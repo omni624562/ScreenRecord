@@ -96,14 +96,14 @@ export function startServer(app: App, port: number, development: boolean) {
       },
       "/api/encoder/reset-learned": { POST: api(() => (app.resetLearnedGpu(), json({ ok: true }))) },
       "/api/update": {
-        GET: api(() => json({ enabled: app.checkUpdatesEnabled, update: app.update, checkedAt: app.updateCheckedAt })),
+        GET: api(() => json({ enabled: app.checkUpdatesEnabled, update: app.update, checkedAt: app.updateCheckedAt, error: app.updateError })),
         POST: api(async (req) => {
           const { enabled, check } = await body<{ enabled?: boolean; check?: boolean }>(req);
           if (typeof enabled === "boolean") app.setCheckUpdates(enabled);
           if (check) await app.checkUpdate().catch((e) => {
             throw new ConfigError(`無法檢查新版本：${(e as Error).message}`);
           });
-          return json({ enabled: app.checkUpdatesEnabled, update: app.update, checkedAt: app.updateCheckedAt });
+          return json({ enabled: app.checkUpdatesEnabled, update: app.update, checkedAt: app.updateCheckedAt, error: app.updateError });
         }),
       },
       "/api/ffmpeg/cancel": { POST: api(() => (app.downloader.cancel(), json({ ok: true, ...status() }))) },

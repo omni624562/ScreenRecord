@@ -614,7 +614,11 @@ function bindSettings() {
   );
   $("checkUpdateBtn").addEventListener("click", () =>
     guarded(async () => {
-      const r = await api<{ update?: UpdateInfo }>("/api/update", { check: true });
+      const r = await api<{ update?: UpdateInfo }>("/api/update", { check: true }).catch((e: Error) => {
+        renderUpdateStatus(e.message);
+        throw e;
+      });
+      renderUpdateStatus();
       env.update = r.update;
       renderEnv();
       toast(r.update ? `有新版本 v${r.update.version}，點右下角的標籤前往下載` : `目前已是最新版本（v${env.appVersion}）`);
@@ -1024,12 +1028,18 @@ function applyStatus(data: { recorder: RecorderStatus; export?: ExportStatus; do
 
 let pollTimer: number | undefined;
 let polling = false;
+function renderUpdateStatus(error?: string) {
+  $("updateStatus").hidden = !error;
+  $("updateStatus").textContent = error ? `無法檢查新版本：${error.replace(/^無法檢查新版本：/, "")}` : "";
+}
+
 /** 伺服器發現新版本（或狀態改變）時重新取得詳細資訊 */
 async function refreshUpdate() {
   try {
-    const r = await api<{ enabled: boolean; update?: UpdateInfo }>("/api/update");
+    const r = await api<{ enabled: boolean; update?: UpdateInfo; error?: string }>("/api/update");
     env.update = r.update;
     $<HTMLInputElement>("checkUpdates").checked = r.enabled;
+    renderUpdateStatus(r.error);
     renderEnv();
   } catch {
     // 下次輪詢再試

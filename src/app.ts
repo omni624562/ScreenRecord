@@ -9,7 +9,7 @@ import { appDir, defaultOutputDir } from "./paths.ts";
 import { Recorder } from "./recorder.ts";
 import { loadSettings, saveSettings } from "./settings.ts";
 import type { EnvInfo, FfmpegInfo, HotkeyStatus, MonitorInfo, UpdateInfo } from "./shared/types.ts";
-import { checkForUpdate } from "./updater.ts";
+import { checkForUpdate, RepoNotPublicError } from "./updater.ts";
 import { APP_VERSION } from "./version.ts";
 import { minimizeUi, restoreUi } from "./winui.ts";
 
@@ -30,6 +30,8 @@ export class App {
   /** GitHub 上較新的版本（檢查後才有） */
   update?: UpdateInfo;
   updateCheckedAt?: number;
+  /** 最近一次檢查失敗的原因（介面顯示用） */
+  updateError?: string;
   private updateTimer?: Timer;
 
   readonly recorder = new Recorder({
@@ -125,7 +127,12 @@ export class App {
     if (!this.checkUpdatesEnabled) return;
     const next = this.updateCheckedAt ? 12 * 3600_000 : 60_000;
     this.updateTimer = setTimeout(async () => {
-      await this.checkUpdate().catch((e) => console.log(`檢查新版本失敗：${(e as Error).message}`));
+      try {
+        await this.checkUpdate();
+      } catch (e) {
+        console.log(`檢查新版本失敗：${(e as Error).message}`);
+        if (e instanceof RepoNotPublicError) return; // 私人儲存庫：再查也是 404，不再排下一次
+      }
       this.scheduleUpdateChecks();
     }, next);
   }
@@ -138,8 +145,15 @@ export class App {
 
   /** 立即檢查；找到新版本時以系統匣通知（同一版只通知一次） */
   async checkUpdate(): Promise<UpdateInfo | undefined> {
-    this.update = await checkForUpdate(APP_VERSION);
-    this.updateCheckedAt = Date.now();
+    try {
+      this.update = await checkForUpdate(APP_VERSION);
+      this.updateError = undefined;
+    } catch (e) {
+      this.updateError = (e as Error).message;
+      throw e;
+    } finally {
+      this.updateCheckedAt = Date.now();
+    }
     const u = this.update;
     if (u && loadSettings().updateNotified !== u.version) {
       saveSettings({ updateNotified: u.version });

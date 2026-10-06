@@ -6,6 +6,9 @@ import type { UpdateInfo } from "./shared/types.ts";
 
 export const RELEASES_API = "https://api.github.com/repos/omni624562/ScreenRecord/releases/latest";
 
+/** 儲存庫不公開（查詢得到 404）：再查也一樣，本次執行不再自動檢查 */
+export class RepoNotPublicError extends Error {}
+
 /** 比較 "1.2.0" 這類版本號：a > b 回傳正數 */
 export function compareVersions(a: string, b: string): number {
   const parse = (v: string) => v.replace(/^v/i, "").split("-")[0]!.split(".").map((n) => Number.parseInt(n, 10) || 0);
@@ -35,7 +38,7 @@ export async function checkForUpdate(
     signal: AbortSignal.timeout(15_000),
   });
   // 儲存庫設為私人時，未登入的查詢一律得到 404
-  if (r.status === 404) throw new Error("GitHub 上找不到公開的發佈版本（儲存庫可能設為私人）");
+  if (r.status === 404) throw new RepoNotPublicError("GitHub 儲存庫為私人（未登入無法查詢）");
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
   const rel = (await r.json()) as Release;
   if (!rel.tag_name || rel.draft || rel.prerelease) return undefined;
