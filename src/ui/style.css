@@ -358,8 +358,9 @@ input[type="number"] { font-family: var(--mono); font-variant-numeric: tabular-n
 
 /* ── 左右面板共用列高（subgrid）：設定列與系統狀態的分隔線永遠對齊，設定列換行時也一樣 ── */
 .main { grid-template-rows: minmax(0, 1fr) auto; }
-.main > .panel { grid-row: span 2; display: grid; grid-template-rows: subgrid; row-gap: 10px; }
-.panel-top { display: flex; flex-direction: column; gap: 10px; min-height: 0; }
+/* 欄寬固定為面板寬：否則很長的一行（事件紀錄的完整路徑）會把內容撐出面板、被視窗裁掉 */
+.main > .panel { grid-row: span 2; display: grid; grid-template-rows: subgrid; grid-template-columns: minmax(0, 1fr); row-gap: 10px; }
+.panel-top { display: flex; flex-direction: column; gap: 10px; min-height: 0; min-width: 0; }
 .settings-bar, .sys-status { border-top: 1px solid var(--border); padding-top: 10px; align-self: stretch; }
 .sys-status { flex-direction: row; align-items: center; flex-wrap: wrap; gap: 6px 10px; }
 /* ── 版本號與更新說明 ── */

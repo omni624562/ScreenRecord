@@ -50,6 +50,8 @@ export class Tray {
     this.worker.onerror = (e) => {
       console.error(`系統匣錯誤：${e.message}`);
       result.resolve(false);
+      // 啟動後才出錯：圖示已消失，標記為無法使用，main.ts 的閒置自動結束會接手
+      this.ok = false;
     };
     this.push(true);
     this.ok = await Promise.race([result.promise, Bun.sleep(5000).then(() => false)]);
@@ -91,6 +93,7 @@ export class Tray {
     if (res && (res.path ?? res.message) !== (this.lastResultPath ?? this.lastResultMsg)) {
       this.lastResultPath = res.path;
       this.lastResultMsg = res.message;
+      this.existsAt = 0;
       if (res.ok && res.path) this.notify("錄影已儲存", `${basename(res.path)}（${videoClock(res.videoSec)}）`);
       else this.notify("錄影未完成", res.message, true);
     }
@@ -115,10 +118,22 @@ export class Tray {
       })),
       audio: { system: cfg.audio.system, mic: cfg.audio.mic },
       canRecord: !!this.app.ffmpegPath() && !this.app.exporter.running,
-      lastResult: this.lastResultPath && existsSync(this.lastResultPath) ? this.lastResultPath : undefined,
+      lastResult: this.lastResultExists() ? this.lastResultPath : undefined,
       autostart: this.autostart,
       version: APP_VERSION,
     };
+  }
+
+  private existsAt = 0;
+  private existsCache = false;
+  /** 選單「播放最後一部」是否可用：每 10 秒才查一次檔案（網路磁碟上 existsSync 可能卡住數秒） */
+  private lastResultExists(): boolean {
+    if (!this.lastResultPath) return false;
+    if (Date.now() - this.existsAt > 10_000) {
+      this.existsAt = Date.now();
+      this.existsCache = existsSync(this.lastResultPath);
+    }
+    return this.existsCache;
   }
 
   private push(force = false) {

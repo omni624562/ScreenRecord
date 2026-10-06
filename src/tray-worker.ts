@@ -35,6 +35,7 @@ const user32 = dlopen("user32.dll", {
   GetForegroundWindow: { args: [], returns: P },
   GetWindowThreadProcessId: { args: [P, P], returns: u32 },
   AttachThreadInput: { args: [u32, u32, i32], returns: i32 },
+  MsgWaitForMultipleObjects: { args: [u32, P, i32, u32, u32], returns: u32 },
 });
 const shell32 = dlopen("shell32.dll", { Shell_NotifyIconW: { args: [u32, P], returns: i32 } });
 const kernel32 = dlopen("kernel32.dll", {
@@ -233,7 +234,7 @@ function init() {
   if (!hwnd) throw new Error("無法建立系統匣視窗");
 }
 
-// 訊息迴圈：用 PeekMessage 輪詢，Worker 的事件迴圈才能同時收主執行緒傳來的狀態
+// 訊息迴圈：用 PeekMessage 取出視窗訊息，Worker 的事件迴圈才能同時收主執行緒傳來的狀態
 const msgBuf = new Uint8Array(48);
 function pump() {
   while (U.PeekMessageW(ptr(msgBuf), null, 0, 0, 1 /* PM_REMOVE */)) {
@@ -278,7 +279,15 @@ self.onmessage = (e: MessageEvent<MainToTray>) => {
 try {
   init();
   send({ type: "hwnd", hwnd: Number(hwnd) });
-  setInterval(pump, 25);
+  // 在原生端等到有視窗訊息（點圖示、選單）或逾時才醒來：點擊立即反應，閒置時幾乎不耗 CPU。
+  // 每輪之間讓出事件迴圈，處理主執行緒傳來的狀態（最慢延遲 WAIT_MS）。
+  const WAIT_MS = 200, QS_ALLINPUT = 0x04ff;
+  const loop = () => {
+    U.MsgWaitForMultipleObjects(0, null, 0, WAIT_MS, QS_ALLINPUT);
+    pump();
+    setTimeout(loop, 0);
+  };
+  setTimeout(loop, 0);
 } catch (e) {
   send({ type: "error", message: (e as Error).message });
 }

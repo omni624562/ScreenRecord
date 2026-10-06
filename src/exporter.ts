@@ -34,8 +34,22 @@ export class Exporter {
 
   constructor(private deps: ExporterDeps) {}
 
+  /** 準備中（讀取影片資訊）也算進行中：避免準備的空檔又開始錄影或第二個轉檔 */
+  private starting = false;
+
   get running() {
-    return this.job?.state === "running";
+    return this.starting || this.job?.state === "running";
+  }
+
+  /** 檢查與開始之間有 await，用旗標讓整段成為一個不可重入的動作 */
+  private async exclusive(fn: () => Promise<ExportStatus>): Promise<ExportStatus> {
+    if (this.running) throw new ConfigError("已有轉檔工作進行中，請等它完成");
+    this.starting = true;
+    try {
+      return await fn();
+    } finally {
+      this.starting = false;
+    }
   }
 
   status(): ExportStatus | undefined {
@@ -50,7 +64,16 @@ export class Exporter {
   }
 
   /** 加速匯出 */
-  async start(source: string, speed: number, keepAudio = true): Promise<ExportStatus> {
+  start(source: string, speed: number, keepAudio = true): Promise<ExportStatus> {
+    return this.exclusive(() => this.doStart(source, speed, keepAudio));
+  }
+
+  /** 剪輯：剪頭尾、刪除中間片段、裁切畫面，另存為 *_cut.mp4 */
+  startCut(source: string, spec: EditSpec): Promise<ExportStatus> {
+    return this.exclusive(() => this.doCut(source, spec));
+  }
+
+  private async doStart(source: string, speed: number, keepAudio: boolean): Promise<ExportStatus> {
     if (!Number.isFinite(speed) || speed < LIMITS.speedMin || speed > LIMITS.speedMax)
       throw new ConfigError(`倍率需介於 ${LIMITS.speedMin}～${LIMITS.speedMax}`);
     const { ffmpeg, enc, info, fps } = await this.prepare(source);
@@ -61,8 +84,7 @@ export class Exporter {
     return this.run("speed", ffmpeg, args, source, output, speed, info.durationSec! / speed, note);
   }
 
-  /** 剪輯：剪頭尾、刪除中間片段、裁切畫面，另存為 *_cut.mp4 */
-  async startCut(source: string, spec: EditSpec): Promise<ExportStatus> {
+  private async doCut(source: string, spec: EditSpec): Promise<ExportStatus> {
     const { ffmpeg, enc, info, fps } = await this.prepare(source);
     const keep = keepRanges(info.durationSec!, spec);
     const length = totalLength(keep);
@@ -102,7 +124,6 @@ export class Exporter {
   // ───────────── 內部 ─────────────
 
   private async prepare(source: string): Promise<{ ffmpeg: string; enc: EncoderSpec; info: MediaInfo; fps: number }> {
-    if (this.running) throw new ConfigError("已有轉檔工作進行中，請等它完成");
     const ffmpeg = this.deps.ffmpegPath();
     const enc = this.deps.encoder();
     if (!ffmpeg || !enc) throw new ConfigError("FFmpeg 無法使用");
@@ -166,7 +187,11 @@ export class Exporter {
       } else if (code === 0 && existsSync(output)) {
         job.state = "done";
         job.progress = 1;
-        job.bytes = statSync(output).size;
+        try {
+          job.bytes = statSync(output).size;
+        } catch {
+          // 檔案剛好被移走：大小未知不影響結果
+        }
         job.message = `已儲存 ${output}`;
       } else {
         job.state = "error";

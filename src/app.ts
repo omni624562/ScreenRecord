@@ -156,12 +156,19 @@ export class App {
     console.log(r.ok ? "ddagrab 測試成功，將優先使用 GPU 擷取" : `ddagrab 測試失敗，將改用 gdigrab：${r.error}`);
   }
 
-  /** 整個桌面的預覽 JPEG；ddagrab 失敗時退回 gdigrab */
-  async preview(): Promise<ArrayBuffer | undefined> {
+  /** 預覽範圍：指定螢幕時只有那一台，否則整個桌面 */
+  private previewMonitors(monitorId?: string | null): MonitorInfo[] {
+    const one = monitorId ? this.monitors.find((m) => m.id === monitorId) : undefined;
+    return one ? [one] : this.monitors;
+  }
+
+  /** 預覽 JPEG（整個桌面或單一螢幕）；ddagrab 失敗時退回 gdigrab */
+  async preview(monitorId?: string | null): Promise<ArrayBuffer | undefined> {
     const ffmpeg = this.ffmpegPath();
     if (!ffmpeg) return undefined;
+    const mons = this.previewMonitors(monitorId);
     const grab = async (dda: boolean) => {
-      const p = Bun.spawn([ffmpeg, ...previewArgs(this.monitors, dda)], { stdin: "ignore", stdout: "pipe", stderr: "ignore", windowsHide: true });
+      const p = Bun.spawn([ffmpeg, ...previewArgs(mons, dda)], { stdin: "ignore", stdout: "pipe", stderr: "ignore", windowsHide: true });
       const timer = setTimeout(() => p.kill(), 10_000);
       const [img, code] = await Promise.all([new Response(p.stdout).arrayBuffer(), p.exited]);
       clearTimeout(timer);
@@ -177,11 +184,11 @@ export class App {
    * 即時預覽串流（multipart JPEG）。同時只保留一條：新的連線會結束舊的，
    * 瀏覽器斷線（關閉視窗、切換分頁、改張數）時 FFmpeg 也跟著結束。
    */
-  livePreview(fps: number, signal: AbortSignal): ReadableStream<Uint8Array> | undefined {
+  livePreview(fps: number, signal: AbortSignal, monitorId?: string | null): ReadableStream<Uint8Array> | undefined {
     const ffmpeg = this.ffmpegPath();
     if (!ffmpeg) return undefined;
     this.live?.kill();
-    const p = Bun.spawn([ffmpeg, ...previewArgs(this.monitors, this.ddagrabUsable() && this.monitors.length > 0, 1280, fps)], {
+    const p = Bun.spawn([ffmpeg, ...previewArgs(this.previewMonitors(monitorId), this.ddagrabUsable() && this.monitors.length > 0, 1280, fps)], {
       stdin: "ignore", stdout: "pipe", stderr: "ignore", windowsHide: true,
     });
     const kill = () => {

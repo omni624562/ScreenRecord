@@ -148,6 +148,15 @@ describe("預覽", () => {
     expect(previewArgs(TWO_GPUS, true)).toContain("gdigrab");
     expect(previewArgs(SAME_GPU, false)).toContain("gdigrab");
   });
+  test("單一螢幕預覽只擷取那一台", () => {
+    const second = SAME_GPU[1]!;
+    const dda = graphOf(previewArgs([second], true));
+    expect(dda).not.toContain("xstack");
+    expect(dda).toContain(`output_idx=${second.output}`);
+    const gdi = previewArgs([second], false).join(" ");
+    expect(gdi).toContain(`-offset_x ${second.x} -offset_y ${second.y} -video_size ${second.width}x${second.height}`);
+    expect(previewArgs(SAME_GPU, false)).not.toContain("-offset_x");
+  });
   test("planTiles 會忽略與範圍不相交的螢幕", () => {
     expect(planTiles({ x: 0, y: 0, width: 100, height: 100 }, SAME_GPU).involved.map((m) => m.id)).toEqual(["0:0"]);
   });

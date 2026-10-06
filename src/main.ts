@@ -109,15 +109,20 @@ if (autoOpen) openUi(url);
 // 超過一段時間沒有任何頁面在輪詢狀態、而且沒在錄影 / 轉檔，就自動結束。
 // （瀏覽器對背景分頁的計時器最慢會降到每分鐘一次，所以門檻設得寬一點）
 const IDLE_EXIT_MS = 5 * 60_000;
-if (isCompiled && !trayOk && !noTray) {
+if (isCompiled && !noTray) {
   setInterval(() => {
-    if (app.recorder.active || app.exporter.running) return;
+    // 系統匣啟動後才失效（圖示消失）也一樣適用，否則關掉視窗後就再也結束不了
+    if (tray.ok || app.recorder.active || app.exporter.running) return;
     if (Date.now() - app.lastSeen > IDLE_EXIT_MS) {
       console.log("超過 5 分鐘沒有開著的頁面，自動結束程式");
       void app.quit();
     }
   }, 15_000);
 }
+
+// 沒接住的例外只記錄、不讓程式整個結束：錄影中的 FFmpeg 會跟著被終止，分段就合併不了
+process.on("uncaughtException", (e) => console.error(`未預期的錯誤：${e?.stack ?? e}`));
+process.on("unhandledRejection", (e) => console.error(`未處理的 Promise 錯誤：${(e as Error)?.stack ?? e}`));
 
 // Ctrl+C / 關閉主控台視窗：先讓錄影正常收尾再結束；連按兩次強制結束
 let signals = 0;

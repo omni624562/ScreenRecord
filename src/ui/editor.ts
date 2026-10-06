@@ -195,16 +195,24 @@ function bind() {
     renderTime();
     if (pendingCut !== undefined) renderTimeline();
   });
-  // 播放中用 rAF 讓播放頭平順移動
+  // 播放中才用 rAF 讓播放頭平順移動；暫停 / 關閉後停止，不在背景每秒重繪 60 次
+  let raf = 0;
   const loop = () => {
-    if (!v.paused) renderTime();
-    requestAnimationFrame(loop);
+    renderTime();
+    raf = v.paused ? 0 : requestAnimationFrame(loop);
   };
-  requestAnimationFrame(loop);
+  v.addEventListener("play", () => {
+    if (!raf) raf = requestAnimationFrame(loop);
+  });
 
   $("edClose").addEventListener("click", close);
+  // 按 Esc 關閉也要釋放檔案（否則之後移到資源回收筒會顯示「正在使用中」）
   $<HTMLDialogElement>("editor").addEventListener("close", () => {
     v.pause();
+    if (v.getAttribute("src")) {
+      v.removeAttribute("src");
+      v.load();
+    }
   });
   $("edPlay").addEventListener("click", () => (v.paused ? void v.play() : v.pause()));
   for (const b of document.querySelectorAll<HTMLButtonElement>("[data-step]")) b.addEventListener("click", () => step(b.dataset.step!));

@@ -434,8 +434,8 @@ export function parseMediaInfo(stderr: string): { durationSec?: number; width?: 
 }
 
 /**
- * 整個桌面的預覽截圖（JPEG 到 stdout）。能用 ddagrab 時與錄影走同一條路徑，
- * 混合 DPI 的多螢幕環境下預覽與實際錄到的畫面才會一致；否則用 gdigrab。
+ * 預覽截圖（JPEG 到 stdout）：傳入的螢幕清單決定範圍（整個桌面，或只有選到的那一台）。
+ * 能用 ddagrab 時與錄影走同一條路徑，混合 DPI 的多螢幕環境下預覽與實際錄到的畫面才會一致；否則用 gdigrab。
  */
 export function previewArgs(monitors: MonitorInfo[], useDdagrab: boolean, maxWidth = 1600, liveFps?: number): string[] {
   // 單張：JPEG 到 stdout；即時：以 mpjpeg（multipart/x-mixed-replace）持續輸出，<img> 可直接顯示
@@ -457,7 +457,9 @@ export function previewArgs(monitors: MonitorInfo[], useDdagrab: boolean, maxWid
   }
   return [
     "-hide_banner", "-loglevel", "error",
-    "-f", "gdigrab", "-framerate", String(fps), "-draw_mouse", "1", "-i", "desktop",
+    "-f", "gdigrab", "-framerate", String(fps), "-draw_mouse", "1",
+    ...(monitors.length === 1 ? ["-offset_x", String(rect.x), "-offset_y", String(rect.y), "-video_size", `${rect.width}x${rect.height}`] : []),
+    "-i", "desktop",
     "-vf", fit, ...out,
   ];
 }

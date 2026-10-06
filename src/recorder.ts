@@ -8,7 +8,7 @@
 import type { Subprocess } from "bun";
 import { existsSync, mkdirSync, rmdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { chooseEncoder, startupFallback, concatArgs, concatList, ConfigError, resolvePlan, segmentArgs, type CapturePlan, type EncoderSpec } from "./args.ts";
+import { chooseEncoder, startupFallback, concatArgs, concatList, ConfigError, parseMediaInfo, resolvePlan, segmentArgs, type CapturePlan, type EncoderSpec } from "./args.ts";
 import { AudioPipe, type AudioSourceSpec } from "./audiopipe.ts";
 import { qpcNow100ns } from "./com.ts";
 import { lastLines, run } from "./ffmpeg.ts";
@@ -62,6 +62,10 @@ const MAX_LOG = 60;
 const STALL_MS = 15_000;
 /** 送 q 後最多等這麼久 */
 const STOP_TIMEOUT_MS = 10_000;
+/** 錄到一半中斷時最多連續重試幾次（約 1 分鐘）；仍失敗就停止並合併已錄的部分 */
+const MAX_RETRIES = 8;
+/** 計時器兩次觸發的間隔超過這個值，視為電腦睡眠 / 休眠後恢復 */
+const SLEEP_GAP_MS = 5_000;
 
 export class Recorder {
   private state: RecorderState = "idle";
@@ -88,6 +92,7 @@ export class Recorder {
   private slowWarned = false;
   private log: LogEntry[] = [];
   private ticker?: Timer;
+  private lastTickAt = 0;
   private queue: Promise<unknown> = Promise.resolve();
   private autoStopping = false;
   shuttingDown = false;
@@ -238,7 +243,16 @@ export class Recorder {
 
     this.state = "recording";
     this.spanStart = Date.now();
-    this.startSegment();
+    try {
+      this.startSegment();
+    } catch (e) {
+      // 例如 ffmpeg.exe 被移除 / 防毒隔離：回到待命，不留下錄影中的假狀態
+      this.state = "idle";
+      this.spanStart = undefined;
+      this.cleanupParts();
+      throw new ConfigError(`無法啟動 FFmpeg：${(e as Error).message}`);
+    }
+    this.lastTickAt = Date.now();
     this.ticker = setInterval(() => this.tick(), 250);
   }
 
@@ -260,7 +274,19 @@ export class Recorder {
     this.state = "recording";
     this.spanStart = Date.now();
     this.addLog("info", "繼續錄影");
-    this.startSegment();
+    if (!this.tryStartSegment()) throw new ConfigError("無法繼續錄影，已停止並儲存先前錄到的部分");
+  }
+
+  /** 在計時器 / 結束事件裡啟動分段：失敗時記錄並停止（保住已錄的部分），不讓例外弄垮整個程式 */
+  private tryStartSegment(): boolean {
+    try {
+      this.startSegment();
+      return true;
+    } catch (e) {
+      this.addLog("error", `無法啟動 FFmpeg：${(e as Error).message}`);
+      void this.stop("無法繼續擷取，停止錄影").catch(() => {});
+      return false;
+    }
   }
 
   private async doStop(reason?: string) {
@@ -274,6 +300,13 @@ export class Recorder {
       this.busy = "正在合併分段…";
       this.result = await this.finalize();
       this.addLog(this.result.ok ? "info" : "error", this.result.message);
+    } catch (e) {
+      // 例如磁碟已滿：要讓介面與系統匣看得到失敗，分段保留下來
+      this.result = {
+        ok: false, frames: 0, videoSec: 0, partsDir: this.partsDir,
+        message: `儲存失敗：${(e as Error).message}（已錄的分段保留於 ${this.partsDir}）`,
+      };
+      this.addLog("error", this.result.message);
     } finally {
       clearInterval(this.ticker);
       this.ticker = undefined;
@@ -412,13 +445,13 @@ export class Recorder {
       if (next === "cpu-encoder") {
         this.addLog("warn", `GPU 編碼器 ${this.enc?.name} 無法使用（${detail}），改用 CPU 編碼`);
         this.enc = this.cpuEncoder;
-        this.startSegment();
+        this.tryStartSegment();
         return;
       }
       if (next === "gdigrab") {
         this.addLog("warn", `ddagrab 無法擷取（${detail}），改用 gdigrab`);
         this.method = "gdigrab";
-        this.startSegment();
+        this.tryStartSegment();
         return;
       }
       this.addLog("error", `無法開始擷取：${detail}`);
@@ -428,6 +461,20 @@ export class Recorder {
 
     // 錄到一半中斷：保留已錄分段，延遲後開新分段續錄
     const attempt = (this.retry?.attempt ?? 0) + 1;
+    if (attempt > MAX_RETRIES) {
+      // 長時間無法恢復（螢幕被拔掉、磁碟已滿…）：ddagrab 先換 gdigrab 再試一輪，否則停止並合併已錄的部分
+      if (seg.method === "ddagrab" && this.config!.method === "auto") {
+        this.addLog("warn", `ddagrab 連續 ${MAX_RETRIES} 次無法擷取（${detail}），改用 gdigrab`);
+        this.method = "gdigrab";
+        this.retry = { attempt: 0, message: "改用 gdigrab 重試" };
+        this.tryStartSegment();
+        return;
+      }
+      this.addLog("error", `連續 ${MAX_RETRIES} 次無法恢復擷取（${detail}），停止錄影並儲存已錄的部分`);
+      this.retry = undefined;
+      void this.stop().catch(() => {});
+      return;
+    }
     const delay = Math.min(1000 * 2 ** (attempt - 1), 10_000);
     const message = `擷取中斷，${Math.round(delay / 1000)} 秒後重試（第 ${attempt} 次）`;
     this.addLog("warn", `FFmpeg 意外結束：${detail}；${message}`);
@@ -437,7 +484,7 @@ export class Recorder {
       timer: setTimeout(() => {
         if (this.state === "recording" && !this.shuttingDown && !this.current?.running) {
           if (this.retry) this.retry.message = `擷取中斷，正在重試（第 ${attempt} 次）`;
-          this.startSegment();
+          this.tryStartSegment();
         }
       }, delay),
     };
@@ -466,7 +513,22 @@ export class Recorder {
   }
 
   private tick() {
+    const now = Date.now();
+    const gap = now - this.lastTickAt;
+    this.lastTickAt = now;
     if (this.state !== "recording") return;
+    if (gap > SLEEP_GAP_MS && this.spanStart) {
+      // 電腦睡眠後恢復：睡著的時間不算錄影長度（否則會誤觸最長錄影時間）；
+      // 重開分段，避免 FFmpeg 用重複畫面補滿這段空白
+      this.spanStart += gap;
+      this.addLog("warn", `電腦約 ${Math.round(gap / 1000)} 秒沒有運作（睡眠 / 休眠），重新開始擷取`);
+      const seg = this.current;
+      if (seg?.running && !seg.stopRequested) {
+        seg.lastFrameAt = now;
+        seg.proc.kill();
+      }
+      return;
+    }
     const maxMs = (this.config?.maxMinutes ?? 0) * 60_000;
     if (maxMs > 0 && this.recordedMs() >= maxMs && !this.autoStopping) {
       this.autoStopping = true;
@@ -505,19 +567,17 @@ export class Recorder {
       };
     }
 
-    // 以 stream copy 讀一遍成品：確認容器完整並取得實際張數
-    const verify = await run(
-      [ffmpeg, "-hide_banner", "-nostats", "-i", out, "-map", "0:v:0", "-c", "copy", "-f", "null", "-", "-progress", "pipe:1"],
-      10 * 60_000,
-    );
-    const counted = Number([...verify.stdout.matchAll(/^frame=(\d+)/gm)].pop()?.[1] ?? NaN);
-    const realFrames = verify.code === 0 && Number.isFinite(counted) ? counted : frames;
+    // 只讀成品的檔頭取得實際長度（毫秒級），不再整檔重讀一遍：長時間錄影停止時省下一半的等待。
+    // 分段回報的張數可能多算被強制終止前還沒寫入的幾張，以檔頭長度為準
+    const head = await run([ffmpeg, "-hide_banner", "-i", out], 15_000);
+    const durationSec = parseMediaInfo(head.stderr).durationSec;
+    const realFrames = durationSec ? Math.round(durationSec * fps) : frames;
     this.cleanupParts();
     return {
       ok: true,
       path: out,
       frames: realFrames,
-      videoSec: realFrames / fps,
+      videoSec: durationSec ?? frames / fps,
       bytes: statSync(out).size,
       message: `已儲存 ${out}（${realFrames} 張，${parts.length} 個分段）`,
     };

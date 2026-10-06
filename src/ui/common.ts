@@ -2,6 +2,17 @@
 
 export const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 
+const lastHtml = new WeakMap<Element, string>();
+/**
+ * 內容有變才重建。輪詢每 0.5 秒更新一次狀態，若每次都重設 innerHTML，
+ * 按鈕會在按下與放開之間被換掉，點擊就不會生效（也會讓 hover 閃動）。
+ */
+export function setHtml(el: Element, html: string) {
+  if (lastHtml.get(el) === html) return;
+  lastHtml.set(el, html);
+  el.innerHTML = html;
+}
+
 export const esc = (s: string) =>
   s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
 

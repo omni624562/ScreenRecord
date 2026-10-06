@@ -2,25 +2,38 @@
  * 掃描儲存資料夾內的錄影：加速版歸到原始錄影底下，支援搜尋、篩選、排序、分頁。
  * 讀取影片資訊（長度、解析度、有無聲音）要執行 FFmpeg，只對需要的檔案做，並快取結果。
  */
-import { readdirSync, statSync } from "node:fs";
+import { readdir, stat } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { parseMediaInfo } from "./args.ts";
 import { run } from "./ffmpeg.ts";
 import { parseExportName } from "./shared/format.ts";
 import type { LibraryEntry, LibraryPage, LibraryQuery, MediaInfo } from "./shared/types.ts";
 
-const cache = new Map<string, { key: string; info: MediaInfo }>();
+/** 快取的是 Promise：同一個檔案同時被要求（搜尋、換頁、匯出完成重新整理）只會執行一次 FFmpeg */
+const cache = new Map<string, { key: string; info: Promise<MediaInfo> }>();
 
 export async function probeMedia(ffmpeg: string, path: string): Promise<MediaInfo> {
-  const st = statSync(path);
+  const st = await stat(path);
   const key = `${st.size}:${st.mtimeMs}`;
   const hit = cache.get(path);
   if (hit?.key === key) return hit.info;
-  // 沒指定輸出時 ffmpeg 會以代碼 1 結束，但 stderr 已含完整的串流資訊
-  const r = await run([ffmpeg, "-hide_banner", "-i", path], 15_000);
-  const info: MediaInfo = { path, name: basename(path), bytes: st.size, mtime: st.mtimeMs, ...parseMediaInfo(r.stderr) };
+  const info = (async (): Promise<MediaInfo> => {
+    // 沒指定輸出時 ffmpeg 會以代碼 1 結束，但 stderr 已含完整的串流資訊
+    const r = await run([ffmpeg, "-hide_banner", "-i", path], 15_000);
+    return { path, name: basename(path), bytes: st.size, mtime: st.mtimeMs, ...parseMediaInfo(r.stderr) };
+  })();
   cache.set(path, { key, info });
+  info.catch(() => cache.get(path)?.info === info && cache.delete(path)); // 失敗不快取，下次再試
   return info;
+}
+
+/** 移除已不存在的檔案的快取（每次掃描資料夾後呼叫） */
+function pruneCache(dir: string, present: Set<string>) {
+  const prefix = join(dir, "_").slice(0, -1).toLowerCase(); // 與 join() 產生的路徑同樣格式，結尾為分隔符
+  for (const path of cache.keys()) {
+    const lower = path.toLowerCase();
+    if (lower.startsWith(prefix) && !lower.slice(prefix.length).includes("\\") && !present.has(lower)) cache.delete(path);
+  }
 }
 
 /** 同時最多 limit 個工作 */
@@ -40,23 +53,24 @@ async function pool<T, R>(items: T[], limit: number, fn: (x: T) => Promise<R>): 
 
 export const isCutName = (name: string) => /_cut(_\d+)?\.mp4$/i.test(name);
 
-/** 掃描資料夾：原始錄影（含剪輯版）各自一筆，加速版放在對應的原檔底下 */
-function scan(dir: string): LibraryEntry[] {
+/**
+ * 掃描資料夾：原始錄影（含剪輯版）各自一筆，加速版放在對應的原檔底下。
+ * 用非同步檔案 API：儲存位置在網路磁碟且回應很慢時，不會卡住錄影與狀態更新。
+ */
+async function scan(dir: string): Promise<LibraryEntry[]> {
   let names: string[];
   try {
-    names = readdirSync(dir).filter((n) => n.toLowerCase().endsWith(".mp4"));
+    names = (await readdir(dir)).filter((n) => n.toLowerCase().endsWith(".mp4"));
   } catch {
     return [];
   }
+  const stats = await pool(names, 16, (name) => stat(join(dir, name)).catch(() => undefined)); // 檔案剛好被刪除或鎖住
   const files: MediaInfo[] = [];
-  for (const name of names) {
-    try {
-      const st = statSync(join(dir, name));
-      if (st.isFile()) files.push({ name, path: join(dir, name), bytes: st.size, mtime: st.mtimeMs });
-    } catch {
-      // 檔案剛好被刪除或鎖住
-    }
-  }
+  names.forEach((name, i) => {
+    const st = stats[i];
+    if (st?.isFile()) files.push({ name, path: join(dir, name), bytes: st.size, mtime: st.mtimeMs });
+  });
+  pruneCache(dir, new Set(files.map((f) => f.path.toLowerCase())));
   const byName = new Map(files.map((f) => [f.name.toLowerCase(), f]));
   const entries = new Map<string, LibraryEntry>();
   const derived: (MediaInfo & { speed: number; base: string })[] = [];
@@ -85,7 +99,7 @@ async function withInfo(ffmpeg: string | undefined, e: LibraryEntry): Promise<Li
 }
 
 export async function listLibrary(ffmpeg: string | undefined, dir: string, q: LibraryQuery = {}): Promise<LibraryPage> {
-  let list = scan(dir);
+  let list = await scan(dir);
 
   const text = q.q?.trim().toLowerCase();
   if (text) {

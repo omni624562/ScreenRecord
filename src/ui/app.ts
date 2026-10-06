@@ -12,7 +12,7 @@ import type {
   Rect,
   ScalePercent,
 } from "../shared/types.ts";
-import { $, api, clamp, esc, guarded, icon, shortDate, toast } from "./common.ts";
+import { $, api, clamp, esc, guarded, icon, setHtml, shortDate, toast } from "./common.ts";
 import { openEditor } from "./editor.ts";
 import { openExport } from "./exportDialog.ts";
 import { isLibraryOpen, load as reloadLibraryDialog, openLibrary, type EntryAction } from "./libraryDialog.ts";
@@ -179,7 +179,7 @@ function renderEnv() {
     else chips.push(`<span class="chip warn" title="${esc(ff.ddagrabError ?? "")}">ddagrab 不可用 → gdigrab</span>`);
     chips.push(`<span class="chip ${ff.encoder ? "ok" : "bad"}">${esc(ff.encoder ?? "無 H.264 編碼器")}</span>`);
   }
-  $("envChips").innerHTML = chips.join("");
+  setHtml($("envChips"), chips.join(""));
   // 版本號顯示在視窗標題列（Chrome / Edge app 模式的標題就是頁面標題）
   document.title = `螢幕錄影 v${env.appVersion}`;
   $("ffmpegBanner").hidden = ff.found;
@@ -247,6 +247,16 @@ function renderDownload(d: DownloadStatus | undefined) {
 /** 目前連線中的即時預覽張數（0 = 靜態截圖） */
 let liveFps = 0;
 let liveFailed = false;
+/** 目前預覽圖對應的範圍（"" = 整個桌面，否則為螢幕 id）；切換時重新擷取 */
+let previewKey: string | undefined;
+
+/** 預覽區顯示的範圍：單一螢幕模式只顯示選到的那一台，其餘顯示整個桌面（自訂範圍要能跨螢幕框選） */
+function previewMonitor(): MonitorInfo | undefined {
+  return S.sourceType === "monitor" ? selectedMonitor() : undefined;
+}
+function viewRect(): Rect {
+  return previewMonitor() ?? env.desktop;
+}
 
 /**
  * 預覽：即時模式以 multipart JPEG 串流（平常每秒 5 張、錄影中 2 張以免搶資源）；
@@ -272,8 +282,11 @@ function loadPreview(forceStatic = false) {
   }
   const live = S.livePreview && !liveFailed && !forceStatic;
   const fps = live ? (locked() ? 2 : 5) : 0;
-  if (live && fps === liveFps && img.src) return; // 已在串流
+  const key = previewMonitor()?.id ?? "";
+  if (live && fps === liveFps && key === previewKey && img.src) return; // 已在串流
+  if (key !== previewKey) img.hidden = true; // 換了範圍：舊畫面比例不對，先藏起來
   liveFps = fps;
+  previewKey = key;
   if (img.hidden) {
     empty.textContent = live ? "正在連接即時預覽…" : "正在擷取預覽…";
     empty.hidden = false;
@@ -294,12 +307,17 @@ function loadPreview(forceStatic = false) {
     empty.textContent = "無法取得預覽（仍可錄影）";
     empty.hidden = false;
   };
-  img.src = live ? `/api/preview/live?fps=${fps}&t=${Date.now()}` : `/api/preview?t=${Date.now()}`;
+  const q = `${key ? `monitor=${encodeURIComponent(key)}&` : ""}t=${Date.now()}`;
+  img.src = live ? `/api/preview/live?fps=${fps}&${q}` : `/api/preview?${q}`;
 }
 
-document.addEventListener("visibilitychange", () => env && loadPreview());
+document.addEventListener("visibilitychange", () => {
+  if (!env) return;
+  loadPreview();
+  if (!document.hidden) void poll();
+});
 function renderSource() {
-  const d = env.desktop;
+  const d = viewRect();
   const desk = $("desk");
   if (d.width > 0) {
     desk.style.setProperty("--ar", `${d.width} / ${d.height}`);
@@ -312,15 +330,16 @@ function renderSource() {
   }
 
   const pct = (v: number, total: number) => `${(v / total) * 100}%`;
-  $("deskOverlay").innerHTML = d.width
-    ? monitors()
+  const shown = previewMonitor();
+  setHtml($("deskOverlay"), d.width
+    ? (shown ? [shown] : monitors())
         .map(
           (m) => `<div class="mon-box${(S.sourceType === "monitor" && m.id === S.monitorId) || S.sourceType === "all" ? " selected" : ""}" data-id="${m.id}"
             style="left:${pct(m.x - d.x, d.width)};top:${pct(m.y - d.y, d.height)};width:${pct(m.width, d.width)};height:${pct(m.height, d.height)}">
             <div>螢幕 ${m.displayNumber}<small>${m.width} × ${m.height}</small></div></div>`,
         )
         .join("")
-    : "";
+    : "");
   const region = $("deskRegion");
   region.hidden = S.sourceType !== "region" || !d.width;
   if (!region.hidden) {
@@ -329,6 +348,7 @@ function renderSource() {
   }
   renderSourceDetail();
   renderSizeText();
+  if (previewKey !== undefined && previewKey !== (shown?.id ?? "")) loadPreview();
 }
 
 /** 範圍分頁旁的細節：螢幕按鈕 / 座標輸入 / 說明文字 */
@@ -338,11 +358,11 @@ function renderSourceDetail() {
   const dis = locked() ? "disabled" : "";
   if (S.sourceType === "monitor") {
     detailMode = "monitor";
-    box.innerHTML = monitors().length
+    setHtml(box, monitors().length
       ? monitors()
           .map((m) => `<button type="button" class="mon-chip" data-id="${m.id}" aria-pressed="${m.id === S.monitorId}" ${dis} title="${esc(m.adapterName)}">螢幕 ${m.displayNumber}<small>${m.width}×${m.height}${m.primary ? "・主" : ""}</small></button>`)
           .join("")
-      : `<span class="info">找不到螢幕資訊，請改用「自訂範圍」</span>`;
+      : `<span class="info">找不到螢幕資訊，請改用「自訂範圍」</span>`);
   } else if (S.sourceType === "all") {
     detailMode = "all";
     const list = monitors();
@@ -350,7 +370,7 @@ function renderSourceDetail() {
     const text = list.length <= 1
       ? "目前只有 1 個螢幕，與「單一螢幕」相同"
       : `${list.length} 個螢幕拼成 ${env.desktop.width}×${env.desktop.height}` + (multiGpu ? "（不同顯示卡，將用 gdigrab）" : "");
-    box.innerHTML = `<span class="info${multiGpu ? " warn" : ""}" title="${esc(text)}">${esc(text)}</span>`;
+    setHtml(box, `<span class="info${multiGpu ? " warn" : ""}" title="${esc(text)}">${esc(text)}</span>`);
   } else {
     // 座標輸入框：正在輸入時不要重建，避免游標跳走
     if (detailMode !== "region") {
@@ -431,10 +451,10 @@ function renderAudio() {
   $<HTMLInputElement>("audioMic").checked = S.audioMic;
   const sel = $<HTMLSelectElement>("micId");
   const def = a.captures.find((d) => d.isDefault);
-  sel.innerHTML = [
+  setHtml(sel, [
     `<option value="">預設麥克風${def ? `（${esc(def.name)}）` : ""}</option>`,
     ...a.captures.map((d) => `<option value="${esc(d.id)}">${esc(d.name)}</option>`),
-  ].join("");
+  ].join(""));
   if (S.micId && !a.captures.some((d) => d.id === S.micId)) S.micId = "";
   sel.value = S.micId;
   sel.disabled = !S.audioMic || locked();
@@ -442,7 +462,7 @@ function renderAudio() {
     ? "聲音與畫面以同一個時鐘對齊。系統聲音會受 Windows 音量影響。"
     : a.captures.length === 0 ? "找不到麥克風。" : "");
   const label = [S.audioSystem && "系統", S.audioMic && "麥克風"].filter(Boolean).join("＋") || "不錄";
-  $("audioBtn").innerHTML = `${icon(S.audioMic && !S.audioSystem ? "mic" : "speaker")}聲音：${label}${icon("down")}`;
+  setHtml($("audioBtn"), `${icon(S.audioMic && !S.audioSystem ? "mic" : "speaker")}聲音：${label}${icon("down")}`);
 }
 
 function audioSummary(): string {
@@ -453,7 +473,7 @@ function audioSummary(): string {
 function renderSettings() {
   const fps = $<HTMLSelectElement>("fps");
   const choices = FPS_CHOICES.includes(S.fps) ? FPS_CHOICES : [...FPS_CHOICES, S.fps].sort((a, b) => a - b);
-  fps.innerHTML = choices.map((f) => `<option value="${f}">${f}</option>`).join("");
+  setHtml(fps, choices.map((f) => `<option value="${f}">${f}</option>`).join(""));
   fps.value = String(S.fps);
   $<HTMLSelectElement>("scale").value = String(S.scale);
   $<HTMLInputElement>("drawMouse").checked = S.drawMouse;
@@ -467,10 +487,10 @@ function renderSettings() {
     S.method === "auto" ? "" : S.method,
     S.encoder === "auto" ? "" : S.encoder === "gpu" ? "GPU 編碼" : "CPU 編碼",
   ].filter(Boolean).join("・");
-  $("moreBtn").innerHTML = `${esc(more)}${icon("down")}`;
+  setHtml($("moreBtn"), `${esc(more)}${icon("down")}`);
   const dir = $<HTMLInputElement>("outputDir");
   if (document.activeElement !== dir) dir.value = S.outputDir;
-  $("dirBtn").innerHTML = `${icon("folder")}<span class="txt">${esc(outDir())}</span>`;
+  setHtml($("dirBtn"), `${icon("folder")}<span class="txt">${esc(outDir())}</span>`);
   $("dirBtn").title = `儲存位置：${outDir()}`;
   for (const el of $("settingsBar").querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLButtonElement>("select, input, button")) {
     if (el.id !== "openDirBtn") el.disabled = locked();
@@ -610,9 +630,10 @@ function liveRecordedMs() {
 }
 
 function renderTimer() {
-  if (!rec) return;
+  if (!rec || document.hidden) return; // 看不到就不必更新；回到前景的那一輪會補上
   const ms = liveRecordedMs();
-  $("timer").textContent = clock(ms);
+  const text = clock(ms);
+  if ($("timer").textContent !== text) $("timer").textContent = text;
   const bar = $("maxBar");
   bar.hidden = !(rec.maxMs > 0 && rec.state !== "idle");
   if (!bar.hidden) (bar.firstElementChild as HTMLElement).style.width = `${Math.min(100, (ms / rec.maxMs) * 100)}%`;
@@ -674,18 +695,18 @@ function renderRecorder() {
   box.hidden = active || !res;
   if (res && !active) {
     box.className = `result ${res.ok ? "ok" : "bad"}`;
-    box.innerHTML = res.ok && res.path
+    setHtml(box, res.ok && res.path
       ? `<strong>錄影已儲存・${videoClock(res.videoSec)}・${formatBytes(res.bytes ?? 0)}</strong>
          <div class="path" title="${esc(res.path)}">${esc(res.path.split(/[\\/]/).pop()!)}</div>
          <div class="actions">${actionButtons(res.path)}</div>`
-      : `<strong>錄影未完成</strong><div class="small">${esc(res.message)}</div>`;
+      : `<strong>錄影未完成</strong><div class="small">${esc(res.message)}</div>`);
   }
 
-  $("logList").innerHTML = r.log
+  setHtml($("logList"), r.log
     .slice(-20)
     .reverse()
     .map((l) => `<li class="${l.level}"><time>${new Date(l.t).toLocaleTimeString("zh-TW", { hour12: false })}</time><span title="${esc(l.text)}">${esc(l.text)}</span></li>`)
-    .join("");
+    .join(""));
 
   if (res?.ok && res.path && res.path !== lastResultPath) {
     lastResultPath = res.path;
@@ -711,11 +732,11 @@ function renderJob() {
     : exp.state === "done" ? `${videoClock(exp.expectedSec)}・${formatBytes(exp.bytes ?? 0)}` : "";
   $("jobBar").hidden = exp.state !== "running";
   ($("jobBar").firstElementChild as HTMLElement).style.width = `${pct}%`;
-  $("jobActions").innerHTML = exp.state === "running"
+  setHtml($("jobActions"), exp.state === "running"
     ? `<span class="muted small job-name">${esc(name)}</span><button class="btn small" id="cancelJobBtn">取消</button>`
     : exp.state === "done"
       ? actionButtons(exp.output, { edit: exp.kind === "cut", export: exp.kind === "cut" }) + `<button class="btn ghost small" id="dismissJobBtn">關閉</button>`
-      : `<span class="small">${esc(exp.message ?? "")}</span><button class="btn ghost small" id="dismissJobBtn">關閉</button>`;
+      : `<span class="small">${esc(exp.message ?? "")}</span><button class="btn ghost small" id="dismissJobBtn">關閉</button>`);
 
   if (exp.state !== lastExportState) {
     const finished = lastExportState === "running" && exp.state !== "running";
@@ -763,14 +784,19 @@ function recentCount() {
   return clamp(Math.floor((w + 10) / 210), 1, 8);
 }
 
+let recentSeq = 0;
 async function loadRecent() {
   if (!env) return;
+  const seq = ++recentSeq;
   try {
     const q = new URLSearchParams({ dir: outDir(), page: String(recentPage), pageSize: String(recentCount()) });
-    recent = await api<LibraryPage>(`/api/library?${q}`);
+    const r = await api<LibraryPage>(`/api/library?${q}`);
+    if (seq !== recentSeq) return; // 較舊的請求晚回來（換頁、調整視窗大小時常見）：丟掉
+    recent = r;
     recentPage = recent.page;
     for (const e of recent.items) known.set(e.path, e);
   } catch {
+    if (seq !== recentSeq) return;
     recent = undefined;
   }
   renderRecent();
@@ -778,7 +804,7 @@ async function loadRecent() {
 
 function renderRecent() {
   const items = recent?.items ?? [];
-  $("recentCards").innerHTML = items.length
+  setHtml($("recentCards"), items.length
     ? items
         .map((e) => {
           const tags = [
@@ -798,12 +824,12 @@ function renderRecent() {
           </div>`;
         })
         .join("")
-    : `<span class="recent-empty">「${esc(outDir())}」還沒有錄影，按「開始錄影」試試看。</span>`;
+    : `<span class="recent-empty">「${esc(outDir())}」還沒有錄影，按「開始錄影」試試看。</span>`);
   const pages = recent?.pages ?? 1;
   $("recentInfo").textContent = recent && recent.total ? `${recentPage} / ${pages} 頁` : "";
   $<HTMLButtonElement>("recentPrev").disabled = recentPage <= 1;
   $<HTMLButtonElement>("recentNext").disabled = recentPage >= pages;
-  $("libraryBtn").innerHTML = `${icon("list")}全部錄影${recent?.total ? `（${recent.total}）` : ""}`;
+  setHtml($("libraryBtn"), `${icon("list")}全部錄影${recent?.total ? `（${recent.total}）` : ""}`);
 }
 
 function bindRecent() {
@@ -854,11 +880,14 @@ async function findEntry(path: string): Promise<LibraryEntry | undefined> {
   return known.get(path);
 }
 
+/** 播放 / 在資料夾中顯示：交給 Windows 開啟。播放器第一次啟動可能要一兩秒，先給回饋 */
+function openFile(action: "play" | "reveal", path: string) {
+  if (action === "play") toast("正在以預設播放器開啟…");
+  void guarded(() => api("/api/open", { action, path }));
+}
+
 function act(action: EntryAction, entry: LibraryEntry) {
-  if (action === "play" || action === "reveal") {
-    void guarded(() => api("/api/open", { action, path: entry.path }));
-    return;
-  }
+  if (action === "play" || action === "reveal") return openFile(action, entry.path);
   if (locked()) return toast(`錄影中無法${action === "edit" ? "剪輯" : "匯出"}，請先停止錄影`, true);
   if (exp?.state === "running") return toast("目前有轉檔工作進行中，請等它完成", true);
   if (!entry.durationSec) return toast("無法讀取影片長度", true);
@@ -898,7 +927,7 @@ document.addEventListener("click", (e) => {
   if (!el || el.closest("#libraryDlg")) return; // 全部錄影對話框自己處理
   const action = el.dataset.act as EntryAction;
   const path = el.dataset.path!;
-  if (action === "play" || action === "reveal") return void guarded(() => api("/api/open", { action, path }));
+  if (action === "play" || action === "reveal") return openFile(action, path);
   void findEntry(path).then((entry) => (entry ? act(action, entry) : toast("清單中找不到這個檔案", true)));
 });
 
@@ -921,8 +950,13 @@ function applyStatus(data: { recorder: RecorderStatus; export?: ExportStatus; do
   }
 }
 
+let pollTimer: number | undefined;
+let polling = false;
 async function poll() {
+  if (polling) return; // 已有一輪在等回應，結束後自然會排下一輪
+  clearTimeout(pollTimer);
   if (stopped) return;
+  polling = true;
   try {
     applyStatus(await api("/api/status"));
     if (disconnected) {
@@ -935,7 +969,9 @@ async function poll() {
       toast("程式已結束或連線中斷，可以關閉這個視窗", true);
     }
   }
-  window.setTimeout(poll, 500);
+  polling = false;
+  // 視窗隱藏（最小化 / 切到別的分頁）時放慢，回到前景時立即更新
+  pollTimer = window.setTimeout(poll, document.hidden ? 3000 : 500);
 }
 
 // ───────────── 更新說明 ─────────────

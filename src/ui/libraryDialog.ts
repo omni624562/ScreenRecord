@@ -58,15 +58,20 @@ export async function load() {
   });
   $("libEmpty").hidden = false;
   $("libEmpty").textContent = "讀取中…";
+  const seq = ++loadSeq;
   try {
-    data = await api<LibraryPage>(`/api/library?${params}`);
+    const r = await api<LibraryPage>(`/api/library?${params}`);
+    if (seq !== loadSeq) return; // 已有較新的查詢（例如還在輸入搜尋字），舊的回應不要蓋掉它
+    data = r;
     page = data.page;
   } catch (e) {
+    if (seq !== loadSeq) return;
     data = undefined;
     $("libEmpty").textContent = (e as Error).message;
   }
   render();
 }
+let loadSeq = 0;
 
 function render() {
   $("libDir").textContent = deps.dir();

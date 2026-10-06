@@ -40,6 +40,9 @@ export function startServer(app: App, port: number, development: boolean) {
   const api = (h: Handler) => async (req: Request) => {
     const blocked = guard(req);
     if (blocked) return blocked;
+    // 停止長時間錄影（合併大檔）、首次掃描大資料夾可能超過 idleTimeout，
+    // 連線被切斷會讓介面誤報失敗；API 都在本機，不限時
+    server.timeout(req, 0);
     try {
       return await h(req, new URL(req.url));
     } catch (e) {
@@ -97,15 +100,15 @@ export function startServer(app: App, port: number, development: boolean) {
         return json(status());
       }),
 
-      "/api/preview": api(async () => {
+      "/api/preview": api(async (_req, url) => {
         if (!app.ffmpegPath()) return new Response("ffmpeg not found", { status: 503 });
-        const img = await app.preview();
+        const img = await app.preview(url.searchParams.get("monitor"));
         if (!img) return new Response("preview failed", { status: 500 });
         return new Response(img, { headers: { "Content-Type": "image/jpeg", "Cache-Control": "no-store" } });
       }),
       "/api/preview/live": api((req, url) => {
         const fps = Math.min(10, Math.max(1, Number(url.searchParams.get("fps")) || 5));
-        const stream = app.livePreview(fps, req.signal);
+        const stream = app.livePreview(fps, req.signal, url.searchParams.get("monitor"));
         if (!stream) return new Response("ffmpeg not found", { status: 503 });
         return new Response(stream, {
           headers: { "Content-Type": "multipart/x-mixed-replace;boundary=ffmpeg", "Cache-Control": "no-store" },

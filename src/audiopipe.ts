@@ -22,6 +22,8 @@ const T0_WINDOW_100NS = 10_000_000;
 /** 開始前最多保留的音訊 */
 const PRE_BUFFER_100NS = 60_000_000;
 const MAX_PENDING_BYTES = 64 * 1024 * 1024;
+/** 一次要補的靜音超過這個長度，代表程式曾停住（電腦睡眠）：時間軸直接跳過，不配置大量靜音 */
+const MAX_SILENCE_FRAMES = SAMPLE_RATE * 2;
 const frames100ns = (d: number) => Math.round((d * SAMPLE_RATE) / 1e7);
 
 export interface AudioSourceSpec {
@@ -163,7 +165,14 @@ export class AudioPipe {
     this.pull(now);
     if (this.t0 === undefined) return;
     const target = frames100ns(now - SILENCE_MARGIN_100NS - this.t0);
-    for (const s of this.sources) this.fillSilence(s, target);
+    const behind = target - Math.max(...this.sources.map((s) => s.written));
+    if (behind > MAX_SILENCE_FRAMES) {
+      // 睡眠一小時要補約 1.4 GB 的靜音；改為把零點往後移，錄影端也會在恢復後重開分段
+      this.t0 += Math.round((behind * 1e7) / SAMPLE_RATE);
+      this.log("warn", `聲音中斷約 ${Math.round(behind / SAMPLE_RATE)} 秒（電腦睡眠？），已跳過這段`);
+    }
+    const capped = frames100ns(now - SILENCE_MARGIN_100NS - this.t0);
+    for (const s of this.sources) this.fillSilence(s, capped);
     this.mix();
   }
 
