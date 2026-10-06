@@ -337,8 +337,24 @@ export function segmentArgs(
 }
 
 /** concat demuxer 清單；單引號需跳脫為 '\'' */
-export function concatList(files: string[]): string {
-  return files.map((f) => `file '${f.replaceAll("\\", "/").replaceAll("'", "'\\''")}'`).join("\n") + "\n";
+/**
+ * concat demuxer 的清單。outpoints[i]：第 i 個分段在此時間（秒）結束。
+ * 錄聲音時用聲音的結尾當 outpoint：FFmpeg 收到 q 後不再讀聲音、但會把已擷取的畫面處理完，
+ * 畫面因此多出按下停止之後的 0.2～0.5 秒；截掉後聲音與畫面一起在按下停止的時刻結束（不需重新編碼）。
+ */
+export function concatList(files: string[], outpoints: (number | undefined)[] = []): string {
+  return files
+    .map((f, i) => {
+      const line = `file '${f.replaceAll("\\", "/").replaceAll("'", "'\\''")}'`;
+      const out = outpoints[i];
+      return out !== undefined && out > 0 ? `${line}\noutpoint ${out.toFixed(6)}` : line;
+    })
+    .join("\n") + "\n";
+}
+
+/** 讀出某個分段的聲音結尾（秒）：只讀聲音封包，不解碼 */
+export function audioEndArgs(file: string): string[] {
+  return ["-hide_banner", "-nostats", "-loglevel", "error", "-i", file, "-map", "0:a:0", "-c", "copy", "-f", "null", "-", "-progress", "pipe:1"];
 }
 
 export function concatArgs(listFile: string, outFile: string): string[] {

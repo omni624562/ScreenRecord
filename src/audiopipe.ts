@@ -199,24 +199,19 @@ export class AudioPipe {
     this.t0Estimate = Math.min(this.t0Estimate, arrival - ptsSec * 1e7);
   }
 
-  /** 停止：把聲音補到 stopAt，送完後關閉連線（FFmpeg 收到 EOF） */
-  async finish(stopAt = qpcNow100ns()) {
-    clearInterval(this.timer);
+  /**
+   * 要停止這個分段時（送 q 之前）：把聲音立即送到 at 為止。
+   * 平常只送到「現在 − 150ms」（等晚到的封包），不先補上的話每個分段結尾會少約 0.25 秒聲音。
+   * 之後才到的封包落在已送出的範圍內，會被當成重疊而略過。
+   */
+  flushTo(at = qpcNow100ns()) {
     if (this.t0 === undefined && this.firstVideoAt !== undefined) this.fixT0();
-    if (this.t0 !== undefined) {
-      this.pull(stopAt);
-      for (const s of this.sources) this.fillSilence(s, frames100ns(stopAt - this.t0));
-      this.mix();
-    }
-    for (const s of this.sources) s.cap?.close();
-    this.ending = true;
-    if (this.sock) {
-      const closed = new Promise<void>((r) => (this.closed = r));
-      this.flush();
-      await Promise.race([closed, Bun.sleep(3000)]);
-    }
-    this.server.stop(true);
+    if (this.t0 === undefined) return;
+    this.pull(at);
+    for (const s of this.sources) this.fillSilence(s, frames100ns(at - this.t0));
+    this.mix();
   }
+
 
   /** 立即釋放（FFmpeg 已結束時） */
   close() {

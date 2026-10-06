@@ -9,7 +9,7 @@ import type { Subprocess } from "bun";
 import { existsSync, mkdirSync, rmdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { statfs } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { chooseEncoder, startupFallback, concatArgs, concatList, ConfigError, parseMediaInfo, resolvePlan, segmentArgs, type CapturePlan, type EncoderSpec } from "./args.ts";
+import { audioEndArgs, chooseEncoder, startupFallback, concatArgs, concatList, ConfigError, parseMediaInfo, resolvePlan, segmentArgs, type CapturePlan, type EncoderSpec } from "./args.ts";
 import { AudioPipe, type AudioSourceSpec } from "./audiopipe.ts";
 import { qpcNow100ns } from "./com.ts";
 import { lastLines, run } from "./ffmpeg.ts";
@@ -623,6 +623,7 @@ export class Recorder {
     const seg = this.current;
     if (!seg || !seg.running) return;
     seg.stopRequested = true;
+    seg.audio?.flushTo(); // 聲音先補到現在，結尾才不會比畫面短
     try {
       seg.proc.stdin.write("q");
       seg.proc.stdin.flush();
@@ -709,8 +710,16 @@ export class Recorder {
     }
 
     const ffmpeg = this.deps.ffmpegPath()!;
+    // 有錄聲音：每個分段在聲音結束處截斷（見 concatList），聲音與畫面一起結束、分段之間也不留無聲的空隙
+    const outpoints = this.audioSpecs.length
+      ? await Promise.all(parts.map(async (p) => {
+          const r = await run([ffmpeg, ...audioEndArgs(p.file)], 60_000);
+          const us = Number([...r.stdout.matchAll(/^out_time_us=(\d+)/gm)].pop()?.[1] ?? NaN);
+          return r.code === 0 && us > 0 ? us / 1e6 : undefined;
+        }))
+      : [];
     const listFile = join(this.partsDir!, "concat.txt");
-    writeFileSync(listFile, concatList(parts.map((p) => p.file)), "utf8");
+    writeFileSync(listFile, concatList(parts.map((p) => p.file), outpoints), "utf8");
     const out = this.finalPath!;
     const r = await run([ffmpeg, ...concatArgs(listFile, out)], 30 * 60_000);
     if (r.code !== 0 || !existsSync(out)) {
