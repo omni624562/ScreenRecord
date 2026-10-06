@@ -28,6 +28,15 @@ export function vcall(obj: number, index: number, args: FFIType[], ...values: un
   return method(obj, index, args, FFIType.i32)(obj, ...values) as number;
 }
 
+/**
+ * 先把某個物件的某個方法綁好，之後直接呼叫：省掉每次讀 vtable、組快取鍵、查表的成本。
+ * 用在每秒要呼叫上百次的地方（音訊擷取），物件存活期間有效。
+ */
+export function bindMethod(obj: number, index: number, args: FFIType[], returns: FFIType = FFIType.i32): (...values: unknown[]) => number {
+  const f = method(obj, index, args, returns);
+  return (...values) => f(obj, ...values) as number;
+}
+
 export function release(obj: number | undefined) {
   if (obj) method(obj, 2, [], FFIType.u32)(obj);
 }

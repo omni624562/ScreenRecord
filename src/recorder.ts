@@ -43,6 +43,8 @@ interface Segment {
   stopRequested: boolean;
   stderr: string;
   audio?: AudioPipe;
+  /** 已要求 FFmpeg 降低訊息等級（聲音對齊完成後不再需要 showinfo） */
+  quieted?: boolean;
 }
 
 export interface RecorderDeps {
@@ -465,7 +467,21 @@ export class Recorder {
       if (audio) {
         // level+info 模式：showinfo 每張畫面的時間給聲音對齊用，其餘只保留警告以上的訊息
         const pts = /Parsed_showinfo.*\bpts_time:\s*(-?[\d.]+)/.exec(line);
-        if (pts) return audio.onVideoFrame(Number(pts[1]), qpcNow100ns());
+        if (pts) {
+          if (!audio.synced) return audio.onVideoFrame(Number(pts[1]), qpcNow100ns());
+          // 對齊完成：對 FFmpeg 按「-」把訊息等級從 info 降一級（仍會印錯誤），不再每張畫面印一行。
+          // 在 Windows 上讀取每秒幾十行的 stderr 要花約 20% 的單核（實測）
+          if (!seg.quieted && !seg.stopRequested) {
+            seg.quieted = true;
+            try {
+              proc.stdin.write("-");
+              proc.stdin.flush();
+            } catch {
+              // 行程剛好結束
+            }
+          }
+          return;
+        }
         if (!/\[(warning|error|fatal|panic)\]/.test(line)) return;
         // 畫面這端失敗時，音訊輸入仍會讓 FFmpeg 卡著不結束；直接結束它，才能立即退回 gdigrab 或重試
         if (/\[(error|fatal)\]/.test(line) && /Error configuring filter graph|Could not open encoder|Error while filtering/.test(line) && !seg.stopRequested) {

@@ -6,7 +6,7 @@ Windows 11 螢幕錄影工具：**原速錄影並完整保留，停止後再選�
 - 擷取與編碼交給 FFmpeg：優先 `ddagrab`（Desktop Duplication，GPU 擷取），不支援或失敗時自動退回 `gdigrab`
 - 輸出 H.264 MP4（yuv420p、BT.709），`bun build --compile` 編成單一 exe
 
-目前版本：**1.2.0**　各版本的變更見 [CHANGELOG.md](CHANGELOG.md)（版本號顯示在操作視窗的標題列；系統匣選單「更新說明」可在程式裡查看）。
+目前版本：**1.2.1**　各版本的變更見 [CHANGELOG.md](CHANGELOG.md)（版本號顯示在操作視窗的標題列；系統匣選單「更新說明」可在程式裡查看）。
 
 ## 功能
 
@@ -48,6 +48,8 @@ Windows 11 螢幕錄影工具：**原速錄影並完整保留，停止後再選�
 - 設定存在 `%LOCALAPPDATA%\ScreenRecorder\settings.json`，記錄檔 `ScreenRecorder.log` 也在同一處
 
 ### 執行編譯好的版本
+
+從 [Releases](https://github.com/omni624562/ScreenRecord/releases/latest) 下載 `ScreenRecorder.zip`（約 38 MB，解壓縮後使用）或 `ScreenRecorder.exe`（約 94 MB）。exe 幾乎都是內含的 Bun 執行環境（約 94 MB，本程式只占約 0.3 MB），壓縮後下載量少約 60%。
 
 ```
 ScreenRecorder.exe

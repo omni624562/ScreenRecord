@@ -6,7 +6,7 @@
  * 每個封包附上 QPC 時間戳，再由 AudioPipe 對齊畫面時間後送進 FFmpeg。
  */
 import { dlopen, FFIType, ptr, toArrayBuffer, type Pointer } from "bun:ffi";
-import { guid, hex, release, S_FALSE, S_OK, toWide, vcall, wstrAt } from "./com.ts";
+import { bindMethod, guid, hex, release, S_FALSE, S_OK, toWide, vcall, wstrAt } from "./com.ts";
 import type { AudioDevice } from "./shared/types.ts";
 
 export const SAMPLE_RATE = 48_000;
@@ -139,12 +139,22 @@ export function listAudioDevices(): { render?: string; captures: AudioDevice[] }
   return { render, captures };
 }
 
-export interface AudioPacket {
-  /** 第一個取樣的 QPC 時間（100ns）；時間戳無效時為 undefined */
-  qpc?: number;
-  /** 交錯排列的 float32 立體聲 */
-  data: Float32Array;
-}
+/**
+ * 一個封包：data 是交錯排列的 float32 立體聲，指向共用的中轉區，只在回呼期間有效（要保留請自行複製）；
+ * null 代表這段是靜音。qpc 為第一個取樣的 QPC 時間（100ns），時間戳無效時為 undefined。
+ */
+export type PacketVisitor = (data: Float32Array | null, frames: number, qpc: number | undefined) => void;
+
+/**
+ * 效能：Windows 上的 Bun 在計時器回呼中配置新的 TypedArray 每次約 300µs（實測），
+ * 對新配置的陣列呼叫 ptr() 或用 toArrayBuffer 包外部記憶體也要 100～600µs；
+ * 每秒上百個封包會吃掉 10% 以上的單核。所以擷取時完全不配置：
+ * 以 RtlMoveMemory 複製到預先配置的中轉區（指標只取一次），由呼叫端直接處理。
+ */
+const kernelMem = dlopen("kernel32.dll", { RtlMoveMemory: { args: [FFIType.ptr, FFIType.ptr, FFIType.u64], returns: FFIType.void } }).symbols;
+const STAGING = new Float32Array(SAMPLE_RATE * CHANNELS);
+const STAGING_PTR = ptr(STAGING);
+const STAGING_FRAMES = STAGING.length / CHANNELS;
 
 /** 48 kHz / 2ch / float32 的 WAVEFORMATEX（搭配 AUTOCONVERTPCM，任何裝置都轉成同一格式） */
 const WAVE_FORMAT = (() => {
@@ -166,13 +176,19 @@ export class WasapiCapture {
   private client = 0;
   private capture = 0;
   readonly name: string;
-  // 重複使用的輸出參數緩衝
-  private pData = new BigUint64Array(1);
-  private pFrames = new Uint32Array(1);
-  private pFlags = new Uint32Array(1);
-  private pDevPos = new BigUint64Array(1);
-  private pQpc = new BigUint64Array(1);
-  private pNext = new Uint32Array(1);
+  // 重複使用的輸出參數緩衝：放在同一塊記憶體，指標只取一次
+  private outBuf = new ArrayBuffer(48);
+  private pData = new BigUint64Array(this.outBuf, 0, 1);
+  private pDevPos = new BigUint64Array(this.outBuf, 8, 1);
+  private pQpc = new BigUint64Array(this.outBuf, 16, 1);
+  private pFrames = new Uint32Array(this.outBuf, 24, 1);
+  private pFlags = new Uint32Array(this.outBuf, 28, 1);
+  private pNext = new Uint32Array(this.outBuf, 32, 1);
+  private outPtr = ptr(this.outBuf);
+  // 擷取時每秒呼叫上百次的方法：建立時綁好
+  private nextPacket?: (...v: unknown[]) => number;
+  private getBuffer?: (...v: unknown[]) => number;
+  private releaseBuffer?: (...v: unknown[]) => number;
 
   constructor(readonly loopback: boolean, micId?: string) {
     const en = getEnumerator();
@@ -201,6 +217,9 @@ export class WasapiCapture {
       hr = vcall(this.client, VT_AC_GET_SERVICE, [FFIType.ptr, FFIType.ptr], ptr(IID_IAudioCaptureClient), ptr(out));
       if (hr !== S_OK) throw new Error(`GetService 失敗 (${hex(hr)})`);
       this.capture = Number(out[0]);
+      this.nextPacket = bindMethod(this.capture, VT_CC_NEXT_PACKET, [FFIType.ptr]);
+      this.getBuffer = bindMethod(this.capture, VT_CC_GET_BUFFER, [FFIType.ptr, FFIType.ptr, FFIType.ptr, FFIType.ptr, FFIType.ptr]);
+      this.releaseBuffer = bindMethod(this.capture, VT_CC_RELEASE_BUFFER, [FFIType.u32]);
       hr = vcall(this.client, VT_AC_START, []);
       if (hr !== S_OK) throw new Error(`Start 失敗 (${hex(hr)})`);
     } catch (e) {
@@ -209,24 +228,34 @@ export class WasapiCapture {
     }
   }
 
-  /** 取出目前所有可讀的封包；裝置失效（拔除、切換）時丟出例外。 */
-  read(): AudioPacket[] {
-    const packets: AudioPacket[] = [];
+  /** 依序處理目前所有可讀的封包（visit 期間資料有效）；裝置失效（拔除、切換）時丟出例外。 */
+  read(visit: PacketVisitor): void {
+    const p = this.outPtr;
     for (;;) {
-      let hr = vcall(this.capture, VT_CC_NEXT_PACKET, [FFIType.ptr], ptr(this.pNext));
+      let hr = this.nextPacket!(p + 32);
       if (hr !== S_OK) throw new Error(`音訊裝置中斷 (${hex(hr)})`);
-      if (this.pNext[0] === 0) return packets;
-      hr = vcall(this.capture, VT_CC_GET_BUFFER, [FFIType.ptr, FFIType.ptr, FFIType.ptr, FFIType.ptr, FFIType.ptr],
-        ptr(this.pData), ptr(this.pFrames), ptr(this.pFlags), ptr(this.pDevPos), ptr(this.pQpc));
+      if (this.pNext[0] === 0) return;
+      hr = this.getBuffer!(p, p + 24, p + 28, p + 8, p + 16);
       if (hr < 0) throw new Error(`音訊裝置中斷 (${hex(hr)})`);
       const frames = this.pFrames[0]!;
       const flags = this.pFlags[0]!;
-      let data: Float32Array;
-      if (frames === 0) data = new Float32Array(0);
-      else if (flags & AUDCLNT_BUFFERFLAGS_SILENT) data = new Float32Array(frames * CHANNELS);
-      else data = new Float32Array(toArrayBuffer(Number(this.pData[0]) as Pointer, 0, frames * BYTES_PER_FRAME).slice(0));
-      vcall(this.capture, VT_CC_RELEASE_BUFFER, [FFIType.u32], frames);
-      if (frames > 0) packets.push({ qpc: flags & AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR ? undefined : Number(this.pQpc[0]), data });
+      const qpc = flags & AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR ? undefined : Number(this.pQpc[0]);
+      try {
+        if (frames === 0) continue;
+        if (flags & AUDCLNT_BUFFERFLAGS_SILENT) {
+          visit(null, frames, qpc);
+          continue;
+        }
+        // 封包通常約 10ms；超過中轉區（1 秒）時分段處理，時間戳依取樣數往後推
+        const src = Number(this.pData[0]);
+        for (let off = 0; off < frames; off += STAGING_FRAMES) {
+          const n = Math.min(STAGING_FRAMES, frames - off);
+          kernelMem.RtlMoveMemory(STAGING_PTR, src + off * CHANNELS * 4, n * CHANNELS * 4);
+          visit(STAGING.subarray(0, n * CHANNELS), n, qpc === undefined ? undefined : qpc + Math.round((off * 1e7) / SAMPLE_RATE));
+        }
+      } finally {
+        this.releaseBuffer!(frames);
+      }
     }
   }
 
