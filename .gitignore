@@ -3,3 +3,5 @@ dist/
 *.log
 assets/
 *.bun-build
+# 開發模式下自動下載的 FFmpeg 會放在專案根目錄
+ffmpeg.exe

@@ -32,7 +32,7 @@ Windows 11 螢幕錄影工具：**原速錄影並完整保留，停止後再選�
 
 程式啟動後常駐在工作列右下角的系統匣（Windows 11 新程式預設在 `^` 收合區，可拖到工作列上，或在「設定 → 個人化 → 工作列 → 其他系統匣圖示」開啟）。
 
-- **左鍵點圖示**：開啟操作視窗（Edge 的 app 模式獨立視窗；沒有 Edge 時用預設瀏覽器）
+- **左鍵點圖示**：開啟操作視窗（Chrome 的 app 模式獨立視窗；沒有 Chrome 用 Edge，都沒有才用預設瀏覽器）
 - **右鍵選單**：開始錄影（沿用上次設定）、錄製指定螢幕 / 所有螢幕、暫停 / 繼續、停止並儲存、切換系統聲音 / 麥克風、開啟儲存資料夾、播放最近的錄影、開機時自動啟動、結束
 - 圖示顏色代表狀態：深色 = 待命、紅色 = 錄影中、琥珀色 = 已暫停；滑鼠停在圖示上會顯示已錄時間
 - 錄影儲存後會跳出通知，點通知開啟操作視窗
@@ -46,8 +46,8 @@ ScreenRecorder.exe
 ffmpeg.exe          ← 放在同一個資料夾
 ```
 
-找不到 `ffmpeg.exe` 時，介面會顯示下載連結（建議 [gyan.dev](https://www.gyan.dev/ffmpeg/builds/) 的 release essentials / full 版）。放好後按「重新偵測」即可，不用重開程式。  
-搜尋順序：`exe 所在資料夾\ffmpeg.exe` → `ffmpeg\bin\ffmpeg.exe` → `bin\ffmpeg.exe` → `PATH`。
+找不到 `ffmpeg.exe` 時，介面上方會出現提示，按「自動下載」即可：從 [gyan.dev](https://www.gyan.dev/ffmpeg/builds/) 下載固定版本 FFmpeg 9.0.2 essentials（約 110 MB，失敗時改用 GitHub 上的同一檔案），比對程式內建的 SHA-256（不是從下載網站取得，檔案被替換也會被擋下）後，用 Windows 內建的 `System32\tar.exe` 解出 `ffmpeg.exe`，放到 exe 旁邊（沒有寫入權限時放 `%LOCALAPPDATA%\ScreenRecorder`），完成後自動偵測，不用重開程式。下載可取消，不會留下未完成的檔案。也可以按「手動下載」自行下載後放好，再按「重新偵測」。  
+搜尋順序：`exe 所在資料夾\ffmpeg.exe` → `ffmpeg\bin\ffmpeg.exe` → `bin\ffmpeg.exe` → `%LOCALAPPDATA%\ScreenRecorder\ffmpeg.exe` → `PATH`。
 
 從系統匣選單「結束」會先把錄影正常收尾並合併再結束。編譯版不顯示主控台視窗；需要看即時訊息時用 `bun run build:console` 另外編一個有主控台的版本。
 
@@ -102,6 +102,7 @@ src/
   tray.ts        系統匣控制（狀態、選單指令、通知）；tray-worker.ts 在獨立執行緒建立圖示與選單
   icon.ts        以程式繪製的圖示（系統匣三種狀態、exe 圖示）
   settings.ts    設定存檔；desktop.ts 開啟操作視窗、開機自動啟動；log.ts 記錄檔
+  downloader.ts  自動下載 FFmpeg（SHA-256 校驗、解壓縮、放置）
   shared/        前後端共用的型別、格式化與剪輯計算（edit.ts）
   ui/editor.ts   剪輯對話框（時間軸、刪除片段、裁切框選）
   ui/            網頁介面（index.html + app.ts + style.css，由 Bun 打包進 exe）
@@ -115,6 +116,7 @@ scripts/copy-ffmpeg.ts
 - **聲音**：FFmpeg 在 Windows 只能用 dshow 錄麥克風、錄不到系統聲音，所以兩者都以 WASAPI 自行擷取（統一轉成 48 kHz / 立體聲 / float32），經本機 TCP 送進 FFmpeg。對齊方式：FFmpeg 的 `showinfo` 回報每張畫面的時間，推算畫面時間零點；WASAPI 封包帶有 QPC 時間戳（與 ddagrab 同一個時鐘），依此補靜音或裁切，長時間錄影也不漂移。沒有播放聲音時 WASAPI 不送資料，會依時鐘補靜音；音訊裝置被拔除或切換時以靜音代替並自動重新連接。實測（avsynctest 閃光 + 嗶聲）影音差距約 +12～19 ms，在 1 張畫面以內。
 - **分段與防損壞**：分段 MP4 以 fragmented MP4 寫入（每秒一個 fragment），即使 FFmpeg 被強制結束或當機，最多只損失最後約 1 秒；停止後以 `-c copy` 合併為一般 MP4（`+faststart`）並驗證成品。
 - **自動續錄**：錄到一半 FFmpeg 意外結束（例如鎖定畫面、UAC 安全桌面讓 Desktop Duplication 中斷），會保留已錄分段並以退避重試開新分段；超過 15 秒沒有新畫面也會重啟 FFmpeg。
+- **編碼器（CPU / GPU）**：預設「自動」——平常用 libx264（畫質最穩、相容性最好），畫面量超過 1080p60（例如 4K、雙螢幕拼接）時改用 GPU 編碼；錄影中偵測到電腦處理不及，會記住並在之後的錄影自動改用 GPU（「更多 → 編碼器」可重設）（同一段錄影不中途切換，否則分段無法無損合併）。GPU 編碼器在啟動時實際試編一小段，只列出真的能用的（例如 MX150 沒有 NVENC 會被排除）；GPU 編碼一開始就失敗時自動退回 CPU。加速匯出與剪輯屬於離線轉檔，固定用 libx264 以畫質為優先。
 - **效能監看**：以近 5 秒實際寫入張數與 `dup_frames` 計算實際 fps（FFmpeg 的 `speed=` 會把啟動時間算進去，開頭會嚴重偏低，不適合用來判斷）。
 - **加速匯出**：`setpts=PTS/倍率,fps=原fps`，直接捨棄多餘的幀而不做混合，螢幕文字才不會有殘影；聲音用串接的 `atempo`（每段 ≤ 2 倍）變速不變調。
 - **剪輯**：`select` / `aselect` 依保留區段逐張挑選並重新接時間戳，可剪在任意一張畫面上（不受關鍵影格限制），再 `crop` 裁切畫面；因此需要重新編碼。預覽播放由 `/api/media` 直接提供影片檔（支援 Range，可拖曳進度）。

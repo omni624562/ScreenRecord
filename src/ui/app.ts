@@ -1,5 +1,6 @@
 import { clock, formatBytes, humanDuration, LIMITS, outputSize, speedLabel, videoClock } from "../shared/format.ts";
 import type {
+  DownloadStatus,
   EnvInfo,
   ExportStatus,
   LibraryEntry,
@@ -46,6 +47,7 @@ interface Settings {
   micId: string;
   keepAudio: boolean;
   livePreview: boolean;
+  encoder: "auto" | "cpu" | "gpu";
 }
 
 const STORAGE_KEY = "screen-recorder.settings.v1";
@@ -138,6 +140,7 @@ function initSettings() {
     micId: typeof st.micId === "string" ? st.micId : "",
     keepAudio: st.keepAudio ?? true,
     livePreview: st.livePreview ?? true,
+    encoder: st.encoder === "cpu" || st.encoder === "gpu" ? st.encoder : "auto",
   };
   if (!selectedMonitor()) S.monitorId = primary?.id;
 }
@@ -156,6 +159,7 @@ function buildConfig(): RecordConfig {
     method: S.method,
     outputDir: S.outputDir.trim() || env.defaultOutputDir,
     audio: { system: S.audioSystem, mic: S.audioMic, micId: S.micId },
+    encoder: S.encoder,
   };
 }
 
@@ -197,16 +201,43 @@ async function refreshEnv(withPreview = true) {
 let ddagrabWatch: number | undefined;
 function watchDdagrabTest() {
   clearInterval(ddagrabWatch);
-  if (!env.ffmpeg.hasDdagrab || env.ffmpeg.ddagrabWorks !== undefined) return;
+  const pending = () => (env.ffmpeg.hasDdagrab && env.ffmpeg.ddagrabWorks === undefined) || (env.ffmpeg.found && !env.ffmpeg.hwEncoders);
+  if (!pending()) return;
   ddagrabWatch = window.setInterval(async () => {
     try {
       env = await api<EnvInfo>("/api/env");
       renderEnv();
-      if (env.ffmpeg.ddagrabWorks !== undefined) clearInterval(ddagrabWatch);
+      renderSettings();
+      if (!pending()) clearInterval(ddagrabWatch);
     } catch {
       clearInterval(ddagrabWatch);
     }
   }, 1000);
+}
+
+/** 自動下載 FFmpeg 的進度（顯示在找不到 FFmpeg 的提示區） */
+let lastDlPhase = "";
+function renderDownload(d: DownloadStatus | undefined) {
+  if (!d || env.ffmpeg.found) return;
+  const busy = d.phase === "downloading" || d.phase === "verifying" || d.phase === "extracting";
+  $<HTMLButtonElement>("dlBtn").hidden = busy;
+  $<HTMLButtonElement>("dlBtn").textContent = d.phase === "error" || d.phase === "canceled" ? "重新下載" : "自動下載";
+  $("dlCancel").hidden = !busy;
+  $("dlBar").hidden = !busy;
+  const pct = d.total ? Math.min(100, (d.received / d.total) * 100) : 0;
+  ($("dlBar").firstElementChild as HTMLElement).style.width = `${d.phase === "downloading" ? pct : 100}%`;
+  const eta = d.speed && d.total ? (d.total - d.received) / d.speed : undefined;
+  if (d.phase === "downloading")
+    $("dlText").textContent = `下載中 ${formatBytes(d.received)}${d.total ? ` / ${formatBytes(d.total)}（${Math.floor(pct)}%）` : ""}` +
+      (d.speed ? `・${formatBytes(d.speed)}/秒` : "") + (eta !== undefined ? `・剩約 ${humanDuration(eta)}` : "");
+  else if (d.phase === "verifying") $("dlText").textContent = "比對 SHA-256 校驗碼…";
+  else if (d.phase === "extracting") $("dlText").textContent = "解壓縮並確認 ffmpeg.exe 可以執行…";
+  else if (d.phase === "error" || d.phase === "canceled") $("dlText").textContent = d.message ?? "下載失敗";
+  if (d.phase === "done" && lastDlPhase !== "done") {
+    // 伺服器已重新偵測，更新整個環境
+    void refreshEnv(true).then(() => toast(d.message ?? "FFmpeg 已安裝"));
+  }
+  lastDlPhase = d.phase;
 }
 
 // ───────────── 擷取範圍 ─────────────
@@ -428,7 +459,12 @@ function renderSettings() {
   const maxInput = $<HTMLInputElement>("maxMinutes");
   if (document.activeElement !== maxInput) maxInput.value = String(S.maxMinutes);
   $<HTMLSelectElement>("method").value = S.method;
-  const more = [S.maxMinutes > 0 ? `最長 ${humanDuration(S.maxMinutes * 60)}` : "不限時", S.method === "auto" ? "" : S.method].filter(Boolean).join("・");
+  renderEncoder();
+  const more = [
+    S.maxMinutes > 0 ? `最長 ${humanDuration(S.maxMinutes * 60)}` : "不限時",
+    S.method === "auto" ? "" : S.method,
+    S.encoder === "auto" ? "" : S.encoder === "gpu" ? "GPU 編碼" : "CPU 編碼",
+  ].filter(Boolean).join("・");
   $("moreBtn").innerHTML = `${esc(more)}${icon("down")}`;
   const dir = $<HTMLInputElement>("outputDir");
   if (document.activeElement !== dir) dir.value = S.outputDir;
@@ -439,6 +475,26 @@ function renderSettings() {
   }
   renderAudio();
   renderSizeText();
+}
+
+/** 編碼器選項：GPU 依實測結果顯示可用的編碼器 */
+function renderEncoder() {
+  const ff = env.ffmpeg;
+  const hw = ff.hwEncoders;
+  const gpuOpt = $<HTMLSelectElement>("encoder").querySelector<HTMLOptionElement>("option[value=gpu]")!;
+  gpuOpt.textContent = hw === undefined ? "GPU（偵測中…）" : hw.length ? `GPU（${hw.join("、")}）` : "GPU（這台電腦沒有可用的）";
+  gpuOpt.disabled = !hw?.length;
+  if (S.encoder === "gpu" && hw && !hw.length) {
+    // 這台電腦沒有可用的 GPU：改回自動並存檔，系統匣「開始錄影」才不會拿到無效的設定
+    S.encoder = "auto";
+    save();
+  }
+  $<HTMLSelectElement>("encoder").value = S.encoder;
+  $("encoderHint").textContent = S.encoder !== "auto" ? ""
+    : !hw?.length ? "這台電腦只能用 CPU 編碼。"
+      : ff.preferGpu ? `先前偵測到 CPU 編碼跟不上，目前會使用 GPU（${hw[0]}）。`
+        : `超過 1080p60 的畫面量，或偵測到 CPU 跟不上時，改用 ${hw[0]}。`;
+  $("resetGpuBtn").hidden = !(S.encoder === "auto" && ff.preferGpu && hw?.length);
 }
 
 /** 下拉面板：點按鈕開關、點外面或按 Esc 關閉 */
@@ -494,6 +550,15 @@ function bindSettings() {
   onChange("audioMic", (el) => (S.audioMic = el.checked));
   onChange("micId", (el) => (S.micId = el.value));
   onChange("method", (el) => (S.method = el.value as MethodPreference));
+  onChange("encoder", (el) => (S.encoder = el.value as Settings["encoder"]));
+  $("resetGpuBtn").addEventListener("click", () =>
+    guarded(async () => {
+      await api("/api/encoder/reset-learned", {});
+      env.ffmpeg.preferGpu = false;
+      renderSettings();
+      toast("已重設，之後的錄影平常會用 CPU 編碼");
+    }),
+  );
   onChange("maxMinutes", (el) => {
     const v = Number(el.value);
     S.maxMinutes = Number.isFinite(v) && v > 0 ? Math.min(Math.round(v), LIMITS.maxMinutesMax) : 0;
@@ -522,6 +587,8 @@ function bindSettings() {
     save();
     loadPreview(!S.livePreview);
   });
+  $("dlBtn").addEventListener("click", () => guarded(() => api("/api/ffmpeg/download", {})));
+  $("dlCancel").addEventListener("click", () => guarded(() => api("/api/ffmpeg/cancel", {})));
   $("recheckBtn").addEventListener("click", () =>
     guarded(async () => {
       await refreshEnv(true);
@@ -577,7 +644,8 @@ function renderRecorder() {
     const src = sourceRect();
     const o = src ? outputSize(src.width, src.height, S.scale) : undefined;
     $("statOut").textContent = o ? `${o.width}×${o.height} · ${S.fps}fps` : "—";
-    $("statMethod").textContent = env.ffmpeg.encoder ? `${S.method === "auto" ? "自動" : S.method} / ${env.ffmpeg.encoder}` : "—";
+    const encLabel = S.encoder === "gpu" ? env.ffmpeg.hwEncoders?.[0] ?? "GPU" : S.encoder === "cpu" ? env.ffmpeg.encoder ?? "CPU" : "自動";
+    $("statMethod").textContent = env.ffmpeg.encoder ? `${S.method === "auto" ? "自動" : S.method} / ${encLabel}` : "—";
     $("statAudio").textContent = audioSummary();
   }
 
@@ -834,7 +902,8 @@ document.addEventListener("click", (e) => {
 
 // ───────────── 輪詢 ─────────────
 
-function applyStatus(data: { recorder: RecorderStatus; export?: ExportStatus; settingsRev?: number }) {
+function applyStatus(data: { recorder: RecorderStatus; export?: ExportStatus; download?: DownloadStatus; settingsRev?: number }) {
+  renderDownload(data.download);
   if (data.settingsRev && settingsRev && data.settingsRev !== settingsRev && saveTimer === undefined) void reloadSettings();
   const prevState = rec?.state;
   rec = data.recorder;

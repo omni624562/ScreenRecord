@@ -8,7 +8,7 @@
 import type { Subprocess } from "bun";
 import { existsSync, mkdirSync, rmdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { concatArgs, concatList, ConfigError, resolvePlan, segmentArgs, type CapturePlan, type EncoderSpec } from "./args.ts";
+import { chooseEncoder, startupFallback, concatArgs, concatList, ConfigError, resolvePlan, segmentArgs, type CapturePlan, type EncoderSpec } from "./args.ts";
 import { AudioPipe, type AudioSourceSpec } from "./audiopipe.ts";
 import { qpcNow100ns } from "./com.ts";
 import { lastLines, run } from "./ffmpeg.ts";
@@ -46,7 +46,12 @@ interface Segment {
 
 export interface RecorderDeps {
   ffmpegPath(): string | undefined;
-  encoder(): EncoderSpec | undefined;
+  /** CPU 與實測可用的 GPU 編碼器 */
+  encoders(): Promise<{ cpu?: EncoderSpec; gpu: EncoderSpec[] }>;
+  /** 「自動」編碼是否曾偵測到 CPU 跟不上 */
+  preferGpu(): boolean;
+  /** 記下「這台電腦 CPU 編碼跟不上」，之後的錄影自動改用 GPU */
+  learnGpu(): void;
   monitors(): MonitorInfo[];
   /** ddagrab 是否可用（濾鏡存在且實測沒失敗；上次失敗時會重新測試） */
   ddagrabUsable(): Promise<boolean>;
@@ -75,6 +80,9 @@ export class Recorder {
   private result?: RecordingResult;
   private retry?: { attempt: number; timer?: Timer; message: string };
   private audioSpecs: AudioSourceSpec[] = [];
+  private enc?: EncoderSpec;
+  private cpuEncoder?: EncoderSpec;
+  private gpuAvailable = false;
   private audioDesc?: string;
   private slowSince?: number;
   private slowWarned = false;
@@ -117,7 +125,7 @@ export class Recorder {
       busy,
       method: this.method,
       tiles: this.method === "ddagrab" ? this.plan?.dda?.tiles.length : undefined,
-      encoder: this.deps.encoder()?.name,
+      encoder: this.enc?.name,
       audio: this.audioDesc,
       segments: this.segments.filter((s) => s.frames > 0).length,
       frames,
@@ -165,10 +173,11 @@ export class Recorder {
   private async doStart(config: RecordConfig) {
     if (this.state !== "idle") throw new ConfigError("目前已在錄影中");
     if (!this.deps.ffmpegPath()) throw new ConfigError("找不到 ffmpeg.exe，請先依畫面指示下載");
-    const enc = this.deps.encoder();
-    if (!enc) throw new ConfigError("FFmpeg 沒有可用的 H.264 編碼器");
-
     const plan = resolvePlan(config, this.deps.monitors());
+    const encoders = await this.deps.encoders();
+    const encPref = config.encoder ?? "auto";
+    const chosen = chooseEncoder(encPref, plan.outWidth, plan.outHeight, config.fps, encoders.cpu, encoders.gpu, this.deps.preferGpu());
+    const enc = chosen.spec;
     let method: CaptureMethod;
     if (config.method === "gdigrab") method = "gdigrab";
     else if (config.method === "ddagrab") {
@@ -191,6 +200,9 @@ export class Recorder {
     this.config = { ...config, outputDir };
     this.plan = plan;
     this.method = method;
+    this.enc = enc;
+    this.cpuEncoder = encoders.cpu;
+    this.gpuAvailable = encoders.gpu.length > 0;
     this.segments = [];
     this.current = undefined;
     this.accumulatedMs = 0;
@@ -220,6 +232,7 @@ export class Recorder {
       "info",
       `開始錄影：${where} ${width}×${height} → ${plan.outWidth}×${plan.outHeight}，${config.fps} fps（${method}${tiles} / ${enc.name}）`,
     );
+    if (enc !== encoders.cpu) this.addLog("info", chosen.reason);
     if (method === "gdigrab" && plan.monitors.length > 1 && !plan.dda && config.method === "auto")
       this.addLog("info", "範圍涵蓋不同顯示卡上的螢幕，ddagrab 無法合成，改用 gdigrab");
 
@@ -280,7 +293,7 @@ export class Recorder {
 
   private startSegment() {
     const ffmpeg = this.deps.ffmpegPath()!;
-    const enc = this.deps.encoder()!;
+    const enc = this.enc!;
     const index = this.segments.length;
     const file = join(this.partsDir!, `seg_${String(index).padStart(3, "0")}.mp4`);
     const method = this.method!;
@@ -368,6 +381,14 @@ export class Recorder {
       if (!this.slowWarned && now - this.slowSince > 3000) {
         this.slowWarned = true;
         this.addLog("warn", `電腦跟不上即時錄影：實際約 ${unique.toFixed(1)} fps（設定 ${fps} fps），建議降低解析度或 FPS`);
+        // 寫入速度不足代表處理鏈（下載畫面、縮放、編碼）跟不上；擷取跟不上則是 dup 增加。
+        // 改用 GPU 編碼可減輕 CPU 負擔，「自動」模式記下來，之後的錄影改用 GPU 編碼
+        // （同一段錄影不中途切換，不同編碼器的分段無法無損合併；可在介面上重設）
+        const auto = (this.config!.encoder ?? "auto") === "auto";
+        if (auto && written < fps * 0.9 && this.enc === this.cpuEncoder && this.gpuAvailable && !this.deps.preferGpu()) {
+          this.deps.learnGpu();
+          this.addLog("warn", "電腦處理不及，之後的錄影會自動改用 GPU 編碼以減輕 CPU 負擔（可在「更多 → 編碼器」重設）");
+        }
       }
     } else this.slowSince = undefined;
   }
@@ -379,7 +400,22 @@ export class Recorder {
 
     const detail = lastLines(seg.stderr, 2) || `結束代碼 ${code}`;
     if (!this.everProducedFrames) {
-      if (seg.method === "ddagrab" && this.config!.method === "auto") {
+      const next = startupFallback({
+        stderr: seg.stderr,
+        gpuEncoderInUse: !!this.cpuEncoder && this.enc !== this.cpuEncoder,
+        encoderAuto: (this.config!.encoder ?? "auto") === "auto",
+        hasCpuEncoder: !!this.cpuEncoder,
+        ddagrabInUse: seg.method === "ddagrab",
+        methodAuto: this.config!.method === "auto",
+      });
+      // GPU 編碼器一開始就失敗（驅動問題等）：「自動」模式退回 CPU 編碼再試
+      if (next === "cpu-encoder") {
+        this.addLog("warn", `GPU 編碼器 ${this.enc?.name} 無法使用（${detail}），改用 CPU 編碼`);
+        this.enc = this.cpuEncoder;
+        this.startSegment();
+        return;
+      }
+      if (next === "gdigrab") {
         this.addLog("warn", `ddagrab 無法擷取（${detail}），改用 gdigrab`);
         this.method = "gdigrab";
         this.startSegment();

@@ -60,6 +60,8 @@ export interface RecordConfig {
   method: MethodPreference;
   outputDir: string;
   audio: AudioConfig;
+  /** 編碼器：auto = 平常 CPU、畫面量大或 CPU 跟不上時改 GPU；未指定視為 auto */
+  encoder?: "auto" | "cpu" | "gpu";
 }
 
 export type RecorderState = "idle" | "recording" | "paused" | "stopping";
@@ -163,6 +165,17 @@ export interface ExportStatus {
   message?: string;
 }
 
+export interface DownloadStatus {
+  phase: "idle" | "downloading" | "verifying" | "extracting" | "done" | "error" | "canceled";
+  received: number;
+  total?: number;
+  /** bytes / 秒 */
+  speed?: number;
+  target?: string;
+  version?: string;
+  message?: string;
+}
+
 export interface FfmpegInfo {
   found: boolean;
   path?: string;
@@ -170,6 +183,10 @@ export interface FfmpegInfo {
   hasDdagrab: boolean;
   hasGdigrab: boolean;
   encoder?: string;
+  /** 實測可用的硬體編碼器；undefined = 測試中 */
+  hwEncoders?: string[];
+  /** 「自動」模式曾偵測到 CPU 編碼跟不上，之後的錄影改用 GPU */
+  preferGpu?: boolean;
   /** ddagrab 實測：undefined = 尚未測試 */
   ddagrabWorks?: boolean;
   ddagrabError?: string;

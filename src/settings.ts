@@ -12,6 +12,8 @@ import type { RecordConfig } from "./shared/types.ts";
 export interface SavedSettings {
   ui?: Record<string, unknown>;
   config?: RecordConfig;
+  /** 「自動」編碼曾偵測到 CPU 跟不上：之後的錄影改用 GPU */
+  preferGpu?: boolean;
   rev: number;
 }
 
@@ -22,7 +24,7 @@ export function loadSettings(): SavedSettings {
   if (cache) return cache;
   try {
     const data = JSON.parse(readFileSync(file, "utf8")) as SavedSettings;
-    cache = { ui: data.ui, config: data.config, rev: 1 };
+    cache = { ui: data.ui, config: data.config, preferGpu: data.preferGpu, rev: 1 };
   } catch {
     cache = { rev: 1 };
   }
@@ -33,7 +35,7 @@ export function saveSettings(patch: Partial<Omit<SavedSettings, "rev">>): SavedS
   const cur = loadSettings();
   cache = { ...cur, ...patch, rev: cur.rev + 1 };
   try {
-    writeFileSync(file, JSON.stringify({ ui: cache.ui, config: cache.config }, null, 2), "utf8");
+    writeFileSync(file, JSON.stringify({ ui: cache.ui, config: cache.config, preferGpu: cache.preferGpu }, null, 2), "utf8");
   } catch (e) {
     console.error(`無法儲存設定：${(e as Error).message}`);
   }

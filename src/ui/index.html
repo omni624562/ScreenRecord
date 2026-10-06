@@ -9,29 +9,24 @@
   </head>
   <body>
     <div class="app" id="app">
-      <header class="topbar">
-        <div class="brand">
-          <span class="brand-mark" aria-hidden="true"></span>
-          <h1>螢幕錄影</h1>
-        </div>
-        <div class="chips" id="envChips"></div>
-      </header>
-
       <div class="banner error" id="ffmpegBanner" hidden>
         <div>
           <strong>找不到 ffmpeg.exe</strong>
-          <span>請下載 Windows 版 FFmpeg（建議 gyan.dev 的 release essentials），把 <code>bin\ffmpeg.exe</code> 放到 <code id="appDirText"></code></span>
+          <span id="dlText">可以自動下載（gyan.dev 的 FFmpeg 9.0.2 essentials，約 110 MB；下載後比對程式內建的 SHA-256，確認檔案完整且未被替換），或自行下載並把 <code>bin\ffmpeg.exe</code> 放到 <code id="appDirText"></code></span>
+          <div class="progress" id="dlBar" hidden><div></div></div>
         </div>
         <div class="banner-actions">
-          <a class="btn small" href="https://www.gyan.dev/ffmpeg/builds/" target="_blank" rel="noopener">前往下載</a>
-          <button class="btn primary small" id="recheckBtn" type="button">重新偵測</button>
+          <button class="btn primary small" id="dlBtn" type="button">自動下載</button>
+          <button class="btn small" id="dlCancel" type="button" hidden>取消</button>
+          <a class="btn small" href="https://www.gyan.dev/ffmpeg/builds/" target="_blank" rel="noopener">手動下載</a>
+          <button class="btn small" id="recheckBtn" type="button">重新偵測</button>
         </div>
-      </div>
-      <div class="banner warn" id="envWarn" hidden></div>
+      </div>      <div class="banner warn" id="envWarn" hidden></div>
 
       <main class="main">
         <!-- 左：擷取範圍與設定 -->
         <section class="panel capture" id="capturePanel">
+          <div class="panel-top">
           <div class="panel-head">
             <div class="segmented" role="tablist" id="sourceTabs">
               <button type="button" role="tab" data-source="monitor">單一螢幕</button>
@@ -54,6 +49,7 @@
               <div id="deskOverlay"></div>
               <div class="desk-region" id="deskRegion" hidden></div>
             </div>
+          </div>
           </div>
 
           <div class="settings-bar" id="settingsBar">
@@ -107,6 +103,16 @@
                     <option value="gdigrab">gdigrab（GDI，相容性最高）</option>
                   </select>
                 </label>
+                <label class="field">
+                  <span>編碼器</span>
+                  <select id="encoder">
+                    <option value="auto">自動（平常 CPU，畫面大或跟不上時用 GPU）</option>
+                    <option value="cpu">CPU（libx264，畫質最穩）</option>
+                    <option value="gpu">GPU</option>
+                  </select>
+                  <small class="muted" id="encoderHint"></small>
+                  <button class="btn ghost small" id="resetGpuBtn" type="button" hidden>重設：恢復平常用 CPU 編碼</button>
+                </label>
               </div>
             </div>
             <div class="set drop grow">
@@ -128,6 +134,7 @@
 
         <!-- 右：錄影控制 -->
         <section class="panel rec" id="recPanel">
+          <div class="panel-top">
           <div class="rec-head">
             <span class="state-pill" id="statePill">待命</span>
             <span class="muted small" id="busyText"></span>
@@ -157,6 +164,12 @@
           <div class="log">
             <div class="log-title">事件紀錄</div>
             <ol id="logList"></ol>
+          </div>
+          </div>
+          <!-- 系統狀態（FFmpeg 版本、擷取方式、編碼器）：固定在錄影面板底部，不受預覽圖大小影響 -->
+          <div class="sys-status">
+            <span class="sys-title">系統狀態</span>
+            <div class="chips env-chips" id="envChips"></div>
           </div>
         </section>
       </main>

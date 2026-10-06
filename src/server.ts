@@ -56,7 +56,12 @@ export function startServer(app: App, port: number, development: boolean) {
     }
   };
 
-  const status = () => ({ recorder: app.recorder.status(), export: app.exporter.status(), settingsRev: loadSettings().rev });
+  const status = () => ({
+    recorder: app.recorder.status(),
+    export: app.exporter.status(),
+    download: app.downloader.status(),
+    settingsRev: loadSettings().rev,
+  });
 
   const server = Bun.serve({
     hostname: "127.0.0.1",
@@ -75,6 +80,15 @@ export function startServer(app: App, port: number, development: boolean) {
           return json({ ok: true, rev: saved.rev });
         }),
       },
+      "/api/ffmpeg/download": {
+        POST: api(() => {
+          if (app.ffmpegPath()) throw new ConfigError("已經有 FFmpeg 了");
+          app.downloader.start();
+          return json({ ok: true, ...status() });
+        }),
+      },
+      "/api/encoder/reset-learned": { POST: api(() => (app.resetLearnedGpu(), json({ ok: true }))) },
+      "/api/ffmpeg/cancel": { POST: api(() => (app.downloader.cancel(), json({ ok: true, ...status() }))) },
       "/api/env/refresh": { POST: api(async () => json(await app.refresh())) },
       "/api/status": api(() => {
         app.lastSeen = Date.now();

@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import {
+  AUTO_GPU_PIXELS_PER_SEC,
+  chooseEncoder,
+  encoderSpec,
   atempoChain,
   concatList,
   ConfigError,
@@ -192,4 +195,29 @@ test("outputSize 一律取偶數", () => {
 
 test("concatList 跳脫單引號並使用正斜線", () => {
   expect(concatList(["C:\\Users\\O'Neil\\seg_000.mp4"])).toBe("file 'C:/Users/O'\\''Neil/seg_000.mp4'\n");
+});
+
+describe("chooseEncoder", () => {
+  const cpu = encoderSpec("libx264")!;
+  const qsv = encoderSpec("h264_qsv")!;
+  test("自動：1080p30 用 CPU", () => {
+    expect(chooseEncoder("auto", 1920, 1080, 30, cpu, [qsv]).spec.name).toBe("libx264");
+  });
+  test("自動：超過 1080p60（例如 4K30、雙螢幕拼接）改用 GPU", () => {
+    expect(3840 * 2160 * 30).toBeGreaterThan(AUTO_GPU_PIXELS_PER_SEC);
+    expect(chooseEncoder("auto", 3840, 2160, 30, cpu, [qsv]).spec.name).toBe("h264_qsv");
+    expect(chooseEncoder("auto", 4480, 1440, 30, cpu, [qsv]).spec.name).toBe("h264_qsv");
+    expect(chooseEncoder("auto", 1920, 1080, 60, cpu, [qsv]).spec.name).toBe("libx264"); // 剛好 1080p60 仍用 CPU
+  });
+  test("自動：先前偵測到 CPU 跟不上就改用 GPU", () => {
+    expect(chooseEncoder("auto", 1280, 720, 30, cpu, [qsv], true).spec.name).toBe("h264_qsv");
+  });
+  test("自動：沒有 GPU 時一律 CPU", () => {
+    expect(chooseEncoder("auto", 3840, 2160, 60, cpu, [], true).spec.name).toBe("libx264");
+  });
+  test("指定 GPU / CPU", () => {
+    expect(chooseEncoder("gpu", 640, 360, 30, cpu, [qsv]).spec.name).toBe("h264_qsv");
+    expect(chooseEncoder("cpu", 3840, 2160, 60, cpu, [qsv], true).spec.name).toBe("libx264");
+    expect(() => chooseEncoder("gpu", 640, 360, 30, cpu, [])).toThrow(ConfigError);
+  });
 });

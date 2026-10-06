@@ -1,16 +1,18 @@
 /** 全域狀態：FFmpeg 偵測結果、螢幕與音訊裝置清單、錄影器與匯出器。 */
-import { desktopRect, previewArgs, type EncoderSpec } from "./args.ts";
+import { desktopRect, encoderSpec, previewArgs, type EncoderSpec } from "./args.ts";
 import { listAudioDevices } from "./audio.ts";
+import { FfmpegDownloader } from "./downloader.ts";
 import { Exporter } from "./exporter.ts";
-import { probeFfmpeg, testDdagrab } from "./ffmpeg.ts";
+import { probeFfmpeg, testDdagrab, testHwEncoders } from "./ffmpeg.ts";
 import { enumerateMonitors } from "./monitors.ts";
 import { appDir, defaultOutputDir } from "./paths.ts";
 import { Recorder } from "./recorder.ts";
+import { loadSettings, saveSettings } from "./settings.ts";
 import type { EnvInfo, FfmpegInfo, MonitorInfo } from "./shared/types.ts";
 
 export class App {
   readonly defaultOutputDir = defaultOutputDir();
-  private ffmpeg: FfmpegInfo & { encoderSpec?: EncoderSpec } = { found: false, hasDdagrab: false, hasGdigrab: false, searched: [] };
+  private ffmpeg: FfmpegInfo & { encoderSpec?: EncoderSpec; hwListed?: string[] } = { found: false, hasDdagrab: false, hasGdigrab: false, searched: [] };
   private monitors: MonitorInfo[] = [];
   private monitorError?: string;
   private audio: EnvInfo["audio"] = { captures: [] };
@@ -23,9 +25,21 @@ export class App {
 
   readonly recorder = new Recorder({
     ffmpegPath: () => this.ffmpegPath(),
-    encoder: () => this.ffmpeg.encoderSpec,
+    encoders: () => this.encoders(),
     monitors: () => this.monitors,
     ddagrabUsable: () => this.ddagrabReady(),
+    preferGpu: () => !!loadSettings().preferGpu,
+    learnGpu: () => {
+      saveSettings({ preferGpu: true });
+      this.ffmpeg.preferGpu = true;
+    },
+  });
+
+  /** 下載完成後重新偵測，介面輪詢時就會看到 FFmpeg 已就緒 */
+  readonly downloader = new FfmpegDownloader({
+    onDone: async () => {
+      await this.refresh();
+    },
   });
 
   readonly exporter = new Exporter({
@@ -35,6 +49,23 @@ export class App {
 
   ffmpegPath() {
     return this.ffmpeg.found ? this.ffmpeg.path : undefined;
+  }
+
+  private hwTest?: Promise<void>;
+
+  /** 軟體編碼器與實測可用的硬體編碼器（硬體測試還沒做完就先等它） */
+  private async encoders(): Promise<{ cpu?: EncoderSpec; gpu: EncoderSpec[] }> {
+    await this.hwTest;
+    return {
+      cpu: this.ffmpeg.encoderSpec,
+      gpu: (this.ffmpeg.hwEncoders ?? []).map((n) => encoderSpec(n)!).filter(Boolean),
+    };
+  }
+
+  /** 清除「自動改用 GPU」的紀錄（例如換了更快的電腦，或當時只是暫時忙碌） */
+  resetLearnedGpu() {
+    saveSettings({ preferGpu: false });
+    this.ffmpeg.preferGpu = false;
   }
 
   private ddagrabUsable() {
@@ -52,7 +83,7 @@ export class App {
   }
 
   env(): EnvInfo {
-    const { encoderSpec: _e, ...ffmpeg } = this.ffmpeg;
+    const { encoderSpec: _e, hwListed: _h, ...ffmpeg } = this.ffmpeg;
     return {
       appDir,
       defaultOutputDir: this.defaultOutputDir,
@@ -88,7 +119,24 @@ export class App {
       info.ddagrabWorks = this.ffmpeg.ddagrabWorks;
       info.ddagrabError = this.ffmpeg.ddagrabError;
     }
+    // 硬體編碼器實測結果同樣保留（換了 ffmpeg.exe 才重測）
+    if (info.path === this.ffmpeg.path && this.ffmpeg.hwEncoders) info.hwEncoders = this.ffmpeg.hwEncoders;
+    info.preferGpu = !!loadSettings().preferGpu;
     this.ffmpeg = info;
+    if (info.found && !info.hwEncoders) {
+      const path = info.path!;
+      // 測試出錯（例如 ffmpeg.exe 中途被刪除）時視為「沒有可用的 GPU」，不能讓之後每次錄影都因此失敗
+      this.hwTest = testHwEncoders(path, info.hwListed ?? [])
+        .catch((e: Error) => {
+          console.error(`GPU 編碼器測試失敗：${e.message}`);
+          return [] as string[];
+        })
+        .then((list) => {
+          if (this.ffmpeg.path !== path) return;
+          this.ffmpeg.hwEncoders = list;
+          console.log(list.length ? `可用的 GPU 編碼器：${list.join("、")}` : "沒有可用的 GPU 編碼器，將使用 CPU 編碼");
+        });
+    }
     if (info.found && info.hasDdagrab && info.ddagrabWorks === undefined) {
       const test = this.testDdagrab();
       if (waitDdagrab) await test;
@@ -160,6 +208,7 @@ export class App {
     this.quitting = true;
     console.log("正在結束程式…");
     this.live?.kill();
+    this.downloader.cancel();
     try {
       await Promise.all([this.recorder.shutdown(), this.exporter.shutdown()]);
       await this.tray?.dispose();

@@ -45,7 +45,81 @@ export const ENCODERS: EncoderSpec[] = [
   },
 ];
 
-const COLOR_TAGS = ["-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709", "-color_range", "tv"];
+/** 硬體編碼器（實測可用才會列入選項）；h264_mf 只在沒有 libx264 時當軟體備援 */
+export const HARDWARE_ENCODERS = ["h264_nvenc", "h264_qsv", "h264_amf"];
+export const encoderSpec = (name: string) => ENCODERS.find((e) => e.name === name);
+
+/** 「自動」模式：每秒處理的像素超過 1080p60 就改用 GPU 編碼 */
+export const AUTO_GPU_PIXELS_PER_SEC = 1920 * 1080 * 60;
+
+export type EncoderPreference = "auto" | "cpu" | "gpu";
+
+/** 擷取端（ddagrab / gdigrab / 濾鏡圖）出錯的訊息 */
+const CAPTURE_ERROR = /ddagrab|gdigrab|Desktop duplication|Error configuring filter graph|Failed to capture/i;
+/**
+ * 編碼器本身出錯的訊息。注意擷取端失敗時 FFmpeg 也會連帶印出「Could not open encoder before EOF」，
+ * 那是沒有收到畫面的結果，不代表編碼器有問題，所以不列入。
+ */
+const ENCODER_ERROR = /Error while opening encoder|Error initializing output stream|enc:(h264_\w+|libx264)[^\n]*(Error|fail|not (supported|available))|No (NVENC|capable) devices?|Cannot load nvEncodeAPI|MFX|\bAMF\b|Cannot load nvcuda|CUDA_ERROR/i;
+
+/** FFmpeg 錯誤訊息是編碼器而非擷取端造成的 */
+export function isEncoderFault(stderr: string): boolean {
+  const lines = stderr.split(/\r?\n/).filter((l) => !/Could not open encoder before EOF/i.test(l)).join("\n");
+  return ENCODER_ERROR.test(lines) && !CAPTURE_ERROR.test(lines);
+}
+export type StartupFallback = "cpu-encoder" | "gdigrab" | "fatal";
+
+/**
+ * 第一張畫面之前就失敗時該退回哪一項：依錯誤訊息判斷是編碼器還是擷取（ddagrab）出問題，
+ * 不要因為擷取失敗（例如鎖定畫面）就連編碼器也一起降級。
+ * 判斷不出來時，先退擷取方式（較常見），之後若仍失敗再退編碼器。
+ */
+export function startupFallback(opts: {
+  stderr: string;
+  gpuEncoderInUse: boolean;
+  encoderAuto: boolean;
+  hasCpuEncoder: boolean;
+  ddagrabInUse: boolean;
+  methodAuto: boolean;
+}): StartupFallback {
+  const canCpu = opts.gpuEncoderInUse && opts.encoderAuto && opts.hasCpuEncoder;
+  const canGdi = opts.ddagrabInUse && opts.methodAuto;
+  const encoderFault = isEncoderFault(opts.stderr);
+  if (encoderFault && canCpu) return "cpu-encoder";
+  if (canGdi) return "gdigrab";
+  if (canCpu) return "cpu-encoder";
+  return "fatal";
+}
+
+/**
+ * 決定這次錄影的編碼器。
+ * @param cpu       軟體編碼器（通常是 libx264）
+ * @param gpu       實測可用的硬體編碼器（依優先順序）
+ * @param learned   之前在「自動」模式偵測到 CPU 跟不上，之後直接用 GPU
+ */
+export function chooseEncoder(
+  pref: EncoderPreference,
+  outWidth: number,
+  outHeight: number,
+  fps: number,
+  cpu: EncoderSpec | undefined,
+  gpu: EncoderSpec[],
+  learned = false,
+): { spec: EncoderSpec; reason: string } {
+  if (pref === "gpu") {
+    if (!gpu[0]) throw new ConfigError("這台電腦沒有可用的 GPU 編碼器，請改用 CPU 或自動");
+    return { spec: gpu[0], reason: "指定使用 GPU 編碼" };
+  }
+  if (pref === "auto" && gpu[0]) {
+    if (outWidth * outHeight * fps > AUTO_GPU_PIXELS_PER_SEC) return { spec: gpu[0], reason: "畫面量超過 1080p60，自動改用 GPU 編碼" };
+    if (learned) return { spec: gpu[0], reason: "先前偵測到 CPU 編碼跟不上，自動改用 GPU 編碼" };
+  }
+  const spec = cpu ?? gpu[0];
+  if (!spec) throw new ConfigError("FFmpeg 沒有可用的 H.264 編碼器");
+  return { spec, reason: cpu ? "CPU 編碼" : "沒有 CPU 編碼器，改用 GPU 編碼" };
+}
+
+const COLOR_TAGS =["-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709", "-color_range", "tv"];
 const AUDIO_ENCODE = ["-c:a", "aac", "-b:a", "160k"];
 
 /** ddagrab 擷取的一塊：某個螢幕與擷取範圍的交集 */
