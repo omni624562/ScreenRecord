@@ -4,6 +4,7 @@ import { basename } from "node:path";
 import type { App } from "./app.ts";
 import { getAutostart, openUi, setAutostart } from "./desktop.ts";
 import { isCompiled } from "./paths.ts";
+import { APP_VERSION } from "./version.ts";
 import { loadSettings, saveSettings } from "./settings.ts";
 import { openWithExplorer } from "./server.ts";
 import { clock, videoClock } from "./shared/format.ts";
@@ -106,7 +107,7 @@ export class Tray {
       : `螢幕 ${env.monitors.find((m) => m.id === src.monitorId)?.displayNumber ?? 1}`;
     return {
       rec: st.state,
-      tip: `螢幕錄影 — ${STATE_TEXT[st.state]}${time}`,
+      tip: `螢幕錄影 ${APP_VERSION} — ${STATE_TEXT[st.state]}${time}`,
       lastSource,
       monitors: env.monitors.map((m) => ({
         id: m.id,
@@ -116,6 +117,7 @@ export class Tray {
       canRecord: !!this.app.ffmpegPath() && !this.app.exporter.running,
       lastResult: this.lastResultPath && existsSync(this.lastResultPath) ? this.lastResultPath : undefined,
       autostart: this.autostart,
+      version: APP_VERSION,
     };
   }
 
@@ -157,6 +159,7 @@ export class Tray {
     const app = this.app;
     try {
       if (cmd === "open") return openUi(app.url);
+      if (cmd === "changelog") return openUi(`${app.url}#changelog`);
       if (cmd === "quit") return void app.quit();
       if (cmd === "pause") return void (await app.recorder.pause());
       if (cmd === "resume") return void (await app.recorder.resume());

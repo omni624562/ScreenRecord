@@ -14,6 +14,7 @@ export type TrayCommand =
   | "open-folder"
   | "play-last"
   | "autostart"
+  | "changelog"
   | "quit";
 
 export interface TrayState {
@@ -29,6 +30,7 @@ export interface TrayState {
   lastResult?: string;
   /** null = 無法設定（開發模式） */
   autostart: boolean | null;
+  version: string;
 }
 
 export type MainToTray =

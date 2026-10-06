@@ -5,6 +5,7 @@ import { ConfigError } from "./args.ts";
 import type { App } from "./app.ts";
 import { listLibrary } from "./library.ts";
 import { moveToRecycleBin } from "./recycle.ts";
+import { CHANGELOG } from "./version.ts";
 import { loadSettings, saveSettings } from "./settings.ts";
 import type { EditSpec } from "./shared/edit.ts";
 import type { LibraryQuery, RecordConfig } from "./shared/types.ts";
@@ -72,6 +73,7 @@ export function startServer(app: App, port: number, development: boolean) {
       "/": index,
       "/api/ping": api(() => json({ app: APP_ID, pid: process.pid })),
       "/api/env": api(() => json(app.env())),
+      "/api/changelog": api(() => new Response(CHANGELOG, { headers: { "Content-Type": "text/markdown; charset=utf-8", "Cache-Control": "no-store" } })),
       "/api/settings": {
         GET: api(() => json(loadSettings())),
         POST: api(async (req) => {

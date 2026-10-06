@@ -196,6 +196,7 @@ export interface FfmpegInfo {
 
 export interface EnvInfo {
   appDir: string;
+  appVersion: string;
   defaultOutputDir: string;
   ffmpeg: FfmpegInfo;
   monitors: MonitorInfo[];

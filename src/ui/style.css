@@ -362,3 +362,19 @@ input[type="number"] { font-family: var(--mono); font-variant-numeric: tabular-n
 .panel-top { display: flex; flex-direction: column; gap: 10px; min-height: 0; }
 .settings-bar, .sys-status { border-top: 1px solid var(--border); padding-top: 10px; align-self: stretch; }
 .sys-status { flex-direction: row; align-items: center; flex-wrap: wrap; gap: 6px 10px; }
+/* ── 版本號與更新說明 ── */
+.changelog-dlg { width: min(720px, calc(100vw - 32px)); }
+.changelog { overflow: auto; max-height: calc(100vh - 160px); gap: 6px; font-size: 13.5px; line-height: 1.6; }
+.changelog h2 { font-size: 16px; font-weight: 650; margin: 14px 0 2px; padding-top: 12px; border-top: 1px solid var(--border); }
+.changelog h2:first-of-type { border-top: 0; padding-top: 0; margin-top: 4px; }
+.changelog h2 .tag { margin-left: 8px; vertical-align: middle; }
+.changelog h3 { font-size: 13px; font-weight: 650; color: var(--muted); margin: 8px 0 0; }
+.changelog ul { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 3px; }
+.changelog p { margin: 0; }
+.changelog a { color: var(--accent); }
+/* 系統狀態固定單行：視窗窄時標籤文字縮短，不換行，左右底部列才會等高、水平對齊 */
+.sys-status { flex-wrap: nowrap; min-width: 0; }
+.sys-title { flex: none; }
+.env-chips { flex-wrap: nowrap; min-width: 0; overflow: hidden; }
+.env-chips .chip { min-width: 0; overflow: hidden; text-overflow: ellipsis; flex-shrink: 1; }
+.env-chips .chip::before { flex: none; }

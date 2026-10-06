@@ -203,6 +203,7 @@ function showMenu() {
   add(m, "播放最近的錄影(&L)", "play-last", { disabled: !st.lastResult });
   sep(m);
   add(m, "開機時自動啟動", "autostart", { checked: !!st.autostart, disabled: st.autostart === null });
+  add(m, `更新說明（v${st.version}）`, "changelog");
   add(m, "結束(&X)", "quit");
 
   const pt = new Int32Array(2);

@@ -5,11 +5,13 @@
  *   --port <n>   指定連接埠（預設 47391，被占用時自動往後找）
  *   --no-open    啟動後不自動開啟操作視窗
  *   --tray       只常駐系統匣、不開視窗（開機自動啟動時使用）
+ *   --no-tray    不建立系統匣圖示、不檢查是否已在執行（開發測試用，可與正式程式並存）
  *
  * 編譯版不顯示主控台視窗，訊息寫入記錄檔；平常常駐在系統匣，從圖示選單操作或結束。
  */
 import { App } from "./app.ts";
 import { logFile, setupLogFile } from "./log.ts";
+import { APP_VERSION } from "./version.ts";
 import { appDir, isCompiled } from "./paths.ts";
 import { openUi } from "./desktop.ts";
 import { APP_ID, startServer } from "./server.ts";
@@ -26,9 +28,10 @@ setupLogFile();
 
 const preferredPort = Number(argValue("--port") ?? process.env.PORT ?? DEFAULT_PORT);
 const autoOpen = !process.argv.includes("--no-open") && !process.argv.includes("--tray");
+const noTray = process.argv.includes("--no-tray");
+const PORT_RANGE = 20;
 
-/** 已有一個執行中的實例時，直接開啟它的頁面 */
-async function findRunningInstance(port: number): Promise<boolean> {
+async function isInstance(port: number): Promise<boolean> {
   try {
     const r = await fetch(`http://127.0.0.1:${port}/api/ping`, { signal: AbortSignal.timeout(800) });
     const data = (await r.json()) as { app?: string };
@@ -38,14 +41,27 @@ async function findRunningInstance(port: number): Promise<boolean> {
   }
 }
 
-if (await findRunningInstance(preferredPort)) {
-  const url = `http://127.0.0.1:${preferredPort}/`;
+/**
+ * 找執行中的實例：預設埠被占用時實例可能落在後面的埠，所以整段都要找，
+ * 否則會多開一個程式（系統匣出現兩個圖示）。
+ */
+async function findRunningInstance(): Promise<number | undefined> {
+  const ports = new Set<number>();
+  for (const base of [preferredPort, DEFAULT_PORT]) for (let i = 0; i < PORT_RANGE; i++) ports.add(base + i);
+  const list = [...ports];
+  const hits = await Promise.all(list.map(isInstance));
+  return list.find((_, i) => hits[i]);
+}
+
+const runningPort = noTray ? undefined : await findRunningInstance();
+if (runningPort !== undefined) {
+  const url = `http://127.0.0.1:${runningPort}/`;
   console.log(`程式已在執行中：${url}`);
   if (autoOpen) openUi(url);
   process.exit(0);
 }
 
-console.log("螢幕錄影 — 原速錄影、事後加速匯出");
+console.log(`螢幕錄影 ${APP_VERSION} — 原速錄影、事後加速匯出`);
 console.log(`程式資料夾：${appDir}`);
 
 const app = new App();
@@ -65,7 +81,7 @@ for (const m of env.monitors) {
 if (env.monitorError) console.log(`  ⚠ ${env.monitorError}`);
 
 let server: ReturnType<typeof startServer> | undefined;
-for (let port = preferredPort; port < preferredPort + 20 && !server; port++) {
+for (let port = preferredPort; port < preferredPort + PORT_RANGE && !server; port++) {
   try {
     server = startServer(app, port, !isCompiled);
   } catch (e) {
@@ -85,7 +101,7 @@ console.log(`記錄檔：${logFile}`);
 // 系統匣常駐：關掉操作視窗後程式仍在背景，從圖示選單操作或結束
 const tray = new Tray(app);
 app.tray = tray;
-const trayOk = process.platform === "win32" && (await tray.start());
+const trayOk = !noTray && process.platform === "win32" && (await tray.start());
 console.log(trayOk ? "已常駐於系統匣：右鍵點圖示可錄影或結束程式\n" : "系統匣無法使用，關閉操作視窗 5 分鐘後會自動結束\n");
 if (autoOpen) openUi(url);
 
@@ -93,7 +109,7 @@ if (autoOpen) openUi(url);
 // 超過一段時間沒有任何頁面在輪詢狀態、而且沒在錄影 / 轉檔，就自動結束。
 // （瀏覽器對背景分頁的計時器最慢會降到每分鐘一次，所以門檻設得寬一點）
 const IDLE_EXIT_MS = 5 * 60_000;
-if (isCompiled && !trayOk) {
+if (isCompiled && !trayOk && !noTray) {
   setInterval(() => {
     if (app.recorder.active || app.exporter.running) return;
     if (Date.now() - app.lastSeen > IDLE_EXIT_MS) {

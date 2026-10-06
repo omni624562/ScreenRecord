@@ -180,6 +180,8 @@ function renderEnv() {
     chips.push(`<span class="chip ${ff.encoder ? "ok" : "bad"}">${esc(ff.encoder ?? "無 H.264 編碼器")}</span>`);
   }
   $("envChips").innerHTML = chips.join("");
+  // 版本號顯示在視窗標題列（Chrome / Edge app 模式的標題就是頁面標題）
+  document.title = `螢幕錄影 v${env.appVersion}`;
   $("ffmpegBanner").hidden = ff.found;
   $("appDirText").textContent = env.appDir;
   const warns = [ff.found ? ff.error : undefined, env.monitorError].filter(Boolean) as string[];
@@ -936,6 +938,61 @@ async function poll() {
   window.setTimeout(poll, 500);
 }
 
+// ───────────── 更新說明 ─────────────
+
+/** CHANGELOG.md 的簡易轉換：## / ### 標題、- 清單、`程式碼`、[文字](網址)，其餘為段落 */
+function renderChangelog(md: string): string {
+  const inline = (s: string) =>
+    esc(s)
+      .replace(/`([^`]+)`/g, "<code>$1</code>")
+      .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, `<a href="$2" target="_blank" rel="noopener">$1</a>`);
+  const out: string[] = [];
+  let list = false;
+  const closeList = () => list && (out.push("</ul>"), (list = false));
+  for (const line of md.split(/\r?\n/)) {
+    if (/^# /.test(line)) continue; // 頁面標題已在對話框上方
+    const h = /^(#{2,3}) (.*)$/.exec(line);
+    if (h) {
+      closeList();
+      const isCurrent = h[1] === "##" && h[2]!.startsWith(env.appVersion);
+      out.push(`<h${h[1]!.length}>${inline(h[2]!)}${isCurrent ? `<span class="tag audio">目前版本</span>` : ""}</h${h[1]!.length}>`);
+    } else if (/^- /.test(line)) {
+      if (!list) (out.push("<ul>"), (list = true));
+      out.push(`<li>${inline(line.slice(2))}</li>`);
+    } else if (line.trim()) {
+      closeList();
+      out.push(`<p>${inline(line)}</p>`);
+    } else closeList();
+  }
+  closeList();
+  return out.join("");
+}
+
+async function openChangelog() {
+  const dlg = $<HTMLDialogElement>("changelogDlg");
+  $("clVersion").textContent = `目前版本 ${env.appVersion}`;
+  try {
+    const md = await (await fetch("/api/changelog", { cache: "no-store" })).text();
+    $("changelogBody").innerHTML = renderChangelog(md);
+  } catch {
+    $("changelogBody").textContent = "無法讀取更新說明";
+  }
+  dlg.showModal();
+}
+
+function bindChangelog() {
+  // 系統匣選單「更新說明」會以 #changelog 開啟操作視窗
+  // （視窗已開著時只會改 hash、不會重新載入，所以也要監聽 hashchange）
+  const fromHash = () => {
+    if (location.hash !== "#changelog") return;
+    history.replaceState(null, "", location.pathname);
+    void openChangelog();
+  };
+  fromHash();
+  window.addEventListener("hashchange", fromHash);
+  $("changelogDlg").querySelector("[data-close]")!.addEventListener("click", () => $<HTMLDialogElement>("changelogDlg").close());
+}
+
 // ───────────── 啟動 ─────────────
 
 async function main() {
@@ -952,6 +1009,7 @@ async function main() {
   bindSettings();
   bindRecorder();
   bindRecent();
+  bindChangelog();
   setupRegionDrag();
   renderSettings();
   renderSource();

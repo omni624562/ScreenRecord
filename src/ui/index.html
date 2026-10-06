@@ -342,6 +342,15 @@
       </footer>
     </dialog>
 
+    <!-- 更新說明 -->
+    <dialog class="dlg changelog-dlg" id="changelogDlg" aria-labelledby="clTitle">
+      <header class="dlg-head">
+        <div><h2 id="clTitle">更新說明</h2><p class="muted small" id="clVersion"></p></div>
+        <button class="btn ghost small" type="button" data-close>關閉</button>
+      </header>
+      <div class="dlg-body changelog" id="changelogBody"></div>
+    </dialog>
+
     <div class="toast" id="toast" role="status" hidden></div>
 
     <script type="module" src="./app.ts"></script>

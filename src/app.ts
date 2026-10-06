@@ -9,6 +9,7 @@ import { appDir, defaultOutputDir } from "./paths.ts";
 import { Recorder } from "./recorder.ts";
 import { loadSettings, saveSettings } from "./settings.ts";
 import type { EnvInfo, FfmpegInfo, MonitorInfo } from "./shared/types.ts";
+import { APP_VERSION } from "./version.ts";
 
 export class App {
   readonly defaultOutputDir = defaultOutputDir();
@@ -86,6 +87,7 @@ export class App {
     const { encoderSpec: _e, hwListed: _h, ...ffmpeg } = this.ffmpeg;
     return {
       appDir,
+      appVersion: APP_VERSION,
       defaultOutputDir: this.defaultOutputDir,
       ffmpeg,
       monitors: this.monitors,

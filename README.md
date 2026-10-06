@@ -6,6 +6,8 @@ Windows 11 螢幕錄影工具：**原速錄影並完整保留，停止後再選�
 - 擷取與編碼交給 FFmpeg：優先 `ddagrab`（Desktop Duplication，GPU 擷取），不支援或失敗時自動退回 `gdigrab`
 - 輸出 H.264 MP4（yuv420p、BT.709），`bun build --compile` 編成單一 exe
 
+目前版本：**1.1.0**　各版本的變更見 [CHANGELOG.md](CHANGELOG.md)（版本號顯示在操作視窗的標題列；系統匣選單「更新說明」可在程式裡查看）。
+
 ## 功能
 
 | 項目 | 說明 |
@@ -82,6 +84,12 @@ bun run build
 ```bash
 bun run dist
 ```
+
+### 發佈新版本
+
+1. 修改 `package.json` 的 `version`（新功能增加次版號，只修正問題增加修訂號）
+2. 在 `CHANGELOG.md` 最上方加上這一版的「新增／變更／修正」
+3. `bun run build`：版本號會自動寫進 exe 的檔案內容與程式畫面
 
 ## 專案結構
 
