@@ -188,7 +188,8 @@ export class Tray {
       if (cmd === "hotkey-record") {
         const st = app.recorder.status().state;
         if (st === "stopping") return;
-        if (st !== "idle") return void (await app.recorder.stop());
+        // 準備開始的期間（狀態仍是待命）再按一次也是取消
+        if (st !== "idle" || app.recorder.starting) return void (await app.recorder.stop());
         return await this.run("start-last");
       }
       if (cmd === "hotkey-pause") {

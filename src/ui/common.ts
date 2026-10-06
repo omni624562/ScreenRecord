@@ -5,6 +5,43 @@ export const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.g
 /** 縮圖網址（已跳脫，可直接放進 HTML 屬性）：帶修改時間，檔案變了網址就不同，瀏覽器可放心快取 */
 export const thumbUrl = (e: { path: string; mtime: number }) => `/api/thumb?path=${encodeURIComponent(e.path)}&amp;v=${Math.round(e.mtime)}`;
 
+/**
+ * 縮圖依序載入：看得到的才載入、同時最多 2 張。瀏覽器對同一主機最多 6 條連線，
+ * 一次丟出幾十張縮圖請求（第一次要等 FFmpeg 產生）會讓狀態輪詢、按鈕操作排在後面卡住。
+ * 圖片用 data-src 標記，畫完 HTML 後呼叫 observeThumbs()。
+ */
+const THUMB_PARALLEL = 2;
+const thumbQueue: HTMLImageElement[] = [];
+let thumbActive = 0;
+const thumbObserver = new IntersectionObserver(
+  (entries) => {
+    for (const e of entries) {
+      if (!e.isIntersecting) continue;
+      thumbObserver.unobserve(e.target);
+      thumbQueue.push(e.target as HTMLImageElement);
+    }
+    pumpThumbs();
+  },
+  { rootMargin: "120px" },
+);
+function pumpThumbs() {
+  while (thumbActive < THUMB_PARALLEL && thumbQueue.length) {
+    const img = thumbQueue.shift()!;
+    if (!img.isConnected || img.getAttribute("src")) continue; // 已被重畫掉或已載入
+    thumbActive++;
+    const done = () => {
+      thumbActive--;
+      pumpThumbs();
+    };
+    img.addEventListener("load", done, { once: true });
+    img.addEventListener("error", done, { once: true });
+    img.src = img.dataset.src!;
+  }
+}
+export function observeThumbs(root: ParentNode) {
+  for (const img of root.querySelectorAll<HTMLImageElement>("img.thumb[data-src]:not([src])")) thumbObserver.observe(img);
+}
+
 const lastHtml = new WeakMap<Element, string>();
 /**
  * 內容有變才重建。輪詢每 0.5 秒更新一次狀態，若每次都重設 innerHTML，

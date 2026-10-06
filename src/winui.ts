@@ -17,7 +17,8 @@ function load() {
 }
 
 const SW_MINIMIZE = 6;
-const SW_RESTORE = 9;
+/** 還原但不搶焦點：自動停止（最長時間、磁碟不足）時不要跳到使用者正在用的程式前面 */
+const SW_SHOWNOACTIVATE = 4;
 const TITLE_PREFIX = "螢幕錄影 v";
 
 /** 目前看得到、而且沒有縮小的操作視窗 */
@@ -63,7 +64,7 @@ export function minimizeUi(prefix = TITLE_PREFIX): boolean {
 export function restoreUi() {
   if (!minimized.length || !user32) return;
   try {
-    for (const h of minimized) if (user32.symbols.IsIconic(h)) user32.symbols.ShowWindow(h, SW_RESTORE);
+    for (const h of minimized) if (user32.symbols.IsIconic(h)) user32.symbols.ShowWindow(h, SW_SHOWNOACTIVATE);
   } catch {
     // 視窗已關閉
   }

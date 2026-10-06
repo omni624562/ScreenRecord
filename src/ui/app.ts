@@ -14,7 +14,7 @@ import type {
   UpdateInfo,
 } from "../shared/types.ts";
 import { HOTKEY_LABELS } from "../shared/types.ts";
-import { $, api, clamp, esc, guarded, icon, setHtml, shortDate, thumbUrl, toast } from "./common.ts";
+import { $, api, clamp, esc, guarded, icon, observeThumbs, setHtml, shortDate, thumbUrl, toast } from "./common.ts";
 import { openEditor } from "./editor.ts";
 import { openExport } from "./exportDialog.ts";
 import { exportTag, isLibraryOpen, load as reloadLibraryDialog, openLibrary, type EntryAction } from "./libraryDialog.ts";
@@ -881,7 +881,7 @@ function renderRecent() {
             e.exports.length ? `<span class="tag speed" title="${esc(e.exports.map(exportTag).join("、"))}">加速 ${e.exports.length}</span>` : "",
           ].join("");
           return `<div class="rcard" title="${esc(e.name)}">
-            <img class="thumb rcard-thumb" src="${thumbUrl(e)}" alt="" loading="lazy" decoding="async" />
+            <img class="thumb rcard-thumb" data-src="${thumbUrl(e)}" alt="" decoding="async" />
             <div class="rcard-body">
             <div class="rcard-top"><span class="rcard-date">${esc(shortDate(e.name, e.mtime))}</span><span>${tags}</span></div>
             <div class="rcard-meta">${e.durationSec !== undefined ? videoClock(e.durationSec) : "—"}・${formatBytes(e.bytes)}${e.width ? `・${e.width}×${e.height}` : ""}</div>
@@ -896,6 +896,7 @@ function renderRecent() {
         })
         .join("")
     : `<span class="recent-empty">「${esc(outDir())}」還沒有錄影，按「開始錄影」試試看。</span>`);
+  observeThumbs($("recentCards"));
   const pages = recent?.pages ?? 1;
   $("recentInfo").textContent = recent && recent.total ? `${recentPage} / ${pages} 頁` : "";
   $<HTMLButtonElement>("recentPrev").disabled = recentPage <= 1;

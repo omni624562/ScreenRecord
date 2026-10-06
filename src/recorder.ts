@@ -120,6 +120,11 @@ export class Recorder {
   private ticker?: Timer;
   private lastTickAt = 0;
   private countdown?: { endsAt: number; cancel: () => void };
+  /** start() 已受理、但還沒進入錄影（準備中 / 倒數中 / 縮小視窗中） */
+  private startingNow = false;
+  /** 開始的過程中按了停止 / 取消：在每個檢查點放棄開始 */
+  private cancelRequested = false;
+  private diskChecking = false;
   private diskFreeBytes?: number;
   private diskCheckedAt = 0;
   private diskWarned = false;
@@ -136,8 +141,12 @@ export class Recorder {
    * 倒數之後才發生的錯誤會寫進事件紀錄並以系統匣通知。
    */
   start(config: RecordConfig): Promise<void> {
+    // 連按兩次（例如快捷鍵）不要排出第二個開始：否則取消第一個後，第二個仍會倒數並錄影
+    if (this.startingNow || this.state !== "idle") return Promise.reject(new ConfigError("目前已在錄影或正在準備開始"));
+    this.startingNow = true;
+    this.cancelRequested = false;
     const began = Promise.withResolvers<void>();
-    const job = this.serial(() => this.doStart(config, began.resolve));
+    const job = this.serial(() => this.doStart(config, began.resolve)).finally(() => (this.startingNow = false));
     let counting = false;
     void began.promise.then(() => (counting = true));
     job.catch((e) => {
@@ -152,9 +161,10 @@ export class Recorder {
     return this.serial(() => this.doResume());
   }
   stop(reason?: string) {
-    // 倒數中直接取消（start 還在佇列裡等倒數，不能排在它後面）
-    if (this.state === "countdown" && this.countdown) {
-      this.countdown.cancel();
+    // 開始的過程中（準備、倒數、縮小視窗）直接取消：start 還在佇列裡，不能排在它後面
+    if (this.startingNow && (this.state === "idle" || this.state === "countdown")) {
+      this.cancelRequested = true;
+      this.countdown?.cancel();
       return Promise.resolve(undefined);
     }
     return this.serial(() => this.doStop(reason));
@@ -162,6 +172,11 @@ export class Recorder {
 
   get active() {
     return this.state !== "idle";
+  }
+
+  /** 正在準備開始（狀態可能仍是待命）；快捷鍵用來判斷再按一次是「取消」 */
+  get starting() {
+    return this.startingNow;
   }
 
   status(): RecorderStatus {
@@ -201,6 +216,12 @@ export class Recorder {
   /** 程式結束前呼叫：正常收尾並合併。 */
   async shutdown() {
     this.shuttingDown = true;
+    if (this.startingNow) {
+      // 還在準備 / 倒數：取消並等它收拾好（否則會留下空的分段資料夾）
+      this.cancelRequested = true;
+      this.countdown?.cancel();
+    }
+    await this.queue;
     if (this.state !== "idle") await this.stop("程式結束");
   }
 
@@ -280,6 +301,16 @@ export class Recorder {
     ];
     this.audioDesc = undefined;
 
+    /** 開始的過程中被取消：回到待命、刪掉空的分段資料夾 */
+    const abandon = (restoreWindow = false) => {
+      this.countdown = undefined;
+      this.state = "idle";
+      this.cleanupParts();
+      if (restoreWindow) this.deps.afterStop?.();
+      this.addLog("info", "已取消，沒有開始錄影");
+    };
+    if (this.cancelRequested || this.shuttingDown) return abandon();
+
     // 倒數：讓使用者有時間切到要錄的畫面；期間按停止（或快捷鍵）可取消
     const countdownSec = Math.min(10, Math.max(0, Math.round(config.countdownSec ?? 3)));
     if (countdownSec > 0) {
@@ -289,15 +320,12 @@ export class Recorder {
         const timer = setTimeout(() => resolve(false), countdownSec * 1000);
         this.countdown = { endsAt: Date.now() + countdownSec * 1000, cancel: () => (clearTimeout(timer), resolve(true)) };
       });
-      this.countdown = undefined;
-      if (canceled || this.shuttingDown) {
-        this.state = "idle";
-        this.cleanupParts();
-        this.addLog("info", "已取消倒數，沒有開始錄影");
-        return;
-      }
+      if (canceled || this.cancelRequested || this.shuttingDown) return abandon();
     }
+    // 縮小視窗的那 0.35 秒仍算倒數（this.countdown 保留到這之後），期間取消也有效
     if (config.hideUi !== false) await this.deps.beforeCapture?.(config).catch(() => {});
+    if (this.cancelRequested || this.shuttingDown) return abandon(config.hideUi !== false);
+    this.countdown = undefined;
 
     const { width, height } = plan.rect;
     const where = config.source.type === "monitor"
@@ -324,6 +352,11 @@ export class Recorder {
       this.state = "idle";
       this.spanStart = undefined;
       this.cleanupParts();
+      try {
+        this.deps.afterStop?.(); // 已縮小的操作視窗要還原，使用者才看得到錯誤
+      } catch {
+        // 還原視窗失敗不影響
+      }
       throw new ConfigError(`無法啟動 FFmpeg：${(e as Error).message}`);
     }
     this.lastTickAt = Date.now();
@@ -628,7 +661,15 @@ export class Recorder {
 
   /** 錄影中定期檢查剩餘空間：不足時先提醒，再不足就自動停止（磁碟寫滿會讓分段損毀、無法合併） */
   private async checkDisk() {
-    const free = await diskFree(this.config!.outputDir);
+    // 網路磁碟沒回應時 statfs 可能超過 10 秒：上一次還沒回來就不再疊加
+    if (this.diskChecking) return;
+    this.diskChecking = true;
+    let free: number | undefined;
+    try {
+      free = await diskFree(this.config!.outputDir);
+    } finally {
+      this.diskChecking = false;
+    }
     if (free === undefined || this.state !== "recording") return;
     this.diskFreeBytes = free;
     if (free < DISK_STOP && !this.autoStopping) {

@@ -75,7 +75,12 @@ async function scan(dir: string): Promise<LibraryEntry[]> {
   const entries = new Map<string, LibraryEntry>();
   const derived: (MediaInfo & { speed: number; format: "mp4" | "gif"; base: string })[] = [];
   for (const f of files) {
-    const e = parseExportName(f.name);
+    let e = parseExportName(f.name);
+    // 原速 GIF：先找同名的 MP4（Rec_X_cut_2.gif → Rec_X_cut_2.mp4），找不到才用去掉 _N 的名稱
+    if (e?.format === "gif" && e.speed === 1) {
+      const exact = f.name.replace(/\.gif$/i, ".mp4");
+      if (byName.has(exact.toLowerCase())) e = { ...e, base: exact };
+    }
     if (e && byName.has(e.base.toLowerCase())) derived.push({ ...f, speed: e.speed, format: e.format, base: e.base.toLowerCase() });
     else if (!/\.gif$/i.test(f.name)) entries.set(f.name.toLowerCase(), { ...f, exports: [] }); // 找不到原片的 GIF 不列出
   }

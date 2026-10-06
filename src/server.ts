@@ -202,11 +202,11 @@ export function startServer(app: App, port: number, development: boolean) {
       },
 
       /** 剪輯預覽用：讓瀏覽器直接播放影片檔（Bun.file 自動支援 Range，可拖曳進度） */
-      "/api/thumb": api(async (_req, url) => {
+      "/api/thumb": api(async (req, url) => {
         const p = url.searchParams.get("path") ?? "";
         const ffmpeg = app.ffmpegPath();
         if (!ffmpeg || !/^[a-zA-Z]:\\|^\\\\/.test(p) || !/\.(mp4|gif)$/i.test(p) || !existsSync(p)) return new Response("Not Found", { status: 404 });
-        const file = await thumbnail(ffmpeg, p).catch(() => undefined);
+        const file = await thumbnail(ffmpeg, p, req.signal).catch(() => undefined);
         if (!file) return new Response("Not Found", { status: 404 });
         // 網址帶修改時間（v=），內容不會變，可以讓瀏覽器快取
         return new Response(Bun.file(file), { headers: { "Content-Type": "image/jpeg", "Cache-Control": "private, max-age=604800, immutable" } });

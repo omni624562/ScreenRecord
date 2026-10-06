@@ -8,7 +8,7 @@ import { formatBytes, speedLabel, videoClock } from "../shared/format.ts";
 export const exportTag = (x: { speed: number; format?: string }) =>
   x.format === "gif" ? `GIF${x.speed > 1 ? ` ${speedLabel(x.speed)}×` : ""}` : `${speedLabel(x.speed)}×`;
 import type { LibraryEntry, LibraryPage } from "../shared/types.ts";
-import { $, api, esc, icon, shortDate, thumbUrl } from "./common.ts";
+import { $, api, esc, icon, observeThumbs, shortDate, thumbUrl } from "./common.ts";
 
 export type EntryAction = "play" | "reveal" | "edit" | "export";
 
@@ -91,7 +91,7 @@ function render() {
       ].join("");
       return `<tr data-path="${esc(e.path)}">
         <td class="c-check"><input type="checkbox" data-select="${esc(e.path)}" ${selected.has(e.path) ? "checked" : ""} aria-label="選取 ${esc(e.name)}" /></td>
-        <td><div class="name"><img class="thumb lib-thumb" src="${thumbUrl(e)}" alt="" loading="lazy" decoding="async" /><span class="fn" title="${esc(e.name)}">${esc(shortDate(e.name, e.mtime))}　${esc(e.name)}</span>${tags}</div></td>
+        <td><div class="name"><img class="thumb lib-thumb" data-src="${thumbUrl(e)}" alt="" decoding="async" /><span class="fn" title="${esc(e.name)}">${esc(shortDate(e.name, e.mtime))}　${esc(e.name)}</span>${tags}</div></td>
         <td class="c-num">${e.durationSec !== undefined ? videoClock(e.durationSec) : "—"}</td>
         <td class="c-num">${e.width ? `${e.width}×${e.height}` : "—"}</td>
         <td class="c-num">${formatBytes(e.bytes)}</td>
@@ -104,6 +104,7 @@ function render() {
       </tr>`;
     })
     .join("");
+  observeThumbs($("libRows"));
   const pages = data?.pages ?? 1;
   $("libPage").textContent = data ? `第 ${page} / ${pages} 頁・共 ${data.total} 筆` : "";
   $<HTMLButtonElement>("libPrev").disabled = page <= 1;
