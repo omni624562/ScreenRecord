@@ -16,6 +16,7 @@ import { appDir, isCompiled } from "./paths.ts";
 import { openUi } from "./desktop.ts";
 import { APP_ID, startServer } from "./server.ts";
 import { Tray } from "./tray.ts";
+import { pruneThumbnails } from "./thumbs.ts";
 
 const DEFAULT_PORT = 47391;
 
@@ -104,6 +105,8 @@ app.tray = tray;
 const trayOk = !noTray && process.platform === "win32" && (await tray.start());
 console.log(trayOk ? "已常駐於系統匣：右鍵點圖示可錄影或結束程式\n" : "系統匣無法使用，關閉操作視窗 5 分鐘後會自動結束\n");
 if (autoOpen) openUi(url);
+if (!noTray) app.scheduleUpdateChecks();
+setTimeout(pruneThumbnails, 30_000);
 
 // 系統匣無法使用時的退路：沒有主控台視窗，關掉分頁後程式就看不到了，
 // 超過一段時間沒有任何頁面在輪詢狀態、而且沒在錄影 / 轉檔，就自動結束。

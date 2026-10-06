@@ -23,15 +23,35 @@ export function speedLabel(speed: number): string {
   return String(Math.round(speed * 100) / 100);
 }
 
-/** 加速版檔名：Rec_xxx.mp4 → Rec_xxx_4x.mp4 */
-export function exportFileName(sourceName: string, speed: number): string {
-  return sourceName.replace(/\.mp4$/i, "") + `_${speedLabel(speed)}x.mp4`;
+export type ExportFormat = "mp4" | "gif";
+
+/** 匯出檔名：Rec_xxx.mp4 → Rec_xxx_4x.mp4 / Rec_xxx_4x.gif；原速 GIF 為 Rec_xxx.gif */
+export function exportFileName(sourceName: string, speed: number, format: ExportFormat = "mp4"): string {
+  const base = sourceName.replace(/\.mp4$/i, "");
+  return format === "gif" && speed <= 1 ? `${base}.gif` : `${base}_${speedLabel(speed)}x.${format}`;
 }
 
-/** 從加速版檔名解析倍率；不是加速版回傳 undefined */
-export function parseExportName(name: string): { base: string; speed: number } | undefined {
-  const m = /^(.*)_(\d+(?:\.\d+)?)x(?:_\d+)?\.mp4$/i.exec(name);
-  return m ? { base: `${m[1]}.mp4`, speed: Number(m[2]) } : undefined;
+/** 從匯出檔名解析倍率與格式；不是匯出檔回傳 undefined（原速 GIF 也算，倍率為 1） */
+export function parseExportName(name: string): { base: string; speed: number; format: ExportFormat } | undefined {
+  const m = /^(.*)_(\d+(?:\.\d+)?)x(?:_\d+)?\.(mp4|gif)$/i.exec(name);
+  if (m) return { base: `${m[1]}.mp4`, speed: Number(m[2]), format: m[3]!.toLowerCase() as ExportFormat };
+  const g = /^(.*?)(?:_\d+)?\.gif$/i.exec(name);
+  return g ? { base: `${g[1]}.mp4`, speed: 1, format: "gif" } : undefined;
+}
+
+/** 「1:30」「90」「1:02:03」→ 秒數；格式不對回傳 undefined */
+export function parseClock(text: string): number | undefined {
+  const t = text.trim();
+  if (!/^\d+(?::\d{1,2}){0,2}(?:\.\d+)?$/.test(t)) return undefined;
+  const sec = t.split(":").reduce((acc, part) => acc * 60 + Number(part), 0);
+  return Number.isFinite(sec) && sec > 0 ? sec : undefined;
+}
+
+/** 依目標長度算倍率（限制在可用範圍，取兩位小數） */
+export function speedForTarget(durationSec: number, targetSec: number, allowOriginal = false): number {
+  const min = allowOriginal ? 1 : LIMITS.speedMin;
+  const raw = durationSec / targetSec;
+  return Math.min(LIMITS.speedMax, Math.max(min, Math.round(raw * 100) / 100));
 }
 
 /** 秒數 → 「1 小時 2 分 3 秒」 */

@@ -2,6 +2,9 @@
 
 export const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 
+/** 縮圖網址（已跳脫，可直接放進 HTML 屬性）：帶修改時間，檔案變了網址就不同，瀏覽器可放心快取 */
+export const thumbUrl = (e: { path: string; mtime: number }) => `/api/thumb?path=${encodeURIComponent(e.path)}&amp;v=${Math.round(e.mtime)}`;
+
 const lastHtml = new WeakMap<Element, string>();
 /**
  * 內容有變才重建。輪詢每 0.5 秒更新一次狀態，若每次都重設 innerHTML，

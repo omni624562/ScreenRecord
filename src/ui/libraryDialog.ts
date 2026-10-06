@@ -3,8 +3,12 @@
  * 勾選多筆移到資源回收筒。加速版以標籤顯示在原檔那一列，點標籤即播放。
  */
 import { formatBytes, speedLabel, videoClock } from "../shared/format.ts";
+
+/** 匯出檔的標籤：4×、GIF 4×、GIF */
+export const exportTag = (x: { speed: number; format?: string }) =>
+  x.format === "gif" ? `GIF${x.speed > 1 ? ` ${speedLabel(x.speed)}×` : ""}` : `${speedLabel(x.speed)}×`;
 import type { LibraryEntry, LibraryPage } from "../shared/types.ts";
-import { $, api, esc, icon, shortDate } from "./common.ts";
+import { $, api, esc, icon, shortDate, thumbUrl } from "./common.ts";
 
 export type EntryAction = "play" | "reveal" | "edit" | "export";
 
@@ -83,11 +87,11 @@ function render() {
       const tags = [
         /_cut(_\d+)?\.mp4$/i.test(e.name) ? `<span class="tag cut">剪輯版</span>` : "",
         e.hasAudio ? `<span class="tag audio">聲音</span>` : "",
-        ...e.exports.map((x) => `<button type="button" class="tag speed as-btn" data-play="${esc(x.path)}" title="播放 ${esc(x.name)}（${x.durationSec ? videoClock(x.durationSec) : ""}・${formatBytes(x.bytes)}）">${speedLabel(x.speed)}×</button>`),
+        ...e.exports.map((x) => `<button type="button" class="tag speed as-btn" data-play="${esc(x.path)}" title="播放 ${esc(x.name)}（${x.durationSec ? videoClock(x.durationSec) : ""}・${formatBytes(x.bytes)}）">${exportTag(x)}</button>`),
       ].join("");
       return `<tr data-path="${esc(e.path)}">
         <td class="c-check"><input type="checkbox" data-select="${esc(e.path)}" ${selected.has(e.path) ? "checked" : ""} aria-label="選取 ${esc(e.name)}" /></td>
-        <td><div class="name"><span class="fn" title="${esc(e.name)}">${esc(shortDate(e.name, e.mtime))}　${esc(e.name)}</span>${tags}</div></td>
+        <td><div class="name"><img class="thumb lib-thumb" src="${thumbUrl(e)}" alt="" loading="lazy" decoding="async" /><span class="fn" title="${esc(e.name)}">${esc(shortDate(e.name, e.mtime))}　${esc(e.name)}</span>${tags}</div></td>
         <td class="c-num">${e.durationSec !== undefined ? videoClock(e.durationSec) : "—"}</td>
         <td class="c-num">${e.width ? `${e.width}×${e.height}` : "—"}</td>
         <td class="c-num">${formatBytes(e.bytes)}</td>

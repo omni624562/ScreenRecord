@@ -77,6 +77,9 @@ svg.fill { fill: currentColor; stroke: none; }
 .chip.ok::before { background: var(--ok); }
 .chip.warn::before { background: var(--warn); }
 .chip.bad::before { background: var(--rec); }
+.chip.new { color: #fff; background: var(--rec); border-color: var(--rec); text-decoration: none; font-weight: 600; flex-shrink: 0; }
+.chip.new::before { background: #fff; }
+.chip.new:hover { filter: brightness(1.08); }
 
 .main { display: grid; grid-template-columns: minmax(0, 1fr) clamp(320px, 26vw, 400px); gap: 12px; min-height: 0; }
 .panel { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px; min-height: 0; min-width: 0; }
@@ -176,6 +179,19 @@ input[type="number"] { font-family: var(--mono); font-variant-numeric: tabular-n
 .drop-panel.wide { width: min(560px, 60vw); }
 .drop-panel select, .drop-panel input { width: 100%; }
 .row-end { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+#morePanel { width: 340px; }
+.field-row { display: grid; grid-template-columns: 110px 1fr; align-items: end; gap: 12px; }
+.check { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; cursor: pointer; white-space: nowrap; }
+.drop-panel .check input { width: auto; margin: 0; accent-color: var(--accent, var(--rec)); }
+.field-row .check { height: 30px; }
+.more-info { display: flex; flex-direction: column; gap: 8px; padding-top: 10px; border-top: 1px solid var(--border); font-size: 12px; color: var(--muted); }
+.more-info kbd { font-family: var(--mono); font-size: 11.5px; padding: 1px 5px; border: 1px solid var(--border-strong); border-bottom-width: 2px; border-radius: 4px; color: var(--text); background: var(--surface-2); }
+.more-info .warn { color: var(--warn); }
+/* 倒數：蓋住整個操作視窗的大數字 */
+.countdown { position: fixed; inset: 0; z-index: 50; display: grid; place-content: center; justify-items: center; gap: 14px; background: rgb(0 0 0 / 0.55); color: #fff; backdrop-filter: blur(2px); }
+.countdown[hidden] { display: none; }
+.countdown .num { font: 700 160px/1 var(--mono); font-variant-numeric: tabular-nums; text-shadow: 0 4px 24px rgb(0 0 0 / 0.4); }
+.countdown .hint { font-size: 14px; opacity: 0.9; }
 .size-text { font-size: 12px; color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
 .size-text.warn { color: var(--warn); }
 
@@ -225,7 +241,12 @@ input[type="number"] { font-family: var(--mono); font-variant-numeric: tabular-n
 .recent-head { display: flex; flex-direction: column; min-width: 72px; }
 .recent-title { font-weight: 650; font-size: 13px; }
 .recent-cards { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 10px; min-width: 0; }
-.rcard { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 8px 10px; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.rcard { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 8px 10px 8px 8px; display: flex; align-items: center; gap: 10px; min-width: 0; }
+.rcard-body { display: flex; flex-direction: column; gap: 4px; min-width: 0; flex: 1; }
+.thumb { display: block; aspect-ratio: 16 / 9; object-fit: cover; border-radius: 4px; background: var(--surface-2); flex: none; }
+.thumb.missing { visibility: hidden; }
+.rcard-thumb { width: 104px; }
+.lib-thumb { width: 54px; }
 .rcard.current { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
 .rcard-top { display: flex; align-items: baseline; justify-content: space-between; gap: 6px; }
 .rcard-date { font-weight: 600; font-size: 13px; font-variant-numeric: tabular-nums; white-space: nowrap; }
@@ -264,6 +285,9 @@ input[type="number"] { font-family: var(--mono); font-variant-numeric: tabular-n
 .calc span { font-size: 12px; }
 .calc strong { font: 600 20px/1.2 var(--mono); font-variant-numeric: tabular-nums; }
 .calc .arrow { color: var(--muted); font-size: 18px; }
+.ex-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+#targetLen { width: 96px; font-family: var(--mono); }
+#targetLen.invalid { border-color: var(--rec); }
 
 /* ── 全部錄影 ── */
 .lib-dlg { width: min(1100px, calc(100vw - 32px)); height: calc(100vh - 48px); }

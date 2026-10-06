@@ -6,7 +6,7 @@ Windows 11 螢幕錄影工具：**原速錄影並完整保留，停止後再選�
 - 擷取與編碼交給 FFmpeg：優先 `ddagrab`（Desktop Duplication，GPU 擷取），不支援或失敗時自動退回 `gdigrab`
 - 輸出 H.264 MP4（yuv420p、BT.709），`bun build --compile` 編成單一 exe
 
-目前版本：**1.1.1**　各版本的變更見 [CHANGELOG.md](CHANGELOG.md)（版本號顯示在操作視窗的標題列；系統匣選單「更新說明」可在程式裡查看）。
+目前版本：**1.2.0**　各版本的變更見 [CHANGELOG.md](CHANGELOG.md)（版本號顯示在操作視窗的標題列；系統匣選單「更新說明」可在程式裡查看）。
 
 ## 功能
 
@@ -16,15 +16,21 @@ Windows 11 螢幕錄影工具：**原速錄影並完整保留，停止後再選�
 | 聲音 | 可選擇錄「系統聲音」（電腦播放的聲音）與「麥克風」（可選裝置），兩者可同時錄並混音；AAC 48 kHz 立體聲 |
 | 錄影設定 | FPS（15/24/30/60 或自訂 1–60）、解析度縮放 100/75/50/25%、是否錄進游標、最長錄影時間（0 = 不限） |
 | 錄影控制 | 開始 / 暫停 / 繼續 / 停止；暫停採分段錄製，停止後以 concat（stream copy）合併成單一檔案 |
+| 全域快捷鍵 | `Ctrl+Alt+R` 開始 / 停止（倒數中為取消）、`Ctrl+Alt+P` 暫停 / 繼續，在任何程式中都能用（需系統匣常駐） |
+| 倒數與自動縮小 | 開始前倒數 0 / 3 / 5 / 10 秒；開始擷取時自動縮小操作視窗、停止後還原，避免錄到它 |
+| 磁碟空間 | 剩餘不到 1 GB 不開始；錄影中低於 2 GB 提醒、低於 512 MB 自動停止並儲存 |
 | 正常收尾 | 停止、暫停、結束程式時都對 FFmpeg 送出 `q`，逾時（10 秒）才強制終止 |
 | 即時資訊 | 已錄時間、影片長度、檔案大小、實際 fps；電腦跟不上即時錄影時會提示 |
-| 加速匯出 | 倍率 1.5/2/4/8/16× 或自訂（1.1–1000×），顯示「原片 → 加速後」長度與匯出進度，可取消；可保留聲音（變速不變調） |
+| 加速匯出 | 指定倍率（1.5/2/4/8/16× 或自訂 1.1–1000×）或指定長度（例如 1:00，自動算倍率），顯示「原片 → 加速後」長度與匯出進度，可取消；可保留聲音（變速不變調） |
+| 匯出 GIF | 可選寬度（320–1280 px）與每秒張數，可同時加速；短片用整段共用調色盤（檔案小），長片改用每張畫面各自的調色盤（記憶體固定） |
 | 剪輯影片 | 剪掉頭尾、刪除中間多段、裁切畫面範圍（在影片上拖曳框選），另存為 `*_cut.mp4`，原檔不變；剪輯版可再拿去加速匯出 |
-| 錄影清單 | 主畫面下方「最近錄影」左右翻頁；「全部錄影」視窗可搜尋、篩選、排序、分頁，勾選多筆移到資源回收筒（可還原） |
+| 錄影清單 | 主畫面下方「最近錄影」左右翻頁、有縮圖；「全部錄影」視窗可搜尋、篩選、排序、分頁，勾選多筆移到資源回收筒（可還原） |
+| 檢查新版本 | 啟動後與每 12 小時查詢 GitHub Releases，有新版本時在系統匣選單與操作視窗提示（只提示、不自動安裝；可關閉） |
 | 介面 | 一頁式、不出現捲軸：以 1280×800 設計，較小的視窗等比縮小（最小 0.8 倍），較大的視窗撐滿、預覽區變大（最寬 2400px） |
 
 預設儲存位置：`%USERPROFILE%\Videos\Timelapse`（介面上可改，會記住）  
-檔名：`Rec_2026-10-05_14-30-00.mp4`，加速版：`…_4x.mp4`，剪輯版：`…_cut.mp4`
+檔名：`Rec_2026-10-05_14-30-00.mp4`，加速版：`…_4x.mp4`，GIF：`…_4x.gif`（原速為 `….gif`），剪輯版：`…_cut.mp4`  
+縮圖快取在 `%LOCALAPPDATA%\ScreenRecorder\thumbs`（最多 2000 張，超過自動刪最舊的）
 
 剪輯視窗快捷鍵：空白鍵 播放 / 暫停、← / → 前後一張（加 Shift 為一秒）、I 設為開頭、O 設為結尾、D 標記刪除起點 / 終點。
 
@@ -36,7 +42,7 @@ Windows 11 螢幕錄影工具：**原速錄影並完整保留，停止後再選�
 
 - **左鍵點圖示**：開啟操作視窗（Chrome 的 app 模式獨立視窗；沒有 Chrome 用 Edge，都沒有才用預設瀏覽器）
 - **右鍵選單**：開始錄影（沿用上次設定）、錄製指定螢幕 / 所有螢幕、暫停 / 繼續、停止並儲存、切換系統聲音 / 麥克風、開啟儲存資料夾、播放最近的錄影、開機時自動啟動、結束
-- 圖示顏色代表狀態：深色 = 待命、紅色 = 錄影中、琥珀色 = 已暫停；滑鼠停在圖示上會顯示已錄時間
+- 圖示顏色代表狀態：深色 = 待命、紅色圓環 = 倒數中、紅色 = 錄影中、琥珀色 = 已暫停；滑鼠停在圖示上會顯示已錄時間
 - 錄影儲存後會跳出通知，點通知開啟操作視窗
 - 關閉操作視窗不會結束程式（仍常駐在系統匣）；要結束請用系統匣選單的「結束」
 - 設定存在 `%LOCALAPPDATA%\ScreenRecorder\settings.json`，記錄檔 `ScreenRecorder.log` 也在同一處
@@ -53,7 +59,7 @@ ffmpeg.exe          ← 放在同一個資料夾
 
 從系統匣選單「結束」會先把錄影正常收尾並合併再結束。編譯版不顯示主控台視窗；需要看即時訊息時用 `bun run build:console` 另外編一個有主控台的版本。
 
-參數：`--port <n>`（預設 47391，被占用時往後找）、`--no-open`（不自動開操作視窗）、`--tray`（只常駐系統匣，開機自動啟動時使用）。同時只會有一個實例，重複啟動會直接開啟現有的操作視窗。
+參數：`--port <n>`（預設 47391，被占用時往後找）、`--no-open`（不自動開操作視窗）、`--tray`（只常駐系統匣，開機自動啟動時使用）、`--no-tray`（開發測試用：不建立系統匣、不檢查是否已在執行，可與正式程式並存）。同時只會有一個實例，重複啟動會直接開啟現有的操作視窗。
 
 ### 開發
 
@@ -89,7 +95,19 @@ bun run dist
 
 1. 修改 `package.json` 的 `version`（新功能增加次版號，只修正問題增加修訂號）
 2. 在 `CHANGELOG.md` 最上方加上這一版的「新增／變更／修正」
-3. `bun run build`：版本號會自動寫進 exe 的檔案內容與程式畫面
+3. commit 後加上 tag 並推送：
+
+```bash
+git tag v1.2.0
+```
+
+```bash
+git push origin main --follow-tags
+```
+
+GitHub Actions（`.github/workflows/release.yml`）會在 Windows 上型別檢查、測試、建置 exe，確認 tag 與 `package.json` 版本一致，再以 CHANGELOG 該版段落為說明發佈 Release。也可在 Actions 頁面手動執行（只建置，不發佈），下載 exe 試用。
+
+**程式碼簽章（選用）**：沒有簽章的 exe 在其他電腦第一次執行時，SmartScreen 可能顯示「Windows 已保護您的電腦」（按「其他資訊 → 仍要執行」即可）。購買程式碼簽章憑證後，在 repo 的 Settings → Secrets and variables → Actions 新增 `SIGN_CERT_PFX`（.pfx 檔的 base64）與 `SIGN_CERT_PASSWORD`，之後發佈的 exe 就會自動簽章。
 
 ## 專案結構
 
@@ -99,22 +117,25 @@ src/
   app.ts         全域狀態（FFmpeg 偵測、螢幕清單、錄影器、匯出器）
   server.ts      Bun.serve 路由與 API（只綁 127.0.0.1，檢查 Host / Origin）
   recorder.ts    錄影狀態機：分段、暫停 / 繼續、q 收尾、意外中斷自動續錄、合併
-  exporter.ts    轉檔工作：加速匯出、剪輯（同時只跑一個，可取消）
-  library.ts     掃描儲存資料夾、讀取影片資訊
+  exporter.ts    轉檔工作：加速匯出、GIF、剪輯（同時只跑一個，可取消）
+  library.ts     掃描儲存資料夾、讀取影片資訊；thumbs.ts 縮圖產生與快取
   args.ts        所有 FFmpeg 參數組裝（純函式，有單元測試）
   ffmpeg.ts      尋找 ffmpeg.exe、偵測 ddagrab / gdigrab / 編碼器、ddagrab 實測
   monitors.ts    以 bun:ffi 呼叫 DXGI 列舉螢幕（取得 ddagrab 需要的 adapter / output 索引）
   audio.ts       以 bun:ffi 呼叫 WASAPI：系統聲音（loopback）與麥克風擷取、裝置列舉
   audiopipe.ts   聲音對齊畫面時間、混音，經本機 TCP 送進 FFmpeg
   com.ts         COM vtable 呼叫、GUID、QPC 時鐘等共用工具
-  tray.ts        系統匣控制（狀態、選單指令、通知）；tray-worker.ts 在獨立執行緒建立圖示與選單
+  tray.ts        系統匣控制（狀態、選單指令、通知、快捷鍵指令）；tray-worker.ts 在獨立執行緒建立圖示、選單、全域快捷鍵
+  winui.ts       開始擷取時縮小操作視窗、停止後還原
+  updater.ts     查詢 GitHub Releases 是否有新版本
   icon.ts        以程式繪製的圖示（系統匣三種狀態、exe 圖示）
   settings.ts    設定存檔；desktop.ts 開啟操作視窗、開機自動啟動；log.ts 記錄檔
   downloader.ts  自動下載 FFmpeg（SHA-256 校驗、解壓縮、放置）
   shared/        前後端共用的型別、格式化與剪輯計算（edit.ts）
   ui/editor.ts   剪輯對話框（時間軸、刪除片段、裁切框選）
   ui/            網頁介面（index.html + app.ts + style.css，由 Bun 打包進 exe）
-scripts/copy-ffmpeg.ts
+scripts/        build.ts 建置 exe、release-notes.ts 產生 Release 說明、copy-ffmpeg.ts、make-icon.ts、set-gui-subsystem.ts
+.github/workflows/release.yml   推送 v* tag 時自動測試、建置、發佈
 ```
 
 ## 設計重點

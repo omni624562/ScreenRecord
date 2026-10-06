@@ -57,5 +57,5 @@ describe("cutArgs", () => {
 test("剪輯版檔名，且之後的加速版會歸在剪輯版底下", () => {
   expect(cutFileName("Rec_2026-10-06_08-00-00.mp4")).toBe("Rec_2026-10-06_08-00-00_cut.mp4");
   expect(parseExportName("Rec_2026-10-06_08-00-00_cut.mp4")).toBeUndefined(); // 剪輯版本身是獨立的錄影
-  expect(parseExportName("Rec_2026-10-06_08-00-00_cut_4x.mp4")).toEqual({ base: "Rec_2026-10-06_08-00-00_cut.mp4", speed: 4 });
+  expect(parseExportName("Rec_2026-10-06_08-00-00_cut_4x.mp4")).toEqual({ base: "Rec_2026-10-06_08-00-00_cut.mp4", speed: 4, format: "mp4" });
 });

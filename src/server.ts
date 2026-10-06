@@ -5,6 +5,7 @@ import { ConfigError } from "./args.ts";
 import type { App } from "./app.ts";
 import { listLibrary } from "./library.ts";
 import { moveToRecycleBin } from "./recycle.ts";
+import { thumbnail } from "./thumbs.ts";
 import { CHANGELOG } from "./version.ts";
 import { loadSettings, saveSettings } from "./settings.ts";
 import type { EditSpec } from "./shared/edit.ts";
@@ -65,6 +66,7 @@ export function startServer(app: App, port: number, development: boolean) {
     export: app.exporter.status(),
     download: app.downloader.status(),
     settingsRev: loadSettings().rev,
+    update: app.update?.version,
   });
 
   const server = Bun.serve({
@@ -93,6 +95,17 @@ export function startServer(app: App, port: number, development: boolean) {
         }),
       },
       "/api/encoder/reset-learned": { POST: api(() => (app.resetLearnedGpu(), json({ ok: true }))) },
+      "/api/update": {
+        GET: api(() => json({ enabled: app.checkUpdatesEnabled, update: app.update, checkedAt: app.updateCheckedAt })),
+        POST: api(async (req) => {
+          const { enabled, check } = await body<{ enabled?: boolean; check?: boolean }>(req);
+          if (typeof enabled === "boolean") app.setCheckUpdates(enabled);
+          if (check) await app.checkUpdate().catch((e) => {
+            throw new ConfigError(`無法檢查新版本：${(e as Error).message}`);
+          });
+          return json({ enabled: app.checkUpdatesEnabled, update: app.update, checkedAt: app.updateCheckedAt });
+        }),
+      },
       "/api/ffmpeg/cancel": { POST: api(() => (app.downloader.cancel(), json({ ok: true, ...status() }))) },
       "/api/env/refresh": { POST: api(async () => json(await app.refresh())) },
       "/api/status": api(() => {
@@ -148,7 +161,7 @@ export function startServer(app: App, port: number, development: boolean) {
           const busy = job?.state === "running" ? [job.source, job.output].map((x) => x.toLowerCase()) : [];
           const list = paths.map((x) => String(x));
           for (const f of list) {
-            if (!/^[a-zA-Z]:\\|^\\\\/.test(f) || !f.toLowerCase().endsWith(".mp4") || !existsSync(f) || !statSync(f).isFile())
+            if (!/^[a-zA-Z]:\\|^\\\\/.test(f) || !/\.(mp4|gif)$/i.test(f) || !existsSync(f) || !statSync(f).isFile())
               throw new ConfigError(`找不到檔案：${f}`);
             if (busy.includes(f.toLowerCase())) throw new ConfigError("檔案正在轉檔中，無法刪除");
           }
@@ -159,8 +172,16 @@ export function startServer(app: App, port: number, development: boolean) {
       "/api/export/start": {
         POST: api(async (req) => {
           if (app.recorder.active) throw new ConfigError("錄影中無法匯出，請先停止錄影");
-          const { source, speed, keepAudio } = await body<{ source: string; speed: number; keepAudio?: boolean }>(req);
-          await app.exporter.start(String(source ?? ""), Number(speed), keepAudio !== false);
+          const { source, speed, keepAudio, format, gifWidth, gifFps } = await body<{
+            source: string;
+            speed: number;
+            keepAudio?: boolean;
+            format?: "mp4" | "gif";
+            gifWidth?: number;
+            gifFps?: number;
+          }>(req);
+          if (format === "gif") await app.exporter.startGif(String(source ?? ""), Number(speed), { width: Number(gifWidth), fps: Number(gifFps) });
+          else await app.exporter.start(String(source ?? ""), Number(speed), keepAudio !== false);
           return json({ ok: true, ...status() });
         }),
       },
@@ -181,6 +202,16 @@ export function startServer(app: App, port: number, development: boolean) {
       },
 
       /** 剪輯預覽用：讓瀏覽器直接播放影片檔（Bun.file 自動支援 Range，可拖曳進度） */
+      "/api/thumb": api(async (_req, url) => {
+        const p = url.searchParams.get("path") ?? "";
+        const ffmpeg = app.ffmpegPath();
+        if (!ffmpeg || !/^[a-zA-Z]:\\|^\\\\/.test(p) || !/\.(mp4|gif)$/i.test(p) || !existsSync(p)) return new Response("Not Found", { status: 404 });
+        const file = await thumbnail(ffmpeg, p).catch(() => undefined);
+        if (!file) return new Response("Not Found", { status: 404 });
+        // 網址帶修改時間（v=），內容不會變，可以讓瀏覽器快取
+        return new Response(Bun.file(file), { headers: { "Content-Type": "image/jpeg", "Cache-Control": "private, max-age=604800, immutable" } });
+      }),
+
       "/api/media": api((_req, url) => {
         const p = url.searchParams.get("path") ?? "";
         if (!/^[a-zA-Z]:\\|^\\\\/.test(p) || !p.toLowerCase().endsWith(".mp4") || !existsSync(p) || !statSync(p).isFile())
@@ -199,8 +230,8 @@ export function startServer(app: App, port: number, development: boolean) {
             mkdirSync(p, { recursive: true });
             openWithExplorer(p);
           } else {
-            // 只允許開啟 .mp4，避免透過此 API 執行任意檔案
-            if (!p.toLowerCase().endsWith(".mp4") || !existsSync(p) || !statSync(p).isFile())
+            // 只允許開啟影片（.mp4 / .gif），避免透過此 API 執行任意檔案
+            if (!/\.(mp4|gif)$/i.test(p) || !existsSync(p) || !statSync(p).isFile())
               throw new ConfigError("找不到影片檔");
             openWithExplorer(p, action === "reveal");
           }

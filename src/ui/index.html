@@ -113,6 +113,25 @@
                   <small class="muted" id="encoderHint"></small>
                   <button class="btn ghost small" id="resetGpuBtn" type="button" hidden>重設：恢復平常用 CPU 編碼</button>
                 </label>
+                <div class="field-row">
+                  <label class="field">
+                    <span>開始前倒數</span>
+                    <select id="countdownSec">
+                      <option value="0">不倒數</option>
+                      <option value="3">3 秒</option>
+                      <option value="5">5 秒</option>
+                      <option value="10">10 秒</option>
+                    </select>
+                  </label>
+                  <label class="check"><input type="checkbox" id="hideUi" />開始時縮小這個視窗</label>
+                </div>
+                <div class="more-info">
+                  <div id="hotkeyInfo"></div>
+                  <div class="row-end">
+                    <label class="check"><input type="checkbox" id="checkUpdates" />自動檢查新版本</label>
+                    <button class="btn ghost small" id="checkUpdateBtn" type="button">立即檢查</button>
+                  </div>
+                </div>
               </div>
             </div>
             <div class="set drop grow">
@@ -195,12 +214,57 @@
       </header>
       <div class="dlg-body">
         <p class="muted small" id="exInfo"></p>
-        <div class="field">
+        <div class="ex-row">
+          <div class="field">
+            <span>格式</span>
+            <div class="segmented compact" id="exFormat">
+              <button type="button" data-format="mp4">MP4 影片</button>
+              <button type="button" data-format="gif">GIF 動畫</button>
+            </div>
+          </div>
+          <div class="field">
+            <span>加速方式</span>
+            <div class="segmented compact" id="exMode">
+              <button type="button" data-mode="speed">指定倍率</button>
+              <button type="button" data-mode="target">指定長度</button>
+            </div>
+          </div>
+        </div>
+        <div class="field" id="speedField">
           <span>倍率</span>
           <div class="chip-input">
             <div class="segmented compact" id="speedPresets"></div>
             <div class="suffix-input"><input type="number" id="speed" min="1.1" max="1000" step="0.1" aria-label="自訂倍率" /><span>×</span></div>
           </div>
+        </div>
+        <div class="field" id="targetField" hidden>
+          <span>加速後的長度（分:秒，例如 1:00）</span>
+          <div class="chip-input">
+            <div class="segmented compact" id="targetPresets"></div>
+            <input type="text" id="targetLen" inputmode="numeric" placeholder="1:00" aria-label="目標長度" />
+          </div>
+          <small class="muted" id="targetHint"></small>
+        </div>
+        <div class="ex-row" id="gifOpts" hidden>
+          <label class="field">
+            <span>GIF 寬度</span>
+            <select id="gifWidth">
+              <option value="320">320 px</option>
+              <option value="480">480 px</option>
+              <option value="640">640 px</option>
+              <option value="960">960 px</option>
+              <option value="1280">1280 px</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>GIF 每秒張數</span>
+            <select id="gifFps">
+              <option value="5">5</option>
+              <option value="10">10</option>
+              <option value="15">15</option>
+              <option value="20">20</option>
+            </select>
+          </label>
         </div>
         <div class="calc">
           <div><span class="muted">原片</span><strong id="calcFrom">—</strong></div>
@@ -350,6 +414,12 @@
       </header>
       <div class="dlg-body changelog" id="changelogBody"></div>
     </dialog>
+
+    <div class="countdown" id="countdown" role="status" aria-live="assertive" hidden>
+      <div class="num" id="countdownNum">3</div>
+      <div class="hint" id="countdownHint">即將開始錄影</div>
+      <button class="btn" id="countdownCancel" type="button">取消</button>
+    </div>
 
     <div class="toast" id="toast" role="status" hidden></div>
 

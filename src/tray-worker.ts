@@ -36,6 +36,8 @@ const user32 = dlopen("user32.dll", {
   GetWindowThreadProcessId: { args: [P, P], returns: u32 },
   AttachThreadInput: { args: [u32, u32, i32], returns: i32 },
   MsgWaitForMultipleObjects: { args: [u32, P, i32, u32, u32], returns: u32 },
+  RegisterHotKey: { args: [P, i32, u32, u32], returns: i32 },
+  UnregisterHotKey: { args: [P, i32], returns: i32 },
 });
 const shell32 = dlopen("shell32.dll", { Shell_NotifyIconW: { args: [u32, P], returns: i32 } });
 const kernel32 = dlopen("kernel32.dll", {
@@ -58,6 +60,13 @@ const WM_CLOSE = 0x10;
 const WM_LBUTTONUP = 0x202;
 const WM_RBUTTONUP = 0x205;
 const WM_TRAY = 0x8001; // WM_APP + 1
+const WM_HOTKEY = 0x0312;
+const MOD_ALT = 1, MOD_CONTROL = 2, MOD_NOREPEAT = 0x4000;
+/** 全域快捷鍵：id → 指令（按鍵與 shared/types.ts 的 HOTKEY_LABELS 一致） */
+const HOTKEYS = [
+  { id: 1, vk: 0x52 /* R */, cmd: "hotkey-record" },
+  { id: 2, vk: 0x50 /* P */, cmd: "hotkey-pause" },
+] as const;
 const NIN_BALLOONUSERCLICK = 0x405;
 const NIM_ADD = 0, NIM_MODIFY = 1, NIM_DELETE = 2;
 const NIF_MESSAGE = 1, NIF_ICON = 2, NIF_TIP = 4, NIF_INFO = 0x10;
@@ -122,7 +131,8 @@ function putStr(b: Uint8Array, offset: number, maxChars: number, s: string) {
 function iconData(flags: number) {
   const st = state;
   return nid(flags, (v, b) => {
-    v.setBigUint64(32, BigInt(icon(st?.rec === "recording" ? "recording" : st?.rec === "paused" ? "paused" : "idle") as unknown as number), true);
+    const kind: IconState = st?.rec === "recording" || st?.rec === "stopping" ? "recording" : st?.rec === "paused" ? "paused" : st?.rec === "countdown" ? "countdown" : "idle";
+    v.setBigUint64(32, BigInt(icon(kind) as unknown as number), true);
     putStr(b, 40, 128, st?.tip ?? "螢幕錄影");
   });
 }
@@ -155,6 +165,11 @@ const wndProc = new JSCallback(
       else if (ev === WM_LBUTTONUP || ev === NIN_BALLOONUSERCLICK) send({ type: "cmd", cmd: "open" });
       return 0;
     }
+    if (msg === WM_HOTKEY) {
+      const hk = HOTKEYS.find((k) => k.id === Number(wParam));
+      if (hk) send({ type: "cmd", cmd: hk.cmd });
+      return 0;
+    }
     if (msg === taskbarCreated && taskbarCreated) {
       addIcon(); // 檔案總管重新啟動後圖示會消失，要重新加入
       return 0;
@@ -182,8 +197,10 @@ function showMenu() {
   const m = U.CreatePopupMenu() as Pointer;
   add(m, "開啟操作視窗(&O)", "open");
   U.SetMenuDefaultItem(m, 0, 1);
+  if (st.update) add(m, `★ 有新版本 v${st.update}（下載）`, "open-update");
   sep(m);
-  add(m, `開始錄影(&R)　${st.lastSource}`, "start-last", { disabled: !idle || !st.canRecord });
+  // 「\t」後的文字顯示在選單右側（快捷鍵提示）
+  add(m, `開始錄影(&R)　${st.lastSource}\tCtrl+Alt+R`, "start-last", { disabled: !idle || !st.canRecord });
   const pick = U.CreatePopupMenu() as Pointer;
   for (const mon of st.monitors) add(pick, mon.label, `start-monitor:${mon.id}`);
   if (st.monitors.length > 1) {
@@ -191,9 +208,10 @@ function showMenu() {
     add(pick, "所有螢幕（整個延伸桌面）", "start-all");
   }
   sub(m, "錄製指定螢幕(&M)", pick, !idle || !st.canRecord);
-  if (st.rec === "paused") add(m, "繼續錄影(&C)", "resume");
-  else add(m, "暫停(&P)", "pause", { disabled: st.rec !== "recording" });
-  add(m, "停止並儲存(&S)", "stop", { disabled: idle || st.rec === "stopping" });
+  if (st.rec === "paused") add(m, "繼續錄影(&C)\tCtrl+Alt+P", "resume");
+  else add(m, "暫停(&P)\tCtrl+Alt+P", "pause", { disabled: st.rec !== "recording" });
+  if (st.rec === "countdown") add(m, "取消倒數(&S)", "stop");
+  else add(m, "停止並儲存(&S)\tCtrl+Alt+R", "stop", { disabled: idle || st.rec === "stopping" });
   sep(m);
   const audio = U.CreatePopupMenu() as Pointer;
   add(audio, "系統聲音", "toggle-system", { checked: st.audio.system });
@@ -257,6 +275,7 @@ self.onmessage = (e: MessageEvent<MainToTray>) => {
     if (added) balloon(m.title, m.text, !!m.warn);
   } else if (m.type === "dispose") {
     if (added) removeIcon();
+    if (hwnd) for (const hk of HOTKEYS) U.UnregisterHotKey(hwnd, hk.id);
     added = false;
     if (hwnd) U.PostMessageW(hwnd, WM_CLOSE, 0, 0);
     pump();
@@ -279,6 +298,9 @@ self.onmessage = (e: MessageEvent<MainToTray>) => {
 try {
   init();
   send({ type: "hwnd", hwnd: Number(hwnd) });
+  // 快捷鍵登記在這個執行緒的視窗上（WM_HOTKEY 會送到這裡）；被其他程式占用時登記失敗
+  const ok = HOTKEYS.map((hk) => U.RegisterHotKey(hwnd, hk.id, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, hk.vk) !== 0);
+  send({ type: "hotkeys", record: ok[0]!, pause: ok[1]! });
   // 在原生端等到有視窗訊息（點圖示、選單）或逾時才醒來：點擊立即反應，閒置時幾乎不耗 CPU。
   // 每輪之間讓出事件迴圈，處理主執行緒傳來的狀態（最慢延遲 WAIT_MS）。
   const WAIT_MS = 200, QS_ALLINPUT = 0x04ff;

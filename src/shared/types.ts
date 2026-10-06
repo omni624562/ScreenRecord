@@ -50,6 +50,13 @@ export interface AudioConfig {
   micId: string;
 }
 
+/** 全域快捷鍵：開始 / 停止、暫停 / 繼續；值為是否登記成功（false = 已被其他程式占用） */
+export interface HotkeyStatus {
+  record: boolean;
+  pause: boolean;
+}
+export const HOTKEY_LABELS = { record: "Ctrl+Alt+R", pause: "Ctrl+Alt+P" } as const;
+
 export interface RecordConfig {
   source: SourceConfig;
   fps: number;
@@ -62,9 +69,13 @@ export interface RecordConfig {
   audio: AudioConfig;
   /** 編碼器：auto = 平常 CPU、畫面量大或 CPU 跟不上時改 GPU；未指定視為 auto */
   encoder?: "auto" | "cpu" | "gpu";
+  /** 開始前倒數秒數（0 = 立即開始）；未指定視為 3 */
+  countdownSec?: number;
+  /** 開始擷取時縮小操作視窗，避免錄到它；未指定視為 true */
+  hideUi?: boolean;
 }
 
-export type RecorderState = "idle" | "recording" | "paused" | "stopping";
+export type RecorderState = "idle" | "countdown" | "recording" | "paused" | "stopping";
 
 export interface RecordingResult {
   ok: boolean;
@@ -107,6 +118,10 @@ export interface RecorderStatus {
   slow: boolean;
   retrying?: string;
   startedAt?: number;
+  /** 倒數中：剩餘毫秒 */
+  countdownMs?: number;
+  /** 儲存位置的剩餘空間（錄影中定期更新） */
+  diskFreeBytes?: number;
   result?: RecordingResult;
   log: LogEntry[];
 }
@@ -124,8 +139,8 @@ export interface MediaInfo {
 }
 
 export interface LibraryEntry extends MediaInfo {
-  /** 由這支錄影匯出的加速版 */
-  exports: (MediaInfo & { speed: number })[];
+  /** 由這支錄影匯出的加速版（MP4 / GIF） */
+  exports: (MediaInfo & { speed: number; format?: "mp4" | "gif" })[];
 }
 
 export interface LibraryQuery {
@@ -150,8 +165,8 @@ export type ExportState = "running" | "done" | "error" | "canceled";
 
 export interface ExportStatus {
   id: number;
-  /** speed = 加速匯出、cut = 剪輯 */
-  kind: "speed" | "cut";
+  /** speed = 加速匯出、gif = 匯出 GIF、cut = 剪輯 */
+  kind: "speed" | "gif" | "cut";
   state: ExportState;
   source: string;
   output: string;
@@ -203,4 +218,14 @@ export interface EnvInfo {
   monitorError?: string;
   desktop: Rect;
   audio: { render?: string; captures: AudioDevice[]; error?: string };
+  /** undefined = 系統匣（快捷鍵）尚未啟動或無法使用 */
+  hotkeys?: HotkeyStatus;
+  /** GitHub 上有比目前更新的版本 */
+  update?: UpdateInfo;
+}
+
+export interface UpdateInfo {
+  version: string;
+  url: string;
+  publishedAt?: string;
 }

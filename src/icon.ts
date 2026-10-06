@@ -3,15 +3,17 @@
  * - idle：深色圓角方塊 + 紅點（與網頁圖示一致）
  * - recording：紅色方塊 + 白點，一眼看出正在錄影
  * - paused：琥珀色方塊 + 兩條白槓
+ * - countdown：深色方塊 + 紅色圓環（即將開始）
  * 產生 Windows 圖示格式（BMP 型 ICO 資源），供系統匣與 exe 圖示使用。
  */
-export type IconState = "idle" | "recording" | "paused";
+export type IconState = "idle" | "recording" | "paused" | "countdown";
 
 type RGBA = [number, number, number, number];
 const COLORS: Record<IconState, { bg: RGBA; fg: RGBA }> = {
   idle: { bg: [43, 43, 43, 255], fg: [229, 72, 77, 255] },
   recording: { bg: [229, 72, 77, 255], fg: [255, 255, 255, 255] },
   paused: { bg: [214, 140, 18, 255], fg: [255, 255, 255, 255] },
+  countdown: { bg: [43, 43, 43, 255], fg: [229, 72, 77, 255] },
 };
 
 /** 每個像素 4×4 超取樣做反鋸齒；回傳由上而下的 RGBA */
@@ -34,7 +36,9 @@ export function renderIcon(size: number, state: IconState): Uint8ClampedArray {
       const top = c - h / 2;
       return y >= top && y <= top + h && ((x >= c - gap - w && x <= c - gap) || (x >= c + gap && x <= c + gap + w));
     }
-    return (x - c) ** 2 + (y - c) ** 2 <= (size * (state === "idle" ? 0.2 : 0.18)) ** 2;
+    const d2 = (x - c) ** 2 + (y - c) ** 2;
+    if (state === "countdown") return d2 <= (size * 0.26) ** 2 && d2 >= (size * 0.16) ** 2;
+    return d2 <= (size * (state === "idle" ? 0.2 : 0.18)) ** 2;
   };
   const S = 4;
   for (let y = 0; y < size; y++) {

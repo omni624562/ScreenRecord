@@ -8,13 +8,14 @@ import {
   ConfigError,
   ENCODERS,
   exportArgs,
+  gifArgs,
   parseMediaInfo,
   planTiles,
   previewArgs,
   resolvePlan,
   segmentArgs,
 } from "./args.ts";
-import { exportFileName, outputSize, parseExportName } from "./shared/format.ts";
+import { exportFileName, outputSize, parseClock, parseExportName, speedForTarget } from "./shared/format.ts";
 import type { MonitorInfo, RecordConfig } from "./shared/types.ts";
 
 const mon = (id: string, x: number, y: number, w: number, h: number, primary = false): MonitorInfo => {
@@ -166,9 +167,41 @@ describe("匯出", () => {
   test("檔名與倍率互轉", () => {
     expect(exportFileName("Rec_2026-10-05_14-30-00.mp4", 4)).toBe("Rec_2026-10-05_14-30-00_4x.mp4");
     expect(exportFileName("Rec_a.mp4", 1.5)).toBe("Rec_a_1.5x.mp4");
-    expect(parseExportName("Rec_a_1.5x.mp4")).toEqual({ base: "Rec_a.mp4", speed: 1.5 });
-    expect(parseExportName("Rec_a_8x_2.mp4")).toEqual({ base: "Rec_a.mp4", speed: 8 });
+    expect(parseExportName("Rec_a_1.5x.mp4")).toEqual({ base: "Rec_a.mp4", speed: 1.5, format: "mp4" });
+    expect(parseExportName("Rec_a_8x_2.mp4")).toEqual({ base: "Rec_a.mp4", speed: 8, format: "mp4" });
     expect(parseExportName("Rec_2026-10-05_14-30-00.mp4")).toBeUndefined();
+  });
+
+  test("GIF 檔名", () => {
+    expect(exportFileName("Rec_a.mp4", 4, "gif")).toBe("Rec_a_4x.gif");
+    expect(exportFileName("Rec_a.mp4", 1, "gif")).toBe("Rec_a.gif");
+    expect(parseExportName("Rec_a_4x.gif")).toEqual({ base: "Rec_a.mp4", speed: 4, format: "gif" });
+    expect(parseExportName("Rec_a.gif")).toEqual({ base: "Rec_a.mp4", speed: 1, format: "gif" });
+    expect(parseExportName("Rec_a_2.gif")).toEqual({ base: "Rec_a.mp4", speed: 1, format: "gif" });
+  });
+
+  test("依目標長度算倍率", () => {
+    expect(parseClock("1:30")).toBe(90);
+    expect(parseClock("90")).toBe(90);
+    expect(parseClock("1:02:03")).toBe(3723);
+    expect(parseClock("abc")).toBeUndefined();
+    expect(parseClock("0")).toBeUndefined();
+    expect(speedForTarget(3600, 60)).toBe(60);
+    expect(speedForTarget(100, 30)).toBe(3.33);
+    expect(speedForTarget(10, 60)).toBe(1.1); // 目標比原片長：用最小倍率
+    expect(speedForTarget(10, 60, true)).toBe(1); // GIF 可原速
+    expect(speedForTarget(36000, 1)).toBe(1000);
+  });
+
+  test("gifArgs：短片用整段調色盤，長片改每張調色盤（避免吃光記憶體）", () => {
+    const short = gifArgs("in.mp4", "out.gif", 4, { fps: 10, width: 640, srcWidth: 1920, srcHeight: 1080, outputSec: 10 });
+    expect(after(short, "-vf")).toContain("setpts=PTS/4,fps=10,scale=640:-2");
+    expect(after(short, "-vf")).toContain("stats_mode=diff");
+    expect(short).toContain("-an");
+    const long = gifArgs("in.mp4", "out.gif", 4, { fps: 10, width: 640, srcWidth: 1920, srcHeight: 1080, outputSec: 600 });
+    expect(after(long, "-vf")).toContain("new=1");
+    const same = gifArgs("in.mp4", "out.gif", 1, { fps: 10, width: 640, srcWidth: 320, srcHeight: 180, outputSec: 5 });
+    expect(after(same, "-vf")).toStartWith("fps=10,scale=320:-2"); // 不放大、原速不加 setpts
   });
 
   test("exportArgs：setpts 壓縮時間、維持原 fps", () => {

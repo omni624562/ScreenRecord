@@ -8,8 +8,10 @@ import { enumerateMonitors } from "./monitors.ts";
 import { appDir, defaultOutputDir } from "./paths.ts";
 import { Recorder } from "./recorder.ts";
 import { loadSettings, saveSettings } from "./settings.ts";
-import type { EnvInfo, FfmpegInfo, MonitorInfo } from "./shared/types.ts";
+import type { EnvInfo, FfmpegInfo, HotkeyStatus, MonitorInfo, UpdateInfo } from "./shared/types.ts";
+import { checkForUpdate } from "./updater.ts";
 import { APP_VERSION } from "./version.ts";
+import { minimizeUi, restoreUi } from "./winui.ts";
 
 export class App {
   readonly defaultOutputDir = defaultOutputDir();
@@ -22,7 +24,13 @@ export class App {
   lastSeen = Date.now();
   /** 操作介面網址（伺服器啟動後設定） */
   url = "";
-  tray?: { dispose(): Promise<void> };
+  tray?: { dispose(): Promise<void>; notify(title: string, text: string, warn?: boolean): void };
+  /** 全域快捷鍵登記結果（系統匣啟動後才知道；被其他程式占用時為 false） */
+  hotkeys?: HotkeyStatus;
+  /** GitHub 上較新的版本（檢查後才有） */
+  update?: UpdateInfo;
+  updateCheckedAt?: number;
+  private updateTimer?: Timer;
 
   readonly recorder = new Recorder({
     ffmpegPath: () => this.ffmpegPath(),
@@ -34,6 +42,12 @@ export class App {
       saveSettings({ preferGpu: true });
       this.ffmpeg.preferGpu = true;
     },
+    // 縮小動畫約 0.25 秒，等它結束再開始擷取，第一張畫面才不會拍到縮到一半的視窗
+    beforeCapture: async () => {
+      if (minimizeUi()) await Bun.sleep(350);
+    },
+    afterStop: () => restoreUi(),
+    notify: (title, text, warn) => this.tray?.notify(title, text, warn),
   });
 
   /** 下載完成後重新偵測，介面輪詢時就會看到 FFmpeg 已就緒 */
@@ -94,7 +108,45 @@ export class App {
       monitorError: this.monitorError,
       desktop: desktopRect(this.monitors),
       audio: this.audio,
+      hotkeys: this.hotkeys,
+      update: this.update,
     };
+  }
+
+  // ───────────── 檢查新版本 ─────────────
+
+  get checkUpdatesEnabled() {
+    return loadSettings().checkUpdates !== false;
+  }
+
+  /** 啟動 1 分鐘後檢查一次，之後每 12 小時；可在介面上關閉 */
+  scheduleUpdateChecks() {
+    clearTimeout(this.updateTimer);
+    if (!this.checkUpdatesEnabled) return;
+    const next = this.updateCheckedAt ? 12 * 3600_000 : 60_000;
+    this.updateTimer = setTimeout(async () => {
+      await this.checkUpdate().catch((e) => console.log(`檢查新版本失敗：${(e as Error).message}`));
+      this.scheduleUpdateChecks();
+    }, next);
+  }
+
+  setCheckUpdates(on: boolean) {
+    saveSettings({ checkUpdates: on });
+    if (!on) this.update = undefined;
+    this.scheduleUpdateChecks();
+  }
+
+  /** 立即檢查；找到新版本時以系統匣通知（同一版只通知一次） */
+  async checkUpdate(): Promise<UpdateInfo | undefined> {
+    this.update = await checkForUpdate(APP_VERSION);
+    this.updateCheckedAt = Date.now();
+    const u = this.update;
+    if (u && loadSettings().updateNotified !== u.version) {
+      saveSettings({ updateNotified: u.version });
+      console.log(`有新版本 v${u.version}：${u.url}`);
+      this.tray?.notify("有新版本", `v${u.version} 已發佈，可從系統匣選單下載`);
+    }
+    return u;
   }
 
   refreshDevices() {

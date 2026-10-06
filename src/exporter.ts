@@ -5,7 +5,7 @@
 import type { Subprocess } from "bun";
 import { existsSync, rmSync, statSync } from "node:fs";
 import { basename, dirname } from "node:path";
-import { ConfigError, cutArgs, exportArgs, type EncoderSpec } from "./args.ts";
+import { ConfigError, cutArgs, exportArgs, gifArgs, type EncoderSpec } from "./args.ts";
 import { lastLines } from "./ffmpeg.ts";
 import { probeMedia } from "./library.ts";
 import { readLines, uniquePath } from "./util.ts";
@@ -26,7 +26,7 @@ export interface ExporterDeps {
   encoder(): EncoderSpec | undefined;
 }
 
-const KIND_TEXT = { speed: "匯出", cut: "剪輯" } as const;
+const KIND_TEXT = { speed: "匯出", gif: "GIF 匯出", cut: "剪輯" } as const;
 
 export class Exporter {
   private job?: Job;
@@ -68,6 +68,11 @@ export class Exporter {
     return this.exclusive(() => this.doStart(source, speed, keepAudio));
   }
 
+  /** 匯出 GIF（可同時加速；無聲音） */
+  startGif(source: string, speed: number, opts: { width: number; fps: number }): Promise<ExportStatus> {
+    return this.exclusive(() => this.doGif(source, speed, opts));
+  }
+
   /** 剪輯：剪頭尾、刪除中間片段、裁切畫面，另存為 *_cut.mp4 */
   startCut(source: string, spec: EditSpec): Promise<ExportStatus> {
     return this.exclusive(() => this.doCut(source, spec));
@@ -82,6 +87,19 @@ export class Exporter {
     const args = exportArgs(source, output, speed, fps, enc, withAudio);
     const note = `${speedLabel(speed)}×${withAudio ? "，含聲音" : ""}`;
     return this.run("speed", ffmpeg, args, source, output, speed, info.durationSec! / speed, note);
+  }
+
+  private async doGif(source: string, speed: number, opts: { width: number; fps: number }): Promise<ExportStatus> {
+    if (!Number.isFinite(speed) || speed < 1 || speed > LIMITS.speedMax) throw new ConfigError(`倍率需介於 1～${LIMITS.speedMax}`);
+    const fps = Math.min(30, Math.max(5, Math.round(opts.fps) || 10));
+    const width = Math.min(1920, Math.max(160, Math.round(opts.width) || 640));
+    const { ffmpeg, info } = await this.prepare(source);
+    const outputSec = info.durationSec! / speed;
+    const name = exportFileName(basename(source), speed, "gif").replace(/\.gif$/i, "");
+    const output = uniquePath(dirname(source), name, ".gif");
+    const args = gifArgs(source, output, speed, { fps, width, srcWidth: info.width ?? 0, srcHeight: info.height ?? 0, outputSec });
+    const note = `${speed > 1 ? `${speedLabel(speed)}×，` : ""}寬 ${Math.min(width, info.width ?? width)}、${fps} fps`;
+    return this.run("gif", ffmpeg, args, source, output, speed, outputSec, note);
   }
 
   private async doCut(source: string, spec: EditSpec): Promise<ExportStatus> {

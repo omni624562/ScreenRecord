@@ -1,0 +1,69 @@
+# 推送 v* tag 時：測試 → 建置 exe →（有憑證時）簽章 → 發佈 GitHub Release
+# 發佈新版本：更新 package.json 版本與 CHANGELOG.md → commit → git tag v1.2.0 → git push --follow-tags
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  # 手動執行：只建置與測試，不發佈（在 Actions 頁面下載 exe 試用）
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    env:
+      # 步驟的 if 看不到 secrets，先放進 env 判斷有沒有設定
+      SIGN_CERT_PFX: ${{ secrets.SIGN_CERT_PFX }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+
+      - name: 安裝套件
+        run: bun install --frozen-lockfile
+
+      - name: 型別檢查
+        run: bun run typecheck
+
+      - name: 測試
+        run: bun test
+
+      - name: 確認版本與更新說明
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: bun run scripts/release-notes.ts --check-tag "${GITHUB_REF_NAME}" > release-notes.md
+
+      - name: 建置 exe
+        run: bun run build
+
+      # 程式碼簽章（選用）：在 repo 的 Settings → Secrets 設定 SIGN_CERT_PFX（.pfx 的 base64）與 SIGN_CERT_PASSWORD 才會執行
+      - name: 簽章
+        if: env.SIGN_CERT_PFX != ''
+        env:
+          SIGN_CERT_PASSWORD: ${{ secrets.SIGN_CERT_PASSWORD }}
+        shell: pwsh
+        run: |
+          $pfx = Join-Path $env:RUNNER_TEMP "sign.pfx"
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:SIGN_CERT_PFX))
+          $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" | Sort-Object FullName -Descending | Select-Object -First 1
+          & $signtool.FullName sign /f $pfx /p $env:SIGN_CERT_PASSWORD /fd sha256 /tr http://timestamp.digicert.com /td sha256 dist\ScreenRecorder.exe
+          if ($LASTEXITCODE -ne 0) { throw "簽章失敗" }
+          Remove-Item $pfx
+
+      - name: 上傳建置結果
+        uses: actions/upload-artifact@v4
+        with:
+          name: ScreenRecorder
+          path: dist/ScreenRecorder.exe
+
+      - name: 發佈 Release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: gh release create "${GITHUB_REF_NAME}" dist/ScreenRecorder.exe --title "${GITHUB_REF_NAME}" --notes-file release-notes.md

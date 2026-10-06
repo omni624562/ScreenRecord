@@ -5,13 +5,14 @@ import type { App } from "./app.ts";
 import { getAutostart, openUi, setAutostart } from "./desktop.ts";
 import { isCompiled } from "./paths.ts";
 import { APP_VERSION } from "./version.ts";
+import { HOTKEY_LABELS } from "./shared/types.ts";
 import { loadSettings, saveSettings } from "./settings.ts";
 import { openWithExplorer } from "./server.ts";
 import { clock, videoClock } from "./shared/format.ts";
 import type { RecordConfig } from "./shared/types.ts";
 import type { MainToTray, TrayCommand, TrayState, TrayToMain } from "./tray-protocol.ts";
 
-const STATE_TEXT = { idle: "待命", recording: "錄影中", paused: "已暫停", stopping: "儲存中" } as const;
+const STATE_TEXT = { idle: "待命", countdown: "倒數中", recording: "錄影中", paused: "已暫停", stopping: "儲存中" } as const;
 
 export class Tray {
   private worker?: Worker;
@@ -46,6 +47,11 @@ export class Tray {
         result.resolve(false);
       } else if (m.type === "cmd") void this.run(m.cmd);
       else if (m.type === "log") console.log(`[系統匣] ${m.text}`);
+      else if (m.type === "hotkeys") {
+        this.app.hotkeys = { record: m.record, pause: m.pause };
+        const busy = [!m.record && HOTKEY_LABELS.record, !m.pause && HOTKEY_LABELS.pause].filter(Boolean);
+        console.log(busy.length ? `快捷鍵 ${busy.join("、")} 已被其他程式使用，無法登記` : `快捷鍵：${HOTKEY_LABELS.record} 開始 / 停止，${HOTKEY_LABELS.pause} 暫停 / 繼續`);
+      }
     };
     this.worker.onerror = (e) => {
       console.error(`系統匣錯誤：${e.message}`);
@@ -103,7 +109,7 @@ export class Tray {
     const st = this.app.recorder.status();
     const env = this.app.env();
     const cfg = this.config();
-    const time = st.state === "idle" ? "" : ` ${clock(st.recordedMs)}`;
+    const time = st.state === "countdown" ? ` ${Math.ceil((st.countdownMs ?? 0) / 1000)}` : st.state === "idle" ? "" : ` ${clock(st.recordedMs)}`;
     const src = cfg.source;
     const lastSource = src.type === "all" ? "所有螢幕"
       : src.type === "region" ? "自訂範圍"
@@ -121,6 +127,7 @@ export class Tray {
       lastResult: this.lastResultExists() ? this.lastResultPath : undefined,
       autostart: this.autostart,
       version: APP_VERSION,
+      update: this.app.update?.version,
     };
   }
 
@@ -170,12 +177,26 @@ export class Tray {
     saveSettings({ config: cfg, ui });
   }
 
-  private async run(cmd: TrayCommand) {
+  private async run(cmd: TrayCommand): Promise<void> {
     const app = this.app;
     try {
       if (cmd === "open") return openUi(app.url);
       if (cmd === "changelog") return openUi(`${app.url}#changelog`);
       if (cmd === "quit") return void app.quit();
+      if (cmd === "open-update") return app.update && openWithExplorer(app.update.url);
+      // 快捷鍵：同一組鍵依狀態切換（待命→開始、倒數→取消、錄影中→停止）
+      if (cmd === "hotkey-record") {
+        const st = app.recorder.status().state;
+        if (st === "stopping") return;
+        if (st !== "idle") return void (await app.recorder.stop());
+        return await this.run("start-last");
+      }
+      if (cmd === "hotkey-pause") {
+        const st = app.recorder.status().state;
+        if (st === "recording") return void (await app.recorder.pause());
+        if (st === "paused") return void (await app.recorder.resume());
+        return;
+      }
       if (cmd === "pause") return void (await app.recorder.pause());
       if (cmd === "resume") return void (await app.recorder.resume());
       if (cmd === "stop") return void (await app.recorder.stop());
@@ -186,7 +207,10 @@ export class Tray {
         mkdirSync(dir, { recursive: true });
         return openWithExplorer(dir);
       }
-      if (cmd === "play-last") return this.lastResultPath && openWithExplorer(this.lastResultPath);
+      if (cmd === "play-last") {
+        if (this.lastResultPath) openWithExplorer(this.lastResultPath);
+        return;
+      }
       if (cmd === "autostart") {
         await setAutostart(!this.autostart);
         this.autostart = await getAutostart();

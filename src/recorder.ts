@@ -7,6 +7,7 @@
  */
 import type { Subprocess } from "bun";
 import { existsSync, mkdirSync, rmdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { statfs } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { chooseEncoder, startupFallback, concatArgs, concatList, ConfigError, parseMediaInfo, resolvePlan, segmentArgs, type CapturePlan, type EncoderSpec } from "./args.ts";
 import { AudioPipe, type AudioSourceSpec } from "./audiopipe.ts";
@@ -55,7 +56,32 @@ export interface RecorderDeps {
   monitors(): MonitorInfo[];
   /** ddagrab 是否可用（濾鏡存在且實測沒失敗；上次失敗時會重新測試） */
   ddagrabUsable(): Promise<boolean>;
+  /** 倒數結束、開始擷取前（縮小操作視窗等） */
+  beforeCapture?(config: RecordConfig): Promise<void>;
+  /** 錄影結束（已儲存或失敗）後（還原操作視窗等） */
+  afterStop?(): void;
+  /** 需要使用者注意的事（系統匣通知） */
+  notify?(title: string, text: string, warn?: boolean): void;
 }
+
+/** 剩餘空間低於這個值不開始錄影 */
+const DISK_MIN_START = 1 * 2 ** 30;
+/** 錄影中剩餘空間低於這個值提醒一次 */
+const DISK_WARN = 2 * 2 ** 30;
+/** 錄影中剩餘空間低於這個值自動停止並儲存（合併時還需要約一份影片大小的空間） */
+const DISK_STOP = 512 * 2 ** 20;
+const DISK_CHECK_MS = 10_000;
+
+/** 儲存位置所在磁碟的剩餘空間；查不到（某些網路磁碟）回傳 undefined */
+export async function diskFree(dir: string): Promise<number | undefined> {
+  try {
+    const s = await statfs(dir);
+    return s.bavail * s.bsize;
+  } catch {
+    return undefined;
+  }
+}
+const gb = (n: number) => `${(n / 2 ** 30).toFixed(1)} GB`;
 
 const MAX_LOG = 60;
 /** 超過這麼久沒有新畫面就視為卡住 */
@@ -93,6 +119,10 @@ export class Recorder {
   private log: LogEntry[] = [];
   private ticker?: Timer;
   private lastTickAt = 0;
+  private countdown?: { endsAt: number; cancel: () => void };
+  private diskFreeBytes?: number;
+  private diskCheckedAt = 0;
+  private diskWarned = false;
   private queue: Promise<unknown> = Promise.resolve();
   private autoStopping = false;
   shuttingDown = false;
@@ -101,8 +131,19 @@ export class Recorder {
 
   // ───────────── 公開操作（序列化執行，避免連點造成競態） ─────────────
 
-  start(config: RecordConfig) {
-    return this.serial(() => this.doStart(config));
+  /**
+   * 開始錄影。有倒數時，進入倒數就先回覆（介面與系統匣以狀態顯示倒數，期間可取消）；
+   * 倒數之後才發生的錯誤會寫進事件紀錄並以系統匣通知。
+   */
+  start(config: RecordConfig): Promise<void> {
+    const began = Promise.withResolvers<void>();
+    const job = this.serial(() => this.doStart(config, began.resolve));
+    let counting = false;
+    void began.promise.then(() => (counting = true));
+    job.catch((e) => {
+      if (counting) this.deps.notify?.("無法開始錄影", (e as Error).message, true);
+    });
+    return Promise.race([job, began.promise]);
   }
   pause() {
     return this.serial(() => this.doPause());
@@ -111,6 +152,11 @@ export class Recorder {
     return this.serial(() => this.doResume());
   }
   stop(reason?: string) {
+    // 倒數中直接取消（start 還在佇列裡等倒數，不能排在它後面）
+    if (this.state === "countdown" && this.countdown) {
+      this.countdown.cancel();
+      return Promise.resolve(undefined);
+    }
     return this.serial(() => this.doStop(reason));
   }
 
@@ -145,6 +191,8 @@ export class Recorder {
       slow: this.state === "recording" && this.slowSince !== undefined && Date.now() - this.slowSince > 3000,
       retrying: this.retry?.message,
       startedAt: this.startedAt,
+      countdownMs: this.state === "countdown" && this.countdown ? Math.max(0, this.countdown.endsAt - Date.now()) : undefined,
+      diskFreeBytes: this.state === "idle" ? undefined : this.diskFreeBytes,
       result: this.result,
       log: this.log,
     };
@@ -175,7 +223,7 @@ export class Recorder {
     return this.accumulatedMs + (this.spanStart ? Date.now() - this.spanStart : 0);
   }
 
-  private async doStart(config: RecordConfig) {
+  private async doStart(config: RecordConfig, onCountdown?: () => void) {
     if (this.state !== "idle") throw new ConfigError("目前已在錄影中");
     if (!this.deps.ffmpegPath()) throw new ConfigError("找不到 ffmpeg.exe，請先依畫面指示下載");
     const plan = resolvePlan(config, this.deps.monitors());
@@ -198,6 +246,12 @@ export class Recorder {
     } catch (e) {
       throw new ConfigError(`無法建立儲存資料夾：${(e as Error).message}`);
     }
+    const free = await diskFree(outputDir);
+    if (free !== undefined && free < DISK_MIN_START)
+      throw new ConfigError(`儲存位置剩餘空間只有 ${gb(free)}，請清出空間或改存到其他磁碟`);
+    this.diskFreeBytes = free;
+    this.diskCheckedAt = Date.now();
+    this.diskWarned = false;
     this.partsDir = join(outputDir, ".parts", stamp);
     mkdirSync(this.partsDir, { recursive: true });
     this.finalPath = uniquePath(outputDir, `Rec_${stamp}`, ".mp4");
@@ -226,6 +280,25 @@ export class Recorder {
     ];
     this.audioDesc = undefined;
 
+    // 倒數：讓使用者有時間切到要錄的畫面；期間按停止（或快捷鍵）可取消
+    const countdownSec = Math.min(10, Math.max(0, Math.round(config.countdownSec ?? 3)));
+    if (countdownSec > 0) {
+      this.state = "countdown";
+      onCountdown?.();
+      const canceled = await new Promise<boolean>((resolve) => {
+        const timer = setTimeout(() => resolve(false), countdownSec * 1000);
+        this.countdown = { endsAt: Date.now() + countdownSec * 1000, cancel: () => (clearTimeout(timer), resolve(true)) };
+      });
+      this.countdown = undefined;
+      if (canceled || this.shuttingDown) {
+        this.state = "idle";
+        this.cleanupParts();
+        this.addLog("info", "已取消倒數，沒有開始錄影");
+        return;
+      }
+    }
+    if (config.hideUi !== false) await this.deps.beforeCapture?.(config).catch(() => {});
+
     const { width, height } = plan.rect;
     const where = config.source.type === "monitor"
       ? `螢幕 ${plan.monitors[0]?.displayNumber ?? "?"}`
@@ -247,6 +320,7 @@ export class Recorder {
       this.startSegment();
     } catch (e) {
       // 例如 ffmpeg.exe 被移除 / 防毒隔離：回到待命，不留下錄影中的假狀態
+      this.addLog("error", `無法啟動 FFmpeg：${(e as Error).message}`);
       this.state = "idle";
       this.spanStart = undefined;
       this.cleanupParts();
@@ -312,6 +386,11 @@ export class Recorder {
       this.ticker = undefined;
       this.busy = undefined;
       this.state = "idle";
+    }
+    try {
+      this.deps.afterStop?.();
+    } catch {
+      // 還原視窗失敗不影響錄影結果
     }
     return this.result;
   }
@@ -535,11 +614,31 @@ export class Recorder {
       void this.stop("已達最長錄影時間，自動停止").catch(() => {});
       return;
     }
+    if (now - this.diskCheckedAt > DISK_CHECK_MS) {
+      this.diskCheckedAt = now;
+      void this.checkDisk();
+    }
     const seg = this.current;
     if (seg?.running && !seg.stopRequested && Date.now() - seg.lastFrameAt > STALL_MS) {
       this.addLog("warn", `超過 ${STALL_MS / 1000} 秒沒有擷取到新畫面，重新啟動 FFmpeg`);
       seg.lastFrameAt = Date.now();
       seg.proc.kill();
+    }
+  }
+
+  /** 錄影中定期檢查剩餘空間：不足時先提醒，再不足就自動停止（磁碟寫滿會讓分段損毀、無法合併） */
+  private async checkDisk() {
+    const free = await diskFree(this.config!.outputDir);
+    if (free === undefined || this.state !== "recording") return;
+    this.diskFreeBytes = free;
+    if (free < DISK_STOP && !this.autoStopping) {
+      this.autoStopping = true;
+      this.deps.notify?.("磁碟空間不足", `只剩 ${gb(free)}，已自動停止並儲存`, true);
+      void this.stop(`儲存位置只剩 ${gb(free)}，自動停止並儲存`).catch(() => {});
+    } else if (free < DISK_WARN && !this.diskWarned) {
+      this.diskWarned = true;
+      this.addLog("warn", `儲存位置只剩 ${gb(free)}，低於 ${gb(DISK_STOP)} 時會自動停止`);
+      this.deps.notify?.("磁碟空間快不夠了", `儲存位置只剩 ${gb(free)}`, true);
     }
   }
 

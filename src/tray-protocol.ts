@@ -15,6 +15,9 @@ export type TrayCommand =
   | "play-last"
   | "autostart"
   | "changelog"
+  | "hotkey-record"
+  | "hotkey-pause"
+  | "open-update"
   | "quit";
 
 export interface TrayState {
@@ -31,6 +34,8 @@ export interface TrayState {
   /** null = 無法設定（開發模式） */
   autostart: boolean | null;
   version: string;
+  /** 有新版本時顯示在選單 */
+  update?: string;
 }
 
 export type MainToTray =
@@ -45,4 +50,5 @@ export type TrayToMain =
   | { type: "error"; message: string }
   | { type: "cmd"; cmd: TrayCommand }
   | { type: "disposed" }
-  | { type: "log"; text: string };
+  | { type: "log"; text: string }
+  | { type: "hotkeys"; record: boolean; pause: boolean };

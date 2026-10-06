@@ -11,11 +11,13 @@ import type {
   RecorderStatus,
   Rect,
   ScalePercent,
+  UpdateInfo,
 } from "../shared/types.ts";
-import { $, api, clamp, esc, guarded, icon, setHtml, shortDate, toast } from "./common.ts";
+import { HOTKEY_LABELS } from "../shared/types.ts";
+import { $, api, clamp, esc, guarded, icon, setHtml, shortDate, thumbUrl, toast } from "./common.ts";
 import { openEditor } from "./editor.ts";
 import { openExport } from "./exportDialog.ts";
-import { isLibraryOpen, load as reloadLibraryDialog, openLibrary, type EntryAction } from "./libraryDialog.ts";
+import { exportTag, isLibraryOpen, load as reloadLibraryDialog, openLibrary, type EntryAction } from "./libraryDialog.ts";
 
 // ───────────── 版面縮放：以 1280×800 設計，較小的視窗等比縮小（最小 0.8 倍），較大則撐滿 ─────────────
 
@@ -48,6 +50,13 @@ interface Settings {
   keepAudio: boolean;
   livePreview: boolean;
   encoder: "auto" | "cpu" | "gpu";
+  countdownSec: number;
+  hideUi: boolean;
+  exportFormat: "mp4" | "gif";
+  exportMode: "speed" | "target";
+  exportTarget: string;
+  gifWidth: number;
+  gifFps: number;
 }
 
 const STORAGE_KEY = "screen-recorder.settings.v1";
@@ -134,13 +143,20 @@ function initSettings() {
     maxMinutes: Number.isFinite(st.maxMinutes) ? st.maxMinutes! : 0,
     method: (["auto", "ddagrab", "gdigrab"] as const).includes(st.method as MethodPreference) ? st.method! : "auto",
     outputDir: st.outputDir?.trim() || env.defaultOutputDir,
-    speed: Number(st.speed) >= LIMITS.speedMin ? Number(st.speed) : 4,
+    speed: Number(st.speed) >= 1 ? Number(st.speed) : 4,
     audioSystem: st.audioSystem ?? false,
     audioMic: st.audioMic ?? false,
     micId: typeof st.micId === "string" ? st.micId : "",
     keepAudio: st.keepAudio ?? true,
     livePreview: st.livePreview ?? true,
     encoder: st.encoder === "cpu" || st.encoder === "gpu" ? st.encoder : "auto",
+    countdownSec: [0, 3, 5, 10].includes(Number(st.countdownSec)) ? Number(st.countdownSec) : 3,
+    hideUi: st.hideUi ?? true,
+    exportFormat: st.exportFormat === "gif" ? "gif" : "mp4",
+    exportMode: st.exportMode === "target" ? "target" : "speed",
+    exportTarget: typeof st.exportTarget === "string" ? st.exportTarget : "1:00",
+    gifWidth: [320, 480, 640, 960, 1280].includes(Number(st.gifWidth)) ? Number(st.gifWidth) : 640,
+    gifFps: [5, 10, 15, 20].includes(Number(st.gifFps)) ? Number(st.gifFps) : 10,
   };
   if (!selectedMonitor()) S.monitorId = primary?.id;
 }
@@ -160,6 +176,8 @@ function buildConfig(): RecordConfig {
     outputDir: S.outputDir.trim() || env.defaultOutputDir,
     audio: { system: S.audioSystem, mic: S.audioMic, micId: S.micId },
     encoder: S.encoder,
+    countdownSec: S.countdownSec,
+    hideUi: S.hideUi,
   };
 }
 
@@ -170,6 +188,8 @@ const outDir = () => S.outputDir.trim() || env.defaultOutputDir;
 function renderEnv() {
   const ff = env.ffmpeg;
   const chips: string[] = [];
+  if (env.update)
+    chips.push(`<a class="chip new" href="${esc(env.update.url)}" target="_blank" rel="noopener" title="點一下前往下載頁面">有新版本 v${esc(env.update.version)}</a>`);
   if (ff.found) chips.push(`<span class="chip ok" title="${esc(ff.path ?? "")}">FFmpeg ${esc((ff.version ?? "").split("-")[0]!)}</span>`);
   else chips.push(`<span class="chip bad">找不到 FFmpeg</span>`);
   if (ff.found) {
@@ -482,8 +502,12 @@ function renderSettings() {
   if (document.activeElement !== maxInput) maxInput.value = String(S.maxMinutes);
   $<HTMLSelectElement>("method").value = S.method;
   renderEncoder();
+  $<HTMLSelectElement>("countdownSec").value = String(S.countdownSec);
+  $<HTMLInputElement>("hideUi").checked = S.hideUi;
+  renderHotkeys();
   const more = [
     S.maxMinutes > 0 ? `最長 ${humanDuration(S.maxMinutes * 60)}` : "不限時",
+    S.countdownSec === 3 ? "" : S.countdownSec ? `倒數 ${S.countdownSec} 秒` : "不倒數",
     S.method === "auto" ? "" : S.method,
     S.encoder === "auto" ? "" : S.encoder === "gpu" ? "GPU 編碼" : "CPU 編碼",
   ].filter(Boolean).join("・");
@@ -497,6 +521,16 @@ function renderSettings() {
   }
   renderAudio();
   renderSizeText();
+}
+
+/** 「更多」面板的快捷鍵說明（被其他程式占用時提示） */
+function renderHotkeys() {
+  const hk = env.hotkeys;
+  const line = (keys: string, what: string, ok?: boolean) =>
+    `<div>${keys.split("+").map((k) => `<kbd>${esc(k)}</kbd>`).join("+")} ${what}${ok === false ? `<span class="warn">（已被其他程式使用）</span>` : ""}</div>`;
+  setHtml($("hotkeyInfo"), hk
+    ? line(HOTKEY_LABELS.record, "開始 / 停止錄影", hk.record) + line(HOTKEY_LABELS.pause, "暫停 / 繼續", hk.pause)
+    : `<div>全域快捷鍵需要系統匣常駐時才能使用</div>`);
 }
 
 /** 編碼器選項：GPU 依實測結果顯示可用的編碼器 */
@@ -573,6 +607,19 @@ function bindSettings() {
   onChange("micId", (el) => (S.micId = el.value));
   onChange("method", (el) => (S.method = el.value as MethodPreference));
   onChange("encoder", (el) => (S.encoder = el.value as Settings["encoder"]));
+  onChange("countdownSec", (el) => (S.countdownSec = Number(el.value)));
+  onChange("hideUi", (el) => (S.hideUi = el.checked));
+  $<HTMLInputElement>("checkUpdates").addEventListener("change", (e) =>
+    guarded(() => api("/api/update", { enabled: (e.target as HTMLInputElement).checked })),
+  );
+  $("checkUpdateBtn").addEventListener("click", () =>
+    guarded(async () => {
+      const r = await api<{ update?: UpdateInfo }>("/api/update", { check: true });
+      env.update = r.update;
+      renderEnv();
+      toast(r.update ? `有新版本 v${r.update.version}，點右下角的標籤前往下載` : `目前已是最新版本（v${env.appVersion}）`);
+    }),
+  );
   $("resetGpuBtn").addEventListener("click", () =>
     guarded(async () => {
       await api("/api/encoder/reset-learned", {});
@@ -622,7 +669,7 @@ function bindSettings() {
 
 // ───────────── 錄影狀態 ─────────────
 
-const STATE_TEXT = { idle: "待命", recording: "錄影中", paused: "已暫停", stopping: "處理中" } as const;
+const STATE_TEXT = { idle: "待命", countdown: "倒數中", recording: "錄影中", paused: "已暫停", stopping: "處理中" } as const;
 
 function liveRecordedMs() {
   if (!rec) return 0;
@@ -634,8 +681,15 @@ function renderTimer() {
   const ms = liveRecordedMs();
   const text = clock(ms);
   if ($("timer").textContent !== text) $("timer").textContent = text;
+  const cd = $("countdown");
+  cd.hidden = rec.state !== "countdown";
+  if (!cd.hidden) {
+    const left = Math.max(0, (rec.countdownMs ?? 0) - (Date.now() - statusAt));
+    const n = String(Math.max(1, Math.ceil(left / 1000)));
+    if ($("countdownNum").textContent !== n) $("countdownNum").textContent = n;
+  }
   const bar = $("maxBar");
-  bar.hidden = !(rec.maxMs > 0 && rec.state !== "idle");
+  bar.hidden = !(rec.maxMs > 0 && rec.state !== "idle" && rec.state !== "countdown");
   if (!bar.hidden) (bar.firstElementChild as HTMLElement).style.width = `${Math.min(100, (ms / rec.maxMs) * 100)}%`;
 }
 
@@ -681,6 +735,9 @@ function renderRecorder() {
   const stop = $<HTMLButtonElement>("stopBtn");
   stop.hidden = !active;
   stop.disabled = r.state === "stopping";
+  setHtml(stop, r.state === "countdown" ? `${icon("stop")}取消倒數` : `${icon("stop")}停止`);
+  const hk = env.hotkeys?.record ? `，或按 ${HOTKEY_LABELS.record} 取消` : "";
+  $("countdownHint").textContent = `即將開始錄影${S.hideUi ? "，這個視窗會自動縮小" : ""}${hk}`;
   $<HTMLButtonElement>("pauseBtn").disabled = !!r.busy && r.state !== "recording";
   $<HTMLButtonElement>("resumeBtn").disabled = !!r.busy;
 
@@ -724,7 +781,7 @@ function renderJob() {
   const name = exp.output.split(/[\\/]/).pop() ?? "";
   card.className = `job ${exp.state}`;
   const pct = Math.floor(exp.progress * 100);
-  const label = exp.kind === "cut" ? "剪輯" : `加速 ${speedLabel(exp.speed)}×`;
+  const label = exp.kind === "cut" ? "剪輯" : exp.kind === "gif" ? `GIF${exp.speed > 1 ? ` ${speedLabel(exp.speed)}×` : ""} 匯出` : `加速 ${speedLabel(exp.speed)}×`;
   const title = { running: `${label}中`, done: `${label}完成`, error: `${label}失敗`, canceled: `${label}已取消` }[exp.state];
   $("jobTitle").textContent = title;
   $("jobMeta").textContent = exp.state === "running"
@@ -744,7 +801,7 @@ function renderJob() {
     if (finished) {
       void loadRecent();
       if (isLibraryOpen()) void reloadLibraryDialog();
-      if (exp.state === "done") toast(exp.kind === "cut" ? "剪輯完成" : "加速版匯出完成");
+      if (exp.state === "done") toast(exp.kind === "cut" ? "剪輯完成" : exp.kind === "gif" ? "GIF 匯出完成" : "加速版匯出完成");
     }
   }
 }
@@ -752,10 +809,11 @@ function renderJob() {
 function bindRecorder() {
   $("pauseBtn").innerHTML = `${icon("pause")}暫停`;
   $("resumeBtn").innerHTML = `${icon("play")}繼續`;
-  $("stopBtn").innerHTML = `${icon("stop")}停止`;
+
   $("startBtn").addEventListener("click", () => guarded(async () => applyStatus(await api("/api/record/start", buildConfig()))));
   $("pauseBtn").addEventListener("click", () => guarded(async () => applyStatus(await api("/api/record/pause", {}))));
   $("resumeBtn").addEventListener("click", () => guarded(async () => applyStatus(await api("/api/record/resume", {}))));
+  $("countdownCancel").addEventListener("click", () => guarded(async () => applyStatus(await api("/api/record/stop", {}))));
   $("stopBtn").addEventListener("click", () =>
     guarded(async () => {
       ($("stopBtn") as HTMLButtonElement).disabled = true;
@@ -781,8 +839,14 @@ const known = new Map<string, LibraryEntry>();
 
 function recentCount() {
   const w = $("recentCards").clientWidth;
-  return clamp(Math.floor((w + 10) / 210), 1, 8);
+  return clamp(Math.floor((w + 10) / 290), 1, 8);
 }
+
+// 縮圖產生失敗（例如檔案損壞）：改顯示空白底色，不要出現破圖示
+document.addEventListener("error", (ev) => {
+  const t = ev.target as HTMLElement;
+  if (t instanceof HTMLImageElement && t.classList.contains("thumb")) t.classList.add("missing");
+}, true);
 
 let recentSeq = 0;
 async function loadRecent() {
@@ -810,9 +874,11 @@ function renderRecent() {
           const tags = [
             e.hasAudio ? `<span class="tag audio">聲音</span>` : "",
             /_cut(_\d+)?\.mp4$/i.test(e.name) ? `<span class="tag cut">剪輯版</span>` : "",
-            e.exports.length ? `<span class="tag speed" title="${esc(e.exports.map((x) => `${speedLabel(x.speed)}×`).join("、"))}">加速 ${e.exports.length}</span>` : "",
+            e.exports.length ? `<span class="tag speed" title="${esc(e.exports.map(exportTag).join("、"))}">加速 ${e.exports.length}</span>` : "",
           ].join("");
           return `<div class="rcard" title="${esc(e.name)}">
+            <img class="thumb rcard-thumb" src="${thumbUrl(e)}" alt="" loading="lazy" decoding="async" />
+            <div class="rcard-body">
             <div class="rcard-top"><span class="rcard-date">${esc(shortDate(e.name, e.mtime))}</span><span>${tags}</span></div>
             <div class="rcard-meta">${e.durationSec !== undefined ? videoClock(e.durationSec) : "—"}・${formatBytes(e.bytes)}${e.width ? `・${e.width}×${e.height}` : ""}</div>
             <div class="rcard-actions">
@@ -820,6 +886,7 @@ function renderRecent() {
               <button class="btn ghost" data-act="reveal" data-path="${esc(e.path)}" title="在資料夾中顯示" aria-label="在資料夾中顯示">${icon("folder")}</button>
               <button class="btn ghost" data-act="edit" data-path="${esc(e.path)}" title="剪輯" aria-label="剪輯">${icon("cut")}</button>
               <button class="btn ghost" data-act="export" data-path="${esc(e.path)}" title="加速匯出" aria-label="加速匯出">${icon("fast")}</button>
+            </div>
             </div>
           </div>`;
         })
@@ -854,17 +921,12 @@ function bindRecent() {
       toast,
     }),
   );
-  // 寬度改變時重新計算一頁放幾張
+  // 寬度改變時重新計算一頁放幾張（與目前資料實際的每頁張數比較：第一次載入時版面可能還沒定型）
   let timer: number | undefined;
-  let lastCount = 0;
   new ResizeObserver(() => {
     clearTimeout(timer);
     timer = window.setTimeout(() => {
-      const n = recentCount();
-      if (n !== lastCount) {
-        lastCount = n;
-        void loadRecent();
-      }
+      if (recent && recentCount() !== recent.pageSize) void loadRecent();
     }, 200);
   }).observe($("recentCards"));
 }
@@ -902,18 +964,27 @@ function act(action: EntryAction, entry: LibraryEntry) {
     });
   } else {
     openExport(entry, {
-      speed: () => S.speed,
-      keepAudio: () => S.keepAudio,
-      setSpeed: (v) => {
-        S.speed = v;
+      prefs: () => ({
+        speed: S.speed,
+        keepAudio: S.keepAudio,
+        format: S.exportFormat,
+        mode: S.exportMode,
+        target: S.exportTarget,
+        gifWidth: S.gifWidth,
+        gifFps: S.gifFps,
+      }),
+      setPrefs: (p) => {
+        if (p.speed !== undefined) S.speed = p.speed;
+        if (p.keepAudio !== undefined) S.keepAudio = p.keepAudio;
+        if (p.format) S.exportFormat = p.format;
+        if (p.mode) S.exportMode = p.mode;
+        if (p.target !== undefined) S.exportTarget = p.target;
+        if (p.gifWidth) S.gifWidth = p.gifWidth;
+        if (p.gifFps) S.gifFps = p.gifFps;
         save();
       },
-      setKeepAudio: (v) => {
-        S.keepAudio = v;
-        save();
-      },
-      start: async (source, speed, keepAudio) => {
-        applyStatus(await api("/api/export/start", { source, speed, keepAudio }));
+      start: async (req) => {
+        applyStatus(await api("/api/export/start", req));
         dismissedJob = undefined;
         toast("已開始匯出，進度顯示在右側");
       },
@@ -933,8 +1004,9 @@ document.addEventListener("click", (e) => {
 
 // ───────────── 輪詢 ─────────────
 
-function applyStatus(data: { recorder: RecorderStatus; export?: ExportStatus; download?: DownloadStatus; settingsRev?: number }) {
+function applyStatus(data: { recorder: RecorderStatus; export?: ExportStatus; download?: DownloadStatus; settingsRev?: number; update?: string }) {
   renderDownload(data.download);
+  if (env && data.update !== env.update?.version) void refreshUpdate();
   if (data.settingsRev && settingsRev && data.settingsRev !== settingsRev && saveTimer === undefined) void reloadSettings();
   const prevState = rec?.state;
   rec = data.recorder;
@@ -952,6 +1024,18 @@ function applyStatus(data: { recorder: RecorderStatus; export?: ExportStatus; do
 
 let pollTimer: number | undefined;
 let polling = false;
+/** 伺服器發現新版本（或狀態改變）時重新取得詳細資訊 */
+async function refreshUpdate() {
+  try {
+    const r = await api<{ enabled: boolean; update?: UpdateInfo }>("/api/update");
+    env.update = r.update;
+    $<HTMLInputElement>("checkUpdates").checked = r.enabled;
+    renderEnv();
+  } catch {
+    // 下次輪詢再試
+  }
+}
+
 async function poll() {
   if (polling) return; // 已有一輪在等回應，結束後自然會排下一輪
   clearTimeout(pollTimer);
@@ -1053,6 +1137,7 @@ async function main() {
   watchDdagrabTest();
   await loadRecent();
   void poll();
+  void refreshUpdate();
   setInterval(renderTimer, 250);
 }
 

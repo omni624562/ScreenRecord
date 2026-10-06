@@ -383,6 +383,44 @@ export function exportArgs(source: string, outFile: string, speed: number, fps: 
   ];
 }
 
+export interface GifOptions {
+  fps: number;
+  /** 輸出寬度（不會放大超過原片） */
+  width: number;
+  srcWidth: number;
+  srcHeight: number;
+  /** 輸出長度（秒），用來估算記憶體 */
+  outputSec: number;
+}
+/** 整段共用一個調色盤時，FFmpeg 要先暫存所有畫面；超過這個量改用每張畫面各自的調色盤 */
+const GIF_GLOBAL_PALETTE_MAX_BYTES = 400 * 2 ** 20;
+
+/**
+ * 匯出 GIF（無聲音）：
+ * - 短片：整段共用調色盤（stats_mode=diff）＋只更新變動區域，檔案小、畫面穩定
+ * - 長片：每張畫面各自的調色盤（new=1），不需暫存整段畫面，記憶體固定；檔案較大
+ */
+export function gifArgs(source: string, outFile: string, speed: number, o: GifOptions): string[] {
+  if (!(speed >= 1 && speed <= LIMITS.speedMax)) throw new ConfigError(`倍率需介於 1～${LIMITS.speedMax}`);
+  const width = Math.max(2, Math.min(o.width, o.srcWidth || o.width));
+  const height = o.srcWidth && o.srcHeight ? Math.round((o.srcHeight * width) / o.srcWidth) : (width * 9) / 16;
+  const frames = Math.ceil(o.outputSec * o.fps);
+  const global = frames * width * height * 4 <= GIF_GLOBAL_PALETTE_MAX_BYTES;
+  const palette = global
+    ? "palettegen=stats_mode=diff[p];[b][p]paletteuse=dither=bayer:bayer_scale=5:diff_mode=rectangle"
+    : "palettegen=stats_mode=single[p];[b][p]paletteuse=new=1:dither=bayer:bayer_scale=5";
+  const time = speed > 1 ? `setpts=PTS/${speed},` : "";
+  return [
+    "-hide_banner", "-nostats", "-loglevel", "error",
+    "-i", source,
+    "-map", "0:v:0", "-an", "-sn", "-dn",
+    "-vf", `${time}fps=${o.fps},scale=${width}:-2:flags=lanczos,split[a][b];[a]${palette}`,
+    "-loop", "0",
+    "-progress", "pipe:1", "-stats_period", "0.5",
+    "-y", outFile,
+  ];
+}
+
 /**
  * 剪輯：只保留 keep 區段（select / aselect 精確到每張畫面，並把時間戳重新接起來），
  * 可再裁切畫面範圍。因為要精準剪在任意時間點並裁切，必須重新編碼。

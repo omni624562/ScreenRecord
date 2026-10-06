@@ -14,6 +14,10 @@ export interface SavedSettings {
   config?: RecordConfig;
   /** 「自動」編碼曾偵測到 CPU 跟不上：之後的錄影改用 GPU */
   preferGpu?: boolean;
+  /** 自動檢查新版本（未指定視為開啟） */
+  checkUpdates?: boolean;
+  /** 已用系統匣通知過的新版本（同一版只通知一次） */
+  updateNotified?: string;
   rev: number;
 }
 
@@ -23,8 +27,8 @@ let cache: SavedSettings | undefined;
 export function loadSettings(): SavedSettings {
   if (cache) return cache;
   try {
-    const data = JSON.parse(readFileSync(file, "utf8")) as SavedSettings;
-    cache = { ui: data.ui, config: data.config, preferGpu: data.preferGpu, rev: 1 };
+    const { rev: _rev, ...data } = JSON.parse(readFileSync(file, "utf8")) as SavedSettings;
+    cache = { ...data, rev: 1 };
   } catch {
     cache = { rev: 1 };
   }
@@ -35,7 +39,8 @@ export function saveSettings(patch: Partial<Omit<SavedSettings, "rev">>): SavedS
   const cur = loadSettings();
   cache = { ...cur, ...patch, rev: cur.rev + 1 };
   try {
-    writeFileSync(file, JSON.stringify({ ui: cache.ui, config: cache.config, preferGpu: cache.preferGpu }, null, 2), "utf8");
+    const { rev: _rev, ...data } = cache;
+    writeFileSync(file, JSON.stringify(data, null, 2), "utf8");
   } catch (e) {
     console.error(`無法儲存設定：${(e as Error).message}`);
   }

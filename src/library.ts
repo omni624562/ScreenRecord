@@ -60,7 +60,7 @@ export const isCutName = (name: string) => /_cut(_\d+)?\.mp4$/i.test(name);
 async function scan(dir: string): Promise<LibraryEntry[]> {
   let names: string[];
   try {
-    names = (await readdir(dir)).filter((n) => n.toLowerCase().endsWith(".mp4"));
+    names = (await readdir(dir)).filter((n) => /\.(mp4|gif)$/i.test(n));
   } catch {
     return [];
   }
@@ -73,17 +73,17 @@ async function scan(dir: string): Promise<LibraryEntry[]> {
   pruneCache(dir, new Set(files.map((f) => f.path.toLowerCase())));
   const byName = new Map(files.map((f) => [f.name.toLowerCase(), f]));
   const entries = new Map<string, LibraryEntry>();
-  const derived: (MediaInfo & { speed: number; base: string })[] = [];
+  const derived: (MediaInfo & { speed: number; format: "mp4" | "gif"; base: string })[] = [];
   for (const f of files) {
     const e = parseExportName(f.name);
-    if (e && byName.has(e.base.toLowerCase())) derived.push({ ...f, speed: e.speed, base: e.base.toLowerCase() });
-    else entries.set(f.name.toLowerCase(), { ...f, exports: [] });
+    if (e && byName.has(e.base.toLowerCase())) derived.push({ ...f, speed: e.speed, format: e.format, base: e.base.toLowerCase() });
+    else if (!/\.gif$/i.test(f.name)) entries.set(f.name.toLowerCase(), { ...f, exports: [] }); // 找不到原片的 GIF 不列出
   }
   for (const d of derived) {
     const { base, ...x } = d;
     entries.get(base)?.exports.push(x);
   }
-  for (const e of entries.values()) e.exports.sort((p, q) => p.speed - q.speed || p.mtime - q.mtime);
+  for (const e of entries.values()) e.exports.sort((p, q) => p.speed - q.speed || (p.format === "gif" ? 1 : 0) - (q.format === "gif" ? 1 : 0) || p.mtime - q.mtime);
   return [...entries.values()];
 }
 
@@ -93,7 +93,7 @@ async function withInfo(ffmpeg: string | undefined, e: LibraryEntry): Promise<Li
   const probe = (m: MediaInfo) => probeMedia(ffmpeg, m.path).catch(() => m);
   const [info, exports] = await Promise.all([
     probe(e),
-    Promise.all(e.exports.map(async (x) => ({ ...(await probe(x)), speed: x.speed }))),
+    Promise.all(e.exports.map(async (x) => ({ ...(await probe(x)), speed: x.speed, format: x.format }))),
   ]);
   return { ...info, exports };
 }
