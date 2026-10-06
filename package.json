@@ -1,0 +1,19 @@
+{
+  "name": "screen-recorder",
+  "version": "1.0.0",
+  "description": "Windows 11 螢幕錄影 + 加速匯出工具（Bun + FFmpeg）",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "bun run src/main.ts",
+    "build": "bun run scripts/make-icon.ts && bun build --compile --target=bun-windows-x64 --windows-icon=./assets/icon.ico --windows-title=ScreenRecorder --windows-description=\"Screen recorder with sped-up export\" --windows-version=1.0.0.0 ./src/main.ts ./src/tray-worker.ts --outfile ./dist/ScreenRecorder.exe && bun run scripts/set-gui-subsystem.ts ./dist/ScreenRecorder.exe",
+    "build:console": "bun run scripts/make-icon.ts && bun build --compile --target=bun-windows-x64 --windows-icon=./assets/icon.ico --windows-title=ScreenRecorder --windows-description=\"Screen recorder with sped-up export\" --windows-version=1.0.0.0 ./src/main.ts ./src/tray-worker.ts --outfile ./dist/ScreenRecorder-console.exe",
+    "dist": "bun run build && bun run scripts/copy-ffmpeg.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5.9.0"
+  }
+}

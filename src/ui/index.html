@@ -1,0 +1,336 @@
+<!doctype html>
+<html lang="zh-Hant-TW">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>螢幕錄影</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='2' y='2' width='28' height='28' rx='7' fill='%232b2b2b'/%3E%3Ccircle cx='16' cy='16' r='6.5' fill='%23e5484d'/%3E%3C/svg%3E" />
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <div class="app" id="app">
+      <header class="topbar">
+        <div class="brand">
+          <span class="brand-mark" aria-hidden="true"></span>
+          <h1>螢幕錄影</h1>
+        </div>
+        <div class="chips" id="envChips"></div>
+      </header>
+
+      <div class="banner error" id="ffmpegBanner" hidden>
+        <div>
+          <strong>找不到 ffmpeg.exe</strong>
+          <span>請下載 Windows 版 FFmpeg（建議 gyan.dev 的 release essentials），把 <code>bin\ffmpeg.exe</code> 放到 <code id="appDirText"></code></span>
+        </div>
+        <div class="banner-actions">
+          <a class="btn small" href="https://www.gyan.dev/ffmpeg/builds/" target="_blank" rel="noopener">前往下載</a>
+          <button class="btn primary small" id="recheckBtn" type="button">重新偵測</button>
+        </div>
+      </div>
+      <div class="banner warn" id="envWarn" hidden></div>
+
+      <main class="main">
+        <!-- 左：擷取範圍與設定 -->
+        <section class="panel capture" id="capturePanel">
+          <div class="panel-head">
+            <div class="segmented" role="tablist" id="sourceTabs">
+              <button type="button" role="tab" data-source="monitor">單一螢幕</button>
+              <button type="button" role="tab" data-source="all">所有螢幕</button>
+              <button type="button" role="tab" data-source="region">自訂範圍</button>
+            </div>
+            <div class="source-detail" id="sourceDetail"></div>
+            <label class="switch live-toggle" title="即時顯示目前畫面（每秒 5 張，錄影中 2 張）">
+              <input type="checkbox" id="liveToggle" />
+              <span class="track" aria-hidden="true"></span>
+              <span>即時預覽</span>
+            </label>
+            <button class="btn ghost icon-btn" id="refreshPreviewBtn" type="button" title="重新擷取預覽並更新螢幕清單" aria-label="重新整理預覽"></button>
+          </div>
+
+          <div class="desk-box">
+            <div class="desk" id="desk">
+              <img id="deskImg" alt="" draggable="false" />
+              <div class="desk-empty" id="deskEmpty">尚無預覽</div>
+              <div id="deskOverlay"></div>
+              <div class="desk-region" id="deskRegion" hidden></div>
+            </div>
+          </div>
+
+          <div class="settings-bar" id="settingsBar">
+            <label class="set">
+              <span>FPS</span>
+              <select id="fps"></select>
+            </label>
+            <label class="set">
+              <span>解析度</span>
+              <select id="scale">
+                <option value="100">100%</option>
+                <option value="75">75%</option>
+                <option value="50">50%</option>
+                <option value="25">25%</option>
+              </select>
+            </label>
+            <label class="set switch compact">
+              <input type="checkbox" id="drawMouse" />
+              <span class="track" aria-hidden="true"></span>
+              <span>游標</span>
+            </label>
+            <div class="set drop">
+              <button type="button" class="btn small drop-btn" id="audioBtn" aria-haspopup="true"></button>
+              <div class="drop-panel" id="audioPanel" hidden>
+                <label class="switch">
+                  <input type="checkbox" id="audioSystem" />
+                  <span class="track" aria-hidden="true"></span>
+                  <span>系統聲音<small class="muted" id="renderName"></small></span>
+                </label>
+                <label class="switch">
+                  <input type="checkbox" id="audioMic" />
+                  <span class="track" aria-hidden="true"></span>
+                  <span>麥克風</span>
+                </label>
+                <select id="micId" aria-label="麥克風裝置"></select>
+                <small class="muted" id="audioHint"></small>
+              </div>
+            </div>
+            <div class="set drop">
+              <button type="button" class="btn small drop-btn" id="moreBtn" aria-haspopup="true"></button>
+              <div class="drop-panel" id="morePanel" hidden>
+                <label class="field">
+                  <span>最長錄影時間（分鐘，0 = 不限）</span>
+                  <input type="number" id="maxMinutes" min="0" step="1" />
+                </label>
+                <label class="field">
+                  <span>擷取方式</span>
+                  <select id="method">
+                    <option value="auto">自動（優先 ddagrab GPU 擷取）</option>
+                    <option value="ddagrab">ddagrab（Desktop Duplication）</option>
+                    <option value="gdigrab">gdigrab（GDI，相容性最高）</option>
+                  </select>
+                </label>
+              </div>
+            </div>
+            <div class="set drop grow">
+              <button type="button" class="btn small drop-btn path-btn" id="dirBtn" aria-haspopup="true"></button>
+              <div class="drop-panel wide" id="dirPanel" hidden>
+                <label class="field">
+                  <span>儲存位置</span>
+                  <input type="text" id="outputDir" spellcheck="false" />
+                </label>
+                <div class="row-end">
+                  <small class="muted">檔名：Rec_年-月-日_時-分-秒.mp4</small>
+                  <button class="btn small" id="openDirBtn" type="button">在檔案總管開啟</button>
+                </div>
+              </div>
+            </div>
+            <span class="size-text" id="sizeText"></span>
+          </div>
+        </section>
+
+        <!-- 右：錄影控制 -->
+        <section class="panel rec" id="recPanel">
+          <div class="rec-head">
+            <span class="state-pill" id="statePill">待命</span>
+            <span class="muted small" id="busyText"></span>
+          </div>
+          <div class="timer" id="timer">00:00:00</div>
+          <div class="progress thin" id="maxBar" hidden><div></div></div>
+          <dl class="stats">
+            <div><dt>影片長度</dt><dd id="statVideo">00:00.0</dd></div>
+            <div><dt>檔案大小</dt><dd id="statSize">—</dd></div>
+            <div><dt>輸出</dt><dd id="statOut">—</dd></div>
+            <div><dt>擷取 / 編碼</dt><dd id="statMethod">—</dd></div>
+            <div class="wide"><dt>聲音</dt><dd id="statAudio">—</dd></div>
+          </dl>
+          <div class="controls">
+            <button class="btn record" id="startBtn" type="button"><span class="dot" aria-hidden="true"></span>開始錄影</button>
+            <button class="btn" id="pauseBtn" type="button" hidden></button>
+            <button class="btn" id="resumeBtn" type="button" hidden></button>
+            <button class="btn danger" id="stopBtn" type="button" hidden></button>
+          </div>
+          <div class="notice" id="recNotice" hidden></div>
+          <div class="job" id="jobCard" hidden>
+            <div class="job-head"><span id="jobTitle"></span><span class="muted small" id="jobMeta"></span></div>
+            <div class="progress" id="jobBar"><div></div></div>
+            <div class="job-actions" id="jobActions"></div>
+          </div>
+          <div class="result" id="recResult" hidden></div>
+          <div class="log">
+            <div class="log-title">事件紀錄</div>
+            <ol id="logList"></ol>
+          </div>
+        </section>
+      </main>
+
+      <!-- 下：最近錄影 -->
+      <footer class="recent">
+        <div class="recent-head">
+          <span class="recent-title">最近錄影</span>
+          <span class="muted small" id="recentInfo"></span>
+        </div>
+        <button class="btn ghost icon-btn" id="recentPrev" type="button" aria-label="較新的錄影"></button>
+        <div class="recent-cards" id="recentCards"></div>
+        <button class="btn ghost icon-btn" id="recentNext" type="button" aria-label="較舊的錄影"></button>
+        <button class="btn small" id="libraryBtn" type="button"></button>
+      </footer>
+    </div>
+
+    <!-- 加速匯出 -->
+    <dialog class="dlg" id="exportDlg" aria-labelledby="exTitle">
+      <header class="dlg-head">
+        <div><h2 id="exTitle">加速匯出</h2><p class="muted small mono" id="exName"></p></div>
+        <button class="btn ghost small" type="button" data-close>關閉</button>
+      </header>
+      <div class="dlg-body">
+        <p class="muted small" id="exInfo"></p>
+        <div class="field">
+          <span>倍率</span>
+          <div class="chip-input">
+            <div class="segmented compact" id="speedPresets"></div>
+            <div class="suffix-input"><input type="number" id="speed" min="1.1" max="1000" step="0.1" aria-label="自訂倍率" /><span>×</span></div>
+          </div>
+        </div>
+        <div class="calc">
+          <div><span class="muted">原片</span><strong id="calcFrom">—</strong></div>
+          <div class="arrow" aria-hidden="true">→</div>
+          <div><span class="muted">加速後</span><strong id="calcTo">—</strong></div>
+        </div>
+        <p class="hint" id="calcHint"></p>
+        <label class="switch" id="keepAudioRow" hidden>
+          <input type="checkbox" id="keepAudio" />
+          <span class="track" aria-hidden="true"></span>
+          <span>保留聲音（變速不變調）</span>
+        </label>
+      </div>
+      <footer class="dlg-foot">
+        <span></span>
+        <button class="btn primary" id="exportBtn" type="button">匯出</button>
+      </footer>
+    </dialog>
+
+    <!-- 全部錄影 -->
+    <dialog class="dlg lib-dlg" id="libraryDlg" aria-labelledby="libTitle">
+      <header class="dlg-head">
+        <div><h2 id="libTitle">全部錄影</h2><p class="muted small mono" id="libDir"></p></div>
+        <button class="btn ghost small" type="button" data-close>關閉</button>
+      </header>
+      <div class="lib-tools">
+        <div class="search"><span id="libSearchIcon"></span><input type="search" id="libSearch" placeholder="搜尋檔名或日期，例如 2026-10-06" /></div>
+        <select id="libFilter" aria-label="篩選">
+          <option value="all">全部</option>
+          <option value="original">原始錄影</option>
+          <option value="cut">剪輯版</option>
+          <option value="speed">有加速版</option>
+          <option value="audio">有聲音</option>
+        </select>
+        <select id="libSort" aria-label="排序">
+          <option value="new">最新的在前</option>
+          <option value="old">最舊的在前</option>
+          <option value="duration">長度（長到短）</option>
+          <option value="size">檔案大小（大到小）</option>
+        </select>
+      </div>
+      <div class="lib-table-wrap" id="libTableWrap">
+        <table class="lib-table">
+          <thead>
+            <tr>
+              <th class="c-check"><input type="checkbox" id="libCheckAll" aria-label="全選本頁" /></th>
+              <th>檔案</th><th class="c-num">長度</th><th class="c-num">解析度</th><th class="c-num">大小</th><th class="c-act"></th>
+            </tr>
+          </thead>
+          <tbody id="libRows"></tbody>
+        </table>
+        <div class="lib-empty" id="libEmpty" hidden></div>
+      </div>
+      <footer class="dlg-foot">
+        <div class="lib-selection">
+          <span class="muted small" id="libSelected"></span>
+          <button class="btn small danger" id="libDelete" type="button" hidden></button>
+        </div>
+        <div class="pager">
+          <button class="btn ghost icon-btn" id="libPrev" type="button" aria-label="上一頁"></button>
+          <span class="small" id="libPage"></span>
+          <button class="btn ghost icon-btn" id="libNext" type="button" aria-label="下一頁"></button>
+        </div>
+      </footer>
+    </dialog>
+
+    <dialog class="editor" id="editor" aria-labelledby="edTitle">
+      <header class="ed-head">
+        <div>
+          <h2 id="edTitle">剪輯影片</h2>
+          <p class="muted small" id="edName"></p>
+        </div>
+        <button class="btn ghost small" id="edClose" type="button">關閉</button>
+      </header>
+
+      <div class="ed-body">
+        <div class="ed-stage-wrap">
+          <div class="ed-stage" id="edStage">
+            <video id="edVideo" preload="auto" playsinline></video>
+            <div class="ed-crop" id="edCrop" hidden></div>
+          </div>
+        </div>
+
+        <div class="ed-timeline" id="edTimeline" title="點選或拖曳以跳到該時間">
+          <div class="ed-track" id="edTrack"></div>
+          <div class="ed-playhead" id="edPlayhead"></div>
+        </div>
+
+        <div class="ed-transport">
+          <button class="btn" id="edPlay" type="button">播放</button>
+          <div class="ed-steps">
+            <button class="btn ghost small" type="button" data-step="-1" title="上一秒（Shift+←）">−1 秒</button>
+            <button class="btn ghost small" type="button" data-step="-frame" title="上一張（←）">−1 張</button>
+            <button class="btn ghost small" type="button" data-step="frame" title="下一張（→）">+1 張</button>
+            <button class="btn ghost small" type="button" data-step="1" title="下一秒（Shift+→）">+1 秒</button>
+          </div>
+          <span class="ed-time" id="edTime">00:00.0 / 00:00.0</span>
+        </div>
+
+        <div class="ed-grid">
+          <section class="ed-section">
+            <h3>時間</h3>
+            <div class="ed-row">
+              <button class="btn small" id="edSetStart" type="button" title="快捷鍵 I">設為開頭</button>
+              <button class="btn small" id="edSetEnd" type="button" title="快捷鍵 O">設為結尾</button>
+              <span class="muted small" id="edRangeText"></span>
+            </div>
+            <div class="ed-row">
+              <button class="btn small" id="edMarkCut" type="button" title="快捷鍵 D">標記刪除起點</button>
+              <button class="btn ghost small" id="edCancelCut" type="button" hidden>取消</button>
+            </div>
+            <ul class="ed-removed" id="edRemoved"></ul>
+          </section>
+
+          <section class="ed-section">
+            <h3>畫面裁切</h3>
+            <label class="switch">
+              <input type="checkbox" id="edCropOn" />
+              <span class="track" aria-hidden="true"></span>
+              <span>裁切畫面</span>
+            </label>
+            <div class="grid4" id="edCropFields">
+              <label class="field"><span>X</span><input type="number" id="ecx" step="2" min="0" /></label>
+              <label class="field"><span>Y</span><input type="number" id="ecy" step="2" min="0" /></label>
+              <label class="field"><span>寬度</span><input type="number" id="ecw" step="2" min="16" /></label>
+              <label class="field"><span>高度</span><input type="number" id="ech" step="2" min="16" /></label>
+            </div>
+            <p class="hint" id="edCropHint">開啟後可直接在影片上拖曳框選要保留的區域。</p>
+          </section>
+        </div>
+      </div>
+
+      <footer class="ed-foot">
+        <div class="ed-summary" id="edSummary"></div>
+        <div class="ed-actions">
+          <button class="btn ghost" id="edReset" type="button">全部重設</button>
+          <button class="btn primary" id="edSave" type="button">另存剪輯版</button>
+        </div>
+      </footer>
+    </dialog>
+
+    <div class="toast" id="toast" role="status" hidden></div>
+
+    <script type="module" src="./app.ts"></script>
+  </body>
+</html>
