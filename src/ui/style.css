@@ -188,10 +188,10 @@ input[type="number"] { font-family: var(--mono); font-variant-numeric: tabular-n
 .more-info kbd { font-family: var(--mono); font-size: 11.5px; padding: 1px 5px; border: 1px solid var(--border-strong); border-bottom-width: 2px; border-radius: 4px; color: var(--text); background: var(--surface-2); }
 .more-info .warn { color: var(--warn); }
 /* 倒數：蓋住整個操作視窗的大數字 */
-.countdown { position: fixed; inset: 0; z-index: 50; display: grid; place-content: center; justify-items: center; gap: 14px; background: rgb(0 0 0 / 0.55); color: #fff; backdrop-filter: blur(2px); }
-.countdown[hidden] { display: none; }
-.countdown .num { font: 700 160px/1 var(--mono); font-variant-numeric: tabular-nums; text-shadow: 0 4px 24px rgb(0 0 0 / 0.4); }
-.countdown .hint { font-size: 14px; opacity: 0.9; }
+.countdown-overlay { position: fixed; inset: 0; z-index: 50; display: grid; place-content: center; justify-items: center; gap: 14px; background: rgb(0 0 0 / 0.55); color: #fff; backdrop-filter: blur(2px); }
+.countdown-overlay[hidden] { display: none; }
+.countdown-overlay .num { font: 700 160px/1 var(--mono); font-variant-numeric: tabular-nums; text-shadow: 0 4px 24px rgb(0 0 0 / 0.4); }
+.countdown-overlay .hint { font-size: 14px; opacity: 0.9; }
 .size-text { font-size: 12px; color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
 .size-text.warn { color: var(--warn); }
 
@@ -200,7 +200,7 @@ input[type="number"] { font-family: var(--mono); font-variant-numeric: tabular-n
 .rec-head { display: flex; align-items: center; gap: 10px; min-height: 24px; }
 .state-pill { display: inline-flex; align-items: center; gap: 7px; font-size: 12px; font-weight: 650; padding: 2px 11px; border-radius: 999px; background: var(--surface-2); color: var(--muted); }
 .state-pill::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
-.state-pill.recording { background: var(--rec-soft); color: var(--rec); }
+.state-pill.recording, .state-pill.countdown { background: var(--rec-soft); color: var(--rec); }
 .state-pill.recording::before { animation: blink 1.2s ease-in-out infinite; }
 .state-pill.paused { background: var(--warn-soft); color: var(--warn); }
 .state-pill.stopping { background: var(--accent-soft); color: var(--accent); }

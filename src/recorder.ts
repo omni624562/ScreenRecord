@@ -61,6 +61,8 @@ export interface RecorderDeps {
   ddagrabUsable(): Promise<boolean>;
   /** 倒數結束、開始擷取前（縮小擋到擷取範圍的操作視窗等）；area 為擷取範圍（虛擬桌面的實體像素座標） */
   beforeCapture?(area: Rect): Promise<void>;
+  /** 操作視窗是否在擷取範圍內（倒數畫面要不要蓋住操作視窗）；未提供視為 true */
+  uiInArea?(area: Rect): boolean;
   /** 錄影結束（已儲存或失敗）後（還原操作視窗等） */
   afterStop?(): void;
   /** 需要使用者注意的事（系統匣通知） */
@@ -215,6 +217,7 @@ export class Recorder {
       retrying: this.retry?.message,
       startedAt: this.startedAt,
       countdownMs: this.state === "countdown" && this.countdown ? Math.max(0, this.countdown.endsAt - Date.now()) : undefined,
+      countdownCoversUi: this.state === "countdown" && this.plan ? (this.deps.uiInArea?.(this.plan.rect) ?? true) : undefined,
       diskFreeBytes: this.state === "idle" ? undefined : this.diskFreeBytes,
       result: this.result,
       log: this.log,

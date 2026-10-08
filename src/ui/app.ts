@@ -684,17 +684,34 @@ function liveRecordedMs() {
   return rec.state === "recording" ? rec.recordedMs + (Date.now() - statusAt) : rec.recordedMs;
 }
 
+/** 倒數剩餘秒數（依上次狀態推算，至少 1） */
+function countdownSec() {
+  const left = Math.max(0, (rec?.countdownMs ?? 0) - (Date.now() - statusAt));
+  return Math.max(1, Math.ceil(left / 1000));
+}
+
+/**
+ * 倒數中的停止鈕：全畫面倒數時已有大數字，按鈕只寫「取消倒數」；否則按鈕上顯示秒數。
+ * 按鈕內容固定，秒數由 renderTimer 只改 span 的文字：每秒重建按鈕內容會讓按下與放開之間的點擊失效
+ */
+function countdownStopLabel() {
+  return rec?.countdownCoversUi === false ? `${icon("stop")}<span id="stopCountdown"></span> 秒後開始・取消` : `${icon("stop")}取消倒數`;
+}
+
 function renderTimer() {
   if (!rec || document.hidden) return; // 看不到就不必更新；回到前景的那一輪會補上
   const ms = liveRecordedMs();
   const text = clock(ms);
   if ($("timer").textContent !== text) $("timer").textContent = text;
+  // 操作視窗在錄影範圍內：全畫面倒數（接著縮小）；在別的螢幕：不擋畫面，只在取消按鈕上倒數
   const cd = $("countdown");
-  cd.hidden = rec.state !== "countdown";
-  if (!cd.hidden) {
-    const left = Math.max(0, (rec.countdownMs ?? 0) - (Date.now() - statusAt));
-    const n = String(Math.max(1, Math.ceil(left / 1000)));
-    if ($("countdownNum").textContent !== n) $("countdownNum").textContent = n;
+  cd.hidden = rec.state !== "countdown" || rec.countdownCoversUi === false;
+  if (rec.state === "countdown") {
+    const n = String(countdownSec());
+    if (!cd.hidden && $("countdownNum").textContent !== n) $("countdownNum").textContent = n;
+    setHtml($("stopBtn"), countdownStopLabel());
+    const sn = document.getElementById("stopCountdown");
+    if (sn && sn.textContent !== n) sn.textContent = n;
   }
   const bar = $("maxBar");
   bar.hidden = !(rec.maxMs > 0 && rec.state !== "idle" && rec.state !== "countdown");
@@ -743,7 +760,7 @@ function renderRecorder() {
   const stop = $<HTMLButtonElement>("stopBtn");
   stop.hidden = !active;
   stop.disabled = r.state === "stopping";
-  setHtml(stop, r.state === "countdown" ? `${icon("stop")}取消倒數` : `${icon("stop")}停止`);
+  setHtml(stop, r.state === "countdown" ? countdownStopLabel() : `${icon("stop")}停止`);
   const hk = env.hotkeys?.record ? `，或按 ${HOTKEY_LABELS.record} 取消` : "";
   $("countdownHint").textContent = `即將開始錄影${S.hideUi ? "，這個視窗若在錄影範圍內會自動縮小" : ""}${hk}`;
   $<HTMLButtonElement>("pauseBtn").disabled = !!r.busy && r.state !== "recording";

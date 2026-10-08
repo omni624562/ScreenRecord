@@ -106,6 +106,18 @@ describe("開始錄影的取消與連按", () => {
     expect(partsLeft(s.outputDir)).toBe(false);
   });
 
+  test("倒數中回報操作視窗是否在擷取範圍內", async () => {
+    const areas: unknown[] = [];
+    const s = setup({ uiInArea: (a) => (areas.push(a), false) });
+    s.releaseEncoders();
+    await s.rec.start(s.config({ source: { type: "region", x: 0, y: 0, width: 800, height: 600 } }));
+    expect(s.rec.status().countdownCoversUi).toBe(false);
+    expect(areas.at(-1)).toEqual({ x: 0, y: 0, width: 800, height: 600 });
+    await s.rec.stop();
+    await Bun.sleep(20);
+    expect(s.rec.status().countdownCoversUi).toBeUndefined(); // 不在倒數就不回報
+  });
+
   test("縮小視窗時傳入擷取範圍", async () => {
     let rec!: Recorder;
     let area: unknown;
