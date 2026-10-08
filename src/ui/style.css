@@ -255,7 +255,6 @@ input[type="number"] { font-family: var(--mono); font-variant-numeric: tabular-n
 .rcard-meta { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .rcard-actions { display: flex; gap: 2px; }
 .rcard-actions .btn { width: 28px; height: 26px; padding: 0; }
-.rcard-actions .btn.rcard-export { width: auto; padding: 0 8px 0 6px; gap: 3px; font-size: 12px; }
 .recent-empty { color: var(--muted); font-size: 13px; }
 .tag { font-size: 11px; font-weight: 600; padding: 0 5px; border-radius: 4px; white-space: nowrap; }
 .tag.audio { background: var(--accent-soft); color: var(--accent); }

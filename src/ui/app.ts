@@ -722,7 +722,7 @@ const actionButtons = (path: string, opts: { edit?: boolean; export?: boolean } 
   `<button class="btn small" data-act="play" data-path="${esc(path)}">${icon("play")}播放</button>
    <button class="btn small" data-act="reveal" data-path="${esc(path)}">${icon("folder")}顯示</button>
    ${opts.edit ? `<button class="btn small" data-act="edit" data-path="${esc(path)}">${icon("cut")}剪輯</button>` : ""}
-   ${opts.export ? `<button class="btn small" data-act="export" data-path="${esc(path)}">${icon("fast")}加速</button>` : ""}`;
+   ${opts.export ? `<button class="btn small" data-act="export" data-path="${esc(path)}">${icon("export")}加速匯出</button>` : ""}`;
 
 function renderRecorder() {
   if (!rec) return;
@@ -913,7 +913,7 @@ function renderRecent() {
               <button class="btn ghost" data-act="play" data-path="${esc(e.path)}" title="播放" aria-label="播放">${icon("play")}</button>
               <button class="btn ghost" data-act="reveal" data-path="${esc(e.path)}" title="在資料夾中顯示" aria-label="在資料夾中顯示">${icon("folder")}</button>
               <button class="btn ghost" data-act="edit" data-path="${esc(e.path)}" title="剪輯" aria-label="剪輯">${icon("cut")}</button>
-              <button class="btn ghost rcard-export" data-act="export" data-path="${esc(e.path)}" title="加速匯出（MP4 / GIF）">${icon("fast")}匯出</button>
+              <button class="btn ghost" data-act="export" data-path="${esc(e.path)}" title="加速匯出（MP4 / GIF）" aria-label="加速匯出">${icon("export")}</button>
             </div>
             </div>
           </div>`;
