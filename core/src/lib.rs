@@ -4,9 +4,21 @@
 //! 呼叫 Windows API 的部分放在 `#[cfg(windows)]` 底下。
 
 pub mod args;
+pub mod downloader;
 pub mod edit;
 pub mod error;
+pub mod exporter;
+pub mod ffmpeg;
 pub mod format;
+pub mod http;
+pub mod library;
+pub mod log;
+pub mod paths;
+pub mod process;
+pub mod recycle;
+pub mod settings;
+pub mod thumbs;
 pub mod types;
+pub mod updater;
 
 pub use error::{Error, Result};

@@ -469,6 +469,7 @@ pub fn atempo_chain(speed: f64) -> String {
     f.join(",")
 }
 
+#[allow(clippy::too_many_arguments)]
 /// 製作加速版：setpts 壓縮時間軸，fps 維持原本的幀率（多出來的幀直接捨棄，不做混合，文字才不會有殘影）；
 /// 聲音以 atempo 變速不變調。width：縮小到這個寬度（高度等比、取偶數）；不小於原寬時維持原尺寸。
 pub fn export_args(source: &str, out_file: &str, speed: f64, fps: f64, enc: &EncoderSpec, with_audio: bool, width: Option<i32>, src_width: Option<i32>) -> Result<Vec<String>> {
@@ -890,7 +891,7 @@ mod tests {
         let pick = |pref, w, h, fps, gpu: &[EncoderSpec], learned| choose_encoder(pref, w, h, fps, cpu, gpu, learned).map(|(s, _)| s.name);
         use EncoderPreference::*;
         assert_eq!(pick(Auto, 1920, 1080, 30.0, &[qsv], false), Ok("libx264"));
-        assert!(3840.0 * 2160.0 * 30.0 > AUTO_GPU_PIXELS_PER_SEC);
+        const { assert!(3840.0 * 2160.0 * 30.0 > AUTO_GPU_PIXELS_PER_SEC) };
         assert_eq!(pick(Auto, 3840, 2160, 30.0, &[qsv], false), Ok("h264_qsv"));
         assert_eq!(pick(Auto, 4480, 1440, 30.0, &[qsv], false), Ok("h264_qsv"));
         assert_eq!(pick(Auto, 1920, 1080, 60.0, &[qsv], false), Ok("libx264"));
@@ -911,6 +912,22 @@ mod tests {
         assert_eq!(f("Cannot load nvEncodeAPI64.dll"), StartupFallback::CpuEncoder);
         assert_eq!(f("[ddagrab] Desktop duplication failed"), StartupFallback::Gdigrab);
         assert_eq!(f("something else"), StartupFallback::Gdigrab);
+    }
+
+    const NVENC_FAIL: &str = "[h264_nvenc @ 0000023ef7e6d940] Cannot load nvEncodeAPI64.dll\n[h264_nvenc @ 0000023ef7e6d940] The minimum required Nvidia driver for nvenc is 610.00 or newer\n[vost#0:0/h264_nvenc @ 0000023ef7e6c6c0] [enc:h264_nvenc @ 0000023ef7a04e00] Error while opening encoder - maybe incorrect parameters such as bit_rate, rate, width or height.\n[vost#0:0/h264_nvenc @ 0000023ef7e6c6c0] [enc:h264_nvenc @ 0000023ef7a04e00] Could not open encoder before EOF";
+    const DDAGRAB_FAIL: &str = "[Parsed_ddagrab_0 @ 000002c19f1d4d80] Failed to enumerate DXGI output 7\n[Parsed_ddagrab_0 @ 000002c19f1d4d80] Failed to configure output pad on Parsed_ddagrab_0\n[fc#0 @ 000002c19f130980] Error configuring filter graph: Generic error in an external library\n[vost#0:0/h264_qsv @ 000002c19f1cba80] [enc:h264_qsv @ 000002c19f1822c0] Could not open encoder before EOF";
+
+    #[test]
+    fn startup_fallback_with_real_ffmpeg_messages() {
+        assert!(is_encoder_fault(NVENC_FAIL));
+        assert!(!is_encoder_fault(DDAGRAB_FAIL));
+        let base = |stderr| FallbackInput { stderr, gpu_encoder_in_use: true, encoder_auto: true, has_cpu_encoder: true, ddagrab_in_use: true, method_auto: true };
+        assert_eq!(startup_fallback(&base(NVENC_FAIL)), StartupFallback::CpuEncoder);
+        assert_eq!(startup_fallback(&base(DDAGRAB_FAIL)), StartupFallback::Gdigrab);
+        assert_eq!(startup_fallback(&base("something odd")), StartupFallback::Gdigrab);
+        assert_eq!(startup_fallback(&FallbackInput { ddagrab_in_use: false, ..base("something odd") }), StartupFallback::CpuEncoder);
+        assert_eq!(startup_fallback(&FallbackInput { encoder_auto: false, method_auto: false, ..base(NVENC_FAIL) }), StartupFallback::Fatal);
+        assert_eq!(startup_fallback(&FallbackInput { gpu_encoder_in_use: false, ddagrab_in_use: false, ..base(NVENC_FAIL) }), StartupFallback::Fatal);
     }
 
     #[test]
