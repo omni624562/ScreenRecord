@@ -9,6 +9,7 @@ import {
   ENCODERS,
   exportArgs,
   gifArgs,
+  intersects,
   parseMediaInfo,
   planTiles,
   previewArgs,
@@ -233,6 +234,14 @@ test("outputSize 一律取偶數", () => {
   expect(outputSize(1921, 1081, 100)).toEqual({ width: 1920, height: 1080 });
   expect(outputSize(1366, 768, 75)).toEqual({ width: 1024, height: 576 });
   expect(outputSize(10, 10, 25)).toEqual({ width: 2, height: 2 });
+});
+
+test("intersects：只碰到邊不算重疊", () => {
+  const screen1 = { x: 0, y: 0, width: 1920, height: 1080 };
+  expect(intersects({ x: 1920, y: 0, width: 1280, height: 800 }, screen1)).toBe(false); // 在右邊的螢幕 2
+  expect(intersects({ x: 1900, y: 100, width: 800, height: 600 }, screen1)).toBe(true); // 跨到螢幕 1 一點點
+  expect(intersects({ x: -1280, y: 0, width: 1280, height: 1024 }, screen1)).toBe(false); // 在左邊的螢幕
+  expect(intersects({ x: 100, y: 1080, width: 800, height: 600 }, screen1)).toBe(false); // 在下方
 });
 
 test("concatList 跳脫單引號並使用正斜線", () => {

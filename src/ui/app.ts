@@ -741,7 +741,7 @@ function renderRecorder() {
   stop.disabled = r.state === "stopping";
   setHtml(stop, r.state === "countdown" ? `${icon("stop")}取消倒數` : `${icon("stop")}停止`);
   const hk = env.hotkeys?.record ? `，或按 ${HOTKEY_LABELS.record} 取消` : "";
-  $("countdownHint").textContent = `即將開始錄影${S.hideUi ? "，這個視窗會自動縮小" : ""}${hk}`;
+  $("countdownHint").textContent = `即將開始錄影${S.hideUi ? "，這個視窗若在錄影範圍內會自動縮小" : ""}${hk}`;
   $<HTMLButtonElement>("pauseBtn").disabled = !!r.busy && r.state !== "recording";
   $<HTMLButtonElement>("resumeBtn").disabled = !!r.busy;
 

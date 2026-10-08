@@ -44,9 +44,10 @@ export class App {
       saveSettings({ preferGpu: true });
       this.ffmpeg.preferGpu = true;
     },
+    // 只縮小擋到擷取範圍的視窗（例如在螢幕 2 操作、錄螢幕 1 時不縮小）；
     // 縮小動畫約 0.25 秒，等它結束再開始擷取，第一張畫面才不會拍到縮到一半的視窗
-    beforeCapture: async () => {
-      if (minimizeUi()) await Bun.sleep(350);
+    beforeCapture: async (area) => {
+      if (minimizeUi(area)) await Bun.sleep(350);
     },
     afterStop: () => restoreUi(),
     notify: (title, text, warn) => this.tray?.notify(title, text, warn),
