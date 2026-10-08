@@ -11,7 +11,7 @@ import { loadSettings, saveSettings } from "./settings.ts";
 import type { EnvInfo, FfmpegInfo, HotkeyStatus, MonitorInfo, UpdateInfo } from "./shared/types.ts";
 import { checkForUpdate, RepoNotPublicError } from "./updater.ts";
 import { APP_VERSION } from "./version.ts";
-import { minimizeUi, restoreUi } from "./winui.ts";
+import { minimizeUi, restoreUi, uiInArea } from "./winui.ts";
 
 export class App {
   readonly defaultOutputDir = defaultOutputDir();
@@ -49,6 +49,7 @@ export class App {
     beforeCapture: async (area) => {
       if (minimizeUi(area)) await Bun.sleep(350);
     },
+    uiInArea: (area) => uiInArea(area),
     afterStop: () => restoreUi(),
     notify: (title, text, warn) => this.tray?.notify(title, text, warn),
   });

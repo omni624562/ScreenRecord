@@ -1,4 +1,4 @@
-import { clock, formatBytes, humanDuration, LIMITS, outputSize, speedLabel, videoClock } from "../shared/format.ts";
+import { clock, formatBytes, humanDuration, LIMITS, MP4_WIDTHS, outputSize, speedLabel, videoClock } from "../shared/format.ts";
 import type {
   DownloadStatus,
   EnvInfo,
@@ -14,7 +14,7 @@ import type {
   UpdateInfo,
 } from "../shared/types.ts";
 import { HOTKEY_LABELS } from "../shared/types.ts";
-import { $, api, baseName, clamp, esc, guarded, icon, isDefaultName, observeThumbs, setHtml, shortDate, thumbUrl, toast } from "./common.ts";
+import { $, api, baseName, clamp, dateLabels, esc, guarded, icon, isDefaultName, observeThumbs, setHtml, thumbUrl, toast } from "./common.ts";
 import { openEditor } from "./editor.ts";
 import { openExport } from "./exportDialog.ts";
 import { exportTag, isLibraryOpen, load as reloadLibraryDialog, openLibrary, type EntryAction } from "./libraryDialog.ts";
@@ -57,6 +57,8 @@ interface Settings {
   exportTarget: string;
   gifWidth: number;
   gifFps: number;
+  /** 加速版縮小後的寬度（0 = 原尺寸） */
+  mp4Width: number;
 }
 
 const STORAGE_KEY = "screen-recorder.settings.v1";
@@ -157,6 +159,7 @@ function initSettings() {
     exportTarget: typeof st.exportTarget === "string" ? st.exportTarget : "1:00",
     gifWidth: [320, 480, 640, 960, 1280].includes(Number(st.gifWidth)) ? Number(st.gifWidth) : 640,
     gifFps: [5, 10, 15, 20].includes(Number(st.gifFps)) ? Number(st.gifFps) : 10,
+    mp4Width: (MP4_WIDTHS as readonly number[]).includes(Number(st.mp4Width)) ? Number(st.mp4Width) : 0,
   };
   if (!selectedMonitor()) S.monitorId = primary?.id;
 }
@@ -182,6 +185,11 @@ function buildConfig(): RecordConfig {
 }
 
 const outDir = () => S.outputDir.trim() || env.defaultOutputDir;
+
+/** 最長錄影時間的常用值（分鐘）；其他值算「自訂」 */
+const MAX_PRESETS = [0, 30, 60, 120];
+/** 使用者選了「自訂…」但還沒輸入：維持顯示輸入框 */
+let maxCustomOpen = false;
 
 // ───────────── 環境（FFmpeg / 螢幕） ─────────────
 
@@ -502,20 +510,27 @@ function renderSettings() {
   $<HTMLSelectElement>("scale").value = String(S.scale);
   $<HTMLInputElement>("drawMouse").checked = S.drawMouse;
   $<HTMLInputElement>("liveToggle").checked = S.livePreview;
+  // 最長錄影時間：常用值用下拉選單，其他值顯示「自訂」與分鐘輸入框
   const maxInput = $<HTMLInputElement>("maxMinutes");
-  if (document.activeElement !== maxInput) maxInput.value = String(S.maxMinutes);
+  const preset = $<HTMLSelectElement>("maxPreset");
+  const custom = maxCustomOpen || !MAX_PRESETS.includes(S.maxMinutes);
+  preset.value = custom ? "custom" : String(S.maxMinutes);
+  $("maxCustom").hidden = !custom;
+  if (document.activeElement !== maxInput) maxInput.value = S.maxMinutes > 0 ? String(S.maxMinutes) : "";
   $<HTMLSelectElement>("method").value = S.method;
   renderEncoder();
   $<HTMLSelectElement>("countdownSec").value = String(S.countdownSec);
   $<HTMLInputElement>("hideUi").checked = S.hideUi;
   renderHotkeys();
+  // 按鈕固定寫「更多設定」，有改過預設值的項目接在後面
   const more = [
-    S.maxMinutes > 0 ? `最長 ${humanDuration(S.maxMinutes * 60)}` : "不限時",
+    "更多設定",
+    S.maxMinutes > 0 ? `最長 ${humanDuration(S.maxMinutes * 60)}` : "",
     S.countdownSec === 3 ? "" : S.countdownSec ? `倒數 ${S.countdownSec} 秒` : "不倒數",
     S.method === "auto" ? "" : S.method,
     S.encoder === "auto" ? "" : S.encoder === "gpu" ? "GPU 編碼" : "CPU 編碼",
   ].filter(Boolean).join("・");
-  setHtml($("moreBtn"), `${esc(more)}${icon("down")}`);
+  setHtml($("moreBtn"), `${icon("settings")}${esc(more)}${icon("down")}`);
   const dir = $<HTMLInputElement>("outputDir");
   if (document.activeElement !== dir) dir.value = S.outputDir;
   setHtml($("dirBtn"), `${icon("folder")}<span class="txt">${esc(outDir())}</span>`);
@@ -553,7 +568,7 @@ function renderEncoder() {
   $("encoderHint").textContent = S.encoder !== "auto" ? ""
     : !hw?.length ? "這台電腦只能用 CPU 編碼。"
       : ff.preferGpu ? `先前偵測到 CPU 編碼跟不上，目前會使用 GPU（${hw[0]}）。`
-        : `超過 1080p60 的畫面量，或偵測到 CPU 跟不上時，改用 ${hw[0]}。`;
+        : `平常用 CPU；畫面大或電腦跟不上時改用 GPU（${hw[0]}）。`;
   $("resetGpuBtn").hidden = !(S.encoder === "auto" && ff.preferGpu && hw?.length);
 }
 
@@ -574,6 +589,7 @@ function setupDrops() {
   }
   document.addEventListener("click", () => closeAll());
   document.addEventListener("keydown", (e) => e.key === "Escape" && closeAll());
+  blockBrowserChrome();
 }
 
 function bindSettings() {
@@ -636,6 +652,11 @@ function bindSettings() {
       toast("已重設，之後的錄影平常會用 CPU 編碼");
     }),
   );
+  onChange("maxPreset", (el) => {
+    maxCustomOpen = el.value === "custom";
+    if (!maxCustomOpen) S.maxMinutes = Number(el.value);
+    else queueMicrotask(() => $("maxMinutes").focus());
+  });
   onChange("maxMinutes", (el) => {
     const v = Number(el.value);
     S.maxMinutes = Number.isFinite(v) && v > 0 ? Math.min(Math.round(v), LIMITS.maxMinutesMax) : 0;
@@ -684,17 +705,34 @@ function liveRecordedMs() {
   return rec.state === "recording" ? rec.recordedMs + (Date.now() - statusAt) : rec.recordedMs;
 }
 
+/** 倒數剩餘秒數（依上次狀態推算，至少 1） */
+function countdownSec() {
+  const left = Math.max(0, (rec?.countdownMs ?? 0) - (Date.now() - statusAt));
+  return Math.max(1, Math.ceil(left / 1000));
+}
+
+/**
+ * 倒數中的停止鈕：全畫面倒數時已有大數字，按鈕只寫「取消倒數」；否則按鈕上顯示秒數。
+ * 按鈕內容固定，秒數由 renderTimer 只改 span 的文字：每秒重建按鈕內容會讓按下與放開之間的點擊失效
+ */
+function countdownStopLabel() {
+  return rec?.countdownCoversUi === false ? `${icon("stop")}<span id="stopCountdown"></span> 秒後開始・取消` : `${icon("stop")}取消倒數`;
+}
+
 function renderTimer() {
   if (!rec || document.hidden) return; // 看不到就不必更新；回到前景的那一輪會補上
   const ms = liveRecordedMs();
   const text = clock(ms);
   if ($("timer").textContent !== text) $("timer").textContent = text;
+  // 操作視窗在錄影範圍內：全畫面倒數（接著縮小）；在別的螢幕：不擋畫面，只在取消按鈕上倒數
   const cd = $("countdown");
-  cd.hidden = rec.state !== "countdown";
-  if (!cd.hidden) {
-    const left = Math.max(0, (rec.countdownMs ?? 0) - (Date.now() - statusAt));
-    const n = String(Math.max(1, Math.ceil(left / 1000)));
-    if ($("countdownNum").textContent !== n) $("countdownNum").textContent = n;
+  cd.hidden = rec.state !== "countdown" || rec.countdownCoversUi === false;
+  if (rec.state === "countdown") {
+    const n = String(countdownSec());
+    if (!cd.hidden && $("countdownNum").textContent !== n) $("countdownNum").textContent = n;
+    setHtml($("stopBtn"), countdownStopLabel());
+    const sn = document.getElementById("stopCountdown");
+    if (sn && sn.textContent !== n) sn.textContent = n;
   }
   const bar = $("maxBar");
   bar.hidden = !(rec.maxMs > 0 && rec.state !== "idle" && rec.state !== "countdown");
@@ -705,7 +743,7 @@ const actionButtons = (path: string, opts: { edit?: boolean; export?: boolean } 
   `<button class="btn small" data-act="play" data-path="${esc(path)}">${icon("play")}播放</button>
    <button class="btn small" data-act="reveal" data-path="${esc(path)}">${icon("folder")}顯示</button>
    ${opts.edit ? `<button class="btn small" data-act="edit" data-path="${esc(path)}">${icon("cut")}剪輯</button>` : ""}
-   ${opts.export ? `<button class="btn small" data-act="export" data-path="${esc(path)}">${icon("fast")}加速</button>` : ""}`;
+   ${opts.export ? `<button class="btn small" data-act="export" data-path="${esc(path)}">${icon("export")}製作加速版 / GIF</button>` : ""}`;
 
 function renderRecorder() {
   if (!rec) return;
@@ -743,7 +781,7 @@ function renderRecorder() {
   const stop = $<HTMLButtonElement>("stopBtn");
   stop.hidden = !active;
   stop.disabled = r.state === "stopping";
-  setHtml(stop, r.state === "countdown" ? `${icon("stop")}取消倒數` : `${icon("stop")}停止`);
+  setHtml(stop, r.state === "countdown" ? countdownStopLabel() : `${icon("stop")}停止`);
   const hk = env.hotkeys?.record ? `，或按 ${HOTKEY_LABELS.record} 取消` : "";
   $("countdownHint").textContent = `即將開始錄影${S.hideUi ? "，這個視窗若在錄影範圍內會自動縮小" : ""}${hk}`;
   $<HTMLButtonElement>("pauseBtn").disabled = !!r.busy && r.state !== "recording";
@@ -781,7 +819,7 @@ function renderRecorder() {
 
 let dismissedJob: number | undefined;
 
-/** 右側「工作」卡：加速匯出 / 剪輯的進度 */
+/** 右側「工作」卡：製作加速版 / GIF、剪輯的進度 */
 function renderJob() {
   const card = $("jobCard");
   card.hidden = !exp || (dismissedJob === exp.id && exp.state !== "running");
@@ -789,7 +827,7 @@ function renderJob() {
   const name = exp.output.split(/[\\/]/).pop() ?? "";
   card.className = `job ${exp.state}`;
   const pct = Math.floor(exp.progress * 100);
-  const label = exp.kind === "cut" ? "剪輯" : exp.kind === "gif" ? `GIF${exp.speed > 1 ? ` ${speedLabel(exp.speed)}×` : ""} 匯出` : `加速 ${speedLabel(exp.speed)}×`;
+  const label = exp.kind === "cut" ? "剪輯" : exp.kind === "gif" ? `製作 GIF${exp.speed > 1 ? ` ${speedLabel(exp.speed)}×` : ""}` : `製作 ${speedLabel(exp.speed)}× 加速版`;
   const title = { running: `${label}中`, done: `${label}完成`, error: `${label}失敗`, canceled: `${label}已取消` }[exp.state];
   $("jobTitle").textContent = title;
   $("jobMeta").textContent = exp.state === "running"
@@ -809,7 +847,7 @@ function renderJob() {
     if (finished) {
       void loadRecent();
       if (isLibraryOpen()) void reloadLibraryDialog();
-      if (exp.state === "done") toast(exp.kind === "cut" ? "剪輯完成" : exp.kind === "gif" ? "GIF 匯出完成" : "加速版匯出完成");
+      if (exp.state === "done") toast(exp.kind === "cut" ? "剪輯完成" : exp.kind === "gif" ? "GIF 製作完成" : "加速版製作完成");
     }
   }
 }
@@ -876,6 +914,7 @@ async function loadRecent() {
 
 function renderRecent() {
   const items = recent?.items ?? [];
+  const dates = dateLabels(items);
   setHtml($("recentCards"), items.length
     ? items
         .map((e) => {
@@ -884,19 +923,19 @@ function renderRecent() {
             /_cut(_\d+)?\.mp4$/i.test(e.name) ? `<span class="tag cut">剪輯版</span>` : "",
             // 卡片放不下各個倍率，只顯示數量；倍率在滑鼠提示與「全部錄影」的子列
             e.exports.length
-              ? `<span class="tag speed" title="${esc(`已匯出 ${e.exports.map(exportTag).join("、")}`)}">${e.exports.some((x) => x.format === "gif") ? "匯出" : "加速"} ${e.exports.length}</span>`
+              ? `<span class="tag speed" title="${esc(`已製作 ${e.exports.map(exportTag).join("、")}`)}">${e.exports.every((x) => x.format === "gif") ? "GIF" : "加速"} ${e.exports.length}</span>`
               : "",
           ].join("");
           return `<div class="rcard" title="${esc(e.name)}">
             <img class="thumb rcard-thumb" data-src="${thumbUrl(e)}" alt="" decoding="async" />
             <div class="rcard-body">
-            <div class="rcard-top"><span class="rcard-date">${esc(isDefaultName(e.name) ? shortDate(e.name, e.mtime) : baseName(e.name))}</span><span>${tags}</span></div>
+            <div class="rcard-top"><span class="rcard-date">${esc(isDefaultName(e.name) ? dates.get(e.name)! : baseName(e.name))}</span><span>${tags}</span></div>
             <div class="rcard-meta">${e.durationSec !== undefined ? videoClock(e.durationSec) : "—"}・${formatBytes(e.bytes)}</div>
             <div class="rcard-actions">
               <button class="btn ghost" data-act="play" data-path="${esc(e.path)}" title="播放" aria-label="播放">${icon("play")}</button>
               <button class="btn ghost" data-act="reveal" data-path="${esc(e.path)}" title="在資料夾中顯示" aria-label="在資料夾中顯示">${icon("folder")}</button>
               <button class="btn ghost" data-act="edit" data-path="${esc(e.path)}" title="剪輯" aria-label="剪輯">${icon("cut")}</button>
-              <button class="btn ghost rcard-export" data-act="export" data-path="${esc(e.path)}" title="加速匯出（MP4 / GIF）">${icon("fast")}匯出</button>
+              <button class="btn ghost" data-act="export" data-path="${esc(e.path)}" title="製作加速版 / GIF" aria-label="製作加速版 / GIF">${icon("export")}</button>
             </div>
             </div>
           </div>`;
@@ -962,7 +1001,7 @@ function openFile(action: "play" | "reveal", path: string) {
 
 function act(action: EntryAction, entry: LibraryEntry) {
   if (action === "play" || action === "reveal") return openFile(action, entry.path);
-  if (locked()) return toast(`錄影中無法${action === "edit" ? "剪輯" : "匯出"}，請先停止錄影`, true);
+  if (locked()) return toast(`錄影中無法${action === "edit" ? "剪輯" : "製作加速版 / GIF"}，請先停止錄影`, true);
   if (exp?.state === "running") return toast("目前有轉檔工作進行中，請等它完成", true);
   if (!entry.durationSec) return toast("無法讀取影片長度", true);
   if (action === "edit") {
@@ -984,6 +1023,7 @@ function act(action: EntryAction, entry: LibraryEntry) {
         target: S.exportTarget,
         gifWidth: S.gifWidth,
         gifFps: S.gifFps,
+        mp4Width: S.mp4Width,
       }),
       setPrefs: (p) => {
         if (p.speed !== undefined) S.speed = p.speed;
@@ -993,12 +1033,14 @@ function act(action: EntryAction, entry: LibraryEntry) {
         if (p.target !== undefined) S.exportTarget = p.target;
         if (p.gifWidth) S.gifWidth = p.gifWidth;
         if (p.gifFps) S.gifFps = p.gifFps;
+        if (p.mp4Width !== undefined) S.mp4Width = p.mp4Width;
         save();
       },
+      play: (path) => openFile("play", path),
       start: async (req) => {
         applyStatus(await api("/api/export/start", req));
         dismissedJob = undefined;
-        toast("已開始匯出，進度顯示在右側");
+        toast("已開始製作，進度顯示在右側");
       },
       toast,
     });
@@ -1129,6 +1171,27 @@ function bindChangelog() {
   fromHash();
   window.addEventListener("hashchange", fromHash);
   $("changelogDlg").querySelector("[data-close]")!.addEventListener("click", () => $<HTMLDialogElement>("changelogDlg").close());
+}
+
+/**
+ * 讓操作視窗像桌面程式：關掉瀏覽器的右鍵選單（可打字的欄位保留，方便複製貼上）、
+ * 另存新檔 / 列印 / 原始碼 / 尋找等快捷鍵，以及會讓版面跑掉的縮放。重新載入（Ctrl+R / F5）保留，畫面卡住時可用。
+ */
+function blockBrowserChrome() {
+  const editable = (t: EventTarget | null) =>
+    t instanceof HTMLElement && (t.isContentEditable || (t instanceof HTMLInputElement && !["checkbox", "radio", "range", "button"].includes(t.type)) || t instanceof HTMLTextAreaElement);
+  document.addEventListener("contextmenu", (e) => {
+    if (!editable(e.target)) e.preventDefault();
+  });
+  document.addEventListener("keydown", (e) => {
+    if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
+    const k = e.key.toLowerCase();
+    if (["s", "p", "u", "f", "g", "o", "=", "+", "-", "0"].includes(k)) e.preventDefault();
+  });
+  // Ctrl+滾輪縮放
+  document.addEventListener("wheel", (e) => {
+    if (e.ctrlKey) e.preventDefault();
+  }, { passive: false });
 }
 
 // ───────────── 啟動 ─────────────

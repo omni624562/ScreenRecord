@@ -91,40 +91,32 @@
             <div class="set drop">
               <button type="button" class="btn small drop-btn" id="moreBtn" aria-haspopup="true"></button>
               <div class="drop-panel" id="morePanel" hidden>
-                <label class="field">
-                  <span>最長錄影時間（分鐘，0 = 不限）</span>
-                  <input type="number" id="maxMinutes" min="0" step="1" />
-                </label>
-                <label class="field">
-                  <span>擷取方式</span>
-                  <select id="method">
-                    <option value="auto">自動（優先 ddagrab GPU 擷取）</option>
-                    <option value="ddagrab">ddagrab（Desktop Duplication）</option>
-                    <option value="gdigrab">gdigrab（GDI，相容性最高）</option>
-                  </select>
-                </label>
-                <label class="field">
-                  <span>編碼器</span>
-                  <select id="encoder">
-                    <option value="auto">自動（平常 CPU，畫面大或跟不上時用 GPU）</option>
-                    <option value="cpu">CPU（libx264，畫質最穩）</option>
-                    <option value="gpu">GPU</option>
-                  </select>
-                  <small class="muted" id="encoderHint"></small>
-                  <button class="btn ghost small" id="resetGpuBtn" type="button" hidden>重設：恢復平常用 CPU 編碼</button>
-                </label>
                 <div class="field-row">
                   <label class="field">
-                    <span>開始前倒數</span>
-                    <select id="countdownSec">
-                      <option value="0">不倒數</option>
-                      <option value="3">3 秒</option>
-                      <option value="5">5 秒</option>
-                      <option value="10">10 秒</option>
+                    <span>最長錄影時間</span>
+                    <select id="maxPreset">
+                      <option value="0">不限</option>
+                      <option value="30">30 分鐘</option>
+                      <option value="60">1 小時</option>
+                      <option value="120">2 小時</option>
+                      <option value="custom">自訂…</option>
                     </select>
                   </label>
-                  <label class="check"><input type="checkbox" id="hideUi" />開始時縮小這個視窗（在錄影範圍內時）</label>
+                  <label class="field" id="maxCustom" hidden>
+                    <span>自訂（分鐘）</span>
+                    <input type="number" id="maxMinutes" min="1" step="1" />
+                  </label>
                 </div>
+                <label class="field">
+                  <span>開始前倒數</span>
+                  <select id="countdownSec">
+                    <option value="0">不倒數</option>
+                    <option value="3">3 秒</option>
+                    <option value="5">5 秒</option>
+                    <option value="10">10 秒</option>
+                  </select>
+                </label>
+                <label class="check wrap"><input type="checkbox" id="hideUi" /><span>開始錄影時縮小這個視窗<small class="muted">視窗不在錄影範圍內時不縮小</small></span></label>
                 <div class="more-info">
                   <div id="hotkeyInfo"></div>
                   <div class="row-end">
@@ -133,6 +125,25 @@
                   </div>
                   <div class="small" id="updateStatus" hidden></div>
                 </div>
+                <div class="more-advanced">進階</div>
+                <label class="field">
+                  <span>擷取方式</span>
+                  <select id="method">
+                    <option value="auto">自動（建議）</option>
+                    <option value="ddagrab">ddagrab（Desktop Duplication）</option>
+                    <option value="gdigrab">gdigrab（GDI，相容性最高）</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span>編碼器</span>
+                  <select id="encoder">
+                    <option value="auto">自動（建議）</option>
+                    <option value="cpu">CPU（libx264，畫質最穩）</option>
+                    <option value="gpu">GPU</option>
+                  </select>
+                  <small class="muted" id="encoderHint"></small>
+                  <button class="btn ghost small" id="resetGpuBtn" type="button" hidden>重設：恢復平常用 CPU 編碼</button>
+                </label>
               </div>
             </div>
             <div class="set drop grow">
@@ -207,10 +218,10 @@
       </footer>
     </div>
 
-    <!-- 加速匯出 -->
+    <!-- 製作加速版 / GIF -->
     <dialog class="dlg" id="exportDlg" aria-labelledby="exTitle">
       <header class="dlg-head">
-        <div><h2 id="exTitle">加速匯出</h2><p class="muted small mono" id="exName"></p></div>
+        <div><h2 id="exTitle">製作加速版</h2><p class="muted small" id="exName"></p></div>
         <button class="btn ghost small" type="button" data-close>關閉</button>
       </header>
       <div class="dlg-body">
@@ -267,11 +278,16 @@
             </select>
           </label>
         </div>
+        <label class="field" id="mp4Opts" hidden>
+          <span>尺寸</span>
+          <select id="mp4Width"></select>
+        </label>
         <div class="calc">
-          <div><span class="muted">原片</span><strong id="calcFrom">—</strong></div>
+          <div><span class="muted">原片</span><strong id="calcFrom">—</strong><small class="muted" id="calcFromInfo"></small></div>
           <div class="arrow" aria-hidden="true">→</div>
-          <div><span class="muted">加速後</span><strong id="calcTo">—</strong></div>
+          <div><span class="muted">加速後</span><strong id="calcTo">—</strong><small class="muted" id="calcToInfo" title="依原片的位元率與畫面大小粗估，實際大小視畫面變化而定"></small></div>
         </div>
+        <div class="ex-notes" id="exNotes"></div>
         <p class="hint" id="calcHint"></p>
         <label class="switch" id="keepAudioRow" hidden>
           <input type="checkbox" id="keepAudio" />
@@ -281,7 +297,7 @@
       </div>
       <footer class="dlg-foot">
         <span></span>
-        <button class="btn primary" id="exportBtn" type="button">匯出</button>
+        <button class="btn primary" id="exportBtn" type="button">製作</button>
       </footer>
     </dialog>
 
@@ -433,7 +449,7 @@
       <div class="dlg-body changelog" id="changelogBody"></div>
     </dialog>
 
-    <div class="countdown" id="countdown" role="status" aria-live="assertive" hidden>
+    <div class="countdown-overlay" id="countdown" role="status" aria-live="assertive" hidden>
       <div class="num" id="countdownNum">3</div>
       <div class="hint" id="countdownHint">即將開始錄影</div>
       <button class="btn" id="countdownCancel" type="button">取消</button>

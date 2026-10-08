@@ -130,7 +130,7 @@ export function startServer(app: App, port: number, development: boolean) {
 
       "/api/record/start": {
         POST: api(async (req) => {
-          if (app.exporter.running) throw new ConfigError("匯出進行中，請等匯出完成再開始錄影");
+          if (app.exporter.running) throw new ConfigError("正在製作加速版 / GIF，請等完成再開始錄影");
           await app.recorder.start(await body<RecordConfig>(req));
           return json({ ok: true, ...status() });
         }),
@@ -187,17 +187,19 @@ export function startServer(app: App, port: number, development: boolean) {
       },
       "/api/export/start": {
         POST: api(async (req) => {
-          if (app.recorder.active) throw new ConfigError("錄影中無法匯出，請先停止錄影");
-          const { source, speed, keepAudio, format, gifWidth, gifFps } = await body<{
+          if (app.recorder.active) throw new ConfigError("錄影中無法製作加速版 / GIF，請先停止錄影");
+          const { source, speed, keepAudio, format, gifWidth, gifFps, mp4Width } = await body<{
             source: string;
             speed: number;
             keepAudio?: boolean;
             format?: "mp4" | "gif";
             gifWidth?: number;
             gifFps?: number;
+            /** 加速版縮小後的寬度；0 / 未指定 = 原尺寸 */
+            mp4Width?: number;
           }>(req);
           if (format === "gif") await app.exporter.startGif(String(source ?? ""), Number(speed), { width: Number(gifWidth), fps: Number(gifFps) });
-          else await app.exporter.start(String(source ?? ""), Number(speed), keepAudio !== false);
+          else await app.exporter.start(String(source ?? ""), Number(speed), keepAudio !== false, Number(mp4Width) || 0);
           return json({ ok: true, ...status() });
         }),
       },

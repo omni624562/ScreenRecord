@@ -184,14 +184,21 @@ input[type="number"] { font-family: var(--mono); font-variant-numeric: tabular-n
 .check { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; cursor: pointer; white-space: nowrap; }
 .drop-panel .check input { width: auto; margin: 0; accent-color: var(--accent, var(--rec)); }
 .field-row .check { height: 30px; }
+.field-row:has(> [hidden]) { grid-template-columns: 1fr; }
+/* 文字較長的勾選項：可換行，說明放在第二行 */
+.check.wrap { white-space: normal; align-items: flex-start; line-height: 1.45; }
+.check.wrap input { margin-top: 2px; }
+.check.wrap span { display: flex; flex-direction: column; }
+.check.wrap small { font-size: 11.5px; }
+.more-advanced { margin-top: 2px; padding-top: 10px; border-top: 1px solid var(--border); font-size: 11.5px; font-weight: 600; color: var(--muted); letter-spacing: 0.04em; }
 .more-info { display: flex; flex-direction: column; gap: 8px; padding-top: 10px; border-top: 1px solid var(--border); font-size: 12px; color: var(--muted); }
 .more-info kbd { font-family: var(--mono); font-size: 11.5px; padding: 1px 5px; border: 1px solid var(--border-strong); border-bottom-width: 2px; border-radius: 4px; color: var(--text); background: var(--surface-2); }
 .more-info .warn { color: var(--warn); }
 /* 倒數：蓋住整個操作視窗的大數字 */
-.countdown { position: fixed; inset: 0; z-index: 50; display: grid; place-content: center; justify-items: center; gap: 14px; background: rgb(0 0 0 / 0.55); color: #fff; backdrop-filter: blur(2px); }
-.countdown[hidden] { display: none; }
-.countdown .num { font: 700 160px/1 var(--mono); font-variant-numeric: tabular-nums; text-shadow: 0 4px 24px rgb(0 0 0 / 0.4); }
-.countdown .hint { font-size: 14px; opacity: 0.9; }
+.countdown-overlay { position: fixed; inset: 0; z-index: 50; display: grid; place-content: center; justify-items: center; gap: 14px; background: rgb(0 0 0 / 0.55); color: #fff; backdrop-filter: blur(2px); }
+.countdown-overlay[hidden] { display: none; }
+.countdown-overlay .num { font: 700 160px/1 var(--mono); font-variant-numeric: tabular-nums; text-shadow: 0 4px 24px rgb(0 0 0 / 0.4); }
+.countdown-overlay .hint { font-size: 14px; opacity: 0.9; }
 .size-text { font-size: 12px; color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
 .size-text.warn { color: var(--warn); }
 
@@ -200,7 +207,7 @@ input[type="number"] { font-family: var(--mono); font-variant-numeric: tabular-n
 .rec-head { display: flex; align-items: center; gap: 10px; min-height: 24px; }
 .state-pill { display: inline-flex; align-items: center; gap: 7px; font-size: 12px; font-weight: 650; padding: 2px 11px; border-radius: 999px; background: var(--surface-2); color: var(--muted); }
 .state-pill::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
-.state-pill.recording { background: var(--rec-soft); color: var(--rec); }
+.state-pill.recording, .state-pill.countdown { background: var(--rec-soft); color: var(--rec); }
 .state-pill.recording::before { animation: blink 1.2s ease-in-out infinite; }
 .state-pill.paused { background: var(--warn-soft); color: var(--warn); }
 .state-pill.stopping { background: var(--accent-soft); color: var(--accent); }
@@ -255,7 +262,6 @@ input[type="number"] { font-family: var(--mono); font-variant-numeric: tabular-n
 .rcard-meta { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .rcard-actions { display: flex; gap: 2px; }
 .rcard-actions .btn { width: 28px; height: 26px; padding: 0; }
-.rcard-actions .btn.rcard-export { width: auto; padding: 0 8px 0 6px; gap: 3px; font-size: 12px; }
 .recent-empty { color: var(--muted); font-size: 13px; }
 .tag { font-size: 11px; font-weight: 600; padding: 0 5px; border-radius: 4px; white-space: nowrap; }
 .tag.audio { background: var(--accent-soft); color: var(--accent); }
@@ -296,6 +302,12 @@ input[type="number"] { font-family: var(--mono); font-variant-numeric: tabular-n
 .calc strong { font: 600 20px/1.2 var(--mono); font-variant-numeric: tabular-nums; }
 .calc .arrow { color: var(--muted); font-size: 18px; }
 .ex-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.calc small { font-size: 12px; font-variant-numeric: tabular-nums; }
+.ex-notes { display: flex; flex-direction: column; gap: 8px; }
+.ex-notes:empty { display: none; }
+.ex-note { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 10px; border-radius: var(--radius-sm); font-size: 12.5px; line-height: 1.5; background: var(--accent-soft); color: var(--text); }
+.ex-note.warn { background: var(--warn-soft); }
+.ex-note .btn { flex: none; }
 #targetLen { width: 96px; font-family: var(--mono); }
 #targetLen.invalid { border-color: var(--rec); }
 
@@ -311,7 +323,8 @@ input[type="number"] { font-family: var(--mono); font-variant-numeric: tabular-n
 .lib-table td { padding: 0 8px; height: 40px; border-bottom: 1px solid var(--border); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .lib-table tr.sub td { height: 32px; color: var(--muted); font-size: 12.5px; }
 .lib-table tr.sub .name { padding-left: 22px; }
-.lib-table tr.sub .branch { color: var(--muted); font-family: var(--mono); }
+/* 子列的分支線：用框線畫 └，與標籤垂直置中（字元 └ 在不同字型裡高度不一） */
+.lib-table tr.sub .branch { flex: none; width: 9px; height: 9px; margin: 0 2px 6px 0; border-left: 1.5px solid var(--border-strong); border-bottom: 1.5px solid var(--border-strong); border-bottom-left-radius: 2px; }
 .lib-table .btn-ph { display: inline-block; width: 28px; }
 .lib-table .c-check { width: 36px; }
 .lib-table .c-num { width: 96px; text-align: right; font-variant-numeric: tabular-nums; }

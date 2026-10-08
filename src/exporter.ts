@@ -26,7 +26,7 @@ export interface ExporterDeps {
   encoder(): EncoderSpec | undefined;
 }
 
-const KIND_TEXT = { speed: "匯出", gif: "GIF 匯出", cut: "剪輯" } as const;
+const KIND_TEXT = { speed: "加速版", gif: "GIF", cut: "剪輯" } as const;
 
 export class Exporter {
   private job?: Job;
@@ -63,9 +63,9 @@ export class Exporter {
     return { ...pub, elapsedMs, etaSec };
   }
 
-  /** 加速匯出 */
-  start(source: string, speed: number, keepAudio = true): Promise<ExportStatus> {
-    return this.exclusive(() => this.doStart(source, speed, keepAudio));
+  /** 製作加速版；width 為縮小後的寬度（0 = 原尺寸） */
+  start(source: string, speed: number, keepAudio = true, width = 0): Promise<ExportStatus> {
+    return this.exclusive(() => this.doStart(source, speed, keepAudio, width));
   }
 
   /** 匯出 GIF（可同時加速；無聲音） */
@@ -78,14 +78,16 @@ export class Exporter {
     return this.exclusive(() => this.doCut(source, spec));
   }
 
-  private async doStart(source: string, speed: number, keepAudio: boolean): Promise<ExportStatus> {
+  private async doStart(source: string, speed: number, keepAudio: boolean, width: number): Promise<ExportStatus> {
     if (!Number.isFinite(speed) || speed < LIMITS.speedMin || speed > LIMITS.speedMax)
       throw new ConfigError(`倍率需介於 ${LIMITS.speedMin}～${LIMITS.speedMax}`);
     const { ffmpeg, enc, info, fps } = await this.prepare(source);
     const output = uniquePath(dirname(source), exportFileName(basename(source), speed).replace(/\.mp4$/i, ""), ".mp4");
     const withAudio = keepAudio && !!info.hasAudio;
-    const args = exportArgs(source, output, speed, fps, enc, withAudio);
-    const note = `${speedLabel(speed)}×${withAudio ? "，含聲音" : ""}`;
+    const w = Number.isFinite(width) && width >= 160 ? Math.round(width) : 0;
+    const scaled = !!w && !!info.width && w < info.width;
+    const args = exportArgs(source, output, speed, fps, enc, withAudio, w, info.width);
+    const note = `${speedLabel(speed)}×${withAudio ? "，含聲音" : ""}${scaled ? `，寬 ${w}` : ""}`;
     return this.run("speed", ffmpeg, args, source, output, speed, info.durationSec! / speed, note);
   }
 

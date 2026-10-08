@@ -87,12 +87,25 @@ export async function guarded(fn: () => Promise<unknown>) {
 }
 
 /** 由檔名 Rec_2026-10-06_08-17-18 取出「10/06 08:17」；不符合格式時用修改時間 */
-export function shortDate(name: string, mtime: number): string {
-  const m = /(\d{4})-(\d{2})-(\d{2})_(\d{2})-(\d{2})/.exec(name);
-  if (m) return `${m[2]}/${m[3]} ${m[4]}:${m[5]}`;
+export function shortDate(name: string, mtime: number, withSec = false): string {
+  const m = /(\d{4})-(\d{2})-(\d{2})_(\d{2})-(\d{2})(?:-(\d{2}))?/.exec(name);
+  if (m) return `${m[2]}/${m[3]} ${m[4]}:${m[5]}${withSec && m[6] ? `:${m[6]}` : ""}`;
   const d = new Date(mtime);
   const p = (n: number) => String(n).padStart(2, "0");
-  return `${p(d.getMonth() + 1)}/${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+  return `${p(d.getMonth() + 1)}/${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}${withSec ? `:${p(d.getSeconds())}` : ""}`;
+}
+
+/** 一組錄影的日期標籤：同一分鐘的有好幾支時加上秒數，才分得出來 */
+export function dateLabels(items: { name: string; mtime: number }[]): Map<string, string> {
+  const count = new Map<string, number>();
+  for (const e of items) {
+    const k = shortDate(e.name, e.mtime);
+    count.set(k, (count.get(k) ?? 0) + 1);
+  }
+  return new Map(items.map((e) => {
+    const k = shortDate(e.name, e.mtime);
+    return [e.name, (count.get(k) ?? 0) > 1 ? shortDate(e.name, e.mtime, true) : k];
+  }));
 }
 
 /** 程式產生的預設檔名（Rec_日期時間，可能帶 _2、_cut）：只看日期就夠，不必再列出檔名 */
@@ -104,8 +117,11 @@ export const baseName = (name: string) => name.replace(/\.mp4$/i, "");
 const path = {
   play: '<path d="M5 3.5v9l7.5-4.5z" fill="currentColor" stroke="none"/>',
   cut: '<circle cx="4.5" cy="4.5" r="2"/><circle cx="4.5" cy="11.5" r="2"/><path d="M6.2 5.6 13.5 12M6.2 10.4 13.5 4"/>',
-  fast: '<path d="M2.5 4v8l5-4zM8.5 4v8l5-4z" fill="currentColor" stroke="none"/>',
+  /** 製作加速版 / GIF：方框加往右上的箭頭（⏩ 容易被看成快轉播放） */
+  export: '<path d="M9 2.5h4.5V7M13.5 2.5 7.5 8.5"/><path d="M11.5 9.5v3a1 1 0 0 1-1 1h-7a1 1 0 0 1-1-1v-7a1 1 0 0 1 1-1h3"/>',
   edit: '<path d="M10.5 2.5l3 3L6 13H3v-3z"/><path d="M9 4l3 3"/>',
+  /** 設定：三條滑桿 */
+  settings: '<path d="M2.5 4h11M2.5 8h11M2.5 12h11"/><circle cx="5.5" cy="4" r="1.5" fill="var(--surface, #fff)"/><circle cx="10.5" cy="8" r="1.5" fill="var(--surface, #fff)"/><circle cx="6.5" cy="12" r="1.5" fill="var(--surface, #fff)"/>',
   folder: '<path d="M1.5 4.5v8a1 1 0 0 0 1 1h11a1 1 0 0 0 1-1v-6a1 1 0 0 0-1-1H8L6.5 3.5h-4a1 1 0 0 0-1 1Z"/>',
   refresh: '<path d="M13.6 6.2A6 6 0 1 0 14 9"/><path d="M14 2.5v3.8h-3.8"/>',
   chevL: '<path d="M10 3 5 8l5 5"/>',

@@ -120,6 +120,8 @@ export interface RecorderStatus {
   startedAt?: number;
   /** 倒數中：剩餘毫秒 */
   countdownMs?: number;
+  /** 倒數中：操作視窗在錄影範圍內（顯示全畫面倒數）；false = 視窗在別的螢幕，只在按鈕上倒數 */
+  countdownCoversUi?: boolean;
   /** 儲存位置的剩餘空間（錄影中定期更新） */
   diskFreeBytes?: number;
   result?: RecordingResult;

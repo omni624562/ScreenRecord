@@ -75,6 +75,25 @@ function windowRect(hwnd: Pointer): Rect | undefined {
   return { x: r[0]!, y: r[1]!, width: r[2]! - r[0]!, height: r[3]! - r[1]! };
 }
 
+/** 與 area 重疊的操作視窗（拿不到位置的視窗算重疊，寧可多縮也不要錄到它） */
+function windowsIn(area: Rect | undefined, prefix: string): Pointer[] {
+  return findUiWindows(prefix).filter((h) => {
+    if (!area) return true;
+    const r = windowRect(h);
+    return !r || intersects(r, area);
+  });
+}
+
+/** 是否有看得到的操作視窗在 area 內（倒數時決定要不要蓋上全畫面倒數）；無法判斷時回傳 true */
+export function uiInArea(area: Rect, prefix = TITLE_PREFIX): boolean {
+  if (process.platform !== "win32") return true;
+  try {
+    return windowsIn(area, prefix).length > 0;
+  } catch {
+    return true;
+  }
+}
+
 let minimized: Pointer[] = [];
 
 /**
@@ -84,11 +103,7 @@ let minimized: Pointer[] = [];
 export function minimizeUi(area?: Rect, prefix = TITLE_PREFIX): boolean {
   if (process.platform !== "win32") return false;
   try {
-    const list = findUiWindows(prefix).filter((h) => {
-      if (!area) return true;
-      const r = windowRect(h);
-      return !r || intersects(r, area);
-    });
+    const list = windowsIn(area, prefix);
     for (const h of list) user32!.symbols.ShowWindow(h, SW_MINIMIZE);
     minimized = list;
     return list.length > 0;

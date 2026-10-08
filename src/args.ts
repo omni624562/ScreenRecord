@@ -1,5 +1,5 @@
 /** 組 FFmpeg 參數（純函式，方便測試）。 */
-import { LIMITS, outputSize } from "./shared/format.ts";
+import { even, LIMITS, outputSize } from "./shared/format.ts";
 import { SCALE_OPTIONS, type CaptureMethod, type MonitorInfo, type Rect, type RecordConfig } from "./shared/types.ts";
 
 export interface EncoderSpec {
@@ -383,13 +383,15 @@ export function atempoChain(speed: number): string {
  * 加速匯出：setpts 壓縮時間軸，fps 維持原本的幀率（多出來的幀直接捨棄，
  * 不做混合，螢幕上的文字才不會出現殘影）；聲音以 atempo 變速不變調。
  */
-export function exportArgs(source: string, outFile: string, speed: number, fps: number, enc: EncoderSpec, withAudio = false): string[] {
+/** width：縮小到這個寬度（高度等比、取偶數）；不指定或不小於原寬時維持原尺寸 */
+export function exportArgs(source: string, outFile: string, speed: number, fps: number, enc: EncoderSpec, withAudio = false, width?: number, srcWidth?: number): string[] {
   if (!(speed >= LIMITS.speedMin && speed <= LIMITS.speedMax)) throw new ConfigError(`倍率需介於 ${LIMITS.speedMin}～${LIMITS.speedMax}`);
+  const scale = width && srcWidth && width < srcWidth ? `scale=${even(width)}:-2:flags=bicubic,` : "";
   return [
     "-hide_banner", "-nostats", "-loglevel", "error",
     "-i", source,
     "-map", "0:v:0", ...(withAudio ? ["-map", "0:a:0"] : ["-an"]), "-sn", "-dn",
-    "-vf", `setpts=PTS/${speed},fps=${fps},format=${enc.pixFmt}`,
+    "-vf", `setpts=PTS/${speed},fps=${fps},${scale}format=${enc.pixFmt}`,
     ...(withAudio ? ["-af", atempoChain(speed), ...AUDIO_ENCODE] : []),
     ...enc.offline(),
     "-g", String(fps * 2),
