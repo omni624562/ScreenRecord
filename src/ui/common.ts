@@ -120,6 +120,8 @@ const path = {
   /** 製作加速版 / GIF：方框加往右上的箭頭（⏩ 容易被看成快轉播放） */
   export: '<path d="M9 2.5h4.5V7M13.5 2.5 7.5 8.5"/><path d="M11.5 9.5v3a1 1 0 0 1-1 1h-7a1 1 0 0 1-1-1v-7a1 1 0 0 1 1-1h3"/>',
   edit: '<path d="M10.5 2.5l3 3L6 13H3v-3z"/><path d="M9 4l3 3"/>',
+  /** 設定：三條滑桿 */
+  settings: '<path d="M2.5 4h11M2.5 8h11M2.5 12h11"/><circle cx="5.5" cy="4" r="1.5" fill="var(--surface, #fff)"/><circle cx="10.5" cy="8" r="1.5" fill="var(--surface, #fff)"/><circle cx="6.5" cy="12" r="1.5" fill="var(--surface, #fff)"/>',
   folder: '<path d="M1.5 4.5v8a1 1 0 0 0 1 1h11a1 1 0 0 0 1-1v-6a1 1 0 0 0-1-1H8L6.5 3.5h-4a1 1 0 0 0-1 1Z"/>',
   refresh: '<path d="M13.6 6.2A6 6 0 1 0 14 9"/><path d="M14 2.5v3.8h-3.8"/>',
   chevL: '<path d="M10 3 5 8l5 5"/>',

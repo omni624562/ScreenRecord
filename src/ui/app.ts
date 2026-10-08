@@ -186,6 +186,11 @@ function buildConfig(): RecordConfig {
 
 const outDir = () => S.outputDir.trim() || env.defaultOutputDir;
 
+/** 最長錄影時間的常用值（分鐘）；其他值算「自訂」 */
+const MAX_PRESETS = [0, 30, 60, 120];
+/** 使用者選了「自訂…」但還沒輸入：維持顯示輸入框 */
+let maxCustomOpen = false;
+
 // ───────────── 環境（FFmpeg / 螢幕） ─────────────
 
 function renderEnv() {
@@ -505,20 +510,27 @@ function renderSettings() {
   $<HTMLSelectElement>("scale").value = String(S.scale);
   $<HTMLInputElement>("drawMouse").checked = S.drawMouse;
   $<HTMLInputElement>("liveToggle").checked = S.livePreview;
+  // 最長錄影時間：常用值用下拉選單，其他值顯示「自訂」與分鐘輸入框
   const maxInput = $<HTMLInputElement>("maxMinutes");
-  if (document.activeElement !== maxInput) maxInput.value = String(S.maxMinutes);
+  const preset = $<HTMLSelectElement>("maxPreset");
+  const custom = maxCustomOpen || !MAX_PRESETS.includes(S.maxMinutes);
+  preset.value = custom ? "custom" : String(S.maxMinutes);
+  $("maxCustom").hidden = !custom;
+  if (document.activeElement !== maxInput) maxInput.value = S.maxMinutes > 0 ? String(S.maxMinutes) : "";
   $<HTMLSelectElement>("method").value = S.method;
   renderEncoder();
   $<HTMLSelectElement>("countdownSec").value = String(S.countdownSec);
   $<HTMLInputElement>("hideUi").checked = S.hideUi;
   renderHotkeys();
+  // 按鈕固定寫「更多設定」，有改過預設值的項目接在後面
   const more = [
-    S.maxMinutes > 0 ? `最長 ${humanDuration(S.maxMinutes * 60)}` : "不限時",
+    "更多設定",
+    S.maxMinutes > 0 ? `最長 ${humanDuration(S.maxMinutes * 60)}` : "",
     S.countdownSec === 3 ? "" : S.countdownSec ? `倒數 ${S.countdownSec} 秒` : "不倒數",
     S.method === "auto" ? "" : S.method,
     S.encoder === "auto" ? "" : S.encoder === "gpu" ? "GPU 編碼" : "CPU 編碼",
   ].filter(Boolean).join("・");
-  setHtml($("moreBtn"), `${esc(more)}${icon("down")}`);
+  setHtml($("moreBtn"), `${icon("settings")}${esc(more)}${icon("down")}`);
   const dir = $<HTMLInputElement>("outputDir");
   if (document.activeElement !== dir) dir.value = S.outputDir;
   setHtml($("dirBtn"), `${icon("folder")}<span class="txt">${esc(outDir())}</span>`);
@@ -556,7 +568,7 @@ function renderEncoder() {
   $("encoderHint").textContent = S.encoder !== "auto" ? ""
     : !hw?.length ? "這台電腦只能用 CPU 編碼。"
       : ff.preferGpu ? `先前偵測到 CPU 編碼跟不上，目前會使用 GPU（${hw[0]}）。`
-        : `超過 1080p60 的畫面量，或偵測到 CPU 跟不上時，改用 ${hw[0]}。`;
+        : `平常用 CPU；畫面大或電腦跟不上時改用 GPU（${hw[0]}）。`;
   $("resetGpuBtn").hidden = !(S.encoder === "auto" && ff.preferGpu && hw?.length);
 }
 
@@ -639,6 +651,11 @@ function bindSettings() {
       toast("已重設，之後的錄影平常會用 CPU 編碼");
     }),
   );
+  onChange("maxPreset", (el) => {
+    maxCustomOpen = el.value === "custom";
+    if (!maxCustomOpen) S.maxMinutes = Number(el.value);
+    else queueMicrotask(() => $("maxMinutes").focus());
+  });
   onChange("maxMinutes", (el) => {
     const v = Number(el.value);
     S.maxMinutes = Number.isFinite(v) && v > 0 ? Math.min(Math.round(v), LIMITS.maxMinutesMax) : 0;

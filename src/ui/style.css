@@ -184,6 +184,13 @@ input[type="number"] { font-family: var(--mono); font-variant-numeric: tabular-n
 .check { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; cursor: pointer; white-space: nowrap; }
 .drop-panel .check input { width: auto; margin: 0; accent-color: var(--accent, var(--rec)); }
 .field-row .check { height: 30px; }
+.field-row:has(> [hidden]) { grid-template-columns: 1fr; }
+/* 文字較長的勾選項：可換行，說明放在第二行 */
+.check.wrap { white-space: normal; align-items: flex-start; line-height: 1.45; }
+.check.wrap input { margin-top: 2px; }
+.check.wrap span { display: flex; flex-direction: column; }
+.check.wrap small { font-size: 11.5px; }
+.more-advanced { margin-top: 2px; padding-top: 10px; border-top: 1px solid var(--border); font-size: 11.5px; font-weight: 600; color: var(--muted); letter-spacing: 0.04em; }
 .more-info { display: flex; flex-direction: column; gap: 8px; padding-top: 10px; border-top: 1px solid var(--border); font-size: 12px; color: var(--muted); }
 .more-info kbd { font-family: var(--mono); font-size: 11.5px; padding: 1px 5px; border: 1px solid var(--border-strong); border-bottom-width: 2px; border-radius: 4px; color: var(--text); background: var(--surface-2); }
 .more-info .warn { color: var(--warn); }
