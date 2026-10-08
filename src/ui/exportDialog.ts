@@ -1,5 +1,5 @@
 /**
- * 加速匯出對話框：MP4 或 GIF；加速方式可「指定倍率」或「指定長度」（自動換算倍率），
+ * 製作加速版 / GIF 對話框：MP4 或 GIF；加速方式可「指定倍率」或「指定長度」（自動換算倍率），
  * 送出後在右側「工作」區顯示進度。
  */
 import {
@@ -77,7 +77,7 @@ function render() {
   const speed = effectiveSpeed();
   const dur = e.durationSec;
 
-  $("exTitle").textContent = gif ? "匯出 GIF" : "加速匯出";
+  $("exTitle").textContent = gif ? "製作 GIF" : "製作加速版";
   $("exName").textContent = e.name;
   $("exInfo").textContent = [
     e.width && `${e.width}×${e.height}`,
@@ -113,7 +113,7 @@ function render() {
       : speed !== undefined && dur / speed > target + 0.5
         ? `最多只能加速到 ${speedLabel(LIMITS.speedMax)}×，實際約 ${videoClock(dur / speed)}`
         : speed !== undefined && dur / speed < target - 0.5
-          ? `原片只有 ${videoClock(dur)}，${gif ? "以原速匯出" : `以最低倍率 ${speedLabel(speed)}× 匯出`}`
+          ? `原片只有 ${videoClock(dur)}，${gif ? "以原速製作" : `以最低倍率 ${speedLabel(speed)}× 製作`}`
           : `需要加速 ${speedLabel(speed ?? 0)}×`;
 
   // GIF 選項
@@ -127,13 +127,13 @@ function render() {
   const outName = speed ? exportFileName(e.name, speed, p.format) : "—";
   const gifNote = gif ? "；GIF 沒有聲音，檔案較大，建議 1 分鐘以內" : "";
   $("calcHint").innerHTML = speed
-    ? `${speed > 1 ? `${speedLabel(speed)}× 時，1 小時的錄影 ≈ ${humanDuration(3600 / speed)}；` : ""}輸出 <span class="mono">${esc(outName)}</span>${gifNote}`
+    ? `${speed > 1 ? `${speedLabel(speed)}× 時，1 小時的錄影 ≈ ${humanDuration(3600 / speed)}${speed >= 8 ? "，適合做成縮時影片" : ""}；` : ""}存成 <span class="mono">${esc(outName)}</span>${gifNote}`
     : "";
   $("keepAudioRow").hidden = gif || !e.hasAudio;
   $<HTMLInputElement>("keepAudio").checked = p.keepAudio;
   const btn = $<HTMLButtonElement>("exportBtn");
   btn.disabled = !speed;
-  btn.textContent = !speed ? "匯出" : gif ? `匯出 GIF${speed > 1 ? `（${speedLabel(speed)}×）` : ""}` : `匯出 ${speedLabel(speed)}× 加速版`;
+  btn.textContent = !speed ? "製作" : gif ? `製作 GIF${speed > 1 ? `（${speedLabel(speed)}×）` : ""}` : `製作 ${speedLabel(speed)}× 加速版`;
 }
 
 function bind() {

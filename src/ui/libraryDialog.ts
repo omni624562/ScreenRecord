@@ -113,7 +113,7 @@ function render() {
           <button class="btn ghost" data-act="play" title="播放" aria-label="播放">${icon("play")}</button>
           <button class="btn ghost" data-act="reveal" title="在資料夾中顯示" aria-label="在資料夾中顯示">${icon("folder")}</button>
           <button class="btn ghost" data-act="edit" title="剪輯" aria-label="剪輯">${icon("cut")}</button>
-          <button class="btn ghost" data-act="export" title="加速匯出（MP4 / GIF）" aria-label="加速匯出">${icon("export")}</button>
+          <button class="btn ghost" data-act="export" title="製作加速版 / GIF" aria-label="製作加速版 / GIF">${icon("export")}</button>
           <button class="btn ghost" data-act="rename" title="重新命名（加速版一起改）" aria-label="重新命名">${icon("edit")}</button>
         </span></td>
       </tr>${subs.join("")}`;

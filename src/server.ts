@@ -130,7 +130,7 @@ export function startServer(app: App, port: number, development: boolean) {
 
       "/api/record/start": {
         POST: api(async (req) => {
-          if (app.exporter.running) throw new ConfigError("匯出進行中，請等匯出完成再開始錄影");
+          if (app.exporter.running) throw new ConfigError("正在製作加速版 / GIF，請等完成再開始錄影");
           await app.recorder.start(await body<RecordConfig>(req));
           return json({ ok: true, ...status() });
         }),
@@ -187,7 +187,7 @@ export function startServer(app: App, port: number, development: boolean) {
       },
       "/api/export/start": {
         POST: api(async (req) => {
-          if (app.recorder.active) throw new ConfigError("錄影中無法匯出，請先停止錄影");
+          if (app.recorder.active) throw new ConfigError("錄影中無法製作加速版 / GIF，請先停止錄影");
           const { source, speed, keepAudio, format, gifWidth, gifFps } = await body<{
             source: string;
             speed: number;

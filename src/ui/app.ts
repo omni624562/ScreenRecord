@@ -722,7 +722,7 @@ const actionButtons = (path: string, opts: { edit?: boolean; export?: boolean } 
   `<button class="btn small" data-act="play" data-path="${esc(path)}">${icon("play")}播放</button>
    <button class="btn small" data-act="reveal" data-path="${esc(path)}">${icon("folder")}顯示</button>
    ${opts.edit ? `<button class="btn small" data-act="edit" data-path="${esc(path)}">${icon("cut")}剪輯</button>` : ""}
-   ${opts.export ? `<button class="btn small" data-act="export" data-path="${esc(path)}">${icon("export")}加速匯出</button>` : ""}`;
+   ${opts.export ? `<button class="btn small" data-act="export" data-path="${esc(path)}">${icon("export")}製作加速版 / GIF</button>` : ""}`;
 
 function renderRecorder() {
   if (!rec) return;
@@ -798,7 +798,7 @@ function renderRecorder() {
 
 let dismissedJob: number | undefined;
 
-/** 右側「工作」卡：加速匯出 / 剪輯的進度 */
+/** 右側「工作」卡：製作加速版 / GIF、剪輯的進度 */
 function renderJob() {
   const card = $("jobCard");
   card.hidden = !exp || (dismissedJob === exp.id && exp.state !== "running");
@@ -806,7 +806,7 @@ function renderJob() {
   const name = exp.output.split(/[\\/]/).pop() ?? "";
   card.className = `job ${exp.state}`;
   const pct = Math.floor(exp.progress * 100);
-  const label = exp.kind === "cut" ? "剪輯" : exp.kind === "gif" ? `GIF${exp.speed > 1 ? ` ${speedLabel(exp.speed)}×` : ""} 匯出` : `加速 ${speedLabel(exp.speed)}×`;
+  const label = exp.kind === "cut" ? "剪輯" : exp.kind === "gif" ? `製作 GIF${exp.speed > 1 ? ` ${speedLabel(exp.speed)}×` : ""}` : `製作 ${speedLabel(exp.speed)}× 加速版`;
   const title = { running: `${label}中`, done: `${label}完成`, error: `${label}失敗`, canceled: `${label}已取消` }[exp.state];
   $("jobTitle").textContent = title;
   $("jobMeta").textContent = exp.state === "running"
@@ -826,7 +826,7 @@ function renderJob() {
     if (finished) {
       void loadRecent();
       if (isLibraryOpen()) void reloadLibraryDialog();
-      if (exp.state === "done") toast(exp.kind === "cut" ? "剪輯完成" : exp.kind === "gif" ? "GIF 匯出完成" : "加速版匯出完成");
+      if (exp.state === "done") toast(exp.kind === "cut" ? "剪輯完成" : exp.kind === "gif" ? "GIF 製作完成" : "加速版製作完成");
     }
   }
 }
@@ -901,7 +901,7 @@ function renderRecent() {
             /_cut(_\d+)?\.mp4$/i.test(e.name) ? `<span class="tag cut">剪輯版</span>` : "",
             // 卡片放不下各個倍率，只顯示數量；倍率在滑鼠提示與「全部錄影」的子列
             e.exports.length
-              ? `<span class="tag speed" title="${esc(`已匯出 ${e.exports.map(exportTag).join("、")}`)}">${e.exports.some((x) => x.format === "gif") ? "匯出" : "加速"} ${e.exports.length}</span>`
+              ? `<span class="tag speed" title="${esc(`已製作 ${e.exports.map(exportTag).join("、")}`)}">${e.exports.every((x) => x.format === "gif") ? "GIF" : "加速"} ${e.exports.length}</span>`
               : "",
           ].join("");
           return `<div class="rcard" title="${esc(e.name)}">
@@ -913,7 +913,7 @@ function renderRecent() {
               <button class="btn ghost" data-act="play" data-path="${esc(e.path)}" title="播放" aria-label="播放">${icon("play")}</button>
               <button class="btn ghost" data-act="reveal" data-path="${esc(e.path)}" title="在資料夾中顯示" aria-label="在資料夾中顯示">${icon("folder")}</button>
               <button class="btn ghost" data-act="edit" data-path="${esc(e.path)}" title="剪輯" aria-label="剪輯">${icon("cut")}</button>
-              <button class="btn ghost" data-act="export" data-path="${esc(e.path)}" title="加速匯出（MP4 / GIF）" aria-label="加速匯出">${icon("export")}</button>
+              <button class="btn ghost" data-act="export" data-path="${esc(e.path)}" title="製作加速版 / GIF" aria-label="製作加速版 / GIF">${icon("export")}</button>
             </div>
             </div>
           </div>`;
@@ -979,7 +979,7 @@ function openFile(action: "play" | "reveal", path: string) {
 
 function act(action: EntryAction, entry: LibraryEntry) {
   if (action === "play" || action === "reveal") return openFile(action, entry.path);
-  if (locked()) return toast(`錄影中無法${action === "edit" ? "剪輯" : "匯出"}，請先停止錄影`, true);
+  if (locked()) return toast(`錄影中無法${action === "edit" ? "剪輯" : "製作加速版 / GIF"}，請先停止錄影`, true);
   if (exp?.state === "running") return toast("目前有轉檔工作進行中，請等它完成", true);
   if (!entry.durationSec) return toast("無法讀取影片長度", true);
   if (action === "edit") {
@@ -1015,7 +1015,7 @@ function act(action: EntryAction, entry: LibraryEntry) {
       start: async (req) => {
         applyStatus(await api("/api/export/start", req));
         dismissedJob = undefined;
-        toast("已開始匯出，進度顯示在右側");
+        toast("已開始製作，進度顯示在右側");
       },
       toast,
     });

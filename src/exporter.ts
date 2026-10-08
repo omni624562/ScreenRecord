@@ -26,7 +26,7 @@ export interface ExporterDeps {
   encoder(): EncoderSpec | undefined;
 }
 
-const KIND_TEXT = { speed: "匯出", gif: "GIF 匯出", cut: "剪輯" } as const;
+const KIND_TEXT = { speed: "加速版", gif: "GIF", cut: "剪輯" } as const;
 
 export class Exporter {
   private job?: Job;
