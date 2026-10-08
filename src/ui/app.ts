@@ -589,6 +589,7 @@ function setupDrops() {
   }
   document.addEventListener("click", () => closeAll());
   document.addEventListener("keydown", (e) => e.key === "Escape" && closeAll());
+  blockBrowserChrome();
 }
 
 function bindSettings() {
@@ -1170,6 +1171,27 @@ function bindChangelog() {
   fromHash();
   window.addEventListener("hashchange", fromHash);
   $("changelogDlg").querySelector("[data-close]")!.addEventListener("click", () => $<HTMLDialogElement>("changelogDlg").close());
+}
+
+/**
+ * 讓操作視窗像桌面程式：關掉瀏覽器的右鍵選單（可打字的欄位保留，方便複製貼上）、
+ * 另存新檔 / 列印 / 原始碼 / 尋找等快捷鍵，以及會讓版面跑掉的縮放。重新載入（Ctrl+R / F5）保留，畫面卡住時可用。
+ */
+function blockBrowserChrome() {
+  const editable = (t: EventTarget | null) =>
+    t instanceof HTMLElement && (t.isContentEditable || (t instanceof HTMLInputElement && !["checkbox", "radio", "range", "button"].includes(t.type)) || t instanceof HTMLTextAreaElement);
+  document.addEventListener("contextmenu", (e) => {
+    if (!editable(e.target)) e.preventDefault();
+  });
+  document.addEventListener("keydown", (e) => {
+    if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
+    const k = e.key.toLowerCase();
+    if (["s", "p", "u", "f", "g", "o", "=", "+", "-", "0"].includes(k)) e.preventDefault();
+  });
+  // Ctrl+滾輪縮放
+  document.addEventListener("wheel", (e) => {
+    if (e.ctrlKey) e.preventDefault();
+  }, { passive: false });
 }
 
 // ───────────── 啟動 ─────────────

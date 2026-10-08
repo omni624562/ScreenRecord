@@ -2,6 +2,7 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { run } from "./ffmpeg.ts";
+import { logDir } from "./log.ts";
 import { isCompiled } from "./paths.ts";
 import { openWithExplorer } from "./server.ts";
 
@@ -29,12 +30,24 @@ export function findAppBrowser(): string | undefined {
  * 開啟操作視窗：用 Chrome 的 app 模式（沒有網址列與分頁的獨立視窗）；沒有 Chrome 用 Edge，
  * 兩者都沒有才交給預設瀏覽器。
  * detached：不放進本程式的 Job Object，關閉本程式時不會連帶關掉使用者的瀏覽器。
+ * 使用獨立的設定檔（%LOCALAPPDATA%\ScreenRecorder\browser）：不帶使用者的擴充功能、翻譯提示，
+ * 右鍵與視窗選單裡不會出現 Acrobat 之類的項目，也不影響使用者平常的瀏覽器。
  */
 export function openUi(url: string) {
   const browser = findAppBrowser();
   if (browser) {
     try {
-      Bun.spawn([browser, `--app=${url}`, "--window-size=1280,900"], { stdin: "ignore", stdout: "ignore", stderr: "ignore", detached: true });
+      Bun.spawn([
+        browser,
+        `--app=${url}`,
+        "--window-size=1280,900",
+        `--user-data-dir=${join(logDir, "browser")}`,
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--disable-extensions",
+        "--disable-sync",
+        "--disable-features=Translate",
+      ], { stdin: "ignore", stdout: "ignore", stderr: "ignore", detached: true });
       return;
     } catch {
       // 改用預設瀏覽器
