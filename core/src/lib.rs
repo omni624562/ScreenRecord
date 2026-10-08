@@ -21,6 +21,7 @@ pub mod monitors;
 pub mod log;
 pub mod paths;
 pub mod process;
+pub mod recorder;
 pub mod recycle;
 pub mod settings;
 pub mod thumbs;

@@ -446,7 +446,7 @@ pub struct AudioPipe {
     desc: String,
     synced: Arc<AtomicBool>,
     tx: mpsc::Sender<Cmd>,
-    thread: Option<std::thread::JoinHandle<()>>,
+    thread: std::sync::Mutex<Option<std::thread::JoinHandle<()>>>,
 }
 
 impl AudioPipe {
@@ -489,7 +489,7 @@ impl AudioPipe {
             }
         })?;
         let desc = desc_rx.recv().unwrap_or_default();
-        Ok(AudioPipe { port, desc, synced, tx, thread: Some(thread) })
+        Ok(AudioPipe { port, desc, synced, tx, thread: std::sync::Mutex::new(Some(thread)) })
     }
 
     pub fn port(&self) -> u16 {
@@ -526,9 +526,10 @@ impl AudioPipe {
     }
 
     /// 立即釋放（FFmpeg 已結束時）
-    pub fn close(&mut self) {
+    pub fn close(&self) {
         let _ = self.tx.send(Cmd::Close);
-        if let Some(t) = self.thread.take() {
+        let thread = self.thread.lock().unwrap().take();
+        if let Some(t) = thread {
             let _ = t.join();
         }
     }
@@ -709,7 +710,7 @@ mod tests {
         let packets: Packets = Default::default();
         let fail = Arc::new(AtomicBool::new(false));
         let (log, _) = logs();
-        let mut pipe = AudioPipe::new(vec![AudioSourceSpec { loopback: true, mic_id: String::new() }], fake_opener(packets, fail), log).unwrap();
+        let pipe = AudioPipe::new(vec![AudioSourceSpec { loopback: true, mic_id: String::new() }], fake_opener(packets, fail), log).unwrap();
         assert_eq!(pipe.describe(), "系統聲音（假裝置）");
         let args = pipe.input_args();
         assert_eq!(args.last().unwrap(), &format!("tcp://127.0.0.1:{}", pipe.port()));

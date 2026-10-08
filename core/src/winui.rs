@@ -13,7 +13,7 @@ mod imp {
     use windows::core::BOOL;
     use windows::Win32::Foundation::{HWND, LPARAM, RECT};
     use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_EXTENDED_FRAME_BOUNDS};
-    use windows::Win32::UI::WindowsAndMessaging::{EnumWindows, GetWindowRect, GetWindowTextW, IsIconic, IsWindowVisible, ShowWindow, SW_MINIMIZE, SW_SHOWNOACTIVATE};
+    use windows::Win32::UI::WindowsAndMessaging::{EnumWindows, GetWindowRect, InternalGetWindowText, IsIconic, IsWindowVisible, ShowWindow, SW_MINIMIZE, SW_SHOWNOACTIVATE};
 
     /// 先前縮小的視窗（HWND 以整數保存，才能跨執行緒）
     static MINIMIZED: Mutex<Vec<isize>> = Mutex::new(Vec::new());
@@ -26,8 +26,9 @@ mod imp {
     unsafe extern "system" fn visit(hwnd: HWND, lparam: LPARAM) -> BOOL {
         let search = &mut *(lparam.0 as *mut Search);
         if IsWindowVisible(hwnd).as_bool() && !IsIconic(hwnd).as_bool() {
+            // InternalGetWindowText 不送 WM_GETTEXT：操作視窗就在本程式裡，不能等它的執行緒回應
             let mut buf = [0u16; 256];
-            let n = GetWindowTextW(hwnd, &mut buf);
+            let n = InternalGetWindowText(hwnd, &mut buf);
             if n > 0 && String::from_utf16_lossy(&buf[..n as usize]).starts_with(search.prefix) {
                 search.found.push(hwnd);
             }
