@@ -1,4 +1,4 @@
-//! 計算與格式化（對應 src/shared/format.ts；介面那邊用同樣的規則，兩邊結果必須一致）。
+//! 計算與格式化（介面那邊用同樣的規則，兩邊結果必須一致）。
 
 use crate::types::ExportFormat;
 use regex::Regex;

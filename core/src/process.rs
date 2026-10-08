@@ -1,4 +1,4 @@
-//! 執行子行程（對應 src/ffmpeg.ts 的 run 與 src/util.ts 的 readLines）。
+//! 執行子行程。
 //! Windows 上不顯示主控台視窗；逾時會強制結束。
 
 use std::ffi::OsStr;

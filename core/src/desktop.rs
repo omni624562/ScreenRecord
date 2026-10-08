@@ -1,4 +1,4 @@
-//! 與 Windows 桌面整合（對應 src/desktop.ts 與 server.ts 的 openWithExplorer）：
+//! 與 Windows 桌面整合：
 //! 開機自動啟動、用檔案總管開啟檔案 / 網址、找可用 app 模式開啟的瀏覽器（操作視窗無法使用時的備案）。
 
 use crate::process::run;

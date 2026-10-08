@@ -1,4 +1,4 @@
-//! 轉檔工作（對應 src/exporter.ts）：製作加速版、GIF、剪輯。同一時間只跑一個，避免搶 CPU；原檔不變。
+//! 轉檔工作：製作加速版、GIF、剪輯。同一時間只跑一個，避免搶 CPU；原檔不變。
 
 use crate::args::{cut_args, export_args, gif_args, EncoderSpec, GifOptions};
 use crate::edit::{cut_file_name, keep_ranges, normalize_crop, total_length, EditSpec};

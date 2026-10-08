@@ -1,4 +1,4 @@
-//! WASAPI 音訊擷取（對應 src/audio.ts）。
+//! WASAPI 音訊擷取。
 //!
 //! FFmpeg 在 Windows 只能透過 dshow 錄麥克風，錄不到「電腦正在播放的聲音」，
 //! 因此系統聲音（loopback）與麥克風都在這裡自行擷取，統一轉成 48 kHz / 立體聲 / float32，

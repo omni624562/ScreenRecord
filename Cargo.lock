@@ -3096,9 +3096,12 @@ dependencies = [
 name = "screenrecorder-ui"
 version = "1.0.0"
 dependencies = [
+ "screenrecorder-core",
+ "serde_json",
  "tauri",
  "tauri-build",
  "tauri-plugin-single-instance",
+ "tokio",
 ]
 
 [[package]]

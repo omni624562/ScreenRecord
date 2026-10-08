@@ -1,4 +1,4 @@
-//! 檢查新版本（對應 src/updater.ts）：查詢 GitHub Releases 的最新版本，比目前新就提示（不會自動下載或安裝）。
+//! 檢查新版本：查詢 GitHub Releases 的最新版本，比目前新就提示（不會自動下載或安裝）。
 //! 只送出一個不帶任何個人資料的 GET 請求；網路不通或被限流時由呼叫端略過。
 
 use crate::types::UpdateInfo;

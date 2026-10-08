@@ -1,4 +1,4 @@
-# Rust 部分：shell = 操作視窗（Tauri / WebView2），core = 後端（錄影、轉檔、清單、HTTP API…，不依賴 Tauri，可在任何平台測試）
+# shell = 主程式（Tauri / WebView2 操作視窗、單一實例），core = 後端（錄影、轉檔、清單、HTTP API、系統匣…，不依賴 Tauri，可在 Linux 上測試）
 [workspace]
 members = ["core", "shell"]
 resolver = "2"
@@ -7,10 +7,9 @@ resolver = "2"
 edition = "2021"
 publish = false
 
-# 發佈版：優先檔案小
+# 發佈版：優先檔案小。不設 panic = "abort"：背景工作出錯時只結束那個工作，不會連同錄影中的程式一起結束
 [profile.release]
 opt-level = "s"
 lto = true
 codegen-units = 1
-panic = "abort"
 strip = true

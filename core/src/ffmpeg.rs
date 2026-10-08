@@ -1,4 +1,4 @@
-//! 尋找 ffmpeg.exe 並偵測功能（對應 src/ffmpeg.ts）：ddagrab、gdigrab、H.264 編碼器。
+//! 尋找 ffmpeg.exe 並偵測功能：ddagrab、gdigrab、H.264 編碼器。
 
 use crate::args::{encoder_spec, EncoderSpec, ENCODERS, HARDWARE_ENCODERS};
 use crate::paths::{app_dir, data_dir};
@@ -11,7 +11,7 @@ use std::time::Duration;
 
 const EXE: &str = if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" };
 
-/// 在 PATH 裡找執行檔（Bun.which）
+/// 在 PATH 裡找執行檔
 pub fn which(name: &str) -> Option<PathBuf> {
     let path = std::env::var_os("PATH")?;
     std::env::split_paths(&path).map(|d| d.join(name)).find(|p| p.is_file())

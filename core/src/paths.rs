@@ -1,4 +1,4 @@
-//! 資料夾位置與時間戳（對應 src/paths.ts、src/log.ts 的 logDir）。
+//! 資料夾位置與時間戳。
 
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;

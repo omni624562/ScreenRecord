@@ -1,4 +1,4 @@
-//! 剪輯計算（對應 src/shared/edit.ts）：保留哪些時間區段、裁切範圍、輸出檔名。
+//! 剪輯計算：保留哪些時間區段、裁切範圍、輸出檔名。
 
 use crate::format::{js_round, strip_mp4};
 use crate::types::Rect;

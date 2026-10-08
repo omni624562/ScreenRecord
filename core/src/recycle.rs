@@ -1,4 +1,4 @@
-//! 把檔案移到資源回收筒（對應 src/recycle.ts）：SHFileOperationW + FOF_ALLOWUNDO，可從資源回收筒還原。
+//! 把檔案移到資源回收筒：SHFileOperationW + FOF_ALLOWUNDO，可從資源回收筒還原。
 
 use crate::error::{Error, Result};
 

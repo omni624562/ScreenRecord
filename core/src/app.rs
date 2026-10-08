@@ -1,4 +1,4 @@
-//! 全域狀態（對應 src/app.ts）：FFmpeg 偵測結果、螢幕與音訊裝置清單、錄影器、轉檔、下載、檢查新版本、預覽。
+//! 全域狀態：FFmpeg 偵測結果、螢幕與音訊裝置清單、錄影器、轉檔、下載、檢查新版本、預覽。
 
 use crate::args::{desktop_rect, encoder_spec, preview_args, EncoderSpec};
 use crate::downloader::{Deps as DownloadDeps, Downloader};

@@ -1,4 +1,4 @@
-//! 設定存檔：%LOCALAPPDATA%\ScreenRecorder\settings.json（對應 src/settings.ts，檔案格式相同，Bun 版與 Rust 版可互通）
+//! 設定存檔：%LOCALAPPDATA%\ScreenRecorder\settings.json（與 1.x 版的檔案格式相同，升級後沿用原本的設定）
 //! - ui：網頁介面的完整設定
 //! - config：最後一次的錄影設定，系統匣選單「開始錄影」直接使用
 //!
@@ -82,7 +82,7 @@ impl SettingsStore {
         *self.cache.lock().unwrap() = Some(next.clone());
         let rev = next.rev;
         next.rev = 0;
-        // 存檔不含 rev（與 Bun 版相同）
+        // 存檔不含 rev
         let mut v = serde_json::to_value(&next).unwrap_or(Value::Null);
         if let Value::Object(m) = &mut v {
             m.remove("rev");

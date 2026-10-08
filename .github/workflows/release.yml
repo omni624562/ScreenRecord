@@ -49,22 +49,20 @@ jobs:
       - name: 安裝套件
         run: bun install --frozen-lockfile
 
-      # 操作視窗程式（Tauri / WebView2）：內嵌進主程式 exe
       - uses: Swatinem/rust-cache@v2
 
-      - name: 建置操作視窗（Rust）
-        run: |
-          bun run scripts/make-icon.ts
-          cargo build --release --locked -p screenrecorder-ui
-
-      - name: 測試後端（Rust）
-        run: cargo test --locked -p screenrecorder-core
-
+      # 網頁介面與共用計算（TypeScript，由 Bun 打包進 exe）
       - name: 型別檢查
         run: bun run typecheck
 
-      - name: 測試
+      - name: 測試介面共用計算
         run: bun test
+
+      # 後端（Rust）：建置時會用 Bun 打包網頁介面並內嵌
+      - name: 測試後端
+        run: |
+          bun run scripts/make-icon.ts
+          cargo test --locked -p screenrecorder-core
 
       # 要發佈的 tag（不發佈時留空）：
       #   推送 tag → 那個 tag；手動勾選 publish → package.json 的版本；
@@ -96,14 +94,11 @@ jobs:
         run: bun run scripts/release-notes.ts --check-tag "${RELEASE_TAG}" > release-notes.md
 
       - name: 建置 exe
-        run: bun run build
+        run: bun run scripts/build.ts --locked
 
-      # 發佈的 exe 一定要內嵌操作視窗程式，否則使用者會退回瀏覽器視窗
-      - name: 確認已內嵌操作視窗
+      - name: 確認建置結果
         shell: bash
-        run: |
-          test -f target/release/screenrecorder-ui.exe
-          ls -l target/release/screenrecorder-ui.exe dist/ScreenRecorder.exe
+        run: ls -l dist/ScreenRecorder.exe
 
       # 程式碼簽章（選用）：在 repo 的 Settings → Secrets 設定 SIGN_CERT_PFX（.pfx 的 base64）與 SIGN_CERT_PASSWORD 才會執行
       - name: 簽章
@@ -119,7 +114,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "簽章失敗" }
           Remove-Item $pfx
 
-      # 壓縮版：exe 幾乎都是 Bun 執行環境，zip 後下載量約少 60%（簽章後才壓縮，zip 內的 exe 也有簽章）
+      # 壓縮版（簽章後才壓縮，zip 內的 exe 也有簽章）
       - name: 壓縮
         shell: pwsh
         run: Compress-Archive -Path dist\ScreenRecorder.exe -DestinationPath dist\ScreenRecorder.zip -CompressionLevel Optimal

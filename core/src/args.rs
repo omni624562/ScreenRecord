@@ -1,4 +1,4 @@
-//! 組 FFmpeg 參數（對應 src/args.ts；純函式，方便測試）。
+//! 組 FFmpeg 參數（純函式，方便測試）。
 
 use crate::error::{Error, Result};
 use crate::format::{even, num, output_size, FPS_MAX, FPS_MIN, MAX_MINUTES_MAX, SPEED_MAX, SPEED_MIN};

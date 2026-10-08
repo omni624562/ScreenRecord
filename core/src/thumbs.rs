@@ -1,4 +1,4 @@
-//! 錄影清單的縮圖（對應 src/thumbs.ts）：用 FFmpeg 擷取一張畫面（320px 寬 JPEG），存在 %LOCALAPPDATA%\ScreenRecorder\thumbs。
+//! 錄影清單的縮圖：用 FFmpeg 擷取一張畫面（320px 寬 JPEG），存在 %LOCALAPPDATA%\ScreenRecorder\thumbs。
 //!
 //! 以「路徑 + 大小 + 修改時間」為鍵：檔案被覆寫時自動重做；同時最多產生 2 張。
 //! 請求被取消（關掉清單、換頁）時 future 被丟棄，還在排隊的不會產生；產生失敗的檔案 10 分鐘內不再重試。

@@ -1,4 +1,4 @@
-//! 以 DXGI 列舉所有顯示輸出（對應 src/monitors.ts）。
+//! 以 DXGI 列舉所有顯示輸出。
 //!
 //! 用 DXGI 而不是 GDI：ddagrab 的 output_idx 是「某張顯示卡上的第幾個 output」，
 //! 只有 IDXGIFactory1::EnumAdapters1 + IDXGIAdapter::EnumOutputs 能給出一致的 (adapter, output) 索引，

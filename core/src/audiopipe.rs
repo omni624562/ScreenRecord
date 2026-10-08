@@ -1,4 +1,4 @@
-//! 把 WASAPI 擷取的聲音對齊畫面時間後，以 raw float32 經本機 TCP 送進 FFmpeg（對應 src/audiopipe.ts）。
+//! 把 WASAPI 擷取的聲音對齊畫面時間後，以 raw float32 經本機 TCP 送進 FFmpeg。
 //!
 //! 時間對齊：
 //! - 畫面：FFmpeg 的 showinfo 每張畫面印一行 pts；畫面時間零點 ≈ min(收到該行的 QPC 時間 − pts)，

@@ -1,4 +1,4 @@
-//! 本機網頁介面與 API（只綁 127.0.0.1；對應 src/server.ts，路徑與 JSON 格式相同，介面不需修改）。
+//! 本機網頁介面與 API（只綁 127.0.0.1；路徑與 JSON 格式即網頁介面使用的格式）。
 
 use crate::app::App;
 use crate::edit::{CropInput, EditSpec};
@@ -248,7 +248,7 @@ pub fn router(app: Arc<App>, port: u16) -> Router {
         .route(
             "/api/export/cancel",
             post(|State(c): State<Ctx>| async move {
-                // 沒有進行中的工作時也回 ok（與 Bun 版相同）
+                // 沒有進行中的工作時也回 ok
                 let _ = c.app.exporter.cancel();
                 ok_status(&c.app)
             }),
