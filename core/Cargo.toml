@@ -22,7 +22,23 @@ ureq = { version = "2", default-features = false, features = ["native-tls", "gzi
 native-tls = "0.2"
 windows = { version = "0.62", features = [
   "Win32_Foundation",
+  "Win32_Devices_FunctionDiscovery",
+  "Win32_Graphics_Dwm",
+  "Win32_Graphics_Dxgi",
+  "Win32_Graphics_Dxgi_Common",
+  "Win32_Graphics_Gdi",
+  "Win32_Media_Audio",
+  "Win32_Security",
+  "Win32_System_Com",
+  "Win32_System_Com_StructuredStorage",
+  "Win32_System_JobObjects",
+  "Win32_System_Performance",
+  "Win32_System_Threading",
+  "Win32_System_Variant",
+  "Win32_UI_HiDpi",
   "Win32_UI_Shell",
+  "Win32_UI_Shell_PropertiesSystem",
+  "Win32_UI_WindowsAndMessaging",
 ] }
 
 [dev-dependencies]
