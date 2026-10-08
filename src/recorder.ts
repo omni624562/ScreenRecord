@@ -23,6 +23,7 @@ import type {
   RecorderState,
   RecorderStatus,
   RecordingResult,
+  Rect,
 } from "./shared/types.ts";
 
 interface Segment {
@@ -58,8 +59,8 @@ export interface RecorderDeps {
   monitors(): MonitorInfo[];
   /** ddagrab 是否可用（濾鏡存在且實測沒失敗；上次失敗時會重新測試） */
   ddagrabUsable(): Promise<boolean>;
-  /** 倒數結束、開始擷取前（縮小操作視窗等） */
-  beforeCapture?(config: RecordConfig): Promise<void>;
+  /** 倒數結束、開始擷取前（縮小擋到擷取範圍的操作視窗等）；area 為擷取範圍（虛擬桌面的實體像素座標） */
+  beforeCapture?(area: Rect): Promise<void>;
   /** 錄影結束（已儲存或失敗）後（還原操作視窗等） */
   afterStop?(): void;
   /** 需要使用者注意的事（系統匣通知） */
@@ -174,6 +175,11 @@ export class Recorder {
 
   get active() {
     return this.state !== "idle";
+  }
+
+  /** 錄影中（含儲存中）要寫入的成品路徑：不能改名或刪除 */
+  get outputPath(): string | undefined {
+    return this.active ? this.finalPath : undefined;
   }
 
   /** 正在準備開始（狀態可能仍是待命）；快捷鍵用來判斷再按一次是「取消」 */
@@ -325,7 +331,7 @@ export class Recorder {
       if (canceled || this.cancelRequested || this.shuttingDown) return abandon();
     }
     // 縮小視窗的那 0.35 秒仍算倒數（this.countdown 保留到這之後），期間取消也有效
-    if (config.hideUi !== false) await this.deps.beforeCapture?.(config).catch(() => {});
+    if (config.hideUi !== false) await this.deps.beforeCapture?.(plan.rect).catch(() => {});
     if (this.cancelRequested || this.shuttingDown) return abandon(config.hideUi !== false);
     this.countdown = undefined;
 

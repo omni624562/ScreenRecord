@@ -123,7 +123,7 @@
                       <option value="10">10 秒</option>
                     </select>
                   </label>
-                  <label class="check"><input type="checkbox" id="hideUi" />開始時縮小這個視窗</label>
+                  <label class="check"><input type="checkbox" id="hideUi" />開始時縮小這個視窗（在錄影範圍內時）</label>
                 </div>
                 <div class="more-info">
                   <div id="hotkeyInfo"></div>
@@ -405,6 +405,23 @@
           <button class="btn primary" id="edSave" type="button">另存剪輯版</button>
         </div>
       </footer>
+    </dialog>
+
+    <!-- 確認 / 輸入（取代瀏覽器內建的 confirm / prompt） -->
+    <dialog class="dlg ask-dlg" id="askDlg" aria-labelledby="askTitle">
+      <form method="dialog" id="askForm">
+        <header class="dlg-head"><h2 id="askTitle"></h2></header>
+        <div class="dlg-body">
+          <p id="askMsg"></p>
+          <ul class="ask-list mono" id="askList" hidden></ul>
+          <label class="field" id="askField" hidden><span id="askLabel"></span><input type="text" id="askInput" spellcheck="false" autocomplete="off" /></label>
+          <p class="ask-error" id="askError" role="alert" hidden></p>
+        </div>
+        <footer class="dlg-foot ask-foot">
+          <button class="btn ghost" type="button" id="askCancel">取消</button>
+          <button class="btn primary" type="submit" id="askOk">確定</button>
+        </footer>
+      </form>
     </dialog>
 
     <!-- 更新說明 -->

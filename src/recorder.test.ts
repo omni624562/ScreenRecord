@@ -106,6 +106,21 @@ describe("開始錄影的取消與連按", () => {
     expect(partsLeft(s.outputDir)).toBe(false);
   });
 
+  test("縮小視窗時傳入擷取範圍", async () => {
+    let rec!: Recorder;
+    let area: unknown;
+    const s = setup({
+      beforeCapture: async (a) => {
+        area = a;
+        void rec.stop();
+      },
+    });
+    rec = s.rec;
+    s.releaseEncoders();
+    await rec.start(s.config({ countdownSec: 0, source: { type: "region", x: 100, y: 50, width: 640, height: 480 } }));
+    expect(area).toEqual({ x: 100, y: 50, width: 640, height: 480 });
+  });
+
   test("結束程式時正在準備：等它收拾好再結束", async () => {
     const { rec, config, outputDir, releaseEncoders } = setup();
     const started = rec.start(config());

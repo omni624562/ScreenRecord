@@ -1,10 +1,12 @@
 /**
- * 操作視窗的縮小 / 還原：開始擷取時把操作視窗縮到工作列（避免錄到它），停止後再還原，
+ * 操作視窗的縮小 / 還原：開始擷取時把擋到擷取範圍的操作視窗縮到工作列（避免錄到它），停止後再還原，
  * 讓使用者馬上看到「錄影已儲存」。以視窗標題（「螢幕錄影 v…」）辨識。
  */
 import { dlopen, FFIType, JSCallback, ptr, type Pointer } from "bun:ffi";
+import { intersects } from "./args.ts";
+import type { Rect } from "./shared/types.ts";
 
-const { i32, i64, ptr: P } = FFIType;
+const { i32, i64, u32, ptr: P } = FFIType;
 let user32: ReturnType<typeof load> | undefined;
 function load() {
   return dlopen("user32.dll", {
@@ -13,6 +15,13 @@ function load() {
     IsWindowVisible: { args: [P], returns: i32 },
     IsIconic: { args: [P], returns: i32 },
     ShowWindow: { args: [P, i32], returns: i32 },
+    GetWindowRect: { args: [P, P], returns: i32 },
+  });
+}
+let dwmapi: ReturnType<typeof loadDwm> | null | undefined;
+function loadDwm() {
+  return dlopen("dwmapi.dll", {
+    DwmGetWindowAttribute: { args: [P, u32, P, u32], returns: i32 },
   });
 }
 
@@ -45,13 +54,41 @@ function findUiWindows(prefix: string): Pointer[] {
   return found;
 }
 
+const DWMWA_EXTENDED_FRAME_BOUNDS = 9;
+
+/**
+ * 視窗看得到的範圍（實體像素）。優先用 DWM 的外框：GetWindowRect 含不可見的縮放邊框，
+ * 最大化的視窗會多出約 8px 到隔壁螢幕上，被誤判成擋到擷取範圍。
+ */
+function windowRect(hwnd: Pointer): Rect | undefined {
+  const r = new Int32Array(4); // left, top, right, bottom
+  if (dwmapi === undefined) {
+    try {
+      dwmapi = loadDwm();
+    } catch {
+      dwmapi = null;
+    }
+  }
+  const ok = dwmapi?.symbols.DwmGetWindowAttribute(hwnd, DWMWA_EXTENDED_FRAME_BOUNDS, ptr(r), r.byteLength) === 0
+    || user32!.symbols.GetWindowRect(hwnd, ptr(r)) !== 0;
+  if (!ok) return undefined;
+  return { x: r[0]!, y: r[1]!, width: r[2]! - r[0]!, height: r[3]! - r[1]! };
+}
+
 let minimized: Pointer[] = [];
 
-/** 縮小所有操作視窗；回傳是否有縮小任何視窗 */
-export function minimizeUi(prefix = TITLE_PREFIX): boolean {
+/**
+ * 縮小操作視窗；回傳是否有縮小任何視窗。
+ * 指定 area 時只縮小與它重疊的視窗（拿不到位置的視窗一律縮小，寧可多縮也不要錄到它）。
+ */
+export function minimizeUi(area?: Rect, prefix = TITLE_PREFIX): boolean {
   if (process.platform !== "win32") return false;
   try {
-    const list = findUiWindows(prefix);
+    const list = findUiWindows(prefix).filter((h) => {
+      if (!area) return true;
+      const r = windowRect(h);
+      return !r || intersects(r, area);
+    });
     for (const h of list) user32!.symbols.ShowWindow(h, SW_MINIMIZE);
     minimized = list;
     return list.length > 0;

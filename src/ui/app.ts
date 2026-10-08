@@ -14,7 +14,7 @@ import type {
   UpdateInfo,
 } from "../shared/types.ts";
 import { HOTKEY_LABELS } from "../shared/types.ts";
-import { $, api, clamp, esc, guarded, icon, observeThumbs, setHtml, shortDate, thumbUrl, toast } from "./common.ts";
+import { $, api, baseName, clamp, esc, guarded, icon, isDefaultName, observeThumbs, setHtml, shortDate, thumbUrl, toast } from "./common.ts";
 import { openEditor } from "./editor.ts";
 import { openExport } from "./exportDialog.ts";
 import { exportTag, isLibraryOpen, load as reloadLibraryDialog, openLibrary, type EntryAction } from "./libraryDialog.ts";
@@ -190,15 +190,19 @@ function renderEnv() {
   const chips: string[] = [];
   if (env.update)
     chips.push(`<a class="chip new" href="${esc(env.update.url)}" target="_blank" rel="noopener" title="點一下前往下載頁面">有新版本 v${esc(env.update.version)}</a>`);
-  if (ff.found) chips.push(`<span class="chip ok" title="${esc(ff.path ?? "")}">FFmpeg ${esc((ff.version ?? "").split("-")[0]!)}</span>`);
+  // 正常的項目合併成一個「已就緒」（細節在滑鼠提示），有問題的才個別顯示：單行放得下、不會被截斷
+  const ok: string[] = [];
+  if (ff.found) ok.push(`FFmpeg ${(ff.version ?? "").split("-")[0]}（${ff.path ?? ""}）`);
   else chips.push(`<span class="chip bad">找不到 FFmpeg</span>`);
   if (ff.found) {
     if (!ff.hasDdagrab) chips.push(`<span class="chip warn" title="此 FFmpeg 不含 ddagrab，將使用 gdigrab">gdigrab</span>`);
     else if (ff.ddagrabWorks === undefined) chips.push(`<span class="chip">ddagrab 測試中…</span>`);
-    else if (ff.ddagrabWorks) chips.push(`<span class="chip ok" title="Desktop Duplication（GPU 擷取）可用">ddagrab</span>`);
+    else if (ff.ddagrabWorks) ok.push("擷取：ddagrab（GPU 擷取）");
     else chips.push(`<span class="chip warn" title="${esc(ff.ddagrabError ?? "")}">ddagrab 不可用 → gdigrab</span>`);
-    chips.push(`<span class="chip ${ff.encoder ? "ok" : "bad"}">${esc(ff.encoder ?? "無 H.264 編碼器")}</span>`);
+    if (ff.encoder) ok.push(`編碼：${ff.encoder}`);
+    else chips.push(`<span class="chip bad">無 H.264 編碼器</span>`);
   }
+  if (ok.length) chips.push(`<span class="chip ok" title="${esc(ok.join("\n"))}">${chips.some((c) => /chip (bad|warn)/.test(c)) ? `FFmpeg ${esc((ff.version ?? "").split("-")[0]!)}` : "已就緒"}</span>`);
   setHtml($("envChips"), chips.join(""));
   // 版本號顯示在視窗標題列（Chrome / Edge app 模式的標題就是頁面標題）
   document.title = `螢幕錄影 v${env.appVersion}`;
@@ -741,7 +745,7 @@ function renderRecorder() {
   stop.disabled = r.state === "stopping";
   setHtml(stop, r.state === "countdown" ? `${icon("stop")}取消倒數` : `${icon("stop")}停止`);
   const hk = env.hotkeys?.record ? `，或按 ${HOTKEY_LABELS.record} 取消` : "";
-  $("countdownHint").textContent = `即將開始錄影${S.hideUi ? "，這個視窗會自動縮小" : ""}${hk}`;
+  $("countdownHint").textContent = `即將開始錄影${S.hideUi ? "，這個視窗若在錄影範圍內會自動縮小" : ""}${hk}`;
   $<HTMLButtonElement>("pauseBtn").disabled = !!r.busy && r.state !== "recording";
   $<HTMLButtonElement>("resumeBtn").disabled = !!r.busy;
 
@@ -878,18 +882,21 @@ function renderRecent() {
           const tags = [
             e.hasAudio ? `<span class="tag audio">聲音</span>` : "",
             /_cut(_\d+)?\.mp4$/i.test(e.name) ? `<span class="tag cut">剪輯版</span>` : "",
-            e.exports.length ? `<span class="tag speed" title="${esc(e.exports.map(exportTag).join("、"))}">加速 ${e.exports.length}</span>` : "",
+            // 卡片放不下各個倍率，只顯示數量；倍率在滑鼠提示與「全部錄影」的子列
+            e.exports.length
+              ? `<span class="tag speed" title="${esc(`已匯出 ${e.exports.map(exportTag).join("、")}`)}">${e.exports.some((x) => x.format === "gif") ? "匯出" : "加速"} ${e.exports.length}</span>`
+              : "",
           ].join("");
           return `<div class="rcard" title="${esc(e.name)}">
             <img class="thumb rcard-thumb" data-src="${thumbUrl(e)}" alt="" decoding="async" />
             <div class="rcard-body">
-            <div class="rcard-top"><span class="rcard-date">${esc(shortDate(e.name, e.mtime))}</span><span>${tags}</span></div>
-            <div class="rcard-meta">${e.durationSec !== undefined ? videoClock(e.durationSec) : "—"}・${formatBytes(e.bytes)}${e.width ? `・${e.width}×${e.height}` : ""}</div>
+            <div class="rcard-top"><span class="rcard-date">${esc(isDefaultName(e.name) ? shortDate(e.name, e.mtime) : baseName(e.name))}</span><span>${tags}</span></div>
+            <div class="rcard-meta">${e.durationSec !== undefined ? videoClock(e.durationSec) : "—"}・${formatBytes(e.bytes)}</div>
             <div class="rcard-actions">
               <button class="btn ghost" data-act="play" data-path="${esc(e.path)}" title="播放" aria-label="播放">${icon("play")}</button>
               <button class="btn ghost" data-act="reveal" data-path="${esc(e.path)}" title="在資料夾中顯示" aria-label="在資料夾中顯示">${icon("folder")}</button>
               <button class="btn ghost" data-act="edit" data-path="${esc(e.path)}" title="剪輯" aria-label="剪輯">${icon("cut")}</button>
-              <button class="btn ghost" data-act="export" data-path="${esc(e.path)}" title="加速匯出" aria-label="加速匯出">${icon("fast")}</button>
+              <button class="btn ghost rcard-export" data-act="export" data-path="${esc(e.path)}" title="加速匯出（MP4 / GIF）">${icon("fast")}匯出</button>
             </div>
             </div>
           </div>`;

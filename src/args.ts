@@ -156,8 +156,9 @@ export class ConfigError extends Error {}
 const contains = (m: MonitorInfo, r: Rect) =>
   r.x >= m.x && r.y >= m.y && r.x + r.width <= m.x + m.width && r.y + r.height <= m.y + m.height;
 
-const intersects = (m: MonitorInfo, r: Rect) =>
-  r.x < m.x + m.width && r.x + r.width > m.x && r.y < m.y + m.height && r.y + r.height > m.y;
+/** 兩個範圍是否重疊（只碰到邊不算） */
+export const intersects = (a: Rect, b: Rect) =>
+  b.x < a.x + a.width && b.x + b.width > a.x && b.y < a.y + a.height && b.y + b.height > a.y;
 
 /** 所有螢幕的聯集（= Windows 虛擬桌面範圍） */
 export function desktopRect(monitors: MonitorInfo[]): Rect {

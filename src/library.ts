@@ -2,12 +2,13 @@
  * 掃描儲存資料夾內的錄影：加速版歸到原始錄影底下，支援搜尋、篩選、排序、分頁。
  * 讀取影片資訊（長度、解析度、有無聲音）要執行 FFmpeg，只對需要的檔案做，並快取結果。
  */
-import { readdir, stat } from "node:fs/promises";
-import { basename, join } from "node:path";
-import { parseMediaInfo } from "./args.ts";
+import { existsSync } from "node:fs";
+import { readdir, rename, stat } from "node:fs/promises";
+import { basename, dirname, join } from "node:path";
+import { ConfigError, parseMediaInfo } from "./args.ts";
 import { run } from "./ffmpeg.ts";
-import { parseExportName } from "./shared/format.ts";
-import type { LibraryEntry, LibraryPage, LibraryQuery, MediaInfo } from "./shared/types.ts";
+import { checkRecordingName, parseExportName } from "./shared/format.ts";
+import { LIBRARY_ROW_PX, type LibraryEntry, type LibraryPage, type LibraryQuery, type MediaInfo } from "./shared/types.ts";
 
 /** 快取的是 Promise：同一個檔案同時被要求（搜尋、換頁、匯出完成重新整理）只會執行一次 FFmpeg */
 const cache = new Map<string, { key: string; info: Promise<MediaInfo> }>();
@@ -103,6 +104,21 @@ async function withInfo(ffmpeg: string | undefined, e: LibraryEntry): Promise<Li
   return { ...info, exports };
 }
 
+/** 依高度分頁：回傳每頁第一筆的索引。一筆（含子列）放不下一整頁時自己一頁 */
+export function pageStarts(list: LibraryEntry[], fitPx: number): number[] {
+  const starts = [0];
+  let used = 0;
+  list.forEach((e, i) => {
+    const h = LIBRARY_ROW_PX.main + e.exports.length * LIBRARY_ROW_PX.sub;
+    if (used > 0 && used + h > fitPx) {
+      starts.push(i);
+      used = 0;
+    }
+    used += h;
+  });
+  return starts;
+}
+
 export async function listLibrary(ffmpeg: string | undefined, dir: string, q: LibraryQuery = {}): Promise<LibraryPage> {
   let list = await scan(dir);
 
@@ -132,10 +148,62 @@ export async function listLibrary(ffmpeg: string | undefined, dir: string, q: Li
   list.sort(sorters[q.sort ?? "new"] ?? sorters.new!);
 
   const total = list.length;
-  const pageSize = Math.max(1, Math.min(200, Math.floor(q.pageSize ?? 30)));
-  const pages = Math.max(1, Math.ceil(total / pageSize));
-  const page = Math.min(Math.max(1, Math.floor(q.page ?? 1)), pages);
-  const slice = list.slice((page - 1) * pageSize, page * pageSize);
+  let pages: number, page: number, slice: LibraryEntry[], pageSize: number;
+  const clampPage = () => Math.min(Math.max(1, Math.floor(q.page ?? 1) || 1), pages);
+  if (q.fitPx !== undefined && Number.isFinite(q.fitPx)) {
+    const starts = pageStarts(list, Math.max(LIBRARY_ROW_PX.main, q.fitPx));
+    pages = starts.length;
+    page = clampPage();
+    slice = list.slice(starts[page - 1], starts[page] ?? list.length);
+    pageSize = slice.length;
+  } else {
+    pageSize = Math.max(1, Math.min(200, Math.floor(q.pageSize ?? 30)));
+    pages = Math.max(1, Math.ceil(total / pageSize));
+    page = clampPage();
+    slice = list.slice((page - 1) * pageSize, page * pageSize);
+  }
   const items = needAll ? slice : await pool(slice, 6, (e) => withInfo(ffmpeg, e));
   return { dir, total, page, pages, pageSize, items };
+}
+
+/**
+ * 錄影改名：原片與底下的加速版 / GIF 一起改（Rec_X_4x.mp4 → 新名_4x.mp4），清單上才不會斷開。
+ * 任何一個失敗就把已改的改回去。busy = 正在錄影 / 轉檔的檔案（小寫完整路徑）。
+ * 回傳新的完整路徑。
+ */
+export async function renameRecording(path: string, newName: string, busy: string[] = []): Promise<string> {
+  const base = newName.trim().replace(/\.mp4$/i, "").trim();
+  const bad = checkRecordingName(base);
+  if (bad) throw new ConfigError(bad);
+  const dir = dirname(path);
+  const entry = (await scan(dir)).find((e) => e.path.toLowerCase() === path.toLowerCase());
+  if (!entry) throw new ConfigError("找不到這個錄影，可能已被移動或刪除");
+  const oldBase = entry.name.replace(/\.mp4$/i, "");
+  if (base === oldBase) return entry.path;
+
+  const plan: [string, string][] = [
+    [entry.path, join(dir, `${base}.mp4`)],
+    ...entry.exports.map((x): [string, string] => [x.path, join(dir, base + x.name.slice(oldBase.length))]),
+  ];
+  for (const [from, to] of plan) {
+    if (busy.includes(from.toLowerCase())) throw new ConfigError("檔案正在錄影或轉檔中，完成後才能改名");
+    // 只改大小寫時目標就是自己（Windows 不分大小寫），不算衝突
+    if (existsSync(to) && to.toLowerCase() !== from.toLowerCase()) throw new ConfigError(`已有同名的檔案：${basename(to)}`);
+  }
+  const done: [string, string][] = [];
+  try {
+    for (const [from, to] of plan) {
+      await rename(from, to);
+      done.push([from, to]);
+    }
+  } catch (e) {
+    for (const [from, to] of done.reverse()) await rename(to, from).catch(() => {});
+    const code = (e as NodeJS.ErrnoException).code;
+    throw new ConfigError(
+      code === "EBUSY" || code === "EPERM" || code === "EACCES"
+        ? "檔案正在使用中（例如正在播放或剪輯），關閉後再試一次"
+        : `無法改名：${(e as Error).message}`,
+    );
+  }
+  return plan[0]![1];
 }

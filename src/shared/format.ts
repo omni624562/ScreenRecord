@@ -39,6 +39,18 @@ export function parseExportName(name: string): { base: string; speed: number; fo
   return g ? { base: `${g[1]}.mp4`, speed: 1, format: "gif" } : undefined;
 }
 
+/** 錄影改名時的名稱檢查（不含 .mp4）；沒問題回傳 undefined */
+export function checkRecordingName(base: string): string | undefined {
+  const b = base.trim();
+  if (!b) return "請輸入名稱";
+  if (/[\\/:*?"<>|\x00-\x1f]/.test(b)) return '名稱不能包含 \\ / : * ? " < > |';
+  if (/[. ]$/.test(b)) return "名稱結尾不能是句點或空白";
+  if (/^(con|prn|aux|nul|com\d|lpt\d)$/i.test(b)) return "這是 Windows 保留的名稱，請換一個";
+  if (b.length > 120) return "名稱太長（最多 120 個字）";
+  if (parseExportName(`${b}.mp4`)) return "名稱結尾不能是「_數字x」（例如 _4x），會被當成加速版";
+  return undefined;
+}
+
 /** 「1:30」「90」「1:02:03」→ 秒數；格式不對回傳 undefined */
 export function parseClock(text: string): number | undefined {
   const t = text.trim();

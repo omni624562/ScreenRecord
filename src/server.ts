@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, statSync } from "node:fs";
 import index from "./ui/index.html";
 import { ConfigError } from "./args.ts";
 import type { App } from "./app.ts";
-import { listLibrary } from "./library.ts";
+import { listLibrary, renameRecording } from "./library.ts";
 import { moveToRecycleBin } from "./recycle.ts";
 import { thumbnail } from "./thumbs.ts";
 import { CHANGELOG } from "./version.ts";
@@ -148,9 +148,25 @@ export function startServer(app: App, port: number, development: boolean) {
           sort: (p.get("sort") as LibraryQuery["sort"]) ?? "new",
           page: Number(p.get("page") ?? 1),
           pageSize: Number(p.get("pageSize") ?? 30),
+          fitPx: p.has("fitPx") ? Number(p.get("fitPx")) : undefined,
         };
         return json(await listLibrary(app.ffmpegPath(), dir, query));
       }),
+
+      /** 錄影改名（連同加速版 / GIF）；不能改正在錄影或轉檔的檔案 */
+      "/api/rename": {
+        POST: api(async (req) => {
+          const { path, name } = await body<{ path: string; name: string }>(req);
+          const f = String(path ?? "");
+          if (!/^[a-zA-Z]:\\|^\\\\/.test(f) || !/\.mp4$/i.test(f) || !existsSync(f)) throw new ConfigError(`找不到檔案：${f}`);
+          const job = app.exporter.status();
+          const busy = [
+            ...(job?.state === "running" ? [job.source, job.output] : []),
+            ...(app.recorder.outputPath ? [app.recorder.outputPath] : []),
+          ].map((x) => x.toLowerCase());
+          return json({ ok: true, path: await renameRecording(f, String(name ?? ""), busy) });
+        }),
+      },
 
       /** 刪除（移到資源回收筒，可還原）；只接受 .mp4，且不能刪正在轉檔的檔案 */
       "/api/delete": {
