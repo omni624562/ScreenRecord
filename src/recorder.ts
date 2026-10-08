@@ -177,6 +177,11 @@ export class Recorder {
     return this.state !== "idle";
   }
 
+  /** 錄影中（含儲存中）要寫入的成品路徑：不能改名或刪除 */
+  get outputPath(): string | undefined {
+    return this.active ? this.finalPath : undefined;
+  }
+
   /** 正在準備開始（狀態可能仍是待命）；快捷鍵用來判斷再按一次是「取消」 */
   get starting() {
     return this.startingNow;

@@ -250,10 +250,12 @@ input[type="number"] { font-family: var(--mono); font-variant-numeric: tabular-n
 .rcard.current { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
 .rcard-top { display: flex; align-items: baseline; justify-content: space-between; gap: 6px; }
 .rcard-top > span:last-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rcard-date { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .rcard-date { font-weight: 600; font-size: 13px; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .rcard-meta { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .rcard-actions { display: flex; gap: 2px; }
 .rcard-actions .btn { width: 28px; height: 26px; padding: 0; }
+.rcard-actions .btn.rcard-export { width: auto; padding: 0 8px 0 6px; gap: 3px; font-size: 12px; }
 .recent-empty { color: var(--muted); font-size: 13px; }
 .tag { font-size: 11px; font-weight: 600; padding: 0 5px; border-radius: 4px; white-space: nowrap; }
 .tag.audio { background: var(--accent-soft); color: var(--accent); }
@@ -281,6 +283,13 @@ input[type="number"] { font-family: var(--mono); font-variant-numeric: tabular-n
 .dlg-head p { word-break: break-all; }
 .dlg-foot { border-top: 1px solid var(--border); }
 .dlg-body { padding: 16px 18px; display: flex; flex-direction: column; gap: 14px; }
+.ask-dlg { width: min(480px, calc(100vw - 32px)); }
+.ask-dlg form { display: contents; }
+.ask-dlg p { margin: 0; line-height: 1.6; white-space: pre-line; }
+.ask-list { margin: 0; padding: 8px 10px 8px 26px; max-height: 180px; overflow: auto; font-size: 12px; background: var(--surface-2); border-radius: var(--radius-sm); word-break: break-all; }
+.ask-error { color: var(--rec); font-size: 12.5px; }
+.ask-foot { justify-content: flex-end; }
+.btn.primary.danger { background: var(--rec); border-color: var(--rec); color: #fff; }
 .calc { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 10px; padding: 12px 14px; border-radius: var(--radius-sm); background: var(--surface-2); }
 .calc div { display: flex; flex-direction: column; gap: 2px; }
 .calc span { font-size: 12px; }
@@ -306,9 +315,11 @@ input[type="number"] { font-family: var(--mono); font-variant-numeric: tabular-n
 .lib-table .btn-ph { display: inline-block; width: 28px; }
 .lib-table .c-check { width: 36px; }
 .lib-table .c-num { width: 96px; text-align: right; font-variant-numeric: tabular-nums; }
-.lib-table .c-act { width: 150px; text-align: right; }
+.lib-table .c-act { width: 180px; text-align: right; }
 .lib-table td.c-num { text-align: right; }
 .lib-table .name { display: flex; align-items: center; gap: 6px; overflow: hidden; }
+.lib-table .name .date { font-family: var(--mono); font-size: 12.5px; flex: none; }
+.lib-table .name .custom { font-weight: 600; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .lib-table .name .fn { font-family: var(--mono); font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; }
 .lib-table .acts { display: inline-flex; gap: 2px; }
 .lib-table .acts .btn { width: 28px; height: 26px; padding: 0; }

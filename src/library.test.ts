@@ -1,8 +1,8 @@
-import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { afterEach, describe, expect, test } from "bun:test";
+import { existsSync, mkdtempSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { listLibrary, pageStarts } from "./library.ts";
+import { listLibrary, pageStarts, renameRecording } from "./library.ts";
 import type { LibraryEntry } from "./shared/types.ts";
 
 const dirs: string[] = [];
@@ -44,4 +44,33 @@ test("指定 fitPx 時依高度分頁", async () => {
   expect(p1.items.map((e) => e.name)).toEqual(["Rec_A.mp4", "Rec_B.mp4"]);
   const p2 = await listLibrary(undefined, dir, { sort: "old", fitPx: 41 * 2 + 33 * 2, page: 2 });
   expect(p2.items.map((e) => e.name)).toEqual(["Rec_C.mp4"]);
+});
+
+describe("錄影改名", () => {
+  const make = (names: string[]) => {
+    const dir = mkdtempSync(join(tmpdir(), "sr-lib-test-"));
+    dirs.push(dir);
+    for (const n of names) writeFileSync(join(dir, n), "x");
+    return dir;
+  };
+
+  test("連同加速版、GIF 一起改名，剪輯版不受影響", async () => {
+    const dir = make(["Rec_X.mp4", "Rec_X_4x.mp4", "Rec_X_2x.gif", "Rec_X.gif", "Rec_X_cut.mp4"]);
+    const out = await renameRecording(join(dir, "Rec_X.mp4"), " 操作示範.mp4 ");
+    expect(out).toBe(join(dir, "操作示範.mp4"));
+    expect(readdirSync(dir).sort()).toEqual(["Rec_X_cut.mp4", "操作示範.gif", "操作示範.mp4", "操作示範_2x.gif", "操作示範_4x.mp4"].sort());
+    const page = await listLibrary(undefined, dir, { pageSize: 50 });
+    expect(page.items.find((e) => e.name === "操作示範.mp4")?.exports.length).toBe(3);
+  });
+
+  test("名稱不合法、有同名檔、正在使用中：不改任何檔案", async () => {
+    const dir = make(["Rec_A.mp4", "Rec_A_4x.mp4", "B_4x.mp4"]);
+    const src = join(dir, "Rec_A.mp4");
+    await expect(renameRecording(src, "a:b")).rejects.toThrow("不能包含");
+    await expect(renameRecording(src, "Demo_4x")).rejects.toThrow("加速版");
+    await expect(renameRecording(src, "B")).rejects.toThrow("同名"); // 加速版 B_4x.mp4 已存在
+    await expect(renameRecording(src, "C", [join(dir, "Rec_A_4x.mp4").toLowerCase()])).rejects.toThrow("轉檔中");
+    expect(readdirSync(dir).sort()).toEqual(["B_4x.mp4", "Rec_A.mp4", "Rec_A_4x.mp4"]);
+    expect(existsSync(src)).toBe(true);
+  });
 });

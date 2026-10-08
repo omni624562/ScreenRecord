@@ -12,7 +12,8 @@ export const exportTag = (x: { speed: number; format?: string }) =>
 const exportLabel = (x: { speed: number; format?: string }) =>
   x.format === "gif" ? `GIF ${x.speed > 1 ? `${speedLabel(x.speed)}×` : "（原速）"}` : `${speedLabel(x.speed)}× 加速版`;
 import { LIBRARY_ROW_PX, type LibraryEntry, type LibraryPage } from "../shared/types.ts";
-import { $, api, esc, icon, observeThumbs, shortDate, thumbUrl } from "./common.ts";
+import { $, api, ask, baseName, esc, icon, isDefaultName, observeThumbs, shortDate, thumbUrl } from "./common.ts";
+import { checkRecordingName } from "../shared/format.ts";
 
 export type EntryAction = "play" | "reveal" | "edit" | "export";
 
@@ -92,19 +93,19 @@ function render() {
       ].join("");
       const subs = e.exports.map((x) => `<tr class="sub" data-path="${esc(e.path)}" data-export="${esc(x.path)}">
         <td class="c-check"><input type="checkbox" data-select="${esc(x.path)}" ${selected.has(x.path) ? "checked" : ""} aria-label="選取 ${esc(x.name)}" /></td>
-        <td><div class="name"><span class="branch" aria-hidden="true">└</span><span class="tag speed">${exportLabel(x)}</span><span class="fn" title="${esc(x.name)}">${esc(x.name)}</span></div></td>
+        <td><div class="name" title="${esc(x.name)}"><span class="branch" aria-hidden="true">└</span><span class="tag speed">${exportLabel(x)}</span></div></td>
         <td class="c-num">${x.durationSec !== undefined ? videoClock(x.durationSec) : "—"}</td>
         <td class="c-num">${x.width ? `${x.width}×${x.height}` : "—"}</td>
         <td class="c-num">${formatBytes(x.bytes)}</td>
         <td class="c-act"><span class="acts">
           <button class="btn ghost" data-act="play" title="播放" aria-label="播放 ${esc(x.name)}">${icon("play")}</button>
           <button class="btn ghost" data-act="reveal" title="在資料夾中顯示" aria-label="在資料夾中顯示 ${esc(x.name)}">${icon("folder")}</button>
-          <span class="btn-ph"></span><span class="btn-ph"></span>
+          <span class="btn-ph"></span><span class="btn-ph"></span><span class="btn-ph"></span>
         </span></td>
       </tr>`);
       return `<tr data-path="${esc(e.path)}">
         <td class="c-check"><input type="checkbox" data-select="${esc(e.path)}" ${selected.has(e.path) ? "checked" : ""} aria-label="選取 ${esc(e.name)}" /></td>
-        <td><div class="name"><img class="thumb lib-thumb" data-src="${thumbUrl(e)}" alt="" decoding="async" /><span class="fn" title="${esc(e.name)}">${esc(shortDate(e.name, e.mtime))}　${esc(e.name)}</span>${tags}</div></td>
+        <td><div class="name" title="${esc(e.name)}"><img class="thumb lib-thumb" data-src="${thumbUrl(e)}" alt="" decoding="async" /><span class="date">${esc(shortDate(e.name, e.mtime))}</span>${isDefaultName(e.name) ? "" : `<span class="custom">${esc(baseName(e.name))}</span>`}${tags}</div></td>
         <td class="c-num">${e.durationSec !== undefined ? videoClock(e.durationSec) : "—"}</td>
         <td class="c-num">${e.width ? `${e.width}×${e.height}` : "—"}</td>
         <td class="c-num">${formatBytes(e.bytes)}</td>
@@ -113,6 +114,7 @@ function render() {
           <button class="btn ghost" data-act="reveal" title="在資料夾中顯示" aria-label="在資料夾中顯示">${icon("folder")}</button>
           <button class="btn ghost" data-act="edit" title="剪輯" aria-label="剪輯">${icon("cut")}</button>
           <button class="btn ghost" data-act="export" title="加速匯出" aria-label="加速匯出">${icon("fast")}</button>
+          <button class="btn ghost" data-act="rename" title="重新命名（加速版一起改）" aria-label="重新命名">${icon("edit")}</button>
         </span></td>
       </tr>${subs.join("")}`;
     })
@@ -148,8 +150,14 @@ async function removeSelected() {
   const list = [...selected];
   // 原檔要刪、但取消勾選了部分加速版：提醒這些會保留
   const kept = (data?.items ?? []).filter((e) => selected.has(e.path)).reduce((n, e) => n + e.exports.filter((x) => !selected.has(x.path)).length, 0);
-  const note = kept ? `\n\n未勾選的 ${kept} 個加速版會保留。` : "";
-  if (!confirm(`要把 ${list.length} 個檔案移到資源回收筒嗎？（可從資源回收筒還原）${note}`)) return;
+  const ok = await ask({
+    title: `把 ${list.length} 個檔案移到資源回收筒？`,
+    message: `可從資源回收筒還原。${kept ? `\n未勾選的 ${kept} 個加速版會保留。` : ""}`,
+    list: list.map((p) => p.split(/[\\/]/).pop()!),
+    ok: "移到資源回收筒",
+    danger: true,
+  });
+  if (!ok) return;
   try {
     await api("/api/delete", { paths: list });
     deps.toast(`已將 ${list.length} 個檔案移到資源回收筒`);
@@ -159,6 +167,30 @@ async function removeSelected() {
   } catch (e) {
     deps.toast((e as Error).message, true);
   }
+}
+
+/** 改名：原片與底下的加速版一起改；送出時由伺服器檢查衝突、使用中，錯誤留在對話框裡 */
+async function renameEntry(entry: LibraryEntry) {
+  const old = baseName(entry.name);
+  const n = entry.exports.length;
+  const name = await ask({
+    title: "重新命名",
+    message: n ? `底下的 ${n} 個加速版會一起改名。` : undefined,
+    input: { label: "新名稱", value: old },
+    ok: "改名",
+    validate: async (v) => {
+      const bad = checkRecordingName(v.replace(/\.mp4$/i, ""));
+      if (bad) return bad;
+      await api("/api/rename", { path: entry.path, name: v });
+      return undefined;
+    },
+  });
+  if (name === undefined || name.trim() === old) return;
+  deps.toast(`已改名為 ${name.trim().replace(/\.mp4$/i, "")}`);
+  selected.delete(entry.path);
+  for (const x of entry.exports) selected.delete(x.path);
+  deps.changed();
+  await load();
 }
 
 function bind() {
@@ -209,6 +241,7 @@ function bind() {
       if (x && (action === "play" || action === "reveal")) deps.act(action, { ...x, exports: [] });
       return;
     }
+    if (b && entry && b.dataset.act === "rename") return void renameEntry(entry);
     if (b && entry) {
       const action = b.dataset.act as EntryAction;
       if (action === "edit" || action === "export") dlg.close();

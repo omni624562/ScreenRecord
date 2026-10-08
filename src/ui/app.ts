@@ -14,7 +14,7 @@ import type {
   UpdateInfo,
 } from "../shared/types.ts";
 import { HOTKEY_LABELS } from "../shared/types.ts";
-import { $, api, clamp, esc, guarded, icon, observeThumbs, setHtml, shortDate, thumbUrl, toast } from "./common.ts";
+import { $, api, baseName, clamp, esc, guarded, icon, isDefaultName, observeThumbs, setHtml, shortDate, thumbUrl, toast } from "./common.ts";
 import { openEditor } from "./editor.ts";
 import { openExport } from "./exportDialog.ts";
 import { exportTag, isLibraryOpen, load as reloadLibraryDialog, openLibrary, type EntryAction } from "./libraryDialog.ts";
@@ -190,15 +190,19 @@ function renderEnv() {
   const chips: string[] = [];
   if (env.update)
     chips.push(`<a class="chip new" href="${esc(env.update.url)}" target="_blank" rel="noopener" title="點一下前往下載頁面">有新版本 v${esc(env.update.version)}</a>`);
-  if (ff.found) chips.push(`<span class="chip ok" title="${esc(ff.path ?? "")}">FFmpeg ${esc((ff.version ?? "").split("-")[0]!)}</span>`);
+  // 正常的項目合併成一個「已就緒」（細節在滑鼠提示），有問題的才個別顯示：單行放得下、不會被截斷
+  const ok: string[] = [];
+  if (ff.found) ok.push(`FFmpeg ${(ff.version ?? "").split("-")[0]}（${ff.path ?? ""}）`);
   else chips.push(`<span class="chip bad">找不到 FFmpeg</span>`);
   if (ff.found) {
     if (!ff.hasDdagrab) chips.push(`<span class="chip warn" title="此 FFmpeg 不含 ddagrab，將使用 gdigrab">gdigrab</span>`);
     else if (ff.ddagrabWorks === undefined) chips.push(`<span class="chip">ddagrab 測試中…</span>`);
-    else if (ff.ddagrabWorks) chips.push(`<span class="chip ok" title="Desktop Duplication（GPU 擷取）可用">ddagrab</span>`);
+    else if (ff.ddagrabWorks) ok.push("擷取：ddagrab（GPU 擷取）");
     else chips.push(`<span class="chip warn" title="${esc(ff.ddagrabError ?? "")}">ddagrab 不可用 → gdigrab</span>`);
-    chips.push(`<span class="chip ${ff.encoder ? "ok" : "bad"}">${esc(ff.encoder ?? "無 H.264 編碼器")}</span>`);
+    if (ff.encoder) ok.push(`編碼：${ff.encoder}`);
+    else chips.push(`<span class="chip bad">無 H.264 編碼器</span>`);
   }
+  if (ok.length) chips.push(`<span class="chip ok" title="${esc(ok.join("\n"))}">${chips.some((c) => /chip (bad|warn)/.test(c)) ? `FFmpeg ${esc((ff.version ?? "").split("-")[0]!)}` : "已就緒"}</span>`);
   setHtml($("envChips"), chips.join(""));
   // 版本號顯示在視窗標題列（Chrome / Edge app 模式的標題就是頁面標題）
   document.title = `螢幕錄影 v${env.appVersion}`;
@@ -886,13 +890,13 @@ function renderRecent() {
           return `<div class="rcard" title="${esc(e.name)}">
             <img class="thumb rcard-thumb" data-src="${thumbUrl(e)}" alt="" decoding="async" />
             <div class="rcard-body">
-            <div class="rcard-top"><span class="rcard-date">${esc(shortDate(e.name, e.mtime))}</span><span>${tags}</span></div>
-            <div class="rcard-meta">${e.durationSec !== undefined ? videoClock(e.durationSec) : "—"}・${formatBytes(e.bytes)}${e.width ? `・${e.width}×${e.height}` : ""}</div>
+            <div class="rcard-top"><span class="rcard-date">${esc(isDefaultName(e.name) ? shortDate(e.name, e.mtime) : baseName(e.name))}</span><span>${tags}</span></div>
+            <div class="rcard-meta">${e.durationSec !== undefined ? videoClock(e.durationSec) : "—"}・${formatBytes(e.bytes)}</div>
             <div class="rcard-actions">
               <button class="btn ghost" data-act="play" data-path="${esc(e.path)}" title="播放" aria-label="播放">${icon("play")}</button>
               <button class="btn ghost" data-act="reveal" data-path="${esc(e.path)}" title="在資料夾中顯示" aria-label="在資料夾中顯示">${icon("folder")}</button>
               <button class="btn ghost" data-act="edit" data-path="${esc(e.path)}" title="剪輯" aria-label="剪輯">${icon("cut")}</button>
-              <button class="btn ghost" data-act="export" data-path="${esc(e.path)}" title="加速匯出" aria-label="加速匯出">${icon("fast")}</button>
+              <button class="btn ghost rcard-export" data-act="export" data-path="${esc(e.path)}" title="加速匯出（MP4 / GIF）">${icon("fast")}匯出</button>
             </div>
             </div>
           </div>`;

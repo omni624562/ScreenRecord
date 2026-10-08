@@ -95,11 +95,17 @@ export function shortDate(name: string, mtime: number): string {
   return `${p(d.getMonth() + 1)}/${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
+/** 程式產生的預設檔名（Rec_日期時間，可能帶 _2、_cut）：只看日期就夠，不必再列出檔名 */
+export const isDefaultName = (name: string) => /^Rec_\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}(_\d+)?(_cut(_\d+)?)?\.mp4$/i.test(name);
+/** 顯示用名稱：去掉 .mp4 */
+export const baseName = (name: string) => name.replace(/\.mp4$/i, "");
+
 /** 線條圖示（currentColor） */
 const path = {
   play: '<path d="M5 3.5v9l7.5-4.5z" fill="currentColor" stroke="none"/>',
   cut: '<circle cx="4.5" cy="4.5" r="2"/><circle cx="4.5" cy="11.5" r="2"/><path d="M6.2 5.6 13.5 12M6.2 10.4 13.5 4"/>',
   fast: '<path d="M2.5 4v8l5-4zM8.5 4v8l5-4z" fill="currentColor" stroke="none"/>',
+  edit: '<path d="M10.5 2.5l3 3L6 13H3v-3z"/><path d="M9 4l3 3"/>',
   folder: '<path d="M1.5 4.5v8a1 1 0 0 0 1 1h11a1 1 0 0 0 1-1v-6a1 1 0 0 0-1-1H8L6.5 3.5h-4a1 1 0 0 0-1 1Z"/>',
   refresh: '<path d="M13.6 6.2A6 6 0 1 0 14 9"/><path d="M14 2.5v3.8h-3.8"/>',
   chevL: '<path d="M10 3 5 8l5 5"/>',
@@ -116,3 +122,87 @@ const path = {
 export type IconName = keyof typeof path;
 export const icon = (name: IconName, cls = "") =>
   `<svg viewBox="0 0 16 16" class="ic ${cls}" aria-hidden="true">${path[name]}</svg>`;
+
+export interface AskOptions {
+  title: string;
+  message?: string;
+  /** 列出相關檔案（最多顯示 12 個） */
+  list?: string[];
+  ok?: string;
+  /** 危險動作（刪除）：確定鈕用紅色 */
+  danger?: boolean;
+  /** 有 input 時是輸入對話框，回傳輸入的文字 */
+  input?: { label: string; value: string; select?: [number, number] };
+  /** 檢查輸入；回傳錯誤訊息則不關閉，或回傳 Promise（例如送出到伺服器）期間停用按鈕 */
+  validate?: (value: string) => string | undefined | Promise<string | undefined>;
+}
+
+/** 程式內的確認 / 輸入對話框；取消回傳 undefined，確認回傳 true（或輸入的文字） */
+export function ask(o: AskOptions & { input: AskOptions["input"] & {} }): Promise<string | undefined>;
+export function ask(o: AskOptions): Promise<true | undefined>;
+export function ask(o: AskOptions): Promise<string | true | undefined> {
+  const dlg = $<HTMLDialogElement>("askDlg");
+  const input = $<HTMLInputElement>("askInput");
+  const okBtn = $<HTMLButtonElement>("askOk");
+  const err = $("askError");
+  $("askTitle").textContent = o.title;
+  $("askMsg").textContent = o.message ?? "";
+  $("askMsg").hidden = !o.message;
+  const list = o.list ?? [];
+  const shown = list.slice(0, 12).map((x) => `<li>${esc(x)}</li>`);
+  if (list.length > 12) shown.push(`<li>…以及另外 ${list.length - 12} 個</li>`);
+  $("askList").innerHTML = shown.join("");
+  $("askList").hidden = list.length === 0;
+  $("askField").hidden = !o.input;
+  $("askLabel").textContent = o.input?.label ?? "";
+  input.value = o.input?.value ?? "";
+  err.hidden = true;
+  okBtn.textContent = o.ok ?? "確定";
+  okBtn.classList.toggle("danger", !!o.danger);
+  okBtn.disabled = false;
+  dlg.showModal();
+  if (o.input) {
+    input.focus();
+    const [a, b] = o.input.select ?? [0, input.value.length];
+    input.setSelectionRange(a, b);
+  } else (o.danger ? $("askCancel") : okBtn).focus(); // 刪除預設停在「取消」，避免誤按 Enter
+
+  return new Promise((resolve) => {
+    const done = (v: string | true | undefined) => {
+      $("askForm").removeEventListener("submit", onSubmit);
+      $("askCancel").removeEventListener("click", onCancel);
+      dlg.removeEventListener("cancel", onCancel);
+      if (dlg.open) dlg.close();
+      resolve(v);
+    };
+    const onCancel = (ev: Event) => {
+      ev.preventDefault();
+      if (!okBtn.disabled) done(undefined); // 送出中不關閉
+    };
+    const onSubmit = async (ev: Event) => {
+      ev.preventDefault();
+      if (okBtn.disabled) return;
+      const value = input.value;
+      if (o.validate) {
+        okBtn.disabled = true;
+        let msg: string | undefined;
+        try {
+          msg = await o.validate(value);
+        } catch (e) {
+          msg = (e as Error).message;
+        }
+        okBtn.disabled = false;
+        if (msg) {
+          err.textContent = msg;
+          err.hidden = false;
+          if (o.input) input.focus();
+          return;
+        }
+      }
+      done(o.input ? value : true);
+    };
+    $("askForm").addEventListener("submit", onSubmit);
+    $("askCancel").addEventListener("click", onCancel);
+    dlg.addEventListener("cancel", onCancel);
+  });
+}
