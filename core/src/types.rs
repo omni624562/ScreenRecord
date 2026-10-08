@@ -1,4 +1,4 @@
-//! 前後端共用的型別。
+//! 前後端共用的型別（對應 src/shared/types.ts）。
 //!
 //! JSON 欄位名稱一律 camelCase；沒有值的欄位不輸出（介面以 `!== undefined` 判斷，不能送 null）。
 
