@@ -58,7 +58,7 @@ const runningPort = noTray ? undefined : await findRunningInstance();
 if (runningPort !== undefined) {
   const url = `http://127.0.0.1:${runningPort}/`;
   console.log(`程式已在執行中：${url}`);
-  if (autoOpen) openUi(url);
+  if (autoOpen) await openUi(url);
   process.exit(0);
 }
 
@@ -104,7 +104,7 @@ const tray = new Tray(app);
 app.tray = tray;
 const trayOk = !noTray && process.platform === "win32" && (await tray.start());
 console.log(trayOk ? "已常駐於系統匣：右鍵點圖示可錄影或結束程式\n" : "系統匣無法使用，關閉操作視窗 5 分鐘後會自動結束\n");
-if (autoOpen) openUi(url);
+if (autoOpen) void openUi(url);
 if (!noTray) app.scheduleUpdateChecks();
 setTimeout(pruneThumbnails, 30_000);
 

@@ -239,6 +239,21 @@ export function startServer(app: App, port: number, development: boolean) {
 
       "/api/export/cancel": { POST: api(() => (app.exporter.cancel(), json({ ok: true, ...status() }))) },
 
+      /** 用預設瀏覽器開啟外部網址（更新頁面、FFmpeg 下載頁）：操作視窗本身只顯示本機介面 */
+      "/api/open-url": {
+        POST: api(async (req) => {
+          const { url } = await body<{ url: string }>(req);
+          let u: URL;
+          try {
+            u = new URL(String(url ?? ""));
+          } catch {
+            throw new ConfigError("網址不正確");
+          }
+          if (!/^https?:$/.test(u.protocol) || u.href.includes('"')) throw new ConfigError("只能開啟 http / https 網址");
+          openWithExplorer(u.href);
+          return json({ ok: true });
+        }),
+      },
       "/api/open": {
         POST: api(async (req) => {
           const { action, path } = await body<{ action: "play" | "reveal" | "folder"; path: string }>(req);

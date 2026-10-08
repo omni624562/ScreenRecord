@@ -2,7 +2,7 @@
 
 Windows 11 螢幕錄影工具：**原速錄影並完整保留，停止後再選倍率製作加速版**（可對同一支錄影重複製作不同倍率，高倍率即是縮時影片）。
 
-- TypeScript + Bun；`Bun.serve` 提供本機網頁介面，啟動後自動以預設瀏覽器開啟
+- TypeScript + Bun；`Bun.serve` 提供本機網頁介面，以內建的操作視窗（Rust + Tauri，使用 Windows 內建的 WebView2）顯示
 - 擷取與編碼交給 FFmpeg：優先 `ddagrab`（Desktop Duplication，GPU 擷取），不支援或失敗時自動退回 `gdigrab`
 - 輸出 H.264 MP4（yuv420p、BT.709），`bun build --compile` 編成單一 exe
 
@@ -40,7 +40,7 @@ Windows 11 螢幕錄影工具：**原速錄影並完整保留，停止後再選�
 
 程式啟動後常駐在工作列右下角的系統匣（Windows 11 新程式預設在 `^` 收合區，可拖到工作列上，或在「設定 → 個人化 → 工作列 → 其他系統匣圖示」開啟）。
 
-- **左鍵點圖示**：開啟操作視窗（Chrome 的 app 模式獨立視窗；沒有 Chrome 用 Edge，都沒有才用預設瀏覽器）
+- **左鍵點圖示**：開啟操作視窗（內建的 WebView2 視窗；WebView2 無法使用時改用 Chrome 的 app 模式視窗，沒有 Chrome 用 Edge，都沒有才用預設瀏覽器）
 - **右鍵選單**：開始錄影（沿用上次設定）、錄製指定螢幕 / 所有螢幕、暫停 / 繼續、停止並儲存、切換系統聲音 / 麥克風、開啟儲存資料夾、播放最近的錄影、開機時自動啟動、結束
 - 圖示顏色代表狀態：深色 = 待命、紅色圓環 = 倒數中、紅色 = 錄影中、琥珀色 = 已暫停；滑鼠停在圖示上會顯示已錄時間
 - 錄影儲存後會跳出通知，點通知開啟操作視窗
@@ -83,11 +83,14 @@ bun run typecheck
 
 ### 建置
 
+需要 [Rust](https://rustup.rs/)（編譯操作視窗程式）：
+
 ```bash
+cargo build --release --manifest-path shell/Cargo.toml
 bun run build
 ```
 
-產生 `dist\ScreenRecorder.exe`。若要一併把 PATH 上的 `ffmpeg.exe` 複製進 `dist\` 組成可發佈的資料夾：
+產生 `dist\ScreenRecorder.exe`（操作視窗程式內嵌其中，仍是單一 exe）。沒有先編 `shell` 時也能建置，但操作視窗會改用瀏覽器開啟。若要一併把 PATH 上的 `ffmpeg.exe` 複製進 `dist\` 組成可發佈的資料夾：
 
 ```bash
 bun run dist
@@ -111,7 +114,7 @@ GitHub Actions（`.github/workflows/release.yml`）會在 Windows 上型別檢�
 
 ```
 src/
-  main.ts        進入點：單一實例檢查、啟動伺服器、開瀏覽器、Ctrl+C 正常收尾
+  main.ts        進入點：單一實例檢查、啟動伺服器、開啟操作視窗、Ctrl+C 正常收尾
   app.ts         全域狀態（FFmpeg 偵測、螢幕清單、錄影器、匯出器）
   server.ts      Bun.serve 路由與 API（只綁 127.0.0.1，檢查 Host / Origin）
   recorder.ts    錄影狀態機：分段、暫停 / 繼續、q 收尾、意外中斷自動續錄、合併
@@ -132,8 +135,10 @@ src/
   shared/        前後端共用的型別、格式化與剪輯計算（edit.ts）
   ui/editor.ts   剪輯對話框（時間軸、刪除片段、裁切框選）
   ui/            網頁介面（index.html + app.ts + style.css，由 Bun 打包進 exe）
+shell/          操作視窗程式（Rust + Tauri v2）：以 WebView2 顯示本機介面、只開一個視窗、外部網址交給預設瀏覽器；
+                由主程式內嵌，第一次使用時取出到 %LOCALAPPDATA%\ScreenRecorder\ui
 scripts/        build.ts 建置 exe、release-notes.ts 產生 Release 說明、copy-ffmpeg.ts、make-icon.ts、set-gui-subsystem.ts
-.github/workflows/release.yml   推送 v* tag 時自動測試、建置、發佈
+.github/workflows/release.yml   PR 自動測試與建置；main 的版本號尚未發佈時自動發佈
 ```
 
 ## 設計重點

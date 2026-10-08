@@ -49,6 +49,16 @@ jobs:
       - name: 安裝套件
         run: bun install --frozen-lockfile
 
+      # 操作視窗程式（Tauri / WebView2）：內嵌進主程式 exe
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: shell
+
+      - name: 建置操作視窗（Rust）
+        run: |
+          bun run scripts/make-icon.ts
+          cargo build --release --locked --manifest-path shell/Cargo.toml
+
       - name: 型別檢查
         run: bun run typecheck
 
@@ -86,6 +96,13 @@ jobs:
 
       - name: 建置 exe
         run: bun run build
+
+      # 發佈的 exe 一定要內嵌操作視窗程式，否則使用者會退回瀏覽器視窗
+      - name: 確認已內嵌操作視窗
+        shell: bash
+        run: |
+          test -f shell/target/release/screenrecorder-ui.exe
+          ls -l shell/target/release/screenrecorder-ui.exe dist/ScreenRecorder.exe
 
       # 程式碼簽章（選用）：在 repo 的 Settings → Secrets 設定 SIGN_CERT_PFX（.pfx 的 base64）與 SIGN_CERT_PASSWORD 才會執行
       - name: 簽章
