@@ -33,11 +33,11 @@ const SHELL_PREFIX = "screenrecorder-ui";
 /**
  * 找操作視窗程式：
  * - 編譯版：內嵌在 exe 裡，第一次使用時取出到 %LOCALAPPDATA%\ScreenRecorder\ui（依版本分檔，執行中的舊版不會被覆寫）
- * - 開發時：shell\target\release（cargo build --release 的結果）
+ * - 開發時：target\release（cargo build --release -p screenrecorder-ui 的結果）
  */
 async function findShell(): Promise<string | undefined> {
   if (!isCompiled) {
-    const p = join(appDir, "shell", "target", "release", `${SHELL_PREFIX}.exe`);
+    const p = join(appDir, "target", "release", `${SHELL_PREFIX}.exe`);
     return existsSync(p) ? p : undefined;
   }
   const embedded = Bun.embeddedFiles.find((f) => (f as Blob & { name?: string }).name?.startsWith(SHELL_PREFIX));

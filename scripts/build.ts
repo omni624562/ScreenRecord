@@ -3,8 +3,8 @@
  * 用法：bun run scripts/build.ts [--console]
  *   --console  另外編一個保留主控台視窗的版本（ScreenRecorder-console.exe），方便看即時訊息
  *
- * 操作視窗程式（shell\target\release\screenrecorder-ui.exe，Tauri / WebView2）有編好時會一起內嵌，
- * 仍是單一 exe；沒有時只能用瀏覽器開操作視窗。先執行：cargo build --release --manifest-path shell/Cargo.toml
+ * 操作視窗程式（target\release\screenrecorder-ui.exe，Tauri / WebView2）有編好時會一起內嵌，
+ * 仍是單一 exe；沒有時只能用瀏覽器開操作視窗。先執行：cargo build --release -p screenrecorder-ui
  */
 import { existsSync } from "node:fs";
 import pkg from "../package.json";
@@ -20,7 +20,7 @@ async function step(cmd: string[]) {
 }
 
 await step(["bun", "run", "scripts/make-icon.ts"]);
-const shellExe = "./shell/target/release/screenrecorder-ui.exe";
+const shellExe = "./target/release/screenrecorder-ui.exe";
 const withShell = existsSync(shellExe);
 console.log(withShell ? `內嵌操作視窗程式：${shellExe}` : "⚠ 找不到操作視窗程式（shell），操作視窗將使用瀏覽器開啟");
 await step([

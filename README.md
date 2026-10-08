@@ -86,7 +86,7 @@ bun run typecheck
 需要 [Rust](https://rustup.rs/)（編譯操作視窗程式）：
 
 ```bash
-cargo build --release --manifest-path shell/Cargo.toml
+cargo build --release -p screenrecorder-ui
 bun run build
 ```
 
