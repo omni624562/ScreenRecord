@@ -1,13 +1,23 @@
-# 推送 v* tag 時：測試 → 建置 exe →（有憑證時）簽章 → 發佈 GitHub Release
-# 發佈新版本：更新 package.json 版本與 CHANGELOG.md → commit → 下列其中一種
-#   - git tag v1.2.0 → git push --follow-tags
-#   - 不用 git：在 Actions 頁面手動執行（分支選 main），勾選「發佈 Release」，tag 由 package.json 的版本自動建立
+# 測試 → 建置 exe →（有憑證時）簽章 →（需要時）發佈 GitHub Release
+#
+# 什麼時候發佈：
+#   - main 上的 package.json 版本變成還沒發佈過的版本（合併改了版本號的 PR）→ 自動建立 tag 並發佈
+#   - 推送 v* tag
+#   - 在 Actions 頁面手動執行（分支選 main）並勾選 publish
+# 其他情況（PR、版本已發佈過、手動執行沒勾 publish）只測試與建置，exe 附在該次執行上可下載試用。
+#
+# 發佈新版本：更新 package.json 版本與 CHANGELOG.md → 合併到 main（或推送 tag）
 name: Release
 
 on:
   push:
     tags: ["v*"]
-  # 手動執行：預設只建置與測試，不發佈（在 Actions 頁面下載 exe 試用）；勾選 publish 才發佈
+    branches: [main]
+    # 只有版本號或這個流程本身有變動時才執行（tag 推送不受 paths 限制）
+    paths: ["package.json", ".github/workflows/release.yml"]
+  # PR：在 Windows 上測試與建置，結果顯示在 PR 上
+  pull_request:
+  # 手動執行：預設只建置與測試；勾選 publish 才發佈
   workflow_dispatch:
     inputs:
       publish:
@@ -17,6 +27,11 @@ on:
 
 permissions:
   contents: write
+
+# 同一個 PR 有新推送時，取消還在跑的舊執行
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   build:
@@ -40,17 +55,28 @@ jobs:
       - name: 測試
         run: bun test
 
-      # 要發佈的 tag：推送 tag 時就是那個 tag；手動執行勾選發佈時用 package.json 的版本
+      # 要發佈的 tag（不發佈時留空）：
+      #   推送 tag → 那個 tag；手動勾選 publish → package.json 的版本；
+      #   推送到 main → package.json 的版本，但已經發佈過就不再發佈
       - name: 決定發佈版本
-        if: startsWith(github.ref, 'refs/tags/') || inputs.publish
+        if: github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PUBLISH: ${{ inputs.publish }}
         shell: bash
         run: |
+          version="v$(bun -e 'console.log(require("./package.json").version)')"
           if [[ "$GITHUB_REF" == refs/tags/* ]]; then
             echo "RELEASE_TAG=$GITHUB_REF_NAME" >> "$GITHUB_ENV"
-          elif [[ "$GITHUB_REF" != refs/heads/main ]]; then
-            echo "::error::只能從 main 發佈（目前是 $GITHUB_REF_NAME）"; exit 1
+          elif [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]; then
+            [[ "$PUBLISH" == true ]] || { echo "手動執行未勾選 publish：只建置"; exit 0; }
+            [[ "$GITHUB_REF" == refs/heads/main ]] || { echo "::error::只能從 main 發佈（目前是 $GITHUB_REF_NAME）"; exit 1; }
+            echo "RELEASE_TAG=$version" >> "$GITHUB_ENV"
+          elif gh release view "$version" > /dev/null 2>&1; then
+            echo "$version 已經發佈過：只建置"
           else
-            echo "RELEASE_TAG=v$(bun -e 'console.log(require("./package.json").version)')" >> "$GITHUB_ENV"
+            echo "main 的版本 $version 尚未發佈：建置後自動發佈"
+            echo "RELEASE_TAG=$version" >> "$GITHUB_ENV"
           fi
 
       - name: 確認版本與更新說明
