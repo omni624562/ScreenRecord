@@ -464,7 +464,11 @@ mod tests {
     fn cancel_while_downloading() {
         let s = setup(Some(Box::new(|_: &str| Ok((None, Box::new(Slow) as Box<dyn Read + Send>)))), None);
         s.dl.start(|| Ok(()));
-        std::thread::sleep(Duration::from_millis(100));
+        // 等到真的收到資料（忙碌的 CI 上執行緒可能晚一點才開始）
+        let start = std::time::Instant::now();
+        while s.dl.status().received == 0 && start.elapsed() < Duration::from_secs(10) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
         assert_eq!(s.dl.status().phase, DownloadPhase::Downloading);
         assert!(s.dl.status().received > 0);
         s.dl.cancel();
