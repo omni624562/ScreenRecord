@@ -1,0 +1,21 @@
+[package]
+name = "screenrecorder-ui"
+version = "1.0.0"
+edition = "2021"
+description = "螢幕錄影的操作視窗（Tauri / WebView2）"
+publish = false
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-single-instance = "2"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+# 只是一個顯示本機網頁的視窗：優先檔案小
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

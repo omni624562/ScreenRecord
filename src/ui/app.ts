@@ -1180,6 +1180,13 @@ function bindChangelog() {
 function blockBrowserChrome() {
   const editable = (t: EventTarget | null) =>
     t instanceof HTMLElement && (t.isContentEditable || (t instanceof HTMLInputElement && !["checkbox", "radio", "range", "button"].includes(t.type)) || t instanceof HTMLTextAreaElement);
+  // 外部連結交給預設瀏覽器（操作視窗是 Tauri 或 Chrome app 模式的視窗，不適合在裡面開網頁）
+  document.addEventListener("click", (e) => {
+    const a = (e.target as HTMLElement).closest<HTMLAnchorElement>("a[href]");
+    if (!a || !/^https?:/i.test(a.href) || new URL(a.href).origin === location.origin) return;
+    e.preventDefault();
+    api("/api/open-url", { url: a.href }).catch((err) => toast((err as Error).message, true));
+  });
   document.addEventListener("contextmenu", (e) => {
     if (!editable(e.target)) e.preventDefault();
   });

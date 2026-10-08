@@ -180,8 +180,8 @@ export class Tray {
   private async run(cmd: TrayCommand): Promise<void> {
     const app = this.app;
     try {
-      if (cmd === "open") return openUi(app.url);
-      if (cmd === "changelog") return openUi(`${app.url}#changelog`);
+      if (cmd === "open") return void openUi(app.url);
+      if (cmd === "changelog") return void openUi(`${app.url}#changelog`);
       if (cmd === "quit") return void app.quit();
       if (cmd === "open-update") return app.update && openWithExplorer(app.update.url);
       // 快捷鍵：同一組鍵依狀態切換（待命→開始、倒數→取消、錄影中→停止）
