@@ -1,12 +1,19 @@
 # 推送 v* tag 時：測試 → 建置 exe →（有憑證時）簽章 → 發佈 GitHub Release
-# 發佈新版本：更新 package.json 版本與 CHANGELOG.md → commit → git tag v1.2.0 → git push --follow-tags
+# 發佈新版本：更新 package.json 版本與 CHANGELOG.md → commit → 下列其中一種
+#   - git tag v1.2.0 → git push --follow-tags
+#   - 不用 git：在 Actions 頁面手動執行（分支選 main），勾選「發佈 Release」，tag 由 package.json 的版本自動建立
 name: Release
 
 on:
   push:
     tags: ["v*"]
-  # 手動執行：只建置與測試，不發佈（在 Actions 頁面下載 exe 試用）
+  # 手動執行：預設只建置與測試，不發佈（在 Actions 頁面下載 exe 試用）；勾選 publish 才發佈
   workflow_dispatch:
+    inputs:
+      publish:
+        description: "發佈 Release（只能在 main；以 package.json 的版本建立 tag，例如 v1.3.0）"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -33,10 +40,23 @@ jobs:
       - name: 測試
         run: bun test
 
-      - name: 確認版本與更新說明
-        if: startsWith(github.ref, 'refs/tags/')
+      # 要發佈的 tag：推送 tag 時就是那個 tag；手動執行勾選發佈時用 package.json 的版本
+      - name: 決定發佈版本
+        if: startsWith(github.ref, 'refs/tags/') || inputs.publish
         shell: bash
-        run: bun run scripts/release-notes.ts --check-tag "${GITHUB_REF_NAME}" > release-notes.md
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            echo "RELEASE_TAG=$GITHUB_REF_NAME" >> "$GITHUB_ENV"
+          elif [[ "$GITHUB_REF" != refs/heads/main ]]; then
+            echo "::error::只能從 main 發佈（目前是 $GITHUB_REF_NAME）"; exit 1
+          else
+            echo "RELEASE_TAG=v$(bun -e 'console.log(require("./package.json").version)')" >> "$GITHUB_ENV"
+          fi
+
+      - name: 確認版本與更新說明
+        if: env.RELEASE_TAG != ''
+        shell: bash
+        run: bun run scripts/release-notes.ts --check-tag "${RELEASE_TAG}" > release-notes.md
 
       - name: 建置 exe
         run: bun run build
@@ -68,9 +88,10 @@ jobs:
             dist/ScreenRecorder.exe
             dist/ScreenRecorder.zip
 
+      # 手動發佈時 tag 還不存在：--target 讓 gh 在這次建置的 commit 上建立 tag（推送 tag 時 tag 已存在，--target 不影響）
       - name: 發佈 Release
-        if: startsWith(github.ref, 'refs/tags/')
+        if: env.RELEASE_TAG != ''
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
-        run: gh release create "${GITHUB_REF_NAME}" dist/ScreenRecorder.zip dist/ScreenRecorder.exe --title "${GITHUB_REF_NAME}" --notes-file release-notes.md
+        run: gh release create "${RELEASE_TAG}" dist/ScreenRecorder.zip dist/ScreenRecorder.exe --title "${RELEASE_TAG}" --notes-file release-notes.md --target "${GITHUB_SHA}"
