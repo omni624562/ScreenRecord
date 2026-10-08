@@ -148,6 +148,7 @@ export function startServer(app: App, port: number, development: boolean) {
           sort: (p.get("sort") as LibraryQuery["sort"]) ?? "new",
           page: Number(p.get("page") ?? 1),
           pageSize: Number(p.get("pageSize") ?? 30),
+          fitPx: p.has("fitPx") ? Number(p.get("fitPx")) : undefined,
         };
         return json(await listLibrary(app.ffmpegPath(), dir, query));
       }),

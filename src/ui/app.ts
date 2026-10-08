@@ -878,7 +878,10 @@ function renderRecent() {
           const tags = [
             e.hasAudio ? `<span class="tag audio">聲音</span>` : "",
             /_cut(_\d+)?\.mp4$/i.test(e.name) ? `<span class="tag cut">剪輯版</span>` : "",
-            e.exports.length ? `<span class="tag speed" title="${esc(e.exports.map(exportTag).join("、"))}">加速 ${e.exports.length}</span>` : "",
+            // 卡片放不下各個倍率，只顯示數量；倍率在滑鼠提示與「全部錄影」的子列
+            e.exports.length
+              ? `<span class="tag speed" title="${esc(`已匯出 ${e.exports.map(exportTag).join("、")}`)}">${e.exports.some((x) => x.format === "gif") ? "匯出" : "加速"} ${e.exports.length}</span>`
+              : "",
           ].join("");
           return `<div class="rcard" title="${esc(e.name)}">
             <img class="thumb rcard-thumb" data-src="${thumbUrl(e)}" alt="" decoding="async" />

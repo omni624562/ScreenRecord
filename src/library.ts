@@ -7,7 +7,7 @@ import { basename, join } from "node:path";
 import { parseMediaInfo } from "./args.ts";
 import { run } from "./ffmpeg.ts";
 import { parseExportName } from "./shared/format.ts";
-import type { LibraryEntry, LibraryPage, LibraryQuery, MediaInfo } from "./shared/types.ts";
+import { LIBRARY_ROW_PX, type LibraryEntry, type LibraryPage, type LibraryQuery, type MediaInfo } from "./shared/types.ts";
 
 /** 快取的是 Promise：同一個檔案同時被要求（搜尋、換頁、匯出完成重新整理）只會執行一次 FFmpeg */
 const cache = new Map<string, { key: string; info: Promise<MediaInfo> }>();
@@ -103,6 +103,21 @@ async function withInfo(ffmpeg: string | undefined, e: LibraryEntry): Promise<Li
   return { ...info, exports };
 }
 
+/** 依高度分頁：回傳每頁第一筆的索引。一筆（含子列）放不下一整頁時自己一頁 */
+export function pageStarts(list: LibraryEntry[], fitPx: number): number[] {
+  const starts = [0];
+  let used = 0;
+  list.forEach((e, i) => {
+    const h = LIBRARY_ROW_PX.main + e.exports.length * LIBRARY_ROW_PX.sub;
+    if (used > 0 && used + h > fitPx) {
+      starts.push(i);
+      used = 0;
+    }
+    used += h;
+  });
+  return starts;
+}
+
 export async function listLibrary(ffmpeg: string | undefined, dir: string, q: LibraryQuery = {}): Promise<LibraryPage> {
   let list = await scan(dir);
 
@@ -132,10 +147,20 @@ export async function listLibrary(ffmpeg: string | undefined, dir: string, q: Li
   list.sort(sorters[q.sort ?? "new"] ?? sorters.new!);
 
   const total = list.length;
-  const pageSize = Math.max(1, Math.min(200, Math.floor(q.pageSize ?? 30)));
-  const pages = Math.max(1, Math.ceil(total / pageSize));
-  const page = Math.min(Math.max(1, Math.floor(q.page ?? 1)), pages);
-  const slice = list.slice((page - 1) * pageSize, page * pageSize);
+  let pages: number, page: number, slice: LibraryEntry[], pageSize: number;
+  const clampPage = () => Math.min(Math.max(1, Math.floor(q.page ?? 1) || 1), pages);
+  if (q.fitPx !== undefined && Number.isFinite(q.fitPx)) {
+    const starts = pageStarts(list, Math.max(LIBRARY_ROW_PX.main, q.fitPx));
+    pages = starts.length;
+    page = clampPage();
+    slice = list.slice(starts[page - 1], starts[page] ?? list.length);
+    pageSize = slice.length;
+  } else {
+    pageSize = Math.max(1, Math.min(200, Math.floor(q.pageSize ?? 30)));
+    pages = Math.max(1, Math.ceil(total / pageSize));
+    page = clampPage();
+    slice = list.slice((page - 1) * pageSize, page * pageSize);
+  }
   const items = needAll ? slice : await pool(slice, 6, (e) => withInfo(ffmpeg, e));
   return { dir, total, page, pages, pageSize, items };
 }

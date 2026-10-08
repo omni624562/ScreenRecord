@@ -150,7 +150,12 @@ export interface LibraryQuery {
   sort?: "new" | "old" | "size" | "duration";
   page?: number;
   pageSize?: number;
+  /** 依高度分頁（全部錄影對話框）：表格可用的高度（px），原片與加速版各佔一列，高度見 LIBRARY_ROW_PX；有指定時忽略 pageSize */
+  fitPx?: number;
 }
+
+/** 全部錄影表格的列高（含 1px 分隔線）：原片一列、底下每個加速版一列子列 */
+export const LIBRARY_ROW_PX = { main: 41, sub: 33 } as const;
 
 export interface LibraryPage {
   dir: string;
