@@ -11,7 +11,7 @@ export const LIMITS = {
 export const FPS_PRESETS = [15, 24, 30, 60] as const;
 export const SPEED_PRESETS = [1.5, 2, 4, 8, 16] as const;
 
-const even = (n: number) => Math.max(2, Math.floor(n / 2) * 2);
+export const even = (n: number) => Math.max(2, Math.floor(n / 2) * 2);
 
 /** 輸出尺寸：依縮放比例計算並取偶數（yuv420p 要求寬高為偶數） */
 export function outputSize(width: number, height: number, scale: number) {
@@ -37,6 +37,47 @@ export function parseExportName(name: string): { base: string; speed: number; fo
   if (m) return { base: `${m[1]}.mp4`, speed: Number(m[2]), format: m[3]!.toLowerCase() as ExportFormat };
   const g = /^(.*?)(?:_\d+)?\.gif$/i.exec(name);
   return g ? { base: `${g[1]}.mp4`, speed: 1, format: "gif" } : undefined;
+}
+
+/** 加速版可選的寬度（0 = 原尺寸）；比原片寬的選項不顯示 */
+export const MP4_WIDTHS = [0, 1920, 1280] as const;
+
+/** 縮小後的尺寸（高度等比、取偶數）；width 為 0 或不小於原寬時維持原尺寸 */
+export function scaledSize(srcWidth: number, srcHeight: number, width: number) {
+  if (!width || width >= srcWidth) return { width: srcWidth, height: srcHeight };
+  return { width: even(width), height: even(Math.round((srcHeight * width) / srcWidth)) };
+}
+
+export interface EstimateInput {
+  format: ExportFormat;
+  /** 原片大小與長度 */
+  srcBytes: number;
+  srcSec: number;
+  srcWidth: number;
+  srcHeight: number;
+  speed: number;
+  /** 輸出尺寸 */
+  width: number;
+  height: number;
+  /** GIF 每秒張數 */
+  gifFps?: number;
+}
+
+/**
+ * 粗估成品大小，回傳 [下限, 上限]（位元組）。畫面內容影響很大，只求數量級正確：
+ * - MP4：以原片的位元率為準；加速後每張畫面差異變大，位元率約隨倍率的平方根增加（最多 4 倍），尺寸縮小時大致依面積遞減
+ * - GIF：依每張畫面的像素數估算；只更新變動區域時，螢幕畫面大多每像素 0.03～0.2 位元組
+ */
+export function estimateBytes(o: EstimateInput): [number, number] {
+  const outSec = o.srcSec / o.speed;
+  if (o.format === "gif") {
+    const frames = Math.max(1, outSec * (o.gifFps ?? 10));
+    const px = o.width * o.height * frames;
+    return [px * 0.03, px * 0.2];
+  }
+  const area = o.srcWidth && o.srcHeight ? (o.width * o.height) / (o.srcWidth * o.srcHeight) : 1;
+  const mid = (o.srcBytes / o.srcSec) * outSec * Math.min(4, Math.sqrt(o.speed)) * area ** 0.75;
+  return [mid * 0.5, mid * 1.8];
 }
 
 /** 錄影改名時的名稱檢查（不含 .mp4）；沒問題回傳 undefined */

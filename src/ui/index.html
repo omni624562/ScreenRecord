@@ -210,7 +210,7 @@
     <!-- 製作加速版 / GIF -->
     <dialog class="dlg" id="exportDlg" aria-labelledby="exTitle">
       <header class="dlg-head">
-        <div><h2 id="exTitle">製作加速版</h2><p class="muted small mono" id="exName"></p></div>
+        <div><h2 id="exTitle">製作加速版</h2><p class="muted small" id="exName"></p></div>
         <button class="btn ghost small" type="button" data-close>關閉</button>
       </header>
       <div class="dlg-body">
@@ -267,11 +267,16 @@
             </select>
           </label>
         </div>
+        <label class="field" id="mp4Opts" hidden>
+          <span>尺寸</span>
+          <select id="mp4Width"></select>
+        </label>
         <div class="calc">
-          <div><span class="muted">原片</span><strong id="calcFrom">—</strong></div>
+          <div><span class="muted">原片</span><strong id="calcFrom">—</strong><small class="muted" id="calcFromInfo"></small></div>
           <div class="arrow" aria-hidden="true">→</div>
-          <div><span class="muted">加速後</span><strong id="calcTo">—</strong></div>
+          <div><span class="muted">加速後</span><strong id="calcTo">—</strong><small class="muted" id="calcToInfo" title="依原片的位元率與畫面大小粗估，實際大小視畫面變化而定"></small></div>
         </div>
+        <div class="ex-notes" id="exNotes"></div>
         <p class="hint" id="calcHint"></p>
         <label class="switch" id="keepAudioRow" hidden>
           <input type="checkbox" id="keepAudio" />

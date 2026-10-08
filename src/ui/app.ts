@@ -1,4 +1,4 @@
-import { clock, formatBytes, humanDuration, LIMITS, outputSize, speedLabel, videoClock } from "../shared/format.ts";
+import { clock, formatBytes, humanDuration, LIMITS, MP4_WIDTHS, outputSize, speedLabel, videoClock } from "../shared/format.ts";
 import type {
   DownloadStatus,
   EnvInfo,
@@ -57,6 +57,8 @@ interface Settings {
   exportTarget: string;
   gifWidth: number;
   gifFps: number;
+  /** 加速版縮小後的寬度（0 = 原尺寸） */
+  mp4Width: number;
 }
 
 const STORAGE_KEY = "screen-recorder.settings.v1";
@@ -157,6 +159,7 @@ function initSettings() {
     exportTarget: typeof st.exportTarget === "string" ? st.exportTarget : "1:00",
     gifWidth: [320, 480, 640, 960, 1280].includes(Number(st.gifWidth)) ? Number(st.gifWidth) : 640,
     gifFps: [5, 10, 15, 20].includes(Number(st.gifFps)) ? Number(st.gifFps) : 10,
+    mp4Width: (MP4_WIDTHS as readonly number[]).includes(Number(st.mp4Width)) ? Number(st.mp4Width) : 0,
   };
   if (!selectedMonitor()) S.monitorId = primary?.id;
 }
@@ -1001,6 +1004,7 @@ function act(action: EntryAction, entry: LibraryEntry) {
         target: S.exportTarget,
         gifWidth: S.gifWidth,
         gifFps: S.gifFps,
+        mp4Width: S.mp4Width,
       }),
       setPrefs: (p) => {
         if (p.speed !== undefined) S.speed = p.speed;
@@ -1010,8 +1014,10 @@ function act(action: EntryAction, entry: LibraryEntry) {
         if (p.target !== undefined) S.exportTarget = p.target;
         if (p.gifWidth) S.gifWidth = p.gifWidth;
         if (p.gifFps) S.gifFps = p.gifFps;
+        if (p.mp4Width !== undefined) S.mp4Width = p.mp4Width;
         save();
       },
+      play: (path) => openFile("play", path),
       start: async (req) => {
         applyStatus(await api("/api/export/start", req));
         dismissedJob = undefined;

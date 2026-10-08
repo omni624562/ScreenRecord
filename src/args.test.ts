@@ -16,7 +16,7 @@ import {
   resolvePlan,
   segmentArgs,
 } from "./args.ts";
-import { exportFileName, outputSize, parseClock, parseExportName, speedForTarget } from "./shared/format.ts";
+import { estimateBytes, exportFileName, outputSize, parseClock, parseExportName, scaledSize, speedForTarget } from "./shared/format.ts";
 import type { MonitorInfo, RecordConfig } from "./shared/types.ts";
 
 const mon = (id: string, x: number, y: number, w: number, h: number, primary = false): MonitorInfo => {
@@ -212,6 +212,12 @@ describe("匯出", () => {
     expect(() => exportArgs("in.mp4", "out.mp4", 1, 30, x264)).toThrow(ConfigError);
   });
 
+  test("exportArgs 縮小尺寸：只縮不放大", () => {
+    expect(after(exportArgs("in.mp4", "out.mp4", 4, 30, x264, false, 1920, 3840), "-vf")).toBe("setpts=PTS/4,fps=30,scale=1920:-2:flags=bicubic,format=yuv420p");
+    expect(after(exportArgs("in.mp4", "out.mp4", 4, 30, x264, false, 1920, 1920), "-vf")).toBe("setpts=PTS/4,fps=30,format=yuv420p");
+    expect(after(exportArgs("in.mp4", "out.mp4", 4, 30, x264, false, 0, 3840), "-vf")).toBe("setpts=PTS/4,fps=30,format=yuv420p");
+  });
+
   test("exportArgs 保留聲音：atempo 每段不超過 2 倍", () => {
     const args = exportArgs("in.mp4", "out.mp4", 16, 30, x264, true);
     expect(after(args, "-af")).toBe("atempo=2,atempo=2,atempo=2,atempo=2");
@@ -228,6 +234,28 @@ describe("匯出", () => {
     expect(parseMediaInfo(stderr)).toEqual({ durationSec: 62.5, width: 1920, height: 1080, fps: 30, hasAudio: true });
     expect(parseMediaInfo(stderr.split("\n").slice(0, 3).join("\n")).hasAudio).toBe(false);
   });
+});
+
+test("scaledSize：只縮不放大、高度等比取偶數", () => {
+  expect(scaledSize(3840, 1080, 1920)).toEqual({ width: 1920, height: 540 });
+  expect(scaledSize(1920, 1080, 1280)).toEqual({ width: 1280, height: 720 });
+  expect(scaledSize(1366, 768, 1280)).toEqual({ width: 1280, height: 720 });
+  expect(scaledSize(1280, 720, 1920)).toEqual({ width: 1280, height: 720 });
+  expect(scaledSize(1920, 1080, 0)).toEqual({ width: 1920, height: 1080 });
+});
+
+test("estimateBytes：範圍合理、縮小尺寸與加速會變小", () => {
+  const base = { format: "mp4" as const, srcBytes: 60e6, srcSec: 600, srcWidth: 1920, srcHeight: 1080, width: 1920, height: 1080 };
+  const [lo, hi] = estimateBytes({ ...base, speed: 4 });
+  expect(lo).toBeLessThan(hi);
+  expect(lo).toBeGreaterThan(0);
+  // 10 分鐘 60 MB、4× → 約 2.5 分鐘；以原位元率 × 2 為中心
+  expect((lo + hi) / 2).toBeGreaterThan(15e6);
+  expect((lo + hi) / 2).toBeLessThan(60e6);
+  expect(estimateBytes({ ...base, speed: 4, width: 1280, height: 720 })[1]).toBeLessThan(hi);
+  expect(estimateBytes({ ...base, speed: 16 })[1]).toBeLessThan(hi);
+  const gif = estimateBytes({ ...base, format: "gif", speed: 1, width: 640, height: 360, gifFps: 10, srcSec: 10 });
+  expect(gif[0]).toBeCloseTo(640 * 360 * 100 * 0.03, -3);
 });
 
 test("outputSize 一律取偶數", () => {
