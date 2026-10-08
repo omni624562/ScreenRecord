@@ -316,7 +316,8 @@ input[type="number"] { font-family: var(--mono); font-variant-numeric: tabular-n
 .lib-table td { padding: 0 8px; height: 40px; border-bottom: 1px solid var(--border); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .lib-table tr.sub td { height: 32px; color: var(--muted); font-size: 12.5px; }
 .lib-table tr.sub .name { padding-left: 22px; }
-.lib-table tr.sub .branch { color: var(--muted); font-family: var(--mono); }
+/* 子列的分支線：用框線畫 └，與標籤垂直置中（字元 └ 在不同字型裡高度不一） */
+.lib-table tr.sub .branch { flex: none; width: 9px; height: 9px; margin: 0 2px 6px 0; border-left: 1.5px solid var(--border-strong); border-bottom: 1.5px solid var(--border-strong); border-bottom-left-radius: 2px; }
 .lib-table .btn-ph { display: inline-block; width: 28px; }
 .lib-table .c-check { width: 36px; }
 .lib-table .c-num { width: 96px; text-align: right; font-variant-numeric: tabular-nums; }

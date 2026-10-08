@@ -3,16 +3,25 @@
  * 勾選多筆移到資源回收筒。加速版（含 GIF）以子列列在原檔底下，各自有長度、大小與播放 / 資料夾按鈕；
  * 勾選原檔時連同底下的加速版一起勾選，可再個別取消。
  */
-import { formatBytes, speedLabel, videoClock } from "../shared/format.ts";
+import { formatBytes, humanDuration, speedLabel, videoClock } from "../shared/format.ts";
 
 /** 匯出檔的標籤：4×、GIF 4×、GIF */
 export const exportTag = (x: { speed: number; format?: string }) =>
   x.format === "gif" ? `GIF${x.speed > 1 ? ` ${speedLabel(x.speed)}×` : ""}` : `${speedLabel(x.speed)}×`;
-/** 子列的名稱：4× 加速版、GIF 4×、GIF（原速） */
-const exportLabel = (x: { speed: number; format?: string }) =>
-  x.format === "gif" ? `GIF ${x.speed > 1 ? `${speedLabel(x.speed)}×` : "（原速）"}` : `${speedLabel(x.speed)}× 加速版`;
+/**
+ * 子列的名稱：4× 加速版、GIF 4×、GIF（原速）。
+ * 「指定長度」做出來的倍率是算出來的小數（例如 13.69×），不好讀，改用長度：30 秒版、GIF 30 秒版
+ */
+const exportLabel = (x: { speed: number; format?: string; durationSec?: number }) => {
+  const gif = x.format === "gif";
+  if (!Number.isInteger(x.speed * 2) && x.durationSec) {
+    const len = `${humanDuration(Math.round(x.durationSec))}版`;
+    return gif ? `GIF ${len}` : len;
+  }
+  return gif ? `GIF ${x.speed > 1 ? `${speedLabel(x.speed)}×` : "（原速）"}` : `${speedLabel(x.speed)}× 加速版`;
+};
 import { LIBRARY_ROW_PX, type LibraryEntry, type LibraryPage } from "../shared/types.ts";
-import { $, api, ask, baseName, esc, icon, isDefaultName, observeThumbs, shortDate, thumbUrl } from "./common.ts";
+import { $, api, ask, baseName, dateLabels, esc, icon, isDefaultName, observeThumbs, thumbUrl } from "./common.ts";
 import { checkRecordingName } from "../shared/format.ts";
 
 export type EntryAction = "play" | "reveal" | "edit" | "export";
@@ -40,6 +49,8 @@ export function openLibrary(d: LibraryDeps) {
   page = 1;
   selected.clear();
   $<HTMLDialogElement>("libraryDlg").showModal();
+  // 焦點放在搜尋框：打開就能打字，「關閉」也不會一開始就有焦點外框、看起來像主要按鈕
+  $("libSearch").focus();
   void load();
 }
 
@@ -85,6 +96,7 @@ function render() {
   const rows = data?.items ?? [];
   $("libEmpty").hidden = rows.length > 0;
   if (data && rows.length === 0) $("libEmpty").textContent = data.total === 0 && !$<HTMLInputElement>("libSearch").value ? "這個資料夾還沒有錄影。" : "沒有符合條件的錄影。";
+  const dates = dateLabels(rows);
   $("libRows").innerHTML = rows
     .map((e) => {
       const tags = [
@@ -93,7 +105,7 @@ function render() {
       ].join("");
       const subs = e.exports.map((x) => `<tr class="sub" data-path="${esc(e.path)}" data-export="${esc(x.path)}">
         <td class="c-check"><input type="checkbox" data-select="${esc(x.path)}" ${selected.has(x.path) ? "checked" : ""} aria-label="選取 ${esc(x.name)}" /></td>
-        <td><div class="name" title="${esc(x.name)}"><span class="branch" aria-hidden="true">└</span><span class="tag speed">${exportLabel(x)}</span></div></td>
+        <td><div class="name" title="${esc(x.name)}"><span class="branch" aria-hidden="true"></span><span class="tag speed" title="${speedLabel(x.speed)}×">${exportLabel(x)}</span></div></td>
         <td class="c-num">${x.durationSec !== undefined ? videoClock(x.durationSec) : "—"}</td>
         <td class="c-num">${x.width ? `${x.width}×${x.height}` : "—"}</td>
         <td class="c-num">${formatBytes(x.bytes)}</td>
@@ -105,7 +117,7 @@ function render() {
       </tr>`);
       return `<tr data-path="${esc(e.path)}">
         <td class="c-check"><input type="checkbox" data-select="${esc(e.path)}" ${selected.has(e.path) ? "checked" : ""} aria-label="選取 ${esc(e.name)}" /></td>
-        <td><div class="name" title="${esc(e.name)}"><img class="thumb lib-thumb" data-src="${thumbUrl(e)}" alt="" decoding="async" /><span class="date">${esc(shortDate(e.name, e.mtime))}</span>${isDefaultName(e.name) ? "" : `<span class="custom">${esc(baseName(e.name))}</span>`}${tags}</div></td>
+        <td><div class="name" title="${esc(e.name)}"><img class="thumb lib-thumb" data-src="${thumbUrl(e)}" alt="" decoding="async" /><span class="date">${esc(dates.get(e.name)!)}</span>${isDefaultName(e.name) ? "" : `<span class="custom">${esc(baseName(e.name))}</span>`}${tags}</div></td>
         <td class="c-num">${e.durationSec !== undefined ? videoClock(e.durationSec) : "—"}</td>
         <td class="c-num">${e.width ? `${e.width}×${e.height}` : "—"}</td>
         <td class="c-num">${formatBytes(e.bytes)}</td>

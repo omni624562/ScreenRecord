@@ -87,12 +87,25 @@ export async function guarded(fn: () => Promise<unknown>) {
 }
 
 /** 由檔名 Rec_2026-10-06_08-17-18 取出「10/06 08:17」；不符合格式時用修改時間 */
-export function shortDate(name: string, mtime: number): string {
-  const m = /(\d{4})-(\d{2})-(\d{2})_(\d{2})-(\d{2})/.exec(name);
-  if (m) return `${m[2]}/${m[3]} ${m[4]}:${m[5]}`;
+export function shortDate(name: string, mtime: number, withSec = false): string {
+  const m = /(\d{4})-(\d{2})-(\d{2})_(\d{2})-(\d{2})(?:-(\d{2}))?/.exec(name);
+  if (m) return `${m[2]}/${m[3]} ${m[4]}:${m[5]}${withSec && m[6] ? `:${m[6]}` : ""}`;
   const d = new Date(mtime);
   const p = (n: number) => String(n).padStart(2, "0");
-  return `${p(d.getMonth() + 1)}/${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+  return `${p(d.getMonth() + 1)}/${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}${withSec ? `:${p(d.getSeconds())}` : ""}`;
+}
+
+/** 一組錄影的日期標籤：同一分鐘的有好幾支時加上秒數，才分得出來 */
+export function dateLabels(items: { name: string; mtime: number }[]): Map<string, string> {
+  const count = new Map<string, number>();
+  for (const e of items) {
+    const k = shortDate(e.name, e.mtime);
+    count.set(k, (count.get(k) ?? 0) + 1);
+  }
+  return new Map(items.map((e) => {
+    const k = shortDate(e.name, e.mtime);
+    return [e.name, (count.get(k) ?? 0) > 1 ? shortDate(e.name, e.mtime, true) : k];
+  }));
 }
 
 /** 程式產生的預設檔名（Rec_日期時間，可能帶 _2、_cut）：只看日期就夠，不必再列出檔名 */

@@ -14,7 +14,7 @@ import type {
   UpdateInfo,
 } from "../shared/types.ts";
 import { HOTKEY_LABELS } from "../shared/types.ts";
-import { $, api, baseName, clamp, esc, guarded, icon, isDefaultName, observeThumbs, setHtml, shortDate, thumbUrl, toast } from "./common.ts";
+import { $, api, baseName, clamp, dateLabels, esc, guarded, icon, isDefaultName, observeThumbs, setHtml, thumbUrl, toast } from "./common.ts";
 import { openEditor } from "./editor.ts";
 import { openExport } from "./exportDialog.ts";
 import { exportTag, isLibraryOpen, load as reloadLibraryDialog, openLibrary, type EntryAction } from "./libraryDialog.ts";
@@ -896,6 +896,7 @@ async function loadRecent() {
 
 function renderRecent() {
   const items = recent?.items ?? [];
+  const dates = dateLabels(items);
   setHtml($("recentCards"), items.length
     ? items
         .map((e) => {
@@ -910,7 +911,7 @@ function renderRecent() {
           return `<div class="rcard" title="${esc(e.name)}">
             <img class="thumb rcard-thumb" data-src="${thumbUrl(e)}" alt="" decoding="async" />
             <div class="rcard-body">
-            <div class="rcard-top"><span class="rcard-date">${esc(isDefaultName(e.name) ? shortDate(e.name, e.mtime) : baseName(e.name))}</span><span>${tags}</span></div>
+            <div class="rcard-top"><span class="rcard-date">${esc(isDefaultName(e.name) ? dates.get(e.name)! : baseName(e.name))}</span><span>${tags}</span></div>
             <div class="rcard-meta">${e.durationSec !== undefined ? videoClock(e.durationSec) : "—"}・${formatBytes(e.bytes)}</div>
             <div class="rcard-actions">
               <button class="btn ghost" data-act="play" data-path="${esc(e.path)}" title="播放" aria-label="播放">${icon("play")}</button>
