@@ -223,7 +223,8 @@ fn plain(s: &str) -> String {
 
 /// 程式產生的預設檔名（Rec_日期時間，可能帶 _2、_cut）：只看日期就夠
 pub fn is_default_name(name: &str) -> bool {
-    static RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| regex::Regex::new(r"(?i)^Rec_\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}(_\d+)?(_cut(_\d+)?)?\.mp4$").unwrap());
+    static RE: std::sync::LazyLock<regex::Regex> =
+        std::sync::LazyLock::new(|| regex::Regex::new(r"(?i)^(Rec_\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}(_\d+)?(_cut(_\d+)?)?\.mp4|Shot_\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}(_\d+)?\.png)$").unwrap());
     RE.is_match(name)
 }
 
@@ -233,7 +234,14 @@ pub fn is_cut_name(name: &str) -> bool {
 
 /// 顯示用名稱：去掉 .mp4
 pub fn base_name(name: &str) -> String {
-    screenrecorder_core::format::strip_mp4(name)
+    match name.strip_suffix(".png").or_else(|| name.strip_suffix(".PNG")) {
+        Some(b) => b.to_string(),
+        None => screenrecorder_core::format::strip_mp4(name),
+    }
+}
+/// 截圖（PNG）
+pub fn is_image(name: &str) -> bool {
+    screenrecorder_core::library::is_image_name(name)
 }
 
 pub fn file_name(path: &str) -> String {
@@ -278,6 +286,9 @@ mod tests {
         assert!(is_default_name("Rec_2026-10-06_08-17-18.mp4"));
         assert!(is_default_name("Rec_2026-10-06_08-17-18_2_cut.mp4"));
         assert!(!is_default_name("操作示範.mp4"));
+        assert!(is_default_name("Shot_2026-10-09_14-30-00.png") && is_default_name("Shot_2026-10-09_14-30-00_2.png"));
+        assert_eq!(base_name("登入畫面.png"), "登入畫面");
+        assert!(is_image("Shot_x.PNG") && !is_image("a.mp4"));
         assert_eq!(short_date("Rec_2026-10-06_08-17-18.mp4", 0.0, false), "10/06 08:17");
         assert_eq!(short_date("Rec_2026-10-06_08-17-18.mp4", 0.0, true), "10/06 08:17:18");
         let labels = date_labels([("Rec_2026-10-06_08-17-18.mp4", 0.0), ("Rec_2026-10-06_08-17-40.mp4", 0.0), ("Rec_2026-10-06_09-00-00.mp4", 0.0)].into_iter());

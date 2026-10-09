@@ -98,6 +98,8 @@ pub struct UiApp {
     last_state: RecorderState,
     pub main: main_view::MainState,
     ddagrab_watch: Option<Instant>,
+    /// 已處理過的截圖（介面或快捷鍵截好時更新清單、顯示提示）
+    last_shot_seq: u64,
     /// 上一格各部分花的時間（毫秒）：畫面處理太慢時寫進記錄檔，找出卡在哪裡
     frame_parts: Vec<(&'static str, f32)>,
     slow_logged: Option<Instant>,
@@ -152,6 +154,7 @@ impl UiApp {
             last_result_path: None,
             main: main_view::MainState::default(),
             ddagrab_watch: None,
+            last_shot_seq: 0,
             frame_parts: Vec::new(),
             slow_logged: None,
             #[cfg(debug_assertions)]
@@ -274,6 +277,16 @@ impl UiApp {
             }
         }
         self.reload_settings_if_changed();
+        if let Some(shot) = self.status.shot.clone().filter(|s| s.seq != self.last_shot_seq) {
+            self.last_shot_seq = shot.seq;
+            let name = dialogs::file_name(&shot.path);
+            self.toast(if shot.copied { format!("已截圖並複製到剪貼簿：{name}") } else { format!("已截圖：{name}") }, false);
+            self.recent_page = 1;
+            self.load_recent();
+            if let Some(d) = &mut self.library {
+                d.dirty = true;
+            }
+        }
         let state = self.status.recorder.state;
         if state != self.last_state {
             // 開始 / 結束錄影時調整即時預覽的張數

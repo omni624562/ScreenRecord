@@ -3,7 +3,7 @@
 //! - 右：錄影狀態、計時、控制按鈕、轉檔工作、事件紀錄、系統狀態
 //! - 下：最近錄影（橫向分頁）
 
-use super::dialogs::{base_name, date_labels, file_name, is_cut_name, is_default_name, Ask};
+use super::dialogs::{base_name, date_labels, file_name, is_cut_name, is_default_name, is_image, Ask};
 use super::settings::{SourceType, FPS_CHOICES, MAX_PRESETS};
 use super::theme::{self, chip, segmented, switch, Btn, Icon, Tone};
 use super::{EntryAction, UiApp};
@@ -12,6 +12,7 @@ use screenrecorder_core::actions;
 use screenrecorder_core::format::{clock, format_bytes, human_duration, output_size, speed_label, video_clock};
 use screenrecorder_core::types::{
     DownloadPhase, EncoderPreference, ExportFormat, ExportKind, ExportState, LibraryEntry, LogLevel, MethodPreference, RecorderState, Rect as DRect, HOTKEY_PAUSE_LABEL, HOTKEY_RECORD_LABEL,
+    HOTKEY_SHOT_LABEL,
 };
 use std::time::Instant;
 
@@ -25,6 +26,8 @@ pub struct MainState {
     region_focus: Option<usize>,
     dir_text: Option<String>,
     dir_changed_at: Option<Instant>,
+    /// 截圖中（按鈕停用，避免連按）
+    pub shooting: bool,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -691,7 +694,7 @@ fn more_panel(app: &mut UiApp, ui: &mut Ui) {
     // 快捷鍵
     match app.env.hotkeys {
         Some(hk) => {
-            for (keys, what, ok) in [(HOTKEY_RECORD_LABEL, "開始 / 停止錄影", hk.record), (HOTKEY_PAUSE_LABEL, "暫停 / 繼續", hk.pause)] {
+            for (keys, what, ok) in [(HOTKEY_RECORD_LABEL, "開始 / 停止錄影", hk.record), (HOTKEY_PAUSE_LABEL, "暫停 / 繼續", hk.pause), (HOTKEY_SHOT_LABEL, "截圖", hk.shot)] {
                 ui.horizontal(|ui| {
                     ui.label(RichText::new(keys).font(theme::mono(12.5)).background_color(p.surface2));
                     ui.label(what);
@@ -920,11 +923,13 @@ fn rec_panel(app: &mut UiApp, ui: &mut Ui) {
             if !active {
                 let can = app.env.ffmpeg.found && app.env.ffmpeg.encoder.is_some() && !app.exporting();
                 let tip = if app.exporting() { "轉檔進行中，完成後才能錄影" } else { "" };
-                if Btn::new("開始錄影").kind(theme::Kind::Record).enabled(can).tooltip(tip).min_width(ui.available_width()).show(ui).clicked() {
+                let shot_w = 92.0;
+                if Btn::new("開始錄影").kind(theme::Kind::Record).enabled(can).tooltip(tip).min_width(ui.available_width() - shot_w - ui.spacing().item_spacing.x).show(ui).clicked() {
                     let config = app.s.record_config(&app.env);
                     let core = app.core.clone();
                     app.guarded(async move { actions::record_start(&core, config).await }, |_, _| {});
                 }
+                shot_button(app, ui, shot_w);
             } else {
                 let w = ui.available_width();
                 if r.state == RecorderState::Recording && Btn::new("暫停").icon(Icon::Pause).enabled(r.busy.is_none()).min_width(w * 0.45).show(ui).clicked() {
@@ -1011,6 +1016,24 @@ fn rec_panel(app: &mut UiApp, ui: &mut Ui) {
         ui.painter().hline(bottom.x_range(), bottom.min.y - BOTTOM_LINE_GAP, Stroke::new(1.0, p.border));
         ui.scope_builder(UiBuilder::new().max_rect(bottom).layout(Layout::left_to_right(Align::Center)), |ui| sys_status(app, ui));
     });
+}
+
+/// 截圖：與錄影相同的範圍，存成 PNG 並複製到剪貼簿（完成後由狀態更新顯示提示、更新清單）
+fn shot_button(app: &mut UiApp, ui: &mut Ui, w: f32) {
+    let hotkey = if app.env.hotkeys.is_some_and(|h| h.shot) { format!("（{HOTKEY_SHOT_LABEL}）") } else { String::new() };
+    let tip = format!("截取目前的擷取範圍，存成 PNG 並複製到剪貼簿{hotkey}");
+    let can = app.env.ffmpeg.found && !app.main.shooting;
+    if Btn::new("截圖").icon(Icon::Camera).enabled(can).tooltip(tip).min_width(w).height(40.0).show(ui).clicked() {
+        app.main.shooting = true;
+        let config = app.s.record_config(&app.env);
+        let core = app.core.clone();
+        app.spawn(async move { core.screenshot(&config).await }, |app, r| {
+            app.main.shooting = false;
+            if let Err(e) = r {
+                app.toast(e.message().to_string(), true);
+            }
+        });
+    }
 }
 
 /// 播放 / 顯示 / 剪輯 / 製作加速版的按鈕
@@ -1243,10 +1266,19 @@ fn recent_card(app: &mut UiApp, ui: &mut Ui, e: &LibraryEntry, date: String, w: 
         painter.image(t.id(), thumb, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
     }
     let x = thumb.max.x + 10.0;
-    let meta = format!("{}・{}", e.media.duration_sec.map(video_clock).unwrap_or_else(|| "—".into()), format_bytes(e.media.bytes));
+    let image = is_image(&e.media.name);
+    let meta = if image {
+        let size = e.media.width.zip(e.media.height).map(|(w, h)| format!("{w}×{h}・")).unwrap_or_default();
+        format!("{size}{}", format_bytes(e.media.bytes))
+    } else {
+        format!("{}・{}", e.media.duration_sec.map(video_clock).unwrap_or_else(|| "—".into()), format_bytes(e.media.bytes))
+    };
     painter.text(pos2(x, rect.min.y + 28.0), egui::Align2::LEFT_TOP, meta, theme::font(12.0), p.muted);
     // 標籤
     let mut tags: Vec<(String, Tone, String)> = vec![];
+    if image {
+        tags.push(("截圖".into(), Tone::Accent, String::new()));
+    }
     if e.media.has_audio == Some(true) {
         tags.push(("聲音".into(), Tone::Ok, String::new()));
     }
@@ -1279,12 +1311,17 @@ fn recent_card(app: &mut UiApp, ui: &mut Ui, e: &LibraryEntry, date: String, w: 
     {
         let ui = &mut ui.new_child(UiBuilder::new().max_rect(row).layout(Layout::left_to_right(Align::Center)));
         ui.spacing_mut().item_spacing.x = 2.0;
-        for (act, icon, tip) in [
-            (EntryAction::Play, Icon::Play, "播放"),
-            (EntryAction::Reveal, Icon::Folder, "在資料夾中顯示"),
-            (EntryAction::Edit, Icon::Cut, "剪輯"),
-            (EntryAction::Export, Icon::Export, "製作加速版 / GIF"),
-        ] {
+        let acts: &[(EntryAction, Icon, &str)] = if image {
+            &[(EntryAction::Play, Icon::Play, "開啟"), (EntryAction::Reveal, Icon::Folder, "在資料夾中顯示")]
+        } else {
+            &[
+                (EntryAction::Play, Icon::Play, "播放"),
+                (EntryAction::Reveal, Icon::Folder, "在資料夾中顯示"),
+                (EntryAction::Edit, Icon::Cut, "剪輯"),
+                (EntryAction::Export, Icon::Export, "製作加速版 / GIF"),
+            ]
+        };
+        for &(act, icon, tip) in acts {
             if Btn::icon_only(icon).ghost().small().tooltip(tip).show(ui).clicked() {
                 app.known.insert(e.media.path.clone(), e.clone());
                 app.act(act, e.clone());

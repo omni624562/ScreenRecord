@@ -6,7 +6,7 @@ use crate::format::{clock, video_clock};
 use crate::info;
 use crate::paths::now_ms;
 use crate::settings::SettingsPatch;
-use crate::types::{AudioConfig, HotkeyStatus, MethodPreference, RecordConfig, RecorderState, SourceConfig, HOTKEY_PAUSE_LABEL, HOTKEY_RECORD_LABEL};
+use crate::types::{AudioConfig, HotkeyStatus, MethodPreference, RecordConfig, RecorderState, SourceConfig, HOTKEY_PAUSE_LABEL, HOTKEY_RECORD_LABEL, HOTKEY_SHOT_LABEL};
 use crate::version::APP_VERSION;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -28,6 +28,8 @@ pub enum TrayCommand {
     Changelog,
     HotkeyRecord,
     HotkeyPause,
+    /// 截圖（選單與 Ctrl+Alt+S）
+    Screenshot,
     OpenUpdate,
     Quit,
 }
@@ -50,6 +52,8 @@ pub struct TrayState {
     pub audio_mic: bool,
     /// 是否能開始錄影（有 FFmpeg、沒有轉檔工作）
     pub can_record: bool,
+    /// 是否能截圖（有 FFmpeg）
+    pub can_shot: bool,
     pub last_result: Option<String>,
     /// None = 無法設定（開發版）
     pub autostart: Option<bool>,
@@ -152,6 +156,7 @@ impl TrayController {
             audio_system: cfg.audio.system,
             audio_mic: cfg.audio.mic,
             can_record: self.app.ffmpeg_path().is_some() && !self.app.exporter.running(),
+            can_shot: self.app.ffmpeg_path().is_some(),
             last_result: if last_result { c.last_result_path.clone() } else { None },
             autostart: c.autostart,
             version: APP_VERSION.to_string(),
@@ -287,6 +292,13 @@ impl TrayController {
                 crate::desktop::open_with_explorer(&dir, false);
                 return Ok(());
             }
+            TrayCommand::Screenshot => {
+                let shot = app.screenshot(&self.config()).await.map_err(err)?;
+                let name = std::path::Path::new(&shot.path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                let text = if shot.copied { format!("已複製到剪貼簿，存成 {name}") } else { format!("已存成 {name}") };
+                self.notify("已截圖", &text, false);
+                return Ok(());
+            }
             TrayCommand::PlayLast => {
                 let p = self.ctl.lock().unwrap().last_result_path.clone();
                 if let Some(p) = p {
@@ -374,8 +386,11 @@ fn report_hotkeys(app: &App, h: HotkeyStatus) {
     if !h.pause {
         busy.push(HOTKEY_PAUSE_LABEL);
     }
+    if !h.shot {
+        busy.push(HOTKEY_SHOT_LABEL);
+    }
     if busy.is_empty() {
-        info!("快捷鍵：{HOTKEY_RECORD_LABEL} 開始 / 停止，{HOTKEY_PAUSE_LABEL} 暫停 / 繼續");
+        info!("快捷鍵：{HOTKEY_RECORD_LABEL} 開始 / 停止，{HOTKEY_PAUSE_LABEL} 暫停 / 繼續，{HOTKEY_SHOT_LABEL} 截圖");
     } else {
         info!("快捷鍵 {} 已被其他程式使用，無法登記", busy.join("、"));
     }

@@ -28,7 +28,7 @@ const WM_TRAY: u32 = WM_APP + 1;
 const WM_WAKE: u32 = WM_APP + 2;
 const NIN_BALLOONUSERCLICK: u32 = 0x405;
 /// 全域快捷鍵：id、按鍵、指令（與介面顯示的 Ctrl+Alt+R / Ctrl+Alt+P 一致）
-const HOTKEYS: [(i32, u32); 2] = [(1, 0x52 /* R */), (2, 0x50 /* P */)];
+const HOTKEYS: [(i32, u32); 3] = [(1, 0x52 /* R */), (2, 0x50 /* P */), (3, 0x53 /* S */)];
 
 enum Req {
     State(TrayState),
@@ -231,6 +231,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             match wparam.0 as i32 {
                 1 => send_cmd(TrayCommand::HotkeyRecord),
                 2 => send_cmd(TrayCommand::HotkeyPause),
+                3 => send_cmd(TrayCommand::Screenshot),
                 _ => {}
             }
             LRESULT(0)
@@ -333,6 +334,8 @@ fn show_menu() {
             m.add(root, "停止並儲存(&S)\tCtrl+Alt+R", TrayCommand::Stop, idle || st.rec == RecorderState::Stopping, false);
         }
         Menu::sep(root);
+        m.add(root, "截圖(&T)\tCtrl+Alt+S", TrayCommand::Screenshot, !st.can_shot, false);
+        Menu::sep(root);
         if let Ok(audio) = CreatePopupMenu() {
             m.add(audio, "系統聲音", TrayCommand::ToggleSystem, false, st.audio_system);
             m.add(audio, "麥克風", TrayCommand::ToggleMic, false, st.audio_mic);
@@ -417,7 +420,7 @@ pub fn start(cmd: UnboundedSender<TrayCommand>) -> Result<(Arc<dyn TrayUi>, Hotk
             }
             // 快捷鍵登記在這個執行緒的視窗上（WM_HOTKEY 會送到這裡）；被其他程式占用時登記失敗
             let ok: Vec<bool> = HOTKEYS.iter().map(|(id, vk)| RegisterHotKey(Some(hwnd), *id, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, *vk).is_ok()).collect();
-            let _ = ready_tx.send(Ok((hwnd.0 as isize, HotkeyStatus { record: ok[0], pause: ok[1] })));
+            let _ = ready_tx.send(Ok((hwnd.0 as isize, HotkeyStatus { record: ok[0], pause: ok[1], shot: ok[2] })));
             let mut msg = MSG::default();
             while GetMessageW(&mut msg, None, 0, 0).as_bool() {
                 let _ = TranslateMessage(&msg);

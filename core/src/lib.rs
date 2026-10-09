@@ -10,6 +10,7 @@ pub mod args;
 pub mod audio;
 pub mod audio_out;
 pub mod audiopipe;
+pub mod clipboard;
 pub mod clock;
 pub mod desktop;
 pub mod downloader;

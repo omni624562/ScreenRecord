@@ -103,8 +103,22 @@ pub struct AudioConfig {
 pub struct HotkeyStatus {
     pub record: bool,
     pub pause: bool,
+    #[serde(default)]
+    pub shot: bool,
 }
 
+/// 最近一次的截圖（seq 每次加一，介面看到變了就更新清單）
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct ShotInfo {
+    pub seq: u64,
+    pub path: String,
+    pub width: u32,
+    pub height: u32,
+    /// 已複製到剪貼簿
+    pub copied: bool,
+}
+
+pub const HOTKEY_SHOT_LABEL: &str = "Ctrl+Alt+S";
 pub const HOTKEY_RECORD_LABEL: &str = "Ctrl+Alt+R";
 pub const HOTKEY_PAUSE_LABEL: &str = "Ctrl+Alt+P";
 
@@ -290,6 +304,8 @@ pub enum LibraryFilter {
     Cut,
     Speed,
     Audio,
+    /// 截圖（PNG）
+    Shot,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]

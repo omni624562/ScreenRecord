@@ -687,11 +687,48 @@ pub fn preview_args(monitors: &[MonitorInfo], use_ddagrab: bool, max_width: u32,
     a
 }
 
+/// 截圖：擷取範圍的一張原尺寸 PNG（不縮放）。ddagrab 取第三張（第一張有時是黑的），gdigrab 取一張
+pub fn screenshot_args(plan: &CapturePlan, use_ddagrab: bool, draw_mouse: bool, out_file: &str) -> Result<Vec<String>> {
+    let mut a = strs(&["-hide_banner", "-loglevel", "error"]);
+    if use_ddagrab {
+        let Some(dda) = &plan.dda else {
+            return Err(Error::config("此範圍涵蓋不同顯示卡上的螢幕，無法使用 ddagrab"));
+        };
+        a.extend(["-init_hw_device".into(), format!("d3d11va=dda:{}", dda.adapter), "-filter_hw_device".into(), "dda".into(), "-filter_complex".into()]);
+        a.push(format!("{},format=rgb24[vout]", ddagrab_chain(plan, 10.0, draw_mouse)));
+        a.extend(strs(&["-map", "[vout]", "-frames:v", "3"]));
+    } else {
+        let Rect { x, y, width, height } = plan.rect;
+        a.extend(strs(&["-f", "gdigrab", "-framerate", "10", "-draw_mouse"]));
+        a.push((draw_mouse as u8).to_string());
+        a.extend(["-offset_x".into(), x.to_string(), "-offset_y".into(), y.to_string(), "-video_size".into(), format!("{width}x{height}"), "-i".into(), "desktop".into()]);
+        a.extend(strs(&["-frames:v", "1", "-pix_fmt", "rgb24"]));
+    }
+    a.extend(strs(&["-update", "1", "-y"]));
+    a.push(out_file.into());
+    Ok(a)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::edit::{cut_file_name, keep_ranges, normalize_crop, EditSpec};
     use crate::types::{AudioConfig, MethodPreference};
+
+    #[test]
+    fn screenshot_full_resolution() {
+        let mons = vec![mon("0:0", 0, 0, 1920, 1080, true), mon("0:1", 1920, 0, 1920, 1080, false)];
+        let (_, dda) = plan_tiles(&Rect { x: 0, y: 0, width: 3840, height: 1080 }, &mons);
+        let plan = CapturePlan { rect: Rect { x: 0, y: 0, width: 3840, height: 1080 }, dda, monitors: mons.clone(), out_width: 1920, out_height: 540 };
+        let a = screenshot_args(&plan, true, false, "C:\\out\\Shot.png").unwrap().join(" ");
+        assert!(a.contains("d3d11va=dda:0") && a.contains("xstack") && a.contains("draw_mouse=0") && a.contains("format=rgb24[vout]"), "{a}");
+        assert!(!a.contains("scale="), "截圖不縮放：{a}");
+        assert!(a.ends_with("-frames:v 3 -update 1 -y C:\\out\\Shot.png"), "{a}");
+        let plan = CapturePlan { rect: Rect { x: 100, y: 50, width: 800, height: 600 }, dda: None, monitors: mons, out_width: 800, out_height: 600 };
+        let a = screenshot_args(&plan, false, true, "s.png").unwrap().join(" ");
+        assert!(a.contains("-f gdigrab -framerate 10 -draw_mouse 1 -offset_x 100 -offset_y 50 -video_size 800x600 -i desktop -frames:v 1 -pix_fmt rgb24"), "{a}");
+        assert!(screenshot_args(&plan, true, true, "s.png").is_err());
+    }
 
     fn mon(id: &str, x: i32, y: i32, w: i32, h: i32, primary: bool) -> MonitorInfo {
         let mut p = id.split(':').map(|n| n.parse::<u32>().unwrap());

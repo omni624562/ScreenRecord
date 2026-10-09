@@ -88,7 +88,22 @@ fn file_name(path: &str) -> String {
 }
 
 static CUT_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)_cut(_\d+)?\.mp4$").unwrap());
-static VIDEO_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)\.(mp4|gif)$").unwrap());
+static VIDEO_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)\.(mp4|gif|png)$").unwrap());
+static IMAGE_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)\.png$").unwrap());
+
+/// 截圖（PNG）：清單上單獨一筆，沒有加速版
+pub fn is_image_name(name: &str) -> bool {
+    IMAGE_RE.is_match(name)
+}
+
+/// 去掉副檔名（.mp4 / .png）
+fn strip_ext(name: &str) -> String {
+    if is_image_name(name) {
+        name[..name.len() - 4].to_string()
+    } else {
+        strip_mp4(name)
+    }
+}
 static GIF_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)\.gif$").unwrap());
 
 pub fn is_cut_name(name: &str) -> bool {
@@ -220,7 +235,8 @@ pub async fn list_library(cache: &Arc<MediaCache>, ffmpeg: Option<&Path>, dir: &
         list.retain(|e| e.media.name.to_lowercase().contains(&text) || local_date(e.media.mtime).contains(&text) || e.exports.iter().any(|x| x.media.name.to_lowercase().contains(&text)));
     }
     match q.filter {
-        LibraryFilter::Original => list.retain(|e| !is_cut_name(&e.media.name)),
+        LibraryFilter::Original => list.retain(|e| !is_cut_name(&e.media.name) && !is_image_name(&e.media.name)),
+        LibraryFilter::Shot => list.retain(|e| is_image_name(&e.media.name)),
         LibraryFilter::Cut => list.retain(|e| is_cut_name(&e.media.name)),
         LibraryFilter::Speed => list.retain(|e| !e.exports.is_empty()),
         _ => {}
@@ -271,7 +287,7 @@ pub async fn list_library(cache: &Arc<MediaCache>, ffmpeg: Option<&Path>, dir: &
 /// 錄影改名：原片與底下的加速版 / GIF 一起改（Rec_X_4x.mp4 → 新名_4x.mp4），清單上才不會斷開。
 /// 任何一個失敗就把已改的改回去。busy = 正在錄影 / 轉檔的檔案（小寫完整路徑）。回傳新的完整路徑。
 pub async fn rename_recording(cache: &MediaCache, path: &str, new_name: &str, busy: &[String]) -> Result<String> {
-    let base = strip_mp4(new_name.trim()).trim().to_string();
+    let base = strip_ext(new_name.trim()).trim().to_string();
     if let Some(bad) = check_recording_name(&base) {
         return Err(Error::config(bad));
     }
@@ -280,12 +296,13 @@ pub async fn rename_recording(cache: &MediaCache, path: &str, new_name: &str, bu
     let Some(entry) = entries.into_iter().find(|e| e.media.path.to_lowercase() == path.to_lowercase()) else {
         return Err(Error::config("找不到這個錄影，可能已被移動或刪除"));
     };
-    let old_base = strip_mp4(&entry.media.name);
+    let old_base = strip_ext(&entry.media.name);
+    let ext = if is_image_name(&entry.media.name) { "png" } else { "mp4" };
     if base == old_base {
         return Ok(entry.media.path);
     }
     let old_len = old_base.chars().count();
-    let mut plan: Vec<(String, PathBuf)> = vec![(entry.media.path.clone(), dir.join(format!("{base}.mp4")))];
+    let mut plan: Vec<(String, PathBuf)> = vec![(entry.media.path.clone(), dir.join(format!("{base}.{ext}")))];
     for x in &entry.exports {
         let suffix: String = x.media.name.chars().skip(old_len).collect();
         plan.push((x.media.path.clone(), dir.join(format!("{base}{suffix}"))));
@@ -388,6 +405,21 @@ mod tests {
         let mut v: Vec<String> = fs::read_dir(dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
         v.sort();
         v
+    }
+
+    #[tokio::test]
+    async fn screenshots_are_standalone_entries() {
+        let dir = make(&["Rec_X.mp4", "Rec_X_4x.mp4", "Shot_2026-10-09_14-30-00.png"]);
+        let cache = MediaCache::default();
+        let list = scan(&cache, dir.path()).await;
+        let names: Vec<(String, usize)> = list.iter().map(|e| (e.media.name.clone(), e.exports.len())).collect();
+        assert_eq!(names, vec![("Rec_X.mp4".into(), 1), ("Shot_2026-10-09_14-30-00.png".into(), 0)]);
+        let shots = list_library(&Arc::new(cache), None, dir.path(), &LibraryQuery { filter: LibraryFilter::Shot, ..q(None, None, LibrarySort::New) }).await;
+        assert_eq!(shots.items.iter().map(|e| e.media.name.as_str()).collect::<Vec<_>>(), vec!["Shot_2026-10-09_14-30-00.png"]);
+        // 改名保留 .png
+        let src = dir.path().join("Shot_2026-10-09_14-30-00.png").display().to_string();
+        let out = rename_recording(&MediaCache::default(), &src, "登入畫面", &[]).await.unwrap();
+        assert!(out.ends_with("登入畫面.png"), "{out}");
     }
 
     #[tokio::test]

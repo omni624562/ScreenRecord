@@ -10,7 +10,7 @@ use crate::process::command;
 use crate::recorder::{BoxFut, Encoders, Recorder, RecorderDeps};
 use crate::settings::{SettingsPatch, SettingsStore};
 use crate::thumbs::Thumbnails;
-use crate::types::{AudioEnv, EnvInfo, FfmpegInfo, HotkeyStatus, MonitorInfo, Rect, UpdateInfo};
+use crate::types::{AudioEnv, EnvInfo, FfmpegInfo, HotkeyStatus, MonitorInfo, RecordConfig, Rect, UpdateInfo};
 use crate::updater::{check_for_update, UpdateError};
 use crate::version::APP_VERSION;
 use crate::{info, warn};
@@ -52,6 +52,8 @@ pub struct Status {
     pub update: Option<String>,
     /// 程式內更新的進度（沒有在更新時為 None）
     pub install: Option<crate::selfupdate::InstallStatus>,
+    /// 最近一次的截圖
+    pub shot: Option<crate::types::ShotInfo>,
 }
 
 /// 預覽畫面的最大寬度
@@ -79,6 +81,10 @@ struct State {
     update_checked_at: Option<u64>,
     /// 最近一次檢查失敗的原因（介面顯示用）
     update_error: Option<String>,
+    /// 最近一次的截圖
+    shot: Option<crate::types::ShotInfo>,
+    /// 截圖中（避免連按快捷鍵同時截好幾張）
+    shooting: bool,
 }
 
 pub struct App {
@@ -250,7 +256,70 @@ impl App {
             settings_rev: self.settings.load().rev,
             update: self.update().map(|u| u.version),
             install: Some(self.installer.status()).filter(|s| s.phase != crate::selfupdate::InstallPhase::Idle),
+            shot: self.lock().shot.clone(),
         }
+    }
+
+    /// 截圖：與錄影相同的擷取範圍，存成原尺寸 PNG（儲存資料夾）並複製到剪貼簿。
+    /// 操作視窗擋到範圍時先縮小、截完還原。
+    pub async fn screenshot(self: &Arc<Self>, config: &RecordConfig) -> crate::Result<crate::types::ShotInfo> {
+        {
+            let mut st = self.lock();
+            if st.shooting {
+                return Err(crate::Error::config("正在截圖"));
+            }
+            st.shooting = true;
+        }
+        let r = self.take_screenshot(config).await;
+        self.lock().shooting = false;
+        let shot = r?;
+        self.lock().shot = Some(shot.clone());
+        crate::info!("[截圖] {}（{}×{}{}）", shot.path, shot.width, shot.height, if shot.copied { "，已複製到剪貼簿" } else { "" });
+        Ok(shot)
+    }
+
+    async fn take_screenshot(self: &Arc<Self>, config: &RecordConfig) -> crate::Result<crate::types::ShotInfo> {
+        let ffmpeg = self.ffmpeg_path().ok_or_else(|| crate::Error::config("找不到 FFmpeg，無法截圖"))?;
+        let monitors = self.lock().monitors.clone();
+        let plan = crate::args::resolve_plan(config, &monitors)?;
+        let dir = PathBuf::from(&config.output_dir);
+        tokio::fs::create_dir_all(&dir).await.map_err(|e| crate::Error::config(format!("無法建立儲存資料夾：{e}")))?;
+        let stamp = crate::paths::timestamp();
+        let out =
+            (1..).map(|i| dir.join(if i == 1 { format!("Shot_{stamp}.png") } else { format!("Shot_{stamp}_{i}.png") })).find(|p| !p.exists()).unwrap_or_else(|| dir.join(format!("Shot_{stamp}.png")));
+        let out_s = out.display().to_string();
+        // 操作視窗擋到範圍：先縮小（等動畫結束）再截
+        let hid = crate::winui::minimize_ui(Some(&plan.rect));
+        if hid {
+            tokio::time::sleep(Duration::from_millis(350)).await;
+        }
+        let mut ok = false;
+        let use_dda = plan.dda.is_some() && self.ddagrab_ready().await;
+        for dda in [true, false] {
+            if dda && !use_dda {
+                continue;
+            }
+            let Ok(args) = crate::args::screenshot_args(&plan, dda, config.draw_mouse, &out_s) else { continue };
+            let r = crate::process::run(&ffmpeg, &args, Duration::from_secs(10)).await;
+            if r.code == 0 && tokio::fs::metadata(&out).await.map(|m| m.len() > 0).unwrap_or(false) {
+                ok = true;
+                break;
+            }
+            crate::info!("[截圖] {} 失敗：{}", if dda { "ddagrab" } else { "gdigrab" }, r.stderr.trim());
+        }
+        if hid {
+            crate::winui::restore_ui();
+        }
+        if !ok {
+            let _ = tokio::fs::remove_file(&out).await;
+            return Err(crate::Error::other("截圖失敗，詳見記錄檔"));
+        }
+        // 複製到剪貼簿（失敗不影響已存好的檔案）
+        let png = out.clone();
+        let (width, height, copied) = tokio::task::spawn_blocking(move || crate::clipboard::copy_png(&png)).await.unwrap_or((0, 0, false));
+        let seq = self.lock().shot.as_ref().map(|s| s.seq + 1).unwrap_or(1);
+        let (width, height) = if width > 0 { (width, height) } else { (plan.rect.width as u32, plan.rect.height as u32) };
+        Ok(crate::types::ShotInfo { seq, path: out_s, width, height, copied })
     }
 
     pub fn update(&self) -> Option<UpdateInfo> {

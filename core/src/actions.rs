@@ -84,13 +84,13 @@ pub async fn library(app: &App, dir: &str, query: &LibraryQuery) -> LibraryPage 
 
 /// 縮圖檔（PNG）的路徑；產生失敗回傳 None
 pub async fn thumb(app: &App, path: &str) -> Option<PathBuf> {
-    let ffmpeg = app.ffmpeg_path().filter(|_| is_abs(path) && ends_with_ci(path, &[".mp4", ".gif"]) && Path::new(path).exists())?;
+    let ffmpeg = app.ffmpeg_path().filter(|_| is_abs(path) && ends_with_ci(path, &[".mp4", ".gif", ".png"]) && Path::new(path).exists())?;
     app.thumbs.get(&ffmpeg, path).await
 }
 
-/// 錄影改名（連同加速版 / GIF）；不能改正在錄影或轉檔的檔案。回傳新的完整路徑
+/// 錄影或截圖改名（錄影連同加速版 / GIF）；不能改正在錄影或轉檔的檔案。回傳新的完整路徑
 pub async fn rename(app: &App, path: &str, name: &str) -> Result<String> {
-    if !is_abs(path) || !ends_with_ci(path, &[".mp4"]) || !Path::new(path).exists() {
+    if !is_abs(path) || !ends_with_ci(path, &[".mp4", ".png"]) || !Path::new(path).exists() {
         return Err(Error::config(format!("找不到檔案：{path}")));
     }
     let mut busy = exporting(app);
@@ -102,14 +102,14 @@ pub async fn rename(app: &App, path: &str, name: &str) -> Result<String> {
     Ok(new_path)
 }
 
-/// 移到資源回收筒（可還原）；只接受 .mp4 / .gif，且不能刪正在轉檔的檔案
+/// 移到資源回收筒（可還原）；只接受 .mp4 / .gif / .png，且不能刪正在轉檔的檔案
 pub fn delete(app: &App, paths: &[String]) -> Result<usize> {
     if paths.is_empty() {
         return Err(Error::config("沒有選取檔案"));
     }
     let busy = exporting(app);
     for f in paths {
-        if !is_abs(f) || !ends_with_ci(f, &[".mp4", ".gif"]) || !is_file(f) {
+        if !is_abs(f) || !ends_with_ci(f, &[".mp4", ".gif", ".png"]) || !is_file(f) {
             return Err(Error::config(format!("找不到檔案：{f}")));
         }
         if busy.contains(&f.to_lowercase()) {
@@ -236,9 +236,9 @@ pub fn open(action: OpenAction, path: &str) -> Result<()> {
             crate::desktop::open_with_explorer(p, false);
         }
         _ => {
-            // 只允許開啟影片（.mp4 / .gif），避免執行任意檔案
-            if !ends_with_ci(p, &[".mp4", ".gif"]) || !is_file(p) {
-                return Err(Error::config("找不到影片檔"));
+            // 只允許開啟影片與截圖（.mp4 / .gif / .png），避免執行任意檔案
+            if !ends_with_ci(p, &[".mp4", ".gif", ".png"]) || !is_file(p) {
+                return Err(Error::config("找不到檔案"));
             }
             crate::desktop::open_with_explorer(p, action == OpenAction::Reveal);
         }
@@ -276,7 +276,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let exe = dir.path().join("x.exe");
         std::fs::write(&exe, "x").unwrap();
-        assert!(open(OpenAction::Play, &exe.display().to_string()).unwrap_err().message().contains("影片"));
+        assert!(open(OpenAction::Play, &exe.display().to_string()).unwrap_err().message().contains("找不到檔案"));
     }
 
     #[tokio::test]

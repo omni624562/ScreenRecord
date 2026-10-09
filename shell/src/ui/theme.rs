@@ -215,6 +215,7 @@ pub enum Icon {
     Mic,
     Speaker,
     Close,
+    Camera,
 }
 
 /// 在 rect（正方形）裡畫圖示
@@ -297,6 +298,11 @@ pub fn paint_icon(p: &Painter, rect: Rect, icon: Icon, color: Color32) {
             line(&[(2.5, 6.0), (5.0, 6.0), (8.5, 3.0), (8.5, 13.0), (5.0, 10.0), (2.5, 10.0), (2.5, 6.0)]);
             arc(11.0, 8.0, 2.5, -1.1, 1.1);
         }
+        Icon::Camera => {
+            p.rect_stroke(Rect::from_min_max(at(2.0, 5.0), at(14.0, 13.5)), CornerRadius::same((2.0 * k) as u8), st, StrokeKind::Middle);
+            line(&[(5.5, 5.0), (6.5, 3.0), (9.5, 3.0), (10.5, 5.0)]);
+            circle(8.0, 9.2, 2.4);
+        }
         Icon::Close => {
             line(&[(4.0, 4.0), (12.0, 12.0)]);
             line(&[(12.0, 4.0), (4.0, 12.0)]);
@@ -335,11 +341,17 @@ pub struct Btn {
     min_width: f32,
     tooltip: Option<String>,
     selected: bool,
+    /// 指定高度（與旁邊的大按鈕對齊）
+    height: Option<f32>,
 }
 
 impl Btn {
     pub fn new(text: impl Into<String>) -> Self {
-        Self { text: text.into(), icon: None, trailing: None, kind: Kind::Normal, small: false, enabled: true, min_width: 0.0, tooltip: None, selected: false }
+        Self { text: text.into(), icon: None, trailing: None, kind: Kind::Normal, small: false, enabled: true, min_width: 0.0, tooltip: None, selected: false, height: None }
+    }
+    pub fn height(mut self, h: f32) -> Self {
+        self.height = Some(h);
+        self
     }
     pub fn icon_only(icon: Icon) -> Self {
         Self::new("").icon(icon)
@@ -394,6 +406,7 @@ impl Btn {
             (_, true) => (28.0, 13.0, 10.0),
             _ => (34.0, 14.0, 14.0),
         };
+        let h = self.height.unwrap_or(h);
         let fid = if matches!(self.kind, Kind::Primary | Kind::Record | Kind::Danger) { font_bold(fs) } else { font(fs) };
         let text_color = |hover: bool| match self.kind {
             Kind::Primary => p.accent_ink,

@@ -2,7 +2,7 @@
 //! 加速版（含 GIF）以子列列在原檔底下，各自有長度、大小與播放 / 資料夾按鈕；
 //! 勾選原檔時連同底下的加速版一起勾選，可再個別取消。
 
-use super::dialogs::{base_name, date_labels, file_name, is_cut_name, is_default_name, Ask};
+use super::dialogs::{base_name, date_labels, file_name, is_cut_name, is_default_name, is_image, Ask};
 use super::theme::{self, chip, Btn, Icon, Tone};
 use super::{EntryAction, UiApp};
 use eframe::egui::{self, pos2, vec2, Align, Color32, CornerRadius, Id, Layout, Rect, RichText, Sense, Stroke, UiBuilder};
@@ -160,7 +160,14 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
             if r.changed() {
                 d.search_at = Some(Instant::now());
             }
-            let filters = [(LibraryFilter::All, "全部"), (LibraryFilter::Original, "原始錄影"), (LibraryFilter::Cut, "剪輯版"), (LibraryFilter::Speed, "有加速版"), (LibraryFilter::Audio, "有聲音")];
+            let filters = [
+                (LibraryFilter::All, "全部"),
+                (LibraryFilter::Original, "原始錄影"),
+                (LibraryFilter::Cut, "剪輯版"),
+                (LibraryFilter::Speed, "有加速版"),
+                (LibraryFilter::Audio, "有聲音"),
+                (LibraryFilter::Shot, "截圖"),
+            ];
             egui::ComboBox::from_id_salt("libFilter").selected_text(filters.iter().find(|f| f.0 == d.filter).map(|f| f.1).unwrap_or("")).show_ui(ui, |ui| {
                 for (v, t) in filters {
                     if ui.selectable_label(d.filter == v, t).clicked() {
@@ -267,6 +274,9 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                 if is_cut_name(&e.media.name) {
                     chip(nui, "剪輯版", Tone::Warn, false);
                 }
+                if is_image(&e.media.name) {
+                    chip(nui, "截圖", Tone::Accent, false);
+                }
                 if e.media.has_audio == Some(true) {
                     chip(nui, "聲音", Tone::Ok, false);
                 }
@@ -281,17 +291,27 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
             {
                 let aui = &mut ui.new_child(UiBuilder::new().max_rect(Rect::from_min_max(pos2(col_x(5), row.min.y), row.max)).layout(Layout::left_to_right(Align::Center)));
                 aui.spacing_mut().item_spacing.x = 2.0;
-                for (act, icon, tip) in [
-                    (EntryAction::Play, Icon::Play, "播放"),
-                    (EntryAction::Reveal, Icon::Folder, "在資料夾中顯示"),
-                    (EntryAction::Edit, Icon::Cut, "剪輯"),
-                    (EntryAction::Export, Icon::Export, "製作加速版 / GIF"),
-                ] {
+                let image = is_image(&e.media.name);
+                let acts: &[(EntryAction, Icon, &str)] = if image {
+                    &[(EntryAction::Play, Icon::Play, "開啟"), (EntryAction::Reveal, Icon::Folder, "在資料夾中顯示")]
+                } else {
+                    &[
+                        (EntryAction::Play, Icon::Play, "播放"),
+                        (EntryAction::Reveal, Icon::Folder, "在資料夾中顯示"),
+                        (EntryAction::Edit, Icon::Cut, "剪輯"),
+                        (EntryAction::Export, Icon::Export, "製作加速版 / GIF"),
+                    ]
+                };
+                for &(act, icon, tip) in acts {
                     if Btn::icon_only(icon).ghost().small().tooltip(tip).show(aui).clicked() {
                         action = Some((act, e.clone()));
                     }
                 }
-                if Btn::icon_only(Icon::Edit).ghost().small().tooltip("重新命名（加速版一起改）").show(aui).clicked() {
+                if image {
+                    // 與錄影列的按鈕對齊
+                    aui.add_space(2.0 * (28.0 + 2.0));
+                }
+                if Btn::icon_only(Icon::Edit).ghost().small().tooltip(if image { "重新命名" } else { "重新命名（加速版一起改）" }).show(aui).clicked() {
                     rename = Some(e.clone());
                 }
             }
