@@ -1,17 +1,29 @@
-//! exe 圖示（assets/icon.ico）由 scripts/make-icon.ts 產生（與系統匣待命圖示相同的設計）；
-//! 沒有時先產生，tauri-build 會把它和版本資訊（package.json 的版本）寫進 exe。
-use std::path::Path;
+//! Windows：把程式圖示（與系統匣待命圖示相同，由 core/src/icon.rs 繪製）與版本資訊寫進 exe。
+
+#[allow(dead_code)]
+#[path = "../core/src/icon.rs"]
+mod icon;
 
 fn main() {
-    let icon = Path::new("../assets/icon.ico");
-    if !icon.exists() {
-        let bun = if cfg!(windows) { "bun.exe" } else { "bun" };
-        let ok = std::process::Command::new(bun).current_dir("..").args(["run", "scripts/make-icon.ts"]).status().map(|s| s.success()).unwrap_or(false);
-        if !ok {
-            panic!("找不到 assets/icon.ico，且無法執行 bun run scripts/make-icon.ts 產生（需要安裝 Bun）");
-        }
+    println!("cargo:rerun-if-changed=../core/src/icon.rs");
+    println!("cargo:rerun-if-changed=build.rs");
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
+        return;
     }
-    println!("cargo:rerun-if-changed=../assets/icon.ico");
-    println!("cargo:rerun-if-changed=../src/icon.ts");
-    tauri_build::build()
+    #[cfg(windows)]
+    {
+        let out = std::path::PathBuf::from(std::env::var("OUT_DIR").unwrap());
+        let ico = out.join("icon.ico");
+        std::fs::write(&ico, icon::ico_file(icon::IconState::Idle, &[16, 24, 32, 48, 64, 256])).unwrap();
+        let version = std::env::var("CARGO_PKG_VERSION").unwrap();
+        let mut res = winresource::WindowsResource::new();
+        res.set_icon(&ico.display().to_string())
+            .set("ProductName", "螢幕錄影 ScreenRecorder")
+            .set("FileDescription", "螢幕錄影 ScreenRecorder")
+            .set("OriginalFilename", "ScreenRecorder.exe")
+            .set("ProductVersion", &version)
+            .set("FileVersion", &version)
+            .set("LegalCopyright", "Copyright (c) 2026 omni624562 (MIT)");
+        res.compile().expect("無法寫入 exe 圖示與版本資訊");
+    }
 }
