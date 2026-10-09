@@ -1,6 +1,6 @@
 //! 全域狀態：FFmpeg 偵測結果、螢幕與音訊裝置清單、錄影器、轉檔、下載、檢查新版本、預覽。
 
-use crate::args::{desktop_rect, encoder_spec, preview_args, EncoderSpec};
+use crate::args::{desktop_rect, encoder_spec, preview_args, preview_size, EncoderSpec};
 use crate::downloader::{Deps as DownloadDeps, Downloader};
 use crate::exporter::{ExportCtx, Exporter};
 use crate::ffmpeg::{probe_ffmpeg, test_ddagrab, test_hw_encoders};
@@ -23,7 +23,40 @@ use tokio::io::AsyncReadExt;
 use tokio::sync::watch;
 
 pub type Notifier = Arc<dyn Fn(&str, &str, bool) + Send + Sync>;
-pub type UiOpener = Arc<dyn Fn(String) + Send + Sync>;
+pub type UiOpener = Arc<dyn Fn(UiPage) + Send + Sync>;
+
+/// 開啟操作視窗時要顯示的畫面
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UiPage {
+    Main,
+    /// 更新說明（系統匣選單「更新說明」）
+    Changelog,
+}
+
+/// 預覽畫面（RGBA，由上而下）
+#[derive(Debug, Clone)]
+pub struct PreviewImage {
+    pub width: u32,
+    pub height: u32,
+    pub rgba: Vec<u8>,
+}
+
+/// 介面需要的即時狀態（錄影、轉檔、下載 FFmpeg、程式內更新）
+#[derive(Debug, Clone)]
+pub struct Status {
+    pub recorder: crate::types::RecorderStatus,
+    pub export: Option<crate::types::ExportStatus>,
+    pub download: crate::types::DownloadStatus,
+    pub settings_rev: u64,
+    /// 有新版本時的版本號
+    pub update: Option<String>,
+    /// 程式內更新的進度（沒有在更新時為 None）
+    pub install: Option<crate::selfupdate::InstallStatus>,
+}
+
+/// 預覽畫面的最大寬度
+pub const PREVIEW_MAX_WIDTH: u32 = 1600;
+pub const LIVE_MAX_WIDTH: u32 = 1280;
 pub type Exiter = Arc<dyn Fn(i32) + Send + Sync>;
 
 #[derive(Default)]
@@ -46,8 +79,6 @@ struct State {
     update_checked_at: Option<u64>,
     /// 最近一次檢查失敗的原因（介面顯示用）
     update_error: Option<String>,
-    /// 操作介面網址（伺服器啟動後設定）
-    url: String,
 }
 
 pub struct App {
@@ -68,8 +99,6 @@ pub struct App {
     /// 第一次偵測（FFmpeg、螢幕、音訊裝置）完成；啟動時先開視窗，偵測在背景進行
     ready: watch::Sender<bool>,
     update_gen: AtomicU64,
-    /// 最後一次有頁面來查狀態的時間（判斷視窗是否都關了）
-    last_seen: AtomicU64,
     quitting: AtomicBool,
     /// 即時預覽：同時只保留一條
     live: Mutex<Option<Arc<Mutex<Option<tokio::process::Child>>>>>,
@@ -161,7 +190,6 @@ impl App {
             hw_ready: watch::channel(true).0,
             ready: watch::channel(false).0,
             update_gen: AtomicU64::new(0),
-            last_seen: AtomicU64::new(now_ms()),
             quitting: AtomicBool::new(false),
             live: Mutex::default(),
             notifier: Mutex::default(),
@@ -192,12 +220,12 @@ impl App {
         *self.ui_opener.lock().unwrap() = Some(o);
     }
 
-    /// 開啟操作視窗（沒有設定時改用瀏覽器）
-    pub fn open_ui(&self, url: String) {
+    /// 開啟操作視窗（已開著時帶到前面）
+    pub fn open_ui(&self, page: UiPage) {
         let o = self.ui_opener.lock().unwrap().clone();
         match o {
-            Some(o) => o(url),
-            None => crate::desktop::open_in_browser(&url),
+            Some(o) => o(page),
+            None => warn!("操作視窗還沒準備好"),
         }
     }
 
@@ -209,24 +237,20 @@ impl App {
         *self.tray_dispose.lock().unwrap() = Some(f);
     }
 
-    pub fn set_url(&self, url: String) {
-        self.lock().url = url;
-    }
-
-    pub fn url(&self) -> String {
-        self.lock().url.clone()
-    }
-
     pub fn set_hotkeys(&self, h: HotkeyStatus) {
         self.lock().hotkeys = Some(h);
     }
 
-    pub fn touch(&self) {
-        self.last_seen.store(now_ms(), Ordering::Relaxed);
-    }
-
-    pub fn last_seen(&self) -> u64 {
-        self.last_seen.load(Ordering::Relaxed)
+    /// 介面的即時狀態
+    pub fn status(&self) -> Status {
+        Status {
+            recorder: self.recorder.status(),
+            export: self.exporter.status(),
+            download: self.downloader.status(),
+            settings_rev: self.settings.load().rev,
+            update: self.update().map(|u| u.version),
+            install: Some(self.installer.status()).filter(|s| s.phase != crate::selfupdate::InstallPhase::Idle),
+        }
     }
 
     pub fn update(&self) -> Option<UpdateInfo> {
@@ -495,27 +519,39 @@ impl App {
         }
     }
 
-    /// 預覽 JPEG（整個桌面或單一螢幕）；ddagrab 失敗時退回 gdigrab
-    pub async fn preview(&self, monitor_id: Option<&str>) -> Option<Vec<u8>> {
+    /// 預覽畫面的大小（整個桌面或單一螢幕；沒有螢幕資訊時為 None）
+    pub fn preview_dims(&self, monitor_id: Option<&str>, max_width: u32) -> Option<(u32, u32)> {
+        let mons = self.preview_monitors(monitor_id);
+        let rect = desktop_rect(&mons);
+        (rect.width > 0 && rect.height > 0).then(|| preview_size(&rect, max_width))
+    }
+
+    /// 預覽一張畫面（整個桌面或單一螢幕）；ddagrab 失敗時退回 gdigrab
+    pub async fn preview(&self, monitor_id: Option<&str>) -> Option<PreviewImage> {
         let ffmpeg = self.ffmpeg_path()?;
         let mons = self.preview_monitors(monitor_id);
+        let (width, height) = self.preview_dims(monitor_id, PREVIEW_MAX_WIDTH)?;
         let dda = self.ddagrab_usable() && !self.lock().monitors.is_empty();
+        let want = (width * height * 4) as usize;
         let grab = |dda: bool| {
-            let args = preview_args(&mons, dda, 1600, None);
+            let args = preview_args(&mons, dda, PREVIEW_MAX_WIDTH, None);
             let ffmpeg = ffmpeg.clone();
             async move {
                 let mut cmd = command(&ffmpeg);
                 cmd.args(&args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
                 let mut child = cmd.spawn().ok()?;
                 let mut out = child.stdout.take()?;
-                let mut img = Vec::new();
+                let mut img = Vec::with_capacity(want);
                 let done = tokio::time::timeout(Duration::from_secs(10), async {
                     let _ = out.read_to_end(&mut img).await;
                     child.wait().await
                 })
                 .await;
                 match done {
-                    Ok(Ok(s)) if s.success() && !img.is_empty() => Some(img),
+                    Ok(Ok(s)) if s.success() && img.len() >= want => {
+                        img.truncate(want);
+                        Some(PreviewImage { width, height, rgba: img })
+                    }
                     _ => None, // 逾時：child 被丟棄時結束行程
                 }
             }
@@ -528,20 +564,26 @@ impl App {
         grab(false).await
     }
 
-    /// 即時預覽串流（multipart JPEG）。同時只保留一條：新的連線會結束舊的；
-    /// 回傳的子行程被丟棄（瀏覽器斷線）時 FFmpeg 也跟著結束。
-    pub fn live_preview(&self, fps: f64, monitor_id: Option<&str>) -> Option<(tokio::process::ChildStdout, LiveGuard)> {
+    /// 即時預覽：FFmpeg 持續輸出固定大小的 RGBA 畫面（回傳寬高）。同時只保留一條：新的會結束舊的；
+    /// 回傳的 LiveGuard 被丟棄時 FFmpeg 也跟著結束。
+    pub fn live_preview(&self, fps: f64, monitor_id: Option<&str>) -> Option<(tokio::process::ChildStdout, LiveGuard, (u32, u32))> {
         let ffmpeg = self.ffmpeg_path()?;
+        let dims = self.preview_dims(monitor_id, LIVE_MAX_WIDTH)?;
         self.kill_live();
         let dda = self.ddagrab_usable() && !self.lock().monitors.is_empty();
-        let args = preview_args(&self.preview_monitors(monitor_id), dda, 1280, Some(fps));
+        let args = preview_args(&self.preview_monitors(monitor_id), dda, LIVE_MAX_WIDTH, Some(fps));
         let mut cmd = command(&ffmpeg);
         cmd.args(&args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
         let mut child = cmd.spawn().ok()?;
         let out = child.stdout.take()?;
         let slot = Arc::new(Mutex::new(Some(child)));
         *self.live.lock().unwrap() = Some(slot.clone());
-        Some((out, LiveGuard(slot)))
+        Some((out, LiveGuard(slot), dims))
+    }
+
+    /// 停止即時預覽（視窗隱藏時）
+    pub fn stop_live(&self) {
+        self.kill_live();
     }
 
     fn kill_live(&self) {
@@ -645,7 +687,7 @@ impl App {
     }
 }
 
-/// 即時預覽的 FFmpeg：丟棄時結束（瀏覽器斷線、換張數）
+/// 即時預覽的 FFmpeg：丟棄時結束（換範圍、換張數、視窗隱藏）
 pub struct LiveGuard(Arc<Mutex<Option<tokio::process::Child>>>);
 
 impl Drop for LiveGuard {

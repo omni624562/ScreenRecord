@@ -682,16 +682,26 @@ pub fn parse_media_info(stderr: &str) -> ParsedMedia {
     }
 }
 
-/// 預覽截圖（JPEG 到 stdout）：傳入的螢幕決定範圍。能用 ddagrab 時與錄影走同一條路徑（混合 DPI 時畫面一致）；否則 gdigrab。
-/// live_fps：即時預覽，以 mpjpeg（multipart/x-mixed-replace）持續輸出
+/// 預覽畫面的大小：寬度不超過 max_width（偶數），高度依比例
+pub fn preview_size(rect: &Rect, max_width: u32) -> (u32, u32) {
+    let w = (rect.width.max(2) as u32).min(max_width.max(2)) / 2 * 2;
+    let h = ((rect.height.max(2) as f64 * w as f64 / rect.width.max(2) as f64).round() as u32 / 2 * 2).max(2);
+    (w, h)
+}
+
+/// 預覽畫面（RGBA 原始像素到 stdout，大小固定為 preview_size）：傳入的螢幕決定範圍。
+/// 能用 ddagrab 時與錄影走同一條路徑（混合 DPI 時畫面一致）；否則 gdigrab。
+/// live_fps：即時預覽，持續輸出；否則只輸出一張。
 pub fn preview_args(monitors: &[MonitorInfo], use_ddagrab: bool, max_width: u32, live_fps: Option<f64>) -> Vec<String> {
-    let out = match live_fps {
-        Some(_) => strs(&["-c:v", "mjpeg", "-q:v", "6", "-f", "mpjpeg", "-flush_packets", "1", "-"]),
-        None => strs(&["-frames:v", "1", "-c:v", "mjpeg", "-q:v", "4", "-f", "image2pipe", "-"]),
+    let mut out = match live_fps {
+        Some(_) => vec![],
+        None => strs(&["-frames:v", "1"]),
     };
+    out.extend(strs(&["-f", "rawvideo", "-pix_fmt", "rgba", "-"]));
     let fps = live_fps.unwrap_or(10.0);
-    let fit = format!("scale='min({max_width},iw)':-2:flags=bilinear,format=yuvj420p");
     let rect = desktop_rect(monitors);
+    let (w, h) = preview_size(&rect, max_width);
+    let fit = format!("scale={w}:{h}:flags=bilinear,format=rgba");
     let (_, dda) = plan_tiles(&rect, monitors);
     if use_ddagrab {
         if let Some(dda) = dda.filter(|d| !d.tiles.is_empty()) {
@@ -903,6 +913,14 @@ mod tests {
         let gdi = preview_args(std::slice::from_ref(&second), false, 1600, None).join(" ");
         assert!(gdi.contains(&format!("-offset_x {} -offset_y {} -video_size {}x{}", second.x, second.y, second.width, second.height)));
         assert!(!preview_args(&same_gpu(), false, 1600, None).contains(&"-offset_x".to_string()));
+        // 原始像素、大小固定：介面依大小切出每一張
+        let raw = preview_args(std::slice::from_ref(&second), false, 1280, Some(5.0)).join(" ");
+        assert!(raw.ends_with("-f rawvideo -pix_fmt rgba -"), "{raw}");
+        assert!(raw.contains("scale=1280:720:flags=bilinear,format=rgba"), "{raw}");
+        assert!(!raw.contains("-frames:v"));
+        assert_eq!(preview_size(&Rect { x: 0, y: 0, width: 3840, height: 1080 }, 1280), (1280, 360));
+        assert_eq!(preview_size(&Rect { x: 0, y: 0, width: 1366, height: 768 }, 1600), (1366, 768));
+        assert_eq!(preview_size(&Rect { x: 0, y: 0, width: 1001, height: 501 }, 1600), (1000, 500));
         let ids: Vec<_> = plan_tiles(&Rect { x: 0, y: 0, width: 100, height: 100 }, &same_gpu()).0.iter().map(|m| m.id.clone()).collect();
         assert_eq!(ids, vec!["0:0"]);
     }

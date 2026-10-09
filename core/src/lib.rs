@@ -1,8 +1,9 @@
-//! 螢幕錄影的後端：FFmpeg 參數、錄影、轉檔、錄影清單、本機 HTTP API、系統匣。
+//! 螢幕錄影的後端：FFmpeg 參數、錄影、轉檔、錄影清單、標註繪製、播放器、系統匣。
 //!
-//! 平台無關的部分（FFmpeg 參數、剪輯計算、錄影清單、HTTP API…）可以在任何平台編譯與測試；
+//! 平台無關的部分（FFmpeg 參數、剪輯計算、錄影清單、標註繪製…）可以在任何平台編譯與測試；
 //! 呼叫 Windows API 的部分放在 `#[cfg(windows)]` 底下。
 
+pub mod actions;
 pub mod app;
 pub mod args;
 pub mod audio;
@@ -17,6 +18,7 @@ pub mod ffmpeg;
 pub mod format;
 pub mod http;
 pub mod instance;
+pub mod ipc;
 pub mod icon;
 pub mod job;
 pub mod library;
@@ -28,7 +30,6 @@ pub mod projects;
 pub mod recorder;
 pub mod recycle;
 pub mod selfupdate;
-pub mod server;
 pub mod settings;
 pub mod thumbs;
 pub mod tray;

@@ -35,7 +35,7 @@ pub struct EditSpec {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum OverlayKind {
-    /// 介面畫好的透明 PNG（png 欄位，base64）
+    /// 介面畫好的透明 PNG（png 欄位）
     Image,
     Blur,
     Mosaic,
@@ -51,11 +51,12 @@ pub struct Overlay {
     pub h: f64,
     pub start: f64,
     pub end: f64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub png: Option<String>,
-    /// 馬賽克 / 模糊的形狀遮罩（白色 = 範圍內，PNG base64）；沒有就是方形
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub mask: Option<String>,
+    /// PNG 檔案內容
+    #[serde(skip)]
+    pub png: Option<Vec<u8>>,
+    /// 馬賽克 / 模糊的形狀遮罩（白色 = 範圍內，PNG）；沒有就是方形
+    #[serde(skip)]
+    pub mask: Option<Vec<u8>>,
     /// 反過來：範圍外模糊（或馬賽克），範圍內清楚
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub invert: bool,

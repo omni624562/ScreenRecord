@@ -1,7 +1,7 @@
 //! 系統匣控制：推送狀態給系統匣圖示、執行選單與快捷鍵指令、錄影完成時顯示通知。
 //! 圖示與選單本身在 tray_win.rs（獨立執行緒；選單開著時會卡住所在的執行緒）。
 
-use crate::app::App;
+use crate::app::{App, UiPage};
 use crate::format::{clock, video_clock};
 use crate::paths::now_ms;
 use crate::settings::SettingsPatch;
@@ -238,11 +238,11 @@ impl TrayController {
         let err = |e: crate::Error| e.message().to_string();
         let mut cfg = match cmd {
             TrayCommand::Open => {
-                app.open_ui(app.url());
+                app.open_ui(UiPage::Main);
                 return Ok(());
             }
             TrayCommand::Changelog => {
-                app.open_ui(format!("{}#changelog", app.url()));
+                app.open_ui(UiPage::Changelog);
                 return Ok(());
             }
             TrayCommand::Quit => {
@@ -252,7 +252,7 @@ impl TrayController {
             }
             // 開啟操作視窗：右上角的「有新版本」可以直接更新
             TrayCommand::OpenUpdate => {
-                app.open_ui(app.url());
+                app.open_ui(UiPage::Main);
                 return Ok(());
             }
             // 快捷鍵：同一組鍵依狀態切換（待命→開始、倒數→取消、錄影中→停止）
