@@ -16,6 +16,7 @@ sha2 = "0.10"
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "json", "query"] }
 tokio-util = { version = "0.7", features = ["io"] }
 futures-core = "0.3"
+base64 = "0.22"
 
 # HTTPS（下載 FFmpeg、檢查新版本）：Windows 用系統內建的 SChannel（不需編譯 C、使用系統憑證），其他平台用 rustls
 [target.'cfg(not(windows))'.dependencies]

@@ -541,7 +541,21 @@ pub fn gif_args(source: &str, out_file: &str, speed: f64, o: &GifOptions) -> Res
 }
 
 /// 剪輯：只保留 keep 區段（select / aselect 精確到每張畫面），可再裁切畫面範圍；必須重新編碼。
-pub fn cut_args(source: &str, out_file: &str, keep: &[(f64, f64)], crop: Option<Rect>, fps: f64, enc: &EncoderSpec, with_audio: bool) -> Result<Vec<String>> {
+/// 剪輯時加上的標註（已換算成影片像素、檔案已寫好）
+#[derive(Debug, Clone, PartialEq)]
+pub enum OverlayInput {
+    /// 透明 PNG：疊在 (x, y)
+    Image { path: String, x: i32, y: i32, start: f64, end: f64 },
+    /// 範圍模糊或馬賽克（寬高為偶數、至少 8）
+    Blur { rect: Rect, start: f64, end: f64, mosaic: bool },
+}
+
+fn enable(start: f64, end: f64) -> String {
+    format!("enable='between(t,{},{})'", num(start), num(end))
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn cut_args(source: &str, out_file: &str, keep: &[(f64, f64)], crop: Option<Rect>, fps: f64, enc: &EncoderSpec, with_audio: bool, overlays: &[OverlayInput]) -> Result<Vec<String>> {
     if keep.is_empty() {
         return Err(Error::config("剪輯後沒有留下任何片段"));
     }
@@ -554,10 +568,54 @@ pub fn cut_args(source: &str, out_file: &str, keep: &[(f64, f64)], crop: Option<
     vf.push(format!("format={}", enc.pix_fmt));
     let mut a = strs(&["-hide_banner", "-nostats", "-loglevel", "error", "-i"]);
     a.push(source.into());
-    a.extend(strs(&["-map", "0:v:0"]));
+    if overlays.is_empty() {
+        a.extend(strs(&["-map", "0:v:0"]));
+    } else {
+        // 標註以原影片的時間顯示，所以先疊上標註，再挑選保留的片段
+        let mut graph = Vec::new();
+        let mut cur = "[0:v]".to_string();
+        let mut next_input = 1;
+        for (i, o) in overlays.iter().enumerate() {
+            let out = format!("[o{i}]");
+            match o {
+                OverlayInput::Image { path, x, y, start, end } => {
+                    a.extend(["-i".into(), path.clone()]);
+                    graph.push(format!("{cur}[{next_input}:v]overlay={x}:{y}:{}{out}", enable(*start, *end)));
+                    next_input += 1;
+                }
+                OverlayInput::Blur { rect: r, start, end, mosaic } => {
+                    let effect = if *mosaic {
+                        // 每格約為範圍短邊的 1/6（至少 12px），用最近鄰放大回原尺寸
+                        let block = (r.width.min(r.height) / 6).max(12);
+                        format!("scale={}:{}:flags=area,scale={}:{}:flags=neighbor", (r.width / block).max(1), (r.height / block).max(1), r.width, r.height)
+                    } else {
+                        // boxblur 的半徑不能超過色度平面短邊的一半
+                        let radius = (r.width.min(r.height) / 4 - 1).clamp(1, 30);
+                        format!("boxblur={radius}:2")
+                    };
+                    graph.push(format!(
+                        "{cur}split=2[b{i}a][b{i}b];[b{i}b]crop={}:{}:{}:{},{effect}[b{i}c];[b{i}a][b{i}c]overlay={}:{}:{}{out}",
+                        r.width,
+                        r.height,
+                        r.x,
+                        r.y,
+                        r.x,
+                        r.y,
+                        enable(*start, *end)
+                    ));
+                }
+            }
+            cur = out;
+        }
+        graph.push(format!("{cur}{}[vout]", vf.join(",")));
+        a.extend(["-filter_complex".into(), graph.join(";"), "-map".into(), "[vout]".into()]);
+    }
     a.extend(if with_audio { strs(&["-map", "0:a:0"]) } else { strs(&["-an"]) });
-    a.extend(strs(&["-sn", "-dn", "-vf"]));
-    a.push(vf.join(","));
+    a.extend(strs(&["-sn", "-dn"]));
+    if overlays.is_empty() {
+        a.push("-vf".into());
+        a.push(vf.join(","));
+    }
     if with_audio {
         a.push("-af".into());
         a.push(format!("aselect='{expr}',asetpts=N/SR/TB"));
@@ -932,17 +990,37 @@ mod tests {
 
     #[test]
     fn cut() {
-        let args = cut_args("in.mp4", "out.mp4", &[(1.0, 2.0), (4.0, 5.5)], Some(Rect { x: 40, y: 40, width: 200, height: 160 }), 30.0, &x264(), true).unwrap();
+        let args = cut_args("in.mp4", "out.mp4", &[(1.0, 2.0), (4.0, 5.5)], Some(Rect { x: 40, y: 40, width: 200, height: 160 }), 30.0, &x264(), true, &[]).unwrap();
         assert_eq!(after(&args, "-vf"), "select='gte(t,1)*lt(t,2)+gte(t,4)*lt(t,5.5)',setpts=N/(30*TB),crop=200:160:40:40,format=yuv420p");
         assert_eq!(after(&args, "-af"), "aselect='gte(t,1)*lt(t,2)+gte(t,4)*lt(t,5.5)',asetpts=N/SR/TB");
-        let no_audio = cut_args("in.mp4", "out.mp4", &[(0.0, 3.0)], None, 30.0, &x264(), false).unwrap();
+        let no_audio = cut_args("in.mp4", "out.mp4", &[(0.0, 3.0)], None, 30.0, &x264(), false, &[]).unwrap();
         assert!(no_audio.contains(&"-an".to_string()));
         assert!(!no_audio.contains(&"-af".to_string()));
-        assert!(cut_args("in.mp4", "out.mp4", &[], None, 30.0, &x264(), false).unwrap_err().is_config());
+        assert!(cut_args("in.mp4", "out.mp4", &[], None, 30.0, &x264(), false, &[]).unwrap_err().is_config());
         // 與 edit 模組串起來
-        let keep = keep_ranges(10.0, &EditSpec { start: 1.0, end: 9.0, removed: vec![(3.0, 4.0)], crop: None });
+        let keep = keep_ranges(10.0, &EditSpec { start: 1.0, end: 9.0, removed: vec![(3.0, 4.0)], crop: None, overlays: vec![] });
         assert_eq!(keep, vec![(1.0, 3.0), (4.0, 9.0)]);
         assert_eq!(normalize_crop(None, 100, 100), None);
+
+        // 標註：先疊上（原影片時間），再挑選保留的片段與裁切
+        let overlays = [
+            OverlayInput::Image { path: "a.png".into(), x: 10, y: 20, start: 1.0, end: 3.5 },
+            OverlayInput::Blur { rect: Rect { x: 100, y: 50, width: 120, height: 60 }, start: 0.0, end: 9.0, mosaic: false },
+            OverlayInput::Blur { rect: Rect { x: 0, y: 0, width: 240, height: 120 }, start: 2.0, end: 4.0, mosaic: true },
+        ];
+        let args = cut_args("in.mp4", "out.mp4", &[(1.0, 5.0)], Some(Rect { x: 40, y: 40, width: 200, height: 160 }), 30.0, &x264(), true, &overlays).unwrap();
+        assert!(!args.contains(&"-vf".to_string()));
+        let inputs: Vec<&String> = args.iter().zip(args.iter().skip(1)).filter(|(k, _)| *k == "-i").map(|(_, v)| v).collect();
+        assert_eq!(inputs, ["in.mp4", "a.png"]);
+        assert_eq!(
+            after(&args, "-filter_complex"),
+            "[0:v][1:v]overlay=10:20:enable='between(t,1,3.5)'[o0];\
+             [o0]split=2[b1a][b1b];[b1b]crop=120:60:100:50,boxblur=14:2[b1c];[b1a][b1c]overlay=100:50:enable='between(t,0,9)'[o1];\
+             [o1]split=2[b2a][b2b];[b2b]crop=240:120:0:0,scale=12:6:flags=area,scale=240:120:flags=neighbor[b2c];[b2a][b2c]overlay=0:0:enable='between(t,2,4)'[o2];\
+             [o2]select='gte(t,1)*lt(t,5)',setpts=N/(30*TB),crop=200:160:40:40,format=yuv420p[vout]"
+        );
+        assert_eq!(after(&args, "-map"), "[vout]");
+        assert_eq!(after(&args, "-af"), "aselect='gte(t,1)*lt(t,5)',asetpts=N/SR/TB");
         assert_eq!(cut_file_name("a.mp4"), "a_cut.mp4");
     }
 }

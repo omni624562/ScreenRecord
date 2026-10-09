@@ -59,7 +59,7 @@ fn compute(name: &str, a: &[Value]) -> Value {
         "formatBytes" => format_bytes(f(&a[0]) as u64).into(),
         "normalizeRanges" => json!(normalize_ranges(&ranges(&a[0]), f(&a[1]))),
         "keepRanges" => {
-            let spec = EditSpec { start: f(&a[1]["start"]), end: f(&a[1]["end"]), removed: ranges(&a[1]["removed"]), crop: None };
+            let spec = EditSpec { start: f(&a[1]["start"]), end: f(&a[1]["end"]), removed: ranges(&a[1]["removed"]), crop: None, overlays: vec![] };
             json!(keep_ranges(f(&a[0]), &spec))
         }
         "totalLength" => total_length(&ranges(&a[0])).into(),

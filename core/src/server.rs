@@ -546,7 +546,12 @@ async fn cut_start(State(c): State<Ctx>, b: Bytes) -> ApiResult {
         }
         _ => None,
     };
-    let edit = EditSpec { start, end, removed, crop };
+    // 標註：格式由 serde 檢查（數值、種類），內容由轉檔時再檢查與限制
+    let overlays = match spec.get("overlays") {
+        None | Some(Value::Null) => Vec::new(),
+        Some(v) => serde_json::from_value(v.clone()).map_err(|_| Error::config("標註格式錯誤"))?,
+    };
+    let edit = EditSpec { start, end, removed, crop, overlays };
     c.app.exporter.start_cut(&c.app.export_ctx(), &js_string(&source), &edit).await?;
     Ok(ok_status(&c.app))
 }
