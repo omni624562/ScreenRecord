@@ -952,7 +952,9 @@ fn rec_panel(app: &mut UiApp, ui: &mut Ui) {
         let gap_y = ui.spacing().item_spacing.y;
         ui.spacing_mut().item_spacing.y = 6.0;
         let key_w = ["影片長度", "檔案大小", "輸出", "擷取 / 編碼", "聲音"].iter().map(|k| ui.painter().layout_no_wrap(k.to_string(), theme::font(13.0), p.muted).size().x).fold(0.0, f32::max);
-        for (k, v) in [("影片長度", video_clock(r.video_sec)), ("檔案大小", if active || r.bytes > 0 { format_bytes(r.bytes) } else { "—".into() }), ("輸出", out), ("擷取 / 編碼", method), ("聲音", audio)] {
+        for (k, v) in
+            [("影片長度", video_clock(r.video_sec)), ("檔案大小", if active || r.bytes > 0 { format_bytes(r.bytes) } else { "—".into() }), ("輸出", out), ("擷取 / 編碼", method), ("聲音", audio)]
+        {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 14.0;
                 let (cell, _) = ui.allocate_exact_size(vec2(key_w, 18.0), Sense::hover());
