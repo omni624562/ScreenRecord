@@ -852,6 +852,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         }
         ed.pause();
         let mut ask = super::dialogs::Ask::confirm("放棄這次的剪輯？", "剪輯、裁切或標註還沒有儲存，關閉後就不見了。", "放棄並關閉", |app, _| {
+            app.ask = None;
             if let Some(e) = app.editor.take() {
                 e.strip.cancel();
             }

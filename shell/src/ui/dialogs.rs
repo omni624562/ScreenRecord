@@ -113,8 +113,11 @@ pub fn show_ask(app: &mut UiApp, ctx: &egui::Context) {
         let value = ask.input.clone().unwrap_or_default();
         if let Some(f) = ask.on_ok.take() {
             ask.error = None;
-            // 送出的處理自己決定要不要關閉（例如改名要等伺服器回覆）
+            // 送出的處理可以讓對話框留著（設 busy 等待結果，或設 error 顯示錯誤），否則自動關閉
             f(app, value);
+            if app.ask.as_ref().is_some_and(|a| !a.busy && a.error.is_none() && a.on_ok.is_none()) {
+                app.ask = None;
+            }
         } else {
             app.ask = None;
         }
