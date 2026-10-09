@@ -5,7 +5,7 @@
 
 use super::dialogs::{base_name, date_labels, file_name, is_cut_name, is_default_name, Ask};
 use super::settings::{SourceType, FPS_CHOICES, MAX_PRESETS};
-use super::theme::{self, chip, paint_icon, segmented, switch, Btn, Icon, Tone};
+use super::theme::{self, chip, segmented, switch, Btn, Icon, Tone};
 use super::{EntryAction, UiApp};
 use eframe::egui::{self, pos2, vec2, Align, Color32, CornerRadius, Id, Layout, Pos2, Rect, RichText, Sense, Stroke, StrokeKind, Ui, UiBuilder};
 use screenrecorder_core::actions;

@@ -113,7 +113,7 @@ impl UiApp {
         let saved = core.settings.load();
         let s = UiSettings::from_saved(saved.ui.as_ref(), &env);
         let status = core.status();
-        let mut app = UiApp {
+        let app = UiApp {
             update: actions::update_state(&core),
             core,
             rt,

@@ -574,6 +574,17 @@ pub fn chip(ui: &mut Ui, text: &str, tone: Tone, clickable: bool) -> Response {
     }
 }
 
+/// 對話框的框
+pub fn modal_frame(ctx: &egui::Context) -> egui::Frame {
+    let p = pal_ctx(ctx);
+    egui::Frame::new()
+        .fill(p.surface)
+        .stroke(Stroke::new(1.0, p.border))
+        .corner_radius(CornerRadius::same(RADIUS))
+        .inner_margin(20.0)
+        .shadow(egui::Shadow { offset: [0, 12], blur: 40, spread: 0, color: Color32::from_black_alpha(70) })
+}
+
 /// 卡片 / 面板的框
 pub fn card(ui: &Ui) -> egui::Frame {
     let p = pal(ui);

@@ -2,7 +2,7 @@
 
 use super::theme::{self, Btn};
 use super::UiApp;
-use eframe::egui::{self, vec2, Align, Align2, Color32, CornerRadius, Id, Layout, RichText, Stroke};
+use eframe::egui::{self, vec2, Align, Align2, Color32, CornerRadius, Id, Layout, RichText};
 use screenrecorder_core::version::{APP_VERSION, CHANGELOG};
 use std::time::Instant;
 
@@ -55,7 +55,7 @@ pub fn show_ask(app: &mut UiApp, ctx: &egui::Context) {
     let Some(ask) = app.ask.as_mut() else { return };
     let mut submit = false;
     let mut cancel = false;
-    let modal = egui::Modal::new(Id::new("ask")).show(ctx, |ui| {
+    let modal = egui::Modal::new(Id::new("ask")).frame(theme::modal_frame(ctx)).show(ctx, |ui| {
         ui.set_width(420.0);
         let p = theme::pal(ui);
         ui.label(RichText::new(&ask.title).font(theme::font_bold(16.0)));
@@ -141,7 +141,7 @@ pub fn show_toast(app: &mut UiApp, ctx: &egui::Context) {
 /// 更新說明（CHANGELOG.md 的簡易轉換：## / ### 標題、- 清單、`程式碼`、[文字](網址)）
 pub fn changelog(app: &mut UiApp, ctx: &egui::Context) {
     let mut open = true;
-    let modal = egui::Modal::new(Id::new("changelog")).show(ctx, |ui| {
+    let modal = egui::Modal::new(Id::new("changelog")).frame(theme::modal_frame(ctx)).show(ctx, |ui| {
         let p = theme::pal(ui);
         ui.set_width((ctx.content_rect().width() - 80.0).min(720.0));
         ui.horizontal(|ui| {
