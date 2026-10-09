@@ -593,11 +593,29 @@ fn drop_button_tip(ui: &mut Ui, id: &str, text: String, tip: Option<String>, ico
         b = b.tooltip(t);
     }
     let resp = b.show(ui);
-    egui::Popup::from_toggle_button_response(&resp).id(Id::new(id)).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).width(width).show(|ui| {
-        ui.set_width(width);
-        ui.spacing_mut().item_spacing.y = 8.0;
-        contents(ui);
-    });
+    // 開關狀態自己記：egui 同時只記得一個打開的彈出視窗，面板裡的下拉選單一打開就會把面板關掉
+    let open_id = Id::new(("drop-open", id));
+    let mut open = ui.data(|d| d.get_temp::<bool>(open_id)).unwrap_or(false);
+    if resp.clicked() {
+        open = !open;
+    }
+    // 面板裡的下拉選單開著時：點選項、按 Esc 只關下拉選單，不關面板
+    let list_open = egui::Popup::is_any_open(ui.ctx());
+    if open {
+        let shown = egui::Popup::from_response(&resp).id(Id::new(id)).open(true).close_behavior(egui::PopupCloseBehavior::IgnoreClicks).width(width).show(|ui| {
+            ui.set_width(width);
+            ui.spacing_mut().item_spacing.y = 8.0;
+            contents(ui);
+        });
+        if let Some(r) = shown {
+            let outside = r.response.clicked_elsewhere() && !resp.clicked();
+            let esc = ui.input(|i| i.key_pressed(egui::Key::Escape));
+            if !list_open && (outside || esc) {
+                open = false;
+            }
+        }
+    }
+    ui.data_mut(|d| d.insert_temp(open_id, open));
 }
 
 fn settings_bar(app: &mut UiApp, ui: &mut Ui) {
