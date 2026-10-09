@@ -4,9 +4,29 @@ import { videoClock } from "../shared/format.ts";
 import type { LibraryEntry } from "../shared/types.ts";
 import { ANN_LABELS, COLORS, EMOJIS, bbox, defaultSize, draw, hit, isBox, label, measure, toOverlay, type Ann, type AnnKind } from "./annotate.ts";
 
+/** 存起來的剪輯設定與標註（之後可以再修改） */
+export interface ProjectData {
+  v: 1;
+  duration: number;
+  spec: { start: number; end: number; removed: Range[]; crop?: EditSpec["crop"] };
+  cropOn: boolean;
+  anns: Ann[];
+}
+
+/** /api/edit/project 的回應 */
+export interface ProjectInfo {
+  project: { output: string; source: string; savedAt: number; data: ProjectData } | null;
+  /** output：開啟的就是剪輯版；source：開啟的是原始影片，這是最近一次用它做的剪輯 */
+  matched?: "output" | "source";
+  /** 原始影片的資訊（找不到原片時沒有） */
+  source?: LibraryEntry | null;
+}
+
 export interface EditorDeps {
-  /** 送出剪輯工作；成功後回傳 */
-  save(source: string, spec: EditSpec): Promise<void>;
+  /** 送出剪輯工作；replace = 取代這個剪輯版，project = 存起來供之後修改 */
+  save(source: string, spec: EditSpec, extra: { replace?: string; project?: ProjectData }): Promise<void>;
+  /** 查詢之前的剪輯設定 */
+  project(path: string): Promise<ProjectInfo>;
   toast(msg: string, error?: boolean): void;
 }
 
@@ -46,15 +66,96 @@ let tool: AnnKind | "emoji" | undefined;
 let emoji = EMOJIS[0]!;
 /** 拖曳標註軌時固定每個標註所在的列，避免拖曳中跳列 */
 let laneFreeze: Map<number, number> | undefined;
+/** 儲存時取代這個剪輯版（修改之前的剪輯） */
+let replaceTarget: string | undefined;
+/** 開啟的那個剪輯版（從原片重新載入時記住，可以改回直接剪輯它） */
+let openedCut: LibraryEntry | undefined;
+/** 開啟的序號：查詢專案回來時對話框已經換了影片就不套用 */
+let openSeq = 0;
 
 const video = () => $<HTMLVideoElement>("edVideo");
 const now = () => video().currentTime;
 const selected = () => anns.find((a) => a.id === annSel);
 
-export function openEditor(e: LibraryEntry, d: EditorDeps) {
+/**
+ * 開啟剪輯視窗。之前用這支影片做過剪輯（或開啟的就是剪輯版）時，
+ * 從原始影片重新載入當時的剪輯與標註，修改後取代那個剪輯版。
+ */
+export async function openEditor(e: LibraryEntry, d: EditorDeps) {
   deps = d;
-  entry = e;
   if (!bound) bind();
+  const seq = ++openSeq;
+  const info = await d.project(e.path).catch(() => undefined);
+  if (seq !== openSeq) return;
+  const p = info?.project;
+  replaceTarget = undefined;
+  openedCut = undefined;
+  if (p && info.matched === "output" && info.source) {
+    // 開啟的是剪輯版：改用原始影片，套用上次的設定
+    load(info.source);
+    openedCut = e;
+    applyProject(p.data);
+    replaceTarget = e.path;
+  } else {
+    load(e);
+  }
+  showBanner(info);
+  render();
+  const dlg = $<HTMLDialogElement>("editor");
+  if (!dlg.open) dlg.showModal();
+}
+
+/** 說明列：正在修改哪個剪輯版、找不到原片、或原片有上次的剪輯可以載入 */
+function showBanner(info: ProjectInfo | undefined) {
+  const banner = $("edBanner");
+  const text = $("edBannerText");
+  const acts = $("edBannerActs");
+  const p = info?.project;
+  banner.classList.remove("warn");
+  acts.innerHTML = "";
+  const btn = (label: string, fn: () => void) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "btn small";
+    b.textContent = label;
+    b.addEventListener("click", fn);
+    acts.append(b);
+  };
+  banner.hidden = false;
+  if (replaceTarget) {
+    text.textContent = `正在修改剪輯版「${baseName(replaceTarget)}」：已從原始影片「${entry?.name ?? ""}」載入上次的剪輯與標註，可以直接修改。儲存時會取代這個剪輯版。`;
+    btn("改為另存新的剪輯版", () => {
+      replaceTarget = undefined;
+      showBanner(undefined);
+      render();
+    });
+    const cut = openedCut;
+    if (cut) btn("改成直接剪輯這個檔案", () => {
+      openedCut = undefined;
+      replaceTarget = undefined;
+      load(cut);
+      showBanner(undefined);
+      render();
+    });
+  } else if (p && info.matched === "output" && !info.source) {
+    banner.classList.add("warn");
+    text.textContent = `找不到這個剪輯版的原始影片「${baseName(p.source)}」，之前的標註已燒進影片、無法修改；只能在這個檔案上繼續剪輯。`;
+  } else if (p && info.matched === "source") {
+    text.textContent = `這支影片之前剪輯成「${baseName(p.output)}」。`;
+    btn("載入上次的剪輯來修改", () => {
+      applyProject(p.data);
+      replaceTarget = p.output;
+      showBanner(undefined);
+      render();
+    });
+  } else banner.hidden = true;
+}
+
+const baseName = (path: string) => path.split(/[\\/]/).pop() ?? path;
+
+/** 載入影片並清除所有剪輯設定 */
+function load(e: LibraryEntry) {
+  entry = e;
   duration = e.durationSec ?? 0;
   fps = e.fps ?? 30;
   vw = e.width ?? 0;
@@ -72,14 +173,39 @@ export function openEditor(e: LibraryEntry, d: EditorDeps) {
   v.src = mediaUrl(e.path);
   v.currentTime = 0;
   setAspect();
-  render();
-  $<HTMLDialogElement>("editor").showModal();
   stripVideo?.removeAttribute("src");
   stripVideo = document.createElement("video");
   stripVideo.muted = true;
   stripVideo.preload = "auto";
   stripVideo.src = mediaUrl(e.path);
   scheduleStrip(0);
+}
+
+/** 套用存起來的剪輯設定與標註 */
+function applyProject(d: ProjectData) {
+  if (!d || d.v !== 1 || !d.spec) return;
+  const full = d.spec.end >= (d.duration || 0) - 0.05;
+  spec = {
+    start: clamp(Number(d.spec.start) || 0, 0, duration),
+    end: full ? duration : clamp(Number(d.spec.end) || duration, 0, duration),
+    removed: Array.isArray(d.spec.removed) ? d.spec.removed : [],
+    crop: d.spec.crop,
+  };
+  if (spec.end - spec.start < 0.1) spec = { start: 0, end: duration, removed: [] };
+  cropOn = !!d.cropOn && !!d.spec.crop;
+  const kinds = new Set(Object.keys(ANN_LABELS));
+  anns = (Array.isArray(d.anns) ? d.anns : [])
+    .filter((a) => a && kinds.has(a.kind) && [a.x, a.y, a.w, a.h, a.start, a.end, a.size].every(Number.isFinite))
+    .map((a) => ({ ...a }));
+  for (const a of anns) {
+    a.id = nextAnnId++;
+    measure(a);
+  }
+}
+
+/** 目前的剪輯設定與標註（存起來供之後修改） */
+function projectData(): ProjectData {
+  return { v: 1, duration, spec: { start: spec.start, end: spec.end, removed: spec.removed, crop: spec.crop }, cropOn, anns: anns.map((a) => ({ ...a })) };
 }
 
 const mediaUrl = (path: string) => `/api/media?path=${encodeURIComponent(path)}`;
@@ -217,10 +343,11 @@ function render() {
     (size ? `・畫面 <strong>${size}</strong>` : "") +
     (anns.length ? `・標註 ${anns.length} 個` : "") +
     (goneCount(keep) ? `<span class="warn-text">（${goneCount(keep)} 個在刪除的片段中，不會出現）</span>` : "") +
-    (entry ? `<br><span class="muted small">另存為 ${cutFileName(entry.name)}</span>` : "");
+    (replaceTarget ? `<br><span class="muted small">儲存後取代 ${esc(baseName(replaceTarget))}</span>` : entry ? `<br><span class="muted small">另存為 ${cutFileName(entry.name)}</span>` : "");
   const unchanged = keep.length === 1 && keep[0]![0] === 0 && keep[0]![1] >= duration - 0.05 && !crop && !anns.length;
   const save = $<HTMLButtonElement>("edSave");
   save.disabled = unchanged || length < 0.1;
+  save.textContent = replaceTarget ? "儲存修改" : "另存剪輯版";
   save.title = unchanged ? "還沒有任何剪輯、裁切或標註" : "";
 }
 
@@ -766,7 +893,11 @@ function bind() {
     btn.disabled = true;
     try {
       const overlays = overlaysForExport();
-      await deps.save(entry.path, { ...spec, crop: cropOn ? normalizeCrop(spec.crop, vw, vh) : undefined, ...(overlays.length ? { overlays } : {}) });
+      await deps.save(
+        entry.path,
+        { ...spec, crop: cropOn ? normalizeCrop(spec.crop, vw, vh) : undefined, ...(overlays.length ? { overlays } : {}) },
+        { replace: replaceTarget, project: projectData() },
+      );
       close();
     } catch (err) {
       deps.toast((err as Error).message, true);

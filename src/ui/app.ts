@@ -1069,13 +1069,14 @@ function act(action: EntryAction, entry: LibraryEntry) {
   if (exp?.state === "running") return toast("目前有轉檔工作進行中，請等它完成", true);
   if (!entry.durationSec) return toast("無法讀取影片長度", true);
   if (action === "edit") {
-    openEditor(entry, {
+    void openEditor(entry, {
       toast,
-      save: async (source, spec) => {
-        applyStatus(await api("/api/cut/start", { source, spec }));
+      save: async (source, spec, extra) => {
+        applyStatus(await api("/api/cut/start", { source, spec, ...extra }));
         dismissedJob = undefined;
-        toast("已開始剪輯，進度顯示在右側");
+        toast(extra.replace ? "已開始更新剪輯版，進度顯示在右側" : "已開始剪輯，進度顯示在右側");
       },
+      project: (path) => api(`/api/edit/project?path=${encodeURIComponent(path)}`),
     });
   } else {
     openExport(entry, {

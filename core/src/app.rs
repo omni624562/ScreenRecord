@@ -59,6 +59,8 @@ pub struct App {
     pub installer: crate::selfupdate::Installer,
     pub thumbs: Thumbnails,
     pub cache: Arc<MediaCache>,
+    /// 剪輯版的剪輯設定與標註（之後可以再修改）
+    pub projects: Arc<crate::projects::ProjectStore>,
     pub default_output_dir: String,
     st: Mutex<State>,
     /// 硬體編碼器測試完成（false = 測試中）
@@ -152,6 +154,7 @@ impl App {
             downloader: Downloader::new(DownloadDeps::default()),
             installer: crate::selfupdate::Installer::default(),
             thumbs: Thumbnails::new(dir.join("thumbs")),
+            projects: Arc::new(crate::projects::ProjectStore::new(dir.join("edits"))),
             cache: Arc::default(),
             default_output_dir: default_output_dir().display().to_string(),
             st: Mutex::default(),

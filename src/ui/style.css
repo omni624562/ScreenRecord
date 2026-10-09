@@ -548,3 +548,7 @@ input[type="number"] { font-family: var(--mono); font-variant-numeric: tabular-n
 .env-chips { flex-wrap: nowrap; min-width: 0; overflow: hidden; }
 .env-chips .chip { min-width: 0; overflow: hidden; text-overflow: ellipsis; flex-shrink: 1; }
 .env-chips .chip::before { flex: none; }.warn-text { color: var(--warn); }
+.ed-banner { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 12px 18px 0; padding: 8px 12px; border-radius: var(--radius-sm); background: var(--accent-soft); font-size: 13px; }
+.ed-banner.warn { background: var(--warn-soft); color: var(--warn); }
+.ed-banner > span:first-child { flex: 1; min-width: 240px; }
+.ed-banner-acts { display: flex; gap: 6px; flex-wrap: wrap; }
