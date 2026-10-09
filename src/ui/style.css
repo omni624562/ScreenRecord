@@ -453,14 +453,9 @@ input[type="number"] { font-family: var(--mono); font-variant-numeric: tabular-n
 /* 影片上的標註 */
 .ed-ann { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
 .ed-blurs { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
-.ed-blur { position: absolute; backdrop-filter: blur(10px); border: 1px dashed rgb(255 255 255 / 0.8); outline: 1px dashed rgb(0 0 0 / 0.5); }
-.ed-blur.mosaic { backdrop-filter: blur(6px) contrast(1.1); background: repeating-conic-gradient(rgb(255 255 255 / 0.06) 0 25%, transparent 0 50%) 0 0 / 14px 14px; }
+/* 馬賽克 / 模糊的效果畫在 canvas 上，這裡只有範圍框與名稱 */
+.ed-blur { position: absolute; border: 1px dashed rgb(255 255 255 / 0.85); outline: 1px dashed rgb(0 0 0 / 0.5); }
 .ed-blur.off { opacity: 0.4; }
-/* 範圍外模糊：蓋滿整個畫面，用遮罩挖掉範圍內 */
-.ed-blur.outside { inset: 0; border: 0; outline: 0; -webkit-mask-size: 100% 100%; mask-size: 100% 100%; }
-.ed-hole { position: absolute; border: 1px dashed rgb(255 255 255 / 0.85); outline: 1px dashed rgb(0 0 0 / 0.5); }
-.ed-hole.off { opacity: 0.4; }
-.ed-hole span { position: absolute; left: 4px; top: 4px; padding: 1px 6px; border-radius: 4px; background: rgb(0 0 0 / 0.55); color: #fff; font-size: 11px; }
 .ed-blur span { position: absolute; left: 4px; top: 4px; padding: 1px 6px; border-radius: 4px; background: rgb(0 0 0 / 0.55); color: #fff; font-size: 11px; }
 .ed-stage.tool-mode { cursor: crosshair; }
 

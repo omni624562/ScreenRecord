@@ -2,7 +2,7 @@
 import { keepRanges, normalizeCrop, normalizeRanges, totalLength, cutFileName, type EditSpec, type OverlaySpec, type Range } from "../shared/edit.ts";
 import { videoClock } from "../shared/format.ts";
 import type { LibraryEntry } from "../shared/types.ts";
-import { ANN_LABELS, COLORS, EMOJIS, bbox, defaultSize, draw, hit, isBox, label, measure, roundRadius, shapePath, toOverlay, type Ann, type AnnKind, type Shape } from "./annotate.ts";
+import { ANN_LABELS, COLORS, EMOJIS, bbox, defaultSize, draw, effectSize, hit, isBox, label, measure, roundRadius, shapePath, toOverlay, type Ann, type AnnKind, type Shape } from "./annotate.ts";
 
 /** 存起來的剪輯設定與標註（之後可以再修改） */
 export interface ProjectData {
@@ -566,31 +566,72 @@ function drawAnns() {
   const s = cw / vw;
   const t = now();
   const blurs: string[] = [];
-  for (const a of anns) {
+  // 先畫馬賽克 / 模糊（匯出時也是先處理，不會把其他標註一起模糊掉），再畫其他標註
+  for (const a of ordered()) {
     const visible = t >= a.start && t <= a.end;
     const isSel = a.id === annSel;
     if (!visible && !isSel) continue;
     ctx.globalAlpha = visible ? 1 : 0.35;
-    if (a.kind === "mosaic" || a.kind === "blur") blurs.push(blurPreview(a, visible, stage.clientWidth / vw));
-    else draw(ctx, a, s);
+    if (a.kind === "mosaic" || a.kind === "blur") {
+      if (visible) drawEffect(ctx, a, s);
+      blurs.push(blurPreview(a, visible, stage.clientWidth / vw));
+    } else draw(ctx, a, s);
     if (isSel) drawSelection(ctx, a, s);
   }
   ctx.globalAlpha = 1;
   $("edBlurs").innerHTML = blurs.join("");
 }
 
-/** 馬賽克 / 模糊的預覽（CSS 模糊）：形狀用圓角或遮罩；範圍外模糊時蓋滿畫面並挖掉範圍內。css = 影片像素換算成畫面像素的倍率 */
+/** 馬賽克 / 模糊在前，其他標註在後（預覽與匯出的順序一致） */
+const isEffect = (a: Ann) => a.kind === "mosaic" || a.kind === "blur";
+const ordered = () => [...anns.filter(isEffect), ...anns.filter((a) => !isEffect(a))];
+
+let mosaicCanvas: HTMLCanvasElement | undefined;
+/**
+ * 馬賽克 / 模糊的預覽：直接從影片目前的畫面畫到 canvas 上（CSS 的 backdrop-filter 在 WebView2 上模糊不到影片），
+ * 限制在形狀內；框外時是整個畫面扣掉形狀。強度與匯出時相同。s = 影片像素換算成 canvas 像素的倍率
+ */
+function drawEffect(ctx: CanvasRenderingContext2D, a: Ann, s: number) {
+  const v = video();
+  if (v.readyState < 2 || !v.videoWidth) return;
+  const cw = ctx.canvas.width;
+  const ch = ctx.canvas.height;
+  const size = effectSize(a, vw, vh);
+  ctx.save();
+  const clip = new Path2D();
+  if (a.invert) clip.rect(0, 0, cw, ch);
+  clip.addPath(new Path2D(shapePath(a.shape, a.x, a.y, a.w, a.h)), new DOMMatrix().scale(s, s));
+  ctx.clip(clip, "evenodd");
+  if (a.kind === "blur") {
+    // 畫大一點，邊緣才不會因為模糊而變暗
+    const pad = size * s * 3;
+    ctx.filter = `blur(${Math.max(1, size * s * 0.8)}px)`;
+    ctx.drawImage(v, -pad, -pad, cw + pad * 2, ch + pad * 2);
+  } else {
+    // 縮小再用最近鄰放大：框內以範圍為準對齊格子，框外以整個畫面為準
+    const [sx, sy, sw, sh] = a.invert ? [0, 0, vw, vh] : [a.x, a.y, a.w, a.h];
+    const tw = Math.max(1, Math.round(sw / size));
+    const th = Math.max(1, Math.round(sh / size));
+    mosaicCanvas ??= document.createElement("canvas");
+    mosaicCanvas.width = tw;
+    mosaicCanvas.height = th;
+    const mc = mosaicCanvas.getContext("2d");
+    if (mc) {
+      const kx = v.videoWidth / vw;
+      const ky = v.videoHeight / vh;
+      mc.drawImage(v, sx * kx, sy * ky, sw * kx, sh * ky, 0, 0, tw, th);
+      ctx.imageSmoothingEnabled = false;
+      ctx.drawImage(mosaicCanvas, sx * s, sy * s, sw * s, sh * s);
+    }
+  }
+  ctx.restore();
+}
+
+/** 馬賽克 / 模糊的範圍框與名稱（虛線）；css = 影片像素換算成畫面像素的倍率 */
 function blurPreview(a: Ann, visible: boolean, css: number): string {
   const box = `left:${(a.x / vw) * 100}%;top:${(a.y / vh) * 100}%;width:${(a.w / vw) * 100}%;height:${(a.h / vh) * 100}%`;
   const radius = a.shape === "ellipse" ? "50%" : a.shape === "round" ? `${roundRadius(a.w, a.h) * css}px` : "0";
-  const name = esc(label(a));
-  if (!a.invert) return `<div class="ed-blur ${a.kind}${visible ? "" : " off"}" style="${box};border-radius:${radius}"><span>${name}</span></div>`;
-  const svg = `<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 ${vw} ${vh}' preserveAspectRatio='none'><path fill-rule='evenodd' d='M0 0H${vw}V${vh}H0Z${shapePath(a.shape, a.x, a.y, a.w, a.h)}'/></svg>`;
-  const mask = `url("data:image/svg+xml,${encodeURIComponent(svg)}")`;
-  return (
-    `<div class="ed-blur outside ${a.kind}${visible ? "" : " off"}" style="-webkit-mask-image:${mask};mask-image:${mask}"></div>` +
-    `<div class="ed-hole${visible ? "" : " off"}" style="${box};border-radius:${radius}"><span>${name}</span></div>`
-  );
+  return `<div class="ed-blur${visible ? "" : " off"}" style="${box};border-radius:${radius}"><span>${esc(label(a))}</span></div>`;
 }
 
 /** 選取框與調整大小的把手 */
@@ -855,7 +896,9 @@ function setHtmlColors() {
 
 /** 匯出用的標註（畫成 PNG / 馬賽克範圍） */
 function overlaysForExport(): OverlaySpec[] {
-  return anns.map((a) => toOverlay(a, vw, vh)).filter((o): o is OverlaySpec => !!o);
+  return ordered()
+    .map((a) => toOverlay(a, vw, vh))
+    .filter((o): o is OverlaySpec => !!o);
 }
 
 // ───────────── 事件 ─────────────
@@ -880,7 +923,7 @@ function bind() {
     render();
   });
   v.addEventListener("error", () => deps.toast("瀏覽器無法播放這個檔案", true));
-  for (const ev of ["timeupdate", "seeked", "play", "pause"]) v.addEventListener(ev, () => renderTime());
+  for (const ev of ["timeupdate", "seeked", "play", "pause", "loadeddata"]) v.addEventListener(ev, () => renderTime());
   v.addEventListener("pause", () => {
     // 使用者在預覽中按了暫停（或影片播完）
     if (previewing && !v.seeking) {

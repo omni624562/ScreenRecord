@@ -34,6 +34,16 @@ export interface Ann {
   invert?: boolean;
 }
 
+/**
+ * 馬賽克的格子大小 / 模糊的半徑（影片像素），與匯出時 FFmpeg 用的一致（core/src/args.rs 的 blur_effect）。
+ * 框外時以整個畫面為準。
+ */
+export function effectSize(a: Ann, vw: number, vh: number): number {
+  const short = a.invert ? Math.min(vw, vh) : Math.min(Math.abs(a.w), Math.abs(a.h));
+  if (a.kind === "mosaic") return Math.max(12, Math.floor(short / (a.invert ? 45 : 6)));
+  return Math.min(30, Math.max(a.invert ? 4 : 1, Math.floor(short / (a.invert ? 40 : 4)) - (a.invert ? 0 : 1)));
+}
+
 /** 圓角的半徑（影片像素） */
 export const roundRadius = (w: number, h: number) => Math.min(Math.abs(w), Math.abs(h)) * 0.2;
 
