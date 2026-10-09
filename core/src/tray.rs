@@ -182,7 +182,7 @@ impl TrayController {
         self.ui.set_state(s);
     }
 
-    /// 最後一次的錄影設定；沒有時用預設值（主螢幕、30 fps、100%、不錄聲音）
+    /// 最後一次的錄影設定；沒有時用預設值（主螢幕、30 fps、100%、錄系統聲音與麥克風）
     fn config(&self) -> RecordConfig {
         if let Some(c) = self.app.settings.load().record_config() {
             return c;
@@ -200,7 +200,8 @@ impl TrayController {
             max_minutes: 0.0,
             method: MethodPreference::Auto,
             output_dir: self.app.default_output_dir.clone(),
-            audio: AudioConfig::default(),
+            // 與介面相同：預設錄系統聲音與麥克風
+            audio: AudioConfig { system: true, mic: true, mic_id: String::new() },
             encoder: None,
             countdown_sec: None,
             hide_ui: None,
@@ -417,13 +418,13 @@ mod tests {
         assert_eq!(s.tip, format!("螢幕錄影 {APP_VERSION} — 待命"));
         assert_eq!(s.last_source, "所有螢幕"); // 沒有螢幕資訊時
         assert!(!s.can_record); // 沒有 FFmpeg
-        assert!(!s.audio_system);
+        assert!(s.audio_system && s.audio_mic); // 預設錄系統聲音與麥克風
 
         ctl.run(TrayCommand::ToggleSystem).await;
         let saved = app.settings.load();
-        assert!(saved.record_config().unwrap().audio.system);
-        assert_eq!(saved.ui.unwrap()["audioSystem"], true);
-        assert!(ui.states.lock().unwrap().last().unwrap().audio_system);
+        assert!(!saved.record_config().unwrap().audio.system);
+        assert_eq!(saved.ui.unwrap()["audioSystem"], false);
+        assert!(!ui.states.lock().unwrap().last().unwrap().audio_system);
 
         // 沒有 FFmpeg 時開始錄影：以通知告知
         ctl.run(TrayCommand::StartLast).await;

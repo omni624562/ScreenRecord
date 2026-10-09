@@ -47,7 +47,10 @@
               <img id="deskImg" alt="" draggable="false" />
               <div class="desk-empty" id="deskEmpty">尚無預覽</div>
               <div id="deskOverlay"></div>
-              <div class="desk-region" id="deskRegion" hidden></div>
+              <div class="desk-region" id="deskRegion" hidden title="拖曳移動，拖曳邊或角調整大小">
+                <span data-h="n"></span><span data-h="s"></span><span data-h="e"></span><span data-h="w"></span>
+                <span data-h="nw"></span><span data-h="ne"></span><span data-h="sw"></span><span data-h="se"></span>
+              </div>
             </div>
           </div>
           </div>
@@ -365,13 +368,20 @@
           </div>
         </div>
 
-        <div class="ed-timeline" id="edTimeline" title="點選或拖曳以跳到該時間">
+        <!-- 時間軸：縮圖、保留 / 刪除的片段、頭尾把手、選取範圍、播放頭 -->
+        <div class="ed-timeline" id="edTimeline">
+          <canvas class="ed-strip" id="edStrip"></canvas>
           <div class="ed-track" id="edTrack"></div>
-          <div class="ed-playhead" id="edPlayhead"></div>
+          <div class="ed-sel" id="edSel" hidden></div>
+          <div class="ed-handle start" id="edHStart" data-handle="start" title="拖曳調整開頭"></div>
+          <div class="ed-handle end" id="edHEnd" data-handle="end" title="拖曳調整結尾"></div>
+          <div class="ed-playhead" id="edPlayhead" data-handle="playhead" title="拖曳跳到其他時間"></div>
         </div>
+        <p class="hint ed-tl-hint">點時間軸跳到該時間；拖曳兩端的黃色把手剪掉頭尾；在時間軸上拖過一段可選取並刪除。</p>
 
         <div class="ed-transport">
           <button class="btn" id="edPlay" type="button">播放</button>
+          <button class="btn ghost" id="edPreview" type="button" title="只播放保留的部分（跳過刪除的片段），確認剪輯結果">預覽結果</button>
           <div class="ed-steps">
             <button class="btn ghost small" type="button" data-step="-1" title="上一秒（Shift+←）">−1 秒</button>
             <button class="btn ghost small" type="button" data-step="-frame" title="上一張（←）">−1 張</button>
@@ -389,9 +399,10 @@
               <button class="btn small" id="edSetEnd" type="button" title="快捷鍵 O">設為結尾</button>
               <span class="muted small" id="edRangeText"></span>
             </div>
-            <div class="ed-row">
-              <button class="btn small" id="edMarkCut" type="button" title="快捷鍵 D">標記刪除起點</button>
-              <button class="btn ghost small" id="edCancelCut" type="button" hidden>取消</button>
+            <div class="ed-row ed-selrow" id="edSelRow" hidden>
+              <span class="small" id="edSelText"></span>
+              <button class="btn small danger" id="edDelSel" type="button" title="快捷鍵 Delete">刪除這段</button>
+              <button class="btn ghost small" id="edClearSel" type="button" title="快捷鍵 Esc">取消選取</button>
             </div>
             <ul class="ed-removed" id="edRemoved"></ul>
           </section>
