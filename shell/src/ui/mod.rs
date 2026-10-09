@@ -10,6 +10,7 @@ pub mod library_dialog;
 pub mod main_view;
 pub mod preview;
 pub mod settings;
+pub mod snip;
 pub mod theme;
 pub mod thumbs;
 pub mod viewer;
@@ -95,6 +96,8 @@ pub struct UiApp {
     pub export_dlg: Option<export_dialog::ExportDialog>,
     pub library: Option<library_dialog::LibraryDialog>,
     pub viewer: Option<viewer::Viewer>,
+    /// 在螢幕上框選截圖
+    pub snip: Option<snip::Snip>,
     pub editor: Option<editor::Editor>,
 
     pub dismissed_job: Option<u64>,
@@ -154,6 +157,7 @@ impl UiApp {
             export_dlg: None,
             library: None,
             viewer: None,
+            snip: None,
             editor: None,
             dismissed_job: None,
             last_export_state: None,
@@ -430,6 +434,12 @@ impl UiApp {
 
     fn handle_open_requests(&mut self, ctx: &egui::Context) {
         for page in self.open_requests.take() {
+            // 框選截圖：不開啟操作視窗
+            if page == UiPage::Snip {
+                snip::start(self, ctx);
+                ctx.request_repaint();
+                continue;
+            }
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
             ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
             ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
@@ -497,6 +507,10 @@ impl eframe::App for UiApp {
             app.frame_parts.push((name, t.elapsed().as_secs_f32() * 1000.0));
             t = Instant::now();
         };
+        if self.snip.is_some() {
+            snip::show(self, &ctx);
+            part(self, "框選截圖");
+        }
         main_view::show(self, ui);
         part(self, "主畫面");
         if self.export_dlg.is_some() {

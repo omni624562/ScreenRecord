@@ -12,7 +12,7 @@ use screenrecorder_core::actions;
 use screenrecorder_core::format::{clock, format_bytes, human_duration, output_size, speed_label, video_clock};
 use screenrecorder_core::types::{
     DownloadPhase, EncoderPreference, ExportFormat, ExportKind, ExportState, LibraryEntry, LogLevel, MethodPreference, RecorderState, Rect as DRect, HOTKEY_PAUSE_LABEL, HOTKEY_RECORD_LABEL,
-    HOTKEY_SHOT_LABEL,
+    HOTKEY_SHOT_LABEL, HOTKEY_SNIP_LABEL,
 };
 use std::time::Instant;
 
@@ -745,7 +745,9 @@ fn more_panel(app: &mut UiApp, ui: &mut Ui) {
     // 快捷鍵
     match app.env.hotkeys {
         Some(hk) => {
-            for (keys, what, ok) in [(HOTKEY_RECORD_LABEL, "開始 / 停止錄影", hk.record), (HOTKEY_PAUSE_LABEL, "暫停 / 繼續", hk.pause), (HOTKEY_SHOT_LABEL, "截圖", hk.shot)] {
+            for (keys, what, ok) in
+                [(HOTKEY_RECORD_LABEL, "開始 / 停止錄影", hk.record), (HOTKEY_PAUSE_LABEL, "暫停 / 繼續", hk.pause), (HOTKEY_SHOT_LABEL, "截圖", hk.shot), (HOTKEY_SNIP_LABEL, "框選截圖", hk.snip)]
+            {
                 ui.horizontal(|ui| {
                     ui.label(RichText::new(keys).font(theme::mono(12.5)).background_color(p.surface2));
                     ui.label(what);

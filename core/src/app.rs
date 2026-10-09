@@ -14,7 +14,7 @@ use crate::types::{AudioEnv, EnvInfo, FfmpegInfo, HotkeyStatus, MonitorInfo, Rec
 use crate::updater::{check_for_update, UpdateError};
 use crate::version::APP_VERSION;
 use crate::{info, warn};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
@@ -31,6 +31,21 @@ pub enum UiPage {
     Main,
     /// 更新說明（系統匣選單「更新說明」）
     Changelog,
+    /// 在螢幕上框選截圖（不開啟操作視窗；凍結的畫面用 App::take_snip 取得）
+    Snip,
+}
+
+/// 框選截圖：先截下整個桌面（凍結），使用者在畫面上框選後再從中裁切
+#[derive(Debug, Clone)]
+pub struct SnipSource {
+    /// 整個桌面的 PNG（暫存檔）
+    pub path: PathBuf,
+    pub desktop: crate::types::Rect,
+    pub monitors: Vec<MonitorInfo>,
+    /// 截下時看得到的視窗（由上層到下層）：點一下截整個視窗
+    pub windows: Vec<crate::types::Rect>,
+    /// 存檔的資料夾
+    pub output_dir: String,
 }
 
 /// 預覽畫面（RGBA，由上而下）
@@ -85,6 +100,12 @@ struct State {
     shot: Option<crate::types::ShotInfo>,
     /// 截圖中（避免連按快捷鍵同時截好幾張）
     shooting: bool,
+    /// 上次框選的範圍（「重複上次框選」）
+    last_snip: Option<crate::types::Rect>,
+    /// 等介面顯示框選畫面的凍結畫面
+    snip: Option<SnipSource>,
+    /// 框選畫面開著（還沒截好或取消）
+    snipping: bool,
 }
 
 pub struct App {
@@ -279,47 +300,128 @@ impl App {
     }
 
     async fn take_screenshot(self: &Arc<Self>, config: &RecordConfig) -> crate::Result<crate::types::ShotInfo> {
-        let ffmpeg = self.ffmpeg_path().ok_or_else(|| crate::Error::config("找不到 FFmpeg，無法截圖"))?;
         let monitors = self.lock().monitors.clone();
         let plan = crate::args::resolve_plan(config, &monitors)?;
-        let dir = PathBuf::from(&config.output_dir);
-        tokio::fs::create_dir_all(&dir).await.map_err(|e| crate::Error::config(format!("無法建立儲存資料夾：{e}")))?;
-        let stamp = crate::paths::timestamp();
-        let out =
-            (1..).map(|i| dir.join(if i == 1 { format!("Shot_{stamp}.png") } else { format!("Shot_{stamp}_{i}.png") })).find(|p| !p.exists()).unwrap_or_else(|| dir.join(format!("Shot_{stamp}.png")));
-        let out_s = out.display().to_string();
+        let out = new_shot_path(&config.output_dir).await?;
         // 操作視窗擋到範圍：先縮小（等動畫結束）再截
         let hid = crate::winui::minimize_ui(Some(&plan.rect));
         if hid {
             tokio::time::sleep(Duration::from_millis(350)).await;
         }
-        let mut ok = false;
+        let r = self.capture_png(&plan, config.draw_mouse, &out).await;
+        if hid {
+            crate::winui::restore_ui();
+        }
+        r?;
+        Ok(self.finish_shot(&out, plan.rect.width as u32, plan.rect.height as u32).await)
+    }
+
+    /// 擷取 plan 的範圍存成 PNG（ddagrab 失敗時改用 gdigrab）
+    async fn capture_png(&self, plan: &crate::args::CapturePlan, draw_mouse: bool, out: &Path) -> crate::Result<()> {
+        let ffmpeg = self.ffmpeg_path().ok_or_else(|| crate::Error::config("找不到 FFmpeg，無法截圖"))?;
+        let out_s = out.display().to_string();
         let use_dda = plan.dda.is_some() && self.ddagrab_ready().await;
         for dda in [true, false] {
             if dda && !use_dda {
                 continue;
             }
-            let Ok(args) = crate::args::screenshot_args(&plan, dda, config.draw_mouse, &out_s) else { continue };
+            let Ok(args) = crate::args::screenshot_args(plan, dda, draw_mouse, &out_s) else { continue };
             let r = crate::process::run(&ffmpeg, &args, Duration::from_secs(10)).await;
-            if r.code == 0 && tokio::fs::metadata(&out).await.map(|m| m.len() > 0).unwrap_or(false) {
-                ok = true;
-                break;
+            if r.code == 0 && tokio::fs::metadata(out).await.map(|m| m.len() > 0).unwrap_or(false) {
+                return Ok(());
             }
             crate::info!("[截圖] {} 失敗：{}", if dda { "ddagrab" } else { "gdigrab" }, r.stderr.trim());
         }
-        if hid {
-            crate::winui::restore_ui();
-        }
-        if !ok {
-            let _ = tokio::fs::remove_file(&out).await;
-            return Err(crate::Error::other("截圖失敗，詳見記錄檔"));
-        }
-        // 複製到剪貼簿（失敗不影響已存好的檔案）
-        let png = out.clone();
+        let _ = tokio::fs::remove_file(out).await;
+        Err(crate::Error::other("截圖失敗，詳見記錄檔"))
+    }
+
+    /// 截好的 PNG：複製到剪貼簿（失敗不影響已存好的檔案），編上序號
+    async fn finish_shot(&self, out: &Path, w: u32, h: u32) -> crate::types::ShotInfo {
+        let png = out.to_path_buf();
         let (width, height, copied) = tokio::task::spawn_blocking(move || crate::clipboard::copy_png(&png)).await.unwrap_or((0, 0, false));
         let seq = self.lock().shot.as_ref().map(|s| s.seq + 1).unwrap_or(1);
-        let (width, height) = if width > 0 { (width, height) } else { (plan.rect.width as u32, plan.rect.height as u32) };
-        Ok(crate::types::ShotInfo { seq, path: out_s, width, height, copied })
+        let (width, height) = if width > 0 { (width, height) } else { (w, h) };
+        crate::types::ShotInfo { seq, path: out.display().to_string(), width, height, copied }
+    }
+
+    // ───────────── 框選截圖 ─────────────
+
+    /// 框選截圖的第一步：截下整個桌面（不含游標）當作凍結的畫面，再請介面顯示框選畫面。
+    /// 操作視窗先縮小，框選結束（snip_end）才還原
+    pub async fn snip_begin(self: &Arc<Self>, config: &RecordConfig) -> crate::Result<()> {
+        {
+            let mut st = self.lock();
+            if st.shooting || st.snipping {
+                return Err(crate::Error::config("正在截圖"));
+            }
+            st.shooting = true;
+        }
+        let r = self.snip_capture(config).await;
+        self.lock().shooting = false;
+        self.snip_offer(r?);
+        Ok(())
+    }
+
+    /// 交給介面顯示框選畫面
+    pub fn snip_offer(&self, src: SnipSource) {
+        {
+            let mut st = self.lock();
+            st.snip = Some(src);
+            st.snipping = true;
+        }
+        self.open_ui(UiPage::Snip);
+    }
+
+    async fn snip_capture(self: &Arc<Self>, config: &RecordConfig) -> crate::Result<SnipSource> {
+        let monitors = self.lock().monitors.clone();
+        let all = RecordConfig { source: crate::types::SourceConfig::All, ..config.clone() };
+        let plan = crate::args::resolve_plan(&all, &monitors)?;
+        let path = std::env::temp_dir().join(format!("ScreenRecorder-snip-{}.png", std::process::id()));
+        if crate::winui::minimize_ui(Some(&plan.rect)) {
+            tokio::time::sleep(Duration::from_millis(350)).await;
+        }
+        if let Err(e) = self.capture_png(&plan, false, &path).await {
+            crate::winui::restore_ui();
+            return Err(e);
+        }
+        let windows = crate::winui::visible_windows();
+        Ok(SnipSource { path, desktop: plan.rect, monitors: plan.monitors.clone(), windows, output_dir: config.output_dir.clone() })
+    }
+
+    /// 上次框選的範圍
+    pub fn last_snip(&self) -> Option<crate::types::Rect> {
+        self.lock().last_snip
+    }
+
+    /// 介面取走凍結的畫面（只取一次）
+    pub fn take_snip(&self) -> Option<SnipSource> {
+        self.lock().snip.take()
+    }
+
+    /// 框選好了：從凍結的畫面裁切 rect（桌面座標），存成 PNG 並複製到剪貼簿
+    pub async fn snip_save(self: &Arc<Self>, src: &SnipSource, rect: crate::types::Rect) -> crate::Result<crate::types::ShotInfo> {
+        let out = new_shot_path(&src.output_dir).await?;
+        let (from, to, desk) = (src.path.clone(), out.clone(), src.desktop);
+        let r = tokio::task::spawn_blocking(move || crop_png(&from, desk, rect, &to)).await.map_err(|e| crate::Error::other(e.to_string()))?;
+        let (w, h) = r?;
+        let shot = self.finish_shot(&out, w, h).await;
+        {
+            let mut st = self.lock();
+            st.shot = Some(shot.clone());
+            st.last_snip = Some(rect);
+        }
+        crate::info!("[截圖] 框選 {}（{}×{}{}）", shot.path, shot.width, shot.height, if shot.copied { "，已複製到剪貼簿" } else { "" });
+        Ok(shot)
+    }
+
+    /// 框選結束（截好或取消）：刪掉暫存的畫面、還原操作視窗
+    pub fn snip_end(&self, src: Option<&SnipSource>) {
+        if let Some(s) = src {
+            let _ = std::fs::remove_file(&s.path);
+        }
+        self.lock().snipping = false;
+        crate::winui::restore_ui();
     }
 
     pub fn update(&self) -> Option<UpdateInfo> {
@@ -768,6 +870,34 @@ impl Drop for LiveGuard {
     }
 }
 
+/// 新截圖的檔名：Shot_日期_時間.png（同一秒有好幾張時加 _2、_3…）
+async fn new_shot_path(dir: &str) -> crate::Result<PathBuf> {
+    let dir = PathBuf::from(dir);
+    tokio::fs::create_dir_all(&dir).await.map_err(|e| crate::Error::config(format!("無法建立儲存資料夾：{e}")))?;
+    let stamp = crate::paths::timestamp();
+    Ok((1..).map(|i| dir.join(if i == 1 { format!("Shot_{stamp}.png") } else { format!("Shot_{stamp}_{i}.png") })).find(|p| !p.exists()).unwrap_or_else(|| dir.join(format!("Shot_{stamp}.png"))))
+}
+
+/// 從整個桌面的 PNG（左上角是 desk 的原點）裁切 rect，存成 PNG；回傳實際的寬高
+fn crop_png(from: &Path, desk: crate::types::Rect, rect: crate::types::Rect, to: &Path) -> crate::Result<(u32, u32)> {
+    let bytes = std::fs::read(from).map_err(|e| crate::Error::other(format!("讀不到截下的畫面：{e}")))?;
+    let src = tiny_skia::Pixmap::decode_png(&bytes).map_err(|e| crate::Error::other(format!("讀不到截下的畫面：{e}")))?;
+    let (sw, sh) = (src.width() as i32, src.height() as i32);
+    let x0 = (rect.x - desk.x).clamp(0, sw);
+    let y0 = (rect.y - desk.y).clamp(0, sh);
+    let x1 = (rect.x + rect.width - desk.x).clamp(x0, sw);
+    let y1 = (rect.y + rect.height - desk.y).clamp(y0, sh);
+    let (w, h) = ((x1 - x0) as u32, (y1 - y0) as u32);
+    let mut out = tiny_skia::Pixmap::new(w.max(1), h.max(1)).ok_or_else(|| crate::Error::config("範圍太小"))?;
+    let row = w as usize * 4;
+    for y in 0..h as usize {
+        let s0 = ((y0 as usize + y) * sw as usize + x0 as usize) * 4;
+        out.data_mut()[y * row..(y + 1) * row].copy_from_slice(&src.data()[s0..s0 + row]);
+    }
+    out.save_png(to).map_err(|e| crate::Error::other(format!("無法儲存截圖：{e}")))?;
+    Ok((w, h))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -785,5 +915,27 @@ mod tests {
         app.mark_ready();
         tokio::time::timeout(Duration::from_secs(2), waiting).await.unwrap().unwrap();
         app.wait_ready().await; // 已完成：立即返回
+    }
+
+    #[test]
+    fn snip_crops_the_frozen_desktop() {
+        use crate::types::Rect;
+        let dir = tempfile::tempdir().unwrap();
+        // 3×2 的桌面，原點在 (-1, 0)（左邊有一台螢幕）；每個像素的紅色 = x*10 + y
+        let mut pm = tiny_skia::Pixmap::new(3, 2).unwrap();
+        for y in 0..2u8 {
+            for x in 0..3u8 {
+                let i = (y as usize * 3 + x as usize) * 4;
+                pm.data_mut()[i..i + 4].copy_from_slice(&[x * 10 + y, 0, 0, 255]);
+            }
+        }
+        let from = dir.path().join("desk.png");
+        pm.save_png(&from).unwrap();
+        let to = dir.path().join("out.png");
+        let desk = Rect { x: -1, y: 0, width: 3, height: 2 };
+        // 超出桌面的部分裁掉
+        assert_eq!(crop_png(&from, desk, Rect { x: 0, y: 1, width: 5, height: 5 }, &to).unwrap(), (2, 1));
+        let out = tiny_skia::Pixmap::load_png(&to).unwrap();
+        assert_eq!((out.data()[0], out.data()[4]), (11, 21));
     }
 }

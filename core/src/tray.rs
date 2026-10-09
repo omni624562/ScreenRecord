@@ -6,7 +6,7 @@ use crate::format::{clock, video_clock};
 use crate::info;
 use crate::paths::now_ms;
 use crate::settings::SettingsPatch;
-use crate::types::{AudioConfig, HotkeyStatus, MethodPreference, RecordConfig, RecorderState, SourceConfig, HOTKEY_PAUSE_LABEL, HOTKEY_RECORD_LABEL, HOTKEY_SHOT_LABEL};
+use crate::types::{AudioConfig, HotkeyStatus, MethodPreference, RecordConfig, RecorderState, SourceConfig, HOTKEY_PAUSE_LABEL, HOTKEY_RECORD_LABEL, HOTKEY_SHOT_LABEL, HOTKEY_SNIP_LABEL};
 use crate::version::APP_VERSION;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -28,8 +28,16 @@ pub enum TrayCommand {
     Changelog,
     HotkeyRecord,
     HotkeyPause,
-    /// 截圖（選單與 Ctrl+Alt+S）
+    /// 截圖：與錄影相同的範圍（選單與 Ctrl+Alt+S）
     Screenshot,
+    /// 截圖：整個指定的螢幕
+    ScreenshotMonitor(String),
+    /// 截圖：所有螢幕
+    ScreenshotAll,
+    /// 在螢幕上框選範圍或點選視窗截圖（選單與 Ctrl+Alt+A）
+    ScreenshotSelect,
+    /// 再截一次上次框選的範圍
+    ScreenshotLast,
     OpenUpdate,
     Quit,
 }
@@ -54,6 +62,8 @@ pub struct TrayState {
     pub can_record: bool,
     /// 是否能截圖（有 FFmpeg）
     pub can_shot: bool,
+    /// 有上次框選的範圍（「重複上次框選」）
+    pub has_last_snip: bool,
     pub last_result: Option<String>,
     /// None = 無法設定（開發版）
     pub autostart: Option<bool>,
@@ -139,7 +149,7 @@ impl TrayController {
         };
         let last_source = match &cfg.source {
             SourceConfig::All => "所有螢幕".to_string(),
-            SourceConfig::Region { .. } => "自訂範圍".to_string(),
+            SourceConfig::Region { width, height, .. } => format!("範圍 {width}×{height}"),
             SourceConfig::Monitor { monitor_id } => format!("螢幕 {}", env.monitors.iter().find(|m| &m.id == monitor_id).map(|m| m.display_number).unwrap_or(1)),
         };
         let last_result = self.last_result_exists();
@@ -157,6 +167,7 @@ impl TrayController {
             audio_mic: cfg.audio.mic,
             can_record: self.app.ffmpeg_path().is_some() && !self.app.exporter.running(),
             can_shot: self.app.ffmpeg_path().is_some(),
+            has_last_snip: self.app.last_snip().is_some(),
             last_result: if last_result { c.last_result_path.clone() } else { None },
             autostart: c.autostart,
             version: APP_VERSION.to_string(),
@@ -292,8 +303,19 @@ impl TrayController {
                 crate::desktop::open_with_explorer(&dir, false);
                 return Ok(());
             }
-            TrayCommand::Screenshot => {
-                let shot = app.screenshot(&self.config()).await.map_err(err)?;
+            TrayCommand::ScreenshotSelect => return app.snip_begin(&self.config()).await.map_err(err),
+            TrayCommand::Screenshot | TrayCommand::ScreenshotMonitor(_) | TrayCommand::ScreenshotAll | TrayCommand::ScreenshotLast => {
+                let mut cfg = self.config();
+                match cmd {
+                    TrayCommand::ScreenshotMonitor(id) => cfg.source = SourceConfig::Monitor { monitor_id: id },
+                    TrayCommand::ScreenshotAll => cfg.source = SourceConfig::All,
+                    TrayCommand::ScreenshotLast => {
+                        let r = app.last_snip().ok_or("還沒有框選過範圍")?;
+                        cfg.source = SourceConfig::Region { x: r.x as f64, y: r.y as f64, width: r.width as f64, height: r.height as f64 };
+                    }
+                    _ => {}
+                }
+                let shot = app.screenshot(&cfg).await.map_err(err)?;
                 let name = std::path::Path::new(&shot.path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
                 let text = if shot.copied { format!("已複製到剪貼簿，存成 {name}") } else { format!("已存成 {name}") };
                 self.notify("已截圖", &text, false);
@@ -389,8 +411,11 @@ fn report_hotkeys(app: &App, h: HotkeyStatus) {
     if !h.shot {
         busy.push(HOTKEY_SHOT_LABEL);
     }
+    if !h.snip {
+        busy.push(HOTKEY_SNIP_LABEL);
+    }
     if busy.is_empty() {
-        info!("快捷鍵：{HOTKEY_RECORD_LABEL} 開始 / 停止，{HOTKEY_PAUSE_LABEL} 暫停 / 繼續，{HOTKEY_SHOT_LABEL} 截圖");
+        info!("快捷鍵：{HOTKEY_RECORD_LABEL} 開始 / 停止，{HOTKEY_PAUSE_LABEL} 暫停 / 繼續，{HOTKEY_SHOT_LABEL} 截圖，{HOTKEY_SNIP_LABEL} 框選截圖");
     } else {
         info!("快捷鍵 {} 已被其他程式使用，無法登記", busy.join("、"));
     }

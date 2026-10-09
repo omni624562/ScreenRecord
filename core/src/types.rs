@@ -4,7 +4,7 @@
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MonitorInfo {
     /// `${adapter}:${output}`
@@ -105,6 +105,8 @@ pub struct HotkeyStatus {
     pub pause: bool,
     #[serde(default)]
     pub shot: bool,
+    #[serde(default)]
+    pub snip: bool,
 }
 
 /// 最近一次的截圖（seq 每次加一，介面看到變了就更新清單）
@@ -119,6 +121,7 @@ pub struct ShotInfo {
 }
 
 pub const HOTKEY_SHOT_LABEL: &str = "Ctrl+Alt+S";
+pub const HOTKEY_SNIP_LABEL: &str = "Ctrl+Alt+A";
 pub const HOTKEY_RECORD_LABEL: &str = "Ctrl+Alt+R";
 pub const HOTKEY_PAUSE_LABEL: &str = "Ctrl+Alt+P";
 

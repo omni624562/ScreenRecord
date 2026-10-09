@@ -1,5 +1,5 @@
 //! 開發用（只在 debug 版）：自動開啟某個畫面、模擬操作並截圖，在 Linux 的 Xvfb 上檢查介面。
-//! - SCREENRECORDER_DEV：要開啟的畫面（library、shots、changelog、export:<路徑>、edit:<路徑>、view:<路徑>、monitors（模擬兩個螢幕）、ed:<剪輯視窗指令>），以 ; 分隔
+//! - SCREENRECORDER_DEV：要開啟的畫面（library、shots、changelog、export:<路徑>、edit:<路徑>、view:<路徑>、monitors（模擬兩個螢幕）、snip:<PNG>（用這張圖當凍結的桌面開啟框選截圖）、ed:<剪輯視窗指令>），以 ; 分隔
 //! - SCREENRECORDER_INPUT：開啟後依序模擬的操作，以 ; 分隔：
 //!   wait:毫秒、click:x,y、drag:x0,y0,x1,y1、wheel:x,y,dy、key:Space（可加 shift+）、type:文字、shot:路徑
 //! - SCREENRECORDER_SHOT：最後截圖存檔的路徑（存好後結束）；SCREENRECORDER_SHOT_AFTER：開始後幾毫秒截圖（預設 3000）
@@ -131,6 +131,7 @@ pub fn tick(app: &mut UiApp, ctx: &egui::Context) {
                     _ if a == "shots" => app.library = Some(super::library_dialog::LibraryDialog::new(super::library_dialog::Kind::Shot)),
                     _ if a == "changelog" => app.changelog_open = true,
                     _ if a == "monitors" => fake_monitors(app),
+                    Some(("snip", p)) => fake_snip(app, p),
                     _ => {}
                 }
             }
@@ -192,4 +193,22 @@ fn fake_monitors(app: &mut UiApp) {
     app.env.monitors = vec![m(0, 0), m(1, 1920)];
     app.env.desktop = Rect { x: 0, y: 0, width: 3840, height: 1080 };
     app.s.fix_monitor(&app.env);
+}
+
+/// 用一張圖當凍結的桌面開啟框選截圖（Linux 上無法真的截下桌面）；模擬兩個視窗供點選
+fn fake_snip(app: &mut UiApp, png: &str) {
+    use screenrecorder_core::types::Rect;
+    let tmp = std::env::temp_dir().join("ScreenRecorder-dev-snip.png");
+    if std::fs::copy(png, &tmp).is_err() {
+        return;
+    }
+    let desktop = if app.env.desktop.width > 0 { app.env.desktop } else { Rect { x: 0, y: 0, width: 1280, height: 900 } };
+    let src = screenrecorder_core::app::SnipSource {
+        path: tmp,
+        desktop,
+        monitors: app.env.monitors.clone(),
+        windows: vec![Rect { x: 100, y: 120, width: 500, height: 300 }, Rect { x: 0, y: 0, width: 900, height: 700 }],
+        output_dir: app.s.out_dir(&app.env),
+    };
+    app.core.snip_offer(src);
 }
