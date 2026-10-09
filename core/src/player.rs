@@ -132,16 +132,7 @@ impl Player {
     /// src_w × src_h：原影片尺寸；解碼成不超過 max_w × max_h 的大小
     pub fn new(ffmpeg: PathBuf, spec: MediaSpec, src_w: u32, src_h: u32, max_w: u32, max_h: u32, wake: Wake) -> Player {
         let (width, height) = fit_size(src_w, src_h, max_w, max_h);
-        Player {
-            ffmpeg,
-            spec,
-            width,
-            height,
-            inner: Arc::default(),
-            children: Arc::default(),
-            stop_audio: Arc::new(Mutex::new(Arc::new(AtomicBool::new(false)))),
-            wake,
-        }
+        Player { ffmpeg, spec, width, height, inner: Arc::default(), children: Arc::default(), stop_audio: Arc::new(Mutex::new(Arc::new(AtomicBool::new(false)))), wake }
     }
 
     pub fn spec(&self) -> &MediaSpec {
@@ -297,7 +288,9 @@ impl Player {
             }
         }
 
-        let Some(mut child) = spawn(&self.ffmpeg, &video_args(&self.spec.path, from, self.width, self.height, None, false)) else { return };
+        let Some(mut child) = spawn(&self.ffmpeg, &video_args(&self.spec.path, from, self.width, self.height, None, false)) else {
+            return;
+        };
         let Some(mut out) = child.stdout.take() else { return };
         self.children.lock().unwrap().push(child);
         let (inner, wake, w, h, fps, duration) = (self.inner.clone(), self.wake.clone(), self.width, self.height, self.spec.fps.max(1.0), self.spec.duration);
@@ -419,9 +412,17 @@ mod tests {
         let Some((ffmpeg, path)) = test_video(dir.path()) else { return };
         let woke = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let w2 = woke.clone();
-        let p = Player::new(ffmpeg.clone(), MediaSpec { path: path.clone(), duration: 2.0, fps: 30.0, has_audio: true }, 64, 36, 64, 36, Arc::new(move || {
-            w2.fetch_add(1, Ordering::SeqCst);
-        }));
+        let p = Player::new(
+            ffmpeg.clone(),
+            MediaSpec { path: path.clone(), duration: 2.0, fps: 30.0, has_audio: true },
+            64,
+            36,
+            64,
+            36,
+            Arc::new(move || {
+                w2.fetch_add(1, Ordering::SeqCst);
+            }),
+        );
         let wait_frame = |p: &Player| {
             let start = Instant::now();
             loop {

@@ -3,8 +3,8 @@
 
 use screenrecorder_core::edit::{cut_file_name, keep_ranges, normalize_crop, normalize_ranges, total_length, CropInput, EditSpec, Range};
 use screenrecorder_core::format::{
-    check_recording_name, clock, estimate_bytes, export_file_name, format_bytes, human_duration, output_size, parse_clock, parse_export_name, scaled_size, speed_for_target,
-    speed_label, video_clock, EstimateInput,
+    check_recording_name, clock, estimate_bytes, export_file_name, format_bytes, human_duration, output_size, parse_clock, parse_export_name, scaled_size, speed_for_target, speed_label, video_clock,
+    EstimateInput,
 };
 use screenrecorder_core::types::ExportFormat;
 use serde_json::{json, Value};

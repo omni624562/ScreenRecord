@@ -61,10 +61,7 @@ pub fn ui_fonts() -> (Vec<FontFile>, Vec<FontFile>) {
         load(&[("msjh.ttc", 1), ("msjh.ttf", 0), ("mingliu.ttc", 0)]).or_else(|| load(CJK_LINUX)),
         load(&[("seguisym.ttf", 0)]),
     ];
-    let bold = [
-        load(&[("segoeuib.ttf", 0), ("seguisb.ttf", 0)]),
-        load(&[("msjhbd.ttc", 1), ("msjhbd.ttf", 0)]).or_else(|| load(&[("msjh.ttc", 1)])).or_else(|| load(CJK_LINUX)),
-    ];
+    let bold = [load(&[("segoeuib.ttf", 0), ("seguisb.ttf", 0)]), load(&[("msjhbd.ttc", 1), ("msjhbd.ttf", 0)]).or_else(|| load(&[("msjh.ttc", 1)])).or_else(|| load(CJK_LINUX))];
     (regular.into_iter().flatten().collect(), bold.into_iter().flatten().collect())
 }
 
@@ -72,11 +69,7 @@ pub fn ui_fonts() -> (Vec<FontFile>, Vec<FontFile>) {
 pub fn text_fonts() -> &'static TextFonts {
     static FONTS: OnceLock<TextFonts> = OnceLock::new();
     FONTS.get_or_init(|| {
-        let text = [
-            load(&[("msjhbd.ttc", 1), ("msjhbd.ttf", 0), ("msjh.ttc", 1)]).or_else(|| load(CJK_LINUX)),
-            load(&[("segoeuib.ttf", 0), ("segoeui.ttf", 0)]),
-            load(&[("seguisym.ttf", 0)]),
-        ];
+        let text = [load(&[("msjhbd.ttc", 1), ("msjhbd.ttf", 0), ("msjh.ttc", 1)]).or_else(|| load(CJK_LINUX)), load(&[("segoeuib.ttf", 0), ("segoeui.ttf", 0)]), load(&[("seguisym.ttf", 0)])];
         let emoji = [load(&[("seguiemj.ttf", 0), ("/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf", 0)])];
         TextFonts { text: text.into_iter().flatten().collect(), emoji: emoji.into_iter().flatten().collect() }
     })

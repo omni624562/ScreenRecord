@@ -71,11 +71,7 @@ fn ms(t: f64) -> f64 {
 
 /// 合併重疊或相鄰的區段，並限制在 [0, duration] 內
 pub fn normalize_ranges(ranges: &[Range], duration: f64) -> Vec<Range> {
-    let mut sorted: Vec<Range> = ranges
-        .iter()
-        .map(|&(a, b)| (a.min(b).max(0.0), a.max(b).min(duration)))
-        .filter(|&(a, b)| b - a >= MIN_RANGE)
-        .collect();
+    let mut sorted: Vec<Range> = ranges.iter().map(|&(a, b)| (a.min(b).max(0.0), a.max(b).min(duration))).filter(|&(a, b)| b - a >= MIN_RANGE).collect();
     sorted.sort_by(|p, q| p.0.total_cmp(&q.0));
     let mut out: Vec<Range> = Vec::new();
     for r in sorted {

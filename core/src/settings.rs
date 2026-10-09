@@ -134,7 +134,9 @@ mod tests {
     #[test]
     fn record_config_parses_ui_json() {
         let s = SavedSettings {
-            config: Some(json!({"source":{"type":"monitor","monitorId":"0:0"},"fps":30,"scale":100,"drawMouse":true,"maxMinutes":0,"method":"auto","outputDir":"C:\\v","audio":{"system":true,"mic":false,"micId":""},"countdownSec":3,"hideUi":true})),
+            config: Some(
+                json!({"source":{"type":"monitor","monitorId":"0:0"},"fps":30,"scale":100,"drawMouse":true,"maxMinutes":0,"method":"auto","outputDir":"C:\\v","audio":{"system":true,"mic":false,"micId":""},"countdownSec":3,"hideUi":true}),
+            ),
             ..Default::default()
         };
         let c = s.record_config().unwrap();

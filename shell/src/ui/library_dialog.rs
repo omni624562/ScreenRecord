@@ -96,7 +96,9 @@ fn export_label(x: &ExportInfo) -> String {
 }
 
 fn load(app: &mut UiApp) {
-    let Some(d) = app.library.as_mut() else { return };
+    let Some(d) = app.library.as_mut() else {
+        return;
+    };
     d.dirty = false;
     d.loading = true;
     d.seq += 1;
@@ -105,7 +107,9 @@ fn load(app: &mut UiApp) {
     let dir = app.s.out_dir(&app.env);
     let core = app.core.clone();
     app.spawn(async move { actions::library(&core, &dir, &query).await }, move |app, page| {
-        let Some(d) = app.library.as_mut() else { return };
+        let Some(d) = app.library.as_mut() else {
+            return;
+        };
         if seq != d.seq {
             return; // 已有較新的查詢（例如還在輸入搜尋字）
         }
@@ -127,7 +131,9 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
     let mut delete = false;
     let dir = app.s.out_dir(&app.env);
     // 縮圖要用 app，先取出對話框
-    let Some(mut d) = app.library.take() else { return };
+    let Some(mut d) = app.library.take() else {
+        return;
+    };
     let modal = egui::Modal::new(Id::new("library")).frame(theme::modal_frame(ctx)).show(ctx, |ui| {
         let p = theme::pal(ui);
         ui.set_width(size.x - 40.0);
@@ -154,13 +160,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
             if r.changed() {
                 d.search_at = Some(Instant::now());
             }
-            let filters = [
-                (LibraryFilter::All, "全部"),
-                (LibraryFilter::Original, "原始錄影"),
-                (LibraryFilter::Cut, "剪輯版"),
-                (LibraryFilter::Speed, "有加速版"),
-                (LibraryFilter::Audio, "有聲音"),
-            ];
+            let filters = [(LibraryFilter::All, "全部"), (LibraryFilter::Original, "原始錄影"), (LibraryFilter::Cut, "剪輯版"), (LibraryFilter::Speed, "有加速版"), (LibraryFilter::Audio, "有聲音")];
             egui::ComboBox::from_id_salt("libFilter").selected_text(filters.iter().find(|f| f.0 == d.filter).map(|f| f.1).unwrap_or("")).show_ui(ui, |ui| {
                 for (v, t) in filters {
                     if ui.selectable_label(d.filter == v, t).clicked() {
@@ -281,7 +281,12 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
             {
                 let aui = &mut ui.new_child(UiBuilder::new().max_rect(Rect::from_min_max(pos2(col_x(5), row.min.y), row.max)).layout(Layout::left_to_right(Align::Center)));
                 aui.spacing_mut().item_spacing.x = 2.0;
-                for (act, icon, tip) in [(EntryAction::Play, Icon::Play, "播放"), (EntryAction::Reveal, Icon::Folder, "在資料夾中顯示"), (EntryAction::Edit, Icon::Cut, "剪輯"), (EntryAction::Export, Icon::Export, "製作加速版 / GIF")] {
+                for (act, icon, tip) in [
+                    (EntryAction::Play, Icon::Play, "播放"),
+                    (EntryAction::Reveal, Icon::Folder, "在資料夾中顯示"),
+                    (EntryAction::Edit, Icon::Cut, "剪輯"),
+                    (EntryAction::Export, Icon::Export, "製作加速版 / GIF"),
+                ] {
                     if Btn::icon_only(icon).ghost().small().tooltip(tip).show(aui).clicked() {
                         action = Some((act, e.clone()));
                     }
@@ -448,7 +453,8 @@ fn remove_selected(app: &mut UiApp) {
     let Some(d) = &app.library else { return };
     let list: Vec<String> = d.selected.iter().cloned().collect();
     // 原檔要刪、但取消勾選了部分加速版：提醒這些會保留
-    let kept: usize = d.data.as_ref().map(|x| x.items.iter().filter(|e| d.selected.contains(&e.media.path)).map(|e| e.exports.iter().filter(|x| !d.selected.contains(&x.media.path)).count()).sum()).unwrap_or(0);
+    let kept: usize =
+        d.data.as_ref().map(|x| x.items.iter().filter(|e| d.selected.contains(&e.media.path)).map(|e| e.exports.iter().filter(|x| !d.selected.contains(&x.media.path)).count()).sum()).unwrap_or(0);
     let mut ask = Ask::confirm(
         format!("把 {} 個檔案移到資源回收筒？", list.len()),
         format!("可從資源回收筒還原。{}", if kept > 0 { format!("\n未勾選的 {kept} 個加速版會保留。") } else { String::new() }),

@@ -456,8 +456,7 @@ impl<'a> ttf_parser::colr::Painter<'a> for ColorPainter<'a, '_> {
             }
             ttf_parser::colr::Paint::RadialGradient(g) => {
                 let s = stops(g.stops(0, &[]));
-                tiny_skia::RadialGradient::new((g.x0, g.y0).into(), g.r0.max(0.0), (g.x1, g.y1).into(), g.r1.max(0.01), s, spread(g.extend), t)
-                    .unwrap_or(tiny_skia::Shader::SolidColor(Color::BLACK))
+                tiny_skia::RadialGradient::new((g.x0, g.y0).into(), g.r0.max(0.0), (g.x1, g.y1).into(), g.r1.max(0.01), s, spread(g.extend), t).unwrap_or(tiny_skia::Shader::SolidColor(Color::BLACK))
             }
             ttf_parser::colr::Paint::SweepGradient(g) => {
                 // 少見：用第一個顏色近似
@@ -584,7 +583,11 @@ pub fn draw(pixmap: &mut Pixmap, a: &Ann, t: Transform) {
             }
         }
         AnnKind::Rect | AnnKind::Ellipse => {
-            let path = if a.kind == AnnKind::Rect { round_rect(x.min(x + w), y.min(y + h), w.abs(), h.abs(), size) } else { Rect::from_xywh(x.min(x + w), y.min(y + h), w.abs().max(0.5), h.abs().max(0.5)).and_then(PathBuilder::from_oval) };
+            let path = if a.kind == AnnKind::Rect {
+                round_rect(x.min(x + w), y.min(y + h), w.abs(), h.abs(), size)
+            } else {
+                Rect::from_xywh(x.min(x + w), y.min(y + h), w.abs().max(0.5), h.abs().max(0.5)).and_then(PathBuilder::from_oval)
+            };
             if let Some(p) = path {
                 pixmap.stroke_path(&p, &paint(color(&a.color, 1.0)), &stroke(a.size), t, None);
             }

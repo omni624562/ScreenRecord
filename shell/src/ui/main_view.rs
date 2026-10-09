@@ -11,8 +11,7 @@ use eframe::egui::{self, pos2, vec2, Align, Color32, CornerRadius, Id, Layout, P
 use screenrecorder_core::actions;
 use screenrecorder_core::format::{clock, format_bytes, human_duration, output_size, speed_label, video_clock};
 use screenrecorder_core::types::{
-    DownloadPhase, EncoderPreference, ExportFormat, ExportKind, ExportState, LibraryEntry, LogLevel, MethodPreference, Rect as DRect, RecorderState, HOTKEY_PAUSE_LABEL,
-    HOTKEY_RECORD_LABEL,
+    DownloadPhase, EncoderPreference, ExportFormat, ExportKind, ExportState, LibraryEntry, LogLevel, MethodPreference, RecorderState, Rect as DRect, HOTKEY_PAUSE_LABEL, HOTKEY_RECORD_LABEL,
 };
 use std::time::Instant;
 
@@ -113,7 +112,11 @@ fn banners(app: &mut UiApp, ui: &mut Ui) {
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if Btn::new("重新偵測").small().show(ui).clicked() {
                         app.refresh_env(|app| {
-                            let (msg, err) = if app.env.ffmpeg.found { (format!("已找到 FFmpeg {}", app.env.ffmpeg.version.clone().unwrap_or_default()), false) } else { ("仍然找不到 ffmpeg.exe".into(), true) };
+                            let (msg, err) = if app.env.ffmpeg.found {
+                                (format!("已找到 FFmpeg {}", app.env.ffmpeg.version.clone().unwrap_or_default()), false)
+                            } else {
+                                ("仍然找不到 ffmpeg.exe".into(), true)
+                            };
                             app.toast(msg, err);
                         });
                     }
@@ -217,7 +220,11 @@ fn source_detail(app: &mut UiApp, ui: &mut Ui) {
             let n = app.env.monitors.len();
             let adapters: std::collections::HashSet<u32> = app.env.monitors.iter().map(|m| m.adapter).collect();
             let multi = adapters.len() > 1;
-            let text = if n <= 1 { "目前只有 1 個螢幕，與「單一螢幕」相同".to_string() } else { format!("{n} 個螢幕拼成 {}×{}{}", app.env.desktop.width, app.env.desktop.height, if multi { "（不同顯示卡，將用 gdigrab）" } else { "" }) };
+            let text = if n <= 1 {
+                "目前只有 1 個螢幕，與「單一螢幕」相同".to_string()
+            } else {
+                format!("{n} 個螢幕拼成 {}×{}{}", app.env.desktop.width, app.env.desktop.height, if multi { "（不同顯示卡，將用 gdigrab）" } else { "" })
+            };
             ui.label(RichText::new(text).color(if multi { p.warn } else { p.muted }).font(theme::font(12.5)));
         }
         SourceType::Region => {
@@ -258,7 +265,15 @@ fn desk(app: &mut UiApp, ui: &mut Ui, area: Rect) {
     let view = view_rect(app);
     // 即時預覽：視窗看得到時才擷取；錄影中放慢
     let key = if app.s.source_type == SourceType::Monitor { app.s.monitor_id.clone().unwrap_or_default() } else { String::new() };
-    let fps = if app.s.live_preview { if app.locked() { 2 } else { 5 } } else { 0 };
+    let fps = if app.s.live_preview {
+        if app.locked() {
+            2
+        } else {
+            5
+        }
+    } else {
+        0
+    };
     if app.env_ready {
         let (core, rt, ctx) = (app.core.clone(), app.rt.clone(), ui.ctx().clone());
         app.preview.ensure(&core, &rt, &ctx, &key, fps, app.env.ffmpeg.found);
@@ -284,7 +299,13 @@ fn desk(app: &mut UiApp, ui: &mut Ui, area: Rect) {
                 super::preview::PreviewState::Failed(m) => m,
                 super::preview::PreviewState::Loading { live: true } => "正在連接即時預覽…".into(),
                 super::preview::PreviewState::Loading { live: false } => "正在擷取預覽…".into(),
-                _ => if app.env_ready { "尚無預覽".into() } else { "正在偵測螢幕與 FFmpeg…".into() },
+                _ => {
+                    if app.env_ready {
+                        "尚無預覽".into()
+                    } else {
+                        "正在偵測螢幕與 FFmpeg…".into()
+                    }
+                }
             };
             theme::centered_text(&painter, rect, &msg, theme::font(13.0), p.muted);
         }
@@ -468,15 +489,11 @@ fn combo<T: PartialEq + Copy>(ui: &mut Ui, id: &str, label: &str, value: &mut T,
 /// 下拉按鈕：點一下開關面板，點外面關閉
 fn drop_button(ui: &mut Ui, id: &str, text: String, icon: Icon, enabled: bool, width: f32, contents: impl FnOnce(&mut Ui)) {
     let resp = Btn::new(text).icon(icon).trailing(Icon::Down).small().enabled(enabled).show(ui);
-    egui::Popup::from_toggle_button_response(&resp)
-        .id(Id::new(id))
-        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-        .width(width)
-        .show(|ui| {
-            ui.set_width(width);
-            ui.spacing_mut().item_spacing.y = 8.0;
-            contents(ui);
-        });
+    egui::Popup::from_toggle_button_response(&resp).id(Id::new(id)).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).width(width).show(|ui| {
+        ui.set_width(width);
+        ui.spacing_mut().item_spacing.y = 8.0;
+        contents(ui);
+    });
 }
 
 fn settings_bar(app: &mut UiApp, ui: &mut Ui) {
@@ -745,7 +762,8 @@ fn more_panel(app: &mut UiApp, ui: &mut Ui) {
     if !hint.is_empty() {
         ui.add(egui::Label::new(theme::muted(ui, hint)).wrap());
     }
-    if app.s.encoder == EncoderPreference::Auto && ff.prefer_gpu == Some(true) && hw.as_ref().is_some_and(|h| !h.is_empty()) && Btn::new("重設：恢復平常用 CPU 編碼").ghost().small().show(ui).clicked() {
+    if app.s.encoder == EncoderPreference::Auto && ff.prefer_gpu == Some(true) && hw.as_ref().is_some_and(|h| !h.is_empty()) && Btn::new("重設：恢復平常用 CPU 編碼").ghost().small().show(ui).clicked()
+    {
         app.core.reset_learned_gpu();
         app.env.ffmpeg.prefer_gpu = Some(false);
         app.toast("已重設，之後的錄影平常會用 CPU 編碼", false);
@@ -825,7 +843,12 @@ fn rec_panel(app: &mut UiApp, ui: &mut Ui) {
         let (out, method, audio) = if active {
             (
                 format!("{}×{} · {}fps", r.out_width, r.out_height, r.fps),
-                format!("{}{} / {}", r.method.map(|m| m.as_str()).unwrap_or("—"), r.tiles.filter(|t| *t > 1).map(|t| format!(" ×{t}")).unwrap_or_default(), r.encoder.clone().unwrap_or_else(|| "—".into())),
+                format!(
+                    "{}{} / {}",
+                    r.method.map(|m| m.as_str()).unwrap_or("—"),
+                    r.tiles.filter(|t| *t > 1).map(|t| format!(" ×{t}")).unwrap_or_default(),
+                    r.encoder.clone().unwrap_or_else(|| "—".into())
+                ),
                 r.audio.clone().unwrap_or_else(|| "不錄聲音".into()),
             )
         } else {
@@ -848,13 +871,9 @@ fn rec_panel(app: &mut UiApp, ui: &mut Ui) {
             )
         };
         egui::Grid::new("stats").num_columns(2).spacing(vec2(14.0, 6.0)).show(ui, |ui| {
-            for (k, v) in [
-                ("影片長度", video_clock(r.video_sec)),
-                ("檔案大小", if active || r.bytes > 0 { format_bytes(r.bytes) } else { "—".into() }),
-                ("輸出", out),
-                ("擷取 / 編碼", method),
-                ("聲音", audio),
-            ] {
+            for (k, v) in
+                [("影片長度", video_clock(r.video_sec)), ("檔案大小", if active || r.bytes > 0 { format_bytes(r.bytes) } else { "—".into() }), ("輸出", out), ("擷取 / 編碼", method), ("聲音", audio)]
+            {
                 ui.label(theme::muted(ui, k));
                 ui.label(RichText::new(v).font(theme::font(13.0)));
                 ui.end_row();
@@ -933,23 +952,26 @@ fn rec_panel(app: &mut UiApp, ui: &mut Ui) {
         }
         // 事件紀錄 + 系統狀態（固定在底部）
         let sys_h = 34.0;
-        ui.add_space(10.0);
-        ui.label(RichText::new("事件紀錄").font(theme::font_bold(12.5)).color(p.muted));
-        let log_h = (ui.available_height() - sys_h - 8.0).max(40.0);
-        egui::ScrollArea::vertical().max_height(log_h).auto_shrink([false, true]).show(ui, |ui| {
-            for l in r.log.iter().rev().take(20) {
-                let time = chrono::DateTime::from_timestamp_millis(l.t as i64).map(|d| d.with_timezone(&chrono::Local).format("%H:%M:%S").to_string()).unwrap_or_default();
-                let color = match l.level {
-                    LogLevel::Info => p.text,
-                    LogLevel::Warn => p.warn,
-                    LogLevel::Error => p.rec,
-                };
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new(time).font(theme::mono(11.5)).color(p.muted));
-                    ui.add(egui::Label::new(RichText::new(&l.text).font(theme::font(12.5)).color(color)).truncate()).on_hover_text(&l.text);
-                });
-            }
-        });
+        // 轉檔工作、結果佔掉空間時：放不下就不顯示事件紀錄，系統狀態不被蓋住
+        let log_h = ui.available_height() - sys_h - 8.0 - 32.0;
+        if log_h >= 40.0 {
+            ui.add_space(10.0);
+            ui.label(RichText::new("事件紀錄").font(theme::font_bold(12.5)).color(p.muted));
+            egui::ScrollArea::vertical().max_height(log_h).auto_shrink([false, true]).show(ui, |ui| {
+                for l in r.log.iter().rev().take(20) {
+                    let time = chrono::DateTime::from_timestamp_millis(l.t as i64).map(|d| d.with_timezone(&chrono::Local).format("%H:%M:%S").to_string()).unwrap_or_default();
+                    let color = match l.level {
+                        LogLevel::Info => p.text,
+                        LogLevel::Warn => p.warn,
+                        LogLevel::Error => p.rec,
+                    };
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(time).font(theme::mono(11.5)).color(p.muted));
+                        ui.add(egui::Label::new(RichText::new(&l.text).font(theme::font(12.5)).color(color)).truncate()).on_hover_text(&l.text);
+                    });
+                }
+            });
+        }
         let bottom = Rect::from_min_max(pos2(ui.max_rect().min.x, ui.max_rect().max.y - sys_h + 6.0), ui.max_rect().max);
         ui.painter().hline(bottom.x_range(), bottom.min.y - 4.0, Stroke::new(1.0, p.border));
         ui.scope_builder(UiBuilder::new().max_rect(bottom).layout(Layout::left_to_right(Align::Center)), |ui| sys_status(app, ui));
@@ -977,7 +999,9 @@ fn action_buttons(app: &mut UiApp, ui: &mut Ui, path: &str, edit: bool, export: 
 /// 「工作」卡：製作加速版 / GIF、剪輯的進度
 fn job_card(app: &mut UiApp, ui: &mut Ui) {
     let p = theme::pal(ui);
-    let Some(e) = app.status.export.clone() else { return };
+    let Some(e) = app.status.export.clone() else {
+        return;
+    };
     if app.dismissed_job == Some(e.id) && e.state != ExportState::Running {
         return;
     }
@@ -1220,7 +1244,12 @@ fn recent_card(app: &mut UiApp, ui: &mut Ui, e: &LibraryEntry, date: String, w: 
     {
         let ui = &mut ui.new_child(UiBuilder::new().max_rect(row).layout(Layout::left_to_right(Align::Center)));
         ui.spacing_mut().item_spacing.x = 2.0;
-        for (act, icon, tip) in [(EntryAction::Play, Icon::Play, "播放"), (EntryAction::Reveal, Icon::Folder, "在資料夾中顯示"), (EntryAction::Edit, Icon::Cut, "剪輯"), (EntryAction::Export, Icon::Export, "製作加速版 / GIF")] {
+        for (act, icon, tip) in [
+            (EntryAction::Play, Icon::Play, "播放"),
+            (EntryAction::Reveal, Icon::Folder, "在資料夾中顯示"),
+            (EntryAction::Edit, Icon::Cut, "剪輯"),
+            (EntryAction::Export, Icon::Export, "製作加速版 / GIF"),
+        ] {
             if Btn::icon_only(icon).ghost().small().tooltip(tip).show(ui).clicked() {
                 app.known.insert(e.media.path.clone(), e.clone());
                 app.act(act, e.clone());

@@ -80,9 +80,7 @@ pub fn parse_export_name(name: &str) -> Option<ParsedExport> {
         let format = if m[3].eq_ignore_ascii_case("gif") { ExportFormat::Gif } else { ExportFormat::Mp4 };
         return Some(ParsedExport { base: format!("{}.mp4", &m[1]), speed: m[2].parse().unwrap_or(1.0), format });
     }
-    GIF_RE
-        .captures(name)
-        .map(|g| ParsedExport { base: format!("{}.mp4", &g[1]), speed: 1.0, format: ExportFormat::Gif })
+    GIF_RE.captures(name).map(|g| ParsedExport { base: format!("{}.mp4", &g[1]), speed: 1.0, format: ExportFormat::Gif })
 }
 
 /// 縮小後的尺寸（高度等比、取偶數）；width 為 0 或不小於原寬時維持原尺寸
@@ -284,31 +282,13 @@ mod tests {
 
     #[test]
     fn estimates() {
-        let base = EstimateInput {
-            format: ExportFormat::Mp4,
-            src_bytes: 60e6,
-            src_sec: 600.0,
-            src_width: 1920.0,
-            src_height: 1080.0,
-            speed: 4.0,
-            width: 1920.0,
-            height: 1080.0,
-            gif_fps: None,
-        };
+        let base = EstimateInput { format: ExportFormat::Mp4, src_bytes: 60e6, src_sec: 600.0, src_width: 1920.0, src_height: 1080.0, speed: 4.0, width: 1920.0, height: 1080.0, gif_fps: None };
         let (lo, hi) = estimate_bytes(&base);
         assert!(lo < hi && lo > 0.0);
         assert!((lo + hi) / 2.0 > 15e6 && (lo + hi) / 2.0 < 60e6);
         assert!(estimate_bytes(&EstimateInput { width: 1280.0, height: 720.0, ..base }).1 < hi);
         assert!(estimate_bytes(&EstimateInput { speed: 16.0, ..base }).1 < hi);
-        let gif = estimate_bytes(&EstimateInput {
-            format: ExportFormat::Gif,
-            speed: 1.0,
-            width: 640.0,
-            height: 360.0,
-            gif_fps: Some(10.0),
-            src_sec: 10.0,
-            ..base
-        });
+        let gif = estimate_bytes(&EstimateInput { format: ExportFormat::Gif, speed: 1.0, width: 640.0, height: 360.0, gif_fps: Some(10.0), src_sec: 10.0, ..base });
         assert!((gif.0 - 640.0 * 360.0 * 100.0 * 0.03).abs() < 1.0);
     }
 

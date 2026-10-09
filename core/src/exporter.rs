@@ -146,7 +146,9 @@ impl Exporter {
         }
         let crop = match spec.crop {
             Some(c) => {
-                let (Some(w), Some(h)) = (info.width, info.height) else { return Err(Error::config("無法讀取影片尺寸，不能裁切畫面")) };
+                let (Some(w), Some(h)) = (info.width, info.height) else {
+                    return Err(Error::config("無法讀取影片尺寸，不能裁切畫面"));
+                };
                 normalize_crop(Some(c), w as i32, h as i32)
             }
             None => None,
@@ -158,7 +160,9 @@ impl Exporter {
         let (overlays, temp) = if spec.overlays.is_empty() {
             (Vec::new(), None)
         } else {
-            let (Some(w), Some(h)) = (info.width, info.height) else { return Err(Error::config("無法讀取影片尺寸，不能加上標註")) };
+            let (Some(w), Some(h)) = (info.width, info.height) else {
+                return Err(Error::config("無法讀取影片尺寸，不能加上標註"));
+            };
             let dir = std::env::temp_dir().join(format!("ScreenRecorder-overlays-{}-{}", std::process::id(), crate::paths::now_ms()));
             match write_overlays(&spec.overlays, w as i32, h as i32, duration, &dir) {
                 Ok(list) => (list, Some(dir)),
@@ -483,7 +487,9 @@ fn parent(p: &str) -> PathBuf {
 }
 
 async fn prepare(ctx: &ExportCtx, source: &str) -> Result<(PathBuf, EncoderSpec, MediaInfo, f64)> {
-    let (Some(ffmpeg), Some(enc)) = (ctx.ffmpeg.clone(), ctx.encoder) else { return Err(Error::config("FFmpeg 無法使用")) };
+    let (Some(ffmpeg), Some(enc)) = (ctx.ffmpeg.clone(), ctx.encoder) else {
+        return Err(Error::config("FFmpeg 無法使用"));
+    };
     if !source.to_lowercase().ends_with(".mp4") || !Path::new(source).is_file() {
         return Err(Error::config("找不到影片檔"));
     }

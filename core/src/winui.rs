@@ -49,9 +49,7 @@ mod imp {
     /// 最大化的視窗會多出約 8px 到隔壁螢幕上，被誤判成擋到擷取範圍。
     fn window_rect(hwnd: HWND) -> Option<Rect> {
         let mut r = RECT::default();
-        let ok = unsafe {
-            DwmGetWindowAttribute(hwnd, DWMWA_EXTENDED_FRAME_BOUNDS, &mut r as *mut RECT as *mut _, std::mem::size_of::<RECT>() as u32).is_ok() || GetWindowRect(hwnd, &mut r).is_ok()
-        };
+        let ok = unsafe { DwmGetWindowAttribute(hwnd, DWMWA_EXTENDED_FRAME_BOUNDS, &mut r as *mut RECT as *mut _, std::mem::size_of::<RECT>() as u32).is_ok() || GetWindowRect(hwnd, &mut r).is_ok() };
         ok.then(|| Rect { x: r.left, y: r.top, width: r.right - r.left, height: r.bottom - r.top })
     }
 

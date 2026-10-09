@@ -6,7 +6,23 @@ fn main() {
     let out = std::env::args().nth(1).unwrap_or_else(|| "ann_sheet.png".into());
     let mut pm = Pixmap::new(960, 540).unwrap();
     pm.fill(Color::from_rgba8(70, 110, 160, 255));
-    let base = Ann { id: 1, kind: AnnKind::Text, x: 40.0, y: 30.0, w: 0.0, h: 0.0, start: 0.0, end: 3.0, color: "#ffffff".into(), size: 48.0, text: Some("按這裡登入 Login\n第二行 👉✅⚠️🔥".into()), bg: true, n: None, shape: None, invert: false };
+    let base = Ann {
+        id: 1,
+        kind: AnnKind::Text,
+        x: 40.0,
+        y: 30.0,
+        w: 0.0,
+        h: 0.0,
+        start: 0.0,
+        end: 3.0,
+        color: "#ffffff".into(),
+        size: 48.0,
+        text: Some("按這裡登入 Login\n第二行 👉✅⚠️🔥".into()),
+        bg: true,
+        n: None,
+        shape: None,
+        invert: false,
+    };
     let mut list = vec![base.clone()];
     list.push(Ann { y: 200.0, bg: false, color: "#f5b301".into(), text: Some("沒有底色的文字 😀".into()), ..base.clone() });
     list.push(Ann { kind: AnnKind::Arrow, x: 500.0, y: 300.0, w: 200.0, h: -120.0, size: 8.0, color: "#e5484d".into(), text: None, ..base.clone() });

@@ -179,11 +179,6 @@ impl UiApp {
         });
     }
 
-    /// 給其他執行緒用：把工作交回介面執行緒
-    pub fn sender(&self) -> (Sender<Job>, egui::Context) {
-        (self.tx.clone(), self.ctx.clone())
-    }
-
     pub fn toast(&mut self, text: impl Into<String>, error: bool) {
         let text = text.into();
         let secs = if error { 6 } else { 3 };
@@ -447,6 +442,11 @@ impl eframe::App for UiApp {
         self.handle_close(ctx);
         // 狀態每 0.25 秒更新一次（錄影中計時器、轉檔進度）；視窗隱藏時放慢
         ctx.request_repaint_after(if self.visible { Duration::from_millis(250) } else { Duration::from_secs(2) });
+    }
+
+    #[cfg(debug_assertions)]
+    fn raw_input_hook(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {
+        dev::input(self, ctx, raw);
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {

@@ -50,12 +50,9 @@ pub async fn run<S: AsRef<OsStr>>(program: impl AsRef<OsStr>, args: &[S], timeou
         Err(e) => return RunResult { code: -1, stderr: e.to_string(), ..Default::default() },
     };
     match tokio::time::timeout(timeout, child.wait_with_output()).await {
-        Ok(Ok(out)) => RunResult {
-            code: out.status.code().unwrap_or(-1),
-            stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
-            stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
-            timed_out: false,
-        },
+        Ok(Ok(out)) => {
+            RunResult { code: out.status.code().unwrap_or(-1), stdout: String::from_utf8_lossy(&out.stdout).into_owned(), stderr: String::from_utf8_lossy(&out.stderr).into_owned(), timed_out: false }
+        }
         Ok(Err(e)) => RunResult { code: -1, stderr: e.to_string(), ..Default::default() },
         // 逾時：wait_with_output 的 future 被丟棄時，kill_on_drop 會結束子行程
         Err(_) => RunResult { code: -1, timed_out: true, ..Default::default() },

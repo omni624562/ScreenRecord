@@ -204,12 +204,8 @@ pub async fn edit_project(app: &App, path: &str) -> Option<EditProject> {
     }
     let store = app.projects.clone();
     let p = path.to_string();
-    let (project, matched) = tokio::task::spawn_blocking(move || {
-        store.for_output(&p).map(|x| (x, ProjectMatch::Output)).or_else(|| store.latest_for_source(&p).map(|x| (x, ProjectMatch::Source)))
-    })
-    .await
-    .ok()
-    .flatten()?;
+    let (project, matched) =
+        tokio::task::spawn_blocking(move || store.for_output(&p).map(|x| (x, ProjectMatch::Output)).or_else(|| store.latest_for_source(&p).map(|x| (x, ProjectMatch::Source)))).await.ok().flatten()?;
     let source = match (is_file(&project.source), app.ffmpeg_path()) {
         (true, Some(ff)) => app.cache.probe(&ff, &project.source).await.ok().map(|m| LibraryEntry { media: m, exports: vec![] }),
         _ => None,

@@ -7,9 +7,7 @@
 //! 公開操作（開始、暫停、繼續、停止）依序執行，避免連點造成競態；狀態放在一把短暫持有的鎖裡，
 //! 不在持有鎖時等待（呼叫 FFmpeg、開啟音訊裝置），查詢狀態永遠不會被卡住。
 
-use crate::args::{
-    audio_end_args, choose_encoder, concat_args, concat_list, parse_media_info, resolve_plan, segment_args, startup_fallback, CapturePlan, EncoderSpec, FallbackInput, StartupFallback,
-};
+use crate::args::{audio_end_args, choose_encoder, concat_args, concat_list, parse_media_info, resolve_plan, segment_args, startup_fallback, CapturePlan, EncoderSpec, FallbackInput, StartupFallback};
 use crate::audio::{AudioSourceSpec, Opener};
 use crate::audiopipe::{AudioPipe, LogFn};
 use crate::format::js_round;
@@ -603,14 +601,7 @@ impl Recorder {
             };
             st.add_log(
                 LogLevel::Info,
-                &format!(
-                    "開始錄影：{place} {width}×{height} → {}×{}，{} fps（{}{tiles} / {}）",
-                    plan.out_width,
-                    plan.out_height,
-                    crate::format::num(config.fps),
-                    method.as_str(),
-                    enc.name
-                ),
+                &format!("開始錄影：{place} {width}×{height} → {}×{}，{} fps（{}{tiles} / {}）", plan.out_width, plan.out_height, crate::format::num(config.fps), method.as_str(), enc.name),
             );
             if Some(enc) != encoders.cpu {
                 st.add_log(LogLevel::Info, reason);
@@ -1208,12 +1199,8 @@ impl Recorder {
     async fn finalize(&self) -> Result<RecordingResult> {
         let (fps, parts, has_audio, parts_dir, out) = {
             let st = self.lock();
-            let parts: Vec<(String, u64)> = st
-                .segments
-                .iter()
-                .filter(|s| s.frames > 0 && std::fs::metadata(&s.file).map(|m| m.len() > 0).unwrap_or(false))
-                .map(|s| (s.file.clone(), s.frames))
-                .collect();
+            let parts: Vec<(String, u64)> =
+                st.segments.iter().filter(|s| s.frames > 0 && std::fs::metadata(&s.file).map(|m| m.len() > 0).unwrap_or(false)).map(|s| (s.file.clone(), s.frames)).collect();
             (st.config().fps, parts, !st.audio_specs.is_empty(), st.parts_dir.clone().unwrap_or_default(), st.final_path.clone().unwrap_or_default())
         };
         let frames: u64 = parts.iter().map(|p| p.1).sum();

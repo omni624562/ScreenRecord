@@ -1,8 +1,8 @@
 //! 外觀：顏色（淺色 / 深色跟著 Windows）、字型、圖示與共用的小元件（按鈕、分段選擇、開關、標籤）。
 
 use eframe::egui::{
-    self, pos2, vec2, Align2, Color32, CornerRadius, FontData, FontDefinitions, FontFamily, FontId, Painter, Pos2, Rect, Response, RichText, Sense, Shape, Stroke, StrokeKind,
-    TextStyle, Ui, Vec2, Visuals, WidgetText,
+    self, pos2, vec2, Align2, Color32, CornerRadius, FontData, FontDefinitions, FontFamily, FontId, Painter, Pos2, Rect, Response, RichText, Sense, Shape, Stroke, StrokeKind, TextStyle, Ui, Vec2,
+    Visuals, WidgetText,
 };
 use std::sync::Arc;
 
@@ -212,10 +212,8 @@ pub enum Icon {
     Stop,
     Trash,
     Down,
-    Search,
     Mic,
     Speaker,
-    Close,
 }
 
 /// 在 rect（正方形）裡畫圖示
@@ -289,10 +287,6 @@ pub fn paint_icon(p: &Painter, rect: Rect, icon: Icon, color: Color32) {
             line(&[(6.0, 4.5), (6.0, 3.0), (10.0, 3.0), (10.0, 4.5)]);
             line(&[(4.0, 4.5), (4.7, 13.5), (11.3, 13.5), (12.0, 4.5)]);
         }
-        Icon::Search => {
-            circle(7.0, 7.0, 4.5);
-            line(&[(10.5, 10.5), (14.0, 14.0)]);
-        }
         Icon::Mic => {
             p.rect_stroke(Rect::from_min_max(at(6.0, 2.0), at(10.0, 9.5)), CornerRadius::same((2.0 * k) as u8), st, StrokeKind::Middle);
             arc(8.0, 8.0, 4.5, 0.0, std::f32::consts::PI);
@@ -301,10 +295,6 @@ pub fn paint_icon(p: &Painter, rect: Rect, icon: Icon, color: Color32) {
         Icon::Speaker => {
             line(&[(2.5, 6.0), (5.0, 6.0), (8.5, 3.0), (8.5, 13.0), (5.0, 10.0), (2.5, 10.0), (2.5, 6.0)]);
             arc(11.0, 8.0, 2.5, -1.1, 1.1);
-        }
-        Icon::Close => {
-            line(&[(4.0, 4.0), (12.0, 12.0)]);
-            line(&[(12.0, 4.0), (4.0, 12.0)]);
         }
     }
 }
@@ -577,12 +567,12 @@ pub fn chip(ui: &mut Ui, text: &str, tone: Tone, clickable: bool) -> Response {
 /// 對話框的框
 pub fn modal_frame(ctx: &egui::Context) -> egui::Frame {
     let p = pal_ctx(ctx);
-    egui::Frame::new()
-        .fill(p.surface)
-        .stroke(Stroke::new(1.0, p.border))
-        .corner_radius(CornerRadius::same(RADIUS))
-        .inner_margin(20.0)
-        .shadow(egui::Shadow { offset: [0, 12], blur: 40, spread: 0, color: Color32::from_black_alpha(70) })
+    egui::Frame::new().fill(p.surface).stroke(Stroke::new(1.0, p.border)).corner_radius(CornerRadius::same(RADIUS)).inner_margin(20.0).shadow(egui::Shadow {
+        offset: [0, 12],
+        blur: 40,
+        spread: 0,
+        color: Color32::from_black_alpha(70),
+    })
 }
 
 /// 卡片 / 面板的框

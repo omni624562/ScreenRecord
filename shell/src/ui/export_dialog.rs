@@ -7,7 +7,9 @@ use super::theme::{self, segmented, switch, Btn, Icon};
 use super::UiApp;
 use eframe::egui::{self, vec2, Align, CornerRadius, Id, Layout, RichText, Stroke};
 use screenrecorder_core::actions::{self, ExportRequest};
-use screenrecorder_core::format::{estimate_bytes, export_file_name, format_bytes, human_duration, parse_clock, scaled_size, speed_for_target, speed_label, video_clock, EstimateInput, MP4_WIDTHS, SPEED_MAX, SPEED_MIN};
+use screenrecorder_core::format::{
+    estimate_bytes, export_file_name, format_bytes, human_duration, parse_clock, scaled_size, speed_for_target, speed_label, video_clock, EstimateInput, MP4_WIDTHS, SPEED_MAX, SPEED_MIN,
+};
 use screenrecorder_core::types::{ExportFormat, ExportInfo, LibraryEntry};
 
 const SPEED_PRESETS: [f64; 5] = [1.5, 2.0, 4.0, 8.0, 16.0];
@@ -29,7 +31,7 @@ impl ExportDialog {
 }
 
 /// 這支錄影已經有同格式、同倍率的成品
-fn existing<'a>(e: &'a LibraryEntry, speed: f64, format: ExportFormat) -> Option<&'a ExportInfo> {
+fn existing(e: &LibraryEntry, speed: f64, format: ExportFormat) -> Option<&ExportInfo> {
     e.exports.iter().find(|x| x.format.unwrap_or_default() == format && (x.speed - speed).abs() < 0.005)
 }
 
@@ -45,7 +47,9 @@ fn output_name(e: &LibraryEntry, speed: f64, format: ExportFormat) -> String {
 }
 
 pub fn show(app: &mut UiApp, ctx: &egui::Context) {
-    let Some(mut dlg) = app.export_dlg.take() else { return };
+    let Some(mut dlg) = app.export_dlg.take() else {
+        return;
+    };
     let mut close = false;
     let e = dlg.entry.clone();
     let dur = e.media.duration_sec.unwrap_or(0.0);
@@ -150,7 +154,9 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                     (None, _) => "請輸入長度，例如 1:00、90（秒）或 1:02:03".to_string(),
                     _ if dur <= 0.0 => "無法讀取原片長度".into(),
                     (Some(t), Some(sp)) if dur / sp > t + 0.5 => format!("最多只能加速到 {}×，實際約 {}", speed_label(SPEED_MAX), video_clock(dur / sp)),
-                    (Some(t), Some(sp)) if dur / sp < t - 0.5 => format!("原片只有 {}，{}", video_clock(dur), if gif { "以原速製作".to_string() } else { format!("以最低倍率 {}× 製作", speed_label(sp)) }),
+                    (Some(t), Some(sp)) if dur / sp < t - 0.5 => {
+                        format!("原片只有 {}，{}", video_clock(dur), if gif { "以原速製作".to_string() } else { format!("以最低倍率 {}× 製作", speed_label(sp)) })
+                    }
                     (_, Some(sp)) => format!("需要加速 {}×", speed_label(sp)),
                     _ => String::new(),
                 };
@@ -230,10 +236,13 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                 ui.allocate_ui(vec2(w, 70.0), |ui| {
                     ui.vertical(|ui| {
                         ui.label(theme::muted(ui, "加速後"));
-                        ui.label(RichText::new(match speed {
-                            Some(sp) if dur > 0.0 => video_clock(dur / sp),
-                            _ => "—".into(),
-                        }).font(theme::font_bold(18.0)));
+                        ui.label(
+                            RichText::new(match speed {
+                                Some(sp) if dur > 0.0 => video_clock(dur / sp),
+                                _ => "—".into(),
+                            })
+                            .font(theme::font_bold(18.0)),
+                        );
                         if let (Some((w, h)), Some(sp)) = (dims, speed.filter(|_| dur > 0.0)) {
                             let (lo, hi) = estimate_bytes(&EstimateInput {
                                 format: s.export_format,
@@ -246,7 +255,8 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                                 height: h as f64,
                                 gif_fps: Some(s.gif_fps as f64),
                             });
-                            ui.label(theme::muted(ui, format!("{w}×{h}・約 {}～{}", format_bytes(lo as u64), format_bytes(hi as u64)))).on_hover_text("依原片的位元率與畫面大小粗估，實際大小視畫面變化而定");
+                            ui.label(theme::muted(ui, format!("{w}×{h}・約 {}～{}", format_bytes(lo as u64), format_bytes(hi as u64))))
+                                .on_hover_text("依原片的位元率與畫面大小粗估，實際大小視畫面變化而定");
                         }
                     });
                 });
@@ -254,13 +264,24 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         });
         // 提醒：已有同倍率的成品、加速後太短
         let ex = speed.and_then(|sp| existing(&e, sp, s.export_format)).cloned();
-        let what = if gif { format!("GIF{}", speed.filter(|v| *v > 1.0).map(|v| format!(" {}×", speed_label(v))).unwrap_or_else(|| "（原速）".into())) } else { format!("{}× 加速版", speed_label(speed.unwrap_or(0.0))) };
+        let what = if gif {
+            format!("GIF{}", speed.filter(|v| *v > 1.0).map(|v| format!(" {}×", speed_label(v))).unwrap_or_else(|| "（原速）".into()))
+        } else {
+            format!("{}× 加速版", speed_label(speed.unwrap_or(0.0)))
+        };
         if let Some(x) = &ex {
             ui.add_space(6.0);
             egui::Frame::new().fill(p.accent_soft).corner_radius(CornerRadius::same(theme::RADIUS_SM)).inner_margin(10.0).show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 ui.horizontal(|ui| {
-                    ui.add(egui::Label::new(format!("已經有 {what}（{}{}）。再製作會另存一份。", x.media.duration_sec.map(|d| format!("{}・", video_clock(d))).unwrap_or_default(), format_bytes(x.media.bytes))).wrap());
+                    ui.add(
+                        egui::Label::new(format!(
+                            "已經有 {what}（{}{}）。再製作會另存一份。",
+                            x.media.duration_sec.map(|d| format!("{}・", video_clock(d))).unwrap_or_default(),
+                            format_bytes(x.media.bytes)
+                        ))
+                        .wrap(),
+                    );
                     if Btn::new("播放現有的").icon(Icon::Play).small().show(ui).clicked() {
                         let _ = actions::open(actions::OpenAction::Play, &x.media.path);
                     }

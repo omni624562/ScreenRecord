@@ -16,12 +16,7 @@ pub fn move_to_recycle_bin(paths: &[String]) -> Result<()> {
         from.push(0);
     }
     from.push(0);
-    let mut op = SHFILEOPSTRUCTW {
-        wFunc: FO_DELETE,
-        pFrom: PCWSTR(from.as_ptr()),
-        fFlags: (FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT | FOF_NOERRORUI).0 as u16,
-        ..Default::default()
-    };
+    let mut op = SHFILEOPSTRUCTW { wFunc: FO_DELETE, pFrom: PCWSTR(from.as_ptr()), fFlags: (FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT | FOF_NOERRORUI).0 as u16, ..Default::default() };
     let r = unsafe { SHFileOperationW(&mut op) };
     if r != 0 {
         return Err(Error::config(format!("無法移到資源回收筒（代碼 0x{:x}），檔案可能正在使用中", r as u32)));

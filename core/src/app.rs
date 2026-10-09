@@ -343,7 +343,8 @@ impl App {
     }
 
     pub async fn refresh_devices(&self) {
-        let (monitors, audio) = tokio::task::spawn_blocking(|| (crate::monitors::enumerate_monitors(), crate::audio::list_audio_devices())).await.unwrap_or_else(|e| (Err(e.to_string()), Err(e.to_string())));
+        let (monitors, audio) =
+            tokio::task::spawn_blocking(|| (crate::monitors::enumerate_monitors(), crate::audio::list_audio_devices())).await.unwrap_or_else(|e| (Err(e.to_string()), Err(e.to_string())));
         let mut st = self.lock();
         match monitors {
             Ok(m) => {

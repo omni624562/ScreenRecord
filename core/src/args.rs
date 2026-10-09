@@ -2,7 +2,7 @@
 
 use crate::error::{Error, Result};
 use crate::format::{even, num, output_size, FPS_MAX, FPS_MIN, MAX_MINUTES_MAX, SPEED_MAX, SPEED_MIN};
-use crate::types::{CaptureMethod, EncoderPreference, MonitorInfo, Rect, RecordConfig, SourceConfig, SCALE_OPTIONS};
+use crate::types::{CaptureMethod, EncoderPreference, MonitorInfo, RecordConfig, Rect, SourceConfig, SCALE_OPTIONS};
 use regex::Regex;
 use std::sync::LazyLock;
 
@@ -27,12 +27,7 @@ impl EncoderSpec {
 }
 
 pub const ENCODERS: [EncoderSpec; 5] = [
-    EncoderSpec {
-        name: "libx264",
-        pix_fmt: "yuv420p",
-        live: &["-c:v", "libx264", "-preset", "veryfast", "-crf", "23"],
-        offline: &["-c:v", "libx264", "-preset", "fast", "-crf", "20"],
-    },
+    EncoderSpec { name: "libx264", pix_fmt: "yuv420p", live: &["-c:v", "libx264", "-preset", "veryfast", "-crf", "23"], offline: &["-c:v", "libx264", "-preset", "fast", "-crf", "20"] },
     EncoderSpec {
         name: "h264_nvenc",
         pix_fmt: "yuv420p",
@@ -70,8 +65,7 @@ pub fn encoder_spec(name: &str) -> Option<EncoderSpec> {
 pub const AUTO_GPU_PIXELS_PER_SEC: f64 = 1920.0 * 1080.0 * 60.0;
 
 /// 擷取端（ddagrab / gdigrab / 濾鏡圖）出錯的訊息
-static CAPTURE_ERROR: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?i)ddagrab|gdigrab|Desktop duplication|Error configuring filter graph|Failed to capture").unwrap());
+static CAPTURE_ERROR: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)ddagrab|gdigrab|Desktop duplication|Error configuring filter graph|Failed to capture").unwrap());
 /// 編碼器本身出錯的訊息。擷取端失敗時 FFmpeg 也會連帶印出「Could not open encoder before EOF」，那不代表編碼器有問題。
 static ENCODER_ERROR: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)Error while opening encoder|Error initializing output stream|enc:(h264_\w+|libx264)[^\n]*(Error|fail|not (supported|available))|No (NVENC|capable) devices?|Cannot load nvEncodeAPI|MFX|\bAMF\b|Cannot load nvcuda|CUDA_ERROR").unwrap()
@@ -119,17 +113,11 @@ pub fn startup_fallback(o: &FallbackInput) -> StartupFallback {
 }
 
 /// 決定這次錄影的編碼器（learned：之前在「自動」模式偵測到 CPU 跟不上，之後直接用 GPU）
-pub fn choose_encoder(
-    pref: EncoderPreference,
-    out_width: i32,
-    out_height: i32,
-    fps: f64,
-    cpu: Option<EncoderSpec>,
-    gpu: &[EncoderSpec],
-    learned: bool,
-) -> Result<(EncoderSpec, &'static str)> {
+pub fn choose_encoder(pref: EncoderPreference, out_width: i32, out_height: i32, fps: f64, cpu: Option<EncoderSpec>, gpu: &[EncoderSpec], learned: bool) -> Result<(EncoderSpec, &'static str)> {
     if pref == EncoderPreference::Gpu {
-        let Some(g) = gpu.first() else { return Err(Error::config("這台電腦沒有可用的 GPU 編碼器，請改用 CPU 或自動")) };
+        let Some(g) = gpu.first() else {
+            return Err(Error::config("這台電腦沒有可用的 GPU 編碼器，請改用 CPU 或自動"));
+        };
         return Ok((*g, "指定使用 GPU 編碼"));
     }
     if pref == EncoderPreference::Auto {
@@ -217,23 +205,11 @@ pub fn plan_tiles(rect: &Rect, monitors: &[MonitorInfo]) -> (Vec<MonitorInfo>, O
             let iy = rect.y.max(m.y);
             let w = (rect.x + rect.width).min(m.x + m.width) - ix;
             let h = (rect.y + rect.height).min(m.y + m.height) - iy;
-            Tile {
-                output: m.output,
-                offset_x: ix - m.x,
-                offset_y: iy - m.y,
-                width: w,
-                height: h,
-                full: ix == m.x && iy == m.y && w == m.width && h == m.height,
-                x: ix - rect.x,
-                y: iy - rect.y,
-            }
+            Tile { output: m.output, offset_x: ix - m.x, offset_y: iy - m.y, width: w, height: h, full: ix == m.x && iy == m.y && w == m.width && h == m.height, x: ix - rect.x, y: iy - rect.y }
         })
         .collect();
     let same_adapter = involved.windows(2).all(|p| p[0].adapter == p[1].adapter);
-    let dda = (!involved.is_empty() && same_adapter).then(|| Dda {
-        adapter: involved[0].adapter,
-        tiles: tiles.into_iter().filter(|t| t.width >= 2 && t.height >= 2).collect(),
-    });
+    let dda = (!involved.is_empty() && same_adapter).then(|| Dda { adapter: involved[0].adapter, tiles: tiles.into_iter().filter(|t| t.width >= 2 && t.height >= 2).collect() });
     (involved, dda)
 }
 
@@ -354,7 +330,9 @@ pub fn capture_spec(plan: &CapturePlan, config: &RecordConfig, method: CaptureMe
     let tail = tail_parts.join(",");
 
     if method == CaptureMethod::Ddagrab {
-        let Some(dda) = &plan.dda else { return Err(Error::config("此範圍涵蓋不同顯示卡上的螢幕，無法使用 ddagrab")) };
+        let Some(dda) = &plan.dda else {
+            return Err(Error::config("此範圍涵蓋不同顯示卡上的螢幕，無法使用 ddagrab"));
+        };
         return Ok(CaptureSpec {
             pre: vec!["-init_hw_device".into(), format!("d3d11va=dda:{}", dda.adapter), "-filter_hw_device".into(), "dda".into()],
             inputs: vec![],
@@ -389,14 +367,7 @@ pub fn capture_spec(plan: &CapturePlan, config: &RecordConfig, method: CaptureMe
 
 /// 單一分段的完整參數。stdin 送 q 收尾；-progress 從 stdout 回報張數與大小。
 /// audio_input：錄聲音時 AudioPipe 提供的輸入參數（TCP raw PCM）
-pub fn segment_args(
-    plan: &CapturePlan,
-    config: &RecordConfig,
-    method: CaptureMethod,
-    enc: &EncoderSpec,
-    out_file: &str,
-    audio_input: Option<&[String]>,
-) -> Result<Vec<String>> {
+pub fn segment_args(plan: &CapturePlan, config: &RecordConfig, method: CaptureMethod, enc: &EncoderSpec, out_file: &str, audio_input: Option<&[String]>) -> Result<Vec<String>> {
     let spec = capture_spec(plan, config, method, enc, audio_input.is_some())?;
     let fps = num(config.fps);
     let mut a: Vec<String> = Vec::new();
@@ -518,11 +489,7 @@ pub fn gif_args(source: &str, out_file: &str, speed: f64, o: &GifOptions) -> Res
         return Err(Error::config(format!("倍率需介於 1～{}", num(SPEED_MAX))));
     }
     let width = o.width.min(if o.src_width > 0.0 { o.src_width } else { o.width }).max(2.0);
-    let height = if o.src_width > 0.0 && o.src_height > 0.0 {
-        crate::format::js_round(o.src_height * width / o.src_width)
-    } else {
-        width * 9.0 / 16.0
-    };
+    let height = if o.src_width > 0.0 && o.src_height > 0.0 { crate::format::js_round(o.src_height * width / o.src_width) } else { width * 9.0 / 16.0 };
     let frames = (o.output_sec * o.fps).ceil();
     let global = frames * width * height * 4.0 <= GIF_GLOBAL_PALETTE_MAX_BYTES;
     let palette = if global {
@@ -667,19 +634,11 @@ static AUDIO_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"Stream #\S+.*?A
 
 /// 解析 `ffmpeg -i file` 的 stderr：長度、解析度、fps、有無聲音
 pub fn parse_media_info(stderr: &str) -> ParsedMedia {
-    let duration_sec = DURATION_RE.captures(stderr).map(|d| {
-        d[1].parse::<f64>().unwrap_or(0.0) * 3600.0 + d[2].parse::<f64>().unwrap_or(0.0) * 60.0 + d[3].parse::<f64>().unwrap_or(0.0)
-    });
+    let duration_sec = DURATION_RE.captures(stderr).map(|d| d[1].parse::<f64>().unwrap_or(0.0) * 3600.0 + d[2].parse::<f64>().unwrap_or(0.0) * 60.0 + d[3].parse::<f64>().unwrap_or(0.0));
     let video = VIDEO_RE.find(stderr).map(|m| m.as_str().trim_end_matches('\r')).unwrap_or("");
     let size = SIZE_RE.captures(video);
     let fps = FPS_RE.captures(video).and_then(|c| c[1].parse().ok());
-    ParsedMedia {
-        duration_sec,
-        width: size.as_ref().and_then(|s| s[1].parse().ok()),
-        height: size.as_ref().and_then(|s| s[2].parse().ok()),
-        fps,
-        has_audio: AUDIO_RE.is_match(stderr),
-    }
+    ParsedMedia { duration_sec, width: size.as_ref().and_then(|s| s[1].parse().ok()), height: size.as_ref().and_then(|s| s[2].parse().ok()), fps, has_audio: AUDIO_RE.is_match(stderr) }
 }
 
 /// 預覽畫面的大小：寬度不超過 max_width（偶數），高度依比例
@@ -792,10 +751,7 @@ mod tests {
     fn plan_single_monitor_full_tile() {
         let p = resolve_plan(&RecordConfig { source: SourceConfig::Monitor { monitor_id: "0:1".into() }, ..cfg() }, &same_gpu()).unwrap();
         assert_eq!(p.rect, Rect { x: 1920, y: -180, width: 2560, height: 1440 });
-        assert_eq!(
-            p.dda,
-            Some(Dda { adapter: 0, tiles: vec![Tile { output: 1, offset_x: 0, offset_y: 0, width: 2560, height: 1440, full: true, x: 0, y: 0 }] })
-        );
+        assert_eq!(p.dda, Some(Dda { adapter: 0, tiles: vec![Tile { output: 1, offset_x: 0, offset_y: 0, width: 2560, height: 1440, full: true, x: 0, y: 0 }] }));
     }
 
     #[test]
@@ -958,10 +914,7 @@ mod tests {
     #[test]
     fn media_info() {
         let stderr = "Input #0, mov,mp4,m4a,3gp,3g2,mj2, from 'x.mp4':\n  Duration: 00:01:02.50, start: 0.000000, bitrate: 1234 kb/s\n  Stream #0:0[0x1](und): Video: h264 (High) (avc1 / 0x31637661), yuv420p(tv, bt709, progressive), 1920x1080 [SAR 1:1 DAR 16:9], 1200 kb/s, 30 fps, 30 tbr, 15360 tbn (default)\n  Stream #0:1[0x2](und): Audio: aac (LC) (mp4a / 0x6134706D), 48000 Hz, stereo, fltp, 160 kb/s (default)";
-        assert_eq!(
-            parse_media_info(stderr),
-            ParsedMedia { duration_sec: Some(62.5), width: Some(1920), height: Some(1080), fps: Some(30.0), has_audio: true }
-        );
+        assert_eq!(parse_media_info(stderr), ParsedMedia { duration_sec: Some(62.5), width: Some(1920), height: Some(1080), fps: Some(30.0), has_audio: true });
         let first3: Vec<&str> = stderr.lines().take(3).collect();
         assert!(!parse_media_info(&first3.join("\n")).has_audio);
     }
@@ -1003,9 +956,7 @@ mod tests {
     fn encoder_fault_detection() {
         assert!(is_encoder_fault("[h264_nvenc @ 0x1] No NVENC capable devices found\nError while opening encoder"));
         assert!(!is_encoder_fault("[ddagrab @ 0x1] Failed to capture\nCould not open encoder before EOF"));
-        let f = |stderr: &str| {
-            startup_fallback(&FallbackInput { stderr, gpu_encoder_in_use: true, encoder_auto: true, has_cpu_encoder: true, ddagrab_in_use: true, method_auto: true })
-        };
+        let f = |stderr: &str| startup_fallback(&FallbackInput { stderr, gpu_encoder_in_use: true, encoder_auto: true, has_cpu_encoder: true, ddagrab_in_use: true, method_auto: true });
         assert_eq!(f("Cannot load nvEncodeAPI64.dll"), StartupFallback::CpuEncoder);
         assert_eq!(f("[ddagrab] Desktop duplication failed"), StartupFallback::Gdigrab);
         assert_eq!(f("something else"), StartupFallback::Gdigrab);

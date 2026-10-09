@@ -77,7 +77,12 @@ pub enum SourceConfig {
     },
     /// 所有螢幕（整個延伸桌面）
     All,
-    Region { x: f64, y: f64, width: f64, height: f64 },
+    Region {
+        x: f64,
+        y: f64,
+        width: f64,
+        height: f64,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]

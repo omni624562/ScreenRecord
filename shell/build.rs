@@ -7,11 +7,11 @@ mod icon;
 fn main() {
     println!("cargo:rerun-if-changed=../core/src/icon.rs");
     println!("cargo:rerun-if-changed=build.rs");
-    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
-        return;
-    }
+    let windows = std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows");
+    #[cfg(not(windows))]
+    let _ = windows;
     #[cfg(windows)]
-    {
+    if windows {
         let out = std::path::PathBuf::from(std::env::var("OUT_DIR").unwrap());
         let ico = out.join("icon.ico");
         std::fs::write(&ico, icon::ico_file(icon::IconState::Idle, &[16, 24, 32, 48, 64, 256])).unwrap();

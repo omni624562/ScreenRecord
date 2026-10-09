@@ -3,11 +3,11 @@
 
 use crate::app::{App, UiPage};
 use crate::format::{clock, video_clock};
+use crate::info;
 use crate::paths::now_ms;
 use crate::settings::SettingsPatch;
 use crate::types::{AudioConfig, HotkeyStatus, MethodPreference, RecordConfig, RecorderState, SourceConfig, HOTKEY_PAUSE_LABEL, HOTKEY_RECORD_LABEL};
 use crate::version::APP_VERSION;
-use crate::info;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 

@@ -112,14 +112,7 @@ impl Tray {
     }
 
     fn nid(&self, flags: NOTIFY_ICON_DATA_FLAGS) -> NOTIFYICONDATAW {
-        NOTIFYICONDATAW {
-            cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32,
-            hWnd: self.hwnd,
-            uID: 1,
-            uFlags: flags,
-            uCallbackMessage: WM_TRAY,
-            ..Default::default()
-        }
+        NOTIFYICONDATAW { cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32, hWnd: self.hwnd, uID: 1, uFlags: flags, uCallbackMessage: WM_TRAY, ..Default::default() }
     }
 
     fn icon_data(&mut self, flags: NOTIFY_ICON_DATA_FLAGS) -> NOTIFYICONDATAW {
@@ -304,7 +297,9 @@ impl Menu {
 
 fn show_menu() {
     // 先取出需要的資料再顯示選單：選單開著時仍會處理其他訊息（狀態更新）
-    let Some((st, hwnd)) = TRAY.with(|t| t.borrow().as_ref().and_then(|t| t.state.clone().map(|s| (s, t.hwnd)))) else { return };
+    let Some((st, hwnd)) = TRAY.with(|t| t.borrow().as_ref().and_then(|t| t.state.clone().map(|s| (s, t.hwnd)))) else {
+        return;
+    };
     let mut m = Menu { ids: Vec::new() };
     let idle = st.rec == RecorderState::Idle;
     unsafe {
@@ -409,10 +404,12 @@ pub fn start(cmd: UnboundedSender<TrayCommand>) -> Result<(Arc<dyn TrayUi>, Hotk
             });
             // 先處理已送來的狀態，圖示一開始就顯示正確的提示
             drain();
-            let added = TRAY.with(|t| t.borrow_mut().as_mut().map(|t| {
-                t.added = t.add_icon();
-                t.added
-            }));
+            let added = TRAY.with(|t| {
+                t.borrow_mut().as_mut().map(|t| {
+                    t.added = t.add_icon();
+                    t.added
+                })
+            });
             if added != Some(true) {
                 let _ = ready_tx.send(Err("Shell_NotifyIcon 失敗".into()));
                 let _ = DestroyWindow(hwnd);

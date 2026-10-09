@@ -6,9 +6,7 @@ use crate::error::{Error, Result};
 use crate::format::{check_recording_name, parse_export_name, strip_mp4};
 use crate::paths::mtime_ms;
 use crate::process::run;
-use crate::types::{
-    ExportFormat, ExportInfo, LibraryEntry, LibraryFilter, LibraryPage, LibraryQuery, LibrarySort, MediaInfo, LIBRARY_ROW_MAIN_PX, LIBRARY_ROW_SUB_PX,
-};
+use crate::types::{ExportFormat, ExportInfo, LibraryEntry, LibraryFilter, LibraryPage, LibraryQuery, LibrarySort, MediaInfo, LIBRARY_ROW_MAIN_PX, LIBRARY_ROW_SUB_PX};
 use regex::Regex;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -158,10 +156,7 @@ pub async fn scan(cache: &MediaCache, dir: &Path) -> Vec<LibraryEntry> {
     }
     for e in &mut entries {
         e.exports.sort_by(|p, q| {
-            p.speed
-                .total_cmp(&q.speed)
-                .then(((p.format == Some(ExportFormat::Gif)) as u8).cmp(&((q.format == Some(ExportFormat::Gif)) as u8)))
-                .then(p.media.mtime.total_cmp(&q.media.mtime))
+            p.speed.total_cmp(&q.speed).then(((p.format == Some(ExportFormat::Gif)) as u8).cmp(&((q.format == Some(ExportFormat::Gif)) as u8))).then(p.media.mtime.total_cmp(&q.media.mtime))
         });
     }
     entries
@@ -222,9 +217,7 @@ pub async fn list_library(cache: &Arc<MediaCache>, ffmpeg: Option<&Path>, dir: &
     let mut list = scan(cache, dir).await;
 
     if let Some(text) = q.q.as_deref().map(|t| t.trim().to_lowercase()).filter(|t| !t.is_empty()) {
-        list.retain(|e| {
-            e.media.name.to_lowercase().contains(&text) || local_date(e.media.mtime).contains(&text) || e.exports.iter().any(|x| x.media.name.to_lowercase().contains(&text))
-        });
+        list.retain(|e| e.media.name.to_lowercase().contains(&text) || local_date(e.media.mtime).contains(&text) || e.exports.iter().any(|x| x.media.name.to_lowercase().contains(&text)));
     }
     match q.filter {
         LibraryFilter::Original => list.retain(|e| !is_cut_name(&e.media.name)),
@@ -313,11 +306,7 @@ pub async fn rename_recording(cache: &MediaCache, path: &str, new_name: &str, bu
                 let _ = tokio::fs::rename(t, f).await;
             }
             let busy = e.kind() == std::io::ErrorKind::PermissionDenied || matches!(e.raw_os_error(), Some(32) | Some(5));
-            return Err(Error::config(if busy {
-                "檔案正在使用中（例如正在播放或剪輯），關閉後再試一次".to_string()
-            } else {
-                format!("無法改名：{e}")
-            }));
+            return Err(Error::config(if busy { "檔案正在使用中（例如正在播放或剪輯），關閉後再試一次".to_string() } else { format!("無法改名：{e}") }));
         }
         done.push((from, to));
     }
