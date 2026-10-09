@@ -228,6 +228,20 @@ fn local_date(mtime_ms: f64) -> String {
     chrono::Local.timestamp_millis_opt(mtime_ms as i64).single().map(|d| d.format("%Y-%m-%d").to_string()).unwrap_or_default()
 }
 
+/// 排序用的時間（毫秒）：檔名裡的錄影時間（Rec_2026-10-06_08-17-18…，剪輯版沿用原片的時間），
+/// 不是預設檔名時用修改時間。介面依日期分組時也用這個時間，才不會同一天被拆開
+fn sort_time(e: &LibraryEntry) -> f64 {
+    static RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(\d{4}-\d{2}-\d{2})_(\d{2})-(\d{2})-(\d{2})").unwrap());
+    use chrono::TimeZone;
+    RE.captures(&e.media.name)
+        .and_then(|m| chrono::NaiveDateTime::parse_from_str(&format!("{} {}:{}:{}", &m[1], &m[2], &m[3], &m[4]), "%Y-%m-%d %H:%M:%S").ok())
+        .and_then(|t| chrono::Local.from_local_datetime(&t).earliest())
+        .map(|t| t.timestamp_millis() as f64)
+        // 同一秒的：剪輯版、_2 排在後面（修改時間較新）
+        .map(|t| t + (e.media.mtime / 1e13).fract())
+        .unwrap_or(e.media.mtime)
+}
+
 pub async fn list_library(cache: &Arc<MediaCache>, ffmpeg: Option<&Path>, dir: &Path, q: &LibraryQuery) -> LibraryPage {
     let mut list = scan(cache, dir).await;
 
@@ -252,8 +266,8 @@ pub async fn list_library(cache: &Arc<MediaCache>, ffmpeg: Option<&Path>, dir: &
         list.retain(|e| e.media.has_audio == Some(true));
     }
     match q.sort {
-        LibrarySort::New => list.sort_by(|a, b| b.media.mtime.total_cmp(&a.media.mtime)),
-        LibrarySort::Old => list.sort_by(|a, b| a.media.mtime.total_cmp(&b.media.mtime)),
+        LibrarySort::New => list.sort_by(|a, b| sort_time(b).total_cmp(&sort_time(a))),
+        LibrarySort::Old => list.sort_by(|a, b| sort_time(a).total_cmp(&sort_time(b))),
         LibrarySort::Size => list.sort_by_key(|e| std::cmp::Reverse(e.media.bytes)),
         LibrarySort::Duration => list.sort_by(|a, b| b.media.duration_sec.unwrap_or(0.0).total_cmp(&a.media.duration_sec.unwrap_or(0.0))),
     }

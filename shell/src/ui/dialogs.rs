@@ -258,17 +258,63 @@ pub fn short_date(name: &str, mtime: f64, with_sec: bool) -> String {
     }
 }
 
-/// 一組錄影的日期標籤：同一分鐘的有好幾支時加上秒數，才分得出來
-pub fn date_labels<'a>(items: impl Iterator<Item = (&'a str, f64)> + Clone) -> std::collections::HashMap<String, String> {
+/// 錄影的時間：檔名 Rec_2026-10-06_08-17-18（截圖 Shot_…）；不符合格式時用修改時間
+pub fn entry_time(name: &str, mtime: f64) -> Option<chrono::NaiveDateTime> {
+    static RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| regex::Regex::new(r"(\d{4}-\d{2}-\d{2})_(\d{2})-(\d{2})-(\d{2})").unwrap());
+    if let Some(m) = RE.captures(name) {
+        if let Ok(t) = chrono::NaiveDateTime::parse_from_str(&format!("{} {}:{}:{}", &m[1], &m[2], &m[3], &m[4]), "%Y-%m-%d %H:%M:%S") {
+            return Some(t);
+        }
+    }
+    use chrono::{Local, TimeZone};
+    Local.timestamp_millis_opt(mtime as i64).single().map(|d| d.naive_local())
+}
+
+/// 日期分組的名稱：今天、昨天、10/08（三）；不是今年的加上年份
+pub fn day_label(d: chrono::NaiveDate, today: chrono::NaiveDate) -> String {
+    use chrono::Datelike;
+    if d == today {
+        return "今天".into();
+    }
+    if today.pred_opt() == Some(d) {
+        return "昨天".into();
+    }
+    let wd = ["一", "二", "三", "四", "五", "六", "日"][d.weekday().num_days_from_monday() as usize];
+    if d.year() == today.year() {
+        format!("{}（{wd}）", d.format("%m/%d"))
+    } else {
+        format!("{}（{wd}）", d.format("%Y/%m/%d"))
+    }
+}
+
+/// 一組錄影的日期與時間：(那一天, 時間「23:18」)。同一天同一分鐘有好幾支時加上秒數，才分得出來
+pub fn time_labels<'a>(items: impl Iterator<Item = (&'a str, f64)> + Clone) -> std::collections::HashMap<String, (chrono::NaiveDate, String)> {
     let mut count = std::collections::HashMap::<String, usize>::new();
     for (n, m) in items.clone() {
-        *count.entry(short_date(n, m, false)).or_default() += 1;
+        if let Some(t) = entry_time(n, m) {
+            *count.entry(t.format("%Y%m%d%H%M").to_string()).or_default() += 1;
+        }
     }
     items
-        .map(|(n, m)| {
-            let k = short_date(n, m, false);
-            let label = if count.get(&k).copied().unwrap_or(0) > 1 { short_date(n, m, true) } else { k };
-            (n.to_string(), label)
+        .filter_map(|(n, m)| {
+            let t = entry_time(n, m)?;
+            let dup = count.get(&t.format("%Y%m%d%H%M").to_string()).copied().unwrap_or(0) > 1;
+            Some((n.to_string(), (t.date(), t.format(if dup { "%H:%M:%S" } else { "%H:%M" }).to_string())))
+        })
+        .collect()
+}
+
+/// 一組錄影的日期標籤：「今天 23:18」「昨天 14:14」「10/08 22:58」（同一分鐘有好幾支時加上秒數）
+pub fn date_labels<'a>(items: impl Iterator<Item = (&'a str, f64)> + Clone) -> std::collections::HashMap<String, String> {
+    let today = chrono::Local::now().date_naive();
+    time_labels(items)
+        .into_iter()
+        .map(|(n, (d, t))| {
+            let day = match day_label(d, today) {
+                l if l == "今天" || l == "昨天" => l,
+                _ => d.format("%m/%d").to_string(),
+            };
+            (n, format!("{day} {t}"))
         })
         .collect()
 }
@@ -286,9 +332,16 @@ mod tests {
         assert_eq!(base_name("登入畫面.png"), "登入畫面");
         assert_eq!(short_date("Rec_2026-10-06_08-17-18.mp4", 0.0, false), "10/06 08:17");
         assert_eq!(short_date("Rec_2026-10-06_08-17-18.mp4", 0.0, true), "10/06 08:17:18");
-        let labels = date_labels([("Rec_2026-10-06_08-17-18.mp4", 0.0), ("Rec_2026-10-06_08-17-40.mp4", 0.0), ("Rec_2026-10-06_09-00-00.mp4", 0.0)].into_iter());
-        assert_eq!(labels["Rec_2026-10-06_08-17-18.mp4"], "10/06 08:17:18");
-        assert_eq!(labels["Rec_2026-10-06_09-00-00.mp4"], "10/06 09:00");
+        let labels = time_labels([("Rec_2026-10-06_08-17-18.mp4", 0.0), ("Rec_2026-10-06_08-17-40.mp4", 0.0), ("Rec_2026-10-06_09-00-00.mp4", 0.0)].into_iter());
+        let d = chrono::NaiveDate::from_ymd_opt(2026, 10, 6).unwrap();
+        assert_eq!(labels["Rec_2026-10-06_08-17-18.mp4"], (d, "08:17:18".to_string()));
+        assert_eq!(labels["Rec_2026-10-06_09-00-00.mp4"], (d, "09:00".to_string()));
+        // 2026/10/06 是星期二
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 10, 9).unwrap();
+        assert_eq!(day_label(today, today), "今天");
+        assert_eq!(day_label(today.pred_opt().unwrap(), today), "昨天");
+        assert_eq!(day_label(d, today), "10/06（二）");
+        assert_eq!(day_label(chrono::NaiveDate::from_ymd_opt(2025, 12, 31).unwrap(), today), "2025/12/31（三）");
         assert_eq!(file_name("C:\\Videos\\a.mp4"), "a.mp4");
         assert_eq!(plain("見 [說明](https://x.y/z) 與 `code`"), "見 說明 與 code");
     }

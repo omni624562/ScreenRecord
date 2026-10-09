@@ -349,7 +349,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                     ui.label(RichText::new(meta.join("・")).font(theme::font(12.0)).color(p.muted));
                 });
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if Btn::new("關閉").ghost().small().show(ui).clicked() {
+                    if Btn::icon_only(Icon::Close).ghost().tooltip("關閉（Esc）").show(ui).clicked() {
                         v.close = true;
                     }
                     ui.add_space(6.0);

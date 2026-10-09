@@ -217,6 +217,7 @@ pub enum Icon {
     Close,
     Camera,
     Eye,
+    More,
 }
 
 /// 在 rect（正方形）裡畫圖示
@@ -304,6 +305,11 @@ pub fn paint_icon(p: &Painter, rect: Rect, icon: Icon, color: Color32) {
             line(&[(5.5, 5.0), (6.5, 3.0), (9.5, 3.0), (10.5, 5.0)]);
             circle(8.0, 9.2, 2.4);
         }
+        Icon::More => {
+            for x in [3.5, 8.0, 12.5] {
+                p.circle_filled(at(x, 8.0), 1.4 * k, color);
+            }
+        }
         Icon::Eye => {
             arc(8.0, 13.0, 7.6, -2.42, -0.72);
             arc(8.0, 3.0, 7.6, 0.72, 2.42);
@@ -351,11 +357,17 @@ pub struct Btn {
     height: Option<f32>,
     /// 圖示與文字靠左（上下排的按鈕對齊用）
     left: bool,
+    /// 平常淡灰色，滑鼠移上去才變深（一整排操作按鈕時不搶眼）
+    quiet: bool,
 }
 
 impl Btn {
     pub fn new(text: impl Into<String>) -> Self {
-        Self { text: text.into(), icon: None, trailing: None, kind: Kind::Normal, small: false, enabled: true, min_width: 0.0, tooltip: None, selected: false, height: None, left: false }
+        Self { text: text.into(), icon: None, trailing: None, kind: Kind::Normal, small: false, enabled: true, min_width: 0.0, tooltip: None, selected: false, height: None, left: false, quiet: false }
+    }
+    pub fn quiet(mut self, q: bool) -> Self {
+        self.quiet = q;
+        self
     }
     pub fn left(mut self) -> Self {
         self.left = true;
@@ -485,7 +497,13 @@ impl Btn {
             let painter = ui.painter();
             let r = CornerRadius::same(if self.kind == Kind::Record { RADIUS_SM + 2 } else { RADIUS_SM });
             painter.rect(rect, r, fill, stroke, StrokeKind::Inside);
-            let color = if self.enabled { text_color(hover) } else { text_color(false).gamma_multiply(0.45) };
+            let color = if !self.enabled {
+                text_color(false).gamma_multiply(0.45)
+            } else if self.quiet && !hover {
+                p.muted.gamma_multiply(0.85)
+            } else {
+                text_color(hover)
+            };
             let mut x = if self.left { rect.min.x + pad } else { rect.center().x - (w - pad * 2.0) / 2.0 };
             if galley.is_none() && self.icon.is_some() && self.trailing.is_none() {
                 x = rect.center().x - icon_w / 2.0;

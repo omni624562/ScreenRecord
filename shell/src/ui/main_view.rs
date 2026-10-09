@@ -1511,9 +1511,6 @@ fn recent_card(app: &mut UiApp, ui: &mut Ui, e: &LibraryEntry, date: String, w: 
     painter.text(pos2(x, rect.min.y + 28.0), egui::Align2::LEFT_TOP, meta, theme::font(12.0), p.muted);
     // 標籤
     let mut tags: Vec<(String, Tone, String)> = vec![];
-    if e.media.has_audio == Some(true) {
-        tags.push(("聲音".into(), Tone::Ok, String::new()));
-    }
     if is_cut_name(&e.media.name) {
         tags.push(("剪輯版".into(), Tone::Warn, String::new()));
     }
@@ -1533,6 +1530,10 @@ fn recent_card(app: &mut UiApp, ui: &mut Ui, e: &LibraryEntry, date: String, w: 
                 r.on_hover_text(tip);
             }
         }
+        // 有聲音：灰色小喇叭（不用彩色標籤）
+        if e.media.has_audio == Some(true) {
+            super::library_dialog::audio_mark(ui);
+        }
         let title = if is_default_name(&e.media.name) { date } else { base_name(&e.media.name) };
         ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
             ui.add(egui::Label::new(RichText::new(title).font(theme::font_bold(13.0))).truncate());
@@ -1549,8 +1550,10 @@ fn recent_card(app: &mut UiApp, ui: &mut Ui, e: &LibraryEntry, date: String, w: 
             (EntryAction::Edit, Icon::Cut, "剪輯"),
             (EntryAction::Export, Icon::Export, "製作加速版 / GIF"),
         ];
+        // 平常淡灰色，滑鼠移到卡片上才變深
+        let hot = ui.rect_contains_pointer(rect);
         for (act, icon, tip) in acts {
-            if Btn::icon_only(icon).ghost().small().tooltip(tip).show(ui).clicked() {
+            if Btn::icon_only(icon).ghost().small().quiet(!hot).tooltip(tip).show(ui).clicked() {
                 app.known.insert(e.media.path.clone(), e.clone());
                 app.act(act, e.clone());
             }
