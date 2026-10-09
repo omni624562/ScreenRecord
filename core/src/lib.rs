@@ -26,6 +26,7 @@ pub mod paths;
 pub mod process;
 pub mod recorder;
 pub mod recycle;
+pub mod selfupdate;
 pub mod server;
 pub mod settings;
 pub mod thumbs;

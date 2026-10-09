@@ -25,7 +25,7 @@ Windows 11 螢幕錄影工具：**原速錄影並完整保留，停止後再選�
 | 製作 GIF | 可選寬度（320–1280 px）與每秒張數，可同時加速；短片用整段共用調色盤（檔案小），長片改用每張畫面各自的調色盤（記憶體固定） |
 | 剪輯影片 | 剪掉頭尾、刪除中間多段、裁切畫面範圍（在影片上拖曳框選），另存為 `*_cut.mp4`，原檔不變；剪輯版可再拿去製作加速版 |
 | 錄影清單 | 主畫面下方「最近錄影」左右翻頁、有縮圖；「全部錄影」視窗可搜尋、篩選、排序、分頁，加速版與 GIF 列在原片底下（各自有長度、大小、播放、資料夾），可重新命名（加速版一起改名），勾選多筆移到資源回收筒（可還原） |
-| 檢查新版本 | 啟動後與每 12 小時查詢 GitHub Releases，有新版本時在系統匣選單與操作視窗提示（只提示、不自動安裝；可關閉）。儲存庫需為公開才查得到，私人時會顯示原因並停止自動檢查 |
+| 檢查與更新新版本 | 啟動後與每 12 小時查詢 GitHub Releases，有新版本時在系統匣選單與操作視窗提示（可關閉）；點「有新版本」即可在程式內更新：下載新版 exe、核對 GitHub 提供的 SHA-256 後替換並重新啟動（錄影中不能更新；exe 所在資料夾沒有寫入權限時改為開啟下載頁面）。儲存庫需為公開才查得到，私人時會顯示原因並停止自動檢查 |
 | 介面 | 一頁式、不出現捲軸：以 1280×800 設計，較小的視窗等比縮小（最小 0.8 倍），較大的視窗撐滿、預覽區變大（最寬 2400px） |
 
 預設儲存位置：`%USERPROFILE%\Videos\Timelapse`（介面上可改，會記住）  
@@ -128,15 +128,15 @@ core/            後端（Rust 函式庫，有單元測試）
   tray.rs        系統匣控制（狀態、選單指令、通知）；tray_win.rs 在獨立執行緒建立圖示、選單、全域快捷鍵
   winui.rs       開始擷取時縮小擋到錄影範圍的操作視窗、停止後還原
   desktop.rs     開機自動啟動、以檔案總管開啟、瀏覽器備案；job.rs 讓子行程隨本程式結束
-  downloader.rs  自動下載 FFmpeg（SHA-256 校驗、解壓縮、放置）；updater.rs 查詢新版本
+  downloader.rs  自動下載 FFmpeg（SHA-256 校驗、解壓縮、放置）；updater.rs 查詢新版本；selfupdate.rs 程式內更新
   settings.rs    設定存檔；log.rs 記錄檔；icon.rs 以程式繪製的系統匣圖示
   build.rs       以 Bun 打包 src/ui 並內嵌；版本號取自 package.json
 shell/           主程式（Rust + Tauri v2）：啟動後端與系統匣、單一實例、操作視窗（WebView2，只顯示本機介面、外部網址交給預設瀏覽器）
 src/
   ui/            網頁介面（index.html + app.ts + style.css）；ui/editor.ts 剪輯對話框
-  shared/        介面使用的型別、格式化與剪輯計算（與 core 的對應函式保持一致）
+  shared/        介面使用的型別、格式化與剪輯計算；vectors.json 是兩邊共用的測試資料，確保與 core 的計算結果一致
   icon.ts        exe 圖示的繪製（scripts/make-icon.ts 產生 assets/icon.ico）
-scripts/         build.ts 建置 exe、release-notes.ts 產生 Release 說明、copy-ffmpeg.ts、make-icon.ts
+scripts/         build.ts 建置 exe、release-notes.ts 產生 Release 說明、shared-vectors.ts 產生共用測試資料、copy-ffmpeg.ts、make-icon.ts
 .github/workflows/release.yml   PR 自動測試與建置；main 的版本號尚未發佈時自動發佈
 ```
 

@@ -454,4 +454,11 @@ pub struct UpdateInfo {
     pub url: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub published_at: Option<String>,
+    /// 新版 exe 的下載網址（Release 有附 ScreenRecorder.exe 且有 SHA-256 時才有，可在程式內更新）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub download_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<u64>,
 }

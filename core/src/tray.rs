@@ -249,10 +249,9 @@ impl TrayController {
                 tokio::spawn(async move { app.quit(0).await });
                 return Ok(());
             }
+            // 開啟操作視窗：右上角的「有新版本」可以直接更新
             TrayCommand::OpenUpdate => {
-                if let Some(u) = app.update() {
-                    crate::desktop::open_with_explorer(&u.url, false);
-                }
+                app.open_ui(app.url());
                 return Ok(());
             }
             // 快捷鍵：同一組鍵依狀態切換（待命→開始、倒數→取消、錄影中→停止）

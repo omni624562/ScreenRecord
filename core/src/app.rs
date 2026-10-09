@@ -55,6 +55,8 @@ pub struct App {
     pub recorder: Recorder,
     pub exporter: Exporter,
     pub downloader: Downloader,
+    /// 程式內更新
+    pub installer: crate::selfupdate::Installer,
     pub thumbs: Thumbnails,
     pub cache: Arc<MediaCache>,
     pub default_output_dir: String,
@@ -148,6 +150,7 @@ impl App {
             recorder: Recorder::new(Arc::new(RecDeps(weak.clone()))),
             exporter: Exporter::new(),
             downloader: Downloader::new(DownloadDeps::default()),
+            installer: crate::selfupdate::Installer::default(),
             thumbs: Thumbnails::new(dir.join("thumbs")),
             cache: Arc::default(),
             default_output_dir: default_output_dir().display().to_string(),
@@ -472,7 +475,7 @@ impl App {
             if self.settings.load().update_notified.as_deref() != Some(u.version.as_str()) {
                 self.settings.save(SettingsPatch { update_notified: Some(u.version.clone()), ..Default::default() });
                 info!("有新版本 v{}：{}", u.version, u.url);
-                self.notify("有新版本", &format!("v{} 已發佈，可從系統匣選單下載", u.version), false);
+                self.notify("有新版本", &format!("v{} 已發佈，開啟操作視窗即可更新", u.version), false);
             }
         }
         Ok(u)
@@ -566,6 +569,46 @@ impl App {
             Some(e) => e(code),
             None => std::process::exit(code),
         }
+    }
+
+    /// 程式內更新：下載新版、替換 exe，完成後啟動新版並正常結束自己
+    pub fn start_self_update(self: &Arc<Self>) -> crate::Result<()> {
+        let Some(info) = self.update() else { return Err(crate::Error::config("目前沒有新版本")) };
+        if self.recorder.active() {
+            return Err(crate::Error::config("錄影中無法更新，請先停止錄影"));
+        }
+        if self.exporter.running() {
+            return Err(crate::Error::config("正在製作加速版 / GIF，請等完成再更新"));
+        }
+        if self.downloader.busy() {
+            return Err(crate::Error::config("正在下載 FFmpeg，請等完成再更新"));
+        }
+        if cfg!(debug_assertions) {
+            return Err(crate::Error::config("開發版無法自動更新"));
+        }
+        let exe = std::env::current_exe()?;
+        if !exe.parent().is_some_and(crate::selfupdate::dir_writable) {
+            return Err(crate::Error::config("程式所在的資料夾沒有寫入權限，請到下載頁面手動更新"));
+        }
+        let app = self.clone();
+        let rt = tokio::runtime::Handle::current();
+        self.installer
+            .start(&info, exe, move |exe| {
+                rt.spawn(async move { app.restart_into(exe).await });
+            })
+            .map(|_| ())
+            .map_err(crate::Error::config)
+    }
+
+    /// 啟動新版（它會等這個程式結束才開始），然後正常結束
+    async fn restart_into(self: &Arc<Self>, exe: PathBuf) {
+        let args = vec![format!("--wait-pid={}", std::process::id())];
+        if let Err(e) = crate::job::spawn_detached(&exe.to_string_lossy(), &args) {
+            crate::error!("無法啟動新版：{e}");
+            self.installer.fail(format!("已下載新版，但無法啟動：{e}。請手動重新開啟程式"));
+            return;
+        }
+        self.quit(0).await;
     }
 
     /// 下載 FFmpeg；完成後重新偵測，介面輪詢時就會看到 FFmpeg 已就緒

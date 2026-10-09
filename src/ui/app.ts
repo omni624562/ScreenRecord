@@ -3,6 +3,7 @@ import type {
   DownloadStatus,
   EnvInfo,
   ExportStatus,
+  InstallStatus,
   LibraryEntry,
   LibraryPage,
   MethodPreference,
@@ -14,7 +15,7 @@ import type {
   UpdateInfo,
 } from "../shared/types.ts";
 import { HOTKEY_LABELS } from "../shared/types.ts";
-import { $, api, baseName, clamp, dateLabels, esc, guarded, icon, isDefaultName, observeThumbs, setHtml, thumbUrl, toast } from "./common.ts";
+import { $, api, ask, baseName, clamp, dateLabels, esc, guarded, icon, isDefaultName, observeThumbs, setHtml, thumbUrl, toast } from "./common.ts";
 import { openEditor } from "./editor.ts";
 import { openExport } from "./exportDialog.ts";
 import { exportTag, isLibraryOpen, load as reloadLibraryDialog, openLibrary, type EntryAction } from "./libraryDialog.ts";
@@ -114,6 +115,8 @@ let env: EnvInfo;
 let S: Settings;
 let rec: RecorderStatus | undefined;
 let exp: ExportStatus | undefined;
+/** 程式內更新的進度（沒有在更新時為 undefined） */
+let install: InstallStatus | undefined;
 let statusAt = 0;
 let lastResultPath: string | undefined;
 let lastExportState: string | undefined;
@@ -193,11 +196,37 @@ let maxCustomOpen = false;
 
 // ───────────── 環境（FFmpeg / 螢幕） ─────────────
 
+/** 更新中顯示在「有新版本」標籤上的進度 */
+function installLabel(): string | undefined {
+  const i = install;
+  if (!i) return undefined;
+  if (i.phase === "downloading") return i.total ? `下載新版 ${Math.floor((i.received / i.total) * 100)}%` : `下載新版 ${formatBytes(i.received)}`;
+  if (i.phase === "verifying") return "驗證新版…";
+  if (i.phase === "restarting") return "重新啟動中…";
+  return undefined;
+}
+
+/** 點「有新版本」：可以程式內更新就確認後更新，否則開啟下載頁面 */
+async function onUpdateChip() {
+  const u = env.update;
+  if (!u || installLabel()) return;
+  if (!(u.downloadUrl && u.sha256)) return void guarded(() => api("/api/open-url", { url: u.url }));
+  const ok = await ask({
+    title: `更新到 v${u.version}`,
+    message: `會下載新版${u.size ? `（約 ${formatBytes(u.size)}）` : ""}、核對檔案後自動重新啟動程式；設定與錄影都會保留。更新內容可在系統匣選單的「更新說明」查看。`,
+    ok: "立即更新",
+  });
+  if (ok) await guarded(() => api("/api/update/install", {}));
+}
+
 function renderEnv() {
   const ff = env.ffmpeg;
   const chips: string[] = [];
-  if (env.update)
-    chips.push(`<a class="chip new" href="${esc(env.update.url)}" target="_blank" rel="noopener" title="點一下前往下載頁面">有新版本 v${esc(env.update.version)}</a>`);
+  if (env.update) {
+    const u = env.update;
+    const auto = !!(u.downloadUrl && u.sha256);
+    chips.push(`<button type="button" class="chip new" id="updateChip" title="${auto ? "點一下更新（自動下載並重新啟動）" : "點一下前往下載頁面"}">${esc(installLabel() ?? `有新版本 v${u.version}`)}</button>`);
+  }
   // 正常的項目合併成一個「已就緒」（細節在滑鼠提示），有問題的才個別顯示：單行放得下、不會被截斷
   const ok: string[] = [];
   if (ff.found) ok.push(`FFmpeg ${(ff.version ?? "").split("-")[0]}（${ff.path ?? ""}）`);
@@ -212,6 +241,7 @@ function renderEnv() {
   }
   if (ok.length) chips.push(`<span class="chip ok" title="${esc(ok.join("\n"))}">${chips.some((c) => /chip (bad|warn)/.test(c)) ? `FFmpeg ${esc((ff.version ?? "").split("-")[0]!)}` : "已就緒"}</span>`);
   setHtml($("envChips"), chips.join(""));
+  $("updateChip")?.addEventListener("click", () => void onUpdateChip());
   // 版本號顯示在視窗標題列（Chrome / Edge app 模式的標題就是頁面標題）
   document.title = `螢幕錄影 v${env.appVersion}`;
   $("ffmpegBanner").hidden = ff.found;
@@ -641,7 +671,7 @@ function bindSettings() {
       renderUpdateStatus();
       env.update = r.update;
       renderEnv();
-      toast(r.update ? `有新版本 v${r.update.version}，點右下角的標籤前往下載` : `目前已是最新版本（v${env.appVersion}）`);
+      toast(r.update ? `有新版本 v${r.update.version}，點「系統狀態」裡的「有新版本」即可更新` : `目前已是最新版本（v${env.appVersion}）`);
     }),
   );
   $("resetGpuBtn").addEventListener("click", () =>
@@ -1058,8 +1088,9 @@ document.addEventListener("click", (e) => {
 
 // ───────────── 輪詢 ─────────────
 
-function applyStatus(data: { recorder: RecorderStatus; export?: ExportStatus; download?: DownloadStatus; settingsRev?: number; update?: string }) {
+function applyStatus(data: { recorder: RecorderStatus; export?: ExportStatus; download?: DownloadStatus; settingsRev?: number; update?: string; install?: InstallStatus }) {
   renderDownload(data.download);
+  applyInstall(data.install);
   if (env && data.update !== env.update?.version) void refreshUpdate();
   if (data.settingsRev && settingsRev && data.settingsRev !== settingsRev && saveTimer === undefined) void reloadSettings();
   const prevState = rec?.state;
@@ -1074,6 +1105,15 @@ function applyStatus(data: { recorder: RecorderStatus; export?: ExportStatus; do
     // 開始 / 結束錄影時調整即時預覽的張數
     if (prevState !== undefined && ((prevState === "idle") !== (rec.state === "idle"))) loadPreview();
   }
+}
+
+/** 更新進度改變時更新標籤；失敗時顯示原因（只顯示一次） */
+function applyInstall(next: InstallStatus | undefined) {
+  if (JSON.stringify(next) === JSON.stringify(install)) return;
+  const prev = install;
+  install = next;
+  if (next?.phase === "error" && (prev?.phase !== "error" || prev.message !== next.message)) toast(`更新失敗：${next.message ?? ""}`, true);
+  if (env) renderEnv();
 }
 
 let pollTimer: number | undefined;

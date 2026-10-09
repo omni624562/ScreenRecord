@@ -16,7 +16,7 @@
 use screenrecorder_core::app::App;
 use screenrecorder_core::paths::{app_dir, data_dir, now_ms};
 use screenrecorder_core::version::APP_VERSION;
-use screenrecorder_core::{desktop, error, info, instance, job, log, server, tray, warn};
+use screenrecorder_core::{desktop, error, info, instance, job, log, selfupdate, server, tray, warn};
 use std::sync::Arc;
 use std::time::Duration;
 use tauri::webview::NewWindowResponse;
@@ -188,9 +188,17 @@ async fn startup(core: Arc<App>, args: Args) {
 fn main() {
     log::setup();
     log::install_panic_hook();
+    let argv: Vec<String> = std::env::args().collect();
+    // 程式內更新後由舊版啟動：等舊版結束（否則會被當成重複執行），再清掉舊版留下的檔案
+    if let Some(pid) = argv.iter().find_map(|a| a.strip_prefix("--wait-pid=")).and_then(|p| p.parse::<u32>().ok()) {
+        info!("已更新到 v{APP_VERSION}，等舊版結束");
+        selfupdate::wait_for_exit(pid, Duration::from_secs(60));
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        selfupdate::cleanup_old(&exe);
+    }
     // 本程式結束（包括當掉）時，FFmpeg 等子程序一併結束
     job::install();
-    let argv: Vec<String> = std::env::args().collect();
     let args = parse_args(&argv);
     info!("螢幕錄影 {APP_VERSION} — 原速錄影、事後加速匯出");
     info!("程式資料夾：{}", app_dir().display());

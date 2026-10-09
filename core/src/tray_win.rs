@@ -312,7 +312,7 @@ fn show_menu() {
         m.add(root, "開啟操作視窗(&O)", TrayCommand::Open, false, false);
         let _ = SetMenuDefaultItem(root, 0, 1);
         if let Some(u) = &st.update {
-            m.add(root, &format!("★ 有新版本 v{u}（下載）"), TrayCommand::OpenUpdate, false, false);
+            m.add(root, &format!("★ 有新版本 v{u}（開啟視窗更新）"), TrayCommand::OpenUpdate, false, false);
         }
         Menu::sep(root);
         // 「\t」後的文字顯示在選單右側（快捷鍵提示）

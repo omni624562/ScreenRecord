@@ -117,6 +117,9 @@ struct Status {
     settings_rev: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     update: Option<String>,
+    /// 程式內更新的進度（沒有在更新時省略）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    install: Option<crate::selfupdate::InstallStatus>,
 }
 
 #[derive(Serialize)]
@@ -133,6 +136,7 @@ fn status(app: &App) -> Status {
         download: app.downloader.status(),
         settings_rev: app.settings.load().rev,
         update: app.update().map(|u| u.version),
+        install: Some(app.installer.status()).filter(|s| s.phase != crate::selfupdate::InstallPhase::Idle),
     }
 }
 
@@ -224,6 +228,10 @@ pub fn router(app: Arc<App>, port: u16) -> Router {
             }),
         )
         .route("/api/update", get(|State(c): State<Ctx>| async move { json(&update_info(&c.app)) }).post(update_post))
+        .route(
+            "/api/update/install",
+            post(|State(c): State<Ctx>| async move { c.app.start_self_update().map(|_| ok_status(&c.app)).map_err(ApiError) }),
+        )
         .route(
             "/api/ffmpeg/cancel",
             post(|State(c): State<Ctx>| async move {
@@ -791,6 +799,12 @@ mod tests {
         let (_, body) = blocking(move || status_of(agent().get(&format!("{b}/api/settings")).call())).await;
         assert_eq!(serde_json::from_str::<Value>(&body).unwrap()["ui"]["fps"], 30);
         assert!(dir.path().join("settings.json").exists());
+
+        // 沒有新版本時不能更新
+        let b = base.clone();
+        let (code, body) = blocking(move || status_of(agent().post(&format!("{b}/api/update/install")).set("Content-Type", "application/json").send_string("{}"))).await;
+        assert_eq!(code, 400);
+        assert!(body.contains("目前沒有新版本"), "{body}");
 
         // 只能開 http / https、只能播放影片
         let b = base.clone();
