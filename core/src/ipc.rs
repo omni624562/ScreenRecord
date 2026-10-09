@@ -167,10 +167,10 @@ mod tests {
         let env: serde_json::Value = serde_json::from_str(&agent().get(&format!("{base}/api/env")).call().unwrap().into_string().unwrap()).unwrap();
         assert_eq!(env["appVersion"], APP_VERSION);
 
-        let post = |path: &str| agent().post(&format!("{base}{path}")).set("Content-Type", "application/json").send_string("{}");
-        post("/api/show").unwrap();
+        let post = |path: &str| agent().post(&format!("{base}{path}")).set("Content-Type", "application/json").send_string("{}").is_ok();
+        assert!(post("/api/show"));
         assert_eq!(shows.load(Ordering::SeqCst), 1);
-        post("/api/quit").unwrap();
+        assert!(post("/api/quit"));
         assert_eq!(quits.load(Ordering::SeqCst), 1);
 
         // 網頁送來的請求（有 Origin）、不是 JSON、錯誤的 Host：拒絕

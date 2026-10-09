@@ -501,6 +501,7 @@ impl<'a> ttf_parser::colr::Painter<'a> for ColorPainter<'a, '_> {
 
 /// 畫一行文字：基線在 (x, baseline)（影片像素），t = 影片像素 → 畫布像素。
 /// outline = 外框（顏色, 寬度），畫在填色之前
+#[allow(clippy::too_many_arguments)]
 fn draw_line(pixmap: &mut Pixmap, line: &Line, x: f64, baseline: f64, size: f64, fill: Color, outline: Option<(Color, f64)>, t: Transform) {
     for g in &line.glyphs {
         let Some(face) = g.font.face() else { continue };

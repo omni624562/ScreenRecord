@@ -2,6 +2,7 @@
 //! - 中文：微軟正黑體（msjh.ttc / msjhbd.ttc）
 //! - 表情符號：Segoe UI Emoji（彩色，COLR）
 //! - 其他符號：Segoe UI Symbol、Segoe UI
+//!
 //! 在 Linux 上（開發、測試）改用文泉驛正黑與 Noto Color Emoji。
 
 use std::path::{Path, PathBuf};
