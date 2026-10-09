@@ -28,6 +28,19 @@ pub fn command(program: impl AsRef<OsStr>) -> Command {
     c
 }
 
+/// 同步版（std::process）：不顯示主控台視窗。用於在一般執行緒上讀取輸出（播放器）
+pub fn std_command(program: impl AsRef<OsStr>) -> std::process::Command {
+    #[allow(unused_mut)]
+    let mut c = std::process::Command::new(program);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        c.creation_flags(CREATE_NO_WINDOW);
+    }
+    c
+}
+
 /// 執行並收集輸出（逾時強制結束）
 pub async fn run<S: AsRef<OsStr>>(program: impl AsRef<OsStr>, args: &[S], timeout: Duration) -> RunResult {
     let mut cmd = command(program);
@@ -37,12 +50,9 @@ pub async fn run<S: AsRef<OsStr>>(program: impl AsRef<OsStr>, args: &[S], timeou
         Err(e) => return RunResult { code: -1, stderr: e.to_string(), ..Default::default() },
     };
     match tokio::time::timeout(timeout, child.wait_with_output()).await {
-        Ok(Ok(out)) => RunResult {
-            code: out.status.code().unwrap_or(-1),
-            stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
-            stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
-            timed_out: false,
-        },
+        Ok(Ok(out)) => {
+            RunResult { code: out.status.code().unwrap_or(-1), stdout: String::from_utf8_lossy(&out.stdout).into_owned(), stderr: String::from_utf8_lossy(&out.stderr).into_owned(), timed_out: false }
+        }
         Ok(Err(e)) => RunResult { code: -1, stderr: e.to_string(), ..Default::default() },
         // 逾時：wait_with_output 的 future 被丟棄時，kill_on_drop 會結束子行程
         Err(_) => RunResult { code: -1, timed_out: true, ..Default::default() },

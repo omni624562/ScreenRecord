@@ -1,4 +1,4 @@
-//! 錄影清單的縮圖：用 FFmpeg 擷取一張畫面（320px 寬 JPEG），存在 %LOCALAPPDATA%\ScreenRecorder\thumbs。
+//! 錄影清單的縮圖：用 FFmpeg 擷取一張畫面（320px 寬 PNG），存在 %LOCALAPPDATA%\ScreenRecorder\thumbs。
 //!
 //! 以「路徑 + 大小 + 修改時間」為鍵：檔案被覆寫時自動重做；同時最多產生 2 張。
 //! 請求被取消（關掉清單、換頁）時 future 被丟棄，還在排隊的不會產生；產生失敗的檔案 10 分鐘內不再重試。
@@ -37,7 +37,7 @@ impl Thumbnails {
             h.update(format!("{}|{}|{}", video.to_lowercase(), meta.len(), mtime_ms(&meta)).as_bytes());
             h.finalize().iter().take(20).map(|b| format!("{b:02x}")).collect::<String>()
         };
-        let out = self.dir.join(format!("{key}.jpg"));
+        let out = self.dir.join(format!("{key}.png"));
         if out.is_file() {
             return Some(out);
         }
@@ -52,7 +52,7 @@ impl Thumbnails {
                 // 先取第 1 秒（避開開頭可能的黑畫面），太短的影片改取第一張；-threads 1 不和錄影搶 CPU
                 for at in ["1", "0"] {
                     let out_s = out.display().to_string();
-                    let args = ["-hide_banner", "-loglevel", "error", "-threads", "1", "-ss", at, "-i", video, "-frames:v", "1", "-vf", "scale=320:-2:flags=bilinear", "-q:v", "5", "-y", &out_s];
+                    let args = ["-hide_banner", "-loglevel", "error", "-threads", "1", "-ss", at, "-i", video, "-frames:v", "1", "-vf", "scale=320:-2:flags=bilinear", "-y", &out_s];
                     let r = run(ffmpeg, &args, Duration::from_secs(20)).await;
                     if r.code == 0 && std::fs::metadata(&out).map(|m| m.len() > 0).unwrap_or(false) {
                         return Some(out.clone());
@@ -72,12 +72,18 @@ impl Thumbnails {
         result
     }
 
-    /// 啟動時整理：超過上限就刪掉最舊的縮圖
+    /// 啟動時整理：刪掉舊版（2.x）的 JPEG 縮圖；超過上限就刪掉最舊的縮圖
     pub fn prune(&self) {
         let Ok(rd) = std::fs::read_dir(&self.dir) else { return };
         let mut files: Vec<(PathBuf, f64)> = rd
             .flatten()
-            .filter(|e| e.file_name().to_string_lossy().ends_with(".jpg"))
+            .filter(|e| {
+                let name = e.file_name().to_string_lossy().into_owned();
+                if name.ends_with(".jpg") {
+                    let _ = std::fs::remove_file(e.path());
+                }
+                name.ends_with(".png")
+            })
             .filter_map(|e| e.metadata().ok().map(|m| (e.path(), mtime_ms(&m))))
             .collect();
         if files.len() <= MAX_FILES {
@@ -99,8 +105,9 @@ mod tests {
     fn prune_keeps_newest() {
         let dir = tempfile::tempdir().unwrap();
         for i in 0..(MAX_FILES + 3) {
-            std::fs::write(dir.path().join(format!("{i:05}.jpg")), "x").unwrap();
+            std::fs::write(dir.path().join(format!("{i:05}.png")), "x").unwrap();
         }
+        std::fs::write(dir.path().join("old.jpg"), "x").unwrap();
         Thumbnails::new(dir.path().to_path_buf()).prune();
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), MAX_FILES);
     }

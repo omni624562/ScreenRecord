@@ -7,9 +7,7 @@ static APP_DIR: OnceLock<PathBuf> = OnceLock::new();
 
 /// 程式所在資料夾（exe 所在處）；可由主程式在啟動時指定（開發時為專案根目錄）
 pub fn app_dir() -> PathBuf {
-    APP_DIR
-        .get_or_init(|| std::env::current_exe().ok().and_then(|p| p.parent().map(Path::to_path_buf)).unwrap_or_else(|| PathBuf::from(".")))
-        .clone()
+    APP_DIR.get_or_init(|| std::env::current_exe().ok().and_then(|p| p.parent().map(Path::to_path_buf)).unwrap_or_else(|| PathBuf::from("."))).clone()
 }
 
 pub fn set_app_dir(dir: PathBuf) {
@@ -20,7 +18,7 @@ fn home() -> PathBuf {
     std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."))
 }
 
-/// 程式資料：%LOCALAPPDATA%\ScreenRecorder（設定、記錄檔、縮圖、自動下載的 FFmpeg、WebView2 資料）
+/// 程式資料：%LOCALAPPDATA%\ScreenRecorder（設定、記錄檔、縮圖、剪輯專案、自動下載的 FFmpeg）
 pub fn data_dir() -> PathBuf {
     if let Some(dir) = std::env::var_os("SCREENRECORDER_DATA_DIR") {
         return PathBuf::from(dir); // 測試用
@@ -46,11 +44,7 @@ pub fn now_ms() -> u64 {
 
 /// 檔案修改時間（Unix 毫秒，含小數，與 Node 的 mtimeMs 相同）
 pub fn mtime_ms(meta: &std::fs::Metadata) -> f64 {
-    meta.modified()
-        .ok()
-        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|d| d.as_secs_f64() * 1000.0)
-        .unwrap_or(0.0)
+    meta.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs_f64() * 1000.0).unwrap_or(0.0)
 }
 
 /// 檔名已存在時加上 _2、_3…，避免覆蓋既有檔案

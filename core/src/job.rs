@@ -1,5 +1,5 @@
 //! Job Object：本程式結束（包括當掉）時，FFmpeg 等子程序一併結束，不會殘留在背景繼續錄影或佔用檔案。
-//! 允許 breakaway：開給使用者的程式（瀏覽器）用 spawn_detached 脫離，關閉本程式時不會被連帶關掉。
+//! 允許 breakaway：要留下來的程式（例如更新後啟動的新版）用 spawn_detached 脫離，關閉本程式時不會被連帶關掉。
 
 #[cfg(windows)]
 pub fn install() {

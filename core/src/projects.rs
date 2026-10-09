@@ -58,11 +58,7 @@ impl ProjectStore {
 
     fn all(&self) -> Vec<(PathBuf, Project)> {
         let Ok(rd) = std::fs::read_dir(&self.dir) else { return vec![] };
-        rd.flatten()
-            .map(|e| e.path())
-            .filter(|p| p.extension().is_some_and(|x| x == "json"))
-            .filter_map(|p| Self::read(&p).map(|x| (p, x)))
-            .collect()
+        rd.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "json")).filter_map(|p| Self::read(&p).map(|x| (p, x))).collect()
     }
 
     pub fn save(&self, output: &str, source: &str, data: Value) -> std::io::Result<()> {
@@ -77,11 +73,7 @@ impl ProjectStore {
 
     /// 用這支原始影片做的剪輯中，最近儲存、而且剪輯版還在的一個
     pub fn latest_for_source(&self, source: &str) -> Option<Project> {
-        self.all()
-            .into_iter()
-            .map(|(_, p)| p)
-            .filter(|p| same(&p.source, source) && Path::new(&p.output).is_file())
-            .max_by_key(|p| p.saved_at)
+        self.all().into_iter().map(|(_, p)| p).filter(|p| same(&p.source, source) && Path::new(&p.output).is_file()).max_by_key(|p| p.saved_at)
     }
 
     /// 檔案改名：剪輯版改名就搬專案，原始影片改名就更新指向它的專案

@@ -6,9 +6,7 @@ use crate::error::{Error, Result};
 use crate::format::{check_recording_name, parse_export_name, strip_mp4};
 use crate::paths::mtime_ms;
 use crate::process::run;
-use crate::types::{
-    ExportFormat, ExportInfo, LibraryEntry, LibraryFilter, LibraryPage, LibraryQuery, LibrarySort, MediaInfo, LIBRARY_ROW_MAIN_PX, LIBRARY_ROW_SUB_PX,
-};
+use crate::types::{ExportFormat, ExportInfo, LibraryEntry, LibraryFilter, LibraryPage, LibraryQuery, LibrarySort, MediaInfo, LIBRARY_ROW_MAIN_PX, LIBRARY_ROW_SUB_PX};
 use regex::Regex;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -90,7 +88,22 @@ fn file_name(path: &str) -> String {
 }
 
 static CUT_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)_cut(_\d+)?\.mp4$").unwrap());
-static VIDEO_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)\.(mp4|gif)$").unwrap());
+static VIDEO_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)\.(mp4|gif|png)$").unwrap());
+static IMAGE_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)\.png$").unwrap());
+
+/// 截圖（PNG）：清單上單獨一筆，沒有加速版
+pub fn is_image_name(name: &str) -> bool {
+    IMAGE_RE.is_match(name)
+}
+
+/// 去掉副檔名（.mp4 / .png）
+fn strip_ext(name: &str) -> String {
+    if is_image_name(name) {
+        name[..name.len() - 4].to_string()
+    } else {
+        strip_mp4(name)
+    }
+}
 static GIF_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)\.gif$").unwrap());
 
 pub fn is_cut_name(name: &str) -> bool {
@@ -158,10 +171,7 @@ pub async fn scan(cache: &MediaCache, dir: &Path) -> Vec<LibraryEntry> {
     }
     for e in &mut entries {
         e.exports.sort_by(|p, q| {
-            p.speed
-                .total_cmp(&q.speed)
-                .then(((p.format == Some(ExportFormat::Gif)) as u8).cmp(&((q.format == Some(ExportFormat::Gif)) as u8)))
-                .then(p.media.mtime.total_cmp(&q.media.mtime))
+            p.speed.total_cmp(&q.speed).then(((p.format == Some(ExportFormat::Gif)) as u8).cmp(&((q.format == Some(ExportFormat::Gif)) as u8))).then(p.media.mtime.total_cmp(&q.media.mtime))
         });
     }
     entries
@@ -218,19 +228,33 @@ fn local_date(mtime_ms: f64) -> String {
     chrono::Local.timestamp_millis_opt(mtime_ms as i64).single().map(|d| d.format("%Y-%m-%d").to_string()).unwrap_or_default()
 }
 
+/// 排序用的時間（毫秒）：檔名裡的錄影時間（Rec_2026-10-06_08-17-18…，剪輯版沿用原片的時間），
+/// 不是預設檔名時用修改時間。介面依日期分組時也用這個時間，才不會同一天被拆開
+fn sort_time(e: &LibraryEntry) -> f64 {
+    static RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(\d{4}-\d{2}-\d{2})_(\d{2})-(\d{2})-(\d{2})").unwrap());
+    use chrono::TimeZone;
+    RE.captures(&e.media.name)
+        .and_then(|m| chrono::NaiveDateTime::parse_from_str(&format!("{} {}:{}:{}", &m[1], &m[2], &m[3], &m[4]), "%Y-%m-%d %H:%M:%S").ok())
+        .and_then(|t| chrono::Local.from_local_datetime(&t).earliest())
+        .map(|t| t.timestamp_millis() as f64)
+        // 同一秒的：剪輯版、_2 排在後面（修改時間較新）
+        .map(|t| t + (e.media.mtime / 1e13).fract())
+        .unwrap_or(e.media.mtime)
+}
+
 pub async fn list_library(cache: &Arc<MediaCache>, ffmpeg: Option<&Path>, dir: &Path, q: &LibraryQuery) -> LibraryPage {
     let mut list = scan(cache, dir).await;
 
     if let Some(text) = q.q.as_deref().map(|t| t.trim().to_lowercase()).filter(|t| !t.is_empty()) {
-        list.retain(|e| {
-            e.media.name.to_lowercase().contains(&text) || local_date(e.media.mtime).contains(&text) || e.exports.iter().any(|x| x.media.name.to_lowercase().contains(&text))
-        });
+        list.retain(|e| e.media.name.to_lowercase().contains(&text) || local_date(e.media.mtime).contains(&text) || e.exports.iter().any(|x| x.media.name.to_lowercase().contains(&text)));
     }
+    // 錄影與截圖分開列：除了「截圖」，其他篩選都只列影片
     match q.filter {
-        LibraryFilter::Original => list.retain(|e| !is_cut_name(&e.media.name)),
+        LibraryFilter::All | LibraryFilter::Audio => list.retain(|e| !is_image_name(&e.media.name)),
+        LibraryFilter::Original => list.retain(|e| !is_cut_name(&e.media.name) && !is_image_name(&e.media.name)),
+        LibraryFilter::Shot => list.retain(|e| is_image_name(&e.media.name)),
         LibraryFilter::Cut => list.retain(|e| is_cut_name(&e.media.name)),
         LibraryFilter::Speed => list.retain(|e| !e.exports.is_empty()),
-        _ => {}
     }
 
     // 依聲音篩選、依長度排序需要每個檔案的資訊（有快取，第一次較慢）
@@ -242,8 +266,8 @@ pub async fn list_library(cache: &Arc<MediaCache>, ffmpeg: Option<&Path>, dir: &
         list.retain(|e| e.media.has_audio == Some(true));
     }
     match q.sort {
-        LibrarySort::New => list.sort_by(|a, b| b.media.mtime.total_cmp(&a.media.mtime)),
-        LibrarySort::Old => list.sort_by(|a, b| a.media.mtime.total_cmp(&b.media.mtime)),
+        LibrarySort::New => list.sort_by(|a, b| sort_time(b).total_cmp(&sort_time(a))),
+        LibrarySort::Old => list.sort_by(|a, b| sort_time(a).total_cmp(&sort_time(b))),
         LibrarySort::Size => list.sort_by_key(|e| std::cmp::Reverse(e.media.bytes)),
         LibrarySort::Duration => list.sort_by(|a, b| b.media.duration_sec.unwrap_or(0.0).total_cmp(&a.media.duration_sec.unwrap_or(0.0))),
     }
@@ -278,7 +302,7 @@ pub async fn list_library(cache: &Arc<MediaCache>, ffmpeg: Option<&Path>, dir: &
 /// 錄影改名：原片與底下的加速版 / GIF 一起改（Rec_X_4x.mp4 → 新名_4x.mp4），清單上才不會斷開。
 /// 任何一個失敗就把已改的改回去。busy = 正在錄影 / 轉檔的檔案（小寫完整路徑）。回傳新的完整路徑。
 pub async fn rename_recording(cache: &MediaCache, path: &str, new_name: &str, busy: &[String]) -> Result<String> {
-    let base = strip_mp4(new_name.trim()).trim().to_string();
+    let base = strip_ext(new_name.trim()).trim().to_string();
     if let Some(bad) = check_recording_name(&base) {
         return Err(Error::config(bad));
     }
@@ -287,12 +311,13 @@ pub async fn rename_recording(cache: &MediaCache, path: &str, new_name: &str, bu
     let Some(entry) = entries.into_iter().find(|e| e.media.path.to_lowercase() == path.to_lowercase()) else {
         return Err(Error::config("找不到這個錄影，可能已被移動或刪除"));
     };
-    let old_base = strip_mp4(&entry.media.name);
+    let old_base = strip_ext(&entry.media.name);
+    let ext = if is_image_name(&entry.media.name) { "png" } else { "mp4" };
     if base == old_base {
         return Ok(entry.media.path);
     }
     let old_len = old_base.chars().count();
-    let mut plan: Vec<(String, PathBuf)> = vec![(entry.media.path.clone(), dir.join(format!("{base}.mp4")))];
+    let mut plan: Vec<(String, PathBuf)> = vec![(entry.media.path.clone(), dir.join(format!("{base}.{ext}")))];
     for x in &entry.exports {
         let suffix: String = x.media.name.chars().skip(old_len).collect();
         plan.push((x.media.path.clone(), dir.join(format!("{base}{suffix}"))));
@@ -313,11 +338,7 @@ pub async fn rename_recording(cache: &MediaCache, path: &str, new_name: &str, bu
                 let _ = tokio::fs::rename(t, f).await;
             }
             let busy = e.kind() == std::io::ErrorKind::PermissionDenied || matches!(e.raw_os_error(), Some(32) | Some(5));
-            return Err(Error::config(if busy {
-                "檔案正在使用中（例如正在播放或剪輯），關閉後再試一次".to_string()
-            } else {
-                format!("無法改名：{e}")
-            }));
+            return Err(Error::config(if busy { "檔案正在使用中（例如正在播放或剪輯），關閉後再試一次".to_string() } else { format!("無法改名：{e}") }));
         }
         done.push((from, to));
     }
@@ -399,6 +420,24 @@ mod tests {
         let mut v: Vec<String> = fs::read_dir(dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
         v.sort();
         v
+    }
+
+    #[tokio::test]
+    async fn screenshots_are_standalone_entries() {
+        let dir = make(&["Rec_X.mp4", "Rec_X_4x.mp4", "Shot_2026-10-09_14-30-00.png"]);
+        let cache = MediaCache::default();
+        let list = scan(&cache, dir.path()).await;
+        let names: Vec<(String, usize)> = list.iter().map(|e| (e.media.name.clone(), e.exports.len())).collect();
+        assert_eq!(names, vec![("Rec_X.mp4".into(), 1), ("Shot_2026-10-09_14-30-00.png".into(), 0)]);
+        let cache = Arc::new(cache);
+        let videos = list_library(&cache, None, dir.path(), &q(None, None, LibrarySort::New)).await;
+        assert_eq!(videos.items.iter().map(|e| e.media.name.as_str()).collect::<Vec<_>>(), vec!["Rec_X.mp4"]);
+        let shots = list_library(&cache, None, dir.path(), &LibraryQuery { filter: LibraryFilter::Shot, ..q(None, None, LibrarySort::New) }).await;
+        assert_eq!(shots.items.iter().map(|e| e.media.name.as_str()).collect::<Vec<_>>(), vec!["Shot_2026-10-09_14-30-00.png"]);
+        // 改名保留 .png
+        let src = dir.path().join("Shot_2026-10-09_14-30-00.png").display().to_string();
+        let out = rename_recording(&MediaCache::default(), &src, "登入畫面", &[]).await.unwrap();
+        assert!(out.ends_with("登入畫面.png"), "{out}");
     }
 
     #[tokio::test]

@@ -61,11 +61,7 @@ pub fn parse_version(stdout: &str) -> Option<String> {
 
 /// 從 `ffmpeg -encoders` 的輸出找出列出的 H.264 編碼器（依 ENCODERS 的順序）
 pub fn listed_encoders(encoders_stdout: &str) -> Vec<EncoderSpec> {
-    ENCODERS
-        .iter()
-        .copied()
-        .filter(|e| Regex::new(&format!(r"(?m)^\s*V\S*\s+{}\s", regex::escape(e.name))).unwrap().is_match(encoders_stdout))
-        .collect()
+    ENCODERS.iter().copied().filter(|e| Regex::new(&format!(r"(?m)^\s*V\S*\s+{}\s", regex::escape(e.name))).unwrap().is_match(encoders_stdout)).collect()
 }
 
 /// 偵測結果：介面顯示用的 FfmpegInfo，加上程式內部要用的編碼器與列出的硬體編碼器
@@ -138,7 +134,11 @@ pub async fn test_ddagrab(ffmpeg: &Path, monitor: Option<&MonitorInfo>) -> Resul
         "測試逾時".into()
     } else {
         let l = last_lines(&r.stderr, 3);
-        if l.is_empty() { format!("exit {}", r.code) } else { l }
+        if l.is_empty() {
+            format!("exit {}", r.code)
+        } else {
+            l
+        }
     })
 }
 

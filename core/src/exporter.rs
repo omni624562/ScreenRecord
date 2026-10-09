@@ -146,7 +146,9 @@ impl Exporter {
         }
         let crop = match spec.crop {
             Some(c) => {
-                let (Some(w), Some(h)) = (info.width, info.height) else { return Err(Error::config("無法讀取影片尺寸，不能裁切畫面")) };
+                let (Some(w), Some(h)) = (info.width, info.height) else {
+                    return Err(Error::config("無法讀取影片尺寸，不能裁切畫面"));
+                };
                 normalize_crop(Some(c), w as i32, h as i32)
             }
             None => None,
@@ -158,7 +160,9 @@ impl Exporter {
         let (overlays, temp) = if spec.overlays.is_empty() {
             (Vec::new(), None)
         } else {
-            let (Some(w), Some(h)) = (info.width, info.height) else { return Err(Error::config("無法讀取影片尺寸，不能加上標註")) };
+            let (Some(w), Some(h)) = (info.width, info.height) else {
+                return Err(Error::config("無法讀取影片尺寸，不能加上標註"));
+            };
             let dir = std::env::temp_dir().join(format!("ScreenRecorder-overlays-{}-{}", std::process::id(), crate::paths::now_ms()));
             match write_overlays(&spec.overlays, w as i32, h as i32, duration, &dir) {
                 Ok(list) => (list, Some(dir)),
@@ -400,7 +404,7 @@ struct Finish {
 
 /// 標註最多幾個（避免濾鏡圖過大）
 const MAX_OVERLAYS: usize = 100;
-/// 單一標註圖檔的上限（base64 解碼後）
+/// 單一標註圖檔的上限
 const MAX_OVERLAY_BYTES: usize = 40 * 1024 * 1024;
 
 /// 把介面送來的標註換算成 FFmpeg 的輸入：PNG 寫進 dir，座標限制在畫面內，時間限制在影片長度內
@@ -455,14 +459,11 @@ fn write_overlays(list: &[Overlay], vw: i32, vh: i32, duration: f64, dir: &Path)
     Ok(out)
 }
 
-/// 介面送來的 PNG（可含 data URL 前綴）
-fn decode_png(data: &str) -> Result<Vec<u8>> {
-    use base64::Engine;
-    let data = data.strip_prefix("data:image/png;base64,").unwrap_or(data);
-    if data.len() > MAX_OVERLAY_BYTES / 3 * 4 + 4 {
+/// 檢查介面畫好的 PNG
+fn decode_png(bytes: &[u8]) -> Result<&[u8]> {
+    if bytes.len() > MAX_OVERLAY_BYTES {
         return Err(Error::config("標註圖片太大"));
     }
-    let bytes = base64::engine::general_purpose::STANDARD.decode(data).map_err(|_| Error::config("標註圖片格式錯誤"))?;
     if !bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
         return Err(Error::config("標註圖片格式錯誤"));
     }
@@ -486,7 +487,9 @@ fn parent(p: &str) -> PathBuf {
 }
 
 async fn prepare(ctx: &ExportCtx, source: &str) -> Result<(PathBuf, EncoderSpec, MediaInfo, f64)> {
-    let (Some(ffmpeg), Some(enc)) = (ctx.ffmpeg.clone(), ctx.encoder) else { return Err(Error::config("FFmpeg 無法使用")) };
+    let (Some(ffmpeg), Some(enc)) = (ctx.ffmpeg.clone(), ctx.encoder) else {
+        return Err(Error::config("FFmpeg 無法使用"));
+    };
     if !source.to_lowercase().ends_with(".mp4") || !Path::new(source).is_file() {
         return Err(Error::config("找不到影片檔"));
     }
@@ -614,10 +617,9 @@ echo data > "$last"
 #[cfg(test)]
 mod overlay_tests {
     use super::*;
-    use base64::Engine;
 
     #[allow(clippy::too_many_arguments)]
-    fn ov(kind: OverlayKind, x: f64, y: f64, w: f64, h: f64, start: f64, end: f64, png: Option<String>) -> Overlay {
+    fn ov(kind: OverlayKind, x: f64, y: f64, w: f64, h: f64, start: f64, end: f64, png: Option<Vec<u8>>) -> Overlay {
         Overlay { kind, x, y, w, h, start, end, png, mask: None, invert: false }
     }
 
@@ -625,8 +627,8 @@ mod overlay_tests {
     fn overlays_are_written_and_clamped() {
         let dir = tempfile::tempdir().unwrap();
         let png = b"\x89PNG\r\n\x1a\nrest".to_vec();
-        let b64 = format!("data:image/png;base64,{}", base64::engine::general_purpose::STANDARD.encode(&png));
-        let b64_mask = b64.clone();
+        let b64 = png.clone();
+        let b64_mask = png.clone();
         let list = vec![
             ov(OverlayKind::Image, 10.4, -5.0, 100.0, 40.0, 1.0, 3.0, Some(b64)),
             // 超出畫面：裁到畫面內並取偶數
@@ -660,7 +662,7 @@ mod overlay_tests {
     #[test]
     fn rejects_bad_overlays() {
         let dir = tempfile::tempdir().unwrap();
-        let not_png = base64::engine::general_purpose::STANDARD.encode(b"GIF89a");
+        let not_png = b"GIF89a".to_vec();
         let bad = |o: Overlay| write_overlays(&[o], 1920, 1080, 10.0, dir.path()).unwrap_err().message().to_string();
         assert!(bad(ov(OverlayKind::Image, 0.0, 0.0, 10.0, 10.0, 0.0, 1.0, Some(not_png))).contains("格式錯誤"));
         assert!(bad(ov(OverlayKind::Image, 0.0, 0.0, 10.0, 10.0, 0.0, 1.0, None)).contains("缺少圖片"));

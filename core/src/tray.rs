@@ -1,13 +1,13 @@
 //! 系統匣控制：推送狀態給系統匣圖示、執行選單與快捷鍵指令、錄影完成時顯示通知。
 //! 圖示與選單本身在 tray_win.rs（獨立執行緒；選單開著時會卡住所在的執行緒）。
 
-use crate::app::App;
+use crate::app::{App, UiPage};
 use crate::format::{clock, video_clock};
+use crate::info;
 use crate::paths::now_ms;
 use crate::settings::SettingsPatch;
-use crate::types::{AudioConfig, HotkeyStatus, MethodPreference, RecordConfig, RecorderState, SourceConfig, HOTKEY_PAUSE_LABEL, HOTKEY_RECORD_LABEL};
+use crate::types::{AudioConfig, HotkeyStatus, Hotkeys, MethodPreference, RecordConfig, RecorderState, SourceConfig, HOTKEY_NAMES};
 use crate::version::APP_VERSION;
-use crate::info;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
@@ -28,6 +28,16 @@ pub enum TrayCommand {
     Changelog,
     HotkeyRecord,
     HotkeyPause,
+    /// 截圖：與錄影相同的範圍（選單與快捷鍵）
+    Screenshot,
+    /// 截圖：整個指定的螢幕
+    ScreenshotMonitor(String),
+    /// 截圖：所有螢幕
+    ScreenshotAll,
+    /// 在螢幕上框選範圍或點選視窗截圖（選單與快捷鍵）
+    ScreenshotSelect,
+    /// 再截一次上次框選的範圍
+    ScreenshotLast,
     OpenUpdate,
     Quit,
 }
@@ -50,12 +60,18 @@ pub struct TrayState {
     pub audio_mic: bool,
     /// 是否能開始錄影（有 FFmpeg、沒有轉檔工作）
     pub can_record: bool,
+    /// 是否能截圖（有 FFmpeg）
+    pub can_shot: bool,
+    /// 有上次框選的範圍（「重複上次框選」）
+    pub has_last_snip: bool,
     pub last_result: Option<String>,
     /// None = 無法設定（開發版）
     pub autostart: Option<bool>,
     pub version: String,
     /// 有新版本時顯示在選單
     pub update: Option<String>,
+    /// 快捷鍵名稱（選單右側顯示；停用時是空字串）：錄影、暫停、截圖、框選截圖
+    pub keys: [String; 4],
 }
 
 /// 系統匣圖示（Windows 實作在 tray_win.rs）
@@ -64,6 +80,8 @@ pub trait TrayUi: Send + Sync {
     fn balloon(&self, title: &str, text: &str, warn: bool);
     /// 結束前移除圖示（否則會殘留到滑鼠移過去才消失）
     fn dispose(&self);
+    /// 重新登記全域快捷鍵
+    fn set_hotkeys(&self, k: &Hotkeys) -> Option<HotkeyStatus>;
 }
 
 fn state_text(s: RecorderState) -> &'static str {
@@ -135,7 +153,7 @@ impl TrayController {
         };
         let last_source = match &cfg.source {
             SourceConfig::All => "所有螢幕".to_string(),
-            SourceConfig::Region { .. } => "自訂範圍".to_string(),
+            SourceConfig::Region { width, height, .. } => format!("範圍 {width}×{height}"),
             SourceConfig::Monitor { monitor_id } => format!("螢幕 {}", env.monitors.iter().find(|m| &m.id == monitor_id).map(|m| m.display_number).unwrap_or(1)),
         };
         let last_result = self.last_result_exists();
@@ -152,10 +170,16 @@ impl TrayController {
             audio_system: cfg.audio.system,
             audio_mic: cfg.audio.mic,
             can_record: self.app.ffmpeg_path().is_some() && !self.app.exporter.running(),
+            can_shot: self.app.ffmpeg_path().is_some(),
+            has_last_snip: self.app.last_snip().is_some(),
             last_result: if last_result { c.last_result_path.clone() } else { None },
             autostart: c.autostart,
             version: APP_VERSION.to_string(),
             update: self.app.update().map(|u| u.version),
+            keys: {
+                let k = self.app.hotkeys();
+                std::array::from_fn(|i| k.label(i))
+            },
         }
     }
 
@@ -208,7 +232,7 @@ impl TrayController {
         }
     }
 
-    /// 改錄音設定時同步更新網頁的設定（網頁看到 rev 變了會重新讀取）
+    /// 改錄音設定時同步更新操作視窗的設定（看到 rev 變了會重新讀取）
     fn update_audio(&self, system: bool) {
         let mut cfg = self.config();
         let on = if system {
@@ -232,17 +256,24 @@ impl TrayController {
         self.push(false);
     }
 
+    /// 截好了：顯示通知（存在哪裡、有沒有複製到剪貼簿）
+    fn notify_shot(&self, shot: &crate::types::ShotInfo) {
+        let name = std::path::Path::new(&shot.path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let text = if shot.copied { format!("已複製到剪貼簿，存成 {name}") } else { format!("已存成 {name}") };
+        self.notify("已截圖", &text, false);
+    }
+
     async fn run_inner(self: &Arc<Self>, cmd: TrayCommand) -> Result<(), String> {
         let app = &self.app;
         let rec = &app.recorder;
         let err = |e: crate::Error| e.message().to_string();
         let mut cfg = match cmd {
             TrayCommand::Open => {
-                app.open_ui(app.url());
+                app.open_ui(UiPage::Main);
                 return Ok(());
             }
             TrayCommand::Changelog => {
-                app.open_ui(format!("{}#changelog", app.url()));
+                app.open_ui(UiPage::Changelog);
                 return Ok(());
             }
             TrayCommand::Quit => {
@@ -252,7 +283,7 @@ impl TrayController {
             }
             // 開啟操作視窗：右上角的「有新版本」可以直接更新
             TrayCommand::OpenUpdate => {
-                app.open_ui(app.url());
+                app.open_ui(UiPage::Main);
                 return Ok(());
             }
             // 快捷鍵：同一組鍵依狀態切換（待命→開始、倒數→取消、錄影中→停止）
@@ -285,6 +316,27 @@ impl TrayController {
                 let dir = self.config().output_dir;
                 let _ = std::fs::create_dir_all(&dir);
                 crate::desktop::open_with_explorer(&dir, false);
+                return Ok(());
+            }
+            TrayCommand::Screenshot | TrayCommand::ScreenshotMonitor(_) | TrayCommand::ScreenshotAll | TrayCommand::ScreenshotLast | TrayCommand::ScreenshotSelect => {
+                let mut cfg = self.config();
+                match cmd {
+                    // 框選：取消時不顯示通知
+                    TrayCommand::ScreenshotSelect => {
+                        let Some(shot) = app.snip_begin(&cfg).await.map_err(err)? else { return Ok(()) };
+                        self.notify_shot(&shot);
+                        return Ok(());
+                    }
+                    TrayCommand::ScreenshotMonitor(id) => cfg.source = SourceConfig::Monitor { monitor_id: id },
+                    TrayCommand::ScreenshotAll => cfg.source = SourceConfig::All,
+                    TrayCommand::ScreenshotLast => {
+                        let r = app.last_snip().ok_or("還沒有框選過範圍")?;
+                        cfg.source = SourceConfig::Region { x: r.x as f64, y: r.y as f64, width: r.width as f64, height: r.height as f64 };
+                    }
+                    _ => {}
+                }
+                let shot = app.screenshot(&cfg).await.map_err(err)?;
+                self.notify_shot(&shot);
                 return Ok(());
             }
             TrayCommand::PlayLast => {
@@ -323,7 +375,8 @@ pub async fn start(app: &Arc<App>) -> bool {
     {
         let autostart = crate::desktop::get_autostart().await;
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<TrayCommand>();
-        let started = tokio::task::spawn_blocking(move || crate::tray_win::start(tx)).await;
+        let keys = app.hotkeys();
+        let started = tokio::task::spawn_blocking(move || crate::tray_win::start(tx, keys)).await;
         let (ui, hotkeys) = match started {
             Ok(Ok(v)) => v,
             Ok(Err(e)) => {
@@ -335,7 +388,9 @@ pub async fn start(app: &Arc<App>) -> bool {
                 return false;
             }
         };
-        report_hotkeys(app, hotkeys);
+        report_hotkeys(app, &keys, hotkeys);
+        let u = ui.clone();
+        app.set_hotkey_applier(Arc::new(move |k| u.set_hotkeys(k)));
         let ctl = TrayController::new(app.clone(), ui.clone(), autostart);
         let n = ctl.clone();
         app.set_notifier(Arc::new(move |title, text, warn| n.notify(title, text, warn)));
@@ -366,16 +421,12 @@ pub async fn start(app: &Arc<App>) -> bool {
 }
 
 #[cfg_attr(not(windows), allow(dead_code))]
-fn report_hotkeys(app: &App, h: HotkeyStatus) {
-    let mut busy = Vec::new();
-    if !h.record {
-        busy.push(HOTKEY_RECORD_LABEL);
-    }
-    if !h.pause {
-        busy.push(HOTKEY_PAUSE_LABEL);
-    }
+fn report_hotkeys(app: &App, k: &Hotkeys, h: HotkeyStatus) {
+    let ok = [h.record, h.pause, h.shot, h.snip];
+    let busy: Vec<String> = (0..4).filter(|i| !ok[*i]).map(|i| k.label(i)).collect();
     if busy.is_empty() {
-        info!("快捷鍵：{HOTKEY_RECORD_LABEL} 開始 / 停止，{HOTKEY_PAUSE_LABEL} 暫停 / 繼續");
+        let list: Vec<String> = (0..4).filter(|i| !k.label(*i).is_empty()).map(|i| format!("{} {}", k.label(i), HOTKEY_NAMES[i])).collect();
+        info!("快捷鍵：{}", list.join("，"));
     } else {
         info!("快捷鍵 {} 已被其他程式使用，無法登記", busy.join("、"));
     }
@@ -400,6 +451,9 @@ mod tests {
             self.balloons.lock().unwrap().push((title.into(), text.into(), warn));
         }
         fn dispose(&self) {}
+        fn set_hotkeys(&self, _: &Hotkeys) -> Option<HotkeyStatus> {
+            None
+        }
     }
 
     #[tokio::test]

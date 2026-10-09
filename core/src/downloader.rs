@@ -120,12 +120,7 @@ pub fn run_blocking(program: &Path, args: &[String], timeout: Duration) -> RunRe
             Err(_) => break (-1, false),
         }
     };
-    RunResult {
-        code,
-        stdout: String::from_utf8_lossy(&t_out.join().unwrap_or_default()).into_owned(),
-        stderr: String::from_utf8_lossy(&t_err.join().unwrap_or_default()).into_owned(),
-        timed_out,
-    }
+    RunResult { code, stdout: String::from_utf8_lossy(&t_out.join().unwrap_or_default()).into_owned(), stderr: String::from_utf8_lossy(&t_err.join().unwrap_or_default()).into_owned(), timed_out }
 }
 
 struct Inner {

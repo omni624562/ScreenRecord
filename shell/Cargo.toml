@@ -1,17 +1,27 @@
 [package]
 name = "screenrecorder-ui"
-version = "1.0.0"
-edition = "2021"
-description = "螢幕錄影：單一執行檔（本機 API、錄影、系統匣、Tauri / WebView2 操作視窗）"
-publish = false
-license = "MIT"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+description = "螢幕錄影：單一執行檔（錄影、轉檔、剪輯、系統匣與 egui 操作視窗）"
+build = "build.rs"
 
 [dependencies]
-tauri = { version = "2", features = [] }
-tauri-plugin-single-instance = "2"
 screenrecorder-core = { path = "../core" }
+eframe = { version = "0.36", default-features = false, features = ["glow", "default_fonts"] }
+# 與 eframe 相同版本：從系統匣顯示 / 隱藏視窗
+winit = { version = "0.30.13", default-features = false }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "io-util", "process", "sync"] }
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tokio = { version = "1", features = ["time"] }
+regex = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+tiny-skia = "0.12"
 
-[build-dependencies]
-tauri-build = { version = "2", features = [] }
+# 開發、測試用（Linux 上以 X11 顯示）
+[target.'cfg(unix)'.dependencies]
+eframe = { version = "0.36", default-features = false, features = ["glow", "default_fonts", "x11"] }
+
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1"

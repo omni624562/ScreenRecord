@@ -1,31 +1,49 @@
-//! 從 1.x 版升級：1.x 版（Bun）不在 Tauri 的單一實例機制裡，開著時新版會再多一個系統匣圖示、快捷鍵也登記不到。
-//! 啟動時掃描連接埠，找到 1.x 版就請它正常結束（錄影中會先停止並儲存），再由新版接手。
+//! 單一實例：啟動時掃描連接埠找已在執行的螢幕錄影。
+//! - 同一代（3.x 以後）：請它把操作視窗帶到前面，自己結束
+//! - 舊版（1.x Bun、2.x Tauri）：請它正常結束（錄影中會先停止並儲存），再由新版接手
 
-use crate::server::APP_ID;
+use crate::ipc::APP_ID;
 use std::time::{Duration, Instant};
 
 fn agent() -> ureq::Agent {
     ureq::AgentBuilder::new().timeout(Duration::from_millis(800)).build()
 }
 
-/// 這個連接埠上是不是螢幕錄影；是的話回傳它的版本
+/// 這個連接埠上是不是螢幕錄影；是的話回傳它的版本（3.x 在 ping 裡，舊版要另外問 /api/env）
 fn probe(port: u16) -> Option<String> {
     let a = agent();
     let ping: serde_json::Value = serde_json::from_str(&a.get(&format!("http://127.0.0.1:{port}/api/ping")).call().ok()?.into_string().ok()?).ok()?;
     if ping["app"] != APP_ID {
         return None;
     }
+    if let Some(v) = ping["version"].as_str() {
+        return Some(v.to_string());
+    }
     let env: serde_json::Value = serde_json::from_str(&a.get(&format!("http://127.0.0.1:{port}/api/env")).call().ok()?.into_string().ok()?).ok()?;
     Some(env["appVersion"].as_str().unwrap_or("").to_string())
 }
 
-/// 找已在執行的 1.x 版：回傳（連接埠, 版本）
-pub fn find_legacy(ports: &[u16]) -> Option<(u16, String)> {
-    let found: Vec<(u16, String)> = std::thread::scope(|s| {
+/// 已在執行的螢幕錄影：（連接埠, 版本）
+pub fn find_running(ports: &[u16]) -> Vec<(u16, String)> {
+    std::thread::scope(|s| {
         let handles: Vec<_> = ports.iter().map(|p| s.spawn(move || probe(*p).map(|v| (*p, v)))).collect();
         handles.into_iter().filter_map(|h| h.join().ok().flatten()).collect()
-    });
-    found.into_iter().find(|(_, v)| v.starts_with("1."))
+    })
+}
+
+/// 舊版（1.x、2.x）：由新版請它結束後接手
+pub fn is_legacy(version: &str) -> bool {
+    version.split('.').next().and_then(|m| m.parse::<u32>().ok()).is_none_or(|m| m < 3)
+}
+
+/// 找已在執行的舊版：回傳（連接埠, 版本）
+pub fn find_legacy(ports: &[u16]) -> Option<(u16, String)> {
+    find_running(ports).into_iter().find(|(_, v)| is_legacy(v))
+}
+
+/// 請已在執行的程式把操作視窗帶到前面
+pub fn show(port: u16) -> bool {
+    agent().post(&format!("http://127.0.0.1:{port}/api/show")).set("Content-Type", "application/json").send_string("{}").is_ok()
 }
 
 /// 請它結束並等它關閉（錄影中要先合併，最多等 timeout）
@@ -74,11 +92,12 @@ mod tests {
 
     #[test]
     fn finds_and_quits_legacy_instance() {
-        let legacy = fake_legacy("1.4.0");
-        let current = fake_legacy("2.0.0");
+        let legacy = fake_legacy("2.1.0");
+        let current = fake_legacy("3.0.0");
         let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
-        assert_eq!(find_legacy(&[closed, current, legacy]), Some((legacy, "1.4.0".to_string())));
-        assert_eq!(find_legacy(&[closed, current]), None); // 2.x 不處理（由單一實例機制負責）
+        assert_eq!(find_legacy(&[closed, current, legacy]), Some((legacy, "2.1.0".to_string())));
+        assert_eq!(find_legacy(&[closed, current]), None); // 同一代：帶到前面，不結束
+        assert!(is_legacy("1.4.0") && is_legacy("2.0.0") && !is_legacy("3.0.0") && !is_legacy("10.1.0"));
         assert!(quit_and_wait(legacy, Duration::from_secs(5)));
         assert_eq!(find_legacy(&[legacy]), None);
     }

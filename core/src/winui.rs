@@ -12,8 +12,8 @@ mod imp {
     use std::sync::Mutex;
     use windows::core::BOOL;
     use windows::Win32::Foundation::{HWND, LPARAM, RECT};
-    use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_EXTENDED_FRAME_BOUNDS};
-    use windows::Win32::UI::WindowsAndMessaging::{EnumWindows, GetWindowRect, InternalGetWindowText, IsIconic, IsWindowVisible, ShowWindow, SW_MINIMIZE, SW_SHOWNOACTIVATE};
+    use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS};
+    use windows::Win32::UI::WindowsAndMessaging::{EnumWindows, GetClassNameW, GetWindowRect, InternalGetWindowText, IsIconic, IsWindowVisible, ShowWindow, SW_MINIMIZE, SW_SHOWNOACTIVATE};
 
     /// 先前縮小的視窗（HWND 以整數保存，才能跨執行緒）
     static MINIMIZED: Mutex<Vec<isize>> = Mutex::new(Vec::new());
@@ -49,10 +49,65 @@ mod imp {
     /// 最大化的視窗會多出約 8px 到隔壁螢幕上，被誤判成擋到擷取範圍。
     fn window_rect(hwnd: HWND) -> Option<Rect> {
         let mut r = RECT::default();
-        let ok = unsafe {
-            DwmGetWindowAttribute(hwnd, DWMWA_EXTENDED_FRAME_BOUNDS, &mut r as *mut RECT as *mut _, std::mem::size_of::<RECT>() as u32).is_ok() || GetWindowRect(hwnd, &mut r).is_ok()
-        };
+        let ok = unsafe { DwmGetWindowAttribute(hwnd, DWMWA_EXTENDED_FRAME_BOUNDS, &mut r as *mut RECT as *mut _, std::mem::size_of::<RECT>() as u32).is_ok() || GetWindowRect(hwnd, &mut r).is_ok() };
         ok.then(|| Rect { x: r.left, y: r.top, width: r.right - r.left, height: r.bottom - r.top })
+    }
+
+    unsafe extern "system" fn visit_all(hwnd: HWND, lparam: LPARAM) -> BOOL {
+        let list = &mut *(lparam.0 as *mut Vec<Rect>);
+        if !IsWindowVisible(hwnd).as_bool() || IsIconic(hwnd).as_bool() {
+            return BOOL(1);
+        }
+        // 隱藏起來的 UWP 視窗（cloaked）看不到，跳過
+        let mut cloaked = 0u32;
+        if DwmGetWindowAttribute(hwnd, DWMWA_CLOAKED, &mut cloaked as *mut u32 as *mut _, 4).is_ok() && cloaked != 0 {
+            return BOOL(1);
+        }
+        let mut buf = [0u16; 256];
+        if InternalGetWindowText(hwnd, &mut buf) == 0 {
+            return BOOL(1);
+        }
+        // 桌面本身不算視窗
+        let n = GetClassNameW(hwnd, &mut buf);
+        let class = String::from_utf16_lossy(&buf[..n.max(0) as usize]);
+        if ["Progman", "WorkerW"].contains(&class.as_str()) {
+            return BOOL(1);
+        }
+        if let Some(r) = window_rect(hwnd).filter(|r| r.width > 0 && r.height > 0) {
+            list.push(r);
+        }
+        BOOL(1)
+    }
+
+    unsafe extern "system" fn visit_monitor(h: windows::Win32::Graphics::Gdi::HMONITOR, _: windows::Win32::Graphics::Gdi::HDC, _: *mut RECT, lparam: LPARAM) -> BOOL {
+        use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, MONITORINFOEXW};
+        let list = &mut *(lparam.0 as *mut Vec<String>);
+        let mut info = MONITORINFOEXW::default();
+        info.monitorInfo.cbSize = std::mem::size_of::<MONITORINFOEXW>() as u32;
+        let name = if GetMonitorInfoW(h, &mut info as *mut MONITORINFOEXW as *mut _).as_bool() {
+            let n = info.szDevice.iter().position(|c| *c == 0).unwrap_or(info.szDevice.len());
+            String::from_utf16_lossy(&info.szDevice[..n])
+        } else {
+            String::new()
+        };
+        list.push(name);
+        BOOL(1)
+    }
+
+    pub fn display_order() -> Vec<String> {
+        let mut list: Vec<String> = Vec::new();
+        unsafe {
+            let _ = windows::Win32::Graphics::Gdi::EnumDisplayMonitors(None, None, Some(visit_monitor), LPARAM(&mut list as *mut Vec<String> as isize));
+        }
+        list
+    }
+
+    pub fn visible_windows() -> Vec<Rect> {
+        let mut list: Vec<Rect> = Vec::new();
+        unsafe {
+            let _ = EnumWindows(Some(visit_all), LPARAM(&mut list as *mut Vec<Rect> as isize));
+        }
+        list
     }
 
     /// 與 area 重疊的操作視窗（拿不到位置的視窗算重疊，寧可多縮也不要錄到它）
@@ -117,6 +172,22 @@ pub fn minimize_ui(area: Option<&Rect>) -> bool {
         let _ = area;
         false
     }
+}
+
+/// 看得到的視窗範圍（實體像素），由上層到下層（框選截圖時點一下截整個視窗）
+pub fn visible_windows() -> Vec<Rect> {
+    #[cfg(windows)]
+    return imp::visible_windows();
+    #[cfg(not(windows))]
+    Vec::new()
+}
+
+/// 螢幕的裝置名稱（\\.\DISPLAY1…），依 EnumDisplayMonitors 的順序（與 winit 的螢幕編號相同）
+pub fn display_order() -> Vec<String> {
+    #[cfg(windows)]
+    return imp::display_order();
+    #[cfg(not(windows))]
+    Vec::new()
 }
 
 /// 還原先前由 minimize_ui 縮小的視窗（使用者自己又打開的就不動）
