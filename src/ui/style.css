@@ -428,7 +428,7 @@ input[type="number"] { font-family: var(--mono); font-variant-numeric: tabular-n
 .ed-range { position: absolute; top: 0; height: 9px; background: #f5b301; opacity: 0.9; cursor: grab; z-index: 3; box-shadow: 0 1px 2px rgb(0 0 0 / 0.4); }
 .ed-range:active { cursor: grabbing; }
 /* 標註軌：每個標註一條，拖曳移動、拖曳兩端調整出現時間 */
-.ed-anntrack { position: relative; margin-top: -6px; border-radius: 6px; background: var(--surface-2); overflow: hidden; touch-action: none; user-select: none; cursor: text; }
+.ed-anntrack { position: relative; height: 70px; margin-top: -6px; border-radius: 6px; background: var(--surface-2); overflow: hidden; touch-action: none; user-select: none; cursor: text; }
 .ed-anntrack .ed-seg.cut { background: repeating-linear-gradient(135deg, rgb(229 72 77 / 0.25) 0 6px, transparent 6px 12px), rgb(0 0 0 / 0.18); pointer-events: none; }
 .ed-abar {
   position: absolute; height: 18px; box-sizing: border-box; padding: 0 8px; border-radius: 4px; background: var(--c); color: var(--fg);
@@ -436,6 +436,8 @@ input[type="number"] { font-family: var(--mono); font-variant-numeric: tabular-n
   box-shadow: inset 0 0 0 1px rgb(0 0 0 / 0.25); z-index: 1;
 }
 .ed-abar:active { cursor: grabbing; }
+.ed-anntrack.dense .ed-abar { font-size: 0; padding: 0; }
+.ed-anntrack-empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--muted); font-size: 12px; pointer-events: none; }
 .ed-abar.on { box-shadow: 0 0 0 2px var(--accent), inset 0 0 0 1px rgb(0 0 0 / 0.25); z-index: 2; }
 /* 整個落在刪除的片段裡：輸出影片看不到 */
 .ed-abar.gone { opacity: 0.55; background: repeating-linear-gradient(135deg, var(--c) 0 5px, color-mix(in srgb, var(--c) 40%, transparent) 5px 10px); }
@@ -454,6 +456,11 @@ input[type="number"] { font-family: var(--mono); font-variant-numeric: tabular-n
 .ed-blur { position: absolute; backdrop-filter: blur(10px); border: 1px dashed rgb(255 255 255 / 0.8); outline: 1px dashed rgb(0 0 0 / 0.5); }
 .ed-blur.mosaic { backdrop-filter: blur(6px) contrast(1.1); background: repeating-conic-gradient(rgb(255 255 255 / 0.06) 0 25%, transparent 0 50%) 0 0 / 14px 14px; }
 .ed-blur.off { opacity: 0.4; }
+/* 範圍外模糊：蓋滿整個畫面，用遮罩挖掉範圍內 */
+.ed-blur.outside { inset: 0; border: 0; outline: 0; -webkit-mask-size: 100% 100%; mask-size: 100% 100%; }
+.ed-hole { position: absolute; border: 1px dashed rgb(255 255 255 / 0.85); outline: 1px dashed rgb(0 0 0 / 0.5); }
+.ed-hole.off { opacity: 0.4; }
+.ed-hole span { position: absolute; left: 4px; top: 4px; padding: 1px 6px; border-radius: 4px; background: rgb(0 0 0 / 0.55); color: #fff; font-size: 11px; }
 .ed-blur span { position: absolute; left: 4px; top: 4px; padding: 1px 6px; border-radius: 4px; background: rgb(0 0 0 / 0.55); color: #fff; font-size: 11px; }
 .ed-stage.tool-mode { cursor: crosshair; }
 

@@ -27,6 +27,10 @@ export interface OverlaySpec {
   start: number;
   end: number;
   png?: string;
+  /** 馬賽克 / 模糊的形狀遮罩（白色 = 範圍內，PNG data URL）；沒有就是方形 */
+  mask?: string;
+  /** 範圍外模糊（或馬賽克），範圍內清楚 */
+  invert?: boolean;
 }
 
 /** 片段短於這個長度就忽略（約一張畫面以下） */

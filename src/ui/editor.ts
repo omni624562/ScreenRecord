@@ -2,7 +2,7 @@
 import { keepRanges, normalizeCrop, normalizeRanges, totalLength, cutFileName, type EditSpec, type OverlaySpec, type Range } from "../shared/edit.ts";
 import { videoClock } from "../shared/format.ts";
 import type { LibraryEntry } from "../shared/types.ts";
-import { ANN_LABELS, COLORS, EMOJIS, bbox, defaultSize, draw, hit, isBox, label, measure, toOverlay, type Ann, type AnnKind } from "./annotate.ts";
+import { ANN_LABELS, COLORS, EMOJIS, bbox, defaultSize, draw, hit, isBox, label, measure, roundRadius, shapePath, toOverlay, type Ann, type AnnKind, type Shape } from "./annotate.ts";
 
 /** 存起來的剪輯設定與標註（之後可以再修改） */
 export interface ProjectData {
@@ -64,6 +64,10 @@ let nextAnnId = 1;
 /** 目前選的工具（放置一個後回到選取模式）；emoji 為表情工具選好的表情 */
 let tool: AnnKind | "emoji" | undefined;
 let emoji = EMOJIS[0]!;
+/** 上次選的馬賽克 / 模糊形狀與範圍（新的沿用） */
+const lastStyle: Record<"mosaic" | "blur", { shape: Shape; invert: boolean }> = { mosaic: { shape: "rect", invert: false }, blur: { shape: "rect", invert: false } };
+/** 放好一個後繼續放下一個的工具（編號 1、2、3…、表情） */
+const sticky = (t: typeof tool) => t === "step" || t === "emoji";
 /** 拖曳標註軌時固定每個標註所在的列，避免拖曳中跳列 */
 let laneFreeze: Map<number, number> | undefined;
 /** 儲存時取代這個剪輯版（修改之前的剪輯） */
@@ -380,17 +384,21 @@ function renderTimeline() {
   if (zoomed) Object.assign($("edScrollThumb").style, { left: `${(view.a / duration) * 100}%`, width: `${((view.b - view.a) / duration) * 100}%` });
 }
 
-const LANE_H = 22;
+/** 標註軌固定高度（不隨標註數量變高，影片才不會在放置標註時跳動）；列多時每列變矮 */
+const TRACK_H = 70;
 
 /** 標註軌：依出現時間排成幾列（不重疊），刪除的片段一樣壓暗，讓人看得出標註會不會被剪掉 */
 function renderAnnTrack(cutParts: string[]) {
   const track = $("edAnnTrack");
-  track.hidden = !anns.length;
-  if (!anns.length) return;
+  if (!anns.length) {
+    track.innerHTML = `<span class="ed-anntrack-empty">標註軌：加上的標註會在這裡顯示一條，拖曳可調整出現的時間</span>`;
+    return;
+  }
   const keep = keepRanges(duration, spec);
   const lanes = laneFreeze ?? assignLanes();
   const n = Math.max(1, ...[...lanes.values()].map((l) => l + 1));
-  track.style.height = `${n * LANE_H + 4}px`;
+  const laneH = Math.max(6, Math.min(22, (TRACK_H - 4) / n));
+  track.classList.toggle("dense", laneH < 16);
   const bars = anns.map((a) => {
     const lane = lanes.get(a.id) ?? 0;
     const blur = a.kind === "mosaic" || a.kind === "blur";
@@ -398,7 +406,7 @@ function renderAnnTrack(cutParts: string[]) {
     const fg = c === "#ffffff" || c === "#f5b301" ? "#111" : "#fff";
     const gone = !inOutput(a, keep);
     const tip = `${label(a)}：${videoClock(a.start)} – ${videoClock(a.end)}${gone ? "（在刪除的片段中，不會出現在輸出影片）" : ""}。拖曳移動，拖曳兩端調整長短`;
-    return `<div class="ed-abar${a.id === annSel ? " on" : ""}${gone ? " gone" : ""}" data-ann="${a.id}" title="${esc(tip)}" style="left:${pct(a.start)};width:${pctLen(a.end - a.start)};top:${lane * LANE_H + 3}px;--c:${c};--fg:${fg}"><i class="edge l" data-edge="start"></i>${esc(label(a))}<i class="edge r" data-edge="end"></i></div>`;
+    return `<div class="ed-abar${a.id === annSel ? " on" : ""}${gone ? " gone" : ""}" data-ann="${a.id}" title="${esc(tip)}" style="left:${pct(a.start)};width:${pctLen(a.end - a.start)};top:${lane * laneH + 2}px;height:${laneH - 2}px;line-height:${laneH - 2}px;--c:${c};--fg:${fg}"><i class="edge l" data-edge="start"></i>${esc(label(a))}<i class="edge r" data-edge="end"></i></div>`;
   });
   track.innerHTML = cutParts.join("").replace(/<button[^>]*>×<\/button>/g, "") + bars.join("") + `<div class="ed-at-ph" id="edAnnPh" style="left:${pct(now())}"></div>`;
 }
@@ -563,15 +571,26 @@ function drawAnns() {
     const isSel = a.id === annSel;
     if (!visible && !isSel) continue;
     ctx.globalAlpha = visible ? 1 : 0.35;
-    if (a.kind === "mosaic" || a.kind === "blur") {
-      blurs.push(
-        `<div class="ed-blur ${a.kind}${visible ? "" : " off"}" style="left:${(a.x / vw) * 100}%;top:${(a.y / vh) * 100}%;width:${(a.w / vw) * 100}%;height:${(a.h / vh) * 100}%"><span>${ANN_LABELS[a.kind]}</span></div>`,
-      );
-    } else draw(ctx, a, s);
+    if (a.kind === "mosaic" || a.kind === "blur") blurs.push(blurPreview(a, visible, stage.clientWidth / vw));
+    else draw(ctx, a, s);
     if (isSel) drawSelection(ctx, a, s);
   }
   ctx.globalAlpha = 1;
   $("edBlurs").innerHTML = blurs.join("");
+}
+
+/** 馬賽克 / 模糊的預覽（CSS 模糊）：形狀用圓角或遮罩；範圍外模糊時蓋滿畫面並挖掉範圍內。css = 影片像素換算成畫面像素的倍率 */
+function blurPreview(a: Ann, visible: boolean, css: number): string {
+  const box = `left:${(a.x / vw) * 100}%;top:${(a.y / vh) * 100}%;width:${(a.w / vw) * 100}%;height:${(a.h / vh) * 100}%`;
+  const radius = a.shape === "ellipse" ? "50%" : a.shape === "round" ? `${roundRadius(a.w, a.h) * css}px` : "0";
+  const name = esc(label(a));
+  if (!a.invert) return `<div class="ed-blur ${a.kind}${visible ? "" : " off"}" style="${box};border-radius:${radius}"><span>${name}</span></div>`;
+  const svg = `<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 ${vw} ${vh}' preserveAspectRatio='none'><path fill-rule='evenodd' d='M0 0H${vw}V${vh}H0Z${shapePath(a.shape, a.x, a.y, a.w, a.h)}'/></svg>`;
+  const mask = `url("data:image/svg+xml,${encodeURIComponent(svg)}")`;
+  return (
+    `<div class="ed-blur outside ${a.kind}${visible ? "" : " off"}" style="-webkit-mask-image:${mask};mask-image:${mask}"></div>` +
+    `<div class="ed-hole${visible ? "" : " off"}" style="${box};border-radius:${radius}"><span>${name}</span></div>`
+  );
 }
 
 /** 選取框與調整大小的把手 */
@@ -631,6 +650,7 @@ function newAnn(kind: AnnKind, x: number, y: number): Ann {
     if (tool === "emoji") a.size = Math.round(defaultSize("text", vh || 1080) * 1.6);
   }
   if (kind === "step") a.n = anns.filter((o) => o.kind === "step").length + 1;
+  if (kind === "mosaic" || kind === "blur") Object.assign(a, lastStyle[kind]);
   measure(a);
   if (kind === "text" || kind === "step") {
     // 以點的位置為中心
@@ -673,9 +693,13 @@ function renderAnnPanel() {
   hint.textContent = !vw
     ? "無法讀取影片尺寸，不能加上標註。"
     : tool
-      ? tool === "text" || tool === "emoji" || tool === "step"
-        ? `在影片上點一下放置${tool === "emoji" ? "（先在上面選表情）" : ""}。按 Esc 取消。`
-        : "在影片上按住拖曳放置。按 Esc 取消。"
+      ? tool === "step"
+        ? "在影片上依序點擊，放置編號 1、2、3…；完成後按 Esc 或再按一次「編號」。"
+        : tool === "emoji"
+          ? "先在上面選表情，再在影片上點擊放置（可連續放）；完成後按 Esc 或再按一次「表情」。"
+          : tool === "text"
+            ? "在影片上點一下放置。按 Esc 取消。"
+            : "在影片上按住拖曳放置。按 Esc 取消。"
       : a
         ? ""
         : "① 選工具 ② 在影片上點一下或拖曳放置。標註從目前位置起出現 3 秒，可在時間軸下方的標註軌拖曳調整。";
@@ -692,6 +716,17 @@ function renderAnnPanel() {
     const blurLike = a.kind === "mosaic" || a.kind === "blur";
     $("edColors").hidden = blurLike;
     $("edAnnSizeRow").hidden = blurLike;
+    $("edAnnShapeRow").hidden = !blurLike;
+    $("edAnnModeRow").hidden = !blurLike;
+    if (blurLike) {
+      for (const b of document.querySelectorAll<HTMLButtonElement>("#edShapes [data-shape]")) b.setAttribute("aria-selected", String(b.dataset.shape === (a.shape ?? "rect")));
+      const word = a.kind === "mosaic" ? "馬賽克" : "模糊";
+      const modes = document.querySelectorAll<HTMLButtonElement>("#edModes [data-invert]");
+      modes.forEach((b) => {
+        b.setAttribute("aria-selected", String((b.dataset.invert === "1") === !!a.invert));
+        b.textContent = b.dataset.invert === "1" ? `框外${word}（框內清楚）` : `框內${word}`;
+      });
+    }
     $("edAnnBgWrap").hidden = !isText;
     $<HTMLInputElement>("edAnnBg").checked = !!a.bg;
     $("edAnnSizeLabel").textContent = isText ? "字級" : a.kind === "step" ? "大小" : "線寬";
@@ -762,6 +797,20 @@ function setupAnnotations() {
       a.y = cy - a.h / 2;
       render();
     }
+  });
+  $("edShapes").addEventListener("click", (e) => {
+    const b = (e.target as HTMLElement).closest<HTMLButtonElement>("[data-shape]");
+    const a = selected();
+    if (!b || !a || (a.kind !== "mosaic" && a.kind !== "blur")) return;
+    lastStyle[a.kind].shape = b.dataset.shape as Shape;
+    updateAnn({ shape: b.dataset.shape as Shape });
+  });
+  $("edModes").addEventListener("click", (e) => {
+    const b = (e.target as HTMLElement).closest<HTMLButtonElement>("[data-invert]");
+    const a = selected();
+    if (!b || !a || (a.kind !== "mosaic" && a.kind !== "blur")) return;
+    lastStyle[a.kind].invert = b.dataset.invert === "1";
+    updateAnn({ invert: b.dataset.invert === "1" });
   });
   $<HTMLInputElement>("edAnnBg").addEventListener("change", (e) => updateAnn({ bg: (e.target as HTMLInputElement).checked }));
   for (const [id, key] of [["edAnnFrom", "start"], ["edAnnTo", "end"]] as const) {
@@ -1092,7 +1141,9 @@ function bind() {
       return;
     }
     const p = toVideo(e);
-    if (tool) {
+    // 連續放置編號 / 表情時，點到已放好的同類標註 = 選取、移動它，不再新增
+    const hitSame = sticky(tool) ? annAt(p) : undefined;
+    if (tool && !(hitSame && hitSame.kind === (tool === "emoji" ? "text" : tool))) {
       v.pause();
       stopPreview();
       const kind: AnnKind = tool === "emoji" ? "text" : tool;
@@ -1101,8 +1152,8 @@ function bind() {
       annSel = a.id;
       tab = "ann";
       if (kind === "text" || kind === "step") {
-        // 點一下就放好
-        tool = undefined;
+        // 點一下就放好；編號、表情繼續放下一個
+        if (!sticky(tool)) tool = undefined;
         render();
         if (kind === "text" && a.text === "說明文字") {
           const ta = $<HTMLTextAreaElement>("edAnnText");

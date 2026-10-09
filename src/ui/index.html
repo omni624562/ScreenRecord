@@ -388,7 +388,7 @@
             <div class="ed-playhead" id="edPlayhead" data-handle="playhead" title="拖曳跳到其他時間"></div>
           </div>
           <!-- 標註軌：每個標註一條，拖曳移動出現時間、拖曳兩端調整長短 -->
-          <div class="ed-anntrack" id="edAnnTrack" hidden></div>
+          <div class="ed-anntrack" id="edAnnTrack"></div>
           <div class="ed-scroll" id="edScroll" hidden title="拖曳查看時間軸的其他部分">
             <div class="ed-scroll-thumb" id="edScrollThumb"></div>
           </div>
@@ -465,6 +465,21 @@
                 <p class="ed-warn" id="edAnnWarn" hidden></p>
                 <label class="field" id="edAnnTextField"><span>文字（Enter 換行）</span><textarea id="edAnnText" rows="2" spellcheck="false"></textarea></label>
                 <div class="ed-colors" id="edColors"></div>
+                <div class="ed-row" id="edAnnShapeRow">
+                  <span class="small muted">形狀</span>
+                  <div class="segmented compact" id="edShapes">
+                    <button type="button" data-shape="rect">方形</button>
+                    <button type="button" data-shape="round">圓角</button>
+                    <button type="button" data-shape="ellipse">橢圓</button>
+                  </div>
+                </div>
+                <div class="ed-row" id="edAnnModeRow">
+                  <span class="small muted" id="edAnnModeLabel">範圍</span>
+                  <div class="segmented compact" id="edModes">
+                    <button type="button" data-invert="0" title="框起來的地方變模糊">框內模糊</button>
+                    <button type="button" data-invert="1" title="框起來的地方清楚，其他地方模糊（聚焦）">框外模糊</button>
+                  </div>
+                </div>
                 <div class="ed-row" id="edAnnSizeRow">
                   <span class="small muted" id="edAnnSizeLabel">大小</span>
                   <input type="range" id="edAnnSize" min="8" max="200" step="1" />

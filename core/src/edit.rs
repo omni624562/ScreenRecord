@@ -53,6 +53,12 @@ pub struct Overlay {
     pub end: f64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub png: Option<String>,
+    /// 馬賽克 / 模糊的形狀遮罩（白色 = 範圍內，PNG base64）；沒有就是方形
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mask: Option<String>,
+    /// 反過來：範圍外模糊（或馬賽克），範圍內清楚
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub invert: bool,
 }
 
 /// 片段短於這個長度就忽略（約一張畫面以下）

@@ -546,8 +546,22 @@ pub fn gif_args(source: &str, out_file: &str, speed: f64, o: &GifOptions) -> Res
 pub enum OverlayInput {
     /// 透明 PNG：疊在 (x, y)
     Image { path: String, x: i32, y: i32, start: f64, end: f64 },
-    /// 範圍模糊或馬賽克（寬高為偶數、至少 8）
-    Blur { rect: Rect, start: f64, end: f64, mosaic: bool },
+    /// 範圍模糊或馬賽克（寬高為偶數、至少 8）。mask = 形狀遮罩圖檔（沒有就是方形）；
+    /// invert = 範圍外模糊、範圍內清楚（frame 為整個畫面的寬高）
+    Blur { rect: Rect, start: f64, end: f64, mosaic: bool, mask: Option<String>, invert: bool, frame: (i32, i32) },
+}
+
+/// 模糊或馬賽克（w × h 的畫面）
+fn blur_effect(w: i32, h: i32, mosaic: bool, outside: bool) -> String {
+    if mosaic {
+        // 每格約為範圍短邊的 1/6（範圍外時以整個畫面為準，格子小一點），至少 12px，用最近鄰放大回原尺寸
+        let block = if outside { (w.min(h) / 45).max(12) } else { (w.min(h) / 6).max(12) };
+        format!("scale={}:{}:flags=area,scale={w}:{h}:flags=neighbor", (w / block).max(1), (h / block).max(1))
+    } else {
+        // boxblur 的半徑不能超過色度平面短邊的一半
+        let radius = if outside { (w.min(h) / 40).clamp(4, 30) } else { (w.min(h) / 4 - 1).clamp(1, 30) };
+        format!("boxblur={radius}:2")
+    }
 }
 
 fn enable(start: f64, end: f64) -> String {
@@ -583,26 +597,33 @@ pub fn cut_args(source: &str, out_file: &str, keep: &[(f64, f64)], crop: Option<
                     graph.push(format!("{cur}[{next_input}:v]overlay={x}:{y}:{}{out}", enable(*start, *end)));
                     next_input += 1;
                 }
-                OverlayInput::Blur { rect: r, start, end, mosaic } => {
-                    let effect = if *mosaic {
-                        // 每格約為範圍短邊的 1/6（至少 12px），用最近鄰放大回原尺寸
-                        let block = (r.width.min(r.height) / 6).max(12);
-                        format!("scale={}:{}:flags=area,scale={}:{}:flags=neighbor", (r.width / block).max(1), (r.height / block).max(1), r.width, r.height)
-                    } else {
-                        // boxblur 的半徑不能超過色度平面短邊的一半
-                        let radius = (r.width.min(r.height) / 4 - 1).clamp(1, 30);
-                        format!("boxblur={radius}:2")
+                OverlayInput::Blur { rect: r, start, end, mosaic, mask, invert, frame } => {
+                    let (w, h, x, y) = (r.width, r.height, r.x, r.y);
+                    // 範圍內的畫面（有形狀時用遮罩變成透明背景）→ [b{i}c]
+                    let mut region = format!("crop={w}:{h}:{x}:{y}");
+                    if !invert {
+                        region = format!("{region},{}", blur_effect(w, h, *mosaic, false));
+                    }
+                    let shaped = match mask {
+                        Some(m) => {
+                            a.extend(["-i".into(), m.clone()]);
+                            let s = format!("{region},format=yuva420p[b{i}e];[{next_input}:v]scale={w}:{h},format=gray[b{i}m];[b{i}e][b{i}m]alphamerge[b{i}c]");
+                            next_input += 1;
+                            s
+                        }
+                        None => format!("{region}[b{i}c]"),
                     };
-                    graph.push(format!(
-                        "{cur}split=2[b{i}a][b{i}b];[b{i}b]crop={}:{}:{}:{},{effect}[b{i}c];[b{i}a][b{i}c]overlay={}:{}:{}{out}",
-                        r.width,
-                        r.height,
-                        r.x,
-                        r.y,
-                        r.x,
-                        r.y,
-                        enable(*start, *end)
-                    ));
+                    if *invert {
+                        // 整個畫面模糊，再把範圍內清楚的畫面疊回去
+                        let (fw, fh) = *frame;
+                        graph.push(format!(
+                            "{cur}split=3[b{i}a][b{i}b][b{i}d];[b{i}b]{}[b{i}f];[b{i}d]{shaped};[b{i}f][b{i}c]overlay={x}:{y}[b{i}g];[b{i}a][b{i}g]overlay=0:0:{}{out}",
+                            blur_effect(fw, fh, *mosaic, true),
+                            enable(*start, *end)
+                        ));
+                    } else {
+                        graph.push(format!("{cur}split=2[b{i}a][b{i}b];[b{i}b]{shaped};[b{i}a][b{i}c]overlay={x}:{y}:{}{out}", enable(*start, *end)));
+                    }
                 }
             }
             cur = out;
@@ -1005,19 +1026,28 @@ mod tests {
         // 標註：先疊上（原影片時間），再挑選保留的片段與裁切
         let overlays = [
             OverlayInput::Image { path: "a.png".into(), x: 10, y: 20, start: 1.0, end: 3.5 },
-            OverlayInput::Blur { rect: Rect { x: 100, y: 50, width: 120, height: 60 }, start: 0.0, end: 9.0, mosaic: false },
-            OverlayInput::Blur { rect: Rect { x: 0, y: 0, width: 240, height: 120 }, start: 2.0, end: 4.0, mosaic: true },
+            OverlayInput::Blur { rect: Rect { x: 100, y: 50, width: 120, height: 60 }, start: 0.0, end: 9.0, mosaic: false, mask: None, invert: false, frame: (1280, 720) },
+            OverlayInput::Blur { rect: Rect { x: 0, y: 0, width: 240, height: 120 }, start: 2.0, end: 4.0, mosaic: true, mask: None, invert: false, frame: (1280, 720) },
+            // 橢圓模糊：遮罩縮放成範圍大小，alphamerge 後疊上
+            OverlayInput::Blur { rect: Rect { x: 200, y: 100, width: 400, height: 240 }, start: 1.0, end: 3.0, mosaic: false, mask: Some("m.png".into()), invert: false, frame: (1280, 720) },
+            // 範圍外模糊（橢圓範圍內清楚）
+            OverlayInput::Blur { rect: Rect { x: 700, y: 400, width: 400, height: 240 }, start: 2.0, end: 4.0, mosaic: false, mask: Some("m2.png".into()), invert: true, frame: (1280, 720) },
+            // 範圍外馬賽克（方形）
+            OverlayInput::Blur { rect: Rect { x: 10, y: 20, width: 100, height: 50 }, start: 0.0, end: 1.0, mosaic: true, mask: None, invert: true, frame: (1280, 720) },
         ];
         let args = cut_args("in.mp4", "out.mp4", &[(1.0, 5.0)], Some(Rect { x: 40, y: 40, width: 200, height: 160 }), 30.0, &x264(), true, &overlays).unwrap();
         assert!(!args.contains(&"-vf".to_string()));
         let inputs: Vec<&String> = args.iter().zip(args.iter().skip(1)).filter(|(k, _)| *k == "-i").map(|(_, v)| v).collect();
-        assert_eq!(inputs, ["in.mp4", "a.png"]);
+        assert_eq!(inputs, ["in.mp4", "a.png", "m.png", "m2.png"]);
         assert_eq!(
             after(&args, "-filter_complex"),
             "[0:v][1:v]overlay=10:20:enable='between(t,1,3.5)'[o0];\
              [o0]split=2[b1a][b1b];[b1b]crop=120:60:100:50,boxblur=14:2[b1c];[b1a][b1c]overlay=100:50:enable='between(t,0,9)'[o1];\
              [o1]split=2[b2a][b2b];[b2b]crop=240:120:0:0,scale=12:6:flags=area,scale=240:120:flags=neighbor[b2c];[b2a][b2c]overlay=0:0:enable='between(t,2,4)'[o2];\
-             [o2]select='gte(t,1)*lt(t,5)',setpts=N/(30*TB),crop=200:160:40:40,format=yuv420p[vout]"
+             [o2]split=2[b3a][b3b];[b3b]crop=400:240:200:100,boxblur=30:2,format=yuva420p[b3e];[2:v]scale=400:240,format=gray[b3m];[b3e][b3m]alphamerge[b3c];[b3a][b3c]overlay=200:100:enable='between(t,1,3)'[o3];\
+             [o3]split=3[b4a][b4b][b4d];[b4b]boxblur=18:2[b4f];[b4d]crop=400:240:700:400,format=yuva420p[b4e];[3:v]scale=400:240,format=gray[b4m];[b4e][b4m]alphamerge[b4c];[b4f][b4c]overlay=700:400[b4g];[b4a][b4g]overlay=0:0:enable='between(t,2,4)'[o4];\
+             [o4]split=3[b5a][b5b][b5d];[b5b]scale=80:45:flags=area,scale=1280:720:flags=neighbor[b5f];[b5d]crop=100:50:10:20[b5c];[b5f][b5c]overlay=10:20[b5g];[b5a][b5g]overlay=0:0:enable='between(t,0,1)'[o5];\
+             [o5]select='gte(t,1)*lt(t,5)',setpts=N/(30*TB),crop=200:160:40:40,format=yuv420p[vout]"
         );
         assert_eq!(after(&args, "-map"), "[vout]");
         assert_eq!(after(&args, "-af"), "aselect='gte(t,1)*lt(t,5)',asetpts=N/SR/TB");

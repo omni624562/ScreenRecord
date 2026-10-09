@@ -6,6 +6,9 @@
 import type { OverlaySpec } from "../shared/edit.ts";
 
 export type AnnKind = "text" | "arrow" | "rect" | "ellipse" | "highlight" | "step" | "mosaic" | "blur";
+/** 馬賽克 / 模糊的形狀 */
+export type Shape = "rect" | "round" | "ellipse";
+export const SHAPE_LABELS: Record<Shape, string> = { rect: "方形", round: "圓角", ellipse: "橢圓" };
 
 export interface Ann {
   id: number;
@@ -25,6 +28,27 @@ export interface Ann {
   /** 文字加半透明深色底 */
   bg?: boolean;
   n?: number;
+  /** 馬賽克 / 模糊的形狀（預設方形） */
+  shape?: Shape;
+  /** 範圍外模糊（或馬賽克），範圍內清楚 */
+  invert?: boolean;
+}
+
+/** 圓角的半徑（影片像素） */
+export const roundRadius = (w: number, h: number) => Math.min(Math.abs(w), Math.abs(h)) * 0.2;
+
+/** 形狀的 SVG 路徑（影片像素座標） */
+export function shapePath(shape: Shape | undefined, x: number, y: number, w: number, h: number): string {
+  if (shape === "ellipse") {
+    const rx = w / 2;
+    const ry = h / 2;
+    return `M${x} ${y + ry}a${rx} ${ry} 0 1 0 ${w} 0a${rx} ${ry} 0 1 0 ${-w} 0Z`;
+  }
+  if (shape === "round") {
+    const r = roundRadius(w, h);
+    return `M${x + r} ${y}H${x + w - r}A${r} ${r} 0 0 1 ${x + w} ${y + r}V${y + h - r}A${r} ${r} 0 0 1 ${x + w - r} ${y + h}H${x + r}A${r} ${r} 0 0 1 ${x} ${y + h - r}V${y + r}A${r} ${r} 0 0 1 ${x + r} ${y}Z`;
+  }
+  return `M${x} ${y}h${w}v${h}h${-w}Z`;
 }
 
 export const ANN_LABELS: Record<AnnKind, string> = {
@@ -194,7 +218,23 @@ export function hit(a: Ann, x: number, y: number, tolerance: number): boolean {
 /** 匯出：馬賽克 / 模糊給 FFmpeg 處理；其他畫成剛好包住標註的透明 PNG */
 export function toOverlay(a: Ann, vw: number, vh: number): OverlaySpec | undefined {
   if (a.kind === "mosaic" || a.kind === "blur") {
-    return { kind: a.kind, x: Math.round(a.x), y: Math.round(a.y), w: Math.round(a.w), h: Math.round(a.h), start: a.start, end: a.end };
+    const o: OverlaySpec = { kind: a.kind, x: Math.round(a.x), y: Math.round(a.y), w: Math.round(a.w), h: Math.round(a.h), start: a.start, end: a.end };
+    if (a.invert) o.invert = true;
+    // 圓角、橢圓：畫一張黑底白色形狀的遮罩（FFmpeg 會縮放成範圍大小）
+    if (a.shape && a.shape !== "rect" && o.w >= 2 && o.h >= 2) {
+      const canvas = document.createElement("canvas");
+      canvas.width = o.w;
+      canvas.height = o.h;
+      const ctx = canvas.getContext("2d");
+      if (ctx) {
+        ctx.fillStyle = "#000";
+        ctx.fillRect(0, 0, o.w, o.h);
+        ctx.fillStyle = "#fff";
+        ctx.fill(new Path2D(shapePath(a.shape, 0, 0, o.w, o.h)));
+        o.mask = canvas.toDataURL("image/png");
+      }
+    }
+    return o;
   }
   const b = bbox(a);
   // 只保留畫面內的部分
@@ -220,5 +260,9 @@ export function label(a: Ann): string {
     return t ? `「${t.length > 12 ? `${t.slice(0, 12)}…` : t}」` : "文字";
   }
   if (a.kind === "step") return `編號 ${a.n ?? 1}`;
+  if (a.kind === "mosaic" || a.kind === "blur") {
+    const parts = [a.shape && a.shape !== "rect" ? SHAPE_LABELS[a.shape] : "", a.invert ? "範圍外" : ""].filter(Boolean);
+    return parts.length ? `${ANN_LABELS[a.kind]}（${parts.join("・")}）` : ANN_LABELS[a.kind];
+  }
   return ANN_LABELS[a.kind];
 }

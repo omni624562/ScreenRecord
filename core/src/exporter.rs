@@ -405,7 +405,6 @@ const MAX_OVERLAY_BYTES: usize = 40 * 1024 * 1024;
 
 /// 把介面送來的標註換算成 FFmpeg 的輸入：PNG 寫進 dir，座標限制在畫面內，時間限制在影片長度內
 fn write_overlays(list: &[Overlay], vw: i32, vh: i32, duration: f64, dir: &Path) -> Result<Vec<OverlayInput>> {
-    use base64::Engine;
     if list.len() > MAX_OVERLAYS {
         return Err(Error::config(format!("標註最多 {MAX_OVERLAYS} 個")));
     }
@@ -423,15 +422,7 @@ fn write_overlays(list: &[Overlay], vw: i32, vh: i32, duration: f64, dir: &Path)
         }
         match o.kind {
             OverlayKind::Image => {
-                let data = o.png.as_deref().ok_or_else(|| Error::config("標註缺少圖片"))?;
-                let data = data.strip_prefix("data:image/png;base64,").unwrap_or(data);
-                if data.len() > MAX_OVERLAY_BYTES / 3 * 4 + 4 {
-                    return Err(Error::config("標註圖片太大"));
-                }
-                let bytes = base64::engine::general_purpose::STANDARD.decode(data).map_err(|_| Error::config("標註圖片格式錯誤"))?;
-                if !bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
-                    return Err(Error::config("標註圖片格式錯誤"));
-                }
+                let bytes = decode_png(o.png.as_deref().ok_or_else(|| Error::config("標註缺少圖片"))?)?;
                 let path = dir.join(format!("overlay_{i:03}.png"));
                 std::fs::write(&path, bytes)?;
                 let x = (o.x.round() as i32).clamp(-vw, vw);
@@ -448,11 +439,34 @@ fn write_overlays(list: &[Overlay], vw: i32, vh: i32, duration: f64, dir: &Path)
                 if w < 8 || h < 8 {
                     continue;
                 }
-                out.push(OverlayInput::Blur { rect: Rect { x: x0, y: y0, width: w, height: h }, start, end, mosaic: o.kind == OverlayKind::Mosaic });
+                // 形狀遮罩（圓角、橢圓）：FFmpeg 會縮放成範圍的大小
+                let mask = match o.mask.as_deref() {
+                    Some(m) => {
+                        let path = dir.join(format!("mask_{i:03}.png"));
+                        std::fs::write(&path, decode_png(m)?)?;
+                        Some(path.display().to_string())
+                    }
+                    None => None,
+                };
+                out.push(OverlayInput::Blur { rect: Rect { x: x0, y: y0, width: w, height: h }, start, end, mosaic: o.kind == OverlayKind::Mosaic, mask, invert: o.invert, frame: (vw, vh) });
             }
         }
     }
     Ok(out)
+}
+
+/// 介面送來的 PNG（可含 data URL 前綴）
+fn decode_png(data: &str) -> Result<Vec<u8>> {
+    use base64::Engine;
+    let data = data.strip_prefix("data:image/png;base64,").unwrap_or(data);
+    if data.len() > MAX_OVERLAY_BYTES / 3 * 4 + 4 {
+        return Err(Error::config("標註圖片太大"));
+    }
+    let bytes = base64::engine::general_purpose::STANDARD.decode(data).map_err(|_| Error::config("標註圖片格式錯誤"))?;
+    if !bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        return Err(Error::config("標註圖片格式錯誤"));
+    }
+    Ok(bytes)
 }
 
 fn snapshot(j: &Job) -> ExportStatus {
@@ -604,7 +618,7 @@ mod overlay_tests {
 
     #[allow(clippy::too_many_arguments)]
     fn ov(kind: OverlayKind, x: f64, y: f64, w: f64, h: f64, start: f64, end: f64, png: Option<String>) -> Overlay {
-        Overlay { kind, x, y, w, h, start, end, png }
+        Overlay { kind, x, y, w, h, start, end, png, mask: None, invert: false }
     }
 
     #[test]
@@ -612,6 +626,7 @@ mod overlay_tests {
         let dir = tempfile::tempdir().unwrap();
         let png = b"\x89PNG\r\n\x1a\nrest".to_vec();
         let b64 = format!("data:image/png;base64,{}", base64::engine::general_purpose::STANDARD.encode(&png));
+        let b64_mask = b64.clone();
         let list = vec![
             ov(OverlayKind::Image, 10.4, -5.0, 100.0, 40.0, 1.0, 3.0, Some(b64)),
             // 超出畫面：裁到畫面內並取偶數
@@ -620,9 +635,11 @@ mod overlay_tests {
             ov(OverlayKind::Mosaic, 10.0, 10.0, 6.0, 6.0, 0.0, 5.0, None),
             // 時間不在影片內：略過
             ov(OverlayKind::Blur, 0.0, 0.0, 100.0, 100.0, 20.0, 30.0, None),
+            // 橢圓、範圍外馬賽克：遮罩寫成檔案
+            Overlay { mask: Some(b64_mask.clone()), invert: true, ..ov(OverlayKind::Mosaic, 100.0, 100.0, 300.0, 200.0, 1.0, 2.0, None) },
         ];
         let out = write_overlays(&list, 1920, 1080, 10.0, dir.path()).unwrap();
-        assert_eq!(out.len(), 2);
+        assert_eq!(out.len(), 3);
         match &out[0] {
             OverlayInput::Image { path, x, y, start, end } => {
                 assert_eq!((*x, *y, *start, *end), (10, -5, 1.0, 3.0));
@@ -630,7 +647,14 @@ mod overlay_tests {
             }
             other => panic!("{other:?}"),
         }
-        assert_eq!(out[1], OverlayInput::Blur { rect: Rect { x: 1800, y: 1000, width: 120, height: 80 }, start: 0.0, end: 10.0, mosaic: false });
+        assert_eq!(out[1], OverlayInput::Blur { rect: Rect { x: 1800, y: 1000, width: 120, height: 80 }, start: 0.0, end: 10.0, mosaic: false, mask: None, invert: false, frame: (1920, 1080) });
+        match &out[2] {
+            OverlayInput::Blur { rect, mosaic: true, mask: Some(m), invert: true, frame: (1920, 1080), .. } => {
+                assert_eq!(*rect, Rect { x: 100, y: 100, width: 300, height: 200 });
+                assert_eq!(std::fs::read(m).unwrap(), png);
+            }
+            other => panic!("{other:?}"),
+        }
     }
 
     #[test]
