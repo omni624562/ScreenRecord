@@ -1,5 +1,5 @@
 //! 開發用（只在 debug 版）：自動開啟某個畫面、模擬操作並截圖，在 Linux 的 Xvfb 上檢查介面。
-//! - SCREENRECORDER_DEV：要開啟的畫面（library、shots、changelog、export:<路徑>、edit:<路徑>、view:<路徑>、ed:<剪輯視窗指令>），以 ; 分隔
+//! - SCREENRECORDER_DEV：要開啟的畫面（library、shots、changelog、export:<路徑>、edit:<路徑>、view:<路徑>、monitors（模擬兩個螢幕）、ed:<剪輯視窗指令>），以 ; 分隔
 //! - SCREENRECORDER_INPUT：開啟後依序模擬的操作，以 ; 分隔：
 //!   wait:毫秒、click:x,y、drag:x0,y0,x1,y1、wheel:x,y,dy、key:Space（可加 shift+）、type:文字、shot:路徑
 //! - SCREENRECORDER_SHOT：最後截圖存檔的路徑（存好後結束）；SCREENRECORDER_SHOT_AFTER：開始後幾毫秒截圖（預設 3000）
@@ -130,6 +130,7 @@ pub fn tick(app: &mut UiApp, ctx: &egui::Context) {
                     _ if a == "library" => app.library = Some(super::library_dialog::LibraryDialog::new(super::library_dialog::Kind::Video)),
                     _ if a == "shots" => app.library = Some(super::library_dialog::LibraryDialog::new(super::library_dialog::Kind::Shot)),
                     _ if a == "changelog" => app.changelog_open = true,
+                    _ if a == "monitors" => fake_monitors(app),
                     _ => {}
                 }
             }
@@ -169,4 +170,26 @@ pub fn tick(app: &mut UiApp, ctx: &egui::Context) {
         }
     }
     ctx.request_repaint_after(Duration::from_millis(30));
+}
+
+/// 模擬兩個 1920×1080 的螢幕（Linux 上沒有螢幕資訊時檢查單一螢幕的版面）
+fn fake_monitors(app: &mut UiApp) {
+    use screenrecorder_core::types::{MonitorInfo, Rect};
+    let m = |i: u32, x: i32| MonitorInfo {
+        id: format!("0:{i}"),
+        adapter: 0,
+        output: i,
+        adapter_name: "GPU".into(),
+        device_name: format!("\\\\.\\DISPLAY{}", i + 1),
+        display_number: i + 1,
+        x,
+        y: 0,
+        width: 1920,
+        height: 1080,
+        primary: i == 0,
+        rotation: 1,
+    };
+    app.env.monitors = vec![m(0, 0), m(1, 1920)];
+    app.env.desktop = Rect { x: 0, y: 0, width: 3840, height: 1080 };
+    app.s.fix_monitor(&app.env);
 }

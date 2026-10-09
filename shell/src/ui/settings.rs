@@ -29,6 +29,9 @@ pub struct UiSettings {
     pub source_type: SourceType,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub monitor_id: Option<String>,
+    /// 單一螢幕模式下只錄其中一部分（桌面座標，在選的螢幕內）；None = 整個螢幕
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub monitor_region: Option<Rect>,
     pub region: Rect,
     pub fps: f64,
     pub scale: u32,
@@ -82,6 +85,7 @@ impl UiSettings {
                 _ => SourceType::Monitor,
             },
             monitor_id: string("monitorId"),
+            monitor_region: o.get("monitorRegion").and_then(|r| serde_json::from_value::<Rect>(r.clone()).ok()),
             region,
             fps: num("fps").filter(|f| f.fract() == 0.0 && *f >= 1.0 && *f <= 60.0).unwrap_or(30.0),
             scale: num("scale").map(|v| v as u32).filter(|v| [100, 75, 50, 25].contains(v)).unwrap_or(100),
@@ -110,11 +114,20 @@ impl UiSettings {
         s
     }
 
-    /// 選的螢幕不存在（換了螢幕）：改用主螢幕
+    /// 選的螢幕不存在（換了螢幕）：改用主螢幕；範圍不在螢幕內（解析度變了）就錄整個螢幕
     pub fn fix_monitor(&mut self, env: &EnvInfo) {
         if !env.monitors.iter().any(|m| Some(&m.id) == self.monitor_id.as_ref()) {
             self.monitor_id = primary(env).map(|m| m.id.clone());
         }
+        if self.monitor_region.is_some() && self.region_in_monitor(env).is_none() {
+            self.monitor_region = None;
+        }
+    }
+
+    /// 單一螢幕模式的範圍（要完全在選的螢幕內）
+    pub fn region_in_monitor(&self, env: &EnvInfo) -> Option<Rect> {
+        let (r, m) = (self.monitor_region?, self.selected_monitor(env)?);
+        (r.width >= 16 && r.height >= 16 && r.x >= m.x && r.y >= m.y && r.x + r.width <= m.x + m.width && r.y + r.height <= m.y + m.height).then_some(r)
     }
 
     pub fn to_value(&self) -> Value {
@@ -137,7 +150,7 @@ impl UiSettings {
     /// 錄影範圍（桌面座標）
     pub fn source_rect(&self, env: &EnvInfo) -> Option<Rect> {
         match self.source_type {
-            SourceType::Monitor => self.selected_monitor(env).map(|m| Rect { x: m.x, y: m.y, width: m.width, height: m.height }),
+            SourceType::Monitor => self.region_in_monitor(env).or_else(|| self.selected_monitor(env).map(|m| Rect { x: m.x, y: m.y, width: m.width, height: m.height })),
             SourceType::All => (env.desktop.width > 0).then_some(env.desktop),
             SourceType::Region => Some(self.region),
         }
@@ -146,7 +159,10 @@ impl UiSettings {
     pub fn record_config(&self, env: &EnvInfo) -> RecordConfig {
         RecordConfig {
             source: match self.source_type {
-                SourceType::Monitor => SourceConfig::Monitor { monitor_id: self.monitor_id.clone().unwrap_or_default() },
+                SourceType::Monitor => match self.region_in_monitor(env) {
+                    Some(r) => SourceConfig::Region { x: r.x as f64, y: r.y as f64, width: r.width as f64, height: r.height as f64 },
+                    None => SourceConfig::Monitor { monitor_id: self.monitor_id.clone().unwrap_or_default() },
+                },
                 SourceType::All => SourceConfig::All,
                 SourceType::Region => SourceConfig::Region { x: self.region.x as f64, y: self.region.y as f64, width: self.region.width as f64, height: self.region.height as f64 },
             },
@@ -232,5 +248,19 @@ mod tests {
         let bad = serde_json::json!({ "fps": 7.5, "scale": 33, "countdownSec": 4, "gifWidth": 1 });
         let s = UiSettings::from_saved(Some(&bad), &env());
         assert_eq!((s.fps, s.scale, s.countdown_sec, s.gif_width), (30.0, 100, 3, 640));
+    }
+
+    #[test]
+    fn part_of_a_single_monitor() {
+        let mut s = UiSettings::from_saved(None, &env());
+        s.monitor_region = Some(Rect { x: 100, y: 50, width: 800, height: 600 });
+        assert_eq!(s.record_config(&env()).source, SourceConfig::Region { x: 100.0, y: 50.0, width: 800.0, height: 600.0 });
+        assert_eq!(s.source_rect(&env()), Some(Rect { x: 100, y: 50, width: 800, height: 600 }));
+        // 存回去再讀：保留
+        assert_eq!(UiSettings::from_saved(Some(&s.to_value()), &env()).monitor_region, s.monitor_region);
+        // 超出螢幕（解析度變小了）：錄整個螢幕
+        s.monitor_region = Some(Rect { x: 1500, y: 0, width: 800, height: 600 });
+        assert_eq!(s.record_config(&env()).source, SourceConfig::Monitor { monitor_id: "0:0".into() });
+        assert_eq!(UiSettings::from_saved(Some(&s.to_value()), &env()).monitor_region, None);
     }
 }

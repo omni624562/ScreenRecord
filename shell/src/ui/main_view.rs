@@ -217,10 +217,20 @@ fn source_detail(app: &mut UiApp, ui: &mut Ui) {
             for m in app.env.monitors.clone() {
                 let on = app.s.monitor_id.as_deref() == Some(&m.id);
                 let label = format!("螢幕 {}  {}×{}{}", m.display_number, m.width, m.height, if m.primary { "・主" } else { "" });
-                if Btn::new(label).small().selected(on).enabled(!locked).tooltip(&m.adapter_name).show(ui).clicked() {
+                if Btn::new(label).small().selected(on).enabled(!locked).tooltip(&m.adapter_name).show(ui).clicked() && !on {
                     app.s.monitor_id = Some(m.id.clone());
+                    app.s.monitor_region = None;
                     app.save_settings();
                 }
+            }
+            // 只錄螢幕的一部分：在預覽上拖曳框選
+            if app.s.region_in_monitor(&app.env).is_some() {
+                if Btn::new("整個螢幕").icon(Icon::Close).small().enabled(!locked).tooltip("取消框選的範圍，錄整個螢幕").show(ui).clicked() {
+                    app.s.monitor_region = None;
+                    app.save_settings();
+                }
+            } else if !app.env.monitors.is_empty() {
+                ui.label(theme::muted(ui, "可在預覽上拖曳框選範圍")).on_hover_text("只錄這個螢幕的一部分：在預覽圖上拖曳框選；拖曳紅框可移動，拉邊或角可調整大小");
             }
         }
         SourceType::All => {
@@ -333,16 +343,18 @@ fn desk(app: &mut UiApp, ui: &mut Ui, area: Rect) {
     for m in &shown {
         let r = Rect::from_min_max(to_screen(m.x, m.y), to_screen(m.x + m.width, m.y + m.height));
         let selected = app.s.source_type == SourceType::All || (app.s.source_type == SourceType::Monitor && app.s.monitor_id.as_deref() == Some(&m.id));
-        let col = if selected && app.s.source_type != SourceType::Region { p.rec } else { Color32::from_white_alpha(140) };
+        // 有框選範圍時，紅框只標範圍
+        let boxed = app.s.source_type == SourceType::Region || region_target(app).is_some() || app.main.drag.is_some();
+        let col = if selected && !boxed { p.rec } else { Color32::from_white_alpha(140) };
         painter.rect_stroke(r.shrink(1.0), CornerRadius::same(4), Stroke::new(if selected { 2.0 } else { 1.0 }, col), StrokeKind::Inside);
         let label = format!("螢幕 {}  {} × {}", m.display_number, m.width, m.height);
         let g = painter.layout_no_wrap(label, theme::font_bold(12.0), Color32::WHITE);
         let tag = Rect::from_min_size(r.min + vec2(8.0, 8.0), g.size() + vec2(12.0, 6.0));
-        painter.rect_filled(tag, CornerRadius::same(5), if selected && app.s.source_type != SourceType::Region { p.rec } else { Color32::from_black_alpha(140) });
+        painter.rect_filled(tag, CornerRadius::same(5), if selected && !boxed { p.rec } else { Color32::from_black_alpha(140) });
         painter.galley(tag.min + vec2(6.0, 3.0), g, Color32::WHITE);
     }
     // 自訂範圍
-    let desk_resp = ui.interact(rect, Id::new("desk"), if app.s.source_type == SourceType::Region && !locked { Sense::drag() } else { Sense::click() });
+    let desk_resp = ui.interact(rect, Id::new("desk"), if !locked && app.s.source_type != SourceType::All { Sense::click_and_drag() } else { Sense::click() });
     if app.s.source_type == SourceType::Monitor && desk_resp.clicked() && !locked {
         if let Some(pos) = desk_resp.interact_pointer_pos() {
             // 點螢幕框選擇那一台
@@ -354,11 +366,13 @@ fn desk(app: &mut UiApp, ui: &mut Ui, area: Rect) {
             }
         }
     }
-    if app.s.source_type != SourceType::Region {
+    if app.s.source_type == SourceType::All {
         return;
     }
-    region_drag(app, ui, &desk_resp, rect, view);
-    let r = app.s.region;
+    if !locked {
+        region_drag(app, ui, &desk_resp, rect, view);
+    }
+    let Some(r) = region_target(app) else { return };
     let rr = Rect::from_min_max(to_screen(r.x, r.y), to_screen(r.x + r.width, r.y + r.height));
     // 範圍外變暗
     let dim = Color32::from_black_alpha(110);
@@ -390,7 +404,25 @@ fn handle_points(r: Rect) -> [Pos2; 8] {
     [r.left_top(), pos2(c.x, r.top()), r.right_top(), pos2(r.right(), c.y), r.right_bottom(), pos2(c.x, r.bottom()), r.left_bottom(), pos2(r.left(), c.y)]
 }
 
-/// 自訂範圍：拖曳框選新範圍；拖曳紅框內部移動，拖曳邊與角調整大小（都限制在桌面範圍內）
+/// 目前的框選範圍：自訂範圍，或單一螢幕裡框選的部分（沒有時是整個螢幕）
+fn region_target(app: &UiApp) -> Option<DRect> {
+    match app.s.source_type {
+        SourceType::Region => Some(app.s.region),
+        SourceType::Monitor => app.s.region_in_monitor(&app.env),
+        SourceType::All => None,
+    }
+}
+
+fn set_region(app: &mut UiApp, r: DRect) {
+    match app.s.source_type {
+        SourceType::Region => app.s.region = r,
+        SourceType::Monitor => app.s.monitor_region = Some(r),
+        SourceType::All => {}
+    }
+}
+
+/// 框選範圍：拖曳框選新範圍；拖曳紅框內部移動，拖曳邊與角調整大小。
+/// 自訂範圍限制在整個桌面內（可跨螢幕），單一螢幕限制在那個螢幕內（view）
 fn region_drag(app: &mut UiApp, ui: &Ui, resp: &egui::Response, rect: Rect, view: DRect) {
     const MIN: i32 = 16;
     let to_desk = |pos: Pos2, clamp: bool| {
@@ -402,7 +434,8 @@ fn region_drag(app: &mut UiApp, ui: &Ui, resp: &egui::Response, rect: Rect, view
         }
         (view.x + (fx * view.width as f32).round() as i32, view.y + (fy * view.height as f32).round() as i32)
     };
-    let r = app.s.region;
+    let cur = region_target(app);
+    let r = cur.unwrap_or(DRect { x: view.x, y: view.y, width: 0, height: 0 });
     let rr = Rect::from_min_max(
         pos2(rect.min.x + (r.x - view.x) as f32 / view.width as f32 * rect.width(), rect.min.y + (r.y - view.y) as f32 / view.height as f32 * rect.height()),
         pos2(rect.min.x + (r.x + r.width - view.x) as f32 / view.width as f32 * rect.width(), rect.min.y + (r.y + r.height - view.y) as f32 / view.height as f32 * rect.height()),
@@ -415,7 +448,9 @@ fn region_drag(app: &mut UiApp, ui: &Ui, resp: &egui::Response, rect: Rect, view
         let inside_x = pos.x >= rr.left() - tol && pos.x <= rr.right() + tol;
         let (n, s) = (near(pos.y, rr.top()) && inside_x, near(pos.y, rr.bottom()) && inside_x);
         let (w, e) = (near(pos.x, rr.left()) && inside_y, near(pos.x, rr.right()) && inside_y);
-        if n || s || e || w {
+        if cur.is_none() {
+            DragMode::New
+        } else if n || s || e || w {
             DragMode::Resize { n, s, e, w }
         } else if rr.contains(pos) {
             DragMode::Move
@@ -441,9 +476,9 @@ fn region_drag(app: &mut UiApp, ui: &Ui, resp: &egui::Response, rect: Rect, view
         }
     }
     if let (Some(d), Some(pos)) = (&app.main.drag, resp.interact_pointer_pos()) {
-        let dk = app.env.desktop;
+        let dk = if app.s.source_type == SourceType::Monitor { view } else { app.env.desktop };
         let o = d.orig;
-        app.s.region = match d.mode {
+        let next = match d.mode {
             DragMode::New => {
                 let pt = to_desk(pos, true);
                 DRect { x: d.from.0.min(pt.0), y: d.from.1.min(pt.1), width: (pt.0 - d.from.0).abs().max(1), height: (pt.1 - d.from.1).abs().max(1) }
@@ -472,11 +507,27 @@ fn region_drag(app: &mut UiApp, ui: &Ui, resp: &egui::Response, rect: Rect, view
                 DRect { x: l, y: t, width: rt - l, height: b - t }
             }
         };
+        set_region(app, next);
     }
     if resp.drag_stopped() && app.main.drag.take().is_some() {
-        app.s.region.width = app.s.region.width.max(MIN);
-        app.s.region.height = app.s.region.height.max(MIN);
+        if let Some(mut r) = region_target(app).or(app.s.monitor_region) {
+            r.width = r.width.max(MIN).min(dk_of(app, view).width);
+            r.height = r.height.max(MIN).min(dk_of(app, view).height);
+            let b = dk_of(app, view);
+            r.x = r.x.clamp(b.x, b.x + b.width - r.width);
+            r.y = r.y.clamp(b.y, b.y + b.height - r.height);
+            set_region(app, r);
+        }
         app.save_settings();
+    }
+}
+
+/// 框選範圍的界線：單一螢幕是那個螢幕，自訂範圍是整個桌面
+fn dk_of(app: &UiApp, view: DRect) -> DRect {
+    if app.s.source_type == SourceType::Monitor {
+        view
+    } else {
+        app.env.desktop
     }
 }
 
