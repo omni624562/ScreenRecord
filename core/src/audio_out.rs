@@ -2,7 +2,7 @@
 //! 其他平台沒有聲音（只把資料讀掉）。
 
 use std::io::Read;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 
 pub const SAMPLE_RATE: u32 = 48_000;
@@ -10,15 +10,34 @@ pub const CHANNELS: usize = 2;
 #[cfg(any(windows, test))]
 const BYTES_PER_FRAME: usize = CHANNELS * 4;
 
+/// 音量（0～1，f32 的位元），播放中可隨時改
+pub type Volume = Arc<AtomicU32>;
+
+pub fn volume(v: f32) -> Volume {
+    Arc::new(AtomicU32::new(v.to_bits()))
+}
+
+/// 依音量縮放 float32 樣本（音量 1 時不動）
+#[cfg(any(windows, test))]
+fn apply_volume(bytes: &mut [u8], vol: f32) {
+    if vol >= 0.999 {
+        return;
+    }
+    for c in bytes.as_chunks_mut::<4>().0 {
+        *c = (f32::from_le_bytes(*c) * vol).to_le_bytes();
+    }
+}
+
 /// 播放到資料結束或 stop 被設定為止（在呼叫的執行緒上執行）。
 /// started：開始出聲時呼叫一次（傳入輸出延遲，秒），讓畫面與聲音對齊
-pub fn play(reader: impl Read, stop: Arc<AtomicBool>, started: impl FnOnce(f64)) -> Result<(), String> {
+pub fn play(reader: impl Read, stop: Arc<AtomicBool>, volume: Volume, started: impl FnOnce(f64)) -> Result<(), String> {
     #[cfg(windows)]
     {
-        win::play(reader, stop, started)
+        win::play(reader, stop, volume, started)
     }
     #[cfg(not(windows))]
     {
+        let _ = volume;
         let mut reader = reader;
         started(0.0);
         let mut buf = [0u8; 16384];
@@ -62,7 +81,7 @@ mod win {
         format!("0x{:08x}", e.code().0 as u32)
     }
 
-    pub fn play(mut reader: impl Read, stop: Arc<AtomicBool>, started: impl FnOnce(f64)) -> Result<(), String> {
+    pub fn play(mut reader: impl Read, stop: Arc<AtomicBool>, volume: Volume, started: impl FnOnce(f64)) -> Result<(), String> {
         unsafe {
             let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
             let en: IMMDeviceEnumerator = CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL).map_err(|e| format!("無法建立音訊裝置列舉器 ({})", hex(&e)))?;
@@ -95,6 +114,7 @@ mod win {
                 if !eof && free > 0 {
                     let n = read_full(&mut reader, &mut bytes[..free * BYTES_PER_FRAME]);
                     let frames = n / BYTES_PER_FRAME;
+                    apply_volume(&mut bytes[..frames * BYTES_PER_FRAME], f32::from_bits(volume.load(Ordering::Relaxed)));
                     if frames > 0 {
                         if let Ok(p) = render.GetBuffer(frames as u32) {
                             std::ptr::copy_nonoverlapping(bytes.as_ptr(), p, frames * BYTES_PER_FRAME);
@@ -132,8 +152,16 @@ mod tests {
         let data = vec![0u8; 48_000 * BYTES_PER_FRAME / 10];
         let stop = Arc::new(AtomicBool::new(false));
         // 沒有播放裝置的環境（CI）會回傳錯誤，但不應卡住
-        let _ = play(std::io::Cursor::new(data), stop, |_| {});
+        let _ = play(std::io::Cursor::new(data), stop, volume(1.0), |_| {});
         let mut buf = [0u8; 8];
         assert_eq!(read_full(&mut std::io::Cursor::new(vec![1u8; 5]), &mut buf), 5);
+    }
+
+    #[test]
+    fn volume_scales_samples() {
+        let mut b: Vec<u8> = [0.5f32, -1.0].iter().flat_map(|v| v.to_le_bytes()).collect();
+        apply_volume(&mut b, 0.5);
+        let out: Vec<f32> = b.as_chunks::<4>().0.iter().map(|c| f32::from_le_bytes(*c)).collect();
+        assert_eq!(out, vec![0.25, -0.5]);
     }
 }

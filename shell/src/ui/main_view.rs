@@ -282,7 +282,7 @@ fn desk(app: &mut UiApp, ui: &mut Ui, area: Rect) {
         0
     };
     // 開著剪輯、製作、全部錄影等視窗時暫停即時預覽（被蓋住看不到，不浪費 CPU / GPU），保留最後一張畫面
-    let covered = app.editor.is_some() || app.export_dlg.is_some() || app.library.is_some();
+    let covered = app.editor.is_some() || app.export_dlg.is_some() || app.library.is_some() || app.viewer.is_some();
     if covered {
         if app.preview.running() {
             app.preview.stop(&app.core);

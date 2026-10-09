@@ -12,6 +12,7 @@ pub mod preview;
 pub mod settings;
 pub mod theme;
 pub mod thumbs;
+pub mod viewer;
 
 use eframe::egui;
 use screenrecorder_core::actions::{self, UpdateState};
@@ -49,7 +50,10 @@ pub struct Toast {
 /// 開檔類型
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EntryAction {
+    /// 在內建檢視器開啟
     Play,
+    /// 用 Windows 預設的程式開啟
+    External,
     Reveal,
     Edit,
     Export,
@@ -92,6 +96,7 @@ pub struct UiApp {
 
     pub export_dlg: Option<export_dialog::ExportDialog>,
     pub library: Option<library_dialog::LibraryDialog>,
+    pub viewer: Option<viewer::Viewer>,
     pub editor: Option<editor::Editor>,
 
     pub dismissed_job: Option<u64>,
@@ -151,6 +156,7 @@ impl UiApp {
             known: HashMap::new(),
             export_dlg: None,
             library: None,
+            viewer: None,
             editor: None,
             dismissed_job: None,
             last_export_state: None,
@@ -378,11 +384,12 @@ impl UiApp {
         use actions::OpenAction;
         let path = entry.media.path.clone();
         match action {
-            EntryAction::Play | EntryAction::Reveal => {
-                if action == EntryAction::Play {
-                    self.toast("正在以預設播放器開啟…", false);
+            EntryAction::Play => viewer::open(self, entry),
+            EntryAction::External | EntryAction::Reveal => {
+                if action == EntryAction::External {
+                    self.toast("正在以 Windows 預設的程式開啟…", false);
                 }
-                let a = if action == EntryAction::Play { OpenAction::Play } else { OpenAction::Reveal };
+                let a = if action == EntryAction::External { OpenAction::Play } else { OpenAction::Reveal };
                 if let Err(e) = actions::open(a, &path) {
                     self.toast(e.message().to_string(), true);
                 }
@@ -457,6 +464,9 @@ impl UiApp {
             if let Some(e) = &mut self.editor {
                 e.pause();
             }
+            if let Some(v) = &mut self.viewer {
+                v.pause();
+            }
         } else {
             // 沒有系統匣：關掉視窗就結束程式
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
@@ -503,6 +513,10 @@ impl eframe::App for UiApp {
         if self.library.is_some() {
             library_dialog::show(self, &ctx);
             part(self, "全部錄影");
+        }
+        if self.viewer.is_some() {
+            viewer::show(self, &ctx);
+            part(self, "檢視器");
         }
         if self.editor.is_some() {
             editor::show(self, &ctx);

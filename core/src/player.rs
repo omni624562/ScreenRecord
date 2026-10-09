@@ -205,6 +205,7 @@ pub struct Player {
     children: Arc<Mutex<Vec<Child>>>,
     scrub: Arc<Mutex<Scrub>>,
     stop_audio: Arc<Mutex<Arc<AtomicBool>>>,
+    volume: crate::audio_out::Volume,
     wake: Wake,
 }
 
@@ -212,7 +213,23 @@ impl Player {
     /// src_w × src_h：原影片尺寸；解碼成不超過 max_w × max_h 的大小
     pub fn new(ffmpeg: PathBuf, spec: MediaSpec, src_w: u32, src_h: u32, max_w: u32, max_h: u32, wake: Wake) -> Player {
         let (width, height) = fit_size(src_w, src_h, max_w, max_h);
-        Player { ffmpeg, spec, width, height, inner: Arc::default(), children: Arc::default(), scrub: Arc::default(), stop_audio: Arc::new(Mutex::new(Arc::new(AtomicBool::new(false)))), wake }
+        Player {
+            ffmpeg,
+            spec,
+            width,
+            height,
+            inner: Arc::default(),
+            children: Arc::default(),
+            scrub: Arc::default(),
+            stop_audio: Arc::new(Mutex::new(Arc::new(AtomicBool::new(false)))),
+            volume: crate::audio_out::volume(1.0),
+            wake,
+        }
+    }
+
+    /// 音量 0～1（播放中立即生效）
+    pub fn set_volume(&self, v: f32) {
+        self.volume.store(v.clamp(0.0, 1.0).to_bits(), Ordering::Relaxed);
     }
 
     pub fn spec(&self) -> &MediaSpec {
@@ -351,6 +368,7 @@ impl Player {
 
         // 開 FFmpeg 在背景做（Windows 上啟動行程要幾十到上百毫秒，不卡住介面）
         let (ffmpeg, spec, children, inner, wake, w, h) = (self.ffmpeg.clone(), self.spec.clone(), self.children.clone(), self.inner.clone(), self.wake.clone(), self.width, self.height);
+        let volume = self.volume.clone();
         std::thread::spawn(move || {
             // 記下子行程以便停止；已經換了一輪（暫停 / 跳轉）就直接結束它
             let register = |mut child: Child| -> bool {
@@ -382,7 +400,7 @@ impl Player {
                                     i.clock = Some(Instant::now() + Duration::from_secs_f64(latency.clamp(0.0, 0.5)));
                                 }
                             };
-                            if crate::audio_out::play(out, stop2, start_clock).is_err() {
+                            if crate::audio_out::play(out, stop2, volume, start_clock).is_err() {
                                 // 沒有播放裝置：改由畫面計時
                                 let mut i = inner.lock().unwrap();
                                 if i.gen == gen && i.clock.is_none() {
