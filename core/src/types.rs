@@ -298,6 +298,7 @@ pub struct LibraryEntry {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum LibraryFilter {
+    /// 全部錄影（不含截圖）
     #[default]
     All,
     Original,

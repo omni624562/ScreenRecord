@@ -1,5 +1,5 @@
 //! 開發用（只在 debug 版）：自動開啟某個畫面、模擬操作並截圖，在 Linux 的 Xvfb 上檢查介面。
-//! - SCREENRECORDER_DEV：要開啟的畫面（library、changelog、export:<路徑>、edit:<路徑>、ed:<剪輯視窗指令>），以 ; 分隔
+//! - SCREENRECORDER_DEV：要開啟的畫面（library、shots、changelog、export:<路徑>、edit:<路徑>、ed:<剪輯視窗指令>），以 ; 分隔
 //! - SCREENRECORDER_INPUT：開啟後依序模擬的操作，以 ; 分隔：
 //!   wait:毫秒、click:x,y、drag:x0,y0,x1,y1、wheel:x,y,dy、key:Space（可加 shift+）、type:文字、shot:路徑
 //! - SCREENRECORDER_SHOT：最後截圖存檔的路徑（存好後結束）；SCREENRECORDER_SHOT_AFTER：開始後幾毫秒截圖（預設 3000）
@@ -126,7 +126,8 @@ pub fn tick(app: &mut UiApp, ctx: &egui::Context) {
                     Some(("export", p)) => app.act_path(EntryAction::Export, p.to_string()),
                     Some(("edit", p)) => app.act_path(EntryAction::Edit, p.to_string()),
                     Some(("ed", c)) => app.dev.editor_cmds.push(c.to_string()),
-                    _ if a == "library" => app.library = Some(super::library_dialog::LibraryDialog::new()),
+                    _ if a == "library" => app.library = Some(super::library_dialog::LibraryDialog::new(super::library_dialog::Kind::Video)),
+                    _ if a == "shots" => app.library = Some(super::library_dialog::LibraryDialog::new(super::library_dialog::Kind::Shot)),
                     _ if a == "changelog" => app.changelog_open = true,
                     _ => {}
                 }

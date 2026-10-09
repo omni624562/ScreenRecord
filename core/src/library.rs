@@ -234,12 +234,13 @@ pub async fn list_library(cache: &Arc<MediaCache>, ffmpeg: Option<&Path>, dir: &
     if let Some(text) = q.q.as_deref().map(|t| t.trim().to_lowercase()).filter(|t| !t.is_empty()) {
         list.retain(|e| e.media.name.to_lowercase().contains(&text) || local_date(e.media.mtime).contains(&text) || e.exports.iter().any(|x| x.media.name.to_lowercase().contains(&text)));
     }
+    // 錄影與截圖分開列：除了「截圖」，其他篩選都只列影片
     match q.filter {
+        LibraryFilter::All | LibraryFilter::Audio => list.retain(|e| !is_image_name(&e.media.name)),
         LibraryFilter::Original => list.retain(|e| !is_cut_name(&e.media.name) && !is_image_name(&e.media.name)),
         LibraryFilter::Shot => list.retain(|e| is_image_name(&e.media.name)),
         LibraryFilter::Cut => list.retain(|e| is_cut_name(&e.media.name)),
         LibraryFilter::Speed => list.retain(|e| !e.exports.is_empty()),
-        _ => {}
     }
 
     // 依聲音篩選、依長度排序需要每個檔案的資訊（有快取，第一次較慢）
@@ -414,7 +415,10 @@ mod tests {
         let list = scan(&cache, dir.path()).await;
         let names: Vec<(String, usize)> = list.iter().map(|e| (e.media.name.clone(), e.exports.len())).collect();
         assert_eq!(names, vec![("Rec_X.mp4".into(), 1), ("Shot_2026-10-09_14-30-00.png".into(), 0)]);
-        let shots = list_library(&Arc::new(cache), None, dir.path(), &LibraryQuery { filter: LibraryFilter::Shot, ..q(None, None, LibrarySort::New) }).await;
+        let cache = Arc::new(cache);
+        let videos = list_library(&cache, None, dir.path(), &q(None, None, LibrarySort::New)).await;
+        assert_eq!(videos.items.iter().map(|e| e.media.name.as_str()).collect::<Vec<_>>(), vec!["Rec_X.mp4"]);
+        let shots = list_library(&cache, None, dir.path(), &LibraryQuery { filter: LibraryFilter::Shot, ..q(None, None, LibrarySort::New) }).await;
         assert_eq!(shots.items.iter().map(|e| e.media.name.as_str()).collect::<Vec<_>>(), vec!["Shot_2026-10-09_14-30-00.png"]);
         // 改名保留 .png
         let src = dir.path().join("Shot_2026-10-09_14-30-00.png").display().to_string();

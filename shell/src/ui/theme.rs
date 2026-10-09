@@ -216,6 +216,7 @@ pub enum Icon {
     Speaker,
     Close,
     Camera,
+    Eye,
 }
 
 /// 在 rect（正方形）裡畫圖示
@@ -302,6 +303,11 @@ pub fn paint_icon(p: &Painter, rect: Rect, icon: Icon, color: Color32) {
             p.rect_stroke(Rect::from_min_max(at(2.0, 5.0), at(14.0, 13.5)), CornerRadius::same((2.0 * k) as u8), st, StrokeKind::Middle);
             line(&[(5.5, 5.0), (6.5, 3.0), (9.5, 3.0), (10.5, 5.0)]);
             circle(8.0, 9.2, 2.4);
+        }
+        Icon::Eye => {
+            arc(8.0, 13.0, 7.6, -2.42, -0.72);
+            arc(8.0, 3.0, 7.6, 0.72, 2.42);
+            p.circle_filled(at(8.0, 8.0), 2.2 * k, color);
         }
         Icon::Close => {
             line(&[(4.0, 4.0), (12.0, 12.0)]);
@@ -614,6 +620,14 @@ pub fn progress(ui: &mut Ui, frac: f32, color: Color32, height: f32) {
 }
 
 /// 文字放在 rect 中間
+/// 縮圖依原比例放進 rect 置中（不拉伸；兩側或上下留底色）
+pub fn paint_thumb(p: &Painter, rect: Rect, tex: &egui::TextureHandle) {
+    let [w, h] = tex.size();
+    let s = (rect.width() / w.max(1) as f32).min(rect.height() / h.max(1) as f32);
+    let r = Rect::from_center_size(rect.center(), egui::vec2(w as f32 * s, h as f32 * s));
+    p.image(tex.id(), r, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+}
+
 pub fn centered_text(p: &Painter, rect: Rect, text: &str, f: FontId, color: Color32) {
     p.text(rect.center(), Align2::CENTER_CENTER, text, f, color);
 }

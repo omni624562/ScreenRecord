@@ -1,20 +1,29 @@
-//! 全部錄影：搜尋、篩選、排序、分頁（每頁筆數依視窗高度決定，不出現捲軸）、勾選多筆移到資源回收筒。
-//! 加速版（含 GIF）以子列列在原檔底下，各自有長度、大小與播放 / 資料夾按鈕；
+//! 全部錄影 / 全部截圖：搜尋、篩選、排序、分頁（每頁筆數依視窗大小決定，不出現捲軸）、勾選多筆移到資源回收筒。
+//! 錄影用表格：加速版（含 GIF）以子列列在原檔底下，各自有長度、大小與播放 / 資料夾按鈕；
 //! 勾選原檔時連同底下的加速版一起勾選，可再個別取消。
+//! 截圖用縮圖格：點縮圖開啟。
 
-use super::dialogs::{base_name, date_labels, file_name, is_cut_name, is_default_name, is_image, Ask};
+use super::dialogs::{base_name, date_labels, file_name, is_cut_name, is_default_name, Ask};
 use super::theme::{self, chip, Btn, Icon, Tone};
 use super::{EntryAction, UiApp};
-use eframe::egui::{self, pos2, vec2, Align, Color32, CornerRadius, Id, Layout, Rect, RichText, Sense, Stroke, UiBuilder};
+use eframe::egui::{self, pos2, vec2, Align, CornerRadius, Id, Layout, Rect, RichText, Sense, Stroke, UiBuilder};
 use screenrecorder_core::actions;
 use screenrecorder_core::format::{check_recording_name, format_bytes, human_duration, speed_label, video_clock};
-use screenrecorder_core::types::{ExportFormat, ExportInfo, LibraryEntry, LibraryFilter, LibraryPage, LibraryQuery, LibrarySort, LIBRARY_ROW_MAIN_PX, LIBRARY_ROW_SUB_PX};
+use screenrecorder_core::types::{ExportFormat, ExportInfo, LibraryEntry, LibraryFilter, LibraryPage, LibraryQuery, LibrarySort, HOTKEY_SHOT_LABEL, LIBRARY_ROW_MAIN_PX, LIBRARY_ROW_SUB_PX};
 use std::collections::HashSet;
 use std::time::Instant;
+
+/// 看錄影還是截圖
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    Video,
+    Shot,
+}
 
 pub struct LibraryDialog {
     /// 需要重新讀取（開啟、換頁、轉檔完成）
     pub dirty: bool,
+    kind: Kind,
     query: String,
     filter: LibraryFilter,
     sort: LibrarySort,
@@ -25,14 +34,17 @@ pub struct LibraryDialog {
     selected: HashSet<String>,
     search_at: Option<Instant>,
     fit_px: f64,
+    /// 截圖格一頁放幾張（依對話框大小）
+    grid_per_page: usize,
     seq: u64,
     focus_search: bool,
 }
 
 impl LibraryDialog {
-    pub fn new() -> Self {
+    pub fn new(kind: Kind) -> Self {
         Self {
             dirty: true,
+            kind,
             query: String::new(),
             filter: LibraryFilter::All,
             sort: LibrarySort::New,
@@ -43,6 +55,7 @@ impl LibraryDialog {
             selected: HashSet::new(),
             search_at: None,
             fit_px: 0.0,
+            grid_per_page: 0,
             seq: 0,
             focus_search: true,
         }
@@ -103,7 +116,11 @@ fn load(app: &mut UiApp) {
     d.loading = true;
     d.seq += 1;
     let seq = d.seq;
-    let query = LibraryQuery { q: Some(d.query.clone()).filter(|q| !q.trim().is_empty()), filter: d.filter, sort: d.sort, page: Some(d.page as f64), page_size: None, fit_px: Some(d.fit_px) };
+    let q = Some(d.query.clone()).filter(|q| !q.trim().is_empty());
+    let query = match d.kind {
+        Kind::Video => LibraryQuery { q, filter: d.filter, sort: d.sort, page: Some(d.page as f64), page_size: None, fit_px: Some(d.fit_px) },
+        Kind::Shot => LibraryQuery { q, filter: LibraryFilter::Shot, sort: d.sort, page: Some(d.page as f64), page_size: Some(d.grid_per_page.max(1) as f64), fit_px: None },
+    };
     let dir = app.s.out_dir(&app.env);
     let core = app.core.clone();
     app.spawn(async move { actions::library(&core, &dir, &query).await }, move |app, page| {
@@ -138,17 +155,31 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         let p = theme::pal(ui);
         ui.set_width(size.x - 40.0);
         ui.set_height(size.y - 40.0);
+        let shot = d.kind == Kind::Shot;
         ui.horizontal(|ui| {
             ui.vertical(|ui| {
-                ui.label(RichText::new("全部錄影").font(theme::font_bold(17.0)));
+                ui.label(RichText::new(if shot { "全部截圖" } else { "全部錄影" }).font(theme::font_bold(17.0)));
                 ui.label(RichText::new(&dir).font(theme::mono(12.0)).color(p.muted));
             });
             ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
                 if Btn::new("關閉").ghost().small().show(ui).clicked() {
                     close = true;
                 }
+                ui.add_space(8.0);
+                // 由右往左排：畫面上是「錄影｜截圖」
+                if theme::segmented(ui, &mut d.kind, &[(Kind::Shot, "截圖"), (Kind::Video, "錄影")], true) {
+                    d.filter = LibraryFilter::All;
+                    if d.sort == LibrarySort::Duration {
+                        d.sort = LibrarySort::New;
+                    }
+                    d.page = 1;
+                    d.selected.clear();
+                    d.data = None;
+                    d.dirty = true;
+                }
             });
         });
+        let shot = d.kind == Kind::Shot;
         ui.add_space(8.0);
         // 搜尋、篩選、排序
         ui.horizontal(|ui| {
@@ -160,24 +191,21 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
             if r.changed() {
                 d.search_at = Some(Instant::now());
             }
-            let filters = [
-                (LibraryFilter::All, "全部"),
-                (LibraryFilter::Original, "原始錄影"),
-                (LibraryFilter::Cut, "剪輯版"),
-                (LibraryFilter::Speed, "有加速版"),
-                (LibraryFilter::Audio, "有聲音"),
-                (LibraryFilter::Shot, "截圖"),
-            ];
-            egui::ComboBox::from_id_salt("libFilter").selected_text(filters.iter().find(|f| f.0 == d.filter).map(|f| f.1).unwrap_or("")).show_ui(ui, |ui| {
-                for (v, t) in filters {
-                    if ui.selectable_label(d.filter == v, t).clicked() {
-                        d.filter = v;
-                        d.page = 1;
-                        d.dirty = true;
+            if !shot {
+                let filters =
+                    [(LibraryFilter::All, "全部"), (LibraryFilter::Original, "原始錄影"), (LibraryFilter::Cut, "剪輯版"), (LibraryFilter::Speed, "有加速版"), (LibraryFilter::Audio, "有聲音")];
+                egui::ComboBox::from_id_salt("libFilter").selected_text(filters.iter().find(|f| f.0 == d.filter).map(|f| f.1).unwrap_or("")).show_ui(ui, |ui| {
+                    for (v, t) in filters {
+                        if ui.selectable_label(d.filter == v, t).clicked() {
+                            d.filter = v;
+                            d.page = 1;
+                            d.dirty = true;
+                        }
                     }
-                }
-            });
+                });
+            }
             let sorts = [(LibrarySort::New, "最新的在前"), (LibrarySort::Old, "最舊的在前"), (LibrarySort::Duration, "長度（長到短）"), (LibrarySort::Size, "檔案大小（大到小）")];
+            let sorts: Vec<_> = sorts.into_iter().filter(|s| !(shot && s.0 == LibrarySort::Duration)).collect();
             egui::ComboBox::from_id_salt("libSort").selected_text(sorts.iter().find(|s| s.0 == d.sort).map(|s| s.1).unwrap_or("")).show_ui(ui, |ui| {
                 for (v, t) in sorts {
                     if ui.selectable_label(d.sort == v, t).clicked() {
@@ -194,168 +222,15 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
             d.dirty = true;
         }
         ui.add_space(8.0);
-        // 表格：高度固定，伺服器依每筆的子列數分頁，一頁剛好放滿
         let foot_h = 40.0;
         let table = Rect::from_min_max(ui.cursor().min, pos2(ui.max_rect().max.x, ui.max_rect().max.y - foot_h - 8.0));
-        let head_h = 30.0;
-        let fit = ((table.height() - head_h - 4.0) as f64).max(LIBRARY_ROW_MAIN_PX * 3.0).floor();
-        if (fit - d.fit_px).abs() > 0.5 {
-            d.fit_px = fit;
-            d.dirty = true;
-        }
-        let rows = d.data.as_ref().map(|x| x.items.clone()).unwrap_or_default();
-        let cols = [36.0, 0.0, 84.0, 104.0, 90.0, 176.0];
-        let name_w = table.width() - cols.iter().sum::<f32>();
-        let col_x = |i: usize| -> f32 {
-            let widths = [cols[0], name_w, cols[2], cols[3], cols[4], cols[5]];
-            table.min.x + widths[..i].iter().sum::<f32>()
-        };
-        let painter = ui.painter().clone();
-        painter.rect_filled(Rect::from_min_size(table.min, vec2(table.width(), head_h)), CornerRadius::same(6), p.surface2);
-        // 標題列
-        {
-            let head = Rect::from_min_size(table.min, vec2(table.width(), head_h));
-            let all = !rows.is_empty() && rows.iter().all(|e| d.selected.contains(&e.media.path) && e.exports.iter().all(|x| d.selected.contains(&x.media.path)));
-            let mut all2 = all;
-            let ui2 = &mut ui.new_child(UiBuilder::new().max_rect(Rect::from_min_size(head.min + vec2(10.0, 4.0), vec2(24.0, 22.0))));
-            if ui2.checkbox(&mut all2, "").on_hover_text("全選本頁").changed() {
-                for e in &rows {
-                    d.toggle(&e.media.path, all2);
-                }
-            }
-            for (i, (t, right)) in [("檔案", false), ("長度", true), ("解析度", true), ("大小", true)].iter().enumerate() {
-                let x0 = col_x(i + 1);
-                let x1 = col_x(i + 2);
-                let (pos, align) = if *right { (pos2(x1 - 10.0, head.center().y), egui::Align2::RIGHT_CENTER) } else { (pos2(x0 + 6.0, head.center().y), egui::Align2::LEFT_CENTER) };
-                painter.text(pos, align, *t, theme::font_bold(12.5), p.muted);
-            }
-        }
-        // 內容
-        let mut y = table.min.y + head_h + 2.0;
-        let dates = date_labels(rows.iter().map(|e| (e.media.name.as_str(), e.media.mtime)));
-        if rows.is_empty() {
-            let msg = if d.loading {
-                "讀取中…".to_string()
-            } else if let Some(e) = &d.error {
-                e.clone()
-            } else if d.data.as_ref().is_some_and(|x| x.total == 0) && d.query.trim().is_empty() {
-                "這個資料夾還沒有錄影。".into()
-            } else {
-                "沒有符合條件的錄影。".into()
-            };
-            painter.text(pos2(table.center().x, table.min.y + 120.0), egui::Align2::CENTER_CENTER, msg, theme::font(14.0), p.muted);
-        }
-        for e in &rows {
-            let row = Rect::from_min_size(pos2(table.min.x, y), vec2(table.width(), LIBRARY_ROW_MAIN_PX as f32));
-            let resp = ui.interact(row, Id::new(("librow", &e.media.path)), Sense::hover());
-            if resp.hovered() {
-                painter.rect_filled(row, CornerRadius::same(4), p.surface2.gamma_multiply(0.6));
-            }
-            painter.hline(row.x_range(), row.max.y, Stroke::new(1.0, p.border));
-            let rui = &mut ui.new_child(UiBuilder::new().max_rect(row).layout(Layout::left_to_right(Align::Center)));
-            rui.add_space(10.0);
-            let mut on = d.selected.contains(&e.media.path);
-            if rui.checkbox(&mut on, "").changed() {
-                d.toggle(&e.media.path, on);
-            }
-            // 名稱欄：縮圖、日期、自訂名稱、標籤
-            let name_rect = Rect::from_min_max(pos2(col_x(1), row.min.y), pos2(col_x(2), row.max.y));
-            let thumb = Rect::from_min_size(pos2(name_rect.min.x + 4.0, row.center().y - 15.0), vec2(53.0, 30.0));
-            painter.rect_filled(thumb, CornerRadius::same(4), p.surface2);
-            if let Some(t) = app.thumb(&e.media.path, e.media.mtime) {
-                painter.image(t.id(), thumb, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
-            }
-            {
-                let nui = &mut ui.new_child(UiBuilder::new().max_rect(Rect::from_min_max(pos2(thumb.max.x + 10.0, row.min.y), name_rect.max)).layout(Layout::left_to_right(Align::Center)));
-                nui.label(RichText::new(dates.get(&e.media.name).cloned().unwrap_or_default()).font(theme::font_bold(13.0)));
-                if !is_default_name(&e.media.name) {
-                    nui.add(egui::Label::new(RichText::new(base_name(&e.media.name)).font(theme::font(13.0))).truncate());
-                }
-                if is_cut_name(&e.media.name) {
-                    chip(nui, "剪輯版", Tone::Warn, false);
-                }
-                if is_image(&e.media.name) {
-                    chip(nui, "截圖", Tone::Accent, false);
-                }
-                if e.media.has_audio == Some(true) {
-                    chip(nui, "聲音", Tone::Ok, false);
-                }
-            }
-            painter.text(pos2(col_x(3) - 10.0, row.center().y), egui::Align2::RIGHT_CENTER, e.media.duration_sec.map(video_clock).unwrap_or_else(|| "—".into()), theme::mono(12.5), p.text);
-            let res = match (e.media.width, e.media.height) {
-                (Some(w), Some(h)) => format!("{w}×{h}"),
-                _ => "—".into(),
-            };
-            painter.text(pos2(col_x(4) - 10.0, row.center().y), egui::Align2::RIGHT_CENTER, res, theme::mono(12.5), p.muted);
-            painter.text(pos2(col_x(5) - 10.0, row.center().y), egui::Align2::RIGHT_CENTER, format_bytes(e.media.bytes), theme::mono(12.5), p.text);
-            {
-                let aui = &mut ui.new_child(UiBuilder::new().max_rect(Rect::from_min_max(pos2(col_x(5), row.min.y), row.max)).layout(Layout::left_to_right(Align::Center)));
-                aui.spacing_mut().item_spacing.x = 2.0;
-                let image = is_image(&e.media.name);
-                let acts: &[(EntryAction, Icon, &str)] = if image {
-                    &[(EntryAction::Play, Icon::Play, "開啟"), (EntryAction::Reveal, Icon::Folder, "在資料夾中顯示")]
-                } else {
-                    &[
-                        (EntryAction::Play, Icon::Play, "播放"),
-                        (EntryAction::Reveal, Icon::Folder, "在資料夾中顯示"),
-                        (EntryAction::Edit, Icon::Cut, "剪輯"),
-                        (EntryAction::Export, Icon::Export, "製作加速版 / GIF"),
-                    ]
-                };
-                for &(act, icon, tip) in acts {
-                    if Btn::icon_only(icon).ghost().small().tooltip(tip).show(aui).clicked() {
-                        action = Some((act, e.clone()));
-                    }
-                }
-                if image {
-                    // 與錄影列的按鈕對齊
-                    aui.add_space(2.0 * (28.0 + 2.0));
-                }
-                if Btn::icon_only(Icon::Edit).ghost().small().tooltip(if image { "重新命名" } else { "重新命名（加速版一起改）" }).show(aui).clicked() {
-                    rename = Some(e.clone());
-                }
-            }
-            y += LIBRARY_ROW_MAIN_PX as f32;
-            // 加速版 / GIF 子列
-            for x in &e.exports {
-                let row = Rect::from_min_size(pos2(table.min.x, y), vec2(table.width(), LIBRARY_ROW_SUB_PX as f32));
-                painter.hline(row.x_range(), row.max.y, Stroke::new(1.0, p.border.gamma_multiply(0.6)));
-                let sui = &mut ui.new_child(UiBuilder::new().max_rect(row).layout(Layout::left_to_right(Align::Center)));
-                sui.add_space(10.0);
-                let mut on = d.selected.contains(&x.media.path);
-                if sui.checkbox(&mut on, "").changed() {
-                    if on {
-                        d.selected.insert(x.media.path.clone());
-                    } else {
-                        d.selected.remove(&x.media.path);
-                    }
-                }
-                // 樹狀線
-                let bx = col_x(1) + 30.0;
-                painter.line_segment([pos2(bx, row.min.y - 6.0), pos2(bx, row.center().y)], Stroke::new(1.0, p.border_strong));
-                painter.line_segment([pos2(bx, row.center().y), pos2(bx + 12.0, row.center().y)], Stroke::new(1.0, p.border_strong));
-                {
-                    let nui = &mut ui.new_child(UiBuilder::new().max_rect(Rect::from_min_max(pos2(bx + 18.0, row.min.y), pos2(col_x(2), row.max.y))).layout(Layout::left_to_right(Align::Center)));
-                    chip(nui, &export_label(x), Tone::Accent, false).on_hover_text(format!("{}（{}×）", x.media.name, speed_label(x.speed)));
-                }
-                painter.text(pos2(col_x(3) - 10.0, row.center().y), egui::Align2::RIGHT_CENTER, x.media.duration_sec.map(video_clock).unwrap_or_else(|| "—".into()), theme::mono(12.0), p.text);
-                let res = match (x.media.width, x.media.height) {
-                    (Some(w), Some(h)) => format!("{w}×{h}"),
-                    _ => "—".into(),
-                };
-                painter.text(pos2(col_x(4) - 10.0, row.center().y), egui::Align2::RIGHT_CENTER, res, theme::mono(12.0), p.muted);
-                painter.text(pos2(col_x(5) - 10.0, row.center().y), egui::Align2::RIGHT_CENTER, format_bytes(x.media.bytes), theme::mono(12.0), p.text);
-                let aui = &mut ui.new_child(UiBuilder::new().max_rect(Rect::from_min_max(pos2(col_x(5), row.min.y), row.max)).layout(Layout::left_to_right(Align::Center)));
-                aui.spacing_mut().item_spacing.x = 2.0;
-                for (act, icon, tip) in [(EntryAction::Play, Icon::Play, "播放"), (EntryAction::Reveal, Icon::Folder, "在資料夾中顯示")] {
-                    if Btn::icon_only(icon).ghost().small().tooltip(tip).show(aui).clicked() {
-                        action = Some((act, LibraryEntry { media: x.media.clone(), exports: vec![] }));
-                    }
-                }
-                y += LIBRARY_ROW_SUB_PX as f32;
-            }
+        if shot {
+            shot_grid(app, ui, &mut d, table, &mut action, &mut rename);
+        } else {
+            video_table(app, ui, &mut d, table, &mut action, &mut rename);
         }
         // 下方：選取與分頁
+        let painter = ui.painter().clone();
         let foot = Rect::from_min_max(pos2(table.min.x, ui.max_rect().max.y - foot_h), ui.max_rect().max);
         painter.hline(foot.x_range(), foot.min.y - 4.0, Stroke::new(1.0, p.border));
         let fui = &mut ui.new_child(UiBuilder::new().max_rect(foot).layout(Layout::left_to_right(Align::Center)));
@@ -404,12 +279,249 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
     }
 }
 
+/// 錄影：表格（高度固定，伺服器依每筆的子列數分頁，一頁剛好放滿）
+fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table: Rect, action: &mut Option<(EntryAction, LibraryEntry)>, rename: &mut Option<LibraryEntry>) {
+    let p = theme::pal(ui);
+    let head_h = 30.0;
+    let fit = ((table.height() - head_h - 4.0) as f64).max(LIBRARY_ROW_MAIN_PX * 3.0).floor();
+    if (fit - d.fit_px).abs() > 0.5 {
+        d.fit_px = fit;
+        d.dirty = true;
+    }
+    let rows = d.data.as_ref().map(|x| x.items.clone()).unwrap_or_default();
+    let cols = [36.0, 0.0, 84.0, 104.0, 90.0, 176.0];
+    let name_w = table.width() - cols.iter().sum::<f32>();
+    let col_x = |i: usize| -> f32 {
+        let widths = [cols[0], name_w, cols[2], cols[3], cols[4], cols[5]];
+        table.min.x + widths[..i].iter().sum::<f32>()
+    };
+    let painter = ui.painter().clone();
+    painter.rect_filled(Rect::from_min_size(table.min, vec2(table.width(), head_h)), CornerRadius::same(6), p.surface2);
+    // 標題列
+    {
+        let head = Rect::from_min_size(table.min, vec2(table.width(), head_h));
+        let all = !rows.is_empty() && rows.iter().all(|e| d.selected.contains(&e.media.path) && e.exports.iter().all(|x| d.selected.contains(&x.media.path)));
+        let mut all2 = all;
+        let ui2 = &mut ui.new_child(UiBuilder::new().max_rect(Rect::from_min_size(head.min + vec2(10.0, 4.0), vec2(24.0, 22.0))));
+        if ui2.checkbox(&mut all2, "").on_hover_text("全選本頁").changed() {
+            for e in &rows {
+                d.toggle(&e.media.path, all2);
+            }
+        }
+        for (i, (t, right)) in [("檔案", false), ("長度", true), ("解析度", true), ("大小", true)].iter().enumerate() {
+            let x0 = col_x(i + 1);
+            let x1 = col_x(i + 2);
+            let (pos, align) = if *right { (pos2(x1 - 10.0, head.center().y), egui::Align2::RIGHT_CENTER) } else { (pos2(x0 + 6.0, head.center().y), egui::Align2::LEFT_CENTER) };
+            painter.text(pos, align, *t, theme::font_bold(12.5), p.muted);
+        }
+    }
+    // 內容
+    let mut y = table.min.y + head_h + 2.0;
+    let dates = date_labels(rows.iter().map(|e| (e.media.name.as_str(), e.media.mtime)));
+    if rows.is_empty() {
+        let msg = if d.loading {
+            "讀取中…".to_string()
+        } else if let Some(e) = &d.error {
+            e.clone()
+        } else if d.data.as_ref().is_some_and(|x| x.total == 0) && d.query.trim().is_empty() {
+            "這個資料夾還沒有錄影。".into()
+        } else {
+            "沒有符合條件的錄影。".into()
+        };
+        painter.text(pos2(table.center().x, table.min.y + 120.0), egui::Align2::CENTER_CENTER, msg, theme::font(14.0), p.muted);
+    }
+    for e in &rows {
+        let row = Rect::from_min_size(pos2(table.min.x, y), vec2(table.width(), LIBRARY_ROW_MAIN_PX as f32));
+        let resp = ui.interact(row, Id::new(("librow", &e.media.path)), Sense::hover());
+        if resp.hovered() {
+            painter.rect_filled(row, CornerRadius::same(4), p.surface2.gamma_multiply(0.6));
+        }
+        painter.hline(row.x_range(), row.max.y, Stroke::new(1.0, p.border));
+        let rui = &mut ui.new_child(UiBuilder::new().max_rect(row).layout(Layout::left_to_right(Align::Center)));
+        rui.add_space(10.0);
+        let mut on = d.selected.contains(&e.media.path);
+        if rui.checkbox(&mut on, "").changed() {
+            d.toggle(&e.media.path, on);
+        }
+        // 名稱欄：縮圖、日期、自訂名稱、標籤
+        let name_rect = Rect::from_min_max(pos2(col_x(1), row.min.y), pos2(col_x(2), row.max.y));
+        let thumb = Rect::from_min_size(pos2(name_rect.min.x + 4.0, row.center().y - 15.0), vec2(53.0, 30.0));
+        painter.rect_filled(thumb, CornerRadius::same(4), p.surface2);
+        if let Some(t) = app.thumb(&e.media.path, e.media.mtime) {
+            theme::paint_thumb(&painter, thumb, &t);
+        }
+        {
+            let nui = &mut ui.new_child(UiBuilder::new().max_rect(Rect::from_min_max(pos2(thumb.max.x + 10.0, row.min.y), name_rect.max)).layout(Layout::left_to_right(Align::Center)));
+            nui.label(RichText::new(dates.get(&e.media.name).cloned().unwrap_or_default()).font(theme::font_bold(13.0)));
+            if !is_default_name(&e.media.name) {
+                nui.add(egui::Label::new(RichText::new(base_name(&e.media.name)).font(theme::font(13.0))).truncate());
+            }
+            if is_cut_name(&e.media.name) {
+                chip(nui, "剪輯版", Tone::Warn, false);
+            }
+            if e.media.has_audio == Some(true) {
+                chip(nui, "聲音", Tone::Ok, false);
+            }
+        }
+        painter.text(pos2(col_x(3) - 10.0, row.center().y), egui::Align2::RIGHT_CENTER, e.media.duration_sec.map(video_clock).unwrap_or_else(|| "—".into()), theme::mono(12.5), p.text);
+        let res = match (e.media.width, e.media.height) {
+            (Some(w), Some(h)) => format!("{w}×{h}"),
+            _ => "—".into(),
+        };
+        painter.text(pos2(col_x(4) - 10.0, row.center().y), egui::Align2::RIGHT_CENTER, res, theme::mono(12.5), p.muted);
+        painter.text(pos2(col_x(5) - 10.0, row.center().y), egui::Align2::RIGHT_CENTER, format_bytes(e.media.bytes), theme::mono(12.5), p.text);
+        {
+            let aui = &mut ui.new_child(UiBuilder::new().max_rect(Rect::from_min_max(pos2(col_x(5), row.min.y), row.max)).layout(Layout::left_to_right(Align::Center)));
+            aui.spacing_mut().item_spacing.x = 2.0;
+            let acts = [
+                (EntryAction::Play, Icon::Play, "播放"),
+                (EntryAction::Reveal, Icon::Folder, "在資料夾中顯示"),
+                (EntryAction::Edit, Icon::Cut, "剪輯"),
+                (EntryAction::Export, Icon::Export, "製作加速版 / GIF"),
+            ];
+            for (act, icon, tip) in acts {
+                if Btn::icon_only(icon).ghost().small().tooltip(tip).show(aui).clicked() {
+                    *action = Some((act, e.clone()));
+                }
+            }
+            if Btn::icon_only(Icon::Edit).ghost().small().tooltip("重新命名（加速版一起改）").show(aui).clicked() {
+                *rename = Some(e.clone());
+            }
+        }
+        y += LIBRARY_ROW_MAIN_PX as f32;
+        // 加速版 / GIF 子列
+        for x in &e.exports {
+            let row = Rect::from_min_size(pos2(table.min.x, y), vec2(table.width(), LIBRARY_ROW_SUB_PX as f32));
+            painter.hline(row.x_range(), row.max.y, Stroke::new(1.0, p.border.gamma_multiply(0.6)));
+            let sui = &mut ui.new_child(UiBuilder::new().max_rect(row).layout(Layout::left_to_right(Align::Center)));
+            sui.add_space(10.0);
+            let mut on = d.selected.contains(&x.media.path);
+            if sui.checkbox(&mut on, "").changed() {
+                if on {
+                    d.selected.insert(x.media.path.clone());
+                } else {
+                    d.selected.remove(&x.media.path);
+                }
+            }
+            // 樹狀線
+            let bx = col_x(1) + 30.0;
+            painter.line_segment([pos2(bx, row.min.y - 6.0), pos2(bx, row.center().y)], Stroke::new(1.0, p.border_strong));
+            painter.line_segment([pos2(bx, row.center().y), pos2(bx + 12.0, row.center().y)], Stroke::new(1.0, p.border_strong));
+            {
+                let nui = &mut ui.new_child(UiBuilder::new().max_rect(Rect::from_min_max(pos2(bx + 18.0, row.min.y), pos2(col_x(2), row.max.y))).layout(Layout::left_to_right(Align::Center)));
+                chip(nui, &export_label(x), Tone::Accent, false).on_hover_text(format!("{}（{}×）", x.media.name, speed_label(x.speed)));
+            }
+            painter.text(pos2(col_x(3) - 10.0, row.center().y), egui::Align2::RIGHT_CENTER, x.media.duration_sec.map(video_clock).unwrap_or_else(|| "—".into()), theme::mono(12.0), p.text);
+            let res = match (x.media.width, x.media.height) {
+                (Some(w), Some(h)) => format!("{w}×{h}"),
+                _ => "—".into(),
+            };
+            painter.text(pos2(col_x(4) - 10.0, row.center().y), egui::Align2::RIGHT_CENTER, res, theme::mono(12.0), p.muted);
+            painter.text(pos2(col_x(5) - 10.0, row.center().y), egui::Align2::RIGHT_CENTER, format_bytes(x.media.bytes), theme::mono(12.0), p.text);
+            let aui = &mut ui.new_child(UiBuilder::new().max_rect(Rect::from_min_max(pos2(col_x(5), row.min.y), row.max)).layout(Layout::left_to_right(Align::Center)));
+            aui.spacing_mut().item_spacing.x = 2.0;
+            for (act, icon, tip) in [(EntryAction::Play, Icon::Play, "播放"), (EntryAction::Reveal, Icon::Folder, "在資料夾中顯示")] {
+                if Btn::icon_only(icon).ghost().small().tooltip(tip).show(aui).clicked() {
+                    *action = Some((act, LibraryEntry { media: x.media.clone(), exports: vec![] }));
+                }
+            }
+            y += LIBRARY_ROW_SUB_PX as f32;
+        }
+    }
+}
+
+/// 截圖：縮圖格（一頁放幾張依對話框大小），點縮圖開啟
+fn shot_grid(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, area: Rect, action: &mut Option<(EntryAction, LibraryEntry)>, rename: &mut Option<LibraryEntry>) {
+    let p = theme::pal(ui);
+    let gap = 14.0;
+    let cols = ((area.width() + gap) / (210.0 + gap)).floor().max(1.0);
+    let cell_w = (area.width() - gap * (cols - 1.0)) / cols;
+    let img_h = (cell_w * 9.0 / 16.0).round();
+    let cell_h = img_h + 64.0;
+    let rows = ((area.height() + gap) / (cell_h + gap)).floor().max(1.0);
+    let per = (cols * rows) as usize;
+    if per != d.grid_per_page {
+        d.grid_per_page = per;
+        d.dirty = true;
+    }
+    let items = d.data.as_ref().map(|x| x.items.clone()).unwrap_or_default();
+    let painter = ui.painter().clone();
+    if items.is_empty() {
+        let msg = if d.loading {
+            "讀取中…".to_string()
+        } else if let Some(e) = &d.error {
+            e.clone()
+        } else if d.data.as_ref().is_some_and(|x| x.total == 0) && d.query.trim().is_empty() {
+            format!("還沒有截圖。按主畫面的「截圖」或 {HOTKEY_SHOT_LABEL} 試試看。")
+        } else {
+            "沒有符合條件的截圖。".into()
+        };
+        painter.text(pos2(area.center().x, area.min.y + 120.0), egui::Align2::CENTER_CENTER, msg, theme::font(14.0), p.muted);
+    }
+    let dates = date_labels(items.iter().map(|e| (e.media.name.as_str(), e.media.mtime)));
+    for (i, e) in items.iter().enumerate() {
+        let (c, r) = ((i % cols as usize) as f32, (i / cols as usize) as f32);
+        let cell = Rect::from_min_size(pos2(area.min.x + c * (cell_w + gap), area.min.y + r * (cell_h + gap)), vec2(cell_w, cell_h));
+        let on = d.selected.contains(&e.media.path);
+        let img = Rect::from_min_size(cell.min, vec2(cell_w, img_h));
+        let resp = ui.interact(img, Id::new(("shotcell", &e.media.path)), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(format!("{}\n點一下開啟", e.media.name));
+        let border = if on {
+            Stroke::new(2.0, p.accent)
+        } else if resp.hovered() {
+            Stroke::new(1.0, p.border_strong)
+        } else {
+            Stroke::new(1.0, p.border)
+        };
+        painter.rect_filled(img, CornerRadius::same(theme::RADIUS_SM), p.surface2);
+        if let Some(t) = app.thumb(&e.media.path, e.media.mtime) {
+            theme::paint_thumb(&painter.with_clip_rect(img.shrink(1.0)), img.shrink(4.0), &t);
+        }
+        painter.rect_stroke(img, CornerRadius::same(theme::RADIUS_SM), border, egui::StrokeKind::Inside);
+        if resp.clicked() {
+            *action = Some((EntryAction::Play, e.clone()));
+        }
+        // 左上角勾選（白底，在深色縮圖上也看得到）
+        let cb = Rect::from_min_size(img.min + vec2(6.0, 6.0), vec2(24.0, 22.0));
+        if on || resp.hovered() || ui.rect_contains_pointer(cb) {
+            painter.rect_filled(cb, CornerRadius::same(5), p.surface.gamma_multiply(0.92));
+        }
+        {
+            let cui = &mut ui.new_child(UiBuilder::new().max_rect(cb.shrink2(vec2(4.0, 1.0))));
+            let mut v = on;
+            if cui.checkbox(&mut v, "").changed() {
+                d.toggle(&e.media.path, v);
+            }
+        }
+        // 名稱（預設檔名顯示日期時間）
+        let title = if is_default_name(&e.media.name) { dates.get(&e.media.name).cloned().unwrap_or_default() } else { base_name(&e.media.name) };
+        let tr = Rect::from_min_max(pos2(cell.min.x + 2.0, img.max.y + 6.0), pos2(cell.max.x, img.max.y + 28.0));
+        ui.new_child(UiBuilder::new().max_rect(tr).layout(Layout::left_to_right(Align::Center))).add(egui::Label::new(RichText::new(title).font(theme::font_bold(13.0))).truncate());
+        // 解析度・大小，右邊放按鈕
+        let br = Rect::from_min_max(pos2(cell.min.x + 2.0, img.max.y + 30.0), cell.max);
+        let bui = &mut ui.new_child(UiBuilder::new().max_rect(br).layout(Layout::left_to_right(Align::Center)));
+        let size = e.media.width.zip(e.media.height).map(|(w, h)| format!("{w}×{h}・")).unwrap_or_default();
+        bui.label(RichText::new(format!("{size}{}", format_bytes(e.media.bytes))).font(theme::font(12.0)).color(p.muted));
+        bui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            ui.spacing_mut().item_spacing.x = 2.0;
+            if Btn::icon_only(Icon::Edit).ghost().small().tooltip("重新命名").show(ui).clicked() {
+                *rename = Some(e.clone());
+            }
+            if Btn::icon_only(Icon::Folder).ghost().small().tooltip("在資料夾中顯示").show(ui).clicked() {
+                *action = Some((EntryAction::Reveal, e.clone()));
+            }
+            if Btn::icon_only(Icon::Eye).ghost().small().tooltip("檢視").show(ui).clicked() {
+                *action = Some((EntryAction::Play, e.clone()));
+            }
+        });
+    }
+}
+
 /// 改名：原片與底下的加速版一起改；送出時檢查衝突、使用中，錯誤留在對話框裡
 fn rename_entry(app: &mut UiApp, entry: LibraryEntry) {
     let old = base_name(&entry.media.name);
     let n = entry.exports.len();
     let mut ask = Ask::input("重新命名", "新名稱", old.clone(), "改名", move |app, value| {
-        let name = value.trim().trim_end_matches(".mp4").trim_end_matches(".MP4").to_string();
+        let name = value.trim().trim_end_matches(".mp4").trim_end_matches(".MP4").trim_end_matches(".png").trim_end_matches(".PNG").to_string();
         if name == old {
             app.ask = None;
             return;

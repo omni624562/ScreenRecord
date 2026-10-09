@@ -3,7 +3,7 @@
 //! - 右：錄影狀態、計時、控制按鈕、轉檔工作、事件紀錄、系統狀態
 //! - 下：最近錄影（橫向分頁）
 
-use super::dialogs::{base_name, date_labels, file_name, is_cut_name, is_default_name, is_image, Ask};
+use super::dialogs::{base_name, date_labels, file_name, is_cut_name, is_default_name, Ask};
 use super::settings::{SourceType, FPS_CHOICES, MAX_PRESETS};
 use super::theme::{self, chip, segmented, switch, Btn, Icon, Tone};
 use super::{EntryAction, UiApp};
@@ -1196,6 +1196,9 @@ fn sys_status(app: &mut UiApp, ui: &mut Ui) {
 
 // ───────────── 最近錄影 ─────────────
 
+/// 「全部錄影」「全部截圖」按鈕的寬度
+const LIB_BTN_W: f32 = 128.0;
+
 fn recent_strip(app: &mut UiApp, ui: &mut Ui) {
     let p = theme::pal(ui);
     theme::card(ui).inner_margin(egui::Margin::symmetric(14, 10)).show(ui, |ui| {
@@ -1216,7 +1219,7 @@ fn recent_strip(app: &mut UiApp, ui: &mut Ui) {
                 app.load_recent();
             }
             // 一頁放幾張依寬度決定
-            let lib_w = 130.0;
+            let lib_w = LIB_BTN_W + 8.0;
             let cards_w = ui.available_width() - lib_w - 44.0;
             let card_w = 280.0;
             let per = ((cards_w + 10.0) / (card_w + 10.0)).floor().clamp(1.0, 8.0) as usize;
@@ -1240,10 +1243,18 @@ fn recent_strip(app: &mut UiApp, ui: &mut Ui) {
                 });
             });
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                // 錄影與截圖分開看
                 let total = app.recent.as_ref().map(|r| r.total).unwrap_or(0);
-                if Btn::new(if total > 0 { format!("全部錄影（{total}）") } else { "全部錄影".into() }).icon(Icon::List).small().show(ui).clicked() {
-                    app.library = Some(super::library_dialog::LibraryDialog::new());
-                }
+                let shots = app.shot_total;
+                ui.allocate_ui_with_layout(vec2(LIB_BTN_W, 64.0), Layout::top_down(Align::Max), |ui| {
+                    ui.spacing_mut().item_spacing.y = 6.0;
+                    if Btn::new(if total > 0 { format!("全部錄影（{total}）") } else { "全部錄影".into() }).icon(Icon::List).small().min_width(LIB_BTN_W).show(ui).clicked() {
+                        app.library = Some(super::library_dialog::LibraryDialog::new(super::library_dialog::Kind::Video));
+                    }
+                    if Btn::new(if shots > 0 { format!("全部截圖（{shots}）") } else { "全部截圖".into() }).icon(Icon::Camera).small().min_width(LIB_BTN_W).show(ui).clicked() {
+                        app.library = Some(super::library_dialog::LibraryDialog::new(super::library_dialog::Kind::Shot));
+                    }
+                });
                 if Btn::icon_only(Icon::ChevR).ghost().small().enabled(app.recent_page < pages).tooltip("較舊的錄影").show(ui).clicked() {
                     app.recent_page += 1;
                     app.load_recent();
@@ -1263,22 +1274,13 @@ fn recent_card(app: &mut UiApp, ui: &mut Ui, e: &LibraryEntry, date: String, w: 
     let thumb = Rect::from_min_size(rect.min + vec2(6.0, 6.0), vec2((h - 12.0) * 16.0 / 9.0, h - 12.0));
     painter.rect_filled(thumb, CornerRadius::same(5), p.surface2);
     if let Some(t) = app.thumb(&e.media.path, e.media.mtime) {
-        painter.image(t.id(), thumb, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+        theme::paint_thumb(&painter, thumb, &t);
     }
     let x = thumb.max.x + 10.0;
-    let image = is_image(&e.media.name);
-    let meta = if image {
-        let size = e.media.width.zip(e.media.height).map(|(w, h)| format!("{w}×{h}・")).unwrap_or_default();
-        format!("{size}{}", format_bytes(e.media.bytes))
-    } else {
-        format!("{}・{}", e.media.duration_sec.map(video_clock).unwrap_or_else(|| "—".into()), format_bytes(e.media.bytes))
-    };
+    let meta = format!("{}・{}", e.media.duration_sec.map(video_clock).unwrap_or_else(|| "—".into()), format_bytes(e.media.bytes));
     painter.text(pos2(x, rect.min.y + 28.0), egui::Align2::LEFT_TOP, meta, theme::font(12.0), p.muted);
     // 標籤
     let mut tags: Vec<(String, Tone, String)> = vec![];
-    if image {
-        tags.push(("截圖".into(), Tone::Accent, String::new()));
-    }
     if e.media.has_audio == Some(true) {
         tags.push(("聲音".into(), Tone::Ok, String::new()));
     }
@@ -1311,17 +1313,13 @@ fn recent_card(app: &mut UiApp, ui: &mut Ui, e: &LibraryEntry, date: String, w: 
     {
         let ui = &mut ui.new_child(UiBuilder::new().max_rect(row).layout(Layout::left_to_right(Align::Center)));
         ui.spacing_mut().item_spacing.x = 2.0;
-        let acts: &[(EntryAction, Icon, &str)] = if image {
-            &[(EntryAction::Play, Icon::Play, "開啟"), (EntryAction::Reveal, Icon::Folder, "在資料夾中顯示")]
-        } else {
-            &[
-                (EntryAction::Play, Icon::Play, "播放"),
-                (EntryAction::Reveal, Icon::Folder, "在資料夾中顯示"),
-                (EntryAction::Edit, Icon::Cut, "剪輯"),
-                (EntryAction::Export, Icon::Export, "製作加速版 / GIF"),
-            ]
-        };
-        for &(act, icon, tip) in acts {
+        let acts = [
+            (EntryAction::Play, Icon::Play, "播放"),
+            (EntryAction::Reveal, Icon::Folder, "在資料夾中顯示"),
+            (EntryAction::Edit, Icon::Cut, "剪輯"),
+            (EntryAction::Export, Icon::Export, "製作加速版 / GIF"),
+        ];
+        for (act, icon, tip) in acts {
             if Btn::icon_only(icon).ghost().small().tooltip(tip).show(ui).clicked() {
                 app.known.insert(e.media.path.clone(), e.clone());
                 app.act(act, e.clone());

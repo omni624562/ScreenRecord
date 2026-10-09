@@ -239,10 +239,6 @@ pub fn base_name(name: &str) -> String {
         None => screenrecorder_core::format::strip_mp4(name),
     }
 }
-/// 截圖（PNG）
-pub fn is_image(name: &str) -> bool {
-    screenrecorder_core::library::is_image_name(name)
-}
 
 pub fn file_name(path: &str) -> String {
     path.rsplit(['\\', '/']).next().unwrap_or(path).to_string()
@@ -288,7 +284,6 @@ mod tests {
         assert!(!is_default_name("操作示範.mp4"));
         assert!(is_default_name("Shot_2026-10-09_14-30-00.png") && is_default_name("Shot_2026-10-09_14-30-00_2.png"));
         assert_eq!(base_name("登入畫面.png"), "登入畫面");
-        assert!(is_image("Shot_x.PNG") && !is_image("a.mp4"));
         assert_eq!(short_date("Rec_2026-10-06_08-17-18.mp4", 0.0, false), "10/06 08:17");
         assert_eq!(short_date("Rec_2026-10-06_08-17-18.mp4", 0.0, true), "10/06 08:17:18");
         let labels = date_labels([("Rec_2026-10-06_08-17-18.mp4", 0.0), ("Rec_2026-10-06_08-17-40.mp4", 0.0), ("Rec_2026-10-06_09-00-00.mp4", 0.0)].into_iter());
