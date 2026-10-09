@@ -59,7 +59,8 @@ pub fn show(app: &mut UiApp, ui: &mut Ui) {
         let gap = 14.0;
         let top = Rect::from_min_max(rest.min, pos2(rest.max.x, rest.max.y - recent_h - gap));
         let bottom = Rect::from_min_max(pos2(rest.min.x, rest.max.y - recent_h), rest.max);
-        let rec_w = 360.0;
+        // 右欄：視窗窄時跟著變窄，左邊的預覽與設定列才放得下
+        let rec_w = (inner.width() * 0.34).clamp(312.0, 360.0);
         let left = Rect::from_min_max(top.min, pos2(top.max.x - rec_w - gap, top.max.y));
         let right = Rect::from_min_max(pos2(top.max.x - rec_w, top.min.y), top.max);
         ui.scope_builder(UiBuilder::new().max_rect(left), |ui| capture_panel(app, ui));
@@ -178,19 +179,26 @@ fn capture_panel(app: &mut UiApp, ui: &mut Ui) {
         let locked = app.locked();
         // 範圍分頁、細節、即時預覽、重新整理
         ui.horizontal(|ui| {
+            // 窄的時候「即時預覽」只留開關（滑鼠提示有說明），讓範圍的按鈕、座標放得下
+            let narrow = ui.available_width() < 720.0;
             let mut st = app.s.source_type;
             if segmented(ui, &mut st, &[(SourceType::Monitor, "單一螢幕"), (SourceType::All, "所有螢幕"), (SourceType::Region, "自訂範圍")], !locked) {
                 app.s.source_type = st;
                 app.save_settings();
             }
-            source_detail(app, ui);
+            // 右邊留給「即時預覽」與重新整理
+            let room = ui.available_width() - if narrow { 80.0 } else { 150.0 };
+            ui.scope(|ui| {
+                ui.set_max_width(room.max(0.0));
+                source_detail(app, ui, room);
+            });
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if Btn::icon_only(Icon::Refresh).ghost().small().tooltip("重新擷取預覽並更新螢幕清單").show(ui).clicked() {
                     app.preview.retry_live();
                     app.refresh_env(|_| {});
                 }
                 let mut live = app.s.live_preview;
-                if switch(ui, &mut live, "即時預覽", true).on_hover_text("即時顯示目前畫面（每秒 5 張，錄影中 2 張）").changed() {
+                if switch(ui, &mut live, if narrow { "" } else { "即時預覽" }, true).on_hover_text("即時預覽：即時顯示目前畫面（每秒 5 張，錄影中 2 張）").changed() {
                     app.s.live_preview = live;
                     app.preview.retry_live();
                     app.save_settings();
@@ -209,32 +217,44 @@ fn capture_panel(app: &mut UiApp, ui: &mut Ui) {
     });
 }
 
-/// 範圍分頁旁的細節：螢幕按鈕 / 說明 / 座標輸入
-fn source_detail(app: &mut UiApp, ui: &mut Ui) {
+/// 範圍分頁旁的細節：螢幕按鈕 / 說明 / 座標輸入。room：可用的寬度（放不下時縮短文字、省略說明）
+fn source_detail(app: &mut UiApp, ui: &mut Ui, room: f32) {
+    let gap = ui.spacing().item_spacing.x;
+    let text_w = |ui: &Ui, t: &str| ui.painter().layout_no_wrap(t.to_string(), theme::font(13.0), Color32::WHITE).size().x;
     let p = theme::pal(ui);
     let locked = app.locked();
     match app.s.source_type {
         SourceType::Monitor => {
             if app.env.monitors.is_empty() {
-                ui.label(theme::muted(ui, "找不到螢幕資訊，請改用「自訂範圍」"));
+                ui.add(egui::Label::new(theme::muted(ui, "找不到螢幕資訊，請改用「自訂範圍」")).truncate());
             }
-            for m in app.env.monitors.clone() {
+            let monitors = app.env.monitors.clone();
+            let full = |m: &screenrecorder_core::types::MonitorInfo| format!("螢幕 {}  {}×{}{}", m.display_number, m.width, m.height, if m.primary { "・主" } else { "" });
+            let boxed = app.s.region_in_monitor(&app.env).is_some();
+            let extra = if boxed { Btn::new("整個螢幕").icon(Icon::Close).small().width(ui) } else { 0.0 };
+            let buttons_w = |short: bool| -> f32 { monitors.iter().map(|m| Btn::new(if short { format!("螢幕 {}", m.display_number) } else { full(m) }).small().width(ui) + gap).sum() };
+            // 放不下完整的「螢幕 1  1920×1080・主」時只寫「螢幕 1」（滑鼠提示有完整資訊）
+            let short = buttons_w(false) + extra > room;
+            let hint = "可在預覽上拖曳框選範圍";
+            let show_hint = !boxed && !monitors.is_empty() && buttons_w(short) + text_w(ui, hint) + gap <= room;
+            for m in monitors {
                 let on = app.s.monitor_id.as_deref() == Some(&m.id);
-                let label = format!("螢幕 {}  {}×{}{}", m.display_number, m.width, m.height, if m.primary { "・主" } else { "" });
-                if Btn::new(label).small().selected(on).enabled(!locked).tooltip(&m.adapter_name).show(ui).clicked() && !on {
+                let label = if short { format!("螢幕 {}", m.display_number) } else { full(&m) };
+                let tip = format!("{}（{}）", full(&m), m.adapter_name);
+                if Btn::new(label).small().selected(on).enabled(!locked).tooltip(tip).show(ui).clicked() && !on {
                     app.s.monitor_id = Some(m.id.clone());
                     app.s.monitor_region = None;
                     app.save_settings();
                 }
             }
             // 只錄螢幕的一部分：在預覽上拖曳框選
-            if app.s.region_in_monitor(&app.env).is_some() {
+            if boxed {
                 if Btn::new("整個螢幕").icon(Icon::Close).small().enabled(!locked).tooltip("取消框選的範圍，錄整個螢幕").show(ui).clicked() {
                     app.s.monitor_region = None;
                     app.save_settings();
                 }
-            } else if !app.env.monitors.is_empty() {
-                ui.label(theme::muted(ui, "可在預覽上拖曳框選範圍")).on_hover_text("只錄這個螢幕的一部分：在預覽圖上拖曳框選；拖曳紅框可移動，拉邊或角可調整大小");
+            } else if show_hint {
+                ui.label(theme::muted(ui, hint)).on_hover_text("只錄這個螢幕的一部分：在預覽圖上拖曳框選；拖曳紅框可移動，拉邊或角可調整大小");
             }
         }
         SourceType::All => {
@@ -246,7 +266,7 @@ fn source_detail(app: &mut UiApp, ui: &mut Ui) {
             } else {
                 format!("{n} 個螢幕拼成 {}×{}{}", app.env.desktop.width, app.env.desktop.height, if multi { "（不同顯示卡，將用 gdigrab）" } else { "" })
             };
-            ui.label(RichText::new(text).color(if multi { p.warn } else { p.muted }).font(theme::font(12.5)));
+            ui.add(egui::Label::new(RichText::new(&text).color(if multi { p.warn } else { p.muted }).font(theme::font(12.5))).truncate()).on_hover_text(&text);
         }
         SourceType::Region => {
             let r = app.s.region;
@@ -256,7 +276,7 @@ fn source_detail(app: &mut UiApp, ui: &mut Ui) {
                 if app.main.region_focus != Some(i) {
                     app.main.region_text[i] = vals[i].to_string();
                 }
-                let resp = ui.add_enabled(!locked, egui::TextEdit::singleline(&mut app.main.region_text[i]).desired_width(52.0));
+                let resp = ui.add_enabled(!locked, egui::TextEdit::singleline(&mut app.main.region_text[i]).desired_width(if room < 330.0 { 40.0 } else { 52.0 }));
                 if resp.has_focus() {
                     app.main.region_focus = Some(i);
                 } else if app.main.region_focus == Some(i) {
@@ -275,7 +295,11 @@ fn source_detail(app: &mut UiApp, ui: &mut Ui) {
                     }
                 }
             }
-            ui.label(theme::muted(ui, "拖曳框選或移動紅框（可跨螢幕）")).on_hover_text("在預覽圖上拖曳框選範圍（可跨螢幕）；拖曳紅框可移動，拉邊或角可調整大小");
+            // 放得下才顯示說明
+            let hint = "拖曳框選或移動紅框（可跨螢幕）";
+            if ui.available_width() >= text_w(ui, hint) {
+                ui.label(theme::muted(ui, hint)).on_hover_text("在預覽圖上拖曳框選範圍（可跨螢幕）；拖曳紅框可移動，拉邊或角可調整大小");
+            }
         }
     }
 }
@@ -581,11 +605,13 @@ fn settings_bar(app: &mut UiApp, ui: &mut Ui) {
     let locked = app.locked();
     // 視窗較窄時：聲音只寫來源、「更多設定」只剩圖示、不顯示輸出大小，整列才放得下
     let compact = ui.available_width() < 800.0;
+    // 更窄時：聲音只剩圖示、不寫「FPS」
+    let tight = ui.available_width() < 660.0;
     let mut fps_items: Vec<(f64, String)> = FPS_CHOICES.iter().map(|f| (*f, format!("{f}"))).collect();
     if !FPS_CHOICES.contains(&app.s.fps) {
         fps_items.push((app.s.fps, format!("{}", app.s.fps)));
     }
-    if combo(ui, "fps", "FPS", &mut app.s.fps, &fps_items, !locked, 56.0) {
+    if combo(ui, "fps", if tight { "" } else { "FPS" }, &mut app.s.fps, &fps_items, !locked, 56.0) {
         app.save_settings();
     }
     ui.add_space(4.0);
@@ -608,7 +634,13 @@ fn settings_bar(app: &mut UiApp, ui: &mut Ui) {
         _ => "不錄",
     };
     let icon = if app.s.audio_mic && !app.s.audio_system { Icon::Mic } else { Icon::Speaker };
-    let audio_text = if compact { label.to_string() } else { format!("聲音：{label}") };
+    let audio_text = if tight {
+        String::new()
+    } else if compact {
+        label.to_string()
+    } else {
+        format!("聲音：{label}")
+    };
     drop_button_tip(ui, "audio", audio_text, Some(format!("錄製聲音：{label}")), icon, !locked, 300.0, |ui| audio_panel(app, ui));
     // 更多設定
     let mut more = vec!["更多設定".to_string()];
