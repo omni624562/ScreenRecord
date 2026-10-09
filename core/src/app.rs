@@ -24,6 +24,7 @@ use tokio::sync::watch;
 
 pub type Notifier = Arc<dyn Fn(&str, &str, bool) + Send + Sync>;
 pub type UiOpener = Arc<dyn Fn(UiPage) + Send + Sync>;
+pub type HotkeyApplier = Arc<dyn Fn(&crate::types::Hotkeys) -> Option<HotkeyStatus> + Send + Sync>;
 
 /// 開啟操作視窗時要顯示的畫面
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -134,6 +135,8 @@ pub struct App {
     exiter: Mutex<Option<Exiter>>,
     /// 結束前要收拾的系統匣
     tray_dispose: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+    /// 重新登記全域快捷鍵（系統匣執行緒）
+    hotkey_applier: Mutex<Option<HotkeyApplier>>,
 }
 
 /// 錄影器需要的環境（以 Weak 參照 App，避免循環參照）
@@ -223,6 +226,7 @@ impl App {
             ui_opener: Mutex::default(),
             exiter: Mutex::default(),
             tray_dispose: Mutex::default(),
+            hotkey_applier: Mutex::default(),
         })
     }
 
@@ -266,6 +270,37 @@ impl App {
 
     pub fn set_hotkeys(&self, h: HotkeyStatus) {
         self.lock().hotkeys = Some(h);
+    }
+
+    /// 目前設定的全域快捷鍵
+    pub fn hotkeys(&self) -> crate::types::Hotkeys {
+        self.settings.load().hotkeys.unwrap_or_default()
+    }
+
+    /// 全域快捷鍵目前的登記結果（沒有系統匣時為 None）
+    pub fn hotkey_status(&self) -> Option<HotkeyStatus> {
+        self.lock().hotkeys
+    }
+
+    pub fn set_hotkey_applier(&self, f: HotkeyApplier) {
+        *self.hotkey_applier.lock().unwrap() = Some(f);
+    }
+
+    /// 重新登記全域快捷鍵（不存檔；設定時先暫停全部，才能按到原本的組合）。沒有系統匣時回傳 None
+    pub fn apply_hotkeys(&self, k: &crate::types::Hotkeys) -> Option<HotkeyStatus> {
+        let f = self.hotkey_applier.lock().unwrap().clone()?;
+        let st = f(k)?;
+        self.set_hotkeys(st);
+        Some(st)
+    }
+
+    /// 儲存並套用自訂的全域快捷鍵
+    pub fn save_hotkeys(&self, k: crate::types::Hotkeys) -> Option<HotkeyStatus> {
+        self.settings.save(crate::settings::SettingsPatch { hotkeys: Some(k), ..Default::default() });
+        let st = self.apply_hotkeys(&k);
+        let names: Vec<String> = (0..4).map(|i| format!("{} {}", crate::types::HOTKEY_NAMES[i], if k.label(i).is_empty() { "停用".to_string() } else { k.label(i) })).collect();
+        crate::info!("快捷鍵改為：{}", names.join("、"));
+        st
     }
 
     /// 介面的即時狀態

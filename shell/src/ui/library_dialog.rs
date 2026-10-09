@@ -9,7 +9,7 @@ use super::{EntryAction, UiApp};
 use eframe::egui::{self, pos2, vec2, Align, CornerRadius, Id, Layout, Rect, RichText, Sense, Stroke, UiBuilder};
 use screenrecorder_core::actions;
 use screenrecorder_core::format::{check_recording_name, format_bytes, human_duration, speed_label, video_clock};
-use screenrecorder_core::types::{ExportFormat, ExportInfo, LibraryEntry, LibraryFilter, LibraryPage, LibraryQuery, LibrarySort, HOTKEY_SHOT_LABEL, LIBRARY_ROW_MAIN_PX, LIBRARY_ROW_SUB_PX};
+use screenrecorder_core::types::{ExportFormat, ExportInfo, LibraryEntry, LibraryFilter, LibraryPage, LibraryQuery, LibrarySort, LIBRARY_ROW_MAIN_PX, LIBRARY_ROW_SUB_PX};
 use std::collections::HashSet;
 use std::time::Instant;
 
@@ -452,7 +452,10 @@ fn shot_grid(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, area: Re
         } else if let Some(e) = &d.error {
             e.clone()
         } else if d.data.as_ref().is_some_and(|x| x.total == 0) && d.query.trim().is_empty() {
-            format!("還沒有截圖。按主畫面的「截圖」或 {HOTKEY_SHOT_LABEL} 試試看。")
+            match app.keys.label(2) {
+                k if k.is_empty() => "還沒有截圖。按主畫面的「截圖」試試看。".to_string(),
+                k => format!("還沒有截圖。按主畫面的「截圖」或 {k} 試試看。"),
+            }
         } else {
             "沒有符合條件的截圖。".into()
         };

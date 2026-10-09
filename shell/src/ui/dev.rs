@@ -1,7 +1,7 @@
 //! 開發用（只在 debug 版）：自動開啟某個畫面、模擬操作並截圖，在 Linux 的 Xvfb 上檢查介面。
-//! - SCREENRECORDER_DEV：要開啟的畫面（library、shots、changelog、export:<路徑>、edit:<路徑>、view:<路徑>、monitors（模擬兩個螢幕）、snip:<PNG>（用這張圖當凍結的桌面開啟框選截圖）、ed:<剪輯視窗指令>），以 ; 分隔
+//! - SCREENRECORDER_DEV：要開啟的畫面（library、shots、changelog、export:<路徑>、edit:<路徑>、view:<路徑>、monitors（模擬兩個螢幕）、snip:<PNG>（用這張圖當凍結的桌面開啟框選截圖）、hotkeys（模擬已登記快捷鍵）、ed:<剪輯視窗指令>），以 ; 分隔
 //! - SCREENRECORDER_INPUT：開啟後依序模擬的操作，以 ; 分隔：
-//!   wait:毫秒、click:x,y、drag:x0,y0,x1,y1、wheel:x,y,dy、key:Space（可加 shift+）、type:文字、shot:路徑
+//!   wait:毫秒、click:x,y、drag:x0,y0,x1,y1、wheel:x,y,dy、key:Space（可加 ctrl+、alt+、shift+）、type:文字、shot:路徑
 //! - SCREENRECORDER_SHOT：最後截圖存檔的路徑（存好後結束）；SCREENRECORDER_SHOT_AFTER：開始後幾毫秒截圖（預設 3000）
 
 use super::{EntryAction, UiApp};
@@ -69,10 +69,19 @@ fn parse_script(s: &str) -> VecDeque<Step> {
                 out.push_back(Step::Wait(Duration::from_millis(100)));
             }
             "key" => {
-                let (m, name) = match v.strip_prefix("shift+") {
-                    Some(n) => (Modifiers::SHIFT, n),
-                    None => (Modifiers::NONE, v),
-                };
+                // 修飾鍵：ctrl+、alt+、shift+ 可組合，例如 ctrl+alt+F9
+                let (mut m, mut name) = (Modifiers::NONE, v);
+                loop {
+                    if let Some(n) = name.strip_prefix("shift+") {
+                        (m, name) = (m | Modifiers::SHIFT, n);
+                    } else if let Some(n) = name.strip_prefix("ctrl+") {
+                        (m, name) = (m | Modifiers::CTRL, n);
+                    } else if let Some(n) = name.strip_prefix("alt+") {
+                        (m, name) = (m | Modifiers::ALT, n);
+                    } else {
+                        break;
+                    }
+                }
                 if let Some(key) = Key::from_name(name) {
                     let ev = |pressed| Event::Key { key, physical_key: None, pressed, repeat: false, modifiers: m };
                     out.push_back(Step::Events(vec![ev(true)]));
@@ -131,6 +140,8 @@ pub fn tick(app: &mut UiApp, ctx: &egui::Context) {
                     _ if a == "shots" => app.library = Some(super::library_dialog::LibraryDialog::new(super::library_dialog::Kind::Shot)),
                     _ if a == "changelog" => app.changelog_open = true,
                     _ if a == "monitors" => fake_monitors(app),
+                    // 模擬系統匣已登記快捷鍵（Linux 上沒有系統匣）
+                    _ if a == "hotkeys" => app.env.hotkeys = Some(screenrecorder_core::types::HotkeyStatus { record: true, pause: true, shot: true, snip: false }),
                     Some(("snip", p)) => fake_snip(app, p),
                     _ => {}
                 }

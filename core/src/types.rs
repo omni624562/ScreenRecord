@@ -98,7 +98,7 @@ pub struct AudioConfig {
     pub mic_id: String,
 }
 
-/// 全域快捷鍵是否登記成功（false = 已被其他程式占用）
+/// 全域快捷鍵是否登記成功（false = 已被其他程式占用；停用的視為成功）
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct HotkeyStatus {
     pub record: bool,
@@ -120,10 +120,102 @@ pub struct ShotInfo {
     pub copied: bool,
 }
 
-pub const HOTKEY_SHOT_LABEL: &str = "Ctrl+Alt+S";
-pub const HOTKEY_SNIP_LABEL: &str = "Ctrl+Alt+A";
-pub const HOTKEY_RECORD_LABEL: &str = "Ctrl+Alt+R";
-pub const HOTKEY_PAUSE_LABEL: &str = "Ctrl+Alt+P";
+/// 一組全域快捷鍵：修飾鍵＋按鍵（Windows 虛擬鍵碼）
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Hotkey {
+    #[serde(default)]
+    pub ctrl: bool,
+    #[serde(default)]
+    pub alt: bool,
+    #[serde(default)]
+    pub shift: bool,
+    #[serde(default)]
+    pub win: bool,
+    pub key: u32,
+}
+
+impl Hotkey {
+    pub const fn ctrl_alt(key: u32) -> Hotkey {
+        Hotkey { ctrl: true, alt: true, shift: false, win: false, key }
+    }
+
+    /// 例如「Ctrl+Alt+R」
+    pub fn label(&self) -> String {
+        let mut parts: Vec<String> = vec![];
+        for (on, name) in [(self.ctrl, "Ctrl"), (self.alt, "Alt"), (self.shift, "Shift"), (self.win, "Win")] {
+            if on {
+                parts.push(name.into());
+            }
+        }
+        parts.push(key_name(self.key).unwrap_or_else(|| format!("0x{:02X}", self.key)));
+        parts.join("+")
+    }
+
+    /// 可以使用的組合：支援的按鍵，且有 Ctrl、Alt 或 Win（只有 Shift 會擋到一般打字）
+    pub fn valid(&self) -> bool {
+        key_name(self.key).is_some() && (self.ctrl || self.alt || self.win)
+    }
+}
+
+/// 支援的按鍵名稱（Windows 虛擬鍵碼）：A–Z、0–9、F1–F12 與幾個常用的功能鍵
+pub fn key_name(vk: u32) -> Option<String> {
+    Some(match vk {
+        0x41..=0x5A | 0x30..=0x39 => char::from_u32(vk)?.to_string(),
+        0x70..=0x7B => format!("F{}", vk - 0x6F),
+        0x20 => "Space".into(),
+        0x21 => "PageUp".into(),
+        0x22 => "PageDown".into(),
+        0x23 => "End".into(),
+        0x24 => "Home".into(),
+        0x2C => "PrintScreen".into(),
+        0x2D => "Insert".into(),
+        0x2E => "Delete".into(),
+        _ => return None,
+    })
+}
+
+/// 四個全域快捷鍵（None = 停用）
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Hotkeys {
+    pub record: Option<Hotkey>,
+    pub pause: Option<Hotkey>,
+    pub shot: Option<Hotkey>,
+    pub snip: Option<Hotkey>,
+}
+
+impl Default for Hotkeys {
+    fn default() -> Self {
+        Hotkeys { record: Some(Hotkey::ctrl_alt(0x52)), pause: Some(Hotkey::ctrl_alt(0x50)), shot: Some(Hotkey::ctrl_alt(0x53)), snip: Some(Hotkey::ctrl_alt(0x41)) }
+    }
+}
+
+impl Hotkeys {
+    /// 依序：開始 / 停止錄影、暫停 / 繼續、截圖、框選截圖
+    pub fn all(&self) -> [Option<Hotkey>; 4] {
+        [self.record, self.pause, self.shot, self.snip]
+    }
+
+    pub fn set(&mut self, i: usize, k: Option<Hotkey>) {
+        match i {
+            0 => self.record = k,
+            1 => self.pause = k,
+            2 => self.shot = k,
+            _ => self.snip = k,
+        }
+    }
+
+    /// 第 i 個的名稱（停用時是空字串）
+    pub fn label(&self, i: usize) -> String {
+        self.all()[i].map(|k| k.label()).unwrap_or_default()
+    }
+
+    /// 同一組按鍵用在兩個功能上：回傳另一個的位置
+    pub fn conflict(&self, i: usize, k: &Hotkey) -> Option<usize> {
+        self.all().iter().enumerate().find(|(j, o)| *j != i && o.as_ref() == Some(k)).map(|(j, _)| j)
+    }
+}
+
+pub const HOTKEY_NAMES: [&str; 4] = ["開始 / 停止錄影", "暫停 / 繼續", "截圖（固定範圍）", "框選截圖"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]

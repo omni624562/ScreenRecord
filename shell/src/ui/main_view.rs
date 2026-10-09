@@ -11,8 +11,7 @@ use eframe::egui::{self, pos2, vec2, Align, Color32, CornerRadius, Id, Layout, P
 use screenrecorder_core::actions;
 use screenrecorder_core::format::{clock, format_bytes, human_duration, output_size, speed_label, video_clock};
 use screenrecorder_core::types::{
-    DownloadPhase, EncoderPreference, ExportFormat, ExportKind, ExportState, LibraryEntry, LogLevel, MethodPreference, RecorderState, Rect as DRect, HOTKEY_PAUSE_LABEL, HOTKEY_RECORD_LABEL,
-    HOTKEY_SHOT_LABEL, HOTKEY_SNIP_LABEL,
+    DownloadPhase, EncoderPreference, ExportFormat, ExportKind, ExportState, Hotkey, LibraryEntry, LogLevel, MethodPreference, RecorderState, Rect as DRect, HOTKEY_NAMES,
 };
 use std::time::Instant;
 
@@ -28,6 +27,11 @@ pub struct MainState {
     dir_changed_at: Option<Instant>,
     /// 截圖中（按鈕停用，避免連按）
     pub shooting: bool,
+    /// 正在設定第幾個快捷鍵（等使用者按下新的組合）
+    key_capture: Option<usize>,
+    /// 上次畫出快捷鍵設定的畫面編號（設定面板關掉時取消設定）
+    key_capture_pass: u64,
+    key_msg: Option<String>,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -742,25 +746,8 @@ fn more_panel(app: &mut UiApp, ui: &mut Ui) {
         app.save_settings();
     }
     ui.separator();
-    // 快捷鍵
-    match app.env.hotkeys {
-        Some(hk) => {
-            for (keys, what, ok) in
-                [(HOTKEY_RECORD_LABEL, "開始 / 停止錄影", hk.record), (HOTKEY_PAUSE_LABEL, "暫停 / 繼續", hk.pause), (HOTKEY_SHOT_LABEL, "截圖", hk.shot), (HOTKEY_SNIP_LABEL, "框選截圖", hk.snip)]
-            {
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new(keys).font(theme::mono(12.5)).background_color(p.surface2));
-                    ui.label(what);
-                    if !ok {
-                        ui.label(RichText::new("（已被其他程式使用）").color(p.warn));
-                    }
-                });
-            }
-        }
-        None => {
-            ui.label(theme::muted(ui, "全域快捷鍵需要系統匣常駐時才能使用"));
-        }
-    }
+    // 快捷鍵（可自訂）
+    hotkey_settings(app, ui);
     ui.horizontal(|ui| {
         let mut on = app.update.enabled;
         if ui.checkbox(&mut on, "自動檢查新版本").changed() {
@@ -1071,9 +1058,141 @@ fn rec_panel(app: &mut UiApp, ui: &mut Ui) {
     });
 }
 
+/// 全域快捷鍵：點按鍵名稱後按下新的組合鍵（Esc 取消），可停用或還原預設
+fn hotkey_settings(app: &mut UiApp, ui: &mut Ui) {
+    let p = theme::pal(ui);
+    let Some(hk) = app.env.hotkeys else {
+        ui.label(theme::muted(ui, "全域快捷鍵需要系統匣常駐時才能使用"));
+        return;
+    };
+    app.main.key_capture_pass = ui.ctx().cumulative_pass_nr();
+    let ok = [hk.record, hk.pause, hk.shot, hk.snip];
+    ui.horizontal(|ui| {
+        ui.label(RichText::new("快捷鍵").font(theme::font_bold(13.0)));
+        ui.label(theme::muted(ui, "點按鍵可更換"));
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            if app.keys != Default::default() && Btn::new("還原預設").ghost().small().show(ui).clicked() {
+                app.main.key_capture = None;
+                save_keys(app, Default::default());
+            }
+        });
+    });
+    for i in 0..4 {
+        ui.horizontal(|ui| {
+            let capturing = app.main.key_capture == Some(i);
+            let label = app.keys.label(i);
+            let text = if capturing {
+                "請按下組合鍵…".to_string()
+            } else if label.is_empty() {
+                "停用".to_string()
+            } else {
+                label.clone()
+            };
+            let tip = if capturing { "按 Esc 取消" } else { "點一下後按下新的組合鍵（要包含 Ctrl 或 Alt）" };
+            if Btn::new(text).small().selected(capturing).min_width(150.0).tooltip(tip).show(ui).clicked() {
+                if capturing {
+                    stop_capture(app);
+                } else {
+                    // 先暫停全部快捷鍵，才按得到原本已登記的組合
+                    app.main.key_capture = Some(i);
+                    app.main.key_msg = None;
+                    app.core.apply_hotkeys(&screenrecorder_core::types::Hotkeys { record: None, pause: None, shot: None, snip: None });
+                }
+            }
+            ui.label(HOTKEY_NAMES[i]);
+            if !label.is_empty() && !capturing {
+                if !ok[i] {
+                    ui.label(RichText::new("被占用").color(p.warn).font(theme::font(12.5))).on_hover_text("已被其他程式使用，請換一組");
+                }
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if Btn::icon_only(Icon::Close).ghost().small().tooltip("停用這個快捷鍵").show(ui).clicked() {
+                        let mut k = app.keys;
+                        k.set(i, None);
+                        save_keys(app, k);
+                    }
+                });
+            }
+        });
+    }
+    if let Some(m) = &app.main.key_msg {
+        ui.label(RichText::new(m).color(p.warn).font(theme::font(12.5)));
+    }
+    let Some(i) = app.main.key_capture else { return };
+    // 等使用者按下組合鍵
+    let pressed = ui.input(|inp| {
+        inp.events.iter().find_map(|e| match e {
+            egui::Event::Key { key, pressed: true, modifiers, .. } => Some((*key, *modifiers)),
+            _ => None,
+        })
+    });
+    let Some((key, m)) = pressed else { return };
+    if key == egui::Key::Escape {
+        stop_capture(app);
+        return;
+    }
+    let Some(vk) = vk_of(key) else {
+        app.main.key_msg = Some(format!("不支援「{}」，請用 A–Z、0–9、F1–F12 等按鍵", key.name()));
+        return;
+    };
+    let k = Hotkey { ctrl: m.ctrl, alt: m.alt, shift: m.shift, win: false, key: vk };
+    if !k.valid() {
+        app.main.key_msg = Some(format!("{} 會擋到一般打字，請加上 Ctrl 或 Alt", k.label()));
+        return;
+    }
+    if let Some(j) = app.keys.conflict(i, &k) {
+        app.main.key_msg = Some(format!("{} 已經用在「{}」", k.label(), HOTKEY_NAMES[j]));
+        return;
+    }
+    let mut next = app.keys;
+    next.set(i, Some(k));
+    app.main.key_capture = None;
+    save_keys(app, next);
+}
+
+/// 設定面板關掉時：取消設定中的快捷鍵（恢復原本的登記）
+pub fn check_key_capture(app: &mut UiApp, ctx: &egui::Context) {
+    if app.main.key_capture.is_some() && ctx.cumulative_pass_nr() > app.main.key_capture_pass + 2 {
+        stop_capture(app);
+    }
+}
+
+/// 取消設定中的快捷鍵（視窗關到系統匣時：不能讓快捷鍵一直暫停）
+pub fn cancel_key_capture(app: &mut UiApp) {
+    if app.main.key_capture.is_some() {
+        stop_capture(app);
+    }
+}
+
+fn stop_capture(app: &mut UiApp) {
+    app.main.key_capture = None;
+    app.main.key_msg = None;
+    let k = app.keys;
+    if let Some(st) = app.core.apply_hotkeys(&k) {
+        app.env.hotkeys = Some(st);
+    }
+}
+
+fn save_keys(app: &mut UiApp, k: screenrecorder_core::types::Hotkeys) {
+    app.keys = k;
+    app.main.key_msg = None;
+    if let Some(st) = app.core.save_hotkeys(k) {
+        app.env.hotkeys = Some(st);
+        let ok = [st.record, st.pause, st.shot, st.snip];
+        if let Some(i) = (0..4).find(|i| !ok[*i]) {
+            app.main.key_msg = Some(format!("{} 已被其他程式使用，請換一組", k.label(i)));
+        }
+    }
+}
+
+/// egui 的按鍵 → Windows 虛擬鍵碼（只限支援的按鍵）
+fn vk_of(key: egui::Key) -> Option<u32> {
+    let name = key.name();
+    (0x20..=0x7B).find(|vk| screenrecorder_core::types::key_name(*vk).as_deref() == Some(name))
+}
+
 /// 截圖：與錄影相同的範圍，存成 PNG 並複製到剪貼簿（完成後由狀態更新顯示提示、更新清單）
 fn shot_button(app: &mut UiApp, ui: &mut Ui, w: f32) {
-    let hotkey = if app.env.hotkeys.is_some_and(|h| h.shot) { format!("（{HOTKEY_SHOT_LABEL}）") } else { String::new() };
+    let hotkey = if app.env.hotkeys.is_some_and(|h| h.shot) && !app.keys.label(2).is_empty() { format!("（{}）", app.keys.label(2)) } else { String::new() };
     let tip = format!("截取目前的擷取範圍，存成 PNG 並複製到剪貼簿{hotkey}");
     let can = app.env.ffmpeg.found && !app.main.shooting;
     if Btn::new("截圖").icon(Icon::Camera).enabled(can).tooltip(tip).min_width(w).height(40.0).show(ui).clicked() {
@@ -1396,7 +1515,7 @@ pub fn countdown_overlay(app: &mut UiApp, ctx: &egui::Context) {
     let hint = format!(
         "即將開始錄影{}{}",
         if app.s.hide_ui { "，這個視窗若在錄影範圍內會自動縮小" } else { "" },
-        if app.env.hotkeys.is_some_and(|h| h.record) { format!("，或按 {HOTKEY_RECORD_LABEL} 取消") } else { String::new() }
+        if app.env.hotkeys.is_some_and(|h| h.record) && !app.keys.label(0).is_empty() { format!("，或按 {} 取消", app.keys.label(0)) } else { String::new() }
     );
     egui::Area::new(Id::new("countdown")).fixed_pos(pos2(0.0, 0.0)).order(egui::Order::Foreground).show(ctx, |ui| {
         let screen = ctx.content_rect();

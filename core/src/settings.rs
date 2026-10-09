@@ -27,6 +27,9 @@ pub struct SavedSettings {
     /// 已用系統匣通知過的新版本（同一版只通知一次）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub update_notified: Option<String>,
+    /// 自訂的全域快捷鍵（未指定時用預設的 Ctrl+Alt+R / P / S / A）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hotkeys: Option<crate::types::Hotkeys>,
     #[serde(default)]
     pub rev: u64,
 }
@@ -46,6 +49,7 @@ pub struct SettingsPatch {
     pub prefer_gpu: Option<bool>,
     pub check_updates: Option<bool>,
     pub update_notified: Option<String>,
+    pub hotkeys: Option<crate::types::Hotkeys>,
 }
 
 pub struct SettingsStore {
@@ -77,6 +81,7 @@ impl SettingsStore {
             prefer_gpu: patch.prefer_gpu.or(cur.prefer_gpu),
             check_updates: patch.check_updates.or(cur.check_updates),
             update_notified: patch.update_notified.or(cur.update_notified),
+            hotkeys: patch.hotkeys.or(cur.hotkeys),
             rev: cur.rev + 1,
         };
         *self.cache.lock().unwrap() = Some(next.clone());
@@ -142,5 +147,31 @@ mod tests {
         let c = s.record_config().unwrap();
         assert!(c.audio.system);
         assert_eq!(c.countdown_sec, Some(3.0));
+    }
+
+    #[test]
+    fn custom_hotkeys() {
+        use crate::types::{Hotkey, Hotkeys};
+        let d = Hotkeys::default();
+        assert_eq!((0..4).map(|i| d.label(i)).collect::<Vec<_>>(), vec!["Ctrl+Alt+R", "Ctrl+Alt+P", "Ctrl+Alt+S", "Ctrl+Alt+A"]);
+        let f9 = Hotkey { ctrl: false, alt: false, shift: true, win: true, key: 0x78 };
+        assert_eq!(f9.label(), "Shift+Win+F9");
+        assert!(f9.valid());
+        // 只有 Shift、不支援的按鍵：不能用
+        assert!(!Hotkey { ctrl: false, alt: false, shift: true, win: false, key: 0x41 }.valid());
+        assert!(!Hotkey::ctrl_alt(0xBA).valid());
+        let mut k = d;
+        k.set(3, None);
+        k.set(1, Some(f9));
+        assert_eq!(k.label(3), "");
+        assert_eq!(k.conflict(2, &Hotkey::ctrl_alt(0x52)), Some(0));
+        assert_eq!(k.conflict(0, &Hotkey::ctrl_alt(0x52)), None);
+        // 存檔再讀：相同（停用的存成 null）
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("settings.json");
+        SettingsStore::new(file.clone()).save(SettingsPatch { hotkeys: Some(k), ..Default::default() });
+        let saved: Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+        assert_eq!(saved["hotkeys"]["snip"], Value::Null);
+        assert_eq!(SettingsStore::new(file).load().hotkeys, Some(k));
     }
 }

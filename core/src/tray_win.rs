@@ -5,7 +5,7 @@
 
 use crate::icon::{icon_resource, IconState};
 use crate::tray::{TrayCommand, TrayState, TrayUi};
-use crate::types::{HotkeyStatus, RecorderState};
+use crate::types::{HotkeyStatus, Hotkeys, RecorderState};
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 use std::sync::{mpsc, Arc, Mutex};
@@ -14,7 +14,7 @@ use tokio::sync::mpsc::UnboundedSender;
 use windows::core::{w, PCSTR, PCWSTR};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
 use windows::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress, LoadLibraryW};
-use windows::Win32::UI::Input::KeyboardAndMouse::{RegisterHotKey, UnregisterHotKey, MOD_ALT, MOD_CONTROL, MOD_NOREPEAT};
+use windows::Win32::UI::Input::KeyboardAndMouse::{RegisterHotKey, UnregisterHotKey, HOT_KEY_MODIFIERS, MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, MOD_SHIFT, MOD_WIN};
 use windows::Win32::UI::Shell::{Shell_NotifyIconW, NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_TIP, NIIF_INFO, NIIF_WARNING, NIM_ADD, NIM_DELETE, NIM_MODIFY, NOTIFYICONDATAW, NOTIFY_ICON_DATA_FLAGS};
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreateIconFromResourceEx, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyIcon, DestroyMenu, DestroyWindow, DispatchMessageW, GetCursorPos, GetMessageW, GetSystemMetrics,
@@ -27,13 +27,44 @@ const WM_TRAY: u32 = WM_APP + 1;
 /// 有其他執行緒送來的要求（狀態、通知、結束）
 const WM_WAKE: u32 = WM_APP + 2;
 const NIN_BALLOONUSERCLICK: u32 = 0x405;
-/// 全域快捷鍵：id、按鍵、指令（與介面顯示的 Ctrl+Alt+R / Ctrl+Alt+P 一致）
-const HOTKEYS: [(i32, u32); 4] = [(1, 0x52 /* R */), (2, 0x50 /* P */), (3, 0x53 /* S */), (4, 0x41 /* A */)];
+/// 全域快捷鍵的 id：1 錄影、2 暫停、3 截圖、4 框選截圖（與 Hotkeys::all 的順序相同）
+const HOTKEY_IDS: [i32; 4] = [1, 2, 3, 4];
+
+/// 登記全域快捷鍵（先取消舊的）；被其他程式占用時登記失敗，停用的視為成功
+fn register_hotkeys(hwnd: HWND, keys: &Hotkeys) -> HotkeyStatus {
+    let ok: Vec<bool> = keys
+        .all()
+        .iter()
+        .zip(HOTKEY_IDS)
+        .map(|(k, id)| unsafe {
+            let _ = UnregisterHotKey(Some(hwnd), id);
+            let Some(k) = k else { return true };
+            let mut m: HOT_KEY_MODIFIERS = MOD_NOREPEAT;
+            for (on, f) in [(k.ctrl, MOD_CONTROL), (k.alt, MOD_ALT), (k.shift, MOD_SHIFT), (k.win, MOD_WIN)] {
+                if on {
+                    m |= f;
+                }
+            }
+            RegisterHotKey(Some(hwnd), id, m, k.key).is_ok()
+        })
+        .collect();
+    HotkeyStatus { record: ok[0], pause: ok[1], shot: ok[2], snip: ok[3] }
+}
+
+/// 選單右側顯示的快捷鍵（停用時不顯示）
+fn tab(k: &str) -> String {
+    if k.is_empty() {
+        String::new()
+    } else {
+        format!("\t{k}")
+    }
+}
 
 enum Req {
     State(TrayState),
     Balloon(String, String, bool),
     Dispose(mpsc::Sender<()>),
+    Hotkeys(Hotkeys, mpsc::Sender<HotkeyStatus>),
 }
 
 struct Handle {
@@ -61,6 +92,11 @@ impl TrayUi for Handle {
         let (tx, rx) = mpsc::channel();
         self.send(Req::Dispose(tx));
         let _ = rx.recv_timeout(Duration::from_secs(1));
+    }
+    fn set_hotkeys(&self, k: &Hotkeys) -> Option<HotkeyStatus> {
+        let (tx, rx) = mpsc::channel();
+        self.send(Req::Hotkeys(*k, tx));
+        rx.recv_timeout(Duration::from_secs(2)).ok()
     }
 }
 
@@ -184,7 +220,7 @@ fn drain() {
                         t.remove_icon();
                         t.added = false;
                     }
-                    for (id, _) in HOTKEYS {
+                    for id in HOTKEY_IDS {
                         unsafe {
                             let _ = UnregisterHotKey(Some(t.hwnd), id);
                         }
@@ -203,6 +239,11 @@ fn drain() {
                     }
                 }
                 let _ = done.send(());
+            }
+            Req::Hotkeys(keys, done) => {
+                if let Some(hwnd) = TRAY.with(|t| t.borrow().as_ref().map(|t| t.hwnd)) {
+                    let _ = done.send(register_hotkeys(hwnd, &keys));
+                }
             }
         }
     }
@@ -313,7 +354,7 @@ fn show_menu() {
         }
         Menu::sep(root);
         // 「\t」後的文字顯示在選單右側（快捷鍵提示）
-        m.add(root, &format!("開始錄影(&R)　{}\tCtrl+Alt+R", st.last_source), TrayCommand::StartLast, !idle || !st.can_record, false);
+        m.add(root, &format!("開始錄影(&R)　{}{}", st.last_source, tab(&st.keys[0])), TrayCommand::StartLast, !idle || !st.can_record, false);
         if let Ok(pick) = CreatePopupMenu() {
             for mon in &st.monitors {
                 m.add(pick, &mon.label, TrayCommand::StartMonitor(mon.id.clone()), false, false);
@@ -325,19 +366,19 @@ fn show_menu() {
             Menu::sub(root, "錄製指定螢幕(&M)", pick, !idle || !st.can_record);
         }
         if st.rec == RecorderState::Paused {
-            m.add(root, "繼續錄影(&C)\tCtrl+Alt+P", TrayCommand::Resume, false, false);
+            m.add(root, &format!("繼續錄影(&C){}", tab(&st.keys[1])), TrayCommand::Resume, false, false);
         } else {
-            m.add(root, "暫停(&P)\tCtrl+Alt+P", TrayCommand::Pause, st.rec != RecorderState::Recording, false);
+            m.add(root, &format!("暫停(&P){}", tab(&st.keys[1])), TrayCommand::Pause, st.rec != RecorderState::Recording, false);
         }
         if st.rec == RecorderState::Countdown {
             m.add(root, "取消倒數(&S)", TrayCommand::Stop, false, false);
         } else {
-            m.add(root, "停止並儲存(&S)\tCtrl+Alt+R", TrayCommand::Stop, idle || st.rec == RecorderState::Stopping, false);
+            m.add(root, &format!("停止並儲存(&S){}", tab(&st.keys[0])), TrayCommand::Stop, idle || st.rec == RecorderState::Stopping, false);
         }
         Menu::sep(root);
         // 截圖：框選範圍或點選視窗、全螢幕、固定範圍（主畫面的錄影範圍）、重複上次框選
         if let Ok(shot) = CreatePopupMenu() {
-            m.add(shot, "框選範圍或視窗(&A)…\tCtrl+Alt+A", TrayCommand::ScreenshotSelect, false, false);
+            m.add(shot, &format!("框選範圍或視窗(&A)…{}", tab(&st.keys[3])), TrayCommand::ScreenshotSelect, false, false);
             if let Ok(full) = CreatePopupMenu() {
                 for mon in &st.monitors {
                     m.add(full, &mon.label, TrayCommand::ScreenshotMonitor(mon.id.clone()), false, false);
@@ -348,7 +389,7 @@ fn show_menu() {
                 }
                 Menu::sub(shot, "全螢幕(&F)", full, st.monitors.is_empty());
             }
-            m.add(shot, &format!("固定範圍(&X)：{}\tCtrl+Alt+S", st.last_source), TrayCommand::Screenshot, false, false);
+            m.add(shot, &format!("固定範圍(&X)：{}{}", st.last_source, tab(&st.keys[2])), TrayCommand::Screenshot, false, false);
             Menu::sep(shot);
             m.add(shot, "重複上次框選(&R)", TrayCommand::ScreenshotLast, !st.has_last_snip, false);
             Menu::sub(root, "截圖(&T)", shot, !st.can_shot);
@@ -399,7 +440,7 @@ fn allow_dark_menus() {
 }
 
 /// 啟動系統匣執行緒；圖示加入成功後回傳控制介面與快捷鍵登記結果
-pub fn start(cmd: UnboundedSender<TrayCommand>) -> Result<(Arc<dyn TrayUi>, HotkeyStatus), String> {
+pub fn start(cmd: UnboundedSender<TrayCommand>, keys: Hotkeys) -> Result<(Arc<dyn TrayUi>, HotkeyStatus), String> {
     let (ready_tx, ready_rx) = mpsc::channel::<Result<(isize, HotkeyStatus), String>>();
     let queue: Arc<Mutex<VecDeque<Req>>> = Arc::default();
     let q = queue.clone();
@@ -437,8 +478,7 @@ pub fn start(cmd: UnboundedSender<TrayCommand>) -> Result<(Arc<dyn TrayUi>, Hotk
                 return;
             }
             // 快捷鍵登記在這個執行緒的視窗上（WM_HOTKEY 會送到這裡）；被其他程式占用時登記失敗
-            let ok: Vec<bool> = HOTKEYS.iter().map(|(id, vk)| RegisterHotKey(Some(hwnd), *id, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, *vk).is_ok()).collect();
-            let _ = ready_tx.send(Ok((hwnd.0 as isize, HotkeyStatus { record: ok[0], pause: ok[1], shot: ok[2], snip: ok[3] })));
+            let _ = ready_tx.send(Ok((hwnd.0 as isize, register_hotkeys(hwnd, &keys))));
             let mut msg = MSG::default();
             while GetMessageW(&mut msg, None, 0, 0).as_bool() {
                 let _ = TranslateMessage(&msg);

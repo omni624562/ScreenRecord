@@ -6,7 +6,7 @@ use crate::format::{clock, video_clock};
 use crate::info;
 use crate::paths::now_ms;
 use crate::settings::SettingsPatch;
-use crate::types::{AudioConfig, HotkeyStatus, MethodPreference, RecordConfig, RecorderState, SourceConfig, HOTKEY_PAUSE_LABEL, HOTKEY_RECORD_LABEL, HOTKEY_SHOT_LABEL, HOTKEY_SNIP_LABEL};
+use crate::types::{AudioConfig, HotkeyStatus, Hotkeys, MethodPreference, RecordConfig, RecorderState, SourceConfig, HOTKEY_NAMES};
 use crate::version::APP_VERSION;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -28,13 +28,13 @@ pub enum TrayCommand {
     Changelog,
     HotkeyRecord,
     HotkeyPause,
-    /// 截圖：與錄影相同的範圍（選單與 Ctrl+Alt+S）
+    /// 截圖：與錄影相同的範圍（選單與快捷鍵）
     Screenshot,
     /// 截圖：整個指定的螢幕
     ScreenshotMonitor(String),
     /// 截圖：所有螢幕
     ScreenshotAll,
-    /// 在螢幕上框選範圍或點選視窗截圖（選單與 Ctrl+Alt+A）
+    /// 在螢幕上框選範圍或點選視窗截圖（選單與快捷鍵）
     ScreenshotSelect,
     /// 再截一次上次框選的範圍
     ScreenshotLast,
@@ -70,6 +70,8 @@ pub struct TrayState {
     pub version: String,
     /// 有新版本時顯示在選單
     pub update: Option<String>,
+    /// 快捷鍵名稱（選單右側顯示；停用時是空字串）：錄影、暫停、截圖、框選截圖
+    pub keys: [String; 4],
 }
 
 /// 系統匣圖示（Windows 實作在 tray_win.rs）
@@ -78,6 +80,8 @@ pub trait TrayUi: Send + Sync {
     fn balloon(&self, title: &str, text: &str, warn: bool);
     /// 結束前移除圖示（否則會殘留到滑鼠移過去才消失）
     fn dispose(&self);
+    /// 重新登記全域快捷鍵
+    fn set_hotkeys(&self, k: &Hotkeys) -> Option<HotkeyStatus>;
 }
 
 fn state_text(s: RecorderState) -> &'static str {
@@ -172,6 +176,10 @@ impl TrayController {
             autostart: c.autostart,
             version: APP_VERSION.to_string(),
             update: self.app.update().map(|u| u.version),
+            keys: {
+                let k = self.app.hotkeys();
+                std::array::from_fn(|i| k.label(i))
+            },
         }
     }
 
@@ -357,7 +365,8 @@ pub async fn start(app: &Arc<App>) -> bool {
     {
         let autostart = crate::desktop::get_autostart().await;
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<TrayCommand>();
-        let started = tokio::task::spawn_blocking(move || crate::tray_win::start(tx)).await;
+        let keys = app.hotkeys();
+        let started = tokio::task::spawn_blocking(move || crate::tray_win::start(tx, keys)).await;
         let (ui, hotkeys) = match started {
             Ok(Ok(v)) => v,
             Ok(Err(e)) => {
@@ -369,7 +378,9 @@ pub async fn start(app: &Arc<App>) -> bool {
                 return false;
             }
         };
-        report_hotkeys(app, hotkeys);
+        report_hotkeys(app, &keys, hotkeys);
+        let u = ui.clone();
+        app.set_hotkey_applier(Arc::new(move |k| u.set_hotkeys(k)));
         let ctl = TrayController::new(app.clone(), ui.clone(), autostart);
         let n = ctl.clone();
         app.set_notifier(Arc::new(move |title, text, warn| n.notify(title, text, warn)));
@@ -400,22 +411,12 @@ pub async fn start(app: &Arc<App>) -> bool {
 }
 
 #[cfg_attr(not(windows), allow(dead_code))]
-fn report_hotkeys(app: &App, h: HotkeyStatus) {
-    let mut busy = Vec::new();
-    if !h.record {
-        busy.push(HOTKEY_RECORD_LABEL);
-    }
-    if !h.pause {
-        busy.push(HOTKEY_PAUSE_LABEL);
-    }
-    if !h.shot {
-        busy.push(HOTKEY_SHOT_LABEL);
-    }
-    if !h.snip {
-        busy.push(HOTKEY_SNIP_LABEL);
-    }
+fn report_hotkeys(app: &App, k: &Hotkeys, h: HotkeyStatus) {
+    let ok = [h.record, h.pause, h.shot, h.snip];
+    let busy: Vec<String> = (0..4).filter(|i| !ok[*i]).map(|i| k.label(i)).collect();
     if busy.is_empty() {
-        info!("快捷鍵：{HOTKEY_RECORD_LABEL} 開始 / 停止，{HOTKEY_PAUSE_LABEL} 暫停 / 繼續，{HOTKEY_SHOT_LABEL} 截圖，{HOTKEY_SNIP_LABEL} 框選截圖");
+        let list: Vec<String> = (0..4).filter(|i| !k.label(*i).is_empty()).map(|i| format!("{} {}", k.label(i), HOTKEY_NAMES[i])).collect();
+        info!("快捷鍵：{}", list.join("，"));
     } else {
         info!("快捷鍵 {} 已被其他程式使用，無法登記", busy.join("、"));
     }
@@ -440,6 +441,9 @@ mod tests {
             self.balloons.lock().unwrap().push((title.into(), text.into(), warn));
         }
         fn dispose(&self) {}
+        fn set_hotkeys(&self, _: &Hotkeys) -> Option<HotkeyStatus> {
+            None
+        }
     }
 
     #[tokio::test]

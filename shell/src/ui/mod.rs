@@ -98,6 +98,8 @@ pub struct UiApp {
     pub viewer: Option<viewer::Viewer>,
     /// 在螢幕上框選截圖
     pub snip: Option<snip::Snip>,
+    /// 目前設定的全域快捷鍵（顯示用）
+    pub keys: screenrecorder_core::types::Hotkeys,
     pub editor: Option<editor::Editor>,
 
     pub dismissed_job: Option<u64>,
@@ -158,6 +160,7 @@ impl UiApp {
             library: None,
             viewer: None,
             snip: None,
+            keys: saved.hotkeys.unwrap_or_default(),
             editor: None,
             dismissed_job: None,
             last_export_state: None,
@@ -470,6 +473,7 @@ impl UiApp {
             if let Some(v) = &mut self.viewer {
                 v.pause();
             }
+            main_view::cancel_key_capture(self);
         } else {
             // 沒有系統匣：關掉視窗就結束程式
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
@@ -512,6 +516,7 @@ impl eframe::App for UiApp {
             part(self, "框選截圖");
         }
         main_view::show(self, ui);
+        main_view::check_key_capture(self, &ctx);
         part(self, "主畫面");
         if self.export_dlg.is_some() {
             export_dialog::show(self, &ctx);
