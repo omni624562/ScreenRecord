@@ -37,6 +37,8 @@ pub mod recorder;
 pub mod recycle;
 pub mod selfupdate;
 pub mod settings;
+#[cfg(windows)]
+pub mod snip_win;
 pub mod thumbs;
 pub mod tray;
 #[cfg(windows)]

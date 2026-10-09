@@ -256,6 +256,13 @@ impl TrayController {
         self.push(false);
     }
 
+    /// 截好了：顯示通知（存在哪裡、有沒有複製到剪貼簿）
+    fn notify_shot(&self, shot: &crate::types::ShotInfo) {
+        let name = std::path::Path::new(&shot.path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let text = if shot.copied { format!("已複製到剪貼簿，存成 {name}") } else { format!("已存成 {name}") };
+        self.notify("已截圖", &text, false);
+    }
+
     async fn run_inner(self: &Arc<Self>, cmd: TrayCommand) -> Result<(), String> {
         let app = &self.app;
         let rec = &app.recorder;
@@ -311,10 +318,15 @@ impl TrayController {
                 crate::desktop::open_with_explorer(&dir, false);
                 return Ok(());
             }
-            TrayCommand::ScreenshotSelect => return app.snip_begin(&self.config()).await.map_err(err),
-            TrayCommand::Screenshot | TrayCommand::ScreenshotMonitor(_) | TrayCommand::ScreenshotAll | TrayCommand::ScreenshotLast => {
+            TrayCommand::Screenshot | TrayCommand::ScreenshotMonitor(_) | TrayCommand::ScreenshotAll | TrayCommand::ScreenshotLast | TrayCommand::ScreenshotSelect => {
                 let mut cfg = self.config();
                 match cmd {
+                    // 框選：取消時不顯示通知
+                    TrayCommand::ScreenshotSelect => {
+                        let Some(shot) = app.snip_begin(&cfg).await.map_err(err)? else { return Ok(()) };
+                        self.notify_shot(&shot);
+                        return Ok(());
+                    }
                     TrayCommand::ScreenshotMonitor(id) => cfg.source = SourceConfig::Monitor { monitor_id: id },
                     TrayCommand::ScreenshotAll => cfg.source = SourceConfig::All,
                     TrayCommand::ScreenshotLast => {
@@ -324,9 +336,7 @@ impl TrayController {
                     _ => {}
                 }
                 let shot = app.screenshot(&cfg).await.map_err(err)?;
-                let name = std::path::Path::new(&shot.path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                let text = if shot.copied { format!("已複製到剪貼簿，存成 {name}") } else { format!("已存成 {name}") };
-                self.notify("已截圖", &text, false);
+                self.notify_shot(&shot);
                 return Ok(());
             }
             TrayCommand::PlayLast => {

@@ -382,9 +382,10 @@ impl App {
 
     // ───────────── 框選截圖 ─────────────
 
-    /// 框選截圖的第一步：截下整個桌面（不含游標）當作凍結的畫面，再請介面顯示框選畫面。
-    /// 操作視窗先縮小，框選結束（snip_end）才還原
-    pub async fn snip_begin(self: &Arc<Self>, config: &RecordConfig) -> crate::Result<()> {
+    /// 框選截圖：截下整個桌面（不含游標）當作凍結的畫面，讓使用者框選後裁切存檔。
+    /// Windows 上用原生的全螢幕視窗框選（不靠操作視窗）；其他平台交給介面（開發測試用）。
+    /// 操作視窗先縮小，框選結束才還原。回傳截好的圖（取消時為 None）
+    pub async fn snip_begin(self: &Arc<Self>, config: &RecordConfig) -> crate::Result<Option<crate::types::ShotInfo>> {
         {
             let mut st = self.lock();
             if st.shooting || st.snipping {
@@ -394,8 +395,38 @@ impl App {
         }
         let r = self.snip_capture(config).await;
         self.lock().shooting = false;
-        self.snip_offer(r?);
-        Ok(())
+        let src = r?;
+        #[cfg(windows)]
+        return self.snip_native(src).await;
+        #[cfg(not(windows))]
+        {
+            self.snip_offer(src);
+            Ok(None)
+        }
+    }
+
+    #[cfg(windows)]
+    async fn snip_native(self: &Arc<Self>, src: SnipSource) -> crate::Result<Option<crate::types::ShotInfo>> {
+        self.lock().snipping = true;
+        let (path, desk, windows) = (src.path.clone(), src.desktop, src.windows.clone());
+        let sel = tokio::task::spawn_blocking(move || {
+            let pm = tiny_skia::Pixmap::decode_png(&std::fs::read(&path).ok()?).ok()?;
+            // 以實際截到的大小為準
+            let desk = crate::types::Rect { width: pm.width() as i32, height: pm.height() as i32, ..desk };
+            crate::snip_win::select(pm.data(), desk, windows)
+        })
+        .await
+        .ok()
+        .flatten();
+        let res = match sel {
+            Some(r) => self.snip_save(&src, r).await.map(Some),
+            None => {
+                crate::info!("[截圖] 取消框選");
+                Ok(None)
+            }
+        };
+        self.snip_end(Some(&src));
+        res
     }
 
     /// 交給介面顯示框選畫面
