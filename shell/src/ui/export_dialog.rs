@@ -21,12 +21,14 @@ pub struct ExportDialog {
     pub entry: LibraryEntry,
     speed_text: String,
     speed_focus: bool,
+    /// 內容最高到過多高：切換格式、加速方式時視窗不會忽大忽小（只會變高一次，不會縮回去）
+    body_h: f32,
     busy: bool,
 }
 
 impl ExportDialog {
     pub fn new(entry: LibraryEntry) -> Self {
-        Self { entry, speed_text: String::new(), speed_focus: false, busy: false }
+        Self { entry, speed_text: String::new(), speed_focus: false, body_h: 0.0, busy: false }
     }
 }
 
@@ -55,6 +57,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
     let dur = e.media.duration_sec.unwrap_or(0.0);
     let modal = egui::Modal::new(Id::new("export")).frame(theme::modal_frame(ctx)).show(ctx, |ui| {
         ui.set_width(560.0);
+        let top = ui.cursor().min.y;
         let p = theme::pal(ui);
         let s = &mut app.s;
         let gif = s.export_format == ExportFormat::Gif;
@@ -162,6 +165,11 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                 };
                 ui.label(RichText::new(hint).font(theme::font(12.5)).color(if target.is_none() { p.rec } else { p.muted }));
             }
+        }
+        if s.export_mode == ExportMode::Speed {
+            // 與「指定長度」下方的說明同高，切換時下面的內容不會跳動
+            let range = if gif { format!("可輸入 1–{}×（1× 為原速）", speed_label(SPEED_MAX)) } else { format!("可輸入 {}–{}×", speed_label(SPEED_MIN), speed_label(SPEED_MAX)) };
+            ui.label(RichText::new(range).font(theme::font(12.5)).color(p.muted));
         }
         // GIF / MP4 尺寸
         let (sw, sh) = (e.media.width.unwrap_or(0) as i32, e.media.height.unwrap_or(0) as i32);
@@ -315,16 +323,35 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
             if gif {
                 hint += "；GIF 沒有聲音，檔案較大，建議 1 分鐘以內";
             }
-            ui.add(egui::Label::new(theme::muted(ui, hint)).wrap());
+            // 固定佔兩行（GIF 的說明較長會換行），切換格式時下面的按鈕不會跳動
+            let line = ui.ctx().fonts_mut(|f| f.row_height(&theme::font(12.5)));
+            let h = ui.add(egui::Label::new(theme::muted(ui, hint)).wrap()).rect.height();
+            if h < line * 2.0 {
+                ui.add_space(line * 2.0 - h);
+            }
         }
-        if !gif && e.media.has_audio == Some(true) {
+        if e.media.has_audio == Some(true) {
             ui.add_space(4.0);
+            // GIF 沒有聲音：不顯示，但保留位置（切換格式時視窗大小不變）
             let mut keep = s.keep_audio;
-            if switch(ui, &mut keep, "保留聲音（變速不變調）", true).changed() {
+            let r = ui
+                .scope(|ui| {
+                    if gif {
+                        ui.set_invisible();
+                    }
+                    switch(ui, &mut keep, "保留聲音（變速不變調）", true)
+                })
+                .inner;
+            if !gif && r.changed() {
                 s.keep_audio = keep;
                 changed = true;
             }
         }
+        let used = ui.cursor().min.y - top;
+        if used < dlg.body_h {
+            ui.add_space(dlg.body_h - used);
+        }
+        dlg.body_h = dlg.body_h.max(used);
         if changed {
             app.save_settings();
         }
