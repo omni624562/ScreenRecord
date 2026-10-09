@@ -44,6 +44,8 @@ let nextAnnId = 1;
 /** 目前選的工具（放置一個後回到選取模式）；emoji 為表情工具選好的表情 */
 let tool: AnnKind | "emoji" | undefined;
 let emoji = EMOJIS[0]!;
+/** 拖曳標註軌時固定每個標註所在的列，避免拖曳中跳列 */
+let laneFreeze: Map<number, number> | undefined;
 
 const video = () => $<HTMLVideoElement>("edVideo");
 const now = () => video().currentTime;
@@ -166,6 +168,7 @@ function close() {
 // ───────────── 繪製 ─────────────
 
 function render() {
+  renumberSteps();
   for (const b of document.querySelectorAll<HTMLButtonElement>("#edTabs [data-tab]")) b.setAttribute("aria-selected", String(b.dataset.tab === tab));
   for (const sec of document.querySelectorAll<HTMLElement>(".ed-grid [data-panel]")) sec.hidden = sec.dataset.panel !== tab;
   $("edAnnCount").textContent = anns.length ? String(anns.length) : "";
@@ -213,6 +216,7 @@ function render() {
     `輸出長度 <strong>${videoClock(length)}</strong>（原 ${videoClock(duration)}）・保留 ${keep.length} 段` +
     (size ? `・畫面 <strong>${size}</strong>` : "") +
     (anns.length ? `・標註 ${anns.length} 個` : "") +
+    (goneCount(keep) ? `<span class="warn-text">（${goneCount(keep)} 個在刪除的片段中，不會出現）</span>` : "") +
     (entry ? `<br><span class="muted small">另存為 ${cutFileName(entry.name)}</span>` : "");
   const unchanged = keep.length === 1 && keep[0]![0] === 0 && keep[0]![1] >= duration - 0.05 && !crop && !anns.length;
   const save = $<HTMLButtonElement>("edSave");
@@ -241,10 +245,7 @@ function renderTimeline() {
   const selEl = $("edSel");
   selEl.hidden = !sel;
   if (sel) Object.assign(selEl.style, { left: pct(sel[0]), width: pctLen(Math.max(sel[1] - sel[0], (view.b - view.a) / 1000)) });
-  // 標註出現的時間
-  $("edAnnLane").innerHTML = anns
-    .map((a) => `<div class="ed-ann-bar${a.id === annSel ? " on" : ""}" style="left:${pct(a.start)};width:${pctLen(a.end - a.start)};--c:${a.color}"></div>`)
-    .join("");
+  renderAnnTrack(parts);
   // 放大時的捲軸
   const zoomed = view.b - view.a < duration - 0.001;
   $("edScroll").hidden = !zoomed;
@@ -252,10 +253,67 @@ function renderTimeline() {
   if (zoomed) Object.assign($("edScrollThumb").style, { left: `${(view.a / duration) * 100}%`, width: `${((view.b - view.a) / duration) * 100}%` });
 }
 
+const LANE_H = 22;
+
+/** 標註軌：依出現時間排成幾列（不重疊），刪除的片段一樣壓暗，讓人看得出標註會不會被剪掉 */
+function renderAnnTrack(cutParts: string[]) {
+  const track = $("edAnnTrack");
+  track.hidden = !anns.length;
+  if (!anns.length) return;
+  const keep = keepRanges(duration, spec);
+  const lanes = laneFreeze ?? assignLanes();
+  const n = Math.max(1, ...[...lanes.values()].map((l) => l + 1));
+  track.style.height = `${n * LANE_H + 4}px`;
+  const bars = anns.map((a) => {
+    const lane = lanes.get(a.id) ?? 0;
+    const blur = a.kind === "mosaic" || a.kind === "blur";
+    const c = blur ? "#7a7f87" : a.color;
+    const fg = c === "#ffffff" || c === "#f5b301" ? "#111" : "#fff";
+    const gone = !inOutput(a, keep);
+    const tip = `${label(a)}：${videoClock(a.start)} – ${videoClock(a.end)}${gone ? "（在刪除的片段中，不會出現在輸出影片）" : ""}。拖曳移動，拖曳兩端調整長短`;
+    return `<div class="ed-abar${a.id === annSel ? " on" : ""}${gone ? " gone" : ""}" data-ann="${a.id}" title="${esc(tip)}" style="left:${pct(a.start)};width:${pctLen(a.end - a.start)};top:${lane * LANE_H + 3}px;--c:${c};--fg:${fg}"><i class="edge l" data-edge="start"></i>${esc(label(a))}<i class="edge r" data-edge="end"></i></div>`;
+  });
+  track.innerHTML = cutParts.join("").replace(/<button[^>]*>×<\/button>/g, "") + bars.join("") + `<div class="ed-at-ph" id="edAnnPh" style="left:${pct(now())}"></div>`;
+}
+
+/** 依開始時間排列，每個標註放進第一個不重疊的列 */
+function assignLanes(): Map<number, number> {
+  const ends: number[] = [];
+  const map = new Map<number, number>();
+  for (const a of [...anns].sort((p, q) => p.start - q.start || p.id - q.id)) {
+    let lane = ends.findIndex((e) => e <= a.start + 1e-6);
+    if (lane < 0) lane = ends.length;
+    ends[lane] = a.end;
+    map.set(a.id, lane);
+  }
+  return map;
+}
+
+/** 標註在輸出影片中看得到嗎（與保留的部分重疊） */
+function inOutput(a: Ann, keep: Range[] = keepRanges(duration, spec)) {
+  return keep.reduce((acc, [x, y]) => acc + Math.max(0, Math.min(y, a.end) - Math.max(x, a.start)), 0) >= 0.05;
+}
+const goneCount = (keep: Range[]) => anns.filter((a) => !inOutput(a, keep)).length;
+
+/** 步驟編號依出現時間自動排成 1、2、3… */
+function renumberSteps() {
+  anns
+    .filter((a) => a.kind === "step")
+    .sort((p, q) => p.start - q.start || p.id - q.id)
+    .forEach((a, i) => {
+      if (a.n !== i + 1) {
+        a.n = i + 1;
+        measure(a);
+      }
+    });
+}
+
 function renderTime() {
   const t = now();
   $("edTime").textContent = `${videoClock(t)} / ${videoClock(duration)}`;
   $("edPlayhead").style.left = duration ? pct(t) : "0";
+  const ph = document.getElementById("edAnnPh");
+  if (ph) ph.style.left = duration ? pct(t) : "0";
   $("edPlay").textContent = video().paused ? "播放" : "暫停";
   // 播放時播放頭跑出放大的範圍：跟著捲動
   if (!video().paused && (t > view.b || t < view.a) && view.b - view.a < duration) {
@@ -324,7 +382,7 @@ function startPreview() {
   // 播放頭已在保留範圍內（且不在最後）就從那裡開始，否則從頭
   const inside = keep.find(([a, b]) => t >= a && t < b - 0.1);
   seek(inside ? t : keep[0]![0]);
-  void v.play();
+  v.play().catch(() => {});
   render();
 }
 function stopPreview() {
@@ -416,8 +474,19 @@ function handles(a: Ann): [number, number][] {
   return [[a.x + a.w, a.y + a.h]];
 }
 
+/**
+ * 新標註的出現時間：從目前位置起 3 秒，但不超出目前所在的保留片段；
+ * 太靠近片段結尾時往前延伸（一定包含目前這一格，放好就看得到）。
+ */
+function defaultWindow(t: number): { start: number; end: number } {
+  const len = Math.min(3, duration);
+  const seg = keepRanges(duration, spec).find(([a, b]) => t >= a - 1e-3 && t < b) ?? [0, duration];
+  const end = Math.min(seg[1], Math.max(t, 0) + len);
+  const start = Math.max(seg[0], Math.min(t, end - len));
+  return { start, end: Math.max(end, start + 0.1) };
+}
+
 function newAnn(kind: AnnKind, x: number, y: number): Ann {
-  const t = now();
   const a: Ann = {
     id: nextAnnId++,
     kind,
@@ -425,8 +494,7 @@ function newAnn(kind: AnnKind, x: number, y: number): Ann {
     y,
     w: 0,
     h: 0,
-    start: Math.max(0, Math.min(t, duration - 0.1)),
-    end: Math.min(duration, Math.max(t, 0) + 3),
+    ...defaultWindow(now()),
     color: kind === "highlight" ? "#f5b301" : kind === "text" ? "#ffffff" : COLORS[0]!,
     size: defaultSize(kind, vh || 1080),
   };
@@ -435,7 +503,7 @@ function newAnn(kind: AnnKind, x: number, y: number): Ann {
     a.bg = tool !== "emoji";
     if (tool === "emoji") a.size = Math.round(defaultSize("text", vh || 1080) * 1.6);
   }
-  if (kind === "step") a.n = Math.max(0, ...anns.filter((o) => o.kind === "step").map((o) => o.n ?? 0)) + 1;
+  if (kind === "step") a.n = anns.filter((o) => o.kind === "step").length + 1;
   measure(a);
   if (kind === "text" || kind === "step") {
     // 以點的位置為中心
@@ -474,20 +542,29 @@ function renderAnnPanel() {
   $("edEmojis").hidden = tool !== "emoji";
   const a = selected();
   $("edAnnProps").hidden = !a;
-  $("edAnnHint").textContent = !vw
+  const hint = $("edAnnHint");
+  hint.textContent = !vw
     ? "無法讀取影片尺寸，不能加上標註。"
     : tool
       ? tool === "text" || tool === "emoji" || tool === "step"
-        ? "在影片上點一下放置。按 Esc 取消。"
-        : "在影片上拖曳放置。按 Esc 取消。"
-      : "選擇工具後，在影片上點一下（文字、表情、編號）或拖曳（箭頭、框線、馬賽克）放置。點選標註可移動、拉角調整大小。";
+        ? `在影片上點一下放置${tool === "emoji" ? "（先在上面選表情）" : ""}。按 Esc 取消。`
+        : "在影片上按住拖曳放置。按 Esc 取消。"
+      : a
+        ? ""
+        : "① 選工具 ② 在影片上點一下或拖曳放置。標註從目前位置起出現 3 秒，可在時間軸下方的標註軌拖曳調整。";
+  hint.hidden = !hint.textContent;
   if (a) {
     const isText = a.kind === "text";
+    $("edAnnName").textContent = label(a);
+    const warn = $("edAnnWarn");
+    warn.hidden = inOutput(a);
+    warn.textContent = "這個標註在刪除的片段中，輸出的影片看不到。請在標註軌把它拖到保留的部分。";
     $("edAnnTextField").hidden = !isText;
     const ta = $<HTMLTextAreaElement>("edAnnText");
     if (isText && document.activeElement !== ta) ta.value = a.text ?? "";
     const blurLike = a.kind === "mosaic" || a.kind === "blur";
-    $("edAnnStyleRow").hidden = blurLike;
+    $("edColors").hidden = blurLike;
+    $("edAnnSizeRow").hidden = blurLike;
     $("edAnnBgWrap").hidden = !isText;
     $<HTMLInputElement>("edAnnBg").checked = !!a.bg;
     $("edAnnSizeLabel").textContent = isText ? "字級" : a.kind === "step" ? "大小" : "線寬";
@@ -503,11 +580,13 @@ function renderAnnPanel() {
       if (document.activeElement !== input) input.value = videoClock(v);
     }
   }
-  $("edAnnList").innerHTML = anns
-    .map(
-      (o) =>
-        `<li class="${o.id === annSel ? "on" : ""}" data-ann="${o.id}"><i style="background:${o.kind === "mosaic" || o.kind === "blur" ? "#888" : o.color}"></i>${esc(label(o))}<span class="muted">${videoClock(o.start)} – ${videoClock(o.end)}</span><button type="button" data-ann-del="${o.id}" aria-label="刪除這個標註">×</button></li>`,
-    )
+  const keep = keepRanges(duration, spec);
+  $("edAnnList").innerHTML = [...anns]
+    .sort((p, q) => p.start - q.start || p.id - q.id)
+    .map((o) => {
+      const gone = !inOutput(o, keep);
+      return `<li class="${o.id === annSel ? "on" : ""}${gone ? " gone" : ""}" data-ann="${o.id}" title="${gone ? "在刪除的片段中，不會出現在輸出影片" : ""}"><i style="background:${o.kind === "mosaic" || o.kind === "blur" ? "#888" : o.color}"></i><span class="name">${esc(label(o))}</span><span class="muted">${videoClock(o.start)}–${videoClock(o.end)}</span><button type="button" data-ann-del="${o.id}" aria-label="刪除這個標註">×</button></li>`;
+    })
     .join("");
 }
 
@@ -650,7 +729,7 @@ function bind() {
   $<HTMLDialogElement>("editor").addEventListener("close", releaseMedia);
   $("edPlay").addEventListener("click", () => {
     if (previewing) return stopPreview();
-    v.paused ? void v.play() : v.pause();
+    v.paused ? v.play().catch(() => {}) : v.pause();
   });
   $("edPreview").addEventListener("click", () => (previewing ? stopPreview() : startPreview()));
   for (const b of document.querySelectorAll<HTMLButtonElement>("[data-step]")) b.addEventListener("click", () => step(b.dataset.step!));
@@ -759,21 +838,77 @@ function bind() {
   tl.addEventListener("pointerup", endDrag);
   tl.addEventListener("pointercancel", endDrag);
   tl.addEventListener("click", (e) => restore(e));
-  // 滾輪：放大 / 縮小（以滑鼠位置為中心）；Shift 或左右滾動 = 平移
-  tl.addEventListener(
-    "wheel",
-    (e) => {
-      if (!duration) return;
-      e.preventDefault();
-      const span = view.b - view.a;
-      const horizontal = Math.abs(e.deltaX) > Math.abs(e.deltaY);
-      if (e.shiftKey || horizontal) {
-        const d = (horizontal ? e.deltaX : e.deltaY) / Math.max(1, tl.clientWidth);
-        setView(view.a + d * span, view.b + d * span);
-      } else zoom(Math.exp(e.deltaY * 0.0015), timeAt(e));
-    },
-    { passive: false },
-  );
+  // 滾輪：放大 / 縮小（以滑鼠位置為中心）；Shift 或左右滾動 = 平移（時間軸與標註軌都可以）
+  const onWheel = (e: WheelEvent) => {
+    if (!duration) return;
+    e.preventDefault();
+    const span = view.b - view.a;
+    const horizontal = Math.abs(e.deltaX) > Math.abs(e.deltaY);
+    if (e.shiftKey || horizontal) {
+      const d = (horizontal ? e.deltaX : e.deltaY) / Math.max(1, tl.clientWidth);
+      setView(view.a + d * span, view.b + d * span);
+    } else zoom(Math.exp(e.deltaY * 0.0015), timeAt(e));
+  };
+  tl.addEventListener("wheel", onWheel, { passive: false });
+
+  // 標註軌：點一下選取（並跳到它出現的時間）；拖曳移動出現時間，拖曳兩端調整開始 / 結束；點空白處跳到該時間
+  const at = $("edAnnTrack");
+  at.addEventListener("wheel", onWheel, { passive: false });
+  let adrag: { id: number; edge: "start" | "end" | "body"; t0: number; x0: number; moved: boolean; orig: { start: number; end: number } } | undefined;
+  at.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0 || !duration) return;
+    stopPreview();
+    v.pause();
+    const bar = (e.target as HTMLElement).closest<HTMLElement>("[data-ann]");
+    if (!bar) {
+      annSel = undefined;
+      seek(timeAt(e));
+      return render();
+    }
+    const a = anns.find((o) => o.id === Number(bar.dataset.ann));
+    if (!a) return;
+    const edge = ((e.target as HTMLElement).closest<HTMLElement>("[data-edge]")?.dataset.edge as "start" | "end" | undefined) ?? "body";
+    adrag = { id: a.id, edge, t0: timeAt(e), x0: e.clientX, moved: false, orig: { start: a.start, end: a.end } };
+    laneFreeze = assignLanes();
+    annSel = a.id;
+    tab = "ann";
+    at.setPointerCapture(e.pointerId);
+    e.preventDefault();
+    render();
+  });
+  at.addEventListener("pointermove", (e) => {
+    if (!adrag) return;
+    const a = anns.find((o) => o.id === adrag!.id);
+    if (!a) return;
+    if (Math.abs(e.clientX - adrag.x0) > 3) adrag.moved = true;
+    if (!adrag.moved) return;
+    const d = timeAt(e) - adrag.t0;
+    const o = adrag.orig;
+    if (adrag.edge === "body") {
+      const len = o.end - o.start;
+      a.start = clamp(o.start + d, 0, duration - len);
+      a.end = a.start + len;
+      seek(a.start);
+    } else if (adrag.edge === "start") {
+      a.start = clamp(o.start + d, 0, a.end - 0.1);
+      seek(a.start);
+    } else {
+      a.end = clamp(o.end + d, a.start + 0.1, duration);
+      seek(a.end - 0.001);
+    }
+    render();
+  });
+  const endAnnDrag = () => {
+    if (!adrag) return;
+    const a = anns.find((o) => o.id === adrag!.id);
+    // 只是點一下：跳到它出現的時間（已經在範圍內就不動）
+    if (a && !adrag.moved && (now() < a.start || now() > a.end)) seek(a.start);
+    adrag = undefined;
+    laneFreeze = undefined;
+    render();
+  };
+  at.addEventListener("pointerup", endAnnDrag);
+  at.addEventListener("pointercancel", endAnnDrag);
   $("edZoomAll").addEventListener("click", () => setView(0, duration));
   // 放大時的捲軸：拖曳移動顯示的範圍，點捲軸其他地方跳過去
   const scroll = $("edScroll");
@@ -822,7 +957,7 @@ function bind() {
   stage.addEventListener("pointerdown", (e) => {
     if (e.button !== 0) return;
     if (!vw) {
-      v.paused ? void v.play() : v.pause();
+      v.paused ? v.play().catch(() => {}) : v.pause();
       return;
     }
     const p = toVideo(e);
@@ -873,7 +1008,7 @@ function bind() {
       return selectAnn(undefined);
     }
     if (!cropOn) {
-      v.paused ? void v.play() : v.pause();
+      v.paused ? v.play().catch(() => {}) : v.pause();
       return;
     }
     sdrag = { kind: "crop", from: p };
@@ -982,7 +1117,7 @@ function bind() {
     const k = e.key.toLowerCase();
     if (k === " ") {
       if (previewing) stopPreview();
-      else v.paused ? void v.play() : v.pause();
+      else v.paused ? v.play().catch(() => {}) : v.pause();
     } else if (k === "arrowleft") step(e.shiftKey ? "-1" : "-frame");
     else if (k === "arrowright") step(e.shiftKey ? "1" : "frame");
     else if (k === "i") setStart();

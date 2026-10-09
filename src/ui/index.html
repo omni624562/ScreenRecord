@@ -361,120 +361,129 @@
       </header>
 
       <div class="ed-body">
-        <div class="ed-stage-wrap">
-          <div class="ed-stage" id="edStage">
-            <video id="edVideo" preload="auto" playsinline></video>
-            <!-- 馬賽克 / 模糊的預覽（CSS 模糊）與其他標註（canvas） -->
-            <div class="ed-blurs" id="edBlurs"></div>
-            <canvas class="ed-ann" id="edAnn"></canvas>
-            <div class="ed-crop" id="edCrop" hidden></div>
+        <div class="ed-main">
+          <div class="ed-stage-wrap">
+            <div class="ed-stage" id="edStage">
+              <video id="edVideo" preload="auto" playsinline></video>
+              <!-- 馬賽克 / 模糊的預覽（CSS 模糊）與其他標註（canvas） -->
+              <div class="ed-blurs" id="edBlurs"></div>
+              <canvas class="ed-ann" id="edAnn"></canvas>
+              <div class="ed-crop" id="edCrop" hidden></div>
+            </div>
+          </div>
+
+          <!-- 時間軸：縮圖、保留 / 刪除的片段、頭尾把手、選取範圍、播放頭 -->
+          <div class="ed-timeline" id="edTimeline">
+            <canvas class="ed-strip" id="edStrip"></canvas>
+            <div class="ed-track" id="edTrack"></div>
+            <div class="ed-sel" id="edSel" hidden></div>
+            <div class="ed-range" id="edRange" data-handle="range" title="拖曳整段保留範圍（長度不變）"></div>
+            <div class="ed-handle start" id="edHStart" data-handle="start" title="拖曳調整開頭"></div>
+            <div class="ed-handle end" id="edHEnd" data-handle="end" title="拖曳調整結尾"></div>
+            <div class="ed-playhead" id="edPlayhead" data-handle="playhead" title="拖曳跳到其他時間"></div>
+          </div>
+          <!-- 標註軌：每個標註一條，拖曳移動出現時間、拖曳兩端調整長短 -->
+          <div class="ed-anntrack" id="edAnnTrack" hidden></div>
+          <div class="ed-scroll" id="edScroll" hidden title="拖曳查看時間軸的其他部分">
+            <div class="ed-scroll-thumb" id="edScrollThumb"></div>
+          </div>
+          <p class="hint ed-tl-hint"><span title="點時間軸跳到該時間；拖曳黃色把手剪掉頭尾，拖曳上方的黃色橫條移動整段；在時間軸上拖過一段可選取並刪除。在時間軸上轉滾輪放大 / 縮小（Shift + 滾輪左右移動），在影片上轉滾輪逐張前後移動（Shift 一次一秒）。">拖曳黃色把手剪頭尾・在時間軸上拖過一段可刪除・滾輪：時間軸放大縮小、影片上逐張移動</span><button class="btn ghost small" id="edZoomAll" type="button" hidden>顯示全部</button></p>
+
+          <div class="ed-transport">
+            <button class="btn" id="edPlay" type="button">播放</button>
+            <button class="btn ghost" id="edPreview" type="button" title="只播放保留的部分（跳過刪除的片段），確認剪輯結果">預覽結果</button>
+            <div class="ed-steps">
+              <button class="btn ghost small" type="button" data-step="-1" title="上一秒（Shift+←）">−1 秒</button>
+              <button class="btn ghost small" type="button" data-step="-frame" title="上一張（←）">−1 張</button>
+              <button class="btn ghost small" type="button" data-step="frame" title="下一張（→）">+1 張</button>
+              <button class="btn ghost small" type="button" data-step="1" title="下一秒（Shift+→）">+1 秒</button>
+            </div>
+            <span class="ed-time" id="edTime">00:00.0 / 00:00.0</span>
           </div>
         </div>
 
-        <!-- 時間軸：縮圖、保留 / 刪除的片段、頭尾把手、選取範圍、播放頭 -->
-        <div class="ed-timeline" id="edTimeline">
-          <canvas class="ed-strip" id="edStrip"></canvas>
-          <div class="ed-track" id="edTrack"></div>
-          <div class="ed-sel" id="edSel" hidden></div>
-          <div class="ed-ann-lane" id="edAnnLane"></div>
-          <div class="ed-range" id="edRange" data-handle="range" title="拖曳整段保留範圍（長度不變）"></div>
-          <div class="ed-handle start" id="edHStart" data-handle="start" title="拖曳調整開頭"></div>
-          <div class="ed-handle end" id="edHEnd" data-handle="end" title="拖曳調整結尾"></div>
-          <div class="ed-playhead" id="edPlayhead" data-handle="playhead" title="拖曳跳到其他時間"></div>
-        </div>
-        <div class="ed-scroll" id="edScroll" hidden title="拖曳查看時間軸的其他部分">
-          <div class="ed-scroll-thumb" id="edScrollThumb"></div>
-        </div>
-        <p class="hint ed-tl-hint">點時間軸跳到該時間；拖曳黃色把手剪掉頭尾，拖曳上方的黃色橫條移動整段；在時間軸上拖過一段可選取並刪除。
-          在時間軸上轉滾輪放大 / 縮小（Shift + 滾輪左右移動），在影片上轉滾輪逐張前後移動（Shift 一次一秒）。<button class="btn ghost small" id="edZoomAll" type="button" hidden>顯示全部</button></p>
-
-        <div class="ed-transport">
-          <button class="btn" id="edPlay" type="button">播放</button>
-          <button class="btn ghost" id="edPreview" type="button" title="只播放保留的部分（跳過刪除的片段），確認剪輯結果">預覽結果</button>
-          <div class="ed-steps">
-            <button class="btn ghost small" type="button" data-step="-1" title="上一秒（Shift+←）">−1 秒</button>
-            <button class="btn ghost small" type="button" data-step="-frame" title="上一張（←）">−1 張</button>
-            <button class="btn ghost small" type="button" data-step="frame" title="下一張（→）">+1 張</button>
-            <button class="btn ghost small" type="button" data-step="1" title="下一秒（Shift+→）">+1 秒</button>
+        <aside class="ed-side">
+          <div class="ed-tabs" id="edTabs" role="tablist">
+            <button type="button" role="tab" data-tab="time">時間</button>
+            <button type="button" role="tab" data-tab="crop">畫面裁切</button>
+            <button type="button" role="tab" data-tab="ann">標註<span class="ed-tab-count" id="edAnnCount"></span></button>
           </div>
-          <span class="ed-time" id="edTime">00:00.0 / 00:00.0</span>
-        </div>
-
-        <div class="ed-tabs" id="edTabs" role="tablist">
-          <button type="button" role="tab" data-tab="time">時間</button>
-          <button type="button" role="tab" data-tab="crop">畫面裁切</button>
-          <button type="button" role="tab" data-tab="ann">標註<span class="ed-tab-count" id="edAnnCount"></span></button>
-        </div>
-        <div class="ed-grid">
-          <section class="ed-section" data-panel="time">
-            <div class="ed-row">
-              <button class="btn small" id="edSetStart" type="button" title="快捷鍵 I">設為開頭</button>
-              <button class="btn small" id="edSetEnd" type="button" title="快捷鍵 O">設為結尾</button>
+          <div class="ed-grid">
+            <section class="ed-section" data-panel="time">
+              <div class="ed-row">
+                <button class="btn small" id="edSetStart" type="button" title="快捷鍵 I">設為開頭</button>
+                <button class="btn small" id="edSetEnd" type="button" title="快捷鍵 O">設為結尾</button>
+              </div>
               <span class="muted small" id="edRangeText"></span>
-            </div>
-            <div class="ed-row ed-selrow" id="edSelRow" hidden>
-              <span class="small" id="edSelText"></span>
-              <button class="btn small danger" id="edDelSel" type="button" title="快捷鍵 Delete">刪除這段</button>
-              <button class="btn ghost small" id="edClearSel" type="button" title="快捷鍵 Esc">取消選取</button>
-            </div>
-            <ul class="ed-removed" id="edRemoved"></ul>
-          </section>
+              <div class="ed-selrow" id="edSelRow" hidden>
+                <span class="small" id="edSelText"></span>
+                <div class="ed-row">
+                  <button class="btn small danger" id="edDelSel" type="button" title="快捷鍵 Delete">刪除這段</button>
+                  <button class="btn ghost small" id="edClearSel" type="button" title="快捷鍵 Esc">取消選取</button>
+                </div>
+              </div>
+              <ul class="ed-removed" id="edRemoved"></ul>
+              <p class="hint">在時間軸上拖過一段即可選取，按「刪除這段」或 Delete 鍵刪除。</p>
+            </section>
 
-          <section class="ed-section" data-panel="crop">
-            <label class="switch">
-              <input type="checkbox" id="edCropOn" />
-              <span class="track" aria-hidden="true"></span>
-              <span>裁切畫面</span>
-            </label>
-            <div class="grid4" id="edCropFields">
-              <label class="field"><span>X</span><input type="number" id="ecx" step="2" min="0" /></label>
-              <label class="field"><span>Y</span><input type="number" id="ecy" step="2" min="0" /></label>
-              <label class="field"><span>寬度</span><input type="number" id="ecw" step="2" min="16" /></label>
-              <label class="field"><span>高度</span><input type="number" id="ech" step="2" min="16" /></label>
-            </div>
-            <p class="hint" id="edCropHint">開啟後可直接在影片上拖曳框選要保留的區域。</p>
-          </section>
+            <section class="ed-section" data-panel="crop">
+              <label class="switch">
+                <input type="checkbox" id="edCropOn" />
+                <span class="track" aria-hidden="true"></span>
+                <span>裁切畫面</span>
+              </label>
+              <div class="grid2" id="edCropFields">
+                <label class="field"><span>X</span><input type="number" id="ecx" step="2" min="0" /></label>
+                <label class="field"><span>Y</span><input type="number" id="ecy" step="2" min="0" /></label>
+                <label class="field"><span>寬度</span><input type="number" id="ecw" step="2" min="16" /></label>
+                <label class="field"><span>高度</span><input type="number" id="ech" step="2" min="16" /></label>
+              </div>
+              <p class="hint" id="edCropHint">開啟後可直接在影片上拖曳框選要保留的區域。</p>
+            </section>
 
-          <section class="ed-section ed-ann-section" data-panel="ann">
-            <div class="ed-tools" id="edTools" role="toolbar" aria-label="標註工具">
-              <button class="btn small" type="button" data-tool="text">文字</button>
-              <button class="btn small" type="button" data-tool="emoji">表情</button>
-              <button class="btn small" type="button" data-tool="arrow">箭頭</button>
-              <button class="btn small" type="button" data-tool="rect">方框</button>
-              <button class="btn small" type="button" data-tool="ellipse">圓框</button>
-              <button class="btn small" type="button" data-tool="highlight">螢光筆</button>
-              <button class="btn small" type="button" data-tool="step">編號</button>
-              <button class="btn small" type="button" data-tool="mosaic">馬賽克</button>
-              <button class="btn small" type="button" data-tool="blur">模糊</button>
-            </div>
-            <div class="ed-emojis" id="edEmojis" hidden></div>
-            <p class="hint" id="edAnnHint">選擇工具後，在影片上點一下（文字、表情、編號）或拖曳（箭頭、框線、馬賽克）放置。點選標註可移動、拉角調整大小。</p>
-            <div class="ed-ann-props" id="edAnnProps" hidden>
-              <label class="field" id="edAnnTextField"><span>文字（Enter 換行）</span><textarea id="edAnnText" rows="2" spellcheck="false"></textarea></label>
-              <div class="ed-row" id="edAnnStyleRow">
-                <span class="small muted">顏色</span>
+            <section class="ed-section ed-ann-section" data-panel="ann">
+              <div class="ed-tools" id="edTools" role="toolbar" aria-label="標註工具">
+                <button class="ed-tool" type="button" data-tool="text"><b>T</b>文字</button>
+                <button class="ed-tool" type="button" data-tool="emoji"><b>😀</b>表情</button>
+                <button class="ed-tool" type="button" data-tool="arrow"><b>↗</b>箭頭</button>
+                <button class="ed-tool" type="button" data-tool="rect"><b>▢</b>方框</button>
+                <button class="ed-tool" type="button" data-tool="ellipse"><b>◯</b>圓框</button>
+                <button class="ed-tool" type="button" data-tool="highlight"><b class="hl">▬</b>螢光筆</button>
+                <button class="ed-tool" type="button" data-tool="step"><b>①</b>編號</button>
+                <button class="ed-tool" type="button" data-tool="mosaic"><b>▦</b>馬賽克</button>
+                <button class="ed-tool" type="button" data-tool="blur"><b>◌</b>模糊</button>
+              </div>
+              <div class="ed-emojis" id="edEmojis" hidden></div>
+              <p class="hint" id="edAnnHint"></p>
+              <div class="ed-ann-props" id="edAnnProps" hidden>
+                <div class="ed-props-head"><strong id="edAnnName"></strong><button class="btn small danger" type="button" id="edAnnDel" title="快捷鍵 Delete">刪除</button></div>
+                <p class="ed-warn" id="edAnnWarn" hidden></p>
+                <label class="field" id="edAnnTextField"><span>文字（Enter 換行）</span><textarea id="edAnnText" rows="2" spellcheck="false"></textarea></label>
                 <div class="ed-colors" id="edColors"></div>
-                <span class="small muted" id="edAnnSizeLabel">大小</span>
-                <input type="range" id="edAnnSize" min="8" max="200" step="1" />
+                <div class="ed-row" id="edAnnSizeRow">
+                  <span class="small muted" id="edAnnSizeLabel">大小</span>
+                  <input type="range" id="edAnnSize" min="8" max="200" step="1" />
+                </div>
                 <label class="switch small-switch" id="edAnnBgWrap">
                   <input type="checkbox" id="edAnnBg" />
                   <span class="track" aria-hidden="true"></span>
-                  <span class="small">底色</span>
+                  <span class="small">深色底</span>
                 </label>
+                <div class="ed-row">
+                  <span class="small muted">出現</span>
+                  <input class="ed-timeinput" id="edAnnFrom" spellcheck="false" />
+                  <span class="small muted">到</span>
+                  <input class="ed-timeinput" id="edAnnTo" spellcheck="false" />
+                </div>
+                <div class="ed-row">
+                  <button class="btn ghost small" type="button" id="edAnnFromNow" title="從播放頭的時間開始">從目前時間開始</button>
+                  <button class="btn ghost small" type="button" id="edAnnToNow" title="到播放頭的時間結束">到目前時間結束</button>
+                </div>
               </div>
-              <div class="ed-row">
-                <span class="small muted">出現</span>
-                <input class="ed-timeinput" id="edAnnFrom" spellcheck="false" />
-                <span class="small muted">到</span>
-                <input class="ed-timeinput" id="edAnnTo" spellcheck="false" />
-                <button class="btn ghost small" type="button" id="edAnnFromNow" title="從播放頭的時間開始">從目前時間</button>
-                <button class="btn ghost small" type="button" id="edAnnToNow" title="到播放頭的時間結束">到目前時間</button>
-                <button class="btn small danger" type="button" id="edAnnDel" title="快捷鍵 Delete">刪除標註</button>
-              </div>
-            </div>
-            <ul class="ed-ann-list" id="edAnnList"></ul>
-          </section>
-        </div>
+              <ul class="ed-ann-list" id="edAnnList"></ul>
+            </section>
+          </div>
+        </aside>
       </div>
 
       <footer class="ed-foot">
