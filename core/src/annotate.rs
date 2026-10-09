@@ -108,6 +108,91 @@ pub struct Ann {
     /// 範圍外模糊（或馬賽克），範圍內清楚
     #[serde(default, skip_serializing_if = "is_false")]
     pub invert: bool,
+    /// 旋轉角度（度，順時針，以中心為軸）；箭頭不用
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub rot: f64,
+}
+
+fn is_zero(v: &f64) -> bool {
+    *v == 0.0
+}
+
+impl AnnKind {
+    /// 可以旋轉（箭頭的兩端本來就能指向任何方向）
+    pub fn rotatable(self) -> bool {
+        self != AnnKind::Arrow
+    }
+}
+
+/// 實際使用的旋轉角度（度）
+pub fn rotation(a: &Ann) -> f64 {
+    if a.kind.rotatable() && a.rot.is_finite() {
+        a.rot
+    } else {
+        0.0
+    }
+}
+
+/// 旋轉的中心（標註的外框中心）
+pub fn center(a: &Ann) -> (f64, f64) {
+    (a.x + a.w / 2.0, a.y + a.h / 2.0)
+}
+
+/// 點 (px, py) 繞 (cx, cy) 轉 deg 度
+pub fn rotate_point(px: f64, py: f64, cx: f64, cy: f64, deg: f64) -> (f64, f64) {
+    let (s, c) = deg.to_radians().sin_cos();
+    let (dx, dy) = (px - cx, py - cy);
+    (cx + dx * c - dy * s, cy + dx * s + dy * c)
+}
+
+/// 影片座標 → 標註未旋轉時的座標
+pub fn to_local(a: &Ann, px: f64, py: f64) -> (f64, f64) {
+    let r = rotation(a);
+    if r == 0.0 {
+        return (px, py);
+    }
+    let (cx, cy) = center(a);
+    rotate_point(px, py, cx, cy, -r)
+}
+
+/// 標註未旋轉時的座標 → 影片座標
+pub fn to_world(a: &Ann, lx: f64, ly: f64) -> (f64, f64) {
+    let r = rotation(a);
+    if r == 0.0 {
+        return (lx, ly);
+    }
+    let (cx, cy) = center(a);
+    rotate_point(lx, ly, cx, cy, r)
+}
+
+/// 未旋轉的外框四個角轉到影片座標（左上、右上、右下、左下）
+pub fn corners(a: &Ann, (x, y, w, h): (f64, f64, f64, f64)) -> [(f64, f64); 4] {
+    [to_world(a, x, y), to_world(a, x + w, y), to_world(a, x + w, y + h), to_world(a, x, y + h)]
+}
+
+/// 旋轉的把手位置（未旋轉時在外框上方正中間 dist 處，影片像素）
+pub fn rotate_handle(a: &Ann, dist: f64) -> (f64, f64) {
+    let (bx, by, bw, _) = local_bbox(a);
+    to_world(a, bx + bw / 2.0, by - dist)
+}
+
+/// 點 (px, py) 是否在旋轉後的形狀內（馬賽克 / 模糊）
+pub fn ann_contains(a: &Ann, px: f64, py: f64) -> bool {
+    let (lx, ly) = to_local(a, px, py);
+    shape_contains(a.shape, a.x, a.y, a.w, a.h, lx, ly)
+}
+
+/// 旋轉後的外接框（x, y, w, h）
+pub fn rotated_rect(a: &Ann, r: (f64, f64, f64, f64)) -> (f64, f64, f64, f64) {
+    if rotation(a) == 0.0 {
+        return r;
+    }
+    let c = corners(a, r);
+    let x0 = c.iter().map(|p| p.0).fold(f64::INFINITY, f64::min);
+    let y0 = c.iter().map(|p| p.1).fold(f64::INFINITY, f64::min);
+    let x1 = c.iter().map(|p| p.0).fold(f64::NEG_INFINITY, f64::max);
+    let y1 = c.iter().map(|p| p.1).fold(f64::NEG_INFINITY, f64::max);
+    (x0, y0, x1 - x0, y1 - y0)
 }
 
 pub const COLORS: [&str; 7] = ["#e5484d", "#f5b301", "#30a46c", "#0090ff", "#8e4ec6", "#ffffff", "#111111"];
@@ -262,8 +347,13 @@ pub fn measure(a: &mut Ann) {
 
 // ───────────── 幾何 ─────────────
 
-/// 標註實際佔的範圍（含線寬、箭頭頭部），用於匯出圖片與點選：(x, y, w, h)
+/// 標註實際佔的範圍（含線寬、箭頭頭部；旋轉後的外接框），用於匯出圖片：(x, y, w, h)
 pub fn bbox(a: &Ann) -> (f64, f64, f64, f64) {
+    rotated_rect(a, local_bbox(a))
+}
+
+/// 未旋轉時佔的範圍（含線寬、箭頭頭部）
+pub fn local_bbox(a: &Ann) -> (f64, f64, f64, f64) {
     if a.kind == AnnKind::Arrow {
         let pad = a.size * 2.5;
         let x0 = a.x.min(a.x + a.w);
@@ -283,16 +373,17 @@ pub fn hit(a: &Ann, x: f64, y: f64, tolerance: f64) -> bool {
         let (dx, dy) = (x - (a.x + t * a.w), y - (a.y + t * a.h));
         return dx.hypot(dy) <= a.size * 2.0 + tolerance || (x - x2).hypot(y - y2) <= a.size * 3.0 + tolerance;
     }
-    let (bx, by, bw, bh) = bbox(a);
+    let (x, y) = to_local(a, x, y);
+    let (bx, by, bw, bh) = local_bbox(a);
     x >= bx - tolerance && x <= bx + bw + tolerance && y >= by - tolerance && y <= by + bh + tolerance
 }
 
-/// 調整大小的把手位置（影片像素）：箭頭為兩端，其他為右下角
+/// 調整大小的把手位置（影片像素）：箭頭為兩端，其他為右下角（跟著旋轉）
 pub fn handles(a: &Ann) -> Vec<(f64, f64)> {
     if a.kind == AnnKind::Arrow {
         vec![(a.x, a.y), (a.x + a.w, a.y + a.h)]
     } else {
-        vec![(a.x + a.w, a.y + a.h)]
+        vec![to_world(a, a.x + a.w, a.y + a.h)]
     }
 }
 
@@ -542,6 +633,13 @@ fn stroke(width: f64) -> Stroke {
 
 /// 畫一個標註（t = 影片像素 → 畫布像素）；馬賽克 / 模糊不在這裡畫
 pub fn draw(pixmap: &mut Pixmap, a: &Ann, t: Transform) {
+    let r = rotation(a);
+    let t = if r != 0.0 {
+        let (cx, cy) = center(a);
+        t.pre_concat(Transform::from_rotate_at(r as f32, cx as f32, cy as f32))
+    } else {
+        t
+    };
     let (x, y, w, h, size) = (a.x as f32, a.y as f32, a.w as f32, a.h as f32, a.size as f32);
     match a.kind {
         AnnKind::Text => {
@@ -630,18 +728,38 @@ pub fn draw_with_opacity(pixmap: &mut Pixmap, a: &Ann, t: Transform, opacity: f3
 /// 匯出：馬賽克 / 模糊交給 FFmpeg（圓角、橢圓附上遮罩）；其他畫成剛好包住標註的透明 PNG
 pub fn to_overlay(a: &Ann, vw: f64, vh: f64) -> Option<Overlay> {
     if a.kind.is_effect() {
-        let (x, y, w, h) = (a.x.round(), a.y.round(), a.w.round(), a.h.round());
         let kind = if a.kind == AnnKind::Mosaic { OverlayKind::Mosaic } else { OverlayKind::Blur };
-        let mut o = Overlay { kind, x, y, w, h, start: a.start, end: a.end, png: None, mask: None, invert: a.invert };
-        if a.shape.is_some_and(|s| s != Shape::Rect) && w >= 2.0 && h >= 2.0 {
-            let mut m = Pixmap::new(w as u32, h as u32)?;
-            m.fill(Color::BLACK);
-            if let Some(p) = shape_path(a.shape, 0.0, 0.0, w, h) {
-                m.fill_path(&p, &paint(Color::WHITE), FillRule::Winding, Transform::identity(), None);
+        let r = rotation(a);
+        if r == 0.0 {
+            let (x, y, w, h) = (a.x.round(), a.y.round(), a.w.round(), a.h.round());
+            let mut o = Overlay { kind, x, y, w, h, start: a.start, end: a.end, png: None, mask: None, invert: a.invert };
+            if a.shape.is_some_and(|s| s != Shape::Rect) && w >= 2.0 && h >= 2.0 {
+                let mut m = Pixmap::new(w as u32, h as u32)?;
+                m.fill(Color::BLACK);
+                if let Some(p) = shape_path(a.shape, 0.0, 0.0, w, h) {
+                    m.fill_path(&p, &paint(Color::WHITE), FillRule::Winding, Transform::identity(), None);
+                }
+                o.mask = m.encode_png().ok();
             }
-            o.mask = m.encode_png().ok();
+            return Some(o);
         }
-        return Some(o);
+        // 旋轉：範圍取旋轉後的外接框（限制在畫面內），遮罩畫成旋轉後的形狀
+        let (bx, by, bw, bh) = rotated_rect(a, (a.x, a.y, a.w, a.h));
+        let x0 = bx.floor().max(0.0);
+        let y0 = by.floor().max(0.0);
+        let x1 = (bx + bw).ceil().min(vw);
+        let y1 = (by + bh).ceil().min(vh);
+        if x1 - x0 < 2.0 || y1 - y0 < 2.0 {
+            return None;
+        }
+        let mut m = Pixmap::new((x1 - x0) as u32, (y1 - y0) as u32)?;
+        m.fill(Color::BLACK);
+        let (cx, cy) = center(a);
+        let t = Transform::from_translate(-x0 as f32, -y0 as f32).pre_concat(Transform::from_rotate_at(r as f32, cx as f32, cy as f32));
+        if let Some(p) = shape_path(a.shape, a.x, a.y, a.w, a.h) {
+            m.fill_path(&p, &paint(Color::WHITE), FillRule::Winding, t, None);
+        }
+        return Some(Overlay { kind, x: x0, y: y0, w: x1 - x0, h: y1 - y0, start: a.start, end: a.end, png: None, mask: m.encode_png().ok(), invert: a.invert });
     }
     let (bx, by, bw, bh) = bbox(a);
     // 只保留畫面內的部分
@@ -685,7 +803,54 @@ mod tests {
     use super::*;
 
     fn ann(kind: AnnKind) -> Ann {
-        Ann { id: 1, kind, x: 100.0, y: 80.0, w: 200.0, h: 120.0, start: 0.0, end: 3.0, color: "#e5484d".into(), size: 8.0, text: None, bg: false, n: None, shape: None, invert: false }
+        Ann { id: 1, kind, x: 100.0, y: 80.0, w: 200.0, h: 120.0, start: 0.0, end: 3.0, color: "#e5484d".into(), size: 8.0, text: None, bg: false, n: None, shape: None, invert: false, rot: 0.0 }
+    }
+
+    #[test]
+    fn rotation_geometry() {
+        // 200×120 的方框轉 90 度：外接框變成 120×200，中心不變
+        let a = Ann { rot: 90.0, ..ann(AnnKind::Rect) };
+        let (cx, cy) = center(&a);
+        let (x, y, w, h) = rotated_rect(&a, (a.x, a.y, a.w, a.h));
+        assert!((w - 120.0).abs() < 1e-6 && (h - 200.0).abs() < 1e-6, "{w}×{h}");
+        assert!((x + w / 2.0 - cx).abs() < 1e-6 && (y + h / 2.0 - cy).abs() < 1e-6);
+        // 原本在框外（右邊）的點，轉 90 度後在框內（上下方向）
+        assert!(hit(&a, cx, cy - 90.0, 0.0), "轉 90 度後上下延伸 100");
+        assert!(!hit(&a, cx + 90.0, cy, 0.0), "轉 90 度後左右只延伸 60＋線寬");
+        // 世界 ↔ 本地座標互轉
+        let (lx, ly) = to_local(&a, 10.0, 20.0);
+        let (wx, wy) = to_world(&a, lx, ly);
+        assert!((wx - 10.0).abs() < 1e-9 && (wy - 20.0).abs() < 1e-9);
+        // 右下角的把手跟著轉
+        let (hx, hy) = handles(&a)[0];
+        assert!((hx - (cx - 60.0)).abs() < 1e-6 && (hy - (cy + 100.0)).abs() < 1e-6, "{hx},{hy}");
+        // 箭頭不旋轉
+        assert_eq!(rotation(&Ann { rot: 45.0, ..ann(AnnKind::Arrow) }), 0.0);
+    }
+
+    #[test]
+    fn rotated_effect_exports_with_mask() {
+        let a = Ann { rot: 45.0, ..ann(AnnKind::Blur) };
+        let o = to_overlay(&a, 1920.0, 1080.0).unwrap();
+        let (_, _, w, h) = rotated_rect(&a, (a.x, a.y, a.w, a.h));
+        assert!((o.w - w.ceil()).abs() <= 2.0 && (o.h - h.ceil()).abs() <= 2.0, "{}×{}", o.w, o.h);
+        let m = Pixmap::decode_png(o.mask.as_ref().expect("旋轉時要有遮罩")).unwrap();
+        // 外接框的角落在形狀外（黑），中心在形狀內（白）
+        let px = |x: u32, y: u32| m.pixel(x, y).unwrap().red();
+        assert_eq!(px(0, 0), 0);
+        assert_eq!(px(m.width() / 2, m.height() / 2), 255);
+        // 沒有旋轉：與之前相同（方形不需要遮罩）
+        let o = to_overlay(&ann(AnnKind::Blur), 1920.0, 1080.0).unwrap();
+        assert!(o.mask.is_none() && o.w == 200.0);
+    }
+
+    #[test]
+    fn rotation_is_optional_in_saved_projects() {
+        let a = ann(AnnKind::Text);
+        assert!(!serde_json::to_string(&a).unwrap().contains("rot"));
+        let b = Ann { rot: 30.0, ..a };
+        let back: Ann = serde_json::from_str(&serde_json::to_string(&b).unwrap()).unwrap();
+        assert_eq!(back.rot, 30.0);
     }
 
     #[test]

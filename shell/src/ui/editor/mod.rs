@@ -89,13 +89,46 @@ enum Edge {
 /// 進行中的拖曳
 enum Drag {
     None,
-    Timeline { kind: TlKind, x0: f32, t0: f64, moved: bool, orig: (f64, f64) },
-    AnnBar { id: u64, edge: Edge, x0: f32, t0: f64, moved: bool, orig: (f64, f64) },
-    Scroll { x0: f32, a0: f64 },
-    Crop { from: (f64, f64) },
-    Create { id: u64, from: (f64, f64) },
-    Move { id: u64, from: (f64, f64), orig: Ann },
-    Resize { id: u64, handle: usize, orig: Ann },
+    Timeline {
+        kind: TlKind,
+        x0: f32,
+        t0: f64,
+        moved: bool,
+        orig: (f64, f64),
+    },
+    AnnBar {
+        id: u64,
+        edge: Edge,
+        x0: f32,
+        t0: f64,
+        moved: bool,
+        orig: (f64, f64),
+    },
+    Scroll {
+        x0: f32,
+        a0: f64,
+    },
+    Crop {
+        from: (f64, f64),
+    },
+    Create {
+        id: u64,
+        from: (f64, f64),
+    },
+    Move {
+        id: u64,
+        from: (f64, f64),
+        orig: Ann,
+    },
+    Resize {
+        id: u64,
+        handle: usize,
+        orig: Ann,
+    },
+    /// 拖曳旋轉把手
+    Rotate {
+        id: u64,
+    },
 }
 
 pub struct Editor {
@@ -403,6 +436,7 @@ impl Editor {
             n: None,
             shape: None,
             invert: false,
+            rot: 0.0,
         };
         self.next_id += 1;
         if kind == AnnKind::Text {
@@ -741,6 +775,7 @@ fn emoji_textures(ctx: &egui::Context) -> Vec<TextureHandle> {
                 n: None,
                 shape: None,
                 invert: false,
+                rot: 0.0,
             };
             annotate::measure(&mut a);
             // 只要表情本身：用深色底的版面量大小，但不畫底色

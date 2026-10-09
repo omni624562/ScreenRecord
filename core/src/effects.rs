@@ -6,7 +6,7 @@
 //!
 //! 畫面可以比原影片小（預覽解析度）：位置與強度依比例換算。
 
-use crate::annotate::{effect_size, shape_contains, Ann, AnnKind};
+use crate::annotate::{ann_contains, effect_size, rotated_rect, rotation, shape_contains, Ann, AnnKind};
 
 /// 水平或垂直方向的方塊模糊（邊緣延伸），src → dst
 fn box_pass(src: &[u8], dst: &mut [u8], w: usize, h: usize, r: usize, horizontal: bool) {
@@ -84,12 +84,20 @@ pub fn apply(frame: &mut [u8], fw: usize, fh: usize, a: &Ann, vw: f64, vh: f64) 
     }
     let (sx, sy) = (fw as f64 / vw, fh as f64 / vh);
     let size = effect_size(a, vw, vh);
-    // 範圍（畫面像素，限制在畫面內）
-    let rx0 = (a.x * sx).floor().clamp(0.0, fw as f64) as usize;
-    let ry0 = (a.y * sy).floor().clamp(0.0, fh as f64) as usize;
-    let rx1 = ((a.x + a.w) * sx).ceil().clamp(0.0, fw as f64) as usize;
-    let ry1 = ((a.y + a.h) * sy).ceil().clamp(0.0, fh as f64) as usize;
-    let inside = |x: usize, y: usize| shape_contains(a.shape, a.x * sx, a.y * sy, a.w * sx, a.h * sy, x as f64 + 0.5, y as f64 + 0.5);
+    // 範圍（畫面像素，限制在畫面內；旋轉時取旋轉後的外接框）
+    let (bx, by, bw, bh) = rotated_rect(a, (a.x, a.y, a.w, a.h));
+    let rx0 = (bx * sx).floor().clamp(0.0, fw as f64) as usize;
+    let ry0 = (by * sy).floor().clamp(0.0, fh as f64) as usize;
+    let rx1 = ((bx + bw) * sx).ceil().clamp(0.0, fw as f64) as usize;
+    let ry1 = ((by + bh) * sy).ceil().clamp(0.0, fh as f64) as usize;
+    let rotated = rotation(a) != 0.0;
+    let inside = |x: usize, y: usize| {
+        if rotated {
+            ann_contains(a, (x as f64 + 0.5) / sx, (y as f64 + 0.5) / sy)
+        } else {
+            shape_contains(a.shape, a.x * sx, a.y * sy, a.w * sx, a.h * sy, x as f64 + 0.5, y as f64 + 0.5)
+        }
+    };
     if a.invert {
         let mut fx = frame.to_vec();
         if a.kind == AnnKind::Blur {
@@ -152,7 +160,7 @@ mod tests {
     }
 
     fn ann(kind: AnnKind, shape: Option<Shape>, invert: bool) -> Ann {
-        Ann { id: 1, kind, x: 20.0, y: 20.0, w: 40.0, h: 40.0, start: 0.0, end: 1.0, color: "#000000".into(), size: 8.0, text: None, bg: false, n: None, shape, invert }
+        Ann { id: 1, kind, x: 20.0, y: 20.0, w: 40.0, h: 40.0, start: 0.0, end: 1.0, color: "#000000".into(), size: 8.0, text: None, bg: false, n: None, shape, invert, rot: 0.0 }
     }
 
     fn at(v: &[u8], w: usize, x: usize, y: usize) -> u8 {

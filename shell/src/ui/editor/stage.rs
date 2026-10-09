@@ -24,6 +24,8 @@ struct Sprite {
 }
 
 const SEL_BLUE: Color32 = Color32::from_rgb(0x00, 0x90, 0xff);
+/// 旋轉把手在選取框上方多遠（畫面像素）
+const ROT_HANDLE_PX: f64 = 26.0;
 
 pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, stage_h: f32) {
     let avail_w = ui.available_width();
@@ -74,7 +76,16 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, stage_h: f3
             }
             let alpha = if visible { 1.0 } else { 0.4 };
             let r = Rect::from_min_max(to_screen(a.x, a.y), to_screen(a.x + a.w, a.y + a.h));
-            let pts = outline(a.shape, r, (annotate::round_radius(a.w, a.h) * css) as f32);
+            let mut pts = outline(a.shape, r, (annotate::round_radius(a.w, a.h) * css) as f32);
+            // 旋轉：外框的點繞中心轉
+            let rot = annotate::rotation(a);
+            if rot != 0.0 {
+                let c = r.center();
+                for q in &mut pts {
+                    let (x, y) = annotate::rotate_point(q.x as f64, q.y as f64, c.x as f64, c.y as f64, rot);
+                    *q = pos2(x as f32, y as f32);
+                }
+            }
             painter.add(egui::Shape::closed_line(pts.clone(), Stroke::new(1.0, Color32::from_black_alpha((128.0 * alpha) as u8))));
             painter.extend(egui::Shape::dashed_line(&pts, Stroke::new(1.0, Color32::from_white_alpha((230.0 * alpha) as u8)), 4.0, 3.0));
             // 名稱放在形狀裡面（橢圓、圓角時置中靠上，不會跑到框外）；形狀太小放不下就不顯示
@@ -92,10 +103,19 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, stage_h: f3
 
     // 選取框與調整大小的把手
     if let Some(a) = ed.selected() {
-        let (bx, by, bw, bh) = annotate::bbox(a);
-        let r = Rect::from_min_max(to_screen(bx, by), to_screen(bx + bw, by + bh));
-        let pts = vec![r.left_top(), r.right_top(), r.right_bottom(), r.left_bottom(), r.left_top()];
+        // 未旋轉的外框四個角轉到畫面上（旋轉時選取框跟著轉）
+        let lb = annotate::local_bbox(a);
+        let mut pts: Vec<Pos2> = annotate::corners(a, lb).iter().map(|&(x, y)| to_screen(x, y)).collect();
+        pts.push(pts[0]);
         painter.extend(egui::Shape::dashed_line(&pts, Stroke::new(1.5, SEL_BLUE), 5.0, 4.0));
+        if a.kind.rotatable() {
+            // 旋轉把手：外框上方的圓點，與外框上緣中間連一條線
+            let top = annotate::to_world(a, lb.0 + lb.2 / 2.0, lb.1);
+            let (rx, ry) = annotate::rotate_handle(a, ROT_HANDLE_PX / css);
+            let (top, rh) = (to_screen(top.0, top.1), to_screen(rx, ry));
+            painter.line_segment([top, rh], Stroke::new(1.5, SEL_BLUE));
+            painter.circle(rh, 6.0, Color32::WHITE, Stroke::new(1.5, SEL_BLUE));
+        }
         for (hx, hy) in annotate::handles(a) {
             let c = to_screen(hx, hy);
             let hr = Rect::from_center_size(c, vec2(10.0, 10.0));
@@ -192,6 +212,15 @@ fn ann_at(ed: &Editor, x: f64, y: f64, tol: f64) -> Option<u64> {
     ed.anns.iter().rev().find(|a| (ed.ann_sel == Some(a.id) || (t >= a.start && t <= a.end)) && annotate::hit(a, x, y, tol)).map(|a| a.id)
 }
 
+/// 點到旋轉把手（k = 畫面一像素是多少影片像素）
+fn on_rotate_handle(a: &Ann, x: f64, y: f64, k: f64) -> bool {
+    if !a.kind.rotatable() {
+        return false;
+    }
+    let (rx, ry) = annotate::rotate_handle(a, ROT_HANDLE_PX * k);
+    (rx - x).hypot(ry - y) <= 10.0 * k
+}
+
 fn handle_at(a: &Ann, x: f64, y: f64, tol: f64) -> Option<usize> {
     annotate::handles(a).iter().position(|&(hx, hy)| (hx - x).abs() <= tol && (hy - y).abs() <= tol)
 }
@@ -223,6 +252,8 @@ fn interact(ed: &mut Editor, ui: &egui::Ui, rect: Rect, resp: &egui::Response) {
                 CursorIcon::PointingHand
             } else if ed.tool.is_some() {
                 CursorIcon::Crosshair
+            } else if ed.selected().is_some_and(|a| on_rotate_handle(a, x, y, k)) {
+                CursorIcon::Grab
             } else if ed.selected().is_some_and(|a| handle_at(a, x, y, k * 9.0).is_some()) {
                 CursorIcon::ResizeNwSe
             } else if ann_at(ed, x, y, k * 6.0).is_some() {
@@ -268,6 +299,10 @@ fn interact(ed: &mut Editor, ui: &egui::Ui, rect: Rect, resp: &egui::Response) {
             return;
         }
         if let Some(cur) = ed.selected() {
+            if on_rotate_handle(cur, x, y, k) {
+                ed.drag = Drag::Rotate { id: cur.id };
+                return;
+            }
             if let Some(h) = handle_at(cur, x, y, k * 9.0) {
                 ed.drag = Drag::Resize { id: cur.id, handle: h, orig: cur.clone() };
                 return;
@@ -296,7 +331,7 @@ fn interact(ed: &mut Editor, ui: &egui::Ui, rect: Rect, resp: &egui::Response) {
         return;
     }
 
-    let stage_drag = matches!(ed.drag, Drag::Crop { .. } | Drag::Create { .. } | Drag::Move { .. } | Drag::Resize { .. });
+    let stage_drag = matches!(ed.drag, Drag::Crop { .. } | Drag::Create { .. } | Drag::Move { .. } | Drag::Resize { .. } | Drag::Rotate { .. });
     if !stage_drag {
         return;
     }
@@ -352,19 +387,43 @@ fn drag_to(ed: &mut Editor, (px, py): (f64, f64)) {
                         a.w = px - o.x;
                         a.h = py - o.y;
                     }
-                    AnnKind::Text | AnnKind::Step => {
-                        // 拉角：依寬度等比例調整字級 / 大小
-                        let ratio = ((px - o.x) / o.w.max(1.0)).max(0.2);
-                        a.size = (o.size * ratio).round().max(8.0);
-                        annotate::measure(a);
-                    }
                     _ => {
-                        a.w = (px - o.x).max(8.0);
-                        a.h = (py - o.y).max(8.0);
+                        // 在標註自己的方向（未旋轉）裡計算：拉右下角，左上角固定不動
+                        let (lx, ly) = annotate::to_local(o, px, py);
+                        if matches!(a.kind, AnnKind::Text | AnnKind::Step) {
+                            // 依寬度等比例調整字級 / 大小
+                            let ratio = ((lx - o.x) / o.w.max(1.0)).max(0.2);
+                            a.size = (o.size * ratio).round().max(8.0);
+                            annotate::measure(a);
+                        } else {
+                            a.w = (lx - o.x).max(8.0);
+                            a.h = (ly - o.y).max(8.0);
+                        }
+                        // 旋轉時中心會移動：讓原本的左上角留在原位
+                        let (cx, cy) = annotate::to_world(o, o.x + a.w / 2.0, o.y + a.h / 2.0);
+                        a.x = cx - a.w / 2.0;
+                        a.y = cy - a.h / 2.0;
                     }
                 }
             }
             ed.drag = Drag::Resize { id, handle, orig };
+        }
+        Drag::Rotate { id } => {
+            if let Some(a) = ed.ann_mut(id) {
+                let (cx, cy) = annotate::center(a);
+                // 把手在上方：指向上方 = 0 度
+                let mut deg = (py - cy).atan2(px - cx).to_degrees() + 90.0;
+                if deg > 180.0 {
+                    deg -= 360.0;
+                }
+                // 靠近 15 度的倍數時吸附（容易轉回水平、轉成 45 / 90 度）
+                let snap = (deg / 15.0).round() * 15.0;
+                if (deg - snap).abs() < 4.0 {
+                    deg = snap;
+                }
+                a.rot = if snap.abs() >= 180.0 && (deg - snap).abs() < 4.0 { 180.0 } else { deg.round() };
+            }
+            ed.drag = Drag::Rotate { id };
         }
         other => ed.drag = other,
     }

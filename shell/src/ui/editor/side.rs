@@ -361,6 +361,21 @@ fn props(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context) {
             }
         }
 
+        // 角度（箭頭不用：兩端本來就能指向任何方向）
+        if cur.kind.rotatable() {
+            ui.horizontal(|ui| {
+                ui.label(theme::muted(ui, "角度").font(theme::font(12.0)));
+                let mut deg = cur.rot;
+                ui.spacing_mut().slider_width = ui.available_width() - 120.0;
+                if ui.add(egui::Slider::new(&mut deg, -180.0..=180.0).step_by(1.0).fixed_decimals(0).suffix("°")).on_hover_text("也可以拖曳影片上選取框上方的圓點旋轉").changed() {
+                    cur.rot = deg;
+                }
+                if Btn::new("歸零").ghost().small().enabled(cur.rot != 0.0).show(ui).clicked() {
+                    cur.rot = 0.0;
+                }
+            });
+        }
+
         // 出現時間
         ui.horizontal(|ui| {
             ui.label(theme::muted(ui, "出現").font(theme::font(12.0)));
