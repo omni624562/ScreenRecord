@@ -655,6 +655,21 @@ pub fn progress(ui: &mut Ui, frac: f32, color: Color32, height: f32) {
 }
 
 /// 文字放在 rect 中間
+/// 下拉選單的外觀：與按鈕相同（白底、細框、圓角、高 30）
+pub fn field_style(ui: &mut Ui) {
+    let p = pal(ui);
+    ui.spacing_mut().interact_size.y = 30.0;
+    ui.spacing_mut().button_padding = vec2(10.0, 6.0);
+    let w = &mut ui.visuals_mut().widgets;
+    for (st, fill) in [(&mut w.inactive, p.surface), (&mut w.hovered, p.surface2), (&mut w.active, p.surface2), (&mut w.open, p.surface2)] {
+        st.weak_bg_fill = fill;
+        st.bg_fill = fill;
+        st.bg_stroke = Stroke::new(1.0, p.border_strong);
+        st.corner_radius = CornerRadius::same(RADIUS_SM);
+        st.expansion = 0.0;
+    }
+}
+
 /// 縮圖依原比例放進 rect 置中（不拉伸；兩側或上下留底色）
 pub fn paint_thumb(p: &Painter, rect: Rect, tex: &egui::TextureHandle) {
     let [w, h] = tex.size();

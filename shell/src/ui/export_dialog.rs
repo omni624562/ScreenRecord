@@ -77,19 +77,8 @@ fn helper(ui: &mut egui::Ui, text: impl Into<String>, color: Color32) {
 fn combo<T: PartialEq + Copy>(ui: &mut egui::Ui, id: &str, width: f32, value: &mut T, items: &[(T, String)]) -> bool {
     let mut changed = false;
     let text = items.iter().find(|(v, _)| v == value).map(|(_, t)| t.clone()).unwrap_or_default();
-    let p = theme::pal(ui);
     ui.scope(|ui| {
-        ui.spacing_mut().interact_size.y = 30.0;
-        ui.spacing_mut().button_padding = vec2(10.0, 6.0);
-        // 與按鈕相同的外觀：白底、細框、圓角
-        let w = &mut ui.visuals_mut().widgets;
-        for (st, fill) in [(&mut w.inactive, p.surface), (&mut w.hovered, p.surface2), (&mut w.active, p.surface2), (&mut w.open, p.surface2)] {
-            st.weak_bg_fill = fill;
-            st.bg_fill = fill;
-            st.bg_stroke = Stroke::new(1.0, p.border_strong);
-            st.corner_radius = CornerRadius::same(theme::RADIUS_SM);
-            st.expansion = 0.0;
-        }
+        theme::field_style(ui);
         egui::ComboBox::from_id_salt(id).selected_text(RichText::new(text).font(theme::font(13.5))).width(width).show_ui(ui, |ui| {
             for (v, t) in items {
                 if ui.selectable_label(value == v, RichText::new(t).font(theme::font(13.5))).clicked() && value != v {

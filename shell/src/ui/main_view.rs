@@ -679,7 +679,7 @@ fn settings_bar(app: &mut UiApp, ui: &mut Ui) {
         _ => {}
     }
     let more_text = if compact { String::new() } else { more.join("・") };
-    drop_button_tip(ui, "more", more_text, Some(more.join("・")), Icon::Settings, !locked, 340.0, |ui| more_panel(app, ui));
+    drop_button_tip(ui, "more", more_text, Some(more.join("・")), Icon::Settings, !locked, 380.0, |ui| more_panel(app, ui));
     // 儲存位置
     let dir = app.s.out_dir(&app.env);
     // 依剩下的寬度縮短路徑（保留結尾），整列不會超出卡片；右邊留給「輸出 3840×1080」
@@ -753,14 +753,78 @@ fn audio_panel(app: &mut UiApp, ui: &mut Ui) {
     }
 }
 
+// ───────────── 更多設定（表單：左邊標籤固定寬度，控制項對齊） ─────────────
+
+const FORM_LABEL_W: f32 = 112.0;
+const FORM_CTRL_W: f32 = 200.0;
+const FORM_ROW_H: f32 = 32.0;
+
+/// 分區標題（右邊可放按鈕）
+fn form_section(ui: &mut Ui, title: &str, right: impl FnOnce(&mut Ui)) {
+    let p = theme::pal(ui);
+    ui.horizontal(|ui| {
+        ui.set_height(22.0);
+        ui.label(RichText::new(title).font(theme::font_bold(13.0)).color(p.text));
+        ui.with_layout(Layout::right_to_left(Align::Center), right);
+    });
+}
+
+/// 表單的一列：左邊標籤（灰色、固定寬度），右邊控制項
+fn form_row(ui: &mut Ui, label: &str, add: impl FnOnce(&mut Ui)) {
+    let p = theme::pal(ui);
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 6.0;
+        let (r, _) = ui.allocate_exact_size(vec2(FORM_LABEL_W, FORM_ROW_H), Sense::hover());
+        ui.painter().text(pos2(r.left(), r.center().y), egui::Align2::LEFT_CENTER, label, theme::font(13.0), p.muted);
+        ui.set_min_height(FORM_ROW_H);
+        add(ui);
+    });
+}
+
+/// 控制項下方的說明（對齊控制項那一欄）
+fn form_hint(ui: &mut Ui, text: impl Into<String>, color: Color32) {
+    ui.horizontal(|ui| {
+        ui.add_space(FORM_LABEL_W + 6.0);
+        ui.add(egui::Label::new(RichText::new(text.into()).font(theme::font(12.0)).color(color)).wrap());
+    });
+}
+
+fn form_divider(ui: &mut Ui) {
+    let p = theme::pal(ui);
+    ui.add_space(2.0);
+    let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 1.0), Sense::hover());
+    ui.painter().hline(r.x_range(), r.center().y, Stroke::new(1.0, p.border));
+    ui.add_space(2.0);
+}
+
+/// 表單的下拉選單（與按鈕相同外觀）；items 的第三個值 = 能不能選
+fn form_combo<T: PartialEq + Copy>(ui: &mut Ui, id: &str, width: f32, value: &mut T, items: &[(T, String, bool)]) -> bool {
+    let mut changed = false;
+    let text = items.iter().find(|(v, _, _)| v == value).map(|(_, t, _)| t.clone()).unwrap_or_default();
+    ui.scope(|ui| {
+        theme::field_style(ui);
+        egui::ComboBox::from_id_salt(id).selected_text(RichText::new(text).font(theme::font(13.0))).width(width).show_ui(ui, |ui| {
+            for (v, t, en) in items {
+                if ui.add_enabled(*en, egui::Button::selectable(value == v, RichText::new(t).font(theme::font(13.0)))).clicked() && value != v {
+                    *value = *v;
+                    changed = true;
+                }
+            }
+        });
+    });
+    changed
+}
+
 fn more_panel(app: &mut UiApp, ui: &mut Ui) {
     let p = theme::pal(ui);
-    // 最長錄影時間
-    ui.horizontal(|ui| {
+    ui.spacing_mut().item_spacing.y = 4.0;
+    // 錄影
+    form_section(ui, "錄影", |_| {});
+    form_row(ui, "最長錄影時間", |ui| {
         let custom = app.main.max_custom_open || !MAX_PRESETS.contains(&app.s.max_minutes);
         let mut sel: f64 = if custom { -1.0 } else { app.s.max_minutes };
-        let items = vec![(0.0, "不限".to_string()), (30.0, "30 分鐘".into()), (60.0, "1 小時".into()), (120.0, "2 小時".into()), (-1.0, "自訂…".into())];
-        if combo(ui, "maxPreset", "最長錄影時間", &mut sel, &items, true, 96.0) {
+        let items = [(0.0, "不限".to_string(), true), (30.0, "30 分鐘".into(), true), (60.0, "1 小時".into(), true), (120.0, "2 小時".into(), true), (-1.0, "自訂…".into(), true)];
+        if form_combo(ui, "maxPreset", if custom { 96.0 } else { FORM_CTRL_W }, &mut sel, &items) {
             app.main.max_custom_open = sel < 0.0;
             if sel >= 0.0 {
                 app.s.max_minutes = sel;
@@ -773,7 +837,7 @@ fn more_panel(app: &mut UiApp, ui: &mut Ui) {
             if !app.main.max_custom_open && app.main.max_text.is_empty() {
                 app.main.max_text = app.s.max_minutes.to_string();
             }
-            let r = ui.add(egui::TextEdit::singleline(&mut app.main.max_text).desired_width(56.0).hint_text("分鐘"));
+            let r = ui.add(egui::TextEdit::singleline(&mut app.main.max_text).desired_width(56.0).min_size(vec2(0.0, 30.0)).vertical_align(Align::Center).hint_text("分鐘"));
             ui.label(theme::muted(ui, "分鐘"));
             if r.changed() {
                 let v: f64 = app.main.max_text.trim().parse().unwrap_or(0.0);
@@ -782,30 +846,35 @@ fn more_panel(app: &mut UiApp, ui: &mut Ui) {
             }
         }
     });
-    let mut cd = app.s.countdown_sec;
-    ui.horizontal(|ui| {
-        let items: Vec<(u32, String)> = [(0, "不倒數".to_string()), (3, "3 秒".into()), (5, "5 秒".into()), (10, "10 秒".into())].to_vec();
-        if combo(ui, "countdown", "開始前倒數", &mut cd, &items, true, 96.0) {
+    form_row(ui, "開始前倒數", |ui| {
+        let mut cd = app.s.countdown_sec;
+        let items = [(0, "不倒數".to_string(), true), (3, "3 秒".into(), true), (5, "5 秒".into(), true), (10, "10 秒".into(), true)];
+        if form_combo(ui, "countdown", FORM_CTRL_W, &mut cd, &items) {
             app.s.countdown_sec = cd;
             app.save_settings();
         }
     });
-    let mut hide = app.s.hide_ui;
-    if ui.checkbox(&mut hide, "開始錄影時縮小這個視窗").on_hover_text("視窗不在錄影範圍內時不縮小").changed() {
-        app.s.hide_ui = hide;
-        app.save_settings();
-    }
-    ui.separator();
+    form_row(ui, "", |ui| {
+        let mut hide = app.s.hide_ui;
+        if ui.checkbox(&mut hide, "開始錄影時縮小這個視窗").on_hover_text("視窗不在錄影範圍內時不縮小").changed() {
+            app.s.hide_ui = hide;
+            app.save_settings();
+        }
+    });
+    form_divider(ui);
     // 快捷鍵（可自訂）
     hotkey_settings(app, ui);
-    ui.horizontal(|ui| {
+    form_divider(ui);
+    // 新版本
+    form_section(ui, "新版本", |_| {});
+    form_row(ui, "自動檢查", |ui| {
         let mut on = app.update.enabled;
-        if ui.checkbox(&mut on, "自動檢查新版本").changed() {
+        if ui.checkbox(&mut on, "啟動後與每 12 小時檢查").changed() {
             app.core.set_check_updates(on);
             app.update = actions::update_state(&app.core);
         }
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            if Btn::new("立即檢查").ghost().small().show(ui).clicked() {
+            if Btn::new("立即檢查").small().show(ui).clicked() {
                 let core = app.core.clone();
                 app.spawn(async move { actions::check_update(&core).await }, |app, r| match r {
                     Ok(u) => {
@@ -825,18 +894,19 @@ fn more_panel(app: &mut UiApp, ui: &mut Ui) {
         });
     });
     if let Some(e) = &app.update.error {
-        ui.label(RichText::new(format!("無法檢查新版本：{}", e.trim_start_matches("無法檢查新版本："))).color(p.warn).font(theme::font(12.0)));
+        form_hint(ui, format!("無法檢查新版本：{}", e.trim_start_matches("無法檢查新版本：")), p.warn);
     }
-    ui.separator();
-    ui.label(RichText::new("進階").font(theme::font_bold(12.5)).color(p.muted));
-    let mut method = app.s.method;
-    ui.horizontal(|ui| {
-        let items = vec![
-            (MethodPreference::Auto, "自動（建議）".to_string()),
-            (MethodPreference::Ddagrab, "ddagrab（Desktop Duplication）".into()),
-            (MethodPreference::Gdigrab, "gdigrab（GDI，相容性最高）".into()),
+    form_divider(ui);
+    // 進階
+    form_section(ui, "進階", |_| {});
+    form_row(ui, "擷取方式", |ui| {
+        let mut method = app.s.method;
+        let items = [
+            (MethodPreference::Auto, "自動（建議）".to_string(), true),
+            (MethodPreference::Ddagrab, "ddagrab（Desktop Duplication）".into(), true),
+            (MethodPreference::Gdigrab, "gdigrab（GDI，相容性最高）".into(), true),
         ];
-        if combo(ui, "method", "擷取方式", &mut method, &items, true, 210.0) {
+        if form_combo(ui, "method", FORM_CTRL_W, &mut method, &items) {
             app.s.method = method;
             app.save_settings();
         }
@@ -853,25 +923,17 @@ fn more_panel(app: &mut UiApp, ui: &mut Ui) {
         Some(h) if !h.is_empty() => format!("GPU（{}）", h.join("、")),
         _ => "GPU（這台電腦沒有可用的）".into(),
     };
-    ui.horizontal(|ui| {
-        ui.label(theme::muted(ui, "編碼器"));
-        let text = match app.s.encoder {
-            EncoderPreference::Auto => "自動（建議）".to_string(),
-            EncoderPreference::Cpu => "CPU（libx264，畫質最穩）".into(),
-            EncoderPreference::Gpu => gpu_label.clone(),
-        };
-        egui::ComboBox::from_id_salt("encoder").selected_text(text).width(210.0).show_ui(ui, |ui| {
-            for (v, t, en) in [
-                (EncoderPreference::Auto, "自動（建議）".to_string(), true),
-                (EncoderPreference::Cpu, "CPU（libx264，畫質最穩）".into(), true),
-                (EncoderPreference::Gpu, gpu_label.clone(), hw.as_ref().is_some_and(|h| !h.is_empty())),
-            ] {
-                if ui.add_enabled(en, egui::Button::selectable(app.s.encoder == v, t)).clicked() {
-                    app.s.encoder = v;
-                    app.save_settings();
-                }
-            }
-        });
+    form_row(ui, "編碼器", |ui| {
+        let mut enc = app.s.encoder;
+        let items = [
+            (EncoderPreference::Auto, "自動（建議）".to_string(), true),
+            (EncoderPreference::Cpu, "CPU（libx264，畫質最穩）".into(), true),
+            (EncoderPreference::Gpu, gpu_label.clone(), hw.as_ref().is_some_and(|h| !h.is_empty())),
+        ];
+        if form_combo(ui, "encoder", FORM_CTRL_W, &mut enc, &items) {
+            app.s.encoder = enc;
+            app.save_settings();
+        }
     });
     let hint = if app.s.encoder != EncoderPreference::Auto {
         String::new()
@@ -888,13 +950,16 @@ fn more_panel(app: &mut UiApp, ui: &mut Ui) {
         }
     };
     if !hint.is_empty() {
-        ui.add(egui::Label::new(theme::muted(ui, hint)).wrap());
+        form_hint(ui, hint, p.muted);
     }
-    if app.s.encoder == EncoderPreference::Auto && ff.prefer_gpu == Some(true) && hw.as_ref().is_some_and(|h| !h.is_empty()) && Btn::new("重設：恢復平常用 CPU 編碼").ghost().small().show(ui).clicked()
-    {
-        app.core.reset_learned_gpu();
-        app.env.ffmpeg.prefer_gpu = Some(false);
-        app.toast("已重設，之後的錄影平常會用 CPU 編碼", false);
+    if app.s.encoder == EncoderPreference::Auto && ff.prefer_gpu == Some(true) && hw.as_ref().is_some_and(|h| !h.is_empty()) {
+        let mut reset = false;
+        form_row(ui, "", |ui| reset = Btn::new("重設：恢復平常用 CPU 編碼").small().show(ui).clicked());
+        if reset {
+            app.core.reset_learned_gpu();
+            app.env.ffmpeg.prefer_gpu = Some(false);
+            app.toast("已重設，之後的錄影平常會用 CPU 編碼", false);
+        }
     }
 }
 
@@ -1118,14 +1183,16 @@ fn rec_panel(app: &mut UiApp, ui: &mut Ui) {
 fn hotkey_settings(app: &mut UiApp, ui: &mut Ui) {
     let p = theme::pal(ui);
     let Some(hk) = app.env.hotkeys else {
-        ui.label(theme::muted(ui, "全域快捷鍵需要系統匣常駐時才能使用"));
+        form_section(ui, "快捷鍵", |_| {});
+        form_hint(ui, "全域快捷鍵需要系統匣常駐時才能使用", p.muted);
         return;
     };
     app.main.key_capture_pass = ui.ctx().cumulative_pass_nr();
     let ok = [hk.record, hk.pause, hk.shot, hk.snip];
     ui.horizontal(|ui| {
-        ui.label(RichText::new("快捷鍵").font(theme::font_bold(13.0)));
-        ui.label(theme::muted(ui, "點按鍵可更換"));
+        ui.set_height(22.0);
+        ui.label(RichText::new("快捷鍵").font(theme::font_bold(13.0)).color(p.text));
+        ui.label(RichText::new("點按鍵後按下新的組合").font(theme::font(12.0)).color(p.muted));
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             if app.keys != Default::default() && Btn::new("還原預設").ghost().small().show(ui).clicked() {
                 app.main.key_capture = None;
@@ -1134,18 +1201,26 @@ fn hotkey_settings(app: &mut UiApp, ui: &mut Ui) {
         });
     });
     for i in 0..4 {
-        ui.horizontal(|ui| {
+        form_row(ui, HOTKEY_NAMES[i], |ui| {
             let capturing = app.main.key_capture == Some(i);
             let label = app.keys.label(i);
             let text = if capturing {
                 "請按下組合鍵…".to_string()
             } else if label.is_empty() {
                 "停用".to_string()
+            } else if !ok[i] {
+                format!("{label}・被占用")
             } else {
                 label.clone()
             };
-            let tip = if capturing { "按 Esc 取消" } else { "點一下後按下新的組合鍵（要包含 Ctrl 或 Alt）" };
-            if Btn::new(text).small().selected(capturing).min_width(150.0).tooltip(tip).show(ui).clicked() {
+            let tip = if capturing {
+                "按 Esc 取消"
+            } else if !ok[i] && !label.is_empty() {
+                "已被其他程式使用，請點一下換一組"
+            } else {
+                "點一下後按下新的組合鍵（要包含 Ctrl 或 Alt）"
+            };
+            if Btn::new(text).small().height(30.0).selected(capturing).min_width(FORM_CTRL_W).tooltip(tip).show(ui).clicked() {
                 if capturing {
                     stop_capture(app);
                 } else {
@@ -1155,11 +1230,7 @@ fn hotkey_settings(app: &mut UiApp, ui: &mut Ui) {
                     app.core.apply_hotkeys(&screenrecorder_core::types::Hotkeys { record: None, pause: None, shot: None, snip: None });
                 }
             }
-            ui.label(HOTKEY_NAMES[i]);
             if !label.is_empty() && !capturing {
-                if !ok[i] {
-                    ui.label(RichText::new("被占用").color(p.warn).font(theme::font(12.5))).on_hover_text("已被其他程式使用，請換一組");
-                }
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if Btn::icon_only(Icon::Close).ghost().small().tooltip("停用這個快捷鍵").show(ui).clicked() {
                         let mut k = app.keys;
@@ -1170,8 +1241,8 @@ fn hotkey_settings(app: &mut UiApp, ui: &mut Ui) {
             }
         });
     }
-    if let Some(m) = &app.main.key_msg {
-        ui.label(RichText::new(m).color(p.warn).font(theme::font(12.5)));
+    if let Some(m) = app.main.key_msg.clone() {
+        form_hint(ui, m, p.warn);
     }
     let Some(i) = app.main.key_capture else { return };
     // 等使用者按下組合鍵
