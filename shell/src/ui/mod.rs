@@ -89,8 +89,6 @@ pub struct UiApp {
     pub recent_page: usize,
     recent_seq: u64,
     pub recent_per_page: usize,
-    /// 截圖張數（主畫面「截圖」按鈕上顯示）
-    pub shot_total: usize,
     /// 已知的錄影（最近錄影、全部錄影），操作按鈕用完整資訊
     pub known: HashMap<String, LibraryEntry>,
 
@@ -152,7 +150,6 @@ impl UiApp {
             recent_page: 1,
             recent_seq: 0,
             recent_per_page: 4,
-            shot_total: 0,
             known: HashMap::new(),
             export_dlg: None,
             library: None,
@@ -290,7 +287,6 @@ impl UiApp {
             self.last_shot_seq = shot.seq;
             let name = dialogs::file_name(&shot.path);
             self.toast(if shot.copied { format!("已截圖並複製到剪貼簿：{name}") } else { format!("已截圖：{name}") }, false);
-            self.load_recent();
             if let Some(d) = &mut self.library {
                 d.dirty = true;
             }
@@ -364,13 +360,10 @@ impl UiApp {
         let core = self.core.clone();
         let dir = self.s.out_dir(&self.env);
         let query = screenrecorder_core::types::LibraryQuery { page: Some(self.recent_page as f64), page_size: Some(self.recent_per_page as f64), ..Default::default() };
-        // 最近錄影只列影片；截圖另外算張數
-        let shots = screenrecorder_core::types::LibraryQuery { filter: screenrecorder_core::types::LibraryFilter::Shot, page_size: Some(1.0), ..Default::default() };
-        self.spawn(async move { (actions::library(&core, &dir, &query).await, actions::library(&core, &dir, &shots).await.total) }, move |app, (page, shot_total)| {
+        self.spawn(async move { actions::library(&core, &dir, &query).await }, move |app, page| {
             if seq != app.recent_seq {
                 return; // 較舊的請求晚回來：丟掉
             }
-            app.shot_total = shot_total;
             app.recent_page = page.page.max(1);
             for e in &page.items {
                 app.known.insert(e.media.path.clone(), e.clone());

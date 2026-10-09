@@ -1220,10 +1220,8 @@ fn recent_strip(app: &mut UiApp, ui: &mut Ui) {
             }
             // 一頁放幾張依寬度決定
             // 右邊「全部錄影」「全部截圖」：一樣寬，圖示與文字靠左對齊
-            let total = app.recent.as_ref().map(|r| r.total).unwrap_or(0);
-            let shots = app.shot_total;
-            let rec_btn = Btn::new(if total > 0 { format!("全部錄影（{total}）") } else { "全部錄影".into() }).icon(Icon::List).small().left();
-            let shot_btn = Btn::new(if shots > 0 { format!("全部截圖（{shots}）") } else { "全部截圖".into() }).icon(Icon::Camera).small().left();
+            let rec_btn = Btn::new("全部錄影").icon(Icon::List).small().left();
+            let shot_btn = Btn::new("全部截圖").icon(Icon::Camera).small().left();
             let btn_w = rec_btn.width(ui).max(shot_btn.width(ui)).max(LIB_BTN_W);
             let lib_w = btn_w + 8.0;
             let cards_w = ui.available_width() - lib_w - 44.0;
