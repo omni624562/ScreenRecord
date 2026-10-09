@@ -208,7 +208,7 @@ impl TrayController {
         }
     }
 
-    /// 改錄音設定時同步更新網頁的設定（網頁看到 rev 變了會重新讀取）
+    /// 改錄音設定時同步更新操作視窗的設定（看到 rev 變了會重新讀取）
     fn update_audio(&self, system: bool) {
         let mut cfg = self.config();
         let on = if system {

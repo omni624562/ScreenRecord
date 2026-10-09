@@ -1,5 +1,5 @@
-//! 介面（TypeScript）與後端共用的計算：以 src/shared/vectors.json（TypeScript 算出的結果）為準，Rust 版必須算出一樣的值。
-//! 資料的產生方式見 src/shared/vectors.ts。
+//! 檔名、倍率、剪輯等計算的回歸測試：vectors.json 是 2.x 版（TypeScript 介面）算出的結果，
+//! 3.0 改用 Rust 介面後仍必須算出一樣的值（舊版的設定、檔名、剪輯專案才能沿用）。
 
 use screenrecorder_core::edit::{cut_file_name, keep_ranges, normalize_crop, normalize_ranges, total_length, CropInput, EditSpec, Range};
 use screenrecorder_core::format::{
@@ -9,7 +9,7 @@ use screenrecorder_core::format::{
 use screenrecorder_core::types::ExportFormat;
 use serde_json::{json, Value};
 
-const VECTORS: &str = include_str!("../../src/shared/vectors.json");
+const VECTORS: &str = include_str!("vectors.json");
 
 fn f(v: &Value) -> f64 {
     v.as_f64().unwrap()

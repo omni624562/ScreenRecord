@@ -1,8 +1,8 @@
 //! 設定存檔：%LOCALAPPDATA%\ScreenRecorder\settings.json（與 1.x 版的檔案格式相同，升級後沿用原本的設定）
-//! - ui：網頁介面的完整設定
+//! - ui：操作視窗的完整設定
 //! - config：最後一次的錄影設定，系統匣選單「開始錄影」直接使用
 //!
-//! rev 每次變更 +1（不存檔），網頁看到 rev 變了（例如從系統匣切換錄音）就重新讀取。
+//! rev 每次變更 +1（不存檔），操作視窗看到 rev 變了（例如從系統匣切換錄音）就重新讀取。
 //! ui 與 config 以原始 JSON 保存：不認得的欄位也會原樣保留。
 
 use crate::types::RecordConfig;

@@ -1,8 +1,7 @@
 //! 與 Windows 桌面整合：
-//! 開機自動啟動、用檔案總管開啟檔案 / 網址、找可用 app 模式開啟的瀏覽器（操作視窗無法使用時的備案）。
+//! 開機自動啟動、用檔案總管開啟檔案 / 網址。
 
 use crate::process::run;
-use std::path::PathBuf;
 use std::time::Duration;
 
 const RUN_KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
@@ -53,40 +52,4 @@ pub fn open_with_explorer(target: &str, select: bool) {
     {
         let _ = arg;
     }
-}
-
-/// 依序尋找可用 app 模式開啟的瀏覽器：Chrome → Edge
-pub fn find_app_browser() -> Option<PathBuf> {
-    const BROWSERS: [[&str; 4]; 2] = [["Google", "Chrome", "Application", "chrome.exe"], ["Microsoft", "Edge", "Application", "msedge.exe"]];
-    let bases: Vec<PathBuf> = ["ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA"].iter().filter_map(std::env::var_os).map(PathBuf::from).collect();
-    for parts in BROWSERS {
-        for b in &bases {
-            let p = parts.iter().fold(b.clone(), |p, s| p.join(s));
-            if p.exists() {
-                return Some(p);
-            }
-        }
-    }
-    None
-}
-
-/// 操作視窗（WebView2）無法使用時的備案：Chrome / Edge 的 app 模式（獨立設定檔），都沒有才交給預設瀏覽器
-pub fn open_in_browser(url: &str) {
-    if let Some(browser) = find_app_browser() {
-        let profile = crate::paths::data_dir().join("browser");
-        let args = vec![
-            format!("--app={url}"),
-            "--window-size=1280,900".into(),
-            format!("--user-data-dir={}", profile.display()),
-            "--no-first-run".into(),
-            "--no-default-browser-check".into(),
-            "--disable-extensions".into(),
-            "--disable-sync".into(),
-            "--disable-features=Translate".into(),
-        ];
-        if crate::job::spawn_detached(&browser.to_string_lossy(), &args).is_ok() {
-            return;
-        }
-    }
-    open_with_explorer(url, false);
 }

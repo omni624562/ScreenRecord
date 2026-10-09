@@ -36,7 +36,7 @@ pub fn ensure_dpi_aware() {
     use windows::Win32::UI::HiDpi::{SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2};
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| unsafe {
-        // 已經設定過（例如 Tauri 的 manifest）時會失敗，沒關係
+        // 已經設定過（例如視窗程式庫或 manifest）時會失敗，沒關係
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     });
 }

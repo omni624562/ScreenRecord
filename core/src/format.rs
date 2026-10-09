@@ -1,4 +1,4 @@
-//! 計算與格式化（對應 src/shared/format.ts；介面那邊用同樣的規則，兩邊結果必須一致）。
+//! 計算與格式化：檔名、倍率、長度、大小（結果與 2.x 版相同，見 tests/vectors.json）。
 
 use crate::types::ExportFormat;
 use regex::Regex;

@@ -1,7 +1,7 @@
 //! 系統匣圖示與全域快捷鍵（Windows）。
 //!
 //! TrackPopupMenu 在選單開著的期間會卡住所在的執行緒，所以圖示、選單與快捷鍵都放在獨立的執行緒，
-//! 網頁伺服器與錄影不會跟著停住。這裡只負責畫圖示與選單，使用者選了什麼就交給 TrayController 處理。
+//! 操作視窗與錄影不會跟著停住。這裡只負責畫圖示與選單，使用者選了什麼就交給 TrayController 處理。
 
 use crate::icon::{icon_resource, IconState};
 use crate::tray::{TrayCommand, TrayState, TrayUi};

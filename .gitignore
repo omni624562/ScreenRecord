@@ -1,10 +1,6 @@
-node_modules/
 dist/
 *.log
-assets/
-*.bun-build
 # 開發模式下自動下載的 FFmpeg 會放在專案根目錄
 ffmpeg.exe
-# Rust（操作視窗程式）的建置結果
+# Rust 的建置結果
 target/
-shell/gen/

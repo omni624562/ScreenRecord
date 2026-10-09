@@ -18,7 +18,7 @@ fn home() -> PathBuf {
     std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."))
 }
 
-/// 程式資料：%LOCALAPPDATA%\ScreenRecorder（設定、記錄檔、縮圖、自動下載的 FFmpeg、WebView2 資料）
+/// 程式資料：%LOCALAPPDATA%\ScreenRecorder（設定、記錄檔、縮圖、剪輯專案、自動下載的 FFmpeg）
 pub fn data_dir() -> PathBuf {
     if let Some(dir) = std::env::var_os("SCREENRECORDER_DATA_DIR") {
         return PathBuf::from(dir); // 測試用
