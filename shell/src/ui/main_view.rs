@@ -948,15 +948,19 @@ fn rec_panel(app: &mut UiApp, ui: &mut Ui) {
                 if parts.is_empty() { "不錄聲音".into() } else { parts.join(" + ") },
             )
         };
-        egui::Grid::new("stats").num_columns(2).spacing(vec2(14.0, 6.0)).show(ui, |ui| {
-            for (k, v) in
-                [("影片長度", video_clock(r.video_sec)), ("檔案大小", if active || r.bytes > 0 { format_bytes(r.bytes) } else { "—".into() }), ("輸出", out), ("擷取 / 編碼", method), ("聲音", audio)]
-            {
-                ui.label(theme::muted(ui, k));
-                ui.label(RichText::new(v).font(theme::font(13.0)));
-                ui.end_row();
-            }
-        });
+        // 名稱一欄固定寬度；值太長（例如音訊裝置名稱）時截斷，不撐寬面板（滑鼠移上去看完整內容）
+        let gap_y = ui.spacing().item_spacing.y;
+        ui.spacing_mut().item_spacing.y = 6.0;
+        let key_w = ["影片長度", "檔案大小", "輸出", "擷取 / 編碼", "聲音"].iter().map(|k| ui.painter().layout_no_wrap(k.to_string(), theme::font(13.0), p.muted).size().x).fold(0.0, f32::max);
+        for (k, v) in [("影片長度", video_clock(r.video_sec)), ("檔案大小", if active || r.bytes > 0 { format_bytes(r.bytes) } else { "—".into() }), ("輸出", out), ("擷取 / 編碼", method), ("聲音", audio)] {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 14.0;
+                let (cell, _) = ui.allocate_exact_size(vec2(key_w, 18.0), Sense::hover());
+                ui.painter().text(cell.left_center(), egui::Align2::LEFT_CENTER, k, theme::font(13.0), p.muted);
+                ui.add(egui::Label::new(RichText::new(&v).font(theme::font(13.0))).truncate()).on_hover_text(&v);
+            });
+        }
+        ui.spacing_mut().item_spacing.y = gap_y;
         ui.add_space(10.0);
         // 控制按鈕
         ui.horizontal(|ui| {
