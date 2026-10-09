@@ -1,12 +1,12 @@
 //! 轉檔工作：製作加速版、GIF、剪輯。同一時間只跑一個，避免搶 CPU；原檔不變。
 
-use crate::args::{cut_args, export_args, gif_args, EncoderSpec, GifOptions};
-use crate::edit::{cut_file_name, keep_ranges, normalize_crop, total_length, EditSpec};
+use crate::args::{cut_args, export_args, gif_args, EncoderSpec, GifOptions, OverlayInput};
+use crate::edit::{cut_file_name, keep_ranges, normalize_crop, total_length, EditSpec, Overlay, OverlayKind};
 use crate::error::{Error, Result};
 use crate::format::{export_file_name, js_round, num, speed_label, strip_mp4, FPS_MAX, SPEED_MAX, SPEED_MIN};
 use crate::library::MediaCache;
 use crate::process::{command, last_lines, read_lines};
-use crate::types::{ExportFormat, ExportKind, ExportState, ExportStatus, MediaInfo};
+use crate::types::{ExportFormat, ExportKind, ExportState, ExportStatus, MediaInfo, Rect};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
@@ -125,8 +125,18 @@ impl Exporter {
     }
 
     /// 剪輯：剪頭尾、刪除中間片段、裁切畫面，另存為 *_cut.mp4
-    pub async fn start_cut(&self, ctx: &ExportCtx, source: &str, spec: &EditSpec) -> Result<ExportStatus> {
+    /// replace：取代這個剪輯版（先寫到暫存檔，成功後才換掉，失敗或取消時原檔不受影響）；
+    /// on_saved：完成後以最終的檔案路徑呼叫（儲存剪輯專案）
+    pub async fn start_cut(&self, ctx: &ExportCtx, source: &str, spec: &EditSpec, replace: Option<&str>, on_saved: Option<OnSaved>) -> Result<ExportStatus> {
         let _g = self.begin()?;
+        if let Some(r) = replace {
+            if !Path::new(r).is_file() || !crate::library::is_cut_name(&file_name(r)) {
+                return Err(Error::config("找不到要取代的剪輯版"));
+            }
+            if r.to_lowercase() == source.to_lowercase() {
+                return Err(Error::config("不能用剪輯版取代自己"));
+            }
+        }
         let (ffmpeg, enc, info, fps) = prepare(ctx, source).await?;
         let duration = info.duration_sec.unwrap_or(0.0);
         let keep = keep_ranges(duration, spec);
@@ -141,14 +151,36 @@ impl Exporter {
             }
             None => None,
         };
-        let unchanged = keep.len() == 1 && keep[0].0 == 0.0 && keep[0].1 >= duration - 0.05 && crop.is_none();
+        let unchanged = keep.len() == 1 && keep[0].0 == 0.0 && keep[0].1 >= duration - 0.05 && crop.is_none() && spec.overlays.is_empty();
         if unchanged {
-            return Err(Error::config("沒有任何剪輯或裁切"));
+            return Err(Error::config("沒有任何剪輯、裁切或標註"));
         }
-        let output = crate::paths::unique_path(&parent(source), &strip_mp4(&cut_file_name(&file_name(source))), ".mp4");
-        let args = cut_args(source, &output.display().to_string(), &keep, crop, fps, &enc, info.has_audio == Some(true))?;
-        let note = format!("保留 {} 段{}", keep.len(), crop.map(|c| format!("，裁切 {}×{}", c.width, c.height)).unwrap_or_default());
-        self.run(ExportKind::Cut, &ffmpeg, args, source, &output, 1.0, length, &note)
+        let (overlays, temp) = if spec.overlays.is_empty() {
+            (Vec::new(), None)
+        } else {
+            let (Some(w), Some(h)) = (info.width, info.height) else { return Err(Error::config("無法讀取影片尺寸，不能加上標註")) };
+            let dir = std::env::temp_dir().join(format!("ScreenRecorder-overlays-{}-{}", std::process::id(), crate::paths::now_ms()));
+            match write_overlays(&spec.overlays, w as i32, h as i32, duration, &dir) {
+                Ok(list) => (list, Some(dir)),
+                Err(e) => {
+                    let _ = std::fs::remove_dir_all(&dir);
+                    return Err(e);
+                }
+            }
+        };
+        let output = match replace {
+            Some(r) => crate::paths::unique_path(&parent(r), &format!("~{}.editing", strip_mp4(&file_name(r))), ".mp4"),
+            None => crate::paths::unique_path(&parent(source), &strip_mp4(&cut_file_name(&file_name(source))), ".mp4"),
+        };
+        let args = cut_args(source, &output.display().to_string(), &keep, crop, fps, &enc, info.has_audio == Some(true), &overlays)?;
+        let note = format!(
+            "保留 {} 段{}{}",
+            keep.len(),
+            crop.map(|c| format!("，裁切 {}×{}", c.width, c.height)).unwrap_or_default(),
+            if overlays.is_empty() { String::new() } else { format!("，標註 {} 個", overlays.len()) }
+        );
+        let finish = Finish { cleanup: temp, replace: replace.map(PathBuf::from), on_saved };
+        self.run_with_cleanup(ExportKind::Cut, &ffmpeg, args, source, &output, 1.0, length, &note, finish)
     }
 
     pub fn cancel(&self) -> Result<()> {
@@ -187,9 +219,29 @@ impl Exporter {
 
     #[allow(clippy::too_many_arguments)]
     fn run(&self, kind: ExportKind, ffmpeg: &Path, args: Vec<String>, source: &str, output: &Path, speed: f64, expected_sec: f64, note: &str) -> Result<ExportStatus> {
-        let mut child = command(ffmpeg).args(&args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().map_err(|e| Error::config(format!("無法執行 FFmpeg：{e}")))?;
+        self.run_with_cleanup(kind, ffmpeg, args, source, output, speed, expected_sec, note, Finish::default())
+    }
+
+    /// output：FFmpeg 寫入的檔案；finish：結束後的處理（見 Finish）
+    #[allow(clippy::too_many_arguments)]
+    fn run_with_cleanup(&self, kind: ExportKind, ffmpeg: &Path, args: Vec<String>, source: &str, output: &Path, speed: f64, expected_sec: f64, note: &str, finish: Finish) -> Result<ExportStatus> {
+        let Finish { cleanup, replace, on_saved } = finish;
+        let remove_temp = |dir: &Option<PathBuf>| {
+            if let Some(d) = dir {
+                let _ = std::fs::remove_dir_all(d);
+            }
+        };
+        let mut child = match command(ffmpeg).args(&args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn() {
+            Ok(c) => c,
+            Err(e) => {
+                remove_temp(&cleanup);
+                return Err(Error::config(format!("無法執行 FFmpeg：{e}")));
+            }
+        };
         let (cancel_tx, mut cancel_rx) = oneshot::channel();
-        let output_s = output.display().to_string();
+        // 狀態顯示最終的檔名（取代時是剪輯版本身），實際寫入的是 output
+        let write_path = output.to_path_buf();
+        let output_s = replace.as_ref().unwrap_or(&write_path).display().to_string();
         let id = {
             let mut s = self.state.lock().unwrap();
             s.next_id += 1;
@@ -278,7 +330,8 @@ impl Exporter {
                 let Some(j) = s.job.as_mut().filter(|j| j.status.id == id) else { return };
                 j.ended = Some(Instant::now());
                 j.cancel = None;
-                let out = Path::new(&j.status.output).to_path_buf();
+                let out = write_path.clone();
+                let mut saved = None;
                 if j.canceled {
                     j.status.state = ExportState::Canceled;
                     j.status.message = Some(format!("已取消{label}"));
@@ -289,7 +342,24 @@ impl Exporter {
                     if let Ok(m) = std::fs::metadata(&out) {
                         j.status.bytes = Some(m.len());
                     }
-                    j.status.message = Some(format!("已儲存 {}", j.status.output));
+                    let mut fin = out.clone();
+                    let mut note = String::new();
+                    if let Some(target) = &replace {
+                        match std::fs::rename(&out, target) {
+                            Ok(()) => fin = target.clone(),
+                            Err(_) => {
+                                // 剪輯版正在被其他程式使用：新版本改用新檔名保存，不丟掉
+                                let alt = crate::paths::unique_path(&parent(&target.display().to_string()), &strip_mp4(&file_name(&target.display().to_string())), ".mp4");
+                                if std::fs::rename(&out, &alt).is_ok() {
+                                    fin = alt;
+                                }
+                                note = format!("（無法取代 {}，可能正在播放）", file_name(&target.display().to_string()));
+                            }
+                        }
+                    }
+                    j.status.output = fin.display().to_string();
+                    j.status.message = Some(format!("已儲存 {}{note}", j.status.output));
+                    saved = Some(j.status.output.clone());
                 } else {
                     j.status.state = ExportState::Error;
                     let last = last_lines(&j.stderr, 3);
@@ -297,15 +367,106 @@ impl Exporter {
                     j.status.message = Some(format!("{label}失敗：{why}"));
                     let _ = std::fs::remove_file(&out);
                 }
-                j.status.message.clone().unwrap_or_default()
+                (j.status.message.clone().unwrap_or_default(), saved)
             };
+            let (message, saved) = message;
+            if let (Some(path), Some(f)) = (saved, on_saved) {
+                f(&path);
+            }
             crate::info!("[{label}] {message}");
+            if let Some(d) = &cleanup {
+                let _ = std::fs::remove_dir_all(d);
+            }
             if let Some(tx) = finished.lock().unwrap().as_ref() {
                 tx.send_modify(|n| *n += 1);
             }
         });
         Ok(self.status().expect("剛建立的工作"))
     }
+}
+
+/// 剪輯完成後的回呼（參數：最終的檔案路徑）
+pub type OnSaved = Box<dyn FnOnce(&str) + Send + 'static>;
+
+/// 工作結束後的處理
+#[derive(Default)]
+struct Finish {
+    /// 結束（完成、失敗、取消）後刪除的暫存資料夾（標註圖檔）
+    cleanup: Option<PathBuf>,
+    /// 完成後用寫好的檔案取代這個檔案
+    replace: Option<PathBuf>,
+    on_saved: Option<OnSaved>,
+}
+
+/// 標註最多幾個（避免濾鏡圖過大）
+const MAX_OVERLAYS: usize = 100;
+/// 單一標註圖檔的上限（base64 解碼後）
+const MAX_OVERLAY_BYTES: usize = 40 * 1024 * 1024;
+
+/// 把介面送來的標註換算成 FFmpeg 的輸入：PNG 寫進 dir，座標限制在畫面內，時間限制在影片長度內
+fn write_overlays(list: &[Overlay], vw: i32, vh: i32, duration: f64, dir: &Path) -> Result<Vec<OverlayInput>> {
+    if list.len() > MAX_OVERLAYS {
+        return Err(Error::config(format!("標註最多 {MAX_OVERLAYS} 個")));
+    }
+    std::fs::create_dir_all(dir)?;
+    let mut out = Vec::new();
+    for (i, o) in list.iter().enumerate() {
+        let nums = [o.x, o.y, o.w, o.h, o.start, o.end];
+        if nums.iter().any(|v| !v.is_finite()) {
+            return Err(Error::config("標註格式錯誤"));
+        }
+        let start = o.start.clamp(0.0, duration);
+        let end = o.end.clamp(0.0, duration);
+        if end - start < 0.01 {
+            continue; // 不會出現的標註
+        }
+        match o.kind {
+            OverlayKind::Image => {
+                let bytes = decode_png(o.png.as_deref().ok_or_else(|| Error::config("標註缺少圖片"))?)?;
+                let path = dir.join(format!("overlay_{i:03}.png"));
+                std::fs::write(&path, bytes)?;
+                let x = (o.x.round() as i32).clamp(-vw, vw);
+                let y = (o.y.round() as i32).clamp(-vh, vh);
+                out.push(OverlayInput::Image { path: path.display().to_string(), x, y, start, end });
+            }
+            OverlayKind::Blur | OverlayKind::Mosaic => {
+                // 限制在畫面內、取偶數（4:2:0 的裁切需要），太小的略過
+                let x0 = (o.x.max(0.0) as i32).min(vw) / 2 * 2;
+                let y0 = (o.y.max(0.0) as i32).min(vh) / 2 * 2;
+                let x1 = ((o.x + o.w).min(vw as f64) as i32).max(x0);
+                let y1 = ((o.y + o.h).min(vh as f64) as i32).max(y0);
+                let (w, h) = ((x1 - x0) / 2 * 2, (y1 - y0) / 2 * 2);
+                if w < 8 || h < 8 {
+                    continue;
+                }
+                // 形狀遮罩（圓角、橢圓）：FFmpeg 會縮放成範圍的大小
+                let mask = match o.mask.as_deref() {
+                    Some(m) => {
+                        let path = dir.join(format!("mask_{i:03}.png"));
+                        std::fs::write(&path, decode_png(m)?)?;
+                        Some(path.display().to_string())
+                    }
+                    None => None,
+                };
+                out.push(OverlayInput::Blur { rect: Rect { x: x0, y: y0, width: w, height: h }, start, end, mosaic: o.kind == OverlayKind::Mosaic, mask, invert: o.invert, frame: (vw, vh) });
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// 介面送來的 PNG（可含 data URL 前綴）
+fn decode_png(data: &str) -> Result<Vec<u8>> {
+    use base64::Engine;
+    let data = data.strip_prefix("data:image/png;base64,").unwrap_or(data);
+    if data.len() > MAX_OVERLAY_BYTES / 3 * 4 + 4 {
+        return Err(Error::config("標註圖片太大"));
+    }
+    let bytes = base64::engine::general_purpose::STANDARD.decode(data).map_err(|_| Error::config("標註圖片格式錯誤"))?;
+    if !bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        return Err(Error::config("標註圖片格式錯誤"));
+    }
+    Ok(bytes)
 }
 
 fn snapshot(j: &Job) -> ExportStatus {
@@ -419,15 +580,92 @@ echo data > "$last"
         let ex = Exporter::new();
         let c = ctx(fake_ffmpeg(dir.path(), "0"));
         let s = src.display().to_string();
-        let unchanged = EditSpec { start: 0.0, end: 10.0, removed: vec![], crop: None };
-        assert!(ex.start_cut(&c, &s, &unchanged).await.unwrap_err().message().contains("沒有任何剪輯"));
-        let too_short = EditSpec { start: 1.0, end: 1.05, removed: vec![], crop: None };
-        assert!(ex.start_cut(&c, &s, &too_short).await.unwrap_err().message().contains("太短"));
-        let ok = ex.start_cut(&c, &s, &EditSpec { start: 1.0, end: 9.0, removed: vec![], crop: None }).await.unwrap();
+        let unchanged = EditSpec { start: 0.0, end: 10.0, removed: vec![], crop: None, overlays: vec![] };
+        assert!(ex.start_cut(&c, &s, &unchanged, None, None).await.unwrap_err().message().contains("沒有任何剪輯"));
+        let too_short = EditSpec { start: 1.0, end: 1.05, removed: vec![], crop: None, overlays: vec![] };
+        assert!(ex.start_cut(&c, &s, &too_short, None, None).await.unwrap_err().message().contains("太短"));
+        let ok = ex.start_cut(&c, &s, &EditSpec { start: 1.0, end: 9.0, removed: vec![], crop: None, overlays: vec![] }, None, None).await.unwrap();
         assert!(ok.output.ends_with("Rec_C_cut.mp4"));
         ex.wait().await;
         assert_eq!(ex.status().unwrap().state, ExportState::Done);
         assert!(!ex.running());
+
+        // 取代剪輯版：寫到暫存檔，完成後換掉 Rec_C_cut.mp4（不另存 _2），並回報最終路徑
+        let cut = dir.path().join("Rec_C_cut.mp4");
+        let cut_s = cut.display().to_string();
+        std::fs::write(&cut, "old").unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let spec = EditSpec { start: 2.0, end: 8.0, removed: vec![], crop: None, overlays: vec![] };
+        let st = ex.start_cut(&c, &s, &spec, Some(&cut_s), Some(Box::new(move |p: &str| tx.send(p.to_string()).unwrap()))).await.unwrap();
+        assert_eq!(st.output, cut_s);
+        ex.wait().await;
+        assert_eq!(ex.status().unwrap().output, cut_s);
+        assert_eq!(rx.recv().unwrap(), cut_s);
+        assert_eq!(std::fs::read_to_string(&cut).unwrap().trim(), "data");
+        let names: Vec<String> = std::fs::read_dir(dir.path()).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+        assert!(!names.iter().any(|n| n.starts_with('~') || n.contains("_cut_2")), "{names:?}");
+        // 只能取代剪輯版、不能取代原片自己
+        assert!(ex.start_cut(&c, &s, &spec, Some(&s), None).await.unwrap_err().message().contains("找不到要取代"));
+
         assert!(ex.start(&ExportCtx { ffmpeg: None, ..c }, &s, 4.0, true, 0.0).await.unwrap_err().message().contains("無法使用"));
+    }
+}
+
+#[cfg(test)]
+mod overlay_tests {
+    use super::*;
+    use base64::Engine;
+
+    #[allow(clippy::too_many_arguments)]
+    fn ov(kind: OverlayKind, x: f64, y: f64, w: f64, h: f64, start: f64, end: f64, png: Option<String>) -> Overlay {
+        Overlay { kind, x, y, w, h, start, end, png, mask: None, invert: false }
+    }
+
+    #[test]
+    fn overlays_are_written_and_clamped() {
+        let dir = tempfile::tempdir().unwrap();
+        let png = b"\x89PNG\r\n\x1a\nrest".to_vec();
+        let b64 = format!("data:image/png;base64,{}", base64::engine::general_purpose::STANDARD.encode(&png));
+        let b64_mask = b64.clone();
+        let list = vec![
+            ov(OverlayKind::Image, 10.4, -5.0, 100.0, 40.0, 1.0, 3.0, Some(b64)),
+            // 超出畫面：裁到畫面內並取偶數
+            ov(OverlayKind::Blur, 1801.0, 1001.0, 500.0, 500.0, -1.0, 99.0, None),
+            // 太小：略過
+            ov(OverlayKind::Mosaic, 10.0, 10.0, 6.0, 6.0, 0.0, 5.0, None),
+            // 時間不在影片內：略過
+            ov(OverlayKind::Blur, 0.0, 0.0, 100.0, 100.0, 20.0, 30.0, None),
+            // 橢圓、範圍外馬賽克：遮罩寫成檔案
+            Overlay { mask: Some(b64_mask.clone()), invert: true, ..ov(OverlayKind::Mosaic, 100.0, 100.0, 300.0, 200.0, 1.0, 2.0, None) },
+        ];
+        let out = write_overlays(&list, 1920, 1080, 10.0, dir.path()).unwrap();
+        assert_eq!(out.len(), 3);
+        match &out[0] {
+            OverlayInput::Image { path, x, y, start, end } => {
+                assert_eq!((*x, *y, *start, *end), (10, -5, 1.0, 3.0));
+                assert_eq!(std::fs::read(path).unwrap(), png);
+            }
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(out[1], OverlayInput::Blur { rect: Rect { x: 1800, y: 1000, width: 120, height: 80 }, start: 0.0, end: 10.0, mosaic: false, mask: None, invert: false, frame: (1920, 1080) });
+        match &out[2] {
+            OverlayInput::Blur { rect, mosaic: true, mask: Some(m), invert: true, frame: (1920, 1080), .. } => {
+                assert_eq!(*rect, Rect { x: 100, y: 100, width: 300, height: 200 });
+                assert_eq!(std::fs::read(m).unwrap(), png);
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn rejects_bad_overlays() {
+        let dir = tempfile::tempdir().unwrap();
+        let not_png = base64::engine::general_purpose::STANDARD.encode(b"GIF89a");
+        let bad = |o: Overlay| write_overlays(&[o], 1920, 1080, 10.0, dir.path()).unwrap_err().message().to_string();
+        assert!(bad(ov(OverlayKind::Image, 0.0, 0.0, 10.0, 10.0, 0.0, 1.0, Some(not_png))).contains("格式錯誤"));
+        assert!(bad(ov(OverlayKind::Image, 0.0, 0.0, 10.0, 10.0, 0.0, 1.0, None)).contains("缺少圖片"));
+        assert!(bad(ov(OverlayKind::Blur, f64::NAN, 0.0, 10.0, 10.0, 0.0, 1.0, None)).contains("格式錯誤"));
+        let many = vec![ov(OverlayKind::Blur, 0.0, 0.0, 10.0, 10.0, 0.0, 1.0, None); MAX_OVERLAYS + 1];
+        assert!(write_overlays(&many, 1920, 1080, 10.0, dir.path()).unwrap_err().message().contains("最多"));
     }
 }

@@ -3078,6 +3078,7 @@ name = "screenrecorder-core"
 version = "1.0.0"
 dependencies = [
  "axum",
+ "base64 0.22.1",
  "chrono",
  "futures-core",
  "native-tls",

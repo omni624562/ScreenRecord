@@ -258,6 +258,7 @@ pub fn router(app: Arc<App>, port: u16) -> Router {
         .route("/api/delete", post(delete))
         .route("/api/export/start", post(export_start))
         .route("/api/cut/start", post(cut_start))
+        .route("/api/edit/project", get(edit_project))
         .route("/api/thumb", get(thumb))
         .route("/api/media", get(media))
         .route(
@@ -452,6 +453,7 @@ async fn rename(State(c): State<Ctx>, b: Bytes) -> ApiResult {
         busy.push(p.display().to_string().to_lowercase());
     }
     let new_path = crate::library::rename_recording(&c.app.cache, &f, &js_string(&name), &busy).await?;
+    c.app.projects.renamed(&f, &new_path);
     Ok(json(&serde_json::json!({ "ok": true, "path": new_path })))
 }
 
@@ -477,6 +479,9 @@ async fn delete(State(c): State<Ctx>, b: Bytes) -> ApiResult {
         }
     }
     crate::recycle::move_to_recycle_bin(&list)?;
+    for f in &list {
+        c.app.projects.removed(f);
+    }
     Ok(json(&serde_json::json!({ "ok": true, "deleted": list.len() })))
 }
 
@@ -515,13 +520,17 @@ async fn export_start(State(c): State<Ctx>, b: Bytes) -> ApiResult {
 struct CutBody {
     source: Option<Value>,
     spec: Option<Value>,
+    /// 取代這個剪輯版（修改之前的剪輯）
+    replace: Option<Value>,
+    /// 介面的剪輯設定與標註：完成後存起來，之後可以再修改
+    project: Option<Value>,
 }
 
 async fn cut_start(State(c): State<Ctx>, b: Bytes) -> ApiResult {
     if c.app.recorder.active() {
         return Err(Error::config("錄影中無法剪輯，請先停止錄影").into());
     }
-    let CutBody { source, spec } = body(&b)?;
+    let CutBody { source, spec, replace, project } = body(&b)?;
     let bad = || Error::config("剪輯設定格式錯誤");
     let Some(Value::Object(spec)) = spec else { return Err(bad().into()) };
     let field = |k: &str| js_number(&spec.get(k).cloned());
@@ -546,9 +555,57 @@ async fn cut_start(State(c): State<Ctx>, b: Bytes) -> ApiResult {
         }
         _ => None,
     };
-    let edit = EditSpec { start, end, removed, crop };
-    c.app.exporter.start_cut(&c.app.export_ctx(), &js_string(&source), &edit).await?;
+    // 標註：格式由 serde 檢查（數值、種類），內容由轉檔時再檢查與限制
+    let overlays = match spec.get("overlays") {
+        None | Some(Value::Null) => Vec::new(),
+        Some(v) => serde_json::from_value(v.clone()).map_err(|_| Error::config("標註格式錯誤"))?,
+    };
+    let edit = EditSpec { start, end, removed, crop, overlays };
+    let source = js_string(&source);
+    let replace = js_string(&replace);
+    let replace = (!replace.is_empty()).then_some(replace);
+    if replace.as_deref().is_some_and(|r| !is_abs(r)) {
+        return Err(Error::config("找不到要取代的剪輯版").into());
+    }
+    let on_saved: Option<crate::exporter::OnSaved> = match project {
+        Some(data @ Value::Object(_)) => {
+            if serde_json::to_vec(&data).map(|v| v.len()).unwrap_or(usize::MAX) > crate::projects::MAX_PROJECT_BYTES {
+                return Err(Error::config("標註資料太大").into());
+            }
+            let (store, src) = (c.app.projects.clone(), source.clone());
+            Some(Box::new(move |out: &str| {
+                if let Err(e) = store.save(out, &src, data) {
+                    crate::info!("[剪輯] 無法儲存剪輯設定：{e}");
+                }
+            }))
+        }
+        _ => None,
+    };
+    c.app.exporter.start_cut(&c.app.export_ctx(), &source, &edit, replace.as_deref(), on_saved).await?;
     Ok(ok_status(&c.app))
+}
+
+/// 之前的剪輯設定：path 是剪輯版時回傳它自己的；是原始影片時回傳最近一次用它做的剪輯。
+/// 原始影片還在的話一起回傳它的資訊（介面用來重新開啟原片）。
+async fn edit_project(State(c): State<Ctx>, Query(q): Q) -> ApiResult {
+    let p = q.get("path").cloned().unwrap_or_default();
+    if !is_abs(&p) || !ends_with_ci(&p, &[".mp4"]) {
+        return Err(Error::config(format!("找不到檔案：{p}")).into());
+    }
+    let store = c.app.projects.clone();
+    let found = {
+        let p = p.clone();
+        tokio::task::spawn_blocking(move || store.for_output(&p).map(|x| (x, "output")).or_else(|| store.latest_for_source(&p).map(|x| (x, "source"))))
+            .await
+            .ok()
+            .flatten()
+    };
+    let Some((project, matched)) = found else { return Ok(json(&serde_json::json!({ "project": null }))) };
+    let source = match (is_file(&project.source), c.app.ffmpeg_path()) {
+        (true, Some(ff)) => c.app.cache.probe(&ff, &project.source).await.ok().map(|m| crate::types::LibraryEntry { media: m, exports: vec![] }),
+        _ => None,
+    };
+    Ok(json(&serde_json::json!({ "project": project, "matched": matched, "source": source })))
 }
 
 async fn thumb(State(c): State<Ctx>, Query(q): Q) -> Response {
@@ -736,6 +793,27 @@ mod tests {
             Err(ureq::Error::Status(code, r)) => (code, r.into_string().unwrap_or_default()),
             Err(e) => panic!("{e}"),
         }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn edit_project_lookup() {
+        let (port, _dir) = start().await;
+        let base = format!("http://127.0.0.1:{port}");
+        // 沒有存過剪輯設定：project 為 null
+        let b = base.clone();
+        let (code, body) = blocking(move || status_of(agent().get(&format!("{b}/api/edit/project")).query("path", r"C:\Videos\Rec_cut.mp4").call())).await;
+        assert_eq!(code, 200, "{body}");
+        assert_eq!(serde_json::from_str::<Value>(&body).unwrap()["project"], Value::Null);
+        // 只接受完整路徑的 mp4
+        let b = base.clone();
+        let (code, _) = blocking(move || status_of(agent().get(&format!("{b}/api/edit/project")).query("path", "Rec_cut.mp4").call())).await;
+        assert_eq!(code, 400);
+        // 取代的檔案不是完整路徑：拒絕
+        let b = base.clone();
+        let body = serde_json::json!({ "source": r"C:\Videos\Rec.mp4", "spec": { "start": 1, "end": 2, "removed": [] }, "replace": "Rec_cut.mp4" });
+        let (code, body) = blocking(move || status_of(agent().post(&format!("{b}/api/cut/start")).set("Content-Type", "application/json").send_string(&body.to_string()))).await;
+        assert_eq!(code, 400);
+        assert!(body.contains("找不到要取代"), "{body}");
     }
 
     #[tokio::test(flavor = "multi_thread")]

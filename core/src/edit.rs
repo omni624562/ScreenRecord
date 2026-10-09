@@ -27,6 +27,38 @@ pub struct EditSpec {
     /// 畫面裁切（影片像素座標）；None = 不裁切
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub crop: Option<CropInput>,
+    /// 畫面上的標註（文字、箭頭、框線、編號由介面畫成透明 PNG；馬賽克 / 模糊由 FFmpeg 處理）
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub overlays: Vec<Overlay>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OverlayKind {
+    /// 介面畫好的透明 PNG（png 欄位，base64）
+    Image,
+    Blur,
+    Mosaic,
+}
+
+/// 一個標註：位置與大小為原影片的像素座標，start / end 為原影片的時間（秒，剪輯前）
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Overlay {
+    pub kind: OverlayKind,
+    pub x: f64,
+    pub y: f64,
+    pub w: f64,
+    pub h: f64,
+    pub start: f64,
+    pub end: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub png: Option<String>,
+    /// 馬賽克 / 模糊的形狀遮罩（白色 = 範圍內，PNG base64）；沒有就是方形
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mask: Option<String>,
+    /// 反過來：範圍外模糊（或馬賽克），範圍內清楚
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub invert: bool,
 }
 
 /// 片段短於這個長度就忽略（約一張畫面以下）
@@ -108,7 +140,7 @@ mod tests {
     use super::*;
 
     fn spec(start: f64, end: f64, removed: &[Range]) -> EditSpec {
-        EditSpec { start, end, removed: removed.to_vec(), crop: None }
+        EditSpec { start, end, removed: removed.to_vec(), crop: None, overlays: vec![] }
     }
 
     #[test]

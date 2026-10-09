@@ -13,6 +13,24 @@ export interface EditSpec {
   removed: Range[];
   /** 畫面裁切（影片像素座標）；undefined = 不裁切 */
   crop?: Rect;
+  /** 畫面上的標註（影片像素座標、原影片時間） */
+  overlays?: OverlaySpec[];
+}
+
+/** 一個標註：image = 介面畫好的透明 PNG（data URL）；mosaic / blur 由 FFmpeg 處理 */
+export interface OverlaySpec {
+  kind: "image" | "mosaic" | "blur";
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  start: number;
+  end: number;
+  png?: string;
+  /** 馬賽克 / 模糊的形狀遮罩（白色 = 範圍內，PNG data URL）；沒有就是方形 */
+  mask?: string;
+  /** 範圍外模糊（或馬賽克），範圍內清楚 */
+  invert?: boolean;
 }
 
 /** 片段短於這個長度就忽略（約一張畫面以下） */

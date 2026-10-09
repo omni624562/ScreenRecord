@@ -112,6 +112,7 @@ input[type="number"], input[type="text"], input[type="search"], select {
   background: var(--surface); color: var(--text); font: inherit; font-size: 13px; min-width: 0;
 }
 input[type="number"] { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.grid2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
 .grid4 { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
 .chip-input { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .suffix-input { position: relative; width: 96px; }
@@ -164,6 +165,21 @@ input[type="number"] { font-family: var(--mono); font-variant-numeric: tabular-n
 .mon-box.selected > div { background: var(--rec); }
 .desk.region-mode .mon-box { pointer-events: none; background: transparent; border-style: dashed; border-width: 1px; }
 .desk-region { position: absolute; border: 2px solid var(--rec); background: rgb(229 72 77 / 0.12); box-shadow: 0 0 0 9999px rgb(0 0 0 / 0.35); pointer-events: none; }
+/* 可以操作時：內部拖曳移動、邊與角調整大小 */
+.desk.region-mode .desk-region { pointer-events: auto; cursor: move; }
+.desk-region [data-h] { position: absolute; display: none; }
+.desk.region-mode .desk-region [data-h] { display: block; }
+.desk-region [data-h="n"], .desk-region [data-h="s"] { left: 8px; right: 8px; height: 10px; cursor: ns-resize; }
+.desk-region [data-h="n"] { top: -6px; }
+.desk-region [data-h="s"] { bottom: -6px; }
+.desk-region [data-h="e"], .desk-region [data-h="w"] { top: 8px; bottom: 8px; width: 10px; cursor: ew-resize; }
+.desk-region [data-h="e"] { right: -6px; }
+.desk-region [data-h="w"] { left: -6px; }
+.desk-region [data-h="nw"], .desk-region [data-h="ne"], .desk-region [data-h="sw"], .desk-region [data-h="se"] { width: 10px; height: 10px; background: #fff; border: 2px solid var(--rec); border-radius: 2px; }
+.desk-region [data-h="nw"] { left: -6px; top: -6px; cursor: nwse-resize; }
+.desk-region [data-h="se"] { right: -6px; bottom: -6px; cursor: nwse-resize; }
+.desk-region [data-h="ne"] { right: -6px; top: -6px; cursor: nesw-resize; }
+.desk-region [data-h="sw"] { left: -6px; bottom: -6px; cursor: nesw-resize; }
 
 .settings-bar { display: flex; align-items: center; gap: 8px 14px; flex-wrap: wrap; padding-top: 10px; border-top: 1px solid var(--border); }
 .set { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; }
@@ -344,7 +360,8 @@ input[type="number"] { font-family: var(--mono); font-variant-numeric: tabular-n
 
 /* ── 剪輯對話框 ── */
 .editor {
-  width: min(1100px, calc(100vw - 32px)); max-height: calc(100vh - 32px); padding: 0; border: 1px solid var(--border);
+  /* 固定高度：切換分頁或面板變長時，影片與時間軸不會跳動 */
+  width: min(1100px, calc(100vw - 32px)); height: calc(100vh - 32px); max-height: 980px; padding: 0; border: 1px solid var(--border);
   border-radius: var(--radius); background: var(--surface); color: var(--text); box-shadow: 0 20px 60px rgb(0 0 0 / 0.35);
 }
 .editor[open] { display: flex; flex-direction: column; }
@@ -354,32 +371,136 @@ input[type="number"] { font-family: var(--mono); font-variant-numeric: tabular-n
 .ed-head h2 { font-size: 16px; font-weight: 650; }
 .ed-head p { font-family: var(--mono); word-break: break-all; }
 .ed-foot { border-top: 1px solid var(--border); }
-.ed-body { padding: 14px 18px; overflow: auto; display: flex; flex-direction: column; gap: 12px; min-height: 0; }
-.ed-body > * { flex-shrink: 0; } /* 空間不夠時捲動，不要壓扁影片 */
-.ed-stage-wrap { display: flex; justify-content: center; align-items: flex-start; background: #000; border-radius: var(--radius-sm); }
-/* 外框永遠與影片同比例（寬度受高度上限反推），裁切框的百分比座標才會對準畫面 */
+/* 左邊：影片、時間軸、播放控制；右邊：時間 / 裁切 / 標註的設定（自己捲動）。影片自動填滿剩下的高度 */
+.ed-body { padding: 14px 18px; overflow: hidden; display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 18px; min-height: 0; flex: 1; }
+.ed-main { display: flex; flex-direction: column; gap: 10px; min-width: 0; min-height: 0; }
+.ed-main > * { flex-shrink: 0; }
+.ed-side { display: flex; flex-direction: column; min-width: 0; min-height: 0; border-left: 1px solid var(--border); padding-left: 16px; }
+.ed-side > .ed-grid { flex: 1 1 auto; min-height: 0; overflow: auto; padding-right: 4px; }
+/* 視窗窄時改成上下排列 */
+@media (max-width: 880px) {
+  .ed-body { display: flex; flex-direction: column; gap: 12px; overflow: auto; }
+  .ed-main, .ed-side { flex: none; }
+  .ed-main > .ed-stage-wrap { flex: none; height: clamp(140px, 36vh, 400px); }
+  .ed-side { border-left: 0; padding-left: 0; }
+  .ed-side > .ed-grid { overflow: visible; }
+}
+.ed-tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--border); flex: none; }
+.ed-tabs button { border: 0; background: transparent; color: var(--muted); font: inherit; font-size: 13px; padding: 6px 14px; border-bottom: 2px solid transparent; cursor: pointer; }
+.ed-tabs button[aria-selected="true"] { color: var(--text); border-bottom-color: var(--accent); font-weight: 600; }
+.ed-tab-count { margin-left: 4px; color: var(--accent); font-weight: 600; }
+/* 影片區填滿剩下的空間；外框永遠與影片同比例（取寬、高兩個限制中較小的），標註與裁切框的百分比座標才會對準畫面 */
+.ed-main > .ed-stage-wrap { flex: 1 1 0; min-height: 140px; }
+.ed-stage-wrap { display: flex; justify-content: center; align-items: center; container-type: size; border-radius: var(--radius-sm); }
 .ed-stage {
-  position: relative; user-select: none; touch-action: none;
-  aspect-ratio: var(--ar, 16 / 9); width: min(100%, calc(52vh * var(--ar-num, 1.7778)));
+  position: relative; user-select: none; touch-action: none; background: #000;
+  aspect-ratio: var(--ar, 16 / 9); width: min(100cqw, calc(100cqh * var(--ar-num, 1.7778)));
 }
 .ed-stage video { display: block; width: 100%; height: 100%; }
 .ed-stage.crop-mode { cursor: crosshair; }
 .ed-crop { position: absolute; border: 2px solid var(--rec); box-shadow: 0 0 0 9999px rgb(0 0 0 / 0.5); pointer-events: none; }
 .ed-stage-wrap { overflow: hidden; }
 
-.ed-timeline { position: relative; height: 34px; border-radius: 6px; background: var(--surface-2); cursor: pointer; touch-action: none; overflow: hidden; }
-.ed-track { position: absolute; inset: 0; }
+.ed-timeline { position: relative; height: 64px; border-radius: 6px; background: var(--surface-2); cursor: text; touch-action: none; overflow: hidden; user-select: none; }
+.ed-strip { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0.9; pointer-events: none; }
+.ed-track { position: absolute; inset: 0; pointer-events: none; }
 .ed-seg { position: absolute; top: 0; bottom: 0; }
-.ed-seg.keep { background: color-mix(in srgb, var(--accent) 35%, var(--surface)); border-left: 1px solid var(--accent); border-right: 1px solid var(--accent); }
-.ed-seg.cut { background: repeating-linear-gradient(135deg, color-mix(in srgb, var(--rec) 30%, transparent) 0 6px, transparent 6px 12px); }
-.ed-seg.pending { background: color-mix(in srgb, var(--warn) 30%, transparent); border-left: 2px solid var(--warn); }
-.ed-playhead { position: absolute; top: 0; bottom: 0; width: 2px; margin-left: -1px; background: var(--text); pointer-events: none; }
+/* 剪掉的部分：壓暗加斜線 */
+.ed-seg.cut { background: repeating-linear-gradient(135deg, rgb(229 72 77 / 0.45) 0 6px, transparent 6px 12px), rgb(0 0 0 / 0.62); }
+.ed-seg.removed { border-left: 1px solid var(--rec); border-right: 1px solid var(--rec); }
+.ed-restore { pointer-events: auto; position: absolute; left: 50%; top: 4px; transform: translateX(-50%); width: 20px; height: 20px; border-radius: 50%; border: 0; background: var(--rec); color: #fff; font-size: 13px; line-height: 20px; padding: 0; cursor: pointer; box-shadow: 0 1px 3px rgb(0 0 0 / 0.4); }
+.ed-restore:hover { filter: brightness(1.1); }
+/* 拖曳選取的範圍 */
+.ed-sel { position: absolute; top: 0; bottom: 0; background: rgb(214 140 18 / 0.35); border-left: 2px solid var(--warn); border-right: 2px solid var(--warn); pointer-events: none; }
+/* 頭尾把手：黃色括號，寬的感應區 */
+.ed-handle { position: absolute; top: 0; bottom: 0; width: 16px; margin-left: -4px; cursor: ew-resize; z-index: 4; }
+.ed-handle::before { content: ""; position: absolute; top: 0; bottom: 0; width: 8px; border: 3px solid #f5b301; border-radius: 3px; box-shadow: 0 0 0 1px rgb(0 0 0 / 0.35); }
+.ed-handle.start::before { left: 4px; border-right: 0; border-top-right-radius: 0; border-bottom-right-radius: 0; }
+.ed-handle.end { margin-left: -12px; }
+.ed-handle.end::before { right: 4px; border-left: 0; border-top-left-radius: 0; border-bottom-left-radius: 0; }
+/* 播放頭：細線＋上方圓鈕，可拖曳 */
+.ed-playhead { position: absolute; top: 0; bottom: 0; width: 14px; margin-left: -7px; cursor: grab; z-index: 3; }
+.ed-playhead::before { content: ""; position: absolute; left: 6px; top: 0; bottom: 0; width: 2px; background: #fff; box-shadow: 0 0 0 1px rgb(0 0 0 / 0.5); }
+.ed-playhead::after { content: ""; position: absolute; left: 1px; top: -1px; width: 12px; height: 12px; border-radius: 50%; background: #fff; box-shadow: 0 0 0 1px rgb(0 0 0 / 0.5); }
+.ed-tl-hint { margin: -4px 0 0; display: flex; align-items: center; gap: 6px; }
+.ed-tl-hint > span { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* 保留範圍上方的橫條：拖曳整段移動 */
+.ed-range { position: absolute; top: 0; height: 9px; background: #f5b301; opacity: 0.9; cursor: grab; z-index: 3; box-shadow: 0 1px 2px rgb(0 0 0 / 0.4); }
+.ed-range:active { cursor: grabbing; }
+/* 標註軌：每個標註一條，拖曳移動、拖曳兩端調整出現時間 */
+.ed-anntrack { position: relative; height: 70px; margin-top: -6px; border-radius: 6px; background: var(--surface-2); overflow: hidden; touch-action: none; user-select: none; cursor: text; }
+.ed-anntrack .ed-seg.cut { background: repeating-linear-gradient(135deg, rgb(229 72 77 / 0.25) 0 6px, transparent 6px 12px), rgb(0 0 0 / 0.18); pointer-events: none; }
+.ed-abar {
+  position: absolute; height: 18px; box-sizing: border-box; padding: 0 8px; border-radius: 4px; background: var(--c); color: var(--fg);
+  font-size: 11px; line-height: 18px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: grab;
+  box-shadow: inset 0 0 0 1px rgb(0 0 0 / 0.25); z-index: 1;
+}
+.ed-abar:active { cursor: grabbing; }
+.ed-anntrack.dense .ed-abar { font-size: 0; padding: 0; }
+.ed-anntrack-empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--muted); font-size: 12px; pointer-events: none; }
+.ed-abar.on { box-shadow: 0 0 0 2px var(--accent), inset 0 0 0 1px rgb(0 0 0 / 0.25); z-index: 2; }
+/* 整個落在刪除的片段裡：輸出影片看不到 */
+.ed-abar.gone { opacity: 0.55; background: repeating-linear-gradient(135deg, var(--c) 0 5px, color-mix(in srgb, var(--c) 40%, transparent) 5px 10px); }
+.ed-abar .edge { position: absolute; top: 0; bottom: 0; width: 8px; cursor: ew-resize; }
+.ed-abar .edge.l { left: 0; }
+.ed-abar .edge.r { right: 0; }
+.ed-abar.on .edge { background: rgb(255 255 255 / 0.35); }
+.ed-at-ph { position: absolute; top: 0; bottom: 0; width: 2px; margin-left: -1px; background: var(--text); opacity: 0.7; pointer-events: none; z-index: 3; }
+/* 放大時的捲軸 */
+.ed-scroll { position: relative; height: 10px; margin-top: -6px; border-radius: 5px; background: var(--surface-2); cursor: pointer; touch-action: none; }
+.ed-scroll-thumb { position: absolute; top: 1px; bottom: 1px; min-width: 12px; border-radius: 4px; background: color-mix(in srgb, var(--text) 40%, transparent); cursor: grab; }
+
+/* 影片上的標註 */
+.ed-ann { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.ed-blurs { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
+/* 馬賽克 / 模糊的效果畫在 canvas 上，這裡只有範圍框與名稱 */
+.ed-blur { position: absolute; border: 1px dashed rgb(255 255 255 / 0.85); outline: 1px dashed rgb(0 0 0 / 0.5); }
+.ed-blur.off { opacity: 0.4; }
+.ed-blur.ellipse span, .ed-blur.round span { left: 50%; top: 14%; transform: translateX(-50%); white-space: nowrap; }
+.ed-stage.playing .ed-blurs { display: none; }
+.ed-blur span { position: absolute; left: 4px; top: 4px; padding: 1px 6px; border-radius: 4px; background: rgb(0 0 0 / 0.55); color: #fff; font-size: 11px; }
+.ed-stage.tool-mode { cursor: crosshair; }
+
+/* 標註面板 */
+.ed-ann-section { grid-column: 1 / -1; }
+.ed-ann-section h3 .muted { font-weight: 400; margin-left: 6px; }
+.ed-tools { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+.ed-tool { display: flex; flex-direction: column; align-items: center; gap: 1px; padding: 6px 2px 5px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); color: var(--text); font: inherit; font-size: 12px; cursor: pointer; }
+.ed-tool b { font-size: 18px; line-height: 1.2; font-weight: 600; }
+.ed-tool b.hl { color: #f5b301; }
+.ed-tool:hover { border-color: var(--accent); }
+.ed-tool.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+.ed-tool.on b.hl { color: inherit; }
+.ed-tool:disabled { opacity: 0.45; cursor: default; }
+.ed-emojis { display: flex; flex-wrap: wrap; gap: 2px; }
+.ed-emojis .btn { font-size: 18px; padding: 0 6px; }
+.ed-emojis .btn.on { outline: 2px solid var(--accent); }
+.ed-ann-props { display: flex; flex-direction: column; gap: 8px; padding: 10px; border-radius: var(--radius-sm); background: var(--surface-2); }
+.ed-ann-props textarea { width: 100%; resize: vertical; font: inherit; }
+.ed-colors { display: flex; gap: 6px; flex-wrap: wrap; }
+.ed-props-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.ed-warn { margin: 0; padding: 6px 8px; border-radius: 6px; background: var(--warn-soft); color: var(--warn); font-size: 12px; }
+.ed-color { width: 22px; height: 22px; border-radius: 50%; border: 1px solid var(--border-strong); background: var(--c); cursor: pointer; padding: 0; }
+.ed-color.on { outline: 2px solid var(--accent); outline-offset: 2px; }
+.ed-ann-props input[type="range"] { flex: 1; min-width: 0; }
+.ed-timeinput { width: 84px; font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.small-switch .track { transform: scale(0.85); }
+.ed-ann-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.ed-ann-list li { display: flex; align-items: center; gap: 6px; padding: 3px 4px 3px 8px; border-radius: 6px; border: 1px solid var(--border); font-size: 12px; cursor: pointer; }
+.ed-ann-list li .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ed-ann-list li.gone .name { text-decoration: line-through; color: var(--muted); }
+.ed-ann-list li.on { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.ed-ann-list li i { flex: none; width: 10px; height: 10px; border-radius: 50%; box-shadow: 0 0 0 1px rgb(0 0 0 / 0.3); }
+.ed-ann-list li .muted { font-family: var(--mono); }
+.ed-ann-list li button { border: 0; background: transparent; color: inherit; cursor: pointer; font-size: 14px; line-height: 1; padding: 2px 6px; border-radius: 999px; }
+.ed-ann-list li button:hover { background: var(--rec-soft); color: var(--rec); }
+.ed-selrow { display: flex; flex-direction: column; gap: 6px; padding: 8px; border-radius: 6px; background: rgb(214 140 18 / 0.12); }
 
 .ed-transport { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .ed-steps { display: flex; gap: 2px; }
 .ed-time { margin-left: auto; font-family: var(--mono); font-variant-numeric: tabular-nums; }
-.ed-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
-@media (max-width: 760px) { .ed-grid { grid-template-columns: 1fr; } }
+.ed-grid { display: block; }
+.ed-grid > .ed-section { border: 0; padding: 12px 2px; }
 .ed-section { display: flex; flex-direction: column; gap: 10px; padding: 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); }
 .ed-section h3 { margin: 0; font-size: 13px; font-weight: 650; }
 .ed-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
@@ -430,4 +551,8 @@ input[type="number"] { font-family: var(--mono); font-variant-numeric: tabular-n
 .sys-title { flex: none; }
 .env-chips { flex-wrap: nowrap; min-width: 0; overflow: hidden; }
 .env-chips .chip { min-width: 0; overflow: hidden; text-overflow: ellipsis; flex-shrink: 1; }
-.env-chips .chip::before { flex: none; }
+.env-chips .chip::before { flex: none; }.warn-text { color: var(--warn); }
+.ed-banner { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 12px 18px 0; padding: 8px 12px; border-radius: var(--radius-sm); background: var(--accent-soft); font-size: 13px; }
+.ed-banner.warn { background: var(--warn-soft); color: var(--warn); }
+.ed-banner > span:first-child { flex: 1; min-width: 240px; }
+.ed-banner-acts { display: flex; gap: 6px; flex-wrap: wrap; }

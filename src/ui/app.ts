@@ -149,8 +149,9 @@ function initSettings() {
     method: (["auto", "ddagrab", "gdigrab"] as const).includes(st.method as MethodPreference) ? st.method! : "auto",
     outputDir: st.outputDir?.trim() || env.defaultOutputDir,
     speed: Number(st.speed) >= 1 ? Number(st.speed) : 4,
-    audioSystem: st.audioSystem ?? false,
-    audioMic: st.audioMic ?? false,
+    // 預設錄系統聲音與麥克風（之前改過的設定照舊）
+    audioSystem: st.audioSystem ?? true,
+    audioMic: st.audioMic ?? true,
     micId: typeof st.micId === "string" ? st.micId : "",
     keepAudio: st.keepAudio ?? true,
     livePreview: st.livePreview ?? true,
@@ -439,7 +440,7 @@ function renderSourceDetail() {
       detailMode = "region";
       box.innerHTML = (["x", "y", "width", "height"] as const)
         .map((k) => `<label>${{ x: "X", y: "Y", width: "寬", height: "高" }[k]}<input type="number" data-region="${k}" step="1" /></label>`)
-        .join("") + `<span class="info">在預覽圖上拖曳框選（可跨螢幕）</span>`;
+        .join("") + `<span class="info" title="在預覽圖上拖曳框選範圍（可跨螢幕）；拖曳紅框可移動，拉邊或角可調整大小">拖曳框選或移動紅框（可跨螢幕）</span>`;
     }
     for (const input of box.querySelectorAll<HTMLInputElement>("input[data-region]")) {
       if (document.activeElement !== input) input.value = String(S.region[input.dataset.region as keyof Rect]);
@@ -455,34 +456,67 @@ function selectMonitor(id: string) {
   renderSource();
 }
 
+/**
+ * 自訂範圍：在預覽圖上拖曳框選新範圍；拖曳紅框內部可移動，拖曳邊與角可調整大小（都限制在桌面範圍內）
+ */
 function setupRegionDrag() {
   const desk = $("desk");
-  let start: { x: number; y: number } | undefined;
-  const toDesktop = (e: PointerEvent) => {
+  type Mode = "new" | "move" | "n" | "s" | "e" | "w" | "ne" | "nw" | "se" | "sw";
+  let drag: { mode: Mode; from: { x: number; y: number }; orig: Rect } | undefined;
+  /** 滑鼠位置換算成桌面座標（clampTo = 限制在預覽圖內） */
+  const toDesktop = (e: PointerEvent, clampTo = true) => {
     const d = env.desktop;
     const r = desk.getBoundingClientRect();
+    const fx = (e.clientX - r.left) / r.width;
+    const fy = (e.clientY - r.top) / r.height;
     return {
-      x: Math.round(d.x + clamp((e.clientX - r.left) / r.width, 0, 1) * d.width),
-      y: Math.round(d.y + clamp((e.clientY - r.top) / r.height, 0, 1) * d.height),
+      x: Math.round(d.x + (clampTo ? clamp(fx, 0, 1) : fx) * d.width),
+      y: Math.round(d.y + (clampTo ? clamp(fy, 0, 1) : fy) * d.height),
     };
   };
+  const MIN = 16;
   desk.addEventListener("pointerdown", (e) => {
     if (S.sourceType !== "region" || locked() || !env.desktop.width || e.button !== 0) return;
-    start = toDesktop(e);
+    const target = e.target as HTMLElement;
+    const handle = target.closest<HTMLElement>("[data-h]")?.dataset.h as Mode | undefined;
+    const mode: Mode = handle ?? (target.closest("#deskRegion") ? "move" : "new");
+    drag = { mode, from: toDesktop(e, mode === "new"), orig: { ...S.region } };
     desk.setPointerCapture(e.pointerId);
     e.preventDefault();
   });
   desk.addEventListener("pointermove", (e) => {
-    if (!start) return;
-    const p = toDesktop(e);
-    S.region = { x: Math.min(start.x, p.x), y: Math.min(start.y, p.y), width: Math.max(1, Math.abs(p.x - start.x)), height: Math.max(1, Math.abs(p.y - start.y)) };
+    if (!drag) return;
+    const d = env.desktop;
+    const { mode, from, orig } = drag;
+    if (mode === "new") {
+      const p = toDesktop(e);
+      S.region = { x: Math.min(from.x, p.x), y: Math.min(from.y, p.y), width: Math.max(1, Math.abs(p.x - from.x)), height: Math.max(1, Math.abs(p.y - from.y)) };
+    } else {
+      const p = toDesktop(e, false);
+      const dx = p.x - from.x;
+      const dy = p.y - from.y;
+      if (mode === "move") {
+        S.region = {
+          ...orig,
+          x: clamp(orig.x + dx, d.x, d.x + d.width - orig.width),
+          y: clamp(orig.y + dy, d.y, d.y + d.height - orig.height),
+        };
+      } else {
+        let left = orig.x, top = orig.y, right = orig.x + orig.width, bottom = orig.y + orig.height;
+        if (mode.includes("w")) left = clamp(orig.x + dx, d.x, right - MIN);
+        if (mode.includes("e")) right = clamp(right + dx, left + MIN, d.x + d.width);
+        if (mode.includes("n")) top = clamp(orig.y + dy, d.y, bottom - MIN);
+        if (mode.includes("s")) bottom = clamp(bottom + dy, top + MIN, d.y + d.height);
+        S.region = { x: left, y: top, width: right - left, height: bottom - top };
+      }
+    }
     renderSource();
   });
   const end = () => {
-    if (!start) return;
-    start = undefined;
-    S.region.width = Math.max(16, S.region.width);
-    S.region.height = Math.max(16, S.region.height);
+    if (!drag) return;
+    drag = undefined;
+    S.region.width = Math.max(MIN, S.region.width);
+    S.region.height = Math.max(MIN, S.region.height);
     save();
     renderSource();
   };
@@ -1035,13 +1069,14 @@ function act(action: EntryAction, entry: LibraryEntry) {
   if (exp?.state === "running") return toast("目前有轉檔工作進行中，請等它完成", true);
   if (!entry.durationSec) return toast("無法讀取影片長度", true);
   if (action === "edit") {
-    openEditor(entry, {
+    void openEditor(entry, {
       toast,
-      save: async (source, spec) => {
-        applyStatus(await api("/api/cut/start", { source, spec }));
+      save: async (source, spec, extra) => {
+        applyStatus(await api("/api/cut/start", { source, spec, ...extra }));
         dismissedJob = undefined;
-        toast("已開始剪輯，進度顯示在右側");
+        toast(extra.replace ? "已開始更新剪輯版，進度顯示在右側" : "已開始剪輯，進度顯示在右側");
       },
+      project: (path) => api(`/api/edit/project?path=${encodeURIComponent(path)}`),
     });
   } else {
     openExport(entry, {
