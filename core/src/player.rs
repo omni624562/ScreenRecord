@@ -256,9 +256,15 @@ impl Player {
 
     fn kill_children(&self) {
         self.stop_audio.lock().unwrap().store(true, Ordering::Relaxed);
-        for mut c in self.children.lock().unwrap().drain(..) {
-            let _ = c.kill();
-            let _ = c.wait();
+        let list: Vec<Child> = self.children.lock().unwrap().drain(..).collect();
+        if !list.is_empty() {
+            // 在背景結束（Windows 上等行程結束可能要上百毫秒，不卡住介面）
+            std::thread::spawn(move || {
+                for mut c in list {
+                    let _ = c.kill();
+                    let _ = c.wait();
+                }
+            });
         }
     }
 
@@ -343,96 +349,119 @@ impl Player {
         let stop = Arc::new(AtomicBool::new(false));
         *self.stop_audio.lock().unwrap() = stop.clone();
 
-        // 聲音：開始出聲時開始計時（以聲音為準，畫面配合）
-        let mut audio_started = false;
-        if self.spec.has_audio {
-            if let Some(mut child) = spawn(&self.ffmpeg, &audio_args(&self.spec.path, from)) {
-                if let Some(out) = child.stdout.take() {
-                    self.children.lock().unwrap().push(child);
-                    let inner = self.inner.clone();
-                    let stop2 = stop.clone();
-                    audio_started = true;
-                    std::thread::spawn(move || {
-                        let start_clock = |latency: f64| {
-                            let mut i = inner.lock().unwrap();
-                            if i.gen == gen && i.clock.is_none() {
-                                i.clock = Some(Instant::now() + Duration::from_secs_f64(latency.clamp(0.0, 0.5)));
-                            }
-                        };
-                        if crate::audio_out::play(out, stop2, start_clock).is_err() {
-                            // 沒有播放裝置：改由畫面計時
-                            let mut i = inner.lock().unwrap();
-                            if i.gen == gen && i.clock.is_none() {
-                                i.clock = Some(Instant::now());
-                            }
-                        }
-                    });
-                }
-            }
-        }
-
-        let Some(mut child) = spawn(&self.ffmpeg, &video_args(&self.spec.path, from, self.width, self.height, None, false)) else {
-            return;
-        };
-        let Some(mut out) = child.stdout.take() else { return };
-        self.children.lock().unwrap().push(child);
-        let (inner, wake, w, h, fps, duration) = (self.inner.clone(), self.wake.clone(), self.width, self.height, self.spec.fps.max(1.0), self.spec.duration);
+        // 開 FFmpeg 在背景做（Windows 上啟動行程要幾十到上百毫秒，不卡住介面）
+        let (ffmpeg, spec, children, inner, wake, w, h) = (self.ffmpeg.clone(), self.spec.clone(), self.children.clone(), self.inner.clone(), self.wake.clone(), self.width, self.height);
         std::thread::spawn(move || {
-            let mut buf = vec![0u8; (w * h * 4) as usize];
-            let mut n: u64 = 0;
-            let waited_for_audio = Instant::now();
-            loop {
-                if !read_frame(&mut out, &mut buf) {
-                    let mut i = inner.lock().unwrap();
-                    if i.gen == gen {
-                        i.playing = false;
-                        i.clock = None;
-                        i.pos = (from + n as f64 / fps).min(duration);
-                        i.ended = true;
-                        drop(i);
-                        wake();
-                    }
-                    return;
+            // 記下子行程以便停止；已經換了一輪（暫停 / 跳轉）就直接結束它
+            let register = |mut child: Child| -> bool {
+                let mut list = children.lock().unwrap();
+                if inner.lock().unwrap().gen != gen {
+                    drop(list);
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return false;
                 }
-                let t = from + n as f64 / fps;
-                n += 1;
-                // 等到這張的時間；第一張立即顯示
-                loop {
-                    let now_t = {
-                        let mut i = inner.lock().unwrap();
-                        if i.gen != gen {
+                list.push(child);
+                true
+            };
+            // 聲音：開始出聲時開始計時（以聲音為準，畫面配合）
+            let mut audio_started = false;
+            if spec.has_audio {
+                if let Some(mut child) = spawn(&ffmpeg, &audio_args(&spec.path, from)) {
+                    if let Some(out) = child.stdout.take() {
+                        if !register(child) {
                             return;
                         }
-                        if i.clock.is_none() && (!audio_started || waited_for_audio.elapsed() > Duration::from_millis(800)) {
-                            i.clock = Some(Instant::now());
-                        }
-                        match i.clock {
-                            Some(c) if Instant::now() >= c => i.play_from + c.elapsed().as_secs_f64(),
-                            _ => i.play_from,
-                        }
-                    };
-                    if t <= now_t + 0.004 || n == 1 {
-                        break;
+                        let inner = inner.clone();
+                        let stop2 = stop.clone();
+                        audio_started = true;
+                        std::thread::spawn(move || {
+                            let start_clock = |latency: f64| {
+                                let mut i = inner.lock().unwrap();
+                                if i.gen == gen && i.clock.is_none() {
+                                    i.clock = Some(Instant::now() + Duration::from_secs_f64(latency.clamp(0.0, 0.5)));
+                                }
+                            };
+                            if crate::audio_out::play(out, stop2, start_clock).is_err() {
+                                // 沒有播放裝置：改由畫面計時
+                                let mut i = inner.lock().unwrap();
+                                if i.gen == gen && i.clock.is_none() {
+                                    i.clock = Some(Instant::now());
+                                }
+                            }
+                        });
                     }
-                    std::thread::sleep(Duration::from_secs_f64((t - now_t).min(0.02)));
                 }
-                // 跟不上：已經晚了兩張以上就跳過（不顯示）
-                let late = {
-                    let i = inner.lock().unwrap();
-                    let now_t = Self::time_of(&i, duration);
-                    n > 1 && now_t - t > 2.0 / fps
-                };
-                if late {
-                    continue;
-                }
-                let mut i = inner.lock().unwrap();
-                if i.gen != gen {
-                    return;
-                }
-                i.frame = Some(Frame { time: t, width: w, height: h, rgba: buf.clone() });
-                drop(i);
-                wake();
             }
+
+            // 連續播放用硬體解碼（大畫面時省很多 CPU）；不支援時 FFmpeg 自動改用軟體解碼
+            let mut args = video_args(&spec.path, from, w, h, None, false);
+            args.splice(4..4, ["-hwaccel".to_string(), "auto".into()]);
+            let Some(mut child) = spawn(&ffmpeg, &args) else {
+                return;
+            };
+            let Some(mut out) = child.stdout.take() else { return };
+            if !register(child) {
+                return;
+            }
+            let (fps, duration) = (spec.fps.max(1.0), spec.duration);
+            std::thread::spawn(move || {
+                let mut buf = vec![0u8; (w * h * 4) as usize];
+                let mut n: u64 = 0;
+                let waited_for_audio = Instant::now();
+                loop {
+                    if !read_frame(&mut out, &mut buf) {
+                        let mut i = inner.lock().unwrap();
+                        if i.gen == gen {
+                            i.playing = false;
+                            i.clock = None;
+                            i.pos = (from + n as f64 / fps).min(duration);
+                            i.ended = true;
+                            drop(i);
+                            wake();
+                        }
+                        return;
+                    }
+                    let t = from + n as f64 / fps;
+                    n += 1;
+                    // 等到這張的時間；第一張立即顯示
+                    loop {
+                        let now_t = {
+                            let mut i = inner.lock().unwrap();
+                            if i.gen != gen {
+                                return;
+                            }
+                            if i.clock.is_none() && (!audio_started || waited_for_audio.elapsed() > Duration::from_millis(800)) {
+                                i.clock = Some(Instant::now());
+                            }
+                            match i.clock {
+                                Some(c) if Instant::now() >= c => i.play_from + c.elapsed().as_secs_f64(),
+                                _ => i.play_from,
+                            }
+                        };
+                        if t <= now_t + 0.004 || n == 1 {
+                            break;
+                        }
+                        std::thread::sleep(Duration::from_secs_f64((t - now_t).min(0.02)));
+                    }
+                    // 跟不上：已經晚了兩張以上就跳過（不顯示）
+                    let late = {
+                        let i = inner.lock().unwrap();
+                        let now_t = Self::time_of(&i, duration);
+                        n > 1 && now_t - t > 2.0 / fps
+                    };
+                    if late {
+                        continue;
+                    }
+                    let mut i = inner.lock().unwrap();
+                    if i.gen != gen {
+                        return;
+                    }
+                    i.frame = Some(Frame { time: t, width: w, height: h, rgba: buf.clone() });
+                    drop(i);
+                    wake();
+                }
+            });
         });
     }
 }

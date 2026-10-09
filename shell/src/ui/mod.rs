@@ -98,6 +98,9 @@ pub struct UiApp {
     last_state: RecorderState,
     pub main: main_view::MainState,
     ddagrab_watch: Option<Instant>,
+    /// 上一格各部分花的時間（毫秒）：畫面處理太慢時寫進記錄檔，找出卡在哪裡
+    frame_parts: Vec<(&'static str, f32)>,
+    slow_logged: Option<Instant>,
     #[cfg(debug_assertions)]
     dev: dev::Dev,
 }
@@ -149,6 +152,8 @@ impl UiApp {
             last_result_path: None,
             main: main_view::MainState::default(),
             ddagrab_watch: None,
+            frame_parts: Vec::new(),
+            slow_logged: None,
             #[cfg(debug_assertions)]
             dev: Default::default(),
         };
@@ -218,6 +223,18 @@ impl UiApp {
                 self.s = UiSettings::from_saved(saved.ui.as_ref(), &self.env);
             }
         }
+    }
+
+    /// 上一格處理超過 60 毫秒：把各部分的時間寫進記錄檔（最多每 5 秒一次），方便找出哪裡卡
+    fn log_slow_frame(&mut self, frame: &eframe::Frame) {
+        let parts = std::mem::take(&mut self.frame_parts);
+        let Some(cpu) = frame.info().cpu_usage else { return };
+        if cpu < 0.06 || self.slow_logged.is_some_and(|t| t.elapsed() < Duration::from_secs(5)) {
+            return;
+        }
+        self.slow_logged = Some(Instant::now());
+        let detail: Vec<String> = parts.iter().filter(|(_, ms)| *ms >= 1.0).map(|(n, ms)| format!("{n} {ms:.0}")).collect();
+        screenrecorder_core::info!("[介面] 一格畫面花了 {:.0} 毫秒（{}）", cpu * 1000.0, if detail.is_empty() { "大多在繪製".into() } else { detail.join("、") });
     }
 
     // ───────────── 狀態 ─────────────
@@ -432,7 +449,9 @@ impl UiApp {
 }
 
 impl eframe::App for UiApp {
-    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        self.log_slow_frame(frame);
+        let t0 = Instant::now();
         while let Ok(job) = self.rx.try_recv() {
             job(self);
         }
@@ -440,6 +459,7 @@ impl eframe::App for UiApp {
         self.flush_settings();
         self.poll_status();
         self.handle_close(ctx);
+        self.frame_parts.push(("背景狀態", t0.elapsed().as_secs_f32() * 1000.0));
         // 狀態每 0.25 秒更新一次（錄影中計時器、轉檔進度）；視窗隱藏時放慢
         ctx.request_repaint_after(if self.visible { Duration::from_millis(250) } else { Duration::from_secs(2) });
     }
@@ -451,15 +471,24 @@ impl eframe::App for UiApp {
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        let mut t = Instant::now();
+        let mut part = |app: &mut UiApp, name: &'static str| {
+            app.frame_parts.push((name, t.elapsed().as_secs_f32() * 1000.0));
+            t = Instant::now();
+        };
         main_view::show(self, ui);
+        part(self, "主畫面");
         if self.export_dlg.is_some() {
             export_dialog::show(self, &ctx);
+            part(self, "製作視窗");
         }
         if self.library.is_some() {
             library_dialog::show(self, &ctx);
+            part(self, "全部錄影");
         }
         if self.editor.is_some() {
             editor::show(self, &ctx);
+            part(self, "剪輯視窗");
         }
         if self.changelog_open {
             dialogs::changelog(self, &ctx);

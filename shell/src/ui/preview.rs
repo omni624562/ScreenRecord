@@ -58,6 +58,11 @@ impl Preview {
         self.current = None;
     }
 
+    /// 預覽在執行中（或已要求執行）
+    pub fn running(&self) -> bool {
+        self.current.is_some()
+    }
+
     pub fn state(&self) -> PreviewState {
         self.slot.lock().unwrap().state.clone().unwrap_or(PreviewState::Idle)
     }
