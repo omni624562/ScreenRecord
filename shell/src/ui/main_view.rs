@@ -1196,8 +1196,8 @@ fn sys_status(app: &mut UiApp, ui: &mut Ui) {
 
 // ───────────── 最近錄影 ─────────────
 
-/// 「全部錄影」「全部截圖」按鈕的寬度
-const LIB_BTN_W: f32 = 128.0;
+/// 「全部錄影」「全部截圖」按鈕的最小寬度
+const LIB_BTN_W: f32 = 120.0;
 
 fn recent_strip(app: &mut UiApp, ui: &mut Ui) {
     let p = theme::pal(ui);
@@ -1219,7 +1219,13 @@ fn recent_strip(app: &mut UiApp, ui: &mut Ui) {
                 app.load_recent();
             }
             // 一頁放幾張依寬度決定
-            let lib_w = LIB_BTN_W + 8.0;
+            // 右邊「全部錄影」「全部截圖」：一樣寬，圖示與文字靠左對齊
+            let total = app.recent.as_ref().map(|r| r.total).unwrap_or(0);
+            let shots = app.shot_total;
+            let rec_btn = Btn::new(if total > 0 { format!("全部錄影（{total}）") } else { "全部錄影".into() }).icon(Icon::List).small().left();
+            let shot_btn = Btn::new(if shots > 0 { format!("全部截圖（{shots}）") } else { "全部截圖".into() }).icon(Icon::Camera).small().left();
+            let btn_w = rec_btn.width(ui).max(shot_btn.width(ui)).max(LIB_BTN_W);
+            let lib_w = btn_w + 8.0;
             let cards_w = ui.available_width() - lib_w - 44.0;
             let card_w = 280.0;
             let per = ((cards_w + 10.0) / (card_w + 10.0)).floor().clamp(1.0, 8.0) as usize;
@@ -1244,14 +1250,12 @@ fn recent_strip(app: &mut UiApp, ui: &mut Ui) {
             });
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 // 錄影與截圖分開看
-                let total = app.recent.as_ref().map(|r| r.total).unwrap_or(0);
-                let shots = app.shot_total;
-                ui.allocate_ui_with_layout(vec2(LIB_BTN_W, 64.0), Layout::top_down(Align::Max), |ui| {
+                ui.allocate_ui_with_layout(vec2(btn_w, 64.0), Layout::top_down(Align::Max), |ui| {
                     ui.spacing_mut().item_spacing.y = 6.0;
-                    if Btn::new(if total > 0 { format!("全部錄影（{total}）") } else { "全部錄影".into() }).icon(Icon::List).small().min_width(LIB_BTN_W).show(ui).clicked() {
+                    if rec_btn.min_width(btn_w).show(ui).clicked() {
                         app.library = Some(super::library_dialog::LibraryDialog::new(super::library_dialog::Kind::Video));
                     }
-                    if Btn::new(if shots > 0 { format!("全部截圖（{shots}）") } else { "全部截圖".into() }).icon(Icon::Camera).small().min_width(LIB_BTN_W).show(ui).clicked() {
+                    if shot_btn.min_width(btn_w).show(ui).clicked() {
                         app.library = Some(super::library_dialog::LibraryDialog::new(super::library_dialog::Kind::Shot));
                     }
                 });

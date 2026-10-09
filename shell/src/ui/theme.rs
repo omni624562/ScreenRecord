@@ -349,11 +349,17 @@ pub struct Btn {
     selected: bool,
     /// 指定高度（與旁邊的大按鈕對齊）
     height: Option<f32>,
+    /// 圖示與文字靠左（上下排的按鈕對齊用）
+    left: bool,
 }
 
 impl Btn {
     pub fn new(text: impl Into<String>) -> Self {
-        Self { text: text.into(), icon: None, trailing: None, kind: Kind::Normal, small: false, enabled: true, min_width: 0.0, tooltip: None, selected: false, height: None }
+        Self { text: text.into(), icon: None, trailing: None, kind: Kind::Normal, small: false, enabled: true, min_width: 0.0, tooltip: None, selected: false, height: None, left: false }
+    }
+    pub fn left(mut self) -> Self {
+        self.left = true;
+        self
     }
     pub fn height(mut self, h: f32) -> Self {
         self.height = Some(h);
@@ -405,15 +411,26 @@ impl Btn {
         self
     }
 
-    pub fn show(self, ui: &mut Ui) -> Response {
-        let p = pal(ui);
+    fn metrics(&self) -> (f32, f32, f32, FontId) {
         let (h, fs, pad) = match (self.kind, self.small) {
             (Kind::Record, _) => (40.0, 15.0, 18.0),
             (_, true) => (28.0, 13.0, 10.0),
             _ => (34.0, 14.0, 14.0),
         };
-        let h = self.height.unwrap_or(h);
         let fid = if matches!(self.kind, Kind::Primary | Kind::Record | Kind::Danger) { font_bold(fs) } else { font(fs) };
+        (self.height.unwrap_or(h), fs, pad, fid)
+    }
+
+    /// 不設最小寬度時的寬度（讓一組按鈕取一樣寬）
+    pub fn width(&self, ui: &Ui) -> f32 {
+        let (_, _, pad, fid) = self.metrics();
+        let text = (!self.text.is_empty()).then(|| ui.painter().layout_no_wrap(self.text.clone(), fid, Color32::WHITE).size().x);
+        pad * 2.0 + text.unwrap_or(0.0) + if self.icon.is_some() { 16.0 + if text.is_some() { 6.0 } else { 0.0 } } else { 0.0 } + if self.trailing.is_some() { 18.0 } else { 0.0 }
+    }
+
+    pub fn show(self, ui: &mut Ui) -> Response {
+        let p = pal(ui);
+        let (h, _, pad, fid) = self.metrics();
         let text_color = |hover: bool| match self.kind {
             Kind::Primary => p.accent_ink,
             Kind::Record => Color32::WHITE,
@@ -469,7 +486,7 @@ impl Btn {
             let r = CornerRadius::same(if self.kind == Kind::Record { RADIUS_SM + 2 } else { RADIUS_SM });
             painter.rect(rect, r, fill, stroke, StrokeKind::Inside);
             let color = if self.enabled { text_color(hover) } else { text_color(false).gamma_multiply(0.45) };
-            let mut x = rect.center().x - (w - pad * 2.0) / 2.0;
+            let mut x = if self.left { rect.min.x + pad } else { rect.center().x - (w - pad * 2.0) / 2.0 };
             if galley.is_none() && self.icon.is_some() && self.trailing.is_none() {
                 x = rect.center().x - icon_w / 2.0;
             }
