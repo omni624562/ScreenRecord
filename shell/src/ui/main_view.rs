@@ -160,6 +160,10 @@ fn view_rect(app: &UiApp) -> DRect {
     }
 }
 
+/// 左右兩欄底部那一列（設定列、系統狀態）的高度與上方細線的間距：兩邊相同，細線才會對齊
+const BOTTOM_BAR_H: f32 = 40.0;
+const BOTTOM_LINE_GAP: f32 = 5.0;
+
 fn capture_panel(app: &mut UiApp, ui: &mut Ui) {
     let p = theme::pal(ui);
     theme::card(ui).show(ui, |ui| {
@@ -187,12 +191,12 @@ fn capture_panel(app: &mut UiApp, ui: &mut Ui) {
             });
         });
         ui.add_space(10.0);
-        let bar_h = 40.0;
+        let bar_h = BOTTOM_BAR_H;
         let desk_area = Rect::from_min_max(ui.cursor().min, pos2(ui.max_rect().max.x, ui.max_rect().max.y - bar_h - 10.0));
         desk(app, ui, desk_area);
         let bar = Rect::from_min_max(pos2(desk_area.min.x, ui.max_rect().max.y - bar_h), ui.max_rect().max);
         ui.scope_builder(UiBuilder::new().max_rect(bar).layout(Layout::left_to_right(Align::Center)), |ui| {
-            ui.painter().hline(bar.x_range(), bar.min.y - 5.0, Stroke::new(1.0, p.border));
+            ui.painter().hline(bar.x_range(), bar.min.y - BOTTOM_LINE_GAP, Stroke::new(1.0, p.border));
             settings_bar(app, ui);
         });
     });
@@ -471,7 +475,9 @@ fn region_drag(app: &mut UiApp, ui: &Ui, resp: &egui::Response, rect: Rect, view
 
 fn combo<T: PartialEq + Copy>(ui: &mut Ui, id: &str, label: &str, value: &mut T, items: &[(T, String)], enabled: bool, width: f32) -> bool {
     let mut changed = false;
-    ui.label(theme::muted(ui, label));
+    if !label.is_empty() {
+        ui.label(theme::muted(ui, label));
+    }
     let text = items.iter().find(|(v, _)| v == value).map(|(_, t)| t.clone()).unwrap_or_default();
     ui.add_enabled_ui(enabled, |ui| {
         egui::ComboBox::from_id_salt(id).selected_text(text).width(width).show_ui(ui, |ui| {
@@ -488,7 +494,17 @@ fn combo<T: PartialEq + Copy>(ui: &mut Ui, id: &str, label: &str, value: &mut T,
 
 /// 下拉按鈕：點一下開關面板，點外面關閉
 fn drop_button(ui: &mut Ui, id: &str, text: String, icon: Icon, enabled: bool, width: f32, contents: impl FnOnce(&mut Ui)) {
-    let resp = Btn::new(text).icon(icon).trailing(Icon::Down).small().enabled(enabled).show(ui);
+    drop_button_tip(ui, id, text, None, icon, enabled, width, contents);
+}
+
+/// 下拉按鈕；text 為空時只有圖示（tip 顯示在滑鼠提示）
+#[allow(clippy::too_many_arguments)]
+fn drop_button_tip(ui: &mut Ui, id: &str, text: String, tip: Option<String>, icon: Icon, enabled: bool, width: f32, contents: impl FnOnce(&mut Ui)) {
+    let mut b = Btn::new(text).icon(icon).trailing(Icon::Down).small().enabled(enabled);
+    if let Some(t) = tip {
+        b = b.tooltip(t);
+    }
+    let resp = b.show(ui);
     egui::Popup::from_toggle_button_response(&resp).id(Id::new(id)).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).width(width).show(|ui| {
         ui.set_width(width);
         ui.spacing_mut().item_spacing.y = 8.0;
@@ -499,6 +515,8 @@ fn drop_button(ui: &mut Ui, id: &str, text: String, icon: Icon, enabled: bool, w
 fn settings_bar(app: &mut UiApp, ui: &mut Ui) {
     let p = theme::pal(ui);
     let locked = app.locked();
+    // 視窗較窄時：聲音只寫來源、「更多設定」只剩圖示、不顯示輸出大小，整列才放得下
+    let compact = ui.available_width() < 800.0;
     let mut fps_items: Vec<(f64, String)> = FPS_CHOICES.iter().map(|f| (*f, format!("{f}"))).collect();
     if !FPS_CHOICES.contains(&app.s.fps) {
         fps_items.push((app.s.fps, format!("{}", app.s.fps)));
@@ -508,7 +526,7 @@ fn settings_bar(app: &mut UiApp, ui: &mut Ui) {
     }
     ui.add_space(4.0);
     let scales: Vec<(u32, String)> = [100, 75, 50, 25].iter().map(|s| (*s, format!("{s}%"))).collect();
-    if combo(ui, "scale", "解析度", &mut app.s.scale, &scales, !locked, 64.0) {
+    if combo(ui, "scale", if compact { "" } else { "解析度" }, &mut app.s.scale, &scales, !locked, 64.0) {
         app.save_settings();
     }
     ui.add_space(4.0);
@@ -526,7 +544,8 @@ fn settings_bar(app: &mut UiApp, ui: &mut Ui) {
         _ => "不錄",
     };
     let icon = if app.s.audio_mic && !app.s.audio_system { Icon::Mic } else { Icon::Speaker };
-    drop_button(ui, "audio", format!("聲音：{label}"), icon, !locked, 300.0, |ui| audio_panel(app, ui));
+    let audio_text = if compact { label.to_string() } else { format!("聲音：{label}") };
+    drop_button_tip(ui, "audio", audio_text, Some(format!("錄製聲音：{label}")), icon, !locked, 300.0, |ui| audio_panel(app, ui));
     // 更多設定
     let mut more = vec!["更多設定".to_string()];
     if app.s.max_minutes > 0.0 {
@@ -545,17 +564,27 @@ fn settings_bar(app: &mut UiApp, ui: &mut Ui) {
         EncoderPreference::Cpu => more.push("CPU 編碼".into()),
         _ => {}
     }
-    drop_button(ui, "more", more.join("・"), Icon::Settings, !locked, 340.0, |ui| more_panel(app, ui));
+    let more_text = if compact { String::new() } else { more.join("・") };
+    drop_button_tip(ui, "more", more_text, Some(more.join("・")), Icon::Settings, !locked, 340.0, |ui| more_panel(app, ui));
     // 儲存位置
     let dir = app.s.out_dir(&app.env);
-    let short: String = if dir.chars().count() > 28 { format!("…{}", dir.chars().rev().take(26).collect::<Vec<_>>().into_iter().rev().collect::<String>()) } else { dir.clone() };
+    // 依剩下的寬度縮短路徑（保留結尾），整列不會超出卡片；右邊留給「輸出 3840×1080」
+    let out_w = if !compact && app.s.source_rect(&app.env).is_some() { 110.0 } else { 0.0 };
+    let room = (ui.available_width() - out_w - 60.0).max(40.0);
+    let fits = |t: &str| ui.painter().layout_no_wrap(t.to_string(), theme::font(13.0), p.text).size().x <= room;
+    let short: String = if fits(&dir) {
+        dir.clone()
+    } else {
+        let chars: Vec<char> = dir.chars().collect();
+        (1..chars.len()).map(|i| format!("…{}", chars[i..].iter().collect::<String>())).find(|t| fits(t)).unwrap_or_else(|| "…".into())
+    };
     ui.scope(|ui| {
         drop_button(ui, "dir", short, Icon::Folder, !locked, 420.0, |ui| dir_panel(app, ui));
     })
     .response
     .on_hover_text(format!("儲存位置：{dir}"));
     // 輸出大小
-    if let Some(r) = app.s.source_rect(&app.env) {
+    if let Some(r) = app.s.source_rect(&app.env).filter(|_| !compact) {
         let (w, h) = output_size(r.width, r.height, app.s.scale as f64);
         let big = (w as f64) * (h as f64) > 3840.0 * 2160.0 * 1.05;
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -951,7 +980,7 @@ fn rec_panel(app: &mut UiApp, ui: &mut Ui) {
             });
         }
         // 事件紀錄 + 系統狀態（固定在底部）
-        let sys_h = 34.0;
+        let sys_h = BOTTOM_BAR_H;
         // 轉檔工作、結果佔掉空間時：放不下就不顯示事件紀錄，系統狀態不被蓋住
         let log_h = ui.available_height() - sys_h - 8.0 - 32.0;
         if log_h >= 40.0 {
@@ -972,8 +1001,8 @@ fn rec_panel(app: &mut UiApp, ui: &mut Ui) {
                 }
             });
         }
-        let bottom = Rect::from_min_max(pos2(ui.max_rect().min.x, ui.max_rect().max.y - sys_h + 6.0), ui.max_rect().max);
-        ui.painter().hline(bottom.x_range(), bottom.min.y - 4.0, Stroke::new(1.0, p.border));
+        let bottom = Rect::from_min_max(pos2(ui.max_rect().min.x, ui.max_rect().max.y - sys_h), ui.max_rect().max);
+        ui.painter().hline(bottom.x_range(), bottom.min.y - BOTTOM_LINE_GAP, Stroke::new(1.0, p.border));
         ui.scope_builder(UiBuilder::new().max_rect(bottom).layout(Layout::left_to_right(Align::Center)), |ui| sys_status(app, ui));
     });
 }

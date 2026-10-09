@@ -423,7 +423,7 @@ impl Btn {
         if self.kind == Kind::Record {
             w += 10.0 + gap;
         }
-        if galley.is_none() && self.icon.is_some() {
+        if galley.is_none() && self.icon.is_some() && self.trailing.is_none() {
             w = h;
         }
         let size = vec2(w.max(self.min_width), h);
@@ -451,7 +451,7 @@ impl Btn {
             painter.rect(rect, r, fill, stroke, StrokeKind::Inside);
             let color = if self.enabled { text_color(hover) } else { text_color(false).gamma_multiply(0.45) };
             let mut x = rect.center().x - (w - pad * 2.0) / 2.0;
-            if galley.is_none() && self.icon.is_some() {
+            if galley.is_none() && self.icon.is_some() && self.trailing.is_none() {
                 x = rect.center().x - icon_w / 2.0;
             }
             if self.kind == Kind::Record {
