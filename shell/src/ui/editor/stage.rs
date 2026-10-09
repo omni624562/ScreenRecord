@@ -10,8 +10,17 @@ use std::time::{Duration, Instant};
 /// 標註畫成與畫面同大小的圖（內容變了才重畫）
 #[derive(Default)]
 pub struct Overlay {
-    tex: Option<TextureHandle>,
+    /// 每個標註畫成自己的小圖（依內容快取）：只改時間或位置時不用重畫，拖曳才順
+    sprites: std::collections::HashMap<u64, Sprite>,
+}
+
+struct Sprite {
+    /// 內容（不含位置、時間）與縮放比例的雜湊；變了才重畫
     key: u64,
+    tex: TextureHandle,
+    /// 圖的左上角相對於標註 (x, y) 的位移與大小（影片像素）
+    off: (f64, f64),
+    size: (f64, f64),
 }
 
 const SEL_BLUE: Color32 = Color32::from_rgb(0x00, 0x90, 0xff);
@@ -36,11 +45,24 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, stage_h: f3
     let playing = ed.player.is_playing();
 
     // 標註（馬賽克 / 模糊已套用在影片上）
-    update_overlay(ed, ctx, rect, t);
-    if let Some(tex) = &ed.overlay.tex {
-        painter.image(tex.id(), rect, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
-    }
     let css = (rect.width() as f64) / ed.vw;
+    update_sprites(ed, ctx, rect);
+    for a in ed.ordered() {
+        if a.kind.is_effect() {
+            continue;
+        }
+        let visible = t >= a.start && t <= a.end;
+        if !visible && ed.ann_sel != Some(a.id) {
+            continue;
+        }
+        if let Some(sp) = ed.overlay.sprites.get(&a.id) {
+            let min = pos2(rect.left() + ((a.x + sp.off.0) * css) as f32, rect.top() + ((a.y + sp.off.1) * css) as f32);
+            let r = Rect::from_min_size(min, vec2((sp.size.0 * css) as f32, (sp.size.1 * css) as f32));
+            // 選取中、但目前時間看不到的標註畫淡一點
+            let tint = if visible { Color32::WHITE } else { Color32::from_white_alpha(89) };
+            painter.with_clip_rect(rect).image(sp.tex.id(), r, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), tint);
+        }
+    }
     let to_screen = |x: f64, y: f64| pos2(rect.left() + (x * css) as f32, rect.top() + (y * css) as f32);
 
     // 馬賽克 / 模糊的範圍框與名稱（播放時隱藏，看到的就是輸出的樣子）
@@ -128,38 +150,39 @@ fn outline(shape: Option<Shape>, r: Rect, radius: f32) -> Vec<Pos2> {
     }
 }
 
-/// 重畫標註圖（內容、大小、選取、目前看得到哪些改變時）
-fn update_overlay(ed: &mut Editor, ctx: &egui::Context, rect: Rect, t: f64) {
-    let ppp = ctx.pixels_per_point();
-    let (pw, ph) = ((rect.width() * ppp).round().max(1.0) as u32, (rect.height() * ppp).round().max(1.0) as u32);
-    let drawn: Vec<(u64, bool)> = ed
-        .anns
-        .iter()
-        .filter(|a| !a.kind.is_effect())
-        .filter_map(|a| {
-            let visible = t >= a.start && t <= a.end;
-            (visible || ed.ann_sel == Some(a.id)).then_some((a.id, visible))
-        })
-        .collect();
-    let list: Vec<&Ann> = ed.anns.iter().filter(|a| drawn.iter().any(|(id, _)| *id == a.id)).collect();
-    let key = hash_of(&(pw, ph, drawn.clone(), serde_json::to_string(&list).unwrap_or_default()));
-    if key == ed.overlay.key && ed.overlay.tex.is_some() {
-        return;
-    }
-    ed.overlay.key = key;
-    let Some(mut pm) = tiny_skia::Pixmap::new(pw, ph) else {
-        return;
-    };
-    let s = (pw as f64 / ed.vw) as f32;
-    for a in ed.ordered() {
-        if let Some((_, visible)) = drawn.iter().find(|(id, _)| *id == a.id) {
-            annotate::draw_with_opacity(&mut pm, a, tiny_skia::Transform::from_scale(s, s), if *visible { 1.0 } else { 0.35 });
+/// 標註的小圖：內容或大小變了才重畫（表情符號的彩色字形畫起來特別慢，拖曳時不能每一格都重畫）
+fn update_sprites(ed: &mut Editor, ctx: &egui::Context, rect: Rect) {
+    let s = (rect.width() * ctx.pixels_per_point()) as f64 / ed.vw;
+    let ids: Vec<u64> = ed.anns.iter().map(|a| a.id).collect();
+    ed.overlay.sprites.retain(|id, _| ids.contains(id));
+    for a in ed.anns.iter().filter(|a| !a.kind.is_effect()) {
+        // 內容：位置、時間、編號以外的欄位
+        let mut look = a.clone();
+        (look.x, look.y, look.start, look.end, look.id) = (0.0, 0.0, 0.0, 0.0, 0);
+        let key = hash_of(&(serde_json::to_string(&look).unwrap_or_default(), s.to_bits()));
+        if ed.overlay.sprites.get(&a.id).is_some_and(|sp| sp.key == key) {
+            continue;
         }
-    }
-    let img = egui::ColorImage::from_rgba_premultiplied([pw as usize, ph as usize], pm.data());
-    match &mut ed.overlay.tex {
-        Some(t) => t.set(img, TextureOptions::LINEAR),
-        None => ed.overlay.tex = Some(ctx.load_texture("editor-anns", img, TextureOptions::LINEAR)),
+        // 範圍：標註實際佔的地方，再留一點邊（文字外框、箭頭頭部）
+        let (bx, by, bw, bh) = annotate::bbox(&look);
+        let m = a.size * 0.3 + 4.0;
+        let (ox, oy, ow, oh) = (bx - m, by - m, bw + m * 2.0, bh + m * 2.0);
+        let (pw, ph) = ((ow * s).ceil().max(1.0) as u32, (oh * s).ceil().max(1.0) as u32);
+        let Some(mut pm) = tiny_skia::Pixmap::new(pw.min(8192), ph.min(8192)) else { continue };
+        let tf = tiny_skia::Transform::from_scale(s as f32, s as f32).pre_translate(-ox as f32, -oy as f32);
+        annotate::draw(&mut pm, &look, tf);
+        let img = egui::ColorImage::from_rgba_premultiplied([pm.width() as usize, pm.height() as usize], pm.data());
+        let size = (pm.width() as f64 / s, pm.height() as f64 / s);
+        match ed.overlay.sprites.get_mut(&a.id) {
+            Some(sp) => {
+                sp.tex.set(img, TextureOptions::LINEAR);
+                (sp.key, sp.off, sp.size) = (key, (ox, oy), size);
+            }
+            None => {
+                let tex = ctx.load_texture(format!("ann-{}", a.id), img, TextureOptions::LINEAR);
+                ed.overlay.sprites.insert(a.id, Sprite { key, tex, off: (ox, oy), size });
+            }
+        }
     }
 }
 
