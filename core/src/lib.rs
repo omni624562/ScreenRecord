@@ -4,6 +4,7 @@
 //! 呼叫 Windows API 的部分放在 `#[cfg(windows)]` 底下。
 
 pub mod actions;
+pub mod annotate;
 pub mod app;
 pub mod args;
 pub mod audio;
@@ -12,9 +13,11 @@ pub mod clock;
 pub mod desktop;
 pub mod downloader;
 pub mod edit;
+pub mod effects;
 pub mod error;
 pub mod exporter;
 pub mod ffmpeg;
+pub mod fonts;
 pub mod format;
 pub mod http;
 pub mod instance;
