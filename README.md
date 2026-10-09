@@ -162,3 +162,9 @@ scripts/         build.ts 建置 exe、release-notes.ts 產生 Release 說明、
 - 錄聲音時，每個分段結尾的畫面會比聲音多約 0.3～0.5 秒（FFmpeg 收到 `q` 後先停止讀取輸入，畫面來源還會多送幾張），因此停止處與暫停點會有一小段沒有聲音；影音同步不受影響。
 - gdigrab 在 1080p30 以上較吃 CPU，可能無法維持設定的 fps（會提示）；ddagrab 沒有這個問題。
 - 混合 DPI 的多螢幕環境下，gdigrab 的座標換算以 FFmpeg 的行為為準；旋轉的螢幕未實測。
+
+## 授權
+
+本程式以 [MIT 授權](LICENSE) 釋出：可以自由使用、修改、散布（包括商業用途），只要保留著作權與授權聲明。
+
+FFmpeg 不包含在本程式內：使用者自行放置或由程式從 gyan.dev 下載，FFmpeg 依其本身的授權（GPL / LGPL）使用。若用 `bun run dist` 把 `ffmpeg.exe` 一起放進發佈資料夾再散布，需遵守 FFmpeg 的授權條款。

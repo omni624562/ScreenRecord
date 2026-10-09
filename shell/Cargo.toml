@@ -4,6 +4,7 @@ version = "1.0.0"
 edition = "2021"
 description = "螢幕錄影：單一執行檔（本機 API、錄影、系統匣、Tauri / WebView2 操作視窗）"
 publish = false
+license = "MIT"
 
 [dependencies]
 tauri = { version = "2", features = [] }

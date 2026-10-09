@@ -3,6 +3,7 @@ name = "screenrecorder-core"
 version = "1.0.0"
 edition.workspace = true
 publish.workspace = true
+license.workspace = true
 description = "螢幕錄影的後端：FFmpeg 參數、錄影、轉檔、錄影清單、本機 HTTP API"
 
 [dependencies]
