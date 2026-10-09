@@ -6,6 +6,7 @@ resolver = "2"
 [workspace.package]
 edition = "2021"
 publish = false
+license = "MIT"
 
 # 發佈版：優先檔案小。不設 panic = "abort"：背景工作出錯時只結束那個工作，不會連同錄影中的程式一起結束
 [profile.release]
