@@ -450,6 +450,8 @@ function renderTime() {
   const ph = document.getElementById("edAnnPh");
   if (ph) ph.style.left = duration ? pct(t) : "0";
   $("edPlay").textContent = video().paused ? "播放" : "暫停";
+  // 播放時隱藏馬賽克 / 模糊的虛線框與名稱，看到的就是輸出的樣子
+  $("edStage").classList.toggle("playing", !video().paused);
   // 播放時播放頭跑出放大的範圍：跟著捲動
   if (!video().paused && (t > view.b || t < view.a) && view.b - view.a < duration) {
     const span = view.b - view.a;
@@ -631,7 +633,9 @@ function drawEffect(ctx: CanvasRenderingContext2D, a: Ann, s: number) {
 function blurPreview(a: Ann, visible: boolean, css: number): string {
   const box = `left:${(a.x / vw) * 100}%;top:${(a.y / vh) * 100}%;width:${(a.w / vw) * 100}%;height:${(a.h / vh) * 100}%`;
   const radius = a.shape === "ellipse" ? "50%" : a.shape === "round" ? `${roundRadius(a.w, a.h) * css}px` : "0";
-  return `<div class="ed-blur${visible ? "" : " off"}" style="${box};border-radius:${radius}"><span>${esc(label(a))}</span></div>`;
+  // 名稱放在形狀裡面（橢圓、圓角時置中靠上，不會跑到框外）；形狀太小放不下就不顯示
+  const tiny = a.w * css < 120 || a.h * css < 48;
+  return `<div class="ed-blur ${a.shape ?? "rect"}${visible ? "" : " off"}" style="${box};border-radius:${radius}">${tiny ? "" : `<span>${esc(label(a))}</span>`}</div>`;
 }
 
 /** 選取框與調整大小的把手 */
