@@ -214,6 +214,7 @@ pub enum Icon {
     Down,
     Mic,
     Speaker,
+    Close,
 }
 
 /// 在 rect（正方形）裡畫圖示
@@ -295,6 +296,10 @@ pub fn paint_icon(p: &Painter, rect: Rect, icon: Icon, color: Color32) {
         Icon::Speaker => {
             line(&[(2.5, 6.0), (5.0, 6.0), (8.5, 3.0), (8.5, 13.0), (5.0, 10.0), (2.5, 10.0), (2.5, 6.0)]);
             arc(11.0, 8.0, 2.5, -1.1, 1.1);
+        }
+        Icon::Close => {
+            line(&[(4.0, 4.0), (12.0, 12.0)]);
+            line(&[(12.0, 4.0), (4.0, 12.0)]);
         }
     }
 }
