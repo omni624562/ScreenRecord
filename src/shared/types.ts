@@ -235,4 +235,17 @@ export interface UpdateInfo {
   version: string;
   url: string;
   publishedAt?: string;
+  /** 有這兩項時可以在程式內更新（下載 exe、核對 SHA-256、重新啟動） */
+  downloadUrl?: string;
+  sha256?: string;
+  size?: number;
+}
+
+/** 程式內更新的進度 */
+export interface InstallStatus {
+  phase: "idle" | "downloading" | "verifying" | "restarting" | "error";
+  received: number;
+  total?: number;
+  version?: string;
+  message?: string;
 }

@@ -79,6 +79,7 @@ svg.fill { fill: currentColor; stroke: none; }
 .chip.bad::before { background: var(--rec); }
 .chip.new { color: #fff; background: var(--rec); border-color: var(--rec); text-decoration: none; font-weight: 600; flex-shrink: 0; }
 .chip.new::before { background: #fff; }
+button.chip { font: inherit; font-size: 12px; cursor: pointer; }
 .chip.new:hover { filter: brightness(1.08); }
 
 .main { display: grid; grid-template-columns: minmax(0, 1fr) clamp(320px, 26vw, 400px); gap: 12px; min-height: 0; }

@@ -2,11 +2,11 @@
 
 Windows 11 螢幕錄影工具：**原速錄影並完整保留，停止後再選倍率製作加速版**（可對同一支錄影重複製作不同倍率，高倍率即是縮時影片）。
 
-- TypeScript + Bun；`Bun.serve` 提供本機網頁介面，以內建的操作視窗（Rust + Tauri，使用 Windows 內建的 WebView2）顯示
+- Rust 單一執行檔：本機 API（axum）、錄影、轉檔、系統匣，操作視窗用 Tauri（Windows 內建的 WebView2）；網頁介面以 TypeScript 撰寫、由 Bun 打包後內嵌
 - 擷取與編碼交給 FFmpeg：優先 `ddagrab`（Desktop Duplication，GPU 擷取），不支援或失敗時自動退回 `gdigrab`
-- 輸出 H.264 MP4（yuv420p、BT.709），`bun build --compile` 編成單一 exe
+- 輸出 H.264 MP4（yuv420p、BT.709）
 
-目前版本：**1.2.1**　各版本的變更見 [CHANGELOG.md](CHANGELOG.md)（版本號顯示在操作視窗的標題列；系統匣選單「更新說明」可在程式裡查看）。
+目前版本：**2.0.0**　各版本的變更見 [CHANGELOG.md](CHANGELOG.md)（版本號顯示在操作視窗的標題列；系統匣選單「更新說明」可在程式裡查看）。
 
 ## 功能
 
@@ -25,7 +25,7 @@ Windows 11 螢幕錄影工具：**原速錄影並完整保留，停止後再選�
 | 製作 GIF | 可選寬度（320–1280 px）與每秒張數，可同時加速；短片用整段共用調色盤（檔案小），長片改用每張畫面各自的調色盤（記憶體固定） |
 | 剪輯影片 | 剪掉頭尾、刪除中間多段、裁切畫面範圍（在影片上拖曳框選），另存為 `*_cut.mp4`，原檔不變；剪輯版可再拿去製作加速版 |
 | 錄影清單 | 主畫面下方「最近錄影」左右翻頁、有縮圖；「全部錄影」視窗可搜尋、篩選、排序、分頁，加速版與 GIF 列在原片底下（各自有長度、大小、播放、資料夾），可重新命名（加速版一起改名），勾選多筆移到資源回收筒（可還原） |
-| 檢查新版本 | 啟動後與每 12 小時查詢 GitHub Releases，有新版本時在系統匣選單與操作視窗提示（只提示、不自動安裝；可關閉）。儲存庫需為公開才查得到，私人時會顯示原因並停止自動檢查 |
+| 檢查與更新新版本 | 啟動後與每 12 小時查詢 GitHub Releases，有新版本時在系統匣選單與操作視窗提示（可關閉）；點「有新版本」即可在程式內更新：下載新版 exe、核對 GitHub 提供的 SHA-256 後替換並重新啟動（錄影中不能更新；exe 所在資料夾沒有寫入權限時改為開啟下載頁面）。儲存庫需為公開才查得到，私人時會顯示原因並停止自動檢查 |
 | 介面 | 一頁式、不出現捲軸：以 1280×800 設計，較小的視窗等比縮小（最小 0.8 倍），較大的視窗撐滿、預覽區變大（最寬 2400px） |
 
 預設儲存位置：`%USERPROFILE%\Videos\Timelapse`（介面上可改，會記住）  
@@ -49,7 +49,7 @@ Windows 11 螢幕錄影工具：**原速錄影並完整保留，停止後再選�
 
 ### 執行編譯好的版本
 
-從 [Releases](https://github.com/omni624562/ScreenRecord/releases/latest) 下載 `ScreenRecorder.zip`（約 38 MB，解壓縮後使用）或 `ScreenRecorder.exe`（約 94 MB）。exe 幾乎都是內含的 Bun 執行環境（約 94 MB，本程式只占約 0.3 MB），壓縮後下載量少約 60%。
+從 [Releases](https://github.com/omni624562/ScreenRecord/releases/latest) 下載 `ScreenRecorder.zip`（解壓縮後使用）或 `ScreenRecorder.exe`（約 9.4 MB）。
 
 ```
 ScreenRecorder.exe
@@ -59,11 +59,13 @@ ffmpeg.exe          ← 放在同一個資料夾
 找不到 `ffmpeg.exe` 時，介面上方會出現提示，按「自動下載」即可：從 [gyan.dev](https://www.gyan.dev/ffmpeg/builds/) 下載固定版本 FFmpeg 9.0.2 essentials（約 110 MB，失敗時改用 GitHub 上的同一檔案），比對程式內建的 SHA-256（不是從下載網站取得，檔案被替換也會被擋下）後，用 Windows 內建的 `System32\tar.exe` 解出 `ffmpeg.exe`，放到 exe 旁邊（沒有寫入權限時放 `%LOCALAPPDATA%\ScreenRecorder`），完成後自動偵測，不用重開程式。下載可取消，不會留下未完成的檔案。也可以按「手動下載」自行下載後放好，再按「重新偵測」。  
 搜尋順序：`exe 所在資料夾\ffmpeg.exe` → `ffmpeg\bin\ffmpeg.exe` → `bin\ffmpeg.exe` → `%LOCALAPPDATA%\ScreenRecorder\ffmpeg.exe` → `PATH`。
 
-從系統匣選單「結束」會先把錄影正常收尾並合併再結束。編譯版不顯示主控台視窗；需要看即時訊息時用 `bun run build:console` 另外編一個有主控台的版本。
+從系統匣選單「結束」會先把錄影正常收尾並合併再結束。程式不顯示主控台視窗，訊息寫在記錄檔 `%LOCALAPPDATA%\ScreenRecorder\ScreenRecorder.log`。
 
 參數：`--port <n>`（預設 47391，被占用時往後找）、`--no-open`（不自動開操作視窗）、`--tray`（只常駐系統匣，開機自動啟動時使用）、`--no-tray`（開發測試用：不建立系統匣、不檢查是否已在執行，可與正式程式並存）。同時只會有一個實例，重複啟動會直接開啟現有的操作視窗。
 
 ### 開發
+
+需要 [Rust](https://rustup.rs/) 與 [Bun](https://bun.sh/)（打包網頁介面）：
 
 ```bash
 bun install
@@ -74,23 +76,22 @@ bun run start
 ```
 
 ```bash
-bun test
+bun run test
 ```
 
 ```bash
 bun run typecheck
 ```
 
+`bun run start` 等於 `cargo run -p screenrecorder-ui`；要與已安裝的正式版並存時加上 `-- --no-tray`。後端的單元測試在 `core`（`cargo test -p screenrecorder-core`，Linux 上也能跑），介面共用計算的測試用 `bun test`。
+
 ### 建置
 
-需要 [Rust](https://rustup.rs/)（編譯操作視窗程式）：
-
 ```bash
-cargo build --release --manifest-path shell/Cargo.toml
 bun run build
 ```
 
-產生 `dist\ScreenRecorder.exe`（操作視窗程式內嵌其中，仍是單一 exe）。沒有先編 `shell` 時也能建置，但操作視窗會改用瀏覽器開啟。若要一併把 PATH 上的 `ffmpeg.exe` 複製進 `dist\` 組成可發佈的資料夾：
+產生 `dist\ScreenRecorder.exe`（單一 exe，網頁介面已內嵌）。若要一併把 PATH 上的 `ffmpeg.exe` 複製進 `dist\` 組成可發佈的資料夾：
 
 ```bash
 bun run dist
@@ -113,31 +114,29 @@ GitHub Actions（`.github/workflows/release.yml`）會在 Windows 上型別檢�
 ## 專案結構
 
 ```
+core/            後端（Rust 函式庫，有單元測試）
+  app.rs         全域狀態（FFmpeg 偵測、螢幕與音訊裝置、錄影器、轉檔、下載、檢查新版本、預覽）
+  server.rs      本機 API（axum，只綁 127.0.0.1，檢查 Host / Origin）；內嵌打包好的網頁介面
+  recorder.rs    錄影狀態機：分段、暫停 / 繼續、q 收尾、意外中斷自動續錄、合併
+  exporter.rs    轉檔工作：加速版、GIF、剪輯（同時只跑一個，可取消）
+  library.rs     掃描儲存資料夾、讀取影片資訊、改名；thumbs.rs 縮圖產生與快取
+  args.rs        所有 FFmpeg 參數組裝（純函式）；format.rs、edit.rs 檔名、倍率、剪輯計算
+  ffmpeg.rs      尋找 ffmpeg.exe、偵測 ddagrab / gdigrab / 編碼器、ddagrab 與 GPU 編碼器實測
+  monitors.rs    DXGI 列舉螢幕（取得 ddagrab 需要的 adapter / output 索引）
+  audio.rs       WASAPI：系統聲音（loopback）與麥克風擷取、裝置列舉
+  audiopipe.rs   聲音對齊畫面時間、混音，經本機 TCP 送進 FFmpeg（專用執行緒）
+  tray.rs        系統匣控制（狀態、選單指令、通知）；tray_win.rs 在獨立執行緒建立圖示、選單、全域快捷鍵
+  winui.rs       開始擷取時縮小擋到錄影範圍的操作視窗、停止後還原
+  desktop.rs     開機自動啟動、以檔案總管開啟、瀏覽器備案；job.rs 讓子行程隨本程式結束
+  downloader.rs  自動下載 FFmpeg（SHA-256 校驗、解壓縮、放置）；updater.rs 查詢新版本；selfupdate.rs 程式內更新
+  settings.rs    設定存檔；log.rs 記錄檔；icon.rs 以程式繪製的系統匣圖示
+  build.rs       以 Bun 打包 src/ui 並內嵌；版本號取自 package.json
+shell/           主程式（Rust + Tauri v2）：啟動後端與系統匣、單一實例、操作視窗（WebView2，只顯示本機介面、外部網址交給預設瀏覽器）
 src/
-  main.ts        進入點：單一實例檢查、啟動伺服器、開啟操作視窗、Ctrl+C 正常收尾
-  app.ts         全域狀態（FFmpeg 偵測、螢幕清單、錄影器、匯出器）
-  server.ts      Bun.serve 路由與 API（只綁 127.0.0.1，檢查 Host / Origin）
-  recorder.ts    錄影狀態機：分段、暫停 / 繼續、q 收尾、意外中斷自動續錄、合併
-  exporter.ts    轉檔工作：加速匯出、GIF、剪輯（同時只跑一個，可取消）
-  library.ts     掃描儲存資料夾、讀取影片資訊；thumbs.ts 縮圖產生與快取
-  args.ts        所有 FFmpeg 參數組裝（純函式，有單元測試）
-  ffmpeg.ts      尋找 ffmpeg.exe、偵測 ddagrab / gdigrab / 編碼器、ddagrab 實測
-  monitors.ts    以 bun:ffi 呼叫 DXGI 列舉螢幕（取得 ddagrab 需要的 adapter / output 索引）
-  audio.ts       以 bun:ffi 呼叫 WASAPI：系統聲音（loopback）與麥克風擷取、裝置列舉
-  audiopipe.ts   聲音對齊畫面時間、混音，經本機 TCP 送進 FFmpeg
-  com.ts         COM vtable 呼叫、GUID、QPC 時鐘等共用工具
-  tray.ts        系統匣控制（狀態、選單指令、通知、快捷鍵指令）；tray-worker.ts 在獨立執行緒建立圖示、選單、全域快捷鍵
-  winui.ts       開始擷取時縮小擋到錄影範圍的操作視窗、停止後還原
-  updater.ts     查詢 GitHub Releases 是否有新版本
-  icon.ts        以程式繪製的圖示（系統匣三種狀態、exe 圖示）
-  settings.ts    設定存檔；desktop.ts 開啟操作視窗、開機自動啟動；log.ts 記錄檔
-  downloader.ts  自動下載 FFmpeg（SHA-256 校驗、解壓縮、放置）
-  shared/        前後端共用的型別、格式化與剪輯計算（edit.ts）
-  ui/editor.ts   剪輯對話框（時間軸、刪除片段、裁切框選）
-  ui/            網頁介面（index.html + app.ts + style.css，由 Bun 打包進 exe）
-shell/          操作視窗程式（Rust + Tauri v2）：以 WebView2 顯示本機介面、只開一個視窗、外部網址交給預設瀏覽器；
-                由主程式內嵌，第一次使用時取出到 %LOCALAPPDATA%\ScreenRecorder\ui
-scripts/        build.ts 建置 exe、release-notes.ts 產生 Release 說明、copy-ffmpeg.ts、make-icon.ts、set-gui-subsystem.ts
+  ui/            網頁介面（index.html + app.ts + style.css）；ui/editor.ts 剪輯對話框
+  shared/        介面使用的型別、格式化與剪輯計算；vectors.json 是兩邊共用的測試資料，確保與 core 的計算結果一致
+  icon.ts        exe 圖示的繪製（scripts/make-icon.ts 產生 assets/icon.ico）
+scripts/         build.ts 建置 exe、release-notes.ts 產生 Release 說明、shared-vectors.ts 產生共用測試資料、copy-ffmpeg.ts、make-icon.ts
 .github/workflows/release.yml   PR 自動測試與建置；main 的版本號尚未發佈時自動發佈
 ```
 
@@ -152,9 +151,9 @@ scripts/        build.ts 建置 exe、release-notes.ts 產生 Release 說明、c
 - **效能監看**：以近 5 秒實際寫入張數與 `dup_frames` 計算實際 fps（FFmpeg 的 `speed=` 會把啟動時間算進去，開頭會嚴重偏低，不適合用來判斷）。
 - **加速匯出**：`setpts=PTS/倍率,fps=原fps`，直接捨棄多餘的幀而不做混合，螢幕文字才不會有殘影；聲音用串接的 `atempo`（每段 ≤ 2 倍）變速不變調。
 - **剪輯**：`select` / `aselect` 依保留區段逐張挑選並重新接時間戳，可剪在任意一張畫面上（不受關鍵影格限制），再 `crop` 裁切畫面；因此需要重新編碼。預覽播放由 `/api/media` 直接提供影片檔（支援 Range，可拖曳進度）。
-- **系統匣**：以 `bun:ffi` 呼叫 `Shell_NotifyIcon` / `TrackPopupMenu`。選單開著時會卡住所在執行緒，所以放在 Bun Worker 裡，錄音讀取與網頁伺服器不受影響；選單跟隨 Windows 深色 / 淺色模式。
+- **系統匣**：`Shell_NotifyIcon` / `TrackPopupMenu`。選單開著時會卡住所在執行緒，所以放在獨立的執行緒，錄音與網頁伺服器不受影響；選單跟隨 Windows 深色 / 淺色模式。
 - **本機 API 防護**：只綁 `127.0.0.1`；檢查 `Host`（防 DNS rebinding）、非 GET 需同源且為 JSON（防其他網站跨站呼叫）；「開啟檔案」只接受 `.mp4`。
-- **子行程**：FFmpeg 由 libuv 放進 kill-on-close 的 Job Object，本程式被強制結束時 FFmpeg 也會一起結束；瀏覽器與播放器則透過 `explorer.exe` 交給 Shell 啟動，不會被一併關閉。
+- **子行程**：程式啟動時把自己放進 kill-on-close 的 Job Object，FFmpeg 等子行程跟著在裡面，本程式被強制結束時 FFmpeg 也會一起結束；瀏覽器與播放器則脫離 Job Object 或透過 `explorer.exe` 交給 Shell 啟動，不會被一併關閉。
 
 ## 已知限制
 
