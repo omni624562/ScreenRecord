@@ -125,9 +125,11 @@ enum Drag {
         handle: usize,
         orig: Ann,
     },
-    /// 拖曳旋轉把手
+    /// 拖曳旋轉把手：按下時游標的角度、標註原本的角度（轉的量 = 游標轉了多少，按下時不會跳）
     Rotate {
         id: u64,
+        a0: f64,
+        r0: f64,
     },
 }
 
@@ -1108,6 +1110,19 @@ fn keyboard(ed: &mut Editor, ctx: &egui::Context, toast: &mut Option<(String, bo
             ed.delete_ann(id);
         }
     }
+    // [ / ]：選取的標註轉 15 度（Shift：1 度）
+    for (k, dir) in [(Key::OpenBracket, -1.0), (Key::CloseBracket, 1.0)] {
+        let step = if key(Modifiers::SHIFT, k) {
+            1.0
+        } else if key(Modifiers::NONE, k) {
+            15.0
+        } else {
+            continue;
+        };
+        if let Some(a) = ed.ann_sel.and_then(|id| ed.ann_mut(id)).filter(|a| a.kind.rotatable()) {
+            a.rot = norm_deg(a.rot + dir * step);
+        }
+    }
     if key(Modifiers::NONE, Key::Escape) {
         if ed.sel.is_some() || ed.tool.is_some() || ed.ann_sel.is_some() {
             // 有選取或正在放置時 Esc 只取消，不關閉
@@ -1117,6 +1132,16 @@ fn keyboard(ed: &mut Editor, ctx: &egui::Context, toast: &mut Option<(String, bo
         } else {
             ed.close = true;
         }
+    }
+}
+
+/// 角度換到 -180（不含）～180
+pub fn norm_deg(d: f64) -> f64 {
+    let r = (d + 180.0).rem_euclid(360.0) - 180.0;
+    if r == -180.0 {
+        180.0
+    } else {
+        r
     }
 }
 

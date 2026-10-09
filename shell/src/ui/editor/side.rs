@@ -367,7 +367,11 @@ fn props(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context) {
                 ui.label(theme::muted(ui, "角度").font(theme::font(12.0)));
                 let mut deg = cur.rot;
                 ui.spacing_mut().slider_width = ui.available_width() - 120.0;
-                if ui.add(egui::Slider::new(&mut deg, -180.0..=180.0).step_by(1.0).fixed_decimals(0).suffix("°")).on_hover_text("也可以拖曳影片上選取框上方的圓點旋轉").changed() {
+                if ui
+                    .add(egui::Slider::new(&mut deg, -180.0..=180.0).step_by(1.0).fixed_decimals(0).suffix("°"))
+                    .on_hover_text("也可以拖曳影片上選取框旁的旋轉鈕，或按 [ / ] 每次轉 15 度（加 Shift 每次 1 度）")
+                    .changed()
+                {
                     cur.rot = deg;
                 }
                 if Btn::new("歸零").ghost().small().enabled(cur.rot != 0.0).show(ui).clicked() {

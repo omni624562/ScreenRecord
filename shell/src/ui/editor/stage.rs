@@ -25,7 +25,9 @@ struct Sprite {
 
 const SEL_BLUE: Color32 = Color32::from_rgb(0x00, 0x90, 0xff);
 /// 旋轉把手在選取框上方多遠（畫面像素）
-const ROT_HANDLE_PX: f64 = 26.0;
+/// 旋轉把手離外框的距離、可以點到的半徑（畫面像素）
+const ROT_HANDLE_PX: f64 = 30.0;
+const ROT_HIT_PX: f64 = 16.0;
 
 pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, stage_h: f32) {
     let avail_w = ui.available_width();
@@ -109,12 +111,20 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, stage_h: f3
         pts.push(pts[0]);
         painter.extend(egui::Shape::dashed_line(&pts, Stroke::new(1.5, SEL_BLUE), 5.0, 4.0));
         if a.kind.rotatable() {
-            // 旋轉把手：外框上方的圓點，與外框上緣中間連一條線
-            let top = annotate::to_world(a, lb.0 + lb.2 / 2.0, lb.1);
-            let (rx, ry) = annotate::rotate_handle(a, ROT_HANDLE_PX / css);
-            let (top, rh) = (to_screen(top.0, top.1), to_screen(rx, ry));
-            painter.line_segment([top, rh], Stroke::new(1.5, SEL_BLUE));
-            painter.circle(rh, 6.0, Color32::WHITE, Stroke::new(1.5, SEL_BLUE));
+            // 旋轉把手：外框上方（放不下時在下方）的圓鈕，與外框中間連一條線
+            let (anchor, (rx, ry)) = rot_handle(a, 1.0 / css, ed.vw, ed.vh);
+            let (anchor, rh) = (to_screen(anchor.0, anchor.1), to_screen(rx, ry));
+            painter.line_segment([anchor, rh], Stroke::new(1.5, SEL_BLUE));
+            let rotating = matches!(ed.drag, Drag::Rotate { .. });
+            painter.circle(rh, 10.0, if rotating { SEL_BLUE } else { Color32::WHITE }, Stroke::new(1.5, SEL_BLUE));
+            theme::paint_icon(&painter, Rect::from_center_size(rh, vec2(13.0, 13.0)), theme::Icon::Refresh, if rotating { Color32::WHITE } else { SEL_BLUE });
+            // 轉動中：顯示角度
+            if rotating {
+                let g = painter.layout_no_wrap(format!("{}°", a.rot.round()), theme::font_bold(12.0), Color32::WHITE);
+                let tag = Rect::from_min_size(rh + vec2(16.0, -g.size().y / 2.0 - 3.0), g.size() + vec2(10.0, 6.0));
+                painter.rect_filled(tag, CornerRadius::same(4), SEL_BLUE);
+                painter.galley(tag.min + vec2(5.0, 3.0), g, Color32::WHITE);
+            }
         }
         for (hx, hy) in annotate::handles(a) {
             let c = to_screen(hx, hy);
@@ -212,13 +222,32 @@ fn ann_at(ed: &Editor, x: f64, y: f64, tol: f64) -> Option<u64> {
     ed.anns.iter().rev().find(|a| (ed.ann_sel == Some(a.id) || (t >= a.start && t <= a.end)) && annotate::hit(a, x, y, tol)).map(|a| a.id)
 }
 
-/// 點到旋轉把手（k = 畫面一像素是多少影片像素）
-fn on_rotate_handle(a: &Ann, x: f64, y: f64, k: f64) -> bool {
+/// 旋轉把手的位置（影片座標）：(外框邊的中點, 把手)。平常在外框上方；超出影片時改放下方（才點得到）。
+/// k = 畫面一像素是多少影片像素
+fn rot_handle(a: &Ann, k: f64, vw: f64, vh: f64) -> ((f64, f64), (f64, f64)) {
+    let (bx, by, bw, bh) = annotate::local_bbox(a);
+    let d = ROT_HANDLE_PX * k;
+    let inside = |(x, y): (f64, f64)| x >= 0.0 && x <= vw && y >= 0.0 && y <= vh;
+    let above = annotate::to_world(a, bx + bw / 2.0, by - d);
+    if inside(above) {
+        return (annotate::to_world(a, bx + bw / 2.0, by), above);
+    }
+    (annotate::to_world(a, bx + bw / 2.0, by + bh), annotate::to_world(a, bx + bw / 2.0, by + bh + d))
+}
+
+/// 點到旋轉把手
+fn on_rotate_handle(a: &Ann, x: f64, y: f64, k: f64, vw: f64, vh: f64) -> bool {
     if !a.kind.rotatable() {
         return false;
     }
-    let (rx, ry) = annotate::rotate_handle(a, ROT_HANDLE_PX * k);
-    (rx - x).hypot(ry - y) <= 10.0 * k
+    let (_, (rx, ry)) = rot_handle(a, k, vw, vh);
+    (rx - x).hypot(ry - y) <= ROT_HIT_PX * k
+}
+
+/// 游標相對於標註中心的角度（度）
+fn pointer_angle(a: &Ann, x: f64, y: f64) -> f64 {
+    let (cx, cy) = annotate::center(a);
+    (y - cy).atan2(x - cx).to_degrees()
 }
 
 fn handle_at(a: &Ann, x: f64, y: f64, tol: f64) -> Option<usize> {
@@ -252,7 +281,7 @@ fn interact(ed: &mut Editor, ui: &egui::Ui, rect: Rect, resp: &egui::Response) {
                 CursorIcon::PointingHand
             } else if ed.tool.is_some() {
                 CursorIcon::Crosshair
-            } else if ed.selected().is_some_and(|a| on_rotate_handle(a, x, y, k)) {
+            } else if ed.selected().is_some_and(|a| on_rotate_handle(a, x, y, k, vw, vh)) {
                 CursorIcon::Grab
             } else if ed.selected().is_some_and(|a| handle_at(a, x, y, k * 9.0).is_some()) {
                 CursorIcon::ResizeNwSe
@@ -273,6 +302,17 @@ fn interact(ed: &mut Editor, ui: &egui::Ui, rect: Rect, resp: &egui::Response) {
             return ed.toggle_play();
         }
         let (x, y) = to_video(p);
+        // 選取中標註的旋轉 / 調整大小把手優先（連續放置表情、編號時也一樣，不會變成再放一個）
+        if let Some(cur) = ed.selected() {
+            if on_rotate_handle(cur, x, y, k, vw, vh) {
+                ed.drag = Drag::Rotate { id: cur.id, a0: pointer_angle(cur, x, y), r0: cur.rot };
+                return;
+            }
+            if let Some(h) = handle_at(cur, x, y, k * 9.0) {
+                ed.drag = Drag::Resize { id: cur.id, handle: h, orig: cur.clone() };
+                return;
+            }
+        }
         // 連續放置編號 / 表情時，點到已放好的同類標註 = 選取、移動它，不再新增
         let hit_same = ed.tool.filter(|t| t.sticky()).and_then(|t| ann_at(ed, x, y, k * 6.0).filter(|id| ed.anns.iter().any(|a| a.id == *id && a.kind == t.kind())));
         if let (Some(tool), None) = (ed.tool, hit_same) {
@@ -297,16 +337,6 @@ fn interact(ed: &mut Editor, ui: &egui::Ui, rect: Rect, resp: &egui::Response) {
                 ed.drag = Drag::Create { id, from: (x, y) };
             }
             return;
-        }
-        if let Some(cur) = ed.selected() {
-            if on_rotate_handle(cur, x, y, k) {
-                ed.drag = Drag::Rotate { id: cur.id };
-                return;
-            }
-            if let Some(h) = handle_at(cur, x, y, k * 9.0) {
-                ed.drag = Drag::Resize { id: cur.id, handle: h, orig: cur.clone() };
-                return;
-            }
         }
         if let Some(id) = ann_at(ed, x, y, k * 6.0) {
             ed.player.pause();
@@ -337,7 +367,9 @@ fn interact(ed: &mut Editor, ui: &egui::Ui, rect: Rect, resp: &egui::Response) {
     }
     if down {
         if let Some(p) = ui.input(|i| i.pointer.latest_pos()) {
-            drag_to(ed, to_video(p));
+            // 轉動時游標可以移到影片外面（不夾在影片範圍內，角度才準）
+            let v = if matches!(ed.drag, Drag::Rotate { .. }) { (((p.x - rect.left()) / rect.width()) as f64 * vw, ((p.y - rect.top()) / rect.height()) as f64 * vh) } else { to_video(p) };
+            drag_to(ed, v);
         }
     }
     if released || !down {
@@ -408,22 +440,18 @@ fn drag_to(ed: &mut Editor, (px, py): (f64, f64)) {
             }
             ed.drag = Drag::Resize { id, handle, orig };
         }
-        Drag::Rotate { id } => {
+        Drag::Rotate { id, a0, r0 } => {
             if let Some(a) = ed.ann_mut(id) {
-                let (cx, cy) = annotate::center(a);
-                // 把手在上方：指向上方 = 0 度
-                let mut deg = (py - cy).atan2(px - cx).to_degrees() + 90.0;
-                if deg > 180.0 {
-                    deg -= 360.0;
-                }
+                // 轉的量 = 游標繞中心轉了多少（從哪裡按下去都不會跳）
+                let mut deg = super::norm_deg(r0 + pointer_angle(a, px, py) - a0);
                 // 靠近 15 度的倍數時吸附（容易轉回水平、轉成 45 / 90 度）
                 let snap = (deg / 15.0).round() * 15.0;
                 if (deg - snap).abs() < 4.0 {
                     deg = snap;
                 }
-                a.rot = if snap.abs() >= 180.0 && (deg - snap).abs() < 4.0 { 180.0 } else { deg.round() };
+                a.rot = super::norm_deg(deg.round());
             }
-            ed.drag = Drag::Rotate { id };
+            ed.drag = Drag::Rotate { id, a0, r0 };
         }
         other => ed.drag = other,
     }
