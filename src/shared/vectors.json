@@ -1,0 +1,157 @@
+{
+  "outputSize": [
+    {"args":[1921,1081,100],"out":{"width":1920,"height":1080}},
+    {"args":[1366,768,75],"out":{"width":1024,"height":576}},
+    {"args":[10,10,25],"out":{"width":2,"height":2}},
+    {"args":[3840,2160,50],"out":{"width":1920,"height":1080}},
+    {"args":[2560,1440,33],"out":{"width":844,"height":474}}
+  ],
+  "speedLabel": [
+    {"args":[1.5],"out":"1.5"},
+    {"args":[2],"out":"2"},
+    {"args":[4],"out":"4"},
+    {"args":[3.333],"out":"3.33"},
+    {"args":[13.69],"out":"13.69"},
+    {"args":[1000],"out":"1000"},
+    {"args":[1.1],"out":"1.1"},
+    {"args":[2.005],"out":"2.01"}
+  ],
+  "exportFileName": [
+    {"args":["Rec_a.mp4",4,"mp4"],"out":"Rec_a_4x.mp4"},
+    {"args":["Rec_a.mp4",1.5,"mp4"],"out":"Rec_a_1.5x.mp4"},
+    {"args":["Rec_a.mp4",1,"gif"],"out":"Rec_a.gif"},
+    {"args":["Rec_a.mp4",4,"gif"],"out":"Rec_a_4x.gif"},
+    {"args":["Rec_b.MP4",3.33,"mp4"],"out":"Rec_b_3.33x.mp4"},
+    {"args":["我的錄影.mp4",16,"gif"],"out":"我的錄影_16x.gif"}
+  ],
+  "parseExportName": [
+    {"args":["Rec_a_4x.mp4"],"out":{"base":"Rec_a.mp4","speed":4,"format":"mp4"}},
+    {"args":["Rec_a_1.5x.mp4"],"out":{"base":"Rec_a.mp4","speed":1.5,"format":"mp4"}},
+    {"args":["Rec_a_8x_2.mp4"],"out":{"base":"Rec_a.mp4","speed":8,"format":"mp4"}},
+    {"args":["Rec_a.gif"],"out":{"base":"Rec_a.mp4","speed":1,"format":"gif"}},
+    {"args":["Rec_a_2.gif"],"out":{"base":"Rec_a.mp4","speed":1,"format":"gif"}},
+    {"args":["Rec_a_4x.gif"],"out":{"base":"Rec_a.mp4","speed":4,"format":"gif"}},
+    {"args":["Rec_a.mp4"],"out":null},
+    {"args":["Rec_a_cut.mp4"],"out":null},
+    {"args":["Rec_a_cut_4x.mp4"],"out":{"base":"Rec_a_cut.mp4","speed":4,"format":"mp4"}},
+    {"args":["X_0.5x.MP4"],"out":{"base":"X.mp4","speed":0.5,"format":"mp4"}}
+  ],
+  "scaledSize": [
+    {"args":[3840,1080,1920],"out":{"width":1920,"height":540}},
+    {"args":[1920,1080,1280],"out":{"width":1280,"height":720}},
+    {"args":[1366,768,1280],"out":{"width":1280,"height":720}},
+    {"args":[1280,720,1920],"out":{"width":1280,"height":720}},
+    {"args":[1920,1080,0],"out":{"width":1920,"height":1080}},
+    {"args":[1921,1081,1280],"out":{"width":1280,"height":720}}
+  ],
+  "estimateBytes": [
+    {"args":[{"format":"mp4","srcBytes":60000000,"srcSec":600,"srcWidth":1920,"srcHeight":1080,"speed":4,"width":1920,"height":1080}],"out":[15000000,54000000]},
+    {"args":[{"format":"mp4","srcBytes":60000000,"srcSec":600,"srcWidth":1920,"srcHeight":1080,"speed":16,"width":1280,"height":720}],"out":[4082482.9046386303,14696938.45669907]},
+    {"args":[{"format":"mp4","srcBytes":1000000,"srcSec":10,"srcWidth":0,"srcHeight":0,"speed":1.5,"width":640,"height":360}],"out":[408248.290463863,1469693.8456699068]},
+    {"args":[{"format":"gif","srcBytes":60000000,"srcSec":10,"srcWidth":1920,"srcHeight":1080,"speed":1,"width":640,"height":360,"gifFps":10}],"out":[691200,4608000]},
+    {"args":[{"format":"gif","srcBytes":60000000,"srcSec":0.01,"srcWidth":1920,"srcHeight":1080,"speed":2,"width":320,"height":180}],"out":[1728,11520]}
+  ],
+  "checkRecordingName": [
+    {"args":[""],"out":"請輸入名稱"},
+    {"args":["  "],"out":"請輸入名稱"},
+    {"args":["a/b"],"out":"名稱不能包含 \\ / : * ? \" < > |"},
+    {"args":["名稱?"],"out":"名稱不能包含 \\ / : * ? \" < > |"},
+    {"args":["CON"],"out":"這是 Windows 保留的名稱，請換一個"},
+    {"args":["com1"],"out":"這是 Windows 保留的名稱，請換一個"},
+    {"args":["正常名稱"],"out":null},
+    {"args":["a."],"out":"名稱結尾不能是句點或空白"},
+    {"args":["a "],"out":null},
+    {"args":["xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"],"out":"名稱太長（最多 120 個字）"},
+    {"args":["xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"],"out":null},
+    {"args":["Rec_a_4x"],"out":"名稱結尾不能是「_數字x」（例如 _4x），會被當成加速版"},
+    {"args":["Rec_a_cut"],"out":null}
+  ],
+  "parseClock": [
+    {"args":["1:30"],"out":90},
+    {"args":["90"],"out":90},
+    {"args":["1:02:03"],"out":3723},
+    {"args":["abc"],"out":null},
+    {"args":["0"],"out":null},
+    {"args":[""],"out":null},
+    {"args":[" 2:00 "],"out":120},
+    {"args":["00:05"],"out":5},
+    {"args":["1:5"],"out":65},
+    {"args":["1.5"],"out":1.5},
+    {"args":["1:2:3:4"],"out":null}
+  ],
+  "speedForTarget": [
+    {"args":[3600,60,false],"out":60},
+    {"args":[100,30,false],"out":3.33},
+    {"args":[10,60,false],"out":1.1},
+    {"args":[10,60,true],"out":1},
+    {"args":[36000,1,false],"out":1000},
+    {"args":[125,7,false],"out":17.86}
+  ],
+  "humanDuration": [
+    {"args":[0],"out":"0 秒"},
+    {"args":[0.44],"out":"0.4 秒"},
+    {"args":[5],"out":"5 秒"},
+    {"args":[9.96],"out":"10 秒"},
+    {"args":[59.6],"out":"1 分"},
+    {"args":[60],"out":"1 分"},
+    {"args":[61],"out":"1 分 1 秒"},
+    {"args":[3599],"out":"59 分 59 秒"},
+    {"args":[3600],"out":"1 小時"},
+    {"args":[3725],"out":"1 小時 2 分 5 秒"},
+    {"args":[86400],"out":"24 小時"}
+  ],
+  "clock": [
+    {"args":[0],"out":"00:00:00"},
+    {"args":[999],"out":"00:00:00"},
+    {"args":[1000],"out":"00:00:01"},
+    {"args":[61000],"out":"00:01:01"},
+    {"args":[3600000],"out":"01:00:00"},
+    {"args":[3725500],"out":"01:02:05"},
+    {"args":[-5],"out":"00:00:00"}
+  ],
+  "videoClock": [
+    {"args":[0],"out":"00:00.0"},
+    {"args":[0.05],"out":"00:00.0"},
+    {"args":[9.99],"out":"00:09.9"},
+    {"args":[61.25],"out":"01:01.2"},
+    {"args":[3725.5],"out":"1:02:05.5"}
+  ],
+  "formatBytes": [
+    {"args":[0],"out":"0 B"},
+    {"args":[1023],"out":"1023 B"},
+    {"args":[1024],"out":"1.00 KB"},
+    {"args":[1536],"out":"1.50 KB"},
+    {"args":[1048576],"out":"1.00 MB"},
+    {"args":[1572864000],"out":"1.46 GB"},
+    {"args":[5000000000],"out":"4.66 GB"}
+  ],
+  "normalizeRanges": [
+    {"args":[[[1,2],[2,3],[5,5.001]],10],"out":[[1,3]]},
+    {"args":[[[40,45],[10,20],[15,25],[55,70]],60],"out":[[10,25],[40,45],[55,60]]},
+    {"args":[[[-5,3],[8,4]],10],"out":[[0,3],[4,8]]},
+    {"args":[[],10],"out":[]}
+  ],
+  "keepRanges": [
+    {"args":[60,{"start":5,"end":50,"removed":[]}],"out":[[5,50]]},
+    {"args":[60,{"start":2,"end":58,"removed":[[40,45],[10,20],[15,25],[55,70]]}],"out":[[2,10],[25,40],[45,55]]},
+    {"args":[30,{"start":0,"end":30,"removed":[[0,12.5]]}],"out":[[12.5,30]]},
+    {"args":[10,{"start":-3,"end":99,"removed":[]}],"out":[[0,10]]},
+    {"args":[10,{"start":4,"end":6,"removed":[[0,10]]}],"out":[]}
+  ],
+  "totalLength": [
+    {"args":[[[2,10],[25,40],[45,55]]],"out":33},
+    {"args":[[]],"out":0}
+  ],
+  "normalizeCrop": [
+    {"args":[{"x":101,"y":50,"width":301,"height":9999},1920,1080],"out":{"x":101,"y":50,"width":300,"height":1030}},
+    {"args":[{"x":0,"y":0,"width":1920,"height":1080},1920,1080],"out":null},
+    {"args":[{"x":10,"y":10,"width":3,"height":3},1920,1080],"out":{"x":10,"y":10,"width":16,"height":16}},
+    {"args":[{"x":-20,"y":2000,"width":500,"height":400},1920,1080],"out":{"x":0,"y":1064,"width":500,"height":16}},
+    {"args":[null,1920,1080],"out":null}
+  ],
+  "cutFileName": [
+    {"args":["Rec_2026-10-06_08-00-00.mp4"],"out":"Rec_2026-10-06_08-00-00_cut.mp4"},
+    {"args":["Rec_a.MP4"],"out":"Rec_a_cut.mp4"},
+    {"args":["我的錄影.mp4"],"out":"我的錄影_cut.mp4"}
+  ]
+}
