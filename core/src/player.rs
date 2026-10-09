@@ -1,5 +1,7 @@
 //! 剪輯視窗的影片播放：用 FFmpeg 解碼成固定大小的 RGBA 畫面（不需要瀏覽器或系統解碼器）。
-//! - 暫停時跳到某個時間：解出那一張（拖曳時只保留最新的要求，前一張解完才解下一張）
+//! - 暫停時跳到某個時間：解出那一張（拖曳時只保留最新的要求，前一張解完才解下一張）。
+//!   解碼器保持開著：往後一張、往後幾秒直接接著解（不用每次從關鍵影格重新解）；
+//!   最近解過的畫面記在快取裡，往前一張也是立即顯示。
 //! - 播放：一個 FFmpeg 連續輸出畫面、另一個輸出聲音（WASAPI 播放）；聲音開始出聲時開始計時，
 //!   畫面依時間顯示（跟不上時跳過）
 //! - 時間軸縮圖：只解關鍵影格，快速取得各時間點的小圖
@@ -7,9 +9,10 @@
 //! 解出的畫面放在共用的位置，介面每一畫格取走最新的一張（wake 會在有新畫面時被呼叫，用來要求重畫）。
 
 use crate::process::std_command;
+use std::collections::VecDeque;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Stdio};
+use std::process::{Child, ChildStdout, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -98,6 +101,82 @@ pub fn decode_frame(ffmpeg: &Path, path: &str, t: f64, w: u32, h: u32, keyframes
     ok.then_some(buf)
 }
 
+/// 暫停時用的解碼器：保持開著，往後跳一點點時接著讀下一張；最近的畫面放在快取
+#[derive(Default)]
+struct Scrub {
+    child: Option<Child>,
+    out: Option<ChildStdout>,
+    /// 解碼器下一張會輸出第幾張（以 fps 換算的張數）
+    next_idx: i64,
+    /// 最近解過的畫面：(第幾張, RGBA)
+    cache: VecDeque<(i64, Arc<Vec<u8>>)>,
+    /// 上一次要求的是第幾張（判斷往前或往後）
+    last_idx: Option<i64>,
+}
+
+impl Scrub {
+    fn close(&mut self) {
+        self.out = None;
+        if let Some(mut c) = self.child.take() {
+            let _ = c.kill();
+            let _ = c.wait();
+        }
+    }
+}
+
+/// 快取最多佔用的記憶體
+const SCRUB_CACHE_BYTES: usize = 96 * 1024 * 1024;
+/// 往後跳這麼多秒以內：接著讀，不重新開始
+const SCRUB_FORWARD_SEC: f64 = 3.0;
+/// 往前逐張移動時，先多解這麼多秒放進快取（之後再往前就不用重新解）
+const SCRUB_BACK_SEC: f64 = 1.0;
+
+/// 解出第 idx 張（暫停時用）；能用快取或接著讀就不重新開始
+fn scrub_frame(sc: &mut Scrub, ffmpeg: &Path, path: &str, fps: f64, idx: i64, w: u32, h: u32) -> Option<Arc<Vec<u8>>> {
+    let size = (w * h * 4) as usize;
+    let max_frames = (SCRUB_CACHE_BYTES / size.max(1)).max(8);
+    let backward_step = sc.last_idx.is_some_and(|l| idx < l && l - idx <= 3);
+    sc.last_idx = Some(idx);
+    if let Some((_, f)) = sc.cache.iter().find(|(i, _)| *i == idx) {
+        return Some(f.clone());
+    }
+    let ahead = idx - sc.next_idx;
+    if sc.out.is_none() || ahead < 0 || ahead as f64 > SCRUB_FORWARD_SEC * fps {
+        // 重新開始：往前逐張移動時從前面一點開始，順便把前面的畫面放進快取
+        sc.close();
+        let start = if backward_step { (idx - (SCRUB_BACK_SEC * fps) as i64 + 1).max(0) } else { idx };
+        // 從半張前開始找，第一張輸出的就是第 start 張
+        let ss = ((start as f64 - 0.5) / fps).max(0.0);
+        let mut args = video_args(path, ss, w, h, None, false);
+        let at = args.iter().position(|a| a == "-vf").unwrap_or(args.len());
+        args.splice(at..at, ["-fps_mode".to_string(), "cfr".into(), "-r".into(), format!("{fps}")]);
+        let mut child = spawn(ffmpeg, &args)?;
+        sc.out = child.stdout.take();
+        sc.child = Some(child);
+        sc.next_idx = start;
+    }
+    let out = sc.out.as_mut()?;
+    while sc.next_idx <= idx {
+        let mut buf = vec![0u8; size];
+        if !read_frame(out, &mut buf) {
+            // 影片結束：用最後一張
+            sc.close();
+            return sc.cache.iter().filter(|(i, _)| *i <= idx).max_by_key(|(i, _)| *i).map(|(_, f)| f.clone());
+        }
+        let f = Arc::new(buf);
+        sc.cache.retain(|(i, _)| *i != sc.next_idx);
+        sc.cache.push_back((sc.next_idx, f.clone()));
+        while sc.cache.len() > max_frames {
+            sc.cache.pop_front();
+        }
+        sc.next_idx += 1;
+        if sc.next_idx > idx {
+            return Some(f);
+        }
+    }
+    None
+}
+
 #[derive(Default)]
 struct Inner {
     /// 最新、還沒被取走的畫面
@@ -124,6 +203,7 @@ pub struct Player {
     pub height: u32,
     inner: Arc<Mutex<Inner>>,
     children: Arc<Mutex<Vec<Child>>>,
+    scrub: Arc<Mutex<Scrub>>,
     stop_audio: Arc<Mutex<Arc<AtomicBool>>>,
     wake: Wake,
 }
@@ -132,7 +212,7 @@ impl Player {
     /// src_w × src_h：原影片尺寸；解碼成不超過 max_w × max_h 的大小
     pub fn new(ffmpeg: PathBuf, spec: MediaSpec, src_w: u32, src_h: u32, max_w: u32, max_h: u32, wake: Wake) -> Player {
         let (width, height) = fit_size(src_w, src_h, max_w, max_h);
-        Player { ffmpeg, spec, width, height, inner: Arc::default(), children: Arc::default(), stop_audio: Arc::new(Mutex::new(Arc::new(AtomicBool::new(false)))), wake }
+        Player { ffmpeg, spec, width, height, inner: Arc::default(), children: Arc::default(), scrub: Arc::default(), stop_audio: Arc::new(Mutex::new(Arc::new(AtomicBool::new(false)))), wake }
     }
 
     pub fn spec(&self) -> &MediaSpec {
@@ -215,6 +295,7 @@ impl Player {
             i.still_busy = true;
         }
         let (inner, ffmpeg, path, w, h, wake, last) = (self.inner.clone(), self.ffmpeg.clone(), self.spec.path.clone(), self.width, self.height, self.wake.clone(), self.last_frame_time());
+        let (scrub, fps) = (self.scrub.clone(), self.spec.fps.max(1.0));
         std::thread::spawn(move || loop {
             let (t, gen) = {
                 let mut i = inner.lock().unwrap();
@@ -226,10 +307,12 @@ impl Player {
                     }
                 }
             };
-            if let Some(rgba) = decode_frame(&ffmpeg, &path, t.min(last), w, h, false) {
+            let idx = (t.min(last) * fps + 1e-6).floor() as i64;
+            let got = scrub_frame(&mut scrub.lock().unwrap(), &ffmpeg, &path, fps, idx, w, h);
+            if let Some(rgba) = got {
                 let mut i = inner.lock().unwrap();
                 if i.gen == gen && !i.playing {
-                    i.frame = Some(Frame { time: t, width: w, height: h, rgba });
+                    i.frame = Some(Frame { time: t, width: w, height: h, rgba: (*rgba).clone() });
                     drop(i);
                     wake();
                 }
@@ -358,6 +441,9 @@ impl Drop for Player {
     fn drop(&mut self) {
         self.inner.lock().unwrap().gen += 1;
         self.kill_children();
+        // 解碼中可能還拿著鎖：在背景關閉，不卡住介面
+        let scrub = self.scrub.clone();
+        std::thread::spawn(move || scrub.lock().unwrap().close());
     }
 }
 
@@ -404,6 +490,37 @@ mod tests {
         assert_eq!(fit_size(3840, 1080, 1280, 720), (1280, 360));
         assert_eq!(fit_size(640, 360, 1280, 720), (640, 360));
         assert_eq!(fit_size(1920, 1080, 1001, 1001), (1000, 562));
+    }
+
+    #[test]
+    fn scrub_steps_reuse_the_decoder() {
+        let dir = tempfile::tempdir().unwrap();
+        let Some((ffmpeg, path)) = test_video(dir.path()) else { return };
+        let mut sc = Scrub::default();
+        // 第 n 張的亮度：Y = n×4（limited range 換成 RGB）
+        let expect = |n: i64| (((n * 4 - 16) as f64) * 255.0 / 219.0).clamp(0.0, 255.0);
+        let check = |sc: &mut Scrub, n: i64| {
+            let f = scrub_frame(sc, &ffmpeg, &path, 30.0, n, 64, 36).expect("沒有畫面");
+            let b = f[(f.len() / 2) & !3] as f64;
+            assert!((b - expect(n)).abs() < 8.0, "第 {n} 張：亮度 {b}，應約 {}", expect(n));
+        };
+        check(&mut sc, 30);
+        let pid = sc.child.as_ref().map(|c| c.id());
+        // 往後一張、幾張：接著讀，不重新開始
+        check(&mut sc, 31);
+        check(&mut sc, 35);
+        assert_eq!(sc.child.as_ref().map(|c| c.id()), pid);
+        // 往前一張：在快取裡
+        check(&mut sc, 34);
+        check(&mut sc, 30);
+        assert_eq!(sc.child.as_ref().map(|c| c.id()), pid);
+        // 跳到前面沒解過的地方：重新開始，並把前面一段放進快取
+        check(&mut sc, 12);
+        check(&mut sc, 11);
+        check(&mut sc, 10);
+        // 跳到後面很遠：重新開始
+        check(&mut sc, 50);
+        check(&mut sc, 5);
     }
 
     #[test]
