@@ -61,6 +61,8 @@ pub struct App {
     st: Mutex<State>,
     /// 硬體編碼器測試完成（false = 測試中）
     hw_ready: watch::Sender<bool>,
+    /// 第一次偵測（FFmpeg、螢幕、音訊裝置）完成；啟動時先開視窗，偵測在背景進行
+    ready: watch::Sender<bool>,
     update_gen: AtomicU64,
     /// 最後一次有頁面來查狀態的時間（判斷視窗是否都關了）
     last_seen: AtomicU64,
@@ -151,6 +153,7 @@ impl App {
             default_output_dir: default_output_dir().display().to_string(),
             st: Mutex::default(),
             hw_ready: watch::channel(true).0,
+            ready: watch::channel(false).0,
             update_gen: AtomicU64::new(0),
             last_seen: AtomicU64::new(now_ms()),
             quitting: AtomicBool::new(false),
@@ -298,6 +301,17 @@ impl App {
         }
     }
 
+    /// 標記第一次偵測已完成（refresh 結束時自動呼叫）
+    pub fn mark_ready(&self) {
+        self.ready.send_replace(true);
+    }
+
+    /// 等第一次偵測完成（介面要讀環境資訊、系統匣要開始錄影時）；偵測卡住時最多等 60 秒
+    pub async fn wait_ready(&self) {
+        let mut rx = self.ready.subscribe();
+        let _ = tokio::time::timeout(Duration::from_secs(60), rx.wait_for(|v| *v)).await;
+    }
+
     pub async fn refresh_devices(&self) {
         let (monitors, audio) = tokio::task::spawn_blocking(|| (crate::monitors::enumerate_monitors(), crate::audio::list_audio_devices())).await.unwrap_or_else(|e| (Err(e.to_string()), Err(e.to_string())));
         let mut st = self.lock();
@@ -372,6 +386,7 @@ impl App {
                 let _ = test.await;
             }
         }
+        self.mark_ready();
         self.env()
     }
 
@@ -592,5 +607,25 @@ impl Drop for LiveGuard {
         if let Some(mut c) = self.0.lock().unwrap().take() {
             let _ = c.start_kill();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn wait_ready_returns_after_first_detection() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = App::with_data_dir(dir.path().to_path_buf());
+        let waiting = tokio::spawn({
+            let app = app.clone();
+            async move { app.wait_ready().await }
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(!waiting.is_finished());
+        app.mark_ready();
+        tokio::time::timeout(Duration::from_secs(2), waiting).await.unwrap().unwrap();
+        app.wait_ready().await; // 已完成：立即返回
     }
 }

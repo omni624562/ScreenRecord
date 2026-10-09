@@ -223,6 +223,8 @@ impl TrayController {
     }
 
     pub async fn run(self: &Arc<Self>, cmd: TrayCommand) {
+        // 剛啟動時（偵測還沒完成）按快捷鍵：等偵測完成，才不會誤報「找不到 ffmpeg.exe」
+        self.app.wait_ready().await;
         if let Err(e) = self.run_inner(cmd).await {
             self.notify("無法執行", &e, true);
         }
@@ -406,6 +408,7 @@ mod tests {
         let app = App::with_data_dir(dir.path().to_path_buf());
         let ui = Arc::new(FakeUi::default());
         let ctl = TrayController::new(app.clone(), ui.clone(), None);
+        app.mark_ready();
         ctl.push(true);
         ctl.push(false); // 沒有變化就不重送
         let states = ui.states.lock().unwrap().clone();

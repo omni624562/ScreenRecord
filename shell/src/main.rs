@@ -129,8 +129,6 @@ async fn startup(core: Arc<App>, args: Args) {
     if !args.no_tray {
         replace_legacy(args.port).await;
     }
-    core.refresh(false).await;
-    core.log_startup();
 
     let Some((listener, port)) = server::bind(args.port, PORT_RANGE).await else {
         error!("無法啟動網頁伺服器（{} 起的連接埠都被占用）", args.port);
@@ -146,6 +144,13 @@ async fn startup(core: Arc<App>, args: Args) {
         if let Err(e) = server::serve(listener, c, port).await {
             error!("網頁伺服器停止：{e}");
         }
+    });
+    // 偵測 FFmpeg、螢幕與音訊裝置（要跑好幾次 ffmpeg）在背景進行，同時建立系統匣並開啟視窗；
+    // 介面讀取環境資訊時會等第一次偵測完成
+    let c = core.clone();
+    tauri::async_runtime::spawn(async move {
+        c.refresh(false).await;
+        c.log_startup();
     });
 
     // 系統匣常駐：關掉操作視窗後程式仍在背景，從圖示選單操作或結束
@@ -182,6 +187,7 @@ async fn startup(core: Arc<App>, args: Args) {
 
 fn main() {
     log::setup();
+    log::install_panic_hook();
     // 本程式結束（包括當掉）時，FFmpeg 等子程序一併結束
     job::install();
     let argv: Vec<String> = std::env::args().collect();

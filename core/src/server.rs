@@ -202,7 +202,14 @@ pub fn router(app: Arc<App>, port: u16) -> Router {
     let ctx: Ctx = Arc::new(Shared { app, port });
     let api = Router::new()
         .route("/api/ping", get(|| async { json(&serde_json::json!({ "app": APP_ID, "pid": std::process::id() })) }))
-        .route("/api/env", get(|State(c): State<Ctx>| async move { json(&c.app.env()) }))
+        .route(
+            "/api/env",
+            get(|State(c): State<Ctx>| async move {
+                // 啟動時視窗比偵測先開：等第一次偵測完成再回覆，介面才不會先顯示「找不到 FFmpeg」
+                c.app.wait_ready().await;
+                json(&c.app.env())
+            }),
+        )
         .route(
             "/api/changelog",
             get(|| async { ([(header::CONTENT_TYPE, "text/markdown; charset=utf-8"), (header::CACHE_CONTROL, "no-store")], CHANGELOG).into_response() }),

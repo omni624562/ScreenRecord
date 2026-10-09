@@ -49,7 +49,7 @@ Windows 11 螢幕錄影工具：**原速錄影並完整保留，停止後再選�
 
 ### 執行編譯好的版本
 
-從 [Releases](https://github.com/omni624562/ScreenRecord/releases/latest) 下載 `ScreenRecorder.zip`（解壓縮後使用）或 `ScreenRecorder.exe`。
+從 [Releases](https://github.com/omni624562/ScreenRecord/releases/latest) 下載 `ScreenRecorder.zip`（解壓縮後使用）或 `ScreenRecorder.exe`（約 9.4 MB）。
 
 ```
 ScreenRecorder.exe
