@@ -53,14 +53,14 @@ pub fn select(rgba: &[u8], desk: Rect, windows: Vec<Rect>) -> Option<Rect> {
     unsafe {
         let screen = GetDC(None);
         let (bright, b1) = dib(screen, w, h, |dst| {
-            for (d, s) in dst.chunks_exact_mut(4).zip(rgba.chunks_exact(4)) {
-                d.copy_from_slice(&[s[2], s[1], s[0], 255]);
+            for (d, s) in dst.as_chunks_mut::<4>().0.iter_mut().zip(rgba.as_chunks::<4>().0) {
+                *d = [s[2], s[1], s[0], 255];
             }
         })?;
         let (dim, b2) = dib(screen, w, h, |dst| {
-            for (d, s) in dst.chunks_exact_mut(4).zip(rgba.chunks_exact(4)) {
+            for (d, s) in dst.as_chunks_mut::<4>().0.iter_mut().zip(rgba.as_chunks::<4>().0) {
                 let k = |v: u8| (v as u16 * 45 / 100) as u8;
-                d.copy_from_slice(&[k(s[2]), k(s[1]), k(s[0]), 255]);
+                *d = [k(s[2]), k(s[1]), k(s[0]), 255];
             }
         })?;
         let back = CreateCompatibleDC(Some(screen));
