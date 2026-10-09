@@ -171,6 +171,11 @@ mod tests {
         assert!(post("/api/show"));
         assert_eq!(shows.load(Ordering::SeqCst), 1);
         assert!(post("/api/quit"));
+        // quit 先回覆再結束（程式會直接結束）：等它執行
+        let t0 = std::time::Instant::now();
+        while quits.load(Ordering::SeqCst) == 0 && t0.elapsed() < Duration::from_secs(2) {
+            std::thread::sleep(Duration::from_millis(5));
+        }
         assert_eq!(quits.load(Ordering::SeqCst), 1);
 
         // 網頁送來的請求（有 Origin）、不是 JSON、錯誤的 Host：拒絕
