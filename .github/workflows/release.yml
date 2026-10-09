@@ -115,13 +115,12 @@ jobs:
         shell: pwsh
         run: Compress-Archive -Path dist\ScreenRecorder.exe -DestinationPath dist\ScreenRecorder.zip -CompressionLevel Optimal
 
+      # 試用版：只放 exe（GitHub 下載時本來就會包成 zip，再放 zip 會變成 zip 裡還有 zip）
       - name: 上傳建置結果
         uses: actions/upload-artifact@v4
         with:
           name: ScreenRecorder
-          path: |
-            dist/ScreenRecorder.exe
-            dist/ScreenRecorder.zip
+          path: dist/ScreenRecorder.exe
 
       # 手動發佈時 tag 還不存在：--target 讓 gh 在這次建置的 commit 上建立 tag（推送 tag 時 tag 已存在，--target 不影響）
       - name: 發佈 Release
