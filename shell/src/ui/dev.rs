@@ -158,6 +158,8 @@ pub fn tick(app: &mut UiApp, ctx: &egui::Context) {
                         app.whats_new_open = true;
                     }
                     _ if a == "monitors" => fake_monitors(app),
+                    // 名稱很長的音訊裝置（檢查設定視窗不會被撐寬）
+                    _ if a == "mics" => fake_mics(app),
                     // 模擬系統匣已登記快捷鍵（Linux 上沒有系統匣）
                     _ if a == "hotkeys" => app.env.hotkeys = Some(screenrecorder_core::types::HotkeyStatus { record: true, pause: true, shot: true, snip: false, mark: true, pen: true }),
                     Some(("snip", p)) => fake_snip(app, p),
@@ -233,6 +235,14 @@ fn fake_monitors(app: &mut UiApp) {
     app.env.monitors = vec![m(0, 0), m(1, 1920)];
     app.env.desktop = Rect { x: 0, y: 0, width: 3840, height: 1080 };
     app.s.fix_monitor(&app.env);
+}
+
+fn fake_mics(app: &mut UiApp) {
+    use screenrecorder_core::types::AudioDevice;
+    let d = |id: &str, name: &str, is_default: bool| AudioDevice { id: id.into(), name: name.into(), is_default };
+    app.env.audio.render = Some("耳機 (JBL Tune 720BT Hands-Free AG Audio 立體聲)".into());
+    app.env.audio.captures =
+        vec![d("m1", "麥克風排列 (適用於數位麥克風的 Intel® 智慧型音效技術)", true), d("m2", "耳機 (JBL Tune 720BT Hands-Free AG Audio)", false), d("m3", "USB Audio Device", false)];
 }
 
 /// 用一張圖當凍結的桌面開啟框選截圖（Linux 上無法真的截下桌面）；模擬兩個視窗供點選

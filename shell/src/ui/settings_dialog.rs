@@ -120,9 +120,12 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                 }
             }
         });
-        // 右邊內容
+        // 右邊內容：用獨立的子區域（new_child），內容再寬也不會撐大視窗；每個分頁的視窗大小都一樣，超出的部分裁掉
         let body = Rect::from_min_max(pos2(nav.right() + 1.0, head.bottom()), rect.max);
-        ui.scope_builder(UiBuilder::new().max_rect(body.shrink2(vec2(24.0, 16.0))).layout(Layout::top_down(Align::Min)), |ui| {
+        let mut page_ui = ui.new_child(UiBuilder::new().max_rect(body.shrink2(vec2(24.0, 16.0))).layout(Layout::top_down(Align::Min)));
+        page_ui.shrink_clip_rect(body);
+        {
+            let ui = &mut page_ui;
             ui.spacing_mut().item_spacing = vec2(6.0, 4.0);
             egui::ScrollArea::vertical().id_salt(("settings-page", d.page as u8)).auto_shrink([false, false]).show(ui, |ui| {
                 let locked = app.locked() && d.page != Page::Keys;
@@ -138,7 +141,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                     Page::Advanced => advanced_page(app, ui),
                 });
             });
-        });
+        }
     });
     if !busy && modal.should_close() {
         close = true;
@@ -225,13 +228,14 @@ fn form_divider(ui: &mut Ui) {
     ui.add_space(8.0);
 }
 
-/// 表單的下拉選單（與按鈕相同外觀）；items 的第三個值 = 能不能選
+/// 表單的下拉選單（與按鈕相同外觀）；items 的第三個值 = 能不能選。
+/// 寬度固定：選項太長（例如裝置名稱）時結尾顯示「…」，滑鼠移上去看完整名稱
 fn form_combo<T: PartialEq + Copy>(ui: &mut Ui, id: &str, width: f32, value: &mut T, items: &[(T, String, bool)]) -> bool {
     let mut changed = false;
     let text = items.iter().find(|(v, _, _)| v == value).map(|(_, t, _)| t.clone()).unwrap_or_default();
     ui.scope(|ui| {
         theme::field_style(ui);
-        egui::ComboBox::from_id_salt(id).selected_text(RichText::new(text).font(theme::font(13.0))).width(width).show_ui(ui, |ui| {
+        let r = egui::ComboBox::from_id_salt(id).selected_text(RichText::new(&text).font(theme::font(13.0))).width(width).truncate().show_ui(ui, |ui| {
             for (v, t, en) in items {
                 if ui.add_enabled(*en, egui::Button::selectable(value == v, RichText::new(t).font(theme::font(13.0)))).clicked() && value != v {
                     *value = *v;
@@ -239,6 +243,10 @@ fn form_combo<T: PartialEq + Copy>(ui: &mut Ui, id: &str, width: f32, value: &mu
                 }
             }
         });
+        let full = ui.fonts_mut(|f| f.layout_no_wrap(text.clone(), theme::font(13.0), Color32::WHITE).size().x);
+        if full > width - 36.0 {
+            r.response.on_hover_text(text);
+        }
     });
     changed
 }
@@ -466,7 +474,12 @@ fn audio_page(app: &mut UiApp, ui: &mut Ui) {
             app.save_settings();
         }
     });
-    form_hint(ui, a.render.clone().map(|r| format!("播放裝置：{r}")).unwrap_or_else(|| "找不到播放裝置".into()), p.muted);
+    // 裝置名稱可能很長：一行顯示，放不下時結尾「…」（滑鼠移上去看完整名稱）
+    ui.horizontal(|ui| {
+        ui.add_space(FORM_LABEL_W + 6.0);
+        let text = a.render.clone().map(|r| format!("播放裝置：{r}")).unwrap_or_else(|| "找不到播放裝置".into());
+        ui.add(egui::Label::new(RichText::new(text).font(theme::font(12.0)).color(p.muted)).truncate());
+    });
     form_row(ui, "麥克風", |ui| {
         let mut mic = app.s.audio_mic;
         if switch(ui, &mut mic, "", true).changed() {
@@ -483,7 +496,8 @@ fn audio_page(app: &mut UiApp, ui: &mut Ui) {
         items.extend(a.captures.iter().enumerate().map(|(i, d)| (i + 1, d.name.clone(), true)));
         let mut sel = a.captures.iter().position(|d| d.id == app.s.mic_id).map(|i| i + 1).unwrap_or(0);
         ui.add_enabled_ui(app.s.audio_mic, |ui| {
-            if form_combo(ui, "mic", FORM_CTRL_W, &mut sel, &items) {
+            // 裝置名稱通常很長：用到整列寬度
+            if form_combo(ui, "mic", ui.available_width(), &mut sel, &items) {
                 app.s.mic_id = if sel == 0 { String::new() } else { a.captures[sel - 1].id.clone() };
                 app.save_settings();
             }
