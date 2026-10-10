@@ -292,7 +292,7 @@ fn decorate(mut body: Pixmap, spec: &ShotSpec, unit: f64) -> Pixmap {
 }
 
 /// 填滿背景：「#rrggbb」單色，「#a,#b」從左上到右下的漸層
-fn fill_background(out: &mut Pixmap, bg: &str) {
+pub(crate) fn fill_background(out: &mut Pixmap, bg: &str) {
     let colors: Vec<Color> = bg
         .split(',')
         .map(|c| {

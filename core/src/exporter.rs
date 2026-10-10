@@ -191,8 +191,15 @@ impl Exporter {
             }
             None => None,
         };
-        let unchanged =
-            keep.len() == 1 && keep[0].0 == 0.0 && keep[0].1 >= duration - 0.05 && keep[0].2 == 1 && crop.is_none() && spec.overlays.is_empty() && spec.audio.is_default() && spec.zoom.is_none();
+        let unchanged = keep.len() == 1
+            && keep[0].0 == 0.0
+            && keep[0].1 >= duration - 0.05
+            && keep[0].2 == 1
+            && crop.is_none()
+            && spec.overlays.is_empty()
+            && spec.audio.is_default()
+            && spec.zoom.is_none()
+            && spec.frame.is_none();
         if unchanged {
             return Err(Error::config("沒有任何剪輯、裁切或標註"));
         }
@@ -223,7 +230,23 @@ impl Exporter {
             }
             _ => None,
         };
-        let args = cut_args(source, &output.display().to_string(), &keep, crop, fps, &enc, info.has_audio == Some(true), &overlays, spec.audio, zoom.as_deref())?;
+        // 背景與圓角：依輸出大小（裁切後）畫好底圖與遮罩
+        let (frame, temp) = match (&spec.frame, info.width, info.height) {
+            (Some(f), Some(w), Some(h)) => {
+                let (ow, oh) = crop.map(|c| (c.width, c.height)).unwrap_or((w as i32, h as i32));
+                let dir = temp.unwrap_or_else(|| std::env::temp_dir().join(format!("ScreenRecorder-overlays-{}-{}", std::process::id(), crate::paths::now_ms())));
+                match write_frame(f, ow, oh, &dir) {
+                    Ok(fi) => (Some(fi), Some(dir)),
+                    Err(e) => {
+                        let _ = std::fs::remove_dir_all(&dir);
+                        return Err(e);
+                    }
+                }
+            }
+            (Some(_), _, _) => return Err(Error::config("無法讀取影片尺寸，不能加上背景")),
+            (None, ..) => (None, temp),
+        };
+        let args = cut_args(source, &output.display().to_string(), &keep, crop, fps, &enc, info.has_audio == Some(true), &overlays, spec.audio, zoom.as_deref(), frame.as_ref())?;
         let fast = keep.iter().filter(|p| p.2 > 1).count();
         let note = format!(
             "保留 {} 段{}{}{}{}",
@@ -232,7 +255,7 @@ impl Exporter {
             if zoom.is_some() { "，跟著點擊放大" } else { "" },
             crop.map(|c| format!("，裁切 {}×{}", c.width, c.height)).unwrap_or_default(),
             if overlays.is_empty() { String::new() } else { format!("，標註 {} 個", overlays.len()) }
-        );
+        ) + if frame.is_some() { "，背景與圓角" } else { "" };
         let finish = Finish { cleanup: temp, replace: replace.map(PathBuf::from), on_saved };
         self.run_with_cleanup(ExportKind::Cut, &ffmpeg, args, source, &output, 1.0, length, &note, finish)
     }
@@ -452,8 +475,8 @@ struct Finish {
     on_saved: Option<OnSaved>,
 }
 
-/// 標註最多幾個（避免濾鏡圖過大）
-const MAX_OVERLAYS: usize = 100;
+/// 標註最多幾個（避免濾鏡圖過大；字幕一段就是一個）
+const MAX_OVERLAYS: usize = 500;
 /// 單一標註圖檔的上限
 const MAX_OVERLAY_BYTES: usize = 40 * 1024 * 1024;
 
@@ -507,6 +530,17 @@ fn write_overlays(list: &[Overlay], vw: i32, vh: i32, duration: f64, dir: &Path)
         }
     }
     Ok(out)
+}
+
+/// 背景與圓角：底圖與遮罩寫進 dir
+fn write_frame(f: &crate::video_frame::VideoFrame, w: i32, h: i32, dir: &Path) -> Result<crate::args::FrameInput> {
+    std::fs::create_dir_all(dir)?;
+    let (base, cover) = crate::video_frame::render(f, w, h).ok_or_else(|| Error::config("無法畫出背景"))?;
+    let (bp, cp) = (dir.join("frame_base.png"), dir.join("frame_cover.png"));
+    base.save_png(&bp).map_err(|e| Error::other(e.to_string()))?;
+    cover.save_png(&cp).map_err(|e| Error::other(e.to_string()))?;
+    let l = crate::video_frame::layout(f, w, h);
+    Ok(crate::args::FrameInput { base: bp.display().to_string(), cover: cp.display().to_string(), x: l.x, y: l.y, w: l.w, h: l.h })
 }
 
 /// 檢查介面畫好的 PNG

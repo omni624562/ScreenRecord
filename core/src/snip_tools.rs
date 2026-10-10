@@ -1,7 +1,7 @@
 //! 框選畫面上的小工具：放大鏡與取色（色碼）、尺規（量距離）。
 //! 這裡只有計算與繪製（可以在任何平台測試），Windows 的框選視窗（snip_win.rs）負責顯示與操作。
 
-use crate::annotate::{self, Ann, AnnKind};
+use crate::annotate;
 use tiny_skia::{Color, Paint, Pixmap, Rect, Transform};
 
 /// 放大鏡顯示游標周圍幾格（奇數，正中間是游標所在的像素）
@@ -96,26 +96,7 @@ pub fn render_loupe(px: impl Fn(i32, i32) -> Option<[u8; 3]>, x: i32, y: i32, sc
 
 /// 白字（x 為左邊或中間）
 fn text(pm: &mut Pixmap, s: &str, x: f32, cy: f32, size: f32, centered: bool) {
-    let mut a = Ann {
-        id: 0,
-        kind: AnnKind::Text,
-        x: 0.0,
-        y: 0.0,
-        w: 0.0,
-        h: 0.0,
-        start: 0.0,
-        end: 1.0,
-        color: "#ffffff".into(),
-        size: size as f64,
-        text: Some(s.to_string()),
-        bg: false,
-        n: None,
-        shape: None,
-        invert: false,
-        rot: 0.0,
-        pts: vec![],
-    };
-    annotate::measure(&mut a);
+    let mut a = annotate::plain_text(s, size as f64, "#ffffff");
     a.x = if centered { x as f64 - a.w / 2.0 } else { x as f64 };
     a.y = cy as f64 - a.h / 2.0;
     annotate::draw(pm, &a, Transform::identity());

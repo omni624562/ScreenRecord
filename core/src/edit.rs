@@ -39,6 +39,9 @@ pub struct EditSpec {
     /// 跟著點擊放大
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub zoom: Option<ClickZoom>,
+    /// 背景與圓角（影片縮小放在背景中間）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frame: Option<crate::video_frame::VideoFrame>,
 }
 
 /// 跟著點擊放大：倍率與錄影時記下的點擊（原影片的秒數, x, y；x、y 為 0～1）

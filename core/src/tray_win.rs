@@ -27,8 +27,8 @@ const WM_TRAY: u32 = WM_APP + 1;
 /// 有其他執行緒送來的要求（狀態、通知、結束）
 const WM_WAKE: u32 = WM_APP + 2;
 const NIN_BALLOONUSERCLICK: u32 = 0x405;
-/// 全域快捷鍵的 id：1 錄影、2 暫停、3 截圖、4 框選截圖、5 打點（與 Hotkeys::all 的順序相同）
-const HOTKEY_IDS: [i32; crate::types::HOTKEY_COUNT] = [1, 2, 3, 4, 5];
+/// 全域快捷鍵的 id：1 錄影、2 暫停、3 截圖、4 框選截圖、5 打點、6 螢幕畫筆（與 Hotkeys::all 的順序相同）
+const HOTKEY_IDS: [i32; crate::types::HOTKEY_COUNT] = [1, 2, 3, 4, 5, 6];
 
 /// 登記全域快捷鍵（先取消舊的）；被其他程式占用時登記失敗，停用的視為成功
 fn register_hotkeys(hwnd: HWND, keys: &Hotkeys) -> HotkeyStatus {
@@ -277,6 +277,8 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                 3 => send_cmd(TrayCommand::Screenshot),
                 4 => send_cmd(TrayCommand::ScreenshotSelect),
                 5 => send_cmd(TrayCommand::Mark),
+                // 畫筆直接在這裡開關（不用等）；視窗在自己的執行緒
+                6 => crate::screen_pen_win::toggle(),
                 _ => {}
             }
             LRESULT(0)
@@ -386,6 +388,7 @@ fn show_menu() {
             m.add(root, &format!("停止並儲存(&S){}", tab(&st.keys[0])), TrayCommand::Stop, idle || st.rec == RecorderState::Stopping, false);
         }
         m.add(root, &format!("打點(&K){}", tab(&st.keys[4])), TrayCommand::Mark, !matches!(st.rec, RecorderState::Recording | RecorderState::Paused), false);
+        m.add(root, &format!("螢幕畫筆(&D){}", tab(&st.keys[5])), TrayCommand::Pen, false, crate::screen_pen_win::active());
         Menu::sep(root);
         // 截圖：框選範圍或點選視窗、全螢幕、固定範圍（主畫面的錄影範圍）、重複上次框選
         if let Ok(shot) = CreatePopupMenu() {

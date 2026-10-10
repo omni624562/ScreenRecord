@@ -177,12 +177,18 @@ fn capture_panel(app: &mut UiApp, ui: &mut Ui) {
             // 窄的時候「即時預覽」只留開關（滑鼠提示有說明），讓範圍的按鈕、座標放得下
             let narrow = ui.available_width() < 720.0;
             let mut st = app.s.source_type;
-            if segmented(ui, &mut st, &[(SourceType::Monitor, "單一螢幕"), (SourceType::All, "所有螢幕"), (SourceType::Region, "自訂範圍")], !locked) {
+            // 窄的時候分頁名稱縮短，範圍的座標才放得下
+            let tabs = if narrow {
+                [(SourceType::Monitor, "單螢幕"), (SourceType::All, "多螢幕"), (SourceType::Region, "自訂"), (SourceType::Audio, "錄音")]
+            } else {
+                [(SourceType::Monitor, "單一螢幕"), (SourceType::All, "所有螢幕"), (SourceType::Region, "自訂範圍"), (SourceType::Audio, "只錄聲音")]
+            };
+            if segmented(ui, &mut st, &tabs, !locked) {
                 app.s.source_type = st;
                 app.save_settings();
             }
             // 右邊留給「即時預覽」與重新整理
-            let room = ui.available_width() - if narrow { 92.0 } else { 150.0 };
+            let room = ui.available_width() - if narrow { 100.0 } else { 160.0 };
             ui.scope(|ui| {
                 ui.set_max_width(room.max(0.0));
                 source_detail(app, ui, room);
@@ -193,7 +199,9 @@ fn capture_panel(app: &mut UiApp, ui: &mut Ui) {
                     app.refresh_env(|_| {});
                 }
                 let mut live = app.s.live_preview;
-                if switch(ui, &mut live, if narrow { "" } else { "即時預覽" }, true).on_hover_text("即時預覽：即時顯示目前畫面（每秒 5 張，錄影中 2 張）").changed() {
+                let audio = app.s.source_type == SourceType::Audio;
+                if !audio && switch(ui, &mut live, if narrow { "" } else { "即時預覽" }, true).on_hover_text("即時預覽：即時顯示目前畫面（每秒 5 張，錄影中 2 張）").changed()
+                {
                     app.s.live_preview = live;
                     app.preview.retry_live();
                     app.save_settings();
@@ -262,6 +270,11 @@ fn source_detail(app: &mut UiApp, ui: &mut Ui, room: f32) {
                 format!("{n} 個螢幕拼成 {}×{}{}", app.env.desktop.width, app.env.desktop.height, if multi { "（不同顯示卡，將用 gdigrab）" } else { "" })
             };
             ui.add(egui::Label::new(RichText::new(&text).color(if multi { p.warn } else { p.muted }).font(theme::font(12.5))).truncate()).on_hover_text(&text);
+        }
+        SourceType::Audio => {
+            let text = if app.s.audio_system || app.s.audio_mic { "畫面不錄，只錄聲音" } else { "請先打開「系統聲音」或「麥克風」" };
+            let warn = !(app.s.audio_system || app.s.audio_mic);
+            ui.add(egui::Label::new(RichText::new(text).color(if warn { p.warn } else { p.muted }).font(theme::font(12.5))).truncate());
         }
         SourceType::Region => {
             let r = app.s.region;
@@ -346,6 +359,12 @@ fn window_picker(app: &mut UiApp, ui: &mut Ui, locked: bool) {
 /// 預覽圖、螢幕框、自訂範圍的紅框
 fn desk(app: &mut UiApp, ui: &mut Ui, area: Rect) {
     let p = theme::pal(ui);
+    if app.s.source_type == SourceType::Audio {
+        if app.preview.running() {
+            app.preview.stop(&app.core);
+        }
+        return audio_panel(app, ui, area);
+    }
     let view = view_rect(app);
     // 即時預覽：視窗看得到時才擷取；錄影中放慢
     let key = if app.s.source_type == SourceType::Monitor { app.s.monitor_id.clone().unwrap_or_default() } else { String::new() };
@@ -471,12 +490,31 @@ fn handle_points(r: Rect) -> [Pos2; 8] {
     [r.left_top(), pos2(c.x, r.top()), r.right_top(), pos2(r.right(), c.y), r.right_bottom(), pos2(c.x, r.bottom()), r.left_bottom(), pos2(r.left(), c.y)]
 }
 
+/// 只錄聲音：預覽區改成說明（錄哪些聲音、存成什麼）
+fn audio_panel(app: &mut UiApp, ui: &mut Ui, area: Rect) {
+    let p = theme::pal(ui);
+    ui.painter().rect_filled(area, CornerRadius::same(theme::RADIUS_SM), p.surface2);
+    let c = area.center();
+    let s = (area.height() / 260.0).clamp(0.6, 1.2);
+    theme::paint_icon(ui.painter(), Rect::from_center_size(c - vec2(0.0, 70.0 * s), vec2(64.0 * s, 64.0 * s)), Icon::Mic, p.accent);
+    ui.painter().text(c - vec2(0.0, 12.0 * s), egui::Align2::CENTER_CENTER, "只錄聲音", theme::font_bold(20.0 * s), p.text);
+    let parts: Vec<&str> = [app.s.audio_system.then_some("系統聲音（電腦播放的聲音）"), app.s.audio_mic.then_some("麥克風")].into_iter().flatten().collect();
+    let (line, warn) =
+        if parts.is_empty() { ("還沒選要錄的聲音：請在下方「聲音」打開系統聲音或麥克風".to_string(), true) } else { (format!("會錄：{}", parts.join("、")), false) };
+    ui.painter().text(c + vec2(0.0, 20.0 * s), egui::Align2::CENTER_CENTER, line, theme::font(13.5), if warn { p.warn } else { p.text });
+    let tips = ["畫面不會錄下來，存成 MP4（畫面是一張「只錄聲音」的卡片，檔案幾乎只有聲音的大小）", "一樣可以暫停、打點、剪輯、降噪；在錄影的「更多」選單選「存成 M4A」就只留下聲音"];
+    for (i, t) in tips.iter().enumerate() {
+        ui.painter().text(c + vec2(0.0, (48.0 + i as f32 * 22.0) * s), egui::Align2::CENTER_CENTER, *t, theme::font(12.0), p.muted);
+    }
+    ui.allocate_rect(area, Sense::hover());
+}
+
 /// 目前的框選範圍：自訂範圍，或單一螢幕裡框選的部分（沒有時是整個螢幕）
 fn region_target(app: &UiApp) -> Option<DRect> {
     match app.s.source_type {
         SourceType::Region => Some(app.s.region),
         SourceType::Monitor => app.s.region_in_monitor(&app.env),
-        SourceType::All => None,
+        SourceType::All | SourceType::Audio => None,
     }
 }
 
@@ -489,7 +527,7 @@ fn set_region(app: &mut UiApp, r: DRect) {
             app.s.region = r
         }
         SourceType::Monitor => app.s.monitor_region = Some(r),
-        SourceType::All => {}
+        SourceType::All | SourceType::Audio => {}
     }
 }
 
@@ -736,7 +774,7 @@ fn rec_panel(app: &mut UiApp, ui: &mut Ui) {
             };
             let parts: Vec<&str> = [app.s.audio_system.then_some("系統聲音"), app.s.audio_mic.then_some("麥克風")].into_iter().flatten().collect();
             (
-                o.map(|(w, h)| format!("{w}×{h} · {}fps", app.s.fps)).unwrap_or_else(|| "—".into()),
+                if app.s.source_type == SourceType::Audio { "只錄聲音".into() } else { o.map(|(w, h)| format!("{w}×{h} · {}fps", app.s.fps)).unwrap_or_else(|| "—".into()) },
                 match (app.env.ffmpeg.encoder.is_some(), m == "自動" && enc == "自動") {
                     (false, _) => "—".into(),
                     (true, true) => "自動（依電腦選最順的方式）".into(),
@@ -1440,6 +1478,9 @@ fn recent_card(app: &mut UiApp, ui: &mut Ui, e: &LibraryEntry, date: String, w: 
             ui.set_min_width(180.0);
             if ui.button("複製檔案（貼到 LINE、資料夾）").clicked() {
                 app.act(EntryAction::CopyFile, e.clone());
+            }
+            if e.media.has_audio != Some(false) && ui.button("存成 M4A（只留聲音）").clicked() {
+                app.act(EntryAction::SaveAudio, e.clone());
             }
         });
     }

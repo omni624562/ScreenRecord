@@ -62,6 +62,8 @@ pub enum TrayCommand {
     BalloonClick,
     /// 錄影中打點
     Mark,
+    /// 螢幕畫筆（開 / 關）
+    Pen,
     OpenUpdate,
     Quit,
 }
@@ -183,6 +185,7 @@ impl TrayController {
             _ => format!(" {}", clock(st.recorded_ms as f64)),
         };
         let last_source = match &cfg.source {
+            _ if cfg.audio_only => "只錄聲音".to_string(),
             SourceConfig::All => "所有螢幕".to_string(),
             SourceConfig::Region { width, height, .. } => format!("範圍 {width}×{height}"),
             SourceConfig::Monitor { monitor_id } => format!("螢幕 {}", env.monitors.iter().find(|m| &m.id == monitor_id).map(|m| m.display_number).unwrap_or(1)),
@@ -268,6 +271,7 @@ impl TrayController {
             hide_icons: false,
             follow_window: None,
             camera: None,
+            audio_only: false,
         }
     }
 
@@ -360,6 +364,11 @@ impl TrayController {
             }
             TrayCommand::Pause => return rec.pause().await.map_err(err),
             // 沒在錄影時按快捷鍵：不提示
+            TrayCommand::Pen => {
+                #[cfg(windows)]
+                crate::screen_pen_win::toggle();
+                return Ok(());
+            }
             TrayCommand::Mark => {
                 let _ = rec.add_marker();
                 return Ok(());
@@ -468,6 +477,10 @@ impl TrayController {
         // 開始錄影
         if app.exporter.running() {
             return Err("轉檔進行中，請等它完成再錄影".into());
+        }
+        // 指定了要錄的範圍：錄畫面（不是只錄聲音）
+        if cmd != TrayCommand::StartLast {
+            cfg.audio_only = false;
         }
         match cmd {
             TrayCommand::StartAll => (cfg.source, cfg.follow_window) = (SourceConfig::All, None),

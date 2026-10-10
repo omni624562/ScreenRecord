@@ -450,7 +450,8 @@ impl App {
 
     async fn take_screenshot(self: &Arc<Self>, config: &RecordConfig) -> crate::Result<crate::types::ShotInfo> {
         let monitors = self.lock().monitors.clone();
-        let plan = crate::args::resolve_plan(config, &monitors)?;
+        // 選了「只錄聲音」時，截圖仍截螢幕
+        let plan = crate::args::resolve_plan(&RecordConfig { audio_only: false, ..config.clone() }, &monitors)?;
         let out = new_shot_path(&config.output_dir).await?;
         // 操作視窗擋到範圍：先縮小（等動畫結束）再截
         let hid = crate::winui::minimize_ui(Some(&plan.rect));
@@ -820,7 +821,7 @@ impl App {
 
     async fn snip_capture(self: &Arc<Self>, config: &RecordConfig) -> crate::Result<SnipSource> {
         let monitors = self.lock().monitors.clone();
-        let all = RecordConfig { source: crate::types::SourceConfig::All, ..config.clone() };
+        let all = RecordConfig { source: crate::types::SourceConfig::All, audio_only: false, ..config.clone() };
         let plan = crate::args::resolve_plan(&all, &monitors)?;
         let path = std::env::temp_dir().join(format!("ScreenRecorder-snip-{}.png", std::process::id()));
         if crate::winui::minimize_ui(Some(&plan.rect)) {

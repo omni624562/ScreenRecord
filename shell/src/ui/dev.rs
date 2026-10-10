@@ -159,7 +159,7 @@ pub fn tick(app: &mut UiApp, ctx: &egui::Context) {
                     }
                     _ if a == "monitors" => fake_monitors(app),
                     // 模擬系統匣已登記快捷鍵（Linux 上沒有系統匣）
-                    _ if a == "hotkeys" => app.env.hotkeys = Some(screenrecorder_core::types::HotkeyStatus { record: true, pause: true, shot: true, snip: false, mark: true }),
+                    _ if a == "hotkeys" => app.env.hotkeys = Some(screenrecorder_core::types::HotkeyStatus { record: true, pause: true, shot: true, snip: false, mark: true, pen: true }),
                     Some(("snip", p)) => fake_snip(app, p),
                     Some(("settings", p)) => {
                         use super::settings_dialog::{open, Page};

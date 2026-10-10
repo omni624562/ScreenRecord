@@ -471,6 +471,9 @@ fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table:
                 if ui.button("複製檔案（貼到 LINE、資料夾）").clicked() {
                     *action = Some((EntryAction::CopyFile, e.clone()));
                 }
+                if e.media.has_audio != Some(false) && ui.button("存成 M4A（只留聲音）").clicked() {
+                    *action = Some((EntryAction::SaveAudio, e.clone()));
+                }
                 if ui.button("重新命名（加速版一起改）").clicked() {
                     *rename = Some(e.clone());
                 }

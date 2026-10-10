@@ -8,6 +8,7 @@ pub mod annotate;
 pub mod app;
 pub mod args;
 pub mod audio;
+pub mod audio_card;
 pub mod audio_out;
 pub mod audiopipe;
 pub mod clipboard;
@@ -19,6 +20,7 @@ pub mod effects;
 pub mod error;
 pub mod exporter;
 pub mod ffmpeg;
+pub mod filepick;
 pub mod fonts;
 pub mod format;
 pub mod http;
@@ -48,6 +50,9 @@ pub mod qr;
 pub mod rec_frame_win;
 pub mod recorder;
 pub mod recycle;
+pub mod screen_pen;
+#[cfg(windows)]
+pub mod screen_pen_win;
 #[cfg(windows)]
 pub mod scroll_win;
 pub mod selfupdate;
@@ -62,6 +67,7 @@ pub mod snip_win;
 pub mod steps;
 #[cfg(windows)]
 pub mod steps_win;
+pub mod subtitles;
 pub mod thumbs;
 pub mod tray;
 #[cfg(windows)]
@@ -69,6 +75,7 @@ pub mod tray_win;
 pub mod types;
 pub mod updater;
 pub mod version;
+pub mod video_frame;
 pub mod winui;
 pub mod zoom;
 

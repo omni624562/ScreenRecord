@@ -12,6 +12,8 @@ pub enum SourceType {
     Monitor,
     All,
     Region,
+    /// 只錄聲音（畫面不錄）
+    Audio,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -122,6 +124,7 @@ impl UiSettings {
             source_type: match o.get("sourceType").and_then(Value::as_str) {
                 Some("region") => SourceType::Region,
                 Some("all") => SourceType::All,
+                Some("audio") => SourceType::Audio,
                 _ => SourceType::Monitor,
             },
             monitor_id: string("monitorId"),
@@ -208,6 +211,7 @@ impl UiSettings {
             SourceType::Monitor => self.region_in_monitor(env).or_else(|| self.selected_monitor(env).map(|m| Rect { x: m.x, y: m.y, width: m.width, height: m.height })),
             SourceType::All => (env.desktop.width > 0).then_some(env.desktop),
             SourceType::Region => Some(self.region),
+            SourceType::Audio => None,
         }
     }
 
@@ -218,7 +222,8 @@ impl UiSettings {
                     Some(r) => SourceConfig::Region { x: r.x as f64, y: r.y as f64, width: r.width as f64, height: r.height as f64 },
                     None => SourceConfig::Monitor { monitor_id: self.monitor_id.clone().unwrap_or_default() },
                 },
-                SourceType::All => SourceConfig::All,
+                // 只錄聲音時，截圖仍截整個桌面
+                SourceType::All | SourceType::Audio => SourceConfig::All,
                 SourceType::Region => SourceConfig::Region { x: self.region.x as f64, y: self.region.y as f64, width: self.region.width as f64, height: self.region.height as f64 },
             },
             fps: self.fps,
@@ -237,6 +242,7 @@ impl UiSettings {
             hide_icons: self.hide_icons,
             follow_window: if self.source_type == SourceType::Region { self.follow_window.as_ref().map(|w| w.id) } else { None },
             camera: (!self.camera.is_empty()).then(|| CameraConfig { device: self.camera.clone(), corner: self.camera_corner, size: self.camera_size, circle: self.camera_circle }),
+            audio_only: self.source_type == SourceType::Audio,
         }
     }
 }

@@ -9,6 +9,7 @@
 pub mod shot;
 mod side;
 mod stage;
+mod subs;
 mod timeline;
 
 use super::dialogs::file_name;
@@ -229,6 +230,10 @@ pub struct Editor {
     zoom: f64,
     /// 上次加上的圖片（Logo），選單裡可以直接再用
     last_picture: String,
+    /// 自動產生字幕（進行中）、選的語言與品質
+    subs: Option<subs::SubsJob>,
+    subs_lang: usize,
+    subs_model: usize,
     /// 正在用文字辨識找個資
     finding_pii: bool,
     /// 正在分析沒動靜的片段
@@ -239,6 +244,8 @@ pub struct Editor {
     frame: Option<Frame>,
     video_tex: Option<TextureHandle>,
     video_key: u64,
+    /// 背景與圓角的預覽：(內容, 圖)
+    frame_preview: Option<(u64, TextureHandle)>,
     overlay: stage::Overlay,
     strip: timeline::Strip,
     emoji_tex: Vec<TextureHandle>,
@@ -352,12 +359,16 @@ impl Editor {
             clicks: vec![],
             zoom: 0.0,
             last_picture: app.s.last_picture.clone(),
+            subs: None,
+            subs_lang: 0,
+            subs_model: 0,
             finding_pii: false,
             finding_idle: false,
             fast_from: None,
             frame: None,
             video_tex: None,
             video_key: 0,
+            frame_preview: None,
             overlay: stage::Overlay::default(),
             strip: timeline::Strip::default(),
             emoji_tex: emoji_textures(&app.ctx),
@@ -400,6 +411,7 @@ impl Editor {
         self.spec.audio = data.audio;
         self.spec.fast = data.fast;
         self.zoom = data.zoom;
+        self.spec.frame = data.frame;
         self.crop_on = data.crop_on;
         self.anns = data.anns;
         if let (Some(s), Some(o)) = (&mut self.shot, opts) {
@@ -521,6 +533,7 @@ impl Editor {
         self.spec.fast = data.get("fast").and_then(|a| serde_json::from_value::<Vec<FastRange>>(a.clone()).ok()).unwrap_or_default();
         self.spec.fast.retain(|f| f.end() <= d + 0.05 && f.speed > 1 && f.speed <= 16);
         self.zoom = data.get("zoom").and_then(Value::as_f64).filter(|z| (1.0..=4.0).contains(z)).unwrap_or(0.0);
+        self.spec.frame = data.get("frame").and_then(|f| serde_json::from_value(f.clone()).ok());
         self.crop_on = data.get("cropOn").and_then(Value::as_bool).unwrap_or(false) && self.spec.crop.is_some();
         // 一個一個讀：格式不對的標註略過，不影響其他的
         let list = data.get("anns").and_then(Value::as_array).cloned().unwrap_or_default();
@@ -543,6 +556,7 @@ impl Editor {
             audio: self.spec.audio,
             fast: self.spec.fast.clone(),
             zoom: self.zoom,
+            frame: self.spec.frame.clone(),
         }
     }
 
@@ -961,6 +975,12 @@ impl Editor {
             "selrange" => self.sel = Some((7.0, 8.5)),
             "picture" => {
                 let _ = self.add_picture(v);
+            }
+            "frame" => self.spec.frame = Some(screenrecorder_core::video_frame::VideoFrame::default()),
+            "srt" => {
+                if let Ok(c) = screenrecorder_core::subtitles::read_file(std::path::Path::new(v)) {
+                    self.add_subtitles(&c);
+                }
             }
             "shadow" => {
                 if let Some(s) = &mut self.shot {
@@ -1418,7 +1438,15 @@ fn footer(ed: &mut Editor, ui: &mut egui::Ui) -> bool {
     };
     let gone = ed.gone_count(&keep);
     let zooming = ed.zoom_on();
-    let unchanged = keep.len() == 1 && keep[0].0 == 0.0 && keep[0].1 >= ed.duration - 0.05 && fast == 0 && !zooming && crop.is_none() && ed.anns.is_empty() && ed.spec.audio.is_default();
+    let unchanged = keep.len() == 1
+        && keep[0].0 == 0.0
+        && keep[0].1 >= ed.duration - 0.05
+        && fast == 0
+        && !zooming
+        && crop.is_none()
+        && ed.anns.is_empty()
+        && ed.spec.audio.is_default()
+        && ed.spec.frame.is_none();
     let mut save = false;
     ui.vertical(|ui| {
         ui.spacing_mut().item_spacing = vec2(0.0, 2.0);
@@ -1432,6 +1460,9 @@ fn footer(ed: &mut Editor, ui: &mut egui::Ui) -> bool {
             }
             if zooming {
                 ui.label("・跟著點擊放大");
+            }
+            if ed.spec.frame.is_some() {
+                ui.label("・背景與圓角");
             }
             if !size.is_empty() {
                 ui.label("・畫面 ");
@@ -1480,6 +1511,7 @@ fn start_save(app: &mut UiApp, ed: &mut Editor) {
         audio: ed.spec.audio,
         fast: ed.spec.fast.clone(),
         zoom: ed.zoom_on().then(|| ClickZoom { factor: ed.zoom, clicks: ed.clicks.clone() }),
+        frame: ed.spec.frame.clone(),
     };
     let project = serde_json::to_value(ed.project_data()).ok();
     let (core, source, replace) = (app.core.clone(), ed.entry.media.path.clone(), ed.replace_target.clone());

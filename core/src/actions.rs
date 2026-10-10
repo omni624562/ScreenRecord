@@ -314,6 +314,22 @@ pub async fn shot_ocr(path: &str, spec: Option<&crate::shot_edit::ShotSpec>) -> 
     tokio::task::spawn_blocking(move || crate::ocr::recognize(&rgba, w, h)).await.map_err(|e| Error::other(e.to_string()))?.map_err(Error::config)
 }
 
+/// 只留下聲音：在同一個資料夾另存成同名的 .m4a（不重新壓縮，很快）；回傳新檔案的路徑
+pub async fn save_audio(app: &App, path: &str) -> Result<String> {
+    let ffmpeg = app.ffmpeg_path().ok_or_else(|| Error::config("找不到 ffmpeg.exe"))?;
+    let src = Path::new(path);
+    let (Some(dir), Some(stem)) = (src.parent(), src.file_stem()) else { return Err(Error::config("檔名不正確")) };
+    let out = crate::paths::unique_path(dir, &stem.to_string_lossy(), ".m4a");
+    let r = crate::process::run(&ffmpeg, &crate::args::audio_file_args(path, &out.to_string_lossy()), std::time::Duration::from_secs(600)).await;
+    if r.code != 0 || !out.is_file() {
+        let _ = std::fs::remove_file(&out);
+        let why = if r.stderr.contains("matches no streams") { "這支影片沒有聲音".to_string() } else { r.stderr.lines().last().unwrap_or("FFmpeg 失敗").to_string() };
+        return Err(Error::config(format!("無法存成 M4A：{why}")));
+    }
+    crate::info!("[檔案] 另存聲音 {}", out.display());
+    Ok(out.display().to_string())
+}
+
 /// 可以用的攝影機（Windows 的 DirectShow 裝置）；其他平台沒有
 pub async fn list_cameras(app: &App) -> Vec<String> {
     if !cfg!(windows) {

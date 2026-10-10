@@ -500,7 +500,9 @@ impl Recorder {
         if !matches!(st.state, RecorderState::Countdown | RecorderState::Recording | RecorderState::Paused) {
             return None;
         }
-        let full = !matches!(st.config.as_ref()?.source, SourceConfig::Region { .. });
+        // 只錄聲音：沒有範圍，只在螢幕上方顯示小控制列
+        let c = st.config.as_ref()?;
+        let full = c.audio_only || !matches!(c.source, SourceConfig::Region { .. });
         let countdown_ms = if st.state == RecorderState::Countdown { st.countdown.as_ref().map(|c| c.ends_at.saturating_sub(now_ms())) } else { None };
         Some(FrameInfo { area: st.plan.as_ref()?.rect, state: st.state, recorded_ms: st.recorded_ms(), countdown_ms, markers: st.markers.len() as u32, full })
     }
@@ -511,7 +513,7 @@ impl Recorder {
         if !matches!(st.state, RecorderState::Recording | RecorderState::Paused) {
             return None;
         }
-        let c = st.config.as_ref()?;
+        let c = st.config.as_ref().filter(|c| !c.audio_only)?;
         Some(OverlayInfo { area: st.plan.as_ref()?.rect, show_clicks: c.show_clicks, show_keys: c.show_keys, cursor_halo: c.cursor_halo })
     }
 
@@ -527,7 +529,7 @@ impl Recorder {
     /// 記下一次滑鼠點擊（桌面的實體像素座標）；範圍外、暫停中不記
     pub fn add_click(&self, x: i32, y: i32) {
         let mut st = self.lock();
-        if st.state != RecorderState::Recording || st.clicks.len() >= 20_000 {
+        if st.state != RecorderState::Recording || st.clicks.len() >= 20_000 || st.config.as_ref().is_some_and(|c| c.audio_only) {
             return;
         }
         let Some(r) = st.plan.as_ref().map(|p| p.rect) else { return };
@@ -663,7 +665,7 @@ impl Recorder {
         st.cancel_requested || st.shutting_down
     }
 
-    async fn do_start(&self, config: RecordConfig, began: &mut Option<oneshot::Sender<()>>) -> Result<()> {
+    async fn do_start(&self, mut config: RecordConfig, began: &mut Option<oneshot::Sender<()>>) -> Result<()> {
         if self.lock().state != RecorderState::Idle {
             return Err(Error::config("目前已在錄影中"));
         }
@@ -671,11 +673,31 @@ impl Recorder {
         if deps.ffmpeg_path().is_none() {
             return Err(Error::config("找不到 ffmpeg.exe，請先依畫面指示下載"));
         }
-        let plan = resolve_plan(&config, &deps.monitors())?;
+        if config.audio_only {
+            if !config.audio.system && !config.audio.mic {
+                return Err(Error::config("只錄聲音時，請至少打開「系統聲音」或「麥克風」"));
+            }
+            // 畫面是一張卡片：螢幕相關的設定都用不到，也不用縮小操作視窗
+            config = RecordConfig {
+                fps: crate::audio_card::FPS,
+                scale: 100.0,
+                draw_mouse: false,
+                hide_ui: Some(false),
+                show_clicks: false,
+                show_keys: false,
+                cursor_halo: false,
+                hide_icons: false,
+                follow_window: None,
+                camera: None,
+                ..config
+            };
+        }
+        let mut plan = resolve_plan(&config, &deps.monitors())?;
         let encoders = deps.encoders().await;
         let enc_pref = config.encoder.unwrap_or_default();
         let (enc, reason) = choose_encoder(enc_pref, plan.out_width, plan.out_height, config.fps, encoders.cpu, &encoders.gpu, deps.prefer_gpu())?;
         let method = match config.method {
+            _ if config.audio_only => CaptureMethod::Gdigrab,
             MethodPreference::Gdigrab => CaptureMethod::Gdigrab,
             MethodPreference::Ddagrab => {
                 if plan.dda.is_none() {
@@ -704,7 +726,15 @@ impl Recorder {
         }
         let parts_dir = Path::new(&output_dir).join(".parts").join(&stamp);
         std::fs::create_dir_all(&parts_dir)?;
-        let final_path = unique_path(Path::new(&output_dir), &format!("Rec_{stamp}"), ".mp4");
+        if config.audio_only {
+            // 卡片放在分段資料夾裡（意外中斷續錄時還要用，合併完一起刪掉）
+            let card = parts_dir.join("card.png");
+            let when = chrono::Local::now().format("%Y-%m-%d %H:%M").to_string();
+            crate::audio_card::render(&when).and_then(|pm| pm.save_png(&card).ok()).ok_or_else(|| Error::config("無法建立錄音的畫面"))?;
+            plan.card = Some(card.display().to_string());
+        }
+        let prefix = if config.audio_only { "錄音" } else { "Rec" };
+        let final_path = unique_path(Path::new(&output_dir), &format!("{prefix}_{stamp}"), ".mp4");
         let mut audio_specs = Vec::new();
         if config.audio.system {
             audio_specs.push(AudioSourceSpec { loopback: true, mic_id: String::new() });
@@ -785,6 +815,7 @@ impl Recorder {
             st.countdown = None;
             let (width, height) = (plan.rect.width, plan.rect.height);
             let place = match &config.source {
+                _ if config.audio_only => "只錄聲音".to_string(),
                 SourceConfig::Monitor { .. } => format!("螢幕 {}", plan.monitors.first().map(|m| m.display_number.to_string()).unwrap_or_else(|| "?".into())),
                 SourceConfig::All => format!("所有螢幕（{} 個）", plan.monitors.len()),
                 SourceConfig::Region { .. } => format!("範圍 ({}, {})", plan.rect.x, plan.rect.y),
@@ -1588,6 +1619,7 @@ mod tests {
                 hide_icons: false,
                 follow_window: None,
                 camera: None,
+                audio_only: false,
             }
         }
         fn release(&self) {
@@ -1627,6 +1659,40 @@ mod tests {
         s.release();
         first.await.unwrap();
         assert_eq!(s.rec.status().state, RecorderState::Idle);
+    }
+
+    #[tokio::test]
+    async fn audio_only_needs_a_sound_source() {
+        let s = Setup::new(Fake::default());
+        s.release();
+        let cfg = RecordConfig { audio_only: true, audio: AudioConfig { system: false, mic: false, mic_id: String::new() }, ..s.config() };
+        let err = s.rec.start(cfg).await.unwrap_err();
+        assert!(err.message().contains("只錄聲音"), "{}", err.message());
+        assert_eq!(s.rec.status().state, RecorderState::Idle);
+        assert!(!s.parts_left());
+    }
+
+    #[tokio::test]
+    async fn audio_only_countdown_draws_the_card() {
+        let s = Setup::new(Fake::default());
+        s.release();
+        let cfg = RecordConfig { audio_only: true, audio: AudioConfig { system: true, mic: false, mic_id: String::new() }, show_clicks: true, ..s.config() };
+        s.rec.start(cfg).await.unwrap(); // 進入倒數就回覆
+        {
+            let st = s.rec.lock();
+            let plan = st.plan.as_ref().unwrap();
+            assert_eq!((plan.out_width, plan.out_height), (640, 360));
+            assert!(plan.card.as_ref().is_some_and(|c| Path::new(c).is_file()));
+            assert!(st.final_path.as_ref().unwrap().file_name().unwrap().to_string_lossy().starts_with("錄音_"));
+            let c = st.config.as_ref().unwrap();
+            assert_eq!((c.fps, c.show_clicks, c.hide_ui), (5.0, false, Some(false)));
+        }
+        // 沒有範圍外框，只在螢幕上方顯示小控制列
+        assert!(s.rec.frame_info().unwrap().full);
+        s.rec.stop(None).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert_eq!(s.rec.status().state, RecorderState::Idle);
+        assert!(!s.parts_left());
     }
 
     #[tokio::test]

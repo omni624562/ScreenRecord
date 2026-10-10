@@ -108,7 +108,7 @@ unsafe fn run(path: String, on: OnCmd) {
 }
 
 /// 把圖（預乘 RGBA）放到分層視窗上
-unsafe fn present(hwnd: HWND, pm: &Pixmap, (x, y): (i32, i32)) {
+pub(crate) unsafe fn present(hwnd: HWND, pm: &Pixmap, (x, y): (i32, i32)) {
     let (w, h) = (pm.width() as i32, pm.height() as i32);
     let screen = GetDC(None);
     let bmi = BITMAPINFO {

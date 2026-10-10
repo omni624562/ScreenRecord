@@ -129,41 +129,14 @@ pub fn save_clipboard_image() -> Result<PathBuf, String> {
 }
 
 /// 用 Windows 的開啟檔案視窗選一張圖片（會等到使用者選好或取消）
-#[cfg(windows)]
 pub fn pick_file() -> Result<Option<PathBuf>, String> {
-    use windows::core::{w, PCWSTR};
-    use windows::Win32::System::Com::{CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED};
-    use windows::Win32::UI::Shell::Common::COMDLG_FILTERSPEC;
-    use windows::Win32::UI::Shell::{FileOpenDialog, IFileOpenDialog, FOS_FILEMUSTEXIST, FOS_FORCEFILESYSTEM, SIGDN_FILESYSPATH};
-    unsafe {
-        let inited = CoInitializeEx(None, COINIT_APARTMENTTHREADED).is_ok();
-        let r = (|| -> windows::core::Result<Option<PathBuf>> {
-            let dlg: IFileOpenDialog = CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER)?;
-            let filters =
-                [COMDLG_FILTERSPEC { pszName: w!("圖片（PNG、JPG、BMP、WebP）"), pszSpec: w!("*.png;*.jpg;*.jpeg;*.bmp;*.webp") }, COMDLG_FILTERSPEC { pszName: w!("所有檔案"), pszSpec: w!("*.*") }];
-            dlg.SetFileTypes(&filters)?;
-            dlg.SetTitle(w!("選擇要加上的圖片或 Logo"))?;
-            dlg.SetOptions(dlg.GetOptions()? | FOS_FILEMUSTEXIST | FOS_FORCEFILESYSTEM)?;
-            // 取消時回傳錯誤（HRESULT_FROM_WIN32(ERROR_CANCELLED)）
-            if dlg.Show(None).is_err() {
-                return Ok(None);
-            }
-            let item = dlg.GetResult()?;
-            let name = item.GetDisplayName(SIGDN_FILESYSPATH)?;
-            let path = PCWSTR(name.0).to_string().unwrap_or_default();
-            windows::Win32::System::Com::CoTaskMemFree(Some(name.0 as *const _));
-            Ok(Some(PathBuf::from(path)))
-        })();
-        if inited {
-            CoUninitialize();
+    crate::filepick::pick("選擇要加上的圖片或 Logo", &[("圖片（PNG、JPG、BMP、WebP）", "*.png;*.jpg;*.jpeg;*.bmp;*.webp"), ("所有檔案", "*.*")]).map_err(|e| {
+        if cfg!(windows) {
+            e
+        } else {
+            "這個系統不支援選擇檔案的視窗，請把圖片檔拖曳到編輯視窗".into()
         }
-        r.map_err(|e| format!("無法開啟選擇檔案的視窗：{}", e.message()))
-    }
-}
-
-#[cfg(not(windows))]
-pub fn pick_file() -> Result<Option<PathBuf>, String> {
-    Err("這個系統不支援選擇檔案的視窗，請把圖片檔拖曳到編輯視窗".into())
+    })
 }
 
 #[cfg(test)]

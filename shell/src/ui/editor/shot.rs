@@ -96,6 +96,12 @@ pub enum Act {
     PastePicture,
     /// 再加一次上次用的圖片
     LastPicture,
+    /// 影片：自動產生字幕（語音辨識）
+    AutoSubs,
+    /// 影片：匯入 SRT 字幕檔
+    ImportSrt,
+    /// 停止產生字幕
+    CancelSubs,
 }
 
 /// 開啟截圖編輯：編輯過的圖會從原圖重新套用上次的編輯
@@ -494,7 +500,7 @@ pub fn rotate_buttons(ed: &mut Editor, ui: &mut egui::Ui) {
 
 /// 透明處的棋盤格底
 /// 背景的色塊：單色或從左上到右下的漸層
-fn gradient_swatch(p: &egui::Painter, r: Rect, bg: &str) {
+pub(super) fn gradient_swatch(p: &egui::Painter, r: Rect, bg: &str) {
     let cols: Vec<Color32> = bg
         .split(',')
         .map(|c| {
@@ -641,6 +647,7 @@ pub fn run(app: &mut UiApp, ed: &mut Editor, act: Act) {
                 Err(e) => app.toast(e, true),
             });
         }
+        Act::AutoSubs | Act::ImportSrt | Act::CancelSubs => super::subs::run(app, ed, act),
         Act::LastPicture => {
             let path = ed.last_picture.clone();
             match ed.add_picture(&path) {

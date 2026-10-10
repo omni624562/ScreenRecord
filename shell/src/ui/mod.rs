@@ -63,6 +63,8 @@ pub enum EntryAction {
     Export,
     /// 把檔案複製到剪貼簿（貼到 LINE、Teams、資料夾）
     CopyFile,
+    /// 只留下聲音，另存成 .m4a
+    SaveAudio,
 }
 
 pub struct UiApp {
@@ -432,6 +434,14 @@ impl UiApp {
         let path = entry.media.path.clone();
         match action {
             EntryAction::Play => viewer::open(self, entry),
+            EntryAction::SaveAudio => {
+                let core = self.core.clone();
+                self.toast("正在存成 M4A…", false);
+                self.spawn(async move { actions::save_audio(&core, &path).await }, |app, r| match r {
+                    Ok(out) => app.toast(format!("已存成 {}（和影片在同一個資料夾）", dialogs::file_name(&out)), false),
+                    Err(e) => app.toast(e.message().to_string(), true),
+                });
+            }
             EntryAction::CopyFile => match screenrecorder_core::clipboard::copy_files(std::slice::from_ref(&path)) {
                 Ok(()) => self.toast("已複製檔案，可以直接貼到 LINE、Teams、信件或資料夾", false),
                 Err(e) => self.toast(e, true),

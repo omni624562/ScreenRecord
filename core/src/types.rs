@@ -109,17 +109,19 @@ pub struct HotkeyStatus {
     pub snip: bool,
     #[serde(default)]
     pub mark: bool,
+    #[serde(default)]
+    pub pen: bool,
 }
 
 impl HotkeyStatus {
     /// 依 Hotkeys::all 的順序
     pub fn all(&self) -> [bool; HOTKEY_COUNT] {
-        [self.record, self.pause, self.shot, self.snip, self.mark]
+        [self.record, self.pause, self.shot, self.snip, self.mark, self.pen]
     }
 
     pub fn from_list(ok: &[bool]) -> HotkeyStatus {
         let g = |i: usize| ok.get(i).copied().unwrap_or(false);
-        HotkeyStatus { record: g(0), pause: g(1), shot: g(2), snip: g(3), mark: g(4) }
+        HotkeyStatus { record: g(0), pause: g(1), shot: g(2), snip: g(3), mark: g(4), pen: g(5) }
     }
 }
 
@@ -228,7 +230,7 @@ pub fn shown_keys(vk: u32, ctrl: bool, alt: bool, shift: bool, win: bool) -> Opt
 }
 
 /// 全域快捷鍵的數量
-pub const HOTKEY_COUNT: usize = 5;
+pub const HOTKEY_COUNT: usize = 6;
 
 /// 全域快捷鍵（None = 停用）
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -240,22 +242,36 @@ pub struct Hotkeys {
     /// 錄影中打點（3.1 新增：舊的設定沒有這個欄位時用預設）
     #[serde(default = "default_mark")]
     pub mark: Option<Hotkey>,
+    /// 螢幕畫筆（3.1 新增）
+    #[serde(default = "default_pen")]
+    pub pen: Option<Hotkey>,
 }
 
 fn default_mark() -> Option<Hotkey> {
     Some(Hotkey::ctrl_alt(0x4D))
 }
 
+fn default_pen() -> Option<Hotkey> {
+    Some(Hotkey::ctrl_alt(0x44))
+}
+
 impl Default for Hotkeys {
     fn default() -> Self {
-        Hotkeys { record: Some(Hotkey::ctrl_alt(0x52)), pause: Some(Hotkey::ctrl_alt(0x50)), shot: Some(Hotkey::ctrl_alt(0x53)), snip: Some(Hotkey::ctrl_alt(0x41)), mark: default_mark() }
+        Hotkeys {
+            record: Some(Hotkey::ctrl_alt(0x52)),
+            pause: Some(Hotkey::ctrl_alt(0x50)),
+            shot: Some(Hotkey::ctrl_alt(0x53)),
+            snip: Some(Hotkey::ctrl_alt(0x41)),
+            mark: default_mark(),
+            pen: default_pen(),
+        }
     }
 }
 
 impl Hotkeys {
-    /// 依序：開始 / 停止錄影、暫停 / 繼續、截圖、框選截圖、打點
+    /// 依序：開始 / 停止錄影、暫停 / 繼續、截圖、框選截圖、打點、螢幕畫筆
     pub fn all(&self) -> [Option<Hotkey>; HOTKEY_COUNT] {
-        [self.record, self.pause, self.shot, self.snip, self.mark]
+        [self.record, self.pause, self.shot, self.snip, self.mark, self.pen]
     }
 
     pub fn set(&mut self, i: usize, k: Option<Hotkey>) {
@@ -264,13 +280,14 @@ impl Hotkeys {
             1 => self.pause = k,
             2 => self.shot = k,
             3 => self.snip = k,
-            _ => self.mark = k,
+            4 => self.mark = k,
+            _ => self.pen = k,
         }
     }
 
     /// 全部停用（設定新的快捷鍵時暫停）
     pub fn none() -> Hotkeys {
-        Hotkeys { record: None, pause: None, shot: None, snip: None, mark: None }
+        Hotkeys { record: None, pause: None, shot: None, snip: None, mark: None, pen: None }
     }
 
     /// 第 i 個的名稱（停用時是空字串）
@@ -284,7 +301,7 @@ impl Hotkeys {
     }
 }
 
-pub const HOTKEY_NAMES: [&str; HOTKEY_COUNT] = ["開始 / 停止錄影", "暫停 / 繼續", "截圖（固定範圍）", "框選截圖", "錄影中打點"];
+pub const HOTKEY_NAMES: [&str; HOTKEY_COUNT] = ["開始 / 停止錄影", "暫停 / 繼續", "截圖（固定範圍）", "框選截圖", "錄影中打點", "螢幕畫筆（開 / 關）"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -336,6 +353,9 @@ pub struct RecordConfig {
     /// 攝影機子母畫面（把攝影機的畫面疊在角落）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub camera: Option<CameraConfig>,
+    /// 只錄聲音（畫面是一張「只錄聲音」的卡片，見 audio_card.rs）
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub audio_only: bool,
 }
 
 /// 攝影機子母畫面
@@ -706,7 +726,24 @@ pub struct UpdateInfo {
 
 #[cfg(test)]
 mod tests {
-    use super::shown_keys;
+    use super::{shown_keys, Hotkey, Hotkeys};
+
+    #[test]
+    fn old_hotkey_settings_get_the_new_defaults() {
+        // 3.0 存的設定沒有打點、畫筆
+        let old = r#"{"record":{"ctrl":true,"alt":true,"shift":false,"win":false,"key":82},"pause":null,"shot":null,"snip":null}"#;
+        let k: Hotkeys = serde_json::from_str(old).unwrap();
+        assert_eq!(k.pen, Some(Hotkey::ctrl_alt(0x44)));
+        assert_eq!(k.mark, Some(Hotkey::ctrl_alt(0x4D)));
+        assert_eq!(k.pause, None);
+        assert_eq!(k.label(5), "Ctrl+Alt+D");
+        // 停用畫筆後存起來，讀回來還是停用
+        let mut k = Hotkeys::default();
+        k.set(5, None);
+        let back: Hotkeys = serde_json::from_str(&serde_json::to_string(&k).unwrap()).unwrap();
+        assert_eq!(back.pen, None);
+        assert_eq!(back.mark, Hotkeys::default().mark);
+    }
 
     #[test]
     fn only_shortcuts_and_function_keys_are_shown() {

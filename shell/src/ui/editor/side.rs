@@ -7,10 +7,12 @@ use crate::ui::dialogs::file_name;
 use crate::ui::theme::{self, segmented, switch, Btn, Icon};
 use eframe::egui::{self, pos2, vec2, Align, Align2, Color32, CornerRadius, CursorIcon, Id, Layout, RichText, Sense, Stroke};
 use screenrecorder_core::annotate::{self, AnnKind, Shape, COLORS};
-use screenrecorder_core::edit::{normalize_ranges, set_fast, CropInput, FAST_SPEEDS};
+use screenrecorder_core::edit::{normalize_crop, normalize_ranges, set_fast, CropInput, FAST_SPEEDS};
 use screenrecorder_core::format::video_clock;
 use screenrecorder_core::idle;
 use screenrecorder_core::picture;
+use screenrecorder_core::shot_edit::BACKGROUNDS;
+use screenrecorder_core::video_frame::{self, VideoFrame};
 use screenrecorder_core::zoom;
 
 pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, toast: &mut Option<(String, bool)>) {
@@ -244,7 +246,92 @@ fn crop_panel(ed: &mut Editor, ui: &mut egui::Ui) {
     hint(ui, &text);
     if !ed.is_shot() {
         zoom_panel(ed, ui);
+        frame_panel(ed, ui);
     }
+}
+
+/// 背景與圓角：影片縮小放在背景中間（輸出大小不變），四角變圓、有陰影
+fn frame_panel(ed: &mut Editor, ui: &mut egui::Ui) {
+    let p = theme::pal(ui);
+    ui.add_space(4.0);
+    let r = ui.cursor();
+    ui.painter().hline(r.x_range(), r.top(), Stroke::new(1.0, p.border));
+    ui.add_space(6.0);
+    ui.label(RichText::new("背景與圓角").font(theme::font_bold(13.5)));
+    let mut on = ed.spec.frame.is_some();
+    if switch(ui, &mut on, "放在背景上", ed.vw > 0.0).on_hover_text("影片縮小放在漸層或單色背景中間，四角變圓、下方有陰影；輸出的大小不變").changed() {
+        ed.spec.frame = on.then(VideoFrame::default);
+    }
+    let Some(mut f) = ed.spec.frame.clone() else {
+        return hint(ui, "適合放到簡報、社群或產品介紹：影片看起來像一張卡片。");
+    };
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
+        for bg in BACKGROUNDS {
+            let (r, resp) = ui.allocate_exact_size(vec2(26.0, 26.0), Sense::click());
+            super::shot::gradient_swatch(ui.painter(), r.shrink(2.0), bg);
+            if f.background == bg {
+                ui.painter().rect_stroke(r.expand(1.0), CornerRadius::same(7), Stroke::new(2.0, p.accent), egui::StrokeKind::Inside);
+            }
+            if resp.on_hover_cursor(CursorIcon::PointingHand).clicked() {
+                f.background = bg.to_string();
+            }
+        }
+    });
+    let names = ["無", "小", "中", "大"];
+    let items: Vec<(u32, &str)> = video_frame::RADII.iter().copied().zip(names).collect();
+    ui.horizontal(|ui| {
+        ui.label(theme::muted(ui, "圓角").font(theme::font(12.0)));
+        segmented(ui, &mut f.radius, &items, true);
+    });
+    let items: Vec<(u32, &str)> = video_frame::PADDINGS.iter().copied().zip(["少", "中", "多"]).collect();
+    ui.horizontal(|ui| {
+        ui.label(theme::muted(ui, "留白").font(theme::font(12.0)));
+        segmented(ui, &mut f.padding, &items, true);
+    });
+    if ed.spec.frame.as_ref() != Some(&f) {
+        ed.spec.frame = Some(f.clone());
+    }
+    // 預覽：目前這一格放在背景上的樣子（與輸出用同一套畫法）
+    let crop = if ed.crop_on { normalize_crop(ed.spec.crop, ed.vw as i32, ed.vh as i32) } else { None };
+    let (ow, oh) = crop.map(|c| (c.width as f64, c.height as f64)).unwrap_or((ed.vw, ed.vh));
+    let pw = ui.available_width().min(320.0);
+    let ph = (pw as f64 * oh / ow.max(1.0)) as f32;
+    let key = super::hash_of(&(serde_json::to_string(&f).unwrap_or_default(), ed.video_key, pw as u32, crop.map(|c| (c.x, c.y, c.width, c.height))));
+    if ed.frame_preview.as_ref().is_none_or(|(k, _)| *k != key) {
+        if let Some(pm) = frame_preview(ed, &f, crop, pw as i32, ph as i32) {
+            let img = egui::ColorImage::from_rgba_premultiplied([pm.width() as usize, pm.height() as usize], pm.data());
+            ed.frame_preview = Some((key, ui.ctx().load_texture("frame-preview", img, egui::TextureOptions::LINEAR)));
+        }
+    }
+    if let Some((_, tex)) = &ed.frame_preview {
+        let (r, _) = ui.allocate_exact_size(vec2(pw, ph), Sense::hover());
+        ui.painter().image(tex.id(), r, egui::Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+    }
+    hint(ui, "上面是輸出的樣子（標註會一起縮小）；輸出的大小不變。");
+}
+
+/// 背景與圓角的預覽圖（w × h）：底圖 + 目前這一格（縮小、裁切）+ 遮罩
+fn frame_preview(ed: &Editor, f: &VideoFrame, crop: Option<screenrecorder_core::types::Rect>, w: i32, h: i32) -> Option<tiny_skia::Pixmap> {
+    let frame = ed.frame.as_ref()?;
+    let (mut out, cover) = video_frame::render(f, w.max(16), h.max(16))?;
+    let l = video_frame::layout(f, w.max(16), h.max(16));
+    let mut src = tiny_skia::Pixmap::new(frame.width, frame.height)?;
+    src.data_mut().copy_from_slice(&frame.rgba[..(frame.width * frame.height * 4) as usize]);
+    // 解出的畫面可能比原影片小：裁切範圍換算成畫面像素
+    let (sx, sy) = (frame.width as f32 / ed.vw.max(1.0) as f32, frame.height as f32 / ed.vh.max(1.0) as f32);
+    let (cx, cy, cw, ch) = match crop {
+        Some(c) => (c.x as f32 * sx, c.y as f32 * sy, c.width as f32 * sx, c.height as f32 * sy),
+        None => (0.0, 0.0, frame.width as f32, frame.height as f32),
+    };
+    let t = tiny_skia::Transform::from_translate(l.x as f32, l.y as f32).pre_scale(l.w as f32 / cw.max(1.0), l.h as f32 / ch.max(1.0)).pre_translate(-cx, -cy);
+    let paint = tiny_skia::PixmapPaint { quality: tiny_skia::FilterQuality::Bilinear, ..Default::default() };
+    let clip = tiny_skia::Rect::from_xywh(l.x as f32, l.y as f32, l.w as f32, l.h as f32).map(tiny_skia::PathBuilder::from_rect)?;
+    let mut mask = tiny_skia::Mask::new(out.width(), out.height())?;
+    mask.fill_path(&clip, tiny_skia::FillRule::Winding, false, tiny_skia::Transform::identity());
+    out.draw_pixmap(0, 0, src.as_ref(), &paint, t, Some(&mask));
+    out.draw_pixmap(0, 0, cover.as_ref(), &tiny_skia::PixmapPaint::default(), tiny_skia::Transform::identity(), None);
+    Some(out)
 }
 
 /// 跟著點擊放大：錄影時記下的點擊，輸出時放大到點擊的地方
@@ -383,6 +470,10 @@ fn ann_panel(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context) {
         if resp.clicked() {
             ed.pending = Some(super::shot::Act::FindPii);
         }
+    }
+    // 影片：字幕（自動產生或匯入 SRT）
+    if !shot && can && ed.tool.is_none() && ed.selected().is_none() {
+        super::subs::panel(ed, ui);
     }
     tool_style(ed, ui);
 

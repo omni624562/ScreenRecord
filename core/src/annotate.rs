@@ -271,6 +271,31 @@ pub fn default_size(kind: AnnKind, vh: f64) -> f64 {
     }
 }
 
+/// 一段文字（不加底色）：量好寬高、左上角在 (0, 0)；給程式自己畫的畫面用（放大鏡、錄音卡片）
+pub fn plain_text(text: &str, size: f64, color: &str) -> Ann {
+    let mut a = Ann {
+        id: 0,
+        kind: AnnKind::Text,
+        x: 0.0,
+        y: 0.0,
+        w: 0.0,
+        h: 0.0,
+        start: 0.0,
+        end: 1.0,
+        color: color.into(),
+        size,
+        text: Some(text.to_string()),
+        bg: false,
+        n: None,
+        shape: None,
+        invert: false,
+        rot: 0.0,
+        pts: vec![],
+    };
+    measure(&mut a);
+    a
+}
+
 /// 清單與時間軸上顯示的名稱
 pub fn label(a: &Ann) -> String {
     match a.kind {
@@ -967,6 +992,9 @@ pub struct ProjectData {
     /// 跟著點擊放大的倍率（0 = 不放大）
     #[serde(default, skip_serializing_if = "is_zero")]
     pub zoom: f64,
+    /// 背景與圓角
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frame: Option<crate::video_frame::VideoFrame>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

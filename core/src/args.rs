@@ -187,6 +187,8 @@ pub struct CapturePlan {
     pub monitors: Vec<MonitorInfo>,
     pub out_width: i32,
     pub out_height: i32,
+    /// 只錄聲音：畫面改用這張圖（以實際速度送進 FFmpeg）
+    pub card: Option<String>,
 }
 
 fn monitor_rect(m: &MonitorInfo) -> Rect {
@@ -248,6 +250,11 @@ pub fn resolve_plan(config: &RecordConfig, monitors: &[MonitorInfo]) -> Result<C
         return Err(Error::config("請指定儲存位置"));
     }
 
+    // 只錄聲音：畫面是固定大小的卡片，與螢幕無關
+    if config.audio_only {
+        let (w, h) = (crate::audio_card::SIZE.0 as i32, crate::audio_card::SIZE.1 as i32);
+        return Ok(CapturePlan { rect: Rect { x: 0, y: 0, width: w, height: h }, dda: None, monitors: vec![], out_width: w, out_height: h, card: None });
+    }
     let rect = match &config.source {
         SourceConfig::Monitor { monitor_id } => {
             let Some(m) = monitors.iter().find(|m| &m.id == monitor_id) else {
@@ -277,7 +284,7 @@ pub fn resolve_plan(config: &RecordConfig, monitors: &[MonitorInfo]) -> Result<C
         return Err(Error::config("範圍不在任何螢幕上"));
     }
     let (out_width, out_height) = output_size(rect.width, rect.height, config.scale);
-    Ok(CapturePlan { rect, dda, monitors: involved, out_width, out_height })
+    Ok(CapturePlan { rect, dda, monitors: involved, out_width, out_height, card: None })
 }
 
 /// ddagrab 來源（GPU 擷取後下載回系統記憶體）。多個螢幕時以 xstack 依實際位置拼接，沒有畫面的區域補黑色。
@@ -410,7 +417,7 @@ pub fn capture_spec(plan: &CapturePlan, config: &RecordConfig, method: CaptureMe
     }
     let mut conv = convert_filters(plan, config, enc);
     // 有攝影機時先疊上攝影機畫面，最後再轉格式（攝影機的輸入編號在聲音之後）
-    let camera = config.camera.as_ref().filter(|c| !c.device.trim().is_empty());
+    let camera = config.camera.as_ref().filter(|c| !c.device.trim().is_empty() && !config.audio_only);
     let format = conv.pop().unwrap_or_default();
     tail_parts.extend(conv);
     let video_inputs = if method == CaptureMethod::Ddagrab { 0 } else { 1 };
@@ -437,6 +444,17 @@ pub fn capture_spec(plan: &CapturePlan, config: &RecordConfig, method: CaptureMe
             extra_inputs,
             input_count: 0,
             graph: format!("{},{tail}[vout]", ddagrab_chain(plan, config.fps, config.draw_mouse)),
+        });
+    }
+
+    // 只錄聲音：卡片圖片一直重複，以實際速度送進來（-re），showinfo 的時間才能拿來對齊聲音
+    if let Some(card) = plan.card.as_ref().filter(|_| config.audio_only) {
+        return Ok(CaptureSpec {
+            pre: vec![],
+            inputs: vec!["-re".into(), "-loop".into(), "1".into(), "-framerate".into(), num(config.fps), "-i".into(), card.clone()],
+            extra_inputs: vec![],
+            input_count: 1,
+            graph: format!("[0:v]{tail}[vout]"),
         });
     }
 
@@ -516,6 +534,15 @@ pub fn audio_end_args(file: &str) -> Vec<String> {
     let mut a = strs(&["-hide_banner", "-nostats", "-loglevel", "error", "-i"]);
     a.push(file.into());
     a.extend(strs(&["-map", "0:a:0", "-c", "copy", "-f", "null", "-", "-progress", "pipe:1"]));
+    a
+}
+
+/// 只留下聲音（.m4a）：直接複製 AAC，不重新壓縮
+pub fn audio_file_args(src: &str, out_file: &str) -> Vec<String> {
+    let mut a = strs(&["-hide_banner", "-nostats", "-loglevel", "error", "-i"]);
+    a.push(src.into());
+    a.extend(strs(&["-map", "0:a:0", "-vn", "-c:a", "copy", "-movflags", "+faststart", "-y"]));
+    a.push(out_file.into());
     a
 }
 
@@ -692,6 +719,17 @@ fn blur_effect(w: i32, h: i32, mosaic: bool, outside: bool) -> String {
     }
 }
 
+/// 背景與圓角（video_frame.rs 畫好的兩張圖）：影片縮成 w × h 疊在底圖的 (x, y)，再蓋上遮罩
+#[derive(Debug, Clone, PartialEq)]
+pub struct FrameInput {
+    pub base: String,
+    pub cover: String,
+    pub x: i32,
+    pub y: i32,
+    pub w: i32,
+    pub h: i32,
+}
+
 fn enable(start: f64, end: f64) -> String {
     format!("enable='between(t,{},{})'", num(start), num(end))
 }
@@ -708,6 +746,7 @@ pub fn cut_args(
     overlays: &[OverlayInput],
     audio: AudioFx,
     zoom: Option<&str>,
+    frame: Option<&FrameInput>,
 ) -> Result<Vec<String>> {
     // 選了「不要聲音」
     let with_audio = with_audio && !audio.mute;
@@ -725,16 +764,26 @@ pub fn cut_args(
     if let Some(c) = crop {
         vf.push(format!("crop={}:{}:{}:{}", c.width, c.height, c.x, c.y));
     }
-    vf.push(format!("format={}", enc.pix_fmt));
     let mut a = strs(&["-hide_banner", "-nostats", "-loglevel", "error", "-i"]);
     a.push(source.into());
-    if overlays.is_empty() {
+    // 背景與圓角：底圖與遮罩是一直重複的圖片（跟著影片結束）
+    let mut next_input = 1;
+    if let Some(f) = frame {
+        for img in [&f.base, &f.cover] {
+            a.extend(["-loop".into(), "1".into(), "-framerate".into(), num(fps), "-i".into(), img.clone()]);
+        }
+        vf.push(format!("scale={}:{}:flags=bicubic[fv];[1:v][fv]overlay={}:{}:shortest=1[fb];[fb][2:v]overlay=0:0:shortest=1", f.w, f.h, f.x, f.y));
+        next_input = 3;
+    }
+    vf.push(format!("format={}", enc.pix_fmt));
+    if overlays.is_empty() && frame.is_none() {
         a.extend(strs(&["-map", "0:v:0"]));
+    } else if overlays.is_empty() {
+        a.extend(["-filter_complex".into(), format!("[0:v]{}[vout]", vf.join(",")), "-map".into(), "[vout]".into()]);
     } else {
         // 標註以原影片的時間顯示，所以先疊上標註，再挑選保留的片段
         let mut graph = Vec::new();
         let mut cur = "[0:v]".to_string();
-        let mut next_input = 1;
         for (i, o) in overlays.iter().enumerate() {
             let out = format!("[o{i}]");
             match o {
@@ -779,7 +828,7 @@ pub fn cut_args(
     }
     a.extend(if with_audio { strs(&["-map", "0:a:0"]) } else { strs(&["-an"]) });
     a.extend(strs(&["-sn", "-dn"]));
-    if overlays.is_empty() {
+    if overlays.is_empty() && frame.is_none() {
         a.push("-vf".into());
         a.push(vf.join(","));
     }
@@ -848,7 +897,7 @@ pub fn preview_args(monitors: &[MonitorInfo], use_ddagrab: bool, max_width: u32,
     if use_ddagrab {
         if let Some(dda) = dda.filter(|d| !d.tiles.is_empty()) {
             let adapter = dda.adapter;
-            let plan = CapturePlan { rect, dda: Some(dda), monitors: monitors.to_vec(), out_width: rect.width, out_height: rect.height };
+            let plan = CapturePlan { rect, dda: Some(dda), monitors: monitors.to_vec(), out_width: rect.width, out_height: rect.height, card: None };
             let mut a = strs(&["-hide_banner", "-loglevel", "error", "-init_hw_device"]);
             a.push(format!("d3d11va=dda:{adapter}"));
             a.extend(strs(&["-filter_hw_device", "dda", "-filter_complex"]));
@@ -902,12 +951,12 @@ mod tests {
     fn screenshot_full_resolution() {
         let mons = vec![mon("0:0", 0, 0, 1920, 1080, true), mon("0:1", 1920, 0, 1920, 1080, false)];
         let (_, dda) = plan_tiles(&Rect { x: 0, y: 0, width: 3840, height: 1080 }, &mons);
-        let plan = CapturePlan { rect: Rect { x: 0, y: 0, width: 3840, height: 1080 }, dda, monitors: mons.clone(), out_width: 1920, out_height: 540 };
+        let plan = CapturePlan { rect: Rect { x: 0, y: 0, width: 3840, height: 1080 }, dda, monitors: mons.clone(), out_width: 1920, out_height: 540, card: None };
         let a = screenshot_args(&plan, true, false, "C:\\out\\Shot.png").unwrap().join(" ");
         assert!(a.contains("d3d11va=dda:0") && a.contains("xstack") && a.contains("draw_mouse=0") && a.contains("format=rgb24[vout]"), "{a}");
         assert!(!a.contains("scale="), "截圖不縮放：{a}");
         assert!(a.ends_with("-frames:v 3 -update 1 -y C:\\out\\Shot.png"), "{a}");
-        let plan = CapturePlan { rect: Rect { x: 100, y: 50, width: 800, height: 600 }, dda: None, monitors: mons, out_width: 800, out_height: 600 };
+        let plan = CapturePlan { rect: Rect { x: 100, y: 50, width: 800, height: 600 }, dda: None, monitors: mons, out_width: 800, out_height: 600, card: None };
         let a = screenshot_args(&plan, false, true, "s.png").unwrap().join(" ");
         assert!(a.contains("-f gdigrab -framerate 10 -draw_mouse 1 -offset_x 100 -offset_y 50 -video_size 800x600 -i desktop -frames:v 1 -pix_fmt rgb24"), "{a}");
         assert!(screenshot_args(&plan, true, true, "s.png").is_err());
@@ -961,6 +1010,7 @@ mod tests {
             hide_icons: false,
             follow_window: None,
             camera: None,
+            audio_only: false,
         }
     }
     fn region(x: f64, y: f64, w: f64, h: f64) -> SourceConfig {
@@ -1081,6 +1131,47 @@ mod tests {
         let gdi = segment_args(&plan, &c, CaptureMethod::Gdigrab, &x264(), "o.mp4", Some(&audio_in)).unwrap();
         assert!(gdi.join(" ").contains("-map [vout] -map 1:a"));
         assert!(graph_of(&gdi).starts_with("[0:v]showinfo=checksum=0,"));
+    }
+
+    #[test]
+    fn cut_with_background_frame() {
+        let f = FrameInput { base: "bg.png".into(), cover: "cover.png".into(), x: 134, y: 76, w: 1650, h: 928 };
+        let a = cut_args("in.mp4", "out.mp4", &[(1.0, 5.0, 1)], None, 30.0, &x264(), true, &[], AudioFx::default(), None, Some(&f)).unwrap();
+        let j = a.join(" ");
+        assert!(j.contains("-i in.mp4 -loop 1 -framerate 30 -i bg.png -loop 1 -framerate 30 -i cover.png"), "{j}");
+        assert_eq!(
+            graph_of(&a),
+            "[0:v]select='gte(t,1)*lt(t,5)',setpts=N/(30*TB),scale=1650:928:flags=bicubic[fv];[1:v][fv]overlay=134:76:shortest=1[fb];[fb][2:v]overlay=0:0:shortest=1,format=yuv420p[vout]"
+        );
+        assert!(!j.contains(" -vf "));
+        // 加上標註：標註的圖片接在底圖、遮罩之後
+        let overlays = [OverlayInput::Image { path: "o.png".into(), x: 10, y: 20, start: 1.0, end: 2.0 }];
+        let a = cut_args("in.mp4", "out.mp4", &[(1.0, 5.0, 1)], None, 30.0, &x264(), true, &overlays, AudioFx::default(), None, Some(&f)).unwrap();
+        let g = graph_of(&a);
+        assert!(g.starts_with("[0:v][3:v]overlay=10:20:"), "{g}");
+        assert!(g.ends_with("[fb][2:v]overlay=0:0:shortest=1,format=yuv420p[vout]"), "{g}");
+    }
+
+    #[test]
+    fn audio_file() {
+        assert_eq!(audio_file_args("a.mp4", "a.m4a").join(" "), "-hide_banner -nostats -loglevel error -i a.mp4 -map 0:a:0 -vn -c:a copy -movflags +faststart -y a.m4a");
+    }
+
+    #[test]
+    fn audio_only_uses_the_card() {
+        let audio_in = strs(&["-f", "f32le", "-ar", "48000", "-ac", "2", "-i", "tcp://127.0.0.1:5000"]);
+        // 不管選了哪個螢幕：卡片的大小，沒有攝影機
+        let cam = CameraConfig { device: "USB Camera".into(), corner: Default::default(), size: 20, circle: true };
+        let c = RecordConfig { audio_only: true, fps: 5.0, source: SourceConfig::Monitor { monitor_id: "missing".into() }, camera: Some(cam), ..cfg() };
+        let mut plan = resolve_plan(&c, &same_gpu()).unwrap();
+        assert_eq!((plan.out_width, plan.out_height, plan.monitors.len()), (640, 360, 0));
+        plan.card = Some("C:\\out\\.parts\\card.png".into());
+        let a = segment_args(&plan, &c, CaptureMethod::Gdigrab, &x264(), "o.mp4", Some(&audio_in)).unwrap();
+        let j = a.join(" ");
+        assert!(j.contains("-re -loop 1 -framerate 5 -i C:\\out\\.parts\\card.png -f f32le"), "{j}");
+        assert!(!j.contains("gdigrab") && !j.contains("dshow"), "{j}");
+        assert_eq!(graph_of(&a), "[0:v]showinfo=checksum=0,scale=640:360:flags=bicubic:out_color_matrix=bt709:out_range=tv,format=yuv420p[vout]");
+        assert!(j.contains("-map [vout] -map 1:a"));
     }
 
     #[test]
@@ -1273,25 +1364,26 @@ dummy: Immediate exit requested";
 
     #[test]
     fn cut() {
-        let args = cut_args("in.mp4", "out.mp4", &[(1.0, 2.0, 1), (4.0, 5.5, 1)], Some(Rect { x: 40, y: 40, width: 200, height: 160 }), 30.0, &x264(), true, &[], AudioFx::default(), None).unwrap();
+        let args =
+            cut_args("in.mp4", "out.mp4", &[(1.0, 2.0, 1), (4.0, 5.5, 1)], Some(Rect { x: 40, y: 40, width: 200, height: 160 }), 30.0, &x264(), true, &[], AudioFx::default(), None, None).unwrap();
         assert_eq!(after(&args, "-vf"), "select='gte(t,1)*lt(t,2)+gte(t,4)*lt(t,5.5)',setpts=N/(30*TB),crop=200:160:40:40,format=yuv420p");
         assert_eq!(after(&args, "-af"), "aselect='gte(t,1)*lt(t,2)+gte(t,4)*lt(t,5.5)',asetpts=N/SR/TB");
-        let no_audio = cut_args("in.mp4", "out.mp4", &[(0.0, 3.0, 1)], None, 30.0, &x264(), false, &[], AudioFx::default(), None).unwrap();
+        let no_audio = cut_args("in.mp4", "out.mp4", &[(0.0, 3.0, 1)], None, 30.0, &x264(), false, &[], AudioFx::default(), None, None).unwrap();
         // 降噪、音量平衡接在剪輯後面；不要聲音時整個拿掉
-        let fx = cut_args("in.mp4", "out.mp4", &[(0.0, 3.0, 1)], None, 30.0, &x264(), true, &[], AudioFx { denoise: true, normalize: true, mute: false }, None).unwrap().join(" ");
+        let fx = cut_args("in.mp4", "out.mp4", &[(0.0, 3.0, 1)], None, 30.0, &x264(), true, &[], AudioFx { denoise: true, normalize: true, mute: false }, None, None).unwrap().join(" ");
         assert!(fx.contains("asetpts=N/SR/TB,afftdn=nf=-25,loudnorm=I=-16:TP=-1.5:LRA=11,aresample=48000"), "{fx}");
-        let muted = cut_args("in.mp4", "out.mp4", &[(0.0, 3.0, 1)], None, 30.0, &x264(), true, &[], AudioFx { mute: true, ..Default::default() }, None).unwrap();
+        let muted = cut_args("in.mp4", "out.mp4", &[(0.0, 3.0, 1)], None, 30.0, &x264(), true, &[], AudioFx { mute: true, ..Default::default() }, None, None).unwrap();
         assert!(muted.contains(&"-an".to_string()) && !muted.iter().any(|a| a.contains("aselect")));
         assert!(no_audio.contains(&"-an".to_string()));
         assert!(!no_audio.contains(&"-af".to_string()));
-        assert!(cut_args("in.mp4", "out.mp4", &[], None, 30.0, &x264(), false, &[], AudioFx::default(), None).unwrap_err().is_config());
+        assert!(cut_args("in.mp4", "out.mp4", &[], None, 30.0, &x264(), false, &[], AudioFx::default(), None, None).unwrap_err().is_config());
         // 與 edit 模組串起來
         let keep = keep_ranges(10.0, &EditSpec { start: 1.0, end: 9.0, removed: vec![(3.0, 4.0)], crop: None, overlays: vec![], ..Default::default() });
         assert_eq!(keep, vec![(1.0, 3.0), (4.0, 9.0)]);
         assert_eq!(normalize_crop(None, 100, 100), None);
 
         // 局部加速：每 4 張留一張，那段的聲音關掉
-        let fast = cut_args("in.mp4", "out.mp4", &[(0.0, 2.0, 1), (2.0, 6.0, 4), (6.0, 8.0, 1)], None, 30.0, &x264(), true, &[], AudioFx::default(), None).unwrap();
+        let fast = cut_args("in.mp4", "out.mp4", &[(0.0, 2.0, 1), (2.0, 6.0, 4), (6.0, 8.0, 1)], None, 30.0, &x264(), true, &[], AudioFx::default(), None, None).unwrap();
         let vf = &fast[fast.iter().position(|a| a == "-vf").unwrap() + 1];
         assert!(vf.starts_with("select='gte(t,0)*lt(t,2)+gte(t,2)*lt(t,6)*not(mod(n,4))+gte(t,6)*lt(t,8)',setpts=N/(30*TB)"), "{vf}");
         let af = &fast[fast.iter().position(|a| a == "-af").unwrap() + 1];
@@ -1309,7 +1401,7 @@ dummy: Immediate exit requested";
             // 範圍外馬賽克（方形）
             OverlayInput::Blur { rect: Rect { x: 10, y: 20, width: 100, height: 50 }, start: 0.0, end: 1.0, mosaic: true, mask: None, invert: true, frame: (1280, 720) },
         ];
-        let args = cut_args("in.mp4", "out.mp4", &[(1.0, 5.0, 1)], Some(Rect { x: 40, y: 40, width: 200, height: 160 }), 30.0, &x264(), true, &overlays, AudioFx::default(), None).unwrap();
+        let args = cut_args("in.mp4", "out.mp4", &[(1.0, 5.0, 1)], Some(Rect { x: 40, y: 40, width: 200, height: 160 }), 30.0, &x264(), true, &overlays, AudioFx::default(), None, None).unwrap();
         assert!(!args.contains(&"-vf".to_string()));
         let inputs: Vec<&String> = args.iter().zip(args.iter().skip(1)).filter(|(k, _)| *k == "-i").map(|(_, v)| v).collect();
         assert_eq!(inputs, ["in.mp4", "a.png", "m.png", "m2.png"]);
