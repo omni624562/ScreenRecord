@@ -162,6 +162,23 @@ fn main() {
         );
     }
 
+    // 錄影時的攝影機小窗：在擷取範圍的角落顯示攝影機畫面（可以拖曳），直接錄進影片
+    #[cfg(windows)]
+    {
+        let (c1, c2, c3) = (Arc::downgrade(&core), Arc::downgrade(&core), Arc::downgrade(&core));
+        screenrecorder_core::camera_bubble_win::spawn(
+            move || c1.upgrade()?.recorder.camera_info(),
+            move || c2.upgrade()?.ffmpeg_path(),
+            move |text| {
+                if let Some(c) = c3.upgrade() {
+                    // 錄影器的事件紀錄也會寫進記錄檔
+                    c.recorder.log_warn(&text);
+                    c.notify("攝影機", &text, true);
+                }
+            },
+        );
+    }
+
     // 控制端點：再次啟動時把視窗帶到前面、新版接手時正常結束
     if !args.no_tray {
         match ipc::bind(args.port, PORT_RANGE) {

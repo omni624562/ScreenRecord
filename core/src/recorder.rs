@@ -516,6 +516,23 @@ impl Recorder {
         Some(FrameInfo { area: st.plan.as_ref()?.rect, state: st.state, recorded_ms: st.recorded_ms(), countdown_ms, markers: st.markers.len() as u32, full })
     }
 
+    /// 攝影機小窗：倒數、錄影、暫停中，而且選了攝影機（只錄聲音時沒有）
+    pub fn camera_info(&self) -> Option<crate::camera_bubble::BubbleInfo> {
+        let st = self.lock();
+        if !matches!(st.state, RecorderState::Countdown | RecorderState::Recording | RecorderState::Paused) {
+            return None;
+        }
+        let c = st.config.as_ref().filter(|c| !c.audio_only)?;
+        let camera = c.camera.clone().filter(|cam| !cam.device.trim().is_empty())?;
+        let plan = st.plan.as_ref()?;
+        Some(crate::camera_bubble::BubbleInfo { area: plan.rect, monitors: plan.monitors.clone(), camera })
+    }
+
+    /// 其他部分（攝影機小窗等）的警告寫進這次錄影的事件紀錄
+    pub fn log_warn(&self, text: &str) {
+        self.add_log(LogLevel::Warn, text);
+    }
+
     /// 錄影中或暫停中（不含倒數）：擷取範圍與要不要顯示點擊、按鍵
     pub fn overlay_info(&self) -> Option<OverlayInfo> {
         let st = self.lock();
@@ -1201,7 +1218,6 @@ impl Recorder {
     fn on_exit(&self, index: usize, code: i32) {
         let mut close_audio = None;
         // 通知等放開鎖之後再送（通知會用到系統匣的鎖，持有錄影器的鎖時呼叫可能互相等）
-        let mut camera_notice = false;
         let mut gpu_failed = false;
         let action = {
             let mut guard = self.lock();
@@ -1218,19 +1234,7 @@ impl Recorder {
                 let detail = if tail.is_empty() { format!("結束代碼 {code}") } else { tail };
                 let seg_method = seg.method;
                 let method_auto = st.config().method == MethodPreference::Auto;
-                let camera_fault = {
-                    let err = &st.segments[index].stderr;
-                    st.config().camera.is_some() && (err.contains("dshow") || err.contains("video="))
-                };
-                if !st.ever_produced_frames && camera_fault {
-                    // 攝影機打不開（被其他程式占用、拔掉了）：這次錄影不含攝影機
-                    st.add_log(LogLevel::Warn, &format!("攝影機無法開啟（{detail}），這次錄影不含攝影機"));
-                    if let Some(c) = st.config.as_mut() {
-                        c.camera = None;
-                    }
-                    camera_notice = true;
-                    ExitAction::Start
-                } else if !st.ever_produced_frames {
+                if !st.ever_produced_frames {
                     let next = startup_fallback(&FallbackInput {
                         stderr: &st.segments[index].stderr,
                         gpu_encoder_in_use: st.cpu_encoder.is_some() && st.enc != st.cpu_encoder,
@@ -1294,9 +1298,6 @@ impl Recorder {
         };
         if let Some(a) = close_audio {
             a.close();
-        }
-        if camera_notice {
-            self.deps().notify("攝影機", "攝影機無法開啟（可能被其他程式使用中），這次錄影不含攝影機", true);
         }
         if gpu_failed {
             self.deps().gpu_convert_failed();

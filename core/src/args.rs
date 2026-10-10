@@ -3,7 +3,7 @@
 use crate::edit::AudioFx;
 use crate::error::{Error, Result};
 use crate::format::{even, num, output_size, FPS_MAX, FPS_MIN, MAX_MINUTES_MAX, SPEED_MAX, SPEED_MIN};
-use crate::types::{CameraConfig, CaptureMethod, EncoderPreference, MonitorInfo, RecordConfig, Rect, SourceConfig, SCALE_OPTIONS};
+use crate::types::{CaptureMethod, EncoderPreference, MonitorInfo, RecordConfig, Rect, SourceConfig, SCALE_OPTIONS};
 use regex::Regex;
 use std::sync::LazyLock;
 
@@ -242,7 +242,7 @@ pub struct GpuPath {
 }
 
 impl GpuPath {
-    /// 這次錄影能不能在顯示卡上處理：ddagrab、單一螢幕且在實測過的顯示卡上、沒有攝影機（疊攝影機在 CPU 上做）
+    /// 這次錄影能不能在顯示卡上處理：ddagrab、單一螢幕且在實測過的顯示卡上
     pub fn choose(support: Option<GpuSupport>, plan: &CapturePlan, config: &RecordConfig, method: CaptureMethod, enc: &EncoderSpec) -> Option<GpuPath> {
         let s = support?;
         let g = GpuPath { adapter: s.adapter, convert: s.convert, zero_copy: s.zero_copy }.for_encoder(enc);
@@ -250,8 +250,7 @@ impl GpuPath {
     }
     /// 這個範圍、設定能不能用（錄影中移動範圍到別的螢幕時會變）
     pub fn applies(&self, plan: &CapturePlan, config: &RecordConfig) -> bool {
-        let camera = config.camera.as_ref().is_some_and(|c| !c.device.trim().is_empty());
-        plan.dda.as_ref().is_some_and(|d| d.tiles.len() == 1 && d.adapter == self.adapter) && !config.audio_only && !camera
+        plan.dda.as_ref().is_some_and(|d| d.tiles.len() == 1 && d.adapter == self.adapter) && !config.audio_only
     }
     /// 編碼器換了（例如 GPU 編碼器失敗改用 CPU）：只有同一張顯示卡的編碼器能直接接
     pub fn for_encoder(self, enc: &EncoderSpec) -> GpuPath {
@@ -510,8 +509,6 @@ pub struct CaptureSpec {
     pub pre: Vec<String>,
     /// 視訊輸入（gdigrab）；ddagrab 是濾鏡來源，沒有輸入檔
     pub inputs: Vec<String>,
-    /// 放在聲音輸入之後的輸入（攝影機）
-    pub extra_inputs: Vec<String>,
     /// 視訊輸入檔數量（之後的音訊輸入編號從這裡開始）
     pub input_count: usize,
     /// -filter_complex，輸出標籤為 [vout]
@@ -563,55 +560,16 @@ pub fn parse_cameras(stderr: &str) -> Vec<String> {
     out
 }
 
-/// 攝影機的輸入（Windows 的 DirectShow）
-pub fn camera_input(cam: &CameraConfig) -> Vec<String> {
-    let mut a = strs(&["-f", "dshow", "-thread_queue_size", "512", "-rtbufsize", "128M", "-i"]);
-    a.push(format!("video={}", cam.device));
-    a
-}
-
-/// 攝影機畫面的濾鏡與疊上去的位置：裁成正方形、縮放、左右翻轉（像照鏡子）、圓形時角落透明
-fn camera_chain(cam: &CameraConfig, out_w: i32, out_h: i32, fps: f64) -> (String, i32, i32) {
-    let d = even(out_w.min(out_h) as f64 * cam.size.clamp(8, 40) as f64 / 100.0).max(32);
-    let m = even(out_w.min(out_h) as f64 * 0.03);
-    let mut f = format!("fps={},crop='min(iw,ih)':'min(iw,ih)',scale={d}:{d},hflip", num(fps));
-    if cam.circle {
-        f.push_str(",format=yuva420p,geq=lum='p(X,Y)':cb='p(X,Y)':cr='p(X,Y)':a='clip((W/2-hypot(X-W/2+0.5,Y-H/2+0.5))*255,0,255)'");
-    }
-    let (x, y) = match cam.corner {
-        1 => (m, out_h - d - m),
-        2 => (out_w - d - m, m),
-        3 => (m, m),
-        _ => (out_w - d - m, out_h - d - m),
-    };
-    (f, x.max(0), y.max(0))
-}
-
 /// probe：在擷取後插入 showinfo，每張畫面印一行 pts，供聲音對齊畫面時間零點
-/// gpu：在顯示卡上縮放、轉色彩（GpuPath::choose 決定，只會是單一螢幕的 ddagrab、沒有攝影機）
+/// gpu：在顯示卡上縮放、轉色彩（GpuPath::choose 決定，只會是單一螢幕的 ddagrab）。
+/// 攝影機不在這裡：錄影時是螢幕上的小窗（camera_bubble），跟著畫面一起被錄進去
 pub fn capture_spec(plan: &CapturePlan, config: &RecordConfig, method: CaptureMethod, enc: &EncoderSpec, probe: bool, gpu: Option<GpuPath>) -> Result<CaptureSpec> {
     let mut tail_parts = Vec::new();
     if probe {
         tail_parts.push("showinfo=checksum=0".to_string());
     }
-    let mut conv = convert_filters(plan, config, enc);
-    // 有攝影機時先疊上攝影機畫面，最後再轉格式（攝影機的輸入編號在聲音之後）
-    let camera = config.camera.as_ref().filter(|c| !c.device.trim().is_empty() && !config.audio_only);
-    let format = conv.pop().unwrap_or_default();
-    tail_parts.extend(conv);
-    let video_inputs = if method == CaptureMethod::Ddagrab { 0 } else { 1 };
-    let tail = match camera {
-        Some(cam) => {
-            let (chain, x, y) = camera_chain(cam, plan.out_width, plan.out_height, config.fps);
-            let ci = video_inputs + probe as usize;
-            format!("{}[scr];[{ci}:v]{chain}[cam];[scr][cam]overlay={x}:{y}:eof_action=pass,{format}", tail_parts.join(","))
-        }
-        None => {
-            tail_parts.push(format);
-            tail_parts.join(",")
-        }
-    };
-    let extra_inputs = camera.map(camera_input).unwrap_or_default();
+    tail_parts.extend(convert_filters(plan, config, enc));
+    let tail = tail_parts.join(",");
 
     if method == CaptureMethod::Ddagrab {
         let Some(dda) = &plan.dda else {
@@ -632,13 +590,7 @@ pub fn capture_spec(plan: &CapturePlan, config: &RecordConfig, method: CaptureMe
             }
             None => format!("{},{tail}[vout]", ddagrab_chain(plan, config.fps, config.draw_mouse)),
         };
-        return Ok(CaptureSpec {
-            pre: vec!["-init_hw_device".into(), format!("d3d11va=dda:{}", dda.adapter), "-filter_hw_device".into(), "dda".into()],
-            inputs: vec![],
-            extra_inputs,
-            input_count: 0,
-            graph,
-        });
+        return Ok(CaptureSpec { pre: vec!["-init_hw_device".into(), format!("d3d11va=dda:{}", dda.adapter), "-filter_hw_device".into(), "dda".into()], inputs: vec![], input_count: 0, graph });
     }
 
     // 只錄聲音：卡片圖片一直重複，以實際速度送進來（-re），showinfo 的時間才能拿來對齊聲音
@@ -646,7 +598,6 @@ pub fn capture_spec(plan: &CapturePlan, config: &RecordConfig, method: CaptureMe
         return Ok(CaptureSpec {
             pre: vec![],
             inputs: vec!["-re".into(), "-loop".into(), "1".into(), "-framerate".into(), num(config.fps), "-i".into(), card.clone()],
-            extra_inputs: vec![],
             input_count: 1,
             graph: format!("[0:v]{tail}[vout]"),
         });
@@ -671,7 +622,6 @@ pub fn capture_spec(plan: &CapturePlan, config: &RecordConfig, method: CaptureMe
             "-i".into(),
             "desktop".into(),
         ],
-        extra_inputs,
         input_count: 1,
         graph: format!("[0:v]{tail}[vout]"),
     })
@@ -690,7 +640,6 @@ pub fn segment_args(plan: &CapturePlan, config: &RecordConfig, method: CaptureMe
     if let Some(ai) = audio_input {
         a.extend(ai.iter().cloned());
     }
-    a.extend(spec.extra_inputs);
     a.extend(["-filter_complex".into(), spec.graph, "-map".into(), "[vout]".into()]);
     if audio_input.is_some() {
         a.extend(["-map".into(), format!("{}:a", spec.input_count)]);
@@ -1140,7 +1089,7 @@ pub fn screenshot_args(plan: &CapturePlan, use_ddagrab: bool, draw_mouse: bool, 
 mod tests {
     use super::*;
     use crate::edit::{cut_file_name, keep_ranges, normalize_crop, EditSpec};
-    use crate::types::{AudioConfig, MethodPreference};
+    use crate::types::{AudioConfig, CameraConfig, MethodPreference};
 
     #[test]
     fn screenshot_full_resolution() {
@@ -1403,40 +1352,17 @@ dummy: Immediate exit requested";
     }
 
     #[test]
-    fn segment_with_camera() {
+    fn camera_is_not_in_the_recording_args() {
+        // 攝影機是螢幕上的小窗，跟著畫面被錄進去：錄影的 FFmpeg 不開攝影機、不疊畫面
         let audio_in = strs(&["-f", "f32le", "-ar", "48000", "-ac", "2", "-i", "tcp://127.0.0.1:5000"]);
         let c = RecordConfig { camera: Some(CameraConfig { device: "USB Camera".into(), corner: 0, size: 20, circle: true }), ..cfg() };
         let plan = resolve_plan(&c, &same_gpu()).unwrap();
-        // gdigrab：畫面 0、聲音 1、攝影機 2
-        let gdi = segment_args(&plan, &c, CaptureMethod::Gdigrab, &x264(), "o.mp4", Some(&audio_in), None).unwrap();
-        let j = gdi.join(" ");
-        assert!(j.contains("-i tcp://127.0.0.1:5000 -f dshow -thread_queue_size 512 -rtbufsize 128M -i video=USB Camera -filter_complex"), "{j}");
-        let g = graph_of(&gdi);
-        assert!(g.starts_with("[0:v]showinfo=checksum=0,"), "{g}");
-        assert!(g.contains("[scr];[2:v]fps=30,crop='min(iw,ih)':'min(iw,ih)',scale=216:216,hflip,format=yuva420p,geq="), "{g}");
-        // 右下角，離邊 3%
-        assert!(g.ends_with("[scr][cam]overlay=1672:832:eof_action=pass,format=yuv420p[vout]"), "{g}");
-        assert!(j.contains("-map [vout] -map 1:a"));
-        // ddagrab 沒有輸入檔：聲音 0、攝影機 1；沒有聲音時攝影機是 0
-        let dda = segment_args(&plan, &c, CaptureMethod::Ddagrab, &x264(), "o.mp4", Some(&audio_in), None).unwrap();
-        assert!(graph_of(&dda).contains("[1:v]fps=30"));
-        let quiet = segment_args(
-            &plan,
-            &RecordConfig { camera: Some(CameraConfig { corner: 3, circle: false, ..c.camera.clone().unwrap() }), ..c.clone() },
-            CaptureMethod::Ddagrab,
-            &x264(),
-            "o.mp4",
-            None,
-            None,
-        )
-        .unwrap();
-        let g = graph_of(&quiet);
-        assert!(g.contains("[0:v]fps=30") && !g.contains("geq") && g.contains("overlay=32:32:"), "{g}");
-        // 沒選攝影機時和原本一樣
-        let none =
-            segment_args(&plan, &RecordConfig { camera: Some(CameraConfig { device: " ".into(), ..c.camera.clone().unwrap() }), ..c.clone() }, CaptureMethod::Gdigrab, &x264(), "o.mp4", None, None)
-                .unwrap();
-        assert!(!none.join(" ").contains("dshow") && !graph_of(&none).contains("overlay"));
+        for method in [CaptureMethod::Gdigrab, CaptureMethod::Ddagrab] {
+            let a = segment_args(&plan, &c, method, &x264(), "o.mp4", Some(&audio_in), None).unwrap();
+            let j = a.join(" ");
+            assert!(!j.contains("dshow") && !graph_of(&a).contains("overlay"), "{j}");
+            assert!(j.contains("-map [vout] -map ") && j.contains(":a"), "{j}");
+        }
     }
 
     #[test]
@@ -1479,13 +1405,14 @@ dummy: Immediate exit requested";
         // 同一張顯示卡的編碼器：直接交給它；其他編碼器：下載 NV12
         assert_eq!(GpuPath::choose(support, &plan, &one, CaptureMethod::Ddagrab, &qsv).map(|g| g.zero_copy), Some(true));
         assert_eq!(GpuPath::choose(support, &plan, &one, CaptureMethod::Ddagrab, &x264()).map(|g| g.zero_copy), Some(false));
-        // 不能用的情況：gdigrab、沒有實測通過、兩個螢幕合成、攝影機、只錄聲音、別張顯示卡
+        // 不能用的情況：gdigrab、沒有實測通過、兩個螢幕合成、只錄聲音、別張顯示卡
         assert!(GpuPath::choose(support, &plan, &one, CaptureMethod::Gdigrab, &x264()).is_none());
         assert!(GpuPath::choose(None, &plan, &one, CaptureMethod::Ddagrab, &x264()).is_none());
         let all = RecordConfig { source: SourceConfig::All, ..cfg() };
         assert!(GpuPath::choose(support, &resolve_plan(&all, &mons).unwrap(), &all, CaptureMethod::Ddagrab, &x264()).is_none());
+        // 攝影機是螢幕上的小窗，不影響
         let cam = RecordConfig { camera: Some(CameraConfig { device: "Cam".into(), size: 20, corner: 0, circle: false }), ..one.clone() };
-        assert!(GpuPath::choose(support, &plan, &cam, CaptureMethod::Ddagrab, &x264()).is_none());
+        assert!(GpuPath::choose(support, &plan, &cam, CaptureMethod::Ddagrab, &x264()).is_some());
         let other = Some(GpuSupport { adapter: mons[0].adapter + 1, ..s });
         assert!(GpuPath::choose(other, &plan, &one, CaptureMethod::Ddagrab, &x264()).is_none());
         // GPU 編碼器失敗改用 CPU：不再直接交給編碼器

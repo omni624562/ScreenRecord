@@ -325,7 +325,7 @@ fn camera_rows(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
             app.save_settings();
         }
     });
-    form_hint(ui, "攝影機的畫面疊在錄影的角落（左右翻轉，像照鏡子）；攝影機被其他程式使用時，那次錄影不含攝影機。", p.muted);
+    form_hint(ui, "錄影時螢幕上會出現攝影機小窗（左右翻轉，像照鏡子），看到的就是錄到的；可以拖曳到範圍內的其他位置。攝影機被其他程式使用時，那次錄影不含攝影機。", p.muted);
 }
 
 fn record_page(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
