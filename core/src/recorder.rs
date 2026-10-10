@@ -254,6 +254,17 @@ struct Inner {
     queue: tokio::sync::Mutex<()>,
 }
 
+/// 螢幕上的錄影範圍外框與控制列要顯示的內容
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FrameInfo {
+    /// 擷取範圍（虛擬桌面的實體像素座標）
+    pub area: Rect,
+    pub state: RecorderState,
+    pub recorded_ms: u64,
+    /// 倒數中：剩下的毫秒數
+    pub countdown_ms: Option<u64>,
+}
+
 #[derive(Clone)]
 pub struct Recorder(Arc<Inner>);
 
@@ -371,9 +382,8 @@ impl Recorder {
         }
     }
 
-    /// 正在準備開始（狀態可能仍是待命）；快捷鍵用來判斷再按一次是「取消」
-    /// 錄自訂範圍時的擷取範圍與是否暫停中（倒數、錄影、暫停期間；其他時候 None）：螢幕上的錄影範圍外框用
-    pub fn frame_area(&self) -> Option<(Rect, bool)> {
+    /// 錄自訂範圍時，螢幕上的外框與控制列要顯示的內容（倒數、錄影、暫停期間；其他時候 None）
+    pub fn frame_info(&self) -> Option<FrameInfo> {
         let st = self.lock();
         if !matches!(st.state, RecorderState::Countdown | RecorderState::Recording | RecorderState::Paused) {
             return None;
@@ -381,9 +391,11 @@ impl Recorder {
         if !matches!(st.config.as_ref()?.source, SourceConfig::Region { .. }) {
             return None;
         }
-        Some((st.plan.as_ref()?.rect, st.state == RecorderState::Paused))
+        let countdown_ms = if st.state == RecorderState::Countdown { st.countdown.as_ref().map(|c| c.ends_at.saturating_sub(now_ms())) } else { None };
+        Some(FrameInfo { area: st.plan.as_ref()?.rect, state: st.state, recorded_ms: st.recorded_ms(), countdown_ms })
     }
 
+    /// 正在準備開始（狀態可能仍是待命）；快捷鍵用來判斷再按一次是「取消」
     pub fn starting(&self) -> bool {
         self.lock().starting_now
     }
@@ -1460,19 +1472,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn frame_area_only_for_regions_while_active() {
+    async fn frame_info_only_for_regions_while_active() {
         let s = Setup::new(Fake::default());
         s.release();
-        assert_eq!(s.rec.frame_area(), None);
+        assert_eq!(s.rec.frame_info(), None);
         s.rec.start(RecordConfig { source: region(100.0, 50.0, 640.0, 480.0), ..s.config() }).await.unwrap();
-        assert_eq!(s.rec.frame_area(), Some((Rect { x: 100, y: 50, width: 640, height: 480 }, false)));
+        let f = s.rec.frame_info().unwrap();
+        assert_eq!(f.area, Rect { x: 100, y: 50, width: 640, height: 480 });
+        assert_eq!(f.state, RecorderState::Countdown);
+        assert!(f.countdown_ms.unwrap() > 2000);
         s.rec.stop(None).await.unwrap();
         tokio::time::sleep(Duration::from_millis(20)).await;
-        assert_eq!(s.rec.frame_area(), None);
+        assert_eq!(s.rec.frame_info(), None);
         // 整個螢幕：不畫外框
         s.rec.start(s.config()).await.unwrap();
         assert_eq!(s.rec.status().state, RecorderState::Countdown);
-        assert_eq!(s.rec.frame_area(), None);
+        assert_eq!(s.rec.frame_info(), None);
         s.rec.stop(None).await.unwrap();
     }
 

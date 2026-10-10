@@ -108,11 +108,28 @@ fn main() {
         }
     }));
     core.set_exiter(Arc::new(|code| std::process::exit(code)));
-    // 錄自訂範圍時，在螢幕上的範圍外圍顯示外框
+    // 錄自訂範圍時，在螢幕上的範圍外圍顯示外框與控制列（已錄時間、暫停 / 繼續、停止）
     #[cfg(windows)]
     {
-        let c = Arc::downgrade(&core);
-        screenrecorder_core::rec_frame_win::spawn(move || c.upgrade()?.recorder.frame_area());
+        use screenrecorder_core::rec_frame_win::{self, FrameCmd};
+        let (c1, c2, h) = (Arc::downgrade(&core), Arc::downgrade(&core), rt.handle().clone());
+        rec_frame_win::spawn(
+            move || c1.upgrade()?.recorder.frame_info(),
+            move |cmd| {
+                let Some(c) = c2.upgrade() else { return };
+                h.spawn(async move {
+                    let r = &c.recorder;
+                    let res = match cmd {
+                        FrameCmd::Pause => r.pause().await,
+                        FrameCmd::Resume => r.resume().await,
+                        FrameCmd::Stop => r.stop(None).await.map(|_| ()),
+                    };
+                    if let Err(e) = res {
+                        warn!("錄影控制列：{}", e.message());
+                    }
+                });
+            },
+        );
     }
 
     // 控制端點：再次啟動時把視窗帶到前面、新版接手時正常結束
