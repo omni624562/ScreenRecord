@@ -196,9 +196,9 @@ impl RecorderDeps for RecDeps {
     fn after_stop(&self) {
         crate::winui::restore_ui();
     }
-    fn save_markers(&self, output: &str, markers: &[f64]) {
+    fn save_markers(&self, output: &str, marks: &crate::recorder::Marks) {
         if let Some(a) = self.0.upgrade() {
-            if let Err(e) = a.markers.save(output, output, serde_json::json!({ "markers": markers })) {
+            if let Err(e) = a.markers.save(output, output, serde_json::to_value(marks).unwrap_or_default()) {
                 crate::warn!("無法儲存打的點：{e}");
             }
         }
@@ -405,6 +405,41 @@ impl App {
         self.lock().shot = Some(shot.clone());
         crate::info!("[截圖] 從 {video} 的 {t:.2} 秒擷取 {}（{}×{}）", shot.path, shot.width, shot.height);
         Ok(shot)
+    }
+
+    /// 「只錄這個視窗」：視窗移動後（停下來 0.4 秒）錄影範圍跟著移過去；大小改變時維持原本的大小
+    pub fn spawn_window_follower(self: &Arc<Self>) {
+        let me = Arc::downgrade(self);
+        tokio::spawn(async move {
+            let mut seen: Option<(i64, Rect)> = None;
+            let mut warned: Option<i64> = None;
+            loop {
+                tokio::time::sleep(Duration::from_millis(400)).await;
+                let Some(app) = me.upgrade() else { return };
+                let Some((id, area)) = app.recorder.follow_info() else {
+                    seen = None;
+                    continue;
+                };
+                let Some(b) = crate::winui::window_bounds(id) else { continue };
+                if (b.x, b.y) == (area.x, area.y) {
+                    seen = None;
+                    continue;
+                }
+                // 拖曳中先等它停下來
+                if seen != Some((id, b)) {
+                    seen = Some((id, b));
+                    continue;
+                }
+                seen = None;
+                if ((b.width - area.width).abs() > 4 || (b.height - area.height).abs() > 4) && warned != Some(id) {
+                    warned = Some(id);
+                    crate::info!("[錄影] 視窗大小改變（{}×{}），錄影維持原本的大小 {}×{}", b.width, b.height, area.width, area.height);
+                }
+                if let Err(e) = app.recorder.move_region(b.x, b.y).await {
+                    crate::info!("[錄影] 無法跟著視窗移動：{}", e.message());
+                }
+            }
+        });
     }
 
     /// 多張截圖拼成一張（依檔案時間由舊到新；左右或上下排），存成新的截圖並複製到剪貼簿

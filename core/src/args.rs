@@ -3,7 +3,7 @@
 use crate::edit::AudioFx;
 use crate::error::{Error, Result};
 use crate::format::{even, num, output_size, FPS_MAX, FPS_MIN, MAX_MINUTES_MAX, SPEED_MAX, SPEED_MIN};
-use crate::types::{CaptureMethod, EncoderPreference, MonitorInfo, RecordConfig, Rect, SourceConfig, SCALE_OPTIONS};
+use crate::types::{CameraConfig, CaptureMethod, EncoderPreference, MonitorInfo, RecordConfig, Rect, SourceConfig, SCALE_OPTIONS};
 use regex::Regex;
 use std::sync::LazyLock;
 
@@ -325,6 +325,8 @@ pub struct CaptureSpec {
     pub pre: Vec<String>,
     /// 視訊輸入（gdigrab）；ddagrab 是濾鏡來源，沒有輸入檔
     pub inputs: Vec<String>,
+    /// 放在聲音輸入之後的輸入（攝影機）
+    pub extra_inputs: Vec<String>,
     /// 視訊輸入檔數量（之後的音訊輸入編號從這裡開始）
     pub input_count: usize,
     /// -filter_complex，輸出標籤為 [vout]
@@ -335,14 +337,95 @@ fn strs(v: &[&str]) -> Vec<String> {
     v.iter().map(|s| s.to_string()).collect()
 }
 
+/// 列出攝影機的參數（結果在 stderr）
+pub fn list_cameras_args() -> Vec<String> {
+    strs(&["-hide_banner", "-list_devices", "true", "-f", "dshow", "-i", "dummy"])
+}
+
+/// 從 `-list_devices` 的輸出讀出攝影機名稱。新版每行標 (video) / (audio)；舊版分成「DirectShow video devices」與 audio 兩段
+pub fn parse_cameras(stderr: &str) -> Vec<String> {
+    let mut out: Vec<String> = vec![];
+    let mut section_video = false;
+    for line in stderr.lines() {
+        if line.contains("DirectShow video devices") {
+            section_video = true;
+            continue;
+        }
+        if line.contains("DirectShow audio devices") {
+            section_video = false;
+            continue;
+        }
+        if line.contains("Alternative name") {
+            continue;
+        }
+        let (Some(a), Some(b)) = (line.find('"'), line.rfind('"')) else { continue };
+        if b <= a + 1 {
+            continue;
+        }
+        let name = &line[a + 1..b];
+        let tail = &line[b + 1..];
+        let video = if tail.contains("(video)") {
+            true
+        } else if tail.contains("(audio)") || tail.contains("(none)") {
+            false
+        } else {
+            section_video
+        };
+        if video && !out.iter().any(|n| n == name) {
+            out.push(name.to_string());
+        }
+    }
+    out
+}
+
+/// 攝影機的輸入（Windows 的 DirectShow）
+pub fn camera_input(cam: &CameraConfig) -> Vec<String> {
+    let mut a = strs(&["-f", "dshow", "-thread_queue_size", "512", "-rtbufsize", "128M", "-i"]);
+    a.push(format!("video={}", cam.device));
+    a
+}
+
+/// 攝影機畫面的濾鏡與疊上去的位置：裁成正方形、縮放、左右翻轉（像照鏡子）、圓形時角落透明
+fn camera_chain(cam: &CameraConfig, out_w: i32, out_h: i32, fps: f64) -> (String, i32, i32) {
+    let d = even(out_w.min(out_h) as f64 * cam.size.clamp(8, 40) as f64 / 100.0).max(32);
+    let m = even(out_w.min(out_h) as f64 * 0.03);
+    let mut f = format!("fps={},crop='min(iw,ih)':'min(iw,ih)',scale={d}:{d},hflip", num(fps));
+    if cam.circle {
+        f.push_str(",format=yuva420p,geq=lum='p(X,Y)':cb='p(X,Y)':cr='p(X,Y)':a='clip((W/2-hypot(X-W/2+0.5,Y-H/2+0.5))*255,0,255)'");
+    }
+    let (x, y) = match cam.corner {
+        1 => (m, out_h - d - m),
+        2 => (out_w - d - m, m),
+        3 => (m, m),
+        _ => (out_w - d - m, out_h - d - m),
+    };
+    (f, x.max(0), y.max(0))
+}
+
 /// probe：在擷取後插入 showinfo，每張畫面印一行 pts，供聲音對齊畫面時間零點
 pub fn capture_spec(plan: &CapturePlan, config: &RecordConfig, method: CaptureMethod, enc: &EncoderSpec, probe: bool) -> Result<CaptureSpec> {
     let mut tail_parts = Vec::new();
     if probe {
         tail_parts.push("showinfo=checksum=0".to_string());
     }
-    tail_parts.extend(convert_filters(plan, config, enc));
-    let tail = tail_parts.join(",");
+    let mut conv = convert_filters(plan, config, enc);
+    // 有攝影機時先疊上攝影機畫面，最後再轉格式（攝影機的輸入編號在聲音之後）
+    let camera = config.camera.as_ref().filter(|c| !c.device.trim().is_empty());
+    let format = conv.pop().unwrap_or_default();
+    tail_parts.extend(conv);
+    let video_inputs = if method == CaptureMethod::Ddagrab { 0 } else { 1 };
+    let tail = match camera {
+        Some(cam) => {
+            let (chain, x, y) = camera_chain(cam, plan.out_width, plan.out_height, config.fps);
+            let ci = video_inputs + probe as usize;
+            format!("{}[scr];[{ci}:v]{chain}[cam];[scr][cam]overlay={x}:{y}:eof_action=pass,{format}", tail_parts.join(","))
+        }
+        None => {
+            tail_parts.push(format);
+            tail_parts.join(",")
+        }
+    };
+    let extra_inputs = camera.map(camera_input).unwrap_or_default();
 
     if method == CaptureMethod::Ddagrab {
         let Some(dda) = &plan.dda else {
@@ -351,6 +434,7 @@ pub fn capture_spec(plan: &CapturePlan, config: &RecordConfig, method: CaptureMe
         return Ok(CaptureSpec {
             pre: vec!["-init_hw_device".into(), format!("d3d11va=dda:{}", dda.adapter), "-filter_hw_device".into(), "dda".into()],
             inputs: vec![],
+            extra_inputs,
             input_count: 0,
             graph: format!("{},{tail}[vout]", ddagrab_chain(plan, config.fps, config.draw_mouse)),
         });
@@ -375,6 +459,7 @@ pub fn capture_spec(plan: &CapturePlan, config: &RecordConfig, method: CaptureMe
             "-i".into(),
             "desktop".into(),
         ],
+        extra_inputs,
         input_count: 1,
         graph: format!("[0:v]{tail}[vout]"),
     })
@@ -393,6 +478,7 @@ pub fn segment_args(plan: &CapturePlan, config: &RecordConfig, method: CaptureMe
     if let Some(ai) = audio_input {
         a.extend(ai.iter().cloned());
     }
+    a.extend(spec.extra_inputs);
     a.extend(["-filter_complex".into(), spec.graph, "-map".into(), "[vout]".into()]);
     if audio_input.is_some() {
         a.extend(["-map".into(), format!("{}:a", spec.input_count)]);
@@ -836,6 +922,10 @@ mod tests {
             encoder: None,
             countdown_sec: None,
             hide_ui: None,
+            show_clicks: false,
+            show_keys: false,
+            follow_window: None,
+            camera: None,
         }
     }
     fn region(x: f64, y: f64, w: f64, h: f64) -> SourceConfig {
@@ -956,6 +1046,55 @@ mod tests {
         let gdi = segment_args(&plan, &c, CaptureMethod::Gdigrab, &x264(), "o.mp4", Some(&audio_in)).unwrap();
         assert!(gdi.join(" ").contains("-map [vout] -map 1:a"));
         assert!(graph_of(&gdi).starts_with("[0:v]showinfo=checksum=0,"));
+    }
+
+    #[test]
+    fn camera_list() {
+        let new_style = "\
+[dshow @ 000001] \"Integrated Camera\" (video)
+[dshow @ 000001]   Alternative name \"@device_pnp_\\\\?\\usb#vid\"
+[dshow @ 000001] \"OBS Virtual Camera\" (none)
+[dshow @ 000001] \"Logi C270\" (video)
+[dshow @ 000001] \"麥克風 (Realtek(R) Audio)\" (audio)
+dummy: Immediate exit requested";
+        assert_eq!(parse_cameras(new_style), vec!["Integrated Camera", "Logi C270"]);
+        let old_style = "\
+[dshow @ 0x1] DirectShow video devices (some may be both video and audio devices)
+[dshow @ 0x1]  \"USB2.0 HD UVC WebCam\"
+[dshow @ 0x1]     Alternative name \"@device_pnp_x\"
+[dshow @ 0x1] DirectShow audio devices
+[dshow @ 0x1]  \"Microphone Array\"";
+        assert_eq!(parse_cameras(old_style), vec!["USB2.0 HD UVC WebCam"]);
+        assert!(parse_cameras("").is_empty());
+    }
+
+    #[test]
+    fn segment_with_camera() {
+        let audio_in = strs(&["-f", "f32le", "-ar", "48000", "-ac", "2", "-i", "tcp://127.0.0.1:5000"]);
+        let c = RecordConfig { camera: Some(CameraConfig { device: "USB Camera".into(), corner: 0, size: 20, circle: true }), ..cfg() };
+        let plan = resolve_plan(&c, &same_gpu()).unwrap();
+        // gdigrab：畫面 0、聲音 1、攝影機 2
+        let gdi = segment_args(&plan, &c, CaptureMethod::Gdigrab, &x264(), "o.mp4", Some(&audio_in)).unwrap();
+        let j = gdi.join(" ");
+        assert!(j.contains("-i tcp://127.0.0.1:5000 -f dshow -thread_queue_size 512 -rtbufsize 128M -i video=USB Camera -filter_complex"), "{j}");
+        let g = graph_of(&gdi);
+        assert!(g.starts_with("[0:v]showinfo=checksum=0,"), "{g}");
+        assert!(g.contains("[scr];[2:v]fps=30,crop='min(iw,ih)':'min(iw,ih)',scale=216:216,hflip,format=yuva420p,geq="), "{g}");
+        // 右下角，離邊 3%
+        assert!(g.ends_with("[scr][cam]overlay=1672:832:eof_action=pass,format=yuv420p[vout]"), "{g}");
+        assert!(j.contains("-map [vout] -map 1:a"));
+        // ddagrab 沒有輸入檔：聲音 0、攝影機 1；沒有聲音時攝影機是 0
+        let dda = segment_args(&plan, &c, CaptureMethod::Ddagrab, &x264(), "o.mp4", Some(&audio_in)).unwrap();
+        assert!(graph_of(&dda).contains("[1:v]fps=30"));
+        let quiet =
+            segment_args(&plan, &RecordConfig { camera: Some(CameraConfig { corner: 3, circle: false, ..c.camera.clone().unwrap() }), ..c.clone() }, CaptureMethod::Ddagrab, &x264(), "o.mp4", None)
+                .unwrap();
+        let g = graph_of(&quiet);
+        assert!(g.contains("[0:v]fps=30") && !g.contains("geq") && g.contains("overlay=32:32:"), "{g}");
+        // 沒選攝影機時和原本一樣
+        let none =
+            segment_args(&plan, &RecordConfig { camera: Some(CameraConfig { device: " ".into(), ..c.camera.clone().unwrap() }), ..c.clone() }, CaptureMethod::Gdigrab, &x264(), "o.mp4", None).unwrap();
+        assert!(!none.join(" ").contains("dshow") && !graph_of(&none).contains("overlay"));
     }
 
     #[test]

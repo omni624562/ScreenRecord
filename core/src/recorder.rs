@@ -18,6 +18,7 @@ use crate::process::{command, last_lines, read_lines, run};
 use crate::types::{CaptureMethod, LogEntry, LogLevel, MethodPreference, MonitorInfo, RecordConfig, RecorderState, RecorderStatus, RecordingResult, Rect, SourceConfig};
 use crate::{Error, Result};
 use regex::Regex;
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::future::Future;
 use std::path::{Path, PathBuf};
@@ -58,7 +59,7 @@ pub trait RecorderDeps: Send + Sync + 'static {
     /// 錄影結束（已儲存或失敗）後（還原操作視窗等）
     fn after_stop(&self) {}
     /// 存好的錄影裡打的點（影片的秒數）
-    fn save_markers(&self, _output: &str, _markers: &[f64]) {}
+    fn save_markers(&self, _output: &str, _marks: &Marks) {}
     /// 需要使用者注意的事（系統匣通知）
     fn notify(&self, _title: &str, _text: &str, _warn: bool) {}
     /// 開啟音訊擷取來源（Windows 上是 WASAPI）
@@ -160,6 +161,8 @@ struct St {
     state: RecorderState,
     /// 打的點（已錄的毫秒數，也就是影片裡的時間）
     markers: Vec<u64>,
+    /// 滑鼠點擊：(已錄的毫秒數, 在擷取範圍內的位置 0～1)
+    clicks: Vec<(u64, f32, f32)>,
     busy: Option<String>,
     config: Option<RecordConfig>,
     plan: Option<CapturePlan>,
@@ -273,6 +276,26 @@ pub struct FrameInfo {
     pub markers: u32,
 }
 
+/// 錄影時記下的時間點：打的點與滑鼠點擊（存在 markers/，剪輯時用）
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Marks {
+    /// 打的點（影片的秒數）
+    #[serde(default)]
+    pub markers: Vec<f64>,
+    /// 滑鼠點擊：[影片的秒數, x, y]（x、y 是在畫面裡的位置 0～1）
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub clicks: Vec<[f64; 3]>,
+}
+
+/// 錄影時要在畫面上顯示點擊 / 按鍵用的資訊
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct OverlayInfo {
+    /// 擷取範圍（虛擬桌面的實體像素座標）
+    pub area: Rect,
+    pub show_clicks: bool,
+    pub show_keys: bool,
+}
+
 #[derive(Clone)]
 pub struct Recorder(Arc<Inner>);
 
@@ -300,7 +323,14 @@ impl Recorder {
 
     /// 開始錄影。有倒數時，進入倒數就先回覆（介面與系統匣以狀態顯示倒數，期間可取消）；
     /// 倒數之後才發生的錯誤會寫進事件紀錄並以系統匣通知。
-    pub fn start(&self, config: RecordConfig) -> BoxFut<'static, Result<()>> {
+    pub fn start(&self, mut config: RecordConfig) -> BoxFut<'static, Result<()>> {
+        // 只錄某個視窗：用視窗現在的位置與大小（選了之後可能動過）；視窗已關閉就照原本的範圍
+        if let (Some(id), SourceConfig::Region { .. }) = (config.follow_window, &config.source) {
+            match crate::winui::window_bounds(id) {
+                Some(b) => config.source = SourceConfig::Region { x: b.x as f64, y: b.y as f64, width: (b.width & !1) as f64, height: (b.height & !1) as f64 },
+                None => config.follow_window = None,
+            }
+        }
         {
             let mut st = self.lock();
             // 連按兩次（例如快捷鍵）不要排出第二個開始：否則取消第一個後，第二個仍會倒數並錄影
@@ -472,6 +502,40 @@ impl Recorder {
         }
         let countdown_ms = if st.state == RecorderState::Countdown { st.countdown.as_ref().map(|c| c.ends_at.saturating_sub(now_ms())) } else { None };
         Some(FrameInfo { area: st.plan.as_ref()?.rect, state: st.state, recorded_ms: st.recorded_ms(), countdown_ms, markers: st.markers.len() as u32 })
+    }
+
+    /// 錄影中或暫停中（不含倒數）：擷取範圍與要不要顯示點擊、按鍵
+    pub fn overlay_info(&self) -> Option<OverlayInfo> {
+        let st = self.lock();
+        if !matches!(st.state, RecorderState::Recording | RecorderState::Paused) {
+            return None;
+        }
+        let c = st.config.as_ref()?;
+        Some(OverlayInfo { area: st.plan.as_ref()?.rect, show_clicks: c.show_clicks, show_keys: c.show_keys })
+    }
+
+    /// 「只錄這個視窗」：(視窗代碼, 目前的擷取範圍)；倒數、錄影、暫停中才有
+    pub fn follow_info(&self) -> Option<(i64, Rect)> {
+        let st = self.lock();
+        if !matches!(st.state, RecorderState::Countdown | RecorderState::Recording | RecorderState::Paused) || st.busy.is_some() {
+            return None;
+        }
+        Some((st.config.as_ref()?.follow_window?, st.plan.as_ref()?.rect))
+    }
+
+    /// 記下一次滑鼠點擊（桌面的實體像素座標）；範圍外、暫停中不記
+    pub fn add_click(&self, x: i32, y: i32) {
+        let mut st = self.lock();
+        if st.state != RecorderState::Recording || st.clicks.len() >= 20_000 {
+            return;
+        }
+        let Some(r) = st.plan.as_ref().map(|p| p.rect) else { return };
+        if x < r.x || y < r.y || x >= r.x + r.width || y >= r.y + r.height || r.width <= 0 || r.height <= 0 {
+            return;
+        }
+        let t = st.recorded_ms();
+        let (fx, fy) = ((x - r.x) as f32 / r.width as f32, (y - r.y) as f32 / r.height as f32);
+        st.clicks.push((t, fx, fy));
     }
 
     /// 錄影中打點（記下目前錄到的時間，剪輯時可以直接跳過去）；回傳這是第幾個點
@@ -674,6 +738,7 @@ impl Recorder {
             st.auto_stopping = false;
             st.log = Vec::new();
             st.markers = Vec::new();
+            st.clicks = Vec::new();
             st.audio_specs = audio_specs;
             st.audio_desc = None;
         }
@@ -819,9 +884,12 @@ impl Recorder {
             let mut st = self.lock();
             st.add_log(if result.ok { LogLevel::Info } else { LogLevel::Error }, &result.message);
             st.result = Some(result.clone());
-            let markers: Vec<f64> = std::mem::take(&mut st.markers).into_iter().map(|m| m as f64 / 1000.0).collect();
-            if let (true, Some(p), false) = (result.ok, &result.path, markers.is_empty()) {
-                self.deps().save_markers(p, &markers);
+            let marks = Marks {
+                markers: std::mem::take(&mut st.markers).into_iter().map(|m| m as f64 / 1000.0).collect(),
+                clicks: std::mem::take(&mut st.clicks).into_iter().map(|(t, x, y)| [t as f64 / 1000.0, x as f64, y as f64]).collect(),
+            };
+            if let (true, Some(p), false) = (result.ok, &result.path, marks.markers.is_empty() && marks.clicks.is_empty()) {
+                self.deps().save_markers(p, &marks);
             }
             st.ticker = 0;
             st.busy = None;
@@ -1096,7 +1164,19 @@ impl Recorder {
                 let detail = if tail.is_empty() { format!("結束代碼 {code}") } else { tail };
                 let seg_method = seg.method;
                 let method_auto = st.config().method == MethodPreference::Auto;
-                if !st.ever_produced_frames {
+                let camera_fault = {
+                    let err = &st.segments[index].stderr;
+                    st.config().camera.is_some() && (err.contains("dshow") || err.contains("video="))
+                };
+                if !st.ever_produced_frames && camera_fault {
+                    // 攝影機打不開（被其他程式占用、拔掉了）：這次錄影不含攝影機
+                    st.add_log(LogLevel::Warn, &format!("攝影機無法開啟（{detail}），這次錄影不含攝影機"));
+                    if let Some(c) = st.config.as_mut() {
+                        c.camera = None;
+                    }
+                    self.deps().notify("攝影機", "攝影機無法開啟（可能被其他程式使用中），這次錄影不含攝影機", true);
+                    ExitAction::Start
+                } else if !st.ever_produced_frames {
                     let next = startup_fallback(&FallbackInput {
                         stderr: &st.segments[index].stderr,
                         gpu_encoder_in_use: st.cpu_encoder.is_some() && st.enc != st.cpu_encoder,
@@ -1497,6 +1577,10 @@ mod tests {
                 encoder: None,
                 countdown_sec: Some(3.0),
                 hide_ui: Some(true),
+                show_clicks: false,
+                show_keys: false,
+                follow_window: None,
+                camera: None,
             }
         }
         fn release(&self) {

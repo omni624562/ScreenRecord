@@ -247,6 +247,10 @@ impl TrayController {
             encoder: None,
             countdown_sec: None,
             hide_ui: None,
+            show_clicks: false,
+            show_keys: false,
+            follow_window: None,
+            camera: None,
         }
     }
 
@@ -403,8 +407,8 @@ impl TrayController {
             return Err("轉檔進行中，請等它完成再錄影".into());
         }
         match cmd {
-            TrayCommand::StartAll => cfg.source = SourceConfig::All,
-            TrayCommand::StartMonitor(id) => cfg.source = SourceConfig::Monitor { monitor_id: id },
+            TrayCommand::StartAll => (cfg.source, cfg.follow_window) = (SourceConfig::All, None),
+            TrayCommand::StartMonitor(id) => (cfg.source, cfg.follow_window) = (SourceConfig::Monitor { monitor_id: id }, None),
             TrayCommand::StartSelect | TrayCommand::StartLastSnip => {
                 let r = if cmd == TrayCommand::StartSelect {
                     // 取消框選時不顯示通知
@@ -417,6 +421,13 @@ impl TrayController {
                     return Err(format!("範圍太小（{}×{}），寬高至少 16 像素", r.width, r.height));
                 }
                 cfg.source = SourceConfig::Region { x: r.x as f64, y: r.y as f64, width: r.width as f64, height: r.height as f64 };
+                // 點一下選的是視窗：錄影範圍跟著那個視窗移動
+                let near = |a: i32, b: i32| (a - b).abs() <= 2;
+                cfg.follow_window =
+                    crate::winui::app_windows().into_iter().find(|w| near(w.rect.x, r.x) && near(w.rect.y, r.y) && near(w.rect.width, r.width) && near(w.rect.height, r.height)).map(|w| {
+                        crate::info!("[錄影] 只錄視窗「{}」（跟著視窗移動）", w.title);
+                        w.id
+                    });
             }
             _ => {}
         }

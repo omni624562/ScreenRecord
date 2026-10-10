@@ -2,7 +2,7 @@
 //! 同時把錄影設定存到 config 欄位，系統匣的「開始錄影」直接使用。
 
 use screenrecorder_core::format::MP4_WIDTHS;
-use screenrecorder_core::types::{AudioConfig, EncoderPreference, EnvInfo, ExportFormat, MethodPreference, MonitorInfo, RecordConfig, Rect, SourceConfig};
+use screenrecorder_core::types::{AudioConfig, CameraConfig, EncoderPreference, EnvInfo, ExportFormat, MethodPreference, MonitorInfo, RecordConfig, Rect, SourceConfig, CAMERA_SIZES};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -60,6 +60,25 @@ pub struct UiSettings {
     pub edit_after_shot: bool,
     /// 加速版壓縮到這個大小以內（MB）；0 = 不限
     pub mp4_max_mb: u32,
+    /// 錄影時顯示滑鼠點擊
+    pub show_clicks: bool,
+    /// 錄影時顯示按下的快捷鍵
+    pub show_keys: bool,
+    /// 自訂範圍跟著這個視窗（「只錄這個視窗」）；視窗關掉、重新開機後就失效
+    #[serde(skip)]
+    pub follow_window: Option<FollowWindow>,
+    /// 攝影機子母畫面：攝影機名稱（空字串 = 不使用）、位置、大小、圓形
+    pub camera: String,
+    pub camera_corner: u8,
+    pub camera_size: u32,
+    pub camera_circle: bool,
+}
+
+/// 自訂範圍跟著的視窗
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FollowWindow {
+    pub id: i64,
+    pub title: String,
 }
 
 pub const FPS_CHOICES: [f64; 8] = [10.0, 15.0, 20.0, 24.0, 25.0, 30.0, 50.0, 60.0];
@@ -117,6 +136,13 @@ impl UiSettings {
             mp4_width: num("mp4Width").map(|v| v as u32).filter(|v| MP4_WIDTHS.contains(v)).unwrap_or(0),
             edit_after_shot: boolean("editAfterShot").unwrap_or(false),
             mp4_max_mb: num("mp4MaxMb").map(|v| v as u32).filter(|v| MAX_MB.contains(v)).unwrap_or(0),
+            show_clicks: boolean("showClicks").unwrap_or(false),
+            show_keys: boolean("showKeys").unwrap_or(false),
+            follow_window: None,
+            camera: string("camera").unwrap_or_default(),
+            camera_corner: num("cameraCorner").map(|v| v as u8).filter(|v| *v <= 3).unwrap_or(0),
+            camera_size: num("cameraSize").map(|v| v as u32).filter(|v| CAMERA_SIZES.contains(v)).unwrap_or(20),
+            camera_circle: boolean("cameraCircle").unwrap_or(true),
         };
         s.fix_monitor(env);
         s
@@ -184,6 +210,10 @@ impl UiSettings {
             encoder: Some(self.encoder),
             countdown_sec: Some(self.countdown_sec as f64),
             hide_ui: Some(self.hide_ui),
+            show_clicks: self.show_clicks,
+            show_keys: self.show_keys,
+            follow_window: if self.source_type == SourceType::Region { self.follow_window.as_ref().map(|w| w.id) } else { None },
+            camera: (!self.camera.is_empty()).then(|| CameraConfig { device: self.camera.clone(), corner: self.camera_corner, size: self.camera_size, circle: self.camera_circle }),
         }
     }
 }

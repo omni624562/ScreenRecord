@@ -4,7 +4,7 @@
 //! - 下：最近錄影（橫向分頁）
 
 use super::dialogs::{base_name, date_labels, file_name, is_cut_name, is_default_name, Ask};
-use super::settings::SourceType;
+use super::settings::{FollowWindow, SourceType};
 use super::settings_dialog::{self, Page};
 use super::theme::{self, chip, segmented, switch, Btn, Icon, Tone};
 use super::{EntryAction, UiApp};
@@ -24,6 +24,8 @@ pub struct MainState {
     pub dir_changed_at: Option<Instant>,
     /// 截圖中（按鈕停用，避免連按）
     pub shooting: bool,
+    /// 「選擇視窗」的清單（按下時更新）
+    windows: Vec<screenrecorder_core::winui::WindowInfo>,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -283,17 +285,58 @@ fn source_detail(app: &mut UiApp, ui: &mut Ui, room: f32) {
                             2 => app.s.region.width = v,
                             _ => app.s.region.height = v,
                         }
+                        app.s.follow_window = None;
                         app.save_settings();
                     }
                 }
             }
+            window_picker(app, ui, locked);
             // 放得下才顯示說明
             let hint = "拖曳框選或移動紅框（可跨螢幕）";
-            if ui.available_width() >= text_w(ui, hint) {
+            if app.s.follow_window.is_none() && ui.available_width() >= text_w(ui, hint) {
                 ui.label(theme::muted(ui, hint)).on_hover_text("在預覽圖上拖曳框選範圍（可跨螢幕）；拖曳紅框可移動，拉邊或角可調整大小");
             }
         }
     }
+}
+
+/// 「視窗」：選一個視窗，範圍設成它的位置，錄影時跟著它移動；已選時顯示視窗名稱，✕ 取消
+fn window_picker(app: &mut UiApp, ui: &mut Ui, locked: bool) {
+    let p = theme::pal(ui);
+    if let Some(w) = app.s.follow_window.clone() {
+        let text = format!("只錄「{}」", w.title);
+        let resp = ui.add(egui::Label::new(RichText::new(&text).color(p.accent).font(theme::font(12.5))).truncate()).on_hover_text("錄影時範圍跟著這個視窗移動（視窗大小改變時維持原本的大小）");
+        let _ = resp;
+        if !locked && Btn::icon_only(Icon::Close).ghost().small().tooltip("不跟著視窗，改回一般的自訂範圍").show(ui).clicked() {
+            app.s.follow_window = None;
+        }
+        return;
+    }
+    let b = Btn::new("選擇視窗").small().enabled(!locked).tooltip("只錄某個視窗：範圍設成那個視窗的位置，錄影時跟著它移動").show(ui);
+    if b.clicked() {
+        app.main.windows = screenrecorder_core::winui::app_windows();
+    }
+    egui::Popup::menu(&b).show(|ui| {
+        ui.set_min_width(260.0);
+        ui.set_max_width(420.0);
+        if app.main.windows.is_empty() {
+            ui.label(theme::muted(ui, if cfg!(windows) { "找不到可以錄的視窗" } else { "只支援 Windows" }));
+        }
+        let mut chosen = None;
+        for w in &app.main.windows {
+            let label = format!("{}　{}×{}", w.title, w.rect.width, w.rect.height);
+            if ui.add(egui::Button::new(egui::RichText::new(label)).truncate()).clicked() {
+                chosen = Some(w.clone());
+            }
+        }
+        if let Some(w) = chosen {
+            // 寬高取偶數（編碼需要）
+            let r = DRect { x: w.rect.x, y: w.rect.y, width: w.rect.width & !1, height: w.rect.height & !1 };
+            app.s.region = r;
+            app.s.follow_window = Some(FollowWindow { id: w.id, title: w.title.clone() });
+            app.save_settings();
+        }
+    });
 }
 
 /// 預覽圖、螢幕框、自訂範圍的紅框
@@ -435,7 +478,12 @@ fn region_target(app: &UiApp) -> Option<DRect> {
 
 fn set_region(app: &mut UiApp, r: DRect) {
     match app.s.source_type {
-        SourceType::Region => app.s.region = r,
+        SourceType::Region => {
+            if app.s.region != r {
+                app.s.follow_window = None;
+            }
+            app.s.region = r
+        }
         SourceType::Monitor => app.s.monitor_region = Some(r),
         SourceType::All => {}
     }

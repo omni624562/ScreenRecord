@@ -24,6 +24,9 @@ pub mod format;
 pub mod http;
 pub mod icon;
 pub mod idle;
+pub mod input_overlay;
+#[cfg(windows)]
+pub mod input_overlay_win;
 pub mod instance;
 pub mod ipc;
 pub mod job;

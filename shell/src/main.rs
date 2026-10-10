@@ -143,6 +143,25 @@ fn main() {
         );
     }
 
+    // 「只錄這個視窗」：視窗移動後錄影範圍跟著移過去
+    {
+        let _g = rt.enter();
+        core.spawn_window_follower();
+    }
+    // 錄影中：記下滑鼠點擊（剪輯時跟著點擊放大用），並依設定在畫面上顯示點擊與快捷鍵（會錄進影片）
+    #[cfg(windows)]
+    {
+        let (c1, c2) = (Arc::downgrade(&core), Arc::downgrade(&core));
+        screenrecorder_core::input_overlay_win::spawn(
+            move || c1.upgrade()?.recorder.overlay_info(),
+            move |x, y| {
+                if let Some(c) = c2.upgrade() {
+                    c.recorder.add_click(x, y);
+                }
+            },
+        );
+    }
+
     // 控制端點：再次啟動時把視窗帶到前面、新版接手時正常結束
     if !args.no_tray {
         match ipc::bind(args.port, PORT_RANGE) {

@@ -2,8 +2,18 @@
 //! 停止後再還原，讓使用者馬上看到「錄影已儲存」。以視窗標題（「螢幕錄影 v…」）辨識。
 
 use crate::types::Rect;
+use serde::{Deserialize, Serialize};
 
 pub const TITLE_PREFIX: &str = "螢幕錄影 v";
+
+/// 可以錄的視窗（「只錄這個視窗」）
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WindowInfo {
+    /// 視窗代碼（HWND；只在這次開機、視窗還開著時有效）
+    pub id: i64,
+    pub title: String,
+    pub rect: Rect,
+}
 
 #[cfg(windows)]
 mod imp {
@@ -53,30 +63,56 @@ mod imp {
         ok.then(|| Rect { x: r.left, y: r.top, width: r.right - r.left, height: r.bottom - r.top })
     }
 
-    unsafe extern "system" fn visit_all(hwnd: HWND, lparam: LPARAM) -> BOOL {
-        let list = &mut *(lparam.0 as *mut Vec<Rect>);
+    /// 看得到、有標題的一般視窗（不含桌面、隱藏的 UWP 視窗）
+    unsafe fn titled_window(hwnd: HWND) -> Option<WindowInfo> {
         if !IsWindowVisible(hwnd).as_bool() || IsIconic(hwnd).as_bool() {
-            return BOOL(1);
+            return None;
         }
         // 隱藏起來的 UWP 視窗（cloaked）看不到，跳過
         let mut cloaked = 0u32;
         if DwmGetWindowAttribute(hwnd, DWMWA_CLOAKED, &mut cloaked as *mut u32 as *mut _, 4).is_ok() && cloaked != 0 {
-            return BOOL(1);
+            return None;
         }
         let mut buf = [0u16; 256];
-        if InternalGetWindowText(hwnd, &mut buf) == 0 {
-            return BOOL(1);
+        let n = InternalGetWindowText(hwnd, &mut buf);
+        if n == 0 {
+            return None;
         }
+        let title = String::from_utf16_lossy(&buf[..n as usize]);
         // 桌面本身不算視窗
         let n = GetClassNameW(hwnd, &mut buf);
         let class = String::from_utf16_lossy(&buf[..n.max(0) as usize]);
         if ["Progman", "WorkerW"].contains(&class.as_str()) {
-            return BOOL(1);
+            return None;
         }
-        if let Some(r) = window_rect(hwnd).filter(|r| r.width > 0 && r.height > 0) {
-            list.push(r);
+        let rect = window_rect(hwnd).filter(|r| r.width > 0 && r.height > 0)?;
+        Some(WindowInfo { id: hwnd.0 as i64, title, rect })
+    }
+
+    unsafe extern "system" fn visit_all(hwnd: HWND, lparam: LPARAM) -> BOOL {
+        let list = &mut *(lparam.0 as *mut Vec<WindowInfo>);
+        if let Some(w) = titled_window(hwnd) {
+            list.push(w);
         }
         BOOL(1)
+    }
+
+    pub fn app_windows() -> Vec<WindowInfo> {
+        let mut list: Vec<WindowInfo> = Vec::new();
+        unsafe {
+            let _ = EnumWindows(Some(visit_all), LPARAM(&mut list as *mut Vec<WindowInfo> as isize));
+        }
+        list
+    }
+
+    pub fn window_bounds(id: i64) -> Option<Rect> {
+        let hwnd = HWND(id as isize as *mut _);
+        unsafe {
+            if !windows::Win32::UI::WindowsAndMessaging::IsWindow(Some(hwnd)).as_bool() || IsIconic(hwnd).as_bool() {
+                return None;
+            }
+        }
+        window_rect(hwnd)
     }
 
     unsafe extern "system" fn visit_monitor(h: windows::Win32::Graphics::Gdi::HMONITOR, _: windows::Win32::Graphics::Gdi::HDC, _: *mut RECT, lparam: LPARAM) -> BOOL {
@@ -103,11 +139,7 @@ mod imp {
     }
 
     pub fn visible_windows() -> Vec<Rect> {
-        let mut list: Vec<Rect> = Vec::new();
-        unsafe {
-            let _ = EnumWindows(Some(visit_all), LPARAM(&mut list as *mut Vec<Rect> as isize));
-        }
-        list
+        app_windows().into_iter().map(|w| w.rect).collect()
     }
 
     /// 與 area 重疊的操作視窗（拿不到位置的視窗算重疊，寧可多縮也不要錄到它）
@@ -180,6 +212,25 @@ pub fn visible_windows() -> Vec<Rect> {
     return imp::visible_windows();
     #[cfg(not(windows))]
     Vec::new()
+}
+
+/// 可以錄的視窗（看得到、有標題），由上層到下層；不含本程式的操作視窗
+pub fn app_windows() -> Vec<WindowInfo> {
+    #[cfg(windows)]
+    return imp::app_windows().into_iter().filter(|w| !w.title.starts_with(TITLE_PREFIX) && w.rect.width >= 80 && w.rect.height >= 40).collect();
+    #[cfg(not(windows))]
+    Vec::new()
+}
+
+/// 視窗目前的範圍（實體像素）；視窗已關閉或縮到工作列時為 None
+pub fn window_bounds(id: i64) -> Option<Rect> {
+    #[cfg(windows)]
+    return imp::window_bounds(id);
+    #[cfg(not(windows))]
+    {
+        let _ = id;
+        None
+    }
 }
 
 /// 螢幕的裝置名稱（\\.\DISPLAY1…），依 EnumDisplayMonitors 的順序（與 winit 的螢幕編號相同）

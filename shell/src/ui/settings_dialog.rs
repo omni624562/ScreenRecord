@@ -2,12 +2,12 @@
 //! 主畫面下方只留摘要，點一下開到對應的分頁。
 
 use super::settings::{FPS_CHOICES, MAX_PRESETS};
-use super::theme::{self, switch, Btn, Icon};
+use super::theme::{self, segmented, switch, Btn, Icon};
 use super::UiApp;
 use eframe::egui::{self, pos2, vec2, Align, Color32, CornerRadius, Id, Layout, Rect, RichText, Sense, Stroke, Ui, UiBuilder};
 use screenrecorder_core::actions;
 use screenrecorder_core::format::{human_duration, output_size};
-use screenrecorder_core::types::{EncoderPreference, Hotkey, Hotkeys, MethodPreference, HOTKEY_NAMES};
+use screenrecorder_core::types::{EncoderPreference, Hotkey, Hotkeys, MethodPreference, CAMERA_SIZES, HOTKEY_NAMES};
 use std::time::Instant;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -31,12 +31,14 @@ pub struct SettingsDialog {
     /// 正在設定第幾個快捷鍵（等使用者按下新的組合）
     key_capture: Option<usize>,
     key_msg: Option<String>,
+    /// 找到的攝影機（None = 還沒找；找的時候先放空的）
+    cameras: Option<Vec<String>>,
 }
 
 pub fn open(app: &mut UiApp, page: Page) {
     match &mut app.settings_dlg {
         Some(d) => d.page = page,
-        None => app.settings_dlg = Some(SettingsDialog { page, max_custom_open: false, max_text: String::new(), dir_text: None, key_capture: None, key_msg: None }),
+        None => app.settings_dlg = Some(SettingsDialog { page, max_custom_open: false, max_text: String::new(), dir_text: None, key_capture: None, key_msg: None, cameras: None }),
     }
 }
 
@@ -48,6 +50,15 @@ pub fn record_summary(app: &UiApp) -> Vec<String> {
         v.push(format!("解析度 {}%", s.scale));
     }
     v.push(if s.draw_mouse { "含游標".into() } else { "不含游標".into() });
+    match (s.show_clicks, s.show_keys) {
+        (true, true) => v.push("顯示點擊與按鍵".into()),
+        (true, false) => v.push("顯示點擊".into()),
+        (false, true) => v.push("顯示按鍵".into()),
+        _ => {}
+    }
+    if !s.camera.is_empty() {
+        v.push("攝影機".into());
+    }
     if s.countdown_sec != 3 {
         v.push(if s.countdown_sec > 0 { format!("倒數 {} 秒", s.countdown_sec) } else { "不倒數".into() });
     }
@@ -234,6 +245,81 @@ fn form_combo<T: PartialEq + Copy>(ui: &mut Ui, id: &str, width: f32, value: &mu
 
 // ───────────── 錄影 ─────────────
 
+/// 攝影機子母畫面：選攝影機、位置、大小、形狀
+fn camera_rows(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
+    let p = theme::pal(ui);
+    if d.cameras.is_none() {
+        d.cameras = Some(vec![]);
+        let core = app.core.clone();
+        app.spawn(async move { actions::list_cameras(&core).await }, |app, list| {
+            if let Some(d) = &mut app.settings_dlg {
+                d.cameras = Some(list);
+            }
+        });
+    }
+    let found = d.cameras.clone().unwrap_or_default();
+    form_row(ui, "攝影機", |ui| {
+        let mut names: Vec<String> = vec![String::new()];
+        names.extend(found.iter().cloned());
+        if !app.s.camera.is_empty() && !found.contains(&app.s.camera) {
+            names.push(app.s.camera.clone());
+        }
+        let mut sel = names.iter().position(|n| *n == app.s.camera).unwrap_or(0);
+        let items: Vec<(usize, String, bool)> = names
+            .iter()
+            .enumerate()
+            .map(|(i, n)| {
+                (
+                    i,
+                    if n.is_empty() {
+                        "不使用".to_string()
+                    } else if found.contains(n) {
+                        n.clone()
+                    } else {
+                        format!("{n}（找不到）")
+                    },
+                    true,
+                )
+            })
+            .collect();
+        if form_combo(ui, "camera", FORM_CTRL_W + 60.0, &mut sel, &items) {
+            app.s.camera = names[sel].clone();
+            app.save_settings();
+        }
+        if Btn::icon_only(Icon::Refresh).ghost().small().tooltip("重新尋找攝影機").show(ui).clicked() {
+            d.cameras = None;
+        }
+    });
+    if app.s.camera.is_empty() {
+        if found.is_empty() {
+            form_hint(ui, if cfg!(windows) { "沒有找到攝影機。" } else { "攝影機只支援 Windows。" }, p.muted);
+        }
+        return;
+    }
+    form_row(ui, "攝影機位置", |ui| {
+        let mut c = app.s.camera_corner;
+        let items = [(0u8, "右下".to_string(), true), (1, "左下".into(), true), (2, "右上".into(), true), (3, "左上".into(), true)];
+        if form_combo(ui, "cameraCorner", FORM_CTRL_W, &mut c, &items) {
+            app.s.camera_corner = c;
+            app.save_settings();
+        }
+    });
+    form_row(ui, "大小與形狀", |ui| {
+        let mut sz = app.s.camera_size;
+        let items: Vec<(u32, &str)> = CAMERA_SIZES.iter().copied().zip(["小", "中", "大"]).collect();
+        if segmented(ui, &mut sz, &items, true) {
+            app.s.camera_size = sz;
+            app.save_settings();
+        }
+        let mut circle = app.s.camera_circle;
+        if segmented(ui, &mut circle, &[(true, "圓形"), (false, "方形")], true) {
+            app.s.camera_circle = circle;
+            app.save_settings();
+        }
+    });
+    form_hint(ui, "攝影機的畫面疊在錄影的角落（左右翻轉，像照鏡子）；攝影機被其他程式使用時，那次錄影不含攝影機。", p.muted);
+}
+
 fn record_page(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
     let p = theme::pal(ui);
     form_section(ui, "畫面", |_| {});
@@ -269,6 +355,28 @@ fn record_page(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
             app.save_settings();
         }
     });
+    form_row(ui, "點擊與按鍵", |ui| {
+        ui.vertical(|ui| {
+            let mut c = app.s.show_clicks;
+            if switch(ui, &mut c, "顯示滑鼠點擊", true).on_hover_text("按下滑鼠時在游標位置出現一圈波紋（左鍵黃色、右鍵藍色），錄進影片，看的人知道點了哪裡").changed()
+            {
+                app.s.show_clicks = c;
+                app.save_settings();
+            }
+            let mut k = app.s.show_keys;
+            if switch(ui, &mut k, "顯示按下的快捷鍵", true)
+                .on_hover_text("按下 Ctrl / Alt / Win 組合鍵或 Enter、Esc 等功能鍵時，在畫面下方顯示按了什麼（例如「Ctrl + C」）；一般打字不會顯示")
+                .changed()
+            {
+                app.s.show_keys = k;
+                app.save_settings();
+            }
+        });
+    });
+    if app.s.show_clicks || app.s.show_keys {
+        form_hint(ui, "顯示的波紋與按鍵會錄進影片；只支援 Windows。", p.muted);
+    }
+    camera_rows(app, d, ui);
     form_divider(ui);
     form_section(ui, "開始與結束", |_| {});
     form_row(ui, "開始前倒數", |ui| {

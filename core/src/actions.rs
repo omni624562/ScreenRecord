@@ -302,6 +302,16 @@ pub async fn shot_ocr(path: &str, spec: Option<&crate::shot_edit::ShotSpec>) -> 
     tokio::task::spawn_blocking(move || crate::ocr::recognize(&rgba, w, h)).await.map_err(|e| Error::other(e.to_string()))?.map_err(Error::config)
 }
 
+/// 可以用的攝影機（Windows 的 DirectShow 裝置）；其他平台沒有
+pub async fn list_cameras(app: &App) -> Vec<String> {
+    if !cfg!(windows) {
+        return vec![];
+    }
+    let Some(ffmpeg) = app.ffmpeg_path() else { return vec![] };
+    let r = crate::process::run(&ffmpeg, &crate::args::list_cameras_args(), std::time::Duration::from_secs(10)).await;
+    crate::args::parse_cameras(&r.stderr)
+}
+
 /// 自動遮個資：在原圖（轉成編輯中的方向）找出 Email、電話、身分證字號、卡號的位置（只有 Windows）
 pub async fn shot_find_pii(path: &str, rotate: u32) -> Result<Vec<crate::ocr::Found>> {
     let (rgba, w, h) = load_image(path).await?;
