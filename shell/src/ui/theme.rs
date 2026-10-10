@@ -161,7 +161,7 @@ pub fn setup_visuals(ctx: &egui::Context) {
     });
 }
 
-/// 調整 egui 內建元件（下拉選單、輸入框、捲軸）的外觀
+/// 調整 egui 內建元件（下拉選單、輸入欄、捲軸）的外觀
 fn visuals(dark: bool) -> Visuals {
     let p = if dark { &DARK } else { &LIGHT };
     let mut v = if dark { Visuals::dark() } else { Visuals::light() };
@@ -673,7 +673,7 @@ pub fn muted(ui: &Ui, text: impl Into<String>) -> RichText {
     RichText::new(text.into()).color(pal(ui).muted).font(font(12.5))
 }
 
-/// 進度條（細）
+/// 進度列（細）
 pub fn progress(ui: &mut Ui, frac: f32, color: Color32, height: f32) {
     let p = pal(ui);
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::hover());

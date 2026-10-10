@@ -1,6 +1,6 @@
-//! 系統匣圖示與全域快捷鍵（Windows）。
+//! 系統匣圖示與全域快速鍵（Windows）。
 //!
-//! TrackPopupMenu 在選單開著的期間會卡住所在的執行緒，所以圖示、選單與快捷鍵都放在獨立的執行緒，
+//! TrackPopupMenu 在選單開著的期間會卡住所在的執行緒，所以圖示、選單與快速鍵都放在獨立的執行緒，
 //! 操作視窗與錄影不會跟著停住。這裡只負責畫圖示與選單，使用者選了什麼就交給 TrayController 處理。
 
 use crate::icon::{icon_resource, IconState};
@@ -29,10 +29,10 @@ const WM_WAKE: u32 = WM_APP + 2;
 const NIN_BALLOONUSERCLICK: u32 = 0x405;
 /// 圖示加不上去時重試的計時器
 const RETRY_TIMER: usize = 7;
-/// 全域快捷鍵的 id：1 錄影、2 暫停、3 截圖、4 框選截圖、5 打點、6 螢幕畫筆（與 Hotkeys::all 的順序相同）
+/// 全域快速鍵的 id：1 錄影、2 暫停、3 截圖、4 框選截圖、5 加標記、6 螢幕畫筆（與 Hotkeys::all 的順序相同）
 const HOTKEY_IDS: [i32; crate::types::HOTKEY_COUNT] = [1, 2, 3, 4, 5, 6];
 
-/// 登記全域快捷鍵（先取消舊的）；被其他程式占用時登記失敗，停用的視為成功
+/// 登記全域快速鍵（先取消舊的）；被其他程式占用時登記失敗，停用的視為成功
 fn register_hotkeys(hwnd: HWND, keys: &Hotkeys) -> HotkeyStatus {
     let ok: Vec<bool> = keys
         .all()
@@ -53,7 +53,7 @@ fn register_hotkeys(hwnd: HWND, keys: &Hotkeys) -> HotkeyStatus {
     HotkeyStatus::from_list(&ok)
 }
 
-/// 選單右側顯示的快捷鍵（停用時不顯示）
+/// 選單右側顯示的快速鍵（停用時不顯示）
 fn tab(k: &str) -> String {
     if k.is_empty() {
         String::new()
@@ -367,7 +367,7 @@ fn show_menu() {
             m.add(root, &format!("★ 有新版本 v{u}（開啟視窗更新）"), TrayCommand::OpenUpdate, false, false);
         }
         Menu::sep(root);
-        // 「\t」後的文字顯示在選單右側（快捷鍵提示）
+        // 「\t」後的文字顯示在選單右側（快速鍵提示）
         m.add(root, &format!("開始錄影(&R)　{}{}", st.last_source, tab(&st.keys[0])), TrayCommand::StartLast, !idle || !st.can_record, false);
         // 錄其他範圍：與「截圖」相同的選法（框選範圍或視窗、全螢幕、重複上次框選）
         if let Ok(pick) = CreatePopupMenu() {
@@ -396,7 +396,7 @@ fn show_menu() {
         } else {
             m.add(root, &format!("停止並儲存(&S){}", tab(&st.keys[0])), TrayCommand::Stop, idle || st.rec == RecorderState::Stopping, false);
         }
-        m.add(root, &format!("打點(&K){}", tab(&st.keys[4])), TrayCommand::Mark, !matches!(st.rec, RecorderState::Recording | RecorderState::Paused), false);
+        m.add(root, &format!("加標記(&K){}", tab(&st.keys[4])), TrayCommand::Mark, !matches!(st.rec, RecorderState::Recording | RecorderState::Paused), false);
         m.add(root, &format!("螢幕畫筆(&D){}", tab(&st.keys[5])), TrayCommand::Pen, false, crate::screen_pen_win::active());
         Menu::sep(root);
         // 截圖：框選範圍或點選視窗、全螢幕、固定範圍（主畫面的錄影範圍）、重複上次框選
@@ -479,7 +479,7 @@ fn allow_dark_menus() {
     }
 }
 
-/// 啟動系統匣執行緒；圖示加入成功後回傳控制介面與快捷鍵登記結果
+/// 啟動系統匣執行緒；圖示加入成功後回傳控制介面與快速鍵登記結果
 pub fn start(cmd: UnboundedSender<TrayCommand>, keys: Hotkeys) -> Result<(Arc<dyn TrayUi>, HotkeyStatus), String> {
     let (ready_tx, ready_rx) = mpsc::channel::<Result<(isize, HotkeyStatus), String>>();
     let queue: Arc<Mutex<VecDeque<Req>>> = Arc::default();
@@ -506,10 +506,10 @@ pub fn start(cmd: UnboundedSender<TrayCommand>, keys: Hotkeys) -> Result<(Arc<dy
             });
             // 先處理已送來的狀態，圖示一開始就顯示正確的提示
             drain();
-            // 快捷鍵登記在這個執行緒的視窗上（WM_HOTKEY 會送到這裡）；被其他程式占用時登記失敗。
+            // 快速鍵登記在這個執行緒的視窗上（WM_HOTKEY 會送到這裡）；被其他程式占用時登記失敗。
             // 先回報準備好（不等圖示）：加圖示要等檔案總管，開機登入時可能很慢
             let _ = ready_tx.send(Ok((hwnd.0 as isize, register_hotkeys(hwnd, &keys))));
-            // 圖示加不上去（工作列還沒準備好）：快捷鍵照樣能用，每 3 秒再試著加圖示
+            // 圖示加不上去（工作列還沒準備好）：快速鍵照樣能用，每 3 秒再試著加圖示
             if !ensure_icon() {
                 crate::warn!("系統匣圖示暫時加不上去（工作列可能還沒準備好），稍後會再試");
                 SetTimer(Some(hwnd), RETRY_TIMER, 3000, None);

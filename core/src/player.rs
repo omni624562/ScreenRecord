@@ -189,7 +189,7 @@ struct Inner {
     pos: f64,
     /// 播放到結尾
     ended: bool,
-    /// 每次播放 / 暫停 / 跳轉加一：舊的執行緒看到不同就停止
+    /// 每次播放 / 暫停 / 跳到其他時間加一：舊的執行緒看到不同就停止
     gen: u64,
     /// 暫停時要解的那一張（拖曳時只保留最新的）
     still: Option<f64>,
@@ -370,7 +370,7 @@ impl Player {
         let (ffmpeg, spec, children, inner, wake, w, h) = (self.ffmpeg.clone(), self.spec.clone(), self.children.clone(), self.inner.clone(), self.wake.clone(), self.width, self.height);
         let volume = self.volume.clone();
         std::thread::spawn(move || {
-            // 記下子行程以便停止；已經換了一輪（暫停 / 跳轉）就直接結束它
+            // 記下子行程以便停止；已經換了一輪（暫停 / 跳到其他時間）就直接結束它
             let register = |mut child: Child| -> bool {
                 let mut list = children.lock().unwrap();
                 if inner.lock().unwrap().gen != gen {
@@ -597,7 +597,7 @@ mod tests {
                 std::thread::sleep(Duration::from_millis(10));
             }
         };
-        // 暫停時跳轉：解出那一張（第 30 張，亮度約 120）
+        // 暫停時跳到其他時間：解出那一張（第 30 張，亮度約 120）
         p.seek(1.0);
         let f = wait_frame(&p);
         assert_eq!((f.width, f.height), (64, 36));

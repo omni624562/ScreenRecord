@@ -73,11 +73,11 @@ fn hint(ui: &mut egui::Ui, text: &str) {
 fn time_panel(ed: &mut Editor, ui: &mut egui::Ui, toast: &mut Option<(String, bool)>) {
     let p = theme::pal(ui);
     ui.horizontal(|ui| {
-        if Btn::new("設為開頭").small().tooltip("快捷鍵 I").show(ui).clicked() {
+        if Btn::new("設為開頭").small().tooltip("快速鍵 I").show(ui).clicked() {
             let t = ed.now();
             ed.set_start(t);
         }
-        if Btn::new("設為結尾").small().tooltip("快捷鍵 O").show(ui).clicked() {
+        if Btn::new("設為結尾").small().tooltip("快速鍵 O").show(ui).clicked() {
             let t = ed.now();
             ed.set_end(t);
         }
@@ -89,10 +89,10 @@ fn time_panel(ed: &mut Editor, ui: &mut egui::Ui, toast: &mut Option<(String, bo
             ui.spacing_mut().item_spacing.y = 6.0;
             ui.label(RichText::new(format!("已選取 {} – {}（{}）", video_clock(a), video_clock(b), video_clock(b - a))).font(theme::font(12.5)));
             ui.horizontal(|ui| {
-                if Btn::new("刪除這段").danger().small().tooltip("快捷鍵 Delete").show(ui).clicked() {
+                if Btn::new("刪除這段").danger().small().tooltip("快速鍵 Delete").show(ui).clicked() {
                     ed.delete_selection(toast);
                 }
-                if Btn::new("取消選取").ghost().small().tooltip("快捷鍵 Esc").show(ui).clicked() {
+                if Btn::new("取消選取").ghost().small().tooltip("快速鍵 Esc").show(ui).clicked() {
                     ed.sel = None;
                 }
             });
@@ -403,7 +403,7 @@ fn zoom_panel(ed: &mut Editor, ui: &mut egui::Ui) {
 /// 加上標註
 const MARK_TOOLS: [(Tool, &str); 8] = [
     (Tool::Ann(AnnKind::Text), "文字"),
-    (Tool::Emoji, "表情"),
+    (Tool::Emoji, "表情符號"),
     (Tool::Ann(AnnKind::Arrow), "箭頭"),
     (Tool::Ann(AnnKind::Rect), "方框"),
     (Tool::Ann(AnnKind::Ellipse), "圓框"),
@@ -511,7 +511,7 @@ fn ann_panel(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context) {
     } else {
         match ed.tool {
             Some(Tool::Ann(AnnKind::Step)) => format!("在{w}上依序點擊，放置編號 1、2、3…；完成後按 Esc 或再按一次「編號」。"),
-            Some(Tool::Emoji) => format!("先在上面選表情，再在{w}上點擊放置（可連續放）；完成後按 Esc 或再按一次「表情」。"),
+            Some(Tool::Emoji) => format!("先在上面選表情符號，再在{w}上點擊放置（可連續放）；完成後按 Esc 或再按一次「表情符號」。"),
             Some(Tool::Ann(AnnKind::Text)) => format!("在{w}上點一下放置。按 Esc 取消。"),
             Some(Tool::Ann(AnnKind::Pen)) => format!("在{w}上按住拖曳手繪（可以連續畫好幾筆）；完成後按 Esc 或再按一次「畫筆」。"),
             Some(Tool::Ann(AnnKind::Magnify)) => format!("在{w}上按住拖曳框出要放大的地方，圓裡會顯示中心附近放大的樣子。按 Esc 取消。"),
@@ -651,7 +651,7 @@ fn props(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context) {
         ui.horizontal(|ui| {
             ui.label(RichText::new(annotate::label(&a)).font(theme::font_bold(13.5)));
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if Btn::new("刪除").danger().small().tooltip("快捷鍵 Delete").show(ui).clicked() {
+                if Btn::new("刪除").danger().small().tooltip("快速鍵 Delete").show(ui).clicked() {
                     delete = true;
                 }
             });

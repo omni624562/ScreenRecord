@@ -1,4 +1,4 @@
-//! 系統匣控制：推送狀態給系統匣圖示、執行選單與快捷鍵指令、錄影完成時顯示通知。
+//! 系統匣控制：推送狀態給系統匣圖示、執行選單與快速鍵指令、錄影完成時顯示通知。
 //! 圖示與選單本身在 tray_win.rs（獨立執行緒；選單開著時會卡住所在的執行緒）。
 
 use crate::app::{App, UiPage};
@@ -32,13 +32,13 @@ pub enum TrayCommand {
     Changelog,
     HotkeyRecord,
     HotkeyPause,
-    /// 截圖：與錄影相同的範圍（選單與快捷鍵）
+    /// 截圖：與錄影相同的範圍（選單與快速鍵）
     Screenshot,
     /// 截圖：整個指定的螢幕
     ScreenshotMonitor(String),
     /// 截圖：所有螢幕
     ScreenshotAll,
-    /// 在螢幕上框選範圍或點選視窗截圖（選單與快捷鍵）
+    /// 在螢幕上框選範圍或點選視窗截圖（選單與快速鍵）
     ScreenshotSelect,
     /// 再截一次上次框選的範圍
     ScreenshotLast,
@@ -60,7 +60,7 @@ pub enum TrayCommand {
     EditLastShot,
     /// 點了通知：剛截圖的通知開啟編輯，其他開啟操作視窗
     BalloonClick,
-    /// 錄影中打點
+    /// 錄影中加標記
     Mark,
     /// 螢幕畫筆（開 / 關）
     Pen,
@@ -100,7 +100,7 @@ pub struct TrayState {
     pub version: String,
     /// 有新版本時顯示在選單
     pub update: Option<String>,
-    /// 快捷鍵名稱（選單右側顯示；停用時是空字串）：錄影、暫停、截圖、框選截圖
+    /// 快速鍵名稱（選單右側顯示；停用時是空字串）：錄影、暫停、截圖、框選截圖
     pub keys: [String; crate::types::HOTKEY_COUNT],
 }
 
@@ -110,7 +110,7 @@ pub trait TrayUi: Send + Sync {
     fn balloon(&self, title: &str, text: &str, warn: bool);
     /// 結束前移除圖示（否則會殘留到滑鼠移過去才消失）
     fn dispose(&self);
-    /// 重新登記全域快捷鍵
+    /// 重新登記全域快速鍵
     fn set_hotkeys(&self, k: &Hotkeys) -> Option<HotkeyStatus>;
 }
 
@@ -321,7 +321,7 @@ impl TrayController {
     }
 
     pub async fn run(self: &Arc<Self>, cmd: TrayCommand) {
-        // 剛啟動時（偵測還沒完成）按快捷鍵：等偵測完成，才不會誤報「找不到 ffmpeg.exe」
+        // 剛啟動時（偵測還沒完成）按快速鍵：等偵測完成，才不會誤報「找不到 ffmpeg.exe」
         self.app.wait_ready().await;
         if let Err(e) = self.run_inner(cmd).await {
             self.notify("無法執行", &e, true);
@@ -373,7 +373,7 @@ impl TrayController {
                 app.open_ui(UiPage::Main);
                 return Ok(());
             }
-            // 快捷鍵：同一組鍵依狀態切換（待命→開始、倒數→取消、錄影中→停止）
+            // 快速鍵：同一組鍵依狀態切換（待命→開始、倒數→取消、錄影中→停止）
             TrayCommand::HotkeyRecord => {
                 let st = rec.status().state;
                 if st == RecorderState::Stopping {
@@ -393,7 +393,7 @@ impl TrayController {
                 };
             }
             TrayCommand::Pause => return rec.pause().await.map_err(err),
-            // 沒在錄影時按快捷鍵：不提示
+            // 沒在錄影時按快速鍵：不提示
             TrayCommand::Pen => {
                 #[cfg(windows)]
                 crate::screen_pen_win::toggle();
@@ -541,7 +541,7 @@ impl TrayController {
     }
 }
 
-/// 建立系統匣圖示與全域快捷鍵；失敗時回傳 false（程式改用「沒有開著的視窗就自動結束」）
+/// 建立系統匣圖示與全域快速鍵；失敗時回傳 false（程式改用「沒有開著的視窗就自動結束」）
 pub async fn start(app: &Arc<App>) -> bool {
     #[cfg(windows)]
     {
@@ -598,9 +598,9 @@ fn report_hotkeys(app: &App, k: &Hotkeys, h: HotkeyStatus) {
     let busy: Vec<String> = (0..ok.len()).filter(|i| !ok[*i]).map(|i| k.label(i)).collect();
     if busy.is_empty() {
         let list: Vec<String> = (0..ok.len()).filter(|i| !k.label(*i).is_empty()).map(|i| format!("{} {}", k.label(i), HOTKEY_NAMES[i])).collect();
-        info!("快捷鍵：{}", list.join("，"));
+        info!("快速鍵：{}", list.join("，"));
     } else {
-        info!("快捷鍵 {} 已被其他程式使用，無法登記", busy.join("、"));
+        info!("快速鍵 {} 已被其他程式使用，無法登記", busy.join("、"));
     }
     app.set_hotkeys(h);
 }

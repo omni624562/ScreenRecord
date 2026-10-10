@@ -1,5 +1,5 @@
 //! 找出沒動靜的片段：畫面不動（FFmpeg freezedetect）而且沒有聲音（silencedetect）的地方，
-//! 讓剪輯時一鍵刪掉等待、發呆的時間。
+//! 讓剪輯時按一下就刪掉等待、發呆的時間。
 
 use crate::edit::Range;
 use std::path::Path;

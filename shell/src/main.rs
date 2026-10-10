@@ -7,7 +7,7 @@
 //!   --tray       只常駐系統匣、不開視窗（開機自動啟動時使用）
 //!   --no-tray    不建立系統匣圖示、不檢查是否已在執行（開發測試用，可與正式程式並存）
 //!
-//! - 只會有一個實例：再次啟動時把操作視窗帶到前面；舊版（1.x、2.x）還開著時請它結束後接手
+//! - 只會有一個執行個體：再次啟動時把操作視窗帶到前面；舊版（1.x、2.x）還開著時請它結束後接手
 //! - 關掉操作視窗後程式仍常駐在系統匣，從圖示選單操作或結束
 //! - 視窗標題以「螢幕錄影 v」開頭：開始錄影時用來找到並縮小這個視窗
 #![windows_subsystem = "windows"]
@@ -84,7 +84,7 @@ fn main() {
     if let Ok(exe) = std::env::current_exe() {
         selfupdate::cleanup_old(&exe);
     }
-    // 本程式結束（包括當掉）時，FFmpeg 等子程序一併結束
+    // 本程式結束（包括當掉）時，FFmpeg 等子處理程序一併結束
     job::install();
     let args = parse_args(&argv);
     if !args.no_tray && hand_over(&args, &argv) {
@@ -148,7 +148,7 @@ fn main() {
         let _g = rt.enter();
         core.spawn_window_follower();
     }
-    // 錄影中：記下滑鼠點擊（剪輯時跟著點擊放大用），並依設定在畫面上顯示點擊與快捷鍵（會錄進影片）
+    // 錄影中：記下滑鼠點擊（剪輯時跟著點擊放大用），並依設定在畫面上顯示點擊與快速鍵（會錄進影片）
     #[cfg(windows)]
     {
         let (c1, c2) = (Arc::downgrade(&core), Arc::downgrade(&core));
@@ -162,7 +162,7 @@ fn main() {
         );
     }
 
-    // 攝影機小窗：錄影前（主畫面開著）與錄影時在擷取範圍裡顯示攝影機畫面（可以拖曳、調整大小），直接錄進影片
+    // 攝影機小視窗：錄影前（主畫面開著）與錄影時在擷取範圍裡顯示攝影機畫面（可以拖曳、調整大小），直接錄進影片
     #[cfg(windows)]
     {
         let (c1, c2, c3, c4) = (Arc::downgrade(&core), Arc::downgrade(&core), Arc::downgrade(&core), Arc::downgrade(&core));

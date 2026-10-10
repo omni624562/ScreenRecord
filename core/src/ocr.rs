@@ -82,7 +82,7 @@ fn luhn(digits: &str) -> bool {
     sum.is_multiple_of(10)
 }
 
-/// 從辨識出的每一行找出個資。一行的字用空格接起來比對，再把比對到的那幾個字的範圍合起來
+/// 從辨識出的每一行找出個資。一行的字用空白接起來比對，再把比對到的那幾個字的範圍合起來
 pub fn find_pii(lines: &[Vec<Word>]) -> Vec<Found> {
     let mut out: Vec<Found> = vec![];
     for line in lines {
@@ -124,7 +124,7 @@ pub fn find_pii(lines: &[Vec<Word>]) -> Vec<Found> {
     out
 }
 
-/// Windows 的辨識結果在中文字之間會加空格：中文字（含全形標點）之間的空格拿掉，英文單字之間的保留
+/// Windows 的辨識結果在中文字之間會加空白：中文字（含全形標點）之間的空白拿掉，英文單字之間的保留
 pub fn tidy(line: &str) -> String {
     let cjk = |c: char| matches!(c as u32, 0x2E80..=0x9FFF | 0xF900..=0xFAFF | 0xFF00..=0xFFEF);
     let chars: Vec<char> = line.chars().collect();

@@ -98,11 +98,11 @@ fn banners(app: &mut UiApp, ui: &mut Ui) {
                             }
                             s
                         }
-                        DownloadPhase::Verifying => "比對 SHA-256 校驗碼…".into(),
+                        DownloadPhase::Verifying => "比對 SHA-256 檢查碼…".into(),
                         DownloadPhase::Extracting => "解壓縮並確認 ffmpeg.exe 可以執行…".into(),
                         DownloadPhase::Error | DownloadPhase::Canceled => d.message.clone().unwrap_or_else(|| "下載失敗".into()),
                         _ => format!(
-                            "可以自動下載（gyan.dev 的 FFmpeg essentials，約 110 MB；下載後比對程式內建的 SHA-256，確認檔案完整且未被替換），或自行下載並把 bin\\ffmpeg.exe 放到 {}",
+                            "可以自動下載（gyan.dev 的 FFmpeg essentials，約 110 MB；下載後比對程式內建的 SHA-256，確認檔案完整且未遭竄改），或自行下載並把 bin\\ffmpeg.exe 放到 {}",
                             app.env.app_dir
                         ),
                     };
@@ -404,7 +404,7 @@ fn desk(app: &mut UiApp, ui: &mut Ui, area: Rect) {
         None => {
             let msg = match app.preview.state() {
                 super::preview::PreviewState::Failed(m) => m,
-                super::preview::PreviewState::Loading { live: true } => "正在連接即時預覽…".into(),
+                super::preview::PreviewState::Loading { live: true } => "正在開啟即時預覽…".into(),
                 super::preview::PreviewState::Loading { live: false } => "正在擷取預覽…".into(),
                 _ => {
                     if app.env_ready {
@@ -500,7 +500,7 @@ fn audio_panel(app: &mut UiApp, ui: &mut Ui, area: Rect) {
     let (line, warn) =
         if parts.is_empty() { ("還沒選要錄的聲音：請在下方「聲音」打開系統聲音或麥克風".to_string(), true) } else { (format!("會錄：{}", parts.join("、")), false) };
     ui.painter().text(c + vec2(0.0, 20.0 * s), egui::Align2::CENTER_CENTER, line, theme::font(13.5), if warn { p.warn } else { p.text });
-    let tips = ["畫面不會錄下來，存成 MP4（畫面是一張「只錄聲音」的卡片，檔案幾乎只有聲音的大小）", "一樣可以暫停、打點、剪輯、降噪；在錄影的「更多」選單選「存成 M4A」就只留下聲音"];
+    let tips = ["畫面不會錄下來，存成 MP4（畫面是一張「只錄聲音」的卡片，檔案幾乎只有聲音的大小）", "一樣可以暫停、加標記、剪輯、降噪；在錄影的「更多」選單選「存成 M4A」就只留下聲音"];
     for (i, t) in tips.iter().enumerate() {
         ui.painter().text(c + vec2(0.0, (48.0 + i as f32 * 22.0) * s), egui::Align2::CENTER_CENTER, *t, theme::font(12.0), p.muted);
     }
@@ -647,7 +647,7 @@ fn settings_bar(app: &mut UiApp, ui: &mut Ui) {
     let locked = app.locked();
     ui.spacing_mut().item_spacing.x = 2.0;
     // 右邊：「設定」按鈕，前面是輸出大小
-    let set_btn = Btn::new("設定").icon(Icon::Settings).small().tooltip("錄影、聲音、儲存位置、快捷鍵與其他設定");
+    let set_btn = Btn::new("設定").icon(Icon::Settings).small().tooltip("錄影、聲音、儲存位置、快速鍵與其他設定");
     let set_w = set_btn.width(ui);
     let out = app.s.source_rect(&app.env).map(|r| output_size(r.width, r.height, app.s.scale as f64));
     let big = out.is_some_and(|(w, h)| (w as f64) * (h as f64) > 3840.0 * 2160.0 * 1.05);
@@ -857,7 +857,7 @@ fn rec_panel(app: &mut UiApp, ui: &mut Ui) {
                 }
                 if marking {
                     let mk = if app.keys.label(4).is_empty() { String::new() } else { format!("（{}）", app.keys.label(4)) };
-                    let label = if r.markers > 0 { format!("打點 {}", r.markers) } else { "打點".into() };
+                    let label = if r.markers > 0 { format!("標記 {}", r.markers) } else { "標記".into() };
                     if Btn::new(label).min_width(w * 0.26).tooltip(format!("記下現在的位置，剪輯時可以直接跳過去{mk}")).show(ui).clicked() {
                         if let Err(e) = app.core.recorder.add_marker() {
                             app.toast(e.message().to_string(), true);
@@ -942,9 +942,9 @@ fn rec_panel(app: &mut UiApp, ui: &mut Ui) {
         // 轉檔工作、結果佔掉空間時：放不下就不顯示事件紀錄，系統狀態不被蓋住
         let log_h = ui.available_height() - sys_h - 8.0 - 32.0;
         if log_h >= 40.0 && r.log.is_empty() && !active {
-            // 還沒有事件：顯示快捷鍵小抄
+            // 還沒有事件：顯示快速鍵小抄
             ui.add_space(10.0);
-            ui.label(RichText::new("快捷鍵").font(theme::font_bold(12.5)).color(p.muted));
+            ui.label(RichText::new("快速鍵").font(theme::font_bold(12.5)).color(p.muted));
             egui::ScrollArea::vertical().max_height(log_h).auto_shrink([false, true]).show(ui, |ui| {
                 ui.spacing_mut().item_spacing.y = 5.0;
                 for (i, name) in screenrecorder_core::types::HOTKEY_NAMES.iter().enumerate() {
@@ -960,7 +960,7 @@ fn rec_panel(app: &mut UiApp, ui: &mut Ui) {
                     });
                 }
                 ui.add_space(4.0);
-                ui.add(egui::Label::new(theme::muted(ui, "「截圖」旁的小箭頭還有框選、長截圖、步驟截圖；快捷鍵可在「設定 → 快捷鍵」更換。").font(theme::font(12.0))).wrap());
+                ui.add(egui::Label::new(theme::muted(ui, "「截圖」旁的小箭頭還有框選、長截圖、步驟截圖；快速鍵可在「設定 → 快速鍵」更換。").font(theme::font(12.0))).wrap());
             });
         } else if log_h >= 40.0 {
             ui.add_space(10.0);
@@ -989,7 +989,7 @@ fn rec_panel(app: &mut UiApp, ui: &mut Ui) {
 /// 截圖：與錄影相同的範圍，存成 PNG 並複製到剪貼簿（完成後由狀態更新顯示提示、更新清單）
 fn shot_button(app: &mut UiApp, ui: &mut Ui, w: f32) {
     let hotkey = if app.env.hotkeys.is_some_and(|h| h.shot) && !app.keys.label(2).is_empty() { format!("（{}）", app.keys.label(2)) } else { String::new() };
-    let tip = format!("截取目前的擷取範圍，存成 PNG 並複製到剪貼簿{hotkey}\n旁邊的小箭頭（或按右鍵）：框選、延遲截圖、長截圖、步驟截圖、取色器、尺規");
+    let tip = format!("把目前的擷取範圍存成 PNG 並複製到剪貼簿{hotkey}\n旁邊的小箭頭（或按右鍵）：框選、延遲截圖、長截圖、步驟截圖、取色器、尺規");
     let can = app.env.ffmpeg.found && !app.main.shooting;
     let arrow_w = 26.0;
     let (resp, arrow) = ui
@@ -1216,7 +1216,7 @@ fn update_meter(app: &mut UiApp, ctx: &egui::Context) {
     }
 }
 
-/// 音量條（0～1）：綠色，接近滿格時變橘色
+/// 音量表（0～1）：綠色，接近滿格時變橘色
 fn level_bar(ui: &mut Ui, v: f32) {
     let p = theme::pal(ui);
     let (r, _) = ui.allocate_exact_size(vec2(46.0, 8.0), Sense::hover());

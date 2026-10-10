@@ -98,7 +98,7 @@ pub struct AudioConfig {
     pub mic_id: String,
 }
 
-/// 全域快捷鍵是否登記成功（false = 已被其他程式占用；停用的視為成功）
+/// 全域快速鍵是否登記成功（false = 已被其他程式占用；停用的視為成功）
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct HotkeyStatus {
     pub record: bool,
@@ -136,7 +136,7 @@ pub struct ShotInfo {
     pub copied: bool,
 }
 
-/// 一組全域快捷鍵：修飾鍵＋按鍵（Windows 虛擬鍵碼）
+/// 一組全域快速鍵：修飾鍵＋按鍵（Windows 虛擬鍵碼）
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Hotkey {
     #[serde(default)]
@@ -229,17 +229,17 @@ pub fn shown_keys(vk: u32, ctrl: bool, alt: bool, shift: bool, win: bool) -> Opt
     Some(parts.join(" + "))
 }
 
-/// 全域快捷鍵的數量
+/// 全域快速鍵的數量
 pub const HOTKEY_COUNT: usize = 6;
 
-/// 全域快捷鍵（None = 停用）
+/// 全域快速鍵（None = 停用）
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Hotkeys {
     pub record: Option<Hotkey>,
     pub pause: Option<Hotkey>,
     pub shot: Option<Hotkey>,
     pub snip: Option<Hotkey>,
-    /// 錄影中打點（3.1 新增：舊的設定沒有這個欄位時用預設）
+    /// 錄影中加標記（3.1 新增：舊的設定沒有這個欄位時用預設）
     #[serde(default = "default_mark")]
     pub mark: Option<Hotkey>,
     /// 螢幕畫筆（3.1 新增）
@@ -269,7 +269,7 @@ impl Default for Hotkeys {
 }
 
 impl Hotkeys {
-    /// 依序：開始 / 停止錄影、暫停 / 繼續、截圖、框選截圖、打點、螢幕畫筆
+    /// 依序：開始 / 停止錄影、暫停 / 繼續、截圖、框選截圖、加標記、螢幕畫筆
     pub fn all(&self) -> [Option<Hotkey>; HOTKEY_COUNT] {
         [self.record, self.pause, self.shot, self.snip, self.mark, self.pen]
     }
@@ -285,7 +285,7 @@ impl Hotkeys {
         }
     }
 
-    /// 全部停用（設定新的快捷鍵時暫停）
+    /// 全部停用（設定新的快速鍵時暫停）
     pub fn none() -> Hotkeys {
         Hotkeys { record: None, pause: None, shot: None, snip: None, mark: None, pen: None }
     }
@@ -301,7 +301,7 @@ impl Hotkeys {
     }
 }
 
-pub const HOTKEY_NAMES: [&str; HOTKEY_COUNT] = ["開始 / 停止錄影", "暫停 / 繼續", "截圖（固定範圍）", "框選截圖", "錄影中打點", "螢幕畫筆（開 / 關）"];
+pub const HOTKEY_NAMES: [&str; HOTKEY_COUNT] = ["開始 / 停止錄影", "暫停 / 繼續", "截圖（固定範圍）", "框選截圖", "錄影中加標記", "螢幕畫筆（開 / 關）"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -338,7 +338,7 @@ pub struct RecordConfig {
     /// 錄影時在畫面上顯示滑鼠點擊（會錄進影片）
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub show_clicks: bool,
-    /// 錄影時在畫面上顯示按下的快捷鍵（有 Ctrl / Alt / Win 的組合與 Enter、Esc 等；一般打字不顯示）
+    /// 錄影時在畫面上顯示按下的快速鍵（有 Ctrl / Alt / Win 的組合與 Enter、Esc 等；一般打字不顯示）
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub show_keys: bool,
     /// 錄影時游標周圍顯示一圈光暈（會錄進影片）
@@ -373,7 +373,7 @@ pub struct CameraConfig {
     /// 圓形（否則是方形）
     #[serde(default = "default_true")]
     pub circle: bool,
-    /// 拖曳後記住的位置：小窗中心在擷取範圍內的相對位置（萬分比，0～10000）；None = 放在 corner
+    /// 拖曳後記住的位置：小視窗中心在擷取範圍內的相對位置（萬分比，0～10000）；None = 放在 corner
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pos: Option<[u16; 2]>,
 }
@@ -470,7 +470,7 @@ pub struct RecorderStatus {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub result: Option<RecordingResult>,
     pub log: Vec<LogEntry>,
-    /// 這次錄影打了幾個點
+    /// 這次錄影加了幾個標記
     #[serde(default, skip_serializing_if = "is_zero_u32")]
     pub markers: u32,
 }
@@ -742,7 +742,7 @@ mod tests {
 
     #[test]
     fn old_hotkey_settings_get_the_new_defaults() {
-        // 3.0 存的設定沒有打點、畫筆
+        // 3.0 存的設定沒有標記、畫筆
         let old = r#"{"record":{"ctrl":true,"alt":true,"shift":false,"win":false,"key":82},"pause":null,"shot":null,"snip":null}"#;
         let k: Hotkeys = serde_json::from_str(old).unwrap();
         assert_eq!(k.pen, Some(Hotkey::ctrl_alt(0x44)));

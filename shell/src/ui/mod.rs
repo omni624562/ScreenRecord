@@ -117,7 +117,7 @@ pub struct UiApp {
     pub settings_dlg: Option<settings_dialog::SettingsDialog>,
     /// 在螢幕上框選截圖
     pub snip: Option<snip::Snip>,
-    /// 目前設定的全域快捷鍵（顯示用）
+    /// 目前設定的全域快速鍵（顯示用）
     pub keys: screenrecorder_core::types::Hotkeys,
     pub editor: Option<editor::Editor>,
 
@@ -127,7 +127,7 @@ pub struct UiApp {
     last_state: RecorderState,
     pub main: main_view::MainState,
     ddagrab_watch: Option<Instant>,
-    /// 已處理過的截圖（介面或快捷鍵截好時更新清單、顯示提示）
+    /// 已處理過的截圖（介面或快速鍵截好時更新清單、顯示提示）
     pub last_shot_seq: u64,
     /// 上一格各部分花的時間（毫秒）：畫面處理太慢時寫進記錄檔，找出卡在哪裡
     frame_parts: Vec<(&'static str, f32)>,
@@ -430,7 +430,7 @@ impl UiApp {
         let query = screenrecorder_core::types::LibraryQuery { page: Some(self.recent_page as f64), page_size: Some(self.recent_per_page as f64), ..Default::default() };
         self.spawn(async move { actions::library(&core, &dir, &query).await }, move |app, page| {
             if seq != app.recent_seq {
-                return; // 較舊的請求晚回來：丟掉
+                return; // 較舊的要求晚回來：丟掉
             }
             app.recent_page = page.page.max(1);
             for e in &page.items {
@@ -608,7 +608,7 @@ impl eframe::App for UiApp {
         // 錄影中（計時器）、開著剪輯 / 檢視 / 製作 / 全部錄影、轉檔或下載中：每 0.25 秒更新。
         // 主畫面閒置時不定時重畫：狀態有變化由 watch_status 叫醒，其餘每 5 秒保險一次；視窗隱藏時 2 秒
         self.shown_flag.store(shown, std::sync::atomic::Ordering::Relaxed);
-        // 選了攝影機時，主畫面看得到（沒有開著剪輯、檢視、製作、全部錄影）就先顯示攝影機小窗
+        // 選了攝影機時，主畫面看得到（沒有開著剪輯、檢視、製作、全部錄影）就先顯示攝影機小視窗
         let covered = self.editor.is_some() || self.viewer.is_some() || self.export_dlg.is_some() || self.library.is_some();
         self.core.set_camera_preview((shown && !covered && self.env_ready).then(|| self.s.record_config(&self.env)));
         let busy = self.status.recorder.state != RecorderState::Idle

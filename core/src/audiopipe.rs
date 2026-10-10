@@ -3,7 +3,7 @@
 //! 時間對齊：
 //! - 畫面：FFmpeg 的 showinfo 每張畫面印一行 pts；畫面時間零點 ≈ min(收到該行的 QPC 時間 − pts)，
 //!   取開頭約 1 秒的最小值，排除管線延遲。
-//! - 聲音：每個 WASAPI 封包都有 QPC 時間戳，依「封包時間 − 畫面零點」決定它在時間軸上的位置；
+//! - 聲音：每個 WASAPI 封包都有 QPC 時間戳記，依「封包時間 − 畫面零點」決定它在時間軸上的位置；
 //!   落後就補靜音、超前就裁掉，長時間錄影也不會因音效卡時鐘誤差而漂移。
 //! - 系統聲音沒有播放時 WASAPI 不送資料，依 QPC 時鐘補靜音維持連續。
 //!
@@ -142,7 +142,7 @@ struct Source {
 }
 
 impl Source {
-    /// 依封包時間戳放進時間軸（data = None 為靜音）
+    /// 依封包時間戳記放進時間軸（data = None 為靜音）
     fn place(&mut self, t0: f64, data: Option<&[f32]>, frames: usize, qpc: Option<i64>) {
         let pos = match qpc {
             Some(q) => frames_100ns(q as f64 - t0),
@@ -331,7 +331,7 @@ impl Timeline {
             match result {
                 Ok(()) => s.cap = Some(cap),
                 Err(e) => {
-                    (self.log)(LogLevel::Warn, format!("{}中斷：{e}，先以靜音代替並嘗試重新連接", s.label));
+                    (self.log)(LogLevel::Warn, format!("{}中斷：{e}，先以靜音代替並嘗試重新連線", s.label));
                     drop(cap);
                     s.reopen_at = Some(now + 10_000_000);
                 }
@@ -357,7 +357,7 @@ impl Timeline {
     }
 }
 
-/// 送往 FFmpeg 的 TCP 連線（非阻塞；寫不完的部分保留到下一次）
+/// 送往 FFmpeg 的 TCP 連線（不等待：寫不完的部分保留到下一次）
 struct Output {
     listener: TcpListener,
     sock: Option<TcpStream>,

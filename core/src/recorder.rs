@@ -4,7 +4,7 @@
 //! - 「停止」送 q 收尾後，以 concat demuxer（-c copy）合併所有分段成單一 MP4。
 //! - FFmpeg 意外結束（例如鎖定畫面、UAC 安全桌面造成 Desktop Duplication 中斷）時自動開新分段續錄。
 //!
-//! 公開操作（開始、暫停、繼續、停止）依序執行，避免連點造成競態；狀態放在一把短暫持有的鎖裡，
+//! 公開操作（開始、暫停、繼續、停止）依序執行，避免連點時互相干擾；狀態放在一把短暫持有的鎖裡，
 //! 不在持有鎖時等待（呼叫 FFmpeg、開啟音訊裝置），查詢狀態永遠不會被卡住。
 
 use crate::args::{
@@ -65,7 +65,7 @@ pub trait RecorderDeps: Send + Sync + 'static {
     }
     /// 錄影結束（已儲存或失敗）後（還原操作視窗等）
     fn after_stop(&self) {}
-    /// 存好的錄影裡打的點（影片的秒數）
+    /// 存好的錄影裡的標記（影片的秒數）
     fn save_markers(&self, _output: &str, _marks: &Marks) {}
     /// 需要使用者注意的事（系統匣通知）
     fn notify(&self, _title: &str, _text: &str, _warn: bool) {}
@@ -166,7 +166,7 @@ struct Countdown {
 #[derive(Default)]
 struct St {
     state: RecorderState,
-    /// 打的點（已錄的毫秒數，也就是影片裡的時間）
+    /// 標記（已錄的毫秒數，也就是影片裡的時間）
     markers: Vec<u64>,
     /// 滑鼠點擊：(已錄的毫秒數, 在擷取範圍內的位置 0～1)
     clicks: Vec<(u64, f32, f32)>,
@@ -281,16 +281,16 @@ pub struct FrameInfo {
     pub recorded_ms: u64,
     /// 倒數中：剩下的毫秒數
     pub countdown_ms: Option<u64>,
-    /// 打了幾個點
+    /// 加了幾個標記
     pub markers: u32,
     /// 錄整個螢幕（不是自訂範圍）：不顯示外框，控制列放在螢幕上方中間、不能拖曳
     pub full: bool,
 }
 
-/// 錄影時記下的時間點：打的點與滑鼠點擊（存在 markers/，剪輯時用）
+/// 錄影時記下的時間點：標記與滑鼠點擊（存在 markers/，剪輯時用）
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Marks {
-    /// 打的點（影片的秒數）
+    /// 標記（影片的秒數）
     #[serde(default)]
     pub markers: Vec<f64>,
     /// 滑鼠點擊：[影片的秒數, x, y]（x、y 是在畫面裡的位置 0～1）
@@ -345,7 +345,7 @@ impl Recorder {
         }
         {
             let mut st = self.lock();
-            // 連按兩次（例如快捷鍵）不要排出第二個開始：否則取消第一個後，第二個仍會倒數並錄影
+            // 連按兩次（例如快速鍵）不要排出第二個開始：否則取消第一個後，第二個仍會倒數並錄影
             if st.starting_now || st.state != RecorderState::Idle {
                 return Box::pin(async { Err(Error::config("目前已在錄影或正在準備開始")) });
             }
@@ -516,7 +516,7 @@ impl Recorder {
         Some(FrameInfo { area: st.plan.as_ref()?.rect, state: st.state, recorded_ms: st.recorded_ms(), countdown_ms, markers: st.markers.len() as u32, full })
     }
 
-    /// 攝影機小窗：倒數、錄影、暫停中，而且選了攝影機（只錄聲音時沒有）
+    /// 攝影機小視窗：倒數、錄影、暫停中，而且選了攝影機（只錄聲音時沒有）
     pub fn camera_info(&self) -> Option<crate::camera_bubble::BubbleInfo> {
         let st = self.lock();
         if !matches!(st.state, RecorderState::Countdown | RecorderState::Recording | RecorderState::Paused) {
@@ -528,7 +528,7 @@ impl Recorder {
         Some(crate::camera_bubble::BubbleInfo { area: plan.rect, monitors: plan.monitors.clone(), camera })
     }
 
-    /// 其他部分（攝影機小窗等）的警告寫進這次錄影的事件紀錄
+    /// 其他部分（攝影機小視窗等）的警告寫進這次錄影的事件紀錄
     pub fn log_warn(&self, text: &str) {
         self.add_log(LogLevel::Warn, text);
     }
@@ -567,11 +567,11 @@ impl Recorder {
         st.clicks.push((t, fx, fy));
     }
 
-    /// 錄影中打點（記下目前錄到的時間，剪輯時可以直接跳過去）；回傳這是第幾個點
+    /// 錄影中加標記（記下目前錄到的時間，剪輯時可以直接跳過去）；回傳這是第幾個標記
     pub fn add_marker(&self) -> Result<usize> {
         let mut st = self.lock();
         if !matches!(st.state, RecorderState::Recording | RecorderState::Paused) {
-            return Err(Error::config("錄影中才能打點"));
+            return Err(Error::config("錄影中才能加標記"));
         }
         let t = st.recorded_ms();
         // 連按兩次（半秒內）只算一個
@@ -580,11 +580,11 @@ impl Recorder {
         }
         st.markers.push(t);
         let n = st.markers.len();
-        st.add_log(LogLevel::Info, &format!("打點 {n}（{}）", crate::format::video_clock(t as f64 / 1000.0)));
+        st.add_log(LogLevel::Info, &format!("標記 {n}（{}）", crate::format::video_clock(t as f64 / 1000.0)));
         Ok(n)
     }
 
-    /// 正在準備開始（狀態可能仍是待命）；快捷鍵用來判斷再按一次是「取消」
+    /// 正在準備開始（狀態可能仍是待命）；快速鍵用來判斷再按一次是「取消」
     pub fn starting(&self) -> bool {
         self.lock().starting_now
     }
@@ -804,7 +804,7 @@ impl Recorder {
             return self.abandon(false);
         }
 
-        // 倒數：讓使用者有時間切到要錄的畫面；期間按停止（或快捷鍵）可取消
+        // 倒數：讓使用者有時間切到要錄的畫面；期間按停止（或快速鍵）可取消
         if countdown_sec > 0 {
             let (tx, rx) = oneshot::channel::<()>();
             {
@@ -1541,8 +1541,8 @@ impl Recorder {
 
 #[cfg(test)]
 mod tests {
-    //! 開始錄影的「準備 / 倒數 / 縮小視窗」階段：取消與連按的競態。
-    //! 用假的依賴（不會真的啟動 FFmpeg）；unix 上另有用假 FFmpeg 跑完整流程的測試。
+    //! 開始錄影的「準備 / 倒數 / 縮小視窗」階段：取消與連按同時發生的情況。
+    //! 用假的相依（不會真的啟動 FFmpeg）；unix 上另有用假 FFmpeg 跑完整流程的測試。
     use super::*;
     use crate::args::ENCODERS;
     use crate::types::AudioConfig;

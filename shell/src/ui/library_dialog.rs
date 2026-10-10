@@ -373,7 +373,7 @@ fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table:
         painter.text(pos2(x, y), egui::Align2::RIGHT_CENTER, t, theme::font(size), color);
     };
     painter.rect_filled(Rect::from_min_size(table.min, vec2(table.width(), head_h)), CornerRadius::same(6), p.surface2);
-    // 標題列（勾選框與每一列的對齊）
+    // 標題列（核取方塊與每一列的對齊）
     {
         let head = Rect::from_min_size(table.min, vec2(table.width(), head_h));
         let all = !rows.is_empty() && rows.iter().all(|e| d.selected.contains(&e.media.path) && e.exports.iter().all(|x| d.selected.contains(&x.media.path)));

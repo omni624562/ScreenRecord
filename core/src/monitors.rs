@@ -16,7 +16,7 @@ pub fn display_number(device_name: &str) -> Option<u32> {
     DISPLAY_RE.captures(device_name).and_then(|c| c[1].parse().ok())
 }
 
-/// 同一個實體螢幕在混合顯卡環境下可能被多張卡回報，依 DeviceName 去重（保留第一個）；主螢幕在前，其餘依編號
+/// 同一個實體螢幕在混合顯示卡環境下可能被多張卡回報，依 DeviceName 去重（保留第一個）；主螢幕在前，其餘依編號
 pub fn finalize(monitors: Vec<MonitorInfo>) -> Vec<MonitorInfo> {
     let mut seen = HashSet::new();
     let mut out: Vec<MonitorInfo> = monitors.into_iter().filter(|m| seen.insert(m.device_name.clone())).collect();

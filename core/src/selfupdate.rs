@@ -1,4 +1,4 @@
-//! 程式內更新：下載新版 exe、核對大小與 SHA-256（由 GitHub Release 提供），再替換掉自己。
+//! 程式內更新：下載新版 exe、核對大小與 SHA-256（由 GitHub Release 提供），再取代自己。
 //!
 //! Windows 不能覆寫執行中的 exe，但可以改名：目前的 exe 改名為 `.old`，新版放到原本的位置，
 //! 接著啟動新版並結束自己；新版啟動時等舊的結束，再刪掉 `.old`。
@@ -18,7 +18,7 @@ pub enum InstallPhase {
     Idle,
     Downloading,
     Verifying,
-    /// 已替換，正在啟動新版
+    /// 已取代，正在啟動新版
     Restarting,
     Error,
 }
@@ -98,7 +98,7 @@ impl Installer {
         f(&mut self.st.lock().unwrap());
     }
 
-    /// 開始下載並替換 exe；完成後呼叫 on_ready（啟動新版並結束自己）。回傳的執行緒用於測試等待
+    /// 開始下載並取代 exe；完成後呼叫 on_ready（啟動新版並結束自己）。回傳的執行緒用於測試等待
     pub fn start(&self, info: &UpdateInfo, exe: PathBuf, on_ready: impl FnOnce(PathBuf) + Send + 'static) -> Result<std::thread::JoinHandle<()>, String> {
         let (Some(url), Some(sha)) = (info.download_url.clone(), info.sha256.clone()) else {
             return Err("這個版本沒有提供可自動更新的檔案，請到下載頁面手動更新".into());
@@ -117,7 +117,7 @@ impl Installer {
             .name("self-update".into())
             .spawn(move || match me.install(&url, &sha, size, &exe) {
                 Ok(()) => {
-                    crate::info!("[更新] 已替換為 v{version}，重新啟動");
+                    crate::info!("[更新] 已更新為 v{version}，重新啟動");
                     me.set(|s| s.phase = InstallPhase::Restarting);
                     on_ready(exe);
                 }
@@ -187,10 +187,10 @@ impl Installer {
 fn swap(exe: &Path, new: &Path) -> Result<(), String> {
     let old = sibling(exe, ".old");
     let _ = std::fs::remove_file(&old);
-    std::fs::rename(exe, &old).map_err(|e| format!("無法替換程式檔案：{e}"))?;
+    std::fs::rename(exe, &old).map_err(|e| format!("無法取代程式檔案：{e}"))?;
     if let Err(e) = std::fs::rename(new, exe) {
         let _ = std::fs::rename(&old, exe);
-        return Err(format!("無法替換程式檔案：{e}"));
+        return Err(format!("無法取代程式檔案：{e}"));
     }
     Ok(())
 }

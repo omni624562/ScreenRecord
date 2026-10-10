@@ -1,4 +1,4 @@
-//! 長截圖用的 Windows 功能：直接從螢幕截取一塊（GDI，比 FFmpeg 快很多）、等畫面停下來、
+//! 長截圖用的 Windows 功能：直接從螢幕擷取一塊（GDI，比 FFmpeg 快很多）、等畫面停下來、
 //! 把範圍裡的視窗切到前面、在範圍中間送出滾輪、看 Esc 有沒有按下。
 
 use crate::types::Rect;
@@ -11,7 +11,7 @@ use windows::Win32::System::Threading::GetCurrentProcessId;
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, SendInput, INPUT, INPUT_0, INPUT_MOUSE, MOUSEEVENTF_WHEEL, MOUSEINPUT};
 use windows::Win32::UI::WindowsAndMessaging::{GetAncestor, GetWindowThreadProcessId, SetCursorPos, SetForegroundWindow, WindowFromPoint, GA_ROOT};
 
-/// 截取螢幕上的一塊（RGBA，不透明，由上而下）；不含游標
+/// 擷取螢幕上的一塊（RGBA，不透明，由上而下）；不含游標
 pub fn grab(r: Rect) -> Option<Vec<u8>> {
     let (w, h) = (r.width, r.height);
     if w <= 0 || h <= 0 {

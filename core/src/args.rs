@@ -562,7 +562,7 @@ pub fn parse_cameras(stderr: &str) -> Vec<String> {
 
 /// probe：在擷取後插入 showinfo，每張畫面印一行 pts，供聲音對齊畫面時間零點
 /// gpu：在顯示卡上縮放、轉色彩（GpuPath::choose 決定，只會是單一螢幕的 ddagrab）。
-/// 攝影機不在這裡：錄影時是螢幕上的小窗（camera_bubble），跟著畫面一起被錄進去
+/// 攝影機不在這裡：錄影時是螢幕上的小視窗（camera_bubble），跟著畫面一起被錄進去
 pub fn capture_spec(plan: &CapturePlan, config: &RecordConfig, method: CaptureMethod, enc: &EncoderSpec, probe: bool, gpu: Option<GpuPath>) -> Result<CaptureSpec> {
     let mut tail_parts = Vec::new();
     if probe {
@@ -751,7 +751,7 @@ pub fn merge_args(inputs: &[(String, bool, f64)], out_file: &str, w: i32, h: i32
     a
 }
 
-/// 製作加速版：setpts 壓縮時間軸，fps 維持原本的幀率（多出來的幀直接捨棄，不做混合，文字才不會有殘影）；
+/// 製作加速版：setpts 壓縮時間軸，fps 維持原本的影格率（多出來的影格直接捨棄，不做混合，文字才不會有殘影）；
 /// 聲音以 atempo 變速不變調。width：縮小到這個寬度（高度等比、取偶數）；不小於原寬時維持原尺寸。
 /// limit_kbps：壓縮到指定大小（影片位元率）；這時可以是原速（1×，只壓縮）
 #[allow(clippy::too_many_arguments)]
@@ -1128,7 +1128,7 @@ mod tests {
     fn same_gpu() -> Vec<MonitorInfo> {
         vec![mon("0:0", 0, 0, 1920, 1080, true), mon("0:1", 1920, -180, 2560, 1440, false)]
     }
-    // 混合顯卡：外接螢幕在另一張卡上
+    // 混合顯示卡：外接螢幕在另一張卡上
     fn two_gpus() -> Vec<MonitorInfo> {
         vec![mon("0:0", 0, 0, 1920, 1080, true), mon("1:0", 1920, -180, 2560, 1440, false)]
     }
@@ -1353,7 +1353,7 @@ dummy: Immediate exit requested";
 
     #[test]
     fn camera_is_not_in_the_recording_args() {
-        // 攝影機是螢幕上的小窗，跟著畫面被錄進去：錄影的 FFmpeg 不開攝影機、不疊畫面
+        // 攝影機是螢幕上的小視窗，跟著畫面被錄進去：錄影的 FFmpeg 不開攝影機、不疊畫面
         let audio_in = strs(&["-f", "f32le", "-ar", "48000", "-ac", "2", "-i", "tcp://127.0.0.1:5000"]);
         let c = RecordConfig { camera: Some(CameraConfig { device: "USB Camera".into(), corner: 0, size: 20, circle: true, pos: None }), ..cfg() };
         let plan = resolve_plan(&c, &same_gpu()).unwrap();
@@ -1410,7 +1410,7 @@ dummy: Immediate exit requested";
         assert!(GpuPath::choose(None, &plan, &one, CaptureMethod::Ddagrab, &x264()).is_none());
         let all = RecordConfig { source: SourceConfig::All, ..cfg() };
         assert!(GpuPath::choose(support, &resolve_plan(&all, &mons).unwrap(), &all, CaptureMethod::Ddagrab, &x264()).is_none());
-        // 攝影機是螢幕上的小窗，不影響
+        // 攝影機是螢幕上的小視窗，不影響
         let cam = RecordConfig { camera: Some(CameraConfig { device: "Cam".into(), size: 20, corner: 0, circle: false, pos: None }), ..one.clone() };
         assert!(GpuPath::choose(support, &plan, &cam, CaptureMethod::Ddagrab, &x264()).is_some());
         let other = Some(GpuSupport { adapter: mons[0].adapter + 1, ..s });

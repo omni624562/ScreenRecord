@@ -49,7 +49,7 @@ pub enum FrameCmd {
     Pause,
     Resume,
     Stop,
-    /// 打點
+    /// 加標記
     Mark,
     /// 把範圍移到 (x, y)（左上角，虛擬桌面座標）
     Move(i32, i32),
@@ -67,7 +67,7 @@ enum Button {
 #[derive(Clone, PartialEq)]
 struct Bar {
     text: String,
-    /// 打了幾個點（時間後面顯示）
+    /// 加了幾個標記（時間後面顯示）
     marks: u32,
     dot: COLORREF,
     buttons: Vec<Button>,
@@ -122,8 +122,8 @@ const DOT: f32 = 10.0;
 /// 左邊的拖曳點（2×3 個小點）
 const GRIP: f32 = 12.0;
 const TEXT_W: f32 = 76.0;
-/// 「・2 點」的寬度
-const MARKS_W: f32 = 44.0;
+/// 「・標記 2」的寬度
+const MARKS_W: f32 = 60.0;
 const BTN_W: f32 = 32.0;
 const BTN_GAP: f32 = 2.0;
 
@@ -480,7 +480,7 @@ unsafe fn paint_bar(hwnd: HWND, hdc: HDC) {
     DrawTextW(mem, &mut text, &mut tr, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
     if b.marks > 0 {
         SetTextColor(mem, AMBER);
-        let mut mt: Vec<u16> = format!("・{} 點", b.marks).encode_utf16().collect();
+        let mut mt: Vec<u16> = format!("・標記 {}", b.marks).encode_utf16().collect();
         let mut mr = RECT { left: tr.right, top: 0, right: tr.right + px(MARKS_W, s), bottom: h };
         DrawTextW(mem, &mut mt, &mut mr, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
     }

@@ -100,7 +100,7 @@ struct State {
     monitors: Vec<MonitorInfo>,
     monitor_error: Option<String>,
     audio: AudioEnv,
-    /// 全域快捷鍵登記結果（系統匣啟動後才知道；被其他程式占用時為 false）
+    /// 全域快速鍵登記結果（系統匣啟動後才知道；被其他程式占用時為 false）
     hotkeys: Option<HotkeyStatus>,
     /// GitHub 上較新的版本（檢查後才有）
     update: Option<UpdateInfo>,
@@ -109,7 +109,7 @@ struct State {
     update_error: Option<String>,
     /// 最近一次的截圖
     shot: Option<crate::types::ShotInfo>,
-    /// 截圖中（避免連按快捷鍵同時截好幾張）
+    /// 截圖中（避免連按快速鍵同時截好幾張）
     shooting: bool,
     /// 上次框選的範圍（「重複上次框選」）
     last_snip: Option<crate::types::Rect>,
@@ -133,7 +133,7 @@ pub struct App {
     pub cache: Arc<MediaCache>,
     /// 剪輯版的剪輯設定與標註（之後可以再修改）
     pub projects: Arc<crate::projects::ProjectStore>,
-    /// 錄影中打的點（每支錄影一份，存在 markers/）
+    /// 錄影中加的標記（每支錄影一份，存在 markers/）
     pub markers: Arc<crate::projects::ProjectStore>,
     pub default_output_dir: String,
     st: Mutex<State>,
@@ -143,7 +143,7 @@ pub struct App {
     ready: watch::Sender<bool>,
     update_gen: AtomicU64,
     quitting: AtomicBool,
-    /// 主畫面看得到時，介面目前的錄影設定（每一格更新；看不到時是 None）：選了攝影機就先顯示攝影機小窗
+    /// 主畫面看得到時，介面目前的錄影設定（每一格更新；看不到時是 None）：選了攝影機就先顯示攝影機小視窗
     camera_preview: Mutex<Option<RecordConfig>>,
     /// 即時預覽：同時只保留一條
     live: Mutex<Option<Arc<Mutex<Option<tokio::process::Child>>>>>,
@@ -152,7 +152,7 @@ pub struct App {
     exiter: Mutex<Option<Exiter>>,
     /// 結束前要收拾的系統匣
     tray_dispose: Mutex<Option<Box<dyn FnOnce() + Send>>>,
-    /// 重新登記全域快捷鍵（系統匣執行緒）
+    /// 重新登記全域快速鍵（系統匣執行緒）
     hotkey_applier: Mutex<Option<HotkeyApplier>>,
 }
 
@@ -223,7 +223,7 @@ impl RecorderDeps for RecDeps {
     fn save_markers(&self, output: &str, marks: &crate::recorder::Marks) {
         if let Some(a) = self.0.upgrade() {
             if let Err(e) = a.markers.save(output, output, serde_json::to_value(marks).unwrap_or_default()) {
-                crate::warn!("無法儲存打的點：{e}");
+                crate::warn!("無法儲存標記：{e}");
             }
         }
     }
@@ -309,12 +309,12 @@ impl App {
         self.lock().hotkeys = Some(h);
     }
 
-    /// 目前設定的全域快捷鍵
+    /// 目前設定的全域快速鍵
     pub fn hotkeys(&self) -> crate::types::Hotkeys {
         self.settings.load().hotkeys.unwrap_or_default()
     }
 
-    /// 全域快捷鍵目前的登記結果（沒有系統匣時為 None）
+    /// 全域快速鍵目前的登記結果（沒有系統匣時為 None）
     pub fn hotkey_status(&self) -> Option<HotkeyStatus> {
         self.lock().hotkeys
     }
@@ -323,7 +323,7 @@ impl App {
         *self.hotkey_applier.lock().unwrap() = Some(f);
     }
 
-    /// 重新登記全域快捷鍵（不存檔；設定時先暫停全部，才能按到原本的組合）。沒有系統匣時回傳 None
+    /// 重新登記全域快速鍵（不存檔；設定時先暫停全部，才能按到原本的組合）。沒有系統匣時回傳 None
     pub fn apply_hotkeys(&self, k: &crate::types::Hotkeys) -> Option<HotkeyStatus> {
         let f = self.hotkey_applier.lock().unwrap().clone()?;
         let st = f(k)?;
@@ -331,20 +331,20 @@ impl App {
         Some(st)
     }
 
-    /// 儲存並套用自訂的全域快捷鍵
+    /// 儲存並套用自訂的全域快速鍵
     pub fn save_hotkeys(&self, k: crate::types::Hotkeys) -> Option<HotkeyStatus> {
         self.settings.save(crate::settings::SettingsPatch { hotkeys: Some(k), ..Default::default() });
         let st = self.apply_hotkeys(&k);
         let names: Vec<String> =
             (0..crate::types::HOTKEY_COUNT).map(|i| format!("{} {}", crate::types::HOTKEY_NAMES[i], if k.label(i).is_empty() { "停用".to_string() } else { k.label(i) })).collect();
-        crate::info!("快捷鍵改為：{}", names.join("、"));
+        crate::info!("快速鍵改為：{}", names.join("、"));
         st
     }
 
     /// 介面的即時狀態
     pub fn status(&self) -> Status {
         // 先取出、放開鎖再組合：結構裡的暫時鎖會留到整個運算式結束，
-        // 而 steps_count 在 Windows 上也要鎖同一把，寫在一起會卡死（主視窗打不開）
+        // 而 steps_count 在 Windows 上也要鎖同一把，寫在一起會卡住（主視窗打不開）
         let shot = self.lock().shot.clone();
         Status {
             recorder: self.recorder.status(),
@@ -362,7 +362,7 @@ impl App {
 
     /// 步驟截圖進行中：已經截了幾步
     pub fn steps_count(&self) -> Option<u32> {
-        // 所有平台都上鎖：Linux 的測試也能抓到「同一把鎖鎖兩次」（status() 曾經這樣卡死）
+        // 所有平台都上鎖：Linux 的測試也能抓到「同一把鎖鎖兩次」（status() 曾經這樣卡住）
         let st = self.lock();
         #[cfg(windows)]
         return st.steps.as_ref().map(|s| s.0.count());
@@ -771,7 +771,7 @@ impl App {
         }
     }
 
-    /// 長截圖：框選範圍（或點一下選視窗）後，自動一邊往下捲一邊截取，接成一張長圖，
+    /// 長截圖：框選範圍（或點一下選視窗）後，自動一邊往下捲一邊擷取，接成一張長圖，
     /// 存成新的截圖並複製到剪貼簿。捲到底、畫面對不起來、太長或按 Esc 時停止。只有 Windows
     pub async fn long_shot(self: &Arc<Self>, config: &RecordConfig) -> crate::Result<Option<crate::types::ShotInfo>> {
         #[cfg(not(windows))]
@@ -962,12 +962,12 @@ impl App {
     // ───────────── FFmpeg ─────────────
 
     /// 主畫面看得到、沒有被剪輯等視窗蓋住時，介面目前的錄影設定（介面每一格呼叫；看不到時 None）：
-    /// 選了攝影機就先顯示小窗，切換螢幕、範圍時小窗馬上跟著移
+    /// 選了攝影機就先顯示小視窗，切換螢幕、範圍時小視窗馬上跟著移
     pub fn set_camera_preview(&self, config: Option<RecordConfig>) {
         *self.camera_preview.lock().unwrap() = config;
     }
 
-    /// 攝影機小窗要顯示在哪裡、長什麼樣子（None = 不顯示）。
+    /// 攝影機小視窗要顯示在哪裡、長什麼樣子（None = 不顯示）。
     /// 錄影中（含倒數、暫停）：這次錄影有攝影機時，用錄影的範圍；位置、大小、形狀用最新的設定
     /// （錄影中在設定裡改了也跟著變）。錄影前：主畫面看得到時，用介面目前的設定（先擺好位置與大小）
     pub fn camera_bubble_info(&self) -> Option<crate::camera_bubble::BubbleInfo> {
@@ -987,8 +987,8 @@ impl App {
         Some(crate::camera_bubble::BubbleInfo { area: plan.rect, monitors: plan.monitors, camera })
     }
 
-    /// 攝影機小窗拖曳、調整大小後的位置（擷取範圍內的相對位置，萬分比）與大小（短邊的百分比）：
-    /// 存進介面設定與錄影設定（從系統匣、快捷鍵開始錄影時用的是錄影設定），下次從這裡開始
+    /// 攝影機小視窗拖曳、調整大小後的位置（擷取範圍內的相對位置，萬分比）與大小（短邊的百分比）：
+    /// 存進介面設定與錄影設定（從系統匣、快速鍵開始錄影時用的是錄影設定），下次從這裡開始
     pub fn save_camera_layout(&self, pos: [u16; 2], size: u32) {
         let cur = self.settings.load();
         let mut ui = cur.ui.unwrap_or_else(|| serde_json::json!({}));
@@ -1415,7 +1415,7 @@ impl App {
         }
     }
 
-    /// 程式內更新：下載新版、替換 exe，完成後啟動新版並正常結束自己
+    /// 程式內更新：下載新版、取代 exe，完成後啟動新版並正常結束自己
     pub fn start_self_update(self: &Arc<Self>) -> crate::Result<()> {
         let Some(info) = self.update() else { return Err(crate::Error::config("目前沒有新版本")) };
         if self.recorder.active() {
@@ -1501,14 +1501,14 @@ impl Drop for LiveGuard {
 #[cfg(windows)]
 type LongCapture = (crate::longshot::LongImage, usize);
 
-/// 一邊往下捲一邊截取範圍、接成長圖；按 Esc 而且還沒接上任何一段時回傳 None
+/// 一邊往下捲一邊擷取範圍、接成長圖；按 Esc 而且還沒接上任何一段時回傳 None
 #[cfg(windows)]
 fn scroll_capture(area: crate::types::Rect) -> crate::Result<Option<LongCapture>> {
     use crate::longshot::{Step, Stitcher};
     use crate::scroll_win::{esc_pressed, focus_at, grab_settled, scroll_down};
     // 先把範圍裡的視窗切到前面，再截第一張（切換時標題列會變色，要在截第一張之前）
     focus_at(area.x + area.width / 2, area.y + area.height / 2);
-    let first = grab_settled(area, Duration::from_millis(1500)).ok_or_else(|| crate::Error::other("無法截取畫面"))?;
+    let first = grab_settled(area, Duration::from_millis(1500)).ok_or_else(|| crate::Error::other("無法擷取畫面"))?;
     let (w, h) = (area.width as u32, area.height as u32);
     let mut st = Stitcher::new(first, w, h);
     // 範圍小時一次捲少一點，前後兩張才有足夠的重疊
@@ -1562,7 +1562,7 @@ fn scroll_capture(area: crate::types::Rect) -> crate::Result<Option<LongCapture>
             return Ok(None);
         }
         return Err(crate::Error::config(if end == Some(Step::Lost) {
-            "捲動後的畫面對不起來，沒辦法接成長圖。請只框選會捲動的內容（例如網頁的正文），避開影片、動畫或會變動的廣告"
+            "捲動後的畫面對不起來，沒辦法接成長圖。請只框選會捲動的內容（例如網頁的內文），避開影片、動畫或會變動的廣告"
         } else {
             "畫面沒有捲動：已經在最下面，或這個範圍不能用滑鼠滾輪捲動。請框選可以捲動的內容（例如網頁中間）再試一次"
         }));
@@ -1703,10 +1703,10 @@ mod tests {
         assert!(!waiting.is_finished());
         app.mark_ready();
         tokio::time::timeout(Duration::from_secs(2), waiting).await.unwrap().unwrap();
-        app.wait_ready().await; // 已完成：立即返回
+        app.wait_ready().await; // 已完成：立即傳回
     }
 
-    /// 介面一開始就讀狀態：任何一個欄位都不能在持有鎖時再鎖一次（Windows 的步驟截圖曾經這樣卡死）
+    /// 介面一開始就讀狀態：任何一個欄位都不能在持有鎖時再鎖一次（Windows 的步驟截圖曾經這樣卡住）
     #[test]
     fn status_does_not_deadlock() {
         let dir = tempfile::tempdir().unwrap();

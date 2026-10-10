@@ -135,7 +135,7 @@ impl Exporter {
         self.run(ExportKind::Gif, &ffmpeg, args, source, &output, speed, output_sec, &note)
     }
 
-    /// 剪輯：剪頭尾、刪除中間片段、裁切畫面，另存為 *_cut.mp4
+    /// 剪輯：剪頭尾、刪除中間片段、裁切畫面，另存成 *_cut.mp4
     /// replace：取代這個剪輯版（先寫到暫存檔，成功後才換掉，失敗或取消時原檔不受影響）；
     /// on_saved：完成後以最終的檔案路徑呼叫（儲存剪輯專案）
     /// 多支錄影依時間順序接成一支（尺寸、張數以第一支為準，其他的縮放並補黑邊；沒有聲音的補靜音）
@@ -425,7 +425,7 @@ impl Exporter {
                         match std::fs::rename(&out, target) {
                             Ok(()) => fin = target.clone(),
                             Err(_) => {
-                                // 剪輯版正在被其他程式使用：新版本改用新檔名保存，不丟掉
+                                // 剪輯版正在被其他程式使用：新版本改用新檔名儲存，不丟掉
                                 let alt = crate::paths::unique_path(&parent(&target.display().to_string()), &strip_mp4(&file_name(&target.display().to_string())), ".mp4");
                                 if std::fs::rename(&out, &alt).is_ok() {
                                     fin = alt;

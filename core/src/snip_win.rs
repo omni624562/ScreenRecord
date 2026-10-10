@@ -302,7 +302,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                 st.result = if r.right - r.left >= MIN_DRAG && r.bottom - r.top >= MIN_DRAG {
                     Some(Rect { x: r.left + st.desk.x, y: r.top + st.desk.y, width: r.right - r.left, height: r.bottom - r.top })
                 } else {
-                    // 點一下：截取游標下的視窗（超出桌面的部分裁掉）
+                    // 點一下：擷取游標下的視窗（超出桌面的部分裁掉）
                     st.hover.map(|w| clamp_to(w, st.desk))
                 };
                 st.result.map(|_| ())
@@ -423,9 +423,9 @@ unsafe fn paint(hwnd: HWND) {
                     r.bottom - r.top,
                     match st.record {
                         Mode::Record => "錄這個範圍",
-                        Mode::Scroll => "捲動截取",
+                        Mode::Scroll => "捲動擷取",
                         Mode::Qr => "讀取 QR 碼",
-                        Mode::Shot | Mode::Color | Mode::Ruler => "截取",
+                        Mode::Shot | Mode::Color | Mode::Ruler => "擷取",
                     }
                 )
             };
@@ -447,7 +447,7 @@ unsafe fn paint(hwnd: HWND) {
                 Mode::Qr => "框選 QR 碼（大一點沒關係），或點一下選視窗　　Esc 或右鍵取消",
                 Mode::Color => "移到要取色的地方點一下（或按 C），色碼會複製到剪貼簿；方向鍵可以微調　　Esc 或右鍵取消",
                 Mode::Ruler => "拖曳量距離（按住 Shift 保持水平、垂直或 45°），可以重複量　　Esc 或右鍵結束",
-                Mode::Shot => "拖曳框選範圍，或點一下截取視窗；按 C 複製游標下的色碼　　Esc 或右鍵取消",
+                Mode::Shot => "拖曳框選範圍，或點一下擷取視窗；按 C 複製游標下的色碼　　Esc 或右鍵取消",
             };
             let mut t: Vec<u16> = tip.encode_utf16().collect();
             let mut sz = SIZE::default();

@@ -50,7 +50,7 @@ pub type Body = (Option<u64>, Box<dyn Read + Send>);
 pub type FetchFn = Box<dyn Fn(&str) -> Result<Body, String> + Send + Sync>;
 pub type RunFn = Box<dyn Fn(&Path, &[String], Duration) -> RunResult + Send + Sync>;
 
-/// 可替換的外部相依（測試時不真的連網、不真的執行 tar）
+/// 可抽換的外部相依（測試時不真的連網、不真的執行 tar）
 pub struct Deps {
     pub fetch: FetchFn,
     pub run: RunFn,
@@ -328,7 +328,7 @@ impl Downloader {
         self.set(|s| s.phase = DownloadPhase::Verifying);
         let digest: String = hasher.finalize().iter().map(|b| format!("{b:02x}")).collect();
         if digest != self.deps.sha256.to_lowercase() {
-            return Err(Fail::Error("檔案的 SHA-256 與預期不符（下載不完整或檔案遭替換），已刪除".into()));
+            return Err(Fail::Error("檔案的 SHA-256 與預期不符（下載不完整或檔案遭竄改），已刪除".into()));
         }
         Ok(())
     }
@@ -348,7 +348,7 @@ mod tests {
         Sha256::digest(b).iter().map(|x| format!("{x:02x}")).collect()
     }
 
-    /// 模擬 tar（列出 / 解壓）與執行 ffmpeg -version
+    /// 模擬 tar（列出 / 解壓縮）與執行 ffmpeg -version
     fn fake_run(program: &Path, args: &[String], _t: Duration) -> RunResult {
         let ok = |stdout: &str| RunResult { code: 0, stdout: stdout.into(), ..Default::default() };
         let _ = program;

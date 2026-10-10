@@ -29,4 +29,4 @@ if [[ -n "$exe" && -f "$exe" ]]; then
   size="（約 $(awk -v b="$(wc -c < "$exe")" 'BEGIN { printf "%.1f", b / 1048576 }') MB，直接執行）"
 fi
 
-printf '%s\n\n### 安裝\n下載 `ScreenRecorder.zip`（解壓縮後執行）或 `ScreenRecorder.exe`%s，放到任意資料夾即可。找不到 FFmpeg 時，介面上可一鍵自動下載。\n' "$body" "$size"
+printf '%s\n\n### 安裝\n下載 `ScreenRecorder.zip`（解壓縮後執行）或 `ScreenRecorder.exe`%s，放到任意資料夾即可。找不到 FFmpeg 時，介面上按「自動下載」即可。\n' "$body" "$size"

@@ -2,7 +2,7 @@
 //!
 //! FFmpeg 在 Windows 只能透過 dshow 錄麥克風，錄不到「電腦正在播放的聲音」，
 //! 因此系統聲音（loopback）與麥克風都在這裡自行擷取，統一轉成 48 kHz / 立體聲 / float32，
-//! 每個封包附上 QPC 時間戳，再由 AudioPipe 對齊畫面時間後送進 FFmpeg。
+//! 每個封包附上 QPC 時間戳記，再由 AudioPipe 對齊畫面時間後送進 FFmpeg。
 
 use crate::types::AudioDevice;
 
@@ -27,7 +27,7 @@ pub struct AudioSourceSpec {
     pub mic_id: String,
 }
 
-/// 開啟擷取來源（可替換：測試時用假的來源）
+/// 開啟擷取來源（可抽換：測試時用假的來源）
 pub type Opener = std::sync::Arc<dyn Fn(&AudioSourceSpec) -> Result<Box<dyn Capture>, String> + Send + Sync>;
 
 /// 列出可錄音的裝置（麥克風等）與預設播放裝置名稱

@@ -73,7 +73,7 @@ impl Shot {
     }
 }
 
-/// 需要 app 的動作（按鈕與快捷鍵）
+/// 需要 app 的動作（按鈕與快速鍵）
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Act {
     Save,
@@ -336,7 +336,7 @@ pub fn footer(ed: &mut Editor, ui: &mut egui::Ui) -> Option<Act> {
         });
         let line = match &ed.replace_target {
             Some(t) => format!("儲存後取代 {}，並複製到剪貼簿", file_name(t)),
-            None => format!("另存為 {}（原圖保留），並複製到剪貼簿", file_name(&shot_edit::edited_path(std::path::Path::new(&source(ed))).display().to_string())),
+            None => format!("另存成 {}（原圖保留），並複製到剪貼簿", file_name(&shot_edit::edited_path(std::path::Path::new(&source(ed))).display().to_string())),
         };
         ui.label(RichText::new(line).font(theme::font(12.0)).color(p.muted));
     });

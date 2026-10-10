@@ -96,7 +96,7 @@ pub fn text_fonts() -> &'static TextFonts {
     })
 }
 
-/// 預設以彩色表情顯示的字元（Emoji_Presentation），或後面接著 U+FE0F 的字元
+/// 預設以彩色表情符號顯示的字元（Emoji_Presentation），或後面接著 U+FE0F 的字元
 pub fn wants_emoji(c: char, next: Option<char>) -> bool {
     if next == Some('\u{FE0F}') {
         return true;
@@ -146,7 +146,7 @@ pub fn invisible(c: char) -> bool {
     matches!(c, '\u{FE0E}' | '\u{FE0F}' | '\u{200D}' | '\u{200B}')
 }
 
-/// 一個字要用哪個字型：（字型, 字形編號, 是否彩色表情）
+/// 一個字要用哪個字型：（字型, 字形編號, 是否彩色表情符號）
 pub fn pick<'a>(fonts: &'a TextFonts, c: char, next: Option<char>) -> Option<(&'a FontFile, ttf_parser::GlyphId, bool)> {
     let find = |list: &'a [FontFile]| list.iter().find_map(|f| Some((f, f.face()?.glyph_index(c)?)));
     if wants_emoji(c, next) {

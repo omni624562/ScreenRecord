@@ -1,4 +1,4 @@
-//! Job Object：本程式結束（包括當掉）時，FFmpeg 等子程序一併結束，不會殘留在背景繼續錄影或佔用檔案。
+//! Job Object：本程式結束（包括當掉）時，FFmpeg 等子處理程序一併結束，不會殘留在背景繼續錄影或佔用檔案。
 //! 允許 breakaway：要留下來的程式（例如更新後啟動的新版）用 spawn_detached 脫離，關閉本程式時不會被連帶關掉。
 
 #[cfg(windows)]
@@ -19,7 +19,7 @@ pub fn install() {
         if let Err(e) = AssignProcessToJobObject(job, GetCurrentProcess()) {
             crate::warn!("無法建立 Job Object：{e}");
         }
-        // job 的 handle 刻意不關閉：程式結束時系統關閉它，子程序隨之結束
+        // job 的 handle 刻意不關閉：程式結束時系統關閉它，子處理程序隨之結束
     }
 }
 

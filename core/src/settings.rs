@@ -27,7 +27,7 @@ pub struct SavedSettings {
     /// 已用系統匣通知過的新版本（同一版只通知一次）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub update_notified: Option<String>,
-    /// 自訂的全域快捷鍵（未指定時用預設的 Ctrl+Alt+R / P / S / A）
+    /// 自訂的全域快速鍵（未指定時用預設的 Ctrl+Alt+R / P / S / A）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hotkeys: Option<crate::types::Hotkeys>,
     #[serde(default)]
@@ -162,7 +162,7 @@ mod tests {
         use crate::types::{Hotkey, Hotkeys};
         let d = Hotkeys::default();
         assert_eq!((0..5).map(|i| d.label(i)).collect::<Vec<_>>(), vec!["Ctrl+Alt+R", "Ctrl+Alt+P", "Ctrl+Alt+S", "Ctrl+Alt+A", "Ctrl+Alt+M"]);
-        // 3.0 存的設定沒有「打點」：用預設；停用的（null）維持停用
+        // 3.0 存的設定沒有「加標記」：用預設；停用的（null）維持停用
         let old: Hotkeys = serde_json::from_str(r#"{"record":null,"pause":null,"shot":null,"snip":null}"#).unwrap();
         assert_eq!(old.label(4), "Ctrl+Alt+M");
         let off: Hotkeys = serde_json::from_str(r#"{"record":null,"pause":null,"shot":null,"snip":null,"mark":null}"#).unwrap();

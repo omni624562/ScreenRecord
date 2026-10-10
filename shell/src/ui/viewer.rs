@@ -39,7 +39,7 @@ pub struct Viewer {
     player: Option<Player>,
     video_tex: Option<TextureHandle>,
     video_size: Vec2,
-    /// 拖曳進度條時暫停，放開後若原本在播放就繼續
+    /// 拖曳進度列時暫停，放開後若原本在播放就繼續
     seeking: Option<bool>,
     volume: f32,
     muted: bool,
@@ -370,7 +370,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                         act = Act::Entry(EntryAction::External);
                     }
                     if image {
-                        if Btn::new("釘在桌面").small().tooltip("把這張圖變成浮在最上層的小視窗，方便對照（雙擊或 Esc 關閉）").show(ui).clicked() {
+                        if Btn::new("釘在桌面").small().tooltip("把這張圖變成浮在最上層的小視窗，方便對照（點兩下或 Esc 關閉）").show(ui).clicked() {
                             act = Act::Pin;
                         }
                         if Btn::new("文字辨識").small().tooltip("把圖裡的文字轉成可以複製的文字").show(ui).clicked() {
@@ -680,7 +680,7 @@ fn video_bar(v: &mut Viewer, ui: &mut egui::Ui) {
         toggle_play(player);
     }
     ui.label(RichText::new(format!("{} / {}", video_clock(t), video_clock(dur))).font(theme::mono(12.5)));
-    // 音量（右邊），進度條填滿中間
+    // 音量（右邊），進度列填滿中間
     let vol_w = 140.0;
     let track_w = (ui.available_width() - vol_w - 16.0).max(80.0);
     let (rect, resp) = ui.allocate_exact_size(vec2(track_w, 28.0), Sense::click_and_drag());
@@ -722,7 +722,7 @@ fn video_bar(v: &mut Viewer, ui: &mut egui::Ui) {
         v.muted = !v.muted;
         player.set_volume(v.volume_now());
     }
-    // 音量條（與進度條同樣的樣式）
+    // 音量表（與進度列同樣的樣式）
     let (rect, resp) = ui.allocate_exact_size(vec2(96.0, 28.0), if has_audio { Sense::click_and_drag() } else { Sense::hover() });
     let track = Rect::from_center_size(rect.center(), vec2(rect.width() - 12.0, 4.0));
     let vol = v.volume_now();

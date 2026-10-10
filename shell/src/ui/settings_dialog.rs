@@ -1,4 +1,4 @@
-//! 設定視窗：左邊分頁（錄影 / 聲音 / 儲存位置 / 快捷鍵 / 進階），右邊表單（標籤固定寬度，控制項對齊）。
+//! 設定視窗：左邊分頁（錄影 / 聲音 / 儲存位置 / 快速鍵 / 進階），右邊表單（標籤固定寬度，控制項對齊）。
 //! 主畫面下方只留摘要，點一下開到對應的分頁。
 
 use super::settings::{FPS_CHOICES, MAX_PRESETS, UI_SCALES};
@@ -20,15 +20,15 @@ pub enum Page {
 }
 
 const PAGES: [(Page, &str, Icon); 5] =
-    [(Page::Record, "錄影", Icon::Camera), (Page::Audio, "聲音", Icon::Speaker), (Page::Save, "儲存位置", Icon::Folder), (Page::Keys, "快捷鍵", Icon::List), (Page::Advanced, "進階", Icon::Settings)];
+    [(Page::Record, "錄影", Icon::Camera), (Page::Audio, "聲音", Icon::Speaker), (Page::Save, "儲存位置", Icon::Folder), (Page::Keys, "快速鍵", Icon::List), (Page::Advanced, "進階", Icon::Settings)];
 
-/// 設定視窗的狀態（輸入中的文字、設定中的快捷鍵）
+/// 設定視窗的狀態（輸入中的文字、設定中的快速鍵）
 pub struct SettingsDialog {
     pub page: Page,
     max_custom_open: bool,
     max_text: String,
     dir_text: Option<String>,
-    /// 正在設定第幾個快捷鍵（等使用者按下新的組合）
+    /// 正在設定第幾個快速鍵（等使用者按下新的組合）
     key_capture: Option<usize>,
     key_msg: Option<String>,
     /// 找到的攝影機（None = 還沒找；找的時候先放空的）
@@ -88,7 +88,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
     let Some(mut d) = app.settings_dlg.take() else {
         return;
     };
-    // 設定快捷鍵時，Esc 只取消設定；下拉選單開著時，Esc 與點外面只關下拉選單
+    // 設定快速鍵時，Esc 只取消設定；下拉選單開著時，Esc 與點外面只關下拉選單
     let busy = d.key_capture.is_some() || egui::Popup::is_any_open(ctx);
     let mut close = false;
     let modal = egui::Modal::new(Id::new("settings")).frame(theme::modal_frame(ctx).inner_margin(0)).show(ctx, |ui| {
@@ -326,7 +326,7 @@ fn camera_rows(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
             app.save_settings();
         }
         if !CAMERA_SIZES.contains(&app.s.camera_size) {
-            // 在小窗上調過大小
+            // 在小視窗上調過大小
             ui.label(RichText::new("自訂").font(theme::font(12.0)).color(p.muted));
         }
         let mut circle = app.s.camera_circle;
@@ -337,7 +337,7 @@ fn camera_rows(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
     });
     form_hint(
         ui,
-        "主畫面開著與錄影時，螢幕上會出現攝影機小窗（左右翻轉，像照鏡子），看到的就是錄到的。拖曳中間移動、拖曳外圈或滾動滑鼠滾輪調整大小，都會記住。攝影機被其他程式使用時，錄影不含攝影機。",
+        "主畫面開著與錄影時，螢幕上會出現攝影機小視窗（左右翻轉，像照鏡子），看到的就是錄到的。拖曳中間移動、拖曳外圈或轉動滑鼠滾輪調整大小，都會記住。攝影機被其他程式使用時，錄影不含攝影機。",
         p.muted,
     );
 }
@@ -386,7 +386,7 @@ fn record_page(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
                 app.save_settings();
             }
             let mut k = app.s.show_keys;
-            if switch(ui, &mut k, "顯示按下的快捷鍵", true)
+            if switch(ui, &mut k, "顯示按下的快速鍵", true)
                 .on_hover_text("按下 Ctrl / Alt / Win 組合鍵或 Enter、Esc 等功能鍵時，在畫面下方顯示按了什麼（例如「Ctrl + C」）；一般打字不會顯示")
                 .changed()
             {
@@ -680,17 +680,17 @@ fn advanced_page(app: &mut UiApp, ui: &mut Ui) {
     }
 }
 
-// ───────────── 快捷鍵（點按鍵後按下新的組合，Esc 取消；可停用或還原預設） ─────────────
+// ───────────── 快速鍵（點按鍵後按下新的組合，Esc 取消；可停用或還原預設） ─────────────
 
 fn keys_page(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
     let p = theme::pal(ui);
     let Some(hk) = app.env.hotkeys else {
-        form_section(ui, "全域快捷鍵", |_| {});
-        form_hint_full(ui, "全域快捷鍵需要系統匣常駐時才能使用。", p.muted);
+        form_section(ui, "全域快速鍵", |_| {});
+        form_hint_full(ui, "全域快速鍵需要系統匣常駐時才能使用。", p.muted);
         return;
     };
     let ok = hk.all();
-    form_section(ui, "全域快捷鍵", |ui| {
+    form_section(ui, "全域快速鍵", |ui| {
         if app.keys != Hotkeys::default() && Btn::new("還原預設").ghost().small().show(ui).clicked() {
             d.key_capture = None;
             save_keys(app, d, Hotkeys::default());
@@ -722,13 +722,13 @@ fn keys_page(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
                 if capturing {
                     stop_capture(app, d);
                 } else {
-                    // 先暫停全部快捷鍵，才按得到原本已登記的組合
+                    // 先暫停全部快速鍵，才按得到原本已登記的組合
                     d.key_capture = Some(i);
                     d.key_msg = None;
                     app.core.apply_hotkeys(&Hotkeys::none());
                 }
             }
-            if !label.is_empty() && !capturing && Btn::icon_only(Icon::Close).ghost().small().tooltip("停用這個快捷鍵").show(ui).clicked() {
+            if !label.is_empty() && !capturing && Btn::icon_only(Icon::Close).ghost().small().tooltip("停用這個快速鍵").show(ui).clicked() {
                 let mut k = app.keys;
                 k.set(i, None);
                 save_keys(app, d, k);
@@ -770,7 +770,7 @@ fn keys_page(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
     save_keys(app, d, next);
 }
 
-/// 換分頁或關掉設定視窗時：取消設定中的快捷鍵（恢復原本的登記）
+/// 換分頁或關掉設定視窗時：取消設定中的快速鍵（恢復原本的登記）
 pub fn check_key_capture(app: &mut UiApp) {
     let stale = app.settings_dlg.as_ref().is_some_and(|d| d.key_capture.is_some() && d.page != Page::Keys);
     if stale {
@@ -778,7 +778,7 @@ pub fn check_key_capture(app: &mut UiApp) {
     }
 }
 
-/// 取消設定中的快捷鍵（視窗關到系統匣時：不能讓快捷鍵一直暫停）
+/// 取消設定中的快速鍵（視窗關到系統匣時：不能讓快速鍵一直暫停）
 pub fn cancel_key_capture(app: &mut UiApp) {
     if let Some(mut d) = app.settings_dlg.take() {
         if d.key_capture.is_some() {

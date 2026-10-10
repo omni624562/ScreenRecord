@@ -1,6 +1,6 @@
 //! 時間軸（縮圖、保留 / 刪除的片段、頭尾把手、選取範圍、播放頭）、標註軌、放大時的捲軸。
 //!
-//! 時間軸：點一下跳到該時間；拖曳把手調整頭尾、拖曳上方橫條移動整段、拖曳播放頭跳轉；在其他地方拖曳 = 選取要刪除的範圍。
+//! 時間軸：點一下跳到該時間；拖曳把手調整頭尾、拖曳上方橫條移動整段、拖曳播放頭跳到其他時間；在其他地方拖曳 = 選取要刪除的範圍。
 //! 滾輪：放大 / 縮小（以滑鼠位置為中心）；Shift 或左右滾動 = 平移。
 //! 標註軌：點一下選取（並跳到它出現的時間）；拖曳移動出現時間，拖曳兩端調整開始 / 結束；點空白處跳到該時間。
 
@@ -32,7 +32,7 @@ pub fn ann_track_h(ed: &Editor) -> f32 {
 pub const SCROLL_H: f32 = 10.0;
 
 const YELLOW: Color32 = Color32::from_rgb(0xf5, 0xb3, 0x01);
-/// 打的點（和錄影外框上的「・N 點」同色）
+/// 錄影時加的標記（和錄影外框上的「・標記 N」同色）
 const MARK: Color32 = Color32::from_rgb(0xff, 0x8a, 0x1f);
 const FLAG_H: f32 = 22.0;
 /// 加速的片段
@@ -206,13 +206,13 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, toast: &mut
         painter.circle_filled(*c, 10.0, p.rec);
         painter.text(*c, Align2::CENTER_CENTER, "×", theme::font_bold(13.0), Color32::WHITE);
     }
-    // 錄影時打的點：底部的小旗子，點一下跳過去
+    // 錄影時加的標記：底部的小旗子，點一下跳過去
     let flags: Vec<(f32, usize, f64)> = ed.markers.iter().enumerate().filter(|(_, &t)| t >= a && t <= b && t <= dur).map(|(i, &t)| (x_of(t), i, t)).collect();
     for &(x, i, _) in &flags {
         let (top, bot) = (rect.bottom() - FLAG_H, rect.bottom() - 1.0);
         painter.vline(x, top..=bot, Stroke::new(3.5, Color32::from_black_alpha(120)));
         painter.vline(x, top..=bot, Stroke::new(2.0, MARK));
-        // 旗面寫第幾個點
+        // 旗面寫第幾個標記
         let label = (i + 1).to_string();
         let fw = 9.0 + 6.0 * label.len() as f32;
         let flag = Rect::from_min_size(pos2(x, top), vec2(fw, 13.0));
@@ -255,7 +255,7 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, toast: &mut
                 tip = Some(t.clone());
             } else if let Some((i, t)) = flag_at(pos) {
                 ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
-                tip = Some(format!("錄影時打的第 {} 個點 {}・點一下跳過去・M 下一個、Shift+M 上一個", i + 1, video_clock(t)));
+                tip = Some(format!("錄影時加的第 {} 個標記 {}・點一下跳過去・M 下一個、Shift+M 上一個", i + 1, video_clock(t)));
             } else {
                 let (cursor, t) = match hit_kind(pos) {
                     TlKind::Start => (CursorIcon::ResizeHorizontal, "拖曳調整開頭"),
@@ -355,10 +355,10 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, toast: &mut
                 let hint = if ed.markers.is_empty() {
                     "拖曳黃色把手剪頭尾・在時間軸上拖過一段可刪除・滾輪：時間軸放大縮小、影片上逐張移動".to_string()
                 } else {
-                    format!("橘色旗子是錄影時打的 {} 個點（M 跳下一個）・拖曳黃色把手剪頭尾・拖過一段可刪除・滾輪放大縮小", ed.markers.len())
+                    format!("橘色旗子是錄影時加的 {} 個標記（M 跳下一個）・拖曳黃色把手剪頭尾・拖過一段可刪除・滾輪放大縮小", ed.markers.len())
                 };
                 ui.add(egui::Label::new(theme::muted(ui, &hint).font(theme::font(12.0))).truncate()).on_hover_text(
-                    "點時間軸跳到該時間；拖曳黃色把手剪掉頭尾，拖曳上方的黃色橫條移動整段；在時間軸上拖過一段可選取並刪除。在時間軸上轉滾輪放大 / 縮小（Shift + 滾輪左右移動），在影片上轉滾輪逐張前後移動（Shift 一次一秒）。錄影時按打點快捷鍵或外框上的旗子，會在時間軸底下留下橘色旗子：點旗子或按 M / Shift+M 跳到下一個 / 上一個點。",
+                    "點時間軸跳到該時間；拖曳黃色把手剪掉頭尾，拖曳上方的黃色橫條移動整段；在時間軸上拖過一段可選取並刪除。在時間軸上轉滾輪放大 / 縮小（Shift + 滾輪左右移動），在影片上轉滾輪逐張前後移動（Shift 一次一秒）。錄影時按標記快速鍵或外框上的旗子，會在時間軸底下留下橘色旗子：點旗子或按 M / Shift+M 跳到下一個 / 上一個標記。",
                 );
             });
         });

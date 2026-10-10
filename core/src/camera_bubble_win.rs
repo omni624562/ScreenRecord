@@ -1,9 +1,9 @@
-//! 攝影機小窗（Windows）：選了攝影機時，錄影前（主畫面開著）與倒數、錄影、暫停期間，在擷取範圍裡顯示攝影機畫面
-//! （圓形或圓角方形、白框）。小窗不設成「不被擷取」，直接錄進影片，看到的就是錄到的。
-//! - 拖曳中間移動、拖曳外圍一圈或滾動滑鼠滾輪調整大小（都限制在擷取範圍內，才會被錄到）；放開後記住位置與大小
-//! - 攝影機畫面由另一個 FFmpeg 讀進來（BGRA，這個範圍裡小窗最大時的大小），程式裡縮放成小窗的大小、
+//! 攝影機小視窗（Windows）：選了攝影機時，錄影前（主畫面開著）與倒數、錄影、暫停期間，在擷取範圍裡顯示攝影機畫面
+//! （圓形或圓角方形、白框）。小視窗不設成「不被擷取」，直接錄進影片，看到的就是錄到的。
+//! - 拖曳中間移動、拖曳外圍一圈或轉動滑鼠滾輪調整大小（都限制在擷取範圍內，才會被錄到）；放開後記住位置與大小
+//! - 攝影機畫面由另一個 FFmpeg 讀進來（BGRA，這個範圍裡小視窗最大時的大小），程式裡縮放成小視窗的大小、
 //!   套上形狀後用 UpdateLayeredWindow 顯示；調整大小時不用重開攝影機。透明的角落點得穿，不搶焦點
-//! - 錄影前後同一個小窗、同一個攝影機連線接著用，不會關了又開
+//! - 錄影前後同一個小視窗、同一個攝影機連線接著用，不會關了又開
 //!
 //! 座標是實體像素（程式已宣告 Per-Monitor DPI aware）。
 
@@ -29,15 +29,15 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEACTIVATE, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_SETCURSOR, WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
 
-/// 用 FFmpeg 的測試畫面代替攝影機（沒有攝影機的電腦上測試小窗用）
+/// 用 FFmpeg 的測試畫面代替攝影機（沒有攝影機的電腦上測試小視窗用）
 const TEST_ENV: &str = "SCREENRECORDER_TEST_CAMERA";
 
 /// 滑鼠操作（視窗程序寫入、迴圈讀取）
 #[derive(Clone, Copy)]
 enum Drag {
-    /// 移動：按下時的游標位置與小窗左上角
+    /// 移動：按下時的游標位置與小視窗左上角
     Move { start: POINT, origin: (i32, i32) },
-    /// 調整大小：小窗中心不動
+    /// 調整大小：小視窗中心不動
     Resize { center: (i32, i32) },
 }
 
@@ -45,15 +45,15 @@ thread_local! {
     static DRAG: Cell<Option<Drag>> = const { Cell::new(None) };
     /// 剛放開的操作與放開時的游標位置（按下、放開在同一輪訊息裡處理完也不會漏掉）
     static RELEASED: Cell<Option<(Drag, POINT)>> = const { Cell::new(None) };
-    /// 小窗目前的左上角、邊長、是否圓形（視窗程序判斷按在哪裡用）
+    /// 小視窗目前的左上角、邊長、是否圓形（視窗程序判斷按在哪裡用）
     static GEOM: Cell<(i32, i32, i32, bool)> = const { Cell::new((0, 0, 0, true)) };
     /// 滾輪累積的格數（正 = 放大）
     static WHEEL: Cell<i32> = const { Cell::new(0) };
 }
 
-/// 背景執行緒：每 0.1 秒問一次 info()（None = 不顯示），跟著顯示、移動、調整或關掉小窗與讀攝影機的 FFmpeg。
-/// 攝影機打不開或中斷時呼叫 failed()，錄影結束（或小窗收起）前不再試。
-/// 拖曳、調整大小後呼叫 moved(位置, 大小)：小窗中心在擷取範圍內的相對位置（萬分比）與大小（短邊的百分比）
+/// 背景執行緒：每 0.1 秒問一次 info()（None = 不顯示），跟著顯示、移動、調整或關掉小視窗與讀攝影機的 FFmpeg。
+/// 攝影機打不開或中斷時呼叫 failed()，錄影結束（或小視窗收起）前不再試。
+/// 拖曳、調整大小後呼叫 moved(位置, 大小)：小視窗中心在擷取範圍內的相對位置（萬分比）與大小（短邊的百分比）
 pub fn spawn(
     info: impl Fn() -> Option<BubbleInfo> + Send + 'static,
     ffmpeg: impl Fn() -> Option<PathBuf> + Send + 'static,
@@ -63,7 +63,7 @@ pub fn spawn(
     let _ = std::thread::Builder::new().name("camera-bubble".into()).spawn(move || unsafe { run(info, ffmpeg, failed, moved) });
 }
 
-/// 小窗大小的點陣圖（BGRA，預乘透明度）
+/// 小視窗大小的點陣圖（BGRA，預乘透明度）
 struct Surface {
     dc: HDC,
     bmp: HBITMAP,
@@ -175,7 +175,7 @@ impl Reader {
     }
 }
 
-/// 目前顯示中的小窗
+/// 目前顯示中的小視窗
 struct Shown {
     /// 最後套用的範圍與攝影機設定
     info: BubbleInfo,
@@ -198,7 +198,7 @@ impl Shown {
         Rect { x: self.pos.0, y: self.pos.1, width: self.size, height: self.size }
     }
 
-    /// 把目前的攝影機畫面（還沒有時是灰色）縮放、套上形狀，畫到小窗
+    /// 把目前的攝影機畫面（還沒有時是灰色）縮放、套上形狀，畫到小視窗
     unsafe fn render(&mut self, hwnd: HWND) {
         let n = (self.size * self.size * 4) as usize;
         self.scaled.resize(n, 0);
@@ -258,12 +258,12 @@ unsafe fn run(info: impl Fn() -> Option<BubbleInfo>, ffmpeg: impl Fn() -> Option
     let hwnd = match CreateWindowExW(WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, class, w!("攝影機"), WS_POPUP, 0, 0, 1, 1, None, None, Some(hinst.into()), None) {
         Ok(h) => h,
         Err(e) => {
-            crate::warn!("無法建立攝影機小窗：{e}");
+            crate::warn!("無法建立攝影機小視窗：{e}");
             return;
         }
     };
     let mut shown: Option<Shown> = None;
-    // 攝影機打不開或中斷：小窗收起（錄影結束、主畫面關掉）前不再試
+    // 攝影機打不開或中斷：小視窗收起（錄影結束、主畫面關掉）前不再試
     let mut gave_up = false;
     let mut raised = Instant::now();
     // 讀攝影機的 FFmpeg 結束了：(已經有過畫面, 錯誤訊息)
@@ -285,7 +285,7 @@ unsafe fn run(info: impl Fn() -> Option<BubbleInfo>, ffmpeg: impl Fn() -> Option
             want = info().filter(|i| !i.camera.device.trim().is_empty());
             polled = Some(Instant::now());
         }
-        // 剛放開，或滾輪調了大小：記住位置與大小（設定裡的值也改成這樣，下一次 info() 不會把小窗拉回去）
+        // 剛放開，或滾輪調了大小：記住位置與大小（設定裡的值也改成這樣，下一次 info() 不會把小視窗拉回去）
         let wheel = WHEEL.with(|w| w.replace(0));
         if let Some(s) = shown.as_mut() {
             // 放開時的位置：最後一次套用拖曳
@@ -315,7 +315,7 @@ unsafe fn run(info: impl Fn() -> Option<BubbleInfo>, ffmpeg: impl Fn() -> Option
                 saved_at = Some(Instant::now());
             }
         }
-        // 剛存的位置、大小傳回介面要一點時間：這 1 秒內 info() 的位置、大小還是舊的，不要把小窗拉回去
+        // 剛存的位置、大小傳回介面要一點時間：這 1 秒內 info() 的位置、大小還是舊的，不要把小視窗拉回去
         if let (Some(w), Some(s), Some(t)) = (want.as_mut(), shown.as_ref(), saved_at) {
             if t.elapsed() < Duration::from_secs(1) && w.camera.device == s.info.camera.device {
                 w.camera.pos = s.info.camera.pos;
@@ -339,7 +339,7 @@ unsafe fn run(info: impl Fn() -> Option<BubbleInfo>, ffmpeg: impl Fn() -> Option
                 let rect = bubble_rect(&i);
                 let src = source_size(&i.area);
                 let Some(surface) = Surface::new(rect.width) else {
-                    crate::warn!("無法建立攝影機小窗的畫面");
+                    crate::warn!("無法建立攝影機小視窗的畫面");
                     gave_up = true;
                     continue;
                 };
@@ -368,7 +368,7 @@ unsafe fn run(info: impl Fn() -> Option<BubbleInfo>, ffmpeg: impl Fn() -> Option
                     scaled: Vec::new(),
                     seq: 0,
                 };
-                // 攝影機開好之前先顯示灰色的形狀，知道小窗在哪裡
+                // 攝影機開好之前先顯示灰色的形狀，知道小視窗在哪裡
                 s.render(hwnd);
                 let _ = SetWindowPos(hwnd, Some(HWND_TOPMOST), 0, 0, 0, 0, SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
                 shown = Some(s);
@@ -385,7 +385,7 @@ unsafe fn run(info: impl Fn() -> Option<BubbleInfo>, ffmpeg: impl Fn() -> Option
                 }
                 if dragging.is_none() && (i.area != s.info.area || i.camera != s.info.camera) {
                     if i.camera == s.info.camera {
-                        // 只有範圍移動（只錄某個視窗、拖曳錄影範圍）：小窗跟著移，相對位置不變
+                        // 只有範圍移動（只錄某個視窗、拖曳錄影範圍）：小視窗跟著移，相對位置不變
                         let (dx, dy) = (i.area.x - s.info.area.x, i.area.y - s.info.area.y);
                         let r = clamp_into(Rect { x: s.pos.0 + dx, y: s.pos.1 + dy, width: s.size, height: s.size }, &i.area);
                         s.info.area = i.area;
@@ -450,7 +450,7 @@ unsafe fn run(info: impl Fn() -> Option<BubbleInfo>, ffmpeg: impl Fn() -> Option
         if let Some(s) = &shown {
             GEOM.with(|g| g.set((s.pos.0, s.pos.1, s.size, s.info.camera.circle)));
         }
-        // 拖曳中 15ms；顯示中 33ms（攝影機每秒 30 張）；沒有小窗時 250ms 看一次就好
+        // 拖曳中 15ms；顯示中 33ms（攝影機每秒 30 張）；沒有小視窗時 250ms 看一次就好
         std::thread::sleep(Duration::from_millis(if dragging.is_some() {
             15
         } else if shown.is_some() {
@@ -474,7 +474,7 @@ fn message_pos() -> POINT {
     POINT { x: (pos & 0xFFFF) as u16 as i16 as i32, y: (pos >> 16) as u16 as i16 as i32 }
 }
 
-/// 游標在小窗的哪裡（螢幕座標）
+/// 游標在小視窗的哪裡（螢幕座標）
 fn grab_screen(p: POINT) -> Option<Grab> {
     let (x, y, size, circle) = GEOM.with(|g| g.get());
     grab_at(p.x - x, p.y - y, size, circle)

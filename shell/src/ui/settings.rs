@@ -64,7 +64,7 @@ pub struct UiSettings {
     pub mp4_max_mb: u32,
     /// 錄影時顯示滑鼠點擊
     pub show_clicks: bool,
-    /// 錄影時顯示按下的快捷鍵
+    /// 錄影時顯示按下的快速鍵
     pub show_keys: bool,
     /// 自訂範圍跟著這個視窗（「只錄這個視窗」）；視窗關掉、重新開機後就失效
     #[serde(skip)]
@@ -74,7 +74,7 @@ pub struct UiSettings {
     pub camera_corner: u8,
     pub camera_size: u32,
     pub camera_circle: bool,
-    /// 攝影機小窗拖曳後記住的位置（擷取範圍內的相對位置，萬分比）；None = 放在 camera_corner
+    /// 攝影機小視窗拖曳後記住的位置（擷取範圍內的相對位置，萬分比）；None = 放在 camera_corner
     #[serde(skip_serializing_if = "Option::is_none")]
     pub camera_pos: Option<[u16; 2]>,
     /// 介面大小（%）
@@ -162,7 +162,7 @@ impl UiSettings {
             follow_window: None,
             camera: string("camera").unwrap_or_default(),
             camera_corner: num("cameraCorner").map(|v| v as u8).filter(|v| *v <= 3).unwrap_or(0),
-            // 小 / 中 / 大，或在小窗上拖曳、滾輪調出來的大小
+            // 小 / 中 / 大，或在小視窗上拖曳、滾輪調出來的大小
             camera_size: num("cameraSize").map(|v| v as u32).filter(|v| (screenrecorder_core::camera_bubble::SIZE_MIN..=screenrecorder_core::camera_bubble::SIZE_MAX).contains(v)).unwrap_or(20),
             camera_circle: boolean("cameraCircle").unwrap_or(true),
             camera_pos: o.get("cameraPos").and_then(|v| serde_json::from_value::<[u16; 2]>(v.clone()).ok()).filter(|p| p.iter().all(|c| *c <= 10000)),

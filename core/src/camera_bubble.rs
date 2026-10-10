@@ -1,10 +1,10 @@
-//! 攝影機小窗：錄影時在螢幕上（擷取範圍的角落）顯示攝影機畫面，可以拖曳，直接被錄進影片（看到的就是錄到的）。
-//! 攝影機同時只能給一個程式用，所以錄影的 FFmpeg 不再開攝影機，改由這個小窗讀畫面、顯示在螢幕上。
-//! 這裡是不分平台的部分：小窗的位置與大小、讀攝影機畫面的 FFmpeg 參數、圓形 / 圓角方形的遮罩與白框。
+//! 攝影機小視窗：錄影時在螢幕上（擷取範圍的角落）顯示攝影機畫面，可以拖曳，直接被錄進影片（看到的就是錄到的）。
+//! 攝影機同時只能給一個程式用，所以錄影的 FFmpeg 不再開攝影機，改由這個小視窗讀畫面、顯示在螢幕上。
+//! 這裡是不分平台的部分：小視窗的位置與大小、讀攝影機畫面的 FFmpeg 參數、圓形 / 圓角方形的遮罩與白框。
 
 use crate::types::{CameraConfig, MonitorInfo, Rect};
 
-/// 錄影器提供給小窗的資訊（倒數、錄影、暫停中，而且選了攝影機才有）
+/// 錄影器提供給小視窗的資訊（倒數、錄影、暫停中，而且選了攝影機才有）
 #[derive(Debug, Clone, PartialEq)]
 pub struct BubbleInfo {
     /// 擷取範圍（虛擬桌面的實體像素座標）
@@ -14,11 +14,11 @@ pub struct BubbleInfo {
     pub camera: CameraConfig,
 }
 
-/// 小窗大小可調的範圍：擷取範圍短邊的百分比
+/// 小視窗大小可調的範圍：擷取範圍短邊的百分比
 pub const SIZE_MIN: u32 = 8;
 pub const SIZE_MAX: u32 = 40;
 
-/// 小窗的邊長：擷取範圍短邊的 size%（8～40%），取偶數、至少 64
+/// 小視窗的邊長：擷取範圍短邊的 size%（8～40%），取偶數、至少 64
 pub fn bubble_size(area: &Rect, cam: &CameraConfig) -> i32 {
     size_px(area, cam.size)
 }
@@ -30,7 +30,7 @@ pub fn size_px(area: &Rect, pct: u32) -> i32 {
 }
 
 /// 拖曳邊緣調整大小：游標離中心的距離決定新的邊長（圓形用直線距離、方形用較遠的那一軸），
-/// 換算成短邊的整數百分比（存設定用；小窗也直接用這個大小，存檔後不會再跳一下）
+/// 換算成短邊的整數百分比（存設定用；小視窗也直接用這個大小，存檔後不會再跳一下）
 pub fn resize_pct(area: &Rect, center: (i32, i32), cursor: (i32, i32), circle: bool) -> u32 {
     let (dx, dy) = ((cursor.0 - center.0) as f64, (cursor.1 - center.1) as f64);
     let half = if circle { dx.hypot(dy) } else { dx.abs().max(dy.abs()) };
@@ -38,8 +38,8 @@ pub fn resize_pct(area: &Rect, center: (i32, i32), cursor: (i32, i32), circle: b
     ((half * 2.0 / short * 100.0).round() as u32).clamp(SIZE_MIN, SIZE_MAX)
 }
 
-/// 按在小窗的哪裡：外圍一圈（邊長的 12%，至少 10 像素）拖曳是調整大小，其他地方是移動。
-/// x、y 是小窗內的座標；不在形狀裡（圓形的角落）時是 None
+/// 按在小視窗的哪裡：外圍一圈（邊長的 12%，至少 10 像素）拖曳是調整大小，其他地方是移動。
+/// x、y 是小視窗內的座標；不在形狀裡（圓形的角落）時是 None
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Grab {
     Move,
@@ -57,7 +57,7 @@ pub fn grab_at(x: i32, y: i32, size: i32, circle: bool) -> Option<Grab> {
     Some(if dist >= c - edge { Grab::Resize } else { Grab::Move })
 }
 
-/// 讀攝影機畫面用的大小：這個範圍裡小窗最大時的邊長（最多 720），調整大小時不用重開攝影機，在程式裡縮放
+/// 讀攝影機畫面用的大小：這個範圍裡小視窗最大時的邊長（最多 720），調整大小時不用重開攝影機，在程式裡縮放
 pub fn source_size(area: &Rect) -> i32 {
     size_px(area, SIZE_MAX).clamp(128, 720)
 }
@@ -133,13 +133,13 @@ fn intersect(a: &Rect, b: &Rect) -> Option<Rect> {
 /// 相對位置的單位：萬分比（4K 寬也能準確回到同一個像素）
 const SCALE: u16 = 10000;
 
-/// 拖曳後要記住的位置：小窗中心在擷取範圍內的相對位置（萬分比）
+/// 拖曳後要記住的位置：小視窗中心在擷取範圍內的相對位置（萬分比）
 pub fn relative_pos(r: &Rect, area: &Rect) -> [u16; 2] {
     let f = |c: i32, start: i32, len: i32| (((c - start) as f64 / len.max(1) as f64) * SCALE as f64).round().clamp(0.0, SCALE as f64) as u16;
     [f(r.x + r.width / 2, area.x, area.width), f(r.y + r.height / 2, area.y, area.height)]
 }
 
-/// 讓小窗整個留在擷取範圍內（拖曳、範圍移動後），才會被錄到
+/// 讓小視窗整個留在擷取範圍內（拖曳、範圍移動後），才會被錄到
 pub fn clamp_into(r: Rect, area: &Rect) -> Rect {
     let x = r.x.clamp(area.x, (area.x + area.width - r.width).max(area.x));
     let y = r.y.clamp(area.y, (area.y + area.height - r.height).max(area.y));
@@ -147,7 +147,7 @@ pub fn clamp_into(r: Rect, area: &Rect) -> Rect {
 }
 
 /// 讀攝影機畫面：裁成正方形、縮成 d×d、左右翻轉（像照鏡子），BGRA 原始像素送到 stdout。
-/// test_source：用 FFmpeg 的測試畫面代替攝影機（沒有攝影機的電腦上測試小窗用）
+/// test_source：用 FFmpeg 的測試畫面代替攝影機（沒有攝影機的電腦上測試小視窗用）
 pub fn reader_args(device: &str, d: i32, test_source: bool) -> Vec<String> {
     let mut a: Vec<String> = ["-hide_banner", "-nostats", "-loglevel", "error"].iter().map(|s| s.to_string()).collect();
     if test_source {
@@ -162,7 +162,7 @@ pub fn reader_args(device: &str, d: i32, test_source: bool) -> Vec<String> {
     a
 }
 
-/// 小窗的形狀：每個像素的透明度與白框的比例（事先算好，每張畫面只要套用）
+/// 小視窗的形狀：每個像素的透明度與白框的比例（事先算好，每張畫面只要套用）
 pub struct Mask {
     pub size: usize,
     /// (不透明度, 白框比例)，0～255
@@ -288,7 +288,7 @@ mod tests {
         assert_eq!(grab_at(100, 4, 200, true), Some(Grab::Resize));
         assert_eq!(grab_at(2, 2, 200, true), None);
         assert_eq!(grab_at(2, 2, 200, false), Some(Grab::Resize));
-        // 讀攝影機的大小：小窗最大時的邊長，最多 720
+        // 讀攝影機的大小：小視窗最大時的邊長，最多 720
         assert_eq!(source_size(&area), 432);
         assert_eq!(source_size(&Rect { x: 0, y: 0, width: 3840, height: 2160 }), 720);
     }

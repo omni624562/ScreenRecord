@@ -441,7 +441,7 @@ fn interact(ed: &mut Editor, ui: &egui::Ui, rect: Rect, resp: &egui::Response) {
             return ed.toggle_play();
         }
         let (x, y) = to_video(p);
-        // 選取中標註的旋轉 / 調整大小把手優先（連續放置表情、編號時也一樣，不會變成再放一個）
+        // 選取中標註的旋轉 / 調整大小把手優先（連續放置表情符號、編號時也一樣，不會變成再放一個）
         if let Some(cur) = ed.selected() {
             if on_rotate_handle(cur, x, y, k, vw, vh) {
                 ed.drag = Drag::Rotate { id: cur.id, a0: pointer_angle(cur, x, y), r0: cur.rot };
@@ -452,7 +452,7 @@ fn interact(ed: &mut Editor, ui: &egui::Ui, rect: Rect, resp: &egui::Response) {
                 return;
             }
         }
-        // 連續放置編號 / 表情時，點到已放好的同類標註 = 選取、移動它，不再新增
+        // 連續放置編號 / 表情符號時，點到已放好的同類標註 = 選取、移動它，不再新增
         let hit_same =
             ed.tool.filter(|t| matches!(t, Tool::Emoji | Tool::Ann(AnnKind::Step))).and_then(|t| ann_at(ed, x, y, k * 6.0).filter(|id| ed.anns.iter().any(|a| a.id == *id && a.kind == t.kind())));
         if let (Some(tool), None) = (ed.tool, hit_same) {
@@ -475,7 +475,7 @@ fn interact(ed: &mut Editor, ui: &egui::Ui, rect: Rect, resp: &egui::Response) {
             ed.ann_sel = Some(id);
             ed.tab = Tab::Ann;
             if matches!(kind, AnnKind::Text | AnnKind::Step) {
-                // 點一下就放好；編號、表情繼續放下一個
+                // 點一下就放好；編號、表情符號繼續放下一個
                 if !tool.sticky() {
                     ed.tool = None;
                 }
@@ -639,7 +639,7 @@ fn drag_to(ed: &mut Editor, (px, py): (f64, f64), shift: bool) {
             if let Some(a) = ed.ann_mut(id) {
                 // 轉的量 = 游標繞中心轉了多少（從哪裡按下去都不會跳）
                 let mut deg = super::norm_deg(r0 + pointer_angle(a, px, py) - a0);
-                // 靠近 15 度的倍數時吸附（容易轉回水平、轉成 45 / 90 度）
+                // 靠近 15 度的倍數時貼齊（容易轉回水平、轉成 45 / 90 度）
                 let snap = (deg / 15.0).round() * 15.0;
                 if (deg - snap).abs() < 4.0 {
                     deg = snap;

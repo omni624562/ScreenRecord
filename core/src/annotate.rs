@@ -1,7 +1,7 @@
 //! 剪輯視窗與截圖編輯的標註：文字（含表情符號）、箭頭、方框、圓框、螢光筆、步驟編號、畫筆、馬賽克、模糊、聚光燈、圖片（Logo）、放大鏡（只限截圖）。
 //! 座標與大小一律用原影片的像素，時間用原影片的秒數（剪輯前）。
 //!
-//! 繪製用 tiny-skia（向量）與系統字型（ttf-parser 取字形，彩色表情支援 COLR 與點陣字形）：
+//! 繪製用 tiny-skia（向量）與系統字型（ttf-parser 取字形，彩色表情符號支援 COLR 與點陣字形）：
 //! 編輯時的預覽與匯出的 PNG 用同一套，看到的就是輸出的樣子。
 //! 匯出時，馬賽克 / 模糊交給 FFmpeg（圓角、橢圓附上遮罩）；其他標註畫成透明 PNG，由 FFmpeg 疊上。
 //!
@@ -700,7 +700,7 @@ fn draw_line(pixmap: &mut Pixmap, line: &Line, x: f64, baseline: f64, size: f64,
                     continue;
                 }
             }
-            // 點陣表情（CBDT / sbix）
+            // 點陣表情符號（CBDT / sbix）
             let ppem = (size * t.sy as f64).round().clamp(8.0, 256.0) as u16;
             if let Some(img) = face.glyph_raster_image(g.id, ppem) {
                 if let Ok(bmp) = Pixmap::decode_png(img.data) {

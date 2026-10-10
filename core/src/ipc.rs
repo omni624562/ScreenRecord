@@ -1,10 +1,10 @@
-//! 單一實例的控制端點：只綁 127.0.0.1 的小型 HTTP 伺服器，讓再次啟動的程式（或新版）找到正在執行的這一個：
+//! 單一執行個體的控制端點：只綁 127.0.0.1 的小型 HTTP 伺服器，讓再次啟動的程式（或新版）找到正在執行的這一個：
 //! - GET  /api/ping：確認是螢幕錄影（app、pid、version）
 //! - GET  /api/env：版本（與 1.x / 2.x 相容的探測方式）
 //! - POST /api/show：把操作視窗帶到前面
 //! - POST /api/quit：正常結束（錄影中會先停止並儲存；新版接手時使用）
 //!
-//! 安全：Host 必須是 127.0.0.1 / localhost（擋 DNS rebinding）；POST 必須是 JSON 且沒有 Origin（擋網頁的跨站請求）。
+//! 安全：Host 必須是 127.0.0.1 / localhost（擋 DNS rebinding）；POST 必須是 JSON 且沒有 Origin（擋網頁的跨站要求）。
 
 use crate::version::APP_VERSION;
 use std::io::{BufRead, BufReader, Write};
@@ -14,7 +14,7 @@ use std::time::Duration;
 
 pub const APP_ID: &str = "screen-recorder";
 
-/// 控制端點收到請求時要做的事
+/// 控制端點收到要求時要做的事
 pub struct Control {
     pub show: Box<dyn Fn() + Send + Sync>,
     pub quit: Box<dyn Fn() + Send + Sync>,
@@ -29,7 +29,7 @@ pub fn bind(preferred: u16, range: u16) -> Option<(TcpListener, u16)> {
     })
 }
 
-/// 在背景執行緒處理請求（程式結束前一直執行）
+/// 在背景執行緒處理要求（程式結束前一直執行）
 pub fn serve(listener: TcpListener, control: Control) {
     let control = Arc::new(control);
     let port = listener.local_addr().map(|a| a.port()).unwrap_or(0);
@@ -95,7 +95,7 @@ fn respond(mut stream: &TcpStream, status: &str, body: &str) -> std::io::Result<
     stream.flush()
 }
 
-/// 只接受本機程式的請求（回傳 None = 允許）
+/// 只接受本機程式的要求（回傳 None = 允許）
 fn reject(req: &Request, port: u16) -> Option<&'static str> {
     let host = req.header("host").unwrap_or("");
     if host != format!("127.0.0.1:{port}") && host != format!("localhost:{port}") {
@@ -178,7 +178,7 @@ mod tests {
         }
         assert_eq!(quits.load(Ordering::SeqCst), 1);
 
-        // 網頁送來的請求（有 Origin）、不是 JSON、錯誤的 Host：拒絕
+        // 網頁送來的要求（有 Origin）、不是 JSON、錯誤的 Host：拒絕
         let code = |r: Result<ureq::Response, ureq::Error>| match r {
             Ok(r) => r.status(),
             Err(ureq::Error::Status(c, _)) => c,

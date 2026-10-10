@@ -229,14 +229,14 @@ pub async fn edit_project(app: &App, path: &str) -> Option<EditProject> {
     Some(EditProject { project, matched, source })
 }
 
-// ───────────── 錄影中打的點 ─────────────
+// ───────────── 錄影中加的標記 ─────────────
 
-/// 這支錄影裡打的點（影片的秒數，由小到大）
+/// 這支錄影裡的標記（影片的秒數，由小到大）
 pub async fn markers(app: &App, path: &str) -> Vec<f64> {
     marks(app, path).await.markers
 }
 
-/// 這支錄影裡打的點與滑鼠點擊（依時間排序）
+/// 這支錄影裡的標記與滑鼠點擊（依時間排序）
 pub async fn marks(app: &App, path: &str) -> crate::recorder::Marks {
     let (store, p) = (app.markers.clone(), path.to_string());
     let mut m: crate::recorder::Marks = tokio::task::spawn_blocking(move || store.for_output(&p)).await.ok().flatten().and_then(|x| serde_json::from_value(x.data).ok()).unwrap_or_default();

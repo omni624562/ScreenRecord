@@ -58,7 +58,7 @@ unsafe fn run(dir: &std::path::Path, folder: &str, stop: &AtomicBool, count: &At
             Ok(_) | Err(RecvTimeoutError::Timeout) => continue,
             Err(RecvTimeoutError::Disconnected) => break,
         };
-        // 連點（雙擊）只算一次
+        // 連點（點兩下）只算一次
         if last.is_some_and(|(p, t)| t.elapsed() < Duration::from_millis(450) && (p.x - pt.x).abs() < 6 && (p.y - pt.y).abs() < 6) {
             continue;
         }

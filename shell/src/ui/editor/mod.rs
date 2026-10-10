@@ -1,4 +1,4 @@
-//! 剪輯視窗：剪頭尾、刪除中間片段、裁切畫面、加上標註，另存為新檔。
+//! 剪輯視窗：剪頭尾、刪除中間片段、裁切畫面、加上標註，另存成新檔。
 //! 影片由 FFmpeg 解碼（core::player），標註與馬賽克 / 模糊的預覽和匯出用同一套繪製（core::annotate、core::effects）。
 //!
 //! 之前用這支影片做過剪輯（或開啟的就是剪輯版）時，從原始影片重新載入當時的剪輯與標註，修改後取代那個剪輯版。
@@ -79,7 +79,7 @@ impl Pl {
     }
 }
 
-/// 標註工具：表情是加上表情符號的文字
+/// 標註工具：表情符號是加上表情符號的文字
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Tool {
     Ann(AnnKind),
@@ -93,7 +93,7 @@ impl Tool {
             Tool::Emoji => AnnKind::Text,
         }
     }
-    /// 放好一個後繼續放下一個（編號 1、2、3…、表情）
+    /// 放好一個後繼續放下一個（編號 1、2、3…、表情符號）
     fn sticky(self) -> bool {
         matches!(self, Tool::Emoji | Tool::Ann(AnnKind::Step) | Tool::Ann(AnnKind::Pen))
     }
@@ -236,9 +236,9 @@ pub struct Editor {
     /// 上次算快照的時間；目前的內容和 committed 不同（還沒記成一步）
     history_at: Option<Instant>,
     uncommitted: bool,
-    /// 快捷鍵要做、需要 app 的事（儲存、複製…）
+    /// 快速鍵要做、需要 app 的事（儲存、複製…）
     pending: Option<shot::Act>,
-    /// 錄影時打的點（秒，原片的時間）
+    /// 錄影時加的標記（秒，原片的時間）
     markers: Vec<f64>,
     /// 錄影時的滑鼠點擊（秒, x, y；原片的時間）
     clicks: Vec<[f64; 3]>,
@@ -289,7 +289,7 @@ pub fn open(app: &mut UiApp, entry: LibraryEntry) {
     app.spawn(
         async move {
             let info = actions::edit_project(&core, &path).await;
-            // 打的點記在原片上：開啟剪輯版時改讀原片的
+            // 標記記在原片上：開啟剪輯版時改讀原片的
             let src = match &info {
                 Some(EditProject { matched: ProjectMatch::Output, source: Some(s), .. }) => s.media.path.clone(),
                 _ => path,
@@ -1100,7 +1100,7 @@ fn make_player(ctx: &egui::Context, ffmpeg: &std::path::Path, e: &LibraryEntry) 
     Player::new(ffmpeg.to_path_buf(), spec, w, h, DECODE_MAX.0, DECODE_MAX.1, Arc::new(move || c.request_repaint()))
 }
 
-/// 表情符號標註（文字只有一個表情）
+/// 表情符號標註（文字只有一個表情符號）
 pub fn is_emoji_text(t: &str) -> bool {
     EMOJIS.contains(&t)
 }
@@ -1154,7 +1154,7 @@ pub fn hash_of<T: std::hash::Hash>(v: &T) -> u64 {
     h.finish()
 }
 
-/// 表情選單用的彩色表情圖（用與影片相同的繪製，Windows 上是彩色的）
+/// 表情符號選單用的彩色表情符號圖（用與影片相同的繪製，Windows 上是彩色的）
 fn emoji_textures(ctx: &egui::Context) -> Vec<TextureHandle> {
     EMOJIS
         .iter()
@@ -1181,7 +1181,7 @@ fn emoji_textures(ctx: &egui::Context) -> Vec<TextureHandle> {
                 pts: vec![],
             };
             annotate::measure(&mut a);
-            // 只要表情本身：用深色底的版面量大小，但不畫底色
+            // 只要表情符號本身：用深色底的版面量大小，但不畫底色
             a.bg = false;
             let (w, h) = (a.w.ceil() as u32, a.h.ceil() as u32);
             let mut pm = tiny_skia::Pixmap::new(w.max(1), h.max(1))?;
@@ -1520,7 +1520,7 @@ fn footer(ed: &mut Editor, ui: &mut egui::Ui) -> bool {
         });
         let line = match &ed.replace_target {
             Some(t) => format!("儲存後取代 {}", file_name(t)),
-            None => format!("另存為 {}", cut_file_name(&ed.entry.media.name)),
+            None => format!("另存成 {}", cut_file_name(&ed.entry.media.name)),
         };
         ui.label(RichText::new(line).font(theme::font(12.0)).color(p.muted));
     });
@@ -1585,7 +1585,7 @@ fn start_save(app: &mut UiApp, ed: &mut Editor) {
     );
 }
 
-/// 快捷鍵：空白 = 播放/暫停、←/→ = 一張（Shift = 一秒）、I/O = 開頭/結尾、Delete = 刪除選取的片段或標註、Esc = 取消或關閉
+/// 快速鍵：空白 = 播放/暫停、←/→ = 一張（Shift = 一秒）、I/O = 開頭/結尾、Delete = 刪除選取的片段或標註、Esc = 取消或關閉
 fn keyboard(ed: &mut Editor, ctx: &egui::Context, toast: &mut Option<(String, bool)>) {
     if ctx.egui_wants_keyboard_input() || ed.typing {
         // 正在輸入文字（egui 在這一格開始時就因 Esc 離開輸入欄）：Esc 只離開輸入欄
@@ -1611,7 +1611,7 @@ fn keyboard(ed: &mut Editor, ctx: &egui::Context, toast: &mut Option<(String, bo
     shortcuts(ed, ctx, toast, key);
 }
 
-/// 其他快捷鍵（截圖沒有時間軸：播放、移動、開頭結尾不適用）
+/// 其他快速鍵（截圖沒有時間軸：播放、移動、開頭結尾不適用）
 fn shortcuts(ed: &mut Editor, ctx: &egui::Context, toast: &mut Option<(String, bool)>, key: impl Fn(Modifiers, Key) -> bool) {
     let _ = ctx;
     let video = !ed.is_shot();
@@ -1634,19 +1634,19 @@ fn shortcuts(ed: &mut Editor, ctx: &egui::Context, toast: &mut Option<(String, b
     if video && key(Modifiers::NONE, Key::ArrowRight) {
         ed.step(Some(1), 0.0);
     }
-    // M / Shift+M：跳到下一個 / 上一個打的點
+    // M / Shift+M：跳到下一個 / 上一個標記
     if video && !ed.markers.is_empty() {
         let now = ed.now();
         if key(Modifiers::NONE, Key::M) {
             match ed.markers.iter().find(|&&t| t > now + 0.05) {
                 Some(&t) => ed.seek(t),
-                None => *toast = Some(("後面沒有打的點了".into(), false)),
+                None => *toast = Some(("後面沒有標記了".into(), false)),
             }
         }
         if key(Modifiers::SHIFT, Key::M) {
             match ed.markers.iter().rev().find(|&&t| t < now - 0.05) {
                 Some(&t) => ed.seek(t),
-                None => *toast = Some(("前面沒有打的點了".into(), false)),
+                None => *toast = Some(("前面沒有標記了".into(), false)),
             }
         }
     }
