@@ -405,19 +405,25 @@ impl App {
         }
     }
 
+    /// 在凍結的畫面上框選（Windows 原生視窗）；取消時 None
     #[cfg(windows)]
-    async fn snip_native(self: &Arc<Self>, src: SnipSource) -> crate::Result<Option<crate::types::ShotInfo>> {
+    async fn snip_pick(&self, src: &SnipSource, record: bool) -> Option<crate::types::Rect> {
         self.lock().snipping = true;
         let (path, desk, windows) = (src.path.clone(), src.desktop, src.windows.clone());
-        let sel = tokio::task::spawn_blocking(move || {
+        tokio::task::spawn_blocking(move || {
             let pm = tiny_skia::Pixmap::decode_png(&std::fs::read(&path).ok()?).ok()?;
             // 以實際截到的大小為準
             let desk = crate::types::Rect { width: pm.width() as i32, height: pm.height() as i32, ..desk };
-            crate::snip_win::select(pm.data(), desk, windows)
+            crate::snip_win::select(pm.data(), desk, windows, record)
         })
         .await
         .ok()
-        .flatten();
+        .flatten()
+    }
+
+    #[cfg(windows)]
+    async fn snip_native(self: &Arc<Self>, src: SnipSource) -> crate::Result<Option<crate::types::ShotInfo>> {
+        let sel = self.snip_pick(&src, false).await;
         let res = match sel {
             Some(r) => self.snip_save(&src, r).await.map(Some),
             None => {
@@ -427,6 +433,34 @@ impl App {
         };
         self.snip_end(Some(&src));
         res
+    }
+
+    /// 框選要錄影的範圍：與框選截圖相同的畫面（拖曳框選或點一下選視窗），回傳範圍（取消時 None），
+    /// 也記成「上次框選」。只有 Windows 有原生的框選畫面
+    pub async fn select_record_region(self: &Arc<Self>, config: &RecordConfig) -> crate::Result<Option<crate::types::Rect>> {
+        {
+            let mut st = self.lock();
+            if st.shooting || st.snipping {
+                return Err(crate::Error::config("正在截圖"));
+            }
+            st.shooting = true;
+        }
+        let r = self.snip_capture(config).await;
+        self.lock().shooting = false;
+        let src = r?;
+        #[cfg(windows)]
+        let sel = self.snip_pick(&src, true).await;
+        #[cfg(not(windows))]
+        let sel = None;
+        match sel {
+            Some(r) => {
+                self.lock().last_snip = Some(r);
+                crate::info!("[錄影] 框選範圍 ({}, {}) {}×{}", r.x, r.y, r.width, r.height);
+            }
+            None => crate::info!("[錄影] 取消框選"),
+        }
+        self.snip_end(Some(&src));
+        Ok(sel)
     }
 
     /// 交給介面顯示框選畫面

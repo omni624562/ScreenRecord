@@ -17,6 +17,10 @@ pub enum TrayCommand {
     StartLast,
     StartMonitor(String),
     StartAll,
+    /// 在螢幕上框選範圍或點選視窗後開始錄影
+    StartSelect,
+    /// 錄上次框選的範圍
+    StartLastSnip,
     Pause,
     Resume,
     Stop,
@@ -354,7 +358,7 @@ impl TrayController {
                 self.notify("開機自動啟動", if now == Some(true) { "已開啟：登入 Windows 後會自動常駐在系統匣" } else { "已關閉" }, false);
                 return Ok(());
             }
-            TrayCommand::StartLast | TrayCommand::StartAll | TrayCommand::StartMonitor(_) => self.config(),
+            TrayCommand::StartLast | TrayCommand::StartAll | TrayCommand::StartMonitor(_) | TrayCommand::StartSelect | TrayCommand::StartLastSnip => self.config(),
         };
         // 開始錄影
         if app.exporter.running() {
@@ -363,6 +367,19 @@ impl TrayController {
         match cmd {
             TrayCommand::StartAll => cfg.source = SourceConfig::All,
             TrayCommand::StartMonitor(id) => cfg.source = SourceConfig::Monitor { monitor_id: id },
+            TrayCommand::StartSelect | TrayCommand::StartLastSnip => {
+                let r = if cmd == TrayCommand::StartSelect {
+                    // 取消框選時不顯示通知
+                    let Some(r) = app.select_record_region(&cfg).await.map_err(err)? else { return Ok(()) };
+                    r
+                } else {
+                    app.last_snip().ok_or("還沒有框選過範圍")?
+                };
+                if r.width < 16 || r.height < 16 {
+                    return Err(format!("範圍太小（{}×{}），寬高至少 16 像素", r.width, r.height));
+                }
+                cfg.source = SourceConfig::Region { x: r.x as f64, y: r.y as f64, width: r.width as f64, height: r.height as f64 };
+            }
             _ => {}
         }
         rec.start(cfg).await.map_err(err)

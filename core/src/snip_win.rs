@@ -1,5 +1,5 @@
 //! 框選截圖的畫面（Windows 原生視窗，不靠操作視窗）：一個蓋住整個桌面的最上層視窗，
-//! 顯示凍結的畫面並變暗；拖曳框選範圍，或點一下截取游標下的視窗；Esc 或右鍵取消。
+//! 顯示凍結的畫面並變暗；拖曳框選範圍，或點一下選游標下的視窗；Esc 或右鍵取消。截圖與錄影共用。
 //! 座標都是實體像素（程式已宣告 Per-Monitor DPI aware）。
 
 use crate::types::Rect;
@@ -37,6 +37,8 @@ struct State {
     drag: Option<(POINT, POINT)>,
     hover: Option<Rect>,
     result: Option<Rect>,
+    /// 選錄影範圍（說明文字不同）
+    record: bool,
 }
 
 thread_local! {
@@ -44,8 +46,8 @@ thread_local! {
 }
 
 /// 顯示框選畫面直到使用者選好或取消（在呼叫的執行緒上執行訊息迴圈）。
-/// rgba：整個桌面的畫面（由上而下、不透明）；windows：看得到的視窗（上層在前）
-pub fn select(rgba: &[u8], desk: Rect, windows: Vec<Rect>) -> Option<Rect> {
+/// rgba：整個桌面的畫面（由上而下、不透明）；windows：看得到的視窗（上層在前）；record：選錄影範圍
+pub fn select(rgba: &[u8], desk: Rect, windows: Vec<Rect>, record: bool) -> Option<Rect> {
     let (w, h) = (desk.width, desk.height);
     if w <= 0 || h <= 0 || rgba.len() < (w * h * 4) as usize {
         return None;
@@ -68,13 +70,14 @@ pub fn select(rgba: &[u8], desk: Rect, windows: Vec<Rect>) -> Option<Rect> {
         SelectObject(back, b3.into());
         ReleaseDC(None, screen);
         let font = CreateFontW(-18, 0, 0, 0, FW_SEMIBOLD.0 as i32, 0, 0, 0, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, 0, w!("Microsoft JhengHei UI"));
-        STATE.with(|s| *s.borrow_mut() = Some(State { desk, windows, bright, dim, back, bitmaps: [b1, b2, b3], font, drag: None, hover: None, result: None }));
+        STATE.with(|s| *s.borrow_mut() = Some(State { desk, windows, bright, dim, back, bitmaps: [b1, b2, b3], font, drag: None, hover: None, result: None, record }));
 
         let hinst = GetModuleHandleW(None).unwrap_or_default();
         let class = w!("ScreenRecorderSnip");
         let wc = WNDCLASSEXW { cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32, lpfnWndProc: Some(wnd_proc), hInstance: hinst.into(), lpszClassName: class, ..Default::default() };
         RegisterClassExW(&wc);
-        let hwnd = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW, class, w!("框選截圖"), WS_POPUP, desk.x, desk.y, w, h, None, None, Some(hinst.into()), None);
+        let hwnd =
+            CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW, class, if record { w!("框選錄影範圍") } else { w!("框選截圖") }, WS_POPUP, desk.x, desk.y, w, h, None, None, Some(hinst.into()), None);
         if let Ok(hwnd) = hwnd {
             let _ = ShowWindow(hwnd, SW_SHOW);
             let _ = SetForegroundWindow(hwnd);
@@ -233,7 +236,11 @@ unsafe fn paint(hwnd: HWND) {
                 let f = RECT { left: r.left - 1 - i, top: r.top - 1 - i, right: r.right + 1 + i, bottom: r.bottom + 1 + i };
                 FrameRect(mem, &f, brush);
             }
-            let text = if is_drag { format!("{} × {}", r.right - r.left, r.bottom - r.top) } else { format!("視窗 {} × {}・點一下截取", r.right - r.left, r.bottom - r.top) };
+            let text = if is_drag {
+                format!("{} × {}", r.right - r.left, r.bottom - r.top)
+            } else {
+                format!("視窗 {} × {}・點一下{}", r.right - r.left, r.bottom - r.top, if st.record { "錄這個範圍" } else { "截取" })
+            };
             let top = if r.top >= 34 { r.top - 34 } else { r.top + 6 };
             label(mem, &text, r.left.max(0), top, brush);
         }
@@ -243,7 +250,8 @@ unsafe fn paint(hwnd: HWND) {
         let mut mi = MONITORINFO { cbSize: std::mem::size_of::<MONITORINFO>() as u32, ..Default::default() };
         if GetMonitorInfoW(MonitorFromPoint(cur, MONITOR_DEFAULTTONEAREST), &mut mi).as_bool() {
             let m = mi.rcMonitor;
-            let tip = "拖曳框選範圍，或點一下截取視窗　　Esc 或右鍵取消";
+            let tip =
+                if st.record { "拖曳框選要錄影的範圍，或點一下選視窗　　Esc 或右鍵取消" } else { "拖曳框選範圍，或點一下截取視窗　　Esc 或右鍵取消" };
             let mut t: Vec<u16> = tip.encode_utf16().collect();
             let mut sz = SIZE::default();
             let _ = GetTextExtentPoint32W(mem, &t, &mut sz);

@@ -355,15 +355,22 @@ fn show_menu() {
         Menu::sep(root);
         // 「\t」後的文字顯示在選單右側（快捷鍵提示）
         m.add(root, &format!("開始錄影(&R)　{}{}", st.last_source, tab(&st.keys[0])), TrayCommand::StartLast, !idle || !st.can_record, false);
+        // 錄其他範圍：與「截圖」相同的選法（框選範圍或視窗、全螢幕、重複上次框選）
         if let Ok(pick) = CreatePopupMenu() {
-            for mon in &st.monitors {
-                m.add(pick, &mon.label, TrayCommand::StartMonitor(mon.id.clone()), false, false);
+            m.add(pick, "框選範圍或視窗(&A)…", TrayCommand::StartSelect, false, false);
+            if let Ok(full) = CreatePopupMenu() {
+                for mon in &st.monitors {
+                    m.add(full, &mon.label, TrayCommand::StartMonitor(mon.id.clone()), false, false);
+                }
+                if st.monitors.len() > 1 {
+                    Menu::sep(full);
+                    m.add(full, "所有螢幕（整個延伸桌面）", TrayCommand::StartAll, false, false);
+                }
+                Menu::sub(pick, "全螢幕(&F)", full, st.monitors.is_empty());
             }
-            if st.monitors.len() > 1 {
-                Menu::sep(pick);
-                m.add(pick, "所有螢幕（整個延伸桌面）", TrayCommand::StartAll, false, false);
-            }
-            Menu::sub(root, "錄製指定螢幕(&M)", pick, !idle || !st.can_record);
+            Menu::sep(pick);
+            m.add(pick, "重複上次框選(&R)", TrayCommand::StartLastSnip, !st.has_last_snip, false);
+            Menu::sub(root, "錄製其他範圍(&M)", pick, !idle || !st.can_record);
         }
         if st.rec == RecorderState::Paused {
             m.add(root, &format!("繼續錄影(&C){}", tab(&st.keys[1])), TrayCommand::Resume, false, false);
