@@ -105,12 +105,80 @@ fn find_shift(prev: &[Option<u64>], next: &[Option<u64>], top: usize, body: usiz
     best.map(|b| b.0)
 }
 
+/// 每一段的大小：夠大才會直接向系統要記憶體、放掉時馬上還給系統（小塊會留在程式裡，接著配剪貼簿的記憶體時兩份疊在一起）
+const PART_BYTES: usize = 8 << 20;
+
+/// 接好的長圖：分段存放（每段是完整的幾列）。長圖可能上百 MB，
+/// 一整塊連續的記憶體每次變大都要整個搬一次（搬的時候新舊兩份同時佔著）；分段就不用
+pub struct LongImage {
+    pub w: u32,
+    pub h: u32,
+    parts: Vec<Vec<u8>>,
+}
+
+impl LongImage {
+    /// 一整塊 RGBA 當成一段
+    pub fn from_rgba(w: u32, h: u32, rgba: Vec<u8>) -> LongImage {
+        LongImage { w, h, parts: vec![rgba] }
+    }
+
+    /// 由上而下的每一列（RGBA）
+    pub fn rows(&self) -> impl Iterator<Item = &[u8]> {
+        let row = self.w as usize * 4;
+        self.parts.iter().flat_map(move |p| p.chunks_exact(row))
+    }
+
+    /// 最上面 n 列（連續的 RGBA）
+    pub fn top(&self, n: u32) -> Vec<u8> {
+        let mut v = Vec::with_capacity(n as usize * self.w as usize * 4);
+        for r in self.rows().take(n as usize) {
+            v.extend_from_slice(r);
+        }
+        v
+    }
+
+    /// 整張接成一塊（測試用）
+    pub fn to_vec(&self) -> Vec<u8> {
+        self.parts.concat()
+    }
+
+    /// 壓成 PNG 寫進 out：一列一列寫，不用先接成一整塊（壓縮方式與一般截圖相同）
+    pub fn write_png<W: std::io::Write>(&self, out: W) -> Result<(), String> {
+        use std::io::Write;
+        let mut enc = png::Encoder::new(out, self.w, self.h);
+        enc.set_color(png::ColorType::Rgba);
+        enc.set_depth(png::BitDepth::Eight);
+        enc.set_compression(png::Compression::Balanced);
+        enc.set_filter(png::Filter::Adaptive);
+        let mut wr = enc.write_header().map_err(|e| e.to_string())?;
+        let mut s = wr.stream_writer().map_err(|e| e.to_string())?;
+        for r in self.rows() {
+            s.write_all(r).map_err(|e| e.to_string())?;
+        }
+        s.finish().map_err(|e| e.to_string())?;
+        wr.finish().map_err(|e| e.to_string())
+    }
+}
+
+/// 把幾列接到最後一段；放不下時開新的一段（每段約 PART_BYTES，事先配好不再變大）
+fn append_rows(parts: &mut Vec<Vec<u8>>, mut rows: &[u8], row: usize) {
+    while !rows.is_empty() {
+        if parts.last().is_none_or(|p| p.capacity() - p.len() < row) {
+            parts.push(Vec::with_capacity((PART_BYTES / row).max(1) * row));
+        }
+        let Some(p) = parts.last_mut() else { return };
+        let n = ((p.capacity() - p.len()) / row * row).min(rows.len());
+        p.extend_from_slice(&rows[..n]);
+        rows = &rows[n..];
+    }
+}
+
 /// 一張一張加進來接成長圖
 pub struct Stitcher {
     w: u32,
     h: u32,
-    /// 接好的內容（不含固定的頁尾）
-    out: Vec<u8>,
+    /// 接好的內容（不含固定的頁尾），一次捲動一段
+    parts: Vec<Vec<u8>>,
     out_h: u32,
     /// 上一張接上去的畫面
     last: Vec<u8>,
@@ -133,7 +201,7 @@ pub enum Step {
 
 impl Stitcher {
     pub fn new(first: Vec<u8>, w: u32, h: u32) -> Stitcher {
-        Stitcher { w, h, out: first.clone(), out_h: h, last: first, footer: None, last_shift: None }
+        Stitcher { w, h, parts: vec![first.clone()], out_h: h, last: first, footer: None, last_shift: None }
     }
 
     pub fn add(&mut self, next: Vec<u8>) -> Step {
@@ -156,7 +224,9 @@ impl Stitcher {
                     return Step::Same;
                 }
                 let f = footer(&prev, &hashes);
-                self.out.truncate((self.out_h as usize - f) * w * 4);
+                if let Some(p) = self.parts.last_mut() {
+                    p.truncate(p.len().saturating_sub(f * w * 4));
+                }
                 self.out_h -= f as u32;
                 self.footer = Some(f);
                 f
@@ -171,7 +241,7 @@ impl Stitcher {
                 if self.out_h as usize + s > MAX_HEIGHT as usize {
                     return Step::Full;
                 }
-                self.out.extend_from_slice(&next[(body - s) * w * 4..body * w * 4]);
+                append_rows(&mut self.parts, &next[(body - s) * w * 4..body * w * 4], w * 4);
                 self.out_h += s as u32;
                 self.last_shift = Some(s);
                 Step::Added(s)
@@ -183,12 +253,12 @@ impl Stitcher {
         step
     }
 
-    /// 接好的長圖（RGBA）與寬高
-    pub fn finish(mut self) -> (Vec<u8>, u32, u32) {
+    /// 接好的長圖（最後接上固定的頁尾）
+    pub fn finish(mut self) -> LongImage {
         let f = self.footer.unwrap_or(0);
         let (w, h) = (self.w as usize, self.h as usize);
-        self.out.extend_from_slice(&self.last[(h - f) * w * 4..]);
-        (self.out, self.w, self.out_h + f as u32)
+        append_rows(&mut self.parts, &self.last[(h - f) * w * 4..], w * 4);
+        LongImage { w: self.w, h: self.out_h + f as u32, parts: self.parts }
     }
 
     /// 目前的高度
@@ -257,7 +327,8 @@ mod tests {
         assert_eq!(steps.last(), Some(&Step::Same));
         assert_eq!(steps[0], Step::Added(40));
         assert_eq!(steps[2], Step::Added(55));
-        let (img, iw, ih) = s.finish();
+        let long_img = s.finish();
+        let (img, iw, ih) = (long_img.to_vec(), long_img.w, long_img.h);
         assert_eq!((iw, ih), (w, 600 - h + h));
         // 內容（不含捲軸）和原本的長頁一樣，最下面是頁尾
         let body = (600 - foot) as usize;
@@ -318,7 +389,8 @@ mod tests {
         assert_eq!(steps.last(), Some(&Step::Same));
         assert!(!steps.contains(&Step::Lost), "{steps:?}");
         assert!(s.grew());
-        let (img, iw, ih) = s.finish();
+        let long_img = s.finish();
+        let (img, iw, ih) = (long_img.to_vec(), long_img.w, long_img.h);
         // 工具列只出現一次，下面是完整的長頁
         assert_eq!((iw, ih), (w, head + long_h));
         for y in (head..ih).step_by(5) {
@@ -346,6 +418,41 @@ mod tests {
         assert!(!s.grew());
         // 之後真的捲動了照樣接得上
         assert_eq!(s.add(view(&long, w, 40, h, 0)), Step::Added(40));
+    }
+
+    #[test]
+    fn rows_go_into_big_parts() {
+        // 每段事先配好、不再變大；放不下的列開新的一段，列不會被切開
+        let row = 1000 * 4;
+        let mut parts = vec![vec![1u8; row * 3]];
+        append_rows(&mut parts, &vec![2u8; row * 5], row);
+        let per = PART_BYTES / row * row;
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts[1].capacity(), per);
+        assert_eq!(parts[1].len(), row * 5);
+        let big = vec![3u8; per];
+        append_rows(&mut parts, &big, row);
+        assert_eq!(parts.len(), 3);
+        assert_eq!(parts[1].len(), per);
+        assert!(parts.iter().all(|p| p.len() % row == 0 && p.len() <= per.max(row * 3)));
+        assert_eq!(parts.iter().map(Vec::len).sum::<usize>(), row * 8 + per);
+    }
+
+    #[test]
+    fn long_image_writes_png_row_by_row() {
+        // 分好幾段的長圖：寫出的 PNG 讀回來和接成一整塊的一樣
+        let (w, h) = (64u32, 90u32);
+        let long = page(w, h);
+        let row = (w * 4) as usize;
+        let img = LongImage { w, h, parts: vec![long[..row * 40].to_vec(), long[row * 40..row * 41].to_vec(), long[row * 41..].to_vec()] };
+        assert_eq!(img.rows().count(), h as usize);
+        assert_eq!(img.top(3), long[..row * 3]);
+        assert_eq!(img.to_vec(), long);
+        let mut png = Vec::new();
+        img.write_png(&mut png).unwrap();
+        let back = tiny_skia::Pixmap::decode_png(&png).unwrap();
+        assert_eq!((back.width(), back.height()), (w, h));
+        assert_eq!(back.data(), &long[..]);
     }
 
     #[test]

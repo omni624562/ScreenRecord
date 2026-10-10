@@ -421,7 +421,7 @@ impl App {
         self.lock().shooting = false;
         let shot = r?;
         self.lock().shot = Some(shot.clone());
-        self.shot_preview(&shot.path);
+        self.shot_preview(&shot.path, None);
         crate::info!("[截圖] {}（{}×{}{}）", shot.path, shot.width, shot.height, if shot.copied { "，已複製到剪貼簿" } else { "" });
         Ok(shot)
     }
@@ -431,8 +431,8 @@ impl App {
         cfg!(windows) && self.settings.load().ui.and_then(|u| u.get("shotPreview").and_then(serde_json::Value::as_bool)).unwrap_or(true)
     }
 
-    /// 顯示截圖後的小縮圖：編輯、複製、釘選、刪除
-    fn shot_preview(self: &Arc<Self>, path: &str) {
+    /// 顯示截圖後的小縮圖：編輯、複製、釘選、刪除。thumb：已經做好的縮圖（沒有時讀取 path）
+    fn shot_preview(self: &Arc<Self>, path: &str, thumb: Option<tiny_skia::Pixmap>) {
         if !self.shot_preview_enabled() {
             return;
         }
@@ -440,7 +440,7 @@ impl App {
         {
             use crate::shot_toast_win::Cmd;
             let me = Arc::downgrade(self);
-            crate::shot_toast_win::show(path.to_string(), move |cmd, p| {
+            crate::shot_toast_win::show(path.to_string(), thumb, move |cmd, p| {
                 let Some(app) = me.upgrade() else { return };
                 match cmd {
                     Cmd::Edit => app.open_ui(UiPage::EditShot),
@@ -460,7 +460,7 @@ impl App {
             });
         }
         #[cfg(not(windows))]
-        let _ = path;
+        let _ = (path, thumb);
     }
 
     async fn take_screenshot(self: &Arc<Self>, config: &RecordConfig) -> crate::Result<crate::types::ShotInfo> {
@@ -603,8 +603,13 @@ impl App {
     async fn finish_shot(&self, out: &Path, w: u32, h: u32) -> crate::types::ShotInfo {
         let png = out.to_path_buf();
         let (width, height, copied) = tokio::task::spawn_blocking(move || crate::clipboard::copy_png(&png)).await.unwrap_or((0, 0, false));
-        let seq = self.lock().shot.as_ref().map(|s| s.seq + 1).unwrap_or(1);
         let (width, height) = if width > 0 { (width, height) } else { (w, h) };
+        self.shot_info(out, width, height, copied)
+    }
+
+    /// 存好的截圖編上序號
+    fn shot_info(&self, out: &Path, width: u32, height: u32, copied: bool) -> crate::types::ShotInfo {
+        let seq = self.lock().shot.as_ref().map(|s| s.seq + 1).unwrap_or(1);
         crate::types::ShotInfo { seq, path: out.display().to_string(), width, height, copied }
     }
 
@@ -775,22 +780,17 @@ impl App {
             let res = tokio::task::spawn_blocking(move || scroll_capture(area)).await;
             // 先結束框選再處理錯誤（背景工作出錯時也不會一直卡在「正在截圖」）
             self.snip_end(Some(&src));
-            let Some((rgba, w, h, steps)) = res.map_err(|e| crate::Error::other(e.to_string()))?? else {
+            let Some((img, steps)) = res.map_err(|e| crate::Error::other(e.to_string()))?? else {
                 crate::info!("[截圖] 取消長截圖");
                 return Ok(None);
             };
             let out = new_shot_path(&src.output_dir).await?;
             let o = out.clone();
-            tokio::task::spawn_blocking(move || {
-                let mut pm = tiny_skia::Pixmap::new(w, h).ok_or_else(|| crate::Error::other("圖片太大"))?;
-                pm.data_mut().copy_from_slice(&rgba);
-                pm.save_png(&o).map_err(|e| crate::Error::other(format!("無法儲存圖片：{e}")))
-            })
-            .await
-            .map_err(|e| crate::Error::other(e.to_string()))??;
-            let shot = self.finish_shot(&out, w, h).await;
+            let (w, h) = (img.w, img.h);
+            let (copied, thumb) = tokio::task::spawn_blocking(move || save_long_shot(img, &o)).await.map_err(|e| crate::Error::other(e.to_string()))??;
+            let shot = self.shot_info(&out, w, h, copied);
             self.lock().shot = Some(shot.clone());
-            self.shot_preview(&shot.path);
+            self.shot_preview(&shot.path, thumb);
             crate::info!("[截圖] 長截圖 {}（{w}×{h}，捲動 {steps} 次）", shot.path);
             Ok(Some(shot))
         }
@@ -904,7 +904,7 @@ impl App {
             st.shot = Some(shot.clone());
             st.last_snip = Some(rect);
         }
-        self.shot_preview(&shot.path);
+        self.shot_preview(&shot.path, None);
         crate::info!("[截圖] 框選 {}（{}×{}{}）", shot.path, shot.width, shot.height, if shot.copied { "，已複製到剪貼簿" } else { "" });
         Ok(shot)
     }
@@ -1374,13 +1374,13 @@ impl Drop for LiveGuard {
     }
 }
 
-/// 接好的長圖：(RGBA, 寬, 高, 捲了幾次)
+/// 接好的長圖與捲了幾次
 #[cfg(windows)]
-type LongImage = (Vec<u8>, u32, u32, usize);
+type LongCapture = (crate::longshot::LongImage, usize);
 
 /// 一邊往下捲一邊截取範圍、接成長圖；按 Esc 而且還沒接上任何一段時回傳 None
 #[cfg(windows)]
-fn scroll_capture(area: crate::types::Rect) -> crate::Result<Option<LongImage>> {
+fn scroll_capture(area: crate::types::Rect) -> crate::Result<Option<LongCapture>> {
     use crate::longshot::{Step, Stitcher};
     use crate::scroll_win::{esc_pressed, focus_at, grab_settled, scroll_down};
     // 先把範圍裡的視窗切到前面，再截第一張（切換時標題列會變色，要在截第一張之前）
@@ -1444,8 +1444,30 @@ fn scroll_capture(area: crate::types::Rect) -> crate::Result<Option<LongImage>> 
             "畫面沒有捲動：已經在最下面，或這個範圍不能用滑鼠滾輪捲動。請框選可以捲動的內容（例如網頁中間）再試一次"
         }));
     }
-    let (rgba, w, h) = st.finish();
-    Ok(Some((rgba, w, h, steps)))
+    Ok(Some((st.finish(), steps)))
+}
+
+/// 存長截圖並複製到剪貼簿，回傳 (是否已複製, 小縮圖)。長截圖可能有上百 MB，所以：
+/// - 分段存放的圖一列一列壓成 PNG 存檔（不用先接成一整塊）
+/// - 剪貼簿的 PNG 用剛壓好的內容（不重新壓縮）；點陣圖在放掉原圖之後才解碼，記憶體最多只佔一份圖
+/// - 小縮圖用原圖最上面一段（整張縮小會變成一條細線），不用再把檔案讀回來
+#[cfg(windows)]
+fn save_long_shot(img: crate::longshot::LongImage, out: &Path) -> crate::Result<(bool, Option<tiny_skia::Pixmap>)> {
+    let mut png = Vec::new();
+    img.write_png(&mut png).map_err(|e| crate::Error::other(format!("無法儲存圖片：{e}")))?;
+    std::fs::write(out, &png).map_err(|e| crate::Error::other(format!("無法儲存圖片：{e}")))?;
+    let thumb = long_shot_thumb(&img);
+    drop(img);
+    let copied = crate::clipboard::copy_png_bytes(&png).2;
+    Ok((copied, thumb))
+}
+
+/// 長截圖的小縮圖：最上面 16:9 的一段（長截圖每個像素都不透明，可以直接當預乘的畫面）
+#[cfg(any(windows, test))]
+fn long_shot_thumb(img: &crate::longshot::LongImage) -> Option<tiny_skia::Pixmap> {
+    let top = img.h.min((img.w * 9 / 16).max(1));
+    let pm = tiny_skia::Pixmap::from_vec(img.top(top), tiny_skia::IntSize::from_wh(img.w, top)?)?;
+    crate::shot_toast::thumbnail(&pm, 640)
 }
 
 /// 新截圖的檔名：Shot_日期_時間.png（同一秒有好幾張時加 _2、_3…）
@@ -1506,6 +1528,22 @@ fn move_ui_region(ui: &mut serde_json::Value, old: Rect, new: Rect, monitors: &[
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn long_shot_thumb_uses_the_top() {
+        // 400×3000 的長截圖：上面 225 列紅色、下面藍色；縮圖只有最上面 16:9 的一段（全紅）
+        let (w, h) = (400u32, 3000u32);
+        let mut rgba = vec![0u8; (w * h * 4) as usize];
+        for (i, px) in rgba.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+            *px = if (i as u32) < w * 225 { [200, 0, 0, 255] } else { [0, 0, 200, 255] };
+        }
+        let short = crate::longshot::LongImage::from_rgba(w, 100, rgba[..(w * 100 * 4) as usize].to_vec());
+        let t = super::long_shot_thumb(&crate::longshot::LongImage::from_rgba(w, h, rgba)).unwrap();
+        assert_eq!((t.width(), t.height()), (400, 225));
+        assert!(t.pixels().iter().all(|p| p.red() == 200 && p.blue() == 0));
+        // 比 16:9 矮的圖：整張
+        assert_eq!(super::long_shot_thumb(&short).unwrap().height(), 100);
+    }
+
     #[test]
     fn moved_region_updates_ui_settings() {
         let mon = |id: &str, x: i32| MonitorInfo { id: id.into(), x, y: 0, width: 1920, height: 1080, ..Default::default() };

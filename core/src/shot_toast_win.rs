@@ -58,20 +58,25 @@ thread_local! {
     static STATE: RefCell<Option<State>> = const { RefCell::new(None) };
 }
 
-/// 顯示這張截圖的小縮圖；按鈕交給 on 處理
-pub fn show(path: String, on: impl Fn(Cmd, &str) + Send + 'static) {
+/// 顯示這張截圖的小縮圖；按鈕交給 on 處理。thumb：已經做好的縮圖（沒有時讀取 path 再縮小）
+pub fn show(path: String, thumb: Option<Pixmap>, on: impl Fn(Cmd, &str) + Send + 'static) {
     if let Some(h) = CURRENT.lock().unwrap().take() {
         unsafe {
             let _ = PostMessageW(Some(HWND(h as *mut _)), WM_CLOSE, WPARAM(0), LPARAM(0));
         }
     }
-    let _ = std::thread::Builder::new().name("shot-toast".into()).spawn(move || unsafe { run(path, std::rc::Rc::new(on)) });
+    let _ = std::thread::Builder::new().name("shot-toast".into()).spawn(move || unsafe { run(path, thumb, std::rc::Rc::new(on)) });
 }
 
-unsafe fn run(path: String, on: OnCmd) {
-    let Some(src) = std::fs::read(&path).ok().and_then(|b| Pixmap::decode_png(&b).ok()) else { return };
-    let Some(thumb) = thumbnail(&src, 640) else { return };
-    drop(src);
+unsafe fn run(path: String, thumb: Option<Pixmap>, on: OnCmd) {
+    let thumb = match thumb {
+        Some(t) => t,
+        None => {
+            let Some(src) = std::fs::read(&path).ok().and_then(|b| Pixmap::decode_png(&b).ok()) else { return };
+            let Some(t) = thumbnail(&src, 640) else { return };
+            t
+        }
+    };
     // 游標所在螢幕的工作區右下角
     let mut cur = POINT::default();
     let _ = GetCursorPos(&mut cur);
