@@ -156,6 +156,18 @@ pub async fn export_start(app: &App, r: &ExportRequest) -> Result<()> {
 // ───────────── 剪輯 ─────────────
 
 /// 開始剪輯。replace = 取代這個剪輯版（修改之前的剪輯）；project = 介面的剪輯設定與標註，完成後存起來供之後修改
+/// 讀取截圖裡的 QR 碼
+pub async fn shot_qr(path: &str) -> Result<Vec<String>> {
+    let (rgba, w, h) = load_image(path).await?;
+    tokio::task::spawn_blocking(move || crate::qr::decode(&rgba, w, h)).await.map_err(|e| Error::other(e.to_string()))
+}
+
+/// 合併多支錄影
+pub async fn merge_start(app: &App, paths: &[String]) -> Result<()> {
+    app.exporter.start_merge(&app.export_ctx(), paths).await?;
+    Ok(())
+}
+
 pub async fn cut_start(app: &App, source: &str, spec: &EditSpec, replace: Option<&str>, project: Option<Value>) -> Result<()> {
     if app.recorder.active() {
         return Err(Error::config("錄影中無法剪輯，請先停止錄影"));

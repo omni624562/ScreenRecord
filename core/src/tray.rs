@@ -46,6 +46,8 @@ pub enum TrayCommand {
     ScreenshotDelay(u64),
     /// 長截圖（框選後自動往下捲，接成長圖）
     ScreenshotScroll,
+    /// 讀取畫面上的 QR 碼
+    ScreenshotQr,
     /// 開始步驟截圖（每點一下截一張）
     StepsStart,
     /// 完成步驟截圖（做成教學文件）
@@ -258,6 +260,8 @@ impl TrayController {
             hide_ui: None,
             show_clicks: false,
             show_keys: false,
+            cursor_halo: false,
+            hide_icons: false,
             follow_window: None,
             camera: None,
         }
@@ -362,6 +366,19 @@ impl TrayController {
                 let dir = self.config().output_dir;
                 let _ = std::fs::create_dir_all(&dir);
                 crate::desktop::open_with_explorer(&dir, false);
+                return Ok(());
+            }
+            TrayCommand::ScreenshotQr => {
+                let cfg = self.config();
+                let Some(list) = app.qr_snip(&cfg).await.map_err(err)? else { return Ok(()) };
+                if list.is_empty() {
+                    self.notify("讀取 QR 碼", "沒有找到 QR 碼（框大一點再試試）", true);
+                } else {
+                    let text = list.join("\n");
+                    crate::clipboard::copy_text(&text);
+                    let short: String = text.chars().take(100).collect();
+                    self.notify("QR 碼內容（已複製）", &short, false);
+                }
                 return Ok(());
             }
             TrayCommand::StepsStart => {

@@ -32,6 +32,23 @@ pub fn ripple(size: u32, progress: f32, right: bool) -> Option<Pixmap> {
     Some(pm)
 }
 
+/// 游標光暈的大小（96 DPI 時的直徑）
+pub const HALO_SIZE: f32 = 56.0;
+
+/// 游標光暈：半透明黃色的圓，邊緣柔和
+pub fn halo(size: u32) -> Option<Pixmap> {
+    let mut pm = Pixmap::new(size, size)?;
+    let c = size as f32 / 2.0;
+    // 由外往內疊幾圈，越裡面越不透明
+    for (k, a) in [(1.0, 30u8), (0.85, 40), (0.7, 45)] {
+        let path = PathBuilder::from_circle(c, c, (c - 1.0) * k)?;
+        let mut paint = Paint { anti_alias: true, ..Default::default() };
+        paint.set_color(Color::from_rgba8(255, 214, 0, a));
+        pm.fill_path(&path, &paint, FillRule::Winding, Transform::identity(), None);
+    }
+    Some(pm)
+}
+
 /// 按鍵提示：深色圓角底、白字（例如「Ctrl + C」）；scale = DPI / 96
 pub fn key_pill(text: &str, scale: f32) -> Option<Pixmap> {
     let mut a = Ann {
@@ -88,5 +105,7 @@ mod tests {
         assert!(key_pill("Ctrl + C", 2.0).unwrap().width() > pill.width() * 3 / 2);
         assert_eq!(key_text("Ctrl + Z", 3), "Ctrl + Z ×3");
         assert_eq!(key_text("Enter", 1), "Enter");
+        let h = halo(56).unwrap();
+        assert!(h.pixel(28, 28).unwrap().alpha() > 80 && h.pixel(0, 0).unwrap().alpha() == 0);
     }
 }

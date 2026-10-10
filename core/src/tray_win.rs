@@ -397,6 +397,7 @@ fn show_menu() {
                 Menu::sub(shot, "延遲框選(&D)", delay, false);
             }
             m.add(shot, "長截圖（捲動）(&L)…", TrayCommand::ScreenshotScroll, false, false);
+            m.add(shot, "讀取 QR 碼(&Q)…", TrayCommand::ScreenshotQr, false, false);
             m.add(shot, "步驟截圖（做成教學文件）(&P)", TrayCommand::StepsStart, st.steps.is_some(), false);
             if let Ok(full) = CreatePopupMenu() {
                 for mon in &st.monitors {

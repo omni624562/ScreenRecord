@@ -463,13 +463,7 @@ pub fn output_panel(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context) {
             }
         }
     }
-    if let Some((_, tex)) = ed.shot.as_ref().and_then(|s| s.preview.as_ref()) {
-        let sz = tex.size_vec2();
-        let k = (ui.available_width() / sz.x).min(220.0 / sz.y).min(1.0);
-        let (r, _) = ui.allocate_exact_size(sz * k, Sense::hover());
-        checker(ui.painter(), r);
-        ui.painter().image(tex.id(), r, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
-    }
+    ui.label(theme::muted(ui, "左邊顯示的就是輸出的樣子（外框、圓角、背景、陰影都已套用）。").font(theme::font(12.0)));
     ui.label(theme::muted(ui, "存檔時另存一張（原圖保留），同時複製到剪貼簿，可以直接貼到 LINE、Word、信件。").font(theme::font(12.0)));
 }
 
@@ -511,7 +505,12 @@ fn gradient_swatch(p: &egui::Painter, r: Rect, bg: &str) {
     p.rect_stroke(r, CornerRadius::ZERO, Stroke::new(1.0, Color32::from_black_alpha(40)), StrokeKind::Inside);
 }
 
-fn checker(p: &egui::Painter, r: Rect) {
+/// 「輸出」分頁的預覽圖（左邊大畫面顯示）
+pub fn output_texture(ed: &Editor) -> Option<TextureHandle> {
+    ed.shot.as_ref().and_then(|s| s.preview.as_ref()).map(|(_, t)| t.clone())
+}
+
+pub fn checker(p: &egui::Painter, r: Rect) {
     let n = 8.0;
     let (a, b) = (Color32::from_gray(236), Color32::from_gray(214));
     p.rect_filled(r, CornerRadius::ZERO, a);

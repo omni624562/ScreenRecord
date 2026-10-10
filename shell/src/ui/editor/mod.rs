@@ -661,6 +661,9 @@ impl Editor {
             a.shape = Some(shape);
             a.invert = invert;
         }
+        if kind == AnnKind::Spotlight {
+            a.shape = Some(annotate::Shape::Round);
+        }
         annotate::measure(&mut a);
         if matches!(kind, AnnKind::Text | AnnKind::Step) {
             // 以點的位置為中心

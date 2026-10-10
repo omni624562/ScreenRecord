@@ -3,7 +3,7 @@
 //! （和錄影外框相反），而且讓滑鼠穿過、不搶焦點。
 //! 點擊的位置也交給錄影器記下來（剪輯時「跟著點擊放大」用），所以不管有沒有顯示，錄影中都會攔截滑鼠。
 
-use crate::input_overlay::{key_pill, key_text, ripple, KEY_FADE_MS, KEY_SHOW_MS, RIPPLE_MS, RIPPLE_SIZE};
+use crate::input_overlay::{halo, key_pill, key_text, ripple, HALO_SIZE, KEY_FADE_MS, KEY_SHOW_MS, RIPPLE_MS, RIPPLE_SIZE};
 use crate::recorder::OverlayInfo;
 use crate::types::{shown_keys, Rect};
 use std::cell::RefCell;
@@ -19,9 +19,9 @@ use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
 use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CallNextHookEx, CreateWindowExW, DefWindowProcW, DispatchMessageW, PeekMessageW, RegisterClassExW, SetWindowPos, SetWindowsHookExW, ShowWindow, TranslateMessage, UnhookWindowsHookEx,
-    UpdateLayeredWindow, HHOOK, HWND_TOPMOST, KBDLLHOOKSTRUCT, MSG, MSLLHOOKSTRUCT, PM_REMOVE, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SW_HIDE, SW_SHOWNOACTIVATE, ULW_ALPHA, WH_KEYBOARD_LL,
-    WH_MOUSE_LL, WM_KEYDOWN, WM_LBUTTONDOWN, WM_RBUTTONDOWN, WM_SYSKEYDOWN, WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
+    CallNextHookEx, CreateWindowExW, DefWindowProcW, DispatchMessageW, GetCursorPos, PeekMessageW, RegisterClassExW, SetWindowPos, SetWindowsHookExW, ShowWindow, TranslateMessage,
+    UnhookWindowsHookEx, UpdateLayeredWindow, HHOOK, HWND_TOPMOST, KBDLLHOOKSTRUCT, MSG, MSLLHOOKSTRUCT, PM_REMOVE, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SW_HIDE, SW_SHOWNOACTIVATE, ULW_ALPHA,
+    WH_KEYBOARD_LL, WH_MOUSE_LL, WM_KEYDOWN, WM_LBUTTONDOWN, WM_RBUTTONDOWN, WM_SYSKEYDOWN, WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
 };
 
 enum Ev {
@@ -81,12 +81,16 @@ unsafe fn run(info: impl Fn() -> Option<OverlayInfo>, on_click: impl Fn(i32, i32
     // 會被錄進影片（沒有設成不被擷取）；滑鼠穿過、不搶焦點
     let ex = WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE;
     let make = || CreateWindowExW(ex, class, w!("點擊與按鍵"), WS_POPUP, 0, 0, 1, 1, None, None, Some(hinst.into()), None).ok();
-    let (Some(rw), Some(kw)) = (make(), make()) else {
+    let (Some(rw), Some(kw), Some(hw)) = (make(), make(), make()) else {
         crate::warn!("無法建立顯示點擊與按鍵的視窗");
         return;
     };
     let mut ripple_fx = Show { hwnd: rw, since: None };
     let mut key_fx = Show { hwnd: kw, since: None };
+    // 游標光暈：(圖, 目前顯示的位置)
+    let mut halo_fx = Show { hwnd: hw, since: None };
+    let mut halo_img: Option<(u32, Pixmap)> = None;
+    let mut halo_at: Option<POINT> = None;
     // 目前的按鍵提示：(文字, 次數, 圖)
     let mut key: Option<(String, u32, Pixmap)> = None;
     let mut click: Option<(i32, i32, bool)> = None;
@@ -119,6 +123,10 @@ unsafe fn run(info: impl Fn() -> Option<OverlayInfo>, on_click: impl Fn(i32, i32
                         Err(e) => crate::warn!("無法攔截滑鼠點擊：{e}"),
                     }
                 }
+            }
+            if next.is_none_or(|n| !n.cursor_halo) {
+                hide(&mut halo_fx);
+                halo_at = None;
             }
             if next.is_none() {
                 hide(&mut ripple_fx);
@@ -184,7 +192,28 @@ unsafe fn run(info: impl Fn() -> Option<OverlayInfo>, on_click: impl Fn(i32, i32
                 }
             }
         }
-        let animating = ripple_fx.since.is_some() || key_fx.since.is_some();
+        // 游標光暈：跟著游標（只在錄影範圍內顯示）
+        if let Some(info) = cur.filter(|i| i.cursor_halo) {
+            let mut p = POINT::default();
+            let _ = GetCursorPos(&mut p);
+            let a = info.area;
+            let inside = p.x >= a.x && p.y >= a.y && p.x < a.x + a.width && p.y < a.y + a.height;
+            if !inside {
+                hide(&mut halo_fx);
+                halo_at = None;
+            } else if halo_at.is_none_or(|q| q.x != p.x || q.y != p.y) {
+                let size = (HALO_SIZE * scale_of(&a)).round() as u32;
+                if halo_img.as_ref().is_none_or(|(s, _)| *s != size) {
+                    halo_img = halo(size).map(|pm| (size, pm));
+                }
+                if let Some((s, pm)) = &halo_img {
+                    present(hw, pm, p.x - *s as i32 / 2, p.y - *s as i32 / 2, 255);
+                    halo_fx.since = Some(Instant::now());
+                    halo_at = Some(p);
+                }
+            }
+        }
+        let animating = ripple_fx.since.is_some() || key_fx.since.is_some() || halo_fx.since.is_some();
         std::thread::sleep(Duration::from_millis(if animating { 15 } else { 30 }));
     }
 }

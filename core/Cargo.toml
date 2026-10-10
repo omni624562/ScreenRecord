@@ -18,6 +18,8 @@ tiny-skia = "0.12"
 ttf-parser = "0.25"
 # 截圖複製到剪貼簿
 arboard = { version = "3.6", default-features = false, features = ["image-data"] }
+# 讀取 QR 碼（純 Rust）
+rqrr = { version = "0.11", default-features = false }
 
 # HTTPS（下載 FFmpeg、檢查新版本）：Windows 用系統內建的 SChannel（不需編譯 C、使用系統憑證），其他平台用 rustls
 [target.'cfg(not(windows))'.dependencies]
@@ -60,3 +62,5 @@ windows = { version = "0.62", features = [
 
 [dev-dependencies]
 tempfile = "3"
+# 測試讀取 QR 碼用（產生 QR 碼圖片）
+qrcode = { version = "0.14", default-features = false }

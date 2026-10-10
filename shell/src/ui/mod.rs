@@ -209,6 +209,21 @@ impl UiApp {
         });
     }
 
+    /// 顯示讀到的 QR 碼內容（複製到剪貼簿；是網址時可以直接開啟）
+    pub fn show_qr(&mut self, list: Vec<String>) {
+        if list.is_empty() {
+            return self.toast("沒有找到 QR 碼（框大一點、或把畫面放大再試試）", true);
+        }
+        let text = list.join("\n");
+        self.ctx.copy_text(text.clone());
+        let url = list.iter().find(|t| screenrecorder_core::qr::is_url(t)).cloned();
+        let msg = format!("{text}\n\n（已複製到剪貼簿）");
+        self.ask = Some(match url {
+            Some(u) => dialogs::Ask::confirm("QR 碼內容", msg, "開啟連結", move |_, _| screenrecorder_core::desktop::open_with_explorer(&u, false)),
+            None => dialogs::Ask::confirm("QR 碼內容", msg, "好", |_, _| {}),
+        });
+    }
+
     pub fn toast(&mut self, text: impl Into<String>, error: bool) {
         let text = text.into();
         let secs = if error { 6 } else { 3 };
@@ -338,6 +353,7 @@ impl UiApp {
                     if e.state == screenrecorder_core::types::ExportState::Done {
                         let what = match e.kind {
                             screenrecorder_core::types::ExportKind::Cut => "剪輯完成",
+                            screenrecorder_core::types::ExportKind::Merge => "合併完成",
                             screenrecorder_core::types::ExportKind::Gif => "GIF 製作完成",
                             screenrecorder_core::types::ExportKind::Speed => "加速版製作完成",
                         };
@@ -529,6 +545,11 @@ impl eframe::App for UiApp {
         self.flush_settings();
         self.poll_status();
         self.handle_close(ctx);
+        // 介面大小（設定 → 進階）
+        let zoom = self.s.ui_scale as f32 / 100.0;
+        if (ctx.zoom_factor() - zoom).abs() > 0.001 {
+            ctx.set_zoom_factor(zoom);
+        }
         self.frame_parts.push(("背景狀態", t0.elapsed().as_secs_f32() * 1000.0));
         // 狀態每 0.25 秒更新一次（錄影中計時器、轉檔進度）；視窗隱藏時放慢
         ctx.request_repaint_after(if self.visible { Duration::from_millis(250) } else { Duration::from_secs(2) });

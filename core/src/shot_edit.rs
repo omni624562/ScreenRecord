@@ -384,6 +384,24 @@ mod tests {
     }
 
     #[test]
+    fn spotlight_dims_outside() {
+        let src = img(200, 100, 200);
+        let mut a: Ann = serde_json::from_value(serde_json::json!({
+            "kind": "spotlight", "x": 50.0, "y": 20.0, "w": 100.0, "h": 60.0, "start": 0.0, "end": 1.0, "color": "#000000", "size": 8.0, "shape": "rect"
+        }))
+        .unwrap();
+        a.id = 1;
+        let spec = ShotSpec { anns: vec![a.clone()], ..Default::default() };
+        let pm = render(&src, 200, 100, 200, 100, &spec, false).unwrap();
+        // 框外變暗、框內不變
+        assert!(pm.pixel(5, 5).unwrap().red() < 120);
+        assert_eq!(pm.pixel(100, 50).unwrap().red(), 200);
+        // 影片匯出：範圍限制在畫面內
+        let o = annotate::to_overlay(&a, 200.0, 100.0).unwrap();
+        assert_eq!((o.x, o.y, o.w, o.h), (0.0, 0.0, 200.0, 100.0));
+    }
+
+    #[test]
     fn combine_side_by_side_and_stacked() {
         let a = Pixmap::new(40, 20).map(|mut p| {
             p.fill(Color::BLACK);

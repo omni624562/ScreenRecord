@@ -278,7 +278,7 @@ fn zoom_panel(ed: &mut Editor, ui: &mut egui::Ui) {
     );
 }
 
-const TOOLS: [(Tool, &str); 11] = [
+const TOOLS: [(Tool, &str); 12] = [
     (Tool::Ann(AnnKind::Text), "文字"),
     (Tool::Emoji, "表情"),
     (Tool::Ann(AnnKind::Arrow), "箭頭"),
@@ -290,6 +290,7 @@ const TOOLS: [(Tool, &str); 11] = [
     (Tool::Ann(AnnKind::Mosaic), "馬賽克"),
     (Tool::Ann(AnnKind::Blur), "模糊"),
     (Tool::Ann(AnnKind::Magnify), "放大鏡"),
+    (Tool::Ann(AnnKind::Spotlight), "聚光燈"),
 ];
 
 fn ann_panel(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context) {
@@ -431,7 +432,7 @@ fn style_controls(ui: &mut egui::Ui, kind: AnnKind, color: &mut String, size: &m
 fn tool_style(ed: &mut Editor, ui: &mut egui::Ui) {
     let Some(tool) = ed.tool else { return };
     let kind = tool.kind();
-    if tool == Tool::Emoji || kind.is_effect() || ed.selected().is_some() {
+    if tool == Tool::Emoji || kind.is_effect() || kind.shape_only() || ed.selected().is_some() {
         return;
     }
     let p = theme::pal(ui);
@@ -522,6 +523,17 @@ fn props(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context) {
                     cur.size = (z * 100.0).round();
                 }
             });
+        } else if cur.kind.shape_only() {
+            ui.vertical(|ui| {
+                ui.spacing_mut().item_spacing.y = 4.0;
+                ui.label(theme::muted(ui, "形狀").font(theme::font(12.0)));
+                let mut shape = cur.shape.unwrap_or(Shape::Round);
+                let items: Vec<(Shape, &str)> = Shape::ALL.iter().map(|s| (*s, s.label())).collect();
+                if segmented(ui, &mut shape, &items, true) {
+                    cur.shape = Some(shape);
+                }
+            });
+            hint(ui, "框以外的地方會變暗，凸顯框裡的重點。");
         } else if cur.kind.is_effect() {
             let idx = (cur.kind == AnnKind::Blur) as usize;
             let word = if cur.kind == AnnKind::Mosaic { "馬賽克" } else { "模糊" };

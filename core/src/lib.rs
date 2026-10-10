@@ -41,6 +41,7 @@ pub mod pin_win;
 pub mod player;
 pub mod process;
 pub mod projects;
+pub mod qr;
 #[cfg(windows)]
 pub mod rec_frame_win;
 pub mod recorder;

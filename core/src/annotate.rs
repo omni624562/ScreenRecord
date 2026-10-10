@@ -27,10 +27,13 @@ pub enum AnnKind {
     Pen,
     /// 放大鏡：把圓裡中心附近的畫面放大顯示（size = 倍率 × 100）；只用在截圖（影片匯出不支援）
     Magnify,
+    /// 聚光燈：框以外的地方變暗，凸顯重點（形狀見 shape）
+    Spotlight,
 }
 
 impl AnnKind {
-    pub const ALL: [AnnKind; 10] = [AnnKind::Text, AnnKind::Arrow, AnnKind::Rect, AnnKind::Ellipse, AnnKind::Highlight, AnnKind::Step, AnnKind::Pen, AnnKind::Mosaic, AnnKind::Blur, AnnKind::Magnify];
+    pub const ALL: [AnnKind; 11] =
+        [AnnKind::Text, AnnKind::Arrow, AnnKind::Rect, AnnKind::Ellipse, AnnKind::Highlight, AnnKind::Step, AnnKind::Pen, AnnKind::Mosaic, AnnKind::Blur, AnnKind::Magnify, AnnKind::Spotlight];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -44,6 +47,7 @@ impl AnnKind {
             AnnKind::Blur => "模糊",
             AnnKind::Pen => "畫筆",
             AnnKind::Magnify => "放大鏡",
+            AnnKind::Spotlight => "聚光燈",
         }
     }
 
@@ -59,7 +63,12 @@ impl AnnKind {
 
     /// 用拖曳框出範圍的標註
     pub fn is_box(self) -> bool {
-        matches!(self, AnnKind::Rect | AnnKind::Ellipse | AnnKind::Highlight | AnnKind::Mosaic | AnnKind::Blur | AnnKind::Magnify)
+        matches!(self, AnnKind::Rect | AnnKind::Ellipse | AnnKind::Highlight | AnnKind::Mosaic | AnnKind::Blur | AnnKind::Magnify | AnnKind::Spotlight)
+    }
+
+    /// 選了以後只有形狀可以調（沒有顏色、粗細）
+    pub fn shape_only(self) -> bool {
+        self == AnnKind::Spotlight
     }
 }
 
@@ -260,6 +269,7 @@ pub fn label(a: &Ann) -> String {
             }
         }
         AnnKind::Step => format!("編號 {}", a.n.unwrap_or(1)),
+        AnnKind::Spotlight => "聚光燈".into(),
         AnnKind::Magnify => format!("放大鏡 {}×", crate::format::num((a.size / 100.0 * 10.0).round() / 10.0)),
         AnnKind::Mosaic | AnnKind::Blur => {
             let mut parts = vec![];
@@ -381,6 +391,8 @@ pub fn local_bbox(a: &Ann) -> (f64, f64, f64, f64) {
         AnnKind::Pen => a.size / 2.0 + 1.0,
         // 外圈的白邊
         AnnKind::Magnify => magnify_ring(a.w.abs().min(a.h.abs())) + 1.0,
+        // 聚光燈蓋住整個畫面（框以外變暗）：用一個很大的範圍，匯出時再限制在畫面內
+        AnnKind::Spotlight => SPOT_REACH,
         _ => 0.0,
     };
     (a.x - pad, a.y - pad, a.w + pad * 2.0, a.h + pad * 2.0)
@@ -766,9 +778,27 @@ pub fn draw(pixmap: &mut Pixmap, a: &Ann, t: Transform) {
                 pixmap.stroke_path(&path, &paint(color(&a.color, 1.0)), &stroke(a.size), t, None);
             }
         }
+        AnnKind::Spotlight => {
+            // 很大的方框挖掉中間的形狀（even-odd），框以外塗成半透明黑
+            let (x0, y0, w0, h0) = (x.min(x + w), y.min(y + h), w.abs(), h.abs());
+            let r = SPOT_REACH as f32;
+            let mut pb = PathBuilder::new();
+            if let Some(big) = Rect::from_xywh(x0 - r, y0 - r, w0 + r * 2.0, h0 + r * 2.0) {
+                pb.push_rect(big);
+            }
+            if let Some(hole) = shape_path(Some(a.shape.unwrap_or(Shape::Round)), x0 as f64, y0 as f64, w0 as f64, h0 as f64) {
+                pb.push_path(&hole);
+            }
+            if let Some(path) = pb.finish() {
+                pixmap.fill_path(&path, &paint(Color::from_rgba8(0, 0, 0, 140)), FillRule::EvenOdd, t, None);
+            }
+        }
         AnnKind::Mosaic | AnnKind::Blur | AnnKind::Magnify => {}
     }
 }
+
+/// 聚光燈變暗的範圍往外延伸多遠（影片像素；比任何畫面都大）
+const SPOT_REACH: f64 = 20000.0;
 
 /// 畫筆的點（影片像素，未旋轉）
 pub fn pen_points(a: &Ann) -> Vec<(f64, f64)> {

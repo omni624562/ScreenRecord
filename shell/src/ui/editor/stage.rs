@@ -32,6 +32,19 @@ const ROT_HIT_PX: f64 = 16.0;
 
 pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, stage_h: f32) {
     let avail_w = ui.available_width();
+    // 截圖的「輸出」分頁：大畫面顯示輸出的樣子（背景、圓角、陰影、外框都看得清楚）
+    if ed.is_shot() && ed.tab == Tab::Output {
+        if let Some(tex) = super::shot::output_texture(ed) {
+            let (outer, _) = ui.allocate_exact_size(vec2(avail_w, stage_h), Sense::hover());
+            let sz = tex.size_vec2();
+            let k = ((outer.width() - 16.0) / sz.x).min((outer.height() - 16.0) / sz.y).min(ed.vw as f32 / sz.x.max(1.0) * 1.5).max(0.01);
+            let r = Rect::from_center_size(outer.center(), sz * k);
+            let painter = ui.painter_at(outer);
+            super::shot::checker(&painter, r);
+            painter.image(tex.id(), r, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+            return;
+        }
+    }
     let ar = if ed.vw > 0.0 && ed.vh > 0.0 { (ed.vw / ed.vh) as f32 } else { 16.0 / 9.0 };
     let (w, h) = if avail_w / stage_h > ar { (stage_h * ar, stage_h) } else { (avail_w, avail_w / ar) };
     let (outer, _) = ui.allocate_exact_size(vec2(avail_w, stage_h), Sense::hover());
@@ -200,20 +213,30 @@ fn update_sprites(ed: &mut Editor, ctx: &egui::Context, rect: Rect) {
     let ids: Vec<u64> = ed.anns.iter().map(|a| a.id).collect();
     ed.overlay.sprites.retain(|id, _| ids.contains(id));
     for a in ed.anns.iter().filter(|a| !a.kind.is_effect()) {
+        // 聚光燈蓋住整個畫面：位置也算在內容裡，圖就是整個畫面
+        let spot = a.kind == AnnKind::Spotlight;
         // 內容：位置、時間、編號以外的欄位
         let mut look = a.clone();
-        (look.x, look.y, look.start, look.end, look.id) = (0.0, 0.0, 0.0, 0.0, 0);
-        let key = hash_of(&(serde_json::to_string(&look).unwrap_or_default(), s.to_bits()));
+        (look.start, look.end, look.id) = (0.0, 0.0, 0);
+        if !spot {
+            (look.x, look.y) = (0.0, 0.0);
+        }
+        let key = hash_of(&(serde_json::to_string(&look).unwrap_or_default(), s.to_bits(), ed.vw.to_bits(), ed.vh.to_bits()));
         if ed.overlay.sprites.get(&a.id).is_some_and(|sp| sp.key == key) {
             continue;
         }
-        // 範圍：標註實際佔的地方，再留一點邊（文字外框、箭頭頭部）
-        let (bx, by, bw, bh) = annotate::bbox(&look);
-        let m = a.size * 0.3 + 4.0;
-        let (ox, oy, ow, oh) = (bx - m, by - m, bw + m * 2.0, bh + m * 2.0);
+        // 範圍：標註實際佔的地方，再留一點邊（文字外框、箭頭頭部）；聚光燈是整個畫面（位置換算回標註的座標）
+        let (ox, oy, ow, oh) = if spot {
+            (-a.x, -a.y, ed.vw, ed.vh)
+        } else {
+            let (bx, by, bw, bh) = annotate::bbox(&look);
+            let m = a.size * 0.3 + 4.0;
+            (bx - m, by - m, bw + m * 2.0, bh + m * 2.0)
+        };
         let (pw, ph) = ((ow * s).ceil().max(1.0) as u32, (oh * s).ceil().max(1.0) as u32);
         let Some(mut pm) = tiny_skia::Pixmap::new(pw.min(8192), ph.min(8192)) else { continue };
-        let tf = tiny_skia::Transform::from_scale(s as f32, s as f32).pre_translate(-ox as f32, -oy as f32);
+        // 聚光燈的 look 保留位置，畫在整個畫面上，不用平移
+        let tf = if spot { tiny_skia::Transform::from_scale(s as f32, s as f32) } else { tiny_skia::Transform::from_scale(s as f32, s as f32).pre_translate(-ox as f32, -oy as f32) };
         annotate::draw(&mut pm, &look, tf);
         let img = egui::ColorImage::from_rgba_premultiplied([pm.width() as usize, pm.height() as usize], pm.data());
         let size = (pm.width() as f64 / s, pm.height() as f64 / s);
@@ -594,6 +617,11 @@ pub fn paint_tool_icon(p: &egui::Painter, c: Pos2, tool: Tool, color: Color32, e
                 })
                 .collect();
             p.add(egui::Shape::line(pts, s));
+        }
+        Tool::Ann(AnnKind::Spotlight) => {
+            p.rect_filled(Rect::from_center_size(c, vec2(20.0, 16.0)), CornerRadius::same(2), color.gamma_multiply(0.45));
+            p.circle_filled(c, 5.0, Color32::WHITE);
+            p.circle_stroke(c, 5.0, Stroke::new(1.2, color));
         }
         Tool::Ann(AnnKind::Magnify) => {
             p.circle_stroke(c + vec2(-2.0, -2.0), 7.0, s);

@@ -294,6 +294,7 @@ pub struct OverlayInfo {
     pub area: Rect,
     pub show_clicks: bool,
     pub show_keys: bool,
+    pub cursor_halo: bool,
 }
 
 #[derive(Clone)]
@@ -511,7 +512,7 @@ impl Recorder {
             return None;
         }
         let c = st.config.as_ref()?;
-        Some(OverlayInfo { area: st.plan.as_ref()?.rect, show_clicks: c.show_clicks, show_keys: c.show_keys })
+        Some(OverlayInfo { area: st.plan.as_ref()?.rect, show_clicks: c.show_clicks, show_keys: c.show_keys, cursor_halo: c.cursor_halo })
     }
 
     /// 「只錄這個視窗」：(視窗代碼, 目前的擷取範圍)；倒數、錄影、暫停中才有
@@ -770,6 +771,10 @@ impl Recorder {
         // 縮小視窗的那 0.35 秒仍算倒數（countdown 保留到這之後），期間取消也有效
         if hide_ui {
             deps.before_capture(plan.rect).await;
+        }
+        // 錄影時隱藏桌面圖示（停止後由 after_stop 還原）
+        if self.lock().config.as_ref().is_some_and(|c| c.hide_icons) {
+            crate::winui::set_desktop_icons(false);
         }
         if self.canceled() {
             return self.abandon(hide_ui);
@@ -1579,6 +1584,8 @@ mod tests {
                 hide_ui: Some(true),
                 show_clicks: false,
                 show_keys: false,
+                cursor_halo: false,
+                hide_icons: false,
                 follow_window: None,
                 camera: None,
             }

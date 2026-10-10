@@ -18,6 +18,7 @@ fn kind_text(k: ExportKind) -> &'static str {
         ExportKind::Speed => "加速版",
         ExportKind::Gif => "GIF",
         ExportKind::Cut => "剪輯",
+        ExportKind::Merge => "合併",
     }
 }
 
@@ -137,6 +138,33 @@ impl Exporter {
     /// 剪輯：剪頭尾、刪除中間片段、裁切畫面，另存為 *_cut.mp4
     /// replace：取代這個剪輯版（先寫到暫存檔，成功後才換掉，失敗或取消時原檔不受影響）；
     /// on_saved：完成後以最終的檔案路徑呼叫（儲存剪輯專案）
+    /// 多支錄影依時間順序接成一支（尺寸、張數以第一支為準，其他的縮放並補黑邊；沒有聲音的補靜音）
+    pub async fn start_merge(&self, ctx: &ExportCtx, sources: &[String]) -> Result<ExportStatus> {
+        let _g = self.begin()?;
+        if sources.len() < 2 {
+            return Err(Error::config("請選兩支以上的錄影"));
+        }
+        let mut list: Vec<(String, MediaInfo)> = vec![];
+        let mut ff = None;
+        let mut enc = None;
+        for s in sources {
+            let (f, e, info, _) = prepare(ctx, s).await?;
+            (ff, enc) = (Some(f), Some(e));
+            list.push((s.clone(), info));
+        }
+        list.sort_by(|a, b| a.1.mtime.total_cmp(&b.1.mtime));
+        let (Some(ffmpeg), Some(enc)) = (ff, enc) else { return Err(Error::config("FFmpeg 無法使用")) };
+        let first = &list[0].1;
+        let (w, h) = (first.width.unwrap_or(1920) as i32 & !1, first.height.unwrap_or(1080) as i32 & !1);
+        let fps = js_round(first.fps.unwrap_or(30.0)).clamp(1.0, FPS_MAX);
+        let inputs: Vec<(String, bool, f64)> = list.iter().map(|(p, i)| (p.clone(), i.has_audio == Some(true), i.duration_sec.unwrap_or(0.0))).collect();
+        let total: f64 = inputs.iter().map(|i| i.2).sum();
+        let output = crate::paths::unique_path(&parent(&list[0].0), &format!("{}_合併", strip_mp4(&file_name(&list[0].0))), ".mp4");
+        let args = crate::args::merge_args(&inputs, &output.display().to_string(), w, h, fps, &enc);
+        let note = format!("合併 {} 支錄影", inputs.len());
+        self.run_with_cleanup(ExportKind::Merge, &ffmpeg, args, &list[0].0, &output, 1.0, total, &note, Finish { cleanup: None, replace: None, on_saved: None })
+    }
+
     pub async fn start_cut(&self, ctx: &ExportCtx, source: &str, spec: &EditSpec, replace: Option<&str>, on_saved: Option<OnSaved>) -> Result<ExportStatus> {
         let _g = self.begin()?;
         if let Some(r) = replace {

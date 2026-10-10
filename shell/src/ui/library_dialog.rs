@@ -149,6 +149,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
     let mut rename: Option<LibraryEntry> = None;
     let mut delete = false;
     let mut combine: Option<bool> = None;
+    let mut merge: Option<Vec<String>> = None;
     let dir = app.s.out_dir(&app.env);
     // 縮圖要用 app，先取出對話框
     let Some(mut d) = app.library.take() else {
@@ -249,6 +250,11 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         if n > 0 && Btn::new("移到資源回收筒").icon(Icon::Trash).danger().small().show(fui).clicked() {
             delete = true;
         }
+        let mp4s: Vec<String> = d.selected.iter().filter(|p| p.to_lowercase().ends_with(".mp4")).cloned().collect();
+        if !shot && mp4s.len() >= 2 && Btn::new("合併成一支").small().tooltip("把勾選的錄影依時間順序接成一支（大小以最早的那支為準）；GIF 不算").show(fui).clicked()
+        {
+            merge = Some(mp4s);
+        }
         if shot && n >= 2 {
             let b = Btn::new("拼成一張").small().tooltip("把勾選的截圖依時間順序拼成一張新的截圖").show(fui);
             egui::Popup::menu(&b).show(|ui| {
@@ -299,6 +305,19 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
     }
     if delete {
         remove_selected(app);
+    }
+    if let Some(paths) = merge {
+        let core = app.core.clone();
+        let n = paths.len();
+        app.spawn(async move { actions::merge_start(&core, &paths).await }, move |app, r| match r {
+            Ok(()) => {
+                if let Some(d) = &mut app.library {
+                    d.selected.clear();
+                }
+                app.toast(format!("開始合併 {n} 支錄影，完成後會出現在清單"), false);
+            }
+            Err(e) => app.toast(e.message().to_string(), true),
+        });
     }
     if let Some(vertical) = combine {
         let paths: Vec<String> = app.library.as_ref().map(|d| d.selected.iter().cloned().collect()).unwrap_or_default();

@@ -324,6 +324,12 @@ pub struct RecordConfig {
     /// 錄影時在畫面上顯示按下的快捷鍵（有 Ctrl / Alt / Win 的組合與 Enter、Esc 等；一般打字不顯示）
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub show_keys: bool,
+    /// 錄影時游標周圍顯示一圈光暈（會錄進影片）
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub cursor_halo: bool,
+    /// 錄影時隱藏桌面圖示（停止後還原）
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub hide_icons: bool,
     /// 只錄這個視窗（自訂範圍跟著視窗移動）；視窗代碼見 winui::WindowInfo
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub follow_window: Option<i64>,
@@ -571,6 +577,8 @@ pub enum ExportKind {
     Speed,
     Gif,
     Cut,
+    /// 多支錄影合併成一支
+    Merge,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

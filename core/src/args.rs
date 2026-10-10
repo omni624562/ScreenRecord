@@ -553,6 +553,34 @@ pub fn size_bitrate(max_bytes: f64, seconds: f64, audio_kbps: u32) -> u32 {
 /// 壓縮到指定大小時聲音用的位元率
 pub const SMALL_AUDIO_KBPS: u32 = 96;
 
+/// 合併多支影片：每支縮放到 w × h（等比，不足補黑邊）、統一張數；沒有聲音的補一段靜音，再用 concat 接起來
+pub fn merge_args(inputs: &[(String, bool, f64)], out_file: &str, w: i32, h: i32, fps: f64, enc: &EncoderSpec) -> Vec<String> {
+    let mut a = strs(&["-hide_banner", "-nostats", "-loglevel", "error"]);
+    for (p, _, _) in inputs {
+        a.extend(["-i".into(), p.clone()]);
+    }
+    let mut graph = vec![];
+    let mut pairs = String::new();
+    for (i, (_, audio, dur)) in inputs.iter().enumerate() {
+        graph.push(format!("[{i}:v]scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:black,setsar=1,fps={},format={}[v{i}]", num(fps), enc.pix_fmt));
+        if *audio {
+            graph.push(format!("[{i}:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo[a{i}]"));
+        } else {
+            graph.push(format!("anullsrc=r=48000:cl=stereo,atrim=duration={},aformat=sample_fmts=fltp[a{i}]", num(dur.max(0.04))));
+        }
+        pairs.push_str(&format!("[v{i}][a{i}]"));
+    }
+    graph.push(format!("{pairs}concat=n={}:v=1:a=1[vout][aout]", inputs.len()));
+    a.extend(["-filter_complex".into(), graph.join(";"), "-map".into(), "[vout]".into(), "-map".into(), "[aout]".into()]);
+    a.extend(strs(&AUDIO_ENCODE));
+    a.extend(enc.offline());
+    a.extend(["-r".into(), num(fps)]);
+    a.extend(strs(&COLOR_TAGS));
+    a.extend(strs(&["-movflags", "+faststart", "-progress", "pipe:1", "-stats_period", "0.5", "-y"]));
+    a.push(out_file.into());
+    a
+}
+
 /// 製作加速版：setpts 壓縮時間軸，fps 維持原本的幀率（多出來的幀直接捨棄，不做混合，文字才不會有殘影）；
 /// 聲音以 atempo 變速不變調。width：縮小到這個寬度（高度等比、取偶數）；不小於原寬時維持原尺寸。
 /// limit_kbps：壓縮到指定大小（影片位元率）；這時可以是原速（1×，只壓縮）
@@ -929,6 +957,8 @@ mod tests {
             hide_ui: None,
             show_clicks: false,
             show_keys: false,
+            cursor_halo: false,
+            hide_icons: false,
             follow_window: None,
             camera: None,
         }
@@ -1051,6 +1081,19 @@ mod tests {
         let gdi = segment_args(&plan, &c, CaptureMethod::Gdigrab, &x264(), "o.mp4", Some(&audio_in)).unwrap();
         assert!(gdi.join(" ").contains("-map [vout] -map 1:a"));
         assert!(graph_of(&gdi).starts_with("[0:v]showinfo=checksum=0,"));
+    }
+
+    #[test]
+    fn merge() {
+        let inputs = [("a.mp4".to_string(), true, 3.0), ("b.mp4".to_string(), false, 2.5)];
+        let a = merge_args(&inputs, "out.mp4", 1920, 1080, 30.0, &x264());
+        let j = a.join(" ");
+        assert!(j.starts_with("-hide_banner -nostats -loglevel error -i a.mp4 -i b.mp4 -filter_complex"));
+        let g = graph_of(&a);
+        assert!(g.contains("[1:v]scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,setsar=1,fps=30,format=yuv420p[v1]"), "{g}");
+        assert!(g.contains("[0:a]aresample=48000") && g.contains("anullsrc=r=48000:cl=stereo,atrim=duration=2.5"), "{g}");
+        assert!(g.ends_with("[v0][a0][v1][a1]concat=n=2:v=1:a=1[vout][aout]"), "{g}");
+        assert!(j.contains("-map [vout] -map [aout] -c:a aac") && j.ends_with("-y out.mp4"));
     }
 
     #[test]

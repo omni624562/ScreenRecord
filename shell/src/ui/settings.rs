@@ -72,7 +72,16 @@ pub struct UiSettings {
     pub camera_corner: u8,
     pub camera_size: u32,
     pub camera_circle: bool,
+    /// 介面大小（%）
+    pub ui_scale: u32,
+    /// 錄影時游標光暈
+    pub cursor_halo: bool,
+    /// 錄影時隱藏桌面圖示
+    pub hide_icons: bool,
 }
+
+/// 介面大小可選的百分比
+pub const UI_SCALES: [u32; 4] = [100, 110, 125, 150];
 
 /// 自訂範圍跟著的視窗
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -143,6 +152,9 @@ impl UiSettings {
             camera_corner: num("cameraCorner").map(|v| v as u8).filter(|v| *v <= 3).unwrap_or(0),
             camera_size: num("cameraSize").map(|v| v as u32).filter(|v| CAMERA_SIZES.contains(v)).unwrap_or(20),
             camera_circle: boolean("cameraCircle").unwrap_or(true),
+            cursor_halo: boolean("cursorHalo").unwrap_or(false),
+            hide_icons: boolean("hideIcons").unwrap_or(false),
+            ui_scale: num("uiScale").map(|v| v as u32).filter(|v| UI_SCALES.contains(v)).unwrap_or(100),
         };
         s.fix_monitor(env);
         s
@@ -212,6 +224,8 @@ impl UiSettings {
             hide_ui: Some(self.hide_ui),
             show_clicks: self.show_clicks,
             show_keys: self.show_keys,
+            cursor_halo: self.cursor_halo,
+            hide_icons: self.hide_icons,
             follow_window: if self.source_type == SourceType::Region { self.follow_window.as_ref().map(|w| w.id) } else { None },
             camera: (!self.camera.is_empty()).then(|| CameraConfig { device: self.camera.clone(), corner: self.camera_corner, size: self.camera_size, circle: self.camera_circle }),
         }

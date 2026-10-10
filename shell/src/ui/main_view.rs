@@ -714,38 +714,42 @@ fn rec_panel(app: &mut UiApp, ui: &mut Ui) {
             (
                 format!("{}×{} · {}fps", r.out_width, r.out_height, r.fps),
                 format!(
-                    "{}{} / {}",
-                    r.method.map(|m| m.as_str()).unwrap_or("—"),
+                    "{}{}・{}",
+                    r.method.map(method_name).unwrap_or("—"),
                     r.tiles.filter(|t| *t > 1).map(|t| format!(" ×{t}")).unwrap_or_default(),
-                    r.encoder.clone().unwrap_or_else(|| "—".into())
+                    r.encoder.as_deref().map(encoder_name).unwrap_or_else(|| "—".into())
                 ),
                 r.audio.clone().unwrap_or_else(|| "不錄聲音".into()),
             )
         } else {
             let o = app.s.source_rect(&app.env).map(|s| output_size(s.width, s.height, app.s.scale as f64));
             let enc = match app.s.encoder {
-                EncoderPreference::Gpu => app.env.ffmpeg.hw_encoders.as_ref().and_then(|h| h.first().cloned()).unwrap_or_else(|| "GPU".into()),
-                EncoderPreference::Cpu => app.env.ffmpeg.encoder.clone().unwrap_or_else(|| "CPU".into()),
+                EncoderPreference::Gpu => app.env.ffmpeg.hw_encoders.as_ref().and_then(|h| h.first().map(|e| encoder_name(e))).unwrap_or_else(|| "顯示卡編碼".into()),
+                EncoderPreference::Cpu => "CPU 編碼".into(),
                 EncoderPreference::Auto => "自動".into(),
             };
             let m = match app.s.method {
                 MethodPreference::Auto => "自動",
-                MethodPreference::Ddagrab => "ddagrab",
-                MethodPreference::Gdigrab => "gdigrab",
+                MethodPreference::Ddagrab => "顯示卡擷取",
+                MethodPreference::Gdigrab => "相容模式",
             };
             let parts: Vec<&str> = [app.s.audio_system.then_some("系統聲音"), app.s.audio_mic.then_some("麥克風")].into_iter().flatten().collect();
             (
                 o.map(|(w, h)| format!("{w}×{h} · {}fps", app.s.fps)).unwrap_or_else(|| "—".into()),
-                if app.env.ffmpeg.encoder.is_some() { format!("{m} / {enc}") } else { "—".into() },
+                match (app.env.ffmpeg.encoder.is_some(), m == "自動" && enc == "自動") {
+                    (false, _) => "—".into(),
+                    (true, true) => "自動（依電腦選最順的方式）".into(),
+                    (true, false) => format!("{m}・{enc}"),
+                },
                 if parts.is_empty() { "不錄聲音".into() } else { parts.join(" + ") },
             )
         };
         // 名稱一欄固定寬度；值太長（例如音訊裝置名稱）時截斷，不撐寬面板（滑鼠移上去看完整內容）
         let gap_y = ui.spacing().item_spacing.y;
         ui.spacing_mut().item_spacing.y = 6.0;
-        let key_w = ["影片長度", "檔案大小", "輸出", "擷取 / 編碼", "聲音"].iter().map(|k| ui.painter().layout_no_wrap(k.to_string(), theme::font(13.0), p.muted).size().x).fold(0.0, f32::max);
+        let key_w = ["影片長度", "檔案大小", "輸出", "錄影方式", "聲音"].iter().map(|k| ui.painter().layout_no_wrap(k.to_string(), theme::font(13.0), p.muted).size().x).fold(0.0, f32::max);
         for (k, v) in
-            [("影片長度", video_clock(r.video_sec)), ("檔案大小", if active || r.bytes > 0 { format_bytes(r.bytes) } else { "—".into() }), ("輸出", out), ("擷取 / 編碼", method), ("聲音", audio)]
+            [("影片長度", video_clock(r.video_sec)), ("檔案大小", if active || r.bytes > 0 { format_bytes(r.bytes) } else { "—".into() }), ("輸出", out), ("錄影方式", method), ("聲音", audio)]
         {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 14.0;
@@ -866,7 +870,28 @@ fn rec_panel(app: &mut UiApp, ui: &mut Ui) {
         let sys_h = BOTTOM_BAR_H;
         // 轉檔工作、結果佔掉空間時：放不下就不顯示事件紀錄，系統狀態不被蓋住
         let log_h = ui.available_height() - sys_h - 8.0 - 32.0;
-        if log_h >= 40.0 {
+        if log_h >= 40.0 && r.log.is_empty() && !active {
+            // 還沒有事件：顯示快捷鍵小抄
+            ui.add_space(10.0);
+            ui.label(RichText::new("快捷鍵").font(theme::font_bold(12.5)).color(p.muted));
+            egui::ScrollArea::vertical().max_height(log_h).auto_shrink([false, true]).show(ui, |ui| {
+                ui.spacing_mut().item_spacing.y = 5.0;
+                for (i, name) in screenrecorder_core::types::HOTKEY_NAMES.iter().enumerate() {
+                    let key = app.keys.label(i);
+                    if key.is_empty() {
+                        continue;
+                    }
+                    ui.horizontal(|ui| {
+                        ui.add(egui::Label::new(RichText::new(*name).font(theme::font(12.5))).truncate());
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            ui.label(RichText::new(key).font(theme::mono(12.0)).color(p.muted));
+                        });
+                    });
+                }
+                ui.add_space(4.0);
+                ui.add(egui::Label::new(theme::muted(ui, "「截圖」旁的 ▾ 還有框選、長截圖、步驟截圖；快捷鍵可在「設定 → 快捷鍵」更換。").font(theme::font(12.0))).wrap());
+            });
+        } else if log_h >= 40.0 {
             ui.add_space(10.0);
             ui.label(RichText::new("事件紀錄").font(theme::font_bold(12.5)).color(p.muted));
             egui::ScrollArea::vertical().max_height(log_h).auto_shrink([false, true]).show(ui, |ui| {
@@ -909,7 +934,8 @@ fn shot_button(app: &mut UiApp, ui: &mut Ui, w: f32) {
     let mut long = false;
     let mut steps = false;
     let steps_on = app.status.steps.is_some();
-    let menu = |ui: &mut Ui, snip: &mut Option<u64>, long: &mut bool, steps: &mut bool| {
+    let mut qr = false;
+    let menu = |ui: &mut Ui, snip: &mut Option<u64>, long: &mut bool, steps: &mut bool, qr: &mut bool| {
         ui.set_min_width(190.0);
         if ui.button("框選範圍或視窗…").clicked() {
             *snip = Some(0);
@@ -924,13 +950,29 @@ fn shot_button(app: &mut UiApp, ui: &mut Ui, w: f32) {
         if ui.button("長截圖（捲動）…").on_hover_text("框選要捲動的內容（例如網頁），自動往下捲並接成一張長圖；按 Esc 停止").clicked() {
             *long = true;
         }
+        if ui.button("讀取 QR 碼…").on_hover_text("框選畫面上的 QR 碼，讀出內容（網址可以直接開啟）").clicked() {
+            *qr = true;
+        }
         if !steps_on && ui.button("步驟截圖（做成教學文件）").on_hover_text("開始後每點一下滑鼠就截一張，標出點的位置；完成時做成一份圖文並茂的教學文件").clicked()
         {
             *steps = true;
         }
     };
-    egui::Popup::context_menu(&resp).show(|ui| menu(ui, &mut snip, &mut long, &mut steps));
-    egui::Popup::menu(&arrow).show(|ui| menu(ui, &mut snip, &mut long, &mut steps));
+    egui::Popup::context_menu(&resp).show(|ui| menu(ui, &mut snip, &mut long, &mut steps, &mut qr));
+    egui::Popup::menu(&arrow).show(|ui| menu(ui, &mut snip, &mut long, &mut steps, &mut qr));
+    if qr && can {
+        app.main.shooting = true;
+        let config = app.s.record_config(&app.env);
+        let core = app.core.clone();
+        app.spawn(async move { core.qr_snip(&config).await }, |app, r| {
+            app.main.shooting = false;
+            match r {
+                Ok(Some(list)) => app.show_qr(list),
+                Ok(None) => {}
+                Err(e) => app.toast(e.message().to_string(), true),
+            }
+        });
+    }
     if steps {
         let dir = app.s.record_config(&app.env).output_dir;
         match app.core.steps_start(&dir) {
@@ -1012,6 +1054,7 @@ fn job_card(app: &mut UiApp, ui: &mut Ui) {
     ui.add_space(8.0);
     let label = match e.kind {
         ExportKind::Cut => "剪輯".to_string(),
+        ExportKind::Merge => "合併錄影".to_string(),
         ExportKind::Gif => format!("製作 GIF{}", if e.speed > 1.0 { format!(" {}×", speed_label(e.speed)) } else { String::new() }),
         ExportKind::Speed => format!("製作 {}× 加速版", speed_label(e.speed)),
     };
@@ -1063,6 +1106,31 @@ fn job_card(app: &mut UiApp, ui: &mut Ui) {
 }
 
 /// 系統狀態：新版本、FFmpeg、擷取方式、編碼器（正常的合併成一個「已就緒」）
+/// 擷取方式的白話名稱
+fn method_name(m: screenrecorder_core::types::CaptureMethod) -> &'static str {
+    match m.as_str() {
+        "ddagrab" => "顯示卡擷取",
+        _ => "相容模式",
+    }
+}
+
+/// 編碼器的白話名稱：libx264 → CPU 編碼、h264_nvenc → NVIDIA 顯示卡…
+fn encoder_name(e: &str) -> String {
+    let e = e.to_lowercase();
+    let gpu = |brand: &str| format!("{brand} 顯示卡編碼");
+    if e.contains("nvenc") {
+        gpu("NVIDIA")
+    } else if e.contains("qsv") {
+        gpu("Intel")
+    } else if e.contains("amf") {
+        gpu("AMD")
+    } else if e.contains("mf") {
+        "顯示卡編碼".into()
+    } else {
+        "CPU 編碼".into()
+    }
+}
+
 fn sys_status(app: &mut UiApp, ui: &mut Ui) {
     let p = theme::pal(ui);
     ui.label(RichText::new("系統狀態").font(theme::font(12.0)).color(p.muted));
@@ -1076,16 +1144,18 @@ fn sys_status(app: &mut UiApp, ui: &mut Ui) {
         } else if ff.found {
             ok.push(format!("FFmpeg {ver}（{}）", ff.path.clone().unwrap_or_default()));
             if !ff.has_ddagrab {
-                chips.push(("gdigrab".into(), Tone::Warn, "此 FFmpeg 不含 ddagrab，將使用 gdigrab".into()));
+                chips.push(("相容模式擷取".into(), Tone::Warn, "這個 FFmpeg 不支援顯示卡擷取（ddagrab），改用相容模式（gdigrab），大畫面時比較吃 CPU".into()));
             } else {
                 match ff.ddagrab_works {
                     None => chips.push(("ddagrab 測試中…".into(), Tone::Plain, String::new())),
-                    Some(true) => ok.push("擷取：ddagrab（GPU 擷取）".into()),
-                    Some(false) => chips.push(("ddagrab 不可用 → gdigrab".into(), Tone::Warn, ff.ddagrab_error.clone().unwrap_or_default())),
+                    Some(true) => ok.push("擷取：顯示卡擷取（ddagrab）".into()),
+                    Some(false) => {
+                        chips.push(("改用相容模式擷取".into(), Tone::Warn, format!("顯示卡擷取（ddagrab）在這台電腦不能用，改用相容模式（gdigrab）\n{}", ff.ddagrab_error.clone().unwrap_or_default())))
+                    }
                 }
             }
             match &ff.encoder {
-                Some(e) => ok.push(format!("編碼：{e}")),
+                Some(e) => ok.push(format!("編碼：{}（{e}）", encoder_name(e))),
                 None => chips.push(("無 H.264 編碼器".into(), Tone::Bad, String::new())),
             }
         } else {

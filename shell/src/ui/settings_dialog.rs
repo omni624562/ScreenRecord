@@ -1,7 +1,7 @@
 //! 設定視窗：左邊分頁（錄影 / 聲音 / 儲存位置 / 快捷鍵 / 進階），右邊表單（標籤固定寬度，控制項對齊）。
 //! 主畫面下方只留摘要，點一下開到對應的分頁。
 
-use super::settings::{FPS_CHOICES, MAX_PRESETS};
+use super::settings::{FPS_CHOICES, MAX_PRESETS, UI_SCALES};
 use super::theme::{self, segmented, switch, Btn, Icon};
 use super::UiApp;
 use eframe::egui::{self, pos2, vec2, Align, Color32, CornerRadius, Id, Layout, Rect, RichText, Sense, Stroke, Ui, UiBuilder};
@@ -355,7 +355,7 @@ fn record_page(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
             app.save_settings();
         }
     });
-    form_row(ui, "點擊與按鍵", |ui| {
+    form_row(ui, "畫面效果", |ui| {
         ui.vertical(|ui| {
             let mut c = app.s.show_clicks;
             if switch(ui, &mut c, "顯示滑鼠點擊", true).on_hover_text("按下滑鼠時在游標位置出現一圈波紋（左鍵黃色、右鍵藍色），錄進影片，看的人知道點了哪裡").changed()
@@ -371,11 +371,23 @@ fn record_page(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
                 app.s.show_keys = k;
                 app.save_settings();
             }
+            let mut h = app.s.cursor_halo;
+            if switch(ui, &mut h, "游標周圍加光暈", true).on_hover_text("游標周圍有一圈淡黃色的光暈，看影片的人比較容易跟上游標在哪裡").changed() {
+                app.s.cursor_halo = h;
+                app.save_settings();
+            }
         });
     });
-    if app.s.show_clicks || app.s.show_keys {
-        form_hint(ui, "顯示的波紋與按鍵會錄進影片；只支援 Windows。", p.muted);
+    if app.s.show_clicks || app.s.show_keys || app.s.cursor_halo {
+        form_hint(ui, "波紋、按鍵與光暈會錄進影片；只支援 Windows。", p.muted);
     }
+    form_row(ui, "桌面", |ui| {
+        let mut v = app.s.hide_icons;
+        if switch(ui, &mut v, "錄影時隱藏桌面圖示", true).on_hover_text("開始錄影時把桌面上的圖示藏起來，畫面比較乾淨；停止後自動還原").changed() {
+            app.s.hide_icons = v;
+            app.save_settings();
+        }
+    });
     camera_rows(app, d, ui);
     form_divider(ui);
     form_section(ui, "開始與結束", |_| {});
@@ -521,13 +533,25 @@ fn save_page(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
 
 fn advanced_page(app: &mut UiApp, ui: &mut Ui) {
     let p = theme::pal(ui);
+    form_section(ui, "介面", |_| {});
+    form_row(ui, "介面大小", |ui| {
+        let mut z = app.s.ui_scale;
+        let items: Vec<(u32, String)> = UI_SCALES.iter().map(|v| (*v, format!("{v}%"))).collect();
+        let refs: Vec<(u32, &str)> = items.iter().map(|(v, t)| (*v, t.as_str())).collect();
+        if segmented(ui, &mut z, &refs, true) {
+            app.s.ui_scale = z;
+            app.save_settings();
+        }
+    });
+    form_hint(ui, "字和按鈕放大一點比較好看清楚；螢幕小（例如 1366×768）時建議 100%。", p.muted);
+    form_divider(ui);
     form_section(ui, "擷取與編碼", |_| {});
     form_row(ui, "擷取方式", |ui| {
         let mut method = app.s.method;
         let items = [
             (MethodPreference::Auto, "自動（建議）".to_string(), true),
-            (MethodPreference::Ddagrab, "ddagrab（Desktop Duplication）".into(), true),
-            (MethodPreference::Gdigrab, "gdigrab（GDI，相容性最高）".into(), true),
+            (MethodPreference::Ddagrab, "顯示卡擷取（ddagrab，較省 CPU）".into(), true),
+            (MethodPreference::Gdigrab, "相容模式（gdigrab，哪台電腦都能用）".into(), true),
         ];
         if form_combo(ui, "method", FORM_CTRL_W, &mut method, &items) {
             app.s.method = method;
@@ -542,15 +566,15 @@ fn advanced_page(app: &mut UiApp, ui: &mut Ui) {
         app.save_settings();
     }
     let gpu_label = match &hw {
-        None => "GPU（偵測中…）".to_string(),
-        Some(h) if !h.is_empty() => format!("GPU（{}）", h.join("、")),
-        _ => "GPU（這台電腦沒有可用的）".into(),
+        None => "顯示卡編碼（偵測中…）".to_string(),
+        Some(h) if !h.is_empty() => format!("顯示卡編碼（{}）", h.join("、")),
+        _ => "顯示卡編碼（這台電腦沒有可用的）".into(),
     };
     form_row(ui, "編碼器", |ui| {
         let mut enc = app.s.encoder;
         let items = [
             (EncoderPreference::Auto, "自動（建議）".to_string(), true),
-            (EncoderPreference::Cpu, "CPU（libx264，畫質最穩）".into(), true),
+            (EncoderPreference::Cpu, "CPU 編碼（libx264，畫質最穩）".into(), true),
             (EncoderPreference::Gpu, gpu_label.clone(), hw.as_ref().is_some_and(|h| !h.is_empty())),
         ];
         if form_combo(ui, "encoder", FORM_CTRL_W, &mut enc, &items) {

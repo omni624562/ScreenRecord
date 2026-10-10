@@ -169,6 +169,45 @@ mod imp {
         any
     }
 
+    /// 桌面圖示是我們藏起來的（停止後要還原）
+    static ICONS_HIDDEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+    /// 桌面圖示的清單視窗（Progman 或 WorkerW 底下的 SHELLDLL_DefView → SysListView32）
+    fn desktop_list_view() -> Option<HWND> {
+        use windows::core::w;
+        use windows::Win32::UI::WindowsAndMessaging::{FindWindowExW, FindWindowW};
+        unsafe {
+            let find_in = |parent: HWND| -> Option<HWND> {
+                let def = FindWindowExW(Some(parent), None, w!("SHELLDLL_DefView"), None).ok()?;
+                FindWindowExW(Some(def), None, w!("SysListView32"), None).ok()
+            };
+            if let Some(h) = FindWindowW(w!("Progman"), None).ok().and_then(find_in) {
+                return Some(h);
+            }
+            // 換過桌布輪播等情況：在某個 WorkerW 底下
+            let mut after: Option<HWND> = None;
+            loop {
+                let w = FindWindowExW(None, after, w!("WorkerW"), None).ok()?;
+                if let Some(h) = find_in(w) {
+                    return Some(h);
+                }
+                after = Some(w);
+            }
+        }
+    }
+
+    pub fn set_desktop_icons(visible: bool) {
+        use std::sync::atomic::Ordering;
+        if visible && !ICONS_HIDDEN.load(Ordering::Relaxed) {
+            return;
+        }
+        let Some(h) = desktop_list_view() else { return };
+        unsafe {
+            let _ = ShowWindow(h, if visible { windows::Win32::UI::WindowsAndMessaging::SW_SHOW } else { windows::Win32::UI::WindowsAndMessaging::SW_HIDE });
+        }
+        ICONS_HIDDEN.store(!visible, Ordering::Relaxed);
+    }
+
     pub fn restore_ui() {
         let list = std::mem::take(&mut *MINIMIZED.lock().unwrap());
         for h in list {
@@ -239,6 +278,14 @@ pub fn display_order() -> Vec<String> {
     return imp::display_order();
     #[cfg(not(windows))]
     Vec::new()
+}
+
+/// 顯示 / 隱藏桌面圖示（錄影時讓畫面乾淨）；只會還原自己藏起來的
+pub fn set_desktop_icons(visible: bool) {
+    #[cfg(windows)]
+    imp::set_desktop_icons(visible);
+    #[cfg(not(windows))]
+    let _ = visible;
 }
 
 /// 還原先前由 minimize_ui 縮小的視窗（使用者自己又打開的就不動）

@@ -10,6 +10,11 @@ pub fn copy_png(path: &Path) -> (u32, u32, bool) {
     (pm.width(), pm.height(), ok)
 }
 
+/// 複製文字
+pub fn copy_text(text: &str) -> bool {
+    arboard::Clipboard::new().and_then(|mut c| c.set_text(text.to_string())).is_ok()
+}
+
 /// 把畫面（預乘 alpha）複製到剪貼簿；編輯後加了陰影的圖四周是透明的
 pub fn copy_pixmap(pm: &tiny_skia::Pixmap) -> bool {
     let bytes = crate::shot_edit::straight_rgba(pm);

@@ -48,6 +48,8 @@ pub enum Mode {
     Record,
     /// 長截圖（捲動截圖）
     Scroll,
+    /// 讀取 QR 碼
+    Qr,
 }
 
 thread_local! {
@@ -91,6 +93,7 @@ pub fn select(rgba: &[u8], desk: Rect, windows: Vec<Rect>, record: Mode) -> Opti
             match record {
                 Mode::Record => w!("框選錄影範圍"),
                 Mode::Scroll => w!("長截圖"),
+                Mode::Qr => w!("讀取 QR 碼"),
                 Mode::Shot => w!("框選截圖"),
             },
             WS_POPUP,
@@ -271,6 +274,7 @@ unsafe fn paint(hwnd: HWND) {
                     match st.record {
                         Mode::Record => "錄這個範圍",
                         Mode::Scroll => "捲動截取",
+                        Mode::Qr => "讀取 QR 碼",
                         Mode::Shot => "截取",
                     }
                 )
@@ -287,6 +291,7 @@ unsafe fn paint(hwnd: HWND) {
             let tip = match st.record {
                 Mode::Record => "拖曳框選要錄影的範圍，或點一下選視窗　　Esc 或右鍵取消",
                 Mode::Scroll => "框選要捲動的內容（例如網頁中間的部分），或點一下選視窗；選好後自動往下捲並接成長圖，按 Esc 停止",
+                Mode::Qr => "框選 QR 碼（大一點沒關係），或點一下選視窗　　Esc 或右鍵取消",
                 Mode::Shot => "拖曳框選範圍，或點一下截取視窗　　Esc 或右鍵取消",
             };
             let mut t: Vec<u16> = tip.encode_utf16().collect();

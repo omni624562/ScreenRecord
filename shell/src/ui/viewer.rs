@@ -297,6 +297,7 @@ enum Act {
     Delete,
     Ocr,
     Pin,
+    Qr,
     /// 影片：目前這一格存成截圖
     Grab,
 }
@@ -373,6 +374,9 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                         }
                         if Btn::new("文字辨識").small().tooltip("把圖裡的文字轉成可以複製的文字").show(ui).clicked() {
                             act = Act::Ocr;
+                        }
+                        if Btn::new("讀取 QR 碼").small().tooltip("找出圖裡的 QR 碼，讀出內容（網址可以直接開啟）").show(ui).clicked() {
+                            act = Act::Qr;
                         }
                         if Btn::new("複製").small().tooltip("複製到剪貼簿（可直接貼到 LINE、Word、信件）").show(ui).clicked() {
                             act = Act::Copy;
@@ -474,6 +478,13 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                 if let Err(e) = r {
                     app.toast(e.message().to_string(), true);
                 }
+            });
+        }
+        Act::Qr => {
+            let Some(path) = app.viewer.as_ref().map(|v| v.cur().media.path.clone()) else { return };
+            app.spawn(async move { screenrecorder_core::actions::shot_qr(&path).await }, |app, r| match r {
+                Ok(list) => app.show_qr(list),
+                Err(e) => app.toast(e.message().to_string(), true),
             });
         }
         Act::Ocr | Act::Pin => {

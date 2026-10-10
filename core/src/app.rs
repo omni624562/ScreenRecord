@@ -200,6 +200,7 @@ impl RecorderDeps for RecDeps {
     }
     fn after_stop(&self) {
         crate::winui::restore_ui();
+        crate::winui::set_desktop_icons(true);
     }
     fn save_markers(&self, output: &str, marks: &crate::recorder::Marks) {
         if let Some(a) = self.0.upgrade() {
@@ -602,6 +603,51 @@ impl App {
         };
         self.snip_end(Some(&src));
         res
+    }
+
+    /// 讀取畫面上的 QR 碼：框選範圍（或點一下選視窗）後解出內容；取消時 None。只有 Windows
+    pub async fn qr_snip(self: &Arc<Self>, config: &RecordConfig) -> crate::Result<Option<Vec<String>>> {
+        #[cfg(not(windows))]
+        {
+            let _ = config;
+            Err(crate::Error::config("讀取畫面上的 QR 碼只支援 Windows；可以在檢視器開啟截圖後按「讀取 QR 碼」"))
+        }
+        #[cfg(windows)]
+        {
+            {
+                let mut st = self.lock();
+                if st.shooting || st.snipping {
+                    return Err(crate::Error::config("正在截圖"));
+                }
+                st.shooting = true;
+            }
+            let r = self.snip_capture(config).await;
+            self.lock().shooting = false;
+            let src = r?;
+            let sel = self.snip_pick(&src, crate::snip_win::Mode::Qr).await;
+            let path = src.path.clone();
+            let desk = src.desktop;
+            let res = match sel {
+                None => Ok(None),
+                Some(r) => tokio::task::spawn_blocking(move || -> crate::Result<Vec<String>> {
+                    let pm = tiny_skia::Pixmap::decode_png(&std::fs::read(&path).map_err(|e| crate::Error::other(e.to_string()))?).map_err(|e| crate::Error::other(e.to_string()))?;
+                    let (x, y) = ((r.x - desk.x).max(0) as u32, (r.y - desk.y).max(0) as u32);
+                    let (w, h) = ((r.width as u32).min(pm.width().saturating_sub(x)), (r.height as u32).min(pm.height().saturating_sub(y)));
+                    let mut rgba = Vec::with_capacity((w * h * 4) as usize);
+                    let data = crate::shot_edit::straight_rgba(&pm);
+                    for row in y..y + h {
+                        let i = ((row * pm.width() + x) * 4) as usize;
+                        rgba.extend_from_slice(&data[i..i + (w * 4) as usize]);
+                    }
+                    Ok(crate::qr::decode(&rgba, w, h))
+                })
+                .await
+                .map_err(|e| crate::Error::other(e.to_string()))?
+                .map(Some),
+            };
+            self.snip_end(Some(&src));
+            res
+        }
     }
 
     /// 長截圖：框選範圍（或點一下選視窗）後，自動一邊往下捲一邊截取，接成一張長圖，
