@@ -1,4 +1,4 @@
-//! 剪輯視窗的標註：文字（含表情符號）、箭頭、方框、圓框、螢光筆、步驟編號、馬賽克、模糊。
+//! 剪輯視窗與截圖編輯的標註：文字（含表情符號）、箭頭、方框、圓框、螢光筆、步驟編號、畫筆、馬賽克、模糊、放大鏡（只限截圖）。
 //! 座標與大小一律用原影片的像素，時間用原影片的秒數（剪輯前）。
 //!
 //! 繪製用 tiny-skia（向量）與系統字型（ttf-parser 取字形，彩色表情支援 COLR 與點陣字形）：
@@ -23,10 +23,14 @@ pub enum AnnKind {
     Step,
     Mosaic,
     Blur,
+    /// 手繪的線（點存在 pts，0～1 相對於 x, y, w, h）
+    Pen,
+    /// 放大鏡：把圓裡中心附近的畫面放大顯示（size = 倍率 × 100）；只用在截圖（影片匯出不支援）
+    Magnify,
 }
 
 impl AnnKind {
-    pub const ALL: [AnnKind; 8] = [AnnKind::Text, AnnKind::Arrow, AnnKind::Rect, AnnKind::Ellipse, AnnKind::Highlight, AnnKind::Step, AnnKind::Mosaic, AnnKind::Blur];
+    pub const ALL: [AnnKind; 10] = [AnnKind::Text, AnnKind::Arrow, AnnKind::Rect, AnnKind::Ellipse, AnnKind::Highlight, AnnKind::Step, AnnKind::Pen, AnnKind::Mosaic, AnnKind::Blur, AnnKind::Magnify];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -38,17 +42,24 @@ impl AnnKind {
             AnnKind::Step => "編號",
             AnnKind::Mosaic => "馬賽克",
             AnnKind::Blur => "模糊",
+            AnnKind::Pen => "畫筆",
+            AnnKind::Magnify => "放大鏡",
         }
     }
 
-    /// 馬賽克 / 模糊（由 FFmpeg 處理，不是畫上去的）
+    /// 馬賽克 / 模糊 / 放大鏡：處理畫面本身（影片由 FFmpeg 處理，截圖由 effects.rs），不是畫上去的
     pub fn is_effect(self) -> bool {
-        matches!(self, AnnKind::Mosaic | AnnKind::Blur)
+        matches!(self, AnnKind::Mosaic | AnnKind::Blur | AnnKind::Magnify)
+    }
+
+    /// 只能用在截圖（影片匯出不支援）
+    pub fn image_only(self) -> bool {
+        self == AnnKind::Magnify
     }
 
     /// 用拖曳框出範圍的標註
     pub fn is_box(self) -> bool {
-        matches!(self, AnnKind::Rect | AnnKind::Ellipse | AnnKind::Highlight | AnnKind::Mosaic | AnnKind::Blur)
+        matches!(self, AnnKind::Rect | AnnKind::Ellipse | AnnKind::Highlight | AnnKind::Mosaic | AnnKind::Blur | AnnKind::Magnify)
     }
 }
 
@@ -111,6 +122,9 @@ pub struct Ann {
     /// 旋轉角度（度，順時針，以中心為軸）；箭頭不用
     #[serde(default, skip_serializing_if = "is_zero")]
     pub rot: f64,
+    /// 畫筆的點（0～1，相對於 x, y, w, h；調整大小時跟著縮放）
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pts: Vec<[f32; 2]>,
 }
 
 fn is_zero(v: &f64) -> bool {
@@ -120,7 +134,7 @@ fn is_zero(v: &f64) -> bool {
 impl AnnKind {
     /// 可以旋轉（箭頭的兩端本來就能指向任何方向）
     pub fn rotatable(self) -> bool {
-        self != AnnKind::Arrow
+        !matches!(self, AnnKind::Arrow | AnnKind::Magnify)
     }
 }
 
@@ -227,6 +241,7 @@ pub fn default_size(kind: AnnKind, vh: f64) -> f64 {
     match kind {
         AnnKind::Text => (48.0 * k).round(),
         AnnKind::Step => (64.0 * k).round(),
+        AnnKind::Magnify => 200.0,
         _ => (8.0 * k).round().max(2.0),
     }
 }
@@ -245,6 +260,7 @@ pub fn label(a: &Ann) -> String {
             }
         }
         AnnKind::Step => format!("編號 {}", a.n.unwrap_or(1)),
+        AnnKind::Magnify => format!("放大鏡 {}×", crate::format::num((a.size / 100.0 * 10.0).round() / 10.0)),
         AnnKind::Mosaic | AnnKind::Blur => {
             let mut parts = vec![];
             if let Some(s) = a.shape.filter(|s| *s != Shape::Rect) {
@@ -360,7 +376,13 @@ pub fn local_bbox(a: &Ann) -> (f64, f64, f64, f64) {
         let y0 = a.y.min(a.y + a.h);
         return (x0 - pad, y0 - pad, a.w.abs() + pad * 2.0, a.h.abs() + pad * 2.0);
     }
-    let pad = if matches!(a.kind, AnnKind::Rect | AnnKind::Ellipse) { a.size } else { 0.0 };
+    let pad = match a.kind {
+        AnnKind::Rect | AnnKind::Ellipse => a.size,
+        AnnKind::Pen => a.size / 2.0 + 1.0,
+        // 外圈的白邊
+        AnnKind::Magnify => magnify_ring(a.w.abs().min(a.h.abs())) + 1.0,
+        _ => 0.0,
+    };
     (a.x - pad, a.y - pad, a.w + pad * 2.0, a.h + pad * 2.0)
 }
 
@@ -374,6 +396,16 @@ pub fn hit(a: &Ann, x: f64, y: f64, tolerance: f64) -> bool {
         return dx.hypot(dy) <= a.size * 2.0 + tolerance || (x - x2).hypot(y - y2) <= a.size * 3.0 + tolerance;
     }
     let (x, y) = to_local(a, x, y);
+    if a.kind == AnnKind::Pen && a.pts.len() > 1 {
+        // 點到線附近才算（框裡的空白處可以點到後面的東西）
+        let pts = pen_points(a);
+        let near = |(x0, y0): (f64, f64), (x1, y1): (f64, f64)| {
+            let (dx, dy) = (x1 - x0, y1 - y0);
+            let t = (((x - x0) * dx + (y - y0) * dy) / (dx * dx + dy * dy).max(1e-9)).clamp(0.0, 1.0);
+            (x - (x0 + t * dx)).hypot(y - (y0 + t * dy)) <= a.size / 2.0 + tolerance + 2.0
+        };
+        return pts.windows(2).any(|p| near(p[0], p[1]));
+    }
     let (bx, by, bw, bh) = local_bbox(a);
     x >= bx - tolerance && x <= bx + bw + tolerance && y >= by - tolerance && y <= by + bh + tolerance
 }
@@ -708,8 +740,62 @@ pub fn draw(pixmap: &mut Pixmap, a: &Ann, t: Transform) {
             let baseline = a.y + a.size / 2.0 + a.size * 0.03 - fs / 2.0 + em_top(fs);
             draw_line(pixmap, &line, a.x + a.size / 2.0 - line.width / 2.0, baseline, fs, ink, None, t);
         }
-        AnnKind::Mosaic | AnnKind::Blur => {}
+        AnnKind::Pen => {
+            let pts = pen_points(a);
+            let Some(&(x0, y0)) = pts.first() else { return };
+            let mut pb = PathBuilder::new();
+            pb.move_to(x0 as f32, y0 as f32);
+            if pts.len() == 1 {
+                pb.line_to(x0 as f32 + 0.01, y0 as f32);
+            }
+            // 用相鄰兩點的中點畫二次曲線，手繪的線比較平滑
+            for i in 1..pts.len() {
+                let (px, py) = pts[i - 1];
+                let (qx, qy) = pts[i];
+                if i == 1 {
+                    pb.line_to(((px + qx) / 2.0) as f32, ((py + qy) / 2.0) as f32);
+                } else {
+                    pb.quad_to(px as f32, py as f32, ((px + qx) / 2.0) as f32, ((py + qy) / 2.0) as f32);
+                }
+            }
+            if let Some(&(lx, ly)) = pts.last() {
+                pb.line_to(lx as f32, ly as f32);
+            }
+            if let Some(path) = pb.finish() {
+                pixmap.stroke_path(&path, &paint(Color::from_rgba8(0, 0, 0, 70)), &stroke(a.size + 2.0), t, None);
+                pixmap.stroke_path(&path, &paint(color(&a.color, 1.0)), &stroke(a.size), t, None);
+            }
+        }
+        AnnKind::Mosaic | AnnKind::Blur | AnnKind::Magnify => {}
     }
+}
+
+/// 畫筆的點（影片像素，未旋轉）
+pub fn pen_points(a: &Ann) -> Vec<(f64, f64)> {
+    a.pts.iter().map(|p| (a.x + p[0] as f64 * a.w, a.y + p[1] as f64 * a.h)).collect()
+}
+
+/// 畫筆：把畫好的點（影片像素）轉成外框與 0～1 的相對位置
+pub fn set_pen_points(a: &mut Ann, pts: &[(f64, f64)]) {
+    if pts.is_empty() {
+        return;
+    }
+    let x0 = pts.iter().map(|p| p.0).fold(f64::INFINITY, f64::min);
+    let y0 = pts.iter().map(|p| p.1).fold(f64::INFINITY, f64::min);
+    let x1 = pts.iter().map(|p| p.0).fold(f64::NEG_INFINITY, f64::max);
+    let y1 = pts.iter().map(|p| p.1).fold(f64::NEG_INFINITY, f64::max);
+    // 直線（寬或高為 0）也能縮放：至少 1 像素
+    let (w, h) = ((x1 - x0).max(1.0), (y1 - y0).max(1.0));
+    a.x = x0;
+    a.y = y0;
+    a.w = w;
+    a.h = h;
+    a.pts = pts.iter().map(|p| [((p.0 - x0) / w) as f32, ((p.1 - y0) / h) as f32]).collect();
+}
+
+/// 放大鏡外圈白邊的寬度（影片像素）
+pub fn magnify_ring(d: f64) -> f64 {
+    (d * 0.025).clamp(2.0, 8.0)
 }
 
 /// 以不透明度畫一個標註（預覽中選取、但目前時間看不到的標註畫淡一點）
@@ -727,6 +813,9 @@ pub fn draw_with_opacity(pixmap: &mut Pixmap, a: &Ann, t: Transform, opacity: f3
 
 /// 匯出：馬賽克 / 模糊交給 FFmpeg（圓角、橢圓附上遮罩）；其他畫成剛好包住標註的透明 PNG
 pub fn to_overlay(a: &Ann, vw: f64, vh: f64) -> Option<Overlay> {
+    if a.kind.image_only() {
+        return None;
+    }
     if a.kind.is_effect() {
         let kind = if a.kind == AnnKind::Mosaic { OverlayKind::Mosaic } else { OverlayKind::Blur };
         let r = rotation(a);
@@ -803,7 +892,25 @@ mod tests {
     use super::*;
 
     fn ann(kind: AnnKind) -> Ann {
-        Ann { id: 1, kind, x: 100.0, y: 80.0, w: 200.0, h: 120.0, start: 0.0, end: 3.0, color: "#e5484d".into(), size: 8.0, text: None, bg: false, n: None, shape: None, invert: false, rot: 0.0 }
+        Ann {
+            id: 1,
+            kind,
+            x: 100.0,
+            y: 80.0,
+            w: 200.0,
+            h: 120.0,
+            start: 0.0,
+            end: 3.0,
+            color: "#e5484d".into(),
+            size: 8.0,
+            text: None,
+            bg: false,
+            n: None,
+            shape: None,
+            invert: false,
+            rot: 0.0,
+            pts: vec![],
+        }
     }
 
     #[test]

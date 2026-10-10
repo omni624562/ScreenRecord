@@ -34,6 +34,8 @@ pub enum UiPage {
     Changelog,
     /// 在螢幕上框選截圖（不開啟操作視窗；凍結的畫面用 App::take_snip 取得）
     Snip,
+    /// 開啟操作視窗並編輯最近的截圖（App::last_shot）
+    EditShot,
 }
 
 /// 框選截圖：先截下整個桌面（凍結），使用者在畫面上框選後再從中裁切
@@ -513,6 +515,11 @@ impl App {
         if ui_changed || cfg_changed {
             self.settings.save(SettingsPatch { ui: ui.filter(|_| ui_changed), config: cfg.filter(|_| cfg_changed).and_then(|c| serde_json::to_value(c).ok()), ..Default::default() });
         }
+    }
+
+    /// 最近的截圖
+    pub fn last_shot(&self) -> Option<crate::types::ShotInfo> {
+        self.lock().shot.clone()
     }
 
     /// 上次框選的範圍

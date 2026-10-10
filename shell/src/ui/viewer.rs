@@ -295,6 +295,8 @@ enum Act {
     Entry(EntryAction),
     Copy,
     Delete,
+    Ocr,
+    Pin,
 }
 
 pub fn show(app: &mut UiApp, ctx: &egui::Context) {
@@ -364,8 +366,17 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                         act = Act::Entry(EntryAction::External);
                     }
                     if image {
+                        if Btn::new("釘在桌面").small().tooltip("把這張圖變成浮在最上層的小視窗，方便對照（雙擊或 Esc 關閉）").show(ui).clicked() {
+                            act = Act::Pin;
+                        }
+                        if Btn::new("文字辨識").small().tooltip("把圖裡的文字轉成可以複製的文字").show(ui).clicked() {
+                            act = Act::Ocr;
+                        }
                         if Btn::new("複製").small().tooltip("複製到剪貼簿（可直接貼到 LINE、Word、信件）").show(ui).clicked() {
                             act = Act::Copy;
+                        }
+                        if Btn::new("編輯").icon(Icon::Edit).small().tooltip("加上標註、遮住個資、裁切（另存一張，原圖保留）").show(ui).clicked() {
+                            act = Act::Entry(EntryAction::Edit);
                         }
                     } else if !is_export_name(&e.media.name) {
                         if Btn::new("製作加速版 / GIF").icon(Icon::Export).small().show(ui).clicked() {
@@ -445,11 +456,23 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         Act::Next => go(app, 1),
         Act::Copy => copy_image(app),
         Act::Delete => delete_current(app),
+        Act::Ocr | Act::Pin => {
+            let Some(path) = app.viewer.as_ref().map(|v| v.cur().media.path.clone()) else { return };
+            if matches!(act, Act::Ocr) {
+                super::ocr::start(app, path);
+            } else {
+                app.spawn(async move { screenrecorder_core::actions::shot_pin(&path, &Default::default()).await }, |app, r| {
+                    if let Err(e) = r {
+                        app.toast(e.message().to_string(), true);
+                    }
+                });
+            }
+        }
         Act::Entry(a) => {
             let Some(v) = app.viewer.as_mut() else { return };
             let e = v.cur().clone();
-            if matches!(a, EntryAction::Edit | EntryAction::Export) {
-                // 改到剪輯 / 製作視窗：關掉檢視器與清單
+            if matches!(a, EntryAction::Edit | EntryAction::Export) && !super::dialogs::is_image(&e.media.path) {
+                // 改到剪輯 / 製作視窗：關掉檢視器與清單（編輯截圖蓋在上面，關掉就回來）
                 app.viewer = None;
                 app.library = None;
             } else if a == EntryAction::External {

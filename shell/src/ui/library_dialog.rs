@@ -266,7 +266,8 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         load(app);
     }
     if let Some((act, e)) = action {
-        if matches!(act, EntryAction::Edit | EntryAction::Export) {
+        // 剪輯影片、製作加速版時關掉清單；編輯截圖蓋在清單上，關掉編輯就回到清單
+        if matches!(act, EntryAction::Edit | EntryAction::Export) && !super::dialogs::is_image(&e.media.path) {
             app.library = None;
         }
         app.act(act, e);
@@ -546,6 +547,9 @@ fn shot_grid(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, area: Re
             }
             if Btn::icon_only(Icon::Folder).ghost().small().quiet(!hot).tooltip("在資料夾中顯示").show(ui).clicked() {
                 *action = Some((EntryAction::Reveal, e.clone()));
+            }
+            if Btn::icon_only(Icon::Cut).ghost().small().quiet(!hot).tooltip("編輯：標註、遮個資、裁切（另存一張）").show(ui).clicked() {
+                *action = Some((EntryAction::Edit, e.clone()));
             }
             if Btn::icon_only(Icon::Eye).ghost().small().quiet(!hot).tooltip("檢視").show(ui).clicked() {
                 *action = Some((EntryAction::Play, e.clone()));

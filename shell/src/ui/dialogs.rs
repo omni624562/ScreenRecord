@@ -240,6 +240,11 @@ pub fn base_name(name: &str) -> String {
     }
 }
 
+/// 圖片（截圖）
+pub fn is_image(path: &str) -> bool {
+    path.to_lowercase().ends_with(".png")
+}
+
 pub fn file_name(path: &str) -> String {
     path.rsplit(['\\', '/']).next().unwrap_or(path).to_string()
 }

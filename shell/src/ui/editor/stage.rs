@@ -76,6 +76,10 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, stage_h: f3
             if !visible && ed.ann_sel != Some(a.id) {
                 continue;
             }
+            // 放大鏡本身就看得出範圍（選取時才有外框）
+            if a.kind == AnnKind::Magnify {
+                continue;
+            }
             let alpha = if visible { 1.0 } else { 0.4 };
             let r = Rect::from_min_max(to_screen(a.x, a.y), to_screen(a.x + a.w, a.y + a.h));
             let mut pts = outline(a.shape, r, (annotate::round_radius(a.w, a.h) * css) as f32);
@@ -261,8 +265,8 @@ fn interact(ed: &mut Editor, ui: &egui::Ui, rect: Rect, resp: &egui::Response) {
     let to_video = |p: Pos2| (((p.x - rect.left()) / rect.width()).clamp(0.0, 1.0) as f64 * vw, ((p.y - rect.top()) / rect.height()).clamp(0.0, 1.0) as f64 * vh);
     let k = vw / rect.width().max(1.0) as f64;
 
-    // 影片上轉滾輪：前後一張（Shift 一秒）
-    if resp.hovered() && scroll != egui::Vec2::ZERO && ed.wheel_at.elapsed() > Duration::from_millis(40) {
+    // 影片上轉滾輪：前後一張（Shift 一秒）；截圖沒有
+    if !ed.is_shot() && resp.hovered() && scroll != egui::Vec2::ZERO && ed.wheel_at.elapsed() > Duration::from_millis(40) {
         ed.wheel_at = Instant::now();
         let d = if scroll.y.abs() >= scroll.x.abs() { scroll.y } else { scroll.x };
         let forward = d < 0.0;
@@ -314,12 +318,22 @@ fn interact(ed: &mut Editor, ui: &egui::Ui, rect: Rect, resp: &egui::Response) {
             }
         }
         // 連續放置編號 / 表情時，點到已放好的同類標註 = 選取、移動它，不再新增
-        let hit_same = ed.tool.filter(|t| t.sticky()).and_then(|t| ann_at(ed, x, y, k * 6.0).filter(|id| ed.anns.iter().any(|a| a.id == *id && a.kind == t.kind())));
+        let hit_same =
+            ed.tool.filter(|t| matches!(t, Tool::Emoji | Tool::Ann(AnnKind::Step))).and_then(|t| ann_at(ed, x, y, k * 6.0).filter(|id| ed.anns.iter().any(|a| a.id == *id && a.kind == t.kind())));
         if let (Some(tool), None) = (ed.tool, hit_same) {
             ed.player.pause();
             ed.stop_preview();
             let kind = tool.kind();
-            let a = ed.new_ann(kind, x, y);
+            let mut a = ed.new_ann(kind, x, y);
+            if kind == AnnKind::Pen {
+                // 畫筆：一筆一個標註，畫完繼續畫下一筆
+                annotate::set_pen_points(&mut a, &[(x, y)]);
+                let id = a.id;
+                ed.anns.push(a);
+                ed.ann_sel = None;
+                ed.drag = Drag::Pen { id, pts: vec![(x, y)] };
+                return;
+            }
             let id = a.id;
             let default_text = a.text.as_deref() == Some("說明文字");
             ed.anns.push(a);
@@ -361,7 +375,7 @@ fn interact(ed: &mut Editor, ui: &egui::Ui, rect: Rect, resp: &egui::Response) {
         return;
     }
 
-    let stage_drag = matches!(ed.drag, Drag::Crop { .. } | Drag::Create { .. } | Drag::Move { .. } | Drag::Resize { .. } | Drag::Rotate { .. });
+    let stage_drag = matches!(ed.drag, Drag::Crop { .. } | Drag::Create { .. } | Drag::Move { .. } | Drag::Resize { .. } | Drag::Rotate { .. } | Drag::Pen { .. });
     if !stage_drag {
         return;
     }
@@ -383,9 +397,27 @@ fn drag_to(ed: &mut Editor, (px, py): (f64, f64)) {
             ed.spec.crop = Some(CropInput { x: from.0.min(px), y: from.1.min(py), width: (px - from.0).abs(), height: (py - from.1).abs() });
             ed.drag = Drag::Crop { from };
         }
+        Drag::Pen { id, mut pts } => {
+            // 移動超過一點點才加點（線比較平滑、資料比較少）
+            let k = (if ed.vh > 0.0 { ed.vh } else { 1080.0 }) / 1080.0;
+            if pts.last().is_none_or(|&(lx, ly)| (px - lx).hypot(py - ly) >= 2.5 * k) {
+                pts.push((px, py));
+                if let Some(a) = ed.ann_mut(id) {
+                    annotate::set_pen_points(a, &pts);
+                }
+            }
+            ed.drag = Drag::Pen { id, pts };
+        }
         Drag::Create { id, from } => {
             if let Some(a) = ed.ann_mut(id) {
-                if a.kind == AnnKind::Arrow {
+                if a.kind == AnnKind::Magnify {
+                    // 放大鏡是正圓：取寬高中比較大的
+                    let d = (px - from.0).abs().max((py - from.1).abs());
+                    a.x = if px < from.0 { from.0 - d } else { from.0 };
+                    a.y = if py < from.1 { from.1 - d } else { from.1 };
+                    a.w = d;
+                    a.h = d;
+                } else if a.kind == AnnKind::Arrow {
                     a.w = px - from.0;
                     a.h = py - from.1;
                 } else {
@@ -427,6 +459,9 @@ fn drag_to(ed: &mut Editor, (px, py): (f64, f64)) {
                             let ratio = ((lx - o.x) / o.w.max(1.0)).max(0.2);
                             a.size = (o.size * ratio).round().max(8.0);
                             annotate::measure(a);
+                        } else if a.kind == AnnKind::Magnify {
+                            let d = (lx - o.x).max(ly - o.y).max(16.0);
+                            (a.w, a.h) = (d, d);
                         } else {
                             a.w = (lx - o.x).max(8.0);
                             a.h = (ly - o.y).max(8.0);
@@ -464,11 +499,23 @@ fn end_drag(ed: &mut Editor) {
                 ed.set_crop(c);
             }
         }
+        Drag::Pen { id, pts } => {
+            // 只點一下：畫一個點
+            if pts.len() == 1 {
+                if let Some(a) = ed.ann_mut(id) {
+                    annotate::set_pen_points(a, &[pts[0], (pts[0].0 + 0.5, pts[0].1)]);
+                }
+            }
+        }
         Drag::Create { id, .. } => {
             // 拖曳太短：給個預設大小
             let k = (if ed.vh > 0.0 { ed.vh } else { 1080.0 }) / 1080.0;
             if let Some(a) = ed.ann_mut(id) {
-                if a.kind == AnnKind::Arrow && a.w.hypot(a.h) < 20.0 * k {
+                if a.kind == AnnKind::Magnify && a.w < 24.0 * k {
+                    (a.w, a.h) = (240.0 * k, 240.0 * k);
+                    a.x -= a.w / 2.0;
+                    a.y -= a.h / 2.0;
+                } else if a.kind == AnnKind::Arrow && a.w.hypot(a.h) < 20.0 * k {
                     a.w = 160.0 * k;
                     a.h = -100.0 * k;
                 } else if a.kind != AnnKind::Arrow && (a.w < 12.0 * k || a.h < 12.0 * k) {
@@ -528,6 +575,19 @@ pub fn paint_tool_icon(p: &egui::Painter, c: Pos2, tool: Tool, color: Color32, e
             for (r, a) in [(9.5, 0.25), (7.0, 0.5), (4.5, 0.85)] {
                 p.circle_filled(c, r, color.gamma_multiply(a));
             }
+        }
+        Tool::Ann(AnnKind::Pen) => {
+            let pts: Vec<Pos2> = (0..=16)
+                .map(|i| {
+                    let t = i as f32 / 16.0;
+                    c + vec2(-9.0 + t * 18.0, (t * std::f32::consts::TAU * 1.2).sin() * 5.0)
+                })
+                .collect();
+            p.add(egui::Shape::line(pts, s));
+        }
+        Tool::Ann(AnnKind::Magnify) => {
+            p.circle_stroke(c + vec2(-2.0, -2.0), 7.0, s);
+            p.line_segment([c + vec2(3.0, 3.0), c + vec2(9.0, 9.0)], Stroke::new(2.6, color));
         }
     }
 }

@@ -42,6 +42,10 @@ pub enum TrayCommand {
     ScreenshotSelect,
     /// 再截一次上次框選的範圍
     ScreenshotLast,
+    /// 編輯最近的截圖
+    EditLastShot,
+    /// 點了通知：剛截圖的通知開啟編輯，其他開啟操作視窗
+    BalloonClick,
     OpenUpdate,
     Quit,
 }
@@ -68,6 +72,8 @@ pub struct TrayState {
     pub can_shot: bool,
     /// 有上次框選的範圍（「重複上次框選」）
     pub has_last_snip: bool,
+    /// 有截過圖（「編輯上次截圖」）
+    pub has_shot: bool,
     pub last_result: Option<String>,
     /// None = 無法設定（開發版）
     pub autostart: Option<bool>,
@@ -106,6 +112,8 @@ struct Ctl {
     last_result_msg: Option<String>,
     exists_at: u64,
     exists_cache: bool,
+    /// 最後一個通知是截圖的（點通知開啟編輯）
+    balloon_shot: bool,
 }
 
 pub struct TrayController {
@@ -120,6 +128,7 @@ impl TrayController {
     }
 
     pub fn notify(&self, title: &str, text: &str, warn: bool) {
+        self.ctl.lock().unwrap().balloon_shot = false;
         self.ui.balloon(title, text, warn);
     }
 
@@ -176,6 +185,7 @@ impl TrayController {
             can_record: self.app.ffmpeg_path().is_some() && !self.app.exporter.running(),
             can_shot: self.app.ffmpeg_path().is_some(),
             has_last_snip: self.app.last_snip().is_some(),
+            has_shot: self.app.last_shot().is_some_and(|s| std::path::Path::new(&s.path).is_file()),
             last_result: if last_result { c.last_result_path.clone() } else { None },
             autostart: c.autostart,
             version: APP_VERSION.to_string(),
@@ -263,8 +273,9 @@ impl TrayController {
     /// 截好了：顯示通知（存在哪裡、有沒有複製到剪貼簿）
     fn notify_shot(&self, shot: &crate::types::ShotInfo) {
         let name = std::path::Path::new(&shot.path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-        let text = if shot.copied { format!("已複製到剪貼簿，存成 {name}") } else { format!("已存成 {name}") };
+        let text = if shot.copied { format!("已複製到剪貼簿，存成 {name}。點這裡編輯") } else { format!("已存成 {name}。點這裡編輯") };
         self.notify("已截圖", &text, false);
+        self.ctl.lock().unwrap().balloon_shot = true;
     }
 
     async fn run_inner(self: &Arc<Self>, cmd: TrayCommand) -> Result<(), String> {
@@ -278,6 +289,15 @@ impl TrayController {
             }
             TrayCommand::Changelog => {
                 app.open_ui(UiPage::Changelog);
+                return Ok(());
+            }
+            TrayCommand::EditLastShot => {
+                app.open_ui(UiPage::EditShot);
+                return Ok(());
+            }
+            TrayCommand::BalloonClick => {
+                let shot = std::mem::take(&mut self.ctl.lock().unwrap().balloon_shot);
+                app.open_ui(if shot { UiPage::EditShot } else { UiPage::Main });
                 return Ok(());
             }
             TrayCommand::Quit => {

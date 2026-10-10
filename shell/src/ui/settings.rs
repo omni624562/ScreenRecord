@@ -56,6 +56,8 @@ pub struct UiSettings {
     pub gif_fps: u32,
     /// 加速版縮小後的寬度（0 = 原尺寸）
     pub mp4_width: u32,
+    /// 截圖後直接開啟編輯
+    pub edit_after_shot: bool,
 }
 
 pub const FPS_CHOICES: [f64; 8] = [10.0, 15.0, 20.0, 24.0, 25.0, 30.0, 50.0, 60.0];
@@ -109,6 +111,7 @@ impl UiSettings {
             gif_width: num("gifWidth").map(|v| v as u32).filter(|v| [320, 480, 640, 960, 1280].contains(v)).unwrap_or(640),
             gif_fps: num("gifFps").map(|v| v as u32).filter(|v| [5, 10, 15, 20].contains(v)).unwrap_or(10),
             mp4_width: num("mp4Width").map(|v| v as u32).filter(|v| MP4_WIDTHS.contains(v)).unwrap_or(0),
+            edit_after_shot: boolean("editAfterShot").unwrap_or(false),
         };
         s.fix_monitor(env);
         s

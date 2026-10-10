@@ -1,0 +1,400 @@
+//! 截圖編輯（剪輯視窗的截圖模式）：沒有時間軸；標註與裁切和剪輯影片相同，另有輸出設定（外框、陰影、大小）。
+//! 存成 *_編輯.png（原圖保留）並複製到剪貼簿；編輯設定記在專案裡，之後開啟編輯過的圖可以從原圖重新套用並修改。
+
+use super::{BannerInfo, Editor, Pl, Tab};
+use crate::ui::dialogs::file_name;
+use crate::ui::theme::{self, segmented, switch, Btn};
+use crate::ui::UiApp;
+use eframe::egui::{self, pos2, vec2, Align, Color32, CornerRadius, CursorIcon, Layout, Rect, RichText, Sense, Stroke, TextureHandle, TextureOptions};
+use screenrecorder_core::actions::{self, ProjectMatch, ShotProjectInfo};
+use screenrecorder_core::annotate;
+use screenrecorder_core::edit::{normalize_crop, CropInput, EditSpec};
+use screenrecorder_core::player::Frame;
+use screenrecorder_core::shot_edit::{self, ShotSpec, BORDER_COLORS, SCALES};
+use screenrecorder_core::types::{LibraryEntry, MediaInfo};
+use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
+
+/// 編輯時顯示的畫面最大邊長（輸出用原圖）
+const PREVIEW_MAX: u32 = 2560;
+
+/// 輸出設定（復原 / 重做也記這些）
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ShotOpts {
+    pub border: Option<String>,
+    pub border_width: f64,
+    pub shadow: bool,
+    pub scale: u32,
+}
+
+impl Default for ShotOpts {
+    fn default() -> Self {
+        let d = ShotSpec::default();
+        Self { border: d.border, border_width: d.border_width, shadow: d.shadow, scale: d.scale }
+    }
+}
+
+pub struct Shot {
+    /// 原圖（編輯過的圖從原圖重新套用）
+    path: String,
+    opts: ShotOpts,
+    /// 開啟的那張編輯過的圖（可以改回直接編輯它）
+    opened_edit: Option<String>,
+    /// 「輸出」分頁的預覽：(內容, 圖)
+    preview: Option<(String, TextureHandle)>,
+}
+
+impl Shot {
+    pub fn opts(&self) -> ShotOpts {
+        self.opts.clone()
+    }
+    pub fn set_opts(&mut self, o: ShotOpts) {
+        self.opts = o;
+    }
+}
+
+/// 需要 app 的動作（按鈕與快捷鍵）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Act {
+    Save,
+    Copy,
+    Pin,
+    Ocr,
+    /// 不從原圖重新套用，直接編輯開啟的那張
+    Plain,
+}
+
+/// 開啟截圖編輯：編輯過的圖會從原圖重新套用上次的編輯
+pub fn open(app: &mut UiApp, path: String) {
+    open_with(app, path, true);
+}
+
+fn open_with(app: &mut UiApp, path: String, use_project: bool) {
+    if app.editor.is_some() {
+        return app.toast("編輯視窗已經開著，請先關閉", true);
+    }
+    let core = app.core.clone();
+    let p = path.clone();
+    app.spawn(
+        async move {
+            let info = if use_project { actions::shot_project(&core, &p).await } else { None };
+            // 開啟的是編輯過的圖、原圖還在：改用原圖，套用上次的編輯
+            let src = match &info {
+                Some(i) if i.matched == ProjectMatch::Output && i.source_ok => i.project.source.clone(),
+                _ => p.clone(),
+            };
+            let img = actions::load_image(&src).await;
+            (info, src, img)
+        },
+        move |app, (info, src, img)| match img {
+            Err(e) => app.toast(e.message().to_string(), true),
+            Ok((rgba, w, h)) => {
+                if app.editor.is_none() {
+                    app.editor = Some(new_editor(app, path, src, rgba, w, h, info));
+                }
+            }
+        },
+    );
+}
+
+fn new_editor(app: &UiApp, opened: String, src: String, rgba: Vec<u8>, w: u32, h: u32, info: Option<ShotProjectInfo>) -> Editor {
+    let entry = LibraryEntry { media: MediaInfo { path: src.clone(), name: file_name(&src), width: Some(w), height: Some(h), ..Default::default() }, exports: vec![] };
+    let mut ed = Editor::base(app, entry, PathBuf::new(), Pl(None), Tab::Ann);
+    ed.duration = 1.0;
+    ed.fps = 1.0;
+    ed.vw = w as f64;
+    ed.vh = h as f64;
+    ed.spec = EditSpec { start: 0.0, end: 1.0, removed: vec![], crop: None, overlays: vec![] };
+    ed.view = (0.0, 1.0);
+    let (prgba, pw, ph) = downscale(&rgba, w, h, PREVIEW_MAX);
+    ed.frame = Some(Frame { time: 0.0, width: pw, height: ph, rgba: prgba });
+    ed.shot = Some(Shot { path: src, opts: ShotOpts::default(), opened_edit: None, preview: None });
+    match info {
+        Some(i) if i.matched == ProjectMatch::Output && i.source_ok => {
+            apply_spec(&mut ed, &i.spec);
+            ed.replace_target = Some(opened.clone());
+            if let Some(s) = &mut ed.shot {
+                s.opened_edit = Some(opened);
+            }
+        }
+        Some(i) if i.matched == ProjectMatch::Output => ed.banner = BannerInfo::MissingSource(file_name(&i.project.source)),
+        Some(i) => ed.banner = BannerInfo::HasProject { output: i.project.output, data: i.project.data },
+        None => {}
+    }
+    ed.mark_saved();
+    ed
+}
+
+/// 縮小到最長邊不超過 max（RGBA）
+fn downscale(rgba: &[u8], w: u32, h: u32, max: u32) -> (Vec<u8>, u32, u32) {
+    shot_edit::scale_rgba(rgba, w, h, (max as f64 / w.max(h) as f64).min(1.0))
+}
+
+/// 套用存起來的編輯
+fn apply_spec(ed: &mut Editor, spec: &ShotSpec) {
+    ed.spec.crop = spec.crop;
+    ed.crop_on = spec.crop.is_some();
+    ed.anns = spec.anns.iter().filter(|a| [a.x, a.y, a.w, a.h, a.size].iter().all(|v| v.is_finite())).cloned().collect();
+    for a in &mut ed.anns {
+        a.id = ed.next_id;
+        ed.next_id += 1;
+        (a.start, a.end) = (0.0, 1.0);
+        annotate::measure(a);
+    }
+    if let Some(s) = &mut ed.shot {
+        s.opts = ShotOpts { border: spec.border.clone(), border_width: spec.border_width, shadow: spec.shadow, scale: spec.scale };
+    }
+}
+
+/// 目前的編輯（輸出用）
+pub fn spec(ed: &Editor) -> ShotSpec {
+    let crop =
+        if ed.crop_on { normalize_crop(ed.spec.crop, ed.vw as i32, ed.vh as i32).map(|r| CropInput { x: r.x as f64, y: r.y as f64, width: r.width as f64, height: r.height as f64 }) } else { None };
+    let o = ed.shot.as_ref().map(|s| s.opts()).unwrap_or_default();
+    ShotSpec { crop, anns: ed.ordered().into_iter().cloned().collect(), border: o.border, border_width: o.border_width, shadow: o.shadow, scale: o.scale }
+}
+
+fn source(ed: &Editor) -> String {
+    ed.shot.as_ref().map(|s| s.path.clone()).unwrap_or_default()
+}
+
+/// 什麼都還沒改（不用存）
+fn unchanged(ed: &Editor) -> bool {
+    let s = spec(ed);
+    s.crop.is_none() && s.anns.is_empty() && s.border.is_none() && !s.shadow && s.scale == 100
+}
+
+// ───────────── 畫面 ─────────────
+
+/// 說明列：正在修改哪張編輯過的圖、找不到原圖、或原圖有上次的編輯可以載入
+pub fn banner(ed: &mut Editor, ui: &mut egui::Ui) {
+    let p = theme::pal(ui);
+    let (text, warn): (String, bool) = if let Some(target) = &ed.replace_target {
+        (format!("正在修改「{}」：已從原圖「{}」載入上次的標註，可以直接修改。儲存時會取代這張。", file_name(target), ed.entry.media.name), false)
+    } else {
+        match &ed.banner {
+            BannerInfo::None => return,
+            BannerInfo::MissingSource(src) => (format!("找不到原圖「{src}」，之前的標註已經存進這張圖、無法修改；只能在這張圖上繼續編輯。"), true),
+            BannerInfo::HasProject { output, .. } => (format!("這張截圖之前編輯成「{}」。", file_name(output)), false),
+        }
+    };
+    egui::Frame::new().inner_margin(egui::Margin::symmetric(18, 0)).show(ui, |ui| {
+        egui::Frame::new().fill(if warn { p.warn_soft } else { p.accent_soft }).corner_radius(theme::RADIUS_SM).inner_margin(egui::Margin::symmetric(12, 8)).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal_wrapped(|ui| {
+                ui.label(RichText::new(text).color(if warn { p.warn } else { p.text }));
+                if ed.replace_target.is_some() {
+                    if Btn::new("改為另存新的一張").small().show(ui).clicked() {
+                        ed.replace_target = None;
+                        ed.banner = BannerInfo::None;
+                    }
+                    if Btn::new("改成直接編輯這張").small().show(ui).clicked() {
+                        ed.pending = Some(Act::Plain);
+                    }
+                } else if let BannerInfo::HasProject { output, data } = &ed.banner {
+                    if Btn::new("載入上次的編輯來修改").small().show(ui).clicked() {
+                        let (output, data) = (output.clone(), data.clone());
+                        if let Some(spec) = shot_edit::ShotProject::parse(&data) {
+                            apply_spec(ed, &spec);
+                            ed.replace_target = Some(output);
+                            ed.banner = BannerInfo::None;
+                            ed.mark_saved();
+                        }
+                    }
+                }
+            });
+        });
+    });
+}
+
+/// 下方：輸出大小與按鈕
+pub fn footer(ed: &mut Editor, ui: &mut egui::Ui) -> Option<Act> {
+    let p = theme::pal(ui);
+    let s = spec(ed);
+    let (w, h) = shot_edit::output_size(&s, ed.vw as u32, ed.vh as u32);
+    let mut act = None;
+    ui.vertical(|ui| {
+        ui.spacing_mut().item_spacing = vec2(0.0, 2.0);
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing.x = 0.0;
+            ui.label("輸出 ");
+            ui.label(RichText::new(format!("{w}×{h}")).font(theme::font_bold(13.5)));
+            ui.label(format!("（原圖 {}×{}）", ed.vw, ed.vh));
+            if !ed.anns.is_empty() {
+                ui.label(format!("・標註 {} 個", ed.anns.len()));
+            }
+        });
+        let line = match &ed.replace_target {
+            Some(t) => format!("儲存後取代 {}，並複製到剪貼簿", file_name(t)),
+            None => format!("另存為 {}（原圖保留），並複製到剪貼簿", file_name(&shot_edit::edited_path(std::path::Path::new(&source(ed))).display().to_string())),
+        };
+        ui.label(RichText::new(line).font(theme::font(12.0)).color(p.muted));
+    });
+    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+        let same = unchanged(ed);
+        let mut b = Btn::new(if ed.replace_target.is_some() { "儲存修改" } else { "儲存" }).primary().enabled(!same && !ed.saving).tooltip("Ctrl+S");
+        if same {
+            b = b.tooltip("還沒有任何標註、裁切或輸出設定");
+        }
+        if b.show(ui).clicked() {
+            act = Some(Act::Save);
+        }
+        if Btn::new("複製").ghost().tooltip("複製編輯後的圖到剪貼簿，不存檔（Ctrl+C）").show(ui).clicked() {
+            act = Some(Act::Copy);
+        }
+        if Btn::new("釘在桌面").ghost().tooltip("把編輯後的圖變成浮在最上層的小視窗，方便對照").show(ui).clicked() {
+            act = Some(Act::Pin);
+        }
+        if Btn::new("全部重設").ghost().show(ui).clicked() {
+            ed.reset();
+            if let Some(s) = &mut ed.shot {
+                s.opts = ShotOpts::default();
+            }
+        }
+    });
+    act
+}
+
+/// 「輸出」分頁：外框、陰影、大小，以及輸出的樣子
+pub fn output_panel(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context) {
+    let p = theme::pal(ui);
+    let Some(mut o) = ed.shot.as_ref().map(|s| s.opts()) else { return };
+    let label = |ui: &mut egui::Ui, t: &str| {
+        ui.label(theme::muted(ui, t).font(theme::font(12.0)));
+    };
+    // 外框
+    ui.vertical(|ui| {
+        ui.spacing_mut().item_spacing.y = 6.0;
+        label(ui, "外框");
+        let mut kind = match &o.border {
+            None => 0,
+            Some(_) if o.border_width <= 3.0 => 1,
+            Some(_) => 2,
+        };
+        if segmented(ui, &mut kind, &[(0, "無"), (1, "細"), (2, "粗")], true) {
+            match kind {
+                0 => o.border = None,
+                k => {
+                    o.border = Some(o.border.clone().unwrap_or_else(|| BORDER_COLORS[0].into()));
+                    o.border_width = if k == 1 { 2.0 } else { 6.0 };
+                }
+            }
+        }
+        if o.border.is_some() {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 8.0;
+                for c in BORDER_COLORS {
+                    let (r, resp) = ui.allocate_exact_size(vec2(24.0, 24.0), Sense::click());
+                    let (cr, cg, cb) = annotate::parse_color(c);
+                    if o.border.as_deref() == Some(c) {
+                        ui.painter().circle_stroke(r.center(), 13.5, Stroke::new(2.0, p.accent));
+                    }
+                    ui.painter().circle(r.center(), 10.5, Color32::from_rgb(cr, cg, cb), Stroke::new(1.0, p.border_strong));
+                    if resp.on_hover_cursor(CursorIcon::PointingHand).clicked() {
+                        o.border = Some(c.to_string());
+                    }
+                }
+            });
+        }
+    });
+    // 陰影
+    switch(ui, &mut o.shadow, "四周加上陰影", true).on_hover_text("四周留透明的邊並加上柔和的陰影，貼到文件或簡報比較立體");
+    // 大小
+    ui.vertical(|ui| {
+        ui.spacing_mut().item_spacing.y = 6.0;
+        label(ui, "大小");
+        let items: Vec<(u32, String)> = SCALES.iter().map(|s| (*s, format!("{s}%"))).collect();
+        let refs: Vec<(u32, &str)> = items.iter().map(|(v, t)| (*v, t.as_str())).collect();
+        segmented(ui, &mut o.scale, &refs, true);
+    });
+    if let Some(s) = &mut ed.shot {
+        s.opts = o;
+    }
+    let sp = spec(ed);
+    let (w, h) = shot_edit::output_size(&sp, ed.vw as u32, ed.vh as u32);
+    ui.label(theme::muted(ui, format!("輸出 {w}×{h}")).font(theme::font(12.5)));
+    // 輸出的樣子（與存檔用同一個 render）
+    let key = serde_json::to_string(&sp).unwrap_or_default();
+    let stale = ed.shot.as_ref().is_none_or(|s| s.preview.as_ref().is_none_or(|(k, _)| *k != key));
+    if stale {
+        if let Some(f) = &ed.frame {
+            if let Some(pm) = shot_edit::render(&f.rgba, f.width, f.height, ed.vw as u32, ed.vh as u32, &sp, true) {
+                let img = egui::ColorImage::from_rgba_premultiplied([pm.width() as usize, pm.height() as usize], pm.data());
+                let tex = ctx.load_texture("shot-output", img, TextureOptions::LINEAR);
+                if let Some(s) = &mut ed.shot {
+                    s.preview = Some((key, tex));
+                }
+            }
+        }
+    }
+    if let Some((_, tex)) = ed.shot.as_ref().and_then(|s| s.preview.as_ref()) {
+        let sz = tex.size_vec2();
+        let k = (ui.available_width() / sz.x).min(220.0 / sz.y).min(1.0);
+        let (r, _) = ui.allocate_exact_size(sz * k, Sense::hover());
+        checker(ui.painter(), r);
+        ui.painter().image(tex.id(), r, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+    }
+    ui.label(theme::muted(ui, "存檔時另存一張（原圖保留），同時複製到剪貼簿，可以直接貼到 LINE、Word、信件。").font(theme::font(12.0)));
+}
+
+/// 透明處的棋盤格底
+fn checker(p: &egui::Painter, r: Rect) {
+    let n = 8.0;
+    let (a, b) = (Color32::from_gray(236), Color32::from_gray(214));
+    p.rect_filled(r, CornerRadius::ZERO, a);
+    let mut y = r.top();
+    let mut row = 0;
+    while y < r.bottom() {
+        let mut x = r.left() + if row % 2 == 0 { 0.0 } else { n };
+        while x < r.right() {
+            p.rect_filled(Rect::from_min_max(pos2(x, y), pos2((x + n).min(r.right()), (y + n).min(r.bottom()))), CornerRadius::ZERO, b);
+            x += n * 2.0;
+        }
+        y += n;
+        row += 1;
+    }
+}
+
+// ───────────── 動作 ─────────────
+
+/// 儲存、複製、釘在桌面、文字辨識、直接編輯開啟的那張
+pub fn run(app: &mut UiApp, ed: &mut Editor, act: Act) {
+    let (core, src, sp) = (app.core.clone(), source(ed), spec(ed));
+    match act {
+        Act::Save => {
+            if unchanged(ed) || ed.saving {
+                return;
+            }
+            ed.saving = true;
+            let replace = ed.replace_target.clone();
+            app.spawn(async move { actions::shot_save(&core, &src, &sp, replace.as_deref()).await }, |app, r| match r {
+                Ok(info) => {
+                    app.editor = None;
+                    app.toast(format!("已存成 {}{}", file_name(&info.path), if info.copied { "，並複製到剪貼簿" } else { "" }), false);
+                    app.shots_changed();
+                }
+                Err(e) => {
+                    if let Some(ed) = &mut app.editor {
+                        ed.saving = false;
+                    }
+                    app.toast(e.message().to_string(), true);
+                }
+            });
+        }
+        Act::Copy => app.spawn(async move { actions::shot_copy(&src, &sp).await }, |app, r| match r {
+            Ok((w, h)) => app.toast(format!("已複製到剪貼簿（{w}×{h}）"), false),
+            Err(e) => app.toast(e.message().to_string(), true),
+        }),
+        Act::Pin => app.spawn(async move { actions::shot_pin(&src, &sp).await }, |app, r| {
+            if let Err(e) = r {
+                app.toast(e.message().to_string(), true);
+            }
+        }),
+        Act::Ocr => super::super::ocr::start_spec(app, src, sp),
+        Act::Plain => {
+            let Some(path) = ed.shot.as_ref().and_then(|s| s.opened_edit.clone()) else { return };
+            app.editor = None;
+            open_with(app, path, false);
+        }
+    }
+}

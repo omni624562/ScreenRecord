@@ -75,7 +75,8 @@ fn parse_script(s: &str) -> VecDeque<Step> {
                     if let Some(n) = name.strip_prefix("shift+") {
                         (m, name) = (m | Modifiers::SHIFT, n);
                     } else if let Some(n) = name.strip_prefix("ctrl+") {
-                        (m, name) = (m | Modifiers::CTRL, n);
+                        // Windows 上 Ctrl 同時是 command（egui 的快捷鍵用 command 判斷）
+                        (m, name) = (m | Modifiers::CTRL | Modifiers::COMMAND, n);
                     } else if let Some(n) = name.strip_prefix("alt+") {
                         (m, name) = (m | Modifiers::ALT, n);
                     } else {

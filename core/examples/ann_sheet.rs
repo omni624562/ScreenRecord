@@ -23,6 +23,7 @@ fn main() {
         shape: None,
         invert: false,
         rot: 0.0,
+        pts: vec![],
     };
     let mut list = vec![base.clone()];
     list.push(Ann { y: 200.0, bg: false, color: "#f5b301".into(), text: Some("沒有底色的文字 😀".into()), ..base.clone() });

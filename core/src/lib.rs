@@ -29,7 +29,10 @@ pub mod job;
 pub mod library;
 pub mod log;
 pub mod monitors;
+pub mod ocr;
 pub mod paths;
+#[cfg(windows)]
+pub mod pin_win;
 pub mod player;
 pub mod process;
 pub mod projects;
@@ -39,6 +42,7 @@ pub mod recorder;
 pub mod recycle;
 pub mod selfupdate;
 pub mod settings;
+pub mod shot_edit;
 #[cfg(windows)]
 pub mod snip_win;
 pub mod thumbs;

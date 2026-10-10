@@ -313,6 +313,16 @@ fn record_page(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
             app.save_settings();
         }
     });
+    form_divider(ui);
+    form_section(ui, "截圖", |_| {});
+    form_row(ui, "截圖後", |ui| {
+        let mut on = app.s.edit_after_shot;
+        if switch(ui, &mut on, "直接開啟編輯", true).changed() {
+            app.s.edit_after_shot = on;
+            app.save_settings();
+        }
+    });
+    form_hint(ui, "關閉時也可以點截圖後的通知、或系統匣「截圖 → 編輯上次截圖」開啟編輯。", theme::pal(ui).muted);
 }
 
 // ───────────── 聲音 ─────────────

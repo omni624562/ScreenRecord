@@ -213,6 +213,121 @@ pub async fn edit_project(app: &App, path: &str) -> Option<EditProject> {
     Some(EditProject { project, matched, source })
 }
 
+// ───────────── 截圖編輯 ─────────────
+
+/// 截圖之前的編輯：path 是編輯過的圖時回傳它自己的；是原圖時回傳最近一次用它編輯的
+#[derive(Debug, Clone)]
+pub struct ShotProjectInfo {
+    pub project: Project,
+    pub matched: ProjectMatch,
+    pub spec: crate::shot_edit::ShotSpec,
+    /// 原圖還在
+    pub source_ok: bool,
+}
+
+pub async fn shot_project(app: &App, path: &str) -> Option<ShotProjectInfo> {
+    if !is_abs(path) || !ends_with_ci(path, &[".png"]) {
+        return None;
+    }
+    let store = app.projects.clone();
+    let p = path.to_string();
+    let (project, matched) =
+        tokio::task::spawn_blocking(move || store.for_output(&p).map(|x| (x, ProjectMatch::Output)).or_else(|| store.latest_for_source(&p).map(|x| (x, ProjectMatch::Source)))).await.ok().flatten()?;
+    let spec = crate::shot_edit::ShotProject::parse(&project.data)?;
+    let source_ok = is_file(&project.source);
+    Some(ShotProjectInfo { project, matched, spec, source_ok })
+}
+
+/// 讀取截圖（RGBA，不透明）與大小
+pub async fn load_image(path: &str) -> Result<(Vec<u8>, u32, u32)> {
+    let p = path.to_string();
+    tokio::task::spawn_blocking(move || {
+        let bytes = std::fs::read(&p).map_err(|e| Error::config(format!("讀不到圖片：{e}")))?;
+        let pm = tiny_skia::Pixmap::decode_png(&bytes).map_err(|e| Error::config(format!("讀不到圖片：{e}")))?;
+        Ok((crate::shot_edit::straight_rgba(&pm), pm.width(), pm.height()))
+    })
+    .await
+    .map_err(|e| Error::other(e.to_string()))?
+}
+
+/// 套用編輯後的圖（原尺寸輸出）
+async fn render_shot(source: &str, spec: &crate::shot_edit::ShotSpec) -> Result<tiny_skia::Pixmap> {
+    let (rgba, w, h) = load_image(source).await?;
+    let spec = spec.clone();
+    tokio::task::spawn_blocking(move || crate::shot_edit::render(&rgba, w, h, w, h, &spec, false).ok_or_else(|| Error::config("無法套用編輯"))).await.map_err(|e| Error::other(e.to_string()))?
+}
+
+/// 編輯好的截圖複製到剪貼簿（不存檔）
+pub async fn shot_copy(source: &str, spec: &crate::shot_edit::ShotSpec) -> Result<(u32, u32)> {
+    let pm = render_shot(source, spec).await?;
+    let (w, h) = (pm.width(), pm.height());
+    let ok = tokio::task::spawn_blocking(move || crate::clipboard::copy_pixmap(&pm)).await.unwrap_or(false);
+    if !ok {
+        return Err(Error::other("無法複製到剪貼簿"));
+    }
+    Ok((w, h))
+}
+
+/// 文字辨識：spec 有給時辨識套用編輯後的樣子；回傳 (文字, 語言)
+pub async fn shot_ocr(path: &str, spec: Option<&crate::shot_edit::ShotSpec>) -> Result<(String, String)> {
+    let (rgba, w, h) = match spec {
+        Some(s) => {
+            let pm = render_shot(path, s).await?;
+            (crate::shot_edit::straight_rgba(&pm), pm.width(), pm.height())
+        }
+        None => load_image(path).await?,
+    };
+    tokio::task::spawn_blocking(move || crate::ocr::recognize(&rgba, w, h)).await.map_err(|e| Error::other(e.to_string()))?.map_err(Error::config)
+}
+
+/// 釘在桌面（編輯後的樣子；只有 Windows）
+pub async fn shot_pin(path: &str, spec: &crate::shot_edit::ShotSpec) -> Result<()> {
+    let pm = render_shot(path, spec).await?;
+    #[cfg(windows)]
+    {
+        crate::pin_win::show(crate::shot_edit::straight_rgba(&pm), pm.width(), pm.height());
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = pm;
+        Err(Error::config("釘在桌面只支援 Windows"))
+    }
+}
+
+/// 存成編輯過的圖（原圖保留；replace = 取代之前編輯過的那張），複製到剪貼簿，並記住編輯設定（之後可以再改）
+pub async fn shot_save(app: &App, source: &str, spec: &crate::shot_edit::ShotSpec, replace: Option<&str>) -> Result<crate::types::ShotInfo> {
+    if !is_abs(source) || !is_file(source) {
+        return Err(Error::config("找不到原圖"));
+    }
+    if replace.is_some_and(|r| !is_abs(r)) {
+        return Err(Error::config("找不到要取代的圖"));
+    }
+    let pm = render_shot(source, spec).await?;
+    let out = match replace {
+        Some(r) => PathBuf::from(r),
+        None => crate::shot_edit::edited_path(Path::new(source)),
+    };
+    let (o, (w, h)) = (out.clone(), (pm.width(), pm.height()));
+    let copied = tokio::task::spawn_blocking(move || -> Result<bool> {
+        // 先寫暫存檔再改名：取代時不會留下寫到一半的圖
+        let tmp = o.with_extension("png.tmp");
+        pm.save_png(&tmp).map_err(|e| Error::other(format!("無法儲存圖片：{e}")))?;
+        std::fs::rename(&tmp, &o).map_err(|e| Error::other(format!("無法儲存圖片：{e}")))?;
+        Ok(crate::clipboard::copy_pixmap(&pm))
+    })
+    .await
+    .map_err(|e| Error::other(e.to_string()))??;
+    let data = serde_json::to_value(crate::shot_edit::ShotProject::new(spec.clone())).unwrap_or(Value::Null);
+    if serde_json::to_vec(&data).map(|v| v.len()).unwrap_or(usize::MAX) <= crate::projects::MAX_PROJECT_BYTES {
+        if let Err(e) = app.projects.save(&out.display().to_string(), source, data) {
+            crate::info!("[截圖] 無法儲存編輯設定：{e}");
+        }
+    }
+    crate::info!("[截圖] 編輯後存成 {}（{w}×{h}{}）", out.display(), if copied { "，已複製到剪貼簿" } else { "" });
+    Ok(crate::types::ShotInfo { seq: 0, path: out.display().to_string(), width: w, height: h, copied })
+}
+
 // ───────────── 開啟檔案 / 網址 ─────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

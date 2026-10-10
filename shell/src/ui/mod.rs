@@ -8,6 +8,7 @@ pub mod editor;
 pub mod export_dialog;
 pub mod library_dialog;
 pub mod main_view;
+pub mod ocr;
 pub mod preview;
 pub mod settings;
 pub mod settings_dialog;
@@ -97,6 +98,8 @@ pub struct UiApp {
     pub export_dlg: Option<export_dialog::ExportDialog>,
     pub library: Option<library_dialog::LibraryDialog>,
     pub viewer: Option<viewer::Viewer>,
+    /// 文字辨識的結果
+    pub ocr: Option<ocr::Ocr>,
     pub settings_dlg: Option<settings_dialog::SettingsDialog>,
     /// 在螢幕上框選截圖
     pub snip: Option<snip::Snip>,
@@ -161,6 +164,7 @@ impl UiApp {
             export_dlg: None,
             library: None,
             viewer: None,
+            ocr: None,
             settings_dlg: None,
             snip: None,
             keys: saved.hotkeys.unwrap_or_default(),
@@ -297,8 +301,11 @@ impl UiApp {
             self.last_shot_seq = shot.seq;
             let name = dialogs::file_name(&shot.path);
             self.toast(if shot.copied { format!("已截圖並複製到剪貼簿：{name}") } else { format!("已截圖：{name}") }, false);
-            if let Some(d) = &mut self.library {
-                d.dirty = true;
+            self.shots_changed();
+            // 設定「截圖後直接編輯」：開啟操作視窗與編輯（其他視窗開著時不打斷）
+            if self.s.edit_after_shot && self.editor.is_none() && self.export_dlg.is_none() {
+                self.core.open_ui(screenrecorder_core::app::UiPage::Main);
+                editor::shot::open(self, shot.path.clone());
             }
         }
         let state = self.status.recorder.state;
@@ -382,6 +389,13 @@ impl UiApp {
         });
     }
 
+    /// 截圖新增或改了：重新讀取清單
+    pub fn shots_changed(&mut self) {
+        if let Some(d) = &mut self.library {
+            d.dirty = true;
+        }
+    }
+
     /// 播放、顯示、剪輯、製作加速版
     pub fn act(&mut self, action: EntryAction, entry: LibraryEntry) {
         use actions::OpenAction;
@@ -397,6 +411,7 @@ impl UiApp {
                     self.toast(e.message().to_string(), true);
                 }
             }
+            EntryAction::Edit if dialogs::is_image(&path) => editor::shot::open(self, path),
             EntryAction::Edit | EntryAction::Export => {
                 let what = if action == EntryAction::Edit { "剪輯" } else { "製作加速版 / GIF" };
                 if self.locked() {
@@ -419,6 +434,10 @@ impl UiApp {
 
     /// 由路徑找到完整資訊後執行（剛錄好的檔案可能還不在清單裡：重新讀取）
     pub fn act_path(&mut self, action: EntryAction, path: String) {
+        // 截圖不用讀影片資訊
+        if action == EntryAction::Edit && dialogs::is_image(&path) {
+            return editor::shot::open(self, path);
+        }
         if let Some(e) = self.known.get(&path).filter(|e| e.media.duration_sec.is_some()).cloned() {
             return self.act(action, e);
         }
@@ -456,6 +475,13 @@ impl UiApp {
             }
             if page == UiPage::Changelog {
                 self.changelog_open = true;
+            }
+            if page == UiPage::EditShot {
+                match self.core.last_shot() {
+                    Some(s) if self.editor.is_none() => editor::shot::open(self, s.path),
+                    Some(_) => self.toast("編輯視窗已經開著，請先關閉", true),
+                    None => self.toast("還沒有截圖", true),
+                }
             }
         }
     }
@@ -539,6 +565,9 @@ impl eframe::App for UiApp {
         if self.editor.is_some() {
             editor::show(self, &ctx);
             part(self, "剪輯視窗");
+        }
+        if self.ocr.is_some() {
+            ocr::show(self, &ctx);
         }
         if self.changelog_open {
             dialogs::changelog(self, &ctx);

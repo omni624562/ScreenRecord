@@ -263,8 +263,10 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             let ev = (lparam.0 as u32) & 0xffff;
             if ev == WM_RBUTTONUP {
                 show_menu();
-            } else if ev == WM_LBUTTONUP || ev == NIN_BALLOONUSERCLICK {
+            } else if ev == WM_LBUTTONUP {
                 send_cmd(TrayCommand::Open);
+            } else if ev == NIN_BALLOONUSERCLICK {
+                send_cmd(TrayCommand::BalloonClick);
             }
             LRESULT(0)
         }
@@ -399,6 +401,8 @@ fn show_menu() {
             m.add(shot, &format!("固定範圍(&X)：{}{}", st.last_source, tab(&st.keys[2])), TrayCommand::Screenshot, false, false);
             Menu::sep(shot);
             m.add(shot, "重複上次框選(&R)", TrayCommand::ScreenshotLast, !st.has_last_snip, false);
+            Menu::sep(shot);
+            m.add(shot, "編輯上次截圖(&E)…", TrayCommand::EditLastShot, !st.has_shot, false);
             Menu::sub(root, "截圖(&T)", shot, !st.can_shot);
         }
         Menu::sep(root);

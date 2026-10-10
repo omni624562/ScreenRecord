@@ -1,4 +1,4 @@
-//! 右側面板：時間（頭尾、刪除的片段）、畫面裁切、標註（工具、屬性、清單）。
+//! 右側面板：時間（頭尾、刪除的片段）、畫面裁切、標註（工具、屬性、清單）；截圖另有「輸出」（外框、陰影、大小）。
 
 use super::stage::paint_tool_icon;
 use super::{ann_color, parse_time, Editor, Tab, Tool};
@@ -18,6 +18,7 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, toast: &mut
             Tab::Time => time_panel(ed, ui, toast),
             Tab::Crop => crop_panel(ed, ui),
             Tab::Ann => ann_panel(ed, ui, ctx),
+            Tab::Output => super::shot::output_panel(ed, ui, ctx),
         }
     });
 }
@@ -27,7 +28,9 @@ fn tabs(ed: &mut Editor, ui: &mut egui::Ui) {
     let count = if ed.anns.is_empty() { String::new() } else { ed.anns.len().to_string() };
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 2.0;
-        for (tab, label) in [(Tab::Time, "時間"), (Tab::Crop, "畫面裁切"), (Tab::Ann, "標註")] {
+        let tabs: &[(Tab, &str)] =
+            if ed.is_shot() { &[(Tab::Ann, "標註"), (Tab::Crop, "裁切"), (Tab::Output, "輸出")] } else { &[(Tab::Time, "時間"), (Tab::Crop, "畫面裁切"), (Tab::Ann, "標註")] };
+        for &(tab, label) in tabs {
             let on = ed.tab == tab;
             let f = if on { theme::font_bold(13.0) } else { theme::font(13.0) };
             let g = ui.painter().layout_no_wrap(label.to_string(), f, if on { p.text } else { p.muted });
@@ -152,19 +155,22 @@ fn crop_panel(ed: &mut Editor, ui: &mut egui::Ui) {
     if changed {
         ed.set_crop(CropInput { x: v[0], y: v[1], width: v[2], height: v[3] });
     }
-    hint(ui, if can { "開啟後可直接在影片上拖曳框選要保留的區域。" } else { "無法讀取影片尺寸，不能裁切。" });
+    let text = if can { format!("開啟後可直接在{}上拖曳框選要保留的區域。", ed.what()) } else { format!("無法讀取{}尺寸，不能裁切。", ed.what()) };
+    hint(ui, &text);
 }
 
-const TOOLS: [(Tool, &str); 9] = [
+const TOOLS: [(Tool, &str); 11] = [
     (Tool::Ann(AnnKind::Text), "文字"),
     (Tool::Emoji, "表情"),
     (Tool::Ann(AnnKind::Arrow), "箭頭"),
     (Tool::Ann(AnnKind::Rect), "方框"),
     (Tool::Ann(AnnKind::Ellipse), "圓框"),
     (Tool::Ann(AnnKind::Highlight), "螢光筆"),
+    (Tool::Ann(AnnKind::Pen), "畫筆"),
     (Tool::Ann(AnnKind::Step), "編號"),
     (Tool::Ann(AnnKind::Mosaic), "馬賽克"),
     (Tool::Ann(AnnKind::Blur), "模糊"),
+    (Tool::Ann(AnnKind::Magnify), "放大鏡"),
 ];
 
 fn ann_panel(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context) {
@@ -174,7 +180,10 @@ fn ann_panel(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context) {
     // 工具
     let gap = 6.0;
     let tw = ((ui.available_width() - gap * 2.0) / 3.0).floor();
-    for row in TOOLS.chunks(3) {
+    // 放大鏡只能用在截圖
+    let shot = ed.is_shot();
+    let tools: Vec<(Tool, &str)> = TOOLS.iter().copied().filter(|(t, _)| shot || !t.kind().image_only()).collect();
+    for row in tools.chunks(3) {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = gap;
             for &(tool, label) in row {
@@ -221,20 +230,24 @@ fn ann_panel(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context) {
             }
         });
     }
+    let w = ed.what();
     let hint_text = if !can {
-        "無法讀取影片尺寸，不能加上標註。"
+        format!("無法讀取{w}尺寸，不能加上標註。")
     } else {
         match ed.tool {
-            Some(Tool::Ann(AnnKind::Step)) => "在影片上依序點擊，放置編號 1、2、3…；完成後按 Esc 或再按一次「編號」。",
-            Some(Tool::Emoji) => "先在上面選表情，再在影片上點擊放置（可連續放）；完成後按 Esc 或再按一次「表情」。",
-            Some(Tool::Ann(AnnKind::Text)) => "在影片上點一下放置。按 Esc 取消。",
-            Some(_) => "在影片上按住拖曳放置。按 Esc 取消。",
-            None if ed.selected().is_some() => "",
-            None => "① 選工具 ② 在影片上點一下或拖曳放置。標註從目前位置起出現 3 秒，可在時間軸下方的標註軌拖曳調整。",
+            Some(Tool::Ann(AnnKind::Step)) => format!("在{w}上依序點擊，放置編號 1、2、3…；完成後按 Esc 或再按一次「編號」。"),
+            Some(Tool::Emoji) => format!("先在上面選表情，再在{w}上點擊放置（可連續放）；完成後按 Esc 或再按一次「表情」。"),
+            Some(Tool::Ann(AnnKind::Text)) => format!("在{w}上點一下放置。按 Esc 取消。"),
+            Some(Tool::Ann(AnnKind::Pen)) => format!("在{w}上按住拖曳手繪（可以連續畫好幾筆）；完成後按 Esc 或再按一次「畫筆」。"),
+            Some(Tool::Ann(AnnKind::Magnify)) => format!("在{w}上按住拖曳框出要放大的地方，圓裡會顯示中心附近放大的樣子。按 Esc 取消。"),
+            Some(_) => format!("在{w}上按住拖曳放置。按 Esc 取消。"),
+            None if ed.selected().is_some() => String::new(),
+            None if shot => "① 選工具 ② 在圖上點一下或拖曳放置。Ctrl+Z 復原、Ctrl+Y 重做。".into(),
+            None => "① 選工具 ② 在影片上點一下或拖曳放置。標註從目前位置起出現 3 秒，可在時間軸下方的標註軌拖曳調整。".into(),
         }
     };
     if !hint_text.is_empty() {
-        hint(ui, hint_text);
+        hint(ui, &hint_text);
     }
 
     if ed.selected().is_some() {
@@ -291,7 +304,16 @@ fn props(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context) {
                 state.store(ctx, out.response.id);
             }
         }
-        if cur.kind.is_effect() {
+        if cur.kind == AnnKind::Magnify {
+            ui.horizontal(|ui| {
+                ui.label(theme::muted(ui, "倍率").font(theme::font(12.0)));
+                let mut z = cur.size / 100.0;
+                ui.spacing_mut().slider_width = ui.available_width() - 60.0;
+                if ui.add(egui::Slider::new(&mut z, 1.5..=4.0).step_by(0.25).fixed_decimals(2).suffix("×")).changed() {
+                    cur.size = (z * 100.0).round();
+                }
+            });
+        } else if cur.kind.is_effect() {
             let idx = (cur.kind == AnnKind::Blur) as usize;
             let word = if cur.kind == AnnKind::Mosaic { "馬賽克" } else { "模糊" };
             ui.vertical(|ui| {
@@ -334,6 +356,7 @@ fn props(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context) {
             let label = match cur.kind {
                 AnnKind::Text => "字級",
                 AnnKind::Step => "大小",
+                AnnKind::Pen => "粗細",
                 _ => "線寬",
             };
             let (lo, hi) = match cur.kind {
@@ -380,7 +403,10 @@ fn props(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context) {
             });
         }
 
-        // 出現時間
+        // 出現時間（截圖沒有）
+        if ed.is_shot() {
+            return;
+        }
         ui.horizontal(|ui| {
             ui.label(theme::muted(ui, "出現").font(theme::font(12.0)));
             for (i, sep) in [(0usize, Some("到")), (1, None)] {
@@ -436,6 +462,7 @@ fn ann_list(ed: &mut Editor, ui: &mut egui::Ui) {
     list.sort_by(|x, y| x.1.total_cmp(&y.1).then(x.0.cmp(&y.0)));
     let mut select = None;
     let mut delete = None;
+    let shot = ed.is_shot();
     ui.spacing_mut().item_spacing.y = 4.0;
     for (id, start, end, name, color, gone) in list {
         let w = ui.available_width();
@@ -444,7 +471,7 @@ fn ann_list(ed: &mut Editor, ui: &mut egui::Ui) {
         let painter = ui.painter();
         painter.rect(r, CornerRadius::same(6), if on { p.accent.gamma_multiply(0.12) } else { Color32::TRANSPARENT }, Stroke::new(1.0, if on { p.accent } else { p.border }), egui::StrokeKind::Inside);
         painter.circle(pos2(r.left() + 13.0, r.center().y), 5.0, color, Stroke::new(1.0, Color32::from_black_alpha(77)));
-        let times = painter.layout_no_wrap(format!("{}–{}", video_clock(start), video_clock(end)), theme::mono(11.5), p.muted);
+        let times = painter.layout_no_wrap(if shot { String::new() } else { format!("{}–{}", video_clock(start), video_clock(end)) }, theme::mono(11.5), p.muted);
         let x_rect = egui::Rect::from_center_size(pos2(r.right() - 14.0, r.center().y), vec2(22.0, 22.0));
         let tx = x_rect.left() - 4.0 - times.size().x;
         let name_rect = egui::Rect::from_min_max(pos2(r.left() + 24.0, r.top()), pos2(tx - 6.0, r.bottom()));
