@@ -14,6 +14,7 @@ use screenrecorder_core::picture;
 use screenrecorder_core::player::Frame;
 use screenrecorder_core::shot_edit::{self, ShotSpec, BACKGROUNDS, BORDER_COLORS, PADDINGS, RADII, SCALES};
 use screenrecorder_core::types::{LibraryEntry, MediaInfo};
+use screenrecorder_core::{tr, trf};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -111,7 +112,7 @@ pub fn open(app: &mut UiApp, path: String) {
 
 fn open_with(app: &mut UiApp, path: String, use_project: bool) {
     if app.editor.is_some() {
-        return app.toast("編輯視窗已經開著，請先關閉", true);
+        return app.toast(tr!("編輯視窗已經開著，請先關閉", "The editor is already open; close it first"), true);
     }
     let core = app.core.clone();
     let p = path.clone();
@@ -279,12 +280,26 @@ fn unchanged(ed: &Editor) -> bool {
 pub fn banner(ed: &mut Editor, ui: &mut egui::Ui) {
     let p = theme::pal(ui);
     let (text, warn): (String, bool) = if let Some(target) = &ed.replace_target {
-        (format!("正在修改「{}」：已從原圖「{}」載入上次的標註，可以直接修改。儲存時會取代這張。", file_name(target), ed.entry.media.name), false)
+        (
+            trf!(
+                "正在修改「{}」：已從原圖「{}」載入上次的標註，可以直接修改。儲存時會取代這張。",
+                "Changing “{}”: your previous annotations were loaded from the original image “{}” and can be changed. Saving replaces this image.",
+                file_name(target),
+                ed.entry.media.name
+            ),
+            false,
+        )
     } else {
         match &ed.banner {
             BannerInfo::None => return,
-            BannerInfo::MissingSource(src) => (format!("找不到原圖「{src}」，之前的標註已經存進這張圖、無法修改；只能在這張圖上繼續編輯。"), true),
-            BannerInfo::HasProject { output, .. } => (format!("這張截圖之前編輯成「{}」。", file_name(output)), false),
+            BannerInfo::MissingSource(src) => (
+                trf!(
+                    "找不到原圖「{src}」，之前的標註已經存進這張圖、無法修改；只能在這張圖上繼續編輯。",
+                    "Can't find the original image “{src}”. Earlier annotations are saved into this image and can't be changed; you can only keep editing this image."
+                ),
+                true,
+            ),
+            BannerInfo::HasProject { output, .. } => (trf!("這張截圖之前編輯成「{}」。", "This screenshot was previously edited into “{}”.", file_name(output)), false),
         }
     };
     egui::Frame::new().inner_margin(egui::Margin::symmetric(18, 0)).show(ui, |ui| {
@@ -293,15 +308,15 @@ pub fn banner(ed: &mut Editor, ui: &mut egui::Ui) {
             ui.horizontal_wrapped(|ui| {
                 ui.label(RichText::new(text).color(if warn { p.warn } else { p.text }));
                 if ed.replace_target.is_some() {
-                    if Btn::new("改為另存新的一張").small().show(ui).clicked() {
+                    if Btn::new(tr!("改為另存新的一張", "Save as a new image instead")).small().show(ui).clicked() {
                         ed.replace_target = None;
                         ed.banner = BannerInfo::None;
                     }
-                    if Btn::new("改成直接編輯這張").small().show(ui).clicked() {
+                    if Btn::new(tr!("改成直接編輯這張", "Edit this image directly instead")).small().show(ui).clicked() {
                         ed.pending = Some(Act::Plain);
                     }
                 } else if let BannerInfo::HasProject { output, data } = &ed.banner {
-                    if Btn::new("載入上次的編輯來修改").small().show(ui).clicked() {
+                    if Btn::new(tr!("載入上次的編輯來修改", "Load the previous edits to change them")).small().show(ui).clicked() {
                         let (output, data) = (output.clone(), data.clone());
                         if let Some(spec) = shot_edit::ShotProject::parse(&data) {
                             apply_spec(ed, &spec);
@@ -326,44 +341,61 @@ pub fn footer(ed: &mut Editor, ui: &mut egui::Ui) -> Option<Act> {
         ui.spacing_mut().item_spacing = vec2(0.0, 2.0);
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing.x = 0.0;
-            ui.label("輸出 ");
+            ui.label(tr!("輸出 ", "Output "));
             ui.label(RichText::new(format!("{w}×{h}")).font(theme::font_bold(13.5)));
             let (ow, oh) = ed.shot.as_ref().map(|s| s.orig).unwrap_or_default();
-            ui.label(format!("（原圖 {ow}×{oh}）"));
+            ui.label(trf!("（原圖 {ow}×{oh}）", " (original {ow}×{oh})"));
             if !ed.anns.is_empty() {
-                ui.label(format!("・標註 {} 個", ed.anns.len()));
+                let n = ed.anns.len();
+                ui.label(if screenrecorder_core::i18n::is_en() { format!(" · {n} annotation{}", if n == 1 { "" } else { "s" }) } else { format!("・標註 {n} 個") });
             }
         });
         let line = match &ed.replace_target {
-            Some(t) => format!("儲存後取代 {}，並複製到剪貼簿", file_name(t)),
-            None => format!("另存成 {}（原圖保留），並複製到剪貼簿", file_name(&shot_edit::edited_path(std::path::Path::new(&source(ed))).display().to_string())),
+            Some(t) => trf!("儲存後取代 {}，並複製到剪貼簿", "Saving replaces {} and copies it to the clipboard", file_name(t)),
+            None => {
+                let name = file_name(&shot_edit::edited_path(std::path::Path::new(&source(ed))).display().to_string());
+                trf!("另存成 {}（原圖保留），並複製到剪貼簿", "Saves as {} (the original is kept) and copies it to the clipboard", name)
+            }
         };
         ui.label(RichText::new(line).font(theme::font(12.0)).color(p.muted));
     });
     // 右邊：儲存（主要）、複製；不常用的收進「更多」，全部重設也不會跟儲存並排被誤按
     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
         let same = unchanged(ed);
-        let mut b = Btn::new(if ed.replace_target.is_some() { "儲存修改" } else { "儲存" }).primary().enabled(!same && !ed.saving).tooltip("Ctrl+S");
+        let mut b = Btn::new(if ed.replace_target.is_some() { tr!("儲存修改", "Save changes") } else { tr!("儲存", "Save") }).primary().enabled(!same && !ed.saving).tooltip("Ctrl+S");
         if same {
-            b = b.tooltip("還沒有任何標註、裁切或輸出設定");
+            b = b.tooltip(tr!("還沒有任何標註、裁切或輸出設定", "No annotations, crop or output settings yet"));
         }
         if b.show(ui).clicked() {
             act = Some(Act::Save);
         }
-        if Btn::new("複製").tooltip("複製編輯後的圖到剪貼簿，不存檔（Ctrl+C）").show(ui).clicked() {
+        if Btn::new(tr!("複製", "Copy")).tooltip(tr!("複製編輯後的圖到剪貼簿，不存檔（Ctrl+C）", "Copy the edited image to the clipboard without saving (Ctrl+C)")).show(ui).clicked()
+        {
             act = Some(Act::Copy);
         }
-        let more = Btn::new("更多").icon(Icon::More).ghost().tooltip("文字辨識、釘在桌面、全部重設").show(ui);
+        let more = Btn::new(tr!("更多", "More")).icon(Icon::More).ghost().tooltip(tr!("文字辨識、釘在桌面、全部重設", "Text recognition, Pin to desktop, Reset all")).show(ui);
         egui::Popup::menu(&more).show(|ui| {
             ui.set_min_width(220.0);
-            if ui.button("文字辨識（複製圖裡的文字）").on_hover_text("把圖裡的文字轉成可以複製的文字（Windows 內建的文字辨識）").clicked() {
+            if ui
+                .button(tr!("文字辨識（複製圖裡的文字）", "Text recognition (copy text from the image)"))
+                .on_hover_text(tr!("把圖裡的文字轉成可以複製的文字（Windows 內建的文字辨識）", "Turn the text in the image into text you can copy (uses the text recognition built into Windows)"))
+                .clicked()
+            {
                 act = Some(Act::Ocr);
             }
-            if ui.button("釘在桌面").on_hover_text("把編輯後的圖變成浮在最上層的小視窗，方便對照").clicked() {
+            if ui
+                .button(tr!("釘在桌面", "Pin to desktop"))
+                .on_hover_text(tr!("把編輯後的圖變成浮在最上層的小視窗，方便對照", "Show the edited image in a small always-on-top window for easy reference"))
+                .clicked()
+            {
                 act = Some(Act::Pin);
             }
             ui.separator();
-            if ui.add_enabled(!unchanged(ed), egui::Button::new("全部重設（回到原圖）")).on_hover_text("清掉標註、裁切、旋轉與輸出設定；可以按 Ctrl+Z 復原").clicked() {
+            if ui
+                .add_enabled(!unchanged(ed), egui::Button::new(tr!("全部重設（回到原圖）", "Reset all (back to the original)")))
+                .on_hover_text(tr!("清掉標註、裁切、旋轉與輸出設定；可以按 Ctrl+Z 復原", "Clear annotations, crop, rotation and output settings; press Ctrl+Z to undo"))
+                .clicked()
+            {
                 ed.reset();
                 if let Some(s) = &mut ed.shot {
                     s.opts = ShotOpts::default();
@@ -384,13 +416,13 @@ pub fn output_panel(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context) {
     // 外框
     ui.vertical(|ui| {
         ui.spacing_mut().item_spacing.y = 6.0;
-        label(ui, "外框");
+        label(ui, tr!("外框", "Border"));
         let mut kind = match &o.border {
             None => 0,
             Some(_) if o.border_width <= 3.0 => 1,
             Some(_) => 2,
         };
-        if segmented(ui, &mut kind, &[(0, "無"), (1, "細"), (2, "粗")], true) {
+        if segmented(ui, &mut kind, &[(0, tr!("無", "None")), (1, tr!("細", "Thin")), (2, tr!("粗", "Thick"))], true) {
             match kind {
                 0 => o.border = None,
                 k => {
@@ -419,15 +451,15 @@ pub fn output_panel(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context) {
     // 圓角
     ui.vertical(|ui| {
         ui.spacing_mut().item_spacing.y = 6.0;
-        label(ui, "圓角");
-        let names = ["無", "小", "中", "大"];
+        label(ui, tr!("圓角", "Corners"));
+        let names = tr!(["無", "小", "中", "大"], ["None", "Small", "Medium", "Large"]);
         let items: Vec<(u32, &str)> = RADII.iter().copied().zip(names).collect();
         segmented(ui, &mut o.radius, &items, true);
     });
     // 背景
     ui.vertical(|ui| {
         ui.spacing_mut().item_spacing.y = 6.0;
-        label(ui, "背景");
+        label(ui, tr!("背景", "Background"));
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
             let (r, resp) = ui.allocate_exact_size(vec2(26.0, 26.0), Sense::click());
@@ -437,7 +469,7 @@ pub fn output_panel(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context) {
             if o.background.is_none() {
                 ui.painter().rect_stroke(r.expand(1.0), CornerRadius::same(7), Stroke::new(2.0, p.accent), StrokeKind::Inside);
             }
-            if resp.on_hover_text("不要背景").on_hover_cursor(CursorIcon::PointingHand).clicked() {
+            if resp.on_hover_text(tr!("不要背景", "No background")).on_hover_cursor(CursorIcon::PointingHand).clicked() {
                 o.background = None;
             }
             for bg in BACKGROUNDS {
@@ -452,16 +484,19 @@ pub fn output_panel(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context) {
             }
         });
         if o.background.is_some() {
-            let items: Vec<(u32, &str)> = PADDINGS.iter().copied().zip(["留白少", "留白中", "留白多"]).collect();
+            let items: Vec<(u32, &str)> = PADDINGS.iter().copied().zip(tr!(["留白少", "留白中", "留白多"], ["Padding S", "Padding M", "Padding L"])).collect();
             segmented(ui, &mut o.padding, &items, true);
         }
     });
     // 陰影
-    switch(ui, &mut o.shadow, "加上陰影", true).on_hover_text("圖的四周加上柔和的陰影（沒有背景時四周留透明的邊），貼到文件或簡報比較立體");
+    switch(ui, &mut o.shadow, tr!("加上陰影", "Add shadow"), true).on_hover_text(tr!(
+        "圖的四周加上柔和的陰影（沒有背景時四周留透明的邊），貼到文件或簡報比較立體",
+        "Add a soft shadow around the image (with a transparent margin when there's no background) so it stands out in documents and slides"
+    ));
     // 大小
     ui.vertical(|ui| {
         ui.spacing_mut().item_spacing.y = 6.0;
-        label(ui, "大小");
+        label(ui, tr!("大小", "Size"));
         let items: Vec<(u32, String)> = SCALES.iter().map(|s| (*s, format!("{s}%"))).collect();
         let refs: Vec<(u32, &str)> = items.iter().map(|(v, t)| (*v, t.as_str())).collect();
         segmented(ui, &mut o.scale, &refs, true);
@@ -485,7 +520,7 @@ pub fn output_panel(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context) {
             }
         }
     }
-    ui.label(theme::muted(ui, "左邊顯示的就是輸出的樣子；輸出的大小顯示在下方。").font(theme::font(12.0)));
+    ui.label(theme::muted(ui, tr!("左邊顯示的就是輸出的樣子；輸出的大小顯示在下方。", "The left side shows how the output will look; the output size is shown below.")).font(theme::font(12.0)));
 }
 
 /// 輸出的大小（原圖大小 + 旋轉 + 裁切 + 縮放 + 陰影）
@@ -496,10 +531,22 @@ fn output_size(ed: &Editor, sp: &ShotSpec) -> (u32, u32) {
 
 /// 旋轉按鈕（只在「裁切與旋轉」分頁）
 pub fn rotate_buttons(ed: &mut Editor, ui: &mut egui::Ui) {
-    if Btn::new("向左轉").icon(Icon::RotL).small().tooltip("整張圖逆時針轉 90 度（標註跟著轉）").show(ui).clicked() {
+    if Btn::new(tr!("向左轉", "Rotate left"))
+        .icon(Icon::RotL)
+        .small()
+        .tooltip(tr!("整張圖逆時針轉 90 度（標註跟著轉）", "Rotate the whole image 90° counterclockwise (annotations rotate too)"))
+        .show(ui)
+        .clicked()
+    {
         rotate(ed, false);
     }
-    if Btn::new("向右轉").icon(Icon::RotR).small().tooltip("整張圖順時針轉 90 度（標註跟著轉）").show(ui).clicked() {
+    if Btn::new(tr!("向右轉", "Rotate right"))
+        .icon(Icon::RotR)
+        .small()
+        .tooltip(tr!("整張圖順時針轉 90 度（標註跟著轉）", "Rotate the whole image 90° clockwise (annotations rotate too)"))
+        .show(ui)
+        .clicked()
+    {
         rotate(ed, true);
     }
 }
@@ -553,7 +600,7 @@ pub fn checker(p: &egui::Painter, r: Rect) {
 /// 在找到的個資上加馬賽克（已經遮住的不重複加）；回傳要顯示的訊息
 fn cover_pii(ed: &mut Editor, found: &[ocr::Found]) -> String {
     if found.is_empty() {
-        return "沒有找到 Email、電話、身分證字號或卡號".into();
+        return tr!("沒有找到 Email、電話、身分證字號或卡號", "No emails, phone numbers, ID numbers or card numbers were found").into();
     }
     let covered = |ed: &Editor, (x, y, w, h): (f64, f64, f64, f64)| {
         ed.anns.iter().filter(|a| a.kind.is_effect() && !a.invert).any(|a| {
@@ -581,11 +628,15 @@ fn cover_pii(ed: &mut Editor, found: &[ocr::Found]) -> String {
         }
     }
     if counts.is_empty() {
-        return "找到的個資都已經遮住了".into();
+        return tr!("找到的個資都已經遮住了", "The personal info found is already covered").into();
     }
     let total: usize = counts.iter().map(|(_, n)| n).sum();
     let parts: Vec<String> = counts.iter().map(|(k, n)| format!("{} {n}", k.name())).collect();
-    format!("已遮住 {total} 處（{}）；請再確認有沒有漏掉的", parts.join("、"))
+    if screenrecorder_core::i18n::is_en() {
+        format!("Covered {total} item{} ({}); please check for anything missed", if total == 1 { "" } else { "s" }, parts.join(", "))
+    } else {
+        format!("已遮住 {total} 處（{}）；請再確認有沒有漏掉的", parts.join("、"))
+    }
 }
 
 /// 儲存、複製、釘在桌面、文字辨識、直接編輯開啟的那張
@@ -601,7 +652,7 @@ pub fn run(app: &mut UiApp, ed: &mut Editor, act: Act) {
             app.spawn(async move { actions::shot_save(&core, &src, &sp, replace.as_deref()).await }, |app, r| match r {
                 Ok(info) => {
                     app.editor = None;
-                    app.toast(format!("已存成 {}{}", file_name(&info.path), if info.copied { "，並複製到剪貼簿" } else { "" }), false);
+                    app.toast(trf!("已存成 {}{}", "Saved as {}{}", file_name(&info.path), if info.copied { tr!("，並複製到剪貼簿", " and copied to the clipboard") } else { "" }), false);
                     app.shots_changed();
                 }
                 Err(e) => {
@@ -613,7 +664,7 @@ pub fn run(app: &mut UiApp, ed: &mut Editor, act: Act) {
             });
         }
         Act::Copy => app.spawn(async move { actions::shot_copy(&src, &sp).await }, |app, r| match r {
-            Ok((w, h)) => app.toast(format!("已複製到剪貼簿（{w}×{h}）"), false),
+            Ok((w, h)) => app.toast(trf!("已複製到剪貼簿（{w}×{h}）", "Copied to the clipboard ({w}×{h})"), false),
             Err(e) => app.toast(e.message().to_string(), true),
         }),
         Act::Pin => app.spawn(async move { actions::shot_pin(&src, &sp).await }, |app, r| {

@@ -7,6 +7,7 @@ use crate::format::{export_file_name, js_round, num, speed_label, strip_mp4, FPS
 use crate::library::MediaCache;
 use crate::process::{command, last_lines, read_lines};
 use crate::types::{ExportFormat, ExportKind, ExportState, ExportStatus, MediaInfo, Rect};
+use crate::{tr, trf};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
@@ -19,6 +20,16 @@ fn kind_text(k: ExportKind) -> &'static str {
         ExportKind::Gif => "GIF",
         ExportKind::Cut => "剪輯",
         ExportKind::Merge => "合併",
+    }
+}
+
+/// 介面上顯示的工作名稱（英文介面用；中文用 kind_text）
+fn kind_text_en(k: ExportKind) -> &'static str {
+    match k {
+        ExportKind::Speed => "Sped-up video",
+        ExportKind::Gif => "GIF",
+        ExportKind::Cut => "Edit",
+        ExportKind::Merge => "Merge",
     }
 }
 
@@ -81,7 +92,7 @@ impl Exporter {
     fn begin(&self) -> Result<StartingGuard> {
         let mut s = self.state.lock().unwrap();
         if s.starting || s.job.as_ref().is_some_and(|j| j.status.state == ExportState::Running) {
-            return Err(Error::config("已有轉檔工作進行中，請等它完成"));
+            return Err(Error::config(tr!("已有轉檔工作進行中，請等它完成", "Another video is being processed. Wait for it to finish.")));
         }
         s.starting = true;
         Ok(StartingGuard(self.state.clone()))
@@ -93,7 +104,7 @@ impl Exporter {
         let limit = max_mb.is_finite() && max_mb > 0.0;
         let min = if limit { 1.0 } else { SPEED_MIN };
         if !speed.is_finite() || !(min..=SPEED_MAX).contains(&speed) {
-            return Err(Error::config(format!("倍率需介於 {}～{}", num(SPEED_MIN), num(SPEED_MAX))));
+            return Err(Error::config(trf!("倍率需介於 {}～{}", "Speed must be between {} and {}", num(SPEED_MIN), num(SPEED_MAX))));
         }
         let (ffmpeg, enc, info, fps) = prepare(ctx, source).await?;
         let dir = parent(source);
@@ -119,7 +130,7 @@ impl Exporter {
     pub async fn start_gif(&self, ctx: &ExportCtx, source: &str, speed: f64, width: f64, fps: f64) -> Result<ExportStatus> {
         let _g = self.begin()?;
         if !speed.is_finite() || !(1.0..=SPEED_MAX).contains(&speed) {
-            return Err(Error::config(format!("倍率需介於 1～{}", num(SPEED_MAX))));
+            return Err(Error::config(trf!("倍率需介於 1～{}", "Speed must be between 1 and {}", num(SPEED_MAX))));
         }
         let fps = if fps.is_finite() && js_round(fps) != 0.0 { js_round(fps) } else { 10.0 }.clamp(5.0, 30.0);
         let width = if width.is_finite() && js_round(width) != 0.0 { js_round(width) } else { 640.0 }.clamp(160.0, 1920.0);
@@ -142,7 +153,7 @@ impl Exporter {
     pub async fn start_merge(&self, ctx: &ExportCtx, sources: &[String]) -> Result<ExportStatus> {
         let _g = self.begin()?;
         if sources.len() < 2 {
-            return Err(Error::config("請選兩支以上的錄影"));
+            return Err(Error::config(tr!("請選兩支以上的錄影", "Select two or more recordings")));
         }
         let mut list: Vec<(String, MediaInfo)> = vec![];
         let mut ff = None;
@@ -153,7 +164,7 @@ impl Exporter {
             list.push((s.clone(), info));
         }
         list.sort_by(|a, b| a.1.mtime.total_cmp(&b.1.mtime));
-        let (Some(ffmpeg), Some(enc)) = (ff, enc) else { return Err(Error::config("FFmpeg 無法使用")) };
+        let (Some(ffmpeg), Some(enc)) = (ff, enc) else { return Err(Error::config(tr!("FFmpeg 無法使用", "FFmpeg isn't available"))) };
         let first = &list[0].1;
         let (w, h) = (first.width.unwrap_or(1920) as i32 & !1, first.height.unwrap_or(1080) as i32 & !1);
         let fps = js_round(first.fps.unwrap_or(30.0)).clamp(1.0, FPS_MAX);
@@ -169,10 +180,10 @@ impl Exporter {
         let _g = self.begin()?;
         if let Some(r) = replace {
             if !Path::new(r).is_file() || !crate::library::is_cut_name(&file_name(r)) {
-                return Err(Error::config("找不到要取代的剪輯版"));
+                return Err(Error::config(tr!("找不到要取代的剪輯版", "Couldn't find the edited version to replace")));
             }
             if r.to_lowercase() == source.to_lowercase() {
-                return Err(Error::config("不能用剪輯版取代自己"));
+                return Err(Error::config(tr!("不能用剪輯版取代自己", "An edited version can't replace itself")));
             }
         }
         let (ffmpeg, enc, info, fps) = prepare(ctx, source).await?;
@@ -180,12 +191,12 @@ impl Exporter {
         let keep = keep_parts(duration, spec);
         let length = output_length(&keep);
         if length < 0.1 {
-            return Err(Error::config("剪輯後留下的長度太短"));
+            return Err(Error::config(tr!("剪輯後留下的長度太短", "What's left after editing is too short")));
         }
         let crop = match spec.crop {
             Some(c) => {
                 let (Some(w), Some(h)) = (info.width, info.height) else {
-                    return Err(Error::config("無法讀取影片尺寸，不能裁切畫面"));
+                    return Err(Error::config(tr!("無法讀取影片尺寸，不能裁切畫面", "Couldn't read the video size, so it can't be cropped")));
                 };
                 normalize_crop(Some(c), w as i32, h as i32)
             }
@@ -201,13 +212,13 @@ impl Exporter {
             && spec.zoom.is_none()
             && spec.frame.is_none();
         if unchanged {
-            return Err(Error::config("沒有任何剪輯、裁切或標註"));
+            return Err(Error::config(tr!("沒有任何剪輯、裁切或標註", "There are no edits, crops or annotations")));
         }
         let (overlays, temp) = if spec.overlays.is_empty() {
             (Vec::new(), None)
         } else {
             let (Some(w), Some(h)) = (info.width, info.height) else {
-                return Err(Error::config("無法讀取影片尺寸，不能加上標註"));
+                return Err(Error::config(tr!("無法讀取影片尺寸，不能加上標註", "Couldn't read the video size, so annotations can't be added")));
             };
             let dir = std::env::temp_dir().join(format!("ScreenRecorder-overlays-{}-{}", std::process::id(), crate::paths::now_ms()));
             match write_overlays(&spec.overlays, w as i32, h as i32, duration, &dir) {
@@ -243,7 +254,7 @@ impl Exporter {
                     }
                 }
             }
-            (Some(_), _, _) => return Err(Error::config("無法讀取影片尺寸，不能加上背景")),
+            (Some(_), _, _) => return Err(Error::config(tr!("無法讀取影片尺寸，不能加上背景", "Couldn't read the video size, so the background can't be added"))),
             (None, ..) => (None, temp),
         };
         let args = cut_args(source, &output.display().to_string(), &keep, crop, fps, &enc, info.has_audio == Some(true), &overlays, spec.audio, zoom.as_deref(), frame.as_ref())?;
@@ -268,7 +279,7 @@ impl Exporter {
                 let _ = j.cancel.take().unwrap().send(());
                 Ok(())
             }
-            _ => Err(Error::config("目前沒有進行中的轉檔")),
+            _ => Err(Error::config(tr!("目前沒有進行中的轉檔", "No video is being processed"))),
         }
     }
 
@@ -312,7 +323,7 @@ impl Exporter {
             Ok(c) => c,
             Err(e) => {
                 remove_temp(&cleanup);
-                return Err(Error::config(format!("無法執行 FFmpeg：{e}")));
+                return Err(Error::config(trf!("無法執行 FFmpeg：{e}", "Couldn't run FFmpeg: {e}")));
             }
         };
         let (cancel_tx, mut cancel_rx) = oneshot::channel();
@@ -353,6 +364,7 @@ impl Exporter {
             }
         }
         let label = kind_text(kind);
+        let label_en = kind_text_en(kind);
         crate::info!("[{label}] {} → {}（{note}）", file_name(source), file_name(&output_s));
 
         let state = self.state.clone();
@@ -411,7 +423,7 @@ impl Exporter {
                 let mut saved = None;
                 if j.canceled {
                     j.status.state = ExportState::Canceled;
-                    j.status.message = Some(format!("已取消{label}"));
+                    j.status.message = Some(trf!("已取消{label}", "{label_en} canceled"));
                     let _ = std::fs::remove_file(&out);
                 } else if code == Some(0) && out.exists() {
                     j.status.state = ExportState::Done;
@@ -430,18 +442,18 @@ impl Exporter {
                                 if std::fs::rename(&out, &alt).is_ok() {
                                     fin = alt;
                                 }
-                                note = format!("（無法取代 {}，可能正在播放）", file_name(&target.display().to_string()));
+                                note = trf!("（無法取代 {}，可能正在播放）", " (couldn't replace {}; it may be playing)", file_name(&target.display().to_string()));
                             }
                         }
                     }
                     j.status.output = fin.display().to_string();
-                    j.status.message = Some(format!("已儲存 {}{note}", j.status.output));
+                    j.status.message = Some(trf!("已儲存 {}{note}", "Saved {}{note}", j.status.output));
                     saved = Some(j.status.output.clone());
                 } else {
                     j.status.state = ExportState::Error;
                     let last = last_lines(&j.stderr, 3);
-                    let why = if last.is_empty() { format!("結束代碼 {}", code.map(|c| c.to_string()).unwrap_or_else(|| "?".into())) } else { last };
-                    j.status.message = Some(format!("{label}失敗：{why}"));
+                    let why = if last.is_empty() { trf!("結束代碼 {}", "exit code {}", code.map(|c| c.to_string()).unwrap_or_else(|| "?".into())) } else { last };
+                    j.status.message = Some(trf!("{label}失敗：{why}", "{label_en} failed: {why}"));
                     let _ = std::fs::remove_file(&out);
                 }
                 (j.status.message.clone().unwrap_or_default(), saved)
@@ -483,14 +495,14 @@ const MAX_OVERLAY_BYTES: usize = 40 * 1024 * 1024;
 /// 把介面送來的標註換算成 FFmpeg 的輸入：PNG 寫進 dir，座標限制在畫面內，時間限制在影片長度內
 fn write_overlays(list: &[Overlay], vw: i32, vh: i32, duration: f64, dir: &Path) -> Result<Vec<OverlayInput>> {
     if list.len() > MAX_OVERLAYS {
-        return Err(Error::config(format!("標註最多 {MAX_OVERLAYS} 個")));
+        return Err(Error::config(trf!("標註最多 {MAX_OVERLAYS} 個", "Up to {MAX_OVERLAYS} annotations are allowed")));
     }
     std::fs::create_dir_all(dir)?;
     let mut out = Vec::new();
     for (i, o) in list.iter().enumerate() {
         let nums = [o.x, o.y, o.w, o.h, o.start, o.end];
         if nums.iter().any(|v| !v.is_finite()) {
-            return Err(Error::config("標註格式錯誤"));
+            return Err(Error::config(tr!("標註格式錯誤", "Invalid annotation")));
         }
         let start = o.start.clamp(0.0, duration);
         let end = o.end.clamp(0.0, duration);
@@ -499,7 +511,7 @@ fn write_overlays(list: &[Overlay], vw: i32, vh: i32, duration: f64, dir: &Path)
         }
         match o.kind {
             OverlayKind::Image => {
-                let bytes = decode_png(o.png.as_deref().ok_or_else(|| Error::config("標註缺少圖片"))?)?;
+                let bytes = decode_png(o.png.as_deref().ok_or_else(|| Error::config(tr!("標註缺少圖片", "An annotation is missing its image")))?)?;
                 let path = dir.join(format!("overlay_{i:03}.png"));
                 std::fs::write(&path, bytes)?;
                 let x = (o.x.round() as i32).clamp(-vw, vw);
@@ -535,7 +547,7 @@ fn write_overlays(list: &[Overlay], vw: i32, vh: i32, duration: f64, dir: &Path)
 /// 背景與圓角：底圖與遮罩寫進 dir
 fn write_frame(f: &crate::video_frame::VideoFrame, w: i32, h: i32, dir: &Path) -> Result<crate::args::FrameInput> {
     std::fs::create_dir_all(dir)?;
-    let (base, cover) = crate::video_frame::render(f, w, h).ok_or_else(|| Error::config("無法畫出背景"))?;
+    let (base, cover) = crate::video_frame::render(f, w, h).ok_or_else(|| Error::config(tr!("無法畫出背景", "Couldn't draw the background")))?;
     let (bp, cp) = (dir.join("frame_base.png"), dir.join("frame_cover.png"));
     base.save_png(&bp).map_err(|e| Error::other(e.to_string()))?;
     cover.save_png(&cp).map_err(|e| Error::other(e.to_string()))?;
@@ -546,10 +558,10 @@ fn write_frame(f: &crate::video_frame::VideoFrame, w: i32, h: i32, dir: &Path) -
 /// 檢查介面畫好的 PNG
 fn decode_png(bytes: &[u8]) -> Result<&[u8]> {
     if bytes.len() > MAX_OVERLAY_BYTES {
-        return Err(Error::config("標註圖片太大"));
+        return Err(Error::config(tr!("標註圖片太大", "Annotation image is too large")));
     }
     if !bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
-        return Err(Error::config("標註圖片格式錯誤"));
+        return Err(Error::config(tr!("標註圖片格式錯誤", "Invalid annotation image format")));
     }
     Ok(bytes)
 }
@@ -572,14 +584,14 @@ fn parent(p: &str) -> PathBuf {
 
 async fn prepare(ctx: &ExportCtx, source: &str) -> Result<(PathBuf, EncoderSpec, MediaInfo, f64)> {
     let (Some(ffmpeg), Some(enc)) = (ctx.ffmpeg.clone(), ctx.encoder) else {
-        return Err(Error::config("FFmpeg 無法使用"));
+        return Err(Error::config(tr!("FFmpeg 無法使用", "FFmpeg isn't available")));
     };
     if !source.to_lowercase().ends_with(".mp4") || !Path::new(source).is_file() {
-        return Err(Error::config("找不到影片檔"));
+        return Err(Error::config(tr!("找不到影片檔", "Video file not found")));
     }
     let info = ctx.cache.probe(&ffmpeg, source).await?;
     if info.duration_sec.unwrap_or(0.0) <= 0.0 {
-        return Err(Error::config("無法讀取影片長度，檔案可能已損壞"));
+        return Err(Error::config(tr!("無法讀取影片長度，檔案可能已損壞", "Couldn't read the video length. The file may be damaged.")));
     }
     let fps = js_round(info.fps.unwrap_or(30.0)).clamp(1.0, FPS_MAX);
     Ok((ffmpeg, enc, info, fps))

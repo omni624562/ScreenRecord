@@ -5,8 +5,9 @@
 
 use crate::snip_tools::{hex, loupe_pos, render_loupe, ruler_text, ruler_ticks, snap};
 use crate::types::Rect;
+use crate::{tr, trf};
 use std::cell::RefCell;
-use windows::core::w;
+use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM};
 use windows::Win32::Graphics::Gdi::{
     BeginPaint, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, CreateDIBSection, CreateFontW, CreatePen, CreateSolidBrush, DeleteDC, DeleteObject, DrawTextW, EndPaint, FillRect, FrameRect,
@@ -141,27 +142,18 @@ fn run(rgba: &[u8], desk: Rect, windows: Vec<Rect>, record: Mode) -> Option<(Opt
         let class = w!("ScreenRecorderSnip");
         let wc = WNDCLASSEXW { cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32, lpfnWndProc: Some(wnd_proc), hInstance: hinst.into(), lpszClassName: class, ..Default::default() };
         RegisterClassExW(&wc);
-        let hwnd = CreateWindowExW(
-            WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
-            class,
-            match record {
-                Mode::Record => w!("框選錄影範圍"),
-                Mode::Scroll => w!("長截圖"),
-                Mode::Qr => w!("讀取 QR 碼"),
-                Mode::Color => w!("取色器"),
-                Mode::Ruler => w!("尺規"),
-                Mode::Shot => w!("框選截圖"),
-            },
-            WS_POPUP,
-            desk.x,
-            desk.y,
-            w,
-            h,
-            None,
-            None,
-            Some(hinst.into()),
-            None,
-        );
+        let title: Vec<u16> = match record {
+            Mode::Record => tr!("框選錄影範圍", "Select area to record"),
+            Mode::Scroll => tr!("長截圖", "Scrolling screenshot"),
+            Mode::Qr => tr!("讀取 QR 碼", "Read QR code"),
+            Mode::Color => tr!("取色器", "Color picker"),
+            Mode::Ruler => tr!("尺規", "Ruler"),
+            Mode::Shot => tr!("框選截圖", "Screenshot of selected area"),
+        }
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
+        let hwnd = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW, class, PCWSTR(title.as_ptr()), WS_POPUP, desk.x, desk.y, w, h, None, None, Some(hinst.into()), None);
         if let Ok(hwnd) = hwnd {
             let _ = ShowWindow(hwnd, SW_SHOW);
             let _ = SetForegroundWindow(hwnd);
@@ -417,15 +409,16 @@ unsafe fn paint(hwnd: HWND) {
             let text = if is_drag {
                 format!("{} × {}", r.right - r.left, r.bottom - r.top)
             } else {
-                format!(
+                trf!(
                     "視窗 {} × {}・點一下{}",
+                    "Window {} × {} · Click to {}",
                     r.right - r.left,
                     r.bottom - r.top,
                     match st.record {
-                        Mode::Record => "錄這個範圍",
-                        Mode::Scroll => "捲動擷取",
-                        Mode::Qr => "讀取 QR 碼",
-                        Mode::Shot | Mode::Color | Mode::Ruler => "擷取",
+                        Mode::Record => tr!("錄這個範圍", "record it"),
+                        Mode::Scroll => tr!("捲動擷取", "scroll and capture"),
+                        Mode::Qr => tr!("讀取 QR 碼", "read the QR code"),
+                        Mode::Shot | Mode::Color | Mode::Ruler => tr!("擷取", "capture"),
                     }
                 )
             };
@@ -442,12 +435,24 @@ unsafe fn paint(hwnd: HWND) {
         if GetMonitorInfoW(MonitorFromPoint(cur, MONITOR_DEFAULTTONEAREST), &mut mi).as_bool() {
             let m = mi.rcMonitor;
             let tip = match st.record {
-                Mode::Record => "拖曳框選要錄影的範圍，或點一下選視窗　　Esc 或右鍵取消",
-                Mode::Scroll => "框選要捲動的內容（例如網頁中間的部分），或點一下選視窗；選好後自動往下捲並接成長圖，按 Esc 停止",
-                Mode::Qr => "框選 QR 碼（大一點沒關係），或點一下選視窗　　Esc 或右鍵取消",
-                Mode::Color => "移到要取色的地方點一下（或按 C），色碼會複製到剪貼簿；方向鍵可以微調　　Esc 或右鍵取消",
-                Mode::Ruler => "拖曳量距離（按住 Shift 保持水平、垂直或 45°），可以重複量　　Esc 或右鍵結束",
-                Mode::Shot => "拖曳框選範圍，或點一下擷取視窗；按 C 複製游標下的色碼　　Esc 或右鍵取消",
+                Mode::Record => tr!("拖曳框選要錄影的範圍，或點一下選視窗　　Esc 或右鍵取消", "Drag to select the area to record, or click a window    Esc or right-click to cancel"),
+                Mode::Scroll => tr!(
+                    "框選要捲動的內容（例如網頁中間的部分），或點一下選視窗；選好後自動往下捲並接成長圖，按 Esc 停止",
+                    "Select what to scroll (e.g. part of a web page) or click a window; it then scrolls down and stitches a long image. Esc stops"
+                ),
+                Mode::Qr => tr!("框選 QR 碼（大一點沒關係），或點一下選視窗　　Esc 或右鍵取消", "Select the QR code (larger is fine), or click a window    Esc or right-click to cancel"),
+                Mode::Color => tr!(
+                    "移到要取色的地方點一下（或按 C），色碼會複製到剪貼簿；方向鍵可以微調　　Esc 或右鍵取消",
+                    "Click a spot (or press C) to copy its color code; arrow keys fine-tune    Esc or right-click to cancel"
+                ),
+                Mode::Ruler => tr!(
+                    "拖曳量距離（按住 Shift 保持水平、垂直或 45°），可以重複量　　Esc 或右鍵結束",
+                    "Drag to measure (hold Shift for horizontal, vertical or 45°); measure as often as you like    Esc or right-click to finish"
+                ),
+                Mode::Shot => tr!(
+                    "拖曳框選範圍，或點一下擷取視窗；按 C 複製游標下的色碼　　Esc 或右鍵取消",
+                    "Drag to select an area or click a window; press C to copy the color under the cursor    Esc or right-click to cancel"
+                ),
             };
             let mut t: Vec<u16> = tip.encode_utf16().collect();
             let mut sz = SIZE::default();
@@ -466,11 +471,11 @@ unsafe fn paint(hwnd: HWND) {
                 let scale = (dpi.0 as f32 / 96.0).clamp(1.0, 3.0);
                 let area = (m.left - st.desk.x, m.top - st.desk.y, m.right - st.desk.x, m.bottom - st.desk.y);
                 let hint = if st.copied {
-                    "已複製色碼"
+                    tr!("已複製色碼", "Color code copied")
                 } else if st.record == Mode::Color {
-                    "點一下複製"
+                    tr!("點一下複製", "Click to copy")
                 } else {
-                    "按 C 複製色碼"
+                    tr!("按 C 複製色碼", "Press C to copy")
                 };
                 draw_loupe(mem, st, c, area, scale, hint);
             }

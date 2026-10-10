@@ -11,6 +11,7 @@ use screenrecorder_core::annotate;
 use screenrecorder_core::edit::normalize_ranges;
 use screenrecorder_core::format::video_clock;
 use screenrecorder_core::player::{strip_frames, Frame};
+use screenrecorder_core::{tr, trf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -170,7 +171,7 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, toast: &mut
         stripes(&painter, r, cut_bg, cut_line);
         painter.vline(r.left(), r.y_range(), Stroke::new(1.0, p.rec));
         painter.vline(r.right(), r.y_range(), Stroke::new(1.0, p.rec));
-        restore_btns.push((pos2(r.center().x, rect.top() + 14.0), i, format!("還原這段（{} – {}）", video_clock(r0), video_clock(r1))));
+        restore_btns.push((pos2(r.center().x, rect.top() + 14.0), i, trf!("還原這段（{} – {}）", "Restore this section ({} – {})", video_clock(r0), video_clock(r1))));
     }
     // 加速的片段：藍色，中間寫倍率
     for f in ed.spec.fast.iter().filter(|f| f.end() > a && f.start() < b) {
@@ -255,13 +256,18 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, toast: &mut
                 tip = Some(t.clone());
             } else if let Some((i, t)) = flag_at(pos) {
                 ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
-                tip = Some(format!("錄影時加的第 {} 個標記 {}・點一下跳過去・M 下一個、Shift+M 上一個", i + 1, video_clock(t)));
+                tip = Some(trf!(
+                    "錄影時加的第 {} 個標記 {}・點一下跳過去・M 下一個、Shift+M 上一個",
+                    "Marker {} at {} (added while recording) · click to jump there · M: next, Shift+M: previous",
+                    i + 1,
+                    video_clock(t)
+                ));
             } else {
                 let (cursor, t) = match hit_kind(pos) {
-                    TlKind::Start => (CursorIcon::ResizeHorizontal, "拖曳調整開頭"),
-                    TlKind::End => (CursorIcon::ResizeHorizontal, "拖曳調整結尾"),
-                    TlKind::Playhead => (CursorIcon::Grab, "拖曳跳到其他時間"),
-                    TlKind::Range => (CursorIcon::Grab, "拖曳整段保留範圍（長度不變）"),
+                    TlKind::Start => (CursorIcon::ResizeHorizontal, tr!("拖曳調整開頭", "Drag to adjust the start")),
+                    TlKind::End => (CursorIcon::ResizeHorizontal, tr!("拖曳調整結尾", "Drag to adjust the end")),
+                    TlKind::Playhead => (CursorIcon::Grab, tr!("拖曳跳到其他時間", "Drag to jump to another time")),
+                    TlKind::Range => (CursorIcon::Grab, tr!("拖曳整段保留範圍（長度不變）", "Drag to move the whole kept range (the length stays the same)")),
                     TlKind::Select => (CursorIcon::Text, ""),
                 };
                 ui.ctx().set_cursor_icon(cursor);
@@ -348,18 +354,29 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, toast: &mut
     ui.horizontal(|ui| {
         ui.set_height(20.0);
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            if ed.zoomed() && Btn::new("顯示全部").ghost().small().show(ui).clicked() {
+            if ed.zoomed() && Btn::new(tr!("顯示全部", "Show all")).ghost().small().show(ui).clicked() {
                 ed.set_view(0.0, ed.duration);
             }
             ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-                let hint = if ed.markers.is_empty() {
-                    "拖曳黃色把手剪頭尾・在時間軸上拖過一段可刪除・滾輪：時間軸放大縮小、影片上逐張移動".to_string()
+                let n = ed.markers.len();
+                let hint = if n == 0 {
+                    tr!(
+                        "拖曳黃色把手剪頭尾・在時間軸上拖過一段可刪除・滾輪：時間軸放大縮小、影片上逐張移動",
+                        "Drag the yellow handles to trim · drag across the timeline to remove a section · scroll: zoom the timeline, step frames on the video"
+                    )
+                    .to_string()
+                } else if screenrecorder_core::i18n::is_en() {
+                    format!(
+                        "Orange flags: {n} marker{} added while recording (M: next) · drag the yellow handles to trim · drag across to remove · scroll to zoom",
+                        if n == 1 { "" } else { "s" }
+                    )
                 } else {
-                    format!("橘色旗子是錄影時加的 {} 個標記（M 跳下一個）・拖曳黃色把手剪頭尾・拖過一段可刪除・滾輪放大縮小", ed.markers.len())
+                    format!("橘色旗子是錄影時加的 {n} 個標記（M 跳下一個）・拖曳黃色把手剪頭尾・拖過一段可刪除・滾輪放大縮小")
                 };
-                ui.add(egui::Label::new(theme::muted(ui, &hint).font(theme::font(12.0))).truncate()).on_hover_text(
+                ui.add(egui::Label::new(theme::muted(ui, &hint).font(theme::font(12.0))).truncate()).on_hover_text(tr!(
                     "點時間軸跳到該時間；拖曳黃色把手剪掉頭尾，拖曳上方的黃色橫條移動整段；在時間軸上拖過一段可選取並刪除。在時間軸上轉滾輪放大 / 縮小（Shift + 滾輪左右移動），在影片上轉滾輪逐張前後移動（Shift 一次一秒）。錄影時按標記快速鍵或外框上的旗子，會在時間軸底下留下橘色旗子：點旗子或按 M / Shift+M 跳到下一個 / 上一個標記。",
-                );
+                    "Click the timeline to jump to that time. Drag the yellow handles to trim the start and end, or drag the yellow bar on top to move the whole range; drag across the timeline to select a section and remove it. Scroll on the timeline to zoom in / out (Shift + scroll to move left and right); scroll on the video to step frame by frame (1 second at a time with Shift). Pressing the marker shortcut or the flag on the recording frame while recording leaves an orange flag below the timeline: click a flag or press M / Shift+M to jump to the next / previous marker.",
+                ));
             });
         });
     });
@@ -399,9 +416,9 @@ fn ann_track(ed: &mut Editor, ui: &mut egui::Ui) {
     wheel(ed, ui, &resp, rect);
     if ed.anns.is_empty() {
         let hint = if rect.height() < AT_H {
-            "標註軌：在右邊「標註」分頁加上文字、箭頭、馬賽克…，會在這裡顯示"
+            tr!("標註軌：在右邊「標註」分頁加上文字、箭頭、馬賽克…，會在這裡顯示", "Annotation track: text, arrows, pixelation… added in the “Annotate” tab on the right show up here")
         } else {
-            "標註軌：加上的標註會在這裡顯示一條，拖曳可調整出現的時間"
+            tr!("標註軌：加上的標註會在這裡顯示一條，拖曳可調整出現的時間", "Annotation track: each annotation you add shows up here as a bar; drag it to change when it appears")
         };
         painter.text(rect.center(), Align2::CENTER_CENTER, hint, theme::font(12.0), p.muted);
         if resp.clicked() {
@@ -455,8 +472,15 @@ fn ann_track(ed: &mut Editor, ui: &mut egui::Ui) {
             let lp = painter.with_clip_rect(r.shrink2(vec2(6.0, 0.0)).intersect(rect));
             lp.text(pos2(r.left() + 8.0, r.center().y), Align2::LEFT_CENTER, annotate::label(an), theme::font(11.5), fg);
         }
-        let tip =
-            format!("{}：{} – {}{}。拖曳移動，拖曳兩端調整長短", annotate::label(an), video_clock(an.start), video_clock(an.end), if gone { "（在刪除的片段中，不會出現在輸出影片）" } else { "" });
+        let gone_note = if gone { tr!("（在刪除的片段中，不會出現在輸出影片）", " (in a removed section; won't appear in the output video)") } else { "" };
+        let tip = trf!(
+            "{}：{} – {}{}。拖曳移動，拖曳兩端調整長短",
+            "{}: {} – {}{}. Drag to move, drag the ends to change the length",
+            annotate::label(an),
+            video_clock(an.start),
+            video_clock(an.end),
+            gone_note
+        );
         bars.push((an.id, r, tip));
     }
     let xp = x_of(ed.now());
@@ -559,7 +583,7 @@ fn scrollbar(ed: &mut Editor, ui: &mut egui::Ui) {
         pos2((rect.left() + (ed.view.1 / d) as f32 * rect.width()).max(rect.left() + (ed.view.0 / d) as f32 * rect.width() + 12.0), rect.bottom() - 1.0),
     );
     painter.rect_filled(thumb, CornerRadius::same(4), p.text.gamma_multiply(0.4));
-    let resp = resp.on_hover_text("拖曳查看時間軸的其他部分").on_hover_cursor(CursorIcon::Grab);
+    let resp = resp.on_hover_text(tr!("拖曳查看時間軸的其他部分", "Drag to see other parts of the timeline")).on_hover_cursor(CursorIcon::Grab);
     let (pressed, down, pos, latest) = ui.input(|i| (i.pointer.primary_pressed(), i.pointer.primary_down(), i.pointer.interact_pos(), i.pointer.latest_pos()));
     let span = ed.view.1 - ed.view.0;
     if pressed && resp.hovered() {

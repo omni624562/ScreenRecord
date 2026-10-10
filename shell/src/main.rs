@@ -139,7 +139,7 @@ fn main() {
                     };
                     if let Err(e) = res {
                         warn!("錄影控制列：{}", e.message());
-                        c.notify("錄影控制", e.message(), true);
+                        c.notify(screenrecorder_core::tr!("錄影控制", "Recording controls"), e.message(), true);
                     }
                 });
             },
@@ -176,7 +176,7 @@ fn main() {
                 if let Some(c) = c3.upgrade() {
                     // 錄影器的事件紀錄也會寫進記錄檔
                     c.recorder.log_warn(&text);
-                    c.notify("攝影機", &text, true);
+                    c.notify(screenrecorder_core::tr!("攝影機", "Camera"), &text, true);
                 }
             },
             // 拖曳、調整大小後記住位置與大小，下次從這裡開始

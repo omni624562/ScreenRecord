@@ -4,6 +4,7 @@ use crate::args::{encoder_spec, gpu_convert_test_args, gpu_encode_test_args, gpu
 use crate::paths::{app_dir, data_dir};
 use crate::process::{last_lines, run};
 use crate::types::{FfmpegInfo, MonitorInfo};
+use crate::{tr, trf};
 use regex::Regex;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
@@ -93,7 +94,7 @@ pub async fn probe_ffmpeg() -> Probe {
         run(&path, &["-hide_banner", "-h", "filter=ddagrab"], t),
     );
     if ver.code != 0 {
-        let err = format!("無法執行 ffmpeg：{}", last_lines(&ver.stderr, 3));
+        let err = trf!("無法執行 ffmpeg：{}", "Couldn't run ffmpeg: {}", last_lines(&ver.stderr, 3));
         return Probe { info: FfmpegInfo { path: Some(path_str), error: Some(err), ..base }, ..Default::default() };
     }
     let version = parse_version(&ver.stdout).unwrap_or_else(|| "unknown".into());
@@ -118,7 +119,10 @@ pub async fn probe_ffmpeg() -> Probe {
             ddagrab_skip_static: dda_help.stdout.contains("dup_frames"),
             has_gdigrab: GDIGRAB_RE.is_match(&devices.stdout),
             encoder: encoder.map(|e| e.name.to_string()),
-            error: encoder.is_none().then(|| "這個 FFmpeg 沒有可用的 H.264 編碼器（建議改用 gyan.dev 的 full / essentials 版本）".to_string()),
+            error: encoder.is_none().then(|| {
+                tr!("這個 FFmpeg 沒有可用的 H.264 編碼器（建議改用 gyan.dev 的 full / essentials 版本）", "This FFmpeg has no usable H.264 encoder (try the full / essentials build from gyan.dev)")
+                    .to_string()
+            }),
             ..base
         },
         encoder,
@@ -132,14 +136,14 @@ pub async fn test_gpu_convert(ffmpeg: &Path, m: &MonitorInfo, convert: GpuConver
     let t = Duration::from_secs(20);
     let r = run(ffmpeg, &gpu_convert_test_args(m, convert), t).await;
     if r.timed_out {
-        return Err("測試逾時".into());
+        return Err(tr!("測試逾時", "Test timed out").into());
     }
     if r.code != 0 {
         return Err(last_lines(&r.stderr, 2));
     }
-    let Some((bt709, bt601)) = parse_gpu_psnr(&r.stderr) else { return Err("讀不到比對結果".into()) };
+    let Some((bt709, bt601)) = parse_gpu_psnr(&r.stderr) else { return Err(tr!("讀不到比對結果", "Couldn't read the comparison result").into()) };
     if !gpu_psnr_ok(bt709, bt601) {
-        return Err(format!("顏色和 CPU 轉的不同（與 BT.709 相比 {bt709:.1} dB、BT.601 {bt601:.1} dB）"));
+        return Err(trf!("顏色和 CPU 轉的不同（與 BT.709 相比 {bt709:.1} dB、BT.601 {bt601:.1} dB）", "Colors differ from the CPU conversion (vs. BT.709 {bt709:.1} dB, BT.601 {bt601:.1} dB)"));
     }
     let zero_copy = match encoder {
         Some(e) => {
@@ -165,7 +169,7 @@ pub async fn test_ddagrab(ffmpeg: &Path, monitor: Option<&MonitorInfo>) -> Resul
         return Ok(());
     }
     Err(if r.timed_out {
-        "測試逾時".into()
+        tr!("測試逾時", "Test timed out").into()
     } else {
         let l = last_lines(&r.stderr, 3);
         if l.is_empty() {

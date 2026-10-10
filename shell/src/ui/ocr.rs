@@ -5,6 +5,7 @@ use super::UiApp;
 use eframe::egui::{self, Align, Id, Layout, RichText};
 use screenrecorder_core::actions;
 use screenrecorder_core::shot_edit::ShotSpec;
+use screenrecorder_core::{tr, trf};
 
 /// 辨識中或辨識好的結果
 pub struct Ocr {
@@ -43,12 +44,12 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         ui.set_width(560.0);
         let p = theme::pal(ui);
         ui.horizontal(|ui| {
-            ui.label(RichText::new("文字辨識").font(theme::font_bold(17.0)));
+            ui.label(RichText::new(tr!("文字辨識", "Text recognition")).font(theme::font_bold(17.0)));
             if !o.lang.is_empty() {
-                ui.label(RichText::new(format!("（{}）", o.lang)).color(p.muted));
+                ui.label(RichText::new(trf!("（{}）", "({})", o.lang)).color(p.muted));
             }
             ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
-                if Btn::icon_only(Icon::Close).ghost().small().tooltip("關閉（Esc）").show(ui).clicked() {
+                if Btn::icon_only(Icon::Close).ghost().small().tooltip(tr!("關閉（Esc）", "Close (Esc)")).show(ui).clicked() {
                     close = true;
                 }
             });
@@ -58,11 +59,11 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
             None => {
                 ui.horizontal(|ui| {
                     ui.spinner();
-                    ui.label("辨識中…");
+                    ui.label(tr!("辨識中…", "Recognizing text…"));
                 });
             }
             Some(text) if text.trim().is_empty() => {
-                ui.label(RichText::new("圖裡找不到文字。").color(p.muted));
+                ui.label(RichText::new(tr!("圖裡找不到文字。", "No text found in the image.")).color(p.muted));
             }
             Some(text) => {
                 egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
@@ -70,9 +71,13 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                 });
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new("可以直接修改，再按「複製全部」；也可以選一段後按 Ctrl+C。").font(theme::font(12.0)).color(p.muted));
+                    ui.label(
+                        RichText::new(tr!("可以直接修改，再按「複製全部」；也可以選一段後按 Ctrl+C。", "Edit the text if needed, then click “Copy all”, or select part of it and press Ctrl+C."))
+                            .font(theme::font(12.0))
+                            .color(p.muted),
+                    );
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if Btn::new("複製全部").primary().show(ui).clicked() {
+                        if Btn::new(tr!("複製全部", "Copy all")).primary().show(ui).clicked() {
                             copy = Some(text.clone());
                         }
                     });
@@ -83,7 +88,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
     });
     if let Some(t) = copy {
         ctx.copy_text(t);
-        app.toast("已複製辨識出的文字", false);
+        app.toast(tr!("已複製辨識出的文字", "Recognized text copied"), false);
     }
     if close || modal.should_close() {
         return;

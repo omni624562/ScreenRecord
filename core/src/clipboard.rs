@@ -195,7 +195,7 @@ pub fn copy_files(paths: &[String]) -> Result<(), String> {
     use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
     use windows::Win32::UI::Shell::DROPFILES;
     if paths.is_empty() {
-        return Err("沒有要複製的檔案".into());
+        return Err(crate::tr!("沒有要複製的檔案", "No files to copy").into());
     }
     // DROPFILES 後面接著以 \0 分隔、\0\0 結尾的 UTF-16 路徑
     let mut list: Vec<u16> = Vec::new();
@@ -205,19 +205,19 @@ pub fn copy_files(paths: &[String]) -> Result<(), String> {
     }
     list.push(0);
     let head = std::mem::size_of::<DROPFILES>();
-    let fail = |what: &str| format!("無法複製到剪貼簿（{what}）");
+    let fail = |what: &str| crate::trf!("無法複製到剪貼簿（{what}）", "Couldn't copy to the clipboard ({what})");
     unsafe {
-        let mem = GlobalAlloc(GMEM_MOVEABLE, head + list.len() * 2).map_err(|_| fail("記憶體"))?;
+        let mem = GlobalAlloc(GMEM_MOVEABLE, head + list.len() * 2).map_err(|_| fail(crate::tr!("記憶體", "out of memory")))?;
         let ptr = GlobalLock(mem) as *mut u8;
         if ptr.is_null() {
-            return Err(fail("記憶體"));
+            return Err(fail(crate::tr!("記憶體", "out of memory")));
         }
         let df = DROPFILES { pFiles: head as u32, pt: POINT::default(), fNC: false.into(), fWide: true.into() };
         std::ptr::write_unaligned(ptr as *mut DROPFILES, df);
         std::ptr::copy_nonoverlapping(list.as_ptr() as *const u8, ptr.add(head), list.len() * 2);
         let _ = GlobalUnlock(mem);
         // 「複製」而不是「剪下」：貼到資料夾時不會搬走原檔
-        let effect = GlobalAlloc(GMEM_MOVEABLE, 4).map_err(|_| fail("記憶體"))?;
+        let effect = GlobalAlloc(GMEM_MOVEABLE, 4).map_err(|_| fail(crate::tr!("記憶體", "out of memory")))?;
         let ep = GlobalLock(effect) as *mut u32;
         if !ep.is_null() {
             *ep = 1; // DROPEFFECT_COPY
@@ -227,7 +227,7 @@ pub fn copy_files(paths: &[String]) -> Result<(), String> {
         if OpenClipboard(None).is_err() {
             let _ = GlobalFree(Some(mem));
             let _ = GlobalFree(Some(effect));
-            return Err(fail("剪貼簿被其他程式占用"));
+            return Err(fail(crate::tr!("剪貼簿被其他程式占用", "the clipboard is in use by another app")));
         }
         let _ = EmptyClipboard();
         let ok = SetClipboardData(15 /* CF_HDROP */, Some(HANDLE(mem.0))).is_ok();
@@ -242,14 +242,14 @@ pub fn copy_files(paths: &[String]) -> Result<(), String> {
         if ok {
             Ok(())
         } else {
-            Err(fail("寫入失敗"))
+            Err(fail(crate::tr!("寫入失敗", "write failed")))
         }
     }
 }
 
 #[cfg(not(windows))]
 pub fn copy_files(_paths: &[String]) -> Result<(), String> {
-    Err("複製檔案只支援 Windows".into())
+    Err(crate::tr!("複製檔案只支援 Windows", "Copying files is only available on Windows").into())
 }
 
 #[cfg(test)]

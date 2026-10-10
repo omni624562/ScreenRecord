@@ -6,6 +6,7 @@
 use crate::icon::{icon_resource, IconState};
 use crate::tray::{TrayCommand, TrayState, TrayUi};
 use crate::types::{HotkeyStatus, Hotkeys, RecorderState};
+use crate::{tr, trf};
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 use std::sync::{mpsc, Arc, Mutex};
@@ -158,7 +159,7 @@ impl Tray {
         let icon = self.icon(kind);
         let mut d = self.nid(flags);
         d.hIcon = icon;
-        put_str(&mut d.szTip, self.state.as_ref().map(|s| s.tip.as_str()).unwrap_or("螢幕錄影"));
+        put_str(&mut d.szTip, self.state.as_ref().map(|s| s.tip.as_str()).unwrap_or(tr!("螢幕錄影", "Screen Recorder")));
         d
     }
 
@@ -361,92 +362,93 @@ fn show_menu() {
     let idle = st.rec == RecorderState::Idle;
     unsafe {
         let Ok(root) = CreatePopupMenu() else { return };
-        m.add(root, "開啟操作視窗(&O)", TrayCommand::Open, false, false);
+        m.add(root, tr!("開啟操作視窗(&O)", "&Open main window"), TrayCommand::Open, false, false);
         let _ = SetMenuDefaultItem(root, 0, 1);
         if let Some(u) = &st.update {
-            m.add(root, &format!("★ 有新版本 v{u}（開啟視窗更新）"), TrayCommand::OpenUpdate, false, false);
+            m.add(root, &trf!("★ 有新版本 v{u}（開啟視窗更新）", "★ New version v{u} available (open to update)"), TrayCommand::OpenUpdate, false, false);
         }
         Menu::sep(root);
         // 「\t」後的文字顯示在選單右側（快速鍵提示）
-        m.add(root, &format!("開始錄影(&R)　{}{}", st.last_source, tab(&st.keys[0])), TrayCommand::StartLast, !idle || !st.can_record, false);
+        m.add(root, &trf!("開始錄影(&R)　{}{}", "Start &recording ({}){}", st.last_source, tab(&st.keys[0])), TrayCommand::StartLast, !idle || !st.can_record, false);
         // 錄其他範圍：與「截圖」相同的選法（框選範圍或視窗、全螢幕、重複上次框選）
         if let Ok(pick) = CreatePopupMenu() {
-            m.add(pick, "框選範圍或視窗(&A)…", TrayCommand::StartSelect, false, false);
+            m.add(pick, tr!("框選範圍或視窗(&A)…", "Select &area or window…"), TrayCommand::StartSelect, false, false);
             if let Ok(full) = CreatePopupMenu() {
                 for mon in &st.monitors {
                     m.add(full, &mon.label, TrayCommand::StartMonitor(mon.id.clone()), false, false);
                 }
                 if st.monitors.len() > 1 {
                     Menu::sep(full);
-                    m.add(full, "所有螢幕（整個延伸桌面）", TrayCommand::StartAll, false, false);
+                    m.add(full, tr!("所有螢幕（整個延伸桌面）", "All screens (entire extended desktop)"), TrayCommand::StartAll, false, false);
                 }
-                Menu::sub(pick, "全螢幕(&F)", full, st.monitors.is_empty());
+                Menu::sub(pick, tr!("全螢幕(&F)", "&Full screen"), full, st.monitors.is_empty());
             }
             Menu::sep(pick);
-            m.add(pick, "重複上次框選(&R)", TrayCommand::StartLastSnip, !st.has_last_snip, false);
-            Menu::sub(root, "錄製其他範圍(&M)", pick, !idle || !st.can_record);
+            m.add(pick, tr!("重複上次框選(&R)", "Re&peat last selection"), TrayCommand::StartLastSnip, !st.has_last_snip, false);
+            Menu::sub(root, tr!("錄製其他範圍(&M)", "Record another ar&ea"), pick, !idle || !st.can_record);
         }
         if st.rec == RecorderState::Paused {
-            m.add(root, &format!("繼續錄影(&C){}", tab(&st.keys[1])), TrayCommand::Resume, false, false);
+            m.add(root, &trf!("繼續錄影(&C){}", "Res&ume recording{}", tab(&st.keys[1])), TrayCommand::Resume, false, false);
         } else {
-            m.add(root, &format!("暫停(&P){}", tab(&st.keys[1])), TrayCommand::Pause, st.rec != RecorderState::Recording, false);
+            m.add(root, &trf!("暫停(&P){}", "&Pause{}", tab(&st.keys[1])), TrayCommand::Pause, st.rec != RecorderState::Recording, false);
         }
         if st.rec == RecorderState::Countdown {
-            m.add(root, "取消倒數(&S)", TrayCommand::Stop, false, false);
+            m.add(root, tr!("取消倒數(&S)", "&Cancel countdown"), TrayCommand::Stop, false, false);
         } else {
-            m.add(root, &format!("停止並儲存(&S){}", tab(&st.keys[0])), TrayCommand::Stop, idle || st.rec == RecorderState::Stopping, false);
+            m.add(root, &trf!("停止並儲存(&S){}", "&Stop and save{}", tab(&st.keys[0])), TrayCommand::Stop, idle || st.rec == RecorderState::Stopping, false);
         }
-        m.add(root, &format!("加標記(&K){}", tab(&st.keys[4])), TrayCommand::Mark, !matches!(st.rec, RecorderState::Recording | RecorderState::Paused), false);
-        m.add(root, &format!("螢幕畫筆(&D){}", tab(&st.keys[5])), TrayCommand::Pen, false, crate::screen_pen_win::active());
+        m.add(root, &trf!("加標記(&K){}", "Add &marker{}", tab(&st.keys[4])), TrayCommand::Mark, !matches!(st.rec, RecorderState::Recording | RecorderState::Paused), false);
+        m.add(root, &trf!("螢幕畫筆(&D){}", "Screen pe&n{}", tab(&st.keys[5])), TrayCommand::Pen, false, crate::screen_pen_win::active());
         Menu::sep(root);
         // 截圖：框選範圍或點選視窗、全螢幕、固定範圍（主畫面的錄影範圍）、重複上次框選
         if let Ok(shot) = CreatePopupMenu() {
-            m.add(shot, &format!("框選範圍或視窗(&A)…{}", tab(&st.keys[3])), TrayCommand::ScreenshotSelect, false, false);
+            m.add(shot, &trf!("框選範圍或視窗(&A)…{}", "Select &area or window…{}", tab(&st.keys[3])), TrayCommand::ScreenshotSelect, false, false);
             if let Ok(delay) = CreatePopupMenu() {
                 for sec in [3u64, 5, 10] {
-                    m.add(delay, &format!("{sec} 秒後"), TrayCommand::ScreenshotDelay(sec), false, false);
+                    m.add(delay, &trf!("{sec} 秒後", "In {sec} seconds"), TrayCommand::ScreenshotDelay(sec), false, false);
                 }
-                Menu::sub(shot, "延遲框選(&D)", delay, false);
+                Menu::sub(shot, tr!("延遲框選(&D)", "&Delayed selection"), delay, false);
             }
-            m.add(shot, "長截圖（捲動）(&L)…", TrayCommand::ScreenshotScroll, false, false);
-            m.add(shot, "讀取 QR 碼(&Q)…", TrayCommand::ScreenshotQr, false, false);
-            m.add(shot, "取色器(&C)…", TrayCommand::ScreenColor, false, false);
-            m.add(shot, "尺規（量距離）(&R)…", TrayCommand::ScreenRuler, false, false);
-            m.add(shot, "步驟截圖（做成教學文件）(&P)", TrayCommand::StepsStart, st.steps.is_some(), false);
+            m.add(shot, tr!("長截圖（捲動）(&L)…", "Scro&lling screenshot…"), TrayCommand::ScreenshotScroll, false, false);
+            m.add(shot, tr!("讀取 QR 碼(&Q)…", "Read &QR code…"), TrayCommand::ScreenshotQr, false, false);
+            m.add(shot, tr!("取色器(&C)…", "&Color picker…"), TrayCommand::ScreenColor, false, false);
+            m.add(shot, tr!("尺規（量距離）(&R)…", "&Ruler (measure distance)…"), TrayCommand::ScreenRuler, false, false);
+            m.add(shot, tr!("步驟截圖（做成教學文件）(&P)", "S&tep capture (step-by-step guide)"), TrayCommand::StepsStart, st.steps.is_some(), false);
             if let Ok(full) = CreatePopupMenu() {
                 for mon in &st.monitors {
                     m.add(full, &mon.label, TrayCommand::ScreenshotMonitor(mon.id.clone()), false, false);
                 }
                 if st.monitors.len() > 1 {
                     Menu::sep(full);
-                    m.add(full, "所有螢幕（整個延伸桌面）", TrayCommand::ScreenshotAll, false, false);
+                    m.add(full, tr!("所有螢幕（整個延伸桌面）", "All screens (entire extended desktop)"), TrayCommand::ScreenshotAll, false, false);
                 }
-                Menu::sub(shot, "全螢幕(&F)", full, st.monitors.is_empty());
+                Menu::sub(shot, tr!("全螢幕(&F)", "&Full screen"), full, st.monitors.is_empty());
             }
-            m.add(shot, &format!("固定範圍(&X)：{}{}", st.last_source, tab(&st.keys[2])), TrayCommand::Screenshot, false, false);
+            m.add(shot, &trf!("固定範圍(&X)：{}{}", "Fi&xed area: {}{}", st.last_source, tab(&st.keys[2])), TrayCommand::Screenshot, false, false);
             Menu::sep(shot);
-            m.add(shot, "重複上次框選(&R)", TrayCommand::ScreenshotLast, !st.has_last_snip, false);
+            m.add(shot, tr!("重複上次框選(&R)", "Re&peat last selection"), TrayCommand::ScreenshotLast, !st.has_last_snip, false);
             Menu::sep(shot);
-            m.add(shot, "編輯上次截圖(&E)…", TrayCommand::EditLastShot, !st.has_shot, false);
-            Menu::sub(root, "截圖(&T)", shot, !st.can_shot);
+            m.add(shot, tr!("編輯上次截圖(&E)…", "&Edit last screenshot…"), TrayCommand::EditLastShot, !st.has_shot, false);
+            Menu::sub(root, tr!("截圖(&T)", "Screensho&t"), shot, !st.can_shot);
         }
         // 步驟截圖進行中：放在最上層，隨時可以完成
         if let Some(n) = st.steps {
-            m.add(root, &format!("完成步驟截圖（{n} 步）(&G)"), TrayCommand::StepsFinish, false, false);
+            let label = if crate::i18n::is_en() { format!("F&inish step capture ({n} step{})", if n == 1 { "" } else { "s" }) } else { format!("完成步驟截圖（{n} 步）(&G)") };
+            m.add(root, &label, TrayCommand::StepsFinish, false, false);
         }
         Menu::sep(root);
         if let Ok(audio) = CreatePopupMenu() {
-            m.add(audio, "系統聲音", TrayCommand::ToggleSystem, false, st.audio_system);
-            m.add(audio, "麥克風", TrayCommand::ToggleMic, false, st.audio_mic);
-            Menu::sub(root, "錄製聲音(&A)", audio, !idle);
+            m.add(audio, tr!("系統聲音", "System audio"), TrayCommand::ToggleSystem, false, st.audio_system);
+            m.add(audio, tr!("麥克風", "Microphone"), TrayCommand::ToggleMic, false, st.audio_mic);
+            Menu::sub(root, tr!("錄製聲音(&A)", "Record &audio"), audio, !idle);
         }
         Menu::sep(root);
-        m.add(root, "開啟儲存資料夾(&F)", TrayCommand::OpenFolder, false, false);
-        m.add(root, "播放最近的錄影(&L)", TrayCommand::PlayLast, st.last_result.is_none(), false);
+        m.add(root, tr!("開啟儲存資料夾(&F)", "Open save &folder"), TrayCommand::OpenFolder, false, false);
+        m.add(root, tr!("播放最近的錄影(&L)", "Play &latest recording"), TrayCommand::PlayLast, st.last_result.is_none(), false);
         Menu::sep(root);
-        m.add(root, "開機時自動啟動", TrayCommand::Autostart, st.autostart.is_none(), st.autostart == Some(true));
-        m.add(root, &format!("更新說明（v{}）", st.version), TrayCommand::Changelog, false, false);
-        m.add(root, "結束(&X)", TrayCommand::Quit, false, false);
+        m.add(root, tr!("開機時自動啟動", "Start with Windows"), TrayCommand::Autostart, st.autostart.is_none(), st.autostart == Some(true));
+        m.add(root, &trf!("更新說明（v{}）", "Release notes (v{})", st.version), TrayCommand::Changelog, false, false);
+        m.add(root, tr!("結束(&X)", "E&xit"), TrayCommand::Quit, false, false);
 
         let mut pt = POINT::default();
         let _ = GetCursorPos(&mut pt);

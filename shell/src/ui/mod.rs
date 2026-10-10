@@ -22,6 +22,7 @@ use eframe::egui;
 use screenrecorder_core::actions::{self, UpdateState};
 use screenrecorder_core::app::{App, Status, UiPage};
 use screenrecorder_core::types::{DownloadPhase, EnvInfo, LibraryEntry, LibraryPage, RecorderState};
+use screenrecorder_core::{tr, trf};
 use settings::UiSettings;
 use std::collections::HashMap;
 use std::future::Future;
@@ -237,15 +238,15 @@ impl UiApp {
     /// 顯示讀到的 QR 碼內容（複製到剪貼簿；是網址時可以直接開啟）
     pub fn show_qr(&mut self, list: Vec<String>) {
         if list.is_empty() {
-            return self.toast("沒有找到 QR 碼（框大一點、或把畫面放大再試試）", true);
+            return self.toast(tr!("沒有找到 QR 碼（框大一點、或把畫面放大再試試）", "No QR code found (try selecting a larger area or zooming in)"), true);
         }
         let text = list.join("\n");
         self.ctx.copy_text(text.clone());
         let url = list.iter().find(|t| screenrecorder_core::qr::is_url(t)).cloned();
-        let msg = format!("{text}\n\n（已複製到剪貼簿）");
+        let msg = trf!("{text}\n\n（已複製到剪貼簿）", "{text}\n\n(Copied to the clipboard)");
         self.ask = Some(match url {
-            Some(u) => dialogs::Ask::confirm("QR 碼內容", msg, "開啟連結", move |_, _| screenrecorder_core::desktop::open_with_explorer(&u, false)),
-            None => dialogs::Ask::confirm("QR 碼內容", msg, "好", |_, _| {}),
+            Some(u) => dialogs::Ask::confirm(tr!("QR 碼內容", "QR code content"), msg, tr!("開啟連結", "Open link"), move |_, _| screenrecorder_core::desktop::open_with_explorer(&u, false)),
+            None => dialogs::Ask::confirm(tr!("QR 碼內容", "QR code content"), msg, tr!("好", "OK"), |_, _| {}),
         });
     }
 
@@ -333,7 +334,7 @@ impl UiApp {
         }
         if let Some(i) = &self.status.install {
             if i.phase == screenrecorder_core::selfupdate::InstallPhase::Error && prev_install.as_ref().map(|p| (&p.phase, &p.message)) != Some((&i.phase, &i.message)) {
-                let msg = format!("更新失敗：{}", i.message.clone().unwrap_or_default());
+                let msg = trf!("更新失敗：{}", "Update failed: {}", i.message.clone().unwrap_or_default());
                 self.toast(msg, true);
             }
         }
@@ -341,7 +342,7 @@ impl UiApp {
         if self.status.download.phase == screenrecorder_core::types::DownloadPhase::Done && !self.env.ffmpeg.found {
             self.env = self.core.env();
             if self.env.ffmpeg.found {
-                let msg = self.status.download.message.clone().unwrap_or_else(|| "FFmpeg 已安裝".into());
+                let msg = self.status.download.message.clone().unwrap_or_else(|| tr!("FFmpeg 已安裝", "FFmpeg installed").into());
                 self.toast(msg, false);
                 self.preview.reset();
                 self.watch_ddagrab();
@@ -352,7 +353,7 @@ impl UiApp {
         if let Some(shot) = self.status.shot.clone().filter(|s| s.seq != self.last_shot_seq) {
             self.last_shot_seq = shot.seq;
             let name = dialogs::file_name(&shot.path);
-            self.toast(if shot.copied { format!("已截圖並複製到剪貼簿：{name}") } else { format!("已截圖：{name}") }, false);
+            self.toast(if shot.copied { trf!("已截圖並複製到剪貼簿：{name}", "Screenshot copied to the clipboard: {name}") } else { trf!("已截圖：{name}", "Screenshot saved: {name}") }, false);
             self.shots_changed();
             // 設定「截圖後直接編輯」：開啟操作視窗與編輯（其他視窗開著時不打斷）
             if self.s.edit_after_shot && self.editor.is_none() && self.export_dlg.is_none() {
@@ -387,10 +388,10 @@ impl UiApp {
                 if let Some(e) = &self.status.export {
                     if e.state == screenrecorder_core::types::ExportState::Done {
                         let what = match e.kind {
-                            screenrecorder_core::types::ExportKind::Cut => "剪輯完成",
-                            screenrecorder_core::types::ExportKind::Merge => "合併完成",
-                            screenrecorder_core::types::ExportKind::Gif => "GIF 製作完成",
-                            screenrecorder_core::types::ExportKind::Speed => "加速版製作完成",
+                            screenrecorder_core::types::ExportKind::Cut => tr!("剪輯完成", "Edited video ready"),
+                            screenrecorder_core::types::ExportKind::Merge => tr!("合併完成", "Merged video ready"),
+                            screenrecorder_core::types::ExportKind::Gif => tr!("GIF 製作完成", "GIF ready"),
+                            screenrecorder_core::types::ExportKind::Speed => tr!("加速版製作完成", "Sped-up video ready"),
                         };
                         self.toast(what, false);
                     }
@@ -463,19 +464,19 @@ impl UiApp {
             EntryAction::Play => viewer::open(self, entry),
             EntryAction::SaveAudio => {
                 let core = self.core.clone();
-                self.toast("正在存成 M4A…", false);
+                self.toast(tr!("正在存成 M4A…", "Saving as M4A…"), false);
                 self.spawn(async move { actions::save_audio(&core, &path).await }, |app, r| match r {
-                    Ok(out) => app.toast(format!("已存成 {}（和影片在同一個資料夾）", dialogs::file_name(&out)), false),
+                    Ok(out) => app.toast(trf!("已存成 {}（和影片在同一個資料夾）", "Saved as {} (in the same folder as the video)", dialogs::file_name(&out)), false),
                     Err(e) => app.toast(e.message().to_string(), true),
                 });
             }
             EntryAction::CopyFile => match screenrecorder_core::clipboard::copy_files(std::slice::from_ref(&path)) {
-                Ok(()) => self.toast("已複製檔案，可以直接貼到 LINE、Teams、信件或資料夾", false),
+                Ok(()) => self.toast(tr!("已複製檔案，可以直接貼到 LINE、Teams、信件或資料夾", "File copied. Paste it into LINE, Teams, an email or a folder"), false),
                 Err(e) => self.toast(e, true),
             },
             EntryAction::External | EntryAction::Reveal => {
                 if action == EntryAction::External {
-                    self.toast("正在以 Windows 預設的程式開啟…", false);
+                    self.toast(tr!("正在以 Windows 預設的程式開啟…", "Opening with the Windows default app…"), false);
                 }
                 let a = if action == EntryAction::External { OpenAction::Play } else { OpenAction::Reveal };
                 if let Err(e) = actions::open(a, &path) {
@@ -484,15 +485,15 @@ impl UiApp {
             }
             EntryAction::Edit if dialogs::is_image(&path) => editor::shot::open(self, path),
             EntryAction::Edit | EntryAction::Export => {
-                let what = if action == EntryAction::Edit { "剪輯" } else { "製作加速版 / GIF" };
+                let what = if action == EntryAction::Edit { tr!("剪輯", "edit") } else { tr!("製作加速版 / GIF", "make a sped-up video or GIF") };
                 if self.locked() {
-                    return self.toast(format!("錄影中無法{what}，請先停止錄影"), true);
+                    return self.toast(trf!("錄影中無法{what}，請先停止錄影", "Can't {what} while recording. Stop the recording first"), true);
                 }
                 if self.exporting() {
-                    return self.toast("目前有轉檔工作進行中，請等它完成", true);
+                    return self.toast(tr!("目前有轉檔工作進行中，請等它完成", "A conversion is in progress. Please wait for it to finish"), true);
                 }
                 if entry.media.duration_sec.unwrap_or(0.0) <= 0.0 {
-                    return self.toast("無法讀取影片長度", true);
+                    return self.toast(tr!("無法讀取影片長度", "Couldn't read the video duration"), true);
                 }
                 if action == EntryAction::Edit {
                     editor::open(self, entry);
@@ -521,7 +522,7 @@ impl UiApp {
             },
             move |app, m| match m {
                 Some(m) => app.act(action, LibraryEntry { media: m, exports: vec![] }),
-                None => app.toast("清單中找不到這個檔案", true),
+                None => app.toast(tr!("清單中找不到這個檔案", "This file isn't in the list"), true),
             },
         );
     }
@@ -551,8 +552,8 @@ impl UiApp {
             if page == UiPage::EditShot {
                 match self.core.last_shot() {
                     Some(s) if self.editor.is_none() => editor::shot::open(self, s.path),
-                    Some(_) => self.toast("編輯視窗已經開著，請先關閉", true),
-                    None => self.toast("還沒有截圖", true),
+                    Some(_) => self.toast(tr!("編輯視窗已經開著，請先關閉", "The editor is already open. Close it first"), true),
+                    None => self.toast(tr!("還沒有截圖", "No screenshots yet"), true),
                 }
             }
         }

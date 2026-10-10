@@ -2,10 +2,12 @@
 //! 這裡是筆畫與按鍵的邏輯、畫法（可以在任何平台測試）；Windows 的視窗見 screen_pen_win.rs。
 
 use crate::annotate;
+use crate::{tr, trf};
 use tiny_skia::{Color, LineCap, LineJoin, Paint, PathBuilder, Pixmap, PixmapMut, Stroke, Transform};
 
 /// 可選的顏色（按 1～4 切換）：紅、黃、綠、藍
-pub const COLORS: [(&str, [u8; 3]); 4] = [("紅", [239, 68, 68]), ("黃", [250, 204, 21]), ("綠", [34, 197, 94]), ("藍", [59, 130, 246])];
+/// (中文名稱, RGB, 英文名稱)
+pub const COLORS: [(&str, [u8; 3], &str); 4] = [("紅", [239, 68, 68], "Red"), ("黃", [250, 204, 21], "Yellow"), ("綠", [34, 197, 94], "Green"), ("藍", [59, 130, 246], "Blue")];
 
 /// 一筆
 #[derive(Debug, Clone, PartialEq)]
@@ -168,7 +170,8 @@ fn draw_line(pm: &mut PixmapMut, l: &Line, t: Transform, bgr: bool) {
 
 /// 操作說明（畫在不會被錄進去的小視窗）
 pub fn help_text(color: usize) -> String {
-    format!("螢幕畫筆（{}）　拖曳畫線　1～4 換顏色　Ctrl+Z 復原　Delete 清除　Esc 結束", COLORS[color.min(COLORS.len() - 1)].0)
+    let (zh, _, en) = COLORS[color.min(COLORS.len() - 1)];
+    trf!("螢幕畫筆（{}）　拖曳畫線　1～4 換顏色　Ctrl+Z 復原　Delete 清除　Esc 結束", "Screen pen ({})   Drag to draw   1–4: color   Ctrl+Z: undo   Delete: clear   Esc: exit", tr!(zh, en))
 }
 
 /// 說明列的圖（不透明的深色圓角底、白字）；回傳預乘 RGBA

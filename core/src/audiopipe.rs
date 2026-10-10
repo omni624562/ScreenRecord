@@ -13,6 +13,7 @@
 use crate::audio::{AudioSourceSpec, Capture, Opener, CHANNELS, SAMPLE_RATE};
 use crate::clock::now_100ns;
 use crate::types::LogLevel;
+use crate::{tr, trf};
 use std::collections::VecDeque;
 use std::io::{ErrorKind, Write};
 use std::net::{TcpListener, TcpStream};
@@ -191,7 +192,7 @@ impl Timeline {
             .iter()
             .map(|spec| Source {
                 spec: spec.clone(),
-                label: if spec.loopback { "系統聲音" } else { "麥克風" },
+                label: if spec.loopback { tr!("系統聲音", "System audio") } else { tr!("麥克風", "Microphone") },
                 cap: None,
                 reopen_at: None,
                 pre: VecDeque::new(),
@@ -210,11 +211,11 @@ impl Timeline {
         self.sources
             .iter()
             .map(|s| match &s.cap {
-                Some(c) => format!("{}（{}）", s.label, c.name()),
-                None => format!("{}（無法使用，改錄靜音）", s.label),
+                Some(c) => trf!("{}（{}）", "{} ({})", s.label, c.name()),
+                None => trf!("{}（無法使用，改錄靜音）", "{} (unavailable, recording silence)", s.label),
             })
             .collect::<Vec<_>>()
-            .join("、")
+            .join(tr!("、", ", "))
     }
 
     /// 畫面時間零點已確定：之後不再需要 showinfo 的輸出
@@ -263,7 +264,10 @@ impl Timeline {
             // 睡眠一小時要補約 1.4 GB 的靜音；改為把零點往後移，錄影端也會在恢復後重開分段
             t0 += (behind as f64 * 1e7 / SAMPLE_RATE as f64 + 0.5).floor();
             self.t0 = Some(t0);
-            (self.log)(LogLevel::Warn, format!("聲音中斷約 {} 秒（電腦睡眠？），已跳過這段", (behind as f64 / SAMPLE_RATE as f64 + 0.5).floor()));
+            (self.log)(
+                LogLevel::Warn,
+                trf!("聲音中斷約 {} 秒（電腦睡眠？），已跳過這段", "Audio was interrupted for about {} s (computer asleep?); skipped that part", (behind as f64 / SAMPLE_RATE as f64 + 0.5).floor()),
+            );
         }
         let capped = frames_100ns((now - SILENCE_MARGIN_100NS) as f64 - t0);
         for s in &mut self.sources {
@@ -277,7 +281,7 @@ impl Timeline {
         match (self.opener)(&s.spec) {
             Ok(cap) => {
                 if !first {
-                    (self.log)(LogLevel::Info, format!("{}已恢復（{}）", s.label, cap.name()));
+                    (self.log)(LogLevel::Info, trf!("{}已恢復（{}）", "{} is back ({})", s.label, cap.name()));
                 }
                 s.cap = Some(cap);
                 s.reopen_at = None;
@@ -286,7 +290,7 @@ impl Timeline {
                 s.cap = None;
                 s.reopen_at = Some(now + 30_000_000);
                 if first {
-                    (self.log)(LogLevel::Warn, format!("{}無法開啟：{e}，這段先以靜音代替", s.label));
+                    (self.log)(LogLevel::Warn, trf!("{}無法開啟：{e}，這段先以靜音代替", "{} couldn't be opened: {e}; recording silence for now", s.label));
                 }
             }
         }
@@ -331,7 +335,7 @@ impl Timeline {
             match result {
                 Ok(()) => s.cap = Some(cap),
                 Err(e) => {
-                    (self.log)(LogLevel::Warn, format!("{}中斷：{e}，先以靜音代替並嘗試重新連線", s.label));
+                    (self.log)(LogLevel::Warn, trf!("{}中斷：{e}，先以靜音代替並嘗試重新連線", "{} disconnected: {e}; recording silence and trying to reconnect", s.label));
                     drop(cap);
                     s.reopen_at = Some(now + 10_000_000);
                 }
@@ -412,7 +416,7 @@ impl Output {
         let rest = &bytes[off..];
         if self.pending.len() + rest.len() > MAX_PENDING_BYTES {
             if !self.overflow_warned {
-                (self.log)(LogLevel::Warn, "FFmpeg 沒有在讀取聲音資料，部分聲音已捨棄".into());
+                (self.log)(LogLevel::Warn, tr!("FFmpeg 沒有在讀取聲音資料，部分聲音已捨棄", "FFmpeg isn't reading the audio data; some audio was dropped").into());
             }
             self.overflow_warned = true;
             return;
@@ -489,7 +493,7 @@ impl AudioPipe {
             }
         })?;
         // 開啟音訊裝置卡住時不要一直等（錄影的開始、暫停、停止都在等這裡）：裝置稍後好了照樣會送聲音
-        let desc = desc_rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap_or_else(|_| "音訊裝置沒有回應".to_string());
+        let desc = desc_rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap_or_else(|_| tr!("音訊裝置沒有回應", "Audio device isn't responding").to_string());
         Ok(AudioPipe { port, desc, synced, tx, thread: std::sync::Mutex::new(Some(thread)) })
     }
 

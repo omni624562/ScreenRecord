@@ -6,6 +6,7 @@
 
 use super::{EntryAction, UiApp};
 use eframe::egui::{self, pos2, Event, Key, Modifiers, PointerButton, Pos2};
+use screenrecorder_core::tr;
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
@@ -240,9 +241,12 @@ fn fake_monitors(app: &mut UiApp) {
 fn fake_mics(app: &mut UiApp) {
     use screenrecorder_core::types::AudioDevice;
     let d = |id: &str, name: &str, is_default: bool| AudioDevice { id: id.into(), name: name.into(), is_default };
-    app.env.audio.render = Some("耳機 (JBL Tune 720BT Hands-Free AG Audio 立體聲)".into());
-    app.env.audio.captures =
-        vec![d("m1", "麥克風排列 (適用於數位麥克風的 Intel® 智慧型音效技術)", true), d("m2", "耳機 (JBL Tune 720BT Hands-Free AG Audio)", false), d("m3", "USB Audio Device", false)];
+    app.env.audio.render = Some(tr!("耳機 (JBL Tune 720BT Hands-Free AG Audio 立體聲)", "Headphones (JBL Tune 720BT Hands-Free AG Audio Stereo)").into());
+    app.env.audio.captures = vec![
+        d("m1", tr!("麥克風排列 (適用於數位麥克風的 Intel® 智慧型音效技術)", "Microphone Array (Intel® Smart Sound Technology for Digital Microphones)"), true),
+        d("m2", tr!("耳機 (JBL Tune 720BT Hands-Free AG Audio)", "Headset (JBL Tune 720BT Hands-Free AG Audio)"), false),
+        d("m3", "USB Audio Device", false),
+    ];
 }
 
 /// 用一張圖當凍結的桌面開啟框選截圖（Linux 上無法真的截下桌面）；模擬兩個視窗供點選

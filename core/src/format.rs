@@ -1,6 +1,7 @@
 //! 計算與格式化：檔名、倍率、長度、大小（結果與 2.x 版相同，見 tests/vectors.json）。
 
 use crate::types::ExportFormat;
+use crate::{tr, trf};
 use regex::Regex;
 use std::sync::LazyLock;
 
@@ -123,22 +124,22 @@ static RESERVED: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^(con|prn|a
 pub fn check_recording_name(base: &str) -> Option<&'static str> {
     let b = base.trim();
     if b.is_empty() {
-        return Some("請輸入名稱");
+        return Some(tr!("請輸入名稱", "Enter a name"));
     }
     if BAD_CHARS.is_match(b) {
-        return Some("名稱不能包含 \\ / : * ? \" < > |");
+        return Some(tr!("名稱不能包含 \\ / : * ? \" < > |", "Name can't contain \\ / : * ? \" < > |"));
     }
     if b.ends_with('.') || b.ends_with(' ') {
-        return Some("名稱結尾不能是句點或空白");
+        return Some(tr!("名稱結尾不能是句點或空白", "Name can't end with a period or space"));
     }
     if RESERVED.is_match(b) {
-        return Some("這是 Windows 保留的名稱，請換一個");
+        return Some(tr!("這是 Windows 保留的名稱，請換一個", "This name is reserved by Windows. Choose another one."));
     }
     if js_len(b) > 120 {
-        return Some("名稱太長（最多 120 個字）");
+        return Some(tr!("名稱太長（最多 120 個字）", "Name is too long (max 120 characters)"));
     }
     if parse_export_name(&format!("{b}.mp4")).is_some() {
-        return Some("名稱結尾不能是「_數字x」（例如 _4x），會被當成加速版");
+        return Some(tr!("名稱結尾不能是「_數字x」（例如 _4x），會被當成加速版", "Name can't end with “_<number>x” (e.g. _4x); it would be treated as a sped-up version"));
     }
     None
 }
@@ -168,19 +169,19 @@ pub fn human_duration(sec: f64) -> String {
         return "—".into();
     }
     if sec < 10.0 {
-        return format!("{} 秒", num(js_round(sec * 10.0) / 10.0));
+        return trf!("{} 秒", "{} s", num(js_round(sec * 10.0) / 10.0));
     }
     let s = js_round(sec) as i64;
     let (h, m, r) = (s / 3600, (s % 3600) / 60, s % 60);
     let mut parts = Vec::new();
     if h > 0 {
-        parts.push(format!("{h} 小時"));
+        parts.push(trf!("{h} 小時", "{h} h"));
     }
     if m > 0 {
-        parts.push(format!("{m} 分"));
+        parts.push(trf!("{m} 分", "{m} min"));
     }
     if r > 0 || parts.is_empty() {
-        parts.push(format!("{r} 秒"));
+        parts.push(trf!("{r} 秒", "{r} s"));
     }
     parts.join(" ")
 }

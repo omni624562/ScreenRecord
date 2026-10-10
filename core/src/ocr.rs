@@ -28,9 +28,9 @@ impl Pii {
     pub fn name(self) -> &'static str {
         match self {
             Pii::Email => "Email",
-            Pii::Phone => "電話",
-            Pii::Id => "身分證字號",
-            Pii::Card => "卡號",
+            Pii::Phone => crate::tr!("電話", "Phone"),
+            Pii::Id => crate::tr!("身分證字號", "ID number"),
+            Pii::Card => crate::tr!("卡號", "Card number"),
         }
     }
 }
@@ -144,7 +144,7 @@ pub fn tidy(line: &str) -> String {
 
 #[cfg(windows)]
 fn fail(e: windows::core::Error) -> String {
-    format!("文字辨識失敗：{}", e.message())
+    crate::trf!("文字辨識失敗：{}", "Text recognition failed: {}", e.message())
 }
 
 /// 辨識 RGBA 圖裡的文字；回傳 (文字（一行一行）, 用的語言)
@@ -228,17 +228,23 @@ fn engine() -> Result<windows::Media::Ocr::OcrEngine, String> {
         }
     }
     OcrEngine::TryCreateFromUserProfileLanguages()
-        .map_err(|_| "Windows 沒有可用的文字辨識語言：請到「設定 → 時間與語言 → 語言與地區」新增「中文（繁體，台灣）」，並在語言選項裡安裝「光學字元辨識」".to_string())
+        .map_err(|_| {
+            crate::tr!(
+                "Windows 沒有可用的文字辨識語言：請到「設定 → 時間與語言 → 語言與地區」新增「中文（繁體，台灣）」，並在語言選項裡安裝「光學字元辨識」",
+                "Windows has no text recognition language: go to Settings → Time & language → Language & region, add a language (e.g. English or Chinese (Traditional, Taiwan)), and install “Optical character recognition” in its language options"
+            )
+            .to_string()
+        })
 }
 
 #[cfg(not(windows))]
 pub fn recognize(_rgba: &[u8], _w: u32, _h: u32) -> Result<(String, String), String> {
-    Err("文字辨識只支援 Windows".into())
+    Err(crate::tr!("文字辨識只支援 Windows", "Text recognition is only available on Windows").into())
 }
 
 #[cfg(not(windows))]
 pub fn recognize_words(_rgba: &[u8], _w: u32, _h: u32) -> Result<Vec<Vec<Word>>, String> {
-    Err("自動遮個資要用 Windows 的文字辨識，只支援 Windows".into())
+    Err(crate::tr!("自動遮個資要用 Windows 的文字辨識，只支援 Windows", "Auto-redact uses Windows text recognition and is only available on Windows").into())
 }
 
 #[cfg(test)]

@@ -13,7 +13,7 @@ use crate::thumbs::Thumbnails;
 use crate::types::{AudioEnv, EnvInfo, FfmpegInfo, HotkeyStatus, MonitorInfo, RecordConfig, Rect, UpdateInfo};
 use crate::updater::{check_for_update, UpdateError};
 use crate::version::APP_VERSION;
-use crate::{info, warn};
+use crate::{info, tr, trf, warn};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -378,24 +378,24 @@ impl App {
         #[cfg(not(windows))]
         {
             let _ = output_dir;
-            Err(crate::Error::config("步驟截圖只支援 Windows"))
+            Err(crate::Error::config(tr!("步驟截圖只支援 Windows", "Step capture is only available on Windows")))
         }
         #[cfg(windows)]
         {
             if self.lock().steps.is_some() {
-                return Err(crate::Error::config("步驟截圖已經在進行中"));
+                return Err(crate::Error::config(tr!("步驟截圖已經在進行中", "Step capture is already in progress")));
             }
             // 建資料夾時不鎖（儲存位置在很慢的網路磁碟時，介面與系統匣不會跟著卡住）
             let stamp = crate::paths::timestamp();
             let name = format!("教學_{stamp}");
             let dir = PathBuf::from(output_dir);
-            let session = crate::steps_win::Session::start(dir.clone(), name.clone()).map_err(|e| crate::Error::config(format!("無法建立資料夾：{e}")))?;
+            let session = crate::steps_win::Session::start(dir.clone(), name.clone()).map_err(|e| crate::Error::config(trf!("無法建立資料夾：{e}", "Couldn't create the folder: {e}")))?;
             let mut st = self.lock();
             if st.steps.is_some() {
                 // 同時按了兩次：留下先開始的那個
                 drop(st);
                 session.finish();
-                return Err(crate::Error::config("步驟截圖已經在進行中"));
+                return Err(crate::Error::config(tr!("步驟截圖已經在進行中", "Step capture is already in progress")));
             }
             st.steps = Some((session, dir, name, chrono::Local::now().format("%Y/%m/%d %H:%M").to_string()));
             crate::info!("[截圖] 開始步驟截圖");
@@ -406,11 +406,11 @@ impl App {
     /// 完成步驟截圖：做成教學文件（HTML），回傳文件路徑；一步都沒有時刪掉資料夾、回傳 None
     pub async fn steps_finish(&self) -> crate::Result<Option<String>> {
         #[cfg(not(windows))]
-        return Err(crate::Error::config("步驟截圖只支援 Windows"));
+        return Err(crate::Error::config(tr!("步驟截圖只支援 Windows", "Step capture is only available on Windows")));
         #[cfg(windows)]
         {
             let Some((session, dir, name, date)) = self.lock().steps.take() else {
-                return Err(crate::Error::config("沒有在步驟截圖"));
+                return Err(crate::Error::config(tr!("沒有在步驟截圖", "Step capture isn't running")));
             };
             let steps = tokio::task::spawn_blocking(move || session.finish()).await.unwrap_or_default();
             if steps.is_empty() {
@@ -419,8 +419,8 @@ impl App {
                 return Ok(None);
             }
             let path = dir.join(format!("{name}.html"));
-            let doc = crate::steps::html(&format!("操作步驟（{date}）"), &date, &steps);
-            tokio::fs::write(&path, doc).await.map_err(|e| crate::Error::other(format!("無法儲存教學文件：{e}")))?;
+            let doc = crate::steps::html(&trf!("操作步驟（{date}）", "Steps ({date})"), &date, &steps);
+            tokio::fs::write(&path, doc).await.map_err(|e| crate::Error::other(trf!("無法儲存教學文件：{e}", "Couldn't save the step-by-step guide: {e}")))?;
             crate::info!("[截圖] 步驟截圖完成：{} 步，{}", steps.len(), path.display());
             Ok(Some(path.display().to_string()))
         }
@@ -432,7 +432,7 @@ impl App {
         {
             let mut st = self.lock();
             if st.shooting {
-                return Err(crate::Error::config("正在截圖"));
+                return Err(crate::Error::config(tr!("正在截圖", "A screenshot is already in progress")));
             }
             st.shooting = true;
         }
@@ -473,7 +473,7 @@ impl App {
                     }
                     Cmd::Delete => match crate::recycle::move_to_recycle_bin(&[p.to_string()]) {
                         Ok(()) => crate::info!("[截圖] 從小縮圖刪除 {p}"),
-                        Err(e) => app.notify("刪除截圖", e.message(), true),
+                        Err(e) => app.notify(tr!("刪除截圖", "Delete screenshot"), e.message(), true),
                     },
                 }
             });
@@ -502,7 +502,7 @@ impl App {
 
     /// 擷取 plan 的範圍存成 PNG（ddagrab 失敗時改用 gdigrab）
     async fn capture_png(&self, plan: &crate::args::CapturePlan, draw_mouse: bool, out: &Path) -> crate::Result<()> {
-        let ffmpeg = self.ffmpeg_path().ok_or_else(|| crate::Error::config("找不到 FFmpeg，無法截圖"))?;
+        let ffmpeg = self.ffmpeg_path().ok_or_else(|| crate::Error::config(tr!("找不到 FFmpeg，無法截圖", "FFmpeg not found, can't take a screenshot")))?;
         let out_s = out.display().to_string();
         let use_dda = plan.dda.is_some() && self.ddagrab_ready().await;
         for dda in [true, false] {
@@ -517,12 +517,12 @@ impl App {
             crate::info!("[截圖] {} 失敗：{}", if dda { "ddagrab" } else { "gdigrab" }, r.stderr.trim());
         }
         let _ = tokio::fs::remove_file(out).await;
-        Err(crate::Error::other("截圖失敗，詳見記錄檔"))
+        Err(crate::Error::other(tr!("截圖失敗，詳見記錄檔", "Screenshot failed. See the log file for details")))
     }
 
     /// 從影片擷取 t 秒的那一格，存成截圖（原尺寸 PNG，和影片放在同一個資料夾）並複製到剪貼簿
     pub async fn grab_frame(self: &Arc<Self>, video: &str, t: f64) -> crate::Result<crate::types::ShotInfo> {
-        let ffmpeg = self.ffmpeg_path().ok_or_else(|| crate::Error::config("找不到 FFmpeg"))?;
+        let ffmpeg = self.ffmpeg_path().ok_or_else(|| crate::Error::config(tr!("找不到 FFmpeg", "FFmpeg not found")))?;
         let dir = Path::new(video).parent().map(|p| p.display().to_string()).unwrap_or_default();
         let out = new_shot_path(&dir).await?;
         let t = if t.is_finite() { t.max(0.0) } else { 0.0 };
@@ -535,7 +535,7 @@ impl App {
         if r.code != 0 || !tokio::fs::metadata(&out).await.map(|m| m.len() > 0).unwrap_or(false) {
             let _ = tokio::fs::remove_file(&out).await;
             crate::info!("[截圖] 擷取影片畫面失敗：{}", r.stderr.trim());
-            return Err(crate::Error::other("無法擷取這一格，詳見記錄檔"));
+            return Err(crate::Error::other(tr!("無法擷取這一格，詳見記錄檔", "Couldn't capture this frame. See the log file for details")));
         }
         let shot = self.finish_shot(&out, 0, 0).await;
         self.lock().shot = Some(shot.clone());
@@ -585,17 +585,17 @@ impl App {
     /// 多張截圖拼成一張（依檔案時間由舊到新；左右或上下排），存成新的截圖並複製到剪貼簿
     pub async fn combine_shots(self: &Arc<Self>, mut paths: Vec<String>, vertical: bool) -> crate::Result<crate::types::ShotInfo> {
         if paths.len() < 2 {
-            return Err(crate::Error::config("請選兩張以上的截圖"));
+            return Err(crate::Error::config(tr!("請選兩張以上的截圖", "Select two or more screenshots")));
         }
         if paths.len() > 20 {
-            return Err(crate::Error::config("一次最多拼 20 張"));
+            return Err(crate::Error::config(tr!("一次最多拼 20 張", "You can combine up to 20 screenshots at a time")));
         }
         let mtime = |p: &String| std::fs::metadata(p).and_then(|m| m.modified()).ok();
         paths.sort_by_key(mtime);
         let mut images = vec![];
         for p in &paths {
             let (rgba, w, h) = crate::actions::load_image(p).await?;
-            let mut pm = tiny_skia::Pixmap::new(w, h).ok_or_else(|| crate::Error::config("圖片太大"))?;
+            let mut pm = tiny_skia::Pixmap::new(w, h).ok_or_else(|| crate::Error::config(tr!("圖片太大", "Image is too large")))?;
             for (d, s) in pm.pixels_mut().iter_mut().zip(rgba.as_chunks::<4>().0) {
                 *d = tiny_skia::ColorU8::from_rgba(s[0], s[1], s[2], s[3]).premultiply();
             }
@@ -606,8 +606,8 @@ impl App {
         let o = out.clone();
         let (w, h) = tokio::task::spawn_blocking(move || {
             let gap = images.iter().map(|i| i.width().min(i.height())).min().unwrap_or(0) / 40;
-            let pm = crate::shot_edit::combine(&images, vertical, gap.clamp(8, 24)).ok_or_else(|| crate::Error::config("拼起來的圖太大"))?;
-            pm.save_png(&o).map_err(|e| crate::Error::other(format!("無法儲存圖片：{e}")))?;
+            let pm = crate::shot_edit::combine(&images, vertical, gap.clamp(8, 24)).ok_or_else(|| crate::Error::config(tr!("拼起來的圖太大", "Combined image is too large")))?;
+            pm.save_png(&o).map_err(|e| crate::Error::other(trf!("無法儲存圖片：{e}", "Couldn't save the image: {e}")))?;
             Ok::<_, crate::Error>((pm.width(), pm.height()))
         })
         .await
@@ -641,7 +641,7 @@ impl App {
         {
             let mut st = self.lock();
             if st.shooting || st.snipping {
-                return Err(crate::Error::config("正在截圖"));
+                return Err(crate::Error::config(tr!("正在截圖", "A screenshot is already in progress")));
             }
             st.shooting = true;
         }
@@ -691,14 +691,14 @@ impl App {
         #[cfg(not(windows))]
         {
             let _ = (config, ruler);
-            Err(crate::Error::config("取色器與尺規只支援 Windows"))
+            Err(crate::Error::config(tr!("取色器與尺規只支援 Windows", "Color picker and ruler are only available on Windows")))
         }
         #[cfg(windows)]
         {
             {
                 let mut st = self.lock();
                 if st.shooting || st.snipping {
-                    return Err(crate::Error::config("正在截圖"));
+                    return Err(crate::Error::config(tr!("正在截圖", "A screenshot is already in progress")));
                 }
                 st.shooting = true;
             }
@@ -732,14 +732,17 @@ impl App {
         #[cfg(not(windows))]
         {
             let _ = config;
-            Err(crate::Error::config("讀取畫面上的 QR 碼只支援 Windows；可以在檢視器開啟截圖後按「讀取 QR 碼」"))
+            Err(crate::Error::config(tr!(
+                "讀取畫面上的 QR 碼只支援 Windows；可以在檢視器開啟截圖後按「讀取 QR 碼」",
+                "Reading QR codes on screen is only available on Windows; open a screenshot in the viewer and click “Read QR code” instead"
+            )))
         }
         #[cfg(windows)]
         {
             {
                 let mut st = self.lock();
                 if st.shooting || st.snipping {
-                    return Err(crate::Error::config("正在截圖"));
+                    return Err(crate::Error::config(tr!("正在截圖", "A screenshot is already in progress")));
                 }
                 st.shooting = true;
             }
@@ -777,14 +780,14 @@ impl App {
         #[cfg(not(windows))]
         {
             let _ = config;
-            Err(crate::Error::config("長截圖只支援 Windows"))
+            Err(crate::Error::config(tr!("長截圖只支援 Windows", "Scrolling screenshot is only available on Windows")))
         }
         #[cfg(windows)]
         {
             {
                 let mut st = self.lock();
                 if st.shooting || st.snipping {
-                    return Err(crate::Error::config("正在截圖"));
+                    return Err(crate::Error::config(tr!("正在截圖", "A screenshot is already in progress")));
                 }
                 st.shooting = true;
             }
@@ -821,7 +824,7 @@ impl App {
         {
             let mut st = self.lock();
             if st.shooting || st.snipping {
-                return Err(crate::Error::config("正在截圖"));
+                return Err(crate::Error::config(tr!("正在截圖", "A screenshot is already in progress")));
             }
             st.shooting = true;
         }
@@ -1085,17 +1088,17 @@ impl App {
         let mut st = self.lock();
         match monitors {
             Ok(m) => {
-                st.monitor_error = m.is_empty().then(|| "找不到任何螢幕".to_string());
+                st.monitor_error = m.is_empty().then(|| tr!("找不到任何螢幕", "No screens found").to_string());
                 st.monitors = m;
             }
             Err(e) => {
                 st.monitors = Vec::new();
-                st.monitor_error = Some(format!("無法列舉螢幕：{e}"));
+                st.monitor_error = Some(trf!("無法列舉螢幕：{e}", "Couldn't list screens: {e}"));
             }
         }
         st.audio = match audio {
             Ok(a) => AudioEnv { render: a.render, captures: a.captures, error: None },
-            Err(e) => AudioEnv { render: None, captures: Vec::new(), error: Some(format!("無法列舉音訊裝置：{e}")) },
+            Err(e) => AudioEnv { render: None, captures: Vec::new(), error: Some(trf!("無法列舉音訊裝置：{e}", "Couldn't list audio devices: {e}")) },
         };
     }
 
@@ -1204,9 +1207,12 @@ impl App {
                     // 這裡說的是能力：「自動」編碼在 1080p60 以下用 CPU 壓縮，那時只在顯示卡上轉色彩、再下載
                     let label = g.convert.label();
                     let text = if g.zero_copy {
-                        format!("在顯示卡上縮放、轉色彩（{label}）；編碼器用 GPU 時畫面完全不經過 CPU")
+                        trf!(
+                            "在顯示卡上縮放、轉色彩（{label}）；編碼器用 GPU 時畫面完全不經過 CPU",
+                            "Scaling and color conversion on the GPU ({label}); with a GPU encoder, frames never pass through the CPU"
+                        )
                     } else {
-                        format!("在顯示卡上縮放、轉色彩（{label}）")
+                        trf!("在顯示卡上縮放、轉色彩（{label}）", "Scaling and color conversion on the GPU ({label})")
                     };
                     info!("顯示卡處理測試成功：錄影時{text}");
                     st.ffmpeg.info.gpu_convert = Some(text);
@@ -1299,7 +1305,7 @@ impl App {
             if self.settings.load().update_notified.as_deref() != Some(u.version.as_str()) {
                 self.settings.save(SettingsPatch { update_notified: Some(u.version.clone()), ..Default::default() });
                 info!("有新版本 v{}：{}", u.version, u.url);
-                self.notify("有新版本", &format!("v{} 已發佈，開啟操作視窗即可更新", u.version), false);
+                self.notify(tr!("有新版本", "Update available"), &trf!("v{} 已發佈，開啟操作視窗即可更新", "v{} is available. Open the main window to update", u.version), false);
             }
         }
         Ok(u)
@@ -1417,22 +1423,22 @@ impl App {
 
     /// 程式內更新：下載新版、取代 exe，完成後啟動新版並正常結束自己
     pub fn start_self_update(self: &Arc<Self>) -> crate::Result<()> {
-        let Some(info) = self.update() else { return Err(crate::Error::config("目前沒有新版本")) };
+        let Some(info) = self.update() else { return Err(crate::Error::config(tr!("目前沒有新版本", "No update available"))) };
         if self.recorder.active() {
-            return Err(crate::Error::config("錄影中無法更新，請先停止錄影"));
+            return Err(crate::Error::config(tr!("錄影中無法更新，請先停止錄影", "Can't update while recording. Stop recording first")));
         }
         if self.exporter.running() {
-            return Err(crate::Error::config("正在製作加速版 / GIF，請等完成再更新"));
+            return Err(crate::Error::config(tr!("正在製作加速版 / GIF，請等完成再更新", "A sped-up video / GIF is being made. Update after it finishes")));
         }
         if self.downloader.busy() {
-            return Err(crate::Error::config("正在下載 FFmpeg，請等完成再更新"));
+            return Err(crate::Error::config(tr!("正在下載 FFmpeg，請等完成再更新", "FFmpeg is downloading. Update after it finishes")));
         }
         if cfg!(debug_assertions) {
-            return Err(crate::Error::config("開發版無法自動更新"));
+            return Err(crate::Error::config(tr!("開發版無法自動更新", "Development builds can't update automatically")));
         }
         let exe = std::env::current_exe()?;
         if !exe.parent().is_some_and(crate::selfupdate::dir_writable) {
-            return Err(crate::Error::config("程式所在的資料夾沒有寫入權限，請到下載頁面手動更新"));
+            return Err(crate::Error::config(tr!("程式所在的資料夾沒有寫入權限，請到下載頁面手動更新", "No write permission for the app's folder. Update manually from the download page")));
         }
         let app = self.clone();
         let rt = tokio::runtime::Handle::current();
@@ -1449,7 +1455,7 @@ impl App {
         let args = vec![format!("--wait-pid={}", std::process::id())];
         if let Err(e) = crate::job::spawn_detached(&exe.to_string_lossy(), &args) {
             crate::error!("無法啟動新版：{e}");
-            self.installer.fail(format!("已下載新版，但無法啟動：{e}。請手動重新開啟程式"));
+            self.installer.fail(trf!("已下載新版，但無法啟動：{e}。請手動重新開啟程式", "The new version was downloaded but couldn't start: {e}. Please reopen the app manually"));
             return;
         }
         self.quit(0).await;
@@ -1508,7 +1514,7 @@ fn scroll_capture(area: crate::types::Rect) -> crate::Result<Option<LongCapture>
     use crate::scroll_win::{esc_pressed, focus_at, grab_settled, scroll_down};
     // 先把範圍裡的視窗切到前面，再截第一張（切換時標題列會變色，要在截第一張之前）
     focus_at(area.x + area.width / 2, area.y + area.height / 2);
-    let first = grab_settled(area, Duration::from_millis(1500)).ok_or_else(|| crate::Error::other("無法擷取畫面"))?;
+    let first = grab_settled(area, Duration::from_millis(1500)).ok_or_else(|| crate::Error::other(tr!("無法擷取畫面", "Couldn't capture the screen")))?;
     let (w, h) = (area.width as u32, area.height as u32);
     let mut st = Stitcher::new(first, w, h);
     // 範圍小時一次捲少一點，前後兩張才有足夠的重疊
@@ -1562,9 +1568,15 @@ fn scroll_capture(area: crate::types::Rect) -> crate::Result<Option<LongCapture>
             return Ok(None);
         }
         return Err(crate::Error::config(if end == Some(Step::Lost) {
-            "捲動後的畫面對不起來，沒辦法接成長圖。請只框選會捲動的內容（例如網頁的內文），避開影片、動畫或會變動的廣告"
+            tr!(
+                "捲動後的畫面對不起來，沒辦法接成長圖。請只框選會捲動的內容（例如網頁的內文），避開影片、動畫或會變動的廣告",
+                "The scrolled content didn't line up, so it couldn't be stitched into one image. Select only the part that scrolls (e.g. the body of a web page) and avoid videos, animations or changing ads"
+            )
         } else {
-            "畫面沒有捲動：已經在最下面，或這個範圍不能用滑鼠滾輪捲動。請框選可以捲動的內容（例如網頁中間）再試一次"
+            tr!(
+                "畫面沒有捲動：已經在最下面，或這個範圍不能用滑鼠滾輪捲動。請框選可以捲動的內容（例如網頁中間）再試一次",
+                "The content didn't scroll: it's already at the bottom, or this area can't be scrolled with the mouse wheel. Select content that scrolls (e.g. the middle of a web page) and try again"
+            )
         }));
     }
     Ok(Some((st.finish(), steps)))
@@ -1577,8 +1589,8 @@ fn scroll_capture(area: crate::types::Rect) -> crate::Result<Option<LongCapture>
 #[cfg(windows)]
 fn save_long_shot(img: crate::longshot::LongImage, out: &Path) -> crate::Result<(bool, Option<tiny_skia::Pixmap>)> {
     let mut png = Vec::new();
-    img.write_png(&mut png).map_err(|e| crate::Error::other(format!("無法儲存圖片：{e}")))?;
-    std::fs::write(out, &png).map_err(|e| crate::Error::other(format!("無法儲存圖片：{e}")))?;
+    img.write_png(&mut png).map_err(|e| crate::Error::other(trf!("無法儲存圖片：{e}", "Couldn't save the image: {e}")))?;
+    std::fs::write(out, &png).map_err(|e| crate::Error::other(trf!("無法儲存圖片：{e}", "Couldn't save the image: {e}")))?;
     let thumb = long_shot_thumb(&img);
     drop(img);
     let copied = crate::clipboard::copy_png_bytes(&png).2;
@@ -1596,28 +1608,28 @@ fn long_shot_thumb(img: &crate::longshot::LongImage) -> Option<tiny_skia::Pixmap
 /// 新截圖的檔名：Shot_日期_時間.png（同一秒有好幾張時加 _2、_3…）
 async fn new_shot_path(dir: &str) -> crate::Result<PathBuf> {
     let dir = PathBuf::from(dir);
-    tokio::fs::create_dir_all(&dir).await.map_err(|e| crate::Error::config(format!("無法建立儲存資料夾：{e}")))?;
+    tokio::fs::create_dir_all(&dir).await.map_err(|e| crate::Error::config(trf!("無法建立儲存資料夾：{e}", "Couldn't create the save folder: {e}")))?;
     let stamp = crate::paths::timestamp();
     Ok((1..).map(|i| dir.join(if i == 1 { format!("Shot_{stamp}.png") } else { format!("Shot_{stamp}_{i}.png") })).find(|p| !p.exists()).unwrap_or_else(|| dir.join(format!("Shot_{stamp}.png"))))
 }
 
 /// 從整個桌面的 PNG（左上角是 desk 的原點）裁切 rect，存成 PNG；回傳實際的寬高
 fn crop_png(from: &Path, desk: crate::types::Rect, rect: crate::types::Rect, to: &Path) -> crate::Result<(u32, u32)> {
-    let bytes = std::fs::read(from).map_err(|e| crate::Error::other(format!("讀不到截下的畫面：{e}")))?;
-    let src = tiny_skia::Pixmap::decode_png(&bytes).map_err(|e| crate::Error::other(format!("讀不到截下的畫面：{e}")))?;
+    let bytes = std::fs::read(from).map_err(|e| crate::Error::other(trf!("讀不到截下的畫面：{e}", "Couldn't read the captured screen: {e}")))?;
+    let src = tiny_skia::Pixmap::decode_png(&bytes).map_err(|e| crate::Error::other(trf!("讀不到截下的畫面：{e}", "Couldn't read the captured screen: {e}")))?;
     let (sw, sh) = (src.width() as i32, src.height() as i32);
     let x0 = (rect.x - desk.x).clamp(0, sw);
     let y0 = (rect.y - desk.y).clamp(0, sh);
     let x1 = (rect.x + rect.width - desk.x).clamp(x0, sw);
     let y1 = (rect.y + rect.height - desk.y).clamp(y0, sh);
     let (w, h) = ((x1 - x0) as u32, (y1 - y0) as u32);
-    let mut out = tiny_skia::Pixmap::new(w.max(1), h.max(1)).ok_or_else(|| crate::Error::config("範圍太小"))?;
+    let mut out = tiny_skia::Pixmap::new(w.max(1), h.max(1)).ok_or_else(|| crate::Error::config(tr!("範圍太小", "Area is too small")))?;
     let row = w as usize * 4;
     for y in 0..h as usize {
         let s0 = ((y0 as usize + y) * sw as usize + x0 as usize) * 4;
         out.data_mut()[y * row..(y + 1) * row].copy_from_slice(&src.data()[s0..s0 + row]);
     }
-    out.save_png(to).map_err(|e| crate::Error::other(format!("無法儲存截圖：{e}")))?;
+    out.save_png(to).map_err(|e| crate::Error::other(trf!("無法儲存截圖：{e}", "Couldn't save the screenshot: {e}")))?;
     Ok((w, h))
 }
 

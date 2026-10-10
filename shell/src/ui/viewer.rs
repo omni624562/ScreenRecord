@@ -13,6 +13,7 @@ use screenrecorder_core::format::{format_bytes, video_clock};
 use screenrecorder_core::library::is_image_name;
 use screenrecorder_core::player::{MediaSpec, Player};
 use screenrecorder_core::types::{LibraryEntry, LibraryFilter, LibraryQuery, LibrarySort};
+use screenrecorder_core::{tr, trf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -143,14 +144,14 @@ fn load_current(app: &mut UiApp) {
                     let opt = TextureOptions { magnification: egui::TextureFilter::Nearest, mipmap_mode: Some(egui::TextureFilter::Linear), ..TextureOptions::LINEAR };
                     v.image = Some((ctx.load_texture("viewer-image", img, opt), size));
                 }
-                None => v.error = Some("無法讀取這張圖片".into()),
+                None => v.error = Some(tr!("無法讀取這張圖片", "Couldn't read this image").into()),
             }
         });
         return;
     }
     let Some(ffmpeg) = app.core.ffmpeg_path() else {
         v.loading = false;
-        v.error = Some("找不到 FFmpeg，無法播放".into());
+        v.error = Some(tr!("找不到 FFmpeg，無法播放", "FFmpeg not found. Can't play this video.").into());
         return;
     };
     let core = app.core.clone();
@@ -171,7 +172,7 @@ fn load_current(app: &mut UiApp) {
             let Some(v) = app.viewer.as_mut() else { return };
             v.loading = false;
             let Some(m) = media.filter(|m| m.duration_sec.is_some_and(|d| d > 0.0)) else {
-                v.error = Some("無法讀取這個影片".into());
+                v.error = Some(tr!("無法讀取這個影片", "Couldn't read this video").into());
                 return;
             };
             v.list[v.idx].media = m.clone();
@@ -241,9 +242,18 @@ fn delete_current(app: &mut UiApp) {
     let mut paths = vec![e.media.path.clone()];
     paths.extend(e.exports.iter().map(|x| x.media.path.clone()));
     let mut ask = Ask::confirm(
-        if paths.len() > 1 { format!("把這部錄影和底下的 {} 個加速版移到資源回收筒？", paths.len() - 1) } else { "把這個檔案移到資源回收筒？".into() },
-        "可從資源回收筒還原。",
-        "移到資源回收筒",
+        if paths.len() > 1 {
+            let n = paths.len() - 1;
+            if screenrecorder_core::i18n::is_en() {
+                format!("Move this recording and its {n} sped-up version{} to the Recycle Bin?", if n == 1 { "" } else { "s" })
+            } else {
+                format!("把這部錄影和底下的 {n} 個加速版移到資源回收筒？")
+            }
+        } else {
+            tr!("把這個檔案移到資源回收筒？", "Move this file to the Recycle Bin?").into()
+        },
+        tr!("可從資源回收筒還原。", "You can restore files from the Recycle Bin."),
+        tr!("移到資源回收筒", "Move to Recycle Bin"),
         move |app, _| {
             app.ask = None;
             // 先停止播放（Windows 上檔案使用中無法刪除）
@@ -252,7 +262,14 @@ fn delete_current(app: &mut UiApp) {
             }
             match actions::delete(&app.core, &paths) {
                 Ok(n) => {
-                    app.toast(format!("已將 {n} 個檔案移到資源回收筒"), false);
+                    app.toast(
+                        if screenrecorder_core::i18n::is_en() {
+                            format!("Moved {n} file{} to the Recycle Bin", if n == 1 { "" } else { "s" })
+                        } else {
+                            format!("已將 {n} 個檔案移到資源回收筒")
+                        },
+                        false,
+                    );
                     if let Some(d) = &mut app.library {
                         d.dirty = true;
                     }
@@ -278,12 +295,12 @@ fn delete_current(app: &mut UiApp) {
 fn copy_image(app: &mut UiApp) {
     let Some(v) = &app.viewer else { return };
     let path = v.cur().media.path.clone();
-    app.toast("正在複製…", false);
+    app.toast(tr!("正在複製…", "Copying…"), false);
     app.spawn(async move { tokio::task::spawn_blocking(move || screenrecorder_core::clipboard::copy_png(std::path::Path::new(&path))).await.map(|r| r.2).unwrap_or(false) }, |app, ok| {
         if ok {
-            app.toast("已複製到剪貼簿", false);
+            app.toast(tr!("已複製到剪貼簿", "Copied to clipboard"), false);
         } else {
-            app.toast("無法複製到剪貼簿", true);
+            app.toast(tr!("無法複製到剪貼簿", "Couldn't copy to clipboard"), true);
         }
     });
 }
@@ -352,52 +369,96 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                     }
                     meta.push(format_bytes(e.media.bytes));
                     meta.push(e.media.name.clone());
-                    ui.label(RichText::new(meta.join("・")).font(theme::font(12.0)).color(p.muted));
+                    ui.label(RichText::new(meta.join(tr!("・", " · "))).font(theme::font(12.0)).color(p.muted));
                 });
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if Btn::icon_only(Icon::Close).ghost().tooltip("關閉（Esc）").show(ui).clicked() {
+                    if Btn::icon_only(Icon::Close).ghost().tooltip(tr!("關閉（Esc）", "Close (Esc)")).show(ui).clicked() {
                         v.close = true;
                     }
                     ui.add_space(6.0);
-                    if Btn::icon_only(Icon::Trash).ghost().small().tooltip("移到資源回收筒").show(ui).clicked() {
+                    if Btn::icon_only(Icon::Trash).ghost().small().tooltip(tr!("移到資源回收筒", "Move to Recycle Bin")).show(ui).clicked() {
                         act = Act::Delete;
                     }
-                    if Btn::icon_only(Icon::Folder).ghost().small().tooltip("在資料夾中顯示").show(ui).clicked() {
+                    if Btn::icon_only(Icon::Folder).ghost().small().tooltip(tr!("在資料夾中顯示", "Show in folder")).show(ui).clicked() {
                         act = Act::Entry(EntryAction::Reveal);
                     }
-                    let other = if image { "用 Windows 的「相片」開啟" } else { "用 Windows 的媒體播放器開啟" };
-                    if Btn::new("用 Windows 開啟").icon(Icon::Export).small().tooltip(other).show(ui).clicked() {
+                    let other = if image {
+                        tr!("用 Windows 的「相片」開啟", "Open in the Windows Photos app")
+                    } else {
+                        tr!("用 Windows 的媒體播放器開啟", "Open in the Windows media player")
+                    };
+                    if Btn::new(tr!("用 Windows 開啟", "Open in Windows")).icon(Icon::Export).small().tooltip(other).show(ui).clicked() {
                         act = Act::Entry(EntryAction::External);
                     }
                     if image {
-                        if Btn::new("釘在桌面").small().tooltip("把這張圖變成浮在最上層的小視窗，方便對照（點兩下或 Esc 關閉）").show(ui).clicked() {
+                        if Btn::new(tr!("釘在桌面", "Pin to desktop"))
+                            .small()
+                            .tooltip(tr!(
+                                "把這張圖變成浮在最上層的小視窗，方便對照（點兩下或 Esc 關閉）",
+                                "Turn this image into a small always-on-top window for reference (double-click or Esc to close)"
+                            ))
+                            .show(ui)
+                            .clicked()
+                        {
                             act = Act::Pin;
                         }
-                        if Btn::new("文字辨識").small().tooltip("把圖裡的文字轉成可以複製的文字").show(ui).clicked() {
+                        if Btn::new(tr!("文字辨識", "OCR"))
+                            .small()
+                            .tooltip(tr!("把圖裡的文字轉成可以複製的文字", "Text recognition (OCR): turn the text in the image into text you can copy"))
+                            .show(ui)
+                            .clicked()
+                        {
                             act = Act::Ocr;
                         }
-                        if Btn::new("讀取 QR 碼").small().tooltip("找出圖裡的 QR 碼，讀出內容（網址可以直接開啟）").show(ui).clicked() {
+                        if Btn::new(tr!("讀取 QR 碼", "Read QR code"))
+                            .small()
+                            .tooltip(tr!("找出圖裡的 QR 碼，讀出內容（網址可以直接開啟）", "Find a QR code in the image and read its content (links can be opened directly)"))
+                            .show(ui)
+                            .clicked()
+                        {
                             act = Act::Qr;
                         }
-                        if Btn::new("複製").small().tooltip("複製到剪貼簿（可直接貼到 LINE、Word、信件）").show(ui).clicked() {
+                        if Btn::new(tr!("複製", "Copy"))
+                            .small()
+                            .tooltip(tr!("複製到剪貼簿（可直接貼到 LINE、Word、信件）", "Copy to clipboard (paste it straight into LINE, Word or an email)"))
+                            .show(ui)
+                            .clicked()
+                        {
                             act = Act::Copy;
                         }
-                        if Btn::new("編輯").icon(Icon::Edit).small().tooltip("加上標註、遮住個資、裁切（另存一張，原圖保留）").show(ui).clicked() {
+                        if Btn::new(tr!("編輯", "Edit"))
+                            .icon(Icon::Edit)
+                            .small()
+                            .tooltip(tr!("加上標註、遮住個資、裁切（另存一張，原圖保留）", "Add annotations, redact personal info, crop (saved as a new image; the original is kept)"))
+                            .show(ui)
+                            .clicked()
+                        {
                             act = Act::Entry(EntryAction::Edit);
                         }
                     } else {
-                        if Btn::new("擷取這一格").icon(Icon::Camera).small().tooltip("把目前這一格存成截圖（原尺寸 PNG），並複製到剪貼簿").show(ui).clicked() {
+                        if Btn::new(tr!("擷取這一格", "Grab frame"))
+                            .icon(Icon::Camera)
+                            .small()
+                            .tooltip(tr!("把目前這一格存成截圖（原尺寸 PNG），並複製到剪貼簿", "Save the current frame as a screenshot (full-size PNG) and copy it to the clipboard"))
+                            .show(ui)
+                            .clicked()
+                        {
                             act = Act::Grab;
                         }
-                        if Btn::new("複製檔案").small().tooltip("複製這個影片檔，可以直接貼到 LINE、Teams、信件或資料夾").show(ui).clicked() {
+                        if Btn::new(tr!("複製檔案", "Copy file"))
+                            .small()
+                            .tooltip(tr!("複製這個影片檔，可以直接貼到 LINE、Teams、信件或資料夾", "Copy this video file so you can paste it into LINE, Teams, an email or a folder"))
+                            .show(ui)
+                            .clicked()
+                        {
                             act = Act::Entry(EntryAction::CopyFile);
                         }
                     }
                     if !image && !is_export_name(&e.media.name) {
-                        if Btn::new("製作加速版 / GIF").icon(Icon::Export).small().show(ui).clicked() {
+                        if Btn::new(tr!("製作加速版 / GIF", "Make sped-up video / GIF")).icon(Icon::Export).small().show(ui).clicked() {
                             act = Act::Entry(EntryAction::Export);
                         }
-                        if Btn::new("剪輯").icon(Icon::Cut).small().show(ui).clicked() {
+                        if Btn::new(tr!("剪輯", "Edit")).icon(Icon::Cut).small().show(ui).clicked() {
                             act = Act::Entry(EntryAction::Edit);
                         }
                     }
@@ -417,7 +478,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
             video_stage(&mut v, &painter, stage, &resp);
         }
         if v.loading && v.image.is_none() && v.video_tex.is_none() {
-            painter.text(stage.center(), Align2::CENTER_CENTER, "讀取中…", theme::font(14.0), Color32::from_gray(200));
+            painter.text(stage.center(), Align2::CENTER_CENTER, tr!("讀取中…", "Loading…"), theme::font(14.0), Color32::from_gray(200));
         }
         if let Some(err) = &v.error {
             painter.text(stage.center(), Align2::CENTER_CENTER, err, theme::font(14.0), Color32::from_gray(220));
@@ -438,10 +499,10 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                     theme::paint_icon(ui.painter(), Rect::from_center_size(r.center(), vec2(20.0, 20.0)), icon, Color32::WHITE);
                 }
                 b.clone().on_hover_text(match (image, step < 0) {
-                    (true, true) => "上一張（←）",
-                    (true, false) => "下一張（→）",
-                    (false, true) => "上一部（PageUp）",
-                    (false, false) => "下一部（PageDown）",
+                    (true, true) => tr!("上一張（←）", "Previous image (←)"),
+                    (true, false) => tr!("下一張（→）", "Next image (→)"),
+                    (false, true) => tr!("上一部（PageUp）", "Previous video (PageUp)"),
+                    (false, false) => tr!("下一部（PageDown）", "Next video (PageDown)"),
                 });
                 if b.clicked() {
                     act = if step < 0 { Act::Prev } else { Act::Next };
@@ -630,22 +691,23 @@ fn image_bar(v: &mut Viewer, ui: &mut egui::Ui, stage: Rect) {
     let Some((_, size)) = v.image.clone() else { return };
     let fit = fit_zoom(size, stage);
     let z = v.zoom.unwrap_or(fit);
-    ui.label(RichText::new("滾輪縮放・拖曳移動・點兩下切換原尺寸").font(theme::font(12.0)).color(p.muted));
+    ui.label(RichText::new(tr!("滾輪縮放・拖曳移動・點兩下切換原尺寸", "Scroll to zoom · Drag to pan · Double-click for actual size")).font(theme::font(12.0)).color(p.muted));
     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
         ui.spacing_mut().item_spacing.x = 4.0;
-        if Btn::new("+").small().tooltip("放大").show(ui).clicked() {
+        if Btn::new("+").small().tooltip(tr!("放大", "Zoom in")).show(ui).clicked() {
             v.zoom = Some((z * 1.25).min(ZOOM_MAX));
         }
-        ui.label(RichText::new(format!("{:.0}%", z * 100.0)).font(theme::mono(12.5))).on_hover_text("目前的縮放");
-        if Btn::new("−").small().tooltip("縮小").show(ui).clicked() {
+        ui.label(RichText::new(format!("{:.0}%", z * 100.0)).font(theme::mono(12.5))).on_hover_text(tr!("目前的縮放", "Current zoom"));
+        if Btn::new("−").small().tooltip(tr!("縮小", "Zoom out")).show(ui).clicked() {
             v.zoom = Some((z / 1.25).max(ZOOM_MIN.min(fit)));
         }
         ui.add_space(8.0);
-        if Btn::new("原尺寸").small().selected(v.zoom.is_some_and(|z| (z - 1.0).abs() < 0.001)).tooltip("1:1（按 1）").show(ui).clicked() {
+        if Btn::new(tr!("原尺寸", "Actual size")).small().selected(v.zoom.is_some_and(|z| (z - 1.0).abs() < 0.001)).tooltip(tr!("1:1（按 1）", "1:1 (press 1)")).show(ui).clicked() {
             v.zoom = Some(1.0);
             v.pan = Vec2::ZERO;
         }
-        if Btn::new("適合視窗").small().selected(v.zoom.is_none()).tooltip("整張放進視窗（按 0）").show(ui).clicked() {
+        if Btn::new(tr!("適合視窗", "Fit to window")).small().selected(v.zoom.is_none()).tooltip(tr!("整張放進視窗（按 0）", "Fit the whole image in the window (press 0)")).show(ui).clicked()
+        {
             v.zoom = None;
             v.pan = Vec2::ZERO;
         }
@@ -675,7 +737,7 @@ fn video_bar(v: &mut Viewer, ui: &mut egui::Ui) {
     let playing = player.is_playing();
     let dur = player.spec().duration.max(0.001);
     let t = player.time().min(dur);
-    let tip = if playing { "暫停（空白鍵）" } else { "播放（空白鍵）" };
+    let tip = if playing { tr!("暫停（空白鍵）", "Pause (Space)") } else { tr!("播放（空白鍵）", "Play (Space)") };
     if Btn::icon_only(if playing { Icon::Pause } else { Icon::Play }).small().tooltip(tip).show(ui).clicked() {
         toggle_play(player);
     }
@@ -712,11 +774,11 @@ fn video_bar(v: &mut Viewer, ui: &mut egui::Ui) {
     ui.add_space(8.0);
     let has_audio = player.spec().has_audio;
     let icon_tip = if !has_audio {
-        "這個影片沒有聲音"
+        tr!("這個影片沒有聲音", "This video has no audio")
     } else if v.muted {
-        "取消靜音"
+        tr!("取消靜音", "Unmute")
     } else {
-        "靜音"
+        tr!("靜音", "Mute")
     };
     if Btn::icon_only(Icon::Speaker).ghost().small().selected(v.muted).enabled(has_audio).tooltip(icon_tip).show(ui).clicked() {
         v.muted = !v.muted;
@@ -738,7 +800,7 @@ fn video_bar(v: &mut Viewer, ui: &mut egui::Ui) {
             VOLUME.store((v.volume * 100.0).round() as u64, Ordering::Relaxed);
             player.set_volume(v.volume_now());
         }
-        resp.on_hover_text(format!("音量 {:.0}%", v.volume_now() * 100.0));
+        resp.on_hover_text(trf!("音量 {:.0}%", "Volume {:.0}%", v.volume_now() * 100.0));
     }
 }
 

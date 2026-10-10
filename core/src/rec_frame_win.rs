@@ -8,6 +8,7 @@
 use crate::format::clock;
 use crate::recorder::FrameInfo;
 use crate::types::{RecorderState, Rect};
+use crate::{tr, trf};
 use std::cell::{Cell, RefCell};
 use std::time::{Duration, Instant};
 use windows::core::w;
@@ -122,8 +123,10 @@ const DOT: f32 = 10.0;
 /// 左邊的拖曳點（2×3 個小點）
 const GRIP: f32 = 12.0;
 const TEXT_W: f32 = 76.0;
-/// 「・標記 2」的寬度
-const MARKS_W: f32 = 60.0;
+/// 「・標記 2」的寬度（英文「· 2 markers」比較寬）
+fn marks_w() -> f32 {
+    tr!(60.0, 80.0)
+}
 const BTN_W: f32 = 32.0;
 const BTN_GAP: f32 = 2.0;
 
@@ -133,7 +136,7 @@ fn px(v: f32, scale: f32) -> i32 {
 
 fn bar_size(b: &Bar) -> (i32, i32) {
     let s = b.scale;
-    let w = BAR_PAD + GRIP + DOT + 8.0 + TEXT_W + if b.marks > 0 { MARKS_W } else { 0.0 } + 6.0 + b.buttons.len() as f32 * (BTN_W + BTN_GAP) + 4.0;
+    let w = BAR_PAD + GRIP + DOT + 8.0 + TEXT_W + if b.marks > 0 { marks_w() } else { 0.0 } + 6.0 + b.buttons.len() as f32 * (BTN_W + BTN_GAP) + 4.0;
     (px(w, s), px(BAR_H, s))
 }
 
@@ -149,7 +152,7 @@ fn button_rect(b: &Bar, i: usize) -> RECT {
 
 fn bar_for(f: &FrameInfo, scale: f32) -> Bar {
     match f.state {
-        RecorderState::Countdown => Bar { text: format!("倒數 {}", f.countdown_ms.unwrap_or(0).div_ceil(1000)), marks: 0, dot: GREY, buttons: vec![Button::Stop], scale },
+        RecorderState::Countdown => Bar { text: trf!("倒數 {}", "Starts in {}", f.countdown_ms.unwrap_or(0).div_ceil(1000)), marks: 0, dot: GREY, buttons: vec![Button::Stop], scale },
         RecorderState::Paused => Bar { text: clock(f.recorded_ms as f64), marks: f.markers, dot: AMBER, buttons: vec![Button::Mark, Button::Resume, Button::Stop], scale },
         _ => Bar { text: clock(f.recorded_ms as f64), marks: f.markers, dot: RED, buttons: vec![Button::Mark, Button::Pause, Button::Stop], scale },
     }
@@ -480,8 +483,9 @@ unsafe fn paint_bar(hwnd: HWND, hdc: HDC) {
     DrawTextW(mem, &mut text, &mut tr, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
     if b.marks > 0 {
         SetTextColor(mem, AMBER);
-        let mut mt: Vec<u16> = format!("・標記 {}", b.marks).encode_utf16().collect();
-        let mut mr = RECT { left: tr.right, top: 0, right: tr.right + px(MARKS_W, s), bottom: h };
+        let marks = if crate::i18n::is_en() { format!("· {} marker{}", b.marks, if b.marks == 1 { "" } else { "s" }) } else { format!("・標記 {}", b.marks) };
+        let mut mt: Vec<u16> = marks.encode_utf16().collect();
+        let mut mr = RECT { left: tr.right, top: 0, right: tr.right + px(marks_w(), s), bottom: h };
         DrawTextW(mem, &mut mt, &mut mr, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
     }
     // 按鈕

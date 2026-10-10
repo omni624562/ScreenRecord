@@ -22,7 +22,7 @@ pub enum UpdateError {
 impl std::fmt::Display for UpdateError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            UpdateError::NotPublic => f.write_str("GitHub 儲存庫為私人（未登入無法查詢）"),
+            UpdateError::NotPublic => f.write_str(crate::tr!("GitHub 儲存庫為私人（未登入無法查詢）", "The GitHub repository is private (can't check without signing in)")),
             UpdateError::Other(m) => f.write_str(m),
         }
     }

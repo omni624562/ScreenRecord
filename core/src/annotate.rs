@@ -9,6 +9,7 @@
 
 use crate::edit::{Overlay, OverlayKind};
 use crate::fonts::{invisible, pick, text_fonts, FontFile};
+use crate::{tr, trf};
 use serde::{Deserialize, Serialize};
 use tiny_skia::{Color, FillRule, LineCap, LineJoin, Mask, Paint, Path, PathBuilder, Pixmap, PixmapPaint, Rect, Stroke, Transform};
 
@@ -51,18 +52,18 @@ impl AnnKind {
 
     pub fn label(self) -> &'static str {
         match self {
-            AnnKind::Text => "文字",
-            AnnKind::Arrow => "箭頭",
-            AnnKind::Rect => "方框",
-            AnnKind::Ellipse => "圓框",
-            AnnKind::Highlight => "螢光筆",
-            AnnKind::Step => "編號",
-            AnnKind::Mosaic => "馬賽克",
-            AnnKind::Blur => "模糊",
-            AnnKind::Pen => "畫筆",
-            AnnKind::Magnify => "放大鏡",
-            AnnKind::Spotlight => "聚光燈",
-            AnnKind::Image => "圖片",
+            AnnKind::Text => tr!("文字", "Text"),
+            AnnKind::Arrow => tr!("箭頭", "Arrow"),
+            AnnKind::Rect => tr!("方框", "Rectangle"),
+            AnnKind::Ellipse => tr!("圓框", "Ellipse"),
+            AnnKind::Highlight => tr!("螢光筆", "Highlighter"),
+            AnnKind::Step => tr!("編號", "Number"),
+            AnnKind::Mosaic => tr!("馬賽克", "Pixelate"),
+            AnnKind::Blur => tr!("模糊", "Blur"),
+            AnnKind::Pen => tr!("畫筆", "Pen"),
+            AnnKind::Magnify => tr!("放大鏡", "Magnifier"),
+            AnnKind::Spotlight => tr!("聚光燈", "Spotlight"),
+            AnnKind::Image => tr!("圖片", "Image"),
         }
     }
 
@@ -102,9 +103,9 @@ impl Shape {
 
     pub fn label(self) -> &'static str {
         match self {
-            Shape::Rect => "方形",
-            Shape::Round => "圓角",
-            Shape::Ellipse => "橢圓",
+            Shape::Rect => tr!("方形", "Rectangle"),
+            Shape::Round => tr!("圓角", "Rounded"),
+            Shape::Ellipse => tr!("橢圓", "Ellipse"),
         }
     }
 }
@@ -302,38 +303,38 @@ pub fn label(a: &Ann) -> String {
         AnnKind::Text => {
             let t: String = a.text.as_deref().unwrap_or("").split_whitespace().collect::<Vec<_>>().join(" ");
             if t.is_empty() {
-                "文字".into()
+                tr!("文字", "Text").into()
             } else if t.chars().count() > 12 {
-                format!("「{}…」", t.chars().take(12).collect::<String>())
+                trf!("「{}…」", "“{}…”", t.chars().take(12).collect::<String>())
             } else {
-                format!("「{t}」")
+                trf!("「{t}」", "“{t}”")
             }
         }
-        AnnKind::Step => format!("編號 {}", a.n.unwrap_or(1)),
-        AnnKind::Spotlight => "聚光燈".into(),
+        AnnKind::Step => trf!("編號 {}", "Number {}", a.n.unwrap_or(1)),
+        AnnKind::Spotlight => tr!("聚光燈", "Spotlight").into(),
         AnnKind::Image => {
             let name = a.text.as_deref().map(std::path::Path::new).and_then(|p| p.file_stem()).map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
             if name.is_empty() {
-                "圖片".into()
+                tr!("圖片", "Image").into()
             } else if name.chars().count() > 12 {
-                format!("圖片「{}…」", name.chars().take(12).collect::<String>())
+                trf!("圖片「{}…」", "Image “{}…”", name.chars().take(12).collect::<String>())
             } else {
-                format!("圖片「{name}」")
+                trf!("圖片「{name}」", "Image “{name}”")
             }
         }
-        AnnKind::Magnify => format!("放大鏡 {}×", crate::format::num((a.size / 100.0 * 10.0).round() / 10.0)),
+        AnnKind::Magnify => trf!("放大鏡 {}×", "Magnifier {}×", crate::format::num((a.size / 100.0 * 10.0).round() / 10.0)),
         AnnKind::Mosaic | AnnKind::Blur => {
             let mut parts = vec![];
             if let Some(s) = a.shape.filter(|s| *s != Shape::Rect) {
                 parts.push(s.label());
             }
             if a.invert {
-                parts.push("範圍外");
+                parts.push(tr!("範圍外", "Outside"));
             }
             if parts.is_empty() {
                 a.kind.label().into()
             } else {
-                format!("{}（{}）", a.kind.label(), parts.join("・"))
+                trf!("{}（{}）", "{} ({})", a.kind.label(), parts.join(tr!("・", " · ")))
             }
         }
         k => k.label().into(),

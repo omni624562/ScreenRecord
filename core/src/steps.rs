@@ -1,6 +1,8 @@
 //! 步驟截圖：開始後每點一下滑鼠就截一張（標出點的位置），完成時做成一份教學文件（HTML），
 //! 每個步驟一段說明與一張圖；說明可以直接在瀏覽器裡修改，再列印成 PDF 或複製到 Word。
 
+use crate::{tr, trf};
+
 /// 一個步驟
 #[derive(Debug, Clone, PartialEq)]
 pub struct Step {
@@ -35,9 +37,9 @@ fn url(path: &str) -> String {
 pub fn caption(window: &str) -> String {
     let w = window.trim();
     if w.is_empty() {
-        "點一下".into()
+        tr!("點一下", "Click").into()
     } else {
-        format!("在「{w}」點一下")
+        trf!("在「{w}」點一下", "Click in “{w}”")
     }
 }
 
@@ -45,8 +47,9 @@ pub fn caption(window: &str) -> String {
 pub fn html(title: &str, date: &str, steps: &[Step]) -> String {
     let mut items = String::new();
     for (i, s) in steps.iter().enumerate() {
-        items.push_str(&format!(
+        items.push_str(&trf!(
             "<li><p class=\"cap\" contenteditable=\"true\"><b>步驟 {}</b>　{}</p><p class=\"time\">{}</p><img src=\"{}\" alt=\"步驟 {}\"></li>\n",
+            "<li><p class=\"cap\" contenteditable=\"true\"><b>Step {}</b> {}</p><p class=\"time\">{}</p><img src=\"{}\" alt=\"Step {}\"></li>\n",
             i + 1,
             esc(&caption(&s.window)),
             esc(&s.time),
@@ -54,9 +57,15 @@ pub fn html(title: &str, date: &str, steps: &[Step]) -> String {
             i + 1
         ));
     }
+    let (d, n) = (esc(date), steps.len());
+    let meta = if crate::i18n::is_en() { format!("{d} · {n} step{}", if n == 1 { "" } else { "s" }) } else { format!("{d}・共 {n} 個步驟") };
+    let tip = tr!(
+        "文字可以直接點一下修改（例如補上要輸入什麼）；改好後用瀏覽器的「列印」存成 PDF，或全選複製貼到 Word。",
+        "Click any text to edit it (e.g. add what to type). When you're done, use the browser's “Print” to save it as a PDF, or select all and paste it into Word."
+    );
     format!(
         r#"<!doctype html>
-<html lang="zh-Hant-TW">
+<html lang="{lang}">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -77,16 +86,15 @@ img {{ max-width: 100%; border: 1px solid #d0d4da; border-radius: 6px; }}
 </head>
 <body>
 <h1 contenteditable="true">{t}</h1>
-<p class="meta">{d}・共 {n} 個步驟</p>
-<p class="tip">文字可以直接點一下修改（例如補上要輸入什麼）；改好後用瀏覽器的「列印」存成 PDF，或全選複製貼到 Word。</p>
+<p class="meta">{meta}</p>
+<p class="tip">{tip}</p>
 <ol>
 {items}</ol>
 </body>
 </html>
 "#,
+        lang = tr!("zh-Hant-TW", "en"),
         t = esc(title),
-        d = esc(date),
-        n = steps.len(),
     )
 }
 

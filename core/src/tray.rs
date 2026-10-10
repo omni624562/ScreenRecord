@@ -8,6 +8,7 @@ use crate::paths::now_ms;
 use crate::settings::SettingsPatch;
 use crate::types::{AudioConfig, HotkeyStatus, Hotkeys, MethodPreference, RecordConfig, RecorderState, SourceConfig};
 use crate::version::APP_VERSION;
+use crate::{tr, trf};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
@@ -116,11 +117,11 @@ pub trait TrayUi: Send + Sync {
 
 fn state_text(s: RecorderState) -> &'static str {
     match s {
-        RecorderState::Idle => "待命",
-        RecorderState::Countdown => "倒數中",
-        RecorderState::Recording => "錄影中",
-        RecorderState::Paused => "已暫停",
-        RecorderState::Stopping => "儲存中",
+        RecorderState::Idle => tr!("待命", "Ready"),
+        RecorderState::Countdown => tr!("倒數中", "Counting down"),
+        RecorderState::Recording => tr!("錄影中", "Recording"),
+        RecorderState::Paused => tr!("已暫停", "Paused"),
+        RecorderState::Stopping => tr!("儲存中", "Saving…"),
     }
 }
 
@@ -171,9 +172,9 @@ impl TrayController {
         match (&res.path, res.ok) {
             (Some(p), true) => {
                 let name = Path::new(p).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                self.notify("錄影已儲存", &format!("{name}（{}）", video_clock(res.video_sec)), false);
+                self.notify(tr!("錄影已儲存", "Recording saved"), &trf!("{name}（{}）", "{name} ({})", video_clock(res.video_sec)), false);
             }
-            _ => self.notify("錄影未完成", &res.message, true),
+            _ => self.notify(tr!("錄影未完成", "Recording not completed"), &res.message, true),
         }
     }
 
@@ -187,10 +188,10 @@ impl TrayController {
             _ => format!(" {}", clock(st.recorded_ms as f64)),
         };
         let last_source = match &cfg.source {
-            _ if cfg.audio_only => "只錄聲音".to_string(),
-            SourceConfig::All => "所有螢幕".to_string(),
-            SourceConfig::Region { width, height, .. } => format!("範圍 {width}×{height}"),
-            SourceConfig::Monitor { monitor_id } => format!("螢幕 {}", env.monitors.iter().find(|m| &m.id == monitor_id).map(|m| m.display_number).unwrap_or(1)),
+            _ if cfg.audio_only => tr!("只錄聲音", "Audio only").to_string(),
+            SourceConfig::All => tr!("所有螢幕", "All screens").to_string(),
+            SourceConfig::Region { width, height, .. } => trf!("範圍 {width}×{height}", "Area {width}×{height}"),
+            SourceConfig::Monitor { monitor_id } => trf!("螢幕 {}", "Screen {}", env.monitors.iter().find(|m| &m.id == monitor_id).map(|m| m.display_number).unwrap_or(1)),
         };
         let last_result = self.last_result_exists();
         let has_shot = self.app.last_shot().is_some_and(|s| self.shot_exists(&s.path));
@@ -209,12 +210,15 @@ impl TrayController {
         let c = self.ctl.lock().unwrap();
         TrayState {
             rec: st.state,
-            tip: format!("螢幕錄影 {APP_VERSION} — {}{time}", state_text(st.state)),
+            tip: trf!("螢幕錄影 {APP_VERSION} — {}{time}", "Screen Recorder {APP_VERSION} — {}{time}", state_text(st.state)),
             last_source,
             monitors: env
                 .monitors
                 .iter()
-                .map(|m| TrayMonitor { id: m.id.clone(), label: format!("螢幕 {}{}　{}×{}", m.display_number, if m.primary { "（主螢幕）" } else { "" }, m.width, m.height) })
+                .map(|m| TrayMonitor {
+                    id: m.id.clone(),
+                    label: trf!("螢幕 {}{}　{}×{}", "Screen {}{}   {}×{}", m.display_number, if m.primary { tr!("（主螢幕）", " (primary)") } else { "" }, m.width, m.height),
+                })
                 .collect(),
             audio_system: cfg.audio.system,
             audio_mic: cfg.audio.mic,
@@ -324,7 +328,7 @@ impl TrayController {
         // 剛啟動時（偵測還沒完成）按快速鍵：等偵測完成，才不會誤報「找不到 ffmpeg.exe」
         self.app.wait_ready().await;
         if let Err(e) = self.run_inner(cmd).await {
-            self.notify("無法執行", &e, true);
+            self.notify(tr!("無法執行", "Couldn't run this"), &e, true);
         }
         self.push(false);
     }
@@ -336,8 +340,12 @@ impl TrayController {
             return;
         }
         let name = std::path::Path::new(&shot.path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-        let text = if shot.copied { format!("已複製到剪貼簿，存成 {name}。點這裡編輯") } else { format!("已存成 {name}。點這裡編輯") };
-        self.notify("已截圖", &text, false);
+        let text = if shot.copied {
+            trf!("已複製到剪貼簿，存成 {name}。點這裡編輯", "Copied to the clipboard and saved as {name}. Click here to edit.")
+        } else {
+            trf!("已存成 {name}。點這裡編輯", "Saved as {name}. Click here to edit.")
+        };
+        self.notify(tr!("已截圖", "Screenshot taken"), &text, false);
         self.ctl.lock().unwrap().balloon_shot = true;
     }
 
@@ -419,35 +427,49 @@ impl TrayController {
                 let cfg = self.config();
                 let Some(list) = app.qr_snip(&cfg).await.map_err(err)? else { return Ok(()) };
                 if list.is_empty() {
-                    self.notify("讀取 QR 碼", "沒有找到 QR 碼（框大一點再試試）", true);
+                    self.notify(tr!("讀取 QR 碼", "Read QR code"), tr!("沒有找到 QR 碼（框大一點再試試）", "No QR code found (try selecting a larger area)"), true);
                 } else {
                     let text = list.join("\n");
                     crate::clipboard::copy_text(&text);
                     let short: String = text.chars().take(100).collect();
-                    self.notify("QR 碼內容（已複製）", &short, false);
+                    self.notify(tr!("QR 碼內容（已複製）", "QR code content (copied)"), &short, false);
                 }
                 return Ok(());
             }
             TrayCommand::ScreenColor | TrayCommand::ScreenRuler => {
                 let cfg = self.config();
                 if let Some(hex) = app.screen_tool(&cfg, cmd == TrayCommand::ScreenRuler).await.map_err(err)? {
-                    self.notify("取色器", &format!("{hex}（已複製到剪貼簿）"), false);
+                    self.notify(tr!("取色器", "Color picker"), &trf!("{hex}（已複製到剪貼簿）", "{hex} (copied to the clipboard)"), false);
                 }
                 return Ok(());
             }
             TrayCommand::StepsStart => {
                 let dir = self.config().output_dir;
                 app.steps_start(&dir).map_err(err)?;
-                self.notify("步驟截圖", "開始了：之後每點一下滑鼠就截一張。做完後在系統匣選「完成步驟截圖」，就會做成教學文件", false);
+                self.notify(
+                    tr!("步驟截圖", "Step capture"),
+                    tr!(
+                        "開始了：之後每點一下滑鼠就截一張。做完後在系統匣選「完成步驟截圖」，就會做成教學文件",
+                        "Started: each mouse click now takes a screenshot. When you're done, choose “Finish step capture” in the system tray to make a step-by-step guide."
+                    ),
+                    false,
+                );
                 return Ok(());
             }
             TrayCommand::StepsFinish => {
                 match app.steps_finish().await.map_err(err)? {
                     Some(path) => {
                         crate::desktop::open_with_explorer(&path, false);
-                        self.notify("步驟截圖", "教學文件做好了，已用瀏覽器開啟；文字可以直接修改，再列印成 PDF", false);
+                        self.notify(
+                            tr!("步驟截圖", "Step capture"),
+                            tr!(
+                                "教學文件做好了，已用瀏覽器開啟；文字可以直接修改，再列印成 PDF",
+                                "The step-by-step guide is ready and open in your browser. You can edit the text, then print it to PDF."
+                            ),
+                            false,
+                        );
                     }
-                    None => self.notify("步驟截圖", "沒有截到任何步驟", false),
+                    None => self.notify(tr!("步驟截圖", "Step capture"), tr!("沒有截到任何步驟", "No steps were captured"), false),
                 }
                 return Ok(());
             }
@@ -465,7 +487,14 @@ impl TrayController {
             | TrayCommand::ScreenshotDelay(_) => {
                 let mut cfg = self.config();
                 if let TrayCommand::ScreenshotDelay(sec) = cmd {
-                    self.notify("延遲截圖", &format!("{sec} 秒後畫面會凍結讓你框選：現在先打開要截的選單或提示"), false);
+                    self.notify(
+                        tr!("延遲截圖", "Delayed screenshot"),
+                        &trf!(
+                            "{sec} 秒後畫面會凍結讓你框選：現在先打開要截的選單或提示",
+                            "The screen will freeze in {sec} s so you can select an area. Open the menu or tooltip you want to capture now."
+                        ),
+                        false,
+                    );
                     tokio::time::sleep(std::time::Duration::from_secs(sec)).await;
                 }
                 match cmd {
@@ -478,7 +507,7 @@ impl TrayController {
                     TrayCommand::ScreenshotMonitor(id) => cfg.source = SourceConfig::Monitor { monitor_id: id },
                     TrayCommand::ScreenshotAll => cfg.source = SourceConfig::All,
                     TrayCommand::ScreenshotLast => {
-                        let r = app.last_snip().ok_or("還沒有框選過範圍")?;
+                        let r = app.last_snip().ok_or(tr!("還沒有框選過範圍", "You haven't selected an area yet"))?;
                         cfg.source = SourceConfig::Region { x: r.x as f64, y: r.y as f64, width: r.width as f64, height: r.height as f64 };
                     }
                     _ => {}
@@ -499,14 +528,22 @@ impl TrayController {
                 crate::desktop::set_autostart(cur != Some(true)).await.map_err(err)?;
                 let now = crate::desktop::get_autostart().await;
                 self.ctl.lock().unwrap().autostart = now;
-                self.notify("開機自動啟動", if now == Some(true) { "已開啟：登入 Windows 後會自動常駐在系統匣" } else { "已關閉" }, false);
+                self.notify(
+                    tr!("開機自動啟動", "Start with Windows"),
+                    if now == Some(true) {
+                        tr!("已開啟：登入 Windows 後會自動常駐在系統匣", "On: the app will start in the system tray when you sign in to Windows")
+                    } else {
+                        tr!("已關閉", "Off")
+                    },
+                    false,
+                );
                 return Ok(());
             }
             TrayCommand::StartLast | TrayCommand::StartAll | TrayCommand::StartMonitor(_) | TrayCommand::StartSelect | TrayCommand::StartLastSnip => self.config(),
         };
         // 開始錄影
         if app.exporter.running() {
-            return Err("轉檔進行中，請等它完成再錄影".into());
+            return Err(tr!("轉檔進行中，請等它完成再錄影", "A video is being processed. Wait for it to finish before recording.").into());
         }
         // 指定了要錄的範圍：錄畫面（不是只錄聲音）
         if cmd != TrayCommand::StartLast {
@@ -521,10 +558,10 @@ impl TrayController {
                     let Some(r) = app.select_record_region(&cfg).await.map_err(err)? else { return Ok(()) };
                     r
                 } else {
-                    app.last_snip().ok_or("還沒有框選過範圍")?
+                    app.last_snip().ok_or(tr!("還沒有框選過範圍", "You haven't selected an area yet"))?
                 };
                 if r.width < 16 || r.height < 16 {
-                    return Err(format!("範圍太小（{}×{}），寬高至少 16 像素", r.width, r.height));
+                    return Err(trf!("範圍太小（{}×{}），寬高至少 16 像素", "The area is too small ({}×{}). It must be at least 16 pixels wide and high.", r.width, r.height));
                 }
                 cfg.source = SourceConfig::Region { x: r.x as f64, y: r.y as f64, width: r.width as f64, height: r.height as f64 };
                 // 點一下選的是視窗：錄影範圍跟著那個視窗移動

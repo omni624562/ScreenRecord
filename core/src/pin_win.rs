@@ -3,6 +3,7 @@
 //! 拖曳移動、滾輪縮放、點兩下或 Esc 關閉；右鍵選單：複製、原尺寸、關閉。
 //! 圖的像素是實體像素（截圖就是實體像素），原尺寸顯示時和截圖時一樣大。
 
+use crate::tr;
 use std::cell::RefCell;
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
@@ -120,10 +121,10 @@ unsafe fn menu(hwnd: HWND) {
         let t: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
         let _ = AppendMenuW(m, MF_STRING, id, PCWSTR(t.as_ptr()));
     };
-    item(ID_COPY, "複製");
-    item(ID_ACTUAL, "原尺寸");
+    item(ID_COPY, tr!("複製", "Copy"));
+    item(ID_ACTUAL, tr!("原尺寸", "Actual size"));
     let _ = AppendMenuW(m, MF_SEPARATOR, 0, None);
-    item(ID_CLOSE, "關閉");
+    item(ID_CLOSE, tr!("關閉", "Close"));
     let mut p = POINT::default();
     let _ = GetCursorPos(&mut p);
     let _ = SetForegroundWindow(hwnd);

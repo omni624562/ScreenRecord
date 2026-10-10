@@ -2,6 +2,7 @@
 //! 這裡只有計算與繪製（可以在任何平台測試），Windows 的框選視窗（snip_win.rs）負責顯示與操作。
 
 use crate::annotate;
+use crate::trf;
 use tiny_skia::{Color, Paint, Pixmap, Rect, Transform};
 
 /// 放大鏡顯示游標周圍幾格（奇數，正中間是游標所在的像素）
@@ -124,9 +125,9 @@ pub fn ruler_text((ax, ay): (i32, i32), (bx, by): (i32, i32)) -> String {
     let deg = (-(dy as f64)).atan2(dx as f64).to_degrees();
     let mut s = format!("{} px", len.round() as i64);
     if dx != 0 && dy != 0 {
-        s.push_str(&format!("（寬 {}、高 {}）", dx.abs(), dy.abs()));
+        s.push_str(&trf!("（寬 {}、高 {}）", " (W {}, H {})", dx.abs(), dy.abs()));
     }
-    s.push_str(&format!("・{}°", deg.round() as i64));
+    s.push_str(&trf!("・{}°", " · {}°", deg.round() as i64));
     s
 }
 

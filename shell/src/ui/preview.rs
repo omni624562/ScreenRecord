@@ -3,6 +3,7 @@
 
 use eframe::egui::{self, Color32, ColorImage, TextureHandle, TextureOptions};
 use screenrecorder_core::app::{App, LIVE_MAX_WIDTH};
+use screenrecorder_core::tr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -104,7 +105,7 @@ impl Preview {
     #[allow(clippy::too_many_arguments)]
     pub fn ensure(&mut self, core: &Arc<App>, rt: &tokio::runtime::Handle, ctx: &egui::Context, key: &str, mut fps: u32, width: u32, ffmpeg_ok: bool) {
         if !ffmpeg_ok {
-            self.slot.lock().unwrap().state = Some(PreviewState::Failed("需要 FFmpeg 才能顯示預覽".into()));
+            self.slot.lock().unwrap().state = Some(PreviewState::Failed(tr!("需要 FFmpeg 才能顯示預覽", "FFmpeg is needed to show the preview").into()));
             return;
         }
         if self.slot.lock().unwrap().live_failed.is_some_and(|t| t.elapsed() < LIVE_RETRY) {
@@ -208,7 +209,7 @@ impl Preview {
                         s.seq += 1;
                         s.state = Some(PreviewState::Ready);
                     }
-                    None => s.state = Some(PreviewState::Failed("無法取得預覽（仍可錄影）".into())),
+                    None => s.state = Some(PreviewState::Failed(tr!("無法取得預覽（仍可錄影）", "Couldn't get a preview (you can still record)").into())),
                 }
                 drop(s);
                 ctx.request_repaint();

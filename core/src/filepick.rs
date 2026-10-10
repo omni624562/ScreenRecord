@@ -16,7 +16,7 @@ pub fn pick(title: &str, filters: &[(&str, &str)]) -> Result<Option<PathBuf>, St
         })
         .map_err(|e| e.to_string())?
         .join()
-        .unwrap_or_else(|_| Err("無法開啟選擇檔案的視窗".into()))
+        .unwrap_or_else(|_| Err(crate::tr!("無法開啟選擇檔案的視窗", "Couldn't open the file picker").into()))
 }
 
 #[cfg(windows)]
@@ -52,11 +52,11 @@ fn pick_sta(title: &str, filters: &[(&str, &str)]) -> Result<Option<PathBuf>, St
         if inited {
             CoUninitialize();
         }
-        r.map_err(|e| format!("無法開啟選擇檔案的視窗：{}", e.message()))
+        r.map_err(|e| crate::trf!("無法開啟選擇檔案的視窗：{}", "Couldn't open the file picker: {}", e.message()))
     }
 }
 
 #[cfg(not(windows))]
 pub fn pick(_title: &str, _filters: &[(&str, &str)]) -> Result<Option<PathBuf>, String> {
-    Err("這個系統不支援選擇檔案的視窗".into())
+    Err(crate::tr!("這個系統不支援選擇檔案的視窗", "The file picker isn't supported on this system").into())
 }

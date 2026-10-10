@@ -1,6 +1,7 @@
 //! 錄影前的音量表：開著系統聲音（loopback）與麥克風，算出目前的音量，讓人在開始錄影前就知道有沒有收到聲音。
 
 use crate::audio::{AudioSourceSpec, Opener};
+use crate::{tr, trf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -47,7 +48,7 @@ impl Meter {
                 match open(&AudioSourceSpec { loopback: true, mic_id: String::new() }) {
                     Ok(c) => Some(c),
                     Err(e) => {
-                        errors.push(format!("系統聲音：{e}"));
+                        errors.push(trf!("系統聲音：{e}", "System audio: {e}"));
                         None
                     }
                 }
@@ -58,14 +59,14 @@ impl Meter {
                 Some(id) => match open(&AudioSourceSpec { loopback: false, mic_id: id.clone() }) {
                     Ok(c) => Some(c),
                     Err(e) => {
-                        errors.push(format!("麥克風：{e}"));
+                        errors.push(trf!("麥克風：{e}", "Microphone: {e}"));
                         None
                     }
                 },
                 None => None,
             };
             if !errors.is_empty() {
-                l.lock().unwrap().error = Some(errors.join("；"));
+                l.lock().unwrap().error = Some(errors.join(tr!("；", "; ")));
             }
             let (mut ls, mut lm) = (0.0f32, 0.0f32);
             while !s.load(Ordering::Relaxed) {

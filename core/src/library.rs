@@ -7,6 +7,7 @@ use crate::format::{check_recording_name, parse_export_name, strip_mp4};
 use crate::paths::mtime_ms;
 use crate::process::run;
 use crate::types::{ExportFormat, ExportInfo, LibraryEntry, LibraryFilter, LibraryPage, LibraryQuery, LibrarySort, MediaInfo, LIBRARY_ROW_MAIN_PX, LIBRARY_ROW_SUB_PX};
+use crate::{tr, trf};
 use regex::Regex;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -42,7 +43,7 @@ impl MediaCache {
                 // 沒指定輸出時 ffmpeg 會以代碼 1 結束，但 stderr 已含完整的串流資訊
                 let r = run(ffmpeg, &["-hide_banner", "-i", path], Duration::from_secs(15)).await;
                 if r.timed_out || (r.code == -1 && r.stderr.is_empty()) {
-                    return Err(Error::other("無法讀取影片資訊"));
+                    return Err(Error::other(tr!("無法讀取影片資訊", "Couldn't read the video info")));
                 }
                 let p = parse_media_info(&r.stderr);
                 Ok::<_, Error>(MediaInfo {
@@ -309,7 +310,7 @@ pub async fn rename_recording(cache: &MediaCache, path: &str, new_name: &str, bu
     let dir = Path::new(path).parent().map(Path::to_path_buf).unwrap_or_default();
     let entries = scan(cache, &dir).await;
     let Some(entry) = entries.into_iter().find(|e| e.media.path.to_lowercase() == path.to_lowercase()) else {
-        return Err(Error::config("找不到這個錄影，可能已被移動或刪除"));
+        return Err(Error::config(tr!("找不到這個錄影，可能已被移動或刪除", "This recording wasn't found. It may have been moved or deleted")));
     };
     let old_base = strip_ext(&entry.media.name);
     let ext = if is_image_name(&entry.media.name) { "png" } else { "mp4" };
@@ -324,11 +325,11 @@ pub async fn rename_recording(cache: &MediaCache, path: &str, new_name: &str, bu
     }
     for (from, to) in &plan {
         if busy.contains(&from.to_lowercase()) {
-            return Err(Error::config("檔案正在錄影或轉檔中，完成後才能改名"));
+            return Err(Error::config(tr!("檔案正在錄影或轉檔中，完成後才能改名", "The file is being recorded or converted. Rename it after that finishes")));
         }
         // 只改大小寫時目標就是自己（Windows 不分大小寫），不算衝突
         if to.exists() && to.display().to_string().to_lowercase() != from.to_lowercase() {
-            return Err(Error::config(format!("已有同名的檔案：{}", file_name(&to.display().to_string()))));
+            return Err(Error::config(trf!("已有同名的檔案：{}", "A file with this name already exists: {}", file_name(&to.display().to_string()))));
         }
     }
     let mut done: Vec<(&String, &PathBuf)> = Vec::new();
@@ -338,7 +339,11 @@ pub async fn rename_recording(cache: &MediaCache, path: &str, new_name: &str, bu
                 let _ = tokio::fs::rename(t, f).await;
             }
             let busy = e.kind() == std::io::ErrorKind::PermissionDenied || matches!(e.raw_os_error(), Some(32) | Some(5));
-            return Err(Error::config(if busy { "檔案正在使用中（例如正在播放或剪輯），關閉後再試一次".to_string() } else { format!("無法改名：{e}") }));
+            return Err(Error::config(if busy {
+                tr!("檔案正在使用中（例如正在播放或剪輯），關閉後再試一次", "The file is in use (e.g. playing or open in the editor). Close it and try again").to_string()
+            } else {
+                trf!("無法改名：{e}", "Couldn't rename: {e}")
+            }));
         }
         done.push((from, to));
     }

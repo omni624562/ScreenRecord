@@ -2,6 +2,7 @@
 //! 幾秒後自動消失（滑鼠移上去時不會）。這裡只負責畫與判斷點到哪裡，各平台共用。
 
 use crate::annotate::{self, Ann, AnnKind};
+use crate::tr;
 use tiny_skia::{Color, FillRule, FilterQuality, Paint, PathBuilder, Pixmap, PixmapPaint, Transform};
 
 /// 下面的按鈕
@@ -14,7 +15,8 @@ pub enum Button {
     Close,
 }
 
-pub const BUTTONS: [(Button, &str); 4] = [(Button::Edit, "編輯"), (Button::Copy, "複製"), (Button::Pin, "釘選"), (Button::Delete, "刪除")];
+/// (按鈕, 中文, 英文)
+pub const BUTTONS: [(Button, &str, &str); 4] = [(Button::Edit, "編輯", "Edit"), (Button::Copy, "複製", "Copy"), (Button::Pin, "釘選", "Pin"), (Button::Delete, "刪除", "Delete")];
 
 /// 點到哪裡
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -38,7 +40,7 @@ pub fn layout(scale: f32) -> Layout {
     let (w, img_h, bar_h, pad) = (280.0 * s, 158.0 * s, 36.0 * s, 6.0 * s);
     let h = pad + img_h + bar_h;
     let bw = (w - pad * 2.0) / BUTTONS.len() as f32;
-    let buttons = BUTTONS.iter().enumerate().map(|(i, (b, _))| (*b, (pad + i as f32 * bw, pad + img_h + 2.0 * s, bw, bar_h - 6.0 * s))).collect();
+    let buttons = BUTTONS.iter().enumerate().map(|(i, (b, _, _))| (*b, (pad + i as f32 * bw, pad + img_h + 2.0 * s, bw, bar_h - 6.0 * s))).collect();
     let r = 11.0 * s;
     Layout { w: w.round() as u32, h: h.round() as u32, image: (pad, pad, w - pad * 2.0, img_h), close: (w - pad - r - 4.0 * s, pad + r + 4.0 * s, r), buttons }
 }
@@ -114,7 +116,7 @@ pub fn render(thumb: &Pixmap, scale: f32, hover: Option<Hit>) -> Option<(Pixmap,
     if hover == Some(Hit::Image) {
         let (w, h) = (100.0 * s, 26.0 * s);
         fill_round(&mut pm, (ix + (iw - w) / 2.0, iy + (ih - h) / 2.0, w, h), 13.0 * s, Color::from_rgba8(0, 0, 0, 170));
-        text(&mut pm, "點一下編輯", ix + iw / 2.0, iy + ih / 2.0, 13.0 * s);
+        text(&mut pm, tr!("點一下編輯", "Click to edit"), ix + iw / 2.0, iy + ih / 2.0, 13.0 * s);
     }
     // 關閉
     let (cx, cy, r) = l.close;
@@ -137,13 +139,13 @@ pub fn render(thumb: &Pixmap, scale: f32, hover: Option<Hit>) -> Option<(Pixmap,
         pm.stroke_path(&x, &p, &tiny_skia::Stroke { width: 1.8 * s, line_cap: tiny_skia::LineCap::Round, ..Default::default() }, Transform::identity(), None);
     }
     // 按鈕
-    for ((b, label), (_, rect)) in BUTTONS.iter().zip(&l.buttons) {
+    for ((b, zh, en), (_, rect)) in BUTTONS.iter().zip(&l.buttons) {
         if hover == Some(Hit::Button(*b)) {
             let c = if *b == Button::Delete { Color::from_rgba8(229, 72, 77, 200) } else { Color::from_rgba8(60, 64, 67, 255) };
             fill_round(&mut pm, *rect, 6.0 * s, c);
         }
         let (x, y, w, h) = *rect;
-        text(&mut pm, label, x + w / 2.0, y + h / 2.0, 13.0 * s);
+        text(&mut pm, tr!(zh, en), x + w / 2.0, y + h / 2.0, 13.0 * s);
     }
     Some((pm, l))
 }

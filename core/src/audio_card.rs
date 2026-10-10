@@ -3,6 +3,7 @@
 //! 清單上的縮圖也一眼看得出是錄音。畫面不會動，影片檔幾乎只有聲音的大小。
 
 use crate::annotate;
+use crate::tr;
 use tiny_skia::{Color, FillRule, GradientStop, LinearGradient, Paint, PathBuilder, Pixmap, Point, Rect, SpreadMode, Stroke, Transform};
 
 /// 卡片大小（也是影片的大小）
@@ -44,7 +45,7 @@ pub fn render(when: &str) -> Option<Pixmap> {
         pm.stroke_path(&p, &white, &stroke, Transform::identity(), None);
     }
 
-    for (s, size, color, y) in [("只錄聲音", 34.0, "#ffffff", 252.0), (when, 20.0, "#cbd5e1", 298.0)] {
+    for (s, size, color, y) in [(tr!("只錄聲音", "Audio only"), 34.0, "#ffffff", 252.0), (when, 20.0, "#cbd5e1", 298.0)] {
         if s.is_empty() {
             continue;
         }

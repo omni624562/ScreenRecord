@@ -9,6 +9,7 @@
 
 use crate::camera_bubble::{bubble_rect, clamp_into, grab_at, reader_args, relative_pos, resample, resize_pct, size_px, source_size, BubbleInfo, Grab, Mask};
 use crate::types::Rect;
+use crate::{tr, trf};
 use std::cell::Cell;
 use std::io::{BufRead, BufReader, Read};
 use std::path::PathBuf;
@@ -346,7 +347,7 @@ unsafe fn run(info: impl Fn() -> Option<BubbleInfo>, ffmpeg: impl Fn() -> Option
                 let reader = match ffmpeg().map(|p| Reader::start(&p, &i.camera.device, src)) {
                     Some(Ok(r)) => r,
                     Some(Err(e)) => {
-                        failed(format!("無法讀取攝影機：{e}"));
+                        failed(trf!("無法讀取攝影機：{e}", "Couldn't read the camera: {e}"));
                         gave_up = true;
                         continue;
                     }
@@ -438,13 +439,13 @@ unsafe fn run(info: impl Fn() -> Option<BubbleInfo>, ffmpeg: impl Fn() -> Option
                 r.stop();
             }
             gave_up = true;
-            let detail = if detail.is_empty() { String::new() } else { format!("（{detail}）") };
+            let detail = if detail.is_empty() { String::new() } else { trf!("（{detail}）", " ({detail})") };
             failed(if started {
-                format!("攝影機中斷{detail}，之後的錄影不含攝影機")
+                trf!("攝影機中斷{detail}，之後的錄影不含攝影機", "The camera disconnected{detail}. The rest of the recording won't include the camera.")
             } else if detail.is_empty() {
-                "攝影機無法開啟（可能被其他程式使用中），錄影不含攝影機".into()
+                tr!("攝影機無法開啟（可能被其他程式使用中），錄影不含攝影機", "Couldn't open the camera (another app may be using it). The recording won't include the camera.").into()
             } else {
-                format!("攝影機無法開啟{detail}，錄影不含攝影機")
+                trf!("攝影機無法開啟{detail}，錄影不含攝影機", "Couldn't open the camera{detail}. The recording won't include the camera.")
             });
         }
         if let Some(s) = &shown {

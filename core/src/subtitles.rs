@@ -4,6 +4,7 @@
 //! FFmpeg 不一定有 whisper 濾鏡（要編譯時打開），所以先用 `ffmpeg -filters` 確認。
 //! 語音模型（ggml 格式）第一次使用時下載到資料夾\whisper。
 
+use crate::{tr, trf};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
@@ -87,15 +88,15 @@ pub fn model_ready(m: &Model) -> bool {
 pub fn download_model(m: &Model, progress: &AtomicU32, cancel: &AtomicBool) -> Result<(), String> {
     use std::io::{Read, Write};
     let dir = model_dir();
-    std::fs::create_dir_all(&dir).map_err(|e| format!("無法建立資料夾：{e}"))?;
+    std::fs::create_dir_all(&dir).map_err(|e| trf!("無法建立資料夾：{e}", "Couldn't create the folder: {e}"))?;
     let part = dir.join(format!("{}.part", m.file));
     let resp = crate::http::agent().redirects(8).build().get(m.url).call().map_err(|e| match e {
-        ureq::Error::Status(code, _) => format!("下載語音模型失敗（HTTP {code}）"),
-        e => format!("下載語音模型失敗：{e}"),
+        ureq::Error::Status(code, _) => trf!("下載語音模型失敗（HTTP {code}）", "Couldn't download the speech model (HTTP {code})"),
+        e => trf!("下載語音模型失敗：{e}", "Couldn't download the speech model: {e}"),
     })?;
     let total = resp.header("Content-Length").and_then(|v| v.parse::<u64>().ok()).unwrap_or(m.mb as u64 * 1_000_000);
     let mut reader = resp.into_reader();
-    let mut out = std::fs::File::create(&part).map_err(|e| format!("無法寫入檔案：{e}"))?;
+    let mut out = std::fs::File::create(&part).map_err(|e| trf!("無法寫入檔案：{e}", "Couldn't write the file: {e}"))?;
     let mut buf = vec![0u8; 256 * 1024];
     let mut got = 0u64;
     loop {
@@ -104,20 +105,20 @@ pub fn download_model(m: &Model, progress: &AtomicU32, cancel: &AtomicBool) -> R
             let _ = std::fs::remove_file(&part);
             return Err("已取消下載".into());
         }
-        let n = reader.read(&mut buf).map_err(|e| format!("下載中斷：{e}"))?;
+        let n = reader.read(&mut buf).map_err(|e| trf!("下載中斷：{e}", "Download interrupted: {e}"))?;
         if n == 0 {
             break;
         }
-        out.write_all(&buf[..n]).map_err(|e| format!("無法寫入檔案：{e}"))?;
+        out.write_all(&buf[..n]).map_err(|e| trf!("無法寫入檔案：{e}", "Couldn't write the file: {e}"))?;
         got += n as u64;
         progress.store(((got * 1000) / total.max(1)).min(1000) as u32, Ordering::Relaxed);
     }
     drop(out);
     if !magic_ok(&part) || got < m.mb as u64 * 900_000 {
         let _ = std::fs::remove_file(&part);
-        return Err("下載的語音模型不完整，請再試一次".into());
+        return Err(tr!("下載的語音模型不完整，請再試一次", "The downloaded speech model is incomplete. Please try again.").into());
     }
-    std::fs::rename(&part, model_path(m)).map_err(|e| format!("無法儲存語音模型：{e}"))?;
+    std::fs::rename(&part, model_path(m)).map_err(|e| trf!("無法儲存語音模型：{e}", "Couldn't save the speech model: {e}"))?;
     crate::info!("[字幕] 已下載語音模型 {}（{} MB）", m.file, got / 1_000_000);
     Ok(())
 }
@@ -160,8 +161,8 @@ async fn transcribe_in(dir: &Path, ffmpeg: &Path, input: &str, duration: f64, mo
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
-        .map_err(|e| format!("無法執行 FFmpeg：{e}"))?;
-    let stdout = child.stdout.take().ok_or("無法讀取 FFmpeg 的進度")?;
+        .map_err(|e| trf!("無法執行 FFmpeg：{e}", "Couldn't run FFmpeg: {e}"))?;
+    let stdout = child.stdout.take().ok_or(tr!("無法讀取 FFmpeg 的進度", "Couldn't read FFmpeg's progress"))?;
     let stderr = child.stderr.take();
     let err_task = tokio::spawn(async move {
         let mut s = String::new();
@@ -204,7 +205,7 @@ async fn transcribe_in(dir: &Path, ffmpeg: &Path, input: &str, duration: f64, mo
         return Err("已取消".into());
     }
     if !status.success() {
-        return Err(format!("語音辨識失敗：{}", if last_err.is_empty() { "FFmpeg 結束時發生錯誤".to_string() } else { last_err }));
+        return Err(trf!("語音辨識失敗：{}", "Speech recognition failed: {}", if last_err.is_empty() { tr!("FFmpeg 結束時發生錯誤", "FFmpeg exited with an error").to_string() } else { last_err }));
     }
     progress.store(1000, Ordering::Relaxed);
     Ok(tidy(parse_srt(&text)))
@@ -339,25 +340,25 @@ pub fn wrap(text: &str, max_chars: usize) -> String {
 /// 在影片旁邊存一份 SRT（同名；已經有就加 _2）
 pub fn save_next_to(video: &str, cues: &[Cue]) -> Result<PathBuf, String> {
     let p = Path::new(video);
-    let (Some(dir), Some(stem)) = (p.parent(), p.file_stem()) else { return Err("檔名不正確".into()) };
+    let (Some(dir), Some(stem)) = (p.parent(), p.file_stem()) else { return Err(tr!("檔名不正確", "Invalid file name").into()) };
     let out = crate::paths::unique_path(dir, &stem.to_string_lossy(), ".srt");
     // 加上 BOM：Windows 的記事本與舊的播放器才不會變成亂碼
-    std::fs::write(&out, format!("\u{feff}{}", to_srt(cues))).map_err(|e| format!("無法儲存字幕檔：{e}"))?;
+    std::fs::write(&out, format!("\u{feff}{}", to_srt(cues))).map_err(|e| trf!("無法儲存字幕檔：{e}", "Couldn't save the subtitle file: {e}"))?;
     Ok(out)
 }
 
 /// 選一個 SRT 字幕檔
 pub fn pick_file() -> Result<Option<PathBuf>, String> {
-    crate::filepick::pick("選擇字幕檔", &[("字幕檔（SRT）", "*.srt"), ("所有檔案", "*.*")])
+    crate::filepick::pick(tr!("選擇字幕檔", "Choose a subtitle file"), &tr!([("字幕檔（SRT）", "*.srt"), ("所有檔案", "*.*")], [("Subtitle files (SRT)", "*.srt"), ("All files", "*.*")]))
 }
 
 /// 讀 SRT 檔（UTF-8；不是 UTF-8 時當作 Big5 以外的編碼無法處理，回報錯誤）
 pub fn read_file(path: &Path) -> Result<Vec<Cue>, String> {
-    let bytes = std::fs::read(path).map_err(|e| format!("無法讀取字幕檔：{e}"))?;
-    let text = String::from_utf8(bytes).map_err(|_| "字幕檔不是 UTF-8 編碼，請先用記事本另存成 UTF-8".to_string())?;
+    let bytes = std::fs::read(path).map_err(|e| trf!("無法讀取字幕檔：{e}", "Couldn't read the subtitle file: {e}"))?;
+    let text = String::from_utf8(bytes).map_err(|_| tr!("字幕檔不是 UTF-8 編碼，請先用記事本另存成 UTF-8", "The subtitle file isn't UTF-8 encoded. Save it as UTF-8 in Notepad first.").to_string())?;
     let cues = tidy(parse_srt(&text));
     if cues.is_empty() {
-        return Err("字幕檔裡沒有可以用的字幕".into());
+        return Err(tr!("字幕檔裡沒有可以用的字幕", "The subtitle file has no usable subtitles").into());
     }
     Ok(cues)
 }

@@ -5,6 +5,7 @@ use crate::ui::theme;
 use eframe::egui::{self, pos2, vec2, Align2, Color32, CornerRadius, CursorIcon, Id, Pos2, Rect, Sense, Stroke, TextureHandle, TextureOptions};
 use screenrecorder_core::annotate::{self, Ann, AnnKind, Shape};
 use screenrecorder_core::edit::CropInput;
+use screenrecorder_core::tr;
 use screenrecorder_core::zoom;
 use std::time::{Duration, Instant};
 
@@ -193,7 +194,7 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, stage_h: f3
             }
         }
     } else if ed.tab == Tab::Crop && ed.vw > 0.0 && ed.tool.is_none() {
-        let g = painter.layout_no_wrap("在圖上拖曳，框出要保留的範圍".to_string(), theme::font(13.0), Color32::WHITE);
+        let g = painter.layout_no_wrap(tr!("在圖上拖曳，框出要保留的範圍", "Drag to select the area to keep").to_string(), theme::font(13.0), Color32::WHITE);
         let pill = Rect::from_center_size(pos2(rect.center().x, rect.top() + 24.0), g.size() + vec2(24.0, 12.0));
         painter.rect_filled(pill, CornerRadius::same(255), Color32::from_black_alpha(170));
         painter.galley(pill.min + vec2(12.0, 6.0), g, Color32::WHITE);
@@ -470,7 +471,7 @@ fn interact(ed: &mut Editor, ui: &egui::Ui, rect: Rect, resp: &egui::Response) {
                 return;
             }
             let id = a.id;
-            let default_text = a.text.as_deref() == Some("說明文字");
+            let default_text = a.text.as_deref() == Some(super::default_text());
             ed.anns.push(a);
             ed.ann_sel = Some(id);
             ed.tab = Tab::Ann;
@@ -538,7 +539,7 @@ fn interact(ed: &mut Editor, ui: &egui::Ui, rect: Rect, resp: &egui::Response) {
 fn drag_to(ed: &mut Editor, (px, py): (f64, f64), shift: bool) {
     match std::mem::replace(&mut ed.drag, Drag::None) {
         Drag::Crop { from, prev_on, prev } => {
-            let ratio = super::CROP_RATIOS.get(ed.crop_ratio).and_then(|c| c.1);
+            let ratio = super::CROP_RATIOS.get(ed.crop_ratio).and_then(|c| c.2);
             let c = crop_from_drag(from, (px, py), ratio, ed.vw, ed.vh);
             // 拖超過一點點才算框選（只點一下不會把裁切清掉）
             if c.width >= 8.0 && c.height >= 8.0 {

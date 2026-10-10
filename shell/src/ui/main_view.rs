@@ -11,7 +11,9 @@ use super::{EntryAction, UiApp};
 use eframe::egui::{self, pos2, vec2, Align, Color32, CornerRadius, Id, Layout, Pos2, Rect, RichText, Sense, Stroke, StrokeKind, Ui, UiBuilder};
 use screenrecorder_core::actions;
 use screenrecorder_core::format::{clock, format_bytes, human_duration, output_size, speed_label, video_clock};
+use screenrecorder_core::i18n::is_en;
 use screenrecorder_core::types::{DownloadPhase, EncoderPreference, ExportFormat, ExportKind, ExportState, LibraryEntry, LogLevel, MethodPreference, RecorderState, Rect as DRect};
+use screenrecorder_core::{tr, trf};
 use std::time::Instant;
 
 /// 主畫面自己的狀態（拖曳範圍、輸入中的文字）
@@ -82,27 +84,28 @@ fn banners(app: &mut UiApp, ui: &mut Ui) {
             ui.horizontal(|ui| {
                 ui.vertical(|ui| {
                     ui.set_max_width(ui.available_width() - 360.0);
-                    ui.label(RichText::new("找不到 ffmpeg.exe").font(theme::font_bold(14.0)).color(p.rec));
+                    ui.label(RichText::new(tr!("找不到 ffmpeg.exe", "ffmpeg.exe not found")).font(theme::font_bold(14.0)).color(p.rec));
                     let text = match d.phase {
                         DownloadPhase::Downloading => {
                             let pct = d.total.map(|t| d.received as f64 / t.max(1) as f64 * 100.0);
-                            let mut s = format!("下載中 {}", format_bytes(d.received));
+                            let mut s = trf!("下載中 {}", "Downloading {}", format_bytes(d.received));
                             if let (Some(t), Some(pc)) = (d.total, pct) {
-                                s += &format!(" / {}（{}%）", format_bytes(t), pc.floor());
+                                s += &trf!(" / {}（{}%）", " / {} ({}%)", format_bytes(t), pc.floor());
                             }
                             if let Some(sp) = d.speed {
-                                s += &format!("・{}/秒", format_bytes(sp as u64));
+                                s += &trf!("・{}/秒", " · {}/s", format_bytes(sp as u64));
                                 if let Some(t) = d.total {
-                                    s += &format!("・剩約 {}", human_duration((t.saturating_sub(d.received)) as f64 / sp.max(1.0)));
+                                    s += &trf!("・剩約 {}", " · about {} left", human_duration((t.saturating_sub(d.received)) as f64 / sp.max(1.0)));
                                 }
                             }
                             s
                         }
-                        DownloadPhase::Verifying => "比對 SHA-256 檢查碼…".into(),
-                        DownloadPhase::Extracting => "解壓縮並確認 ffmpeg.exe 可以執行…".into(),
-                        DownloadPhase::Error | DownloadPhase::Canceled => d.message.clone().unwrap_or_else(|| "下載失敗".into()),
-                        _ => format!(
+                        DownloadPhase::Verifying => tr!("比對 SHA-256 檢查碼…", "Verifying SHA-256 checksum…").into(),
+                        DownloadPhase::Extracting => tr!("解壓縮並確認 ffmpeg.exe 可以執行…", "Extracting and checking that ffmpeg.exe runs…").into(),
+                        DownloadPhase::Error | DownloadPhase::Canceled => d.message.clone().unwrap_or_else(|| tr!("下載失敗", "Download failed").into()),
+                        _ => trf!(
                             "可以自動下載（gyan.dev 的 FFmpeg essentials，約 110 MB；下載後比對程式內建的 SHA-256，確認檔案完整且未遭竄改），或自行下載並把 bin\\ffmpeg.exe 放到 {}",
+                            "Download it automatically (FFmpeg essentials from gyan.dev, about 110 MB; the download is checked against a built-in SHA-256 to make sure it is complete and untampered), or download it yourself and put bin\\ffmpeg.exe in {}",
                             app.env.app_dir
                         ),
                     };
@@ -113,25 +116,25 @@ fn banners(app: &mut UiApp, ui: &mut Ui) {
                     }
                 });
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if Btn::new("重新偵測").small().show(ui).clicked() {
+                    if Btn::new(tr!("重新偵測", "Check again")).small().show(ui).clicked() {
                         app.refresh_env(|app| {
                             let (msg, err) = if app.env.ffmpeg.found {
-                                (format!("已找到 FFmpeg {}", app.env.ffmpeg.version.clone().unwrap_or_default()), false)
+                                (trf!("已找到 FFmpeg {}", "Found FFmpeg {}", app.env.ffmpeg.version.clone().unwrap_or_default()), false)
                             } else {
-                                ("仍然找不到 ffmpeg.exe".into(), true)
+                                (tr!("仍然找不到 ffmpeg.exe", "ffmpeg.exe still not found").into(), true)
                             };
                             app.toast(msg, err);
                         });
                     }
-                    if Btn::new("手動下載").small().show(ui).clicked() {
+                    if Btn::new(tr!("手動下載", "Manual download")).small().show(ui).clicked() {
                         let _ = actions::open_url("https://www.gyan.dev/ffmpeg/builds/");
                     }
                     if busy {
-                        if Btn::new("取消").small().show(ui).clicked() {
+                        if Btn::new(tr!("取消", "Cancel")).small().show(ui).clicked() {
                             app.core.downloader.cancel();
                         }
                     } else {
-                        let label = if matches!(d.phase, DownloadPhase::Error | DownloadPhase::Canceled) { "重新下載" } else { "自動下載" };
+                        let label = if matches!(d.phase, DownloadPhase::Error | DownloadPhase::Canceled) { tr!("重新下載", "Download again") } else { tr!("自動下載", "Auto download") };
                         if Btn::new(label).primary().small().show(ui).clicked() {
                             if let Err(e) = actions::ffmpeg_download(&app.core) {
                                 app.toast(e.message().to_string(), true);
@@ -179,9 +182,15 @@ fn capture_panel(app: &mut UiApp, ui: &mut Ui) {
             let mut st = app.s.source_type;
             // 窄的時候分頁名稱縮短，範圍的座標才放得下
             let tabs = if narrow {
-                [(SourceType::Monitor, "單螢幕"), (SourceType::All, "多螢幕"), (SourceType::Region, "自訂"), (SourceType::Audio, "錄音")]
+                tr!(
+                    [(SourceType::Monitor, "單螢幕"), (SourceType::All, "多螢幕"), (SourceType::Region, "自訂"), (SourceType::Audio, "錄音")],
+                    [(SourceType::Monitor, "Screen"), (SourceType::All, "All"), (SourceType::Region, "Area"), (SourceType::Audio, "Audio")]
+                )
             } else {
-                [(SourceType::Monitor, "單一螢幕"), (SourceType::All, "所有螢幕"), (SourceType::Region, "自訂範圍"), (SourceType::Audio, "只錄聲音")]
+                tr!(
+                    [(SourceType::Monitor, "單一螢幕"), (SourceType::All, "所有螢幕"), (SourceType::Region, "自訂範圍"), (SourceType::Audio, "只錄聲音")],
+                    [(SourceType::Monitor, "Single screen"), (SourceType::All, "All screens"), (SourceType::Region, "Custom area"), (SourceType::Audio, "Audio only")]
+                )
             };
             if segmented(ui, &mut st, &tabs, !locked) {
                 app.s.source_type = st;
@@ -194,13 +203,19 @@ fn capture_panel(app: &mut UiApp, ui: &mut Ui) {
                 source_detail(app, ui, room);
             });
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if Btn::icon_only(Icon::Refresh).ghost().small().tooltip("重新擷取預覽並更新螢幕清單").show(ui).clicked() {
+                if Btn::icon_only(Icon::Refresh).ghost().small().tooltip(tr!("重新擷取預覽並更新螢幕清單", "Refresh the preview and the screen list")).show(ui).clicked() {
                     app.preview.retry_live();
                     app.refresh_env(|_| {});
                 }
                 let mut live = app.s.live_preview;
                 let audio = app.s.source_type == SourceType::Audio;
-                if !audio && switch(ui, &mut live, if narrow { "" } else { "即時預覽" }, true).on_hover_text("即時預覽：即時顯示目前畫面（每秒 5 張；切到其他視窗或錄影中 2 張）").changed()
+                if !audio
+                    && switch(ui, &mut live, if narrow { "" } else { tr!("即時預覽", "Live preview") }, true)
+                        .on_hover_text(tr!(
+                            "即時預覽：即時顯示目前畫面（每秒 5 張；切到其他視窗或錄影中 2 張）",
+                            "Live preview: shows the screen as it is now (5 frames per second; 2 while recording or when another window is active)"
+                        ))
+                        .changed()
                 {
                     app.s.live_preview = live;
                     app.preview.retry_live();
@@ -229,21 +244,22 @@ fn source_detail(app: &mut UiApp, ui: &mut Ui, room: f32) {
     match app.s.source_type {
         SourceType::Monitor => {
             if app.env.monitors.is_empty() {
-                ui.add(egui::Label::new(theme::muted(ui, "找不到螢幕資訊，請改用「自訂範圍」")).truncate());
+                ui.add(egui::Label::new(theme::muted(ui, tr!("找不到螢幕資訊，請改用「自訂範圍」", "No screen info found; use “Custom area” instead"))).truncate());
             }
             let monitors = app.env.monitors.clone();
-            let full = |m: &screenrecorder_core::types::MonitorInfo| format!("螢幕 {}  {}×{}{}", m.display_number, m.width, m.height, if m.primary { "・主" } else { "" });
+            let full =
+                |m: &screenrecorder_core::types::MonitorInfo| trf!("螢幕 {}  {}×{}{}", "Screen {}  {}×{}{}", m.display_number, m.width, m.height, if m.primary { tr!("・主", " · main") } else { "" });
             let boxed = app.s.region_in_monitor(&app.env).is_some();
-            let extra = if boxed { Btn::new("整個螢幕").icon(Icon::Close).small().width(ui) } else { 0.0 };
-            let buttons_w = |short: bool| -> f32 { monitors.iter().map(|m| Btn::new(if short { format!("螢幕 {}", m.display_number) } else { full(m) }).small().width(ui) + gap).sum() };
+            let extra = if boxed { Btn::new(tr!("整個螢幕", "Whole screen")).icon(Icon::Close).small().width(ui) } else { 0.0 };
+            let buttons_w = |short: bool| -> f32 { monitors.iter().map(|m| Btn::new(if short { trf!("螢幕 {}", "Screen {}", m.display_number) } else { full(m) }).small().width(ui) + gap).sum() };
             // 放不下完整的「螢幕 1  1920×1080・主」時只寫「螢幕 1」（滑鼠提示有完整資訊）
             let short = buttons_w(false) + extra > room;
-            let hint = "可在預覽上拖曳框選範圍";
+            let hint = tr!("可在預覽上拖曳框選範圍", "Drag on the preview to select an area");
             let show_hint = !boxed && !monitors.is_empty() && buttons_w(short) + text_w(ui, hint) + gap <= room;
             for m in monitors {
                 let on = app.s.monitor_id.as_deref() == Some(&m.id);
-                let label = if short { format!("螢幕 {}", m.display_number) } else { full(&m) };
-                let tip = format!("{}（{}）", full(&m), m.adapter_name);
+                let label = if short { trf!("螢幕 {}", "Screen {}", m.display_number) } else { full(&m) };
+                let tip = trf!("{}（{}）", "{} ({})", full(&m), m.adapter_name);
                 if Btn::new(label).small().selected(on).enabled(!locked).tooltip(tip).show(ui).clicked() && !on {
                     app.s.monitor_id = Some(m.id.clone());
                     app.s.monitor_region = None;
@@ -252,12 +268,22 @@ fn source_detail(app: &mut UiApp, ui: &mut Ui, room: f32) {
             }
             // 只錄螢幕的一部分：在預覽上拖曳框選
             if boxed {
-                if Btn::new("整個螢幕").icon(Icon::Close).small().enabled(!locked).tooltip("取消框選的範圍，錄整個螢幕").show(ui).clicked() {
+                if Btn::new(tr!("整個螢幕", "Whole screen"))
+                    .icon(Icon::Close)
+                    .small()
+                    .enabled(!locked)
+                    .tooltip(tr!("取消框選的範圍，錄整個螢幕", "Clear the selected area and record the whole screen"))
+                    .show(ui)
+                    .clicked()
+                {
                     app.s.monitor_region = None;
                     app.save_settings();
                 }
             } else if show_hint {
-                ui.label(theme::muted(ui, hint)).on_hover_text("只錄這個螢幕的一部分：在預覽圖上拖曳框選；拖曳紅框可移動，拉邊或角可調整大小");
+                ui.label(theme::muted(ui, hint)).on_hover_text(tr!(
+                    "只錄這個螢幕的一部分：在預覽圖上拖曳框選；拖曳紅框可移動，拉邊或角可調整大小",
+                    "To record only part of this screen, drag on the preview to select an area. Drag the red frame to move it; drag its edges or corners to resize it."
+                ));
             }
         }
         SourceType::All => {
@@ -265,21 +291,31 @@ fn source_detail(app: &mut UiApp, ui: &mut Ui, room: f32) {
             let adapters: std::collections::HashSet<u32> = app.env.monitors.iter().map(|m| m.adapter).collect();
             let multi = adapters.len() > 1;
             let text = if n <= 1 {
-                "目前只有 1 個螢幕，與「單一螢幕」相同".to_string()
+                tr!("目前只有 1 個螢幕，與「單一螢幕」相同", "Only 1 screen connected; same as “Single screen”").to_string()
             } else {
-                format!("{n} 個螢幕拼成 {}×{}{}", app.env.desktop.width, app.env.desktop.height, if multi { "（不同顯示卡，將用 gdigrab）" } else { "" })
+                trf!(
+                    "{n} 個螢幕拼成 {}×{}{}",
+                    "{n} screens combined: {}×{}{}",
+                    app.env.desktop.width,
+                    app.env.desktop.height,
+                    if multi { tr!("（不同顯示卡，將用 gdigrab）", " (different graphics cards; gdigrab will be used)") } else { "" }
+                )
             };
             ui.add(egui::Label::new(RichText::new(&text).color(if multi { p.warn } else { p.muted }).font(theme::font(12.5))).truncate()).on_hover_text(&text);
         }
         SourceType::Audio => {
-            let text = if app.s.audio_system || app.s.audio_mic { "畫面不錄，只錄聲音" } else { "請先打開「系統聲音」或「麥克風」" };
+            let text = if app.s.audio_system || app.s.audio_mic {
+                tr!("畫面不錄，只錄聲音", "Records audio only, no video")
+            } else {
+                tr!("請先打開「系統聲音」或「麥克風」", "Turn on “System audio” or “Microphone” first")
+            };
             let warn = !(app.s.audio_system || app.s.audio_mic);
             ui.add(egui::Label::new(RichText::new(text).color(if warn { p.warn } else { p.muted }).font(theme::font(12.5))).truncate());
         }
         SourceType::Region => {
             let r = app.s.region;
             let vals = [r.x, r.y, r.width, r.height];
-            for (i, label) in ["X", "Y", "寬", "高"].iter().enumerate() {
+            for (i, label) in tr!(["X", "Y", "寬", "高"], ["X", "Y", "W", "H"]).iter().enumerate() {
                 ui.label(theme::muted(ui, *label));
                 if app.main.region_focus != Some(i) {
                     app.main.region_text[i] = vals[i].to_string();
@@ -306,9 +342,12 @@ fn source_detail(app: &mut UiApp, ui: &mut Ui, room: f32) {
             }
             window_picker(app, ui, locked);
             // 放得下才顯示說明
-            let hint = "拖曳框選或移動紅框（可跨螢幕）";
+            let hint = tr!("拖曳框選或移動紅框（可跨螢幕）", "Drag to select, or move the red frame (across screens)");
             if app.s.follow_window.is_none() && ui.available_width() >= text_w(ui, hint) {
-                ui.label(theme::muted(ui, hint)).on_hover_text("在預覽圖上拖曳框選範圍（可跨螢幕）；拖曳紅框可移動，拉邊或角可調整大小");
+                ui.label(theme::muted(ui, hint)).on_hover_text(tr!(
+                    "在預覽圖上拖曳框選範圍（可跨螢幕）；拖曳紅框可移動，拉邊或角可調整大小",
+                    "Drag on the preview to select an area (it can span screens). Drag the red frame to move it; drag its edges or corners to resize it."
+                ));
             }
         }
     }
@@ -318,18 +357,22 @@ fn source_detail(app: &mut UiApp, ui: &mut Ui, room: f32) {
 fn window_picker(app: &mut UiApp, ui: &mut Ui, locked: bool) {
     let p = theme::pal(ui);
     if let Some(w) = app.s.follow_window.clone() {
-        let text = format!("只錄「{}」", w.title);
-        let resp = ui.add(egui::Label::new(RichText::new(&text).color(p.accent).font(theme::font(12.5))).truncate()).on_hover_text("錄影時範圍跟著這個視窗移動（視窗大小改變時維持原本的大小）");
+        let text = trf!("只錄「{}」", "Only “{}”", w.title);
+        let resp = ui.add(egui::Label::new(RichText::new(&text).color(p.accent).font(theme::font(12.5))).truncate()).on_hover_text(tr!(
+            "錄影時範圍跟著這個視窗移動（視窗大小改變時維持原本的大小）",
+            "While recording, the area follows this window (if the window is resized, the area keeps its original size)"
+        ));
         let _ = resp;
-        if !locked && Btn::icon_only(Icon::Close).ghost().small().tooltip("不跟著視窗，改回一般的自訂範圍").show(ui).clicked() {
+        if !locked && Btn::icon_only(Icon::Close).ghost().small().tooltip(tr!("不跟著視窗，改回一般的自訂範圍", "Stop following the window and go back to a normal custom area")).show(ui).clicked()
+        {
             app.s.follow_window = None;
         }
         return;
     }
-    let tip = "只錄某個視窗：範圍設成那個視窗的位置，錄影時跟著它移動";
+    let tip = tr!("只錄某個視窗：範圍設成那個視窗的位置，錄影時跟著它移動", "Record one window only: the area is set to that window and follows it while recording");
     // 放不下文字時只顯示圖示
-    let full = Btn::new("選擇視窗").small().width(ui);
-    let b = if ui.available_width() >= full { Btn::new("選擇視窗").small() } else { Btn::icon_only(Icon::Window).ghost().small() }.enabled(!locked).tooltip(tip).show(ui);
+    let full = Btn::new(tr!("選擇視窗", "Choose window")).small().width(ui);
+    let b = if ui.available_width() >= full { Btn::new(tr!("選擇視窗", "Choose window")).small() } else { Btn::icon_only(Icon::Window).ghost().small() }.enabled(!locked).tooltip(tip).show(ui);
     if b.clicked() {
         app.main.windows = screenrecorder_core::winui::app_windows();
     }
@@ -337,7 +380,7 @@ fn window_picker(app: &mut UiApp, ui: &mut Ui, locked: bool) {
         ui.set_min_width(260.0);
         ui.set_max_width(420.0);
         if app.main.windows.is_empty() {
-            ui.label(theme::muted(ui, if cfg!(windows) { "找不到可以錄的視窗" } else { "只支援 Windows" }));
+            ui.label(theme::muted(ui, if cfg!(windows) { tr!("找不到可以錄的視窗", "No windows to record") } else { tr!("只支援 Windows", "Windows only") }));
         }
         let mut chosen = None;
         for w in &app.main.windows {
@@ -404,13 +447,13 @@ fn desk(app: &mut UiApp, ui: &mut Ui, area: Rect) {
         None => {
             let msg = match app.preview.state() {
                 super::preview::PreviewState::Failed(m) => m,
-                super::preview::PreviewState::Loading { live: true } => "正在開啟即時預覽…".into(),
-                super::preview::PreviewState::Loading { live: false } => "正在擷取預覽…".into(),
+                super::preview::PreviewState::Loading { live: true } => tr!("正在開啟即時預覽…", "Starting live preview…").into(),
+                super::preview::PreviewState::Loading { live: false } => tr!("正在擷取預覽…", "Capturing preview…").into(),
                 _ => {
                     if app.env_ready {
-                        "尚無預覽".into()
+                        tr!("尚無預覽", "No preview yet").into()
                     } else {
-                        "正在偵測螢幕與 FFmpeg…".into()
+                        tr!("正在偵測螢幕與 FFmpeg…", "Detecting screens and FFmpeg…").into()
                     }
                 }
             };
@@ -431,7 +474,7 @@ fn desk(app: &mut UiApp, ui: &mut Ui, area: Rect) {
         let boxed = app.s.source_type == SourceType::Region || region_target(app).is_some() || app.main.drag.is_some();
         let col = if selected && !boxed { p.rec } else { Color32::from_white_alpha(140) };
         painter.rect_stroke(r.shrink(1.0), CornerRadius::same(4), Stroke::new(if selected { 2.0 } else { 1.0 }, col), StrokeKind::Inside);
-        let label = format!("螢幕 {}  {} × {}", m.display_number, m.width, m.height);
+        let label = trf!("螢幕 {}  {} × {}", "Screen {}  {} × {}", m.display_number, m.width, m.height);
         let g = painter.layout_no_wrap(label, theme::font_bold(12.0), Color32::WHITE);
         let tag = Rect::from_min_size(r.min + vec2(8.0, 8.0), g.size() + vec2(12.0, 6.0));
         painter.rect_filled(tag, CornerRadius::same(5), if selected && !boxed { p.rec } else { Color32::from_black_alpha(140) });
@@ -495,12 +538,24 @@ fn audio_panel(app: &mut UiApp, ui: &mut Ui, area: Rect) {
     let c = area.center();
     let s = (area.height() / 260.0).clamp(0.6, 1.2);
     theme::paint_icon(ui.painter(), Rect::from_center_size(c - vec2(0.0, 70.0 * s), vec2(64.0 * s, 64.0 * s)), Icon::Mic, p.accent);
-    ui.painter().text(c - vec2(0.0, 12.0 * s), egui::Align2::CENTER_CENTER, "只錄聲音", theme::font_bold(20.0 * s), p.text);
-    let parts: Vec<&str> = [app.s.audio_system.then_some("系統聲音（電腦播放的聲音）"), app.s.audio_mic.then_some("麥克風")].into_iter().flatten().collect();
-    let (line, warn) =
-        if parts.is_empty() { ("還沒選要錄的聲音：請在下方「聲音」打開系統聲音或麥克風".to_string(), true) } else { (format!("會錄：{}", parts.join("、")), false) };
+    ui.painter().text(c - vec2(0.0, 12.0 * s), egui::Align2::CENTER_CENTER, tr!("只錄聲音", "Audio only"), theme::font_bold(20.0 * s), p.text);
+    let parts: Vec<&str> = [app.s.audio_system.then_some(tr!("系統聲音（電腦播放的聲音）", "System audio (sound played by the computer)")), app.s.audio_mic.then_some(tr!("麥克風", "Microphone"))]
+        .into_iter()
+        .flatten()
+        .collect();
+    let (line, warn) = if parts.is_empty() {
+        (tr!("還沒選要錄的聲音：請在下方「聲音」打開系統聲音或麥克風", "No audio selected: turn on system audio or the microphone under “Audio” below").to_string(), true)
+    } else {
+        (trf!("會錄：{}", "Will record: {}", parts.join(tr!("、", ", "))), false)
+    };
     ui.painter().text(c + vec2(0.0, 20.0 * s), egui::Align2::CENTER_CENTER, line, theme::font(13.5), if warn { p.warn } else { p.text });
-    let tips = ["畫面不會錄下來，存成 MP4（畫面是一張「只錄聲音」的卡片，檔案幾乎只有聲音的大小）", "一樣可以暫停、加標記、剪輯、降噪；在錄影的「更多」選單選「存成 M4A」就只留下聲音"];
+    let tips = tr!(
+        ["畫面不會錄下來，存成 MP4（畫面是一張「只錄聲音」的卡片，檔案幾乎只有聲音的大小）", "一樣可以暫停、加標記、剪輯、降噪；在錄影的「更多」選單選「存成 M4A」就只留下聲音"],
+        [
+            "No video is recorded. Saved as MP4 with an “Audio only” card, so the file stays small",
+            "You can still pause, add markers, edit and reduce noise. “More” → “Save as M4A” keeps just the audio"
+        ]
+    );
     for (i, t) in tips.iter().enumerate() {
         ui.painter().text(c + vec2(0.0, (48.0 + i as f32 * 22.0) * s), egui::Align2::CENTER_CENTER, *t, theme::font(12.0), p.muted);
     }
@@ -647,11 +702,12 @@ fn settings_bar(app: &mut UiApp, ui: &mut Ui) {
     let locked = app.locked();
     ui.spacing_mut().item_spacing.x = 2.0;
     // 右邊：「設定」按鈕，前面是輸出大小
-    let set_btn = Btn::new("設定").icon(Icon::Settings).small().tooltip("錄影、聲音、儲存位置、快速鍵與其他設定");
+    let set_btn =
+        Btn::new(tr!("設定", "Settings")).icon(Icon::Settings).small().tooltip(tr!("錄影、聲音、儲存位置、快速鍵與其他設定", "Recording, audio, save location, shortcuts and other settings"));
     let set_w = set_btn.width(ui);
     let out = app.s.source_rect(&app.env).map(|r| output_size(r.width, r.height, app.s.scale as f64));
     let big = out.is_some_and(|(w, h)| (w as f64) * (h as f64) > 3840.0 * 2160.0 * 1.05);
-    let out_text = out.map(|(w, h)| format!("輸出 {w}×{h}{}", if big { "（很大，建議 50%）" } else { "" }));
+    let out_text = out.map(|(w, h)| trf!("輸出 {w}×{h}{}", "Output {w}×{h}{}", if big { tr!("（很大，建議 50%）", " (very large; 50% recommended)") } else { "" }));
     let out_w = out_text.as_ref().map(|t| ui.painter().layout_no_wrap(t.clone(), theme::font(12.5), p.muted).size().x + 16.0).unwrap_or(0.0);
     // 左邊：錄影、聲音、儲存位置的摘要，依剩下的寬度取捨
     let room = ui.available_width() - set_w - 8.0;
@@ -663,16 +719,16 @@ fn settings_bar(app: &mut UiApp, ui: &mut Ui) {
     let measure = |ui: &Ui, text: &str, icon: Icon| item(text, icon).width(ui) + 2.0;
     let mut open: Option<Page> = None;
     // 錄影：太窄時只寫 FPS
-    let rec_full = rec.join("・");
+    let rec_full = rec.join(tr!("・", " · "));
     let rec_text = if measure(ui, &rec_full, Icon::Camera) + 200.0 <= room { rec_full.clone() } else { rec[0].clone() };
     room -= measure(ui, &rec_text, Icon::Camera);
-    if item(&rec_text, Icon::Camera).enabled(!locked).tooltip(format!("錄影：{rec_full}")).show(ui).clicked() {
+    if item(&rec_text, Icon::Camera).enabled(!locked).tooltip(trf!("錄影：{rec_full}", "Recording: {rec_full}")).show(ui).clicked() {
         open = Some(Page::Record);
     }
     // 聲音：太窄時只剩圖示
     let audio_text = if measure(ui, &audio, audio_icon) + 120.0 <= room { audio.clone() } else { String::new() };
     room -= measure(ui, &audio_text, audio_icon);
-    if item(&audio_text, audio_icon).enabled(!locked).tooltip(format!("錄製聲音：{audio}")).show(ui).clicked() {
+    if item(&audio_text, audio_icon).enabled(!locked).tooltip(trf!("錄製聲音：{audio}", "Audio: {audio}")).show(ui).clicked() {
         open = Some(Page::Audio);
     }
     // 儲存位置：縮短路徑（保留結尾）
@@ -684,7 +740,7 @@ fn settings_bar(app: &mut UiApp, ui: &mut Ui) {
         let chars: Vec<char> = dir.chars().collect();
         (1..chars.len()).map(|i| format!("…{}", chars[i..].iter().collect::<String>())).find(|t| fits(t)).unwrap_or_default()
     };
-    if item(&short, Icon::Folder).enabled(!locked).tooltip(format!("儲存位置：{dir}")).show(ui).clicked() {
+    if item(&short, Icon::Folder).enabled(!locked).tooltip(trf!("儲存位置：{dir}", "Save location: {dir}")).show(ui).clicked() {
         open = Some(Page::Save);
     }
     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -726,16 +782,16 @@ fn rec_panel(app: &mut UiApp, ui: &mut Ui) {
         // 狀態
         ui.horizontal(|ui| {
             let (text, tone) = match r.state {
-                RecorderState::Idle => ("待命", Tone::Plain),
-                RecorderState::Countdown => ("倒數中", Tone::Warn),
-                RecorderState::Recording => ("● 錄影中", Tone::Bad),
-                RecorderState::Paused => ("已暫停", Tone::Warn),
-                RecorderState::Stopping => ("處理中", Tone::Accent),
+                RecorderState::Idle => (tr!("待命", "Ready"), Tone::Plain),
+                RecorderState::Countdown => (tr!("倒數中", "Countdown"), Tone::Warn),
+                RecorderState::Recording => (tr!("● 錄影中", "● Recording"), Tone::Bad),
+                RecorderState::Paused => (tr!("已暫停", "Paused"), Tone::Warn),
+                RecorderState::Stopping => (tr!("處理中", "Processing"), Tone::Accent),
             };
             chip(ui, text, tone, false);
             let mut busy = r.busy.clone().unwrap_or_default();
             if busy.is_empty() && r.max_ms > 0 && active {
-                busy = format!("剩餘 {}", clock((r.max_ms as f64 - live_recorded_ms(app)).max(0.0)));
+                busy = trf!("剩餘 {}", "{} left", clock((r.max_ms as f64 - live_recorded_ms(app)).max(0.0)));
             }
             ui.label(theme::muted(ui, busy));
         });
@@ -750,52 +806,55 @@ fn rec_panel(app: &mut UiApp, ui: &mut Ui) {
         let (out, method, audio) = if active {
             (
                 format!("{}×{} · {}fps", r.out_width, r.out_height, r.fps),
-                format!(
+                trf!(
                     "{}{}・{}",
+                    "{}{} · {}",
                     r.method.map(method_name).unwrap_or("—"),
                     r.tiles.filter(|t| *t > 1).map(|t| format!(" ×{t}")).unwrap_or_default(),
                     r.encoder.as_deref().map(encoder_name).unwrap_or_else(|| "—".into())
                 ),
-                r.audio.clone().unwrap_or_else(|| "不錄聲音".into()),
+                r.audio.clone().unwrap_or_else(|| tr!("不錄聲音", "No audio").into()),
             )
         } else {
             let o = app.s.source_rect(&app.env).map(|s| output_size(s.width, s.height, app.s.scale as f64));
             let enc = match app.s.encoder {
-                EncoderPreference::Gpu => app.env.ffmpeg.hw_encoders.as_ref().and_then(|h| h.first().map(|e| encoder_name(e))).unwrap_or_else(|| "顯示卡編碼".into()),
-                EncoderPreference::Cpu => "CPU 編碼".into(),
-                EncoderPreference::Auto => "自動".into(),
+                EncoderPreference::Gpu => app.env.ffmpeg.hw_encoders.as_ref().and_then(|h| h.first().map(|e| encoder_name(e))).unwrap_or_else(|| tr!("顯示卡編碼", "GPU encoding").into()),
+                EncoderPreference::Cpu => tr!("CPU 編碼", "CPU encoding").into(),
+                EncoderPreference::Auto => tr!("自動", "Auto").into(),
             };
             let m = match app.s.method {
-                MethodPreference::Auto => "自動",
-                MethodPreference::Ddagrab => "顯示卡擷取",
-                MethodPreference::Gdigrab => "相容模式",
+                MethodPreference::Auto => tr!("自動", "Auto"),
+                MethodPreference::Ddagrab => tr!("顯示卡擷取", "GPU capture"),
+                MethodPreference::Gdigrab => tr!("相容模式", "Compatibility mode"),
             };
-            let parts: Vec<&str> = [app.s.audio_system.then_some("系統聲音"), app.s.audio_mic.then_some("麥克風")].into_iter().flatten().collect();
+            let parts: Vec<&str> = [app.s.audio_system.then_some(tr!("系統聲音", "System audio")), app.s.audio_mic.then_some(tr!("麥克風", "Microphone"))].into_iter().flatten().collect();
             (
-                if app.s.source_type == SourceType::Audio { "只錄聲音".into() } else { o.map(|(w, h)| format!("{w}×{h} · {}fps", app.s.fps)).unwrap_or_else(|| "—".into()) },
-                match (app.env.ffmpeg.encoder.is_some(), m == "自動" && enc == "自動") {
+                if app.s.source_type == SourceType::Audio { tr!("只錄聲音", "Audio only").into() } else { o.map(|(w, h)| format!("{w}×{h} · {}fps", app.s.fps)).unwrap_or_else(|| "—".into()) },
+                match (app.env.ffmpeg.encoder.is_some(), app.s.method == MethodPreference::Auto && app.s.encoder == EncoderPreference::Auto) {
                     (false, _) => "—".into(),
-                    (true, true) => "自動（依電腦選最順的方式）".into(),
-                    (true, false) => format!("{m}・{enc}"),
+                    (true, true) => tr!("自動（依電腦選最順的方式）", "Auto (best for this PC)").into(),
+                    (true, false) => trf!("{m}・{enc}", "{m} · {enc}"),
                 },
-                if parts.is_empty() { "不錄聲音".into() } else { parts.join(" + ") },
+                if parts.is_empty() { tr!("不錄聲音", "No audio").into() } else { parts.join(" + ") },
             )
         };
         // 名稱一欄固定寬度；值太長（例如音訊裝置名稱）時截斷，不撐寬面板（滑鼠移上去看完整內容）
         let gap_y = ui.spacing().item_spacing.y;
         ui.spacing_mut().item_spacing.y = 6.0;
-        let key_w = ["影片長度", "檔案大小", "輸出", "錄影方式", "聲音"].iter().map(|k| ui.painter().layout_no_wrap(k.to_string(), theme::font(13.0), p.muted).size().x).fold(0.0, f32::max);
-        for (k, v) in
-            [("影片長度", video_clock(r.video_sec)), ("檔案大小", if active || r.bytes > 0 { format_bytes(r.bytes) } else { "—".into() }), ("輸出", out), ("錄影方式", method), ("聲音", audio)]
-        {
+        let keys = tr!(["影片長度", "檔案大小", "輸出", "錄影方式", "聲音"], ["Duration", "File size", "Output", "Method", "Audio"]);
+        let key_w = keys.iter().map(|k| ui.painter().layout_no_wrap(k.to_string(), theme::font(13.0), p.muted).size().x).fold(0.0, f32::max);
+        let values = [video_clock(r.video_sec), if active || r.bytes > 0 { format_bytes(r.bytes) } else { "—".into() }, out, method, audio];
+        for (i, (k, v)) in keys.into_iter().zip(values).enumerate() {
+            // 最後一列是「聲音」
+            let audio_row = i == 4;
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 14.0;
                 let (cell, _) = ui.allocate_exact_size(vec2(key_w, 18.0), Sense::hover());
                 ui.painter().text(cell.left_center(), egui::Align2::LEFT_CENTER, k, theme::font(13.0), p.muted);
-                if k == "聲音" && !active {
+                if audio_row && !active {
                     if let Some(l) = app.meter.as_ref().map(|m| m.levels()) {
                         // 音量表：每個來源一條，旁邊寫名稱
-                        let meters: Vec<(&str, f32)> = [("系統", l.system), ("麥克風", l.mic)].into_iter().filter_map(|(n, v)| v.map(|v| (n, v))).collect();
+                        let meters: Vec<(&str, f32)> = [(tr!("系統", "System"), l.system), (tr!("麥克風", "Mic"), l.mic)].into_iter().filter_map(|(n, v)| v.map(|v| (n, v))).collect();
                         let resp = ui.horizontal(|ui| {
                             ui.spacing_mut().item_spacing.x = 6.0;
                             for (n, v) in &meters {
@@ -807,8 +866,8 @@ fn rec_panel(app: &mut UiApp, ui: &mut Ui) {
                             }
                         });
                         let tip = match &l.error {
-                            Some(e) => format!("打不開：{e}"),
-                            None => "錄影前先講幾句話：麥克風的條會跳動，就表示收得到聲音".into(),
+                            Some(e) => trf!("打不開：{e}", "Couldn't open: {e}"),
+                            None => tr!("錄影前先講幾句話：麥克風的條會跳動，就表示收得到聲音", "Say a few words before recording: if the microphone bar moves, your voice is being picked up").into(),
                         };
                         resp.response.on_hover_text(tip);
                         return;
@@ -816,7 +875,16 @@ fn rec_panel(app: &mut UiApp, ui: &mut Ui) {
                     if app.s.audio_system || app.s.audio_mic {
                         // 右邊留給「測試音量」
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            if Btn::new("測試音量").ghost().small().tooltip("量 20 秒的音量：講幾句話看麥克風的條有沒有跳動，確定錄得到聲音").show(ui).clicked() {
+                            if Btn::new(tr!("測試音量", "Test levels"))
+                                .ghost()
+                                .small()
+                                .tooltip(tr!(
+                                    "量 20 秒的音量：講幾句話看麥克風的條有沒有跳動，確定錄得到聲音",
+                                    "Shows levels for 20 seconds: say a few words and check that the microphone bar moves, so you know audio is being recorded"
+                                ))
+                                .show(ui)
+                                .clicked()
+                            {
                                 app.meter_until = Some(Instant::now() + std::time::Duration::from_secs(20));
                             }
                             ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
@@ -835,9 +903,17 @@ fn rec_panel(app: &mut UiApp, ui: &mut Ui) {
         ui.horizontal(|ui| {
             if !active {
                 let can = app.env.ffmpeg.found && app.env.ffmpeg.encoder.is_some() && !app.exporting();
-                let tip = if app.exporting() { "轉檔進行中，完成後才能錄影" } else { "" };
-                let shot_w = 118.0;
-                if Btn::new("開始錄影").kind(theme::Kind::Record).enabled(can).tooltip(tip).min_width(ui.available_width() - shot_w - ui.spacing().item_spacing.x).show(ui).clicked() {
+                let tip = if app.exporting() { tr!("轉檔進行中，完成後才能錄影", "A conversion is in progress; you can record when it finishes") } else { "" };
+                // 截圖按鈕（含小箭頭）的寬度：至少 118，英文字較長時跟著加寬
+                let shot_w = (Btn::new(shot_label()).icon(Icon::Camera).width(ui) + 28.0).max(118.0);
+                if Btn::new(tr!("開始錄影", "Start recording"))
+                    .kind(theme::Kind::Record)
+                    .enabled(can)
+                    .tooltip(tip)
+                    .min_width(ui.available_width() - shot_w - ui.spacing().item_spacing.x)
+                    .show(ui)
+                    .clicked()
+                {
                     let config = app.s.record_config(&app.env);
                     let core = app.core.clone();
                     app.guarded(async move { actions::record_start(&core, config).await }, |_, _| {});
@@ -847,18 +923,23 @@ fn rec_panel(app: &mut UiApp, ui: &mut Ui) {
                 let w = ui.available_width();
                 let marking = matches!(r.state, RecorderState::Recording | RecorderState::Paused);
                 let pw = if marking { w * 0.34 } else { w * 0.45 };
-                if r.state == RecorderState::Recording && Btn::new("暫停").icon(Icon::Pause).enabled(r.busy.is_none()).min_width(pw).show(ui).clicked() {
+                if r.state == RecorderState::Recording && Btn::new(tr!("暫停", "Pause")).icon(Icon::Pause).enabled(r.busy.is_none()).min_width(pw).show(ui).clicked() {
                     let core = app.core.clone();
                     app.guarded(async move { core.recorder.pause().await }, |_, _| {});
                 }
-                if r.state == RecorderState::Paused && Btn::new("繼續").icon(Icon::Play).enabled(r.busy.is_none()).min_width(pw).show(ui).clicked() {
+                if r.state == RecorderState::Paused && Btn::new(tr!("繼續", "Resume")).icon(Icon::Play).enabled(r.busy.is_none()).min_width(pw).show(ui).clicked() {
                     let core = app.core.clone();
                     app.guarded(async move { core.recorder.resume().await }, |_, _| {});
                 }
                 if marking {
-                    let mk = if app.keys.label(4).is_empty() { String::new() } else { format!("（{}）", app.keys.label(4)) };
-                    let label = if r.markers > 0 { format!("標記 {}", r.markers) } else { "標記".into() };
-                    if Btn::new(label).min_width(w * 0.26).tooltip(format!("記下現在的位置，剪輯時可以直接跳過去{mk}")).show(ui).clicked() {
+                    let mk = if app.keys.label(4).is_empty() { String::new() } else { trf!("（{}）", " ({})", app.keys.label(4)) };
+                    let label = if r.markers > 0 { trf!("標記 {}", "Mark ({})", r.markers) } else { tr!("標記", "Mark").into() };
+                    if Btn::new(label)
+                        .min_width(w * 0.26)
+                        .tooltip(trf!("記下現在的位置，剪輯時可以直接跳過去{mk}", "Mark the current position so you can jump straight to it when editing{mk}"))
+                        .show(ui)
+                        .clicked()
+                    {
                         if let Err(e) = app.core.recorder.add_marker() {
                             app.toast(e.message().to_string(), true);
                         }
@@ -866,12 +947,12 @@ fn rec_panel(app: &mut UiApp, ui: &mut Ui) {
                 }
                 let stop_label = if r.state == RecorderState::Countdown {
                     if r.countdown_covers_ui == Some(false) {
-                        format!("{} 秒後開始・取消", countdown_left(app))
+                        trf!("{} 秒後開始・取消", "Starts in {} s · Cancel", countdown_left(app))
                     } else {
-                        "取消倒數".into()
+                        tr!("取消倒數", "Cancel countdown").into()
                     }
                 } else {
-                    "停止".into()
+                    tr!("停止", "Stop").into()
                 };
                 if Btn::new(stop_label).icon(Icon::Stop).danger().enabled(r.state != RecorderState::Stopping).min_width(ui.available_width()).show(ui).clicked() {
                     let core = app.core.clone();
@@ -885,16 +966,29 @@ fn rec_panel(app: &mut UiApp, ui: &mut Ui) {
             egui::Frame::new().fill(p.accent.gamma_multiply(0.1)).corner_radius(CornerRadius::same(theme::RADIUS_SM)).inner_margin(8.0).show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new(format!("步驟截圖中・已截 {n} 步")).color(p.accent).font(theme::font_bold(13.0)));
+                    let text = if is_en() { format!("Step capture · {n} step{} captured", if n == 1 { "" } else { "s" }) } else { format!("步驟截圖中・已截 {n} 步") };
+                    ui.label(RichText::new(text).color(p.accent).font(theme::font_bold(13.0)));
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if Btn::new("完成").primary().small().tooltip("停止並做成教學文件（HTML），用瀏覽器開啟").show(ui).clicked() {
+                        if Btn::new(tr!("完成", "Finish"))
+                            .primary()
+                            .small()
+                            .tooltip(tr!("停止並做成教學文件（HTML），用瀏覽器開啟", "Stop and create the step-by-step guide (HTML), then open it in your browser"))
+                            .show(ui)
+                            .clicked()
+                        {
                             let core = app.core.clone();
                             app.spawn(async move { core.steps_finish().await }, |app, r| match r {
                                 Ok(Some(path)) => {
-                                    app.toast("教學文件做好了，已用瀏覽器開啟；文字可以直接修改，再列印成 PDF", false);
+                                    app.toast(
+                                        tr!(
+                                            "教學文件做好了，已用瀏覽器開啟；文字可以直接修改，再列印成 PDF",
+                                            "The step-by-step guide is ready and open in your browser. You can edit the text, then print it to PDF."
+                                        ),
+                                        false,
+                                    );
                                     screenrecorder_core::desktop::open_with_explorer(&path, false);
                                 }
-                                Ok(None) => app.toast("沒有截到任何步驟", false),
+                                Ok(None) => app.toast(tr!("沒有截到任何步驟", "No steps were captured"), false),
                                 Err(e) => app.toast(e.message().to_string(), true),
                             });
                         }
@@ -908,7 +1002,12 @@ fn rec_panel(app: &mut UiApp, ui: &mut Ui) {
             msgs.push(t.clone());
         }
         if r.slow {
-            msgs.push(format!("電腦跟不上：實際約 {} fps（設定 {}），建議調低解析度或 FPS", r.actual_fps.map(|f| format!("{f:.1}")).unwrap_or_else(|| "?".into()), r.fps));
+            msgs.push(trf!(
+                "電腦跟不上：實際約 {} fps（設定 {}），建議調低解析度或 FPS",
+                "The computer can't keep up: about {} fps (set to {}). Try a lower resolution or FPS",
+                r.actual_fps.map(|f| format!("{f:.1}")).unwrap_or_else(|| "?".into()),
+                r.fps
+            ));
         }
         if !msgs.is_empty() {
             ui.add_space(6.0);
@@ -926,12 +1025,13 @@ fn rec_panel(app: &mut UiApp, ui: &mut Ui) {
                 ui.set_width(ui.available_width());
                 match (&res.path, res.ok) {
                     (Some(path), true) => {
-                        ui.label(RichText::new(format!("錄影已儲存・{}・{}", video_clock(res.video_sec), format_bytes(res.bytes.unwrap_or(0)))).font(theme::font_bold(13.5)).color(p.ok));
+                        let saved = trf!("錄影已儲存・{}・{}", "Recording saved · {} · {}", video_clock(res.video_sec), format_bytes(res.bytes.unwrap_or(0)));
+                        ui.label(RichText::new(saved).font(theme::font_bold(13.5)).color(p.ok));
                         ui.label(RichText::new(file_name(path)).font(theme::mono(12.0))).on_hover_text(path);
                         action_buttons(app, ui, path, true, true);
                     }
                     _ => {
-                        ui.label(RichText::new("錄影未完成").font(theme::font_bold(13.5)).color(p.rec));
+                        ui.label(RichText::new(tr!("錄影未完成", "Recording incomplete")).font(theme::font_bold(13.5)).color(p.rec));
                         ui.add(egui::Label::new(RichText::new(&res.message).font(theme::font(12.5))).wrap());
                     }
                 }
@@ -944,7 +1044,7 @@ fn rec_panel(app: &mut UiApp, ui: &mut Ui) {
         if log_h >= 40.0 && r.log.is_empty() && !active {
             // 還沒有事件：顯示快速鍵小抄
             ui.add_space(10.0);
-            ui.label(RichText::new("快速鍵").font(theme::font_bold(12.5)).color(p.muted));
+            ui.label(RichText::new(tr!("快速鍵", "Shortcuts")).font(theme::font_bold(12.5)).color(p.muted));
             egui::ScrollArea::vertical().max_height(log_h).auto_shrink([false, true]).show(ui, |ui| {
                 ui.spacing_mut().item_spacing.y = 5.0;
                 for (i, name) in screenrecorder_core::types::hotkey_names().iter().enumerate() {
@@ -960,11 +1060,15 @@ fn rec_panel(app: &mut UiApp, ui: &mut Ui) {
                     });
                 }
                 ui.add_space(4.0);
-                ui.add(egui::Label::new(theme::muted(ui, "「截圖」旁的小箭頭還有框選、長截圖、步驟截圖；快速鍵可在「設定 → 快速鍵」更換。").font(theme::font(12.0))).wrap());
+                let tip = tr!(
+                    "「截圖」旁的小箭頭還有框選、長截圖、步驟截圖；快速鍵可在「設定 → 快速鍵」更換。",
+                    "The small arrow next to “Screenshot” offers select area, scrolling screenshot and step capture. Change shortcuts in “Settings → Shortcuts”."
+                );
+                ui.add(egui::Label::new(theme::muted(ui, tip).font(theme::font(12.0))).wrap());
             });
         } else if log_h >= 40.0 {
             ui.add_space(10.0);
-            ui.label(RichText::new("事件紀錄").font(theme::font_bold(12.5)).color(p.muted));
+            ui.label(RichText::new(tr!("事件紀錄", "Event log")).font(theme::font_bold(12.5)).color(p.muted));
             egui::ScrollArea::vertical().max_height(log_h).auto_shrink([false, true]).show(ui, |ui| {
                 for l in r.log.iter().rev().take(20) {
                     let time = chrono::DateTime::from_timestamp_millis(l.t as i64).map(|d| d.with_timezone(&chrono::Local).format("%H:%M:%S").to_string()).unwrap_or_default();
@@ -986,17 +1090,33 @@ fn rec_panel(app: &mut UiApp, ui: &mut Ui) {
     });
 }
 
+/// 「截圖」按鈕的文字
+fn shot_label() -> &'static str {
+    tr!("截圖", "Screenshot")
+}
+
 /// 截圖：與錄影相同的範圍，存成 PNG 並複製到剪貼簿（完成後由狀態更新顯示提示、更新清單）
 fn shot_button(app: &mut UiApp, ui: &mut Ui, w: f32) {
-    let hotkey = if app.env.hotkeys.is_some_and(|h| h.shot) && !app.keys.label(2).is_empty() { format!("（{}）", app.keys.label(2)) } else { String::new() };
-    let tip = format!("把目前的擷取範圍存成 PNG 並複製到剪貼簿{hotkey}\n旁邊的小箭頭（或按右鍵）：框選、延遲截圖、長截圖、步驟截圖、取色器、尺規");
+    let hotkey = if app.env.hotkeys.is_some_and(|h| h.shot) && !app.keys.label(2).is_empty() { trf!("（{}）", " ({})", app.keys.label(2)) } else { String::new() };
+    let tip = trf!(
+        "把目前的擷取範圍存成 PNG 並複製到剪貼簿{hotkey}\n旁邊的小箭頭（或按右鍵）：框選、延遲截圖、長截圖、步驟截圖、取色器、尺規",
+        "Save the current capture area as PNG and copy it to the clipboard{hotkey}\nSmall arrow (or right-click): select area, delayed screenshot, scrolling screenshot, step capture, color picker, ruler"
+    );
     let can = app.env.ffmpeg.found && !app.main.shooting;
     let arrow_w = 26.0;
     let (resp, arrow) = ui
         .scope(|ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
-            let resp = Btn::new("截圖").icon(Icon::Camera).enabled(can).tooltip(tip).min_width(w - arrow_w - 2.0).height(40.0).show(ui);
-            let arrow = Btn::icon_only(Icon::ChevD).enabled(can).tooltip("更多截圖方式：框選範圍或視窗、延遲截圖、長截圖、步驟截圖、取色器、尺規").min_width(arrow_w).height(40.0).show(ui);
+            let resp = Btn::new(shot_label()).icon(Icon::Camera).enabled(can).tooltip(tip).min_width(w - arrow_w - 2.0).height(40.0).show(ui);
+            let arrow = Btn::icon_only(Icon::ChevD)
+                .enabled(can)
+                .tooltip(tr!(
+                    "更多截圖方式：框選範圍或視窗、延遲截圖、長截圖、步驟截圖、取色器、尺規",
+                    "More screenshot options: select an area or window, delayed screenshot, scrolling screenshot, step capture, color picker, ruler"
+                ))
+                .min_width(arrow_w)
+                .height(40.0)
+                .show(ui);
             (resp, arrow)
         })
         .inner;
@@ -1010,31 +1130,60 @@ fn shot_button(app: &mut UiApp, ui: &mut Ui, w: f32) {
     let mut tool: Option<bool> = None;
     let menu = |ui: &mut Ui, snip: &mut Option<u64>, long: &mut bool, steps: &mut bool, qr: &mut bool, tool: &mut Option<bool>| {
         ui.set_min_width(190.0);
-        if ui.button("框選範圍或視窗…").clicked() {
+        if ui.button(tr!("框選範圍或視窗…", "Select area or window…")).clicked() {
             *snip = Some(0);
         }
         ui.separator();
         for sec in [3u64, 5, 10] {
-            if ui.button(format!("{sec} 秒後框選")).clicked() {
+            if ui.button(trf!("{sec} 秒後框選", "Select area in {sec} s")).clicked() {
                 *snip = Some(sec);
             }
         }
         ui.separator();
-        if ui.button("長截圖（捲動）…").on_hover_text("框選要捲動的內容（例如網頁），自動往下捲並接成一張長圖；按 Esc 停止").clicked() {
+        if ui
+            .button(tr!("長截圖（捲動）…", "Scrolling screenshot…"))
+            .on_hover_text(tr!(
+                "框選要捲動的內容（例如網頁），自動往下捲並接成一張長圖；按 Esc 停止",
+                "Select the content to scroll (e.g. a web page); it scrolls down automatically and stitches everything into one long image. Press Esc to stop."
+            ))
+            .clicked()
+        {
             *long = true;
         }
-        if ui.button("讀取 QR 碼…").on_hover_text("框選畫面上的 QR 碼，讀出內容（網址可以直接開啟）").clicked() {
+        if ui
+            .button(tr!("讀取 QR 碼…", "Read QR code…"))
+            .on_hover_text(tr!("框選畫面上的 QR 碼，讀出內容（網址可以直接開啟）", "Select a QR code on the screen to read it (links can be opened directly)"))
+            .clicked()
+        {
             *qr = true;
         }
-        if !steps_on && ui.button("步驟截圖（做成教學文件）").on_hover_text("開始後每點一下滑鼠就截一張，標出點的位置；完成時做成一份圖文並茂的教學文件").clicked()
+        if !steps_on
+            && ui
+                .button(tr!("步驟截圖（做成教學文件）", "Step capture (step-by-step guide)"))
+                .on_hover_text(tr!(
+                    "開始後每點一下滑鼠就截一張，標出點的位置；完成時做成一份圖文並茂的教學文件",
+                    "Once started, every mouse click takes a screenshot with the click marked. When you finish, it becomes an illustrated step-by-step guide."
+                ))
+                .clicked()
         {
             *steps = true;
         }
         ui.separator();
-        if ui.button("取色器…").on_hover_text("點一下畫面上的任何地方，色碼（例如 #1D4ED8）就複製到剪貼簿；有放大鏡可以對準").clicked() {
+        if ui
+            .button(tr!("取色器…", "Color picker…"))
+            .on_hover_text(tr!(
+                "點一下畫面上的任何地方，色碼（例如 #1D4ED8）就複製到剪貼簿；有放大鏡可以對準",
+                "Click anywhere on the screen to copy its color code (e.g. #1D4ED8) to the clipboard. A magnifier helps you aim."
+            ))
+            .clicked()
+        {
             *tool = Some(false);
         }
-        if ui.button("尺規（量距離）…").on_hover_text("在畫面上拖曳，量出兩點之間有幾個像素與角度").clicked() {
+        if ui
+            .button(tr!("尺規（量距離）…", "Ruler (measure distance)…"))
+            .on_hover_text(tr!("在畫面上拖曳，量出兩點之間有幾個像素與角度", "Drag on the screen to measure the distance in pixels and the angle between two points"))
+            .clicked()
+        {
             *tool = Some(true);
         }
     };
@@ -1047,7 +1196,7 @@ fn shot_button(app: &mut UiApp, ui: &mut Ui, w: f32) {
         app.spawn(async move { core.screen_tool(&config, ruler).await }, |app, r| {
             app.main.shooting = false;
             match r {
-                Ok(Some(hex)) => app.toast(format!("已複製色碼 {hex}"), false),
+                Ok(Some(hex)) => app.toast(trf!("已複製色碼 {hex}", "Copied color code {hex}"), false),
                 Ok(None) => {}
                 Err(e) => app.toast(e.message().to_string(), true),
             }
@@ -1069,7 +1218,9 @@ fn shot_button(app: &mut UiApp, ui: &mut Ui, w: f32) {
     if steps {
         let dir = app.s.record_config(&app.env).output_dir;
         match app.core.steps_start(&dir) {
-            Ok(()) => app.toast("步驟截圖開始：之後每點一下滑鼠就截一張，做完後按「完成」", false),
+            Ok(()) => {
+                app.toast(tr!("步驟截圖開始：之後每點一下滑鼠就截一張，做完後按「完成」", "Step capture started: every mouse click now takes a screenshot. Click “Finish” when you're done."), false)
+            }
             Err(e) => app.toast(e.message().to_string(), true),
         }
     }
@@ -1089,7 +1240,7 @@ fn shot_button(app: &mut UiApp, ui: &mut Ui, w: f32) {
         let config = app.s.record_config(&app.env);
         let core = app.core.clone();
         if sec > 0 {
-            app.toast(format!("{sec} 秒後框選：現在先打開要截的選單或提示"), false);
+            app.toast(trf!("{sec} 秒後框選：現在先打開要截的選單或提示", "Selecting in {sec} s: open the menu or tooltip you want to capture now"), false);
         }
         app.spawn(
             async move {
@@ -1120,16 +1271,16 @@ fn shot_button(app: &mut UiApp, ui: &mut Ui, w: f32) {
 /// 播放 / 顯示 / 剪輯 / 製作加速版的按鈕
 fn action_buttons(app: &mut UiApp, ui: &mut Ui, path: &str, edit: bool, export: bool) {
     ui.horizontal_wrapped(|ui| {
-        if Btn::new("播放").icon(Icon::Play).small().show(ui).clicked() {
+        if Btn::new(tr!("播放", "Play")).icon(Icon::Play).small().show(ui).clicked() {
             app.act_path(EntryAction::Play, path.to_string());
         }
-        if Btn::new("顯示").icon(Icon::Folder).small().show(ui).clicked() {
+        if Btn::new(tr!("顯示", "Show in folder")).icon(Icon::Folder).small().show(ui).clicked() {
             app.act_path(EntryAction::Reveal, path.to_string());
         }
-        if edit && Btn::new("剪輯").icon(Icon::Cut).small().show(ui).clicked() {
+        if edit && Btn::new(tr!("剪輯", "Edit")).icon(Icon::Cut).small().show(ui).clicked() {
             app.act_path(EntryAction::Edit, path.to_string());
         }
-        if export && Btn::new("製作加速版 / GIF").icon(Icon::Export).small().show(ui).clicked() {
+        if export && Btn::new(tr!("製作加速版 / GIF", "Speed up / GIF")).icon(Icon::Export).small().show(ui).clicked() {
             app.act_path(EntryAction::Export, path.to_string());
         }
     });
@@ -1145,17 +1296,18 @@ fn job_card(app: &mut UiApp, ui: &mut Ui) {
         return;
     }
     ui.add_space(8.0);
+    let gif_speed = if e.speed > 1.0 { format!(" {}×", speed_label(e.speed)) } else { String::new() };
     let label = match e.kind {
-        ExportKind::Cut => "剪輯".to_string(),
-        ExportKind::Merge => "合併錄影".to_string(),
-        ExportKind::Gif => format!("製作 GIF{}", if e.speed > 1.0 { format!(" {}×", speed_label(e.speed)) } else { String::new() }),
-        ExportKind::Speed => format!("製作 {}× 加速版", speed_label(e.speed)),
+        ExportKind::Cut => tr!("剪輯", "edited video").to_string(),
+        ExportKind::Merge => tr!("合併錄影", "merged video").to_string(),
+        ExportKind::Gif => trf!("製作 GIF{gif_speed}", "GIF{gif_speed}"),
+        ExportKind::Speed => trf!("製作 {}× 加速版", "{}× sped-up video", speed_label(e.speed)),
     };
     let title = match e.state {
-        ExportState::Running => format!("{label}中"),
-        ExportState::Done => format!("{label}完成"),
-        ExportState::Error => format!("{label}失敗"),
-        ExportState::Canceled => format!("{label}已取消"),
+        ExportState::Running => trf!("{label}中", "Making {label}…"),
+        ExportState::Done => trf!("{label}完成", "Done: {label}"),
+        ExportState::Error => trf!("{label}失敗", "Failed: {label}"),
+        ExportState::Canceled => trf!("{label}已取消", "Canceled: {label}"),
     };
     let pct = (e.progress * 100.0).floor();
     egui::Frame::new().fill(p.surface2).corner_radius(CornerRadius::same(theme::RADIUS_SM)).inner_margin(10.0).show(ui, |ui| {
@@ -1163,8 +1315,8 @@ fn job_card(app: &mut UiApp, ui: &mut Ui) {
         ui.horizontal(|ui| {
             ui.label(RichText::new(title).font(theme::font_bold(13.5)));
             let meta = match e.state {
-                ExportState::Running => format!("{pct}%{}", e.eta_sec.map(|s| format!("・剩 {}", human_duration(s))).unwrap_or_default()),
-                ExportState::Done => format!("{}・{}", video_clock(e.expected_sec), format_bytes(e.bytes.unwrap_or(0))),
+                ExportState::Running => format!("{pct}%{}", e.eta_sec.map(|s| trf!("・剩 {}", " · {} left", human_duration(s))).unwrap_or_default()),
+                ExportState::Done => trf!("{}・{}", "{} · {}", video_clock(e.expected_sec), format_bytes(e.bytes.unwrap_or(0))),
                 _ => String::new(),
             };
             ui.label(theme::muted(ui, meta));
@@ -1175,7 +1327,7 @@ fn job_card(app: &mut UiApp, ui: &mut Ui) {
                 ui.horizontal(|ui| {
                     ui.add(egui::Label::new(theme::muted(ui, file_name(&e.output))).truncate());
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if Btn::new("取消").small().show(ui).clicked() {
+                        if Btn::new(tr!("取消", "Cancel")).small().show(ui).clicked() {
                             let _ = app.core.exporter.cancel();
                         }
                     });
@@ -1184,13 +1336,13 @@ fn job_card(app: &mut UiApp, ui: &mut Ui) {
             ExportState::Done => {
                 let cut = e.kind == ExportKind::Cut;
                 action_buttons(app, ui, &e.output, cut, cut);
-                if Btn::new("關閉").ghost().small().show(ui).clicked() {
+                if Btn::new(tr!("關閉", "Close")).ghost().small().show(ui).clicked() {
                     app.dismissed_job = Some(e.id);
                 }
             }
             _ => {
                 ui.add(egui::Label::new(RichText::new(e.message.clone().unwrap_or_default()).font(theme::font(12.5))).wrap());
-                if Btn::new("關閉").ghost().small().show(ui).clicked() {
+                if Btn::new(tr!("關閉", "Close")).ghost().small().show(ui).clicked() {
                     app.dismissed_job = Some(e.id);
                 }
             }
@@ -1234,15 +1386,15 @@ fn level_bar(ui: &mut Ui, v: f32) {
 /// 擷取方式的白話名稱
 fn method_name(m: screenrecorder_core::types::CaptureMethod) -> &'static str {
     match m.as_str() {
-        "ddagrab" => "顯示卡擷取",
-        _ => "相容模式",
+        "ddagrab" => tr!("顯示卡擷取", "GPU capture"),
+        _ => tr!("相容模式", "Compatibility mode"),
     }
 }
 
 /// 編碼器的白話名稱：libx264 → CPU 編碼、h264_nvenc → NVIDIA 顯示卡…
 fn encoder_name(e: &str) -> String {
     let e = e.to_lowercase();
-    let gpu = |brand: &str| format!("{brand} 顯示卡編碼");
+    let gpu = |brand: &str| trf!("{brand} 顯示卡編碼", "{brand} GPU encoding");
     if e.contains("nvenc") {
         gpu("NVIDIA")
     } else if e.contains("qsv") {
@@ -1250,48 +1402,62 @@ fn encoder_name(e: &str) -> String {
     } else if e.contains("amf") {
         gpu("AMD")
     } else if e.contains("mf") {
-        "顯示卡編碼".into()
+        tr!("顯示卡編碼", "GPU encoding").into()
     } else {
-        "CPU 編碼".into()
+        tr!("CPU 編碼", "CPU encoding").into()
     }
 }
 
 fn sys_status(app: &mut UiApp, ui: &mut Ui) {
     let p = theme::pal(ui);
-    ui.label(RichText::new("系統狀態").font(theme::font(12.0)).color(p.muted));
+    ui.label(RichText::new(tr!("系統狀態", "System status")).font(theme::font(12.0)).color(p.muted));
     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
         let ff = app.env.ffmpeg.clone();
         let mut chips: Vec<(String, Tone, String)> = vec![];
         let mut ok: Vec<String> = vec![];
         let ver = ff.version.clone().unwrap_or_default().split('-').next().unwrap_or("").to_string();
         if !app.env_ready {
-            chips.push(("偵測中…".into(), Tone::Plain, String::new()));
+            chips.push((tr!("偵測中…", "Detecting…").into(), Tone::Plain, String::new()));
         } else if ff.found {
-            ok.push(format!("FFmpeg {ver}（{}）", ff.path.clone().unwrap_or_default()));
+            ok.push(trf!("FFmpeg {ver}（{}）", "FFmpeg {ver} ({})", ff.path.clone().unwrap_or_default()));
             if !ff.has_ddagrab {
-                chips.push(("相容模式擷取".into(), Tone::Warn, "這個 FFmpeg 不支援顯示卡擷取（ddagrab），改用相容模式（gdigrab），大畫面時比較吃 CPU".into()));
+                chips.push((
+                    tr!("相容模式擷取", "Compatibility capture").into(),
+                    Tone::Warn,
+                    tr!(
+                        "這個 FFmpeg 不支援顯示卡擷取（ddagrab），改用相容模式（gdigrab），大畫面時比較吃 CPU",
+                        "This FFmpeg doesn't support GPU capture (ddagrab), so compatibility mode (gdigrab) is used. It uses more CPU on large screens."
+                    )
+                    .into(),
+                ));
             } else {
                 match ff.ddagrab_works {
-                    None => chips.push(("ddagrab 測試中…".into(), Tone::Plain, String::new())),
-                    Some(true) => ok.push("擷取：顯示卡擷取（ddagrab）".into()),
-                    Some(false) => {
-                        chips.push(("改用相容模式擷取".into(), Tone::Warn, format!("顯示卡擷取（ddagrab）在這台電腦不能用，改用相容模式（gdigrab）\n{}", ff.ddagrab_error.clone().unwrap_or_default())))
-                    }
+                    None => chips.push((tr!("ddagrab 測試中…", "Testing ddagrab…").into(), Tone::Plain, String::new())),
+                    Some(true) => ok.push(tr!("擷取：顯示卡擷取（ddagrab）", "Capture: GPU capture (ddagrab)").into()),
+                    Some(false) => chips.push((
+                        tr!("改用相容模式擷取", "Using compatibility capture").into(),
+                        Tone::Warn,
+                        trf!(
+                            "顯示卡擷取（ddagrab）在這台電腦不能用，改用相容模式（gdigrab）\n{}",
+                            "GPU capture (ddagrab) doesn't work on this PC, so compatibility mode (gdigrab) is used\n{}",
+                            ff.ddagrab_error.clone().unwrap_or_default()
+                        ),
+                    )),
                 }
             }
             if let Some(g) = &ff.gpu_convert {
-                ok.push(format!("畫面處理：{g}"));
+                ok.push(trf!("畫面處理：{g}", "Video processing: {g}"));
             }
             match &ff.encoder {
-                Some(e) => ok.push(format!("編碼：{}（{e}）", encoder_name(e))),
-                None => chips.push(("無 H.264 編碼器".into(), Tone::Bad, String::new())),
+                Some(e) => ok.push(trf!("編碼：{}（{e}）", "Encoding: {} ({e})", encoder_name(e))),
+                None => chips.push((tr!("無 H.264 編碼器", "No H.264 encoder").into(), Tone::Bad, String::new())),
             }
         } else {
-            chips.push(("找不到 FFmpeg".into(), Tone::Bad, String::new()));
+            chips.push((tr!("找不到 FFmpeg", "FFmpeg not found").into(), Tone::Bad, String::new()));
         }
         if !ok.is_empty() {
             let problems = chips.iter().any(|c| matches!(c.1, Tone::Warn | Tone::Bad));
-            chips.push((if problems { format!("FFmpeg {ver}") } else { "已就緒".into() }, Tone::Ok, ok.join("\n")));
+            chips.push((if problems { format!("FFmpeg {ver}") } else { tr!("已就緒", "Ready").into() }, Tone::Ok, ok.join("\n")));
         }
         // 右到左：最後加的在最左邊
         for (text, tone, tip) in chips.iter().rev() {
@@ -1302,29 +1468,36 @@ fn sys_status(app: &mut UiApp, ui: &mut Ui) {
         }
         if let Some(u) = app.env.update.clone() {
             let auto = u.download_url.is_some() && u.sha256.is_some();
-            let label = match &app.status.install {
+            // (文字, 更新中)
+            let (label, busy) = match &app.status.install {
                 Some(i) if i.phase == screenrecorder_core::selfupdate::InstallPhase::Downloading => {
                     if let Some(total) = i.total.filter(|t| *t > 0) {
-                        format!("下載新版 {}%", (i.received as f64 / total as f64 * 100.0).floor())
+                        (trf!("下載新版 {}%", "Downloading update {}%", (i.received as f64 / total as f64 * 100.0).floor()), true)
                     } else {
-                        format!("下載新版 {}", format_bytes(i.received))
+                        (trf!("下載新版 {}", "Downloading update {}", format_bytes(i.received)), true)
                     }
                 }
-                Some(i) if i.phase == screenrecorder_core::selfupdate::InstallPhase::Verifying => "驗證新版…".into(),
-                Some(i) if i.phase == screenrecorder_core::selfupdate::InstallPhase::Restarting => "重新啟動中…".into(),
-                _ => format!("有新版本 v{}", u.version),
+                Some(i) if i.phase == screenrecorder_core::selfupdate::InstallPhase::Verifying => (tr!("驗證新版…", "Verifying update…").into(), true),
+                Some(i) if i.phase == screenrecorder_core::selfupdate::InstallPhase::Restarting => (tr!("重新啟動中…", "Restarting…").into(), true),
+                _ => (trf!("有新版本 v{}", "Update available: v{}", u.version), false),
             };
-            let busy = !label.starts_with("有新版本");
-            let r = chip(ui, &label, Tone::Accent, !busy).on_hover_text(if auto { "點一下更新（自動下載並重新啟動）" } else { "點一下前往下載頁面" });
+            let r = chip(ui, &label, Tone::Accent, !busy).on_hover_text(if auto {
+                tr!("點一下更新（自動下載並重新啟動）", "Click to update (downloads and restarts automatically)")
+            } else {
+                tr!("點一下前往下載頁面", "Click to open the download page")
+            });
             if r.clicked() && !busy {
                 if !auto {
                     let _ = actions::open_url(&u.url);
                 } else {
-                    let size = u.size.map(|s| format!("（約 {}）", format_bytes(s))).unwrap_or_default();
+                    let size = u.size.map(|s| trf!("（約 {}）", " (about {})", format_bytes(s))).unwrap_or_default();
                     app.ask = Some(Ask::confirm(
-                        format!("更新到 v{}", u.version),
-                        format!("會下載新版{size}、核對檔案後自動重新啟動程式；設定與錄影都會保留。更新內容可在系統匣選單的「更新說明」查看。"),
-                        "立即更新",
+                        trf!("更新到 v{}", "Update to v{}", u.version),
+                        trf!(
+                            "會下載新版{size}、核對檔案後自動重新啟動程式；設定與錄影都會保留。更新內容可在系統匣選單的「更新說明」查看。",
+                            "The new version{size} will be downloaded and verified, then the app restarts automatically. Your settings and recordings are kept. See what's new under “Release notes” in the system tray menu."
+                        ),
+                        tr!("立即更新", "Update now"),
                         |app, _| {
                             app.ask = None;
                             if let Err(e) = app.core.start_self_update() {
@@ -1349,23 +1522,24 @@ fn recent_strip(app: &mut UiApp, ui: &mut Ui) {
         ui.set_min_size(ui.available_size());
         ui.horizontal_centered(|ui| {
             ui.vertical(|ui| {
-                ui.set_width(84.0);
-                ui.label(RichText::new("最近錄影").font(theme::font_bold(14.0)));
+                // 英文的「Recent recordings」分成兩行
+                ui.set_width(if is_en() { 96.0 } else { 84.0 });
+                ui.label(RichText::new(tr!("最近錄影", "Recent recordings")).font(theme::font_bold(14.0)));
                 if let Some(r) = &app.recent {
                     if r.total > 0 {
-                        ui.label(theme::muted(ui, format!("{} / {} 頁", app.recent_page, r.pages.max(1))));
+                        ui.label(theme::muted(ui, trf!("{} / {} 頁", "Page {} / {}", app.recent_page, r.pages.max(1))));
                     }
                 }
             });
             let pages = app.recent.as_ref().map(|r| r.pages).unwrap_or(1);
-            if Btn::icon_only(Icon::ChevL).ghost().small().enabled(app.recent_page > 1).tooltip("較新的錄影").show(ui).clicked() {
+            if Btn::icon_only(Icon::ChevL).ghost().small().enabled(app.recent_page > 1).tooltip(tr!("較新的錄影", "Newer recordings")).show(ui).clicked() {
                 app.recent_page -= 1;
                 app.load_recent();
             }
             // 一頁放幾張依寬度決定
             // 右邊「全部錄影」「全部截圖」：一樣寬，圖示與文字靠左對齊
-            let rec_btn = Btn::new("全部錄影").icon(Icon::List).small().left();
-            let shot_btn = Btn::new("全部截圖").icon(Icon::Camera).small().left();
+            let rec_btn = Btn::new(tr!("全部錄影", "All recordings")).icon(Icon::List).small().left();
+            let shot_btn = Btn::new(tr!("全部截圖", "All screenshots")).icon(Icon::Camera).small().left();
             let btn_w = rec_btn.width(ui).max(shot_btn.width(ui)).max(LIB_BTN_W);
             let lib_w = btn_w + 8.0;
             let cards_w = ui.available_width() - lib_w - 44.0;
@@ -1382,7 +1556,9 @@ fn recent_strip(app: &mut UiApp, ui: &mut Ui) {
                 ui.horizontal_centered(|ui| {
                     if items.is_empty() {
                         let dir = app.s.out_dir(&app.env);
-                        ui.label(theme::muted(ui, format!("「{dir}」還沒有錄影，按「開始錄影」試試看。")));
+                        // 路徑很長時截斷（滑鼠提示有完整內容），不蓋到右邊的按鈕
+                        let text = trf!("「{dir}」還沒有錄影，按「開始錄影」試試看。", "No recordings in “{dir}” yet. Click “Start recording” to try it.");
+                        ui.add(egui::Label::new(theme::muted(ui, &text)).truncate()).on_hover_text(&text);
                     }
                     let dates = date_labels(items.iter().map(|e| (e.media.name.as_str(), e.media.mtime)));
                     for e in &items {
@@ -1401,7 +1577,7 @@ fn recent_strip(app: &mut UiApp, ui: &mut Ui) {
                         app.library = Some(super::library_dialog::LibraryDialog::new(super::library_dialog::Kind::Shot));
                     }
                 });
-                if Btn::icon_only(Icon::ChevR).ghost().small().enabled(app.recent_page < pages).tooltip("較舊的錄影").show(ui).clicked() {
+                if Btn::icon_only(Icon::ChevR).ghost().small().enabled(app.recent_page < pages).tooltip(tr!("較舊的錄影", "Older recordings")).show(ui).clicked() {
                     app.recent_page += 1;
                     app.load_recent();
                 }
@@ -1428,12 +1604,12 @@ fn recent_card(app: &mut UiApp, ui: &mut Ui, e: &LibraryEntry, date: String, w: 
     // 標籤
     let mut tags: Vec<(String, Tone, String)> = vec![];
     if is_cut_name(&e.media.name) {
-        tags.push(("剪輯版".into(), Tone::Warn, String::new()));
+        tags.push((tr!("剪輯版", "Edited").into(), Tone::Warn, String::new()));
     }
     if !e.exports.is_empty() {
         let all_gif = e.exports.iter().all(|x| x.format == Some(ExportFormat::Gif));
         let list: Vec<String> = e.exports.iter().map(super::library_dialog::export_tag).collect();
-        tags.push((format!("{} {}", if all_gif { "GIF" } else { "加速" }, e.exports.len()), Tone::Accent, format!("已製作 {}", list.join("、"))));
+        tags.push((format!("{} {}", if all_gif { "GIF" } else { tr!("加速", "Sped-up") }, e.exports.len()), Tone::Accent, trf!("已製作 {}", "Made: {}", list.join(tr!("、", ", ")))));
     }
     // 第一列：日期（或名稱）與標籤
     let top = Rect::from_min_max(pos2(x, rect.min.y + 5.0), pos2(rect.max.x - 6.0, rect.min.y + 27.0));
@@ -1461,10 +1637,10 @@ fn recent_card(app: &mut UiApp, ui: &mut Ui, e: &LibraryEntry, date: String, w: 
         let ui = &mut ui.new_child(UiBuilder::new().max_rect(row).layout(Layout::left_to_right(Align::Center)));
         ui.spacing_mut().item_spacing.x = 2.0;
         let acts = [
-            (EntryAction::Play, Icon::Play, "播放"),
-            (EntryAction::Reveal, Icon::Folder, "在資料夾中顯示"),
-            (EntryAction::Edit, Icon::Cut, "剪輯"),
-            (EntryAction::Export, Icon::Export, "製作加速版 / GIF"),
+            (EntryAction::Play, Icon::Play, tr!("播放", "Play")),
+            (EntryAction::Reveal, Icon::Folder, tr!("在資料夾中顯示", "Show in folder")),
+            (EntryAction::Edit, Icon::Cut, tr!("剪輯", "Edit")),
+            (EntryAction::Export, Icon::Export, tr!("製作加速版 / GIF", "Make sped-up video / GIF")),
         ];
         // 平常淡灰色，滑鼠移到卡片上才變深
         let hot = ui.rect_contains_pointer(rect);
@@ -1474,13 +1650,13 @@ fn recent_card(app: &mut UiApp, ui: &mut Ui, e: &LibraryEntry, date: String, w: 
                 app.act(act, e.clone());
             }
         }
-        let more = Btn::icon_only(Icon::More).ghost().small().quiet(!hot).tooltip("更多").show(ui);
+        let more = Btn::icon_only(Icon::More).ghost().small().quiet(!hot).tooltip(tr!("更多", "More")).show(ui);
         egui::Popup::menu(&more).show(|ui| {
             ui.set_min_width(180.0);
-            if ui.button("複製檔案（貼到 LINE、資料夾）").clicked() {
+            if ui.button(tr!("複製檔案（貼到 LINE、資料夾）", "Copy file (paste into LINE or a folder)")).clicked() {
                 app.act(EntryAction::CopyFile, e.clone());
             }
-            if e.media.has_audio != Some(false) && ui.button("存成 M4A（只留聲音）").clicked() {
+            if e.media.has_audio != Some(false) && ui.button(tr!("存成 M4A（只留聲音）", "Save as M4A (audio only)")).clicked() {
                 app.act(EntryAction::SaveAudio, e.clone());
             }
         });
@@ -1497,10 +1673,11 @@ pub fn countdown_overlay(app: &mut UiApp, ctx: &egui::Context) {
         return;
     }
     let n = countdown_left(app);
-    let hint = format!(
+    let hint = trf!(
         "即將開始錄影{}{}",
-        if app.s.hide_ui { "，這個視窗若在錄影範圍內會自動縮小" } else { "" },
-        if app.env.hotkeys.is_some_and(|h| h.record) && !app.keys.label(0).is_empty() { format!("，或按 {} 取消", app.keys.label(0)) } else { String::new() }
+        "Recording is about to start{}{}",
+        if app.s.hide_ui { tr!("，這個視窗若在錄影範圍內會自動縮小", ". This window will minimize if it's inside the recording area") } else { "" },
+        if app.env.hotkeys.is_some_and(|h| h.record) && !app.keys.label(0).is_empty() { trf!("，或按 {} 取消", ". Press {} to cancel", app.keys.label(0)) } else { String::new() }
     );
     egui::Area::new(Id::new("countdown")).fixed_pos(pos2(0.0, 0.0)).order(egui::Order::Foreground).show(ctx, |ui| {
         let screen = ctx.content_rect();
@@ -1511,7 +1688,7 @@ pub fn countdown_overlay(app: &mut UiApp, ctx: &egui::Context) {
             ui.label(RichText::new(n.to_string()).font(theme::font_bold(140.0)).color(Color32::WHITE));
             ui.label(RichText::new(hint).color(Color32::from_white_alpha(220)));
             ui.add_space(16.0);
-            if Btn::new("取消").show(ui).clicked() {
+            if Btn::new(tr!("取消", "Cancel")).show(ui).clicked() {
                 let core = app.core.clone();
                 app.guarded(async move { core.recorder.stop(None).await }, |_, _| {});
             }

@@ -6,6 +6,7 @@ use crate::edit::EditSpec;
 use crate::error::{Error, Result};
 use crate::projects::Project;
 use crate::types::{ExportFormat, ExportState, LibraryEntry, LibraryPage, LibraryQuery, RecordConfig, UpdateInfo};
+use crate::{tr, trf};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -36,7 +37,7 @@ fn exporting(app: &App) -> Vec<String> {
 
 pub async fn record_start(app: &App, config: RecordConfig) -> Result<()> {
     if app.exporter.running() {
-        return Err(Error::config("正在製作加速版 / GIF，請等完成再開始錄影"));
+        return Err(Error::config(tr!("正在製作加速版 / GIF，請等完成再開始錄影", "A sped-up video / GIF is being made. Start recording after it finishes")));
     }
     app.recorder.start(config).await
 }
@@ -49,7 +50,7 @@ pub fn save_settings(app: &App, ui: Option<Value>, config: Option<&RecordConfig>
 
 pub fn ffmpeg_download(app: &Arc<App>) -> Result<()> {
     if app.ffmpeg_path().is_some() {
-        return Err(Error::config("已經有 FFmpeg 了"));
+        return Err(Error::config(tr!("已經有 FFmpeg 了", "FFmpeg is already installed")));
     }
     app.start_download();
     Ok(())
@@ -71,7 +72,7 @@ pub fn update_state(app: &App) -> UpdateState {
 
 /// 立即檢查新版本
 pub async fn check_update(app: &App) -> Result<Option<UpdateInfo>> {
-    app.check_update().await.map_err(|e| Error::config(format!("無法檢查新版本：{e}")))
+    app.check_update().await.map_err(|e| Error::config(trf!("無法檢查新版本：{e}", "Couldn't check for updates: {e}")))
 }
 
 // ───────────── 錄影清單 ─────────────
@@ -91,7 +92,7 @@ pub async fn thumb(app: &App, path: &str) -> Option<PathBuf> {
 /// 錄影或截圖改名（錄影連同加速版 / GIF）；不能改正在錄影或轉檔的檔案。回傳新的完整路徑
 pub async fn rename(app: &App, path: &str, name: &str) -> Result<String> {
     if !is_abs(path) || !ends_with_ci(path, &[".mp4", ".png"]) || !Path::new(path).exists() {
-        return Err(Error::config(format!("找不到檔案：{path}")));
+        return Err(Error::config(trf!("找不到檔案：{path}", "File not found: {path}")));
     }
     let mut busy = exporting(app);
     if let Some(p) = app.recorder.output_path() {
@@ -106,15 +107,15 @@ pub async fn rename(app: &App, path: &str, name: &str) -> Result<String> {
 /// 移到資源回收筒（可還原）；只接受 .mp4 / .gif / .png，且不能刪正在轉檔的檔案
 pub fn delete(app: &App, paths: &[String]) -> Result<usize> {
     if paths.is_empty() {
-        return Err(Error::config("沒有選取檔案"));
+        return Err(Error::config(tr!("沒有選取檔案", "No files selected")));
     }
     let busy = exporting(app);
     for f in paths {
         if !is_abs(f) || !ends_with_ci(f, &[".mp4", ".gif", ".png"]) || !is_file(f) {
-            return Err(Error::config(format!("找不到檔案：{f}")));
+            return Err(Error::config(trf!("找不到檔案：{f}", "File not found: {f}")));
         }
         if busy.contains(&f.to_lowercase()) {
-            return Err(Error::config("檔案正在轉檔中，無法刪除"));
+            return Err(Error::config(tr!("檔案正在轉檔中，無法刪除", "The file is being converted and can't be deleted")));
         }
     }
     crate::recycle::move_to_recycle_bin(paths)?;
@@ -143,7 +144,7 @@ pub struct ExportRequest {
 
 pub async fn export_start(app: &App, r: &ExportRequest) -> Result<()> {
     if app.recorder.active() {
-        return Err(Error::config("錄影中無法製作加速版 / GIF，請先停止錄影"));
+        return Err(Error::config(tr!("錄影中無法製作加速版 / GIF，請先停止錄影", "Can't make a sped-up video / GIF while recording. Stop recording first")));
     }
     let ctx = app.export_ctx();
     match r.format {
@@ -170,18 +171,18 @@ pub async fn merge_start(app: &App, paths: &[String]) -> Result<()> {
 
 pub async fn cut_start(app: &App, source: &str, spec: &EditSpec, replace: Option<&str>, project: Option<Value>) -> Result<()> {
     if app.recorder.active() {
-        return Err(Error::config("錄影中無法剪輯，請先停止錄影"));
+        return Err(Error::config(tr!("錄影中無法剪輯，請先停止錄影", "Can't edit while recording. Stop recording first")));
     }
     if ![spec.start, spec.end].iter().all(|v| v.is_finite()) {
-        return Err(Error::config("剪輯設定格式錯誤"));
+        return Err(Error::config(tr!("剪輯設定格式錯誤", "Invalid edit settings")));
     }
     if replace.is_some_and(|r| !is_abs(r)) {
-        return Err(Error::config("找不到要取代的剪輯版"));
+        return Err(Error::config(tr!("找不到要取代的剪輯版", "The edited version to replace wasn't found")));
     }
     let on_saved: Option<crate::exporter::OnSaved> = match project {
         Some(data @ Value::Object(_)) => {
             if serde_json::to_vec(&data).map(|v| v.len()).unwrap_or(usize::MAX) > crate::projects::MAX_PROJECT_BYTES {
-                return Err(Error::config("標註資料太大"));
+                return Err(Error::config(tr!("標註資料太大", "Annotation data is too large")));
             }
             let (store, src) = (app.projects.clone(), source.to_string());
             Some(Box::new(move |out: &str| {
@@ -276,8 +277,8 @@ pub async fn shot_project(app: &App, path: &str) -> Option<ShotProjectInfo> {
 pub async fn load_image(path: &str) -> Result<(Vec<u8>, u32, u32)> {
     let p = path.to_string();
     tokio::task::spawn_blocking(move || {
-        let bytes = std::fs::read(&p).map_err(|e| Error::config(format!("讀不到圖片：{e}")))?;
-        let pm = tiny_skia::Pixmap::decode_png(&bytes).map_err(|e| Error::config(format!("讀不到圖片：{e}")))?;
+        let bytes = std::fs::read(&p).map_err(|e| Error::config(trf!("讀不到圖片：{e}", "Couldn't read the image: {e}")))?;
+        let pm = tiny_skia::Pixmap::decode_png(&bytes).map_err(|e| Error::config(trf!("讀不到圖片：{e}", "Couldn't read the image: {e}")))?;
         Ok((crate::shot_edit::straight_rgba(&pm), pm.width(), pm.height()))
     })
     .await
@@ -288,7 +289,9 @@ pub async fn load_image(path: &str) -> Result<(Vec<u8>, u32, u32)> {
 async fn render_shot(source: &str, spec: &crate::shot_edit::ShotSpec) -> Result<tiny_skia::Pixmap> {
     let (rgba, w, h) = load_image(source).await?;
     let spec = spec.clone();
-    tokio::task::spawn_blocking(move || crate::shot_edit::render(&rgba, w, h, w, h, &spec, false).ok_or_else(|| Error::config("無法套用編輯"))).await.map_err(|e| Error::other(e.to_string()))?
+    tokio::task::spawn_blocking(move || crate::shot_edit::render(&rgba, w, h, w, h, &spec, false).ok_or_else(|| Error::config(tr!("無法套用編輯", "Couldn't apply the edits"))))
+        .await
+        .map_err(|e| Error::other(e.to_string()))?
 }
 
 /// 編輯好的截圖複製到剪貼簿（不存檔）
@@ -297,7 +300,7 @@ pub async fn shot_copy(source: &str, spec: &crate::shot_edit::ShotSpec) -> Resul
     let (w, h) = (pm.width(), pm.height());
     let ok = tokio::task::spawn_blocking(move || crate::clipboard::copy_pixmap(&pm)).await.unwrap_or(false);
     if !ok {
-        return Err(Error::other("無法複製到剪貼簿"));
+        return Err(Error::other(tr!("無法複製到剪貼簿", "Couldn't copy to the clipboard")));
     }
     Ok((w, h))
 }
@@ -316,15 +319,19 @@ pub async fn shot_ocr(path: &str, spec: Option<&crate::shot_edit::ShotSpec>) -> 
 
 /// 只留下聲音：在同一個資料夾另存成同名的 .m4a（不重新壓縮，很快）；回傳新檔案的路徑
 pub async fn save_audio(app: &App, path: &str) -> Result<String> {
-    let ffmpeg = app.ffmpeg_path().ok_or_else(|| Error::config("找不到 ffmpeg.exe"))?;
+    let ffmpeg = app.ffmpeg_path().ok_or_else(|| Error::config(tr!("找不到 ffmpeg.exe", "ffmpeg.exe not found")))?;
     let src = Path::new(path);
-    let (Some(dir), Some(stem)) = (src.parent(), src.file_stem()) else { return Err(Error::config("檔名不正確")) };
+    let (Some(dir), Some(stem)) = (src.parent(), src.file_stem()) else { return Err(Error::config(tr!("檔名不正確", "Invalid file name"))) };
     let out = crate::paths::unique_path(dir, &stem.to_string_lossy(), ".m4a");
     let r = crate::process::run(&ffmpeg, &crate::args::audio_file_args(path, &out.to_string_lossy()), std::time::Duration::from_secs(600)).await;
     if r.code != 0 || !out.is_file() {
         let _ = std::fs::remove_file(&out);
-        let why = if r.stderr.contains("matches no streams") { "這支影片沒有聲音".to_string() } else { r.stderr.lines().last().unwrap_or("FFmpeg 失敗").to_string() };
-        return Err(Error::config(format!("無法存成 M4A：{why}")));
+        let why = if r.stderr.contains("matches no streams") {
+            tr!("這支影片沒有聲音", "This video has no audio").to_string()
+        } else {
+            r.stderr.lines().last().unwrap_or(tr!("FFmpeg 失敗", "FFmpeg failed")).to_string()
+        };
+        return Err(Error::config(trf!("無法存成 M4A：{why}", "Couldn't save as M4A: {why}")));
     }
     crate::info!("[檔案] 另存聲音 {}", out.display());
     Ok(out.display().to_string())
@@ -363,17 +370,17 @@ pub async fn shot_pin(path: &str, spec: &crate::shot_edit::ShotSpec) -> Result<(
     #[cfg(not(windows))]
     {
         let _ = pm;
-        Err(Error::config("釘在桌面只支援 Windows"))
+        Err(Error::config(tr!("釘在桌面只支援 Windows", "Pin to desktop is only available on Windows")))
     }
 }
 
 /// 存成編輯過的圖（原圖保留；replace = 取代之前編輯過的那張），複製到剪貼簿，並記住編輯設定（之後可以再改）
 pub async fn shot_save(app: &App, source: &str, spec: &crate::shot_edit::ShotSpec, replace: Option<&str>) -> Result<crate::types::ShotInfo> {
     if !is_abs(source) || !is_file(source) {
-        return Err(Error::config("找不到原圖"));
+        return Err(Error::config(tr!("找不到原圖", "Original image not found")));
     }
     if replace.is_some_and(|r| !is_abs(r)) {
-        return Err(Error::config("找不到要取代的圖"));
+        return Err(Error::config(tr!("找不到要取代的圖", "The image to replace wasn't found")));
     }
     let pm = render_shot(source, spec).await?;
     let out = match replace {
@@ -384,8 +391,8 @@ pub async fn shot_save(app: &App, source: &str, spec: &crate::shot_edit::ShotSpe
     let copied = tokio::task::spawn_blocking(move || -> Result<bool> {
         // 先寫暫存檔再改名：取代時不會留下寫到一半的圖
         let tmp = o.with_extension("png.tmp");
-        pm.save_png(&tmp).map_err(|e| Error::other(format!("無法儲存圖片：{e}")))?;
-        std::fs::rename(&tmp, &o).map_err(|e| Error::other(format!("無法儲存圖片：{e}")))?;
+        pm.save_png(&tmp).map_err(|e| Error::other(trf!("無法儲存圖片：{e}", "Couldn't save the image: {e}")))?;
+        std::fs::rename(&tmp, &o).map_err(|e| Error::other(trf!("無法儲存圖片：{e}", "Couldn't save the image: {e}")))?;
         Ok(crate::clipboard::copy_pixmap(&pm))
     })
     .await
@@ -415,7 +422,7 @@ pub enum OpenAction {
 pub fn open(action: OpenAction, path: &str) -> Result<()> {
     let p = path.trim();
     if !is_abs(p) || p.contains('"') {
-        return Err(Error::config("路徑不正確"));
+        return Err(Error::config(tr!("路徑不正確", "Invalid path")));
     }
     match action {
         OpenAction::Folder => {
@@ -425,7 +432,7 @@ pub fn open(action: OpenAction, path: &str) -> Result<()> {
         _ => {
             // 只允許開啟影片與截圖（.mp4 / .gif / .png），避免執行任意檔案
             if !ends_with_ci(p, &[".mp4", ".gif", ".png"]) || !is_file(p) {
-                return Err(Error::config("找不到檔案"));
+                return Err(Error::config(tr!("找不到檔案", "File not found")));
             }
             crate::desktop::open_with_explorer(p, action == OpenAction::Reveal);
         }
@@ -440,10 +447,10 @@ pub fn open_url(url: &str) -> Result<()> {
     let scheme_ok = lower.starts_with("http://") || lower.starts_with("https://");
     let host_ok = u.split_once("://").map(|(_, rest)| !rest.is_empty() && !rest.starts_with('/')).unwrap_or(false);
     if !scheme_ok || !host_ok {
-        return Err(Error::config(if u.contains("://") { "只能開啟 http / https 網址" } else { "網址不正確" }));
+        return Err(Error::config(if u.contains("://") { tr!("只能開啟 http / https 網址", "Only http / https links can be opened") } else { tr!("網址不正確", "Invalid URL") }));
     }
     if u.chars().any(|c| c == '"' || c.is_whitespace() || c.is_control()) {
-        return Err(Error::config("只能開啟 http / https 網址"));
+        return Err(Error::config(tr!("只能開啟 http / https 網址", "Only http / https links can be opened")));
     }
     crate::desktop::open_with_explorer(u, false);
     Ok(())

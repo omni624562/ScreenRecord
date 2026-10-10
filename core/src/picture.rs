@@ -3,6 +3,7 @@
 //! 預覽與匯出時同一張圖會畫很多次（拖曳調整大小時每一格都重畫），所以解碼一次後保留
 //! 一組逐次縮小一半的圖，畫的時候挑最接近目標大小的那張，縮小時也不會鋸齒。
 
+use crate::{tr, trf};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -115,26 +116,30 @@ pub fn pictures_dir() -> PathBuf {
 
 /// 把剪貼簿裡的圖存成 PNG（貼上的圖沒有檔案，存下來標註才能記住它）
 pub fn save_clipboard_image() -> Result<PathBuf, String> {
-    let img = arboard::Clipboard::new().and_then(|mut c| c.get_image()).map_err(|_| "剪貼簿裡沒有圖片".to_string())?;
+    let img = arboard::Clipboard::new().and_then(|mut c| c.get_image()).map_err(|_| tr!("剪貼簿裡沒有圖片", "There's no image on the clipboard").to_string())?;
     let (w, h) = (img.width as u32, img.height as u32);
-    let mut pm = Pixmap::new(w, h).ok_or("剪貼簿裡的圖片是空的")?;
+    let mut pm = Pixmap::new(w, h).ok_or(tr!("剪貼簿裡的圖片是空的", "The image on the clipboard is empty"))?;
     for (d, s) in pm.pixels_mut().iter_mut().zip(img.bytes.as_chunks::<4>().0) {
         *d = ColorU8::from_rgba(s[0], s[1], s[2], s[3]).premultiply();
     }
     let dir = pictures_dir();
-    std::fs::create_dir_all(&dir).map_err(|e| format!("無法建立資料夾：{e}"))?;
+    std::fs::create_dir_all(&dir).map_err(|e| trf!("無法建立資料夾：{e}", "Couldn't create the folder: {e}"))?;
     let path = crate::paths::unique_path(&dir, &format!("貼上_{}", crate::paths::timestamp()), ".png");
-    pm.save_png(&path).map_err(|e| format!("無法儲存圖片：{e}"))?;
+    pm.save_png(&path).map_err(|e| trf!("無法儲存圖片：{e}", "Couldn't save the image: {e}"))?;
     Ok(path)
 }
 
 /// 用 Windows 的開啟檔案視窗選一張圖片（會等到使用者選好或取消）
 pub fn pick_file() -> Result<Option<PathBuf>, String> {
-    crate::filepick::pick("選擇要加上的圖片或 Logo", &[("圖片（PNG、JPG、BMP、WebP）", "*.png;*.jpg;*.jpeg;*.bmp;*.webp"), ("所有檔案", "*.*")]).map_err(|e| {
+    crate::filepick::pick(
+        tr!("選擇要加上的圖片或 Logo", "Choose an image or logo to add"),
+        &[(tr!("圖片（PNG、JPG、BMP、WebP）", "Images (PNG, JPG, BMP, WebP)"), "*.png;*.jpg;*.jpeg;*.bmp;*.webp"), (tr!("所有檔案", "All files"), "*.*")],
+    )
+    .map_err(|e| {
         if cfg!(windows) {
             e
         } else {
-            "這個系統不支援選擇檔案的視窗，請把圖片檔拖曳到編輯視窗".into()
+            tr!("這個系統不支援選擇檔案的視窗，請把圖片檔拖曳到編輯視窗", "The file picker isn't supported on this system. Drag the image file into the editor instead").into()
         }
     })
 }

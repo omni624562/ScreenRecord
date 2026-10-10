@@ -4,6 +4,7 @@ use crate::edit::AudioFx;
 use crate::error::{Error, Result};
 use crate::format::{even, num, output_size, FPS_MAX, FPS_MIN, MAX_MINUTES_MAX, SPEED_MAX, SPEED_MIN};
 use crate::types::{CaptureMethod, EncoderPreference, MonitorInfo, RecordConfig, Rect, SourceConfig, SCALE_OPTIONS};
+use crate::{tr, trf};
 use regex::Regex;
 use std::sync::LazyLock;
 
@@ -143,27 +144,27 @@ pub const AUTO_PREFERRED_GPU: &str = "h264_qsv";
 pub fn choose_encoder(pref: EncoderPreference, out_width: i32, out_height: i32, fps: f64, cpu: Option<EncoderSpec>, gpu: &[EncoderSpec], learned: bool) -> Result<(EncoderSpec, &'static str)> {
     if pref == EncoderPreference::Gpu {
         let Some(g) = gpu.first() else {
-            return Err(Error::config("這台電腦沒有可用的 GPU 編碼器，請改用 CPU 或自動"));
+            return Err(Error::config(tr!("這台電腦沒有可用的 GPU 編碼器，請改用 CPU 或自動", "No GPU encoder is available on this computer. Choose CPU or Auto instead.")));
         };
-        return Ok((*g, "指定使用 GPU 編碼"));
+        return Ok((*g, tr!("指定使用 GPU 編碼", "Using GPU encoding (as set)")));
     }
     if pref == EncoderPreference::Auto {
         if let Some(q) = gpu.iter().find(|e| e.name == AUTO_PREFERRED_GPU) {
-            return Ok((*q, "優先使用 Intel 顯示卡編碼（QSV），減輕 CPU 負擔"));
+            return Ok((*q, tr!("優先使用 Intel 顯示卡編碼（QSV），減輕 CPU 負擔", "Using Intel GPU encoding (QSV) to reduce CPU load")));
         }
         if let Some(g) = gpu.first() {
             if out_width as f64 * out_height as f64 * fps > AUTO_GPU_PIXELS_PER_SEC {
-                return Ok((*g, "畫面量超過 1080p60，自動改用 GPU 編碼"));
+                return Ok((*g, tr!("畫面量超過 1080p60，自動改用 GPU 編碼", "More than 1080p60 worth of pixels; switched to GPU encoding automatically")));
             }
             if learned {
-                return Ok((*g, "先前偵測到 CPU 編碼跟不上，自動改用 GPU 編碼"));
+                return Ok((*g, tr!("先前偵測到 CPU 編碼跟不上，自動改用 GPU 編碼", "CPU encoding couldn't keep up before; switched to GPU encoding automatically")));
             }
         }
     }
     match (cpu, gpu.first()) {
-        (Some(c), _) => Ok((c, "CPU 編碼")),
-        (None, Some(g)) => Ok((*g, "沒有 CPU 編碼器，改用 GPU 編碼")),
-        (None, None) => Err(Error::config("FFmpeg 沒有可用的 H.264 編碼器")),
+        (Some(c), _) => Ok((c, tr!("CPU 編碼", "CPU encoding"))),
+        (None, Some(g)) => Ok((*g, tr!("沒有 CPU 編碼器，改用 GPU 編碼", "No CPU encoder; using GPU encoding"))),
+        (None, None) => Err(Error::config(tr!("FFmpeg 沒有可用的 H.264 編碼器", "FFmpeg has no usable H.264 encoder"))),
     }
 }
 
@@ -258,9 +259,9 @@ impl GpuPath {
     }
     pub fn describe(&self) -> String {
         if self.zero_copy {
-            format!("畫面在顯示卡上縮放、轉色彩後直接壓縮（{}）", self.convert.label())
+            trf!("畫面在顯示卡上縮放、轉色彩後直接壓縮（{}）", "Frames are scaled, color-converted and encoded on the GPU ({})", self.convert.label())
         } else {
-            format!("畫面在顯示卡上縮放、轉色彩（{}）", self.convert.label())
+            trf!("畫面在顯示卡上縮放、轉色彩（{}）", "Frames are scaled and color-converted on the GPU ({})", self.convert.label())
         }
     }
 }
@@ -401,16 +402,16 @@ fn is_int(x: f64) -> bool {
 pub fn resolve_plan(config: &RecordConfig, monitors: &[MonitorInfo]) -> Result<CapturePlan> {
     let fps = config.fps;
     if !is_int(fps) || !(FPS_MIN..=FPS_MAX).contains(&fps) {
-        return Err(Error::config(format!("錄影 FPS 需為 {}～{} 的整數", num(FPS_MIN), num(FPS_MAX))));
+        return Err(Error::config(trf!("錄影 FPS 需為 {}～{} 的整數", "Recording FPS must be a whole number from {} to {}", num(FPS_MIN), num(FPS_MAX))));
     }
     if !SCALE_OPTIONS.iter().any(|&s| s as f64 == config.scale) {
-        return Err(Error::config("解析度縮放只能是 100 / 75 / 50 / 25%"));
+        return Err(Error::config(tr!("解析度縮放只能是 100 / 75 / 50 / 25%", "Resolution scale must be 100 / 75 / 50 / 25%")));
     }
     if !config.max_minutes.is_finite() || config.max_minutes < 0.0 || config.max_minutes > MAX_MINUTES_MAX {
-        return Err(Error::config("最長錄影時間設定不正確"));
+        return Err(Error::config(tr!("最長錄影時間設定不正確", "Invalid maximum recording length")));
     }
     if config.output_dir.trim().is_empty() {
-        return Err(Error::config("請指定儲存位置"));
+        return Err(Error::config(tr!("請指定儲存位置", "Choose a save location")));
     }
 
     // 只錄聲音：畫面是固定大小的卡片，與螢幕無關
@@ -421,22 +422,22 @@ pub fn resolve_plan(config: &RecordConfig, monitors: &[MonitorInfo]) -> Result<C
     let rect = match &config.source {
         SourceConfig::Monitor { monitor_id } => {
             let Some(m) = monitors.iter().find(|m| &m.id == monitor_id) else {
-                return Err(Error::config("找不到選擇的螢幕，請重新整理螢幕清單"));
+                return Err(Error::config(tr!("找不到選擇的螢幕，請重新整理螢幕清單", "The selected screen wasn't found. Refresh the screen list.")));
             };
             monitor_rect(m)
         }
         SourceConfig::All => {
             if monitors.is_empty() {
-                return Err(Error::config("找不到任何螢幕"));
+                return Err(Error::config(tr!("找不到任何螢幕", "No screens found")));
             }
             desktop_rect(monitors)
         }
         SourceConfig::Region { x, y, width, height } => {
             if ![*x, *y, *width, *height].iter().all(|v| is_int(*v)) {
-                return Err(Error::config("範圍座標必須是整數"));
+                return Err(Error::config(tr!("範圍座標必須是整數", "Area coordinates must be whole numbers")));
             }
             if *width < 16.0 || *height < 16.0 {
-                return Err(Error::config("範圍寬高至少 16 像素"));
+                return Err(Error::config(tr!("範圍寬高至少 16 像素", "The area must be at least 16 pixels wide and tall")));
             }
             Rect { x: *x as i32, y: *y as i32, width: *width as i32, height: *height as i32 }
         }
@@ -444,7 +445,7 @@ pub fn resolve_plan(config: &RecordConfig, monitors: &[MonitorInfo]) -> Result<C
 
     let (involved, dda) = plan_tiles(&rect, monitors);
     if !monitors.is_empty() && involved.is_empty() {
-        return Err(Error::config("範圍不在任何螢幕上"));
+        return Err(Error::config(tr!("範圍不在任何螢幕上", "The area isn't on any screen")));
     }
     let (out_width, out_height) = output_size(rect.width, rect.height, config.scale);
     Ok(CapturePlan { rect, dda, monitors: involved, out_width, out_height, card: None })
@@ -573,7 +574,7 @@ pub fn capture_spec(plan: &CapturePlan, config: &RecordConfig, method: CaptureMe
 
     if method == CaptureMethod::Ddagrab {
         let Some(dda) = &plan.dda else {
-            return Err(Error::config("此範圍涵蓋不同顯示卡上的螢幕，無法使用 ddagrab"));
+            return Err(Error::config(tr!("此範圍涵蓋不同顯示卡上的螢幕，無法使用 ddagrab", "This area spans screens on different graphics cards, so ddagrab can't be used")));
         };
         let graph = match gpu.filter(|g| g.applies(plan, config)) {
             // 顯示卡上處理：showinfo 只讀時間，不碰畫面內容，放在顯示卡上的畫面也可以
@@ -768,7 +769,7 @@ pub fn export_args(
 ) -> Result<Vec<String>> {
     let min = if limit_kbps.is_some() { 1.0 } else { SPEED_MIN };
     if !(min..=SPEED_MAX).contains(&speed) {
-        return Err(Error::config(format!("倍率需介於 {}～{}", num(SPEED_MIN), num(SPEED_MAX))));
+        return Err(Error::config(trf!("倍率需介於 {}～{}", "Speed must be between {} and {}", num(SPEED_MIN), num(SPEED_MAX))));
     }
     let scale = match (width, src_width) {
         (Some(w), Some(sw)) if w > 0 && sw > 0 && w < sw => format!("scale={}:-2:flags=bicubic,", even(w as f64)),
@@ -817,7 +818,7 @@ const GIF_GLOBAL_PALETTE_MAX_BYTES: f64 = 400.0 * 1048576.0;
 /// GIF（無聲音）：短片整段共用調色盤＋只更新變動區域；長片每張畫面各自的調色盤，記憶體固定
 pub fn gif_args(source: &str, out_file: &str, speed: f64, o: &GifOptions) -> Result<Vec<String>> {
     if !(1.0..=SPEED_MAX).contains(&speed) {
-        return Err(Error::config(format!("倍率需介於 1～{}", num(SPEED_MAX))));
+        return Err(Error::config(trf!("倍率需介於 1～{}", "Speed must be between 1 and {}", num(SPEED_MAX))));
     }
     let width = o.width.min(if o.src_width > 0.0 { o.src_width } else { o.width }).max(2.0);
     let height = if o.src_width > 0.0 && o.src_height > 0.0 { crate::format::js_round(o.src_height * width / o.src_width) } else { width * 9.0 / 16.0 };
@@ -894,7 +895,7 @@ pub fn cut_args(
     // 選了「不要聲音」
     let with_audio = with_audio && !audio.mute;
     if keep.is_empty() {
-        return Err(Error::config("剪輯後沒有留下任何片段"));
+        return Err(Error::config(tr!("剪輯後沒有留下任何片段", "Nothing is left after editing")));
     }
     // 單引號內的逗號不會被當成濾鏡分隔；加速的片段每 N 張（聲音每 N 個音框）留一個
     let expr =
@@ -1068,7 +1069,7 @@ pub fn screenshot_args(plan: &CapturePlan, use_ddagrab: bool, draw_mouse: bool, 
     let mut a = strs(&["-hide_banner", "-loglevel", "error"]);
     if use_ddagrab {
         let Some(dda) = &plan.dda else {
-            return Err(Error::config("此範圍涵蓋不同顯示卡上的螢幕，無法使用 ddagrab"));
+            return Err(Error::config(tr!("此範圍涵蓋不同顯示卡上的螢幕，無法使用 ddagrab", "This area spans screens on different graphics cards, so ddagrab can't be used")));
         };
         a.extend(["-init_hw_device".into(), format!("d3d11va=dda:{}", dda.adapter), "-filter_hw_device".into(), "dda".into(), "-filter_complex".into()]);
         a.push(format!("{},format=rgb24[vout]", ddagrab_chain(plan, 10.0, draw_mouse)));

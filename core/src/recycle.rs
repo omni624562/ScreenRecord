@@ -19,10 +19,10 @@ pub fn move_to_recycle_bin(paths: &[String]) -> Result<()> {
     let mut op = SHFILEOPSTRUCTW { wFunc: FO_DELETE, pFrom: PCWSTR(from.as_ptr()), fFlags: (FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT | FOF_NOERRORUI).0 as u16, ..Default::default() };
     let r = unsafe { SHFileOperationW(&mut op) };
     if r != 0 {
-        return Err(Error::config(format!("無法移到資源回收筒（代碼 0x{:x}），檔案可能正在使用中", r as u32)));
+        return Err(Error::config(crate::trf!("無法移到資源回收筒（代碼 0x{:x}），檔案可能正在使用中", "Couldn't move to the Recycle Bin (code 0x{:x}). The file may be in use", r as u32)));
     }
     if op.fAnyOperationsAborted.as_bool() {
-        return Err(Error::config("刪除動作被中止"));
+        return Err(Error::config(crate::tr!("刪除動作被中止", "Delete was canceled")));
     }
     Ok(())
 }
@@ -31,7 +31,7 @@ pub fn move_to_recycle_bin(paths: &[String]) -> Result<()> {
 #[cfg(not(windows))]
 pub fn move_to_recycle_bin(paths: &[String]) -> Result<()> {
     for p in paths {
-        std::fs::remove_file(p).map_err(|e| Error::config(format!("無法刪除 {p}：{e}")))?;
+        std::fs::remove_file(p).map_err(|e| Error::config(crate::trf!("無法刪除 {p}：{e}", "Couldn't delete {p}: {e}")))?;
     }
     Ok(())
 }

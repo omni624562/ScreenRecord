@@ -47,7 +47,7 @@ pub fn enumerate_monitors() -> Result<Vec<MonitorInfo>, String> {
     ensure_dpi_aware();
     let mut monitors = Vec::new();
     unsafe {
-        let factory: IDXGIFactory1 = CreateDXGIFactory1().map_err(|e| format!("CreateDXGIFactory1 失敗 ({e})"))?;
+        let factory: IDXGIFactory1 = CreateDXGIFactory1().map_err(|e| crate::trf!("CreateDXGIFactory1 失敗 ({e})", "CreateDXGIFactory1 failed ({e})"))?;
         let mut a = 0u32;
         while let Ok(adapter) = factory.EnumAdapters1(a) {
             let adapter_name = adapter.GetDesc1().map(|d| wide(&d.Description).trim().to_string()).unwrap_or_else(|_| format!("Adapter {a}"));

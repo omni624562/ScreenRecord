@@ -2,6 +2,7 @@
 //! 讓剪輯時按一下就刪掉等待、發呆的時間。
 
 use crate::edit::Range;
+use crate::tr;
 use std::path::Path;
 use std::time::Duration;
 
@@ -74,11 +75,11 @@ pub async fn find(ffmpeg: &Path, input: &str, duration: f64, has_audio: bool) ->
     // 解碼整支影片：給到影片長度的兩倍再加一分鐘
     let r = crate::process::run(ffmpeg, &args, Duration::from_secs_f64(duration.max(0.0) * 2.0 + 60.0)).await;
     if r.timed_out {
-        return Err(crate::Error::other("分析太久，已停止"));
+        return Err(crate::Error::other(tr!("分析太久，已停止", "Analysis took too long and was stopped")));
     }
     if r.code != 0 {
         crate::info!("[剪輯] 找沒動靜的片段失敗：{}", r.stderr.lines().rev().take(3).collect::<Vec<_>>().join(" / "));
-        return Err(crate::Error::other("無法分析這支影片，詳見記錄檔"));
+        return Err(crate::Error::other(tr!("無法分析這支影片，詳見記錄檔", "Couldn't analyze this video. See the log file for details.")));
     }
     let (freeze, silence) = parse(&r.stderr, duration);
     let found = idle_ranges(&freeze, has_audio.then_some(&silence[..]), duration);
