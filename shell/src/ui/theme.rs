@@ -223,6 +223,12 @@ pub enum Icon {
     ChevD,
     /// 圖片（山與太陽）
     Image,
+    /// 復原 / 重做（彎箭頭）
+    Undo,
+    Redo,
+    /// 向左轉 / 向右轉（轉 90 度的圓弧箭頭）
+    RotL,
+    RotR,
 }
 
 /// 在 rect（正方形）裡畫圖示
@@ -314,6 +320,26 @@ pub fn paint_icon(p: &Painter, rect: Rect, icon: Icon, color: Color32) {
             p.rect_stroke(Rect::from_min_max(at(2.0, 3.0), at(14.0, 13.0)), CornerRadius::same((1.5 * k) as u8), st, StrokeKind::Middle);
             line(&[(3.5, 11.5), (7.0, 7.5), (9.5, 10.0), (11.0, 8.5), (13.0, 11.0)]);
             p.circle_filled(at(10.8, 5.8), 1.2 * k, color);
+        }
+        Icon::Undo | Icon::Redo => {
+            // 往左上的箭頭接一個往下彎回來的弧；重做是左右相反
+            let m = |x: f32| if icon == Icon::Undo { x } else { 16.0 - x };
+            line(&[(m(6.0), 3.5), (m(3.5), 6.0), (m(6.0), 8.5)]);
+            line(&[(m(3.5), 6.0), (m(10.0), 6.0)]);
+            let (a0, a1) = if icon == Icon::Undo { (-std::f32::consts::FRAC_PI_2, std::f32::consts::FRAC_PI_2) } else { (std::f32::consts::FRAC_PI_2 * 3.0, std::f32::consts::FRAC_PI_2) };
+            arc(m(10.0), 9.5, 3.5, a0, a1);
+            line(&[(m(10.0), 13.0), (m(6.0), 13.0)]);
+        }
+        Icon::RotL | Icon::RotR => {
+            // 四分之三圈的圓弧，箭頭在上方；向右轉是左右相反
+            let m = |x: f32| if icon == Icon::RotL { x } else { 16.0 - x };
+            let pi = std::f32::consts::PI;
+            if icon == Icon::RotL {
+                arc(8.0, 8.5, 5.0, -pi / 2.0, pi);
+            } else {
+                arc(8.0, 8.5, 5.0, 0.0, pi * 1.5);
+            }
+            line(&[(m(10.3), 1.4), (m(8.0), 3.5), (m(10.3), 5.6)]);
         }
         Icon::Window => {
             p.rect_stroke(Rect::from_min_max(at(2.0, 3.0), at(14.0, 13.0)), CornerRadius::same((1.5 * k) as u8), st, StrokeKind::Middle);

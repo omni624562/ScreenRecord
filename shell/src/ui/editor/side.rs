@@ -199,28 +199,60 @@ fn audio_panel(ed: &mut Editor, ui: &mut egui::Ui) {
     hint(ui, "預覽時聽到的是原本的聲音，輸出的影片才會套用。");
 }
 
-fn crop_panel(ed: &mut Editor, ui: &mut egui::Ui) {
-    if ed.is_shot() {
-        ui.horizontal(|ui| {
-            ui.label(theme::muted(ui, "旋轉").font(theme::font(12.0)));
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| super::shot::rotate_buttons(ed, ui));
-        });
+/// 分頁裡的小節標題（第一節不畫分隔線）
+fn section(ui: &mut egui::Ui, title: &str, first: bool) {
+    if !first {
+        let p = theme::pal(ui);
         ui.add_space(4.0);
+        let r = ui.cursor();
+        ui.painter().hline(r.x_range(), r.top(), Stroke::new(1.0, p.border));
+        ui.add_space(6.0);
     }
+    ui.label(RichText::new(title).font(theme::font_bold(13.5)));
+}
+
+/// 「裁切與旋轉」（截圖）／「畫面裁切」（影片）：旋轉只在這裡；裁切直接在圖上拖曳，不用先打開開關
+fn crop_panel(ed: &mut Editor, ui: &mut egui::Ui) {
+    let shot = ed.is_shot();
+    if shot {
+        section(ui, "旋轉", true);
+        ui.horizontal(|ui| super::shot::rotate_buttons(ed, ui));
+    }
+    section(ui, "裁切", !shot);
     let can = ed.vw > 0.0;
-    let mut on = ed.crop_on;
-    switch(ui, &mut on, "裁切畫面", can);
-    if on != ed.crop_on {
-        ed.crop_on = on;
-        if on && ed.spec.crop.is_none() && can {
-            let ev = |v: f64| (v / 2.0).round() * 2.0;
-            ed.spec.crop = Some(CropInput { x: ev(ed.vw * 0.05), y: ev(ed.vh * 0.05), width: ev(ed.vw * 0.8), height: ev(ed.vh * 0.8) });
-        }
+    if !can {
+        return hint(ui, &format!("無法讀取{}尺寸，不能裁切。", ed.what()));
     }
-    let c = ed.crop_rect();
-    let mut v = [c.x, c.y, c.width, c.height];
-    let mut changed = false;
-    ui.add_enabled_ui(ed.crop_on && can, |ui| {
+    // 比例：選了就在目前的範圍裡放一個最大的那個比例，之後拖曳也保持比例
+    ui.allocate_ui_with_layout(vec2(ui.available_width(), 34.0), Layout::left_to_right(Align::Center), |ui| {
+        ui.label(theme::muted(ui, "比例").font(theme::font(12.0)));
+        let items: Vec<(usize, &str)> = super::CROP_RATIOS.iter().enumerate().map(|(i, r)| (i, r.0)).collect();
+        if segmented(ui, &mut ed.crop_ratio, &items, true) {
+            ed.apply_crop_ratio();
+        }
+    });
+    if ed.crop_on {
+        let c = normalize_crop(ed.spec.crop, ed.vw as i32, ed.vh as i32);
+        ui.horizontal(|ui| {
+            if let Some(c) = c {
+                ui.label("保留 ");
+                ui.label(RichText::new(format!("{}×{}", c.width, c.height)).font(theme::font_bold(13.5)));
+            }
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if Btn::new("取消裁切").small().tooltip("回到完整的畫面（可以按 Ctrl+Z 復原）").show(ui).clicked() {
+                    ed.crop_on = false;
+                }
+            });
+        });
+        hint(ui, "拖曳框內可以移動，拖曳四個角可以調整大小；在框外拖曳會重新框選。");
+    } else {
+        hint(ui, &format!("直接在{}上拖曳，框出要保留的範圍。", ed.what()));
+    }
+    // 精確數值：大多數人用拖的，預設收起來
+    egui::CollapsingHeader::new(RichText::new("輸入精確數值").font(theme::font(12.5))).id_salt("ed-crop-exact").default_open(false).show(ui, |ui| {
+        let c = ed.crop_rect();
+        let mut v = [c.x, c.y, c.width, c.height];
+        let mut changed = false;
         egui::Grid::new("ed-crop").num_columns(2).spacing(vec2(12.0, 8.0)).show(ui, |ui| {
             let labels = ["X", "Y", "寬度", "高度"];
             let maxes = [ed.vw - 16.0, ed.vh - 16.0, ed.vw, ed.vh];
@@ -229,7 +261,7 @@ fn crop_panel(ed: &mut Editor, ui: &mut egui::Ui) {
                     ui.spacing_mut().item_spacing.y = 2.0;
                     ui.label(theme::muted(ui, *l).font(theme::font(12.0)));
                     let min = if i >= 2 { 16.0 } else { 0.0 };
-                    if ui.add_sized(vec2(118.0, 26.0), egui::DragValue::new(&mut v[i]).speed(2.0).range(min..=maxes[i].max(min)).fixed_decimals(0)).changed() {
+                    if ui.add_sized(vec2(110.0, 26.0), egui::DragValue::new(&mut v[i]).speed(2.0).range(min..=maxes[i].max(min)).fixed_decimals(0)).changed() {
                         changed = true;
                     }
                 });
@@ -238,13 +270,13 @@ fn crop_panel(ed: &mut Editor, ui: &mut egui::Ui) {
                 }
             }
         });
+        if changed {
+            ed.crop_on = true;
+            ed.crop_ratio = 0;
+            ed.set_crop(CropInput { x: v[0], y: v[1], width: v[2], height: v[3] });
+        }
     });
-    if changed {
-        ed.set_crop(CropInput { x: v[0], y: v[1], width: v[2], height: v[3] });
-    }
-    let text = if can { format!("開啟後可直接在{}上拖曳框選要保留的區域。", ed.what()) } else { format!("無法讀取{}尺寸，不能裁切。", ed.what()) };
-    hint(ui, &text);
-    if !ed.is_shot() {
+    if !shot {
         zoom_panel(ed, ui);
         frame_panel(ed, ui);
     }
@@ -368,7 +400,8 @@ fn zoom_panel(ed: &mut Editor, ui: &mut egui::Ui) {
     );
 }
 
-const TOOLS: [(Tool, &str); 12] = [
+/// 加上標註
+const MARK_TOOLS: [(Tool, &str); 8] = [
     (Tool::Ann(AnnKind::Text), "文字"),
     (Tool::Emoji, "表情"),
     (Tool::Ann(AnnKind::Arrow), "箭頭"),
@@ -377,23 +410,20 @@ const TOOLS: [(Tool, &str); 12] = [
     (Tool::Ann(AnnKind::Highlight), "螢光筆"),
     (Tool::Ann(AnnKind::Pen), "畫筆"),
     (Tool::Ann(AnnKind::Step), "編號"),
-    (Tool::Ann(AnnKind::Mosaic), "馬賽克"),
-    (Tool::Ann(AnnKind::Blur), "模糊"),
-    (Tool::Ann(AnnKind::Magnify), "放大鏡"),
-    (Tool::Ann(AnnKind::Spotlight), "聚光燈"),
 ];
+/// 遮蔽與強調
+const COVER_TOOLS: [(Tool, &str); 4] = [(Tool::Ann(AnnKind::Mosaic), "馬賽克"), (Tool::Ann(AnnKind::Blur), "模糊"), (Tool::Ann(AnnKind::Spotlight), "聚光燈"), (Tool::Ann(AnnKind::Magnify), "放大鏡")];
 
-fn ann_panel(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context) {
+/// 一組工具：每列三個方塊；picture = 最後放一個「圖片」方塊（按下去選圖片來源）
+fn tool_grid(ed: &mut Editor, ui: &mut egui::Ui, tools: &[(Tool, &str)], can: bool, picture: bool) {
     let p = theme::pal(ui);
-    let can = ed.vw > 0.0;
-
-    // 工具
     let gap = 6.0;
     let tw = ((ui.available_width() - gap * 2.0) / 3.0).floor();
     // 放大鏡只能用在截圖
     let shot = ed.is_shot();
-    let tools: Vec<(Tool, &str)> = TOOLS.iter().copied().filter(|(t, _)| shot || !t.kind().image_only()).collect();
-    for row in tools.chunks(3) {
+    let tools: Vec<(Tool, &str)> = tools.iter().copied().filter(|(t, _)| shot || !t.kind().image_only()).collect();
+    let rows = tools.len().div_ceil(3);
+    for (ri, row) in tools.chunks(3).enumerate() {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = gap;
             for &(tool, label) in row {
@@ -419,8 +449,31 @@ fn ann_panel(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context) {
                     }
                 }
             }
+            if picture && ri + 1 == rows && row.len() < 3 {
+                let (r, resp) = ui.allocate_exact_size(vec2(tw, 52.0), if can { Sense::click() } else { Sense::hover() });
+                let ink = if can { p.text } else { p.text.gamma_multiply(0.45) };
+                let open = egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(&resp));
+                ui.painter().rect(r, CornerRadius::same(theme::RADIUS_SM), p.surface, Stroke::new(1.0, if (can && resp.hovered()) || open { p.accent } else { p.border }), egui::StrokeKind::Inside);
+                theme::paint_icon(ui.painter(), egui::Rect::from_center_size(pos2(r.center().x, r.top() + 19.0), vec2(18.0, 18.0)), Icon::Image, ink);
+                ui.painter().text(pos2(r.center().x, r.bottom() - 11.0), Align2::CENTER_CENTER, "圖片", theme::font(12.0), ink);
+                if can {
+                    let tip = format!("加上圖片：Logo、浮水印、商品照…（可以調整大小、透明度{}）\n也可以直接把圖片檔拖曳到這個視窗", if shot { "" } else { "、出現時間" });
+                    let resp = resp.on_hover_cursor(CursorIcon::PointingHand).on_hover_text(tip);
+                    picture_menu(ed, &resp);
+                }
+            }
         });
     }
+}
+
+fn ann_panel(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context) {
+    let p = theme::pal(ui);
+    let can = ed.vw > 0.0;
+    let shot = ed.is_shot();
+
+    // 加上標註：文字、箭頭、框線…、圖片
+    section(ui, "加上標註", true);
+    tool_grid(ed, ui, &MARK_TOOLS, can, true);
     if ed.tool == Some(Tool::Emoji) {
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing = vec2(2.0, 2.0);
@@ -440,8 +493,17 @@ fn ann_panel(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context) {
             }
         });
     }
-    if can {
-        picture_button(ed, ui);
+    // 遮蔽與強調：馬賽克、模糊、聚光燈、放大鏡；截圖可以自動遮個資
+    section(ui, "遮蔽與強調", false);
+    tool_grid(ed, ui, &COVER_TOOLS, can, false);
+    if shot && can {
+        let busy = ed.finding_pii;
+        let label = if busy { "正在找個資…" } else { "自動遮個資" };
+        let resp =
+            Btn::new(label).small().min_width(ui.available_width()).enabled(!busy).tooltip("用文字辨識找出圖裡的 Email、電話、身分證字號、信用卡號，自動打上馬賽克（可再個別調整或刪除）").show(ui);
+        if resp.clicked() {
+            ed.pending = Some(super::shot::Act::FindPii);
+        }
     }
     let w = ed.what();
     let hint_text = if !can {
@@ -462,15 +524,6 @@ fn ann_panel(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context) {
     if !hint_text.is_empty() {
         hint(ui, &hint_text);
     }
-    // 截圖：用文字辨識找出個資，自動打上馬賽克
-    if shot && can && ed.tool.is_none() && ed.selected().is_none() {
-        let busy = ed.finding_pii;
-        let label = if busy { "正在找個資…" } else { "自動遮個資" };
-        let resp = Btn::new(label).small().enabled(!busy).tooltip("用文字辨識找出圖裡的 Email、電話、身分證字號、信用卡號，自動打上馬賽克（可再個別調整或刪除）").show(ui);
-        if resp.clicked() {
-            ed.pending = Some(super::shot::Act::FindPii);
-        }
-    }
     // 影片：字幕（自動產生或匯入 SRT）
     if !shot && can && ed.tool.is_none() && ed.selected().is_none() {
         super::subs::panel(ed, ui);
@@ -484,17 +537,15 @@ fn ann_panel(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context) {
 }
 
 /// 加上圖片 / Logo：選檔、上次用的圖、剪貼簿的圖（也可以直接把圖片檔拖曳進來）
-fn picture_button(ed: &mut Editor, ui: &mut egui::Ui) {
-    let last = ed.last_picture.clone();
-    let has_last = !last.is_empty() && std::path::Path::new(&last).is_file();
-    let tip = format!("加上圖片：Logo、浮水印、商品照…（可以調整大小、透明度{}）\n也可以直接把圖片檔拖曳到這個視窗", if ed.is_shot() { "" } else { "、出現時間" });
-    let resp = Btn::new(if ed.is_shot() { "加上圖片" } else { "加上圖片／Logo" }).icon(Icon::Image).small().min_width(ui.available_width()).tooltip(tip).show(ui);
-    egui::Popup::menu(&resp).show(|ui| {
+fn picture_menu(ed: &mut Editor, resp: &egui::Response) {
+    egui::Popup::menu(resp).show(|ui| {
         ui.set_min_width(220.0);
         if ui.button("選擇圖片檔…").clicked() {
             ed.pending = Some(Act::PickPicture { replace: false });
         }
-        if has_last && ui.button(format!("上次的圖片「{}」", file_name(&last))).on_hover_text(last.as_str()).clicked() {
+        // 選單開著時才檢查檔案還在不在（不要每一格畫面都讀磁碟）
+        let last = ed.last_picture.clone();
+        if !last.is_empty() && std::path::Path::new(&last).is_file() && ui.button(format!("上次的圖片「{}」", file_name(&last))).on_hover_text(last.as_str()).clicked() {
             ed.pending = Some(Act::LastPicture);
         }
         if ui.button("貼上剪貼簿裡的圖片").clicked() {

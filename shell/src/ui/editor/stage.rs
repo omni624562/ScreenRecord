@@ -176,7 +176,27 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, stage_h: f3
                 }
             }
             painter.rect_stroke(cr, CornerRadius::ZERO, Stroke::new(2.0, theme::pal(ui).rec), egui::StrokeKind::Outside);
+            if ed.tab == Tab::Crop {
+                // 三等分線（構圖參考）與四個角的 L 形把手
+                let faint = Stroke::new(1.0, Color32::from_white_alpha(90));
+                for i in 1..3 {
+                    let t = i as f32 / 3.0;
+                    painter.vline(cr.left() + cr.width() * t, cr.y_range(), faint);
+                    painter.hline(cr.x_range(), cr.top() + cr.height() * t, faint);
+                }
+                let len = (cr.width().min(cr.height()) / 4.0).clamp(6.0, 18.0);
+                for (c, sx, sy) in [(cr.left_top(), 1.0, 1.0), (cr.right_top(), -1.0, 1.0), (cr.left_bottom(), 1.0, -1.0), (cr.right_bottom(), -1.0, -1.0)] {
+                    let pts = vec![c + vec2(0.0, len * sy), c, c + vec2(len * sx, 0.0)];
+                    painter.add(egui::Shape::line(pts.clone(), Stroke::new(6.0, Color32::from_black_alpha(110))));
+                    painter.add(egui::Shape::line(pts, Stroke::new(3.5, Color32::WHITE)));
+                }
+            }
         }
+    } else if ed.tab == Tab::Crop && ed.vw > 0.0 && ed.tool.is_none() {
+        let g = painter.layout_no_wrap("在圖上拖曳，框出要保留的範圍".to_string(), theme::font(13.0), Color32::WHITE);
+        let pill = Rect::from_center_size(pos2(rect.center().x, rect.top() + 24.0), g.size() + vec2(24.0, 12.0));
+        painter.rect_filled(pill, CornerRadius::same(255), Color32::from_black_alpha(170));
+        painter.galley(pill.min + vec2(12.0, 6.0), g, Color32::WHITE);
     }
     interact(ed, ui, rect, &resp);
 }
@@ -287,6 +307,50 @@ fn pointer_angle(a: &Ann, x: f64, y: f64) -> f64 {
     (y - cy).atan2(x - cx).to_degrees()
 }
 
+/// 在裁切範圍上按下的位置：角（回傳對角當固定點，以及是不是左上—右下方向）或框內
+enum CropGrab {
+    Corner((f64, f64), bool),
+    Inside,
+}
+
+fn crop_grab(ed: &Editor, x: f64, y: f64, tol: f64) -> Option<CropGrab> {
+    if !ed.crop_on {
+        return None;
+    }
+    let c = ed.spec.crop?;
+    let (l, t, r, b) = (c.x, c.y, c.x + c.width, c.y + c.height);
+    for (cx, cy, ax, ay, diag) in [(l, t, r, b, true), (r, t, l, b, false), (l, b, r, t, false), (r, b, l, t, true)] {
+        if (x - cx).abs() <= tol && (y - cy).abs() <= tol {
+            return Some(CropGrab::Corner((ax, ay), diag));
+        }
+    }
+    (x > l && x < r && y > t && y < b).then_some(CropGrab::Inside)
+}
+
+/// 從固定的角拖到 (px, py) 的範圍；有比例時保持比例，並限制在畫面內
+fn crop_from_drag(from: (f64, f64), (px, py): (f64, f64), ratio: Option<f64>, vw: f64, vh: f64) -> CropInput {
+    let (dx, dy) = (px - from.0, py - from.1);
+    let (mut w, mut h) = (dx.abs(), dy.abs());
+    if let Some(r) = ratio.filter(|r| *r > 0.0) {
+        if w / h.max(1e-9) > r {
+            w = h * r;
+        } else {
+            h = w / r;
+        }
+        let room_w = if dx >= 0.0 { vw - from.0 } else { from.0 };
+        let room_h = if dy >= 0.0 { vh - from.1 } else { from.1 };
+        if w > room_w {
+            (w, h) = (room_w, room_w / r);
+        }
+        if h > room_h {
+            (w, h) = (room_h * r, room_h);
+        }
+    }
+    let x = if dx >= 0.0 { from.0 } else { from.0 - w };
+    let y = if dy >= 0.0 { from.1 } else { from.1 - h };
+    CropInput { x, y, width: w, height: h }
+}
+
 fn handle_at(a: &Ann, x: f64, y: f64, tol: f64) -> Option<usize> {
     annotate::handles(a).iter().position(|&(hx, hy)| (hx - x).abs() <= tol && (hy - y).abs() <= tol)
 }
@@ -324,8 +388,18 @@ fn interact(ed: &mut Editor, ui: &egui::Ui, rect: Rect, resp: &egui::Response) {
                 CursorIcon::ResizeNwSe
             } else if ann_at(ed, x, y, k * 6.0).is_some() {
                 CursorIcon::Move
-            } else if ed.crop_on {
-                CursorIcon::Crosshair
+            } else if ed.tab == Tab::Crop {
+                match crop_grab(ed, x, y, k * 12.0) {
+                    Some(CropGrab::Corner(_, diag)) => {
+                        if diag {
+                            CursorIcon::ResizeNwSe
+                        } else {
+                            CursorIcon::ResizeNeSw
+                        }
+                    }
+                    Some(CropGrab::Inside) => CursorIcon::Move,
+                    None => CursorIcon::Crosshair,
+                }
             } else {
                 CursorIcon::PointingHand
             };
@@ -395,20 +469,28 @@ fn interact(ed: &mut Editor, ui: &egui::Ui, rect: Rect, resp: &egui::Response) {
             }
             return;
         }
+        // 只有「裁切」分頁會框選裁切範圍，其他分頁點空白處不會動到裁切
+        let cropping = ed.tab == Tab::Crop;
         if ed.ann_sel.is_some() {
-            // 點空白處：取消選取標註（裁切模式下同時開始框選）
+            // 點空白處：取消選取標註（裁切分頁同時開始框選）
             ed.ann_sel = None;
-            if !ed.crop_on {
+            if !cropping {
                 return;
             }
-        } else if !ed.crop_on {
+        } else if !cropping {
             return ed.toggle_play();
         }
-        ed.drag = Drag::Crop { from: (x, y) };
+        ed.stop_preview();
+        ed.drag = match crop_grab(ed, x, y, k * 12.0) {
+            // 拉角：以對角為固定點重新框選
+            Some(CropGrab::Corner(anchor, _)) => Drag::Crop { from: anchor, prev_on: ed.crop_on, prev: ed.spec.crop },
+            Some(CropGrab::Inside) => Drag::CropMove { from: (x, y), orig: ed.crop_rect() },
+            None => Drag::Crop { from: (x, y), prev_on: ed.crop_on, prev: ed.spec.crop },
+        };
         return;
     }
 
-    let stage_drag = matches!(ed.drag, Drag::Crop { .. } | Drag::Create { .. } | Drag::Move { .. } | Drag::Resize { .. } | Drag::Rotate { .. } | Drag::Pen { .. });
+    let stage_drag = matches!(ed.drag, Drag::Crop { .. } | Drag::CropMove { .. } | Drag::Create { .. } | Drag::Move { .. } | Drag::Resize { .. } | Drag::Rotate { .. } | Drag::Pen { .. });
     if !stage_drag {
         return;
     }
@@ -427,9 +509,21 @@ fn interact(ed: &mut Editor, ui: &egui::Ui, rect: Rect, resp: &egui::Response) {
 /// shift：調整圖片大小時不保持比例
 fn drag_to(ed: &mut Editor, (px, py): (f64, f64), shift: bool) {
     match std::mem::replace(&mut ed.drag, Drag::None) {
-        Drag::Crop { from } => {
-            ed.spec.crop = Some(CropInput { x: from.0.min(px), y: from.1.min(py), width: (px - from.0).abs(), height: (py - from.1).abs() });
-            ed.drag = Drag::Crop { from };
+        Drag::Crop { from, prev_on, prev } => {
+            let ratio = super::CROP_RATIOS.get(ed.crop_ratio).and_then(|c| c.1);
+            let c = crop_from_drag(from, (px, py), ratio, ed.vw, ed.vh);
+            // 拖超過一點點才算框選（只點一下不會把裁切清掉）
+            if c.width >= 8.0 && c.height >= 8.0 {
+                ed.crop_on = true;
+                ed.spec.crop = Some(c);
+            }
+            ed.drag = Drag::Crop { from, prev_on, prev };
+        }
+        Drag::CropMove { from, orig } => {
+            let x = (orig.x + px - from.0).clamp(0.0, (ed.vw - orig.width).max(0.0));
+            let y = (orig.y + py - from.1).clamp(0.0, (ed.vh - orig.height).max(0.0));
+            ed.spec.crop = Some(CropInput { x, y, ..orig });
+            ed.drag = Drag::CropMove { from, orig };
         }
         Drag::Pen { id, mut pts } => {
             // 移動超過一點點才加點（線比較平滑、資料比較少）
@@ -532,7 +626,19 @@ fn drag_to(ed: &mut Editor, (px, py): (f64, f64), shift: bool) {
 
 fn end_drag(ed: &mut Editor) {
     match std::mem::replace(&mut ed.drag, Drag::None) {
-        Drag::Crop { .. } => {
+        Drag::Crop { prev_on, prev, .. } => {
+            let tiny = !ed.crop_on || ed.spec.crop.is_none_or(|c| c.width < 8.0 || c.height < 8.0);
+            if tiny {
+                // 只點一下：還原；影片照舊是播放 / 暫停
+                (ed.crop_on, ed.spec.crop) = (prev_on, prev);
+                if !ed.is_shot() {
+                    ed.toggle_play();
+                }
+            } else if let Some(c) = ed.spec.crop {
+                ed.set_crop(c);
+            }
+        }
+        Drag::CropMove { .. } => {
             if let Some(c) = ed.spec.crop {
                 ed.set_crop(c);
             }

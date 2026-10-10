@@ -13,7 +13,7 @@ mod subs;
 mod timeline;
 
 use super::dialogs::file_name;
-use super::theme::{self, Btn};
+use super::theme::{self, Btn, Icon};
 use super::UiApp;
 use eframe::egui::{self, vec2, Align, Color32, Id, Key, Layout, Modifiers, RichText, TextureHandle, TextureOptions};
 use screenrecorder_core::actions::{self, EditProject, ProjectMatch};
@@ -127,6 +127,9 @@ enum Edge {
     Body,
 }
 
+/// 裁切的比例：名稱、寬 / 高（None = 自由）
+pub const CROP_RATIOS: [(&str, Option<f64>); 4] = [("自由", None), ("16:9", Some(16.0 / 9.0)), ("4:3", Some(4.0 / 3.0)), ("1:1", Some(1.0))];
+
 /// 進行中的拖曳
 enum Drag {
     None,
@@ -149,8 +152,16 @@ enum Drag {
         x0: f32,
         a0: f64,
     },
+    /// 框選裁切範圍：from 是固定的那個角（拉角調整大小時是對角）；放開時太小就還原成 prev
     Crop {
         from: (f64, f64),
+        prev_on: bool,
+        prev: Option<CropInput>,
+    },
+    /// 拖曳移動裁切範圍
+    CropMove {
+        from: (f64, f64),
+        orig: CropInput,
     },
     Create {
         id: u64,
@@ -192,6 +203,8 @@ pub struct Editor {
     /// 預覽結果：只播放保留的部分
     previewing: bool,
     crop_on: bool,
+    /// 裁切的比例（CROP_RATIOS 的位置；0 = 自由）
+    crop_ratio: usize,
     /// 時間軸顯示的範圍（放大時只顯示一部分）
     view: (f64, f64),
     tab: Tab,
@@ -336,6 +349,7 @@ impl Editor {
             sel: None,
             previewing: false,
             crop_on: false,
+            crop_ratio: 0,
             view: (0.0, 0.0),
             tab,
             anns: vec![],
@@ -926,6 +940,18 @@ impl Editor {
         self.spec.crop.unwrap_or(CropInput { x: 0.0, y: 0.0, width: self.vw, height: self.vh })
     }
 
+    /// 選了比例：在目前的裁切範圍（沒有時是整張）裡放一個最大、置中的那個比例的範圍
+    fn apply_crop_ratio(&mut self) {
+        let Some(r) = CROP_RATIOS.get(self.crop_ratio).and_then(|c| c.1) else { return };
+        if self.vw <= 0.0 || self.vh <= 0.0 {
+            return;
+        }
+        let base = if self.crop_on { self.crop_rect() } else { CropInput { x: 0.0, y: 0.0, width: self.vw, height: self.vh } };
+        let (w, h) = if base.width / base.height > r { (base.height * r, base.height) } else { (base.width, base.width / r) };
+        self.crop_on = true;
+        self.set_crop(CropInput { x: base.x + (base.width - w) / 2.0, y: base.y + (base.height - h) / 2.0, width: w, height: h });
+    }
+
     /// 標註在輸出影片中看得到嗎（與保留的部分重疊）
     fn in_output(a: &Ann, keep: &[Range]) -> bool {
         keep.iter().map(|&(x, y)| (y.min(a.end) - x.max(a.start)).max(0.0)).sum::<f64>() >= 0.05
@@ -1181,25 +1207,17 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                     ui.label(RichText::new(if ed.is_shot() { "編輯截圖" } else { "剪輯影片" }).font(theme::font_bold(16.0)));
                     ui.label(RichText::new(&ed.entry.media.name).font(theme::mono(12.0)).color(p.muted));
                 });
+                // 標題列只放復原、重做與關閉；其他功能在右側分頁與下方
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if Btn::new("關閉").ghost().small().show(ui).clicked() {
+                    if Btn::icon_only(Icon::Close).ghost().tooltip("關閉（Esc）").show(ui).clicked() {
                         ed.close = true;
                     }
-                    if ed.is_shot() {
-                        ui.add_space(8.0);
-                        // 由右往左排：畫面上是「向左轉 向右轉」
-                        shot::rotate_buttons(&mut ed, ui);
-                        ui.add_space(8.0);
-                        if Btn::new("文字辨識").ghost().small().tooltip("把圖裡的文字轉成可以複製的文字（Windows 內建的文字辨識）").show(ui).clicked() {
-                            ed.pending = Some(shot::Act::Ocr);
-                        }
-                    }
-                    ui.add_space(8.0);
-                    if Btn::new("重做").ghost().small().enabled(!ed.redo.is_empty()).tooltip("Ctrl+Y").show(ui).clicked() {
+                    ui.add_space(10.0);
+                    if Btn::icon_only(Icon::Redo).ghost().enabled(!ed.redo.is_empty()).tooltip("重做（Ctrl+Y）").show(ui).clicked() {
                         ed.redo();
                     }
                     let can = ed.can_undo();
-                    if Btn::new("復原").ghost().small().enabled(can).tooltip("Ctrl+Z").show(ui).clicked() {
+                    if Btn::icon_only(Icon::Undo).ghost().enabled(can).tooltip("復原（Ctrl+Z）").show(ui).clicked() {
                         ed.undo();
                     }
                 });

@@ -3,7 +3,7 @@
 
 use super::{BannerInfo, Editor, Pl, Tab};
 use crate::ui::dialogs::file_name;
-use crate::ui::theme::{self, segmented, switch, Btn};
+use crate::ui::theme::{self, segmented, switch, Btn, Icon};
 use crate::ui::UiApp;
 use eframe::egui::{self, pos2, vec2, Align, Color32, CornerRadius, CursorIcon, Layout, Rect, RichText, Sense, Stroke, StrokeKind, TextureHandle, TextureOptions};
 use screenrecorder_core::actions::{self, ProjectMatch, ShotProjectInfo};
@@ -340,6 +340,7 @@ pub fn footer(ed: &mut Editor, ui: &mut egui::Ui) -> Option<Act> {
         };
         ui.label(RichText::new(line).font(theme::font(12.0)).color(p.muted));
     });
+    // 右邊：儲存（主要）、複製；不常用的收進「更多」，全部重設也不會跟儲存並排被誤按
     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
         let same = unchanged(ed);
         let mut b = Btn::new(if ed.replace_target.is_some() { "儲存修改" } else { "儲存" }).primary().enabled(!same && !ed.saving).tooltip("Ctrl+S");
@@ -349,18 +350,26 @@ pub fn footer(ed: &mut Editor, ui: &mut egui::Ui) -> Option<Act> {
         if b.show(ui).clicked() {
             act = Some(Act::Save);
         }
-        if Btn::new("複製").ghost().tooltip("複製編輯後的圖到剪貼簿，不存檔（Ctrl+C）").show(ui).clicked() {
+        if Btn::new("複製").tooltip("複製編輯後的圖到剪貼簿，不存檔（Ctrl+C）").show(ui).clicked() {
             act = Some(Act::Copy);
         }
-        if Btn::new("釘在桌面").ghost().tooltip("把編輯後的圖變成浮在最上層的小視窗，方便對照").show(ui).clicked() {
-            act = Some(Act::Pin);
-        }
-        if Btn::new("全部重設").ghost().show(ui).clicked() {
-            ed.reset();
-            if let Some(s) = &mut ed.shot {
-                s.opts = ShotOpts::default();
+        let more = Btn::new("更多").icon(Icon::More).ghost().tooltip("文字辨識、釘在桌面、全部重設").show(ui);
+        egui::Popup::menu(&more).show(|ui| {
+            ui.set_min_width(220.0);
+            if ui.button("文字辨識（複製圖裡的文字）").on_hover_text("把圖裡的文字轉成可以複製的文字（Windows 內建的文字辨識）").clicked() {
+                act = Some(Act::Ocr);
             }
-        }
+            if ui.button("釘在桌面").on_hover_text("把編輯後的圖變成浮在最上層的小視窗，方便對照").clicked() {
+                act = Some(Act::Pin);
+            }
+            ui.separator();
+            if ui.add_enabled(!unchanged(ed), egui::Button::new("全部重設（回到原圖）")).on_hover_text("清掉標註、裁切、旋轉與輸出設定；可以按 Ctrl+Z 復原").clicked() {
+                ed.reset();
+                if let Some(s) = &mut ed.shot {
+                    s.opts = ShotOpts::default();
+                }
+            }
+        });
     });
     act
 }
@@ -461,8 +470,6 @@ pub fn output_panel(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context) {
         s.opts = o;
     }
     let sp = spec(ed);
-    let (w, h) = output_size(ed, &sp);
-    ui.label(theme::muted(ui, format!("輸出 {w}×{h}")).font(theme::font(12.5)));
     // 輸出的樣子（與存檔用同一個 render）
     let key = serde_json::to_string(&sp).unwrap_or_default();
     let stale = ed.shot.as_ref().is_none_or(|s| s.preview.as_ref().is_none_or(|(k, _)| *k != key));
@@ -478,8 +485,7 @@ pub fn output_panel(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context) {
             }
         }
     }
-    ui.label(theme::muted(ui, "左邊顯示的就是輸出的樣子（外框、圓角、背景、陰影都已套用）。").font(theme::font(12.0)));
-    ui.label(theme::muted(ui, "存檔時另存一張（原圖保留），同時複製到剪貼簿，可以直接貼到 LINE、Word、信件。").font(theme::font(12.0)));
+    ui.label(theme::muted(ui, "左邊顯示的就是輸出的樣子；輸出的大小顯示在下方。").font(theme::font(12.0)));
 }
 
 /// 輸出的大小（原圖大小 + 旋轉 + 裁切 + 縮放 + 陰影）
@@ -488,13 +494,13 @@ fn output_size(ed: &Editor, sp: &ShotSpec) -> (u32, u32) {
     shot_edit::output_size(sp, ow, oh)
 }
 
-/// 旋轉按鈕（裁切分頁與標題列）
+/// 旋轉按鈕（只在「裁切與旋轉」分頁）
 pub fn rotate_buttons(ed: &mut Editor, ui: &mut egui::Ui) {
-    if Btn::new("向右轉").small().tooltip("整張圖順時針轉 90 度（標註跟著轉）").show(ui).clicked() {
-        rotate(ed, true);
-    }
-    if Btn::new("向左轉").small().tooltip("整張圖逆時針轉 90 度（標註跟著轉）").show(ui).clicked() {
+    if Btn::new("向左轉").icon(Icon::RotL).small().tooltip("整張圖逆時針轉 90 度（標註跟著轉）").show(ui).clicked() {
         rotate(ed, false);
+    }
+    if Btn::new("向右轉").icon(Icon::RotR).small().tooltip("整張圖順時針轉 90 度（標註跟著轉）").show(ui).clicked() {
+        rotate(ed, true);
     }
 }
 
