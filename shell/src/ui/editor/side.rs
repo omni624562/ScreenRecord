@@ -29,7 +29,7 @@ fn tabs(ed: &mut Editor, ui: &mut egui::Ui) {
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 2.0;
         let tabs: &[(Tab, &str)] =
-            if ed.is_shot() { &[(Tab::Ann, "標註"), (Tab::Crop, "裁切"), (Tab::Output, "輸出")] } else { &[(Tab::Time, "時間"), (Tab::Crop, "畫面裁切"), (Tab::Ann, "標註")] };
+            if ed.is_shot() { &[(Tab::Ann, "標註"), (Tab::Crop, "裁切與旋轉"), (Tab::Output, "輸出")] } else { &[(Tab::Time, "時間"), (Tab::Crop, "畫面裁切"), (Tab::Ann, "標註")] };
         for &(tab, label) in tabs {
             let on = ed.tab == tab;
             let f = if on { theme::font_bold(13.0) } else { theme::font(13.0) };
@@ -120,6 +120,13 @@ fn time_panel(ed: &mut Editor, ui: &mut egui::Ui, toast: &mut Option<(String, bo
 }
 
 fn crop_panel(ed: &mut Editor, ui: &mut egui::Ui) {
+    if ed.is_shot() {
+        ui.horizontal(|ui| {
+            ui.label(theme::muted(ui, "旋轉").font(theme::font(12.0)));
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| super::shot::rotate_buttons(ed, ui));
+        });
+        ui.add_space(4.0);
+    }
     let can = ed.vw > 0.0;
     let mut on = ed.crop_on;
     switch(ui, &mut on, "裁切畫面", can);
@@ -249,11 +256,91 @@ fn ann_panel(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context) {
     if !hint_text.is_empty() {
         hint(ui, &hint_text);
     }
+    tool_style(ed, ui);
 
     if ed.selected().is_some() {
         props(ed, ui, ctx);
     }
     ann_list(ed, ui);
+}
+
+/// 顏色與大小（線寬、粗細、字級）；回傳 (顏色改了, 大小改了)
+fn style_controls(ui: &mut egui::Ui, kind: AnnKind, color: &mut String, size: &mut f64, k: f64) -> (bool, bool) {
+    let p = theme::pal(ui);
+    let (mut cc, mut sc) = (false, false);
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 8.0;
+        for c in COLORS {
+            let (r, resp) = ui.allocate_exact_size(vec2(24.0, 24.0), Sense::click());
+            let (cr, cg, cb) = annotate::parse_color(c);
+            if color == c {
+                ui.painter().circle_stroke(r.center(), 13.5, Stroke::new(2.0, p.accent));
+            }
+            ui.painter().circle(r.center(), 10.5, Color32::from_rgb(cr, cg, cb), Stroke::new(1.0, p.border_strong));
+            if resp.on_hover_cursor(CursorIcon::PointingHand).on_hover_text(format!("顏色 {c}")).clicked() && color != c {
+                *color = c.to_string();
+                cc = true;
+            }
+        }
+    });
+    let label = match kind {
+        AnnKind::Text => "字級",
+        AnnKind::Step => "大小",
+        AnnKind::Pen => "粗細",
+        _ => "線寬",
+    };
+    let (lo, hi) = match kind {
+        AnnKind::Text => (16.0, 240.0),
+        AnnKind::Step => (24.0, 240.0),
+        _ => (2.0, 40.0),
+    };
+    ui.horizontal(|ui| {
+        ui.label(theme::muted(ui, label).font(theme::font(12.0)));
+        let mut v = *size;
+        ui.spacing_mut().slider_width = ui.available_width() - 50.0;
+        if ui.add(egui::Slider::new(&mut v, (lo * k).round()..=(hi * k).round()).step_by(1.0).fixed_decimals(0)).changed() {
+            *size = v;
+            sc = true;
+        }
+    });
+    (cc, sc)
+}
+
+/// 選了工具、還沒放：接下來放的標註用的顏色與大小
+fn tool_style(ed: &mut Editor, ui: &mut egui::Ui) {
+    let Some(tool) = ed.tool else { return };
+    let kind = tool.kind();
+    if tool == Tool::Emoji || kind.is_effect() || ed.selected().is_some() {
+        return;
+    }
+    let p = theme::pal(ui);
+    let vh = if ed.vh > 0.0 { ed.vh } else { 1080.0 };
+    let (mut color, mut size) = super::style_of(kind, vh);
+    egui::Frame::new().fill(p.surface2).corner_radius(theme::RADIUS_SM).inner_margin(10).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.spacing_mut().item_spacing = vec2(8.0, 8.0);
+        ui.label(
+            RichText::new(format!(
+                "{}的顏色與{}",
+                kind.label(),
+                if kind == AnnKind::Pen {
+                    "粗細"
+                } else if kind == AnnKind::Text {
+                    "字級"
+                } else if kind == AnnKind::Step {
+                    "大小"
+                } else {
+                    "線寬"
+                }
+            ))
+            .font(theme::font_bold(13.0)),
+        );
+        let (cc, sc) = style_controls(ui, kind, &mut color, &mut size, vh / 1080.0);
+        if cc || sc {
+            super::remember_style(kind, &color, size, vh);
+        }
+        ui.label(theme::muted(ui, "接下來放的都用這個設定；放好的可以點選後再改。").font(theme::font(12.0)));
+    });
 }
 
 /// 選取的標註的屬性（改一份副本，最後寫回）
@@ -337,48 +424,20 @@ fn props(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context) {
                 }
             });
         } else {
-            // 顏色
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 8.0;
-                for c in COLORS {
-                    let (r, resp) = ui.allocate_exact_size(vec2(24.0, 24.0), Sense::click());
-                    let (cr, cg, cb) = annotate::parse_color(c);
-                    if cur.color == c {
-                        ui.painter().circle_stroke(r.center(), 13.5, Stroke::new(2.0, p.accent));
-                    }
-                    ui.painter().circle(r.center(), 10.5, Color32::from_rgb(cr, cg, cb), Stroke::new(1.0, p.border_strong));
-                    if resp.on_hover_cursor(CursorIcon::PointingHand).on_hover_text(format!("顏色 {c}")).clicked() {
-                        cur.color = c.to_string();
-                    }
+            let (cc, sc) = style_controls(ui, cur.kind, &mut cur.color, &mut cur.size, k);
+            if sc {
+                // 文字、編號放大時以中心為準
+                let (cx, cy) = (cur.x + cur.w / 2.0, cur.y + cur.h / 2.0);
+                annotate::measure(&mut cur);
+                if matches!(cur.kind, AnnKind::Text | AnnKind::Step) {
+                    cur.x = cx - cur.w / 2.0;
+                    cur.y = cy - cur.h / 2.0;
                 }
-            });
-            // 大小
-            let label = match cur.kind {
-                AnnKind::Text => "字級",
-                AnnKind::Step => "大小",
-                AnnKind::Pen => "粗細",
-                _ => "線寬",
-            };
-            let (lo, hi) = match cur.kind {
-                AnnKind::Text => (16.0, 240.0),
-                AnnKind::Step => (24.0, 240.0),
-                _ => (2.0, 40.0),
-            };
-            ui.horizontal(|ui| {
-                ui.label(theme::muted(ui, label).font(theme::font(12.0)));
-                let mut size = cur.size;
-                ui.spacing_mut().slider_width = ui.available_width() - 50.0;
-                if ui.add(egui::Slider::new(&mut size, (lo * k).round()..=(hi * k).round()).step_by(1.0).fixed_decimals(0)).changed() {
-                    // 文字、編號放大時以中心為準
-                    let (cx, cy) = (cur.x + cur.w / 2.0, cur.y + cur.h / 2.0);
-                    cur.size = size;
-                    annotate::measure(&mut cur);
-                    if matches!(cur.kind, AnnKind::Text | AnnKind::Step) {
-                        cur.x = cx - cur.w / 2.0;
-                        cur.y = cy - cur.h / 2.0;
-                    }
-                }
-            });
+            }
+            if cc || sc {
+                // 之後新放的同類標註沿用
+                super::remember_style(cur.kind, &cur.color, cur.size, ed.vh);
+            }
             if is_text {
                 switch(ui, &mut cur.bg, "深色底", true);
             }

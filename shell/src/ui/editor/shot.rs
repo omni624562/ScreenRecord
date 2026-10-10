@@ -25,12 +25,15 @@ pub struct ShotOpts {
     pub border_width: f64,
     pub shadow: bool,
     pub scale: u32,
+    /// 整張圖順時針轉的角度（0 / 90 / 180 / 270）
+    #[serde(default)]
+    pub rotate: u32,
 }
 
 impl Default for ShotOpts {
     fn default() -> Self {
         let d = ShotSpec::default();
-        Self { border: d.border, border_width: d.border_width, shadow: d.shadow, scale: d.scale }
+        Self { border: d.border, border_width: d.border_width, shadow: d.shadow, scale: d.scale, rotate: 0 }
     }
 }
 
@@ -42,6 +45,11 @@ pub struct Shot {
     opened_edit: Option<String>,
     /// 「輸出」分頁的預覽：(內容, 圖)
     preview: Option<(String, TextureHandle)>,
+    /// 還沒旋轉的畫面（預覽解析度）與原圖大小
+    base: Frame,
+    orig: (u32, u32),
+    /// 目前 ed.frame 轉了幾度（和 opts.rotate 不同時重新轉）
+    applied: u32,
 }
 
 impl Shot {
@@ -107,8 +115,9 @@ fn new_editor(app: &UiApp, opened: String, src: String, rgba: Vec<u8>, w: u32, h
     ed.spec = EditSpec { start: 0.0, end: 1.0, removed: vec![], crop: None, overlays: vec![] };
     ed.view = (0.0, 1.0);
     let (prgba, pw, ph) = downscale(&rgba, w, h, PREVIEW_MAX);
-    ed.frame = Some(Frame { time: 0.0, width: pw, height: ph, rgba: prgba });
-    ed.shot = Some(Shot { path: src, opts: ShotOpts::default(), opened_edit: None, preview: None });
+    let base = Frame { time: 0.0, width: pw, height: ph, rgba: prgba };
+    ed.frame = Some(base.clone());
+    ed.shot = Some(Shot { path: src, opts: ShotOpts::default(), opened_edit: None, preview: None, base, orig: (w, h), applied: 0 });
     match info {
         Some(i) if i.matched == ProjectMatch::Output && i.source_ok => {
             apply_spec(&mut ed, &i.spec);
@@ -142,8 +151,56 @@ fn apply_spec(ed: &mut Editor, spec: &ShotSpec) {
         annotate::measure(a);
     }
     if let Some(s) = &mut ed.shot {
-        s.opts = ShotOpts { border: spec.border.clone(), border_width: spec.border_width, shadow: spec.shadow, scale: spec.scale };
+        s.opts = ShotOpts { border: spec.border.clone(), border_width: spec.border_width, shadow: spec.shadow, scale: spec.scale, rotate: shot_edit::norm_rotate(spec.rotate) };
     }
+    sync_rotation(ed);
+}
+
+/// 畫面轉成 opts.rotate 的角度（旋轉、復原 / 重做之後）；ed.vw × ed.vh 是旋轉後的大小
+pub fn sync_rotation(ed: &mut Editor) {
+    let Some(s) = &mut ed.shot else { return };
+    let deg = shot_edit::norm_rotate(s.opts.rotate);
+    if deg == s.applied {
+        return;
+    }
+    let (rgba, w, h) = shot_edit::rotate_rgba(&s.base.rgba, s.base.width, s.base.height, deg);
+    let (vw, vh) = shot_edit::rotated_size(s.orig.0, s.orig.1, deg);
+    s.applied = deg;
+    ed.frame = Some(Frame { time: 0.0, width: w, height: h, rgba });
+    (ed.vw, ed.vh) = (vw as f64, vh as f64);
+    ed.video_key = 0;
+}
+
+/// 整張圖向右（順時針）或向左轉 90 度：標註與裁切範圍跟著轉
+pub fn rotate(ed: &mut Editor, clockwise: bool) {
+    let (w, h) = (ed.vw, ed.vh);
+    // 旋轉前 → 旋轉後的座標
+    let t = |x: f64, y: f64| if clockwise { (h - y, x) } else { (y, w - x) };
+    for a in &mut ed.anns {
+        if a.kind == annotate::AnnKind::Arrow {
+            let (p0, p1) = (t(a.x, a.y), t(a.x + a.w, a.y + a.h));
+            (a.x, a.y, a.w, a.h) = (p0.0, p0.1, p1.0 - p0.0, p1.1 - p0.1);
+            continue;
+        }
+        // 其他：中心跟著轉，標註本身多轉 90 度（放大鏡是圓的，不用轉）
+        let (cx, cy) = t(a.x + a.w / 2.0, a.y + a.h / 2.0);
+        a.x = cx - a.w / 2.0;
+        a.y = cy - a.h / 2.0;
+        if a.kind.rotatable() {
+            a.rot = super::norm_deg(a.rot + if clockwise { 90.0 } else { -90.0 });
+        }
+    }
+    if let Some(c) = ed.spec.crop {
+        ed.spec.crop = Some(if clockwise {
+            CropInput { x: h - (c.y + c.height), y: c.x, width: c.height, height: c.width }
+        } else {
+            CropInput { x: c.y, y: w - (c.x + c.width), width: c.height, height: c.width }
+        });
+    }
+    if let Some(s) = &mut ed.shot {
+        s.opts.rotate = (s.opts.rotate + if clockwise { 90 } else { 270 }) % 360;
+    }
+    sync_rotation(ed);
 }
 
 /// 目前的編輯（輸出用）
@@ -151,7 +208,7 @@ pub fn spec(ed: &Editor) -> ShotSpec {
     let crop =
         if ed.crop_on { normalize_crop(ed.spec.crop, ed.vw as i32, ed.vh as i32).map(|r| CropInput { x: r.x as f64, y: r.y as f64, width: r.width as f64, height: r.height as f64 }) } else { None };
     let o = ed.shot.as_ref().map(|s| s.opts()).unwrap_or_default();
-    ShotSpec { crop, anns: ed.ordered().into_iter().cloned().collect(), border: o.border, border_width: o.border_width, shadow: o.shadow, scale: o.scale }
+    ShotSpec { crop, anns: ed.ordered().into_iter().cloned().collect(), border: o.border, border_width: o.border_width, shadow: o.shadow, scale: o.scale, rotate: o.rotate }
 }
 
 fn source(ed: &Editor) -> String {
@@ -161,7 +218,7 @@ fn source(ed: &Editor) -> String {
 /// 什麼都還沒改（不用存）
 fn unchanged(ed: &Editor) -> bool {
     let s = spec(ed);
-    s.crop.is_none() && s.anns.is_empty() && s.border.is_none() && !s.shadow && s.scale == 100
+    s.crop.is_none() && s.anns.is_empty() && s.border.is_none() && !s.shadow && s.scale == 100 && s.rotate == 0
 }
 
 // ───────────── 畫面 ─────────────
@@ -211,7 +268,7 @@ pub fn banner(ed: &mut Editor, ui: &mut egui::Ui) {
 pub fn footer(ed: &mut Editor, ui: &mut egui::Ui) -> Option<Act> {
     let p = theme::pal(ui);
     let s = spec(ed);
-    let (w, h) = shot_edit::output_size(&s, ed.vw as u32, ed.vh as u32);
+    let (w, h) = output_size(ed, &s);
     let mut act = None;
     ui.vertical(|ui| {
         ui.spacing_mut().item_spacing = vec2(0.0, 2.0);
@@ -219,7 +276,8 @@ pub fn footer(ed: &mut Editor, ui: &mut egui::Ui) -> Option<Act> {
             ui.spacing_mut().item_spacing.x = 0.0;
             ui.label("輸出 ");
             ui.label(RichText::new(format!("{w}×{h}")).font(theme::font_bold(13.5)));
-            ui.label(format!("（原圖 {}×{}）", ed.vw, ed.vh));
+            let (ow, oh) = ed.shot.as_ref().map(|s| s.orig).unwrap_or_default();
+            ui.label(format!("（原圖 {ow}×{oh}）"));
             if !ed.anns.is_empty() {
                 ui.label(format!("・標註 {} 個", ed.anns.len()));
             }
@@ -311,14 +369,15 @@ pub fn output_panel(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context) {
         s.opts = o;
     }
     let sp = spec(ed);
-    let (w, h) = shot_edit::output_size(&sp, ed.vw as u32, ed.vh as u32);
+    let (w, h) = output_size(ed, &sp);
     ui.label(theme::muted(ui, format!("輸出 {w}×{h}")).font(theme::font(12.5)));
     // 輸出的樣子（與存檔用同一個 render）
     let key = serde_json::to_string(&sp).unwrap_or_default();
     let stale = ed.shot.as_ref().is_none_or(|s| s.preview.as_ref().is_none_or(|(k, _)| *k != key));
     if stale {
-        if let Some(f) = &ed.frame {
-            if let Some(pm) = shot_edit::render(&f.rgba, f.width, f.height, ed.vw as u32, ed.vh as u32, &sp, true) {
+        // 用還沒旋轉的畫面與原圖大小（render 自己轉）
+        if let Some((f, (ow, oh))) = ed.shot.as_ref().map(|s| (&s.base, s.orig)) {
+            if let Some(pm) = shot_edit::render(&f.rgba, f.width, f.height, ow, oh, &sp, true) {
                 let img = egui::ColorImage::from_rgba_premultiplied([pm.width() as usize, pm.height() as usize], pm.data());
                 let tex = ctx.load_texture("shot-output", img, TextureOptions::LINEAR);
                 if let Some(s) = &mut ed.shot {
@@ -335,6 +394,22 @@ pub fn output_panel(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context) {
         ui.painter().image(tex.id(), r, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
     }
     ui.label(theme::muted(ui, "存檔時另存一張（原圖保留），同時複製到剪貼簿，可以直接貼到 LINE、Word、信件。").font(theme::font(12.0)));
+}
+
+/// 輸出的大小（原圖大小 + 旋轉 + 裁切 + 縮放 + 陰影）
+fn output_size(ed: &Editor, sp: &ShotSpec) -> (u32, u32) {
+    let (ow, oh) = ed.shot.as_ref().map(|s| s.orig).unwrap_or((ed.vw as u32, ed.vh as u32));
+    shot_edit::output_size(sp, ow, oh)
+}
+
+/// 旋轉按鈕（裁切分頁與標題列）
+pub fn rotate_buttons(ed: &mut Editor, ui: &mut egui::Ui) {
+    if Btn::new("向右轉").small().tooltip("整張圖順時針轉 90 度（標註跟著轉）").show(ui).clicked() {
+        rotate(ed, true);
+    }
+    if Btn::new("向左轉").small().tooltip("整張圖逆時針轉 90 度（標註跟著轉）").show(ui).clicked() {
+        rotate(ed, false);
+    }
 }
 
 /// 透明處的棋盤格底

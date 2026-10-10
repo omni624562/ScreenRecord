@@ -366,6 +366,8 @@ impl Editor {
         if let (Some(s), Some(o)) = (&mut self.shot, opts) {
             s.set_opts(o);
         }
+        // 旋轉的角度可能變了：畫面跟著轉
+        shot::sync_rotation(self);
         if self.ann_sel.is_some_and(|id| !self.anns.iter().any(|a| a.id == id)) {
             self.ann_sel = None;
         }
@@ -581,12 +583,8 @@ impl Editor {
             h: 0.0,
             start,
             end,
-            color: match kind {
-                AnnKind::Highlight => "#f5b301".into(),
-                AnnKind::Text => "#ffffff".into(),
-                _ => COLORS[0].into(),
-            },
-            size: annotate::default_size(kind, vh),
+            color: style_of(kind, vh).0,
+            size: style_of(kind, vh).1,
             text: None,
             bg: false,
             n: None,
@@ -895,6 +893,32 @@ fn make_player(ctx: &egui::Context, ffmpeg: &std::path::Path, e: &LibraryEntry) 
     Player::new(ffmpeg.to_path_buf(), spec, w, h, DECODE_MAX.0, DECODE_MAX.1, Arc::new(move || c.request_repaint()))
 }
 
+/// 每種標註上次用的顏色與大小（大小以 1080 高的畫面為準）：新放的沿用，程式執行期間都記得
+static TOOL_STYLE: std::sync::LazyLock<std::sync::Mutex<HashMap<AnnKind, (String, f64)>>> = std::sync::LazyLock::new(Default::default);
+
+/// 新標註的顏色與大小（vh = 畫面高度）
+pub fn style_of(kind: AnnKind, vh: f64) -> (String, f64) {
+    let k = vh / 1080.0;
+    if let Some((c, s)) = TOOL_STYLE.lock().unwrap().get(&kind) {
+        return (c.clone(), (s * k).round().max(1.0));
+    }
+    let color = match kind {
+        AnnKind::Highlight => "#f5b301",
+        AnnKind::Text => "#ffffff",
+        _ => COLORS[0],
+    };
+    (color.into(), annotate::default_size(kind, vh))
+}
+
+/// 記住這種標註的顏色與大小（之後新放的沿用）
+pub fn remember_style(kind: AnnKind, color: &str, size: f64, vh: f64) {
+    if kind.is_effect() {
+        return;
+    }
+    let k = (vh / 1080.0).max(1e-6);
+    TOOL_STYLE.lock().unwrap().insert(kind, (color.to_string(), size / k));
+}
+
 /// 這一格的滾輪量（點）：與 DOM 的方向相反，往下捲為負
 pub fn wheel_delta(i: &egui::InputState) -> egui::Vec2 {
     i.raw
@@ -998,6 +1022,9 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                         ed.close = true;
                     }
                     if ed.is_shot() {
+                        ui.add_space(8.0);
+                        // 由右往左排：畫面上是「向左轉 向右轉」
+                        shot::rotate_buttons(&mut ed, ui);
                         ui.add_space(8.0);
                         if Btn::new("文字辨識").ghost().small().tooltip("把圖裡的文字轉成可以複製的文字（Windows 內建的文字辨識）").show(ui).clicked() {
                             ed.pending = Some(shot::Act::Ocr);

@@ -1,4 +1,5 @@
-//! 截圖編輯：在原圖上套用標註（含馬賽克 / 模糊 / 放大鏡）、裁切、縮放、外框與陰影，存成新的 PNG（原圖保留）。
+//! 截圖編輯：原圖先旋轉（90 度的倍數），再套用標註（含馬賽克 / 模糊 / 放大鏡）、裁切、縮放、外框與陰影，存成新的 PNG（原圖保留）。
+//! 標註與裁切的座標都是旋轉後的圖的像素。
 //! 編輯設定另外存成專案（projects.rs，與剪輯版相同），之後開啟編輯過的圖可以從原圖重新套用並修改。
 //! 預覽與輸出用同一個 render：預覽時畫面可以比原圖小，位置與大小依比例換算。
 
@@ -32,6 +33,13 @@ pub struct ShotSpec {
     /// 縮放比例（%）
     #[serde(default = "default_scale")]
     pub scale: u32,
+    /// 整張圖順時針旋轉的角度（0 / 90 / 180 / 270）
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub rotate: u32,
+}
+
+fn is_zero(v: &u32) -> bool {
+    *v == 0
 }
 
 fn default_border_width() -> f64 {
@@ -44,7 +52,7 @@ fn default_scale() -> u32 {
 
 impl Default for ShotSpec {
     fn default() -> Self {
-        Self { crop: None, anns: vec![], border: None, border_width: default_border_width(), shadow: false, scale: default_scale() }
+        Self { crop: None, anns: vec![], border: None, border_width: default_border_width(), shadow: false, scale: default_scale(), rotate: 0 }
     }
 }
 
@@ -74,11 +82,51 @@ impl ShotProject {
             "borderWidth": spec.get("borderWidth").cloned().unwrap_or(serde_json::json!(2.0)),
             "shadow": spec.get("shadow").cloned().unwrap_or(serde_json::json!(false)),
             "scale": spec.get("scale").cloned().unwrap_or(serde_json::json!(100)),
+            "rotate": spec.get("rotate").cloned().unwrap_or(serde_json::json!(0)),
         }))
         .ok()?;
+        s.rotate = norm_rotate(s.rotate);
         s.anns = spec.get("anns").and_then(|a| a.as_array()).map(|l| l.iter().filter_map(|a| serde_json::from_value(a.clone()).ok()).collect()).unwrap_or_default();
         Some(s)
     }
+}
+
+/// 角度換成 0 / 90 / 180 / 270
+pub fn norm_rotate(deg: u32) -> u32 {
+    (deg / 90 % 4) * 90
+}
+
+/// 旋轉後的寬高（vw × vh 是原圖）
+pub fn rotated_size(vw: u32, vh: u32, rotate: u32) -> (u32, u32) {
+    if norm_rotate(rotate) % 180 == 90 {
+        (vh, vw)
+    } else {
+        (vw, vh)
+    }
+}
+
+/// 把 RGBA 順時針轉 deg 度（90 的倍數）
+pub fn rotate_rgba(rgba: &[u8], w: u32, h: u32, deg: u32) -> (Vec<u8>, u32, u32) {
+    let deg = norm_rotate(deg);
+    if deg == 0 {
+        return (rgba.to_vec(), w, h);
+    }
+    let (w, h) = (w as usize, h as usize);
+    let (nw, nh) = if deg == 180 { (w, h) } else { (h, w) };
+    let mut out = vec![0u8; nw * nh * 4];
+    for y in 0..h {
+        for x in 0..w {
+            // 順時針 90：(x, y) → (h - 1 - y, x)；180：(w - 1 - x, h - 1 - y)；270：(y, w - 1 - x)
+            let (dx, dy) = match deg {
+                90 => (h - 1 - y, x),
+                180 => (w - 1 - x, h - 1 - y),
+                _ => (y, w - 1 - x),
+            };
+            let (s, d) = ((y * w + x) * 4, (dy * nw + dx) * 4);
+            out[d..d + 4].copy_from_slice(&rgba[s..s + 4]);
+        }
+    }
+    (out, nw as u32, nh as u32)
 }
 
 /// 陰影留的邊（輸出圖的像素）
@@ -102,6 +150,7 @@ pub fn crop_rect(spec: &ShotSpec, vw: u32, vh: u32) -> (u32, u32, u32, u32) {
 
 /// 輸出圖的大小（含外框與陰影）
 pub fn output_size(spec: &ShotSpec, vw: u32, vh: u32) -> (u32, u32) {
+    let (vw, vh) = rotated_size(vw, vh, spec.rotate);
     let (_, _, w, h) = crop_rect(spec, vw, vh);
     let k = spec.scale.clamp(10, 100) as f64 / 100.0;
     let (w, h) = (((w as f64 * k).round() as u32).max(1), ((h as f64 * k).round() as u32).max(1));
@@ -109,12 +158,16 @@ pub fn output_size(spec: &ShotSpec, vw: u32, vh: u32) -> (u32, u32) {
     (w + m, h + m)
 }
 
-/// 套用編輯：src 是畫面（RGBA，不透明；可以是縮小的預覽），vw × vh 是原圖大小。
+/// 套用編輯：src 是畫面（RGBA，不透明；可以是縮小的預覽；還沒旋轉），vw × vh 是原圖大小。
 /// preview = true 時不縮放（預覽另外縮放顯示），外框粗細與陰影依畫面比例換算
 pub fn render(src: &[u8], fw: u32, fh: u32, vw: u32, vh: u32, spec: &ShotSpec, preview: bool) -> Option<Pixmap> {
     if fw == 0 || fh == 0 || vw == 0 || vh == 0 || src.len() < (fw * fh * 4) as usize {
         return None;
     }
+    // 0. 旋轉（之後的座標都是旋轉後的）
+    let (rotated, fw, fh) = rotate_rgba(&src[..(fw * fh * 4) as usize], fw, fh, spec.rotate);
+    let src = &rotated[..];
+    let (vw, vh) = rotated_size(vw, vh, spec.rotate);
     let (sx, sy) = (fw as f64 / vw as f64, fh as f64 / vh as f64);
     // 1. 馬賽克 / 模糊 / 放大鏡（依清單順序）
     let mut rgba = src[..(fw * fh * 4) as usize].to_vec();
@@ -281,6 +334,26 @@ mod tests {
         assert!(pm.pixel(20, 20).unwrap().red() < 200);
         let b = pm.pixel(1, 50).unwrap();
         assert!(b.red() > 200 && b.green() < 100, "{b:?}");
+    }
+
+    #[test]
+    fn rotation_turns_the_picture_and_swaps_the_size() {
+        // 2×1：左紅右藍；順時針轉 90 度後是 1×2：上紅下藍
+        let src = [255, 0, 0, 255, 0, 0, 255, 255];
+        let (r, w, h) = rotate_rgba(&src, 2, 1, 90);
+        assert_eq!((w, h), (1, 2));
+        assert_eq!(&r[..4], &[255, 0, 0, 255]);
+        let (r, w, h) = rotate_rgba(&src, 2, 1, 270);
+        assert_eq!((w, h), (1, 2));
+        assert_eq!(&r[..4], &[0, 0, 255, 255]);
+        let (r, _, _) = rotate_rgba(&src, 2, 1, 180);
+        assert_eq!(&r[..4], &[0, 0, 255, 255]);
+        let spec = ShotSpec { rotate: 90, ..Default::default() };
+        assert_eq!(output_size(&spec, 200, 100), (100, 200));
+        let pm = render(&img(200, 100, 128), 200, 100, 200, 100, &spec, false).unwrap();
+        assert_eq!((pm.width(), pm.height()), (100, 200));
+        let v = serde_json::to_value(ShotProject::new(spec.clone())).unwrap();
+        assert_eq!(ShotProject::parse(&v), Some(spec));
     }
 
     #[test]
