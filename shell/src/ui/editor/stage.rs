@@ -5,6 +5,7 @@ use crate::ui::theme;
 use eframe::egui::{self, pos2, vec2, Align2, Color32, CornerRadius, CursorIcon, Id, Pos2, Rect, Sense, Stroke, TextureHandle, TextureOptions};
 use screenrecorder_core::annotate::{self, Ann, AnnKind, Shape};
 use screenrecorder_core::edit::CropInput;
+use screenrecorder_core::zoom;
 use std::time::{Duration, Instant};
 
 /// 標註畫成與畫面同大小的圖（內容變了才重畫）
@@ -39,7 +40,16 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, stage_h: f3
     let painter = ui.painter_at(outer);
     painter.rect_filled(rect, CornerRadius::ZERO, Color32::BLACK);
     if let Some(tex) = &ed.video_tex {
-        painter.image(tex.id(), rect, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+        // 預覽結果時顯示跟著點擊放大的效果（只放大影片；標註照原本的位置畫）
+        let uv = if ed.previewing && ed.zoom_on() {
+            let (z, cx, cy) = zoom::at(&zoom::focus_points(&ed.clicks), ed.zoom, ed.now());
+            let (hw, hh) = (0.5 / z as f32, 0.5 / z as f32);
+            let (cx, cy) = ((cx as f32).clamp(hw, 1.0 - hw), (cy as f32).clamp(hh, 1.0 - hh));
+            Rect::from_min_max(pos2(cx - hw, cy - hh), pos2(cx + hw, cy + hh))
+        } else {
+            Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0))
+        };
+        painter.image(tex.id(), rect, uv, Color32::WHITE);
     }
     if ed.vw <= 0.0 {
         interact(ed, ui, rect, &resp);

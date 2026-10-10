@@ -32,6 +32,7 @@ pub mod ipc;
 pub mod job;
 pub mod library;
 pub mod log;
+pub mod longshot;
 pub mod monitors;
 pub mod ocr;
 pub mod paths;
@@ -44,11 +45,16 @@ pub mod projects;
 pub mod rec_frame_win;
 pub mod recorder;
 pub mod recycle;
+#[cfg(windows)]
+pub mod scroll_win;
 pub mod selfupdate;
 pub mod settings;
 pub mod shot_edit;
 #[cfg(windows)]
 pub mod snip_win;
+pub mod steps;
+#[cfg(windows)]
+pub mod steps_win;
 pub mod thumbs;
 pub mod tray;
 #[cfg(windows)]
@@ -57,5 +63,6 @@ pub mod types;
 pub mod updater;
 pub mod version;
 pub mod winui;
+pub mod zoom;
 
 pub use error::{Error, Result};

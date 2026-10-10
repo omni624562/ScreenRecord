@@ -221,18 +221,18 @@ pub async fn edit_project(app: &App, path: &str) -> Option<EditProject> {
 
 /// 這支錄影裡打的點（影片的秒數，由小到大）
 pub async fn markers(app: &App, path: &str) -> Vec<f64> {
+    marks(app, path).await.markers
+}
+
+/// 這支錄影裡打的點與滑鼠點擊（依時間排序）
+pub async fn marks(app: &App, path: &str) -> crate::recorder::Marks {
     let (store, p) = (app.markers.clone(), path.to_string());
-    tokio::task::spawn_blocking(move || store.for_output(&p))
-        .await
-        .ok()
-        .flatten()
-        .and_then(|x| x.data.get("markers").and_then(|m| serde_json::from_value::<Vec<f64>>(m.clone()).ok()))
-        .map(|mut v| {
-            v.retain(|t| t.is_finite() && *t >= 0.0);
-            v.sort_by(f64::total_cmp);
-            v
-        })
-        .unwrap_or_default()
+    let mut m: crate::recorder::Marks = tokio::task::spawn_blocking(move || store.for_output(&p)).await.ok().flatten().and_then(|x| serde_json::from_value(x.data).ok()).unwrap_or_default();
+    m.markers.retain(|t| t.is_finite() && *t >= 0.0);
+    m.markers.sort_by(f64::total_cmp);
+    m.clicks.retain(|c| c.iter().all(|v| v.is_finite()) && c[0] >= 0.0);
+    m.clicks.sort_by(|a, b| a[0].total_cmp(&b[0]));
+    m
 }
 
 // ───────────── 截圖編輯 ─────────────

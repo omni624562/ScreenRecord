@@ -17,7 +17,7 @@ use super::UiApp;
 use eframe::egui::{self, vec2, Align, Color32, Id, Key, Layout, Modifiers, RichText, TextureHandle, TextureOptions};
 use screenrecorder_core::actions::{self, EditProject, ProjectMatch};
 use screenrecorder_core::annotate::{self, Ann, AnnKind, ProjectData, ProjectSpec, Shape, COLORS, EMOJIS};
-use screenrecorder_core::edit::{cut_file_name, keep_parts, keep_ranges, normalize_crop, normalize_ranges, output_length, CropInput, EditSpec, FastRange, Range};
+use screenrecorder_core::edit::{cut_file_name, keep_parts, keep_ranges, normalize_crop, normalize_ranges, output_length, ClickZoom, CropInput, EditSpec, FastRange, Range};
 use screenrecorder_core::format::video_clock;
 use screenrecorder_core::player::{Frame, MediaSpec, Player};
 use screenrecorder_core::types::LibraryEntry;
@@ -222,6 +222,10 @@ pub struct Editor {
     pending: Option<shot::Act>,
     /// 錄影時打的點（秒，原片的時間）
     markers: Vec<f64>,
+    /// 錄影時的滑鼠點擊（秒, x, y；原片的時間）
+    clicks: Vec<[f64; 3]>,
+    /// 跟著點擊放大的倍率（0 = 不放大）
+    zoom: f64,
     /// 正在用文字辨識找個資
     finding_pii: bool,
     /// 正在分析沒動靜的片段
@@ -264,14 +268,15 @@ pub fn open(app: &mut UiApp, entry: LibraryEntry) {
                 Some(EditProject { matched: ProjectMatch::Output, source: Some(s), .. }) => s.media.path.clone(),
                 _ => path,
             };
-            (info, actions::markers(&core, &src).await)
+            (info, actions::marks(&core, &src).await)
         },
-        move |app, (info, markers)| {
+        move |app, (info, marks)| {
             if OPEN_SEQ.load(Ordering::Relaxed) != seq || app.editor.is_some() {
                 return;
             }
             let mut ed = Editor::new(app, entry, ffmpeg, info);
-            ed.markers = markers;
+            ed.markers = marks.markers;
+            ed.clicks = marks.clicks;
             app.editor = Some(ed);
         },
     );
@@ -341,6 +346,8 @@ impl Editor {
             changed_at: None,
             pending: None,
             markers: vec![],
+            clicks: vec![],
+            zoom: 0.0,
             finding_pii: false,
             finding_idle: false,
             fast_from: None,
@@ -388,6 +395,7 @@ impl Editor {
         self.spec.crop = data.spec.crop;
         self.spec.audio = data.audio;
         self.spec.fast = data.fast;
+        self.zoom = data.zoom;
         self.crop_on = data.crop_on;
         self.anns = data.anns;
         if let (Some(s), Some(o)) = (&mut self.shot, opts) {
@@ -508,6 +516,7 @@ impl Editor {
         self.spec.audio = data.get("audio").and_then(|a| serde_json::from_value(a.clone()).ok()).unwrap_or_default();
         self.spec.fast = data.get("fast").and_then(|a| serde_json::from_value::<Vec<FastRange>>(a.clone()).ok()).unwrap_or_default();
         self.spec.fast.retain(|f| f.end() <= d + 0.05 && f.speed > 1 && f.speed <= 16);
+        self.zoom = data.get("zoom").and_then(Value::as_f64).filter(|z| (1.0..=4.0).contains(z)).unwrap_or(0.0);
         self.crop_on = data.get("cropOn").and_then(Value::as_bool).unwrap_or(false) && self.spec.crop.is_some();
         // 一個一個讀：格式不對的標註略過，不影響其他的
         let list = data.get("anns").and_then(Value::as_array).cloned().unwrap_or_default();
@@ -529,6 +538,7 @@ impl Editor {
             anns: self.anns.clone(),
             audio: self.spec.audio,
             fast: self.spec.fast.clone(),
+            zoom: self.zoom,
         }
     }
 
@@ -540,6 +550,11 @@ impl Editor {
 
     fn keep(&self) -> Vec<Range> {
         keep_ranges(self.duration, &self.spec)
+    }
+
+    /// 有打開跟著點擊放大（而且有點擊、沒有裁切）
+    fn zoom_on(&self) -> bool {
+        self.zoom > 1.0 && !self.clicks.is_empty() && !self.crop_on
     }
 
     /// 保留的片段依加速切開：(開始, 結束, 倍率)
@@ -1320,7 +1335,8 @@ fn footer(ed: &mut Editor, ui: &mut egui::Ui) -> bool {
         None => String::new(),
     };
     let gone = ed.gone_count(&keep);
-    let unchanged = keep.len() == 1 && keep[0].0 == 0.0 && keep[0].1 >= ed.duration - 0.05 && fast == 0 && crop.is_none() && ed.anns.is_empty() && ed.spec.audio.is_default();
+    let zooming = ed.zoom_on();
+    let unchanged = keep.len() == 1 && keep[0].0 == 0.0 && keep[0].1 >= ed.duration - 0.05 && fast == 0 && !zooming && crop.is_none() && ed.anns.is_empty() && ed.spec.audio.is_default();
     let mut save = false;
     ui.vertical(|ui| {
         ui.spacing_mut().item_spacing = vec2(0.0, 2.0);
@@ -1331,6 +1347,9 @@ fn footer(ed: &mut Editor, ui: &mut egui::Ui) -> bool {
             ui.label(format!("（原 {}）・保留 {} 段", video_clock(ed.duration), keep.len()));
             if fast > 0 {
                 ui.label(format!("・加速 {fast} 段"));
+            }
+            if zooming {
+                ui.label("・跟著點擊放大");
             }
             if !size.is_empty() {
                 ui.label("・畫面 ");
@@ -1370,7 +1389,16 @@ fn start_save(app: &mut UiApp, ed: &mut Editor) {
     let overlays = ed.ordered().into_iter().filter_map(|a| annotate::to_overlay(a, ed.vw, ed.vh)).collect();
     let crop =
         if ed.crop_on { normalize_crop(ed.spec.crop, ed.vw as i32, ed.vh as i32).map(|r| CropInput { x: r.x as f64, y: r.y as f64, width: r.width as f64, height: r.height as f64 }) } else { None };
-    let spec = EditSpec { start: ed.spec.start, end: ed.spec.end, removed: ed.spec.removed.clone(), crop, overlays, audio: ed.spec.audio, fast: ed.spec.fast.clone() };
+    let spec = EditSpec {
+        start: ed.spec.start,
+        end: ed.spec.end,
+        removed: ed.spec.removed.clone(),
+        crop,
+        overlays,
+        audio: ed.spec.audio,
+        fast: ed.spec.fast.clone(),
+        zoom: ed.zoom_on().then(|| ClickZoom { factor: ed.zoom, clicks: ed.clicks.clone() }),
+    };
     let project = serde_json::to_value(ed.project_data()).ok();
     let (core, source, replace) = (app.core.clone(), ed.entry.media.path.clone(), ed.replace_target.clone());
     let replacing = replace.is_some();

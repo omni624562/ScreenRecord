@@ -44,6 +44,12 @@ pub enum TrayCommand {
     ScreenshotLast,
     /// 幾秒後再框選（先打開要截的選單、提示）
     ScreenshotDelay(u64),
+    /// 長截圖（框選後自動往下捲，接成長圖）
+    ScreenshotScroll,
+    /// 開始步驟截圖（每點一下截一張）
+    StepsStart,
+    /// 完成步驟截圖（做成教學文件）
+    StepsFinish,
     /// 編輯最近的截圖
     EditLastShot,
     /// 點了通知：剛截圖的通知開啟編輯，其他開啟操作視窗
@@ -78,6 +84,8 @@ pub struct TrayState {
     pub has_last_snip: bool,
     /// 有截過圖（「編輯上次截圖」）
     pub has_shot: bool,
+    /// 步驟截圖進行中：已經截了幾步
+    pub steps: Option<u32>,
     pub last_result: Option<String>,
     /// None = 無法設定（開發版）
     pub autostart: Option<bool>,
@@ -190,6 +198,7 @@ impl TrayController {
             can_shot: self.app.ffmpeg_path().is_some(),
             has_last_snip: self.app.last_snip().is_some(),
             has_shot: self.app.last_shot().is_some_and(|s| std::path::Path::new(&s.path).is_file()),
+            steps: self.app.steps_count(),
             last_result: if last_result { c.last_result_path.clone() } else { None },
             autostart: c.autostart,
             version: APP_VERSION.to_string(),
@@ -353,6 +362,28 @@ impl TrayController {
                 let dir = self.config().output_dir;
                 let _ = std::fs::create_dir_all(&dir);
                 crate::desktop::open_with_explorer(&dir, false);
+                return Ok(());
+            }
+            TrayCommand::StepsStart => {
+                let dir = self.config().output_dir;
+                app.steps_start(&dir).map_err(err)?;
+                self.notify("步驟截圖", "開始了：之後每點一下滑鼠就截一張。做完後在系統匣選「完成步驟截圖」，就會做成教學文件", false);
+                return Ok(());
+            }
+            TrayCommand::StepsFinish => {
+                match app.steps_finish().await.map_err(err)? {
+                    Some(path) => {
+                        crate::desktop::open_with_explorer(&path, false);
+                        self.notify("步驟截圖", "教學文件做好了，已用瀏覽器開啟；文字可以直接修改，再列印成 PDF", false);
+                    }
+                    None => self.notify("步驟截圖", "沒有截到任何步驟", false),
+                }
+                return Ok(());
+            }
+            TrayCommand::ScreenshotScroll => {
+                let cfg = self.config();
+                let Some(shot) = app.long_shot(&cfg).await.map_err(err)? else { return Ok(()) };
+                self.notify_shot(&shot);
                 return Ok(());
             }
             TrayCommand::Screenshot

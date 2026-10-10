@@ -801,6 +801,29 @@ fn rec_panel(app: &mut UiApp, ui: &mut Ui) {
                 }
             }
         });
+        // 步驟截圖進行中：顯示幾步，可以完成
+        if let Some(n) = app.status.steps {
+            ui.add_space(6.0);
+            egui::Frame::new().fill(p.accent.gamma_multiply(0.1)).corner_radius(CornerRadius::same(theme::RADIUS_SM)).inner_margin(8.0).show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(format!("步驟截圖中・已截 {n} 步")).color(p.accent).font(theme::font_bold(13.0)));
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if Btn::new("完成").primary().small().tooltip("停止並做成教學文件（HTML），用瀏覽器開啟").show(ui).clicked() {
+                            let core = app.core.clone();
+                            app.spawn(async move { core.steps_finish().await }, |app, r| match r {
+                                Ok(Some(path)) => {
+                                    app.toast("教學文件做好了，已用瀏覽器開啟；文字可以直接修改，再列印成 PDF", false);
+                                    screenrecorder_core::desktop::open_with_explorer(&path, false);
+                                }
+                                Ok(None) => app.toast("沒有截到任何步驟", false),
+                                Err(e) => app.toast(e.message().to_string(), true),
+                            });
+                        }
+                    });
+                });
+            });
+        }
         // 提醒
         let mut msgs = vec![];
         if let Some(t) = &r.retrying {
@@ -867,11 +890,13 @@ fn rec_panel(app: &mut UiApp, ui: &mut Ui) {
 /// 截圖：與錄影相同的範圍，存成 PNG 並複製到剪貼簿（完成後由狀態更新顯示提示、更新清單）
 fn shot_button(app: &mut UiApp, ui: &mut Ui, w: f32) {
     let hotkey = if app.env.hotkeys.is_some_and(|h| h.shot) && !app.keys.label(2).is_empty() { format!("（{}）", app.keys.label(2)) } else { String::new() };
-    let tip = format!("截取目前的擷取範圍，存成 PNG 並複製到剪貼簿{hotkey}\n右鍵：框選範圍或視窗、延遲截圖");
+    let tip = format!("截取目前的擷取範圍，存成 PNG 並複製到剪貼簿{hotkey}\n右鍵：框選範圍或視窗、延遲截圖、長截圖");
     let can = app.env.ffmpeg.found && !app.main.shooting;
     let resp = Btn::new("截圖").icon(Icon::Camera).enabled(can).tooltip(tip).min_width(w).height(40.0).show(ui);
     // 右鍵選單：在螢幕上框選，或等幾秒再框選（先打開要截的選單）
     let mut snip: Option<u64> = None;
+    let mut long = false;
+    let mut steps = false;
     egui::Popup::context_menu(&resp).show(|ui| {
         ui.set_min_width(170.0);
         if ui.button("框選範圍或視窗…").clicked() {
@@ -883,7 +908,33 @@ fn shot_button(app: &mut UiApp, ui: &mut Ui, w: f32) {
                 snip = Some(sec);
             }
         }
+        ui.separator();
+        if ui.button("長截圖（捲動）…").on_hover_text("框選要捲動的內容（例如網頁），自動往下捲並接成一張長圖；按 Esc 停止").clicked() {
+            long = true;
+        }
+        if app.status.steps.is_none() && ui.button("步驟截圖（做成教學文件）").on_hover_text("開始後每點一下滑鼠就截一張，標出點的位置；完成時做成一份圖文並茂的教學文件").clicked()
+        {
+            steps = true;
+        }
     });
+    if steps {
+        let dir = app.s.record_config(&app.env).output_dir;
+        match app.core.steps_start(&dir) {
+            Ok(()) => app.toast("步驟截圖開始：之後每點一下滑鼠就截一張，做完後按「完成」", false),
+            Err(e) => app.toast(e.message().to_string(), true),
+        }
+    }
+    if long && can {
+        app.main.shooting = true;
+        let config = app.s.record_config(&app.env);
+        let core = app.core.clone();
+        app.spawn(async move { core.long_shot(&config).await }, |app, r| {
+            app.main.shooting = false;
+            if let Err(e) = r {
+                app.toast(e.message().to_string(), true);
+            }
+        });
+    }
     if let Some(sec) = snip.filter(|_| can) {
         app.main.shooting = true;
         let config = app.s.record_config(&app.env);

@@ -72,6 +72,8 @@ pub struct Status {
     pub install: Option<crate::selfupdate::InstallStatus>,
     /// 最近一次的截圖
     pub shot: Option<crate::types::ShotInfo>,
+    /// 步驟截圖進行中：已經截了幾步
+    pub steps: Option<u32>,
 }
 
 /// 預覽畫面的最大寬度
@@ -109,6 +111,9 @@ struct State {
     snip: Option<SnipSource>,
     /// 框選畫面開著（還沒截好或取消）
     snipping: bool,
+    /// 步驟截圖進行中：(工作, 文件的資料夾, 文件名稱, 開始的時間)
+    #[cfg(windows)]
+    steps: Option<(crate::steps_win::Session, PathBuf, String, String)>,
 }
 
 pub struct App {
@@ -326,6 +331,63 @@ impl App {
             update: self.update().map(|u| u.version),
             install: Some(self.installer.status()).filter(|s| s.phase != crate::selfupdate::InstallPhase::Idle),
             shot: self.lock().shot.clone(),
+            steps: self.steps_count(),
+        }
+    }
+
+    // ───────────── 步驟截圖 ─────────────
+
+    /// 步驟截圖進行中：已經截了幾步
+    pub fn steps_count(&self) -> Option<u32> {
+        #[cfg(windows)]
+        return self.lock().steps.as_ref().map(|s| s.0.count());
+        #[cfg(not(windows))]
+        None
+    }
+
+    /// 開始步驟截圖：之後每點一下滑鼠就截一張（圖放在儲存資料夾的「教學_日期_時間」資料夾）
+    pub fn steps_start(&self, output_dir: &str) -> crate::Result<()> {
+        #[cfg(not(windows))]
+        {
+            let _ = output_dir;
+            Err(crate::Error::config("步驟截圖只支援 Windows"))
+        }
+        #[cfg(windows)]
+        {
+            let mut st = self.lock();
+            if st.steps.is_some() {
+                return Err(crate::Error::config("步驟截圖已經在進行中"));
+            }
+            let stamp = crate::paths::timestamp();
+            let name = format!("教學_{stamp}");
+            let dir = PathBuf::from(output_dir);
+            let session = crate::steps_win::Session::start(dir.clone(), name.clone()).map_err(|e| crate::Error::config(format!("無法建立資料夾：{e}")))?;
+            st.steps = Some((session, dir, name, chrono::Local::now().format("%Y/%m/%d %H:%M").to_string()));
+            crate::info!("[截圖] 開始步驟截圖");
+            Ok(())
+        }
+    }
+
+    /// 完成步驟截圖：做成教學文件（HTML），回傳文件路徑；一步都沒有時刪掉資料夾、回傳 None
+    pub async fn steps_finish(&self) -> crate::Result<Option<String>> {
+        #[cfg(not(windows))]
+        return Err(crate::Error::config("步驟截圖只支援 Windows"));
+        #[cfg(windows)]
+        {
+            let Some((session, dir, name, date)) = self.lock().steps.take() else {
+                return Err(crate::Error::config("沒有在步驟截圖"));
+            };
+            let steps = tokio::task::spawn_blocking(move || session.finish()).await.unwrap_or_default();
+            if steps.is_empty() {
+                let _ = std::fs::remove_dir(dir.join(&name));
+                crate::info!("[截圖] 步驟截圖：沒有任何步驟");
+                return Ok(None);
+            }
+            let path = dir.join(format!("{name}.html"));
+            let doc = crate::steps::html(&format!("操作步驟（{date}）"), &date, &steps);
+            tokio::fs::write(&path, doc).await.map_err(|e| crate::Error::other(format!("無法儲存教學文件：{e}")))?;
+            crate::info!("[截圖] 步驟截圖完成：{} 步，{}", steps.len(), path.display());
+            Ok(Some(path.display().to_string()))
         }
     }
 
@@ -514,7 +576,7 @@ impl App {
 
     /// 在凍結的畫面上框選（Windows 原生視窗）；取消時 None
     #[cfg(windows)]
-    async fn snip_pick(&self, src: &SnipSource, record: bool) -> Option<crate::types::Rect> {
+    async fn snip_pick(&self, src: &SnipSource, record: crate::snip_win::Mode) -> Option<crate::types::Rect> {
         self.lock().snipping = true;
         let (path, desk, windows) = (src.path.clone(), src.desktop, src.windows.clone());
         tokio::task::spawn_blocking(move || {
@@ -530,7 +592,7 @@ impl App {
 
     #[cfg(windows)]
     async fn snip_native(self: &Arc<Self>, src: SnipSource) -> crate::Result<Option<crate::types::ShotInfo>> {
-        let sel = self.snip_pick(&src, false).await;
+        let sel = self.snip_pick(&src, crate::snip_win::Mode::Shot).await;
         let res = match sel {
             Some(r) => self.snip_save(&src, r).await.map(Some),
             None => {
@@ -540,6 +602,52 @@ impl App {
         };
         self.snip_end(Some(&src));
         res
+    }
+
+    /// 長截圖：框選範圍（或點一下選視窗）後，自動一邊往下捲一邊截取，接成一張長圖，
+    /// 存成新的截圖並複製到剪貼簿。捲到底、畫面對不起來、太長或按 Esc 時停止。只有 Windows
+    pub async fn long_shot(self: &Arc<Self>, config: &RecordConfig) -> crate::Result<Option<crate::types::ShotInfo>> {
+        #[cfg(not(windows))]
+        {
+            let _ = config;
+            Err(crate::Error::config("長截圖只支援 Windows"))
+        }
+        #[cfg(windows)]
+        {
+            {
+                let mut st = self.lock();
+                if st.shooting || st.snipping {
+                    return Err(crate::Error::config("正在截圖"));
+                }
+                st.shooting = true;
+            }
+            let r = self.snip_capture(config).await;
+            self.lock().shooting = false;
+            let src = r?;
+            let Some(area) = self.snip_pick(&src, crate::snip_win::Mode::Scroll).await else {
+                crate::info!("[截圖] 取消長截圖");
+                self.snip_end(Some(&src));
+                return Ok(None);
+            };
+            // 框選畫面關掉後等一下，讓下面的視窗重畫
+            tokio::time::sleep(Duration::from_millis(250)).await;
+            let res = tokio::task::spawn_blocking(move || scroll_capture(area)).await.map_err(|e| crate::Error::other(e.to_string()))?;
+            self.snip_end(Some(&src));
+            let (rgba, w, h, steps) = res?;
+            let out = new_shot_path(&src.output_dir).await?;
+            let o = out.clone();
+            tokio::task::spawn_blocking(move || {
+                let mut pm = tiny_skia::Pixmap::new(w, h).ok_or_else(|| crate::Error::other("圖片太大"))?;
+                pm.data_mut().copy_from_slice(&rgba);
+                pm.save_png(&o).map_err(|e| crate::Error::other(format!("無法儲存圖片：{e}")))
+            })
+            .await
+            .map_err(|e| crate::Error::other(e.to_string()))??;
+            let shot = self.finish_shot(&out, w, h).await;
+            self.lock().shot = Some(shot.clone());
+            crate::info!("[截圖] 長截圖 {}（{w}×{h}，捲動 {steps} 次）", shot.path);
+            Ok(Some(shot))
+        }
     }
 
     /// 框選要錄影的範圍：與框選截圖相同的畫面（拖曳框選或點一下選視窗），回傳範圍（取消時 None），
@@ -556,7 +664,7 @@ impl App {
         self.lock().shooting = false;
         let src = r?;
         #[cfg(windows)]
-        let sel = self.snip_pick(&src, true).await;
+        let sel = self.snip_pick(&src, crate::snip_win::Mode::Record).await;
         #[cfg(not(windows))]
         let sel = None;
         match sel {
@@ -1109,6 +1217,55 @@ impl Drop for LiveGuard {
 }
 
 /// 新截圖的檔名：Shot_日期_時間.png（同一秒有好幾張時加 _2、_3…）
+/// 一邊往下捲一邊截取範圍、接成長圖；回傳 (RGBA, 寬, 高, 捲了幾次)
+#[cfg(windows)]
+fn scroll_capture(area: crate::types::Rect) -> crate::Result<(Vec<u8>, u32, u32, usize)> {
+    use crate::longshot::{Step, Stitcher};
+    let first = crate::scroll_win::grab(area).ok_or_else(|| crate::Error::other("無法截取畫面"))?;
+    let (w, h) = (area.width as u32, area.height as u32);
+    let mut st = Stitcher::new(first, w, h);
+    // 範圍小時一次捲少一點，前後兩張才有足夠的重疊
+    let notches = if area.height < 360 {
+        1
+    } else if area.height < 700 {
+        2
+    } else {
+        3
+    };
+    let _ = crate::scroll_win::esc_pressed();
+    let (mut steps, mut same) = (0, 0);
+    while steps < 120 {
+        crate::scroll_win::scroll_down(area, notches);
+        std::thread::sleep(Duration::from_millis(350));
+        if crate::scroll_win::esc_pressed() {
+            crate::info!("[截圖] 長截圖：按了 Esc，停止");
+            break;
+        }
+        let Some(img) = crate::scroll_win::grab(area) else { break };
+        steps += 1;
+        match st.add(img) {
+            Step::Added(_) => same = 0,
+            // 有些網頁捲動有動畫：再等一下看看
+            Step::Same => {
+                same += 1;
+                if same >= 2 {
+                    break;
+                }
+            }
+            Step::Lost => {
+                crate::info!("[截圖] 長截圖：畫面對不起來，停止");
+                break;
+            }
+            Step::Full => {
+                crate::info!("[截圖] 長截圖：已達最高 {} 像素，停止", crate::longshot::MAX_HEIGHT);
+                break;
+            }
+        }
+    }
+    let (rgba, w, h) = st.finish();
+    Ok((rgba, w, h, steps))
+}
+
 async fn new_shot_path(dir: &str) -> crate::Result<PathBuf> {
     let dir = PathBuf::from(dir);
     tokio::fs::create_dir_all(&dir).await.map_err(|e| crate::Error::config(format!("無法建立儲存資料夾：{e}")))?;

@@ -163,7 +163,8 @@ impl Exporter {
             }
             None => None,
         };
-        let unchanged = keep.len() == 1 && keep[0].0 == 0.0 && keep[0].1 >= duration - 0.05 && keep[0].2 == 1 && crop.is_none() && spec.overlays.is_empty() && spec.audio.is_default();
+        let unchanged =
+            keep.len() == 1 && keep[0].0 == 0.0 && keep[0].1 >= duration - 0.05 && keep[0].2 == 1 && crop.is_none() && spec.overlays.is_empty() && spec.audio.is_default() && spec.zoom.is_none();
         if unchanged {
             return Err(Error::config("沒有任何剪輯、裁切或標註"));
         }
@@ -186,12 +187,21 @@ impl Exporter {
             Some(r) => crate::paths::unique_path(&parent(r), &format!("~{}.editing", strip_mp4(&file_name(r))), ".mp4"),
             None => crate::paths::unique_path(&parent(source), &strip_mp4(&cut_file_name(&file_name(source))), ".mp4"),
         };
-        let args = cut_args(source, &output.display().to_string(), &keep, crop, fps, &enc, info.has_audio == Some(true), &overlays, spec.audio)?;
+        // 跟著點擊放大：點擊的時間換成剪輯後的時間（刪掉的片段裡的不算）
+        let zoom = match (&spec.zoom, crop, info.width, info.height) {
+            (Some(z), None, Some(w), Some(h)) if z.factor > 1.0 => {
+                let pts: Vec<[f64; 3]> = z.clicks.iter().filter_map(|c| crate::zoom::map_time(&keep, c[0]).map(|t| [t, c[1], c[2]])).collect();
+                crate::zoom::zoompan(&crate::zoom::focus_points(&pts), z.factor, w as i32, h as i32, fps)
+            }
+            _ => None,
+        };
+        let args = cut_args(source, &output.display().to_string(), &keep, crop, fps, &enc, info.has_audio == Some(true), &overlays, spec.audio, zoom.as_deref())?;
         let fast = keep.iter().filter(|p| p.2 > 1).count();
         let note = format!(
-            "保留 {} 段{}{}{}",
+            "保留 {} 段{}{}{}{}",
             keep.iter().filter(|p| p.2 == 1).count() + fast,
             if fast > 0 { format!("，加速 {fast} 段") } else { String::new() },
+            if zoom.is_some() { "，跟著點擊放大" } else { "" },
             crop.map(|c| format!("，裁切 {}×{}", c.width, c.height)).unwrap_or_default(),
             if overlays.is_empty() { String::new() } else { format!("，標註 {} 個", overlays.len()) }
         );

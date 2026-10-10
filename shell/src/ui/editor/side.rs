@@ -8,6 +8,7 @@ use screenrecorder_core::annotate::{self, AnnKind, Shape, COLORS};
 use screenrecorder_core::edit::{normalize_ranges, set_fast, CropInput, FAST_SPEEDS};
 use screenrecorder_core::format::video_clock;
 use screenrecorder_core::idle;
+use screenrecorder_core::zoom;
 
 pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, toast: &mut Option<(String, bool)>) {
     tabs(ed, ui);
@@ -238,6 +239,43 @@ fn crop_panel(ed: &mut Editor, ui: &mut egui::Ui) {
     }
     let text = if can { format!("開啟後可直接在{}上拖曳框選要保留的區域。", ed.what()) } else { format!("無法讀取{}尺寸，不能裁切。", ed.what()) };
     hint(ui, &text);
+    if !ed.is_shot() {
+        zoom_panel(ed, ui);
+    }
+}
+
+/// 跟著點擊放大：錄影時記下的點擊，輸出時放大到點擊的地方
+fn zoom_panel(ed: &mut Editor, ui: &mut egui::Ui) {
+    let p = theme::pal(ui);
+    ui.add_space(4.0);
+    let r = ui.cursor();
+    ui.painter().hline(r.x_range(), r.top(), Stroke::new(1.0, p.border));
+    ui.add_space(6.0);
+    ui.label(RichText::new("跟著點擊放大").font(theme::font_bold(13.5)));
+    if ed.clicks.is_empty() {
+        return hint(ui, "這支錄影沒有記下滑鼠點擊（3.1 版以後在 Windows 上錄的影片才有）。");
+    }
+    let can = !ed.crop_on;
+    let mut on = ed.zoom > 1.0;
+    if switch(ui, &mut on, format!("點擊時放大（{} 次點擊）", ed.clicks.len()), can).changed() {
+        ed.zoom = if on { 2.0 } else { 0.0 };
+    }
+    if on {
+        let mut z = (ed.zoom * 10.0).round() as u32;
+        let items: Vec<(u32, String)> = zoom::FACTORS.iter().map(|f| ((f * 10.0).round() as u32, format!("{f}×"))).collect();
+        let refs: Vec<(u32, &str)> = items.iter().map(|(v, t)| (*v, t.as_str())).collect();
+        if segmented(ui, &mut z, &refs, can) {
+            ed.zoom = z as f64 / 10.0;
+        }
+    }
+    hint(
+        ui,
+        if can {
+            "點擊前畫面慢慢放大到點擊的地方，連續點擊時跟著移動，停下來後拉回全畫面。按「預覽結果」可以看到效果。"
+        } else {
+            "裁切畫面時不能同時使用。"
+        },
+    );
 }
 
 const TOOLS: [(Tool, &str); 11] = [

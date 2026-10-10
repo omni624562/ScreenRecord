@@ -396,6 +396,8 @@ fn show_menu() {
                 }
                 Menu::sub(shot, "延遲框選(&D)", delay, false);
             }
+            m.add(shot, "長截圖（捲動）(&L)…", TrayCommand::ScreenshotScroll, false, false);
+            m.add(shot, "步驟截圖（做成教學文件）(&P)", TrayCommand::StepsStart, st.steps.is_some(), false);
             if let Ok(full) = CreatePopupMenu() {
                 for mon in &st.monitors {
                     m.add(full, &mon.label, TrayCommand::ScreenshotMonitor(mon.id.clone()), false, false);
@@ -412,6 +414,10 @@ fn show_menu() {
             Menu::sep(shot);
             m.add(shot, "編輯上次截圖(&E)…", TrayCommand::EditLastShot, !st.has_shot, false);
             Menu::sub(root, "截圖(&T)", shot, !st.can_shot);
+        }
+        // 步驟截圖進行中：放在最上層，隨時可以完成
+        if let Some(n) = st.steps {
+            m.add(root, &format!("完成步驟截圖（{n} 步）(&G)"), TrayCommand::StepsFinish, false, false);
         }
         Menu::sep(root);
         if let Ok(audio) = CreatePopupMenu() {

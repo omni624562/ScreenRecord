@@ -36,6 +36,16 @@ pub struct EditSpec {
     /// 加速的片段（原影片的時間）
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fast: Vec<FastRange>,
+    /// 跟著點擊放大
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub zoom: Option<ClickZoom>,
+}
+
+/// 跟著點擊放大：倍率與錄影時記下的點擊（原影片的秒數, x, y；x、y 為 0～1）
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ClickZoom {
+    pub factor: f64,
+    pub clicks: Vec<[f64; 3]>,
 }
 
 /// 局部加速：這段時間以 speed 倍播放（加速的片段沒有聲音）

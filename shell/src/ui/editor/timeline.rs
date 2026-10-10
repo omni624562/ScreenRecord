@@ -208,6 +208,12 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, toast: &mut
         painter.rect(flag, CornerRadius { nw: 0, sw: 0, ne: 4, se: 4 }, MARK, Stroke::new(1.0, Color32::from_black_alpha(140)), egui::StrokeKind::Outside);
         painter.text(flag.center() + vec2(0.5, 0.0), Align2::CENTER_CENTER, label, theme::font_bold(10.0), Color32::WHITE);
     }
+    // 跟著點擊放大：點擊的時間（小圓點）
+    if ed.zoom_on() {
+        for c in ed.clicks.iter().filter(|c| c[0] >= a && c[0] <= b) {
+            painter.circle(pos2(x_of(c[0]), rect.bottom() - 5.0), 2.5, FAST, Stroke::new(1.0, Color32::WHITE));
+        }
+    }
     let flag_at = |pos: Pos2| flags.iter().find(|(x, _, _)| pos.y >= rect.bottom() - FLAG_H - 2.0 && pos.x >= x - 4.0 && pos.x <= x + 18.0).map(|&(_, i, t)| (i, t));
     // 播放頭
     let t_now = ed.now();

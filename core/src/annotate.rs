@@ -881,6 +881,9 @@ pub struct ProjectData {
     /// 局部加速的片段
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fast: Vec<crate::edit::FastRange>,
+    /// 跟著點擊放大的倍率（0 = 不放大）
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub zoom: f64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
