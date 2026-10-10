@@ -123,9 +123,11 @@ fn main() {
                         FrameCmd::Pause => r.pause().await,
                         FrameCmd::Resume => r.resume().await,
                         FrameCmd::Stop => r.stop(None).await.map(|_| ()),
+                        FrameCmd::Move(x, y) => r.move_region(x, y).await.map(|_| ()),
                     };
                     if let Err(e) = res {
                         warn!("錄影控制列：{}", e.message());
+                        c.notify("錄影控制", e.message(), true);
                     }
                 });
             },

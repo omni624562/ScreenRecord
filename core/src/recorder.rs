@@ -7,7 +7,9 @@
 //! 公開操作（開始、暫停、繼續、停止）依序執行，避免連點造成競態；狀態放在一把短暫持有的鎖裡，
 //! 不在持有鎖時等待（呼叫 FFmpeg、開啟音訊裝置），查詢狀態永遠不會被卡住。
 
-use crate::args::{audio_end_args, choose_encoder, concat_args, concat_list, parse_media_info, resolve_plan, segment_args, startup_fallback, CapturePlan, EncoderSpec, FallbackInput, StartupFallback};
+use crate::args::{
+    audio_end_args, choose_encoder, concat_args, concat_list, desktop_rect, parse_media_info, resolve_plan, segment_args, startup_fallback, CapturePlan, EncoderSpec, FallbackInput, StartupFallback,
+};
 use crate::audio::{AudioSourceSpec, Opener};
 use crate::audiopipe::{AudioPipe, LogFn};
 use crate::format::js_round;
@@ -341,6 +343,77 @@ impl Recorder {
         self.do_resume()
     }
 
+    /// 移動自訂範圍（大小不變，限制在桌面內），回傳移動後的範圍。
+    /// 倒數或暫停中直接換位置；錄影中結束目前的分段，從新位置開新分段（中間約 0.5～1 秒沒錄到，停止時一樣合併成一個檔案）
+    pub async fn move_region(&self, x: i32, y: i32) -> Result<Rect> {
+        // 倒數期間 start 佔著佇列：不排隊，直接換（還沒有分段在錄）
+        if self.lock().state != RecorderState::Countdown {
+            let _q = self.0.queue.lock().await;
+            return self.do_move(x, y).await;
+        }
+        self.do_move(x, y).await
+    }
+
+    async fn do_move(&self, x: i32, y: i32) -> Result<Rect> {
+        let monitors = self.deps().monitors();
+        let (plan, config, recording) = {
+            let st = self.lock();
+            let recording = match st.state {
+                RecorderState::Recording => true,
+                RecorderState::Countdown | RecorderState::Paused => false,
+                _ => return Err(Error::config("目前沒有在錄影")),
+            };
+            let (Some(cfg), Some(old)) = (st.config.as_ref(), st.plan.as_ref()) else {
+                return Err(Error::config("目前沒有在錄影"));
+            };
+            if !matches!(cfg.source, SourceConfig::Region { .. }) {
+                return Err(Error::config("只有自訂範圍可以移動"));
+            }
+            let r = old.rect;
+            let dk = desktop_rect(&monitors);
+            let (nx, ny) = if dk.width > 0 { (x.clamp(dk.x, (dk.x + dk.width - r.width).max(dk.x)), y.clamp(dk.y, (dk.y + dk.height - r.height).max(dk.y))) } else { (x, y) };
+            if (nx, ny) == (r.x, r.y) {
+                return Ok(r);
+            }
+            let config = RecordConfig { source: SourceConfig::Region { x: nx as f64, y: ny as f64, width: r.width as f64, height: r.height as f64 }, ..cfg.clone() };
+            let plan = resolve_plan(&config, &monitors)?;
+            if st.method == Some(CaptureMethod::Ddagrab) && plan.dda.is_none() {
+                return Err(Error::config("新位置跨到不同顯示卡上的螢幕，這次錄影無法移過去"));
+            }
+            (plan, config, recording)
+        };
+        let rect = plan.rect;
+        if recording {
+            {
+                let mut st = self.lock();
+                st.close_span();
+                st.state = RecorderState::Paused;
+                st.busy = Some("正在移動範圍…".into());
+            }
+            self.stop_current().await;
+        }
+        {
+            let mut st = self.lock();
+            st.plan = Some(plan);
+            st.config = Some(config);
+            st.add_log(LogLevel::Info, &format!("錄影範圍移到 ({}, {})", rect.x, rect.y));
+            if !recording {
+                return Ok(rect);
+            }
+            st.busy = None;
+            // 移動的期間按了停止：不再開新分段
+            if st.state != RecorderState::Paused {
+                return Ok(rect);
+            }
+            st.state = RecorderState::Recording;
+            st.span_start = Some(now_ms());
+        }
+        if !self.try_start_segment() {
+            return Err(Error::config("無法在新位置繼續錄影，已停止並儲存先前錄到的部分"));
+        }
+        Ok(rect)
+    }
+
     /// 停止並儲存。開始的過程中（準備、倒數、縮小視窗）直接取消：start 還在佇列裡，不能排在它後面
     pub fn stop(&self, reason: Option<String>) -> BoxFut<'static, Result<Option<RecordingResult>>> {
         {
@@ -602,6 +675,8 @@ impl Recorder {
                 return self.abandon(false);
             }
         }
+        // 倒數中可能移動了範圍（螢幕上的控制列）
+        let plan = self.lock().plan.clone().unwrap_or(plan);
         // 縮小視窗的那 0.35 秒仍算倒數（countdown 保留到這之後），期間取消也有效
         if hide_ui {
             deps.before_capture(plan.rect).await;
@@ -1492,6 +1567,22 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn move_region_during_countdown_keeps_size() {
+        let s = Setup::new(Fake::default());
+        s.release();
+        s.rec.start(RecordConfig { source: region(100.0, 50.0, 640.0, 480.0), ..s.config() }).await.unwrap();
+        let r = s.rec.move_region(300, 200).await.unwrap();
+        assert_eq!(r, Rect { x: 300, y: 200, width: 640, height: 480 });
+        assert_eq!(s.rec.frame_info().unwrap().area, r);
+        // 超出桌面時限制在桌面內（假的螢幕是 1920×1080）
+        let r = s.rec.move_region(5000, -50).await.unwrap();
+        assert_eq!(r, Rect { x: 1920 - 640, y: 0, width: 640, height: 480 });
+        s.rec.stop(None).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(s.rec.move_region(0, 0).await.is_err());
+    }
+
+    #[tokio::test]
     async fn minimizing_gets_capture_area() {
         let s = Setup::new(Fake { stop_in_before: true, ..Default::default() });
         s.release();
@@ -1598,6 +1689,35 @@ esac
         assert!(!st.log.iter().any(|l| l.text.contains("強制終止")), "{:?}", st.log);
         assert!(s.rec.output_path().is_none());
         assert_eq!(s.deps.after.load(Ordering::SeqCst), 1);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn move_region_while_recording_starts_a_new_segment() {
+        let tools = tempfile::tempdir().unwrap();
+        let s = Setup::new(Fake { ffmpeg: Some(fake_ffmpeg(tools.path())), ..Default::default() });
+        s.release();
+        let cfg = RecordConfig { countdown_sec: Some(0.0), hide_ui: Some(false), source: region(0.0, 0.0, 640.0, 480.0), ..s.config() };
+        s.rec.start(cfg).await.unwrap();
+        let wait_frames = || async {
+            for _ in 0..100 {
+                if s.rec.status().frames > 0 && s.rec.status().busy.is_none() {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            panic!("沒有收到進度");
+        };
+        wait_frames().await;
+        let r = s.rec.move_region(400, 300).await.unwrap();
+        assert_eq!(r, Rect { x: 400, y: 300, width: 640, height: 480 });
+        let st = s.rec.status();
+        assert_eq!(st.state, RecorderState::Recording);
+        assert!(st.log.iter().any(|l| l.text.contains("錄影範圍移到 (400, 300)")));
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let res = s.rec.stop(None).await.unwrap().unwrap();
+        assert!(res.ok, "{}", res.message);
+        assert!(res.message.contains("2 個分段"), "{}", res.message);
     }
 
     #[cfg(unix)]

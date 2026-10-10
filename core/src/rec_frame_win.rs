@@ -1,5 +1,6 @@
 //! 錄影範圍的外框與控制列（Windows）：錄自訂範圍時，在範圍外圍畫一圈細框，倒數、錄影、暫停期間一直顯示，
 //! 讓人知道錄到哪裡；框的左上方有一個小控制列（已錄時間、暫停 / 繼續、停止；倒數中是剩幾秒與取消）。
+//! 拖曳控制列（按鈕以外的地方）可以移動範圍：外框跟著游標走，放開後從新位置繼續錄（大小不變）。
 //! 框與控制列都在範圍外面（放不下時控制列改到框下方或框內左上），也設成不被擷取（Windows 10 2004 以後），
 //! 不會錄進影片。框讓滑鼠穿過；控制列可以點，但不搶焦點（正在打字的視窗不受影響）。
 //! 錄影中紅色，暫停時橘色。座標是實體像素（程式已宣告 Per-Monitor DPI aware）。
@@ -19,12 +20,13 @@ use windows::Win32::Graphics::Gdi::{
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
-use windows::Win32::UI::Input::KeyboardAndMouse::{TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT};
+use windows::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture, TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT};
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DispatchMessageW, GetClientRect, LoadCursorW, PeekMessageW, RegisterClassExW, SetCursor, SetLayeredWindowAttributes, SetWindowDisplayAffinity, SetWindowPos,
-    ShowWindow, TranslateMessage, HTTRANSPARENT, HWND_TOPMOST, IDC_ARROW, IDC_HAND, LWA_ALPHA, MA_NOACTIVATE, MSG, PM_REMOVE, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, SW_HIDE,
-    WDA_EXCLUDEFROMCAPTURE, WM_ERASEBKGND, WM_LBUTTONUP, WM_MOUSEACTIVATE, WM_MOUSEMOVE, WM_NCHITTEST, WM_PAINT, WM_SETCURSOR, WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
-    WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
+    CreateWindowExW, DefWindowProcW, DispatchMessageW, GetClientRect, GetCursorPos, GetSystemMetrics, LoadCursorW, PeekMessageW, RegisterClassExW, SetCursor, SetLayeredWindowAttributes,
+    SetWindowDisplayAffinity, SetWindowPos, ShowWindow, TranslateMessage, HTTRANSPARENT, HWND_TOPMOST, IDC_HAND, IDC_SIZEALL, LWA_ALPHA, MA_NOACTIVATE, MSG, PM_REMOVE, SM_CXVIRTUALSCREEN,
+    SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, SW_HIDE, WDA_EXCLUDEFROMCAPTURE, WM_CAPTURECHANGED, WM_ERASEBKGND,
+    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEACTIVATE, WM_MOUSEMOVE, WM_NCHITTEST, WM_PAINT, WM_SETCURSOR, WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
+    WS_EX_TRANSPARENT, WS_POPUP,
 };
 
 /// 框的粗細與離範圍的距離（像素）
@@ -47,6 +49,8 @@ pub enum FrameCmd {
     Pause,
     Resume,
     Stop,
+    /// 把範圍移到 (x, y)（左上角，虛擬桌面座標）
+    Move(i32, i32),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -72,6 +76,29 @@ thread_local! {
     static HOVER: Cell<Option<usize>> = const { Cell::new(None) };
     /// 按下的按鈕（迴圈裡取出後送出指令）
     static CLICKED: Cell<Option<Button>> = const { Cell::new(None) };
+    /// 正在拖曳控制列：按下時的游標位置與範圍左上角、目前的游標位置
+    static DRAG: Cell<Option<Drag>> = const { Cell::new(None) };
+    /// 目前顯示的範圍左上角（拖曳的起點）
+    static ORIGIN: Cell<(i32, i32)> = const { Cell::new((0, 0)) };
+    /// 範圍的寬高
+    static BAR_AREA: Cell<(i32, i32)> = const { Cell::new((0, 0)) };
+    /// 放開後要移去的位置（錄影器移好之前，外框先停在這裡）
+    static MOVE_TO: Cell<Option<(i32, i32)>> = const { Cell::new(None) };
+}
+
+#[derive(Clone, Copy)]
+struct Drag {
+    start: POINT,
+    origin: (i32, i32),
+    cur: POINT,
+}
+
+/// 拖曳中外框的左上角（限制在虛擬桌面內）
+fn drag_origin(d: &Drag, size: (i32, i32)) -> (i32, i32) {
+    let (vx, vy, vw, vh) = unsafe { (GetSystemMetrics(SM_XVIRTUALSCREEN), GetSystemMetrics(SM_YVIRTUALSCREEN), GetSystemMetrics(SM_CXVIRTUALSCREEN), GetSystemMetrics(SM_CYVIRTUALSCREEN)) };
+    let x = d.origin.0 + d.cur.x - d.start.x;
+    let y = d.origin.1 + d.cur.y - d.start.y;
+    (x.clamp(vx, (vx + vw - size.0).max(vx)), y.clamp(vy, (vy + vh - size.1).max(vy)))
 }
 
 /// 背景執行緒：每 0.1 秒問一次 info()（None = 不顯示），跟著顯示、移動或隱藏外框與控制列；
@@ -85,6 +112,8 @@ pub fn spawn(info: impl Fn() -> Option<FrameInfo> + Send + 'static, cmd: impl Fn
 const BAR_H: f32 = 34.0;
 const BAR_PAD: f32 = 12.0;
 const DOT: f32 = 10.0;
+/// 左邊的拖曳點（2×3 個小點）
+const GRIP: f32 = 12.0;
 const TEXT_W: f32 = 76.0;
 const BTN_W: f32 = 32.0;
 const BTN_GAP: f32 = 2.0;
@@ -95,7 +124,7 @@ fn px(v: f32, scale: f32) -> i32 {
 
 fn bar_size(b: &Bar) -> (i32, i32) {
     let s = b.scale;
-    let w = BAR_PAD + DOT + 8.0 + TEXT_W + 6.0 + b.buttons.len() as f32 * (BTN_W + BTN_GAP) + 4.0;
+    let w = BAR_PAD + GRIP + DOT + 8.0 + TEXT_W + 6.0 + b.buttons.len() as f32 * (BTN_W + BTN_GAP) + 4.0;
     (px(w, s), px(BAR_H, s))
 }
 
@@ -155,6 +184,7 @@ unsafe fn run(info: impl Fn() -> Option<FrameInfo>, cmd: impl Fn(FrameCmd)) {
         }
     };
     let mut shown: Option<(Rect, bool)> = None;
+    let mut pending: Option<((i32, i32), Instant)> = None;
     let mut raised = Instant::now();
     let mut msg = MSG::default();
     loop {
@@ -169,7 +199,29 @@ unsafe fn run(info: impl Fn() -> Option<FrameInfo>, cmd: impl Fn(FrameCmd)) {
                 Button::Stop => FrameCmd::Stop,
             });
         }
-        let f = info();
+        let mut f = info();
+        // 拖曳中：外框跟著游標；放開後到錄影器移好之前（最多 3 秒）先停在新位置
+        let dragging = DRAG.with(|d| d.get());
+        if let Some(fi) = &mut f {
+            let size = (fi.area.width, fi.area.height);
+            if let Some(d) = dragging {
+                (fi.area.x, fi.area.y) = drag_origin(&d, size);
+            } else if let Some((to, since)) = pending {
+                if (fi.area.x, fi.area.y) == to || since.elapsed() > Duration::from_secs(3) {
+                    pending = None;
+                } else {
+                    (fi.area.x, fi.area.y) = to;
+                }
+            }
+            ORIGIN.with(|o| o.set((fi.area.x, fi.area.y)));
+            BAR_AREA.with(|a| a.set(size));
+        } else {
+            pending = None;
+        }
+        if let Some(to) = MOVE_TO.with(|m| m.take()) {
+            pending = Some((to, Instant::now()));
+            cmd(FrameCmd::Move(to.0, to.1));
+        }
         let want = f.map(|f| (f.area, f.state == RecorderState::Paused));
         if want != shown {
             match want {
@@ -202,7 +254,8 @@ unsafe fn run(info: impl Fn() -> Option<FrameInfo>, cmd: impl Fn(FrameCmd)) {
             update_bar(h, &f, want != shown);
         }
         shown = want;
-        std::thread::sleep(Duration::from_millis(100));
+        // 拖曳中更新得快一點，外框才跟得上游標
+        std::thread::sleep(Duration::from_millis(if dragging.is_some() { 15 } else { 100 }));
     }
 }
 
@@ -286,6 +339,11 @@ unsafe extern "system" fn bar_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
         // 點了也不搶焦點
         WM_MOUSEACTIVATE => LRESULT(MA_NOACTIVATE as isize),
         WM_MOUSEMOVE => {
+            if let Some(mut d) = DRAG.with(|d| d.get()) {
+                let _ = GetCursorPos(&mut d.cur);
+                DRAG.with(|c| c.set(Some(d)));
+                return LRESULT(0);
+            }
             let h = hit(lparam);
             if HOVER.with(|c| c.replace(h)) != h {
                 let _ = InvalidateRect(Some(hwnd), None, false);
@@ -300,13 +358,38 @@ unsafe extern "system" fn bar_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             LRESULT(0)
         }
         WM_SETCURSOR => {
-            let hand = HOVER.with(|c| c.get()).is_some();
-            if let Ok(c) = LoadCursorW(None, if hand { IDC_HAND } else { IDC_ARROW }) {
+            // 按鈕上是手指，其他地方可以拖曳
+            let hand = HOVER.with(|c| c.get()).is_some() && DRAG.with(|d| d.get()).is_none();
+            if let Ok(c) = LoadCursorW(None, if hand { IDC_HAND } else { IDC_SIZEALL }) {
                 SetCursor(Some(c));
             }
             LRESULT(1)
         }
+        WM_LBUTTONDOWN => {
+            if hit(lparam).is_none() {
+                let mut p = POINT::default();
+                let _ = GetCursorPos(&mut p);
+                DRAG.with(|d| d.set(Some(Drag { start: p, origin: ORIGIN.with(|o| o.get()), cur: p })));
+                SetCapture(hwnd);
+            }
+            LRESULT(0)
+        }
+        WM_CAPTURECHANGED => {
+            // 拖曳被打斷（例如切換視窗）：放回原位
+            DRAG.with(|d| d.set(None));
+            LRESULT(0)
+        }
         WM_LBUTTONUP => {
+            if let Some(mut d) = DRAG.with(|d| d.take()) {
+                let _ = ReleaseCapture();
+                let _ = GetCursorPos(&mut d.cur);
+                // 只是點一下（沒移動）不算
+                if (d.cur.x - d.start.x).abs() + (d.cur.y - d.start.y).abs() > 3 {
+                    let size = BAR_AREA.with(|a| a.get());
+                    MOVE_TO.with(|m| m.set(Some(drag_origin(&d, size))));
+                }
+                return LRESULT(0);
+            }
             if let Some(i) = hit(lparam) {
                 let b = BAR.with(|b| b.borrow().as_ref().and_then(|b| b.buttons.get(i).copied()));
                 CLICKED.with(|c| c.set(b));
@@ -337,9 +420,15 @@ unsafe fn paint_bar(hwnd: HWND, hdc: HDC) {
     let old_pen = SelectObject(mem, GetStockObject(NULL_PEN));
     let s = b.scale;
     fill(mem, &rc, BAR_BG);
-    // 狀態點
+    // 拖曳點
     let cy = h / 2;
-    let x0 = px(BAR_PAD, s);
+    let g = px(2.0, s).max(2);
+    for (ix, iy) in [(0, -1), (0, 0), (0, 1), (1, -1), (1, 0), (1, 1)] {
+        let (gx, gy) = (px(BAR_PAD - 2.0 + ix as f32 * 5.0, s), cy + iy * px(5.0, s) - g / 2);
+        fill(mem, &RECT { left: gx, top: gy, right: gx + g, bottom: gy + g }, GREY);
+    }
+    // 狀態點
+    let x0 = px(BAR_PAD + GRIP, s);
     let d = px(DOT, s);
     let brush = CreateSolidBrush(b.dot);
     let old_brush = SelectObject(mem, brush.into());
