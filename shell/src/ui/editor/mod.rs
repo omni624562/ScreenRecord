@@ -233,6 +233,9 @@ pub struct Editor {
     /// 最後記下的一步；目前的內容和它不同時，停下來（放開滑鼠、停止打字）就記成新的一步
     committed: String,
     changed_at: Option<Instant>,
+    /// 上次算快照的時間；目前的內容和 committed 不同（還沒記成一步）
+    history_at: Option<Instant>,
+    uncommitted: bool,
     /// 快捷鍵要做、需要 app 的事（儲存、複製…）
     pending: Option<shot::Act>,
     /// 錄影時打的點（秒，原片的時間）
@@ -368,6 +371,8 @@ impl Editor {
             redo: vec![],
             committed: String::new(),
             changed_at: None,
+            history_at: None,
+            uncommitted: false,
             pending: None,
             markers: vec![],
             clicks: vec![],
@@ -440,17 +445,30 @@ impl Editor {
         self.drag = Drag::None;
         // 重新產生：JSON 讀回來的小數最後一位可能不同，直接用存的字串會被當成又改了一次（重做就被清掉）
         self.committed = self.snapshot();
+        self.uncommitted = false;
     }
 
     /// 內容變了、而且停下來了（沒有在拖曳、打字停了 0.8 秒）：記成新的一步
-    fn track_history(&mut self, busy: bool, typing: bool) {
+    /// input = 這一格有按鍵、點擊、貼上之類可能改到內容的輸入
+    fn track_history(&mut self, busy: bool, typing: bool, input: bool) {
+        // 快照要把所有標註轉成 JSON（字幕一多就很大），不要每一格都算：
+        // 拖曳中不算（放開後再記）；沒有輸入時每秒最多算一次（背景工作加的字幕等也會記下）
+        if busy {
+            return;
+        }
+        if !input && self.changed_at.is_none() && self.history_at.is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(1)) {
+            return;
+        }
+        self.history_at = Some(Instant::now());
         let now = self.snapshot();
         if now == self.committed {
             self.changed_at = None;
+            self.uncommitted = false;
             return;
         }
+        self.uncommitted = true;
         let since = *self.changed_at.get_or_insert_with(Instant::now);
-        if busy || (typing && since.elapsed().as_millis() < 800) {
+        if typing && since.elapsed().as_millis() < 800 {
             return;
         }
         self.commit(now);
@@ -464,10 +482,11 @@ impl Editor {
         }
         self.redo.clear();
         self.changed_at = None;
+        self.uncommitted = false;
     }
 
     fn can_undo(&self) -> bool {
-        !self.undo.is_empty() || self.snapshot() != self.committed
+        !self.undo.is_empty() || self.uncommitted
     }
 
     fn undo(&mut self) {
@@ -1051,13 +1070,17 @@ impl Editor {
             return;
         }
         self.video_key = key;
-        let mut rgba = f.rgba.clone();
-        if self.vw > 0.0 {
+        let size = [f.width as usize, f.height as usize];
+        // 沒有馬賽克 / 模糊時直接用解出來的畫面（不多複製一份）
+        let img = if effects.is_empty() || self.vw <= 0.0 {
+            egui::ColorImage::from_rgba_unmultiplied(size, &f.rgba)
+        } else {
+            let mut rgba = f.rgba.clone();
             for a in &effects {
                 screenrecorder_core::effects::apply(&mut rgba, f.width as usize, f.height as usize, a, self.vw, self.vh);
             }
-        }
-        let img = egui::ColorImage::from_rgba_unmultiplied([f.width as usize, f.height as usize], &rgba);
+            egui::ColorImage::from_rgba_unmultiplied(size, &rgba)
+        };
         match &mut self.video_tex {
             Some(t) => t.set(img, TextureOptions::LINEAR),
             None => self.video_tex = Some(ctx.load_texture("editor-video", img, TextureOptions::LINEAR)),
@@ -1185,8 +1208,9 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         keyboard(&mut ed, ctx, &mut toast);
     }
     ed.update_video(ctx);
+    // 播放中：新的一格到了解碼器會叫畫面更新；這裡只是讓時間與播放點順順地走（不用跟著螢幕更新率每秒畫 60～144 次）
     if ed.player.is_playing() {
-        ctx.request_repaint();
+        ctx.request_repaint_after(std::time::Duration::from_millis(33));
     }
     drop_pictures(app, &mut ed, ctx, &mut toast);
 
@@ -1275,7 +1299,8 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         start_save(app, &mut ed);
     }
     let busy = !matches!(ed.drag, Drag::None) || ctx.input(|i| i.pointer.any_down());
-    ed.track_history(busy, ctx.egui_wants_keyboard_input());
+    let input = ctx.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Key { .. } | egui::Event::Text(_) | egui::Event::PointerButton { .. } | egui::Event::Paste(_) | egui::Event::Cut)));
+    ed.track_history(busy, ctx.egui_wants_keyboard_input(), input);
     if let Some(act) = ed.pending.take() {
         if act == shot::Act::Plain {
             // 換成直接編輯開啟的那張：不放回這個視窗
@@ -1517,7 +1542,9 @@ fn footer(ed: &mut Editor, ui: &mut egui::Ui) -> bool {
 
 fn start_save(app: &mut UiApp, ed: &mut Editor) {
     ed.saving = true;
-    let overlays = ed.ordered().into_iter().filter_map(|a| annotate::to_overlay(a, ed.vw, ed.vh)).collect();
+    // 標註轉成圖（每個都要畫並壓成 PNG，字幕多時要好幾秒）放到背景做，畫面不會卡住
+    let anns: Vec<Ann> = ed.ordered().into_iter().cloned().collect();
+    let (vw, vh) = (ed.vw, ed.vh);
     let crop =
         if ed.crop_on { normalize_crop(ed.spec.crop, ed.vw as i32, ed.vh as i32).map(|r| CropInput { x: r.x as f64, y: r.y as f64, width: r.width as f64, height: r.height as f64 }) } else { None };
     let spec = EditSpec {
@@ -1525,7 +1552,7 @@ fn start_save(app: &mut UiApp, ed: &mut Editor) {
         end: ed.spec.end,
         removed: ed.spec.removed.clone(),
         crop,
-        overlays,
+        overlays: vec![],
         audio: ed.spec.audio,
         fast: ed.spec.fast.clone(),
         zoom: ed.zoom_on().then(|| ClickZoom { factor: ed.zoom, clicks: ed.clicks.clone() }),
@@ -1534,21 +1561,28 @@ fn start_save(app: &mut UiApp, ed: &mut Editor) {
     let project = serde_json::to_value(ed.project_data()).ok();
     let (core, source, replace) = (app.core.clone(), ed.entry.media.path.clone(), ed.replace_target.clone());
     let replacing = replace.is_some();
-    app.spawn(async move { actions::cut_start(&core, &source, &spec, replace.as_deref(), project).await }, move |app, r| match r {
-        Ok(()) => {
-            if let Some(e) = app.editor.take() {
-                e.strip.cancel();
+    let mut spec = spec;
+    app.spawn(
+        async move {
+            spec.overlays = tokio::task::spawn_blocking(move || anns.iter().filter_map(|a| annotate::to_overlay(a, vw, vh)).collect()).await.unwrap_or_default();
+            actions::cut_start(&core, &source, &spec, replace.as_deref(), project).await
+        },
+        move |app, r| match r {
+            Ok(()) => {
+                if let Some(e) = app.editor.take() {
+                    e.strip.cancel();
+                }
+                app.dismissed_job = None;
+                app.toast(if replacing { "已開始更新剪輯版，進度顯示在右側" } else { "已開始剪輯，進度顯示在右側" }, false);
             }
-            app.dismissed_job = None;
-            app.toast(if replacing { "已開始更新剪輯版，進度顯示在右側" } else { "已開始剪輯，進度顯示在右側" }, false);
-        }
-        Err(e) => {
-            if let Some(ed) = &mut app.editor {
-                ed.saving = false;
+            Err(e) => {
+                if let Some(ed) = &mut app.editor {
+                    ed.saving = false;
+                }
+                app.toast(e.message().to_string(), true);
             }
-            app.toast(e.message().to_string(), true);
-        }
-    });
+        },
+    );
 }
 
 /// 快捷鍵：空白 = 播放/暫停、←/→ = 一張（Shift = 一秒）、I/O = 開頭/結尾、Delete = 刪除選取的片段或標註、Esc = 取消或關閉

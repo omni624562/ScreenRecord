@@ -4,9 +4,10 @@
 //! 點擊的位置也交給錄影器記下來（剪輯時「跟著點擊放大」用），所以不管有沒有顯示，錄影中都會攔截滑鼠。
 
 use crate::input_overlay::{halo, key_pill, key_text, ripple, HALO_SIZE, KEY_FADE_MS, KEY_SHOW_MS, RIPPLE_MS, RIPPLE_SIZE};
+use crate::llhook_win::{Hook, HookEvent};
 use crate::recorder::OverlayInfo;
-use crate::types::{shown_keys, Rect};
-use std::cell::RefCell;
+use crate::types::Rect;
+use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 use tiny_skia::Pixmap;
 use windows::core::w;
@@ -17,22 +18,10 @@ use windows::Win32::Graphics::Gdi::{
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
-use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CallNextHookEx, CreateWindowExW, DefWindowProcW, DispatchMessageW, GetCursorPos, PeekMessageW, RegisterClassExW, SetWindowPos, SetWindowsHookExW, ShowWindow, TranslateMessage,
-    UnhookWindowsHookEx, UpdateLayeredWindow, HHOOK, HWND_TOPMOST, KBDLLHOOKSTRUCT, MSG, MSLLHOOKSTRUCT, PM_REMOVE, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SW_HIDE, SW_SHOWNOACTIVATE, ULW_ALPHA,
-    WH_KEYBOARD_LL, WH_MOUSE_LL, WM_KEYDOWN, WM_LBUTTONDOWN, WM_RBUTTONDOWN, WM_SYSKEYDOWN, WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
+    CreateWindowExW, DefWindowProcW, DispatchMessageW, GetCursorPos, PeekMessageW, RegisterClassExW, SetWindowPos, ShowWindow, TranslateMessage, UpdateLayeredWindow, HWND_TOPMOST, MSG, PM_REMOVE,
+    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SW_HIDE, SW_SHOWNOACTIVATE, ULW_ALPHA, WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
 };
-
-enum Ev {
-    Click { x: i32, y: i32, right: bool },
-    Key(String),
-}
-
-thread_local! {
-    /// 攔截到、還沒處理的事件（攔截函式要盡快返回，畫面在主迴圈更新）
-    static EVENTS: RefCell<Vec<Ev>> = const { RefCell::new(Vec::new()) };
-}
 
 /// 在背景執行緒顯示點擊與按鍵；info 取得錄影狀態（None = 沒在錄影），on_click 收到點擊的桌面座標
 pub fn spawn(info: impl Fn() -> Option<OverlayInfo> + Send + 'static, on_click: impl Fn(i32, i32) + Send + 'static) {
@@ -41,29 +30,6 @@ pub fn spawn(info: impl Fn() -> Option<OverlayInfo> + Send + 'static, on_click: 
 
 unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     DefWindowProcW(hwnd, msg, wparam, lparam)
-}
-
-unsafe extern "system" fn mouse_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
-    if code >= 0 {
-        let m = wparam.0 as u32;
-        if m == WM_LBUTTONDOWN || m == WM_RBUTTONDOWN {
-            let s = &*(lparam.0 as *const MSLLHOOKSTRUCT);
-            EVENTS.with(|e| e.borrow_mut().push(Ev::Click { x: s.pt.x, y: s.pt.y, right: m == WM_RBUTTONDOWN }));
-        }
-    }
-    CallNextHookEx(None, code, wparam, lparam)
-}
-
-unsafe extern "system" fn key_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
-    if code >= 0 && (wparam.0 as u32 == WM_KEYDOWN || wparam.0 as u32 == WM_SYSKEYDOWN) {
-        let k = &*(lparam.0 as *const KBDLLHOOKSTRUCT);
-        let down = |vk: i32| (GetAsyncKeyState(vk) as u16 & 0x8000) != 0;
-        let (ctrl, alt, shift, win) = (down(0x11), down(0x12), down(0x10), down(0x5B) || down(0x5C));
-        if let Some(label) = shown_keys(k.vkCode, ctrl, alt, shift, win) {
-            EVENTS.with(|e| e.borrow_mut().push(Ev::Key(label)));
-        }
-    }
-    CallNextHookEx(None, code, wparam, lparam)
 }
 
 /// 顯示中的效果
@@ -94,7 +60,8 @@ unsafe fn run(info: impl Fn() -> Option<OverlayInfo>, on_click: impl Fn(i32, i32
     // 目前的按鍵提示：(文字, 次數, 圖)
     let mut key: Option<(String, u32, Pixmap)> = None;
     let mut click: Option<(i32, i32, bool)> = None;
-    let mut hooks: Option<(HHOOK, Option<HHOOK>)> = None;
+    // 攔截在專用執行緒（llhook_win），這裡只從通道收事件：畫畫面、等鎖都不會讓整台電腦的滑鼠變卡
+    let mut hooks: Option<(Hook, Receiver<HookEvent>)> = None;
     let mut cur: Option<OverlayInfo> = None;
     let mut polled = Instant::now() - Duration::from_secs(1);
     let mut msg = MSG::default();
@@ -108,20 +75,9 @@ unsafe fn run(info: impl Fn() -> Option<OverlayInfo>, on_click: impl Fn(i32, i32
             polled = Instant::now();
             let next = info();
             if next.map(|n| n.show_keys) != cur.map(|c| c.show_keys) || next.is_some() != cur.is_some() {
-                if let Some((m, k)) = hooks.take() {
-                    let _ = UnhookWindowsHookEx(m);
-                    if let Some(k) = k {
-                        let _ = UnhookWindowsHookEx(k);
-                    }
-                }
+                hooks = None;
                 if let Some(n) = next {
-                    match SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_proc), Some(hinst.into()), 0) {
-                        Ok(m) => {
-                            let k = if n.show_keys { SetWindowsHookExW(WH_KEYBOARD_LL, Some(key_proc), Some(hinst.into()), 0).ok() } else { None };
-                            hooks = Some((m, k));
-                        }
-                        Err(e) => crate::warn!("無法攔截滑鼠點擊：{e}"),
-                    }
+                    hooks = Hook::start(n.show_keys);
                 }
             }
             if next.is_none_or(|n| !n.cursor_halo) {
@@ -132,16 +88,15 @@ unsafe fn run(info: impl Fn() -> Option<OverlayInfo>, on_click: impl Fn(i32, i32
                 hide(&mut ripple_fx);
                 hide(&mut key_fx);
                 key = None;
-                EVENTS.with(|e| e.borrow_mut().clear());
             }
             cur = next;
         }
-        let events = EVENTS.with(|e| std::mem::take(&mut *e.borrow_mut()));
+        let events: Vec<HookEvent> = hooks.as_ref().map(|(_, rx)| rx.try_iter().collect()).unwrap_or_default();
         if let Some(info) = cur {
             let scale = scale_of(&info.area);
             for ev in events {
                 match ev {
-                    Ev::Click { x, y, right } => {
+                    HookEvent::MouseDown { x, y, right } => {
                         on_click(x, y);
                         let a = info.area;
                         if info.show_clicks && x >= a.x && y >= a.y && x < a.x + a.width && y < a.y + a.height {
@@ -149,7 +104,7 @@ unsafe fn run(info: impl Fn() -> Option<OverlayInfo>, on_click: impl Fn(i32, i32
                             ripple_fx.since = Some(Instant::now());
                         }
                     }
-                    Ev::Key(label) => {
+                    HookEvent::Key(label) => {
                         // 連續按同一組（還在顯示時）：加上次數
                         let count = match &key {
                             Some((l, n, _)) if *l == label && key_fx.since.is_some() => n + 1,
@@ -213,8 +168,15 @@ unsafe fn run(info: impl Fn() -> Option<OverlayInfo>, on_click: impl Fn(i32, i32
                 }
             }
         }
-        let animating = ripple_fx.since.is_some() || key_fx.since.is_some() || halo_fx.since.is_some();
-        std::thread::sleep(Duration::from_millis(if animating { 15 } else { 30 }));
+        // 動畫中 15ms；錄影中 30ms（游標光暈跟著游標）；沒在錄影時 200ms 看一次狀態就好
+        let animating = ripple_fx.since.is_some() || key_fx.since.is_some();
+        std::thread::sleep(Duration::from_millis(if cur.is_none() {
+            200
+        } else if animating {
+            15
+        } else {
+            30
+        }));
     }
 }
 

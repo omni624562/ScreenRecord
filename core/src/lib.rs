@@ -33,6 +33,8 @@ pub mod instance;
 pub mod ipc;
 pub mod job;
 pub mod library;
+#[cfg(windows)]
+pub mod llhook_win;
 pub mod log;
 pub mod longshot;
 pub mod meter;

@@ -212,6 +212,7 @@ unsafe fn run(info: impl Fn() -> Option<FrameInfo>, cmd: impl Fn(FrameCmd)) {
         let mut f = info();
         // 拖曳中：外框跟著游標；放開後到錄影器移好之前（最多 3 秒）先停在新位置
         let dragging = DRAG.with(|d| d.get());
+        let idle = f.is_none() && dragging.is_none();
         if let Some(fi) = &mut f {
             let size = (fi.area.width, fi.area.height);
             if let Some(d) = dragging {
@@ -273,7 +274,14 @@ unsafe fn run(info: impl Fn() -> Option<FrameInfo>, cmd: impl Fn(FrameCmd)) {
         }
         shown = want;
         // 拖曳中更新得快一點，外框才跟得上游標
-        std::thread::sleep(Duration::from_millis(if dragging.is_some() { 15 } else { 100 }));
+        // 拖曳中 15ms；顯示中 100ms；沒在錄影時 250ms 看一次就好（閒置時少喚醒）
+        std::thread::sleep(Duration::from_millis(if dragging.is_some() {
+            15
+        } else if idle {
+            250
+        } else {
+            100
+        }));
     }
 }
 

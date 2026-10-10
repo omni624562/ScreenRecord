@@ -2,7 +2,7 @@
 //! 這裡是筆畫與按鍵的邏輯、畫法（可以在任何平台測試）；Windows 的視窗見 screen_pen_win.rs。
 
 use crate::annotate;
-use tiny_skia::{Color, LineCap, LineJoin, Paint, PathBuilder, Pixmap, Stroke, Transform};
+use tiny_skia::{Color, LineCap, LineJoin, Paint, PathBuilder, Pixmap, PixmapMut, Stroke, Transform};
 
 /// 可選的顏色（按 1～4 切換）：紅、黃、綠、藍
 pub const COLORS: [(&str, [u8; 3]); 4] = [("紅", [239, 68, 68]), ("黃", [250, 204, 21]), ("綠", [34, 197, 94]), ("藍", [59, 130, 246])];
@@ -90,15 +90,58 @@ impl Board {
 
     /// 畫出所有筆畫（off：螢幕左上角在畫布上的位置，畫布座標 = 螢幕座標 − off）
     pub fn render(&self, pm: &mut Pixmap, off: (f32, f32)) {
+        self.render_to(&mut pm.as_mut(), off, false);
+    }
+
+    /// 畫到任何像素緩衝；bgr = 緩衝是 Windows 點陣圖的 BGRA 順序（直接畫進去，不用再轉一次）
+    pub fn render_to(&self, pm: &mut PixmapMut, off: (f32, f32), bgr: bool) {
         let t = Transform::from_translate(-off.0, -off.1);
         for l in &self.lines {
-            draw_line(pm, l, t);
+            draw_line(pm, l, t, bgr);
         }
+    }
+
+    /// 正在畫的那一筆目前有幾個點
+    pub fn drawing_len(&self) -> Option<usize> {
+        self.drawing.then(|| self.lines.last().map(|l| l.pts.len())).flatten()
+    }
+
+    /// 只畫正在畫的那一筆從第 from 個點之後的新線段（拖曳中每次只畫新的一小段，不重畫整個螢幕）。
+    /// 先用直線、不加外框；放開滑鼠後再整個重畫成平滑、有外框的線
+    pub fn render_tail(&self, pm: &mut PixmapMut, off: (f32, f32), bgr: bool, from: usize) {
+        let Some(l) = self.lines.last() else { return };
+        if l.pts.len() < 2 || from + 1 >= l.pts.len() {
+            return;
+        }
+        let mut pb = PathBuilder::new();
+        let (x0, y0) = l.pts[from.min(l.pts.len() - 1)];
+        pb.move_to(x0, y0);
+        for &(x, y) in &l.pts[from + 1..] {
+            pb.line_to(x, y);
+        }
+        let Some(path) = pb.finish() else { return };
+        let stroke = Stroke { width: l.width, line_cap: LineCap::Round, line_join: LineJoin::Round, ..Default::default() };
+        pm.stroke_path(&path, &paint(color_of(l.color, bgr)), &stroke, Transform::from_translate(-off.0, -off.1), None);
     }
 }
 
+fn color_of(c: [u8; 3], bgr: bool) -> Color {
+    if bgr {
+        Color::from_rgba8(c[2], c[1], c[0], 255)
+    } else {
+        Color::from_rgba8(c[0], c[1], c[2], 255)
+    }
+}
+
+fn paint(c: Color) -> Paint<'static> {
+    let mut p = Paint::default();
+    p.set_color(c);
+    p.anti_alias = true;
+    p
+}
+
 /// 一筆：深色的外框讓線在任何背景都看得清楚；用相鄰兩點的中點畫二次曲線，比較平滑
-fn draw_line(pm: &mut Pixmap, l: &Line, t: Transform) {
+fn draw_line(pm: &mut PixmapMut, l: &Line, t: Transform, bgr: bool) {
     let Some(&(x0, y0)) = l.pts.first() else { return };
     let mut pb = PathBuilder::new();
     pb.move_to(x0, y0);
@@ -119,14 +162,8 @@ fn draw_line(pm: &mut Pixmap, l: &Line, t: Transform) {
     }
     let Some(path) = pb.finish() else { return };
     let stroke = |w: f32| Stroke { width: w, line_cap: LineCap::Round, line_join: LineJoin::Round, ..Default::default() };
-    let paint = |c: Color| {
-        let mut p = Paint::default();
-        p.set_color(c);
-        p.anti_alias = true;
-        p
-    };
     pm.stroke_path(&path, &paint(Color::from_rgba8(0, 0, 0, 90)), &stroke(l.width + 2.0), t, None);
-    pm.stroke_path(&path, &paint(Color::from_rgba8(l.color[0], l.color[1], l.color[2], 255)), &stroke(l.width), t, None);
+    pm.stroke_path(&path, &paint(color_of(l.color, bgr)), &stroke(l.width), t, None);
 }
 
 /// 操作說明（畫在不會被錄進去的小視窗）
@@ -200,5 +237,26 @@ mod tests {
         assert_eq!(pm.pixel(150, 80).unwrap().alpha(), 0);
         let help = render_help(&help_text(0), 1.0).unwrap();
         assert!(help.width() > 300 && help.height() > 20);
+    }
+
+    #[test]
+    fn bgr_and_tail_drawing() {
+        let mut b = Board::new(1.0);
+        b.begin(10.0, 50.0);
+        b.move_to(60.0, 50.0);
+        assert_eq!(b.drawing_len(), Some(2));
+        // 只畫新的一段：BGRA 順序時紅色寫在第三個位元組
+        let mut pm = Pixmap::new(200, 100).unwrap();
+        b.render_tail(&mut pm.as_mut(), (0.0, 0.0), true, 0);
+        let px = pm.pixel(35, 50).unwrap();
+        assert_eq!((px.red(), px.blue(), px.alpha()), (68, 239, 255));
+        // 繼續畫：只畫第 2 點之後
+        b.move_to(110.0, 50.0);
+        let mut pm2 = Pixmap::new(200, 100).unwrap();
+        b.render_tail(&mut pm2.as_mut(), (0.0, 0.0), false, 1);
+        assert_eq!(pm2.pixel(35, 50).unwrap().alpha(), 0, "舊的那段不重畫");
+        assert_eq!(pm2.pixel(85, 50).unwrap().red(), 239);
+        b.end();
+        assert_eq!(b.drawing_len(), None);
     }
 }

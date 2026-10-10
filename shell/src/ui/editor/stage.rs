@@ -1,6 +1,6 @@
 //! 影片畫面：影片（含馬賽克 / 模糊）、標註、選取框、裁切框，以及在畫面上放置 / 移動 / 調整標註與框選裁切範圍。
 
-use super::{hash_of, Drag, Editor, Tab, Tool};
+use super::{Drag, Editor, Tab, Tool};
 use crate::ui::theme;
 use eframe::egui::{self, pos2, vec2, Align2, Color32, CornerRadius, CursorIcon, Id, Pos2, Rect, Sense, Stroke, TextureHandle, TextureOptions};
 use screenrecorder_core::annotate::{self, Ann, AnnKind, Shape};
@@ -73,7 +73,7 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, stage_h: f3
 
     // 標註（馬賽克 / 模糊已套用在影片上）
     let css = (rect.width() as f64) / ed.vw;
-    update_sprites(ed, ctx, rect);
+    update_sprites(ed, ctx, rect, t);
     for a in ed.ordered() {
         if a.kind.is_effect() {
             continue;
@@ -228,22 +228,50 @@ fn outline(shape: Option<Shape>, r: Rect, radius: f32) -> Vec<Pos2> {
 }
 
 /// 標註的小圖：內容或大小變了才重畫（表情符號的彩色字形畫起來特別慢，拖曳時不能每一格都重畫）
-fn update_sprites(ed: &mut Editor, ctx: &egui::Context, rect: Rect) {
+/// 標註畫成圖的內容（位置、時間、編號以外的欄位；聚光燈連位置也算）：直接算雜湊，不轉 JSON
+fn look_key(a: &Ann, spot: bool, s: f64, vw: f64, vh: f64) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    a.kind.hash(&mut h);
+    let mut nums = vec![a.w, a.h, a.size, a.rot, s, vw, vh];
+    if spot {
+        nums.extend([a.x, a.y]);
+    }
+    for v in nums {
+        v.to_bits().hash(&mut h);
+    }
+    (&a.color, &a.text, a.bg, a.n, a.shape, a.invert).hash(&mut h);
+    a.pts.len().hash(&mut h);
+    for p in &a.pts {
+        (p[0].to_bits(), p[1].to_bits()).hash(&mut h);
+    }
+    h.finish()
+}
+
+/// 每個標註畫成一張圖（貼圖）快取起來。只畫現在看得到（或選取中）的：
+/// 字幕一次可能有幾百段，不要每段都畫、也不要每一格都比對全部
+fn update_sprites(ed: &mut Editor, ctx: &egui::Context, rect: Rect, t: f64) {
     let s = (rect.width() * ctx.pixels_per_point()) as f64 / ed.vw;
-    let ids: Vec<u64> = ed.anns.iter().map(|a| a.id).collect();
+    let shown = |a: &Ann| (t >= a.start && t <= a.end) || ed.ann_sel == Some(a.id);
+    let ids: std::collections::HashSet<u64> = ed.anns.iter().map(|a| a.id).collect();
     ed.overlay.sprites.retain(|id, _| ids.contains(id));
-    for a in ed.anns.iter().filter(|a| !a.kind.is_effect()) {
+    // 快取太多時丟掉現在看不到的（貼圖佔顯示卡記憶體）
+    if ed.overlay.sprites.len() > 64 {
+        let keep: std::collections::HashSet<u64> = ed.anns.iter().filter(|a| shown(a)).map(|a| a.id).collect();
+        ed.overlay.sprites.retain(|id, _| keep.contains(id));
+    }
+    for a in ed.anns.iter().filter(|a| !a.kind.is_effect() && shown(a)) {
         // 聚光燈蓋住整個畫面：位置也算在內容裡，圖就是整個畫面
         let spot = a.kind == AnnKind::Spotlight;
+        let key = look_key(a, spot, s, ed.vw, ed.vh);
+        if ed.overlay.sprites.get(&a.id).is_some_and(|sp| sp.key == key) {
+            continue;
+        }
         // 內容：位置、時間、編號以外的欄位
         let mut look = a.clone();
         (look.start, look.end, look.id) = (0.0, 0.0, 0);
         if !spot {
             (look.x, look.y) = (0.0, 0.0);
-        }
-        let key = hash_of(&(serde_json::to_string(&look).unwrap_or_default(), s.to_bits(), ed.vw.to_bits(), ed.vh.to_bits()));
-        if ed.overlay.sprites.get(&a.id).is_some_and(|sp| sp.key == key) {
-            continue;
         }
         // 範圍：標註實際佔的地方，再留一點邊（文字外框、箭頭頭部）；聚光燈是整個畫面（位置換算回標註的座標）
         let (ox, oy, ow, oh) = if spot {

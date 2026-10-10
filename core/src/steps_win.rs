@@ -1,33 +1,18 @@
 //! 步驟截圖（Windows）：用低階滑鼠攔截得知左鍵按下，截下那個螢幕、在點的位置畫一圈紅框，存成 step_NN.png。
 //! 點到本程式自己的視窗（操作視窗、系統匣選單）不算。
 
+use crate::llhook_win::{Hook, HookEvent};
 use crate::steps::Step;
 use crate::types::Rect;
-use std::cell::RefCell;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::mpsc::RecvTimeoutError;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tiny_skia::{Color, FillRule, Paint, PathBuilder, Pixmap, Stroke, Transform};
-use windows::Win32::Foundation::{LPARAM, LRESULT, POINT, WPARAM};
+use windows::Win32::Foundation::POINT;
 use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, MonitorFromPoint, MONITORINFO, MONITOR_DEFAULTTONEAREST};
-use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows::Win32::UI::WindowsAndMessaging::{
-    CallNextHookEx, DispatchMessageW, GetAncestor, GetWindowThreadProcessId, InternalGetWindowText, PeekMessageW, SetWindowsHookExW, TranslateMessage, UnhookWindowsHookEx, WindowFromPoint, GA_ROOT,
-    MSG, MSLLHOOKSTRUCT, PM_REMOVE, WH_MOUSE_LL, WM_LBUTTONDOWN,
-};
-
-thread_local! {
-    static CLICKS: RefCell<Vec<POINT>> = const { RefCell::new(Vec::new()) };
-}
-
-unsafe extern "system" fn mouse_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
-    if code >= 0 && wparam.0 as u32 == WM_LBUTTONDOWN {
-        let s = &*(lparam.0 as *const MSLLHOOKSTRUCT);
-        CLICKS.with(|c| c.borrow_mut().push(s.pt));
-    }
-    CallNextHookEx(None, code, wparam, lparam)
-}
+use windows::Win32::UI::WindowsAndMessaging::{GetAncestor, GetWindowThreadProcessId, InternalGetWindowText, WindowFromPoint, GA_ROOT};
 
 /// 進行中的步驟截圖
 pub struct Session {
@@ -59,58 +44,51 @@ impl Session {
     }
 }
 
+/// 攔截在專用執行緒（llhook_win）：這裡截圖、存檔花多久都不會讓滑鼠變卡
 unsafe fn run(dir: &std::path::Path, folder: &str, stop: &AtomicBool, count: &AtomicU32) -> Vec<Step> {
-    let hinst = GetModuleHandleW(None).unwrap_or_default();
-    let hook = match SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_proc), Some(hinst.into()), 0) {
-        Ok(h) => h,
-        Err(e) => {
-            crate::warn!("步驟截圖：無法攔截滑鼠點擊：{e}");
-            return vec![];
-        }
+    let Some((hook, rx)) = Hook::start(false) else {
+        crate::warn!("步驟截圖：無法攔截滑鼠點擊");
+        return vec![];
     };
     let mut steps: Vec<Step> = vec![];
     let mut last: Option<(POINT, Instant)> = None;
-    let mut msg = MSG::default();
     while !stop.load(Ordering::Relaxed) {
-        while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
-            let _ = TranslateMessage(&msg);
-            DispatchMessageW(&msg);
+        let pt = match rx.recv_timeout(Duration::from_millis(100)) {
+            Ok(HookEvent::MouseDown { x, y, right: false }) => POINT { x, y },
+            Ok(_) | Err(RecvTimeoutError::Timeout) => continue,
+            Err(RecvTimeoutError::Disconnected) => break,
+        };
+        // 連點（雙擊）只算一次
+        if last.is_some_and(|(p, t)| t.elapsed() < Duration::from_millis(450) && (p.x - pt.x).abs() < 6 && (p.y - pt.y).abs() < 6) {
+            continue;
         }
-        let clicks = CLICKS.with(|c| std::mem::take(&mut *c.borrow_mut()));
-        for pt in clicks {
-            // 連點（雙擊）只算一次
-            if last.is_some_and(|(p, t)| t.elapsed() < Duration::from_millis(450) && (p.x - pt.x).abs() < 6 && (p.y - pt.y).abs() < 6) {
-                continue;
-            }
-            last = Some((pt, Instant::now()));
-            let root = GetAncestor(WindowFromPoint(pt), GA_ROOT);
-            let mut pid = 0u32;
-            GetWindowThreadProcessId(root, Some(&mut pid));
-            if pid == std::process::id() {
-                continue;
-            }
-            let mut buf = [0u16; 256];
-            let n = InternalGetWindowText(root, &mut buf);
-            let window = String::from_utf16_lossy(&buf[..n.max(0) as usize]);
-            let mut mi = MONITORINFO { cbSize: std::mem::size_of::<MONITORINFO>() as u32, ..Default::default() };
-            if !GetMonitorInfoW(MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST), &mut mi).as_bool() {
-                continue;
-            }
-            let m = mi.rcMonitor;
-            let area = Rect { x: m.left, y: m.top, width: m.right - m.left, height: m.bottom - m.top };
-            let Some(rgba) = crate::scroll_win::grab(area) else { continue };
-            let n = steps.len() + 1;
-            let name = format!("step_{n:02}.png");
-            if let Err(e) = save(&rgba, area, pt, &dir.join(folder).join(&name)) {
-                crate::warn!("步驟截圖：無法儲存第 {n} 步：{e}");
-                continue;
-            }
-            steps.push(Step { time: chrono::Local::now().format("%H:%M:%S").to_string(), window, image: format!("{folder}/{name}") });
-            count.store(steps.len() as u32, Ordering::Relaxed);
+        last = Some((pt, Instant::now()));
+        let root = GetAncestor(WindowFromPoint(pt), GA_ROOT);
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(root, Some(&mut pid));
+        if pid == std::process::id() {
+            continue;
         }
-        std::thread::sleep(Duration::from_millis(15));
+        let mut buf = [0u16; 256];
+        let n = InternalGetWindowText(root, &mut buf);
+        let window = String::from_utf16_lossy(&buf[..n.max(0) as usize]);
+        let mut mi = MONITORINFO { cbSize: std::mem::size_of::<MONITORINFO>() as u32, ..Default::default() };
+        if !GetMonitorInfoW(MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST), &mut mi).as_bool() {
+            continue;
+        }
+        let m = mi.rcMonitor;
+        let area = Rect { x: m.left, y: m.top, width: m.right - m.left, height: m.bottom - m.top };
+        let Some(rgba) = crate::scroll_win::grab(area) else { continue };
+        let n = steps.len() + 1;
+        let name = format!("step_{n:02}.png");
+        if let Err(e) = save(&rgba, area, pt, &dir.join(folder).join(&name)) {
+            crate::warn!("步驟截圖：無法儲存第 {n} 步：{e}");
+            continue;
+        }
+        steps.push(Step { time: chrono::Local::now().format("%H:%M:%S").to_string(), window, image: format!("{folder}/{name}") });
+        count.store(steps.len() as u32, Ordering::Relaxed);
     }
-    let _ = UnhookWindowsHookEx(hook);
+    drop(hook);
     steps
 }
 

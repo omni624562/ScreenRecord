@@ -35,6 +35,11 @@ pub fn write(level: &str, msg: &str) {
 fn write_file(level: &str, msg: &str) {
     let path = FILE.lock().unwrap_or_else(|e| e.into_inner()).clone();
     if let Some(path) = path {
+        // 常駐好幾天也不會無限變大：每寫 200 行看一次，超過 2 MB 就換成新檔（舊的留一份 .old.log）
+        static WRITES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        if WRITES.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % 200 == 199 && std::fs::metadata(&path).is_ok_and(|m| m.len() > 2 * 1024 * 1024) {
+            let _ = std::fs::rename(&path, path.with_file_name("ScreenRecorder.old.log"));
+        }
         let stamp = chrono::Local::now().format("%Y/%m/%d %H:%M:%S");
         if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
             let _ = writeln!(f, "{stamp} {level} {msg}");

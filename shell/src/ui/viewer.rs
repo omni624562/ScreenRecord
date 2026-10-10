@@ -313,8 +313,9 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
     }
     if let Some(p) = &v.player {
         let _ = p.take_ended();
+        // 新的一格到了解碼器會叫畫面更新；這裡只讓時間順順地走
         if p.is_playing() {
-            ctx.request_repaint();
+            ctx.request_repaint_after(std::time::Duration::from_millis(33));
         }
     }
     let mut act = Act::None;

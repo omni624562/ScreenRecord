@@ -32,7 +32,7 @@ pub fn copy_pixmap(pm: &tiny_skia::Pixmap) -> bool {
 #[cfg(windows)]
 pub fn copy_files(paths: &[String]) -> Result<(), String> {
     use windows::core::w;
-    use windows::Win32::Foundation::{HANDLE, POINT};
+    use windows::Win32::Foundation::{GlobalFree, HANDLE, POINT};
     use windows::Win32::System::DataExchange::{CloseClipboard, EmptyClipboard, OpenClipboard, RegisterClipboardFormatW, SetClipboardData};
     use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
     use windows::Win32::UI::Shell::DROPFILES;
@@ -65,12 +65,20 @@ pub fn copy_files(paths: &[String]) -> Result<(), String> {
             *ep = 1; // DROPEFFECT_COPY
             let _ = GlobalUnlock(effect);
         }
-        OpenClipboard(None).map_err(|_| fail("剪貼簿被其他程式占用"))?;
+        // 交給剪貼簿成功後記憶體歸剪貼簿管；沒交出去的要自己釋放
+        if OpenClipboard(None).is_err() {
+            let _ = GlobalFree(Some(mem));
+            let _ = GlobalFree(Some(effect));
+            return Err(fail("剪貼簿被其他程式占用"));
+        }
         let _ = EmptyClipboard();
         let ok = SetClipboardData(15 /* CF_HDROP */, Some(HANDLE(mem.0))).is_ok();
+        if !ok {
+            let _ = GlobalFree(Some(mem));
+        }
         let fmt = RegisterClipboardFormatW(w!("Preferred DropEffect"));
-        if fmt != 0 {
-            let _ = SetClipboardData(fmt, Some(HANDLE(effect.0)));
+        if fmt == 0 || SetClipboardData(fmt, Some(HANDLE(effect.0))).is_err() {
+            let _ = GlobalFree(Some(effect));
         }
         let _ = CloseClipboard();
         if ok {

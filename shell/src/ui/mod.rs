@@ -567,6 +567,18 @@ impl eframe::App for UiApp {
         self.flush_settings();
         self.poll_status();
         self.handle_close(ctx);
+        // 視窗縮小、被其他視窗完全蓋住或隱藏時 ui() 不會執行（開始錄影時操作視窗也會縮小）：
+        // 在這裡停掉即時預覽（否則多開一個 FFmpeg 擷取整個桌面，跟錄影搶資源）與音量測試
+        let shown = self.visible && ctx.input(|i| i.viewport().visible()) != Some(false);
+        if !shown {
+            if self.preview.running() {
+                self.preview.stop(&self.core);
+            }
+            if self.meter.is_some() {
+                self.meter = None;
+                self.meter_until = None;
+            }
+        }
         // 介面大小（設定 → 進階）
         let zoom = self.s.ui_scale as f32 / 100.0;
         if (ctx.zoom_factor() - zoom).abs() > 0.001 {
@@ -574,7 +586,7 @@ impl eframe::App for UiApp {
         }
         self.frame_parts.push(("背景狀態", t0.elapsed().as_secs_f32() * 1000.0));
         // 狀態每 0.25 秒更新一次（錄影中計時器、轉檔進度）；視窗隱藏時放慢
-        ctx.request_repaint_after(if self.visible { Duration::from_millis(250) } else { Duration::from_secs(2) });
+        ctx.request_repaint_after(if shown { Duration::from_millis(250) } else { Duration::from_secs(2) });
     }
 
     #[cfg(debug_assertions)]
@@ -583,6 +595,11 @@ impl eframe::App for UiApp {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        // 關到系統匣（視窗隱藏）時什麼都不畫：eframe 只看「縮小 / 被蓋住」判斷看不看得到，
+        // 隱藏的視窗仍會一直呼叫這裡；畫主畫面會重新開始即時預覽，背景就一直有 FFmpeg 在擷取桌面
+        if !self.visible {
+            return;
+        }
         let ctx = ui.ctx().clone();
         let mut t = Instant::now();
         let mut part = |app: &mut UiApp, name: &'static str| {

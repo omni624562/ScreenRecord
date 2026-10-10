@@ -73,6 +73,14 @@ impl SettingsStore {
         s
     }
 
+    /// 設定的版本（每次儲存加一）：介面每 0.25 秒問一次，不用複製整份設定
+    pub fn rev(&self) -> u64 {
+        if let Some(s) = self.cache.lock().unwrap().as_ref() {
+            return s.rev;
+        }
+        self.load().rev
+    }
+
     pub fn save(&self, patch: SettingsPatch) -> SavedSettings {
         let cur = self.load();
         let mut next = SavedSettings {

@@ -18,15 +18,17 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{RegisterHotKey, UnregisterHotK
 use windows::Win32::UI::Shell::{Shell_NotifyIconW, NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_TIP, NIIF_INFO, NIIF_WARNING, NIM_ADD, NIM_DELETE, NIM_MODIFY, NOTIFYICONDATAW, NOTIFY_ICON_DATA_FLAGS};
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreateIconFromResourceEx, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyIcon, DestroyMenu, DestroyWindow, DispatchMessageW, GetCursorPos, GetMessageW, GetSystemMetrics,
-    PostMessageW, PostQuitMessage, RegisterClassExW, RegisterWindowMessageW, SetForegroundWindow, SetMenuDefaultItem, TrackPopupMenu, TranslateMessage, HICON, HMENU, LR_DEFAULTCOLOR, MF_CHECKED,
-    MF_GRAYED, MF_POPUP, MF_SEPARATOR, MF_STRING, MSG, SM_CXSMICON, TPM_NONOTIFY, TPM_RETURNCMD, TPM_RIGHTBUTTON, WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP, WM_DESTROY, WM_HOTKEY, WM_LBUTTONUP, WM_NULL,
-    WM_RBUTTONUP, WNDCLASSEXW,
+    KillTimer, PostMessageW, PostQuitMessage, RegisterClassExW, RegisterWindowMessageW, SetForegroundWindow, SetMenuDefaultItem, SetTimer, TrackPopupMenu, TranslateMessage, HICON, HMENU,
+    LR_DEFAULTCOLOR, MF_CHECKED, MF_GRAYED, MF_POPUP, MF_SEPARATOR, MF_STRING, MSG, SM_CXSMICON, TPM_NONOTIFY, TPM_RETURNCMD, TPM_RIGHTBUTTON, WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP, WM_DESTROY,
+    WM_HOTKEY, WM_LBUTTONUP, WM_NULL, WM_RBUTTONUP, WM_TIMER, WNDCLASSEXW,
 };
 
 const WM_TRAY: u32 = WM_APP + 1;
 /// 有其他執行緒送來的要求（狀態、通知、結束）
 const WM_WAKE: u32 = WM_APP + 2;
 const NIN_BALLOONUSERCLICK: u32 = 0x405;
+/// 圖示加不上去時重試的計時器
+const RETRY_TIMER: usize = 7;
 /// 全域快捷鍵的 id：1 錄影、2 暫停、3 截圖、4 框選截圖、5 打點、6 螢幕畫筆（與 Hotkeys::all 的順序相同）
 const HOTKEY_IDS: [i32; crate::types::HOTKEY_COUNT] = [1, 2, 3, 4, 5, 6];
 
@@ -160,34 +162,27 @@ impl Tray {
         d
     }
 
-    fn add_icon(&mut self) -> bool {
-        let d = self.icon_data(NIF_MESSAGE | NIF_ICON | NIF_TIP);
-        unsafe { Shell_NotifyIconW(NIM_ADD, &d).as_bool() }
-    }
-
-    fn update_icon(&mut self) {
-        let d = self.icon_data(NIF_ICON | NIF_TIP);
-        unsafe {
-            let _ = Shell_NotifyIconW(NIM_MODIFY, &d);
-        }
-    }
-
-    fn balloon(&self, title: &str, text: &str, warn: bool) {
+    fn balloon_data(&self, title: &str, text: &str, warn: bool) -> NOTIFYICONDATAW {
         let mut d = self.nid(NIF_INFO);
         put_str(&mut d.szInfo, text);
         put_str(&mut d.szInfoTitle, title);
         d.dwInfoFlags = if warn { NIIF_WARNING } else { NIIF_INFO };
-        unsafe {
-            let _ = Shell_NotifyIconW(NIM_MODIFY, &d);
-        }
+        d
     }
+}
 
-    fn remove_icon(&self) {
-        let d = self.nid(NOTIFY_ICON_DATA_FLAGS(0));
-        unsafe {
-            let _ = Shell_NotifyIconW(NIM_DELETE, &d);
+/// 把圖示加到系統匣（還沒加上時）；回傳現在有沒有在系統匣上。借用 TRAY 時不呼叫 Shell_NotifyIcon
+fn ensure_icon() -> bool {
+    let Some(d) = TRAY.with(|t| t.borrow_mut().as_mut().filter(|t| !t.added).map(|t| t.icon_data(NIF_MESSAGE | NIF_ICON | NIF_TIP))) else {
+        return TRAY.with(|t| t.borrow().as_ref().is_some_and(|t| t.added));
+    };
+    let ok = unsafe { Shell_NotifyIconW(NIM_ADD, &d).as_bool() };
+    TRAY.with(|t| {
+        if let Some(t) = t.borrow_mut().as_mut() {
+            t.added = ok;
         }
-    }
+    });
+    ok
 }
 
 /// 處理其他執行緒送來的要求
@@ -197,45 +192,49 @@ fn drain() {
     loop {
         let Some(req) = queue.lock().unwrap().pop_front() else { break };
         match req {
-            Req::State(s) => TRAY.with(|t| {
-                if let Some(t) = t.borrow_mut().as_mut() {
-                    t.state = Some(*s);
-                    if t.added {
-                        t.update_icon();
-                    }
-                }
-            }),
-            Req::Balloon(title, text, warn) => TRAY.with(|t| {
-                if let Some(t) = t.borrow().as_ref() {
-                    if t.added {
-                        t.balloon(&title, &text, warn);
-                    }
-                }
-            }),
-            Req::Dispose(done) => {
-                let hwnd = TRAY.with(|t| {
+            // Shell_NotifyIcon 會等檔案總管回應，等的時候這條執行緒可能又收到訊息（進到 wnd_proc）：
+            // 所以借用 TRAY 時只準備資料，放開之後才呼叫，避免重複借用而整個程式結束
+            Req::State(s) => {
+                let d = TRAY.with(|t| {
                     let mut b = t.borrow_mut();
                     let t = b.as_mut()?;
-                    if t.added {
-                        t.remove_icon();
-                        t.added = false;
-                    }
-                    for id in HOTKEY_IDS {
-                        unsafe {
-                            let _ = UnregisterHotKey(Some(t.hwnd), id);
-                        }
-                    }
-                    for h in t.icons.values() {
-                        unsafe {
-                            let _ = DestroyIcon(*h);
-                        }
-                    }
-                    t.icons.clear();
-                    Some(t.hwnd)
+                    t.state = Some(*s);
+                    t.added.then(|| t.icon_data(NIF_ICON | NIF_TIP))
                 });
-                if let Some(h) = hwnd {
+                if let Some(d) = d {
                     unsafe {
-                        let _ = DestroyWindow(h);
+                        let _ = Shell_NotifyIconW(NIM_MODIFY, &d);
+                    }
+                }
+            }
+            Req::Balloon(title, text, warn) => {
+                let d = TRAY.with(|t| t.borrow().as_ref().filter(|t| t.added).map(|t| t.balloon_data(&title, &text, warn)));
+                if let Some(d) = d {
+                    unsafe {
+                        let _ = Shell_NotifyIconW(NIM_MODIFY, &d);
+                    }
+                }
+            }
+            Req::Dispose(done) => {
+                let info = TRAY.with(|t| {
+                    let mut b = t.borrow_mut();
+                    let t = b.as_mut()?;
+                    let added = std::mem::replace(&mut t.added, false);
+                    let icons: Vec<HICON> = t.icons.drain().map(|(_, h)| h).collect();
+                    Some((t.hwnd, added.then(|| t.nid(NOTIFY_ICON_DATA_FLAGS(0))), icons))
+                });
+                if let Some((hwnd, nid, icons)) = info {
+                    unsafe {
+                        if let Some(d) = nid {
+                            let _ = Shell_NotifyIconW(NIM_DELETE, &d);
+                        }
+                        for id in HOTKEY_IDS {
+                            let _ = UnregisterHotKey(Some(hwnd), id);
+                        }
+                        for h in icons {
+                            let _ = DestroyIcon(h);
+                        }
+                        let _ = DestroyWindow(hwnd);
                     }
                 }
                 let _ = done.send(());
@@ -291,15 +290,25 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             PostQuitMessage(0);
             LRESULT(0)
         }
+        WM_TIMER if wparam.0 == RETRY_TIMER => {
+            // 開機登入時工作列還沒好、圖示加不上去：每 3 秒再試，加上了就停
+            if ensure_icon() {
+                let _ = KillTimer(Some(hwnd), RETRY_TIMER);
+                crate::info!("系統匣圖示已加上");
+            }
+            LRESULT(0)
+        }
         _ => {
-            let taskbar = TRAY.with(|t| t.borrow().as_ref().map(|t| t.taskbar_created).unwrap_or(0));
+            // 用 try_borrow：萬一其他地方正借用著（不應該發生），也不要讓整個程式結束
+            let taskbar = TRAY.with(|t| t.try_borrow().ok().and_then(|b| b.as_ref().map(|t| t.taskbar_created)).unwrap_or(0));
             if taskbar != 0 && msg == taskbar {
                 // 檔案總管重新啟動後圖示會消失，要重新加入
                 TRAY.with(|t| {
                     if let Some(t) = t.borrow_mut().as_mut() {
-                        t.added = t.add_icon();
+                        t.added = false;
                     }
                 });
+                ensure_icon();
                 return LRESULT(0);
             }
             DefWindowProcW(hwnd, msg, wparam, lparam)
@@ -497,19 +506,14 @@ pub fn start(cmd: UnboundedSender<TrayCommand>, keys: Hotkeys) -> Result<(Arc<dy
             });
             // 先處理已送來的狀態，圖示一開始就顯示正確的提示
             drain();
-            let added = TRAY.with(|t| {
-                t.borrow_mut().as_mut().map(|t| {
-                    t.added = t.add_icon();
-                    t.added
-                })
-            });
-            if added != Some(true) {
-                let _ = ready_tx.send(Err("Shell_NotifyIcon 失敗".into()));
-                let _ = DestroyWindow(hwnd);
-                return;
-            }
-            // 快捷鍵登記在這個執行緒的視窗上（WM_HOTKEY 會送到這裡）；被其他程式占用時登記失敗
+            // 快捷鍵登記在這個執行緒的視窗上（WM_HOTKEY 會送到這裡）；被其他程式占用時登記失敗。
+            // 先回報準備好（不等圖示）：加圖示要等檔案總管，開機登入時可能很慢
             let _ = ready_tx.send(Ok((hwnd.0 as isize, register_hotkeys(hwnd, &keys))));
+            // 圖示加不上去（工作列還沒準備好）：快捷鍵照樣能用，每 3 秒再試著加圖示
+            if !ensure_icon() {
+                crate::warn!("系統匣圖示暫時加不上去（工作列可能還沒準備好），稍後會再試");
+                SetTimer(Some(hwnd), RETRY_TIMER, 3000, None);
+            }
             let mut msg = MSG::default();
             while GetMessageW(&mut msg, None, 0, 0).as_bool() {
                 let _ = TranslateMessage(&msg);

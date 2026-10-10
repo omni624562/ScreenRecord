@@ -23,6 +23,18 @@ pub struct SubsJob {
     pub cancel: Arc<AtomicBool>,
 }
 
+/// 關掉剪輯視窗（或換一個工作）時停止：下載與辨識語音不會在背景一直跑
+impl Drop for SubsJob {
+    fn drop(&mut self) {
+        self.cancel.store(true, Ordering::Relaxed);
+    }
+}
+
+/// 剪輯視窗裡進行中的還是不是這個工作（關掉又開了別支影片時，結果不能加到別支影片上）
+fn is_current(ed: &Editor, cancel: &Arc<AtomicBool>) -> bool {
+    ed.subs.as_ref().is_some_and(|j| Arc::ptr_eq(&j.cancel, cancel))
+}
+
 /// 「標註」分頁的字幕區塊（影片才有）
 pub fn panel(ed: &mut Editor, ui: &mut egui::Ui) {
     let p = theme::pal(ui);
@@ -78,15 +90,17 @@ pub fn run(app: &mut UiApp, ed: &mut Editor, act: Act) {
             }
         }
         Act::ImportSrt => {
+            let video = ed.entry.media.path.clone();
             app.spawn(
                 async move {
                     let path = tokio::task::spawn_blocking(subtitles::pick_file).await.unwrap_or(Ok(None))?;
                     let Some(path) = path else { return Ok(None) };
                     subtitles::read_file(&path).map(|c| Some((c, file_name(&path.to_string_lossy()))))
                 },
-                |app, r: Result<Option<(Vec<Cue>, String)>, String>| match r {
+                move |app, r: Result<Option<(Vec<Cue>, String)>, String>| match r {
                     Ok(Some((cues, name))) => {
-                        let Some(ed) = &mut app.editor else { return };
+                        // 選檔案時關掉或換了影片：不加
+                        let Some(ed) = app.editor.as_mut().filter(|e| e.entry.media.path == video) else { return };
                         let n = ed.add_subtitles(&cues);
                         app.toast(format!("已從「{name}」加上 {n} 段字幕{}", if cues.len() > n { format!("（太多了，只加前 {MAX_CUES} 段）") } else { String::new() }), false);
                     }
@@ -100,10 +114,11 @@ pub fn run(app: &mut UiApp, ed: &mut Editor, act: Act) {
                 return;
             }
             let job = SubsJob { phase: Arc::new(AtomicU8::new(0)), progress: Arc::new(AtomicU32::new(0)), cancel: Arc::new(AtomicBool::new(false)) };
+            let mine = job.cancel.clone();
             let ffmpeg = ed.ffmpeg.clone();
             ed.subs = Some(job);
-            app.spawn(async move { subtitles::has_whisper(&ffmpeg).await }, |app, ok| {
-                let Some(ed) = &mut app.editor else { return };
+            app.spawn(async move { subtitles::has_whisper(&ffmpeg).await }, move |app, ok| {
+                let Some(ed) = app.editor.as_mut().filter(|e| is_current(e, &mine)) else { return };
                 if !ok {
                     ed.subs = None;
                     app.ask = Some(Ask::confirm(
@@ -144,6 +159,7 @@ fn start(app: &mut UiApp) {
     let Some(ed) = &mut app.editor else { return };
     let Some(job) = &ed.subs else { return };
     let (phase, progress, cancel) = (job.phase.clone(), job.progress.clone(), job.cancel.clone());
+    let mine = job.cancel.clone();
     let m = MODELS[ed.subs_model.min(MODELS.len() - 1)];
     let lang = LANGUAGES[ed.subs_lang.min(LANGUAGES.len() - 1)].0;
     let (ffmpeg, video, duration) = (ed.ffmpeg.clone(), ed.entry.media.path.clone(), ed.duration);
@@ -160,8 +176,8 @@ fn start(app: &mut UiApp) {
             let srt = if cues.is_empty() { None } else { subtitles::save_next_to(&video, &cues).ok() };
             Ok::<_, String>((cues, srt))
         },
-        |app, r| {
-            let Some(ed) = &mut app.editor else { return };
+        move |app, r| {
+            let Some(ed) = app.editor.as_mut().filter(|e| is_current(e, &mine)) else { return };
             ed.subs = None;
             match r {
                 Ok((cues, _)) if cues.is_empty() => app.toast("沒有辨識出說話的內容", false),

@@ -132,6 +132,8 @@ struct Ctl {
     last_result_msg: Option<String>,
     exists_at: u64,
     exists_cache: bool,
+    /// 最近的截圖還在不在：(路徑, 查的時間, 結果)
+    shot_exists: Option<(String, u64, bool)>,
     /// 最後一個通知是截圖的（點通知開啟編輯）
     balloon_shot: bool,
 }
@@ -191,6 +193,19 @@ impl TrayController {
             SourceConfig::Monitor { monitor_id } => format!("螢幕 {}", env.monitors.iter().find(|m| &m.id == monitor_id).map(|m| m.display_number).unwrap_or(1)),
         };
         let last_result = self.last_result_exists();
+        let has_shot = self.app.last_shot().is_some_and(|s| self.shot_exists(&s.path));
+        // 檔案、設定都先查好再鎖：鎖住時不讀磁碟（網路磁碟可能卡住好幾秒，其他地方會跟著等）
+        let (can_record, can_shot, has_last_snip, steps, update, keys) = (
+            self.app.ffmpeg_path().is_some() && !self.app.exporter.running(),
+            self.app.ffmpeg_path().is_some(),
+            self.app.last_snip().is_some(),
+            self.app.steps_count(),
+            self.app.update().map(|u| u.version),
+            {
+                let k = self.app.hotkeys();
+                std::array::from_fn(|i| k.label(i))
+            },
+        );
         let c = self.ctl.lock().unwrap();
         TrayState {
             rec: st.state,
@@ -203,31 +218,46 @@ impl TrayController {
                 .collect(),
             audio_system: cfg.audio.system,
             audio_mic: cfg.audio.mic,
-            can_record: self.app.ffmpeg_path().is_some() && !self.app.exporter.running(),
-            can_shot: self.app.ffmpeg_path().is_some(),
-            has_last_snip: self.app.last_snip().is_some(),
-            has_shot: self.app.last_shot().is_some_and(|s| std::path::Path::new(&s.path).is_file()),
-            steps: self.app.steps_count(),
+            can_record,
+            can_shot,
+            has_last_snip,
+            has_shot,
+            steps,
             last_result: if last_result { c.last_result_path.clone() } else { None },
             autostart: c.autostart,
             version: APP_VERSION.to_string(),
-            update: self.app.update().map(|u| u.version),
-            keys: {
-                let k = self.app.hotkeys();
-                std::array::from_fn(|i| k.label(i))
-            },
+            update,
+            keys,
         }
     }
 
-    /// 選單「播放最近的錄影」是否可用：每 10 秒才查一次檔案（網路磁碟上可能卡住數秒）
+    /// 選單「播放最近的錄影」是否可用：每 10 秒才查一次檔案（網路磁碟上可能卡住數秒；查的時候不鎖）
     fn last_result_exists(&self) -> bool {
+        let p = {
+            let c = self.ctl.lock().unwrap();
+            let Some(p) = c.last_result_path.clone() else { return false };
+            if now_ms().saturating_sub(c.exists_at) <= 10_000 {
+                return c.exists_cache;
+            }
+            p
+        };
+        let ok = Path::new(&p).exists();
         let mut c = self.ctl.lock().unwrap();
-        let Some(p) = c.last_result_path.clone() else { return false };
-        if now_ms().saturating_sub(c.exists_at) > 10_000 {
-            c.exists_at = now_ms();
-            c.exists_cache = Path::new(&p).exists();
+        c.exists_at = now_ms();
+        c.exists_cache = ok;
+        ok
+    }
+
+    /// 最近的截圖還在不在：同一個檔案每 10 秒才查一次（換了截圖立刻查）
+    fn shot_exists(&self, path: &str) -> bool {
+        if let Some((p, at, ok)) = &self.ctl.lock().unwrap().shot_exists {
+            if p == path && now_ms().saturating_sub(*at) <= 10_000 {
+                return *ok;
+            }
         }
-        c.exists_cache
+        let ok = Path::new(path).is_file();
+        self.ctl.lock().unwrap().shot_exists = Some((path.to_string(), now_ms(), ok));
+        ok
     }
 
     pub fn push(&self, force: bool) {

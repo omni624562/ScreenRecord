@@ -488,7 +488,8 @@ impl AudioPipe {
                 let _ = sock.shutdown(std::net::Shutdown::Both);
             }
         })?;
-        let desc = desc_rx.recv().unwrap_or_default();
+        // 開啟音訊裝置卡住時不要一直等（錄影的開始、暫停、停止都在等這裡）：裝置稍後好了照樣會送聲音
+        let desc = desc_rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap_or_else(|_| "音訊裝置沒有回應".to_string());
         Ok(AudioPipe { port, desc, synced, tx, thread: std::sync::Mutex::new(Some(thread)) })
     }
 

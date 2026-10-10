@@ -33,6 +33,8 @@ pub struct LibraryDialog {
     error: Option<String>,
     selected: HashSet<String>,
     search_at: Option<Instant>,
+    /// 視窗大小變了（每頁筆數跟著變）：停下來 0.25 秒再重新讀，拖曳調整大小時不會一直掃資料夾
+    fit_at: Option<Instant>,
     fit_px: f64,
     /// 截圖格一頁放幾張（依對話框大小）
     grid_per_page: usize,
@@ -54,6 +56,7 @@ impl LibraryDialog {
             error: None,
             selected: HashSet::new(),
             search_at: None,
+            fit_at: None,
             fit_px: 0.0,
             grid_per_page: 0,
             seq: 0,
@@ -345,7 +348,17 @@ fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table:
     let fit = ((table.height() - head_h - 4.0) as f64).max(LIBRARY_ROW_MAIN_PX * 3.0).floor();
     if (fit - d.fit_px).abs() > 0.5 {
         d.fit_px = fit;
+        if d.data.is_none() {
+            d.dirty = true;
+        } else {
+            d.fit_at = Some(Instant::now());
+        }
+    }
+    if d.fit_at.is_some_and(|t| t.elapsed().as_millis() > 250) {
+        d.fit_at = None;
         d.dirty = true;
+    } else if d.fit_at.is_some() {
+        ui.ctx().request_repaint_after(std::time::Duration::from_millis(260));
     }
     let rows = d.data.as_ref().map(|x| x.items.clone()).unwrap_or_default();
     // 勾選、日期、檔案、長度、解析度、大小、操作

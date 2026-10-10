@@ -109,17 +109,26 @@ fn run(rgba: &[u8], desk: Rect, windows: Vec<Rect>, record: Mode) -> Option<(Opt
     }
     unsafe {
         let screen = GetDC(None);
-        let (bright, b1, bits) = dib(screen, w, h, |dst| {
+        // 記憶體不夠時（多個 4K 螢幕）可能建不出來：已經建好的要釋放
+        let Some((bright, b1, bits)) = dib(screen, w, h, |dst| {
             for (d, s) in dst.as_chunks_mut::<4>().0.iter_mut().zip(rgba.as_chunks::<4>().0) {
                 *d = [s[2], s[1], s[0], 255];
             }
-        })?;
-        let (dim, b2, _) = dib(screen, w, h, |dst| {
+        }) else {
+            ReleaseDC(None, screen);
+            return None;
+        };
+        let Some((dim, b2, _)) = dib(screen, w, h, |dst| {
             for (d, s) in dst.as_chunks_mut::<4>().0.iter_mut().zip(rgba.as_chunks::<4>().0) {
                 let k = |v: u8| (v as u16 * 45 / 100) as u8;
                 *d = [k(s[2]), k(s[1]), k(s[0]), 255];
             }
-        })?;
+        }) else {
+            let _ = DeleteDC(bright);
+            let _ = DeleteObject(b1.into());
+            ReleaseDC(None, screen);
+            return None;
+        };
         let back = CreateCompatibleDC(Some(screen));
         let b3 = CreateCompatibleBitmap(screen, w, h);
         SelectObject(back, b3.into());
@@ -315,7 +324,8 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
         }
         // C：複製游標下的色碼（取色器直接結束）
         WM_KEYDOWN if wparam.0 == 0x43 => {
-            let done = STATE.with(|s| {
+            // 剪貼簿在放開 STATE 之後才寫（寫的時候可能處理其他訊息，又進到這裡借用）
+            let picked = STATE.with(|s| {
                 let mut b = s.borrow_mut();
                 let st = b.as_mut()?;
                 if !st.record.loupe() {
@@ -325,11 +335,22 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                 let c = pixel(st, p.x, p.y)?;
                 if st.record == Mode::Color {
                     st.color = Some(c);
-                    return Some(true);
+                    return Some((true, c));
                 }
-                st.copied = crate::clipboard::copy_text(&hex(c));
-                Some(false)
+                Some((false, c))
             });
+            let done = match picked {
+                Some((false, c)) => {
+                    let ok = crate::clipboard::copy_text(&hex(c));
+                    STATE.with(|s| {
+                        if let Some(st) = s.borrow_mut().as_mut() {
+                            st.copied = ok;
+                        }
+                    });
+                    Some(false)
+                }
+                other => other.map(|p| p.0),
+            };
             if done == Some(true) {
                 let _ = DestroyWindow(hwnd);
             } else {

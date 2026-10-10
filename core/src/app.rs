@@ -189,7 +189,7 @@ impl RecorderDeps for RecDeps {
     // 縮小動畫約 0.25 秒，等它結束再開始擷取，第一張畫面才不會拍到縮到一半的視窗
     fn before_capture(&self, area: Rect) -> BoxFut<'_, ()> {
         Box::pin(async move {
-            let minimized = tokio::task::spawn_blocking(move || crate::winui::minimize_ui(Some(&area))).await.unwrap_or(false);
+            let minimized = tokio::task::spawn_blocking(move || crate::winui::minimize_ui_for_recording(&area)).await.unwrap_or(false);
             if minimized {
                 tokio::time::sleep(Duration::from_millis(350)).await;
             }
@@ -199,7 +199,7 @@ impl RecorderDeps for RecDeps {
         crate::winui::ui_in_area(area)
     }
     fn after_stop(&self) {
-        crate::winui::restore_ui();
+        crate::winui::restore_ui_after_recording();
         crate::winui::set_desktop_icons(true);
     }
     fn save_markers(&self, output: &str, marks: &crate::recorder::Marks) {
@@ -331,7 +331,7 @@ impl App {
             recorder: self.recorder.status(),
             export: self.exporter.status(),
             download: self.downloader.status(),
-            settings_rev: self.settings.load().rev,
+            settings_rev: self.settings.rev(),
             update: self.update().map(|u| u.version),
             install: Some(self.installer.status()).filter(|s| s.phase != crate::selfupdate::InstallPhase::Idle),
             shot,
@@ -343,10 +343,15 @@ impl App {
 
     /// 步驟截圖進行中：已經截了幾步
     pub fn steps_count(&self) -> Option<u32> {
+        // 所有平台都上鎖：Linux 的測試也能抓到「同一把鎖鎖兩次」（status() 曾經這樣卡死）
+        let st = self.lock();
         #[cfg(windows)]
-        return self.lock().steps.as_ref().map(|s| s.0.count());
+        return st.steps.as_ref().map(|s| s.0.count());
         #[cfg(not(windows))]
-        None
+        {
+            drop(st);
+            None
+        }
     }
 
     /// 開始步驟截圖：之後每點一下滑鼠就截一張（圖放在儲存資料夾的「教學_日期_時間」資料夾）
@@ -358,14 +363,21 @@ impl App {
         }
         #[cfg(windows)]
         {
-            let mut st = self.lock();
-            if st.steps.is_some() {
+            if self.lock().steps.is_some() {
                 return Err(crate::Error::config("步驟截圖已經在進行中"));
             }
+            // 建資料夾時不鎖（儲存位置在很慢的網路磁碟時，介面與系統匣不會跟著卡住）
             let stamp = crate::paths::timestamp();
             let name = format!("教學_{stamp}");
             let dir = PathBuf::from(output_dir);
             let session = crate::steps_win::Session::start(dir.clone(), name.clone()).map_err(|e| crate::Error::config(format!("無法建立資料夾：{e}")))?;
+            let mut st = self.lock();
+            if st.steps.is_some() {
+                // 同時按了兩次：留下先開始的那個
+                drop(st);
+                session.finish();
+                return Err(crate::Error::config("步驟截圖已經在進行中"));
+            }
             st.steps = Some((session, dir, name, chrono::Local::now().format("%Y/%m/%d %H:%M").to_string()));
             crate::info!("[截圖] 開始步驟截圖");
             Ok(())
@@ -518,13 +530,17 @@ impl App {
         tokio::spawn(async move {
             let mut seen: Option<(i64, Rect)> = None;
             let mut warned: Option<i64> = None;
+            let mut active = false;
             loop {
-                tokio::time::sleep(Duration::from_millis(400)).await;
+                // 跟著視窗錄影時每 0.4 秒看一次；其他時候 2 秒（閒置時少喚醒）
+                tokio::time::sleep(Duration::from_millis(if active { 400 } else { 2000 })).await;
                 let Some(app) = me.upgrade() else { return };
                 let Some((id, area)) = app.recorder.follow_info() else {
                     seen = None;
+                    active = false;
                     continue;
                 };
+                active = true;
                 let Some(b) = crate::winui::window_bounds(id) else { continue };
                 if (b.x, b.y) == (area.x, area.y) {
                     seen = None;
@@ -605,9 +621,7 @@ impl App {
             }
             st.shooting = true;
         }
-        let r = self.snip_capture(config).await;
-        self.lock().shooting = false;
-        let src = r?;
+        let src = self.snip_ready(self.snip_capture(config).await)?;
         #[cfg(windows)]
         return self.snip_native(src).await;
         #[cfg(not(windows))]
@@ -664,10 +678,7 @@ impl App {
                 }
                 st.shooting = true;
             }
-            let r = self.snip_capture(config).await;
-            self.lock().shooting = false;
-            let src = r?;
-            self.lock().snipping = true;
+            let src = self.snip_ready(self.snip_capture(config).await)?;
             let (path, desk) = (src.path.clone(), src.desktop);
             let color = tokio::task::spawn_blocking(move || {
                 let pm = tiny_skia::Pixmap::decode_png(&std::fs::read(&path).ok()?).ok()?;
@@ -708,9 +719,7 @@ impl App {
                 }
                 st.shooting = true;
             }
-            let r = self.snip_capture(config).await;
-            self.lock().shooting = false;
-            let src = r?;
+            let src = self.snip_ready(self.snip_capture(config).await)?;
             let sel = self.snip_pick(&src, crate::snip_win::Mode::Qr).await;
             let path = src.path.clone();
             let desk = src.desktop;
@@ -729,9 +738,10 @@ impl App {
                     Ok(crate::qr::decode(&rgba, w, h))
                 })
                 .await
-                .map_err(|e| crate::Error::other(e.to_string()))?
-                .map(Some),
+                .map_err(|e| crate::Error::other(e.to_string()))
+                .and_then(|r| r.map(Some)),
             };
+            // 不管成功失敗（包括背景工作出錯）都要結束框選，否則之後的截圖都會被當成「正在截圖」
             self.snip_end(Some(&src));
             res
         }
@@ -754,9 +764,7 @@ impl App {
                 }
                 st.shooting = true;
             }
-            let r = self.snip_capture(config).await;
-            self.lock().shooting = false;
-            let src = r?;
+            let src = self.snip_ready(self.snip_capture(config).await)?;
             let Some(area) = self.snip_pick(&src, crate::snip_win::Mode::Scroll).await else {
                 crate::info!("[截圖] 取消長截圖");
                 self.snip_end(Some(&src));
@@ -764,9 +772,10 @@ impl App {
             };
             // 框選畫面關掉後等一下，讓下面的視窗重畫
             tokio::time::sleep(Duration::from_millis(250)).await;
-            let res = tokio::task::spawn_blocking(move || scroll_capture(area)).await.map_err(|e| crate::Error::other(e.to_string()))?;
+            let res = tokio::task::spawn_blocking(move || scroll_capture(area)).await;
+            // 先結束框選再處理錯誤（背景工作出錯時也不會一直卡在「正在截圖」）
             self.snip_end(Some(&src));
-            let (rgba, w, h, steps) = res?;
+            let (rgba, w, h, steps) = res.map_err(|e| crate::Error::other(e.to_string()))??;
             let out = new_shot_path(&src.output_dir).await?;
             let o = out.clone();
             tokio::task::spawn_blocking(move || {
@@ -794,9 +803,7 @@ impl App {
             }
             st.shooting = true;
         }
-        let r = self.snip_capture(config).await;
-        self.lock().shooting = false;
-        let src = r?;
+        let src = self.snip_ready(self.snip_capture(config).await)?;
         #[cfg(windows)]
         let sel = self.snip_pick(&src, crate::snip_win::Mode::Record).await;
         #[cfg(not(windows))]
@@ -826,7 +833,10 @@ impl App {
         let monitors = self.lock().monitors.clone();
         let all = RecordConfig { source: crate::types::SourceConfig::All, audio_only: false, ..config.clone() };
         let plan = crate::args::resolve_plan(&all, &monitors)?;
-        let path = std::env::temp_dir().join(format!("ScreenRecorder-snip-{}.png", std::process::id()));
+        // 每次用不同的檔名：前一次的收尾不會刪到這一次的凍結畫面
+        static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!("ScreenRecorder-snip-{}-{n}.png", std::process::id()));
         if crate::winui::minimize_ui(Some(&plan.rect)) {
             tokio::time::sleep(Duration::from_millis(350)).await;
         }
@@ -894,6 +904,16 @@ impl App {
         self.shot_preview(&shot.path);
         crate::info!("[截圖] 框選 {}（{}×{}{}）", shot.path, shot.width, shot.height, if shot.copied { "，已複製到剪貼簿" } else { "" });
         Ok(shot)
+    }
+
+    /// 凍結畫面截好了：「截圖中」換成「框選中」，同一次上鎖（中間不會插進另一個框選）
+    fn snip_ready(&self, r: crate::Result<SnipSource>) -> crate::Result<SnipSource> {
+        let mut st = self.lock();
+        st.shooting = false;
+        if r.is_ok() {
+            st.snipping = true;
+        }
+        r
     }
 
     /// 框選結束（截好或取消）：刪掉暫存的畫面、還原操作視窗

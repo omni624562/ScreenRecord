@@ -3,8 +3,24 @@
 use std::path::PathBuf;
 
 /// filters：(說明, 副檔名樣式，例如 "*.png;*.jpg")
+/// 在新的執行緒開啟：對話框要在 STA 執行緒，而共用的背景執行緒可能已被其他功能（文字辨識）設成 MTA
 #[cfg(windows)]
 pub fn pick(title: &str, filters: &[(&str, &str)]) -> Result<Option<PathBuf>, String> {
+    let title = title.to_string();
+    let filters: Vec<(String, String)> = filters.iter().map(|(a, b)| (a.to_string(), b.to_string())).collect();
+    std::thread::Builder::new()
+        .name("file-dialog".into())
+        .spawn(move || {
+            let f: Vec<(&str, &str)> = filters.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
+            pick_sta(&title, &f)
+        })
+        .map_err(|e| e.to_string())?
+        .join()
+        .unwrap_or_else(|_| Err("無法開啟選擇檔案的視窗".into()))
+}
+
+#[cfg(windows)]
+fn pick_sta(title: &str, filters: &[(&str, &str)]) -> Result<Option<PathBuf>, String> {
     use windows::core::{HSTRING, PCWSTR};
     use windows::Win32::System::Com::{CoCreateInstance, CoInitializeEx, CoTaskMemFree, CoUninitialize, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED};
     use windows::Win32::UI::Shell::Common::COMDLG_FILTERSPEC;

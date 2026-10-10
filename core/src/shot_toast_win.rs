@@ -40,7 +40,7 @@ const LIFETIME: Duration = Duration::from_secs(7);
 static CURRENT: Mutex<Option<isize>> = Mutex::new(None);
 
 /// 按鈕的處理函式：(要做的事, 截圖的路徑)
-type OnCmd = Box<dyn Fn(Cmd, &str)>;
+type OnCmd = std::rc::Rc<dyn Fn(Cmd, &str)>;
 
 struct State {
     path: String,
@@ -65,7 +65,7 @@ pub fn show(path: String, on: impl Fn(Cmd, &str) + Send + 'static) {
             let _ = PostMessageW(Some(HWND(h as *mut _)), WM_CLOSE, WPARAM(0), LPARAM(0));
         }
     }
-    let _ = std::thread::Builder::new().name("shot-toast".into()).spawn(move || unsafe { run(path, Box::new(on)) });
+    let _ = std::thread::Builder::new().name("shot-toast".into()).spawn(move || unsafe { run(path, std::rc::Rc::new(on)) });
 }
 
 unsafe fn run(path: String, on: OnCmd) {
@@ -208,11 +208,11 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                 None => return LRESULT(0),
             };
             if let Some(c) = cmd {
-                STATE.with(|s| {
-                    if let Some(st) = s.borrow().as_ref() {
-                        (st.on)(c, &st.path);
-                    }
-                });
+                // 先取出再呼叫：刪除、複製可能在等的時候處理其他訊息（又進到這裡借用 STATE）
+                let job = STATE.with(|s| s.borrow().as_ref().map(|st| (st.on.clone(), st.path.clone())));
+                if let Some((on, path)) = job {
+                    on(c, &path);
+                }
             }
             // 複製後留著（可能還要做別的），其他都關掉
             if cmd != Some(Cmd::Copy) {

@@ -1185,6 +1185,8 @@ impl Recorder {
 
     fn on_exit(&self, index: usize, code: i32) {
         let mut close_audio = None;
+        // 通知等放開鎖之後再送（通知會用到系統匣的鎖，持有錄影器的鎖時呼叫可能互相等）
+        let mut camera_notice = false;
         let action = {
             let mut guard = self.lock();
             let st = &mut *guard;
@@ -1210,7 +1212,7 @@ impl Recorder {
                     if let Some(c) = st.config.as_mut() {
                         c.camera = None;
                     }
-                    self.deps().notify("攝影機", "攝影機無法開啟（可能被其他程式使用中），這次錄影不含攝影機", true);
+                    camera_notice = true;
                     ExitAction::Start
                 } else if !st.ever_produced_frames {
                     let next = startup_fallback(&FallbackInput {
@@ -1268,6 +1270,9 @@ impl Recorder {
         };
         if let Some(a) = close_audio {
             a.close();
+        }
+        if camera_notice {
+            self.deps().notify("攝影機", "攝影機無法開啟（可能被其他程式使用中），這次錄影不含攝影機", true);
         }
         match action {
             ExitAction::None => {}

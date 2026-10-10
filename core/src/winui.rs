@@ -157,7 +157,10 @@ mod imp {
         !windows_in(Some(area), prefix).is_empty()
     }
 
-    pub fn minimize_ui(area: Option<&Rect>, prefix: &str) -> bool {
+    /// 錄影開始時縮小的視窗（和截圖分開記：錄影中截圖收尾時不會把操作視窗叫回來，停止錄影時也不會漏還原）
+    static REC_MINIMIZED: Mutex<Vec<isize>> = Mutex::new(Vec::new());
+
+    pub fn minimize_ui(area: Option<&Rect>, prefix: &str, recording: bool) -> bool {
         let list = windows_in(area, prefix);
         for h in &list {
             unsafe {
@@ -165,7 +168,8 @@ mod imp {
             }
         }
         let any = !list.is_empty();
-        *MINIMIZED.lock().unwrap() = list.into_iter().map(|h| h.0 as isize).collect();
+        let ids = list.into_iter().map(|h| h.0 as isize).collect();
+        *if recording { &REC_MINIMIZED } else { &MINIMIZED }.lock().unwrap() = ids;
         any
     }
 
@@ -208,8 +212,8 @@ mod imp {
         ICONS_HIDDEN.store(!visible, Ordering::Relaxed);
     }
 
-    pub fn restore_ui() {
-        let list = std::mem::take(&mut *MINIMIZED.lock().unwrap());
+    pub fn restore_ui(recording: bool) {
+        let list = std::mem::take(&mut *if recording { &REC_MINIMIZED } else { &MINIMIZED }.lock().unwrap());
         for h in list {
             let hwnd = HWND(h as *mut _);
             unsafe {
@@ -237,12 +241,29 @@ pub fn ui_in_area(area: &Rect) -> bool {
 /// 指定 area 時只縮小與它重疊的視窗（拿不到位置的視窗一律縮小，寧可多縮也不要錄到它）。
 pub fn minimize_ui(area: Option<&Rect>) -> bool {
     #[cfg(windows)]
-    return imp::minimize_ui(area, TITLE_PREFIX);
+    return imp::minimize_ui(area, TITLE_PREFIX, false);
     #[cfg(not(windows))]
     {
         let _ = area;
         false
     }
+}
+
+/// 開始錄影時縮小擋到範圍的操作視窗（停止後用 restore_ui_after_recording 還原）
+pub fn minimize_ui_for_recording(area: &Rect) -> bool {
+    #[cfg(windows)]
+    return imp::minimize_ui(Some(area), TITLE_PREFIX, true);
+    #[cfg(not(windows))]
+    {
+        let _ = area;
+        false
+    }
+}
+
+/// 停止錄影：還原開始時縮小的操作視窗
+pub fn restore_ui_after_recording() {
+    #[cfg(windows)]
+    imp::restore_ui(true);
 }
 
 /// 看得到的視窗範圍（實體像素），由上層到下層（框選截圖時點一下截整個視窗）
@@ -291,5 +312,5 @@ pub fn set_desktop_icons(visible: bool) {
 /// 還原先前由 minimize_ui 縮小的視窗（使用者自己又打開的就不動）
 pub fn restore_ui() {
     #[cfg(windows)]
-    imp::restore_ui();
+    imp::restore_ui(false);
 }
