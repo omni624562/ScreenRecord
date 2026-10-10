@@ -1,6 +1,6 @@
 //! 尋找 ffmpeg.exe 並偵測功能：ddagrab、gdigrab、H.264 編碼器。
 
-use crate::args::{encoder_spec, EncoderSpec, ENCODERS, HARDWARE_ENCODERS};
+use crate::args::{encoder_spec, gpu_convert_test_args, gpu_encode_test_args, gpu_psnr_ok, parse_gpu_psnr, EncoderSpec, GpuConvert, GpuSupport, ENCODERS, HARDWARE_ENCODERS};
 use crate::paths::{app_dir, data_dir};
 use crate::process::{last_lines, run};
 use crate::types::{FfmpegInfo, MonitorInfo};
@@ -70,6 +70,13 @@ pub struct Probe {
     pub info: FfmpegInfo,
     pub encoder: Option<EncoderSpec>,
     pub hw_listed: Vec<String>,
+    /// 列得出濾鏡的顯示卡處理方式（還要實測）
+    pub gpu_filters: Vec<GpuConvert>,
+}
+
+/// `ffmpeg -filters` 裡有沒有這個濾鏡
+fn has_filter(filters_stdout: &str, name: &str) -> bool {
+    Regex::new(&format!(r"(?m)^\s*\S+\s+{}\s", regex::escape(name))).unwrap().is_match(filters_stdout)
 }
 
 pub async fn probe_ffmpeg() -> Probe {
@@ -78,11 +85,12 @@ pub async fn probe_ffmpeg() -> Probe {
     let Some(path) = path else { return Probe { info: base, ..Default::default() } };
     let path_str = path.display().to_string();
     let t = Duration::from_secs(20);
-    let (ver, filters, devices, encoders) = tokio::join!(
+    let (ver, filters, devices, encoders, dda_help) = tokio::join!(
         run(&path, &["-hide_banner", "-version"], t),
         run(&path, &["-hide_banner", "-filters"], t),
         run(&path, &["-hide_banner", "-devices"], t),
         run(&path, &["-hide_banner", "-encoders"], t),
+        run(&path, &["-hide_banner", "-h", "filter=ddagrab"], t),
     );
     if ver.code != 0 {
         let err = format!("無法執行 ffmpeg：{}", last_lines(&ver.stderr, 3));
@@ -107,6 +115,7 @@ pub async fn probe_ffmpeg() -> Probe {
             path: Some(path_str),
             version: Some(version),
             has_ddagrab: DDAGRAB_RE.is_match(&filters.stdout),
+            ddagrab_skip_static: dda_help.stdout.contains("dup_frames"),
             has_gdigrab: GDIGRAB_RE.is_match(&devices.stdout),
             encoder: encoder.map(|e| e.name.to_string()),
             error: encoder.is_none().then(|| "這個 FFmpeg 沒有可用的 H.264 編碼器（建議改用 gyan.dev 的 full / essentials 版本）".to_string()),
@@ -114,7 +123,32 @@ pub async fn probe_ffmpeg() -> Probe {
         },
         encoder,
         hw_listed,
+        gpu_filters: [GpuConvert::Qsv, GpuConvert::Amf].into_iter().filter(|g| has_filter(&filters.stdout, g.filter())).collect(),
     }
+}
+
+/// 實測在顯示卡上縮放、轉色彩：顏色要和 CPU 轉的 BT.709 相同；encoder 是同一張顯示卡的編碼器時，再試直接交給它壓縮
+pub async fn test_gpu_convert(ffmpeg: &Path, m: &MonitorInfo, convert: GpuConvert, encoder: Option<EncoderSpec>) -> Result<GpuSupport, String> {
+    let t = Duration::from_secs(20);
+    let r = run(ffmpeg, &gpu_convert_test_args(m, convert), t).await;
+    if r.timed_out {
+        return Err("測試逾時".into());
+    }
+    if r.code != 0 {
+        return Err(last_lines(&r.stderr, 2));
+    }
+    let Some((bt709, bt601)) = parse_gpu_psnr(&r.stderr) else { return Err("讀不到比對結果".into()) };
+    if !gpu_psnr_ok(bt709, bt601) {
+        return Err(format!("顏色和 CPU 轉的不同（與 BT.709 相比 {bt709:.1} dB、BT.601 {bt601:.1} dB）"));
+    }
+    let zero_copy = match encoder {
+        Some(e) => {
+            let r = run(ffmpeg, &gpu_encode_test_args(m, convert, &e), t).await;
+            r.code == 0 && !r.timed_out
+        }
+        None => false,
+    };
+    Ok(GpuSupport { adapter: m.adapter, convert, zero_copy })
 }
 
 /// 實際用 ddagrab 抓一張畫面，確認 Desktop Duplication 在這台電腦可用

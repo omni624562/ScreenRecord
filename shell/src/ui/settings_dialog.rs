@@ -525,6 +525,7 @@ fn save_page(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
         app.s.output_dir = text.clone();
         app.save_settings();
         app.main.dir_changed_at = Some(Instant::now());
+        app.ctx.request_repaint_after(std::time::Duration::from_millis(620));
     }
     if !r.has_focus() {
         d.dir_text = None;

@@ -8,7 +8,8 @@
 //! 不在持有鎖時等待（呼叫 FFmpeg、開啟音訊裝置），查詢狀態永遠不會被卡住。
 
 use crate::args::{
-    audio_end_args, choose_encoder, concat_args, concat_list, desktop_rect, parse_media_info, resolve_plan, segment_args, startup_fallback, CapturePlan, EncoderSpec, FallbackInput, StartupFallback,
+    audio_end_args, choose_encoder, concat_args, concat_list, desktop_rect, parse_media_info, resolve_plan, segment_args, startup_fallback, CapturePlan, EncoderSpec, FallbackInput, GpuPath,
+    GpuSupport, StartupFallback,
 };
 use crate::audio::{AudioSourceSpec, Opener};
 use crate::audiopipe::{AudioPipe, LogFn};
@@ -48,6 +49,12 @@ pub trait RecorderDeps: Send + Sync + 'static {
     fn monitors(&self) -> Vec<MonitorInfo>;
     /// ddagrab 是否可用（濾鏡存在且實測沒失敗；上次失敗時會重新測試）
     fn ddagrab_usable(&self) -> BoxFut<'_, bool>;
+    /// 實測通過的顯示卡處理（在顯示卡上縮放、轉色彩）
+    fn gpu_convert(&self) -> Option<GpuSupport> {
+        None
+    }
+    /// 顯示卡處理在錄影時失敗：這次執行期間不再使用
+    fn gpu_convert_failed(&self) {}
     /// 倒數結束、開始擷取前（縮小擋到擷取範圍的操作視窗等）；area 為擷取範圍（虛擬桌面的實體像素座標）
     fn before_capture(&self, _area: Rect) -> BoxFut<'_, ()> {
         Box::pin(async {})
@@ -182,6 +189,8 @@ struct St {
     enc: Option<EncoderSpec>,
     cpu_encoder: Option<EncoderSpec>,
     gpu_available: bool,
+    /// 在顯示卡上縮放、轉色彩（失敗時清掉，改回 CPU 轉換）
+    gpu: Option<GpuPath>,
     audio_desc: Option<String>,
     slow_since: Option<u64>,
     slow_warned: bool,
@@ -757,6 +766,7 @@ impl Recorder {
             st.enc = Some(enc);
             st.cpu_encoder = encoders.cpu;
             st.gpu_available = !encoders.gpu.is_empty();
+            st.gpu = GpuPath::choose(deps.gpu_convert(), &plan, &config, method, &enc);
             st.segments = Vec::new();
             st.current = None;
             st.accumulated_ms = 0;
@@ -830,6 +840,9 @@ impl Recorder {
             );
             if Some(enc) != encoders.cpu {
                 st.add_log(LogLevel::Info, reason);
+            }
+            if let Some(g) = st.gpu {
+                st.add_log(LogLevel::Info, &g.describe());
             }
             if method == CaptureMethod::Gdigrab && plan.monitors.len() > 1 && plan.dda.is_none() && config.method == MethodPreference::Auto {
                 st.add_log(LogLevel::Info, "範圍涵蓋不同顯示卡上的螢幕，ddagrab 無法合成，改用 gdigrab");
@@ -948,19 +961,21 @@ impl Recorder {
     }
 
     fn start_segment(&self) -> std::result::Result<(), String> {
-        let (ffmpeg, plan, config, method, enc, file, specs, index) = {
+        let (ffmpeg, plan, config, method, enc, file, specs, index, gpu) = {
             let st = self.lock();
             let index = st.segments.len();
             let parts = st.parts_dir.clone().ok_or("沒有分段資料夾")?;
+            let enc = st.enc.ok_or("沒有編碼器")?;
             (
                 self.deps().ffmpeg_path().ok_or("找不到 ffmpeg.exe")?,
                 st.plan.clone().ok_or("沒有擷取範圍")?,
                 st.config().clone(),
                 st.method.unwrap_or(CaptureMethod::Gdigrab),
-                st.enc.ok_or("沒有編碼器")?,
+                enc,
                 parts.join(format!("seg_{index:03}.mp4")).display().to_string(),
                 st.audio_specs.clone(),
                 index,
+                st.gpu.map(|g| g.for_encoder(&enc)),
             )
         };
         // 錄聲音：每個分段各自開一組 WASAPI 擷取與 TCP 連線，時間零點對齊該分段的第一張畫面。
@@ -984,7 +999,7 @@ impl Recorder {
             }
         }
         let audio_args = audio.as_ref().map(|a| a.input_args());
-        let args = segment_args(&plan, &config, method, &enc, &file, audio_args.as_deref()).map_err(|e| e.message().to_string())?;
+        let args = segment_args(&plan, &config, method, &enc, &file, audio_args.as_deref(), gpu).map_err(|e| e.message().to_string())?;
 
         let mut cmd = command(&ffmpeg);
         cmd.args(&args).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
@@ -1187,6 +1202,7 @@ impl Recorder {
         let mut close_audio = None;
         // 通知等放開鎖之後再送（通知會用到系統匣的鎖，持有錄影器的鎖時呼叫可能互相等）
         let mut camera_notice = false;
+        let mut gpu_failed = false;
         let action = {
             let mut guard = self.lock();
             let st = &mut *guard;
@@ -1222,8 +1238,16 @@ impl Recorder {
                         has_cpu_encoder: st.cpu_encoder.is_some(),
                         ddagrab_in_use: seg_method == CaptureMethod::Ddagrab,
                         method_auto,
+                        gpu_convert_in_use: seg_method == CaptureMethod::Ddagrab && st.gpu.zip(st.plan.as_ref()).is_some_and(|(g, p)| g.applies(p, st.config())),
                     });
                     match next {
+                        // 顯示卡處理失敗（驅動不支援等）：改回 CPU 轉換再試，這次執行期間之後的錄影也不再用
+                        StartupFallback::CpuConvert => {
+                            st.add_log(LogLevel::Warn, &format!("顯示卡處理畫面失敗（{detail}），改用 CPU 轉換"));
+                            st.gpu = None;
+                            gpu_failed = true;
+                            ExitAction::Start
+                        }
                         // GPU 編碼器一開始就失敗（驅動問題等）：「自動」模式退回 CPU 編碼再試
                         StartupFallback::CpuEncoder => {
                             let name = st.enc.map(|e| e.name).unwrap_or("");
@@ -1273,6 +1297,9 @@ impl Recorder {
         }
         if camera_notice {
             self.deps().notify("攝影機", "攝影機無法開啟（可能被其他程式使用中），這次錄影不含攝影機", true);
+        }
+        if gpu_failed {
+            self.deps().gpu_convert_failed();
         }
         match action {
             ExitAction::None => {}
@@ -1549,6 +1576,10 @@ mod tests {
         before_areas: Mutex<Vec<Rect>>,
         ui_areas: Mutex<Vec<Rect>>,
         ui_in: Option<bool>,
+        /// 有假的 FFmpeg 時也當作 ddagrab 可用
+        dda: bool,
+        gpu: Option<GpuSupport>,
+        gpu_failed: AtomicUsize,
     }
 
     impl RecorderDeps for Fake {
@@ -1570,8 +1601,14 @@ mod tests {
             vec![mon()]
         }
         fn ddagrab_usable(&self) -> BoxFut<'_, bool> {
-            let usable = self.ffmpeg.is_none();
+            let usable = self.ffmpeg.is_none() || self.dda;
             Box::pin(async move { usable })
+        }
+        fn gpu_convert(&self) -> Option<GpuSupport> {
+            self.gpu
+        }
+        fn gpu_convert_failed(&self) {
+            self.gpu_failed.fetch_add(1, Ordering::SeqCst);
         }
         fn before_capture(&self, area: Rect) -> BoxFut<'_, ()> {
             self.before.fetch_add(1, Ordering::SeqCst);
@@ -1838,6 +1875,44 @@ esac
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
         p
+    }
+
+    /// 假的 FFmpeg：遇到顯示卡處理的濾鏡就失敗（驅動不支援），其他照 fake_ffmpeg
+    #[cfg(unix)]
+    fn fake_ffmpeg_no_gpu(dir: &Path) -> PathBuf {
+        let inner = fake_ffmpeg(dir);
+        let p = dir.join("ffmpeg-no-gpu");
+        let script = format!("#!/bin/bash\ncase \" $* \" in *vpp_qsv*) echo '[vpp_qsv @ 0x1] Error creating a MFX session: -9' >&2; exit 1;; esac\nexec {} \"$@\"\n", inner.display());
+        std::fs::write(&p, script).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        p
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn gpu_convert_failure_falls_back_to_cpu() {
+        let tools = tempfile::tempdir().unwrap();
+        let gpu = GpuSupport { adapter: mon().adapter, convert: crate::args::GpuConvert::Qsv, zero_copy: false };
+        let s = Setup::new(Fake { ffmpeg: Some(fake_ffmpeg_no_gpu(tools.path())), dda: true, gpu: Some(gpu), ..Default::default() });
+        s.release();
+        s.rec.start(RecordConfig { countdown_sec: Some(0.0), hide_ui: Some(false), ..s.config() }).await.unwrap();
+        for _ in 0..150 {
+            if s.rec.status().frames > 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let st = s.rec.status();
+        assert!(st.frames > 0, "退回 CPU 轉換後應該繼續錄影");
+        // 仍然用 ddagrab，只是改回 CPU 轉換；app 記下這次執行不再用顯示卡處理
+        assert_eq!(st.method, Some(CaptureMethod::Ddagrab));
+        assert_eq!(s.deps.gpu_failed.load(Ordering::SeqCst), 1);
+        let log: Vec<String> = st.log.iter().map(|l| l.text.clone()).collect();
+        assert!(log.iter().any(|l| l.contains("畫面在顯示卡上縮放、轉色彩（Intel QSV）")), "{log:?}");
+        assert!(log.iter().any(|l| l.contains("顯示卡處理畫面失敗") && l.contains("改用 CPU 轉換")), "{log:?}");
+        let res = s.rec.stop(None).await.unwrap().unwrap();
+        assert!(res.ok, "{}", res.message);
     }
 
     #[cfg(unix)]

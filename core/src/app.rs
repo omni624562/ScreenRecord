@@ -1,9 +1,9 @@
 //! 全域狀態：FFmpeg 偵測結果、螢幕與音訊裝置清單、錄影器、轉檔、下載、檢查新版本、預覽。
 
-use crate::args::{desktop_rect, encoder_spec, preview_args, preview_size, EncoderSpec};
+use crate::args::{desktop_rect, encoder_spec, preview_args, preview_size, EncoderSpec, GpuConvert, GpuSupport};
 use crate::downloader::{Deps as DownloadDeps, Downloader};
 use crate::exporter::{ExportCtx, Exporter};
-use crate::ffmpeg::{probe_ffmpeg, test_ddagrab, test_hw_encoders};
+use crate::ffmpeg::{probe_ffmpeg, test_ddagrab, test_gpu_convert, test_hw_encoders};
 use crate::library::MediaCache;
 use crate::paths::{data_dir, default_output_dir, now_ms};
 use crate::process::command;
@@ -60,7 +60,7 @@ pub struct PreviewImage {
 }
 
 /// 介面需要的即時狀態（錄影、轉檔、下載 FFmpeg、程式內更新）
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Status {
     pub recorder: crate::types::RecorderStatus,
     pub export: Option<crate::types::ExportStatus>,
@@ -86,6 +86,12 @@ struct Ffmpeg {
     info: FfmpegInfo,
     encoder: Option<EncoderSpec>,
     hw_listed: Vec<String>,
+    /// 列得出濾鏡的顯示卡處理方式
+    gpu_filters: Vec<GpuConvert>,
+    /// 顯示卡處理已經測過（或正在測）
+    gpu_tested: bool,
+    /// 實測通過的顯示卡處理；錄影時失敗會清掉
+    gpu: Option<GpuSupport>,
 }
 
 #[derive(Default)]
@@ -175,6 +181,16 @@ impl RecorderDeps for RecDeps {
     }
     fn monitors(&self) -> Vec<MonitorInfo> {
         self.0.upgrade().map(|a| a.lock().monitors.clone()).unwrap_or_default()
+    }
+    fn gpu_convert(&self) -> Option<GpuSupport> {
+        self.0.upgrade()?.lock().ffmpeg.gpu
+    }
+    fn gpu_convert_failed(&self) {
+        if let Some(a) = self.0.upgrade() {
+            let mut st = a.lock();
+            st.ffmpeg.gpu = None;
+            st.ffmpeg.info.gpu_convert = None;
+        }
     }
     fn ddagrab_usable(&self) -> BoxFut<'_, bool> {
         let app = self.0.upgrade();
@@ -1058,7 +1074,14 @@ impl App {
             let info = &probe.info;
             let need_hw = info.found && info.hw_encoders.is_none();
             let need_dda = info.found && info.has_ddagrab && info.ddagrab_works.is_none();
-            st.ffmpeg = Ffmpeg { info: probe.info, encoder: probe.encoder, hw_listed: probe.hw_listed };
+            // 顯示卡處理的實測結果也保留（同一個執行檔）
+            let (gpu_tested, gpu) = if probe.info.path == st.ffmpeg.info.path { (st.ffmpeg.gpu_tested, st.ffmpeg.gpu) } else { (false, None) };
+            if gpu.is_some() {
+                probe.info.gpu_convert = st.ffmpeg.info.gpu_convert.clone();
+            }
+            // 還要測顯示卡處理時先標成測試中：介面會一直更新到測完
+            probe.info.gpu_testing = !gpu_tested && probe.info.has_ddagrab && !probe.gpu_filters.is_empty();
+            st.ffmpeg = Ffmpeg { info: probe.info, encoder: probe.encoder, hw_listed: probe.hw_listed, gpu_filters: probe.gpu_filters, gpu_tested, gpu };
             (need_hw, need_dda)
         };
         if need_hw {
@@ -1083,17 +1106,63 @@ impl App {
                     }
                 }
                 app.hw_ready.send_replace(true);
+                app.test_gpu_convert();
             });
         }
         if need_dda {
             let app = self.clone();
-            let test = tokio::spawn(async move { app.test_ddagrab().await });
+            let test = tokio::spawn(async move {
+                app.test_ddagrab().await;
+                app.test_gpu_convert();
+            });
             if wait_ddagrab {
                 let _ = test.await;
             }
         }
+        self.test_gpu_convert();
         self.mark_ready();
         self.env()
+    }
+
+    /// ddagrab 與硬體編碼器都測完後，在背景實測主螢幕那張顯示卡能不能縮放、轉色彩（Intel / AMD）。
+    /// 每個 ffmpeg.exe 只測一次；失敗時錄影照舊用 CPU 轉換
+    fn test_gpu_convert(self: &Arc<Self>) {
+        let (path, monitor, convert, encoder) = {
+            let mut st = self.lock();
+            let f = &st.ffmpeg;
+            // 等 ddagrab 與硬體編碼器都有結果才決定
+            if f.gpu_tested || f.info.ddagrab_works.is_none() || f.info.hw_encoders.is_none() {
+                return;
+            }
+            st.ffmpeg.gpu_tested = true;
+            let primary = st.monitors.iter().find(|m| m.primary).or(st.monitors.first()).cloned();
+            let target =
+                primary.filter(|_| st.ffmpeg.info.ddagrab_works == Some(true)).and_then(|m| Some((GpuConvert::for_adapter(&m.adapter_name).filter(|c| st.ffmpeg.gpu_filters.contains(c))?, m)));
+            let Some((convert, m)) = target else {
+                st.ffmpeg.info.gpu_testing = false;
+                return;
+            };
+            let encoder = st.ffmpeg.info.hw_encoders.as_ref().filter(|l| l.iter().any(|n| n == convert.encoder())).and_then(|_| encoder_spec(convert.encoder()));
+            (st.ffmpeg.info.path.clone().unwrap_or_default(), m, convert, encoder)
+        };
+        let app = self.clone();
+        tokio::spawn(async move {
+            let r = test_gpu_convert(&PathBuf::from(&path), &monitor, convert, encoder).await;
+            let mut st = app.lock();
+            if st.ffmpeg.info.path.as_deref() != Some(path.as_str()) {
+                return;
+            }
+            st.ffmpeg.info.gpu_testing = false;
+            match r {
+                Ok(g) => {
+                    let text = crate::args::GpuPath { adapter: g.adapter, convert: g.convert, zero_copy: g.zero_copy }.describe();
+                    info!("顯示卡處理測試成功：錄影時{text}");
+                    st.ffmpeg.info.gpu_convert = Some(text);
+                    st.ffmpeg.gpu = Some(g);
+                }
+                Err(e) => info!("顯示卡處理（{}）無法使用，錄影時用 CPU 轉換：{e}", convert.label()),
+            }
+        });
     }
 
     async fn test_ddagrab(&self) {
@@ -1210,7 +1279,7 @@ impl App {
         let dda = self.ddagrab_usable() && !self.lock().monitors.is_empty();
         let want = (width * height * 4) as usize;
         let grab = |dda: bool| {
-            let args = preview_args(&mons, dda, PREVIEW_MAX_WIDTH, None);
+            let args = preview_args(&mons, dda, PREVIEW_MAX_WIDTH, None, false);
             let ffmpeg = ffmpeg.clone();
             async move {
                 let mut cmd = command(&ffmpeg);
@@ -1248,7 +1317,8 @@ impl App {
         let dims = self.preview_dims(monitor_id, max_width)?;
         self.kill_live();
         let dda = self.ddagrab_usable() && !self.lock().monitors.is_empty();
-        let args = preview_args(&self.preview_monitors(monitor_id), dda, max_width, Some(fps));
+        let skip_static = self.lock().ffmpeg.info.ddagrab_skip_static;
+        let args = preview_args(&self.preview_monitors(monitor_id), dda, max_width, Some(fps), skip_static);
         let mut cmd = command(&ffmpeg);
         cmd.args(&args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
         let mut child = cmd.spawn().ok()?;

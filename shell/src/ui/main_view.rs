@@ -1279,6 +1279,9 @@ fn sys_status(app: &mut UiApp, ui: &mut Ui) {
                     }
                 }
             }
+            if let Some(g) = &ff.gpu_convert {
+                ok.push(format!("畫面處理：{g}"));
+            }
             match &ff.encoder {
                 Some(e) => ok.push(format!("編碼：{}（{e}）", encoder_name(e))),
                 None => chips.push(("無 H.264 編碼器".into(), Tone::Bad, String::new())),

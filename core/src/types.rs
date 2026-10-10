@@ -662,6 +662,9 @@ pub struct FfmpegInfo {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
     pub has_ddagrab: bool,
+    /// ddagrab 能在畫面沒變化時不送出（dup_frames，FFmpeg 7.0 起）：即時預覽用
+    #[serde(default)]
+    pub ddagrab_skip_static: bool,
     pub has_gdigrab: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub encoder: Option<String>,
@@ -675,6 +678,12 @@ pub struct FfmpegInfo {
     pub ddagrab_works: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ddagrab_error: Option<String>,
+    /// 錄影時在顯示卡上處理畫面的方式（實測通過時的說明）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gpu_convert: Option<String>,
+    /// 顯示卡處理測試中
+    #[serde(default)]
+    pub gpu_testing: bool,
     pub searched: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,

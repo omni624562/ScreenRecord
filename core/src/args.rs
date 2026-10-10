@@ -96,6 +96,8 @@ pub fn is_encoder_fault(stderr: &str) -> bool {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StartupFallback {
+    /// 不在顯示卡上處理畫面，改回下載後用 CPU 轉
+    CpuConvert,
     CpuEncoder,
     Gdigrab,
     Fatal,
@@ -108,11 +110,17 @@ pub struct FallbackInput<'a> {
     pub has_cpu_encoder: bool,
     pub ddagrab_in_use: bool,
     pub method_auto: bool,
+    /// 這次在顯示卡上處理畫面
+    pub gpu_convert_in_use: bool,
 }
 
 /// 第一張畫面之前就失敗時該退回哪一項：依錯誤訊息判斷是編碼器還是擷取（ddagrab）出問題。
 /// 判斷不出來時，先退擷取方式（較常見），之後若仍失敗再退編碼器。
 pub fn startup_fallback(o: &FallbackInput) -> StartupFallback {
+    // 顯示卡處理是最新、最依賴驅動的一環：先拿掉它再試，其他設定不變
+    if o.gpu_convert_in_use {
+        return StartupFallback::CpuConvert;
+    }
     let can_cpu = o.gpu_encoder_in_use && o.encoder_auto && o.has_cpu_encoder;
     let can_gdi = o.ddagrab_in_use && o.method_auto;
     if is_encoder_fault(o.stderr) && can_cpu {
@@ -150,6 +158,155 @@ pub fn choose_encoder(pref: EncoderPreference, out_width: i32, out_height: i32, 
         (None, Some(g)) => Ok((*g, "沒有 CPU 編碼器，改用 GPU 編碼")),
         (None, None) => Err(Error::config("FFmpeg 沒有可用的 H.264 編碼器")),
     }
+}
+
+/// 在顯示卡上縮放並轉成 BT.709（limited）的 NV12：ddagrab 的畫面不用整張（BGRA）下載回 CPU 再轉。
+/// 只用在能指定 BT.709 的濾鏡：其他處理（加速版、合併、剪輯匯出）都直接沿用影片的 YUV 並標成 BT.709，
+/// 錄影本身必須是 BT.709。NVIDIA 沒有這樣的濾鏡（scale_d3d11 與 NVENC 收 RGB 時都是 BT.601），維持 CPU 轉換
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GpuConvert {
+    /// Intel：對應到 QSV，以 vpp_qsv 處理
+    Qsv,
+    /// AMD：vpp_amf（FFmpeg 8.0 起）
+    Amf,
+}
+
+impl GpuConvert {
+    /// 依顯示卡名稱判斷
+    pub fn for_adapter(name: &str) -> Option<GpuConvert> {
+        let n = name.to_ascii_lowercase();
+        if n.contains("intel") {
+            Some(GpuConvert::Qsv)
+        } else if n.contains("amd") || n.contains("radeon") {
+            Some(GpuConvert::Amf)
+        } else {
+            None
+        }
+    }
+    /// 需要的濾鏡（`ffmpeg -filters` 要列得出來）
+    pub fn filter(self) -> &'static str {
+        match self {
+            GpuConvert::Qsv => "vpp_qsv",
+            GpuConvert::Amf => "vpp_amf",
+        }
+    }
+    /// 同一張顯示卡的編碼器：處理好的畫面可以直接交給它
+    pub fn encoder(self) -> &'static str {
+        match self {
+            GpuConvert::Qsv => "h264_qsv",
+            GpuConvert::Amf => "h264_amf",
+        }
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            GpuConvert::Qsv => "Intel QSV",
+            GpuConvert::Amf => "AMD AMF",
+        }
+    }
+    /// 接在 ddagrab（D3D11 畫面）之後：縮放到 w × h 並轉成 BT.709 limited 的 NV12，畫面仍在顯示卡上。
+    /// vpp_amf 的 color_profile=bt709 即 limited（FFmpeg 8 與 9 的範圍選項名稱不同，不另外指定）
+    pub fn chain(self, w: i32, h: i32) -> String {
+        match self {
+            GpuConvert::Qsv => {
+                format!("hwmap=derive_device=qsv,format=qsv,vpp_qsv=w={w}:h={h}:format=nv12:out_color_matrix=bt709:out_color_primaries=bt709:out_color_transfer=bt709:out_range=limited")
+            }
+            GpuConvert::Amf => format!("vpp_amf=w={w}:h={h}:format=nv12:scale_type=bicubic:color_profile=bt709"),
+        }
+    }
+}
+
+/// 實測通過的顯示卡處理（app 啟動時測試）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GpuSupport {
+    pub adapter: u32,
+    pub convert: GpuConvert,
+    /// 處理好的畫面可以直接交給 convert.encoder()（實測可用）
+    pub zero_copy: bool,
+}
+
+/// 這次錄影在顯示卡上處理畫面的方式
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GpuPath {
+    /// 實測過的顯示卡：範圍移到其他顯示卡的螢幕時改回 CPU 轉換
+    pub adapter: u32,
+    pub convert: GpuConvert,
+    /// 直接交給同一張顯示卡的編碼器；否則下載轉好的 NV12（比 BGRA 少 62%）給其他編碼器
+    pub zero_copy: bool,
+}
+
+impl GpuPath {
+    /// 這次錄影能不能在顯示卡上處理：ddagrab、單一螢幕且在實測過的顯示卡上、沒有攝影機（疊攝影機在 CPU 上做）
+    pub fn choose(support: Option<GpuSupport>, plan: &CapturePlan, config: &RecordConfig, method: CaptureMethod, enc: &EncoderSpec) -> Option<GpuPath> {
+        let s = support?;
+        let g = GpuPath { adapter: s.adapter, convert: s.convert, zero_copy: s.zero_copy }.for_encoder(enc);
+        (method == CaptureMethod::Ddagrab && g.applies(plan, config)).then_some(g)
+    }
+    /// 這個範圍、設定能不能用（錄影中移動範圍到別的螢幕時會變）
+    pub fn applies(&self, plan: &CapturePlan, config: &RecordConfig) -> bool {
+        let camera = config.camera.as_ref().is_some_and(|c| !c.device.trim().is_empty());
+        plan.dda.as_ref().is_some_and(|d| d.tiles.len() == 1 && d.adapter == self.adapter) && !config.audio_only && !camera
+    }
+    /// 編碼器換了（例如 GPU 編碼器失敗改用 CPU）：只有同一張顯示卡的編碼器能直接接
+    pub fn for_encoder(self, enc: &EncoderSpec) -> GpuPath {
+        GpuPath { zero_copy: self.zero_copy && enc.name == self.convert.encoder(), ..self }
+    }
+    pub fn describe(&self) -> String {
+        if self.zero_copy {
+            format!("畫面在顯示卡上縮放、轉色彩後直接壓縮（{}）", self.convert.label())
+        } else {
+            format!("畫面在顯示卡上縮放、轉色彩（{}）", self.convert.label())
+        }
+    }
+}
+
+/// 顯示卡處理的實測：同一張畫面分別在顯示卡上轉、和用 CPU 轉成 BT.709 與 BT.601，比較亮度（Y）的 PSNR。
+/// 顏色矩陣或範圍（limited / full）不對時亮度差很多；色度的取樣方式本來就不同，不拿來比
+pub fn gpu_convert_test_args(m: &MonitorInfo, convert: GpuConvert) -> Vec<String> {
+    let (w, h) = (m.width & !1, m.height & !1);
+    // psnr 不收 NV12，FFmpeg 會自動插入轉換，並依標記把 full range 轉回 limited，把錯誤蓋掉：
+    // 先把兩邊都標成一樣，比的才是實際的數值
+    const SAME: &str = "setparams=range=tv:colorspace=bt709:color_primaries=bt709:color_trc=bt709";
+    let cpu = |matrix: &str| format!("hwdownload,format=bgra,scale={w}:{h}:flags=bicubic:out_color_matrix={matrix}:out_range=tv,format=nv12,{SAME}");
+    let mut a = strs(&["-hide_banner", "-nostats", "-loglevel", "info", "-init_hw_device"]);
+    a.push(format!("d3d11va=dda:{}", m.adapter));
+    a.extend(strs(&["-filter_hw_device", "dda", "-filter_complex"]));
+    a.push(format!(
+        "ddagrab=output_idx={}:framerate=10:draw_mouse=0:video_size={w}x{h},showinfo=checksum=0,split=3[a][b][c];[a]{},hwdownload,format=nv12,{SAME},split=2[g1][g2];[b]{}[r709];[c]{}[r601];[g1][r709]psnr[o1];[g2][r601]psnr[o2]",
+        m.output,
+        convert.chain(w, h),
+        cpu("bt709"),
+        cpu("bt601"),
+    ));
+    a.extend(strs(&["-map", "[o1]", "-map", "[o2]", "-frames:v", "6", "-f", "null", "-"]));
+    a
+}
+
+static PSNR_Y: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"Parsed_psnr_(\d+)[^\n]*PSNR y:(inf|[\d.]+)").unwrap());
+
+/// 從實測的輸出讀出 (BT.709 的 Y PSNR, BT.601 的 Y PSNR)；inf 表示完全相同
+pub fn parse_gpu_psnr(stderr: &str) -> Option<(f64, f64)> {
+    let mut v: Vec<(u32, f64)> = PSNR_Y.captures_iter(stderr).filter_map(|c| Some((c[1].parse().ok()?, if &c[2] == "inf" { f64::INFINITY } else { c[2].parse().ok()? }))).collect();
+    v.sort_by_key(|p| p.0);
+    (v.len() == 2).then(|| (v[0].1, v[1].1))
+}
+
+/// 顯示卡轉出來的顏色是否正確：亮度和 CPU 轉的 BT.709 幾乎相同，而且不比 BT.601 更不像
+/// （畫面全是灰階時兩者一樣，這時相信濾鏡指定的 BT.709）
+pub fn gpu_psnr_ok(bt709: f64, bt601: f64) -> bool {
+    bt709 >= 40.0 && bt709 + 0.1 >= bt601
+}
+
+/// 直接交給編碼器的實測：與錄影相同的濾鏡串（含 showinfo）實際壓縮幾張
+pub fn gpu_encode_test_args(m: &MonitorInfo, convert: GpuConvert, enc: &EncoderSpec) -> Vec<String> {
+    let (w, h) = (m.width & !1, m.height & !1);
+    let mut a = strs(&["-hide_banner", "-nostats", "-loglevel", "error", "-init_hw_device"]);
+    a.push(format!("d3d11va=dda:{}", m.adapter));
+    a.extend(strs(&["-filter_hw_device", "dda", "-filter_complex"]));
+    a.push(format!("ddagrab=output_idx={}:framerate=30:draw_mouse=0:video_size={w}x{h},showinfo=checksum=0,{}[vout]", m.output, convert.chain(w, h)));
+    a.extend(strs(&["-map", "[vout]"]));
+    a.extend(enc.live());
+    a.extend(strs(&["-frames:v", "10", "-f", "null", "-"]));
+    a
 }
 
 const COLOR_TAGS: [&str; 8] = ["-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709", "-color_range", "tv"];
@@ -289,16 +446,30 @@ pub fn resolve_plan(config: &RecordConfig, monitors: &[MonitorInfo]) -> Result<C
 
 /// ddagrab 來源（GPU 擷取後下載回系統記憶體）。多個螢幕時以 xstack 依實際位置拼接，沒有畫面的區域補黑色。
 fn ddagrab_chain(plan: &CapturePlan, fps: f64, draw_mouse: bool) -> String {
+    ddagrab_chain_opts(plan, fps, draw_mouse, false)
+}
+
+/// ddagrab 的來源濾鏡（畫面還在顯示卡上，D3D11 BGRA）。
+/// skip_static：畫面沒有變化時不送出（dup_frames=0，FFmpeg 7.0 起）；沒有變化時整個濾鏡圖會停著等，
+/// 只能用在即時預覽這種不需要固定張數的地方，錄影（聲音交錯、每秒寫入、停頓偵測）不能用
+fn ddagrab_source(t: &Tile, fps: f64, draw_mouse: bool, skip_static: bool) -> String {
+    let mut p = vec![format!("ddagrab=output_idx={}", t.output), format!("framerate={}", num(fps)), format!("draw_mouse={}", draw_mouse as u8)];
+    if !t.full {
+        p.push(format!("offset_x={}", t.offset_x));
+        p.push(format!("offset_y={}", t.offset_y));
+        p.push(format!("video_size={}x{}", t.width, t.height));
+    }
+    if skip_static {
+        p.push("dup_frames=0".into());
+    }
+    p.join(":")
+}
+
+/// skip_static 只對單一螢幕有效：多個螢幕時 xstack 要每塊都有新畫面才會輸出，一塊靜止就會整個停住
+fn ddagrab_chain_opts(plan: &CapturePlan, fps: f64, draw_mouse: bool, skip_static: bool) -> String {
     let tiles = &plan.dda.as_ref().expect("ddagrab 需要 dda").tiles;
-    let src = |t: &Tile| {
-        let mut p = vec![format!("ddagrab=output_idx={}", t.output), format!("framerate={}", num(fps)), format!("draw_mouse={}", draw_mouse as u8)];
-        if !t.full {
-            p.push(format!("offset_x={}", t.offset_x));
-            p.push(format!("offset_y={}", t.offset_y));
-            p.push(format!("video_size={}x{}", t.width, t.height));
-        }
-        format!("{},hwdownload,format=bgra", p.join(":"))
-    };
+    let skip_static = skip_static && tiles.len() == 1;
+    let src = |t: &Tile| format!("{},hwdownload,format=bgra", ddagrab_source(t, fps, draw_mouse, skip_static));
     if tiles.len() == 1 {
         return src(&tiles[0]);
     }
@@ -410,7 +581,8 @@ fn camera_chain(cam: &CameraConfig, out_w: i32, out_h: i32, fps: f64) -> (String
 }
 
 /// probe：在擷取後插入 showinfo，每張畫面印一行 pts，供聲音對齊畫面時間零點
-pub fn capture_spec(plan: &CapturePlan, config: &RecordConfig, method: CaptureMethod, enc: &EncoderSpec, probe: bool) -> Result<CaptureSpec> {
+/// gpu：在顯示卡上縮放、轉色彩（GpuPath::choose 決定，只會是單一螢幕的 ddagrab、沒有攝影機）
+pub fn capture_spec(plan: &CapturePlan, config: &RecordConfig, method: CaptureMethod, enc: &EncoderSpec, probe: bool, gpu: Option<GpuPath>) -> Result<CaptureSpec> {
     let mut tail_parts = Vec::new();
     if probe {
         tail_parts.push("showinfo=checksum=0".to_string());
@@ -438,12 +610,27 @@ pub fn capture_spec(plan: &CapturePlan, config: &RecordConfig, method: CaptureMe
         let Some(dda) = &plan.dda else {
             return Err(Error::config("此範圍涵蓋不同顯示卡上的螢幕，無法使用 ddagrab"));
         };
+        let graph = match gpu.filter(|g| g.applies(plan, config)) {
+            // 顯示卡上處理：showinfo 只讀時間，不碰畫面內容，放在顯示卡上的畫面也可以
+            Some(g) => {
+                let mut f = vec![ddagrab_source(&dda.tiles[0], config.fps, config.draw_mouse, false)];
+                if probe {
+                    f.push("showinfo=checksum=0".into());
+                }
+                f.push(g.convert.chain(plan.out_width, plan.out_height));
+                if !g.zero_copy {
+                    f.push("hwdownload,format=nv12".into());
+                }
+                format!("{}[vout]", f.join(","))
+            }
+            None => format!("{},{tail}[vout]", ddagrab_chain(plan, config.fps, config.draw_mouse)),
+        };
         return Ok(CaptureSpec {
             pre: vec!["-init_hw_device".into(), format!("d3d11va=dda:{}", dda.adapter), "-filter_hw_device".into(), "dda".into()],
             inputs: vec![],
             extra_inputs,
             input_count: 0,
-            graph: format!("{},{tail}[vout]", ddagrab_chain(plan, config.fps, config.draw_mouse)),
+            graph,
         });
     }
 
@@ -485,8 +672,8 @@ pub fn capture_spec(plan: &CapturePlan, config: &RecordConfig, method: CaptureMe
 
 /// 單一分段的完整參數。stdin 送 q 收尾；-progress 從 stdout 回報張數與大小。
 /// audio_input：錄聲音時 AudioPipe 提供的輸入參數（TCP raw PCM）
-pub fn segment_args(plan: &CapturePlan, config: &RecordConfig, method: CaptureMethod, enc: &EncoderSpec, out_file: &str, audio_input: Option<&[String]>) -> Result<Vec<String>> {
-    let spec = capture_spec(plan, config, method, enc, audio_input.is_some())?;
+pub fn segment_args(plan: &CapturePlan, config: &RecordConfig, method: CaptureMethod, enc: &EncoderSpec, out_file: &str, audio_input: Option<&[String]>, gpu: Option<GpuPath>) -> Result<Vec<String>> {
+    let spec = capture_spec(plan, config, method, enc, audio_input.is_some(), gpu)?;
     let fps = num(config.fps);
     let mut a: Vec<String> = Vec::new();
     // 錄聲音時需要 showinfo（info 等級）的輸出；level 前綴用來分辨錯誤訊息
@@ -883,7 +1070,8 @@ pub fn preview_size(rect: &Rect, max_width: u32) -> (u32, u32) {
 /// 預覽畫面（RGBA 原始像素到 stdout，大小固定為 preview_size）：傳入的螢幕決定範圍。
 /// 能用 ddagrab 時與錄影走同一條路徑（混合 DPI 時畫面一致）；否則 gdigrab。
 /// live_fps：即時預覽，持續輸出；否則只輸出一張。
-pub fn preview_args(monitors: &[MonitorInfo], use_ddagrab: bool, max_width: u32, live_fps: Option<f64>) -> Vec<String> {
+/// skip_static：即時預覽在畫面沒有變化時不送出新畫面（ddagrab 支援 dup_frames 時）
+pub fn preview_args(monitors: &[MonitorInfo], use_ddagrab: bool, max_width: u32, live_fps: Option<f64>, skip_static: bool) -> Vec<String> {
     let mut out = match live_fps {
         Some(_) => vec![],
         None => strs(&["-frames:v", "1"]),
@@ -901,7 +1089,7 @@ pub fn preview_args(monitors: &[MonitorInfo], use_ddagrab: bool, max_width: u32,
             let mut a = strs(&["-hide_banner", "-loglevel", "error", "-init_hw_device"]);
             a.push(format!("d3d11va=dda:{adapter}"));
             a.extend(strs(&["-filter_hw_device", "dda", "-filter_complex"]));
-            a.push(format!("{},{fit}[vout]", ddagrab_chain(&plan, fps, true)));
+            a.push(format!("{},{fit}[vout]", ddagrab_chain_opts(&plan, fps, true, skip_static && live_fps.is_some())));
             a.extend(strs(&["-map", "[vout]"]));
             a.extend(out);
             return a;
@@ -1057,7 +1245,7 @@ mod tests {
         let p = resolve_plan(&RecordConfig { source: SourceConfig::All, ..cfg() }, &two_gpus()).unwrap();
         assert!(p.dda.is_none());
         assert_eq!(p.monitors.len(), 2);
-        assert!(segment_args(&p, &cfg(), CaptureMethod::Ddagrab, &x264(), "o.mp4", None).unwrap_err().is_config());
+        assert!(segment_args(&p, &cfg(), CaptureMethod::Ddagrab, &x264(), "o.mp4", None, None).unwrap_err().is_config());
     }
 
     #[test]
@@ -1074,7 +1262,7 @@ mod tests {
     #[test]
     fn segment_ddagrab_single_tile() {
         let c = RecordConfig { source: region(2000.0, -100.0, 801.0, 601.0), ..cfg() };
-        let args = segment_args(&resolve_plan(&c, &same_gpu()).unwrap(), &c, CaptureMethod::Ddagrab, &x264(), "C:\\p\\seg.mp4", None).unwrap();
+        let args = segment_args(&resolve_plan(&c, &same_gpu()).unwrap(), &c, CaptureMethod::Ddagrab, &x264(), "C:\\p\\seg.mp4", None, None).unwrap();
         assert!(args.contains(&"d3d11va=dda:0".to_string()));
         assert_eq!(
             graph_of(&args),
@@ -1089,7 +1277,7 @@ mod tests {
     #[test]
     fn segment_ddagrab_xstack() {
         let c = RecordConfig { source: SourceConfig::All, scale: 50.0, ..cfg() };
-        let args = segment_args(&resolve_plan(&c, &same_gpu()).unwrap(), &c, CaptureMethod::Ddagrab, &x264(), "o.mp4", None).unwrap();
+        let args = segment_args(&resolve_plan(&c, &same_gpu()).unwrap(), &c, CaptureMethod::Ddagrab, &x264(), "o.mp4", None, None).unwrap();
         assert_eq!(
             graph_of(&args),
             "ddagrab=output_idx=0:framerate=30:draw_mouse=1,hwdownload,format=bgra[t0];\
@@ -1102,18 +1290,18 @@ mod tests {
     #[test]
     fn segment_ddagrab_pad() {
         let c = RecordConfig { source: region(1000.0, -180.0, 1500.0, 400.0), ..cfg() };
-        let args = segment_args(&resolve_plan(&c, &same_gpu()).unwrap(), &c, CaptureMethod::Ddagrab, &x264(), "o.mp4", None).unwrap();
+        let args = segment_args(&resolve_plan(&c, &same_gpu()).unwrap(), &c, CaptureMethod::Ddagrab, &x264(), "o.mp4", None, None).unwrap();
         assert!(graph_of(&args).contains("xstack=inputs=2:layout=0_180|920_0:fill=black,scale=1500:400"));
         assert!(!graph_of(&args).contains("pad="));
         let c2 = RecordConfig { source: region(1000.0, 900.0, 1500.0, 400.0), ..cfg() };
-        let args2 = segment_args(&resolve_plan(&c2, &same_gpu()).unwrap(), &c2, CaptureMethod::Ddagrab, &x264(), "o.mp4", None).unwrap();
+        let args2 = segment_args(&resolve_plan(&c2, &same_gpu()).unwrap(), &c2, CaptureMethod::Ddagrab, &x264(), "o.mp4", None, None).unwrap();
         assert!(graph_of(&args2).contains("pad=1500:400:0:0:color=black"));
     }
 
     #[test]
     fn segment_gdigrab_absolute_coordinates() {
         let c = RecordConfig { source: SourceConfig::Monitor { monitor_id: "1:0".into() }, draw_mouse: false, scale: 25.0, ..cfg() };
-        let args = segment_args(&resolve_plan(&c, &two_gpus()).unwrap(), &c, CaptureMethod::Gdigrab, &x264(), "o.mp4", None).unwrap();
+        let args = segment_args(&resolve_plan(&c, &two_gpus()).unwrap(), &c, CaptureMethod::Gdigrab, &x264(), "o.mp4", None, None).unwrap();
         let v: Vec<&str> = ["-offset_x", "-offset_y", "-video_size", "-draw_mouse", "-framerate"].iter().map(|k| after(&args, k)).collect();
         assert_eq!(v, vec!["1920", "-180", "2560x1440", "0", "30"]);
         assert_eq!(graph_of(&args), "[0:v]scale=640:360:flags=bicubic:out_color_matrix=bt709:out_range=tv,format=yuv420p[vout]");
@@ -1124,11 +1312,11 @@ mod tests {
         let audio_in = strs(&["-f", "f32le", "-ar", "48000", "-ac", "2", "-i", "tcp://127.0.0.1:5000"]);
         let c = cfg();
         let plan = resolve_plan(&c, &same_gpu()).unwrap();
-        let dda = segment_args(&plan, &c, CaptureMethod::Ddagrab, &x264(), "o.mp4", Some(&audio_in)).unwrap();
+        let dda = segment_args(&plan, &c, CaptureMethod::Ddagrab, &x264(), "o.mp4", Some(&audio_in), None).unwrap();
         assert_eq!(after(&dda, "-loglevel"), "level+info");
         assert!(graph_of(&dda).contains("format=bgra,showinfo=checksum=0,"));
         assert!(dda.join(" ").contains("-map [vout] -map 0:a -c:a aac"));
-        let gdi = segment_args(&plan, &c, CaptureMethod::Gdigrab, &x264(), "o.mp4", Some(&audio_in)).unwrap();
+        let gdi = segment_args(&plan, &c, CaptureMethod::Gdigrab, &x264(), "o.mp4", Some(&audio_in), None).unwrap();
         assert!(gdi.join(" ").contains("-map [vout] -map 1:a"));
         assert!(graph_of(&gdi).starts_with("[0:v]showinfo=checksum=0,"));
     }
@@ -1166,7 +1354,7 @@ mod tests {
         let mut plan = resolve_plan(&c, &same_gpu()).unwrap();
         assert_eq!((plan.out_width, plan.out_height, plan.monitors.len()), (640, 360, 0));
         plan.card = Some("C:\\out\\.parts\\card.png".into());
-        let a = segment_args(&plan, &c, CaptureMethod::Gdigrab, &x264(), "o.mp4", Some(&audio_in)).unwrap();
+        let a = segment_args(&plan, &c, CaptureMethod::Gdigrab, &x264(), "o.mp4", Some(&audio_in), None).unwrap();
         let j = a.join(" ");
         assert!(j.contains("-re -loop 1 -framerate 5 -i C:\\out\\.parts\\card.png -f f32le"), "{j}");
         assert!(!j.contains("gdigrab") && !j.contains("dshow"), "{j}");
@@ -1213,7 +1401,7 @@ dummy: Immediate exit requested";
         let c = RecordConfig { camera: Some(CameraConfig { device: "USB Camera".into(), corner: 0, size: 20, circle: true }), ..cfg() };
         let plan = resolve_plan(&c, &same_gpu()).unwrap();
         // gdigrab：畫面 0、聲音 1、攝影機 2
-        let gdi = segment_args(&plan, &c, CaptureMethod::Gdigrab, &x264(), "o.mp4", Some(&audio_in)).unwrap();
+        let gdi = segment_args(&plan, &c, CaptureMethod::Gdigrab, &x264(), "o.mp4", Some(&audio_in), None).unwrap();
         let j = gdi.join(" ");
         assert!(j.contains("-i tcp://127.0.0.1:5000 -f dshow -thread_queue_size 512 -rtbufsize 128M -i video=USB Camera -filter_complex"), "{j}");
         let g = graph_of(&gdi);
@@ -1223,33 +1411,152 @@ dummy: Immediate exit requested";
         assert!(g.ends_with("[scr][cam]overlay=1672:832:eof_action=pass,format=yuv420p[vout]"), "{g}");
         assert!(j.contains("-map [vout] -map 1:a"));
         // ddagrab 沒有輸入檔：聲音 0、攝影機 1；沒有聲音時攝影機是 0
-        let dda = segment_args(&plan, &c, CaptureMethod::Ddagrab, &x264(), "o.mp4", Some(&audio_in)).unwrap();
+        let dda = segment_args(&plan, &c, CaptureMethod::Ddagrab, &x264(), "o.mp4", Some(&audio_in), None).unwrap();
         assert!(graph_of(&dda).contains("[1:v]fps=30"));
-        let quiet =
-            segment_args(&plan, &RecordConfig { camera: Some(CameraConfig { corner: 3, circle: false, ..c.camera.clone().unwrap() }), ..c.clone() }, CaptureMethod::Ddagrab, &x264(), "o.mp4", None)
-                .unwrap();
+        let quiet = segment_args(
+            &plan,
+            &RecordConfig { camera: Some(CameraConfig { corner: 3, circle: false, ..c.camera.clone().unwrap() }), ..c.clone() },
+            CaptureMethod::Ddagrab,
+            &x264(),
+            "o.mp4",
+            None,
+            None,
+        )
+        .unwrap();
         let g = graph_of(&quiet);
         assert!(g.contains("[0:v]fps=30") && !g.contains("geq") && g.contains("overlay=32:32:"), "{g}");
         // 沒選攝影機時和原本一樣
         let none =
-            segment_args(&plan, &RecordConfig { camera: Some(CameraConfig { device: " ".into(), ..c.camera.clone().unwrap() }), ..c.clone() }, CaptureMethod::Gdigrab, &x264(), "o.mp4", None).unwrap();
+            segment_args(&plan, &RecordConfig { camera: Some(CameraConfig { device: " ".into(), ..c.camera.clone().unwrap() }), ..c.clone() }, CaptureMethod::Gdigrab, &x264(), "o.mp4", None, None)
+                .unwrap();
         assert!(!none.join(" ").contains("dshow") && !graph_of(&none).contains("overlay"));
     }
 
     #[test]
-    fn preview() {
-        assert!(graph_of(&preview_args(&same_gpu(), true, 1600, None)).contains("xstack=inputs=2"));
-        assert!(preview_args(&two_gpus(), true, 1600, None).contains(&"gdigrab".to_string()));
-        assert!(preview_args(&same_gpu(), false, 1600, None).contains(&"gdigrab".to_string()));
+    fn preview_skips_static_frames() {
         let second = same_gpu()[1].clone();
-        let dda = preview_args(std::slice::from_ref(&second), true, 1600, None);
+        // 單一螢幕的即時預覽：畫面沒變化時不送出
+        let live = preview_args(std::slice::from_ref(&second), true, 1280, Some(5.0), true);
+        let live = graph_of(&live);
+        assert!(live.contains("dup_frames=0"), "{live}");
+        // 單張、多個螢幕（xstack 要每塊都有新畫面）、FFmpeg 不支援時都不用
+        assert!(!graph_of(&preview_args(std::slice::from_ref(&second), true, 1600, None, true)).contains("dup_frames"));
+        assert!(!graph_of(&preview_args(&same_gpu(), true, 1280, Some(5.0), true)).contains("dup_frames"));
+        assert!(!graph_of(&preview_args(std::slice::from_ref(&second), true, 1280, Some(5.0), false)).contains("dup_frames"));
+        // 錄影永遠不用（沒有變化時整個濾鏡圖會停住）
+        let c = RecordConfig { source: SourceConfig::Monitor { monitor_id: second.id.clone() }, ..cfg() };
+        let rec = segment_args(&resolve_plan(&c, &same_gpu()).unwrap(), &c, CaptureMethod::Ddagrab, &x264(), "o.mp4", None, None).unwrap();
+        assert!(!graph_of(&rec).contains("dup_frames"));
+    }
+
+    #[test]
+    fn gpu_convert_by_vendor() {
+        assert_eq!(GpuConvert::for_adapter("Intel(R) UHD Graphics 770"), Some(GpuConvert::Qsv));
+        assert_eq!(GpuConvert::for_adapter("AMD Radeon(TM) Graphics"), Some(GpuConvert::Amf));
+        assert_eq!(GpuConvert::for_adapter("Radeon RX 7600"), Some(GpuConvert::Amf));
+        // NVIDIA 沒有能指定 BT.709 的顯示卡轉換，維持 CPU
+        assert_eq!(GpuConvert::for_adapter("NVIDIA GeForce RTX 4060"), None);
+        assert_eq!(GpuConvert::for_adapter("Microsoft Basic Render Driver"), None);
+        assert!(GpuConvert::Qsv.chain(1920, 1080).contains("out_color_matrix=bt709") && GpuConvert::Qsv.chain(1920, 1080).contains("out_range=limited"));
+        assert!(GpuConvert::Amf.chain(1280, 720).contains("w=1280:h=720:format=nv12") && GpuConvert::Amf.chain(1280, 720).contains("color_profile=bt709"));
+    }
+
+    #[test]
+    fn gpu_path_choice() {
+        let mons = same_gpu();
+        let s = GpuSupport { adapter: mons[0].adapter, convert: GpuConvert::Qsv, zero_copy: true };
+        let support = Some(s);
+        let qsv = encoder_spec("h264_qsv").unwrap();
+        let one = RecordConfig { source: SourceConfig::Monitor { monitor_id: mons[0].id.clone() }, ..cfg() };
+        let plan = resolve_plan(&one, &mons).unwrap();
+        // 同一張顯示卡的編碼器：直接交給它；其他編碼器：下載 NV12
+        assert_eq!(GpuPath::choose(support, &plan, &one, CaptureMethod::Ddagrab, &qsv).map(|g| g.zero_copy), Some(true));
+        assert_eq!(GpuPath::choose(support, &plan, &one, CaptureMethod::Ddagrab, &x264()).map(|g| g.zero_copy), Some(false));
+        // 不能用的情況：gdigrab、沒有實測通過、兩個螢幕合成、攝影機、只錄聲音、別張顯示卡
+        assert!(GpuPath::choose(support, &plan, &one, CaptureMethod::Gdigrab, &x264()).is_none());
+        assert!(GpuPath::choose(None, &plan, &one, CaptureMethod::Ddagrab, &x264()).is_none());
+        let all = RecordConfig { source: SourceConfig::All, ..cfg() };
+        assert!(GpuPath::choose(support, &resolve_plan(&all, &mons).unwrap(), &all, CaptureMethod::Ddagrab, &x264()).is_none());
+        let cam = RecordConfig { camera: Some(CameraConfig { device: "Cam".into(), size: 20, corner: 0, circle: false }), ..one.clone() };
+        assert!(GpuPath::choose(support, &plan, &cam, CaptureMethod::Ddagrab, &x264()).is_none());
+        let other = Some(GpuSupport { adapter: mons[0].adapter + 1, ..s });
+        assert!(GpuPath::choose(other, &plan, &one, CaptureMethod::Ddagrab, &x264()).is_none());
+        // GPU 編碼器失敗改用 CPU：不再直接交給編碼器
+        let g = GpuPath::choose(support, &plan, &one, CaptureMethod::Ddagrab, &qsv).unwrap();
+        assert!(!g.for_encoder(&x264()).zero_copy);
+    }
+
+    #[test]
+    fn gpu_convert_graph() {
+        let mons = same_gpu();
+        let c = RecordConfig { source: SourceConfig::Monitor { monitor_id: mons[0].id.clone() }, scale: 50.0, ..cfg() };
+        let plan = resolve_plan(&c, &mons).unwrap();
+        let g = GpuPath { adapter: mons[0].adapter, convert: GpuConvert::Qsv, zero_copy: true };
+        // 直接交給編碼器：沒有下載、沒有 CPU 縮放；聲音對齊用的 showinfo 在轉換之前
+        let audio_in = vec!["-f".to_string(), "s16le".into(), "-i".into(), "tcp://127.0.0.1:1".into()];
+        let zc = segment_args(&plan, &c, CaptureMethod::Ddagrab, &encoder_spec("h264_qsv").unwrap(), "o.mp4", Some(&audio_in), Some(g)).unwrap();
+        let zc = graph_of(&zc);
+        assert!(zc.starts_with("ddagrab=") && zc.contains(&format!("showinfo=checksum=0,hwmap=derive_device=qsv,format=qsv,vpp_qsv=w={}:h={}:", plan.out_width, plan.out_height)), "{zc}");
+        assert!(!zc.contains("hwdownload") && !zc.contains("scale=") && zc.ends_with("[vout]"), "{zc}");
+        // 給 CPU 編碼器：下載轉好的 NV12
+        let dl = segment_args(&plan, &c, CaptureMethod::Ddagrab, &x264(), "o.mp4", None, Some(GpuPath { zero_copy: false, ..g })).unwrap();
+        let dl = graph_of(&dl);
+        assert!(dl.contains("out_range=limited,hwdownload,format=nv12[vout]") && !dl.contains("format=bgra") && !dl.contains("showinfo"), "{dl}");
+        // 顏色標記不變（仍是 BT.709 limited），之後的處理照舊
+        let args = segment_args(&plan, &c, CaptureMethod::Ddagrab, &x264(), "o.mp4", None, Some(g)).unwrap().join(" ");
+        assert!(args.contains("-colorspace bt709") && args.contains("-color_range tv"));
+        // 範圍移到別張顯示卡、多個螢幕、gdigrab：回到原本的 CPU 轉換
+        let other = GpuPath { adapter: g.adapter + 1, ..g };
+        assert!(graph_of(&segment_args(&plan, &c, CaptureMethod::Ddagrab, &x264(), "o.mp4", None, Some(other)).unwrap()).contains("hwdownload,format=bgra"));
+        let all = RecordConfig { source: SourceConfig::All, ..c.clone() };
+        assert!(graph_of(&segment_args(&resolve_plan(&all, &mons).unwrap(), &all, CaptureMethod::Ddagrab, &x264(), "o.mp4", None, Some(g)).unwrap()).contains("xstack"));
+        assert!(!segment_args(&plan, &c, CaptureMethod::Gdigrab, &x264(), "o.mp4", None, Some(g)).unwrap().join(" ").contains("vpp_qsv"));
+    }
+
+    #[test]
+    fn gpu_convert_test_checks_colors() {
+        let m = &same_gpu()[0];
+        let a = gpu_convert_test_args(m, GpuConvert::Amf);
+        let g = graph_of(&a);
+        assert!(g.contains("split=3") && g.matches("psnr[").count() == 2 && g.matches("setparams=range=tv").count() == 3, "{g}");
+        assert!(a.join(" ").contains("-map [o1] -map [o2]"));
+        assert!(after(&gpu_encode_test_args(m, GpuConvert::Qsv, &encoder_spec("h264_qsv").unwrap()), "-filter_complex").contains("showinfo=checksum=0,hwmap=derive_device=qsv"));
+        // 實際 FFmpeg 的輸出（以 CPU 模擬三種顯示卡轉換的結果；psnr 的編號依濾鏡圖的順序，印出來的順序相反）
+        let ok = "[Parsed_psnr_15 @ 0x55] PSNR y:22.413359 u:28.659495 v:31.975017 average:23.812008 min:23.742304 max:23.851274\n[Parsed_psnr_14 @ 0x55] PSNR y:inf u:49.067202 v:45.117796 average:51.429437 min:51.113770 max:51.966583\n";
+        let bt601 = "[Parsed_psnr_15 @ 0x55] PSNR y:inf u:49.636133 v:45.368733 average:51.769321\n[Parsed_psnr_14 @ 0x55] PSNR y:22.418426 u:28.602335 v:31.809216 average:23.809227\n";
+        let full = "[Parsed_psnr_15 @ 0x55] PSNR y:18.767008 u:28.3 v:32.4 average:23.7\n[Parsed_psnr_14 @ 0x55] PSNR y:26.534293 u:47.6 v:44.5 average:47.3\n";
+        let p = |s: &str| parse_gpu_psnr(s).unwrap();
+        assert_eq!(p(ok), (f64::INFINITY, 22.413359));
+        assert!(gpu_psnr_ok(p(ok).0, p(ok).1));
+        assert!(!gpu_psnr_ok(p(bt601).0, p(bt601).1));
+        assert!(!gpu_psnr_ok(p(full).0, p(full).1));
+        // 畫面全是灰階：兩者一樣，相信濾鏡指定的 BT.709
+        assert!(gpu_psnr_ok(f64::INFINITY, f64::INFINITY));
+        assert!(gpu_psnr_ok(52.0, 52.0));
+        assert!(parse_gpu_psnr("Error opening filters").is_none());
+    }
+
+    #[test]
+    fn gpu_convert_falls_back_first() {
+        let base = FallbackInput { stderr: "anything", gpu_encoder_in_use: true, encoder_auto: true, has_cpu_encoder: true, ddagrab_in_use: true, method_auto: true, gpu_convert_in_use: true };
+        assert_eq!(startup_fallback(&base), StartupFallback::CpuConvert);
+        assert_eq!(startup_fallback(&FallbackInput { encoder_auto: false, method_auto: false, ..base }), StartupFallback::CpuConvert);
+    }
+
+    #[test]
+    fn preview() {
+        assert!(graph_of(&preview_args(&same_gpu(), true, 1600, None, false)).contains("xstack=inputs=2"));
+        assert!(preview_args(&two_gpus(), true, 1600, None, false).contains(&"gdigrab".to_string()));
+        assert!(preview_args(&same_gpu(), false, 1600, None, false).contains(&"gdigrab".to_string()));
+        let second = same_gpu()[1].clone();
+        let dda = preview_args(std::slice::from_ref(&second), true, 1600, None, false);
         assert!(!graph_of(&dda).contains("xstack"));
         assert!(graph_of(&dda).contains(&format!("output_idx={}", second.output)));
-        let gdi = preview_args(std::slice::from_ref(&second), false, 1600, None).join(" ");
+        let gdi = preview_args(std::slice::from_ref(&second), false, 1600, None, false).join(" ");
         assert!(gdi.contains(&format!("-offset_x {} -offset_y {} -video_size {}x{}", second.x, second.y, second.width, second.height)));
-        assert!(!preview_args(&same_gpu(), false, 1600, None).contains(&"-offset_x".to_string()));
+        assert!(!preview_args(&same_gpu(), false, 1600, None, false).contains(&"-offset_x".to_string()));
         // 原始像素、大小固定：介面依大小切出每一張
-        let raw = preview_args(std::slice::from_ref(&second), false, 1280, Some(5.0)).join(" ");
+        let raw = preview_args(std::slice::from_ref(&second), false, 1280, Some(5.0), false).join(" ");
         assert!(raw.ends_with("-f rawvideo -pix_fmt rgba -"), "{raw}");
         assert!(raw.contains("scale=1280:720:flags=bilinear,format=rgba"), "{raw}");
         assert!(!raw.contains("-frames:v"));
@@ -1340,7 +1647,9 @@ dummy: Immediate exit requested";
     fn encoder_fault_detection() {
         assert!(is_encoder_fault("[h264_nvenc @ 0x1] No NVENC capable devices found\nError while opening encoder"));
         assert!(!is_encoder_fault("[ddagrab @ 0x1] Failed to capture\nCould not open encoder before EOF"));
-        let f = |stderr: &str| startup_fallback(&FallbackInput { stderr, gpu_encoder_in_use: true, encoder_auto: true, has_cpu_encoder: true, ddagrab_in_use: true, method_auto: true });
+        let f = |stderr: &str| {
+            startup_fallback(&FallbackInput { stderr, gpu_encoder_in_use: true, encoder_auto: true, has_cpu_encoder: true, ddagrab_in_use: true, method_auto: true, gpu_convert_in_use: false })
+        };
         assert_eq!(f("Cannot load nvEncodeAPI64.dll"), StartupFallback::CpuEncoder);
         assert_eq!(f("[ddagrab] Desktop duplication failed"), StartupFallback::Gdigrab);
         assert_eq!(f("something else"), StartupFallback::Gdigrab);
@@ -1353,7 +1662,7 @@ dummy: Immediate exit requested";
     fn startup_fallback_with_real_ffmpeg_messages() {
         assert!(is_encoder_fault(NVENC_FAIL));
         assert!(!is_encoder_fault(DDAGRAB_FAIL));
-        let base = |stderr| FallbackInput { stderr, gpu_encoder_in_use: true, encoder_auto: true, has_cpu_encoder: true, ddagrab_in_use: true, method_auto: true };
+        let base = |stderr| FallbackInput { stderr, gpu_encoder_in_use: true, encoder_auto: true, has_cpu_encoder: true, ddagrab_in_use: true, method_auto: true, gpu_convert_in_use: false };
         assert_eq!(startup_fallback(&base(NVENC_FAIL)), StartupFallback::CpuEncoder);
         assert_eq!(startup_fallback(&base(DDAGRAB_FAIL)), StartupFallback::Gdigrab);
         assert_eq!(startup_fallback(&base("something odd")), StartupFallback::Gdigrab);

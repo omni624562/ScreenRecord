@@ -21,7 +21,7 @@ mod whats_new;
 use eframe::egui;
 use screenrecorder_core::actions::{self, UpdateState};
 use screenrecorder_core::app::{App, Status, UiPage};
-use screenrecorder_core::types::{EnvInfo, LibraryEntry, LibraryPage, RecorderState};
+use screenrecorder_core::types::{DownloadPhase, EnvInfo, LibraryEntry, LibraryPage, RecorderState};
 use settings::UiSettings;
 use std::collections::HashMap;
 use std::future::Future;
@@ -77,6 +77,8 @@ pub struct UiApp {
     /// 系統匣可以用：關掉視窗時只是隱藏
     pub tray_ok: bool,
     pub visible: bool,
+    /// 主視窗看得到（背景比對狀態時用：看不到就不叫介面重畫）
+    shown_flag: Arc<std::sync::atomic::AtomicBool>,
 
     pub env: EnvInfo,
     pub env_ready: bool,
@@ -155,6 +157,7 @@ impl UiApp {
             open_requests,
             tray_ok,
             visible,
+            shown_flag: Arc::new(std::sync::atomic::AtomicBool::new(visible)),
             env,
             env_ready: false,
             s,
@@ -196,6 +199,7 @@ impl UiApp {
             #[cfg(debug_assertions)]
             dev: Default::default(),
         };
+        app.watch_status();
         let core = app.core.clone();
         app.spawn(async move { core.wait_ready().await }, |app, _| {
             app.env = app.core.env();
@@ -208,6 +212,13 @@ impl UiApp {
             app.load_recent();
         });
         app
+    }
+
+    /// 閒置時介面不定時重畫：背景每 0.25 秒比對一次狀態（錄影、轉檔、下載、截圖、設定…），
+    /// 有變化才叫介面重畫。比對只是讀幾個欄位，比重畫整個視窗（排版、繪圖）省得多
+    fn watch_status(&self) {
+        let (core, ctx) = (self.core.clone(), self.ctx.clone());
+        self.rt.spawn(watch_changes(Duration::from_millis(250), self.shown_flag.clone(), move || core.status(), move || ctx.request_repaint()));
     }
 
     // ───────────── 非同步工作 ─────────────
@@ -258,6 +269,8 @@ impl UiApp {
     /// 設定改了：稍後存檔（連續變更只存一次）
     pub fn save_settings(&mut self) {
         self.save_at = Some(Instant::now() + Duration::from_millis(300));
+        // logic() 在 ui() 之前，這一格算下次醒來時還不知道要存檔
+        self.ctx.request_repaint_after(Duration::from_millis(310));
     }
 
     fn flush_settings(&mut self) {
@@ -384,7 +397,8 @@ impl UiApp {
                 // ddagrab 測試結果出來：測試期間即時預覽會先試 ddagrab，失敗時改成單張，現在用確定的方式重開
                 self.preview.retry_if_failed();
             }
-            let pending = (self.env.ffmpeg.has_ddagrab && self.env.ffmpeg.ddagrab_works.is_none()) || (self.env.ffmpeg.found && self.env.ffmpeg.hw_encoders.is_none());
+            let f = &self.env.ffmpeg;
+            let pending = (f.has_ddagrab && f.ddagrab_works.is_none()) || (f.found && f.hw_encoders.is_none()) || f.gpu_testing;
             self.ddagrab_watch = pending.then(|| Instant::now() + Duration::from_secs(1));
         }
     }
@@ -591,8 +605,30 @@ impl eframe::App for UiApp {
             ctx.set_zoom_factor(zoom);
         }
         self.frame_parts.push(("背景狀態", t0.elapsed().as_secs_f32() * 1000.0));
-        // 狀態每 0.25 秒更新一次（錄影中計時器、轉檔進度）；視窗隱藏時放慢
-        ctx.request_repaint_after(if shown { Duration::from_millis(250) } else { Duration::from_secs(2) });
+        // 錄影中（計時器）、開著剪輯 / 檢視 / 製作 / 全部錄影、轉檔或下載中：每 0.25 秒更新。
+        // 主畫面閒置時不定時重畫：狀態有變化由 watch_status 叫醒，其餘每 5 秒保險一次；視窗隱藏時 2 秒
+        self.shown_flag.store(shown, std::sync::atomic::Ordering::Relaxed);
+        let busy = self.status.recorder.state != RecorderState::Idle
+            || self.editor.is_some()
+            || self.viewer.is_some()
+            || self.export_dlg.is_some()
+            || self.library.is_some()
+            || self.status.export.as_ref().is_some_and(|e| e.state == screenrecorder_core::types::ExportState::Running)
+            || matches!(self.status.download.phase, DownloadPhase::Downloading | DownloadPhase::Verifying | DownloadPhase::Extracting)
+            || self.status.install.is_some();
+        let mut next = match (shown, busy) {
+            (false, _) => Duration::from_secs(2),
+            (true, true) => Duration::from_millis(250),
+            (true, false) => Duration::from_secs(5),
+        };
+        // 等著到時間要做的事（設定存檔、儲存位置改了重新讀取、ddagrab 測試中）：每一畫格都重算，
+        // 中途因滑鼠等輸入多畫了一格也不會錯過
+        let now = Instant::now();
+        let dir_reload = self.main.dir_changed_at.map(|t| t + Duration::from_millis(610));
+        for t in [self.save_at, self.ddagrab_watch, dir_reload].into_iter().flatten() {
+            next = next.min(t.saturating_duration_since(now));
+        }
+        ctx.request_repaint_after(next);
     }
 
     #[cfg(debug_assertions)]
@@ -663,5 +699,67 @@ impl eframe::App for UiApp {
 
     fn clear_color(&self, visuals: &egui::Visuals) -> [f32; 4] {
         visuals.panel_fill.to_normalized_gamma_f32()
+    }
+}
+
+/// 每隔 every 讀一次 poll()，和上一次不同就呼叫 wake()。shown 為 false 時不讀
+/// （看不到時不比對；再顯示時一定會重畫，從那時重新比）
+async fn watch_changes<T: PartialEq>(every: Duration, shown: Arc<std::sync::atomic::AtomicBool>, poll: impl Fn() -> T, wake: impl Fn()) {
+    let mut tick = tokio::time::interval(every);
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut last: Option<T> = None;
+    loop {
+        tick.tick().await;
+        if !shown.load(std::sync::atomic::Ordering::Relaxed) {
+            last = None;
+            continue;
+        }
+        let now = poll();
+        if last.as_ref().is_some_and(|l| *l != now) {
+            wake();
+        }
+        last = Some(now);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+
+    #[tokio::test(start_paused = true)]
+    async fn wakes_only_on_change() {
+        let value = Arc::new(AtomicU32::new(0));
+        let wakes = Arc::new(AtomicU32::new(0));
+        let shown = Arc::new(AtomicBool::new(true));
+        let (v, w) = (value.clone(), wakes.clone());
+        let task = tokio::spawn(watch_changes(
+            Duration::from_millis(250),
+            shown.clone(),
+            move || v.load(Ordering::SeqCst),
+            move || {
+                w.fetch_add(1, Ordering::SeqCst);
+            },
+        ));
+        let step = |ms| tokio::time::sleep(Duration::from_millis(ms));
+        // 沒有變化：不叫醒
+        step(2000).await;
+        assert_eq!(wakes.load(Ordering::SeqCst), 0);
+        // 變了一次：叫醒一次
+        value.store(1, Ordering::SeqCst);
+        step(1000).await;
+        assert_eq!(wakes.load(Ordering::SeqCst), 1);
+        // 看不到時變化：不叫醒；再看得到之後也不會因為先前的變化叫醒
+        shown.store(false, Ordering::SeqCst);
+        value.store(2, Ordering::SeqCst);
+        step(1000).await;
+        shown.store(true, Ordering::SeqCst);
+        step(1000).await;
+        assert_eq!(wakes.load(Ordering::SeqCst), 1);
+        // 之後的變化照常
+        value.store(3, Ordering::SeqCst);
+        step(300).await;
+        assert_eq!(wakes.load(Ordering::SeqCst), 2);
+        task.abort();
     }
 }
