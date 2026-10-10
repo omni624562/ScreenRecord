@@ -123,7 +123,15 @@ fn main() {
                         FrameCmd::Pause => r.pause().await,
                         FrameCmd::Resume => r.resume().await,
                         FrameCmd::Stop => r.stop(None).await.map(|_| ()),
-                        FrameCmd::Move(x, y) => r.move_region(x, y).await.map(|_| ()),
+                        FrameCmd::Move(x, y) => {
+                            let old = r.frame_info().map(|f| f.area);
+                            r.move_region(x, y).await.map(|new| {
+                                // 主畫面的範圍、「重複上次框選」也跟著移過去
+                                if let Some(old) = old.filter(|o| *o != new) {
+                                    c.region_moved(old, new);
+                                }
+                            })
+                        }
                     };
                     if let Err(e) = res {
                         warn!("錄影控制列：{}", e.message());

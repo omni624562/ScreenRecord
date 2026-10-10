@@ -489,6 +489,32 @@ impl App {
         Ok(SnipSource { path, desktop: plan.rect, monitors: plan.monitors.clone(), windows, output_dir: config.output_dir.clone() })
     }
 
+    /// 錄影中拖曳移動了範圍：主畫面的自訂範圍（或單一螢幕裡框選的部分）、系統匣「開始錄影」用的設定、
+    /// 「重複上次框選」原本是 old 的，都改成 new，下次錄影直接用新位置（操作視窗看到設定變了會重新讀取）
+    pub fn region_moved(&self, old: Rect, new: Rect) {
+        let monitors = {
+            let mut st = self.lock();
+            if st.last_snip == Some(old) {
+                st.last_snip = Some(new);
+            }
+            st.monitors.clone()
+        };
+        let saved = self.settings.load();
+        let mut ui = saved.ui.clone().filter(|v| v.is_object());
+        let ui_changed = ui.as_mut().is_some_and(|u| move_ui_region(u, old, new, &monitors));
+        let mut cfg = saved.record_config();
+        let cfg_changed = match cfg.as_mut().map(|c| &mut c.source) {
+            Some(crate::types::SourceConfig::Region { x, y, width, height }) if (*x, *y, *width, *height) == (old.x as f64, old.y as f64, old.width as f64, old.height as f64) => {
+                (*x, *y) = (new.x as f64, new.y as f64);
+                true
+            }
+            _ => false,
+        };
+        if ui_changed || cfg_changed {
+            self.settings.save(SettingsPatch { ui: ui.filter(|_| ui_changed), config: cfg.filter(|_| cfg_changed).and_then(|c| serde_json::to_value(c).ok()), ..Default::default() });
+        }
+    }
+
     /// 上次框選的範圍
     pub fn last_snip(&self) -> Option<crate::types::Rect> {
         self.lock().last_snip
@@ -998,8 +1024,58 @@ fn crop_png(from: &Path, desk: crate::types::Rect, rect: crate::types::Rect, to:
     Ok((w, h))
 }
 
+/// 操作視窗的設定（settings.json 的 ui 欄位）裡，原本是 old 的範圍改成 new。
+/// 單一螢幕裡框選的部分：new 完全在某個螢幕內就改選那個螢幕，否則改成「自訂範圍」
+fn move_ui_region(ui: &mut serde_json::Value, old: Rect, new: Rect, monitors: &[MonitorInfo]) -> bool {
+    let rect_of = |v: &serde_json::Value| serde_json::from_value::<Rect>(v.clone()).ok();
+    let Ok(new_v) = serde_json::to_value(new) else { return false };
+    match ui["sourceType"].as_str() {
+        Some("region") if rect_of(&ui["region"]) == Some(old) => {
+            ui["region"] = new_v;
+            true
+        }
+        Some("monitor") if rect_of(&ui["monitorRegion"]) == Some(old) => {
+            let inside = |m: &&MonitorInfo| new.x >= m.x && new.y >= m.y && new.x + new.width <= m.x + m.width && new.y + new.height <= m.y + m.height;
+            match monitors.iter().find(inside) {
+                Some(m) => {
+                    ui["monitorId"] = serde_json::Value::String(m.id.clone());
+                    ui["monitorRegion"] = new_v;
+                }
+                None => {
+                    ui["sourceType"] = serde_json::Value::String("region".into());
+                    ui["region"] = new_v;
+                }
+            }
+            true
+        }
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn moved_region_updates_ui_settings() {
+        let mon = |id: &str, x: i32| MonitorInfo { id: id.into(), x, y: 0, width: 1920, height: 1080, ..Default::default() };
+        let mons = [mon("0:0", 0), mon("0:1", 1920)];
+        let r = |x, y| Rect { x, y, width: 640, height: 480 };
+        // 自訂範圍
+        let mut ui = serde_json::json!({ "sourceType": "region", "region": r(10, 20) });
+        assert!(move_ui_region(&mut ui, r(10, 20), r(300, 200), &mons));
+        assert_eq!(ui["region"], serde_json::to_value(r(300, 200)).unwrap());
+        // 不是同一個範圍（例如從系統匣框選錄的）：不改
+        assert!(!move_ui_region(&mut ui, r(1, 1), r(2, 2), &mons));
+        // 單一螢幕裡的部分：移到另一個螢幕內就改選那個螢幕
+        let mut ui = serde_json::json!({ "sourceType": "monitor", "monitorId": "0:0", "monitorRegion": r(10, 20), "region": r(0, 0) });
+        assert!(move_ui_region(&mut ui, r(10, 20), r(2000, 100), &mons));
+        assert_eq!(ui["monitorId"], "0:1");
+        assert_eq!(ui["monitorRegion"], serde_json::to_value(r(2000, 100)).unwrap());
+        // 跨兩個螢幕：改成自訂範圍
+        assert!(move_ui_region(&mut ui, r(2000, 100), r(1700, 100), &mons));
+        assert_eq!(ui["sourceType"], "region");
+        assert_eq!(ui["region"], serde_json::to_value(r(1700, 100)).unwrap());
+    }
+
     use super::*;
 
     #[tokio::test]
