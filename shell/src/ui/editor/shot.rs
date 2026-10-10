@@ -5,12 +5,13 @@ use super::{BannerInfo, Editor, Pl, Tab};
 use crate::ui::dialogs::file_name;
 use crate::ui::theme::{self, segmented, switch, Btn};
 use crate::ui::UiApp;
-use eframe::egui::{self, pos2, vec2, Align, Color32, CornerRadius, CursorIcon, Layout, Rect, RichText, Sense, Stroke, TextureHandle, TextureOptions};
+use eframe::egui::{self, pos2, vec2, Align, Color32, CornerRadius, CursorIcon, Layout, Rect, RichText, Sense, Stroke, StrokeKind, TextureHandle, TextureOptions};
 use screenrecorder_core::actions::{self, ProjectMatch, ShotProjectInfo};
-use screenrecorder_core::annotate;
+use screenrecorder_core::annotate::{self, AnnKind};
 use screenrecorder_core::edit::{normalize_crop, CropInput, EditSpec};
+use screenrecorder_core::ocr;
 use screenrecorder_core::player::Frame;
-use screenrecorder_core::shot_edit::{self, ShotSpec, BORDER_COLORS, SCALES};
+use screenrecorder_core::shot_edit::{self, ShotSpec, BACKGROUNDS, BORDER_COLORS, PADDINGS, RADII, SCALES};
 use screenrecorder_core::types::{LibraryEntry, MediaInfo};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -28,12 +29,22 @@ pub struct ShotOpts {
     /// 整張圖順時針轉的角度（0 / 90 / 180 / 270）
     #[serde(default)]
     pub rotate: u32,
+    #[serde(default)]
+    pub radius: u32,
+    #[serde(default)]
+    pub background: Option<String>,
+    #[serde(default = "default_padding")]
+    pub padding: u32,
+}
+
+fn default_padding() -> u32 {
+    ShotSpec::default().padding
 }
 
 impl Default for ShotOpts {
     fn default() -> Self {
         let d = ShotSpec::default();
-        Self { border: d.border, border_width: d.border_width, shadow: d.shadow, scale: d.scale, rotate: 0 }
+        Self { border: d.border, border_width: d.border_width, shadow: d.shadow, scale: d.scale, rotate: 0, radius: d.radius, background: d.background, padding: d.padding }
     }
 }
 
@@ -72,6 +83,10 @@ pub enum Act {
     Plain,
     /// 影片：目前這一格存成截圖
     Grab,
+    /// 找出個資並打上馬賽克
+    FindPii,
+    /// 影片：找出沒動靜的片段並刪掉
+    FindIdle,
 }
 
 /// 開啟截圖編輯：編輯過的圖會從原圖重新套用上次的編輯
@@ -153,7 +168,16 @@ fn apply_spec(ed: &mut Editor, spec: &ShotSpec) {
         annotate::measure(a);
     }
     if let Some(s) = &mut ed.shot {
-        s.opts = ShotOpts { border: spec.border.clone(), border_width: spec.border_width, shadow: spec.shadow, scale: spec.scale, rotate: shot_edit::norm_rotate(spec.rotate) };
+        s.opts = ShotOpts {
+            border: spec.border.clone(),
+            border_width: spec.border_width,
+            shadow: spec.shadow,
+            scale: spec.scale,
+            rotate: shot_edit::norm_rotate(spec.rotate),
+            radius: spec.radius,
+            background: spec.background.clone(),
+            padding: spec.padding,
+        };
     }
     sync_rotation(ed);
 }
@@ -210,7 +234,18 @@ pub fn spec(ed: &Editor) -> ShotSpec {
     let crop =
         if ed.crop_on { normalize_crop(ed.spec.crop, ed.vw as i32, ed.vh as i32).map(|r| CropInput { x: r.x as f64, y: r.y as f64, width: r.width as f64, height: r.height as f64 }) } else { None };
     let o = ed.shot.as_ref().map(|s| s.opts()).unwrap_or_default();
-    ShotSpec { crop, anns: ed.ordered().into_iter().cloned().collect(), border: o.border, border_width: o.border_width, shadow: o.shadow, scale: o.scale, rotate: o.rotate }
+    ShotSpec {
+        crop,
+        anns: ed.ordered().into_iter().cloned().collect(),
+        border: o.border,
+        border_width: o.border_width,
+        shadow: o.shadow,
+        scale: o.scale,
+        rotate: o.rotate,
+        radius: o.radius,
+        background: o.background,
+        padding: o.padding,
+    }
 }
 
 fn source(ed: &Editor) -> String {
@@ -220,7 +255,7 @@ fn source(ed: &Editor) -> String {
 /// 什麼都還沒改（不用存）
 fn unchanged(ed: &Editor) -> bool {
     let s = spec(ed);
-    s.crop.is_none() && s.anns.is_empty() && s.border.is_none() && !s.shadow && s.scale == 100 && s.rotate == 0
+    s.crop.is_none() && s.anns.is_empty() && s.border.is_none() && !s.shadow && s.scale == 100 && s.rotate == 0 && s.radius == 0 && s.background.is_none()
 }
 
 // ───────────── 畫面 ─────────────
@@ -357,8 +392,48 @@ pub fn output_panel(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context) {
             });
         }
     });
+    // 圓角
+    ui.vertical(|ui| {
+        ui.spacing_mut().item_spacing.y = 6.0;
+        label(ui, "圓角");
+        let names = ["無", "小", "中", "大"];
+        let items: Vec<(u32, &str)> = RADII.iter().copied().zip(names).collect();
+        segmented(ui, &mut o.radius, &items, true);
+    });
+    // 背景
+    ui.vertical(|ui| {
+        ui.spacing_mut().item_spacing.y = 6.0;
+        label(ui, "背景");
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
+            let (r, resp) = ui.allocate_exact_size(vec2(26.0, 26.0), Sense::click());
+            let sw = r.shrink(2.0);
+            ui.painter().rect(sw, CornerRadius::same(5), p.surface, Stroke::new(1.0, p.border_strong), StrokeKind::Inside);
+            ui.painter().line_segment([sw.left_bottom() + vec2(4.0, -4.0), sw.right_top() + vec2(-4.0, 4.0)], Stroke::new(1.5, p.muted));
+            if o.background.is_none() {
+                ui.painter().rect_stroke(r.expand(1.0), CornerRadius::same(7), Stroke::new(2.0, p.accent), StrokeKind::Inside);
+            }
+            if resp.on_hover_text("不要背景").on_hover_cursor(CursorIcon::PointingHand).clicked() {
+                o.background = None;
+            }
+            for bg in BACKGROUNDS {
+                let (r, resp) = ui.allocate_exact_size(vec2(26.0, 26.0), Sense::click());
+                gradient_swatch(ui.painter(), r.shrink(2.0), bg);
+                if o.background.as_deref() == Some(bg) {
+                    ui.painter().rect_stroke(r.expand(1.0), CornerRadius::same(7), Stroke::new(2.0, p.accent), StrokeKind::Inside);
+                }
+                if resp.on_hover_cursor(CursorIcon::PointingHand).clicked() {
+                    o.background = Some(bg.to_string());
+                }
+            }
+        });
+        if o.background.is_some() {
+            let items: Vec<(u32, &str)> = PADDINGS.iter().copied().zip(["留白少", "留白中", "留白多"]).collect();
+            segmented(ui, &mut o.padding, &items, true);
+        }
+    });
     // 陰影
-    switch(ui, &mut o.shadow, "四周加上陰影", true).on_hover_text("四周留透明的邊並加上柔和的陰影，貼到文件或簡報比較立體");
+    switch(ui, &mut o.shadow, "加上陰影", true).on_hover_text("圖的四周加上柔和的陰影（沒有背景時四周留透明的邊），貼到文件或簡報比較立體");
     // 大小
     ui.vertical(|ui| {
         ui.spacing_mut().item_spacing.y = 6.0;
@@ -415,6 +490,27 @@ pub fn rotate_buttons(ed: &mut Editor, ui: &mut egui::Ui) {
 }
 
 /// 透明處的棋盤格底
+/// 背景的色塊：單色或從左上到右下的漸層
+fn gradient_swatch(p: &egui::Painter, r: Rect, bg: &str) {
+    let cols: Vec<Color32> = bg
+        .split(',')
+        .map(|c| {
+            let (r, g, b) = annotate::parse_color(c.trim());
+            Color32::from_rgb(r, g, b)
+        })
+        .collect();
+    let (a, b) = (cols.first().copied().unwrap_or(Color32::GRAY), cols.last().copied().unwrap_or(Color32::GRAY));
+    let mid = a.lerp_to_gamma(b, 0.5);
+    let mut mesh = egui::Mesh::default();
+    for (pt, c) in [(r.left_top(), a), (r.right_top(), mid), (r.right_bottom(), b), (r.left_bottom(), mid)] {
+        mesh.colored_vertex(pt, c);
+    }
+    mesh.add_triangle(0, 1, 2);
+    mesh.add_triangle(0, 2, 3);
+    p.add(mesh);
+    p.rect_stroke(r, CornerRadius::ZERO, Stroke::new(1.0, Color32::from_black_alpha(40)), StrokeKind::Inside);
+}
+
 fn checker(p: &egui::Painter, r: Rect) {
     let n = 8.0;
     let (a, b) = (Color32::from_gray(236), Color32::from_gray(214));
@@ -433,6 +529,44 @@ fn checker(p: &egui::Painter, r: Rect) {
 }
 
 // ───────────── 動作 ─────────────
+
+/// 在找到的個資上加馬賽克（已經遮住的不重複加）；回傳要顯示的訊息
+fn cover_pii(ed: &mut Editor, found: &[ocr::Found]) -> String {
+    if found.is_empty() {
+        return "沒有找到 Email、電話、身分證字號或卡號".into();
+    }
+    let covered = |ed: &Editor, (x, y, w, h): (f64, f64, f64, f64)| {
+        ed.anns.iter().filter(|a| a.kind.is_effect() && !a.invert).any(|a| {
+            let ix = (a.x + a.w).min(x + w) - a.x.max(x);
+            let iy = (a.y + a.h).min(y + h) - a.y.max(y);
+            ix > 0.0 && iy > 0.0 && ix * iy >= w * h * 0.6
+        })
+    };
+    let mut counts: Vec<(ocr::Pii, usize)> = vec![];
+    for f in found {
+        let (x, y, w, h) = f.rect;
+        let x = x.clamp(0.0, ed.vw);
+        let y = y.clamp(0.0, ed.vh);
+        let (w, h) = (w.min(ed.vw - x), h.min(ed.vh - y));
+        if w < 2.0 || h < 2.0 || covered(ed, (x, y, w, h)) {
+            continue;
+        }
+        let mut a = ed.new_ann(AnnKind::Mosaic, x, y);
+        (a.w, a.h) = (w, h);
+        (a.shape, a.invert) = (Some(annotate::Shape::Rect), false);
+        ed.anns.push(a);
+        match counts.iter_mut().find(|(k, _)| *k == f.kind) {
+            Some((_, n)) => *n += 1,
+            None => counts.push((f.kind, 1)),
+        }
+    }
+    if counts.is_empty() {
+        return "找到的個資都已經遮住了".into();
+    }
+    let total: usize = counts.iter().map(|(_, n)| n).sum();
+    let parts: Vec<String> = counts.iter().map(|(k, n)| format!("{} {n}", k.name())).collect();
+    format!("已遮住 {total} 處（{}）；請再確認有沒有漏掉的", parts.join("、"))
+}
 
 /// 儲存、複製、釘在桌面、文字辨識、直接編輯開啟的那張
 pub fn run(app: &mut UiApp, ed: &mut Editor, act: Act) {
@@ -468,6 +602,42 @@ pub fn run(app: &mut UiApp, ed: &mut Editor, act: Act) {
             }
         }),
         Act::Ocr => super::super::ocr::start_spec(app, src, sp),
+        Act::FindPii => {
+            if ed.finding_pii {
+                return;
+            }
+            ed.finding_pii = true;
+            let rotate = sp.rotate;
+            app.spawn(async move { actions::shot_find_pii(&src, rotate).await }, |app, r| {
+                let Some(ed) = &mut app.editor else { return };
+                ed.finding_pii = false;
+                match r {
+                    Ok(found) => {
+                        let msg = cover_pii(ed, &found);
+                        app.toast(msg, false);
+                    }
+                    Err(e) => app.toast(e.message().to_string(), true),
+                }
+            });
+        }
+        Act::FindIdle => {
+            if ed.finding_idle {
+                return;
+            }
+            ed.finding_idle = true;
+            let (ffmpeg, video, dur, audio) = (ed.ffmpeg.clone(), ed.entry.media.path.clone(), ed.duration, ed.entry.media.has_audio == Some(true));
+            app.spawn(async move { screenrecorder_core::idle::find(&ffmpeg, &video, dur, audio).await }, |app, r| {
+                let Some(ed) = &mut app.editor else { return };
+                ed.finding_idle = false;
+                match r {
+                    Ok(found) => {
+                        let msg = ed.remove_idle(&found);
+                        app.toast(msg, false);
+                    }
+                    Err(e) => app.toast(e.message().to_string(), true),
+                }
+            });
+        }
         Act::Grab => {
             let (video, t) = (ed.entry.media.path.clone(), ed.now());
             ed.pause();

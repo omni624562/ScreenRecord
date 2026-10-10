@@ -116,7 +116,7 @@ pub struct UiApp {
     pub main: main_view::MainState,
     ddagrab_watch: Option<Instant>,
     /// 已處理過的截圖（介面或快捷鍵截好時更新清單、顯示提示）
-    last_shot_seq: u64,
+    pub last_shot_seq: u64,
     /// 上一格各部分花的時間（毫秒）：畫面處理太慢時寫進記錄檔，找出卡在哪裡
     frame_parts: Vec<(&'static str, f32)>,
     slow_logged: Option<Instant>,

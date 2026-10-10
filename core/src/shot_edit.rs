@@ -6,12 +6,18 @@
 use crate::annotate::{self, Ann};
 use crate::edit::CropInput;
 use serde::{Deserialize, Serialize};
-use tiny_skia::{Color, FilterQuality, Paint, PathBuilder, Pixmap, PixmapPaint, Rect, Stroke, Transform};
+use tiny_skia::{Color, FillRule, FilterQuality, GradientStop, LinearGradient, Mask, Paint, PathBuilder, Pixmap, PixmapPaint, Point, Rect, SpreadMode, Stroke, Transform};
 
 /// 輸出的縮放比例（%）
 pub const SCALES: [u32; 4] = [100, 75, 50, 25];
 /// 外框的顏色
 pub const BORDER_COLORS: [&str; 4] = ["#d0d4da", "#111111", "#e5484d", "#0090ff"];
+/// 背景：單色「#rrggbb」或斜向漸層「#左上,#右下」
+pub const BACKGROUNDS: [&str; 8] = ["#a1c4fd,#c2e9fb", "#ff9a9e,#fecfef", "#f6d365,#fda085", "#84fab0,#8fd3f4", "#667eea,#764ba2", "#2b5876,#4e4376", "#f1f3f5", "#1f2328"];
+/// 圓角半徑（輸出圖的像素）
+pub const RADII: [u32; 4] = [0, 8, 16, 32];
+/// 背景留白（圖的短邊的百分比）
+pub const PADDINGS: [u32; 3] = [4, 8, 14];
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -36,6 +42,19 @@ pub struct ShotSpec {
     /// 整張圖順時針旋轉的角度（0 / 90 / 180 / 270）
     #[serde(default, skip_serializing_if = "is_zero")]
     pub rotate: u32,
+    /// 圓角半徑（輸出圖的像素；0 = 直角）
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub radius: u32,
+    /// 放在背景上（單色或漸層，見 BACKGROUNDS）；None = 沒有背景
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub background: Option<String>,
+    /// 背景留白（圖的短邊的百分比）
+    #[serde(default = "default_padding")]
+    pub padding: u32,
+}
+
+fn default_padding() -> u32 {
+    8
 }
 
 fn is_zero(v: &u32) -> bool {
@@ -52,7 +71,7 @@ fn default_scale() -> u32 {
 
 impl Default for ShotSpec {
     fn default() -> Self {
-        Self { crop: None, anns: vec![], border: None, border_width: default_border_width(), shadow: false, scale: default_scale(), rotate: 0 }
+        Self { crop: None, anns: vec![], border: None, border_width: default_border_width(), shadow: false, scale: default_scale(), rotate: 0, radius: 0, background: None, padding: default_padding() }
     }
 }
 
@@ -154,8 +173,15 @@ pub fn output_size(spec: &ShotSpec, vw: u32, vh: u32) -> (u32, u32) {
     let (_, _, w, h) = crop_rect(spec, vw, vh);
     let k = spec.scale.clamp(10, 100) as f64 / 100.0;
     let (w, h) = (((w as f64 * k).round() as u32).max(1), ((h as f64 * k).round() as u32).max(1));
-    let m = if spec.shadow { shadow_margin(w, h) * 2 } else { 0 };
+    let m = margin(spec, w, h) * 2;
     (w + m, h + m)
+}
+
+/// 圖四周加的邊（輸出圖的像素）：陰影要的空間、背景的留白，取大的
+pub fn margin(spec: &ShotSpec, out_w: u32, out_h: u32) -> u32 {
+    let shadow = if spec.shadow { shadow_margin(out_w, out_h) } else { 0 };
+    let bg = if spec.background.is_some() { (out_w.min(out_h) as f64 * spec.padding.min(40) as f64 / 100.0).round() as u32 } else { 0 };
+    shadow.max(bg)
 }
 
 /// 套用編輯：src 是畫面（RGBA，不透明；可以是縮小的預覽；還沒旋轉），vw × vh 是原圖大小。
@@ -203,43 +229,114 @@ pub fn render(src: &[u8], fw: u32, fh: u32, vw: u32, vh: u32, spec: &ShotSpec, p
     Some(decorate(body, spec, unit))
 }
 
-/// 外框與陰影；unit = 輸出圖一像素在這張圖上是多少像素
-fn decorate(body: Pixmap, spec: &ShotSpec, unit: f64) -> Pixmap {
+/// 圓角、背景、陰影與外框；unit = 輸出圖一像素在這張圖上是多少像素
+fn decorate(mut body: Pixmap, spec: &ShotSpec, unit: f64) -> Pixmap {
     let (w, h) = (body.width(), body.height());
-    let margin = if spec.shadow { (shadow_margin((w as f64 / unit) as u32, (h as f64 / unit) as u32) as f64 * unit).round().max(1.0) as u32 } else { 0 };
+    let (ow, oh) = ((w as f64 / unit) as u32, (h as f64 / unit) as u32);
+    let scaled = |v: u32| if v > 0 { (v as f64 * unit).round().max(1.0) as u32 } else { 0 };
+    let margin = scaled(margin(spec, ow, oh));
+    let radius = (spec.radius.min(400) as f64 * unit) as f32;
+    // 圓角：四個角變透明（陰影、外框都跟著圓）
+    if radius >= 0.5 {
+        if let (Some(path), Some(mut mask)) = (annotate::round_rect(0.0, 0.0, w as f32, h as f32, radius), Mask::new(w, h)) {
+            mask.fill_path(&path, FillRule::Winding, true, Transform::identity());
+            body.apply_mask(&mask);
+        }
+    }
+    if margin == 0 && spec.border.is_none() {
+        return body;
+    }
     let Some(mut out) = Pixmap::new(w + margin * 2, h + margin * 2) else { return body };
     let m = margin as f32;
+    if let Some(bg) = &spec.background {
+        fill_background(&mut out, bg);
+    }
     if spec.shadow {
-        // 往下偏一點的柔和陰影：先畫半透明的方塊，再把透明度模糊
-        let mut sh = vec![0u8; (out.width() * out.height() * 4) as usize];
-        let ow = out.width() as usize;
-        let off = (margin as f64 * 0.25).round() as usize;
-        for y in 0..h as usize {
-            let row = (y + margin as usize + off).min(out.height() as usize - 1);
-            for x in 0..w as usize {
-                let p = (row * ow + x + margin as usize) * 4;
-                sh[p + 3] = 110;
+        // 往下偏一點的柔和陰影：照圖的形狀（含圓角）畫半透明的黑色，再把透明度模糊
+        let sm = scaled(shadow_margin(ow, oh)) as usize;
+        let (ow, oh) = (out.width() as usize, out.height() as usize);
+        let mut sh = vec![0u8; ow * oh * 4];
+        let off = (sm as f64 * 0.25).round() as usize;
+        for (y, row) in body.data().chunks_exact(w as usize * 4).enumerate() {
+            let oy = (y + margin as usize + off).min(oh - 1);
+            for (x, px) in row.as_chunks::<4>().0.iter().enumerate() {
+                sh[(oy * ow + x + margin as usize) * 4 + 3] = (px[3] as u32 * 110 / 255) as u8;
             }
         }
-        crate::effects::box_blur(&mut sh, ow, out.height() as usize, (margin as usize / 3).max(1));
-        // 透明度只留在 alpha（顏色是黑色，預乘後 RGB 為 0）
-        for (d, s) in out.data_mut().as_chunks_mut::<4>().0.iter_mut().zip(sh.as_chunks::<4>().0) {
-            *d = [0, 0, 0, s[3]];
+        crate::effects::box_blur(&mut sh, ow, oh, (sm / 3).max(1));
+        if let Some(mut layer) = Pixmap::new(ow as u32, oh as u32) {
+            // 透明度只留在 alpha（顏色是黑色，預乘後 RGB 為 0）
+            for (d, s) in layer.data_mut().as_chunks_mut::<4>().0.iter_mut().zip(sh.as_chunks::<4>().0) {
+                *d = [0, 0, 0, s[3]];
+            }
+            out.draw_pixmap(0, 0, layer.as_ref(), &PixmapPaint::default(), Transform::identity(), None);
         }
     }
     out.draw_pixmap(margin as i32, margin as i32, body.as_ref(), &PixmapPaint::default(), Transform::identity(), None);
     if let Some(c) = &spec.border {
         let bw = (spec.border_width.clamp(1.0, 20.0) * unit).max(1.0) as f32;
-        if let Some(r) = Rect::from_xywh(m + bw / 2.0, m + bw / 2.0, w as f32 - bw, h as f32 - bw) {
+        let path = if radius >= 0.5 {
+            annotate::round_rect(m + bw / 2.0, m + bw / 2.0, w as f32 - bw, h as f32 - bw, (radius - bw / 2.0).max(0.0))
+        } else {
+            Rect::from_xywh(m + bw / 2.0, m + bw / 2.0, w as f32 - bw, h as f32 - bw).map(PathBuilder::from_rect)
+        };
+        if let Some(path) = path {
             let (r8, g8, b8) = annotate::parse_color(c);
             let mut paint = Paint::default();
             paint.set_color(Color::from_rgba8(r8, g8, b8, 255));
             paint.anti_alias = true;
-            let path = PathBuilder::from_rect(r);
             out.stroke_path(&path, &paint, &Stroke { width: bw, ..Default::default() }, Transform::identity(), None);
         }
     }
     out
+}
+
+/// 填滿背景：「#rrggbb」單色，「#a,#b」從左上到右下的漸層
+fn fill_background(out: &mut Pixmap, bg: &str) {
+    let colors: Vec<Color> = bg
+        .split(',')
+        .map(|c| {
+            let (r, g, b) = annotate::parse_color(c.trim());
+            Color::from_rgba8(r, g, b, 255)
+        })
+        .collect();
+    let (w, h) = (out.width() as f32, out.height() as f32);
+    let mut paint = Paint::default();
+    match colors.as_slice() {
+        [] => return,
+        [c] => paint.set_color(*c),
+        [a, .., b] => {
+            let stops = vec![GradientStop::new(0.0, *a), GradientStop::new(1.0, *b)];
+            match LinearGradient::new(Point::from_xy(0.0, 0.0), Point::from_xy(w, h), stops, SpreadMode::Pad, Transform::identity()) {
+                Some(sh) => paint.shader = sh,
+                None => paint.set_color(*a),
+            }
+        }
+    }
+    if let Some(r) = Rect::from_xywh(0.0, 0.0, w, h) {
+        out.fill_rect(r, &paint, Transform::identity(), None);
+    }
+}
+
+/// 多張圖拼成一張：左右（vertical = false）或上下排，不縮放、置中對齊，中間與四周留 gap 像素的白邊
+pub fn combine(images: &[Pixmap], vertical: bool, gap: u32) -> Option<Pixmap> {
+    if images.is_empty() {
+        return None;
+    }
+    let n = images.len() as u32;
+    let along: u32 = images.iter().map(|i| if vertical { i.height() } else { i.width() }).sum::<u32>() + gap * (n + 1);
+    let across: u32 = images.iter().map(|i| if vertical { i.width() } else { i.height() }).max()? + gap * 2;
+    let (w, h) = if vertical { (across, along) } else { (along, across) };
+    let mut out = Pixmap::new(w, h)?;
+    out.fill(Color::WHITE);
+    let mut pos = gap;
+    for img in images {
+        let (iw, ih) = (img.width(), img.height());
+        let (x, y) = if vertical { ((w - iw) / 2, pos) } else { (pos, (h - ih) / 2) };
+        out.draw_pixmap(x as i32, y as i32, img.as_ref(), &PixmapPaint::default(), Transform::identity(), None);
+        pos += if vertical { ih } else { iw } + gap;
+    }
+    Some(out)
 }
 
 /// 編輯過的圖的檔名：Shot_…_編輯.png（已有同名時加 _2、_3…）
@@ -284,6 +381,56 @@ mod tests {
 
     fn img(w: u32, h: u32, v: u8) -> Vec<u8> {
         vec![[v, v, v, 255]; (w * h) as usize].concat()
+    }
+
+    #[test]
+    fn combine_side_by_side_and_stacked() {
+        let a = Pixmap::new(40, 20).map(|mut p| {
+            p.fill(Color::BLACK);
+            p
+        });
+        let b = Pixmap::new(10, 30).map(|mut p| {
+            p.fill(Color::from_rgba8(255, 0, 0, 255));
+            p
+        });
+        let (a, b) = (a.unwrap(), b.unwrap());
+        let row = combine(&[a.clone(), b.clone()], false, 5).unwrap();
+        assert_eq!((row.width(), row.height()), (5 + 40 + 5 + 10 + 5, 30 + 10));
+        // 矮的置中，上下是白色
+        assert_eq!(row.pixel(10, 7).unwrap().red(), 255);
+        assert_eq!(row.pixel(10, 12).unwrap().red(), 0);
+        assert_eq!(row.pixel(52, 6).unwrap().green(), 0);
+        let col = combine(&[a, b], true, 0).unwrap();
+        assert_eq!((col.width(), col.height()), (40, 50));
+        assert!(combine(&[], true, 5).is_none());
+    }
+
+    #[test]
+    fn rounded_corners_and_background() {
+        let src = img(100, 60, 128);
+        // 圓角：角落透明，中間不透明
+        let spec = ShotSpec { radius: 16, ..Default::default() };
+        let pm = render(&src, 100, 60, 100, 60, &spec, false).unwrap();
+        assert_eq!((pm.width(), pm.height()), (100, 60));
+        assert_eq!(pm.pixel(0, 0).unwrap().alpha(), 0);
+        assert_eq!(pm.pixel(50, 30).unwrap().alpha(), 255);
+        // 背景：短邊的 10% 留白，四周填滿背景色
+        let spec = ShotSpec { radius: 16, background: Some("#ff0000".into()), padding: 10, ..Default::default() };
+        assert_eq!(output_size(&spec, 100, 60), (112, 72));
+        let pm = render(&src, 100, 60, 100, 60, &spec, false).unwrap();
+        assert_eq!((pm.width(), pm.height()), (112, 72));
+        let c = pm.pixel(0, 0).unwrap();
+        assert_eq!((c.red(), c.green(), c.blue(), c.alpha()), (255, 0, 0, 255));
+        // 圖的圓角處露出背景
+        let c = pm.pixel(7, 7).unwrap();
+        assert_eq!((c.red(), c.alpha()), (255, 255));
+        assert_eq!(pm.pixel(56, 36).unwrap().red(), 128);
+        // 漸層：左上和右下的顏色不同；陰影比留白大時用陰影的邊
+        let spec = ShotSpec { background: Some("#000000,#ffffff".into()), padding: 4, shadow: true, ..Default::default() };
+        let pm = render(&src, 100, 60, 100, 60, &spec, false).unwrap();
+        let m = shadow_margin(100, 60);
+        assert_eq!(pm.width(), 100 + m * 2);
+        assert!(pm.pixel(0, 0).unwrap().red() < 30 && pm.pixel(pm.width() - 1, pm.height() - 1).unwrap().red() > 225);
     }
 
     #[test]

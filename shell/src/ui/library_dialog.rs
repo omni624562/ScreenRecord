@@ -148,6 +148,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
     let mut action: Option<(EntryAction, LibraryEntry)> = None;
     let mut rename: Option<LibraryEntry> = None;
     let mut delete = false;
+    let mut combine: Option<bool> = None;
     let dir = app.s.out_dir(&app.env);
     // 縮圖要用 app，先取出對話框
     let Some(mut d) = app.library.take() else {
@@ -237,9 +238,28 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         painter.hline(foot.x_range(), foot.min.y - 4.0, Stroke::new(1.0, p.border));
         let fui = &mut ui.new_child(UiBuilder::new().max_rect(foot).layout(Layout::left_to_right(Align::Center)));
         let n = d.selected.len();
-        fui.label(theme::muted(fui, if n > 0 { format!("已選取 {n} 個檔案") } else { "可勾選多筆一次刪除".into() }));
+        fui.label(theme::muted(
+            fui,
+            match (n, shot) {
+                (0, true) => "可勾選多張一次刪除，或拼成一張".into(),
+                (0, false) => "可勾選多筆一次刪除".into(),
+                _ => format!("已選取 {n} 個檔案"),
+            },
+        ));
         if n > 0 && Btn::new("移到資源回收筒").icon(Icon::Trash).danger().small().show(fui).clicked() {
             delete = true;
+        }
+        if shot && n >= 2 {
+            let b = Btn::new("拼成一張").small().tooltip("把勾選的截圖依時間順序拼成一張新的截圖").show(fui);
+            egui::Popup::menu(&b).show(|ui| {
+                ui.set_min_width(150.0);
+                if ui.button("左右排").clicked() {
+                    combine = Some(false);
+                }
+                if ui.button("上下排").clicked() {
+                    combine = Some(true);
+                }
+            });
         }
         fui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             let pages = d.data.as_ref().map(|x| x.pages).unwrap_or(1);
@@ -279,6 +299,22 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
     }
     if delete {
         remove_selected(app);
+    }
+    if let Some(vertical) = combine {
+        let paths: Vec<String> = app.library.as_ref().map(|d| d.selected.iter().cloned().collect()).unwrap_or_default();
+        let core = app.core.clone();
+        app.spawn(async move { core.combine_shots(paths, vertical).await }, |app, r| match r {
+            Ok(shot) => {
+                if let Some(d) = &mut app.library {
+                    d.selected.clear();
+                }
+                // 狀態更新的「已截圖」不用再顯示一次
+                app.last_shot_seq = app.last_shot_seq.max(shot.seq);
+                app.toast(format!("已拼成 {}（{}×{}）{}", super::dialogs::file_name(&shot.path), shot.width, shot.height, if shot.copied { "，並複製到剪貼簿" } else { "" }), false);
+                app.shots_changed();
+            }
+            Err(e) => app.toast(e.message().to_string(), true),
+        });
     }
 }
 

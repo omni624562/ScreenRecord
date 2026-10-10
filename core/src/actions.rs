@@ -302,6 +302,18 @@ pub async fn shot_ocr(path: &str, spec: Option<&crate::shot_edit::ShotSpec>) -> 
     tokio::task::spawn_blocking(move || crate::ocr::recognize(&rgba, w, h)).await.map_err(|e| Error::other(e.to_string()))?.map_err(Error::config)
 }
 
+/// 自動遮個資：在原圖（轉成編輯中的方向）找出 Email、電話、身分證字號、卡號的位置（只有 Windows）
+pub async fn shot_find_pii(path: &str, rotate: u32) -> Result<Vec<crate::ocr::Found>> {
+    let (rgba, w, h) = load_image(path).await?;
+    tokio::task::spawn_blocking(move || {
+        let (rgba, w, h) = crate::shot_edit::rotate_rgba(&rgba, w, h, rotate);
+        crate::ocr::recognize_words(&rgba, w, h).map(|lines| crate::ocr::find_pii(&lines))
+    })
+    .await
+    .map_err(|e| Error::other(e.to_string()))?
+    .map_err(Error::config)
+}
+
 /// 釘在桌面（編輯後的樣子；只有 Windows）
 pub async fn shot_pin(path: &str, spec: &crate::shot_edit::ShotSpec) -> Result<()> {
     let pm = render_shot(path, spec).await?;

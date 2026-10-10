@@ -17,7 +17,7 @@ use super::UiApp;
 use eframe::egui::{self, vec2, Align, Color32, Id, Key, Layout, Modifiers, RichText, TextureHandle, TextureOptions};
 use screenrecorder_core::actions::{self, EditProject, ProjectMatch};
 use screenrecorder_core::annotate::{self, Ann, AnnKind, ProjectData, ProjectSpec, Shape, COLORS, EMOJIS};
-use screenrecorder_core::edit::{cut_file_name, keep_ranges, normalize_crop, normalize_ranges, total_length, CropInput, EditSpec, Range};
+use screenrecorder_core::edit::{cut_file_name, keep_parts, keep_ranges, normalize_crop, normalize_ranges, output_length, CropInput, EditSpec, FastRange, Range};
 use screenrecorder_core::format::video_clock;
 use screenrecorder_core::player::{Frame, MediaSpec, Player};
 use screenrecorder_core::types::LibraryEntry;
@@ -222,6 +222,12 @@ pub struct Editor {
     pending: Option<shot::Act>,
     /// 錄影時打的點（秒，原片的時間）
     markers: Vec<f64>,
+    /// 正在用文字辨識找個資
+    finding_pii: bool,
+    /// 正在分析沒動靜的片段
+    finding_idle: bool,
+    /// 預覽到加速的片段時，上次跳過去的位置
+    fast_from: Option<f64>,
     /// 最新解出的畫面（套用馬賽克 / 模糊前）
     frame: Option<Frame>,
     video_tex: Option<TextureHandle>,
@@ -335,6 +341,9 @@ impl Editor {
             changed_at: None,
             pending: None,
             markers: vec![],
+            finding_pii: false,
+            finding_idle: false,
+            fast_from: None,
             frame: None,
             video_tex: None,
             video_key: 0,
@@ -378,6 +387,7 @@ impl Editor {
         self.spec.removed = data.spec.removed;
         self.spec.crop = data.spec.crop;
         self.spec.audio = data.audio;
+        self.spec.fast = data.fast;
         self.crop_on = data.crop_on;
         self.anns = data.anns;
         if let (Some(s), Some(o)) = (&mut self.shot, opts) {
@@ -496,6 +506,8 @@ impl Editor {
             self.spec = EditSpec { start: 0.0, end: d, removed: vec![], crop: None, overlays: vec![], ..Default::default() };
         }
         self.spec.audio = data.get("audio").and_then(|a| serde_json::from_value(a.clone()).ok()).unwrap_or_default();
+        self.spec.fast = data.get("fast").and_then(|a| serde_json::from_value::<Vec<FastRange>>(a.clone()).ok()).unwrap_or_default();
+        self.spec.fast.retain(|f| f.end() <= d + 0.05 && f.speed > 1 && f.speed <= 16);
         self.crop_on = data.get("cropOn").and_then(Value::as_bool).unwrap_or(false) && self.spec.crop.is_some();
         // 一個一個讀：格式不對的標註略過，不影響其他的
         let list = data.get("anns").and_then(Value::as_array).cloned().unwrap_or_default();
@@ -516,6 +528,7 @@ impl Editor {
             crop_on: self.crop_on,
             anns: self.anns.clone(),
             audio: self.spec.audio,
+            fast: self.spec.fast.clone(),
         }
     }
 
@@ -527,6 +540,11 @@ impl Editor {
 
     fn keep(&self) -> Vec<Range> {
         keep_ranges(self.duration, &self.spec)
+    }
+
+    /// 保留的片段依加速切開：(開始, 結束, 倍率)
+    fn parts(&self) -> Vec<(f64, f64, u32)> {
+        keep_parts(self.duration, &self.spec)
     }
 
     fn selected(&self) -> Option<&Ann> {
@@ -732,6 +750,30 @@ impl Editor {
         }
     }
 
+    /// 刪掉找到的沒動靜片段（只算保留範圍內的）；回傳要顯示的訊息
+    pub(crate) fn remove_idle(&mut self, found: &[Range]) -> String {
+        let keep = self.keep();
+        // 只刪還保留著的部分
+        let mut add: Vec<Range> = vec![];
+        for &(a, b) in found {
+            for &(c, d) in &keep {
+                let (x, y) = (a.max(c), b.min(d));
+                if y - x >= 0.5 {
+                    add.push((x, y));
+                }
+            }
+        }
+        if add.is_empty() {
+            return if found.is_empty() { format!("沒有找到超過 {} 秒不動又沒聲音的片段", screenrecorder_core::idle::MIN_IDLE) } else { "找到的片段都已經刪掉了".into() };
+        }
+        let secs: f64 = add.iter().map(|(a, b)| b - a).sum();
+        let mut list = self.spec.removed.clone();
+        list.extend(add.iter().copied());
+        self.spec.removed = normalize_ranges(&list, self.duration);
+        self.sel = None;
+        format!("刪除了 {} 段沒動靜的片段（共 {}），可按 Ctrl+Z 復原", add.len(), video_clock(secs))
+    }
+
     fn restore_removed(&mut self, i: usize) {
         let mut list = normalize_ranges(&self.spec.removed, self.duration);
         if i < list.len() {
@@ -771,6 +813,18 @@ impl Editor {
         let t = self.now();
         let keep = self.keep();
         if keep.iter().any(|&(a, b)| t >= a - 0.02 && t < b) {
+            // 加速的片段：每播 0.5 秒往後跳 (倍率 - 1) × 0.5 秒，看起來像快轉
+            match self.parts().into_iter().find(|&(a, b, s)| s > 1 && t >= a - 0.02 && t < b) {
+                Some((_, b, s)) => {
+                    let from = *self.fast_from.get_or_insert(t);
+                    if t - from >= 0.5 || t < from {
+                        let to = (t + 0.5 * (s - 1) as f64).min(b);
+                        self.fast_from = Some(to);
+                        self.seek(to);
+                    }
+                }
+                None => self.fast_from = None,
+            }
             return;
         }
         if let Some(next) = keep.iter().find(|&&(a, _)| a > t) {
@@ -1256,7 +1310,9 @@ fn transport(ed: &mut Editor, ui: &mut egui::Ui) {
 fn footer(ed: &mut Editor, ui: &mut egui::Ui) -> bool {
     let p = theme::pal(ui);
     let keep = ed.keep();
-    let length = total_length(&keep);
+    let parts = ed.parts();
+    let length = output_length(&parts);
+    let fast = parts.iter().filter(|p| p.2 > 1).count();
     let crop = if ed.crop_on { normalize_crop(ed.spec.crop, ed.vw as i32, ed.vh as i32) } else { None };
     let size = match &crop {
         Some(c) => format!("{}×{}", c.width, c.height),
@@ -1264,7 +1320,7 @@ fn footer(ed: &mut Editor, ui: &mut egui::Ui) -> bool {
         None => String::new(),
     };
     let gone = ed.gone_count(&keep);
-    let unchanged = keep.len() == 1 && keep[0].0 == 0.0 && keep[0].1 >= ed.duration - 0.05 && crop.is_none() && ed.anns.is_empty() && ed.spec.audio.is_default();
+    let unchanged = keep.len() == 1 && keep[0].0 == 0.0 && keep[0].1 >= ed.duration - 0.05 && fast == 0 && crop.is_none() && ed.anns.is_empty() && ed.spec.audio.is_default();
     let mut save = false;
     ui.vertical(|ui| {
         ui.spacing_mut().item_spacing = vec2(0.0, 2.0);
@@ -1273,6 +1329,9 @@ fn footer(ed: &mut Editor, ui: &mut egui::Ui) -> bool {
             ui.label("輸出長度 ");
             ui.label(RichText::new(video_clock(length)).font(theme::font_bold(13.5)));
             ui.label(format!("（原 {}）・保留 {} 段", video_clock(ed.duration), keep.len()));
+            if fast > 0 {
+                ui.label(format!("・加速 {fast} 段"));
+            }
             if !size.is_empty() {
                 ui.label("・畫面 ");
                 ui.label(RichText::new(size).font(theme::font_bold(13.5)));
@@ -1311,7 +1370,7 @@ fn start_save(app: &mut UiApp, ed: &mut Editor) {
     let overlays = ed.ordered().into_iter().filter_map(|a| annotate::to_overlay(a, ed.vw, ed.vh)).collect();
     let crop =
         if ed.crop_on { normalize_crop(ed.spec.crop, ed.vw as i32, ed.vh as i32).map(|r| CropInput { x: r.x as f64, y: r.y as f64, width: r.width as f64, height: r.height as f64 }) } else { None };
-    let spec = EditSpec { start: ed.spec.start, end: ed.spec.end, removed: ed.spec.removed.clone(), crop, overlays, audio: ed.spec.audio };
+    let spec = EditSpec { start: ed.spec.start, end: ed.spec.end, removed: ed.spec.removed.clone(), crop, overlays, audio: ed.spec.audio, fast: ed.spec.fast.clone() };
     let project = serde_json::to_value(ed.project_data()).ok();
     let (core, source, replace) = (app.core.clone(), ed.entry.media.path.clone(), ed.replace_target.clone());
     let replacing = replace.is_some();

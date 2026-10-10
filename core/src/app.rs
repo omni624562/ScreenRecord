@@ -407,6 +407,42 @@ impl App {
         Ok(shot)
     }
 
+    /// 多張截圖拼成一張（依檔案時間由舊到新；左右或上下排），存成新的截圖並複製到剪貼簿
+    pub async fn combine_shots(self: &Arc<Self>, mut paths: Vec<String>, vertical: bool) -> crate::Result<crate::types::ShotInfo> {
+        if paths.len() < 2 {
+            return Err(crate::Error::config("請選兩張以上的截圖"));
+        }
+        if paths.len() > 20 {
+            return Err(crate::Error::config("一次最多拼 20 張"));
+        }
+        let mtime = |p: &String| std::fs::metadata(p).and_then(|m| m.modified()).ok();
+        paths.sort_by_key(mtime);
+        let mut images = vec![];
+        for p in &paths {
+            let (rgba, w, h) = crate::actions::load_image(p).await?;
+            let mut pm = tiny_skia::Pixmap::new(w, h).ok_or_else(|| crate::Error::config("圖片太大"))?;
+            for (d, s) in pm.pixels_mut().iter_mut().zip(rgba.as_chunks::<4>().0) {
+                *d = tiny_skia::ColorU8::from_rgba(s[0], s[1], s[2], s[3]).premultiply();
+            }
+            images.push(pm);
+        }
+        let dir = Path::new(&paths[0]).parent().map(|p| p.display().to_string()).unwrap_or_default();
+        let out = new_shot_path(&dir).await?;
+        let o = out.clone();
+        let (w, h) = tokio::task::spawn_blocking(move || {
+            let gap = images.iter().map(|i| i.width().min(i.height())).min().unwrap_or(0) / 40;
+            let pm = crate::shot_edit::combine(&images, vertical, gap.clamp(8, 24)).ok_or_else(|| crate::Error::config("拼起來的圖太大"))?;
+            pm.save_png(&o).map_err(|e| crate::Error::other(format!("無法儲存圖片：{e}")))?;
+            Ok::<_, crate::Error>((pm.width(), pm.height()))
+        })
+        .await
+        .map_err(|e| crate::Error::other(e.to_string()))??;
+        let shot = self.finish_shot(&out, w, h).await;
+        self.lock().shot = Some(shot.clone());
+        crate::info!("[截圖] {} 張{}拼成 {}（{w}×{h}）", paths.len(), if vertical { "上下" } else { "左右" }, shot.path);
+        Ok(shot)
+    }
+
     /// 截好的 PNG：複製到剪貼簿（失敗不影響已存好的檔案），編上序號
     async fn finish_shot(&self, out: &Path, w: u32, h: u32) -> crate::types::ShotInfo {
         let png = out.to_path_buf();

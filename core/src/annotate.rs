@@ -469,7 +469,7 @@ pub fn shape_path(shape: Option<Shape>, x: f64, y: f64, w: f64, h: f64) -> Optio
 }
 
 /// 圓角矩形（半徑不超過短邊的一半）
-fn round_rect(x: f32, y: f32, w: f32, h: f32, r: f32) -> Option<Path> {
+pub(crate) fn round_rect(x: f32, y: f32, w: f32, h: f32, r: f32) -> Option<Path> {
     let r = r.min(w.abs() / 2.0).min(h.abs() / 2.0).max(0.0);
     let k = 0.552_284_8 * r;
     let mut p = PathBuilder::new();
@@ -878,6 +878,9 @@ pub struct ProjectData {
     /// 聲音處理（降噪、音量平衡、靜音）
     #[serde(default, skip_serializing_if = "crate::edit::AudioFx::is_default")]
     pub audio: crate::edit::AudioFx,
+    /// 局部加速的片段
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fast: Vec<crate::edit::FastRange>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

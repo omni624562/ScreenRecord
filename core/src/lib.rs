@@ -23,6 +23,7 @@ pub mod fonts;
 pub mod format;
 pub mod http;
 pub mod icon;
+pub mod idle;
 pub mod instance;
 pub mod ipc;
 pub mod job;

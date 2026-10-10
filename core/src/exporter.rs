@@ -1,7 +1,7 @@
 //! 轉檔工作：製作加速版、GIF、剪輯。同一時間只跑一個，避免搶 CPU；原檔不變。
 
 use crate::args::{cut_args, export_args, gif_args, EncoderSpec, GifOptions, OverlayInput};
-use crate::edit::{cut_file_name, keep_ranges, normalize_crop, total_length, EditSpec, Overlay, OverlayKind};
+use crate::edit::{cut_file_name, keep_parts, normalize_crop, output_length, EditSpec, Overlay, OverlayKind};
 use crate::error::{Error, Result};
 use crate::format::{export_file_name, js_round, num, speed_label, strip_mp4, FPS_MAX, SPEED_MAX, SPEED_MIN};
 use crate::library::MediaCache;
@@ -149,8 +149,8 @@ impl Exporter {
         }
         let (ffmpeg, enc, info, fps) = prepare(ctx, source).await?;
         let duration = info.duration_sec.unwrap_or(0.0);
-        let keep = keep_ranges(duration, spec);
-        let length = total_length(&keep);
+        let keep = keep_parts(duration, spec);
+        let length = output_length(&keep);
         if length < 0.1 {
             return Err(Error::config("剪輯後留下的長度太短"));
         }
@@ -163,7 +163,7 @@ impl Exporter {
             }
             None => None,
         };
-        let unchanged = keep.len() == 1 && keep[0].0 == 0.0 && keep[0].1 >= duration - 0.05 && crop.is_none() && spec.overlays.is_empty() && spec.audio.is_default();
+        let unchanged = keep.len() == 1 && keep[0].0 == 0.0 && keep[0].1 >= duration - 0.05 && keep[0].2 == 1 && crop.is_none() && spec.overlays.is_empty() && spec.audio.is_default();
         if unchanged {
             return Err(Error::config("沒有任何剪輯、裁切或標註"));
         }
@@ -187,9 +187,11 @@ impl Exporter {
             None => crate::paths::unique_path(&parent(source), &strip_mp4(&cut_file_name(&file_name(source))), ".mp4"),
         };
         let args = cut_args(source, &output.display().to_string(), &keep, crop, fps, &enc, info.has_audio == Some(true), &overlays, spec.audio)?;
+        let fast = keep.iter().filter(|p| p.2 > 1).count();
         let note = format!(
-            "保留 {} 段{}{}",
-            keep.len(),
+            "保留 {} 段{}{}{}",
+            keep.iter().filter(|p| p.2 == 1).count() + fast,
+            if fast > 0 { format!("，加速 {fast} 段") } else { String::new() },
             crop.map(|c| format!("，裁切 {}×{}", c.width, c.height)).unwrap_or_default(),
             if overlays.is_empty() { String::new() } else { format!("，標註 {} 個", overlays.len()) }
         );

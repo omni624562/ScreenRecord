@@ -24,6 +24,8 @@ const YELLOW: Color32 = Color32::from_rgb(0xf5, 0xb3, 0x01);
 /// 打的點（和錄影外框上的「・N 點」同色）
 const MARK: Color32 = Color32::from_rgb(0xff, 0x8a, 0x1f);
 const FLAG_H: f32 = 22.0;
+/// 加速的片段
+const FAST: Color32 = Color32::from_rgb(0x00, 0x78, 0xff);
 
 /// 時間軸縮圖：在背景依序解出時間軸上各個時間點的小圖（放大後只解顯示的範圍）；
 /// 一張一張出現；關閉、換影片或再次縮放時停止。
@@ -158,6 +160,19 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, toast: &mut
         painter.vline(r.left(), r.y_range(), Stroke::new(1.0, p.rec));
         painter.vline(r.right(), r.y_range(), Stroke::new(1.0, p.rec));
         restore_btns.push((pos2(r.center().x, rect.top() + 14.0), i, format!("還原這段（{} – {}）", video_clock(r0), video_clock(r1))));
+    }
+    // 加速的片段：藍色，中間寫倍率
+    for f in ed.spec.fast.iter().filter(|f| f.end() > a && f.start() < b) {
+        let r = full(f.start(), f.end());
+        painter.rect_filled(r, CornerRadius::ZERO, Color32::from_rgba_unmultiplied(0, 120, 255, 70));
+        painter.hline(r.x_range(), r.bottom() - 2.0, Stroke::new(3.0, FAST));
+        let label = format!("{}×", f.speed);
+        let g = painter.layout_no_wrap(label, theme::font_bold(12.0), Color32::WHITE);
+        if r.width() > g.size().x + 8.0 {
+            let c = pos2(r.center().x, rect.top() + 21.0);
+            painter.rect_filled(Rect::from_center_size(c, g.size() + vec2(8.0, 2.0)), CornerRadius::same(4), FAST);
+            painter.galley(c - g.size() / 2.0, g, Color32::WHITE);
+        }
     }
     if let Some((s0, s1)) = ed.sel {
         let r = Rect::from_min_max(pos2(x_of(s0), rect.top()), pos2(x_of(s1).max(x_of(s0) + 1.0), rect.bottom()));

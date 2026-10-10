@@ -5,8 +5,9 @@ use super::{ann_color, parse_time, Editor, Tab, Tool};
 use crate::ui::theme::{self, segmented, switch, Btn};
 use eframe::egui::{self, pos2, vec2, Align, Align2, Color32, CornerRadius, CursorIcon, Id, Layout, RichText, Sense, Stroke};
 use screenrecorder_core::annotate::{self, AnnKind, Shape, COLORS};
-use screenrecorder_core::edit::{normalize_ranges, CropInput};
+use screenrecorder_core::edit::{normalize_ranges, set_fast, CropInput, FAST_SPEEDS};
 use screenrecorder_core::format::video_clock;
+use screenrecorder_core::idle;
 
 pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, toast: &mut Option<(String, bool)>) {
     tabs(ed, ui);
@@ -89,6 +90,22 @@ fn time_panel(ed: &mut Editor, ui: &mut egui::Ui, toast: &mut Option<(String, bo
                     ed.sel = None;
                 }
             });
+            // 局部加速：等待、重複的操作快轉帶過
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 4.0;
+                ui.label(theme::muted(ui, "這段加速").font(theme::font(12.0)));
+                for s in FAST_SPEEDS {
+                    if Btn::new(format!("{s}×")).small().tooltip(format!("這段以 {s} 倍速播放（沒有聲音）")).show(ui).clicked() {
+                        set_fast(&mut ed.spec.fast, a, b, s);
+                        ed.sel = None;
+                    }
+                }
+                let overlaps = ed.spec.fast.iter().any(|f| f.start() < b && f.end() > a);
+                if overlaps && Btn::new("原速").ghost().small().tooltip("這段恢復原本的速度").show(ui).clicked() {
+                    set_fast(&mut ed.spec.fast, a, b, 1);
+                    ed.sel = None;
+                }
+            });
         });
     }
     let removed = normalize_ranges(&ed.spec.removed, ed.duration);
@@ -116,7 +133,42 @@ fn time_panel(ed: &mut Editor, ui: &mut egui::Ui, toast: &mut Option<(String, bo
             ed.restore_removed(i);
         }
     }
-    hint(ui, "在時間軸上拖過一段即可選取，按「刪除這段」或 Delete 鍵刪除。");
+    // 加速的片段
+    if !ed.spec.fast.is_empty() {
+        let mut remove = None;
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
+            for (i, f) in ed.spec.fast.iter().enumerate() {
+                let g = ui.painter().layout_no_wrap(format!("{}× {} – {}", f.speed, video_clock(f.start()), video_clock(f.end())), theme::mono(12.0), p.accent);
+                let (r, _) = ui.allocate_exact_size(vec2(g.size().x + 10.0 + 24.0, 24.0), Sense::hover());
+                ui.painter().rect_filled(r, CornerRadius::same(12), p.accent.gamma_multiply(0.14));
+                ui.painter().galley(pos2(r.left() + 10.0, r.center().y - g.size().y / 2.0), g, p.accent);
+                let x = egui::Rect::from_center_size(pos2(r.right() - 13.0, r.center().y), vec2(20.0, 20.0));
+                let xr = ui.interact(x, Id::new(("ed-fast", i)), Sense::click()).on_hover_text("恢復原速").on_hover_cursor(CursorIcon::PointingHand);
+                if xr.hovered() {
+                    ui.painter().circle_filled(x.center(), 10.0, p.accent.gamma_multiply(0.2));
+                }
+                ui.painter().text(x.center(), Align2::CENTER_CENTER, "×", theme::font(14.0), p.accent);
+                if xr.clicked() {
+                    remove = Some(i);
+                }
+            }
+        });
+        if let Some(i) = remove {
+            ed.spec.fast.remove(i);
+        }
+    }
+    hint(ui, "在時間軸上拖過一段即可選取，按「刪除這段」或 Delete 鍵刪除，或讓這段加速。");
+    // 自動找出畫面不動又沒聲音的片段
+    let busy = ed.finding_idle;
+    let tip = if ed.entry.media.has_audio == Some(true) {
+        format!("分析整支影片，找出畫面不動、也沒有聲音超過 {} 秒的地方，直接刪掉（可按 Ctrl+Z 復原）", idle::MIN_IDLE)
+    } else {
+        format!("分析整支影片，找出畫面不動超過 {} 秒的地方，直接刪掉（可按 Ctrl+Z 復原）", idle::MIN_IDLE)
+    };
+    if Btn::new(if busy { "正在分析…" } else { "自動剪掉沒動靜的片段" }).small().enabled(!busy && ed.duration > 0.0).tooltip(tip).show(ui).clicked() {
+        ed.pending = Some(super::shot::Act::FindIdle);
+    }
     audio_panel(ed, ui);
 }
 
@@ -277,6 +329,15 @@ fn ann_panel(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context) {
     };
     if !hint_text.is_empty() {
         hint(ui, &hint_text);
+    }
+    // 截圖：用文字辨識找出個資，自動打上馬賽克
+    if shot && can && ed.tool.is_none() && ed.selected().is_none() {
+        let busy = ed.finding_pii;
+        let label = if busy { "正在找個資…" } else { "自動遮個資" };
+        let resp = Btn::new(label).small().enabled(!busy).tooltip("用文字辨識找出圖裡的 Email、電話、身分證字號、信用卡號，自動打上馬賽克（可再個別調整或刪除）").show(ui);
+        if resp.clicked() {
+            ed.pending = Some(super::shot::Act::FindPii);
+        }
     }
     tool_style(ed, ui);
 
