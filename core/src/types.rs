@@ -301,7 +301,13 @@ impl Hotkeys {
     }
 }
 
-pub const HOTKEY_NAMES: [&str; HOTKEY_COUNT] = ["開始 / 停止錄影", "暫停 / 繼續", "截圖（固定範圍）", "框選截圖", "錄影中加標記", "螢幕畫筆（開 / 關）"];
+/// 每組快速鍵的名稱（依介面語言）
+pub fn hotkey_names() -> [&'static str; HOTKEY_COUNT] {
+    crate::tr!(
+        ["開始 / 停止錄影", "暫停 / 繼續", "截圖（固定範圍）", "框選截圖", "錄影中加標記", "螢幕畫筆（開 / 關）"],
+        ["Start / stop recording", "Pause / resume", "Screenshot (fixed area)", "Select area screenshot", "Add marker while recording", "Screen pen (on / off)"]
+    )
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]

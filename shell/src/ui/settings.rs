@@ -79,6 +79,8 @@ pub struct UiSettings {
     pub camera_pos: Option<[u16; 2]>,
     /// 介面大小（%）
     pub ui_scale: u32,
+    /// 介面語言："auto"（跟著 Windows）、"zh-TW"、"en"
+    pub language: String,
     /// 錄影時游標光暈
     pub cursor_halo: bool,
     /// 錄影時隱藏桌面圖示
@@ -172,6 +174,7 @@ impl UiSettings {
             seen_version: string("seenVersion").unwrap_or_default(),
             last_picture: string("lastPicture").unwrap_or_default(),
             ui_scale: num("uiScale").map(|v| v as u32).filter(|v| UI_SCALES.contains(v)).unwrap_or(100),
+            language: string("language").filter(|v| ["zh-TW", "en"].contains(&v.as_str())).unwrap_or_else(|| "auto".into()),
         };
         s.fix_monitor(env);
         s

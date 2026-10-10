@@ -6,7 +6,7 @@ use crate::format::{clock, video_clock};
 use crate::info;
 use crate::paths::now_ms;
 use crate::settings::SettingsPatch;
-use crate::types::{AudioConfig, HotkeyStatus, Hotkeys, MethodPreference, RecordConfig, RecorderState, SourceConfig, HOTKEY_NAMES};
+use crate::types::{AudioConfig, HotkeyStatus, Hotkeys, MethodPreference, RecordConfig, RecorderState, SourceConfig};
 use crate::version::APP_VERSION;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -597,7 +597,7 @@ fn report_hotkeys(app: &App, k: &Hotkeys, h: HotkeyStatus) {
     let ok = h.all();
     let busy: Vec<String> = (0..ok.len()).filter(|i| !ok[*i]).map(|i| k.label(i)).collect();
     if busy.is_empty() {
-        let list: Vec<String> = (0..ok.len()).filter(|i| !k.label(*i).is_empty()).map(|i| format!("{} {}", k.label(i), HOTKEY_NAMES[i])).collect();
+        let list: Vec<String> = (0..ok.len()).filter(|i| !k.label(*i).is_empty()).map(|i| format!("{} {}", k.label(i), crate::types::hotkey_names()[i])).collect();
         info!("快速鍵：{}", list.join("，"));
     } else {
         info!("快速鍵 {} 已被其他程式使用，無法登記", busy.join("、"));

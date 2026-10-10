@@ -947,7 +947,7 @@ fn rec_panel(app: &mut UiApp, ui: &mut Ui) {
             ui.label(RichText::new("快速鍵").font(theme::font_bold(12.5)).color(p.muted));
             egui::ScrollArea::vertical().max_height(log_h).auto_shrink([false, true]).show(ui, |ui| {
                 ui.spacing_mut().item_spacing.y = 5.0;
-                for (i, name) in screenrecorder_core::types::HOTKEY_NAMES.iter().enumerate() {
+                for (i, name) in screenrecorder_core::types::hotkey_names().iter().enumerate() {
                     let key = app.keys.label(i);
                     if key.is_empty() {
                         continue;

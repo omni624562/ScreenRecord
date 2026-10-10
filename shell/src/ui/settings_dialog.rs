@@ -7,7 +7,7 @@ use super::UiApp;
 use eframe::egui::{self, pos2, vec2, Align, Color32, CornerRadius, Id, Layout, Rect, RichText, Sense, Stroke, Ui, UiBuilder};
 use screenrecorder_core::actions;
 use screenrecorder_core::format::{human_duration, output_size};
-use screenrecorder_core::types::{EncoderPreference, Hotkey, Hotkeys, MethodPreference, CAMERA_SIZES, HOTKEY_NAMES};
+use screenrecorder_core::types::{EncoderPreference, Hotkey, Hotkeys, MethodPreference, CAMERA_SIZES};
 use std::time::Instant;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -571,6 +571,18 @@ fn save_page(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
 fn advanced_page(app: &mut UiApp, ui: &mut Ui) {
     let p = theme::pal(ui);
     form_section(ui, "介面", |_| {});
+    // 兩種語言都寫，選錯語言時也找得到
+    form_row(ui, "語言 Language", |ui| {
+        const CODES: [&str; 3] = ["auto", "zh-TW", "en"];
+        let mut sel = CODES.iter().position(|c| *c == app.s.language).unwrap_or(0);
+        let auto = format!("{}（{}）", screenrecorder_core::tr!("自動", "Auto"), screenrecorder_core::tr!("跟著 Windows", "follow Windows"));
+        let items = [(0usize, auto, true), (1, "繁體中文".into(), true), (2, "English".into(), true)];
+        if form_combo(ui, "language", FORM_CTRL_W, &mut sel, &items) {
+            app.s.language = CODES[sel].to_string();
+            app.apply_language();
+            app.save_settings();
+        }
+    });
     form_row(ui, "介面大小", |ui| {
         let mut z = app.s.ui_scale;
         let items: Vec<(u32, String)> = UI_SCALES.iter().map(|v| (*v, format!("{v}%"))).collect();
@@ -699,7 +711,7 @@ fn keys_page(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
     form_hint_full(ui, "程式在背景時也能用。點一下按鍵，再按下新的組合（要包含 Ctrl 或 Alt）。", p.muted);
     ui.add_space(6.0);
     for i in 0..ok.len() {
-        form_row(ui, HOTKEY_NAMES[i], |ui| {
+        form_row(ui, screenrecorder_core::types::hotkey_names()[i], |ui| {
             let capturing = d.key_capture == Some(i);
             let label = app.keys.label(i);
             let text = if capturing {
@@ -761,7 +773,7 @@ fn keys_page(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
         return;
     }
     if let Some(j) = app.keys.conflict(i, &k) {
-        d.key_msg = Some(format!("{} 已經用在「{}」", k.label(), HOTKEY_NAMES[j]));
+        d.key_msg = Some(format!("{} 已經用在「{}」", k.label(), screenrecorder_core::types::hotkey_names()[j]));
         return;
     }
     let mut next = app.keys;

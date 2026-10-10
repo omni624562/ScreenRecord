@@ -267,6 +267,14 @@ impl UiApp {
     // ───────────── 設定 ─────────────
 
     /// 設定改了：稍後存檔（連續變更只存一次）
+    /// 套用設定裡的介面語言：之後畫的介面、系統匣選單、通知都換成這個語言
+    pub fn apply_language(&mut self) {
+        let lang = screenrecorder_core::i18n::resolve(Some(self.s.language.as_str()));
+        screenrecorder_core::i18n::set_lang(lang);
+        self.ctx.send_viewport_cmd(egui::ViewportCommand::Title(screenrecorder_core::winui::app_title()));
+        self.ctx.request_repaint();
+    }
+
     pub fn save_settings(&mut self) {
         self.save_at = Some(Instant::now() + Duration::from_millis(300));
         // logic() 在 ui() 之前，這一格算下次醒來時還不知道要存檔

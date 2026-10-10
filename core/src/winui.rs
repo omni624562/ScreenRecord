@@ -4,7 +4,18 @@
 use crate::types::Rect;
 use serde::{Deserialize, Serialize};
 
-pub const TITLE_PREFIX: &str = "螢幕錄影 v";
+/// 操作視窗的標題開頭（兩種語言；切換語言後也認得出自己的視窗）
+pub const TITLE_PREFIXES: [&str; 2] = ["螢幕錄影 v", "Screen Recorder v"];
+
+/// 操作視窗的標題（依介面語言）
+pub fn app_title() -> String {
+    format!("{}{}", crate::tr!(TITLE_PREFIXES[0], TITLE_PREFIXES[1]), crate::version::APP_VERSION)
+}
+
+#[cfg(windows)]
+fn is_app_title(t: &str) -> bool {
+    TITLE_PREFIXES.iter().any(|p| t.starts_with(p))
+}
 
 /// 可以錄的視窗（「只錄這個視窗」）
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -28,8 +39,7 @@ mod imp {
     /// 先前縮小的視窗（HWND 以整數保存，才能跨執行緒）
     static MINIMIZED: Mutex<Vec<isize>> = Mutex::new(Vec::new());
 
-    struct Search<'a> {
-        prefix: &'a str,
+    struct Search {
         found: Vec<HWND>,
     }
 
@@ -39,7 +49,7 @@ mod imp {
             // InternalGetWindowText 不送 WM_GETTEXT：操作視窗就在本程式裡，不能等它的執行緒回應
             let mut buf = [0u16; 256];
             let n = InternalGetWindowText(hwnd, &mut buf);
-            if n > 0 && String::from_utf16_lossy(&buf[..n as usize]).starts_with(search.prefix) {
+            if n > 0 && super::is_app_title(&String::from_utf16_lossy(&buf[..n as usize])) {
                 search.found.push(hwnd);
             }
         }
@@ -47,8 +57,8 @@ mod imp {
     }
 
     /// 目前看得到、而且沒有縮小的操作視窗
-    fn find_ui_windows(prefix: &str) -> Vec<HWND> {
-        let mut search = Search { prefix, found: Vec::new() };
+    fn find_ui_windows() -> Vec<HWND> {
+        let mut search = Search { found: Vec::new() };
         unsafe {
             let _ = EnumWindows(Some(visit), LPARAM(&mut search as *mut Search as isize));
         }
@@ -143,8 +153,8 @@ mod imp {
     }
 
     /// 與 area 重疊的操作視窗（拿不到位置的視窗算重疊，寧可多縮也不要錄到它）
-    fn windows_in(area: Option<&Rect>, prefix: &str) -> Vec<HWND> {
-        find_ui_windows(prefix)
+    fn windows_in(area: Option<&Rect>) -> Vec<HWND> {
+        find_ui_windows()
             .into_iter()
             .filter(|h| match area {
                 None => true,
@@ -153,15 +163,15 @@ mod imp {
             .collect()
     }
 
-    pub fn ui_in_area(area: &Rect, prefix: &str) -> bool {
-        !windows_in(Some(area), prefix).is_empty()
+    pub fn ui_in_area(area: &Rect) -> bool {
+        !windows_in(Some(area)).is_empty()
     }
 
     /// 錄影開始時縮小的視窗（和截圖分開記：錄影中截圖收尾時不會把操作視窗叫回來，停止錄影時也不會漏還原）
     static REC_MINIMIZED: Mutex<Vec<isize>> = Mutex::new(Vec::new());
 
-    pub fn minimize_ui(area: Option<&Rect>, prefix: &str, recording: bool) -> bool {
-        let list = windows_in(area, prefix);
+    pub fn minimize_ui(area: Option<&Rect>, recording: bool) -> bool {
+        let list = windows_in(area);
         for h in &list {
             unsafe {
                 let _ = ShowWindow(*h, SW_MINIMIZE);
@@ -229,7 +239,7 @@ mod imp {
 /// 是否有看得到的操作視窗在 area 內（倒數時決定要不要蓋上全畫面倒數）；無法判斷時回傳 true
 pub fn ui_in_area(area: &Rect) -> bool {
     #[cfg(windows)]
-    return imp::ui_in_area(area, TITLE_PREFIX);
+    return imp::ui_in_area(area);
     #[cfg(not(windows))]
     {
         let _ = area;
@@ -241,7 +251,7 @@ pub fn ui_in_area(area: &Rect) -> bool {
 /// 指定 area 時只縮小與它重疊的視窗（拿不到位置的視窗一律縮小，寧可多縮也不要錄到它）。
 pub fn minimize_ui(area: Option<&Rect>) -> bool {
     #[cfg(windows)]
-    return imp::minimize_ui(area, TITLE_PREFIX, false);
+    return imp::minimize_ui(area, false);
     #[cfg(not(windows))]
     {
         let _ = area;
@@ -252,7 +262,7 @@ pub fn minimize_ui(area: Option<&Rect>) -> bool {
 /// 開始錄影時縮小擋到範圍的操作視窗（停止後用 restore_ui_after_recording 還原）
 pub fn minimize_ui_for_recording(area: &Rect) -> bool {
     #[cfg(windows)]
-    return imp::minimize_ui(Some(area), TITLE_PREFIX, true);
+    return imp::minimize_ui(Some(area), true);
     #[cfg(not(windows))]
     {
         let _ = area;
@@ -277,7 +287,7 @@ pub fn visible_windows() -> Vec<Rect> {
 /// 可以錄的視窗（看得到、有標題），由上層到下層；不含本程式的操作視窗
 pub fn app_windows() -> Vec<WindowInfo> {
     #[cfg(windows)]
-    return imp::app_windows().into_iter().filter(|w| !w.title.starts_with(TITLE_PREFIX) && w.rect.width >= 80 && w.rect.height >= 40).collect();
+    return imp::app_windows().into_iter().filter(|w| !is_app_title(&w.title) && w.rect.width >= 80 && w.rect.height >= 40).collect();
     #[cfg(not(windows))]
     Vec::new()
 }

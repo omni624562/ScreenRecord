@@ -25,16 +25,42 @@ pub struct Model {
     pub url: &'static str,
     /// 大約幾 MB
     pub mb: u32,
-    pub label: &'static str,
+    /// 說明（中文、英文）
+    pub labels: [&'static str; 2],
+}
+
+impl Model {
+    /// 說明（依介面語言）
+    pub fn label(&self) -> &'static str {
+        crate::tr!(self.labels[0], self.labels[1])
+    }
 }
 
 pub const MODELS: [Model; 2] = [
-    Model { id: "base", file: "ggml-base.bin", url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin", mb: 148, label: "標準（約 150 MB，較快）" },
-    Model { id: "small", file: "ggml-small.bin", url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin", mb: 488, label: "精準（約 490 MB，較慢）" },
+    Model {
+        id: "base",
+        file: "ggml-base.bin",
+        url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin",
+        mb: 148,
+        labels: ["標準（約 150 MB，較快）", "Standard (about 150 MB, faster)"],
+    },
+    Model {
+        id: "small",
+        file: "ggml-small.bin",
+        url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin",
+        mb: 488,
+        labels: ["精準（約 490 MB，較慢）", "Accurate (about 490 MB, slower)"],
+    },
 ];
 
-/// 辨識的語言
-pub const LANGUAGES: [(&str, &str); 3] = [("zh", "中文"), ("en", "英文"), ("auto", "自動偵測")];
+/// 辨識的語言：(代碼, 中文名稱, 英文名稱)
+pub const LANGUAGES: [(&str, &str, &str); 3] = [("zh", "中文", "Chinese"), ("en", "英文", "English"), ("auto", "自動偵測", "Detect automatically")];
+
+/// 辨識語言的名稱（依介面語言）
+pub fn language_name(i: usize) -> &'static str {
+    let l = LANGUAGES[i.min(LANGUAGES.len() - 1)];
+    crate::tr!(l.1, l.2)
+}
 
 pub fn model_dir() -> PathBuf {
     crate::paths::data_dir().join("whisper")

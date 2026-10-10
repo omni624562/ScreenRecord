@@ -62,7 +62,7 @@ pub fn panel(ed: &mut Editor, ui: &mut egui::Ui) {
             ui.set_min_width(260.0);
             ui.spacing_mut().item_spacing = vec2(8.0, 8.0);
             ui.label(theme::muted(ui, "說的語言").font(theme::font(12.0)));
-            let items: Vec<(usize, &str)> = LANGUAGES.iter().enumerate().map(|(i, l)| (i, l.1)).collect();
+            let items: Vec<(usize, &str)> = LANGUAGES.iter().enumerate().map(|(i, _)| (i, subtitles::language_name(i))).collect();
             segmented(ui, &mut ed.subs_lang, &items, true);
             ui.label(theme::muted(ui, "辨識的品質").font(theme::font(12.0)));
             let items: Vec<(usize, &str)> = MODELS.iter().enumerate().map(|(i, m)| (i, if m.id == "base" { "標準（較快）" } else { "精準（較慢）" })).collect();
@@ -138,7 +138,7 @@ pub fn run(app: &mut UiApp, ed: &mut Editor, act: Act) {
                 let msg = format!(
                     "第一次使用要下載約 {} MB 的語音模型（{}），存在「{}」，之後就不用再下載。\n\n辨識在這台電腦上進行，影片不會上傳。",
                     m.mb,
-                    m.label,
+                    m.label(),
                     subtitles::model_dir().display()
                 );
                 app.ask = Some(Ask::confirm("下載語音模型", msg, "下載並開始", |app, _| {

@@ -96,6 +96,9 @@ fn main() {
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().expect("無法建立執行環境");
     let _enter = rt.enter();
     let core = App::new();
+    // 介面語言：設定裡選的，或跟著 Windows 的顯示語言
+    let lang_setting = core.settings.load().ui.and_then(|u| u.get("language").and_then(|v| v.as_str()).map(str::to_string));
+    screenrecorder_core::i18n::set_lang(screenrecorder_core::i18n::resolve(lang_setting.as_deref()));
     let open_requests = ui::OpenRequests::default();
     static CTX: OnceLock<egui::Context> = OnceLock::new();
 
@@ -230,7 +233,7 @@ fn main() {
     let icon = screenrecorder_core::icon::render_icon(64, screenrecorder_core::icon::IconState::Idle);
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title(format!("螢幕錄影 v{APP_VERSION}"))
+            .with_title(screenrecorder_core::winui::app_title())
             .with_inner_size([1280.0, 900.0])
             .with_min_inner_size([1024.0, 640.0])
             .with_visible(visible)

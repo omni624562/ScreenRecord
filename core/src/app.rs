@@ -336,7 +336,7 @@ impl App {
         self.settings.save(crate::settings::SettingsPatch { hotkeys: Some(k), ..Default::default() });
         let st = self.apply_hotkeys(&k);
         let names: Vec<String> =
-            (0..crate::types::HOTKEY_COUNT).map(|i| format!("{} {}", crate::types::HOTKEY_NAMES[i], if k.label(i).is_empty() { "停用".to_string() } else { k.label(i) })).collect();
+            (0..crate::types::HOTKEY_COUNT).map(|i| format!("{} {}", crate::types::hotkey_names()[i], if k.label(i).is_empty() { "停用".to_string() } else { k.label(i) })).collect();
         crate::info!("快速鍵改為：{}", names.join("、"));
         st
     }

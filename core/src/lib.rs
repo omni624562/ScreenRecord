@@ -27,6 +27,7 @@ pub mod filepick;
 pub mod fonts;
 pub mod format;
 pub mod http;
+pub mod i18n;
 pub mod icon;
 pub mod idle;
 pub mod input_overlay;
