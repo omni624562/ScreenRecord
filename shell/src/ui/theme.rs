@@ -217,6 +217,10 @@ pub enum Icon {
     Camera,
     Eye,
     More,
+    /// 視窗（有標題列的方框）
+    Window,
+    /// 向下的箭頭（下拉選單）
+    ChevD,
 }
 
 /// 在 rect（正方形）裡畫圖示
@@ -271,6 +275,7 @@ pub fn paint_icon(p: &Painter, rect: Rect, icon: Icon, color: Color32) {
         }
         Icon::ChevL => line(&[(10.0, 3.0), (5.0, 8.0), (10.0, 13.0)]),
         Icon::ChevR => line(&[(6.0, 3.0), (11.0, 8.0), (6.0, 13.0)]),
+        Icon::ChevD => line(&[(4.0, 6.0), (8.0, 10.0), (12.0, 6.0)]),
         Icon::List => {
             for y in [4.0, 8.0, 12.0] {
                 line(&[(5.5, y), (13.5, y)]);
@@ -302,6 +307,10 @@ pub fn paint_icon(p: &Painter, rect: Rect, icon: Icon, color: Color32) {
             p.rect_stroke(Rect::from_min_max(at(2.0, 5.0), at(14.0, 13.5)), CornerRadius::same((2.0 * k) as u8), st, StrokeKind::Middle);
             line(&[(5.5, 5.0), (6.5, 3.0), (9.5, 3.0), (10.5, 5.0)]);
             circle(8.0, 9.2, 2.4);
+        }
+        Icon::Window => {
+            p.rect_stroke(Rect::from_min_max(at(2.0, 3.0), at(14.0, 13.0)), CornerRadius::same((1.5 * k) as u8), st, StrokeKind::Middle);
+            line(&[(2.0, 6.0), (14.0, 6.0)]);
         }
         Icon::More => {
             for x in [3.5, 8.0, 12.5] {

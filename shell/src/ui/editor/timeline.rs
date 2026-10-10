@@ -18,6 +18,17 @@ use std::time::{Duration, Instant};
 pub const TL_H: f32 = 64.0;
 /// 標註軌固定高度（不隨標註數量變高，影片才不會在放置標註時跳動）；列多時每列變矮
 pub const AT_H: f32 = 70.0;
+/// 還沒有標註、也不在「標註」分頁時，標註軌縮成一條，影片可以大一點
+pub const AT_H_EMPTY: f32 = 26.0;
+
+/// 標註軌的高度（切到「標註」分頁時就先變高，放標註時影片不會跳動）
+pub fn ann_track_h(ed: &Editor) -> f32 {
+    if ed.anns.is_empty() && ed.tab != Tab::Ann {
+        AT_H_EMPTY
+    } else {
+        AT_H
+    }
+}
 pub const SCROLL_H: f32 = 10.0;
 
 const YELLOW: Color32 = Color32::from_rgb(0xf5, 0xb3, 0x01);
@@ -377,7 +388,7 @@ fn wheel(ed: &mut Editor, ui: &egui::Ui, resp: &egui::Response, rect: Rect) {
 fn ann_track(ed: &mut Editor, ui: &mut egui::Ui) {
     let p = theme::pal(ui);
     let w = ui.available_width();
-    let (rect, resp) = ui.allocate_exact_size(vec2(w, AT_H), Sense::click_and_drag());
+    let (rect, resp) = ui.allocate_exact_size(vec2(w, ann_track_h(ed)), Sense::click_and_drag());
     let (a, b) = ed.view;
     let span = (b - a).max(1e-9);
     let x_of = |t: f64| rect.left() + ((t - a) / span) as f32 * rect.width();
@@ -387,7 +398,12 @@ fn ann_track(ed: &mut Editor, ui: &mut egui::Ui) {
     painter.rect_filled(rect, CornerRadius::same(6), p.surface2);
     wheel(ed, ui, &resp, rect);
     if ed.anns.is_empty() {
-        painter.text(rect.center(), Align2::CENTER_CENTER, "標註軌：加上的標註會在這裡顯示一條，拖曳可調整出現的時間", theme::font(12.0), p.muted);
+        let hint = if rect.height() < AT_H {
+            "標註軌：在右邊「標註」分頁加上文字、箭頭、馬賽克…，會在這裡顯示"
+        } else {
+            "標註軌：加上的標註會在這裡顯示一條，拖曳可調整出現的時間"
+        };
+        painter.text(rect.center(), Align2::CENTER_CENTER, hint, theme::font(12.0), p.muted);
         if resp.clicked() {
             if let Some(pos) = resp.interact_pointer_pos() {
                 ed.seek(time_at(pos.x));

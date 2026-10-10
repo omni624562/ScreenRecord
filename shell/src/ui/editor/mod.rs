@@ -1277,7 +1277,7 @@ fn main_column(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, toast: &
         let h = (ui.available_height() - 8.0).max(140.0);
         return stage::show(ed, ui, ctx, h);
     }
-    let below = timeline::TL_H + 4.0 + timeline::AT_H + 4.0 + timeline::SCROLL_H + 8.0 + 20.0 + 8.0 + 34.0 + 8.0;
+    let below = timeline::TL_H + 4.0 + timeline::ann_track_h(ed) + 4.0 + timeline::SCROLL_H + 8.0 + 20.0 + 8.0 + 34.0 + 8.0;
     let stage_h = (ui.available_height() - below - 8.0).max(140.0);
     stage::show(ed, ui, ctx, stage_h);
     timeline::show(ed, ui, ctx, toast);
@@ -1312,7 +1312,11 @@ fn transport(ed: &mut Editor, ui: &mut egui::Ui) {
             ed.step(None, 1.0);
         }
         ui.add_space(6.0);
-        if Btn::new("擷取這一格").icon(theme::Icon::Camera).ghost().small().tooltip("把目前這一格存成截圖（原尺寸 PNG），並複製到剪貼簿").show(ui).clicked() {
+        // 右邊留給時間；放不下文字時只顯示圖示
+        let clock_w = ui.painter().layout_no_wrap("00:00.0 / 00:00.0".into(), theme::mono(14.0), Color32::WHITE).size().x + 12.0;
+        let full = Btn::new("擷取這一格").icon(theme::Icon::Camera).ghost().small();
+        let grab = if ui.available_width() >= full.width(ui) + clock_w { full } else { Btn::icon_only(theme::Icon::Camera).ghost().small() };
+        if grab.tooltip("擷取這一格：把目前這一格存成截圖（原尺寸 PNG），並複製到剪貼簿").show(ui).clicked() {
             ed.pending = Some(shot::Act::Grab);
         }
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {

@@ -103,6 +103,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
     let modal = egui::Modal::new(Id::new("export")).frame(theme::modal_frame(ctx).inner_margin(0)).show(ctx, |ui| {
         ui.set_width(600.0);
         ui.spacing_mut().item_spacing = vec2(8.0, 8.0);
+        let compact = ctx.content_rect().height() < 700.0;
         let p = theme::pal(ui);
         let s = &mut app.s;
         let gif = s.export_format == ExportFormat::Gif;
@@ -148,7 +149,8 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         // ── 設定 ──
         let body_top = ui.cursor().min.y;
         egui::Frame::new().inner_margin(egui::Margin { left: PAD, right: PAD, top: 8, bottom: 4 }).show(ui, |ui| {
-            ui.spacing_mut().item_spacing.y = 10.0;
+            // 視窗矮（1024×640 等）時列距縮小，整個對話框才放得下
+            ui.spacing_mut().item_spacing.y = if compact { 4.0 } else { 10.0 };
             row(ui, "格式", |ui| {
                 let mut f = s.export_format;
                 if segmented(ui, &mut f, &[(ExportFormat::Mp4, "MP4 影片"), (ExportFormat::Gif, "GIF 動畫")], true) {

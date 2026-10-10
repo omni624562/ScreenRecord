@@ -181,7 +181,7 @@ fn capture_panel(app: &mut UiApp, ui: &mut Ui) {
                 app.save_settings();
             }
             // 右邊留給「即時預覽」與重新整理
-            let room = ui.available_width() - if narrow { 80.0 } else { 150.0 };
+            let room = ui.available_width() - if narrow { 92.0 } else { 150.0 };
             ui.scope(|ui| {
                 ui.set_max_width(room.max(0.0));
                 source_detail(app, ui, room);
@@ -312,7 +312,10 @@ fn window_picker(app: &mut UiApp, ui: &mut Ui, locked: bool) {
         }
         return;
     }
-    let b = Btn::new("選擇視窗").small().enabled(!locked).tooltip("只錄某個視窗：範圍設成那個視窗的位置，錄影時跟著它移動").show(ui);
+    let tip = "只錄某個視窗：範圍設成那個視窗的位置，錄影時跟著它移動";
+    // 放不下文字時只顯示圖示
+    let full = Btn::new("選擇視窗").small().width(ui);
+    let b = if ui.available_width() >= full { Btn::new("選擇視窗").small() } else { Btn::icon_only(Icon::Window).ghost().small() }.enabled(!locked).tooltip(tip).show(ui);
     if b.clicked() {
         app.main.windows = screenrecorder_core::winui::app_windows();
     }
@@ -758,7 +761,7 @@ fn rec_panel(app: &mut UiApp, ui: &mut Ui) {
             if !active {
                 let can = app.env.ffmpeg.found && app.env.ffmpeg.encoder.is_some() && !app.exporting();
                 let tip = if app.exporting() { "轉檔進行中，完成後才能錄影" } else { "" };
-                let shot_w = 92.0;
+                let shot_w = 118.0;
                 if Btn::new("開始錄影").kind(theme::Kind::Record).enabled(can).tooltip(tip).min_width(ui.available_width() - shot_w - ui.spacing().item_spacing.x).show(ui).clicked() {
                     let config = app.s.record_config(&app.env);
                     let core = app.core.clone();
@@ -890,33 +893,44 @@ fn rec_panel(app: &mut UiApp, ui: &mut Ui) {
 /// 截圖：與錄影相同的範圍，存成 PNG 並複製到剪貼簿（完成後由狀態更新顯示提示、更新清單）
 fn shot_button(app: &mut UiApp, ui: &mut Ui, w: f32) {
     let hotkey = if app.env.hotkeys.is_some_and(|h| h.shot) && !app.keys.label(2).is_empty() { format!("（{}）", app.keys.label(2)) } else { String::new() };
-    let tip = format!("截取目前的擷取範圍，存成 PNG 並複製到剪貼簿{hotkey}\n右鍵：框選範圍或視窗、延遲截圖、長截圖");
+    let tip = format!("截取目前的擷取範圍，存成 PNG 並複製到剪貼簿{hotkey}\n旁邊的 ▾（或按右鍵）：框選、延遲截圖、長截圖、步驟截圖");
     let can = app.env.ffmpeg.found && !app.main.shooting;
-    let resp = Btn::new("截圖").icon(Icon::Camera).enabled(can).tooltip(tip).min_width(w).height(40.0).show(ui);
-    // 右鍵選單：在螢幕上框選，或等幾秒再框選（先打開要截的選單）
+    let arrow_w = 26.0;
+    let (resp, arrow) = ui
+        .scope(|ui| {
+            ui.spacing_mut().item_spacing.x = 2.0;
+            let resp = Btn::new("截圖").icon(Icon::Camera).enabled(can).tooltip(tip).min_width(w - arrow_w - 2.0).height(40.0).show(ui);
+            let arrow = Btn::icon_only(Icon::ChevD).enabled(can).tooltip("更多截圖方式：框選範圍或視窗、延遲截圖、長截圖、步驟截圖").min_width(arrow_w).height(40.0).show(ui);
+            (resp, arrow)
+        })
+        .inner;
+    // 選單（▾ 或按右鍵）：在螢幕上框選、等幾秒再框選（先打開要截的選單）、長截圖、步驟截圖
     let mut snip: Option<u64> = None;
     let mut long = false;
     let mut steps = false;
-    egui::Popup::context_menu(&resp).show(|ui| {
-        ui.set_min_width(170.0);
+    let steps_on = app.status.steps.is_some();
+    let menu = |ui: &mut Ui, snip: &mut Option<u64>, long: &mut bool, steps: &mut bool| {
+        ui.set_min_width(190.0);
         if ui.button("框選範圍或視窗…").clicked() {
-            snip = Some(0);
+            *snip = Some(0);
         }
         ui.separator();
         for sec in [3u64, 5, 10] {
             if ui.button(format!("{sec} 秒後框選")).clicked() {
-                snip = Some(sec);
+                *snip = Some(sec);
             }
         }
         ui.separator();
         if ui.button("長截圖（捲動）…").on_hover_text("框選要捲動的內容（例如網頁），自動往下捲並接成一張長圖；按 Esc 停止").clicked() {
-            long = true;
+            *long = true;
         }
-        if app.status.steps.is_none() && ui.button("步驟截圖（做成教學文件）").on_hover_text("開始後每點一下滑鼠就截一張，標出點的位置；完成時做成一份圖文並茂的教學文件").clicked()
+        if !steps_on && ui.button("步驟截圖（做成教學文件）").on_hover_text("開始後每點一下滑鼠就截一張，標出點的位置；完成時做成一份圖文並茂的教學文件").clicked()
         {
-            steps = true;
+            *steps = true;
         }
-    });
+    };
+    egui::Popup::context_menu(&resp).show(|ui| menu(ui, &mut snip, &mut long, &mut steps));
+    egui::Popup::menu(&arrow).show(|ui| menu(ui, &mut snip, &mut long, &mut steps));
     if steps {
         let dir = app.s.record_config(&app.env).output_dir;
         match app.core.steps_start(&dir) {
