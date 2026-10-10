@@ -324,6 +324,9 @@ impl App {
 
     /// 介面的即時狀態
     pub fn status(&self) -> Status {
+        // 先取出、放開鎖再組合：結構裡的暫時鎖會留到整個運算式結束，
+        // 而 steps_count 在 Windows 上也要鎖同一把，寫在一起會卡死（主視窗打不開）
+        let shot = self.lock().shot.clone();
         Status {
             recorder: self.recorder.status(),
             export: self.exporter.status(),
@@ -331,7 +334,7 @@ impl App {
             settings_rev: self.settings.load().rev,
             update: self.update().map(|u| u.version),
             install: Some(self.installer.status()).filter(|s| s.phase != crate::selfupdate::InstallPhase::Idle),
-            shot: self.lock().shot.clone(),
+            shot,
             steps: self.steps_count(),
         }
     }
@@ -1492,6 +1495,19 @@ mod tests {
         app.mark_ready();
         tokio::time::timeout(Duration::from_secs(2), waiting).await.unwrap().unwrap();
         app.wait_ready().await; // 已完成：立即返回
+    }
+
+    /// 介面一開始就讀狀態：任何一個欄位都不能在持有鎖時再鎖一次（Windows 的步驟截圖曾經這樣卡死）
+    #[test]
+    fn status_does_not_deadlock() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = App::with_data_dir(dir.path().to_path_buf());
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let st = app.status();
+            let _ = tx.send(st.steps);
+        });
+        assert_eq!(rx.recv_timeout(Duration::from_secs(10)).expect("status() 卡住了"), None);
     }
 
     #[test]
