@@ -115,7 +115,8 @@ pub fn setup_fonts(ctx: &egui::Context) {
             .enumerate()
             .map(|(i, f)| {
                 let name = format!("{prefix}{i}-{}", f.name);
-                let mut fd = FontData::from_owned((*f.data).clone());
+                // 直接用對映的字型檔，不複製一份到記憶體
+                let mut fd = FontData::from_static(f.data);
                 fd.index = f.index;
                 defs.font_data.insert(name.clone(), Arc::new(fd));
                 name
@@ -128,7 +129,7 @@ pub fn setup_fonts(ctx: &egui::Context) {
         .iter()
         .find_map(|n| {
             let win = std::env::var("WINDIR").unwrap_or_else(|_| "C:\\Windows".into());
-            std::fs::read(std::path::Path::new(&win).join("Fonts").join(n)).ok().map(|d| screenrecorder_core::fonts::FontFile { name: n.to_string(), data: Arc::new(d), index: 0 })
+            screenrecorder_core::fonts::map_file(&std::path::Path::new(&win).join("Fonts").join(n)).map(|data| screenrecorder_core::fonts::FontFile { name: n.to_string(), data, index: 0 })
         })
         .into_iter()
         .collect();

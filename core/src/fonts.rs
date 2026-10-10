@@ -6,20 +6,41 @@
 //! 在 Linux 上（開發、測試）改用文泉驛正黑與 Noto Color Emoji。
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Mutex, OnceLock};
 
 /// 一個字型檔（.ttc 時以 index 指定其中一個字型）
 #[derive(Clone)]
 pub struct FontFile {
     pub name: String,
-    pub data: Arc<Vec<u8>>,
+    /// 字型檔的內容（記憶體對映，見 map_file）
+    pub data: &'static [u8],
     pub index: u32,
 }
 
 impl FontFile {
-    pub fn face(&self) -> Option<ttf_parser::Face<'_>> {
-        ttf_parser::Face::parse(&self.data, self.index).ok()
+    pub fn face(&self) -> Option<ttf_parser::Face<'static>> {
+        ttf_parser::Face::parse(self.data, self.index).ok()
     }
+}
+
+/// 把字型檔對映到記憶體（整個程式期間都要用，所以不放掉）。
+/// 中文字型一個檔約 20 MB：讀進記憶體要佔滿 20 MB；對映只有實際用到的字形才會載入，
+/// 而且和其他也在用這個系統字型的程式共用。同一個檔案只對映一次（介面、標註、粗體備援共用）
+pub fn map_file(path: &Path) -> Option<&'static [u8]> {
+    static MAPS: Mutex<Vec<(PathBuf, &'static [u8])>> = Mutex::new(Vec::new());
+    let mut maps = MAPS.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((_, d)) = maps.iter().find(|(p, _)| p == path) {
+        return Some(d);
+    }
+    let file = std::fs::File::open(path).ok()?;
+    // 系統字型在執行中不會被改寫（Windows 上對映中的檔案也不能被截短）
+    let data: &'static [u8] = match unsafe { memmap2::Mmap::map(&file) } {
+        Ok(m) => Box::leak(Box::new(m)),
+        // 對映不了（例如網路磁碟）：讀進記憶體
+        Err(_) => Box::leak(std::fs::read(path).ok()?.into_boxed_slice()),
+    };
+    maps.push((path.to_path_buf(), data));
+    Some(data)
 }
 
 /// 標註文字用的字型（依序找字）
@@ -40,9 +61,9 @@ fn load(candidates: &[(&str, u32)]) -> Option<FontFile> {
     let win = windows_fonts();
     candidates.iter().find_map(|(name, index)| {
         let path = if name.starts_with('/') { PathBuf::from(name) } else { win.join(name) };
-        let data = std::fs::read(&path).ok()?;
-        ttf_parser::Face::parse(&data, *index).ok()?;
-        Some(FontFile { name: path.file_name()?.to_string_lossy().into_owned(), data: Arc::new(data), index: *index })
+        let data = map_file(&path)?;
+        ttf_parser::Face::parse(data, *index).ok()?;
+        Some(FontFile { name: path.file_name()?.to_string_lossy().into_owned(), data, index: *index })
     })
 }
 

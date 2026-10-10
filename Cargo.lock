@@ -2461,6 +2461,7 @@ dependencies = [
  "arboard",
  "chrono",
  "image",
+ "memmap2",
  "native-tls",
  "png",
  "qrcode",

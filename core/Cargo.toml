@@ -17,6 +17,8 @@ sha2 = "0.10"
 tiny-skia = "0.12"
 # 長截圖一列一列寫成 PNG（不用先接成一整塊）；image 與 tiny-skia 已經在用同一版
 png = "0.18"
+# 字型檔用記憶體對映：不整份讀進記憶體，只有用到的字形才載入，也和其他程式共用（已經在相依套件裡）
+memmap2 = "0.9"
 ttf-parser = "0.25"
 # 截圖複製到剪貼簿
 arboard = { version = "3.6", default-features = false, features = ["image-data"] }
