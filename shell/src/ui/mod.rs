@@ -10,6 +10,7 @@ pub mod library_dialog;
 pub mod main_view;
 pub mod preview;
 pub mod settings;
+pub mod settings_dialog;
 pub mod snip;
 pub mod theme;
 pub mod thumbs;
@@ -96,6 +97,7 @@ pub struct UiApp {
     pub export_dlg: Option<export_dialog::ExportDialog>,
     pub library: Option<library_dialog::LibraryDialog>,
     pub viewer: Option<viewer::Viewer>,
+    pub settings_dlg: Option<settings_dialog::SettingsDialog>,
     /// 在螢幕上框選截圖
     pub snip: Option<snip::Snip>,
     /// 目前設定的全域快捷鍵（顯示用）
@@ -159,6 +161,7 @@ impl UiApp {
             export_dlg: None,
             library: None,
             viewer: None,
+            settings_dlg: None,
             snip: None,
             keys: saved.hotkeys.unwrap_or_default(),
             editor: None,
@@ -473,7 +476,7 @@ impl UiApp {
             if let Some(v) = &mut self.viewer {
                 v.pause();
             }
-            main_view::cancel_key_capture(self);
+            settings_dialog::cancel_key_capture(self);
         } else {
             // 沒有系統匣：關掉視窗就結束程式
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
@@ -516,7 +519,6 @@ impl eframe::App for UiApp {
             part(self, "框選截圖");
         }
         main_view::show(self, ui);
-        main_view::check_key_capture(self, &ctx);
         part(self, "主畫面");
         if self.export_dlg.is_some() {
             export_dialog::show(self, &ctx);
@@ -529,6 +531,10 @@ impl eframe::App for UiApp {
         if self.viewer.is_some() {
             viewer::show(self, &ctx);
             part(self, "檢視器");
+        }
+        if self.settings_dlg.is_some() {
+            settings_dialog::show(self, &ctx);
+            settings_dialog::check_key_capture(self);
         }
         if self.editor.is_some() {
             editor::show(self, &ctx);

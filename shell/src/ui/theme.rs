@@ -211,7 +211,6 @@ pub enum Icon {
     Pause,
     Stop,
     Trash,
-    Down,
     Mic,
     Speaker,
     Close,
@@ -272,7 +271,6 @@ pub fn paint_icon(p: &Painter, rect: Rect, icon: Icon, color: Color32) {
         }
         Icon::ChevL => line(&[(10.0, 3.0), (5.0, 8.0), (10.0, 13.0)]),
         Icon::ChevR => line(&[(6.0, 3.0), (11.0, 8.0), (6.0, 13.0)]),
-        Icon::Down => line(&[(4.0, 6.0), (8.0, 10.0), (12.0, 6.0)]),
         Icon::List => {
             for y in [4.0, 8.0, 12.0] {
                 line(&[(5.5, y), (13.5, y)]);
@@ -346,7 +344,6 @@ pub enum Kind {
 pub struct Btn {
     text: String,
     icon: Option<Icon>,
-    trailing: Option<Icon>,
     kind: Kind,
     small: bool,
     enabled: bool,
@@ -363,7 +360,7 @@ pub struct Btn {
 
 impl Btn {
     pub fn new(text: impl Into<String>) -> Self {
-        Self { text: text.into(), icon: None, trailing: None, kind: Kind::Normal, small: false, enabled: true, min_width: 0.0, tooltip: None, selected: false, height: None, left: false, quiet: false }
+        Self { text: text.into(), icon: None, kind: Kind::Normal, small: false, enabled: true, min_width: 0.0, tooltip: None, selected: false, height: None, left: false, quiet: false }
     }
     pub fn quiet(mut self, q: bool) -> Self {
         self.quiet = q;
@@ -382,10 +379,6 @@ impl Btn {
     }
     pub fn icon(mut self, i: Icon) -> Self {
         self.icon = Some(i);
-        self
-    }
-    pub fn trailing(mut self, i: Icon) -> Self {
-        self.trailing = Some(i);
         self
     }
     pub fn kind(mut self, k: Kind) -> Self {
@@ -437,7 +430,7 @@ impl Btn {
     pub fn width(&self, ui: &Ui) -> f32 {
         let (_, _, pad, fid) = self.metrics();
         let text = (!self.text.is_empty()).then(|| ui.painter().layout_no_wrap(self.text.clone(), fid, Color32::WHITE).size().x);
-        pad * 2.0 + text.unwrap_or(0.0) + if self.icon.is_some() { 16.0 + if text.is_some() { 6.0 } else { 0.0 } } else { 0.0 } + if self.trailing.is_some() { 18.0 } else { 0.0 }
+        pad * 2.0 + text.unwrap_or(0.0) + if self.icon.is_some() { 16.0 + if text.is_some() { 6.0 } else { 0.0 } } else { 0.0 }
     }
 
     pub fn show(self, ui: &mut Ui) -> Response {
@@ -465,13 +458,10 @@ impl Btn {
         if self.icon.is_some() {
             w += icon_w + if galley.is_some() { gap } else { 0.0 };
         }
-        if self.trailing.is_some() {
-            w += 12.0 + gap;
-        }
         if self.kind == Kind::Record {
             w += 10.0 + gap;
         }
-        if galley.is_none() && self.icon.is_some() && self.trailing.is_none() {
+        if galley.is_none() && self.icon.is_some() {
             w = h;
         }
         let size = vec2(w.max(self.min_width), h);
@@ -505,7 +495,7 @@ impl Btn {
                 text_color(hover)
             };
             let mut x = if self.left { rect.min.x + pad } else { rect.center().x - (w - pad * 2.0) / 2.0 };
-            if galley.is_none() && self.icon.is_some() && self.trailing.is_none() {
+            if galley.is_none() && self.icon.is_some() {
                 x = rect.center().x - icon_w / 2.0;
             }
             if self.kind == Kind::Record {
@@ -518,10 +508,6 @@ impl Btn {
             }
             if let Some(g) = &galley {
                 painter.galley_with_override_text_color(pos2(x, rect.center().y - g.size().y / 2.0), g.clone(), color);
-                x += g.size().x + gap;
-            }
-            if let Some(i) = self.trailing {
-                paint_icon(painter, Rect::from_min_size(pos2(x, rect.center().y - 6.0), Vec2::splat(12.0)), i, color.gamma_multiply(0.8));
             }
         }
         let resp = if self.enabled { resp.on_hover_cursor(egui::CursorIcon::PointingHand) } else { resp };

@@ -4,34 +4,26 @@
 //! - 下：最近錄影（橫向分頁）
 
 use super::dialogs::{base_name, date_labels, file_name, is_cut_name, is_default_name, Ask};
-use super::settings::{SourceType, FPS_CHOICES, MAX_PRESETS};
+use super::settings::SourceType;
+use super::settings_dialog::{self, Page};
 use super::theme::{self, chip, segmented, switch, Btn, Icon, Tone};
 use super::{EntryAction, UiApp};
 use eframe::egui::{self, pos2, vec2, Align, Color32, CornerRadius, Id, Layout, Pos2, Rect, RichText, Sense, Stroke, StrokeKind, Ui, UiBuilder};
 use screenrecorder_core::actions;
 use screenrecorder_core::format::{clock, format_bytes, human_duration, output_size, speed_label, video_clock};
-use screenrecorder_core::types::{
-    DownloadPhase, EncoderPreference, ExportFormat, ExportKind, ExportState, Hotkey, LibraryEntry, LogLevel, MethodPreference, RecorderState, Rect as DRect, HOTKEY_NAMES,
-};
+use screenrecorder_core::types::{DownloadPhase, EncoderPreference, ExportFormat, ExportKind, ExportState, LibraryEntry, LogLevel, MethodPreference, RecorderState, Rect as DRect};
 use std::time::Instant;
 
 /// 主畫面自己的狀態（拖曳範圍、輸入中的文字）
 #[derive(Default)]
 pub struct MainState {
     drag: Option<RegionDrag>,
-    max_custom_open: bool,
-    max_text: String,
     region_text: [String; 4],
     region_focus: Option<usize>,
-    dir_text: Option<String>,
-    dir_changed_at: Option<Instant>,
+    /// 儲存位置改了的時間（停止輸入一下子後重新讀取最近錄影）
+    pub dir_changed_at: Option<Instant>,
     /// 截圖中（按鈕停用，避免連按）
     pub shooting: bool,
-    /// 正在設定第幾個快捷鍵（等使用者按下新的組合）
-    key_capture: Option<usize>,
-    /// 上次畫出快捷鍵設定的畫面編號（設定面板關掉時取消設定）
-    key_capture_pass: u64,
-    key_msg: Option<String>,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -559,432 +551,65 @@ fn dk_of(app: &UiApp, view: DRect) -> DRect {
     }
 }
 
-// ───────────── 錄影設定（下方一列 + 下拉面板） ─────────────
-
-fn combo<T: PartialEq + Copy>(ui: &mut Ui, id: &str, label: &str, value: &mut T, items: &[(T, String)], enabled: bool, width: f32) -> bool {
-    let mut changed = false;
-    if !label.is_empty() {
-        ui.label(theme::muted(ui, label));
-    }
-    let text = items.iter().find(|(v, _)| v == value).map(|(_, t)| t.clone()).unwrap_or_default();
-    ui.add_enabled_ui(enabled, |ui| {
-        egui::ComboBox::from_id_salt(id).selected_text(text).width(width).show_ui(ui, |ui| {
-            for (v, t) in items {
-                if ui.selectable_label(v == value, t).clicked() && v != value {
-                    *value = *v;
-                    changed = true;
-                }
-            }
-        });
-    });
-    changed
-}
-
-/// 下拉按鈕：點一下開關面板，點外面關閉
-fn drop_button(ui: &mut Ui, id: &str, text: String, icon: Icon, enabled: bool, width: f32, contents: impl FnOnce(&mut Ui)) {
-    drop_button_tip(ui, id, text, None, icon, enabled, width, contents);
-}
-
-/// 下拉按鈕；text 為空時只有圖示（tip 顯示在滑鼠提示）
-#[allow(clippy::too_many_arguments)]
-fn drop_button_tip(ui: &mut Ui, id: &str, text: String, tip: Option<String>, icon: Icon, enabled: bool, width: f32, contents: impl FnOnce(&mut Ui)) {
-    let mut b = Btn::new(text).icon(icon).trailing(Icon::Down).small().enabled(enabled);
-    if let Some(t) = tip {
-        b = b.tooltip(t);
-    }
-    let resp = b.show(ui);
-    // 開關狀態自己記：egui 同時只記得一個打開的彈出視窗，面板裡的下拉選單一打開就會把面板關掉
-    let open_id = Id::new(("drop-open", id));
-    let mut open = ui.data(|d| d.get_temp::<bool>(open_id)).unwrap_or(false);
-    if resp.clicked() {
-        open = !open;
-    }
-    // 面板裡的下拉選單開著時：點選項、按 Esc 只關下拉選單，不關面板
-    let list_open = egui::Popup::is_any_open(ui.ctx());
-    if open {
-        let shown = egui::Popup::from_response(&resp).id(Id::new(id)).open(true).close_behavior(egui::PopupCloseBehavior::IgnoreClicks).width(width).show(|ui| {
-            ui.set_width(width);
-            ui.spacing_mut().item_spacing.y = 8.0;
-            contents(ui);
-        });
-        if let Some(r) = shown {
-            let outside = r.response.clicked_elsewhere() && !resp.clicked();
-            let esc = ui.input(|i| i.key_pressed(egui::Key::Escape));
-            if !list_open && (outside || esc) {
-                open = false;
-            }
-        }
-    }
-    ui.data_mut(|d| d.insert_temp(open_id, open));
-}
+// ───────────── 錄影設定摘要（下方一列；點一下開啟「設定」視窗的那一頁） ─────────────
 
 fn settings_bar(app: &mut UiApp, ui: &mut Ui) {
     let p = theme::pal(ui);
     let locked = app.locked();
-    // 視窗較窄時：聲音只寫來源、「更多設定」只剩圖示、不顯示輸出大小，整列才放得下
-    let compact = ui.available_width() < 800.0;
-    // 更窄時：聲音只剩圖示、不寫「FPS」
-    let tight = ui.available_width() < 660.0;
-    let mut fps_items: Vec<(f64, String)> = FPS_CHOICES.iter().map(|f| (*f, format!("{f}"))).collect();
-    if !FPS_CHOICES.contains(&app.s.fps) {
-        fps_items.push((app.s.fps, format!("{}", app.s.fps)));
+    ui.spacing_mut().item_spacing.x = 2.0;
+    // 右邊：「設定」按鈕，前面是輸出大小
+    let set_btn = Btn::new("設定").icon(Icon::Settings).small().tooltip("錄影、聲音、儲存位置、快捷鍵與其他設定");
+    let set_w = set_btn.width(ui);
+    let out = app.s.source_rect(&app.env).map(|r| output_size(r.width, r.height, app.s.scale as f64));
+    let big = out.is_some_and(|(w, h)| (w as f64) * (h as f64) > 3840.0 * 2160.0 * 1.05);
+    let out_text = out.map(|(w, h)| format!("輸出 {w}×{h}{}", if big { "（很大，建議 50%）" } else { "" }));
+    let out_w = out_text.as_ref().map(|t| ui.painter().layout_no_wrap(t.clone(), theme::font(12.5), p.muted).size().x + 16.0).unwrap_or(0.0);
+    // 左邊：錄影、聲音、儲存位置的摘要，依剩下的寬度取捨
+    let room = ui.available_width() - set_w - 8.0;
+    let show_out = room - out_w > 360.0;
+    let mut room = if show_out { room - out_w } else { room };
+    let rec = settings_dialog::record_summary(app);
+    let (audio, audio_icon) = settings_dialog::audio_summary(app);
+    let item = |text: &str, icon: Icon| Btn::new(text).icon(icon).ghost().small();
+    let measure = |ui: &Ui, text: &str, icon: Icon| item(text, icon).width(ui) + 2.0;
+    let mut open: Option<Page> = None;
+    // 錄影：太窄時只寫 FPS
+    let rec_full = rec.join("・");
+    let rec_text = if measure(ui, &rec_full, Icon::Camera) + 200.0 <= room { rec_full.clone() } else { rec[0].clone() };
+    room -= measure(ui, &rec_text, Icon::Camera);
+    if item(&rec_text, Icon::Camera).enabled(!locked).tooltip(format!("錄影：{rec_full}")).show(ui).clicked() {
+        open = Some(Page::Record);
     }
-    if combo(ui, "fps", if tight { "" } else { "FPS" }, &mut app.s.fps, &fps_items, !locked, 56.0) {
-        app.save_settings();
+    // 聲音：太窄時只剩圖示
+    let audio_text = if measure(ui, &audio, audio_icon) + 120.0 <= room { audio.clone() } else { String::new() };
+    room -= measure(ui, &audio_text, audio_icon);
+    if item(&audio_text, audio_icon).enabled(!locked).tooltip(format!("錄製聲音：{audio}")).show(ui).clicked() {
+        open = Some(Page::Audio);
     }
-    ui.add_space(4.0);
-    let scales: Vec<(u32, String)> = [100, 75, 50, 25].iter().map(|s| (*s, format!("{s}%"))).collect();
-    if combo(ui, "scale", if compact { "" } else { "解析度" }, &mut app.s.scale, &scales, !locked, 64.0) {
-        app.save_settings();
-    }
-    ui.add_space(4.0);
-    let mut dm = app.s.draw_mouse;
-    if switch(ui, &mut dm, "游標", !locked).changed() {
-        app.s.draw_mouse = dm;
-        app.save_settings();
-    }
-    ui.add_space(4.0);
-    // 聲音
-    let label = match (app.s.audio_system, app.s.audio_mic) {
-        (true, true) => "系統＋麥克風",
-        (true, false) => "系統",
-        (false, true) => "麥克風",
-        _ => "不錄",
-    };
-    let icon = if app.s.audio_mic && !app.s.audio_system { Icon::Mic } else { Icon::Speaker };
-    let audio_text = if tight {
-        String::new()
-    } else if compact {
-        label.to_string()
-    } else {
-        format!("聲音：{label}")
-    };
-    drop_button_tip(ui, "audio", audio_text, Some(format!("錄製聲音：{label}")), icon, !locked, 300.0, |ui| audio_panel(app, ui));
-    // 更多設定
-    let mut more = vec!["更多設定".to_string()];
-    if app.s.max_minutes > 0.0 {
-        more.push(format!("最長 {}", human_duration(app.s.max_minutes * 60.0)));
-    }
-    if app.s.countdown_sec != 3 {
-        more.push(if app.s.countdown_sec > 0 { format!("倒數 {} 秒", app.s.countdown_sec) } else { "不倒數".into() });
-    }
-    match app.s.method {
-        MethodPreference::Ddagrab => more.push("ddagrab".into()),
-        MethodPreference::Gdigrab => more.push("gdigrab".into()),
-        _ => {}
-    }
-    match app.s.encoder {
-        EncoderPreference::Gpu => more.push("GPU 編碼".into()),
-        EncoderPreference::Cpu => more.push("CPU 編碼".into()),
-        _ => {}
-    }
-    let more_text = if compact { String::new() } else { more.join("・") };
-    drop_button_tip(ui, "more", more_text, Some(more.join("・")), Icon::Settings, !locked, 380.0, |ui| more_panel(app, ui));
-    // 儲存位置
+    // 儲存位置：縮短路徑（保留結尾）
     let dir = app.s.out_dir(&app.env);
-    // 依剩下的寬度縮短路徑（保留結尾），整列不會超出卡片；右邊留給「輸出 3840×1080」
-    let out_w = if !compact && app.s.source_rect(&app.env).is_some() { 110.0 } else { 0.0 };
-    let room = (ui.available_width() - out_w - 60.0).max(40.0);
-    let fits = |t: &str| ui.painter().layout_no_wrap(t.to_string(), theme::font(13.0), p.text).size().x <= room;
+    let fits = |t: &str| measure(ui, t, Icon::Folder) <= room;
     let short: String = if fits(&dir) {
         dir.clone()
     } else {
         let chars: Vec<char> = dir.chars().collect();
-        (1..chars.len()).map(|i| format!("…{}", chars[i..].iter().collect::<String>())).find(|t| fits(t)).unwrap_or_else(|| "…".into())
+        (1..chars.len()).map(|i| format!("…{}", chars[i..].iter().collect::<String>())).find(|t| fits(t)).unwrap_or_default()
     };
-    ui.scope(|ui| {
-        drop_button(ui, "dir", short, Icon::Folder, !locked, 420.0, |ui| dir_panel(app, ui));
-    })
-    .response
-    .on_hover_text(format!("儲存位置：{dir}"));
-    // 輸出大小
-    if let Some(r) = app.s.source_rect(&app.env).filter(|_| !compact) {
-        let (w, h) = output_size(r.width, r.height, app.s.scale as f64);
-        let big = (w as f64) * (h as f64) > 3840.0 * 2160.0 * 1.05;
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            ui.label(RichText::new(format!("輸出 {w}×{h}{}", if big { "（很大，建議 50%）" } else { "" })).font(theme::font(12.5)).color(if big { p.warn } else { p.muted }));
-        });
+    if item(&short, Icon::Folder).enabled(!locked).tooltip(format!("儲存位置：{dir}")).show(ui).clicked() {
+        open = Some(Page::Save);
     }
-}
-
-fn audio_panel(app: &mut UiApp, ui: &mut Ui) {
-    let a = app.env.audio.clone();
-    let mut sys = app.s.audio_system;
-    let render = a.render.clone().map(|r| format!("（{r}）")).unwrap_or_else(|| "（找不到播放裝置）".into());
-    if switch(ui, &mut sys, format!("系統聲音{render}"), true).changed() {
-        app.s.audio_system = sys;
-        app.save_settings();
-    }
-    let mut mic = app.s.audio_mic;
-    if switch(ui, &mut mic, "麥克風", true).changed() {
-        app.s.audio_mic = mic;
-        app.save_settings();
-    }
-    if !app.s.mic_id.is_empty() && !a.captures.iter().any(|d| d.id == app.s.mic_id) {
-        app.s.mic_id.clear();
-    }
-    let def = a.captures.iter().find(|d| d.is_default).map(|d| format!("預設麥克風（{}）", d.name)).unwrap_or_else(|| "預設麥克風".into());
-    let current = if app.s.mic_id.is_empty() { def.clone() } else { a.captures.iter().find(|d| d.id == app.s.mic_id).map(|d| d.name.clone()).unwrap_or_default() };
-    ui.add_enabled_ui(app.s.audio_mic, |ui| {
-        egui::ComboBox::from_id_salt("mic").selected_text(current).width(ui.available_width()).show_ui(ui, |ui| {
-            if ui.selectable_label(app.s.mic_id.is_empty(), &def).clicked() {
-                app.s.mic_id.clear();
-                app.save_settings();
-            }
-            for d in &a.captures {
-                if ui.selectable_label(app.s.mic_id == d.id, &d.name).clicked() {
-                    app.s.mic_id = d.id.clone();
-                    app.save_settings();
-                }
-            }
-        });
-    });
-    let hint = a.error.clone().unwrap_or_else(|| {
-        if app.s.audio_system || app.s.audio_mic {
-            "聲音與畫面以同一個時鐘對齊。系統聲音會受 Windows 音量影響。".into()
-        } else if a.captures.is_empty() {
-            "找不到麥克風。".into()
-        } else {
-            String::new()
+    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+        if set_btn.show(ui).clicked() {
+            open = Some(Page::Record);
+        }
+        if let Some(t) = out_text.filter(|_| show_out) {
+            ui.add_space(8.0);
+            ui.label(RichText::new(t).font(theme::font(12.5)).color(if big { p.warn } else { p.muted }));
         }
     });
-    if !hint.is_empty() {
-        ui.add(egui::Label::new(theme::muted(ui, hint)).wrap());
+    if let Some(page) = open {
+        settings_dialog::open(app, page);
     }
-}
-
-// ───────────── 更多設定（表單：左邊標籤固定寬度，控制項對齊） ─────────────
-
-const FORM_LABEL_W: f32 = 112.0;
-const FORM_CTRL_W: f32 = 200.0;
-const FORM_ROW_H: f32 = 32.0;
-
-/// 分區標題（右邊可放按鈕）
-fn form_section(ui: &mut Ui, title: &str, right: impl FnOnce(&mut Ui)) {
-    let p = theme::pal(ui);
-    ui.horizontal(|ui| {
-        ui.set_height(22.0);
-        ui.label(RichText::new(title).font(theme::font_bold(13.0)).color(p.text));
-        ui.with_layout(Layout::right_to_left(Align::Center), right);
-    });
-}
-
-/// 表單的一列：左邊標籤（灰色、固定寬度），右邊控制項
-fn form_row(ui: &mut Ui, label: &str, add: impl FnOnce(&mut Ui)) {
-    let p = theme::pal(ui);
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 6.0;
-        let (r, _) = ui.allocate_exact_size(vec2(FORM_LABEL_W, FORM_ROW_H), Sense::hover());
-        ui.painter().text(pos2(r.left(), r.center().y), egui::Align2::LEFT_CENTER, label, theme::font(13.0), p.muted);
-        ui.set_min_height(FORM_ROW_H);
-        add(ui);
-    });
-}
-
-/// 控制項下方的說明（對齊控制項那一欄）
-fn form_hint(ui: &mut Ui, text: impl Into<String>, color: Color32) {
-    ui.horizontal(|ui| {
-        ui.add_space(FORM_LABEL_W + 6.0);
-        ui.add(egui::Label::new(RichText::new(text.into()).font(theme::font(12.0)).color(color)).wrap());
-    });
-}
-
-fn form_divider(ui: &mut Ui) {
-    let p = theme::pal(ui);
-    ui.add_space(2.0);
-    let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 1.0), Sense::hover());
-    ui.painter().hline(r.x_range(), r.center().y, Stroke::new(1.0, p.border));
-    ui.add_space(2.0);
-}
-
-/// 表單的下拉選單（與按鈕相同外觀）；items 的第三個值 = 能不能選
-fn form_combo<T: PartialEq + Copy>(ui: &mut Ui, id: &str, width: f32, value: &mut T, items: &[(T, String, bool)]) -> bool {
-    let mut changed = false;
-    let text = items.iter().find(|(v, _, _)| v == value).map(|(_, t, _)| t.clone()).unwrap_or_default();
-    ui.scope(|ui| {
-        theme::field_style(ui);
-        egui::ComboBox::from_id_salt(id).selected_text(RichText::new(text).font(theme::font(13.0))).width(width).show_ui(ui, |ui| {
-            for (v, t, en) in items {
-                if ui.add_enabled(*en, egui::Button::selectable(value == v, RichText::new(t).font(theme::font(13.0)))).clicked() && value != v {
-                    *value = *v;
-                    changed = true;
-                }
-            }
-        });
-    });
-    changed
-}
-
-fn more_panel(app: &mut UiApp, ui: &mut Ui) {
-    let p = theme::pal(ui);
-    ui.spacing_mut().item_spacing.y = 4.0;
-    // 錄影
-    form_section(ui, "錄影", |_| {});
-    form_row(ui, "最長錄影時間", |ui| {
-        let custom = app.main.max_custom_open || !MAX_PRESETS.contains(&app.s.max_minutes);
-        let mut sel: f64 = if custom { -1.0 } else { app.s.max_minutes };
-        let items = [(0.0, "不限".to_string(), true), (30.0, "30 分鐘".into(), true), (60.0, "1 小時".into(), true), (120.0, "2 小時".into(), true), (-1.0, "自訂…".into(), true)];
-        if form_combo(ui, "maxPreset", if custom { 96.0 } else { FORM_CTRL_W }, &mut sel, &items) {
-            app.main.max_custom_open = sel < 0.0;
-            if sel >= 0.0 {
-                app.s.max_minutes = sel;
-                app.save_settings();
-            } else {
-                app.main.max_text = if app.s.max_minutes > 0.0 { app.s.max_minutes.to_string() } else { String::new() };
-            }
-        }
-        if custom {
-            if !app.main.max_custom_open && app.main.max_text.is_empty() {
-                app.main.max_text = app.s.max_minutes.to_string();
-            }
-            let r = ui.add(egui::TextEdit::singleline(&mut app.main.max_text).desired_width(56.0).min_size(vec2(0.0, 30.0)).vertical_align(Align::Center).hint_text("分鐘"));
-            ui.label(theme::muted(ui, "分鐘"));
-            if r.changed() {
-                let v: f64 = app.main.max_text.trim().parse().unwrap_or(0.0);
-                app.s.max_minutes = if v.is_finite() && v > 0.0 { v.round().min(screenrecorder_core::format::MAX_MINUTES_MAX) } else { 0.0 };
-                app.save_settings();
-            }
-        }
-    });
-    form_row(ui, "開始前倒數", |ui| {
-        let mut cd = app.s.countdown_sec;
-        let items = [(0, "不倒數".to_string(), true), (3, "3 秒".into(), true), (5, "5 秒".into(), true), (10, "10 秒".into(), true)];
-        if form_combo(ui, "countdown", FORM_CTRL_W, &mut cd, &items) {
-            app.s.countdown_sec = cd;
-            app.save_settings();
-        }
-    });
-    form_row(ui, "", |ui| {
-        let mut hide = app.s.hide_ui;
-        if ui.checkbox(&mut hide, "開始錄影時縮小這個視窗").on_hover_text("視窗不在錄影範圍內時不縮小").changed() {
-            app.s.hide_ui = hide;
-            app.save_settings();
-        }
-    });
-    form_divider(ui);
-    // 快捷鍵（可自訂）
-    hotkey_settings(app, ui);
-    form_divider(ui);
-    // 新版本
-    form_section(ui, "新版本", |_| {});
-    form_row(ui, "自動檢查", |ui| {
-        let mut on = app.update.enabled;
-        if ui.checkbox(&mut on, "啟動後與每 12 小時檢查").changed() {
-            app.core.set_check_updates(on);
-            app.update = actions::update_state(&app.core);
-        }
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            if Btn::new("立即檢查").small().show(ui).clicked() {
-                let core = app.core.clone();
-                app.spawn(async move { actions::check_update(&core).await }, |app, r| match r {
-                    Ok(u) => {
-                        app.update = actions::update_state(&app.core);
-                        app.env.update = u.clone();
-                        match u {
-                            Some(u) => app.toast(format!("有新版本 v{}，點「系統狀態」裡的「有新版本」即可更新", u.version), false),
-                            None => app.toast(format!("目前已是最新版本（v{}）", app.env.app_version), false),
-                        }
-                    }
-                    Err(e) => {
-                        app.update.error = Some(e.message().to_string());
-                        app.toast(e.message().to_string(), true);
-                    }
-                });
-            }
-        });
-    });
-    if let Some(e) = &app.update.error {
-        form_hint(ui, format!("無法檢查新版本：{}", e.trim_start_matches("無法檢查新版本：")), p.warn);
-    }
-    form_divider(ui);
-    // 進階
-    form_section(ui, "進階", |_| {});
-    form_row(ui, "擷取方式", |ui| {
-        let mut method = app.s.method;
-        let items = [
-            (MethodPreference::Auto, "自動（建議）".to_string(), true),
-            (MethodPreference::Ddagrab, "ddagrab（Desktop Duplication）".into(), true),
-            (MethodPreference::Gdigrab, "gdigrab（GDI，相容性最高）".into(), true),
-        ];
-        if form_combo(ui, "method", FORM_CTRL_W, &mut method, &items) {
-            app.s.method = method;
-            app.save_settings();
-        }
-    });
-    let ff = app.env.ffmpeg.clone();
-    let hw = ff.hw_encoders.clone();
-    if app.s.encoder == EncoderPreference::Gpu && hw.as_ref().is_some_and(|h| h.is_empty()) {
-        // 這台電腦沒有可用的 GPU：改回自動並存檔，系統匣「開始錄影」才不會拿到無效的設定
-        app.s.encoder = EncoderPreference::Auto;
-        app.save_settings();
-    }
-    let gpu_label = match &hw {
-        None => "GPU（偵測中…）".to_string(),
-        Some(h) if !h.is_empty() => format!("GPU（{}）", h.join("、")),
-        _ => "GPU（這台電腦沒有可用的）".into(),
-    };
-    form_row(ui, "編碼器", |ui| {
-        let mut enc = app.s.encoder;
-        let items = [
-            (EncoderPreference::Auto, "自動（建議）".to_string(), true),
-            (EncoderPreference::Cpu, "CPU（libx264，畫質最穩）".into(), true),
-            (EncoderPreference::Gpu, gpu_label.clone(), hw.as_ref().is_some_and(|h| !h.is_empty())),
-        ];
-        if form_combo(ui, "encoder", FORM_CTRL_W, &mut enc, &items) {
-            app.s.encoder = enc;
-            app.save_settings();
-        }
-    });
-    let hint = if app.s.encoder != EncoderPreference::Auto {
-        String::new()
-    } else {
-        match &hw {
-            Some(h) if !h.is_empty() => {
-                if ff.prefer_gpu == Some(true) {
-                    format!("先前偵測到 CPU 編碼跟不上，目前會使用 GPU（{}）。", h[0])
-                } else {
-                    format!("平常用 CPU；畫面大或電腦跟不上時改用 GPU（{}）。", h[0])
-                }
-            }
-            _ => "這台電腦只能用 CPU 編碼。".into(),
-        }
-    };
-    if !hint.is_empty() {
-        form_hint(ui, hint, p.muted);
-    }
-    if app.s.encoder == EncoderPreference::Auto && ff.prefer_gpu == Some(true) && hw.as_ref().is_some_and(|h| !h.is_empty()) {
-        let mut reset = false;
-        form_row(ui, "", |ui| reset = Btn::new("重設：恢復平常用 CPU 編碼").small().show(ui).clicked());
-        if reset {
-            app.core.reset_learned_gpu();
-            app.env.ffmpeg.prefer_gpu = Some(false);
-            app.toast("已重設，之後的錄影平常會用 CPU 編碼", false);
-        }
-    }
-}
-
-fn dir_panel(app: &mut UiApp, ui: &mut Ui) {
-    ui.label(theme::muted(ui, "儲存位置"));
-    let text = app.main.dir_text.get_or_insert_with(|| app.s.output_dir.clone());
-    let r = ui.add(egui::TextEdit::singleline(text).desired_width(f32::INFINITY));
-    if r.changed() {
-        app.s.output_dir = text.clone();
-        app.save_settings();
-        app.main.dir_changed_at = Some(Instant::now());
-    }
-    if !r.has_focus() {
-        app.main.dir_text = None;
-    }
-    ui.horizontal(|ui| {
-        ui.label(theme::muted(ui, "檔名：Rec_年-月-日_時-分-秒.mp4"));
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            if Btn::new("在檔案總管開啟").small().show(ui).clicked() {
-                if let Err(e) = actions::open(actions::OpenAction::Folder, &app.s.out_dir(&app.env)) {
-                    app.toast(e.message().to_string(), true);
-                }
-            }
-        });
-    });
 }
 
 // ───────────── 錄影狀態 ─────────────
@@ -1177,144 +802,6 @@ fn rec_panel(app: &mut UiApp, ui: &mut Ui) {
         ui.painter().hline(bottom.x_range(), bottom.min.y - BOTTOM_LINE_GAP, Stroke::new(1.0, p.border));
         ui.scope_builder(UiBuilder::new().max_rect(bottom).layout(Layout::left_to_right(Align::Center)), |ui| sys_status(app, ui));
     });
-}
-
-/// 全域快捷鍵：點按鍵名稱後按下新的組合鍵（Esc 取消），可停用或還原預設
-fn hotkey_settings(app: &mut UiApp, ui: &mut Ui) {
-    let p = theme::pal(ui);
-    let Some(hk) = app.env.hotkeys else {
-        form_section(ui, "快捷鍵", |_| {});
-        form_hint(ui, "全域快捷鍵需要系統匣常駐時才能使用", p.muted);
-        return;
-    };
-    app.main.key_capture_pass = ui.ctx().cumulative_pass_nr();
-    let ok = [hk.record, hk.pause, hk.shot, hk.snip];
-    ui.horizontal(|ui| {
-        ui.set_height(22.0);
-        ui.label(RichText::new("快捷鍵").font(theme::font_bold(13.0)).color(p.text));
-        ui.label(RichText::new("點按鍵後按下新的組合").font(theme::font(12.0)).color(p.muted));
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            if app.keys != Default::default() && Btn::new("還原預設").ghost().small().show(ui).clicked() {
-                app.main.key_capture = None;
-                save_keys(app, Default::default());
-            }
-        });
-    });
-    for i in 0..4 {
-        form_row(ui, HOTKEY_NAMES[i], |ui| {
-            let capturing = app.main.key_capture == Some(i);
-            let label = app.keys.label(i);
-            let text = if capturing {
-                "請按下組合鍵…".to_string()
-            } else if label.is_empty() {
-                "停用".to_string()
-            } else if !ok[i] {
-                format!("{label}・被占用")
-            } else {
-                label.clone()
-            };
-            let tip = if capturing {
-                "按 Esc 取消"
-            } else if !ok[i] && !label.is_empty() {
-                "已被其他程式使用，請點一下換一組"
-            } else {
-                "點一下後按下新的組合鍵（要包含 Ctrl 或 Alt）"
-            };
-            if Btn::new(text).small().height(30.0).selected(capturing).min_width(FORM_CTRL_W).tooltip(tip).show(ui).clicked() {
-                if capturing {
-                    stop_capture(app);
-                } else {
-                    // 先暫停全部快捷鍵，才按得到原本已登記的組合
-                    app.main.key_capture = Some(i);
-                    app.main.key_msg = None;
-                    app.core.apply_hotkeys(&screenrecorder_core::types::Hotkeys { record: None, pause: None, shot: None, snip: None });
-                }
-            }
-            if !label.is_empty() && !capturing {
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if Btn::icon_only(Icon::Close).ghost().small().tooltip("停用這個快捷鍵").show(ui).clicked() {
-                        let mut k = app.keys;
-                        k.set(i, None);
-                        save_keys(app, k);
-                    }
-                });
-            }
-        });
-    }
-    if let Some(m) = app.main.key_msg.clone() {
-        form_hint(ui, m, p.warn);
-    }
-    let Some(i) = app.main.key_capture else { return };
-    // 等使用者按下組合鍵
-    let pressed = ui.input(|inp| {
-        inp.events.iter().find_map(|e| match e {
-            egui::Event::Key { key, pressed: true, modifiers, .. } => Some((*key, *modifiers)),
-            _ => None,
-        })
-    });
-    let Some((key, m)) = pressed else { return };
-    if key == egui::Key::Escape {
-        stop_capture(app);
-        return;
-    }
-    let Some(vk) = vk_of(key) else {
-        app.main.key_msg = Some(format!("不支援「{}」，請用 A–Z、0–9、F1–F12 等按鍵", key.name()));
-        return;
-    };
-    let k = Hotkey { ctrl: m.ctrl, alt: m.alt, shift: m.shift, win: false, key: vk };
-    if !k.valid() {
-        app.main.key_msg = Some(format!("{} 會擋到一般打字，請加上 Ctrl 或 Alt", k.label()));
-        return;
-    }
-    if let Some(j) = app.keys.conflict(i, &k) {
-        app.main.key_msg = Some(format!("{} 已經用在「{}」", k.label(), HOTKEY_NAMES[j]));
-        return;
-    }
-    let mut next = app.keys;
-    next.set(i, Some(k));
-    app.main.key_capture = None;
-    save_keys(app, next);
-}
-
-/// 設定面板關掉時：取消設定中的快捷鍵（恢復原本的登記）
-pub fn check_key_capture(app: &mut UiApp, ctx: &egui::Context) {
-    if app.main.key_capture.is_some() && ctx.cumulative_pass_nr() > app.main.key_capture_pass + 2 {
-        stop_capture(app);
-    }
-}
-
-/// 取消設定中的快捷鍵（視窗關到系統匣時：不能讓快捷鍵一直暫停）
-pub fn cancel_key_capture(app: &mut UiApp) {
-    if app.main.key_capture.is_some() {
-        stop_capture(app);
-    }
-}
-
-fn stop_capture(app: &mut UiApp) {
-    app.main.key_capture = None;
-    app.main.key_msg = None;
-    let k = app.keys;
-    if let Some(st) = app.core.apply_hotkeys(&k) {
-        app.env.hotkeys = Some(st);
-    }
-}
-
-fn save_keys(app: &mut UiApp, k: screenrecorder_core::types::Hotkeys) {
-    app.keys = k;
-    app.main.key_msg = None;
-    if let Some(st) = app.core.save_hotkeys(k) {
-        app.env.hotkeys = Some(st);
-        let ok = [st.record, st.pause, st.shot, st.snip];
-        if let Some(i) = (0..4).find(|i| !ok[*i]) {
-            app.main.key_msg = Some(format!("{} 已被其他程式使用，請換一組", k.label(i)));
-        }
-    }
-}
-
-/// egui 的按鍵 → Windows 虛擬鍵碼（只限支援的按鍵）
-fn vk_of(key: egui::Key) -> Option<u32> {
-    let name = key.name();
-    (0x20..=0x7B).find(|vk| screenrecorder_core::types::key_name(*vk).as_deref() == Some(name))
 }
 
 /// 截圖：與錄影相同的範圍，存成 PNG 並複製到剪貼簿（完成後由狀態更新顯示提示、更新清單）
