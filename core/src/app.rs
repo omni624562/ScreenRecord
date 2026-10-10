@@ -1155,7 +1155,13 @@ impl App {
             st.ffmpeg.info.gpu_testing = false;
             match r {
                 Ok(g) => {
-                    let text = crate::args::GpuPath { adapter: g.adapter, convert: g.convert, zero_copy: g.zero_copy }.describe();
+                    // 這裡說的是能力：「自動」編碼在 1080p60 以下用 CPU 壓縮，那時只在顯示卡上轉色彩、再下載
+                    let label = g.convert.label();
+                    let text = if g.zero_copy {
+                        format!("在顯示卡上縮放、轉色彩（{label}）；編碼器用 GPU 時畫面完全不經過 CPU")
+                    } else {
+                        format!("在顯示卡上縮放、轉色彩（{label}）")
+                    };
                     info!("顯示卡處理測試成功：錄影時{text}");
                     st.ffmpeg.info.gpu_convert = Some(text);
                     st.ffmpeg.gpu = Some(g);
