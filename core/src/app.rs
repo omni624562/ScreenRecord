@@ -775,7 +775,10 @@ impl App {
             let res = tokio::task::spawn_blocking(move || scroll_capture(area)).await;
             // 先結束框選再處理錯誤（背景工作出錯時也不會一直卡在「正在截圖」）
             self.snip_end(Some(&src));
-            let (rgba, w, h, steps) = res.map_err(|e| crate::Error::other(e.to_string()))??;
+            let Some((rgba, w, h, steps)) = res.map_err(|e| crate::Error::other(e.to_string()))?? else {
+                crate::info!("[截圖] 取消長截圖");
+                return Ok(None);
+            };
             let out = new_shot_path(&src.output_dir).await?;
             let o = out.clone();
             tokio::task::spawn_blocking(move || {
@@ -1371,12 +1374,18 @@ impl Drop for LiveGuard {
     }
 }
 
-/// 新截圖的檔名：Shot_日期_時間.png（同一秒有好幾張時加 _2、_3…）
-/// 一邊往下捲一邊截取範圍、接成長圖；回傳 (RGBA, 寬, 高, 捲了幾次)
+/// 接好的長圖：(RGBA, 寬, 高, 捲了幾次)
 #[cfg(windows)]
-fn scroll_capture(area: crate::types::Rect) -> crate::Result<(Vec<u8>, u32, u32, usize)> {
+type LongImage = (Vec<u8>, u32, u32, usize);
+
+/// 一邊往下捲一邊截取範圍、接成長圖；按 Esc 而且還沒接上任何一段時回傳 None
+#[cfg(windows)]
+fn scroll_capture(area: crate::types::Rect) -> crate::Result<Option<LongImage>> {
     use crate::longshot::{Step, Stitcher};
-    let first = crate::scroll_win::grab(area).ok_or_else(|| crate::Error::other("無法截取畫面"))?;
+    use crate::scroll_win::{esc_pressed, focus_at, grab_settled, scroll_down};
+    // 先把範圍裡的視窗切到前面，再截第一張（切換時標題列會變色，要在截第一張之前）
+    focus_at(area.x + area.width / 2, area.y + area.height / 2);
+    let first = grab_settled(area, Duration::from_millis(1500)).ok_or_else(|| crate::Error::other("無法截取畫面"))?;
     let (w, h) = (area.width as u32, area.height as u32);
     let mut st = Stitcher::new(first, w, h);
     // 範圍小時一次捲少一點，前後兩張才有足夠的重疊
@@ -1387,40 +1396,59 @@ fn scroll_capture(area: crate::types::Rect) -> crate::Result<(Vec<u8>, u32, u32,
     } else {
         3
     };
-    let _ = crate::scroll_win::esc_pressed();
+    let _ = esc_pressed();
     let (mut steps, mut same) = (0, 0);
+    // 停下來的原因（None = 捲到次數上限或截不到畫面）
+    let mut end: Option<Step> = None;
+    let mut esc = false;
     while steps < 120 {
-        crate::scroll_win::scroll_down(area, notches);
-        std::thread::sleep(Duration::from_millis(350));
-        if crate::scroll_win::esc_pressed() {
-            crate::info!("[截圖] 長截圖：按了 Esc，停止");
+        scroll_down(area, notches);
+        std::thread::sleep(Duration::from_millis(150));
+        if esc_pressed() {
+            esc = true;
             break;
         }
-        let Some(img) = crate::scroll_win::grab(area) else { break };
+        // 等捲動的動畫停下來再截
+        let Some(img) = grab_settled(area, Duration::from_millis(1200)) else { break };
         steps += 1;
         match st.add(img) {
             Step::Added(_) => same = 0,
-            // 有些網頁捲動有動畫：再等一下看看
+            // 有些網頁捲動後才載入內容：再捲一次看看
             Step::Same => {
                 same += 1;
                 if same >= 2 {
+                    end = Some(Step::Same);
                     break;
                 }
             }
-            Step::Lost => {
-                crate::info!("[截圖] 長截圖：畫面對不起來，停止");
-                break;
-            }
-            Step::Full => {
-                crate::info!("[截圖] 長截圖：已達最高 {} 像素，停止", crate::longshot::MAX_HEIGHT);
+            s => {
+                end = Some(s);
                 break;
             }
         }
     }
+    match (esc, end) {
+        (true, _) => crate::info!("[截圖] 長截圖：按了 Esc，停止"),
+        (_, Some(Step::Lost)) => crate::info!("[截圖] 長截圖：畫面對不起來，停止"),
+        (_, Some(Step::Full)) => crate::info!("[截圖] 長截圖：已達最高 {} 像素，停止", crate::longshot::MAX_HEIGHT),
+        _ => {}
+    }
+    // 一段都沒接上：說明原因，不要存一張和框選範圍一樣的圖讓人以為沒作用
+    if !st.grew() {
+        if esc {
+            return Ok(None);
+        }
+        return Err(crate::Error::config(if end == Some(Step::Lost) {
+            "捲動後的畫面對不起來，沒辦法接成長圖。請只框選會捲動的內容（例如網頁的正文），避開影片、動畫或會變動的廣告"
+        } else {
+            "畫面沒有捲動：已經在最下面，或這個範圍不能用滑鼠滾輪捲動。請框選可以捲動的內容（例如網頁中間）再試一次"
+        }));
+    }
     let (rgba, w, h) = st.finish();
-    Ok((rgba, w, h, steps))
+    Ok(Some((rgba, w, h, steps)))
 }
 
+/// 新截圖的檔名：Shot_日期_時間.png（同一秒有好幾張時加 _2、_3…）
 async fn new_shot_path(dir: &str) -> crate::Result<PathBuf> {
     let dir = PathBuf::from(dir);
     tokio::fs::create_dir_all(&dir).await.map_err(|e| crate::Error::config(format!("無法建立儲存資料夾：{e}")))?;
