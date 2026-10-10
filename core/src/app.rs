@@ -143,6 +143,8 @@ pub struct App {
     ready: watch::Sender<bool>,
     update_gen: AtomicU64,
     quitting: AtomicBool,
+    /// 主畫面看得到時，介面目前的錄影設定（每一格更新；看不到時是 None）：選了攝影機就先顯示攝影機小窗
+    camera_preview: Mutex<Option<RecordConfig>>,
     /// 即時預覽：同時只保留一條
     live: Mutex<Option<Arc<Mutex<Option<tokio::process::Child>>>>>,
     notifier: Mutex<Option<Notifier>>,
@@ -255,6 +257,7 @@ impl App {
             ready: watch::channel(false).0,
             update_gen: AtomicU64::new(0),
             quitting: AtomicBool::new(false),
+            camera_preview: Mutex::new(None),
             live: Mutex::default(),
             notifier: Mutex::default(),
             ui_opener: Mutex::default(),
@@ -957,6 +960,49 @@ impl App {
     }
 
     // ───────────── FFmpeg ─────────────
+
+    /// 主畫面看得到、沒有被剪輯等視窗蓋住時，介面目前的錄影設定（介面每一格呼叫；看不到時 None）：
+    /// 選了攝影機就先顯示小窗，切換螢幕、範圍時小窗馬上跟著移
+    pub fn set_camera_preview(&self, config: Option<RecordConfig>) {
+        *self.camera_preview.lock().unwrap() = config;
+    }
+
+    /// 攝影機小窗要顯示在哪裡、長什麼樣子（None = 不顯示）。
+    /// 錄影中（含倒數、暫停）：這次錄影有攝影機時，用錄影的範圍；位置、大小、形狀用最新的設定
+    /// （錄影中在設定裡改了也跟著變）。錄影前：主畫面看得到時，用介面目前的設定（先擺好位置與大小）
+    pub fn camera_bubble_info(&self) -> Option<crate::camera_bubble::BubbleInfo> {
+        let preview = self.camera_preview.lock().unwrap().clone();
+        let device = |c: &crate::types::CameraConfig| !c.device.trim().is_empty();
+        if let Some(rec) = self.recorder.camera_info() {
+            let latest = preview.as_ref().and_then(|c| c.camera.clone()).or_else(|| self.settings.load().record_config().and_then(|c| c.camera));
+            return Some(crate::camera_bubble::BubbleInfo { camera: latest.filter(device).unwrap_or(rec.camera.clone()), ..rec });
+        }
+        // 倒數、錄影、暫停中但這次錄影沒有攝影機：不能顯示（會被錄進去）。儲存中照常預覽，攝影機不用關了又開
+        if self.recorder.frame_info().is_some() {
+            return None;
+        }
+        let config = preview.filter(|c| !c.audio_only)?;
+        let camera = config.camera.clone().filter(device)?;
+        let plan = crate::args::resolve_plan(&config, &self.lock().monitors).ok()?;
+        Some(crate::camera_bubble::BubbleInfo { area: plan.rect, monitors: plan.monitors, camera })
+    }
+
+    /// 攝影機小窗拖曳、調整大小後的位置（擷取範圍內的相對位置，萬分比）與大小（短邊的百分比）：
+    /// 存進介面設定與錄影設定（從系統匣、快捷鍵開始錄影時用的是錄影設定），下次從這裡開始
+    pub fn save_camera_layout(&self, pos: [u16; 2], size: u32) {
+        let cur = self.settings.load();
+        let mut ui = cur.ui.unwrap_or_else(|| serde_json::json!({}));
+        if let Some(m) = ui.as_object_mut() {
+            m.insert("cameraPos".into(), serde_json::json!(pos));
+            m.insert("cameraSize".into(), serde_json::json!(size));
+        }
+        let mut config = cur.config;
+        if let Some(cam) = config.as_mut().and_then(|c| c.get_mut("camera")).and_then(|c| c.as_object_mut()) {
+            cam.insert("pos".into(), serde_json::json!(pos));
+            cam.insert("size".into(), serde_json::json!(size));
+        }
+        self.settings.save(SettingsPatch { ui: Some(ui), config, ..Default::default() });
+    }
 
     pub fn ffmpeg_path(&self) -> Option<PathBuf> {
         let st = self.lock();

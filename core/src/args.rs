@@ -1305,7 +1305,7 @@ mod tests {
     fn audio_only_uses_the_card() {
         let audio_in = strs(&["-f", "f32le", "-ar", "48000", "-ac", "2", "-i", "tcp://127.0.0.1:5000"]);
         // 不管選了哪個螢幕：卡片的大小，沒有攝影機
-        let cam = CameraConfig { device: "USB Camera".into(), corner: Default::default(), size: 20, circle: true };
+        let cam = CameraConfig { device: "USB Camera".into(), corner: Default::default(), size: 20, circle: true, pos: None };
         let c = RecordConfig { audio_only: true, fps: 5.0, source: SourceConfig::Monitor { monitor_id: "missing".into() }, camera: Some(cam), ..cfg() };
         let mut plan = resolve_plan(&c, &same_gpu()).unwrap();
         assert_eq!((plan.out_width, plan.out_height, plan.monitors.len()), (640, 360, 0));
@@ -1355,7 +1355,7 @@ dummy: Immediate exit requested";
     fn camera_is_not_in_the_recording_args() {
         // 攝影機是螢幕上的小窗，跟著畫面被錄進去：錄影的 FFmpeg 不開攝影機、不疊畫面
         let audio_in = strs(&["-f", "f32le", "-ar", "48000", "-ac", "2", "-i", "tcp://127.0.0.1:5000"]);
-        let c = RecordConfig { camera: Some(CameraConfig { device: "USB Camera".into(), corner: 0, size: 20, circle: true }), ..cfg() };
+        let c = RecordConfig { camera: Some(CameraConfig { device: "USB Camera".into(), corner: 0, size: 20, circle: true, pos: None }), ..cfg() };
         let plan = resolve_plan(&c, &same_gpu()).unwrap();
         for method in [CaptureMethod::Gdigrab, CaptureMethod::Ddagrab] {
             let a = segment_args(&plan, &c, method, &x264(), "o.mp4", Some(&audio_in), None).unwrap();
@@ -1411,7 +1411,7 @@ dummy: Immediate exit requested";
         let all = RecordConfig { source: SourceConfig::All, ..cfg() };
         assert!(GpuPath::choose(support, &resolve_plan(&all, &mons).unwrap(), &all, CaptureMethod::Ddagrab, &x264()).is_none());
         // 攝影機是螢幕上的小窗，不影響
-        let cam = RecordConfig { camera: Some(CameraConfig { device: "Cam".into(), size: 20, corner: 0, circle: false }), ..one.clone() };
+        let cam = RecordConfig { camera: Some(CameraConfig { device: "Cam".into(), size: 20, corner: 0, circle: false, pos: None }), ..one.clone() };
         assert!(GpuPath::choose(support, &plan, &cam, CaptureMethod::Ddagrab, &x264()).is_some());
         let other = Some(GpuSupport { adapter: mons[0].adapter + 1, ..s });
         assert!(GpuPath::choose(other, &plan, &one, CaptureMethod::Ddagrab, &x264()).is_none());

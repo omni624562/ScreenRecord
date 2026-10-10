@@ -14,17 +14,100 @@ pub struct BubbleInfo {
     pub camera: CameraConfig,
 }
 
+/// 小窗大小可調的範圍：擷取範圍短邊的百分比
+pub const SIZE_MIN: u32 = 8;
+pub const SIZE_MAX: u32 = 40;
+
 /// 小窗的邊長：擷取範圍短邊的 size%（8～40%），取偶數、至少 64
 pub fn bubble_size(area: &Rect, cam: &CameraConfig) -> i32 {
-    let d = (area.width.min(area.height) as f64 * cam.size.clamp(8, 40) as f64 / 100.0).round() as i32;
+    size_px(area, cam.size)
+}
+
+/// 擷取範圍短邊的 pct% 是幾個像素（取偶數、至少 64）
+pub fn size_px(area: &Rect, pct: u32) -> i32 {
+    let d = (area.width.min(area.height) as f64 * pct.clamp(SIZE_MIN, SIZE_MAX) as f64 / 100.0).round() as i32;
     (d / 2 * 2).max(64)
 }
 
-/// 預設位置：設定的角落（0 右下、1 左下、2 右上、3 左上），離邊為短邊的 3%。
+/// 拖曳邊緣調整大小：游標離中心的距離決定新的邊長（圓形用直線距離、方形用較遠的那一軸），
+/// 換算成短邊的整數百分比（存設定用；小窗也直接用這個大小，存檔後不會再跳一下）
+pub fn resize_pct(area: &Rect, center: (i32, i32), cursor: (i32, i32), circle: bool) -> u32 {
+    let (dx, dy) = ((cursor.0 - center.0) as f64, (cursor.1 - center.1) as f64);
+    let half = if circle { dx.hypot(dy) } else { dx.abs().max(dy.abs()) };
+    let short = area.width.min(area.height).max(1) as f64;
+    ((half * 2.0 / short * 100.0).round() as u32).clamp(SIZE_MIN, SIZE_MAX)
+}
+
+/// 按在小窗的哪裡：外圍一圈（邊長的 12%，至少 10 像素）拖曳是調整大小，其他地方是移動。
+/// x、y 是小窗內的座標；不在形狀裡（圓形的角落）時是 None
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Grab {
+    Move,
+    Resize,
+}
+
+pub fn grab_at(x: i32, y: i32, size: i32, circle: bool) -> Option<Grab> {
+    let c = size as f64 / 2.0;
+    let (dx, dy) = ((x as f64 + 0.5 - c).abs(), (y as f64 + 0.5 - c).abs());
+    let edge = (size as f64 * 0.12).max(10.0);
+    let dist = if circle { dx.hypot(dy) } else { dx.max(dy) };
+    if dist > c {
+        return None;
+    }
+    Some(if dist >= c - edge { Grab::Resize } else { Grab::Move })
+}
+
+/// 讀攝影機畫面用的大小：這個範圍裡小窗最大時的邊長（最多 720），調整大小時不用重開攝影機，在程式裡縮放
+pub fn source_size(area: &Rect) -> i32 {
+    size_px(area, SIZE_MAX).clamp(128, 720)
+}
+
+/// 把 s×s 的 BGRA 縮放成 d×d：縮小時取範圍內的平均（不會有鋸齒），放大時取最近的像素
+pub fn resample(src: &[u8], s: usize, dst: &mut [u8], d: usize) {
+    if s == d {
+        dst.copy_from_slice(&src[..d * d * 4]);
+        return;
+    }
+    let span = |i: usize| {
+        let a = i * s / d;
+        (a, ((i + 1) * s / d).max(a + 1).min(s))
+    };
+    let cols: Vec<(usize, usize)> = (0..d).map(span).collect();
+    for y in 0..d {
+        let (y0, y1) = span(y);
+        for (x, &(x0, x1)) in cols.iter().enumerate() {
+            let mut acc = [0u32; 4];
+            for sy in y0..y1 {
+                let row = &src[(sy * s + x0) * 4..(sy * s + x1) * 4];
+                for p in row.as_chunks::<4>().0 {
+                    for (a, v) in acc.iter_mut().zip(p) {
+                        *a += *v as u32;
+                    }
+                }
+            }
+            let n = ((y1 - y0) * (x1 - x0)) as u32;
+            let o = &mut dst[(y * d + x) * 4..(y * d + x) * 4 + 4];
+            for (v, a) in o.iter_mut().zip(acc) {
+                *v = (a / n) as u8;
+            }
+        }
+    }
+}
+
+/// 開始時的位置：拖曳過就放在記住的相對位置（落在沒有螢幕的地方時改回角落）；
+/// 否則放在設定的角落（0 右下、1 左下、2 右上、3 左上），離邊為短邊的 3%。
 /// 範圍跨好幾個螢幕（所有螢幕）時，放在最靠那個角落的螢幕上，不會落在沒有螢幕的地方
 pub fn bubble_rect(info: &BubbleInfo) -> Rect {
     let a = &info.area;
     let d = bubble_size(a, &info.camera);
+    if let Some([px, py]) = info.camera.pos {
+        let (cx, cy) = (a.x + (a.width as f64 * px.min(SCALE) as f64 / SCALE as f64).round() as i32, a.y + (a.height as f64 * py.min(SCALE) as f64 / SCALE as f64).round() as i32);
+        let r = clamp_into(Rect { x: cx - d / 2, y: cy - d / 2, width: d, height: d }, a);
+        let on_screen = info.monitors.is_empty() || info.monitors.iter().any(|m| r.x >= m.x && r.y >= m.y && r.x + r.width <= m.x + m.width && r.y + r.height <= m.y + m.height);
+        if on_screen {
+            return r;
+        }
+    }
     let m = (a.width.min(a.height) as f64 * 0.03).round() as i32;
     let (right, bottom) = match info.camera.corner {
         1 => (false, true),
@@ -45,6 +128,15 @@ fn intersect(a: &Rect, b: &Rect) -> Option<Rect> {
     let (x, y) = (a.x.max(b.x), a.y.max(b.y));
     let (r, btm) = ((a.x + a.width).min(b.x + b.width), (a.y + a.height).min(b.y + b.height));
     (r > x && btm > y).then_some(Rect { x, y, width: r - x, height: btm - y })
+}
+
+/// 相對位置的單位：萬分比（4K 寬也能準確回到同一個像素）
+const SCALE: u16 = 10000;
+
+/// 拖曳後要記住的位置：小窗中心在擷取範圍內的相對位置（萬分比）
+pub fn relative_pos(r: &Rect, area: &Rect) -> [u16; 2] {
+    let f = |c: i32, start: i32, len: i32| (((c - start) as f64 / len.max(1) as f64) * SCALE as f64).round().clamp(0.0, SCALE as f64) as u16;
+    [f(r.x + r.width / 2, area.x, area.width), f(r.y + r.height / 2, area.y, area.height)]
 }
 
 /// 讓小窗整個留在擷取範圍內（拖曳、範圍移動後），才會被錄到
@@ -123,7 +215,7 @@ mod tests {
     }
 
     fn cam(corner: u8, size: u32) -> CameraConfig {
-        CameraConfig { device: "Cam".into(), corner, size, circle: true }
+        CameraConfig { device: "Cam".into(), corner, size, circle: true, pos: None }
     }
 
     #[test]
@@ -152,6 +244,82 @@ mod tests {
         assert!(monitors.iter().any(on), "{r:?}");
         // 右邊螢幕的右下角
         assert_eq!((r.x + r.width + 32, r.y + r.height + 32), (3200, 1024));
+    }
+
+    #[test]
+    fn remembers_the_dragged_position() {
+        let mons = vec![mon(0, 0, 1920, 1080)];
+        let area = Rect { x: 0, y: 0, width: 1920, height: 1080 };
+        // 拖到畫面中間偏左上：記成相對位置
+        let dragged = Rect { x: 400, y: 200, width: 216, height: 216 };
+        let pos = relative_pos(&dragged, &area);
+        assert_eq!(pos, [2646, 2852]);
+        // 下次錄同一個範圍：回到同一個地方
+        let info = |area: Rect, pos| BubbleInfo { area, monitors: mons.clone(), camera: CameraConfig { pos, ..cam(0, 20) } };
+        assert_eq!(bubble_rect(&info(area, Some(pos))), dragged);
+        // 錄比較小的自訂範圍：相對位置一樣、大小跟著範圍
+        let region = Rect { x: 100, y: 100, width: 800, height: 600 };
+        let r = bubble_rect(&info(region, Some(pos)));
+        assert_eq!((r.width, r.x + r.width / 2, r.y + r.height / 2), (120, 100 + 212, 100 + 171));
+        // 貼著邊拖：仍整個在範圍內
+        let edge = bubble_rect(&info(area, Some([10000, 0])));
+        assert_eq!((edge.x + edge.width, edge.y), (1920, 0));
+        // 所有螢幕時落在沒有螢幕的地方（右邊螢幕比較矮）：改回角落
+        let two = vec![mon(0, 0, 1920, 1080), mon(1920, 0, 1280, 1024)];
+        let all = BubbleInfo { area: Rect { x: 0, y: 0, width: 3200, height: 1080 }, monitors: two, camera: CameraConfig { pos: Some([9500, 9900]), ..cam(0, 20) } };
+        let r = bubble_rect(&all);
+        assert_eq!((r.x + r.width + 32, r.y + r.height + 32), (3200, 1024));
+    }
+
+    #[test]
+    fn resize_by_dragging_the_edge() {
+        let area = Rect { x: 0, y: 0, width: 1920, height: 1080 };
+        // 中心在 (500, 500)，游標拉到右邊 162 像素：邊長 324 = 短邊 30%
+        assert_eq!(resize_pct(&area, (500, 500), (662, 500), true), 30);
+        // 圓形看直線距離、方形看較遠的一軸
+        assert_eq!(resize_pct(&area, (500, 500), (600, 600), true), 26);
+        assert_eq!(resize_pct(&area, (500, 500), (600, 600), false), 19);
+        // 有上下限
+        assert_eq!(resize_pct(&area, (500, 500), (505, 500), true), SIZE_MIN);
+        assert_eq!(resize_pct(&area, (500, 500), (1500, 500), true), SIZE_MAX);
+        assert_eq!(size_px(&area, 30), 324);
+        // 外圍一圈是調整大小，中間是移動，圓形的角落點不到
+        assert_eq!(grab_at(100, 100, 200, true), Some(Grab::Move));
+        assert_eq!(grab_at(100, 4, 200, true), Some(Grab::Resize));
+        assert_eq!(grab_at(2, 2, 200, true), None);
+        assert_eq!(grab_at(2, 2, 200, false), Some(Grab::Resize));
+        // 讀攝影機的大小：小窗最大時的邊長，最多 720
+        assert_eq!(source_size(&area), 432);
+        assert_eq!(source_size(&Rect { x: 0, y: 0, width: 3840, height: 2160 }), 720);
+    }
+
+    #[test]
+    fn resample_averages_when_shrinking() {
+        // 4×4：左半黑、右半白 → 2×2 每格取平均
+        let mut src = vec![0u8; 4 * 4 * 4];
+        for y in 0..4 {
+            for x in 2..4 {
+                src[(y * 4 + x) * 4..(y * 4 + x) * 4 + 4].copy_from_slice(&[255, 255, 255, 255]);
+            }
+        }
+        let mut out = vec![0u8; 2 * 2 * 4];
+        resample(&src, 4, &mut out, 2);
+        assert_eq!(&out[0..4], &[0, 0, 0, 0]);
+        assert_eq!(&out[4..8], &[255, 255, 255, 255]);
+        // 3×3 → 2×2：跨在中間的那一欄、列都算進去
+        let gray: Vec<u8> = (0..9).flat_map(|i| [i as u8 * 10; 4]).collect();
+        let mut o = vec![0u8; 16];
+        resample(&gray, 3, &mut o, 2);
+        assert_eq!(o[0], 0);
+        assert_eq!(o[12], (40 + 50 + 70 + 80) / 4);
+        // 一樣大：直接複製；放大：取最近的像素
+        let mut same = vec![0u8; 16];
+        resample(&out, 2, &mut same, 2);
+        assert_eq!(same, out);
+        let mut big = vec![0u8; 4 * 4 * 4];
+        resample(&out, 2, &mut big, 4);
+        assert_eq!(&big[0..4], &[0, 0, 0, 0]);
+        assert_eq!(&big[(4 + 3) * 4..(4 + 3) * 4 + 4], &[255, 255, 255, 255]);
     }
 
     #[test]

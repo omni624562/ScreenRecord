@@ -608,6 +608,9 @@ impl eframe::App for UiApp {
         // 錄影中（計時器）、開著剪輯 / 檢視 / 製作 / 全部錄影、轉檔或下載中：每 0.25 秒更新。
         // 主畫面閒置時不定時重畫：狀態有變化由 watch_status 叫醒，其餘每 5 秒保險一次；視窗隱藏時 2 秒
         self.shown_flag.store(shown, std::sync::atomic::Ordering::Relaxed);
+        // 選了攝影機時，主畫面看得到（沒有開著剪輯、檢視、製作、全部錄影）就先顯示攝影機小窗
+        let covered = self.editor.is_some() || self.viewer.is_some() || self.export_dlg.is_some() || self.library.is_some();
+        self.core.set_camera_preview((shown && !covered && self.env_ready).then(|| self.s.record_config(&self.env)));
         let busy = self.status.recorder.state != RecorderState::Idle
             || self.editor.is_some()
             || self.viewer.is_some()

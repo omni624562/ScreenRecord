@@ -162,18 +162,24 @@ fn main() {
         );
     }
 
-    // 錄影時的攝影機小窗：在擷取範圍的角落顯示攝影機畫面（可以拖曳），直接錄進影片
+    // 攝影機小窗：錄影前（主畫面開著）與錄影時在擷取範圍裡顯示攝影機畫面（可以拖曳、調整大小），直接錄進影片
     #[cfg(windows)]
     {
-        let (c1, c2, c3) = (Arc::downgrade(&core), Arc::downgrade(&core), Arc::downgrade(&core));
+        let (c1, c2, c3, c4) = (Arc::downgrade(&core), Arc::downgrade(&core), Arc::downgrade(&core), Arc::downgrade(&core));
         screenrecorder_core::camera_bubble_win::spawn(
-            move || c1.upgrade()?.recorder.camera_info(),
+            move || c1.upgrade()?.camera_bubble_info(),
             move || c2.upgrade()?.ffmpeg_path(),
             move |text| {
                 if let Some(c) = c3.upgrade() {
                     // 錄影器的事件紀錄也會寫進記錄檔
                     c.recorder.log_warn(&text);
                     c.notify("攝影機", &text, true);
+                }
+            },
+            // 拖曳、調整大小後記住位置與大小，下次從這裡開始
+            move |pos, size| {
+                if let Some(c) = c4.upgrade() {
+                    c.save_camera_layout(pos, size);
                 }
             },
         );

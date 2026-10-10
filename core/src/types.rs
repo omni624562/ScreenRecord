@@ -373,6 +373,9 @@ pub struct CameraConfig {
     /// 圓形（否則是方形）
     #[serde(default = "default_true")]
     pub circle: bool,
+    /// 拖曳後記住的位置：小窗中心在擷取範圍內的相對位置（萬分比，0～10000）；None = 放在 corner
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pos: Option<[u16; 2]>,
 }
 
 fn default_camera_size() -> u32 {

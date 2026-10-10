@@ -2,7 +2,7 @@
 //! 同時把錄影設定存到 config 欄位，系統匣的「開始錄影」直接使用。
 
 use screenrecorder_core::format::MP4_WIDTHS;
-use screenrecorder_core::types::{AudioConfig, CameraConfig, EncoderPreference, EnvInfo, ExportFormat, MethodPreference, MonitorInfo, RecordConfig, Rect, SourceConfig, CAMERA_SIZES};
+use screenrecorder_core::types::{AudioConfig, CameraConfig, EncoderPreference, EnvInfo, ExportFormat, MethodPreference, MonitorInfo, RecordConfig, Rect, SourceConfig};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -74,6 +74,9 @@ pub struct UiSettings {
     pub camera_corner: u8,
     pub camera_size: u32,
     pub camera_circle: bool,
+    /// 攝影機小窗拖曳後記住的位置（擷取範圍內的相對位置，萬分比）；None = 放在 camera_corner
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub camera_pos: Option<[u16; 2]>,
     /// 介面大小（%）
     pub ui_scale: u32,
     /// 錄影時游標光暈
@@ -159,8 +162,10 @@ impl UiSettings {
             follow_window: None,
             camera: string("camera").unwrap_or_default(),
             camera_corner: num("cameraCorner").map(|v| v as u8).filter(|v| *v <= 3).unwrap_or(0),
-            camera_size: num("cameraSize").map(|v| v as u32).filter(|v| CAMERA_SIZES.contains(v)).unwrap_or(20),
+            // 小 / 中 / 大，或在小窗上拖曳、滾輪調出來的大小
+            camera_size: num("cameraSize").map(|v| v as u32).filter(|v| (screenrecorder_core::camera_bubble::SIZE_MIN..=screenrecorder_core::camera_bubble::SIZE_MAX).contains(v)).unwrap_or(20),
             camera_circle: boolean("cameraCircle").unwrap_or(true),
+            camera_pos: o.get("cameraPos").and_then(|v| serde_json::from_value::<[u16; 2]>(v.clone()).ok()).filter(|p| p.iter().all(|c| *c <= 10000)),
             cursor_halo: boolean("cursorHalo").unwrap_or(false),
             hide_icons: boolean("hideIcons").unwrap_or(false),
             shot_preview: boolean("shotPreview").unwrap_or(true),
@@ -241,7 +246,13 @@ impl UiSettings {
             cursor_halo: self.cursor_halo,
             hide_icons: self.hide_icons,
             follow_window: if self.source_type == SourceType::Region { self.follow_window.as_ref().map(|w| w.id) } else { None },
-            camera: (!self.camera.is_empty()).then(|| CameraConfig { device: self.camera.clone(), corner: self.camera_corner, size: self.camera_size, circle: self.camera_circle }),
+            camera: (!self.camera.is_empty()).then(|| CameraConfig {
+                device: self.camera.clone(),
+                corner: self.camera_corner,
+                size: self.camera_size,
+                circle: self.camera_circle,
+                pos: self.camera_pos,
+            }),
             audio_only: self.source_type == SourceType::Audio,
         }
     }

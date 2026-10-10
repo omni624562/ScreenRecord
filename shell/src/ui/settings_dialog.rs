@@ -305,10 +305,16 @@ fn camera_rows(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
         return;
     }
     form_row(ui, "攝影機位置", |ui| {
-        let mut c = app.s.camera_corner;
-        let items = [(0u8, "右下".to_string(), true), (1, "左下".into(), true), (2, "右上".into(), true), (3, "左上".into(), true)];
-        if form_combo(ui, "cameraCorner", FORM_CTRL_W, &mut c, &items) {
+        // 錄影時拖曳過：多一個「上次拖曳的位置」；改選角落就不再用記住的位置
+        const DRAGGED: u8 = u8::MAX;
+        let mut c = if app.s.camera_pos.is_some() { DRAGGED } else { app.s.camera_corner };
+        let mut items = vec![(0u8, "右下".to_string(), true), (1, "左下".into(), true), (2, "右上".into(), true), (3, "左上".into(), true)];
+        if app.s.camera_pos.is_some() {
+            items.push((DRAGGED, "上次拖曳的位置".into(), true));
+        }
+        if form_combo(ui, "cameraCorner", FORM_CTRL_W, &mut c, &items) && c != DRAGGED {
             app.s.camera_corner = c;
+            app.s.camera_pos = None;
             app.save_settings();
         }
     });
@@ -319,13 +325,21 @@ fn camera_rows(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
             app.s.camera_size = sz;
             app.save_settings();
         }
+        if !CAMERA_SIZES.contains(&app.s.camera_size) {
+            // 在小窗上調過大小
+            ui.label(RichText::new("自訂").font(theme::font(12.0)).color(p.muted));
+        }
         let mut circle = app.s.camera_circle;
         if segmented(ui, &mut circle, &[(true, "圓形"), (false, "方形")], true) {
             app.s.camera_circle = circle;
             app.save_settings();
         }
     });
-    form_hint(ui, "錄影時螢幕上會出現攝影機小窗（左右翻轉，像照鏡子），看到的就是錄到的；可以拖曳到範圍內的其他位置。攝影機被其他程式使用時，那次錄影不含攝影機。", p.muted);
+    form_hint(
+        ui,
+        "主畫面開著與錄影時，螢幕上會出現攝影機小窗（左右翻轉，像照鏡子），看到的就是錄到的。拖曳中間移動、拖曳外圈或滾動滑鼠滾輪調整大小，都會記住。攝影機被其他程式使用時，錄影不含攝影機。",
+        p.muted,
+    );
 }
 
 fn record_page(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
