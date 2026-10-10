@@ -21,6 +21,9 @@ pub const AT_H: f32 = 70.0;
 pub const SCROLL_H: f32 = 10.0;
 
 const YELLOW: Color32 = Color32::from_rgb(0xf5, 0xb3, 0x01);
+/// 打的點（和錄影外框上的「・N 點」同色）
+const MARK: Color32 = Color32::from_rgb(0xff, 0x8a, 0x1f);
+const FLAG_H: f32 = 22.0;
 
 /// 時間軸縮圖：在背景依序解出時間軸上各個時間點的小圖（放大後只解顯示的範圍）；
 /// 一張一張出現；關閉、換影片或再次縮放時停止。
@@ -177,6 +180,20 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, toast: &mut
         painter.circle_filled(*c, 10.0, p.rec);
         painter.text(*c, Align2::CENTER_CENTER, "×", theme::font_bold(13.0), Color32::WHITE);
     }
+    // 錄影時打的點：底部的小旗子，點一下跳過去
+    let flags: Vec<(f32, usize, f64)> = ed.markers.iter().enumerate().filter(|(_, &t)| t >= a && t <= b && t <= dur).map(|(i, &t)| (x_of(t), i, t)).collect();
+    for &(x, i, _) in &flags {
+        let (top, bot) = (rect.bottom() - FLAG_H, rect.bottom() - 1.0);
+        painter.vline(x, top..=bot, Stroke::new(3.5, Color32::from_black_alpha(120)));
+        painter.vline(x, top..=bot, Stroke::new(2.0, MARK));
+        // 旗面寫第幾個點
+        let label = (i + 1).to_string();
+        let fw = 9.0 + 6.0 * label.len() as f32;
+        let flag = Rect::from_min_size(pos2(x, top), vec2(fw, 13.0));
+        painter.rect(flag, CornerRadius { nw: 0, sw: 0, ne: 4, se: 4 }, MARK, Stroke::new(1.0, Color32::from_black_alpha(140)), egui::StrokeKind::Outside);
+        painter.text(flag.center() + vec2(0.5, 0.0), Align2::CENTER_CENTER, label, theme::font_bold(10.0), Color32::WHITE);
+    }
+    let flag_at = |pos: Pos2| flags.iter().find(|(x, _, _)| pos.y >= rect.bottom() - FLAG_H - 2.0 && pos.x >= x - 4.0 && pos.x <= x + 18.0).map(|&(_, i, t)| (i, t));
     // 播放頭
     let t_now = ed.now();
     let xp = x_of(t_now);
@@ -204,6 +221,9 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, toast: &mut
             if let Some((_, _, t)) = restore_btns.iter().find(|(c, _, _)| c.distance(pos) <= 10.0) {
                 ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
                 tip = Some(t.clone());
+            } else if let Some((i, t)) = flag_at(pos) {
+                ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
+                tip = Some(format!("錄影時打的第 {} 個點 {}・點一下跳過去・M 下一個、Shift+M 上一個", i + 1, video_clock(t)));
             } else {
                 let (cursor, t) = match hit_kind(pos) {
                     TlKind::Start => (CursorIcon::ResizeHorizontal, "拖曳調整開頭"),
@@ -223,6 +243,10 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, toast: &mut
         if let Some(pos) = pos {
             if let Some((_, i, _)) = restore_btns.iter().find(|(c, _, _)| c.distance(pos) <= 10.0) {
                 ed.restore_removed(*i);
+            } else if let Some((_, t)) = flag_at(pos) {
+                ed.stop_preview();
+                ed.player.pause();
+                ed.seek(t);
             } else {
                 ed.stop_preview();
                 ed.player.pause();
@@ -296,8 +320,13 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, toast: &mut
                 ed.set_view(0.0, ed.duration);
             }
             ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-                ui.add(egui::Label::new(theme::muted(ui, "拖曳黃色把手剪頭尾・在時間軸上拖過一段可刪除・滾輪：時間軸放大縮小、影片上逐張移動").font(theme::font(12.0))).truncate()).on_hover_text(
-                    "點時間軸跳到該時間；拖曳黃色把手剪掉頭尾，拖曳上方的黃色橫條移動整段；在時間軸上拖過一段可選取並刪除。在時間軸上轉滾輪放大 / 縮小（Shift + 滾輪左右移動），在影片上轉滾輪逐張前後移動（Shift 一次一秒）。",
+                let hint = if ed.markers.is_empty() {
+                    "拖曳黃色把手剪頭尾・在時間軸上拖過一段可刪除・滾輪：時間軸放大縮小、影片上逐張移動".to_string()
+                } else {
+                    format!("橘色旗子是錄影時打的 {} 個點（M 跳下一個）・拖曳黃色把手剪頭尾・拖過一段可刪除・滾輪放大縮小", ed.markers.len())
+                };
+                ui.add(egui::Label::new(theme::muted(ui, &hint).font(theme::font(12.0))).truncate()).on_hover_text(
+                    "點時間軸跳到該時間；拖曳黃色把手剪掉頭尾，拖曳上方的黃色橫條移動整段；在時間軸上拖過一段可選取並刪除。在時間軸上轉滾輪放大 / 縮小（Shift + 滾輪左右移動），在影片上轉滾輪逐張前後移動（Shift 一次一秒）。錄影時按打點快捷鍵或外框上的旗子，會在時間軸底下留下橘色旗子：點旗子或按 M / Shift+M 跳到下一個 / 上一個點。",
                 );
             });
         });

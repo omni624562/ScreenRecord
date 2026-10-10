@@ -123,6 +123,7 @@ fn main() {
                         FrameCmd::Pause => r.pause().await,
                         FrameCmd::Resume => r.resume().await,
                         FrameCmd::Stop => r.stop(None).await.map(|_| ()),
+                        FrameCmd::Mark => r.add_marker().map(|_| ()),
                         FrameCmd::Move(x, y) => {
                             let old = r.frame_info().map(|f| f.area);
                             r.move_region(x, y).await.map(|new| {

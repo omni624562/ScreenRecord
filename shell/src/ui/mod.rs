@@ -60,6 +60,8 @@ pub enum EntryAction {
     Reveal,
     Edit,
     Export,
+    /// 把檔案複製到剪貼簿（貼到 LINE、Teams、資料夾）
+    CopyFile,
 }
 
 pub struct UiApp {
@@ -402,6 +404,10 @@ impl UiApp {
         let path = entry.media.path.clone();
         match action {
             EntryAction::Play => viewer::open(self, entry),
+            EntryAction::CopyFile => match screenrecorder_core::clipboard::copy_files(std::slice::from_ref(&path)) {
+                Ok(()) => self.toast("已複製檔案，可以直接貼到 LINE、Teams、信件或資料夾", false),
+                Err(e) => self.toast(e, true),
+            },
             EntryAction::External | EntryAction::Reveal => {
                 if action == EntryAction::External {
                     self.toast("正在以 Windows 預設的程式開啟…", false);

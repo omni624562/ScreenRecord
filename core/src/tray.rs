@@ -42,10 +42,14 @@ pub enum TrayCommand {
     ScreenshotSelect,
     /// 再截一次上次框選的範圍
     ScreenshotLast,
+    /// 幾秒後再框選（先打開要截的選單、提示）
+    ScreenshotDelay(u64),
     /// 編輯最近的截圖
     EditLastShot,
     /// 點了通知：剛截圖的通知開啟編輯，其他開啟操作視窗
     BalloonClick,
+    /// 錄影中打點
+    Mark,
     OpenUpdate,
     Quit,
 }
@@ -81,7 +85,7 @@ pub struct TrayState {
     /// 有新版本時顯示在選單
     pub update: Option<String>,
     /// 快捷鍵名稱（選單右側顯示；停用時是空字串）：錄影、暫停、截圖、框選截圖
-    pub keys: [String; 4],
+    pub keys: [String; crate::types::HOTKEY_COUNT],
 }
 
 /// 系統匣圖示（Windows 實作在 tray_win.rs）
@@ -330,6 +334,11 @@ impl TrayController {
                 };
             }
             TrayCommand::Pause => return rec.pause().await.map_err(err),
+            // 沒在錄影時按快捷鍵：不提示
+            TrayCommand::Mark => {
+                let _ = rec.add_marker();
+                return Ok(());
+            }
             TrayCommand::Resume => return rec.resume().await.map_err(err),
             TrayCommand::Stop => return rec.stop(None).await.map(|_| ()).map_err(err),
             TrayCommand::ToggleSystem | TrayCommand::ToggleMic => {
@@ -342,11 +351,20 @@ impl TrayController {
                 crate::desktop::open_with_explorer(&dir, false);
                 return Ok(());
             }
-            TrayCommand::Screenshot | TrayCommand::ScreenshotMonitor(_) | TrayCommand::ScreenshotAll | TrayCommand::ScreenshotLast | TrayCommand::ScreenshotSelect => {
+            TrayCommand::Screenshot
+            | TrayCommand::ScreenshotMonitor(_)
+            | TrayCommand::ScreenshotAll
+            | TrayCommand::ScreenshotLast
+            | TrayCommand::ScreenshotSelect
+            | TrayCommand::ScreenshotDelay(_) => {
                 let mut cfg = self.config();
+                if let TrayCommand::ScreenshotDelay(sec) = cmd {
+                    self.notify("延遲截圖", &format!("{sec} 秒後畫面會凍結讓你框選：現在先打開要截的選單或提示"), false);
+                    tokio::time::sleep(std::time::Duration::from_secs(sec)).await;
+                }
                 match cmd {
                     // 框選：取消時不顯示通知
-                    TrayCommand::ScreenshotSelect => {
+                    TrayCommand::ScreenshotSelect | TrayCommand::ScreenshotDelay(_) => {
                         let Some(shot) = app.snip_begin(&cfg).await.map_err(err)? else { return Ok(()) };
                         self.notify_shot(&shot);
                         return Ok(());
@@ -459,10 +477,10 @@ pub async fn start(app: &Arc<App>) -> bool {
 
 #[cfg_attr(not(windows), allow(dead_code))]
 fn report_hotkeys(app: &App, k: &Hotkeys, h: HotkeyStatus) {
-    let ok = [h.record, h.pause, h.shot, h.snip];
-    let busy: Vec<String> = (0..4).filter(|i| !ok[*i]).map(|i| k.label(i)).collect();
+    let ok = h.all();
+    let busy: Vec<String> = (0..ok.len()).filter(|i| !ok[*i]).map(|i| k.label(i)).collect();
     if busy.is_empty() {
-        let list: Vec<String> = (0..4).filter(|i| !k.label(*i).is_empty()).map(|i| format!("{} {}", k.label(i), HOTKEY_NAMES[i])).collect();
+        let list: Vec<String> = (0..ok.len()).filter(|i| !k.label(*i).is_empty()).map(|i| format!("{} {}", k.label(i), HOTKEY_NAMES[i])).collect();
         info!("快捷鍵：{}", list.join("，"));
     } else {
         info!("快捷鍵 {} 已被其他程式使用，無法登記", busy.join("、"));

@@ -1,5 +1,6 @@
 //! 組 FFmpeg 參數（純函式，方便測試）。
 
+use crate::edit::AudioFx;
 use crate::error::{Error, Result};
 use crate::format::{even, num, output_size, FPS_MAX, FPS_MIN, MAX_MINUTES_MAX, SPEED_MAX, SPEED_MIN};
 use crate::types::{CaptureMethod, EncoderPreference, MonitorInfo, RecordConfig, Rect, SourceConfig, SCALE_OPTIONS};
@@ -18,6 +19,20 @@ pub struct EncoderSpec {
 }
 
 impl EncoderSpec {
+    /// 指定位元率（kbps）的參數：壓縮到指定大小用
+    pub fn bitrate(&self, kbps: u32) -> Vec<String> {
+        let (b, max, buf) = (format!("{kbps}k"), format!("{}k", kbps * 3 / 2), format!("{}k", kbps * 2));
+        let head: &[&str] = match self.name {
+            "h264_nvenc" => &["-c:v", "h264_nvenc", "-preset", "p6", "-rc", "vbr"],
+            "h264_qsv" => &["-c:v", "h264_qsv", "-preset", "medium"],
+            "h264_amf" => &["-c:v", "h264_amf", "-quality", "quality", "-rc", "vbr_peak"],
+            "h264_mf" => &["-c:v", "h264_mf", "-rate_control", "cbr"],
+            _ => &["-c:v", "libx264", "-preset", "medium"],
+        };
+        let mut a: Vec<String> = head.iter().map(|s| s.to_string()).collect();
+        a.extend(["-b:v".into(), b, "-maxrate".into(), max, "-bufsize".into(), buf]);
+        a
+    }
     pub fn live(&self) -> Vec<String> {
         self.live.iter().map(|s| s.to_string()).collect()
     }
@@ -440,11 +455,35 @@ pub fn atempo_chain(speed: f64) -> String {
     f.join(",")
 }
 
-#[allow(clippy::too_many_arguments)]
+/// 壓縮到 max_bytes 以內的影片位元率（kbps）：扣掉聲音與 3% 的檔案結構；太小時以 80 kbps 為下限
+pub fn size_bitrate(max_bytes: f64, seconds: f64, audio_kbps: u32) -> u32 {
+    if seconds <= 0.0 || max_bytes <= 0.0 {
+        return 80;
+    }
+    let total = max_bytes * 8.0 * 0.97 / seconds / 1000.0;
+    ((total - audio_kbps as f64).floor() as i64).max(80) as u32
+}
+
+/// 壓縮到指定大小時聲音用的位元率
+pub const SMALL_AUDIO_KBPS: u32 = 96;
+
 /// 製作加速版：setpts 壓縮時間軸，fps 維持原本的幀率（多出來的幀直接捨棄，不做混合，文字才不會有殘影）；
 /// 聲音以 atempo 變速不變調。width：縮小到這個寬度（高度等比、取偶數）；不小於原寬時維持原尺寸。
-pub fn export_args(source: &str, out_file: &str, speed: f64, fps: f64, enc: &EncoderSpec, with_audio: bool, width: Option<i32>, src_width: Option<i32>) -> Result<Vec<String>> {
-    if !(SPEED_MIN..=SPEED_MAX).contains(&speed) {
+/// limit_kbps：壓縮到指定大小（影片位元率）；這時可以是原速（1×，只壓縮）
+#[allow(clippy::too_many_arguments)]
+pub fn export_args(
+    source: &str,
+    out_file: &str,
+    speed: f64,
+    fps: f64,
+    enc: &EncoderSpec,
+    with_audio: bool,
+    width: Option<i32>,
+    src_width: Option<i32>,
+    limit_kbps: Option<u32>,
+) -> Result<Vec<String>> {
+    let min = if limit_kbps.is_some() { 1.0 } else { SPEED_MIN };
+    if !(min..=SPEED_MAX).contains(&speed) {
         return Err(Error::config(format!("倍率需介於 {}～{}", num(SPEED_MIN), num(SPEED_MAX))));
     }
     let scale = match (width, src_width) {
@@ -458,11 +497,19 @@ pub fn export_args(source: &str, out_file: &str, speed: f64, fps: f64, enc: &Enc
     a.extend(strs(&["-sn", "-dn", "-vf"]));
     a.push(format!("setpts=PTS/{},fps={},{scale}format={}", num(speed), num(fps), enc.pix_fmt));
     if with_audio {
-        a.push("-af".into());
-        a.push(atempo_chain(speed));
-        a.extend(strs(&AUDIO_ENCODE));
+        if speed > 1.0 {
+            a.push("-af".into());
+            a.push(atempo_chain(speed));
+        }
+        match limit_kbps {
+            Some(_) => a.extend(["-c:a".into(), "aac".into(), "-b:a".into(), format!("{SMALL_AUDIO_KBPS}k")]),
+            None => a.extend(strs(&AUDIO_ENCODE)),
+        }
     }
-    a.extend(enc.offline());
+    match limit_kbps {
+        Some(k) => a.extend(enc.bitrate(k)),
+        None => a.extend(enc.offline()),
+    }
     a.extend(["-g".into(), num(fps * 2.0)]);
     a.extend(strs(&COLOR_TAGS));
     a.extend(strs(&["-movflags", "+faststart", "-progress", "pipe:1", "-stats_period", "0.5", "-y"]));
@@ -536,7 +583,19 @@ fn enable(start: f64, end: f64) -> String {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn cut_args(source: &str, out_file: &str, keep: &[(f64, f64)], crop: Option<Rect>, fps: f64, enc: &EncoderSpec, with_audio: bool, overlays: &[OverlayInput]) -> Result<Vec<String>> {
+pub fn cut_args(
+    source: &str,
+    out_file: &str,
+    keep: &[(f64, f64)],
+    crop: Option<Rect>,
+    fps: f64,
+    enc: &EncoderSpec,
+    with_audio: bool,
+    overlays: &[OverlayInput],
+    audio: AudioFx,
+) -> Result<Vec<String>> {
+    // 選了「不要聲音」
+    let with_audio = with_audio && !audio.mute;
     if keep.is_empty() {
         return Err(Error::config("剪輯後沒有留下任何片段"));
     }
@@ -606,7 +665,9 @@ pub fn cut_args(source: &str, out_file: &str, keep: &[(f64, f64)], crop: Option<
     }
     if with_audio {
         a.push("-af".into());
-        a.push(format!("aselect='{expr}',asetpts=N/SR/TB"));
+        let mut af = vec![format!("aselect='{expr}',asetpts=N/SR/TB")];
+        af.extend(audio.filters().into_iter().map(String::from));
+        a.push(af.join(","));
         a.extend(strs(&AUDIO_ENCODE));
     }
     a.extend(enc.offline());
@@ -933,15 +994,20 @@ mod tests {
 
     #[test]
     fn export() {
-        let args = export_args("in.mp4", "out.mp4", 4.0, 30.0, &x264(), false, None, None).unwrap();
+        let args = export_args("in.mp4", "out.mp4", 4.0, 30.0, &x264(), false, None, None, None).unwrap();
         assert_eq!(after(&args, "-vf"), "setpts=PTS/4,fps=30,format=yuv420p");
         assert!(args.contains(&"-an".to_string()));
-        assert!(export_args("in.mp4", "out.mp4", 1.0, 30.0, &x264(), false, None, None).unwrap_err().is_config());
-        let vf = |w, sw| export_args("in.mp4", "out.mp4", 4.0, 30.0, &x264(), false, Some(w), Some(sw)).unwrap();
+        assert!(export_args("in.mp4", "out.mp4", 1.0, 30.0, &x264(), false, None, None, None).unwrap_err().is_config());
+        // 指定大小：原速也可以，改用位元率
+        let small = export_args("in.mp4", "out.mp4", 1.0, 30.0, &x264(), true, None, None, Some(1500)).unwrap().join(" ");
+        assert!(small.contains("-b:v 1500k -maxrate 2250k -bufsize 3000k") && !small.contains("-crf") && !small.contains("atempo") && small.contains("-b:a 96k"), "{small}");
+        assert_eq!(size_bitrate(25.0 * 1024.0 * 1024.0, 100.0, 96), 1938);
+        assert_eq!(size_bitrate(1.0, 100.0, 96), 80);
+        let vf = |w, sw| export_args("in.mp4", "out.mp4", 4.0, 30.0, &x264(), false, Some(w), Some(sw), None).unwrap();
         assert_eq!(after(&vf(1920, 3840), "-vf"), "setpts=PTS/4,fps=30,scale=1920:-2:flags=bicubic,format=yuv420p");
         assert_eq!(after(&vf(1920, 1920), "-vf"), "setpts=PTS/4,fps=30,format=yuv420p");
         assert_eq!(after(&vf(0, 3840), "-vf"), "setpts=PTS/4,fps=30,format=yuv420p");
-        let audio = export_args("in.mp4", "out.mp4", 16.0, 30.0, &x264(), true, None, None).unwrap();
+        let audio = export_args("in.mp4", "out.mp4", 16.0, 30.0, &x264(), true, None, None, None).unwrap();
         assert_eq!(after(&audio, "-af"), "atempo=2,atempo=2,atempo=2,atempo=2");
         assert!(audio.join(" ").contains("-map 0:v:0 -map 0:a:0"));
         assert_eq!(atempo_chain(1.5), "atempo=1.5");
@@ -1017,15 +1083,20 @@ mod tests {
 
     #[test]
     fn cut() {
-        let args = cut_args("in.mp4", "out.mp4", &[(1.0, 2.0), (4.0, 5.5)], Some(Rect { x: 40, y: 40, width: 200, height: 160 }), 30.0, &x264(), true, &[]).unwrap();
+        let args = cut_args("in.mp4", "out.mp4", &[(1.0, 2.0), (4.0, 5.5)], Some(Rect { x: 40, y: 40, width: 200, height: 160 }), 30.0, &x264(), true, &[], AudioFx::default()).unwrap();
         assert_eq!(after(&args, "-vf"), "select='gte(t,1)*lt(t,2)+gte(t,4)*lt(t,5.5)',setpts=N/(30*TB),crop=200:160:40:40,format=yuv420p");
         assert_eq!(after(&args, "-af"), "aselect='gte(t,1)*lt(t,2)+gte(t,4)*lt(t,5.5)',asetpts=N/SR/TB");
-        let no_audio = cut_args("in.mp4", "out.mp4", &[(0.0, 3.0)], None, 30.0, &x264(), false, &[]).unwrap();
+        let no_audio = cut_args("in.mp4", "out.mp4", &[(0.0, 3.0)], None, 30.0, &x264(), false, &[], AudioFx::default()).unwrap();
+        // 降噪、音量平衡接在剪輯後面；不要聲音時整個拿掉
+        let fx = cut_args("in.mp4", "out.mp4", &[(0.0, 3.0)], None, 30.0, &x264(), true, &[], AudioFx { denoise: true, normalize: true, mute: false }).unwrap().join(" ");
+        assert!(fx.contains("asetpts=N/SR/TB,afftdn=nf=-25,loudnorm=I=-16:TP=-1.5:LRA=11,aresample=48000"), "{fx}");
+        let muted = cut_args("in.mp4", "out.mp4", &[(0.0, 3.0)], None, 30.0, &x264(), true, &[], AudioFx { mute: true, ..Default::default() }).unwrap();
+        assert!(muted.contains(&"-an".to_string()) && !muted.iter().any(|a| a.contains("aselect")));
         assert!(no_audio.contains(&"-an".to_string()));
         assert!(!no_audio.contains(&"-af".to_string()));
-        assert!(cut_args("in.mp4", "out.mp4", &[], None, 30.0, &x264(), false, &[]).unwrap_err().is_config());
+        assert!(cut_args("in.mp4", "out.mp4", &[], None, 30.0, &x264(), false, &[], AudioFx::default()).unwrap_err().is_config());
         // 與 edit 模組串起來
-        let keep = keep_ranges(10.0, &EditSpec { start: 1.0, end: 9.0, removed: vec![(3.0, 4.0)], crop: None, overlays: vec![] });
+        let keep = keep_ranges(10.0, &EditSpec { start: 1.0, end: 9.0, removed: vec![(3.0, 4.0)], crop: None, overlays: vec![], ..Default::default() });
         assert_eq!(keep, vec![(1.0, 3.0), (4.0, 9.0)]);
         assert_eq!(normalize_crop(None, 100, 100), None);
 
@@ -1041,7 +1112,7 @@ mod tests {
             // 範圍外馬賽克（方形）
             OverlayInput::Blur { rect: Rect { x: 10, y: 20, width: 100, height: 50 }, start: 0.0, end: 1.0, mosaic: true, mask: None, invert: true, frame: (1280, 720) },
         ];
-        let args = cut_args("in.mp4", "out.mp4", &[(1.0, 5.0)], Some(Rect { x: 40, y: 40, width: 200, height: 160 }), 30.0, &x264(), true, &overlays).unwrap();
+        let args = cut_args("in.mp4", "out.mp4", &[(1.0, 5.0)], Some(Rect { x: 40, y: 40, width: 200, height: 160 }), 30.0, &x264(), true, &overlays, AudioFx::default()).unwrap();
         assert!(!args.contains(&"-vf".to_string()));
         let inputs: Vec<&String> = args.iter().zip(args.iter().skip(1)).filter(|(k, _)| *k == "-i").map(|(_, v)| v).collect();
         assert_eq!(inputs, ["in.mp4", "a.png", "m.png", "m2.png"]);

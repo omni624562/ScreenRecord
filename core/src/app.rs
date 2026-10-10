@@ -122,6 +122,8 @@ pub struct App {
     pub cache: Arc<MediaCache>,
     /// 剪輯版的剪輯設定與標註（之後可以再修改）
     pub projects: Arc<crate::projects::ProjectStore>,
+    /// 錄影中打的點（每支錄影一份，存在 markers/）
+    pub markers: Arc<crate::projects::ProjectStore>,
     pub default_output_dir: String,
     st: Mutex<State>,
     /// 硬體編碼器測試完成（false = 測試中）
@@ -194,6 +196,13 @@ impl RecorderDeps for RecDeps {
     fn after_stop(&self) {
         crate::winui::restore_ui();
     }
+    fn save_markers(&self, output: &str, markers: &[f64]) {
+        if let Some(a) = self.0.upgrade() {
+            if let Err(e) = a.markers.save(output, output, serde_json::json!({ "markers": markers })) {
+                crate::warn!("無法儲存打的點：{e}");
+            }
+        }
+    }
     fn notify(&self, title: &str, text: &str, warn: bool) {
         if let Some(a) = self.0.upgrade() {
             a.notify(title, text, warn);
@@ -216,6 +225,7 @@ impl App {
             installer: crate::selfupdate::Installer::default(),
             thumbs: Thumbnails::new(dir.join("thumbs")),
             projects: Arc::new(crate::projects::ProjectStore::new(dir.join("edits"))),
+            markers: Arc::new(crate::projects::ProjectStore::new(dir.join("markers"))),
             cache: Arc::default(),
             default_output_dir: default_output_dir().display().to_string(),
             st: Mutex::default(),
@@ -300,7 +310,8 @@ impl App {
     pub fn save_hotkeys(&self, k: crate::types::Hotkeys) -> Option<HotkeyStatus> {
         self.settings.save(crate::settings::SettingsPatch { hotkeys: Some(k), ..Default::default() });
         let st = self.apply_hotkeys(&k);
-        let names: Vec<String> = (0..4).map(|i| format!("{} {}", crate::types::HOTKEY_NAMES[i], if k.label(i).is_empty() { "停用".to_string() } else { k.label(i) })).collect();
+        let names: Vec<String> =
+            (0..crate::types::HOTKEY_COUNT).map(|i| format!("{} {}", crate::types::HOTKEY_NAMES[i], if k.label(i).is_empty() { "停用".to_string() } else { k.label(i) })).collect();
         crate::info!("快捷鍵改為：{}", names.join("、"));
         st
     }
@@ -371,6 +382,29 @@ impl App {
         }
         let _ = tokio::fs::remove_file(out).await;
         Err(crate::Error::other("截圖失敗，詳見記錄檔"))
+    }
+
+    /// 從影片擷取 t 秒的那一格，存成截圖（原尺寸 PNG，和影片放在同一個資料夾）並複製到剪貼簿
+    pub async fn grab_frame(self: &Arc<Self>, video: &str, t: f64) -> crate::Result<crate::types::ShotInfo> {
+        let ffmpeg = self.ffmpeg_path().ok_or_else(|| crate::Error::config("找不到 FFmpeg"))?;
+        let dir = Path::new(video).parent().map(|p| p.display().to_string()).unwrap_or_default();
+        let out = new_shot_path(&dir).await?;
+        let t = if t.is_finite() { t.max(0.0) } else { 0.0 };
+        let args: Vec<String> = ["-hide_banner", "-loglevel", "error", "-ss", &format!("{t:.3}"), "-i", video, "-frames:v", "1", "-update", "1", "-y"]
+            .iter()
+            .map(|s| s.to_string())
+            .chain(std::iter::once(out.display().to_string()))
+            .collect();
+        let r = crate::process::run(&ffmpeg, &args, Duration::from_secs(30)).await;
+        if r.code != 0 || !tokio::fs::metadata(&out).await.map(|m| m.len() > 0).unwrap_or(false) {
+            let _ = tokio::fs::remove_file(&out).await;
+            crate::info!("[截圖] 擷取影片畫面失敗：{}", r.stderr.trim());
+            return Err(crate::Error::other("無法擷取這一格，詳見記錄檔"));
+        }
+        let shot = self.finish_shot(&out, 0, 0).await;
+        self.lock().shot = Some(shot.clone());
+        crate::info!("[截圖] 從 {video} 的 {t:.2} 秒擷取 {}（{}×{}）", shot.path, shot.width, shot.height);
+        Ok(shot)
     }
 
     /// 截好的 PNG：複製到剪貼簿（失敗不影響已存好的檔案），編上序號

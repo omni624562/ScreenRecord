@@ -82,6 +82,8 @@ pub fn export_tag(x: &ExportInfo) -> String {
         } else {
             "GIF".into()
         }
+    } else if x.speed <= 1.0 {
+        "壓縮版".into()
     } else {
         format!("{}×", speed_label(x.speed))
     }
@@ -410,6 +412,9 @@ fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table:
                 ui.set_min_width(190.0);
                 if ui.button("製作加速版 / GIF").clicked() {
                     *action = Some((EntryAction::Export, e.clone()));
+                }
+                if ui.button("複製檔案（貼到 LINE、資料夾）").clicked() {
+                    *action = Some((EntryAction::CopyFile, e.clone()));
                 }
                 if ui.button("重新命名（加速版一起改）").clicked() {
                     *rename = Some(e.clone());

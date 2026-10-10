@@ -117,6 +117,28 @@ fn time_panel(ed: &mut Editor, ui: &mut egui::Ui, toast: &mut Option<(String, bo
         }
     }
     hint(ui, "在時間軸上拖過一段即可選取，按「刪除這段」或 Delete 鍵刪除。");
+    audio_panel(ed, ui);
+}
+
+/// 聲音處理（輸出時套用）
+fn audio_panel(ed: &mut Editor, ui: &mut egui::Ui) {
+    let p = theme::pal(ui);
+    let has = ed.entry.media.has_audio == Some(true);
+    ui.add_space(4.0);
+    let r = ui.cursor();
+    ui.painter().hline(r.x_range(), r.top(), Stroke::new(1.0, p.border));
+    ui.add_space(6.0);
+    ui.label(RichText::new("聲音").font(theme::font_bold(13.5)));
+    if !has {
+        return hint(ui, "這支影片沒有聲音。");
+    }
+    let fx = &mut ed.spec.audio;
+    switch(ui, &mut fx.mute, "不要聲音", true).on_hover_text("輸出的影片沒有聲音");
+    ui.add_enabled_ui(!fx.mute, |ui| {
+        switch(ui, &mut fx.denoise, "降噪", true).on_hover_text("減少風扇、冷氣等持續的背景雜音");
+        switch(ui, &mut fx.normalize, "音量平衡", true).on_hover_text("忽大忽小的音量變平均，整體調到適合聆聽的大小");
+    });
+    hint(ui, "預覽時聽到的是原本的聲音，輸出的影片才會套用。");
 }
 
 fn crop_panel(ed: &mut Editor, ui: &mut egui::Ui) {
@@ -354,6 +376,7 @@ fn props(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context) {
     let (dur, now) = (ed.duration, ed.now());
     let k = (if ed.vh > 0.0 { ed.vh } else { 1080.0 }) / 1080.0;
     let mut delete = false;
+    let mut apply_all = false;
     egui::Frame::new().fill(p.surface2).corner_radius(theme::RADIUS_SM).inner_margin(10).show(ui, |ui| {
         ui.set_width(ui.available_width());
         ui.spacing_mut().item_spacing = vec2(8.0, 8.0);
@@ -443,6 +466,14 @@ fn props(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context) {
             }
         }
 
+        // 同類的標註一次改成一樣（例如所有編號都改成綠色、一樣大）
+        let same = ed.anns.iter().filter(|o| o.kind == cur.kind).count();
+        // 表情符號不算（顏色、大小是另外選的）
+        let emoji = cur.kind == AnnKind::Text && cur.text.as_deref().is_some_and(super::is_emoji_text);
+        if same > 1 && !emoji && Btn::new(format!("全部 {same} 個{}都改成這樣", cur.kind.label())).ghost().small().tooltip("顏色、大小（以及形狀、底色）套用到所有同類的標註").show(ui).clicked()
+        {
+            apply_all = true;
+        }
         // 角度（箭頭不用：兩端本來就能指向任何方向）
         if cur.kind.rotatable() {
             ui.horizontal(|ui| {
@@ -504,9 +535,30 @@ fn props(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context) {
     }
     if cur != a {
         if let Some(sel) = ed.selected_mut() {
-            *sel = cur;
+            *sel = cur.clone();
         }
         ed.touch_selected();
+    }
+    if apply_all {
+        for o in ed.anns.iter_mut().filter(|o| o.kind == cur.kind && o.id != cur.id) {
+            // 表情符號不改（它們的顏色、大小是另外選的）
+            if o.kind == AnnKind::Text && o.text.as_deref().is_some_and(super::is_emoji_text) {
+                continue;
+            }
+            let (cx, cy) = (o.x + o.w / 2.0, o.y + o.h / 2.0);
+            o.color = cur.color.clone();
+            o.size = cur.size;
+            o.bg = cur.bg;
+            if o.kind.is_effect() {
+                o.shape = cur.shape;
+                o.invert = cur.invert;
+            }
+            annotate::measure(o);
+            if matches!(o.kind, AnnKind::Text | AnnKind::Step) {
+                o.x = cx - o.w / 2.0;
+                o.y = cy - o.h / 2.0;
+            }
+        }
     }
 }
 

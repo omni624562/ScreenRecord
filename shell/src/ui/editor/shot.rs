@@ -70,6 +70,8 @@ pub enum Act {
     Ocr,
     /// 不從原圖重新套用，直接編輯開啟的那張
     Plain,
+    /// 影片：目前這一格存成截圖
+    Grab,
 }
 
 /// 開啟截圖編輯：編輯過的圖會從原圖重新套用上次的編輯
@@ -112,7 +114,7 @@ fn new_editor(app: &UiApp, opened: String, src: String, rgba: Vec<u8>, w: u32, h
     ed.fps = 1.0;
     ed.vw = w as f64;
     ed.vh = h as f64;
-    ed.spec = EditSpec { start: 0.0, end: 1.0, removed: vec![], crop: None, overlays: vec![] };
+    ed.spec = EditSpec { start: 0.0, end: 1.0, removed: vec![], crop: None, overlays: vec![], ..Default::default() };
     ed.view = (0.0, 1.0);
     let (prgba, pw, ph) = downscale(&rgba, w, h, PREVIEW_MAX);
     let base = Frame { time: 0.0, width: pw, height: ph, rgba: prgba };
@@ -466,6 +468,16 @@ pub fn run(app: &mut UiApp, ed: &mut Editor, act: Act) {
             }
         }),
         Act::Ocr => super::super::ocr::start_spec(app, src, sp),
+        Act::Grab => {
+            let (video, t) = (ed.entry.media.path.clone(), ed.now());
+            ed.pause();
+            // 完成後由狀態更新顯示「已截圖」並更新清單
+            app.spawn(async move { core.grab_frame(&video, t).await }, |app, r| {
+                if let Err(e) = r {
+                    app.toast(e.message().to_string(), true);
+                }
+            });
+        }
         Act::Plain => {
             let Some(path) = ed.shot.as_ref().and_then(|s| s.opened_edit.clone()) else { return };
             app.editor = None;

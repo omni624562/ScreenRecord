@@ -99,6 +99,7 @@ pub async fn rename(app: &App, path: &str, name: &str) -> Result<String> {
     }
     let new_path = crate::library::rename_recording(&app.cache, path, name, &busy).await?;
     app.projects.renamed(path, &new_path);
+    app.markers.renamed(path, &new_path);
     Ok(new_path)
 }
 
@@ -119,6 +120,7 @@ pub fn delete(app: &App, paths: &[String]) -> Result<usize> {
     crate::recycle::move_to_recycle_bin(paths)?;
     for f in paths {
         app.projects.removed(f);
+        app.markers.removed(f);
     }
     Ok(paths.len())
 }
@@ -135,6 +137,8 @@ pub struct ExportRequest {
     pub gif_fps: f64,
     /// 加速版縮小後的寬度；0 = 原尺寸
     pub mp4_width: f64,
+    /// 壓縮到這個大小以內（MB）；0 = 不限
+    pub mp4_max_mb: f64,
 }
 
 pub async fn export_start(app: &App, r: &ExportRequest) -> Result<()> {
@@ -144,7 +148,7 @@ pub async fn export_start(app: &App, r: &ExportRequest) -> Result<()> {
     let ctx = app.export_ctx();
     match r.format {
         ExportFormat::Gif => app.exporter.start_gif(&ctx, &r.source, r.speed, r.gif_width, r.gif_fps).await?,
-        ExportFormat::Mp4 => app.exporter.start(&ctx, &r.source, r.speed, r.keep_audio, r.mp4_width).await?,
+        ExportFormat::Mp4 => app.exporter.start(&ctx, &r.source, r.speed, r.keep_audio, r.mp4_width, r.mp4_max_mb).await?,
     };
     Ok(())
 }
@@ -211,6 +215,24 @@ pub async fn edit_project(app: &App, path: &str) -> Option<EditProject> {
         _ => None,
     };
     Some(EditProject { project, matched, source })
+}
+
+// ───────────── 錄影中打的點 ─────────────
+
+/// 這支錄影裡打的點（影片的秒數，由小到大）
+pub async fn markers(app: &App, path: &str) -> Vec<f64> {
+    let (store, p) = (app.markers.clone(), path.to_string());
+    tokio::task::spawn_blocking(move || store.for_output(&p))
+        .await
+        .ok()
+        .flatten()
+        .and_then(|x| x.data.get("markers").and_then(|m| serde_json::from_value::<Vec<f64>>(m.clone()).ok()))
+        .map(|mut v| {
+            v.retain(|t| t.is_finite() && *t >= 0.0);
+            v.sort_by(f64::total_cmp);
+            v
+        })
+        .unwrap_or_default()
 }
 
 // ───────────── 截圖編輯 ─────────────
@@ -401,7 +423,7 @@ mod tests {
         assert!(delete(&app, &[]).unwrap_err().message().contains("沒有選取"));
         assert!(delete(&app, &["relative.mp4".into()]).unwrap_err().message().contains("找不到"));
         assert!(rename(&app, "relative.mp4", "x").await.unwrap_err().message().contains("找不到"));
-        let spec = EditSpec { start: 1.0, end: 2.0, removed: vec![], crop: None, overlays: vec![] };
+        let spec = EditSpec { start: 1.0, end: 2.0, removed: vec![], crop: None, overlays: vec![], ..Default::default() };
         let src = dir.path().join("Rec.mp4").display().to_string();
         assert!(cut_start(&app, &src, &spec, Some("Rec_cut.mp4"), None).await.unwrap_err().message().contains("找不到要取代"));
         assert!(edit_project(&app, &src).await.is_none());

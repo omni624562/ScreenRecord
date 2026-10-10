@@ -106,10 +106,13 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         let p = theme::pal(ui);
         let s = &mut app.s;
         let gif = s.export_format == ExportFormat::Gif;
+        // 有大小上限（壓縮）
+        let small = !gif && s.mp4_max_mb > 0;
         // 目前設定實際會用的倍率；指定長度但輸入無效時為 None
         let speed = match s.export_mode {
-            ExportMode::Speed => Some(if gif { s.speed.max(1.0) } else { s.speed.max(SPEED_MIN) }),
-            ExportMode::Target => parse_clock(&s.export_target).filter(|_| dur > 0.0).map(|t| speed_for_target(dur, t, gif)),
+            // 有大小上限時可以原速（只壓縮）
+            ExportMode::Speed => Some(if gif || small { s.speed.max(1.0) } else { s.speed.max(SPEED_MIN) }),
+            ExportMode::Target => parse_clock(&s.export_target).filter(|_| dur > 0.0).map(|t| speed_for_target(dur, t, gif || small)),
         };
         let mut changed = false;
 
@@ -170,7 +173,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                         ui.set_height(ROW_H);
                         ui.spacing_mut().item_spacing.x = 6.0;
                         let mut presets: Vec<(f64, String)> = SPEED_PRESETS.iter().map(|v| (*v, format!("{}×", speed_label(*v)))).collect();
-                        if gif {
+                        if gif || small {
                             presets.insert(0, (1.0, "原速".into()));
                         }
                         for (v, label) in &presets {
@@ -188,7 +191,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                         ui.label(RichText::new("×").font(theme::font(14.0)).color(p.muted));
                         if r.changed() {
                             if let Ok(v) = dlg.speed_text.trim().parse::<f64>() {
-                                let min = if gif { 1.0 } else { SPEED_MIN };
+                                let min = if gif || small { 1.0 } else { SPEED_MIN };
                                 if v.is_finite() && v >= min && v <= SPEED_MAX {
                                     s.speed = (v * 100.0).round() / 100.0;
                                     changed = true;
@@ -196,8 +199,11 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                             }
                         }
                     });
-                    let range =
-                        if gif { format!("可輸入 1–{}×，1× 為原速", speed_label(SPEED_MAX)) } else { format!("可輸入 {}–{}×", speed_label(SPEED_MIN), speed_label(SPEED_MAX)) };
+                    let range = if gif || small {
+                        format!("可輸入 1–{}×，1× 為原速", speed_label(SPEED_MAX))
+                    } else {
+                        format!("可輸入 {}–{}×", speed_label(SPEED_MIN), speed_label(SPEED_MAX))
+                    };
                     helper(ui, range, p.muted);
                 }),
                 ExportMode::Target => row(ui, "長度", |ui| {
@@ -262,6 +268,23 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                     }
                 });
             });
+            if !gif {
+                row(ui, "大小上限", |ui| {
+                    ui.horizontal(|ui| {
+                        ui.set_height(ROW_H);
+                        let opts: Vec<(u32, String)> = crate::ui::settings::MAX_MB.iter().map(|m| (*m, if *m == 0 { "不限".to_string() } else { format!("{m} MB 以內") })).collect();
+                        if combo(ui, "mp4max", 130.0, &mut s.mp4_max_mb, &opts) {
+                            // 改回不限：不能原速
+                            if s.mp4_max_mb == 0 && s.speed < SPEED_MIN {
+                                s.speed = 4.0;
+                            }
+                            changed = true;
+                        }
+                        ui.add_space(8.0);
+                        ui.label(RichText::new(if s.mp4_max_mb > 0 { "降低畫質讓檔案小於上限，方便用 Email、LINE 傳送；可選「原速」只壓縮" } else { "" }).font(theme::font(12.5)).color(p.muted));
+                    });
+                });
+            }
             row(ui, "聲音", |ui| {
                 ui.horizontal(|ui| {
                     ui.set_height(ROW_H);
@@ -323,11 +346,22 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                                 height: h as f64,
                                 gif_fps: Some(s.gif_fps as f64),
                             });
-                            format!("{w}×{h}・約 {}～{}", format_bytes(lo as u64), format_bytes(hi as u64))
+                            let cap = (s.mp4_max_mb > 0 && !gif).then_some(s.mp4_max_mb as f64 * 1024.0 * 1024.0);
+                            match cap {
+                                Some(c) if hi > c => format!("{w}×{h}・{} 以內", format_bytes(c as u64)),
+                                _ => format!("{w}×{h}・約 {}～{}", format_bytes(lo as u64), format_bytes(hi as u64)),
+                            }
                         }
                         _ => String::new(),
                     };
-                    side(ui, if gif { "GIF" } else { "加速版" }, out_time, out_sub);
+                    let title = if gif {
+                        "GIF"
+                    } else if speed.is_some_and(|sp| sp <= 1.0) {
+                        "壓縮版"
+                    } else {
+                        "加速版"
+                    };
+                    side(ui, title, out_time, out_sub);
                 });
                 // 存成的檔名、1 小時的錄影會變成多長
                 let r = ui.cursor();
@@ -417,7 +451,8 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                 let label = match speed {
                     None => "製作".to_string(),
                     Some(sp) if gif => format!("製作 GIF{}", if sp > 1.0 { format!("（{}×）", speed_label(sp)) } else { String::new() }),
-                    Some(sp) => format!("製作 {}× 加速版", speed_label(sp)),
+                    Some(sp) if sp <= 1.0 => format!("製作壓縮版（{} MB 以內）", s.mp4_max_mb),
+                    Some(sp) => format!("製作 {}× 加速版{}", speed_label(sp), if s.mp4_max_mb > 0 { format!("（{} MB 以內）", s.mp4_max_mb) } else { String::new() }),
                 };
                 let label = if ex.is_some() { label.replacen("製作", "再製作一份", 1) } else { label };
                 if Btn::new(label).primary().enabled(speed.is_some() && !dlg.busy).min_width(170.0).show(ui).clicked() {
@@ -431,6 +466,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                             gif_width: s.gif_width as f64,
                             gif_fps: s.gif_fps as f64,
                             mp4_width: s.mp4_width as f64,
+                            mp4_max_mb: if gif { 0.0 } else { s.mp4_max_mb as f64 },
                         };
                         let core = app.core.clone();
                         app.spawn(async move { actions::export_start(&core, &req).await }, |app, r| match r {

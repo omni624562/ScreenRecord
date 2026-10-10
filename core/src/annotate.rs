@@ -875,6 +875,9 @@ pub struct ProjectData {
     pub crop_on: bool,
     #[serde(default)]
     pub anns: Vec<Ann>,
+    /// 聲音處理（降噪、音量平衡、靜音）
+    #[serde(default, skip_serializing_if = "crate::edit::AudioFx::is_default")]
+    pub audio: crate::edit::AudioFx,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -107,6 +107,20 @@ pub struct HotkeyStatus {
     pub shot: bool,
     #[serde(default)]
     pub snip: bool,
+    #[serde(default)]
+    pub mark: bool,
+}
+
+impl HotkeyStatus {
+    /// 依 Hotkeys::all 的順序
+    pub fn all(&self) -> [bool; HOTKEY_COUNT] {
+        [self.record, self.pause, self.shot, self.snip, self.mark]
+    }
+
+    pub fn from_list(ok: &[bool]) -> HotkeyStatus {
+        let g = |i: usize| ok.get(i).copied().unwrap_or(false);
+        HotkeyStatus { record: g(0), pause: g(1), shot: g(2), snip: g(3), mark: g(4) }
+    }
 }
 
 /// 最近一次的截圖（seq 每次加一，介面看到變了就更新清單）
@@ -174,25 +188,35 @@ pub fn key_name(vk: u32) -> Option<String> {
     })
 }
 
-/// 四個全域快捷鍵（None = 停用）
+/// 全域快捷鍵的數量
+pub const HOTKEY_COUNT: usize = 5;
+
+/// 全域快捷鍵（None = 停用）
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Hotkeys {
     pub record: Option<Hotkey>,
     pub pause: Option<Hotkey>,
     pub shot: Option<Hotkey>,
     pub snip: Option<Hotkey>,
+    /// 錄影中打點（3.1 新增：舊的設定沒有這個欄位時用預設）
+    #[serde(default = "default_mark")]
+    pub mark: Option<Hotkey>,
+}
+
+fn default_mark() -> Option<Hotkey> {
+    Some(Hotkey::ctrl_alt(0x4D))
 }
 
 impl Default for Hotkeys {
     fn default() -> Self {
-        Hotkeys { record: Some(Hotkey::ctrl_alt(0x52)), pause: Some(Hotkey::ctrl_alt(0x50)), shot: Some(Hotkey::ctrl_alt(0x53)), snip: Some(Hotkey::ctrl_alt(0x41)) }
+        Hotkeys { record: Some(Hotkey::ctrl_alt(0x52)), pause: Some(Hotkey::ctrl_alt(0x50)), shot: Some(Hotkey::ctrl_alt(0x53)), snip: Some(Hotkey::ctrl_alt(0x41)), mark: default_mark() }
     }
 }
 
 impl Hotkeys {
-    /// 依序：開始 / 停止錄影、暫停 / 繼續、截圖、框選截圖
-    pub fn all(&self) -> [Option<Hotkey>; 4] {
-        [self.record, self.pause, self.shot, self.snip]
+    /// 依序：開始 / 停止錄影、暫停 / 繼續、截圖、框選截圖、打點
+    pub fn all(&self) -> [Option<Hotkey>; HOTKEY_COUNT] {
+        [self.record, self.pause, self.shot, self.snip, self.mark]
     }
 
     pub fn set(&mut self, i: usize, k: Option<Hotkey>) {
@@ -200,8 +224,14 @@ impl Hotkeys {
             0 => self.record = k,
             1 => self.pause = k,
             2 => self.shot = k,
-            _ => self.snip = k,
+            3 => self.snip = k,
+            _ => self.mark = k,
         }
+    }
+
+    /// 全部停用（設定新的快捷鍵時暫停）
+    pub fn none() -> Hotkeys {
+        Hotkeys { record: None, pause: None, shot: None, snip: None, mark: None }
     }
 
     /// 第 i 個的名稱（停用時是空字串）
@@ -215,7 +245,7 @@ impl Hotkeys {
     }
 }
 
-pub const HOTKEY_NAMES: [&str; 4] = ["開始 / 停止錄影", "暫停 / 繼續", "截圖（固定範圍）", "框選截圖"];
+pub const HOTKEY_NAMES: [&str; HOTKEY_COUNT] = ["開始 / 停止錄影", "暫停 / 繼續", "截圖（固定範圍）", "框選截圖", "錄影中打點"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -332,6 +362,13 @@ pub struct RecorderStatus {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub result: Option<RecordingResult>,
     pub log: Vec<LogEntry>,
+    /// 這次錄影打了幾個點
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub markers: u32,
+}
+
+fn is_zero_u32(v: &u32) -> bool {
+    *v == 0
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]

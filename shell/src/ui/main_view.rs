@@ -719,13 +719,24 @@ fn rec_panel(app: &mut UiApp, ui: &mut Ui) {
                 shot_button(app, ui, shot_w);
             } else {
                 let w = ui.available_width();
-                if r.state == RecorderState::Recording && Btn::new("暫停").icon(Icon::Pause).enabled(r.busy.is_none()).min_width(w * 0.45).show(ui).clicked() {
+                let marking = matches!(r.state, RecorderState::Recording | RecorderState::Paused);
+                let pw = if marking { w * 0.34 } else { w * 0.45 };
+                if r.state == RecorderState::Recording && Btn::new("暫停").icon(Icon::Pause).enabled(r.busy.is_none()).min_width(pw).show(ui).clicked() {
                     let core = app.core.clone();
                     app.guarded(async move { core.recorder.pause().await }, |_, _| {});
                 }
-                if r.state == RecorderState::Paused && Btn::new("繼續").icon(Icon::Play).enabled(r.busy.is_none()).min_width(w * 0.45).show(ui).clicked() {
+                if r.state == RecorderState::Paused && Btn::new("繼續").icon(Icon::Play).enabled(r.busy.is_none()).min_width(pw).show(ui).clicked() {
                     let core = app.core.clone();
                     app.guarded(async move { core.recorder.resume().await }, |_, _| {});
+                }
+                if marking {
+                    let mk = if app.keys.label(4).is_empty() { String::new() } else { format!("（{}）", app.keys.label(4)) };
+                    let label = if r.markers > 0 { format!("打點 {}", r.markers) } else { "打點".into() };
+                    if Btn::new(label).min_width(w * 0.26).tooltip(format!("記下現在的位置，剪輯時可以直接跳過去{mk}")).show(ui).clicked() {
+                        if let Err(e) = app.core.recorder.add_marker() {
+                            app.toast(e.message().to_string(), true);
+                        }
+                    }
                 }
                 let stop_label = if r.state == RecorderState::Countdown {
                     if r.countdown_covers_ui == Some(false) {
@@ -808,9 +819,44 @@ fn rec_panel(app: &mut UiApp, ui: &mut Ui) {
 /// 截圖：與錄影相同的範圍，存成 PNG 並複製到剪貼簿（完成後由狀態更新顯示提示、更新清單）
 fn shot_button(app: &mut UiApp, ui: &mut Ui, w: f32) {
     let hotkey = if app.env.hotkeys.is_some_and(|h| h.shot) && !app.keys.label(2).is_empty() { format!("（{}）", app.keys.label(2)) } else { String::new() };
-    let tip = format!("截取目前的擷取範圍，存成 PNG 並複製到剪貼簿{hotkey}");
+    let tip = format!("截取目前的擷取範圍，存成 PNG 並複製到剪貼簿{hotkey}\n右鍵：框選範圍或視窗、延遲截圖");
     let can = app.env.ffmpeg.found && !app.main.shooting;
-    if Btn::new("截圖").icon(Icon::Camera).enabled(can).tooltip(tip).min_width(w).height(40.0).show(ui).clicked() {
+    let resp = Btn::new("截圖").icon(Icon::Camera).enabled(can).tooltip(tip).min_width(w).height(40.0).show(ui);
+    // 右鍵選單：在螢幕上框選，或等幾秒再框選（先打開要截的選單）
+    let mut snip: Option<u64> = None;
+    egui::Popup::context_menu(&resp).show(|ui| {
+        ui.set_min_width(170.0);
+        if ui.button("框選範圍或視窗…").clicked() {
+            snip = Some(0);
+        }
+        ui.separator();
+        for sec in [3u64, 5, 10] {
+            if ui.button(format!("{sec} 秒後框選")).clicked() {
+                snip = Some(sec);
+            }
+        }
+    });
+    if let Some(sec) = snip.filter(|_| can) {
+        app.main.shooting = true;
+        let config = app.s.record_config(&app.env);
+        let core = app.core.clone();
+        if sec > 0 {
+            app.toast(format!("{sec} 秒後框選：現在先打開要截的選單或提示"), false);
+        }
+        app.spawn(
+            async move {
+                tokio::time::sleep(std::time::Duration::from_secs(sec)).await;
+                core.snip_begin(&config).await
+            },
+            |app, r| {
+                app.main.shooting = false;
+                if let Err(e) = r {
+                    app.toast(e.message().to_string(), true);
+                }
+            },
+        );
+    }
+    if resp.clicked() {
         app.main.shooting = true;
         let config = app.s.record_config(&app.env);
         let core = app.core.clone();
@@ -1117,6 +1163,13 @@ fn recent_card(app: &mut UiApp, ui: &mut Ui, e: &LibraryEntry, date: String, w: 
                 app.act(act, e.clone());
             }
         }
+        let more = Btn::icon_only(Icon::More).ghost().small().quiet(!hot).tooltip("更多").show(ui);
+        egui::Popup::menu(&more).show(|ui| {
+            ui.set_min_width(180.0);
+            if ui.button("複製檔案（貼到 LINE、資料夾）").clicked() {
+                app.act(EntryAction::CopyFile, e.clone());
+            }
+        });
     }
     resp.on_hover_text(&e.media.name);
 }

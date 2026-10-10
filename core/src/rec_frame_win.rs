@@ -49,12 +49,15 @@ pub enum FrameCmd {
     Pause,
     Resume,
     Stop,
+    /// 打點
+    Mark,
     /// 把範圍移到 (x, y)（左上角，虛擬桌面座標）
     Move(i32, i32),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Button {
+    Mark,
     Pause,
     Resume,
     Stop,
@@ -64,6 +67,8 @@ enum Button {
 #[derive(Clone, PartialEq)]
 struct Bar {
     text: String,
+    /// 打了幾個點（時間後面顯示）
+    marks: u32,
     dot: COLORREF,
     buttons: Vec<Button>,
     /// DPI 縮放（1.0 = 96 DPI）
@@ -115,6 +120,8 @@ const DOT: f32 = 10.0;
 /// 左邊的拖曳點（2×3 個小點）
 const GRIP: f32 = 12.0;
 const TEXT_W: f32 = 76.0;
+/// 「・2 點」的寬度
+const MARKS_W: f32 = 44.0;
 const BTN_W: f32 = 32.0;
 const BTN_GAP: f32 = 2.0;
 
@@ -124,7 +131,7 @@ fn px(v: f32, scale: f32) -> i32 {
 
 fn bar_size(b: &Bar) -> (i32, i32) {
     let s = b.scale;
-    let w = BAR_PAD + GRIP + DOT + 8.0 + TEXT_W + 6.0 + b.buttons.len() as f32 * (BTN_W + BTN_GAP) + 4.0;
+    let w = BAR_PAD + GRIP + DOT + 8.0 + TEXT_W + if b.marks > 0 { MARKS_W } else { 0.0 } + 6.0 + b.buttons.len() as f32 * (BTN_W + BTN_GAP) + 4.0;
     (px(w, s), px(BAR_H, s))
 }
 
@@ -140,9 +147,9 @@ fn button_rect(b: &Bar, i: usize) -> RECT {
 
 fn bar_for(f: &FrameInfo, scale: f32) -> Bar {
     match f.state {
-        RecorderState::Countdown => Bar { text: format!("倒數 {}", f.countdown_ms.unwrap_or(0).div_ceil(1000)), dot: GREY, buttons: vec![Button::Stop], scale },
-        RecorderState::Paused => Bar { text: clock(f.recorded_ms as f64), dot: AMBER, buttons: vec![Button::Resume, Button::Stop], scale },
-        _ => Bar { text: clock(f.recorded_ms as f64), dot: RED, buttons: vec![Button::Pause, Button::Stop], scale },
+        RecorderState::Countdown => Bar { text: format!("倒數 {}", f.countdown_ms.unwrap_or(0).div_ceil(1000)), marks: 0, dot: GREY, buttons: vec![Button::Stop], scale },
+        RecorderState::Paused => Bar { text: clock(f.recorded_ms as f64), marks: f.markers, dot: AMBER, buttons: vec![Button::Mark, Button::Resume, Button::Stop], scale },
+        _ => Bar { text: clock(f.recorded_ms as f64), marks: f.markers, dot: RED, buttons: vec![Button::Mark, Button::Pause, Button::Stop], scale },
     }
 }
 
@@ -197,6 +204,7 @@ unsafe fn run(info: impl Fn() -> Option<FrameInfo>, cmd: impl Fn(FrameCmd)) {
                 Button::Pause => FrameCmd::Pause,
                 Button::Resume => FrameCmd::Resume,
                 Button::Stop => FrameCmd::Stop,
+                Button::Mark => FrameCmd::Mark,
             });
         }
         let mut f = info();
@@ -441,6 +449,12 @@ unsafe fn paint_bar(hwnd: HWND, hdc: HDC) {
     let mut text: Vec<u16> = b.text.encode_utf16().collect();
     let mut tr = RECT { left: x0 + d + px(8.0, s), top: 0, right: x0 + d + px(8.0 + TEXT_W, s), bottom: h };
     DrawTextW(mem, &mut text, &mut tr, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+    if b.marks > 0 {
+        SetTextColor(mem, AMBER);
+        let mut mt: Vec<u16> = format!("・{} 點", b.marks).encode_utf16().collect();
+        let mut mr = RECT { left: tr.right, top: 0, right: tr.right + px(MARKS_W, s), bottom: h };
+        DrawTextW(mem, &mut mt, &mut mr, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+    }
     // 按鈕
     let hover = HOVER.with(|c| c.get());
     for (i, btn) in b.buttons.iter().enumerate() {
@@ -472,6 +486,18 @@ unsafe fn paint_bar(hwnd: HWND, hdc: HDC) {
             Button::Stop => {
                 let q = px(5.5, s);
                 fill(mem, &RECT { left: cx - q, top: cy - q, right: cx + q, bottom: cy + q }, RED);
+            }
+            Button::Mark => {
+                // 小旗子：旗桿 + 三角旗
+                let pole = px(2.0, s).max(1);
+                fill(mem, &RECT { left: cx - k + px(1.0, s), top: cy - k, right: cx - k + px(1.0, s) + pole, bottom: cy + k }, WHITE);
+                let wb = CreateSolidBrush(AMBER);
+                let prev = SelectObject(mem, wb.into());
+                let x0 = cx - k + px(1.0, s) + pole;
+                let pts = [POINT { x: x0, y: cy - k }, POINT { x: cx + k, y: cy - k + px(3.5, s) }, POINT { x: x0, y: cy - k + px(7.0, s) }];
+                let _ = Polygon(mem, &pts);
+                SelectObject(mem, prev);
+                let _ = DeleteObject(wb.into());
             }
         }
     }

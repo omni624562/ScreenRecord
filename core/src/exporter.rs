@@ -86,10 +86,12 @@ impl Exporter {
         Ok(StartingGuard(self.state.clone()))
     }
 
-    /// 製作加速版；width 為縮小後的寬度（0 = 原尺寸）
-    pub async fn start(&self, ctx: &ExportCtx, source: &str, speed: f64, keep_audio: bool, width: f64) -> Result<ExportStatus> {
+    /// 製作加速版；width 為縮小後的寬度（0 = 原尺寸）；max_mb > 0 時壓縮到這個大小以內（可以是原速，只壓縮）
+    pub async fn start(&self, ctx: &ExportCtx, source: &str, speed: f64, keep_audio: bool, width: f64, max_mb: f64) -> Result<ExportStatus> {
         let _g = self.begin()?;
-        if !speed.is_finite() || !(SPEED_MIN..=SPEED_MAX).contains(&speed) {
+        let limit = max_mb.is_finite() && max_mb > 0.0;
+        let min = if limit { 1.0 } else { SPEED_MIN };
+        if !speed.is_finite() || !(min..=SPEED_MAX).contains(&speed) {
             return Err(Error::config(format!("倍率需介於 {}～{}", num(SPEED_MIN), num(SPEED_MAX))));
         }
         let (ffmpeg, enc, info, fps) = prepare(ctx, source).await?;
@@ -99,8 +101,16 @@ impl Exporter {
         let w = if width.is_finite() && width >= 160.0 { js_round(width) as i32 } else { 0 };
         let src_w = info.width.map(|x| x as i32);
         let scaled = w > 0 && src_w.is_some_and(|sw| w < sw);
-        let args = export_args(source, &output.display().to_string(), speed, fps, &enc, with_audio, Some(w), src_w)?;
-        let note = format!("{}×{}{}", speed_label(speed), if with_audio { "，含聲音" } else { "" }, if scaled { format!("，寬 {w}") } else { String::new() });
+        let out_sec = info.duration_sec.unwrap_or(0.0) / speed;
+        let kbps = limit.then(|| crate::args::size_bitrate(max_mb * 1024.0 * 1024.0, out_sec, if with_audio { crate::args::SMALL_AUDIO_KBPS } else { 0 }));
+        let args = export_args(source, &output.display().to_string(), speed, fps, &enc, with_audio, Some(w), src_w, kbps)?;
+        let note = format!(
+            "{}{}{}{}",
+            if speed > 1.0 { format!("{}×", speed_label(speed)) } else { "原速".into() },
+            if with_audio { "，含聲音" } else { "" },
+            if scaled { format!("，寬 {w}") } else { String::new() },
+            if limit { format!("，{} MB 以內", num(max_mb)) } else { String::new() }
+        );
         self.run(ExportKind::Speed, &ffmpeg, args, source, &output, speed, info.duration_sec.unwrap_or(0.0) / speed, &note)
     }
 
@@ -153,7 +163,7 @@ impl Exporter {
             }
             None => None,
         };
-        let unchanged = keep.len() == 1 && keep[0].0 == 0.0 && keep[0].1 >= duration - 0.05 && crop.is_none() && spec.overlays.is_empty();
+        let unchanged = keep.len() == 1 && keep[0].0 == 0.0 && keep[0].1 >= duration - 0.05 && crop.is_none() && spec.overlays.is_empty() && spec.audio.is_default();
         if unchanged {
             return Err(Error::config("沒有任何剪輯、裁切或標註"));
         }
@@ -176,7 +186,7 @@ impl Exporter {
             Some(r) => crate::paths::unique_path(&parent(r), &format!("~{}.editing", strip_mp4(&file_name(r))), ".mp4"),
             None => crate::paths::unique_path(&parent(source), &strip_mp4(&cut_file_name(&file_name(source))), ".mp4"),
         };
-        let args = cut_args(source, &output.display().to_string(), &keep, crop, fps, &enc, info.has_audio == Some(true), &overlays)?;
+        let args = cut_args(source, &output.display().to_string(), &keep, crop, fps, &enc, info.has_audio == Some(true), &overlays, spec.audio)?;
         let note = format!(
             "保留 {} 段{}{}",
             keep.len(),
@@ -540,17 +550,17 @@ echo data > "$last"
         std::fs::write(&src, "x").unwrap();
         let ex = Exporter::new();
         let c = ctx(fake_ffmpeg(dir.path(), "0"));
-        let st = ex.start(&c, &src.display().to_string(), 4.0, true, 0.0).await.unwrap();
+        let st = ex.start(&c, &src.display().to_string(), 4.0, true, 0.0, 0.0).await.unwrap();
         assert_eq!(st.state, ExportState::Running);
         assert!(st.output.ends_with("Rec_A_4x.mp4"));
-        assert!(ex.start(&c, &src.display().to_string(), 4.0, true, 0.0).await.unwrap_err().message().contains("進行中"));
+        assert!(ex.start(&c, &src.display().to_string(), 4.0, true, 0.0, 0.0).await.unwrap_err().message().contains("進行中"));
         ex.wait().await;
         let done = ex.status().unwrap();
         assert_eq!(done.state, ExportState::Done, "{:?}", done.message);
         assert_eq!(done.progress, 1.0);
         assert!(dir.path().join("Rec_A_4x.mp4").exists());
         // 第二次：已有同名檔，另存 _2
-        let again = ex.start(&c, &src.display().to_string(), 4.0, false, 0.0).await.unwrap();
+        let again = ex.start(&c, &src.display().to_string(), 4.0, false, 0.0, 0.0).await.unwrap();
         assert!(again.output.ends_with("Rec_A_4x_2.mp4"));
         ex.wait().await;
     }
@@ -583,11 +593,11 @@ echo data > "$last"
         let ex = Exporter::new();
         let c = ctx(fake_ffmpeg(dir.path(), "0"));
         let s = src.display().to_string();
-        let unchanged = EditSpec { start: 0.0, end: 10.0, removed: vec![], crop: None, overlays: vec![] };
+        let unchanged = EditSpec { start: 0.0, end: 10.0, removed: vec![], crop: None, overlays: vec![], ..Default::default() };
         assert!(ex.start_cut(&c, &s, &unchanged, None, None).await.unwrap_err().message().contains("沒有任何剪輯"));
-        let too_short = EditSpec { start: 1.0, end: 1.05, removed: vec![], crop: None, overlays: vec![] };
+        let too_short = EditSpec { start: 1.0, end: 1.05, removed: vec![], crop: None, overlays: vec![], ..Default::default() };
         assert!(ex.start_cut(&c, &s, &too_short, None, None).await.unwrap_err().message().contains("太短"));
-        let ok = ex.start_cut(&c, &s, &EditSpec { start: 1.0, end: 9.0, removed: vec![], crop: None, overlays: vec![] }, None, None).await.unwrap();
+        let ok = ex.start_cut(&c, &s, &EditSpec { start: 1.0, end: 9.0, removed: vec![], crop: None, overlays: vec![], ..Default::default() }, None, None).await.unwrap();
         assert!(ok.output.ends_with("Rec_C_cut.mp4"));
         ex.wait().await;
         assert_eq!(ex.status().unwrap().state, ExportState::Done);
@@ -598,7 +608,7 @@ echo data > "$last"
         let cut_s = cut.display().to_string();
         std::fs::write(&cut, "old").unwrap();
         let (tx, rx) = std::sync::mpsc::channel();
-        let spec = EditSpec { start: 2.0, end: 8.0, removed: vec![], crop: None, overlays: vec![] };
+        let spec = EditSpec { start: 2.0, end: 8.0, removed: vec![], crop: None, overlays: vec![], ..Default::default() };
         let st = ex.start_cut(&c, &s, &spec, Some(&cut_s), Some(Box::new(move |p: &str| tx.send(p.to_string()).unwrap()))).await.unwrap();
         assert_eq!(st.output, cut_s);
         ex.wait().await;
@@ -610,7 +620,7 @@ echo data > "$last"
         // 只能取代剪輯版、不能取代原片自己
         assert!(ex.start_cut(&c, &s, &spec, Some(&s), None).await.unwrap_err().message().contains("找不到要取代"));
 
-        assert!(ex.start(&ExportCtx { ffmpeg: None, ..c }, &s, 4.0, true, 0.0).await.unwrap_err().message().contains("無法使用"));
+        assert!(ex.start(&ExportCtx { ffmpeg: None, ..c }, &s, 4.0, true, 0.0, 0.0).await.unwrap_err().message().contains("無法使用"));
     }
 }
 

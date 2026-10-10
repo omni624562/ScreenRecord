@@ -27,8 +27,8 @@ const WM_TRAY: u32 = WM_APP + 1;
 /// 有其他執行緒送來的要求（狀態、通知、結束）
 const WM_WAKE: u32 = WM_APP + 2;
 const NIN_BALLOONUSERCLICK: u32 = 0x405;
-/// 全域快捷鍵的 id：1 錄影、2 暫停、3 截圖、4 框選截圖（與 Hotkeys::all 的順序相同）
-const HOTKEY_IDS: [i32; 4] = [1, 2, 3, 4];
+/// 全域快捷鍵的 id：1 錄影、2 暫停、3 截圖、4 框選截圖、5 打點（與 Hotkeys::all 的順序相同）
+const HOTKEY_IDS: [i32; crate::types::HOTKEY_COUNT] = [1, 2, 3, 4, 5];
 
 /// 登記全域快捷鍵（先取消舊的）；被其他程式占用時登記失敗，停用的視為成功
 fn register_hotkeys(hwnd: HWND, keys: &Hotkeys) -> HotkeyStatus {
@@ -48,7 +48,7 @@ fn register_hotkeys(hwnd: HWND, keys: &Hotkeys) -> HotkeyStatus {
             RegisterHotKey(Some(hwnd), id, m, k.key).is_ok()
         })
         .collect();
-    HotkeyStatus { record: ok[0], pause: ok[1], shot: ok[2], snip: ok[3] }
+    HotkeyStatus::from_list(&ok)
 }
 
 /// 選單右側顯示的快捷鍵（停用時不顯示）
@@ -61,7 +61,7 @@ fn tab(k: &str) -> String {
 }
 
 enum Req {
-    State(TrayState),
+    State(Box<TrayState>),
     Balloon(String, String, bool),
     Dispose(mpsc::Sender<()>),
     Hotkeys(Hotkeys, mpsc::Sender<HotkeyStatus>),
@@ -83,7 +83,7 @@ impl Handle {
 
 impl TrayUi for Handle {
     fn set_state(&self, s: TrayState) {
-        self.send(Req::State(s));
+        self.send(Req::State(Box::new(s)));
     }
     fn balloon(&self, title: &str, text: &str, warn: bool) {
         self.send(Req::Balloon(title.into(), text.into(), warn));
@@ -199,7 +199,7 @@ fn drain() {
         match req {
             Req::State(s) => TRAY.with(|t| {
                 if let Some(t) = t.borrow_mut().as_mut() {
-                    t.state = Some(s);
+                    t.state = Some(*s);
                     if t.added {
                         t.update_icon();
                     }
@@ -276,6 +276,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                 2 => send_cmd(TrayCommand::HotkeyPause),
                 3 => send_cmd(TrayCommand::Screenshot),
                 4 => send_cmd(TrayCommand::ScreenshotSelect),
+                5 => send_cmd(TrayCommand::Mark),
                 _ => {}
             }
             LRESULT(0)
@@ -384,10 +385,17 @@ fn show_menu() {
         } else {
             m.add(root, &format!("停止並儲存(&S){}", tab(&st.keys[0])), TrayCommand::Stop, idle || st.rec == RecorderState::Stopping, false);
         }
+        m.add(root, &format!("打點(&K){}", tab(&st.keys[4])), TrayCommand::Mark, !matches!(st.rec, RecorderState::Recording | RecorderState::Paused), false);
         Menu::sep(root);
         // 截圖：框選範圍或點選視窗、全螢幕、固定範圍（主畫面的錄影範圍）、重複上次框選
         if let Ok(shot) = CreatePopupMenu() {
             m.add(shot, &format!("框選範圍或視窗(&A)…{}", tab(&st.keys[3])), TrayCommand::ScreenshotSelect, false, false);
+            if let Ok(delay) = CreatePopupMenu() {
+                for sec in [3u64, 5, 10] {
+                    m.add(delay, &format!("{sec} 秒後"), TrayCommand::ScreenshotDelay(sec), false, false);
+                }
+                Menu::sub(shot, "延遲框選(&D)", delay, false);
+            }
             if let Ok(full) = CreatePopupMenu() {
                 for mon in &st.monitors {
                     m.add(full, &mon.label, TrayCommand::ScreenshotMonitor(mon.id.clone()), false, false);

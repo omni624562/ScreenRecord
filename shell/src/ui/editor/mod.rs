@@ -220,6 +220,8 @@ pub struct Editor {
     changed_at: Option<Instant>,
     /// 快捷鍵要做、需要 app 的事（儲存、複製…）
     pending: Option<shot::Act>,
+    /// 錄影時打的點（秒，原片的時間）
+    markers: Vec<f64>,
     /// 最新解出的畫面（套用馬賽克 / 模糊前）
     frame: Option<Frame>,
     video_tex: Option<TextureHandle>,
@@ -248,12 +250,25 @@ pub fn open(app: &mut UiApp, entry: LibraryEntry) {
     };
     let seq = OPEN_SEQ.fetch_add(1, Ordering::Relaxed) + 1;
     let (core, path) = (app.core.clone(), entry.media.path.clone());
-    app.spawn(async move { actions::edit_project(&core, &path).await }, move |app, info| {
-        if OPEN_SEQ.load(Ordering::Relaxed) != seq || app.editor.is_some() {
-            return;
-        }
-        app.editor = Some(Editor::new(app, entry, ffmpeg, info));
-    });
+    app.spawn(
+        async move {
+            let info = actions::edit_project(&core, &path).await;
+            // 打的點記在原片上：開啟剪輯版時改讀原片的
+            let src = match &info {
+                Some(EditProject { matched: ProjectMatch::Output, source: Some(s), .. }) => s.media.path.clone(),
+                _ => path,
+            };
+            (info, actions::markers(&core, &src).await)
+        },
+        move |app, (info, markers)| {
+            if OPEN_SEQ.load(Ordering::Relaxed) != seq || app.editor.is_some() {
+                return;
+            }
+            let mut ed = Editor::new(app, entry, ffmpeg, info);
+            ed.markers = markers;
+            app.editor = Some(ed);
+        },
+    );
 }
 
 impl Editor {
@@ -296,7 +311,7 @@ impl Editor {
             fps: 30.0,
             vw: 0.0,
             vh: 0.0,
-            spec: EditSpec { start: 0.0, end: 0.0, removed: vec![], crop: None, overlays: vec![] },
+            spec: EditSpec { start: 0.0, end: 0.0, removed: vec![], crop: None, overlays: vec![], ..Default::default() },
             sel: None,
             previewing: false,
             crop_on: false,
@@ -319,6 +334,7 @@ impl Editor {
             committed: String::new(),
             changed_at: None,
             pending: None,
+            markers: vec![],
             frame: None,
             video_tex: None,
             video_key: 0,
@@ -361,6 +377,7 @@ impl Editor {
         self.spec.end = data.spec.end;
         self.spec.removed = data.spec.removed;
         self.spec.crop = data.spec.crop;
+        self.spec.audio = data.audio;
         self.crop_on = data.crop_on;
         self.anns = data.anns;
         if let (Some(s), Some(o)) = (&mut self.shot, opts) {
@@ -446,7 +463,7 @@ impl Editor {
         self.fps = e.media.fps.filter(|f| *f > 0.0).unwrap_or(30.0);
         self.vw = e.media.width.unwrap_or(0) as f64;
         self.vh = e.media.height.unwrap_or(0) as f64;
-        self.spec = EditSpec { start: 0.0, end: self.duration, removed: vec![], crop: None, overlays: vec![] };
+        self.spec = EditSpec { start: 0.0, end: self.duration, removed: vec![], crop: None, overlays: vec![], ..Default::default() };
         self.sel = None;
         self.previewing = false;
         self.crop_on = false;
@@ -474,10 +491,11 @@ impl Editor {
         let full = spec.end >= saved_dur - 0.05;
         let start = if spec.start.is_finite() { spec.start.clamp(0.0, d) } else { 0.0 };
         let end = if full || !spec.end.is_finite() { d } else { spec.end.clamp(0.0, d) };
-        self.spec = EditSpec { start, end, removed: spec.removed.iter().copied().filter(|(a, b)| a.is_finite() && b.is_finite()).collect(), crop: spec.crop, overlays: vec![] };
+        self.spec = EditSpec { start, end, removed: spec.removed.iter().copied().filter(|(a, b)| a.is_finite() && b.is_finite()).collect(), crop: spec.crop, overlays: vec![], ..Default::default() };
         if self.spec.end - self.spec.start < 0.1 {
-            self.spec = EditSpec { start: 0.0, end: d, removed: vec![], crop: None, overlays: vec![] };
+            self.spec = EditSpec { start: 0.0, end: d, removed: vec![], crop: None, overlays: vec![], ..Default::default() };
         }
+        self.spec.audio = data.get("audio").and_then(|a| serde_json::from_value(a.clone()).ok()).unwrap_or_default();
         self.crop_on = data.get("cropOn").and_then(Value::as_bool).unwrap_or(false) && self.spec.crop.is_some();
         // 一個一個讀：格式不對的標註略過，不影響其他的
         let list = data.get("anns").and_then(Value::as_array).cloned().unwrap_or_default();
@@ -497,6 +515,7 @@ impl Editor {
             spec: ProjectSpec { start: self.spec.start, end: self.spec.end, removed: self.spec.removed.clone(), crop: self.spec.crop },
             crop_on: self.crop_on,
             anns: self.anns.clone(),
+            audio: self.spec.audio,
         }
     }
 
@@ -788,7 +807,7 @@ impl Editor {
 
     /// 全部重設
     fn reset(&mut self) {
-        self.spec = EditSpec { start: 0.0, end: self.duration, removed: vec![], crop: None, overlays: vec![] };
+        self.spec = EditSpec { start: 0.0, end: self.duration, removed: vec![], crop: None, overlays: vec![], ..Default::default() };
         self.sel = None;
         self.stop_preview();
         self.crop_on = false;
@@ -891,6 +910,11 @@ fn make_player(ctx: &egui::Context, ffmpeg: &std::path::Path, e: &LibraryEntry) 
     let c = ctx.clone();
     let (w, h) = (e.media.width.unwrap_or(1280), e.media.height.unwrap_or(720));
     Player::new(ffmpeg.to_path_buf(), spec, w, h, DECODE_MAX.0, DECODE_MAX.1, Arc::new(move || c.request_repaint()))
+}
+
+/// 表情符號標註（文字只有一個表情）
+pub fn is_emoji_text(t: &str) -> bool {
+    EMOJIS.contains(&t)
 }
 
 /// 每種標註上次用的顏色與大小（大小以 1080 高的畫面為準）：新放的沿用，程式執行期間都記得
@@ -1218,6 +1242,10 @@ fn transport(ed: &mut Editor, ui: &mut egui::Ui) {
         if Btn::new("+1 秒").ghost().small().tooltip("下一秒（Shift+→）").show(ui).clicked() {
             ed.step(None, 1.0);
         }
+        ui.add_space(6.0);
+        if Btn::new("擷取這一格").icon(theme::Icon::Camera).ghost().small().tooltip("把目前這一格存成截圖（原尺寸 PNG），並複製到剪貼簿").show(ui).clicked() {
+            ed.pending = Some(shot::Act::Grab);
+        }
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             ui.label(RichText::new(format!("{} / {}", video_clock(ed.now()), video_clock(ed.duration))).font(theme::mono(14.0)));
         });
@@ -1236,7 +1264,7 @@ fn footer(ed: &mut Editor, ui: &mut egui::Ui) -> bool {
         None => String::new(),
     };
     let gone = ed.gone_count(&keep);
-    let unchanged = keep.len() == 1 && keep[0].0 == 0.0 && keep[0].1 >= ed.duration - 0.05 && crop.is_none() && ed.anns.is_empty();
+    let unchanged = keep.len() == 1 && keep[0].0 == 0.0 && keep[0].1 >= ed.duration - 0.05 && crop.is_none() && ed.anns.is_empty() && ed.spec.audio.is_default();
     let mut save = false;
     ui.vertical(|ui| {
         ui.spacing_mut().item_spacing = vec2(0.0, 2.0);
@@ -1283,7 +1311,7 @@ fn start_save(app: &mut UiApp, ed: &mut Editor) {
     let overlays = ed.ordered().into_iter().filter_map(|a| annotate::to_overlay(a, ed.vw, ed.vh)).collect();
     let crop =
         if ed.crop_on { normalize_crop(ed.spec.crop, ed.vw as i32, ed.vh as i32).map(|r| CropInput { x: r.x as f64, y: r.y as f64, width: r.width as f64, height: r.height as f64 }) } else { None };
-    let spec = EditSpec { start: ed.spec.start, end: ed.spec.end, removed: ed.spec.removed.clone(), crop, overlays };
+    let spec = EditSpec { start: ed.spec.start, end: ed.spec.end, removed: ed.spec.removed.clone(), crop, overlays, audio: ed.spec.audio };
     let project = serde_json::to_value(ed.project_data()).ok();
     let (core, source, replace) = (app.core.clone(), ed.entry.media.path.clone(), ed.replace_target.clone());
     let replacing = replace.is_some();
@@ -1352,6 +1380,22 @@ fn shortcuts(ed: &mut Editor, ctx: &egui::Context, toast: &mut Option<(String, b
     }
     if video && key(Modifiers::NONE, Key::ArrowRight) {
         ed.step(Some(1), 0.0);
+    }
+    // M / Shift+M：跳到下一個 / 上一個打的點
+    if video && !ed.markers.is_empty() {
+        let now = ed.now();
+        if key(Modifiers::NONE, Key::M) {
+            match ed.markers.iter().find(|&&t| t > now + 0.05) {
+                Some(&t) => ed.seek(t),
+                None => *toast = Some(("後面沒有打的點了".into(), false)),
+            }
+        }
+        if key(Modifiers::SHIFT, Key::M) {
+            match ed.markers.iter().rev().find(|&&t| t < now - 0.05) {
+                Some(&t) => ed.seek(t),
+                None => *toast = Some(("前面沒有打的點了".into(), false)),
+            }
+        }
     }
     if video && key(Modifiers::NONE, Key::I) {
         let t = ed.now();

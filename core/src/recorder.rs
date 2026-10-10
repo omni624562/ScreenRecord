@@ -57,6 +57,8 @@ pub trait RecorderDeps: Send + Sync + 'static {
     }
     /// 錄影結束（已儲存或失敗）後（還原操作視窗等）
     fn after_stop(&self) {}
+    /// 存好的錄影裡打的點（影片的秒數）
+    fn save_markers(&self, _output: &str, _markers: &[f64]) {}
     /// 需要使用者注意的事（系統匣通知）
     fn notify(&self, _title: &str, _text: &str, _warn: bool) {}
     /// 開啟音訊擷取來源（Windows 上是 WASAPI）
@@ -156,6 +158,8 @@ struct Countdown {
 #[derive(Default)]
 struct St {
     state: RecorderState,
+    /// 打的點（已錄的毫秒數，也就是影片裡的時間）
+    markers: Vec<u64>,
     busy: Option<String>,
     config: Option<RecordConfig>,
     plan: Option<CapturePlan>,
@@ -265,6 +269,8 @@ pub struct FrameInfo {
     pub recorded_ms: u64,
     /// 倒數中：剩下的毫秒數
     pub countdown_ms: Option<u64>,
+    /// 打了幾個點
+    pub markers: u32,
 }
 
 #[derive(Clone)]
@@ -465,7 +471,24 @@ impl Recorder {
             return None;
         }
         let countdown_ms = if st.state == RecorderState::Countdown { st.countdown.as_ref().map(|c| c.ends_at.saturating_sub(now_ms())) } else { None };
-        Some(FrameInfo { area: st.plan.as_ref()?.rect, state: st.state, recorded_ms: st.recorded_ms(), countdown_ms })
+        Some(FrameInfo { area: st.plan.as_ref()?.rect, state: st.state, recorded_ms: st.recorded_ms(), countdown_ms, markers: st.markers.len() as u32 })
+    }
+
+    /// 錄影中打點（記下目前錄到的時間，剪輯時可以直接跳過去）；回傳這是第幾個點
+    pub fn add_marker(&self) -> Result<usize> {
+        let mut st = self.lock();
+        if !matches!(st.state, RecorderState::Recording | RecorderState::Paused) {
+            return Err(Error::config("錄影中才能打點"));
+        }
+        let t = st.recorded_ms();
+        // 連按兩次（半秒內）只算一個
+        if st.markers.last().is_some_and(|m| t.saturating_sub(*m) < 500) {
+            return Ok(st.markers.len());
+        }
+        st.markers.push(t);
+        let n = st.markers.len();
+        st.add_log(LogLevel::Info, &format!("打點 {n}（{}）", crate::format::video_clock(t as f64 / 1000.0)));
+        Ok(n)
     }
 
     /// 正在準備開始（狀態可能仍是待命）；快捷鍵用來判斷再按一次是「取消」
@@ -511,6 +534,7 @@ impl Recorder {
                 countdown_ms: if counting { st.countdown.as_ref().map(|c| c.ends_at.saturating_sub(now)) } else { None },
                 countdown_covers_ui: None,
                 disk_free_bytes: if st.state == RecorderState::Idle { None } else { st.disk_free_bytes },
+                markers: st.markers.len() as u32,
                 result: st.result.clone(),
                 log: st.log.clone(),
             };
@@ -649,6 +673,7 @@ impl Recorder {
             st.slow_warned = false;
             st.auto_stopping = false;
             st.log = Vec::new();
+            st.markers = Vec::new();
             st.audio_specs = audio_specs;
             st.audio_desc = None;
         }
@@ -794,6 +819,10 @@ impl Recorder {
             let mut st = self.lock();
             st.add_log(if result.ok { LogLevel::Info } else { LogLevel::Error }, &result.message);
             st.result = Some(result.clone());
+            let markers: Vec<f64> = std::mem::take(&mut st.markers).into_iter().map(|m| m as f64 / 1000.0).collect();
+            if let (true, Some(p), false) = (result.ok, &result.path, markers.is_empty()) {
+                self.deps().save_markers(p, &markers);
+            }
             st.ticker = 0;
             st.busy = None;
             st.state = RecorderState::Idle;

@@ -16,7 +16,7 @@ pub struct CropInput {
     pub height: f64,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct EditSpec {
     /// 保留的開頭（剪掉之前的部分）
     pub start: f64,
@@ -30,6 +30,44 @@ pub struct EditSpec {
     /// 畫面上的標註（文字、箭頭、框線、編號由介面畫成透明 PNG；馬賽克 / 模糊由 FFmpeg 處理）
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub overlays: Vec<Overlay>,
+    /// 聲音處理
+    #[serde(default, skip_serializing_if = "AudioFx::is_default")]
+    pub audio: AudioFx,
+}
+
+/// 剪輯時的聲音處理
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AudioFx {
+    /// 降噪（減少風扇、冷氣等穩定的背景雜音）
+    #[serde(default)]
+    pub denoise: bool,
+    /// 音量平衡（忽大忽小變平均，整體調到適合聆聽的音量）
+    #[serde(default)]
+    pub normalize: bool,
+    /// 不要聲音
+    #[serde(default)]
+    pub mute: bool,
+}
+
+impl AudioFx {
+    pub fn is_default(&self) -> bool {
+        *self == AudioFx::default()
+    }
+
+    /// FFmpeg 的聲音濾鏡（接在剪輯之後）
+    pub fn filters(&self) -> Vec<&'static str> {
+        let mut f = Vec::new();
+        if self.denoise {
+            f.push("afftdn=nf=-25");
+        }
+        if self.normalize {
+            // loudnorm 會把取樣率改成 192k：轉回 48k
+            f.push("loudnorm=I=-16:TP=-1.5:LRA=11");
+            f.push("aresample=48000");
+        }
+        f
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -137,7 +175,7 @@ mod tests {
     use super::*;
 
     fn spec(start: f64, end: f64, removed: &[Range]) -> EditSpec {
-        EditSpec { start, end, removed: removed.to_vec(), crop: None, overlays: vec![] }
+        EditSpec { start, end, removed: removed.to_vec(), crop: None, overlays: vec![], ..Default::default() }
     }
 
     #[test]

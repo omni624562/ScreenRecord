@@ -519,7 +519,7 @@ fn keys_page(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
         form_hint_full(ui, "全域快捷鍵需要系統匣常駐時才能使用。", p.muted);
         return;
     };
-    let ok = [hk.record, hk.pause, hk.shot, hk.snip];
+    let ok = hk.all();
     form_section(ui, "全域快捷鍵", |ui| {
         if app.keys != Hotkeys::default() && Btn::new("還原預設").ghost().small().show(ui).clicked() {
             d.key_capture = None;
@@ -528,7 +528,7 @@ fn keys_page(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
     });
     form_hint_full(ui, "程式在背景時也能用。點一下按鍵，再按下新的組合（要包含 Ctrl 或 Alt）。", p.muted);
     ui.add_space(6.0);
-    for i in 0..4 {
+    for i in 0..ok.len() {
         form_row(ui, HOTKEY_NAMES[i], |ui| {
             let capturing = d.key_capture == Some(i);
             let label = app.keys.label(i);
@@ -555,7 +555,7 @@ fn keys_page(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
                     // 先暫停全部快捷鍵，才按得到原本已登記的組合
                     d.key_capture = Some(i);
                     d.key_msg = None;
-                    app.core.apply_hotkeys(&Hotkeys { record: None, pause: None, shot: None, snip: None });
+                    app.core.apply_hotkeys(&Hotkeys::none());
                 }
             }
             if !label.is_empty() && !capturing && Btn::icon_only(Icon::Close).ghost().small().tooltip("停用這個快捷鍵").show(ui).clicked() {
@@ -632,8 +632,8 @@ fn save_keys(app: &mut UiApp, d: &mut SettingsDialog, k: Hotkeys) {
     d.key_msg = None;
     if let Some(st) = app.core.save_hotkeys(k) {
         app.env.hotkeys = Some(st);
-        let ok = [st.record, st.pause, st.shot, st.snip];
-        if let Some(i) = (0..4).find(|i| !ok[*i]) {
+        let ok = st.all();
+        if let Some(i) = (0..ok.len()).find(|i| !ok[*i]) {
             d.key_msg = Some(format!("{} 已被其他程式使用，請換一組", k.label(i)));
         }
     }

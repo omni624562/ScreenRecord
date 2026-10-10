@@ -58,10 +58,14 @@ pub struct UiSettings {
     pub mp4_width: u32,
     /// 截圖後直接開啟編輯
     pub edit_after_shot: bool,
+    /// 加速版壓縮到這個大小以內（MB）；0 = 不限
+    pub mp4_max_mb: u32,
 }
 
 pub const FPS_CHOICES: [f64; 8] = [10.0, 15.0, 20.0, 24.0, 25.0, 30.0, 50.0, 60.0];
 pub const MAX_PRESETS: [f64; 4] = [0.0, 30.0, 60.0, 120.0];
+/// 加速版的大小上限（MB）；0 = 不限
+pub const MAX_MB: [u32; 5] = [0, 10, 25, 50, 100];
 
 fn primary(env: &EnvInfo) -> Option<&MonitorInfo> {
     env.monitors.iter().find(|m| m.primary).or_else(|| env.monitors.first())
@@ -112,6 +116,7 @@ impl UiSettings {
             gif_fps: num("gifFps").map(|v| v as u32).filter(|v| [5, 10, 15, 20].contains(v)).unwrap_or(10),
             mp4_width: num("mp4Width").map(|v| v as u32).filter(|v| MP4_WIDTHS.contains(v)).unwrap_or(0),
             edit_after_shot: boolean("editAfterShot").unwrap_or(false),
+            mp4_max_mb: num("mp4MaxMb").map(|v| v as u32).filter(|v| MAX_MB.contains(v)).unwrap_or(0),
         };
         s.fix_monitor(env);
         s

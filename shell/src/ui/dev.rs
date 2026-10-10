@@ -1,7 +1,7 @@
 //! 開發用（只在 debug 版）：自動開啟某個畫面、模擬操作並截圖，在 Linux 的 Xvfb 上檢查介面。
 //! - SCREENRECORDER_DEV：要開啟的畫面（library、shots、changelog、export:<路徑>、edit:<路徑>、view:<路徑>、monitors（模擬兩個螢幕）、snip:<PNG>（用這張圖當凍結的桌面開啟框選截圖）、hotkeys（模擬已登記快捷鍵）、settings:<record|audio|save|keys|advanced>、ed:<剪輯視窗指令>），以 ; 分隔
 //! - SCREENRECORDER_INPUT：開啟後依序模擬的操作，以 ; 分隔：
-//!   wait:毫秒、click:x,y、drag:x0,y0,x1,y1、wheel:x,y,dy、key:Space（可加 ctrl+、alt+、shift+）、type:文字、shot:路徑
+//!   wait:毫秒、click:x,y、move:x,y、drag:x0,y0,x1,y1、wheel:x,y,dy、key:Space（可加 ctrl+、alt+、shift+）、type:文字、shot:路徑
 //! - SCREENRECORDER_SHOT：最後截圖存檔的路徑（存好後結束）；SCREENRECORDER_SHOT_AFTER：開始後幾毫秒截圖（預設 3000）
 
 use super::{EntryAction, UiApp};
@@ -49,6 +49,10 @@ fn parse_script(s: &str) -> VecDeque<Step> {
                 out.push_back(Step::Events(vec![button(p, true, Modifiers::NONE)]));
                 out.push_back(Step::Events(vec![button(p, false, Modifiers::NONE)]));
                 out.push_back(Step::Wait(Duration::from_millis(200)));
+            }
+            "move" => {
+                let n = nums(v);
+                out.push_back(Step::Events(vec![Event::PointerMoved(pos2(n[0], n[1]))]));
             }
             "drag" => {
                 let n = nums(v);
@@ -142,7 +146,7 @@ pub fn tick(app: &mut UiApp, ctx: &egui::Context) {
                     _ if a == "changelog" => app.changelog_open = true,
                     _ if a == "monitors" => fake_monitors(app),
                     // 模擬系統匣已登記快捷鍵（Linux 上沒有系統匣）
-                    _ if a == "hotkeys" => app.env.hotkeys = Some(screenrecorder_core::types::HotkeyStatus { record: true, pause: true, shot: true, snip: false }),
+                    _ if a == "hotkeys" => app.env.hotkeys = Some(screenrecorder_core::types::HotkeyStatus { record: true, pause: true, shot: true, snip: false, mark: true }),
                     Some(("snip", p)) => fake_snip(app, p),
                     Some(("settings", p)) => {
                         use super::settings_dialog::{open, Page};

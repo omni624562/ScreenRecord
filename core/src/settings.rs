@@ -153,7 +153,12 @@ mod tests {
     fn custom_hotkeys() {
         use crate::types::{Hotkey, Hotkeys};
         let d = Hotkeys::default();
-        assert_eq!((0..4).map(|i| d.label(i)).collect::<Vec<_>>(), vec!["Ctrl+Alt+R", "Ctrl+Alt+P", "Ctrl+Alt+S", "Ctrl+Alt+A"]);
+        assert_eq!((0..5).map(|i| d.label(i)).collect::<Vec<_>>(), vec!["Ctrl+Alt+R", "Ctrl+Alt+P", "Ctrl+Alt+S", "Ctrl+Alt+A", "Ctrl+Alt+M"]);
+        // 3.0 存的設定沒有「打點」：用預設；停用的（null）維持停用
+        let old: Hotkeys = serde_json::from_str(r#"{"record":null,"pause":null,"shot":null,"snip":null}"#).unwrap();
+        assert_eq!(old.label(4), "Ctrl+Alt+M");
+        let off: Hotkeys = serde_json::from_str(r#"{"record":null,"pause":null,"shot":null,"snip":null,"mark":null}"#).unwrap();
+        assert_eq!(off.label(4), "");
         let f9 = Hotkey { ctrl: false, alt: false, shift: true, win: true, key: 0x78 };
         assert_eq!(f9.label(), "Shift+Win+F9");
         assert!(f9.valid());

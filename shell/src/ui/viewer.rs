@@ -297,6 +297,8 @@ enum Act {
     Delete,
     Ocr,
     Pin,
+    /// 影片：目前這一格存成截圖
+    Grab,
 }
 
 pub fn show(app: &mut UiApp, ctx: &egui::Context) {
@@ -378,7 +380,15 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                         if Btn::new("編輯").icon(Icon::Edit).small().tooltip("加上標註、遮住個資、裁切（另存一張，原圖保留）").show(ui).clicked() {
                             act = Act::Entry(EntryAction::Edit);
                         }
-                    } else if !is_export_name(&e.media.name) {
+                    } else {
+                        if Btn::new("擷取這一格").icon(Icon::Camera).small().tooltip("把目前這一格存成截圖（原尺寸 PNG），並複製到剪貼簿").show(ui).clicked() {
+                            act = Act::Grab;
+                        }
+                        if Btn::new("複製檔案").small().tooltip("複製這個影片檔，可以直接貼到 LINE、Teams、信件或資料夾").show(ui).clicked() {
+                            act = Act::Entry(EntryAction::CopyFile);
+                        }
+                    }
+                    if !image && !is_export_name(&e.media.name) {
                         if Btn::new("製作加速版 / GIF").icon(Icon::Export).small().show(ui).clicked() {
                             act = Act::Entry(EntryAction::Export);
                         }
@@ -456,6 +466,16 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         Act::Next => go(app, 1),
         Act::Copy => copy_image(app),
         Act::Delete => delete_current(app),
+        Act::Grab => {
+            let Some(v) = app.viewer.as_mut() else { return };
+            let (path, t) = (v.cur().media.path.clone(), v.player.as_ref().map(|p| p.time()).unwrap_or(0.0));
+            let core = app.core.clone();
+            app.spawn(async move { core.grab_frame(&path, t).await }, |app, r| {
+                if let Err(e) = r {
+                    app.toast(e.message().to_string(), true);
+                }
+            });
+        }
         Act::Ocr | Act::Pin => {
             let Some(path) = app.viewer.as_ref().map(|v| v.cur().media.path.clone()) else { return };
             if matches!(act, Act::Ocr) {
