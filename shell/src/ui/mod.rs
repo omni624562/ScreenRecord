@@ -378,7 +378,12 @@ impl UiApp {
         }
         // ddagrab / 硬體編碼器測試中：每秒更新環境
         if self.ddagrab_watch.is_some_and(|t| Instant::now() >= t) {
+            let tested = self.env.ffmpeg.ddagrab_works.is_some();
             self.env = self.core.env();
+            if !tested && self.env.ffmpeg.ddagrab_works.is_some() {
+                // ddagrab 測試結果出來：測試期間即時預覽會先試 ddagrab，失敗時改成單張，現在用確定的方式重開
+                self.preview.retry_if_failed();
+            }
             let pending = (self.env.ffmpeg.has_ddagrab && self.env.ffmpeg.ddagrab_works.is_none()) || (self.env.ffmpeg.found && self.env.ffmpeg.hw_encoders.is_none());
             self.ddagrab_watch = pending.then(|| Instant::now() + Duration::from_secs(1));
         }
@@ -514,7 +519,8 @@ impl UiApp {
             ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
             if !self.visible {
                 self.visible = true;
-                self.preview.reset();
+                // 從系統匣叫回來：上次即時預覽失敗（例如當時在鎖定畫面）也重新試
+                self.preview.retry_live();
                 self.load_recent();
             }
             if page == UiPage::Changelog {

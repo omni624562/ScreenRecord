@@ -1240,14 +1240,15 @@ impl App {
         grab(false).await
     }
 
-    /// 即時預覽：FFmpeg 持續輸出固定大小的 RGBA 畫面（回傳寬高）。同時只保留一條：新的會結束舊的；
-    /// 回傳的 LiveGuard 被丟棄時 FFmpeg 也跟著結束。
-    pub fn live_preview(&self, fps: f64, monitor_id: Option<&str>) -> Option<(tokio::process::ChildStdout, LiveGuard, (u32, u32))> {
+    /// 即時預覽：FFmpeg 持續輸出固定大小的 RGBA 畫面（寬度最多 max_width 與 LIVE_MAX_WIDTH；回傳寬高）。
+    /// 同時只保留一條：新的會結束舊的；回傳的 LiveGuard 被丟棄時 FFmpeg 也跟著結束。
+    pub fn live_preview(&self, fps: f64, monitor_id: Option<&str>, max_width: u32) -> Option<(tokio::process::ChildStdout, LiveGuard, (u32, u32))> {
         let ffmpeg = self.ffmpeg_path()?;
-        let dims = self.preview_dims(monitor_id, LIVE_MAX_WIDTH)?;
+        let max_width = max_width.clamp(2, LIVE_MAX_WIDTH);
+        let dims = self.preview_dims(monitor_id, max_width)?;
         self.kill_live();
         let dda = self.ddagrab_usable() && !self.lock().monitors.is_empty();
-        let args = preview_args(&self.preview_monitors(monitor_id), dda, LIVE_MAX_WIDTH, Some(fps));
+        let args = preview_args(&self.preview_monitors(monitor_id), dda, max_width, Some(fps));
         let mut cmd = command(&ffmpeg);
         cmd.args(&args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
         let mut child = cmd.spawn().ok()?;

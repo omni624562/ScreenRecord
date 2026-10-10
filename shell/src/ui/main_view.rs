@@ -200,7 +200,7 @@ fn capture_panel(app: &mut UiApp, ui: &mut Ui) {
                 }
                 let mut live = app.s.live_preview;
                 let audio = app.s.source_type == SourceType::Audio;
-                if !audio && switch(ui, &mut live, if narrow { "" } else { "即時預覽" }, true).on_hover_text("即時預覽：即時顯示目前畫面（每秒 5 張，錄影中 2 張）").changed()
+                if !audio && switch(ui, &mut live, if narrow { "" } else { "即時預覽" }, true).on_hover_text("即時預覽：即時顯示目前畫面（每秒 5 張；切到其他視窗或錄影中 2 張）").changed()
                 {
                     app.s.live_preview = live;
                     app.preview.retry_live();
@@ -366,27 +366,6 @@ fn desk(app: &mut UiApp, ui: &mut Ui, area: Rect) {
         return audio_panel(app, ui, area);
     }
     let view = view_rect(app);
-    // 即時預覽：視窗看得到時才擷取；錄影中放慢
-    let key = if app.s.source_type == SourceType::Monitor { app.s.monitor_id.clone().unwrap_or_default() } else { String::new() };
-    let fps = if app.s.live_preview {
-        if app.locked() {
-            2
-        } else {
-            5
-        }
-    } else {
-        0
-    };
-    // 開著剪輯、製作、全部錄影等視窗時暫停即時預覽（被蓋住看不到，不浪費 CPU / GPU），保留最後一張畫面
-    let covered = app.editor.is_some() || app.export_dlg.is_some() || app.library.is_some() || app.viewer.is_some();
-    if covered {
-        if app.preview.running() {
-            app.preview.stop(&app.core);
-        }
-    } else if app.env_ready {
-        let (core, rt, ctx) = (app.core.clone(), app.rt.clone(), ui.ctx().clone());
-        app.preview.ensure(&core, &rt, &ctx, &key, fps, app.env.ffmpeg.found);
-    }
     // 依範圍的比例放進可用的空間
     let ar = if view.width > 0 && view.height > 0 { view.width as f32 / view.height as f32 } else { 16.0 / 9.0 };
     let mut w = area.width();
@@ -396,6 +375,25 @@ fn desk(app: &mut UiApp, ui: &mut Ui, area: Rect) {
         w = h * ar;
     }
     let rect = Rect::from_min_size(pos2(area.center().x - w / 2.0, area.min.y), vec2(w, h));
+    // 即時預覽：視窗看得到時才擷取；切到其他視窗或錄影中放慢；大小跟著預覽實際顯示的像素
+    let key = if app.s.source_type == SourceType::Monitor { app.s.monitor_id.clone().unwrap_or_default() } else { String::new() };
+    let focused = ui.ctx().input(|i| i.viewport().focused) != Some(false);
+    let fps = match (app.s.live_preview, app.locked() || !focused) {
+        (false, _) => 0,
+        (true, true) => 2,
+        (true, false) => 5,
+    };
+    let width = super::preview::live_width(w, ui.ctx().pixels_per_point());
+    // 開著剪輯、製作、全部錄影等視窗時暫停即時預覽（被蓋住看不到，不浪費 CPU / GPU），保留最後一張畫面
+    let covered = app.editor.is_some() || app.export_dlg.is_some() || app.library.is_some() || app.viewer.is_some();
+    if covered {
+        if app.preview.running() {
+            app.preview.stop(&app.core);
+        }
+    } else if app.env_ready {
+        let (core, rt, ctx) = (app.core.clone(), app.rt.clone(), ui.ctx().clone());
+        app.preview.ensure(&core, &rt, &ctx, &key, fps, width, app.env.ffmpeg.found);
+    }
     let painter = ui.painter_at(area);
     painter.rect_filled(rect, CornerRadius::same(theme::RADIUS_SM), p.surface2);
     let tex = app.preview.texture(ui.ctx()).cloned();

@@ -2483,6 +2483,7 @@ dependencies = [
 name = "screenrecorder-ui"
 version = "3.1.0"
 dependencies = [
+ "bytemuck",
  "chrono",
  "eframe",
  "regex",
