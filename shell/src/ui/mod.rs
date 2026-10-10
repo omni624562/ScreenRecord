@@ -16,6 +16,7 @@ pub mod snip;
 pub mod theme;
 pub mod thumbs;
 pub mod viewer;
+mod whats_new;
 
 use eframe::egui;
 use screenrecorder_core::actions::{self, UpdateState};
@@ -73,7 +74,7 @@ pub struct UiApp {
     open_requests: OpenRequests,
     /// 系統匣可以用：關掉視窗時只是隱藏
     pub tray_ok: bool,
-    visible: bool,
+    pub visible: bool,
 
     pub env: EnvInfo,
     pub env_ready: bool,
@@ -87,6 +88,9 @@ pub struct UiApp {
     pub toast: Option<Toast>,
     pub ask: Option<dialogs::Ask>,
     pub changelog_open: bool,
+    /// 新功能介紹（更新後第一次開啟時顯示一次）
+    pub whats_new_open: bool,
+    whats_new_checked: bool,
 
     pub preview: preview::Preview,
     pub thumbs: thumbs::Thumbs,
@@ -102,6 +106,10 @@ pub struct UiApp {
     pub viewer: Option<viewer::Viewer>,
     /// 文字辨識的結果
     pub ocr: Option<ocr::Ocr>,
+    /// 錄影前的音量表（主畫面看得到、沒在錄影時才開）
+    pub meter: Option<screenrecorder_core::meter::Meter>,
+    /// 按了「測試音量」：量到這個時間（不一直開著麥克風，Windows 才不會一直顯示麥克風使用中）
+    pub meter_until: Option<Instant>,
     pub settings_dlg: Option<settings_dialog::SettingsDialog>,
     /// 在螢幕上框選截圖
     pub snip: Option<snip::Snip>,
@@ -156,6 +164,8 @@ impl UiApp {
             toast: None,
             ask: None,
             changelog_open: false,
+            whats_new_open: false,
+            whats_new_checked: false,
             preview: preview::Preview::default(),
             thumbs: thumbs::Thumbs::default(),
             recent: None,
@@ -167,6 +177,8 @@ impl UiApp {
             library: None,
             viewer: None,
             ocr: None,
+            meter: None,
+            meter_until: None,
             settings_dlg: None,
             snip: None,
             keys: saved.hotkeys.unwrap_or_default(),
@@ -595,6 +607,14 @@ impl eframe::App for UiApp {
         }
         if self.ocr.is_some() {
             ocr::show(self, &ctx);
+        }
+        // 新功能介紹：主畫面第一次看得到、沒有其他視窗時檢查一次
+        if !self.whats_new_checked && self.visible && self.env_ready && self.editor.is_none() && self.snip.is_none() {
+            self.whats_new_checked = true;
+            self.whats_new_open = whats_new::should_show(self) && std::env::var("SCREENRECORDER_DEV").is_err();
+        }
+        if self.whats_new_open {
+            whats_new::show(self, &ctx);
         }
         if self.changelog_open {
             dialogs::changelog(self, &ctx);

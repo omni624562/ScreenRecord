@@ -20,6 +20,8 @@ ttf-parser = "0.25"
 arboard = { version = "3.6", default-features = false, features = ["image-data"] }
 # 讀取 QR 碼（純 Rust）
 rqrr = { version = "0.11", default-features = false }
+# 圖片標註（Logo、浮水印）：讀取 PNG、JPG、BMP、WebP
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "bmp", "webp"] }
 
 # HTTPS（下載 FFmpeg、檢查新版本）：Windows 用系統內建的 SChannel（不需編譯 C、使用系統憑證），其他平台用 rustls
 [target.'cfg(not(windows))'.dependencies]
@@ -56,6 +58,7 @@ windows = { version = "0.62", features = [
   "Win32_UI_HiDpi",
   "Win32_UI_Input_KeyboardAndMouse",
   "Win32_UI_Shell",
+  "Win32_UI_Shell_Common",
   "Win32_UI_Shell_PropertiesSystem",
   "Win32_UI_WindowsAndMessaging",
 ] }

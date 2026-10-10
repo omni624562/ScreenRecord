@@ -42,6 +42,7 @@ struct RegionDrag {
 }
 
 pub fn show(app: &mut UiApp, ui: &mut Ui) {
+    update_meter(app, ui.ctx());
     let p = theme::pal(ui);
     let full = ui.max_rect();
     ui.painter().rect_filled(full, CornerRadius::ZERO, p.bg);
@@ -755,6 +756,40 @@ fn rec_panel(app: &mut UiApp, ui: &mut Ui) {
                 ui.spacing_mut().item_spacing.x = 14.0;
                 let (cell, _) = ui.allocate_exact_size(vec2(key_w, 18.0), Sense::hover());
                 ui.painter().text(cell.left_center(), egui::Align2::LEFT_CENTER, k, theme::font(13.0), p.muted);
+                if k == "聲音" && !active {
+                    if let Some(l) = app.meter.as_ref().map(|m| m.levels()) {
+                        // 音量表：每個來源一條，旁邊寫名稱
+                        let meters: Vec<(&str, f32)> = [("系統", l.system), ("麥克風", l.mic)].into_iter().filter_map(|(n, v)| v.map(|v| (n, v))).collect();
+                        let resp = ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 6.0;
+                            for (n, v) in &meters {
+                                ui.label(RichText::new(*n).font(theme::font(12.5)));
+                                level_bar(ui, *v);
+                            }
+                            if l.error.is_some() {
+                                ui.label(RichText::new("⚠").color(p.warn));
+                            }
+                        });
+                        let tip = match &l.error {
+                            Some(e) => format!("打不開：{e}"),
+                            None => "錄影前先講幾句話：麥克風的條會跳動，就表示收得到聲音".into(),
+                        };
+                        resp.response.on_hover_text(tip);
+                        return;
+                    }
+                    if app.s.audio_system || app.s.audio_mic {
+                        // 右邊留給「測試音量」
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            if Btn::new("測試音量").ghost().small().tooltip("量 20 秒的音量：講幾句話看麥克風的條有沒有跳動，確定錄得到聲音").show(ui).clicked() {
+                                app.meter_until = Some(Instant::now() + std::time::Duration::from_secs(20));
+                            }
+                            ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                                ui.add(egui::Label::new(RichText::new(&v).font(theme::font(13.0))).truncate()).on_hover_text(&v);
+                            });
+                        });
+                        return;
+                    }
+                }
                 ui.add(egui::Label::new(RichText::new(&v).font(theme::font(13.0))).truncate()).on_hover_text(&v);
             });
         }
@@ -889,7 +924,7 @@ fn rec_panel(app: &mut UiApp, ui: &mut Ui) {
                     });
                 }
                 ui.add_space(4.0);
-                ui.add(egui::Label::new(theme::muted(ui, "「截圖」旁的 ▾ 還有框選、長截圖、步驟截圖；快捷鍵可在「設定 → 快捷鍵」更換。").font(theme::font(12.0))).wrap());
+                ui.add(egui::Label::new(theme::muted(ui, "「截圖」旁的小箭頭還有框選、長截圖、步驟截圖；快捷鍵可在「設定 → 快捷鍵」更換。").font(theme::font(12.0))).wrap());
             });
         } else if log_h >= 40.0 {
             ui.add_space(10.0);
@@ -918,24 +953,26 @@ fn rec_panel(app: &mut UiApp, ui: &mut Ui) {
 /// 截圖：與錄影相同的範圍，存成 PNG 並複製到剪貼簿（完成後由狀態更新顯示提示、更新清單）
 fn shot_button(app: &mut UiApp, ui: &mut Ui, w: f32) {
     let hotkey = if app.env.hotkeys.is_some_and(|h| h.shot) && !app.keys.label(2).is_empty() { format!("（{}）", app.keys.label(2)) } else { String::new() };
-    let tip = format!("截取目前的擷取範圍，存成 PNG 並複製到剪貼簿{hotkey}\n旁邊的 ▾（或按右鍵）：框選、延遲截圖、長截圖、步驟截圖");
+    let tip = format!("截取目前的擷取範圍，存成 PNG 並複製到剪貼簿{hotkey}\n旁邊的小箭頭（或按右鍵）：框選、延遲截圖、長截圖、步驟截圖、取色器、尺規");
     let can = app.env.ffmpeg.found && !app.main.shooting;
     let arrow_w = 26.0;
     let (resp, arrow) = ui
         .scope(|ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
             let resp = Btn::new("截圖").icon(Icon::Camera).enabled(can).tooltip(tip).min_width(w - arrow_w - 2.0).height(40.0).show(ui);
-            let arrow = Btn::icon_only(Icon::ChevD).enabled(can).tooltip("更多截圖方式：框選範圍或視窗、延遲截圖、長截圖、步驟截圖").min_width(arrow_w).height(40.0).show(ui);
+            let arrow = Btn::icon_only(Icon::ChevD).enabled(can).tooltip("更多截圖方式：框選範圍或視窗、延遲截圖、長截圖、步驟截圖、取色器、尺規").min_width(arrow_w).height(40.0).show(ui);
             (resp, arrow)
         })
         .inner;
-    // 選單（▾ 或按右鍵）：在螢幕上框選、等幾秒再框選（先打開要截的選單）、長截圖、步驟截圖
+    // 選單（小箭頭或按右鍵）：在螢幕上框選、等幾秒再框選（先打開要截的選單）、長截圖、步驟截圖
     let mut snip: Option<u64> = None;
     let mut long = false;
     let mut steps = false;
     let steps_on = app.status.steps.is_some();
     let mut qr = false;
-    let menu = |ui: &mut Ui, snip: &mut Option<u64>, long: &mut bool, steps: &mut bool, qr: &mut bool| {
+    // 取色器（false）或尺規（true）
+    let mut tool: Option<bool> = None;
+    let menu = |ui: &mut Ui, snip: &mut Option<u64>, long: &mut bool, steps: &mut bool, qr: &mut bool, tool: &mut Option<bool>| {
         ui.set_min_width(190.0);
         if ui.button("框選範圍或視窗…").clicked() {
             *snip = Some(0);
@@ -957,9 +994,29 @@ fn shot_button(app: &mut UiApp, ui: &mut Ui, w: f32) {
         {
             *steps = true;
         }
+        ui.separator();
+        if ui.button("取色器…").on_hover_text("點一下畫面上的任何地方，色碼（例如 #1D4ED8）就複製到剪貼簿；有放大鏡可以對準").clicked() {
+            *tool = Some(false);
+        }
+        if ui.button("尺規（量距離）…").on_hover_text("在畫面上拖曳，量出兩點之間有幾個像素與角度").clicked() {
+            *tool = Some(true);
+        }
     };
-    egui::Popup::context_menu(&resp).show(|ui| menu(ui, &mut snip, &mut long, &mut steps, &mut qr));
-    egui::Popup::menu(&arrow).show(|ui| menu(ui, &mut snip, &mut long, &mut steps, &mut qr));
+    egui::Popup::context_menu(&resp).show(|ui| menu(ui, &mut snip, &mut long, &mut steps, &mut qr, &mut tool));
+    egui::Popup::menu(&arrow).show(|ui| menu(ui, &mut snip, &mut long, &mut steps, &mut qr, &mut tool));
+    if let Some(ruler) = tool.filter(|_| can) {
+        app.main.shooting = true;
+        let config = app.s.record_config(&app.env);
+        let core = app.core.clone();
+        app.spawn(async move { core.screen_tool(&config, ruler).await }, |app, r| {
+            app.main.shooting = false;
+            match r {
+                Ok(Some(hex)) => app.toast(format!("已複製色碼 {hex}"), false),
+                Ok(None) => {}
+                Err(e) => app.toast(e.message().to_string(), true),
+            }
+        });
+    }
     if qr && can {
         app.main.shooting = true;
         let config = app.s.record_config(&app.env);
@@ -1106,6 +1163,38 @@ fn job_card(app: &mut UiApp, ui: &mut Ui) {
 }
 
 /// 系統狀態：新版本、FFmpeg、擷取方式、編碼器（正常的合併成一個「已就緒」）
+/// 錄影前的音量表：主畫面看得到、沒在錄影、沒開其他視窗時才開著（錄影中、隱藏時關掉，不佔用麥克風）
+fn update_meter(app: &mut UiApp, ctx: &egui::Context) {
+    let idle = app.status.recorder.state == RecorderState::Idle && app.status.recorder.busy.is_none();
+    let covered = app.editor.is_some() || app.viewer.is_some() || app.library.is_some() || app.export_dlg.is_some();
+    let testing = app.meter_until.is_some_and(|t| Instant::now() < t);
+    if !testing {
+        app.meter_until = None;
+    }
+    let want = (testing && app.visible && idle && !covered && (app.s.audio_system || app.s.audio_mic)).then(|| (app.s.audio_system, app.s.audio_mic.then(|| app.s.mic_id.clone())));
+    if app.meter.as_ref().map(|m| m.key.clone()) != want {
+        app.meter = want.map(|(sys, mic)| screenrecorder_core::meter::Meter::start(std::sync::Arc::new(screenrecorder_core::audio::open_wasapi), sys, mic));
+    }
+    if app.meter.is_some() {
+        ctx.request_repaint_after(std::time::Duration::from_millis(80));
+    }
+}
+
+/// 音量條（0～1）：綠色，接近滿格時變橘色
+fn level_bar(ui: &mut Ui, v: f32) {
+    let p = theme::pal(ui);
+    let (r, _) = ui.allocate_exact_size(vec2(46.0, 8.0), Sense::hover());
+    ui.painter().rect_filled(r, CornerRadius::same(4), p.surface2);
+    // 人耳對音量是對數感受：-50 dB～0 dB 對應到整條
+    let db = 20.0 * v.max(1e-5).log10();
+    let k = ((db + 50.0) / 50.0).clamp(0.0, 1.0);
+    if k > 0.01 {
+        let mut f = r;
+        f.set_width(r.width() * k);
+        ui.painter().rect_filled(f, CornerRadius::same(4), if k > 0.9 { p.warn } else { p.ok });
+    }
+}
+
 /// 擷取方式的白話名稱
 fn method_name(m: screenrecorder_core::types::CaptureMethod) -> &'static str {
     match m.as_str() {

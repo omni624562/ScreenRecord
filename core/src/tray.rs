@@ -48,6 +48,10 @@ pub enum TrayCommand {
     ScreenshotScroll,
     /// 讀取畫面上的 QR 碼
     ScreenshotQr,
+    /// 取色器（點一下複製色碼）
+    ScreenColor,
+    /// 尺規（量畫面上的距離）
+    ScreenRuler,
     /// 開始步驟截圖（每點一下截一張）
     StepsStart,
     /// 完成步驟截圖（做成教學文件）
@@ -293,6 +297,10 @@ impl TrayController {
 
     /// 截好了：顯示通知（存在哪裡、有沒有複製到剪貼簿）
     fn notify_shot(&self, shot: &crate::types::ShotInfo) {
+        // 已經在右下角顯示小縮圖了：不用再跳通知
+        if self.app.shot_preview_enabled() {
+            return;
+        }
         let name = std::path::Path::new(&shot.path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         let text = if shot.copied { format!("已複製到剪貼簿，存成 {name}。點這裡編輯") } else { format!("已存成 {name}。點這裡編輯") };
         self.notify("已截圖", &text, false);
@@ -378,6 +386,13 @@ impl TrayController {
                     crate::clipboard::copy_text(&text);
                     let short: String = text.chars().take(100).collect();
                     self.notify("QR 碼內容（已複製）", &short, false);
+                }
+                return Ok(());
+            }
+            TrayCommand::ScreenColor | TrayCommand::ScreenRuler => {
+                let cfg = self.config();
+                if let Some(hex) = app.screen_tool(&cfg, cmd == TrayCommand::ScreenRuler).await.map_err(err)? {
+                    self.notify("取色器", &format!("{hex}（已複製到剪貼簿）"), false);
                 }
                 return Ok(());
             }

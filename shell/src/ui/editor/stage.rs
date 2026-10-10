@@ -230,7 +230,7 @@ fn update_sprites(ed: &mut Editor, ctx: &egui::Context, rect: Rect) {
             (-a.x, -a.y, ed.vw, ed.vh)
         } else {
             let (bx, by, bw, bh) = annotate::bbox(&look);
-            let m = a.size * 0.3 + 4.0;
+            let m = if a.kind == AnnKind::Image { 2.0 } else { a.size * 0.3 + 4.0 };
             (bx - m, by - m, bw + m * 2.0, bh + m * 2.0)
         };
         let (pw, ph) = ((ow * s).ceil().max(1.0) as u32, (oh * s).ceil().max(1.0) as u32);
@@ -416,7 +416,7 @@ fn interact(ed: &mut Editor, ui: &egui::Ui, rect: Rect, resp: &egui::Response) {
         if let Some(p) = ui.input(|i| i.pointer.latest_pos()) {
             // 轉動時游標可以移到影片外面（不夾在影片範圍內，角度才準）
             let v = if matches!(ed.drag, Drag::Rotate { .. }) { (((p.x - rect.left()) / rect.width()) as f64 * vw, ((p.y - rect.top()) / rect.height()) as f64 * vh) } else { to_video(p) };
-            drag_to(ed, v);
+            drag_to(ed, v, ui.input(|i| i.modifiers.shift));
         }
     }
     if released || !down {
@@ -424,7 +424,8 @@ fn interact(ed: &mut Editor, ui: &egui::Ui, rect: Rect, resp: &egui::Response) {
     }
 }
 
-fn drag_to(ed: &mut Editor, (px, py): (f64, f64)) {
+/// shift：調整圖片大小時不保持比例
+fn drag_to(ed: &mut Editor, (px, py): (f64, f64), shift: bool) {
     match std::mem::replace(&mut ed.drag, Drag::None) {
         Drag::Crop { from } => {
             ed.spec.crop = Some(CropInput { x: from.0.min(px), y: from.1.min(py), width: (px - from.0).abs(), height: (py - from.1).abs() });
@@ -495,6 +496,10 @@ fn drag_to(ed: &mut Editor, (px, py): (f64, f64)) {
                         } else if a.kind == AnnKind::Magnify {
                             let d = (lx - o.x).max(ly - o.y).max(16.0);
                             (a.w, a.h) = (d, d);
+                        } else if a.kind == AnnKind::Image && !shift {
+                            // 圖片保持比例（按住 Shift 可以自由調整）
+                            let k = ((lx - o.x) / o.w.max(1.0)).max((ly - o.y) / o.h.max(1.0)).max(8.0 / o.w.min(o.h).max(1.0));
+                            (a.w, a.h) = ((o.w * k).round(), (o.h * k).round());
                         } else {
                             a.w = (lx - o.x).max(8.0);
                             a.h = (ly - o.y).max(8.0);
@@ -622,6 +627,9 @@ pub fn paint_tool_icon(p: &egui::Painter, c: Pos2, tool: Tool, color: Color32, e
             p.rect_filled(Rect::from_center_size(c, vec2(20.0, 16.0)), CornerRadius::same(2), color.gamma_multiply(0.45));
             p.circle_filled(c, 5.0, Color32::WHITE);
             p.circle_stroke(c, 5.0, Stroke::new(1.2, color));
+        }
+        Tool::Ann(AnnKind::Image) => {
+            theme::paint_icon(p, Rect::from_center_size(c, vec2(20.0, 20.0)), theme::Icon::Image, color);
         }
         Tool::Ann(AnnKind::Magnify) => {
             p.circle_stroke(c + vec2(-2.0, -2.0), 7.0, s);

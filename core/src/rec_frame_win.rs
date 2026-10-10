@@ -23,7 +23,7 @@ use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
 use windows::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture, TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT};
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DispatchMessageW, GetClientRect, GetCursorPos, GetSystemMetrics, LoadCursorW, PeekMessageW, RegisterClassExW, SetCursor, SetLayeredWindowAttributes,
-    SetWindowDisplayAffinity, SetWindowPos, ShowWindow, TranslateMessage, HTTRANSPARENT, HWND_TOPMOST, IDC_HAND, IDC_SIZEALL, LWA_ALPHA, MA_NOACTIVATE, MSG, PM_REMOVE, SM_CXVIRTUALSCREEN,
+    SetWindowDisplayAffinity, SetWindowPos, ShowWindow, TranslateMessage, HTTRANSPARENT, HWND_TOPMOST, IDC_ARROW, IDC_HAND, IDC_SIZEALL, LWA_ALPHA, MA_NOACTIVATE, MSG, PM_REMOVE, SM_CXVIRTUALSCREEN,
     SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, SW_HIDE, WDA_EXCLUDEFROMCAPTURE, WM_CAPTURECHANGED, WM_ERASEBKGND,
     WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEACTIVATE, WM_MOUSEMOVE, WM_NCHITTEST, WM_PAINT, WM_SETCURSOR, WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
     WS_EX_TRANSPARENT, WS_POPUP,
@@ -89,6 +89,8 @@ thread_local! {
     static BAR_AREA: Cell<(i32, i32)> = const { Cell::new((0, 0)) };
     /// 放開後要移去的位置（錄影器移好之前，外框先停在這裡）
     static MOVE_TO: Cell<Option<(i32, i32)>> = const { Cell::new(None) };
+    /// 錄整個螢幕：沒有外框、控制列不能拖曳
+    static FULL: Cell<bool> = const { Cell::new(false) };
 }
 
 #[derive(Clone, Copy)]
@@ -231,8 +233,16 @@ unsafe fn run(info: impl Fn() -> Option<FrameInfo>, cmd: impl Fn(FrameCmd)) {
             cmd(FrameCmd::Move(to.0, to.1));
         }
         let want = f.map(|f| (f.area, f.state == RecorderState::Paused));
+        let full = f.is_some_and(|f| f.full);
+        FULL.with(|c| c.set(full));
         if want != shown {
             match want {
+                Some(_) if full => {
+                    // 錄整個螢幕：只有控制列（外框會在螢幕外面）
+                    for h in &edges {
+                        let _ = ShowWindow(*h, SW_HIDE);
+                    }
+                }
                 Some((r, paused)) => {
                     FRAME_COLOR.with(|c| c.set(if paused { AMBER } else { RED }));
                     let o = GAP + THICK;
@@ -287,8 +297,11 @@ unsafe fn update_bar(h: HWND, f: &FrameInfo, moved: bool) {
         let mut mi = MONITORINFO { cbSize: std::mem::size_of::<MONITORINFO>() as u32, ..Default::default() };
         let m = if GetMonitorInfoW(mon, &mut mi).as_bool() { mi.rcMonitor } else { frame };
         let gap = px(4.0, next.scale);
+        // 錄整個螢幕：螢幕上方中間（設成不被擷取，不會錄進影片）
         // 框的左上方；上面放不下改到框下方，都放不下時放在框內左上（不會被錄進去）
-        let (x, y) = if frame.top - gap - bh >= m.top {
+        let (x, y) = if f.full {
+            ((m.left + m.right - w) / 2, m.top + gap * 2)
+        } else if frame.top - gap - bh >= m.top {
             (frame.left, frame.top - gap - bh)
         } else if frame.bottom + gap + bh <= m.bottom {
             (frame.left, frame.bottom + gap)
@@ -368,13 +381,20 @@ unsafe extern "system" fn bar_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
         WM_SETCURSOR => {
             // 按鈕上是手指，其他地方可以拖曳
             let hand = HOVER.with(|c| c.get()).is_some() && DRAG.with(|d| d.get()).is_none();
-            if let Ok(c) = LoadCursorW(None, if hand { IDC_HAND } else { IDC_SIZEALL }) {
+            let cursor = if hand {
+                IDC_HAND
+            } else if FULL.with(|c| c.get()) {
+                IDC_ARROW
+            } else {
+                IDC_SIZEALL
+            };
+            if let Ok(c) = LoadCursorW(None, cursor) {
                 SetCursor(Some(c));
             }
             LRESULT(1)
         }
         WM_LBUTTONDOWN => {
-            if hit(lparam).is_none() {
+            if hit(lparam).is_none() && !FULL.with(|c| c.get()) {
                 let mut p = POINT::default();
                 let _ = GetCursorPos(&mut p);
                 DRAG.with(|d| d.set(Some(Drag { start: p, origin: ORIGIN.with(|o| o.get()), cur: p })));
@@ -428,10 +448,11 @@ unsafe fn paint_bar(hwnd: HWND, hdc: HDC) {
     let old_pen = SelectObject(mem, GetStockObject(NULL_PEN));
     let s = b.scale;
     fill(mem, &rc, BAR_BG);
-    // 拖曳點
+    // 拖曳點（錄整個螢幕時不能拖，不畫）
     let cy = h / 2;
     let g = px(2.0, s).max(2);
-    for (ix, iy) in [(0, -1), (0, 0), (0, 1), (1, -1), (1, 0), (1, 1)] {
+    let grip: &[(i32, i32)] = if FULL.with(|c| c.get()) { &[] } else { &[(0, -1), (0, 0), (0, 1), (1, -1), (1, 0), (1, 1)] };
+    for &(ix, iy) in grip {
         let (gx, gy) = (px(BAR_PAD - 2.0 + ix as f32 * 5.0, s), cy + iy * px(5.0, s) - g / 2);
         fill(mem, &RECT { left: gx, top: gy, right: gx + g, bottom: gy + g }, GREY);
     }

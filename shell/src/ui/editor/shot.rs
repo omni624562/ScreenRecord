@@ -10,6 +10,7 @@ use screenrecorder_core::actions::{self, ProjectMatch, ShotProjectInfo};
 use screenrecorder_core::annotate::{self, AnnKind};
 use screenrecorder_core::edit::{normalize_crop, CropInput, EditSpec};
 use screenrecorder_core::ocr;
+use screenrecorder_core::picture;
 use screenrecorder_core::player::Frame;
 use screenrecorder_core::shot_edit::{self, ShotSpec, BACKGROUNDS, BORDER_COLORS, PADDINGS, RADII, SCALES};
 use screenrecorder_core::types::{LibraryEntry, MediaInfo};
@@ -87,6 +88,14 @@ pub enum Act {
     FindPii,
     /// 影片：找出沒動靜的片段並刪掉
     FindIdle,
+    /// 選一張圖片檔加上去（replace = 換掉選取的圖片）
+    PickPicture {
+        replace: bool,
+    },
+    /// 加上剪貼簿裡的圖片
+    PastePicture,
+    /// 再加一次上次用的圖片
+    LastPicture,
 }
 
 /// 開啟截圖編輯：編輯過的圖會從原圖重新套用上次的編輯
@@ -619,6 +628,26 @@ pub fn run(app: &mut UiApp, ed: &mut Editor, act: Act) {
                 }
             });
         }
+        Act::PickPicture { replace } => {
+            app.spawn(async move { tokio::task::spawn_blocking(picture::pick_file).await.unwrap_or(Ok(None)) }, move |app, r| match r {
+                Ok(Some(path)) => use_picture(app, &path.to_string_lossy(), replace),
+                Ok(None) => {}
+                Err(e) => app.toast(e, true),
+            });
+        }
+        Act::PastePicture => {
+            app.spawn(async move { tokio::task::spawn_blocking(picture::save_clipboard_image).await.unwrap_or_else(|e| Err(e.to_string())) }, |app, r| match r {
+                Ok(path) => use_picture(app, &path.to_string_lossy(), false),
+                Err(e) => app.toast(e, true),
+            });
+        }
+        Act::LastPicture => {
+            let path = ed.last_picture.clone();
+            match ed.add_picture(&path) {
+                Ok(()) => {}
+                Err(e) => app.toast(e, true),
+            }
+        }
         Act::FindIdle => {
             if ed.finding_idle {
                 return;
@@ -652,5 +681,20 @@ pub fn run(app: &mut UiApp, ed: &mut Editor, act: Act) {
             app.editor = None;
             open_with(app, path, false);
         }
+    }
+}
+
+/// 加上（或換成）這張圖片，並記住它（下次可以從選單直接再用）
+pub fn use_picture(app: &mut UiApp, path: &str, replace: bool) {
+    let Some(ed) = &mut app.editor else { return };
+    let r = if replace { ed.replace_picture(path) } else { ed.add_picture(path) };
+    match r {
+        Ok(()) => {
+            if app.s.last_picture != path {
+                app.s.last_picture = path.to_string();
+                app.save_settings();
+            }
+        }
+        Err(e) => app.toast(e, true),
     }
 }

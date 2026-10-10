@@ -406,8 +406,46 @@ impl App {
         self.lock().shooting = false;
         let shot = r?;
         self.lock().shot = Some(shot.clone());
+        self.shot_preview(&shot.path);
         crate::info!("[截圖] {}（{}×{}{}）", shot.path, shot.width, shot.height, if shot.copied { "，已複製到剪貼簿" } else { "" });
         Ok(shot)
+    }
+
+    /// 截圖後在右下角顯示小縮圖（設定可關掉；只有 Windows）
+    pub fn shot_preview_enabled(&self) -> bool {
+        cfg!(windows) && self.settings.load().ui.and_then(|u| u.get("shotPreview").and_then(serde_json::Value::as_bool)).unwrap_or(true)
+    }
+
+    /// 顯示截圖後的小縮圖：編輯、複製、釘選、刪除
+    fn shot_preview(self: &Arc<Self>, path: &str) {
+        if !self.shot_preview_enabled() {
+            return;
+        }
+        #[cfg(windows)]
+        {
+            use crate::shot_toast_win::Cmd;
+            let me = Arc::downgrade(self);
+            crate::shot_toast_win::show(path.to_string(), move |cmd, p| {
+                let Some(app) = me.upgrade() else { return };
+                match cmd {
+                    Cmd::Edit => app.open_ui(UiPage::EditShot),
+                    Cmd::Copy => {
+                        crate::clipboard::copy_png(Path::new(p));
+                    }
+                    Cmd::Pin => {
+                        if let Some(pm) = std::fs::read(p).ok().and_then(|b| tiny_skia::Pixmap::decode_png(&b).ok()) {
+                            crate::pin_win::show(crate::shot_edit::straight_rgba(&pm), pm.width(), pm.height());
+                        }
+                    }
+                    Cmd::Delete => match crate::recycle::move_to_recycle_bin(&[p.to_string()]) {
+                        Ok(()) => crate::info!("[截圖] 從小縮圖刪除 {p}"),
+                        Err(e) => app.notify("刪除截圖", e.message(), true),
+                    },
+                }
+            });
+        }
+        #[cfg(not(windows))]
+        let _ = path;
     }
 
     async fn take_screenshot(self: &Arc<Self>, config: &RecordConfig) -> crate::Result<crate::types::ShotInfo> {
@@ -605,6 +643,51 @@ impl App {
         res
     }
 
+    /// 取色器（tool = false）或尺規（tool = true）：凍結畫面後顯示放大鏡。
+    /// 取色器點一下把色碼（#1D4ED8）複製到剪貼簿並回傳；尺規只是量，回傳 None。只有 Windows
+    pub async fn screen_tool(self: &Arc<Self>, config: &RecordConfig, ruler: bool) -> crate::Result<Option<String>> {
+        #[cfg(not(windows))]
+        {
+            let _ = (config, ruler);
+            Err(crate::Error::config("取色器與尺規只支援 Windows"))
+        }
+        #[cfg(windows)]
+        {
+            {
+                let mut st = self.lock();
+                if st.shooting || st.snipping {
+                    return Err(crate::Error::config("正在截圖"));
+                }
+                st.shooting = true;
+            }
+            let r = self.snip_capture(config).await;
+            self.lock().shooting = false;
+            let src = r?;
+            self.lock().snipping = true;
+            let (path, desk) = (src.path.clone(), src.desktop);
+            let color = tokio::task::spawn_blocking(move || {
+                let pm = tiny_skia::Pixmap::decode_png(&std::fs::read(&path).ok()?).ok()?;
+                let desk = crate::types::Rect { width: pm.width() as i32, height: pm.height() as i32, ..desk };
+                if ruler {
+                    crate::snip_win::ruler(pm.data(), desk);
+                    None
+                } else {
+                    crate::snip_win::pick_color(pm.data(), desk)
+                }
+            })
+            .await
+            .ok()
+            .flatten();
+            self.snip_end(Some(&src));
+            let hex = color.map(crate::snip_tools::hex);
+            if let Some(h) = &hex {
+                crate::clipboard::copy_text(h);
+                crate::info!("[取色器] {h}（已複製到剪貼簿）");
+            }
+            Ok(hex)
+        }
+    }
+
     /// 讀取畫面上的 QR 碼：框選範圍（或點一下選視窗）後解出內容；取消時 None。只有 Windows
     pub async fn qr_snip(self: &Arc<Self>, config: &RecordConfig) -> crate::Result<Option<Vec<String>>> {
         #[cfg(not(windows))]
@@ -691,6 +774,7 @@ impl App {
             .map_err(|e| crate::Error::other(e.to_string()))??;
             let shot = self.finish_shot(&out, w, h).await;
             self.lock().shot = Some(shot.clone());
+            self.shot_preview(&shot.path);
             crate::info!("[截圖] 長截圖 {}（{w}×{h}，捲動 {steps} 次）", shot.path);
             Ok(Some(shot))
         }
@@ -803,6 +887,7 @@ impl App {
             st.shot = Some(shot.clone());
             st.last_snip = Some(rect);
         }
+        self.shot_preview(&shot.path);
         crate::info!("[截圖] 框選 {}（{}×{}{}）", shot.path, shot.width, shot.height, if shot.copied { "，已複製到剪貼簿" } else { "" });
         Ok(shot)
     }

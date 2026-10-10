@@ -221,6 +221,8 @@ pub enum Icon {
     Window,
     /// 向下的箭頭（下拉選單）
     ChevD,
+    /// 圖片（山與太陽）
+    Image,
 }
 
 /// 在 rect（正方形）裡畫圖示
@@ -307,6 +309,11 @@ pub fn paint_icon(p: &Painter, rect: Rect, icon: Icon, color: Color32) {
             p.rect_stroke(Rect::from_min_max(at(2.0, 5.0), at(14.0, 13.5)), CornerRadius::same((2.0 * k) as u8), st, StrokeKind::Middle);
             line(&[(5.5, 5.0), (6.5, 3.0), (9.5, 3.0), (10.5, 5.0)]);
             circle(8.0, 9.2, 2.4);
+        }
+        Icon::Image => {
+            p.rect_stroke(Rect::from_min_max(at(2.0, 3.0), at(14.0, 13.0)), CornerRadius::same((1.5 * k) as u8), st, StrokeKind::Middle);
+            line(&[(3.5, 11.5), (7.0, 7.5), (9.5, 10.0), (11.0, 8.5), (13.0, 11.0)]);
+            p.circle_filled(at(10.8, 5.8), 1.2 * k, color);
         }
         Icon::Window => {
             p.rect_stroke(Rect::from_min_max(at(2.0, 3.0), at(14.0, 13.0)), CornerRadius::same((1.5 * k) as u8), st, StrokeKind::Middle);

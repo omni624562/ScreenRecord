@@ -19,6 +19,7 @@ use screenrecorder_core::actions::{self, EditProject, ProjectMatch};
 use screenrecorder_core::annotate::{self, Ann, AnnKind, ProjectData, ProjectSpec, Shape, COLORS, EMOJIS};
 use screenrecorder_core::edit::{cut_file_name, keep_parts, keep_ranges, normalize_crop, normalize_ranges, output_length, ClickZoom, CropInput, EditSpec, FastRange, Range};
 use screenrecorder_core::format::video_clock;
+use screenrecorder_core::picture;
 use screenrecorder_core::player::{Frame, MediaSpec, Player};
 use screenrecorder_core::types::LibraryEntry;
 use serde_json::Value;
@@ -226,6 +227,8 @@ pub struct Editor {
     clicks: Vec<[f64; 3]>,
     /// 跟著點擊放大的倍率（0 = 不放大）
     zoom: f64,
+    /// 上次加上的圖片（Logo），選單裡可以直接再用
+    last_picture: String,
     /// 正在用文字辨識找個資
     finding_pii: bool,
     /// 正在分析沒動靜的片段
@@ -348,6 +351,7 @@ impl Editor {
             markers: vec![],
             clicks: vec![],
             zoom: 0.0,
+            last_picture: app.s.last_picture.clone(),
             finding_pii: false,
             finding_idle: false,
             fast_from: None,
@@ -673,6 +677,46 @@ impl Editor {
         a
     }
 
+    /// 加上圖片標註：截圖放在中間；影片當作 Logo 放在右下角、整支影片都顯示
+    fn add_picture(&mut self, path: &str) -> Result<(), String> {
+        if self.vw <= 0.0 {
+            return Err(format!("無法讀取{}尺寸，不能加上圖片", self.what()));
+        }
+        let pic = picture::load(path).ok_or_else(|| format!("無法讀取圖片「{}」（支援 PNG、JPG、BMP、WebP）", file_name(path)))?;
+        let shot = self.is_shot();
+        let (w, h) = picture::fit_size(pic.width(), pic.height(), self.vw, self.vh, if shot { 0.3 } else { 0.16 });
+        let mut a = self.new_ann(AnnKind::Image, 0.0, 0.0);
+        a.text = Some(path.to_string());
+        (a.w, a.h) = (w, h);
+        if shot {
+            (a.x, a.y) = (((self.vw - w) / 2.0).round(), ((self.vh - h) / 2.0).round());
+        } else {
+            let m = (self.vw.min(self.vh) * 0.03).round();
+            (a.x, a.y) = ((self.vw - w - m).max(0.0), (self.vh - h - m).max(0.0));
+            (a.start, a.end) = (0.0, self.duration);
+        }
+        let id = a.id;
+        self.anns.push(a);
+        self.tool = None;
+        self.select_ann(Some(id));
+        self.last_picture = path.to_string();
+        Ok(())
+    }
+
+    /// 選取的圖片換成另一張（位置與寬度不變，高度依新圖的比例）
+    fn replace_picture(&mut self, path: &str) -> Result<(), String> {
+        let pic = picture::load(path).ok_or_else(|| format!("無法讀取圖片「{}」（支援 PNG、JPG、BMP、WebP）", file_name(path)))?;
+        let Some(a) = self.selected_mut().filter(|a| a.kind == AnnKind::Image) else {
+            return self.add_picture(path);
+        };
+        a.text = Some(path.to_string());
+        let cy = a.y + a.h / 2.0;
+        a.h = (a.w * pic.height() as f64 / pic.width().max(1) as f64).round().max(8.0);
+        a.y = cy - a.h / 2.0;
+        self.last_picture = path.to_string();
+        Ok(())
+    }
+
     fn select_ann(&mut self, id: Option<u64>) {
         self.ann_sel = id;
         if id.is_some() {
@@ -915,6 +959,9 @@ impl Editor {
             }
             "zoom" => self.set_view(2.0, 2.0 + v.parse::<f64>().unwrap_or(4.0)),
             "selrange" => self.sel = Some((7.0, 8.5)),
+            "picture" => {
+                let _ = self.add_picture(v);
+            }
             "shadow" => {
                 if let Some(s) = &mut self.shot {
                     let mut o = s.opts();
@@ -1095,6 +1142,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
     if ed.player.is_playing() {
         ctx.request_repaint();
     }
+    drop_pictures(app, &mut ed, ctx, &mut toast);
 
     let screen = ctx.content_rect();
     let size = vec2((screen.width() - 32.0).max(600.0), (screen.height() - 32.0).max(400.0));
@@ -1226,6 +1274,33 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         app.ask = Some(ask);
     }
     app.editor = Some(ed);
+}
+
+/// 把圖片檔拖曳到視窗：加上圖片（Logo）；拖曳中蓋上提示
+fn drop_pictures(app: &mut UiApp, ed: &mut Editor, ctx: &egui::Context, toast: &mut Option<(String, bool)>) {
+    let (hovering, dropped) = ctx.input(|i| (!i.raw.hovered_files.is_empty(), i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).filter(|p| !p.as_os_str().is_empty()).collect::<Vec<_>>()));
+    if hovering {
+        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, Id::new("drop-picture")));
+        let r = ctx.content_rect();
+        painter.rect_filled(r, 0, Color32::from_black_alpha(140));
+        painter.text(r.center(), egui::Align2::CENTER_CENTER, format!("放開滑鼠，把圖片加到{}上", ed.what()), theme::font_bold(20.0), Color32::WHITE);
+    }
+    for path in dropped {
+        if !picture::is_picture(&path) {
+            *toast = Some(("只能拖曳圖片檔進來（PNG、JPG、BMP、WebP）".into(), true));
+            continue;
+        }
+        let p = path.to_string_lossy().to_string();
+        match ed.add_picture(&p) {
+            Ok(()) => {
+                if app.s.last_picture != p {
+                    app.s.last_picture = p;
+                    app.save_settings();
+                }
+            }
+            Err(e) => *toast = Some((e, true)),
+        }
+    }
 }
 
 /// 說明列：正在修改哪個剪輯版、找不到原片、或原片有上次的剪輯可以載入

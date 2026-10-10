@@ -78,6 +78,12 @@ pub struct UiSettings {
     pub cursor_halo: bool,
     /// 錄影時隱藏桌面圖示
     pub hide_icons: bool,
+    /// 截圖後在右下角顯示小縮圖
+    pub shot_preview: bool,
+    /// 看過哪一版的新功能介紹（例如 "3.1"）
+    pub seen_version: String,
+    /// 上次加到截圖或影片上的圖片（Logo）
+    pub last_picture: String,
 }
 
 /// 介面大小可選的百分比
@@ -154,6 +160,9 @@ impl UiSettings {
             camera_circle: boolean("cameraCircle").unwrap_or(true),
             cursor_halo: boolean("cursorHalo").unwrap_or(false),
             hide_icons: boolean("hideIcons").unwrap_or(false),
+            shot_preview: boolean("shotPreview").unwrap_or(true),
+            seen_version: string("seenVersion").unwrap_or_default(),
+            last_picture: string("lastPicture").unwrap_or_default(),
             ui_scale: num("uiScale").map(|v| v as u32).filter(|v| UI_SCALES.contains(v)).unwrap_or(100),
         };
         s.fix_monitor(env);

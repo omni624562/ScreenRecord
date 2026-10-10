@@ -33,9 +33,11 @@ pub mod job;
 pub mod library;
 pub mod log;
 pub mod longshot;
+pub mod meter;
 pub mod monitors;
 pub mod ocr;
 pub mod paths;
+pub mod picture;
 #[cfg(windows)]
 pub mod pin_win;
 pub mod player;
@@ -51,6 +53,10 @@ pub mod scroll_win;
 pub mod selfupdate;
 pub mod settings;
 pub mod shot_edit;
+pub mod shot_toast;
+#[cfg(windows)]
+pub mod shot_toast_win;
+pub mod snip_tools;
 #[cfg(windows)]
 pub mod snip_win;
 pub mod steps;

@@ -274,6 +274,8 @@ pub struct FrameInfo {
     pub countdown_ms: Option<u64>,
     /// 打了幾個點
     pub markers: u32,
+    /// 錄整個螢幕（不是自訂範圍）：不顯示外框，控制列放在螢幕上方中間、不能拖曳
+    pub full: bool,
 }
 
 /// 錄影時記下的時間點：打的點與滑鼠點擊（存在 markers/，剪輯時用）
@@ -498,11 +500,9 @@ impl Recorder {
         if !matches!(st.state, RecorderState::Countdown | RecorderState::Recording | RecorderState::Paused) {
             return None;
         }
-        if !matches!(st.config.as_ref()?.source, SourceConfig::Region { .. }) {
-            return None;
-        }
+        let full = !matches!(st.config.as_ref()?.source, SourceConfig::Region { .. });
         let countdown_ms = if st.state == RecorderState::Countdown { st.countdown.as_ref().map(|c| c.ends_at.saturating_sub(now_ms())) } else { None };
-        Some(FrameInfo { area: st.plan.as_ref()?.rect, state: st.state, recorded_ms: st.recorded_ms(), countdown_ms, markers: st.markers.len() as u32 })
+        Some(FrameInfo { area: st.plan.as_ref()?.rect, state: st.state, recorded_ms: st.recorded_ms(), countdown_ms, markers: st.markers.len() as u32, full })
     }
 
     /// 錄影中或暫停中（不含倒數）：擷取範圍與要不要顯示點擊、按鍵
@@ -1667,7 +1667,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn frame_info_only_for_regions_while_active() {
+    async fn frame_info_while_active() {
         let s = Setup::new(Fake::default());
         s.release();
         assert_eq!(s.rec.frame_info(), None);
@@ -1679,10 +1679,10 @@ mod tests {
         s.rec.stop(None).await.unwrap();
         tokio::time::sleep(Duration::from_millis(20)).await;
         assert_eq!(s.rec.frame_info(), None);
-        // 整個螢幕：不畫外框
+        // 整個螢幕：只有控制列（full = true，不畫外框、不能拖曳）
         s.rec.start(s.config()).await.unwrap();
         assert_eq!(s.rec.status().state, RecorderState::Countdown);
-        assert_eq!(s.rec.frame_info(), None);
+        assert!(s.rec.frame_info().unwrap().full);
         s.rec.stop(None).await.unwrap();
     }
 

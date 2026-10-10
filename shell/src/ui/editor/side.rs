@@ -1,13 +1,16 @@
 //! 右側面板：時間（頭尾、刪除的片段）、畫面裁切、標註（工具、屬性、清單）；截圖另有「輸出」（外框、陰影、大小）。
 
+use super::shot::Act;
 use super::stage::paint_tool_icon;
 use super::{ann_color, parse_time, Editor, Tab, Tool};
-use crate::ui::theme::{self, segmented, switch, Btn};
+use crate::ui::dialogs::file_name;
+use crate::ui::theme::{self, segmented, switch, Btn, Icon};
 use eframe::egui::{self, pos2, vec2, Align, Align2, Color32, CornerRadius, CursorIcon, Id, Layout, RichText, Sense, Stroke};
 use screenrecorder_core::annotate::{self, AnnKind, Shape, COLORS};
 use screenrecorder_core::edit::{normalize_ranges, set_fast, CropInput, FAST_SPEEDS};
 use screenrecorder_core::format::video_clock;
 use screenrecorder_core::idle;
+use screenrecorder_core::picture;
 use screenrecorder_core::zoom;
 
 pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, toast: &mut Option<(String, bool)>) {
@@ -350,6 +353,9 @@ fn ann_panel(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context) {
             }
         });
     }
+    if can {
+        picture_button(ed, ui);
+    }
     let w = ed.what();
     let hint_text = if !can {
         format!("無法讀取{w}尺寸，不能加上標註。")
@@ -384,6 +390,26 @@ fn ann_panel(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context) {
         props(ed, ui, ctx);
     }
     ann_list(ed, ui);
+}
+
+/// 加上圖片 / Logo：選檔、上次用的圖、剪貼簿的圖（也可以直接把圖片檔拖曳進來）
+fn picture_button(ed: &mut Editor, ui: &mut egui::Ui) {
+    let last = ed.last_picture.clone();
+    let has_last = !last.is_empty() && std::path::Path::new(&last).is_file();
+    let tip = format!("加上圖片：Logo、浮水印、商品照…（可以調整大小、透明度{}）\n也可以直接把圖片檔拖曳到這個視窗", if ed.is_shot() { "" } else { "、出現時間" });
+    let resp = Btn::new(if ed.is_shot() { "加上圖片" } else { "加上圖片／Logo" }).icon(Icon::Image).small().min_width(ui.available_width()).tooltip(tip).show(ui);
+    egui::Popup::menu(&resp).show(|ui| {
+        ui.set_min_width(220.0);
+        if ui.button("選擇圖片檔…").clicked() {
+            ed.pending = Some(Act::PickPicture { replace: false });
+        }
+        if has_last && ui.button(format!("上次的圖片「{}」", file_name(&last))).on_hover_text(last.as_str()).clicked() {
+            ed.pending = Some(Act::LastPicture);
+        }
+        if ui.button("貼上剪貼簿裡的圖片").clicked() {
+            ed.pending = Some(Act::PastePicture);
+        }
+    });
 }
 
 /// 顏色與大小（線寬、粗細、字級）；回傳 (顏色改了, 大小改了)
@@ -523,6 +549,32 @@ fn props(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context) {
                     cur.size = (z * 100.0).round();
                 }
             });
+        } else if cur.kind == AnnKind::Image {
+            ui.horizontal(|ui| {
+                ui.label(theme::muted(ui, "不透明度").font(theme::font(12.0)));
+                let mut v = cur.size.clamp(5.0, 100.0);
+                ui.spacing_mut().slider_width = ui.available_width() - 60.0;
+                if ui.add(egui::Slider::new(&mut v, 5.0..=100.0).step_by(5.0).fixed_decimals(0).suffix("%")).changed() {
+                    cur.size = v;
+                }
+            });
+            ui.horizontal(|ui| {
+                if Btn::new("換一張圖…").ghost().small().show(ui).clicked() {
+                    ed.pending = Some(Act::PickPicture { replace: true });
+                }
+                if Btn::new("原始比例").ghost().small().tooltip("依圖片原本的長寬比例調整高度").show(ui).clicked() {
+                    if let Some(pic) = cur.text.as_deref().and_then(picture::load) {
+                        let cy = cur.y + cur.h / 2.0;
+                        cur.h = (cur.w * pic.height() as f64 / pic.width().max(1) as f64).round().max(8.0);
+                        cur.y = cy - cur.h / 2.0;
+                    }
+                }
+            });
+            if cur.text.as_deref().and_then(picture::load).is_none() {
+                hint(ui, "找不到這張圖片（可能被移動或刪除了），請按「換一張圖」。");
+            } else {
+                hint(ui, "拖曳右下角調整大小（保持比例）；調低不透明度可以當作浮水印。");
+            }
         } else if cur.kind.shape_only() {
             ui.vertical(|ui| {
                 ui.spacing_mut().item_spacing.y = 4.0;
