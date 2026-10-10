@@ -135,6 +135,10 @@ pub fn startup_fallback(o: &FallbackInput) -> StartupFallback {
     StartupFallback::Fatal
 }
 
+/// 「自動」優先用的顯示卡編碼器：Intel QSV（內顯幾乎每台都有，壓縮時 CPU 負擔最小；
+/// 擷取在 Intel 顯示卡上時，畫面還能全程留在顯示卡）
+pub const AUTO_PREFERRED_GPU: &str = "h264_qsv";
+
 /// 決定這次錄影的編碼器（learned：之前在「自動」模式偵測到 CPU 跟不上，之後直接用 GPU）
 pub fn choose_encoder(pref: EncoderPreference, out_width: i32, out_height: i32, fps: f64, cpu: Option<EncoderSpec>, gpu: &[EncoderSpec], learned: bool) -> Result<(EncoderSpec, &'static str)> {
     if pref == EncoderPreference::Gpu {
@@ -144,6 +148,9 @@ pub fn choose_encoder(pref: EncoderPreference, out_width: i32, out_height: i32, 
         return Ok((*g, "指定使用 GPU 編碼"));
     }
     if pref == EncoderPreference::Auto {
+        if let Some(q) = gpu.iter().find(|e| e.name == AUTO_PREFERRED_GPU) {
+            return Ok((*q, "優先使用 Intel 顯示卡編碼（QSV），減輕 CPU 負擔"));
+        }
         if let Some(g) = gpu.first() {
             if out_width as f64 * out_height as f64 * fps > AUTO_GPU_PIXELS_PER_SEC {
                 return Ok((*g, "畫面量超過 1080p60，自動改用 GPU 編碼"));
@@ -1629,15 +1636,22 @@ dummy: Immediate exit requested";
     fn encoder_choice() {
         let cpu = encoder_spec("libx264");
         let qsv = encoder_spec("h264_qsv").unwrap();
+        let nvenc = encoder_spec("h264_nvenc").unwrap();
         let pick = |pref, w, h, fps, gpu: &[EncoderSpec], learned| choose_encoder(pref, w, h, fps, cpu, gpu, learned).map(|(s, _)| s.name);
         use EncoderPreference::*;
-        assert_eq!(pick(Auto, 1920, 1080, 30.0, &[qsv], false), Ok("libx264"));
+        // 「自動」：有 Intel QSV 就優先用，不論畫面大小（也比其他顯示卡優先）
+        assert_eq!(pick(Auto, 1280, 720, 30.0, &[qsv], false), Ok("h264_qsv"));
+        assert_eq!(pick(Auto, 1920, 1080, 30.0, &[qsv], false), Ok("h264_qsv"));
+        assert_eq!(pick(Auto, 3840, 2160, 60.0, &[nvenc, qsv], false), Ok("h264_qsv"));
+        // 沒有 QSV：照舊平常用 CPU，畫面量超過 1080p60 或先前跟不上才用顯示卡
+        assert_eq!(pick(Auto, 1920, 1080, 30.0, &[nvenc], false), Ok("libx264"));
+        assert_eq!(pick(Auto, 1920, 1080, 60.0, &[nvenc], false), Ok("libx264"));
         const { assert!(3840.0 * 2160.0 * 30.0 > AUTO_GPU_PIXELS_PER_SEC) };
-        assert_eq!(pick(Auto, 3840, 2160, 30.0, &[qsv], false), Ok("h264_qsv"));
-        assert_eq!(pick(Auto, 4480, 1440, 30.0, &[qsv], false), Ok("h264_qsv"));
-        assert_eq!(pick(Auto, 1920, 1080, 60.0, &[qsv], false), Ok("libx264"));
-        assert_eq!(pick(Auto, 1280, 720, 30.0, &[qsv], true), Ok("h264_qsv"));
+        assert_eq!(pick(Auto, 3840, 2160, 30.0, &[nvenc], false), Ok("h264_nvenc"));
+        assert_eq!(pick(Auto, 4480, 1440, 30.0, &[nvenc], false), Ok("h264_nvenc"));
+        assert_eq!(pick(Auto, 1280, 720, 30.0, &[nvenc], true), Ok("h264_nvenc"));
         assert_eq!(pick(Auto, 3840, 2160, 60.0, &[], true), Ok("libx264"));
+        // 指定 GPU / CPU 不受影響
         assert_eq!(pick(Gpu, 640, 360, 30.0, &[qsv], false), Ok("h264_qsv"));
         assert_eq!(pick(Cpu, 3840, 2160, 60.0, &[qsv], true), Ok("libx264"));
         assert!(pick(Gpu, 640, 360, 30.0, &[], false).unwrap_err().is_config());

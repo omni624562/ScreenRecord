@@ -609,6 +609,7 @@ fn advanced_page(app: &mut UiApp, ui: &mut Ui) {
         String::new()
     } else {
         match &hw {
+            Some(h) if h.iter().any(|n| n == screenrecorder_core::args::AUTO_PREFERRED_GPU) => "優先用 Intel 顯示卡（QSV），CPU 負擔最小；不能用時改用 CPU。".into(),
             Some(h) if !h.is_empty() => {
                 if ff.prefer_gpu == Some(true) {
                     format!("先前偵測到 CPU 編碼跟不上，目前會使用 GPU（{}）。", h[0])
