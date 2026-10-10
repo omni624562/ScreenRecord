@@ -372,6 +372,18 @@ impl Recorder {
     }
 
     /// 正在準備開始（狀態可能仍是待命）；快捷鍵用來判斷再按一次是「取消」
+    /// 錄自訂範圍時的擷取範圍與是否暫停中（倒數、錄影、暫停期間；其他時候 None）：螢幕上的錄影範圍外框用
+    pub fn frame_area(&self) -> Option<(Rect, bool)> {
+        let st = self.lock();
+        if !matches!(st.state, RecorderState::Countdown | RecorderState::Recording | RecorderState::Paused) {
+            return None;
+        }
+        if !matches!(st.config.as_ref()?.source, SourceConfig::Region { .. }) {
+            return None;
+        }
+        Some((st.plan.as_ref()?.rect, st.state == RecorderState::Paused))
+    }
+
     pub fn starting(&self) -> bool {
         self.lock().starting_now
     }
@@ -1445,6 +1457,23 @@ mod tests {
         s.rec.stop(None).await.unwrap();
         tokio::time::sleep(Duration::from_millis(20)).await;
         assert_eq!(s.rec.status().countdown_covers_ui, None); // 不在倒數就不回報
+    }
+
+    #[tokio::test]
+    async fn frame_area_only_for_regions_while_active() {
+        let s = Setup::new(Fake::default());
+        s.release();
+        assert_eq!(s.rec.frame_area(), None);
+        s.rec.start(RecordConfig { source: region(100.0, 50.0, 640.0, 480.0), ..s.config() }).await.unwrap();
+        assert_eq!(s.rec.frame_area(), Some((Rect { x: 100, y: 50, width: 640, height: 480 }, false)));
+        s.rec.stop(None).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert_eq!(s.rec.frame_area(), None);
+        // 整個螢幕：不畫外框
+        s.rec.start(s.config()).await.unwrap();
+        assert_eq!(s.rec.status().state, RecorderState::Countdown);
+        assert_eq!(s.rec.frame_area(), None);
+        s.rec.stop(None).await.unwrap();
     }
 
     #[tokio::test]

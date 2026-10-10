@@ -108,6 +108,12 @@ fn main() {
         }
     }));
     core.set_exiter(Arc::new(|code| std::process::exit(code)));
+    // 錄自訂範圍時，在螢幕上的範圍外圍顯示外框
+    #[cfg(windows)]
+    {
+        let c = Arc::downgrade(&core);
+        screenrecorder_core::rec_frame_win::spawn(move || c.upgrade()?.recorder.frame_area());
+    }
 
     // 控制端點：再次啟動時把視窗帶到前面、新版接手時正常結束
     if !args.no_tray {

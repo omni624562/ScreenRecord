@@ -33,6 +33,8 @@ pub mod paths;
 pub mod player;
 pub mod process;
 pub mod projects;
+#[cfg(windows)]
+pub mod rec_frame_win;
 pub mod recorder;
 pub mod recycle;
 pub mod selfupdate;
