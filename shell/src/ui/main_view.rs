@@ -462,7 +462,7 @@ fn region_drag(app: &mut UiApp, ui: &Ui, resp: &egui::Response, rect: Rect, view
     );
     // 滑鼠游標：依位置顯示移動 / 調整大小
     let mode_at = |pos: Pos2| -> DragMode {
-        let tol = 7.0;
+        let tol = 8.0;
         let near = |a: f32, b: f32| (a - b).abs() <= tol;
         let inside_y = pos.y >= rr.top() - tol && pos.y <= rr.bottom() + tol;
         let inside_x = pos.x >= rr.left() - tol && pos.x <= rr.right() + tol;
@@ -490,7 +490,8 @@ fn region_drag(app: &mut UiApp, ui: &Ui, resp: &egui::Response, rect: Rect, view
         ui.ctx().set_cursor_icon(icon);
     }
     if resp.drag_started() {
-        if let Some(pos) = resp.interact_pointer_pos() {
+        // 從按下的位置判斷（開始拖曳時游標已經移動了幾點；用移動後的位置會離開控制點，變成重新框選，範圍先變小）
+        if let Some(pos) = ui.input(|i| i.pointer.press_origin()).or_else(|| resp.interact_pointer_pos()) {
             let mode = mode_at(pos);
             app.main.drag = Some(RegionDrag { mode, from: to_desk(pos, mode == DragMode::New), orig: r });
         }
