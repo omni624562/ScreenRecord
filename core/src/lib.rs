@@ -87,4 +87,7 @@ pub mod video_frame;
 pub mod winui;
 pub mod zoom;
 
+#[cfg(test)]
+mod e2e_tests;
+
 pub use error::{Error, Result};

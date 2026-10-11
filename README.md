@@ -105,7 +105,7 @@ cargo clippy --workspace --all-targets
 cargo fmt --all
 ```
 
-要與已安裝的正式版並存時加上 `-- --no-tray`。`core` 的單元測試在 Linux 上也能跑；操作視窗在 Linux（X11）上也能開啟，方便截圖檢查版面（debug 版可用環境變數 `SCREENRECORDER_DEV`、`SCREENRECORDER_INPUT`、`SCREENRECORDER_SHOT` 自動開啟畫面、模擬操作並截圖，見 `shell/src/ui/dev.rs`）。
+要與已安裝的正式版並存時加上 `-- --no-tray`。`core` 的單元測試在 Linux 上也能跑；`core/src/e2e_tests.rs` 用真的 FFmpeg 跑完整流程（用錄影的參數錄分段、停止合併與章節、當掉後救回、加速版、GIF、WebP、剪輯的各種效果、合併、找出沒動靜的片段、播放器解碼），FFmpeg 用環境變數 `SCREENRECORDER_TEST_FFMPEG` 指定，否則用 PATH 上的 `ffmpeg`，都沒有就略過；操作視窗在 Linux（X11）上也能開啟，方便截圖檢查版面（debug 版可用環境變數 `SCREENRECORDER_DEV`、`SCREENRECORDER_INPUT`、`SCREENRECORDER_SHOT` 自動開啟畫面、模擬操作並截圖，見 `shell/src/ui/dev.rs`）。
 
 ### 建置
 
@@ -172,7 +172,7 @@ shell/           主程式：單一執行個體、系統匣、操作視窗（egu
 - **ddagrab 優先、gdigrab 備援**：啟動時用 ddagrab 實際抓一張畫面測試；錄影時若 ddagrab 在第一張畫面前就失敗（自動模式），立即改用 gdigrab。
 - **延伸螢幕**：ddagrab 一次只能擷取一個輸出，所以「所有螢幕」與跨螢幕的範圍會對每個螢幕各開一個 ddagrab，再用 `xstack` 依 Windows 顯示設定中的位置拼接（大小不同的空白處補黑）。ddagrab 的 `output_idx` 是「某張顯示卡上的第幾個輸出」，因此用 DXGI 列舉並以 `-init_hw_device d3d11va=dda:<adapter>` 指定顯示卡；涵蓋的螢幕接在不同顯示卡上時無法合成，改用 gdigrab 擷取整個範圍。預覽圖也走同一條路徑，確保看到的就是錄到的。
 - **聲音**：FFmpeg 在 Windows 只能用 dshow 錄麥克風、錄不到系統聲音，所以兩者都以 WASAPI 自行擷取（統一轉成 48 kHz / 立體聲 / float32），經本機 TCP 送進 FFmpeg。對齊方式：FFmpeg 的 `showinfo` 回報每張畫面的時間，推算畫面時間零點；WASAPI 封包帶有 QPC 時間戳記（與 ddagrab 同一個時鐘），依此補靜音或裁切，長時間錄影也不漂移。沒有播放聲音時 WASAPI 不送資料，會依時鐘補靜音；音訊裝置被拔除或切換時以靜音代替並自動重新連線。實測（avsynctest 閃光 + 嗶聲）影音差距約 +12～19 ms，在 1 張畫面以內。
-- **分段與防損壞**：分段 MP4 以 fragmented MP4 寫入（每秒一個 fragment），即使 FFmpeg 被強制結束或當機，最多只損失最後約 1 秒；停止後以 `-c copy` 合併為一般 MP4（`+faststart`）並驗證成品。
+- **分段與防損壞**：分段 MP4 以 fragmented MP4 寫入（每秒一個 fragment），即使 FFmpeg 被強制結束或當機，通常只損失最後一兩秒（每秒寫入一次，加上編碼器還沒送出的畫面；只錄聲音時每秒只有 5 張，x264 改用 `-tune zerolatency` 不預讀）；停止後以 `-c copy` 合併為一般 MP4（`+faststart`）並驗證成品。
 - **自動續錄**：錄到一半 FFmpeg 意外結束（例如鎖定畫面、UAC 安全桌面讓 Desktop Duplication 中斷），會保留已錄分段並以退避重試開新分段；超過 15 秒沒有新畫面也會重新啟動 FFmpeg。
 - **編碼器（CPU / GPU）**：預設「自動」——有 Intel 顯示卡編碼（QSV）時優先用它（CPU 負擔最小，擷取也在 Intel 顯示卡上時畫面全程留在顯示卡）；沒有時平常用 libx264（畫質最穩、相容性最好），畫面量超過 1080p60（例如 4K、雙螢幕拼接）時改用 GPU 編碼；錄影中偵測到電腦處理不及，會記住並在之後的錄影自動改用 GPU（「更多 → 編碼器」可重設）（同一段錄影不中途切換，否則分段無法無損合併）。GPU 編碼器在啟動時實際試編一小段，只列出真的能用的（例如 MX150 沒有 NVENC 會被排除）；GPU 編碼一開始就失敗時自動退回 CPU。加速匯出與剪輯屬於離線轉檔，固定用 libx264 以畫質為優先。
 - **效能監看**：以近 5 秒實際寫入張數與 `dup_frames` 計算實際 fps（FFmpeg 的 `speed=` 會把啟動時間算進去，開頭會嚴重偏低，不適合用來判斷）。

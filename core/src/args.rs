@@ -648,9 +648,14 @@ pub fn segment_args(plan: &CapturePlan, config: &RecordConfig, method: CaptureMe
         a.extend(strs(&["-max_muxing_queue_size", "4096"]));
     }
     a.extend(enc.live());
+    // 只錄聲音每秒只有幾張：x264 平常會先收一批畫面才輸出（預讀 + 多執行緒），
+    // 每秒 5 張時要好幾秒才寫出第一段，當掉就全沒了。卡片不會動，不預讀也不會變大
+    if config.audio_only && enc.name == "libx264" {
+        a.extend(strs(&["-tune", "zerolatency"]));
+    }
     a.extend(["-r".into(), fps.clone(), "-fps_mode".into(), "cfr".into(), "-g".into(), num(config.fps * 2.0)]);
     a.extend(strs(&COLOR_TAGS));
-    // 分段寫成每秒一個 fragment：即使 FFmpeg 被強制結束或當機，最多只損失最後 1 秒
+    // 分段寫成每秒一個 fragment：即使 FFmpeg 被強制結束或當機，只損失最後 1 秒與編碼器還沒送出的畫面
     a.extend(strs(&["-movflags", "+empty_moov+default_base_moof", "-frag_duration", "1000000", "-flush_packets", "1"]));
     a.extend(strs(&["-progress", "pipe:1", "-stats_period", "0.5", "-y"]));
     a.push(out_file.into());
@@ -1391,6 +1396,10 @@ mod tests {
         assert!(!j.contains("gdigrab") && !j.contains("dshow"), "{j}");
         assert_eq!(graph_of(&a), "[0:v]showinfo=checksum=0,scale=640:360:flags=bicubic:out_color_matrix=bt709:out_range=tv,format=yuv420p[vout]");
         assert!(j.contains("-map [vout] -map 1:a"));
+        assert!(j.contains("-crf 23 -tune zerolatency -r 5"), "{j}");
+        // 一般錄影維持預設（壓縮比較好）
+        let screen = segment_args(&plan, &RecordConfig { audio_only: false, ..c.clone() }, CaptureMethod::Gdigrab, &x264(), "o.mp4", Some(&audio_in), None).unwrap();
+        assert!(!screen.join(" ").contains("zerolatency"));
     }
 
     #[test]

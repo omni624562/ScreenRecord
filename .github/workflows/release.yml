@@ -56,6 +56,20 @@ jobs:
       - name: 程式碼檢查
         run: cargo clippy --locked --workspace --all-targets -- -D warnings
 
+      # 端對端測試（core/src/e2e_tests.rs）用的 FFmpeg：與程式下載的版本相同。
+      # 下載失敗時那些測試會自動略過，其他測試照跑
+      - name: 下載 FFmpeg（端對端測試用）
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $v = (Select-String -Path core/src/downloader.rs -Pattern 'FFMPEG_VERSION: &str = "([^"]+)"').Matches[0].Groups[1].Value
+          $zip = Join-Path $env:RUNNER_TEMP "ffmpeg.zip"
+          Invoke-WebRequest "https://github.com/GyanD/codexffmpeg/releases/download/$v/ffmpeg-$v-essentials_build.zip" -OutFile $zip
+          Expand-Archive $zip -DestinationPath (Join-Path $env:RUNNER_TEMP "ffmpeg")
+          $exe = Get-ChildItem (Join-Path $env:RUNNER_TEMP "ffmpeg") -Recurse -Filter ffmpeg.exe | Select-Object -First 1
+          & $exe.FullName -hide_banner -version | Select-Object -First 1
+          "SCREENRECORDER_TEST_FFMPEG=$($exe.FullName)" >> $env:GITHUB_ENV
+
       - name: 測試
         run: cargo test --locked --workspace
 
