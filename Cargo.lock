@@ -2476,6 +2476,7 @@ dependencies = [
  "ttf-parser",
  "ureq",
  "windows",
+ "windows-core",
  "zhconv",
 ]
 

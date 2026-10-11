@@ -45,6 +45,32 @@ pub struct WindowInfo {
     pub rect: Rect,
 }
 
+/// 有視窗的程式（「系統聲音來源」選單）：執行檔名稱（小寫，例如 chrome.exe）與其中一個視窗的標題
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AppInfo {
+    pub exe: String,
+    pub title: String,
+}
+
+/// 目前有視窗的程式（每個執行檔一筆，依視窗由上到下；不含本程式）
+pub fn audio_apps() -> Vec<AppInfo> {
+    #[cfg(windows)]
+    return imp::audio_apps();
+    #[cfg(not(windows))]
+    Vec::new()
+}
+
+/// 這個執行檔（例如 chrome.exe）目前的程序代碼：有視窗的那個（瀏覽器的主程序，聲音的子程序也算在內）
+pub fn pid_for_exe(exe: &str) -> Option<u32> {
+    #[cfg(windows)]
+    return imp::pid_for_exe(exe);
+    #[cfg(not(windows))]
+    {
+        let _ = exe;
+        None
+    }
+}
+
 #[cfg(windows)]
 mod imp {
     use super::*;
@@ -147,6 +173,54 @@ mod imp {
             }
         }
         found
+    }
+
+    /// 視窗所屬的程序與執行檔名稱（小寫）
+    fn window_process(hwnd: HWND) -> Option<(u32, String)> {
+        use windows::core::PWSTR;
+        use windows::Win32::Foundation::CloseHandle;
+        use windows::Win32::System::Threading::{OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION};
+        use windows::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId;
+        unsafe {
+            let mut pid = 0u32;
+            GetWindowThreadProcessId(hwnd, Some(&mut pid));
+            if pid == 0 {
+                return None;
+            }
+            let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
+            let mut buf = [0u16; 1024];
+            let mut len = buf.len() as u32;
+            let ok = QueryFullProcessImageNameW(h, PROCESS_NAME_WIN32, PWSTR(buf.as_mut_ptr()), &mut len).is_ok();
+            let _ = CloseHandle(h);
+            if !ok {
+                return None;
+            }
+            let path = String::from_utf16_lossy(&buf[..len as usize]);
+            let exe = path.rsplit(['\\', '/']).next().unwrap_or(&path).to_lowercase();
+            Some((pid, exe))
+        }
+    }
+
+    fn own_exe() -> String {
+        std::env::current_exe().ok().and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_lowercase())).unwrap_or_default()
+    }
+
+    pub fn audio_apps() -> Vec<AppInfo> {
+        let me = own_exe();
+        let mut out: Vec<AppInfo> = vec![];
+        for w in app_windows() {
+            let Some((_, exe)) = window_process(HWND(w.id as *mut _)) else { continue };
+            if exe == me || ["explorer.exe", "textinputhost.exe", "applicationframehost.exe"].contains(&exe.as_str()) || out.iter().any(|a| a.exe == exe) {
+                continue;
+            }
+            out.push(AppInfo { exe, title: w.title });
+        }
+        out
+    }
+
+    pub fn pid_for_exe(exe: &str) -> Option<u32> {
+        let exe = exe.to_lowercase();
+        app_windows().into_iter().filter_map(|w| window_process(HWND(w.id as *mut _))).find(|(_, e)| *e == exe).map(|(pid, _)| pid)
     }
 
     pub fn app_windows() -> Vec<WindowInfo> {

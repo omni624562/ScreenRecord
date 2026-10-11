@@ -315,7 +315,7 @@ impl TrayController {
             method: MethodPreference::Auto,
             output_dir: self.app.default_output_dir.clone(),
             // 與介面相同：預設錄系統聲音與麥克風
-            audio: AudioConfig { system: true, mic: true, mic_id: String::new() },
+            audio: AudioConfig { system: true, mic: true, mic_id: String::new(), app: String::new() },
             encoder: None,
             countdown_sec: None,
             hide_ui: None,

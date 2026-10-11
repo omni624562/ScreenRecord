@@ -46,6 +46,8 @@ pub struct UiSettings {
     pub audio_mic: bool,
     /// 空字串 = 預設麥克風
     pub mic_id: String,
+    /// 系統聲音只錄這個程式（執行檔名稱）；空字串 = 全部
+    pub audio_app: String,
     pub keep_audio: bool,
     pub live_preview: bool,
     pub encoder: EncoderPreference,
@@ -167,6 +169,7 @@ impl UiSettings {
             audio_system: boolean("audioSystem").unwrap_or(true),
             audio_mic: boolean("audioMic").unwrap_or(true),
             mic_id: string("micId").unwrap_or_default(),
+            audio_app: string("audioApp").unwrap_or_default(),
             keep_audio: boolean("keepAudio").unwrap_or(true),
             live_preview: boolean("livePreview").unwrap_or(true),
             encoder: o.get("encoder").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default(),
@@ -291,7 +294,7 @@ impl UiSettings {
             max_minutes: self.max_minutes,
             method: self.method,
             output_dir: self.out_dir(env),
-            audio: AudioConfig { system: self.audio_system, mic: self.audio_mic, mic_id: self.mic_id.clone() },
+            audio: AudioConfig { system: self.audio_system, mic: self.audio_mic, mic_id: self.mic_id.clone(), app: self.audio_app.clone() },
             encoder: Some(self.encoder),
             countdown_sec: Some(self.countdown_sec as f64),
             hide_ui: Some(self.hide_ui),
@@ -396,6 +399,21 @@ mod tests {
         let bad = serde_json::json!({ "fps": 7.5, "scale": 33, "countdownSec": 4, "gifWidth": 1 });
         let s = UiSettings::from_saved(Some(&bad), &env());
         assert_eq!((s.fps, s.scale, s.countdown_sec, s.gif_width), (30.0, 100, 3, 640));
+    }
+
+    #[test]
+    fn system_audio_from_one_app() {
+        let mut s = UiSettings::from_saved(None, &env());
+        assert_eq!(s.record_config(&env()).audio.app, "");
+        // 沒有指定程式時，錄影設定裡不寫這個欄位（舊版讀得懂）
+        assert!(serde_json::to_value(s.record_config(&env())).unwrap()["audio"].get("app").is_none());
+        s.audio_app = "chrome.exe".into();
+        let c = s.record_config(&env());
+        assert_eq!(c.audio.app, "chrome.exe");
+        assert_eq!(serde_json::from_value::<RecordConfig>(serde_json::to_value(&c).unwrap()).unwrap(), c);
+        // 存回去再讀：保留；設定組合也存
+        assert_eq!(UiSettings::from_saved(Some(&s.to_value()), &env()).audio_app, "chrome.exe");
+        assert!(screenrecorder_core::presets::KEYS.contains(&"audioApp"));
     }
 
     #[test]

@@ -25,6 +25,8 @@ pub struct AudioSourceSpec {
     pub loopback: bool,
     /// 麥克風裝置 ID；空字串 = 預設麥克風
     pub mic_id: String,
+    /// 系統聲音只錄這個程式（執行檔名稱，例如 chrome.exe；含它開的子程序）；空字串 = 全部
+    pub app: String,
 }
 
 /// 開啟擷取來源（可抽換：測試時用假的來源）
@@ -53,13 +55,16 @@ pub fn open_wasapi(_spec: &AudioSourceSpec) -> Result<Box<dyn Capture>, String> 
 mod win {
     use super::*;
     use crate::{tr, trf};
+    use windows::core::Interface;
     use windows::core::PCWSTR;
     use windows::Win32::Devices::FunctionDiscovery::PKEY_Device_FriendlyName;
     use windows::Win32::Media::Audio::{
-        eCapture, eConsole, eRender, IAudioCaptureClient, IAudioClient, IMMDevice, IMMDeviceEnumerator, MMDeviceEnumerator, AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM,
-        AUDCLNT_STREAMFLAGS_LOOPBACK, AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY, DEVICE_STATE_ACTIVE, WAVEFORMATEX,
+        eCapture, eConsole, eRender, ActivateAudioInterfaceAsync, IActivateAudioInterfaceAsyncOperation, IActivateAudioInterfaceCompletionHandler, IActivateAudioInterfaceCompletionHandler_Impl,
+        IAudioCaptureClient, IAudioClient, IMMDevice, IMMDeviceEnumerator, MMDeviceEnumerator, AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM, AUDCLNT_STREAMFLAGS_LOOPBACK,
+        AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY, AUDIOCLIENT_ACTIVATION_PARAMS, AUDIOCLIENT_ACTIVATION_PARAMS_0, AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK, AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS,
+        DEVICE_STATE_ACTIVE, PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE, VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK, WAVEFORMATEX,
     };
-    use windows::Win32::System::Com::{CoCreateInstance, CoInitializeEx, CoTaskMemFree, CLSCTX_ALL, COINIT_MULTITHREADED, STGM_READ};
+    use windows::Win32::System::Com::{CoCreateInstance, CoInitializeEx, CoTaskMemFree, IAgileObject, IAgileObject_Impl, CLSCTX_ALL, COINIT_MULTITHREADED, STGM_READ};
 
     const AUDCLNT_BUFFERFLAGS_SILENT: u32 = 0x2;
     const AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR: u32 = 0x4;
@@ -122,7 +127,8 @@ mod win {
         name: String,
         client: IAudioClient,
         capture: IAudioCaptureClient,
-        _device: IMMDevice,
+        /// 只錄某個程式時沒有裝置
+        _device: Option<IMMDevice>,
     }
 
     impl Drop for Wasapi {
@@ -133,8 +139,100 @@ mod win {
         }
     }
 
-    /// loopback = 錄預設播放裝置的聲音；否則錄指定（或預設）麥克風
+    /// 完成通知（ActivateAudioInterfaceAsync 在別的執行緒呼叫；必須是 agile 物件）
+    #[windows::core::implement(IActivateAudioInterfaceCompletionHandler, IAgileObject)]
+    struct Activated(std::sync::Mutex<Option<std::sync::mpsc::Sender<()>>>);
+
+    impl IActivateAudioInterfaceCompletionHandler_Impl for Activated_Impl {
+        fn ActivateCompleted(&self, _op: windows::core::Ref<IActivateAudioInterfaceAsyncOperation>) -> windows::core::Result<()> {
+            if let Some(tx) = self.0.lock().unwrap().take() {
+                let _ = tx.send(());
+            }
+            Ok(())
+        }
+    }
+
+    impl IAgileObject_Impl for Activated_Impl {}
+
+    /// 只錄某個程式（和它開的子程序）播放的聲音（process loopback；較舊的 Windows 不支援）
+    fn process_loopback(pid: u32) -> Result<IAudioClient, String> {
+        use std::mem::ManuallyDrop;
+        use windows::Win32::System::Com::StructuredStorage::{PROPVARIANT, PROPVARIANT_0, PROPVARIANT_0_0, PROPVARIANT_0_0_0};
+        use windows::Win32::System::Com::BLOB;
+        use windows::Win32::System::Variant::VT_BLOB;
+        unsafe {
+            let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+            let mut params = AUDIOCLIENT_ACTIVATION_PARAMS {
+                ActivationType: AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK,
+                Anonymous: AUDIOCLIENT_ACTIVATION_PARAMS_0 {
+                    ProcessLoopbackParams: AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS { TargetProcessId: pid, ProcessLoopbackMode: PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE },
+                },
+            };
+            // 參數放在 BLOB 裡（記憶體是我們的，不能讓 PROPVARIANT 去釋放）
+            let pv = ManuallyDrop::new(PROPVARIANT {
+                Anonymous: PROPVARIANT_0 {
+                    Anonymous: ManuallyDrop::new(PROPVARIANT_0_0 {
+                        vt: VT_BLOB,
+                        wReserved1: 0,
+                        wReserved2: 0,
+                        wReserved3: 0,
+                        Anonymous: PROPVARIANT_0_0_0 { blob: BLOB { cbSize: std::mem::size_of::<AUDIOCLIENT_ACTIVATION_PARAMS>() as u32, pBlobData: &mut params as *mut _ as *mut u8 } },
+                    }),
+                },
+            });
+            let (tx, rx) = std::sync::mpsc::channel();
+            let handler: IActivateAudioInterfaceCompletionHandler = Activated(std::sync::Mutex::new(Some(tx))).into();
+            let op = ActivateAudioInterfaceAsync(VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK, &IAudioClient::IID, Some(&*pv as *const PROPVARIANT), &handler)
+                .map_err(|e| trf!("無法只錄這個程式的聲音 ({})", "Couldn't capture just this app's audio ({})", hex(&e)))?;
+            rx.recv_timeout(std::time::Duration::from_secs(5)).map_err(|_| tr!("只錄程式的聲音沒有回應", "Capturing the app's audio didn't respond").to_string())?;
+            let mut hr = windows::core::HRESULT(0);
+            let mut unk: Option<windows::core::IUnknown> = None;
+            op.GetActivateResult(&mut hr, &mut unk).map_err(|e| hex(&e))?;
+            hr.ok().map_err(|e| trf!("無法只錄這個程式的聲音 ({})", "Couldn't capture just this app's audio ({})", hex(&e)))?;
+            unk.ok_or_else(|| tr!("無法只錄這個程式的聲音", "Couldn't capture just this app's audio").to_string())?.cast::<IAudioClient>().map_err(|e| hex(&e))
+        }
+    }
+
+    /// 48 kHz / 2ch / float32（搭配 AUTOCONVERTPCM，任何裝置都轉成同一格式）
+    fn format() -> WAVEFORMATEX {
+        WAVEFORMATEX {
+            wFormatTag: 3, // WAVE_FORMAT_IEEE_FLOAT
+            nChannels: CHANNELS as u16,
+            nSamplesPerSec: SAMPLE_RATE,
+            nAvgBytesPerSec: SAMPLE_RATE * BYTES_PER_FRAME as u32,
+            nBlockAlign: BYTES_PER_FRAME as u16,
+            wBitsPerSample: 32,
+            cbSize: 0,
+        }
+    }
+
+    /// 系統聲音只錄某個程式；做不到（程式沒開、Windows 太舊）時回傳原因，改錄全部系統聲音
+    fn open_app(exe: &str) -> Result<Box<dyn Capture>, String> {
+        let pid = crate::winui::pid_for_exe(exe).ok_or_else(|| trf!("{exe} 沒有開啟", "{exe} isn't running"))?;
+        let client = process_loopback(pid)?;
+        unsafe {
+            let flags = AUDCLNT_STREAMFLAGS_LOOPBACK | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY;
+            client.Initialize(AUDCLNT_SHAREMODE_SHARED, flags, BUFFER_100NS, 0, &format(), None).map_err(|e| trf!("Initialize 失敗 ({})", "Initialize failed ({})", hex(&e)))?;
+            let capture: IAudioCaptureClient = client.GetService().map_err(|e| trf!("GetService 失敗 ({})", "GetService failed ({})", hex(&e)))?;
+            client.Start().map_err(|e| trf!("Start 失敗 ({})", "Start failed ({})", hex(&e)))?;
+            Ok(Box::new(Wasapi { name: trf!("只錄 {exe}", "{exe} only"), client, capture, _device: None }))
+        }
+    }
+
+    /// loopback = 錄預設播放裝置的聲音（有指定程式時只錄那個程式）；否則錄指定（或預設）麥克風
     pub fn open_wasapi(spec: &AudioSourceSpec) -> Result<Box<dyn Capture>, String> {
+        if spec.loopback && !spec.app.is_empty() {
+            return match open_app(&spec.app) {
+                Ok(c) => Ok(c),
+                // 改錄全部系統聲音也失敗：兩個原因都寫出來
+                Err(e) => open_device(spec, Some(&e)).map_err(|d| trf!("{d}（{e}）", "{d} ({e})")),
+            };
+        }
+        open_device(spec, None)
+    }
+
+    /// fallback = 只錄某個程式失敗的原因（改錄全部系統聲音）
+    fn open_device(spec: &AudioSourceSpec, fallback: Option<&str>) -> Result<Box<dyn Capture>, String> {
         let en = enumerator()?;
         unsafe {
             let device: IMMDevice = if spec.loopback {
@@ -158,17 +256,13 @@ mod win {
                     tr!("麥克風", "Microphone").into()
                 }
             });
-            let client: IAudioClient = device.Activate(CLSCTX_ALL, None).map_err(|e| trf!("Activate 失敗 ({})", "Activate failed ({})", hex(&e)))?;
-            // 48 kHz / 2ch / float32（搭配 AUTOCONVERTPCM，任何裝置都轉成同一格式）
-            let fmt = WAVEFORMATEX {
-                wFormatTag: 3, // WAVE_FORMAT_IEEE_FLOAT
-                nChannels: CHANNELS as u16,
-                nSamplesPerSec: SAMPLE_RATE,
-                nAvgBytesPerSec: SAMPLE_RATE * BYTES_PER_FRAME as u32,
-                nBlockAlign: BYTES_PER_FRAME as u16,
-                wBitsPerSample: 32,
-                cbSize: 0,
+            // 只錄某個程式失敗：名稱寫上原因（事件紀錄看得到），錄全部系統聲音
+            let name = match fallback {
+                Some(e) => trf!("{name}（{e}，改錄全部系統聲音）", "{name} ({e}; recording all system audio)"),
+                None => name,
             };
+            let client: IAudioClient = device.Activate(CLSCTX_ALL, None).map_err(|e| trf!("Activate 失敗 ({})", "Activate failed ({})", hex(&e)))?;
+            let fmt = format();
             let mut flags = AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY;
             if spec.loopback {
                 flags |= AUDCLNT_STREAMFLAGS_LOOPBACK;
@@ -176,7 +270,7 @@ mod win {
             client.Initialize(AUDCLNT_SHAREMODE_SHARED, flags, BUFFER_100NS, 0, &fmt, None).map_err(|e| trf!("Initialize 失敗 ({})", "Initialize failed ({})", hex(&e)))?;
             let capture: IAudioCaptureClient = client.GetService().map_err(|e| trf!("GetService 失敗 ({})", "GetService failed ({})", hex(&e)))?;
             client.Start().map_err(|e| trf!("Start 失敗 ({})", "Start failed ({})", hex(&e)))?;
-            Ok(Box::new(Wasapi { name, client, capture, _device: device }))
+            Ok(Box::new(Wasapi { name, client, capture, _device: Some(device) }))
         }
     }
 

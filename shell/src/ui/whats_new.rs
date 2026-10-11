@@ -28,7 +28,7 @@ enum Try {
 }
 
 /// 新功能清單（標題、說明、試試看）：依介面語言
-fn items() -> [(&'static str, &'static str, Try); 16] {
+fn items() -> [(&'static str, &'static str, Try); 17] {
     [
         (
             "語言 Language",
@@ -120,7 +120,10 @@ fn items() -> [(&'static str, &'static str, Try); 16] {
         ),
         (
             tr!("只錄某個視窗", "Record a single window"),
-            tr!("「自訂範圍 → 選擇視窗」，視窗移到哪裡就錄到哪裡。", "“Custom area → Choose window”: the recording follows the window wherever it moves."),
+            tr!(
+                "「自訂範圍 → 選擇視窗」，視窗移到哪裡就錄到哪裡；打開「只錄視窗內容」，被其他視窗擋住也錄得到。",
+                "“Custom area → Choose window”: the recording follows the window wherever it moves. Turn on “Window content only” to record it even when other windows cover it."
+            ),
             Try::None,
         ),
         (
@@ -146,6 +149,14 @@ fn items() -> [(&'static str, &'static str, Try); 16] {
                 "Make WebP animations (much smaller than GIF), combine several screenshots into one image, merge several recordings into one, compress to a target size, copy as a file to paste into LINE."
             ),
             Try::Shots,
+        ),
+        (
+            tr!("只錄某個程式的聲音、分軌", "One app's audio, separate tracks"),
+            tr!(
+                "系統聲音可以只錄某個程式（例如只錄瀏覽器，通知音不會錄進去）；也可以把系統聲音與麥克風分成兩條音軌，剪輯時分別調整音量。",
+                "System audio can come from a single app (for example just the browser, without notification sounds). System audio and the mic can also be saved as separate tracks so you can set their volumes separately when editing."
+            ),
+            Try::Settings(Page::Audio),
         ),
         (
             tr!("錄影前測試音量", "Test levels before recording"),

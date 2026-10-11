@@ -36,6 +36,8 @@ ureq = "2"
 [target.'cfg(windows)'.dependencies]
 ureq = { version = "2", default-features = false, features = ["native-tls", "gzip"] }
 native-tls = "0.2"
+# 實作 COM 介面（#[implement]，只錄某個程式的聲音的完成通知）
+windows-core = "0.62"
 windows = { version = "0.62", features = [
   "Foundation",
   "Globalization",

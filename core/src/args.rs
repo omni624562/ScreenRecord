@@ -1633,7 +1633,7 @@ dummy: Immediate exit requested";
     #[test]
     fn separate_audio_tracks_args() {
         let audio_in = strs(&["-f", "f32le", "-ar", "48000", "-ac", "6", "-i", "tcp://127.0.0.1:5000"]);
-        let both = AudioConfig { system: true, mic: true, mic_id: String::new() };
+        let both = AudioConfig { system: true, mic: true, mic_id: String::new(), app: String::new() };
         let c = RecordConfig { audio: both.clone(), separate_audio: true, ..cfg() };
         let plan = resolve_plan(&c, &same_gpu()).unwrap();
         let a = segment_args(&plan, &c, CaptureMethod::Gdigrab, &x264(), "o.mp4", Some(&audio_in), None).unwrap();

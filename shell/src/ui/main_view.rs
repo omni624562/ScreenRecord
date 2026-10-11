@@ -555,10 +555,12 @@ fn audio_panel(app: &mut UiApp, ui: &mut Ui, area: Rect) {
     let s = (area.height() / 260.0).clamp(0.6, 1.2);
     theme::paint_icon(ui.painter(), Rect::from_center_size(c - vec2(0.0, 70.0 * s), vec2(64.0 * s, 64.0 * s)), Icon::Mic, p.accent);
     ui.painter().text(c - vec2(0.0, 12.0 * s), egui::Align2::CENTER_CENTER, tr!("只錄聲音", "Audio only"), theme::font_bold(20.0 * s), p.text);
-    let parts: Vec<&str> = [app.s.audio_system.then_some(tr!("系統聲音（電腦播放的聲音）", "System audio (sound played by the computer)")), app.s.audio_mic.then_some(tr!("麥克風", "Microphone"))]
-        .into_iter()
-        .flatten()
-        .collect();
+    let system = if app.s.audio_app.is_empty() {
+        tr!("系統聲音（電腦播放的聲音）", "System audio (sound played by the computer)").to_string()
+    } else {
+        trf!("{} 的聲音", "Sound from {}", app.s.audio_app)
+    };
+    let parts: Vec<String> = [app.s.audio_system.then_some(system), app.s.audio_mic.then(|| tr!("麥克風", "Microphone").to_string())].into_iter().flatten().collect();
     let (line, warn) = if parts.is_empty() {
         (tr!("還沒選要錄的聲音：請在下方「聲音」打開系統聲音或麥克風", "No audio selected: turn on system audio or the microphone under “Audio” below").to_string(), true)
     } else {
@@ -896,7 +898,8 @@ fn rec_panel(app: &mut UiApp, ui: &mut Ui) {
                 MethodPreference::Ddagrab => tr!("顯示卡擷取", "GPU capture"),
                 MethodPreference::Gdigrab => tr!("相容模式", "Compatibility mode"),
             };
-            let parts: Vec<&str> = [app.s.audio_system.then_some(tr!("系統聲音", "System audio")), app.s.audio_mic.then_some(tr!("麥克風", "Microphone"))].into_iter().flatten().collect();
+            let system = if app.s.audio_app.is_empty() { tr!("系統聲音", "System audio").to_string() } else { app.s.audio_app.clone() };
+            let parts: Vec<String> = [app.s.audio_system.then_some(system), app.s.audio_mic.then(|| tr!("麥克風", "Microphone").to_string())].into_iter().flatten().collect();
             (
                 if app.s.source_type == SourceType::Audio { tr!("只錄聲音", "Audio only").into() } else { o.map(|(w, h)| format!("{w}×{h} · {}fps", app.s.fps)).unwrap_or_else(|| "—".into()) },
                 match (app.env.ffmpeg.encoder.is_some(), app.s.method == MethodPreference::Auto && app.s.encoder == EncoderPreference::Auto) {

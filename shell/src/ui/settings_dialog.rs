@@ -40,12 +40,14 @@ pub struct SettingsDialog {
     key_msg: Option<String>,
     /// 找到的攝影機（None = 還沒找；找的時候先放空的）
     cameras: Option<Vec<String>>,
+    /// 有視窗的程式（系統聲音只錄某個程式用；None = 還沒找）
+    apps: Option<Vec<screenrecorder_core::winui::AppInfo>>,
 }
 
 pub fn open(app: &mut UiApp, page: Page) {
     match &mut app.settings_dlg {
         Some(d) => d.page = page,
-        None => app.settings_dlg = Some(SettingsDialog { page, max_custom_open: false, max_text: String::new(), dir_text: None, key_capture: None, key_msg: None, cameras: None }),
+        None => app.settings_dlg = Some(SettingsDialog { page, max_custom_open: false, max_text: String::new(), dir_text: None, key_capture: None, key_msg: None, cameras: None, apps: None }),
     }
 }
 
@@ -83,7 +85,13 @@ pub fn audio_summary(app: &UiApp) -> (String, Icon) {
         (false, true) => tr!("麥克風", "Microphone"),
         _ => tr!("不錄聲音", "No audio"),
     };
-    (label.to_string(), if app.s.audio_mic && !app.s.audio_system { Icon::Mic } else { Icon::Speaker })
+    // 只錄某個程式：「chrome.exe＋麥克風」
+    let label = match (app.s.audio_system && !app.s.audio_app.is_empty(), app.s.audio_mic) {
+        (true, true) => trf!("{}＋麥克風", "{} + mic", app.s.audio_app),
+        (true, false) => app.s.audio_app.clone(),
+        _ => label.to_string(),
+    };
+    (label, if app.s.audio_mic && !app.s.audio_system { Icon::Mic } else { Icon::Speaker })
 }
 
 const NAV_W: f32 = 148.0;
@@ -142,7 +150,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                 }
                 ui.add_enabled_ui(!locked, |ui| match d.page {
                     Page::Record => record_page(app, &mut d, ui),
-                    Page::Audio => audio_page(app, ui),
+                    Page::Audio => audio_page(app, &mut d, ui),
                     Page::Save => save_page(app, &mut d, ui),
                     Page::Keys => keys_page(app, &mut d, ui),
                     Page::Advanced => advanced_page(app, ui),
@@ -522,7 +530,7 @@ fn record_page(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
 
 // ───────────── 聲音 ─────────────
 
-fn audio_page(app: &mut UiApp, ui: &mut Ui) {
+fn audio_page(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
     let p = theme::pal(ui);
     let a = app.env.audio.clone();
     form_section(ui, tr!("錄製聲音", "Record audio"), |_| {});
@@ -539,6 +547,7 @@ fn audio_page(app: &mut UiApp, ui: &mut Ui) {
         let text = a.render.clone().map(|r| trf!("播放裝置：{r}", "Playback device: {r}")).unwrap_or_else(|| tr!("找不到播放裝置", "No playback device found").into());
         ui.add(egui::Label::new(RichText::new(text).font(theme::font(12.0)).color(p.muted)).truncate());
     });
+    app_audio_row(app, d, ui);
     form_row(ui, tr!("麥克風", "Microphone"), |ui| {
         let mut mic = app.s.audio_mic;
         if switch(ui, &mut mic, "", true).changed() {
@@ -585,6 +594,53 @@ fn audio_page(app: &mut UiApp, ui: &mut Ui) {
     });
     ui.add_space(6.0);
     form_hint_full(ui, hint, if a.error.is_some() { p.warn } else { p.muted });
+}
+
+/// 系統聲音來源：全部，或只錄某個程式（例如只錄瀏覽器的聲音，通知音、音樂不會錄進去）
+fn app_audio_row(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
+    let apps = d.apps.get_or_insert_with(screenrecorder_core::winui::audio_apps).clone();
+    form_row(ui, tr!("系統聲音來源", "System audio from"), |ui| {
+        // 選過、但現在沒有開啟的程式也列出來（錄影時才開也可以）
+        let mut exes: Vec<String> = vec![String::new()];
+        exes.extend(apps.iter().map(|a| a.exe.clone()));
+        if !app.s.audio_app.is_empty() && !exes.contains(&app.s.audio_app) {
+            exes.push(app.s.audio_app.clone());
+        }
+        let mut sel = exes.iter().position(|e| *e == app.s.audio_app).unwrap_or(0);
+        let items: Vec<(usize, String, bool)> = exes
+            .iter()
+            .enumerate()
+            .map(|(i, e)| {
+                let text = if e.is_empty() {
+                    tr!("全部系統聲音", "All system audio").to_string()
+                } else if let Some(a) = apps.iter().find(|a| a.exe == *e) {
+                    format!("{e} — {}", a.title)
+                } else {
+                    trf!("{e}（沒有開啟）", "{e} (not running)")
+                };
+                (i, text, true)
+            })
+            .collect();
+        ui.add_enabled_ui(app.s.audio_system, |ui| {
+            if form_combo(ui, "audio_app", FORM_CTRL_W + 60.0, &mut sel, &items) {
+                app.s.audio_app = exes[sel].clone();
+                app.save_settings();
+            }
+        });
+        if Btn::icon_only(Icon::Refresh).ghost().small().tooltip(tr!("重新列出開啟中的程式", "List running apps again")).show(ui).clicked() {
+            d.apps = None;
+        }
+    });
+    if !app.s.audio_app.is_empty() && app.s.audio_system {
+        form_hint(
+            ui,
+            tr!(
+                "只錄這個程式發出的聲音（含它的子程序），其他程式的通知音、音樂不會錄進去。Windows 版本太舊或程式沒有開啟時改錄全部系統聲音。",
+                "Records only the sound from this app (and its child processes); notifications and music from other apps are left out. On older Windows versions, or if the app isn't running, all system audio is recorded instead."
+            ),
+            theme::pal(ui).muted,
+        );
+    }
 }
 
 // ───────────── 儲存位置 ─────────────

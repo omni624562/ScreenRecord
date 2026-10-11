@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 /// ui 裡屬於設定組合的欄位：範圍、畫面、聲音、儲存位置、倒數、錄影時的效果、攝影機、錄完自動處理
-pub const KEYS: [&str; 32] = [
+pub const KEYS: [&str; 33] = [
     "sourceType",
     "monitorId",
     "monitorRegion",
@@ -23,6 +23,7 @@ pub const KEYS: [&str; 32] = [
     "audioSystem",
     "audioMic",
     "micId",
+    "audioApp",
     "encoder",
     "countdownSec",
     "hideUi",
@@ -138,7 +139,7 @@ mod tests {
             max_minutes: 0.0,
             method: MethodPreference::Auto,
             output_dir: "D:\\教學".into(),
-            audio: AudioConfig { system: true, mic: true, mic_id: String::new() },
+            audio: AudioConfig { system: true, mic: true, mic_id: String::new(), app: String::new() },
             encoder: None,
             countdown_sec: Some(3.0),
             hide_ui: None,

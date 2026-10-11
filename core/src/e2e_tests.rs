@@ -510,7 +510,7 @@ async fn separate_audio_tracks() {
     let sys = "0.3*sin(440*2*PI*t)";
     let mic = "0.3*sin(880*2*PI*t)";
     let src = format!("aevalsrc={sys}+{mic}|{sys}+{mic}|{sys}|{sys}|{mic}|{mic}:s=48000:c=5.1");
-    let config = RecordConfig { audio: crate::types::AudioConfig { system: true, mic: true, mic_id: String::new() }, separate_audio: true, ..record_config() };
+    let config = RecordConfig { audio: crate::types::AudioConfig { system: true, mic: true, mic_id: String::new(), app: String::new() }, separate_audio: true, ..record_config() };
     assert!(config.separate_tracks());
     let segs = [parts.join("seg_000.mp4"), parts.join("seg_001.mp4")];
     record_segment_with(&ff, &card, &segs[0], 2.0, false, &config, &src);

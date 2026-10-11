@@ -99,6 +99,9 @@ pub struct AudioConfig {
     /// 空字串 = 預設麥克風
     #[serde(default)]
     pub mic_id: String,
+    /// 系統聲音只錄這個程式（執行檔名稱，例如 chrome.exe）；空字串 = 全部系統聲音
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub app: String,
 }
 
 /// 全域快速鍵是否登記成功（false = 已被其他程式占用；停用的視為成功）

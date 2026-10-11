@@ -45,7 +45,7 @@ impl Meter {
         let _ = std::thread::Builder::new().name("meter".into()).spawn(move || {
             let mut errors = vec![];
             let mut sys = if system {
-                match open(&AudioSourceSpec { loopback: true, mic_id: String::new() }) {
+                match open(&AudioSourceSpec { loopback: true, mic_id: String::new(), app: String::new() }) {
                     Ok(c) => Some(c),
                     Err(e) => {
                         errors.push(trf!("系統聲音：{e}", "System audio: {e}"));
@@ -56,7 +56,7 @@ impl Meter {
                 None
             };
             let mut mic = match &m {
-                Some(id) => match open(&AudioSourceSpec { loopback: false, mic_id: id.clone() }) {
+                Some(id) => match open(&AudioSourceSpec { loopback: false, mic_id: id.clone(), app: String::new() }) {
                     Ok(c) => Some(c),
                     Err(e) => {
                         errors.push(trf!("麥克風：{e}", "Microphone: {e}"));

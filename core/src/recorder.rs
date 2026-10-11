@@ -834,10 +834,10 @@ impl Recorder {
         let final_path = unique_path(Path::new(&output_dir), &format!("{prefix}_{stamp}"), ".mp4");
         let mut audio_specs = Vec::new();
         if config.audio.system {
-            audio_specs.push(AudioSourceSpec { loopback: true, mic_id: String::new() });
+            audio_specs.push(AudioSourceSpec { loopback: true, mic_id: String::new(), app: config.audio.app.clone() });
         }
         if config.audio.mic {
-            audio_specs.push(AudioSourceSpec { loopback: false, mic_id: config.audio.mic_id.clone() });
+            audio_specs.push(AudioSourceSpec { loopback: false, mic_id: config.audio.mic_id.clone(), app: String::new() });
         }
         let hide_ui = config.hide_ui != Some(false);
         let countdown_sec = js_round(config.countdown_sec.unwrap_or(3.0)).clamp(0.0, 10.0) as u64;
@@ -1830,7 +1830,7 @@ mod tests {
     async fn audio_only_needs_a_sound_source() {
         let s = Setup::new(Fake::default());
         s.release();
-        let cfg = RecordConfig { audio_only: true, audio: AudioConfig { system: false, mic: false, mic_id: String::new() }, ..s.config() };
+        let cfg = RecordConfig { audio_only: true, audio: AudioConfig { system: false, mic: false, mic_id: String::new(), app: String::new() }, ..s.config() };
         let err = s.rec.start(cfg).await.unwrap_err();
         assert!(err.message().contains("只錄聲音"), "{}", err.message());
         assert_eq!(s.rec.status().state, RecorderState::Idle);
@@ -1841,7 +1841,7 @@ mod tests {
     async fn audio_only_countdown_draws_the_card() {
         let s = Setup::new(Fake::default());
         s.release();
-        let cfg = RecordConfig { audio_only: true, audio: AudioConfig { system: true, mic: false, mic_id: String::new() }, show_clicks: true, ..s.config() };
+        let cfg = RecordConfig { audio_only: true, audio: AudioConfig { system: true, mic: false, mic_id: String::new(), app: String::new() }, show_clicks: true, ..s.config() };
         s.rec.start(cfg).await.unwrap(); // 進入倒數就回覆
         {
             let st = s.rec.lock();

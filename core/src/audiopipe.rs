@@ -684,7 +684,7 @@ mod tests {
         let packets: Packets = Default::default();
         let fail = Arc::new(AtomicBool::new(false));
         let (log, _) = logs();
-        let spec = AudioSourceSpec { loopback: true, mic_id: String::new() };
+        let spec = AudioSourceSpec { loopback: true, mic_id: String::new(), app: String::new() };
         let mut tl = Timeline::new(&[spec], fake_opener(packets.clone(), fail), log, 0);
         assert_eq!(tl.describe(), "系統聲音（假裝置）");
         // 畫面零點 = 1000ms（第二張畫面延遲較大，不影響最小值）
@@ -712,7 +712,7 @@ mod tests {
         let packets: Packets = Default::default();
         let fail = Arc::new(AtomicBool::new(false));
         let (log, messages) = logs();
-        let specs = [AudioSourceSpec { loopback: true, mic_id: String::new() }, AudioSourceSpec { loopback: false, mic_id: String::new() }];
+        let specs = [AudioSourceSpec { loopback: true, mic_id: String::new(), app: String::new() }, AudioSourceSpec { loopback: false, mic_id: String::new(), app: String::new() }];
         let mut tl = Timeline::new(&specs, fake_opener(packets.clone(), fail), log, 0);
         tl.on_video_frame(0.0, 0);
         // 兩個來源共用同一個假封包佇列：第一個來源讀完全部，第二個只有靜音
@@ -731,7 +731,7 @@ mod tests {
         let packets: Packets = Default::default();
         let fail = Arc::new(AtomicBool::new(false));
         let (log, _) = logs();
-        let specs = [AudioSourceSpec { loopback: true, mic_id: String::new() }, AudioSourceSpec { loopback: false, mic_id: String::new() }];
+        let specs = [AudioSourceSpec { loopback: true, mic_id: String::new(), app: String::new() }, AudioSourceSpec { loopback: false, mic_id: String::new(), app: String::new() }];
         let mut tl = Timeline::with_tracks(&specs, fake_opener(packets.clone(), fail), log, 0, true);
         tl.on_video_frame(0.0, 0);
         // 第一個來源（系統聲音）讀到這個封包，第二個（麥克風）只有靜音
@@ -752,7 +752,7 @@ mod tests {
         let packets: Packets = Default::default();
         let fail = Arc::new(AtomicBool::new(true));
         let (log, messages) = logs();
-        let spec = AudioSourceSpec { loopback: false, mic_id: "x".into() };
+        let spec = AudioSourceSpec { loopback: false, mic_id: "x".into(), app: String::new() };
         let mut tl = Timeline::new(&[spec], fake_opener(packets, fail.clone()), log, 0);
         assert_eq!(tl.describe(), "麥克風（無法使用，改錄靜音）");
         tl.on_video_frame(0.0, 0);
@@ -777,7 +777,7 @@ mod tests {
         let packets: Packets = Default::default();
         let fail = Arc::new(AtomicBool::new(false));
         let (log, _) = logs();
-        let pipe = AudioPipe::new(vec![AudioSourceSpec { loopback: true, mic_id: String::new() }], fake_opener(packets, fail), log, true).unwrap();
+        let pipe = AudioPipe::new(vec![AudioSourceSpec { loopback: true, mic_id: String::new(), app: String::new() }], fake_opener(packets, fail), log, true).unwrap();
         // 只有一個來源：分軌沒有作用，照樣是立體聲
         assert!(pipe.input_args().windows(2).any(|w| w == ["-ac", "2"]));
         assert_eq!(pipe.describe(), "系統聲音（假裝置）");
