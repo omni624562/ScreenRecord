@@ -9,7 +9,9 @@ use super::{EntryAction, UiApp};
 use eframe::egui::{self, pos2, vec2, Align, Color32, CornerRadius, Id, Layout, Rect, RichText, Sense, Stroke, UiBuilder};
 use screenrecorder_core::actions;
 use screenrecorder_core::format::{check_recording_name, format_bytes, human_duration, speed_label, video_clock};
+use screenrecorder_core::i18n::is_en;
 use screenrecorder_core::types::{ExportFormat, ExportInfo, LibraryEntry, LibraryFilter, LibraryPage, LibraryQuery, LibrarySort, LIBRARY_ROW_MAIN_PX, LIBRARY_ROW_SUB_PX};
+use screenrecorder_core::{tr, trf};
 use std::collections::HashSet;
 use std::time::Instant;
 
@@ -33,6 +35,8 @@ pub struct LibraryDialog {
     error: Option<String>,
     selected: HashSet<String>,
     search_at: Option<Instant>,
+    /// 視窗大小變了（每頁筆數跟著變）：停下來 0.25 秒再重新讀，拖曳調整大小時不會一直掃資料夾
+    fit_at: Option<Instant>,
     fit_px: f64,
     /// 截圖格一頁放幾張（依對話框大小）
     grid_per_page: usize,
@@ -54,6 +58,7 @@ impl LibraryDialog {
             error: None,
             selected: HashSet::new(),
             search_at: None,
+            fit_at: None,
             fit_px: 0.0,
             grid_per_page: 0,
             seq: 0,
@@ -74,14 +79,25 @@ impl LibraryDialog {
     }
 }
 
+/// 動圖的名稱（GIF、WebP）；不是動圖時 None
+fn anim_name(x: &ExportInfo) -> Option<&'static str> {
+    match x.format {
+        Some(ExportFormat::Gif) => Some("GIF"),
+        Some(ExportFormat::Webp) => Some("WebP"),
+        _ => None,
+    }
+}
+
 /// 匯出檔的標籤：4×、GIF 4×、GIF
 pub fn export_tag(x: &ExportInfo) -> String {
-    if x.format == Some(ExportFormat::Gif) {
+    if let Some(name) = anim_name(x) {
         if x.speed > 1.0 {
-            format!("GIF {}×", speed_label(x.speed))
+            format!("{name} {}×", speed_label(x.speed))
         } else {
-            "GIF".into()
+            name.into()
         }
+    } else if x.speed <= 1.0 {
+        tr!("壓縮版", "Compressed").into()
     } else {
         format!("{}×", speed_label(x.speed))
     }
@@ -90,21 +106,24 @@ pub fn export_tag(x: &ExportInfo) -> String {
 /// 子列的名稱：4× 加速版、GIF 4×、GIF（原速）。
 /// 「指定長度」做出來的倍率是算出來的小數（例如 13.69×），不好讀，改用長度：30 秒版、GIF 30 秒版
 fn export_label(x: &ExportInfo) -> String {
-    let gif = x.format == Some(ExportFormat::Gif);
+    let gif = anim_name(x).is_some();
+    let anim = anim_name(x).unwrap_or("GIF");
     if (x.speed * 2.0).fract() != 0.0 {
         if let Some(d) = x.media.duration_sec {
-            let len = format!("{}版", human_duration(d.round()));
-            return if gif { format!("GIF {len}") } else { len };
+            let len = trf!("{}版", "{} version", human_duration(d.round()));
+            return if gif { format!("{anim} {len}") } else { len };
         }
     }
     if gif {
         if x.speed > 1.0 {
-            format!("GIF {}×", speed_label(x.speed))
+            format!("{anim} {}×", speed_label(x.speed))
         } else {
-            "GIF（原速）".into()
+            trf!("{anim}（原速）", "{anim} (original speed)")
         }
+    } else if x.speed <= 1.0 {
+        tr!("壓縮版", "Compressed").to_string()
     } else {
-        format!("{}× 加速版", speed_label(x.speed))
+        trf!("{}× 加速版", "{}× speed", speed_label(x.speed))
     }
 }
 
@@ -146,6 +165,8 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
     let mut action: Option<(EntryAction, LibraryEntry)> = None;
     let mut rename: Option<LibraryEntry> = None;
     let mut delete = false;
+    let mut combine: Option<bool> = None;
+    let mut merge: Option<Vec<String>> = None;
     let dir = app.s.out_dir(&app.env);
     // 縮圖要用 app，先取出對話框
     let Some(mut d) = app.library.take() else {
@@ -158,16 +179,16 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         let shot = d.kind == Kind::Shot;
         ui.horizontal(|ui| {
             ui.vertical(|ui| {
-                ui.label(RichText::new(if shot { "全部截圖" } else { "全部錄影" }).font(theme::font_bold(17.0)));
+                ui.label(RichText::new(if shot { tr!("全部截圖", "All screenshots") } else { tr!("全部錄影", "All recordings") }).font(theme::font_bold(17.0)));
                 ui.label(RichText::new(&dir).font(theme::mono(12.0)).color(p.muted));
             });
             ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
-                if Btn::icon_only(Icon::Close).ghost().tooltip("關閉（Esc）").show(ui).clicked() {
+                if Btn::icon_only(Icon::Close).ghost().tooltip(tr!("關閉（Esc）", "Close (Esc)")).show(ui).clicked() {
                     close = true;
                 }
                 ui.add_space(8.0);
                 // 由右往左排：畫面上是「錄影｜截圖」
-                if theme::segmented(ui, &mut d.kind, &[(Kind::Shot, "截圖"), (Kind::Video, "錄影")], true) {
+                if theme::segmented(ui, &mut d.kind, &[(Kind::Shot, tr!("截圖", "Screenshots")), (Kind::Video, tr!("錄影", "Recordings"))], true) {
                     d.filter = LibraryFilter::All;
                     if d.sort == LibrarySort::Duration {
                         d.sort = LibrarySort::New;
@@ -183,7 +204,13 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         ui.add_space(8.0);
         // 搜尋、篩選、排序
         ui.horizontal(|ui| {
-            let r = ui.add(egui::TextEdit::singleline(&mut d.query).hint_text("搜尋檔名或日期，例如 2026-10-06").desired_width(320.0).min_size(vec2(0.0, 30.0)).vertical_align(Align::Center));
+            let r = ui.add(
+                egui::TextEdit::singleline(&mut d.query)
+                    .hint_text(tr!("搜尋檔名或日期，例如 2026-10-06", "Search by name or date, e.g. 2026-10-06"))
+                    .desired_width(320.0)
+                    .min_size(vec2(0.0, 30.0))
+                    .vertical_align(Align::Center),
+            );
             if d.focus_search {
                 r.request_focus();
                 d.focus_search = false;
@@ -192,8 +219,13 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                 d.search_at = Some(Instant::now());
             }
             if !shot {
-                let filters =
-                    [(LibraryFilter::All, "全部"), (LibraryFilter::Original, "原始錄影"), (LibraryFilter::Cut, "剪輯版"), (LibraryFilter::Speed, "有加速版"), (LibraryFilter::Audio, "有聲音")];
+                let filters = [
+                    (LibraryFilter::All, tr!("全部", "All")),
+                    (LibraryFilter::Original, tr!("原始錄影", "Originals")),
+                    (LibraryFilter::Cut, tr!("剪輯版", "Edited")),
+                    (LibraryFilter::Speed, tr!("有加速版", "Has sped-up version")),
+                    (LibraryFilter::Audio, tr!("有聲音", "Has audio")),
+                ];
                 egui::ComboBox::from_id_salt("libFilter").selected_text(filters.iter().find(|f| f.0 == d.filter).map(|f| f.1).unwrap_or("")).show_ui(ui, |ui| {
                     for (v, t) in filters {
                         if ui.selectable_label(d.filter == v, t).clicked() {
@@ -204,7 +236,12 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                     }
                 });
             }
-            let sorts = [(LibrarySort::New, "最新的在前"), (LibrarySort::Old, "最舊的在前"), (LibrarySort::Duration, "長度（長到短）"), (LibrarySort::Size, "檔案大小（大到小）")];
+            let sorts = [
+                (LibrarySort::New, tr!("最新的在前", "Newest first")),
+                (LibrarySort::Old, tr!("最舊的在前", "Oldest first")),
+                (LibrarySort::Duration, tr!("長度（長到短）", "Longest first")),
+                (LibrarySort::Size, tr!("檔案大小（大到小）", "Largest first")),
+            ];
             let sorts: Vec<_> = sorts.into_iter().filter(|s| !(shot && s.0 == LibrarySort::Duration)).collect();
             egui::ComboBox::from_id_salt("libSort").selected_text(sorts.iter().find(|s| s.0 == d.sort).map(|s| s.1).unwrap_or("")).show_ui(ui, |ui| {
                 for (v, t) in sorts {
@@ -235,20 +272,62 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         painter.hline(foot.x_range(), foot.min.y - 4.0, Stroke::new(1.0, p.border));
         let fui = &mut ui.new_child(UiBuilder::new().max_rect(foot).layout(Layout::left_to_right(Align::Center)));
         let n = d.selected.len();
-        fui.label(theme::muted(fui, if n > 0 { format!("已選取 {n} 個檔案") } else { "可勾選多筆一次刪除".into() }));
-        if n > 0 && Btn::new("移到資源回收筒").icon(Icon::Trash).danger().small().show(fui).clicked() {
+        fui.label(theme::muted(
+            fui,
+            match (n, shot) {
+                (0, true) => tr!("可勾選多張一次刪除，或拼成一張", "Select several to delete them at once or combine them into one").into(),
+                (0, false) => tr!("可勾選多筆一次刪除", "Select several to delete them at once").into(),
+                _ if is_en() => format!("{n} file{} selected", if n == 1 { "" } else { "s" }),
+                _ => format!("已選取 {n} 個檔案"),
+            },
+        ));
+        if n > 0 && Btn::new(tr!("移到資源回收筒", "Move to Recycle Bin")).icon(Icon::Trash).danger().small().show(fui).clicked() {
             delete = true;
+        }
+        let mp4s: Vec<String> = d.selected.iter().filter(|p| p.to_lowercase().ends_with(".mp4")).cloned().collect();
+        if !shot
+            && mp4s.len() >= 2
+            && Btn::new(tr!("合併成一支", "Merge into one"))
+                .small()
+                .tooltip(tr!(
+                    "把勾選的錄影依時間順序接成一支（大小以最早的那支為準）；GIF 不算",
+                    "Joins the selected recordings in time order into one video (sized like the earliest one). GIFs are skipped"
+                ))
+                .show(fui)
+                .clicked()
+        {
+            merge = Some(mp4s);
+        }
+        if shot && n >= 2 {
+            let b = Btn::new(tr!("拼成一張", "Combine into one"))
+                .small()
+                .tooltip(tr!("把勾選的截圖依時間順序拼成一張新的截圖", "Combines the selected screenshots in time order into a new screenshot"))
+                .show(fui);
+            egui::Popup::menu(&b).show(|ui| {
+                ui.set_min_width(150.0);
+                if ui.button(tr!("左右排", "Side by side")).clicked() {
+                    combine = Some(false);
+                }
+                if ui.button(tr!("上下排", "Top to bottom")).clicked() {
+                    combine = Some(true);
+                }
+            });
         }
         fui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             let pages = d.data.as_ref().map(|x| x.pages).unwrap_or(1);
-            if Btn::icon_only(Icon::ChevR).ghost().small().enabled(d.page < pages).tooltip("下一頁").show(ui).clicked() {
+            if Btn::icon_only(Icon::ChevR).ghost().small().enabled(d.page < pages).tooltip(tr!("下一頁", "Next page")).show(ui).clicked() {
                 d.page += 1;
                 d.dirty = true;
             }
             if let Some(x) = &d.data {
-                ui.label(RichText::new(format!("第 {} / {} 頁・共 {} 筆", d.page, x.pages.max(1), x.total)).font(theme::font(12.5)));
+                let text = if is_en() {
+                    format!("Page {} of {}・{} item{}", d.page, x.pages.max(1), x.total, if x.total == 1 { "" } else { "s" })
+                } else {
+                    format!("第 {} / {} 頁・共 {} 筆", d.page, x.pages.max(1), x.total)
+                };
+                ui.label(RichText::new(text).font(theme::font(12.5)));
             }
-            if Btn::icon_only(Icon::ChevL).ghost().small().enabled(d.page > 1).tooltip("上一頁").show(ui).clicked() {
+            if Btn::icon_only(Icon::ChevL).ghost().small().enabled(d.page > 1).tooltip(tr!("上一頁", "Previous page")).show(ui).clicked() {
                 d.page -= 1;
                 d.dirty = true;
             }
@@ -266,7 +345,8 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         load(app);
     }
     if let Some((act, e)) = action {
-        if matches!(act, EntryAction::Edit | EntryAction::Export) {
+        // 剪輯影片、製作加速版時關掉清單；編輯截圖蓋在清單上，關掉編輯就回到清單
+        if matches!(act, EntryAction::Edit | EntryAction::Export) && !super::dialogs::is_image(&e.media.path) {
             app.library = None;
         }
         app.act(act, e);
@@ -276,6 +356,36 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
     }
     if delete {
         remove_selected(app);
+    }
+    if let Some(paths) = merge {
+        let core = app.core.clone();
+        let n = paths.len();
+        app.spawn(async move { actions::merge_start(&core, &paths).await }, move |app, r| match r {
+            Ok(()) => {
+                if let Some(d) = &mut app.library {
+                    d.selected.clear();
+                }
+                app.toast(trf!("開始合併 {n} 支錄影，完成後會出現在清單", "Merging {n} recordings. The result will appear in the list when done"), false);
+            }
+            Err(e) => app.toast(e.message().to_string(), true),
+        });
+    }
+    if let Some(vertical) = combine {
+        let paths: Vec<String> = app.library.as_ref().map(|d| d.selected.iter().cloned().collect()).unwrap_or_default();
+        let core = app.core.clone();
+        app.spawn(async move { core.combine_shots(paths, vertical).await }, |app, r| match r {
+            Ok(shot) => {
+                if let Some(d) = &mut app.library {
+                    d.selected.clear();
+                }
+                // 狀態更新的「已截圖」不用再顯示一次
+                app.last_shot_seq = app.last_shot_seq.max(shot.seq);
+                let copied = if shot.copied { tr!("，並複製到剪貼簿", " and copied to the clipboard") } else { "" };
+                app.toast(trf!("已拼成 {}（{}×{}）{copied}", "Combined into {} ({}×{}){copied}", super::dialogs::file_name(&shot.path), shot.width, shot.height), false);
+                app.shots_changed();
+            }
+            Err(e) => app.toast(e.message().to_string(), true),
+        });
     }
 }
 
@@ -287,7 +397,17 @@ fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table:
     let fit = ((table.height() - head_h - 4.0) as f64).max(LIBRARY_ROW_MAIN_PX * 3.0).floor();
     if (fit - d.fit_px).abs() > 0.5 {
         d.fit_px = fit;
+        if d.data.is_none() {
+            d.dirty = true;
+        } else {
+            d.fit_at = Some(Instant::now());
+        }
+    }
+    if d.fit_at.is_some_and(|t| t.elapsed().as_millis() > 250) {
+        d.fit_at = None;
         d.dirty = true;
+    } else if d.fit_at.is_some() {
+        ui.ctx().request_repaint_after(std::time::Duration::from_millis(260));
     }
     let rows = d.data.as_ref().map(|x| x.items.clone()).unwrap_or_default();
     // 勾選、日期、檔案、長度、解析度、大小、操作
@@ -302,19 +422,20 @@ fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table:
         painter.text(pos2(x, y), egui::Align2::RIGHT_CENTER, t, theme::font(size), color);
     };
     painter.rect_filled(Rect::from_min_size(table.min, vec2(table.width(), head_h)), CornerRadius::same(6), p.surface2);
-    // 標題列（勾選框與每一列的對齊）
+    // 標題列（核取方塊與每一列的對齊）
     {
         let head = Rect::from_min_size(table.min, vec2(table.width(), head_h));
         let all = !rows.is_empty() && rows.iter().all(|e| d.selected.contains(&e.media.path) && e.exports.iter().all(|x| d.selected.contains(&x.media.path)));
         let mut all2 = all;
         let ui2 = &mut ui
             .new_child(UiBuilder::new().max_rect(Rect::from_min_max(head.min + vec2(10.0, 0.0), pos2(head.min.x + col_x(1) - table.min.x, head.max.y))).layout(Layout::left_to_right(Align::Center)));
-        if ui2.checkbox(&mut all2, "").on_hover_text("全選本頁").changed() {
+        if ui2.checkbox(&mut all2, "").on_hover_text(tr!("全選本頁", "Select all on this page")).changed() {
             for e in &rows {
                 d.toggle(&e.media.path, all2);
             }
         }
-        for (i, (t, right)) in [("日期", false), ("檔案", false), ("長度", true), ("解析度", true), ("大小", true)].iter().enumerate() {
+        let heads = [(tr!("日期", "Date"), false), (tr!("檔案", "File"), false), (tr!("長度", "Duration"), true), (tr!("解析度", "Resolution"), true), (tr!("大小", "Size"), true)];
+        for (i, (t, right)) in heads.iter().enumerate() {
             let x0 = col_x(i + 1);
             let x1 = col_x(i + 2);
             let (pos, align) = if *right { (pos2(x1 - 10.0, head.center().y), egui::Align2::RIGHT_CENTER) } else { (pos2(x0 + 6.0, head.center().y), egui::Align2::LEFT_CENTER) };
@@ -328,13 +449,13 @@ fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table:
     let mut last_day = None;
     if rows.is_empty() {
         let msg = if d.loading {
-            "讀取中…".to_string()
+            tr!("讀取中…", "Loading…").to_string()
         } else if let Some(e) = &d.error {
             e.clone()
         } else if d.data.as_ref().is_some_and(|x| x.total == 0) && d.query.trim().is_empty() {
-            "這個資料夾還沒有錄影。".into()
+            tr!("這個資料夾還沒有錄影。", "No recordings in this folder yet.").into()
         } else {
-            "沒有符合條件的錄影。".into()
+            tr!("沒有符合條件的錄影。", "No matching recordings.").into()
         };
         painter.text(pos2(table.center().x, table.min.y + 120.0), egui::Align2::CENTER_CENTER, msg, theme::font(14.0), p.muted);
     }
@@ -382,7 +503,7 @@ fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table:
                 nui.add(egui::Label::new(RichText::new(base_name(&e.media.name)).font(theme::font(13.0))).truncate());
             }
             if is_cut_name(&e.media.name) {
-                chip(nui, "剪輯版", Tone::Warn, false);
+                chip(nui, tr!("剪輯版", "Edited"), Tone::Warn, false);
             }
             if e.media.has_audio == Some(true) {
                 audio_mark(nui);
@@ -398,19 +519,32 @@ fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table:
         {
             let aui = &mut ui.new_child(UiBuilder::new().max_rect(Rect::from_min_max(pos2(col_x(6), row.min.y), row.max)).layout(Layout::left_to_right(Align::Center)));
             aui.spacing_mut().item_spacing.x = 2.0;
-            for (act, icon, tip) in [(EntryAction::Play, Icon::Play, "播放"), (EntryAction::Reveal, Icon::Folder, "在資料夾中顯示"), (EntryAction::Edit, Icon::Cut, "剪輯")] {
+            for (act, icon, tip) in [
+                (EntryAction::Play, Icon::Play, tr!("播放", "Play")),
+                (EntryAction::Reveal, Icon::Folder, tr!("在資料夾中顯示", "Show in folder")),
+                (EntryAction::Edit, Icon::Cut, tr!("剪輯", "Edit")),
+            ] {
                 if Btn::icon_only(icon).ghost().small().quiet(!hot).tooltip(tip).show(aui).clicked() {
                     *action = Some((act, e.clone()));
                 }
             }
             // 不常用的收進「⋯」
-            let more = Btn::icon_only(Icon::More).ghost().small().quiet(!hot).tooltip("更多").show(aui);
+            let more = Btn::icon_only(Icon::More).ghost().small().quiet(!hot).tooltip(tr!("更多", "More")).show(aui);
             egui::Popup::menu(&more).show(|ui| {
                 ui.set_min_width(190.0);
-                if ui.button("製作加速版 / GIF").clicked() {
+                if ui.button(tr!("製作加速版 / GIF", "Make sped-up video / GIF")).clicked() {
                     *action = Some((EntryAction::Export, e.clone()));
                 }
-                if ui.button("重新命名（加速版一起改）").clicked() {
+                if ui.button(tr!("複製檔案（貼到 LINE、資料夾）", "Copy file (paste into LINE or a folder)")).clicked() {
+                    *action = Some((EntryAction::CopyFile, e.clone()));
+                }
+                if e.media.has_audio != Some(false) && ui.button(tr!("存成 M4A（只留聲音）", "Save as M4A (audio only)")).clicked() {
+                    *action = Some((EntryAction::SaveAudio, e.clone()));
+                }
+                if !e.media.chapters.is_empty() && ui.button(tr!("複製章節（貼到 YouTube）", "Copy chapters (for YouTube)")).clicked() {
+                    *action = Some((EntryAction::CopyChapters, e.clone()));
+                }
+                if ui.button(tr!("重新命名（加速版一起改）", "Rename (sped-up versions too)")).clicked() {
                     *rename = Some(e.clone());
                 }
             });
@@ -436,7 +570,7 @@ fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table:
             painter.line_segment([pos2(bx, row.center().y), pos2(bx + 12.0, row.center().y)], Stroke::new(1.0, p.border_strong));
             {
                 let nui = &mut ui.new_child(UiBuilder::new().max_rect(Rect::from_min_max(pos2(bx + 18.0, row.min.y), pos2(col_x(3), row.max.y))).layout(Layout::left_to_right(Align::Center)));
-                chip(nui, &export_label(x), Tone::Accent, false).on_hover_text(format!("{}（{}×）", x.media.name, speed_label(x.speed)));
+                chip(nui, &export_label(x), Tone::Accent, false).on_hover_text(trf!("{}（{}×）", "{} ({}×)", x.media.name, speed_label(x.speed)));
             }
             num(&x.media.duration_sec.map(video_clock).unwrap_or_else(|| "—".into()), col_x(4) - 10.0, row.center().y, p.text, 12.5);
             let res = match (x.media.width, x.media.height) {
@@ -447,7 +581,7 @@ fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table:
             num(&format_bytes(x.media.bytes), col_x(6) - 10.0, row.center().y, p.text, 12.5);
             let aui = &mut ui.new_child(UiBuilder::new().max_rect(Rect::from_min_max(pos2(col_x(6), row.min.y), row.max)).layout(Layout::left_to_right(Align::Center)));
             aui.spacing_mut().item_spacing.x = 2.0;
-            for (act, icon, tip) in [(EntryAction::Play, Icon::Play, "播放"), (EntryAction::Reveal, Icon::Folder, "在資料夾中顯示")] {
+            for (act, icon, tip) in [(EntryAction::Play, Icon::Play, tr!("播放", "Play")), (EntryAction::Reveal, Icon::Folder, tr!("在資料夾中顯示", "Show in folder"))] {
                 if Btn::icon_only(icon).ghost().small().quiet(!hot).tooltip(tip).show(aui).clicked() {
                     *action = Some((act, LibraryEntry { media: x.media.clone(), exports: vec![] }));
                 }
@@ -461,7 +595,7 @@ fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table:
 pub fn audio_mark(ui: &mut egui::Ui) -> egui::Response {
     let (r, resp) = ui.allocate_exact_size(vec2(16.0, 16.0), Sense::hover());
     theme::paint_icon(ui.painter(), r, Icon::Speaker, theme::pal(ui).muted);
-    resp.on_hover_text("有聲音")
+    resp.on_hover_text(tr!("有聲音", "Has audio"))
 }
 
 /// 截圖：縮圖格（一頁放幾張依對話框大小），點縮圖開啟
@@ -482,16 +616,16 @@ fn shot_grid(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, area: Re
     let painter = ui.painter().clone();
     if items.is_empty() {
         let msg = if d.loading {
-            "讀取中…".to_string()
+            tr!("讀取中…", "Loading…").to_string()
         } else if let Some(e) = &d.error {
             e.clone()
         } else if d.data.as_ref().is_some_and(|x| x.total == 0) && d.query.trim().is_empty() {
             match app.keys.label(2) {
-                k if k.is_empty() => "還沒有截圖。按主畫面的「截圖」試試看。".to_string(),
-                k => format!("還沒有截圖。按主畫面的「截圖」或 {k} 試試看。"),
+                k if k.is_empty() => tr!("還沒有截圖。按主畫面的「截圖」試試看。", "No screenshots yet. Try “Screenshot” in the main window.").to_string(),
+                k => trf!("還沒有截圖。按主畫面的「截圖」或 {k} 試試看。", "No screenshots yet. Try “Screenshot” in the main window or press {k}."),
             }
         } else {
-            "沒有符合條件的截圖。".into()
+            tr!("沒有符合條件的截圖。", "No matching screenshots.").into()
         };
         painter.text(pos2(area.center().x, area.min.y + 120.0), egui::Align2::CENTER_CENTER, msg, theme::font(14.0), p.muted);
     }
@@ -502,7 +636,11 @@ fn shot_grid(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, area: Re
         let hot = ui.rect_contains_pointer(cell);
         let on = d.selected.contains(&e.media.path);
         let img = Rect::from_min_size(cell.min, vec2(cell_w, img_h));
-        let resp = ui.interact(img, Id::new(("shotcell", &e.media.path)), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(format!("{}\n點一下開啟", e.media.name));
+        let resp = ui.interact(img, Id::new(("shotcell", &e.media.path)), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(trf!(
+            "{}\n點一下開啟",
+            "{}\nClick to open",
+            e.media.name
+        ));
         let border = if on {
             Stroke::new(2.0, p.accent)
         } else if resp.hovered() {
@@ -541,13 +679,23 @@ fn shot_grid(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, area: Re
         bui.label(RichText::new(format!("{size}{}", format_bytes(e.media.bytes))).font(theme::font(12.0)).color(p.muted));
         bui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
-            if Btn::icon_only(Icon::Edit).ghost().small().quiet(!hot).tooltip("重新命名").show(ui).clicked() {
+            if Btn::icon_only(Icon::Edit).ghost().small().quiet(!hot).tooltip(tr!("重新命名", "Rename")).show(ui).clicked() {
                 *rename = Some(e.clone());
             }
-            if Btn::icon_only(Icon::Folder).ghost().small().quiet(!hot).tooltip("在資料夾中顯示").show(ui).clicked() {
+            if Btn::icon_only(Icon::Folder).ghost().small().quiet(!hot).tooltip(tr!("在資料夾中顯示", "Show in folder")).show(ui).clicked() {
                 *action = Some((EntryAction::Reveal, e.clone()));
             }
-            if Btn::icon_only(Icon::Eye).ghost().small().quiet(!hot).tooltip("檢視").show(ui).clicked() {
+            if Btn::icon_only(Icon::Cut)
+                .ghost()
+                .small()
+                .quiet(!hot)
+                .tooltip(tr!("編輯：標註、遮個資、裁切（另存一張）", "Edit: annotate, redact personal info, crop (saves a copy)"))
+                .show(ui)
+                .clicked()
+            {
+                *action = Some((EntryAction::Edit, e.clone()));
+            }
+            if Btn::icon_only(Icon::Eye).ghost().small().quiet(!hot).tooltip(tr!("檢視", "View")).show(ui).clicked() {
                 *action = Some((EntryAction::Play, e.clone()));
             }
         });
@@ -558,7 +706,7 @@ fn shot_grid(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, area: Re
 fn rename_entry(app: &mut UiApp, entry: LibraryEntry) {
     let old = base_name(&entry.media.name);
     let n = entry.exports.len();
-    let mut ask = Ask::input("重新命名", "新名稱", old.clone(), "改名", move |app, value| {
+    let mut ask = Ask::input(tr!("重新命名", "Rename"), tr!("新名稱", "New name"), old.clone(), tr!("改名", "Rename"), move |app, value| {
         let name = value.trim().trim_end_matches(".mp4").trim_end_matches(".MP4").trim_end_matches(".png").trim_end_matches(".PNG").to_string();
         if name == old {
             app.ask = None;
@@ -582,7 +730,7 @@ fn rename_entry(app: &mut UiApp, entry: LibraryEntry) {
         app.spawn(async move { actions::rename(&core, &path, &value).await }, move |app, r| match r {
             Ok(_) => {
                 app.ask = None;
-                app.toast(format!("已改名為 {name}"), false);
+                app.toast(trf!("已改名為 {name}", "Renamed to {name}"), false);
                 if let Some(d) = &mut app.library {
                     d.selected.remove(&e2.media.path);
                     for x in &e2.exports {
@@ -602,7 +750,15 @@ fn rename_entry(app: &mut UiApp, entry: LibraryEntry) {
         });
     });
     if n > 0 {
-        ask.message = Some(format!("底下的 {n} 個加速版會一起改名。"));
+        ask.message = Some(if is_en() {
+            if n == 1 {
+                "Its sped-up version will be renamed too.".to_string()
+            } else {
+                format!("Its {n} sped-up versions will be renamed too.")
+            }
+        } else {
+            format!("底下的 {n} 個加速版會一起改名。")
+        });
     }
     app.ask = Some(ask);
 }
@@ -625,25 +781,33 @@ fn remove_selected(app: &mut UiApp) {
     // 原檔要刪、但取消勾選了部分加速版：提醒這些會保留
     let kept: usize =
         d.data.as_ref().map(|x| x.items.iter().filter(|e| d.selected.contains(&e.media.path)).map(|e| e.exports.iter().filter(|x| !d.selected.contains(&x.media.path)).count()).sum()).unwrap_or(0);
-    let mut ask = Ask::confirm(
-        format!("把 {} 個檔案移到資源回收筒？", list.len()),
-        format!("可從資源回收筒還原。{}", if kept > 0 { format!("\n未勾選的 {kept} 個加速版會保留。") } else { String::new() }),
-        "移到資源回收筒",
-        move |app, _| {
-            app.ask = None;
-            match actions::delete(&app.core, &list) {
-                Ok(n) => {
-                    app.toast(format!("已將 {n} 個檔案移到資源回收筒"), false);
-                    if let Some(d) = &mut app.library {
-                        d.selected.clear();
-                        d.dirty = true;
-                    }
-                    app.load_recent();
+    let plural = |n: usize| if n == 1 { "" } else { "s" };
+    let (title, message) = if is_en() {
+        let kept_text = match kept {
+            0 => String::new(),
+            1 => "\nThe unselected sped-up version will be kept.".to_string(),
+            k => format!("\nThe {k} unselected sped-up versions will be kept."),
+        };
+        let them = if list.len() == 1 { "it" } else { "them" };
+        (format!("Move {} file{} to the Recycle Bin?", list.len(), plural(list.len())), format!("You can restore {them} from the Recycle Bin.{kept_text}"))
+    } else {
+        (format!("把 {} 個檔案移到資源回收筒？", list.len()), format!("可從資源回收筒還原。{}", if kept > 0 { format!("\n未勾選的 {kept} 個加速版會保留。") } else { String::new() }))
+    };
+    let mut ask = Ask::confirm(title, message, tr!("移到資源回收筒", "Move to Recycle Bin"), move |app, _| {
+        app.ask = None;
+        match actions::delete(&app.core, &list) {
+            Ok(n) => {
+                let text = if is_en() { format!("Moved {n} file{} to the Recycle Bin", plural(n)) } else { format!("已將 {n} 個檔案移到資源回收筒") };
+                app.toast(text, false);
+                if let Some(d) = &mut app.library {
+                    d.selected.clear();
+                    d.dirty = true;
                 }
-                Err(e) => app.toast(e.message().to_string(), true),
+                app.load_recent();
             }
-        },
-    );
+            Err(e) => app.toast(e.message().to_string(), true),
+        }
+    });
     ask.danger = true;
     ask.list = d.selected.iter().map(|p| file_name(p)).collect();
     ask.list.sort();

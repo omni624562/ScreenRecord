@@ -1,11 +1,11 @@
-# shell = 主程式（egui 操作視窗、單一實例），core = 後端（錄影、轉檔、清單、標註繪製、播放器、系統匣…，可在 Linux 上測試）
+# shell = 主程式（egui 操作視窗、單一執行個體），core = 後端（錄影、轉檔、清單、標註繪製、播放器、系統匣…，可在 Linux 上測試）
 # 版本號只在這裡（workspace.package.version）：程式內顯示、exe 的檔案資訊、發佈流程都讀這裡
 [workspace]
 members = ["core", "shell"]
 resolver = "2"
 
 [workspace.package]
-version = "3.0.0"
+version = "3.1.0"
 edition = "2021"
 publish = false
 license = "MIT"

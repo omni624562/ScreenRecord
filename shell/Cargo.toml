@@ -18,6 +18,8 @@ serde_json = "1"
 regex = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 tiny-skia = "0.12"
+# 即時預覽：FFmpeg 的 RGBA 直接讀進 Color32（已在相依樹裡，egui 也用）
+bytemuck = "1"
 
 # 開發、測試用（Linux 上以 X11 顯示）
 [target.'cfg(unix)'.dependencies]
@@ -25,3 +27,7 @@ eframe = { version = "0.36", default-features = false, features = ["glow", "defa
 
 [target.'cfg(windows)'.build-dependencies]
 winresource = "0.1"
+
+[dev-dependencies]
+# 測試用：暫停時間（watch_changes）
+tokio = { version = "1", features = ["test-util"] }

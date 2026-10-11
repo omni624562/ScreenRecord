@@ -1,10 +1,12 @@
 //! 影片畫面：影片（含馬賽克 / 模糊）、標註、選取框、裁切框，以及在畫面上放置 / 移動 / 調整標註與框選裁切範圍。
 
-use super::{hash_of, Drag, Editor, Tab, Tool};
+use super::{Drag, Editor, Tab, Tool};
 use crate::ui::theme;
 use eframe::egui::{self, pos2, vec2, Align2, Color32, CornerRadius, CursorIcon, Id, Pos2, Rect, Sense, Stroke, TextureHandle, TextureOptions};
 use screenrecorder_core::annotate::{self, Ann, AnnKind, Shape};
 use screenrecorder_core::edit::CropInput;
+use screenrecorder_core::tr;
+use screenrecorder_core::zoom;
 use std::time::{Duration, Instant};
 
 /// 標註畫成與畫面同大小的圖（內容變了才重畫）
@@ -31,6 +33,19 @@ const ROT_HIT_PX: f64 = 16.0;
 
 pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, stage_h: f32) {
     let avail_w = ui.available_width();
+    // 截圖的「輸出」分頁：大畫面顯示輸出的樣子（背景、圓角、陰影、外框都看得清楚）
+    if ed.is_shot() && ed.tab == Tab::Output {
+        if let Some(tex) = super::shot::output_texture(ed) {
+            let (outer, _) = ui.allocate_exact_size(vec2(avail_w, stage_h), Sense::hover());
+            let sz = tex.size_vec2();
+            let k = ((outer.width() - 16.0) / sz.x).min((outer.height() - 16.0) / sz.y).min(ed.vw as f32 / sz.x.max(1.0) * 1.5).max(0.01);
+            let r = Rect::from_center_size(outer.center(), sz * k);
+            let painter = ui.painter_at(outer);
+            super::shot::checker(&painter, r);
+            painter.image(tex.id(), r, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+            return;
+        }
+    }
     let ar = if ed.vw > 0.0 && ed.vh > 0.0 { (ed.vw / ed.vh) as f32 } else { 16.0 / 9.0 };
     let (w, h) = if avail_w / stage_h > ar { (stage_h * ar, stage_h) } else { (avail_w, avail_w / ar) };
     let (outer, _) = ui.allocate_exact_size(vec2(avail_w, stage_h), Sense::hover());
@@ -39,7 +54,16 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, stage_h: f3
     let painter = ui.painter_at(outer);
     painter.rect_filled(rect, CornerRadius::ZERO, Color32::BLACK);
     if let Some(tex) = &ed.video_tex {
-        painter.image(tex.id(), rect, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+        // 預覽結果時顯示跟著點擊放大的效果（只放大影片；標註照原本的位置畫）
+        let uv = if ed.previewing && ed.zoom_on() {
+            let (z, cx, cy) = zoom::at(&zoom::focus_points(&ed.clicks), ed.zoom, ed.now());
+            let (hw, hh) = (0.5 / z as f32, 0.5 / z as f32);
+            let (cx, cy) = ((cx as f32).clamp(hw, 1.0 - hw), (cy as f32).clamp(hh, 1.0 - hh));
+            Rect::from_min_max(pos2(cx - hw, cy - hh), pos2(cx + hw, cy + hh))
+        } else {
+            Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0))
+        };
+        painter.image(tex.id(), rect, uv, Color32::WHITE);
     }
     if ed.vw <= 0.0 {
         interact(ed, ui, rect, &resp);
@@ -50,7 +74,7 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, stage_h: f3
 
     // 標註（馬賽克 / 模糊已套用在影片上）
     let css = (rect.width() as f64) / ed.vw;
-    update_sprites(ed, ctx, rect);
+    update_sprites(ed, ctx, rect, t);
     for a in ed.ordered() {
         if a.kind.is_effect() {
             continue;
@@ -74,6 +98,10 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, stage_h: f3
         for a in ed.anns.iter().filter(|a| a.kind.is_effect()) {
             let visible = t >= a.start && t <= a.end;
             if !visible && ed.ann_sel != Some(a.id) {
+                continue;
+            }
+            // 放大鏡本身就看得出範圍（選取時才有外框）
+            if a.kind == AnnKind::Magnify {
                 continue;
             }
             let alpha = if visible { 1.0 } else { 0.4 };
@@ -149,7 +177,27 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, stage_h: f3
                 }
             }
             painter.rect_stroke(cr, CornerRadius::ZERO, Stroke::new(2.0, theme::pal(ui).rec), egui::StrokeKind::Outside);
+            if ed.tab == Tab::Crop {
+                // 三等分線（構圖參考）與四個角的 L 形把手
+                let faint = Stroke::new(1.0, Color32::from_white_alpha(90));
+                for i in 1..3 {
+                    let t = i as f32 / 3.0;
+                    painter.vline(cr.left() + cr.width() * t, cr.y_range(), faint);
+                    painter.hline(cr.x_range(), cr.top() + cr.height() * t, faint);
+                }
+                let len = (cr.width().min(cr.height()) / 4.0).clamp(6.0, 18.0);
+                for (c, sx, sy) in [(cr.left_top(), 1.0, 1.0), (cr.right_top(), -1.0, 1.0), (cr.left_bottom(), 1.0, -1.0), (cr.right_bottom(), -1.0, -1.0)] {
+                    let pts = vec![c + vec2(0.0, len * sy), c, c + vec2(len * sx, 0.0)];
+                    painter.add(egui::Shape::line(pts.clone(), Stroke::new(6.0, Color32::from_black_alpha(110))));
+                    painter.add(egui::Shape::line(pts, Stroke::new(3.5, Color32::WHITE)));
+                }
+            }
         }
+    } else if ed.tab == Tab::Crop && ed.vw > 0.0 && ed.tool.is_none() {
+        let g = painter.layout_no_wrap(tr!("在圖上拖曳，框出要保留的範圍", "Drag to select the area to keep").to_string(), theme::font(13.0), Color32::WHITE);
+        let pill = Rect::from_center_size(pos2(rect.center().x, rect.top() + 24.0), g.size() + vec2(24.0, 12.0));
+        painter.rect_filled(pill, CornerRadius::same(255), Color32::from_black_alpha(170));
+        painter.galley(pill.min + vec2(12.0, 6.0), g, Color32::WHITE);
     }
     interact(ed, ui, rect, &resp);
 }
@@ -181,25 +229,63 @@ fn outline(shape: Option<Shape>, r: Rect, radius: f32) -> Vec<Pos2> {
 }
 
 /// 標註的小圖：內容或大小變了才重畫（表情符號的彩色字形畫起來特別慢，拖曳時不能每一格都重畫）
-fn update_sprites(ed: &mut Editor, ctx: &egui::Context, rect: Rect) {
+/// 標註畫成圖的內容（位置、時間、編號以外的欄位；聚光燈連位置也算）：直接算雜湊，不轉 JSON
+fn look_key(a: &Ann, spot: bool, s: f64, vw: f64, vh: f64) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    a.kind.hash(&mut h);
+    let mut nums = vec![a.w, a.h, a.size, a.rot, s, vw, vh];
+    if spot {
+        nums.extend([a.x, a.y]);
+    }
+    for v in nums {
+        v.to_bits().hash(&mut h);
+    }
+    (&a.color, &a.text, a.bg, a.n, a.shape, a.invert).hash(&mut h);
+    a.pts.len().hash(&mut h);
+    for p in &a.pts {
+        (p[0].to_bits(), p[1].to_bits()).hash(&mut h);
+    }
+    h.finish()
+}
+
+/// 每個標註畫成一張圖（貼圖）快取起來。只畫現在看得到（或選取中）的：
+/// 字幕一次可能有幾百段，不要每段都畫、也不要每一格都比對全部
+fn update_sprites(ed: &mut Editor, ctx: &egui::Context, rect: Rect, t: f64) {
     let s = (rect.width() * ctx.pixels_per_point()) as f64 / ed.vw;
-    let ids: Vec<u64> = ed.anns.iter().map(|a| a.id).collect();
+    let shown = |a: &Ann| (t >= a.start && t <= a.end) || ed.ann_sel == Some(a.id);
+    let ids: std::collections::HashSet<u64> = ed.anns.iter().map(|a| a.id).collect();
     ed.overlay.sprites.retain(|id, _| ids.contains(id));
-    for a in ed.anns.iter().filter(|a| !a.kind.is_effect()) {
-        // 內容：位置、時間、編號以外的欄位
-        let mut look = a.clone();
-        (look.x, look.y, look.start, look.end, look.id) = (0.0, 0.0, 0.0, 0.0, 0);
-        let key = hash_of(&(serde_json::to_string(&look).unwrap_or_default(), s.to_bits()));
+    // 快取太多時丟掉現在看不到的（貼圖佔顯示卡記憶體）
+    if ed.overlay.sprites.len() > 64 {
+        let keep: std::collections::HashSet<u64> = ed.anns.iter().filter(|a| shown(a)).map(|a| a.id).collect();
+        ed.overlay.sprites.retain(|id, _| keep.contains(id));
+    }
+    for a in ed.anns.iter().filter(|a| !a.kind.is_effect() && shown(a)) {
+        // 聚光燈蓋住整個畫面：位置也算在內容裡，圖就是整個畫面
+        let spot = a.kind == AnnKind::Spotlight;
+        let key = look_key(a, spot, s, ed.vw, ed.vh);
         if ed.overlay.sprites.get(&a.id).is_some_and(|sp| sp.key == key) {
             continue;
         }
-        // 範圍：標註實際佔的地方，再留一點邊（文字外框、箭頭頭部）
-        let (bx, by, bw, bh) = annotate::bbox(&look);
-        let m = a.size * 0.3 + 4.0;
-        let (ox, oy, ow, oh) = (bx - m, by - m, bw + m * 2.0, bh + m * 2.0);
+        // 內容：位置、時間、編號以外的欄位
+        let mut look = a.clone();
+        (look.start, look.end, look.id) = (0.0, 0.0, 0);
+        if !spot {
+            (look.x, look.y) = (0.0, 0.0);
+        }
+        // 範圍：標註實際佔的地方，再留一點邊（文字外框、箭頭頭部）；聚光燈是整個畫面（位置換算回標註的座標）
+        let (ox, oy, ow, oh) = if spot {
+            (-a.x, -a.y, ed.vw, ed.vh)
+        } else {
+            let (bx, by, bw, bh) = annotate::bbox(&look);
+            let m = if a.kind == AnnKind::Image { 2.0 } else { a.size * 0.3 + 4.0 };
+            (bx - m, by - m, bw + m * 2.0, bh + m * 2.0)
+        };
         let (pw, ph) = ((ow * s).ceil().max(1.0) as u32, (oh * s).ceil().max(1.0) as u32);
         let Some(mut pm) = tiny_skia::Pixmap::new(pw.min(8192), ph.min(8192)) else { continue };
-        let tf = tiny_skia::Transform::from_scale(s as f32, s as f32).pre_translate(-ox as f32, -oy as f32);
+        // 聚光燈的 look 保留位置，畫在整個畫面上，不用平移
+        let tf = if spot { tiny_skia::Transform::from_scale(s as f32, s as f32) } else { tiny_skia::Transform::from_scale(s as f32, s as f32).pre_translate(-ox as f32, -oy as f32) };
         annotate::draw(&mut pm, &look, tf);
         let img = egui::ColorImage::from_rgba_premultiplied([pm.width() as usize, pm.height() as usize], pm.data());
         let size = (pm.width() as f64 / s, pm.height() as f64 / s);
@@ -250,6 +336,50 @@ fn pointer_angle(a: &Ann, x: f64, y: f64) -> f64 {
     (y - cy).atan2(x - cx).to_degrees()
 }
 
+/// 在裁切範圍上按下的位置：角（回傳對角當固定點，以及是不是左上—右下方向）或框內
+enum CropGrab {
+    Corner((f64, f64), bool),
+    Inside,
+}
+
+fn crop_grab(ed: &Editor, x: f64, y: f64, tol: f64) -> Option<CropGrab> {
+    if !ed.crop_on {
+        return None;
+    }
+    let c = ed.spec.crop?;
+    let (l, t, r, b) = (c.x, c.y, c.x + c.width, c.y + c.height);
+    for (cx, cy, ax, ay, diag) in [(l, t, r, b, true), (r, t, l, b, false), (l, b, r, t, false), (r, b, l, t, true)] {
+        if (x - cx).abs() <= tol && (y - cy).abs() <= tol {
+            return Some(CropGrab::Corner((ax, ay), diag));
+        }
+    }
+    (x > l && x < r && y > t && y < b).then_some(CropGrab::Inside)
+}
+
+/// 從固定的角拖到 (px, py) 的範圍；有比例時保持比例，並限制在畫面內
+fn crop_from_drag(from: (f64, f64), (px, py): (f64, f64), ratio: Option<f64>, vw: f64, vh: f64) -> CropInput {
+    let (dx, dy) = (px - from.0, py - from.1);
+    let (mut w, mut h) = (dx.abs(), dy.abs());
+    if let Some(r) = ratio.filter(|r| *r > 0.0) {
+        if w / h.max(1e-9) > r {
+            w = h * r;
+        } else {
+            h = w / r;
+        }
+        let room_w = if dx >= 0.0 { vw - from.0 } else { from.0 };
+        let room_h = if dy >= 0.0 { vh - from.1 } else { from.1 };
+        if w > room_w {
+            (w, h) = (room_w, room_w / r);
+        }
+        if h > room_h {
+            (w, h) = (room_h * r, room_h);
+        }
+    }
+    let x = if dx >= 0.0 { from.0 } else { from.0 - w };
+    let y = if dy >= 0.0 { from.1 } else { from.1 - h };
+    CropInput { x, y, width: w, height: h }
+}
+
 fn handle_at(a: &Ann, x: f64, y: f64, tol: f64) -> Option<usize> {
     annotate::handles(a).iter().position(|&(hx, hy)| (hx - x).abs() <= tol && (hy - y).abs() <= tol)
 }
@@ -261,8 +391,8 @@ fn interact(ed: &mut Editor, ui: &egui::Ui, rect: Rect, resp: &egui::Response) {
     let to_video = |p: Pos2| (((p.x - rect.left()) / rect.width()).clamp(0.0, 1.0) as f64 * vw, ((p.y - rect.top()) / rect.height()).clamp(0.0, 1.0) as f64 * vh);
     let k = vw / rect.width().max(1.0) as f64;
 
-    // 影片上轉滾輪：前後一張（Shift 一秒）
-    if resp.hovered() && scroll != egui::Vec2::ZERO && ed.wheel_at.elapsed() > Duration::from_millis(40) {
+    // 影片上轉滾輪：前後一張（Shift 一秒）；截圖沒有
+    if !ed.is_shot() && resp.hovered() && scroll != egui::Vec2::ZERO && ed.wheel_at.elapsed() > Duration::from_millis(40) {
         ed.wheel_at = Instant::now();
         let d = if scroll.y.abs() >= scroll.x.abs() { scroll.y } else { scroll.x };
         let forward = d < 0.0;
@@ -287,8 +417,18 @@ fn interact(ed: &mut Editor, ui: &egui::Ui, rect: Rect, resp: &egui::Response) {
                 CursorIcon::ResizeNwSe
             } else if ann_at(ed, x, y, k * 6.0).is_some() {
                 CursorIcon::Move
-            } else if ed.crop_on {
-                CursorIcon::Crosshair
+            } else if ed.tab == Tab::Crop {
+                match crop_grab(ed, x, y, k * 12.0) {
+                    Some(CropGrab::Corner(_, diag)) => {
+                        if diag {
+                            CursorIcon::ResizeNwSe
+                        } else {
+                            CursorIcon::ResizeNeSw
+                        }
+                    }
+                    Some(CropGrab::Inside) => CursorIcon::Move,
+                    None => CursorIcon::Crosshair,
+                }
             } else {
                 CursorIcon::PointingHand
             };
@@ -302,7 +442,7 @@ fn interact(ed: &mut Editor, ui: &egui::Ui, rect: Rect, resp: &egui::Response) {
             return ed.toggle_play();
         }
         let (x, y) = to_video(p);
-        // 選取中標註的旋轉 / 調整大小把手優先（連續放置表情、編號時也一樣，不會變成再放一個）
+        // 選取中標註的旋轉 / 調整大小把手優先（連續放置表情符號、編號時也一樣，不會變成再放一個）
         if let Some(cur) = ed.selected() {
             if on_rotate_handle(cur, x, y, k, vw, vh) {
                 ed.drag = Drag::Rotate { id: cur.id, a0: pointer_angle(cur, x, y), r0: cur.rot };
@@ -313,20 +453,30 @@ fn interact(ed: &mut Editor, ui: &egui::Ui, rect: Rect, resp: &egui::Response) {
                 return;
             }
         }
-        // 連續放置編號 / 表情時，點到已放好的同類標註 = 選取、移動它，不再新增
-        let hit_same = ed.tool.filter(|t| t.sticky()).and_then(|t| ann_at(ed, x, y, k * 6.0).filter(|id| ed.anns.iter().any(|a| a.id == *id && a.kind == t.kind())));
+        // 連續放置編號 / 表情符號時，點到已放好的同類標註 = 選取、移動它，不再新增
+        let hit_same =
+            ed.tool.filter(|t| matches!(t, Tool::Emoji | Tool::Ann(AnnKind::Step))).and_then(|t| ann_at(ed, x, y, k * 6.0).filter(|id| ed.anns.iter().any(|a| a.id == *id && a.kind == t.kind())));
         if let (Some(tool), None) = (ed.tool, hit_same) {
             ed.player.pause();
             ed.stop_preview();
             let kind = tool.kind();
-            let a = ed.new_ann(kind, x, y);
+            let mut a = ed.new_ann(kind, x, y);
+            if kind == AnnKind::Pen {
+                // 畫筆：一筆一個標註，畫完繼續畫下一筆
+                annotate::set_pen_points(&mut a, &[(x, y)]);
+                let id = a.id;
+                ed.anns.push(a);
+                ed.ann_sel = None;
+                ed.drag = Drag::Pen { id, pts: vec![(x, y)] };
+                return;
+            }
             let id = a.id;
-            let default_text = a.text.as_deref() == Some("說明文字");
+            let default_text = a.text.as_deref() == Some(super::default_text());
             ed.anns.push(a);
             ed.ann_sel = Some(id);
             ed.tab = Tab::Ann;
             if matches!(kind, AnnKind::Text | AnnKind::Step) {
-                // 點一下就放好；編號、表情繼續放下一個
+                // 點一下就放好；編號、表情符號繼續放下一個
                 if !tool.sticky() {
                     ed.tool = None;
                 }
@@ -348,20 +498,28 @@ fn interact(ed: &mut Editor, ui: &egui::Ui, rect: Rect, resp: &egui::Response) {
             }
             return;
         }
+        // 只有「裁切」分頁會框選裁切範圍，其他分頁點空白處不會動到裁切
+        let cropping = ed.tab == Tab::Crop;
         if ed.ann_sel.is_some() {
-            // 點空白處：取消選取標註（裁切模式下同時開始框選）
+            // 點空白處：取消選取標註（裁切分頁同時開始框選）
             ed.ann_sel = None;
-            if !ed.crop_on {
+            if !cropping {
                 return;
             }
-        } else if !ed.crop_on {
+        } else if !cropping {
             return ed.toggle_play();
         }
-        ed.drag = Drag::Crop { from: (x, y) };
+        ed.stop_preview();
+        ed.drag = match crop_grab(ed, x, y, k * 12.0) {
+            // 拉角：以對角為固定點重新框選
+            Some(CropGrab::Corner(anchor, _)) => Drag::Crop { from: anchor, prev_on: ed.crop_on, prev: ed.spec.crop },
+            Some(CropGrab::Inside) => Drag::CropMove { from: (x, y), orig: ed.crop_rect() },
+            None => Drag::Crop { from: (x, y), prev_on: ed.crop_on, prev: ed.spec.crop },
+        };
         return;
     }
 
-    let stage_drag = matches!(ed.drag, Drag::Crop { .. } | Drag::Create { .. } | Drag::Move { .. } | Drag::Resize { .. } | Drag::Rotate { .. });
+    let stage_drag = matches!(ed.drag, Drag::Crop { .. } | Drag::CropMove { .. } | Drag::Create { .. } | Drag::Move { .. } | Drag::Resize { .. } | Drag::Rotate { .. } | Drag::Pen { .. });
     if !stage_drag {
         return;
     }
@@ -369,7 +527,7 @@ fn interact(ed: &mut Editor, ui: &egui::Ui, rect: Rect, resp: &egui::Response) {
         if let Some(p) = ui.input(|i| i.pointer.latest_pos()) {
             // 轉動時游標可以移到影片外面（不夾在影片範圍內，角度才準）
             let v = if matches!(ed.drag, Drag::Rotate { .. }) { (((p.x - rect.left()) / rect.width()) as f64 * vw, ((p.y - rect.top()) / rect.height()) as f64 * vh) } else { to_video(p) };
-            drag_to(ed, v);
+            drag_to(ed, v, ui.input(|i| i.modifiers.shift));
         }
     }
     if released || !down {
@@ -377,15 +535,46 @@ fn interact(ed: &mut Editor, ui: &egui::Ui, rect: Rect, resp: &egui::Response) {
     }
 }
 
-fn drag_to(ed: &mut Editor, (px, py): (f64, f64)) {
+/// shift：調整圖片大小時不保持比例
+fn drag_to(ed: &mut Editor, (px, py): (f64, f64), shift: bool) {
     match std::mem::replace(&mut ed.drag, Drag::None) {
-        Drag::Crop { from } => {
-            ed.spec.crop = Some(CropInput { x: from.0.min(px), y: from.1.min(py), width: (px - from.0).abs(), height: (py - from.1).abs() });
-            ed.drag = Drag::Crop { from };
+        Drag::Crop { from, prev_on, prev } => {
+            let ratio = super::CROP_RATIOS.get(ed.crop_ratio).and_then(|c| c.2);
+            let c = crop_from_drag(from, (px, py), ratio, ed.vw, ed.vh);
+            // 拖超過一點點才算框選（只點一下不會把裁切清掉）
+            if c.width >= 8.0 && c.height >= 8.0 {
+                ed.crop_on = true;
+                ed.spec.crop = Some(c);
+            }
+            ed.drag = Drag::Crop { from, prev_on, prev };
+        }
+        Drag::CropMove { from, orig } => {
+            let x = (orig.x + px - from.0).clamp(0.0, (ed.vw - orig.width).max(0.0));
+            let y = (orig.y + py - from.1).clamp(0.0, (ed.vh - orig.height).max(0.0));
+            ed.spec.crop = Some(CropInput { x, y, ..orig });
+            ed.drag = Drag::CropMove { from, orig };
+        }
+        Drag::Pen { id, mut pts } => {
+            // 移動超過一點點才加點（線比較平滑、資料比較少）
+            let k = (if ed.vh > 0.0 { ed.vh } else { 1080.0 }) / 1080.0;
+            if pts.last().is_none_or(|&(lx, ly)| (px - lx).hypot(py - ly) >= 2.5 * k) {
+                pts.push((px, py));
+                if let Some(a) = ed.ann_mut(id) {
+                    annotate::set_pen_points(a, &pts);
+                }
+            }
+            ed.drag = Drag::Pen { id, pts };
         }
         Drag::Create { id, from } => {
             if let Some(a) = ed.ann_mut(id) {
-                if a.kind == AnnKind::Arrow {
+                if a.kind == AnnKind::Magnify {
+                    // 放大鏡是正圓：取寬高中比較大的
+                    let d = (px - from.0).abs().max((py - from.1).abs());
+                    a.x = if px < from.0 { from.0 - d } else { from.0 };
+                    a.y = if py < from.1 { from.1 - d } else { from.1 };
+                    a.w = d;
+                    a.h = d;
+                } else if a.kind == AnnKind::Arrow {
                     a.w = px - from.0;
                     a.h = py - from.1;
                 } else {
@@ -427,6 +616,13 @@ fn drag_to(ed: &mut Editor, (px, py): (f64, f64)) {
                             let ratio = ((lx - o.x) / o.w.max(1.0)).max(0.2);
                             a.size = (o.size * ratio).round().max(8.0);
                             annotate::measure(a);
+                        } else if a.kind == AnnKind::Magnify {
+                            let d = (lx - o.x).max(ly - o.y).max(16.0);
+                            (a.w, a.h) = (d, d);
+                        } else if a.kind == AnnKind::Image && !shift {
+                            // 圖片保持比例（按住 Shift 可以自由調整）
+                            let k = ((lx - o.x) / o.w.max(1.0)).max((ly - o.y) / o.h.max(1.0)).max(8.0 / o.w.min(o.h).max(1.0));
+                            (a.w, a.h) = ((o.w * k).round(), (o.h * k).round());
                         } else {
                             a.w = (lx - o.x).max(8.0);
                             a.h = (ly - o.y).max(8.0);
@@ -444,7 +640,7 @@ fn drag_to(ed: &mut Editor, (px, py): (f64, f64)) {
             if let Some(a) = ed.ann_mut(id) {
                 // 轉的量 = 游標繞中心轉了多少（從哪裡按下去都不會跳）
                 let mut deg = super::norm_deg(r0 + pointer_angle(a, px, py) - a0);
-                // 靠近 15 度的倍數時吸附（容易轉回水平、轉成 45 / 90 度）
+                // 靠近 15 度的倍數時貼齊（容易轉回水平、轉成 45 / 90 度）
                 let snap = (deg / 15.0).round() * 15.0;
                 if (deg - snap).abs() < 4.0 {
                     deg = snap;
@@ -459,16 +655,40 @@ fn drag_to(ed: &mut Editor, (px, py): (f64, f64)) {
 
 fn end_drag(ed: &mut Editor) {
     match std::mem::replace(&mut ed.drag, Drag::None) {
-        Drag::Crop { .. } => {
+        Drag::Crop { prev_on, prev, .. } => {
+            let tiny = !ed.crop_on || ed.spec.crop.is_none_or(|c| c.width < 8.0 || c.height < 8.0);
+            if tiny {
+                // 只點一下：還原；影片照舊是播放 / 暫停
+                (ed.crop_on, ed.spec.crop) = (prev_on, prev);
+                if !ed.is_shot() {
+                    ed.toggle_play();
+                }
+            } else if let Some(c) = ed.spec.crop {
+                ed.set_crop(c);
+            }
+        }
+        Drag::CropMove { .. } => {
             if let Some(c) = ed.spec.crop {
                 ed.set_crop(c);
+            }
+        }
+        Drag::Pen { id, pts } => {
+            // 只點一下：畫一個點
+            if pts.len() == 1 {
+                if let Some(a) = ed.ann_mut(id) {
+                    annotate::set_pen_points(a, &[pts[0], (pts[0].0 + 0.5, pts[0].1)]);
+                }
             }
         }
         Drag::Create { id, .. } => {
             // 拖曳太短：給個預設大小
             let k = (if ed.vh > 0.0 { ed.vh } else { 1080.0 }) / 1080.0;
             if let Some(a) = ed.ann_mut(id) {
-                if a.kind == AnnKind::Arrow && a.w.hypot(a.h) < 20.0 * k {
+                if a.kind == AnnKind::Magnify && a.w < 24.0 * k {
+                    (a.w, a.h) = (240.0 * k, 240.0 * k);
+                    a.x -= a.w / 2.0;
+                    a.y -= a.h / 2.0;
+                } else if a.kind == AnnKind::Arrow && a.w.hypot(a.h) < 20.0 * k {
                     a.w = 160.0 * k;
                     a.h = -100.0 * k;
                 } else if a.kind != AnnKind::Arrow && (a.w < 12.0 * k || a.h < 12.0 * k) {
@@ -528,6 +748,27 @@ pub fn paint_tool_icon(p: &egui::Painter, c: Pos2, tool: Tool, color: Color32, e
             for (r, a) in [(9.5, 0.25), (7.0, 0.5), (4.5, 0.85)] {
                 p.circle_filled(c, r, color.gamma_multiply(a));
             }
+        }
+        Tool::Ann(AnnKind::Pen) => {
+            let pts: Vec<Pos2> = (0..=16)
+                .map(|i| {
+                    let t = i as f32 / 16.0;
+                    c + vec2(-9.0 + t * 18.0, (t * std::f32::consts::TAU * 1.2).sin() * 5.0)
+                })
+                .collect();
+            p.add(egui::Shape::line(pts, s));
+        }
+        Tool::Ann(AnnKind::Spotlight) => {
+            p.rect_filled(Rect::from_center_size(c, vec2(20.0, 16.0)), CornerRadius::same(2), color.gamma_multiply(0.45));
+            p.circle_filled(c, 5.0, Color32::WHITE);
+            p.circle_stroke(c, 5.0, Stroke::new(1.2, color));
+        }
+        Tool::Ann(AnnKind::Image) => {
+            theme::paint_icon(p, Rect::from_center_size(c, vec2(20.0, 20.0)), theme::Icon::Image, color);
+        }
+        Tool::Ann(AnnKind::Magnify) => {
+            p.circle_stroke(c + vec2(-2.0, -2.0), 7.0, s);
+            p.line_segment([c + vec2(3.0, 3.0), c + vec2(9.0, 9.0)], Stroke::new(2.6, color));
         }
     }
 }

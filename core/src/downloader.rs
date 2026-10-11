@@ -9,6 +9,7 @@
 use crate::paths::{app_dir, data_dir};
 use crate::process::RunResult;
 use crate::types::{DownloadPhase, DownloadStatus};
+use crate::{tr, trf};
 use sha2::{Digest, Sha256};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -41,7 +42,7 @@ pub fn download_target() -> Result<PathBuf, String> {
             return Ok(dir.join(if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" }));
         }
     }
-    Err("找不到可寫入的資料夾".into())
+    Err(tr!("找不到可寫入的資料夾", "No writable folder found").into())
 }
 
 /// 網路回應：內容長度（可能未知）與內容
@@ -50,7 +51,7 @@ pub type Body = (Option<u64>, Box<dyn Read + Send>);
 pub type FetchFn = Box<dyn Fn(&str) -> Result<Body, String> + Send + Sync>;
 pub type RunFn = Box<dyn Fn(&Path, &[String], Duration) -> RunResult + Send + Sync>;
 
-/// 可替換的外部相依（測試時不真的連網、不真的執行 tar）
+/// 可抽換的外部相依（測試時不真的連網、不真的執行 tar）
 pub struct Deps {
     pub fetch: FetchFn,
     pub run: RunFn,
@@ -70,8 +71,8 @@ impl Default for Deps {
                         let len = r.header("content-length").and_then(|v| v.parse().ok());
                         Ok((len, Box::new(r.into_reader())))
                     }
-                    Err(ureq::Error::Status(code, _)) => Err(format!("下載失敗（HTTP {code}）")),
-                    Err(e) => Err(format!("下載失敗：{e}")),
+                    Err(ureq::Error::Status(code, _)) => Err(trf!("下載失敗（HTTP {code}）", "Download failed (HTTP {code})")),
+                    Err(e) => Err(trf!("下載失敗：{e}", "Download failed: {e}")),
                 }
             }),
             run: Box::new(run_blocking),
@@ -187,7 +188,7 @@ impl Downloader {
             return;
         }
         g.st.phase = DownloadPhase::Canceled;
-        g.st.message = Some("已取消下載".into());
+        g.st.message = Some(tr!("已取消下載", "Download canceled").into());
         if let Some(c) = &g.cancel {
             c.store(true, Ordering::SeqCst);
         }
@@ -238,7 +239,7 @@ impl Downloader {
             }
         }
         if !ok {
-            return Err(Fail::Error(last_error.unwrap_or_else(|| "下載失敗".into())));
+            return Err(Fail::Error(last_error.unwrap_or_else(|| tr!("下載失敗", "Download failed").into())));
         }
 
         // 2. 解壓縮：只取 bin\ffmpeg.exe
@@ -247,7 +248,7 @@ impl Downloader {
         let zip_s = zip.display().to_string();
         let list = (self.deps.run)(tar, &["-tf".into(), zip_s.clone()], Duration::from_secs(60));
         if list.code != 0 {
-            return Err(Fail::Error(format!("無法讀取壓縮檔：{}", list.stderr.trim())));
+            return Err(Fail::Error(trf!("無法讀取壓縮檔：{}", "Couldn't read the archive: {}", list.stderr.trim())));
         }
         let entry = list
             .stdout
@@ -257,12 +258,12 @@ impl Downloader {
                 let lower = l.to_lowercase();
                 lower == "bin/ffmpeg.exe" || lower.ends_with("/bin/ffmpeg.exe")
             })
-            .ok_or_else(|| Fail::Error("壓縮檔裡找不到 bin/ffmpeg.exe".into()))?
+            .ok_or_else(|| Fail::Error(tr!("壓縮檔裡找不到 bin/ffmpeg.exe", "bin/ffmpeg.exe not found in the archive").into()))?
             .to_string();
         let ex = (self.deps.run)(tar, &["-xf".into(), zip_s, "-C".into(), work.display().to_string(), entry.clone()], Duration::from_secs(120));
         let extracted = entry.split('/').fold(work.to_path_buf(), |p, part| p.join(part));
         if ex.code != 0 || !extracted.exists() {
-            return Err(Fail::Error(format!("解壓縮失敗：{}", ex.stderr.trim())));
+            return Err(Fail::Error(trf!("解壓縮失敗：{}", "Extraction failed: {}", ex.stderr.trim())));
         }
         if cancel.load(Ordering::SeqCst) {
             return Err(Fail::Canceled);
@@ -271,7 +272,7 @@ impl Downloader {
         // 3. 確認能執行再放到定位（先放暫存名稱再改名，避免留下半個檔案）
         let ver = (self.deps.run)(&extracted, &["-hide_banner".into(), "-version".into()], Duration::from_secs(15));
         if ver.code != 0 {
-            return Err(Fail::Error("下載的 ffmpeg.exe 無法執行".into()));
+            return Err(Fail::Error(tr!("下載的 ffmpeg.exe 無法執行", "The downloaded ffmpeg.exe can't run").into()));
         }
         if let Some(dir) = target.parent() {
             std::fs::create_dir_all(dir).map_err(|e| Fail::Error(e.to_string()))?;
@@ -281,7 +282,7 @@ impl Downloader {
         let _ = std::fs::remove_file(target);
         std::fs::rename(&staging, target).map_err(|e| Fail::Error(e.to_string()))?;
         let version = crate::ffmpeg::parse_version(&ver.stdout);
-        let msg = format!("已安裝 FFmpeg {}：{}", version.clone().unwrap_or_default(), target.display());
+        let msg = trf!("已安裝 FFmpeg {}：{}", "Installed FFmpeg {}: {}", version.clone().unwrap_or_default(), target.display());
         self.set(|s| {
             s.version = version;
             s.phase = DownloadPhase::Done;
@@ -309,7 +310,7 @@ impl Downloader {
             if cancel.load(Ordering::SeqCst) {
                 return Err(Fail::Canceled);
             }
-            let n = body.read(&mut buf).map_err(|e| if cancel.load(Ordering::SeqCst) { Fail::Canceled } else { Fail::Error(format!("下載中斷：{e}")) })?;
+            let n = body.read(&mut buf).map_err(|e| if cancel.load(Ordering::SeqCst) { Fail::Canceled } else { Fail::Error(trf!("下載中斷：{e}", "Download interrupted: {e}")) })?;
             if n == 0 {
                 break;
             }
@@ -328,7 +329,9 @@ impl Downloader {
         self.set(|s| s.phase = DownloadPhase::Verifying);
         let digest: String = hasher.finalize().iter().map(|b| format!("{b:02x}")).collect();
         if digest != self.deps.sha256.to_lowercase() {
-            return Err(Fail::Error("檔案的 SHA-256 與預期不符（下載不完整或檔案遭替換），已刪除".into()));
+            return Err(Fail::Error(
+                tr!("檔案的 SHA-256 與預期不符（下載不完整或檔案遭竄改），已刪除", "The file's SHA-256 doesn't match (incomplete download or tampered file) and was deleted").into(),
+            ));
         }
         Ok(())
     }
@@ -348,7 +351,7 @@ mod tests {
         Sha256::digest(b).iter().map(|x| format!("{x:02x}")).collect()
     }
 
-    /// 模擬 tar（列出 / 解壓）與執行 ffmpeg -version
+    /// 模擬 tar（列出 / 解壓縮）與執行 ffmpeg -version
     fn fake_run(program: &Path, args: &[String], _t: Duration) -> RunResult {
         let ok = |stdout: &str| RunResult { code: 0, stdout: stdout.into(), ..Default::default() };
         let _ = program;

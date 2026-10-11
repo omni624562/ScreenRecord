@@ -1,11 +1,12 @@
-//! 系統匣圖示與全域快捷鍵（Windows）。
+//! 系統匣圖示與全域快速鍵（Windows）。
 //!
-//! TrackPopupMenu 在選單開著的期間會卡住所在的執行緒，所以圖示、選單與快捷鍵都放在獨立的執行緒，
+//! TrackPopupMenu 在選單開著的期間會卡住所在的執行緒，所以圖示、選單與快速鍵都放在獨立的執行緒，
 //! 操作視窗與錄影不會跟著停住。這裡只負責畫圖示與選單，使用者選了什麼就交給 TrayController 處理。
 
 use crate::icon::{icon_resource, IconState};
 use crate::tray::{TrayCommand, TrayState, TrayUi};
 use crate::types::{HotkeyStatus, Hotkeys, RecorderState};
+use crate::{tr, trf};
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 use std::sync::{mpsc, Arc, Mutex};
@@ -18,19 +19,21 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{RegisterHotKey, UnregisterHotK
 use windows::Win32::UI::Shell::{Shell_NotifyIconW, NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_TIP, NIIF_INFO, NIIF_WARNING, NIM_ADD, NIM_DELETE, NIM_MODIFY, NOTIFYICONDATAW, NOTIFY_ICON_DATA_FLAGS};
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreateIconFromResourceEx, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyIcon, DestroyMenu, DestroyWindow, DispatchMessageW, GetCursorPos, GetMessageW, GetSystemMetrics,
-    PostMessageW, PostQuitMessage, RegisterClassExW, RegisterWindowMessageW, SetForegroundWindow, SetMenuDefaultItem, TrackPopupMenu, TranslateMessage, HICON, HMENU, LR_DEFAULTCOLOR, MF_CHECKED,
-    MF_GRAYED, MF_POPUP, MF_SEPARATOR, MF_STRING, MSG, SM_CXSMICON, TPM_NONOTIFY, TPM_RETURNCMD, TPM_RIGHTBUTTON, WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP, WM_DESTROY, WM_HOTKEY, WM_LBUTTONUP, WM_NULL,
-    WM_RBUTTONUP, WNDCLASSEXW,
+    KillTimer, PostMessageW, PostQuitMessage, RegisterClassExW, RegisterWindowMessageW, SetForegroundWindow, SetMenuDefaultItem, SetTimer, TrackPopupMenu, TranslateMessage, HICON, HMENU,
+    LR_DEFAULTCOLOR, MF_CHECKED, MF_GRAYED, MF_POPUP, MF_SEPARATOR, MF_STRING, MSG, SM_CXSMICON, TPM_NONOTIFY, TPM_RETURNCMD, TPM_RIGHTBUTTON, WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP, WM_DESTROY,
+    WM_HOTKEY, WM_LBUTTONUP, WM_NULL, WM_RBUTTONUP, WM_TIMER, WNDCLASSEXW,
 };
 
 const WM_TRAY: u32 = WM_APP + 1;
 /// 有其他執行緒送來的要求（狀態、通知、結束）
 const WM_WAKE: u32 = WM_APP + 2;
 const NIN_BALLOONUSERCLICK: u32 = 0x405;
-/// 全域快捷鍵的 id：1 錄影、2 暫停、3 截圖、4 框選截圖（與 Hotkeys::all 的順序相同）
-const HOTKEY_IDS: [i32; 4] = [1, 2, 3, 4];
+/// 圖示加不上去時重試的計時器
+const RETRY_TIMER: usize = 7;
+/// 全域快速鍵的 id：1 錄影、2 暫停、3 截圖、4 框選截圖、5 加標記、6 螢幕畫筆（與 Hotkeys::all 的順序相同）
+const HOTKEY_IDS: [i32; crate::types::HOTKEY_COUNT] = [1, 2, 3, 4, 5, 6];
 
-/// 登記全域快捷鍵（先取消舊的）；被其他程式占用時登記失敗，停用的視為成功
+/// 登記全域快速鍵（先取消舊的）；被其他程式占用時登記失敗，停用的視為成功
 fn register_hotkeys(hwnd: HWND, keys: &Hotkeys) -> HotkeyStatus {
     let ok: Vec<bool> = keys
         .all()
@@ -48,10 +51,10 @@ fn register_hotkeys(hwnd: HWND, keys: &Hotkeys) -> HotkeyStatus {
             RegisterHotKey(Some(hwnd), id, m, k.key).is_ok()
         })
         .collect();
-    HotkeyStatus { record: ok[0], pause: ok[1], shot: ok[2], snip: ok[3] }
+    HotkeyStatus::from_list(&ok)
 }
 
-/// 選單右側顯示的快捷鍵（停用時不顯示）
+/// 選單右側顯示的快速鍵（停用時不顯示）
 fn tab(k: &str) -> String {
     if k.is_empty() {
         String::new()
@@ -61,7 +64,7 @@ fn tab(k: &str) -> String {
 }
 
 enum Req {
-    State(TrayState),
+    State(Box<TrayState>),
     Balloon(String, String, bool),
     Dispose(mpsc::Sender<()>),
     Hotkeys(Hotkeys, mpsc::Sender<HotkeyStatus>),
@@ -83,7 +86,7 @@ impl Handle {
 
 impl TrayUi for Handle {
     fn set_state(&self, s: TrayState) {
-        self.send(Req::State(s));
+        self.send(Req::State(Box::new(s)));
     }
     fn balloon(&self, title: &str, text: &str, warn: bool) {
         self.send(Req::Balloon(title.into(), text.into(), warn));
@@ -156,38 +159,31 @@ impl Tray {
         let icon = self.icon(kind);
         let mut d = self.nid(flags);
         d.hIcon = icon;
-        put_str(&mut d.szTip, self.state.as_ref().map(|s| s.tip.as_str()).unwrap_or("螢幕錄影"));
+        put_str(&mut d.szTip, self.state.as_ref().map(|s| s.tip.as_str()).unwrap_or(tr!("螢幕錄影", "Screen Recorder")));
         d
     }
 
-    fn add_icon(&mut self) -> bool {
-        let d = self.icon_data(NIF_MESSAGE | NIF_ICON | NIF_TIP);
-        unsafe { Shell_NotifyIconW(NIM_ADD, &d).as_bool() }
-    }
-
-    fn update_icon(&mut self) {
-        let d = self.icon_data(NIF_ICON | NIF_TIP);
-        unsafe {
-            let _ = Shell_NotifyIconW(NIM_MODIFY, &d);
-        }
-    }
-
-    fn balloon(&self, title: &str, text: &str, warn: bool) {
+    fn balloon_data(&self, title: &str, text: &str, warn: bool) -> NOTIFYICONDATAW {
         let mut d = self.nid(NIF_INFO);
         put_str(&mut d.szInfo, text);
         put_str(&mut d.szInfoTitle, title);
         d.dwInfoFlags = if warn { NIIF_WARNING } else { NIIF_INFO };
-        unsafe {
-            let _ = Shell_NotifyIconW(NIM_MODIFY, &d);
-        }
+        d
     }
+}
 
-    fn remove_icon(&self) {
-        let d = self.nid(NOTIFY_ICON_DATA_FLAGS(0));
-        unsafe {
-            let _ = Shell_NotifyIconW(NIM_DELETE, &d);
+/// 把圖示加到系統匣（還沒加上時）；回傳現在有沒有在系統匣上。借用 TRAY 時不呼叫 Shell_NotifyIcon
+fn ensure_icon() -> bool {
+    let Some(d) = TRAY.with(|t| t.borrow_mut().as_mut().filter(|t| !t.added).map(|t| t.icon_data(NIF_MESSAGE | NIF_ICON | NIF_TIP))) else {
+        return TRAY.with(|t| t.borrow().as_ref().is_some_and(|t| t.added));
+    };
+    let ok = unsafe { Shell_NotifyIconW(NIM_ADD, &d).as_bool() };
+    TRAY.with(|t| {
+        if let Some(t) = t.borrow_mut().as_mut() {
+            t.added = ok;
         }
-    }
+    });
+    ok
 }
 
 /// 處理其他執行緒送來的要求
@@ -197,45 +193,49 @@ fn drain() {
     loop {
         let Some(req) = queue.lock().unwrap().pop_front() else { break };
         match req {
-            Req::State(s) => TRAY.with(|t| {
-                if let Some(t) = t.borrow_mut().as_mut() {
-                    t.state = Some(s);
-                    if t.added {
-                        t.update_icon();
-                    }
-                }
-            }),
-            Req::Balloon(title, text, warn) => TRAY.with(|t| {
-                if let Some(t) = t.borrow().as_ref() {
-                    if t.added {
-                        t.balloon(&title, &text, warn);
-                    }
-                }
-            }),
-            Req::Dispose(done) => {
-                let hwnd = TRAY.with(|t| {
+            // Shell_NotifyIcon 會等檔案總管回應，等的時候這條執行緒可能又收到訊息（進到 wnd_proc）：
+            // 所以借用 TRAY 時只準備資料，放開之後才呼叫，避免重複借用而整個程式結束
+            Req::State(s) => {
+                let d = TRAY.with(|t| {
                     let mut b = t.borrow_mut();
                     let t = b.as_mut()?;
-                    if t.added {
-                        t.remove_icon();
-                        t.added = false;
-                    }
-                    for id in HOTKEY_IDS {
-                        unsafe {
-                            let _ = UnregisterHotKey(Some(t.hwnd), id);
-                        }
-                    }
-                    for h in t.icons.values() {
-                        unsafe {
-                            let _ = DestroyIcon(*h);
-                        }
-                    }
-                    t.icons.clear();
-                    Some(t.hwnd)
+                    t.state = Some(*s);
+                    t.added.then(|| t.icon_data(NIF_ICON | NIF_TIP))
                 });
-                if let Some(h) = hwnd {
+                if let Some(d) = d {
                     unsafe {
-                        let _ = DestroyWindow(h);
+                        let _ = Shell_NotifyIconW(NIM_MODIFY, &d);
+                    }
+                }
+            }
+            Req::Balloon(title, text, warn) => {
+                let d = TRAY.with(|t| t.borrow().as_ref().filter(|t| t.added).map(|t| t.balloon_data(&title, &text, warn)));
+                if let Some(d) = d {
+                    unsafe {
+                        let _ = Shell_NotifyIconW(NIM_MODIFY, &d);
+                    }
+                }
+            }
+            Req::Dispose(done) => {
+                let info = TRAY.with(|t| {
+                    let mut b = t.borrow_mut();
+                    let t = b.as_mut()?;
+                    let added = std::mem::replace(&mut t.added, false);
+                    let icons: Vec<HICON> = t.icons.drain().map(|(_, h)| h).collect();
+                    Some((t.hwnd, added.then(|| t.nid(NOTIFY_ICON_DATA_FLAGS(0))), icons))
+                });
+                if let Some((hwnd, nid, icons)) = info {
+                    unsafe {
+                        if let Some(d) = nid {
+                            let _ = Shell_NotifyIconW(NIM_DELETE, &d);
+                        }
+                        for id in HOTKEY_IDS {
+                            let _ = UnregisterHotKey(Some(hwnd), id);
+                        }
+                        for h in icons {
+                            let _ = DestroyIcon(h);
+                        }
+                        let _ = DestroyWindow(hwnd);
                     }
                 }
                 let _ = done.send(());
@@ -263,8 +263,10 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             let ev = (lparam.0 as u32) & 0xffff;
             if ev == WM_RBUTTONUP {
                 show_menu();
-            } else if ev == WM_LBUTTONUP || ev == NIN_BALLOONUSERCLICK {
+            } else if ev == WM_LBUTTONUP {
                 send_cmd(TrayCommand::Open);
+            } else if ev == NIN_BALLOONUSERCLICK {
+                send_cmd(TrayCommand::BalloonClick);
             }
             LRESULT(0)
         }
@@ -274,6 +276,9 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                 2 => send_cmd(TrayCommand::HotkeyPause),
                 3 => send_cmd(TrayCommand::Screenshot),
                 4 => send_cmd(TrayCommand::ScreenshotSelect),
+                5 => send_cmd(TrayCommand::Mark),
+                // 畫筆直接在這裡開關（不用等）；視窗在自己的執行緒
+                6 => crate::screen_pen_win::toggle(),
                 _ => {}
             }
             LRESULT(0)
@@ -286,15 +291,25 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             PostQuitMessage(0);
             LRESULT(0)
         }
+        WM_TIMER if wparam.0 == RETRY_TIMER => {
+            // 開機登入時工作列還沒好、圖示加不上去：每 3 秒再試，加上了就停
+            if ensure_icon() {
+                let _ = KillTimer(Some(hwnd), RETRY_TIMER);
+                crate::info!("系統匣圖示已加上");
+            }
+            LRESULT(0)
+        }
         _ => {
-            let taskbar = TRAY.with(|t| t.borrow().as_ref().map(|t| t.taskbar_created).unwrap_or(0));
+            // 用 try_borrow：萬一其他地方正借用著（不應該發生），也不要讓整個程式結束
+            let taskbar = TRAY.with(|t| t.try_borrow().ok().and_then(|b| b.as_ref().map(|t| t.taskbar_created)).unwrap_or(0));
             if taskbar != 0 && msg == taskbar {
                 // 檔案總管重新啟動後圖示會消失，要重新加入
                 TRAY.with(|t| {
                     if let Some(t) = t.borrow_mut().as_mut() {
-                        t.added = t.add_icon();
+                        t.added = false;
                     }
                 });
+                ensure_icon();
                 return LRESULT(0);
             }
             DefWindowProcW(hwnd, msg, wparam, lparam)
@@ -347,66 +362,107 @@ fn show_menu() {
     let idle = st.rec == RecorderState::Idle;
     unsafe {
         let Ok(root) = CreatePopupMenu() else { return };
-        m.add(root, "開啟操作視窗(&O)", TrayCommand::Open, false, false);
+        m.add(root, tr!("開啟操作視窗(&O)", "&Open main window"), TrayCommand::Open, false, false);
         let _ = SetMenuDefaultItem(root, 0, 1);
         if let Some(u) = &st.update {
-            m.add(root, &format!("★ 有新版本 v{u}（開啟視窗更新）"), TrayCommand::OpenUpdate, false, false);
+            m.add(root, &trf!("★ 有新版本 v{u}（開啟視窗更新）", "★ New version v{u} available (open to update)"), TrayCommand::OpenUpdate, false, false);
         }
         Menu::sep(root);
-        // 「\t」後的文字顯示在選單右側（快捷鍵提示）
-        m.add(root, &format!("開始錄影(&R)　{}{}", st.last_source, tab(&st.keys[0])), TrayCommand::StartLast, !idle || !st.can_record, false);
+        // 「\t」後的文字顯示在選單右側（快速鍵提示）
+        m.add(root, &trf!("開始錄影(&R)　{}{}", "Start &recording ({}){}", st.last_source, tab(&st.keys[0])), TrayCommand::StartLast, !idle || !st.can_record, false);
+        // 錄其他範圍：與「截圖」相同的選法（框選範圍或視窗、全螢幕、重複上次框選）
         if let Ok(pick) = CreatePopupMenu() {
-            for mon in &st.monitors {
-                m.add(pick, &mon.label, TrayCommand::StartMonitor(mon.id.clone()), false, false);
+            m.add(pick, tr!("框選範圍或視窗(&A)…", "Select &area or window…"), TrayCommand::StartSelect, false, false);
+            if let Ok(full) = CreatePopupMenu() {
+                for mon in &st.monitors {
+                    m.add(full, &mon.label, TrayCommand::StartMonitor(mon.id.clone()), false, false);
+                }
+                if st.monitors.len() > 1 {
+                    Menu::sep(full);
+                    m.add(full, tr!("所有螢幕（整個延伸桌面）", "All screens (entire extended desktop)"), TrayCommand::StartAll, false, false);
+                }
+                Menu::sub(pick, tr!("全螢幕(&F)", "&Full screen"), full, st.monitors.is_empty());
             }
-            if st.monitors.len() > 1 {
-                Menu::sep(pick);
-                m.add(pick, "所有螢幕（整個延伸桌面）", TrayCommand::StartAll, false, false);
+            Menu::sep(pick);
+            m.add(pick, tr!("重複上次框選(&R)", "Re&peat last selection"), TrayCommand::StartLastSnip, !st.has_last_snip, false);
+            Menu::sub(root, tr!("錄製其他範圍(&M)", "Record another ar&ea"), pick, !idle || !st.can_record);
+        }
+        // 錄影設定組合：勾選的是目前的設定
+        if let Ok(sets) = CreatePopupMenu() {
+            for (i, name) in st.presets.iter().enumerate() {
+                // 名稱裡的 & 會被當成快速鍵記號
+                m.add(sets, &name.replace('&', "&&"), TrayCommand::ApplyPreset(i), false, st.preset == Some(i));
             }
-            Menu::sub(root, "錄製指定螢幕(&M)", pick, !idle || !st.can_record);
+            if st.presets.is_empty() {
+                m.add(sets, tr!("還沒有設定組合（在操作視窗下方儲存）", "No presets yet (save one at the bottom of the main window)"), TrayCommand::Open, false, false);
+            }
+            Menu::sub(root, tr!("設定組合(&E)", "Recordin&g presets"), sets, !idle);
+        }
+        if let Some(s) = &st.scheduled {
+            m.add(root, &trf!("取消排程錄影（{s}）", "Cancel scheduled recording ({s})"), TrayCommand::CancelSchedule, false, false);
         }
         if st.rec == RecorderState::Paused {
-            m.add(root, &format!("繼續錄影(&C){}", tab(&st.keys[1])), TrayCommand::Resume, false, false);
+            m.add(root, &trf!("繼續錄影(&C){}", "Res&ume recording{}", tab(&st.keys[1])), TrayCommand::Resume, false, false);
         } else {
-            m.add(root, &format!("暫停(&P){}", tab(&st.keys[1])), TrayCommand::Pause, st.rec != RecorderState::Recording, false);
+            m.add(root, &trf!("暫停(&P){}", "&Pause{}", tab(&st.keys[1])), TrayCommand::Pause, st.rec != RecorderState::Recording, false);
         }
         if st.rec == RecorderState::Countdown {
-            m.add(root, "取消倒數(&S)", TrayCommand::Stop, false, false);
+            m.add(root, tr!("取消倒數(&S)", "&Cancel countdown"), TrayCommand::Stop, false, false);
         } else {
-            m.add(root, &format!("停止並儲存(&S){}", tab(&st.keys[0])), TrayCommand::Stop, idle || st.rec == RecorderState::Stopping, false);
+            m.add(root, &trf!("停止並儲存(&S){}", "&Stop and save{}", tab(&st.keys[0])), TrayCommand::Stop, idle || st.rec == RecorderState::Stopping, false);
         }
+        m.add(root, &trf!("加標記(&K){}", "Add &marker{}", tab(&st.keys[4])), TrayCommand::Mark, !matches!(st.rec, RecorderState::Recording | RecorderState::Paused), false);
+        m.add(root, &trf!("螢幕畫筆(&D){}", "Screen pe&n{}", tab(&st.keys[5])), TrayCommand::Pen, false, crate::screen_pen_win::active());
         Menu::sep(root);
         // 截圖：框選範圍或點選視窗、全螢幕、固定範圍（主畫面的錄影範圍）、重複上次框選
         if let Ok(shot) = CreatePopupMenu() {
-            m.add(shot, &format!("框選範圍或視窗(&A)…{}", tab(&st.keys[3])), TrayCommand::ScreenshotSelect, false, false);
+            m.add(shot, &trf!("框選範圍或視窗(&A)…{}", "Select &area or window…{}", tab(&st.keys[3])), TrayCommand::ScreenshotSelect, false, false);
+            if let Ok(delay) = CreatePopupMenu() {
+                for sec in [3u64, 5, 10] {
+                    m.add(delay, &trf!("{sec} 秒後", "In {sec} seconds"), TrayCommand::ScreenshotDelay(sec), false, false);
+                }
+                Menu::sub(shot, tr!("延遲框選(&D)", "&Delayed selection"), delay, false);
+            }
+            m.add(shot, tr!("長截圖（捲動）(&L)…", "Scro&lling screenshot…"), TrayCommand::ScreenshotScroll, false, false);
+            m.add(shot, tr!("讀取 QR 碼(&Q)…", "Read &QR code…"), TrayCommand::ScreenshotQr, false, false);
+            m.add(shot, tr!("取色器(&C)…", "&Color picker…"), TrayCommand::ScreenColor, false, false);
+            m.add(shot, tr!("尺規（量距離）(&R)…", "&Ruler (measure distance)…"), TrayCommand::ScreenRuler, false, false);
+            m.add(shot, tr!("步驟截圖（做成教學文件）(&P)", "S&tep capture (step-by-step guide)"), TrayCommand::StepsStart, st.steps.is_some(), false);
             if let Ok(full) = CreatePopupMenu() {
                 for mon in &st.monitors {
                     m.add(full, &mon.label, TrayCommand::ScreenshotMonitor(mon.id.clone()), false, false);
                 }
                 if st.monitors.len() > 1 {
                     Menu::sep(full);
-                    m.add(full, "所有螢幕（整個延伸桌面）", TrayCommand::ScreenshotAll, false, false);
+                    m.add(full, tr!("所有螢幕（整個延伸桌面）", "All screens (entire extended desktop)"), TrayCommand::ScreenshotAll, false, false);
                 }
-                Menu::sub(shot, "全螢幕(&F)", full, st.monitors.is_empty());
+                Menu::sub(shot, tr!("全螢幕(&F)", "&Full screen"), full, st.monitors.is_empty());
             }
-            m.add(shot, &format!("固定範圍(&X)：{}{}", st.last_source, tab(&st.keys[2])), TrayCommand::Screenshot, false, false);
+            m.add(shot, &trf!("固定範圍(&X)：{}{}", "Fi&xed area: {}{}", st.last_source, tab(&st.keys[2])), TrayCommand::Screenshot, false, false);
             Menu::sep(shot);
-            m.add(shot, "重複上次框選(&R)", TrayCommand::ScreenshotLast, !st.has_last_snip, false);
-            Menu::sub(root, "截圖(&T)", shot, !st.can_shot);
+            m.add(shot, tr!("重複上次框選(&R)", "Re&peat last selection"), TrayCommand::ScreenshotLast, !st.has_last_snip, false);
+            Menu::sep(shot);
+            m.add(shot, tr!("編輯上次截圖(&E)…", "&Edit last screenshot…"), TrayCommand::EditLastShot, !st.has_shot, false);
+            Menu::sub(root, tr!("截圖(&T)", "Screensho&t"), shot, !st.can_shot);
+        }
+        // 步驟截圖進行中：放在最上層，隨時可以完成
+        if let Some(n) = st.steps {
+            let label = if crate::i18n::is_en() { format!("F&inish step capture ({n} step{})", if n == 1 { "" } else { "s" }) } else { format!("完成步驟截圖（{n} 步）(&G)") };
+            m.add(root, &label, TrayCommand::StepsFinish, false, false);
         }
         Menu::sep(root);
         if let Ok(audio) = CreatePopupMenu() {
-            m.add(audio, "系統聲音", TrayCommand::ToggleSystem, false, st.audio_system);
-            m.add(audio, "麥克風", TrayCommand::ToggleMic, false, st.audio_mic);
-            Menu::sub(root, "錄製聲音(&A)", audio, !idle);
+            m.add(audio, tr!("系統聲音", "System audio"), TrayCommand::ToggleSystem, false, st.audio_system);
+            m.add(audio, tr!("麥克風", "Microphone"), TrayCommand::ToggleMic, false, st.audio_mic);
+            Menu::sub(root, tr!("錄製聲音(&A)", "Record &audio"), audio, !idle);
         }
         Menu::sep(root);
-        m.add(root, "開啟儲存資料夾(&F)", TrayCommand::OpenFolder, false, false);
-        m.add(root, "播放最近的錄影(&L)", TrayCommand::PlayLast, st.last_result.is_none(), false);
+        m.add(root, tr!("開啟儲存資料夾(&F)", "Open save &folder"), TrayCommand::OpenFolder, false, false);
+        m.add(root, tr!("播放最近的錄影(&L)", "Play &latest recording"), TrayCommand::PlayLast, st.last_result.is_none(), false);
         Menu::sep(root);
-        m.add(root, "開機時自動啟動", TrayCommand::Autostart, st.autostart.is_none(), st.autostart == Some(true));
-        m.add(root, &format!("更新說明（v{}）", st.version), TrayCommand::Changelog, false, false);
-        m.add(root, "結束(&X)", TrayCommand::Quit, false, false);
+        m.add(root, tr!("開機時自動啟動", "Start with Windows"), TrayCommand::Autostart, st.autostart.is_none(), st.autostart == Some(true));
+        m.add(root, &trf!("更新說明（v{}）", "Release notes (v{})", st.version), TrayCommand::Changelog, false, false);
+        m.add(root, tr!("結束(&X)", "E&xit"), TrayCommand::Quit, false, false);
 
         let mut pt = POINT::default();
         let _ = GetCursorPos(&mut pt);
@@ -439,7 +495,7 @@ fn allow_dark_menus() {
     }
 }
 
-/// 啟動系統匣執行緒；圖示加入成功後回傳控制介面與快捷鍵登記結果
+/// 啟動系統匣執行緒；圖示加入成功後回傳控制介面與快速鍵登記結果
 pub fn start(cmd: UnboundedSender<TrayCommand>, keys: Hotkeys) -> Result<(Arc<dyn TrayUi>, HotkeyStatus), String> {
     let (ready_tx, ready_rx) = mpsc::channel::<Result<(isize, HotkeyStatus), String>>();
     let queue: Arc<Mutex<VecDeque<Req>>> = Arc::default();
@@ -466,19 +522,14 @@ pub fn start(cmd: UnboundedSender<TrayCommand>, keys: Hotkeys) -> Result<(Arc<dy
             });
             // 先處理已送來的狀態，圖示一開始就顯示正確的提示
             drain();
-            let added = TRAY.with(|t| {
-                t.borrow_mut().as_mut().map(|t| {
-                    t.added = t.add_icon();
-                    t.added
-                })
-            });
-            if added != Some(true) {
-                let _ = ready_tx.send(Err("Shell_NotifyIcon 失敗".into()));
-                let _ = DestroyWindow(hwnd);
-                return;
-            }
-            // 快捷鍵登記在這個執行緒的視窗上（WM_HOTKEY 會送到這裡）；被其他程式占用時登記失敗
+            // 快速鍵登記在這個執行緒的視窗上（WM_HOTKEY 會送到這裡）；被其他程式占用時登記失敗。
+            // 先回報準備好（不等圖示）：加圖示要等檔案總管，開機登入時可能很慢
             let _ = ready_tx.send(Ok((hwnd.0 as isize, register_hotkeys(hwnd, &keys))));
+            // 圖示加不上去（工作列還沒準備好）：快速鍵照樣能用，每 3 秒再試著加圖示
+            if !ensure_icon() {
+                crate::warn!("系統匣圖示暫時加不上去（工作列可能還沒準備好），稍後會再試");
+                SetTimer(Some(hwnd), RETRY_TIMER, 3000, None);
+            }
             let mut msg = MSG::default();
             while GetMessageW(&mut msg, None, 0, 0).as_bool() {
                 let _ = TranslateMessage(&msg);

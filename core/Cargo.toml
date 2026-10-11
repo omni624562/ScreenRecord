@@ -15,9 +15,19 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "std"
 sha2 = "0.10"
 # 標註繪製（文字、箭頭、框線、編號、遮罩）：預覽與匯出用同一套
 tiny-skia = "0.12"
+# 長截圖一列一列寫成 PNG（不用先接成一整塊）；image 與 tiny-skia 已經在用同一版
+png = "0.18"
+# 字型檔用記憶體對映：不整份讀進記憶體，只有用到的字形才載入，也和其他程式共用（已經在相依套件裡）
+memmap2 = "0.9"
 ttf-parser = "0.25"
 # 截圖複製到剪貼簿
 arboard = { version = "3.6", default-features = false, features = ["image-data"] }
+# 讀取 QR 碼（純 Rust）
+rqrr = { version = "0.11", default-features = false }
+# 自動字幕：語音辨識的結果轉成繁體中文（台灣用詞）
+zhconv = "0.3"
+# 圖片標註（Logo、浮水印）：讀取 PNG、JPG、BMP、WebP
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "bmp", "webp"] }
 
 # HTTPS（下載 FFmpeg、檢查新版本）：Windows 用系統內建的 SChannel（不需編譯 C、使用系統憑證），其他平台用 rustls
 [target.'cfg(not(windows))'.dependencies]
@@ -27,6 +37,11 @@ ureq = "2"
 ureq = { version = "2", default-features = false, features = ["native-tls", "gzip"] }
 native-tls = "0.2"
 windows = { version = "0.62", features = [
+  "Foundation",
+  "Globalization",
+  "Graphics_Imaging",
+  "Media_Ocr",
+  "Storage_Streams",
   "Win32_Foundation",
   "Win32_Devices_FunctionDiscovery",
   "Win32_Graphics_Dwm",
@@ -38,17 +53,24 @@ windows = { version = "0.62", features = [
   "Win32_Storage_FileSystem",
   "Win32_System_Com",
   "Win32_System_Com_StructuredStorage",
+  "Win32_System_DataExchange",
   "Win32_System_JobObjects",
   "Win32_System_Performance",
+  "Win32_System_Power",
   "Win32_System_Threading",
   "Win32_System_Variant",
+  "Win32_System_WinRT",
   "Win32_System_LibraryLoader",
+  "Win32_System_Memory",
   "Win32_UI_HiDpi",
   "Win32_UI_Input_KeyboardAndMouse",
   "Win32_UI_Shell",
+  "Win32_UI_Shell_Common",
   "Win32_UI_Shell_PropertiesSystem",
   "Win32_UI_WindowsAndMessaging",
 ] }
 
 [dev-dependencies]
 tempfile = "3"
+# 測試讀取 QR 碼用（產生 QR 碼圖片）
+qrcode = { version = "0.14", default-features = false }

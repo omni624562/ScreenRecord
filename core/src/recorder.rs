@@ -4,18 +4,22 @@
 //! - 「停止」送 q 收尾後，以 concat demuxer（-c copy）合併所有分段成單一 MP4。
 //! - FFmpeg 意外結束（例如鎖定畫面、UAC 安全桌面造成 Desktop Duplication 中斷）時自動開新分段續錄。
 //!
-//! 公開操作（開始、暫停、繼續、停止）依序執行，避免連點造成競態；狀態放在一把短暫持有的鎖裡，
+//! 公開操作（開始、暫停、繼續、停止）依序執行，避免連點時互相干擾；狀態放在一把短暫持有的鎖裡，
 //! 不在持有鎖時等待（呼叫 FFmpeg、開啟音訊裝置），查詢狀態永遠不會被卡住。
 
-use crate::args::{audio_end_args, choose_encoder, concat_args, concat_list, parse_media_info, resolve_plan, segment_args, startup_fallback, CapturePlan, EncoderSpec, FallbackInput, StartupFallback};
+use crate::args::{
+    audio_end_args, choose_encoder, concat_args, concat_list, desktop_rect, parse_media_info, resolve_plan, segment_args, startup_fallback, CapturePlan, EncoderSpec, FallbackInput, GpuPath,
+    GpuSupport, StartupFallback,
+};
 use crate::audio::{AudioSourceSpec, Opener};
 use crate::audiopipe::{AudioPipe, LogFn};
 use crate::format::js_round;
 use crate::paths::{now_ms, timestamp, unique_path};
 use crate::process::{command, last_lines, read_lines, run};
 use crate::types::{CaptureMethod, LogEntry, LogLevel, MethodPreference, MonitorInfo, RecordConfig, RecorderState, RecorderStatus, RecordingResult, Rect, SourceConfig};
-use crate::{Error, Result};
+use crate::{tr, trf, Error, Result};
 use regex::Regex;
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::future::Future;
 use std::path::{Path, PathBuf};
@@ -45,6 +49,12 @@ pub trait RecorderDeps: Send + Sync + 'static {
     fn monitors(&self) -> Vec<MonitorInfo>;
     /// ddagrab 是否可用（濾鏡存在且實測沒失敗；上次失敗時會重新測試）
     fn ddagrab_usable(&self) -> BoxFut<'_, bool>;
+    /// 實測通過的顯示卡處理（在顯示卡上縮放、轉色彩）
+    fn gpu_convert(&self) -> Option<GpuSupport> {
+        None
+    }
+    /// 顯示卡處理在錄影時失敗：這次執行期間不再使用
+    fn gpu_convert_failed(&self) {}
     /// 倒數結束、開始擷取前（縮小擋到擷取範圍的操作視窗等）；area 為擷取範圍（虛擬桌面的實體像素座標）
     fn before_capture(&self, _area: Rect) -> BoxFut<'_, ()> {
         Box::pin(async {})
@@ -55,6 +65,10 @@ pub trait RecorderDeps: Send + Sync + 'static {
     }
     /// 錄影結束（已儲存或失敗）後（還原操作視窗等）
     fn after_stop(&self) {}
+    /// 錄影存好了（錄完自動處理）
+    fn saved(&self, _path: &str) {}
+    /// 存好的錄影裡的標記（影片的秒數）
+    fn save_markers(&self, _output: &str, _marks: &Marks) {}
     /// 需要使用者注意的事（系統匣通知）
     fn notify(&self, _title: &str, _text: &str, _warn: bool) {}
     /// 開啟音訊擷取來源（Windows 上是 WASAPI）
@@ -154,6 +168,10 @@ struct Countdown {
 #[derive(Default)]
 struct St {
     state: RecorderState,
+    /// 標記（已錄的毫秒數，也就是影片裡的時間）
+    markers: Vec<u64>,
+    /// 滑鼠點擊：(已錄的毫秒數, 在擷取範圍內的位置 0～1)
+    clicks: Vec<(u64, f32, f32)>,
     busy: Option<String>,
     config: Option<RecordConfig>,
     plan: Option<CapturePlan>,
@@ -173,6 +191,8 @@ struct St {
     enc: Option<EncoderSpec>,
     cpu_encoder: Option<EncoderSpec>,
     gpu_available: bool,
+    /// 在顯示卡上縮放、轉色彩（失敗時清掉，改回 CPU 轉換）
+    gpu: Option<GpuPath>,
     audio_desc: Option<String>,
     slow_since: Option<u64>,
     slow_warned: bool,
@@ -230,7 +250,47 @@ impl St {
     }
 }
 
-fn cleanup_parts(parts_dir: Option<&Path>) {
+/// 把分段接成一支影片（concat，不重新壓縮）。有錄聲音時每個分段在聲音結尾截斷（見 concat_list），
+/// 聲音與畫面一起結束、分段之間也不留無聲的空隙。chapters：寫進影片的章節（錄影時加的標記）。
+/// 成功時回傳成品的長度（秒，讀不到時 None），失敗時回傳原因
+pub(crate) async fn merge_segments(ffmpeg: &Path, files: &[String], parts_dir: &Path, out: &Path, has_audio: bool, chapters: Option<String>) -> std::result::Result<Option<f64>, String> {
+    let mut outpoints = Vec::new();
+    if has_audio {
+        let mut tasks = Vec::new();
+        for f in files {
+            let (ffmpeg, args) = (ffmpeg.to_path_buf(), audio_end_args(f));
+            tasks.push(tokio::spawn(async move {
+                let r = run(&ffmpeg, &args, Duration::from_secs(60)).await;
+                let us = OUT_TIME_RE.captures_iter(&r.stdout).last().and_then(|c| c[1].parse::<f64>().ok());
+                us.filter(|us| r.code == 0 && *us > 0.0).map(|us| us / 1e6)
+            }));
+        }
+        for t in tasks {
+            outpoints.push(t.await.ok().flatten());
+        }
+    }
+    let list_file = parts_dir.join("concat.txt");
+    std::fs::write(&list_file, concat_list(files, &outpoints)).map_err(|e| e.to_string())?;
+    let out_str = out.display().to_string();
+    let meta = match chapters {
+        Some(c) => {
+            let f = parts_dir.join("chapters.txt");
+            std::fs::write(&f, c).map_err(|e| e.to_string())?;
+            Some(f.display().to_string())
+        }
+        None => None,
+    };
+    let r = run(ffmpeg, &concat_args(&list_file.display().to_string(), &out_str, meta.as_deref()), Duration::from_secs(30 * 60)).await;
+    if r.code != 0 || !out.exists() {
+        let tail = last_lines(&r.stderr, 3);
+        return Err(if tail.is_empty() { trf!("結束代碼 {}", "exit code {}", r.code) } else { tail });
+    }
+    // 只讀成品的檔頭取得實際長度（毫秒級），不再整檔重讀一遍：長時間錄影停止時省下一半的等待
+    let head = run(ffmpeg, &["-hide_banner", "-i", &out_str], Duration::from_secs(15)).await;
+    Ok(parse_media_info(&head.stderr).duration_sec)
+}
+
+pub(crate) fn cleanup_parts(parts_dir: Option<&Path>) {
     let Some(dir) = parts_dir else { return };
     let _ = std::fs::remove_dir_all(dir);
     // 只有空資料夾才刪得掉（.parts 內還有其他合併失敗而保留的分段時屬正常）
@@ -252,6 +312,42 @@ struct Inner {
     st: Mutex<St>,
     /// 公開操作依序執行
     queue: tokio::sync::Mutex<()>,
+}
+
+/// 螢幕上的錄影範圍外框與控制列要顯示的內容
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FrameInfo {
+    /// 擷取範圍（虛擬桌面的實體像素座標）
+    pub area: Rect,
+    pub state: RecorderState,
+    pub recorded_ms: u64,
+    /// 倒數中：剩下的毫秒數
+    pub countdown_ms: Option<u64>,
+    /// 加了幾個標記
+    pub markers: u32,
+    /// 錄整個螢幕（不是自訂範圍）：不顯示外框，控制列放在螢幕上方中間、不能拖曳
+    pub full: bool,
+}
+
+/// 錄影時記下的時間點：標記與滑鼠點擊（存在 markers/，剪輯時用）
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Marks {
+    /// 標記（影片的秒數）
+    #[serde(default)]
+    pub markers: Vec<f64>,
+    /// 滑鼠點擊：[影片的秒數, x, y]（x、y 是在畫面裡的位置 0～1）
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub clicks: Vec<[f64; 3]>,
+}
+
+/// 錄影時要在畫面上顯示點擊 / 按鍵用的資訊
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct OverlayInfo {
+    /// 擷取範圍（虛擬桌面的實體像素座標）
+    pub area: Rect,
+    pub show_clicks: bool,
+    pub show_keys: bool,
+    pub cursor_halo: bool,
 }
 
 #[derive(Clone)]
@@ -281,12 +377,19 @@ impl Recorder {
 
     /// 開始錄影。有倒數時，進入倒數就先回覆（介面與系統匣以狀態顯示倒數，期間可取消）；
     /// 倒數之後才發生的錯誤會寫進事件紀錄並以系統匣通知。
-    pub fn start(&self, config: RecordConfig) -> BoxFut<'static, Result<()>> {
+    pub fn start(&self, mut config: RecordConfig) -> BoxFut<'static, Result<()>> {
+        // 只錄某個視窗：用視窗現在的位置與大小（選了之後可能動過）；視窗已關閉就照原本的範圍
+        if let (Some(id), SourceConfig::Region { .. }) = (config.follow_window, &config.source) {
+            match crate::winui::window_bounds(id) {
+                Some(b) => config.source = SourceConfig::Region { x: b.x as f64, y: b.y as f64, width: (b.width & !1) as f64, height: (b.height & !1) as f64 },
+                None => config.follow_window = None,
+            }
+        }
         {
             let mut st = self.lock();
-            // 連按兩次（例如快捷鍵）不要排出第二個開始：否則取消第一個後，第二個仍會倒數並錄影
+            // 連按兩次（例如快速鍵）不要排出第二個開始：否則取消第一個後，第二個仍會倒數並錄影
             if st.starting_now || st.state != RecorderState::Idle {
-                return Box::pin(async { Err(Error::config("目前已在錄影或正在準備開始")) });
+                return Box::pin(async { Err(Error::config(tr!("目前已在錄影或正在準備開始", "Already recording or getting ready to start"))) });
             }
             st.starting_now = true;
             st.cancel_requested = false;
@@ -303,7 +406,7 @@ impl Recorder {
             me.lock().starting_now = false;
             if let Err(e) = &r {
                 if began.is_none() {
-                    me.deps().notify("無法開始錄影", e.message(), true);
+                    me.deps().notify(tr!("無法開始錄影", "Couldn't start recording"), e.message(), true);
                 }
             }
             let _ = done_tx.send(r);
@@ -328,6 +431,77 @@ impl Recorder {
     pub async fn resume(&self) -> Result<()> {
         let _q = self.0.queue.lock().await;
         self.do_resume()
+    }
+
+    /// 移動自訂範圍（大小不變，限制在桌面內），回傳移動後的範圍。
+    /// 倒數或暫停中直接換位置；錄影中結束目前的分段，從新位置開新分段（中間約 0.5～1 秒沒錄到，停止時一樣合併成一個檔案）
+    pub async fn move_region(&self, x: i32, y: i32) -> Result<Rect> {
+        // 倒數期間 start 佔著佇列：不排隊，直接換（還沒有分段在錄）
+        if self.lock().state != RecorderState::Countdown {
+            let _q = self.0.queue.lock().await;
+            return self.do_move(x, y).await;
+        }
+        self.do_move(x, y).await
+    }
+
+    async fn do_move(&self, x: i32, y: i32) -> Result<Rect> {
+        let monitors = self.deps().monitors();
+        let (plan, config, recording) = {
+            let st = self.lock();
+            let recording = match st.state {
+                RecorderState::Recording => true,
+                RecorderState::Countdown | RecorderState::Paused => false,
+                _ => return Err(Error::config(tr!("目前沒有在錄影", "Not recording"))),
+            };
+            let (Some(cfg), Some(old)) = (st.config.as_ref(), st.plan.as_ref()) else {
+                return Err(Error::config(tr!("目前沒有在錄影", "Not recording")));
+            };
+            if !matches!(cfg.source, SourceConfig::Region { .. }) {
+                return Err(Error::config(tr!("只有自訂範圍可以移動", "Only a custom area can be moved")));
+            }
+            let r = old.rect;
+            let dk = desktop_rect(&monitors);
+            let (nx, ny) = if dk.width > 0 { (x.clamp(dk.x, (dk.x + dk.width - r.width).max(dk.x)), y.clamp(dk.y, (dk.y + dk.height - r.height).max(dk.y))) } else { (x, y) };
+            if (nx, ny) == (r.x, r.y) {
+                return Ok(r);
+            }
+            let config = RecordConfig { source: SourceConfig::Region { x: nx as f64, y: ny as f64, width: r.width as f64, height: r.height as f64 }, ..cfg.clone() };
+            let plan = resolve_plan(&config, &monitors)?;
+            if st.method == Some(CaptureMethod::Ddagrab) && plan.dda.is_none() {
+                return Err(Error::config(tr!("新位置跨到不同顯示卡上的螢幕，這次錄影無法移過去", "The new position spans screens on different graphics cards, so this recording can't move there")));
+            }
+            (plan, config, recording)
+        };
+        let rect = plan.rect;
+        if recording {
+            {
+                let mut st = self.lock();
+                st.close_span();
+                st.state = RecorderState::Paused;
+                st.busy = Some(tr!("正在移動範圍…", "Moving area…").into());
+            }
+            self.stop_current().await;
+        }
+        {
+            let mut st = self.lock();
+            st.plan = Some(plan);
+            st.config = Some(config);
+            st.add_log(LogLevel::Info, &trf!("錄影範圍移到 ({}, {})", "Capture area moved to ({}, {})", rect.x, rect.y));
+            if !recording {
+                return Ok(rect);
+            }
+            st.busy = None;
+            // 移動的期間按了停止：不再開新分段
+            if st.state != RecorderState::Paused {
+                return Ok(rect);
+            }
+            st.state = RecorderState::Recording;
+            st.span_start = Some(now_ms());
+        }
+        if !self.try_start_segment() {
+            return Err(Error::config(tr!("無法在新位置繼續錄影，已停止並儲存先前錄到的部分", "Couldn't continue recording at the new position. Stopped and saved what was recorded so far")));
+        }
+        Ok(rect)
     }
 
     /// 停止並儲存。開始的過程中（準備、倒數、縮小視窗）直接取消：start 還在佇列裡，不能排在它後面
@@ -362,6 +536,11 @@ impl Recorder {
     }
 
     /// 錄影中（含儲存中）要寫入的成品路徑：不能改名或刪除
+    /// 正在錄影的分段資料夾（救回中斷的錄影時不能動它）
+    pub fn parts_dir(&self) -> Option<PathBuf> {
+        self.lock().parts_dir.clone()
+    }
+
     pub fn output_path(&self) -> Option<PathBuf> {
         let st = self.lock();
         if st.state != RecorderState::Idle {
@@ -371,7 +550,88 @@ impl Recorder {
         }
     }
 
-    /// 正在準備開始（狀態可能仍是待命）；快捷鍵用來判斷再按一次是「取消」
+    /// 錄自訂範圍時，螢幕上的外框與控制列要顯示的內容（倒數、錄影、暫停期間；其他時候 None）
+    pub fn frame_info(&self) -> Option<FrameInfo> {
+        let st = self.lock();
+        if !matches!(st.state, RecorderState::Countdown | RecorderState::Recording | RecorderState::Paused) {
+            return None;
+        }
+        // 只錄聲音：沒有範圍，只在螢幕上方顯示小控制列
+        let c = st.config.as_ref()?;
+        let full = c.audio_only || !matches!(c.source, SourceConfig::Region { .. });
+        let countdown_ms = if st.state == RecorderState::Countdown { st.countdown.as_ref().map(|c| c.ends_at.saturating_sub(now_ms())) } else { None };
+        Some(FrameInfo { area: st.plan.as_ref()?.rect, state: st.state, recorded_ms: st.recorded_ms(), countdown_ms, markers: st.markers.len() as u32, full })
+    }
+
+    /// 攝影機小視窗：倒數、錄影、暫停中，而且選了攝影機（只錄聲音時沒有）
+    pub fn camera_info(&self) -> Option<crate::camera_bubble::BubbleInfo> {
+        let st = self.lock();
+        if !matches!(st.state, RecorderState::Countdown | RecorderState::Recording | RecorderState::Paused) {
+            return None;
+        }
+        let c = st.config.as_ref().filter(|c| !c.audio_only)?;
+        let camera = c.camera.clone().filter(|cam| !cam.device.trim().is_empty())?;
+        let plan = st.plan.as_ref()?;
+        Some(crate::camera_bubble::BubbleInfo { area: plan.rect, monitors: plan.monitors.clone(), camera })
+    }
+
+    /// 其他部分（攝影機小視窗等）的警告寫進這次錄影的事件紀錄
+    pub fn log_warn(&self, text: &str) {
+        self.add_log(LogLevel::Warn, text);
+    }
+
+    /// 錄影中或暫停中（不含倒數）：擷取範圍與要不要顯示點擊、按鍵
+    pub fn overlay_info(&self) -> Option<OverlayInfo> {
+        let st = self.lock();
+        if !matches!(st.state, RecorderState::Recording | RecorderState::Paused) {
+            return None;
+        }
+        let c = st.config.as_ref().filter(|c| !c.audio_only)?;
+        Some(OverlayInfo { area: st.plan.as_ref()?.rect, show_clicks: c.show_clicks, show_keys: c.show_keys, cursor_halo: c.cursor_halo })
+    }
+
+    /// 「只錄這個視窗」：(視窗代碼, 目前的擷取範圍)；倒數、錄影、暫停中才有
+    pub fn follow_info(&self) -> Option<(i64, Rect)> {
+        let st = self.lock();
+        if !matches!(st.state, RecorderState::Countdown | RecorderState::Recording | RecorderState::Paused) || st.busy.is_some() {
+            return None;
+        }
+        Some((st.config.as_ref()?.follow_window?, st.plan.as_ref()?.rect))
+    }
+
+    /// 記下一次滑鼠點擊（桌面的實體像素座標）；範圍外、暫停中不記
+    pub fn add_click(&self, x: i32, y: i32) {
+        let mut st = self.lock();
+        if st.state != RecorderState::Recording || st.clicks.len() >= 20_000 || st.config.as_ref().is_some_and(|c| c.audio_only) {
+            return;
+        }
+        let Some(r) = st.plan.as_ref().map(|p| p.rect) else { return };
+        if x < r.x || y < r.y || x >= r.x + r.width || y >= r.y + r.height || r.width <= 0 || r.height <= 0 {
+            return;
+        }
+        let t = st.recorded_ms();
+        let (fx, fy) = ((x - r.x) as f32 / r.width as f32, (y - r.y) as f32 / r.height as f32);
+        st.clicks.push((t, fx, fy));
+    }
+
+    /// 錄影中加標記（記下目前錄到的時間，剪輯時可以直接跳過去）；回傳這是第幾個標記
+    pub fn add_marker(&self) -> Result<usize> {
+        let mut st = self.lock();
+        if !matches!(st.state, RecorderState::Recording | RecorderState::Paused) {
+            return Err(Error::config(tr!("錄影中才能加標記", "Markers can only be added while recording")));
+        }
+        let t = st.recorded_ms();
+        // 連按兩次（半秒內）只算一個
+        if st.markers.last().is_some_and(|m| t.saturating_sub(*m) < 500) {
+            return Ok(st.markers.len());
+        }
+        st.markers.push(t);
+        let n = st.markers.len();
+        st.add_log(LogLevel::Info, &trf!("標記 {n}（{}）", "Marker {n} ({})", crate::format::video_clock(t as f64 / 1000.0)));
+        Ok(n)
+    }
+
+    /// 正在準備開始（狀態可能仍是待命）；快速鍵用來判斷再按一次是「取消」
     pub fn starting(&self) -> bool {
         self.lock().starting_now
     }
@@ -388,7 +648,7 @@ impl Recorder {
             let cur_running = cur.is_some_and(|c| c.running);
             let mut busy = st.busy.clone();
             if busy.is_none() && recording && cur_running && cur.is_some_and(|c| c.frames == 0) && st.retry.is_none() {
-                busy = Some("正在啟動擷取…".into());
+                busy = Some(tr!("正在啟動擷取…", "Starting capture…").into());
             }
             let counting = st.state == RecorderState::Countdown;
             let status = RecorderStatus {
@@ -414,6 +674,7 @@ impl Recorder {
                 countdown_ms: if counting { st.countdown.as_ref().map(|c| c.ends_at.saturating_sub(now)) } else { None },
                 countdown_covers_ui: None,
                 disk_free_bytes: if st.state == RecorderState::Idle { None } else { st.disk_free_bytes },
+                markers: st.markers.len() as u32,
                 result: st.result.clone(),
                 log: st.log.clone(),
             };
@@ -446,7 +707,7 @@ impl Recorder {
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
             if me.active() {
-                let _ = me.stop(Some("程式結束".into())).await;
+                let _ = me.stop(Some(tr!("程式結束", "App is closing").into())).await;
             }
         })
     }
@@ -464,7 +725,7 @@ impl Recorder {
             st.countdown = None;
             st.state = RecorderState::Idle;
             cleanup_parts(st.parts_dir.as_deref());
-            st.add_log(LogLevel::Info, "已取消，沒有開始錄影");
+            st.add_log(LogLevel::Info, tr!("已取消，沒有開始錄影", "Canceled, recording not started"));
         }
         if restore_window {
             self.deps().after_stop();
@@ -477,26 +738,49 @@ impl Recorder {
         st.cancel_requested || st.shutting_down
     }
 
-    async fn do_start(&self, config: RecordConfig, began: &mut Option<oneshot::Sender<()>>) -> Result<()> {
+    async fn do_start(&self, mut config: RecordConfig, began: &mut Option<oneshot::Sender<()>>) -> Result<()> {
         if self.lock().state != RecorderState::Idle {
-            return Err(Error::config("目前已在錄影中"));
+            return Err(Error::config(tr!("目前已在錄影中", "Already recording")));
         }
         let deps = self.0.deps.clone();
         if deps.ffmpeg_path().is_none() {
-            return Err(Error::config("找不到 ffmpeg.exe，請先依畫面指示下載"));
+            return Err(Error::config(tr!("找不到 ffmpeg.exe，請先依畫面指示下載", "ffmpeg.exe not found. Download it first by following the on-screen instructions")));
         }
-        let plan = resolve_plan(&config, &deps.monitors())?;
+        if config.audio_only {
+            if !config.audio.system && !config.audio.mic {
+                return Err(Error::config(tr!("只錄聲音時，請至少打開「系統聲音」或「麥克風」", "For audio-only recording, turn on “System audio” or “Microphone”")));
+            }
+            // 畫面是一張卡片：螢幕相關的設定都用不到，也不用縮小操作視窗
+            config = RecordConfig {
+                fps: crate::audio_card::FPS,
+                scale: 100.0,
+                draw_mouse: false,
+                hide_ui: Some(false),
+                show_clicks: false,
+                show_keys: false,
+                cursor_halo: false,
+                hide_icons: false,
+                follow_window: None,
+                camera: None,
+                ..config
+            };
+        }
+        let mut plan = resolve_plan(&config, &deps.monitors())?;
         let encoders = deps.encoders().await;
         let enc_pref = config.encoder.unwrap_or_default();
         let (enc, reason) = choose_encoder(enc_pref, plan.out_width, plan.out_height, config.fps, encoders.cpu, &encoders.gpu, deps.prefer_gpu())?;
         let method = match config.method {
+            _ if config.audio_only => CaptureMethod::Gdigrab,
             MethodPreference::Gdigrab => CaptureMethod::Gdigrab,
             MethodPreference::Ddagrab => {
                 if plan.dda.is_none() {
-                    return Err(Error::config("此範圍涵蓋不同顯示卡上的螢幕，ddagrab 無法擷取，請改用 gdigrab 或自動"));
+                    return Err(Error::config(tr!(
+                        "此範圍涵蓋不同顯示卡上的螢幕，ddagrab 無法擷取，請改用 gdigrab 或自動",
+                        "This area spans screens on different graphics cards, which ddagrab can't capture. Switch to gdigrab or Auto"
+                    )));
                 }
                 if !deps.ddagrab_usable().await {
-                    return Err(Error::config("這台電腦無法使用 ddagrab，請改用 gdigrab 或自動"));
+                    return Err(Error::config(tr!("這台電腦無法使用 ddagrab，請改用 gdigrab 或自動", "ddagrab isn't available on this computer. Switch to gdigrab or Auto")));
                 }
                 CaptureMethod::Ddagrab
             }
@@ -511,14 +795,22 @@ impl Recorder {
 
         let stamp = timestamp();
         let output_dir = config.output_dir.trim().to_string();
-        std::fs::create_dir_all(&output_dir).map_err(|e| Error::config(format!("無法建立儲存資料夾：{e}")))?;
+        std::fs::create_dir_all(&output_dir).map_err(|e| Error::config(trf!("無法建立儲存資料夾：{e}", "Couldn't create the save folder: {e}")))?;
         let free = disk_free(&output_dir).await;
         if let Some(f) = free.filter(|f| *f < DISK_MIN_START) {
-            return Err(Error::config(format!("儲存位置剩餘空間只有 {}，請清出空間或改存到其他磁碟", gb(f))));
+            return Err(Error::config(trf!("儲存位置剩餘空間只有 {}，請清出空間或改存到其他磁碟", "Only {} free at the save location. Free up space or save to another drive", gb(f))));
         }
         let parts_dir = Path::new(&output_dir).join(".parts").join(&stamp);
         std::fs::create_dir_all(&parts_dir)?;
-        let final_path = unique_path(Path::new(&output_dir), &format!("Rec_{stamp}"), ".mp4");
+        if config.audio_only {
+            // 卡片放在分段資料夾裡（意外中斷續錄時還要用，合併完一起刪掉）
+            let card = parts_dir.join("card.png");
+            let when = chrono::Local::now().format("%Y-%m-%d %H:%M").to_string();
+            crate::audio_card::render(&when).and_then(|pm| pm.save_png(&card).ok()).ok_or_else(|| Error::config(tr!("無法建立錄音的畫面", "Couldn't create the image for the audio recording")))?;
+            plan.card = Some(card.display().to_string());
+        }
+        let prefix = if config.audio_only { "錄音" } else { "Rec" };
+        let final_path = unique_path(Path::new(&output_dir), &format!("{prefix}_{stamp}"), ".mp4");
         let mut audio_specs = Vec::new();
         if config.audio.system {
             audio_specs.push(AudioSourceSpec { loopback: true, mic_id: String::new() });
@@ -541,6 +833,7 @@ impl Recorder {
             st.enc = Some(enc);
             st.cpu_encoder = encoders.cpu;
             st.gpu_available = !encoders.gpu.is_empty();
+            st.gpu = GpuPath::choose(deps.gpu_convert(), &plan, &config, method, &enc);
             st.segments = Vec::new();
             st.current = None;
             st.accumulated_ms = 0;
@@ -552,6 +845,8 @@ impl Recorder {
             st.slow_warned = false;
             st.auto_stopping = false;
             st.log = Vec::new();
+            st.markers = Vec::new();
+            st.clicks = Vec::new();
             st.audio_specs = audio_specs;
             st.audio_desc = None;
         }
@@ -559,7 +854,7 @@ impl Recorder {
             return self.abandon(false);
         }
 
-        // 倒數：讓使用者有時間切到要錄的畫面；期間按停止（或快捷鍵）可取消
+        // 倒數：讓使用者有時間切到要錄的畫面；期間按停止（或快速鍵）可取消
         if countdown_sec > 0 {
             let (tx, rx) = oneshot::channel::<()>();
             {
@@ -578,9 +873,15 @@ impl Recorder {
                 return self.abandon(false);
             }
         }
+        // 倒數中可能移動了範圍（螢幕上的控制列）
+        let plan = self.lock().plan.clone().unwrap_or(plan);
         // 縮小視窗的那 0.35 秒仍算倒數（countdown 保留到這之後），期間取消也有效
         if hide_ui {
             deps.before_capture(plan.rect).await;
+        }
+        // 錄影時隱藏桌面圖示（停止後由 after_stop 還原）
+        if self.lock().config.as_ref().is_some_and(|c| c.hide_icons) {
+            crate::winui::set_desktop_icons(false);
         }
         if self.canceled() {
             return self.abandon(hide_ui);
@@ -591,23 +892,38 @@ impl Recorder {
             st.countdown = None;
             let (width, height) = (plan.rect.width, plan.rect.height);
             let place = match &config.source {
-                SourceConfig::Monitor { .. } => format!("螢幕 {}", plan.monitors.first().map(|m| m.display_number.to_string()).unwrap_or_else(|| "?".into())),
-                SourceConfig::All => format!("所有螢幕（{} 個）", plan.monitors.len()),
-                SourceConfig::Region { .. } => format!("範圍 ({}, {})", plan.rect.x, plan.rect.y),
+                _ if config.audio_only => tr!("只錄聲音", "Audio only").to_string(),
+                SourceConfig::Monitor { .. } => trf!("螢幕 {}", "Screen {}", plan.monitors.first().map(|m| m.display_number.to_string()).unwrap_or_else(|| "?".into())),
+                SourceConfig::All => trf!("所有螢幕（{} 個）", "All screens ({})", plan.monitors.len()),
+                SourceConfig::Region { .. } => trf!("範圍 ({}, {})", "Area ({}, {})", plan.rect.x, plan.rect.y),
             };
             let tiles = match &plan.dda {
-                Some(d) if method == CaptureMethod::Ddagrab && d.tiles.len() > 1 => format!(" ×{} 合成", d.tiles.len()),
+                Some(d) if method == CaptureMethod::Ddagrab && d.tiles.len() > 1 => trf!(" ×{} 合成", " ×{} tiles", d.tiles.len()),
                 _ => String::new(),
             };
             st.add_log(
                 LogLevel::Info,
-                &format!("開始錄影：{place} {width}×{height} → {}×{}，{} fps（{}{tiles} / {}）", plan.out_width, plan.out_height, crate::format::num(config.fps), method.as_str(), enc.name),
+                &trf!(
+                    "開始錄影：{place} {width}×{height} → {}×{}，{} fps（{}{tiles} / {}）",
+                    "Recording started: {place} {width}×{height} → {}×{}, {} fps ({}{tiles} / {})",
+                    plan.out_width,
+                    plan.out_height,
+                    crate::format::num(config.fps),
+                    method.as_str(),
+                    enc.name
+                ),
             );
             if Some(enc) != encoders.cpu {
                 st.add_log(LogLevel::Info, reason);
             }
+            if let Some(g) = st.gpu {
+                st.add_log(LogLevel::Info, &g.describe());
+            }
             if method == CaptureMethod::Gdigrab && plan.monitors.len() > 1 && plan.dda.is_none() && config.method == MethodPreference::Auto {
-                st.add_log(LogLevel::Info, "範圍涵蓋不同顯示卡上的螢幕，ddagrab 無法合成，改用 gdigrab");
+                st.add_log(
+                    LogLevel::Info,
+                    tr!("範圍涵蓋不同顯示卡上的螢幕，ddagrab 無法合成，改用 gdigrab", "The area spans screens on different graphics cards, which ddagrab can't combine; using gdigrab"),
+                );
             }
             st.state = RecorderState::Recording;
             st.span_start = Some(now_ms());
@@ -616,13 +932,13 @@ impl Recorder {
             // 例如 ffmpeg.exe 被移除 / 防毒隔離：回到待命，不留下錄影中的假狀態
             {
                 let mut st = self.lock();
-                st.add_log(LogLevel::Error, &format!("無法啟動 FFmpeg：{e}"));
+                st.add_log(LogLevel::Error, &trf!("無法啟動 FFmpeg：{e}", "Couldn't start FFmpeg: {e}"));
                 st.state = RecorderState::Idle;
                 st.span_start = None;
                 cleanup_parts(st.parts_dir.as_deref());
             }
             self.deps().after_stop(); // 已縮小的操作視窗要還原，使用者才看得到錯誤
-            return Err(Error::config(format!("無法啟動 FFmpeg：{e}")));
+            return Err(Error::config(trf!("無法啟動 FFmpeg：{e}", "Couldn't start FFmpeg: {e}")));
         }
         self.start_ticker();
         Ok(())
@@ -632,16 +948,16 @@ impl Recorder {
         {
             let mut st = self.lock();
             if st.state != RecorderState::Recording {
-                return Err(Error::config("目前不在錄影中"));
+                return Err(Error::config(tr!("目前不在錄影中", "Not recording")));
             }
             st.close_span();
             st.state = RecorderState::Paused;
-            st.busy = Some("正在結束目前分段…".into());
+            st.busy = Some(tr!("正在結束目前分段…", "Finishing the current segment…").into());
         }
         self.stop_current().await;
         let mut st = self.lock();
         st.busy = None;
-        st.add_log(LogLevel::Info, "已暫停");
+        st.add_log(LogLevel::Info, tr!("已暫停", "Paused"));
         Ok(())
     }
 
@@ -649,14 +965,14 @@ impl Recorder {
         {
             let mut st = self.lock();
             if st.state != RecorderState::Paused {
-                return Err(Error::config("目前不是暫停狀態"));
+                return Err(Error::config(tr!("目前不是暫停狀態", "Not paused")));
             }
             st.state = RecorderState::Recording;
             st.span_start = Some(now_ms());
-            st.add_log(LogLevel::Info, "繼續錄影");
+            st.add_log(LogLevel::Info, tr!("繼續錄影", "Resumed recording"));
         }
         if !self.try_start_segment() {
-            return Err(Error::config("無法繼續錄影，已停止並儲存先前錄到的部分"));
+            return Err(Error::config(tr!("無法繼續錄影，已停止並儲存先前錄到的部分", "Couldn't resume recording. Stopped and saved what was recorded so far")));
         }
         Ok(())
     }
@@ -665,17 +981,17 @@ impl Recorder {
         {
             let mut st = self.lock();
             if st.state == RecorderState::Idle {
-                return Err(Error::config("目前沒有在錄影"));
+                return Err(Error::config(tr!("目前沒有在錄影", "Not recording")));
             }
             st.close_span();
             st.state = RecorderState::Stopping;
-            st.busy = Some("正在結束錄影…".into());
+            st.busy = Some(tr!("正在結束錄影…", "Stopping recording…").into());
             if let Some(r) = &reason {
                 st.add_log(LogLevel::Info, r);
             }
         }
         self.stop_current().await;
-        self.lock().busy = Some("正在合併分段…".into());
+        self.lock().busy = Some(tr!("正在合併分段…", "Merging segments…").into());
         let result = match self.finalize().await {
             Ok(r) => r,
             Err(e) => {
@@ -686,7 +1002,7 @@ impl Recorder {
                     frames: 0,
                     video_sec: 0.0,
                     parts_dir: Some(parts.clone()),
-                    message: format!("儲存失敗：{}（已錄的分段保留於 {parts}）", e.message()),
+                    message: trf!("儲存失敗：{}（已錄的分段保留於 {parts}）", "Save failed: {} (recorded segments kept in {parts})", e.message()),
                     ..Default::default()
                 }
             }
@@ -695,11 +1011,21 @@ impl Recorder {
             let mut st = self.lock();
             st.add_log(if result.ok { LogLevel::Info } else { LogLevel::Error }, &result.message);
             st.result = Some(result.clone());
+            let marks = Marks {
+                markers: std::mem::take(&mut st.markers).into_iter().map(|m| m as f64 / 1000.0).collect(),
+                clicks: std::mem::take(&mut st.clicks).into_iter().map(|(t, x, y)| [t as f64 / 1000.0, x as f64, y as f64]).collect(),
+            };
+            if let (true, Some(p), false) = (result.ok, &result.path, marks.markers.is_empty() && marks.clicks.is_empty()) {
+                self.deps().save_markers(p, &marks);
+            }
             st.ticker = 0;
             st.busy = None;
             st.state = RecorderState::Idle;
         }
         self.deps().after_stop();
+        if let (true, Some(p)) = (result.ok, &result.path) {
+            self.deps().saved(p);
+        }
         Ok(Some(result))
     }
 
@@ -708,27 +1034,29 @@ impl Recorder {
         match self.start_segment() {
             Ok(()) => true,
             Err(e) => {
-                self.add_log(LogLevel::Error, &format!("無法啟動 FFmpeg：{e}"));
-                self.stop_later(Some("無法繼續擷取，停止錄影".into()));
+                self.add_log(LogLevel::Error, &trf!("無法啟動 FFmpeg：{e}", "Couldn't start FFmpeg: {e}"));
+                self.stop_later(Some(tr!("無法繼續擷取，停止錄影", "Couldn't continue capturing; recording stopped").into()));
                 false
             }
         }
     }
 
     fn start_segment(&self) -> std::result::Result<(), String> {
-        let (ffmpeg, plan, config, method, enc, file, specs, index) = {
+        let (ffmpeg, plan, config, method, enc, file, specs, index, gpu) = {
             let st = self.lock();
             let index = st.segments.len();
-            let parts = st.parts_dir.clone().ok_or("沒有分段資料夾")?;
+            let parts = st.parts_dir.clone().ok_or(tr!("沒有分段資料夾", "No segment folder"))?;
+            let enc = st.enc.ok_or(tr!("沒有編碼器", "No encoder"))?;
             (
-                self.deps().ffmpeg_path().ok_or("找不到 ffmpeg.exe")?,
-                st.plan.clone().ok_or("沒有擷取範圍")?,
+                self.deps().ffmpeg_path().ok_or(tr!("找不到 ffmpeg.exe", "ffmpeg.exe not found"))?,
+                st.plan.clone().ok_or(tr!("沒有擷取範圍", "No capture area"))?,
                 st.config().clone(),
                 st.method.unwrap_or(CaptureMethod::Gdigrab),
-                st.enc.ok_or("沒有編碼器")?,
+                enc,
                 parts.join(format!("seg_{index:03}.mp4")).display().to_string(),
                 st.audio_specs.clone(),
                 index,
+                st.gpu.map(|g| g.for_encoder(&enc)),
             )
         };
         // 錄聲音：每個分段各自開一組 WASAPI 擷取與 TCP 連線，時間零點對齊該分段的第一張畫面。
@@ -742,17 +1070,17 @@ impl Recorder {
                     Recorder(inner).add_log(level, &text);
                 }
             });
-            Some(Arc::new(AudioPipe::new(specs, self.deps().audio_opener(), log).map_err(|e| format!("無法建立聲音管線：{e}"))?))
+            Some(Arc::new(AudioPipe::new(specs, self.deps().audio_opener(), log).map_err(|e| trf!("無法建立聲音管線：{e}", "Couldn't set up audio capture: {e}"))?))
         };
         if let Some(a) = &audio {
             let mut st = self.lock();
             if st.audio_desc.is_none() {
                 st.audio_desc = Some(a.describe().to_string());
-                st.add_log(LogLevel::Info, &format!("錄製聲音：{}", a.describe()));
+                st.add_log(LogLevel::Info, &trf!("錄製聲音：{}", "Recording audio: {}", a.describe()));
             }
         }
         let audio_args = audio.as_ref().map(|a| a.input_args());
-        let args = segment_args(&plan, &config, method, &enc, &file, audio_args.as_deref()).map_err(|e| e.message().to_string())?;
+        let args = segment_args(&plan, &config, method, &enc, &file, audio_args.as_deref(), gpu).map_err(|e| e.message().to_string())?;
 
         let mut cmd = command(&ffmpeg);
         cmd.args(&args).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
@@ -899,7 +1227,7 @@ impl Recorder {
             seg.last_frame_at = now;
             st.ever_produced_frames = true;
             if st.retry.is_some() && st.current == Some(index) {
-                st.add_log(LogLevel::Info, "擷取已恢復");
+                st.add_log(LogLevel::Info, tr!("擷取已恢復", "Capture resumed"));
                 st.retry = None;
             }
         }
@@ -936,12 +1264,25 @@ impl Recorder {
             let since = *st.slow_since.get_or_insert(now);
             if !st.slow_warned && now - since > 3000 {
                 st.slow_warned = true;
-                st.add_log(LogLevel::Warn, &format!("電腦跟不上即時錄影：實際約 {unique:.1} fps（設定 {} fps），建議降低解析度或 FPS", crate::format::num(fps)));
+                st.add_log(
+                    LogLevel::Warn,
+                    &trf!(
+                        "電腦跟不上即時錄影：實際約 {unique:.1} fps（設定 {} fps），建議降低解析度或 FPS",
+                        "The computer can't keep up with real-time recording: about {unique:.1} fps (set to {} fps). Try a lower resolution or FPS",
+                        crate::format::num(fps)
+                    ),
+                );
                 // 寫入速度不足代表處理鏈（下載畫面、縮放、編碼）跟不上；擷取跟不上則是 dup 增加。
                 // 改用 GPU 編碼可減輕 CPU 負擔，「自動」模式記下來，之後的錄影改用 GPU 編碼
                 // （同一段錄影不中途切換，不同編碼器的分段無法無損合併；可在介面上重設）
                 if auto && written < fps * 0.9 && st.enc == st.cpu_encoder && st.gpu_available && !self.deps().prefer_gpu() {
-                    st.add_log(LogLevel::Warn, "電腦處理不及，之後的錄影會自動改用 GPU 編碼以減輕 CPU 負擔（可在「更多 → 編碼器」重設）");
+                    st.add_log(
+                        LogLevel::Warn,
+                        tr!(
+                            "電腦處理不及，之後的錄影會自動改用 GPU 編碼以減輕 CPU 負擔（可在「設定 → 進階 → 編碼器」重設）",
+                            "The computer can't keep up. Future recordings will use GPU encoding to reduce CPU load (you can change this in Settings → Advanced → Encoder)"
+                        ),
+                    );
                     return true;
                 }
             }
@@ -953,6 +1294,8 @@ impl Recorder {
 
     fn on_exit(&self, index: usize, code: i32) {
         let mut close_audio = None;
+        // 通知等放開鎖之後再送（通知會用到系統匣的鎖，持有錄影器的鎖時呼叫可能互相等）
+        let mut gpu_failed = false;
         let action = {
             let mut guard = self.lock();
             let st = &mut *guard;
@@ -965,7 +1308,7 @@ impl Recorder {
                 ExitAction::None
             } else {
                 let tail = last_lines(&seg.stderr, 2);
-                let detail = if tail.is_empty() { format!("結束代碼 {code}") } else { tail };
+                let detail = if tail.is_empty() { trf!("結束代碼 {code}", "exit code {code}") } else { tail };
                 let seg_method = seg.method;
                 let method_auto = st.config().method == MethodPreference::Auto;
                 if !st.ever_produced_frames {
@@ -976,22 +1319,30 @@ impl Recorder {
                         has_cpu_encoder: st.cpu_encoder.is_some(),
                         ddagrab_in_use: seg_method == CaptureMethod::Ddagrab,
                         method_auto,
+                        gpu_convert_in_use: seg_method == CaptureMethod::Ddagrab && st.gpu.zip(st.plan.as_ref()).is_some_and(|(g, p)| g.applies(p, st.config())),
                     });
                     match next {
+                        // 顯示卡處理失敗（驅動不支援等）：改回 CPU 轉換再試，這次執行期間之後的錄影也不再用
+                        StartupFallback::CpuConvert => {
+                            st.add_log(LogLevel::Warn, &trf!("顯示卡處理畫面失敗（{detail}），改用 CPU 轉換", "GPU processing failed ({detail}); using CPU conversion"));
+                            st.gpu = None;
+                            gpu_failed = true;
+                            ExitAction::Start
+                        }
                         // GPU 編碼器一開始就失敗（驅動問題等）：「自動」模式退回 CPU 編碼再試
                         StartupFallback::CpuEncoder => {
                             let name = st.enc.map(|e| e.name).unwrap_or("");
-                            st.add_log(LogLevel::Warn, &format!("GPU 編碼器 {name} 無法使用（{detail}），改用 CPU 編碼"));
+                            st.add_log(LogLevel::Warn, &trf!("GPU 編碼器 {name} 無法使用（{detail}），改用 CPU 編碼", "GPU encoder {name} isn't working ({detail}); using CPU encoding"));
                             st.enc = st.cpu_encoder;
                             ExitAction::Start
                         }
                         StartupFallback::Gdigrab => {
-                            st.add_log(LogLevel::Warn, &format!("ddagrab 無法擷取（{detail}），改用 gdigrab"));
+                            st.add_log(LogLevel::Warn, &trf!("ddagrab 無法擷取（{detail}），改用 gdigrab", "ddagrab couldn't capture ({detail}); using gdigrab"));
                             st.method = Some(CaptureMethod::Gdigrab);
                             ExitAction::Start
                         }
                         StartupFallback::Fatal => {
-                            st.add_log(LogLevel::Error, &format!("無法開始擷取：{detail}"));
+                            st.add_log(LogLevel::Error, &trf!("無法開始擷取：{detail}", "Couldn't start capturing: {detail}"));
                             ExitAction::Stop
                         }
                     }
@@ -1001,20 +1352,29 @@ impl Recorder {
                     if attempt > MAX_RETRIES {
                         // 長時間無法恢復（螢幕被拔掉、磁碟已滿…）：ddagrab 先換 gdigrab 再試一輪，否則停止並合併已錄的部分
                         if seg_method == CaptureMethod::Ddagrab && method_auto {
-                            st.add_log(LogLevel::Warn, &format!("ddagrab 連續 {MAX_RETRIES} 次無法擷取（{detail}），改用 gdigrab"));
+                            st.add_log(
+                                LogLevel::Warn,
+                                &trf!("ddagrab 連續 {MAX_RETRIES} 次無法擷取（{detail}），改用 gdigrab", "ddagrab failed to capture {MAX_RETRIES} times in a row ({detail}); switching to gdigrab"),
+                            );
                             st.method = Some(CaptureMethod::Gdigrab);
                             let token = st.next_seq();
-                            st.retry = Some(Retry { attempt: 0, message: "改用 gdigrab 重試".into(), token });
+                            st.retry = Some(Retry { attempt: 0, message: tr!("改用 gdigrab 重試", "Retrying with gdigrab").into(), token });
                             ExitAction::Start
                         } else {
-                            st.add_log(LogLevel::Error, &format!("連續 {MAX_RETRIES} 次無法恢復擷取（{detail}），停止錄影並儲存已錄的部分"));
+                            st.add_log(
+                                LogLevel::Error,
+                                &trf!(
+                                    "連續 {MAX_RETRIES} 次無法恢復擷取（{detail}），停止錄影並儲存已錄的部分",
+                                    "Couldn't resume capturing after {MAX_RETRIES} tries ({detail}). Stopping and saving what was recorded"
+                                ),
+                            );
                             st.retry = None;
                             ExitAction::Stop
                         }
                     } else {
                         let delay = (1000u64 << (attempt - 1)).min(10_000);
-                        let message = format!("擷取中斷，{} 秒後重試（第 {attempt} 次）", js_round(delay as f64 / 1000.0));
-                        st.add_log(LogLevel::Warn, &format!("FFmpeg 意外結束：{detail}；{message}"));
+                        let message = trf!("擷取中斷，{} 秒後重試（第 {attempt} 次）", "Capture interrupted, retrying in {} s (attempt {attempt})", js_round(delay as f64 / 1000.0));
+                        st.add_log(LogLevel::Warn, &trf!("FFmpeg 意外結束：{detail}；{message}", "FFmpeg exited unexpectedly: {detail}; {message}"));
                         let token = st.next_seq();
                         st.retry = Some(Retry { attempt, message, token });
                         ExitAction::RetryLater { delay, token, attempt }
@@ -1024,6 +1384,9 @@ impl Recorder {
         };
         if let Some(a) = close_audio {
             a.close();
+        }
+        if gpu_failed {
+            self.deps().gpu_convert_failed();
         }
         match action {
             ExitAction::None => {}
@@ -1043,7 +1406,7 @@ impl Recorder {
                             return;
                         }
                         if let Some(r) = st.retry.as_mut() {
-                            r.message = format!("擷取中斷，正在重試（第 {attempt} 次）");
+                            r.message = trf!("擷取中斷，正在重試（第 {attempt} 次）", "Capture interrupted, retrying (attempt {attempt})");
                         }
                     }
                     me.try_start_segment();
@@ -1072,7 +1435,7 @@ impl Recorder {
         // 提早送 EOF 會讓每個分段結尾少一截聲音
         let exited_in_time = tokio::time::timeout(STOP_TIMEOUT, exited.wait_for(|v| *v)).await.is_ok();
         if !exited_in_time {
-            self.add_log(LogLevel::Warn, &format!("FFmpeg 未在 {} 秒內結束，已強制終止", STOP_TIMEOUT.as_secs()));
+            self.add_log(LogLevel::Warn, &trf!("FFmpeg 未在 {} 秒內結束，已強制終止", "FFmpeg didn't exit within {} s and was force-stopped", STOP_TIMEOUT.as_secs()));
             let _ = ctl.send(SegCmd::Kill);
             let _ = exited.wait_for(|v| *v).await;
         }
@@ -1120,7 +1483,10 @@ impl Recorder {
                 // 電腦睡眠後恢復：睡著的時間不算錄影長度（否則會誤觸最長錄影時間）；
                 // 重開分段，避免 FFmpeg 用重複畫面補滿這段空白
                 st.span_start = st.span_start.map(|s| s + gap);
-                st.add_log(LogLevel::Warn, &format!("電腦約 {} 秒沒有運作（睡眠 / 休眠），重新開始擷取", js_round(gap as f64 / 1000.0)));
+                st.add_log(
+                    LogLevel::Warn,
+                    &trf!("電腦約 {} 秒沒有運作（睡眠 / 休眠），重新開始擷取", "The computer was inactive for about {} s (sleep / hibernate); restarting capture", js_round(gap as f64 / 1000.0)),
+                );
                 if let Some(seg) = st.current.map(|i| &mut st.segments[i]) {
                     if seg.running && !seg.stop_requested {
                         seg.last_frame_at = now;
@@ -1132,7 +1498,7 @@ impl Recorder {
             let max_ms = (st.config().max_minutes * 60_000.0).max(0.0) as u64;
             if max_ms > 0 && st.recorded_ms() >= max_ms && !st.auto_stopping {
                 st.auto_stopping = true;
-                stop_reason = Some("已達最長錄影時間，自動停止".to_string());
+                stop_reason = Some(tr!("已達最長錄影時間，自動停止", "Maximum recording length reached; stopped automatically").to_string());
             } else {
                 if now.saturating_sub(st.disk_checked_at) > DISK_CHECK_MS {
                     st.disk_checked_at = now;
@@ -1140,7 +1506,7 @@ impl Recorder {
                 }
                 let stalled = st.current.map(|i| &st.segments[i]).is_some_and(|s| s.running && !s.stop_requested && now.saturating_sub(s.last_frame_at) > STALL_MS);
                 if stalled {
-                    st.add_log(LogLevel::Warn, &format!("超過 {} 秒沒有擷取到新畫面，重新啟動 FFmpeg", STALL_MS / 1000));
+                    st.add_log(LogLevel::Warn, &trf!("超過 {} 秒沒有擷取到新畫面，重新啟動 FFmpeg", "No new frames for over {} s; restarting FFmpeg", STALL_MS / 1000));
                     let seg = &mut st.segments[st.current.unwrap()];
                     seg.last_frame_at = now;
                     let _ = seg.ctl.send(SegCmd::Kill);
@@ -1180,12 +1546,12 @@ impl Recorder {
             st.disk_free_bytes = Some(free);
             if free < DISK_STOP && !st.auto_stopping {
                 st.auto_stopping = true;
-                notify = Some(("磁碟空間不足", format!("只剩 {}，已自動停止並儲存", gb(free))));
-                stop_reason = Some(format!("儲存位置只剩 {}，自動停止並儲存", gb(free)));
+                notify = Some((tr!("磁碟空間不足", "Low disk space"), trf!("只剩 {}，已自動停止並儲存", "Only {} left. Recording was stopped and saved automatically", gb(free))));
+                stop_reason = Some(trf!("儲存位置只剩 {}，自動停止並儲存", "Only {} left at the save location; stopped and saved automatically", gb(free)));
             } else if free < DISK_WARN && !st.disk_warned {
                 st.disk_warned = true;
-                st.add_log(LogLevel::Warn, &format!("儲存位置只剩 {}，低於 {} 時會自動停止", gb(free), gb(DISK_STOP)));
-                notify = Some(("磁碟空間快不夠了", format!("儲存位置只剩 {}", gb(free))));
+                st.add_log(LogLevel::Warn, &trf!("儲存位置只剩 {}，低於 {} 時會自動停止", "Only {} left at the save location; recording stops automatically below {}", gb(free), gb(DISK_STOP)));
+                notify = Some((tr!("磁碟空間快不夠了", "Disk space is running low"), trf!("儲存位置只剩 {}", "Only {} left at the save location", gb(free))));
             }
         }
         if let Some((title, text)) = notify {
@@ -1197,57 +1563,39 @@ impl Recorder {
     }
 
     async fn finalize(&self) -> Result<RecordingResult> {
-        let (fps, parts, has_audio, parts_dir, out) = {
+        let (fps, parts, has_audio, parts_dir, out, markers) = {
             let st = self.lock();
             let parts: Vec<(String, u64)> =
                 st.segments.iter().filter(|s| s.frames > 0 && std::fs::metadata(&s.file).map(|m| m.len() > 0).unwrap_or(false)).map(|s| (s.file.clone(), s.frames)).collect();
-            (st.config().fps, parts, !st.audio_specs.is_empty(), st.parts_dir.clone().unwrap_or_default(), st.final_path.clone().unwrap_or_default())
+            let markers: Vec<f64> = st.markers.iter().map(|m| *m as f64 / 1000.0).collect();
+            (st.config().fps, parts, !st.audio_specs.is_empty(), st.parts_dir.clone().unwrap_or_default(), st.final_path.clone().unwrap_or_default(), markers)
         };
         let frames: u64 = parts.iter().map(|p| p.1).sum();
         if parts.is_empty() {
             cleanup_parts(Some(&parts_dir));
-            return Ok(RecordingResult { ok: false, message: "沒有擷取到任何畫面，未產生影片".into(), ..Default::default() });
+            return Ok(RecordingResult { ok: false, message: tr!("沒有擷取到任何畫面，未產生影片", "No frames were captured, so no video was created").into(), ..Default::default() });
         }
-        let ffmpeg = self.deps().ffmpeg_path().ok_or_else(|| Error::other("找不到 ffmpeg.exe"))?;
+        let ffmpeg = self.deps().ffmpeg_path().ok_or_else(|| Error::other(tr!("找不到 ffmpeg.exe", "ffmpeg.exe not found")))?;
         let files: Vec<String> = parts.iter().map(|p| p.0.clone()).collect();
-        // 有錄聲音：每個分段在聲音結束處截斷（見 concat_list），聲音與畫面一起結束、分段之間也不留無聲的空隙
-        let mut outpoints = Vec::new();
-        if has_audio {
-            let mut tasks = Vec::new();
-            for f in &files {
-                let (ffmpeg, args) = (ffmpeg.clone(), audio_end_args(f));
-                tasks.push(tokio::spawn(async move {
-                    let r = run(&ffmpeg, &args, Duration::from_secs(60)).await;
-                    let us = OUT_TIME_RE.captures_iter(&r.stdout).last().and_then(|c| c[1].parse::<f64>().ok());
-                    us.filter(|us| r.code == 0 && *us > 0.0).map(|us| us / 1e6)
-                }));
-            }
-            for t in tasks {
-                outpoints.push(t.await.ok().flatten());
-            }
-        }
-        let list_file = parts_dir.join("concat.txt");
-        std::fs::write(&list_file, concat_list(&files, &outpoints))?;
         let out_str = out.display().to_string();
         let parts_str = parts_dir.display().to_string();
-        let r = run(&ffmpeg, &concat_args(&list_file.display().to_string(), &out_str), Duration::from_secs(30 * 60)).await;
-        if r.code != 0 || !out.exists() {
-            let tail = last_lines(&r.stderr, 3);
-            let detail = if tail.is_empty() { format!("結束代碼 {}", r.code) } else { tail };
-            return Ok(RecordingResult {
-                ok: false,
-                frames,
-                video_sec: frames as f64 / fps,
-                parts_dir: Some(parts_str.clone()),
-                message: format!("合併失敗：{detail}（分段保留於 {parts_str}）"),
-                ..Default::default()
-            });
-        }
-
-        // 只讀成品的檔頭取得實際長度（毫秒級），不再整檔重讀一遍：長時間錄影停止時省下一半的等待。
-        // 分段回報的張數可能多算被強制終止前還沒寫入的幾張，以檔頭長度為準
-        let head = run(&ffmpeg, &["-hide_banner", "-i", &out_str], Duration::from_secs(15)).await;
-        let duration = parse_media_info(&head.stderr).duration_sec;
+        // 標記寫成章節（播放器可以跳章節）
+        let length = frames as f64 / fps;
+        let chapters = crate::chapters::from_markers(&markers, length);
+        let meta = (!chapters.is_empty()).then(|| crate::chapters::ffmetadata(&chapters, length));
+        let duration = match merge_segments(&ffmpeg, &files, &parts_dir, &out, has_audio, meta).await {
+            Ok(d) => d,
+            Err(detail) => {
+                return Ok(RecordingResult {
+                    ok: false,
+                    frames,
+                    video_sec: frames as f64 / fps,
+                    parts_dir: Some(parts_str.clone()),
+                    message: trf!("合併失敗：{detail}（分段保留於 {parts_str}）", "Merge failed: {detail} (segments kept in {parts_str})"),
+                    ..Default::default()
+                });
+            }
+        };
         let real_frames = duration.map(|d| js_round(d * fps) as u64).unwrap_or(frames);
         cleanup_parts(Some(&parts_dir));
         Ok(RecordingResult {
@@ -1256,7 +1604,12 @@ impl Recorder {
             frames: real_frames,
             video_sec: duration.unwrap_or(frames as f64 / fps),
             bytes: std::fs::metadata(&out).map(|m| m.len()).ok(),
-            message: format!("已儲存 {out_str}（{real_frames} 張，{} 個分段）", parts.len()),
+            message: if crate::i18n::is_en() {
+                let n = parts.len();
+                format!("Saved {out_str} ({real_frames} frame{}, {n} segment{})", if real_frames == 1 { "" } else { "s" }, if n == 1 { "" } else { "s" })
+            } else {
+                format!("已儲存 {out_str}（{real_frames} 張，{} 個分段）", parts.len())
+            },
             parts_dir: None,
         })
     }
@@ -1264,8 +1617,8 @@ impl Recorder {
 
 #[cfg(test)]
 mod tests {
-    //! 開始錄影的「準備 / 倒數 / 縮小視窗」階段：取消與連按的競態。
-    //! 用假的依賴（不會真的啟動 FFmpeg）；unix 上另有用假 FFmpeg 跑完整流程的測試。
+    //! 開始錄影的「準備 / 倒數 / 縮小視窗」階段：取消與連按同時發生的情況。
+    //! 用假的相依（不會真的啟動 FFmpeg）；unix 上另有用假 FFmpeg 跑完整流程的測試。
     use super::*;
     use crate::args::ENCODERS;
     use crate::types::AudioConfig;
@@ -1300,6 +1653,10 @@ mod tests {
         before_areas: Mutex<Vec<Rect>>,
         ui_areas: Mutex<Vec<Rect>>,
         ui_in: Option<bool>,
+        /// 有假的 FFmpeg 時也當作 ddagrab 可用
+        dda: bool,
+        gpu: Option<GpuSupport>,
+        gpu_failed: AtomicUsize,
     }
 
     impl RecorderDeps for Fake {
@@ -1321,8 +1678,14 @@ mod tests {
             vec![mon()]
         }
         fn ddagrab_usable(&self) -> BoxFut<'_, bool> {
-            let usable = self.ffmpeg.is_none();
+            let usable = self.ffmpeg.is_none() || self.dda;
             Box::pin(async move { usable })
+        }
+        fn gpu_convert(&self) -> Option<GpuSupport> {
+            self.gpu
+        }
+        fn gpu_convert_failed(&self) {
+            self.gpu_failed.fetch_add(1, Ordering::SeqCst);
         }
         fn before_capture(&self, area: Rect) -> BoxFut<'_, ()> {
             self.before.fetch_add(1, Ordering::SeqCst);
@@ -1369,6 +1732,13 @@ mod tests {
                 encoder: None,
                 countdown_sec: Some(3.0),
                 hide_ui: Some(true),
+                show_clicks: false,
+                show_keys: false,
+                cursor_halo: false,
+                hide_icons: false,
+                follow_window: None,
+                camera: None,
+                audio_only: false,
             }
         }
         fn release(&self) {
@@ -1411,6 +1781,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn audio_only_needs_a_sound_source() {
+        let s = Setup::new(Fake::default());
+        s.release();
+        let cfg = RecordConfig { audio_only: true, audio: AudioConfig { system: false, mic: false, mic_id: String::new() }, ..s.config() };
+        let err = s.rec.start(cfg).await.unwrap_err();
+        assert!(err.message().contains("只錄聲音"), "{}", err.message());
+        assert_eq!(s.rec.status().state, RecorderState::Idle);
+        assert!(!s.parts_left());
+    }
+
+    #[tokio::test]
+    async fn audio_only_countdown_draws_the_card() {
+        let s = Setup::new(Fake::default());
+        s.release();
+        let cfg = RecordConfig { audio_only: true, audio: AudioConfig { system: true, mic: false, mic_id: String::new() }, show_clicks: true, ..s.config() };
+        s.rec.start(cfg).await.unwrap(); // 進入倒數就回覆
+        {
+            let st = s.rec.lock();
+            let plan = st.plan.as_ref().unwrap();
+            assert_eq!((plan.out_width, plan.out_height), (640, 360));
+            assert!(plan.card.as_ref().is_some_and(|c| Path::new(c).is_file()));
+            assert!(st.final_path.as_ref().unwrap().file_name().unwrap().to_string_lossy().starts_with("錄音_"));
+            let c = st.config.as_ref().unwrap();
+            assert_eq!((c.fps, c.show_clicks, c.hide_ui), (5.0, false, Some(false)));
+        }
+        // 沒有範圍外框，只在螢幕上方顯示小控制列
+        assert!(s.rec.frame_info().unwrap().full);
+        s.rec.stop(None).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert_eq!(s.rec.status().state, RecorderState::Idle);
+        assert!(!s.parts_left());
+    }
+
+    #[tokio::test]
     async fn cancel_during_countdown() {
         let s = Setup::new(Fake::default());
         s.release();
@@ -1445,6 +1849,42 @@ mod tests {
         s.rec.stop(None).await.unwrap();
         tokio::time::sleep(Duration::from_millis(20)).await;
         assert_eq!(s.rec.status().countdown_covers_ui, None); // 不在倒數就不回報
+    }
+
+    #[tokio::test]
+    async fn frame_info_while_active() {
+        let s = Setup::new(Fake::default());
+        s.release();
+        assert_eq!(s.rec.frame_info(), None);
+        s.rec.start(RecordConfig { source: region(100.0, 50.0, 640.0, 480.0), ..s.config() }).await.unwrap();
+        let f = s.rec.frame_info().unwrap();
+        assert_eq!(f.area, Rect { x: 100, y: 50, width: 640, height: 480 });
+        assert_eq!(f.state, RecorderState::Countdown);
+        assert!(f.countdown_ms.unwrap() > 2000);
+        s.rec.stop(None).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert_eq!(s.rec.frame_info(), None);
+        // 整個螢幕：只有控制列（full = true，不畫外框、不能拖曳）
+        s.rec.start(s.config()).await.unwrap();
+        assert_eq!(s.rec.status().state, RecorderState::Countdown);
+        assert!(s.rec.frame_info().unwrap().full);
+        s.rec.stop(None).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn move_region_during_countdown_keeps_size() {
+        let s = Setup::new(Fake::default());
+        s.release();
+        s.rec.start(RecordConfig { source: region(100.0, 50.0, 640.0, 480.0), ..s.config() }).await.unwrap();
+        let r = s.rec.move_region(300, 200).await.unwrap();
+        assert_eq!(r, Rect { x: 300, y: 200, width: 640, height: 480 });
+        assert_eq!(s.rec.frame_info().unwrap().area, r);
+        // 超出桌面時限制在桌面內（假的螢幕是 1920×1080）
+        let r = s.rec.move_region(5000, -50).await.unwrap();
+        assert_eq!(r, Rect { x: 1920 - 640, y: 0, width: 640, height: 480 });
+        s.rec.stop(None).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(s.rec.move_region(0, 0).await.is_err());
     }
 
     #[tokio::test]
@@ -1514,6 +1954,44 @@ esac
         p
     }
 
+    /// 假的 FFmpeg：遇到顯示卡處理的濾鏡就失敗（驅動不支援），其他照 fake_ffmpeg
+    #[cfg(unix)]
+    fn fake_ffmpeg_no_gpu(dir: &Path) -> PathBuf {
+        let inner = fake_ffmpeg(dir);
+        let p = dir.join("ffmpeg-no-gpu");
+        let script = format!("#!/bin/bash\ncase \" $* \" in *vpp_qsv*) echo '[vpp_qsv @ 0x1] Error creating a MFX session: -9' >&2; exit 1;; esac\nexec {} \"$@\"\n", inner.display());
+        std::fs::write(&p, script).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        p
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn gpu_convert_failure_falls_back_to_cpu() {
+        let tools = tempfile::tempdir().unwrap();
+        let gpu = GpuSupport { adapter: mon().adapter, convert: crate::args::GpuConvert::Qsv, zero_copy: false };
+        let s = Setup::new(Fake { ffmpeg: Some(fake_ffmpeg_no_gpu(tools.path())), dda: true, gpu: Some(gpu), ..Default::default() });
+        s.release();
+        s.rec.start(RecordConfig { countdown_sec: Some(0.0), hide_ui: Some(false), ..s.config() }).await.unwrap();
+        for _ in 0..150 {
+            if s.rec.status().frames > 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let st = s.rec.status();
+        assert!(st.frames > 0, "退回 CPU 轉換後應該繼續錄影");
+        // 仍然用 ddagrab，只是改回 CPU 轉換；app 記下這次執行不再用顯示卡處理
+        assert_eq!(st.method, Some(CaptureMethod::Ddagrab));
+        assert_eq!(s.deps.gpu_failed.load(Ordering::SeqCst), 1);
+        let log: Vec<String> = st.log.iter().map(|l| l.text.clone()).collect();
+        assert!(log.iter().any(|l| l.contains("畫面在顯示卡上縮放、轉色彩（Intel QSV）")), "{log:?}");
+        assert!(log.iter().any(|l| l.contains("顯示卡處理畫面失敗") && l.contains("改用 CPU 轉換")), "{log:?}");
+        let res = s.rec.stop(None).await.unwrap().unwrap();
+        assert!(res.ok, "{}", res.message);
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn record_pause_resume_stop_merges_segments() {
@@ -1554,6 +2032,35 @@ esac
         assert!(!st.log.iter().any(|l| l.text.contains("強制終止")), "{:?}", st.log);
         assert!(s.rec.output_path().is_none());
         assert_eq!(s.deps.after.load(Ordering::SeqCst), 1);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn move_region_while_recording_starts_a_new_segment() {
+        let tools = tempfile::tempdir().unwrap();
+        let s = Setup::new(Fake { ffmpeg: Some(fake_ffmpeg(tools.path())), ..Default::default() });
+        s.release();
+        let cfg = RecordConfig { countdown_sec: Some(0.0), hide_ui: Some(false), source: region(0.0, 0.0, 640.0, 480.0), ..s.config() };
+        s.rec.start(cfg).await.unwrap();
+        let wait_frames = || async {
+            for _ in 0..100 {
+                if s.rec.status().frames > 0 && s.rec.status().busy.is_none() {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            panic!("沒有收到進度");
+        };
+        wait_frames().await;
+        let r = s.rec.move_region(400, 300).await.unwrap();
+        assert_eq!(r, Rect { x: 400, y: 300, width: 640, height: 480 });
+        let st = s.rec.status();
+        assert_eq!(st.state, RecorderState::Recording);
+        assert!(st.log.iter().any(|l| l.text.contains("錄影範圍移到 (400, 300)")));
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let res = s.rec.stop(None).await.unwrap().unwrap();
+        assert!(res.ok, "{}", res.message);
+        assert!(res.message.contains("2 個分段"), "{}", res.message);
     }
 
     #[cfg(unix)]

@@ -16,7 +16,7 @@ pub struct CropInput {
     pub height: f64,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct EditSpec {
     /// 保留的開頭（剪掉之前的部分）
     pub start: f64,
@@ -30,6 +30,146 @@ pub struct EditSpec {
     /// 畫面上的標註（文字、箭頭、框線、編號由介面畫成透明 PNG；馬賽克 / 模糊由 FFmpeg 處理）
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub overlays: Vec<Overlay>,
+    /// 聲音處理
+    #[serde(default, skip_serializing_if = "AudioFx::is_default")]
+    pub audio: AudioFx,
+    /// 加速的片段（原影片的時間）
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fast: Vec<FastRange>,
+    /// 跟著點擊放大
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub zoom: Option<ClickZoom>,
+    /// 背景與圓角（影片縮小放在背景中間）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frame: Option<crate::video_frame::VideoFrame>,
+}
+
+/// 跟著點擊放大：倍率與錄影時記下的點擊（原影片的秒數, x, y；x、y 為 0～1）
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ClickZoom {
+    pub factor: f64,
+    pub clicks: Vec<[f64; 3]>,
+}
+
+/// 局部加速：這段時間以 speed 倍播放（加速的片段沒有聲音）
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FastRange {
+    /// 毫秒（整數，方便比對與存檔）
+    pub start_ms: u64,
+    pub end_ms: u64,
+    pub speed: u32,
+}
+
+impl FastRange {
+    pub fn start(&self) -> f64 {
+        self.start_ms as f64 / 1000.0
+    }
+    pub fn end(&self) -> f64 {
+        self.end_ms as f64 / 1000.0
+    }
+}
+
+/// 局部加速可選的倍率（整數倍：每 N 張留一張）
+pub const FAST_SPEEDS: [u32; 4] = [2, 4, 8, 16];
+
+/// 把 [a, b) 設成 speed 倍（1 = 恢復原速）；和原有的加速片段重疊的部分以新的為準
+pub fn set_fast(list: &mut Vec<FastRange>, a: f64, b: f64, speed: u32) {
+    let (a, b) = (a.min(b).max(0.0), a.max(b).max(0.0));
+    let (am, bm) = ((a * 1000.0).round() as u64, (b * 1000.0).round() as u64);
+    if bm <= am {
+        return;
+    }
+    let mut out = vec![];
+    for r in list.drain(..) {
+        if r.end_ms <= am || r.start_ms >= bm {
+            out.push(r);
+            continue;
+        }
+        if r.start_ms < am {
+            out.push(FastRange { end_ms: am, ..r });
+        }
+        if r.end_ms > bm {
+            out.push(FastRange { start_ms: bm, ..r });
+        }
+    }
+    if speed > 1 {
+        out.push(FastRange { start_ms: am, end_ms: bm, speed });
+    }
+    out.retain(|r| r.end_ms >= r.start_ms + 20);
+    out.sort_by_key(|r| r.start_ms);
+    // 相鄰而且倍率相同的合併
+    let mut merged: Vec<FastRange> = vec![];
+    for r in out {
+        match merged.last_mut() {
+            Some(l) if l.end_ms >= r.start_ms && l.speed == r.speed => l.end_ms = l.end_ms.max(r.end_ms),
+            _ => merged.push(r),
+        }
+    }
+    *list = merged;
+}
+
+/// 保留的片段再依加速切開：(開始, 結束, 倍率)；倍率 1 = 原速
+pub fn keep_parts(duration: f64, spec: &EditSpec) -> Vec<(f64, f64, u32)> {
+    let mut fast = spec.fast.clone();
+    fast.sort_by_key(|f| f.start_ms);
+    let mut out = vec![];
+    for (a, b) in keep_ranges(duration, spec) {
+        let mut t = a;
+        for f in fast.iter().filter(|f| f.speed > 1 && f.end() > a && f.start() < b) {
+            let (fa, fb) = (f.start().max(a), f.end().min(b));
+            if fa - t >= MIN_RANGE {
+                out.push((t, fa, 1));
+            }
+            if fb - fa >= MIN_RANGE {
+                out.push((fa.max(t), fb, f.speed));
+            }
+            t = t.max(fb);
+        }
+        if b - t >= MIN_RANGE {
+            out.push((t, b, 1));
+        }
+    }
+    out.into_iter().map(|(a, b, s)| (ms(a), ms(b), s)).collect()
+}
+
+/// 輸出的長度（加速的片段變短）
+pub fn output_length(parts: &[(f64, f64, u32)]) -> f64 {
+    parts.iter().map(|&(a, b, s)| (b - a) / s.max(1) as f64).sum()
+}
+
+/// 剪輯時的聲音處理
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AudioFx {
+    /// 降噪（減少風扇、冷氣等穩定的背景雜音）
+    #[serde(default)]
+    pub denoise: bool,
+    /// 音量平衡（忽大忽小變平均，整體調到適合聆聽的音量）
+    #[serde(default)]
+    pub normalize: bool,
+    /// 不要聲音
+    #[serde(default)]
+    pub mute: bool,
+}
+
+impl AudioFx {
+    pub fn is_default(&self) -> bool {
+        *self == AudioFx::default()
+    }
+
+    /// FFmpeg 的聲音濾鏡（接在剪輯之後）
+    pub fn filters(&self) -> Vec<&'static str> {
+        let mut f = Vec::new();
+        if self.denoise {
+            f.push("afftdn=nf=-25");
+        }
+        if self.normalize {
+            // loudnorm 會把取樣率改成 192k：轉回 48k
+            f.push("loudnorm=I=-16:TP=-1.5:LRA=11");
+            f.push("aresample=48000");
+        }
+        f
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -136,8 +276,34 @@ pub fn cut_file_name(source_name: &str) -> String {
 mod tests {
     use super::*;
 
+    #[test]
+    fn fast_ranges_split_the_kept_parts() {
+        let mut fast = vec![];
+        set_fast(&mut fast, 2.0, 6.0, 4);
+        set_fast(&mut fast, 8.0, 9.0, 2);
+        assert_eq!(fast.len(), 2);
+        // 重疊的部分以新的為準；設回原速就拿掉
+        set_fast(&mut fast, 5.0, 8.5, 8);
+        assert_eq!(fast.iter().map(|f| (f.start_ms, f.end_ms, f.speed)).collect::<Vec<_>>(), vec![(2000, 5000, 4), (5000, 8500, 8), (8500, 9000, 2)]);
+        set_fast(&mut fast, 0.0, 10.0, 1);
+        assert!(fast.is_empty());
+        // 相鄰而且倍率相同的合併
+        set_fast(&mut fast, 1.0, 2.0, 4);
+        set_fast(&mut fast, 2.0, 3.0, 4);
+        assert_eq!(fast.iter().map(|f| (f.start_ms, f.end_ms)).collect::<Vec<_>>(), vec![(1000, 3000)]);
+
+        let mut sp = spec(0.0, 10.0, &[(4.0, 5.0)]);
+        set_fast(&mut sp.fast, 2.0, 6.0, 4);
+        let parts = keep_parts(10.0, &sp);
+        assert_eq!(parts, vec![(0.0, 2.0, 1), (2.0, 4.0, 4), (5.0, 6.0, 4), (6.0, 10.0, 1)]);
+        assert!((output_length(&parts) - (2.0 + 0.5 + 0.25 + 4.0)).abs() < 1e-9);
+        // 沒有加速時和 keep_ranges 一樣
+        let plain = spec(1.0, 9.0, &[(3.0, 4.0)]);
+        assert_eq!(keep_parts(10.0, &plain), keep_ranges(10.0, &plain).into_iter().map(|(a, b)| (a, b, 1)).collect::<Vec<_>>());
+    }
+
     fn spec(start: f64, end: f64, removed: &[Range]) -> EditSpec {
-        EditSpec { start, end, removed: removed.to_vec(), crop: None, overlays: vec![] }
+        EditSpec { start, end, removed: removed.to_vec(), crop: None, overlays: vec![], ..Default::default() }
     }
 
     #[test]

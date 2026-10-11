@@ -1,9 +1,10 @@
-//! 程式內更新：下載新版 exe、核對大小與 SHA-256（由 GitHub Release 提供），再替換掉自己。
+//! 程式內更新：下載新版 exe、核對大小與 SHA-256（由 GitHub Release 提供），再取代自己。
 //!
 //! Windows 不能覆寫執行中的 exe，但可以改名：目前的 exe 改名為 `.old`，新版放到原本的位置，
 //! 接著啟動新版並結束自己；新版啟動時等舊的結束，再刪掉 `.old`。
 
 use crate::types::UpdateInfo;
+use crate::{tr, trf};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::io::{Read, Write};
@@ -18,7 +19,7 @@ pub enum InstallPhase {
     Idle,
     Downloading,
     Verifying,
-    /// 已替換，正在啟動新版
+    /// 已取代，正在啟動新版
     Restarting,
     Error,
 }
@@ -98,15 +99,15 @@ impl Installer {
         f(&mut self.st.lock().unwrap());
     }
 
-    /// 開始下載並替換 exe；完成後呼叫 on_ready（啟動新版並結束自己）。回傳的執行緒用於測試等待
+    /// 開始下載並取代 exe；完成後呼叫 on_ready（啟動新版並結束自己）。回傳的執行緒用於測試等待
     pub fn start(&self, info: &UpdateInfo, exe: PathBuf, on_ready: impl FnOnce(PathBuf) + Send + 'static) -> Result<std::thread::JoinHandle<()>, String> {
         let (Some(url), Some(sha)) = (info.download_url.clone(), info.sha256.clone()) else {
-            return Err("這個版本沒有提供可自動更新的檔案，請到下載頁面手動更新".into());
+            return Err(tr!("這個版本沒有提供可自動更新的檔案，請到下載頁面手動更新", "This version has no file for automatic updates. Update manually from the download page").into());
         };
         {
             let mut st = self.st.lock().unwrap();
             if matches!(st.phase, InstallPhase::Downloading | InstallPhase::Verifying | InstallPhase::Restarting) {
-                return Err("正在更新中".into());
+                return Err(tr!("正在更新中", "Already updating").into());
             }
             *st = InstallStatus { phase: InstallPhase::Downloading, total: info.size, version: Some(info.version.clone()), ..Default::default() };
         }
@@ -117,7 +118,7 @@ impl Installer {
             .name("self-update".into())
             .spawn(move || match me.install(&url, &sha, size, &exe) {
                 Ok(()) => {
-                    crate::info!("[更新] 已替換為 v{version}，重新啟動");
+                    crate::info!("[更新] 已更新為 v{version}，重新啟動");
                     me.set(|s| s.phase = InstallPhase::Restarting);
                     on_ready(exe);
                 }
@@ -151,33 +152,33 @@ impl Installer {
     }
 
     fn download(&self, url: &str, sha: &str, size: Option<u64>, to: &Path) -> Result<(), String> {
-        let (len, mut body) = (self.fetch)(url).map_err(|e| format!("無法下載新版：{e}"))?;
+        let (len, mut body) = (self.fetch)(url).map_err(|e| trf!("無法下載新版：{e}", "Couldn't download the new version: {e}"))?;
         if let Some(l) = len.or(size) {
             self.set(|s| s.total = Some(l));
         }
-        let mut file = std::fs::File::create(to).map_err(|e| format!("無法寫入新版檔案：{e}"))?;
+        let mut file = std::fs::File::create(to).map_err(|e| trf!("無法寫入新版檔案：{e}", "Couldn't write the new version's file: {e}"))?;
         let mut hasher = Sha256::new();
         let mut buf = vec![0u8; 64 * 1024];
         let mut received = 0u64;
         loop {
-            let n = body.read(&mut buf).map_err(|e| format!("下載中斷：{e}"))?;
+            let n = body.read(&mut buf).map_err(|e| trf!("下載中斷：{e}", "Download interrupted: {e}"))?;
             if n == 0 {
                 break;
             }
             hasher.update(&buf[..n]);
-            file.write_all(&buf[..n]).map_err(|e| format!("無法寫入新版檔案：{e}"))?;
+            file.write_all(&buf[..n]).map_err(|e| trf!("無法寫入新版檔案：{e}", "Couldn't write the new version's file: {e}"))?;
             received += n as u64;
             self.set(|s| s.received = received);
         }
-        file.sync_all().map_err(|e| format!("無法寫入新版檔案：{e}"))?;
+        file.sync_all().map_err(|e| trf!("無法寫入新版檔案：{e}", "Couldn't write the new version's file: {e}"))?;
         drop(file);
         self.set(|s| s.phase = InstallPhase::Verifying);
         if size.is_some_and(|s| s != received) {
-            return Err(format!("下載的檔案大小不符（{received} / {} bytes），已刪除", size.unwrap()));
+            return Err(trf!("下載的檔案大小不符（{received} / {} bytes），已刪除", "The downloaded file's size doesn't match ({received} / {} bytes) and was deleted", size.unwrap()));
         }
         let got: String = hasher.finalize().iter().map(|b| format!("{b:02x}")).collect();
         if !got.eq_ignore_ascii_case(sha) {
-            return Err("下載的檔案驗證失敗（SHA-256 不符），已刪除".into());
+            return Err(tr!("下載的檔案驗證失敗（SHA-256 不符），已刪除", "The downloaded file failed verification (SHA-256 mismatch) and was deleted").into());
         }
         Ok(())
     }
@@ -187,10 +188,10 @@ impl Installer {
 fn swap(exe: &Path, new: &Path) -> Result<(), String> {
     let old = sibling(exe, ".old");
     let _ = std::fs::remove_file(&old);
-    std::fs::rename(exe, &old).map_err(|e| format!("無法替換程式檔案：{e}"))?;
+    std::fs::rename(exe, &old).map_err(|e| trf!("無法取代程式檔案：{e}", "Couldn't replace the app file: {e}"))?;
     if let Err(e) = std::fs::rename(new, exe) {
         let _ = std::fs::rename(&old, exe);
-        return Err(format!("無法替換程式檔案：{e}"));
+        return Err(trf!("無法取代程式檔案：{e}", "Couldn't replace the app file: {e}"));
     }
     Ok(())
 }

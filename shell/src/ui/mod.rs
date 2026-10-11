@@ -8,17 +8,24 @@ pub mod editor;
 pub mod export_dialog;
 pub mod library_dialog;
 pub mod main_view;
+pub mod notes;
+pub mod ocr;
+pub mod presets;
 pub mod preview;
+pub mod schedule;
 pub mod settings;
+pub mod settings_dialog;
 pub mod snip;
 pub mod theme;
 pub mod thumbs;
 pub mod viewer;
+mod whats_new;
 
 use eframe::egui;
 use screenrecorder_core::actions::{self, UpdateState};
 use screenrecorder_core::app::{App, Status, UiPage};
-use screenrecorder_core::types::{EnvInfo, LibraryEntry, LibraryPage, RecorderState};
+use screenrecorder_core::types::{DownloadPhase, EnvInfo, LibraryEntry, LibraryPage, RecorderState};
+use screenrecorder_core::{tr, trf};
 use settings::UiSettings;
 use std::collections::HashMap;
 use std::future::Future;
@@ -58,6 +65,12 @@ pub enum EntryAction {
     Reveal,
     Edit,
     Export,
+    /// 把檔案複製到剪貼簿（貼到 LINE、Teams、資料夾）
+    CopyFile,
+    /// 只留下聲音，另存成 .m4a
+    SaveAudio,
+    /// 章節（錄影時加的標記）複製成 YouTube 說明欄的格式
+    CopyChapters,
 }
 
 pub struct UiApp {
@@ -69,12 +82,20 @@ pub struct UiApp {
     open_requests: OpenRequests,
     /// 系統匣可以用：關掉視窗時只是隱藏
     pub tray_ok: bool,
-    visible: bool,
+    pub visible: bool,
+    /// 主視窗看得到（背景比對狀態時用：看不到就不叫介面重畫）
+    shown_flag: Arc<std::sync::atomic::AtomicBool>,
 
     pub env: EnvInfo,
     pub env_ready: bool,
     pub s: UiSettings,
     settings_rev: u64,
+    /// 講稿小視窗
+    pub notes: Option<notes::Notes>,
+    /// 排程錄影的對話框
+    pub schedule_dlg: Option<schedule::ScheduleDlg>,
+    /// 錄影設定組合（settings.json 的 presets）
+    pub presets: Vec<screenrecorder_core::presets::Preset>,
     save_at: Option<Instant>,
     pub status: Status,
     pub status_at: Instant,
@@ -83,6 +104,9 @@ pub struct UiApp {
     pub toast: Option<Toast>,
     pub ask: Option<dialogs::Ask>,
     pub changelog_open: bool,
+    /// 新功能介紹（更新後第一次開啟時顯示一次）
+    pub whats_new_open: bool,
+    whats_new_checked: bool,
 
     pub preview: preview::Preview,
     pub thumbs: thumbs::Thumbs,
@@ -96,9 +120,16 @@ pub struct UiApp {
     pub export_dlg: Option<export_dialog::ExportDialog>,
     pub library: Option<library_dialog::LibraryDialog>,
     pub viewer: Option<viewer::Viewer>,
+    /// 文字辨識的結果
+    pub ocr: Option<ocr::Ocr>,
+    /// 錄影前的音量表（主畫面看得到、沒在錄影時才開）
+    pub meter: Option<screenrecorder_core::meter::Meter>,
+    /// 按了「測試音量」：量到這個時間（不一直開著麥克風，Windows 才不會一直顯示麥克風使用中）
+    pub meter_until: Option<Instant>,
+    pub settings_dlg: Option<settings_dialog::SettingsDialog>,
     /// 在螢幕上框選截圖
     pub snip: Option<snip::Snip>,
-    /// 目前設定的全域快捷鍵（顯示用）
+    /// 目前設定的全域快速鍵（顯示用）
     pub keys: screenrecorder_core::types::Hotkeys,
     pub editor: Option<editor::Editor>,
 
@@ -108,8 +139,8 @@ pub struct UiApp {
     last_state: RecorderState,
     pub main: main_view::MainState,
     ddagrab_watch: Option<Instant>,
-    /// 已處理過的截圖（介面或快捷鍵截好時更新清單、顯示提示）
-    last_shot_seq: u64,
+    /// 已處理過的截圖（介面或快速鍵截好時更新清單、顯示提示）
+    pub last_shot_seq: u64,
     /// 上一格各部分花的時間（毫秒）：畫面處理太慢時寫進記錄檔，找出卡在哪裡
     frame_parts: Vec<(&'static str, f32)>,
     slow_logged: Option<Instant>,
@@ -138,10 +169,14 @@ impl UiApp {
             open_requests,
             tray_ok,
             visible,
+            shown_flag: Arc::new(std::sync::atomic::AtomicBool::new(visible)),
             env,
             env_ready: false,
             s,
             settings_rev: saved.rev,
+            presets: saved.presets.clone(),
+            notes: None,
+            schedule_dlg: None,
             save_at: None,
             last_state: status.recorder.state,
             status,
@@ -149,6 +184,8 @@ impl UiApp {
             toast: None,
             ask: None,
             changelog_open: false,
+            whats_new_open: false,
+            whats_new_checked: false,
             preview: preview::Preview::default(),
             thumbs: thumbs::Thumbs::default(),
             recent: None,
@@ -159,6 +196,10 @@ impl UiApp {
             export_dlg: None,
             library: None,
             viewer: None,
+            ocr: None,
+            meter: None,
+            meter_until: None,
+            settings_dlg: None,
             snip: None,
             keys: saved.hotkeys.unwrap_or_default(),
             editor: None,
@@ -173,6 +214,7 @@ impl UiApp {
             #[cfg(debug_assertions)]
             dev: Default::default(),
         };
+        app.watch_status();
         let core = app.core.clone();
         app.spawn(async move { core.wait_ready().await }, |app, _| {
             app.env = app.core.env();
@@ -180,11 +222,75 @@ impl UiApp {
             let saved = app.core.settings.load();
             app.s = UiSettings::from_saved(saved.ui.as_ref(), &app.env);
             app.settings_rev = saved.rev;
+            app.presets = saved.presets;
             app.preview.reset();
             app.watch_ddagrab();
             app.load_recent();
+            app.check_orphans();
         });
         app
+    }
+
+    /// 上次錄影時程式意外結束（當機、停電、被強制關掉）留下分段：問要不要救回
+    fn check_orphans(&mut self) {
+        let (core, dir) = (self.core.clone(), self.s.out_dir(&self.env));
+        self.spawn(async move { tokio::task::spawn_blocking(move || core.orphan_recordings(&dir)).await.unwrap_or_default() }, |app, list| {
+            if list.is_empty() {
+                return;
+            }
+            let names = list
+                .iter()
+                .map(|o| {
+                    // 2026-10-10_14-30-05 → 2026-10-10 14:30
+                    let s = &o.stamp;
+                    let when = match (s.get(..10), s.get(11..13), s.get(14..16)) {
+                        (Some(d), Some(h), Some(m)) => format!("{d} {h}:{m}"),
+                        _ => s.clone(),
+                    };
+                    format!("{when}　{}", screenrecorder_core::format::format_bytes(o.bytes))
+                })
+                .collect();
+            let (keep, drop) = (list.clone(), list);
+            let mut ask = dialogs::Ask::confirm(
+                tr!("找到沒有存好的錄影", "Found unsaved recordings"),
+                tr!(
+                    "上次錄影時程式意外結束（例如當機、停電），留下了下面這些錄影片段。要合併成影片嗎？",
+                    "The app stopped unexpectedly during a recording (for example a crash or power loss) and left these pieces behind. Merge them into videos?"
+                ),
+                tr!("救回", "Recover"),
+                move |app, _| app.recover_orphans(keep),
+            )
+            .with_alt(tr!("刪除", "Delete"), move |app, _| {
+                for o in &drop {
+                    screenrecorder_core::recovery::discard(o);
+                }
+                app.toast(tr!("已刪除沒有存好的錄影片段", "Deleted the unsaved recording pieces"), false);
+            })
+            .with_cancel(tr!("稍後", "Later"));
+            ask.list = names;
+            app.ask = Some(ask);
+        });
+    }
+
+    fn recover_orphans(&mut self, list: Vec<screenrecorder_core::recovery::Orphan>) {
+        self.toast(tr!("正在救回錄影…", "Recovering recordings…"), false);
+        let core = self.core.clone();
+        self.spawn(async move { core.recover_recordings(list).await }, |app, (saved, errors): (Vec<String>, Vec<String>)| {
+            app.load_recent();
+            if errors.is_empty() {
+                let n = saved.len();
+                app.toast(if screenrecorder_core::i18n::is_en() { format!("Recovered {n} recording{}", if n == 1 { "" } else { "s" }) } else { format!("已救回 {n} 支錄影") }, false);
+            } else {
+                app.toast(errors.join("\n"), true);
+            }
+        });
+    }
+
+    /// 閒置時介面不定時重畫：背景每 0.25 秒比對一次狀態（錄影、轉檔、下載、截圖、設定…），
+    /// 有變化才叫介面重畫。比對只是讀幾個欄位，比重畫整個視窗（排版、繪圖）省得多
+    fn watch_status(&self) {
+        let (core, ctx) = (self.core.clone(), self.ctx.clone());
+        self.rt.spawn(watch_changes(Duration::from_millis(250), self.shown_flag.clone(), move || core.status(), move || ctx.request_repaint()));
     }
 
     // ───────────── 非同步工作 ─────────────
@@ -197,6 +303,21 @@ impl UiApp {
             let r = fut.await;
             let _ = tx.send(Box::new(move |app: &mut UiApp| done(app, r)));
             ctx.request_repaint();
+        });
+    }
+
+    /// 顯示讀到的 QR 碼內容（複製到剪貼簿；是網址時可以直接開啟）
+    pub fn show_qr(&mut self, list: Vec<String>) {
+        if list.is_empty() {
+            return self.toast(tr!("沒有找到 QR 碼（框大一點、或把畫面放大再試試）", "No QR code found (try selecting a larger area or zooming in)"), true);
+        }
+        let text = list.join("\n");
+        self.ctx.copy_text(text.clone());
+        let url = list.iter().find(|t| screenrecorder_core::qr::is_url(t)).cloned();
+        let msg = trf!("{text}\n\n（已複製到剪貼簿）", "{text}\n\n(Copied to the clipboard)");
+        self.ask = Some(match url {
+            Some(u) => dialogs::Ask::confirm(tr!("QR 碼內容", "QR code content"), msg, tr!("開啟連結", "Open link"), move |_, _| screenrecorder_core::desktop::open_with_explorer(&u, false)),
+            None => dialogs::Ask::confirm(tr!("QR 碼內容", "QR code content"), msg, tr!("好", "OK"), |_, _| {}),
         });
     }
 
@@ -218,8 +339,18 @@ impl UiApp {
     // ───────────── 設定 ─────────────
 
     /// 設定改了：稍後存檔（連續變更只存一次）
+    /// 套用設定裡的介面語言：之後畫的介面、系統匣選單、通知都換成這個語言
+    pub fn apply_language(&mut self) {
+        let lang = screenrecorder_core::i18n::resolve(Some(self.s.language.as_str()));
+        screenrecorder_core::i18n::set_lang(lang);
+        self.ctx.send_viewport_cmd(egui::ViewportCommand::Title(screenrecorder_core::winui::app_title()));
+        self.ctx.request_repaint();
+    }
+
     pub fn save_settings(&mut self) {
         self.save_at = Some(Instant::now() + Duration::from_millis(300));
+        // logic() 在 ui() 之前，這一格算下次醒來時還不知道要存檔
+        self.ctx.request_repaint_after(Duration::from_millis(310));
     }
 
     fn flush_settings(&mut self) {
@@ -238,6 +369,7 @@ impl UiApp {
             if saved.ui.is_some() {
                 self.s = UiSettings::from_saved(saved.ui.as_ref(), &self.env);
             }
+            self.presets = saved.presets;
         }
     }
 
@@ -274,7 +406,7 @@ impl UiApp {
         }
         if let Some(i) = &self.status.install {
             if i.phase == screenrecorder_core::selfupdate::InstallPhase::Error && prev_install.as_ref().map(|p| (&p.phase, &p.message)) != Some((&i.phase, &i.message)) {
-                let msg = format!("更新失敗：{}", i.message.clone().unwrap_or_default());
+                let msg = trf!("更新失敗：{}", "Update failed: {}", i.message.clone().unwrap_or_default());
                 self.toast(msg, true);
             }
         }
@@ -282,7 +414,7 @@ impl UiApp {
         if self.status.download.phase == screenrecorder_core::types::DownloadPhase::Done && !self.env.ffmpeg.found {
             self.env = self.core.env();
             if self.env.ffmpeg.found {
-                let msg = self.status.download.message.clone().unwrap_or_else(|| "FFmpeg 已安裝".into());
+                let msg = self.status.download.message.clone().unwrap_or_else(|| tr!("FFmpeg 已安裝", "FFmpeg installed").into());
                 self.toast(msg, false);
                 self.preview.reset();
                 self.watch_ddagrab();
@@ -293,9 +425,12 @@ impl UiApp {
         if let Some(shot) = self.status.shot.clone().filter(|s| s.seq != self.last_shot_seq) {
             self.last_shot_seq = shot.seq;
             let name = dialogs::file_name(&shot.path);
-            self.toast(if shot.copied { format!("已截圖並複製到剪貼簿：{name}") } else { format!("已截圖：{name}") }, false);
-            if let Some(d) = &mut self.library {
-                d.dirty = true;
+            self.toast(if shot.copied { trf!("已截圖並複製到剪貼簿：{name}", "Screenshot copied to the clipboard: {name}") } else { trf!("已截圖：{name}", "Screenshot saved: {name}") }, false);
+            self.shots_changed();
+            // 設定「截圖後直接編輯」：開啟操作視窗與編輯（其他視窗開著時不打斷）
+            if self.s.edit_after_shot && self.editor.is_none() && self.export_dlg.is_none() {
+                self.core.open_ui(screenrecorder_core::app::UiPage::Main);
+                editor::shot::open(self, shot.path.clone());
             }
         }
         let state = self.status.recorder.state;
@@ -325,9 +460,11 @@ impl UiApp {
                 if let Some(e) = &self.status.export {
                     if e.state == screenrecorder_core::types::ExportState::Done {
                         let what = match e.kind {
-                            screenrecorder_core::types::ExportKind::Cut => "剪輯完成",
-                            screenrecorder_core::types::ExportKind::Gif => "GIF 製作完成",
-                            screenrecorder_core::types::ExportKind::Speed => "加速版製作完成",
+                            screenrecorder_core::types::ExportKind::Cut => tr!("剪輯完成", "Edited video ready"),
+                            screenrecorder_core::types::ExportKind::Merge => tr!("合併完成", "Merged video ready"),
+                            screenrecorder_core::types::ExportKind::Gif => tr!("GIF 製作完成", "GIF ready"),
+                            screenrecorder_core::types::ExportKind::Webp => tr!("WebP 動圖製作完成", "WebP ready"),
+                            screenrecorder_core::types::ExportKind::Speed => tr!("加速版製作完成", "Sped-up video ready"),
                         };
                         self.toast(what, false);
                     }
@@ -336,8 +473,14 @@ impl UiApp {
         }
         // ddagrab / 硬體編碼器測試中：每秒更新環境
         if self.ddagrab_watch.is_some_and(|t| Instant::now() >= t) {
+            let tested = self.env.ffmpeg.ddagrab_works.is_some();
             self.env = self.core.env();
-            let pending = (self.env.ffmpeg.has_ddagrab && self.env.ffmpeg.ddagrab_works.is_none()) || (self.env.ffmpeg.found && self.env.ffmpeg.hw_encoders.is_none());
+            if !tested && self.env.ffmpeg.ddagrab_works.is_some() {
+                // ddagrab 測試結果出來：測試期間即時預覽會先試 ddagrab，失敗時改成單張，現在用確定的方式重開
+                self.preview.retry_if_failed();
+            }
+            let f = &self.env.ffmpeg;
+            let pending = (f.has_ddagrab && f.ddagrab_works.is_none()) || (f.found && f.hw_encoders.is_none()) || f.gpu_testing;
             self.ddagrab_watch = pending.then(|| Instant::now() + Duration::from_secs(1));
         }
     }
@@ -369,7 +512,7 @@ impl UiApp {
         let query = screenrecorder_core::types::LibraryQuery { page: Some(self.recent_page as f64), page_size: Some(self.recent_per_page as f64), ..Default::default() };
         self.spawn(async move { actions::library(&core, &dir, &query).await }, move |app, page| {
             if seq != app.recent_seq {
-                return; // 較舊的請求晚回來：丟掉
+                return; // 較舊的要求晚回來：丟掉
             }
             app.recent_page = page.page.max(1);
             for e in &page.items {
@@ -379,31 +522,56 @@ impl UiApp {
         });
     }
 
+    /// 截圖新增或改了：重新讀取清單
+    pub fn shots_changed(&mut self) {
+        if let Some(d) = &mut self.library {
+            d.dirty = true;
+        }
+    }
+
     /// 播放、顯示、剪輯、製作加速版
     pub fn act(&mut self, action: EntryAction, entry: LibraryEntry) {
         use actions::OpenAction;
         let path = entry.media.path.clone();
         match action {
             EntryAction::Play => viewer::open(self, entry),
+            EntryAction::SaveAudio => {
+                let core = self.core.clone();
+                self.toast(tr!("正在存成 M4A…", "Saving as M4A…"), false);
+                self.spawn(async move { actions::save_audio(&core, &path).await }, |app, r| match r {
+                    Ok(out) => app.toast(trf!("已存成 {}（和影片在同一個資料夾）", "Saved as {} (in the same folder as the video)", dialogs::file_name(&out)), false),
+                    Err(e) => app.toast(e.message().to_string(), true),
+                });
+            }
+            EntryAction::CopyChapters => {
+                let duration = entry.media.duration_sec.unwrap_or(0.0);
+                self.ctx.copy_text(screenrecorder_core::chapters::youtube_text(&entry.media.chapters, duration));
+                self.toast(tr!("已複製章節，可以貼到 YouTube 影片的說明欄", "Chapters copied. Paste them into the YouTube video description"), false);
+            }
+            EntryAction::CopyFile => match screenrecorder_core::clipboard::copy_files(std::slice::from_ref(&path)) {
+                Ok(()) => self.toast(tr!("已複製檔案，可以直接貼到 LINE、Teams、信件或資料夾", "File copied. Paste it into LINE, Teams, an email or a folder"), false),
+                Err(e) => self.toast(e, true),
+            },
             EntryAction::External | EntryAction::Reveal => {
                 if action == EntryAction::External {
-                    self.toast("正在以 Windows 預設的程式開啟…", false);
+                    self.toast(tr!("正在以 Windows 預設的程式開啟…", "Opening with the Windows default app…"), false);
                 }
                 let a = if action == EntryAction::External { OpenAction::Play } else { OpenAction::Reveal };
                 if let Err(e) = actions::open(a, &path) {
                     self.toast(e.message().to_string(), true);
                 }
             }
+            EntryAction::Edit if dialogs::is_image(&path) => editor::shot::open(self, path),
             EntryAction::Edit | EntryAction::Export => {
-                let what = if action == EntryAction::Edit { "剪輯" } else { "製作加速版 / GIF" };
+                let what = if action == EntryAction::Edit { tr!("剪輯", "edit") } else { tr!("製作加速版 / GIF", "make a sped-up video or GIF") };
                 if self.locked() {
-                    return self.toast(format!("錄影中無法{what}，請先停止錄影"), true);
+                    return self.toast(trf!("錄影中無法{what}，請先停止錄影", "Can't {what} while recording. Stop the recording first"), true);
                 }
                 if self.exporting() {
-                    return self.toast("目前有轉檔工作進行中，請等它完成", true);
+                    return self.toast(tr!("目前有轉檔工作進行中，請等它完成", "A conversion is in progress. Please wait for it to finish"), true);
                 }
                 if entry.media.duration_sec.unwrap_or(0.0) <= 0.0 {
-                    return self.toast("無法讀取影片長度", true);
+                    return self.toast(tr!("無法讀取影片長度", "Couldn't read the video duration"), true);
                 }
                 if action == EntryAction::Edit {
                     editor::open(self, entry);
@@ -416,6 +584,10 @@ impl UiApp {
 
     /// 由路徑找到完整資訊後執行（剛錄好的檔案可能還不在清單裡：重新讀取）
     pub fn act_path(&mut self, action: EntryAction, path: String) {
+        // 截圖不用讀影片資訊
+        if action == EntryAction::Edit && dialogs::is_image(&path) {
+            return editor::shot::open(self, path);
+        }
         if let Some(e) = self.known.get(&path).filter(|e| e.media.duration_sec.is_some()).cloned() {
             return self.act(action, e);
         }
@@ -428,7 +600,7 @@ impl UiApp {
             },
             move |app, m| match m {
                 Some(m) => app.act(action, LibraryEntry { media: m, exports: vec![] }),
-                None => app.toast("清單中找不到這個檔案", true),
+                None => app.toast(tr!("清單中找不到這個檔案", "This file isn't in the list"), true),
             },
         );
     }
@@ -448,11 +620,19 @@ impl UiApp {
             ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
             if !self.visible {
                 self.visible = true;
-                self.preview.reset();
+                // 從系統匣叫回來：上次即時預覽失敗（例如當時在鎖定畫面）也重新試
+                self.preview.retry_live();
                 self.load_recent();
             }
             if page == UiPage::Changelog {
                 self.changelog_open = true;
+            }
+            if page == UiPage::EditShot {
+                match self.core.last_shot() {
+                    Some(s) if self.editor.is_none() => editor::shot::open(self, s.path),
+                    Some(_) => self.toast(tr!("編輯視窗已經開著，請先關閉", "The editor is already open. Close it first"), true),
+                    None => self.toast(tr!("還沒有截圖", "No screenshots yet"), true),
+                }
             }
         }
     }
@@ -473,7 +653,7 @@ impl UiApp {
             if let Some(v) = &mut self.viewer {
                 v.pause();
             }
-            main_view::cancel_key_capture(self);
+            settings_dialog::cancel_key_capture(self);
         } else {
             // 沒有系統匣：關掉視窗就結束程式
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
@@ -494,9 +674,51 @@ impl eframe::App for UiApp {
         self.flush_settings();
         self.poll_status();
         self.handle_close(ctx);
+        // 視窗縮小、被其他視窗完全蓋住或隱藏時 ui() 不會執行（開始錄影時操作視窗也會縮小）：
+        // 在這裡停掉即時預覽（否則多開一個 FFmpeg 擷取整個桌面，跟錄影搶資源）與音量測試
+        let shown = self.visible && ctx.input(|i| i.viewport().visible()) != Some(false);
+        if !shown {
+            if self.preview.running() {
+                self.preview.stop(&self.core);
+            }
+            if self.meter.is_some() {
+                self.meter = None;
+                self.meter_until = None;
+            }
+        }
+        // 介面大小（設定 → 進階）
+        let zoom = self.s.ui_scale as f32 / 100.0;
+        if (ctx.zoom_factor() - zoom).abs() > 0.001 {
+            ctx.set_zoom_factor(zoom);
+        }
         self.frame_parts.push(("背景狀態", t0.elapsed().as_secs_f32() * 1000.0));
-        // 狀態每 0.25 秒更新一次（錄影中計時器、轉檔進度）；視窗隱藏時放慢
-        ctx.request_repaint_after(if self.visible { Duration::from_millis(250) } else { Duration::from_secs(2) });
+        // 錄影中（計時器）、開著剪輯 / 檢視 / 製作 / 全部錄影、轉檔或下載中：每 0.25 秒更新。
+        // 主畫面閒置時不定時重畫：狀態有變化由 watch_status 叫醒，其餘每 5 秒保險一次；視窗隱藏時 2 秒
+        self.shown_flag.store(shown, std::sync::atomic::Ordering::Relaxed);
+        // 選了攝影機時，主畫面看得到（沒有開著剪輯、檢視、製作、全部錄影）就先顯示攝影機小視窗
+        let covered = self.editor.is_some() || self.viewer.is_some() || self.export_dlg.is_some() || self.library.is_some();
+        self.core.set_camera_preview((shown && !covered && self.env_ready).then(|| self.s.record_config(&self.env)));
+        let busy = self.status.recorder.state != RecorderState::Idle
+            || self.editor.is_some()
+            || self.viewer.is_some()
+            || self.export_dlg.is_some()
+            || self.library.is_some()
+            || self.status.export.as_ref().is_some_and(|e| e.state == screenrecorder_core::types::ExportState::Running)
+            || matches!(self.status.download.phase, DownloadPhase::Downloading | DownloadPhase::Verifying | DownloadPhase::Extracting)
+            || self.status.install.is_some();
+        let mut next = match (shown, busy) {
+            (false, _) => Duration::from_secs(2),
+            (true, true) => Duration::from_millis(250),
+            (true, false) => Duration::from_secs(5),
+        };
+        // 等著到時間要做的事（設定存檔、儲存位置改了重新讀取、ddagrab 測試中）：每一畫格都重算，
+        // 中途因滑鼠等輸入多畫了一格也不會錯過
+        let now = Instant::now();
+        let dir_reload = self.main.dir_changed_at.map(|t| t + Duration::from_millis(610));
+        for t in [self.save_at, self.ddagrab_watch, dir_reload].into_iter().flatten() {
+            next = next.min(t.saturating_duration_since(now));
+        }
+        ctx.request_repaint_after(next);
     }
 
     #[cfg(debug_assertions)]
@@ -505,6 +727,11 @@ impl eframe::App for UiApp {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        // 關到系統匣（視窗隱藏）時什麼都不畫：eframe 只看「縮小 / 被蓋住」判斷看不看得到，
+        // 隱藏的視窗仍會一直呼叫這裡；畫主畫面會重新開始即時預覽，背景就一直有 FFmpeg 在擷取桌面
+        if !self.visible {
+            return;
+        }
         let ctx = ui.ctx().clone();
         let mut t = Instant::now();
         let mut part = |app: &mut UiApp, name: &'static str| {
@@ -516,8 +743,14 @@ impl eframe::App for UiApp {
             part(self, "框選截圖");
         }
         main_view::show(self, ui);
-        main_view::check_key_capture(self, &ctx);
         part(self, "主畫面");
+        if self.notes.is_some() {
+            notes::show(self, &ctx);
+            part(self, "講稿");
+        }
+        if self.schedule_dlg.is_some() {
+            schedule::show(self, &ctx);
+        }
         if self.export_dlg.is_some() {
             export_dialog::show(self, &ctx);
             part(self, "製作視窗");
@@ -530,9 +763,24 @@ impl eframe::App for UiApp {
             viewer::show(self, &ctx);
             part(self, "檢視器");
         }
+        if self.settings_dlg.is_some() {
+            settings_dialog::show(self, &ctx);
+            settings_dialog::check_key_capture(self);
+        }
         if self.editor.is_some() {
             editor::show(self, &ctx);
             part(self, "剪輯視窗");
+        }
+        if self.ocr.is_some() {
+            ocr::show(self, &ctx);
+        }
+        // 新功能介紹：主畫面第一次看得到、沒有其他視窗時檢查一次
+        if !self.whats_new_checked && self.visible && self.env_ready && self.editor.is_none() && self.snip.is_none() {
+            self.whats_new_checked = true;
+            self.whats_new_open = whats_new::should_show(self) && std::env::var("SCREENRECORDER_DEV").is_err();
+        }
+        if self.whats_new_open {
+            whats_new::show(self, &ctx);
         }
         if self.changelog_open {
             dialogs::changelog(self, &ctx);
@@ -548,5 +796,67 @@ impl eframe::App for UiApp {
 
     fn clear_color(&self, visuals: &egui::Visuals) -> [f32; 4] {
         visuals.panel_fill.to_normalized_gamma_f32()
+    }
+}
+
+/// 每隔 every 讀一次 poll()，和上一次不同就呼叫 wake()。shown 為 false 時不讀
+/// （看不到時不比對；再顯示時一定會重畫，從那時重新比）
+async fn watch_changes<T: PartialEq>(every: Duration, shown: Arc<std::sync::atomic::AtomicBool>, poll: impl Fn() -> T, wake: impl Fn()) {
+    let mut tick = tokio::time::interval(every);
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut last: Option<T> = None;
+    loop {
+        tick.tick().await;
+        if !shown.load(std::sync::atomic::Ordering::Relaxed) {
+            last = None;
+            continue;
+        }
+        let now = poll();
+        if last.as_ref().is_some_and(|l| *l != now) {
+            wake();
+        }
+        last = Some(now);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+
+    #[tokio::test(start_paused = true)]
+    async fn wakes_only_on_change() {
+        let value = Arc::new(AtomicU32::new(0));
+        let wakes = Arc::new(AtomicU32::new(0));
+        let shown = Arc::new(AtomicBool::new(true));
+        let (v, w) = (value.clone(), wakes.clone());
+        let task = tokio::spawn(watch_changes(
+            Duration::from_millis(250),
+            shown.clone(),
+            move || v.load(Ordering::SeqCst),
+            move || {
+                w.fetch_add(1, Ordering::SeqCst);
+            },
+        ));
+        let step = |ms| tokio::time::sleep(Duration::from_millis(ms));
+        // 沒有變化：不叫醒
+        step(2000).await;
+        assert_eq!(wakes.load(Ordering::SeqCst), 0);
+        // 變了一次：叫醒一次
+        value.store(1, Ordering::SeqCst);
+        step(1000).await;
+        assert_eq!(wakes.load(Ordering::SeqCst), 1);
+        // 看不到時變化：不叫醒；再看得到之後也不會因為先前的變化叫醒
+        shown.store(false, Ordering::SeqCst);
+        value.store(2, Ordering::SeqCst);
+        step(1000).await;
+        shown.store(true, Ordering::SeqCst);
+        step(1000).await;
+        assert_eq!(wakes.load(Ordering::SeqCst), 1);
+        // 之後的變化照常
+        value.store(3, Ordering::SeqCst);
+        step(300).await;
+        assert_eq!(wakes.load(Ordering::SeqCst), 2);
+        task.abort();
     }
 }

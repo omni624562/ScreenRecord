@@ -1,7 +1,7 @@
-//! 剪輯視窗的標註：文字（含表情符號）、箭頭、方框、圓框、螢光筆、步驟編號、馬賽克、模糊。
+//! 剪輯視窗與截圖編輯的標註：文字（含表情符號）、箭頭、方框、圓框、螢光筆、步驟編號、畫筆、馬賽克、模糊、聚光燈、圖片（Logo）、放大鏡（只限截圖）。
 //! 座標與大小一律用原影片的像素，時間用原影片的秒數（剪輯前）。
 //!
-//! 繪製用 tiny-skia（向量）與系統字型（ttf-parser 取字形，彩色表情支援 COLR 與點陣字形）：
+//! 繪製用 tiny-skia（向量）與系統字型（ttf-parser 取字形，彩色表情符號支援 COLR 與點陣字形）：
 //! 編輯時的預覽與匯出的 PNG 用同一套，看到的就是輸出的樣子。
 //! 匯出時，馬賽克 / 模糊交給 FFmpeg（圓角、橢圓附上遮罩）；其他標註畫成透明 PNG，由 FFmpeg 疊上。
 //!
@@ -9,6 +9,7 @@
 
 use crate::edit::{Overlay, OverlayKind};
 use crate::fonts::{invisible, pick, text_fonts, FontFile};
+use crate::{tr, trf};
 use serde::{Deserialize, Serialize};
 use tiny_skia::{Color, FillRule, LineCap, LineJoin, Mask, Paint, Path, PathBuilder, Pixmap, PixmapPaint, Rect, Stroke, Transform};
 
@@ -23,32 +24,67 @@ pub enum AnnKind {
     Step,
     Mosaic,
     Blur,
+    /// 手繪的線（點存在 pts，0～1 相對於 x, y, w, h）
+    Pen,
+    /// 放大鏡：把圓裡中心附近的畫面放大顯示（size = 倍率 × 100）；只用在截圖（影片匯出不支援）
+    Magnify,
+    /// 聚光燈：框以外的地方變暗，凸顯重點（形狀見 shape）
+    Spotlight,
+    /// 圖片（Logo、浮水印、貼上的圖）：檔案路徑存在 text，size = 不透明度（%）
+    Image,
 }
 
 impl AnnKind {
-    pub const ALL: [AnnKind; 8] = [AnnKind::Text, AnnKind::Arrow, AnnKind::Rect, AnnKind::Ellipse, AnnKind::Highlight, AnnKind::Step, AnnKind::Mosaic, AnnKind::Blur];
+    pub const ALL: [AnnKind; 12] = [
+        AnnKind::Text,
+        AnnKind::Arrow,
+        AnnKind::Rect,
+        AnnKind::Ellipse,
+        AnnKind::Highlight,
+        AnnKind::Step,
+        AnnKind::Pen,
+        AnnKind::Mosaic,
+        AnnKind::Blur,
+        AnnKind::Magnify,
+        AnnKind::Spotlight,
+        AnnKind::Image,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
-            AnnKind::Text => "文字",
-            AnnKind::Arrow => "箭頭",
-            AnnKind::Rect => "方框",
-            AnnKind::Ellipse => "圓框",
-            AnnKind::Highlight => "螢光筆",
-            AnnKind::Step => "編號",
-            AnnKind::Mosaic => "馬賽克",
-            AnnKind::Blur => "模糊",
+            AnnKind::Text => tr!("文字", "Text"),
+            AnnKind::Arrow => tr!("箭頭", "Arrow"),
+            AnnKind::Rect => tr!("方框", "Rectangle"),
+            AnnKind::Ellipse => tr!("圓框", "Ellipse"),
+            AnnKind::Highlight => tr!("螢光筆", "Highlighter"),
+            AnnKind::Step => tr!("編號", "Number"),
+            AnnKind::Mosaic => tr!("馬賽克", "Pixelate"),
+            AnnKind::Blur => tr!("模糊", "Blur"),
+            AnnKind::Pen => tr!("畫筆", "Pen"),
+            AnnKind::Magnify => tr!("放大鏡", "Magnifier"),
+            AnnKind::Spotlight => tr!("聚光燈", "Spotlight"),
+            AnnKind::Image => tr!("圖片", "Image"),
         }
     }
 
-    /// 馬賽克 / 模糊（由 FFmpeg 處理，不是畫上去的）
+    /// 馬賽克 / 模糊 / 放大鏡：處理畫面本身（影片由 FFmpeg 處理，截圖由 effects.rs），不是畫上去的
     pub fn is_effect(self) -> bool {
-        matches!(self, AnnKind::Mosaic | AnnKind::Blur)
+        matches!(self, AnnKind::Mosaic | AnnKind::Blur | AnnKind::Magnify)
+    }
+
+    /// 只能用在截圖（影片匯出不支援）
+    pub fn image_only(self) -> bool {
+        self == AnnKind::Magnify
     }
 
     /// 用拖曳框出範圍的標註
     pub fn is_box(self) -> bool {
-        matches!(self, AnnKind::Rect | AnnKind::Ellipse | AnnKind::Highlight | AnnKind::Mosaic | AnnKind::Blur)
+        matches!(self, AnnKind::Rect | AnnKind::Ellipse | AnnKind::Highlight | AnnKind::Mosaic | AnnKind::Blur | AnnKind::Magnify | AnnKind::Spotlight)
+    }
+
+    /// 選了以後只有形狀可以調（沒有顏色、粗細）
+    pub fn shape_only(self) -> bool {
+        self == AnnKind::Spotlight
     }
 }
 
@@ -67,9 +103,9 @@ impl Shape {
 
     pub fn label(self) -> &'static str {
         match self {
-            Shape::Rect => "方形",
-            Shape::Round => "圓角",
-            Shape::Ellipse => "橢圓",
+            Shape::Rect => tr!("方形", "Rectangle"),
+            Shape::Round => tr!("圓角", "Rounded"),
+            Shape::Ellipse => tr!("橢圓", "Ellipse"),
         }
     }
 }
@@ -111,6 +147,9 @@ pub struct Ann {
     /// 旋轉角度（度，順時針，以中心為軸）；箭頭不用
     #[serde(default, skip_serializing_if = "is_zero")]
     pub rot: f64,
+    /// 畫筆的點（0～1，相對於 x, y, w, h；調整大小時跟著縮放）
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pts: Vec<[f32; 2]>,
 }
 
 fn is_zero(v: &f64) -> bool {
@@ -120,7 +159,7 @@ fn is_zero(v: &f64) -> bool {
 impl AnnKind {
     /// 可以旋轉（箭頭的兩端本來就能指向任何方向）
     pub fn rotatable(self) -> bool {
-        self != AnnKind::Arrow
+        !matches!(self, AnnKind::Arrow | AnnKind::Magnify)
     }
 }
 
@@ -227,8 +266,35 @@ pub fn default_size(kind: AnnKind, vh: f64) -> f64 {
     match kind {
         AnnKind::Text => (48.0 * k).round(),
         AnnKind::Step => (64.0 * k).round(),
+        AnnKind::Magnify => 200.0,
+        AnnKind::Image => 100.0,
         _ => (8.0 * k).round().max(2.0),
     }
+}
+
+/// 一段文字（不加底色）：量好寬高、左上角在 (0, 0)；給程式自己畫的畫面用（放大鏡、錄音卡片）
+pub fn plain_text(text: &str, size: f64, color: &str) -> Ann {
+    let mut a = Ann {
+        id: 0,
+        kind: AnnKind::Text,
+        x: 0.0,
+        y: 0.0,
+        w: 0.0,
+        h: 0.0,
+        start: 0.0,
+        end: 1.0,
+        color: color.into(),
+        size,
+        text: Some(text.to_string()),
+        bg: false,
+        n: None,
+        shape: None,
+        invert: false,
+        rot: 0.0,
+        pts: vec![],
+    };
+    measure(&mut a);
+    a
 }
 
 /// 清單與時間軸上顯示的名稱
@@ -237,26 +303,38 @@ pub fn label(a: &Ann) -> String {
         AnnKind::Text => {
             let t: String = a.text.as_deref().unwrap_or("").split_whitespace().collect::<Vec<_>>().join(" ");
             if t.is_empty() {
-                "文字".into()
+                tr!("文字", "Text").into()
             } else if t.chars().count() > 12 {
-                format!("「{}…」", t.chars().take(12).collect::<String>())
+                trf!("「{}…」", "“{}…”", t.chars().take(12).collect::<String>())
             } else {
-                format!("「{t}」")
+                trf!("「{t}」", "“{t}”")
             }
         }
-        AnnKind::Step => format!("編號 {}", a.n.unwrap_or(1)),
+        AnnKind::Step => trf!("編號 {}", "Number {}", a.n.unwrap_or(1)),
+        AnnKind::Spotlight => tr!("聚光燈", "Spotlight").into(),
+        AnnKind::Image => {
+            let name = a.text.as_deref().map(std::path::Path::new).and_then(|p| p.file_stem()).map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+            if name.is_empty() {
+                tr!("圖片", "Image").into()
+            } else if name.chars().count() > 12 {
+                trf!("圖片「{}…」", "Image “{}…”", name.chars().take(12).collect::<String>())
+            } else {
+                trf!("圖片「{name}」", "Image “{name}”")
+            }
+        }
+        AnnKind::Magnify => trf!("放大鏡 {}×", "Magnifier {}×", crate::format::num((a.size / 100.0 * 10.0).round() / 10.0)),
         AnnKind::Mosaic | AnnKind::Blur => {
             let mut parts = vec![];
             if let Some(s) = a.shape.filter(|s| *s != Shape::Rect) {
                 parts.push(s.label());
             }
             if a.invert {
-                parts.push("範圍外");
+                parts.push(tr!("範圍外", "Outside"));
             }
             if parts.is_empty() {
                 a.kind.label().into()
             } else {
-                format!("{}（{}）", a.kind.label(), parts.join("・"))
+                trf!("{}（{}）", "{} ({})", a.kind.label(), parts.join(tr!("・", " · ")))
             }
         }
         k => k.label().into(),
@@ -360,7 +438,15 @@ pub fn local_bbox(a: &Ann) -> (f64, f64, f64, f64) {
         let y0 = a.y.min(a.y + a.h);
         return (x0 - pad, y0 - pad, a.w.abs() + pad * 2.0, a.h.abs() + pad * 2.0);
     }
-    let pad = if matches!(a.kind, AnnKind::Rect | AnnKind::Ellipse) { a.size } else { 0.0 };
+    let pad = match a.kind {
+        AnnKind::Rect | AnnKind::Ellipse => a.size,
+        AnnKind::Pen => a.size / 2.0 + 1.0,
+        // 外圈的白邊
+        AnnKind::Magnify => magnify_ring(a.w.abs().min(a.h.abs())) + 1.0,
+        // 聚光燈蓋住整個畫面（框以外變暗）：用一個很大的範圍，匯出時再限制在畫面內
+        AnnKind::Spotlight => SPOT_REACH,
+        _ => 0.0,
+    };
     (a.x - pad, a.y - pad, a.w + pad * 2.0, a.h + pad * 2.0)
 }
 
@@ -374,6 +460,16 @@ pub fn hit(a: &Ann, x: f64, y: f64, tolerance: f64) -> bool {
         return dx.hypot(dy) <= a.size * 2.0 + tolerance || (x - x2).hypot(y - y2) <= a.size * 3.0 + tolerance;
     }
     let (x, y) = to_local(a, x, y);
+    if a.kind == AnnKind::Pen && a.pts.len() > 1 {
+        // 點到線附近才算（框裡的空白處可以點到後面的東西）
+        let pts = pen_points(a);
+        let near = |(x0, y0): (f64, f64), (x1, y1): (f64, f64)| {
+            let (dx, dy) = (x1 - x0, y1 - y0);
+            let t = (((x - x0) * dx + (y - y0) * dy) / (dx * dx + dy * dy).max(1e-9)).clamp(0.0, 1.0);
+            (x - (x0 + t * dx)).hypot(y - (y0 + t * dy)) <= a.size / 2.0 + tolerance + 2.0
+        };
+        return pts.windows(2).any(|p| near(p[0], p[1]));
+    }
     let (bx, by, bw, bh) = local_bbox(a);
     x >= bx - tolerance && x <= bx + bw + tolerance && y >= by - tolerance && y <= by + bh + tolerance
 }
@@ -437,7 +533,7 @@ pub fn shape_path(shape: Option<Shape>, x: f64, y: f64, w: f64, h: f64) -> Optio
 }
 
 /// 圓角矩形（半徑不超過短邊的一半）
-fn round_rect(x: f32, y: f32, w: f32, h: f32, r: f32) -> Option<Path> {
+pub(crate) fn round_rect(x: f32, y: f32, w: f32, h: f32, r: f32) -> Option<Path> {
     let r = r.min(w.abs() / 2.0).min(h.abs() / 2.0).max(0.0);
     let k = 0.552_284_8 * r;
     let mut p = PathBuilder::new();
@@ -605,7 +701,7 @@ fn draw_line(pixmap: &mut Pixmap, line: &Line, x: f64, baseline: f64, size: f64,
                     continue;
                 }
             }
-            // 點陣表情（CBDT / sbix）
+            // 點陣表情符號（CBDT / sbix）
             let ppem = (size * t.sy as f64).round().clamp(8.0, 256.0) as u16;
             if let Some(img) = face.glyph_raster_image(g.id, ppem) {
                 if let Ok(bmp) = Pixmap::decode_png(img.data) {
@@ -708,8 +804,107 @@ pub fn draw(pixmap: &mut Pixmap, a: &Ann, t: Transform) {
             let baseline = a.y + a.size / 2.0 + a.size * 0.03 - fs / 2.0 + em_top(fs);
             draw_line(pixmap, &line, a.x + a.size / 2.0 - line.width / 2.0, baseline, fs, ink, None, t);
         }
-        AnnKind::Mosaic | AnnKind::Blur => {}
+        AnnKind::Pen => {
+            let pts = pen_points(a);
+            let Some(&(x0, y0)) = pts.first() else { return };
+            let mut pb = PathBuilder::new();
+            pb.move_to(x0 as f32, y0 as f32);
+            if pts.len() == 1 {
+                pb.line_to(x0 as f32 + 0.01, y0 as f32);
+            }
+            // 用相鄰兩點的中點畫二次曲線，手繪的線比較平滑
+            for i in 1..pts.len() {
+                let (px, py) = pts[i - 1];
+                let (qx, qy) = pts[i];
+                if i == 1 {
+                    pb.line_to(((px + qx) / 2.0) as f32, ((py + qy) / 2.0) as f32);
+                } else {
+                    pb.quad_to(px as f32, py as f32, ((px + qx) / 2.0) as f32, ((py + qy) / 2.0) as f32);
+                }
+            }
+            if let Some(&(lx, ly)) = pts.last() {
+                pb.line_to(lx as f32, ly as f32);
+            }
+            if let Some(path) = pb.finish() {
+                pixmap.stroke_path(&path, &paint(Color::from_rgba8(0, 0, 0, 70)), &stroke(a.size + 2.0), t, None);
+                pixmap.stroke_path(&path, &paint(color(&a.color, 1.0)), &stroke(a.size), t, None);
+            }
+        }
+        AnnKind::Spotlight => {
+            // 很大的方框挖掉中間的形狀（even-odd），框以外塗成半透明黑
+            let (x0, y0, w0, h0) = (x.min(x + w), y.min(y + h), w.abs(), h.abs());
+            let r = SPOT_REACH as f32;
+            let mut pb = PathBuilder::new();
+            if let Some(big) = Rect::from_xywh(x0 - r, y0 - r, w0 + r * 2.0, h0 + r * 2.0) {
+                pb.push_rect(big);
+            }
+            if let Some(hole) = shape_path(Some(a.shape.unwrap_or(Shape::Round)), x0 as f64, y0 as f64, w0 as f64, h0 as f64) {
+                pb.push_path(&hole);
+            }
+            if let Some(path) = pb.finish() {
+                pixmap.fill_path(&path, &paint(Color::from_rgba8(0, 0, 0, 140)), FillRule::EvenOdd, t, None);
+            }
+        }
+        AnnKind::Image => draw_picture(pixmap, a, t),
+        AnnKind::Mosaic | AnnKind::Blur | AnnKind::Magnify => {}
     }
+}
+
+/// 圖片標註：縮放到外框大小；檔案不見時畫一個灰色的框，提醒要換一張
+fn draw_picture(pixmap: &mut Pixmap, a: &Ann, t: Transform) {
+    let (x0, y0, w0, h0) = (a.x.min(a.x + a.w) as f32, a.y.min(a.y + a.h) as f32, a.w.abs().max(1.0) as f32, a.h.abs().max(1.0) as f32);
+    let Some(pic) = a.text.as_deref().and_then(crate::picture::load) else {
+        if let Some(r) = Rect::from_xywh(x0, y0, w0, h0) {
+            pixmap.fill_rect(r, &paint(Color::from_rgba8(128, 128, 128, 90)), t, None);
+            let mut pb = PathBuilder::new();
+            pb.push_rect(r);
+            pb.move_to(x0, y0);
+            pb.line_to(x0 + w0, y0 + h0);
+            pb.move_to(x0 + w0, y0);
+            pb.line_to(x0, y0 + h0);
+            if let Some(p) = pb.finish() {
+                pixmap.stroke_path(&p, &paint(Color::from_rgba8(128, 128, 128, 220)), &stroke(2.0 / t.sx.abs().max(1e-3) as f64), t, None);
+            }
+        }
+        return;
+    };
+    // 依實際畫出來的大小挑一張縮好的圖（縮很小時不會鋸齒）
+    let scale = (t.sx * t.sx + t.ky * t.ky).sqrt();
+    let img = pic.level_for(w0 * scale);
+    let (sx, sy) = (w0 / img.width() as f32, h0 / img.height() as f32);
+    let pp = PixmapPaint { opacity: (a.size / 100.0).clamp(0.05, 1.0) as f32, quality: tiny_skia::FilterQuality::Bicubic, ..Default::default() };
+    pixmap.draw_pixmap(0, 0, img.as_ref(), &pp, t.pre_translate(x0, y0).pre_scale(sx, sy), None);
+}
+
+/// 聚光燈變暗的範圍往外延伸多遠（影片像素；比任何畫面都大）
+const SPOT_REACH: f64 = 20000.0;
+
+/// 畫筆的點（影片像素，未旋轉）
+pub fn pen_points(a: &Ann) -> Vec<(f64, f64)> {
+    a.pts.iter().map(|p| (a.x + p[0] as f64 * a.w, a.y + p[1] as f64 * a.h)).collect()
+}
+
+/// 畫筆：把畫好的點（影片像素）轉成外框與 0～1 的相對位置
+pub fn set_pen_points(a: &mut Ann, pts: &[(f64, f64)]) {
+    if pts.is_empty() {
+        return;
+    }
+    let x0 = pts.iter().map(|p| p.0).fold(f64::INFINITY, f64::min);
+    let y0 = pts.iter().map(|p| p.1).fold(f64::INFINITY, f64::min);
+    let x1 = pts.iter().map(|p| p.0).fold(f64::NEG_INFINITY, f64::max);
+    let y1 = pts.iter().map(|p| p.1).fold(f64::NEG_INFINITY, f64::max);
+    // 直線（寬或高為 0）也能縮放：至少 1 像素
+    let (w, h) = ((x1 - x0).max(1.0), (y1 - y0).max(1.0));
+    a.x = x0;
+    a.y = y0;
+    a.w = w;
+    a.h = h;
+    a.pts = pts.iter().map(|p| [((p.0 - x0) / w) as f32, ((p.1 - y0) / h) as f32]).collect();
+}
+
+/// 放大鏡外圈白邊的寬度（影片像素）
+pub fn magnify_ring(d: f64) -> f64 {
+    (d * 0.025).clamp(2.0, 8.0)
 }
 
 /// 以不透明度畫一個標註（預覽中選取、但目前時間看不到的標註畫淡一點）
@@ -727,6 +922,9 @@ pub fn draw_with_opacity(pixmap: &mut Pixmap, a: &Ann, t: Transform, opacity: f3
 
 /// 匯出：馬賽克 / 模糊交給 FFmpeg（圓角、橢圓附上遮罩）；其他畫成剛好包住標註的透明 PNG
 pub fn to_overlay(a: &Ann, vw: f64, vh: f64) -> Option<Overlay> {
+    if a.kind.image_only() {
+        return None;
+    }
     if a.kind.is_effect() {
         let kind = if a.kind == AnnKind::Mosaic { OverlayKind::Mosaic } else { OverlayKind::Blur };
         let r = rotation(a);
@@ -786,6 +984,18 @@ pub struct ProjectData {
     pub crop_on: bool,
     #[serde(default)]
     pub anns: Vec<Ann>,
+    /// 聲音處理（降噪、音量平衡、靜音）
+    #[serde(default, skip_serializing_if = "crate::edit::AudioFx::is_default")]
+    pub audio: crate::edit::AudioFx,
+    /// 局部加速的片段
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fast: Vec<crate::edit::FastRange>,
+    /// 跟著點擊放大的倍率（0 = 不放大）
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub zoom: f64,
+    /// 背景與圓角
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frame: Option<crate::video_frame::VideoFrame>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -803,7 +1013,25 @@ mod tests {
     use super::*;
 
     fn ann(kind: AnnKind) -> Ann {
-        Ann { id: 1, kind, x: 100.0, y: 80.0, w: 200.0, h: 120.0, start: 0.0, end: 3.0, color: "#e5484d".into(), size: 8.0, text: None, bg: false, n: None, shape: None, invert: false, rot: 0.0 }
+        Ann {
+            id: 1,
+            kind,
+            x: 100.0,
+            y: 80.0,
+            w: 200.0,
+            h: 120.0,
+            start: 0.0,
+            end: 3.0,
+            color: "#e5484d".into(),
+            size: 8.0,
+            text: None,
+            bg: false,
+            n: None,
+            shape: None,
+            invert: false,
+            rot: 0.0,
+            pts: vec![],
+        }
     }
 
     #[test]
@@ -903,6 +1131,33 @@ mod tests {
         assert!(!shape_contains(Some(Shape::Round), 0.0, 0.0, 100.0, 50.0, 0.5, 0.5));
         assert!(shape_contains(Some(Shape::Round), 0.0, 0.0, 100.0, 50.0, 50.0, 1.0));
         assert!(shape_contains(None, 0.0, 0.0, 100.0, 50.0, 0.5, 0.5));
+    }
+
+    #[test]
+    fn pictures_are_scaled_with_opacity() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("logo.png");
+        let mut src = Pixmap::new(40, 20).unwrap();
+        src.fill(Color::from_rgba8(255, 0, 0, 255));
+        src.save_png(&path).unwrap();
+        let mut a = ann(AnnKind::Image);
+        a.text = Some(path.to_string_lossy().to_string());
+        (a.x, a.y, a.w, a.h, a.size) = (100.0, 50.0, 80.0, 40.0, 100.0);
+        assert_eq!(label(&a), "圖片「logo」");
+        let o = to_overlay(&a, 1920.0, 1080.0).unwrap();
+        assert_eq!((o.kind, o.x, o.y, o.w, o.h), (OverlayKind::Image, 100.0, 50.0, 80.0, 40.0));
+        let p = Pixmap::decode_png(&o.png.unwrap()).unwrap();
+        let c = p.pixel(40, 20).unwrap();
+        assert_eq!((c.red(), c.alpha()), (255, 255));
+        // 半透明（浮水印）
+        a.size = 50.0;
+        let p = Pixmap::decode_png(&to_overlay(&a, 1920.0, 1080.0).unwrap().png.unwrap()).unwrap();
+        let al = p.pixel(40, 20).unwrap().alpha();
+        assert!((126..=129).contains(&al), "{al}");
+        // 檔案不見：畫灰色的框（不會失敗）
+        a.text = Some(dir.path().join("gone.png").to_string_lossy().to_string());
+        let p = Pixmap::decode_png(&to_overlay(&a, 1920.0, 1080.0).unwrap().png.unwrap()).unwrap();
+        assert!(p.pixel(40, 10).unwrap().alpha() > 0);
     }
 
     fn alpha_at(png: &[u8], x: u32, y: u32) -> u8 {

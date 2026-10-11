@@ -98,7 +98,7 @@ pub struct AudioConfig {
     pub mic_id: String,
 }
 
-/// 全域快捷鍵是否登記成功（false = 已被其他程式占用；停用的視為成功）
+/// 全域快速鍵是否登記成功（false = 已被其他程式占用；停用的視為成功）
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct HotkeyStatus {
     pub record: bool,
@@ -107,6 +107,22 @@ pub struct HotkeyStatus {
     pub shot: bool,
     #[serde(default)]
     pub snip: bool,
+    #[serde(default)]
+    pub mark: bool,
+    #[serde(default)]
+    pub pen: bool,
+}
+
+impl HotkeyStatus {
+    /// 依 Hotkeys::all 的順序
+    pub fn all(&self) -> [bool; HOTKEY_COUNT] {
+        [self.record, self.pause, self.shot, self.snip, self.mark, self.pen]
+    }
+
+    pub fn from_list(ok: &[bool]) -> HotkeyStatus {
+        let g = |i: usize| ok.get(i).copied().unwrap_or(false);
+        HotkeyStatus { record: g(0), pause: g(1), shot: g(2), snip: g(3), mark: g(4), pen: g(5) }
+    }
 }
 
 /// 最近一次的截圖（seq 每次加一，介面看到變了就更新清單）
@@ -120,7 +136,7 @@ pub struct ShotInfo {
     pub copied: bool,
 }
 
-/// 一組全域快捷鍵：修飾鍵＋按鍵（Windows 虛擬鍵碼）
+/// 一組全域快速鍵：修飾鍵＋按鍵（Windows 虛擬鍵碼）
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Hotkey {
     #[serde(default)]
@@ -174,25 +190,88 @@ pub fn key_name(vk: u32) -> Option<String> {
     })
 }
 
-/// 四個全域快捷鍵（None = 停用）
+/// 錄影時要顯示的按鍵：有 Ctrl / Alt / Win 的組合，或 Enter、Esc 等功能鍵；一般打字（含 Shift + 字母）不顯示，避免錄到密碼
+pub fn shown_keys(vk: u32, ctrl: bool, alt: bool, shift: bool, win: bool) -> Option<String> {
+    let name = match vk {
+        // 修飾鍵本身不顯示（和其他鍵一起按時才顯示）
+        0x10..=0x12 | 0x5B | 0x5C | 0xA0..=0xA5 => return None,
+        0x0D => "Enter".to_string(),
+        0x1B => "Esc".to_string(),
+        0x09 => "Tab".to_string(),
+        0x08 => "Backspace".to_string(),
+        0x25 => "←".to_string(),
+        0x26 => "↑".to_string(),
+        0x27 => "→".to_string(),
+        0x28 => "↓".to_string(),
+        0x7C..=0x87 => format!("F{}", vk - 0x6F),
+        0xBA => ";".into(),
+        0xBB => "=".into(),
+        0xBC => ",".into(),
+        0xBD => "-".into(),
+        0xBE => ".".into(),
+        0xBF => "/".into(),
+        0xDB => "[".into(),
+        0xDC => "\\".into(),
+        0xDD => "]".into(),
+        _ => key_name(vk)?,
+    };
+    let special = !matches!(vk, 0x41..=0x5A | 0x30..=0x39 | 0x20 | 0xBA..=0xBF | 0xDB..=0xDD);
+    if !(ctrl || alt || win || special) {
+        return None;
+    }
+    let mut parts: Vec<String> = vec![];
+    for (on, n) in [(ctrl, "Ctrl"), (alt, "Alt"), (shift, "Shift"), (win, "Win")] {
+        if on {
+            parts.push(n.into());
+        }
+    }
+    parts.push(name);
+    Some(parts.join(" + "))
+}
+
+/// 全域快速鍵的數量
+pub const HOTKEY_COUNT: usize = 6;
+
+/// 全域快速鍵（None = 停用）
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Hotkeys {
     pub record: Option<Hotkey>,
     pub pause: Option<Hotkey>,
     pub shot: Option<Hotkey>,
     pub snip: Option<Hotkey>,
+    /// 錄影中加標記（3.1 新增：舊的設定沒有這個欄位時用預設）
+    #[serde(default = "default_mark")]
+    pub mark: Option<Hotkey>,
+    /// 螢幕畫筆（3.1 新增）
+    #[serde(default = "default_pen")]
+    pub pen: Option<Hotkey>,
+}
+
+fn default_mark() -> Option<Hotkey> {
+    Some(Hotkey::ctrl_alt(0x4D))
+}
+
+fn default_pen() -> Option<Hotkey> {
+    Some(Hotkey::ctrl_alt(0x44))
 }
 
 impl Default for Hotkeys {
     fn default() -> Self {
-        Hotkeys { record: Some(Hotkey::ctrl_alt(0x52)), pause: Some(Hotkey::ctrl_alt(0x50)), shot: Some(Hotkey::ctrl_alt(0x53)), snip: Some(Hotkey::ctrl_alt(0x41)) }
+        Hotkeys {
+            record: Some(Hotkey::ctrl_alt(0x52)),
+            pause: Some(Hotkey::ctrl_alt(0x50)),
+            shot: Some(Hotkey::ctrl_alt(0x53)),
+            snip: Some(Hotkey::ctrl_alt(0x41)),
+            mark: default_mark(),
+            pen: default_pen(),
+        }
     }
 }
 
 impl Hotkeys {
-    /// 依序：開始 / 停止錄影、暫停 / 繼續、截圖、框選截圖
-    pub fn all(&self) -> [Option<Hotkey>; 4] {
-        [self.record, self.pause, self.shot, self.snip]
+    /// 依序：開始 / 停止錄影、暫停 / 繼續、截圖、框選截圖、加標記、螢幕畫筆
+    pub fn all(&self) -> [Option<Hotkey>; HOTKEY_COUNT] {
+        [self.record, self.pause, self.shot, self.snip, self.mark, self.pen]
     }
 
     pub fn set(&mut self, i: usize, k: Option<Hotkey>) {
@@ -200,8 +279,15 @@ impl Hotkeys {
             0 => self.record = k,
             1 => self.pause = k,
             2 => self.shot = k,
-            _ => self.snip = k,
+            3 => self.snip = k,
+            4 => self.mark = k,
+            _ => self.pen = k,
         }
+    }
+
+    /// 全部停用（設定新的快速鍵時暫停）
+    pub fn none() -> Hotkeys {
+        Hotkeys { record: None, pause: None, shot: None, snip: None, mark: None, pen: None }
     }
 
     /// 第 i 個的名稱（停用時是空字串）
@@ -215,7 +301,13 @@ impl Hotkeys {
     }
 }
 
-pub const HOTKEY_NAMES: [&str; 4] = ["開始 / 停止錄影", "暫停 / 繼續", "截圖（固定範圍）", "框選截圖"];
+/// 每組快速鍵的名稱（依介面語言）
+pub fn hotkey_names() -> [&'static str; HOTKEY_COUNT] {
+    crate::tr!(
+        ["開始 / 停止錄影", "暫停 / 繼續", "截圖（固定範圍）", "框選截圖", "錄影中加標記", "螢幕畫筆（開 / 關）"],
+        ["Start / stop recording", "Pause / resume", "Screenshot (fixed area)", "Select area screenshot", "Add marker while recording", "Screen pen (on / off)"]
+    )
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -249,7 +341,59 @@ pub struct RecordConfig {
     /// 開始擷取時縮小操作視窗；未指定視為 true
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hide_ui: Option<bool>,
+    /// 錄影時在畫面上顯示滑鼠點擊（會錄進影片）
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub show_clicks: bool,
+    /// 錄影時在畫面上顯示按下的快速鍵（有 Ctrl / Alt / Win 的組合與 Enter、Esc 等；一般打字不顯示）
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub show_keys: bool,
+    /// 錄影時游標周圍顯示一圈光暈（會錄進影片）
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub cursor_halo: bool,
+    /// 錄影時隱藏桌面圖示（停止後還原）
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub hide_icons: bool,
+    /// 只錄這個視窗（自訂範圍跟著視窗移動）；視窗代碼見 winui::WindowInfo
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub follow_window: Option<i64>,
+    /// 攝影機子母畫面（把攝影機的畫面疊在角落）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub camera: Option<CameraConfig>,
+    /// 只錄聲音（畫面是一張「只錄聲音」的卡片，見 audio_card.rs）
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub audio_only: bool,
 }
+
+/// 攝影機子母畫面
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CameraConfig {
+    /// 攝影機（DirectShow 的裝置名稱）
+    pub device: String,
+    /// 位置：0 右下、1 左下、2 右上、3 左上
+    #[serde(default)]
+    pub corner: u8,
+    /// 大小：畫面短邊（橫的畫面是高度）的百分比
+    #[serde(default = "default_camera_size")]
+    pub size: u32,
+    /// 圓形（否則是方形）
+    #[serde(default = "default_true")]
+    pub circle: bool,
+    /// 拖曳後記住的位置：小視窗中心在擷取範圍內的相對位置（萬分比，0～10000）；None = 放在 corner
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pos: Option<[u16; 2]>,
+}
+
+fn default_camera_size() -> u32 {
+    20
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// 攝影機大小可選的百分比
+pub const CAMERA_SIZES: [u32; 3] = [15, 20, 28];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -332,6 +476,20 @@ pub struct RecorderStatus {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub result: Option<RecordingResult>,
     pub log: Vec<LogEntry>,
+    /// 這次錄影加了幾個標記
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub markers: u32,
+}
+
+fn is_zero_u32(v: &u32) -> bool {
+    *v == 0
+}
+
+/// 影片章節（開始的秒數與名稱）
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct Chapter {
+    pub start: f64,
+    pub title: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
@@ -352,6 +510,9 @@ pub struct MediaInfo {
     pub fps: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub has_audio: Option<bool>,
+    /// 章節（錄影時加的標記）
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub chapters: Vec<Chapter>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -360,6 +521,8 @@ pub enum ExportFormat {
     #[default]
     Mp4,
     Gif,
+    /// WebP 動圖：比 GIF 小很多、顏色也比較好
+    Webp,
 }
 
 impl ExportFormat {
@@ -367,7 +530,13 @@ impl ExportFormat {
         match self {
             ExportFormat::Mp4 => "mp4",
             ExportFormat::Gif => "gif",
+            ExportFormat::Webp => "webp",
         }
+    }
+
+    /// 動圖（GIF、WebP）：沒有聲音、選寬度與每秒張數
+    pub fn is_animation(self) -> bool {
+        matches!(self, ExportFormat::Gif | ExportFormat::Webp)
     }
 }
 
@@ -454,7 +623,11 @@ pub enum ExportState {
 pub enum ExportKind {
     Speed,
     Gif,
+    /// WebP 動圖
+    Webp,
     Cut,
+    /// 多支錄影合併成一支
+    Merge,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -518,6 +691,9 @@ pub struct FfmpegInfo {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
     pub has_ddagrab: bool,
+    /// ddagrab 能在畫面沒變化時不送出（dup_frames，FFmpeg 7.0 起）：即時預覽用
+    #[serde(default)]
+    pub ddagrab_skip_static: bool,
     pub has_gdigrab: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub encoder: Option<String>,
@@ -531,6 +707,12 @@ pub struct FfmpegInfo {
     pub ddagrab_works: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ddagrab_error: Option<String>,
+    /// 錄影時在顯示卡上處理畫面的方式（實測通過時的說明）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gpu_convert: Option<String>,
+    /// 顯示卡處理測試中
+    #[serde(default)]
+    pub gpu_testing: bool,
     pub searched: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
@@ -578,4 +760,42 @@ pub struct UpdateInfo {
     pub sha256: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub size: Option<u64>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{shown_keys, Hotkey, Hotkeys};
+
+    #[test]
+    fn old_hotkey_settings_get_the_new_defaults() {
+        // 3.0 存的設定沒有標記、畫筆
+        let old = r#"{"record":{"ctrl":true,"alt":true,"shift":false,"win":false,"key":82},"pause":null,"shot":null,"snip":null}"#;
+        let k: Hotkeys = serde_json::from_str(old).unwrap();
+        assert_eq!(k.pen, Some(Hotkey::ctrl_alt(0x44)));
+        assert_eq!(k.mark, Some(Hotkey::ctrl_alt(0x4D)));
+        assert_eq!(k.pause, None);
+        assert_eq!(k.label(5), "Ctrl+Alt+D");
+        // 停用畫筆後存起來，讀回來還是停用
+        let mut k = Hotkeys::default();
+        k.set(5, None);
+        let back: Hotkeys = serde_json::from_str(&serde_json::to_string(&k).unwrap()).unwrap();
+        assert_eq!(back.pen, None);
+        assert_eq!(back.mark, Hotkeys::default().mark);
+    }
+
+    #[test]
+    fn only_shortcuts_and_function_keys_are_shown() {
+        assert_eq!(shown_keys(0x43, true, false, false, false).as_deref(), Some("Ctrl + C"));
+        assert_eq!(shown_keys(0x53, true, false, true, false).as_deref(), Some("Ctrl + Shift + S"));
+        assert_eq!(shown_keys(0x44, false, false, false, true).as_deref(), Some("Win + D"));
+        assert_eq!(shown_keys(0x0D, false, false, false, false).as_deref(), Some("Enter"));
+        assert_eq!(shown_keys(0x74, false, false, false, false).as_deref(), Some("F5"));
+        assert_eq!(shown_keys(0x09, false, true, false, false).as_deref(), Some("Alt + Tab"));
+        // 一般打字（含 Shift）、單獨的修飾鍵不顯示
+        assert_eq!(shown_keys(0x41, false, false, false, false), None);
+        assert_eq!(shown_keys(0x41, false, false, true, false), None);
+        assert_eq!(shown_keys(0x20, false, false, false, false), None);
+        assert_eq!(shown_keys(0xA2, true, false, false, false), None);
+        assert_eq!(shown_keys(0x10, false, false, true, false), None);
+    }
 }

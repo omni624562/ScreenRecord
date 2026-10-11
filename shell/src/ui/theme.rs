@@ -115,7 +115,8 @@ pub fn setup_fonts(ctx: &egui::Context) {
             .enumerate()
             .map(|(i, f)| {
                 let name = format!("{prefix}{i}-{}", f.name);
-                let mut fd = FontData::from_owned((*f.data).clone());
+                // 直接用對映的字型檔，不複製一份到記憶體
+                let mut fd = FontData::from_static(f.data);
                 fd.index = f.index;
                 defs.font_data.insert(name.clone(), Arc::new(fd));
                 name
@@ -128,7 +129,7 @@ pub fn setup_fonts(ctx: &egui::Context) {
         .iter()
         .find_map(|n| {
             let win = std::env::var("WINDIR").unwrap_or_else(|_| "C:\\Windows".into());
-            std::fs::read(std::path::Path::new(&win).join("Fonts").join(n)).ok().map(|d| screenrecorder_core::fonts::FontFile { name: n.to_string(), data: Arc::new(d), index: 0 })
+            screenrecorder_core::fonts::map_file(&std::path::Path::new(&win).join("Fonts").join(n)).map(|data| screenrecorder_core::fonts::FontFile { name: n.to_string(), data, index: 0 })
         })
         .into_iter()
         .collect();
@@ -160,7 +161,7 @@ pub fn setup_visuals(ctx: &egui::Context) {
     });
 }
 
-/// 調整 egui 內建元件（下拉選單、輸入框、捲軸）的外觀
+/// 調整 egui 內建元件（下拉選單、輸入欄、捲軸）的外觀
 fn visuals(dark: bool) -> Visuals {
     let p = if dark { &DARK } else { &LIGHT };
     let mut v = if dark { Visuals::dark() } else { Visuals::light() };
@@ -211,13 +212,26 @@ pub enum Icon {
     Pause,
     Stop,
     Trash,
-    Down,
     Mic,
     Speaker,
     Close,
     Camera,
     Eye,
     More,
+    /// 視窗（有標題列的方框）
+    Window,
+    /// 向下的箭頭（下拉選單）
+    ChevD,
+    /// 圖片（山與太陽）
+    Image,
+    /// 復原 / 重做（彎箭頭）
+    Undo,
+    Redo,
+    /// 向左轉 / 向右轉（轉 90 度的圓弧箭頭）
+    RotL,
+    RotR,
+    /// 時鐘（排程）
+    Clock,
 }
 
 /// 在 rect（正方形）裡畫圖示
@@ -272,7 +286,7 @@ pub fn paint_icon(p: &Painter, rect: Rect, icon: Icon, color: Color32) {
         }
         Icon::ChevL => line(&[(10.0, 3.0), (5.0, 8.0), (10.0, 13.0)]),
         Icon::ChevR => line(&[(6.0, 3.0), (11.0, 8.0), (6.0, 13.0)]),
-        Icon::Down => line(&[(4.0, 6.0), (8.0, 10.0), (12.0, 6.0)]),
+        Icon::ChevD => line(&[(4.0, 6.0), (8.0, 10.0), (12.0, 6.0)]),
         Icon::List => {
             for y in [4.0, 8.0, 12.0] {
                 line(&[(5.5, y), (13.5, y)]);
@@ -305,6 +319,35 @@ pub fn paint_icon(p: &Painter, rect: Rect, icon: Icon, color: Color32) {
             line(&[(5.5, 5.0), (6.5, 3.0), (9.5, 3.0), (10.5, 5.0)]);
             circle(8.0, 9.2, 2.4);
         }
+        Icon::Image => {
+            p.rect_stroke(Rect::from_min_max(at(2.0, 3.0), at(14.0, 13.0)), CornerRadius::same((1.5 * k) as u8), st, StrokeKind::Middle);
+            line(&[(3.5, 11.5), (7.0, 7.5), (9.5, 10.0), (11.0, 8.5), (13.0, 11.0)]);
+            p.circle_filled(at(10.8, 5.8), 1.2 * k, color);
+        }
+        Icon::Undo | Icon::Redo => {
+            // 往左上的箭頭接一個往下彎回來的弧；重做是左右相反
+            let m = |x: f32| if icon == Icon::Undo { x } else { 16.0 - x };
+            line(&[(m(6.0), 3.5), (m(3.5), 6.0), (m(6.0), 8.5)]);
+            line(&[(m(3.5), 6.0), (m(10.0), 6.0)]);
+            let (a0, a1) = if icon == Icon::Undo { (-std::f32::consts::FRAC_PI_2, std::f32::consts::FRAC_PI_2) } else { (std::f32::consts::FRAC_PI_2 * 3.0, std::f32::consts::FRAC_PI_2) };
+            arc(m(10.0), 9.5, 3.5, a0, a1);
+            line(&[(m(10.0), 13.0), (m(6.0), 13.0)]);
+        }
+        Icon::RotL | Icon::RotR => {
+            // 四分之三圈的圓弧，箭頭在上方；向右轉是左右相反
+            let m = |x: f32| if icon == Icon::RotL { x } else { 16.0 - x };
+            let pi = std::f32::consts::PI;
+            if icon == Icon::RotL {
+                arc(8.0, 8.5, 5.0, -pi / 2.0, pi);
+            } else {
+                arc(8.0, 8.5, 5.0, 0.0, pi * 1.5);
+            }
+            line(&[(m(10.3), 1.4), (m(8.0), 3.5), (m(10.3), 5.6)]);
+        }
+        Icon::Window => {
+            p.rect_stroke(Rect::from_min_max(at(2.0, 3.0), at(14.0, 13.0)), CornerRadius::same((1.5 * k) as u8), st, StrokeKind::Middle);
+            line(&[(2.0, 6.0), (14.0, 6.0)]);
+        }
         Icon::More => {
             for x in [3.5, 8.0, 12.5] {
                 p.circle_filled(at(x, 8.0), 1.4 * k, color);
@@ -314,6 +357,10 @@ pub fn paint_icon(p: &Painter, rect: Rect, icon: Icon, color: Color32) {
             arc(8.0, 13.0, 7.6, -2.42, -0.72);
             arc(8.0, 3.0, 7.6, 0.72, 2.42);
             p.circle_filled(at(8.0, 8.0), 2.2 * k, color);
+        }
+        Icon::Clock => {
+            circle(8.0, 8.0, 6.0);
+            line(&[(8.0, 4.6), (8.0, 8.0), (10.6, 9.6)]);
         }
         Icon::Close => {
             line(&[(4.0, 4.0), (12.0, 12.0)]);
@@ -346,7 +393,6 @@ pub enum Kind {
 pub struct Btn {
     text: String,
     icon: Option<Icon>,
-    trailing: Option<Icon>,
     kind: Kind,
     small: bool,
     enabled: bool,
@@ -363,7 +409,7 @@ pub struct Btn {
 
 impl Btn {
     pub fn new(text: impl Into<String>) -> Self {
-        Self { text: text.into(), icon: None, trailing: None, kind: Kind::Normal, small: false, enabled: true, min_width: 0.0, tooltip: None, selected: false, height: None, left: false, quiet: false }
+        Self { text: text.into(), icon: None, kind: Kind::Normal, small: false, enabled: true, min_width: 0.0, tooltip: None, selected: false, height: None, left: false, quiet: false }
     }
     pub fn quiet(mut self, q: bool) -> Self {
         self.quiet = q;
@@ -382,10 +428,6 @@ impl Btn {
     }
     pub fn icon(mut self, i: Icon) -> Self {
         self.icon = Some(i);
-        self
-    }
-    pub fn trailing(mut self, i: Icon) -> Self {
-        self.trailing = Some(i);
         self
     }
     pub fn kind(mut self, k: Kind) -> Self {
@@ -437,7 +479,7 @@ impl Btn {
     pub fn width(&self, ui: &Ui) -> f32 {
         let (_, _, pad, fid) = self.metrics();
         let text = (!self.text.is_empty()).then(|| ui.painter().layout_no_wrap(self.text.clone(), fid, Color32::WHITE).size().x);
-        pad * 2.0 + text.unwrap_or(0.0) + if self.icon.is_some() { 16.0 + if text.is_some() { 6.0 } else { 0.0 } } else { 0.0 } + if self.trailing.is_some() { 18.0 } else { 0.0 }
+        pad * 2.0 + text.unwrap_or(0.0) + if self.icon.is_some() { 16.0 + if text.is_some() { 6.0 } else { 0.0 } } else { 0.0 }
     }
 
     pub fn show(self, ui: &mut Ui) -> Response {
@@ -465,13 +507,10 @@ impl Btn {
         if self.icon.is_some() {
             w += icon_w + if galley.is_some() { gap } else { 0.0 };
         }
-        if self.trailing.is_some() {
-            w += 12.0 + gap;
-        }
         if self.kind == Kind::Record {
             w += 10.0 + gap;
         }
-        if galley.is_none() && self.icon.is_some() && self.trailing.is_none() {
+        if galley.is_none() && self.icon.is_some() {
             w = h;
         }
         let size = vec2(w.max(self.min_width), h);
@@ -505,7 +544,7 @@ impl Btn {
                 text_color(hover)
             };
             let mut x = if self.left { rect.min.x + pad } else { rect.center().x - (w - pad * 2.0) / 2.0 };
-            if galley.is_none() && self.icon.is_some() && self.trailing.is_none() {
+            if galley.is_none() && self.icon.is_some() {
                 x = rect.center().x - icon_w / 2.0;
             }
             if self.kind == Kind::Record {
@@ -518,10 +557,6 @@ impl Btn {
             }
             if let Some(g) = &galley {
                 painter.galley_with_override_text_color(pos2(x, rect.center().y - g.size().y / 2.0), g.clone(), color);
-                x += g.size().x + gap;
-            }
-            if let Some(i) = self.trailing {
-                paint_icon(painter, Rect::from_min_size(pos2(x, rect.center().y - 6.0), Vec2::splat(12.0)), i, color.gamma_multiply(0.8));
             }
         }
         let resp = if self.enabled { resp.on_hover_cursor(egui::CursorIcon::PointingHand) } else { resp };
@@ -644,7 +679,7 @@ pub fn muted(ui: &Ui, text: impl Into<String>) -> RichText {
     RichText::new(text.into()).color(pal(ui).muted).font(font(12.5))
 }
 
-/// 進度條（細）
+/// 進度列（細）
 pub fn progress(ui: &mut Ui, frac: f32, color: Color32, height: f32) {
     let p = pal(ui);
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::hover());

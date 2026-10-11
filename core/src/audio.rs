@@ -2,7 +2,7 @@
 //!
 //! FFmpeg 在 Windows 只能透過 dshow 錄麥克風，錄不到「電腦正在播放的聲音」，
 //! 因此系統聲音（loopback）與麥克風都在這裡自行擷取，統一轉成 48 kHz / 立體聲 / float32，
-//! 每個封包附上 QPC 時間戳，再由 AudioPipe 對齊畫面時間後送進 FFmpeg。
+//! 每個封包附上 QPC 時間戳記，再由 AudioPipe 對齊畫面時間後送進 FFmpeg。
 
 use crate::types::AudioDevice;
 
@@ -27,7 +27,7 @@ pub struct AudioSourceSpec {
     pub mic_id: String,
 }
 
-/// 開啟擷取來源（可替換：測試時用假的來源）
+/// 開啟擷取來源（可抽換：測試時用假的來源）
 pub type Opener = std::sync::Arc<dyn Fn(&AudioSourceSpec) -> Result<Box<dyn Capture>, String> + Send + Sync>;
 
 /// 列出可錄音的裝置（麥克風等）與預設播放裝置名稱
@@ -46,12 +46,13 @@ pub fn list_audio_devices() -> Result<AudioDevices, String> {
 
 #[cfg(not(windows))]
 pub fn open_wasapi(_spec: &AudioSourceSpec) -> Result<Box<dyn Capture>, String> {
-    Err("這個平台不支援錄音".into())
+    Err(crate::tr!("這個平台不支援錄音", "Audio recording isn't supported on this platform").into())
 }
 
 #[cfg(windows)]
 mod win {
     use super::*;
+    use crate::{tr, trf};
     use windows::core::PCWSTR;
     use windows::Win32::Devices::FunctionDiscovery::PKEY_Device_FriendlyName;
     use windows::Win32::Media::Audio::{
@@ -73,7 +74,7 @@ mod win {
         unsafe {
             // 這個執行緒可能已經初始化過 COM（任何模式都可以用 MMDevice API）
             let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
-            CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL).map_err(|e| format!("無法建立音訊裝置列舉器 ({})", hex(&e)))
+            CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL).map_err(|e| trf!("無法建立音訊裝置列舉器 ({})", "Couldn't create the audio device enumerator ({})", hex(&e)))
         }
     }
 
@@ -137,7 +138,7 @@ mod win {
         let en = enumerator()?;
         unsafe {
             let device: IMMDevice = if spec.loopback {
-                en.GetDefaultAudioEndpoint(eRender, eConsole).map_err(|_| "找不到播放裝置".to_string())?
+                en.GetDefaultAudioEndpoint(eRender, eConsole).map_err(|_| tr!("找不到播放裝置", "Playback device not found").to_string())?
             } else {
                 let picked = if spec.mic_id.is_empty() {
                     None
@@ -147,11 +148,17 @@ mod win {
                 };
                 match picked {
                     Some(d) => d,
-                    None => en.GetDefaultAudioEndpoint(eCapture, eConsole).map_err(|_| "找不到麥克風".to_string())?,
+                    None => en.GetDefaultAudioEndpoint(eCapture, eConsole).map_err(|_| tr!("找不到麥克風", "Microphone not found").to_string())?,
                 }
             };
-            let name = Some(friendly_name(&device)).filter(|n| !n.is_empty()).unwrap_or_else(|| if spec.loopback { "播放裝置".into() } else { "麥克風".into() });
-            let client: IAudioClient = device.Activate(CLSCTX_ALL, None).map_err(|e| format!("Activate 失敗 ({})", hex(&e)))?;
+            let name = Some(friendly_name(&device)).filter(|n| !n.is_empty()).unwrap_or_else(|| {
+                if spec.loopback {
+                    tr!("播放裝置", "Playback device").into()
+                } else {
+                    tr!("麥克風", "Microphone").into()
+                }
+            });
+            let client: IAudioClient = device.Activate(CLSCTX_ALL, None).map_err(|e| trf!("Activate 失敗 ({})", "Activate failed ({})", hex(&e)))?;
             // 48 kHz / 2ch / float32（搭配 AUTOCONVERTPCM，任何裝置都轉成同一格式）
             let fmt = WAVEFORMATEX {
                 wFormatTag: 3, // WAVE_FORMAT_IEEE_FLOAT
@@ -166,9 +173,9 @@ mod win {
             if spec.loopback {
                 flags |= AUDCLNT_STREAMFLAGS_LOOPBACK;
             }
-            client.Initialize(AUDCLNT_SHAREMODE_SHARED, flags, BUFFER_100NS, 0, &fmt, None).map_err(|e| format!("Initialize 失敗 ({})", hex(&e)))?;
-            let capture: IAudioCaptureClient = client.GetService().map_err(|e| format!("GetService 失敗 ({})", hex(&e)))?;
-            client.Start().map_err(|e| format!("Start 失敗 ({})", hex(&e)))?;
+            client.Initialize(AUDCLNT_SHAREMODE_SHARED, flags, BUFFER_100NS, 0, &fmt, None).map_err(|e| trf!("Initialize 失敗 ({})", "Initialize failed ({})", hex(&e)))?;
+            let capture: IAudioCaptureClient = client.GetService().map_err(|e| trf!("GetService 失敗 ({})", "GetService failed ({})", hex(&e)))?;
+            client.Start().map_err(|e| trf!("Start 失敗 ({})", "Start failed ({})", hex(&e)))?;
             Ok(Box::new(Wasapi { name, client, capture, _device: device }))
         }
     }
@@ -181,13 +188,13 @@ mod win {
         fn read(&mut self, visit: &mut Visit) -> Result<(), String> {
             unsafe {
                 loop {
-                    let next = self.capture.GetNextPacketSize().map_err(|e| format!("音訊裝置中斷 ({})", hex(&e)))?;
+                    let next = self.capture.GetNextPacketSize().map_err(|e| trf!("音訊裝置中斷 ({})", "Audio device disconnected ({})", hex(&e)))?;
                     if next == 0 {
                         return Ok(());
                     }
                     let mut data: *mut u8 = std::ptr::null_mut();
                     let (mut frames, mut flags, mut qpc) = (0u32, 0u32, 0u64);
-                    self.capture.GetBuffer(&mut data, &mut frames, &mut flags, None, Some(&mut qpc)).map_err(|e| format!("音訊裝置中斷 ({})", hex(&e)))?;
+                    self.capture.GetBuffer(&mut data, &mut frames, &mut flags, None, Some(&mut qpc)).map_err(|e| trf!("音訊裝置中斷 ({})", "Audio device disconnected ({})", hex(&e)))?;
                     let ts = (flags & AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR == 0).then_some(qpc as i64);
                     if frames > 0 {
                         if flags & AUDCLNT_BUFFERFLAGS_SILENT != 0 || data.is_null() {

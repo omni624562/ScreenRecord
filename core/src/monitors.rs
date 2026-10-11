@@ -16,7 +16,7 @@ pub fn display_number(device_name: &str) -> Option<u32> {
     DISPLAY_RE.captures(device_name).and_then(|c| c[1].parse().ok())
 }
 
-/// 同一個實體螢幕在混合顯卡環境下可能被多張卡回報，依 DeviceName 去重（保留第一個）；主螢幕在前，其餘依編號
+/// 同一個實體螢幕在混合顯示卡環境下可能被多張卡回報，依 DeviceName 去重（保留第一個）；主螢幕在前，其餘依編號
 pub fn finalize(monitors: Vec<MonitorInfo>) -> Vec<MonitorInfo> {
     let mut seen = HashSet::new();
     let mut out: Vec<MonitorInfo> = monitors.into_iter().filter(|m| seen.insert(m.device_name.clone())).collect();
@@ -47,7 +47,7 @@ pub fn enumerate_monitors() -> Result<Vec<MonitorInfo>, String> {
     ensure_dpi_aware();
     let mut monitors = Vec::new();
     unsafe {
-        let factory: IDXGIFactory1 = CreateDXGIFactory1().map_err(|e| format!("CreateDXGIFactory1 失敗 ({e})"))?;
+        let factory: IDXGIFactory1 = CreateDXGIFactory1().map_err(|e| crate::trf!("CreateDXGIFactory1 失敗 ({e})", "CreateDXGIFactory1 failed ({e})"))?;
         let mut a = 0u32;
         while let Ok(adapter) = factory.EnumAdapters1(a) {
             let adapter_name = adapter.GetDesc1().map(|d| wide(&d.Description).trim().to_string()).unwrap_or_else(|_| format!("Adapter {a}"));
