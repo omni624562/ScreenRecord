@@ -516,7 +516,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         if image {
             image_bar(&mut v, bui, stage);
         } else {
-            video_bar(&mut v, bui);
+            video_bar(&mut v, bui, &mut act);
         }
     });
     if modal.should_close() && app.ask.is_none() {
@@ -731,8 +731,9 @@ fn video_stage(v: &mut Viewer, painter: &egui::Painter, stage: Rect, resp: &egui
     }
 }
 
-fn video_bar(v: &mut Viewer, ui: &mut egui::Ui) {
+fn video_bar(v: &mut Viewer, ui: &mut egui::Ui, act: &mut Act) {
     let p = theme::pal(ui);
+    let chapters = v.cur().media.chapters.clone();
     let Some(player) = &v.player else { return };
     let playing = player.is_playing();
     let dur = player.spec().duration.max(0.001);
@@ -744,18 +745,29 @@ fn video_bar(v: &mut Viewer, ui: &mut egui::Ui) {
     ui.label(RichText::new(format!("{} / {}", video_clock(t), video_clock(dur))).font(theme::mono(12.5)));
     // 音量（右邊），進度列填滿中間
     let vol_w = 140.0;
-    let track_w = (ui.available_width() - vol_w - 16.0).max(80.0);
+    let chap_w = if chapters.is_empty() { 0.0 } else { 84.0 };
+    let track_w = (ui.available_width() - vol_w - chap_w - 16.0).max(80.0);
     let (rect, resp) = ui.allocate_exact_size(vec2(track_w, 28.0), Sense::click_and_drag());
     let track = Rect::from_center_size(rect.center(), vec2(rect.width() - 12.0, 6.0));
     let painter = ui.painter();
     painter.rect_filled(track, CornerRadius::same(3), p.surface2);
     let frac = (t / dur) as f32;
     painter.rect_filled(Rect::from_min_max(track.min, pos2(track.min.x + track.width() * frac, track.max.y)), CornerRadius::same(3), p.accent);
+    // 章節的分界（錄影時加的標記）
+    for c in chapters.iter().filter(|c| c.start > 0.05 && c.start < dur) {
+        let x = track.min.x + track.width() * (c.start / dur) as f32;
+        painter.rect_filled(Rect::from_center_size(pos2(x, track.center().y), vec2(2.0, 12.0)), CornerRadius::ZERO, p.warn);
+    }
     let knob = pos2(track.min.x + track.width() * frac, track.center().y);
     painter.circle(knob, if resp.hovered() || resp.dragged() { 8.0 } else { 6.0 }, p.surface, Stroke::new(2.0, p.accent));
     let to_t = |pos: Pos2| (((pos.x - track.min.x) / track.width()).clamp(0.0, 1.0) as f64) * dur;
     if let Some(pos) = resp.hover_pos() {
-        resp.clone().on_hover_text_at_pointer(video_clock(to_t(pos)));
+        let at = to_t(pos);
+        let text = match chapters.iter().rev().find(|c| c.start <= at) {
+            Some(c) => format!("{}・{}", video_clock(at), c.title),
+            None => video_clock(at),
+        };
+        resp.clone().on_hover_text_at_pointer(text);
     }
     if v.seeking.is_none() && resp.is_pointer_button_down_on() {
         v.seeking = Some(playing);
@@ -770,6 +782,22 @@ fn video_bar(v: &mut Viewer, ui: &mut egui::Ui) {
         }
     }
     resp.on_hover_cursor(egui::CursorIcon::PointingHand);
+    // 章節：跳到某一章、複製成 YouTube 章節
+    if !chapters.is_empty() {
+        let b = Btn::new(tr!("章節", "Chapters")).ghost().small().tooltip(tr!("跳到某一章（錄影時加的標記）", "Jump to a chapter (markers added while recording)")).show(ui);
+        egui::Popup::menu(&b).show(|ui| {
+            ui.set_min_width(200.0);
+            for c in &chapters {
+                if ui.button(format!("{}  {}", video_clock(c.start), c.title)).clicked() {
+                    player.seek(c.start);
+                }
+            }
+            ui.separator();
+            if ui.button(tr!("複製章節（貼到 YouTube）", "Copy chapters (for YouTube)")).clicked() {
+                *act = Act::Entry(EntryAction::CopyChapters);
+            }
+        });
+    }
     // 音量
     ui.add_space(8.0);
     let has_audio = player.spec().has_audio;

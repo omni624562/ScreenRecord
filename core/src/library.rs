@@ -56,6 +56,7 @@ impl MediaCache {
                     height: p.height,
                     fps: p.fps,
                     has_audio: Some(p.has_audio),
+                    chapters: p.chapters,
                 })
             })
             .await;

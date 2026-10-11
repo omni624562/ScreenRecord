@@ -115,7 +115,9 @@ impl Exporter {
         let scaled = w > 0 && src_w.is_some_and(|sw| w < sw);
         let out_sec = info.duration_sec.unwrap_or(0.0) / speed;
         let kbps = limit.then(|| crate::args::size_bitrate(max_mb * 1024.0 * 1024.0, out_sec, if with_audio { crate::args::SMALL_AUDIO_KBPS } else { 0 }));
-        let args = export_args(source, &output.display().to_string(), speed, fps, &enc, with_audio, Some(w), src_w, kbps)?;
+        let mut args = export_args(source, &output.display().to_string(), speed, fps, &enc, with_audio, Some(w), src_w, kbps)?;
+        // 章節（錄影時加的標記）跟著加速換算時間
+        let cleanup = with_chapters(&mut args, &crate::chapters::scale(&info.chapters, speed), out_sec, None);
         let note = format!(
             "{}{}{}{}",
             if speed > 1.0 { format!("{}×", speed_label(speed)) } else { "原速".into() },
@@ -123,7 +125,7 @@ impl Exporter {
             if scaled { format!("，寬 {w}") } else { String::new() },
             if limit { format!("，{} MB 以內", num(max_mb)) } else { String::new() }
         );
-        self.run(ExportKind::Speed, &ffmpeg, args, source, &output, speed, info.duration_sec.unwrap_or(0.0) / speed, &note)
+        self.run_with_cleanup(ExportKind::Speed, &ffmpeg, args, source, &output, speed, out_sec, &note, Finish { cleanup, replace: None, on_saved: None })
     }
 
     /// GIF（可同時加速；無聲音）
@@ -171,7 +173,8 @@ impl Exporter {
         let inputs: Vec<(String, bool, f64)> = list.iter().map(|(p, i)| (p.clone(), i.has_audio == Some(true), i.duration_sec.unwrap_or(0.0))).collect();
         let total: f64 = inputs.iter().map(|i| i.2).sum();
         let output = crate::paths::unique_path(&parent(&list[0].0), &format!("{}_合併", strip_mp4(&file_name(&list[0].0))), ".mp4");
-        let args = crate::args::merge_args(&inputs, &output.display().to_string(), w, h, fps, &enc);
+        let mut args = crate::args::merge_args(&inputs, &output.display().to_string(), w, h, fps, &enc);
+        crate::args::drop_chapters(&mut args);
         let note = format!("合併 {} 支錄影", inputs.len());
         self.run_with_cleanup(ExportKind::Merge, &ffmpeg, args, &list[0].0, &output, 1.0, total, &note, Finish { cleanup: None, replace: None, on_saved: None })
     }
@@ -257,7 +260,9 @@ impl Exporter {
             (Some(_), _, _) => return Err(Error::config(tr!("無法讀取影片尺寸，不能加上背景", "Couldn't read the video size, so the background can't be added"))),
             (None, ..) => (None, temp),
         };
-        let args = cut_args(source, &output.display().to_string(), &keep, crop, fps, &enc, info.has_audio == Some(true), &overlays, spec.audio, zoom.as_deref(), frame.as_ref())?;
+        let mut args = cut_args(source, &output.display().to_string(), &keep, crop, fps, &enc, info.has_audio == Some(true), &overlays, spec.audio, zoom.as_deref(), frame.as_ref())?;
+        // 章節換成剪輯後的時間（刪掉的片段裡的章節改從下一段開始）
+        let temp = with_chapters(&mut args, &crate::chapters::map_cut(&info.chapters, &keep), length, temp);
         let fast = keep.iter().filter(|p| p.2 > 1).count();
         let note = format!(
             "保留 {} 段{}{}{}{}",
@@ -478,6 +483,23 @@ impl Exporter {
 pub type OnSaved = Box<dyn FnOnce(&str) + Send + 'static>;
 
 /// 工作結束後的處理
+/// 輸出寫入章節：章節檔放在暫存資料夾（沒有就建一個），回傳要清掉的暫存資料夾。
+/// 沒有章節時明確不要章節（FFmpeg 預設會照抄來源的章節，時間會對不上）
+fn with_chapters(args: &mut Vec<String>, chapters: &[crate::types::Chapter], duration: f64, temp: Option<PathBuf>) -> Option<PathBuf> {
+    if chapters.is_empty() {
+        crate::args::drop_chapters(args);
+        return temp;
+    }
+    let dir = temp.unwrap_or_else(|| std::env::temp_dir().join(format!("ScreenRecorder-chapters-{}-{}", std::process::id(), crate::paths::now_ms())));
+    let file = dir.join("chapters.txt");
+    if std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&file, crate::chapters::ffmetadata(chapters, duration))).is_ok() {
+        crate::args::add_chapters(args, &file.display().to_string());
+    } else {
+        crate::args::drop_chapters(args);
+    }
+    Some(dir)
+}
+
 #[derive(Default)]
 struct Finish {
     /// 結束（完成、失敗、取消）後刪除的暫存資料夾（標註圖檔）

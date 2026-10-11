@@ -529,6 +529,9 @@ fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table:
                 if e.media.has_audio != Some(false) && ui.button(tr!("存成 M4A（只留聲音）", "Save as M4A (audio only)")).clicked() {
                     *action = Some((EntryAction::SaveAudio, e.clone()));
                 }
+                if !e.media.chapters.is_empty() && ui.button(tr!("複製章節（貼到 YouTube）", "Copy chapters (for YouTube)")).clicked() {
+                    *action = Some((EntryAction::CopyChapters, e.clone()));
+                }
                 if ui.button(tr!("重新命名（加速版一起改）", "Rename (sped-up versions too)")).clicked() {
                     *rename = Some(e.clone());
                 }

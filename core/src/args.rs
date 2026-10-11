@@ -690,12 +690,34 @@ pub fn audio_file_args(src: &str, out_file: &str) -> Vec<String> {
     a
 }
 
-pub fn concat_args(list_file: &str, out_file: &str) -> Vec<String> {
+/// chapters：章節檔（FFMETADATA，錄影時加的標記）
+pub fn concat_args(list_file: &str, out_file: &str, chapters: Option<&str>) -> Vec<String> {
     let mut a = strs(&["-hide_banner", "-nostats", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i"]);
     a.push(list_file.into());
     a.extend(strs(&["-map", "0", "-c", "copy", "-movflags", "+faststart", "-y"]));
     a.push(out_file.into());
+    if let Some(c) = chapters {
+        add_chapters(&mut a, c);
+    }
     a
+}
+
+/// 輸出用這個章節檔（FFMETADATA）的章節：放在最後一個輸入之後（前面的輸入編號不變）。
+/// args 的最後一個值是輸出檔
+pub fn add_chapters(args: &mut Vec<String>, meta_file: &str) {
+    let inputs = args.iter().filter(|a| *a == "-i").count();
+    let Some(last) = args.iter().rposition(|a| a == "-i") else { return };
+    args.splice(last + 2..last + 2, ["-i".to_string(), meta_file.to_string()]);
+    let out = args.pop().unwrap_or_default();
+    args.extend(["-map_chapters".into(), inputs.to_string()]);
+    args.push(out);
+}
+
+/// 不要沿用來源的章節（FFmpeg 預設會照抄第一個有章節的輸入，時間會對不上）
+pub fn drop_chapters(args: &mut Vec<String>) {
+    let out = args.pop().unwrap_or_default();
+    args.extend(strs(&["-map_chapters", "-1"]));
+    args.push(out);
 }
 
 /// atempo 串接：每段不超過 2 倍，變速不變調且音質較好
@@ -1000,6 +1022,7 @@ pub struct ParsedMedia {
     pub height: Option<u32>,
     pub fps: Option<f64>,
     pub has_audio: bool,
+    pub chapters: Vec<crate::types::Chapter>,
 }
 
 static DURATION_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"Duration:\s*(\d+):(\d{2}):(\d{2}(?:\.\d+)?)").unwrap());
@@ -1014,7 +1037,14 @@ pub fn parse_media_info(stderr: &str) -> ParsedMedia {
     let video = VIDEO_RE.find(stderr).map(|m| m.as_str().trim_end_matches('\r')).unwrap_or("");
     let size = SIZE_RE.captures(video);
     let fps = FPS_RE.captures(video).and_then(|c| c[1].parse().ok());
-    ParsedMedia { duration_sec, width: size.as_ref().and_then(|s| s[1].parse().ok()), height: size.as_ref().and_then(|s| s[2].parse().ok()), fps, has_audio: AUDIO_RE.is_match(stderr) }
+    ParsedMedia {
+        duration_sec,
+        width: size.as_ref().and_then(|s| s[1].parse().ok()),
+        height: size.as_ref().and_then(|s| s[2].parse().ok()),
+        fps,
+        has_audio: AUDIO_RE.is_match(stderr),
+        chapters: crate::chapters::parse(stderr),
+    }
 }
 
 /// 預覽畫面的大小：寬度不超過 max_width（偶數），高度依比例
@@ -1540,7 +1570,7 @@ dummy: Immediate exit requested";
     #[test]
     fn media_info() {
         let stderr = "Input #0, mov,mp4,m4a,3gp,3g2,mj2, from 'x.mp4':\n  Duration: 00:01:02.50, start: 0.000000, bitrate: 1234 kb/s\n  Stream #0:0[0x1](und): Video: h264 (High) (avc1 / 0x31637661), yuv420p(tv, bt709, progressive), 1920x1080 [SAR 1:1 DAR 16:9], 1200 kb/s, 30 fps, 30 tbr, 15360 tbn (default)\n  Stream #0:1[0x2](und): Audio: aac (LC) (mp4a / 0x6134706D), 48000 Hz, stereo, fltp, 160 kb/s (default)";
-        assert_eq!(parse_media_info(stderr), ParsedMedia { duration_sec: Some(62.5), width: Some(1920), height: Some(1080), fps: Some(30.0), has_audio: true });
+        assert_eq!(parse_media_info(stderr), ParsedMedia { duration_sec: Some(62.5), width: Some(1920), height: Some(1080), fps: Some(30.0), has_audio: true, chapters: vec![] });
         let first3: Vec<&str> = stderr.lines().take(3).collect();
         assert!(!parse_media_info(&first3.join("\n")).has_audio);
     }

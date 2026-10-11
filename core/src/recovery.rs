@@ -70,7 +70,7 @@ pub async fn recover(ffmpeg: &Path, o: &Orphan) -> Result<RecordingResult> {
     let out = unique_path(output_dir, &format!("{prefix}_{}", o.stamp), ".mp4");
     let files: Vec<String> = o.files.iter().map(|f| f.display().to_string()).collect();
     // 聲音有沒有錄：讀不到聲音結尾的分段就不截斷（merge_segments 會略過）
-    let duration = merge_segments(ffmpeg, &files, &o.dir, &out, true).await.map_err(|detail| Error::other(trf!("無法合併分段：{detail}", "Couldn't merge the segments: {detail}")))?;
+    let duration = merge_segments(ffmpeg, &files, &o.dir, &out, true, None).await.map_err(|detail| Error::other(trf!("無法合併分段：{detail}", "Couldn't merge the segments: {detail}")))?;
     cleanup_parts(Some(&o.dir));
     let out_str = out.display().to_string();
     Ok(RecordingResult {

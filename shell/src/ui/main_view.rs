@@ -1659,6 +1659,9 @@ fn recent_card(app: &mut UiApp, ui: &mut Ui, e: &LibraryEntry, date: String, w: 
             if e.media.has_audio != Some(false) && ui.button(tr!("存成 M4A（只留聲音）", "Save as M4A (audio only)")).clicked() {
                 app.act(EntryAction::SaveAudio, e.clone());
             }
+            if !e.media.chapters.is_empty() && ui.button(tr!("複製章節（貼到 YouTube）", "Copy chapters (for YouTube)")).clicked() {
+                app.act(EntryAction::CopyChapters, e.clone());
+            }
         });
     }
     resp.on_hover_text(&e.media.name);

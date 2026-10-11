@@ -249,8 +249,9 @@ impl St {
 }
 
 /// 把分段接成一支影片（concat，不重新壓縮）。有錄聲音時每個分段在聲音結尾截斷（見 concat_list），
-/// 聲音與畫面一起結束、分段之間也不留無聲的空隙。成功時回傳成品的長度（秒，讀不到時 None），失敗時回傳原因
-pub(crate) async fn merge_segments(ffmpeg: &Path, files: &[String], parts_dir: &Path, out: &Path, has_audio: bool) -> std::result::Result<Option<f64>, String> {
+/// 聲音與畫面一起結束、分段之間也不留無聲的空隙。chapters：寫進影片的章節（錄影時加的標記）。
+/// 成功時回傳成品的長度（秒，讀不到時 None），失敗時回傳原因
+pub(crate) async fn merge_segments(ffmpeg: &Path, files: &[String], parts_dir: &Path, out: &Path, has_audio: bool, chapters: Option<String>) -> std::result::Result<Option<f64>, String> {
     let mut outpoints = Vec::new();
     if has_audio {
         let mut tasks = Vec::new();
@@ -269,7 +270,15 @@ pub(crate) async fn merge_segments(ffmpeg: &Path, files: &[String], parts_dir: &
     let list_file = parts_dir.join("concat.txt");
     std::fs::write(&list_file, concat_list(files, &outpoints)).map_err(|e| e.to_string())?;
     let out_str = out.display().to_string();
-    let r = run(ffmpeg, &concat_args(&list_file.display().to_string(), &out_str), Duration::from_secs(30 * 60)).await;
+    let meta = match chapters {
+        Some(c) => {
+            let f = parts_dir.join("chapters.txt");
+            std::fs::write(&f, c).map_err(|e| e.to_string())?;
+            Some(f.display().to_string())
+        }
+        None => None,
+    };
+    let r = run(ffmpeg, &concat_args(&list_file.display().to_string(), &out_str, meta.as_deref()), Duration::from_secs(30 * 60)).await;
     if r.code != 0 || !out.exists() {
         let tail = last_lines(&r.stderr, 3);
         return Err(if tail.is_empty() { trf!("結束代碼 {}", "exit code {}", r.code) } else { tail });
@@ -1549,11 +1558,12 @@ impl Recorder {
     }
 
     async fn finalize(&self) -> Result<RecordingResult> {
-        let (fps, parts, has_audio, parts_dir, out) = {
+        let (fps, parts, has_audio, parts_dir, out, markers) = {
             let st = self.lock();
             let parts: Vec<(String, u64)> =
                 st.segments.iter().filter(|s| s.frames > 0 && std::fs::metadata(&s.file).map(|m| m.len() > 0).unwrap_or(false)).map(|s| (s.file.clone(), s.frames)).collect();
-            (st.config().fps, parts, !st.audio_specs.is_empty(), st.parts_dir.clone().unwrap_or_default(), st.final_path.clone().unwrap_or_default())
+            let markers: Vec<f64> = st.markers.iter().map(|m| *m as f64 / 1000.0).collect();
+            (st.config().fps, parts, !st.audio_specs.is_empty(), st.parts_dir.clone().unwrap_or_default(), st.final_path.clone().unwrap_or_default(), markers)
         };
         let frames: u64 = parts.iter().map(|p| p.1).sum();
         if parts.is_empty() {
@@ -1564,7 +1574,11 @@ impl Recorder {
         let files: Vec<String> = parts.iter().map(|p| p.0.clone()).collect();
         let out_str = out.display().to_string();
         let parts_str = parts_dir.display().to_string();
-        let duration = match merge_segments(&ffmpeg, &files, &parts_dir, &out, has_audio).await {
+        // 標記寫成章節（播放器可以跳章節）
+        let length = frames as f64 / fps;
+        let chapters = crate::chapters::from_markers(&markers, length);
+        let meta = (!chapters.is_empty()).then(|| crate::chapters::ffmetadata(&chapters, length));
+        let duration = match merge_segments(&ffmpeg, &files, &parts_dir, &out, has_audio, meta).await {
             Ok(d) => d,
             Err(detail) => {
                 return Ok(RecordingResult {

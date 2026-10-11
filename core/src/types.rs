@@ -485,6 +485,13 @@ fn is_zero_u32(v: &u32) -> bool {
     *v == 0
 }
 
+/// 影片章節（開始的秒數與名稱）
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct Chapter {
+    pub start: f64,
+    pub title: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MediaInfo {
@@ -503,6 +510,9 @@ pub struct MediaInfo {
     pub fps: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub has_audio: Option<bool>,
+    /// 章節（錄影時加的標記）
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub chapters: Vec<Chapter>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]

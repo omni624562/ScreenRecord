@@ -66,6 +66,8 @@ pub enum EntryAction {
     CopyFile,
     /// 只留下聲音，另存成 .m4a
     SaveAudio,
+    /// 章節（錄影時加的標記）複製成 YouTube 說明欄的格式
+    CopyChapters,
 }
 
 pub struct UiApp {
@@ -525,6 +527,11 @@ impl UiApp {
                     Ok(out) => app.toast(trf!("已存成 {}（和影片在同一個資料夾）", "Saved as {} (in the same folder as the video)", dialogs::file_name(&out)), false),
                     Err(e) => app.toast(e.message().to_string(), true),
                 });
+            }
+            EntryAction::CopyChapters => {
+                let duration = entry.media.duration_sec.unwrap_or(0.0);
+                self.ctx.copy_text(screenrecorder_core::chapters::youtube_text(&entry.media.chapters, duration));
+                self.toast(tr!("已複製章節，可以貼到 YouTube 影片的說明欄", "Chapters copied. Paste them into the YouTube video description"), false);
             }
             EntryAction::CopyFile => match screenrecorder_core::clipboard::copy_files(std::slice::from_ref(&path)) {
                 Ok(()) => self.toast(tr!("已複製檔案，可以直接貼到 LINE、Teams、信件或資料夾", "File copied. Paste it into LINE, Teams, an email or a folder"), false),
