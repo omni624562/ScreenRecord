@@ -1,5 +1,5 @@
 //! 長截圖用的 Windows 功能：直接從螢幕擷取一塊（GDI，比 FFmpeg 快很多）、等畫面停下來、
-//! 把範圍裡的視窗切到前面、在範圍中間送出滾輪、看 Esc 有沒有按下。
+//! 把範圍裡的視窗切到前面、在範圍中間送出滾輪、把游標移開、看 Esc 有沒有按下。
 
 use crate::types::Rect;
 use std::time::{Duration, Instant};
@@ -7,6 +7,7 @@ use windows::Win32::Foundation::POINT;
 use windows::Win32::Graphics::Gdi::{
     BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject, GetDC, GetDIBits, ReleaseDC, SelectObject, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, CAPTUREBLT, DIB_RGB_COLORS, SRCCOPY,
 };
+use windows::Win32::Graphics::Gdi::{MonitorFromPoint, MONITOR_DEFAULTTONULL};
 use windows::Win32::System::Threading::GetCurrentProcessId;
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, SendInput, INPUT, INPUT_0, INPUT_MOUSE, MOUSEEVENTF_WHEEL, MOUSEINPUT};
 use windows::Win32::UI::WindowsAndMessaging::{GetAncestor, GetWindowThreadProcessId, SetCursorPos, SetForegroundWindow, WindowFromPoint, GA_ROOT};
@@ -83,12 +84,23 @@ pub fn focus_at(x: i32, y: i32) {
     }
 }
 
-/// 把游標移到範圍中間並往下捲 notches 格（一格 = 滾輪轉一下）
-pub fn scroll_down(r: Rect, notches: i32) {
+/// 把游標移到範圍中間並捲動 delta（滾輪的單位：120 = 轉一格；正的往下、負的往上）
+pub fn scroll(r: Rect, delta: i32) {
     unsafe {
         let _ = SetCursorPos(r.x + r.width / 2, r.y + r.height / 2);
-        let input = INPUT { r#type: INPUT_MOUSE, Anonymous: INPUT_0 { mi: MOUSEINPUT { dwFlags: MOUSEEVENTF_WHEEL, mouseData: (-120 * notches) as u32, ..Default::default() } } };
+        let input = INPUT { r#type: INPUT_MOUSE, Anonymous: INPUT_0 { mi: MOUSEINPUT { dwFlags: MOUSEEVENTF_WHEEL, mouseData: (-delta) as u32, ..Default::default() } } };
         SendInput(&[input], std::mem::size_of::<INPUT>() as i32);
+    }
+}
+
+/// 把游標移到範圍外面（右邊、左邊、下面或上面有螢幕的地方；都沒有時放在範圍的右邊緣，通常是捲軸）：
+/// 游標停在內容上時，連結、按鈕、表格的列會反白，前後兩張就對不太起來
+pub fn park_cursor(r: Rect) {
+    let (cx, cy) = (r.x + r.width / 2, r.y + r.height / 2);
+    let spots = [(r.x + r.width + 8, cy), (r.x - 8, cy), (cx, r.y + r.height + 8), (cx, r.y - 8)];
+    unsafe {
+        let p = spots.into_iter().find(|&(x, y)| !MonitorFromPoint(POINT { x, y }, MONITOR_DEFAULTTONULL).is_invalid()).unwrap_or((r.x + r.width - 3, cy));
+        let _ = SetCursorPos(p.0, p.1);
     }
 }
 

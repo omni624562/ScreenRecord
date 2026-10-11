@@ -112,6 +112,8 @@ pub struct UiSettings {
     pub separate_audio: bool,
     /// 重播緩衝保留最近幾秒（core 的 replay.rs 也讀這個欄位：快速鍵、系統匣開始時用）
     pub replay_sec: u32,
+    /// 主畫面展開事件紀錄（預設收起來）
+    pub show_log: bool,
 }
 
 /// 講稿提詞的字級範圍、不透明度下限
@@ -218,6 +220,7 @@ impl UiSettings {
             window_capture: boolean("windowCapture").unwrap_or(false),
             separate_audio: boolean("separateAudio").unwrap_or(false),
             replay_sec: screenrecorder_core::replay::sec_from_ui(v),
+            show_log: boolean("showLog").unwrap_or(false),
         };
         s.fix_monitor(env);
         s
