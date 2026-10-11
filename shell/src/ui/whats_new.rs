@@ -28,7 +28,7 @@ enum Try {
 }
 
 /// 新功能清單（標題、說明、試試看）：依介面語言
-fn items() -> [(&'static str, &'static str, Try); 12] {
+fn items() -> [(&'static str, &'static str, Try); 13] {
     [
         (
             "語言 Language",
@@ -61,6 +61,14 @@ fn items() -> [(&'static str, &'static str, Try); 12] {
                 "Show mouse clicks, pressed shortcuts and a cursor highlight while recording. You can also put a camera bubble on the screen (shown before recording starts; drag to move or resize it) and hide desktop icons."
             ),
             Try::Settings(Page::Record),
+        ),
+        (
+            tr!("講稿小視窗", "Script window"),
+            tr!(
+                "右上角「講稿」：浮在最上層、不會被錄進影片；「提詞」用大字自動往上捲，開始錄影時自動開始、暫停時停下。",
+                "“Script” at the top right: a window that stays on top and isn't recorded. “Prompt” shows your script in large text that scrolls up automatically, starting when you record and stopping when you pause."
+            ),
+            Try::None,
         ),
         (
             tr!("設定組合", "Recording presets"),

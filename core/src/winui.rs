@@ -17,6 +17,25 @@ fn is_app_title(t: &str) -> bool {
     TITLE_PREFIXES.iter().any(|p| t.starts_with(p))
 }
 
+/// 講稿小視窗的標題（兩種語言）：不算操作視窗（開始錄影時不縮小），也不列在「選擇視窗」
+pub const NOTES_TITLES: [&str; 2] = ["講稿（不會錄進影片）", "Script (not recorded)"];
+
+pub fn notes_title() -> &'static str {
+    crate::tr!(NOTES_TITLES[0], NOTES_TITLES[1])
+}
+
+/// 講稿小視窗：設成不被擷取（錄影、截圖都看不到它；Windows 10 2004 以後），並調整透明度（255 = 不透明）。
+/// 回傳是否找到視窗（剛開啟時視窗可能還沒建立，下一格再試）
+pub fn style_notes_window(alpha: u8) -> bool {
+    #[cfg(windows)]
+    return imp::style_notes_window(alpha);
+    #[cfg(not(windows))]
+    {
+        let _ = alpha;
+        false
+    }
+}
+
 /// 可以錄的視窗（「只錄這個視窗」）
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WindowInfo {
@@ -105,6 +124,29 @@ mod imp {
             list.push(w);
         }
         BOOL(1)
+    }
+
+    pub fn style_notes_window(alpha: u8) -> bool {
+        use windows::core::PCWSTR;
+        use windows::Win32::Foundation::COLORREF;
+        use windows::Win32::UI::WindowsAndMessaging::{
+            FindWindowW, GetWindowLongPtrW, SetLayeredWindowAttributes, SetWindowDisplayAffinity, SetWindowLongPtrW, GWL_EXSTYLE, LWA_ALPHA, WDA_EXCLUDEFROMCAPTURE, WS_EX_LAYERED,
+        };
+        let mut found = false;
+        for t in NOTES_TITLES {
+            let w: Vec<u16> = t.encode_utf16().chain(std::iter::once(0)).collect();
+            let Ok(hwnd) = (unsafe { FindWindowW(PCWSTR::null(), PCWSTR(w.as_ptr())) }) else { continue };
+            found = true;
+            unsafe {
+                let _ = SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE);
+                let ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+                if ex & WS_EX_LAYERED.0 as isize == 0 {
+                    SetWindowLongPtrW(hwnd, GWL_EXSTYLE, ex | WS_EX_LAYERED.0 as isize);
+                }
+                let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0), alpha, LWA_ALPHA);
+            }
+        }
+        found
     }
 
     pub fn app_windows() -> Vec<WindowInfo> {
@@ -287,7 +329,7 @@ pub fn visible_windows() -> Vec<Rect> {
 /// 可以錄的視窗（看得到、有標題），由上層到下層；不含本程式的操作視窗
 pub fn app_windows() -> Vec<WindowInfo> {
     #[cfg(windows)]
-    return imp::app_windows().into_iter().filter(|w| !is_app_title(&w.title) && w.rect.width >= 80 && w.rect.height >= 40).collect();
+    return imp::app_windows().into_iter().filter(|w| !is_app_title(&w.title) && !NOTES_TITLES.contains(&w.title.as_str()) && w.rect.width >= 80 && w.rect.height >= 40).collect();
     #[cfg(not(windows))]
     Vec::new()
 }

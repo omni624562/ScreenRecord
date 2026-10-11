@@ -8,6 +8,7 @@ pub mod editor;
 pub mod export_dialog;
 pub mod library_dialog;
 pub mod main_view;
+pub mod notes;
 pub mod ocr;
 pub mod presets;
 pub mod preview;
@@ -88,6 +89,8 @@ pub struct UiApp {
     pub env_ready: bool,
     pub s: UiSettings,
     settings_rev: u64,
+    /// 講稿小視窗
+    pub notes: Option<notes::Notes>,
     /// 錄影設定組合（settings.json 的 presets）
     pub presets: Vec<screenrecorder_core::presets::Preset>,
     save_at: Option<Instant>,
@@ -169,6 +172,7 @@ impl UiApp {
             s,
             settings_rev: saved.rev,
             presets: saved.presets.clone(),
+            notes: None,
             save_at: None,
             last_state: status.recorder.state,
             status,
@@ -736,6 +740,10 @@ impl eframe::App for UiApp {
         }
         main_view::show(self, ui);
         part(self, "主畫面");
+        if self.notes.is_some() {
+            notes::show(self, &ctx);
+            part(self, "講稿");
+        }
         if self.export_dlg.is_some() {
             export_dialog::show(self, &ctx);
             part(self, "製作視窗");

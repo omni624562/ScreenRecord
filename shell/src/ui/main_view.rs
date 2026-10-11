@@ -794,7 +794,20 @@ fn rec_panel(app: &mut UiApp, ui: &mut Ui) {
             if busy.is_empty() && r.max_ms > 0 && active {
                 busy = trf!("剩餘 {}", "{} left", clock((r.max_ms as f64 - live_recorded_ms(app)).max(0.0)));
             }
-            ui.label(theme::muted(ui, busy));
+            // 右上角：講稿小視窗
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                let open = app.notes.is_some();
+                let tip = tr!(
+                    "講稿小視窗：浮在最上層、不會被錄進影片；可以用大字自動往上捲（提詞），開始錄影時自動開始",
+                    "Script window: stays on top and isn't recorded. It can show your script in large text that scrolls up automatically (teleprompter), starting when you record."
+                );
+                if Btn::new(if open { tr!("關閉講稿", "Close script") } else { tr!("講稿", "Script") }).icon(Icon::Edit).ghost().small().tooltip(tip).show(ui).clicked() {
+                    super::notes::toggle(app);
+                }
+                ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                    ui.add(egui::Label::new(theme::muted(ui, busy)).truncate());
+                });
+            });
         });
         ui.add_space(4.0);
         let ms = live_recorded_ms(app);

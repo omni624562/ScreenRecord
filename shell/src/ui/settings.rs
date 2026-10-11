@@ -91,7 +91,18 @@ pub struct UiSettings {
     pub seen_version: String,
     /// 上次加到截圖或影片上的圖片（Logo）
     pub last_picture: String,
+    /// 講稿小視窗：提詞的字級、捲動速度（1～10）、不透明度（%）、開始錄影時自動捲動、位置與大小（點）
+    pub notes_font: u32,
+    pub notes_speed: u32,
+    pub notes_opacity: u32,
+    pub notes_auto: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub notes_rect: Option<[i32; 4]>,
 }
+
+/// 講稿提詞的字級範圍、不透明度下限
+pub const NOTES_FONT: (u32, u32) = (16, 72);
+pub const NOTES_OPACITY_MIN: u32 = 40;
 
 /// 介面大小可選的百分比
 pub const UI_SCALES: [u32; 4] = [100, 110, 125, 150];
@@ -179,6 +190,11 @@ impl UiSettings {
             last_picture: string("lastPicture").unwrap_or_default(),
             ui_scale: num("uiScale").map(|v| v as u32).filter(|v| UI_SCALES.contains(v)).unwrap_or(100),
             language: string("language").filter(|v| ["zh-TW", "en"].contains(&v.as_str())).unwrap_or_else(|| "auto".into()),
+            notes_font: num("notesFont").map(|v| v as u32).filter(|v| (NOTES_FONT.0..=NOTES_FONT.1).contains(v)).unwrap_or(30),
+            notes_speed: num("notesSpeed").map(|v| v as u32).filter(|v| (1..=10).contains(v)).unwrap_or(3),
+            notes_opacity: num("notesOpacity").map(|v| v as u32).filter(|v| (NOTES_OPACITY_MIN..=100).contains(v)).unwrap_or(90),
+            notes_auto: boolean("notesAuto").unwrap_or(true),
+            notes_rect: o.get("notesRect").and_then(|v| serde_json::from_value::<[i32; 4]>(v.clone()).ok()).filter(|r| r[2] >= 200 && r[3] >= 120),
         };
         s.fix_monitor(env);
         s
