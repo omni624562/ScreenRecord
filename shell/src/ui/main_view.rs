@@ -733,7 +733,9 @@ fn settings_bar(app: &mut UiApp, ui: &mut Ui) {
     let room = ui.available_width() - set_w - 8.0;
     let show_out = room - out_w > 360.0;
     let mut room = if show_out { room - out_w } else { room };
-    let rec = settings_dialog::record_summary(app);
+    let mut rec = settings_dialog::record_summary(app);
+    // 攝影機有自己的按鈕
+    rec.retain(|t| t != tr!("攝影機", "Camera"));
     let (audio, audio_icon) = settings_dialog::audio_summary(app);
     let item = |text: &str, icon: Icon| Btn::new(text).icon(icon).ghost().small();
     let measure = |ui: &Ui, text: &str, icon: Icon| item(text, icon).width(ui) + 2.0;
@@ -751,6 +753,23 @@ fn settings_bar(app: &mut UiApp, ui: &mut Ui) {
     if item(&audio_text, audio_icon).enabled(!locked).tooltip(trf!("錄製聲音：{audio}", "Audio: {audio}")).show(ui).clicked() {
         open = Some(Page::Audio);
     }
+    // 攝影機：直接選要用哪一台（不用進設定）；太窄時只剩圖示
+    let cam = camera_label(&app.s.camera);
+    let cam_text = if measure(ui, &cam, Icon::Webcam) + 80.0 <= room { cam.clone() } else { String::new() };
+    room -= measure(ui, &cam_text, Icon::Webcam);
+    let cam_resp = item(&cam_text, Icon::Webcam)
+        .selected(!app.s.camera.is_empty())
+        .enabled(!locked)
+        .tooltip(tr!("攝影機子母畫面：點一下選攝影機或關閉", "Camera overlay: click to choose a camera or turn it off"))
+        .show(ui);
+    if cam_resp.clicked() {
+        app.load_cameras(false);
+    }
+    egui::Popup::menu(&cam_resp).show(|ui| {
+        if camera_menu(app, ui) {
+            open = Some(Page::Record);
+        }
+    });
     // 儲存位置：縮短路徑（保留結尾）
     let dir = app.s.out_dir(&app.env);
     let fits = |t: &str| measure(ui, t, Icon::Folder) <= room;
@@ -776,6 +795,63 @@ fn settings_bar(app: &mut UiApp, ui: &mut Ui) {
     if let Some(page) = open {
         settings_dialog::open(app, page);
     }
+}
+
+/// 主畫面攝影機按鈕的文字
+fn camera_label(name: &str) -> String {
+    if name.is_empty() {
+        return tr!("攝影機：關", "Camera: off").into();
+    }
+    // 名稱太長時只留前面
+    let short: String = name.chars().take(18).collect();
+    if short.chars().count() < name.chars().count() {
+        format!("{short}…")
+    } else {
+        short
+    }
+}
+
+/// 攝影機選單：不使用、找到的攝影機、重新尋找、更多設定；回傳是否要開啟設定視窗
+fn camera_menu(app: &mut UiApp, ui: &mut Ui) -> bool {
+    ui.set_min_width(220.0);
+    let mut pick: Option<String> = None;
+    if ui.radio(app.s.camera.is_empty(), tr!("不使用", "None")).clicked() {
+        pick = Some(String::new());
+    }
+    match app.cameras.clone() {
+        None => {
+            ui.add_enabled(false, egui::Label::new(tr!("正在尋找攝影機…", "Looking for cameras…")));
+            ui.ctx().request_repaint_after(std::time::Duration::from_millis(200));
+        }
+        Some(list) => {
+            for name in &list {
+                if ui.radio(app.s.camera == *name, name.as_str()).clicked() {
+                    pick = Some(name.clone());
+                }
+            }
+            // 選過、但現在找不到的攝影機（拔掉了）
+            if !app.s.camera.is_empty() && !list.contains(&app.s.camera) {
+                let _ = ui.radio(true, trf!("{}（找不到）", "{} (not found)", app.s.camera));
+            }
+            if list.is_empty() {
+                ui.add_enabled(false, egui::Label::new(if cfg!(windows) { tr!("沒有找到攝影機", "No camera found") } else { tr!("攝影機只支援 Windows", "Camera is supported on Windows only") }));
+            }
+        }
+    }
+    ui.separator();
+    if ui.add_enabled(app.cameras.is_some(), egui::Button::new(tr!("重新尋找攝影機", "Search for cameras again"))).clicked() {
+        app.load_cameras(true);
+    }
+    let more = ui.button(tr!("位置、大小與形狀…", "Position, size and shape…")).clicked();
+    if let Some(name) = pick {
+        app.s.camera = name;
+        app.save_settings();
+        ui.close();
+    }
+    if more {
+        ui.close();
+    }
+    more
 }
 
 /// 錄完自動處理中：哪一支、做到哪一步、取消

@@ -240,6 +240,8 @@ pub enum Icon {
     RotR,
     /// 時鐘（排程）
     Clock,
+    /// 網路攝影機（鏡頭與底座）
+    Webcam,
 }
 
 /// 在 rect（正方形）裡畫圖示
@@ -369,6 +371,12 @@ pub fn paint_icon(p: &Painter, rect: Rect, icon: Icon, color: Color32) {
         Icon::Clock => {
             circle(8.0, 8.0, 6.0);
             line(&[(8.0, 4.6), (8.0, 8.0), (10.6, 9.6)]);
+        }
+        Icon::Webcam => {
+            circle(8.0, 6.8, 4.6);
+            p.circle_filled(at(8.0, 6.8), 1.5 * k, color);
+            line(&[(8.0, 11.4), (8.0, 13.6)]);
+            line(&[(4.5, 13.8), (11.5, 13.8)]);
         }
         Icon::Close => {
             line(&[(4.0, 4.0), (12.0, 12.0)]);
