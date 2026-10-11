@@ -679,15 +679,16 @@ pub fn segment_args(plan: &CapturePlan, config: &RecordConfig, method: CaptureMe
     if let Some(ai) = audio_input {
         a.extend(ai.iter().cloned());
     }
-    // 分軌：送進來的 6 個聲道是 混音、系統聲音、麥克風 各兩個，拆成三條立體聲音軌
+    // 分軌：送進來的 6 個聲道是 混音、系統聲音、麥克風 各兩個，拆成三條立體聲音軌。
+    // 拆聲音要放在另一個濾鏡圖：和畫面放在同一個時，FFmpeg 7 以後要等聲音進來才處理畫面，
+    // 而聲音管線要看到第一張畫面才開始送（對齊時間），兩邊互等、一張畫面都錄不到
     let separate = audio_input.is_some() && config.separate_tracks();
-    let graph = if separate {
+    a.extend(["-filter_complex".into(), spec.graph]);
+    if separate {
         let i = spec.input_count;
-        format!("{};[{i}:a]asplit=3[sa0][sa1][sa2];[sa0]pan=stereo|c0=c0|c1=c1[amix];[sa1]pan=stereo|c0=c2|c1=c3[asys];[sa2]pan=stereo|c0=c4|c1=c5[amic]", spec.graph)
-    } else {
-        spec.graph
-    };
-    a.extend(["-filter_complex".into(), graph, "-map".into(), "[vout]".into()]);
+        a.extend(["-filter_complex".into(), format!("[{i}:a]asplit=3[sa0][sa1][sa2];[sa0]pan=stereo|c0=c0|c1=c1[amix];[sa1]pan=stereo|c0=c2|c1=c3[asys];[sa2]pan=stereo|c0=c4|c1=c5[amic]")]);
+    }
+    a.extend(strs(&["-map", "[vout]"]));
     if separate {
         a.extend(strs(&["-map", "[amix]", "-map", "[asys]", "-map", "[amic]"]));
         a.extend(strs(&AUDIO_ENCODE));
@@ -1691,7 +1692,11 @@ dummy: Immediate exit requested";
         let plan = resolve_plan(&c, &same_gpu()).unwrap();
         let a = segment_args(&plan, &c, CaptureMethod::Gdigrab, &x264(), "o.mp4", Some(&audio_in), None).unwrap();
         let j = a.join(" ");
-        assert!(graph_of(&a).ends_with(";[1:a]asplit=3[sa0][sa1][sa2];[sa0]pan=stereo|c0=c0|c1=c1[amix];[sa1]pan=stereo|c0=c2|c1=c3[asys];[sa2]pan=stereo|c0=c4|c1=c5[amic]"), "{j}");
+        // 畫面與拆聲音是兩個濾鏡圖（放在一起時 FFmpeg 要等聲音才處理畫面，而聲音要等第一張畫面才送）
+        let graphs: Vec<&String> = a.iter().zip(a.iter().skip(1)).filter(|(k, _)| *k == "-filter_complex").map(|(_, v)| v).collect();
+        assert_eq!(graphs.len(), 2, "{j}");
+        assert!(!graphs[0].contains("[1:a]") && graphs[0].ends_with("[vout]"), "{j}");
+        assert_eq!(graphs[1], "[1:a]asplit=3[sa0][sa1][sa2];[sa0]pan=stereo|c0=c0|c1=c1[amix];[sa1]pan=stereo|c0=c2|c1=c3[asys];[sa2]pan=stereo|c0=c4|c1=c5[amic]");
         assert!(j.contains("-map [vout] -map [amix] -map [asys] -map [amic] -c:a aac"), "{j}");
         assert!(j.contains("-metadata:s:a:2 handler_name=麥克風") && j.contains("-disposition:a:0 default -metadata:s:a:1"), "{j}");
         // 只錄一個來源、或沒打開分軌：一條音軌

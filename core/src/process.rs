@@ -73,6 +73,12 @@ pub fn last_lines(text: &str, n: usize) -> String {
     lines[lines.len().saturating_sub(n)..].join(" / ")
 }
 
+/// 最後 n 行錯誤訊息：略過標成警告、資訊的行（-loglevel level+… 時每行有等級）
+pub fn last_errors(text: &str, n: usize) -> String {
+    let lines: Vec<&str> = text.lines().map(str::trim).filter(|l| !l.is_empty() && !["[warning]", "[info]", "[verbose]", "[debug]"].iter().any(|t| l.contains(t))).collect();
+    lines[lines.len().saturating_sub(n)..].join(" / ")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -81,6 +87,12 @@ mod tests {
     fn last_lines_picks_tail() {
         assert_eq!(last_lines("a\n\n b \r\nc\nd\n", 3), "b / c / d");
         assert_eq!(last_lines("", 3), "");
+        // 只有警告時沒有錯誤可說
+        let warn = "[in#0/gdigrab @ 0x1] [warning] Stream #0: not enough frames\n[aist#1:0/pcm_f32le @ 0x2] [warning] Guessed Channel Layout: 5.1\n";
+        assert_eq!(last_errors(warn, 2), "");
+        assert_eq!(last_errors(&format!("{warn}[gdigrab @ 0x3] [error] Failed to capture image\n"), 2), "[gdigrab @ 0x3] [error] Failed to capture image");
+        // 沒有等級的訊息（-loglevel error）照常
+        assert_eq!(last_errors("a\nb\nc\n", 2), "b / c");
     }
 
     #[cfg(unix)]

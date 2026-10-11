@@ -688,3 +688,108 @@ async fn vertical_videos() {
     assert_eq!(white(0.5), 0);
     assert!(white(3.5) > 2500, "{}", white(3.5));
 }
+
+/// FFmpeg 的主版號（「ffmpeg version 9.0.2-…」→ 9；讀不到時 None）
+fn ffmpeg_major(ff: &Path) -> Option<u32> {
+    let out = Command::new(ff).args(["-hide_banner", "-version"]).stdin(Stdio::null()).output().ok()?;
+    let text = String::from_utf8_lossy(&out.stdout).into_owned();
+    let v = text.split_whitespace().skip_while(|w| *w != "version").nth(1)?;
+    v.trim_start_matches('n').split(['.', '-']).next()?.parse().ok()
+}
+
+/// 用真的聲音管線（假的、沒有聲音的來源）錄 secs 秒，和錄影時一樣：聲音管線要看到第一張畫面（showinfo）才開始送聲音，
+/// 用來對齊時間。回傳第一張畫面出現花了多久
+fn record_with_audio_pipe(ff: &Path, card: &Path, out: &Path, separate: bool, secs: f64) -> Duration {
+    use crate::audio::{AudioSourceSpec, Capture, Opener};
+    use crate::audiopipe::{AudioPipe, LogFn};
+    struct Silent;
+    impl Capture for Silent {
+        fn name(&self) -> String {
+            "沒有聲音".into()
+        }
+        fn read(&mut self, _visit: &mut crate::audio::Visit) -> Result<(), String> {
+            Ok(())
+        }
+    }
+    let opener: Opener = Arc::new(|_: &AudioSourceSpec| -> Result<Box<dyn Capture>, String> { Ok(Box::new(Silent)) });
+    let log: LogFn = Arc::new(|_, _| {});
+    let specs = vec![AudioSourceSpec { loopback: true, mic_id: String::new(), app: String::new() }, AudioSourceSpec { loopback: false, mic_id: String::new(), app: String::new() }];
+    let pipe = Arc::new(AudioPipe::new(specs, opener, log, separate).unwrap());
+    let config = RecordConfig { audio: AudioConfig { system: true, mic: true, mic_id: String::new(), app: String::new() }, separate_audio: separate, ..record_config() };
+    let (w, h) = (crate::audio_card::SIZE.0 as i32, crate::audio_card::SIZE.1 as i32);
+    let plan = CapturePlan { rect: Rect { x: 0, y: 0, width: w, height: h }, dda: None, monitors: vec![], out_width: w, out_height: h, card: Some(card.display().to_string()) };
+    let args = segment_args(&plan, &config, CaptureMethod::Gdigrab, &ENCODERS[0], &out.display().to_string(), Some(&pipe.input_args()), None).unwrap();
+    let start = std::time::Instant::now();
+    let mut child = Command::new(ff).args(&args).stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::piped()).spawn().unwrap();
+    // 和錄影器一樣讀 showinfo 的 pts 交給聲音管線
+    let stderr = child.stderr.take().unwrap();
+    let (tx, rx) = std::sync::mpsc::channel::<Duration>();
+    let p = pipe.clone();
+    let tail = Arc::new(std::sync::Mutex::new(std::collections::VecDeque::<String>::new()));
+    let tail2 = tail.clone();
+    let reader = std::thread::spawn(move || {
+        use std::io::BufRead;
+        let re = regex::Regex::new(r"Parsed_showinfo.*\bpts_time:\s*(-?[\d.]+)").unwrap();
+        let mut first = true;
+        for line in std::io::BufReader::new(stderr).lines().map_while(|l| l.ok()) {
+            if !line.contains("Parsed_showinfo") {
+                let mut t = tail2.lock().unwrap();
+                t.push_back(line.clone());
+                if t.len() > 15 {
+                    t.pop_front();
+                }
+            }
+            if let Some(c) = re.captures(&line) {
+                p.on_video_frame(c[1].parse().unwrap_or(0.0), crate::clock::now_100ns());
+                if first {
+                    first = false;
+                    let _ = tx.send(start.elapsed());
+                }
+            }
+        }
+    });
+    let first = rx.recv_timeout(Duration::from_secs(10));
+    let mut stdin = child.stdin.take().unwrap();
+    if first.is_err() {
+        let _ = child.kill();
+        let _ = child.wait();
+        pipe.close();
+        panic!("10 秒內沒有任何畫面：FFmpeg 在等聲音，聲音管線在等畫面（分軌 = {separate}）");
+    }
+    std::thread::sleep(Duration::from_secs_f64(secs));
+    pipe.flush_to_now();
+    stdin.write_all(b"q").unwrap();
+    stdin.flush().unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while child.try_wait().unwrap().is_none() {
+        if std::time::Instant::now() > deadline {
+            let _ = child.kill();
+            panic!("FFmpeg 收到 q 後沒有結束（分軌 = {separate}）：{:?}", tail.lock().unwrap());
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    pipe.close();
+    let _ = reader.join();
+    drop(stdin);
+    first.unwrap()
+}
+
+#[tokio::test]
+async fn recording_with_the_audio_pipe_starts_right_away() {
+    let Some(ff) = ffmpeg() else { return };
+    // FFmpeg 6 以前要等每個輸入都有資料才處理畫面，聲音管線（等第一張畫面才送）沒辦法用
+    if !has(&ff, "-encoders", "libx264") || ffmpeg_major(&ff).is_none_or(|v| v < 7) {
+        eprintln!("略過：需要 FFmpeg 7 以上");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let card = write_card(dir.path());
+    for separate in [false, true] {
+        let out = dir.path().join(format!("seg_{}.mp4", separate as u8));
+        let first = record_with_audio_pipe(&ff, &card, &out, separate, 3.0);
+        assert!(first < Duration::from_secs(5), "第一張畫面花了 {first:?}（分軌 = {separate}）");
+        let i = probe(&ff, &out).await;
+        assert!(i.duration_sec.unwrap() > 2.0, "{:?}", i.duration_sec);
+        assert_eq!((i.has_audio, i.audio_tracks), (Some(true), if separate { 3 } else { 1 }), "分軌 = {separate}");
+    }
+}
