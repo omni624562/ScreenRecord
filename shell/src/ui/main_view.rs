@@ -1385,6 +1385,10 @@ fn shot_button(app: &mut UiApp, ui: &mut Ui, w: f32) {
         app.spawn(async move { core.long_shot(&config).await }, |app, r| {
             app.main.shooting = false;
             if let Err(e) = r {
+                // 捲動時被捲的視窗在前面，操作視窗常在它後面：沒在前面時也用系統通知說明
+                if app.ctx.input(|i| i.viewport().focused) != Some(true) {
+                    app.core.notify(tr!("長截圖", "Scrolling screenshot"), e.message(), true);
+                }
                 app.toast(e.message().to_string(), true);
             }
         });

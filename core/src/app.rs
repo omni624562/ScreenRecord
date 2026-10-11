@@ -1631,37 +1631,53 @@ type LongCapture = (crate::longshot::LongImage, usize);
 #[cfg(windows)]
 fn scroll_capture(area: crate::types::Rect) -> crate::Result<Option<LongCapture>> {
     use crate::longshot::{Step, Stitcher};
-    use crate::scroll_win::{esc_pressed, focus_at, grab_settled, scroll_down};
+    use crate::scroll_win::{esc_pressed, focus_at, grab_settled, park_cursor, scroll};
+    crate::info!("[截圖] 開始長截圖：範圍 ({}, {}) {}×{}", area.x, area.y, area.width, area.height);
     // 先把範圍裡的視窗切到前面，再截第一張（切換時標題列會變色，要在截第一張之前）
     focus_at(area.x + area.width / 2, area.y + area.height / 2);
+    park_cursor(area);
     let first = grab_settled(area, Duration::from_millis(1500)).ok_or_else(|| crate::Error::other(tr!("無法擷取畫面", "Couldn't capture the screen")))?;
     let (w, h) = (area.width as u32, area.height as u32);
     let mut st = Stitcher::new(first, w, h);
-    // 範圍小時一次捲少一點，前後兩張才有足夠的重疊
-    let notches = if area.height < 360 {
-        1
-    } else if area.height < 700 {
-        2
-    } else {
-        3
-    };
+    // 每次捲多少（滾輪的單位，120 = 一格）：第一次捲一格量出一格捲幾列，之後每次捲大約半個範圍；
+    // 對不起來時可能是一次捲太多（滑鼠設定成一次捲很多行），捲回去改少一點再試
+    let mut delta = 120;
+    let mut measured = false;
+    let mut retries = 0;
     let _ = esc_pressed();
     let (mut steps, mut same) = (0, 0);
     // 停下來的原因（None = 捲到次數上限或截不到畫面）
     let mut end: Option<Step> = None;
     let mut esc = false;
-    while steps < 120 {
-        scroll_down(area, notches);
-        std::thread::sleep(Duration::from_millis(150));
+    // 等滾輪送到範圍裡的視窗，再把游標移開（游標停在內容上會反白）、等捲動的動畫停下來再截
+    let scroll_and_grab = |delta: i32| {
+        scroll(area, delta);
+        std::thread::sleep(Duration::from_millis(40));
+        park_cursor(area);
+        std::thread::sleep(Duration::from_millis(110));
+        grab_settled(area, Duration::from_millis(1200))
+    };
+    while steps < 300 {
+        let img = scroll_and_grab(delta);
         if esc_pressed() {
             esc = true;
             break;
         }
-        // 等捲動的動畫停下來再截
-        let Some(img) = grab_settled(area, Duration::from_millis(1200)) else { break };
+        let Some(img) = img else { break };
         steps += 1;
         match st.add(img) {
-            Step::Added(_) => same = 0,
+            Step::Added(s) => {
+                same = 0;
+                retries = 0;
+                if !measured {
+                    measured = true;
+                    let per_notch = s as f64 * 120.0 / delta as f64;
+                    let notches = (area.height as f64 * 0.45 / per_notch).floor().clamp(1.0, 5.0) as i32;
+                    if delta >= 120 {
+                        delta = notches * 120;
+                    }
+                }
+            }
             // 有些網頁捲動後才載入內容：再捲一次看看
             Step::Same => {
                 same += 1;
@@ -1669,6 +1685,13 @@ fn scroll_capture(area: crate::types::Rect) -> crate::Result<Option<LongCapture>
                     end = Some(Step::Same);
                     break;
                 }
+            }
+            Step::Lost if retries < 2 => {
+                retries += 1;
+                let _ = scroll_and_grab(-delta);
+                // 一格還是太多時改捲三分之一格（瀏覽器支援；其他程式累積到一格才捲）
+                delta = if delta > 120 { (delta / 240).max(1) * 120 } else { 40 };
+                crate::info!("[截圖] 長截圖：第 {steps} 次對不起來，捲回去改捲 {delta}（120 = 一格）再試");
             }
             s => {
                 end = Some(s);
@@ -1678,7 +1701,7 @@ fn scroll_capture(area: crate::types::Rect) -> crate::Result<Option<LongCapture>
     }
     match (esc, end) {
         (true, _) => crate::info!("[截圖] 長截圖：按了 Esc，停止"),
-        (_, Some(Step::Lost)) => crate::info!("[截圖] 長截圖：畫面對不起來，停止"),
+        (_, Some(Step::Lost)) => crate::info!("[截圖] 長截圖：第 {steps} 次捲動後畫面對不起來，停止"),
         (_, Some(Step::Full)) => crate::info!("[截圖] 長截圖：已達最高 {} 像素，停止", crate::longshot::MAX_HEIGHT),
         _ => {}
     }
