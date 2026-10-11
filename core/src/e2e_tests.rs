@@ -368,6 +368,7 @@ async fn cut_with_every_effect() {
         fast: vec![FastRange { start_ms: 3000, end_ms: 5000, speed: 4 }],
         zoom: Some(ClickZoom { factor: 1.5, clicks: vec![[2.0, 0.3, 0.4]] }),
         frame: Some(crate::video_frame::VideoFrame::default()),
+        cursor: Some(crate::cursor::CursorFx { size: 2.0, track: vec![[0.0, 0.2, 0.2], [2.0, 0.6, 0.5], [4.0, 0.3, 0.7]] }),
     };
     let expect = crate::edit::output_length(&crate::edit::keep_parts(6.0, &spec));
     assert!(near(expect, 4.0, 0.01), "{expect}");
@@ -601,4 +602,50 @@ async fn replay_buffer_saves_while_recording() {
         assert!(std::time::Instant::now() < deadline, "FFmpeg 收到 q 後沒有結束");
         std::thread::sleep(Duration::from_millis(50));
     }
+}
+
+/// 一張畫面的灰階像素（w × h）
+fn gray_frame(ff: &Path, file: &Path, t: f64, w: usize, h: usize) -> Vec<u8> {
+    let o = Command::new(ff)
+        .args(["-hide_banner", "-loglevel", "error", "-nostdin", "-ss", &t.to_string(), "-i"])
+        .arg(file)
+        .args(["-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "gray", "-"])
+        .output()
+        .unwrap();
+    assert_eq!(o.stdout.len(), w * h, "{}", String::from_utf8_lossy(&o.stderr));
+    o.stdout
+}
+
+#[tokio::test]
+async fn smooth_cursor_is_drawn_where_it_should_be() {
+    let Some(ff) = ffmpeg() else { return };
+    if !has(&ff, "-encoders", "libx264") || !has(&ff, "-filters", "sendcmd") {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("Rec_2026-10-11_15-00-00.mp4");
+    run_ok(&ff, &["-f", "lavfi", "-i", "color=black:s=640x360:r=30", "-t", "3", "-c:v", "libx264", "-pix_fmt", "yuv420p", &src.display().to_string()]);
+    // 0.5 秒時從左上移到右下，之後不動
+    let track = vec![[0.0, 0.2, 0.2], [0.5, 0.2, 0.2], [0.53, 0.7, 0.6], [3.0, 0.7, 0.6]];
+    let spec = EditSpec { start: 0.0, end: 3.0, cursor: Some(crate::cursor::CursorFx { size: 2.0, track: track.clone() }), ..Default::default() };
+    let ex = Exporter::new();
+    ex.start_cut(&ctx(&ff), &src.display().to_string(), &spec, None, None).await.unwrap();
+    let out = finish(&ex).await;
+    let px = |f: &[u8], x: usize, y: usize| f[y * 640 + x];
+    // 箭頭的尖端在游標的位置：尖端右下方是白色，左上方是黑色的背景
+    for (t, cx, cy) in [(0.3, 128usize, 72usize), (2.5, 448, 216)] {
+        let f = gray_frame(&ff, &out, t, 640, 360);
+        assert!(px(&f, cx + 2, cy + 7) > 180, "t={t}：{}", px(&f, cx + 2, cy + 7));
+        assert!(px(&f, cx - 6, cy - 6) < 40, "t={t}：{}", px(&f, cx - 6, cy - 6));
+    }
+    // 移動中：平滑地追過去（0.6 秒時還在路上，不在起點也不在終點）
+    let s = crate::cursor::smooth(&track, 30.0);
+    let (mx, my) = crate::cursor::at(&s, 0.6).unwrap();
+    assert!(mx > 0.25 && mx < 0.65, "{mx}");
+    let f = gray_frame(&ff, &out, 0.6, 640, 360);
+    let (cx, cy) = ((mx * 640.0).round() as usize, (my * 360.0).round() as usize);
+    let white = (cx..cx + 6).flat_map(|x| (cy + 2..cy + 12).map(move |y| (x, y))).filter(|&(x, y)| px(&f, x, y) > 180).count();
+    assert!(white > 5, "{white}");
+    // 暫存的游標圖與指令檔刪掉了
+    assert!(!std::fs::read_dir(std::env::temp_dir()).unwrap().flatten().any(|e| e.path().join("cursor.txt").exists() && e.file_name().to_string_lossy().contains(&std::process::id().to_string())));
 }

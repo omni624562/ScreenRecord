@@ -18,6 +18,7 @@ pub mod camera_bubble_win;
 pub mod chapters;
 pub mod clipboard;
 pub mod clock;
+pub mod cursor;
 pub mod desktop;
 pub mod downloader;
 pub mod edit;

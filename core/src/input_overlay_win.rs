@@ -23,9 +23,10 @@ use windows::Win32::UI::WindowsAndMessaging::{
     SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SW_HIDE, SW_SHOWNOACTIVATE, ULW_ALPHA, WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
 };
 
-/// 在背景執行緒顯示點擊與按鍵；info 取得錄影狀態（None = 沒在錄影），on_click 收到點擊的桌面座標
-pub fn spawn(info: impl Fn() -> Option<OverlayInfo> + Send + 'static, on_click: impl Fn(i32, i32) + Send + 'static) {
-    let _ = std::thread::Builder::new().name("input-overlay".into()).spawn(move || unsafe { run(info, on_click) });
+/// 在背景執行緒顯示點擊與按鍵；info 取得錄影狀態（None = 沒在錄影），on_click 收到點擊的桌面座標，
+/// on_cursor 在錄影中約每 30 毫秒收到游標的桌面座標（剪輯時換成平滑、放大的游標用）
+pub fn spawn(info: impl Fn() -> Option<OverlayInfo> + Send + 'static, on_click: impl Fn(i32, i32) + Send + 'static, on_cursor: impl Fn(i32, i32) + Send + 'static) {
+    let _ = std::thread::Builder::new().name("input-overlay".into()).spawn(move || unsafe { run(info, on_click, on_cursor) });
 }
 
 unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
@@ -39,7 +40,7 @@ struct Show {
     since: Option<Instant>,
 }
 
-unsafe fn run(info: impl Fn() -> Option<OverlayInfo>, on_click: impl Fn(i32, i32)) {
+unsafe fn run(info: impl Fn() -> Option<OverlayInfo>, on_click: impl Fn(i32, i32), on_cursor: impl Fn(i32, i32)) {
     let hinst = GetModuleHandleW(None).unwrap_or_default();
     let class = w!("ScreenRecorderInputOverlay");
     let wc = WNDCLASSEXW { cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32, lpfnWndProc: Some(wnd_proc), hInstance: hinst.into(), lpszClassName: class, ..Default::default() };
@@ -145,6 +146,13 @@ unsafe fn run(info: impl Fn() -> Option<OverlayInfo>, on_click: impl Fn(i32, i32
                     let (w, h) = (pm.width() as i32, pm.height() as i32);
                     present(kw, pm, a.x + (a.width - w) / 2, a.y + a.height - h - (a.height as f32 * 0.08) as i32, alpha);
                 }
+            }
+        }
+        // 記下游標的位置
+        if cur.is_some() {
+            let mut p = POINT::default();
+            if GetCursorPos(&mut p).is_ok() {
+                on_cursor(p.x, p.y);
             }
         }
         // 游標光暈：跟著游標（只在錄影範圍內顯示）

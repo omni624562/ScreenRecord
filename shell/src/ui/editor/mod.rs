@@ -245,6 +245,14 @@ pub struct Editor {
     clicks: Vec<[f64; 3]>,
     /// 跟著點擊放大的倍率（0 = 不放大）
     zoom: f64,
+    /// 錄影時記下的游標位置（原片的時間）、平滑後的位置（預覽用）、錄影時沒有把游標錄進影片
+    cursor: Vec<[f64; 3]>,
+    cursor_smooth: Vec<[f64; 3]>,
+    no_cursor: bool,
+    /// 平滑、放大的游標的大小（0 = 不加）
+    cursor_size: f64,
+    /// 預覽用的游標圖
+    cursor_tex: Option<CursorTex>,
     /// 上次加上的圖片（Logo），選單裡可以直接再用
     last_picture: String,
     /// 自動產生字幕（進行中）、選的語言與品質
@@ -304,10 +312,16 @@ pub fn open(app: &mut UiApp, entry: LibraryEntry) {
             let mut ed = Editor::new(app, entry, ffmpeg, info);
             ed.markers = marks.markers;
             ed.clicks = marks.clicks;
+            ed.cursor_smooth = screenrecorder_core::cursor::smooth(&marks.cursor, 60.0);
+            ed.cursor = marks.cursor;
+            ed.no_cursor = marks.no_cursor;
             app.editor = Some(ed);
         },
     );
 }
+
+/// 預覽用的游標圖：(高, 圖, 尖端位置, 圖的大小)
+type CursorTex = (u32, TextureHandle, (i32, i32), (u32, u32));
 
 impl Editor {
     fn new(app: &UiApp, e: LibraryEntry, ffmpeg: PathBuf, info: Option<EditProject>) -> Editor {
@@ -378,6 +392,11 @@ impl Editor {
             markers: vec![],
             clicks: vec![],
             zoom: 0.0,
+            cursor: vec![],
+            cursor_smooth: vec![],
+            no_cursor: false,
+            cursor_size: 0.0,
+            cursor_tex: None,
             last_picture: app.s.last_picture.clone(),
             subs: None,
             subs_lang: 0,
@@ -431,6 +450,7 @@ impl Editor {
         self.spec.audio = data.audio;
         self.spec.fast = data.fast;
         self.zoom = data.zoom;
+        self.cursor_size = data.cursor;
         self.spec.frame = data.frame;
         self.crop_on = data.crop_on;
         self.anns = data.anns;
@@ -567,6 +587,7 @@ impl Editor {
         self.spec.fast = data.get("fast").and_then(|a| serde_json::from_value::<Vec<FastRange>>(a.clone()).ok()).unwrap_or_default();
         self.spec.fast.retain(|f| f.end() <= d + 0.05 && f.speed > 1 && f.speed <= 16);
         self.zoom = data.get("zoom").and_then(Value::as_f64).filter(|z| (1.0..=4.0).contains(z)).unwrap_or(0.0);
+        self.cursor_size = data.get("cursor").and_then(Value::as_f64).filter(|s| screenrecorder_core::cursor::SIZES.contains(s)).unwrap_or(0.0);
         self.spec.frame = data.get("frame").and_then(|f| serde_json::from_value(f.clone()).ok());
         self.crop_on = data.get("cropOn").and_then(Value::as_bool).unwrap_or(false) && self.spec.crop.is_some();
         // 一個一個讀：格式不對的標註略過，不影響其他的
@@ -591,6 +612,7 @@ impl Editor {
             fast: self.spec.fast.clone(),
             zoom: self.zoom,
             frame: self.spec.frame.clone(),
+            cursor: self.cursor_size,
         }
     }
 
@@ -602,6 +624,11 @@ impl Editor {
 
     fn keep(&self) -> Vec<Range> {
         keep_ranges(self.duration, &self.spec)
+    }
+
+    /// 有打開平滑、放大的游標（而且有記下游標的位置）
+    fn cursor_on(&self) -> bool {
+        self.cursor_size > 0.0 && !self.cursor.is_empty()
     }
 
     /// 有打開跟著點擊放大（而且有點擊、沒有裁切）
@@ -1032,6 +1059,7 @@ impl Editor {
                 let _ = self.add_picture(v);
             }
             "frame" => self.spec.frame = Some(screenrecorder_core::video_frame::VideoFrame::default()),
+            "cursor" => self.cursor_size = v.parse().unwrap_or(2.0),
             "srt" => {
                 if let Ok(c) = screenrecorder_core::subtitles::read_file(std::path::Path::new(v)) {
                     self.add_subtitles(&c);
@@ -1535,7 +1563,8 @@ fn footer(ed: &mut Editor, ui: &mut egui::Ui) -> bool {
         && crop.is_none()
         && ed.anns.is_empty()
         && ed.spec.audio.is_default()
-        && ed.spec.frame.is_none();
+        && ed.spec.frame.is_none()
+        && !ed.cursor_on();
     let mut save = false;
     ui.vertical(|ui| {
         ui.spacing_mut().item_spacing = vec2(0.0, 2.0);
@@ -1552,6 +1581,9 @@ fn footer(ed: &mut Editor, ui: &mut egui::Ui) -> bool {
             }
             if zooming {
                 ui.label(tr!("・跟著點擊放大", " · Zoom on clicks"));
+            }
+            if ed.cursor_on() {
+                ui.label(tr!("・平滑放大的游標", " · Smooth cursor"));
             }
             if ed.spec.frame.is_some() {
                 ui.label(tr!("・背景與圓角", " · Background and rounded corners"));
@@ -1614,6 +1646,7 @@ fn start_save(app: &mut UiApp, ed: &mut Editor) {
         fast: ed.spec.fast.clone(),
         zoom: ed.zoom_on().then(|| ClickZoom { factor: ed.zoom, clicks: ed.clicks.clone() }),
         frame: ed.spec.frame.clone(),
+        cursor: ed.cursor_on().then(|| screenrecorder_core::cursor::CursorFx { size: ed.cursor_size, track: ed.cursor.clone() }),
     };
     let project = serde_json::to_value(ed.project_data()).ok();
     let (core, source, replace) = (app.core.clone(), ed.entry.media.path.clone(), ed.replace_target.clone());

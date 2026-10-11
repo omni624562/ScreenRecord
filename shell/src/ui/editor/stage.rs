@@ -31,6 +31,28 @@ const SEL_BLUE: Color32 = Color32::from_rgb(0x00, 0x90, 0xff);
 const ROT_HANDLE_PX: f64 = 30.0;
 const ROT_HIT_PX: f64 = 16.0;
 
+/// 平滑、放大的游標（輸出時畫在標註底下）：影片上 uv 那一塊顯示在 rect
+fn cursor_overlay(ed: &mut Editor, ctx: &egui::Context, painter: &egui::Painter, rect: Rect, uv: Rect) {
+    use screenrecorder_core::cursor;
+    if !ed.cursor_on() || ed.vw <= 0.0 || ed.vh <= 0.0 {
+        return;
+    }
+    let Some(pos) = cursor::at(&ed.cursor_smooth, ed.now()) else { return };
+    let h = cursor::height_for(ed.vh as i32, ed.cursor_size);
+    if ed.cursor_tex.as_ref().is_none_or(|c| c.0 != h) {
+        ed.cursor_tex = cursor::image(h).map(|(pm, tip)| {
+            let img = egui::ColorImage::from_rgba_premultiplied([pm.width() as usize, pm.height() as usize], pm.data());
+            (h, ctx.load_texture("ed-cursor", img, TextureOptions::LINEAR), tip, (pm.width(), pm.height()))
+        });
+    }
+    let Some((_, tex, tip, size)) = &ed.cursor_tex else { return };
+    let (ox, oy) = cursor::origin(pos, ed.vw as i32, ed.vh as i32, *tip);
+    // 影片像素 → 畫面上的位置
+    let map = |x: f64, y: f64| pos2(rect.left() + ((x / ed.vw) as f32 - uv.left()) / uv.width() * rect.width(), rect.top() + ((y / ed.vh) as f32 - uv.top()) / uv.height() * rect.height());
+    let r = Rect::from_min_max(map(ox as f64, oy as f64), map((ox + size.0 as i32) as f64, (oy + size.1 as i32) as f64));
+    painter.with_clip_rect(rect).image(tex.id(), r, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+}
+
 pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, stage_h: f32) {
     let avail_w = ui.available_width();
     // 截圖的「輸出」分頁：大畫面顯示輸出的樣子（背景、圓角、陰影、外框都看得清楚）
@@ -53,18 +75,19 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, stage_h: f3
     let resp = ui.interact(rect, Id::new("ed-stage"), Sense::click_and_drag());
     let painter = ui.painter_at(outer);
     painter.rect_filled(rect, CornerRadius::ZERO, Color32::BLACK);
+    // 預覽結果時顯示跟著點擊放大的效果（只放大影片與游標；標註照原本的位置畫）
+    let uv = if ed.previewing && ed.zoom_on() {
+        let (z, cx, cy) = zoom::at(&zoom::focus_points(&ed.clicks), ed.zoom, ed.now());
+        let (hw, hh) = (0.5 / z as f32, 0.5 / z as f32);
+        let (cx, cy) = ((cx as f32).clamp(hw, 1.0 - hw), (cy as f32).clamp(hh, 1.0 - hh));
+        Rect::from_min_max(pos2(cx - hw, cy - hh), pos2(cx + hw, cy + hh))
+    } else {
+        Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0))
+    };
     if let Some(tex) = &ed.video_tex {
-        // 預覽結果時顯示跟著點擊放大的效果（只放大影片；標註照原本的位置畫）
-        let uv = if ed.previewing && ed.zoom_on() {
-            let (z, cx, cy) = zoom::at(&zoom::focus_points(&ed.clicks), ed.zoom, ed.now());
-            let (hw, hh) = (0.5 / z as f32, 0.5 / z as f32);
-            let (cx, cy) = ((cx as f32).clamp(hw, 1.0 - hw), (cy as f32).clamp(hh, 1.0 - hh));
-            Rect::from_min_max(pos2(cx - hw, cy - hh), pos2(cx + hw, cy + hh))
-        } else {
-            Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0))
-        };
         painter.image(tex.id(), rect, uv, Color32::WHITE);
     }
+    cursor_overlay(ed, ctx, &painter, rect, uv);
     if ed.vw <= 0.0 {
         interact(ed, ui, rect, &resp);
         return;

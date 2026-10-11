@@ -237,7 +237,7 @@ pub async fn markers(app: &App, path: &str) -> Vec<f64> {
     marks(app, path).await.markers
 }
 
-/// 這支錄影裡的標記與滑鼠點擊（依時間排序）
+/// 這支錄影裡的標記、滑鼠點擊與游標位置（依時間排序）
 pub async fn marks(app: &App, path: &str) -> crate::recorder::Marks {
     let (store, p) = (app.markers.clone(), path.to_string());
     let mut m: crate::recorder::Marks = tokio::task::spawn_blocking(move || store.for_output(&p)).await.ok().flatten().and_then(|x| serde_json::from_value(x.data).ok()).unwrap_or_default();
@@ -245,6 +245,8 @@ pub async fn marks(app: &App, path: &str) -> crate::recorder::Marks {
     m.markers.sort_by(f64::total_cmp);
     m.clicks.retain(|c| c.iter().all(|v| v.is_finite()) && c[0] >= 0.0);
     m.clicks.sort_by(|a, b| a[0].total_cmp(&b[0]));
+    m.cursor.retain(|c| c.iter().all(|v| v.is_finite()) && c[0] >= 0.0);
+    m.cursor.sort_by(|a, b| a[0].total_cmp(&b[0]));
     m
 }
 

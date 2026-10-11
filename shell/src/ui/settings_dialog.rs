@@ -396,7 +396,13 @@ fn record_page(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
     }
     form_row(ui, tr!("滑鼠游標", "Mouse cursor"), |ui| {
         let mut dm = app.s.draw_mouse;
-        if switch(ui, &mut dm, tr!("錄進影片", "Include in recording"), true).changed() {
+        if switch(ui, &mut dm, tr!("錄進影片", "Include in recording"), true)
+            .on_hover_text(tr!(
+                "關掉時影片裡沒有游標，剪輯時可以換成平滑移動、放大的游標（錄影時一樣會記下游標的位置）",
+                "When off, the video has no cursor and you can add a smooth, larger cursor when editing (the cursor position is still recorded)"
+            ))
+            .changed()
+        {
             app.s.draw_mouse = dm;
             app.save_settings();
         }

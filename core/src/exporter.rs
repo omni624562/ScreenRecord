@@ -127,7 +127,7 @@ impl Exporter {
             if scaled { format!("，寬 {w}") } else { String::new() },
             if limit { format!("，{} MB 以內", num(max_mb)) } else { String::new() }
         );
-        self.run_with_cleanup(ExportKind::Speed, &ffmpeg, args, source, &output, speed, out_sec, &note, Finish { cleanup, replace: None, on_saved: None })
+        self.run_with_cleanup(ExportKind::Speed, &ffmpeg, args, source, &output, speed, out_sec, &note, Finish { cleanup, replace: None, on_saved: None, cwd: None })
     }
 
     /// 動圖：GIF 或 WebP（可同時加速；無聲音）
@@ -182,7 +182,7 @@ impl Exporter {
         let mut args = crate::args::merge_args(&inputs, &output.display().to_string(), w, h, fps, &enc);
         crate::args::drop_chapters(&mut args);
         let note = format!("合併 {} 支錄影", inputs.len());
-        self.run_with_cleanup(ExportKind::Merge, &ffmpeg, args, &list[0].0, &output, 1.0, total, &note, Finish { cleanup: None, replace: None, on_saved: None })
+        self.run_with_cleanup(ExportKind::Merge, &ffmpeg, args, &list[0].0, &output, 1.0, total, &note, Finish { cleanup: None, replace: None, on_saved: None, cwd: None })
     }
 
     pub async fn start_cut(&self, ctx: &ExportCtx, source: &str, spec: &EditSpec, replace: Option<&str>, on_saved: Option<OnSaved>) -> Result<ExportStatus> {
@@ -219,7 +219,8 @@ impl Exporter {
             && spec.overlays.is_empty()
             && spec.audio.is_default()
             && spec.zoom.is_none()
-            && spec.frame.is_none();
+            && spec.frame.is_none()
+            && spec.cursor.is_none();
         if unchanged {
             return Err(Error::config(tr!("沒有任何剪輯、裁切或標註", "There are no edits, crops or annotations")));
         }
@@ -266,9 +267,26 @@ impl Exporter {
             (Some(_), _, _) => return Err(Error::config(tr!("無法讀取影片尺寸，不能加上背景", "Couldn't read the video size, so the background can't be added"))),
             (None, ..) => (None, temp),
         };
+        // 平滑、放大的游標：游標圖與移動它的指令檔（FFmpeg 在暫存資料夾裡執行，濾鏡裡的檔名不用處理 Windows 路徑）
+        let (cursor, temp) = match (&spec.cursor, info.width, info.height) {
+            (Some(c), Some(w), Some(h)) if !c.track.is_empty() => {
+                let dir = temp.unwrap_or_else(|| std::env::temp_dir().join(format!("ScreenRecorder-overlays-{}-{}", std::process::id(), crate::paths::now_ms())));
+                match write_cursor(c, w as i32, h as i32, fps, &dir) {
+                    Ok(ci) => (Some(ci), Some(dir)),
+                    Err(e) => {
+                        let _ = std::fs::remove_dir_all(&dir);
+                        return Err(e);
+                    }
+                }
+            }
+            (Some(c), None, _) | (Some(c), _, None) if !c.track.is_empty() => {
+                return Err(Error::config(tr!("無法讀取影片尺寸，不能加上游標", "Couldn't read the video size, so the cursor can't be added")))
+            }
+            _ => (None, temp),
+        };
         // 分別調整系統聲音與麥克風：只有分軌錄影（3 條音軌）才做得到
         let audio = crate::edit::AudioFx { tracks: spec.audio.tracks.filter(|_| info.audio_tracks >= 3), ..spec.audio };
-        let mut args = cut_args(source, &output.display().to_string(), &keep, crop, fps, &enc, info.has_audio == Some(true), &overlays, audio, zoom.as_deref(), frame.as_ref())?;
+        let mut args = cut_args(source, &output.display().to_string(), &keep, crop, fps, &enc, info.has_audio == Some(true), &overlays, audio, zoom.as_deref(), frame.as_ref(), cursor.as_ref())?;
         // 章節換成剪輯後的時間（刪掉的片段裡的章節改從下一段開始）
         let temp = with_chapters(&mut args, &crate::chapters::map_cut(&info.chapters, &keep), length, temp);
         let fast = keep.iter().filter(|p| p.2 > 1).count();
@@ -279,8 +297,10 @@ impl Exporter {
             if zoom.is_some() { "，跟著點擊放大" } else { "" },
             crop.map(|c| format!("，裁切 {}×{}", c.width, c.height)).unwrap_or_default(),
             if overlays.is_empty() { String::new() } else { format!("，標註 {} 個", overlays.len()) }
-        ) + if frame.is_some() { "，背景與圓角" } else { "" };
-        let finish = Finish { cleanup: temp, replace: replace.map(PathBuf::from), on_saved };
+        ) + if frame.is_some() { "，背景與圓角" } else { "" }
+            + if cursor.is_some() { "，平滑放大的游標" } else { "" };
+        let cwd = cursor.as_ref().and(temp.clone());
+        let finish = Finish { cleanup: temp, replace: replace.map(PathBuf::from), on_saved, cwd };
         self.run_with_cleanup(ExportKind::Cut, &ffmpeg, args, source, &output, 1.0, length, &note, finish)
     }
 
@@ -326,13 +346,17 @@ impl Exporter {
     /// output：FFmpeg 寫入的檔案；finish：結束後的處理（見 Finish）
     #[allow(clippy::too_many_arguments)]
     fn run_with_cleanup(&self, kind: ExportKind, ffmpeg: &Path, args: Vec<String>, source: &str, output: &Path, speed: f64, expected_sec: f64, note: &str, finish: Finish) -> Result<ExportStatus> {
-        let Finish { cleanup, replace, on_saved } = finish;
+        let Finish { cleanup, replace, on_saved, cwd } = finish;
         let remove_temp = |dir: &Option<PathBuf>| {
             if let Some(d) = dir {
                 let _ = std::fs::remove_dir_all(d);
             }
         };
-        let mut child = match command(ffmpeg).args(&args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn() {
+        let mut cmd = command(ffmpeg);
+        if let Some(d) = &cwd {
+            cmd.current_dir(d);
+        }
+        let mut child = match cmd.args(&args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn() {
             Ok(c) => c,
             Err(e) => {
                 remove_temp(&cleanup);
@@ -515,6 +539,8 @@ struct Finish {
     /// 完成後用寫好的檔案取代這個檔案
     replace: Option<PathBuf>,
     on_saved: Option<OnSaved>,
+    /// FFmpeg 的工作資料夾（濾鏡用相對檔名讀暫存檔）
+    cwd: Option<PathBuf>,
 }
 
 /// 標註最多幾個（避免濾鏡圖過大；字幕一段就是一個）
@@ -572,6 +598,20 @@ fn write_overlays(list: &[Overlay], vw: i32, vh: i32, duration: f64, dir: &Path)
         }
     }
     Ok(out)
+}
+
+/// 平滑、放大的游標：游標圖（cursor.png）與 sendcmd 指令（cursor.txt）寫進 dir
+fn write_cursor(c: &crate::cursor::CursorFx, w: i32, h: i32, fps: f64, dir: &Path) -> Result<crate::args::CursorInput> {
+    use crate::cursor;
+    std::fs::create_dir_all(dir)?;
+    let size = if cursor::SIZES.contains(&c.size) { c.size } else { cursor::SIZES[1] };
+    let (img, tip) = cursor::image(cursor::height_for(h, size)).ok_or_else(|| Error::config(tr!("無法畫出游標", "Couldn't draw the cursor")))?;
+    img.save_png(dir.join("cursor.png")).map_err(|e| Error::other(e.to_string()))?;
+    let smoothed = cursor::smooth(&c.track, fps.min(60.0));
+    std::fs::write(dir.join("cursor.txt"), cursor::commands(&smoothed, w, h, tip))?;
+    // 第一個位置之前放在畫面外
+    let (x, y) = smoothed.first().map(|p| cursor::origin((p[1], p[2]), w, h, tip)).unwrap_or((-1000, -1000));
+    Ok(crate::args::CursorInput { image: "cursor.png".into(), commands: "cursor.txt".into(), x, y })
 }
 
 /// 背景與圓角：底圖與遮罩寫進 dir

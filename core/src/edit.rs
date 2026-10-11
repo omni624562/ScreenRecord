@@ -42,6 +42,9 @@ pub struct EditSpec {
     /// 背景與圓角（影片縮小放在背景中間）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub frame: Option<crate::video_frame::VideoFrame>,
+    /// 平滑、放大的游標（錄影時記下的位置）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<crate::cursor::CursorFx>,
 }
 
 /// 跟著點擊放大：倍率與錄影時記下的點擊（原影片的秒數, x, y；x、y 為 0～1）

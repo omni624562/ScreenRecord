@@ -187,6 +187,8 @@ struct St {
     markers: Vec<u64>,
     /// 滑鼠點擊：(已錄的毫秒數, 在擷取範圍內的位置 0～1)
     clicks: Vec<(u64, f32, f32)>,
+    /// 游標的位置（剪輯時換成平滑、放大的游標用；見 cursor.rs）
+    cursor: Vec<crate::cursor::Sample>,
     busy: Option<String>,
     config: Option<RecordConfig>,
     plan: Option<CapturePlan>,
@@ -368,6 +370,18 @@ pub struct Marks {
     /// 滑鼠點擊：[影片的秒數, x, y]（x、y 是在畫面裡的位置 0～1）
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub clicks: Vec<[f64; 3]>,
+    /// 游標的位置：[影片的秒數, x, y]（位置有變才記）
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cursor: Vec<crate::cursor::Sample>,
+    /// 錄影時沒有把游標錄進影片（剪輯時換成大游標才不會重疊）
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub no_cursor: bool,
+}
+
+impl Marks {
+    pub fn is_empty(&self) -> bool {
+        self.markers.is_empty() && self.clicks.is_empty() && self.cursor.is_empty()
+    }
 }
 
 /// 錄影時要在畫面上顯示點擊 / 按鍵用的資訊
@@ -655,6 +669,18 @@ impl Recorder {
         st.clicks.push((t, fx, fy));
     }
 
+    /// 記下游標的位置（桌面的實體像素座標；錄影中約每 30 毫秒一次）：剪輯時換成平滑、放大的游標
+    pub fn add_cursor(&self, x: i32, y: i32) {
+        let mut st = self.lock();
+        if st.state != RecorderState::Recording || st.config.as_ref().is_none_or(|c| c.audio_only || c.replay_sec > 0) {
+            return;
+        }
+        let Some(r) = st.plan.as_ref().map(|p| p.rect).filter(|r| r.width > 0 && r.height > 0) else { return };
+        let t = st.recorded_ms() as f64 / 1000.0;
+        let (fx, fy) = ((x - r.x) as f64 / r.width as f64, (y - r.y) as f64 / r.height as f64);
+        crate::cursor::push(&mut st.cursor, t, fx, fy);
+    }
+
     /// 錄影中加標記（記下目前錄到的時間，剪輯時可以直接跳過去）；回傳這是第幾個標記
     pub fn add_marker(&self) -> Result<usize> {
         let mut st = self.lock();
@@ -906,6 +932,7 @@ impl Recorder {
             st.log = Vec::new();
             st.markers = Vec::new();
             st.clicks = Vec::new();
+            st.cursor = Vec::new();
             st.audio_specs = audio_specs;
             st.audio_desc = None;
             st.replay_saving = false;
@@ -1071,6 +1098,7 @@ impl Recorder {
                 st.result = None;
                 st.markers.clear();
                 st.clicks.clear();
+                st.cursor.clear();
                 st.ticker = 0;
                 st.busy = None;
                 st.state = RecorderState::Idle;
@@ -1101,8 +1129,10 @@ impl Recorder {
             let marks = Marks {
                 markers: std::mem::take(&mut st.markers).into_iter().map(|m| m as f64 / 1000.0).collect(),
                 clicks: std::mem::take(&mut st.clicks).into_iter().map(|(t, x, y)| [t as f64 / 1000.0, x as f64, y as f64]).collect(),
+                cursor: std::mem::take(&mut st.cursor),
+                no_cursor: st.config.as_ref().is_some_and(|c| !c.draw_mouse),
             };
-            if let (true, Some(p), false) = (result.ok, &result.path, marks.markers.is_empty() && marks.clicks.is_empty()) {
+            if let (true, Some(p), false) = (result.ok, &result.path, marks.is_empty()) {
                 self.deps().save_markers(p, &marks);
             }
             st.ticker = 0;
@@ -1851,6 +1881,8 @@ mod tests {
         gpu_failed: AtomicUsize,
         /// 有 gfxcapture；視窗 1234 在 (100, 100) 640×360
         gfx: bool,
+        /// 存下的標記、點擊、游標位置
+        marks: Mutex<Option<Marks>>,
     }
 
     impl RecorderDeps for Fake {
@@ -1902,6 +1934,9 @@ mod tests {
         }
         fn after_stop(&self) {
             self.after.fetch_add(1, Ordering::SeqCst);
+        }
+        fn save_markers(&self, _output: &str, marks: &Marks) {
+            *self.marks.lock().unwrap() = Some(marks.clone());
         }
     }
 
@@ -2275,6 +2310,32 @@ esac
         assert!(!st.log.iter().any(|l| l.text.contains("強制終止")), "{:?}", st.log);
         assert!(s.rec.output_path().is_none());
         assert_eq!(s.deps.after.load(Ordering::SeqCst), 1);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cursor_positions_are_saved_with_the_recording() {
+        let tools = tempfile::tempdir().unwrap();
+        let s = Setup::new(Fake { ffmpeg: Some(fake_ffmpeg(tools.path())), ..Default::default() });
+        s.release();
+        s.rec.add_cursor(10, 10); // 還沒開始：不記
+        s.rec.start(RecordConfig { countdown_sec: Some(0.0), hide_ui: Some(false), draw_mouse: false, ..s.config() }).await.unwrap();
+        for _ in 0..100 {
+            if s.rec.status().frames > 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        s.rec.add_cursor(960, 540);
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        s.rec.add_cursor(960, 540); // 沒動：不記
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        s.rec.add_cursor(1920, 0);
+        assert!(s.rec.stop(None).await.unwrap().unwrap().ok);
+        let m = s.deps.marks.lock().unwrap().clone().expect("有游標位置就要存");
+        assert!(m.no_cursor && m.markers.is_empty());
+        assert_eq!(m.cursor.iter().map(|c| (c[1], c[2])).collect::<Vec<_>>(), [(0.5, 0.5), (1.0, 0.0)]);
+        assert!(m.cursor[1][0] > m.cursor[0][0]);
     }
 
     #[cfg(unix)]

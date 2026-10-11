@@ -328,6 +328,7 @@ fn crop_panel(ed: &mut Editor, ui: &mut egui::Ui) {
     });
     if !shot {
         zoom_panel(ed, ui);
+        cursor_panel(ed, ui);
         frame_panel(ed, ui);
     }
 }
@@ -463,6 +464,55 @@ fn zoom_panel(ed: &mut Editor, ui: &mut egui::Ui) {
             tr!("裁切畫面時不能同時使用。", "Can't be used together with cropping.")
         },
     );
+}
+
+/// 平滑、放大的游標：錄影時記下的游標位置，輸出時畫成大的箭頭、平順地移動
+fn cursor_panel(ed: &mut Editor, ui: &mut egui::Ui) {
+    let p = theme::pal(ui);
+    ui.add_space(4.0);
+    let r = ui.cursor();
+    ui.painter().hline(r.x_range(), r.top(), Stroke::new(1.0, p.border));
+    ui.add_space(6.0);
+    ui.label(RichText::new(tr!("平滑、放大的游標", "Smooth, larger cursor")).font(theme::font_bold(13.5)));
+    if ed.cursor.is_empty() {
+        return hint(
+            ui,
+            tr!(
+                "這支錄影沒有記下游標的位置（3.1 版以後在 Windows 上錄的影片才有）。",
+                "This recording has no saved cursor positions (only videos recorded on Windows with version 3.1 or later have them)."
+            ),
+        );
+    }
+    let mut on = ed.cursor_size > 0.0;
+    if switch(ui, &mut on, tr!("換成大游標、平順移動", "Larger cursor that moves smoothly"), true).changed() {
+        ed.cursor_size = if on { 2.0 } else { 0.0 };
+    }
+    if on {
+        let mut v = (ed.cursor_size * 10.0).round() as u32;
+        let items: Vec<(u32, String)> = screenrecorder_core::cursor::SIZES.iter().map(|f| ((f * 10.0).round() as u32, format!("{f}×"))).collect();
+        let refs: Vec<(u32, &str)> = items.iter().map(|(v, t)| (*v, t.as_str())).collect();
+        if segmented(ui, &mut v, &refs, true) {
+            ed.cursor_size = v as f64 / 10.0;
+        }
+    }
+    if ed.no_cursor {
+        hint(
+            ui,
+            tr!(
+                "游標像彈簧一樣平順地跟著移動，手抖、急停都變得流暢；畫在標註底下。",
+                "The cursor follows smoothly like a spring, so shaky or abrupt movements look fluid. It's drawn below annotations."
+            ),
+        );
+    } else {
+        ui.label(
+            RichText::new(tr!(
+                "這支錄影有把游標錄進影片，會同時看到原本的小游標。下次錄影前到「設定 → 錄影」關掉「滑鼠游標：錄進影片」。",
+                "This recording includes the cursor, so the original small cursor will also be visible. Before your next recording, turn off “Mouse cursor: Include in recording” in Settings → Recording."
+            ))
+            .font(theme::font(12.0))
+            .color(p.warn),
+        );
+    }
 }
 
 /// 加上標註：(工具, 中文名稱, 英文名稱)

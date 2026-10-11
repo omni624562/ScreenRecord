@@ -996,6 +996,9 @@ pub struct ProjectData {
     /// 背景與圓角
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub frame: Option<crate::video_frame::VideoFrame>,
+    /// 平滑、放大的游標：大小（cursor::SIZES；0 = 不加）
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub cursor: f64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
