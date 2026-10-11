@@ -599,7 +599,7 @@ impl UiApp {
                 core.cache.probe(&ff, &p).await.ok()
             },
             move |app, m| match m {
-                Some(m) => app.act(action, LibraryEntry { media: m, exports: vec![] }),
+                Some(m) => app.act(action, LibraryEntry { media: m, exports: vec![], hits: vec![] }),
                 None => app.toast(tr!("清單中找不到這個檔案", "This file isn't in the list"), true),
             },
         );

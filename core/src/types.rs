@@ -557,7 +557,21 @@ pub struct LibraryEntry {
     #[serde(flatten)]
     pub media: MediaInfo,
     pub exports: Vec<ExportInfo>,
+    /// 搜尋時在字幕（影片旁邊的 SRT）裡找到的地方
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hits: Vec<SpeechHit>,
 }
+
+/// 說過的話：字幕裡符合搜尋的一句
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct SpeechHit {
+    /// 影片的秒數
+    pub start: f64,
+    pub text: String,
+}
+
+/// 全部錄影的表格：每支錄影底下最多列幾句說過的話
+pub const LIBRARY_HITS_SHOWN: usize = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]

@@ -319,6 +319,20 @@ pub fn parse_srt(s: &str) -> Vec<Cue> {
     out
 }
 
+/// 在字幕裡找說過的話（不分大小寫；多行的字幕接成一行）
+pub fn search(srt: &str, query: &str) -> Vec<crate::types::SpeechHit> {
+    let q = query.trim().to_lowercase();
+    if q.is_empty() {
+        return vec![];
+    }
+    parse_srt(srt)
+        .into_iter()
+        .map(|c| (c.start, c.text.lines().map(str::trim).collect::<Vec<_>>().join(" ")))
+        .filter(|(_, t)| t.to_lowercase().contains(&q))
+        .map(|(start, text)| crate::types::SpeechHit { start, text })
+        .collect()
+}
+
 pub fn to_srt(cues: &[Cue]) -> String {
     cues.iter().enumerate().map(|(i, c)| format!("{}\n{} --> {}\n{}\n", i + 1, fmt_time(c.start), fmt_time(c.end), c.text)).collect::<Vec<_>>().join("\n")
 }

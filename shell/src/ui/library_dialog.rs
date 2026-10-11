@@ -10,7 +10,7 @@ use eframe::egui::{self, pos2, vec2, Align, Color32, CornerRadius, Id, Layout, R
 use screenrecorder_core::actions;
 use screenrecorder_core::format::{check_recording_name, format_bytes, human_duration, speed_label, video_clock};
 use screenrecorder_core::i18n::is_en;
-use screenrecorder_core::types::{ExportFormat, ExportInfo, LibraryEntry, LibraryFilter, LibraryPage, LibraryQuery, LibrarySort, LIBRARY_ROW_MAIN_PX, LIBRARY_ROW_SUB_PX};
+use screenrecorder_core::types::{ExportFormat, ExportInfo, LibraryEntry, LibraryFilter, LibraryPage, LibraryQuery, LibrarySort, LIBRARY_HITS_SHOWN, LIBRARY_ROW_MAIN_PX, LIBRARY_ROW_SUB_PX};
 use screenrecorder_core::{tr, trf};
 use std::collections::HashSet;
 use std::time::Instant;
@@ -42,6 +42,8 @@ pub struct LibraryDialog {
     grid_per_page: usize,
     seq: u64,
     focus_search: bool,
+    /// 點了說過的話：開啟影片並跳到那一句
+    jump: Option<(LibraryEntry, f64)>,
 }
 
 impl LibraryDialog {
@@ -63,6 +65,7 @@ impl LibraryDialog {
             grid_per_page: 0,
             seq: 0,
             focus_search: true,
+            jump: None,
         }
     }
 
@@ -206,7 +209,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         ui.horizontal(|ui| {
             let r = ui.add(
                 egui::TextEdit::singleline(&mut d.query)
-                    .hint_text(tr!("搜尋檔名或日期，例如 2026-10-06", "Search by name or date, e.g. 2026-10-06"))
+                    .hint_text(tr!("搜尋檔名、日期或字幕裡說過的話", "Search names, dates or words spoken (subtitles)"))
                     .desired_width(320.0)
                     .min_size(vec2(0.0, 30.0))
                     .vertical_align(Align::Center),
@@ -340,9 +343,13 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         return;
     }
     let dirty = d.dirty;
+    let jump = d.jump.take();
     app.library = Some(d);
     if dirty {
         load(app);
+    }
+    if let Some((e, t)) = jump {
+        super::viewer::open_at(app, e, t);
     }
     if let Some((act, e)) = action {
         // 剪輯影片、製作加速版時關掉清單；編輯截圖蓋在清單上，關掉編輯就回到清單
@@ -463,7 +470,8 @@ fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table:
         let row = Rect::from_min_size(pos2(table.min.x, y), vec2(table.width(), LIBRARY_ROW_MAIN_PX as f32));
         let resp = ui.interact(row, Id::new(("librow", &e.media.path)), Sense::hover());
         // 子列（加速版）也算在這一列的範圍內：滑鼠在子列上時，原片的按鈕也亮起來
-        let group = Rect::from_min_size(row.min, vec2(row.width(), LIBRARY_ROW_MAIN_PX as f32 + e.exports.len() as f32 * LIBRARY_ROW_SUB_PX as f32));
+        let sub_rows = e.exports.len() + e.hits.len().min(LIBRARY_HITS_SHOWN);
+        let group = Rect::from_min_size(row.min, vec2(row.width(), LIBRARY_ROW_MAIN_PX as f32 + sub_rows as f32 * LIBRARY_ROW_SUB_PX as f32));
         let hot = ui.rect_contains_pointer(group);
         if resp.hovered() {
             painter.rect_filled(row, CornerRadius::same(4), p.surface2.gamma_multiply(0.6));
@@ -583,12 +591,57 @@ fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table:
             aui.spacing_mut().item_spacing.x = 2.0;
             for (act, icon, tip) in [(EntryAction::Play, Icon::Play, tr!("播放", "Play")), (EntryAction::Reveal, Icon::Folder, tr!("在資料夾中顯示", "Show in folder"))] {
                 if Btn::icon_only(icon).ghost().small().quiet(!hot).tooltip(tip).show(aui).clicked() {
-                    *action = Some((act, LibraryEntry { media: x.media.clone(), exports: vec![] }));
+                    *action = Some((act, LibraryEntry { media: x.media.clone(), exports: vec![], hits: vec![] }));
                 }
             }
             y += LIBRARY_ROW_SUB_PX as f32;
         }
+        // 搜尋到的說過的話：時間與那一句（點一下從那裡播放）
+        let shown = e.hits.len().min(LIBRARY_HITS_SHOWN);
+        for (i, h) in e.hits.iter().take(shown).enumerate() {
+            let row = Rect::from_min_size(pos2(table.min.x, y), vec2(table.width(), LIBRARY_ROW_SUB_PX as f32));
+            let resp = ui.interact(row, Id::new(("libhit", &e.media.path, i)), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
+            if resp.hovered() {
+                painter.rect_filled(row, CornerRadius::same(4), p.accent.gamma_multiply(0.08));
+            }
+            painter.hline(row.x_range(), row.max.y, Stroke::new(1.0, p.border.gamma_multiply(0.6)));
+            let bx = col_x(2) + 30.0;
+            painter.line_segment([pos2(bx, row.min.y - 6.0), pos2(bx, row.center().y)], Stroke::new(1.0, p.border_strong));
+            painter.line_segment([pos2(bx, row.center().y), pos2(bx + 12.0, row.center().y)], Stroke::new(1.0, p.border_strong));
+            let more = if i + 1 == shown && e.hits.len() > shown { trf!("　（還有 {} 句）", " ({} more)", e.hits.len() - shown) } else { String::new() };
+            let mut job = egui::text::LayoutJob::default();
+            job.append(&format!("{}  ", video_clock(h.start)), 0.0, egui::TextFormat::simple(theme::mono(12.5), p.accent));
+            highlight(&mut job, &h.text, d.query.trim(), p.text, p.accent);
+            job.append(&more, 0.0, egui::TextFormat::simple(theme::font(12.5), p.muted));
+            job.wrap = egui::text::TextWrapping::truncate_at_width(col_x(6) - bx - 30.0);
+            let galley = ui.fonts_mut(|f| f.layout_job(job));
+            painter.galley(pos2(bx + 18.0, row.center().y - galley.size().y / 2.0), galley, p.text);
+            if resp.clicked() {
+                d.jump = Some((e.clone(), h.start));
+            }
+            y += LIBRARY_ROW_SUB_PX as f32;
+        }
     }
+}
+
+/// 一句話，搜尋的字用強調色、粗體
+fn highlight(job: &mut egui::text::LayoutJob, text: &str, query: &str, color: Color32, accent: Color32) {
+    let normal = egui::TextFormat::simple(theme::font(12.5), color);
+    let strong = egui::TextFormat::simple(theme::font_bold(12.5), accent);
+    let lower = text.to_lowercase();
+    let q = query.to_lowercase();
+    // 小寫後長度不變時才標示（中文、英文都是）；否則整句一般顯示
+    if q.is_empty() || lower.len() != text.len() {
+        job.append(text, 0.0, normal);
+        return;
+    }
+    let mut at = 0;
+    while let Some(i) = lower[at..].find(&q).map(|i| i + at) {
+        job.append(&text[at..i], 0.0, normal.clone());
+        job.append(&text[i..i + q.len()], 0.0, strong.clone());
+        at = i + q.len();
+    }
+    job.append(&text[at..], 0.0, normal);
 }
 
 /// 「有聲音」：灰色小喇叭（滑鼠提示說明），不用彩色標籤

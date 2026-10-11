@@ -139,7 +139,7 @@ fn open_with(app: &mut UiApp, path: String, use_project: bool) {
 }
 
 fn new_editor(app: &UiApp, opened: String, src: String, rgba: Vec<u8>, w: u32, h: u32, info: Option<ShotProjectInfo>) -> Editor {
-    let entry = LibraryEntry { media: MediaInfo { path: src.clone(), name: file_name(&src), width: Some(w), height: Some(h), ..Default::default() }, exports: vec![] };
+    let entry = LibraryEntry { media: MediaInfo { path: src.clone(), name: file_name(&src), width: Some(w), height: Some(h), ..Default::default() }, exports: vec![], hits: vec![] };
     let mut ed = Editor::base(app, entry, PathBuf::new(), Pl(None), Tab::Ann);
     ed.duration = 1.0;
     ed.fps = 1.0;

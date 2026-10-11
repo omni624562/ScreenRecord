@@ -47,6 +47,8 @@ pub struct Viewer {
     loading: bool,
     error: Option<String>,
     close: bool,
+    /// 影片從這裡開始播（搜尋說過的話時跳到那一句）
+    start_at: Option<f64>,
 }
 
 impl Viewer {
@@ -85,6 +87,14 @@ impl Viewer {
 }
 
 /// 開啟檢視器；同類的檔案（截圖或錄影）在背景載入，供上一個 / 下一個切換
+/// 開啟影片並從 t 秒開始播放（搜尋到的說過的話）
+pub fn open_at(app: &mut UiApp, entry: LibraryEntry, t: f64) {
+    open(app, entry);
+    if let Some(v) = &mut app.viewer {
+        v.start_at = Some(t.max(0.0));
+    }
+}
+
 pub fn open(app: &mut UiApp, entry: LibraryEntry) {
     let shots = is_image_name(&entry.media.name);
     let path = entry.media.path.clone();
@@ -103,6 +113,7 @@ pub fn open(app: &mut UiApp, entry: LibraryEntry) {
         loading: true,
         error: None,
         close: false,
+        start_at: None,
     });
     load_current(app);
     let core = app.core.clone();
@@ -181,7 +192,8 @@ fn load_current(app: &mut UiApp) {
             let c = ctx.clone();
             let player = Player::new(ffmpeg, spec, w, h, DECODE_MAX.0, DECODE_MAX.1, Arc::new(move || c.request_repaint()));
             player.set_volume(v.volume_now());
-            player.seek(0.0);
+            // 從說過的話開始：往前一點，聽得到整句
+            player.seek(v.start_at.take().map(|t| (t - 0.5).max(0.0)).unwrap_or(0.0));
             player.play();
             v.video_size = vec2(w as f32, h as f32);
             v.player = Some(player);

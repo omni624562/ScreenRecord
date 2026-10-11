@@ -28,7 +28,7 @@ enum Try {
 }
 
 /// 新功能清單（標題、說明、試試看）：依介面語言
-fn items() -> [(&'static str, &'static str, Try); 15] {
+fn items() -> [(&'static str, &'static str, Try); 16] {
     [
         (
             "語言 Language",
@@ -61,6 +61,14 @@ fn items() -> [(&'static str, &'static str, Try); 15] {
                 "Show mouse clicks, pressed shortcuts and a cursor highlight while recording. You can also put a camera bubble on the screen (shown before recording starts; drag to move or resize it) and hide desktop icons."
             ),
             Try::Settings(Page::Record),
+        ),
+        (
+            tr!("搜尋說過的話", "Search what was said"),
+            tr!(
+                "「全部錄影」的搜尋也找字幕裡說過的話，點一下就從那一句開始播放。",
+                "Search in “All recordings” also looks inside subtitles; click a line to play from there."
+            ),
+            Try::Videos,
         ),
         (
             tr!("錄完自動處理", "After recording"),
