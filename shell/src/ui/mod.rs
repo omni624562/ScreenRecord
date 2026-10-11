@@ -105,6 +105,9 @@ pub struct UiApp {
     pub toast: Option<Toast>,
     pub ask: Option<dialogs::Ask>,
     pub changelog_open: bool,
+    /// 找到的攝影機（None = 還沒找完）；主畫面的攝影機選單與設定視窗共用
+    pub cameras: Option<Vec<String>>,
+    cameras_loading: bool,
     /// 新功能介紹（更新後第一次開啟時顯示一次）
     pub whats_new_open: bool,
     whats_new_checked: bool,
@@ -187,6 +190,8 @@ impl UiApp {
             toast: None,
             ask: None,
             changelog_open: false,
+            cameras: None,
+            cameras_loading: false,
             whats_new_open: false,
             whats_new_checked: false,
             preview: preview::Preview::default(),
@@ -513,6 +518,20 @@ impl UiApp {
     }
 
     // ───────────── 最近錄影 ─────────────
+
+    /// 尋找攝影機（找的時候 cameras 是 None）；force 時重新找
+    pub fn load_cameras(&mut self, force: bool) {
+        if self.cameras_loading || (self.cameras.is_some() && !force) {
+            return;
+        }
+        self.cameras = None;
+        self.cameras_loading = true;
+        let core = self.core.clone();
+        self.spawn(async move { actions::list_cameras(&core).await }, |app, list| {
+            app.cameras = Some(list);
+            app.cameras_loading = false;
+        });
+    }
 
     pub fn load_recent(&mut self) {
         self.recent_seq += 1;

@@ -38,8 +38,6 @@ pub struct SettingsDialog {
     /// 正在設定第幾個快速鍵（等使用者按下新的組合）
     key_capture: Option<usize>,
     key_msg: Option<String>,
-    /// 找到的攝影機（None = 還沒找；找的時候先放空的）
-    cameras: Option<Vec<String>>,
     /// 有視窗的程式（系統聲音只錄某個程式用；None = 還沒找）
     apps: Option<Vec<screenrecorder_core::winui::AppInfo>>,
 }
@@ -47,7 +45,7 @@ pub struct SettingsDialog {
 pub fn open(app: &mut UiApp, page: Page) {
     match &mut app.settings_dlg {
         Some(d) => d.page = page,
-        None => app.settings_dlg = Some(SettingsDialog { page, max_custom_open: false, max_text: String::new(), dir_text: None, key_capture: None, key_msg: None, cameras: None, apps: None }),
+        None => app.settings_dlg = Some(SettingsDialog { page, max_custom_open: false, max_text: String::new(), dir_text: None, key_capture: None, key_msg: None, apps: None }),
     }
 }
 
@@ -269,18 +267,11 @@ fn form_combo<T: PartialEq + Copy>(ui: &mut Ui, id: &str, width: f32, value: &mu
 // ───────────── 錄影 ─────────────
 
 /// 攝影機子母畫面：選攝影機、位置、大小、形狀
-fn camera_rows(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
+fn camera_rows(app: &mut UiApp, ui: &mut Ui) {
     let p = theme::pal(ui);
-    if d.cameras.is_none() {
-        d.cameras = Some(vec![]);
-        let core = app.core.clone();
-        app.spawn(async move { actions::list_cameras(&core).await }, |app, list| {
-            if let Some(d) = &mut app.settings_dlg {
-                d.cameras = Some(list);
-            }
-        });
-    }
-    let found = d.cameras.clone().unwrap_or_default();
+    app.load_cameras(false);
+    let searching = app.cameras.is_none();
+    let found = app.cameras.clone().unwrap_or_default();
     form_row(ui, tr!("攝影機", "Camera"), |ui| {
         let mut names: Vec<String> = vec![String::new()];
         names.extend(found.iter().cloned());
@@ -296,7 +287,7 @@ fn camera_rows(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
                     i,
                     if n.is_empty() {
                         tr!("不使用", "None").to_string()
-                    } else if found.contains(n) {
+                    } else if found.contains(n) || searching {
                         n.clone()
                     } else {
                         trf!("{n}（找不到）", "{n} (not found)")
@@ -309,12 +300,14 @@ fn camera_rows(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
             app.s.camera = names[sel].clone();
             app.save_settings();
         }
-        if Btn::icon_only(Icon::Refresh).ghost().small().tooltip(tr!("重新尋找攝影機", "Search for cameras again")).show(ui).clicked() {
-            d.cameras = None;
+        if Btn::icon_only(Icon::Refresh).ghost().small().enabled(!searching).tooltip(tr!("重新尋找攝影機", "Search for cameras again")).show(ui).clicked() {
+            app.load_cameras(true);
         }
     });
     if app.s.camera.is_empty() {
-        if found.is_empty() {
+        if searching {
+            form_hint(ui, tr!("正在尋找攝影機…", "Looking for cameras…"), p.muted);
+        } else if found.is_empty() {
             form_hint(ui, if cfg!(windows) { tr!("沒有找到攝影機。", "No camera found.") } else { tr!("攝影機只支援 Windows。", "Camera is supported on Windows only.") }, p.muted);
         }
         return;
@@ -454,7 +447,7 @@ fn record_page(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
             app.save_settings();
         }
     });
-    camera_rows(app, d, ui);
+    camera_rows(app, ui);
     form_divider(ui);
     form_section(ui, tr!("開始與結束", "Start and stop"), |_| {});
     form_row(ui, tr!("開始前倒數", "Countdown"), |ui| {
