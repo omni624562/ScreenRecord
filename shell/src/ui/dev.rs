@@ -1,5 +1,5 @@
 //! 開發用（只在 debug 版）：自動開啟某個畫面、模擬操作並截圖，在 Linux 的 Xvfb 上檢查介面。
-//! - SCREENRECORDER_DEV：要開啟的畫面（library、shots、changelog、notes（講稿小視窗）、schedule（排程錄影）、after:<路徑>（錄完自動處理）、export:<路徑>、edit:<路徑>、view:<路徑>、whatsnew（新功能介紹）、monitors（模擬兩個螢幕）、snip:<PNG>（用這張圖當凍結的桌面開啟框選截圖）、hotkeys（模擬已登記快速鍵）、settings:<record|audio|save|keys|advanced>、ed:<剪輯視窗指令>），以 ; 分隔
+//! - SCREENRECORDER_DEV：要開啟的畫面（library、shots、changelog、notes（講稿小視窗）、schedule（排程錄影）、after:<路徑>（錄完自動處理）、follow:<標題>（只錄這個視窗）、record:<秒>（錄幾秒）、export:<路徑>、edit:<路徑>、view:<路徑>、whatsnew（新功能介紹）、monitors（模擬兩個螢幕）、snip:<PNG>（用這張圖當凍結的桌面開啟框選截圖）、hotkeys（模擬已登記快速鍵）、settings:<record|audio|save|keys|advanced>、ed:<剪輯視窗指令>），以 ; 分隔
 //! - SCREENRECORDER_INPUT：開啟後依序模擬的操作，以 ; 分隔：
 //!   wait:毫秒、click:x,y、rclick:x,y（右鍵）、move:x,y、drag:x0,y0,x1,y1、wheel:x,y,dy、key:Space（可加 ctrl+、alt+、shift+）、type:文字、shot:路徑
 //! - SCREENRECORDER_SHOT：最後截圖存檔的路徑（存好後結束）；SCREENRECORDER_SHOT_AFTER：開始後幾毫秒截圖（預設 3000）
@@ -156,6 +156,32 @@ pub fn tick(app: &mut UiApp, ctx: &egui::Context) {
                     _ if a == "changelog" => app.changelog_open = true,
                     _ if a == "notes" => super::notes::toggle(app),
                     _ if a == "schedule" => super::schedule::open(app),
+                    // 只錄標題含有這段文字的視窗
+                    Some(("follow", t)) => {
+                        if let Some(w) = screenrecorder_core::winui::app_windows().into_iter().find(|w| w.title.contains(t)) {
+                            app.s.source_type = super::settings::SourceType::Region;
+                            app.s.region = screenrecorder_core::types::Rect { x: w.rect.x, y: w.rect.y, width: w.rect.width & !1, height: w.rect.height & !1 };
+                            app.s.follow_window = Some(super::settings::FollowWindow { id: w.id, title: w.title.clone() });
+                        }
+                    }
+                    // 用目前的設定錄幾秒後停止
+                    Some(("record", secs)) => {
+                        let secs: u64 = secs.parse().unwrap_or(5);
+                        let config = app.s.record_config(&app.env);
+                        let core = app.core.clone();
+                        app.spawn(
+                            async move {
+                                screenrecorder_core::actions::record_start(&core, config).await?;
+                                tokio::time::sleep(std::time::Duration::from_secs(secs)).await;
+                                core.recorder.stop(None).await.map(|_| ())
+                            },
+                            |app, r: screenrecorder_core::Result<()>| {
+                                if let Err(e) = r {
+                                    app.toast(e.message().to_string(), true);
+                                }
+                            },
+                        );
+                    }
                     Some(("after", p)) => {
                         let core = app.core.clone();
                         app.spawn(core.after_record(p.to_string()), |_, _| {});

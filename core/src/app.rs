@@ -227,6 +227,9 @@ impl RecorderDeps for RecDeps {
     fn ui_in_area(&self, area: &Rect) -> bool {
         crate::winui::ui_in_area(area)
     }
+    fn gfxcapture_usable(&self) -> bool {
+        self.0.upgrade().is_some_and(|a| a.lock().ffmpeg.info.has_gfxcapture)
+    }
     fn saved(&self, path: &str) {
         if let Some(a) = self.0.upgrade() {
             tokio::spawn(a.after_record(path.to_string()));
@@ -1804,6 +1807,7 @@ mod tests {
             follow_window: None,
             camera: None,
             audio_only: false,
+            window_capture: false,
         };
         let later = Schedule { at: chrono::Local::now() + chrono::Duration::minutes(30), minutes: 10, config: config.clone() };
         let a = app.clone();

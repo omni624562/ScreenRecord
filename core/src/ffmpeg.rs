@@ -116,6 +116,7 @@ pub async fn probe_ffmpeg() -> Probe {
             path: Some(path_str),
             version: Some(version),
             has_ddagrab: DDAGRAB_RE.is_match(&filters.stdout),
+            has_gfxcapture: has_filter(&filters.stdout, "gfxcapture"),
             ddagrab_skip_static: dda_help.stdout.contains("dup_frames"),
             has_gdigrab: GDIGRAB_RE.is_match(&devices.stdout),
             encoder: encoder.map(|e| e.name.to_string()),

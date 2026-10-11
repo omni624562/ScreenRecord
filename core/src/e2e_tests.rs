@@ -60,6 +60,7 @@ fn record_config() -> RecordConfig {
         follow_window: None,
         camera: None,
         audio_only: true,
+        window_capture: false,
     }
 }
 

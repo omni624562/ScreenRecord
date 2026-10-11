@@ -363,6 +363,22 @@ fn window_picker(app: &mut UiApp, ui: &mut Ui, locked: bool) {
             "While recording, the area follows this window (if the window is resized, the area keeps its original size)"
         ));
         let _ = resp;
+        // 只錄視窗內容（Windows Graphics Capture；FFmpeg 支援時才顯示）
+        if app.env.ffmpeg.has_gfxcapture
+            && Btn::new(tr!("只錄視窗內容", "Window only"))
+                .small()
+                .selected(app.s.window_capture)
+                .enabled(!locked)
+                .tooltip(tr!(
+                    "直接擷取這個視窗：被其他視窗擋住、移到哪裡都錄得到，畫面上的其他東西不會錄進去（攝影機小視窗、點擊與按鍵效果、螢幕畫筆也不會）。不能用時自動改回跟著視窗的範圍",
+                    "Capture this window directly: it's recorded even when covered by other windows or moved, and nothing else on screen is recorded (including the camera bubble, click and key effects, and the screen pen). Falls back to the area that follows the window if it can't be used."
+                ))
+                .show(ui)
+                .clicked()
+        {
+            app.s.window_capture = !app.s.window_capture;
+            app.save_settings();
+        }
         if !locked && Btn::icon_only(Icon::Close).ghost().small().tooltip(tr!("不跟著視窗，改回一般的自訂範圍", "Stop following the window and go back to a normal custom area")).show(ui).clicked()
         {
             app.s.follow_window = None;
@@ -1448,6 +1464,7 @@ fn level_bar(ui: &mut Ui, v: f32) {
 fn method_name(m: screenrecorder_core::types::CaptureMethod) -> &'static str {
     match m.as_str() {
         "ddagrab" => tr!("顯示卡擷取", "GPU capture"),
+        "gfxcapture" => tr!("視窗擷取", "Window capture"),
         _ => tr!("相容模式", "Compatibility mode"),
     }
 }

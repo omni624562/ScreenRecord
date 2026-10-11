@@ -104,6 +104,8 @@ pub struct UiSettings {
     pub after_subs_model: u32,
     pub after_subs_lang: u32,
     pub after_compress_mb: u32,
+    /// 只錄某個視窗時只錄視窗的內容（Windows Graphics Capture）
+    pub window_capture: bool,
 }
 
 /// 講稿提詞的字級範圍、不透明度下限
@@ -206,6 +208,7 @@ impl UiSettings {
             after_subs_model: num("afterSubsModel").map(|v| v as u32).filter(|v| (*v as usize) < screenrecorder_core::subtitles::MODELS.len()).unwrap_or(0),
             after_subs_lang: num("afterSubsLang").map(|v| v as u32).filter(|v| (*v as usize) < screenrecorder_core::subtitles::LANGUAGES.len()).unwrap_or(0),
             after_compress_mb: num("afterCompressMb").map(|v| v as u32).filter(|v| MAX_MB.contains(v)).unwrap_or(0),
+            window_capture: boolean("windowCapture").unwrap_or(false),
         };
         s.fix_monitor(env);
         s
@@ -302,6 +305,7 @@ impl UiSettings {
                 pos: self.camera_pos,
             }),
             audio_only: self.source_type == SourceType::Audio,
+            window_capture: self.window_capture && self.source_type == SourceType::Region && self.follow_window.is_some(),
         }
     }
 }

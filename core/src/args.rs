@@ -81,7 +81,7 @@ pub fn encoder_spec(name: &str) -> Option<EncoderSpec> {
 pub const AUTO_GPU_PIXELS_PER_SEC: f64 = 1920.0 * 1080.0 * 60.0;
 
 /// 擷取端（ddagrab / gdigrab / 濾鏡圖）出錯的訊息
-static CAPTURE_ERROR: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)ddagrab|gdigrab|Desktop duplication|Error configuring filter graph|Failed to capture").unwrap());
+static CAPTURE_ERROR: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)ddagrab|gdigrab|gfxcapture|Desktop duplication|Error configuring filter graph|Failed to capture").unwrap());
 /// 編碼器本身出錯的訊息。擷取端失敗時 FFmpeg 也會連帶印出「Could not open encoder before EOF」，那不代表編碼器有問題。
 static ENCODER_ERROR: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)Error while opening encoder|Error initializing output stream|enc:(h264_\w+|libx264)[^\n]*(Error|fail|not (supported|available))|No (NVENC|capable) devices?|Cannot load nvEncodeAPI|MFX|\bAMF\b|Cannot load nvcuda|CUDA_ERROR").unwrap()
@@ -101,6 +101,8 @@ pub enum StartupFallback {
     CpuConvert,
     CpuEncoder,
     Gdigrab,
+    /// 只錄視窗內容（gfxcapture）失敗：改用跟著視窗的範圍
+    RegionCapture,
     Fatal,
 }
 
@@ -113,6 +115,8 @@ pub struct FallbackInput<'a> {
     pub method_auto: bool,
     /// 這次在顯示卡上處理畫面
     pub gpu_convert_in_use: bool,
+    /// 這次用 gfxcapture 只錄視窗內容
+    pub gfx_in_use: bool,
 }
 
 /// 第一張畫面之前就失敗時該退回哪一項：依錯誤訊息判斷是編碼器還是擷取（ddagrab）出問題。
@@ -126,6 +130,10 @@ pub fn startup_fallback(o: &FallbackInput) -> StartupFallback {
     let can_gdi = o.ddagrab_in_use && o.method_auto;
     if is_encoder_fault(o.stderr) && can_cpu {
         return StartupFallback::CpuEncoder;
+    }
+    // Windows Graphics Capture 是最新、限制最多的擷取方式（舊版 Windows、某些視窗不能擷取）
+    if o.gfx_in_use {
+        return StartupFallback::RegionCapture;
     }
     if can_gdi {
         return StartupFallback::Gdigrab;
@@ -592,6 +600,19 @@ pub fn capture_spec(plan: &CapturePlan, config: &RecordConfig, method: CaptureMe
             None => format!("{},{tail}[vout]", ddagrab_chain(plan, config.fps, config.draw_mouse)),
         };
         return Ok(CaptureSpec { pre: vec!["-init_hw_device".into(), format!("d3d11va=dda:{}", dda.adapter), "-filter_hw_device".into(), "dda".into()], inputs: vec![], input_count: 0, graph });
+    }
+
+    // 只錄視窗內容：Windows Graphics Capture 直接擷取那個視窗（顯示卡上的畫面，下載後照常縮放、轉色彩）；
+    // 視窗大小改變時維持開始時的大小（等比例縮放、補黑邊）
+    if method == CaptureMethod::Gfxcapture {
+        let Some(hwnd) = config.follow_window.filter(|h| *h > 0) else {
+            return Err(Error::config(tr!("找不到要錄的視窗", "The window to record wasn't found")));
+        };
+        let src = format!("gfxcapture=hwnd={hwnd}:max_framerate={}:capture_cursor={}:width=-2:height=-2:resize_mode=scale_aspect,hwdownload,format=bgra", num(config.fps), config.draw_mouse as u8);
+        // 擷取到的畫面大小由視窗決定（可能和範圍差幾個像素）：直接縮放，不從左上角裁切
+        let tail: Vec<&String> = tail_parts.iter().filter(|f| !f.starts_with("crop=")).collect();
+        let tail = tail.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(",");
+        return Ok(CaptureSpec { pre: vec![], inputs: vec![], input_count: 0, graph: format!("{src},{tail}[vout]") });
     }
 
     // 只錄聲音：卡片圖片一直重複，以實際速度送進來（-re），showinfo 的時間才能拿來對齊聲音
@@ -1235,6 +1256,7 @@ mod tests {
             follow_window: None,
             camera: None,
             audio_only: false,
+            window_capture: false,
         }
     }
     fn region(x: f64, y: f64, w: f64, h: f64) -> SourceConfig {
@@ -1555,8 +1577,48 @@ dummy: Immediate exit requested";
     }
 
     #[test]
+    fn window_capture_graph_and_fallback() {
+        let c = RecordConfig { source: region(100.0, 100.0, 641.0, 361.0), follow_window: Some(4660), window_capture: true, fps: 30.0, ..cfg() };
+        let plan = resolve_plan(&c, &same_gpu()).unwrap();
+        let a = segment_args(&plan, &c, CaptureMethod::Gfxcapture, &x264(), "o.mp4", None, None).unwrap();
+        assert_eq!(
+            graph_of(&a),
+            "gfxcapture=hwnd=4660:max_framerate=30:capture_cursor=1:width=-2:height=-2:resize_mode=scale_aspect,hwdownload,format=bgra,scale=640:360:flags=bicubic:out_color_matrix=bt709:out_range=tv,format=yuv420p[vout]"
+        );
+        // 沒有輸入檔、不需要另外建顯示卡裝置
+        assert!(!a.contains(&"-i".to_string()) && !a.contains(&"-init_hw_device".to_string()), "{a:?}");
+        let no_cursor = segment_args(&plan, &RecordConfig { draw_mouse: false, ..c.clone() }, CaptureMethod::Gfxcapture, &x264(), "o.mp4", None, None).unwrap();
+        assert!(graph_of(&no_cursor).contains("capture_cursor=0"));
+        assert!(segment_args(&plan, &RecordConfig { follow_window: None, ..c }, CaptureMethod::Gfxcapture, &x264(), "o.mp4", None, None).is_err());
+        // 第一張畫面前就失敗：先改用範圍（編碼器的錯誤還是先退編碼器）
+        let base = FallbackInput {
+            stderr: "[gfxcapture @ 0x1] Failed",
+            gpu_encoder_in_use: true,
+            encoder_auto: true,
+            has_cpu_encoder: true,
+            ddagrab_in_use: false,
+            method_auto: true,
+            gpu_convert_in_use: false,
+            gfx_in_use: true,
+        };
+        assert_eq!(startup_fallback(&base), StartupFallback::RegionCapture);
+        assert_eq!(startup_fallback(&FallbackInput { stderr: "[h264_nvenc @ 0x1] No NVENC capable devices found\nError while opening encoder", ..base }), StartupFallback::CpuEncoder);
+        // 擷取失敗時連帶印出的「Could not open encoder」不算編碼器的問題
+        assert_eq!(startup_fallback(&FallbackInput { stderr: "[gfxcapture @ 0x1] Failed\nError while opening encoder", ..base }), StartupFallback::RegionCapture);
+    }
+
+    #[test]
     fn gpu_convert_falls_back_first() {
-        let base = FallbackInput { stderr: "anything", gpu_encoder_in_use: true, encoder_auto: true, has_cpu_encoder: true, ddagrab_in_use: true, method_auto: true, gpu_convert_in_use: true };
+        let base = FallbackInput {
+            stderr: "anything",
+            gpu_encoder_in_use: true,
+            encoder_auto: true,
+            has_cpu_encoder: true,
+            ddagrab_in_use: true,
+            method_auto: true,
+            gpu_convert_in_use: true,
+            gfx_in_use: false,
+        };
         assert_eq!(startup_fallback(&base), StartupFallback::CpuConvert);
         assert_eq!(startup_fallback(&FallbackInput { encoder_auto: false, method_auto: false, ..base }), StartupFallback::CpuConvert);
     }
@@ -1682,7 +1744,16 @@ dummy: Immediate exit requested";
         assert!(is_encoder_fault("[h264_nvenc @ 0x1] No NVENC capable devices found\nError while opening encoder"));
         assert!(!is_encoder_fault("[ddagrab @ 0x1] Failed to capture\nCould not open encoder before EOF"));
         let f = |stderr: &str| {
-            startup_fallback(&FallbackInput { stderr, gpu_encoder_in_use: true, encoder_auto: true, has_cpu_encoder: true, ddagrab_in_use: true, method_auto: true, gpu_convert_in_use: false })
+            startup_fallback(&FallbackInput {
+                stderr,
+                gpu_encoder_in_use: true,
+                encoder_auto: true,
+                has_cpu_encoder: true,
+                ddagrab_in_use: true,
+                method_auto: true,
+                gpu_convert_in_use: false,
+                gfx_in_use: false,
+            })
         };
         assert_eq!(f("Cannot load nvEncodeAPI64.dll"), StartupFallback::CpuEncoder);
         assert_eq!(f("[ddagrab] Desktop duplication failed"), StartupFallback::Gdigrab);
@@ -1696,7 +1767,16 @@ dummy: Immediate exit requested";
     fn startup_fallback_with_real_ffmpeg_messages() {
         assert!(is_encoder_fault(NVENC_FAIL));
         assert!(!is_encoder_fault(DDAGRAB_FAIL));
-        let base = |stderr| FallbackInput { stderr, gpu_encoder_in_use: true, encoder_auto: true, has_cpu_encoder: true, ddagrab_in_use: true, method_auto: true, gpu_convert_in_use: false };
+        let base = |stderr| FallbackInput {
+            stderr,
+            gpu_encoder_in_use: true,
+            encoder_auto: true,
+            has_cpu_encoder: true,
+            ddagrab_in_use: true,
+            method_auto: true,
+            gpu_convert_in_use: false,
+            gfx_in_use: false,
+        };
         assert_eq!(startup_fallback(&base(NVENC_FAIL)), StartupFallback::CpuEncoder);
         assert_eq!(startup_fallback(&base(DDAGRAB_FAIL)), StartupFallback::Gdigrab);
         assert_eq!(startup_fallback(&base("something odd")), StartupFallback::Gdigrab);

@@ -45,6 +45,8 @@ pub struct Rect {
 pub enum CaptureMethod {
     Ddagrab,
     Gdigrab,
+    /// Windows Graphics Capture：直接擷取一個視窗（被擋住、移動都錄得到）
+    Gfxcapture,
 }
 
 impl CaptureMethod {
@@ -52,6 +54,7 @@ impl CaptureMethod {
         match self {
             CaptureMethod::Ddagrab => "ddagrab",
             CaptureMethod::Gdigrab => "gdigrab",
+            CaptureMethod::Gfxcapture => "gfxcapture",
         }
     }
 }
@@ -362,6 +365,10 @@ pub struct RecordConfig {
     /// 只錄聲音（畫面是一張「只錄聲音」的卡片，見 audio_card.rs）
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub audio_only: bool,
+    /// 只錄視窗的內容（follow_window 的視窗，用 Windows Graphics Capture）：被其他視窗擋住、移動都錄得到；
+    /// 畫面上的其他東西（攝影機小視窗、點擊效果、螢幕畫筆）不會錄進去。FFmpeg 不支援或失敗時改用跟著視窗的範圍
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub window_capture: bool,
 }
 
 /// 攝影機子母畫面
@@ -705,6 +712,9 @@ pub struct FfmpegInfo {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
     pub has_ddagrab: bool,
+    /// 有 gfxcapture 濾鏡（Windows Graphics Capture；FFmpeg 8.1 以後）
+    #[serde(default)]
+    pub has_gfxcapture: bool,
     /// ddagrab 能在畫面沒變化時不送出（dup_frames，FFmpeg 7.0 起）：即時預覽用
     #[serde(default)]
     pub ddagrab_skip_static: bool,

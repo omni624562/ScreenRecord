@@ -67,6 +67,14 @@ pub trait RecorderDeps: Send + Sync + 'static {
     fn after_stop(&self) {}
     /// 錄影存好了（錄完自動處理）
     fn saved(&self, _path: &str) {}
+    /// 可以用 gfxcapture 只錄視窗內容（FFmpeg 有這個濾鏡）
+    fn gfxcapture_usable(&self) -> bool {
+        false
+    }
+    /// 視窗目前的範圍（「只錄這個視窗」）；關掉了是 None
+    fn window_bounds(&self, id: i64) -> Option<Rect> {
+        crate::winui::window_bounds(id)
+    }
     /// 存好的錄影裡的標記（影片的秒數）
     fn save_markers(&self, _output: &str, _marks: &Marks) {}
     /// 需要使用者注意的事（系統匣通知）
@@ -176,6 +184,8 @@ struct St {
     config: Option<RecordConfig>,
     plan: Option<CapturePlan>,
     method: Option<CaptureMethod>,
+    /// 只錄視窗內容（gfxcapture）失敗時改用的擷取方式（跟著視窗的範圍）
+    region_method: Option<CaptureMethod>,
     segments: Vec<Segment>,
     current: Option<usize>,
     accumulated_ms: u64,
@@ -380,7 +390,7 @@ impl Recorder {
     pub fn start(&self, mut config: RecordConfig) -> BoxFut<'static, Result<()>> {
         // 只錄某個視窗：用視窗現在的位置與大小（選了之後可能動過）；視窗已關閉就照原本的範圍
         if let (Some(id), SourceConfig::Region { .. }) = (config.follow_window, &config.source) {
-            match crate::winui::window_bounds(id) {
+            match self.deps().window_bounds(id) {
                 Some(b) => config.source = SourceConfig::Region { x: b.x as f64, y: b.y as f64, width: (b.width & !1) as f64, height: (b.height & !1) as f64 },
                 None => config.follow_window = None,
             }
@@ -446,7 +456,7 @@ impl Recorder {
 
     async fn do_move(&self, x: i32, y: i32) -> Result<Rect> {
         let monitors = self.deps().monitors();
-        let (plan, config, recording) = {
+        let (plan, config, recording, gfx) = {
             let st = self.lock();
             let recording = match st.state {
                 RecorderState::Recording => true,
@@ -467,12 +477,20 @@ impl Recorder {
             }
             let config = RecordConfig { source: SourceConfig::Region { x: nx as f64, y: ny as f64, width: r.width as f64, height: r.height as f64 }, ..cfg.clone() };
             let plan = resolve_plan(&config, &monitors)?;
+            let gfx = st.method == Some(CaptureMethod::Gfxcapture);
             if st.method == Some(CaptureMethod::Ddagrab) && plan.dda.is_none() {
                 return Err(Error::config(tr!("新位置跨到不同顯示卡上的螢幕，這次錄影無法移過去", "The new position spans screens on different graphics cards, so this recording can't move there")));
             }
-            (plan, config, recording)
+            (plan, config, recording, gfx)
         };
         let rect = plan.rect;
+        // 只錄視窗內容：視窗移到哪裡都錄得到，不用重開分段；只更新範圍（錄影外框、點擊效果、改用範圍時的位置）
+        if gfx {
+            let mut st = self.lock();
+            st.plan = Some(plan);
+            st.config = Some(config);
+            return Ok(rect);
+        }
         if recording {
             {
                 let mut st = self.lock();
@@ -792,6 +810,9 @@ impl Recorder {
                 }
             }
         };
+        // 只錄視窗內容：Windows Graphics Capture；失敗時改回上面選的方式（跟著視窗的範圍）
+        let region_method = method;
+        let method = if config.window_capture && config.follow_window.is_some() && !config.audio_only && deps.gfxcapture_usable() { CaptureMethod::Gfxcapture } else { region_method };
 
         let stamp = timestamp();
         let output_dir = config.output_dir.trim().to_string();
@@ -830,6 +851,7 @@ impl Recorder {
             st.config = Some(RecordConfig { output_dir, ..config.clone() });
             st.plan = Some(plan.clone());
             st.method = Some(method);
+            st.region_method = Some(region_method);
             st.enc = Some(enc);
             st.cpu_encoder = encoders.cpu;
             st.gpu_available = !encoders.gpu.is_empty();
@@ -1320,6 +1342,7 @@ impl Recorder {
                         ddagrab_in_use: seg_method == CaptureMethod::Ddagrab,
                         method_auto,
                         gpu_convert_in_use: seg_method == CaptureMethod::Ddagrab && st.gpu.zip(st.plan.as_ref()).is_some_and(|(g, p)| g.applies(p, st.config())),
+                        gfx_in_use: seg_method == CaptureMethod::Gfxcapture,
                     });
                     match next {
                         // 顯示卡處理失敗（驅動不支援等）：改回 CPU 轉換再試，這次執行期間之後的錄影也不再用
@@ -1341,11 +1364,24 @@ impl Recorder {
                             st.method = Some(CaptureMethod::Gdigrab);
                             ExitAction::Start
                         }
+                        StartupFallback::RegionCapture => {
+                            st.add_log(
+                                LogLevel::Warn,
+                                &trf!("無法只錄視窗內容（{detail}），改用跟著視窗的範圍", "Couldn't capture just the window ({detail}); recording the area that follows the window instead"),
+                            );
+                            st.method = st.region_method.or(Some(CaptureMethod::Gdigrab));
+                            ExitAction::Start
+                        }
                         StartupFallback::Fatal => {
                             st.add_log(LogLevel::Error, &trf!("無法開始擷取：{detail}", "Couldn't start capturing: {detail}"));
                             ExitAction::Stop
                         }
                     }
+                } else if seg_method == CaptureMethod::Gfxcapture {
+                    // 只錄視窗內容中斷（例如視窗關掉了）：馬上改用跟著視窗的範圍繼續錄
+                    st.add_log(LogLevel::Warn, &trf!("只錄視窗內容中斷（{detail}），改用跟著視窗的範圍繼續錄", "Window capture stopped ({detail}); continuing with the area that follows the window"));
+                    st.method = st.region_method.or(Some(CaptureMethod::Gdigrab));
+                    ExitAction::Start
                 } else {
                     // 錄到一半中斷：保留已錄分段，延遲後開新分段續錄
                     let attempt = st.retry.as_ref().map(|r| r.attempt).unwrap_or(0) + 1;
@@ -1657,9 +1693,17 @@ mod tests {
         dda: bool,
         gpu: Option<GpuSupport>,
         gpu_failed: AtomicUsize,
+        /// 有 gfxcapture；視窗 1234 在 (100, 100) 640×360
+        gfx: bool,
     }
 
     impl RecorderDeps for Fake {
+        fn gfxcapture_usable(&self) -> bool {
+            self.gfx
+        }
+        fn window_bounds(&self, id: i64) -> Option<Rect> {
+            (self.gfx && id == 1234).then_some(Rect { x: 100, y: 100, width: 640, height: 360 })
+        }
         fn ffmpeg_path(&self) -> Option<PathBuf> {
             Some(self.ffmpeg.clone().unwrap_or_else(|| "ffmpeg-not-used.exe".into()))
         }
@@ -1739,6 +1783,7 @@ mod tests {
                 follow_window: None,
                 camera: None,
                 audio_only: false,
+                window_capture: false,
             }
         }
         fn release(&self) {
@@ -1964,6 +2009,43 @@ esac
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
         p
+    }
+
+    /// 假的 FFmpeg：遇到 gfxcapture 就失敗（舊版 Windows、不能擷取的視窗），其他照 fake_ffmpeg
+    #[cfg(unix)]
+    fn fake_ffmpeg_no_gfx(dir: &Path) -> PathBuf {
+        let inner = fake_ffmpeg(dir);
+        let p = dir.join("ffmpeg-no-gfx");
+        let script = format!("#!/bin/bash\ncase \" $* \" in *gfxcapture*) echo '[gfxcapture @ 0x1] Failed to create capture item' >&2; exit 1;; esac\nexec {} \"$@\"\n", inner.display());
+        std::fs::write(&p, script).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        p
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn window_capture_falls_back_to_following_area() {
+        let tools = tempfile::tempdir().unwrap();
+        let s = Setup::new(Fake { ffmpeg: Some(fake_ffmpeg_no_gfx(tools.path())), gfx: true, ..Default::default() });
+        s.release();
+        let region = SourceConfig::Region { x: 0.0, y: 0.0, width: 320.0, height: 240.0 };
+        s.rec.start(RecordConfig { countdown_sec: Some(0.0), hide_ui: Some(false), source: region, follow_window: Some(1234), window_capture: true, ..s.config() }).await.unwrap();
+        for _ in 0..150 {
+            if s.rec.status().frames > 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let st = s.rec.status();
+        assert!(st.frames > 0, "改用範圍後應該繼續錄影");
+        // gfxcapture 失敗：改用跟著視窗的範圍（視窗現在的位置與大小）
+        assert_eq!(st.method, Some(CaptureMethod::Gdigrab));
+        assert_eq!((st.out_width, st.out_height), (640, 360));
+        let log: Vec<String> = st.log.iter().map(|l| l.text.clone()).collect();
+        assert!(log.iter().any(|l| l.contains("無法只錄視窗內容") && l.contains("改用跟著視窗的範圍")), "{log:?}");
+        let res = s.rec.stop(None).await.unwrap().unwrap();
+        assert!(res.ok, "{}", res.message);
     }
 
     #[cfg(unix)]
