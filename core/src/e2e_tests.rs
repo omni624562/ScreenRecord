@@ -417,3 +417,67 @@ async fn idle_parts_are_found() {
     // 頭尾各留一點
     assert!(a > 3.0 && a < 4.0 && b > 7.0 && b <= 8.0, "{ranges:?}");
 }
+
+#[tokio::test]
+async fn after_record_cuts_idle_parts_and_compresses() {
+    let Some(ff) = ffmpeg() else { return };
+    if !has(&ff, "-encoders", "libx264") {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    // 3 秒有動、有聲音，接著 5 秒畫面停住而且沒有聲音；無損壓縮讓檔案夠大（才需要壓縮）
+    let src = dir.path().join("Rec_2026-10-11_13-00-00.mp4");
+    run_ok(
+        &ff,
+        &[
+            "-f",
+            "lavfi",
+            "-i",
+            // 雜訊讓前 3 秒很難壓縮；停住的部分重複最後一張（不動）
+            "testsrc2=size=640x360:rate=30:duration=3,noise=alls=40:allf=t+u,tpad=stop_mode=clone:stop_duration=5",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:sample_rate=48000:duration=3,apad=whole_dur=8",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "ultrafast",
+            "-qp",
+            "0",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "aac",
+            &src.display().to_string(),
+        ],
+    );
+    assert!(std::fs::metadata(&src).unwrap().len() > 2 * 1024 * 1024, "測試影片太小");
+    let data = tempfile::tempdir().unwrap();
+    let app = crate::app::App::with_data_dir(data.path().to_path_buf());
+    app.set_ffmpeg_for_test(&ff);
+    app.mark_ready();
+    app.settings.save(crate::settings::SettingsPatch { ui: Some(serde_json::json!({ "afterIdleCut": true, "afterCompressMb": 1 })), ..Default::default() });
+    app.clone().after_record(src.display().to_string()).await;
+    assert!(app.after_status().is_none());
+
+    // 剪輯版：只剩有動靜的 3 秒多一點；存了剪輯設定，可以在剪輯視窗再改
+    let cut = dir.path().join("Rec_2026-10-11_13-00-00_cut.mp4");
+    let i = probe(&ff, &cut).await;
+    let d = i.duration_sec.unwrap();
+    assert!(d > 3.0 && d < 5.0, "剪輯版 {d} 秒");
+    let project = app.projects.for_output(&cut.display().to_string()).expect("沒有存剪輯設定");
+    assert_eq!(Path::new(&project.source), src.as_path());
+    // 壓縮版（從剪輯版做）：1 MB 以內
+    let small: Vec<PathBuf> = std::fs::read_dir(dir.path()).unwrap().flatten().map(|e| e.path()).filter(|p| p != &src && p != &cut).collect();
+    assert_eq!(small.len(), 1, "{small:?}");
+    assert!(std::fs::metadata(&small[0]).unwrap().len() <= 1024 * 1024);
+    assert!(near(probe(&ff, &small[0]).await.duration_sec.unwrap(), d, 0.2));
+
+    // 已經夠小：不再壓縮；沒有設定：什麼都不做
+    app.settings.save(crate::settings::SettingsPatch { ui: Some(serde_json::json!({ "afterCompressMb": 100 })), ..Default::default() });
+    app.clone().after_record(cut.display().to_string()).await;
+    app.settings.save(crate::settings::SettingsPatch { ui: Some(serde_json::json!({})), ..Default::default() });
+    app.clone().after_record(src.display().to_string()).await;
+    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 3);
+}

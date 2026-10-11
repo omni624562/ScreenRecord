@@ -65,6 +65,8 @@ pub trait RecorderDeps: Send + Sync + 'static {
     }
     /// 錄影結束（已儲存或失敗）後（還原操作視窗等）
     fn after_stop(&self) {}
+    /// 錄影存好了（錄完自動處理）
+    fn saved(&self, _path: &str) {}
     /// 存好的錄影裡的標記（影片的秒數）
     fn save_markers(&self, _output: &str, _marks: &Marks) {}
     /// 需要使用者注意的事（系統匣通知）
@@ -1021,6 +1023,9 @@ impl Recorder {
             st.state = RecorderState::Idle;
         }
         self.deps().after_stop();
+        if let (true, Some(p)) = (result.ok, &result.path) {
+            self.deps().saved(p);
+        }
         Ok(Some(result))
     }
 

@@ -1,7 +1,7 @@
 //! 設定視窗：左邊分頁（錄影 / 聲音 / 儲存位置 / 快速鍵 / 進階），右邊表單（標籤固定寬度，控制項對齊）。
 //! 主畫面下方只留摘要，點一下開到對應的分頁。
 
-use super::settings::{FPS_CHOICES, MAX_PRESETS, UI_SCALES};
+use super::settings::{FPS_CHOICES, MAX_MB, MAX_PRESETS, UI_SCALES};
 use super::theme::{self, segmented, switch, Btn, Icon};
 use super::UiApp;
 use eframe::egui::{self, pos2, vec2, Align, Color32, CornerRadius, Id, Layout, Rect, RichText, Sense, Stroke, Ui, UiBuilder};
@@ -609,6 +609,79 @@ fn save_page(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
         ui.label(RichText::new(tr!("Shot_年-月-日_時-分-秒.png", "Shot_YYYY-MM-DD_HH-MM-SS.png")).font(theme::mono(12.5)));
     });
     form_hint(ui, tr!("加速版、GIF、剪輯版存在同一個資料夾，檔名接在原檔後面。", "Sped-up versions, GIFs and edited versions are saved in the same folder, named after the original file."), p.muted);
+    form_divider(ui);
+    after_record_section(app, ui);
+}
+
+/// 錄完自動處理：剪掉沒動靜的片段、產生字幕、壓縮
+fn after_record_section(app: &mut UiApp, ui: &mut Ui) {
+    use screenrecorder_core::subtitles::{language_name, MODELS};
+    let p = theme::pal(ui);
+    form_section(ui, tr!("錄完自動處理", "After recording"), |_| {});
+    form_row(ui, tr!("剪輯", "Edit"), |ui| {
+        let mut on = app.s.after_idle_cut;
+        if switch(ui, &mut on, tr!("剪掉沒動靜的片段", "Cut idle parts"), true)
+            .on_hover_text(tr!(
+                "畫面不動而且沒有聲音超過 2 秒的地方（等待、發呆）剪掉，另存剪輯版；原片保留，剪輯版之後在剪輯視窗可以再改",
+                "Removes parts where nothing moves and there's no sound for over 2 seconds (waiting, pauses) and saves an edited version. The original is kept, and you can adjust the edit later in the editor."
+            ))
+            .changed()
+        {
+            app.s.after_idle_cut = on;
+            app.save_settings();
+        }
+    });
+    form_row(ui, tr!("字幕", "Subtitles"), |ui| {
+        let mut on = app.s.after_subs;
+        if switch(ui, &mut on, tr!("產生字幕（存成 SRT）", "Generate subtitles (SRT)"), true)
+            .on_hover_text(tr!(
+                "辨識說話的內容，在影片旁邊存一份同名的 SRT 字幕檔（YouTube、播放器都能用）",
+                "Recognizes speech and saves an SRT subtitle file with the same name next to the video (works with YouTube and players)"
+            ))
+            .changed()
+        {
+            app.s.after_subs = on;
+            app.save_settings();
+        }
+    });
+    if app.s.after_subs {
+        form_row(ui, tr!("語言", "Language"), |ui| {
+            let mut lang = app.s.after_subs_lang as usize;
+            let items: Vec<(usize, String, bool)> = (0..screenrecorder_core::subtitles::LANGUAGES.len()).map(|i| (i, language_name(i).to_string(), true)).collect();
+            if form_combo(ui, "after-subs-lang", FORM_CTRL_W, &mut lang, &items) {
+                app.s.after_subs_lang = lang as u32;
+                app.save_settings();
+            }
+        });
+        form_row(ui, tr!("辨識模型", "Model"), |ui| {
+            let mut m = app.s.after_subs_model as usize;
+            let items: Vec<(usize, String, bool)> = MODELS.iter().enumerate().map(|(i, m)| (i, m.label().to_string(), true)).collect();
+            if form_combo(ui, "after-subs-model", FORM_CTRL_W, &mut m, &items) {
+                app.s.after_subs_model = m as u32;
+                app.save_settings();
+            }
+        });
+        let m = &MODELS[(app.s.after_subs_model as usize).min(MODELS.len() - 1)];
+        if !screenrecorder_core::subtitles::model_ready(m) {
+            form_hint(ui, trf!("第一次會先下載語音模型（約 {} MB）", "The speech model (about {} MB) is downloaded the first time", m.mb), p.muted);
+        }
+    }
+    form_row(ui, tr!("壓縮", "Compress"), |ui| {
+        let mut mb = app.s.after_compress_mb;
+        let items: Vec<(u32, String, bool)> = MAX_MB.iter().map(|v| (*v, if *v == 0 { tr!("不壓縮", "Don't compress").to_string() } else { trf!("{v} MB 以內", "Under {v} MB") }, true)).collect();
+        if form_combo(ui, "after-compress", FORM_CTRL_W, &mut mb, &items) {
+            app.s.after_compress_mb = mb;
+            app.save_settings();
+        }
+    });
+    form_hint(
+        ui,
+        tr!(
+            "錄影存好後依序處理（有剪輯版時，字幕與壓縮用剪輯版），錄影面板顯示進度、可以取消；新的錄影、手動的轉檔優先。系統匣、快速鍵、排程的錄影也會處理。",
+            "Runs in order after each recording is saved (subtitles and compression use the edited version when there is one). The recording panel shows progress and lets you cancel; new recordings and manual conversions go first. Recordings started from the tray, shortcuts or a schedule are processed too."
+        ),
+        p.muted,
+    );
 }
 
 // ───────────── 進階 ─────────────

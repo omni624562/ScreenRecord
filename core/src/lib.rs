@@ -4,6 +4,7 @@
 //! 呼叫 Windows API 的部分放在 `#[cfg(windows)]` 底下。
 
 pub mod actions;
+pub mod after_record;
 pub mod annotate;
 pub mod app;
 pub mod args;

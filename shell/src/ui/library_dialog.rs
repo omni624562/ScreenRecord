@@ -120,6 +120,8 @@ fn export_label(x: &ExportInfo) -> String {
         } else {
             trf!("{anim}（原速）", "{anim} (original speed)")
         }
+    } else if x.speed <= 1.0 {
+        tr!("壓縮版", "Compressed").to_string()
     } else {
         trf!("{}× 加速版", "{}× speed", speed_label(x.speed))
     }

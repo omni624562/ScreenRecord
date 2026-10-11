@@ -758,6 +758,34 @@ fn settings_bar(app: &mut UiApp, ui: &mut Ui) {
     }
 }
 
+/// 錄完自動處理中：哪一支、做到哪一步、取消
+fn after_record_strip(app: &mut UiApp, ui: &mut Ui) {
+    let Some(s) = app.core.after_status() else { return };
+    let p = theme::pal(ui);
+    ui.add_space(6.0);
+    egui::Frame::new().fill(p.accent.gamma_multiply(0.1)).corner_radius(CornerRadius::same(theme::RADIUS_SM)).inner_margin(8.0).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.add(egui::Label::new(RichText::new(trf!("錄完自動處理：{}", "Post-processing: {}", s.name)).color(p.accent).font(theme::font_bold(13.0))).truncate());
+        ui.horizontal(|ui| {
+            let pm = s.progress.load(std::sync::atomic::Ordering::Relaxed);
+            let step = if s.step.is_empty() {
+                tr!("等待中", "Waiting").to_string()
+            } else if pm > 0 {
+                format!("{}… {}%", s.step, pm / 10)
+            } else {
+                format!("{}…", s.step)
+            };
+            ui.label(theme::muted(ui, step));
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if Btn::new(tr!("取消", "Cancel")).icon(Icon::Close).ghost().small().show(ui).clicked() {
+                    app.core.cancel_after();
+                }
+            });
+        });
+    });
+    ui.ctx().request_repaint_after(std::time::Duration::from_millis(500));
+}
+
 // ───────────── 錄影狀態 ─────────────
 
 fn live_recorded_ms(app: &UiApp) -> f64 {
@@ -989,6 +1017,7 @@ fn rec_panel(app: &mut UiApp, ui: &mut Ui) {
         if !active {
             super::schedule::strip(app, ui);
         }
+        after_record_strip(app, ui);
         // 步驟截圖進行中：顯示幾步，可以完成
         if let Some(n) = app.status.steps {
             ui.add_space(6.0);
@@ -1331,6 +1360,8 @@ fn job_card(app: &mut UiApp, ui: &mut Ui) {
         ExportKind::Merge => tr!("合併錄影", "merged video").to_string(),
         ExportKind::Gif => trf!("製作 GIF{gif_speed}", "GIF{gif_speed}"),
         ExportKind::Webp => trf!("製作 WebP 動圖{gif_speed}", "WebP{gif_speed}"),
+        // 原速：只壓縮
+        ExportKind::Speed if e.speed <= 1.0 => tr!("製作壓縮版", "compressed copy").to_string(),
         ExportKind::Speed => trf!("製作 {}× 加速版", "{}× sped-up video", speed_label(e.speed)),
     };
     let title = match e.state {

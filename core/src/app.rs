@@ -148,6 +148,8 @@ pub struct App {
     schedule_gen: AtomicU64,
     /// 錄影中不讓電腦睡眠
     awake: Mutex<Option<crate::power::KeepAwake>>,
+    /// 錄完自動處理中（after_record.rs）
+    pub(crate) after: Mutex<Option<crate::after_record::AfterStatus>>,
     /// 主畫面看得到時，介面目前的錄影設定（每一格更新；看不到時是 None）：選了攝影機就先顯示攝影機小視窗
     camera_preview: Mutex<Option<RecordConfig>>,
     /// 即時預覽：同時只保留一條
@@ -225,6 +227,11 @@ impl RecorderDeps for RecDeps {
     fn ui_in_area(&self, area: &Rect) -> bool {
         crate::winui::ui_in_area(area)
     }
+    fn saved(&self, path: &str) {
+        if let Some(a) = self.0.upgrade() {
+            tokio::spawn(a.after_record(path.to_string()));
+        }
+    }
     fn after_stop(&self) {
         crate::winui::restore_ui_after_recording();
         crate::winui::set_desktop_icons(true);
@@ -272,6 +279,7 @@ impl App {
             schedule: Mutex::default(),
             schedule_gen: AtomicU64::new(0),
             awake: Mutex::default(),
+            after: Mutex::default(),
             camera_preview: Mutex::new(None),
             live: Mutex::default(),
             notifier: Mutex::default(),
@@ -1057,6 +1065,15 @@ impl App {
         }
     }
 
+    /// 測試用：直接指定 FFmpeg（不偵測）
+    #[cfg(test)]
+    pub(crate) fn set_ffmpeg_for_test(&self, path: &Path) {
+        let mut st = self.lock();
+        st.ffmpeg.info.found = true;
+        st.ffmpeg.info.path = Some(path.display().to_string());
+        st.ffmpeg.encoder = Some(crate::args::ENCODERS[0]);
+    }
+
     pub fn export_ctx(&self) -> ExportCtx {
         ExportCtx { ffmpeg: self.ffmpeg_path(), encoder: self.lock().ffmpeg.encoder, cache: self.cache.clone() }
     }
@@ -1293,6 +1310,11 @@ impl App {
 
     pub fn check_updates_enabled(&self) -> bool {
         self.settings.load().check_updates != Some(false)
+    }
+
+    /// 程式正在結束
+    pub fn is_quitting(&self) -> bool {
+        self.quitting.load(Ordering::SeqCst)
     }
 
     // ───────────── 排程錄影 ─────────────

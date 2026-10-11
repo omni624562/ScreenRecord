@@ -98,6 +98,12 @@ pub struct UiSettings {
     pub notes_auto: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub notes_rect: Option<[i32; 4]>,
+    /// 錄完自動處理（core 的 after_record.rs 讀這些欄位）：剪掉沒動靜的片段、產生字幕（模型、語言）、壓縮到幾 MB 以內
+    pub after_idle_cut: bool,
+    pub after_subs: bool,
+    pub after_subs_model: u32,
+    pub after_subs_lang: u32,
+    pub after_compress_mb: u32,
 }
 
 /// 講稿提詞的字級範圍、不透明度下限
@@ -195,6 +201,11 @@ impl UiSettings {
             notes_opacity: num("notesOpacity").map(|v| v as u32).filter(|v| (NOTES_OPACITY_MIN..=100).contains(v)).unwrap_or(90),
             notes_auto: boolean("notesAuto").unwrap_or(true),
             notes_rect: o.get("notesRect").and_then(|v| serde_json::from_value::<[i32; 4]>(v.clone()).ok()).filter(|r| r[2] >= 200 && r[3] >= 120),
+            after_idle_cut: boolean("afterIdleCut").unwrap_or(false),
+            after_subs: boolean("afterSubs").unwrap_or(false),
+            after_subs_model: num("afterSubsModel").map(|v| v as u32).filter(|v| (*v as usize) < screenrecorder_core::subtitles::MODELS.len()).unwrap_or(0),
+            after_subs_lang: num("afterSubsLang").map(|v| v as u32).filter(|v| (*v as usize) < screenrecorder_core::subtitles::LANGUAGES.len()).unwrap_or(0),
+            after_compress_mb: num("afterCompressMb").map(|v| v as u32).filter(|v| MAX_MB.contains(v)).unwrap_or(0),
         };
         s.fix_monitor(env);
         s
@@ -344,6 +355,20 @@ mod tests {
         assert_eq!((s.gif_width, s.gif_fps, s.mp4_width), (480, 15, 1280));
         // 存回去再讀：相同
         assert_eq!(UiSettings::from_saved(Some(&s.to_value()), &env()), s);
+    }
+
+    #[test]
+    fn after_record_settings_are_read_by_core() {
+        let mut s = UiSettings::from_saved(None, &env());
+        assert!(!screenrecorder_core::after_record::AfterRecord::from_ui(Some(&s.to_value())).any());
+        (s.after_idle_cut, s.after_subs, s.after_subs_lang, s.after_compress_mb) = (true, true, 1, 25);
+        let a = screenrecorder_core::after_record::AfterRecord::from_ui(Some(&s.to_value()));
+        assert_eq!((a.idle_cut, a.subtitles, a.subs_lang, a.compress_mb), (true, true, 1, 25));
+        // 設定組合也存這些欄位
+        for k in screenrecorder_core::after_record::UI_KEYS {
+            assert!(screenrecorder_core::presets::KEYS.contains(&k), "{k}");
+            assert!(s.to_value().get(k).is_some(), "{k}");
+        }
     }
 
     #[test]
