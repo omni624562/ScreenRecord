@@ -85,7 +85,7 @@ pub async fn library(app: &App, dir: &str, query: &LibraryQuery) -> LibraryPage 
 
 /// 縮圖檔（PNG）的路徑；產生失敗回傳 None
 pub async fn thumb(app: &App, path: &str) -> Option<PathBuf> {
-    let ffmpeg = app.ffmpeg_path().filter(|_| is_abs(path) && ends_with_ci(path, &[".mp4", ".gif", ".png"]) && Path::new(path).exists())?;
+    let ffmpeg = app.ffmpeg_path().filter(|_| is_abs(path) && ends_with_ci(path, &[".mp4", ".gif", ".webp", ".png"]) && Path::new(path).exists())?;
     app.thumbs.get(&ffmpeg, path).await
 }
 
@@ -111,7 +111,7 @@ pub fn delete(app: &App, paths: &[String]) -> Result<usize> {
     }
     let busy = exporting(app);
     for f in paths {
-        if !is_abs(f) || !ends_with_ci(f, &[".mp4", ".gif", ".png"]) || !is_file(f) {
+        if !is_abs(f) || !ends_with_ci(f, &[".mp4", ".gif", ".webp", ".png"]) || !is_file(f) {
             return Err(Error::config(trf!("找不到檔案：{f}", "File not found: {f}")));
         }
         if busy.contains(&f.to_lowercase()) {
@@ -148,7 +148,7 @@ pub async fn export_start(app: &App, r: &ExportRequest) -> Result<()> {
     }
     let ctx = app.export_ctx();
     match r.format {
-        ExportFormat::Gif => app.exporter.start_gif(&ctx, &r.source, r.speed, r.gif_width, r.gif_fps).await?,
+        ExportFormat::Gif | ExportFormat::Webp => app.exporter.start_gif(&ctx, &r.source, r.speed, r.gif_width, r.gif_fps, r.format).await?,
         ExportFormat::Mp4 => app.exporter.start(&ctx, &r.source, r.speed, r.keep_audio, r.mp4_width, r.mp4_max_mb).await?,
     };
     Ok(())
@@ -431,7 +431,7 @@ pub fn open(action: OpenAction, path: &str) -> Result<()> {
         }
         _ => {
             // 只允許開啟影片與截圖（.mp4 / .gif / .png），避免執行任意檔案
-            if !ends_with_ci(p, &[".mp4", ".gif", ".png"]) || !is_file(p) {
+            if !ends_with_ci(p, &[".mp4", ".gif", ".webp", ".png"]) || !is_file(p) {
                 return Err(Error::config(tr!("找不到檔案", "File not found")));
             }
             crate::desktop::open_with_explorer(p, action == OpenAction::Reveal);

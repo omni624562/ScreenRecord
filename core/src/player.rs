@@ -59,7 +59,8 @@ fn video_args(path: &str, t: f64, w: u32, h: u32, frames: Option<u32>, keyframes
     if keyframes_only {
         a.extend(["-skip_frame".into(), "nokey".into()]);
     }
-    a.extend(["-ss".into(), format!("{:.3}", t.max(0.0)), "-i".into(), path.into(), "-an".into(), "-sn".into()]);
+    a.extend(crate::args::input_at(path, &format!("{:.3}", t.max(0.0))));
+    a.extend(["-an".into(), "-sn".into()]);
     if let Some(n) = frames {
         a.extend(["-frames:v".into(), n.to_string()]);
     }
@@ -69,7 +70,8 @@ fn video_args(path: &str, t: f64, w: u32, h: u32, frames: Option<u32>, keyframes
 
 fn audio_args(path: &str, t: f64) -> Vec<String> {
     let mut a: Vec<String> = ["-hide_banner", "-loglevel", "error", "-nostdin"].iter().map(|s| s.to_string()).collect();
-    a.extend(["-ss".into(), format!("{:.3}", t.max(0.0)), "-i".into(), path.into(), "-vn".into(), "-sn".into()]);
+    a.extend(crate::args::input_at(path, &format!("{:.3}", t.max(0.0))));
+    a.extend(["-vn".into(), "-sn".into()]);
     a.extend(["-f".into(), "f32le".into(), "-ac".into(), "2".into(), "-ar".into(), crate::audio_out::SAMPLE_RATE.to_string(), "-".into()]);
     a
 }

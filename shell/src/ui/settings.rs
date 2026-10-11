@@ -151,7 +151,11 @@ impl UiSettings {
             encoder: o.get("encoder").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default(),
             countdown_sec: num("countdownSec").map(|v| v as u32).filter(|v| [0, 3, 5, 10].contains(v)).unwrap_or(3),
             hide_ui: boolean("hideUi").unwrap_or(true),
-            export_format: if o.get("exportFormat").and_then(Value::as_str) == Some("gif") { ExportFormat::Gif } else { ExportFormat::Mp4 },
+            export_format: match o.get("exportFormat").and_then(Value::as_str) {
+                Some("gif") => ExportFormat::Gif,
+                Some("webp") => ExportFormat::Webp,
+                _ => ExportFormat::Mp4,
+            },
             export_mode: if o.get("exportMode").and_then(Value::as_str) == Some("target") { ExportMode::Target } else { ExportMode::Speed },
             export_target: string("exportTarget").unwrap_or_else(|| "1:00".into()),
             gif_width: num("gifWidth").map(|v| v as u32).filter(|v| [320, 480, 640, 960, 1280].contains(v)).unwrap_or(640),

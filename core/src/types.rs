@@ -521,6 +521,8 @@ pub enum ExportFormat {
     #[default]
     Mp4,
     Gif,
+    /// WebP 動圖：比 GIF 小很多、顏色也比較好
+    Webp,
 }
 
 impl ExportFormat {
@@ -528,7 +530,13 @@ impl ExportFormat {
         match self {
             ExportFormat::Mp4 => "mp4",
             ExportFormat::Gif => "gif",
+            ExportFormat::Webp => "webp",
         }
+    }
+
+    /// 動圖（GIF、WebP）：沒有聲音、選寬度與每秒張數
+    pub fn is_animation(self) -> bool {
+        matches!(self, ExportFormat::Gif | ExportFormat::Webp)
     }
 }
 
@@ -615,6 +623,8 @@ pub enum ExportState {
 pub enum ExportKind {
     Speed,
     Gif,
+    /// WebP 動圖
+    Webp,
     Cut,
     /// 多支錄影合併成一支
     Merge,

@@ -54,11 +54,11 @@ pub fn strip_mp4(name: &str) -> String {
     MP4_EXT.replace(name, "").into_owned()
 }
 
-/// 匯出檔名：Rec_xxx.mp4 → Rec_xxx_4x.mp4 / Rec_xxx_4x.gif；原速 GIF 為 Rec_xxx.gif
+/// 匯出檔名：Rec_xxx.mp4 → Rec_xxx_4x.mp4 / Rec_xxx_4x.gif；原速動圖為 Rec_xxx.gif / Rec_xxx.webp
 pub fn export_file_name(source_name: &str, speed: f64, format: ExportFormat) -> String {
     let base = strip_mp4(source_name);
-    if format == ExportFormat::Gif && speed <= 1.0 {
-        format!("{base}.gif")
+    if format.is_animation() && speed <= 1.0 {
+        format!("{base}.{}", format.ext())
     } else {
         format!("{base}_{}x.{}", speed_label(speed), format.ext())
     }
@@ -72,16 +72,25 @@ pub struct ParsedExport {
     pub format: ExportFormat,
 }
 
-static EXPORT_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^(.*)_(\d+(?:\.\d+)?)x(?:_\d+)?\.(mp4|gif)$").unwrap());
-static GIF_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^(.*?)(?:_\d+)?\.gif$").unwrap());
+static EXPORT_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^(.*)_(\d+(?:\.\d+)?)x(?:_\d+)?\.(mp4|gif|webp)$").unwrap());
+static ANIM_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^(.*?)(?:_\d+)?\.(gif|webp)$").unwrap());
 
-/// 從匯出檔名解析倍率與格式；不是匯出檔回傳 None（原速 GIF 也算，倍率為 1）
+fn format_of(ext: &str) -> ExportFormat {
+    if ext.eq_ignore_ascii_case("gif") {
+        ExportFormat::Gif
+    } else if ext.eq_ignore_ascii_case("webp") {
+        ExportFormat::Webp
+    } else {
+        ExportFormat::Mp4
+    }
+}
+
+/// 從匯出檔名解析倍率與格式；不是匯出檔回傳 None（原速動圖也算，倍率為 1）
 pub fn parse_export_name(name: &str) -> Option<ParsedExport> {
     if let Some(m) = EXPORT_RE.captures(name) {
-        let format = if m[3].eq_ignore_ascii_case("gif") { ExportFormat::Gif } else { ExportFormat::Mp4 };
-        return Some(ParsedExport { base: format!("{}.mp4", &m[1]), speed: m[2].parse().unwrap_or(1.0), format });
+        return Some(ParsedExport { base: format!("{}.mp4", &m[1]), speed: m[2].parse().unwrap_or(1.0), format: format_of(&m[3]) });
     }
-    GIF_RE.captures(name).map(|g| ParsedExport { base: format!("{}.mp4", &g[1]), speed: 1.0, format: ExportFormat::Gif })
+    ANIM_RE.captures(name).map(|g| ParsedExport { base: format!("{}.mp4", &g[1]), speed: 1.0, format: format_of(&g[2]) })
 }
 
 /// 縮小後的尺寸（高度等比、取偶數）；width 為 0 或不小於原寬時維持原尺寸
@@ -107,10 +116,11 @@ pub struct EstimateInput {
 /// 粗估成品大小，回傳 (下限, 上限)（位元組）
 pub fn estimate_bytes(o: &EstimateInput) -> (f64, f64) {
     let out_sec = o.src_sec / o.speed;
-    if o.format == ExportFormat::Gif {
+    if o.format.is_animation() {
         let frames = (out_sec * o.gif_fps.unwrap_or(10.0)).max(1.0);
         let px = o.width * o.height * frames;
-        return (px * 0.03, px * 0.2);
+        // WebP 實測約為 GIF 的 1/6
+        return if o.format == ExportFormat::Webp { (px * 0.005, px * 0.04) } else { (px * 0.03, px * 0.2) };
     }
     let area = if o.src_width > 0.0 && o.src_height > 0.0 { o.width * o.height / (o.src_width * o.src_height) } else { 1.0 };
     let mid = o.src_bytes / o.src_sec * out_sec * o.speed.sqrt().min(4.0) * area.powf(0.75);
@@ -250,6 +260,10 @@ mod tests {
         assert_eq!(parse_export_name("Rec_a_4x.gif"), p("Rec_a.mp4", 4.0, ExportFormat::Gif));
         assert_eq!(parse_export_name("Rec_a.gif"), p("Rec_a.mp4", 1.0, ExportFormat::Gif));
         assert_eq!(parse_export_name("Rec_a_2.gif"), p("Rec_a.mp4", 1.0, ExportFormat::Gif));
+        assert_eq!(export_file_name("Rec_a.mp4", 8.0, ExportFormat::Webp), "Rec_a_8x.webp");
+        assert_eq!(export_file_name("Rec_a.mp4", 1.0, ExportFormat::Webp), "Rec_a.webp");
+        assert_eq!(parse_export_name("Rec_a_8x.webp"), p("Rec_a.mp4", 8.0, ExportFormat::Webp));
+        assert_eq!(parse_export_name("Rec_a_3.WEBP"), p("Rec_a.mp4", 1.0, ExportFormat::Webp));
         // 剪輯版本身是獨立的錄影；它的加速版歸在剪輯版底下
         assert_eq!(parse_export_name("Rec_2026-10-06_08-00-00_cut.mp4"), None);
         assert_eq!(parse_export_name("Rec_2026-10-06_08-00-00_cut_4x.mp4"), p("Rec_2026-10-06_08-00-00_cut.mp4", 4.0, ExportFormat::Mp4));

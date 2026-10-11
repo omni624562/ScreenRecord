@@ -861,6 +861,23 @@ pub fn gif_args(source: &str, out_file: &str, speed: f64, o: &GifOptions) -> Res
     Ok(a)
 }
 
+/// WebP 動圖（libwebp_anim）：與 GIF 相同的寬度與張數，有損壓縮（品質 80）；畫面一樣時檔案約為 GIF 的 1/6，也沒有 256 色的色帶
+pub fn webp_args(source: &str, out_file: &str, speed: f64, o: &GifOptions) -> Result<Vec<String>> {
+    if !(1.0..=SPEED_MAX).contains(&speed) {
+        return Err(Error::config(trf!("倍率需介於 1～{}", "Speed must be between 1 and {}", num(SPEED_MAX))));
+    }
+    let width = o.width.min(if o.src_width > 0.0 { o.src_width } else { o.width }).max(2.0);
+    let time = if speed > 1.0 { format!("setpts=PTS/{},", num(speed)) } else { String::new() };
+    let mut a = strs(&["-hide_banner", "-nostats", "-loglevel", "error", "-i"]);
+    a.push(source.into());
+    a.extend(strs(&["-map", "0:v:0", "-an", "-sn", "-dn", "-vf"]));
+    a.push(format!("{time}fps={},scale={}:-2:flags=lanczos", num(o.fps), num(width)));
+    a.extend(strs(&["-c:v", "libwebp_anim", "-lossless", "0", "-quality", "80", "-compression_level", "4", "-loop", "0"]));
+    a.extend(strs(&["-progress", "pipe:1", "-stats_period", "0.5", "-y"]));
+    a.push(out_file.into());
+    Ok(a)
+}
+
 /// 剪輯：只保留 keep 區段（select / aselect 精確到每張畫面），可再裁切畫面範圍；必須重新編碼。
 /// 剪輯時加上的標註（已換算成影片像素、檔案已寫好）
 #[derive(Debug, Clone, PartialEq)]
@@ -1045,6 +1062,33 @@ pub fn parse_media_info(stderr: &str) -> ParsedMedia {
         has_audio: AUDIO_RE.is_match(stderr),
         chapters: crate::chapters::parse(stderr),
     }
+}
+
+/// 從第 t 秒開始讀 path：`-ss t -i path`（快速跳到附近的關鍵畫面）。
+/// WebP 動圖不能這樣跳（什麼都讀不到），改成 `-i path -ss t`：從頭解碼、丟掉 t 秒以前的畫面（動圖都很短）
+pub fn input_at(path: &str, t: &str) -> [String; 4] {
+    if path.to_ascii_lowercase().ends_with(".webp") {
+        ["-i".into(), path.into(), "-ss".into(), t.into()]
+    } else {
+        ["-ss".into(), t.into(), "-i".into(), path.into()]
+    }
+}
+
+/// 量長度：有些格式（WebP 動圖）的檔頭沒有長度，只複製串流不解碼地讀一遍（很快）
+pub fn measure_duration_args(path: &str) -> Vec<String> {
+    let mut a = strs(&["-hide_banner", "-i"]);
+    a.push(path.into());
+    a.extend(strs(&["-map", "0:v:0", "-c", "copy", "-f", "null", "-"]));
+    a
+}
+
+static TIME_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"time=\s*(\d+):(\d{2}):(\d{2}(?:\.\d+)?)").unwrap());
+
+/// measure_duration_args 的 stderr：最後一個 time=
+pub fn parse_measured_duration(stderr: &str) -> Option<f64> {
+    let c = TIME_RE.captures_iter(stderr).last()?;
+    let t = c[1].parse::<f64>().ok()? * 3600.0 + c[2].parse::<f64>().ok()? * 60.0 + c[3].parse::<f64>().ok()?;
+    (t > 0.0).then_some(t)
 }
 
 /// 預覽畫面的大小：寬度不超過 max_width（偶數），高度依比例
@@ -1573,6 +1617,15 @@ dummy: Immediate exit requested";
         assert_eq!(parse_media_info(stderr), ParsedMedia { duration_sec: Some(62.5), width: Some(1920), height: Some(1080), fps: Some(30.0), has_audio: true, chapters: vec![] });
         let first3: Vec<&str> = stderr.lines().take(3).collect();
         assert!(!parse_media_info(&first3.join("\n")).has_audio);
+        // WebP 動圖：檔頭沒有長度，另外量
+        let webp = "Input #0, webp_pipe, from 'a.webp':\n  Duration: N/A, start: 0.000000, bitrate: N/A\n  Stream #0:0: Video: webp_anim, argb, 480x270, 10 fps, 10 tbr, 1k tbn";
+        assert_eq!(parse_media_info(webp).duration_sec, None);
+        assert_eq!(measure_duration_args("a.webp").join(" "), "-hide_banner -i a.webp -map 0:v:0 -c copy -f null -");
+        assert_eq!(input_at("x.mp4", "1.500").join(" "), "-ss 1.500 -i x.mp4");
+        assert_eq!(input_at("x.WebP", "1.500").join(" "), "-i x.WebP -ss 1.500");
+        let measured = "frame=   12 fps=0.0 q=-1.0 size=N/A time=00:00:01.20 bitrate=N/A\rframe=   30 fps=0.0 q=-1.0 Lsize=N/A time=00:00:03.00 bitrate=N/A speed=1.41e+03x";
+        assert_eq!(parse_measured_duration(measured), Some(3.0));
+        assert_eq!(parse_measured_duration("time=N/A"), None);
     }
 
     #[test]

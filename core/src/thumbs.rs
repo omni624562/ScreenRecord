@@ -52,7 +52,9 @@ impl Thumbnails {
                 // 先取第 1 秒（避開開頭可能的黑畫面），太短的影片改取第一張；-threads 1 不和錄影搶 CPU
                 for at in ["1", "0"] {
                     let out_s = out.display().to_string();
-                    let args = ["-hide_banner", "-loglevel", "error", "-threads", "1", "-ss", at, "-i", video, "-frames:v", "1", "-vf", "scale=320:-2:flags=bilinear", "-y", &out_s];
+                    let mut args: Vec<String> = ["-hide_banner", "-loglevel", "error", "-threads", "1"].iter().map(|s| s.to_string()).collect();
+                    args.extend(crate::args::input_at(video, at));
+                    args.extend(["-frames:v", "1", "-vf", "scale=320:-2:flags=bilinear", "-y", &out_s].iter().map(|s| s.to_string()));
                     let r = run(ffmpeg, &args, Duration::from_secs(20)).await;
                     if r.code == 0 && std::fs::metadata(&out).map(|m| m.len() > 0).unwrap_or(false) {
                         return Some(out.clone());

@@ -449,6 +449,7 @@ impl UiApp {
                             screenrecorder_core::types::ExportKind::Cut => tr!("剪輯完成", "Edited video ready"),
                             screenrecorder_core::types::ExportKind::Merge => tr!("合併完成", "Merged video ready"),
                             screenrecorder_core::types::ExportKind::Gif => tr!("GIF 製作完成", "GIF ready"),
+                            screenrecorder_core::types::ExportKind::Webp => tr!("WebP 動圖製作完成", "WebP ready"),
                             screenrecorder_core::types::ExportKind::Speed => tr!("加速版製作完成", "Sped-up video ready"),
                         };
                         self.toast(what, false);

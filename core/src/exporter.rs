@@ -18,6 +18,7 @@ fn kind_text(k: ExportKind) -> &'static str {
     match k {
         ExportKind::Speed => "加速版",
         ExportKind::Gif => "GIF",
+        ExportKind::Webp => "WebP",
         ExportKind::Cut => "剪輯",
         ExportKind::Merge => "合併",
     }
@@ -28,6 +29,7 @@ fn kind_text_en(k: ExportKind) -> &'static str {
     match k {
         ExportKind::Speed => "Sped-up video",
         ExportKind::Gif => "GIF",
+        ExportKind::Webp => "WebP",
         ExportKind::Cut => "Edit",
         ExportKind::Merge => "Merge",
     }
@@ -128,8 +130,8 @@ impl Exporter {
         self.run_with_cleanup(ExportKind::Speed, &ffmpeg, args, source, &output, speed, out_sec, &note, Finish { cleanup, replace: None, on_saved: None })
     }
 
-    /// GIF（可同時加速；無聲音）
-    pub async fn start_gif(&self, ctx: &ExportCtx, source: &str, speed: f64, width: f64, fps: f64) -> Result<ExportStatus> {
+    /// 動圖：GIF 或 WebP（可同時加速；無聲音）
+    pub async fn start_gif(&self, ctx: &ExportCtx, source: &str, speed: f64, width: f64, fps: f64, format: ExportFormat) -> Result<ExportStatus> {
         let _g = self.begin()?;
         if !speed.is_finite() || !(1.0..=SPEED_MAX).contains(&speed) {
             return Err(Error::config(trf!("倍率需介於 1～{}", "Speed must be between 1 and {}", num(SPEED_MAX))));
@@ -139,13 +141,17 @@ impl Exporter {
         let (ffmpeg, _enc, info, _src_fps) = prepare(ctx, source).await?;
         let output_sec = info.duration_sec.unwrap_or(0.0) / speed;
         let dir = parent(source);
-        let name = export_file_name(&file_name(source), speed, ExportFormat::Gif);
-        let output = crate::paths::unique_path(&dir, name.trim_end_matches(".gif"), ".gif");
+        let format = if format == ExportFormat::Webp { ExportFormat::Webp } else { ExportFormat::Gif };
+        let ext = format!(".{}", format.ext());
+        let name = export_file_name(&file_name(source), speed, format);
+        let output = crate::paths::unique_path(&dir, name.trim_end_matches(ext.as_str()), &ext);
         let opts = GifOptions { fps, width, src_width: info.width.unwrap_or(0) as f64, src_height: info.height.unwrap_or(0) as f64, output_sec };
-        let args = gif_args(source, &output.display().to_string(), speed, &opts)?;
+        let args =
+            if format == ExportFormat::Webp { crate::args::webp_args(source, &output.display().to_string(), speed, &opts)? } else { gif_args(source, &output.display().to_string(), speed, &opts)? };
         let shown_w = info.width.map(|sw| width.min(sw as f64)).unwrap_or(width);
         let note = format!("{}寬 {}、{} fps", if speed > 1.0 { format!("{}×，", speed_label(speed)) } else { String::new() }, num(shown_w), num(fps));
-        self.run(ExportKind::Gif, &ffmpeg, args, source, &output, speed, output_sec, &note)
+        let kind = if format == ExportFormat::Webp { ExportKind::Webp } else { ExportKind::Gif };
+        self.run(kind, &ffmpeg, args, source, &output, speed, output_sec, &note)
     }
 
     /// 剪輯：剪頭尾、刪除中間片段、裁切畫面，另存成 *_cut.mp4
@@ -679,7 +685,7 @@ echo data > "$last"
         let src = dir.path().join("Rec_B.mp4");
         std::fs::write(&src, "x").unwrap();
         let ex = Exporter::new();
-        let st = ex.start_gif(&ctx(fake_ffmpeg(dir.path(), "5")), &src.display().to_string(), 2.0, 640.0, 10.0).await.unwrap();
+        let st = ex.start_gif(&ctx(fake_ffmpeg(dir.path(), "5")), &src.display().to_string(), 2.0, 640.0, 10.0, ExportFormat::Gif).await.unwrap();
         assert!(st.output.ends_with("Rec_B_2x.gif"));
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         let p = ex.status().unwrap();

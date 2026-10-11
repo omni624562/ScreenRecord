@@ -1,7 +1,7 @@
 //! 錄影清單：加速版歸到原始錄影底下，支援搜尋、篩選、排序、分頁、改名。
 //! 讀取影片資訊（長度、解析度、有無聲音）要執行 FFmpeg，只對需要的檔案做，並快取結果。
 
-use crate::args::parse_media_info;
+use crate::args::{measure_duration_args, parse_measured_duration, parse_media_info};
 use crate::error::{Error, Result};
 use crate::format::{check_recording_name, parse_export_name, strip_mp4};
 use crate::paths::mtime_ms;
@@ -45,7 +45,11 @@ impl MediaCache {
                 if r.timed_out || (r.code == -1 && r.stderr.is_empty()) {
                     return Err(Error::other(tr!("無法讀取影片資訊", "Couldn't read the video info")));
                 }
-                let p = parse_media_info(&r.stderr);
+                let mut p = parse_media_info(&r.stderr);
+                if p.duration_sec.is_none() && p.width.is_some() {
+                    let m = run(ffmpeg, &measure_duration_args(path), Duration::from_secs(15)).await;
+                    p.duration_sec = parse_measured_duration(&m.stderr);
+                }
                 Ok::<_, Error>(MediaInfo {
                     path: path.to_string(),
                     name: file_name(path),
@@ -90,7 +94,7 @@ fn file_name(path: &str) -> String {
 }
 
 static CUT_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)_cut(_\d+)?\.mp4$").unwrap());
-static VIDEO_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)\.(mp4|gif|png)$").unwrap());
+static VIDEO_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)\.(mp4|gif|webp|png)$").unwrap());
 static IMAGE_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)\.png$").unwrap());
 
 /// 截圖（PNG）：清單上單獨一筆，沒有加速版
@@ -106,7 +110,8 @@ fn strip_ext(name: &str) -> String {
         strip_mp4(name)
     }
 }
-static GIF_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)\.gif$").unwrap());
+/// 動圖（GIF、WebP）
+static GIF_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)\.(gif|webp)$").unwrap());
 
 pub fn is_cut_name(name: &str) -> bool {
     CUT_RE.is_match(name)
@@ -148,8 +153,8 @@ pub async fn scan(cache: &MediaCache, dir: &Path) -> Vec<LibraryEntry> {
     let mut derived: Vec<(String, ExportInfo)> = Vec::new();
     for f in &files {
         let mut e = parse_export_name(&f.name);
-        // 原速 GIF：先找同名的 MP4（Rec_X_cut_2.gif → Rec_X_cut_2.mp4），找不到才用去掉 _N 的名稱
-        if let Some(p) = e.as_mut().filter(|p| p.format == ExportFormat::Gif && p.speed == 1.0) {
+        // 原速動圖：先找同名的 MP4（Rec_X_cut_2.gif → Rec_X_cut_2.mp4），找不到才用去掉 _N 的名稱
+        if let Some(p) = e.as_mut().filter(|p| p.format.is_animation() && p.speed == 1.0) {
             let exact = GIF_RE.replace(&f.name, ".mp4").into_owned();
             if by_name.contains_key(&exact.to_lowercase()) {
                 p.base = exact;
@@ -163,7 +168,7 @@ pub async fn scan(cache: &MediaCache, dir: &Path) -> Vec<LibraryEntry> {
                 index.insert(f.name.to_lowercase(), entries.len());
                 entries.push(LibraryEntry { media: f.clone(), exports: vec![] });
             }
-            _ => {} // 找不到原片的 GIF 不列出
+            _ => {} // 找不到原片的動圖不列出
         }
     }
     for (base, x) in derived {
@@ -173,7 +178,13 @@ pub async fn scan(cache: &MediaCache, dir: &Path) -> Vec<LibraryEntry> {
     }
     for e in &mut entries {
         e.exports.sort_by(|p, q| {
-            p.speed.total_cmp(&q.speed).then(((p.format == Some(ExportFormat::Gif)) as u8).cmp(&((q.format == Some(ExportFormat::Gif)) as u8))).then(p.media.mtime.total_cmp(&q.media.mtime))
+            // 同一個倍率：MP4、GIF、WebP
+            let rank = |f: Option<ExportFormat>| match f {
+                Some(ExportFormat::Gif) => 1u8,
+                Some(ExportFormat::Webp) => 2,
+                _ => 0,
+            };
+            p.speed.total_cmp(&q.speed).then(rank(p.format).cmp(&rank(q.format))).then(p.media.mtime.total_cmp(&q.media.mtime))
         });
     }
     entries
@@ -370,7 +381,7 @@ mod tests {
 
     #[tokio::test]
     async fn exports_group_under_the_right_original() {
-        let dir = make(&["Rec_X.mp4", "Rec_X_4x.mp4", "Rec_X_2.gif", "Rec_X_cut.mp4", "Rec_X_cut_2.mp4", "Rec_X_cut_2.gif", "Orphan.gif"]);
+        let dir = make(&["Rec_X.mp4", "Rec_X_4x.mp4", "Rec_X_2.gif", "Rec_X_4x.webp", "Rec_X_cut.mp4", "Rec_X_cut_2.mp4", "Rec_X_cut_2.gif", "Rec_X_cut_2.webp", "Orphan.gif", "Orphan.webp"]);
         let cache = Arc::new(MediaCache::default());
         let page = list_library(&cache, None, dir.path(), &q(None, None, LibrarySort::New)).await;
         let mut by: Vec<(String, Vec<String>)> = page
@@ -385,9 +396,9 @@ mod tests {
         assert_eq!(
             by,
             vec![
-                ("Rec_X.mp4".into(), vec!["Rec_X_2.gif:gif:1".into(), "Rec_X_4x.mp4:mp4:4".into()]),
+                ("Rec_X.mp4".into(), vec!["Rec_X_2.gif:gif:1".into(), "Rec_X_4x.mp4:mp4:4".into(), "Rec_X_4x.webp:webp:4".into()]),
                 ("Rec_X_cut.mp4".into(), vec![]),
-                ("Rec_X_cut_2.mp4".into(), vec!["Rec_X_cut_2.gif:gif:1".into()]),
+                ("Rec_X_cut_2.mp4".into(), vec!["Rec_X_cut_2.gif:gif:1".into(), "Rec_X_cut_2.webp:webp:1".into()]),
             ]
         );
     }

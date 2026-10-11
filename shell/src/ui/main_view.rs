@@ -1301,6 +1301,7 @@ fn job_card(app: &mut UiApp, ui: &mut Ui) {
         ExportKind::Cut => tr!("剪輯", "edited video").to_string(),
         ExportKind::Merge => tr!("合併錄影", "merged video").to_string(),
         ExportKind::Gif => trf!("製作 GIF{gif_speed}", "GIF{gif_speed}"),
+        ExportKind::Webp => trf!("製作 WebP 動圖{gif_speed}", "WebP{gif_speed}"),
         ExportKind::Speed => trf!("製作 {}× 加速版", "{}× sped-up video", speed_label(e.speed)),
     };
     let title = match e.state {
@@ -1607,9 +1608,18 @@ fn recent_card(app: &mut UiApp, ui: &mut Ui, e: &LibraryEntry, date: String, w: 
         tags.push((tr!("剪輯版", "Edited").into(), Tone::Warn, String::new()));
     }
     if !e.exports.is_empty() {
-        let all_gif = e.exports.iter().all(|x| x.format == Some(ExportFormat::Gif));
+        let all = |f: ExportFormat| e.exports.iter().all(|x| x.format == Some(f));
+        let kind = if all(ExportFormat::Gif) {
+            "GIF"
+        } else if all(ExportFormat::Webp) {
+            "WebP"
+        } else if e.exports.iter().all(|x| x.format.is_some_and(|f| f.is_animation())) {
+            tr!("動圖", "Anim")
+        } else {
+            tr!("加速", "Sped-up")
+        };
         let list: Vec<String> = e.exports.iter().map(super::library_dialog::export_tag).collect();
-        tags.push((format!("{} {}", if all_gif { "GIF" } else { tr!("加速", "Sped-up") }, e.exports.len()), Tone::Accent, trf!("已製作 {}", "Made: {}", list.join(tr!("、", ", ")))));
+        tags.push((format!("{kind} {}", e.exports.len()), Tone::Accent, trf!("已製作 {}", "Made: {}", list.join(tr!("、", ", ")))));
     }
     // 第一列：日期（或名稱）與標籤
     let top = Rect::from_min_max(pos2(x, rect.min.y + 5.0), pos2(rect.max.x - 6.0, rect.min.y + 27.0));

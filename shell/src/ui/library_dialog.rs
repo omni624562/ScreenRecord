@@ -79,13 +79,22 @@ impl LibraryDialog {
     }
 }
 
+/// 動圖的名稱（GIF、WebP）；不是動圖時 None
+fn anim_name(x: &ExportInfo) -> Option<&'static str> {
+    match x.format {
+        Some(ExportFormat::Gif) => Some("GIF"),
+        Some(ExportFormat::Webp) => Some("WebP"),
+        _ => None,
+    }
+}
+
 /// 匯出檔的標籤：4×、GIF 4×、GIF
 pub fn export_tag(x: &ExportInfo) -> String {
-    if x.format == Some(ExportFormat::Gif) {
+    if let Some(name) = anim_name(x) {
         if x.speed > 1.0 {
-            format!("GIF {}×", speed_label(x.speed))
+            format!("{name} {}×", speed_label(x.speed))
         } else {
-            "GIF".into()
+            name.into()
         }
     } else if x.speed <= 1.0 {
         tr!("壓縮版", "Compressed").into()
@@ -97,18 +106,19 @@ pub fn export_tag(x: &ExportInfo) -> String {
 /// 子列的名稱：4× 加速版、GIF 4×、GIF（原速）。
 /// 「指定長度」做出來的倍率是算出來的小數（例如 13.69×），不好讀，改用長度：30 秒版、GIF 30 秒版
 fn export_label(x: &ExportInfo) -> String {
-    let gif = x.format == Some(ExportFormat::Gif);
+    let gif = anim_name(x).is_some();
+    let anim = anim_name(x).unwrap_or("GIF");
     if (x.speed * 2.0).fract() != 0.0 {
         if let Some(d) = x.media.duration_sec {
             let len = trf!("{}版", "{} version", human_duration(d.round()));
-            return if gif { format!("GIF {len}") } else { len };
+            return if gif { format!("{anim} {len}") } else { len };
         }
     }
     if gif {
         if x.speed > 1.0 {
-            format!("GIF {}×", speed_label(x.speed))
+            format!("{anim} {}×", speed_label(x.speed))
         } else {
-            tr!("GIF（原速）", "GIF (original speed)").into()
+            trf!("{anim}（原速）", "{anim} (original speed)")
         }
     } else {
         trf!("{}× 加速版", "{}× speed", speed_label(x.speed))

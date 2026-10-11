@@ -526,9 +526,11 @@ impl App {
         let dir = Path::new(video).parent().map(|p| p.display().to_string()).unwrap_or_default();
         let out = new_shot_path(&dir).await?;
         let t = if t.is_finite() { t.max(0.0) } else { 0.0 };
-        let args: Vec<String> = ["-hide_banner", "-loglevel", "error", "-ss", &format!("{t:.3}"), "-i", video, "-frames:v", "1", "-update", "1", "-y"]
+        let args: Vec<String> = ["-hide_banner", "-loglevel", "error"]
             .iter()
             .map(|s| s.to_string())
+            .chain(crate::args::input_at(video, &format!("{t:.3}")))
+            .chain(["-frames:v", "1", "-update", "1", "-y"].iter().map(|s| s.to_string()))
             .chain(std::iter::once(out.display().to_string()))
             .collect();
         let r = crate::process::run(&ffmpeg, &args, Duration::from_secs(30)).await;

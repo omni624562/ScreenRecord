@@ -107,7 +107,9 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         let compact = ctx.content_rect().height() < 700.0;
         let p = theme::pal(ui);
         let s = &mut app.s;
-        let gif = s.export_format == ExportFormat::Gif;
+        // 動圖（GIF、WebP）
+        let gif = s.export_format.is_animation();
+        let anim = if s.export_format == ExportFormat::Webp { "WebP" } else { "GIF" };
         // 有大小上限（壓縮）
         let small = !gif && s.mp4_max_mb > 0;
         // 目前設定實際會用的倍率；指定長度但輸入無效時為 None
@@ -123,7 +125,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
             ui.horizontal_top(|ui| {
                 ui.vertical(|ui| {
                     ui.spacing_mut().item_spacing.y = 4.0;
-                    ui.label(RichText::new(if gif { tr!("製作 GIF", "Make GIF") } else { tr!("製作加速版", "Make sped-up video") }).font(theme::font_bold(18.0)));
+                    ui.label(RichText::new(if gif { trf!("製作 {anim}", "Make {anim}") } else { tr!("製作加速版", "Make sped-up video").to_string() }).font(theme::font_bold(18.0)));
                     let name = if is_default_name(&e.media.name) { trf!("{} 的錄影", "Recording from {}", short_date(&e.media.name, e.media.mtime, false)) } else { base_name(&e.media.name) };
                     let info: Vec<String> = [
                         Some(name),
@@ -154,7 +156,12 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
             ui.spacing_mut().item_spacing.y = if compact { 4.0 } else { 10.0 };
             row(ui, tr!("格式", "Format"), |ui| {
                 let mut f = s.export_format;
-                if segmented(ui, &mut f, &[(ExportFormat::Mp4, tr!("MP4 影片", "MP4 video")), (ExportFormat::Gif, tr!("GIF 動畫", "Animated GIF"))], true) {
+                if segmented(
+                    ui,
+                    &mut f,
+                    &[(ExportFormat::Mp4, tr!("MP4 影片", "MP4 video")), (ExportFormat::Gif, tr!("GIF 動畫", "Animated GIF")), (ExportFormat::Webp, tr!("WebP 動圖", "Animated WebP"))],
+                    true,
+                ) {
                     // MP4 不能原速（那就是原檔）
                     if f == ExportFormat::Mp4 && s.speed < SPEED_MIN {
                         s.speed = 4.0;
@@ -304,7 +311,15 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
             row(ui, tr!("聲音", "Audio"), |ui| {
                 ui.horizontal(|ui| {
                     ui.set_height(ROW_H);
-                    if gif {
+                    if s.export_format == ExportFormat::Webp {
+                        ui.label(theme::muted(
+                            ui,
+                            tr!(
+                                "WebP 動圖不含聲音；檔案約為 GIF 的 1/6、顏色更好，瀏覽器、Slack、Discord 都能看",
+                                "WebP has no audio; about 1/6 the size of a GIF with better colors, and works in browsers, Slack and Discord"
+                            ),
+                        ));
+                    } else if gif {
                         ui.label(theme::muted(ui, tr!("GIF 不含聲音；檔案較大，建議 1 分鐘以內", "GIFs have no audio and are large; keep them under 1 min")));
                     } else if !has_audio {
                         ui.label(theme::muted(ui, tr!("原片沒有聲音", "The original has no audio")));
@@ -371,7 +386,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                         _ => String::new(),
                     };
                     let title = if gif {
-                        "GIF"
+                        anim
                     } else if speed.is_some_and(|sp| sp <= 1.0) {
                         tr!("壓縮版", "Compressed")
                     } else {
@@ -406,7 +421,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
 
             // 提醒：已有同倍率的成品、加速後太短
             let what = if gif {
-                format!("GIF{}", speed.filter(|v| *v > 1.0).map(|v| format!(" {}×", speed_label(v))).unwrap_or_else(|| tr!("（原速）", " (original speed)").into()))
+                format!("{anim}{}", speed.filter(|v| *v > 1.0).map(|v| format!(" {}×", speed_label(v))).unwrap_or_else(|| tr!("（原速）", " (original speed)").into()))
             } else {
                 trf!("{}× 加速版", "{}× sped-up video", speed_label(speed.unwrap_or(0.0)))
             };
@@ -473,7 +488,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                 let cap = if s.mp4_max_mb > 0 { trf!("（{} MB 以內）", " (up to {} MB)", s.mp4_max_mb) } else { String::new() };
                 let label = match speed {
                     None => make.to_string(),
-                    Some(sp) if gif => format!("{make} GIF{}", if sp > 1.0 { trf!("（{}×）", " ({}×)", speed_label(sp)) } else { String::new() }),
+                    Some(sp) if gif => format!("{make} {anim}{}", if sp > 1.0 { trf!("（{}×）", " ({}×)", speed_label(sp)) } else { String::new() }),
                     Some(sp) if sp <= 1.0 => trf!("{make}壓縮版{cap}", "{make} compressed video{cap}"),
                     Some(sp) => trf!("{make} {}× 加速版{cap}", "{make} {}× sped-up video{cap}", speed_label(sp)),
                 };
