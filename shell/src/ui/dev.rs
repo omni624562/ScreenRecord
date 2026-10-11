@@ -1,5 +1,5 @@
 //! 開發用（只在 debug 版）：自動開啟某個畫面、模擬操作並截圖，在 Linux 的 Xvfb 上檢查介面。
-//! - SCREENRECORDER_DEV：要開啟的畫面（library、shots、changelog、notes（講稿小視窗）、schedule（排程錄影）、after:<路徑>（錄完自動處理）、follow:<標題>（只錄這個視窗）、record:<秒>（錄幾秒）、replay:<保留秒數>,<幾秒後存下>[,<再幾秒停止>]（重播緩衝）、export:<路徑>、edit:<路徑>、view:<路徑>、whatsnew（新功能介紹）、monitors（模擬兩個螢幕）、snip:<PNG>（用這張圖當凍結的桌面開啟框選截圖）、hotkeys（模擬已登記快速鍵）、settings:<record|audio|save|keys|advanced>、ed:<剪輯視窗指令>），以 ; 分隔
+//! - SCREENRECORDER_DEV：要開啟的畫面（library、shots、changelog、notes（講稿小視窗）、schedule（排程錄影）、after:<路徑>（錄完自動處理）、follow:<標題>（只錄這個視窗）、record:<秒>（錄幾秒）、replay:<保留秒數>,<幾秒後存下>[,<再幾秒停止>]（重播緩衝）、export:<路徑>、edit:<路徑>、view:<路徑>、whatsnew（新功能介紹）、monitors（模擬兩個螢幕）、snip:<PNG>（用這張圖當凍結的桌面開啟框選截圖）、hotkeys（模擬已登記快速鍵）、update:<版本>（模擬有新版本）、settings:<record|audio|save|keys|advanced>、ed:<剪輯視窗指令>），以 ; 分隔
 //! - SCREENRECORDER_INPUT：開啟後依序模擬的操作，以 ; 分隔：
 //!   wait:毫秒、click:x,y、rclick:x,y（右鍵）、move:x,y、drag:x0,y0,x1,y1、wheel:x,y,dy、key:Space（可加 ctrl+、alt+、shift+）、type:文字、shot:路徑
 //! - SCREENRECORDER_SHOT：最後截圖存檔的路徑（存好後結束）；SCREENRECORDER_SHOT_AFTER：開始後幾毫秒截圖（預設 3000）
@@ -29,6 +29,8 @@ pub struct Dev {
     /// 等待中的截圖（依序對應收到的截圖）
     shots: VecDeque<(String, bool)>,
     final_requested: bool,
+    /// update:<版本> 模擬的新版本（啟動時的檢查會蓋掉，所以每一格都重新設定）
+    fake_update: Option<screenrecorder_core::types::UpdateInfo>,
 }
 
 fn button(p: Pos2, pressed: bool, modifiers: Modifiers) -> Event {
@@ -132,6 +134,9 @@ pub fn input(app: &mut UiApp, ctx: &egui::Context, raw: &mut egui::RawInput) {
 }
 
 pub fn tick(app: &mut UiApp, ctx: &egui::Context) {
+    if let Some(u) = &app.dev.fake_update {
+        app.env.update = Some(u.clone());
+    }
     if app.dev.started.is_none() {
         // 測試用：SCREENRECORDER_THEME=light / dark
         match std::env::var("SCREENRECORDER_THEME").as_deref() {
@@ -219,6 +224,16 @@ pub fn tick(app: &mut UiApp, ctx: &egui::Context) {
                     // 模擬系統匣已登記快速鍵（Linux 上沒有系統匣）
                     _ if a == "hotkeys" => app.env.hotkeys = Some(screenrecorder_core::types::HotkeyStatus { record: true, pause: true, shot: true, snip: false, mark: true, pen: true, replay: true }),
                     Some(("snip", p)) => fake_snip(app, p),
+                    Some(("update", v)) => {
+                        app.dev.fake_update = Some(screenrecorder_core::types::UpdateInfo {
+                            version: v.to_string(),
+                            url: "https://github.com/omni624562/ScreenRecord/releases/latest".into(),
+                            published_at: None,
+                            download_url: Some(format!("https://github.com/omni624562/ScreenRecord/releases/download/v{v}/ScreenRecorder.exe")),
+                            sha256: Some("0".repeat(64)),
+                            size: Some(15_340_544),
+                        })
+                    }
                     Some(("settings", p)) => {
                         use super::settings_dialog::{open, Page};
                         let page = match p {
