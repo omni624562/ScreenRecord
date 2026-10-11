@@ -152,6 +152,7 @@ mod tests {
             audio_only: false,
             window_capture: false,
             separate_audio: false,
+            replay_sec: 0,
         }
     }
 

@@ -110,6 +110,8 @@ pub struct UiSettings {
     pub window_capture: bool,
     /// 系統聲音與麥克風分開存（分軌）
     pub separate_audio: bool,
+    /// 重播緩衝保留最近幾秒（core 的 replay.rs 也讀這個欄位：快速鍵、系統匣開始時用）
+    pub replay_sec: u32,
 }
 
 /// 講稿提詞的字級範圍、不透明度下限
@@ -215,6 +217,7 @@ impl UiSettings {
             after_compress_mb: num("afterCompressMb").map(|v| v as u32).filter(|v| MAX_MB.contains(v)).unwrap_or(0),
             window_capture: boolean("windowCapture").unwrap_or(false),
             separate_audio: boolean("separateAudio").unwrap_or(false),
+            replay_sec: screenrecorder_core::replay::sec_from_ui(v),
         };
         s.fix_monitor(env);
         s
@@ -313,6 +316,7 @@ impl UiSettings {
             audio_only: self.source_type == SourceType::Audio,
             window_capture: self.window_capture && self.source_type == SourceType::Region && self.follow_window.is_some(),
             separate_audio: self.separate_audio,
+            replay_sec: 0,
         }
     }
 }

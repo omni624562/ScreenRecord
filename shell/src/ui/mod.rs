@@ -12,6 +12,7 @@ pub mod notes;
 pub mod ocr;
 pub mod presets;
 pub mod preview;
+pub mod replay;
 pub mod schedule;
 pub mod settings;
 pub mod settings_dialog;
@@ -136,6 +137,8 @@ pub struct UiApp {
     pub dismissed_job: Option<u64>,
     last_export_state: Option<screenrecorder_core::types::ExportState>,
     last_result_path: Option<String>,
+    /// 重播緩衝最近存下的檔案（快速鍵、系統匣存下時也更新最近錄影）
+    last_replay_path: Option<String>,
     last_state: RecorderState,
     pub main: main_view::MainState,
     ddagrab_watch: Option<Instant>,
@@ -206,6 +209,7 @@ impl UiApp {
             dismissed_job: None,
             last_export_state: None,
             last_result_path: None,
+            last_replay_path: None,
             main: main_view::MainState::default(),
             ddagrab_watch: None,
             last_shot_seq: 0,
@@ -440,6 +444,12 @@ impl UiApp {
                 self.preview.reset();
             }
             self.last_state = state;
+        }
+        let replay_last = self.status.recorder.replay.as_ref().and_then(|r| r.last.clone());
+        if replay_last.is_some() && replay_last != self.last_replay_path {
+            self.last_replay_path = replay_last;
+            self.recent_page = 1;
+            self.load_recent();
         }
         if let Some(r) = &self.status.recorder.result {
             if r.ok && r.path.is_some() && r.path != self.last_result_path {

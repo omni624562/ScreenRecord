@@ -117,17 +117,19 @@ pub struct HotkeyStatus {
     pub mark: bool,
     #[serde(default)]
     pub pen: bool,
+    #[serde(default)]
+    pub replay: bool,
 }
 
 impl HotkeyStatus {
     /// 依 Hotkeys::all 的順序
     pub fn all(&self) -> [bool; HOTKEY_COUNT] {
-        [self.record, self.pause, self.shot, self.snip, self.mark, self.pen]
+        [self.record, self.pause, self.shot, self.snip, self.mark, self.pen, self.replay]
     }
 
     pub fn from_list(ok: &[bool]) -> HotkeyStatus {
         let g = |i: usize| ok.get(i).copied().unwrap_or(false);
-        HotkeyStatus { record: g(0), pause: g(1), shot: g(2), snip: g(3), mark: g(4), pen: g(5) }
+        HotkeyStatus { record: g(0), pause: g(1), shot: g(2), snip: g(3), mark: g(4), pen: g(5), replay: g(6) }
     }
 }
 
@@ -236,7 +238,7 @@ pub fn shown_keys(vk: u32, ctrl: bool, alt: bool, shift: bool, win: bool) -> Opt
 }
 
 /// 全域快速鍵的數量
-pub const HOTKEY_COUNT: usize = 6;
+pub const HOTKEY_COUNT: usize = 7;
 
 /// 全域快速鍵（None = 停用）
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -251,6 +253,9 @@ pub struct Hotkeys {
     /// 螢幕畫筆（3.1 新增）
     #[serde(default = "default_pen")]
     pub pen: Option<Hotkey>,
+    /// 重播緩衝：沒在錄影時開始，重播緩衝中存下最近幾分鐘（3.1 新增）
+    #[serde(default = "default_replay")]
+    pub replay: Option<Hotkey>,
 }
 
 fn default_mark() -> Option<Hotkey> {
@@ -259,6 +264,10 @@ fn default_mark() -> Option<Hotkey> {
 
 fn default_pen() -> Option<Hotkey> {
     Some(Hotkey::ctrl_alt(0x44))
+}
+
+fn default_replay() -> Option<Hotkey> {
+    Some(Hotkey::ctrl_alt(0x42))
 }
 
 impl Default for Hotkeys {
@@ -270,14 +279,15 @@ impl Default for Hotkeys {
             snip: Some(Hotkey::ctrl_alt(0x41)),
             mark: default_mark(),
             pen: default_pen(),
+            replay: default_replay(),
         }
     }
 }
 
 impl Hotkeys {
-    /// 依序：開始 / 停止錄影、暫停 / 繼續、截圖、框選截圖、加標記、螢幕畫筆
+    /// 依序：開始 / 停止錄影、暫停 / 繼續、截圖、框選截圖、加標記、螢幕畫筆、重播緩衝
     pub fn all(&self) -> [Option<Hotkey>; HOTKEY_COUNT] {
-        [self.record, self.pause, self.shot, self.snip, self.mark, self.pen]
+        [self.record, self.pause, self.shot, self.snip, self.mark, self.pen, self.replay]
     }
 
     pub fn set(&mut self, i: usize, k: Option<Hotkey>) {
@@ -287,13 +297,14 @@ impl Hotkeys {
             2 => self.shot = k,
             3 => self.snip = k,
             4 => self.mark = k,
-            _ => self.pen = k,
+            5 => self.pen = k,
+            _ => self.replay = k,
         }
     }
 
     /// 全部停用（設定新的快速鍵時暫停）
     pub fn none() -> Hotkeys {
-        Hotkeys { record: None, pause: None, shot: None, snip: None, mark: None, pen: None }
+        Hotkeys { record: None, pause: None, shot: None, snip: None, mark: None, pen: None, replay: None }
     }
 
     /// 第 i 個的名稱（停用時是空字串）
@@ -310,8 +321,16 @@ impl Hotkeys {
 /// 每組快速鍵的名稱（依介面語言）
 pub fn hotkey_names() -> [&'static str; HOTKEY_COUNT] {
     crate::tr!(
-        ["開始 / 停止錄影", "暫停 / 繼續", "截圖（固定範圍）", "框選截圖", "錄影中加標記", "螢幕畫筆（開 / 關）"],
-        ["Start / stop recording", "Pause / resume", "Screenshot (fixed area)", "Select area screenshot", "Add marker while recording", "Screen pen (on / off)"]
+        ["開始 / 停止錄影", "暫停 / 繼續", "截圖（固定範圍）", "框選截圖", "錄影中加標記", "螢幕畫筆（開 / 關）", "重播（開始 / 存下）"],
+        [
+            "Start / stop recording",
+            "Pause / resume",
+            "Screenshot (fixed area)",
+            "Select area screenshot",
+            "Add marker while recording",
+            "Screen pen (on / off)",
+            "Replay buffer (start / save the last minutes)"
+        ]
     )
 }
 
@@ -375,6 +394,9 @@ pub struct RecordConfig {
     /// 系統聲音與麥克風分開存（多兩條音軌；第一條仍是混在一起的，一般播放器照常播放）
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub separate_audio: bool,
+    /// 重播緩衝：在背景一直錄、只保留最近這麼多秒，需要時再存下來（0 = 一般錄影）
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub replay_sec: u32,
 }
 
 impl RecordConfig {
@@ -499,6 +521,26 @@ pub struct RecorderStatus {
     /// 這次錄影加了幾個標記
     #[serde(default, skip_serializing_if = "is_zero_u32")]
     pub markers: u32,
+    /// 重播緩衝中（不是一般錄影）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replay: Option<ReplayStatus>,
+}
+
+/// 重播緩衝的狀態
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReplayStatus {
+    /// 保留最近幾秒
+    pub sec: u32,
+    /// 緩衝在硬碟上的大小
+    pub bytes: u64,
+    /// 正在存
+    pub saving: bool,
+    /// 這次存了幾支
+    pub saved: u32,
+    /// 最近存下的檔案
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last: Option<String>,
 }
 
 fn is_zero_u32(v: &u32) -> bool {
@@ -821,6 +863,9 @@ mod tests {
         let back: Hotkeys = serde_json::from_str(&serde_json::to_string(&k).unwrap()).unwrap();
         assert_eq!(back.pen, None);
         assert_eq!(back.mark, Hotkeys::default().mark);
+        // 重播緩衝也是 3.1 新增
+        assert_eq!(k.label(6), "Ctrl+Alt+B");
+        assert_eq!(serde_json::from_str::<Hotkeys>(old).unwrap().replay, Some(Hotkey::ctrl_alt(0x42)));
     }
 
     #[test]

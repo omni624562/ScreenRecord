@@ -212,11 +212,13 @@ impl RecorderDeps for RecDeps {
     }
     // 只縮小擋到擷取範圍的視窗（例如在螢幕 2 操作、錄螢幕 1 時不縮小）；
     // 縮小動畫約 0.25 秒，等它結束再開始擷取，第一張畫面才不會拍到縮到一半的視窗
-    fn before_capture(&self, area: Rect) -> BoxFut<'_, ()> {
-        // 錄影中不讓電腦因為閒置而睡眠、螢幕也不關（暫停後繼續、移動範圍時沿用同一個）
+    fn keep_awake(&self) {
+        // 錄影中不讓電腦因為閒置而睡眠、螢幕也不關（暫停後繼續、移動範圍時沿用同一個；停止時 after_stop 放掉）
         if let Some(a) = self.0.upgrade() {
             a.awake.lock().unwrap().get_or_insert_with(|| crate::power::keep_awake(true));
         }
+    }
+    fn before_capture(&self, area: Rect) -> BoxFut<'_, ()> {
         Box::pin(async move {
             let minimized = tokio::task::spawn_blocking(move || crate::winui::minimize_ui_for_recording(&area)).await.unwrap_or(false);
             if minimized {
@@ -1809,6 +1811,7 @@ mod tests {
             audio_only: false,
             window_capture: false,
             separate_audio: false,
+            replay_sec: 0,
         };
         let later = Schedule { at: chrono::Local::now() + chrono::Duration::minutes(30), minutes: 10, config: config.clone() };
         let a = app.clone();

@@ -52,6 +52,8 @@ pub enum FrameCmd {
     Stop,
     /// 加標記
     Mark,
+    /// 重播緩衝：存下最近幾分鐘
+    SaveReplay,
     /// 把範圍移到 (x, y)（左上角，虛擬桌面座標）
     Move(i32, i32),
 }
@@ -59,6 +61,7 @@ pub enum FrameCmd {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Button {
     Mark,
+    Save,
     Pause,
     Resume,
     Stop,
@@ -153,6 +156,7 @@ fn button_rect(b: &Bar, i: usize) -> RECT {
 fn bar_for(f: &FrameInfo, scale: f32) -> Bar {
     match f.state {
         RecorderState::Countdown => Bar { text: trf!("倒數 {}", "Starts in {}", f.countdown_ms.unwrap_or(0).div_ceil(1000)), marks: 0, dot: GREY, buttons: vec![Button::Stop], scale },
+        RecorderState::Recording if f.replay => Bar { text: clock(f.recorded_ms as f64), marks: 0, dot: RED, buttons: vec![Button::Save, Button::Stop], scale },
         RecorderState::Paused => Bar { text: clock(f.recorded_ms as f64), marks: f.markers, dot: AMBER, buttons: vec![Button::Mark, Button::Resume, Button::Stop], scale },
         _ => Bar { text: clock(f.recorded_ms as f64), marks: f.markers, dot: RED, buttons: vec![Button::Mark, Button::Pause, Button::Stop], scale },
     }
@@ -210,6 +214,7 @@ unsafe fn run(info: impl Fn() -> Option<FrameInfo>, cmd: impl Fn(FrameCmd)) {
                 Button::Resume => FrameCmd::Resume,
                 Button::Stop => FrameCmd::Stop,
                 Button::Mark => FrameCmd::Mark,
+                Button::Save => FrameCmd::SaveReplay,
             });
         }
         let mut f = info();
@@ -519,6 +524,18 @@ unsafe fn paint_bar(hwnd: HWND, hdc: HDC) {
             Button::Stop => {
                 let q = px(5.5, s);
                 fill(mem, &RECT { left: cx - q, top: cy - q, right: cx + q, bottom: cy + q }, RED);
+            }
+            Button::Save => {
+                // 存下：向下的箭頭落在一條線上
+                let t = px(2.0, s).max(1);
+                fill(mem, &RECT { left: cx - t / 2, top: cy - k, right: cx - t / 2 + t, bottom: cy + px(1.0, s) }, WHITE);
+                fill(mem, &RECT { left: cx - k, top: cy + k - t, right: cx + k, bottom: cy + k }, WHITE);
+                let wb = CreateSolidBrush(WHITE);
+                let prev = SelectObject(mem, wb.into());
+                let pts = [POINT { x: cx - px(4.5, s), y: cy - px(1.0, s) }, POINT { x: cx + px(4.5, s), y: cy - px(1.0, s) }, POINT { x: cx, y: cy + px(4.0, s) }];
+                let _ = Polygon(mem, &pts);
+                SelectObject(mem, prev);
+                let _ = DeleteObject(wb.into());
             }
             Button::Mark => {
                 // 小旗子：旗桿 + 三角旗

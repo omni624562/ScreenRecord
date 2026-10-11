@@ -62,6 +62,7 @@ fn record_config() -> RecordConfig {
         audio_only: true,
         window_capture: false,
         separate_audio: false,
+        replay_sec: 0,
     }
 }
 
@@ -548,4 +549,56 @@ async fn separate_audio_tracks() {
     ex.start_cut(&c, &one.display().to_string(), &EditSpec { start: 0.0, end: 5.0, ..sys_only.clone() }, None, None).await.unwrap();
     let cut = finish(&ex).await;
     assert!(max_volume(&ff, &cut) > -20.0);
+}
+
+#[tokio::test]
+async fn replay_buffer_saves_while_recording() {
+    let Some(ff) = ffmpeg() else { return };
+    if !has(&ff, "-encoders", "libx264") {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let card = write_card(dir.path());
+    let parts = dir.path().join(".parts").join("2026-10-11_14-00-00");
+    std::fs::create_dir_all(&parts).unwrap();
+    let (w, h) = (crate::audio_card::SIZE.0 as i32, crate::audio_card::SIZE.1 as i32);
+    let plan = CapturePlan { rect: Rect { x: 0, y: 0, width: w, height: h }, dda: None, monitors: vec![], out_width: w, out_height: h, card: Some(card.display().to_string()) };
+    let audio: Vec<String> = ["-re", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000,aformat=channel_layouts=stereo"].iter().map(|s| s.to_string()).collect();
+    let config = RecordConfig { replay_sec: 30, ..record_config() };
+    let pattern = parts.join("rp_000_%05d.mp4").display().to_string();
+    let mut args = segment_args(&plan, &config, CaptureMethod::Gdigrab, &ENCODERS[0], &pattern, Some(&audio), None).unwrap();
+    // 測試不等 10 秒：每 2 秒（每個關鍵畫面）換一個檔案
+    let i = args.iter().position(|a| a == "-segment_time").unwrap();
+    args[i + 1] = "2".into();
+    let mut child = Command::new(&ff).args(&args).stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
+    std::thread::sleep(Duration::from_millis(7500));
+    // 還在錄的時候存下最近 4 秒：包含正在寫的檔案
+    let chunks = crate::replay::chunks(&parts);
+    assert!(chunks.len() >= 3, "{chunks:?}");
+    let files: Vec<String> = crate::replay::pick(&chunks, std::time::SystemTime::now(), 4).iter().map(|p| p.display().to_string()).collect();
+    assert!((2..=4).contains(&files.len()), "{files:?}");
+    // 最後一個是有內容的最新檔案（剛開的、只有檔頭的不算）
+    let newest = chunks.iter().rev().find(|c| c.len >= 4096).map(|c| c.path.display().to_string());
+    assert_eq!(files.last(), newest.as_ref());
+    let work = parts.join("save");
+    std::fs::create_dir_all(&work).unwrap();
+    let out = dir.path().join("Replay_2026-10-11_14-00-07.mp4");
+    let dur = crate::recorder::merge_segments(&ff, &files, &work, &out, true, None).await.unwrap().unwrap();
+    assert!((3.0..=7.0).contains(&dur), "{dur}");
+    let info = probe(&ff, &out).await;
+    assert_eq!((info.has_audio, info.width), (Some(true), Some(640)));
+    // 測試音約 -21 dB；接起來的地方沒有斷掉（每個檔案的聲音都在）
+    let vol = max_volume(&ff, &out);
+    assert!(vol > -30.0, "{vol}");
+    for f in &files {
+        assert!(max_volume(&ff, Path::new(f)) > -30.0, "{f}");
+    }
+    let mut stdin = child.stdin.take().unwrap();
+    stdin.write_all(b"q").unwrap();
+    stdin.flush().unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while child.try_wait().unwrap().is_none() {
+        assert!(std::time::Instant::now() < deadline, "FFmpeg 收到 q 後沒有結束");
+        std::thread::sleep(Duration::from_millis(50));
+    }
 }

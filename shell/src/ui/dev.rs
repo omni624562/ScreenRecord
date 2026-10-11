@@ -1,5 +1,5 @@
 //! 開發用（只在 debug 版）：自動開啟某個畫面、模擬操作並截圖，在 Linux 的 Xvfb 上檢查介面。
-//! - SCREENRECORDER_DEV：要開啟的畫面（library、shots、changelog、notes（講稿小視窗）、schedule（排程錄影）、after:<路徑>（錄完自動處理）、follow:<標題>（只錄這個視窗）、record:<秒>（錄幾秒）、export:<路徑>、edit:<路徑>、view:<路徑>、whatsnew（新功能介紹）、monitors（模擬兩個螢幕）、snip:<PNG>（用這張圖當凍結的桌面開啟框選截圖）、hotkeys（模擬已登記快速鍵）、settings:<record|audio|save|keys|advanced>、ed:<剪輯視窗指令>），以 ; 分隔
+//! - SCREENRECORDER_DEV：要開啟的畫面（library、shots、changelog、notes（講稿小視窗）、schedule（排程錄影）、after:<路徑>（錄完自動處理）、follow:<標題>（只錄這個視窗）、record:<秒>（錄幾秒）、replay:<保留秒數>,<幾秒後存下>[,<再幾秒停止>]（重播緩衝）、export:<路徑>、edit:<路徑>、view:<路徑>、whatsnew（新功能介紹）、monitors（模擬兩個螢幕）、snip:<PNG>（用這張圖當凍結的桌面開啟框選截圖）、hotkeys（模擬已登記快速鍵）、settings:<record|audio|save|keys|advanced>、ed:<剪輯視窗指令>），以 ; 分隔
 //! - SCREENRECORDER_INPUT：開啟後依序模擬的操作，以 ; 分隔：
 //!   wait:毫秒、click:x,y、rclick:x,y（右鍵）、move:x,y、drag:x0,y0,x1,y1、wheel:x,y,dy、key:Space（可加 ctrl+、alt+、shift+）、type:文字、shot:路徑
 //! - SCREENRECORDER_SHOT：最後截圖存檔的路徑（存好後結束）；SCREENRECORDER_SHOT_AFTER：開始後幾毫秒截圖（預設 3000）
@@ -182,6 +182,28 @@ pub fn tick(app: &mut UiApp, ctx: &egui::Context) {
                             },
                         );
                     }
+                    // 重播緩衝：replay:保留秒數,幾秒後存下[,存下後幾秒停止]
+                    Some(("replay", v)) => {
+                        let n: Vec<u64> = v.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+                        let (keep, save_at, stop_after) = (n.first().copied().unwrap_or(30), n.get(1).copied().unwrap_or(15), n.get(2).copied().unwrap_or(3));
+                        let config = screenrecorder_core::types::RecordConfig { replay_sec: keep as u32, ..app.s.record_config(&app.env) };
+                        let core = app.core.clone();
+                        app.spawn(
+                            async move {
+                                core.replay_start(config).await?;
+                                tokio::time::sleep(std::time::Duration::from_secs(save_at)).await;
+                                let res = core.replay_save(false).await?;
+                                screenrecorder_core::info!("[dev] 存下重播：{}", res.message);
+                                tokio::time::sleep(std::time::Duration::from_secs(stop_after)).await;
+                                core.recorder.stop(None).await.map(|_| ())
+                            },
+                            |app, r: screenrecorder_core::Result<()>| {
+                                if let Err(e) = r {
+                                    app.toast(e.message().to_string(), true);
+                                }
+                            },
+                        );
+                    }
                     Some(("after", p)) => {
                         let core = app.core.clone();
                         app.spawn(core.after_record(p.to_string()), |_, _| {});
@@ -195,7 +217,7 @@ pub fn tick(app: &mut UiApp, ctx: &egui::Context) {
                     // 名稱很長的音訊裝置（檢查設定視窗不會被撐寬）
                     _ if a == "mics" => fake_mics(app),
                     // 模擬系統匣已登記快速鍵（Linux 上沒有系統匣）
-                    _ if a == "hotkeys" => app.env.hotkeys = Some(screenrecorder_core::types::HotkeyStatus { record: true, pause: true, shot: true, snip: false, mark: true, pen: true }),
+                    _ if a == "hotkeys" => app.env.hotkeys = Some(screenrecorder_core::types::HotkeyStatus { record: true, pause: true, shot: true, snip: false, mark: true, pen: true, replay: true }),
                     Some(("snip", p)) => fake_snip(app, p),
                     Some(("settings", p)) => {
                         use super::settings_dialog::{open, Page};

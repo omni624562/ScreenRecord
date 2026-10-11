@@ -28,7 +28,7 @@ enum Try {
 }
 
 /// 新功能清單（標題、說明、試試看）：依介面語言
-fn items() -> [(&'static str, &'static str, Try); 17] {
+fn items() -> [(&'static str, &'static str, Try); 18] {
     [
         (
             "語言 Language",
@@ -77,6 +77,14 @@ fn items() -> [(&'static str, &'static str, Try); 17] {
                 "Automatically cut idle parts, generate subtitles and compress to a target size after each recording (Settings → Save location)."
             ),
             Try::Settings(Page::Save),
+        ),
+        (
+            tr!("重播緩衝", "Replay buffer"),
+            tr!(
+                "右上角「重播」：在背景一直錄、只留最近幾分鐘，發生想留下的事時按「存下」或 Ctrl+Alt+B。",
+                "“Replay” at the top right: keeps recording in the background, holding only the last few minutes. Press “Save” or Ctrl+Alt+B when something worth keeping happens."
+            ),
+            Try::None,
         ),
         (
             tr!("排程錄影", "Scheduled recording"),

@@ -69,6 +69,8 @@ pub enum TrayCommand {
     Mark,
     /// 螢幕畫筆（開 / 關）
     Pen,
+    /// 重播緩衝：沒在錄影時開始，重播緩衝中存下最近幾分鐘（選單與快速鍵）
+    Replay,
     OpenUpdate,
     Quit,
 }
@@ -104,6 +106,10 @@ pub struct TrayState {
     pub has_shot: bool,
     /// 步驟截圖進行中：已經截了幾步
     pub steps: Option<u32>,
+    /// 重播緩衝的長度（例如「2 分鐘」）
+    pub replay_len: String,
+    /// 重播緩衝中
+    pub replay: bool,
     pub last_result: Option<String>,
     /// None = 無法設定（開發版）
     pub autostart: Option<bool>,
@@ -206,6 +212,7 @@ impl TrayController {
         let saved = self.app.settings.load();
         let presets: Vec<String> = saved.presets.iter().map(|p| p.name.clone()).collect();
         let preset = saved.ui.as_ref().and_then(|ui| crate::presets::active(&saved.presets, ui));
+        let replay_len = crate::replay::length_label(st.replay.as_ref().map(|r| r.sec).unwrap_or_else(|| crate::replay::sec_from_ui(saved.ui.as_ref())));
         drop(saved);
         let last_result = self.last_result_exists();
         let has_shot = self.app.last_shot().is_some_and(|s| self.shot_exists(&s.path));
@@ -225,6 +232,7 @@ impl TrayController {
         TrayState {
             rec: st.state,
             tip: match (&scheduled, st.state) {
+                _ if st.replay.is_some() => trf!("螢幕錄影 {APP_VERSION} — 重播緩衝中（最近 {replay_len}）", "Screen Recorder {APP_VERSION} — Replay buffer (last {replay_len})"),
                 (Some(s), RecorderState::Idle) => trf!("螢幕錄影 {APP_VERSION} — 排程：{s}", "Screen Recorder {APP_VERSION} — Scheduled: {s}"),
                 _ => trf!("螢幕錄影 {APP_VERSION} — {}{time}", "Screen Recorder {APP_VERSION} — {}{time}", state_text(st.state)),
             },
@@ -247,6 +255,8 @@ impl TrayController {
             has_last_snip,
             has_shot,
             steps,
+            replay: st.replay.is_some(),
+            replay_len,
             last_result: if last_result { c.last_result_path.clone() } else { None },
             autostart: c.autostart,
             version: APP_VERSION.to_string(),
@@ -328,6 +338,7 @@ impl TrayController {
             audio_only: false,
             window_capture: false,
             separate_audio: false,
+            replay_sec: 0,
         }
     }
 
@@ -443,6 +454,11 @@ impl TrayController {
             }
             TrayCommand::Mark => {
                 let _ = rec.add_marker();
+                return Ok(());
+            }
+            TrayCommand::Replay => {
+                let (app, config) = (app.clone(), self.config());
+                tokio::spawn(async move { app.replay_hotkey(config).await });
                 return Ok(());
             }
             TrayCommand::Resume => return rec.resume().await.map_err(err),

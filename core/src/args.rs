@@ -665,6 +665,9 @@ pub fn track_tags() -> Vec<String> {
 
 /// 單一分段的完整參數。stdin 送 q 收尾；-progress 從 stdout 回報張數與大小。
 /// audio_input：錄聲音時 AudioPipe 提供的輸入參數（TCP raw PCM）
+/// 重播緩衝每個檔案的長度（秒）：存下來的影片最多比指定的長這麼多
+pub const REPLAY_CHUNK_SEC: u32 = 10;
+
 pub fn segment_args(plan: &CapturePlan, config: &RecordConfig, method: CaptureMethod, enc: &EncoderSpec, out_file: &str, audio_input: Option<&[String]>, gpu: Option<GpuPath>) -> Result<Vec<String>> {
     let spec = capture_spec(plan, config, method, enc, audio_input.is_some(), gpu)?;
     let fps = num(config.fps);
@@ -703,8 +706,15 @@ pub fn segment_args(plan: &CapturePlan, config: &RecordConfig, method: CaptureMe
     }
     a.extend(["-r".into(), fps.clone(), "-fps_mode".into(), "cfr".into(), "-g".into(), num(config.fps * 2.0)]);
     a.extend(strs(&COLOR_TAGS));
-    // 分段寫成每秒一個 fragment：即使 FFmpeg 被強制結束或當機，只損失最後 1 秒與編碼器還沒送出的畫面
-    a.extend(strs(&["-movflags", "+empty_moov+default_base_moof", "-frag_duration", "1000000", "-flush_packets", "1"]));
+    if config.replay_sec > 0 {
+        // 重播緩衝：每 REPLAY_CHUNK_SEC 秒換一個檔案（out_file 是含 %05d 的檔名樣式；新檔案從關鍵畫面開始），
+        // 太舊的由錄影器刪掉。每個檔案一樣每秒寫入一次，存下來時連正在寫的那個也讀得到
+        a.extend(strs(&["-f", "segment", "-segment_time", &REPLAY_CHUNK_SEC.to_string(), "-reset_timestamps", "1", "-segment_format", "mp4"]));
+        a.extend(strs(&["-segment_format_options", "movflags=+empty_moov+default_base_moof:frag_duration=1000000:flush_packets=1", "-flush_packets", "1"]));
+    } else {
+        // 分段寫成每秒一個 fragment：即使 FFmpeg 被強制結束或當機，只損失最後 1 秒與編碼器還沒送出的畫面
+        a.extend(strs(&["-movflags", "+empty_moov+default_base_moof", "-frag_duration", "1000000", "-flush_packets", "1"]));
+    }
     a.extend(strs(&["-progress", "pipe:1", "-stats_period", "0.5", "-y"]));
     a.push(out_file.into());
     Ok(a)
@@ -1311,6 +1321,7 @@ mod tests {
             audio_only: false,
             window_capture: false,
             separate_audio: false,
+            replay_sec: 0,
         }
     }
     fn region(x: f64, y: f64, w: f64, h: f64) -> SourceConfig {
@@ -1645,6 +1656,21 @@ dummy: Immediate exit requested";
         assert!(!RecordConfig { audio: AudioConfig { mic: false, ..both.clone() }, ..c.clone() }.separate_tracks());
         let one = segment_args(&plan, &RecordConfig { separate_audio: false, ..c }, CaptureMethod::Gdigrab, &x264(), "o.mp4", Some(&audio_in), None).unwrap();
         assert!(one.join(" ").contains("-map [vout] -map 1:a -c:a aac") && !one.join(" ").contains("asplit"));
+    }
+
+    #[test]
+    fn replay_buffer_writes_rolling_files() {
+        let c = RecordConfig { replay_sec: 120, ..cfg() };
+        let plan = resolve_plan(&c, &same_gpu()).unwrap();
+        let a = segment_args(&plan, &c, CaptureMethod::Gdigrab, &x264(), "rp_000_%05d.mp4", None, None).unwrap();
+        let j = a.join(" ");
+        assert!(j.contains("-f segment -segment_time 10 -reset_timestamps 1 -segment_format mp4"), "{j}");
+        assert!(j.contains("frag_duration=1000000") && j.ends_with("-y rp_000_%05d.mp4"), "{j}");
+        // 關鍵畫面每 2 秒一張：每個檔案都能從頭播放
+        assert!(j.contains(&format!("-g {}", num(c.fps * 2.0))), "{j}");
+        // 一般錄影：一個檔案
+        let normal = segment_args(&plan, &cfg(), CaptureMethod::Gdigrab, &x264(), "seg_000.mp4", None, None).unwrap().join(" ");
+        assert!(!normal.contains("segment_time") && normal.contains("-movflags +empty_moov+default_base_moof -frag_duration 1000000"), "{normal}");
     }
 
     #[test]

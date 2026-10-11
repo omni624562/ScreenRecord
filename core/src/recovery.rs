@@ -100,7 +100,9 @@ mod tests {
         let b = parts.join("2026-10-11_10-00-00");
         let empty = parts.join("2026-10-11_11-00-00");
         let active = parts.join("2026-10-11_12-00-00");
-        for d in [&a, &b, &empty, &active] {
+        // 當掉時留下的重播緩衝（沒存下的暫存檔）：不救回，直接刪掉
+        let replay = parts.join("2026-10-11_13-00-00");
+        for d in [&a, &b, &empty, &active, &replay] {
             std::fs::create_dir_all(d).unwrap();
         }
         std::fs::write(a.join("seg_001.mp4"), b"22").unwrap();
@@ -111,6 +113,7 @@ mod tests {
         // 0 位元組的分段不算
         std::fs::write(empty.join("seg_000.mp4"), b"").unwrap();
         std::fs::write(active.join("seg_000.mp4"), b"4444").unwrap();
+        std::fs::write(replay.join("rp_000_00003.mp4"), b"55555").unwrap();
 
         let found = find(dir.path(), Some(&active));
         assert_eq!(found.len(), 2);
@@ -119,7 +122,7 @@ mod tests {
         assert_eq!((found[0].bytes, found[0].audio_only), (3, false));
         assert!(found[1].audio_only);
         // 沒有內容的資料夾刪掉；正在錄的不動
-        assert!(!empty.exists());
+        assert!(!empty.exists() && !replay.exists());
         assert!(active.exists());
         // 沒有 .parts
         assert!(find(&dir.path().join("none"), None).is_empty());

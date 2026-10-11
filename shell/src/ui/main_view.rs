@@ -826,9 +826,12 @@ fn rec_panel(app: &mut UiApp, ui: &mut Ui) {
         ui.set_min_size(ui.available_size());
         let r = app.status.recorder.clone();
         let active = r.state != RecorderState::Idle;
+        // 重播緩衝中（不是一般錄影）
+        let replay = r.replay.clone().filter(|_| active);
         // 狀態
         ui.horizontal(|ui| {
             let (text, tone) = match r.state {
+                RecorderState::Recording if replay.is_some() => (tr!("● 重播緩衝中", "● Replay buffer"), Tone::Bad),
                 RecorderState::Idle => (tr!("待命", "Ready"), Tone::Plain),
                 RecorderState::Countdown => (tr!("倒數中", "Countdown"), Tone::Warn),
                 RecorderState::Recording => (tr!("● 錄影中", "● Recording"), Tone::Bad),
@@ -839,6 +842,9 @@ fn rec_panel(app: &mut UiApp, ui: &mut Ui) {
             let mut busy = r.busy.clone().unwrap_or_default();
             if busy.is_empty() && r.max_ms > 0 && active {
                 busy = trf!("剩餘 {}", "{} left", clock((r.max_ms as f64 - live_recorded_ms(app)).max(0.0)));
+            }
+            if let Some(rp) = replay.as_ref().filter(|_| busy.is_empty()) {
+                busy = if rp.saving { tr!("正在存…", "Saving…").into() } else { trf!("保留最近 {}", "Keeping the last {}", screenrecorder_core::replay::length_label(rp.sec)) };
             }
             // 右上角：講稿小視窗
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -860,6 +866,9 @@ fn rec_panel(app: &mut UiApp, ui: &mut Ui) {
                         .clicked()
                 {
                     super::schedule::open(app);
+                }
+                if !active {
+                    super::replay::button(app, ui);
                 }
                 ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
                     ui.add(egui::Label::new(theme::muted(ui, busy)).truncate());
@@ -913,9 +922,16 @@ fn rec_panel(app: &mut UiApp, ui: &mut Ui) {
         // 名稱一欄固定寬度；值太長（例如音訊裝置名稱）時截斷，不撐寬面板（滑鼠移上去看完整內容）
         let gap_y = ui.spacing().item_spacing.y;
         ui.spacing_mut().item_spacing.y = 6.0;
-        let keys = tr!(["影片長度", "檔案大小", "輸出", "錄影方式", "聲音"], ["Duration", "File size", "Output", "Method", "Audio"]);
+        let mut keys = tr!(["影片長度", "檔案大小", "輸出", "錄影方式", "聲音"], ["Duration", "File size", "Output", "Method", "Audio"]);
+        let mut values = [video_clock(r.video_sec), if active || r.bytes > 0 { format_bytes(r.bytes) } else { "—".into() }, out, method, audio];
+        if let Some(rp) = &replay {
+            // 重播緩衝：緩衝裡有幾秒（最多保留的長度）、在硬碟上佔多少
+            keys[0] = tr!("緩衝", "Buffer");
+            keys[1] = tr!("暫存大小", "Temp size");
+            values[0] = video_clock((live_recorded_ms(app) / 1000.0).min(rp.sec as f64));
+            values[1] = format_bytes(rp.bytes);
+        }
         let key_w = keys.iter().map(|k| ui.painter().layout_no_wrap(k.to_string(), theme::font(13.0), p.muted).size().x).fold(0.0, f32::max);
-        let values = [video_clock(r.video_sec), if active || r.bytes > 0 { format_bytes(r.bytes) } else { "—".into() }, out, method, audio];
         for (i, (k, v)) in keys.into_iter().zip(values).enumerate() {
             // 最後一列是「聲音」
             let audio_row = i == 4;
@@ -991,6 +1007,27 @@ fn rec_panel(app: &mut UiApp, ui: &mut Ui) {
                     app.guarded(async move { actions::record_start(&core, config).await }, |_, _| {});
                 }
                 shot_button(app, ui, shot_w);
+            } else if let Some(rp) = &replay {
+                // 重播緩衝：存下最近 N 分鐘、停止（不能暫停、不能加標記）
+                let w = ui.available_width();
+                let key = app.keys.label(6);
+                let tip = if key.is_empty() { String::new() } else { trf!("快速鍵 {key}", "Shortcut {key}") };
+                let label = trf!("存下最近 {}", "Save the last {}", screenrecorder_core::replay::length_label(rp.sec));
+                if Btn::new(label).icon(Icon::Export).primary().enabled(!rp.saving && r.state == RecorderState::Recording && r.busy.is_none()).min_width(w * 0.62).tooltip(tip).show(ui).clicked() {
+                    super::replay::save(app);
+                }
+                if Btn::new(tr!("停止", "Stop"))
+                    .icon(Icon::Stop)
+                    .danger()
+                    .enabled(r.state != RecorderState::Stopping && !rp.saving)
+                    .min_width(ui.available_width())
+                    .tooltip(tr!("停止重播緩衝（沒存下的部分會刪掉）", "Stop the replay buffer (anything not saved is discarded)"))
+                    .show(ui)
+                    .clicked()
+                {
+                    let core = app.core.clone();
+                    app.guarded(async move { core.recorder.stop(None).await }, |_, _| {});
+                }
             } else {
                 let w = ui.available_width();
                 let marking = matches!(r.state, RecorderState::Recording | RecorderState::Paused);
