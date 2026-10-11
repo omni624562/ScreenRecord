@@ -1629,48 +1629,61 @@ fn sys_status(app: &mut UiApp, ui: &mut Ui) {
             }
         }
         if let Some(u) = app.env.update.clone() {
-            let auto = u.download_url.is_some() && u.sha256.is_some();
-            // (文字, 更新中)
-            let (label, busy) = match &app.status.install {
-                Some(i) if i.phase == screenrecorder_core::selfupdate::InstallPhase::Downloading => {
-                    if let Some(total) = i.total.filter(|t| *t > 0) {
-                        (trf!("下載新版 {}%", "Downloading update {}%", (i.received as f64 / total as f64 * 100.0).floor()), true)
-                    } else {
-                        (trf!("下載新版 {}", "Downloading update {}", format_bytes(i.received)), true)
-                    }
-                }
-                Some(i) if i.phase == screenrecorder_core::selfupdate::InstallPhase::Verifying => (tr!("驗證新版…", "Verifying update…").into(), true),
-                Some(i) if i.phase == screenrecorder_core::selfupdate::InstallPhase::Restarting => (tr!("重新啟動中…", "Restarting…").into(), true),
-                _ => (trf!("有新版本 v{}", "Update available: v{}", u.version), false),
-            };
-            let r = chip(ui, &label, Tone::Accent, !busy).on_hover_text(if auto {
+            let busy = update_progress(app);
+            let label = busy.clone().unwrap_or_else(|| trf!("有新版本 v{}", "Update available: v{}", u.version));
+            let r = chip(ui, &label, Tone::Accent, busy.is_none()).on_hover_text(if can_self_update(&u) {
                 tr!("點一下更新（自動下載並重新啟動）", "Click to update (downloads and restarts automatically)")
             } else {
                 tr!("點一下前往下載頁面", "Click to open the download page")
             });
-            if r.clicked() && !busy {
-                if !auto {
-                    let _ = actions::open_url(&u.url);
-                } else {
-                    let size = u.size.map(|s| trf!("（約 {}）", " (about {})", format_bytes(s))).unwrap_or_default();
-                    app.ask = Some(Ask::confirm(
-                        trf!("更新到 v{}", "Update to v{}", u.version),
-                        trf!(
-                            "會下載新版{size}、核對檔案後自動重新啟動程式；設定與錄影都會保留。更新內容可在系統匣選單的「更新說明」查看。",
-                            "The new version{size} will be downloaded and verified, then the app restarts automatically. Your settings and recordings are kept. See what's new under “Release notes” in the system tray menu."
-                        ),
-                        tr!("立即更新", "Update now"),
-                        |app, _| {
-                            app.ask = None;
-                            if let Err(e) = app.core.start_self_update() {
-                                app.toast(e.message().to_string(), true);
-                            }
-                        },
-                    ));
-                }
+            if r.clicked() && busy.is_none() {
+                ask_update(app, &u);
             }
         }
     });
+}
+
+/// 可以在程式內更新（Release 有附 exe 與 SHA-256）
+pub fn can_self_update(u: &screenrecorder_core::types::UpdateInfo) -> bool {
+    u.download_url.is_some() && u.sha256.is_some()
+}
+
+/// 正在更新時的進度（下載中、驗證中、重新啟動中）；沒在更新時 None
+pub fn update_progress(app: &UiApp) -> Option<String> {
+    use screenrecorder_core::selfupdate::InstallPhase;
+    let i = app.status.install.as_ref()?;
+    match i.phase {
+        InstallPhase::Downloading => Some(match i.total.filter(|t| *t > 0) {
+            Some(total) => trf!("下載新版 {}%", "Downloading update {}%", (i.received as f64 / total as f64 * 100.0).floor()),
+            None => trf!("下載新版 {}", "Downloading update {}", format_bytes(i.received)),
+        }),
+        InstallPhase::Verifying => Some(tr!("驗證新版…", "Verifying update…").into()),
+        InstallPhase::Restarting => Some(tr!("重新啟動中…", "Restarting…").into()),
+        _ => None,
+    }
+}
+
+/// 更新到新版：可以在程式內更新時先確認（下載、核對後自動重新啟動），不行時開啟下載頁面
+pub fn ask_update(app: &mut UiApp, u: &screenrecorder_core::types::UpdateInfo) {
+    if !can_self_update(u) {
+        let _ = actions::open_url(&u.url);
+        return;
+    }
+    let size = u.size.map(|s| trf!("（約 {}）", " (about {})", format_bytes(s))).unwrap_or_default();
+    app.ask = Some(Ask::confirm(
+        trf!("更新到 v{}", "Update to v{}", u.version),
+        trf!(
+            "會下載新版{size}、核對檔案後自動重新啟動程式；設定與錄影都會保留。",
+            "The new version{size} will be downloaded and verified, then the app restarts automatically. Your settings and recordings are kept."
+        ),
+        tr!("立即更新", "Update now"),
+        |app, _| {
+            app.ask = None;
+            if let Err(e) = app.core.start_self_update() {
+                app.toast(e.message().to_string(), true);
+            }
+        },
+    ));
 }
 
 // ───────────── 最近錄影 ─────────────

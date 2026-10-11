@@ -3,7 +3,7 @@
 
 use super::settings::{FPS_CHOICES, MAX_MB, MAX_PRESETS, UI_SCALES};
 use super::theme::{self, segmented, switch, Btn, Icon};
-use super::UiApp;
+use super::{main_view, UiApp};
 use eframe::egui::{self, pos2, vec2, Align, Color32, CornerRadius, Id, Layout, Rect, RichText, Sense, Stroke, Ui, UiBuilder};
 use screenrecorder_core::actions;
 use screenrecorder_core::format::{human_duration, output_size};
@@ -870,7 +870,20 @@ fn advanced_page(app: &mut UiApp, ui: &mut Ui) {
             app.update = actions::update_state(&app.core);
         }
     });
-    form_row(ui, "", |ui| {
+    // 有新版本：直接在這裡更新、看新版的更新內容
+    if let Some(u) = app.env.update.clone() {
+        form_row(ui, tr!("有新版本", "New version"), |ui| {
+            let busy = main_view::update_progress(app);
+            let label = busy.clone().unwrap_or_else(|| if main_view::can_self_update(&u) { trf!("更新到 v{}", "Update to v{}", u.version) } else { trf!("下載 v{}", "Download v{}", u.version) });
+            if Btn::new(label).primary().small().enabled(busy.is_none()).show(ui).clicked() {
+                main_view::ask_update(app, &u);
+            }
+            if Btn::new(tr!("新版的更新內容", "What's new")).small().ghost().tooltip(tr!("在瀏覽器開啟新版的說明", "Open the release notes in your browser")).show(ui).clicked() {
+                let _ = actions::open_url(&u.url);
+            }
+        });
+    }
+    form_row(ui, if app.env.update.is_some() { "" } else { tr!("目前版本", "Current version") }, |ui| {
         if Btn::new(tr!("立即檢查", "Check now")).small().show(ui).clicked() {
             let core = app.core.clone();
             app.spawn(async move { actions::check_update(&core).await }, |app, r| match r {
@@ -878,10 +891,7 @@ fn advanced_page(app: &mut UiApp, ui: &mut Ui) {
                     app.update = actions::update_state(&app.core);
                     app.env.update = u.clone();
                     match u {
-                        Some(u) => app.toast(
-                            trf!("有新版本 v{}，點「系統狀態」裡的「有新版本」即可更新", "Version v{} is available. Click “Update available” under “System status” to update", u.version),
-                            false,
-                        ),
+                        Some(u) => app.toast(trf!("有新版本 v{}", "Version v{} is available", u.version), false),
                         None => app.toast(trf!("目前已是最新版本（v{}）", "You're on the latest version (v{})", app.env.app_version), false),
                     }
                 }
@@ -891,13 +901,36 @@ fn advanced_page(app: &mut UiApp, ui: &mut Ui) {
                 }
             });
         }
-        ui.label(theme::muted(ui, trf!("目前版本 v{}", "Current version v{}", app.env.app_version)));
+        if Btn::new(tr!("這一版的更新說明", "Release notes")).small().ghost().show(ui).clicked() {
+            app.changelog_open = true;
+        }
+        let current = if app.env.update.is_some() { trf!("目前 v{}", "Current v{}", app.env.app_version) } else { format!("v{}", app.env.app_version) };
+        ui.label(theme::muted(ui, current));
     });
     if let Some(e) = &app.update.error {
         // 「立即檢查」的錯誤已經有這個開頭（中文或英文），不要重複
         let e = e.trim_start_matches("無法檢查新版本：").trim_start_matches("Couldn't check for updates: ");
         form_hint(ui, trf!("無法檢查新版本：{e}", "Couldn't check for updates: {e}"), p.warn);
     }
+    form_divider(ui);
+    form_section(ui, tr!("疑難排解", "Troubleshooting"), |_| {});
+    form_row(ui, tr!("記錄檔", "Log file"), |ui| {
+        let log = screenrecorder_core::log::log_file().display().to_string();
+        if Btn::new(tr!("開啟記錄檔", "Open log file")).small().tooltip(log.clone()).show(ui).clicked() {
+            screenrecorder_core::desktop::open_with_explorer(&log, false);
+        }
+        if Btn::new(tr!("在資料夾中顯示", "Show in folder")).small().ghost().show(ui).clicked() {
+            screenrecorder_core::desktop::open_with_explorer(&log, true);
+        }
+    });
+    form_hint(
+        ui,
+        tr!(
+            "程式做了什麼、哪裡出錯都會寫在這裡。回報問題時附上最後幾十行，比較容易找到原因。",
+            "Everything the app does, and any errors, are written here. When reporting a problem, include the last few dozen lines so the cause is easier to find."
+        ),
+        p.muted,
+    );
 }
 
 // ───────────── 快速鍵（點按鍵後按下新的組合，Esc 取消；可停用或還原預設） ─────────────
