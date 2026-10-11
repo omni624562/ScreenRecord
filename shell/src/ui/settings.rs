@@ -229,6 +229,20 @@ impl UiSettings {
         }
     }
 
+    /// 錄影範圍的簡短說明：「螢幕 1」「所有螢幕」「範圍 1280×720」「只錄聲音」
+    pub fn source_label(&self, env: &EnvInfo) -> String {
+        use screenrecorder_core::{tr, trf};
+        match self.source_type {
+            SourceType::Monitor => match self.region_in_monitor(env) {
+                Some(r) => trf!("範圍 {}×{}", "Area {}×{}", r.width, r.height),
+                None => trf!("螢幕 {}", "Screen {}", self.selected_monitor(env).map(|m| m.display_number).unwrap_or(1)),
+            },
+            SourceType::All => tr!("所有螢幕", "All screens").to_string(),
+            SourceType::Region => trf!("範圍 {}×{}", "Area {}×{}", self.region.width, self.region.height),
+            SourceType::Audio => tr!("只錄聲音", "Audio only").to_string(),
+        }
+    }
+
     pub fn selected_monitor<'a>(&self, env: &'a EnvInfo) -> Option<&'a MonitorInfo> {
         env.monitors.iter().find(|m| Some(&m.id) == self.monitor_id.as_ref())
     }

@@ -398,6 +398,9 @@ fn show_menu() {
             }
             Menu::sub(root, tr!("設定組合(&E)", "Recordin&g presets"), sets, !idle);
         }
+        if let Some(s) = &st.scheduled {
+            m.add(root, &trf!("取消排程錄影（{s}）", "Cancel scheduled recording ({s})"), TrayCommand::CancelSchedule, false, false);
+        }
         if st.rec == RecorderState::Paused {
             m.add(root, &trf!("繼續錄影(&C){}", "Res&ume recording{}", tab(&st.keys[1])), TrayCommand::Resume, false, false);
         } else {

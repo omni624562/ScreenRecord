@@ -143,6 +143,11 @@ pub struct App {
     ready: watch::Sender<bool>,
     update_gen: AtomicU64,
     quitting: AtomicBool,
+    /// 排程錄影（等待中）；改排程或取消時 schedule_gen 加一，等待中的工作就結束
+    schedule: Mutex<Option<crate::schedule::Schedule>>,
+    schedule_gen: AtomicU64,
+    /// 錄影中不讓電腦睡眠
+    awake: Mutex<Option<crate::power::KeepAwake>>,
     /// 主畫面看得到時，介面目前的錄影設定（每一格更新；看不到時是 None）：選了攝影機就先顯示攝影機小視窗
     camera_preview: Mutex<Option<RecordConfig>>,
     /// 即時預覽：同時只保留一條
@@ -206,6 +211,10 @@ impl RecorderDeps for RecDeps {
     // 只縮小擋到擷取範圍的視窗（例如在螢幕 2 操作、錄螢幕 1 時不縮小）；
     // 縮小動畫約 0.25 秒，等它結束再開始擷取，第一張畫面才不會拍到縮到一半的視窗
     fn before_capture(&self, area: Rect) -> BoxFut<'_, ()> {
+        // 錄影中不讓電腦因為閒置而睡眠、螢幕也不關（暫停後繼續、移動範圍時沿用同一個）
+        if let Some(a) = self.0.upgrade() {
+            a.awake.lock().unwrap().get_or_insert_with(|| crate::power::keep_awake(true));
+        }
         Box::pin(async move {
             let minimized = tokio::task::spawn_blocking(move || crate::winui::minimize_ui_for_recording(&area)).await.unwrap_or(false);
             if minimized {
@@ -219,6 +228,9 @@ impl RecorderDeps for RecDeps {
     fn after_stop(&self) {
         crate::winui::restore_ui_after_recording();
         crate::winui::set_desktop_icons(true);
+        if let Some(a) = self.0.upgrade() {
+            a.awake.lock().unwrap().take();
+        }
     }
     fn save_markers(&self, output: &str, marks: &crate::recorder::Marks) {
         if let Some(a) = self.0.upgrade() {
@@ -257,6 +269,9 @@ impl App {
             ready: watch::channel(false).0,
             update_gen: AtomicU64::new(0),
             quitting: AtomicBool::new(false),
+            schedule: Mutex::default(),
+            schedule_gen: AtomicU64::new(0),
+            awake: Mutex::default(),
             camera_preview: Mutex::new(None),
             live: Mutex::default(),
             notifier: Mutex::default(),
@@ -1280,6 +1295,58 @@ impl App {
         self.settings.load().check_updates != Some(false)
     }
 
+    // ───────────── 排程錄影 ─────────────
+
+    /// 等待中的排程錄影
+    pub fn scheduled(&self) -> Option<crate::schedule::Schedule> {
+        self.schedule.lock().unwrap().clone()
+    }
+
+    pub fn cancel_schedule(&self) {
+        if self.schedule.lock().unwrap().take().is_some() {
+            info!("[排程] 已取消");
+        }
+        self.schedule_gen.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// 排程錄影：等到指定時間用 s 的設定開始錄影（取代之前的排程）。
+    /// 等待期間不讓電腦睡眠。回傳 Ok(true) = 已開始，Ok(false) = 取消或被新的排程取代
+    pub async fn run_schedule(self: &Arc<Self>, s: crate::schedule::Schedule) -> crate::Result<bool> {
+        use crate::schedule::{describe, title};
+        let gen = self.schedule_gen.fetch_add(1, Ordering::SeqCst) + 1;
+        info!("[排程] {}", describe(&s, chrono::Local::now()));
+        *self.schedule.lock().unwrap() = Some(s.clone());
+        let _awake = crate::power::keep_awake(false);
+        loop {
+            if self.schedule_gen.load(Ordering::SeqCst) != gen || self.quitting.load(Ordering::SeqCst) {
+                return Ok(false);
+            }
+            if chrono::Local::now() >= s.at {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+        self.schedule.lock().unwrap().take();
+        let config = s.record_config();
+        match crate::actions::record_start(self, config).await {
+            Ok(()) => {
+                let text = if s.minutes > 0 {
+                    trf!("已開始錄影，{} 分鐘後自動停止", "Recording started. It stops automatically after {} min", s.minutes)
+                } else {
+                    tr!("已開始錄影", "Recording started").to_string()
+                };
+                info!("[排程] {text}");
+                self.notify(title(), &text, false);
+                Ok(true)
+            }
+            Err(e) => {
+                warn!("[排程] 無法開始錄影：{}", e.message());
+                self.notify(title(), &trf!("沒有開始錄影：{}", "Recording didn't start: {}", e.message()), true);
+                Err(e)
+            }
+        }
+    }
+
     /// 啟動 1 分鐘後檢查一次，之後每 12 小時；可在介面上關閉
     pub fn schedule_update_checks(self: &Arc<Self>) {
         let gen = self.update_gen.fetch_add(1, Ordering::SeqCst) + 1;
@@ -1689,6 +1756,56 @@ fn move_ui_region(ui: &mut serde_json::Value, old: Rect, new: Rect, monitors: &[
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn schedule_waits_cancels_and_starts() {
+        use crate::schedule::Schedule;
+        use crate::types::{AudioConfig, MethodPreference, SourceConfig};
+        let dir = tempfile::tempdir().unwrap();
+        let app = super::App::with_data_dir(dir.path().to_path_buf());
+        app.mark_ready();
+        let config = super::RecordConfig {
+            source: SourceConfig::All,
+            fps: 30.0,
+            scale: 100.0,
+            draw_mouse: true,
+            max_minutes: 0.0,
+            method: MethodPreference::Auto,
+            output_dir: dir.path().display().to_string(),
+            audio: AudioConfig::default(),
+            encoder: None,
+            countdown_sec: None,
+            hide_ui: None,
+            show_clicks: false,
+            show_keys: false,
+            cursor_halo: false,
+            hide_icons: false,
+            follow_window: None,
+            camera: None,
+            audio_only: false,
+        };
+        let later = Schedule { at: chrono::Local::now() + chrono::Duration::minutes(30), minutes: 10, config: config.clone() };
+        let a = app.clone();
+        let waiting = tokio::spawn(async move { a.run_schedule(later).await });
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert_eq!(app.scheduled().map(|s| s.minutes), Some(10));
+        // 取消：等待中的工作結束，沒有開始錄影
+        app.cancel_schedule();
+        assert!(!waiting.await.unwrap().unwrap());
+        assert!(app.scheduled().is_none());
+        // 新的排程取代舊的
+        let a = app.clone();
+        let first = tokio::spawn({
+            let s = Schedule { at: chrono::Local::now() + chrono::Duration::minutes(30), minutes: 0, config: config.clone() };
+            async move { a.run_schedule(s).await }
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        // 時間到了：沒有 FFmpeg，開始錄影失敗（會通知）；排程清掉
+        let now = Schedule { at: chrono::Local::now(), minutes: 5, config };
+        assert!(app.run_schedule(now).await.unwrap_err().message().contains("ffmpeg"));
+        assert!(!first.await.unwrap().unwrap());
+        assert!(app.scheduled().is_none());
+    }
+
     #[test]
     fn long_shot_thumb_uses_the_top() {
         // 400×3000 的長截圖：上面 225 列紅色、下面藍色；縮圖只有最上面 16:9 的一段（全紅）

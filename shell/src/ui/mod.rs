@@ -12,6 +12,7 @@ pub mod notes;
 pub mod ocr;
 pub mod presets;
 pub mod preview;
+pub mod schedule;
 pub mod settings;
 pub mod settings_dialog;
 pub mod snip;
@@ -91,6 +92,8 @@ pub struct UiApp {
     settings_rev: u64,
     /// 講稿小視窗
     pub notes: Option<notes::Notes>,
+    /// 排程錄影的對話框
+    pub schedule_dlg: Option<schedule::ScheduleDlg>,
     /// 錄影設定組合（settings.json 的 presets）
     pub presets: Vec<screenrecorder_core::presets::Preset>,
     save_at: Option<Instant>,
@@ -173,6 +176,7 @@ impl UiApp {
             settings_rev: saved.rev,
             presets: saved.presets.clone(),
             notes: None,
+            schedule_dlg: None,
             save_at: None,
             last_state: status.recorder.state,
             status,
@@ -743,6 +747,9 @@ impl eframe::App for UiApp {
         if self.notes.is_some() {
             notes::show(self, &ctx);
             part(self, "講稿");
+        }
+        if self.schedule_dlg.is_some() {
+            schedule::show(self, &ctx);
         }
         if self.export_dlg.is_some() {
             export_dialog::show(self, &ctx);

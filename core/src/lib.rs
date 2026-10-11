@@ -50,6 +50,7 @@ pub mod picture;
 #[cfg(windows)]
 pub mod pin_win;
 pub mod player;
+pub mod power;
 pub mod presets;
 pub mod process;
 pub mod projects;
@@ -59,6 +60,7 @@ pub mod rec_frame_win;
 pub mod recorder;
 pub mod recovery;
 pub mod recycle;
+pub mod schedule;
 pub mod screen_pen;
 #[cfg(windows)]
 pub mod screen_pen_win;

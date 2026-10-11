@@ -804,6 +804,17 @@ fn rec_panel(app: &mut UiApp, ui: &mut Ui) {
                 if Btn::new(if open { tr!("關閉講稿", "Close script") } else { tr!("講稿", "Script") }).icon(Icon::Edit).ghost().small().tooltip(tip).show(ui).clicked() {
                     super::notes::toggle(app);
                 }
+                if !active
+                    && Btn::new(tr!("排程", "Schedule"))
+                        .icon(Icon::Clock)
+                        .ghost()
+                        .small()
+                        .tooltip(tr!("指定時間自動開始錄影，也可以設定錄幾分鐘後自動停止", "Start recording automatically at a set time, optionally stopping after a set length"))
+                        .show(ui)
+                        .clicked()
+                {
+                    super::schedule::open(app);
+                }
                 ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
                     ui.add(egui::Label::new(theme::muted(ui, busy)).truncate());
                 });
@@ -974,6 +985,10 @@ fn rec_panel(app: &mut UiApp, ui: &mut Ui) {
                 }
             }
         });
+        // 排程錄影：什麼時候開始、還有多久、取消
+        if !active {
+            super::schedule::strip(app, ui);
+        }
         // 步驟截圖進行中：顯示幾步，可以完成
         if let Some(n) = app.status.steps {
             ui.add_space(6.0);

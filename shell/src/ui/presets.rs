@@ -2,7 +2,7 @@
 //! 組合存在 settings.json 的 presets（見 core 的 presets.rs），系統匣選單也能切換。
 
 use super::dialogs::Ask;
-use super::settings::{SourceType, UiSettings};
+use super::settings::UiSettings;
 use super::theme::{Btn, Icon};
 use super::UiApp;
 use eframe::egui::{self, Ui};
@@ -115,12 +115,7 @@ pub fn apply_preset(app: &mut UiApp, i: usize) {
 
 /// 建議的名稱：錄影範圍（重複時加編號）
 fn suggest(app: &UiApp) -> String {
-    let base = match app.s.source_type {
-        SourceType::Monitor => trf!("螢幕 {}", "Screen {}", app.s.selected_monitor(&app.env).map(|m| m.display_number).unwrap_or(1)),
-        SourceType::All => tr!("所有螢幕", "All screens").to_string(),
-        SourceType::Region => trf!("範圍 {}×{}", "Area {}×{}", app.s.region.width, app.s.region.height),
-        SourceType::Audio => tr!("只錄聲音", "Audio only").to_string(),
-    };
+    let base = app.s.source_label(&app.env);
     (1..).map(|n| if n == 1 { base.clone() } else { format!("{base} {n}") }).find(|name| presets::find(&app.presets, name).is_none()).unwrap_or(base)
 }
 

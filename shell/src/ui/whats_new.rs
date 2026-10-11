@@ -28,7 +28,7 @@ enum Try {
 }
 
 /// 新功能清單（標題、說明、試試看）：依介面語言
-fn items() -> [(&'static str, &'static str, Try); 13] {
+fn items() -> [(&'static str, &'static str, Try); 14] {
     [
         (
             "語言 Language",
@@ -61,6 +61,14 @@ fn items() -> [(&'static str, &'static str, Try); 13] {
                 "Show mouse clicks, pressed shortcuts and a cursor highlight while recording. You can also put a camera bubble on the screen (shown before recording starts; drag to move or resize it) and hide desktop icons."
             ),
             Try::Settings(Page::Record),
+        ),
+        (
+            tr!("排程錄影", "Scheduled recording"),
+            tr!(
+                "右上角「排程」：指定時間自動開始錄影，也可以錄幾分鐘後自動停止；等待與錄影時電腦不會睡眠。",
+                "“Schedule” at the top right: start recording automatically at a set time and optionally stop after a set length. The PC stays awake while waiting and recording."
+            ),
+            Try::None,
         ),
         (
             tr!("講稿小視窗", "Script window"),

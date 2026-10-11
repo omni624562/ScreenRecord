@@ -29,6 +29,8 @@ pub enum TrayCommand {
     ToggleMic,
     /// 切換到第幾個錄影設定組合
     ApplyPreset(usize),
+    /// 取消排程錄影
+    CancelSchedule,
     OpenFolder,
     PlayLast,
     Autostart,
@@ -90,6 +92,8 @@ pub struct TrayState {
     /// 錄影設定組合的名稱；目前的設定是哪一組
     pub presets: Vec<String>,
     pub preset: Option<usize>,
+    /// 排程錄影（例如「今天 10:30 開始，錄 30 分鐘」）
+    pub scheduled: Option<String>,
     /// 是否能開始錄影（有 FFmpeg、沒有轉檔工作）
     pub can_record: bool,
     /// 是否能截圖（有 FFmpeg）
@@ -198,6 +202,7 @@ impl TrayController {
             SourceConfig::Region { width, height, .. } => trf!("範圍 {width}×{height}", "Area {width}×{height}"),
             SourceConfig::Monitor { monitor_id } => trf!("螢幕 {}", "Screen {}", env.monitors.iter().find(|m| &m.id == monitor_id).map(|m| m.display_number).unwrap_or(1)),
         };
+        let scheduled = self.app.scheduled().map(|s| crate::schedule::describe(&s, chrono::Local::now()));
         let saved = self.app.settings.load();
         let presets: Vec<String> = saved.presets.iter().map(|p| p.name.clone()).collect();
         let preset = saved.ui.as_ref().and_then(|ui| crate::presets::active(&saved.presets, ui));
@@ -219,7 +224,10 @@ impl TrayController {
         let c = self.ctl.lock().unwrap();
         TrayState {
             rec: st.state,
-            tip: trf!("螢幕錄影 {APP_VERSION} — {}{time}", "Screen Recorder {APP_VERSION} — {}{time}", state_text(st.state)),
+            tip: match (&scheduled, st.state) {
+                (Some(s), RecorderState::Idle) => trf!("螢幕錄影 {APP_VERSION} — 排程：{s}", "Screen Recorder {APP_VERSION} — Scheduled: {s}"),
+                _ => trf!("螢幕錄影 {APP_VERSION} — {}{time}", "Screen Recorder {APP_VERSION} — {}{time}", state_text(st.state)),
+            },
             last_source,
             monitors: env
                 .monitors
@@ -233,6 +241,7 @@ impl TrayController {
             audio_mic: cfg.audio.mic,
             presets,
             preset,
+            scheduled,
             can_record,
             can_shot,
             has_last_snip,
@@ -438,6 +447,10 @@ impl TrayController {
             TrayCommand::Stop => return rec.stop(None).await.map(|_| ()).map_err(err),
             TrayCommand::ToggleSystem | TrayCommand::ToggleMic => {
                 self.update_audio(cmd == TrayCommand::ToggleSystem);
+                return Ok(());
+            }
+            TrayCommand::CancelSchedule => {
+                app.cancel_schedule();
                 return Ok(());
             }
             TrayCommand::ApplyPreset(i) => {

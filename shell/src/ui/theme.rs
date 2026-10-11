@@ -230,6 +230,8 @@ pub enum Icon {
     /// 向左轉 / 向右轉（轉 90 度的圓弧箭頭）
     RotL,
     RotR,
+    /// 時鐘（排程）
+    Clock,
 }
 
 /// 在 rect（正方形）裡畫圖示
@@ -355,6 +357,10 @@ pub fn paint_icon(p: &Painter, rect: Rect, icon: Icon, color: Color32) {
             arc(8.0, 13.0, 7.6, -2.42, -0.72);
             arc(8.0, 3.0, 7.6, 0.72, 2.42);
             p.circle_filled(at(8.0, 8.0), 2.2 * k, color);
+        }
+        Icon::Clock => {
+            circle(8.0, 8.0, 6.0);
+            line(&[(8.0, 4.6), (8.0, 8.0), (10.6, 9.6)]);
         }
         Icon::Close => {
             line(&[(4.0, 4.0), (12.0, 12.0)]);
