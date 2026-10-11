@@ -266,7 +266,9 @@ impl Exporter {
             (Some(_), _, _) => return Err(Error::config(tr!("無法讀取影片尺寸，不能加上背景", "Couldn't read the video size, so the background can't be added"))),
             (None, ..) => (None, temp),
         };
-        let mut args = cut_args(source, &output.display().to_string(), &keep, crop, fps, &enc, info.has_audio == Some(true), &overlays, spec.audio, zoom.as_deref(), frame.as_ref())?;
+        // 分別調整系統聲音與麥克風：只有分軌錄影（3 條音軌）才做得到
+        let audio = crate::edit::AudioFx { tracks: spec.audio.tracks.filter(|_| info.audio_tracks >= 3), ..spec.audio };
+        let mut args = cut_args(source, &output.display().to_string(), &keep, crop, fps, &enc, info.has_audio == Some(true), &overlays, audio, zoom.as_deref(), frame.as_ref())?;
         // 章節換成剪輯後的時間（刪掉的片段裡的章節改從下一段開始）
         let temp = with_chapters(&mut args, &crate::chapters::map_cut(&info.chapters, &keep), length, temp);
         let fast = keep.iter().filter(|p| p.2 > 1).count();

@@ -134,11 +134,11 @@ fn filters_have_whisper(list: &str) -> bool {
 }
 
 /// 辨識語音的參數。模型與輸出都用檔名（FFmpeg 在模型的資料夾裡執行），
-/// 濾鏡參數裡就不會有「C:」的冒號與反斜線要跳脫
-pub fn whisper_args(input: &str, model_file: &str, out_file: &str, language: &str) -> Vec<String> {
+/// 濾鏡參數裡就不會有「C:」的冒號與反斜線要跳脫。track：用第幾條音軌（分軌錄影用麥克風那條，沒有背景音樂、系統音效）
+pub fn whisper_args(input: &str, model_file: &str, out_file: &str, language: &str, track: usize) -> Vec<String> {
     let mut a: Vec<String> = ["-hide_banner", "-nostats", "-loglevel", "error", "-progress", "pipe:1", "-i"].iter().map(|s| s.to_string()).collect();
     a.push(input.into());
-    a.extend(["-vn", "-map", "0:a:0", "-af"].iter().map(|s| s.to_string()));
+    a.extend(["-vn".to_string(), "-map".into(), format!("0:a:{track}"), "-af".into()]);
     a.push(format!("whisper=model={model_file}:language={language}:queue=10:format=srt:destination={out_file}"));
     a.extend(["-f", "null", "-"].iter().map(|s| s.to_string()));
     a
@@ -154,8 +154,11 @@ async fn transcribe_in(dir: &Path, ffmpeg: &Path, input: &str, duration: f64, mo
     let dir = dir.to_path_buf();
     let out_name = format!("job-{}-{}.srt", std::process::id(), crate::paths::now_ms());
     let out = dir.join(&out_name);
+    // 分軌錄影（混音、系統聲音、麥克風）：只聽麥克風
+    let head = crate::process::run(ffmpeg, &["-hide_banner", "-i", input], std::time::Duration::from_secs(15)).await;
+    let track = if crate::args::parse_media_info(&head.stderr).audio_tracks >= 3 { 2 } else { 0 };
     let mut child = crate::process::command(ffmpeg)
-        .args(whisper_args(input, model.file, &out_name, language))
+        .args(whisper_args(input, model.file, &out_name, language, track))
         .current_dir(&dir)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
@@ -454,7 +457,8 @@ echo "progress=end"
         let list = " ... aecho            A->A       Add echoing to the audio.\n ... whisper          A->A       Transcribe audio using whisper.cpp.\n";
         assert!(filters_have_whisper(list));
         assert!(!filters_have_whisper(" ... aecho  A->A  x\n"));
-        let a = whisper_args("C:\\影片\\a.mp4", "ggml-base.bin", "job.srt", "zh").join(" ");
+        let a = whisper_args("C:\\影片\\a.mp4", "ggml-base.bin", "job.srt", "zh", 0).join(" ");
+        assert!(whisper_args("a.mp4", "m.bin", "j.srt", "zh", 2).join(" ").contains("-map 0:a:2"));
         assert_eq!(
             a,
             "-hide_banner -nostats -loglevel error -progress pipe:1 -i C:\\影片\\a.mp4 -vn -map 0:a:0 -af whisper=model=ggml-base.bin:language=zh:queue=10:format=srt:destination=job.srt -f null -"

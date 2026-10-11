@@ -195,6 +195,14 @@ fn visuals(dark: bool) -> Visuals {
     v
 }
 
+/// 滑桿：軌道用淺灰（一般元件的底色和面板一樣是白色，軌道會看不到），左邊填上強調色
+pub fn slider_style(ui: &mut Ui) {
+    let p = pal(ui);
+    let v = ui.visuals_mut();
+    v.widgets.inactive.bg_fill = p.border;
+    v.slider_trailing_fill = true;
+}
+
 // ───────────── 圖示（16×16 的線條圖，與 2.x 版相同的設計） ─────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

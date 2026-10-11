@@ -211,8 +211,37 @@ fn audio_panel(ed: &mut Editor, ui: &mut egui::Ui) {
     }
     let fx = &mut ed.spec.audio;
     switch(ui, &mut fx.mute, tr!("不要聲音", "Remove audio"), true).on_hover_text(tr!("輸出的影片沒有聲音", "The output video has no sound"));
+    let tracks = ed.entry.media.audio_tracks >= 3;
     ui.add_enabled_ui(!fx.mute, |ui| {
-        switch(ui, &mut fx.denoise, tr!("降噪", "Noise reduction"), true).on_hover_text(tr!("減少風扇、冷氣等持續的背景雜音", "Reduce constant background noise such as fans or air conditioning"));
+        // 分軌錄影：系統聲音與麥克風分別調整
+        if tracks {
+            let mut on = fx.tracks.is_some();
+            if switch(ui, &mut on, tr!("分別調整系統聲音與麥克風", "Adjust system audio and mic separately"), true)
+                .on_hover_text(tr!(
+                    "這支是分軌錄影：可以把背景音樂調小、講話的聲音調大，降噪也只處理麥克風",
+                    "This recording has separate tracks: turn background music down and your voice up; noise reduction only applies to the mic"
+                ))
+                .changed()
+            {
+                fx.tracks = on.then(screenrecorder_core::edit::TrackMix::default);
+            }
+            if let Some(t) = &mut fx.tracks {
+                for (label, v) in [(tr!("系統聲音", "System audio"), &mut t.system), (tr!("麥克風", "Microphone"), &mut t.mic)] {
+                    ui.horizontal(|ui| {
+                        ui.add_sized(vec2(64.0, 20.0), egui::Label::new(theme::muted(ui, label).font(theme::font(12.0))));
+                        ui.spacing_mut().slider_width = (ui.available_width() - 70.0).max(80.0).floor();
+                        theme::slider_style(ui);
+                        ui.add(egui::Slider::new(v, 0..=200).step_by(5.0).suffix("%"));
+                    });
+                }
+            }
+        }
+        let denoise_tip = if fx.tracks.is_some() {
+            tr!("減少麥克風收到的風扇、冷氣等持續的背景雜音（系統聲音不處理）", "Reduce constant background noise (fans, air conditioning) picked up by the mic; system audio isn't affected")
+        } else {
+            tr!("減少風扇、冷氣等持續的背景雜音", "Reduce constant background noise such as fans or air conditioning")
+        };
+        switch(ui, &mut fx.denoise, tr!("降噪", "Noise reduction"), true).on_hover_text(denoise_tip);
         switch(ui, &mut fx.normalize, tr!("音量平衡", "Normalize loudness"), true)
             .on_hover_text(tr!("忽大忽小的音量變平均，整體調到適合聆聽的大小", "Even out loud and quiet parts and set a comfortable overall volume"));
     });
@@ -656,6 +685,7 @@ fn style_controls(ui: &mut egui::Ui, kind: AnnKind, color: &mut String, size: &m
         ui.label(theme::muted(ui, label).font(theme::font(12.0)));
         let mut v = *size;
         ui.spacing_mut().slider_width = ui.available_width() - 50.0;
+        theme::slider_style(ui);
         if ui.add(egui::Slider::new(&mut v, (lo * k).round()..=(hi * k).round()).step_by(1.0).fixed_decimals(0)).changed() {
             *size = v;
             sc = true;
@@ -763,6 +793,7 @@ fn props(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context) {
                 ui.label(theme::muted(ui, tr!("倍率", "Zoom")).font(theme::font(12.0)));
                 let mut z = cur.size / 100.0;
                 ui.spacing_mut().slider_width = ui.available_width() - 60.0;
+                theme::slider_style(ui);
                 if ui.add(egui::Slider::new(&mut z, 1.5..=4.0).step_by(0.25).fixed_decimals(2).suffix("×")).changed() {
                     cur.size = (z * 100.0).round();
                 }
@@ -772,6 +803,7 @@ fn props(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context) {
                 ui.label(theme::muted(ui, tr!("不透明度", "Opacity")).font(theme::font(12.0)));
                 let mut v = cur.size.clamp(5.0, 100.0);
                 ui.spacing_mut().slider_width = ui.available_width() - 60.0;
+                theme::slider_style(ui);
                 if ui.add(egui::Slider::new(&mut v, 5.0..=100.0).step_by(5.0).fixed_decimals(0).suffix("%")).changed() {
                     cur.size = v;
                 }
@@ -874,6 +906,7 @@ fn props(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context) {
                 ui.label(theme::muted(ui, tr!("角度", "Angle")).font(theme::font(12.0)));
                 let mut deg = cur.rot;
                 ui.spacing_mut().slider_width = ui.available_width() - 120.0;
+                theme::slider_style(ui);
                 if ui
                     .add(egui::Slider::new(&mut deg, -180.0..=180.0).step_by(1.0).fixed_decimals(0).suffix("°"))
                     .on_hover_text(tr!(

@@ -1092,7 +1092,7 @@ impl Recorder {
                     Recorder(inner).add_log(level, &text);
                 }
             });
-            Some(Arc::new(AudioPipe::new(specs, self.deps().audio_opener(), log).map_err(|e| trf!("無法建立聲音管線：{e}", "Couldn't set up audio capture: {e}"))?))
+            Some(Arc::new(AudioPipe::new(specs, self.deps().audio_opener(), log, config.separate_tracks()).map_err(|e| trf!("無法建立聲音管線：{e}", "Couldn't set up audio capture: {e}"))?))
         };
         if let Some(a) = &audio {
             let mut st = self.lock();
@@ -1784,6 +1784,7 @@ mod tests {
                 camera: None,
                 audio_only: false,
                 window_capture: false,
+                separate_audio: false,
             }
         }
         fn release(&self) {

@@ -150,17 +150,41 @@ pub struct AudioFx {
     /// 不要聲音
     #[serde(default)]
     pub mute: bool,
+    /// 分軌錄影：系統聲音與麥克風分別調整音量後重新混合（降噪只處理麥克風）；None = 用混好的那條
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tracks: Option<TrackMix>,
+}
+
+/// 分軌錄影的音量（%）
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TrackMix {
+    pub system: u32,
+    pub mic: u32,
+}
+
+impl Default for TrackMix {
+    fn default() -> Self {
+        TrackMix { system: 100, mic: 100 }
+    }
 }
 
 impl AudioFx {
     pub fn is_default(&self) -> bool {
-        *self == AudioFx::default()
+        *self == AudioFx::default() || AudioFx { tracks: None, ..*self } == AudioFx::default() && self.tracks == Some(TrackMix::default())
+    }
+
+    /// 分軌時重新混合系統聲音與麥克風的濾鏡（輸入 [0:a:1]、[0:a:2]，輸出 [amixed]）
+    pub fn track_graph(&self) -> Option<String> {
+        let t = self.tracks?;
+        let mic = if self.denoise { format!("afftdn=nf=-25,volume={}", t.mic as f64 / 100.0) } else { format!("volume={}", t.mic as f64 / 100.0) };
+        Some(format!("[0:a:1]volume={}[tsys];[0:a:2]{mic}[tmic];[tsys][tmic]amix=inputs=2:duration=longest:normalize=0[amixed]", t.system as f64 / 100.0))
     }
 
     /// FFmpeg 的聲音濾鏡（接在剪輯之後）
     pub fn filters(&self) -> Vec<&'static str> {
         let mut f = Vec::new();
-        if self.denoise {
+        // 分軌時降噪只套用在麥克風（見 track_graph）
+        if self.denoise && self.tracks.is_none() {
             f.push("afftdn=nf=-25");
         }
         if self.normalize {

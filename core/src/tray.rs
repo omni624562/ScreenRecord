@@ -327,6 +327,7 @@ impl TrayController {
             camera: None,
             audio_only: false,
             window_capture: false,
+            separate_audio: false,
         }
     }
 

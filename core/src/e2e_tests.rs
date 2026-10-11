@@ -61,16 +61,21 @@ fn record_config() -> RecordConfig {
         camera: None,
         audio_only: true,
         window_capture: false,
+        separate_audio: false,
     }
 }
 
 /// 用錄影的參數錄一個分段 secs 秒：crash = false 時像按下停止一樣送 q 收尾；true 時直接砍掉（當機、停電）
 fn record_segment(ff: &Path, card: &Path, out: &Path, secs: f64, crash: bool) {
+    // 錄影時聲音以實際速度從 TCP 進來；這裡用 -re 讓測試音也照實際速度
+    record_segment_with(ff, card, out, secs, crash, &record_config(), "sine=frequency=440:sample_rate=48000,aformat=channel_layouts=stereo");
+}
+
+fn record_segment_with(ff: &Path, card: &Path, out: &Path, secs: f64, crash: bool, config: &RecordConfig, audio_src: &str) {
     let (w, h) = (crate::audio_card::SIZE.0 as i32, crate::audio_card::SIZE.1 as i32);
     let plan = CapturePlan { rect: Rect { x: 0, y: 0, width: w, height: h }, dda: None, monitors: vec![], out_width: w, out_height: h, card: Some(card.display().to_string()) };
-    // 錄影時聲音以實際速度從 TCP 進來；這裡用 -re 讓測試音也照實際速度
-    let audio: Vec<String> = ["-re", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000,aformat=channel_layouts=stereo"].iter().map(|s| s.to_string()).collect();
-    let args = segment_args(&plan, &record_config(), CaptureMethod::Gdigrab, &ENCODERS[0], &out.display().to_string(), Some(&audio), None).unwrap();
+    let audio: Vec<String> = ["-re", "-f", "lavfi", "-i", audio_src].iter().map(|s| s.to_string()).collect();
+    let args = segment_args(&plan, config, CaptureMethod::Gdigrab, &ENCODERS[0], &out.display().to_string(), Some(&audio), None).unwrap();
     let mut child = Command::new(ff).args(&args).stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
     std::thread::sleep(Duration::from_secs_f64(secs));
     let mut stdin = child.stdin.take().unwrap();
@@ -357,7 +362,7 @@ async fn cut_with_every_effect() {
         removed: vec![(1.0, 1.5)],
         crop: Some(CropInput { x: 20.0, y: 10.0, width: 600.0, height: 340.0 }),
         overlays: vec![ov(OverlayKind::Image, 10.0, 10.0, Some(png)), ov(OverlayKind::Blur, 200.0, 100.0, None), ov(OverlayKind::Mosaic, 400.0, 200.0, None)],
-        audio: AudioFx { denoise: true, normalize: true, mute: false },
+        audio: AudioFx { denoise: true, normalize: true, mute: false, tracks: None },
         // 3～5 秒 4 倍速：2 秒變 0.5 秒
         fast: vec![FastRange { start_ms: 3000, end_ms: 5000, speed: 4 }],
         zoom: Some(ClickZoom { factor: 1.5, clicks: vec![[2.0, 0.3, 0.4]] }),
@@ -481,4 +486,66 @@ async fn after_record_cuts_idle_parts_and_compresses() {
     app.settings.save(crate::settings::SettingsPatch { ui: Some(serde_json::json!({})), ..Default::default() });
     app.clone().after_record(src.display().to_string()).await;
     assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 3);
+}
+
+/// 最大音量（dB）
+fn max_volume(ff: &Path, file: &Path) -> f64 {
+    let o = Command::new(ff).args(["-hide_banner", "-nostdin", "-i"]).arg(file).args(["-map", "0:a:0", "-af", "volumedetect", "-f", "null", "-"]).output().unwrap();
+    let err = String::from_utf8_lossy(&o.stderr);
+    let line = err.lines().find(|l| l.contains("max_volume:")).unwrap_or_else(|| panic!("{err}"));
+    line.split("max_volume:").nth(1).unwrap().trim().trim_end_matches("dB").trim().parse().unwrap()
+}
+
+#[tokio::test]
+async fn separate_audio_tracks() {
+    let Some(ff) = ffmpeg() else { return };
+    if !has(&ff, "-encoders", "libx264") {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let card = write_card(dir.path());
+    let parts = dir.path().join(".parts").join("2026-10-11_14-00-00");
+    std::fs::create_dir_all(&parts).unwrap();
+    // 聲音管線分軌時送進 6 個聲道：混音、系統聲音（440 Hz）、麥克風（880 Hz）各兩個
+    let sys = "0.3*sin(440*2*PI*t)";
+    let mic = "0.3*sin(880*2*PI*t)";
+    let src = format!("aevalsrc={sys}+{mic}|{sys}+{mic}|{sys}|{sys}|{mic}|{mic}:s=48000:c=5.1");
+    let config = RecordConfig { audio: crate::types::AudioConfig { system: true, mic: true, mic_id: String::new() }, separate_audio: true, ..record_config() };
+    assert!(config.separate_tracks());
+    let segs = [parts.join("seg_000.mp4"), parts.join("seg_001.mp4")];
+    record_segment_with(&ff, &card, &segs[0], 2.0, false, &config, &src);
+    record_segment_with(&ff, &card, &segs[1], 2.0, false, &config, &src);
+    let out = dir.path().join("Rec_2026-10-11_14-00-00.mp4");
+    let files: Vec<String> = segs.iter().map(|s| s.display().to_string()).collect();
+    crate::recorder::merge_segments(&ff, &files, &parts, &out, true, None).await.unwrap();
+    // 合併後三條音軌都在，第一條（混音）是預設
+    let i = probe(&ff, &out).await;
+    assert_eq!((i.has_audio, i.audio_tracks), (Some(true), 3));
+    let head = Command::new(&ff).args(["-hide_banner", "-i"]).arg(&out).output().unwrap();
+    let head = String::from_utf8_lossy(&head.stderr).into_owned();
+    for t in ["混音", "系統聲音", "麥克風"] {
+        assert!(head.contains(t), "{head}");
+    }
+    assert!(max_volume(&ff, &out) > -20.0);
+
+    // 剪輯：系統聲音、麥克風都關掉 → 沒有聲音；只留系統聲音 → 有聲音
+    let ex = Exporter::new();
+    let c = ctx(&ff);
+    let s = out.display().to_string();
+    let d = i.duration_sec.unwrap();
+    let silent = EditSpec { start: 0.0, end: d - 0.5, audio: AudioFx { tracks: Some(crate::edit::TrackMix { system: 0, mic: 0 }), ..Default::default() }, ..Default::default() };
+    ex.start_cut(&c, &s, &silent, None, None).await.unwrap();
+    let cut = finish(&ex).await;
+    assert!(max_volume(&ff, &cut) < -60.0, "{}", max_volume(&ff, &cut));
+    assert_eq!(probe(&ff, &cut).await.audio_tracks, 1);
+    std::fs::remove_file(&cut).unwrap();
+    let sys_only = EditSpec { audio: AudioFx { tracks: Some(crate::edit::TrackMix { system: 100, mic: 0 }), denoise: true, ..Default::default() }, ..silent };
+    ex.start_cut(&c, &s, &sys_only, None, None).await.unwrap();
+    let cut = finish(&ex).await;
+    assert!(max_volume(&ff, &cut) > -20.0);
+    // 一般的錄影（一條音軌）選了分軌音量：照常用那一條
+    let one = make_source(&ff, dir.path());
+    ex.start_cut(&c, &one.display().to_string(), &EditSpec { start: 0.0, end: 5.0, ..sys_only.clone() }, None, None).await.unwrap();
+    let cut = finish(&ex).await;
+    assert!(max_volume(&ff, &cut) > -20.0);
 }

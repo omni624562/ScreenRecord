@@ -204,6 +204,8 @@ fn body(ui: &mut egui::Ui, n: &mut Notes, s: &mut super::settings::UiSettings) -
                     });
                     ui.horizontal(|ui| {
                         ui.label(tr!("不透明度", "Opacity"));
+                        ui.spacing_mut().slider_width = 130.0;
+                        theme::slider_style(ui);
                         changed |= ui.add(egui::Slider::new(&mut s.notes_opacity, NOTES_OPACITY_MIN..=100).suffix("%")).changed();
                     });
                     changed |= ui.checkbox(&mut s.notes_auto, tr!("開始錄影時自動捲動，暫停時停下", "Scroll automatically while recording, stop when paused")).changed();

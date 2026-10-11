@@ -1808,6 +1808,7 @@ mod tests {
             camera: None,
             audio_only: false,
             window_capture: false,
+            separate_audio: false,
         };
         let later = Schedule { at: chrono::Local::now() + chrono::Duration::minutes(30), minutes: 10, config: config.clone() };
         let a = app.clone();

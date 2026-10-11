@@ -369,6 +369,16 @@ pub struct RecordConfig {
     /// 畫面上的其他東西（攝影機小視窗、點擊效果、螢幕畫筆）不會錄進去。FFmpeg 不支援或失敗時改用跟著視窗的範圍
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub window_capture: bool,
+    /// 系統聲音與麥克風分開存（多兩條音軌；第一條仍是混在一起的，一般播放器照常播放）
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub separate_audio: bool,
+}
+
+impl RecordConfig {
+    /// 這次錄影要分軌：有打開分軌，而且系統聲音、麥克風都有錄
+    pub fn separate_tracks(&self) -> bool {
+        self.separate_audio && self.audio.system && self.audio.mic
+    }
 }
 
 /// 攝影機子母畫面
@@ -520,6 +530,9 @@ pub struct MediaInfo {
     /// 章節（錄影時加的標記）
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub chapters: Vec<Chapter>,
+    /// 幾條音軌（分軌錄影是 3：混音、系統聲音、麥克風）
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub audio_tracks: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]

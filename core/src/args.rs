@@ -649,6 +649,20 @@ pub fn capture_spec(plan: &CapturePlan, config: &RecordConfig, method: CaptureMe
     })
 }
 
+/// 分軌錄影的三條音軌：名稱（播放器、剪輯軟體看得到；MP4 存在 handler_name）與預設播放第一條（混音）
+pub fn track_tags() -> Vec<String> {
+    let mut a = vec![];
+    for (i, title) in [tr!("混音", "Mix"), tr!("系統聲音", "System audio"), tr!("麥克風", "Microphone")].iter().enumerate() {
+        a.push(format!("-metadata:s:a:{i}"));
+        a.push(format!("handler_name={title}"));
+        a.push(format!("-metadata:s:a:{i}"));
+        a.push(format!("title={title}"));
+        a.push(format!("-disposition:a:{i}"));
+        a.push(if i == 0 { "default".into() } else { "0".into() });
+    }
+    a
+}
+
 /// 單一分段的完整參數。stdin 送 q 收尾；-progress 從 stdout 回報張數與大小。
 /// audio_input：錄聲音時 AudioPipe 提供的輸入參數（TCP raw PCM）
 pub fn segment_args(plan: &CapturePlan, config: &RecordConfig, method: CaptureMethod, enc: &EncoderSpec, out_file: &str, audio_input: Option<&[String]>, gpu: Option<GpuPath>) -> Result<Vec<String>> {
@@ -662,8 +676,21 @@ pub fn segment_args(plan: &CapturePlan, config: &RecordConfig, method: CaptureMe
     if let Some(ai) = audio_input {
         a.extend(ai.iter().cloned());
     }
-    a.extend(["-filter_complex".into(), spec.graph, "-map".into(), "[vout]".into()]);
-    if audio_input.is_some() {
+    // 分軌：送進來的 6 個聲道是 混音、系統聲音、麥克風 各兩個，拆成三條立體聲音軌
+    let separate = audio_input.is_some() && config.separate_tracks();
+    let graph = if separate {
+        let i = spec.input_count;
+        format!("{};[{i}:a]asplit=3[sa0][sa1][sa2];[sa0]pan=stereo|c0=c0|c1=c1[amix];[sa1]pan=stereo|c0=c2|c1=c3[asys];[sa2]pan=stereo|c0=c4|c1=c5[amic]", spec.graph)
+    } else {
+        spec.graph
+    };
+    a.extend(["-filter_complex".into(), graph, "-map".into(), "[vout]".into()]);
+    if separate {
+        a.extend(strs(&["-map", "[amix]", "-map", "[asys]", "-map", "[amic]"]));
+        a.extend(strs(&AUDIO_ENCODE));
+        a.extend(track_tags());
+        a.extend(strs(&["-max_muxing_queue_size", "4096"]));
+    } else if audio_input.is_some() {
         a.extend(["-map".into(), format!("{}:a", spec.input_count)]);
         a.extend(strs(&AUDIO_ENCODE));
         a.extend(strs(&["-max_muxing_queue_size", "4096"]));
@@ -985,10 +1012,28 @@ pub fn cut_args(
         next_input = 3;
     }
     vf.push(format!("format={}", enc.pix_fmt));
+    // 聲音：加速的片段沒有聲音（快轉的聲音聽不清楚），只留保留的片段，再做聲音處理
+    let af: Vec<String> = if with_audio {
+        let mut af: Vec<String> = keep.iter().filter(|p| p.2 > 1).map(|&(a, b, _)| format!("volume=0:enable='between(t,{},{})'", num(a), num(b))).collect();
+        af.push(format!("aselect='{expr}',asetpts=N/SR/TB"));
+        af.extend(audio.filters().into_iter().map(String::from));
+        af
+    } else {
+        vec![]
+    };
+    // 分軌錄影：系統聲音與麥克風分別調整後重新混合，接著同樣處理（放進 -filter_complex）
+    let track_graph = audio.track_graph().filter(|_| with_audio).map(|g| format!("{g};[amixed]{}[aout]", af.join(",")));
     if overlays.is_empty() && frame.is_none() {
         a.extend(strs(&["-map", "0:v:0"]));
+        if let Some(g) = &track_graph {
+            a.extend(["-filter_complex".into(), g.clone()]);
+        }
     } else if overlays.is_empty() {
-        a.extend(["-filter_complex".into(), format!("[0:v]{}[vout]", vf.join(",")), "-map".into(), "[vout]".into()]);
+        let mut g = format!("[0:v]{}[vout]", vf.join(","));
+        if let Some(t) = &track_graph {
+            g = format!("{g};{t}");
+        }
+        a.extend(["-filter_complex".into(), g, "-map".into(), "[vout]".into()]);
     } else {
         // 標註以原影片的時間顯示，所以先疊上標註，再挑選保留的片段
         let mut graph = Vec::new();
@@ -1033,21 +1078,26 @@ pub fn cut_args(
             cur = out;
         }
         graph.push(format!("{cur}{}[vout]", vf.join(",")));
+        if let Some(t) = &track_graph {
+            graph.push(t.clone());
+        }
         a.extend(["-filter_complex".into(), graph.join(";"), "-map".into(), "[vout]".into()]);
     }
-    a.extend(if with_audio { strs(&["-map", "0:a:0"]) } else { strs(&["-an"]) });
+    a.extend(match (with_audio, &track_graph) {
+        (true, Some(_)) => strs(&["-map", "[aout]"]),
+        (true, None) => strs(&["-map", "0:a:0"]),
+        _ => strs(&["-an"]),
+    });
     a.extend(strs(&["-sn", "-dn"]));
     if overlays.is_empty() && frame.is_none() {
         a.push("-vf".into());
         a.push(vf.join(","));
     }
     if with_audio {
-        a.push("-af".into());
-        // 加速的片段沒有聲音（快轉的聲音聽不清楚）
-        let mut af: Vec<String> = keep.iter().filter(|p| p.2 > 1).map(|&(a, b, _)| format!("volume=0:enable='between(t,{},{})'", num(a), num(b))).collect();
-        af.push(format!("aselect='{expr}',asetpts=N/SR/TB"));
-        af.extend(audio.filters().into_iter().map(String::from));
-        a.push(af.join(","));
+        if track_graph.is_none() {
+            a.push("-af".into());
+            a.push(af.join(","));
+        }
         a.extend(strs(&AUDIO_ENCODE));
     }
     a.extend(enc.offline());
@@ -1066,6 +1116,8 @@ pub struct ParsedMedia {
     pub fps: Option<f64>,
     pub has_audio: bool,
     pub chapters: Vec<crate::types::Chapter>,
+    /// 幾條音軌
+    pub audio_tracks: u32,
 }
 
 static DURATION_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"Duration:\s*(\d+):(\d{2}):(\d{2}(?:\.\d+)?)").unwrap());
@@ -1087,6 +1139,7 @@ pub fn parse_media_info(stderr: &str) -> ParsedMedia {
         fps,
         has_audio: AUDIO_RE.is_match(stderr),
         chapters: crate::chapters::parse(stderr),
+        audio_tracks: AUDIO_RE.find_iter(stderr).count() as u32,
     }
 }
 
@@ -1257,6 +1310,7 @@ mod tests {
             camera: None,
             audio_only: false,
             window_capture: false,
+            separate_audio: false,
         }
     }
     fn region(x: f64, y: f64, w: f64, h: f64) -> SourceConfig {
@@ -1577,6 +1631,23 @@ dummy: Immediate exit requested";
     }
 
     #[test]
+    fn separate_audio_tracks_args() {
+        let audio_in = strs(&["-f", "f32le", "-ar", "48000", "-ac", "6", "-i", "tcp://127.0.0.1:5000"]);
+        let both = AudioConfig { system: true, mic: true, mic_id: String::new() };
+        let c = RecordConfig { audio: both.clone(), separate_audio: true, ..cfg() };
+        let plan = resolve_plan(&c, &same_gpu()).unwrap();
+        let a = segment_args(&plan, &c, CaptureMethod::Gdigrab, &x264(), "o.mp4", Some(&audio_in), None).unwrap();
+        let j = a.join(" ");
+        assert!(graph_of(&a).ends_with(";[1:a]asplit=3[sa0][sa1][sa2];[sa0]pan=stereo|c0=c0|c1=c1[amix];[sa1]pan=stereo|c0=c2|c1=c3[asys];[sa2]pan=stereo|c0=c4|c1=c5[amic]"), "{j}");
+        assert!(j.contains("-map [vout] -map [amix] -map [asys] -map [amic] -c:a aac"), "{j}");
+        assert!(j.contains("-metadata:s:a:2 handler_name=麥克風") && j.contains("-disposition:a:0 default -metadata:s:a:1"), "{j}");
+        // 只錄一個來源、或沒打開分軌：一條音軌
+        assert!(!RecordConfig { audio: AudioConfig { mic: false, ..both.clone() }, ..c.clone() }.separate_tracks());
+        let one = segment_args(&plan, &RecordConfig { separate_audio: false, ..c }, CaptureMethod::Gdigrab, &x264(), "o.mp4", Some(&audio_in), None).unwrap();
+        assert!(one.join(" ").contains("-map [vout] -map 1:a -c:a aac") && !one.join(" ").contains("asplit"));
+    }
+
+    #[test]
     fn window_capture_graph_and_fallback() {
         let c = RecordConfig { source: region(100.0, 100.0, 641.0, 361.0), follow_window: Some(4660), window_capture: true, fps: 30.0, ..cfg() };
         let plan = resolve_plan(&c, &same_gpu()).unwrap();
@@ -1685,7 +1756,7 @@ dummy: Immediate exit requested";
     #[test]
     fn media_info() {
         let stderr = "Input #0, mov,mp4,m4a,3gp,3g2,mj2, from 'x.mp4':\n  Duration: 00:01:02.50, start: 0.000000, bitrate: 1234 kb/s\n  Stream #0:0[0x1](und): Video: h264 (High) (avc1 / 0x31637661), yuv420p(tv, bt709, progressive), 1920x1080 [SAR 1:1 DAR 16:9], 1200 kb/s, 30 fps, 30 tbr, 15360 tbn (default)\n  Stream #0:1[0x2](und): Audio: aac (LC) (mp4a / 0x6134706D), 48000 Hz, stereo, fltp, 160 kb/s (default)";
-        assert_eq!(parse_media_info(stderr), ParsedMedia { duration_sec: Some(62.5), width: Some(1920), height: Some(1080), fps: Some(30.0), has_audio: true, chapters: vec![] });
+        assert_eq!(parse_media_info(stderr), ParsedMedia { duration_sec: Some(62.5), width: Some(1920), height: Some(1080), fps: Some(30.0), has_audio: true, chapters: vec![], audio_tracks: 1 });
         let first3: Vec<&str> = stderr.lines().take(3).collect();
         assert!(!parse_media_info(&first3.join("\n")).has_audio);
         // WebP 動圖：檔頭沒有長度，另外量
@@ -1793,7 +1864,7 @@ dummy: Immediate exit requested";
         assert_eq!(after(&args, "-af"), "aselect='gte(t,1)*lt(t,2)+gte(t,4)*lt(t,5.5)',asetpts=N/SR/TB");
         let no_audio = cut_args("in.mp4", "out.mp4", &[(0.0, 3.0, 1)], None, 30.0, &x264(), false, &[], AudioFx::default(), None, None).unwrap();
         // 降噪、音量平衡接在剪輯後面；不要聲音時整個拿掉
-        let fx = cut_args("in.mp4", "out.mp4", &[(0.0, 3.0, 1)], None, 30.0, &x264(), true, &[], AudioFx { denoise: true, normalize: true, mute: false }, None, None).unwrap().join(" ");
+        let fx = cut_args("in.mp4", "out.mp4", &[(0.0, 3.0, 1)], None, 30.0, &x264(), true, &[], AudioFx { denoise: true, normalize: true, mute: false, tracks: None }, None, None).unwrap().join(" ");
         assert!(fx.contains("asetpts=N/SR/TB,afftdn=nf=-25,loudnorm=I=-16:TP=-1.5:LRA=11,aresample=48000"), "{fx}");
         let muted = cut_args("in.mp4", "out.mp4", &[(0.0, 3.0, 1)], None, 30.0, &x264(), true, &[], AudioFx { mute: true, ..Default::default() }, None, None).unwrap();
         assert!(muted.contains(&"-an".to_string()) && !muted.iter().any(|a| a.contains("aselect")));

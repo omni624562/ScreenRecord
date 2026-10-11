@@ -184,10 +184,28 @@ pub struct Timeline {
     t0_estimate: f64,
     /// 混音輸出（重複使用）
     mix_buf: Vec<f32>,
+    /// 分軌：輸出 混音、各來源 各兩個聲道（系統聲音 + 麥克風時共 6 個聲道），FFmpeg 再拆成三條音軌
+    separate: bool,
+    /// 分軌時每個來源先取到這裡
+    src_buf: Vec<f32>,
+}
+
+/// 送給 FFmpeg 的聲道數：一般是立體聲；分軌時多了每個來源各自的立體聲
+pub fn channels_for(sources: usize, separate: bool) -> usize {
+    if separate && sources > 1 {
+        CHANNELS * (1 + sources)
+    } else {
+        CHANNELS
+    }
 }
 
 impl Timeline {
     pub fn new(specs: &[AudioSourceSpec], opener: Opener, log: LogFn, now: i64) -> Timeline {
+        Self::with_tracks(specs, opener, log, now, false)
+    }
+
+    /// separate：系統聲音、麥克風也各自輸出一份（分軌）
+    pub fn with_tracks(specs: &[AudioSourceSpec], opener: Opener, log: LogFn, now: i64, separate: bool) -> Timeline {
         let sources = specs
             .iter()
             .map(|spec| Source {
@@ -200,7 +218,8 @@ impl Timeline {
                 ring: Ring::new(RING_FRAMES),
             })
             .collect();
-        let mut t = Timeline { sources, opener, log, t0: None, first_video_at: None, t0_estimate: f64::INFINITY, mix_buf: vec![0.0; SAMPLE_RATE as usize * CHANNELS] };
+        let separate = separate && specs.len() > 1;
+        let mut t = Timeline { sources, opener, log, t0: None, first_video_at: None, t0_estimate: f64::INFINITY, mix_buf: vec![0.0; SAMPLE_RATE as usize * CHANNELS], separate, src_buf: Vec::new() };
         for i in 0..t.sources.len() {
             t.open(i, true, now);
         }
@@ -343,19 +362,37 @@ impl Timeline {
         }
     }
 
-    /// 所有來源都有資料的部分相加後回傳
+    /// 所有來源都有資料的部分相加後回傳（分軌時每張取樣是 混音、來源 1、來源 2…）
     fn mix(&mut self) -> &[u8] {
         let Some(n) = self.sources.iter().map(|s| s.ring.size).min() else { return &[] };
         if n == 0 {
             return &[];
         }
-        if self.mix_buf.len() < n * CHANNELS {
-            self.mix_buf.resize(n * CHANNELS, 0.0);
+        let width = channels_for(self.sources.len(), self.separate);
+        if self.mix_buf.len() < n * width {
+            self.mix_buf.resize(n * width, 0.0);
         }
-        for (i, s) in self.sources.iter_mut().enumerate() {
-            s.ring.take(&mut self.mix_buf, n, i > 0);
+        if self.separate {
+            if self.src_buf.len() < n * CHANNELS {
+                self.src_buf.resize(n * CHANNELS, 0.0);
+            }
+            for (i, s) in self.sources.iter_mut().enumerate() {
+                s.ring.take(&mut self.src_buf, n, false);
+                for f in 0..n {
+                    for c in 0..CHANNELS {
+                        let v = self.src_buf[f * CHANNELS + c];
+                        let row = f * width;
+                        self.mix_buf[row + c] = if i == 0 { v } else { self.mix_buf[row + c] + v };
+                        self.mix_buf[row + CHANNELS * (i + 1) + c] = v;
+                    }
+                }
+            }
+        } else {
+            for (i, s) in self.sources.iter_mut().enumerate() {
+                s.ring.take(&mut self.mix_buf, n, i > 0);
+            }
         }
-        let out = &self.mix_buf[..n * CHANNELS];
+        let out = &self.mix_buf[..n * width];
         // float32 little-endian（Windows / x86 皆為 little-endian），即 FFmpeg 的 f32le
         unsafe { std::slice::from_raw_parts(out.as_ptr() as *const u8, std::mem::size_of_val(out)) }
     }
@@ -447,6 +484,8 @@ enum Cmd {
 /// 錄一個分段期間的聲音管線
 pub struct AudioPipe {
     port: u16,
+    /// 送出的聲道數（分軌時 6）
+    channels: usize,
     desc: String,
     synced: Arc<AtomicBool>,
     tx: mpsc::Sender<Cmd>,
@@ -454,7 +493,9 @@ pub struct AudioPipe {
 }
 
 impl AudioPipe {
-    pub fn new(specs: Vec<AudioSourceSpec>, opener: Opener, log: LogFn) -> std::io::Result<AudioPipe> {
+    /// separate：系統聲音與麥克風分軌（兩個來源時才有作用）
+    pub fn new(specs: Vec<AudioSourceSpec>, opener: Opener, log: LogFn, separate: bool) -> std::io::Result<AudioPipe> {
+        let channels = channels_for(specs.len(), separate);
         let listener = TcpListener::bind("127.0.0.1:0")?;
         listener.set_nonblocking(true)?;
         let port = listener.local_addr()?.port();
@@ -463,7 +504,7 @@ impl AudioPipe {
         let (desc_tx, desc_rx) = mpsc::channel::<String>();
         let flag = synced.clone();
         let thread = std::thread::Builder::new().name("audio".into()).spawn(move || {
-            let mut tl = Timeline::new(&specs, opener, log.clone(), now_100ns());
+            let mut tl = Timeline::with_tracks(&specs, opener, log.clone(), now_100ns(), separate);
             let _ = desc_tx.send(tl.describe());
             let mut out = Output { listener, sock: None, pending: VecDeque::new(), overflow_warned: false, log };
             let mut next = Instant::now() + TICK;
@@ -494,7 +535,7 @@ impl AudioPipe {
         })?;
         // 開啟音訊裝置卡住時不要一直等（錄影的開始、暫停、停止都在等這裡）：裝置稍後好了照樣會送聲音
         let desc = desc_rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap_or_else(|_| tr!("音訊裝置沒有回應", "Audio device isn't responding").to_string());
-        Ok(AudioPipe { port, desc, synced, tx, thread: std::sync::Mutex::new(Some(thread)) })
+        Ok(AudioPipe { port, channels, desc, synced, tx, thread: std::sync::Mutex::new(Some(thread)) })
     }
 
     pub fn port(&self) -> u16 {
@@ -503,7 +544,7 @@ impl AudioPipe {
 
     /// FFmpeg 的音訊輸入參數
     pub fn input_args(&self) -> Vec<String> {
-        ["-thread_queue_size", "4096", "-f", "f32le", "-ar", &SAMPLE_RATE.to_string(), "-ac", &CHANNELS.to_string(), "-i", &format!("tcp://127.0.0.1:{}", self.port)]
+        ["-thread_queue_size", "4096", "-f", "f32le", "-ar", &SAMPLE_RATE.to_string(), "-ac", &self.channels.to_string(), "-i", &format!("tcp://127.0.0.1:{}", self.port)]
             .iter()
             .map(|s| s.to_string())
             .collect()
@@ -686,6 +727,27 @@ mod tests {
     }
 
     #[test]
+    fn separate_tracks_interleave_mix_and_each_source() {
+        let packets: Packets = Default::default();
+        let fail = Arc::new(AtomicBool::new(false));
+        let (log, _) = logs();
+        let specs = [AudioSourceSpec { loopback: true, mic_id: String::new() }, AudioSourceSpec { loopback: false, mic_id: String::new() }];
+        let mut tl = Timeline::with_tracks(&specs, fake_opener(packets.clone(), fail), log, 0, true);
+        tl.on_video_frame(0.0, 0);
+        // 第一個來源（系統聲音）讀到這個封包，第二個（麥克風）只有靜音
+        packets.lock().unwrap().push_back((Some(seq(1, 48)), 48, Some(0)));
+        let out = floats(tl.flush_to(10 * MS));
+        assert_eq!(channels_for(2, true), 6);
+        assert_eq!(out.len(), 480 * 6);
+        // 每張：混音 L/R、系統 L/R、麥克風 L/R
+        assert_eq!(out[..6], [1.0, -1.0, 1.0, -1.0, 0.0, 0.0]);
+        assert_eq!(out[6 * 47..6 * 48], [48.0, -48.0, 48.0, -48.0, 0.0, 0.0]);
+        assert!(out[6 * 48..].iter().all(|v| *v == 0.0));
+        assert_eq!(channels_for(2, false), 2);
+        assert_eq!(channels_for(1, true), 2);
+    }
+
+    #[test]
     fn missing_device_records_silence_and_reopens() {
         let packets: Packets = Default::default();
         let fail = Arc::new(AtomicBool::new(true));
@@ -715,7 +777,9 @@ mod tests {
         let packets: Packets = Default::default();
         let fail = Arc::new(AtomicBool::new(false));
         let (log, _) = logs();
-        let pipe = AudioPipe::new(vec![AudioSourceSpec { loopback: true, mic_id: String::new() }], fake_opener(packets, fail), log).unwrap();
+        let pipe = AudioPipe::new(vec![AudioSourceSpec { loopback: true, mic_id: String::new() }], fake_opener(packets, fail), log, true).unwrap();
+        // 只有一個來源：分軌沒有作用，照樣是立體聲
+        assert!(pipe.input_args().windows(2).any(|w| w == ["-ac", "2"]));
         assert_eq!(pipe.describe(), "系統聲音（假裝置）");
         let args = pipe.input_args();
         assert_eq!(args.last().unwrap(), &format!("tcp://127.0.0.1:{}", pipe.port()));

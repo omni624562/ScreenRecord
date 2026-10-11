@@ -562,6 +562,20 @@ fn audio_page(app: &mut UiApp, ui: &mut Ui) {
             }
         });
     });
+    form_row(ui, tr!("分軌", "Separate tracks"), |ui| {
+        let both = app.s.audio_system && app.s.audio_mic;
+        let mut on = app.s.separate_audio;
+        if switch(ui, &mut on, tr!("系統聲音與麥克風分開存", "Save system audio and mic separately"), both)
+            .on_hover_text(tr!(
+                "影片多兩條音軌（系統聲音、麥克風）：剪輯時可以分別調整音量、只對麥克風降噪，自動字幕也只聽麥克風。第一條仍是混在一起的，一般播放器照常播放",
+                "Adds two audio tracks (system audio and mic) to the video, so you can set their volumes separately and apply noise reduction to the mic only when editing; automatic subtitles listen to the mic only. The first track is still the mix, so players work as usual."
+            ))
+            .changed()
+        {
+            app.s.separate_audio = on;
+            app.save_settings();
+        }
+    });
     let hint = a.error.clone().unwrap_or_else(|| {
         if a.captures.is_empty() {
             tr!("找不到麥克風。", "No microphone found.").into()

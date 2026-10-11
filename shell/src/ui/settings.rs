@@ -106,6 +106,8 @@ pub struct UiSettings {
     pub after_compress_mb: u32,
     /// 只錄某個視窗時只錄視窗的內容（Windows Graphics Capture）
     pub window_capture: bool,
+    /// 系統聲音與麥克風分開存（分軌）
+    pub separate_audio: bool,
 }
 
 /// 講稿提詞的字級範圍、不透明度下限
@@ -209,6 +211,7 @@ impl UiSettings {
             after_subs_lang: num("afterSubsLang").map(|v| v as u32).filter(|v| (*v as usize) < screenrecorder_core::subtitles::LANGUAGES.len()).unwrap_or(0),
             after_compress_mb: num("afterCompressMb").map(|v| v as u32).filter(|v| MAX_MB.contains(v)).unwrap_or(0),
             window_capture: boolean("windowCapture").unwrap_or(false),
+            separate_audio: boolean("separateAudio").unwrap_or(false),
         };
         s.fix_monitor(env);
         s
@@ -306,6 +309,7 @@ impl UiSettings {
             }),
             audio_only: self.source_type == SourceType::Audio,
             window_capture: self.window_capture && self.source_type == SourceType::Region && self.follow_window.is_some(),
+            separate_audio: self.separate_audio,
         }
     }
 }
