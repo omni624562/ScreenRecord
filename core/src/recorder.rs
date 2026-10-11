@@ -248,7 +248,38 @@ impl St {
     }
 }
 
-fn cleanup_parts(parts_dir: Option<&Path>) {
+/// 把分段接成一支影片（concat，不重新壓縮）。有錄聲音時每個分段在聲音結尾截斷（見 concat_list），
+/// 聲音與畫面一起結束、分段之間也不留無聲的空隙。成功時回傳成品的長度（秒，讀不到時 None），失敗時回傳原因
+pub(crate) async fn merge_segments(ffmpeg: &Path, files: &[String], parts_dir: &Path, out: &Path, has_audio: bool) -> std::result::Result<Option<f64>, String> {
+    let mut outpoints = Vec::new();
+    if has_audio {
+        let mut tasks = Vec::new();
+        for f in files {
+            let (ffmpeg, args) = (ffmpeg.to_path_buf(), audio_end_args(f));
+            tasks.push(tokio::spawn(async move {
+                let r = run(&ffmpeg, &args, Duration::from_secs(60)).await;
+                let us = OUT_TIME_RE.captures_iter(&r.stdout).last().and_then(|c| c[1].parse::<f64>().ok());
+                us.filter(|us| r.code == 0 && *us > 0.0).map(|us| us / 1e6)
+            }));
+        }
+        for t in tasks {
+            outpoints.push(t.await.ok().flatten());
+        }
+    }
+    let list_file = parts_dir.join("concat.txt");
+    std::fs::write(&list_file, concat_list(files, &outpoints)).map_err(|e| e.to_string())?;
+    let out_str = out.display().to_string();
+    let r = run(ffmpeg, &concat_args(&list_file.display().to_string(), &out_str), Duration::from_secs(30 * 60)).await;
+    if r.code != 0 || !out.exists() {
+        let tail = last_lines(&r.stderr, 3);
+        return Err(if tail.is_empty() { trf!("結束代碼 {}", "exit code {}", r.code) } else { tail });
+    }
+    // 只讀成品的檔頭取得實際長度（毫秒級），不再整檔重讀一遍：長時間錄影停止時省下一半的等待
+    let head = run(ffmpeg, &["-hide_banner", "-i", &out_str], Duration::from_secs(15)).await;
+    Ok(parse_media_info(&head.stderr).duration_sec)
+}
+
+pub(crate) fn cleanup_parts(parts_dir: Option<&Path>) {
     let Some(dir) = parts_dir else { return };
     let _ = std::fs::remove_dir_all(dir);
     // 只有空資料夾才刪得掉（.parts 內還有其他合併失敗而保留的分段時屬正常）
@@ -494,6 +525,11 @@ impl Recorder {
     }
 
     /// 錄影中（含儲存中）要寫入的成品路徑：不能改名或刪除
+    /// 正在錄影的分段資料夾（救回中斷的錄影時不能動它）
+    pub fn parts_dir(&self) -> Option<PathBuf> {
+        self.lock().parts_dir.clone()
+    }
+
     pub fn output_path(&self) -> Option<PathBuf> {
         let st = self.lock();
         if st.state != RecorderState::Idle {
@@ -1526,44 +1562,21 @@ impl Recorder {
         }
         let ffmpeg = self.deps().ffmpeg_path().ok_or_else(|| Error::other(tr!("找不到 ffmpeg.exe", "ffmpeg.exe not found")))?;
         let files: Vec<String> = parts.iter().map(|p| p.0.clone()).collect();
-        // 有錄聲音：每個分段在聲音結束處截斷（見 concat_list），聲音與畫面一起結束、分段之間也不留無聲的空隙
-        let mut outpoints = Vec::new();
-        if has_audio {
-            let mut tasks = Vec::new();
-            for f in &files {
-                let (ffmpeg, args) = (ffmpeg.clone(), audio_end_args(f));
-                tasks.push(tokio::spawn(async move {
-                    let r = run(&ffmpeg, &args, Duration::from_secs(60)).await;
-                    let us = OUT_TIME_RE.captures_iter(&r.stdout).last().and_then(|c| c[1].parse::<f64>().ok());
-                    us.filter(|us| r.code == 0 && *us > 0.0).map(|us| us / 1e6)
-                }));
-            }
-            for t in tasks {
-                outpoints.push(t.await.ok().flatten());
-            }
-        }
-        let list_file = parts_dir.join("concat.txt");
-        std::fs::write(&list_file, concat_list(&files, &outpoints))?;
         let out_str = out.display().to_string();
         let parts_str = parts_dir.display().to_string();
-        let r = run(&ffmpeg, &concat_args(&list_file.display().to_string(), &out_str), Duration::from_secs(30 * 60)).await;
-        if r.code != 0 || !out.exists() {
-            let tail = last_lines(&r.stderr, 3);
-            let detail = if tail.is_empty() { trf!("結束代碼 {}", "exit code {}", r.code) } else { tail };
-            return Ok(RecordingResult {
-                ok: false,
-                frames,
-                video_sec: frames as f64 / fps,
-                parts_dir: Some(parts_str.clone()),
-                message: trf!("合併失敗：{detail}（分段保留於 {parts_str}）", "Merge failed: {detail} (segments kept in {parts_str})"),
-                ..Default::default()
-            });
-        }
-
-        // 只讀成品的檔頭取得實際長度（毫秒級），不再整檔重讀一遍：長時間錄影停止時省下一半的等待。
-        // 分段回報的張數可能多算被強制終止前還沒寫入的幾張，以檔頭長度為準
-        let head = run(&ffmpeg, &["-hide_banner", "-i", &out_str], Duration::from_secs(15)).await;
-        let duration = parse_media_info(&head.stderr).duration_sec;
+        let duration = match merge_segments(&ffmpeg, &files, &parts_dir, &out, has_audio).await {
+            Ok(d) => d,
+            Err(detail) => {
+                return Ok(RecordingResult {
+                    ok: false,
+                    frames,
+                    video_sec: frames as f64 / fps,
+                    parts_dir: Some(parts_str.clone()),
+                    message: trf!("合併失敗：{detail}（分段保留於 {parts_str}）", "Merge failed: {detail} (segments kept in {parts_str})"),
+                    ..Default::default()
+                });
+            }
+        };
         let real_frames = duration.map(|d| js_round(d * fps) as u64).unwrap_or(frames);
         cleanup_parts(Some(&parts_dir));
         Ok(RecordingResult {

@@ -211,8 +211,64 @@ impl UiApp {
             app.preview.reset();
             app.watch_ddagrab();
             app.load_recent();
+            app.check_orphans();
         });
         app
+    }
+
+    /// 上次錄影時程式意外結束（當機、停電、被強制關掉）留下分段：問要不要救回
+    fn check_orphans(&mut self) {
+        let (core, dir) = (self.core.clone(), self.s.out_dir(&self.env));
+        self.spawn(async move { tokio::task::spawn_blocking(move || core.orphan_recordings(&dir)).await.unwrap_or_default() }, |app, list| {
+            if list.is_empty() {
+                return;
+            }
+            let names = list
+                .iter()
+                .map(|o| {
+                    // 2026-10-10_14-30-05 → 2026-10-10 14:30
+                    let s = &o.stamp;
+                    let when = match (s.get(..10), s.get(11..13), s.get(14..16)) {
+                        (Some(d), Some(h), Some(m)) => format!("{d} {h}:{m}"),
+                        _ => s.clone(),
+                    };
+                    format!("{when}　{}", screenrecorder_core::format::format_bytes(o.bytes))
+                })
+                .collect();
+            let (keep, drop) = (list.clone(), list);
+            let mut ask = dialogs::Ask::confirm(
+                tr!("找到沒有存好的錄影", "Found unsaved recordings"),
+                tr!(
+                    "上次錄影時程式意外結束（例如當機、停電），留下了下面這些錄影片段。要合併成影片嗎？",
+                    "The app stopped unexpectedly during a recording (for example a crash or power loss) and left these pieces behind. Merge them into videos?"
+                ),
+                tr!("救回", "Recover"),
+                move |app, _| app.recover_orphans(keep),
+            )
+            .with_alt(tr!("刪除", "Delete"), move |app, _| {
+                for o in &drop {
+                    screenrecorder_core::recovery::discard(o);
+                }
+                app.toast(tr!("已刪除沒有存好的錄影片段", "Deleted the unsaved recording pieces"), false);
+            })
+            .with_cancel(tr!("稍後", "Later"));
+            ask.list = names;
+            app.ask = Some(ask);
+        });
+    }
+
+    fn recover_orphans(&mut self, list: Vec<screenrecorder_core::recovery::Orphan>) {
+        self.toast(tr!("正在救回錄影…", "Recovering recordings…"), false);
+        let core = self.core.clone();
+        self.spawn(async move { core.recover_recordings(list).await }, |app, (saved, errors): (Vec<String>, Vec<String>)| {
+            app.load_recent();
+            if errors.is_empty() {
+                let n = saved.len();
+                app.toast(if screenrecorder_core::i18n::is_en() { format!("Recovered {n} recording{}", if n == 1 { "" } else { "s" }) } else { format!("已救回 {n} 支錄影") }, false);
+            } else {
+                app.toast(errors.join("\n"), true);
+            }
+        });
     }
 
     /// 閒置時介面不定時重畫：背景每 0.25 秒比對一次狀態（錄影、轉檔、下載、截圖、設定…），

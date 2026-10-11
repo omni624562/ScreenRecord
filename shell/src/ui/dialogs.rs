@@ -23,6 +23,10 @@ pub struct Ask {
     /// 送出中（等待伺服器）：按鈕停用、不能關閉
     pub busy: bool,
     pub on_ok: Option<Submit>,
+    /// 第二個動作（例如「刪除」）：放在確定按鈕左邊
+    pub alt: Option<(String, Submit)>,
+    /// 取消按鈕的字（None = 取消）
+    pub cancel: Option<String>,
     focused: bool,
 }
 
@@ -40,8 +44,22 @@ impl Ask {
             error: None,
             busy: false,
             on_ok: Some(Box::new(on_ok)),
+            alt: None,
+            cancel: None,
             focused: false,
         }
+    }
+
+    /// 加上第二個動作按鈕
+    pub fn with_alt(mut self, label: impl Into<String>, f: impl FnOnce(&mut UiApp, String) + Send + 'static) -> Ask {
+        self.alt = Some((label.into(), Box::new(f)));
+        self
+    }
+
+    /// 改「取消」按鈕的字（例如「稍後」）
+    pub fn with_cancel(mut self, label: impl Into<String>) -> Ask {
+        self.cancel = Some(label.into());
+        self
     }
 
     pub fn input(title: impl Into<String>, label: impl Into<String>, value: impl Into<String>, ok: impl Into<String>, on_ok: impl FnOnce(&mut UiApp, String) + Send + 'static) -> Ask {
@@ -56,6 +74,7 @@ pub fn show_ask(app: &mut UiApp, ctx: &egui::Context) {
     let Some(ask) = app.ask.as_mut() else { return };
     let mut submit = false;
     let mut cancel = false;
+    let mut alt = false;
     let modal = egui::Modal::new(Id::new("ask")).frame(theme::modal_frame(ctx)).show(ctx, |ui| {
         ui.set_width(420.0);
         let p = theme::pal(ui);
@@ -98,7 +117,13 @@ pub fn show_ask(app: &mut UiApp, ctx: &egui::Context) {
             if ok.clicked() {
                 submit = true;
             }
-            if Btn::new(tr!("取消", "Cancel")).ghost().enabled(!ask.busy).show(ui).clicked() {
+            if let Some((label, _)) = &ask.alt {
+                if Btn::new(label).enabled(!ask.busy).show(ui).clicked() {
+                    alt = true;
+                }
+            }
+            let cancel_label = ask.cancel.clone().unwrap_or_else(|| tr!("取消", "Cancel").into());
+            if Btn::new(cancel_label).ghost().enabled(!ask.busy).show(ui).clicked() {
                 cancel = true;
             }
         });
@@ -106,6 +131,13 @@ pub fn show_ask(app: &mut UiApp, ctx: &egui::Context) {
             submit = true;
         }
     });
+    if alt && !ask.busy {
+        if let Some((_, f)) = ask.alt.take() {
+            app.ask = None;
+            f(app, String::new());
+        }
+        return;
+    }
     if (modal.should_close() || cancel) && !ask.busy && !submit {
         app.ask = None;
         return;

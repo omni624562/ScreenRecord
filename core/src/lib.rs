@@ -55,6 +55,7 @@ pub mod qr;
 #[cfg(windows)]
 pub mod rec_frame_win;
 pub mod recorder;
+pub mod recovery;
 pub mod recycle;
 pub mod screen_pen;
 #[cfg(windows)]

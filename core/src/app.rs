@@ -1007,6 +1007,30 @@ impl App {
         self.settings.save(SettingsPatch { ui: Some(ui), config, ..Default::default() });
     }
 
+    /// 儲存位置裡沒有收尾的錄影（意外中斷留下的分段；不含正在錄的）
+    pub fn orphan_recordings(&self, output_dir: &str) -> Vec<crate::recovery::Orphan> {
+        crate::recovery::find(Path::new(output_dir), self.recorder.parts_dir().as_deref())
+    }
+
+    /// 依序合併沒有收尾的錄影：(救回的檔案, 失敗原因)
+    pub async fn recover_recordings(&self, list: Vec<crate::recovery::Orphan>) -> (Vec<String>, Vec<String>) {
+        let Some(ffmpeg) = self.ffmpeg_path() else { return (Vec::new(), vec![tr!("找不到 ffmpeg.exe", "ffmpeg.exe not found").into()]) };
+        let (mut saved, mut errors) = (Vec::new(), Vec::new());
+        for o in &list {
+            match crate::recovery::recover(&ffmpeg, o).await {
+                Ok(r) => {
+                    crate::info!("救回中斷的錄影：{}", r.path.as_deref().unwrap_or(""));
+                    saved.extend(r.path);
+                }
+                Err(e) => {
+                    crate::warn!("無法救回 {}：{}", o.dir.display(), e.message());
+                    errors.push(e.message().to_string());
+                }
+            }
+        }
+        (saved, errors)
+    }
+
     pub fn ffmpeg_path(&self) -> Option<PathBuf> {
         let st = self.lock();
         if st.ffmpeg.info.found {
