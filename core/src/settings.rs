@@ -27,9 +27,12 @@ pub struct SavedSettings {
     /// 已用系統匣通知過的新版本（同一版只通知一次）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub update_notified: Option<String>,
-    /// 自訂的全域快捷鍵（未指定時用預設的 Ctrl+Alt+R / P / S / A）
+    /// 自訂的全域快速鍵（未指定時用預設的 Ctrl+Alt+R / P / S / A）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hotkeys: Option<crate::types::Hotkeys>,
+    /// 錄影設定組合（見 presets.rs）
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub presets: Vec<crate::presets::Preset>,
     #[serde(default)]
     pub rev: u64,
 }
@@ -50,6 +53,7 @@ pub struct SettingsPatch {
     pub check_updates: Option<bool>,
     pub update_notified: Option<String>,
     pub hotkeys: Option<crate::types::Hotkeys>,
+    pub presets: Option<Vec<crate::presets::Preset>>,
 }
 
 pub struct SettingsStore {
@@ -73,6 +77,14 @@ impl SettingsStore {
         s
     }
 
+    /// 設定的版本（每次儲存加一）：介面每 0.25 秒問一次，不用複製整份設定
+    pub fn rev(&self) -> u64 {
+        if let Some(s) = self.cache.lock().unwrap().as_ref() {
+            return s.rev;
+        }
+        self.load().rev
+    }
+
     pub fn save(&self, patch: SettingsPatch) -> SavedSettings {
         let cur = self.load();
         let mut next = SavedSettings {
@@ -82,6 +94,7 @@ impl SettingsStore {
             check_updates: patch.check_updates.or(cur.check_updates),
             update_notified: patch.update_notified.or(cur.update_notified),
             hotkeys: patch.hotkeys.or(cur.hotkeys),
+            presets: patch.presets.unwrap_or(cur.presets),
             rev: cur.rev + 1,
         };
         *self.cache.lock().unwrap() = Some(next.clone());
@@ -123,8 +136,14 @@ mod tests {
         assert_eq!(saved["ui"]["future"], json!("x"));
         assert_eq!(saved["checkUpdates"], json!(false));
         assert!(saved.get("rev").is_none());
+        // 設定組合：存了之後，只改其他欄位時保留
+        let p = crate::presets::Preset { name: "教學".into(), ui: serde_json::Map::new(), config: json!({}) };
+        s.save(SettingsPatch { presets: Some(vec![p.clone()]), ..Default::default() });
+        s.save(SettingsPatch { ui: Some(json!({ "fps": 60 })), ..Default::default() });
         // 重新開啟：rev 從 1 開始
-        assert_eq!(SettingsStore::new(file).load().rev, 1);
+        let again = SettingsStore::new(file).load();
+        assert_eq!(again.rev, 1);
+        assert_eq!(again.presets, vec![p]);
     }
 
     #[test]
@@ -153,7 +172,12 @@ mod tests {
     fn custom_hotkeys() {
         use crate::types::{Hotkey, Hotkeys};
         let d = Hotkeys::default();
-        assert_eq!((0..4).map(|i| d.label(i)).collect::<Vec<_>>(), vec!["Ctrl+Alt+R", "Ctrl+Alt+P", "Ctrl+Alt+S", "Ctrl+Alt+A"]);
+        assert_eq!((0..5).map(|i| d.label(i)).collect::<Vec<_>>(), vec!["Ctrl+Alt+R", "Ctrl+Alt+P", "Ctrl+Alt+S", "Ctrl+Alt+A", "Ctrl+Alt+M"]);
+        // 3.0 存的設定沒有「加標記」：用預設；停用的（null）維持停用
+        let old: Hotkeys = serde_json::from_str(r#"{"record":null,"pause":null,"shot":null,"snip":null}"#).unwrap();
+        assert_eq!(old.label(4), "Ctrl+Alt+M");
+        let off: Hotkeys = serde_json::from_str(r#"{"record":null,"pause":null,"shot":null,"snip":null,"mark":null}"#).unwrap();
+        assert_eq!(off.label(4), "");
         let f9 = Hotkey { ctrl: false, alt: false, shift: true, win: true, key: 0x78 };
         assert_eq!(f9.label(), "Shift+Win+F9");
         assert!(f9.valid());

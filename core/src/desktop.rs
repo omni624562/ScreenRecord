@@ -20,7 +20,7 @@ pub async fn get_autostart() -> Option<bool> {
 
 pub async fn set_autostart(on: bool) -> crate::Result<()> {
     if !IS_RELEASE || !cfg!(windows) {
-        crate::bail!("開發模式無法設定開機自動啟動");
+        return Err(crate::Error::config(crate::tr!("開發模式無法設定開機自動啟動", "Start with Windows can't be set in development mode")));
     }
     let exe = std::env::current_exe()?;
     let value = format!("\"{}\" --tray", exe.display());
@@ -30,7 +30,11 @@ pub async fn set_autostart(on: bool) -> crate::Result<()> {
         run("reg.exe", &["delete", RUN_KEY, "/v", RUN_NAME, "/f"], Duration::from_secs(5)).await
     };
     if r.code != 0 {
-        crate::bail!("無法{}開機自動啟動：{}", if on { "設定" } else { "取消" }, r.stderr.trim());
+        return Err(crate::Error::config(match (crate::i18n::is_en(), on) {
+            (false, _) => format!("無法{}開機自動啟動：{}", if on { "設定" } else { "取消" }, r.stderr.trim()),
+            (true, true) => format!("Couldn't turn on Start with Windows: {}", r.stderr.trim()),
+            (true, false) => format!("Couldn't turn off Start with Windows: {}", r.stderr.trim()),
+        }));
     }
     Ok(())
 }

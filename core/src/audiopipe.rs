@@ -3,7 +3,7 @@
 //! 時間對齊：
 //! - 畫面：FFmpeg 的 showinfo 每張畫面印一行 pts；畫面時間零點 ≈ min(收到該行的 QPC 時間 − pts)，
 //!   取開頭約 1 秒的最小值，排除管線延遲。
-//! - 聲音：每個 WASAPI 封包都有 QPC 時間戳，依「封包時間 − 畫面零點」決定它在時間軸上的位置；
+//! - 聲音：每個 WASAPI 封包都有 QPC 時間戳記，依「封包時間 − 畫面零點」決定它在時間軸上的位置；
 //!   落後就補靜音、超前就裁掉，長時間錄影也不會因音效卡時鐘誤差而漂移。
 //! - 系統聲音沒有播放時 WASAPI 不送資料，依 QPC 時鐘補靜音維持連續。
 //!
@@ -13,6 +13,7 @@
 use crate::audio::{AudioSourceSpec, Capture, Opener, CHANNELS, SAMPLE_RATE};
 use crate::clock::now_100ns;
 use crate::types::LogLevel;
+use crate::{tr, trf};
 use std::collections::VecDeque;
 use std::io::{ErrorKind, Write};
 use std::net::{TcpListener, TcpStream};
@@ -142,7 +143,7 @@ struct Source {
 }
 
 impl Source {
-    /// 依封包時間戳放進時間軸（data = None 為靜音）
+    /// 依封包時間戳記放進時間軸（data = None 為靜音）
     fn place(&mut self, t0: f64, data: Option<&[f32]>, frames: usize, qpc: Option<i64>) {
         let pos = match qpc {
             Some(q) => frames_100ns(q as f64 - t0),
@@ -183,15 +184,33 @@ pub struct Timeline {
     t0_estimate: f64,
     /// 混音輸出（重複使用）
     mix_buf: Vec<f32>,
+    /// 分軌：輸出 混音、各來源 各兩個聲道（系統聲音 + 麥克風時共 6 個聲道），FFmpeg 再拆成三條音軌
+    separate: bool,
+    /// 分軌時每個來源先取到這裡
+    src_buf: Vec<f32>,
+}
+
+/// 送給 FFmpeg 的聲道數：一般是立體聲；分軌時多了每個來源各自的立體聲
+pub fn channels_for(sources: usize, separate: bool) -> usize {
+    if separate && sources > 1 {
+        CHANNELS * (1 + sources)
+    } else {
+        CHANNELS
+    }
 }
 
 impl Timeline {
     pub fn new(specs: &[AudioSourceSpec], opener: Opener, log: LogFn, now: i64) -> Timeline {
+        Self::with_tracks(specs, opener, log, now, false)
+    }
+
+    /// separate：系統聲音、麥克風也各自輸出一份（分軌）
+    pub fn with_tracks(specs: &[AudioSourceSpec], opener: Opener, log: LogFn, now: i64, separate: bool) -> Timeline {
         let sources = specs
             .iter()
             .map(|spec| Source {
                 spec: spec.clone(),
-                label: if spec.loopback { "系統聲音" } else { "麥克風" },
+                label: if spec.loopback { tr!("系統聲音", "System audio") } else { tr!("麥克風", "Microphone") },
                 cap: None,
                 reopen_at: None,
                 pre: VecDeque::new(),
@@ -199,7 +218,8 @@ impl Timeline {
                 ring: Ring::new(RING_FRAMES),
             })
             .collect();
-        let mut t = Timeline { sources, opener, log, t0: None, first_video_at: None, t0_estimate: f64::INFINITY, mix_buf: vec![0.0; SAMPLE_RATE as usize * CHANNELS] };
+        let separate = separate && specs.len() > 1;
+        let mut t = Timeline { sources, opener, log, t0: None, first_video_at: None, t0_estimate: f64::INFINITY, mix_buf: vec![0.0; SAMPLE_RATE as usize * CHANNELS], separate, src_buf: Vec::new() };
         for i in 0..t.sources.len() {
             t.open(i, true, now);
         }
@@ -210,11 +230,11 @@ impl Timeline {
         self.sources
             .iter()
             .map(|s| match &s.cap {
-                Some(c) => format!("{}（{}）", s.label, c.name()),
-                None => format!("{}（無法使用，改錄靜音）", s.label),
+                Some(c) => trf!("{}（{}）", "{} ({})", s.label, c.name()),
+                None => trf!("{}（無法使用，改錄靜音）", "{} (unavailable, recording silence)", s.label),
             })
             .collect::<Vec<_>>()
-            .join("、")
+            .join(tr!("、", ", "))
     }
 
     /// 畫面時間零點已確定：之後不再需要 showinfo 的輸出
@@ -263,7 +283,10 @@ impl Timeline {
             // 睡眠一小時要補約 1.4 GB 的靜音；改為把零點往後移，錄影端也會在恢復後重開分段
             t0 += (behind as f64 * 1e7 / SAMPLE_RATE as f64 + 0.5).floor();
             self.t0 = Some(t0);
-            (self.log)(LogLevel::Warn, format!("聲音中斷約 {} 秒（電腦睡眠？），已跳過這段", (behind as f64 / SAMPLE_RATE as f64 + 0.5).floor()));
+            (self.log)(
+                LogLevel::Warn,
+                trf!("聲音中斷約 {} 秒（電腦睡眠？），已跳過這段", "Audio was interrupted for about {} s (computer asleep?); skipped that part", (behind as f64 / SAMPLE_RATE as f64 + 0.5).floor()),
+            );
         }
         let capped = frames_100ns((now - SILENCE_MARGIN_100NS) as f64 - t0);
         for s in &mut self.sources {
@@ -277,7 +300,7 @@ impl Timeline {
         match (self.opener)(&s.spec) {
             Ok(cap) => {
                 if !first {
-                    (self.log)(LogLevel::Info, format!("{}已恢復（{}）", s.label, cap.name()));
+                    (self.log)(LogLevel::Info, trf!("{}已恢復（{}）", "{} is back ({})", s.label, cap.name()));
                 }
                 s.cap = Some(cap);
                 s.reopen_at = None;
@@ -286,7 +309,7 @@ impl Timeline {
                 s.cap = None;
                 s.reopen_at = Some(now + 30_000_000);
                 if first {
-                    (self.log)(LogLevel::Warn, format!("{}無法開啟：{e}，這段先以靜音代替", s.label));
+                    (self.log)(LogLevel::Warn, trf!("{}無法開啟：{e}，這段先以靜音代替", "{} couldn't be opened: {e}; recording silence for now", s.label));
                 }
             }
         }
@@ -331,7 +354,7 @@ impl Timeline {
             match result {
                 Ok(()) => s.cap = Some(cap),
                 Err(e) => {
-                    (self.log)(LogLevel::Warn, format!("{}中斷：{e}，先以靜音代替並嘗試重新連接", s.label));
+                    (self.log)(LogLevel::Warn, trf!("{}中斷：{e}，先以靜音代替並嘗試重新連線", "{} disconnected: {e}; recording silence and trying to reconnect", s.label));
                     drop(cap);
                     s.reopen_at = Some(now + 10_000_000);
                 }
@@ -339,25 +362,43 @@ impl Timeline {
         }
     }
 
-    /// 所有來源都有資料的部分相加後回傳
+    /// 所有來源都有資料的部分相加後回傳（分軌時每張取樣是 混音、來源 1、來源 2…）
     fn mix(&mut self) -> &[u8] {
         let Some(n) = self.sources.iter().map(|s| s.ring.size).min() else { return &[] };
         if n == 0 {
             return &[];
         }
-        if self.mix_buf.len() < n * CHANNELS {
-            self.mix_buf.resize(n * CHANNELS, 0.0);
+        let width = channels_for(self.sources.len(), self.separate);
+        if self.mix_buf.len() < n * width {
+            self.mix_buf.resize(n * width, 0.0);
         }
-        for (i, s) in self.sources.iter_mut().enumerate() {
-            s.ring.take(&mut self.mix_buf, n, i > 0);
+        if self.separate {
+            if self.src_buf.len() < n * CHANNELS {
+                self.src_buf.resize(n * CHANNELS, 0.0);
+            }
+            for (i, s) in self.sources.iter_mut().enumerate() {
+                s.ring.take(&mut self.src_buf, n, false);
+                for f in 0..n {
+                    for c in 0..CHANNELS {
+                        let v = self.src_buf[f * CHANNELS + c];
+                        let row = f * width;
+                        self.mix_buf[row + c] = if i == 0 { v } else { self.mix_buf[row + c] + v };
+                        self.mix_buf[row + CHANNELS * (i + 1) + c] = v;
+                    }
+                }
+            }
+        } else {
+            for (i, s) in self.sources.iter_mut().enumerate() {
+                s.ring.take(&mut self.mix_buf, n, i > 0);
+            }
         }
-        let out = &self.mix_buf[..n * CHANNELS];
+        let out = &self.mix_buf[..n * width];
         // float32 little-endian（Windows / x86 皆為 little-endian），即 FFmpeg 的 f32le
         unsafe { std::slice::from_raw_parts(out.as_ptr() as *const u8, std::mem::size_of_val(out)) }
     }
 }
 
-/// 送往 FFmpeg 的 TCP 連線（非阻塞；寫不完的部分保留到下一次）
+/// 送往 FFmpeg 的 TCP 連線（不等待：寫不完的部分保留到下一次）
 struct Output {
     listener: TcpListener,
     sock: Option<TcpStream>,
@@ -412,7 +453,7 @@ impl Output {
         let rest = &bytes[off..];
         if self.pending.len() + rest.len() > MAX_PENDING_BYTES {
             if !self.overflow_warned {
-                (self.log)(LogLevel::Warn, "FFmpeg 沒有在讀取聲音資料，部分聲音已捨棄".into());
+                (self.log)(LogLevel::Warn, tr!("FFmpeg 沒有在讀取聲音資料，部分聲音已捨棄", "FFmpeg isn't reading the audio data; some audio was dropped").into());
             }
             self.overflow_warned = true;
             return;
@@ -443,6 +484,8 @@ enum Cmd {
 /// 錄一個分段期間的聲音管線
 pub struct AudioPipe {
     port: u16,
+    /// 送出的聲道數（分軌時 6）
+    channels: usize,
     desc: String,
     synced: Arc<AtomicBool>,
     tx: mpsc::Sender<Cmd>,
@@ -450,7 +493,9 @@ pub struct AudioPipe {
 }
 
 impl AudioPipe {
-    pub fn new(specs: Vec<AudioSourceSpec>, opener: Opener, log: LogFn) -> std::io::Result<AudioPipe> {
+    /// separate：系統聲音與麥克風分軌（兩個來源時才有作用）
+    pub fn new(specs: Vec<AudioSourceSpec>, opener: Opener, log: LogFn, separate: bool) -> std::io::Result<AudioPipe> {
+        let channels = channels_for(specs.len(), separate);
         let listener = TcpListener::bind("127.0.0.1:0")?;
         listener.set_nonblocking(true)?;
         let port = listener.local_addr()?.port();
@@ -459,7 +504,7 @@ impl AudioPipe {
         let (desc_tx, desc_rx) = mpsc::channel::<String>();
         let flag = synced.clone();
         let thread = std::thread::Builder::new().name("audio".into()).spawn(move || {
-            let mut tl = Timeline::new(&specs, opener, log.clone(), now_100ns());
+            let mut tl = Timeline::with_tracks(&specs, opener, log.clone(), now_100ns(), separate);
             let _ = desc_tx.send(tl.describe());
             let mut out = Output { listener, sock: None, pending: VecDeque::new(), overflow_warned: false, log };
             let mut next = Instant::now() + TICK;
@@ -488,8 +533,9 @@ impl AudioPipe {
                 let _ = sock.shutdown(std::net::Shutdown::Both);
             }
         })?;
-        let desc = desc_rx.recv().unwrap_or_default();
-        Ok(AudioPipe { port, desc, synced, tx, thread: std::sync::Mutex::new(Some(thread)) })
+        // 開啟音訊裝置卡住時不要一直等（錄影的開始、暫停、停止都在等這裡）：裝置稍後好了照樣會送聲音
+        let desc = desc_rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap_or_else(|_| tr!("音訊裝置沒有回應", "Audio device isn't responding").to_string());
+        Ok(AudioPipe { port, channels, desc, synced, tx, thread: std::sync::Mutex::new(Some(thread)) })
     }
 
     pub fn port(&self) -> u16 {
@@ -498,7 +544,7 @@ impl AudioPipe {
 
     /// FFmpeg 的音訊輸入參數
     pub fn input_args(&self) -> Vec<String> {
-        ["-thread_queue_size", "4096", "-f", "f32le", "-ar", &SAMPLE_RATE.to_string(), "-ac", &CHANNELS.to_string(), "-i", &format!("tcp://127.0.0.1:{}", self.port)]
+        ["-thread_queue_size", "4096", "-f", "f32le", "-ar", &SAMPLE_RATE.to_string(), "-ac", &self.channels.to_string(), "-i", &format!("tcp://127.0.0.1:{}", self.port)]
             .iter()
             .map(|s| s.to_string())
             .collect()
@@ -638,7 +684,7 @@ mod tests {
         let packets: Packets = Default::default();
         let fail = Arc::new(AtomicBool::new(false));
         let (log, _) = logs();
-        let spec = AudioSourceSpec { loopback: true, mic_id: String::new() };
+        let spec = AudioSourceSpec { loopback: true, mic_id: String::new(), app: String::new() };
         let mut tl = Timeline::new(&[spec], fake_opener(packets.clone(), fail), log, 0);
         assert_eq!(tl.describe(), "系統聲音（假裝置）");
         // 畫面零點 = 1000ms（第二張畫面延遲較大，不影響最小值）
@@ -666,7 +712,7 @@ mod tests {
         let packets: Packets = Default::default();
         let fail = Arc::new(AtomicBool::new(false));
         let (log, messages) = logs();
-        let specs = [AudioSourceSpec { loopback: true, mic_id: String::new() }, AudioSourceSpec { loopback: false, mic_id: String::new() }];
+        let specs = [AudioSourceSpec { loopback: true, mic_id: String::new(), app: String::new() }, AudioSourceSpec { loopback: false, mic_id: String::new(), app: String::new() }];
         let mut tl = Timeline::new(&specs, fake_opener(packets.clone(), fail), log, 0);
         tl.on_video_frame(0.0, 0);
         // 兩個來源共用同一個假封包佇列：第一個來源讀完全部，第二個只有靜音
@@ -681,11 +727,32 @@ mod tests {
     }
 
     #[test]
+    fn separate_tracks_interleave_mix_and_each_source() {
+        let packets: Packets = Default::default();
+        let fail = Arc::new(AtomicBool::new(false));
+        let (log, _) = logs();
+        let specs = [AudioSourceSpec { loopback: true, mic_id: String::new(), app: String::new() }, AudioSourceSpec { loopback: false, mic_id: String::new(), app: String::new() }];
+        let mut tl = Timeline::with_tracks(&specs, fake_opener(packets.clone(), fail), log, 0, true);
+        tl.on_video_frame(0.0, 0);
+        // 第一個來源（系統聲音）讀到這個封包，第二個（麥克風）只有靜音
+        packets.lock().unwrap().push_back((Some(seq(1, 48)), 48, Some(0)));
+        let out = floats(tl.flush_to(10 * MS));
+        assert_eq!(channels_for(2, true), 6);
+        assert_eq!(out.len(), 480 * 6);
+        // 每張：混音 L/R、系統 L/R、麥克風 L/R
+        assert_eq!(out[..6], [1.0, -1.0, 1.0, -1.0, 0.0, 0.0]);
+        assert_eq!(out[6 * 47..6 * 48], [48.0, -48.0, 48.0, -48.0, 0.0, 0.0]);
+        assert!(out[6 * 48..].iter().all(|v| *v == 0.0));
+        assert_eq!(channels_for(2, false), 2);
+        assert_eq!(channels_for(1, true), 2);
+    }
+
+    #[test]
     fn missing_device_records_silence_and_reopens() {
         let packets: Packets = Default::default();
         let fail = Arc::new(AtomicBool::new(true));
         let (log, messages) = logs();
-        let spec = AudioSourceSpec { loopback: false, mic_id: "x".into() };
+        let spec = AudioSourceSpec { loopback: false, mic_id: "x".into(), app: String::new() };
         let mut tl = Timeline::new(&[spec], fake_opener(packets, fail.clone()), log, 0);
         assert_eq!(tl.describe(), "麥克風（無法使用，改錄靜音）");
         tl.on_video_frame(0.0, 0);
@@ -710,7 +777,9 @@ mod tests {
         let packets: Packets = Default::default();
         let fail = Arc::new(AtomicBool::new(false));
         let (log, _) = logs();
-        let pipe = AudioPipe::new(vec![AudioSourceSpec { loopback: true, mic_id: String::new() }], fake_opener(packets, fail), log).unwrap();
+        let pipe = AudioPipe::new(vec![AudioSourceSpec { loopback: true, mic_id: String::new(), app: String::new() }], fake_opener(packets, fail), log, true).unwrap();
+        // 只有一個來源：分軌沒有作用，照樣是立體聲
+        assert!(pipe.input_args().windows(2).any(|w| w == ["-ac", "2"]));
         assert_eq!(pipe.describe(), "系統聲音（假裝置）");
         let args = pipe.input_args();
         assert_eq!(args.last().unwrap(), &format!("tcp://127.0.0.1:{}", pipe.port()));

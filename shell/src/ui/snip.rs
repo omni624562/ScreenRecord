@@ -1,6 +1,6 @@
 //! 在螢幕上框選截圖（系統匣「截圖 → 框選範圍或視窗」、Ctrl+Alt+A）：
 //! 先截下整個桌面（凍結），每個螢幕開一個全螢幕視窗顯示變暗的畫面，
-//! 拖曳框選範圍，或點一下截取游標下的視窗；Esc 或右鍵取消。
+//! 拖曳框選範圍，或點一下擷取游標下的視窗；Esc 或右鍵取消。
 //! 從凍結的畫面裁切，所以截到的就是框選時看到的樣子。
 
 use super::theme;
@@ -8,6 +8,7 @@ use super::UiApp;
 use eframe::egui::{self, pos2, vec2, Color32, CornerRadius, Key, Pos2, Rect, Sense, Stroke, StrokeKind, TextureHandle, TextureOptions, ViewportBuilder, ViewportCommand, ViewportId};
 use screenrecorder_core::app::SnipSource;
 use screenrecorder_core::types::{MonitorInfo, Rect as DRect};
+use screenrecorder_core::{tr, trf};
 
 /// 小於這個大小（實體像素）的拖曳當成點一下
 const MIN_DRAG: i32 = 4;
@@ -35,7 +36,7 @@ enum Done {
     Save(DRect),
 }
 
-/// 收到框選請求：取走凍結的畫面，在背景切成每個螢幕的材質
+/// 收到框選要求：取走凍結的畫面，在背景切成每個螢幕的材質
 pub fn start(app: &mut UiApp, ctx: &egui::Context) {
     let Some(src) = app.core.take_snip() else { return };
     if app.snip.is_some() {
@@ -69,7 +70,7 @@ pub fn start(app: &mut UiApp, ctx: &egui::Context) {
             }
             None => {
                 finish(app, &ctx, Done::Cancel);
-                report(app, Err("讀不到截下的畫面".into()));
+                report(app, Err(tr!("讀不到截下的畫面", "Couldn't read the captured screen").into()));
             }
         }
     });
@@ -110,7 +111,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         for i in 0..s.mons.len() {
             let m = &s.mons[i];
             let builder = ViewportBuilder::default()
-                .with_title("框選截圖")
+                .with_title(tr!("框選截圖", "Select area"))
                 .with_decorations(false)
                 .with_taskbar(false)
                 .with_always_on_top()
@@ -196,7 +197,7 @@ fn overlay(ui: &mut egui::Ui, s: &mut Snip, i: usize) -> Option<Done> {
             let accent = theme::pal_ctx(ui.ctx()).accent;
             painter.rect_stroke(h, CornerRadius::ZERO, Stroke::new(2.0, accent), StrokeKind::Outside);
             let r = selection.or(window).unwrap_or_default();
-            let text = if selection.is_some() { format!("{} × {}", r.width, r.height) } else { format!("視窗 {} × {}・點一下截取", r.width, r.height) };
+            let text = if selection.is_some() { format!("{} × {}", r.width, r.height) } else { trf!("視窗 {} × {}・點一下擷取", "Window {} × {} · Click to capture", r.width, r.height) };
             let g = painter.layout_no_wrap(text, theme::font_bold(13.0), Color32::WHITE);
             let mut at = h.min + vec2(0.0, -g.size().y - 10.0);
             if at.y < rect.min.y + 4.0 {
@@ -211,7 +212,11 @@ fn overlay(ui: &mut egui::Ui, s: &mut Snip, i: usize) -> Option<Done> {
         }
     }
     // 上方的說明
-    let g = painter.layout_no_wrap("拖曳框選範圍，或點一下截取視窗　　Esc 或右鍵取消".to_string(), theme::font(14.0), Color32::WHITE);
+    let g = painter.layout_no_wrap(
+        tr!("拖曳框選範圍，或點一下擷取視窗　　Esc 或右鍵取消", "Drag to select an area, or click a window to capture it    Esc or right-click to cancel").to_string(),
+        theme::font(14.0),
+        Color32::WHITE,
+    );
     let tip = Rect::from_center_size(pos2(rect.center().x, rect.min.y + 40.0), g.size() + vec2(28.0, 16.0));
     if !pointer.is_some_and(|p| tip.expand(20.0).contains(p)) || s.drag.is_some() {
         painter.rect_filled(tip, CornerRadius::same(18), Color32::from_black_alpha(190));
@@ -255,14 +260,18 @@ fn report(app: &mut UiApp, res: Result<(String, bool), String>) {
         Ok((path, copied)) => {
             if !app.visible {
                 let name = super::dialogs::file_name(&path);
-                app.core.notify("已截圖", &if copied { format!("已複製到剪貼簿，存成 {name}") } else { format!("已存成 {name}") }, false);
+                app.core.notify(
+                    tr!("已截圖", "Screenshot taken"),
+                    &if copied { trf!("已複製到剪貼簿，存成 {name}", "Copied to clipboard and saved as {name}") } else { trf!("已存成 {name}", "Saved as {name}") },
+                    false,
+                );
             }
         }
         Err(e) => {
             if app.visible {
-                app.toast(format!("截圖失敗：{e}"), true);
+                app.toast(trf!("截圖失敗：{e}", "Screenshot failed: {e}"), true);
             } else {
-                app.core.notify("截圖失敗", &e, true);
+                app.core.notify(tr!("截圖失敗", "Screenshot failed"), &e, true);
             }
         }
     }

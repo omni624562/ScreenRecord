@@ -67,6 +67,7 @@ fn read_full(reader: &mut impl Read, buf: &mut [u8]) -> usize {
 #[cfg(windows)]
 mod win {
     use super::*;
+    use crate::{tr, trf};
     use std::time::Duration;
     use windows::Win32::Media::Audio::{
         eConsole, eRender, IAudioClient, IAudioRenderClient, IMMDeviceEnumerator, MMDeviceEnumerator, AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM,
@@ -84,9 +85,10 @@ mod win {
     pub fn play(mut reader: impl Read, stop: Arc<AtomicBool>, volume: Volume, started: impl FnOnce(f64)) -> Result<(), String> {
         unsafe {
             let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
-            let en: IMMDeviceEnumerator = CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL).map_err(|e| format!("無法建立音訊裝置列舉器 ({})", hex(&e)))?;
-            let device = en.GetDefaultAudioEndpoint(eRender, eConsole).map_err(|_| "找不到播放裝置".to_string())?;
-            let client: IAudioClient = device.Activate(CLSCTX_ALL, None).map_err(|e| format!("Activate 失敗 ({})", hex(&e)))?;
+            let en: IMMDeviceEnumerator =
+                CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL).map_err(|e| trf!("無法建立音訊裝置列舉器 ({})", "Couldn't create the audio device enumerator ({})", hex(&e)))?;
+            let device = en.GetDefaultAudioEndpoint(eRender, eConsole).map_err(|_| tr!("找不到播放裝置", "Playback device not found").to_string())?;
+            let client: IAudioClient = device.Activate(CLSCTX_ALL, None).map_err(|e| trf!("Activate 失敗 ({})", "Activate failed ({})", hex(&e)))?;
             let fmt = WAVEFORMATEX {
                 wFormatTag: 3, // WAVE_FORMAT_IEEE_FLOAT
                 nChannels: CHANNELS as u16,
@@ -97,9 +99,9 @@ mod win {
                 cbSize: 0,
             };
             let flags = AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY;
-            client.Initialize(AUDCLNT_SHAREMODE_SHARED, flags, BUFFER_100NS, 0, &fmt, None).map_err(|e| format!("Initialize 失敗 ({})", hex(&e)))?;
-            let render: IAudioRenderClient = client.GetService().map_err(|e| format!("GetService 失敗 ({})", hex(&e)))?;
-            let size = client.GetBufferSize().map_err(|e| format!("GetBufferSize 失敗 ({})", hex(&e)))?;
+            client.Initialize(AUDCLNT_SHAREMODE_SHARED, flags, BUFFER_100NS, 0, &fmt, None).map_err(|e| trf!("Initialize 失敗 ({})", "Initialize failed ({})", hex(&e)))?;
+            let render: IAudioRenderClient = client.GetService().map_err(|e| trf!("GetService 失敗 ({})", "GetService failed ({})", hex(&e)))?;
+            let size = client.GetBufferSize().map_err(|e| trf!("GetBufferSize 失敗 ({})", "GetBufferSize failed ({})", hex(&e)))?;
             let latency = client.GetStreamLatency().unwrap_or(0) as f64 / 1e7;
             let mut bytes = vec![0u8; size as usize * BYTES_PER_FRAME];
             let mut running = false;
@@ -126,7 +128,7 @@ mod win {
                     }
                 }
                 if !running {
-                    client.Start().map_err(|e| format!("Start 失敗 ({})", hex(&e)))?;
+                    client.Start().map_err(|e| trf!("Start 失敗 ({})", "Start failed ({})", hex(&e)))?;
                     running = true;
                     if let Some(f) = started.take() {
                         f(latency + padding as f64 / SAMPLE_RATE as f64);

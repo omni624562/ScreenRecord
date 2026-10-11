@@ -1,11 +1,12 @@
 //! 開發用（只在 debug 版）：自動開啟某個畫面、模擬操作並截圖，在 Linux 的 Xvfb 上檢查介面。
-//! - SCREENRECORDER_DEV：要開啟的畫面（library、shots、changelog、export:<路徑>、edit:<路徑>、view:<路徑>、monitors（模擬兩個螢幕）、snip:<PNG>（用這張圖當凍結的桌面開啟框選截圖）、hotkeys（模擬已登記快捷鍵）、ed:<剪輯視窗指令>），以 ; 分隔
+//! - SCREENRECORDER_DEV：要開啟的畫面（library、shots、changelog、notes（講稿小視窗）、schedule（排程錄影）、after:<路徑>（錄完自動處理）、follow:<標題>（只錄這個視窗）、record:<秒>（錄幾秒）、replay:<保留秒數>,<幾秒後存下>[,<再幾秒停止>]（重播緩衝）、export:<路徑>、edit:<路徑>、view:<路徑>、whatsnew（新功能介紹）、monitors（模擬兩個螢幕）、snip:<PNG>（用這張圖當凍結的桌面開啟框選截圖）、hotkeys（模擬已登記快速鍵）、settings:<record|audio|save|keys|advanced>、ed:<剪輯視窗指令>），以 ; 分隔
 //! - SCREENRECORDER_INPUT：開啟後依序模擬的操作，以 ; 分隔：
-//!   wait:毫秒、click:x,y、drag:x0,y0,x1,y1、wheel:x,y,dy、key:Space（可加 ctrl+、alt+、shift+）、type:文字、shot:路徑
+//!   wait:毫秒、click:x,y、rclick:x,y（右鍵）、move:x,y、drag:x0,y0,x1,y1、wheel:x,y,dy、key:Space（可加 ctrl+、alt+、shift+）、type:文字、shot:路徑
 //! - SCREENRECORDER_SHOT：最後截圖存檔的路徑（存好後結束）；SCREENRECORDER_SHOT_AFTER：開始後幾毫秒截圖（預設 3000）
 
 use super::{EntryAction, UiApp};
 use eframe::egui::{self, pos2, Event, Key, Modifiers, PointerButton, Pos2};
+use screenrecorder_core::tr;
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
@@ -50,6 +51,19 @@ fn parse_script(s: &str) -> VecDeque<Step> {
                 out.push_back(Step::Events(vec![button(p, false, Modifiers::NONE)]));
                 out.push_back(Step::Wait(Duration::from_millis(200)));
             }
+            "rclick" => {
+                let n = nums(v);
+                let p = pos2(n[0], n[1]);
+                let b = |pressed| Event::PointerButton { pos: p, button: PointerButton::Secondary, pressed, modifiers: Modifiers::NONE };
+                out.push_back(Step::Events(vec![Event::PointerMoved(p)]));
+                out.push_back(Step::Events(vec![b(true)]));
+                out.push_back(Step::Events(vec![b(false)]));
+                out.push_back(Step::Wait(Duration::from_millis(200)));
+            }
+            "move" => {
+                let n = nums(v);
+                out.push_back(Step::Events(vec![Event::PointerMoved(pos2(n[0], n[1]))]));
+            }
             "drag" => {
                 let n = nums(v);
                 let (a, b) = (pos2(n[0], n[1]), pos2(n[2], n[3]));
@@ -75,7 +89,8 @@ fn parse_script(s: &str) -> VecDeque<Step> {
                     if let Some(n) = name.strip_prefix("shift+") {
                         (m, name) = (m | Modifiers::SHIFT, n);
                     } else if let Some(n) = name.strip_prefix("ctrl+") {
-                        (m, name) = (m | Modifiers::CTRL, n);
+                        // Windows 上 Ctrl 同時是 command（egui 的快速鍵用 command 判斷）
+                        (m, name) = (m | Modifiers::CTRL | Modifiers::COMMAND, n);
                     } else if let Some(n) = name.strip_prefix("alt+") {
                         (m, name) = (m | Modifiers::ALT, n);
                     } else {
@@ -95,7 +110,7 @@ fn parse_script(s: &str) -> VecDeque<Step> {
     out
 }
 
-/// 送出腳本的下一步（每一格一步）
+/// 送出測試步驟的下一步（每一格一步）
 pub fn input(app: &mut UiApp, ctx: &egui::Context, raw: &mut egui::RawInput) {
     let Some(ready) = app.dev.script_ready else {
         return;
@@ -139,10 +154,82 @@ pub fn tick(app: &mut UiApp, ctx: &egui::Context) {
                     _ if a == "library" => app.library = Some(super::library_dialog::LibraryDialog::new(super::library_dialog::Kind::Video)),
                     _ if a == "shots" => app.library = Some(super::library_dialog::LibraryDialog::new(super::library_dialog::Kind::Shot)),
                     _ if a == "changelog" => app.changelog_open = true,
+                    _ if a == "notes" => super::notes::toggle(app),
+                    _ if a == "schedule" => super::schedule::open(app),
+                    // 只錄標題含有這段文字的視窗
+                    Some(("follow", t)) => {
+                        if let Some(w) = screenrecorder_core::winui::app_windows().into_iter().find(|w| w.title.contains(t)) {
+                            app.s.source_type = super::settings::SourceType::Region;
+                            app.s.region = screenrecorder_core::types::Rect { x: w.rect.x, y: w.rect.y, width: w.rect.width & !1, height: w.rect.height & !1 };
+                            app.s.follow_window = Some(super::settings::FollowWindow { id: w.id, title: w.title.clone() });
+                        }
+                    }
+                    // 用目前的設定錄幾秒後停止
+                    Some(("record", secs)) => {
+                        let secs: u64 = secs.parse().unwrap_or(5);
+                        let config = app.s.record_config(&app.env);
+                        let core = app.core.clone();
+                        app.spawn(
+                            async move {
+                                screenrecorder_core::actions::record_start(&core, config).await?;
+                                tokio::time::sleep(std::time::Duration::from_secs(secs)).await;
+                                core.recorder.stop(None).await.map(|_| ())
+                            },
+                            |app, r: screenrecorder_core::Result<()>| {
+                                if let Err(e) = r {
+                                    app.toast(e.message().to_string(), true);
+                                }
+                            },
+                        );
+                    }
+                    // 重播緩衝：replay:保留秒數,幾秒後存下[,存下後幾秒停止]
+                    Some(("replay", v)) => {
+                        let n: Vec<u64> = v.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+                        let (keep, save_at, stop_after) = (n.first().copied().unwrap_or(30), n.get(1).copied().unwrap_or(15), n.get(2).copied().unwrap_or(3));
+                        let config = screenrecorder_core::types::RecordConfig { replay_sec: keep as u32, ..app.s.record_config(&app.env) };
+                        let core = app.core.clone();
+                        app.spawn(
+                            async move {
+                                core.replay_start(config).await?;
+                                tokio::time::sleep(std::time::Duration::from_secs(save_at)).await;
+                                let res = core.replay_save(false).await?;
+                                screenrecorder_core::info!("[dev] 存下重播：{}", res.message);
+                                tokio::time::sleep(std::time::Duration::from_secs(stop_after)).await;
+                                core.recorder.stop(None).await.map(|_| ())
+                            },
+                            |app, r: screenrecorder_core::Result<()>| {
+                                if let Err(e) = r {
+                                    app.toast(e.message().to_string(), true);
+                                }
+                            },
+                        );
+                    }
+                    Some(("after", p)) => {
+                        let core = app.core.clone();
+                        app.spawn(core.after_record(p.to_string()), |_, _| {});
+                    }
+                    Some(("notes", c)) => super::notes::dev(app, c),
+                    _ if a == "whatsnew" => {
+                        app.whats_new_checked = true;
+                        app.whats_new_open = true;
+                    }
                     _ if a == "monitors" => fake_monitors(app),
-                    // 模擬系統匣已登記快捷鍵（Linux 上沒有系統匣）
-                    _ if a == "hotkeys" => app.env.hotkeys = Some(screenrecorder_core::types::HotkeyStatus { record: true, pause: true, shot: true, snip: false }),
+                    // 名稱很長的音訊裝置（檢查設定視窗不會被撐寬）
+                    _ if a == "mics" => fake_mics(app),
+                    // 模擬系統匣已登記快速鍵（Linux 上沒有系統匣）
+                    _ if a == "hotkeys" => app.env.hotkeys = Some(screenrecorder_core::types::HotkeyStatus { record: true, pause: true, shot: true, snip: false, mark: true, pen: true, replay: true }),
                     Some(("snip", p)) => fake_snip(app, p),
+                    Some(("settings", p)) => {
+                        use super::settings_dialog::{open, Page};
+                        let page = match p {
+                            "audio" => Page::Audio,
+                            "save" => Page::Save,
+                            "keys" => Page::Keys,
+                            "advanced" => Page::Advanced,
+                            _ => Page::Record,
+                        };
+                        open(app, page);
+                    }
                     _ => {}
                 }
             }
@@ -204,6 +291,17 @@ fn fake_monitors(app: &mut UiApp) {
     app.env.monitors = vec![m(0, 0), m(1, 1920)];
     app.env.desktop = Rect { x: 0, y: 0, width: 3840, height: 1080 };
     app.s.fix_monitor(&app.env);
+}
+
+fn fake_mics(app: &mut UiApp) {
+    use screenrecorder_core::types::AudioDevice;
+    let d = |id: &str, name: &str, is_default: bool| AudioDevice { id: id.into(), name: name.into(), is_default };
+    app.env.audio.render = Some(tr!("耳機 (JBL Tune 720BT Hands-Free AG Audio 立體聲)", "Headphones (JBL Tune 720BT Hands-Free AG Audio Stereo)").into());
+    app.env.audio.captures = vec![
+        d("m1", tr!("麥克風排列 (適用於數位麥克風的 Intel® 智慧型音效技術)", "Microphone Array (Intel® Smart Sound Technology for Digital Microphones)"), true),
+        d("m2", tr!("耳機 (JBL Tune 720BT Hands-Free AG Audio)", "Headset (JBL Tune 720BT Hands-Free AG Audio)"), false),
+        d("m3", "USB Audio Device", false),
+    ];
 }
 
 /// 用一張圖當凍結的桌面開啟框選截圖（Linux 上無法真的截下桌面）；模擬兩個視窗供點選

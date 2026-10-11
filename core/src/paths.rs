@@ -1,4 +1,4 @@
-//! 資料夾位置與時間戳。
+//! 資料夾位置與時間戳記。
 
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;

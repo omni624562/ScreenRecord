@@ -1,4 +1,4 @@
-//! 單調時鐘（100ns 單位）。Windows 上是 QPC：WASAPI 封包時間戳與 FFmpeg 的 av_gettime_relative() 都以 QPC 為基準，
+//! 單調時鐘（100ns 單位）。Windows 上是 QPC：WASAPI 封包時間戳記與 FFmpeg 的 av_gettime_relative() 都以 QPC 為基準，
 //! 用同一個時鐘才能讓聲音與畫面長時間對齊。其他平台（測試）用 Instant。
 
 #[cfg(windows)]

@@ -4,6 +4,7 @@ use super::theme::{self, Btn};
 use super::UiApp;
 use eframe::egui::{self, vec2, Align, Align2, Color32, CornerRadius, Id, Layout, RichText};
 use screenrecorder_core::version::{APP_VERSION, CHANGELOG};
+use screenrecorder_core::{tr, trf};
 use std::time::Instant;
 
 /// 送出時呼叫：回傳 None 關閉、Some(錯誤) 顯示在對話框裡；需要等待時自己設定 ask.busy 並在完成後處理
@@ -22,6 +23,10 @@ pub struct Ask {
     /// 送出中（等待伺服器）：按鈕停用、不能關閉
     pub busy: bool,
     pub on_ok: Option<Submit>,
+    /// 第二個動作（例如「刪除」）：放在確定按鈕左邊
+    pub alt: Option<(String, Submit)>,
+    /// 取消按鈕的字（None = 取消）
+    pub cancel: Option<String>,
     focused: bool,
 }
 
@@ -39,8 +44,22 @@ impl Ask {
             error: None,
             busy: false,
             on_ok: Some(Box::new(on_ok)),
+            alt: None,
+            cancel: None,
             focused: false,
         }
+    }
+
+    /// 加上第二個動作按鈕
+    pub fn with_alt(mut self, label: impl Into<String>, f: impl FnOnce(&mut UiApp, String) + Send + 'static) -> Ask {
+        self.alt = Some((label.into(), Box::new(f)));
+        self
+    }
+
+    /// 改「取消」按鈕的字（例如「稍後」）
+    pub fn with_cancel(mut self, label: impl Into<String>) -> Ask {
+        self.cancel = Some(label.into());
+        self
     }
 
     pub fn input(title: impl Into<String>, label: impl Into<String>, value: impl Into<String>, ok: impl Into<String>, on_ok: impl FnOnce(&mut UiApp, String) + Send + 'static) -> Ask {
@@ -55,6 +74,7 @@ pub fn show_ask(app: &mut UiApp, ctx: &egui::Context) {
     let Some(ask) = app.ask.as_mut() else { return };
     let mut submit = false;
     let mut cancel = false;
+    let mut alt = false;
     let modal = egui::Modal::new(Id::new("ask")).frame(theme::modal_frame(ctx)).show(ctx, |ui| {
         ui.set_width(420.0);
         let p = theme::pal(ui);
@@ -71,7 +91,7 @@ pub fn show_ask(app: &mut UiApp, ctx: &egui::Context) {
                     ui.label(RichText::new(name).font(theme::mono(12.5)));
                 }
                 if ask.list.len() > 12 {
-                    ui.label(theme::muted(ui, format!("…以及另外 {} 個", ask.list.len() - 12)));
+                    ui.label(theme::muted(ui, trf!("…以及另外 {} 個", "…and {} more", ask.list.len() - 12)));
                 }
             });
         }
@@ -97,7 +117,13 @@ pub fn show_ask(app: &mut UiApp, ctx: &egui::Context) {
             if ok.clicked() {
                 submit = true;
             }
-            if Btn::new("取消").ghost().enabled(!ask.busy).show(ui).clicked() {
+            if let Some((label, _)) = &ask.alt {
+                if Btn::new(label).enabled(!ask.busy).show(ui).clicked() {
+                    alt = true;
+                }
+            }
+            let cancel_label = ask.cancel.clone().unwrap_or_else(|| tr!("取消", "Cancel").into());
+            if Btn::new(cancel_label).ghost().enabled(!ask.busy).show(ui).clicked() {
                 cancel = true;
             }
         });
@@ -105,6 +131,13 @@ pub fn show_ask(app: &mut UiApp, ctx: &egui::Context) {
             submit = true;
         }
     });
+    if alt && !ask.busy {
+        if let Some((_, f)) = ask.alt.take() {
+            app.ask = None;
+            f(app, String::new());
+        }
+        return;
+    }
     if (modal.should_close() || cancel) && !ask.busy && !submit {
         app.ask = None;
         return;
@@ -148,10 +181,10 @@ pub fn changelog(app: &mut UiApp, ctx: &egui::Context) {
         let p = theme::pal(ui);
         ui.set_width((ctx.content_rect().width() - 80.0).min(720.0));
         ui.horizontal(|ui| {
-            ui.label(RichText::new("更新說明").font(theme::font_bold(17.0)));
-            ui.label(theme::muted(ui, format!("目前版本 {APP_VERSION}")));
+            ui.label(RichText::new(tr!("更新說明", "Release notes")).font(theme::font_bold(17.0)));
+            ui.label(theme::muted(ui, trf!("目前版本 {APP_VERSION}", "Current version {APP_VERSION}")));
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if Btn::new("關閉").ghost().small().show(ui).clicked() {
+                if Btn::new(tr!("關閉", "Close")).ghost().small().show(ui).clicked() {
                     open = false;
                 }
             });
@@ -168,7 +201,7 @@ pub fn changelog(app: &mut UiApp, ctx: &egui::Context) {
                     ui.horizontal(|ui| {
                         ui.label(RichText::new(plain(h)).font(theme::font_bold(16.0)));
                         if h.starts_with(APP_VERSION) {
-                            theme::chip(ui, "目前版本", theme::Tone::Accent, false);
+                            theme::chip(ui, tr!("目前版本", "Current version"), theme::Tone::Accent, false);
                         }
                     });
                 } else if let Some(h) = line.strip_prefix("### ") {
@@ -240,6 +273,11 @@ pub fn base_name(name: &str) -> String {
     }
 }
 
+/// 圖片（截圖）
+pub fn is_image(path: &str) -> bool {
+    path.to_lowercase().ends_with(".png")
+}
+
 pub fn file_name(path: &str) -> String {
     path.rsplit(['\\', '/']).next().unwrap_or(path).to_string()
 }
@@ -274,16 +312,16 @@ pub fn entry_time(name: &str, mtime: f64) -> Option<chrono::NaiveDateTime> {
 pub fn day_label(d: chrono::NaiveDate, today: chrono::NaiveDate) -> String {
     use chrono::Datelike;
     if d == today {
-        return "今天".into();
+        return tr!("今天", "Today").into();
     }
     if today.pred_opt() == Some(d) {
-        return "昨天".into();
+        return tr!("昨天", "Yesterday").into();
     }
-    let wd = ["一", "二", "三", "四", "五", "六", "日"][d.weekday().num_days_from_monday() as usize];
+    let wd = tr!(["一", "二", "三", "四", "五", "六", "日"], ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"])[d.weekday().num_days_from_monday() as usize];
     if d.year() == today.year() {
-        format!("{}（{wd}）", d.format("%m/%d"))
+        trf!("{}（{wd}）", "{} ({wd})", d.format("%m/%d"))
     } else {
-        format!("{}（{wd}）", d.format("%Y/%m/%d"))
+        trf!("{}（{wd}）", "{} ({wd})", d.format(tr!("%Y/%m/%d", "%m/%d/%Y")))
     }
 }
 
@@ -310,10 +348,8 @@ pub fn date_labels<'a>(items: impl Iterator<Item = (&'a str, f64)> + Clone) -> s
     time_labels(items)
         .into_iter()
         .map(|(n, (d, t))| {
-            let day = match day_label(d, today) {
-                l if l == "今天" || l == "昨天" => l,
-                _ => d.format("%m/%d").to_string(),
-            };
+            // 今天、昨天寫字，其他只寫日期
+            let day = if d == today || today.pred_opt() == Some(d) { day_label(d, today) } else { d.format("%m/%d").to_string() };
             (n, format!("{day} {t}"))
         })
         .collect()

@@ -1,12 +1,13 @@
 //! 錄影清單：加速版歸到原始錄影底下，支援搜尋、篩選、排序、分頁、改名。
 //! 讀取影片資訊（長度、解析度、有無聲音）要執行 FFmpeg，只對需要的檔案做，並快取結果。
 
-use crate::args::parse_media_info;
+use crate::args::{measure_duration_args, parse_measured_duration, parse_media_info};
 use crate::error::{Error, Result};
 use crate::format::{check_recording_name, parse_export_name, strip_mp4};
 use crate::paths::mtime_ms;
 use crate::process::run;
 use crate::types::{ExportFormat, ExportInfo, LibraryEntry, LibraryFilter, LibraryPage, LibraryQuery, LibrarySort, MediaInfo, LIBRARY_ROW_MAIN_PX, LIBRARY_ROW_SUB_PX};
+use crate::{tr, trf};
 use regex::Regex;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -42,9 +43,13 @@ impl MediaCache {
                 // 沒指定輸出時 ffmpeg 會以代碼 1 結束，但 stderr 已含完整的串流資訊
                 let r = run(ffmpeg, &["-hide_banner", "-i", path], Duration::from_secs(15)).await;
                 if r.timed_out || (r.code == -1 && r.stderr.is_empty()) {
-                    return Err(Error::other("無法讀取影片資訊"));
+                    return Err(Error::other(tr!("無法讀取影片資訊", "Couldn't read the video info")));
                 }
-                let p = parse_media_info(&r.stderr);
+                let mut p = parse_media_info(&r.stderr);
+                if p.duration_sec.is_none() && p.width.is_some() {
+                    let m = run(ffmpeg, &measure_duration_args(path), Duration::from_secs(15)).await;
+                    p.duration_sec = parse_measured_duration(&m.stderr);
+                }
                 Ok::<_, Error>(MediaInfo {
                     path: path.to_string(),
                     name: file_name(path),
@@ -55,6 +60,8 @@ impl MediaCache {
                     height: p.height,
                     fps: p.fps,
                     has_audio: Some(p.has_audio),
+                    chapters: p.chapters,
+                    audio_tracks: p.audio_tracks,
                 })
             })
             .await;
@@ -88,7 +95,7 @@ fn file_name(path: &str) -> String {
 }
 
 static CUT_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)_cut(_\d+)?\.mp4$").unwrap());
-static VIDEO_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)\.(mp4|gif|png)$").unwrap());
+static VIDEO_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)\.(mp4|gif|webp|png)$").unwrap());
 static IMAGE_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)\.png$").unwrap());
 
 /// 截圖（PNG）：清單上單獨一筆，沒有加速版
@@ -104,7 +111,8 @@ fn strip_ext(name: &str) -> String {
         strip_mp4(name)
     }
 }
-static GIF_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)\.gif$").unwrap());
+/// 動圖（GIF、WebP）
+static GIF_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)\.(gif|webp)$").unwrap());
 
 pub fn is_cut_name(name: &str) -> bool {
     CUT_RE.is_match(name)
@@ -146,8 +154,8 @@ pub async fn scan(cache: &MediaCache, dir: &Path) -> Vec<LibraryEntry> {
     let mut derived: Vec<(String, ExportInfo)> = Vec::new();
     for f in &files {
         let mut e = parse_export_name(&f.name);
-        // 原速 GIF：先找同名的 MP4（Rec_X_cut_2.gif → Rec_X_cut_2.mp4），找不到才用去掉 _N 的名稱
-        if let Some(p) = e.as_mut().filter(|p| p.format == ExportFormat::Gif && p.speed == 1.0) {
+        // 原速動圖：先找同名的 MP4（Rec_X_cut_2.gif → Rec_X_cut_2.mp4），找不到才用去掉 _N 的名稱
+        if let Some(p) = e.as_mut().filter(|p| p.format.is_animation() && p.speed == 1.0) {
             let exact = GIF_RE.replace(&f.name, ".mp4").into_owned();
             if by_name.contains_key(&exact.to_lowercase()) {
                 p.base = exact;
@@ -159,9 +167,9 @@ pub async fn scan(cache: &MediaCache, dir: &Path) -> Vec<LibraryEntry> {
             }
             _ if !GIF_RE.is_match(&f.name) => {
                 index.insert(f.name.to_lowercase(), entries.len());
-                entries.push(LibraryEntry { media: f.clone(), exports: vec![] });
+                entries.push(LibraryEntry { media: f.clone(), exports: vec![], hits: vec![] });
             }
-            _ => {} // 找不到原片的 GIF 不列出
+            _ => {} // 找不到原片的動圖不列出
         }
     }
     for (base, x) in derived {
@@ -171,7 +179,13 @@ pub async fn scan(cache: &MediaCache, dir: &Path) -> Vec<LibraryEntry> {
     }
     for e in &mut entries {
         e.exports.sort_by(|p, q| {
-            p.speed.total_cmp(&q.speed).then(((p.format == Some(ExportFormat::Gif)) as u8).cmp(&((q.format == Some(ExportFormat::Gif)) as u8))).then(p.media.mtime.total_cmp(&q.media.mtime))
+            // 同一個倍率：MP4、GIF、WebP
+            let rank = |f: Option<ExportFormat>| match f {
+                Some(ExportFormat::Gif) => 1u8,
+                Some(ExportFormat::Webp) => 2,
+                _ => 0,
+            };
+            p.speed.total_cmp(&q.speed).then(rank(p.format).cmp(&rank(q.format))).then(p.media.mtime.total_cmp(&q.media.mtime))
         });
     }
     entries
@@ -186,7 +200,41 @@ async fn with_info(cache: &MediaCache, ffmpeg: Option<&Path>, e: LibraryEntry) -
         let m = cache.probe(ff, &x.media.path).await.unwrap_or(x.media);
         exports.push(ExportInfo { media: m, ..x });
     }
-    LibraryEntry { media, exports }
+    LibraryEntry { media, exports, hits: e.hits }
+}
+
+/// 資料夾裡的字幕檔：檔名（不含 .srt，小寫）→ 路徑
+fn srt_files(dir: &Path) -> HashMap<String, Vec<PathBuf>> {
+    let mut map: HashMap<String, Vec<PathBuf>> = HashMap::new();
+    for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let p = e.path();
+        let Some(name) = p.file_name().and_then(|n| n.to_str()) else { continue };
+        if let Some(stem) = name.to_lowercase().strip_suffix(".srt") {
+            map.entry(stem.to_string()).or_default().push(p.clone());
+        }
+    }
+    map
+}
+
+/// 這支影片的字幕裡說過的話：同名的 SRT（另存時可能是「名稱_2.srt」；有同名的另一支影片時那是它的）
+fn speech_hits(srts: &HashMap<String, Vec<PathBuf>>, videos: &std::collections::HashSet<String>, video_name: &str, query: &str) -> Vec<crate::types::SpeechHit> {
+    static NUM: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^_\d+$").unwrap());
+    let stem = strip_ext(video_name).to_lowercase();
+    let mut hits = vec![];
+    for (s, paths) in srts {
+        let Some(rest) = s.strip_prefix(&stem) else { continue };
+        if !rest.is_empty() && (!NUM.is_match(rest) || videos.contains(s)) {
+            continue;
+        }
+        for p in paths {
+            if let Ok(text) = std::fs::read_to_string(p) {
+                hits.extend(crate::subtitles::search(&text, query));
+            }
+        }
+    }
+    hits.sort_by(|a, b| a.start.total_cmp(&b.start));
+    hits.dedup_by(|a, b| a.start == b.start && a.text == b.text);
+    hits
 }
 
 /// 同時最多 limit 個讀取影片資訊的工作
@@ -213,7 +261,7 @@ pub fn page_starts(list: &[LibraryEntry], fit_px: f64) -> Vec<usize> {
     let mut starts = vec![0];
     let mut used = 0.0;
     for (i, e) in list.iter().enumerate() {
-        let h = LIBRARY_ROW_MAIN_PX + e.exports.len() as f64 * LIBRARY_ROW_SUB_PX;
+        let h = LIBRARY_ROW_MAIN_PX + (e.exports.len() + e.hits.len().min(crate::types::LIBRARY_HITS_SHOWN)) as f64 * LIBRARY_ROW_SUB_PX;
         if used > 0.0 && used + h > fit_px {
             starts.push(i);
             used = 0.0;
@@ -246,7 +294,15 @@ pub async fn list_library(cache: &Arc<MediaCache>, ffmpeg: Option<&Path>, dir: &
     let mut list = scan(cache, dir).await;
 
     if let Some(text) = q.q.as_deref().map(|t| t.trim().to_lowercase()).filter(|t| !t.is_empty()) {
-        list.retain(|e| e.media.name.to_lowercase().contains(&text) || local_date(e.media.mtime).contains(&text) || e.exports.iter().any(|x| x.media.name.to_lowercase().contains(&text)));
+        // 也找字幕裡說過的話（影片旁邊的 SRT）
+        let srts = srt_files(dir);
+        let videos: std::collections::HashSet<String> = list.iter().map(|e| strip_ext(&e.media.name).to_lowercase()).collect();
+        for e in list.iter_mut().filter(|e| !is_image_name(&e.media.name)) {
+            e.hits = speech_hits(&srts, &videos, &e.media.name, &text);
+        }
+        list.retain(|e| {
+            e.media.name.to_lowercase().contains(&text) || local_date(e.media.mtime).contains(&text) || e.exports.iter().any(|x| x.media.name.to_lowercase().contains(&text)) || !e.hits.is_empty()
+        });
     }
     // 錄影與截圖分開列：除了「截圖」，其他篩選都只列影片
     match q.filter {
@@ -309,7 +365,7 @@ pub async fn rename_recording(cache: &MediaCache, path: &str, new_name: &str, bu
     let dir = Path::new(path).parent().map(Path::to_path_buf).unwrap_or_default();
     let entries = scan(cache, &dir).await;
     let Some(entry) = entries.into_iter().find(|e| e.media.path.to_lowercase() == path.to_lowercase()) else {
-        return Err(Error::config("找不到這個錄影，可能已被移動或刪除"));
+        return Err(Error::config(tr!("找不到這個錄影，可能已被移動或刪除", "This recording wasn't found. It may have been moved or deleted")));
     };
     let old_base = strip_ext(&entry.media.name);
     let ext = if is_image_name(&entry.media.name) { "png" } else { "mp4" };
@@ -324,11 +380,11 @@ pub async fn rename_recording(cache: &MediaCache, path: &str, new_name: &str, bu
     }
     for (from, to) in &plan {
         if busy.contains(&from.to_lowercase()) {
-            return Err(Error::config("檔案正在錄影或轉檔中，完成後才能改名"));
+            return Err(Error::config(tr!("檔案正在錄影或轉檔中，完成後才能改名", "The file is being recorded or converted. Rename it after that finishes")));
         }
         // 只改大小寫時目標就是自己（Windows 不分大小寫），不算衝突
         if to.exists() && to.display().to_string().to_lowercase() != from.to_lowercase() {
-            return Err(Error::config(format!("已有同名的檔案：{}", file_name(&to.display().to_string()))));
+            return Err(Error::config(trf!("已有同名的檔案：{}", "A file with this name already exists: {}", file_name(&to.display().to_string()))));
         }
     }
     let mut done: Vec<(&String, &PathBuf)> = Vec::new();
@@ -338,7 +394,11 @@ pub async fn rename_recording(cache: &MediaCache, path: &str, new_name: &str, bu
                 let _ = tokio::fs::rename(t, f).await;
             }
             let busy = e.kind() == std::io::ErrorKind::PermissionDenied || matches!(e.raw_os_error(), Some(32) | Some(5));
-            return Err(Error::config(if busy { "檔案正在使用中（例如正在播放或剪輯），關閉後再試一次".to_string() } else { format!("無法改名：{e}") }));
+            return Err(Error::config(if busy {
+                tr!("檔案正在使用中（例如正在播放或剪輯），關閉後再試一次", "The file is in use (e.g. playing or open in the editor). Close it and try again").to_string()
+            } else {
+                trf!("無法改名：{e}", "Couldn't rename: {e}")
+            }));
         }
         done.push((from, to));
     }
@@ -364,7 +424,7 @@ mod tests {
 
     #[tokio::test]
     async fn exports_group_under_the_right_original() {
-        let dir = make(&["Rec_X.mp4", "Rec_X_4x.mp4", "Rec_X_2.gif", "Rec_X_cut.mp4", "Rec_X_cut_2.mp4", "Rec_X_cut_2.gif", "Orphan.gif"]);
+        let dir = make(&["Rec_X.mp4", "Rec_X_4x.mp4", "Rec_X_2.gif", "Rec_X_4x.webp", "Rec_X_cut.mp4", "Rec_X_cut_2.mp4", "Rec_X_cut_2.gif", "Rec_X_cut_2.webp", "Orphan.gif", "Orphan.webp"]);
         let cache = Arc::new(MediaCache::default());
         let page = list_library(&cache, None, dir.path(), &q(None, None, LibrarySort::New)).await;
         let mut by: Vec<(String, Vec<String>)> = page
@@ -379,15 +439,41 @@ mod tests {
         assert_eq!(
             by,
             vec![
-                ("Rec_X.mp4".into(), vec!["Rec_X_2.gif:gif:1".into(), "Rec_X_4x.mp4:mp4:4".into()]),
+                ("Rec_X.mp4".into(), vec!["Rec_X_2.gif:gif:1".into(), "Rec_X_4x.mp4:mp4:4".into(), "Rec_X_4x.webp:webp:4".into()]),
                 ("Rec_X_cut.mp4".into(), vec![]),
-                ("Rec_X_cut_2.mp4".into(), vec!["Rec_X_cut_2.gif:gif:1".into()]),
+                ("Rec_X_cut_2.mp4".into(), vec!["Rec_X_cut_2.gif:gif:1".into(), "Rec_X_cut_2.webp:webp:1".into()]),
             ]
         );
     }
 
+    #[tokio::test]
+    async fn search_finds_words_in_subtitles() {
+        let dir = make(&["Rec_A.mp4", "Rec_A_cut.mp4", "Rec_B.mp4", "Rec_B_2.mp4", "會議.mp4"]);
+        let srt = |cues: &[(f64, &str)]| {
+            "\u{feff}".to_string() + &crate::subtitles::to_srt(&cues.iter().map(|(s, t)| crate::subtitles::Cue { start: *s, end: s + 2.0, text: t.to_string() }).collect::<Vec<_>>())
+        };
+        fs::write(dir.path().join("Rec_A.srt"), srt(&[(1.0, "今天示範怎麼剪輯"), (5.0, "接著存檔")])).unwrap();
+        // 另存的第二份字幕（Rec_A 已經有 Rec_A.srt）
+        fs::write(dir.path().join("Rec_A_2.srt"), srt(&[(9.0, "最後再剪輯一次")])).unwrap();
+        fs::write(dir.path().join("Rec_A_cut.srt"), srt(&[(0.5, "剪輯版\n的字幕")])).unwrap();
+        // Rec_B_2.srt 是 Rec_B_2.mp4 的，不是 Rec_B 的
+        fs::write(dir.path().join("Rec_B_2.srt"), srt(&[(3.0, "Editing in English")])).unwrap();
+        let cache = Arc::new(MediaCache::default());
+        let find = |text: &str| LibraryQuery { q: Some(text.into()), ..q(None, None, LibrarySort::Old) };
+        let page = list_library(&cache, None, dir.path(), &find("剪輯")).await;
+        let got: Vec<(String, Vec<(f64, String)>)> = page.items.iter().map(|e| (e.media.name.clone(), e.hits.iter().map(|h| (h.start, h.text.clone())).collect())).collect();
+        assert_eq!(got, vec![("Rec_A.mp4".into(), vec![(1.0, "今天示範怎麼剪輯".into()), (9.0, "最後再剪輯一次".into())]), ("Rec_A_cut.mp4".into(), vec![(0.5, "剪輯版 的字幕".into())]),]);
+        // 不分大小寫；檔名符合的也列出（沒有說過的話）
+        let page = list_library(&cache, None, dir.path(), &find("editing")).await;
+        assert_eq!(page.items.iter().map(|e| (e.media.name.as_str(), e.hits.len())).collect::<Vec<_>>(), vec![("Rec_B_2.mp4", 1)]);
+        let page = list_library(&cache, None, dir.path(), &find("會議")).await;
+        assert_eq!(page.items.iter().map(|e| (e.media.name.as_str(), e.hits.len())).collect::<Vec<_>>(), vec![("會議.mp4", 0)]);
+        // 沒有搜尋：不讀字幕
+        assert!(list_library(&cache, None, dir.path(), &q(None, None, LibrarySort::Old)).await.items.iter().all(|e| e.hits.is_empty()));
+    }
+
     fn entry(n: usize) -> LibraryEntry {
-        LibraryEntry { media: MediaInfo { name: "a.mp4".into(), ..Default::default() }, exports: vec![ExportInfo { speed: 4.0, ..Default::default() }; n] }
+        LibraryEntry { media: MediaInfo { name: "a.mp4".into(), ..Default::default() }, exports: vec![ExportInfo { speed: 4.0, ..Default::default() }; n], hits: vec![] }
     }
 
     #[test]
