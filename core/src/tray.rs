@@ -27,6 +27,8 @@ pub enum TrayCommand {
     Stop,
     ToggleSystem,
     ToggleMic,
+    /// 切換到第幾個錄影設定組合
+    ApplyPreset(usize),
     OpenFolder,
     PlayLast,
     Autostart,
@@ -85,6 +87,9 @@ pub struct TrayState {
     pub monitors: Vec<TrayMonitor>,
     pub audio_system: bool,
     pub audio_mic: bool,
+    /// 錄影設定組合的名稱；目前的設定是哪一組
+    pub presets: Vec<String>,
+    pub preset: Option<usize>,
     /// 是否能開始錄影（有 FFmpeg、沒有轉檔工作）
     pub can_record: bool,
     /// 是否能截圖（有 FFmpeg）
@@ -193,6 +198,10 @@ impl TrayController {
             SourceConfig::Region { width, height, .. } => trf!("範圍 {width}×{height}", "Area {width}×{height}"),
             SourceConfig::Monitor { monitor_id } => trf!("螢幕 {}", "Screen {}", env.monitors.iter().find(|m| &m.id == monitor_id).map(|m| m.display_number).unwrap_or(1)),
         };
+        let saved = self.app.settings.load();
+        let presets: Vec<String> = saved.presets.iter().map(|p| p.name.clone()).collect();
+        let preset = saved.ui.as_ref().and_then(|ui| crate::presets::active(&saved.presets, ui));
+        drop(saved);
         let last_result = self.last_result_exists();
         let has_shot = self.app.last_shot().is_some_and(|s| self.shot_exists(&s.path));
         // 檔案、設定都先查好再鎖：鎖住時不讀磁碟（網路磁碟可能卡住好幾秒，其他地方會跟著等）
@@ -222,6 +231,8 @@ impl TrayController {
                 .collect(),
             audio_system: cfg.audio.system,
             audio_mic: cfg.audio.mic,
+            presets,
+            preset,
             can_record,
             can_shot,
             has_last_snip,
@@ -324,6 +335,18 @@ impl TrayController {
         self.app.settings.save(SettingsPatch { config: serde_json::to_value(&cfg).ok(), ui: Some(ui), ..Default::default() });
     }
 
+    /// 切換錄影設定組合：操作視窗的設定換成組合裡的值（看到 rev 變了會重新讀取），錄影設定直接用組合的
+    fn apply_preset(&self, i: usize) {
+        let saved = self.app.settings.load();
+        let Some(p) = saved.presets.get(i) else { return };
+        let mut ui = saved.ui.clone().unwrap_or_default();
+        p.apply_to(&mut ui);
+        let config = p.record_config().and_then(|c| serde_json::to_value(c).ok());
+        info!("[系統匣] 切換設定組合：{}", p.name);
+        self.app.settings.save(SettingsPatch { ui: Some(ui), config, ..Default::default() });
+        self.push(true);
+    }
+
     pub async fn run(self: &Arc<Self>, cmd: TrayCommand) {
         // 剛啟動時（偵測還沒完成）按快速鍵：等偵測完成，才不會誤報「找不到 ffmpeg.exe」
         self.app.wait_ready().await;
@@ -415,6 +438,13 @@ impl TrayController {
             TrayCommand::Stop => return rec.stop(None).await.map(|_| ()).map_err(err),
             TrayCommand::ToggleSystem | TrayCommand::ToggleMic => {
                 self.update_audio(cmd == TrayCommand::ToggleSystem);
+                return Ok(());
+            }
+            TrayCommand::ApplyPreset(i) => {
+                if rec.status().state != RecorderState::Idle {
+                    return Err(tr!("錄影中不能切換設定組合", "Can't switch presets while recording").into());
+                }
+                self.apply_preset(i);
                 return Ok(());
             }
             TrayCommand::OpenFolder => {
@@ -694,5 +724,41 @@ mod tests {
         let b = ui.balloons.lock().unwrap().clone();
         assert_eq!(b.last().unwrap().0, "無法執行");
         assert!(b.last().unwrap().1.contains("ffmpeg"));
+    }
+
+    #[tokio::test]
+    async fn switch_presets() {
+        use crate::presets::Preset;
+        use serde_json::json;
+        let dir = tempfile::tempdir().unwrap();
+        let app = App::with_data_dir(dir.path().to_path_buf());
+        let ui = Arc::new(FakeUi::default());
+        let ctl = TrayController::new(app.clone(), ui.clone(), None);
+        app.mark_ready();
+        let base = ctl.config();
+        let teach_ui = json!({ "sourceType": "region", "region": { "x": 0, "y": 0, "width": 1280, "height": 720 }, "fps": 30.0, "showClicks": true });
+        let teach_cfg = RecordConfig { source: SourceConfig::Region { x: 0.0, y: 0.0, width: 1280.0, height: 720.0 }, show_clicks: true, ..base.clone() };
+        let meet_ui = json!({ "sourceType": "all", "fps": 15.0, "showClicks": false });
+        let meet_cfg = RecordConfig { source: SourceConfig::All, fps: 15.0, ..base };
+        let presets = vec![Preset::capture("教學", &teach_ui, &teach_cfg), Preset::capture("會議", &meet_ui, &meet_cfg)];
+        let mut cur = meet_ui.clone();
+        cur["language"] = json!("en");
+        app.settings.save(SettingsPatch { ui: Some(cur), presets: Some(presets), ..Default::default() });
+        ctl.push(true);
+        let s = ui.states.lock().unwrap().last().unwrap().clone();
+        assert_eq!((s.presets.clone(), s.preset), (vec!["教學".to_string(), "會議".to_string()], Some(1)));
+
+        // 切換：操作視窗的設定與錄影設定都換成「教學」，其他設定不動
+        ctl.run(TrayCommand::ApplyPreset(0)).await;
+        let saved = app.settings.load();
+        assert_eq!(saved.record_config().unwrap(), teach_cfg);
+        let ui_now = saved.ui.unwrap();
+        assert_eq!((ui_now["sourceType"].clone(), ui_now["language"].clone()), (json!("region"), json!("en")));
+        let s = ui.states.lock().unwrap().last().unwrap().clone();
+        assert_eq!((s.preset, s.last_source.as_str()), (Some(0), "範圍 1280×720"));
+        // 不存在的組合：不動
+        let rev = app.settings.rev();
+        ctl.run(TrayCommand::ApplyPreset(9)).await;
+        assert_eq!(app.settings.rev(), rev);
     }
 }

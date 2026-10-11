@@ -30,6 +30,9 @@ pub struct SavedSettings {
     /// 自訂的全域快速鍵（未指定時用預設的 Ctrl+Alt+R / P / S / A）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hotkeys: Option<crate::types::Hotkeys>,
+    /// 錄影設定組合（見 presets.rs）
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub presets: Vec<crate::presets::Preset>,
     #[serde(default)]
     pub rev: u64,
 }
@@ -50,6 +53,7 @@ pub struct SettingsPatch {
     pub check_updates: Option<bool>,
     pub update_notified: Option<String>,
     pub hotkeys: Option<crate::types::Hotkeys>,
+    pub presets: Option<Vec<crate::presets::Preset>>,
 }
 
 pub struct SettingsStore {
@@ -90,6 +94,7 @@ impl SettingsStore {
             check_updates: patch.check_updates.or(cur.check_updates),
             update_notified: patch.update_notified.or(cur.update_notified),
             hotkeys: patch.hotkeys.or(cur.hotkeys),
+            presets: patch.presets.unwrap_or(cur.presets),
             rev: cur.rev + 1,
         };
         *self.cache.lock().unwrap() = Some(next.clone());
@@ -131,8 +136,14 @@ mod tests {
         assert_eq!(saved["ui"]["future"], json!("x"));
         assert_eq!(saved["checkUpdates"], json!(false));
         assert!(saved.get("rev").is_none());
+        // 設定組合：存了之後，只改其他欄位時保留
+        let p = crate::presets::Preset { name: "教學".into(), ui: serde_json::Map::new(), config: json!({}) };
+        s.save(SettingsPatch { presets: Some(vec![p.clone()]), ..Default::default() });
+        s.save(SettingsPatch { ui: Some(json!({ "fps": 60 })), ..Default::default() });
         // 重新開啟：rev 從 1 開始
-        assert_eq!(SettingsStore::new(file).load().rev, 1);
+        let again = SettingsStore::new(file).load();
+        assert_eq!(again.rev, 1);
+        assert_eq!(again.presets, vec![p]);
     }
 
     #[test]

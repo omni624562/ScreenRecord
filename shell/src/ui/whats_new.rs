@@ -28,7 +28,7 @@ enum Try {
 }
 
 /// 新功能清單（標題、說明、試試看）：依介面語言
-fn items() -> [(&'static str, &'static str, Try); 11] {
+fn items() -> [(&'static str, &'static str, Try); 12] {
     [
         (
             "語言 Language",
@@ -63,6 +63,14 @@ fn items() -> [(&'static str, &'static str, Try); 11] {
             Try::Settings(Page::Record),
         ),
         (
+            tr!("設定組合", "Recording presets"),
+            tr!(
+                "把範圍、畫面、聲音、儲存位置存成組合（例如「教學影片」「線上會議」），在主畫面下方「設定」旁或系統匣選單一次切換。",
+                "Save the area, video, audio and save location as a preset (e.g. “Tutorial” or “Meeting”) and switch in one click next to “Settings” at the bottom of the main window or from the tray menu."
+            ),
+            Try::None,
+        ),
+        (
             tr!("螢幕畫筆", "Screen pen"),
             tr!(
                 "按 Ctrl+Alt+D 直接在螢幕上畫線圈重點，錄影時會一起錄進去；1～4 換顏色，Esc 結束。",
@@ -85,7 +93,10 @@ fn items() -> [(&'static str, &'static str, Try); 11] {
         ),
         (
             tr!("錄影中加標記", "Markers while recording"),
-            tr!("錄影時按 Ctrl+Alt+M 加標記，剪輯時直接跳過去。", "Press Ctrl+Alt+M while recording to add a marker, then jump straight to it in the editor."),
+            tr!(
+                "錄影時按 Ctrl+Alt+M 加標記，剪輯時直接跳過去；存檔時變成影片章節，可以複製貼到 YouTube。",
+                "Press Ctrl+Alt+M while recording to add a marker, then jump straight to it in the editor. Markers become video chapters you can copy to YouTube."
+            ),
             Try::None,
         ),
         (
@@ -99,8 +110,8 @@ fn items() -> [(&'static str, &'static str, Try); 11] {
         (
             tr!("整理與分享", "Organize and share"),
             tr!(
-                "多張截圖拼成一張、多支錄影合併成一支、壓縮到指定大小、複製成檔案貼到 LINE。",
-                "Combine several screenshots into one image, merge several recordings into one, compress to a target size, copy as a file to paste into LINE."
+                "做成 WebP 動圖（比 GIF 小很多）、多張截圖拼成一張、多支錄影合併成一支、壓縮到指定大小、複製成檔案貼到 LINE。",
+                "Make WebP animations (much smaller than GIF), combine several screenshots into one image, merge several recordings into one, compress to a target size, copy as a file to paste into LINE."
             ),
             Try::Shots,
         ),

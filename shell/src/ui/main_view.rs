@@ -704,7 +704,7 @@ fn settings_bar(app: &mut UiApp, ui: &mut Ui) {
     // 右邊：「設定」按鈕，前面是輸出大小
     let set_btn =
         Btn::new(tr!("設定", "Settings")).icon(Icon::Settings).small().tooltip(tr!("錄影、聲音、儲存位置、快速鍵與其他設定", "Recording, audio, save location, shortcuts and other settings"));
-    let set_w = set_btn.width(ui);
+    let set_w = set_btn.width(ui) + super::presets::width(app, ui) + 4.0;
     let out = app.s.source_rect(&app.env).map(|r| output_size(r.width, r.height, app.s.scale as f64));
     let big = out.is_some_and(|(w, h)| (w as f64) * (h as f64) > 3840.0 * 2160.0 * 1.05);
     let out_text = out.map(|(w, h)| trf!("輸出 {w}×{h}{}", "Output {w}×{h}{}", if big { tr!("（很大，建議 50%）", " (very large; 50% recommended)") } else { "" }));
@@ -747,6 +747,7 @@ fn settings_bar(app: &mut UiApp, ui: &mut Ui) {
         if set_btn.show(ui).clicked() {
             open = Some(Page::Record);
         }
+        super::presets::button(app, ui);
         if let Some(t) = out_text.filter(|_| show_out) {
             ui.add_space(8.0);
             ui.label(RichText::new(t).font(theme::font(12.5)).color(if big { p.warn } else { p.muted }));

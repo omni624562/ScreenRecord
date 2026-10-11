@@ -9,6 +9,7 @@ pub mod export_dialog;
 pub mod library_dialog;
 pub mod main_view;
 pub mod ocr;
+pub mod presets;
 pub mod preview;
 pub mod settings;
 pub mod settings_dialog;
@@ -87,6 +88,8 @@ pub struct UiApp {
     pub env_ready: bool,
     pub s: UiSettings,
     settings_rev: u64,
+    /// 錄影設定組合（settings.json 的 presets）
+    pub presets: Vec<screenrecorder_core::presets::Preset>,
     save_at: Option<Instant>,
     pub status: Status,
     pub status_at: Instant,
@@ -165,6 +168,7 @@ impl UiApp {
             env_ready: false,
             s,
             settings_rev: saved.rev,
+            presets: saved.presets.clone(),
             save_at: None,
             last_state: status.recorder.state,
             status,
@@ -210,6 +214,7 @@ impl UiApp {
             let saved = app.core.settings.load();
             app.s = UiSettings::from_saved(saved.ui.as_ref(), &app.env);
             app.settings_rev = saved.rev;
+            app.presets = saved.presets;
             app.preview.reset();
             app.watch_ddagrab();
             app.load_recent();
@@ -356,6 +361,7 @@ impl UiApp {
             if saved.ui.is_some() {
                 self.s = UiSettings::from_saved(saved.ui.as_ref(), &self.env);
             }
+            self.presets = saved.presets;
         }
     }
 

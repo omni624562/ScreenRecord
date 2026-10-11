@@ -50,6 +50,7 @@ pub mod picture;
 #[cfg(windows)]
 pub mod pin_win;
 pub mod player;
+pub mod presets;
 pub mod process;
 pub mod projects;
 pub mod qr;

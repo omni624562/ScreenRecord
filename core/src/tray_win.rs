@@ -387,6 +387,17 @@ fn show_menu() {
             m.add(pick, tr!("重複上次框選(&R)", "Re&peat last selection"), TrayCommand::StartLastSnip, !st.has_last_snip, false);
             Menu::sub(root, tr!("錄製其他範圍(&M)", "Record another ar&ea"), pick, !idle || !st.can_record);
         }
+        // 錄影設定組合：勾選的是目前的設定
+        if let Ok(sets) = CreatePopupMenu() {
+            for (i, name) in st.presets.iter().enumerate() {
+                // 名稱裡的 & 會被當成快速鍵記號
+                m.add(sets, &name.replace('&', "&&"), TrayCommand::ApplyPreset(i), false, st.preset == Some(i));
+            }
+            if st.presets.is_empty() {
+                m.add(sets, tr!("還沒有設定組合（在操作視窗下方儲存）", "No presets yet (save one at the bottom of the main window)"), TrayCommand::Open, false, false);
+            }
+            Menu::sub(root, tr!("設定組合(&E)", "Recordin&g presets"), sets, !idle);
+        }
         if st.rec == RecorderState::Paused {
             m.add(root, &trf!("繼續錄影(&C){}", "Res&ume recording{}", tab(&st.keys[1])), TrayCommand::Resume, false, false);
         } else {
