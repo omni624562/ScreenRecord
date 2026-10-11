@@ -28,6 +28,8 @@ pub struct MainState {
     pub shooting: bool,
     /// 「選擇視窗」的清單（按下時更新）
     windows: Vec<screenrecorder_core::winui::WindowInfo>,
+    /// 事件紀錄展開時看到的最後一筆的時間：收起時，之後的警告與錯誤標在標題旁
+    log_seen: u64,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -1180,23 +1182,61 @@ fn rec_panel(app: &mut UiApp, ui: &mut Ui) {
                 );
                 ui.add(egui::Label::new(theme::muted(ui, tip).font(theme::font(12.0))).wrap());
             });
-        } else if log_h >= 40.0 {
+        } else if log_h >= if app.s.show_log { 40.0 } else { 0.0 } {
+            // 事件紀錄：預設收起來，按標題展開；收起時標出還沒看過的警告與錯誤（只要一行，空間不夠時也顯示）
             ui.add_space(10.0);
-            ui.label(RichText::new(tr!("事件紀錄", "Event log")).font(theme::font_bold(12.5)).color(p.muted));
-            egui::ScrollArea::vertical().max_height(log_h).auto_shrink([false, true]).show(ui, |ui| {
-                for l in r.log.iter().rev().take(20) {
-                    let time = chrono::DateTime::from_timestamp_millis(l.t as i64).map(|d| d.with_timezone(&chrono::Local).format("%H:%M:%S").to_string()).unwrap_or_default();
-                    let color = match l.level {
-                        LogLevel::Info => p.text,
-                        LogLevel::Warn => p.warn,
-                        LogLevel::Error => p.rec,
-                    };
-                    ui.horizontal(|ui| {
-                        ui.label(RichText::new(time).font(theme::mono(11.5)).color(p.muted));
-                        ui.add(egui::Label::new(RichText::new(&l.text).font(theme::font(12.5)).color(color)).truncate()).on_hover_text(&l.text);
-                    });
-                }
-            });
+            let open = app.s.show_log;
+            if open {
+                app.main.log_seen = r.log.last().map_or(0, |l| l.t);
+            }
+            let unseen = |level: LogLevel| r.log.iter().filter(|l| l.t > app.main.log_seen && l.level == level).count();
+            let (errors, warns) = (unseen(LogLevel::Error), unseen(LogLevel::Warn));
+            let row = ui
+                .horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 4.0;
+                    let (icon, _) = ui.allocate_exact_size(vec2(14.0, 14.0), Sense::hover());
+                    theme::paint_icon(ui.painter(), icon, if open { Icon::ChevD } else { Icon::ChevR }, p.muted);
+                    ui.label(RichText::new(tr!("事件紀錄", "Event log")).font(theme::font_bold(12.5)).color(p.muted));
+                    if !open && errors + warns > 0 {
+                        let mut parts = Vec::new();
+                        if errors > 0 {
+                            parts.push(if is_en() { format!("{errors} error{}", if errors == 1 { "" } else { "s" }) } else { format!("{errors} 則錯誤") });
+                        }
+                        if warns > 0 {
+                            parts.push(if is_en() { format!("{warns} warning{}", if warns == 1 { "" } else { "s" }) } else { format!("{warns} 則警告") });
+                        }
+                        let color = if errors > 0 { p.rec } else { p.warn };
+                        ui.spacing_mut().item_spacing.x = 0.0;
+                        ui.label(RichText::new(format!("・{}", parts.join(tr!("、", ", ")))).font(theme::font(12.5)).color(color));
+                    }
+                    ui.add_space(ui.available_width());
+                })
+                .response;
+            let tip = if open {
+                tr!("收起事件紀錄", "Hide the event log")
+            } else {
+                tr!("展開事件紀錄：錄影過程的訊息、警告與錯誤", "Show the event log: messages, warnings and errors while recording")
+            };
+            if ui.interact(row.rect, ui.id().with("log_toggle"), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(tip).clicked() {
+                app.s.show_log = !open;
+                app.save_settings();
+            }
+            if open {
+                egui::ScrollArea::vertical().max_height(log_h).auto_shrink([false, true]).show(ui, |ui| {
+                    for l in r.log.iter().rev().take(20) {
+                        let time = chrono::DateTime::from_timestamp_millis(l.t as i64).map(|d| d.with_timezone(&chrono::Local).format("%H:%M:%S").to_string()).unwrap_or_default();
+                        let color = match l.level {
+                            LogLevel::Info => p.text,
+                            LogLevel::Warn => p.warn,
+                            LogLevel::Error => p.rec,
+                        };
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new(time).font(theme::mono(11.5)).color(p.muted));
+                            ui.add(egui::Label::new(RichText::new(&l.text).font(theme::font(12.5)).color(color)).truncate()).on_hover_text(&l.text);
+                        });
+                    }
+                });
+            }
         }
         let bottom = Rect::from_min_max(pos2(ui.max_rect().min.x, ui.max_rect().max.y - sys_h), ui.max_rect().max);
         ui.painter().hline(bottom.x_range(), bottom.min.y - BOTTOM_LINE_GAP, Stroke::new(1.0, p.border));
