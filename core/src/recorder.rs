@@ -18,7 +18,7 @@ use crate::audio::{AudioSourceSpec, Opener};
 use crate::audiopipe::{AudioPipe, LogFn};
 use crate::format::js_round;
 use crate::paths::{now_ms, timestamp, unique_path};
-use crate::process::{command, last_lines, read_lines, run};
+use crate::process::{command, last_errors, last_lines, read_lines, run};
 use crate::types::{CaptureMethod, LogEntry, LogLevel, MethodPreference, MonitorInfo, RecordConfig, RecorderState, RecorderStatus, RecordingResult, Rect, ReplayStatus, SourceConfig};
 use crate::{tr, trf, Error, Result};
 use regex::Regex;
@@ -166,6 +166,8 @@ struct Segment {
     audio: Option<Arc<AudioPipe>>,
     /// 已要求 FFmpeg 降低訊息等級（聲音對齊完成後不再需要 showinfo）
     quieted: bool,
+    /// 太久沒有新畫面，被錄影器結束
+    stalled: bool,
 }
 
 struct Retry {
@@ -236,6 +238,8 @@ struct St {
     replay_last: Option<String>,
     replay_bytes: u64,
     replay_pruned_at: u64,
+    /// 開始不了的原因（每次錄影重設）
+    fatal: Option<String>,
 }
 
 impl St {
@@ -940,6 +944,7 @@ impl Recorder {
             st.replay_last = None;
             st.replay_bytes = 0;
             st.replay_pruned_at = now_ms();
+            st.fatal = None;
         }
         if self.canceled() {
             return self.abandon(false);
@@ -1236,6 +1241,7 @@ impl Recorder {
                 stderr: String::new(),
                 audio,
                 quieted: false,
+                stalled: false,
             });
             st.current = Some(index);
         }
@@ -1425,8 +1431,13 @@ impl Recorder {
             if seg.stop_requested || st.shutting_down || st.current != Some(index) || st.state != RecorderState::Recording {
                 ExitAction::None
             } else {
-                let tail = last_lines(&seg.stderr, 2);
-                let detail = if tail.is_empty() { trf!("結束代碼 {code}", "exit code {code}") } else { tail };
+                // 只引用錯誤訊息（警告常常和失敗無關，例如聲音的聲道配置）
+                let tail = last_errors(&seg.stderr, 2);
+                let detail = match (tail.is_empty(), seg.stalled) {
+                    (false, _) => tail,
+                    (true, true) => trf!("超過 {} 秒沒有輸出畫面", "no frames for over {} s", STALL_MS / 1000),
+                    (true, false) => trf!("結束代碼 {code}", "exit code {code}"),
+                };
                 let seg_method = seg.method;
                 let method_auto = st.config().method == MethodPreference::Auto;
                 if !st.ever_produced_frames {
@@ -1470,6 +1481,7 @@ impl Recorder {
                         }
                         StartupFallback::Fatal => {
                             st.add_log(LogLevel::Error, &trf!("無法開始擷取：{detail}", "Couldn't start capturing: {detail}"));
+                            st.fatal = Some(detail);
                             ExitAction::Stop
                         }
                     }
@@ -1648,6 +1660,7 @@ impl Recorder {
                     st.add_log(LogLevel::Warn, &trf!("超過 {} 秒沒有擷取到新畫面，重新啟動 FFmpeg", "No new frames for over {} s; restarting FFmpeg", STALL_MS / 1000));
                     let seg = &mut st.segments[st.current.unwrap()];
                     seg.last_frame_at = now;
+                    seg.stalled = true;
                     let _ = seg.ctl.send(SegCmd::Kill);
                 }
             }
@@ -1795,7 +1808,12 @@ impl Recorder {
         let frames: u64 = parts.iter().map(|p| p.1).sum();
         if parts.is_empty() {
             cleanup_parts(Some(&parts_dir));
-            return Ok(RecordingResult { ok: false, message: tr!("沒有擷取到任何畫面，未產生影片", "No frames were captured, so no video was created").into(), ..Default::default() });
+            // 有開始不了的原因就一起說
+            let message = match self.lock().fatal.clone() {
+                Some(why) => trf!("沒有擷取到任何畫面，未產生影片（{why}）", "No frames were captured, so no video was created ({why})"),
+                None => tr!("沒有擷取到任何畫面，未產生影片", "No frames were captured, so no video was created").into(),
+            };
+            return Ok(RecordingResult { ok: false, message, ..Default::default() });
         }
         let ffmpeg = self.deps().ffmpeg_path().ok_or_else(|| Error::other(tr!("找不到 ffmpeg.exe", "ffmpeg.exe not found")))?;
         let files: Vec<String> = parts.iter().map(|p| p.0.clone()).collect();
@@ -2433,6 +2451,7 @@ esac
         let st = s.rec.status();
         assert_eq!(st.state, RecorderState::Idle);
         assert!(st.log.iter().any(|l| l.text.contains("無法開始擷取") && l.text.contains("gdigrab")), "{:?}", st.log);
-        assert_eq!(st.result.unwrap().message, "沒有擷取到任何畫面，未產生影片");
+        // 結果也說出原因
+        assert_eq!(st.result.unwrap().message, "沒有擷取到任何畫面，未產生影片（Could not find gdigrab device）");
     }
 }
