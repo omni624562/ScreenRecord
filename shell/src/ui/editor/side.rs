@@ -329,6 +329,7 @@ fn crop_panel(ed: &mut Editor, ui: &mut egui::Ui) {
     if !shot {
         zoom_panel(ed, ui);
         cursor_panel(ed, ui);
+        vertical_panel(ed, ui);
         frame_panel(ed, ui);
     }
 }
@@ -342,7 +343,7 @@ fn frame_panel(ed: &mut Editor, ui: &mut egui::Ui) {
     ui.add_space(6.0);
     ui.label(RichText::new(tr!("背景與圓角", "Background and rounded corners")).font(theme::font_bold(13.5)));
     let mut on = ed.spec.frame.is_some();
-    if switch(ui, &mut on, tr!("放在背景上", "Place on a background"), ed.vw > 0.0)
+    if switch(ui, &mut on, tr!("放在背景上", "Place on a background"), ed.vw > 0.0 && ed.vertical == 0)
         .on_hover_text(tr!(
             "影片縮小放在漸層或單色背景中間，四角變圓、下方有陰影；輸出的大小不變",
             "The video shrinks onto a gradient or solid background, with rounded corners and a shadow below; the output size stays the same"
@@ -438,7 +439,7 @@ fn zoom_panel(ed: &mut Editor, ui: &mut egui::Ui) {
             tr!("這支錄影沒有記下滑鼠點擊（3.1 版以後在 Windows 上錄的影片才有）。", "This recording has no saved mouse clicks (only videos recorded on Windows with version 3.1 or later have them)."),
         );
     }
-    let can = !ed.crop_on;
+    let can = !ed.crop_on && ed.vertical == 0;
     let mut on = ed.zoom > 1.0;
     let n = ed.clicks.len();
     let label = if screenrecorder_core::i18n::is_en() { format!("Zoom in on clicks ({n} click{})", if n == 1 { "" } else { "s" }) } else { format!("點擊時放大（{n} 次點擊）") };
@@ -461,7 +462,45 @@ fn zoom_panel(ed: &mut Editor, ui: &mut egui::Ui) {
                 "Before each click the view slowly zooms in on it, follows along during a series of clicks, then zooms back out. Press “Preview result” to see the effect."
             )
         } else {
-            tr!("裁切畫面時不能同時使用。", "Can't be used together with cropping.")
+            tr!("裁切畫面、直式影片時不能同時使用。", "Can't be used together with cropping or vertical video.")
+        },
+    );
+}
+
+/// 直式影片（9:16）：放在中間，或跟著游標裁切
+fn vertical_panel(ed: &mut Editor, ui: &mut egui::Ui) {
+    let p = theme::pal(ui);
+    ui.add_space(4.0);
+    let r = ui.cursor();
+    ui.painter().hline(r.x_range(), r.top(), Stroke::new(1.0, p.border));
+    ui.add_space(6.0);
+    ui.label(RichText::new(tr!("直式影片（9:16）", "Vertical video (9:16)")).font(theme::font_bold(13.5)));
+    let can_follow = !ed.cursor.is_empty() || !ed.clicks.is_empty();
+    let mut v = ed.vertical;
+    let items = [(0u8, tr!("不用", "Off")), (1, tr!("放在中間", "Fit")), (2, tr!("跟著游標", "Follow cursor"))];
+    if segmented(ui, &mut v, &items, ed.vw > 0.0) {
+        if v == 2 && !can_follow {
+            v = ed.vertical;
+        }
+        ed.vertical = v;
+        ed.vertical_pan.clear();
+    }
+    hint(
+        ui,
+        match ed.vertical {
+            1 => tr!(
+                "整個畫面放在直式畫面中間，上下是放大、模糊的同一個畫面，什麼都不會被裁掉。適合 Shorts、Reels、TikTok。",
+                "The whole frame sits in the middle of a vertical frame, with a blurred, enlarged copy above and below, so nothing is cropped. Great for Shorts, Reels and TikTok."
+            ),
+            2 => tr!(
+                "裁出 9:16 的一塊，像攝影機一樣跟著游標左右移動（游標在中間附近移動時不動）。不另外裁切畫面。",
+                "Crops a 9:16 window that pans like a camera to follow the cursor (it stays still while the cursor moves near the middle). Manual cropping isn't applied."
+            ),
+            _ if !can_follow => tr!(
+                "「跟著游標」需要錄影時記下的游標位置或點擊（3.1 版以後在 Windows 上錄的影片才有）。",
+                "“Follow cursor” needs the cursor positions or clicks saved while recording (only videos recorded on Windows with version 3.1 or later have them)."
+            ),
+            _ => tr!("做成手機直式影片：放在中間，或跟著游標裁切。", "Make a vertical video for phones: fit the whole frame, or crop and follow the cursor."),
         },
     );
 }

@@ -159,6 +159,7 @@ impl App {
                     zoom: 0.0,
                     frame: None,
                     cursor: 0.0,
+                    vertical: 0,
                 };
                 crate::actions::cut_start(self, &video, &spec, None, serde_json::to_value(project).ok()).await.map_err(|e| e.message().to_string())?;
                 let out = self.after_export_result().await?;

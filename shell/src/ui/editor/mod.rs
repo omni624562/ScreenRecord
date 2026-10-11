@@ -253,6 +253,9 @@ pub struct Editor {
     cursor_size: f64,
     /// 預覽用的游標圖
     cursor_tex: Option<CursorTex>,
+    /// 直式影片：0 = 不用、1 = 放在中間、2 = 跟著游標；跟著游標時鏡頭的位置（預覽用，需要時才算）
+    vertical: u8,
+    vertical_pan: Vec<[f64; 2]>,
     /// 上次加上的圖片（Logo），選單裡可以直接再用
     last_picture: String,
     /// 自動產生字幕（進行中）、選的語言與品質
@@ -397,6 +400,8 @@ impl Editor {
             no_cursor: false,
             cursor_size: 0.0,
             cursor_tex: None,
+            vertical: 0,
+            vertical_pan: vec![],
             last_picture: app.s.last_picture.clone(),
             subs: None,
             subs_lang: 0,
@@ -451,6 +456,7 @@ impl Editor {
         self.spec.fast = data.fast;
         self.zoom = data.zoom;
         self.cursor_size = data.cursor;
+        self.vertical = data.vertical.min(2);
         self.spec.frame = data.frame;
         self.crop_on = data.crop_on;
         self.anns = data.anns;
@@ -588,6 +594,7 @@ impl Editor {
         self.spec.fast.retain(|f| f.end() <= d + 0.05 && f.speed > 1 && f.speed <= 16);
         self.zoom = data.get("zoom").and_then(Value::as_f64).filter(|z| (1.0..=4.0).contains(z)).unwrap_or(0.0);
         self.cursor_size = data.get("cursor").and_then(Value::as_f64).filter(|s| screenrecorder_core::cursor::SIZES.contains(s)).unwrap_or(0.0);
+        self.vertical = data.get("vertical").and_then(Value::as_u64).filter(|v| *v <= 2).unwrap_or(0) as u8;
         self.spec.frame = data.get("frame").and_then(|f| serde_json::from_value(f.clone()).ok());
         self.crop_on = data.get("cropOn").and_then(Value::as_bool).unwrap_or(false) && self.spec.crop.is_some();
         // 一個一個讀：格式不對的標註略過，不影響其他的
@@ -613,6 +620,7 @@ impl Editor {
             zoom: self.zoom,
             frame: self.spec.frame.clone(),
             cursor: self.cursor_size,
+            vertical: self.vertical,
         }
     }
 
@@ -631,9 +639,45 @@ impl Editor {
         self.cursor_size > 0.0 && !self.cursor.is_empty()
     }
 
-    /// 有打開跟著點擊放大（而且有點擊、沒有裁切）
+    /// 有打開跟著點擊放大（而且有點擊、沒有裁切、不是直式影片）
     fn zoom_on(&self) -> bool {
-        self.zoom > 1.0 && !self.clicks.is_empty() && !self.crop_on
+        self.zoom > 1.0 && !self.clicks.is_empty() && !self.crop_on && self.vertical == 0
+    }
+
+    /// 跟著游標的直式影片要跟的位置：游標（沒有記下時用點擊）
+    fn vertical_track(&self) -> Vec<[f64; 3]> {
+        if self.cursor.is_empty() {
+            self.clicks.clone()
+        } else {
+            self.cursor.clone()
+        }
+    }
+
+    /// 直式影片的設定（輸出用）
+    fn vertical_spec(&self) -> Option<screenrecorder_core::vertical::Vertical> {
+        use screenrecorder_core::vertical::Vertical;
+        match self.vertical {
+            1 => Some(Vertical::Fit),
+            2 if !self.vertical_track().is_empty() => Some(Vertical::Follow { track: self.vertical_track() }),
+            _ => None,
+        }
+    }
+
+    /// 輸出的大小（直式影片時是直式畫面的大小）
+    fn output_size(&self, crop: Option<screenrecorder_core::types::Rect>) -> Option<(i32, i32)> {
+        use screenrecorder_core::vertical;
+        if self.vw <= 0.0 {
+            return None;
+        }
+        let (w, h) = crop.map(|c| (c.width, c.height)).unwrap_or((self.vw as i32, self.vh as i32));
+        Some(match self.vertical_spec() {
+            Some(vertical::Vertical::Fit) => vertical::fit_size(h),
+            Some(vertical::Vertical::Follow { .. }) => {
+                let (cw, ch) = vertical::follow_size(self.vw as i32, self.vh as i32);
+                vertical::follow_scale(cw, ch).unwrap_or((cw, ch))
+            }
+            None => (w, h),
+        })
     }
 
     /// 保留的片段依加速切開：(開始, 結束, 倍率)
@@ -1060,6 +1104,7 @@ impl Editor {
             }
             "frame" => self.spec.frame = Some(screenrecorder_core::video_frame::VideoFrame::default()),
             "cursor" => self.cursor_size = v.parse().unwrap_or(2.0),
+            "vertical" => self.vertical = v.parse().unwrap_or(1),
             "srt" => {
                 if let Ok(c) = screenrecorder_core::subtitles::read_file(std::path::Path::new(v)) {
                     self.add_subtitles(&c);
@@ -1547,12 +1592,8 @@ fn footer(ed: &mut Editor, ui: &mut egui::Ui) -> bool {
     let parts = ed.parts();
     let length = output_length(&parts);
     let fast = parts.iter().filter(|p| p.2 > 1).count();
-    let crop = if ed.crop_on { normalize_crop(ed.spec.crop, ed.vw as i32, ed.vh as i32) } else { None };
-    let size = match &crop {
-        Some(c) => format!("{}×{}", c.width, c.height),
-        None if ed.vw > 0.0 => format!("{}×{}", ed.vw, ed.vh),
-        None => String::new(),
-    };
+    let crop = if ed.crop_on && ed.vertical != 2 { normalize_crop(ed.spec.crop, ed.vw as i32, ed.vh as i32) } else { None };
+    let size = ed.output_size(crop).map(|(w, h)| format!("{w}×{h}")).unwrap_or_default();
     let gone = ed.gone_count(&keep);
     let zooming = ed.zoom_on();
     let unchanged = keep.len() == 1
@@ -1564,7 +1605,8 @@ fn footer(ed: &mut Editor, ui: &mut egui::Ui) -> bool {
         && ed.anns.is_empty()
         && ed.spec.audio.is_default()
         && ed.spec.frame.is_none()
-        && !ed.cursor_on();
+        && !ed.cursor_on()
+        && ed.vertical_spec().is_none();
     let mut save = false;
     ui.vertical(|ui| {
         ui.spacing_mut().item_spacing = vec2(0.0, 2.0);
@@ -1585,7 +1627,10 @@ fn footer(ed: &mut Editor, ui: &mut egui::Ui) -> bool {
             if ed.cursor_on() {
                 ui.label(tr!("・平滑放大的游標", " · Smooth cursor"));
             }
-            if ed.spec.frame.is_some() {
+            if ed.vertical_spec().is_some() {
+                ui.label(tr!("・直式影片", " · Vertical video"));
+            }
+            if ed.spec.frame.is_some() && ed.vertical == 0 {
                 ui.label(tr!("・背景與圓角", " · Background and rounded corners"));
             }
             if !size.is_empty() {
@@ -1634,8 +1679,11 @@ fn start_save(app: &mut UiApp, ed: &mut Editor) {
     // 標註轉成圖（每個都要畫並壓成 PNG，字幕多時要好幾秒）放到背景做，畫面不會卡住
     let anns: Vec<Ann> = ed.ordered().into_iter().cloned().collect();
     let (vw, vh) = (ed.vw, ed.vh);
-    let crop =
-        if ed.crop_on { normalize_crop(ed.spec.crop, ed.vw as i32, ed.vh as i32).map(|r| CropInput { x: r.x as f64, y: r.y as f64, width: r.width as f64, height: r.height as f64 }) } else { None };
+    let crop = if ed.crop_on && ed.vertical != 2 {
+        normalize_crop(ed.spec.crop, ed.vw as i32, ed.vh as i32).map(|r| CropInput { x: r.x as f64, y: r.y as f64, width: r.width as f64, height: r.height as f64 })
+    } else {
+        None
+    };
     let spec = EditSpec {
         start: ed.spec.start,
         end: ed.spec.end,
@@ -1645,8 +1693,9 @@ fn start_save(app: &mut UiApp, ed: &mut Editor) {
         audio: ed.spec.audio,
         fast: ed.spec.fast.clone(),
         zoom: ed.zoom_on().then(|| ClickZoom { factor: ed.zoom, clicks: ed.clicks.clone() }),
-        frame: ed.spec.frame.clone(),
+        frame: ed.spec.frame.clone().filter(|_| ed.vertical == 0),
         cursor: ed.cursor_on().then(|| screenrecorder_core::cursor::CursorFx { size: ed.cursor_size, track: ed.cursor.clone() }),
+        vertical: ed.vertical_spec(),
     };
     let project = serde_json::to_value(ed.project_data()).ok();
     let (core, source, replace) = (app.core.clone(), ed.entry.media.path.clone(), ed.replace_target.clone());

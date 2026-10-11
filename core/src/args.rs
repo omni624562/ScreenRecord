@@ -985,6 +985,14 @@ pub struct CursorInput {
     pub y: i32,
 }
 
+/// 直式影片（見 vertical.rs）：放在中間（輸出 w × h），或跟著游標裁切
+/// （sendcmd 指令檔的檔名、裁切大小、一開始的位置、太大時縮小成多大）
+#[derive(Debug, Clone, PartialEq)]
+pub enum VerticalInput {
+    Fit { w: i32, h: i32 },
+    Follow { commands: String, w: i32, h: i32, x: i32, y: i32, scale: Option<(i32, i32)> },
+}
+
 fn enable(start: f64, end: f64) -> String {
     format!("enable='between(t,{},{})'", num(start), num(end))
 }
@@ -1003,6 +1011,7 @@ pub fn cut_args(
     zoom: Option<&str>,
     frame: Option<&FrameInput>,
     cursor: Option<&CursorInput>,
+    vertical: Option<&VerticalInput>,
 ) -> Result<Vec<String>> {
     // 選了「不要聲音」
     let with_audio = with_audio && !audio.mute;
@@ -1020,6 +1029,16 @@ pub fn cut_args(
     if let Some(c) = crop {
         vf.push(format!("crop={}:{}:{}:{}", c.width, c.height, c.x, c.y));
     }
+    // 直式影片（放在中間）：剪好的畫面放在直式畫面中間，上下是放大、模糊的同一個畫面
+    let fit = matches!(vertical, Some(VerticalInput::Fit { .. }));
+    if let Some(VerticalInput::Fit { w, h }) = vertical {
+        vf.push(crate::vertical::fit_filter(*w, *h));
+    }
+    // 要先在原影片的時間處理的：標註、游標、跟著游標的直式裁切
+    let follow = matches!(vertical, Some(VerticalInput::Follow { .. }));
+    let pre = !overlays.is_empty() || cursor.is_some() || follow;
+    // 濾鏡有多個輸入（不能用 -vf）
+    let complex = frame.is_some() || fit;
     let mut a = strs(&["-hide_banner", "-nostats", "-loglevel", "error", "-i"]);
     a.push(source.into());
     // 背景與圓角：底圖與遮罩是一直重複的圖片（跟著影片結束）
@@ -1043,12 +1062,12 @@ pub fn cut_args(
     };
     // 分軌錄影：系統聲音與麥克風分別調整後重新混合，接著同樣處理（放進 -filter_complex）
     let track_graph = audio.track_graph().filter(|_| with_audio).map(|g| format!("{g};[amixed]{}[aout]", af.join(",")));
-    if overlays.is_empty() && frame.is_none() && cursor.is_none() {
+    if !pre && !complex {
         a.extend(strs(&["-map", "0:v:0"]));
         if let Some(g) = &track_graph {
             a.extend(["-filter_complex".into(), g.clone()]);
         }
-    } else if overlays.is_empty() && cursor.is_none() {
+    } else if !pre {
         let mut g = format!("[0:v]{}[vout]", vf.join(","));
         if let Some(t) = &track_graph {
             g = format!("{g};{t}");
@@ -1104,6 +1123,12 @@ pub fn cut_args(
             }
             cur = out;
         }
+        // 跟著游標的直式裁切：在標註之後（標註跟著畫面一起裁），sendcmd 依原影片的時間移動 crop@vertical
+        if let Some(VerticalInput::Follow { commands, w, h, x, y, scale }) = vertical {
+            let sc = scale.map(|(sw, sh)| format!(",scale={sw}:{sh}:flags=bicubic")).unwrap_or_default();
+            graph.push(format!("{cur}sendcmd=f={commands},crop@vertical=w={w}:h={h}:x={x}:y={y}{sc}[vert]"));
+            cur = "[vert]".into();
+        }
         graph.push(format!("{cur}{}[vout]", vf.join(",")));
         if let Some(t) = &track_graph {
             graph.push(t.clone());
@@ -1116,7 +1141,7 @@ pub fn cut_args(
         _ => strs(&["-an"]),
     });
     a.extend(strs(&["-sn", "-dn"]));
-    if overlays.is_empty() && frame.is_none() && cursor.is_none() {
+    if !pre && !complex {
         a.push("-vf".into());
         a.push(vf.join(","));
     }
@@ -1464,7 +1489,7 @@ mod tests {
     #[test]
     fn cut_with_background_frame() {
         let f = FrameInput { base: "bg.png".into(), cover: "cover.png".into(), x: 134, y: 76, w: 1650, h: 928 };
-        let a = cut_args("in.mp4", "out.mp4", &[(1.0, 5.0, 1)], None, 30.0, &x264(), true, &[], AudioFx::default(), None, Some(&f), None).unwrap();
+        let a = cut_args("in.mp4", "out.mp4", &[(1.0, 5.0, 1)], None, 30.0, &x264(), true, &[], AudioFx::default(), None, Some(&f), None, None).unwrap();
         let j = a.join(" ");
         assert!(j.contains("-i in.mp4 -loop 1 -framerate 30 -i bg.png -loop 1 -framerate 30 -i cover.png"), "{j}");
         assert_eq!(
@@ -1474,7 +1499,7 @@ mod tests {
         assert!(!j.contains(" -vf "));
         // 加上標註：標註的圖片接在底圖、遮罩之後
         let overlays = [OverlayInput::Image { path: "o.png".into(), x: 10, y: 20, start: 1.0, end: 2.0 }];
-        let a = cut_args("in.mp4", "out.mp4", &[(1.0, 5.0, 1)], None, 30.0, &x264(), true, &overlays, AudioFx::default(), None, Some(&f), None).unwrap();
+        let a = cut_args("in.mp4", "out.mp4", &[(1.0, 5.0, 1)], None, 30.0, &x264(), true, &overlays, AudioFx::default(), None, Some(&f), None, None).unwrap();
         let g = graph_of(&a);
         assert!(g.starts_with("[0:v][3:v]overlay=10:20:"), "{g}");
         assert!(g.ends_with("[fb][2:v]overlay=0:0:shortest=1,format=yuv420p[vout]"), "{g}");
@@ -1901,27 +1926,29 @@ dummy: Immediate exit requested";
 
     #[test]
     fn cut() {
-        let args = cut_args("in.mp4", "out.mp4", &[(1.0, 2.0, 1), (4.0, 5.5, 1)], Some(Rect { x: 40, y: 40, width: 200, height: 160 }), 30.0, &x264(), true, &[], AudioFx::default(), None, None, None)
-            .unwrap();
+        let args =
+            cut_args("in.mp4", "out.mp4", &[(1.0, 2.0, 1), (4.0, 5.5, 1)], Some(Rect { x: 40, y: 40, width: 200, height: 160 }), 30.0, &x264(), true, &[], AudioFx::default(), None, None, None, None)
+                .unwrap();
         assert_eq!(after(&args, "-vf"), "select='gte(t,1)*lt(t,2)+gte(t,4)*lt(t,5.5)',setpts=N/(30*TB),crop=200:160:40:40,format=yuv420p");
         assert_eq!(after(&args, "-af"), "aselect='gte(t,1)*lt(t,2)+gte(t,4)*lt(t,5.5)',asetpts=N/SR/TB");
-        let no_audio = cut_args("in.mp4", "out.mp4", &[(0.0, 3.0, 1)], None, 30.0, &x264(), false, &[], AudioFx::default(), None, None, None).unwrap();
+        let no_audio = cut_args("in.mp4", "out.mp4", &[(0.0, 3.0, 1)], None, 30.0, &x264(), false, &[], AudioFx::default(), None, None, None, None).unwrap();
         // 降噪、音量平衡接在剪輯後面；不要聲音時整個拿掉
-        let fx =
-            cut_args("in.mp4", "out.mp4", &[(0.0, 3.0, 1)], None, 30.0, &x264(), true, &[], AudioFx { denoise: true, normalize: true, mute: false, tracks: None }, None, None, None).unwrap().join(" ");
+        let fx = cut_args("in.mp4", "out.mp4", &[(0.0, 3.0, 1)], None, 30.0, &x264(), true, &[], AudioFx { denoise: true, normalize: true, mute: false, tracks: None }, None, None, None, None)
+            .unwrap()
+            .join(" ");
         assert!(fx.contains("asetpts=N/SR/TB,afftdn=nf=-25,loudnorm=I=-16:TP=-1.5:LRA=11,aresample=48000"), "{fx}");
-        let muted = cut_args("in.mp4", "out.mp4", &[(0.0, 3.0, 1)], None, 30.0, &x264(), true, &[], AudioFx { mute: true, ..Default::default() }, None, None, None).unwrap();
+        let muted = cut_args("in.mp4", "out.mp4", &[(0.0, 3.0, 1)], None, 30.0, &x264(), true, &[], AudioFx { mute: true, ..Default::default() }, None, None, None, None).unwrap();
         assert!(muted.contains(&"-an".to_string()) && !muted.iter().any(|a| a.contains("aselect")));
         assert!(no_audio.contains(&"-an".to_string()));
         assert!(!no_audio.contains(&"-af".to_string()));
-        assert!(cut_args("in.mp4", "out.mp4", &[], None, 30.0, &x264(), false, &[], AudioFx::default(), None, None, None).unwrap_err().is_config());
+        assert!(cut_args("in.mp4", "out.mp4", &[], None, 30.0, &x264(), false, &[], AudioFx::default(), None, None, None, None).unwrap_err().is_config());
         // 與 edit 模組串起來
         let keep = keep_ranges(10.0, &EditSpec { start: 1.0, end: 9.0, removed: vec![(3.0, 4.0)], crop: None, overlays: vec![], ..Default::default() });
         assert_eq!(keep, vec![(1.0, 3.0), (4.0, 9.0)]);
         assert_eq!(normalize_crop(None, 100, 100), None);
 
         // 局部加速：每 4 張留一張，那段的聲音關掉
-        let fast = cut_args("in.mp4", "out.mp4", &[(0.0, 2.0, 1), (2.0, 6.0, 4), (6.0, 8.0, 1)], None, 30.0, &x264(), true, &[], AudioFx::default(), None, None, None).unwrap();
+        let fast = cut_args("in.mp4", "out.mp4", &[(0.0, 2.0, 1), (2.0, 6.0, 4), (6.0, 8.0, 1)], None, 30.0, &x264(), true, &[], AudioFx::default(), None, None, None, None).unwrap();
         let vf = &fast[fast.iter().position(|a| a == "-vf").unwrap() + 1];
         assert!(vf.starts_with("select='gte(t,0)*lt(t,2)+gte(t,2)*lt(t,6)*not(mod(n,4))+gte(t,6)*lt(t,8)',setpts=N/(30*TB)"), "{vf}");
         let af = &fast[fast.iter().position(|a| a == "-af").unwrap() + 1];
@@ -1939,7 +1966,8 @@ dummy: Immediate exit requested";
             // 範圍外馬賽克（方形）
             OverlayInput::Blur { rect: Rect { x: 10, y: 20, width: 100, height: 50 }, start: 0.0, end: 1.0, mosaic: true, mask: None, invert: true, frame: (1280, 720) },
         ];
-        let args = cut_args("in.mp4", "out.mp4", &[(1.0, 5.0, 1)], Some(Rect { x: 40, y: 40, width: 200, height: 160 }), 30.0, &x264(), true, &overlays, AudioFx::default(), None, None, None).unwrap();
+        let args =
+            cut_args("in.mp4", "out.mp4", &[(1.0, 5.0, 1)], Some(Rect { x: 40, y: 40, width: 200, height: 160 }), 30.0, &x264(), true, &overlays, AudioFx::default(), None, None, None, None).unwrap();
         assert!(!args.contains(&"-vf".to_string()));
         let inputs: Vec<&String> = args.iter().zip(args.iter().skip(1)).filter(|(k, _)| *k == "-i").map(|(_, v)| v).collect();
         assert_eq!(inputs, ["in.mp4", "a.png", "m.png", "m2.png"]);
@@ -1958,7 +1986,7 @@ dummy: Immediate exit requested";
         assert_eq!(cut_file_name("a.mp4"), "a_cut.mp4");
         // 平滑、放大的游標：在標註底下，sendcmd 依原影片的時間移動它；沒有其他標註時也走同一條路
         let c = CursorInput { image: "cursor.png".into(), commands: "cursor.txt".into(), x: 96, y: 50 };
-        let args = cut_args("in.mp4", "out.mp4", &[(1.0, 5.0, 1)], None, 30.0, &x264(), false, &overlays[..1], AudioFx::default(), None, None, Some(&c)).unwrap();
+        let args = cut_args("in.mp4", "out.mp4", &[(1.0, 5.0, 1)], None, 30.0, &x264(), false, &overlays[..1], AudioFx::default(), None, None, Some(&c), None).unwrap();
         let inputs: Vec<&String> = args.iter().zip(args.iter().skip(1)).filter(|(k, _)| *k == "-i").map(|(_, v)| v).collect();
         assert_eq!(inputs, ["in.mp4", "cursor.png", "a.png"]);
         assert!(
@@ -1966,7 +1994,20 @@ dummy: Immediate exit requested";
             "{}",
             after(&args, "-filter_complex")
         );
-        let only = cut_args("in.mp4", "out.mp4", &[(0.0, 5.0, 1)], None, 30.0, &x264(), false, &[], AudioFx::default(), None, None, Some(&c)).unwrap();
+        let only = cut_args("in.mp4", "out.mp4", &[(0.0, 5.0, 1)], None, 30.0, &x264(), false, &[], AudioFx::default(), None, None, Some(&c), None).unwrap();
         assert!(!only.contains(&"-vf".to_string()) && after(&only, "-map") == "[vout]");
+        // 直式影片：放在中間（剪好的畫面再放進直式畫面）
+        let fit = VerticalInput::Fit { w: 1080, h: 1920 };
+        let a =
+            cut_args("in.mp4", "out.mp4", &[(0.0, 5.0, 1)], Some(Rect { x: 0, y: 0, width: 800, height: 600 }), 30.0, &x264(), false, &[], AudioFx::default(), None, None, None, Some(&fit)).unwrap();
+        assert_eq!(after(&a, "-filter_complex"), format!("[0:v]select='gte(t,0)*lt(t,5)',setpts=N/(30*TB),crop=800:600:0:0,{},format=yuv420p[vout]", crate::vertical::fit_filter(1080, 1920)));
+        // 跟著游標：在原影片的時間裁切（游標、標註之後），太大時縮小
+        let follow = VerticalInput::Follow { commands: "vertical.txt".into(), w: 1214, h: 2158, x: 1300, y: 1, scale: Some((1080, 1920)) };
+        let a = cut_args("in.mp4", "out.mp4", &[(0.0, 5.0, 1)], None, 30.0, &x264(), false, &[], AudioFx::default(), None, None, Some(&c), Some(&follow)).unwrap();
+        assert_eq!(
+            after(&a, "-filter_complex"),
+            "[0:v]sendcmd=f=cursor.txt[cs];[cs][1:v]overlay@cursor=x=96:y=50[cur0];[cur0]sendcmd=f=vertical.txt,crop@vertical=w=1214:h=2158:x=1300:y=1,scale=1080:1920:flags=bicubic[vert];\
+             [vert]select='gte(t,0)*lt(t,5)',setpts=N/(30*TB),format=yuv420p[vout]"
+        );
     }
 }

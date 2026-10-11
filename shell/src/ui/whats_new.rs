@@ -145,8 +145,8 @@ fn items() -> [(&'static str, &'static str, Try); 18] {
         (
             tr!("剪輯", "Editing"),
             tr!(
-                "局部加速、自動剪掉沒動靜的片段、跟著點擊放大、平滑放大的游標、背景與圓角、自動字幕、加上 Logo、降噪與音量平衡。",
-                "Speed up a section, auto-cut idle parts, zoom on clicks, a smooth larger cursor, background and rounded corners, automatic subtitles, add a logo, noise reduction and loudness normalization."
+                "局部加速、自動剪掉沒動靜的片段、跟著點擊放大、平滑放大的游標、直式影片（9:16）、背景與圓角、自動字幕、加上 Logo、降噪與音量平衡。",
+                "Speed up a section, auto-cut idle parts, zoom on clicks, a smooth larger cursor, vertical 9:16 video, background and rounded corners, automatic subtitles, add a logo, noise reduction and loudness normalization."
             ),
             Try::Videos,
         ),

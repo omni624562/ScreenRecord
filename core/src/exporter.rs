@@ -1,6 +1,6 @@
 //! 轉檔工作：製作加速版、GIF、剪輯。同一時間只跑一個，避免搶 CPU；原檔不變。
 
-use crate::args::{cut_args, export_args, gif_args, EncoderSpec, GifOptions, OverlayInput};
+use crate::args::{cut_args, export_args, gif_args, EncoderSpec, GifOptions, OverlayInput, VerticalInput};
 use crate::edit::{cut_file_name, keep_parts, normalize_crop, output_length, EditSpec, Overlay, OverlayKind};
 use crate::error::{Error, Result};
 use crate::format::{export_file_name, js_round, num, speed_label, strip_mp4, FPS_MAX, SPEED_MAX, SPEED_MIN};
@@ -220,7 +220,8 @@ impl Exporter {
             && spec.audio.is_default()
             && spec.zoom.is_none()
             && spec.frame.is_none()
-            && spec.cursor.is_none();
+            && spec.cursor.is_none()
+            && spec.vertical.is_none();
         if unchanged {
             return Err(Error::config(tr!("沒有任何剪輯、裁切或標註", "There are no edits, crops or annotations")));
         }
@@ -243,8 +244,12 @@ impl Exporter {
             Some(r) => crate::paths::unique_path(&parent(r), &format!("~{}.editing", strip_mp4(&file_name(r))), ".mp4"),
             None => crate::paths::unique_path(&parent(source), &strip_mp4(&cut_file_name(&file_name(source))), ".mp4"),
         };
+        // 直式影片時不用跟著點擊放大、背景與圓角（介面也不能同時選）；跟著游標時不另外裁切
+        let vertical_on = spec.vertical.is_some();
+        let crop = if matches!(spec.vertical, Some(crate::vertical::Vertical::Follow { .. })) { None } else { crop };
         // 跟著點擊放大：點擊的時間換成剪輯後的時間（刪掉的片段裡的不算）
         let zoom = match (&spec.zoom, crop, info.width, info.height) {
+            _ if vertical_on => None,
             (Some(z), None, Some(w), Some(h)) if z.factor > 1.0 => {
                 let pts: Vec<[f64; 3]> = z.clicks.iter().filter_map(|c| crate::zoom::map_time(&keep, c[0]).map(|t| [t, c[1], c[2]])).collect();
                 crate::zoom::zoompan(&crate::zoom::focus_points(&pts), z.factor, w as i32, h as i32, fps)
@@ -253,6 +258,7 @@ impl Exporter {
         };
         // 背景與圓角：依輸出大小（裁切後）畫好底圖與遮罩
         let (frame, temp) = match (&spec.frame, info.width, info.height) {
+            _ if vertical_on => (None, temp),
             (Some(f), Some(w), Some(h)) => {
                 let (ow, oh) = crop.map(|c| (c.width, c.height)).unwrap_or((w as i32, h as i32));
                 let dir = temp.unwrap_or_else(|| std::env::temp_dir().join(format!("ScreenRecorder-overlays-{}-{}", std::process::id(), crate::paths::now_ms())));
@@ -284,9 +290,42 @@ impl Exporter {
             }
             _ => (None, temp),
         };
+        // 直式影片：放在中間只要輸出大小；跟著游標要寫鏡頭移動的指令檔
+        let (vertical, temp) = match (&spec.vertical, info.width, info.height) {
+            (None, ..) => (None, temp),
+            (Some(crate::vertical::Vertical::Fit), _, Some(h)) => {
+                let (w, h) = crate::vertical::fit_size(crop.map(|c| c.height).unwrap_or(h as i32));
+                (Some(VerticalInput::Fit { w, h }), temp)
+            }
+            (Some(crate::vertical::Vertical::Follow { track }), Some(w), Some(h)) => {
+                let dir = temp.unwrap_or_else(|| std::env::temp_dir().join(format!("ScreenRecorder-overlays-{}-{}", std::process::id(), crate::paths::now_ms())));
+                match write_vertical(track, w as i32, h as i32, fps, &dir) {
+                    Ok(v) => (Some(v), Some(dir)),
+                    Err(e) => {
+                        let _ = std::fs::remove_dir_all(&dir);
+                        return Err(e);
+                    }
+                }
+            }
+            _ => return Err(Error::config(tr!("無法讀取影片尺寸，不能做成直式影片", "Couldn't read the video size, so it can't be made vertical"))),
+        };
         // 分別調整系統聲音與麥克風：只有分軌錄影（3 條音軌）才做得到
         let audio = crate::edit::AudioFx { tracks: spec.audio.tracks.filter(|_| info.audio_tracks >= 3), ..spec.audio };
-        let mut args = cut_args(source, &output.display().to_string(), &keep, crop, fps, &enc, info.has_audio == Some(true), &overlays, audio, zoom.as_deref(), frame.as_ref(), cursor.as_ref())?;
+        let mut args = cut_args(
+            source,
+            &output.display().to_string(),
+            &keep,
+            crop,
+            fps,
+            &enc,
+            info.has_audio == Some(true),
+            &overlays,
+            audio,
+            zoom.as_deref(),
+            frame.as_ref(),
+            cursor.as_ref(),
+            vertical.as_ref(),
+        )?;
         // 章節換成剪輯後的時間（刪掉的片段裡的章節改從下一段開始）
         let temp = with_chapters(&mut args, &crate::chapters::map_cut(&info.chapters, &keep), length, temp);
         let fast = keep.iter().filter(|p| p.2 > 1).count();
@@ -298,8 +337,10 @@ impl Exporter {
             crop.map(|c| format!("，裁切 {}×{}", c.width, c.height)).unwrap_or_default(),
             if overlays.is_empty() { String::new() } else { format!("，標註 {} 個", overlays.len()) }
         ) + if frame.is_some() { "，背景與圓角" } else { "" }
-            + if cursor.is_some() { "，平滑放大的游標" } else { "" };
-        let cwd = cursor.as_ref().and(temp.clone());
+            + if cursor.is_some() { "，平滑放大的游標" } else { "" }
+            + if vertical.is_some() { "，直式影片" } else { "" };
+        let follow = matches!(vertical, Some(VerticalInput::Follow { .. }));
+        let cwd = (cursor.is_some() || follow).then(|| temp.clone()).flatten();
         let finish = Finish { cleanup: temp, replace: replace.map(PathBuf::from), on_saved, cwd };
         self.run_with_cleanup(ExportKind::Cut, &ffmpeg, args, source, &output, 1.0, length, &note, finish)
     }
@@ -612,6 +653,17 @@ fn write_cursor(c: &crate::cursor::CursorFx, w: i32, h: i32, fps: f64, dir: &Pat
     // 第一個位置之前放在畫面外
     let (x, y) = smoothed.first().map(|p| cursor::origin((p[1], p[2]), w, h, tip)).unwrap_or((-1000, -1000));
     Ok(crate::args::CursorInput { image: "cursor.png".into(), commands: "cursor.txt".into(), x, y })
+}
+
+/// 跟著游標的直式影片：鏡頭移動的 sendcmd 指令寫進 dir（vertical.txt）
+fn write_vertical(track: &[crate::cursor::Sample], w: i32, h: i32, fps: f64, dir: &Path) -> Result<VerticalInput> {
+    use crate::vertical;
+    std::fs::create_dir_all(dir)?;
+    let (cw, ch) = vertical::follow_size(w, h);
+    let pan = vertical::pan(track, fps.min(60.0), cw as f64 / w as f64);
+    std::fs::write(dir.join("vertical.txt"), vertical::commands(&pan, w, cw))?;
+    let x = vertical::crop_x(pan.first().map(|p| p[1]).unwrap_or(0.5), w, cw);
+    Ok(VerticalInput::Follow { commands: "vertical.txt".into(), w: cw, h: ch, x, y: (h - ch) / 2, scale: vertical::follow_scale(cw, ch) })
 }
 
 /// 背景與圓角：底圖與遮罩寫進 dir

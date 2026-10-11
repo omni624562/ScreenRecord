@@ -369,6 +369,7 @@ async fn cut_with_every_effect() {
         zoom: Some(ClickZoom { factor: 1.5, clicks: vec![[2.0, 0.3, 0.4]] }),
         frame: Some(crate::video_frame::VideoFrame::default()),
         cursor: Some(crate::cursor::CursorFx { size: 2.0, track: vec![[0.0, 0.2, 0.2], [2.0, 0.6, 0.5], [4.0, 0.3, 0.7]] }),
+        vertical: None,
     };
     let expect = crate::edit::output_length(&crate::edit::keep_parts(6.0, &spec));
     assert!(near(expect, 4.0, 0.01), "{expect}");
@@ -648,4 +649,42 @@ async fn smooth_cursor_is_drawn_where_it_should_be() {
     assert!(white > 5, "{white}");
     // 暫存的游標圖與指令檔刪掉了
     assert!(!std::fs::read_dir(std::env::temp_dir()).unwrap().flatten().any(|e| e.path().join("cursor.txt").exists() && e.file_name().to_string_lossy().contains(&std::process::id().to_string())));
+}
+
+#[tokio::test]
+async fn vertical_videos() {
+    let Some(ff) = ffmpeg() else { return };
+    if !has(&ff, "-encoders", "libx264") || !has(&ff, "-filters", "sendcmd") {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    // 黑色畫面，右邊有一個白色方塊
+    let src = dir.path().join("Rec_2026-10-11_17-00-00.mp4");
+    run_ok(
+        &ff,
+        &["-f", "lavfi", "-i", "color=black:s=1280x720:r=30,drawbox=x=1100:y=300:w=60:h=60:color=white:t=fill", "-t", "4", "-c:v", "libx264", "-pix_fmt", "yuv420p", &src.display().to_string()],
+    );
+    let s = src.display().to_string();
+    let ex = Exporter::new();
+    // 放在中間：720×1280（來源 720p）
+    let fit = EditSpec { start: 0.0, end: 4.0, vertical: Some(crate::vertical::Vertical::Fit), ..Default::default() };
+    ex.start_cut(&ctx(&ff), &s, &fit, None, None).await.unwrap();
+    let out = finish(&ex).await;
+    let i = probe(&ff, &out).await;
+    assert_eq!((i.width, i.height), (Some(720), Some(1280)));
+    // 中間是整個畫面（方塊在右邊），上下是模糊的背景
+    let f = gray_frame(&ff, &out, 1.0, 720, 1280);
+    let px = |f: &[u8], w: usize, x: usize, y: usize| f[y * w + x];
+    let (bx, by) = ((1130.0 * 720.0 / 1280.0) as usize, 640 - 202 + (330.0 * 720.0 / 1280.0) as usize);
+    assert!(px(&f, 720, bx, by) > 200, "{}", px(&f, 720, bx, by));
+    // 跟著游標：一開始在左邊（看不到方塊），1 秒後游標移到方塊上，鏡頭跟過去
+    let track = vec![[0.0, 0.2, 0.5], [1.0, 0.2, 0.5], [1.03, 0.88, 0.45], [4.0, 0.88, 0.45]];
+    let follow = EditSpec { start: 0.0, end: 4.0, vertical: Some(crate::vertical::Vertical::Follow { track }), ..Default::default() };
+    ex.start_cut(&ctx(&ff), &s, &follow, None, None).await.unwrap();
+    let out = finish(&ex).await;
+    let i = probe(&ff, &out).await;
+    assert_eq!((i.width, i.height), (Some(404), Some(718)));
+    let white = |t: f64| gray_frame(&ff, &out, t, 404, 718).iter().filter(|v| **v > 200).count();
+    assert_eq!(white(0.5), 0);
+    assert!(white(3.5) > 2500, "{}", white(3.5));
 }

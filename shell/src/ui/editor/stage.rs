@@ -31,6 +31,29 @@ const SEL_BLUE: Color32 = Color32::from_rgb(0x00, 0x90, 0xff);
 const ROT_HANDLE_PX: f64 = 30.0;
 const ROT_HIT_PX: f64 = 16.0;
 
+/// 跟著游標的直式影片：輸出的範圍（9:16 的框），外面變暗
+fn vertical_window(ed: &mut Editor, painter: &egui::Painter, rect: Rect) {
+    use screenrecorder_core::vertical;
+    if ed.vertical != 2 || ed.vw <= 0.0 {
+        return;
+    }
+    let (cw, ch) = vertical::follow_size(ed.vw as i32, ed.vh as i32);
+    if ed.vertical_pan.is_empty() {
+        ed.vertical_pan = vertical::pan(&ed.vertical_track(), 30.0, cw as f64 / ed.vw);
+    }
+    let Some(c) = vertical::pan_at(&ed.vertical_pan, ed.now()) else { return };
+    let k = rect.width() / ed.vw as f32;
+    let x = vertical::crop_x(c, ed.vw as i32, cw) as f32 * k;
+    let y = ((ed.vh as i32 - ch) / 2) as f32 * k;
+    let win = Rect::from_min_size(pos2(rect.left() + x, rect.top() + y), vec2(cw as f32 * k, ch as f32 * k));
+    let dim = Color32::from_black_alpha(150);
+    painter.rect_filled(Rect::from_min_max(rect.min, pos2(win.left(), rect.bottom())), CornerRadius::ZERO, dim);
+    painter.rect_filled(Rect::from_min_max(pos2(win.right(), rect.top()), rect.max), CornerRadius::ZERO, dim);
+    painter.rect_filled(Rect::from_min_max(pos2(win.left(), rect.top()), pos2(win.right(), win.top())), CornerRadius::ZERO, dim);
+    painter.rect_filled(Rect::from_min_max(pos2(win.left(), win.bottom()), pos2(win.right(), rect.bottom())), CornerRadius::ZERO, dim);
+    painter.rect_stroke(win, CornerRadius::ZERO, Stroke::new(2.0, Color32::WHITE), egui::StrokeKind::Outside);
+}
+
 /// 平滑、放大的游標（輸出時畫在標註底下）：影片上 uv 那一塊顯示在 rect
 fn cursor_overlay(ed: &mut Editor, ctx: &egui::Context, painter: &egui::Painter, rect: Rect, uv: Rect) {
     use screenrecorder_core::cursor;
@@ -88,6 +111,7 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, stage_h: f3
         painter.image(tex.id(), rect, uv, Color32::WHITE);
     }
     cursor_overlay(ed, ctx, &painter, rect, uv);
+    vertical_window(ed, &painter, rect);
     if ed.vw <= 0.0 {
         interact(ed, ui, rect, &resp);
         return;

@@ -999,6 +999,13 @@ pub struct ProjectData {
     /// 平滑、放大的游標：大小（cursor::SIZES；0 = 不加）
     #[serde(default, skip_serializing_if = "is_zero")]
     pub cursor: f64,
+    /// 直式影片：0 = 不用、1 = 放在中間、2 = 跟著游標
+    #[serde(default, skip_serializing_if = "is_zero_u8")]
+    pub vertical: u8,
+}
+
+fn is_zero_u8(v: &u8) -> bool {
+    *v == 0
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

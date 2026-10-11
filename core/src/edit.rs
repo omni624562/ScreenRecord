@@ -45,6 +45,9 @@ pub struct EditSpec {
     /// 平滑、放大的游標（錄影時記下的位置）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cursor: Option<crate::cursor::CursorFx>,
+    /// 直式影片（9:16）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vertical: Option<crate::vertical::Vertical>,
 }
 
 /// 跟著點擊放大：倍率與錄影時記下的點擊（原影片的秒數, x, y；x、y 為 0～1）

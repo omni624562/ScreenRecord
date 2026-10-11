@@ -53,8 +53,8 @@ pub fn push(track: &mut Vec<Sample>, t: f64, x: f64, y: f64) {
     track.push([t, x, y]);
 }
 
-/// 原始位置在時間 t（兩點之間直線內插；j 是上次找到的位置，往後找）
-fn raw_at(pts: &[Sample], j: &mut usize, t: f64) -> (f64, f64) {
+/// 原始位置在時間 t（兩點之間直線內插；j 是上次找到的位置，往後找；pts 要先 clean）
+pub fn raw_at(pts: &[Sample], j: &mut usize, t: f64) -> (f64, f64) {
     while *j + 1 < pts.len() && pts[*j + 1][0] <= t {
         *j += 1;
     }
@@ -68,10 +68,16 @@ fn raw_at(pts: &[Sample], j: &mut usize, t: f64) -> (f64, f64) {
     }
 }
 
-/// 平滑後的位置：每 1/rate 秒一點，從第一點到最後一點後 0.5 秒（讓它停穩）
-pub fn smooth(track: &[Sample], rate: f64) -> Vec<Sample> {
+/// 整理：去掉不合理的點、依時間排序
+pub fn clean(track: &[Sample]) -> Vec<Sample> {
     let mut pts: Vec<Sample> = track.iter().copied().filter(|p| p.iter().all(|v| v.is_finite())).collect();
     pts.sort_by(|a, b| a[0].total_cmp(&b[0]));
+    pts
+}
+
+/// 平滑後的位置：每 1/rate 秒一點，從第一點到最後一點後 0.5 秒（讓它停穩）
+pub fn smooth(track: &[Sample], rate: f64) -> Vec<Sample> {
+    let pts = clean(track);
     let (Some(first), Some(last)) = (pts.first().copied(), pts.last().copied()) else { return vec![] };
     let dt = 1.0 / rate.clamp(10.0, 120.0);
     // 每一點之間再細分幾步（彈簧的計算才穩定）
