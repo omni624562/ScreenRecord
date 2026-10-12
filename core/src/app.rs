@@ -1424,7 +1424,7 @@ impl App {
         if let Some(u) = &u {
             if self.settings.load().update_notified.as_deref() != Some(u.version.as_str()) {
                 self.settings.save(SettingsPatch { update_notified: Some(u.version.clone()), ..Default::default() });
-                info!("有新版本 v{}：{}", u.version, u.url);
+                info!("有新版本 v{}", u.version);
                 self.notify(tr!("有新版本", "Update available"), &trf!("v{} 已發佈，開啟操作視窗即可更新", "v{} is available. Open the main window to update", u.version), false);
             }
         }
