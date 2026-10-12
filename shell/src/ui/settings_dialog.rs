@@ -7,7 +7,7 @@ use super::{main_view, UiApp};
 use eframe::egui::{self, pos2, vec2, Align, Color32, CornerRadius, Id, Layout, Rect, RichText, Sense, Stroke, Ui, UiBuilder};
 use screenrecorder_core::actions;
 use screenrecorder_core::format::{human_duration, output_size};
-use screenrecorder_core::types::{EncoderPreference, Hotkey, Hotkeys, MethodPreference, CAMERA_SIZES};
+use screenrecorder_core::types::{EncoderPreference, Hotkey, Hotkeys, MethodPreference, RecBarMode, CAMERA_SIZES};
 use screenrecorder_core::{tr, trf};
 use std::time::Instant;
 
@@ -502,6 +502,30 @@ fn record_page(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
             app.save_settings();
         }
     });
+    form_row(ui, tr!("錄影控制列", "Recording bar"), |ui| {
+        let mut m = app.s.rec_bar;
+        let items = [
+            (RecBarMode::Full, tr!("完整：時間與按鈕", "Full: time and buttons").to_string(), true),
+            (RecBarMode::Compact, tr!("精簡：只有狀態點與停止", "Compact: status dot and stop").into(), true),
+            (RecBarMode::Hidden, tr!("不顯示", "Hidden").into(), true),
+        ];
+        if form_combo(ui, "recBar", FORM_CTRL_W, &mut m, &items) {
+            app.s.rec_bar = m;
+            app.save_settings();
+        }
+    });
+    let hint = match app.s.rec_bar {
+        RecBarMode::Hidden => match app.keys.label(0) {
+            k if k.is_empty() => tr!("倒數完就隱藏。要停止錄影時，從系統匣或這個視窗停止。", "Hidden once the countdown ends. Stop recording from the tray icon or this window.").to_string(),
+            k => trf!("倒數完就隱藏。要停止錄影時按 {k}，或從系統匣停止。", "Hidden once the countdown ends. Press {k} or use the tray icon to stop recording."),
+        },
+        _ => tr!(
+            "錄影時螢幕上的小控制列，不會被錄進影片。錄影中也可以按控制列右邊的「‹」縮小、「›」展開。",
+            "The small bar shown on screen while recording. It isn't captured in the video. You can also click ‹ / › at its right end to shrink or expand it."
+        )
+        .to_string(),
+    };
+    form_hint(ui, hint, p.muted);
     form_divider(ui);
     form_section(ui, tr!("截圖", "Screenshots"), |_| {});
     form_row(ui, tr!("截圖後", "After capture"), |ui| {

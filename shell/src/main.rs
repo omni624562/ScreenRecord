@@ -111,13 +111,14 @@ fn main() {
         }
     }));
     core.set_exiter(Arc::new(|code| std::process::exit(code)));
-    // 錄自訂範圍時，在螢幕上的範圍外圍顯示外框與控制列（已錄時間、暫停 / 繼續、停止）
+    // 錄影時在螢幕上顯示控制列（已錄時間、暫停 / 繼續、停止；可以縮小或不顯示），錄自訂範圍時另有外框
     #[cfg(windows)]
     {
         use screenrecorder_core::rec_frame_win::{self, FrameCmd};
-        let (c1, c2, h) = (Arc::downgrade(&core), Arc::downgrade(&core), rt.handle().clone());
+        let (c1, c2, c3, h) = (Arc::downgrade(&core), Arc::downgrade(&core), Arc::downgrade(&core), rt.handle().clone());
         rec_frame_win::spawn(
             move || c1.upgrade()?.recorder.frame_info(),
+            move || c3.upgrade().map(|c| c.rec_bar_mode()).unwrap_or_default(),
             move |cmd| {
                 let Some(c) = c2.upgrade() else { return };
                 h.spawn(async move {
@@ -128,6 +129,10 @@ fn main() {
                         FrameCmd::Stop => r.stop(None).await.map(|_| ()),
                         FrameCmd::Mark => r.add_marker().map(|_| ()),
                         FrameCmd::SaveReplay => c.replay_save(true).await.map(|_| ()),
+                        FrameCmd::SetMode(m) => {
+                            c.set_rec_bar_mode(m);
+                            Ok(())
+                        }
                         FrameCmd::Move(x, y) => {
                             let old = r.frame_info().map(|f| f.area);
                             r.move_region(x, y).await.map(|new| {

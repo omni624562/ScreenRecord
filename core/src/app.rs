@@ -152,6 +152,8 @@ pub struct App {
     pub(crate) after: Mutex<Option<crate::after_record::AfterStatus>>,
     /// 主畫面看得到時，介面目前的錄影設定（每一格更新；看不到時是 None）：選了攝影機就先顯示攝影機小視窗
     camera_preview: Mutex<Option<RecordConfig>>,
+    /// 錄影控制列的樣式：（設定版本, 樣式）
+    rec_bar: Mutex<(u64, crate::types::RecBarMode)>,
     /// 即時預覽：同時只保留一條
     live: Mutex<Option<Arc<Mutex<Option<tokio::process::Child>>>>>,
     notifier: Mutex<Option<Notifier>>,
@@ -286,6 +288,7 @@ impl App {
             awake: Mutex::default(),
             after: Mutex::default(),
             camera_preview: Mutex::new(None),
+            rec_bar: Mutex::new((0, crate::types::RecBarMode::Full)),
             live: Mutex::default(),
             notifier: Mutex::default(),
             ui_opener: Mutex::default(),
@@ -1018,6 +1021,27 @@ impl App {
         let camera = config.camera.clone().filter(device)?;
         let plan = crate::args::resolve_plan(&config, &self.lock().monitors).ok()?;
         Some(crate::camera_bubble::BubbleInfo { area: plan.rect, monitors: plan.monitors, camera })
+    }
+
+    /// 錄影控制列的樣式（設定的 recBar）。控制列每 0.1 秒問一次：設定沒變就用上次讀到的
+    pub fn rec_bar_mode(&self) -> crate::types::RecBarMode {
+        let rev = self.settings.rev();
+        let mut cache = self.rec_bar.lock().unwrap();
+        if cache.0 != rev {
+            let ui = self.settings.load().ui;
+            let mode = ui.as_ref().and_then(|u| u.get("recBar")).and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default();
+            *cache = (rev, mode);
+        }
+        cache.1
+    }
+
+    /// 在控制列上按了縮小 / 展開：存進介面設定，下次錄影也一樣
+    pub fn set_rec_bar_mode(&self, mode: crate::types::RecBarMode) {
+        let mut ui = self.settings.load().ui.unwrap_or_else(|| serde_json::json!({}));
+        if let Some(m) = ui.as_object_mut() {
+            m.insert("recBar".into(), serde_json::json!(mode));
+        }
+        self.settings.save(SettingsPatch { ui: Some(ui), ..Default::default() });
     }
 
     /// 攝影機小視窗拖曳、調整大小後的位置（擷取範圍內的相對位置，萬分比）與大小（短邊的百分比）：

@@ -2,7 +2,7 @@
 //! 同時把錄影設定存到 config 欄位，系統匣的「開始錄影」直接使用。
 
 use screenrecorder_core::format::MP4_WIDTHS;
-use screenrecorder_core::types::{AudioConfig, CameraConfig, EncoderPreference, EnvInfo, ExportFormat, MethodPreference, MonitorInfo, RecordConfig, Rect, SourceConfig};
+use screenrecorder_core::types::{AudioConfig, CameraConfig, EncoderPreference, EnvInfo, ExportFormat, MethodPreference, MonitorInfo, RecBarMode, RecordConfig, Rect, SourceConfig};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -87,6 +87,8 @@ pub struct UiSettings {
     pub cursor_halo: bool,
     /// 錄影時隱藏桌面圖示
     pub hide_icons: bool,
+    /// 錄影時螢幕上的控制列：完整、精簡、不顯示（core 的 rec_bar_mode 讀這個欄位）
+    pub rec_bar: RecBarMode,
     /// 截圖後在右下角顯示小縮圖
     pub shot_preview: bool,
     /// 看過哪一版的新功能介紹（例如 "3.1"）
@@ -202,6 +204,7 @@ impl UiSettings {
             camera_pos: o.get("cameraPos").and_then(|v| serde_json::from_value::<[u16; 2]>(v.clone()).ok()).filter(|p| p.iter().all(|c| *c <= 10000)),
             cursor_halo: boolean("cursorHalo").unwrap_or(false),
             hide_icons: boolean("hideIcons").unwrap_or(false),
+            rec_bar: o.get("recBar").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default(),
             shot_preview: boolean("shotPreview").unwrap_or(true),
             seen_version: string("seenVersion").unwrap_or_default(),
             last_picture: string("lastPicture").unwrap_or_default(),
