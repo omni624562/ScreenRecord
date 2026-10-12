@@ -4,10 +4,14 @@
 //! 框與控制列都在範圍外面（放不下時控制列改到框下方或框內左上），也設成不被擷取（Windows 10 2004 以後），
 //! 不會錄進影片。框讓滑鼠穿過；控制列可以點，但不搶焦點（正在打字的視窗不受影響）。
 //! 錄影中紅色，暫停時橘色。座標是實體像素（程式已宣告 Per-Monitor DPI aware）。
+//! 控制列有三種樣式（設定的 recBar）：完整；精簡（只有狀態點與停止，按控制列右邊的「‹」縮小、「›」展開）；
+//! 不顯示（倒數時仍顯示，開始錄影後隱藏）。
+//! 錄整個螢幕時控制列在螢幕上方中間，拖曳可以移到別的地方（例如另一個螢幕），位置會記住（recBarPos）；
+//! 雙擊控制列（按鈕以外）放回上方中間。
 
 use crate::format::clock;
 use crate::recorder::FrameInfo;
-use crate::types::{RecorderState, Rect};
+use crate::types::{RecBarMode, RecBarPrefs, RecorderState, Rect};
 use crate::{tr, trf};
 use std::cell::{Cell, RefCell};
 use std::time::{Duration, Instant};
@@ -16,18 +20,18 @@ use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, W
 use windows::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND};
 use windows::Win32::Graphics::Gdi::{
     BeginPaint, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, CreateFontW, CreateSolidBrush, DeleteDC, DeleteObject, DrawTextW, Ellipse, EndPaint, FillRect, GetMonitorInfoW, GetStockObject,
-    InvalidateRect, MonitorFromRect, Polygon, RoundRect, SelectObject, SetBkMode, SetTextColor, CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS, DEFAULT_CHARSET, DT_LEFT, DT_SINGLELINE, DT_VCENTER,
-    FW_SEMIBOLD, HDC, MONITORINFO, MONITOR_DEFAULTTONEAREST, NULL_PEN, OUT_DEFAULT_PRECIS, PAINTSTRUCT, SRCCOPY, TRANSPARENT,
+    InvalidateRect, MonitorFromPoint, MonitorFromRect, Polygon, RoundRect, SelectObject, SetBkMode, SetTextColor, CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS, DEFAULT_CHARSET, DT_LEFT, DT_SINGLELINE,
+    DT_VCENTER, FW_SEMIBOLD, HDC, MONITORINFO, MONITOR_DEFAULTTONEAREST, MONITOR_DEFAULTTONULL, NULL_PEN, OUT_DEFAULT_PRECIS, PAINTSTRUCT, SRCCOPY, TRANSPARENT,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
 use windows::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture, TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT};
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DispatchMessageW, GetClientRect, GetCursorPos, GetSystemMetrics, LoadCursorW, PeekMessageW, RegisterClassExW, SetCursor, SetLayeredWindowAttributes,
-    SetWindowDisplayAffinity, SetWindowPos, ShowWindow, TranslateMessage, HTTRANSPARENT, HWND_TOPMOST, IDC_ARROW, IDC_HAND, IDC_SIZEALL, LWA_ALPHA, MA_NOACTIVATE, MSG, PM_REMOVE, SM_CXVIRTUALSCREEN,
-    SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, SW_HIDE, WDA_EXCLUDEFROMCAPTURE, WM_CAPTURECHANGED, WM_ERASEBKGND,
-    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEACTIVATE, WM_MOUSEMOVE, WM_NCHITTEST, WM_PAINT, WM_SETCURSOR, WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
-    WS_EX_TRANSPARENT, WS_POPUP,
+    CreateWindowExW, DefWindowProcW, DispatchMessageW, GetClientRect, GetCursorPos, GetSystemMetrics, GetWindowRect, LoadCursorW, PeekMessageW, RegisterClassExW, SetCursor,
+    SetLayeredWindowAttributes, SetWindowDisplayAffinity, SetWindowPos, ShowWindow, TranslateMessage, CS_DBLCLKS, HTTRANSPARENT, HWND_TOPMOST, IDC_HAND, IDC_SIZEALL, LWA_ALPHA, MA_NOACTIVATE, MSG,
+    PM_REMOVE, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW, SW_HIDE, WDA_EXCLUDEFROMCAPTURE,
+    WM_CAPTURECHANGED, WM_ERASEBKGND, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEACTIVATE, WM_MOUSEMOVE, WM_NCHITTEST, WM_PAINT, WM_SETCURSOR, WNDCLASSEXW, WS_EX_LAYERED,
+    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
 };
 
 /// 框的粗細與離範圍的距離（像素）
@@ -56,20 +60,29 @@ pub enum FrameCmd {
     SaveReplay,
     /// 把範圍移到 (x, y)（左上角，虛擬桌面座標）
     Move(i32, i32),
+    /// 縮小 / 展開控制列（存進設定，下次錄影也一樣）
+    SetMode(RecBarMode),
+    /// 錄整個螢幕時控制列拖到的位置（None = 放回上方中間；存進設定，下次錄影也一樣）
+    SetPos(Option<(i32, i32)>),
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Button {
     Mark,
     Save,
     Pause,
     Resume,
     Stop,
+    /// 縮小成精簡的控制列「‹」
+    Shrink,
+    /// 展開成完整的控制列「›」
+    Expand,
 }
 
 /// 控制列目前的內容（只在控制列的執行緒上用）
 #[derive(Clone, PartialEq)]
 struct Bar {
+    /// 精簡的控制列是空字串（不顯示時間）
     text: String,
     /// 加了幾個標記（時間後面顯示）
     marks: u32,
@@ -93,8 +106,16 @@ thread_local! {
     static BAR_AREA: Cell<(i32, i32)> = const { Cell::new((0, 0)) };
     /// 放開後要移去的位置（錄影器移好之前，外框先停在這裡）
     static MOVE_TO: Cell<Option<(i32, i32)>> = const { Cell::new(None) };
-    /// 錄整個螢幕：沒有外框、控制列不能拖曳
+    /// 錄整個螢幕：沒有外框，拖曳控制列移動的是控制列本身
     static FULL: Cell<bool> = const { Cell::new(false) };
+    /// 正在拖曳控制列本身（錄整個螢幕時）：按下時的游標位置與控制列左上角
+    static BAR_DRAG: Cell<Option<Drag>> = const { Cell::new(None) };
+    /// 錄整個螢幕時控制列的位置（拖曳過才有；None = 上方中間）
+    static CUSTOM_POS: Cell<Option<(i32, i32)>> = const { Cell::new(None) };
+    /// 要存進設定的位置（迴圈裡取出後送出指令）
+    static SAVE_POS: Cell<Option<Option<(i32, i32)>>> = const { Cell::new(None) };
+    /// 雙擊放回上方中間：下一輪重新擺放
+    static REPLACE: Cell<bool> = const { Cell::new(false) };
 }
 
 #[derive(Clone, Copy)]
@@ -112,10 +133,10 @@ fn drag_origin(d: &Drag, size: (i32, i32)) -> (i32, i32) {
     (x.clamp(vx, (vx + vw - size.0).max(vx)), y.clamp(vy, (vy + vh - size.1).max(vy)))
 }
 
-/// 背景執行緒：每 0.1 秒問一次 info()（None = 不顯示），跟著顯示、移動或隱藏外框與控制列；
+/// 背景執行緒：每 0.1 秒問一次 info()（None = 不顯示）與 prefs()（控制列的樣式與位置），跟著顯示、移動或隱藏外框與控制列；
 /// 按下控制列的按鈕時呼叫 cmd()
-pub fn spawn(info: impl Fn() -> Option<FrameInfo> + Send + 'static, cmd: impl Fn(FrameCmd) + Send + 'static) {
-    let _ = std::thread::Builder::new().name("rec-frame".into()).spawn(move || unsafe { run(info, cmd) });
+pub fn spawn(info: impl Fn() -> Option<FrameInfo> + Send + 'static, prefs: impl Fn() -> RecBarPrefs + Send + 'static, cmd: impl Fn(FrameCmd) + Send + 'static) {
+    let _ = std::thread::Builder::new().name("rec-frame".into()).spawn(move || unsafe { run(info, prefs, cmd) });
 }
 
 // ───────────── 版面（以 96 DPI 為準，乘上 scale） ─────────────
@@ -131,15 +152,30 @@ fn marks_w() -> f32 {
     tr!(60.0, 80.0)
 }
 const BTN_W: f32 = 32.0;
+/// 縮小 / 展開的按鈕窄一點（次要的按鈕）
+const SMALL_BTN_W: f32 = 24.0;
 const BTN_GAP: f32 = 2.0;
+
+fn btn_w(b: Button) -> f32 {
+    match b {
+        Button::Shrink | Button::Expand => SMALL_BTN_W,
+        _ => BTN_W,
+    }
+}
 
 fn px(v: f32, scale: f32) -> i32 {
     (v * scale).round() as i32
 }
 
+/// 按鈕們的寬度（含間隔）
+fn buttons_w(buttons: &[Button]) -> f32 {
+    buttons.iter().map(|&b| btn_w(b) + BTN_GAP).sum()
+}
+
 fn bar_size(b: &Bar) -> (i32, i32) {
     let s = b.scale;
-    let w = BAR_PAD + GRIP + DOT + 8.0 + TEXT_W + if b.marks > 0 { marks_w() } else { 0.0 } + 6.0 + b.buttons.len() as f32 * (BTN_W + BTN_GAP) + 4.0;
+    let text = if b.text.is_empty() { 0.0 } else { 8.0 + TEXT_W + if b.marks > 0 { marks_w() } else { 0.0 } };
+    let w = BAR_PAD + GRIP + DOT + text + 6.0 + buttons_w(&b.buttons) + 4.0;
     (px(w, s), px(BAR_H, s))
 }
 
@@ -147,28 +183,51 @@ fn bar_size(b: &Bar) -> (i32, i32) {
 fn button_rect(b: &Bar, i: usize) -> RECT {
     let s = b.scale;
     let (w, h) = bar_size(b);
-    let n = b.buttons.len();
-    let right = w - px(4.0, s) - ((n - 1 - i) as f32 * (BTN_W + BTN_GAP) * s).round() as i32;
+    let right = w - px(4.0, s) - (buttons_w(&b.buttons[i + 1..]) * s).round() as i32;
     let m = px(4.0, s);
-    RECT { left: right - px(BTN_W, s), top: m, right, bottom: h - m }
+    RECT { left: right - px(btn_w(b.buttons[i]), s), top: m, right, bottom: h - m }
 }
 
-fn bar_for(f: &FrameInfo, scale: f32) -> Bar {
-    match f.state {
-        RecorderState::Countdown => Bar { text: trf!("倒數 {}", "Starts in {}", f.countdown_ms.unwrap_or(0).div_ceil(1000)), marks: 0, dot: GREY, buttons: vec![Button::Stop], scale },
-        RecorderState::Recording if f.replay => Bar { text: clock(f.recorded_ms as f64), marks: 0, dot: RED, buttons: vec![Button::Save, Button::Stop], scale },
-        RecorderState::Paused => Bar { text: clock(f.recorded_ms as f64), marks: f.markers, dot: AMBER, buttons: vec![Button::Mark, Button::Resume, Button::Stop], scale },
-        _ => Bar { text: clock(f.recorded_ms as f64), marks: f.markers, dot: RED, buttons: vec![Button::Mark, Button::Pause, Button::Stop], scale },
-    }
+/// 控制列要顯示的內容（None = 不顯示）。倒數時一律顯示（看得到還剩幾秒、可以取消）
+fn bar_for(f: &FrameInfo, scale: f32, mode: RecBarMode) -> Option<Bar> {
+    let paused = f.state == RecorderState::Paused;
+    let dot = if paused { AMBER } else { RED };
+    let bar = match (f.state, mode) {
+        (RecorderState::Countdown, _) => Bar { text: trf!("倒數 {}", "Starts in {}", f.countdown_ms.unwrap_or(0).div_ceil(1000)), marks: 0, dot: GREY, buttons: vec![Button::Stop], scale },
+        (_, RecBarMode::Hidden) => return None,
+        // 精簡：狀態點與停止（暫停中多一個繼續、重播緩衝多一個存下）
+        (_, RecBarMode::Compact) => {
+            let buttons = if f.replay {
+                vec![Button::Save, Button::Stop, Button::Expand]
+            } else if paused {
+                vec![Button::Resume, Button::Stop, Button::Expand]
+            } else {
+                vec![Button::Stop, Button::Expand]
+            };
+            Bar { text: String::new(), marks: 0, dot, buttons, scale }
+        }
+        (_, RecBarMode::Full) => {
+            let (marks, buttons) = if f.replay {
+                (0, vec![Button::Save, Button::Stop, Button::Shrink])
+            } else if paused {
+                (f.markers, vec![Button::Mark, Button::Resume, Button::Stop, Button::Shrink])
+            } else {
+                (f.markers, vec![Button::Mark, Button::Pause, Button::Stop, Button::Shrink])
+            };
+            Bar { text: clock(f.recorded_ms as f64), marks, dot, buttons, scale }
+        }
+    };
+    Some(bar)
 }
 
-unsafe fn run(info: impl Fn() -> Option<FrameInfo>, cmd: impl Fn(FrameCmd)) {
+unsafe fn run(info: impl Fn() -> Option<FrameInfo>, prefs: impl Fn() -> RecBarPrefs, cmd: impl Fn(FrameCmd)) {
     let hinst = GetModuleHandleW(None).unwrap_or_default();
     let frame_class = w!("ScreenRecorderRecFrame");
     let bar_class = w!("ScreenRecorderRecBar");
     let wc = WNDCLASSEXW { cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32, lpfnWndProc: Some(frame_proc), hInstance: hinst.into(), lpszClassName: frame_class, ..Default::default() };
     RegisterClassExW(&wc);
-    let wc = WNDCLASSEXW { lpfnWndProc: Some(bar_proc), lpszClassName: bar_class, ..wc };
+    // 控制列收得到雙擊（放回上方中間）
+    let wc = WNDCLASSEXW { style: CS_DBLCLKS, lpfnWndProc: Some(bar_proc), lpszClassName: bar_class, ..wc };
     RegisterClassExW(&wc);
     // 上、下、左、右四條（中間是空的，不擋範圍裡的畫面與滑鼠）
     let mut edges: Vec<HWND> = Vec::new();
@@ -215,7 +274,12 @@ unsafe fn run(info: impl Fn() -> Option<FrameInfo>, cmd: impl Fn(FrameCmd)) {
                 Button::Stop => FrameCmd::Stop,
                 Button::Mark => FrameCmd::Mark,
                 Button::Save => FrameCmd::SaveReplay,
+                Button::Shrink => FrameCmd::SetMode(RecBarMode::Compact),
+                Button::Expand => FrameCmd::SetMode(RecBarMode::Full),
             });
+        }
+        if let Some(p) = SAVE_POS.with(|c| c.take()) {
+            cmd(FrameCmd::SetPos(p));
         }
         let mut f = info();
         // 拖曳中：外框跟著游標；放開後到錄影器移好之前（最多 3 秒）先停在新位置
@@ -278,7 +342,8 @@ unsafe fn run(info: impl Fn() -> Option<FrameInfo>, cmd: impl Fn(FrameCmd)) {
             raised = Instant::now();
         }
         if let (Some(h), Some(f)) = (bar, f) {
-            update_bar(h, &f, want != shown);
+            let replace = REPLACE.with(|c| c.take());
+            update_bar(h, &f, prefs(), want != shown || replace);
         }
         shown = want;
         // 拖曳中更新得快一點，外框才跟得上游標
@@ -293,18 +358,41 @@ unsafe fn run(info: impl Fn() -> Option<FrameInfo>, cmd: impl Fn(FrameCmd)) {
     }
 }
 
-/// 更新控制列的內容；範圍改變（moved）或大小改變時重新擺放
-unsafe fn update_bar(h: HWND, f: &FrameInfo, moved: bool) {
+/// 更新控制列的內容；範圍改變（moved）或大小改變時重新擺放，不顯示時藏起來
+unsafe fn update_bar(h: HWND, f: &FrameInfo, prefs: RecBarPrefs, moved: bool) {
     let r = f.area;
     let o = GAP + THICK;
     let frame = RECT { left: r.x - o, top: r.y - o, right: r.x + r.width + o, bottom: r.y + r.height + o };
-    let mon = MonitorFromRect(&frame, MONITOR_DEFAULTTONEAREST);
+    let prev = BAR.with(|b| b.borrow().clone());
+    // 錄整個螢幕：控制列拖到別的地方（例如另一個螢幕）後記住位置；那裡已經沒有螢幕時（拔掉了）放回上方中間
+    if prev.is_none() {
+        CUSTOM_POS.with(|c| c.set(prefs.pos));
+    }
+    let custom = CUSTOM_POS.with(|c| c.get()).filter(|_| f.full).and_then(|p| {
+        let m = MonitorFromPoint(POINT { x: p.0 + 8, y: p.1 + 8 }, MONITOR_DEFAULTTONULL);
+        (!m.is_invalid()).then_some((p, m))
+    });
+    // 控制列所在的螢幕（決定 DPI 縮放與擺放範圍）
+    let mon = match custom {
+        Some((_, m)) => m,
+        None => MonitorFromRect(&frame, MONITOR_DEFAULTTONEAREST),
+    };
     let (mut dx, mut dy) = (96u32, 96u32);
     let _ = GetDpiForMonitor(mon, MDT_EFFECTIVE_DPI, &mut dx, &mut dy);
-    let next = bar_for(f, dx as f32 / 96.0);
-    let prev = BAR.with(|b| b.borrow().clone());
+    let Some(next) = bar_for(f, dx as f32 / 96.0, prefs.mode) else {
+        if prev.is_some() {
+            let _ = ShowWindow(h, SW_HIDE);
+            BAR.with(|b| *b.borrow_mut() = None);
+            HOVER.with(|c| c.set(None));
+        }
+        return;
+    };
     if prev.as_ref() == Some(&next) && !moved {
         return;
+    }
+    // 按鈕換了（例如縮小後）：滑鼠停的那一格不一定還是同一個按鈕
+    if prev.as_ref().is_none_or(|p| p.buttons != next.buttons) {
+        HOVER.with(|c| c.set(None));
     }
     let resized = prev.as_ref().is_none_or(|p| bar_size(p) != bar_size(&next));
     BAR.with(|b| *b.borrow_mut() = Some(next.clone()));
@@ -313,9 +401,16 @@ unsafe fn update_bar(h: HWND, f: &FrameInfo, moved: bool) {
         let mut mi = MONITORINFO { cbSize: std::mem::size_of::<MONITORINFO>() as u32, ..Default::default() };
         let m = if GetMonitorInfoW(mon, &mut mi).as_bool() { mi.rcMonitor } else { frame };
         let gap = px(4.0, next.scale);
-        // 錄整個螢幕：螢幕上方中間（設成不被擷取，不會錄進影片）
+        let mut cur = RECT::default();
+        let dragging = BAR_DRAG.with(|d| d.get()).is_some() && GetWindowRect(h, &mut cur).is_ok();
+        // 拖曳中：留在游標拖到的地方
+        // 錄整個螢幕：拖曳過的位置，或螢幕上方中間（設成不被擷取，不會錄進影片）
         // 框的左上方；上面放不下改到框下方，都放不下時放在框內左上（不會被錄進去）
-        let (x, y) = if f.full {
+        let (x, y) = if dragging {
+            (cur.left, cur.top)
+        } else if let Some((p, _)) = custom {
+            (p.0.clamp(m.left, (m.right - w).max(m.left)), p.1.clamp(m.top, (m.bottom - bh).max(m.top)))
+        } else if f.full {
             ((m.left + m.right - w) / 2, m.top + gap * 2)
         } else if frame.top - gap - bh >= m.top {
             (frame.left, frame.top - gap - bh)
@@ -324,7 +419,7 @@ unsafe fn update_bar(h: HWND, f: &FrameInfo, moved: bool) {
         } else {
             (r.x + gap * 2, r.y + gap * 2)
         };
-        let x = x.clamp(m.left, (m.right - w).max(m.left));
+        let x = if dragging { x } else { x.clamp(m.left, (m.right - w).max(m.left)) };
         let _ = SetWindowPos(h, Some(HWND_TOPMOST), x, y, w, bh, SWP_NOACTIVATE | SWP_SHOWWINDOW);
     }
     let _ = InvalidateRect(Some(h), None, false);
@@ -358,6 +453,13 @@ unsafe extern "system" fn frame_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lpara
     }
 }
 
+/// 滑鼠訊息的位置換成螢幕座標（訊息發生時的位置；GetCursorPos 是現在的位置，處理得慢時已經移開了）
+unsafe fn msg_point(hwnd: HWND, lparam: LPARAM) -> POINT {
+    let mut rc = RECT::default();
+    let _ = GetWindowRect(hwnd, &mut rc);
+    POINT { x: rc.left + (lparam.0 & 0xFFFF) as i16 as i32, y: rc.top + ((lparam.0 >> 16) & 0xFFFF) as i16 as i32 }
+}
+
 /// 滑鼠在第幾個按鈕上
 fn hit(lparam: LPARAM) -> Option<usize> {
     let (x, y) = ((lparam.0 & 0xFFFF) as i16 as i32, ((lparam.0 >> 16) & 0xFFFF) as i16 as i32);
@@ -376,6 +478,16 @@ unsafe extern "system" fn bar_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
         // 點了也不搶焦點
         WM_MOUSEACTIVATE => LRESULT(MA_NOACTIVATE as isize),
         WM_MOUSEMOVE => {
+            if let Some(mut d) = BAR_DRAG.with(|d| d.get()) {
+                // 拖曳控制列本身：直接跟著游標走（可以拖到另一個螢幕）
+                let _ = GetCursorPos(&mut d.cur);
+                BAR_DRAG.with(|c| c.set(Some(d)));
+                let mut rc = RECT::default();
+                let _ = GetWindowRect(hwnd, &mut rc);
+                let (x, y) = drag_origin(&d, (rc.right - rc.left, rc.bottom - rc.top));
+                let _ = SetWindowPos(hwnd, None, x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+                return LRESULT(0);
+            }
             if let Some(mut d) = DRAG.with(|d| d.get()) {
                 let _ = GetCursorPos(&mut d.cur);
                 DRAG.with(|c| c.set(Some(d)));
@@ -396,34 +508,64 @@ unsafe extern "system" fn bar_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
         }
         WM_SETCURSOR => {
             // 按鈕上是手指，其他地方可以拖曳
-            let hand = HOVER.with(|c| c.get()).is_some() && DRAG.with(|d| d.get()).is_none();
-            let cursor = if hand {
-                IDC_HAND
-            } else if FULL.with(|c| c.get()) {
-                IDC_ARROW
-            } else {
-                IDC_SIZEALL
-            };
+            let hand = HOVER.with(|c| c.get()).is_some() && DRAG.with(|d| d.get()).is_none() && BAR_DRAG.with(|d| d.get()).is_none();
+            let cursor = if hand { IDC_HAND } else { IDC_SIZEALL };
             if let Ok(c) = LoadCursorW(None, cursor) {
                 SetCursor(Some(c));
             }
             LRESULT(1)
         }
         WM_LBUTTONDOWN => {
-            if hit(lparam).is_none() && !FULL.with(|c| c.get()) {
-                let mut p = POINT::default();
-                let _ = GetCursorPos(&mut p);
-                DRAG.with(|d| d.set(Some(Drag { start: p, origin: ORIGIN.with(|o| o.get()), cur: p })));
+            if hit(lparam).is_none() {
+                if FULL.with(|c| c.get()) {
+                    // 錄整個螢幕：拖曳的是控制列本身
+                    let mut rc = RECT::default();
+                    let _ = GetWindowRect(hwnd, &mut rc);
+                    let p = msg_point(hwnd, lparam);
+                    BAR_DRAG.with(|d| d.set(Some(Drag { start: p, origin: (rc.left, rc.top), cur: p })));
+                } else {
+                    let mut p = POINT::default();
+                    let _ = GetCursorPos(&mut p);
+                    DRAG.with(|d| d.set(Some(Drag { start: p, origin: ORIGIN.with(|o| o.get()), cur: p })));
+                }
                 SetCapture(hwnd);
             }
             LRESULT(0)
         }
+        WM_LBUTTONDBLCLK => {
+            // 錄整個螢幕：雙擊控制列（按鈕以外）放回螢幕上方中間
+            if hit(lparam).is_none() && FULL.with(|c| c.get()) {
+                CUSTOM_POS.with(|c| c.set(None));
+                SAVE_POS.with(|c| c.set(Some(None)));
+                REPLACE.with(|c| c.set(true));
+            }
+            LRESULT(0)
+        }
         WM_CAPTURECHANGED => {
-            // 拖曳被打斷（例如切換視窗）：放回原位
+            // 拖曳被打斷（例如切換視窗）：範圍放回原位；控制列就停在拖到的地方
             DRAG.with(|d| d.set(None));
+            if BAR_DRAG.with(|d| d.take()).is_some() {
+                bar_dropped(hwnd);
+            }
             LRESULT(0)
         }
         WM_LBUTTONUP => {
+            if let Some(mut d) = BAR_DRAG.with(|d| d.take()) {
+                d.cur = msg_point(hwnd, lparam);
+                let _ = ReleaseCapture();
+                if (d.cur.x - d.start.x).abs() + (d.cur.y - d.start.y).abs() > 3 {
+                    // 放在放開時游標的位置（最後幾次移動可能還沒處理到）
+                    let mut rc = RECT::default();
+                    let _ = GetWindowRect(hwnd, &mut rc);
+                    let (x, y) = drag_origin(&d, (rc.right - rc.left, rc.bottom - rc.top));
+                    let _ = SetWindowPos(hwnd, None, x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+                    bar_dropped(hwnd);
+                } else {
+                    // 只是點一下（沒移動）不算：放回原位
+                    let _ = SetWindowPos(hwnd, None, d.origin.0, d.origin.1, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+                }
+                return LRESULT(0);
+            }
             if let Some(mut d) = DRAG.with(|d| d.take()) {
                 let _ = ReleaseCapture();
                 let _ = GetCursorPos(&mut d.cur);
@@ -452,6 +594,15 @@ unsafe extern "system" fn bar_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
     }
 }
 
+/// 控制列拖好了：記住位置（存進設定，下次錄影也放在這裡）
+unsafe fn bar_dropped(hwnd: HWND) {
+    let mut rc = RECT::default();
+    if GetWindowRect(hwnd, &mut rc).is_ok() {
+        CUSTOM_POS.with(|c| c.set(Some((rc.left, rc.top))));
+        SAVE_POS.with(|c| c.set(Some(Some((rc.left, rc.top)))));
+    }
+}
+
 /// 畫控制列（先畫在記憶體 DC 再一次貼上，不閃爍）
 unsafe fn paint_bar(hwnd: HWND, hdc: HDC) {
     let Some(b) = BAR.with(|b| b.borrow().clone()) else { return };
@@ -464,11 +615,10 @@ unsafe fn paint_bar(hwnd: HWND, hdc: HDC) {
     let old_pen = SelectObject(mem, GetStockObject(NULL_PEN));
     let s = b.scale;
     fill(mem, &rc, BAR_BG);
-    // 拖曳點（錄整個螢幕時不能拖，不畫）
+    // 拖曳點
     let cy = h / 2;
     let g = px(2.0, s).max(2);
-    let grip: &[(i32, i32)] = if FULL.with(|c| c.get()) { &[] } else { &[(0, -1), (0, 0), (0, 1), (1, -1), (1, 0), (1, 1)] };
-    for &(ix, iy) in grip {
+    for (ix, iy) in [(0, -1), (0, 0), (0, 1), (1, -1), (1, 0), (1, 1)] {
         let (gx, gy) = (px(BAR_PAD - 2.0 + ix as f32 * 5.0, s), cy + iy * px(5.0, s) - g / 2);
         fill(mem, &RECT { left: gx, top: gy, right: gx + g, bottom: gy + g }, GREY);
     }
@@ -485,7 +635,9 @@ unsafe fn paint_bar(hwnd: HWND, hdc: HDC) {
     SetTextColor(mem, WHITE);
     let mut text: Vec<u16> = b.text.encode_utf16().collect();
     let mut tr = RECT { left: x0 + d + px(8.0, s), top: 0, right: x0 + d + px(8.0 + TEXT_W, s), bottom: h };
-    DrawTextW(mem, &mut text, &mut tr, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+    if !text.is_empty() {
+        DrawTextW(mem, &mut text, &mut tr, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+    }
     if b.marks > 0 {
         SetTextColor(mem, AMBER);
         let marks = if crate::i18n::is_en() { format!("· {} marker{}", b.marks, if b.marks == 1 { "" } else { "s" }) } else { format!("・標記 {}", b.marks) };
@@ -549,6 +701,25 @@ unsafe fn paint_bar(hwnd: HWND, hdc: HDC) {
                 SelectObject(mem, prev);
                 let _ = DeleteObject(wb.into());
             }
+            Button::Shrink | Button::Expand => {
+                // 縮小「‹」（尖端朝左）、展開「›」（尖端朝右），灰色：次要的按鈕
+                let dir = if *btn == Button::Shrink { -1 } else { 1 };
+                let (a, v, t) = (px(2.5, s), px(5.0, s), px(2.5, s).max(2));
+                let (tip, arm) = (cx + dir * a, cx - dir * a);
+                let gb = CreateSolidBrush(GREY);
+                let prev = SelectObject(mem, gb.into());
+                let pts = [
+                    POINT { x: arm, y: cy - v },
+                    POINT { x: tip, y: cy },
+                    POINT { x: arm, y: cy + v },
+                    POINT { x: arm - dir * t, y: cy + v },
+                    POINT { x: tip - dir * t, y: cy },
+                    POINT { x: arm - dir * t, y: cy - v },
+                ];
+                let _ = Polygon(mem, &pts);
+                SelectObject(mem, prev);
+                let _ = DeleteObject(gb.into());
+            }
         }
     }
     let _ = BitBlt(hdc, 0, 0, w, h, Some(mem), 0, 0, SRCCOPY);
@@ -560,4 +731,42 @@ unsafe fn paint_bar(hwnd: HWND, hdc: HDC) {
     let _ = DeleteObject(brush.into());
     let _ = DeleteObject(bmp.into());
     let _ = DeleteDC(mem);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn info(state: RecorderState) -> FrameInfo {
+        FrameInfo { area: Rect { x: 0, y: 0, width: 640, height: 480 }, state, recorded_ms: 61_000, countdown_ms: Some(2_500), markers: 2, full: true, replay: false }
+    }
+
+    #[test]
+    fn bar_modes() {
+        let full = bar_for(&info(RecorderState::Recording), 1.0, RecBarMode::Full).unwrap();
+        assert_eq!(full.buttons, [Button::Mark, Button::Pause, Button::Stop, Button::Shrink]);
+        let compact = bar_for(&info(RecorderState::Recording), 1.0, RecBarMode::Compact).unwrap();
+        assert!(compact.text.is_empty());
+        assert_eq!(compact.buttons, [Button::Stop, Button::Expand]);
+        assert!(bar_size(&compact).0 * 2 < bar_size(&full).0, "精簡的控制列不到完整的一半寬");
+        // 暫停中的精簡控制列多一個繼續；重播緩衝多一個存下
+        assert_eq!(bar_for(&info(RecorderState::Paused), 1.0, RecBarMode::Compact).unwrap().buttons, [Button::Resume, Button::Stop, Button::Expand]);
+        let replay = FrameInfo { replay: true, ..info(RecorderState::Recording) };
+        assert_eq!(bar_for(&replay, 1.0, RecBarMode::Compact).unwrap().buttons, [Button::Save, Button::Stop, Button::Expand]);
+        // 不顯示：錄影、暫停中沒有控制列，倒數時仍顯示（可以取消）
+        assert!(bar_for(&info(RecorderState::Recording), 1.0, RecBarMode::Hidden).is_none());
+        assert!(bar_for(&info(RecorderState::Paused), 1.0, RecBarMode::Hidden).is_none());
+        assert_eq!(bar_for(&info(RecorderState::Countdown), 1.0, RecBarMode::Hidden).unwrap().buttons, [Button::Stop]);
+        // 按鈕都在控制列裡、不重疊
+        for b in [&full, &compact] {
+            let (w, _) = bar_size(b);
+            for i in 0..b.buttons.len() {
+                let r = button_rect(b, i);
+                assert!(r.left >= 0 && r.right <= w);
+                if i > 0 {
+                    assert!(button_rect(b, i - 1).right <= r.left);
+                }
+            }
+        }
+    }
 }

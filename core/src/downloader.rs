@@ -71,8 +71,7 @@ impl Default for Deps {
                         let len = r.header("content-length").and_then(|v| v.parse().ok());
                         Ok((len, Box::new(r.into_reader())))
                     }
-                    Err(ureq::Error::Status(code, _)) => Err(trf!("下載失敗（HTTP {code}）", "Download failed (HTTP {code})")),
-                    Err(e) => Err(trf!("下載失敗：{e}", "Download failed: {e}")),
+                    Err(e) => Err(trf!("下載失敗：{}", "Download failed: {}", crate::http::describe(&e))),
                 }
             }),
             run: Box::new(run_blocking),
@@ -221,8 +220,11 @@ impl Downloader {
         // 1. 下載並比對內建的 SHA-256；主來源失敗就換下一個
         let mut last_error = None;
         let mut ok = false;
-        for url in &self.deps.urls {
-            crate::info!("[下載 FFmpeg] {url} → {}", target.display());
+        let sources = self.deps.urls.len();
+        for (i, url) in self.deps.urls.iter().enumerate() {
+            // 記錄檔不寫網址，只寫第幾個來源
+            let source = i + 1;
+            crate::info!("[下載 FFmpeg] 來源 {source}/{sources} → {}", target.display());
             match self.download_to(url, &zip, cancel) {
                 Ok(()) => {
                     ok = true;
@@ -233,7 +235,7 @@ impl Downloader {
                     if cancel.load(Ordering::SeqCst) {
                         return Err(Fail::Canceled);
                     }
-                    crate::error!("[下載 FFmpeg] {url} 失敗：{e}");
+                    crate::error!("[下載 FFmpeg] 來源 {source}/{sources} 失敗：{e}");
                     last_error = Some(e);
                 }
             }
@@ -310,7 +312,13 @@ impl Downloader {
             if cancel.load(Ordering::SeqCst) {
                 return Err(Fail::Canceled);
             }
-            let n = body.read(&mut buf).map_err(|e| if cancel.load(Ordering::SeqCst) { Fail::Canceled } else { Fail::Error(trf!("下載中斷：{e}", "Download interrupted: {e}")) })?;
+            let n = body.read(&mut buf).map_err(|e| {
+                if cancel.load(Ordering::SeqCst) {
+                    Fail::Canceled
+                } else {
+                    Fail::Error(trf!("下載中斷：{}", "Download interrupted: {}", crate::http::describe_io(&e)))
+                }
+            })?;
             if n == 0 {
                 break;
             }

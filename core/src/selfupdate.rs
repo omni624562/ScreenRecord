@@ -43,7 +43,7 @@ pub type Fetch = Arc<dyn Fn(&str) -> Result<(Option<u64>, Box<dyn Read + Send>),
 fn http_fetch() -> Fetch {
     Arc::new(|url: &str| {
         let agent = crate::http::agent().timeout_connect(Duration::from_secs(15)).timeout_read(Duration::from_secs(60)).build();
-        let res = agent.get(url).set("User-Agent", &format!("ScreenRecorder/{}", crate::version::APP_VERSION)).call().map_err(|e| e.to_string())?;
+        let res = agent.get(url).set("User-Agent", &format!("ScreenRecorder/{}", crate::version::APP_VERSION)).call().map_err(|e| crate::http::describe(&e))?;
         let len = res.header("Content-Length").and_then(|v| v.parse().ok());
         Ok((len, Box::new(res.into_reader()) as Box<dyn Read + Send>))
     })
@@ -142,7 +142,7 @@ impl Installer {
     }
 
     fn install(&self, url: &str, sha: &str, size: Option<u64>, exe: &Path) -> Result<(), String> {
-        crate::info!("[更新] 下載 {url}");
+        crate::info!("[更新] 下載新版 exe");
         let new = sibling(exe, ".new");
         let result = self.download(url, sha, size, &new).and_then(|()| swap(exe, &new));
         if result.is_err() {
@@ -161,7 +161,7 @@ impl Installer {
         let mut buf = vec![0u8; 64 * 1024];
         let mut received = 0u64;
         loop {
-            let n = body.read(&mut buf).map_err(|e| trf!("下載中斷：{e}", "Download interrupted: {e}"))?;
+            let n = body.read(&mut buf).map_err(|e| trf!("下載中斷：{}", "Download interrupted: {}", crate::http::describe_io(&e)))?;
             if n == 0 {
                 break;
             }

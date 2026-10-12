@@ -240,6 +240,27 @@ pub fn shown_keys(vk: u32, ctrl: bool, alt: bool, shift: bool, win: bool) -> Opt
 /// 全域快速鍵的數量
 pub const HOTKEY_COUNT: usize = 7;
 
+/// 錄影時螢幕上的控制列（設定的 recBar）
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RecBarMode {
+    /// 時間、標記、暫停 / 繼續、停止
+    #[default]
+    Full,
+    /// 只有狀態點與停止（不顯示時間）
+    Compact,
+    /// 不顯示（倒數時仍顯示，開始錄影後隱藏；用快速鍵或系統匣停止）
+    Hidden,
+}
+
+/// 錄影控制列的設定：樣式（recBar）與錄整個螢幕時拖曳後的位置（recBarPos）
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct RecBarPrefs {
+    pub mode: RecBarMode,
+    /// 控制列左上角（虛擬桌面的實體像素，可以在另一個螢幕上）；None = 錄的螢幕上方中間
+    pub pos: Option<(i32, i32)>,
+}
+
 /// 全域快速鍵（None = 停用）
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Hotkeys {

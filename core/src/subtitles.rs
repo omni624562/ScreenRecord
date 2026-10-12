@@ -90,10 +90,7 @@ pub fn download_model(m: &Model, progress: &AtomicU32, cancel: &AtomicBool) -> R
     let dir = model_dir();
     std::fs::create_dir_all(&dir).map_err(|e| trf!("無法建立資料夾：{e}", "Couldn't create the folder: {e}"))?;
     let part = dir.join(format!("{}.part", m.file));
-    let resp = crate::http::agent().redirects(8).build().get(m.url).call().map_err(|e| match e {
-        ureq::Error::Status(code, _) => trf!("下載語音模型失敗（HTTP {code}）", "Couldn't download the speech model (HTTP {code})"),
-        e => trf!("下載語音模型失敗：{e}", "Couldn't download the speech model: {e}"),
-    })?;
+    let resp = crate::http::agent().redirects(8).build().get(m.url).call().map_err(|e| trf!("下載語音模型失敗：{}", "Couldn't download the speech model: {}", crate::http::describe(&e)))?;
     let total = resp.header("Content-Length").and_then(|v| v.parse::<u64>().ok()).unwrap_or(m.mb as u64 * 1_000_000);
     let mut reader = resp.into_reader();
     let mut out = std::fs::File::create(&part).map_err(|e| trf!("無法寫入檔案：{e}", "Couldn't write the file: {e}"))?;
@@ -105,7 +102,7 @@ pub fn download_model(m: &Model, progress: &AtomicU32, cancel: &AtomicBool) -> R
             let _ = std::fs::remove_file(&part);
             return Err("已取消下載".into());
         }
-        let n = reader.read(&mut buf).map_err(|e| trf!("下載中斷：{e}", "Download interrupted: {e}"))?;
+        let n = reader.read(&mut buf).map_err(|e| trf!("下載中斷：{}", "Download interrupted: {}", crate::http::describe_io(&e)))?;
         if n == 0 {
             break;
         }

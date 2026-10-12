@@ -108,7 +108,7 @@ pub fn check_for_update(current: &str) -> Result<Option<UpdateInfo>, UpdateError
     let (status, body) = match res {
         Ok(r) => (r.status(), r.into_string().unwrap_or_default()),
         Err(ureq::Error::Status(code, r)) => (code, r.into_string().unwrap_or_default()),
-        Err(e) => return Err(UpdateError::Other(e.to_string())),
+        Err(e) => return Err(UpdateError::Other(crate::http::describe(&e))),
     };
     parse_release(current, status, &body)
 }
