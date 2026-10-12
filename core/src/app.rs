@@ -152,8 +152,8 @@ pub struct App {
     pub(crate) after: Mutex<Option<crate::after_record::AfterStatus>>,
     /// 主畫面看得到時，介面目前的錄影設定（每一格更新；看不到時是 None）：選了攝影機就先顯示攝影機小視窗
     camera_preview: Mutex<Option<RecordConfig>>,
-    /// 錄影控制列的樣式：（設定版本, 樣式）
-    rec_bar: Mutex<(u64, crate::types::RecBarMode)>,
+    /// 錄影控制列的樣式與位置：（設定版本, 設定）
+    rec_bar: Mutex<(u64, crate::types::RecBarPrefs)>,
     /// 即時預覽：同時只保留一條
     live: Mutex<Option<Arc<Mutex<Option<tokio::process::Child>>>>>,
     notifier: Mutex<Option<Notifier>>,
@@ -288,7 +288,7 @@ impl App {
             awake: Mutex::default(),
             after: Mutex::default(),
             camera_preview: Mutex::new(None),
-            rec_bar: Mutex::new((0, crate::types::RecBarMode::Full)),
+            rec_bar: Mutex::new((0, crate::types::RecBarPrefs::default())),
             live: Mutex::default(),
             notifier: Mutex::default(),
             ui_opener: Mutex::default(),
@@ -1023,23 +1023,38 @@ impl App {
         Some(crate::camera_bubble::BubbleInfo { area: plan.rect, monitors: plan.monitors, camera })
     }
 
-    /// 錄影控制列的樣式（設定的 recBar）。控制列每 0.1 秒問一次：設定沒變就用上次讀到的
-    pub fn rec_bar_mode(&self) -> crate::types::RecBarMode {
+    /// 錄影控制列的樣式與位置（設定的 recBar、recBarPos）。控制列每 0.1 秒問一次：設定沒變就用上次讀到的
+    pub fn rec_bar_prefs(&self) -> crate::types::RecBarPrefs {
         let rev = self.settings.rev();
         let mut cache = self.rec_bar.lock().unwrap();
         if cache.0 != rev {
             let ui = self.settings.load().ui;
-            let mode = ui.as_ref().and_then(|u| u.get("recBar")).and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default();
-            *cache = (rev, mode);
+            let get = |k: &str| ui.as_ref().and_then(|u| u.get(k)).cloned();
+            let mode = get("recBar").and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default();
+            let pos = get("recBarPos").and_then(|v| serde_json::from_value::<[i32; 2]>(v).ok()).map(|[x, y]| (x, y));
+            *cache = (rev, crate::types::RecBarPrefs { mode, pos });
         }
         cache.1
     }
 
     /// 在控制列上按了縮小 / 展開：存進介面設定，下次錄影也一樣
     pub fn set_rec_bar_mode(&self, mode: crate::types::RecBarMode) {
+        self.patch_ui("recBar", Some(serde_json::json!(mode)));
+    }
+
+    /// 錄整個螢幕時把控制列拖到別的地方（None = 回到螢幕上方中間）：下次錄影也放在那裡
+    pub fn set_rec_bar_pos(&self, pos: Option<(i32, i32)>) {
+        self.patch_ui("recBarPos", pos.map(|(x, y)| serde_json::json!([x, y])));
+    }
+
+    /// 改介面設定的一個欄位（None = 刪掉）
+    fn patch_ui(&self, key: &str, value: Option<serde_json::Value>) {
         let mut ui = self.settings.load().ui.unwrap_or_else(|| serde_json::json!({}));
         if let Some(m) = ui.as_object_mut() {
-            m.insert("recBar".into(), serde_json::json!(mode));
+            match value {
+                Some(v) => m.insert(key.into(), v),
+                None => m.remove(key),
+            };
         }
         self.settings.save(SettingsPatch { ui: Some(ui), ..Default::default() });
     }

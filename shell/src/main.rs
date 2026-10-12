@@ -118,7 +118,7 @@ fn main() {
         let (c1, c2, c3, h) = (Arc::downgrade(&core), Arc::downgrade(&core), Arc::downgrade(&core), rt.handle().clone());
         rec_frame_win::spawn(
             move || c1.upgrade()?.recorder.frame_info(),
-            move || c3.upgrade().map(|c| c.rec_bar_mode()).unwrap_or_default(),
+            move || c3.upgrade().map(|c| c.rec_bar_prefs()).unwrap_or_default(),
             move |cmd| {
                 let Some(c) = c2.upgrade() else { return };
                 h.spawn(async move {
@@ -131,6 +131,10 @@ fn main() {
                         FrameCmd::SaveReplay => c.replay_save(true).await.map(|_| ()),
                         FrameCmd::SetMode(m) => {
                             c.set_rec_bar_mode(m);
+                            Ok(())
+                        }
+                        FrameCmd::SetPos(p) => {
+                            c.set_rec_bar_pos(p);
                             Ok(())
                         }
                         FrameCmd::Move(x, y) => {

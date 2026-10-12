@@ -359,7 +359,7 @@ pub struct FrameInfo {
     pub countdown_ms: Option<u64>,
     /// 加了幾個標記
     pub markers: u32,
-    /// 錄整個螢幕（不是自訂範圍）：不顯示外框，控制列放在螢幕上方中間、不能拖曳
+    /// 錄整個螢幕（不是自訂範圍）：不顯示外框，控制列放在螢幕上方中間（可以拖到別的地方，例如另一個螢幕）
     pub full: bool,
     /// 重播緩衝中：控制列是「存下」與「停止」（不能暫停、加標記）
     pub replay: bool,

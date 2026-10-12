@@ -520,8 +520,8 @@ fn record_page(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
             k => trf!("倒數完就隱藏。要停止錄影時按 {k}，或從系統匣停止。", "Hidden once the countdown ends. Press {k} or use the tray icon to stop recording."),
         },
         _ => tr!(
-            "錄影時螢幕上的小控制列，不會被錄進影片。錄影中也可以按控制列右邊的「‹」縮小、「›」展開。",
-            "The small bar shown on screen while recording. It isn't captured in the video. You can also click ‹ / › at its right end to shrink or expand it."
+            "錄影時螢幕上的小控制列，不會被錄進影片。按控制列右邊的「‹」縮小、「›」展開。錄整個螢幕時可以把控制列拖到別的地方（例如另一個螢幕），會記住位置；雙擊控制列放回上方中間。",
+            "The small bar shown on screen while recording. It isn't captured in the video. Click ‹ / › at its right end to shrink or expand it. When recording a whole screen you can drag the bar elsewhere (e.g. to another monitor) and it stays there; double-click it to put it back at the top center."
         )
         .to_string(),
     };

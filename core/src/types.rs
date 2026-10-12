@@ -253,6 +253,14 @@ pub enum RecBarMode {
     Hidden,
 }
 
+/// 錄影控制列的設定：樣式（recBar）與錄整個螢幕時拖曳後的位置（recBarPos）
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct RecBarPrefs {
+    pub mode: RecBarMode,
+    /// 控制列左上角（虛擬桌面的實體像素，可以在另一個螢幕上）；None = 錄的螢幕上方中間
+    pub pos: Option<(i32, i32)>,
+}
+
 /// 全域快速鍵（None = 停用）
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Hotkeys {
