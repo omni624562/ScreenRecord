@@ -110,6 +110,13 @@ async fn probe(ff: &Path, path: &Path) -> MediaInfo {
     MediaCache::default().probe(ff, &path.display().to_string()).await.unwrap()
 }
 
+/// 分段的聲音長度（秒）：合併時每段在聲音結尾截斷，畫面比聲音長的部分不要
+async fn audio_sec(ff: &Path, file: &Path) -> f64 {
+    let r = crate::process::run(ff, &crate::args::audio_end_args(&file.display().to_string()), Duration::from_secs(30)).await;
+    let us = r.stdout.lines().filter_map(|l| l.strip_prefix("out_time_us=")).filter_map(|v| v.trim().parse::<f64>().ok()).next_back();
+    us.expect("讀不到聲音長度") / 1e6
+}
+
 fn near(a: f64, b: f64, tol: f64) -> bool {
     (a - b).abs() <= tol
 }
@@ -132,20 +139,25 @@ async fn recording_segments_merge_with_chapters() {
     let segs = [parts.join("seg_000.mp4"), parts.join("seg_001.mp4")];
     record_segment(&ff, &card, &segs[0], 2.5, false);
     record_segment(&ff, &card, &segs[1], 2.0, false);
-    let mut expect = 0.0;
+    // 分段的長度（畫面與聲音較長的那個）與聲音的長度。測試的畫面是一張圖，常比測試音多出零點幾秒
+    // （CI 忙的時候更多），合併時那一段會在聲音結尾截斷
+    let (mut expect, mut audio) = (0.0, 0.0);
     for s in &segs {
         let i = probe(&ff, s).await;
         assert_eq!(i.has_audio, Some(true));
         assert_eq!((i.width, i.height), (Some(640), Some(360)));
-        expect += i.duration_sec.unwrap();
+        let d = i.duration_sec.unwrap();
+        expect += d;
+        audio += audio_sec(&ff, s).await.min(d);
     }
-    assert!(expect > 3.5, "分段太短：{expect}");
+    assert!(audio > 3.5, "分段太短：聲音 {audio} 秒");
 
     let out = dir.path().join("Rec_2026-10-11_10-00-00.mp4");
     let chapters = crate::chapters::from_markers(&[1.0, 3.0], expect);
     let files: Vec<String> = segs.iter().map(|s| s.display().to_string()).collect();
     let duration = crate::recorder::merge_segments(&ff, &files, &parts, &out, true, Some(crate::chapters::ffmetadata(&chapters, expect))).await.unwrap().unwrap();
-    assert!(near(duration, expect, 0.3), "合併後 {duration} 秒，分段加起來 {expect} 秒");
+    // 兩段都要在：至少有各段的聲音那麼長，最多是分段加起來的長度（舊版 FFmpeg 不截斷）
+    assert!(duration >= audio - 0.3 && duration <= expect + 0.3, "合併後 {duration} 秒，各段聲音加起來 {audio} 秒，分段加起來 {expect} 秒");
 
     let info = probe(&ff, &out).await;
     assert_eq!(info.has_audio, Some(true));
