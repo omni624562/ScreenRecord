@@ -135,7 +135,7 @@ GitHub Actions（`.github/workflows/release.yml`）會在 Windows 上檢查格�
 
 - **PR**：每個 PR 都會在 Windows 上測試與建置，建置好的 exe 附在該次執行上，可下載試用
 - **其他發佈方式**：推送 `v*` tag，或在 Actions 頁面手動執行（分支選 main）並勾選 publish
-- 版本號沒變或已經發佈過時，合併到 main 只會建置、不會重複發佈
+- 每次合併到 main 都會測試與建置；版本已經發佈過就不會重複發佈。上次發佈失敗（例如測試沒過）時，合併修正後會自動再發佈
 
 **程式碼簽章（選用）**：沒有簽章的 exe 在其他電腦第一次執行時，SmartScreen 可能顯示「Windows 已保護您的電腦」（按「其他資訊 → 仍要執行」即可）。購買程式碼簽章憑證後，在 repo 的 Settings → Secrets and variables → Actions 新增 `SIGN_CERT_PFX`（.pfx 檔的 base64）與 `SIGN_CERT_PASSWORD`，之後發佈的 exe 就會自動簽章。
 

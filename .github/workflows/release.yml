@@ -1,7 +1,7 @@
 # 測試 → 建置 exe →（有憑證時）簽章 →（需要時）發佈 GitHub Release
 #
 # 什麼時候發佈：
-#   - main 上的 Cargo.toml 版本變成還沒發佈過的版本（合併改了版本號的 PR）→ 自動建立 tag 並發佈
+#   - main 上的 Cargo.toml 版本還沒發佈過（合併改了版本號的 PR，或上次發佈失敗後合併的修正）→ 自動建立 tag 並發佈
 #   - 推送 v* tag
 #   - 在 Actions 頁面手動執行（分支選 main）並勾選 publish
 # 其他情況（PR、版本已發佈過、手動執行沒勾 publish）只測試與建置，exe 附在該次執行上可下載試用。
@@ -12,9 +12,9 @@ name: Release
 on:
   push:
     tags: ["v*"]
+    # 每次推送到 main 都執行：版本已經發佈過就只測試與建置。
+    # 不限定改了哪些檔案，否則發佈失敗後合併的修正（例如只改測試）不會再觸發發佈
     branches: [main]
-    # 只有版本號或這個流程本身有變動時才執行（tag 推送不受 paths 限制）
-    paths: ["Cargo.toml", ".github/workflows/release.yml", ".github/scripts/**"]
   # PR：在 Windows 上測試與建置，結果顯示在 PR 上
   pull_request:
   # 手動執行：預設只建置與測試；勾選 publish 才發佈
