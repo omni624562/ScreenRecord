@@ -1811,7 +1811,7 @@ fn recent_strip(app: &mut UiApp, ui: &mut Ui) {
                         let text = trf!("「{dir}」還沒有錄影，按「開始錄影」試試看。", "No recordings in “{dir}” yet. Click “Start recording” to try it.");
                         ui.add(egui::Label::new(theme::muted(ui, &text)).truncate()).on_hover_text(&text);
                     }
-                    let dates = date_labels(items.iter().map(|e| (e.media.name.as_str(), e.media.mtime)));
+                    let dates = date_labels(items.iter().map(|e| (e.media.name.as_str(), e.media.time_ms())));
                     for e in &items {
                         recent_card(app, ui, e, dates.get(&e.media.name).cloned().unwrap_or_default(), card_w);
                     }
@@ -1921,6 +1921,9 @@ fn recent_card(app: &mut UiApp, ui: &mut Ui, e: &LibraryEntry, date: String, w: 
             }
             if !e.media.chapters.is_empty() && ui.button(tr!("複製章節（貼到 YouTube）", "Copy chapters (for YouTube)")).clicked() {
                 app.act(EntryAction::CopyChapters, e.clone());
+            }
+            if ui.button(tr!("重新命名", "Rename")).clicked() {
+                super::library_dialog::rename_entry(app, e.clone());
             }
         });
     }

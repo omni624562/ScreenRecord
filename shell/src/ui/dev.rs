@@ -1,7 +1,7 @@
 //! 開發用（只在 debug 版）：自動開啟某個畫面、模擬操作並截圖，在 Linux 的 Xvfb 上檢查介面。
 //! - SCREENRECORDER_DEV：要開啟的畫面（library、shots、changelog、notes（講稿小視窗）、schedule（排程錄影）、after:<路徑>（錄完自動處理）、follow:<標題>（只錄這個視窗）、record:<秒>（錄幾秒）、replay:<保留秒數>,<幾秒後存下>[,<再幾秒停止>]（重播緩衝）、export:<路徑>、edit:<路徑>、view:<路徑>、whatsnew（新功能介紹）、monitors（模擬兩個螢幕）、snip:<PNG>（用這張圖當凍結的桌面開啟框選截圖）、hotkeys（模擬已登記快速鍵）、update:<版本>（模擬有新版本）、cameras:<名稱>,<名稱>（模擬找到的攝影機）、settings:<record|audio|save|keys|advanced>、ed:<剪輯視窗指令>），以 ; 分隔
 //! - SCREENRECORDER_INPUT：開啟後依序模擬的操作，以 ; 分隔：
-//!   wait:毫秒、click:x,y、rclick:x,y（右鍵）、move:x,y、drag:x0,y0,x1,y1、wheel:x,y,dy、key:Space（可加 ctrl+、alt+、shift+）、type:文字、shot:路徑
+//!   wait:毫秒、click:x,y、dclick:x,y（按兩下）、rclick:x,y（右鍵）、move:x,y、drag:x0,y0,x1,y1、wheel:x,y,dy、key:Space（可加 ctrl+、alt+、shift+）、type:文字、shot:路徑
 //! - SCREENRECORDER_SHOT：最後截圖存檔的路徑（存好後結束）；SCREENRECORDER_SHOT_AFTER：開始後幾毫秒截圖（預設 3000）
 
 use super::{EntryAction, UiApp};
@@ -60,6 +60,14 @@ fn parse_script(s: &str) -> VecDeque<Step> {
                 out.push_back(Step::Events(vec![Event::PointerMoved(p)]));
                 out.push_back(Step::Events(vec![b(true)]));
                 out.push_back(Step::Events(vec![b(false)]));
+                out.push_back(Step::Wait(Duration::from_millis(200)));
+            }
+            "dclick" => {
+                // 按兩下：同一格送出，Xvfb 上一格很慢，分開送會超過按兩下的間隔
+                let n = nums(v);
+                let p = pos2(n[0], n[1]);
+                out.push_back(Step::Events(vec![Event::PointerMoved(p)]));
+                out.push_back(Step::Events(vec![button(p, true, Modifiers::NONE), button(p, false, Modifiers::NONE), button(p, true, Modifiers::NONE), button(p, false, Modifiers::NONE)]));
                 out.push_back(Step::Wait(Duration::from_millis(200)));
             }
             "move" => {

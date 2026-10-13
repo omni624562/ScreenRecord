@@ -102,6 +102,11 @@ pub fn show_ask(app: &mut UiApp, ctx: &egui::Context) {
             if !ask.focused {
                 r.request_focus();
                 ask.focused = true;
+                // 全選，直接打字就取代原本的名稱
+                let mut state = egui::TextEdit::load_state(ui.ctx(), r.id).unwrap_or_default();
+                let n = v.chars().count();
+                state.cursor.set_char_range(Some(egui::text::CCursorRange::two(egui::text::CCursor::new(0), egui::text::CCursor::new(n))));
+                state.store(ui.ctx(), r.id);
             }
             if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                 submit = true;
@@ -282,7 +287,7 @@ pub fn file_name(path: &str) -> String {
     path.rsplit(['\\', '/']).next().unwrap_or(path).to_string()
 }
 
-/// 由檔名 Rec_2026-10-06_08-17-18 取出「10/06 08:17」；不符合格式時用修改時間
+/// 由檔名 Rec_2026-10-06_08-17-18 取出「10/06 08:17」；不符合格式時用檔案的時間（MediaInfo::time_ms）
 pub fn short_date(name: &str, mtime: f64, with_sec: bool) -> String {
     static RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| regex::Regex::new(r"(\d{4})-(\d{2})-(\d{2})_(\d{2})-(\d{2})(?:-(\d{2}))?").unwrap());
     if let Some(m) = RE.captures(name) {
@@ -296,7 +301,7 @@ pub fn short_date(name: &str, mtime: f64, with_sec: bool) -> String {
     }
 }
 
-/// 錄影的時間：檔名 Rec_2026-10-06_08-17-18（截圖 Shot_…）；不符合格式時用修改時間
+/// 錄影的時間：檔名 Rec_2026-10-06_08-17-18（截圖 Shot_…）；不符合格式時用檔案的時間（MediaInfo::time_ms）
 pub fn entry_time(name: &str, mtime: f64) -> Option<chrono::NaiveDateTime> {
     static RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| regex::Regex::new(r"(\d{4}-\d{2}-\d{2})_(\d{2})-(\d{2})-(\d{2})").unwrap());
     if let Some(m) = RE.captures(name) {

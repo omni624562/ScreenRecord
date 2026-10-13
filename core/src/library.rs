@@ -4,7 +4,7 @@
 use crate::args::{measure_duration_args, parse_measured_duration, parse_media_info};
 use crate::error::{Error, Result};
 use crate::format::{check_recording_name, parse_export_name, strip_mp4};
-use crate::paths::mtime_ms;
+use crate::paths::{created_ms, mtime_ms, set_created};
 use crate::process::run;
 use crate::types::{ExportFormat, ExportInfo, LibraryEntry, LibraryFilter, LibraryPage, LibraryQuery, LibrarySort, MediaInfo, LIBRARY_ROW_MAIN_PX, LIBRARY_ROW_SUB_PX};
 use crate::{tr, trf};
@@ -55,6 +55,7 @@ impl MediaCache {
                     name: file_name(path),
                     bytes: meta.len(),
                     mtime: mtime_ms(&meta),
+                    created: created_ms(&meta),
                     duration_sec: p.duration_sec,
                     width: p.width,
                     height: p.height,
@@ -144,7 +145,7 @@ pub async fn scan(cache: &MediaCache, dir: &Path) -> Vec<LibraryEntry> {
     for (name, st) in names.iter().zip(stats) {
         // 檔案剛好被刪除或鎖住
         if let Some(st) = st.filter(|s| s.is_file()) {
-            files.push(MediaInfo { name: name.clone(), path: dir.join(name).display().to_string(), bytes: st.len(), mtime: mtime_ms(&st), ..Default::default() });
+            files.push(MediaInfo { name: name.clone(), path: dir.join(name).display().to_string(), bytes: st.len(), mtime: mtime_ms(&st), created: created_ms(&st), ..Default::default() });
         }
     }
     cache.prune(dir, &files.iter().map(|f| f.path.to_lowercase()).collect::<Vec<_>>());
@@ -276,18 +277,23 @@ fn local_date(mtime_ms: f64) -> String {
     chrono::Local.timestamp_millis_opt(mtime_ms as i64).single().map(|d| d.format("%Y-%m-%d").to_string()).unwrap_or_default()
 }
 
-/// 排序用的時間（毫秒）：檔名裡的錄影時間（Rec_2026-10-06_08-17-18…，剪輯版沿用原片的時間），
-/// 不是預設檔名時用修改時間。介面依日期分組時也用這個時間，才不會同一天被拆開
-fn sort_time(e: &LibraryEntry) -> f64 {
+/// 檔名裡的錄影時間（毫秒）：Rec_2026-10-06_08-17-18…、Shot_…；沒有時 None
+fn name_time_ms(name: &str) -> Option<f64> {
     static RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(\d{4}-\d{2}-\d{2})_(\d{2})-(\d{2})-(\d{2})").unwrap());
     use chrono::TimeZone;
-    RE.captures(&e.media.name)
+    RE.captures(name)
         .and_then(|m| chrono::NaiveDateTime::parse_from_str(&format!("{} {}:{}:{}", &m[1], &m[2], &m[3], &m[4]), "%Y-%m-%d %H:%M:%S").ok())
         .and_then(|t| chrono::Local.from_local_datetime(&t).earliest())
         .map(|t| t.timestamp_millis() as f64)
+}
+
+/// 排序用的時間（毫秒）：檔名裡的錄影時間（Rec_2026-10-06_08-17-18…，剪輯版沿用原片的時間），
+/// 不是預設檔名時用建立或修改時間（改名後不會跳到錄完的時間）。介面依日期分組時也用這個時間，才不會同一天被拆開
+fn sort_time(e: &LibraryEntry) -> f64 {
+    name_time_ms(&e.media.name)
         // 同一秒的：剪輯版、_2 排在後面（修改時間較新）
         .map(|t| t + (e.media.mtime / 1e13).fract())
-        .unwrap_or(e.media.mtime)
+        .unwrap_or(e.media.time_ms())
 }
 
 pub async fn list_library(cache: &Arc<MediaCache>, ffmpeg: Option<&Path>, dir: &Path, q: &LibraryQuery) -> LibraryPage {
@@ -301,7 +307,7 @@ pub async fn list_library(cache: &Arc<MediaCache>, ffmpeg: Option<&Path>, dir: &
             e.hits = speech_hits(&srts, &videos, &e.media.name, &text);
         }
         list.retain(|e| {
-            e.media.name.to_lowercase().contains(&text) || local_date(e.media.mtime).contains(&text) || e.exports.iter().any(|x| x.media.name.to_lowercase().contains(&text)) || !e.hits.is_empty()
+            e.media.name.to_lowercase().contains(&text) || local_date(e.media.time_ms()).contains(&text) || e.exports.iter().any(|x| x.media.name.to_lowercase().contains(&text)) || !e.hits.is_empty()
         });
     }
     // 錄影與截圖分開列：除了「截圖」，其他篩選都只列影片
@@ -401,6 +407,10 @@ pub async fn rename_recording(cache: &MediaCache, path: &str, new_name: &str, bu
             }));
         }
         done.push((from, to));
+    }
+    // 檔名裡的錄影時間寫進建立時間：改名後清單仍顯示錄影的時間，不會跳到錄完的時間（MediaInfo::time_ms）
+    if let Some(t) = name_time_ms(&entry.media.name) {
+        set_created(&plan[0].1, t);
     }
     Ok(plan[0].1.display().to_string())
 }
@@ -536,6 +546,37 @@ mod tests {
         let mut expect: Vec<String> = ["Rec_X_cut.mp4", "操作示範.gif", "操作示範.mp4", "操作示範_2x.gif", "操作示範_4x.mp4"].iter().map(|s| s.to_string()).collect();
         expect.sort();
         assert_eq!(listing(dir.path()), expect);
+    }
+
+    #[test]
+    fn time_of_undated_names() {
+        let m = |mtime: f64, created: f64| MediaInfo { mtime, created, ..Default::default() };
+        // 改過名的錄影：建立時間（錄影時間）比修改時間（錄完）早
+        assert_eq!(m(2000.0, 1000.0).time_ms(), 1000.0);
+        // 從別處複製來的：建立時間是複製的時候，用修改時間
+        assert_eq!(m(1000.0, 5000.0).time_ms(), 1000.0);
+        assert_eq!(m(1000.0, 0.0).time_ms(), 1000.0);
+        assert!(name_time_ms("Rec_2026-10-11_16-20-00_cut.mp4").is_some());
+        assert_eq!(name_time_ms("操作示範.mp4"), None);
+    }
+
+    /// 改名後清單仍顯示錄影的時間（檔名裡的時間寫進建立時間），不會跳到錄完的時間
+    #[tokio::test]
+    async fn rename_keeps_recording_time() {
+        let dir = make(&["Rec_2026-10-11_16-20-00.mp4"]);
+        let src = dir.path().join("Rec_2026-10-11_16-20-00.mp4");
+        let start = name_time_ms("Rec_2026-10-11_16-20-00.mp4").unwrap();
+        // 錄了 14 分鐘：修改時間是錄完的時間
+        let end = std::time::UNIX_EPOCH + Duration::from_millis(start as u64 + 14 * 60_000);
+        fs::File::options().write(true).open(&src).unwrap().set_modified(end).unwrap();
+        let cache = MediaCache::default();
+        rename_recording(&cache, &src.display().to_string(), "會議", &[]).await.unwrap();
+        let list = scan(&cache, dir.path()).await;
+        assert_eq!(list[0].media.name, "會議.mp4");
+        // 只有 Windows 能改建立時間
+        if cfg!(windows) {
+            assert!((sort_time(&list[0]) - start).abs() < 1.0, "{} != {start}", sort_time(&list[0]));
+        }
     }
 
     #[tokio::test]

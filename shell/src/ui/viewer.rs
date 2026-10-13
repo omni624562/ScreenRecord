@@ -365,7 +365,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
             ui.horizontal(|ui| {
                 ui.vertical(|ui| {
                     ui.spacing_mut().item_spacing.y = 2.0;
-                    let title = if is_default_name(&e.media.name) { short_date(&e.media.name, e.media.mtime, true) } else { base_name(&e.media.name) };
+                    let title = if is_default_name(&e.media.name) { short_date(&e.media.name, e.media.time_ms(), true) } else { base_name(&e.media.name) };
                     ui.label(RichText::new(title).font(theme::font_bold(16.0)));
                     let mut meta = vec![];
                     if v.list.len() > 1 {

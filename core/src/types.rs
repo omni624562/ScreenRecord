@@ -568,6 +568,22 @@ fn is_zero_u32(v: &u32) -> bool {
     *v == 0
 }
 
+fn is_zero_f64(v: &f64) -> bool {
+    *v == 0.0
+}
+
+impl MediaInfo {
+    /// 錄影開始（截圖）的時間（毫秒），檔名沒有日期時間時用：建立時間與修改時間較早的那個。
+    /// 修改時間是錄完的時間；改名不會改變建立時間。從別處複製來的檔案建立時間是複製的時候，這時修改時間比較早
+    pub fn time_ms(&self) -> f64 {
+        if self.created > 0.0 {
+            self.created.min(self.mtime)
+        } else {
+            self.mtime
+        }
+    }
+}
+
 /// 影片章節（開始的秒數與名稱）
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct Chapter {
@@ -583,6 +599,9 @@ pub struct MediaInfo {
     pub bytes: u64,
     /// 修改時間（毫秒）
     pub mtime: f64,
+    /// 建立時間（毫秒）；拿不到時 0
+    #[serde(default, skip_serializing_if = "is_zero_f64")]
+    pub created: f64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub duration_sec: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]

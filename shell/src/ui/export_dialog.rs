@@ -126,7 +126,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                 ui.vertical(|ui| {
                     ui.spacing_mut().item_spacing.y = 4.0;
                     ui.label(RichText::new(if gif { trf!("製作 {anim}", "Make {anim}") } else { tr!("製作加速版", "Make sped-up video").to_string() }).font(theme::font_bold(18.0)));
-                    let name = if is_default_name(&e.media.name) { trf!("{} 的錄影", "Recording from {}", short_date(&e.media.name, e.media.mtime, false)) } else { base_name(&e.media.name) };
+                    let name = if is_default_name(&e.media.name) { trf!("{} 的錄影", "Recording from {}", short_date(&e.media.name, e.media.time_ms(), false)) } else { base_name(&e.media.name) };
                     let info: Vec<String> = [
                         Some(name),
                         (dur > 0.0).then(|| video_clock(dur)),

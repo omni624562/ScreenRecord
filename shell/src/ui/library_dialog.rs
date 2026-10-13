@@ -418,7 +418,7 @@ fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table:
     }
     let rows = d.data.as_ref().map(|x| x.items.clone()).unwrap_or_default();
     // 勾選、日期、檔案、長度、解析度、大小、操作
-    let cols = [36.0, 104.0, 0.0, 84.0, 104.0, 90.0, 136.0];
+    let cols = [36.0, 104.0, 0.0, 84.0, 104.0, 90.0, 166.0];
     let name_w = table.width() - cols.iter().sum::<f32>();
     let col_x = |i: usize| -> f32 {
         let widths = [cols[0], cols[1], name_w, cols[3], cols[4], cols[5], cols[6]];
@@ -451,7 +451,7 @@ fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table:
     }
     // 內容
     let mut y = table.min.y + head_h + 2.0;
-    let times = time_labels(rows.iter().map(|e| (e.media.name.as_str(), e.media.mtime)));
+    let times = time_labels(rows.iter().map(|e| (e.media.name.as_str(), e.media.time_ms())));
     let today = chrono::Local::now().date_naive();
     let mut last_day = None;
     if rows.is_empty() {
@@ -495,7 +495,7 @@ fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table:
                 painter.text(pos2(col_x(1) + 6.0, row.center().y), egui::Align2::LEFT_CENTER, day_label(dd, today), theme::font_bold(13.0), p.text);
             }
         }
-        // 檔案欄：縮圖、時間、自訂名稱、剪輯版、有聲音
+        // 檔案欄：縮圖、時間、檔名（資料夾裡看到的名稱），右邊是剪輯版、有聲音
         let name_rect = Rect::from_min_max(pos2(col_x(2), row.min.y), pos2(col_x(3), row.max.y));
         let thumb = Rect::from_min_size(pos2(name_rect.min.x + 4.0, row.center().y - 15.0), vec2(53.0, 30.0));
         painter.rect_filled(thumb, CornerRadius::same(4), p.surface2);
@@ -503,18 +503,25 @@ fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table:
             theme::paint_thumb(&painter, thumb, &t);
         }
         {
-            let nui = &mut ui.new_child(
-                UiBuilder::new().max_rect(Rect::from_min_max(pos2(thumb.max.x + 10.0, row.min.y), pos2(name_rect.max.x - 8.0, name_rect.max.y))).layout(Layout::left_to_right(Align::Center)),
-            );
-            nui.label(RichText::new(time.unwrap_or_default()).font(theme::font_bold(13.0)));
-            if !is_default_name(&e.media.name) {
-                nui.add(egui::Label::new(RichText::new(base_name(&e.media.name)).font(theme::font(13.0))).truncate());
+            let cell = Rect::from_min_max(pos2(thumb.max.x + 10.0, row.min.y), pos2(name_rect.max.x - 8.0, name_rect.max.y));
+            // 先排右邊的標記，檔名用剩下的寬度（太長時截斷，不會擠掉標記）
+            let tui = &mut ui.new_child(UiBuilder::new().max_rect(cell).layout(Layout::right_to_left(Align::Center)));
+            if e.media.has_audio == Some(true) {
+                audio_mark(tui);
             }
             if is_cut_name(&e.media.name) {
-                chip(nui, tr!("剪輯版", "Edited"), Tone::Warn, false);
+                chip(tui, tr!("剪輯版", "Edited"), Tone::Warn, false);
             }
-            if e.media.has_audio == Some(true) {
-                audio_mark(nui);
+            let tags_w = tui.min_rect().width();
+            let left = Rect::from_min_max(cell.min, pos2(cell.max.x - tags_w - 6.0, cell.max.y));
+            let nui = &mut ui.new_child(UiBuilder::new().max_rect(left).layout(Layout::left_to_right(Align::Center)));
+            nui.label(RichText::new(time.unwrap_or_default()).font(theme::font_bold(13.0)));
+            // 自己取的名稱用一般字色，預設檔名（Rec_日期_時間）用灰色
+            let custom = !is_default_name(&e.media.name);
+            let name = RichText::new(&e.media.name).font(theme::font(if custom { 13.0 } else { 12.5 })).color(if custom { p.text } else { p.muted });
+            let r = nui.add(egui::Label::new(name).truncate().sense(Sense::click())).on_hover_text(trf!("{}\n按兩下改名", "{}\nDouble-click to rename", e.media.name));
+            if r.double_clicked() {
+                *rename = Some(e.clone());
             }
         }
         num(&e.media.duration_sec.map(video_clock).unwrap_or_else(|| "—".into()), col_x(4) - 10.0, row.center().y, p.text, 13.0);
@@ -536,6 +543,10 @@ fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table:
                     *action = Some((act, e.clone()));
                 }
             }
+            let tip = if e.exports.is_empty() { tr!("重新命名", "Rename") } else { tr!("重新命名（加速版、GIF 一起改）", "Rename (sped-up versions and GIFs too)") };
+            if Btn::icon_only(Icon::Edit).ghost().small().quiet(!hot).tooltip(tip).show(aui).clicked() {
+                *rename = Some(e.clone());
+            }
             // 不常用的收進「⋯」
             let more = Btn::icon_only(Icon::More).ghost().small().quiet(!hot).tooltip(tr!("更多", "More")).show(aui);
             egui::Popup::menu(&more).show(|ui| {
@@ -551,9 +562,6 @@ fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table:
                 }
                 if !e.media.chapters.is_empty() && ui.button(tr!("複製章節（貼到 YouTube）", "Copy chapters (for YouTube)")).clicked() {
                     *action = Some((EntryAction::CopyChapters, e.clone()));
-                }
-                if ui.button(tr!("重新命名（加速版一起改）", "Rename (sped-up versions too)")).clicked() {
-                    *rename = Some(e.clone());
                 }
             });
         }
@@ -577,8 +585,9 @@ fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table:
             painter.line_segment([pos2(bx, row.min.y - 6.0), pos2(bx, row.center().y)], Stroke::new(1.0, p.border_strong));
             painter.line_segment([pos2(bx, row.center().y), pos2(bx + 12.0, row.center().y)], Stroke::new(1.0, p.border_strong));
             {
-                let nui = &mut ui.new_child(UiBuilder::new().max_rect(Rect::from_min_max(pos2(bx + 18.0, row.min.y), pos2(col_x(3), row.max.y))).layout(Layout::left_to_right(Align::Center)));
+                let nui = &mut ui.new_child(UiBuilder::new().max_rect(Rect::from_min_max(pos2(bx + 18.0, row.min.y), pos2(col_x(3) - 8.0, row.max.y))).layout(Layout::left_to_right(Align::Center)));
                 chip(nui, &export_label(x), Tone::Accent, false).on_hover_text(trf!("{}（{}×）", "{} ({}×)", x.media.name, speed_label(x.speed)));
+                nui.add(egui::Label::new(RichText::new(&x.media.name).font(theme::font(12.0)).color(p.muted)).truncate());
             }
             num(&x.media.duration_sec.map(video_clock).unwrap_or_else(|| "—".into()), col_x(4) - 10.0, row.center().y, p.text, 12.5);
             let res = match (x.media.width, x.media.height) {
@@ -682,7 +691,7 @@ fn shot_grid(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, area: Re
         };
         painter.text(pos2(area.center().x, area.min.y + 120.0), egui::Align2::CENTER_CENTER, msg, theme::font(14.0), p.muted);
     }
-    let dates = date_labels(items.iter().map(|e| (e.media.name.as_str(), e.media.mtime)));
+    let dates = date_labels(items.iter().map(|e| (e.media.name.as_str(), e.media.time_ms())));
     for (i, e) in items.iter().enumerate() {
         let (c, r) = ((i % cols as usize) as f32, (i / cols as usize) as f32);
         let cell = Rect::from_min_size(pos2(area.min.x + c * (cell_w + gap), area.min.y + r * (cell_h + gap)), vec2(cell_w, cell_h));
@@ -756,7 +765,7 @@ fn shot_grid(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, area: Re
 }
 
 /// 改名：原片與底下的加速版一起改；送出時檢查衝突、使用中，錯誤留在對話框裡
-fn rename_entry(app: &mut UiApp, entry: LibraryEntry) {
+pub fn rename_entry(app: &mut UiApp, entry: LibraryEntry) {
     let old = base_name(&entry.media.name);
     let n = entry.exports.len();
     let mut ask = Ask::input(tr!("重新命名", "Rename"), tr!("新名稱", "New name"), old.clone(), tr!("改名", "Rename"), move |app, value| {

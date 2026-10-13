@@ -47,6 +47,25 @@ pub fn mtime_ms(meta: &std::fs::Metadata) -> f64 {
     meta.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs_f64() * 1000.0).unwrap_or(0.0)
 }
 
+/// 建立時間（毫秒）；檔案系統不支援時 0
+pub fn created_ms(meta: &std::fs::Metadata) -> f64 {
+    meta.created().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs_f64() * 1000.0).unwrap_or(0.0)
+}
+
+/// 改建立時間（毫秒）；只有 Windows 能改，其他系統不做事。失敗（例如唯讀）就算了
+pub fn set_created(path: &Path, ms: f64) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::FileTimesExt;
+        let t = std::time::UNIX_EPOCH + std::time::Duration::from_millis(ms.max(0.0) as u64);
+        if let Ok(f) = std::fs::OpenOptions::new().write(true).open(path) {
+            let _ = f.set_times(std::fs::FileTimes::new().set_created(t));
+        }
+    }
+    #[cfg(not(windows))]
+    let _ = (path, ms);
+}
+
 /// 檔名已存在時加上 _2、_3…，避免覆蓋既有檔案
 pub fn unique_path(dir: &Path, base: &str, ext: &str) -> PathBuf {
     let mut p = dir.join(format!("{base}{ext}"));
