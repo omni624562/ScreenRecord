@@ -119,7 +119,12 @@ pub struct UiSettings {
     pub replay_sec: u32,
     /// 主畫面展開事件紀錄（預設收起來）
     pub show_log: bool,
+    /// 之前用過的儲存位置（全部錄影的資料夾選單；最近用的在前，最多 RECENT_DIRS 個）
+    pub recent_dirs: Vec<String>,
 }
+
+/// 記住幾個用過的儲存位置
+pub const RECENT_DIRS: usize = 5;
 
 /// 講稿提詞的字級範圍、不透明度下限
 pub const NOTES_FONT: (u32, u32) = (16, 72);
@@ -228,6 +233,15 @@ impl UiSettings {
             separate_audio: boolean("separateAudio").unwrap_or(false),
             replay_sec: screenrecorder_core::replay::sec_from_ui(v),
             show_log: boolean("showLog").unwrap_or(false),
+            recent_dirs: o
+                .get("recentDirs")
+                .and_then(|v| serde_json::from_value::<Vec<String>>(v.clone()).ok())
+                .unwrap_or_default()
+                .into_iter()
+                .map(|d| d.trim().to_string())
+                .filter(|d| !d.is_empty())
+                .take(RECENT_DIRS)
+                .collect(),
         };
         s.fix_monitor(env);
         s

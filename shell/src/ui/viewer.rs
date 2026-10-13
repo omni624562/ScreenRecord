@@ -117,7 +117,8 @@ pub fn open(app: &mut UiApp, entry: LibraryEntry) {
     });
     load_current(app);
     let core = app.core.clone();
-    let dir = app.s.out_dir(&app.env);
+    // 同一個資料夾裡的（全部錄影也可以看之前用過的資料夾）
+    let dir = std::path::Path::new(&path).parent().map(|p| p.display().to_string()).filter(|d| !d.is_empty()).unwrap_or_else(|| app.s.out_dir(&app.env));
     let query = LibraryQuery { filter: if shots { LibraryFilter::Shot } else { LibraryFilter::All }, sort: LibrarySort::New, page_size: Some(200.0), ..Default::default() };
     app.spawn(async move { actions::library(&core, &dir, &query).await }, move |app, page| {
         let Some(v) = app.viewer.as_mut() else { return };

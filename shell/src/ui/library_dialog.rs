@@ -26,6 +26,10 @@ pub struct LibraryDialog {
     /// 需要重新讀取（開啟、換頁、轉檔完成）
     pub dirty: bool,
     kind: Kind,
+    /// 看哪個資料夾：None = 目前的儲存位置；也可以看之前用過的資料夾
+    dir: Option<String>,
+    /// 上次讀取的資料夾（儲存位置改了就重新讀取）
+    loaded_dir: String,
     query: String,
     filter: LibraryFilter,
     sort: LibrarySort,
@@ -51,6 +55,8 @@ impl LibraryDialog {
         Self {
             dirty: true,
             kind,
+            dir: None,
+            loaded_dir: String::new(),
             query: String::new(),
             filter: LibraryFilter::All,
             sort: LibrarySort::New,
@@ -143,7 +149,8 @@ fn load(app: &mut UiApp) {
         Kind::Video => LibraryQuery { q, filter: d.filter, sort: d.sort, page: Some(d.page as f64), page_size: None, fit_px: Some(d.fit_px) },
         Kind::Shot => LibraryQuery { q, filter: LibraryFilter::Shot, sort: d.sort, page: Some(d.page as f64), page_size: Some(d.grid_per_page.max(1) as f64), fit_px: None },
     };
-    let dir = app.s.out_dir(&app.env);
+    let dir = d.dir.clone().unwrap_or_else(|| app.s.out_dir(&app.env));
+    d.loaded_dir = dir.clone();
     let core = app.core.clone();
     app.spawn(async move { actions::library(&core, &dir, &query).await }, move |app, page| {
         let Some(d) = app.library.as_mut() else {
@@ -153,6 +160,7 @@ fn load(app: &mut UiApp) {
             return; // 已有較新的查詢（例如還在輸入搜尋字）
         }
         d.loading = false;
+        d.error = page.error.clone();
         d.page = page.page.max(1);
         for e in &page.items {
             app.known.insert(e.media.path.clone(), e.clone());
@@ -161,48 +169,193 @@ fn load(app: &mut UiApp) {
     });
 }
 
+/// 清單上按了什麼（關掉對話框後才處理，處理時要用到 app）
+enum Req {
+    Entry(EntryAction, LibraryEntry),
+    Rename(LibraryEntry),
+    /// 勾選的檔案移到資源回收筒
+    DeleteSelected,
+    /// 換儲存位置（Windows 的選資料夾視窗）
+    ChooseDir,
+    /// 在檔案總管開啟資料夾
+    OpenDir(String),
+    /// 看哪個資料夾（None = 目前的儲存位置）
+    Browse(Option<String>),
+    /// 關掉清單、開始錄影
+    Record,
+    Merge(Vec<String>),
+    Combine(bool),
+}
+
+/// 記住用過的儲存位置（最近用的在前；資料夾選單的「之前用過的資料夾」）
+pub fn remember_dir(app: &mut UiApp, dir: &str) {
+    let dir = dir.trim();
+    if dir.is_empty() || app.s.recent_dirs.first().is_some_and(|d| d.eq_ignore_ascii_case(dir)) {
+        return;
+    }
+    app.s.recent_dirs.retain(|d| !d.eq_ignore_ascii_case(dir));
+    app.s.recent_dirs.insert(0, dir.to_string());
+    app.s.recent_dirs.truncate(super::settings::RECENT_DIRS);
+    app.save_settings();
+}
+
+/// 太長的路徑從中間省略（保留開頭的磁碟與最後的資料夾名稱）：C:\Users\…\Videos\Timelapse
+fn middle_truncate(ui: &egui::Ui, text: &str, font: &egui::FontId, max_w: f32) -> String {
+    let width = |t: &str| ui.painter().layout_no_wrap(t.to_string(), font.clone(), Color32::WHITE).size().x;
+    if width(text) <= max_w {
+        return text.to_string();
+    }
+    let chars: Vec<char> = text.chars().collect();
+    let cut = |keep: usize| -> String {
+        // 後面保留多一點：最後的資料夾名稱最重要
+        let head = keep / 3;
+        let tail = keep - head;
+        chars[..head].iter().chain(std::iter::once(&'…')).chain(chars[chars.len() - tail..].iter()).collect()
+    };
+    let (mut lo, mut hi) = (0, chars.len());
+    while lo < hi {
+        let mid = (lo + hi).div_ceil(2);
+        if width(&cut(mid)) <= max_w {
+            lo = mid;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    cut(lo)
+}
+
+/// 標題下的資料夾：資料夾圖示與路徑（太長時從中間省略），點一下在檔案總管開啟，滑鼠提示完整路徑
+fn folder_link(ui: &mut egui::Ui, dir: &str, max_w: f32) -> egui::Response {
+    let p = theme::pal(ui);
+    let font = theme::font(12.5);
+    let text = middle_truncate(ui, dir, &font, (max_w - 22.0).max(40.0));
+    let g = ui.painter().layout_no_wrap(text, font, p.muted);
+    let (rect, resp) = ui.allocate_exact_size(vec2(22.0 + g.size().x, 22.0), Sense::click());
+    let color = if resp.hovered() { p.accent } else { p.muted };
+    theme::paint_icon(ui.painter(), Rect::from_center_size(pos2(rect.min.x + 8.0, rect.center().y), vec2(15.0, 15.0)), Icon::Folder, color);
+    let at = pos2(rect.min.x + 22.0, rect.center().y - g.size().y / 2.0);
+    if resp.hovered() {
+        ui.painter().hline(at.x..=at.x + g.size().x, at.y + g.size().y, Stroke::new(1.0, color));
+    }
+    ui.painter().galley_with_override_text_color(at, g, color);
+    resp.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(trf!("{dir}\n點一下開啟資料夾", "{dir}\nClick to open the folder"))
+}
+
+/// 清單是空的或讀不到資料夾：說明與按鈕（置中）；回傳按了第幾個按鈕
+fn empty_state(ui: &mut egui::Ui, area: Rect, msg: &str, buttons: &[(&str, bool)]) -> Option<usize> {
+    let p = theme::pal(ui);
+    let r = Rect::from_center_size(pos2(area.center().x, area.min.y + 130.0), vec2(area.width().min(640.0), 110.0));
+    let ui = &mut ui.new_child(UiBuilder::new().max_rect(r).layout(Layout::top_down(Align::Center)));
+    ui.add(egui::Label::new(RichText::new(msg).font(theme::font(14.5)).color(p.muted)).wrap());
+    let mut clicked = None;
+    if !buttons.is_empty() {
+        ui.add_space(10.0);
+        // 一排按鈕置中：先量好總寬度
+        let gap = 8.0;
+        let total: f32 = buttons.iter().map(|(t, _)| Btn::new(*t).width(ui)).sum::<f32>() + gap * (buttons.len() - 1) as f32;
+        let row = Rect::from_center_size(pos2(r.center().x, ui.cursor().min.y + 17.0), vec2(total, 34.0));
+        let bui = &mut ui.new_child(UiBuilder::new().max_rect(row).layout(Layout::left_to_right(Align::Center)));
+        bui.spacing_mut().item_spacing.x = gap;
+        for (i, (t, primary)) in buttons.iter().enumerate() {
+            let b = Btn::new(*t);
+            if (if *primary { b.primary() } else { b }).show(bui).clicked() {
+                clicked = Some(i);
+            }
+        }
+    }
+    clicked
+}
+
 pub fn show(app: &mut UiApp, ctx: &egui::Context) {
     let screen = ctx.content_rect();
     let size = vec2((screen.width() - 80.0).min(1040.0), screen.height() - 80.0);
     let mut close = false;
-    let mut action: Option<(EntryAction, LibraryEntry)> = None;
-    let mut rename: Option<LibraryEntry> = None;
-    let mut delete = false;
-    let mut combine: Option<bool> = None;
-    let mut merge: Option<Vec<String>> = None;
-    let dir = app.s.out_dir(&app.env);
+    let mut req: Option<Req> = None;
+    // 目前的儲存位置記在「用過的資料夾」最前面（換了儲存位置之後，舊的還能從選單切回去看）
+    let save_dir = app.s.out_dir(&app.env);
+    remember_dir(app, &save_dir);
+    let recent: Vec<String> = app.s.recent_dirs.iter().filter(|d| !d.eq_ignore_ascii_case(&save_dir)).cloned().collect();
     // 縮圖要用 app，先取出對話框
     let Some(mut d) = app.library.take() else {
         return;
     };
+    let dir = d.dir.clone().unwrap_or_else(|| save_dir.clone());
+    // 儲存位置改了（例如按了「變更儲存位置…」）：重新讀取
+    if !d.loading && !d.dirty && !d.loaded_dir.is_empty() && d.loaded_dir != dir {
+        d.page = 1;
+        d.selected.clear();
+        d.data = None;
+        d.dirty = true;
+    }
     let modal = egui::Modal::new(Id::new("library")).frame(theme::modal_frame(ctx)).show(ctx, |ui| {
         let p = theme::pal(ui);
         ui.set_width(size.x - 40.0);
         ui.set_height(size.y - 40.0);
-        let shot = d.kind == Kind::Shot;
-        ui.horizontal(|ui| {
-            ui.vertical(|ui| {
-                ui.label(RichText::new(if shot { tr!("全部截圖", "All screenshots") } else { tr!("全部錄影", "All recordings") }).font(theme::font_bold(17.0)));
-                ui.label(RichText::new(&dir).font(theme::mono(12.0)).color(p.muted));
-            });
-            ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
-                if Btn::icon_only(Icon::Close).ghost().tooltip(tr!("關閉（Esc）", "Close (Esc)")).show(ui).clicked() {
-                    close = true;
+        // 標題列：左邊標題與資料夾，右邊「錄影｜截圖」與關閉。
+        // 先排右邊，路徑只用剩下的寬度（太長時從中間省略），不會被「錄影｜截圖」蓋住
+        let head = Rect::from_min_size(ui.cursor().min, vec2(ui.available_width(), 48.0));
+        let right_w = {
+            let rui = &mut ui.new_child(UiBuilder::new().max_rect(head).layout(Layout::right_to_left(Align::Min)));
+            if Btn::icon_only(Icon::Close).ghost().tooltip(tr!("關閉（Esc）", "Close (Esc)")).show(rui).clicked() {
+                close = true;
+            }
+            rui.add_space(8.0);
+            // 由右往左排：畫面上是「錄影｜截圖」
+            if theme::segmented(rui, &mut d.kind, &[(Kind::Shot, tr!("截圖", "Screenshots")), (Kind::Video, tr!("錄影", "Recordings"))], true) {
+                d.filter = LibraryFilter::All;
+                if d.sort == LibrarySort::Duration {
+                    d.sort = LibrarySort::New;
                 }
-                ui.add_space(8.0);
-                // 由右往左排：畫面上是「錄影｜截圖」
-                if theme::segmented(ui, &mut d.kind, &[(Kind::Shot, tr!("截圖", "Screenshots")), (Kind::Video, tr!("錄影", "Recordings"))], true) {
-                    d.filter = LibraryFilter::All;
-                    if d.sort == LibrarySort::Duration {
-                        d.sort = LibrarySort::New;
+                d.page = 1;
+                d.selected.clear();
+                d.data = None;
+                d.dirty = true;
+            }
+            rui.min_rect().width()
+        };
+        {
+            let left = Rect::from_min_max(head.min, pos2(head.max.x - right_w - 16.0, head.max.y));
+            let lui = &mut ui.new_child(UiBuilder::new().max_rect(left).layout(Layout::top_down(Align::Min)));
+            lui.spacing_mut().item_spacing.y = 2.0;
+            let shot = d.kind == Kind::Shot;
+            lui.add(egui::Label::new(RichText::new(if shot { tr!("全部截圖", "All screenshots") } else { tr!("全部錄影", "All recordings") }).font(theme::font_bold(17.0))).truncate());
+            lui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 2.0;
+                let other = d.dir.is_some();
+                // 留給下拉按鈕與「之前用過的資料夾」標籤
+                let max_w = left.width() - 34.0 - if other { 120.0 } else { 0.0 };
+                if folder_link(ui, &dir, max_w).clicked() {
+                    req = Some(Req::OpenDir(dir.clone()));
+                }
+                let b = Btn::icon_only(Icon::ChevD).ghost().small().tooltip(tr!("看其他資料夾、變更儲存位置", "View another folder or change the save location")).show(ui);
+                egui::Popup::menu(&b).show(|ui| {
+                    ui.set_min_width(280.0);
+                    let font = theme::font(13.0);
+                    ui.label(theme::muted(ui, tr!("目前儲存位置", "Current save location")));
+                    if ui.selectable_label(!other, middle_truncate(ui, &save_dir, &font, 360.0)).on_hover_text(&save_dir).clicked() {
+                        req = Some(Req::Browse(None));
                     }
-                    d.page = 1;
-                    d.selected.clear();
-                    d.data = None;
-                    d.dirty = true;
+                    if !recent.is_empty() {
+                        ui.add_space(4.0);
+                        ui.label(theme::muted(ui, tr!("之前用過的資料夾", "Previously used folders")));
+                        for r in &recent {
+                            if ui.selectable_label(d.dir.as_deref() == Some(r.as_str()), middle_truncate(ui, r, &font, 360.0)).on_hover_text(r).clicked() {
+                                req = Some(Req::Browse(Some(r.clone())));
+                            }
+                        }
+                    }
+                    ui.separator();
+                    if ui.button(tr!("變更儲存位置…", "Change save location…")).clicked() {
+                        req = Some(Req::ChooseDir);
+                    }
+                });
+                if other {
+                    ui.add_space(6.0);
+                    chip(ui, tr!("之前用過的資料夾", "Previous folder"), Tone::Warn, false).on_hover_text(tr!("新的錄影與截圖不是存在這裡", "New recordings and screenshots aren't saved here"));
                 }
             });
-        });
+        }
+        ui.advance_cursor_after_rect(head);
         let shot = d.kind == Kind::Shot;
         ui.add_space(8.0);
         // 搜尋、篩選、排序
@@ -265,9 +418,9 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         let foot_h = 40.0;
         let table = Rect::from_min_max(ui.cursor().min, pos2(ui.max_rect().max.x, ui.max_rect().max.y - foot_h - 8.0));
         if shot {
-            shot_grid(app, ui, &mut d, table, &mut action, &mut rename);
+            shot_grid(app, ui, &mut d, table, &dir, &mut req);
         } else {
-            video_table(app, ui, &mut d, table, &mut action, &mut rename);
+            video_table(app, ui, &mut d, table, &dir, &mut req);
         }
         // 下方：選取與分頁
         let painter = ui.painter().clone();
@@ -275,17 +428,18 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         painter.hline(foot.x_range(), foot.min.y - 4.0, Stroke::new(1.0, p.border));
         let fui = &mut ui.new_child(UiBuilder::new().max_rect(foot).layout(Layout::left_to_right(Align::Center)));
         let n = d.selected.len();
-        fui.label(theme::muted(
-            fui,
-            match (n, shot) {
-                (0, true) => tr!("可勾選多張一次刪除，或拼成一張", "Select several to delete them at once or combine them into one").into(),
-                (0, false) => tr!("可勾選多筆一次刪除", "Select several to delete them at once").into(),
-                _ if is_en() => format!("{n} file{} selected", if n == 1 { "" } else { "s" }),
-                _ => format!("已選取 {n} 個檔案"),
-            },
-        ));
+        let total = d.data.as_ref().map(|x| x.total).unwrap_or(0);
+        // 沒有任何檔案時不顯示操作說明
+        let hint = match (n, shot) {
+            (0, _) if total == 0 => String::new(),
+            (0, true) => tr!("可勾選多張一次刪除，或拼成一張", "Select several to delete them at once or combine them into one").into(),
+            (0, false) => tr!("可勾選多筆一次刪除", "Select several to delete them at once").into(),
+            _ if is_en() => format!("{n} file{} selected", if n == 1 { "" } else { "s" }),
+            _ => format!("已選取 {n} 個檔案"),
+        };
+        fui.label(theme::muted(fui, hint));
         if n > 0 && Btn::new(tr!("移到資源回收筒", "Move to Recycle Bin")).icon(Icon::Trash).danger().small().show(fui).clicked() {
-            delete = true;
+            req = Some(Req::DeleteSelected);
         }
         let mp4s: Vec<String> = d.selected.iter().filter(|p| p.to_lowercase().ends_with(".mp4")).cloned().collect();
         if !shot
@@ -299,7 +453,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                 .show(fui)
                 .clicked()
         {
-            merge = Some(mp4s);
+            req = Some(Req::Merge(mp4s));
         }
         if shot && n >= 2 {
             let b = Btn::new(tr!("拼成一張", "Combine into one"))
@@ -309,20 +463,23 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
             egui::Popup::menu(&b).show(|ui| {
                 ui.set_min_width(150.0);
                 if ui.button(tr!("左右排", "Side by side")).clicked() {
-                    combine = Some(false);
+                    req = Some(Req::Combine(false));
                 }
                 if ui.button(tr!("上下排", "Top to bottom")).clicked() {
-                    combine = Some(true);
+                    req = Some(Req::Combine(true));
                 }
             });
         }
         fui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             let pages = d.data.as_ref().map(|x| x.pages).unwrap_or(1);
+            if total == 0 {
+                return;
+            }
             if Btn::icon_only(Icon::ChevR).ghost().small().enabled(d.page < pages).tooltip(tr!("下一頁", "Next page")).show(ui).clicked() {
                 d.page += 1;
                 d.dirty = true;
             }
-            if let Some(x) = &d.data {
+            if let Some(x) = d.data.as_ref().filter(|x| x.total > 0) {
                 let text = if is_en() {
                     format!("Page {} of {}・{} item{}", d.page, x.pages.max(1), x.total, if x.total == 1 { "" } else { "s" })
                 } else {
@@ -339,7 +496,10 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
     if modal.should_close() && app.ask.is_none() {
         close = true;
     }
-    if close {
+    if close || matches!(req, Some(Req::Record)) {
+        if matches!(req, Some(Req::Record)) {
+            start_recording(app);
+        }
         return;
     }
     let dirty = d.dirty;
@@ -351,54 +511,83 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
     if let Some((e, t)) = jump {
         super::viewer::open_at(app, e, t);
     }
-    if let Some((act, e)) = action {
-        // 剪輯影片、製作加速版時關掉清單；編輯截圖蓋在清單上，關掉編輯就回到清單
-        if matches!(act, EntryAction::Edit | EntryAction::Export) && !super::dialogs::is_image(&e.media.path) {
-            app.library = None;
+    match req {
+        None | Some(Req::Record) => {}
+        Some(Req::Entry(act, e)) => {
+            // 剪輯影片、製作加速版時關掉清單；編輯截圖蓋在清單上，關掉編輯就回到清單
+            if matches!(act, EntryAction::Edit | EntryAction::Export) && !super::dialogs::is_image(&e.media.path) {
+                app.library = None;
+            }
+            app.act(act, e);
         }
-        app.act(act, e);
-    }
-    if let Some(e) = rename {
-        rename_entry(app, e);
-    }
-    if delete {
-        remove_selected(app);
-    }
-    if let Some(paths) = merge {
-        let core = app.core.clone();
-        let n = paths.len();
-        app.spawn(async move { actions::merge_start(&core, &paths).await }, move |app, r| match r {
-            Ok(()) => {
-                if let Some(d) = &mut app.library {
-                    d.selected.clear();
-                }
-                app.toast(trf!("開始合併 {n} 支錄影，完成後會出現在清單", "Merging {n} recordings. The result will appear in the list when done"), false);
+        Some(Req::Rename(e)) => rename_entry(app, e),
+        Some(Req::DeleteSelected) => remove_selected(app),
+        Some(Req::ChooseDir) => super::settings_dialog::choose_output_dir(app),
+        Some(Req::OpenDir(dir)) => {
+            if let Err(e) = actions::open(actions::OpenAction::Folder, &dir) {
+                app.toast(e.message().to_string(), true);
             }
-            Err(e) => app.toast(e.message().to_string(), true),
-        });
-    }
-    if let Some(vertical) = combine {
-        let paths: Vec<String> = app.library.as_ref().map(|d| d.selected.iter().cloned().collect()).unwrap_or_default();
-        let core = app.core.clone();
-        app.spawn(async move { core.combine_shots(paths, vertical).await }, |app, r| match r {
-            Ok(shot) => {
-                if let Some(d) = &mut app.library {
+        }
+        Some(Req::Browse(dir)) => {
+            if let Some(d) = &mut app.library {
+                if d.dir != dir {
+                    d.dir = dir;
+                    d.page = 1;
                     d.selected.clear();
+                    d.data = None;
+                    d.dirty = true;
                 }
-                // 狀態更新的「已截圖」不用再顯示一次
-                app.last_shot_seq = app.last_shot_seq.max(shot.seq);
-                let copied = if shot.copied { tr!("，並複製到剪貼簿", " and copied to the clipboard") } else { "" };
-                app.toast(trf!("已拼成 {}（{}×{}）{copied}", "Combined into {} ({}×{}){copied}", super::dialogs::file_name(&shot.path), shot.width, shot.height), false);
-                app.shots_changed();
             }
-            Err(e) => app.toast(e.message().to_string(), true),
-        });
+        }
+        Some(Req::Merge(paths)) => {
+            let core = app.core.clone();
+            let n = paths.len();
+            app.spawn(async move { actions::merge_start(&core, &paths).await }, move |app, r| match r {
+                Ok(()) => {
+                    if let Some(d) = &mut app.library {
+                        d.selected.clear();
+                    }
+                    app.toast(trf!("開始合併 {n} 支錄影，完成後會出現在清單", "Merging {n} recordings. The result will appear in the list when done"), false);
+                }
+                Err(e) => app.toast(e.message().to_string(), true),
+            });
+        }
+        Some(Req::Combine(vertical)) => {
+            let paths: Vec<String> = app.library.as_ref().map(|d| d.selected.iter().cloned().collect()).unwrap_or_default();
+            let core = app.core.clone();
+            app.spawn(async move { core.combine_shots(paths, vertical).await }, |app, r| match r {
+                Ok(shot) => {
+                    if let Some(d) = &mut app.library {
+                        d.selected.clear();
+                    }
+                    // 狀態更新的「已截圖」不用再顯示一次
+                    app.last_shot_seq = app.last_shot_seq.max(shot.seq);
+                    let copied = if shot.copied { tr!("，並複製到剪貼簿", " and copied to the clipboard") } else { "" };
+                    app.toast(trf!("已拼成 {}（{}×{}）{copied}", "Combined into {} ({}×{}){copied}", super::dialogs::file_name(&shot.path), shot.width, shot.height), false);
+                    app.shots_changed();
+                }
+                Err(e) => app.toast(e.message().to_string(), true),
+            });
+        }
     }
+}
+
+/// 可以開始錄影（有 FFmpeg、沒在錄影或轉檔）
+fn can_record(app: &UiApp) -> bool {
+    app.env.ffmpeg.found && app.env.ffmpeg.encoder.is_some() && !app.exporting() && !app.locked()
+}
+
+/// 關掉清單、用目前的設定開始錄影（與主畫面的「開始錄影」相同）
+fn start_recording(app: &mut UiApp) {
+    app.library = None;
+    let config = app.s.record_config(&app.env);
+    let core = app.core.clone();
+    app.guarded(async move { actions::record_start(&core, config).await }, |_, _| {});
 }
 
 /// 錄影：表格（高度固定，伺服器依每筆的子列數分頁，一頁剛好放滿）。
 /// 依日期分組：每天第一筆在「日期」欄寫「今天」「昨天」「10/08（三）」，其餘只寫時間
-fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table: Rect, action: &mut Option<(EntryAction, LibraryEntry)>, rename: &mut Option<LibraryEntry>) {
+fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table: Rect, dir: &str, req: &mut Option<Req>) {
     let p = theme::pal(ui);
     let head_h = 30.0;
     let fit = ((table.height() - head_h - 4.0) as f64).max(LIBRARY_ROW_MAIN_PX * 3.0).floor();
@@ -455,16 +644,8 @@ fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table:
     let today = chrono::Local::now().date_naive();
     let mut last_day = None;
     if rows.is_empty() {
-        let msg = if d.loading {
-            tr!("讀取中…", "Loading…").to_string()
-        } else if let Some(e) = &d.error {
-            e.clone()
-        } else if d.data.as_ref().is_some_and(|x| x.total == 0) && d.query.trim().is_empty() {
-            tr!("這個資料夾還沒有錄影。", "No recordings in this folder yet.").into()
-        } else {
-            tr!("沒有符合條件的錄影。", "No matching recordings.").into()
-        };
-        painter.text(pos2(table.center().x, table.min.y + 120.0), egui::Align2::CENTER_CENTER, msg, theme::font(14.0), p.muted);
+        let can = can_record(app);
+        empty_list(ui, d, table, dir, req, tr!("這個資料夾還沒有錄影。", "No recordings in this folder yet."), tr!("沒有符合條件的錄影。", "No matching recordings."), can);
     }
     for e in &rows {
         let row = Rect::from_min_size(pos2(table.min.x, y), vec2(table.width(), LIBRARY_ROW_MAIN_PX as f32));
@@ -521,7 +702,7 @@ fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table:
             let name = RichText::new(&e.media.name).font(theme::font(if custom { 13.0 } else { 12.5 })).color(if custom { p.text } else { p.muted });
             let r = nui.add(egui::Label::new(name).truncate().sense(Sense::click())).on_hover_text(trf!("{}\n按兩下改名", "{}\nDouble-click to rename", e.media.name));
             if r.double_clicked() {
-                *rename = Some(e.clone());
+                *req = Some(Req::Rename(e.clone()));
             }
         }
         num(&e.media.duration_sec.map(video_clock).unwrap_or_else(|| "—".into()), col_x(4) - 10.0, row.center().y, p.text, 13.0);
@@ -540,28 +721,28 @@ fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table:
                 (EntryAction::Edit, Icon::Cut, tr!("剪輯", "Edit")),
             ] {
                 if Btn::icon_only(icon).ghost().small().quiet(!hot).tooltip(tip).show(aui).clicked() {
-                    *action = Some((act, e.clone()));
+                    *req = Some(Req::Entry(act, e.clone()));
                 }
             }
             let tip = if e.exports.is_empty() { tr!("重新命名", "Rename") } else { tr!("重新命名（加速版、GIF 一起改）", "Rename (sped-up versions and GIFs too)") };
             if Btn::icon_only(Icon::Rename).ghost().small().quiet(!hot).tooltip(tip).show(aui).clicked() {
-                *rename = Some(e.clone());
+                *req = Some(Req::Rename(e.clone()));
             }
             // 不常用的收進「⋯」
             let more = Btn::icon_only(Icon::More).ghost().small().quiet(!hot).tooltip(tr!("更多", "More")).show(aui);
             egui::Popup::menu(&more).show(|ui| {
                 ui.set_min_width(190.0);
                 if ui.button(tr!("製作加速版 / GIF", "Make sped-up video / GIF")).clicked() {
-                    *action = Some((EntryAction::Export, e.clone()));
+                    *req = Some(Req::Entry(EntryAction::Export, e.clone()));
                 }
                 if ui.button(tr!("複製檔案（貼到 LINE、資料夾）", "Copy file (paste into LINE or a folder)")).clicked() {
-                    *action = Some((EntryAction::CopyFile, e.clone()));
+                    *req = Some(Req::Entry(EntryAction::CopyFile, e.clone()));
                 }
                 if e.media.has_audio != Some(false) && ui.button(tr!("存成 M4A（只留聲音）", "Save as M4A (audio only)")).clicked() {
-                    *action = Some((EntryAction::SaveAudio, e.clone()));
+                    *req = Some(Req::Entry(EntryAction::SaveAudio, e.clone()));
                 }
                 if !e.media.chapters.is_empty() && ui.button(tr!("複製章節（貼到 YouTube）", "Copy chapters (for YouTube)")).clicked() {
-                    *action = Some((EntryAction::CopyChapters, e.clone()));
+                    *req = Some(Req::Entry(EntryAction::CopyChapters, e.clone()));
                 }
             });
         }
@@ -600,7 +781,7 @@ fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table:
             aui.spacing_mut().item_spacing.x = 2.0;
             for (act, icon, tip) in [(EntryAction::Play, Icon::Play, tr!("播放", "Play")), (EntryAction::Reveal, Icon::Folder, tr!("在資料夾中顯示", "Show in folder"))] {
                 if Btn::icon_only(icon).ghost().small().quiet(!hot).tooltip(tip).show(aui).clicked() {
-                    *action = Some((act, LibraryEntry { media: x.media.clone(), exports: vec![], hits: vec![] }));
+                    *req = Some(Req::Entry(act, LibraryEntry { media: x.media.clone(), exports: vec![], hits: vec![] }));
                 }
             }
             y += LIBRARY_ROW_SUB_PX as f32;
@@ -633,6 +814,46 @@ fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table:
     }
 }
 
+/// 清單是空的：讀取中、資料夾讀不到（選別的資料夾）、還沒有檔案（開始錄影）、搜尋沒有結果（清除搜尋）
+#[allow(clippy::too_many_arguments)]
+fn empty_list(ui: &mut egui::Ui, d: &mut LibraryDialog, area: Rect, dir: &str, req: &mut Option<Req>, none: &str, no_match: &str, record: bool) {
+    let open_dir = tr!("開啟資料夾", "Open folder");
+    if d.loading {
+        empty_state(ui, area, tr!("讀取中…", "Loading…"), &[]);
+    } else if let Some(e) = d.error.clone() {
+        // 看之前用過的資料夾時，可以回到目前的儲存位置
+        let mut buttons = vec![(tr!("選擇資料夾…", "Choose folder…"), true), (open_dir, false)];
+        if d.dir.is_some() {
+            buttons.push((tr!("看目前的儲存位置", "View current save location"), false));
+        }
+        match empty_state(ui, area, &e, &buttons) {
+            Some(0) => *req = Some(Req::ChooseDir),
+            Some(1) => *req = Some(Req::OpenDir(dir.to_string())),
+            Some(_) => *req = Some(Req::Browse(None)),
+            None => {}
+        }
+    } else if d.data.as_ref().is_some_and(|x| x.total == 0) && d.query.trim().is_empty() && d.filter == LibraryFilter::All {
+        let mut buttons = vec![(open_dir, false), (tr!("變更儲存位置…", "Change save location…"), false)];
+        if record {
+            buttons.insert(0, (tr!("開始錄影", "Start recording"), true));
+        }
+        match empty_state(ui, area, none, &buttons).map(|i| if record { i } else { i + 1 }) {
+            Some(0) => *req = Some(Req::Record),
+            Some(1) => *req = Some(Req::OpenDir(dir.to_string())),
+            Some(_) => *req = Some(Req::ChooseDir),
+            None => {}
+        }
+    } else if d.data.is_some() {
+        let searching = !d.query.trim().is_empty();
+        let buttons = if searching { vec![(tr!("清除搜尋", "Clear search"), false)] } else { vec![] };
+        if empty_state(ui, area, no_match, &buttons).is_some() {
+            d.query.clear();
+            d.page = 1;
+            d.dirty = true;
+        }
+    }
+}
+
 /// 一句話，搜尋的字用強調色、粗體
 fn highlight(job: &mut egui::text::LayoutJob, text: &str, query: &str, color: Color32, accent: Color32) {
     let normal = egui::TextFormat::simple(theme::font(12.5), color);
@@ -661,7 +882,7 @@ pub fn audio_mark(ui: &mut egui::Ui) -> egui::Response {
 }
 
 /// 截圖：縮圖格（一頁放幾張依對話框大小），點縮圖開啟
-fn shot_grid(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, area: Rect, action: &mut Option<(EntryAction, LibraryEntry)>, rename: &mut Option<LibraryEntry>) {
+fn shot_grid(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, area: Rect, dir: &str, req: &mut Option<Req>) {
     let p = theme::pal(ui);
     let gap = 14.0;
     let cols = ((area.width() + gap) / (210.0 + gap)).floor().max(1.0);
@@ -677,19 +898,11 @@ fn shot_grid(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, area: Re
     let items = d.data.as_ref().map(|x| x.items.clone()).unwrap_or_default();
     let painter = ui.painter().clone();
     if items.is_empty() {
-        let msg = if d.loading {
-            tr!("讀取中…", "Loading…").to_string()
-        } else if let Some(e) = &d.error {
-            e.clone()
-        } else if d.data.as_ref().is_some_and(|x| x.total == 0) && d.query.trim().is_empty() {
-            match app.keys.label(2) {
-                k if k.is_empty() => tr!("還沒有截圖。按主畫面的「截圖」試試看。", "No screenshots yet. Try “Screenshot” in the main window.").to_string(),
-                k => trf!("還沒有截圖。按主畫面的「截圖」或 {k} 試試看。", "No screenshots yet. Try “Screenshot” in the main window or press {k}."),
-            }
-        } else {
-            tr!("沒有符合條件的截圖。", "No matching screenshots.").into()
+        let none = match app.keys.label(2) {
+            k if k.is_empty() => tr!("還沒有截圖。按主畫面的「截圖」試試看。", "No screenshots yet. Try “Screenshot” in the main window.").to_string(),
+            k => trf!("還沒有截圖。按主畫面的「截圖」或 {k} 試試看。", "No screenshots yet. Try “Screenshot” in the main window or press {k}."),
         };
-        painter.text(pos2(area.center().x, area.min.y + 120.0), egui::Align2::CENTER_CENTER, msg, theme::font(14.0), p.muted);
+        empty_list(ui, d, area, dir, req, &none, tr!("沒有符合條件的截圖。", "No matching screenshots."), false);
     }
     let dates = date_labels(items.iter().map(|e| (e.media.name.as_str(), e.media.time_ms())));
     for (i, e) in items.iter().enumerate() {
@@ -716,7 +929,7 @@ fn shot_grid(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, area: Re
         }
         painter.rect_stroke(img, CornerRadius::same(theme::RADIUS_SM), border, egui::StrokeKind::Inside);
         if resp.clicked() {
-            *action = Some((EntryAction::Play, e.clone()));
+            *req = Some(Req::Entry(EntryAction::Play, e.clone()));
         }
         // 左上角勾選（白底，在深色縮圖上也看得到）
         let cb = Rect::from_min_size(img.min + vec2(6.0, 6.0), vec2(24.0, 22.0));
@@ -742,10 +955,10 @@ fn shot_grid(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, area: Re
         bui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
             if Btn::icon_only(Icon::Rename).ghost().small().quiet(!hot).tooltip(tr!("重新命名", "Rename")).show(ui).clicked() {
-                *rename = Some(e.clone());
+                *req = Some(Req::Rename(e.clone()));
             }
             if Btn::icon_only(Icon::Folder).ghost().small().quiet(!hot).tooltip(tr!("在資料夾中顯示", "Show in folder")).show(ui).clicked() {
-                *action = Some((EntryAction::Reveal, e.clone()));
+                *req = Some(Req::Entry(EntryAction::Reveal, e.clone()));
             }
             if Btn::icon_only(Icon::Edit)
                 .ghost()
@@ -755,10 +968,10 @@ fn shot_grid(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, area: Re
                 .show(ui)
                 .clicked()
             {
-                *action = Some((EntryAction::Edit, e.clone()));
+                *req = Some(Req::Entry(EntryAction::Edit, e.clone()));
             }
             if Btn::icon_only(Icon::Eye).ghost().small().quiet(!hot).tooltip(tr!("檢視", "View")).show(ui).clicked() {
-                *action = Some((EntryAction::Play, e.clone()));
+                *req = Some(Req::Entry(EntryAction::Play, e.clone()));
             }
         });
     }

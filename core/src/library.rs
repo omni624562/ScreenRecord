@@ -122,8 +122,13 @@ pub fn is_cut_name(name: &str) -> bool {
 /// 掃描資料夾：原始錄影（含剪輯版）各自一筆，加速版放在對應的原檔底下。
 /// 非同步讀取：儲存位置在網路磁碟且回應很慢時，不會卡住錄影與狀態更新。
 pub async fn scan(cache: &MediaCache, dir: &Path) -> Vec<LibraryEntry> {
+    scan_checked(cache, dir).await.unwrap_or_default()
+}
+
+/// 同 scan，但資料夾讀不到（不存在、隨身碟或網路磁碟沒接上、沒有權限）時回傳錯誤
+pub async fn scan_checked(cache: &MediaCache, dir: &Path) -> std::io::Result<Vec<LibraryEntry>> {
     let mut names = Vec::new();
-    let Ok(mut rd) = tokio::fs::read_dir(dir).await else { return vec![] };
+    let mut rd = tokio::fs::read_dir(dir).await?;
     while let Ok(Some(e)) = rd.next_entry().await {
         let name = e.file_name().to_string_lossy().into_owned();
         if VIDEO_RE.is_match(&name) {
@@ -189,7 +194,18 @@ pub async fn scan(cache: &MediaCache, dir: &Path) -> Vec<LibraryEntry> {
             p.speed.total_cmp(&q.speed).then(rank(p.format).cmp(&rank(q.format))).then(p.media.mtime.total_cmp(&q.media.mtime))
         });
     }
-    entries
+    Ok(entries)
+}
+
+/// 資料夾讀不到時給使用者看的說明；None = 當作空的資料夾（還沒錄過影，預設的資料夾還沒建立）
+fn dir_error(dir: &Path, e: &std::io::Error) -> Option<String> {
+    let shown = dir.display().to_string();
+    match e.kind() {
+        std::io::ErrorKind::NotFound if dir.parent().is_some_and(Path::is_dir) => None,
+        std::io::ErrorKind::NotFound => Some(trf!("找不到資料夾「{shown}」（隨身碟或網路磁碟可能沒接上）", "Folder “{shown}” not found (a USB drive or network drive may be disconnected)")),
+        std::io::ErrorKind::PermissionDenied => Some(trf!("沒有權限讀取資料夾「{shown}」", "No permission to read the folder “{shown}”")),
+        _ => Some(trf!("無法讀取資料夾「{shown}」（隨身碟或網路磁碟可能沒接上）", "Couldn't read the folder “{shown}” (a USB drive or network drive may be disconnected)")),
+    }
 }
 
 /// 已讀過的資訊直接帶入，沒讀過的才執行 FFmpeg
@@ -297,7 +313,16 @@ fn sort_time(e: &LibraryEntry) -> f64 {
 }
 
 pub async fn list_library(cache: &Arc<MediaCache>, ffmpeg: Option<&Path>, dir: &Path, q: &LibraryQuery) -> LibraryPage {
-    let mut list = scan(cache, dir).await;
+    let mut list = match scan_checked(cache, dir).await {
+        Ok(list) => list,
+        Err(e) => {
+            let error = dir_error(dir, &e);
+            if error.is_some() {
+                crate::info!("[清單] 無法讀取資料夾 {}：{e}", dir.display());
+            }
+            return LibraryPage { dir: dir.display().to_string(), page: 1, pages: 1, error, ..Default::default() };
+        }
+    };
 
     if let Some(text) = q.q.as_deref().map(|t| t.trim().to_lowercase()).filter(|t| !t.is_empty()) {
         // 也找字幕裡說過的話（影片旁邊的 SRT）
@@ -358,7 +383,7 @@ pub async fn list_library(cache: &Arc<MediaCache>, ffmpeg: Option<&Path>, dir: &
         }
     };
     let items = if need_all { slice } else { pool_with_info(cache, ffmpeg, slice, 6).await };
-    LibraryPage { dir: dir.display().to_string(), total, page, pages, page_size, items }
+    LibraryPage { dir: dir.display().to_string(), total, page, pages, page_size, items, error: None }
 }
 
 /// 錄影改名：原片與底下的加速版 / GIF 一起改（Rec_X_4x.mp4 → 新名_4x.mp4），清單上才不會斷開。
@@ -480,6 +505,19 @@ mod tests {
         assert_eq!(page.items.iter().map(|e| (e.media.name.as_str(), e.hits.len())).collect::<Vec<_>>(), vec![("會議.mp4", 0)]);
         // 沒有搜尋：不讀字幕
         assert!(list_library(&cache, None, dir.path(), &q(None, None, LibrarySort::Old)).await.items.iter().all(|e| e.hits.is_empty()));
+    }
+
+    #[tokio::test]
+    async fn unreachable_folder_is_reported() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = Arc::new(MediaCache::default());
+        // 還沒建立的資料夾（預設的儲存位置還沒錄過影）：當作空的
+        let page = list_library(&cache, None, &dir.path().join("Timelapse"), &q(None, None, LibrarySort::New)).await;
+        assert_eq!((page.total, page.error), (0, None));
+        // 上層也不在（隨身碟、網路磁碟沒接上）：說明找不到
+        let page = list_library(&cache, None, &dir.path().join("USB").join("Timelapse"), &q(None, None, LibrarySort::New)).await;
+        assert_eq!(page.total, 0);
+        assert!(page.error.unwrap().contains("找不到資料夾"));
     }
 
     fn entry(n: usize) -> LibraryEntry {

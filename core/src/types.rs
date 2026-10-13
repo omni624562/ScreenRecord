@@ -726,6 +726,9 @@ pub struct LibraryPage {
     pub pages: usize,
     pub page_size: usize,
     pub items: Vec<LibraryEntry>,
+    /// 資料夾讀不到（不存在、隨身碟或網路磁碟沒接上）時的說明
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
