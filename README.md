@@ -54,7 +54,7 @@ Windows 11 螢幕錄影工具：**原速錄影並完整保留，停止後再選�
 | 只錄聲音 | 範圍選「只錄聲音」：畫面不錄（存成畫面是一張卡片的 MP4，可剪輯、降噪），「更多」選單可存成 M4A |
 | 螢幕畫筆 | `Ctrl+Alt+D` 在螢幕上畫線圈重點（會錄進影片）；1～4 換顏色、Ctrl+Z 復原、Delete 清除、Esc 結束 |
 | 影片背景與圓角 | 剪輯時把影片縮小放在漸層 / 單色背景上，四角變圓、有陰影，輸出大小不變 |
-| 字幕 | 自動產生（FFmpeg 的 whisper 在本機辨識語音，需要有 whisper 的 FFmpeg 8 以上，例如 BtbN 的 win64-gpl）或匯入 SRT；轉成繁體中文與台灣用詞，變成可修改的文字標註燒進影片，並另存 SRT |
+| 字幕 | 自動產生（FFmpeg 的 whisper 在本機辨識語音；目前用的 FFmpeg 沒有 whisper 時，第一次使用會另外下載同一版、有 whisper 的 FFmpeg 9.0.2 full，只用來辨識語音）或匯入 SRT；轉成繁體中文與台灣用詞，變成可修改的文字標註燒進影片，並另存 SRT |
 | 多張拼成一張 | 「全部截圖」勾選兩張以上，左右或上下拼成一張新的截圖 |
 | 複製成檔案 | 「⋯」選單或檢視器「複製檔案」，在 LINE、Teams、信件或資料夾直接貼上檔案 |
 | 內建檢視器 | 按清單的播放 / 眼睛按鈕在程式裡開啟：截圖可適合視窗 / 原尺寸、滾輪縮放、拖曳移動、複製到剪貼簿；錄影（含加速版、GIF）可播放、拖曳進度、調整音量，直接進入剪輯或製作加速版；左右箭頭切換上一個 / 下一個，也可「用 Windows 開啟」 |
@@ -93,6 +93,8 @@ ffmpeg.exe          ← 放在同一個資料夾
 
 找不到 `ffmpeg.exe` 時，介面上方會出現提示，按「自動下載」即可：從 [gyan.dev](https://www.gyan.dev/ffmpeg/builds/) 下載固定版本 FFmpeg 9.0.2 essentials（約 110 MB，失敗時改用 GitHub 上的同一檔案），比對程式內建的 SHA-256（不是從下載網站取得，檔案遭竄改也會被擋下）後，用 Windows 內建的 `System32\tar.exe` 解出 `ffmpeg.exe`，放到 exe 旁邊（沒有寫入權限時放 `%LOCALAPPDATA%\ScreenRecorder`），完成後自動偵測，不用重開程式。下載可取消，不會留下未完成的檔案。也可以按「手動下載」自行下載後放好，再按「重新偵測」。  
 搜尋順序：`exe 所在資料夾\ffmpeg.exe` → `ffmpeg\bin\ffmpeg.exe` → `bin\ffmpeg.exe` → `%LOCALAPPDATA%\ScreenRecorder\ffmpeg.exe` → `PATH`。
+
+自動字幕需要有 whisper（語音辨識）的 FFmpeg，essentials 沒有。第一次產生字幕時，程式會另外下載同一版的 FFmpeg 9.0.2 full（約 258 MB，從 GitHub 下載，失敗時改用 gyan.dev，一樣比對內建的 SHA-256），和語音模型一起放在 `%LOCALAPPDATA%\ScreenRecorder\whisper`，只用來辨識語音；錄影、轉檔仍用原本的 FFmpeg。目前用的 FFmpeg 已經有 whisper 時不會下載。
 
 從系統匣選單「結束」會先把錄影正常收尾並合併再結束。程式不顯示主控台視窗，訊息寫在記錄檔 `%LOCALAPPDATA%\ScreenRecorder\ScreenRecorder.log`。
 
