@@ -261,6 +261,8 @@ pub enum Icon {
     Ocr,
     /// 打勾（完成、確定）
     Check,
+    /// 往上（調整順序）
+    ChevU,
 }
 
 /// 在 rect（正方形）裡畫圖示
@@ -446,6 +448,7 @@ pub fn paint_icon(p: &Painter, rect: Rect, icon: Icon, color: Color32) {
             line(&[(8.0, 5.0), (8.0, 11.5)]);
         }
         Icon::Check => line(&[(2.5, 8.5), (6.5, 12.5), (13.5, 4.0)]),
+        Icon::ChevU => line(&[(4.0, 10.0), (8.0, 6.0), (12.0, 10.0)]),
     }
 }
 

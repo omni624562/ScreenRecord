@@ -36,6 +36,8 @@ pub enum UiPage {
     Snip,
     /// 開啟操作視窗並編輯最近的截圖（App::last_shot）
     EditShot,
+    /// 開啟操作視窗整理剛截好的步驟（App::steps_draft），再做成教學文件
+    StepsReview,
 }
 
 /// 框選截圖：先截下整個桌面（凍結），使用者在畫面上框選後再從中裁切
@@ -120,6 +122,8 @@ struct State {
     /// 步驟截圖進行中：(工作, 文件的資料夾, 文件名稱, 開始的時間)
     #[cfg(windows)]
     steps: Option<(crate::steps_win::Session, PathBuf, String, String)>,
+    /// 截好、等在操作視窗整理的步驟
+    steps_draft: Option<crate::steps::Draft>,
 }
 
 pub struct App {
@@ -404,8 +408,16 @@ impl App {
         }
     }
 
-    /// 開始步驟截圖：之後每點一下滑鼠就截一張（圖放在儲存資料夾的「教學_日期_時間」資料夾）
-    pub fn steps_start(&self, output_dir: &str) -> crate::Result<()> {
+    /// 開始步驟截圖：之後每點一下滑鼠就截一張（圖先放在儲存資料夾的「教學_日期_時間」資料夾）；
+    /// 畫面下方有小工具列可以完成或取消
+    pub fn steps_start(self: &Arc<Self>, output_dir: &str) -> crate::Result<()> {
+        if self.lock().steps_draft.is_some() {
+            self.open_ui(UiPage::StepsReview);
+            return Err(crate::Error::config(tr!(
+                "上一次截的步驟還沒做成文件：請先在操作視窗做成文件或放棄",
+                "The steps from last time haven't been made into a guide yet. Finish or discard them in the main window first"
+            )));
+        }
         #[cfg(not(windows))]
         {
             let _ = output_dir;
@@ -420,7 +432,14 @@ impl App {
             let stamp = crate::paths::timestamp();
             let name = format!("教學_{stamp}");
             let dir = PathBuf::from(output_dir);
-            let session = crate::steps_win::Session::start(dir.clone(), name.clone()).map_err(|e| crate::Error::config(trf!("無法建立資料夾：{e}", "Couldn't create the folder: {e}")))?;
+            // 小工具列的按鈕：在小工具列自己的執行緒上，直接停止（等截圖執行緒結束）
+            let weak = Arc::downgrade(self);
+            let on_bar = Arc::new(move |cmd: crate::steps_win::BarCmd| {
+                if let Some(app) = weak.upgrade() {
+                    app.steps_stop(cmd == crate::steps_win::BarCmd::Discard);
+                }
+            });
+            let session = crate::steps_win::Session::start(dir.clone(), name.clone(), on_bar).map_err(|e| crate::Error::config(trf!("無法建立資料夾：{e}", "Couldn't create the folder: {e}")))?;
             let mut st = self.lock();
             if st.steps.is_some() {
                 // 同時按了兩次：留下先開始的那個
@@ -434,26 +453,72 @@ impl App {
         }
     }
 
-    /// 完成步驟截圖：做成教學文件（HTML），回傳文件路徑；一步都沒有時刪掉資料夾、回傳 None
-    pub async fn steps_finish(&self) -> crate::Result<Option<String>> {
+    /// 停止步驟截圖（會等截圖執行緒結束，不要在 async 裡直接呼叫）：discard = 放棄（刪掉截好的圖），
+    /// 否則開啟操作視窗整理。回傳 None = 沒有在截，Some(false) = 沒有截到任何步驟（或放棄了）
+    #[cfg(windows)]
+    fn steps_stop(&self, discard: bool) -> Option<bool> {
+        let (session, dir, name, date) = self.lock().steps.take()?;
+        let steps = session.finish();
+        Some(self.steps_done(crate::steps::Draft { dir, name, date, steps }, discard))
+    }
+
+    /// 截好了：沒有步驟或放棄時刪掉資料夾，否則開啟操作視窗整理
+    #[cfg(windows)]
+    fn steps_done(&self, draft: crate::steps::Draft, discard: bool) -> bool {
+        if discard || draft.steps.is_empty() {
+            draft.discard();
+            crate::info!("[截圖] 步驟截圖：{}", if discard { "放棄" } else { "沒有任何步驟" });
+            return false;
+        }
+        crate::info!("[截圖] 步驟截圖：截了 {} 步，開啟操作視窗整理", draft.steps.len());
+        self.steps_review(draft);
+        true
+    }
+
+    /// 完成步驟截圖（系統匣、操作視窗的「完成」）：開啟操作視窗整理步驟；回傳 false = 沒有截到任何步驟
+    pub async fn steps_finish(self: &Arc<Self>) -> crate::Result<bool> {
         #[cfg(not(windows))]
         return Err(crate::Error::config(tr!("步驟截圖只支援 Windows", "Step capture is only available on Windows")));
         #[cfg(windows)]
         {
-            let Some((session, dir, name, date)) = self.lock().steps.take() else {
+            if self.lock().steps.is_none() {
                 return Err(crate::Error::config(tr!("沒有在步驟截圖", "Step capture isn't running")));
-            };
-            let steps = tokio::task::spawn_blocking(move || session.finish()).await.unwrap_or_default();
-            if steps.is_empty() {
-                let _ = std::fs::remove_dir(dir.join(&name));
-                crate::info!("[截圖] 步驟截圖：沒有任何步驟");
-                return Ok(None);
             }
-            let path = dir.join(format!("{name}.html"));
-            let doc = crate::steps::html(&trf!("操作步驟（{date}）", "Steps ({date})"), &date, &steps);
-            tokio::fs::write(&path, doc).await.map_err(|e| crate::Error::other(trf!("無法儲存教學文件：{e}", "Couldn't save the step-by-step guide: {e}")))?;
-            crate::info!("[截圖] 步驟截圖完成：{} 步，{}", steps.len(), path.display());
-            Ok(Some(path.display().to_string()))
+            let app = self.clone();
+            Ok(tokio::task::spawn_blocking(move || app.steps_stop(false)).await.ok().flatten().unwrap_or(false))
+        }
+    }
+
+    /// 開啟操作視窗整理這些步驟（開發測試也用）
+    pub fn steps_review(&self, draft: crate::steps::Draft) {
+        self.lock().steps_draft = Some(draft);
+        self.open_ui(UiPage::StepsReview);
+    }
+
+    /// 等著整理的步驟
+    pub fn steps_draft(&self) -> Option<crate::steps::Draft> {
+        self.lock().steps_draft.clone()
+    }
+
+    /// 做成教學文件（一個 HTML 檔，圖片包在裡面）：steps = 整理後的步驟；成功後刪掉暫放的截圖，回傳文件路徑
+    pub async fn steps_build(&self, title: String, steps: Vec<crate::steps::Step>) -> crate::Result<String> {
+        let draft = self.lock().steps_draft.clone().ok_or_else(|| crate::Error::config(tr!("沒有要整理的步驟", "There are no steps to organize")))?;
+        let d = draft.clone();
+        let n = steps.len();
+        let path = tokio::task::spawn_blocking(move || crate::steps::build(&d, &title, &steps)).await.map_err(|e| crate::Error::other(e.to_string()))?.map_err(crate::Error::other)?;
+        let mut st = self.lock();
+        if st.steps_draft.as_ref() == Some(&draft) {
+            st.steps_draft = None;
+        }
+        crate::info!("[截圖] 步驟截圖完成：{n} 步，{}", path.display());
+        Ok(path.display().to_string())
+    }
+
+    /// 放棄整理中的步驟（刪掉截好的圖）
+    pub fn steps_discard(&self) {
+        if let Some(d) = self.lock().steps_draft.take() {
+            crate::info!("[截圖] 步驟截圖：放棄 {} 步", d.steps.len());
+            std::thread::spawn(move || d.discard());
         }
     }
 

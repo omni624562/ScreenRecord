@@ -507,30 +507,12 @@ impl TrayController {
             TrayCommand::StepsStart => {
                 let dir = self.config().output_dir;
                 app.steps_start(&dir).map_err(err)?;
-                self.notify(
-                    tr!("步驟截圖", "Step capture"),
-                    tr!(
-                        "開始了：之後每點一下滑鼠就截一張。做完後在系統匣選「完成步驟截圖」，就會做成教學文件",
-                        "Started: each mouse click now takes a screenshot. When you're done, choose “Finish step capture” in the system tray to make a step-by-step guide."
-                    ),
-                    false,
-                );
                 return Ok(());
             }
             TrayCommand::StepsFinish => {
-                match app.steps_finish().await.map_err(err)? {
-                    Some(path) => {
-                        crate::desktop::open_with_explorer(&path, false);
-                        self.notify(
-                            tr!("步驟截圖", "Step capture"),
-                            tr!(
-                                "教學文件做好了，已用瀏覽器開啟；文字可以直接修改，再列印成 PDF",
-                                "The step-by-step guide is ready and open in your browser. You can edit the text, then print it to PDF."
-                            ),
-                            false,
-                        );
-                    }
-                    None => self.notify(tr!("步驟截圖", "Step capture"), tr!("沒有截到任何步驟", "No steps were captured"), false),
+                // 有步驟時開啟操作視窗整理（刪掉、調整順序）再做成教學文件
+                if !app.steps_finish().await.map_err(err)? {
+                    self.notify(tr!("步驟截圖", "Step capture"), tr!("沒有截到任何步驟", "No steps were captured"), false);
                 }
                 return Ok(());
             }

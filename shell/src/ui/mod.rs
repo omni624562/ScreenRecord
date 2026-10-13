@@ -17,6 +17,7 @@ pub mod schedule;
 pub mod settings;
 pub mod settings_dialog;
 pub mod snip;
+pub mod steps_review;
 pub mod theme;
 pub mod thumbs;
 pub mod viewer;
@@ -154,6 +155,8 @@ pub struct UiApp {
     pub settings_dlg: Option<settings_dialog::SettingsDialog>,
     /// 在螢幕上框選截圖
     pub snip: Option<snip::Snip>,
+    /// 整理步驟截圖（做成教學文件前）
+    pub steps_review: Option<steps_review::Review>,
     /// 目前設定的全域快速鍵（顯示用）
     pub keys: screenrecorder_core::types::Hotkeys,
     pub editor: Option<editor::Editor>,
@@ -239,6 +242,7 @@ impl UiApp {
             meter_until: None,
             settings_dlg: None,
             snip: None,
+            steps_review: None,
             keys: saved.hotkeys.unwrap_or_default(),
             editor: None,
             dismissed_job: None,
@@ -712,6 +716,9 @@ impl UiApp {
             if page == UiPage::Changelog {
                 self.changelog_open = true;
             }
+            if page == UiPage::StepsReview {
+                steps_review::open(self);
+            }
             if page == UiPage::EditShot {
                 match self.core.last_shot() {
                     Some(s) if self.editor.is_none() => editor::shot::open(self, s.path),
@@ -858,6 +865,9 @@ impl eframe::App for UiApp {
         }
         if self.ocr.is_some() {
             ocr::show(self, &ctx);
+        }
+        if self.steps_review.is_some() {
+            steps_review::show(self, &ctx);
         }
         // 新功能介紹：主畫面第一次看得到、沒有其他視窗時檢查一次
         if !self.whats_new_checked && self.visible && self.env_ready && self.editor.is_none() && self.snip.is_none() {

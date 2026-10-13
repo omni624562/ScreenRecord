@@ -1177,23 +1177,15 @@ fn rec_panel(app: &mut UiApp, ui: &mut Ui) {
                         if Btn::new(tr!("完成", "Finish"))
                             .primary()
                             .small()
-                            .tooltip(tr!("停止並做成教學文件（HTML），用瀏覽器開啟", "Stop and create the step-by-step guide (HTML), then open it in your browser"))
+                            .tooltip(tr!("停止截圖，整理步驟後做成教學文件", "Stop capturing, organize the steps, then make the step-by-step guide"))
                             .show(ui)
                             .clicked()
                         {
                             let core = app.core.clone();
                             app.spawn(async move { core.steps_finish().await }, |app, r| match r {
-                                Ok(Some(path)) => {
-                                    app.toast(
-                                        tr!(
-                                            "教學文件做好了，已用瀏覽器開啟；文字可以直接修改，再列印成 PDF",
-                                            "The step-by-step guide is ready and open in your browser. You can edit the text, then print it to PDF."
-                                        ),
-                                        false,
-                                    );
-                                    screenrecorder_core::desktop::open_with_explorer(&path, false);
-                                }
-                                Ok(None) => app.toast(tr!("沒有截到任何步驟", "No steps were captured"), false),
+                                // 有步驟時會開啟整理步驟的視窗
+                                Ok(true) => {}
+                                Ok(false) => app.toast(tr!("沒有截到任何步驟", "No steps were captured"), false),
                                 Err(e) => app.toast(e.message().to_string(), true),
                             });
                         }
@@ -1461,9 +1453,13 @@ fn shot_button(app: &mut UiApp, ui: &mut Ui, w: f32) {
     if steps {
         let dir = app.s.record_config(&app.env).output_dir;
         match app.core.steps_start(&dir) {
-            Ok(()) => {
-                app.toast(tr!("步驟截圖開始：之後每點一下滑鼠就截一張，做完後按「完成」", "Step capture started: every mouse click now takes a screenshot. Click “Finish” when you're done."), false)
-            }
+            Ok(()) => app.toast(
+                tr!(
+                    "步驟截圖開始：之後每點一下滑鼠就截一張，做完後按畫面下方的「完成」",
+                    "Step capture started: every mouse click now takes a screenshot. Click “Finish” at the bottom of the screen when you're done."
+                ),
+                false,
+            ),
             Err(e) => app.toast(e.message().to_string(), true),
         }
     }
