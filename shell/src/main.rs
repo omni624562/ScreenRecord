@@ -259,6 +259,8 @@ fn main() {
         tray_ok.store(!args.no_tray && rt.block_on(tray::start(&core, Duration::from_secs(5))), Ordering::Relaxed);
         info!("{}", if tray_ok.load(Ordering::Relaxed) { "已常駐於系統匣：右鍵點圖示可錄影或結束程式" } else { "系統匣無法使用：關掉操作視窗就會結束程式" });
     }
+    // 上次還在等的排程錄影：繼續等（已經過了的通知錯過了）
+    screenrecorder_core::schedule::resume_saved(&core);
     if !args.no_tray {
         core.schedule_update_checks();
         // 開機自動啟動指向別的位置的程式（例如舊版留在原本的資料夾）：改成這個

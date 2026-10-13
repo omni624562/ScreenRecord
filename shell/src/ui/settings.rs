@@ -127,6 +127,9 @@ pub struct UiSettings {
     pub hide_notice_shown: bool,
     /// 上次切換或儲存的設定組合（目前的設定和它不一樣時顯示「已修改」）
     pub preset_name: String,
+    /// 等待中的排程錄影（core 的 schedule.rs 存進來；這裡只是原樣保留，並跟著 core 的狀態更新）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub schedule: Option<Value>,
 }
 
 /// 講稿提詞的字級範圍、不透明度下限
@@ -242,6 +245,7 @@ impl UiSettings {
             theme: string("theme").filter(|v| ["light", "dark"].contains(&v.as_str())).unwrap_or_else(|| "system".into()),
             hide_notice_shown: boolean("hideNoticeShown").unwrap_or(false),
             preset_name: string("presetName").unwrap_or_default(),
+            schedule: o.get(screenrecorder_core::schedule::UI_KEY).cloned(),
         };
         s.fix_monitor(env);
         s

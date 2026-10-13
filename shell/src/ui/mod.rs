@@ -507,6 +507,11 @@ impl UiApp {
             }
         }
         self.reload_settings_if_changed();
+        // 等待中的排程：設定裡的副本跟著 core 的狀態（開始、取消後不會被這裡存回去）
+        let scheduled = self.core.scheduled();
+        if scheduled.is_none() != self.s.schedule.is_none() {
+            self.s.schedule = scheduled.as_ref().map(screenrecorder_core::schedule::to_value);
+        }
         if let Some(shot) = self.status.shot.clone().filter(|s| s.seq != self.last_shot_seq) {
             self.last_shot_seq = shot.seq;
             let name = dialogs::file_name(&shot.path);
