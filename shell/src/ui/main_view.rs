@@ -1587,11 +1587,14 @@ fn rec_body(app: &mut UiApp, ui: &mut Ui, r: &screenrecorder_core::types::Record
                 Some(_) if !ok => tr!("被其他程式占用，到「設定 → 快速鍵」換一組", "Used by another program. Choose a different one in Settings → Shortcuts"),
                 _ => "",
             };
+            // 先放右邊的按鍵，名稱用剩下的寬度（太長時結尾「…」）
             let row = ui.horizontal(|ui| {
-                ui.add(egui::Label::new(RichText::new(name).font(theme::font(12.5)).color(if ok { p.text } else { p.muted })).truncate());
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     let k = RichText::new(key).font(theme::mono(12.0)).color(p.muted);
                     ui.label(if ok { k } else { k.strikethrough() });
+                    ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                        ui.add(egui::Label::new(RichText::new(name).font(theme::font(12.5)).color(if ok { p.text } else { p.muted })).truncate());
+                    });
                 });
             });
             if !tip.is_empty() {
