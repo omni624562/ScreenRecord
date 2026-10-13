@@ -568,7 +568,7 @@ impl App {
         if r.code != 0 || !tokio::fs::metadata(&out).await.map(|m| m.len() > 0).unwrap_or(false) {
             let _ = tokio::fs::remove_file(&out).await;
             crate::info!("[截圖] 擷取影片畫面失敗：{}", r.stderr.trim());
-            return Err(crate::Error::other(tr!("無法擷取這一格，詳見記錄檔", "Couldn't capture this frame. See the log file for details")));
+            return Err(crate::Error::other(tr!("無法擷取這一格，請換個時間點再試", "Couldn't capture this frame. Try a different moment")));
         }
         let shot = self.finish_shot(&out, 0, 0).await;
         self.lock().shot = Some(shot.clone());
@@ -615,16 +615,14 @@ impl App {
         });
     }
 
-    /// 多張截圖拼成一張（依檔案時間由舊到新；左右或上下排），存成新的截圖並複製到剪貼簿
-    pub async fn combine_shots(self: &Arc<Self>, mut paths: Vec<String>, vertical: bool) -> crate::Result<crate::types::ShotInfo> {
+    /// 多張截圖拼成一張（依給的順序；左右或上下排；spacing 間距：0 無、1 小、2 大），存成新的截圖並複製到剪貼簿
+    pub async fn combine_shots(self: &Arc<Self>, paths: Vec<String>, vertical: bool, spacing: u8) -> crate::Result<crate::types::ShotInfo> {
         if paths.len() < 2 {
             return Err(crate::Error::config(tr!("請選兩張以上的截圖", "Select two or more screenshots")));
         }
         if paths.len() > 20 {
             return Err(crate::Error::config(tr!("一次最多拼 20 張", "You can combine up to 20 screenshots at a time")));
         }
-        let mtime = |p: &String| std::fs::metadata(p).and_then(|m| m.modified()).ok();
-        paths.sort_by_key(mtime);
         let mut images = vec![];
         for p in &paths {
             let (rgba, w, h) = crate::actions::load_image(p).await?;
@@ -638,8 +636,8 @@ impl App {
         let out = new_shot_path(&dir).await?;
         let o = out.clone();
         let (w, h) = tokio::task::spawn_blocking(move || {
-            let gap = images.iter().map(|i| i.width().min(i.height())).min().unwrap_or(0) / 40;
-            let pm = crate::shot_edit::combine(&images, vertical, gap.clamp(8, 24)).ok_or_else(|| crate::Error::config(tr!("拼起來的圖太大", "Combined image is too large")))?;
+            let gap = combine_gap(&images, spacing);
+            let pm = crate::shot_edit::combine(&images, vertical, gap).ok_or_else(|| crate::Error::config(tr!("拼起來的圖太大", "Combined image is too large")))?;
             pm.save_png(&o).map_err(|e| crate::Error::other(trf!("無法儲存圖片：{e}", "Couldn't save the image: {e}")))?;
             Ok::<_, crate::Error>((pm.width(), pm.height()))
         })
@@ -1785,6 +1783,16 @@ fn long_shot_thumb(img: &crate::longshot::LongImage) -> Option<tiny_skia::Pixmap
     let top = img.h.min((img.w * 9 / 16).max(1));
     let pm = tiny_skia::Pixmap::from_vec(img.top(top), tiny_skia::IntSize::from_wh(img.w, top)?)?;
     crate::shot_toast::thumbnail(&pm, 640)
+}
+
+/// 拼成一張的間距（像素）：0 無、1 小（依圖的大小 8～24）、2 大（小的三倍）
+pub fn combine_gap(images: &[tiny_skia::Pixmap], spacing: u8) -> u32 {
+    let auto = (images.iter().map(|i| i.width().min(i.height())).min().unwrap_or(0) / 40).clamp(8, 24);
+    match spacing {
+        0 => 0,
+        1 => auto,
+        _ => auto * 3,
+    }
 }
 
 /// 新截圖的檔名：Shot_日期_時間.png（同一秒有好幾張時加 _2、_3…）

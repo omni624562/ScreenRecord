@@ -96,7 +96,9 @@ fn file_name(path: &str) -> String {
 }
 
 static CUT_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)_cut(_\d+)?\.mp4$").unwrap());
-static VIDEO_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)\.(mp4|gif|webp|png)$").unwrap());
+static VIDEO_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)\.(mp4|gif|webp|png|m4a)$").unwrap());
+/// 只有聲音（「存成 M4A」做出來的）：清單上單獨一筆，標示「只有聲音」
+static AUDIO_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)\.m4a$").unwrap());
 static IMAGE_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)\.png$").unwrap());
 
 /// 截圖（PNG）：清單上單獨一筆，沒有加速版
@@ -104,9 +106,9 @@ pub fn is_image_name(name: &str) -> bool {
     IMAGE_RE.is_match(name)
 }
 
-/// 去掉副檔名（.mp4 / .png）
+/// 去掉副檔名（.mp4 / .png / .m4a）
 fn strip_ext(name: &str) -> String {
-    if is_image_name(name) {
+    if is_image_name(name) || is_audio_name(name) {
         name[..name.len() - 4].to_string()
     } else {
         strip_mp4(name)
@@ -117,6 +119,10 @@ static GIF_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)\.(gif|webp)$
 
 pub fn is_cut_name(name: &str) -> bool {
     CUT_RE.is_match(name)
+}
+
+pub fn is_audio_name(name: &str) -> bool {
+    AUDIO_RE.is_match(name)
 }
 
 /// 掃描資料夾：原始錄影（含剪輯版）各自一筆，加速版放在對應的原檔底下。
@@ -338,7 +344,7 @@ pub async fn list_library(cache: &Arc<MediaCache>, ffmpeg: Option<&Path>, dir: &
     // 錄影與截圖分開列：除了「截圖」，其他篩選都只列影片
     match q.filter {
         LibraryFilter::All | LibraryFilter::Audio => list.retain(|e| !is_image_name(&e.media.name)),
-        LibraryFilter::Original => list.retain(|e| !is_cut_name(&e.media.name) && !is_image_name(&e.media.name)),
+        LibraryFilter::Original => list.retain(|e| !is_cut_name(&e.media.name) && !is_image_name(&e.media.name) && !is_audio_name(&e.media.name)),
         LibraryFilter::Shot => list.retain(|e| is_image_name(&e.media.name)),
         LibraryFilter::Cut => list.retain(|e| is_cut_name(&e.media.name)),
         LibraryFilter::Speed => list.retain(|e| !e.exports.is_empty()),
@@ -505,6 +511,19 @@ mod tests {
         assert_eq!(page.items.iter().map(|e| (e.media.name.as_str(), e.hits.len())).collect::<Vec<_>>(), vec![("會議.mp4", 0)]);
         // 沒有搜尋：不讀字幕
         assert!(list_library(&cache, None, dir.path(), &q(None, None, LibrarySort::Old)).await.items.iter().all(|e| e.hits.is_empty()));
+    }
+
+    #[tokio::test]
+    async fn audio_files_are_listed_on_their_own() {
+        let dir = make(&["Rec_X.mp4", "Rec_X.m4a", "Shot_2026-10-09_14-30-00.png"]);
+        let cache = Arc::new(MediaCache::default());
+        let all = list_library(&cache, None, dir.path(), &q(None, None, LibrarySort::Old)).await;
+        let mut names: Vec<(&str, usize)> = all.items.iter().map(|e| (e.media.name.as_str(), e.exports.len())).collect();
+        names.sort();
+        assert_eq!(names, vec![("Rec_X.m4a", 0), ("Rec_X.mp4", 0)]);
+        // 「原始錄影」不含聲音檔
+        let originals = list_library(&cache, None, dir.path(), &LibraryQuery { filter: LibraryFilter::Original, ..q(None, None, LibrarySort::Old) }).await;
+        assert_eq!(originals.items.iter().map(|e| e.media.name.as_str()).collect::<Vec<_>>(), vec!["Rec_X.mp4"]);
     }
 
     #[tokio::test]

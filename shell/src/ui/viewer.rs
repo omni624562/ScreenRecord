@@ -123,9 +123,10 @@ pub fn open(app: &mut UiApp, entry: LibraryEntry) {
     app.spawn(async move { actions::library(&core, &dir, &query).await }, move |app, page| {
         let Some(v) = app.viewer.as_mut() else { return };
         // 加速版 / GIF 不在清單裡（列在原片底下）：只看這一個
-        if let Some(i) = page.items.iter().position(|e| e.media.path == path) {
+        let items: Vec<LibraryEntry> = page.items.into_iter().filter(|e| !screenrecorder_core::library::is_audio_name(&e.media.name)).collect();
+        if let Some(i) = items.iter().position(|e| e.media.path == path) {
             let cur = v.list[v.idx].clone();
-            v.list = page.items;
+            v.list = items;
             v.idx = i;
             // 保留已讀到的完整資訊（長度、fps）
             v.list[i] = cur;
@@ -308,6 +309,11 @@ fn delete_current(app: &mut UiApp) {
 fn copy_image(app: &mut UiApp) {
     let Some(v) = &app.viewer else { return };
     let path = v.cur().media.path.clone();
+    copy_png(app, path);
+}
+
+/// 截圖（PNG）複製到剪貼簿（圖片，可以直接貼到 LINE、Word）
+pub fn copy_png(app: &mut UiApp, path: String) {
     app.toast(tr!("正在複製…", "Copying…"), false);
     app.spawn(async move { tokio::task::spawn_blocking(move || screenrecorder_core::clipboard::copy_png(std::path::Path::new(&path))).await.map(|r| r.2).unwrap_or(false) }, |app, ok| {
         if ok {
@@ -560,10 +566,15 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
             let Some(v) = app.viewer.as_mut() else { return };
             let (path, t) = (v.cur().media.path.clone(), v.player.as_ref().map(|p| p.time()).unwrap_or(0.0));
             let core = app.core.clone();
-            app.spawn(async move { core.grab_frame(&path, t).await }, |app, r| {
-                if let Err(e) = r {
-                    app.toast(e.message().to_string(), true);
+            app.spawn(async move { core.grab_frame(&path, t).await }, |app, r| match r {
+                Ok(shot) => {
+                    // 狀態更新的「已截圖」不用再顯示一次：這裡的提示有「開啟」「在資料夾中顯示」
+                    app.last_shot_seq = app.last_shot_seq.max(shot.seq);
+                    let copied = if shot.copied { tr!("，並複製到剪貼簿", " and copied to the clipboard") } else { "" };
+                    app.toast_file(trf!("已擷取這一格：{}{copied}", "Frame saved: {}{copied}", super::dialogs::file_name(&shot.path)), &shot.path);
+                    app.shots_changed();
                 }
+                Err(e) => app.toast(e.message().to_string(), true),
             });
         }
         Act::Qr => {

@@ -532,16 +532,18 @@ impl UiApp {
                 if let Some(l) = &mut self.library {
                     l.dirty = true;
                 }
-                if let Some(e) = &self.status.export {
+                if let Some(e) = self.status.export.clone() {
                     if e.state == screenrecorder_core::types::ExportState::Done {
                         let what = match e.kind {
                             screenrecorder_core::types::ExportKind::Cut => tr!("剪輯完成", "Edited video ready"),
                             screenrecorder_core::types::ExportKind::Merge => tr!("合併完成", "Merged video ready"),
                             screenrecorder_core::types::ExportKind::Gif => tr!("GIF 製作完成", "GIF ready"),
                             screenrecorder_core::types::ExportKind::Webp => tr!("WebP 動圖製作完成", "WebP ready"),
+                            screenrecorder_core::types::ExportKind::Speed if e.speed <= 1.0 => tr!("壓縮完成", "Compressed video ready"),
                             screenrecorder_core::types::ExportKind::Speed => tr!("加速版製作完成", "Sped-up video ready"),
                         };
-                        self.toast(what, false);
+                        // 提示上直接有「開啟」「在資料夾中顯示」
+                        self.toast_file(format!("{what}{}{}", tr!("：", ": "), dialogs::file_name(&e.output)), &e.output);
                     }
                 }
             }
@@ -623,6 +625,8 @@ impl UiApp {
         use actions::OpenAction;
         let path = entry.media.path.clone();
         match action {
+            // 只有聲音的檔案（M4A）用 Windows 預設的程式播放
+            EntryAction::Play if screenrecorder_core::library::is_audio_name(&path) => self.act(EntryAction::External, entry),
             EntryAction::Play => viewer::open(self, entry),
             EntryAction::SaveAudio => {
                 let core = self.core.clone();

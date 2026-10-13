@@ -104,14 +104,14 @@ pub async fn rename(app: &App, path: &str, name: &str) -> Result<String> {
     Ok(new_path)
 }
 
-/// 移到資源回收筒（可還原）；只接受 .mp4 / .gif / .png，且不能刪正在轉檔的檔案
+/// 移到資源回收筒（可還原）；只接受 .mp4 / .gif / .webp / .png / .m4a，且不能刪正在轉檔的檔案
 pub fn delete(app: &App, paths: &[String]) -> Result<usize> {
     if paths.is_empty() {
         return Err(Error::config(tr!("沒有選取檔案", "No files selected")));
     }
     let busy = exporting(app);
     for f in paths {
-        if !is_abs(f) || !ends_with_ci(f, &[".mp4", ".gif", ".webp", ".png"]) || !is_file(f) {
+        if !is_abs(f) || !ends_with_ci(f, &[".mp4", ".gif", ".webp", ".png", ".m4a"]) || !is_file(f) {
             return Err(Error::config(trf!("找不到檔案：{f}", "File not found: {f}")));
         }
         if busy.contains(&f.to_lowercase()) {
@@ -333,12 +333,13 @@ pub async fn save_audio(app: &App, path: &str) -> Result<String> {
     let r = crate::process::run(&ffmpeg, &crate::args::audio_file_args(path, &out.to_string_lossy()), std::time::Duration::from_secs(600)).await;
     if r.code != 0 || !out.is_file() {
         let _ = std::fs::remove_file(&out);
-        let why = if r.stderr.contains("matches no streams") {
-            tr!("這支影片沒有聲音", "This video has no audio").to_string()
+        // FFmpeg 的原始訊息只寫進記錄檔；給使用者看的說明要讓人知道怎麼辦
+        crate::info!("[檔案] 無法另存聲音 {path}：{}", r.stderr.trim());
+        return Err(Error::config(if r.stderr.contains("matches no streams") {
+            tr!("這支影片沒有聲音，無法存成 M4A", "This video has no audio, so it can't be saved as M4A")
         } else {
-            r.stderr.lines().last().unwrap_or(tr!("FFmpeg 失敗", "FFmpeg failed")).to_string()
-        };
-        return Err(Error::config(trf!("無法存成 M4A：{why}", "Couldn't save as M4A: {why}")));
+            tr!("無法存成 M4A（影片可能損壞或正在使用中）", "Couldn't save as M4A (the video may be damaged or in use)")
+        }));
     }
     crate::info!("[檔案] 另存聲音 {}", out.display());
     Ok(out.display().to_string())
@@ -437,8 +438,8 @@ pub fn open(action: OpenAction, path: &str) -> Result<()> {
             crate::desktop::open_with_explorer(p, false);
         }
         _ => {
-            // 只允許開啟影片與截圖（.mp4 / .gif / .png），避免執行任意檔案
-            if !ends_with_ci(p, &[".mp4", ".gif", ".webp", ".png"]) || !is_file(p) {
+            // 只允許開啟影片、截圖與聲音檔（.mp4 / .gif / .webp / .png / .m4a），避免執行任意檔案
+            if !ends_with_ci(p, &[".mp4", ".gif", ".webp", ".png", ".m4a"]) || !is_file(p) {
                 return Err(Error::config(tr!("找不到檔案", "File not found")));
             }
             crate::desktop::open_with_explorer(p, action == OpenAction::Reveal);
