@@ -712,7 +712,7 @@ fn entry_menu(ui: &mut egui::Ui, app: &UiApp, e: &LibraryEntry, full: bool, req:
     let audio = is_audio_file(&e.media.name);
     let pick = |a: EntryAction, req: &mut Option<Req>| *req = Some(Req::Entry(a, e.clone()));
     if full {
-        if ui.button(if audio { tr!("播放（用 Windows 開啟）", "Play (in Windows)") } else { tr!("播放", "Play") }).clicked() {
+        if ui.button(tr!("播放", "Play")).clicked() {
             pick(EntryAction::Play, req);
         }
         if !audio && menu_item(ui, tr!("剪輯", "Edit"), app.blocked(EntryAction::Edit)) {
@@ -740,6 +740,9 @@ fn entry_menu(ui: &mut egui::Ui, app: &UiApp, e: &LibraryEntry, full: bool, req:
     }
     if ui.button(tr!("複製檔案（貼到 LINE、資料夾）", "Copy file (paste into LINE or a folder)")).clicked() {
         pick(EntryAction::CopyFile, req);
+    }
+    if ui.button(tr!("用 Windows 開啟", "Open in Windows")).clicked() {
+        pick(EntryAction::External, req);
     }
     if !audio && e.media.has_audio != Some(false) && ui.button(tr!("存成 M4A（只留聲音）", "Save as M4A (audio only)")).clicked() {
         pick(EntryAction::SaveAudio, req);
@@ -938,7 +941,7 @@ fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table:
             painter.rect_filled(thumb, CornerRadius::same(4), Color32::from_black_alpha(90));
             theme::paint_icon(&painter, Rect::from_center_size(thumb.center() + vec2(1.0, 0.0), vec2(16.0, 16.0)), Icon::Play, Color32::WHITE);
         }
-        if tresp.on_hover_text(if audio { tr!("播放（用 Windows 開啟）", "Play (in Windows)") } else { tr!("播放", "Play") }).clicked() {
+        if tresp.on_hover_text(tr!("播放", "Play")).clicked() {
             *req = Some(Req::Entry(EntryAction::Play, e.clone()));
         }
         {
@@ -949,7 +952,8 @@ fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table:
                 audio_mark(tui);
             }
             if audio {
-                chip(tui, tr!("只有聲音", "Audio only"), Tone::Plain, false).on_hover_text(tr!("存成 M4A 的聲音檔", "Audio saved as M4A"));
+                chip(tui, tr!("只有聲音", "Audio only"), Tone::Plain, false)
+                    .on_hover_text(tr!("存成 M4A 的聲音檔（可以在這裡播放，或在「⋯」用 Windows 開啟）", "Audio saved as M4A (play it here, or open it in Windows from “⋯”)"));
             }
             if is_cut_name(&e.media.name) {
                 chip(tui, tr!("剪輯版", "Edited"), Tone::Warn, false);
@@ -984,14 +988,7 @@ fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table:
             // 操作：播放 · 剪輯 · 資料夾 · 改名 · ⋯（全部截圖的格子也是這個順序）
             let aui = &mut ui.new_child(UiBuilder::new().max_rect(Rect::from_min_max(pos2(col_x(6), row.min.y), row.max)).layout(Layout::left_to_right(Align::Center)));
             aui.spacing_mut().item_spacing.x = 2.0;
-            if Btn::icon_only(Icon::Play)
-                .ghost()
-                .small()
-                .quiet(!hot)
-                .tooltip(if audio { tr!("播放（用 Windows 開啟）", "Play (in Windows)") } else { tr!("播放（Enter）", "Play (Enter)") })
-                .show(aui)
-                .clicked()
-            {
+            if Btn::icon_only(Icon::Play).ghost().small().quiet(!hot).tooltip(tr!("播放（Enter）", "Play (Enter)")).show(aui).clicked() {
                 *req = Some(Req::Entry(EntryAction::Play, e.clone()));
             }
             if audio {
@@ -1697,7 +1694,9 @@ pub fn rename_entry(app: &mut UiApp, entry: LibraryEntry) {
         let path = entry.media.path.clone();
         let e2 = entry.clone();
         app.spawn(async move { actions::rename(&core, &path, &value).await }, move |app, r| match r {
-            Ok(_) => {
+            Ok(new_path) => {
+                // 檢視器開著這個檔案：路徑跟著改
+                super::viewer::renamed(app, &e2.media.path, &new_path);
                 app.ask = None;
                 app.toast(trf!("已改名為 {name}", "Renamed to {name}"), false);
                 if let Some(d) = &mut app.library {

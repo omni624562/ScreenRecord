@@ -257,6 +257,8 @@ pub enum Icon {
     Pin,
     /// 鍵盤（快速鍵說明）
     Keyboard,
+    /// 全螢幕（四個角往外的框）
+    Fullscreen,
 }
 
 /// 在 rect（正方形）裡畫圖示
@@ -432,6 +434,12 @@ pub fn paint_icon(p: &Painter, rect: Rect, icon: Icon, color: Color32) {
                 p.circle_filled(at(x, 6.8), 0.8 * k, color);
             }
             line(&[(5.0, 9.8), (11.0, 9.8)]);
+        }
+        Icon::Fullscreen => {
+            line(&[(2.5, 6.0), (2.5, 2.5), (6.0, 2.5)]);
+            line(&[(10.0, 2.5), (13.5, 2.5), (13.5, 6.0)]);
+            line(&[(13.5, 10.0), (13.5, 13.5), (10.0, 13.5)]);
+            line(&[(6.0, 13.5), (2.5, 13.5), (2.5, 10.0)]);
         }
     }
 }

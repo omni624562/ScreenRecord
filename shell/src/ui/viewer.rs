@@ -1,16 +1,17 @@
 //! 內建檢視器（不必開 Windows 的相片 / 媒體播放器）：
 //! - 截圖：適合視窗 / 原尺寸、滾輪縮放、拖曳移動、上一張 / 下一張、複製到剪貼簿
-//! - 錄影（含加速版、GIF）：播放 / 暫停、拖曳進度、音量、上一部 / 下一部、剪輯、製作加速版
+//! - 錄影（含加速版、GIF）：播放 / 暫停、拖曳進度、音量、播放速度、全螢幕、上一部 / 下一部、剪輯、製作加速版、壓縮
+//! - 只有聲音的檔案（M4A）：播放聲音
 //!
-//! 都可以「用 Windows 開啟」、在資料夾中顯示、移到資源回收筒。
+//! 都可以「用 Windows 開啟」、在資料夾中顯示、移到資源回收筒；視窗窄時不常用的按鈕收進「⋯」。
 
 use super::dialogs::{base_name, is_default_name, short_date, Ask};
 use super::theme::{self, Btn, Icon};
 use super::{EntryAction, UiApp};
 use eframe::egui::{self, pos2, vec2, Align, Align2, Color32, CornerRadius, Id, Key, Layout, Pos2, Rect, RichText, Sense, Stroke, TextureHandle, TextureOptions, Vec2};
 use screenrecorder_core::actions;
-use screenrecorder_core::format::{format_bytes, video_clock};
-use screenrecorder_core::library::is_image_name;
+use screenrecorder_core::format::{format_bytes, short_clock, speed_label};
+use screenrecorder_core::library::{is_audio_name, is_image_name};
 use screenrecorder_core::player::{MediaSpec, Player};
 use screenrecorder_core::types::{LibraryEntry, LibraryFilter, LibraryQuery, LibrarySort};
 use screenrecorder_core::{tr, trf};
@@ -26,6 +27,10 @@ const ZOOM_MAX: f32 = 8.0;
 static LOAD_SEQ: AtomicU64 = AtomicU64::new(0);
 /// 音量在開啟之間保留
 static VOLUME: AtomicU64 = AtomicU64::new(100);
+/// 播放速度（×100）在開啟之間保留
+static RATE: AtomicU64 = AtomicU64::new(100);
+/// 可選的播放速度
+const RATES: [f64; 5] = [0.5, 1.0, 1.25, 1.5, 2.0];
 
 pub struct Viewer {
     /// 上一個 / 下一個切換的清單（同類：截圖或錄影，最新的在前）
@@ -49,6 +54,10 @@ pub struct Viewer {
     close: bool,
     /// 影片從這裡開始播（搜尋說過的話時跳到那一句）
     start_at: Option<f64>,
+    /// 全螢幕（只顯示畫面與下方的控制列）
+    full: bool,
+    /// 改名的對話框關掉後重新載入（改名前先放開檔案，Windows 上播放中的檔案不能改名）
+    reload_after_ask: bool,
 }
 
 impl Viewer {
@@ -58,6 +67,11 @@ impl Viewer {
 
     fn is_image(&self) -> bool {
         is_image_name(&self.cur().media.name)
+    }
+
+    /// 只有聲音（M4A）
+    fn is_audio(&self) -> bool {
+        is_audio_name(&self.cur().media.name)
     }
 
     fn clear_media(&mut self) {
@@ -114,6 +128,8 @@ pub fn open(app: &mut UiApp, entry: LibraryEntry) {
         error: None,
         close: false,
         start_at: None,
+        full: false,
+        reload_after_ask: false,
     });
     load_current(app);
     let core = app.core.clone();
@@ -123,10 +139,9 @@ pub fn open(app: &mut UiApp, entry: LibraryEntry) {
     app.spawn(async move { actions::library(&core, &dir, &query).await }, move |app, page| {
         let Some(v) = app.viewer.as_mut() else { return };
         // 加速版 / GIF 不在清單裡（列在原片底下）：只看這一個
-        let items: Vec<LibraryEntry> = page.items.into_iter().filter(|e| !screenrecorder_core::library::is_audio_name(&e.media.name)).collect();
-        if let Some(i) = items.iter().position(|e| e.media.path == path) {
+        if let Some(i) = page.items.iter().position(|e| e.media.path == path) {
             let cur = v.list[v.idx].clone();
-            v.list = items;
+            v.list = page.items;
             v.idx = i;
             // 保留已讀到的完整資訊（長度、fps）
             v.list[i] = cur;
@@ -192,8 +207,10 @@ fn load_current(app: &mut UiApp) {
             let spec = MediaSpec { path: m.path.clone(), duration: m.duration_sec.unwrap_or(0.0), fps: m.fps.filter(|f| *f > 0.0).unwrap_or(30.0), has_audio: m.has_audio == Some(true) };
             let (w, h) = (m.width.unwrap_or(1280), m.height.unwrap_or(720));
             let c = ctx.clone();
-            let player = Player::new(ffmpeg, spec, w, h, DECODE_MAX.0, DECODE_MAX.1, Arc::new(move || c.request_repaint()));
+            let wake = Arc::new(move || c.request_repaint());
+            let player = if is_audio_name(&m.name) { Player::new_audio(ffmpeg, spec, wake) } else { Player::new(ffmpeg, spec, w, h, DECODE_MAX.0, DECODE_MAX.1, wake) };
             player.set_volume(v.volume_now());
+            player.set_rate(RATE.load(Ordering::Relaxed) as f64 / 100.0);
             // 從說過的話開始：往前一點，聽得到整句
             player.seek(v.start_at.take().map(|t| (t - 0.5).max(0.0)).unwrap_or(0.0));
             player.play();
@@ -336,6 +353,90 @@ enum Act {
     Qr,
     /// 影片：目前這一格存成截圖
     Grab,
+    Rename,
+}
+
+/// 標題列的一個按鈕；視窗窄時依序從後面的開始收進「⋯」
+struct HeadBtn {
+    label: &'static str,
+    icon: Option<Icon>,
+    tip: String,
+    act: fn() -> Act,
+    /// 現在不能用的原因（轉檔進行中等）
+    blocked: Option<String>,
+}
+
+/// 標題列上的按鈕（由左到右；越前面越重要）
+fn head_buttons(app: &UiApp, e: &LibraryEntry, image: bool, audio: bool) -> Vec<HeadBtn> {
+    let b = |label, icon, tip: &str, act: fn() -> Act| HeadBtn { label, icon, tip: tip.to_string(), act, blocked: None };
+    let open_tip = if image { tr!("用 Windows 的「相片」開啟", "Open in the Windows Photos app") } else { tr!("用 Windows 的媒體播放器開啟", "Open in the Windows media player") };
+    let open = b(tr!("用 Windows 開啟", "Open in Windows"), Some(Icon::Export), open_tip, || Act::Entry(EntryAction::External));
+    if image {
+        return vec![
+            b(
+                tr!("編輯", "Edit"),
+                Some(Icon::Edit),
+                tr!("加上標註、遮住個資、裁切（另存一張，原圖保留）", "Add annotations, redact personal info, crop (saved as a new image; the original is kept)"),
+                || Act::Entry(EntryAction::Edit),
+            ),
+            b(
+                tr!("複製", "Copy"),
+                Some(Icon::Copy),
+                tr!("複製到剪貼簿（Ctrl+C；可直接貼到 LINE、Word、信件）", "Copy to clipboard (Ctrl+C; paste it straight into LINE, Word or an email)"),
+                || Act::Copy,
+            ),
+            b(
+                tr!("讀取 QR 碼", "Read QR code"),
+                None,
+                tr!("找出圖裡的 QR 碼，讀出內容（網址可以直接開啟）", "Find a QR code in the image and read its content (links can be opened directly)"),
+                || Act::Qr,
+            ),
+            b(tr!("文字辨識", "OCR"), None, tr!("把圖裡的文字轉成可以複製的文字", "Text recognition (OCR): turn the text in the image into text you can copy"), || Act::Ocr),
+            b(
+                tr!("釘在桌面", "Pin to desktop"),
+                Some(Icon::Pin),
+                tr!("把這張圖變成浮在最上層的小視窗，方便對照（點兩下或 Esc 關閉）", "Turn this image into a small always-on-top window for reference (double-click or Esc to close)"),
+                || Act::Pin,
+            ),
+            open,
+        ];
+    }
+    let mut list = vec![];
+    if !audio && !is_export_name(&e.media.name) {
+        let gate = |mut x: HeadBtn, a: EntryAction| {
+            x.blocked = app.blocked(a);
+            x
+        };
+        list.push(gate(b(tr!("剪輯", "Edit"), Some(Icon::Cut), tr!("剪掉頭尾、刪除片段、加上標註", "Trim, cut out parts, add annotations"), || Act::Entry(EntryAction::Edit)), EntryAction::Edit));
+        list.push(gate(
+            b(tr!("製作加速版 / GIF", "Make sped-up video / GIF"), Some(Icon::Fast), tr!("另存加速版、GIF 或 WebP 動圖", "Save a sped-up version, GIF or WebP"), || {
+                Act::Entry(EntryAction::Export)
+            }),
+            EntryAction::Export,
+        ));
+        list.push(gate(
+            b(tr!("壓縮", "Compress"), None, tr!("壓縮到 LINE、Email 傳得出去的大小（原速）", "Compress to a size you can send via LINE or email (original speed)"), || {
+                Act::Entry(EntryAction::Compress)
+            }),
+            EntryAction::Compress,
+        ));
+    }
+    if !audio {
+        list.push(b(
+            tr!("擷取這一格", "Grab frame"),
+            Some(Icon::Camera),
+            tr!("把目前這一格存成截圖（原尺寸 PNG），並複製到剪貼簿", "Save the current frame as a screenshot (full-size PNG) and copy it to the clipboard"),
+            || Act::Grab,
+        ));
+    }
+    list.push(b(
+        tr!("複製檔案", "Copy file"),
+        Some(Icon::Copy),
+        tr!("複製這個檔案，可以直接貼到 LINE、Teams、信件或資料夾", "Copy this file so you can paste it into LINE, Teams, an email or a folder"),
+        || Act::Entry(EntryAction::CopyFile),
+    ));
+    list.push(open);
+    list
 }
 
 pub fn show(app: &mut UiApp, ctx: &egui::Context) {
@@ -354,147 +455,42 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
             ctx.request_repaint_after(std::time::Duration::from_millis(33));
         }
     }
+    // 改名的對話框關掉了：重新載入（改了名就是新的路徑）
+    if v.reload_after_ask && app.ask.is_none() {
+        v.reload_after_ask = false;
+        app.viewer = Some(v);
+        load_current(app);
+        let Some(v2) = app.viewer.take() else { return };
+        v = v2;
+    }
     let mut act = Act::None;
     if app.ask.is_none() {
+        // 全螢幕時 Esc 先離開全螢幕（不關掉檢視器）
+        if v.full && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Escape)) {
+            set_full(&mut v, ctx, false);
+        }
         keyboard(&mut v, ctx, &mut act);
     }
+    let e = v.cur().clone();
+    let buttons = head_buttons(app, &e, v.is_image(), v.is_audio());
 
     let screen = ctx.content_rect();
-    let size = vec2((screen.width() - 32.0).max(600.0), (screen.height() - 32.0).max(400.0));
-    let modal = egui::Modal::new(Id::new("viewer")).frame(theme::modal_frame(ctx).inner_margin(0)).show(ctx, |ui| {
+    let (size, frame, area) = if v.full {
+        let area = egui::Modal::default_area(Id::new("viewer")).anchor(Align2::LEFT_TOP, vec2(0.0, 0.0));
+        (screen.size(), theme::modal_frame(ctx).inner_margin(0).corner_radius(0).stroke(Stroke::NONE).shadow(egui::Shadow::NONE), area)
+    } else {
+        (vec2((screen.width() - 32.0).max(600.0), (screen.height() - 32.0).max(400.0)), theme::modal_frame(ctx).inner_margin(0), egui::Modal::default_area(Id::new("viewer")))
+    };
+    let modal = egui::Modal::new(Id::new("viewer")).area(area).frame(frame).show(ctx, |ui| {
         ui.set_width(size.x);
         ui.set_height(size.y);
         let p = theme::pal(ui);
         let image = v.is_image();
-        let e = v.cur().clone();
-        // 標題列
-        egui::Frame::new().inner_margin(egui::Margin::symmetric(18, 12)).show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.vertical(|ui| {
-                    ui.spacing_mut().item_spacing.y = 2.0;
-                    let title = if is_default_name(&e.media.name) { short_date(&e.media.name, e.media.time_ms(), true) } else { base_name(&e.media.name) };
-                    ui.label(RichText::new(title).font(theme::font_bold(16.0)));
-                    let mut meta = vec![];
-                    if v.list.len() > 1 {
-                        meta.push(format!("{} / {}", v.idx + 1, v.list.len()));
-                    }
-                    if let (Some(w), Some(h)) = (e.media.width, e.media.height) {
-                        meta.push(format!("{w}×{h}"));
-                    }
-                    if !image {
-                        if let Some(d) = e.media.duration_sec {
-                            meta.push(video_clock(d));
-                        }
-                    }
-                    meta.push(format_bytes(e.media.bytes));
-                    meta.push(e.media.name.clone());
-                    ui.label(RichText::new(meta.join(tr!("・", " · "))).font(theme::font(12.0)).color(p.muted));
-                });
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if Btn::icon_only(Icon::Close).ghost().tooltip(tr!("關閉（Esc）", "Close (Esc)")).show(ui).clicked() {
-                        v.close = true;
-                    }
-                    ui.add_space(6.0);
-                    if Btn::icon_only(Icon::Trash).ghost().small().tooltip(tr!("移到資源回收筒", "Move to Recycle Bin")).show(ui).clicked() {
-                        act = Act::Delete;
-                    }
-                    if Btn::icon_only(Icon::Folder).ghost().small().tooltip(tr!("在資料夾中顯示", "Show in folder")).show(ui).clicked() {
-                        act = Act::Entry(EntryAction::Reveal);
-                    }
-                    let other = if image {
-                        tr!("用 Windows 的「相片」開啟", "Open in the Windows Photos app")
-                    } else {
-                        tr!("用 Windows 的媒體播放器開啟", "Open in the Windows media player")
-                    };
-                    if Btn::new(tr!("用 Windows 開啟", "Open in Windows")).icon(Icon::Export).small().tooltip(other).show(ui).clicked() {
-                        act = Act::Entry(EntryAction::External);
-                    }
-                    if image {
-                        if Btn::new(tr!("釘在桌面", "Pin to desktop"))
-                            .icon(Icon::Pin)
-                            .small()
-                            .tooltip(tr!(
-                                "把這張圖變成浮在最上層的小視窗，方便對照（點兩下或 Esc 關閉）",
-                                "Turn this image into a small always-on-top window for reference (double-click or Esc to close)"
-                            ))
-                            .show(ui)
-                            .clicked()
-                        {
-                            act = Act::Pin;
-                        }
-                        if Btn::new(tr!("文字辨識", "OCR"))
-                            .small()
-                            .tooltip(tr!("把圖裡的文字轉成可以複製的文字", "Text recognition (OCR): turn the text in the image into text you can copy"))
-                            .show(ui)
-                            .clicked()
-                        {
-                            act = Act::Ocr;
-                        }
-                        if Btn::new(tr!("讀取 QR 碼", "Read QR code"))
-                            .small()
-                            .tooltip(tr!("找出圖裡的 QR 碼，讀出內容（網址可以直接開啟）", "Find a QR code in the image and read its content (links can be opened directly)"))
-                            .show(ui)
-                            .clicked()
-                        {
-                            act = Act::Qr;
-                        }
-                        if Btn::new(tr!("複製", "Copy"))
-                            .icon(Icon::Copy)
-                            .small()
-                            .tooltip(tr!("複製到剪貼簿（可直接貼到 LINE、Word、信件）", "Copy to clipboard (paste it straight into LINE, Word or an email)"))
-                            .show(ui)
-                            .clicked()
-                        {
-                            act = Act::Copy;
-                        }
-                        if Btn::new(tr!("編輯", "Edit"))
-                            .icon(Icon::Edit)
-                            .small()
-                            .tooltip(tr!("加上標註、遮住個資、裁切（另存一張，原圖保留）", "Add annotations, redact personal info, crop (saved as a new image; the original is kept)"))
-                            .show(ui)
-                            .clicked()
-                        {
-                            act = Act::Entry(EntryAction::Edit);
-                        }
-                    } else {
-                        if Btn::new(tr!("擷取這一格", "Grab frame"))
-                            .icon(Icon::Camera)
-                            .small()
-                            .tooltip(tr!("把目前這一格存成截圖（原尺寸 PNG），並複製到剪貼簿", "Save the current frame as a screenshot (full-size PNG) and copy it to the clipboard"))
-                            .show(ui)
-                            .clicked()
-                        {
-                            act = Act::Grab;
-                        }
-                        if Btn::new(tr!("複製檔案", "Copy file"))
-                            .icon(Icon::Copy)
-                            .small()
-                            .tooltip(tr!("複製這個影片檔，可以直接貼到 LINE、Teams、信件或資料夾", "Copy this video file so you can paste it into LINE, Teams, an email or a folder"))
-                            .show(ui)
-                            .clicked()
-                        {
-                            act = Act::Entry(EntryAction::CopyFile);
-                        }
-                    }
-                    if !image && !is_export_name(&e.media.name) {
-                        if Btn::new(tr!("壓縮", "Compress"))
-                            .small()
-                            .tooltip(tr!("壓縮到 LINE、Email 傳得出去的大小（原速）", "Compress to a size you can send via LINE or email (original speed)"))
-                            .show(ui)
-                            .clicked()
-                        {
-                            act = Act::Entry(EntryAction::Compress);
-                        }
-                        if Btn::new(tr!("製作加速版 / GIF", "Make sped-up video / GIF")).icon(Icon::Fast).small().show(ui).clicked() {
-                            act = Act::Entry(EntryAction::Export);
-                        }
-                        if Btn::new(tr!("剪輯", "Edit")).icon(Icon::Cut).small().show(ui).clicked() {
-                            act = Act::Entry(EntryAction::Edit);
-                        }
-                    }
-                });
-            });
-        });
+        let audio = v.is_audio();
+        // 標題列（全螢幕時不顯示）
+        if !v.full {
+            egui::Frame::new().inner_margin(egui::Margin::symmetric(18, 12)).show(ui, |ui| header(&mut v, ui, &e, &buttons, &mut act));
+        }
         // 畫面
         let bar_h = 52.0;
         let full = ui.available_rect_before_wrap();
@@ -505,9 +501,14 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         if image {
             image_stage(&mut v, ui, &painter, stage, &resp);
         } else {
-            video_stage(&mut v, &painter, stage, &resp);
+            video_stage(&mut v, &painter, stage, &resp, audio);
         }
-        if v.loading && v.image.is_none() && v.video_tex.is_none() {
+        // 點兩下畫面：全螢幕
+        if !image && resp.double_clicked() {
+            let on = !v.full;
+            set_full(&mut v, ui.ctx(), on);
+        }
+        if v.loading && v.image.is_none() && v.video_tex.is_none() && !(audio && v.player.is_some()) {
             painter.text(stage.center(), Align2::CENTER_CENTER, tr!("讀取中…", "Loading…"), theme::font(14.0), Color32::from_gray(200));
         }
         if let Some(err) = &v.error {
@@ -553,15 +554,148 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         v.close = true;
     }
     if v.close {
+        if v.full {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
+        }
         return;
     }
     app.viewer = Some(v);
+    run_act(app, act);
+}
+
+/// 進入 / 離開全螢幕（整個視窗全螢幕，檢視器蓋滿）
+fn set_full(v: &mut Viewer, ctx: &egui::Context, on: bool) {
+    if v.full != on {
+        v.full = on;
+        ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(on));
+    }
+}
+
+/// 標題列：左邊名稱與資訊（太長時截斷），右邊按鈕；視窗窄時不常用的按鈕收進「⋯ 更多」
+fn header(v: &mut Viewer, ui: &mut egui::Ui, e: &LibraryEntry, buttons: &[HeadBtn], act: &mut Act) {
+    let p = theme::pal(ui);
+    let image = v.is_image();
+    let audio = v.is_audio();
+    let head = Rect::from_min_size(ui.cursor().min, vec2(ui.available_width(), 40.0));
+    // 先算右邊放得下幾個按鈕（關閉、資源回收筒、資料夾、⋯ 固定在最右邊；左邊至少留 260 給名稱）
+    let gap = ui.spacing().item_spacing.x;
+    let fixed = 34.0 + 6.0 + 3.0 * (28.0 + gap) + 8.0;
+    let mut room = head.width() - fixed - 260.0;
+    let mut shown = 0;
+    for b in buttons {
+        let mut btn = Btn::new(b.label).small();
+        if let Some(i) = b.icon {
+            btn = btn.icon(i);
+        }
+        let w = btn.width(ui) + gap;
+        if w > room {
+            break;
+        }
+        room -= w;
+        shown += 1;
+    }
+    let rui = &mut ui.new_child(egui::UiBuilder::new().max_rect(head).layout(Layout::right_to_left(Align::Center)));
+    if Btn::icon_only(Icon::Close).ghost().tooltip(tr!("關閉（Esc）", "Close (Esc)")).show(rui).clicked() {
+        v.close = true;
+    }
+    rui.add_space(6.0);
+    if Btn::icon_only(Icon::Trash).ghost().small().tooltip(tr!("移到資源回收筒（Delete）", "Move to Recycle Bin (Delete)")).show(rui).clicked() {
+        *act = Act::Delete;
+    }
+    if Btn::icon_only(Icon::Folder).ghost().small().tooltip(tr!("在資料夾中顯示", "Show in folder")).show(rui).clicked() {
+        *act = Act::Entry(EntryAction::Reveal);
+    }
+    // 「⋯ 更多」：收起來的按鈕，加上改名、存成 M4A、複製章節、做成直式影片
+    let more = Btn::icon_only(Icon::More).ghost().small().tooltip(tr!("更多", "More")).show(rui);
+    egui::Popup::menu(&more).show(|ui| {
+        ui.set_min_width(220.0);
+        for b in &buttons[shown..] {
+            let r = ui.add_enabled(b.blocked.is_none(), egui::Button::new(b.label)).on_hover_text(&b.tip);
+            let r = match &b.blocked {
+                Some(why) => r.on_disabled_hover_text(why),
+                None => r,
+            };
+            if r.clicked() {
+                *act = (b.act)();
+            }
+        }
+        if shown < buttons.len() {
+            ui.separator();
+        }
+        let export = is_export_name(&e.media.name);
+        if !image && !audio && !export && e.media.has_audio != Some(false) && ui.button(tr!("存成 M4A（只留聲音）", "Save as M4A (audio only)")).clicked() {
+            *act = Act::Entry(EntryAction::SaveAudio);
+        }
+        if !e.media.chapters.is_empty() && ui.button(tr!("複製章節（貼到 YouTube）", "Copy chapters (for YouTube)")).clicked() {
+            *act = Act::Entry(EntryAction::CopyChapters);
+        }
+        if !image && !audio && !export {
+            let r = ui.add_enabled(v_blocked_vertical(buttons), egui::Button::new(tr!("做成直式影片（Shorts / Reels）…", "Make a vertical video (Shorts / Reels)…")));
+            if r.clicked() {
+                *act = Act::Entry(EntryAction::Vertical);
+            }
+        }
+        if !audio && !export && ui.button(tr!("重新命名…", "Rename…")).clicked() {
+            *act = Act::Rename;
+        }
+    });
+    for b in buttons[..shown].iter().rev() {
+        let mut btn = Btn::new(b.label).small().enabled(b.blocked.is_none()).tooltip(b.blocked.clone().unwrap_or_else(|| b.tip.clone()));
+        if let Some(i) = b.icon {
+            btn = btn.icon(i);
+        }
+        if btn.show(rui).clicked() {
+            *act = (b.act)();
+        }
+    }
+    let right_w = rui.min_rect().width();
+    let left = Rect::from_min_max(head.min, pos2(head.max.x - right_w - 16.0, head.max.y));
+    let lui = &mut ui.new_child(egui::UiBuilder::new().max_rect(left).layout(Layout::top_down(Align::Min)));
+    lui.spacing_mut().item_spacing.y = 2.0;
+    let title = if is_default_name(&e.media.name) { short_date(&e.media.name, e.media.time_ms(), true) } else { base_name(&e.media.name) };
+    lui.add(egui::Label::new(RichText::new(title).font(theme::font_bold(16.0))).truncate());
+    let mut meta = vec![];
+    if v.list.len() > 1 {
+        meta.push(format!("{} / {}", v.idx + 1, v.list.len()));
+    }
+    if let (Some(w), Some(h)) = (e.media.width, e.media.height) {
+        meta.push(format!("{w}×{h}"));
+    }
+    if !image {
+        if let Some(d) = e.media.duration_sec {
+            meta.push(short_clock(d));
+        }
+    }
+    meta.push(format_bytes(e.media.bytes));
+    meta.push(e.media.name.clone());
+    let meta = meta.join(tr!("・", " · "));
+    lui.add(egui::Label::new(RichText::new(&meta).font(theme::font(12.0)).color(p.muted)).truncate()).on_hover_text(&meta);
+    ui.advance_cursor_after_rect(head);
+}
+
+/// 做成直式影片跟剪輯一樣：轉檔進行中、錄影中不能用
+fn v_blocked_vertical(buttons: &[HeadBtn]) -> bool {
+    buttons.iter().find(|b| b.label == tr!("剪輯", "Edit")).is_none_or(|b| b.blocked.is_none())
+}
+
+/// 處理按下的按鈕、選單、快速鍵
+fn run_act(app: &mut UiApp, act: Act) {
     match act {
         Act::None => {}
         Act::Prev => go(app, -1),
         Act::Next => go(app, 1),
         Act::Copy => copy_image(app),
         Act::Delete => delete_current(app),
+        Act::Rename => {
+            let Some(v) = app.viewer.as_mut() else { return };
+            let e = v.cur().clone();
+            // 先停止播放、放開檔案（Windows 上播放中的檔案不能改名），對話框關掉後重新載入
+            if !v.is_image() {
+                v.clear_media();
+                v.reload_after_ask = true;
+            }
+            super::library_dialog::rename_entry(app, e);
+        }
         Act::Grab => {
             let Some(v) = app.viewer.as_mut() else { return };
             let (path, t) = (v.cur().media.path.clone(), v.player.as_ref().map(|p| p.time()).unwrap_or(0.0));
@@ -597,10 +731,17 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
             }
         }
         Act::Entry(a) => {
+            let blocked = app.blocked(a);
             let Some(v) = app.viewer.as_mut() else { return };
             let e = v.cur().clone();
             if matches!(a, EntryAction::Edit | EntryAction::Export | EntryAction::Compress | EntryAction::Vertical) && !super::dialogs::is_image(&e.media.path) {
+                if let Some(why) = blocked {
+                    return app.toast(why, true);
+                }
                 // 改到剪輯 / 製作視窗：關掉檢視器與清單（編輯截圖蓋在上面，關掉就回來）
+                if v.full {
+                    app.ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
+                }
                 app.viewer = None;
                 app.library = None;
             } else if a == EntryAction::External {
@@ -611,12 +752,34 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
     }
 }
 
+/// 改名後：清單裡的路徑、檔名跟著改（底下的加速版也是），對話框關掉後用新的路徑重新載入
+pub fn renamed(app: &mut UiApp, old: &str, new: &str) {
+    let Some(v) = app.viewer.as_mut() else { return };
+    let dir = std::path::Path::new(new).parent().map(|d| d.to_path_buf()).unwrap_or_default();
+    let (old_base, new_base) = (base_name(&super::dialogs::file_name(old)), base_name(&super::dialogs::file_name(new)));
+    for e in v.list.iter_mut().filter(|e| e.media.path == old) {
+        e.media.path = new.to_string();
+        e.media.name = super::dialogs::file_name(new);
+        for x in &mut e.exports {
+            if let Some(rest) = x.media.name.strip_prefix(&old_base) {
+                x.media.name = format!("{new_base}{rest}");
+                x.media.path = dir.join(&x.media.name).display().to_string();
+            }
+        }
+    }
+}
+
 fn keyboard(v: &mut Viewer, ctx: &egui::Context, act: &mut Act) {
-    if ctx.egui_wants_keyboard_input() {
+    if ctx.egui_wants_keyboard_input() || egui::Popup::is_any_open(ctx) {
         return;
     }
     let image = v.is_image();
+    // 全螢幕要在讀完輸入之後才切換（讀輸入時不能送視窗指令）
+    let mut toggle_full = false;
     ctx.input(|i| {
+        if i.key_pressed(Key::Delete) {
+            *act = Act::Delete;
+        }
         if image {
             if i.key_pressed(Key::ArrowLeft) || i.key_pressed(Key::PageUp) {
                 *act = Act::Prev;
@@ -632,6 +795,11 @@ fn keyboard(v: &mut Viewer, ctx: &egui::Context, act: &mut Act) {
                 v.zoom = Some(1.0);
                 v.pan = Vec2::ZERO;
             }
+            // Ctrl+C：複製圖片
+            let copy = i.events.iter().any(|e| matches!(e, egui::Event::Copy | egui::Event::Key { key: Key::C, pressed: true, modifiers: egui::Modifiers { command: true, .. }, .. }));
+            if copy {
+                *act = Act::Copy;
+            }
             return;
         }
         if i.key_pressed(Key::PageUp) {
@@ -639,6 +807,9 @@ fn keyboard(v: &mut Viewer, ctx: &egui::Context, act: &mut Act) {
         }
         if i.key_pressed(Key::PageDown) {
             *act = Act::Next;
+        }
+        if i.key_pressed(Key::F) && !i.modifiers.any() {
+            toggle_full = true;
         }
         let Some(p) = &v.player else { return };
         if i.key_pressed(Key::Space) {
@@ -651,7 +822,36 @@ fn keyboard(v: &mut Viewer, ctx: &egui::Context, act: &mut Act) {
         if i.key_pressed(Key::ArrowRight) {
             p.seek(p.time() + step);
         }
+        if i.key_pressed(Key::Home) {
+            p.seek(0.0);
+        }
+        if i.key_pressed(Key::End) {
+            p.seek((p.spec().duration - 0.1).max(0.0));
+        }
+        // M 靜音；↑↓ 音量（每次 10%）
+        if p.spec().has_audio {
+            if i.key_pressed(Key::M) {
+                v.muted = !v.muted;
+            }
+            let dv = if i.key_pressed(Key::ArrowUp) {
+                0.1
+            } else if i.key_pressed(Key::ArrowDown) {
+                -0.1
+            } else {
+                0.0
+            };
+            if dv != 0.0 {
+                v.volume = ((v.volume + dv) * 10.0).round().clamp(0.0, 10.0) / 10.0;
+                v.muted = false;
+                VOLUME.store((v.volume * 100.0).round() as u64, Ordering::Relaxed);
+            }
+            p.set_volume(v.volume_now());
+        }
     });
+    if toggle_full {
+        let on = !v.full;
+        set_full(v, ctx, on);
+    }
 }
 
 fn toggle_play(p: &Player) {
@@ -749,18 +949,27 @@ fn image_bar(v: &mut Viewer, ui: &mut egui::Ui, stage: Rect) {
     });
 }
 
-fn video_stage(v: &mut Viewer, painter: &egui::Painter, stage: Rect, resp: &egui::Response) {
-    let Some(tex) = &v.video_tex else { return };
-    let src = if v.video_size.x > 0.0 { v.video_size } else { tex.size_vec2() };
-    let k = ((stage.width() - 24.0) / src.x).min((stage.height() - 24.0) / src.y);
-    let r = Rect::from_center_size(stage.center(), src * k);
-    painter.image(tex.id(), r, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+fn video_stage(v: &mut Viewer, painter: &egui::Painter, stage: Rect, resp: &egui::Response, audio: bool) {
+    if audio {
+        // 只有聲音：大大的喇叭與檔名
+        let c = stage.center() - vec2(0.0, 16.0);
+        painter.circle_filled(c, 56.0, Color32::from_gray(48));
+        theme::paint_icon(painter, Rect::from_center_size(c, vec2(56.0, 56.0)), Icon::Speaker, Color32::from_gray(220));
+        painter.text(c + vec2(0.0, 84.0), Align2::CENTER_CENTER, tr!("只有聲音", "Audio only"), theme::font(14.0), Color32::from_gray(200));
+    } else if let Some(tex) = &v.video_tex {
+        let src = if v.video_size.x > 0.0 { v.video_size } else { tex.size_vec2() };
+        let k = ((stage.width() - 24.0) / src.x).min((stage.height() - 24.0) / src.y);
+        let r = Rect::from_center_size(stage.center(), src * k);
+        painter.image(tex.id(), r, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+    } else {
+        return;
+    }
     let Some(p) = &v.player else { return };
-    // 點畫面：播放 / 暫停
+    // 點畫面：播放 / 暫停（點兩下：全螢幕）
     if resp.clicked() {
         toggle_play(p);
     }
-    if !p.is_playing() && v.seeking.is_none() {
+    if !p.is_playing() && v.seeking.is_none() && !audio {
         painter.circle_filled(stage.center(), 34.0, Color32::from_black_alpha(150));
         theme::paint_icon(painter, Rect::from_center_size(stage.center() + vec2(3.0, 0.0), vec2(30.0, 30.0)), Icon::Play, Color32::WHITE);
     }
@@ -769,6 +978,7 @@ fn video_stage(v: &mut Viewer, painter: &egui::Painter, stage: Rect, resp: &egui
 fn video_bar(v: &mut Viewer, ui: &mut egui::Ui, act: &mut Act) {
     let p = theme::pal(ui);
     let chapters = v.cur().media.chapters.clone();
+    let full = v.full;
     let Some(player) = &v.player else { return };
     let playing = player.is_playing();
     let dur = player.spec().duration.max(0.001);
@@ -777,11 +987,12 @@ fn video_bar(v: &mut Viewer, ui: &mut egui::Ui, act: &mut Act) {
     if Btn::icon_only(if playing { Icon::Pause } else { Icon::Play }).small().tooltip(tip).show(ui).clicked() {
         toggle_play(player);
     }
-    ui.label(RichText::new(format!("{} / {}", video_clock(t), video_clock(dur))).font(theme::mono(12.5)));
-    // 音量（右邊），進度列填滿中間
+    ui.label(RichText::new(format!("{} / {}", short_clock(t), short_clock(dur))).font(theme::mono(12.5)));
+    // 速度、全螢幕、音量（右邊），進度列填滿中間
     let vol_w = 140.0;
     let chap_w = if chapters.is_empty() { 0.0 } else { 84.0 };
-    let track_w = (ui.available_width() - vol_w - chap_w - 16.0).max(80.0);
+    let tools_w = 76.0 + 36.0;
+    let track_w = (ui.available_width() - vol_w - chap_w - tools_w - 16.0).max(80.0);
     let (rect, resp) = ui.allocate_exact_size(vec2(track_w, 28.0), Sense::click_and_drag());
     let track = Rect::from_center_size(rect.center(), vec2(rect.width() - 12.0, 6.0));
     let painter = ui.painter();
@@ -798,11 +1009,12 @@ fn video_bar(v: &mut Viewer, ui: &mut egui::Ui, act: &mut Act) {
     let to_t = |pos: Pos2| (((pos.x - track.min.x) / track.width()).clamp(0.0, 1.0) as f64) * dur;
     if let Some(pos) = resp.hover_pos() {
         let at = to_t(pos);
-        let text = match chapters.iter().rev().find(|c| c.start <= at) {
-            Some(c) => format!("{}・{}", video_clock(at), c.title),
-            None => video_clock(at),
+        let when = match chapters.iter().rev().find(|c| c.start <= at) {
+            Some(c) => format!("{}・{}", short_clock(at), c.title),
+            None => short_clock(at),
         };
-        resp.clone().on_hover_text_at_pointer(text);
+        let keys = tr!("←/→ 倒退/快轉 5 秒、空白鍵 播放/暫停", "←/→ back/forward 5 s, Space play/pause");
+        resp.clone().on_hover_text_at_pointer(format!("{when}\n{keys}"));
     }
     if v.seeking.is_none() && resp.is_pointer_button_down_on() {
         v.seeking = Some(playing);
@@ -823,7 +1035,7 @@ fn video_bar(v: &mut Viewer, ui: &mut egui::Ui, act: &mut Act) {
         egui::Popup::menu(&b).show(|ui| {
             ui.set_min_width(200.0);
             for c in &chapters {
-                if ui.button(format!("{}  {}", video_clock(c.start), c.title)).clicked() {
+                if ui.button(format!("{}  {}", short_clock(c.start), c.title)).clicked() {
                     player.seek(c.start);
                 }
             }
@@ -833,15 +1045,42 @@ fn video_bar(v: &mut Viewer, ui: &mut egui::Ui, act: &mut Act) {
             }
         });
     }
+    // 播放速度「1×▾」
+    ui.add_space(4.0);
+    ui.scope(|ui| {
+        theme::field_style(ui);
+        ui.spacing_mut().interact_size.y = 28.0;
+        let rate = player.rate();
+        egui::ComboBox::from_id_salt("viewer-rate")
+            .selected_text(RichText::new(format!("{}×", speed_label(rate))).font(theme::font(12.5)))
+            .width(62.0)
+            .show_ui(ui, |ui| {
+                for r in RATES {
+                    if ui.selectable_label((r - rate).abs() < 1e-6, format!("{}×", speed_label(r))).clicked() {
+                        player.set_rate(r);
+                        RATE.store((r * 100.0).round() as u64, Ordering::Relaxed);
+                    }
+                }
+            })
+            .response
+            .on_hover_text(tr!("播放速度（聲音變速不變調）", "Playback speed (pitch preserved)"));
+    });
+    // 全螢幕
+    let tip = if full { tr!("離開全螢幕（Esc、F）", "Exit full screen (Esc, F)") } else { tr!("全螢幕（F、點兩下畫面）", "Full screen (F, or double-click the video)") };
+    if Btn::icon_only(Icon::Fullscreen).ghost().small().selected(full).tooltip(tip).show(ui).clicked() {
+        let on = !v.full;
+        set_full(v, ui.ctx(), on);
+    }
+    let Some(player) = &v.player else { return };
     // 音量
-    ui.add_space(8.0);
+    ui.add_space(4.0);
     let has_audio = player.spec().has_audio;
     let icon_tip = if !has_audio {
         tr!("這個影片沒有聲音", "This video has no audio")
     } else if v.muted {
-        tr!("取消靜音", "Unmute")
+        tr!("取消靜音（M）", "Unmute (M)")
     } else {
-        tr!("靜音", "Mute")
+        tr!("靜音（M）", "Mute (M)")
     };
     if Btn::icon_only(Icon::Speaker).ghost().small().selected(v.muted).enabled(has_audio).tooltip(icon_tip).show(ui).clicked() {
         v.muted = !v.muted;
@@ -863,7 +1102,7 @@ fn video_bar(v: &mut Viewer, ui: &mut egui::Ui, act: &mut Act) {
             VOLUME.store((v.volume * 100.0).round() as u64, Ordering::Relaxed);
             player.set_volume(v.volume_now());
         }
-        resp.on_hover_text(trf!("音量 {:.0}%", "Volume {:.0}%", v.volume_now() * 100.0));
+        resp.on_hover_text(trf!("音量 {:.0}%（↑↓ 調整）", "Volume {:.0}% (↑↓ to adjust)", v.volume_now() * 100.0));
     }
 }
 

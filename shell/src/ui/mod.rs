@@ -625,8 +625,6 @@ impl UiApp {
         use actions::OpenAction;
         let path = entry.media.path.clone();
         match action {
-            // 只有聲音的檔案（M4A）用 Windows 預設的程式播放
-            EntryAction::Play if screenrecorder_core::library::is_audio_name(&path) => self.act(EntryAction::External, entry),
             EntryAction::Play => viewer::open(self, entry),
             EntryAction::SaveAudio => {
                 let core = self.core.clone();
