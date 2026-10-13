@@ -2,12 +2,15 @@
 //! 這裡是筆畫與按鍵的邏輯、畫法（可以在任何平台測試）；Windows 的視窗見 screen_pen_win.rs。
 
 use crate::annotate;
-use crate::{tr, trf};
+use crate::tr;
 use tiny_skia::{Color, LineCap, LineJoin, Paint, PathBuilder, Pixmap, PixmapMut, Stroke, Transform};
 
 /// 可選的顏色（按 1～4 切換）：紅、黃、綠、藍
 /// (中文名稱, RGB, 英文名稱)
 pub const COLORS: [(&str, [u8; 3], &str); 4] = [("紅", [239, 68, 68], "Red"), ("黃", [250, 204, 21], "Yellow"), ("綠", [34, 197, 94], "Green"), ("藍", [59, 130, 246], "Blue")];
+
+/// 線的粗細（100% 縮放時的像素）：(中文, 像素, 英文)
+pub const WIDTHS: [(&str, f32, &str); 3] = [("細", 2.5, "Thin"), ("中", 4.0, "Medium"), ("粗", 8.0, "Thick")];
 
 /// 一筆
 #[derive(Debug, Clone, PartialEq)]
@@ -32,15 +35,25 @@ pub enum KeyResult {
 pub struct Board {
     pub lines: Vec<Line>,
     pub color: usize,
-    /// 線寬（像素，已依螢幕縮放換算）
+    /// 線寬（像素，已依螢幕縮放換算）與選的粗細（WIDTHS 的位置）
     pub width: f32,
+    pub thick: usize,
+    scale: f32,
     /// 正在畫的那一筆（lines 的最後一筆）
     drawing: bool,
 }
 
 impl Board {
     pub fn new(scale: f32) -> Board {
-        Board { lines: vec![], color: 0, width: (4.0 * scale).round().max(2.0), drawing: false }
+        let mut b = Board { lines: vec![], color: 0, width: 0.0, thick: 1, scale, drawing: false };
+        b.set_thick(1);
+        b
+    }
+
+    /// 換粗細（之後畫的線）
+    pub fn set_thick(&mut self, i: usize) {
+        self.thick = i.min(WIDTHS.len() - 1);
+        self.width = (WIDTHS[self.thick].1 * self.scale).round().max(2.0);
     }
 
     pub fn begin(&mut self, x: f32, y: f32) {
@@ -168,28 +181,97 @@ fn draw_line(pm: &mut PixmapMut, l: &Line, t: Transform, bgr: bool) {
     pm.stroke_path(&path, &paint(color_of(l.color, bgr)), &stroke(l.width), t, None);
 }
 
-/// 操作說明（畫在不會被錄進去的小視窗）
-pub fn help_text(color: usize) -> String {
-    let (zh, _, en) = COLORS[color.min(COLORS.len() - 1)];
-    trf!("螢幕畫筆（{}）　拖曳畫線　1～4 換顏色　Ctrl+Z 復原　Delete 清除　Esc 結束", "Screen pen ({})   Drag to draw   1–4: color   Ctrl+Z: undo   Delete: clear   Esc: exit", tr!(zh, en))
+/// 說明列上點得到的地方：顏色、粗細
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HelpHit {
+    Color(usize),
+    Thick(usize),
 }
 
-/// 說明列的圖（不透明的深色圓角底、白字）；回傳預乘 RGBA
-pub fn render_help(text: &str, scale: f32) -> Option<Pixmap> {
-    let size = 14.0 * scale as f64;
-    let mut a = annotate::plain_text(text, size, "#ffffff");
-    let (pad_x, pad_y) = (16.0 * scale as f64, 8.0 * scale as f64);
-    let (w, h) = ((a.w + pad_x * 2.0).ceil() as u32, (a.h + pad_y * 2.0).ceil() as u32);
-    let mut pm = Pixmap::new(w, h)?;
-    if let Some(p) = annotate::round_rect(0.0, 0.0, w as f32, h as f32, h as f32 / 2.0) {
-        let mut paint = Paint::default();
-        paint.set_color(Color::from_rgba8(24, 24, 27, 235));
+/// 說明列的大小與點得到的地方 (哪個, (x, y, 寬, 高))
+#[derive(Debug, Clone, PartialEq)]
+pub struct HelpLayout {
+    pub w: u32,
+    pub h: u32,
+    pub hits: Vec<(HelpHit, (f32, f32, f32, f32))>,
+}
+
+/// 說明列上 (x, y) 點到哪裡
+pub fn help_hit(l: &HelpLayout, x: f32, y: f32) -> Option<HelpHit> {
+    l.hits.iter().find(|(_, (hx, hy, hw, hh))| x >= *hx && x < hx + hw && y >= *hy && y < hy + hh).map(|(h, _)| *h)
+}
+
+/// 操作說明（畫在不會被錄進去的小視窗）
+pub fn help_text() -> &'static str {
+    tr!("拖曳畫線・1～4 換顏色・Ctrl+Z 復原・Delete 清除・Esc 結束", "Drag to draw · 1–4: color · Ctrl+Z: undo · Delete: clear · Esc: exit")
+}
+
+fn fill_circle(pm: &mut Pixmap, cx: f32, cy: f32, r: f32, c: Color) {
+    if let Some(p) = PathBuilder::from_circle(cx, cy, r) {
+        let mut paint = paint(c);
         paint.anti_alias = true;
         pm.fill_path(&p, &paint, tiny_skia::FillRule::Winding, Transform::identity(), None);
     }
-    (a.x, a.y) = (pad_x, pad_y);
-    annotate::draw(&mut pm, &a, Transform::identity());
-    Some(pm)
+}
+
+fn fill_round(pm: &mut Pixmap, (x, y, w, h): (f32, f32, f32, f32), r: f32, c: Color) {
+    if let Some(p) = annotate::round_rect(x, y, w, h, r) {
+        pm.fill_path(&p, &paint(c), tiny_skia::FillRule::Winding, Transform::identity(), None);
+    }
+}
+
+/// 說明列（不透明的深色圓角底、白字）：「螢幕畫筆」、四個顏色（點一下換）、粗細（細、中、粗）、操作說明；回傳預乘 RGBA 與點得到的地方
+pub fn render_help(color: usize, thick: usize, scale: f32) -> Option<(Pixmap, HelpLayout)> {
+    let s = scale.max(1.0);
+    let size = 14.0 * s as f64;
+    let title = annotate::plain_text(tr!("螢幕畫筆", "Screen pen"), size, "#ffffff");
+    let label = annotate::plain_text(tr!("粗細", "Width"), 12.0 * s as f64, "#c8c8cc");
+    let help = annotate::plain_text(help_text(), 12.5 * s as f64, "#c8c8cc");
+    let (pad_x, pad_y, gap) = (16.0 * s, 8.0 * s, 14.0 * s);
+    let dot = 22.0 * s;
+    let seg = 30.0 * s;
+    let h = ((title.h.max(help.h) as f32).max(dot) + pad_y * 2.0).ceil();
+    let w = (pad_x * 2.0 + title.w as f32 + gap + dot * COLORS.len() as f32 + gap + label.w as f32 + 6.0 * s + seg * WIDTHS.len() as f32 + gap + help.w as f32).ceil();
+    let mut pm = Pixmap::new(w as u32, h as u32)?;
+    fill_round(&mut pm, (0.0, 0.0, w, h), h / 2.0, Color::from_rgba8(24, 24, 27, 235));
+    let cy = h / 2.0;
+    let mut x = pad_x;
+    let mut hits = vec![];
+    let draw_text = |pm: &mut Pixmap, mut a: crate::annotate::Ann, x: f32| {
+        (a.x, a.y) = (x as f64, (cy as f64 - a.h / 2.0).round());
+        annotate::draw(pm, &a, Transform::identity());
+    };
+    let tw = title.w as f32;
+    draw_text(&mut pm, title, x);
+    x += tw + gap;
+    // 顏色：選的那個有白色外圈
+    for (i, (_, rgb, _)) in COLORS.iter().enumerate() {
+        let c = x + dot / 2.0;
+        if i == color {
+            fill_circle(&mut pm, c, cy, dot / 2.0, Color::WHITE);
+        }
+        fill_circle(&mut pm, c, cy, dot / 2.0 - 3.0 * s, Color::from_rgba8(rgb[0], rgb[1], rgb[2], 255));
+        hits.push((HelpHit::Color(i), (x, 0.0, dot, h)));
+        x += dot;
+    }
+    x += gap;
+    let lw = label.w as f32;
+    draw_text(&mut pm, label, x);
+    x += lw + 6.0 * s;
+    // 粗細：一段示範的線，選的那個有底色
+    for (i, (_, px, _)) in WIDTHS.iter().enumerate() {
+        let r = (x + 1.0 * s, cy - 11.0 * s, seg - 2.0 * s, 22.0 * s);
+        if i == thick {
+            fill_round(&mut pm, r, 6.0 * s, Color::from_rgba8(72, 72, 80, 255));
+        }
+        let lh = (px * s).max(1.5);
+        fill_round(&mut pm, (x + 7.0 * s, cy - lh / 2.0, seg - 14.0 * s, lh), lh / 2.0, Color::WHITE);
+        hits.push((HelpHit::Thick(i), (x, 0.0, seg, h)));
+        x += seg;
+    }
+    x += gap;
+    draw_text(&mut pm, help, x);
+    Some((pm, HelpLayout { w: w as u32, h: h as u32, hits }))
 }
 
 #[cfg(test)]
@@ -223,7 +305,9 @@ mod tests {
         assert!(b.lines.is_empty());
         assert_eq!(b.key(0x5A, true), KeyResult::None);
         assert_eq!(b.key(0x1B, false), KeyResult::Exit);
-        assert!(help_text(2).contains("（綠）"));
+        // 換粗細
+        b.set_thick(2);
+        assert_eq!((b.thick, b.width), (2, 12.0));
     }
 
     #[test]
@@ -238,8 +322,14 @@ mod tests {
         let c = pm.pixel(150, 50).unwrap();
         assert_eq!((c.red(), c.alpha()), (239, 255));
         assert_eq!(pm.pixel(150, 80).unwrap().alpha(), 0);
-        let help = render_help(&help_text(0), 1.0).unwrap();
+        let (help, l) = render_help(0, 1, 1.0).unwrap();
         assert!(help.width() > 300 && help.height() > 20);
+        // 點顏色、粗細
+        let (x, y, w, h) = l.hits[2].1;
+        assert_eq!(help_hit(&l, x + w / 2.0, y + h / 2.0), Some(HelpHit::Color(2)));
+        let (x, y, w, h) = l.hits[4 + 2].1;
+        assert_eq!(help_hit(&l, x + w / 2.0, y + h / 2.0), Some(HelpHit::Thick(2)));
+        assert_eq!(help_hit(&l, 2.0, 2.0), None);
     }
 
     #[test]

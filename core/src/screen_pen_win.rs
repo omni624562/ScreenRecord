@@ -1,8 +1,8 @@
 //! 螢幕畫筆（Windows）：快速鍵（預設 Ctrl+Alt+D）或系統匣打開，在游標所在的螢幕蓋一層透明的分層視窗，
 //! 拖曳就能畫線；錄影時會一起錄進去。再按一次快速鍵或 Esc 結束（畫的線一起清掉）。
-//! 上方的操作說明是另一個小視窗，設成不被擷取，不會錄進影片。
+//! 上方的操作說明是另一個小視窗，設成不被擷取，不會錄進影片；上面的顏色、粗細點一下就換。
 
-use crate::screen_pen::{help_text, render_help, Board, KeyResult};
+use crate::screen_pen::{help_hit, render_help, Board, HelpHit, HelpLayout, KeyResult};
 use crate::shot_toast_win::present;
 use std::cell::RefCell;
 use std::sync::Mutex;
@@ -18,8 +18,9 @@ use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, ReleaseCapture, SetCapture, SetFocus, VK_CONTROL};
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetCursorPos, GetMessageW, LoadCursorW, PostMessageW, PostQuitMessage, RegisterClassExW, SetCursor, SetForegroundWindow,
-    SetTimer, SetWindowDisplayAffinity, ShowWindow, TranslateMessage, UpdateLayeredWindow, IDC_CROSS, MSG, SW_SHOW, SW_SHOWNOACTIVATE, ULW_ALPHA, WDA_EXCLUDEFROMCAPTURE, WM_CLOSE, WM_DESTROY,
-    WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_SETCURSOR, WM_TIMER, WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
+    SetTimer, SetWindowDisplayAffinity, ShowWindow, TranslateMessage, UpdateLayeredWindow, IDC_ARROW, IDC_CROSS, IDC_HAND, MSG, SW_SHOW, SW_SHOWNOACTIVATE, ULW_ALPHA, WDA_EXCLUDEFROMCAPTURE,
+    WM_CLOSE, WM_DESTROY, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEACTIVATE, WM_MOUSEMOVE, WM_SETCURSOR, WM_TIMER, WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+    WS_EX_TOPMOST, WS_POPUP,
 };
 
 /// 整個螢幕大小的點陣圖（BGRA，預乘透明度）：開著時一直用同一張，直接畫進去、直接貼到視窗，
@@ -113,8 +114,9 @@ struct State {
     drawn: usize,
     help: Option<HWND>,
     help_pos: (i32, i32),
-    /// 說明上顯示的顏色（變了才重畫說明）
-    help_color: usize,
+    /// 說明上顯示的顏色與粗細（變了才重畫說明）、點得到的地方
+    help_shown: (usize, usize),
+    help_layout: Option<HelpLayout>,
 }
 
 thread_local! {
@@ -185,24 +187,26 @@ unsafe fn run() {
     *CURRENT.lock().unwrap() = Some(hwnd.0 as isize);
     surface.present(hwnd, (m.left, m.top));
 
-    // 操作說明：螢幕上方中間，滑鼠穿過、不被擷取
-    let help_img = render_help(&help_text(0), scale);
-    let (help, help_pos) = match &help_img {
-        Some(img) => {
+    // 操作說明：螢幕上方中間，不被擷取；顏色、粗細可以點（不搶焦點，Esc、數字鍵照樣給畫筆）
+    let board = Board::new(scale);
+    let help_img = render_help(board.color, board.thick, scale);
+    let (help, help_pos, help_layout) = match help_img {
+        Some((img, layout)) => {
             let pos = ((m.left + m.right - img.width() as i32) / 2, m.top + (12.0 * scale) as i32);
-            let ex = WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_LAYERED | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT;
+            let ex = WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_LAYERED | WS_EX_NOACTIVATE;
             match CreateWindowExW(ex, help_class, w!("螢幕畫筆說明"), WS_POPUP, pos.0, pos.1, img.width() as i32, img.height() as i32, Some(hwnd), None, Some(hinst.into()), None) {
                 Ok(hh) => {
                     let _ = SetWindowDisplayAffinity(hh, WDA_EXCLUDEFROMCAPTURE);
-                    present(hh, img, pos);
-                    (Some(hh), pos)
+                    present(hh, &img, pos);
+                    (Some(hh), pos, Some(layout))
                 }
-                Err(_) => (None, pos),
+                Err(_) => (None, pos, None),
             }
         }
-        None => (None, (0, 0)),
+        None => (None, (0, 0), None),
     };
-    STATE.with(|s| *s.borrow_mut() = Some(State { board: Board::new(scale), surface, origin: (m.left, m.top), scale, full: false, tail: false, drawn: 0, help, help_pos, help_color: 0 }));
+    let shown = (board.color, board.thick);
+    STATE.with(|s| *s.borrow_mut() = Some(State { board, surface, origin: (m.left, m.top), scale, full: false, tail: false, drawn: 0, help, help_pos, help_shown: shown, help_layout }));
     let _ = ShowWindow(hwnd, SW_SHOW);
     if let Some(hh) = help {
         let _ = ShowWindow(hh, SW_SHOWNOACTIVATE);
@@ -320,9 +324,15 @@ unsafe fn redraw(hwnd: HWND) {
             return None;
         }
         st.surface.present(hwnd, st.origin);
-        let help = (st.help_color != st.board.color).then(|| {
-            st.help_color = st.board.color;
-            (st.help, render_help(&help_text(st.board.color), st.scale), st.help_pos)
+        let now = (st.board.color, st.board.thick);
+        let help = (st.help_shown != now).then(|| {
+            st.help_shown = now;
+            let r = render_help(now.0, now.1, st.scale);
+            let img = r.map(|(img, layout)| {
+                st.help_layout = Some(layout);
+                img
+            });
+            (st.help, img, st.help_pos)
         });
         Some(help)
     }) else {
@@ -333,6 +343,40 @@ unsafe fn redraw(hwnd: HWND) {
     }
 }
 
+/// 說明列上 (x, y) 點到哪裡
+fn help_at(lparam: LPARAM) -> Option<HelpHit> {
+    let (x, y) = point(lparam);
+    with(|st| st.help_layout.as_ref().and_then(|l| help_hit(l, x, y))).flatten()
+}
+
+/// 說明列：點顏色、粗細就換（不搶焦點）
 unsafe extern "system" fn help_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
-    DefWindowProcW(hwnd, msg, wparam, lparam)
+    match msg {
+        WM_MOUSEACTIVATE => LRESULT(3), // MA_NOACTIVATE
+        WM_SETCURSOR => {
+            let mut p = POINT::default();
+            let _ = GetCursorPos(&mut p);
+            let pos = with(|st| st.help_pos).unwrap_or_default();
+            let lp = LPARAM((((p.y - pos.1) as u16 as isize) << 16) | ((p.x - pos.0) as u16 as isize));
+            if let Ok(c) = LoadCursorW(None, if help_at(lp).is_some() { IDC_HAND } else { IDC_ARROW }) {
+                SetCursor(Some(c));
+            }
+            LRESULT(1)
+        }
+        WM_LBUTTONUP => {
+            match help_at(lparam) {
+                Some(HelpHit::Color(i)) => {
+                    with(|st| st.board.color = i);
+                }
+                Some(HelpHit::Thick(i)) => {
+                    with(|st| st.board.set_thick(i));
+                }
+                None => {}
+            }
+            // 下一次計時器重畫時更新說明列
+            with(|st| st.full = true);
+            LRESULT(0)
+        }
+        _ => DefWindowProcW(hwnd, msg, wparam, lparam),
+    }
 }

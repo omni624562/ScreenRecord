@@ -267,6 +267,9 @@ pub fn tick(app: &mut UiApp, ctx: &egui::Context) {
                             }
                         });
                     }
+                    // 螢幕畫筆（Windows）
+                    #[cfg(windows)]
+                    _ if a == "pen" => screenrecorder_core::screen_pen_win::toggle(),
                     // 只選範圍（例如錄影範圍）：選好後顯示範圍
                     Some(("snipregion", p)) => {
                         if let Some(src) = fake_source(app, p) {
