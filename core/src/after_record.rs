@@ -61,7 +61,7 @@ pub fn audio_m4a(ui: Option<&Value>) -> bool {
 
 /// 只錄聲音的錄影（錄影器用「錄音_」開頭的檔名）
 pub fn is_audio_recording(path: &str) -> bool {
-    Path::new(path).file_name().is_some_and(|n| n.to_string_lossy().starts_with("錄音_"))
+    path.rsplit(['\\', '/']).next().is_some_and(|n| n.starts_with("錄音_"))
 }
 
 /// 只錄聲音時另存的 M4A（和錄影同一個資料夾、同名）
