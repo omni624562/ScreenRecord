@@ -127,6 +127,8 @@ pub const NOTES_OPACITY_MIN: u32 = 40;
 
 /// 介面大小可選的百分比
 pub const UI_SCALES: [u32; 4] = [100, 110, 125, 150];
+/// 主畫面至少要這麼大（點）才放得下：螢幕放大後比這個小的介面大小不能選
+pub const UI_MIN_SIZE: (f32, f32) = (1000.0, 600.0);
 
 /// 自訂範圍跟著的視窗
 #[derive(Debug, Clone, PartialEq, Eq)]

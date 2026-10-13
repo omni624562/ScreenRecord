@@ -973,364 +973,404 @@ fn rec_panel(app: &mut UiApp, ui: &mut Ui) {
             theme::progress(ui, (ms / r.max_ms as f64) as f32, p.rec, 4.0);
         }
         ui.add_space(6.0);
-        // 統計
-        let (out, method, audio) = if active {
-            (
-                format!("{}×{} · {}fps", r.out_width, r.out_height, r.fps),
-                trf!(
-                    "{}{}・{}",
-                    "{}{} · {}",
-                    r.method.map(method_name).unwrap_or("—"),
-                    r.tiles.filter(|t| *t > 1).map(|t| format!(" ×{t}")).unwrap_or_default(),
-                    r.encoder.as_deref().map(encoder_name).unwrap_or_else(|| "—".into())
-                ),
-                r.audio.clone().unwrap_or_else(|| tr!("不錄聲音", "No audio").into()),
-            )
-        } else {
-            let o = app.s.source_rect(&app.env).map(|s| output_size(s.width, s.height, app.s.scale as f64));
-            let enc = match app.s.encoder {
-                EncoderPreference::Gpu => app.env.ffmpeg.hw_encoders.as_ref().and_then(|h| h.first().map(|e| encoder_name(e))).unwrap_or_else(|| tr!("顯示卡編碼", "GPU encoding").into()),
-                EncoderPreference::Cpu => tr!("CPU 編碼", "CPU encoding").into(),
-                EncoderPreference::Auto => tr!("自動", "Auto").into(),
-            };
-            let m = match app.s.method {
-                MethodPreference::Auto => tr!("自動", "Auto"),
-                MethodPreference::Ddagrab => tr!("顯示卡擷取", "GPU capture"),
-                MethodPreference::Gdigrab => tr!("相容模式", "Compatibility mode"),
-            };
-            let system = if app.s.audio_app.is_empty() { tr!("系統聲音", "System audio").to_string() } else { app.s.audio_app.clone() };
-            let parts: Vec<String> = [app.s.audio_system.then_some(system), app.s.audio_mic.then(|| tr!("麥克風", "Microphone").to_string())].into_iter().flatten().collect();
-            (
-                if app.s.source_type == SourceType::Audio { tr!("只錄聲音", "Audio only").into() } else { o.map(|(w, h)| format!("{w}×{h} · {}fps", app.s.fps)).unwrap_or_else(|| "—".into()) },
-                match (app.env.ffmpeg.encoder.is_some(), app.s.method == MethodPreference::Auto && app.s.encoder == EncoderPreference::Auto) {
-                    (false, _) => "—".into(),
-                    (true, true) => tr!("自動（依電腦選最順的方式）", "Auto (best for this PC)").into(),
-                    (true, false) => trf!("{m}・{enc}", "{m} · {enc}"),
-                },
-                if parts.is_empty() { tr!("不錄聲音", "No audio").into() } else { parts.join(" + ") },
-            )
-        };
-        // 名稱一欄固定寬度；值太長（例如音訊裝置名稱）時截斷，不撐寬面板（滑鼠移上去看完整內容）
-        let gap_y = ui.spacing().item_spacing.y;
-        ui.spacing_mut().item_spacing.y = 6.0;
-        let mut keys = tr!(["影片長度", "檔案大小", "輸出", "錄影方式", "聲音"], ["Duration", "File size", "Output", "Method", "Audio"]);
-        let mut values = [video_clock(r.video_sec), if active || r.bytes > 0 { format_bytes(r.bytes) } else { "—".into() }, out, method, audio];
-        if let Some(rp) = &replay {
-            // 重播緩衝：緩衝裡有幾秒（最多保留的長度）、在硬碟上佔多少
-            keys[0] = tr!("緩衝", "Buffer");
-            keys[1] = tr!("暫存大小", "Temp size");
-            values[0] = video_clock((live_recorded_ms(app) / 1000.0).min(rp.sec as f64));
-            values[1] = format_bytes(rp.bytes);
-        }
-        let key_w = keys.iter().map(|k| ui.painter().layout_no_wrap(k.to_string(), theme::font(13.0), p.muted).size().x).fold(0.0, f32::max);
-        for (i, (k, v)) in keys.into_iter().zip(values).enumerate() {
-            // 最後一列是「聲音」
-            let audio_row = i == 4;
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 14.0;
-                let (cell, _) = ui.allocate_exact_size(vec2(key_w, 18.0), Sense::hover());
-                ui.painter().text(cell.left_center(), egui::Align2::LEFT_CENTER, k, theme::font(13.0), p.muted);
-                if audio_row && !active {
-                    if let Some(l) = app.meter.as_ref().map(|m| m.levels()) {
-                        // 音量表：每個來源一條，旁邊寫名稱
-                        let meters: Vec<(&str, f32)> = [(tr!("系統", "System"), l.system), (tr!("麥克風", "Mic"), l.mic)].into_iter().filter_map(|(n, v)| v.map(|v| (n, v))).collect();
-                        let resp = ui.horizontal(|ui| {
-                            ui.spacing_mut().item_spacing.x = 6.0;
-                            for (n, v) in &meters {
-                                ui.label(RichText::new(*n).font(theme::font(12.5)));
-                                level_bar(ui, *v);
-                            }
-                            if l.error.is_some() {
-                                ui.label(RichText::new("⚠").color(p.warn));
-                            }
-                        });
-                        let tip = match &l.error {
-                            Some(e) => trf!("打不開：{e}", "Couldn't open: {e}"),
-                            None => tr!("錄影前先講幾句話：麥克風的條會跳動，就表示收得到聲音", "Say a few words before recording: if the microphone bar moves, your voice is being picked up").into(),
-                        };
-                        resp.response.on_hover_text(tip);
-                        return;
-                    }
-                    if app.s.audio_system || app.s.audio_mic {
-                        // 右邊留給「測試音量」
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            if Btn::new(tr!("測試音量", "Test levels"))
-                                .ghost()
-                                .small()
-                                .tooltip(tr!(
-                                    "量 20 秒的音量：講幾句話看麥克風的條有沒有跳動，確定錄得到聲音",
-                                    "Shows levels for 20 seconds: say a few words and check that the microphone bar moves, so you know audio is being recorded"
-                                ))
-                                .show(ui)
-                                .clicked()
-                            {
-                                app.meter_until = Some(Instant::now() + std::time::Duration::from_secs(20));
-                            }
-                            ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-                                ui.add(egui::Label::new(RichText::new(&v).font(theme::font(13.0))).truncate()).on_hover_text(&v);
-                            });
-                        });
-                        return;
-                    }
-                }
-                ui.add(egui::Label::new(RichText::new(&v).font(theme::font(13.0))).truncate()).on_hover_text(&v);
+        // 中間（統計、控制按鈕、提示、結果、快速鍵 / 事件紀錄）放不下時可以捲動：系統狀態一定在最下面，不會蓋住按鈕
+        let full = ui.max_rect();
+        let body = Rect::from_min_max(ui.cursor().min, pos2(full.max.x, full.max.y - BOTTOM_BAR_H - BOTTOM_LINE_GAP - 6.0));
+        // 高度不夠（視窗矮、介面放大）：省略比較不重要的列
+        let tight = body.height() < 330.0;
+        ui.scope_builder(UiBuilder::new().max_rect(body), |ui| {
+            egui::ScrollArea::vertical().id_salt("rec-body").auto_shrink([false, false]).max_height(body.height()).show(ui, |ui| {
+                rec_body(app, ui, &r, replay.as_ref(), tight);
             });
-        }
-        ui.spacing_mut().item_spacing.y = gap_y;
-        ui.add_space(10.0);
-        // 控制按鈕
-        ui.horizontal(|ui| {
-            if !active {
-                let can = app.env.ffmpeg.found && app.env.ffmpeg.encoder.is_some() && !app.exporting();
-                let tip = if app.exporting() { tr!("轉檔進行中，完成後才能錄影", "A conversion is in progress; you can record when it finishes") } else { "" };
-                // 截圖按鈕（含小箭頭）的寬度：至少 118，英文字較長時跟著加寬
-                let shot_w = (Btn::new(shot_label()).icon(Icon::Camera).width(ui) + 28.0).max(118.0);
-                if Btn::new(tr!("開始錄影", "Start recording"))
-                    .kind(theme::Kind::Record)
-                    .enabled(can)
-                    .tooltip(tip)
-                    .min_width(ui.available_width() - shot_w - ui.spacing().item_spacing.x)
-                    .show(ui)
-                    .clicked()
-                {
-                    let config = app.s.record_config(&app.env);
-                    let core = app.core.clone();
-                    app.guarded(async move { actions::record_start(&core, config).await }, |_, _| {});
-                }
-                shot_button(app, ui, shot_w);
-            } else if let Some(rp) = &replay {
-                // 重播緩衝：存下最近 N 分鐘、停止（不能暫停、不能加標記）
-                let w = ui.available_width();
-                let key = app.keys.label(6);
-                let tip = if key.is_empty() { String::new() } else { trf!("快速鍵 {key}", "Shortcut {key}") };
-                let label = trf!("存下最近 {}", "Save the last {}", screenrecorder_core::replay::length_label(rp.sec));
-                if Btn::new(label).icon(Icon::Export).primary().enabled(!rp.saving && r.state == RecorderState::Recording && r.busy.is_none()).min_width(w * 0.62).tooltip(tip).show(ui).clicked() {
-                    super::replay::save(app);
-                }
-                if Btn::new(tr!("停止", "Stop"))
-                    .icon(Icon::Stop)
-                    .danger()
-                    .enabled(r.state != RecorderState::Stopping && !rp.saving)
-                    .min_width(ui.available_width())
-                    .tooltip(tr!("停止重播緩衝（沒存下的部分會刪掉）", "Stop the replay buffer (anything not saved is discarded)"))
-                    .show(ui)
-                    .clicked()
-                {
-                    let core = app.core.clone();
-                    app.guarded(async move { core.recorder.stop(None).await }, |_, _| {});
-                }
-            } else {
-                let w = ui.available_width();
-                let marking = matches!(r.state, RecorderState::Recording | RecorderState::Paused);
-                let pw = if marking { w * 0.34 } else { w * 0.45 };
-                if r.state == RecorderState::Recording && Btn::new(tr!("暫停", "Pause")).icon(Icon::Pause).enabled(r.busy.is_none()).min_width(pw).show(ui).clicked() {
-                    let core = app.core.clone();
-                    app.guarded(async move { core.recorder.pause().await }, |_, _| {});
-                }
-                if r.state == RecorderState::Paused && Btn::new(tr!("繼續", "Resume")).icon(Icon::Play).enabled(r.busy.is_none()).min_width(pw).show(ui).clicked() {
-                    let core = app.core.clone();
-                    app.guarded(async move { core.recorder.resume().await }, |_, _| {});
-                }
-                if marking {
-                    let mk = if app.keys.label(4).is_empty() { String::new() } else { trf!("（{}）", " ({})", app.keys.label(4)) };
-                    let label = if r.markers > 0 { trf!("標記 {}", "Mark ({})", r.markers) } else { tr!("標記", "Mark").into() };
-                    if Btn::new(label)
-                        .min_width(w * 0.26)
-                        .tooltip(trf!("記下現在的位置，剪輯時可以直接跳過去{mk}", "Mark the current position so you can jump straight to it when editing{mk}"))
-                        .show(ui)
-                        .clicked()
-                    {
-                        if let Err(e) = app.core.recorder.add_marker() {
-                            app.toast(e.message().to_string(), true);
-                        }
-                    }
-                }
-                let stop_label = if r.state == RecorderState::Countdown {
-                    if r.countdown_covers_ui == Some(false) {
-                        trf!("{} 秒後開始・取消", "Starts in {} s · Cancel", countdown_left(app))
-                    } else {
-                        tr!("取消倒數", "Cancel countdown").into()
-                    }
-                } else {
-                    tr!("停止", "Stop").into()
-                };
-                if Btn::new(stop_label).icon(Icon::Stop).danger().enabled(r.state != RecorderState::Stopping).min_width(ui.available_width()).show(ui).clicked() {
-                    let core = app.core.clone();
-                    app.guarded(async move { core.recorder.stop(None).await }, |_, _| {});
-                }
-            }
         });
-        // 排程錄影：什麼時候開始、還有多久、取消
-        if !active {
-            super::schedule::strip(app, ui);
-        }
-        after_record_strip(app, ui);
-        // 步驟截圖進行中：顯示幾步，可以完成
-        if let Some(n) = app.status.steps {
-            ui.add_space(6.0);
-            egui::Frame::new().fill(p.accent.gamma_multiply(0.1)).corner_radius(CornerRadius::same(theme::RADIUS_SM)).inner_margin(8.0).show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                ui.horizontal(|ui| {
-                    let text = if is_en() { format!("Step capture · {n} step{} captured", if n == 1 { "" } else { "s" }) } else { format!("步驟截圖中・已截 {n} 步") };
-                    ui.label(RichText::new(text).color(p.accent).font(theme::font_bold(13.0)));
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if Btn::new(tr!("完成", "Finish"))
-                            .primary()
-                            .small()
-                            .tooltip(tr!("停止並做成教學文件（HTML），用瀏覽器開啟", "Stop and create the step-by-step guide (HTML), then open it in your browser"))
-                            .show(ui)
-                            .clicked()
-                        {
-                            let core = app.core.clone();
-                            app.spawn(async move { core.steps_finish().await }, |app, r| match r {
-                                Ok(Some(path)) => {
-                                    app.toast(
-                                        tr!(
-                                            "教學文件做好了，已用瀏覽器開啟；文字可以直接修改，再列印成 PDF",
-                                            "The step-by-step guide is ready and open in your browser. You can edit the text, then print it to PDF."
-                                        ),
-                                        false,
-                                    );
-                                    screenrecorder_core::desktop::open_with_explorer(&path, false);
-                                }
-                                Ok(None) => app.toast(tr!("沒有截到任何步驟", "No steps were captured"), false),
-                                Err(e) => app.toast(e.message().to_string(), true),
-                            });
-                        }
-                    });
-                });
-            });
-        }
-        // 提醒
-        let mut msgs = vec![];
-        if let Some(t) = &r.retrying {
-            msgs.push(t.clone());
-        }
-        if r.slow {
-            msgs.push(trf!(
-                "電腦跟不上：實際約 {} fps（設定 {}），建議調低解析度或 FPS",
-                "The computer can't keep up: about {} fps (set to {}). Try a lower resolution or FPS",
-                r.actual_fps.map(|f| format!("{f:.1}")).unwrap_or_else(|| "?".into()),
-                r.fps
-            ));
-        }
-        if !msgs.is_empty() {
-            ui.add_space(6.0);
-            egui::Frame::new().fill(p.warn_soft).corner_radius(CornerRadius::same(theme::RADIUS_SM)).inner_margin(8.0).show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                ui.add(egui::Label::new(RichText::new(msgs.join("　")).color(p.warn)).wrap());
-            });
-        }
-        job_card(app, ui);
-        // 錄影結果
-        if let Some(res) = r.result.clone().filter(|_| !active) {
-            ui.add_space(8.0);
-            let (fill, stroke) = if res.ok { (p.ok_soft, p.ok) } else { (p.rec_soft, p.rec) };
-            egui::Frame::new().fill(fill).stroke(Stroke::new(1.0, stroke.gamma_multiply(0.4))).corner_radius(CornerRadius::same(theme::RADIUS_SM)).inner_margin(10.0).show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                match (&res.path, res.ok) {
-                    (Some(path), true) => {
-                        let saved = trf!("錄影已儲存・{}・{}", "Recording saved · {} · {}", video_clock(res.video_sec), format_bytes(res.bytes.unwrap_or(0)));
-                        ui.label(RichText::new(saved).font(theme::font_bold(13.5)).color(p.ok));
-                        ui.label(RichText::new(file_name(path)).font(theme::mono(12.0))).on_hover_text(path);
-                        action_buttons(app, ui, path, true, true);
-                    }
-                    _ => {
-                        ui.label(RichText::new(tr!("錄影未完成", "Recording incomplete")).font(theme::font_bold(13.5)).color(p.rec));
-                        ui.add(egui::Label::new(RichText::new(&res.message).font(theme::font(12.5))).wrap());
-                    }
-                }
-            });
-        }
-        // 事件紀錄 + 系統狀態（固定在底部）
-        let sys_h = BOTTOM_BAR_H;
-        // 轉檔工作、結果佔掉空間時：放不下就不顯示事件紀錄，系統狀態不被蓋住
-        let log_h = ui.available_height() - sys_h - 8.0 - 32.0;
-        if log_h >= 40.0 && r.log.is_empty() && !active {
-            // 還沒有事件：顯示快速鍵小抄
-            ui.add_space(10.0);
-            ui.label(RichText::new(tr!("快速鍵", "Shortcuts")).font(theme::font_bold(12.5)).color(p.muted));
-            egui::ScrollArea::vertical().max_height(log_h).auto_shrink([false, true]).show(ui, |ui| {
-                ui.spacing_mut().item_spacing.y = 5.0;
-                for (i, name) in screenrecorder_core::types::hotkey_names().iter().enumerate() {
-                    let key = app.keys.label(i);
-                    if key.is_empty() {
-                        continue;
-                    }
-                    ui.horizontal(|ui| {
-                        ui.add(egui::Label::new(RichText::new(*name).font(theme::font(12.5))).truncate());
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            ui.label(RichText::new(key).font(theme::mono(12.0)).color(p.muted));
-                        });
-                    });
-                }
-                ui.add_space(4.0);
-                let tip = tr!(
-                    "「截圖」旁的小箭頭還有框選、長截圖、步驟截圖；快速鍵可在「設定 → 快速鍵」更換。",
-                    "The small arrow next to “Screenshot” offers select area, scrolling screenshot and step capture. Change shortcuts in “Settings → Shortcuts”."
-                );
-                ui.add(egui::Label::new(theme::muted(ui, tip).font(theme::font(12.0))).wrap());
-            });
-        } else if log_h >= if app.s.show_log { 40.0 } else { 0.0 } {
-            // 事件紀錄：預設收起來，按標題展開；收起時標出還沒看過的警告與錯誤（只要一行，空間不夠時也顯示）
-            ui.add_space(10.0);
-            let open = app.s.show_log;
-            if open {
-                app.main.log_seen = r.log.last().map_or(0, |l| l.t);
-            }
-            let unseen = |level: LogLevel| r.log.iter().filter(|l| l.t > app.main.log_seen && l.level == level).count();
-            let (errors, warns) = (unseen(LogLevel::Error), unseen(LogLevel::Warn));
-            let row = ui
-                .horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 4.0;
-                    let (icon, _) = ui.allocate_exact_size(vec2(14.0, 14.0), Sense::hover());
-                    theme::paint_icon(ui.painter(), icon, if open { Icon::ChevD } else { Icon::ChevR }, p.muted);
-                    ui.label(RichText::new(tr!("事件紀錄", "Event log")).font(theme::font_bold(12.5)).color(p.muted));
-                    if !open && errors + warns > 0 {
-                        let mut parts = Vec::new();
-                        if errors > 0 {
-                            parts.push(if is_en() { format!("{errors} error{}", if errors == 1 { "" } else { "s" }) } else { format!("{errors} 則錯誤") });
-                        }
-                        if warns > 0 {
-                            parts.push(if is_en() { format!("{warns} warning{}", if warns == 1 { "" } else { "s" }) } else { format!("{warns} 則警告") });
-                        }
-                        let color = if errors > 0 { p.rec } else { p.warn };
-                        ui.spacing_mut().item_spacing.x = 0.0;
-                        ui.label(RichText::new(format!("・{}", parts.join(tr!("、", ", ")))).font(theme::font(12.5)).color(color));
-                    }
-                    ui.add_space(ui.available_width());
-                })
-                .response;
-            let tip = if open {
-                tr!("收起事件紀錄", "Hide the event log")
-            } else {
-                tr!("展開事件紀錄：錄影過程的訊息、警告與錯誤", "Show the event log: messages, warnings and errors while recording")
-            };
-            if ui.interact(row.rect, ui.id().with("log_toggle"), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(tip).clicked() {
-                app.s.show_log = !open;
-                app.save_settings();
-            }
-            if open {
-                egui::ScrollArea::vertical().max_height(log_h).auto_shrink([false, true]).show(ui, |ui| {
-                    for l in r.log.iter().rev().take(20) {
-                        let time = chrono::DateTime::from_timestamp_millis(l.t as i64).map(|d| d.with_timezone(&chrono::Local).format("%H:%M:%S").to_string()).unwrap_or_default();
-                        let color = match l.level {
-                            LogLevel::Info => p.text,
-                            LogLevel::Warn => p.warn,
-                            LogLevel::Error => p.rec,
-                        };
-                        ui.horizontal(|ui| {
-                            ui.label(RichText::new(time).font(theme::mono(11.5)).color(p.muted));
-                            ui.add(egui::Label::new(RichText::new(&l.text).font(theme::font(12.5)).color(color)).truncate()).on_hover_text(&l.text);
-                        });
-                    }
-                });
-            }
-        }
-        let bottom = Rect::from_min_max(pos2(ui.max_rect().min.x, ui.max_rect().max.y - sys_h), ui.max_rect().max);
+        let bottom = Rect::from_min_max(pos2(full.min.x, full.max.y - BOTTOM_BAR_H), full.max);
         ui.painter().hline(bottom.x_range(), bottom.min.y - BOTTOM_LINE_GAP, Stroke::new(1.0, p.border));
         ui.scope_builder(UiBuilder::new().max_rect(bottom).layout(Layout::left_to_right(Align::Center)), |ui| sys_status(app, ui));
     });
+}
+
+/// 錄影面板中間可以捲動的部分
+fn rec_body(app: &mut UiApp, ui: &mut Ui, r: &screenrecorder_core::types::RecorderStatus, replay: Option<&screenrecorder_core::types::ReplayStatus>, tight: bool) {
+    let p = theme::pal(ui);
+    let active = r.state != RecorderState::Idle;
+    // 統計
+    let (out, method, audio) = if active {
+        (
+            format!("{}×{} · {}fps", r.out_width, r.out_height, r.fps),
+            trf!(
+                "{}{}・{}",
+                "{}{} · {}",
+                r.method.map(method_name).unwrap_or("—"),
+                r.tiles.filter(|t| *t > 1).map(|t| format!(" ×{t}")).unwrap_or_default(),
+                r.encoder.as_deref().map(encoder_name).unwrap_or_else(|| "—".into())
+            ),
+            r.audio.clone().unwrap_or_else(|| tr!("不錄聲音", "No audio").into()),
+        )
+    } else {
+        let o = app.s.source_rect(&app.env).map(|s| output_size(s.width, s.height, app.s.scale as f64));
+        let enc = match app.s.encoder {
+            EncoderPreference::Gpu => app.env.ffmpeg.hw_encoders.as_ref().and_then(|h| h.first().map(|e| encoder_name(e))).unwrap_or_else(|| tr!("顯示卡編碼", "GPU encoding").into()),
+            EncoderPreference::Cpu => tr!("CPU 編碼", "CPU encoding").into(),
+            EncoderPreference::Auto => tr!("自動", "Auto").into(),
+        };
+        let m = match app.s.method {
+            MethodPreference::Auto => tr!("自動", "Auto"),
+            MethodPreference::Ddagrab => tr!("顯示卡擷取", "GPU capture"),
+            MethodPreference::Gdigrab => tr!("相容模式", "Compatibility mode"),
+        };
+        let system = if app.s.audio_app.is_empty() { tr!("系統聲音", "System audio").to_string() } else { app.s.audio_app.clone() };
+        let parts: Vec<String> = [app.s.audio_system.then_some(system), app.s.audio_mic.then(|| tr!("麥克風", "Microphone").to_string())].into_iter().flatten().collect();
+        (
+            if app.s.source_type == SourceType::Audio { tr!("只錄聲音", "Audio only").into() } else { o.map(|(w, h)| format!("{w}×{h} · {}fps", app.s.fps)).unwrap_or_else(|| "—".into()) },
+            match (app.env.ffmpeg.encoder.is_some(), app.s.method == MethodPreference::Auto && app.s.encoder == EncoderPreference::Auto) {
+                (false, _) => "—".into(),
+                (true, true) => tr!("自動（依電腦選最順的方式）", "Auto (best for this PC)").into(),
+                (true, false) => trf!("{m}・{enc}", "{m} · {enc}"),
+            },
+            if parts.is_empty() { tr!("不錄聲音", "No audio").into() } else { parts.join(" + ") },
+        )
+    };
+    // 名稱一欄固定寬度；值太長（例如音訊裝置名稱）時截斷，不撐寬面板（滑鼠移上去看完整內容）
+    let gap_y = ui.spacing().item_spacing.y;
+    ui.spacing_mut().item_spacing.y = 6.0;
+    let mut keys = tr!(["影片長度", "檔案大小", "輸出", "錄影方式", "聲音"], ["Duration", "File size", "Output", "Method", "Audio"]);
+    let mut values = [video_clock(r.video_sec), if active || r.bytes > 0 { format_bytes(r.bytes) } else { "—".into() }, out, method, audio];
+    if let Some(rp) = replay {
+        // 重播緩衝：緩衝裡有幾秒（最多保留的長度）、在硬碟上佔多少
+        keys[0] = tr!("緩衝", "Buffer");
+        keys[1] = tr!("暫存大小", "Temp size");
+        values[0] = video_clock((live_recorded_ms(app) / 1000.0).min(rp.sec as f64));
+        values[1] = format_bytes(rp.bytes);
+    }
+    // 高度不夠時省略比較不重要的列：待命時的影片長度、檔案大小（都還是 0）；錄影中的影片長度（和上面的計時差不多）、錄影方式
+    let show = |i: usize| match i {
+        0 => !tight || replay.is_some(),
+        1 => !tight || active,
+        3 => !(tight && active),
+        _ => true,
+    };
+    let key_w = keys.iter().enumerate().filter(|(i, _)| show(*i)).map(|(_, k)| ui.painter().layout_no_wrap(k.to_string(), theme::font(13.0), p.muted).size().x).fold(0.0, f32::max);
+    for (i, (k, v)) in keys.into_iter().zip(values).enumerate() {
+        if !show(i) {
+            continue;
+        }
+        // 最後一列是「聲音」
+        let audio_row = i == 4;
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 14.0;
+            let (cell, _) = ui.allocate_exact_size(vec2(key_w, 18.0), Sense::hover());
+            ui.painter().text(cell.left_center(), egui::Align2::LEFT_CENTER, k, theme::font(13.0), p.muted);
+            if audio_row && !active {
+                if let Some(l) = app.meter.as_ref().map(|m| m.levels()) {
+                    // 音量表：每個來源一條，旁邊寫名稱
+                    let meters: Vec<(&str, f32)> = [(tr!("系統", "System"), l.system), (tr!("麥克風", "Mic"), l.mic)].into_iter().filter_map(|(n, v)| v.map(|v| (n, v))).collect();
+                    let resp = ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 6.0;
+                        for (n, v) in &meters {
+                            ui.label(RichText::new(*n).font(theme::font(12.5)));
+                            level_bar(ui, *v);
+                        }
+                        if l.error.is_some() {
+                            ui.label(RichText::new("⚠").color(p.warn));
+                        }
+                    });
+                    let tip = match &l.error {
+                        Some(e) => trf!("打不開：{e}", "Couldn't open: {e}"),
+                        None => tr!("錄影前先講幾句話：麥克風的條會跳動，就表示收得到聲音", "Say a few words before recording: if the microphone bar moves, your voice is being picked up").into(),
+                    };
+                    resp.response.on_hover_text(tip);
+                    return;
+                }
+                if app.s.audio_system || app.s.audio_mic {
+                    // 右邊留給「測試音量」
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if Btn::new(tr!("測試音量", "Test levels"))
+                            .ghost()
+                            .small()
+                            .tooltip(tr!(
+                                "量 20 秒的音量：講幾句話看麥克風的條有沒有跳動，確定錄得到聲音",
+                                "Shows levels for 20 seconds: say a few words and check that the microphone bar moves, so you know audio is being recorded"
+                            ))
+                            .show(ui)
+                            .clicked()
+                        {
+                            app.meter_until = Some(Instant::now() + std::time::Duration::from_secs(20));
+                        }
+                        ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                            ui.add(egui::Label::new(RichText::new(&v).font(theme::font(13.0))).truncate()).on_hover_text(&v);
+                        });
+                    });
+                    return;
+                }
+            }
+            ui.add(egui::Label::new(RichText::new(&v).font(theme::font(13.0))).truncate()).on_hover_text(&v);
+        });
+    }
+    ui.spacing_mut().item_spacing.y = gap_y;
+    ui.add_space(10.0);
+    // 控制按鈕
+    ui.horizontal(|ui| {
+        if !active {
+            let can = app.env.ffmpeg.found && app.env.ffmpeg.encoder.is_some() && !app.exporting();
+            let tip = if app.exporting() { tr!("轉檔進行中，完成後才能錄影", "A conversion is in progress; you can record when it finishes") } else { "" };
+            // 截圖按鈕（含小箭頭）的寬度：至少 118，英文字較長時跟著加寬
+            let shot_w = (Btn::new(shot_label()).icon(Icon::Camera).width(ui) + 28.0).max(118.0);
+            if Btn::new(tr!("開始錄影", "Start recording"))
+                .kind(theme::Kind::Record)
+                .enabled(can)
+                .tooltip(tip)
+                .min_width(ui.available_width() - shot_w - ui.spacing().item_spacing.x)
+                .show(ui)
+                .clicked()
+            {
+                let config = app.s.record_config(&app.env);
+                let core = app.core.clone();
+                app.guarded(async move { actions::record_start(&core, config).await }, |_, _| {});
+            }
+            shot_button(app, ui, shot_w);
+        } else if let Some(rp) = replay {
+            // 重播緩衝：存下最近 N 分鐘、停止（不能暫停、不能加標記）
+            let w = ui.available_width();
+            let key = app.keys.label(6);
+            let tip = if key.is_empty() { String::new() } else { trf!("快速鍵 {key}", "Shortcut {key}") };
+            let label = trf!("存下最近 {}", "Save the last {}", screenrecorder_core::replay::length_label(rp.sec));
+            if Btn::new(label).icon(Icon::Export).primary().enabled(!rp.saving && r.state == RecorderState::Recording && r.busy.is_none()).min_width(w * 0.62).tooltip(tip).show(ui).clicked() {
+                super::replay::save(app);
+            }
+            if Btn::new(tr!("停止", "Stop"))
+                .icon(Icon::Stop)
+                .danger()
+                .enabled(r.state != RecorderState::Stopping && !rp.saving)
+                .min_width(ui.available_width())
+                .tooltip(tr!("停止重播緩衝（沒存下的部分會刪掉）", "Stop the replay buffer (anything not saved is discarded)"))
+                .show(ui)
+                .clicked()
+            {
+                let core = app.core.clone();
+                app.guarded(async move { core.recorder.stop(None).await }, |_, _| {});
+            }
+        } else {
+            let w = ui.available_width();
+            let marking = matches!(r.state, RecorderState::Recording | RecorderState::Paused);
+            let pw = if marking { w * 0.34 } else { w * 0.45 };
+            if r.state == RecorderState::Recording && Btn::new(tr!("暫停", "Pause")).icon(Icon::Pause).enabled(r.busy.is_none()).min_width(pw).show(ui).clicked() {
+                let core = app.core.clone();
+                app.guarded(async move { core.recorder.pause().await }, |_, _| {});
+            }
+            if r.state == RecorderState::Paused && Btn::new(tr!("繼續", "Resume")).icon(Icon::Play).enabled(r.busy.is_none()).min_width(pw).show(ui).clicked() {
+                let core = app.core.clone();
+                app.guarded(async move { core.recorder.resume().await }, |_, _| {});
+            }
+            if marking {
+                let mk = if app.keys.label(4).is_empty() { String::new() } else { trf!("（{}）", " ({})", app.keys.label(4)) };
+                let label = if r.markers > 0 { trf!("標記 {}", "Mark ({})", r.markers) } else { tr!("標記", "Mark").into() };
+                if Btn::new(label)
+                    .min_width(w * 0.26)
+                    .tooltip(trf!("記下現在的位置，剪輯時可以直接跳過去{mk}", "Mark the current position so you can jump straight to it when editing{mk}"))
+                    .show(ui)
+                    .clicked()
+                {
+                    if let Err(e) = app.core.recorder.add_marker() {
+                        app.toast(e.message().to_string(), true);
+                    }
+                }
+            }
+            let stop_label = if r.state == RecorderState::Countdown {
+                if r.countdown_covers_ui == Some(false) {
+                    trf!("{} 秒後開始・取消", "Starts in {} s · Cancel", countdown_left(app))
+                } else {
+                    tr!("取消倒數", "Cancel countdown").into()
+                }
+            } else {
+                tr!("停止", "Stop").into()
+            };
+            if Btn::new(stop_label).icon(Icon::Stop).danger().enabled(r.state != RecorderState::Stopping).min_width(ui.available_width()).show(ui).clicked() {
+                let core = app.core.clone();
+                app.guarded(async move { core.recorder.stop(None).await }, |_, _| {});
+            }
+        }
+    });
+    // 排程錄影：什麼時候開始、還有多久、取消
+    if !active {
+        super::schedule::strip(app, ui);
+    }
+    after_record_strip(app, ui);
+    // 步驟截圖進行中：顯示幾步，可以完成
+    if let Some(n) = app.status.steps {
+        ui.add_space(6.0);
+        egui::Frame::new().fill(p.accent.gamma_multiply(0.1)).corner_radius(CornerRadius::same(theme::RADIUS_SM)).inner_margin(8.0).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                let text = if is_en() { format!("Step capture · {n} step{} captured", if n == 1 { "" } else { "s" }) } else { format!("步驟截圖中・已截 {n} 步") };
+                ui.label(RichText::new(text).color(p.accent).font(theme::font_bold(13.0)));
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if Btn::new(tr!("完成", "Finish"))
+                        .primary()
+                        .small()
+                        .tooltip(tr!("停止並做成教學文件（HTML），用瀏覽器開啟", "Stop and create the step-by-step guide (HTML), then open it in your browser"))
+                        .show(ui)
+                        .clicked()
+                    {
+                        let core = app.core.clone();
+                        app.spawn(async move { core.steps_finish().await }, |app, r| match r {
+                            Ok(Some(path)) => {
+                                app.toast(
+                                    tr!(
+                                        "教學文件做好了，已用瀏覽器開啟；文字可以直接修改，再列印成 PDF",
+                                        "The step-by-step guide is ready and open in your browser. You can edit the text, then print it to PDF."
+                                    ),
+                                    false,
+                                );
+                                screenrecorder_core::desktop::open_with_explorer(&path, false);
+                            }
+                            Ok(None) => app.toast(tr!("沒有截到任何步驟", "No steps were captured"), false),
+                            Err(e) => app.toast(e.message().to_string(), true),
+                        });
+                    }
+                });
+            });
+        });
+    }
+    // 提醒
+    let mut msgs = vec![];
+    if let Some(t) = &r.retrying {
+        msgs.push(t.clone());
+    }
+    if r.slow {
+        msgs.push(trf!(
+            "電腦跟不上：實際約 {} fps（設定 {}），建議調低解析度或 FPS",
+            "The computer can't keep up: about {} fps (set to {}). Try a lower resolution or FPS",
+            r.actual_fps.map(|f| format!("{f:.1}")).unwrap_or_else(|| "?".into()),
+            r.fps
+        ));
+    }
+    if !msgs.is_empty() {
+        ui.add_space(6.0);
+        egui::Frame::new().fill(p.warn_soft).corner_radius(CornerRadius::same(theme::RADIUS_SM)).inner_margin(8.0).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.add(egui::Label::new(RichText::new(msgs.join("　")).color(p.warn)).wrap());
+        });
+    }
+    job_card(app, ui);
+    // 錄影結果
+    if let Some(res) = r.result.clone().filter(|_| !active) {
+        ui.add_space(8.0);
+        let (fill, stroke) = if res.ok { (p.ok_soft, p.ok) } else { (p.rec_soft, p.rec) };
+        egui::Frame::new().fill(fill).stroke(Stroke::new(1.0, stroke.gamma_multiply(0.4))).corner_radius(CornerRadius::same(theme::RADIUS_SM)).inner_margin(10.0).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            match (&res.path, res.ok) {
+                (Some(path), true) => {
+                    let saved = trf!("錄影已儲存・{}・{}", "Recording saved · {} · {}", video_clock(res.video_sec), format_bytes(res.bytes.unwrap_or(0)));
+                    ui.label(RichText::new(saved).font(theme::font_bold(13.5)).color(p.ok));
+                    ui.label(RichText::new(file_name(path)).font(theme::mono(12.0))).on_hover_text(path);
+                    action_buttons(app, ui, path, true, true);
+                }
+                _ => {
+                    ui.label(RichText::new(tr!("錄影未完成", "Recording incomplete")).font(theme::font_bold(13.5)).color(p.rec));
+                    ui.add(egui::Label::new(RichText::new(&res.message).font(theme::font(12.5))).wrap());
+                }
+            }
+        });
+    }
+    // 快速鍵小抄或事件紀錄（放不下時整個中間部分可以捲動）
+    if r.log.is_empty() && !active {
+        // 還沒有事件：顯示常用的快速鍵（不能用的變灰色，註明「無法使用」），其他的在設定裡
+        ui.add_space(10.0);
+        let mut open_keys = false;
+        ui.horizontal(|ui| {
+            ui.label(RichText::new(tr!("快速鍵", "Shortcuts")).font(theme::font_bold(12.5)).color(p.muted));
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if Btn::new(tr!("全部快速鍵…", "All shortcuts…")).ghost().small().tooltip(tr!("在「設定 → 快速鍵」查看與更換", "View and change them in Settings → Shortcuts")).show(ui).clicked()
+                {
+                    open_keys = true;
+                }
+            });
+        });
+        if open_keys {
+            settings_dialog::open(app, Page::Keys);
+        }
+        ui.spacing_mut().item_spacing.y = 5.0;
+        let names = screenrecorder_core::types::hotkey_names();
+        // 系統匣沒有啟動時全域快速鍵都不能用；被其他程式占用的也不能用
+        let works = app.env.hotkeys.map(|h| h.all());
+        // 常用的在前面：開始 / 停止錄影、框選截圖、截圖、暫停 / 繼續、回溯錄影
+        for i in [0usize, 3, 2, 1, 6] {
+            let key = app.keys.label(i);
+            if key.is_empty() || i >= names.len() {
+                continue;
+            }
+            let ok = works.is_some_and(|w| w.get(i).copied().unwrap_or(false));
+            let name = if ok { names[i].to_string() } else { trf!("{}（無法使用）", "{} (unavailable)", names[i]) };
+            let tip = match works {
+                None => tr!("系統匣沒有啟動，全域快速鍵無法使用", "The tray icon isn't running, so global shortcuts don't work"),
+                Some(_) if !ok => tr!("被其他程式占用，到「設定 → 快速鍵」換一組", "Used by another program. Choose a different one in Settings → Shortcuts"),
+                _ => "",
+            };
+            let row = ui.horizontal(|ui| {
+                ui.add(egui::Label::new(RichText::new(name).font(theme::font(12.5)).color(if ok { p.text } else { p.muted })).truncate());
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    let k = RichText::new(key).font(theme::mono(12.0)).color(p.muted);
+                    ui.label(if ok { k } else { k.strikethrough() });
+                });
+            });
+            if !tip.is_empty() {
+                row.response.on_hover_text(tip);
+            }
+        }
+    } else {
+        // 事件紀錄：預設收起來，按標題展開；收起時標出還沒看過的警告與錯誤（只要一行，空間不夠時也顯示）
+        ui.add_space(10.0);
+        let open = app.s.show_log;
+        if open {
+            app.main.log_seen = r.log.last().map_or(0, |l| l.t);
+        }
+        let unseen = |level: LogLevel| r.log.iter().filter(|l| l.t > app.main.log_seen && l.level == level).count();
+        let (errors, warns) = (unseen(LogLevel::Error), unseen(LogLevel::Warn));
+        let row = ui
+            .horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 4.0;
+                let (icon, _) = ui.allocate_exact_size(vec2(14.0, 14.0), Sense::hover());
+                theme::paint_icon(ui.painter(), icon, if open { Icon::ChevD } else { Icon::ChevR }, p.muted);
+                ui.label(RichText::new(tr!("事件紀錄", "Event log")).font(theme::font_bold(12.5)).color(p.muted));
+                if !open && errors + warns > 0 {
+                    let mut parts = Vec::new();
+                    if errors > 0 {
+                        parts.push(if is_en() { format!("{errors} error{}", if errors == 1 { "" } else { "s" }) } else { format!("{errors} 則錯誤") });
+                    }
+                    if warns > 0 {
+                        parts.push(if is_en() { format!("{warns} warning{}", if warns == 1 { "" } else { "s" }) } else { format!("{warns} 則警告") });
+                    }
+                    let color = if errors > 0 { p.rec } else { p.warn };
+                    ui.spacing_mut().item_spacing.x = 0.0;
+                    ui.label(RichText::new(format!("・{}", parts.join(tr!("、", ", ")))).font(theme::font(12.5)).color(color));
+                }
+                ui.add_space(ui.available_width());
+            })
+            .response;
+        let tip = if open {
+            tr!("收起事件紀錄", "Hide the event log")
+        } else {
+            tr!("展開事件紀錄：錄影過程的訊息、警告與錯誤", "Show the event log: messages, warnings and errors while recording")
+        };
+        if ui.interact(row.rect, ui.id().with("log_toggle"), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(tip).clicked() {
+            app.s.show_log = !open;
+            app.save_settings();
+        }
+        if open {
+            for l in r.log.iter().rev().take(20) {
+                let time = chrono::DateTime::from_timestamp_millis(l.t as i64).map(|d| d.with_timezone(&chrono::Local).format("%H:%M:%S").to_string()).unwrap_or_default();
+                let color = match l.level {
+                    LogLevel::Info => p.text,
+                    LogLevel::Warn => p.warn,
+                    LogLevel::Error => p.rec,
+                };
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(time).font(theme::mono(11.5)).color(p.muted));
+                    ui.add(egui::Label::new(RichText::new(&l.text).font(theme::font(12.5)).color(color)).truncate()).on_hover_text(&l.text);
+                });
+            }
+        }
+    }
 }
 
 /// 「截圖」按鈕的文字

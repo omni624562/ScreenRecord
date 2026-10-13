@@ -1,7 +1,7 @@
 //! 設定視窗：左邊分頁（錄影 / 聲音 / 儲存位置 / 快速鍵 / 進階），右邊表單（標籤固定寬度，控制項對齊）。
 //! 主畫面下方只留摘要，點一下開到對應的分頁。
 
-use super::settings::{FPS_CHOICES, MAX_MB, MAX_PRESETS, UI_SCALES};
+use super::settings::{FPS_CHOICES, MAX_MB, MAX_PRESETS, UI_MIN_SIZE, UI_SCALES};
 use super::theme::{self, segmented, switch, Btn, Icon};
 use super::{main_view, UiApp};
 use eframe::egui::{self, pos2, vec2, Align, Color32, CornerRadius, Id, Layout, Rect, RichText, Sense, Stroke, Ui, UiBuilder};
@@ -847,20 +847,30 @@ fn advanced_page(app: &mut UiApp, ui: &mut Ui) {
             app.save_settings();
         }
     });
+    // 螢幕太小時，放大後主畫面放不下（按鈕會被擋住）：那些大小不能選（目前用的除外）
+    let base = ui.ctx().input(|i| i.viewport().monitor_size).filter(|m| m.x > 0.0 && m.y > 0.0).map(|m| m * ui.ctx().zoom_factor());
+    let fits = |v: u32| base.is_none_or(|b| b.x * 100.0 / v as f32 >= UI_MIN_SIZE.0 && b.y * 100.0 / v as f32 >= UI_MIN_SIZE.1);
     form_row(ui, tr!("介面大小", "Interface size"), |ui| {
-        let mut z = app.s.ui_scale;
-        let items: Vec<(u32, String)> = UI_SCALES.iter().map(|v| (*v, format!("{v}%"))).collect();
-        let refs: Vec<(u32, &str)> = items.iter().map(|(v, t)| (*v, t.as_str())).collect();
-        if segmented(ui, &mut z, &refs, true) {
-            app.s.ui_scale = z;
-            app.save_settings();
+        ui.spacing_mut().item_spacing.x = 4.0;
+        for v in UI_SCALES {
+            let on = app.s.ui_scale == v;
+            let ok = on || fits(v);
+            let tip = if ok { "" } else { tr!("螢幕太小，放大後按鈕會被擋住", "The screen is too small; buttons would be cut off at this size") };
+            if Btn::new(format!("{v}%")).small().selected(on).enabled(ok).min_width(58.0).tooltip(tip).show(ui).clicked() && !on {
+                app.s.ui_scale = v;
+                app.save_settings();
+            }
         }
     });
-    form_hint(
-        ui,
-        tr!("字和按鈕放大一點比較好看清楚；螢幕小（例如 1366×768）時建議 100%。", "Larger text and buttons are easier to read. On small screens (e.g. 1366×768), 100% is recommended."),
-        p.muted,
-    );
+    if !fits(app.s.ui_scale) {
+        // 目前的大小就放不下：建議放得下的最大的
+        let best = UI_SCALES.iter().rev().find(|v| fits(**v)).copied().unwrap_or(100);
+        form_hint(ui, trf!("螢幕太小，放大後按鈕會被擋住，建議改成 {best}%。", "The screen is too small and buttons get cut off at this size. {best}% is recommended."), p.warn);
+    } else if UI_SCALES.iter().any(|v| !fits(*v)) {
+        form_hint(ui, tr!("螢幕太小，放大後按鈕會被擋住：灰色的大小不能選。", "The screen is too small: buttons would be cut off at the greyed-out sizes."), p.muted);
+    } else {
+        form_hint(ui, tr!("字和按鈕放大一點比較好看清楚。", "Larger text and buttons are easier to read."), p.muted);
+    }
     form_divider(ui);
     form_section(ui, tr!("擷取與編碼", "Capture and encoding"), |_| {});
     form_row(ui, tr!("擷取方式", "Capture method"), |ui| {
