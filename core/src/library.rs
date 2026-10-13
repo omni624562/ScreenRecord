@@ -294,6 +294,50 @@ pub fn page_starts(list: &[LibraryEntry], fit_px: f64) -> Vec<usize> {
     starts
 }
 
+/// 搜尋的字是日期時要找的那一天（或那個月）：年份 None = 每一年都算
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct DateQuery {
+    year: Option<i32>,
+    month: u32,
+    day: Option<u32>,
+}
+
+/// 「10/11」「10-11」「10月11日」「2026/10/11」「2026年10月11日」「10月」「今天」「昨天」「前天」→ 要找的日期
+fn date_query(q: &str, today: chrono::NaiveDate) -> Option<DateQuery> {
+    use chrono::Datelike;
+    static MD: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(?:(\d{4})\s*[/\-.年]\s*)?(\d{1,2})\s*[/\-.月]\s*(\d{1,2})\s*[日號号]?$").unwrap());
+    static M: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(?:(\d{4})\s*年\s*)?(\d{1,2})\s*月(?:份)?$").unwrap());
+    let q = q.trim();
+    let back = |days: u64| today.checked_sub_days(chrono::Days::new(days)).map(|d| DateQuery { year: Some(d.year()), month: d.month(), day: Some(d.day()) });
+    match q {
+        "今天" | "today" => return back(0),
+        "昨天" | "yesterday" => return back(1),
+        "前天" => return back(2),
+        _ => {}
+    }
+    let (year, month, day) = match MD.captures(q) {
+        Some(m) => (m.get(1).and_then(|y| y.as_str().parse().ok()), m[2].parse().ok()?, Some(m[3].parse().ok()?)),
+        None => {
+            let m = M.captures(q)?;
+            (m.get(1).and_then(|y| y.as_str().parse().ok()), m[2].parse().ok()?, None)
+        }
+    };
+    ((1..=12).contains(&month) && day.is_none_or(|d| (1..=31).contains(&d))).then_some(DateQuery { year, month, day })
+}
+
+/// 錄影的那一天（與清單上顯示的日期相同：檔名裡的時間，沒有時用檔案的時間）
+fn entry_day(e: &LibraryEntry) -> Option<chrono::NaiveDate> {
+    use chrono::TimeZone;
+    chrono::Local.timestamp_millis_opt(sort_time(e) as i64).single().map(|d| d.date_naive())
+}
+
+impl DateQuery {
+    fn matches(&self, d: chrono::NaiveDate) -> bool {
+        use chrono::Datelike;
+        self.year.is_none_or(|y| y == d.year()) && self.month == d.month() && self.day.is_none_or(|x| x == d.day())
+    }
+}
+
 fn local_date(mtime_ms: f64) -> String {
     use chrono::TimeZone;
     chrono::Local.timestamp_millis_opt(mtime_ms as i64).single().map(|d| d.format("%Y-%m-%d").to_string()).unwrap_or_default()
@@ -337,8 +381,14 @@ pub async fn list_library(cache: &Arc<MediaCache>, ffmpeg: Option<&Path>, dir: &
         for e in list.iter_mut().filter(|e| !is_image_name(&e.media.name)) {
             e.hits = speech_hits(&srts, &videos, &e.media.name, &text);
         }
+        // 也可以用日期找：「10/11」「10月11日」「今天」「昨天」
+        let day = date_query(&text, chrono::Local::now().date_naive());
         list.retain(|e| {
-            e.media.name.to_lowercase().contains(&text) || local_date(e.media.time_ms()).contains(&text) || e.exports.iter().any(|x| x.media.name.to_lowercase().contains(&text)) || !e.hits.is_empty()
+            e.media.name.to_lowercase().contains(&text)
+                || local_date(e.media.time_ms()).contains(&text)
+                || day.is_some_and(|q| entry_day(e).is_some_and(|d| q.matches(d)))
+                || e.exports.iter().any(|x| x.media.name.to_lowercase().contains(&text))
+                || !e.hits.is_empty()
         });
     }
     // 錄影與截圖分開列：除了「截圖」，其他篩選都只列影片
@@ -511,6 +561,39 @@ mod tests {
         assert_eq!(page.items.iter().map(|e| (e.media.name.as_str(), e.hits.len())).collect::<Vec<_>>(), vec![("會議.mp4", 0)]);
         // 沒有搜尋：不讀字幕
         assert!(list_library(&cache, None, dir.path(), &q(None, None, LibrarySort::Old)).await.items.iter().all(|e| e.hits.is_empty()));
+    }
+
+    #[test]
+    fn dates_in_the_search_box() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 10, 13).unwrap();
+        let q = |t: &str| date_query(t, today);
+        let md = |m, d| Some(DateQuery { year: None, month: m, day: Some(d) });
+        assert_eq!(q("10/11"), md(10, 11));
+        assert_eq!(q("10-11"), md(10, 11));
+        assert_eq!(q("10月11日"), md(10, 11));
+        assert_eq!(q("10 月 11 號"), md(10, 11));
+        assert_eq!(q("2026/10/11"), Some(DateQuery { year: Some(2026), month: 10, day: Some(11) }));
+        assert_eq!(q("2026年10月11日"), Some(DateQuery { year: Some(2026), month: 10, day: Some(11) }));
+        assert_eq!(q("10月"), Some(DateQuery { year: None, month: 10, day: None }));
+        assert_eq!(q("今天"), Some(DateQuery { year: Some(2026), month: 10, day: Some(13) }));
+        assert_eq!(q("昨天"), Some(DateQuery { year: Some(2026), month: 10, day: Some(12) }));
+        assert_eq!(q("13/40"), None);
+        assert_eq!(q("會議"), None);
+        assert!(q("10/11").unwrap().matches(chrono::NaiveDate::from_ymd_opt(2025, 10, 11).unwrap()));
+        assert!(!q("2026/10/11").unwrap().matches(chrono::NaiveDate::from_ymd_opt(2025, 10, 11).unwrap()));
+    }
+
+    #[tokio::test]
+    async fn search_by_date() {
+        let dir = make(&["Rec_2026-10-11_09-00-00.mp4", "Rec_2026-10-12_09-00-00.mp4", "Shot_2026-10-11_10-00-00.png"]);
+        let cache = Arc::new(MediaCache::default());
+        let find = |text: &str| LibraryQuery { q: Some(text.into()), ..q(None, None, LibrarySort::Old) };
+        for t in ["10/11", "10月11日", "2026/10/11"] {
+            let page = list_library(&cache, None, dir.path(), &find(t)).await;
+            assert_eq!(page.items.iter().map(|e| e.media.name.as_str()).collect::<Vec<_>>(), vec!["Rec_2026-10-11_09-00-00.mp4"], "{t}");
+        }
+        let shots = list_library(&cache, None, dir.path(), &LibraryQuery { filter: LibraryFilter::Shot, ..find("10/11") }).await;
+        assert_eq!(shots.items.len(), 1);
     }
 
     #[tokio::test]

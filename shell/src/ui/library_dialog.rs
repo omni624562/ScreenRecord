@@ -416,11 +416,18 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         ui.add_space(8.0);
         // 搜尋、篩選、排序
         ui.horizontal(|ui| {
+            let hint = if shot {
+                tr!("搜尋檔名或日期（例如 10/11）", "Search names or dates (e.g. 10/11)")
+            } else {
+                tr!("搜尋檔名、日期（例如 10/11）或字幕裡說過的話", "Search names, dates (e.g. 10/11) or words spoken")
+            };
+            // 右邊留位置給「✕」清除鈕
             let r = ui.add(
                 egui::TextEdit::singleline(&mut d.query)
-                    .hint_text(tr!("搜尋檔名、日期或字幕裡說過的話", "Search names, dates or words spoken (subtitles)"))
-                    .desired_width(320.0)
+                    .hint_text(hint)
+                    .desired_width(340.0)
                     .min_size(vec2(0.0, 30.0))
+                    .margin(egui::Margin { left: 6, right: 28, top: 2, bottom: 2 })
                     .vertical_align(Align::Center),
             );
             if d.focus_search {
@@ -429,6 +436,21 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
             }
             if r.changed() {
                 d.search_at = Some(Instant::now());
+            }
+            if !d.query.is_empty() {
+                let x = Rect::from_center_size(pos2(r.rect.max.x - 15.0, r.rect.center().y), vec2(22.0, 22.0));
+                let xr = ui.interact(x, Id::new("libSearchClear"), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(tr!("清除搜尋", "Clear search"));
+                if xr.hovered() {
+                    ui.painter().circle_filled(x.center(), 10.0, p.surface2);
+                }
+                theme::paint_icon(ui.painter(), Rect::from_center_size(x.center(), vec2(12.0, 12.0)), Icon::Close, if xr.hovered() { p.text } else { p.muted });
+                if xr.clicked() {
+                    d.query.clear();
+                    d.search_at = None;
+                    d.page = 1;
+                    d.dirty = true;
+                    d.focus_search = true;
+                }
             }
             if !shot {
                 let filters = [
