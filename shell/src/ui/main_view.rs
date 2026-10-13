@@ -1425,7 +1425,7 @@ fn rec_body(app: &mut UiApp, ui: &mut Ui, r: &screenrecorder_core::types::Record
                 if r.countdown_covers_ui == Some(false) {
                     trf!("{} 秒後開始・取消", "Starts in {} s · Cancel", countdown_left(app))
                 } else {
-                    tr!("取消倒數", "Cancel countdown").into()
+                    tr!("取消倒數（Esc）", "Cancel countdown (Esc)").into()
                 }
             } else {
                 tr!("停止", "Stop").into()
@@ -2595,15 +2595,24 @@ fn recent_menu(app: &mut UiApp, ui: &mut Ui, e: &LibraryEntry) {
 /// 操作視窗在錄影範圍內：全畫面倒數（接著縮小）；在別的螢幕：不擋畫面，只在取消按鈕上倒數
 pub fn countdown_overlay(app: &mut UiApp, ctx: &egui::Context) {
     let r = &app.status.recorder;
-    if r.state != RecorderState::Countdown || r.countdown_covers_ui == Some(false) {
+    if r.state != RecorderState::Countdown {
+        return;
+    }
+    // 倒數中按 Esc 取消（沒有開著其他對話框時）
+    if app.ask.is_none() && ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+        let core = app.core.clone();
+        app.guarded(async move { core.recorder.stop(None).await }, |_, _| {});
+        return;
+    }
+    if r.countdown_covers_ui == Some(false) {
         return;
     }
     let n = countdown_left(app);
     let hint = trf!(
-        "即將開始錄影{}{}",
-        "Recording is about to start{}{}",
+        "即將開始錄影{}。按 Esc{} 取消",
+        "Recording is about to start{}. Press Esc{} to cancel",
         if app.s.hide_ui { tr!("，這個視窗若在錄影範圍內會自動縮小", ". This window will minimize if it's inside the recording area") } else { "" },
-        if app.env.hotkeys.is_some_and(|h| h.record) && !app.keys.label(0).is_empty() { trf!("，或按 {} 取消", ". Press {} to cancel", app.keys.label(0)) } else { String::new() }
+        if app.env.hotkeys.is_some_and(|h| h.record) && !app.keys.label(0).is_empty() { trf!(" 或 {}", " or {}", app.keys.label(0)) } else { String::new() }
     );
     egui::Area::new(Id::new("countdown")).fixed_pos(pos2(0.0, 0.0)).order(egui::Order::Foreground).show(ctx, |ui| {
         let screen = ctx.content_rect();
@@ -2614,7 +2623,7 @@ pub fn countdown_overlay(app: &mut UiApp, ctx: &egui::Context) {
             ui.label(RichText::new(n.to_string()).font(theme::font_bold(140.0)).color(Color32::WHITE));
             ui.label(RichText::new(hint).color(Color32::from_white_alpha(220)));
             ui.add_space(16.0);
-            if Btn::new(tr!("取消", "Cancel")).show(ui).clicked() {
+            if Btn::new(tr!("取消（Esc）", "Cancel (Esc)")).show(ui).clicked() {
                 let core = app.core.clone();
                 app.guarded(async move { core.recorder.stop(None).await }, |_, _| {});
             }
