@@ -224,6 +224,8 @@ pub struct Editor {
     /// 開啟的那個剪輯版（從原片重新載入時記住，可以改回直接剪輯它）
     opened_cut: Option<LibraryEntry>,
     banner: BannerInfo,
+    /// 說明列按了 ✕ 收起來
+    banner_hidden: bool,
 
     player: Pl,
     /// 編輯截圖（不是影片）
@@ -292,9 +294,32 @@ pub struct Editor {
     typing: bool,
     /// 開啟（或載入專案）時的剪輯設定：關閉時比對有沒有改過
     initial: String,
+    /// 開啟時找到的草稿（上次沒有完成的剪輯），說明列問要不要接著剪；選了之後清掉
+    draft: Option<DraftInfo>,
+    /// 這次存過草稿的內容（committed 快照）、上次檢查的時間；這次有存過草稿
+    draft_saved: String,
+    draft_at: Instant,
+    draft_written: bool,
+    /// 說明列按了「捨棄」：刪掉草稿（需要 app，在 show 最後做）
+    discard_draft: bool,
 }
 
+/// 開啟時找到的草稿
+struct DraftInfo {
+    data: Value,
+    /// 存的時間（Unix 毫秒）
+    saved_at: u64,
+}
+
+/// 每隔多久存一次草稿（有改過、內容變了才存）
+const DRAFT_EVERY: std::time::Duration = std::time::Duration::from_secs(10);
+
 pub fn open(app: &mut UiApp, entry: LibraryEntry) {
+    open_entry(app, entry, false);
+}
+
+/// 開啟剪輯視窗；resume = 直接套用上次沒有完成的剪輯（草稿），不用再問
+fn open_entry(app: &mut UiApp, entry: LibraryEntry, resume: bool) {
     let Some(ffmpeg) = app.core.ffmpeg_path() else {
         return app.toast(tr!("找不到 FFmpeg，無法剪輯", "FFmpeg not found, so videos can't be edited"), true);
     };
@@ -303,14 +328,15 @@ pub fn open(app: &mut UiApp, entry: LibraryEntry) {
     app.spawn(
         async move {
             let info = actions::edit_project(&core, &path).await;
-            // 標記記在原片上：開啟剪輯版時改讀原片的
+            // 標記記在原片上：開啟剪輯版時改讀原片的；草稿也是記在剪輯中的影片（原片）上
             let src = match &info {
                 Some(EditProject { matched: ProjectMatch::Output, source: Some(s), .. }) => s.media.path.clone(),
                 _ => path,
             };
-            (info, actions::marks(&core, &src).await)
+            let draft = actions::edit_draft(&core, &src).await;
+            (info, actions::marks(&core, &src).await, draft)
         },
-        move |app, (info, marks)| {
+        move |app, (info, marks, draft)| {
             if OPEN_SEQ.load(Ordering::Relaxed) != seq || app.editor.is_some() {
                 return;
             }
@@ -320,9 +346,60 @@ pub fn open(app: &mut UiApp, entry: LibraryEntry) {
             ed.cursor_smooth = screenrecorder_core::cursor::smooth(&marks.cursor, 60.0);
             ed.cursor = marks.cursor;
             ed.no_cursor = marks.no_cursor;
+            // 草稿是同一支影片的才用（開啟剪輯版但找不到原片時，剪輯中的就是剪輯版本身）
+            if let Some(d) = draft.filter(|d| d.output.eq_ignore_ascii_case(&ed.entry.media.path)) {
+                let info = DraftInfo { data: d.data, saved_at: d.saved_at };
+                if resume {
+                    ed.apply_draft(&info.data);
+                } else {
+                    ed.draft = Some(info);
+                }
+            }
             app.editor = Some(ed);
+            if resume {
+                app.toast(tr!("已回到上次的剪輯，修改後可以再儲存一次", "Your previous edits are back. Make changes and save again"), false);
+            }
         },
     );
+}
+
+/// 回到剪輯：剪輯輸出失敗或取消後，重新開啟剪輯視窗並還原當時的剪輯、標註與字幕（存在草稿裡）。
+/// video = 剪輯中的影片（工作狀態的 source）
+pub fn resume(app: &mut UiApp, video: &str) {
+    if app.editor.is_some() {
+        return app.toast(tr!("剪輯視窗已經開著，請先關閉", "The editor is already open. Close it first"), true);
+    }
+    if app.locked() {
+        return app.toast(tr!("錄影中無法剪輯，請先停止錄影", "Can't edit while recording. Stop the recording first"), true);
+    }
+    let core = app.core.clone();
+    let p = video.to_string();
+    app.spawn(
+        async move {
+            let ff = core.ffmpeg_path()?;
+            core.cache.probe(&ff, &p).await.ok()
+        },
+        |app, m| match m {
+            Some(m) => open_entry(app, LibraryEntry { media: m, exports: vec![], hits: vec![] }, true),
+            None => app.toast(tr!("找不到剪輯的影片，可能已經移動或刪除", "Can't find the video being edited. It may have been moved or deleted"), true),
+        },
+    );
+}
+
+/// 剪輯的工作結束：失敗或取消時提示，並提供「回到剪輯」（剪輯、標註、字幕都還在）
+pub fn cut_ended(app: &mut UiApp, e: &screenrecorder_core::types::ExportStatus) {
+    use screenrecorder_core::types::{ExportKind, ExportState};
+    if e.kind != ExportKind::Cut || !matches!(e.state, ExportState::Error | ExportState::Canceled) {
+        return;
+    }
+    let error = e.state == ExportState::Error;
+    let msg = if error {
+        tr!("剪輯失敗，剪輯和標註都還留著", "The edit failed. Your cuts and annotations are kept")
+    } else {
+        tr!("已取消剪輯，剪輯和標註都還留著", "Editing canceled. Your cuts and annotations are kept")
+    };
+    let video = e.source.clone();
+    app.toast_with(msg, error, vec![super::ToastAction::new(tr!("回到剪輯", "Back to editing"), move |app: &mut UiApp| resume(app, &video))]);
 }
 
 /// 預覽用的游標圖：(高, 圖, 尖端位置, 圖的大小)
@@ -385,6 +462,7 @@ impl Editor {
             replace_target: None,
             opened_cut: None,
             banner: BannerInfo::None,
+            banner_hidden: false,
             player,
             shot: None,
             undo: vec![],
@@ -427,6 +505,11 @@ impl Editor {
             close: false,
             typing: false,
             initial: String::new(),
+            draft: None,
+            draft_saved: String::new(),
+            draft_at: Instant::now(),
+            draft_written: false,
+            discard_draft: false,
         }
     }
 
@@ -441,6 +524,34 @@ impl Editor {
     /// 有還沒儲存的修改
     fn dirty(&self) -> bool {
         self.snapshot() != self.initial
+    }
+
+    /// 有還沒儲存的修改（給主畫面在結束程式前確認用；不重新產生快照，最多慢一秒反映）
+    pub fn has_unsaved(&self) -> bool {
+        !self.saving && (self.uncommitted || self.committed != self.initial)
+    }
+
+    /// 草稿的內容：剪輯設定與標註（和剪輯專案同一個格式）、要取代的剪輯版、選的儲存位置；exporting = 已經開始輸出
+    fn draft_value(&self, exporting: bool) -> Value {
+        serde_json::json!({
+            "v": 1,
+            "project": serde_json::to_value(self.project_data()).unwrap_or(Value::Null),
+            "replace": self.replace_target,
+            "exporting": exporting,
+        })
+    }
+
+    /// 套用草稿（還沒完成的剪輯）：不算儲存過，關閉時會問要不要儲存
+    fn apply_draft(&mut self, d: &Value) {
+        if let Some(p) = d.get("project") {
+            self.apply_project(p);
+        }
+        // 要取代的剪輯版還在才取代，不在就另存新的
+        self.replace_target = d.get("replace").and_then(Value::as_str).filter(|r| std::path::Path::new(r).is_file()).map(String::from);
+        if self.replace_target.is_none() {
+            self.banner = BannerInfo::None;
+        }
+        self.draft = None;
     }
 
     /// 目前的編輯內容（復原 / 重做、比對有沒有改過）
@@ -1075,6 +1186,33 @@ impl Editor {
         self.anns.iter().filter(|a| !Self::in_output(a, keep)).count()
     }
 
+    /// 什麼都還沒改（和原影片 / 原圖一樣，不用存）
+    fn unchanged(&self) -> bool {
+        if self.is_shot() {
+            // 與 shot.rs 的判斷相同
+            let s = shot::spec(self);
+            return s.crop.is_none() && s.anns.is_empty() && s.border.is_none() && !s.shadow && s.scale == 100 && s.rotate == 0 && s.radius == 0 && s.background.is_none();
+        }
+        let keep = self.keep();
+        let crop = if self.crop_on && self.vertical != 2 { normalize_crop(self.spec.crop, self.vw as i32, self.vh as i32) } else { None };
+        keep.len() == 1
+            && keep[0].0 == 0.0
+            && keep[0].1 >= self.duration - 0.05
+            && !self.parts().iter().any(|p| p.2 > 1)
+            && !self.zoom_on()
+            && crop.is_none()
+            && self.anns.is_empty()
+            && self.spec.audio.is_default()
+            && self.spec.frame.is_none()
+            && !self.cursor_on()
+            && self.vertical_spec().is_none()
+    }
+
+    /// 可以儲存（有修改、剪完還有長度）
+    fn can_save(&self) -> bool {
+        !self.unchanged() && (self.is_shot() || output_length(&self.parts()) >= 0.1)
+    }
+
     /// 全部重設
     fn reset(&mut self) {
         self.spec = EditSpec { start: 0.0, end: self.duration, removed: vec![], crop: None, overlays: vec![], ..Default::default() };
@@ -1339,7 +1477,12 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                 ui.vertical(|ui| {
                     ui.spacing_mut().item_spacing.y = 2.0;
                     ui.label(RichText::new(if ed.is_shot() { tr!("編輯截圖", "Edit screenshot") } else { tr!("剪輯影片", "Edit video") }).font(theme::font_bold(16.0)));
-                    ui.label(RichText::new(&ed.entry.media.name).font(theme::mono(12.0)).color(p.muted));
+                    // 顯示開啟的那個檔案（開啟剪輯版時實際是從原始影片重新套用）
+                    let name = match &ed.opened_cut {
+                        Some(c) => trf!("{}（從原始影片「{}」重新套用剪輯）", "{} (edits reapplied from the original “{}”)", c.media.name, ed.entry.media.name),
+                        None => ed.entry.media.name.clone(),
+                    };
+                    ui.add(egui::Label::new(RichText::new(name).font(theme::mono(12.0)).color(p.muted)).truncate());
                 });
                 // 標題列只放復原、重做與關閉；其他功能在右側分頁與下方
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -1425,31 +1568,96 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         LAST_TAB.store(ed.tab as u8, Ordering::Relaxed);
     }
     ed.typing = ctx.egui_wants_keyboard_input();
+    if std::mem::take(&mut ed.discard_draft) {
+        clear_draft(app, &ed);
+    }
+    autosave_draft(app, &mut ed);
     if std::mem::take(&mut ed.close) {
         if !ed.dirty() || ed.saving {
+            // 這次存的草稿和儲存過的一樣（例如改了又復原）：不用再提示接著剪
+            if ed.draft_written && !ed.saving {
+                clear_draft(app, &ed);
+            }
             // 關閉時釋放影片檔（Player 結束時停止 FFmpeg）
             ed.strip.cancel();
             return;
         }
         ed.pause();
-        let (title, msg) = if ed.is_shot() {
-            (
-                tr!("放棄這次的編輯？", "Discard your changes?"),
-                tr!("標註、裁切或輸出設定還沒有儲存，關閉後就不見了。", "Your annotations, crop and output settings haven't been saved and will be lost when you close."),
-            )
-        } else {
-            (tr!("放棄這次的剪輯？", "Discard your edits?"), tr!("剪輯、裁切或標註還沒有儲存，關閉後就不見了。", "Your cuts, crop and annotations haven't been saved and will be lost when you close."))
-        };
-        let mut ask = super::dialogs::Ask::confirm(title, msg, tr!("放棄並關閉", "Discard and close"), |app, _| {
-            app.ask = None;
-            if let Some(e) = app.editor.take() {
-                e.strip.cancel();
-            }
-        });
-        ask.danger = true;
-        app.ask = Some(ask);
+        app.ask = Some(close_dialog(&ed));
     }
     app.editor = Some(ed);
+}
+
+/// 關閉時還有沒儲存的修改：「儲存後關閉」（主要）／「不儲存」／「取消」；存不了（例如全部改回原樣）時只問要不要放棄
+fn close_dialog(ed: &Editor) -> super::dialogs::Ask {
+    use super::dialogs::Ask;
+    let shot = ed.is_shot();
+    let (title, msg) = if shot {
+        (tr!("要儲存這次的編輯嗎？", "Save your changes?"), tr!("標註、裁切或輸出設定還沒有儲存，不儲存就關閉的話會不見。", "Your annotations, crop and output settings haven't been saved. They'll be lost if you close without saving."))
+    } else {
+        (tr!("要儲存這次的剪輯嗎？", "Save your edits?"), tr!("剪輯、裁切或標註還沒有儲存，不儲存就關閉的話會不見。", "Your cuts, crop and annotations haven't been saved. They'll be lost if you close without saving."))
+    };
+    let discard = |app: &mut UiApp, _: String| {
+        app.ask = None;
+        if let Some(e) = app.editor.take() {
+            // 自己選了不儲存：草稿也不留
+            if !e.is_shot() {
+                clear_draft(app, &e);
+            }
+            e.strip.cancel();
+        }
+    };
+    if !ed.can_save() {
+        let mut ask = Ask::confirm(
+            if shot { tr!("放棄這次的編輯？", "Discard your changes?") } else { tr!("放棄這次的剪輯？", "Discard your edits?") },
+            tr!("目前的內容和原本一樣，沒有可以儲存的修改。", "Nothing has changed from the original, so there's nothing to save."),
+            tr!("不儲存", "Don't save"),
+            discard,
+        );
+        ask.danger = true;
+        return ask;
+    }
+    let save = if shot { tr!("儲存後關閉", "Save and close") } else if ed.replace_target.is_some() { tr!("儲存修改後關閉", "Save changes and close") } else { tr!("另存剪輯版後關閉", "Save edited version and close") };
+    Ask::confirm(title, msg, save, |app, _| {
+        app.ask = None;
+        // 儲存（影片：開始輸出；截圖：存檔）成功後會關閉剪輯視窗，失敗時留著並顯示原因
+        if let Some(mut e) = app.editor.take() {
+            if e.is_shot() {
+                shot::run(app, &mut e, shot::Act::Save);
+            } else {
+                start_save(app, &mut e);
+            }
+            if app.editor.is_none() {
+                app.editor = Some(e);
+            }
+        }
+    })
+    .with_alt(tr!("不儲存", "Don't save"), discard)
+}
+
+/// 剪輯中每隔一段時間存一份草稿（有改過、內容變了才存）：程式當掉或輸出失敗時可以接著剪。
+/// 開啟時有上次的草稿、還沒決定要不要接著剪時不存（不蓋掉它）
+fn autosave_draft(app: &mut UiApp, ed: &mut Editor) {
+    if ed.is_shot() || ed.saving || ed.draft.is_some() || ed.draft_at.elapsed() < DRAFT_EVERY {
+        return;
+    }
+    ed.draft_at = Instant::now();
+    if !ed.has_unsaved() || ed.committed == ed.draft_saved {
+        return;
+    }
+    ed.draft_saved = ed.committed.clone();
+    ed.draft_written = true;
+    let (core, video, data) = (app.core.clone(), ed.entry.media.path.clone(), ed.draft_value(false));
+    app.spawn(async move { actions::save_edit_draft(&core, &video, data).await }, |_, r| {
+        if let Err(e) = r {
+            screenrecorder_core::info!("[剪輯] 無法存草稿：{}", e.message());
+        }
+    });
+}
+
+fn clear_draft(app: &UiApp, ed: &Editor) {
+    let (core, video) = (app.core.clone(), ed.entry.media.path.clone());
+    app.spawn(async move { actions::clear_edit_draft(&core, &video).await }, |_, _| {});
 }
 
 /// 把圖片檔拖曳到視窗：加上圖片（Logo）；拖曳中蓋上提示
@@ -1479,11 +1687,44 @@ fn drop_pictures(app: &mut UiApp, ed: &mut Editor, ctx: &egui::Context, toast: &
     }
 }
 
-/// 說明列：正在修改哪個剪輯版、找不到原片、或原片有上次的剪輯可以載入
+/// 說明列（各一行，放不下的字看提示）：上次沒有完成的剪輯（草稿）可以接著剪；
+/// 正在修改哪個剪輯版、找不到原片、或原片有上次的剪輯可以載入（可以按 ✕ 收起來）
 fn banner(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context) {
-    let p = theme::pal(ui);
-    let (text, warn): (String, bool) = if let Some(target) = &ed.replace_target {
+    if let Some(d) = &ed.draft {
+        let exporting = d.data.get("exporting").and_then(Value::as_bool).unwrap_or(false);
+        let when = local_time(d.saved_at);
+        let text = if exporting {
+            trf!("上次的剪輯沒有完成（輸出失敗或取消了），{when} 的剪輯與標註還留著。", "Your last edit didn't finish (it failed or was canceled). The cuts and annotations from {when} are kept.")
+        } else {
+            trf!("這支影片有上次沒有完成的剪輯（{when}）。", "This video has unfinished edits from {when}.")
+        };
+        let mut act = 0;
+        banner_row(ui, true, &text, |ui| {
+            if Btn::new(tr!("捨棄", "Discard")).ghost().small().tooltip(tr!("刪掉上次沒有完成的剪輯", "Delete the unfinished edits")).show(ui).clicked() {
+                act = 2;
+            }
+            if Btn::new(tr!("繼續上次未完成的剪輯", "Continue the unfinished edit")).primary().small().show(ui).clicked() {
+                act = 1;
+            }
+        });
+        match act {
+            1 => {
+                let data = d.data.clone();
+                ed.apply_draft(&data);
+            }
+            2 => {
+                ed.draft = None;
+                ed.discard_draft = true;
+            }
+            _ => {}
+        }
+    }
+    if ed.banner_hidden {
+        return;
+    }
+    let (text, full, warn): (String, String, bool) = if let Some(target) = &ed.replace_target {
         (
+            trf!("正在修改剪輯版「{}」，儲存時會取代它。", "Changing the edited version “{}”. Saving replaces it.", file_name(target)),
             trf!(
                 "正在修改剪輯版「{}」：已從原始影片「{}」載入上次的剪輯與標註，可以直接修改。儲存時會取代這個剪輯版。",
                 "Changing the edited version “{}”: your previous edits and annotations were loaded from the original video “{}” and can be changed. Saving replaces this edited version.",
@@ -1495,47 +1736,98 @@ fn banner(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context) {
     } else {
         match &ed.banner {
             BannerInfo::None => return,
-            BannerInfo::MissingSource(src) => (
-                trf!(
+            BannerInfo::MissingSource(src) => {
+                let t = trf!(
                     "找不到這個剪輯版的原始影片「{src}」，之前的標註已燒進影片、無法修改；只能在這個檔案上繼續剪輯。",
                     "Can't find “{src}”, the original video of this edited version. Earlier annotations are burned into the video and can't be changed; you can only keep editing this file."
-                ),
-                true,
-            ),
-            BannerInfo::HasProject { output, .. } => (trf!("這支影片之前剪輯成「{}」。", "This video was previously edited into “{}”.", file_name(output)), false),
+                );
+                (t.clone(), t, true)
+            }
+            BannerInfo::HasProject { output, .. } => {
+                let t = trf!("這支影片之前剪輯成「{}」。", "This video was previously edited into “{}”.", file_name(output));
+                (t.clone(), t, false)
+            }
         }
     };
-    egui::Frame::new().inner_margin(egui::Margin::symmetric(18, 0)).show(ui, |ui| {
-        egui::Frame::new().fill(if warn { p.warn_soft } else { p.accent_soft }).corner_radius(theme::RADIUS_SM).inner_margin(egui::Margin::symmetric(12, 8)).show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.horizontal_wrapped(|ui| {
-                ui.label(RichText::new(text).color(if warn { p.warn } else { p.text }));
-                if ed.replace_target.is_some() {
-                    if Btn::new(tr!("改為另存新的剪輯版", "Save as a new edited version instead")).small().show(ui).clicked() {
-                        ed.replace_target = None;
-                        ed.banner = BannerInfo::None;
-                    }
-                    if let Some(cut) = ed.opened_cut.clone() {
-                        if Btn::new(tr!("改成直接剪輯這個檔案", "Edit this file directly instead")).small().show(ui).clicked() {
-                            ed.opened_cut = None;
-                            ed.replace_target = None;
-                            ed.banner = BannerInfo::None;
-                            ed.load(ctx, cut);
-                            ed.mark_saved();
-                        }
-                    }
-                } else if let BannerInfo::HasProject { output, data } = &ed.banner {
-                    if Btn::new(tr!("載入上次的剪輯來修改", "Load the previous edits to change them")).small().show(ui).clicked() {
-                        let (output, data) = (output.clone(), data.clone());
-                        ed.apply_project(&data);
-                        ed.replace_target = Some(output);
-                        ed.banner = BannerInfo::None;
-                        ed.mark_saved();
-                    }
+    let mut close = false;
+    let mut load = None;
+    let mut other = 0;
+    banner_row(ui, warn, &text, |ui| {
+        if Btn::icon_only(Icon::Close).ghost().small().tooltip(tr!("收起說明", "Hide this message")).show(ui).clicked() {
+            close = true;
+        }
+        if ed.replace_target.is_some() {
+            // 不常用的做法收進選單（一行放得下）
+            let more = Btn::new(tr!("其他做法", "Other options")).icon(Icon::ChevD).ghost().small().show(ui);
+            egui::Popup::menu(&more).show(|ui| {
+                ui.set_min_width(260.0);
+                if ui.button(tr!("改為另存新的剪輯版", "Save as a new edited version instead")).clicked() {
+                    other = 1;
+                }
+                if ed.opened_cut.is_some() && ui.button(tr!("改在這個剪輯版上繼續剪（舊標註已燒進影片，無法修改）", "Keep editing this edited version instead (earlier annotations are burned in and can't be changed)")).clicked() {
+                    other = 2;
                 }
             });
-        });
-    });
+        } else if let BannerInfo::HasProject { output, data } = &ed.banner {
+            if Btn::new(tr!("載入上次的剪輯來修改", "Load the previous edits to change them")).small().show(ui).clicked() {
+                load = Some((output.clone(), data.clone()));
+            }
+        }
+    })
+    .on_hover_text(full);
+    if close {
+        ed.banner_hidden = true;
+    }
+    match other {
+        1 => {
+            ed.replace_target = None;
+            ed.banner = BannerInfo::None;
+        }
+        2 => {
+            if let Some(cut) = ed.opened_cut.take() {
+                ed.replace_target = None;
+                ed.banner = BannerInfo::None;
+                ed.load(ctx, cut);
+                ed.mark_saved();
+            }
+        }
+        _ => {}
+    }
+    if let Some((output, data)) = load {
+        ed.apply_project(&data);
+        ed.replace_target = Some(output);
+        ed.banner = BannerInfo::None;
+        ed.mark_saved();
+    }
+}
+
+/// 說明列的一行：文字放不下時截斷（滑鼠移上去看完整內容）；buttons 由右往左排
+fn banner_row(ui: &mut egui::Ui, warn: bool, text: &str, buttons: impl FnOnce(&mut egui::Ui)) -> egui::Response {
+    let p = theme::pal(ui);
+    egui::Frame::new()
+        .inner_margin(egui::Margin { left: 18, right: 18, top: 0, bottom: 4 })
+        .show(ui, |ui| {
+            egui::Frame::new().fill(if warn { p.warn_soft } else { p.accent_soft }).corner_radius(theme::RADIUS_SM).inner_margin(egui::Margin::symmetric(12, 4)).show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal(|ui| {
+                    ui.set_min_height(28.0);
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        buttons(ui);
+                        ui.with_layout(Layout::left_to_right(Align::Center), |ui| ui.add(egui::Label::new(RichText::new(text).color(if warn { p.warn } else { p.text })).truncate())).inner
+                    })
+                    .inner
+                })
+                .inner
+            })
+            .inner
+        })
+        .inner
+}
+
+/// 時間（Unix 毫秒）→「10/13 14:05」（當地時間）
+fn local_time(ms: u64) -> String {
+    use chrono::TimeZone;
+    chrono::Local.timestamp_millis_opt(ms as i64).single().map(|t| t.format("%m/%d %H:%M").to_string()).unwrap_or_default()
 }
 
 /// 左邊：影片、時間軸、標註軌、播放控制
@@ -1613,17 +1905,7 @@ fn footer(ed: &mut Editor, ui: &mut egui::Ui) -> bool {
     let size = ed.output_size(crop).map(|(w, h)| format!("{w}×{h}")).unwrap_or_default();
     let gone = ed.gone_count(&keep);
     let zooming = ed.zoom_on();
-    let unchanged = keep.len() == 1
-        && keep[0].0 == 0.0
-        && keep[0].1 >= ed.duration - 0.05
-        && fast == 0
-        && !zooming
-        && crop.is_none()
-        && ed.anns.is_empty()
-        && ed.spec.audio.is_default()
-        && ed.spec.frame.is_none()
-        && !ed.cursor_on()
-        && ed.vertical_spec().is_none();
+    let unchanged = ed.unchanged();
     let mut save = false;
     ui.vertical(|ui| {
         ui.spacing_mut().item_spacing = vec2(0.0, 2.0);
@@ -1715,11 +1997,16 @@ fn start_save(app: &mut UiApp, ed: &mut Editor) {
         vertical: ed.vertical_spec(),
     };
     let project = serde_json::to_value(ed.project_data()).ok();
+    // 開始輸出時先存草稿（標記為輸出中）：輸出失敗或取消時可以「回到剪輯」，完成時會刪掉
+    let draft = ed.draft_value(true);
     let (core, source, replace) = (app.core.clone(), ed.entry.media.path.clone(), ed.replace_target.clone());
     let replacing = replace.is_some();
     let mut spec = spec;
     app.spawn(
         async move {
+            if let Err(e) = actions::save_edit_draft(&core, &source, draft).await {
+                screenrecorder_core::info!("[剪輯] 無法存草稿：{}", e.message());
+            }
             spec.overlays = tokio::task::spawn_blocking(move || anns.iter().filter_map(|a| annotate::to_overlay(a, vw, vh)).collect()).await.unwrap_or_default();
             actions::cut_start(&core, &source, &spec, replace.as_deref(), project).await
         },

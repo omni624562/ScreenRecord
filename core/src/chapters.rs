@@ -4,28 +4,44 @@
 use crate::tr;
 use crate::types::Chapter;
 use regex::Regex;
+use serde::{Deserialize, Serialize};
 use std::sync::LazyLock;
+
+/// 剪輯視窗裡的標記：時間（原影片的秒數）與名稱（空白 = 「標記 N」）
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct Marker {
+    pub t: f64,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub name: String,
+}
 
 /// 離開頭或結尾這麼近的標記不另開章節（秒）
 const EDGE: f64 = 0.5;
 
 /// 標記 → 章節：開頭一章，之後每個標記開一章（「標記 1」「標記 2」…）
 pub fn from_markers(markers: &[f64], duration: f64) -> Vec<Chapter> {
-    let mut times: Vec<f64> = markers.iter().copied().filter(|t| t.is_finite() && *t < duration - EDGE).collect();
-    times.sort_by(f64::total_cmp);
-    if times.is_empty() {
+    let named: Vec<Marker> = markers.iter().map(|&t| Marker { t, name: String::new() }).collect();
+    from_named(&named, duration)
+}
+
+/// 有名稱的標記 → 章節：和 from_markers 相同，有名稱的用名稱當章節標題（沒有的照舊是「標記 N」，N 依時間排序）
+pub fn from_named(markers: &[Marker], duration: f64) -> Vec<Chapter> {
+    let mut list: Vec<&Marker> = markers.iter().filter(|m| m.t.is_finite() && m.t < duration - EDGE).collect();
+    list.sort_by(|a, b| a.t.total_cmp(&b.t));
+    if list.is_empty() {
         return Vec::new();
     }
     let mut out = Vec::new();
-    if times[0] > EDGE {
+    if list[0].t > EDGE {
         out.push(Chapter { start: 0.0, title: tr!("開頭", "Start").into() });
     }
-    for (i, t) in times.iter().enumerate() {
-        let start = if *t <= EDGE { 0.0 } else { *t };
+    for (i, m) in list.iter().enumerate() {
+        let start = if m.t <= EDGE { 0.0 } else { m.t };
         if out.last().is_some_and(|c: &Chapter| start - c.start < EDGE) {
             continue;
         }
-        out.push(Chapter { start, title: crate::trf!("標記 {}", "Marker {}", i + 1) });
+        let title = if m.name.trim().is_empty() { crate::trf!("標記 {}", "Marker {}", i + 1) } else { m.name.trim().to_string() };
+        out.push(Chapter { start, title });
     }
     out
 }
@@ -143,6 +159,14 @@ mod tests {
         let meta = ffmetadata(&from_markers(&[12.5], 60.0), 60.0);
         assert_eq!(meta, ";FFMETADATA1\n[CHAPTER]\nTIMEBASE=1/1000\nSTART=0\nEND=12500\ntitle=開頭\n[CHAPTER]\nTIMEBASE=1/1000\nSTART=12500\nEND=60000\ntitle=標記 1\n");
         assert_eq!(escape("a=b;c#d\\e\nf"), "a\\=b\\;c\\#d\\\\e f");
+    }
+
+    #[test]
+    fn named_markers() {
+        let m = |t: f64, name: &str| Marker { t, name: name.into() };
+        // 有名稱的用名稱，沒有的照舊叫「標記 N」（N 依時間排序）
+        assert_eq!(titles(&from_named(&[m(30.0, ""), m(12.5, "登入"), m(59.8, "太靠近結尾")], 60.0)), vec![(0.0, "開頭"), (12.5, "登入"), (30.0, "標記 2")]);
+        assert!(from_named(&[], 60.0).is_empty());
     }
 
     #[test]

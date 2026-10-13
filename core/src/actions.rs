@@ -170,15 +170,40 @@ pub async fn merge_start(app: &App, paths: &[String]) -> Result<()> {
 }
 
 pub async fn cut_start(app: &App, source: &str, spec: &EditSpec, replace: Option<&str>, project: Option<Value>) -> Result<()> {
+    cut_start_with(app, source, spec, CutTarget { replace: replace.map(String::from), ..Default::default() }, project).await
+}
+
+/// 剪輯存到哪裡、章節
+#[derive(Debug, Clone, Default)]
+pub struct CutTarget {
+    /// 取代這個剪輯版（修改之前的剪輯）
+    pub replace: Option<String>,
+    /// 存到這裡（另存新檔視窗選的位置）；None = 原影片旁邊的 *_cut.mp4
+    pub output: Option<String>,
+    /// 章節（剪輯視窗改過標記時）；None = 沿用原影片的章節
+    pub chapters: Option<Vec<crate::types::Chapter>>,
+}
+
+/// 開始剪輯（見 cut_start）；完成後存剪輯專案並刪掉草稿（失敗、取消時草稿留著，可以回到剪輯）
+pub async fn cut_start_with(app: &App, source: &str, spec: &EditSpec, target: CutTarget, project: Option<Value>) -> Result<()> {
     if app.recorder.active() {
         return Err(Error::config(tr!("錄影中無法剪輯，請先停止錄影", "Can't edit while recording. Stop recording first")));
     }
     if ![spec.start, spec.end].iter().all(|v| v.is_finite()) {
         return Err(Error::config(tr!("剪輯設定格式錯誤", "Invalid edit settings")));
     }
-    if replace.is_some_and(|r| !is_abs(r)) {
+    let CutTarget { replace, output, chapters } = target;
+    if replace.as_deref().is_some_and(|r| !is_abs(r)) {
         return Err(Error::config(tr!("找不到要取代的剪輯版", "The edited version to replace wasn't found")));
     }
+    if output.as_deref().is_some_and(|o| !is_abs(o)) {
+        return Err(Error::config(tr!("無法儲存到這個位置，請重新選擇", "Can't save to this location. Choose another one")));
+    }
+    // 取代的是自己選檔名存的剪輯版（不是 *_cut.mp4）：剪輯視窗存的（有專案）才能取代，當作存到那個位置
+    let (replace, output) = match replace {
+        Some(r) if !crate::library::is_cut_name(&Path::new(&r).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()) && app.projects.for_output(&r).is_some() => (None, Some(r)),
+        r => (r, output),
+    };
     let on_saved: Option<crate::exporter::OnSaved> = match project {
         Some(data @ Value::Object(_)) => {
             if serde_json::to_vec(&data).map(|v| v.len()).unwrap_or(usize::MAX) > crate::projects::MAX_PROJECT_BYTES {
@@ -189,12 +214,43 @@ pub async fn cut_start(app: &App, source: &str, spec: &EditSpec, replace: Option
                 if let Err(e) = store.save(out, &src, data) {
                     crate::info!("[剪輯] 無法儲存剪輯設定：{e}");
                 }
+                // 完成了：不用再提示接著剪
+                store.drafts().removed(&src);
             }))
         }
         _ => None,
     };
-    app.exporter.start_cut(&app.export_ctx(), source, spec, replace, on_saved).await?;
+    let opts = crate::exporter::CutOptions { replace, output, chapters, on_saved };
+    app.exporter.start_cut_with(&app.export_ctx(), source, spec, opts).await?;
     Ok(())
+}
+
+/// 還沒完成的剪輯（草稿）：剪輯中的影片的草稿（影片不在了就沒有）
+pub async fn edit_draft(app: &App, video: &str) -> Option<Project> {
+    if !is_abs(video) {
+        return None;
+    }
+    let (store, p) = (app.projects.clone(), video.to_string());
+    tokio::task::spawn_blocking(move || store.drafts().for_output(&p)).await.ok().flatten()
+}
+
+/// 存草稿（剪輯中每隔一段時間、開始輸出時）
+pub async fn save_edit_draft(app: &App, video: &str, data: Value) -> Result<()> {
+    if !is_abs(video) {
+        return Err(Error::config(tr!("影片路徑不正確", "Invalid video path")));
+    }
+    if serde_json::to_vec(&data).map(|v| v.len()).unwrap_or(usize::MAX) > crate::projects::MAX_PROJECT_BYTES {
+        return Err(Error::config(tr!("標註資料太大", "Annotation data is too large")));
+    }
+    let (store, p) = (app.projects.clone(), video.to_string());
+    tokio::task::spawn_blocking(move || store.drafts().save(&p, &p, data)).await.map_err(|e| Error::other(e.to_string()))??;
+    Ok(())
+}
+
+/// 刪掉草稿（選了「不儲存」）
+pub async fn clear_edit_draft(app: &App, video: &str) {
+    let (store, p) = (app.projects.clone(), video.to_string());
+    let _ = tokio::task::spawn_blocking(move || store.drafts().removed(&p)).await;
 }
 
 /// 找到的剪輯專案是哪一種

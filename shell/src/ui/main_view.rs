@@ -1592,9 +1592,15 @@ fn job_card(app: &mut UiApp, ui: &mut Ui) {
             }
             _ => {
                 ui.add(egui::Label::new(RichText::new(e.message.clone().unwrap_or_default()).font(theme::font(12.5))).wrap());
-                if Btn::new(tr!("關閉", "Close")).ghost().small().show(ui).clicked() {
-                    app.dismissed_job = Some(e.id);
-                }
+                ui.horizontal(|ui| {
+                    // 剪輯失敗或取消：剪輯、標註、字幕都還在（草稿），可以回去改了再存
+                    if e.kind == ExportKind::Cut && Btn::new(tr!("回到剪輯", "Back to editing")).icon(Icon::Cut).small().show(ui).clicked() {
+                        super::editor::resume(app, &e.source);
+                    }
+                    if Btn::new(tr!("關閉", "Close")).ghost().small().show(ui).clicked() {
+                        app.dismissed_job = Some(e.id);
+                    }
+                });
             }
         }
     });

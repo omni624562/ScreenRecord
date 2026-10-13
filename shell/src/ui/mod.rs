@@ -538,6 +538,10 @@ impl UiApp {
                             screenrecorder_core::types::ExportKind::Speed => tr!("加速版製作完成", "Sped-up video ready"),
                         };
                         self.toast(what, false);
+                    } else {
+                        // 剪輯失敗或取消：提示並提供「回到剪輯」
+                        let e = e.clone();
+                        editor::cut_ended(self, &e);
                     }
                 }
             }
