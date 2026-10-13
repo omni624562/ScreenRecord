@@ -1,12 +1,14 @@
-//! 剪輯視窗的字幕：自動產生（語音辨識）或匯入 SRT，變成影片下方一段一段的文字標註，可以修改後燒進影片。
+//! 剪輯視窗的字幕（「字幕」分頁）：自動產生（語音辨識）或匯入 SRT，變成影片下方一段一段的文字標註；
+//! 在清單裡直接改字，可以燒進影片，也可以依剪輯後的時間匯出成 SRT。
 
 use super::shot::Act;
-use super::Editor;
+use super::{Editor, VAct};
 use crate::ui::dialogs::{file_name, Ask};
 use crate::ui::theme::{self, segmented, Btn};
 use crate::ui::UiApp;
-use eframe::egui::{self, vec2, RichText};
+use eframe::egui::{self, pos2, vec2, Align2, Color32, CornerRadius, CursorIcon, Id, RichText, Sense, Stroke};
 use screenrecorder_core::annotate::{self, Ann, AnnKind};
+use screenrecorder_core::format::video_clock;
 use screenrecorder_core::subtitles::{self, Cue, LANGUAGES, MODELS};
 use screenrecorder_core::{tr, trf};
 use std::path::PathBuf;
@@ -37,11 +39,131 @@ fn is_current(ed: &Editor, cancel: &Arc<AtomicBool>) -> bool {
     ed.subs.as_ref().is_some_and(|j| Arc::ptr_eq(&j.cancel, cancel))
 }
 
-/// 「標註」分頁的字幕區塊（影片才有）
+/// 「字幕」分頁：產生或匯入字幕、選取的字幕的樣式與時間、逐段修改的清單
+pub fn tab(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context) {
+    if ed.vw <= 0.0 {
+        return hint(ui, tr!("無法讀取影片尺寸，不能加上字幕。", "Couldn't read the video size, so captions can't be added."));
+    }
+    panel(ed, ui);
+    let n = ed.sub_ids.len();
+    if n == 0 {
+        return;
+    }
+    ui.horizontal(|ui| {
+        if Btn::new(tr!("匯出 SRT（依剪輯後的時間）", "Export SRT (edited timing)"))
+            .small()
+            .tooltip(tr!(
+                "把字幕存成 SRT 字幕檔，時間換成剪輯後的影片的時間（刪掉的片段裡的字幕不算），可以上傳到 YouTube",
+                "Save the captions as an SRT file with timing matched to the edited video (captions in removed sections are left out), e.g. for YouTube"
+            ))
+            .show(ui)
+            .clicked()
+        {
+            ed.vpending = Some(VAct::ExportSrt);
+        }
+        if Btn::new(tr!("全部刪除", "Delete all")).ghost().small().tooltip(tr!("刪掉所有字幕（可以按 Ctrl+Z 復原）", "Delete all captions (press Ctrl+Z to undo)")).show(ui).clicked()
+        {
+            let ids = std::mem::take(&mut ed.sub_ids);
+            ed.anns.retain(|a| !ids.contains(&a.id));
+            if ed.ann_sel.is_some_and(|id| ids.contains(&id)) {
+                ed.ann_sel = None;
+            }
+        }
+    });
+    // 選取的字幕：顏色、字級、深色底（可以套用到全部字幕）、出現時間
+    if ed.ann_sel.is_some_and(|id| ed.is_sub(id)) {
+        super::side::props(ed, ui, ctx);
+    } else {
+        hint(ui, tr!("點清單裡的時間可以跳到那一段並調整樣式；直接在文字上修改。", "Click a time in the list to jump there and change its style; edit the text right in the list."));
+    }
+    list(ed, ui);
+}
+
+fn hint(ui: &mut egui::Ui, text: &str) {
+    ui.label(theme::muted(ui, text).font(theme::font(12.0)));
+}
+
+/// 每一段字幕一行：時間（點一下跳過去並選取）、可以直接修改的文字、刪除
+fn list(ed: &mut Editor, ui: &mut egui::Ui) {
+    let p = theme::pal(ui);
+    let keep = ed.keep();
+    let mut rows: Vec<(u64, f64, f64, String, bool)> =
+        ed.anns.iter().filter(|a| ed.is_sub(a.id)).map(|a| (a.id, a.start, a.end, a.text.clone().unwrap_or_default().replace('\n', " "), !Editor::in_output(a, &keep))).collect();
+    rows.sort_by(|x, y| x.1.total_cmp(&y.1).then(x.0.cmp(&y.0)));
+    let now = ed.now();
+    let (mut select, mut delete, mut edit) = (None, None, None);
+    let w = ui.available_width();
+    ui.spacing_mut().item_spacing.y = 3.0;
+    for (id, start, end, mut text, gone) in rows {
+        let (r, _) = ui.allocate_exact_size(vec2(w, 30.0), Sense::hover());
+        // 看不到的那幾行不畫（字幕可能有幾百段）
+        if !ui.is_rect_visible(r) {
+            continue;
+        }
+        let on = ed.ann_sel == Some(id);
+        let playing_here = now >= start && now < end;
+        let painter = ui.painter();
+        painter.rect(r, CornerRadius::same(6), if on { p.accent.gamma_multiply(0.12) } else { Color32::TRANSPARENT }, Stroke::new(1.0, if on { p.accent } else { p.border }), egui::StrokeKind::Inside);
+        if playing_here {
+            painter.rect_filled(egui::Rect::from_min_size(r.min + vec2(1.0, 5.0), vec2(3.0, r.height() - 10.0)), CornerRadius::same(2), p.accent);
+        }
+        let tr_rect = egui::Rect::from_min_size(r.min, vec2(62.0, r.height()));
+        let t = ui.interact(tr_rect, Id::new(("sub-time", id)), Sense::click());
+        let tcolor = if gone {
+            p.muted
+        } else if t.hovered() {
+            p.accent
+        } else {
+            p.text
+        };
+        ui.painter().text(pos2(tr_rect.left() + 8.0, r.center().y), Align2::LEFT_CENTER, video_clock(start), theme::mono(11.5), tcolor);
+        let gone_note = if gone { tr!("（在刪除的片段中，不會出現）", " (in a removed section; won't appear)") } else { "" };
+        if t.on_hover_cursor(CursorIcon::PointingHand)
+            .on_hover_text(trf!("{} – {}{}・點一下跳到這一段並選取", "{} – {}{} · click to jump here and select it", video_clock(start), video_clock(end), gone_note))
+            .clicked()
+        {
+            select = Some((id, start));
+        }
+        let er = egui::Rect::from_min_max(pos2(r.left() + 64.0, r.top() + 3.0), pos2(r.right() - 30.0, r.bottom() - 3.0));
+        let resp = ui.put(er, egui::TextEdit::singleline(&mut text).id(Id::new(("sub-text", id))).font(theme::font(13.0)).margin(vec2(4.0, 3.0)));
+        if resp.changed() {
+            edit = Some((id, text));
+        }
+        if resp.gained_focus() {
+            select = Some((id, start));
+        }
+        let x_rect = egui::Rect::from_center_size(pos2(r.right() - 15.0, r.center().y), vec2(22.0, 22.0));
+        let xr = ui.interact(x_rect, Id::new(("sub-del", id)), Sense::click()).on_hover_text(tr!("刪除這段字幕", "Delete this caption")).on_hover_cursor(CursorIcon::PointingHand);
+        if xr.hovered() {
+            ui.painter().circle_filled(x_rect.center(), 11.0, p.rec_soft);
+        }
+        ui.painter().text(x_rect.center(), Align2::CENTER_CENTER, "×", theme::font(14.0), if xr.hovered() { p.rec } else { p.muted });
+        if xr.clicked() {
+            delete = Some(id);
+        }
+    }
+    if let Some((id, text)) = edit {
+        ed.set_sub_text(id, &text);
+    }
+    if let Some(id) = delete {
+        ed.delete_ann(id);
+    }
+    if let Some((id, start)) = select {
+        if ed.ann_sel != Some(id) {
+            let now = ed.now();
+            if ed.anns.iter().find(|a| a.id == id).is_none_or(|a| now < a.start || now > a.end) {
+                ed.seek(start);
+            }
+            ed.select_ann(Some(id));
+        }
+    }
+}
+
+/// 產生或匯入字幕的按鈕（「字幕」分頁最上面）
 pub fn panel(ed: &mut Editor, ui: &mut egui::Ui) {
     let p = theme::pal(ui);
     ui.add_space(2.0);
-    ui.label(RichText::new(tr!("字幕", "Subtitles")).font(theme::font_bold(13.5)));
+    ui.label(RichText::new(tr!("字幕", "Captions")).font(theme::font_bold(13.5)));
     if let Some(job) = &ed.subs {
         let pct = job.progress.load(Ordering::Relaxed) as f32 / 10.0;
         let text = match job.phase.load(Ordering::Relaxed) {
@@ -99,14 +221,16 @@ pub fn panel(ed: &mut Editor, ui: &mut egui::Ui) {
             ed.pending = Some(Act::ImportSrt);
         }
     });
-    ui.label(
-        RichText::new(tr!(
-            "字幕會放在影片下方，點一下就能改字或調整時間；不滿意可以按 Ctrl+Z 復原。",
-            "Subtitles are placed at the bottom of the video; click one to change its text or timing. Press Ctrl+Z to undo."
-        ))
-        .font(theme::font(12.0))
-        .color(p.muted),
-    );
+    if ed.sub_ids.is_empty() {
+        ui.label(
+            RichText::new(tr!(
+                "字幕會放在影片下方，之後在這裡的清單逐段修改；不滿意可以按 Ctrl+Z 復原。",
+                "Captions are placed at the bottom of the video; edit them one by one in the list here. Press Ctrl+Z to undo."
+            ))
+            .font(theme::font(12.0))
+            .color(p.muted),
+        );
+    }
 }
 
 pub fn run(app: &mut UiApp, ed: &mut Editor, act: Act) {
@@ -236,6 +360,33 @@ fn start(app: &mut UiApp, speech: Option<PathBuf>) {
 }
 
 impl Editor {
+    /// 改一段字幕的文字（太長自動斷成兩行）：寬度變了以下緣中間為準，位置不跑掉
+    pub fn set_sub_text(&mut self, id: u64, text: &str) {
+        let Some(a) = self.ann_mut(id) else { return };
+        let ascii = text.chars().filter(|ch| ch.is_ascii()).count() * 2 > text.chars().count();
+        let (cx, bottom) = (a.x + a.w / 2.0, a.y + a.h);
+        a.text = Some(subtitles::wrap(text, if ascii { 42 } else { 22 }));
+        annotate::measure(a);
+        a.x = cx - a.w / 2.0;
+        a.y = bottom - a.h;
+    }
+
+    /// 字幕換成剪輯後的時間（刪掉的片段裡的不算；跨過刪掉的片段時從第一段保留的開始到最後一段保留的結束）
+    pub fn cut_cues(&self) -> Vec<Cue> {
+        let parts = self.parts();
+        let mut subs: Vec<&Ann> = self.anns.iter().filter(|a| self.is_sub(a.id)).collect();
+        subs.sort_by(|x, y| x.start.total_cmp(&y.start));
+        subs.into_iter()
+            .filter_map(|a| {
+                let over: Vec<&(f64, f64, u32)> = parts.iter().filter(|p| p.0 < a.end && p.1 > a.start).collect();
+                let (first, last) = (over.first()?, over.last()?);
+                let start = screenrecorder_core::zoom::map_time(&parts, a.start.max(first.0))?;
+                let end = screenrecorder_core::zoom::map_time(&parts, (a.end.min(last.1) - 0.001).max(first.0))? + 0.001;
+                (end - start >= 0.05).then(|| Cue { start, end, text: a.text.clone().unwrap_or_default() })
+            })
+            .collect()
+    }
+
     /// 字幕變成文字標註：白字深色底，放在影片下方中間；回傳加了幾段
     pub fn add_subtitles(&mut self, cues: &[Cue]) -> usize {
         if self.vw <= 0.0 {
@@ -274,13 +425,14 @@ impl Editor {
             a.x = ((self.vw - a.w) / 2.0).round().max(0.0);
             a.y = (self.vh - a.h - self.vh * 0.06).round().max(0.0);
             self.next_id += 1;
+            self.sub_ids.insert(a.id);
             self.anns.push(a);
             n += 1;
         }
         if n > 0 {
             self.ann_sel = None;
             self.tool = None;
-            self.tab = super::Tab::Ann;
+            self.tab = super::Tab::Subs;
         }
         n
     }

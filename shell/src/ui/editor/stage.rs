@@ -5,7 +5,7 @@ use crate::ui::theme;
 use eframe::egui::{self, pos2, vec2, Align2, Color32, CornerRadius, CursorIcon, Id, Pos2, Rect, Sense, Stroke, TextureHandle, TextureOptions};
 use screenrecorder_core::annotate::{self, Ann, AnnKind, Shape};
 use screenrecorder_core::edit::CropInput;
-use screenrecorder_core::tr;
+use screenrecorder_core::trf;
 use screenrecorder_core::zoom;
 use std::time::{Duration, Instant};
 
@@ -240,13 +240,18 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, stage_h: f3
                 }
             }
         }
-    } else if ed.tab == Tab::Crop && ed.vw > 0.0 && ed.tool.is_none() {
-        let g = painter.layout_no_wrap(tr!("在圖上拖曳，框出要保留的範圍", "Drag to select the area to keep").to_string(), theme::font(13.0), Color32::WHITE);
+    } else if ed.tab == Tab::Crop && ed.vw > 0.0 && ed.tool.is_none() && !follow_crop(ed) {
+        let g = painter.layout_no_wrap(trf!("在{}上拖曳，框出要保留的範圍", "Drag on the {} to select the area to keep", ed.what()), theme::font(13.0), Color32::WHITE);
         let pill = Rect::from_center_size(pos2(rect.center().x, rect.top() + 24.0), g.size() + vec2(24.0, 12.0));
         painter.rect_filled(pill, CornerRadius::same(255), Color32::from_black_alpha(170));
         painter.galley(pill.min + vec2(12.0, 6.0), g, Color32::WHITE);
     }
     interact(ed, ui, rect, &resp);
+}
+
+/// 影片做成跟著游標的直式影片：自己會裁出 9:16 的一塊，不能另外裁切
+fn follow_crop(ed: &Editor) -> bool {
+    !ed.is_shot() && ed.vertical == 2
 }
 
 /// 形狀的外框（畫面座標）
@@ -464,7 +469,7 @@ fn interact(ed: &mut Editor, ui: &egui::Ui, rect: Rect, resp: &egui::Response) {
                 CursorIcon::ResizeNwSe
             } else if ann_at(ed, x, y, k * 6.0).is_some() {
                 CursorIcon::Move
-            } else if ed.tab == Tab::Crop {
+            } else if ed.tab == Tab::Crop && !follow_crop(ed) {
                 match crop_grab(ed, x, y, k * 12.0) {
                     Some(CropGrab::Corner(_, diag)) => {
                         if diag {
@@ -544,8 +549,8 @@ fn interact(ed: &mut Editor, ui: &egui::Ui, rect: Rect, resp: &egui::Response) {
             }
             return;
         }
-        // 只有「裁切」分頁會框選裁切範圍，其他分頁點空白處不會動到裁切
-        let cropping = ed.tab == Tab::Crop;
+        // 只有「裁切」分頁會框選裁切範圍，其他分頁點空白處不會動到裁切（跟著游標的直式影片不另外裁切）
+        let cropping = ed.tab == Tab::Crop && !follow_crop(ed);
         if ed.ann_sel.is_some() {
             // 點空白處：取消選取標註（裁切分頁同時開始框選）
             ed.ann_sel = None;

@@ -24,7 +24,7 @@ pub const AT_H_EMPTY: f32 = 26.0;
 
 /// 標註軌的高度（切到「標註」分頁時就先變高，放標註時影片不會跳動）
 pub fn ann_track_h(ed: &Editor) -> f32 {
-    if ed.anns.is_empty() && ed.tab != Tab::Ann {
+    if ed.anns.is_empty() && !matches!(ed.tab, Tab::Ann | Tab::Subs) {
         AT_H_EMPTY
     } else {
         AT_H
@@ -208,7 +208,7 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, toast: &mut
         painter.text(*c, Align2::CENTER_CENTER, "×", theme::font_bold(13.0), Color32::WHITE);
     }
     // 錄影時加的標記：底部的小旗子，點一下跳過去
-    let flags: Vec<(f32, usize, f64)> = ed.markers.iter().enumerate().filter(|(_, &t)| t >= a && t <= b && t <= dur).map(|(i, &t)| (x_of(t), i, t)).collect();
+    let flags: Vec<(f32, usize, f64)> = ed.markers.iter().enumerate().filter(|(_, m)| m.t >= a && m.t <= b && m.t <= dur).map(|(i, m)| (x_of(m.t), i, m.t)).collect();
     for &(x, i, _) in &flags {
         let (top, bot) = (rect.bottom() - FLAG_H, rect.bottom() - 1.0);
         painter.vline(x, top..=bot, Stroke::new(3.5, Color32::from_black_alpha(120)));
@@ -468,9 +468,11 @@ fn ann_track(ed: &mut Editor, ui: &mut egui::Ui) {
                 painter.rect_filled(er, CornerRadius::same(3), Color32::from_white_alpha(90));
             }
         }
-        if lane_h >= 16.0 {
-            let lp = painter.with_clip_rect(r.shrink2(vec2(6.0, 0.0)).intersect(rect));
-            lp.text(pos2(r.left() + 8.0, r.center().y), Align2::LEFT_CENTER, annotate::label(an), theme::font(11.5), fg);
+        if lane_h >= 16.0 && r.width() > 24.0 {
+            // 名稱放不下時結尾變成「…」
+            let lp = painter.with_clip_rect(r.intersect(rect));
+            let g = super::side::ellipsized(&lp, annotate::label(an), theme::font(11.5), fg, r.width() - 14.0);
+            lp.galley(pos2(r.left() + 7.0, r.center().y - g.size().y / 2.0), g, fg);
         }
         let gone_note = if gone { tr!("（在刪除的片段中，不會出現在輸出影片）", " (in a removed section; won't appear in the output video)") } else { "" };
         let tip = trf!(
