@@ -601,6 +601,11 @@ fn tool_grid(ed: &mut Editor, ui: &mut egui::Ui, tools: &[(Tool, &str, &str)], c
                     ed.emoji_tex.get(ed.emoji),
                 );
                 ui.painter().text(pos2(r.center().x, r.bottom() - 11.0), Align2::CENTER_CENTER, label, theme::font(12.0), ink);
+                // 截圖：提示顯示快速鍵「箭頭（A）」
+                let resp = match super::shot::tool_tip(tool, label).filter(|_| shot) {
+                    Some(t) => resp.on_hover_text(t),
+                    None => resp,
+                };
                 if can && resp.on_hover_cursor(CursorIcon::PointingHand).clicked() {
                     ed.tool = if on { None } else { Some(tool) };
                     if ed.tool.is_some() {

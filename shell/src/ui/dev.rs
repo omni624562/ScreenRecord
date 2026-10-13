@@ -1,7 +1,7 @@
 //! 開發用（只在 debug 版）：自動開啟某個畫面、模擬操作並截圖，在 Linux 的 Xvfb 上檢查介面。
 //! - SCREENRECORDER_DEV：要開啟的畫面（library、shots、changelog、notes（講稿小視窗）、schedule（排程錄影）、after:<路徑>（錄完自動處理）、follow:<標題>（只錄這個視窗）、record:<秒>（錄幾秒）、replay:<保留秒數>,<幾秒後存下>[,<再幾秒停止>]（重播緩衝）、export:<路徑>、edit:<路徑>、view:<路徑>、whatsnew（新功能介紹）、monitors（模擬兩個螢幕）、snip:<PNG>（用這張圖當凍結的桌面開啟框選截圖）、hotkeys（模擬已登記快速鍵）、update:<版本>（模擬有新版本）、cameras:<名稱>,<名稱>（模擬找到的攝影機）、settings:<record|audio|save|keys|advanced>、ed:<剪輯視窗指令>），以 ; 分隔
 //! - SCREENRECORDER_INPUT：開啟後依序模擬的操作，以 ; 分隔：
-//!   wait:毫秒、click:x,y、dclick:x,y（按兩下）、rclick:x,y（右鍵）、move:x,y、drag:x0,y0,x1,y1、wheel:x,y,dy、key:Space（可加 ctrl+、alt+、shift+）、type:文字、shot:路徑
+//!   wait:毫秒、click:x,y、dclick:x,y（按兩下）、rclick:x,y（右鍵）、move:x,y、drag:x0,y0,x1,y1、wheel:x,y,dy（加 ,ctrl = Ctrl+滾輪）、key:Space（可加 ctrl+、alt+、shift+）、hold:Space / release:Space（按住、放開）、type:文字、shot:路徑
 //! - SCREENRECORDER_SHOT：最後截圖存檔的路徑（存好後結束）；SCREENRECORDER_SHOT_AFTER：開始後幾毫秒截圖（預設 3000）
 
 use super::{EntryAction, UiApp};
@@ -86,11 +86,19 @@ fn parse_script(s: &str) -> VecDeque<Step> {
                 out.push_back(Step::Wait(Duration::from_millis(200)));
             }
             "wheel" => {
+                // wheel:x,y,dy（後面加 ,ctrl = 按住 Ctrl 轉滾輪）
                 let n = nums(v);
                 let p = pos2(n[0], n[1]);
+                let modifiers = if v.ends_with(",ctrl") { Modifiers::CTRL | Modifiers::COMMAND } else { Modifiers::NONE };
                 out.push_back(Step::Events(vec![Event::PointerMoved(p)]));
-                out.push_back(Step::Events(vec![Event::MouseWheel { unit: egui::MouseWheelUnit::Point, delta: egui::vec2(0.0, n[2]), phase: egui::TouchPhase::Move, modifiers: Modifiers::NONE }]));
+                out.push_back(Step::Events(vec![Event::MouseWheel { unit: egui::MouseWheelUnit::Point, delta: egui::vec2(0.0, n[2]), phase: egui::TouchPhase::Move, modifiers }]));
                 out.push_back(Step::Wait(Duration::from_millis(100)));
+            }
+            // hold:Space / release:Space：按住、放開一個鍵（例如按住空白鍵拖曳）
+            "hold" | "release" => {
+                if let Some(key) = Key::from_name(v) {
+                    out.push_back(Step::Events(vec![Event::Key { key, physical_key: None, pressed: k == "hold", repeat: false, modifiers: Modifiers::NONE }]));
+                }
             }
             "key" => {
                 // 修飾鍵：ctrl+、alt+、shift+ 可組合，例如 ctrl+alt+F9

@@ -94,10 +94,11 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, stage_h: f3
     let ar = if ed.vw > 0.0 && ed.vh > 0.0 { (ed.vw / ed.vh) as f32 } else { 16.0 / 9.0 };
     let (w, h) = if avail_w / stage_h > ar { (stage_h * ar, stage_h) } else { (avail_w, avail_w / ar) };
     let (outer, _) = ui.allocate_exact_size(vec2(avail_w, stage_h), Sense::hover());
-    let rect = Rect::from_center_size(outer.center(), vec2(w, h));
-    let resp = ui.interact(rect, Id::new("ed-stage"), Sense::click_and_drag());
+    // 截圖可以縮放、捲動：rect 是整張圖在畫面上的位置（放大時比 outer 大，只畫得到 outer 裡面）
+    let rect = if ed.is_shot() { super::shot::place(ed, ui, outer) } else { Rect::from_center_size(outer.center(), vec2(w, h)) };
+    let resp = ui.interact(rect.intersect(outer), Id::new("ed-stage"), Sense::click_and_drag());
     let painter = ui.painter_at(outer);
-    painter.rect_filled(rect, CornerRadius::ZERO, Color32::BLACK);
+    painter.rect_filled(rect.intersect(outer), CornerRadius::ZERO, Color32::BLACK);
     // 預覽結果時顯示跟著點擊放大的效果（只放大影片與游標；標註照原本的位置畫）
     let uv = if ed.previewing && ed.zoom_on() {
         let (z, cx, cy) = zoom::at(&zoom::focus_points(&ed.clicks), ed.zoom, ed.now());
@@ -107,7 +108,9 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, stage_h: f3
     } else {
         Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0))
     };
-    if let Some(tex) = &ed.video_tex {
+    if ed.is_shot() {
+        super::shot::paint(ed, &painter, rect);
+    } else if let Some(tex) = &ed.video_tex {
         painter.image(tex.id(), rect, uv, Color32::WHITE);
     }
     cursor_overlay(ed, ctx, &painter, rect, uv);
@@ -242,11 +245,19 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, stage_h: f3
         }
     } else if ed.tab == Tab::Crop && ed.vw > 0.0 && ed.tool.is_none() {
         let g = painter.layout_no_wrap(tr!("在圖上拖曳，框出要保留的範圍", "Drag to select the area to keep").to_string(), theme::font(13.0), Color32::WHITE);
-        let pill = Rect::from_center_size(pos2(rect.center().x, rect.top() + 24.0), g.size() + vec2(24.0, 12.0));
+        // 截圖放大時圖的上緣可能在畫面外：放在看得到的範圍裡
+        let vis = rect.intersect(outer);
+        let pill = Rect::from_center_size(pos2(vis.center().x, vis.top() + 24.0), g.size() + vec2(24.0, 12.0));
         painter.rect_filled(pill, CornerRadius::same(255), Color32::from_black_alpha(170));
         painter.galley(pill.min + vec2(12.0, 6.0), g, Color32::WHITE);
     }
-    interact(ed, ui, rect, &resp);
+    // 截圖：按住空白鍵（或中鍵）拖曳是移動畫面，不放標註
+    if !(ed.is_shot() && super::shot::pan(ed, ui, &resp)) {
+        interact(ed, ui, rect, &resp);
+    }
+    if ed.is_shot() {
+        super::shot::overlays(ed, ui, outer, rect);
+    }
 }
 
 /// 形狀的外框（畫面座標）
@@ -299,7 +310,12 @@ fn look_key(a: &Ann, spot: bool, s: f64, vw: f64, vh: f64) -> u64 {
 /// 每個標註畫成一張圖（貼圖）快取起來。只畫現在看得到（或選取中）的：
 /// 字幕一次可能有幾百段，不要每段都畫、也不要每一格都比對全部
 fn update_sprites(ed: &mut Editor, ctx: &egui::Context, rect: Rect, t: f64) {
-    let s = (rect.width() * ctx.pixels_per_point()) as f64 / ed.vw;
+    let mut s = (rect.width() * ctx.pixels_per_point()) as f64 / ed.vw;
+    let shot = ed.is_shot();
+    if shot {
+        // 截圖可以縮放：倍率取到 2 的 1/4 次方（連續縮放時不用每一格都重畫）
+        s = 2f64.powf((s.log2() * 4.0).ceil() / 4.0);
+    }
     let shown = |a: &Ann| (t >= a.start && t <= a.end) || ed.ann_sel == Some(a.id);
     let ids: std::collections::HashSet<u64> = ed.anns.iter().map(|a| a.id).collect();
     ed.overlay.sprites.retain(|id, _| ids.contains(id));
@@ -311,6 +327,8 @@ fn update_sprites(ed: &mut Editor, ctx: &egui::Context, rect: Rect, t: f64) {
     for a in ed.anns.iter().filter(|a| !a.kind.is_effect() && shown(a)) {
         // 聚光燈蓋住整個畫面：位置也算在內容裡，圖就是整個畫面
         let spot = a.kind == AnnKind::Spotlight;
+        // 截圖放大很多時，大的標註（聚光燈蓋住整張圖）畫成的圖限制大小
+        let s = if shot { s.min(SPRITE_MAX / sprite_extent(a, spot, ed.vw, ed.vh)) } else { s };
         let key = look_key(a, spot, s, ed.vw, ed.vh);
         if ed.overlay.sprites.get(&a.id).is_some_and(|sp| sp.key == key) {
             continue;
@@ -347,6 +365,14 @@ fn update_sprites(ed: &mut Editor, ctx: &egui::Context, rect: Rect, t: f64) {
             }
         }
     }
+}
+
+/// 截圖放大時標註畫成的圖最大的邊長（像素）
+const SPRITE_MAX: f64 = 4096.0;
+
+/// 標註大約佔多大（影片像素，算圖的上限用）
+fn sprite_extent(a: &Ann, spot: bool, vw: f64, vh: f64) -> f64 {
+    if spot { vw.max(vh) } else { a.w.abs().max(a.h.abs()) + a.size.abs() + 16.0 }.max(1.0)
 }
 
 /// 點到的標註（目前時間看得到的，最上面的優先；選取中的也算）
