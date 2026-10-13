@@ -193,8 +193,10 @@ pub fn show_toast(app: &mut UiApp, ctx: &egui::Context) {
                         clicked = Some(i);
                     }
                 }
-                let x = egui::Button::new(RichText::new("✕").color(fg)).frame(false);
-                if ui.add(x).on_hover_text(tr!("關閉", "Close")).clicked() {
+                // 關閉（自己畫叉叉：部分字型沒有「✕」）
+                let (r, x) = ui.allocate_exact_size(vec2(18.0, 18.0), egui::Sense::click());
+                theme::paint_icon(ui.painter(), r.shrink(1.0), theme::Icon::Close, if x.hovered() { fg } else { fg.gamma_multiply(0.7) });
+                if x.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(tr!("關閉", "Close")).clicked() {
                     close = true;
                 }
             });
