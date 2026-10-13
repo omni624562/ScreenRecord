@@ -381,7 +381,14 @@ fn source_detail(app: &mut UiApp, ui: &mut Ui, room: f32) {
         }
         SourceType::Region => {
             // 在螢幕上直接框選（和框選截圖一樣的畫面，不存檔）：比在小預覽圖上拖曳準確
-            if app.s.follow_window.is_none() && region_pick_btn().enabled(!locked).show(ui).clicked() {
+            // 框選要先截下整個畫面（用 FFmpeg）：沒有錄影元件時停用並說明，和「框選截圖」一樣
+            let pick = region_pick_btn().enabled(!locked && app.env.ffmpeg.found);
+            let pick = if app.env.ffmpeg.found {
+                pick
+            } else {
+                pick.tooltip(tr!("請先下載錄影元件（上方的「下載並開始使用」）", "Download the recording component first (“Download and get started” above)"))
+            };
+            if app.s.follow_window.is_none() && pick.show(ui).clicked() {
                 super::snip::pick_region(app, |app: &mut UiApp, r: Option<DRect>| {
                     let Some(r) = r else { return };
                     if r.width < 16 || r.height < 16 {
