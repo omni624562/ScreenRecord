@@ -189,8 +189,8 @@ fn time_panel(ed: &mut Editor, ui: &mut egui::Ui, toast: &mut Option<(String, bo
     hint(
         ui,
         tr!(
-            "在時間軸上拖過一段即可選取，按「刪除這段」或 Delete 鍵刪除，或讓這段加速。",
-            "Drag across the timeline to select a section, then press “Delete section” or the Delete key to remove it, or speed it up."
+            "選取一段：在縮圖上按住 Shift 拖過去（或先打開「選取範圍」），也可以按「在這裡分割（S）」把影片切開後點一段。選好後按「刪除這段」或 Delete 鍵刪除，或讓這段加速。",
+            "To select a section, Shift + drag across the thumbnails (or turn on “Select range”), or press “Split here (S)” and click a section. Then press “Delete section” or the Delete key to remove it, or speed it up."
         ),
     );
     // 自動找出畫面不動又沒聲音的片段

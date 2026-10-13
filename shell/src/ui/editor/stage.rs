@@ -5,8 +5,8 @@ use crate::ui::theme;
 use eframe::egui::{self, pos2, vec2, Align2, Color32, CornerRadius, CursorIcon, Id, Pos2, Rect, Sense, Stroke, TextureHandle, TextureOptions};
 use screenrecorder_core::annotate::{self, Ann, AnnKind, Shape};
 use screenrecorder_core::edit::CropInput;
-use screenrecorder_core::trf;
 use screenrecorder_core::zoom;
+use screenrecorder_core::{tr, trf};
 use std::time::{Duration, Instant};
 
 /// 標註畫成與畫面同大小的圖（內容變了才重畫）
@@ -91,6 +91,10 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, stage_h: f3
             return;
         }
     }
+    // 預覽結果：直接顯示輸出的樣子（裁切、直式影片、背景與圓角）
+    if ed.previewing && !ed.is_shot() && result_view(ed, ui, ctx, avail_w, stage_h) {
+        return;
+    }
     let ar = if ed.vw > 0.0 && ed.vh > 0.0 { (ed.vw / ed.vh) as f32 } else { 16.0 / 9.0 };
     let (w, h) = if avail_w / stage_h > ar { (stage_h * ar, stage_h) } else { (avail_w, avail_w / ar) };
     let (outer, _) = ui.allocate_exact_size(vec2(avail_w, stage_h), Sense::hover());
@@ -99,8 +103,8 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, stage_h: f3
     let painter = ui.painter_at(outer);
     painter.rect_filled(rect, CornerRadius::ZERO, Color32::BLACK);
     // 預覽結果時顯示跟著點擊放大的效果（只放大影片與游標；標註照原本的位置畫）
-    let uv = if ed.previewing && ed.zoom_on() {
-        let (z, cx, cy) = zoom::at(&zoom::focus_points(&ed.clicks), ed.zoom, ed.now());
+    let uv = if ed.previewing && ed.zoom_active() {
+        let (z, cx, cy) = zoom::at(&zoom::focus_points(&ed.zoom_clicks()), ed.zoom, ed.now());
         let (hw, hh) = (0.5 / z as f32, 0.5 / z as f32);
         let (cx, cy) = ((cx as f32).clamp(hw, 1.0 - hw), (cy as f32).clamp(hh, 1.0 - hh));
         Rect::from_min_max(pos2(cx - hw, cy - hh), pos2(cx + hw, cy + hh))
@@ -247,6 +251,111 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, stage_h: f3
         painter.galley(pill.min + vec2(12.0, 6.0), g, Color32::WHITE);
     }
     interact(ed, ui, rect, &resp);
+}
+
+/// 預覽結果時的畫面：和輸出一樣的大小比例，只顯示裁切的範圍、直式影片（放在中間：上下是同一個畫面放大變暗；
+/// 跟著游標：9:16 的一塊）、背景與圓角；標註跟著影片縮小。沒有這些設定時回傳 false（照平常畫，跟著點擊放大另外處理）。
+/// 點一下畫面停止預覽。
+fn result_view(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, avail_w: f32, stage_h: f32) -> bool {
+    use screenrecorder_core::{edit::normalize_crop, vertical, video_frame};
+    if ed.vw <= 0.0 || ed.vh <= 0.0 {
+        return false;
+    }
+    let crop = if ed.crop_on && ed.vertical != 2 { normalize_crop(ed.spec.crop, ed.vw as i32, ed.vh as i32) } else { None };
+    let frame = ed.spec.frame.clone().filter(|_| ed.vertical == 0);
+    let vert = ed.vertical_spec().is_some();
+    if !vert && frame.is_none() && crop.is_none() {
+        return false;
+    }
+    let Some(tex) = ed.video_tex.clone() else { return false };
+    let Some((ow, oh)) = ed.output_size(crop) else { return false };
+    let ar = ow as f32 / oh.max(1) as f32;
+    let (w, h) = if avail_w / stage_h > ar { (stage_h * ar, stage_h) } else { (avail_w, avail_w / ar) };
+    let (outer, _) = ui.allocate_exact_size(vec2(avail_w, stage_h), Sense::hover());
+    let out = Rect::from_center_size(outer.center(), vec2(w, h));
+    let resp = ui.interact(out, Id::new("ed-stage-result"), Sense::click());
+    let painter = ui.painter_at(outer);
+    painter.rect_filled(out, CornerRadius::ZERO, Color32::BLACK);
+    let (vw, vh) = (ed.vw as f32, ed.vh as f32);
+    let unit = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
+    // 影片要顯示的部分（0～1）
+    let mut uv = crop.map(|c| Rect::from_min_max(pos2(c.x as f32 / vw, c.y as f32 / vh), pos2((c.x + c.width) as f32 / vw, (c.y + c.height) as f32 / vh))).unwrap_or(unit);
+    if ed.zoom_active() {
+        let (z, cx, cy) = zoom::at(&zoom::focus_points(&ed.zoom_clicks()), ed.zoom, ed.now());
+        let (hw, hh) = (0.5 / z as f32, 0.5 / z as f32);
+        let (cx, cy) = ((cx as f32).clamp(hw, 1.0 - hw), (cy as f32).clamp(hh, 1.0 - hh));
+        uv = Rect::from_min_max(pos2(cx - hw, cy - hh), pos2(cx + hw, cy + hh));
+    }
+    let content_ar = uv.width() * vw / (uv.height() * vh).max(1e-6);
+    let mut cover: Option<TextureHandle> = None;
+    let dest = match (ed.vertical, &frame) {
+        (1, _) => {
+            // 背景：同一個畫面放大到填滿、變暗（輸出還會模糊）
+            let bg = if content_ar > ar {
+                let wv = uv.height() * ar * vh / vw;
+                Rect::from_center_size(uv.center(), vec2(wv, uv.height()))
+            } else {
+                let hv = uv.width() / ar * vw / vh;
+                Rect::from_center_size(uv.center(), vec2(uv.width(), hv))
+            };
+            painter.image(tex.id(), out, bg, Color32::from_gray(90));
+            Rect::from_center_size(out.center(), vec2(out.width(), (out.width() / content_ar).min(out.height())))
+        }
+        (2, _) => {
+            let (cw, ch) = vertical::follow_size(ed.vw as i32, ed.vh as i32);
+            if ed.vertical_pan.is_empty() {
+                ed.vertical_pan = vertical::pan(&ed.vertical_track(), 30.0, cw as f64 / ed.vw);
+            }
+            let c = vertical::pan_at(&ed.vertical_pan, ed.now()).unwrap_or(0.5);
+            let x = vertical::crop_x(c, ed.vw as i32, cw) as f32;
+            let y = ((ed.vh as i32 - ch) / 2) as f32;
+            uv = Rect::from_min_size(pos2(x / vw, y / vh), vec2(cw as f32 / vw, ch as f32 / vh));
+            out
+        }
+        (_, Some(f)) => {
+            // 背景與圓角：底圖、影片、蓋在上面的遮罩（與輸出同一套畫法，大小變了才重畫）
+            let ppp = ctx.pixels_per_point();
+            let (pw, ph) = (((out.width() * ppp).round() as i32).max(16), ((out.height() * ppp).round() as i32).max(16));
+            let key = super::hash_of(&(serde_json::to_string(f).unwrap_or_default(), pw, ph));
+            if ed.stage_frame.as_ref().is_none_or(|(k, _, _)| *k != key) {
+                ed.stage_frame = video_frame::render(f, pw, ph).map(|(base, mask)| {
+                    let img = |pm: &tiny_skia::Pixmap| egui::ColorImage::from_rgba_premultiplied([pm.width() as usize, pm.height() as usize], pm.data());
+                    (key, ctx.load_texture("ed-frame-base", img(&base), TextureOptions::LINEAR), ctx.load_texture("ed-frame-mask", img(&mask), TextureOptions::LINEAR))
+                });
+            }
+            let l = video_frame::layout(f, pw, ph);
+            if let Some((_, base, mask)) = &ed.stage_frame {
+                painter.image(base.id(), out, unit, Color32::WHITE);
+                cover = Some(mask.clone());
+            }
+            Rect::from_min_size(out.min + vec2(l.x as f32, l.y as f32) / ppp, vec2(l.w as f32, l.h as f32) / ppp)
+        }
+        _ => out,
+    };
+    painter.image(tex.id(), dest, uv, Color32::WHITE);
+    cursor_overlay(ed, ctx, &painter.with_clip_rect(dest), dest, uv);
+    // 標註：影片座標 → 畫面（跟著影片縮放、裁切）
+    let t = ed.now();
+    let full_w = dest.width() / uv.width().max(1e-6);
+    update_sprites(ed, ctx, Rect::from_min_size(pos2(0.0, 0.0), vec2(full_w, full_w * vh / vw)), t);
+    let to_screen = |x: f64, y: f64| pos2(dest.left() + ((x as f32 / vw) - uv.left()) / uv.width() * dest.width(), dest.top() + ((y as f32 / vh) - uv.top()) / uv.height() * dest.height());
+    let clip = painter.with_clip_rect(dest);
+    for a in ed.ordered() {
+        if a.kind.is_effect() || t < a.start || t > a.end {
+            continue;
+        }
+        if let Some(sp) = ed.overlay.sprites.get(&a.id) {
+            let r = Rect::from_min_max(to_screen(a.x + sp.off.0, a.y + sp.off.1), to_screen(a.x + sp.off.0 + sp.size.0, a.y + sp.off.1 + sp.size.1));
+            clip.image(sp.tex.id(), r, unit, Color32::WHITE);
+        }
+    }
+    if let Some(m) = cover {
+        painter.image(m.id(), out, unit, Color32::WHITE);
+    }
+    if resp.on_hover_cursor(CursorIcon::PointingHand).on_hover_text(tr!("預覽結果中（點一下停止）", "Previewing the result (click to stop)")).clicked() {
+        ed.stop_preview();
+    }
+    true
 }
 
 /// 影片做成跟著游標的直式影片：自己會裁出 9:16 的一塊，不能另外裁切
