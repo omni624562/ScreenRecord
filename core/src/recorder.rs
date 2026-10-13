@@ -90,6 +90,25 @@ pub trait RecorderDeps: Send + Sync + 'static {
     }
 }
 
+/// 聲音來源改錄靜音時的通知（bits：audiopipe::SILENT_*）
+fn silent_notice_text(bits: u8) -> (&'static str, &'static str) {
+    use crate::audiopipe::{SILENT_MIC, SILENT_SYSTEM};
+    let title = match (bits & SILENT_MIC != 0, bits & SILENT_SYSTEM != 0) {
+        (true, true) => tr!("麥克風與系統聲音無法使用", "The microphone and system audio aren't working"),
+        (true, false) => tr!("麥克風無法使用", "The microphone isn't working"),
+        _ => tr!("系統聲音無法使用", "System audio isn't working"),
+    };
+    let text = if bits & SILENT_MIC != 0 {
+        tr!(
+            "目前錄到的是靜音。請確認麥克風有接好、沒有被其他程式（例如視訊會議）占用",
+            "Silence is being recorded. Check that the microphone is connected and not in use by another app (such as a video call)"
+        )
+    } else {
+        tr!("目前錄到的是靜音。請確認播放裝置（喇叭、耳機）正常", "Silence is being recorded. Check that your playback device (speakers or headphones) is working")
+    };
+    (title, text)
+}
+
 /// 剩餘空間低於這個值不開始錄影
 const DISK_MIN_START: u64 = 1 << 30;
 /// 錄影中剩餘空間低於這個值提醒一次
@@ -240,6 +259,11 @@ struct St {
     replay_pruned_at: u64,
     /// 開始不了的原因（每次錄影重設）
     fatal: Option<String>,
+    /// 聲音來源以靜音代替（audiopipe::SILENT_*）：現在、這次錄影曾經、曾經正常錄到的、已經通知過的
+    silent_now: u8,
+    silent_ever: u8,
+    audio_ok_ever: u8,
+    silent_notified: u8,
 }
 
 impl St {
@@ -255,6 +279,13 @@ impl St {
             LogLevel::Info => ("訊息", "INFO "),
         };
         crate::log::write(file_tag, &format!("{tag}：{text}"));
+    }
+
+    /// 錄影結果的 silent_audio：整支都是靜音的來源（SILENT_*）與只有一段是靜音的來源（PARTLY_*）
+    fn silent_result(&self) -> u8 {
+        let full = self.silent_ever & !self.audio_ok_ever;
+        let partly = self.silent_ever & self.audio_ok_ever;
+        full | (partly << 2)
     }
 
     fn recorded_ms(&self) -> u64 {
@@ -751,6 +782,7 @@ impl Recorder {
                 markers: st.markers.len() as u32,
                 result: st.result.clone(),
                 log: st.log.clone(),
+                silent_audio: if st.state == RecorderState::Idle { 0 } else { st.silent_now },
                 replay: st.replay_sec().filter(|_| st.state != RecorderState::Idle).map(|sec| ReplayStatus {
                     sec,
                     bytes: st.replay_bytes,
@@ -939,6 +971,7 @@ impl Recorder {
             st.cursor = Vec::new();
             st.audio_specs = audio_specs;
             st.audio_desc = None;
+            (st.silent_now, st.silent_ever, st.audio_ok_ever, st.silent_notified) = (0, 0, 0, 0);
             st.replay_saving = false;
             st.replay_saved = 0;
             st.replay_last = None;
@@ -1616,6 +1649,7 @@ impl Recorder {
         let mut stop_reason = None;
         let mut check_disk = false;
         let mut prune = None;
+        let mut silent_notice = 0;
         {
             let mut guard = self.lock();
             let st = &mut *guard;
@@ -1623,6 +1657,15 @@ impl Recorder {
             st.last_tick_at = now;
             if st.state != RecorderState::Recording {
                 return;
+            }
+            // 麥克風、系統聲音打不開或中斷（改錄靜音）：錄影面板標成紅色，第一次發生時用系統通知提醒
+            if let Some(a) = st.current.and_then(|i| st.segments[i].audio.as_ref()) {
+                let (silent, sources) = (a.silent(), a.sources());
+                st.silent_now = silent;
+                st.silent_ever |= silent;
+                st.audio_ok_ever |= sources & !silent;
+                silent_notice = silent & !st.silent_notified;
+                st.silent_notified |= silent;
             }
             if gap > SLEEP_GAP_MS && st.span_start.is_some() {
                 // 電腦睡眠後恢復：睡著的時間不算錄影長度（否則會誤觸最長錄影時間）；
@@ -1664,6 +1707,10 @@ impl Recorder {
                     let _ = seg.ctl.send(SegCmd::Kill);
                 }
             }
+        }
+        if silent_notice != 0 {
+            let (title, text) = silent_notice_text(silent_notice);
+            self.deps().notify(title, text, true);
         }
         if stop_reason.is_some() {
             self.stop_later(stop_reason);
@@ -1749,7 +1796,7 @@ impl Recorder {
             video_sec,
             bytes: std::fs::metadata(&out).map(|m| m.len()).ok(),
             message: trf!("已存下回溯錄影 {out_str}（{}）", "Saved replay {out_str} ({})", crate::format::video_clock(video_sec)),
-            parts_dir: None,
+            ..Default::default()
         })
     }
 
@@ -1851,6 +1898,7 @@ impl Recorder {
                 format!("已儲存 {out_str}（{real_frames} 張，{} 個分段）", parts.len())
             },
             parts_dir: None,
+            silent_audio: self.lock().silent_result(),
         })
     }
 }

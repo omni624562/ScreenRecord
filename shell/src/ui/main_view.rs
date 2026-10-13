@@ -10,6 +10,7 @@ use super::theme::{self, chip, segmented, switch, Btn, Icon, Tone};
 use super::{EntryAction, UiApp};
 use eframe::egui::{self, pos2, vec2, Align, Color32, CornerRadius, Id, Layout, Pos2, Rect, RichText, Sense, Stroke, StrokeKind, Ui, UiBuilder};
 use screenrecorder_core::actions;
+use screenrecorder_core::audiopipe::{SILENT_MIC, SILENT_SYSTEM};
 use screenrecorder_core::format::{clock, format_bytes, human_duration, output_size, speed_label, video_clock};
 use screenrecorder_core::i18n::is_en;
 use screenrecorder_core::types::{DownloadPhase, EncoderPreference, ExportFormat, ExportKind, ExportState, LibraryEntry, LogLevel, MethodPreference, RecorderState, Rect as DRect};
@@ -1272,6 +1273,14 @@ fn rec_body(app: &mut UiApp, ui: &mut Ui, r: &screenrecorder_core::types::Record
             ui.spacing_mut().item_spacing.x = 14.0;
             let (cell, _) = ui.allocate_exact_size(vec2(key_w, 18.0), Sense::hover());
             ui.painter().text(cell.left_center(), egui::Align2::LEFT_CENTER, k, theme::font(13.0), p.muted);
+            // 錄影中聲音來源打不開或中斷（改錄靜音）：紅色麥克風與說明
+            if audio_row && active && r.silent_audio != 0 {
+                let (icon, _) = ui.allocate_exact_size(vec2(16.0, 16.0), Sense::hover());
+                theme::paint_icon(ui.painter(), icon, if r.silent_audio & SILENT_MIC != 0 { Icon::Mic } else { Icon::Speaker }, p.rec);
+                let text = silent_text(r.silent_audio);
+                ui.add(egui::Label::new(RichText::new(text).font(theme::font(13.0)).color(p.rec)).truncate()).on_hover_text(trf!("{text}（錄到的是靜音）\n{v}", "{text} (recording silence)\n{v}"));
+                return;
+            }
             if audio_row && !active {
                 if let Some(l) = app.meter.as_ref().map(|m| m.levels()) {
                     // 音量表：每個來源一條，旁邊寫名稱
@@ -1891,6 +1900,33 @@ fn card_title(ui: &mut Ui, title: &str, color: Color32) -> bool {
     close
 }
 
+/// 改錄靜音的聲音來源：「麥克風無法使用」「系統聲音無法使用」
+fn silent_text(bits: u8) -> &'static str {
+    match (bits & SILENT_MIC != 0, bits & SILENT_SYSTEM != 0) {
+        (true, true) => tr!("麥克風與系統聲音無法使用", "Mic and system audio unavailable"),
+        (true, false) => tr!("麥克風無法使用", "Microphone unavailable"),
+        _ => tr!("系統聲音無法使用", "System audio unavailable"),
+    }
+}
+
+/// 錄影結果卡：沒錄到的聲音（整支或一段）
+fn silent_result_text(bits: u8) -> Option<String> {
+    let full = |b: u8| bits & b != 0;
+    let part = |b: u8| bits & (b << 2) != 0;
+    let mut v = vec![];
+    if full(SILENT_MIC) {
+        v.push(tr!("這支錄影沒有錄到麥克風聲音", "This recording has no microphone audio"));
+    } else if part(SILENT_MIC) {
+        v.push(tr!("這支錄影有一段沒有錄到麥克風聲音", "Part of this recording has no microphone audio"));
+    }
+    if full(SILENT_SYSTEM) {
+        v.push(tr!("這支錄影沒有錄到系統聲音", "This recording has no system audio"));
+    } else if part(SILENT_SYSTEM) {
+        v.push(tr!("這支錄影有一段沒有錄到系統聲音", "Part of this recording has no system audio"));
+    }
+    (!v.is_empty()).then(|| v.join(tr!("；", "; ")))
+}
+
 /// 錄影失敗的白話說明：發生什麼事、可以試試什麼、能不能改用相容模式再錄一次
 struct Failure {
     summary: &'static str,
@@ -1961,6 +1997,12 @@ fn result_card(app: &mut UiApp, ui: &mut Ui, res: &screenrecorder_core::types::R
                     app.main.dismissed_result = Some(key);
                 }
                 ui.label(RichText::new(file_name(path)).font(theme::mono(12.0))).on_hover_text(path);
+                if let Some(t) = silent_result_text(res.silent_audio) {
+                    ui.add(egui::Label::new(RichText::new(t).font(theme::font(12.5)).color(p.rec)).wrap()).on_hover_text(tr!(
+                        "錄影時麥克風或播放裝置打不開、或中途斷掉，那段錄到的是靜音",
+                        "The microphone or playback device couldn't be opened or disconnected while recording, so that part is silent"
+                    ));
+                }
                 action_buttons(app, ui, path, true, !audio);
                 // 只錄聲音：另存的 M4A
                 let m4a = screenrecorder_core::after_record::m4a_path(path).display().to_string();
