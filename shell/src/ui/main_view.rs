@@ -13,7 +13,7 @@ use screenrecorder_core::actions;
 use screenrecorder_core::audiopipe::{SILENT_MIC, SILENT_SYSTEM};
 use screenrecorder_core::format::{clock, format_bytes, human_duration, output_size, speed_label, video_clock};
 use screenrecorder_core::i18n::is_en;
-use screenrecorder_core::types::{DownloadPhase, EncoderPreference, ExportFormat, ExportKind, ExportState, LibraryEntry, LogLevel, MethodPreference, RecorderState, Rect as DRect};
+use screenrecorder_core::types::{DownloadPhase, EncoderPreference, ExportKind, ExportState, LibraryEntry, LogLevel, MethodPreference, RecorderState, Rect as DRect};
 use screenrecorder_core::{tr, trf};
 use std::time::Instant;
 
@@ -2477,7 +2477,8 @@ fn recent_strip(app: &mut UiApp, ui: &mut Ui) {
 fn recent_card(app: &mut UiApp, ui: &mut Ui, e: &LibraryEntry, date: String, w: f32) {
     let p = theme::pal(ui);
     let h = 80.0;
-    let (rect, resp) = ui.allocate_exact_size(vec2(w, h), Sense::hover());
+    // 整張卡片可以按右鍵（和「⋯」同一個選單）
+    let (rect, resp) = ui.allocate_exact_size(vec2(w, h), Sense::click());
     let painter = ui.painter_at(rect);
     painter.rect(rect, CornerRadius::same(theme::RADIUS_SM), if resp.hovered() { p.surface2 } else { p.surface }, Stroke::new(1.0, p.border), StrokeKind::Inside);
     let thumb = Rect::from_min_size(rect.min + vec2(6.0, 6.0), vec2((h - 12.0) * 16.0 / 9.0, h - 12.0));
@@ -2485,38 +2486,41 @@ fn recent_card(app: &mut UiApp, ui: &mut Ui, e: &LibraryEntry, date: String, w: 
     if let Some(t) = app.thumb(&e.media.path, e.media.mtime) {
         theme::paint_thumb(&painter, thumb, &t);
     }
+    // 縮圖：點一下就播放（中間有播放鍵，滑鼠移上去變明顯）
+    let thumb_resp = ui.interact(thumb, Id::new(("recent-thumb", &e.media.path)), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(tr!("播放", "Play"));
+    let hot_thumb = thumb_resp.hovered();
+    painter.circle_filled(thumb.center(), if hot_thumb { 15.0 } else { 13.0 }, Color32::from_black_alpha(if hot_thumb { 170 } else { 110 }));
+    let c = thumb.center();
+    painter.add(egui::Shape::convex_polygon(vec![c + vec2(-4.0, -6.5), c + vec2(7.0, 0.0), c + vec2(-4.0, 6.5)], Color32::WHITE, Stroke::NONE));
+    if thumb_resp.clicked() {
+        app.known.insert(e.media.path.clone(), e.clone());
+        app.act(EntryAction::Play, e.clone());
+    }
     let x = thumb.max.x + 10.0;
     let meta = format!("{}・{}", e.media.duration_sec.map(video_clock).unwrap_or_else(|| "—".into()), format_bytes(e.media.bytes));
-    painter.text(pos2(x, rect.min.y + 28.0), egui::Align2::LEFT_TOP, meta, theme::font(12.0), p.muted);
-    // 標籤
-    let mut tags: Vec<(String, Tone, String)> = vec![];
-    if is_cut_name(&e.media.name) {
-        tags.push((tr!("剪輯版", "Edited").into(), Tone::Warn, String::new()));
-    }
+    let meta_g = painter.layout_no_wrap(meta, theme::font(12.0), p.muted);
+    let meta_w = meta_g.size().x;
+    painter.galley(pos2(x, rect.min.y + 28.0), meta_g, p.muted);
+    // 另外做過的版本（加速版、GIF…）：在長度、大小後面寫「另有 2 個版本」（放不下時「+2 版本」），滑鼠提示列出來
     if !e.exports.is_empty() {
-        let all = |f: ExportFormat| e.exports.iter().all(|x| x.format == Some(f));
-        let kind = if all(ExportFormat::Gif) {
-            "GIF"
-        } else if all(ExportFormat::Webp) {
-            "WebP"
-        } else if e.exports.iter().all(|x| x.format.is_some_and(|f| f.is_animation())) {
-            tr!("動圖", "Anim")
-        } else {
-            tr!("加速", "Sped-up")
-        };
+        let n = e.exports.len();
         let list: Vec<String> = e.exports.iter().map(super::library_dialog::export_tag).collect();
-        tags.push((format!("{kind} {}", e.exports.len()), Tone::Accent, trf!("已製作 {}", "Made: {}", list.join(tr!("、", ", ")))));
+        let room = rect.max.x - 8.0 - (x + meta_w + 8.0);
+        let long = if is_en() { format!("{n} more version{}", if n == 1 { "" } else { "s" }) } else { format!("另有 {n} 個版本") };
+        let short = trf!("+{n} 版本", "+{n}");
+        let fits = |t: &str| ui.painter().layout_no_wrap(t.to_string(), theme::font_bold(11.5), p.accent).size().x + 14.0 <= room;
+        let text = if fits(&long) { long } else { short };
+        let chip_rect = Rect::from_min_max(pos2(x + meta_w + 8.0, rect.min.y + 24.0), pos2(rect.max.x - 6.0, rect.min.y + 46.0));
+        let ui = &mut ui.new_child(UiBuilder::new().max_rect(chip_rect).layout(Layout::left_to_right(Align::Center)));
+        chip(ui, &text, Tone::Accent, false).on_hover_text(trf!("已製作 {}", "Made: {}", list.join(tr!("、", ", "))));
     }
     // 第一列：日期（或名稱）與標籤
     let top = Rect::from_min_max(pos2(x, rect.min.y + 5.0), pos2(rect.max.x - 6.0, rect.min.y + 27.0));
     {
         let ui = &mut ui.new_child(UiBuilder::new().max_rect(top).layout(Layout::right_to_left(Align::Center)));
         ui.spacing_mut().item_spacing.x = 3.0;
-        for (t, tone, tip) in tags.iter().rev() {
-            let r = chip(ui, t, *tone, false);
-            if !tip.is_empty() {
-                r.on_hover_text(tip);
-            }
+        if is_cut_name(&e.media.name) {
+            chip(ui, tr!("剪輯版", "Edited"), Tone::Warn, false);
         }
         // 有聲音：灰色小喇叭（不用彩色標籤）
         if e.media.has_audio == Some(true) {
@@ -2527,7 +2531,7 @@ fn recent_card(app: &mut UiApp, ui: &mut Ui, e: &LibraryEntry, date: String, w: 
             ui.add(egui::Label::new(RichText::new(title).font(theme::font_bold(13.0))).truncate());
         });
     }
-    // 下方：操作按鈕
+    // 下方：操作按鈕（播放一直是深色，其他平常淡灰色，滑鼠移到卡片上才變深）
     let row = Rect::from_min_max(pos2(x - 6.0, rect.max.y - 32.0), pos2(rect.max.x - 4.0, rect.max.y - 4.0));
     {
         let ui = &mut ui.new_child(UiBuilder::new().max_rect(row).layout(Layout::left_to_right(Align::Center)));
@@ -2538,32 +2542,52 @@ fn recent_card(app: &mut UiApp, ui: &mut Ui, e: &LibraryEntry, date: String, w: 
             (EntryAction::Edit, Icon::Cut, tr!("剪輯", "Edit")),
             (EntryAction::Export, Icon::Fast, tr!("製作加速版 / GIF", "Make sped-up video / GIF")),
         ];
-        // 平常淡灰色，滑鼠移到卡片上才變深
         let hot = ui.rect_contains_pointer(rect);
         for (act, icon, tip) in acts {
-            if Btn::icon_only(icon).ghost().small().quiet(!hot).tooltip(tip).show(ui).clicked() {
+            if Btn::icon_only(icon).ghost().small().quiet(!hot && act != EntryAction::Play).tooltip(tip).show(ui).clicked() {
                 app.known.insert(e.media.path.clone(), e.clone());
                 app.act(act, e.clone());
             }
         }
-        let more = Btn::icon_only(Icon::More).ghost().small().quiet(!hot).tooltip(tr!("更多", "More")).show(ui);
-        egui::Popup::menu(&more).show(|ui| {
-            ui.set_min_width(180.0);
-            if ui.button(tr!("複製檔案（貼到 LINE、資料夾）", "Copy file (paste into LINE or a folder)")).clicked() {
-                app.act(EntryAction::CopyFile, e.clone());
-            }
-            if e.media.has_audio != Some(false) && ui.button(tr!("存成 M4A（只留聲音）", "Save as M4A (audio only)")).clicked() {
-                app.act(EntryAction::SaveAudio, e.clone());
-            }
-            if !e.media.chapters.is_empty() && ui.button(tr!("複製章節（貼到 YouTube）", "Copy chapters (for YouTube)")).clicked() {
-                app.act(EntryAction::CopyChapters, e.clone());
-            }
-            if ui.button(tr!("重新命名", "Rename")).clicked() {
-                super::library_dialog::rename_entry(app, e.clone());
-            }
-        });
+        let more = Btn::icon_only(Icon::More).ghost().small().quiet(!hot).tooltip(tr!("更多（也可以在卡片上按右鍵）", "More (or right-click the card)")).show(ui);
+        egui::Popup::menu(&more).show(|ui| recent_menu(app, ui, e));
     }
+    egui::Popup::context_menu(&resp).show(|ui| recent_menu(app, ui, e));
     resp.on_hover_text(&e.media.name);
+}
+
+/// 最近錄影卡片的選單（「⋯」與按右鍵相同）
+fn recent_menu(app: &mut UiApp, ui: &mut Ui, e: &LibraryEntry) {
+    ui.set_min_width(200.0);
+    let act = |app: &mut UiApp, a: EntryAction| {
+        app.known.insert(e.media.path.clone(), e.clone());
+        app.act(a, e.clone());
+    };
+    if ui.button(tr!("播放", "Play")).clicked() {
+        act(app, EntryAction::Play);
+    }
+    if ui.button(tr!("在資料夾中顯示", "Show in folder")).clicked() {
+        act(app, EntryAction::Reveal);
+    }
+    if ui.button(tr!("剪輯", "Edit")).clicked() {
+        act(app, EntryAction::Edit);
+    }
+    if ui.button(tr!("製作加速版 / GIF", "Make sped-up video / GIF")).clicked() {
+        act(app, EntryAction::Export);
+    }
+    ui.separator();
+    if ui.button(tr!("複製檔案（貼到 LINE、資料夾）", "Copy file (paste into LINE or a folder)")).clicked() {
+        act(app, EntryAction::CopyFile);
+    }
+    if e.media.has_audio != Some(false) && ui.button(tr!("存成 M4A（只留聲音）", "Save as M4A (audio only)")).clicked() {
+        act(app, EntryAction::SaveAudio);
+    }
+    if !e.media.chapters.is_empty() && ui.button(tr!("複製章節（貼到 YouTube）", "Copy chapters (for YouTube)")).clicked() {
+        act(app, EntryAction::CopyChapters);
+    }
+    if ui.button(tr!("重新命名", "Rename")).clicked() {
+        super::library_dialog::rename_entry(app, e.clone());
+    }
 }
 
 // ───────────── 倒數 ─────────────
