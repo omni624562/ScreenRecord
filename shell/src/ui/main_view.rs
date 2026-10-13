@@ -779,9 +779,22 @@ fn settings_bar(app: &mut UiApp, ui: &mut Ui) {
         let chars: Vec<char> = dir.chars().collect();
         (1..chars.len()).map(|i| format!("…{}", chars[i..].iter().collect::<String>())).find(|t| fits(t)).unwrap_or_default()
     };
-    if item(&short, Icon::Folder).enabled(!locked).tooltip(trf!("儲存位置：{dir}", "Save location: {dir}")).show(ui).clicked() {
-        open = Some(Page::Save);
-    }
+    // 點一下：開啟資料夾或換一個資料夾（不用進設定打字）
+    let dir_resp = item(&short, Icon::Folder).enabled(!locked).tooltip(trf!("儲存位置：{dir}", "Save location: {dir}")).show(ui);
+    egui::Popup::menu(&dir_resp).show(|ui| {
+        ui.set_min_width(200.0);
+        if ui.button(tr!("在檔案總管開啟", "Open in File Explorer")).clicked() {
+            if let Err(e) = actions::open(actions::OpenAction::Folder, &dir) {
+                app.toast(e.message().to_string(), true);
+            }
+        }
+        if ui.button(tr!("選擇其他資料夾…", "Choose another folder…")).clicked() {
+            settings_dialog::choose_output_dir(app);
+        }
+        if ui.button(tr!("儲存位置設定…", "Save location settings…")).clicked() {
+            open = Some(Page::Save);
+        }
+    });
     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
         if set_btn.show(ui).clicked() {
             open = Some(Page::Record);

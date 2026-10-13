@@ -34,7 +34,6 @@ pub struct SettingsDialog {
     pub page: Page,
     max_custom_open: bool,
     max_text: String,
-    dir_text: Option<String>,
     /// 正在設定第幾個快速鍵（等使用者按下新的組合）
     key_capture: Option<usize>,
     key_msg: Option<String>,
@@ -45,7 +44,7 @@ pub struct SettingsDialog {
 pub fn open(app: &mut UiApp, page: Page) {
     match &mut app.settings_dlg {
         Some(d) => d.page = page,
-        None => app.settings_dlg = Some(SettingsDialog { page, max_custom_open: false, max_text: String::new(), dir_text: None, key_capture: None, key_msg: None, apps: None }),
+        None => app.settings_dlg = Some(SettingsDialog { page, max_custom_open: false, max_text: String::new(), key_capture: None, key_msg: None, apps: None }),
     }
 }
 
@@ -149,7 +148,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                 ui.add_enabled_ui(!locked, |ui| match d.page {
                     Page::Record => record_page(app, &mut d, ui),
                     Page::Audio => audio_page(app, &mut d, ui),
-                    Page::Save => save_page(app, &mut d, ui),
+                    Page::Save => save_page(app, ui),
                     Page::Keys => keys_page(app, &mut d, ui),
                     Page::Advanced => advanced_page(app, ui),
                 });
@@ -668,30 +667,59 @@ fn app_audio_row(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
 
 // ───────────── 儲存位置 ─────────────
 
-fn save_page(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
+fn save_page(app: &mut UiApp, ui: &mut Ui) {
     let p = theme::pal(ui);
     form_section(ui, tr!("儲存位置", "Save location"), |_| {});
-    let text = d.dir_text.get_or_insert_with(|| app.s.output_dir.clone());
-    let r = ui.add(egui::TextEdit::singleline(text).desired_width(f32::INFINITY).min_size(vec2(0.0, 30.0)).vertical_align(Align::Center).hint_text(app.s.out_dir(&app.env)));
-    if r.changed() {
-        app.s.output_dir = text.clone();
-        app.save_settings();
-        app.main.dir_changed_at = Some(Instant::now());
-        app.ctx.request_repaint_after(std::time::Duration::from_millis(620));
-    }
-    if !r.has_focus() {
-        d.dir_text = None;
-    }
-    ui.add_space(6.0);
+    let dir = app.s.out_dir(&app.env);
+    let custom = !app.s.output_dir.trim().is_empty();
+    // 目前的資料夾（不用打字）：點一下或按「選擇資料夾」用 Windows 的視窗選
+    let mut choose = false;
     ui.horizontal(|ui| {
-        ui.label(RichText::new(tr!("留空時使用預設位置", "Leave empty to use the default location")).font(theme::font(12.0)).color(p.muted));
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            if Btn::new(tr!("在檔案總管開啟", "Open in File Explorer")).icon(Icon::Folder).small().show(ui).clicked() {
-                if let Err(e) = actions::open(actions::OpenAction::Folder, &app.s.out_dir(&app.env)) {
-                    app.toast(e.message().to_string(), true);
-                }
+        let btn = Btn::new(tr!("選擇資料夾…", "Choose folder…")).icon(Icon::Folder);
+        let w = ui.available_width() - btn.width(ui) - ui.spacing().item_spacing.x;
+        let (rect, resp) = ui.allocate_exact_size(vec2(w, 32.0), Sense::click());
+        let hover = resp.hovered();
+        ui.painter().rect(rect, CornerRadius::same(6), p.surface, Stroke::new(1.0, if hover { p.accent } else { p.border_strong }), egui::StrokeKind::Inside);
+        theme::paint_icon(ui.painter(), Rect::from_center_size(pos2(rect.min.x + 18.0, rect.center().y), vec2(16.0, 16.0)), Icon::Folder, p.muted);
+        // 太長時保留結尾（資料夾名稱比較重要）
+        let room = rect.width() - 40.0;
+        let fits = |t: &str| ui.painter().layout_no_wrap(t.to_string(), theme::font(13.0), p.text).size().x <= room;
+        let shown = if fits(&dir) {
+            dir.clone()
+        } else {
+            let chars: Vec<char> = dir.chars().collect();
+            (1..chars.len()).map(|i| format!("…{}", chars[i..].iter().collect::<String>())).find(|t| fits(t)).unwrap_or_default()
+        };
+        ui.painter().text(pos2(rect.min.x + 32.0, rect.center().y), egui::Align2::LEFT_CENTER, shown, theme::font(13.0), p.text);
+        if resp.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(trf!("{dir}\n點一下選擇其他資料夾", "{dir}\nClick to choose another folder")).clicked() {
+            choose = true;
+        }
+        if btn.show(ui).clicked() {
+            choose = true;
+        }
+    });
+    if choose {
+        choose_output_dir(app);
+    }
+    ui.add_space(4.0);
+    // 狀態一列、按鈕一列（英文的說明比較長，放同一列會疊在一起）
+    if !std::path::Path::new(&dir).is_dir() {
+        ui.label(RichText::new(tr!("找不到這個資料夾，錄影時會自動建立", "This folder doesn't exist yet. It will be created when you record")).font(theme::font(12.0)).color(p.warn));
+    } else if !custom {
+        ui.label(RichText::new(tr!("預設位置（「影片」資料夾裡的 Timelapse）", "Default location (Timelapse in your Videos folder)")).font(theme::font(12.0)).color(p.muted));
+    }
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        if Btn::new(tr!("在檔案總管開啟", "Open in File Explorer")).icon(Icon::Folder).small().show(ui).clicked() {
+            if let Err(e) = actions::open(actions::OpenAction::Folder, &dir) {
+                app.toast(e.message().to_string(), true);
             }
-        });
+        }
+        if custom && Btn::new(tr!("改回預設位置", "Use default location")).small().ghost().tooltip(trf!("改存到 {}", "Save to {} instead", app.env.default_output_dir)).show(ui).clicked() {
+            set_output_dir(app, String::new());
+            let dir = app.s.out_dir(&app.env);
+            app.toast(trf!("之後的錄影與截圖會存到 {dir}", "New recordings and screenshots will be saved to {dir}"), false);
+        }
     });
     form_divider(ui);
     form_section(ui, tr!("檔名", "File names"), |_| {});
@@ -704,6 +732,33 @@ fn save_page(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
     form_hint(ui, tr!("加速版、GIF、剪輯版存在同一個資料夾，檔名接在原檔後面。", "Sped-up versions, GIFs and edited versions are saved in the same folder, named after the original file."), p.muted);
     form_divider(ui);
     after_record_section(app, ui);
+}
+
+/// 用 Windows 的視窗選儲存位置（主畫面下方的資料夾按鈕也用）
+pub fn choose_output_dir(app: &mut UiApp) {
+    let current = app.s.out_dir(&app.env);
+    app.spawn(async move { tokio::task::spawn_blocking(move || actions::pick_output_dir(&current)).await.unwrap_or(Ok(None)) }, |app, r| match r {
+        Ok(Some(dir)) => {
+            // 選的就是預設位置：存成空白（之後預設位置變了也跟著）
+            let value = if dir.eq_ignore_ascii_case(&app.env.default_output_dir) { String::new() } else { dir };
+            set_output_dir(app, value);
+            let dir = app.s.out_dir(&app.env);
+            app.toast(trf!("之後的錄影與截圖會存到 {dir}", "New recordings and screenshots will be saved to {dir}"), false);
+        }
+        Ok(None) => {}
+        Err(e) => app.toast(e.message().to_string(), true),
+    });
+}
+
+fn set_output_dir(app: &mut UiApp, value: String) {
+    if app.s.output_dir == value {
+        return;
+    }
+    app.s.output_dir = value;
+    app.save_settings();
+    // 重新讀取最近錄影
+    app.main.dir_changed_at = Some(Instant::now());
+    app.ctx.request_repaint_after(std::time::Duration::from_millis(620));
 }
 
 /// 錄完自動處理：剪掉沒動靜的片段、產生字幕、壓縮

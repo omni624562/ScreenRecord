@@ -442,6 +442,26 @@ pub fn open(action: OpenAction, path: &str) -> Result<()> {
     Ok(())
 }
 
+/// 用 Windows 的選擇資料夾視窗選儲存位置（會等到使用者選好或取消，請在背景執行緒呼叫）；
+/// 選好後確認可以在那裡存檔（不存在就建立）。取消時 Ok(None)
+pub fn pick_output_dir(current: &str) -> Result<Option<String>> {
+    let start = Some(PathBuf::from(current.trim())).filter(|p| p.is_dir());
+    let Some(dir) = crate::filepick::pick_folder(tr!("選擇儲存錄影與截圖的資料夾", "Choose a folder for recordings and screenshots"), start).map_err(Error::config)? else {
+        return Ok(None);
+    };
+    check_writable_dir(&dir)?;
+    Ok(Some(dir.display().to_string()))
+}
+
+/// 確認可以在這個資料夾存檔（不存在就建立）
+pub fn check_writable_dir(dir: &Path) -> Result<()> {
+    std::fs::create_dir_all(dir).map_err(|e| Error::config(trf!("無法建立這個資料夾：{e}", "Couldn't create this folder: {e}")))?;
+    let probe = dir.join(format!(".screenrecorder-{}.tmp", crate::paths::now_ms()));
+    std::fs::write(&probe, b"").map_err(|e| Error::config(trf!("這個資料夾不能存檔（{e}），請選別的資料夾", "Files can't be saved in this folder ({e}). Choose another folder")))?;
+    let _ = std::fs::remove_file(&probe);
+    Ok(())
+}
+
 /// 用預設瀏覽器開啟外部網址（更新頁面、FFmpeg 下載頁）
 pub fn open_url(url: &str) -> Result<()> {
     let u = url.trim();
