@@ -436,7 +436,7 @@ fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table:
         let mut all2 = all;
         let ui2 = &mut ui
             .new_child(UiBuilder::new().max_rect(Rect::from_min_max(head.min + vec2(10.0, 0.0), pos2(head.min.x + col_x(1) - table.min.x, head.max.y))).layout(Layout::left_to_right(Align::Center)));
-        if ui2.checkbox(&mut all2, "").on_hover_text(tr!("全選本頁", "Select all on this page")).changed() {
+        if theme::check(ui2, &mut all2, "").on_hover_text(tr!("全選本頁", "Select all on this page")).changed() {
             for e in &rows {
                 d.toggle(&e.media.path, all2);
             }
@@ -487,7 +487,7 @@ fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table:
         let rui = &mut ui.new_child(UiBuilder::new().max_rect(row).layout(Layout::left_to_right(Align::Center)));
         rui.add_space(10.0);
         let mut on = d.selected.contains(&e.media.path);
-        if rui.checkbox(&mut on, "").changed() {
+        if theme::check(rui, &mut on, "").changed() {
             d.toggle(&e.media.path, on);
         }
         if new_day {
@@ -544,7 +544,7 @@ fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table:
                 }
             }
             let tip = if e.exports.is_empty() { tr!("重新命名", "Rename") } else { tr!("重新命名（加速版、GIF 一起改）", "Rename (sped-up versions and GIFs too)") };
-            if Btn::icon_only(Icon::Edit).ghost().small().quiet(!hot).tooltip(tip).show(aui).clicked() {
+            if Btn::icon_only(Icon::Rename).ghost().small().quiet(!hot).tooltip(tip).show(aui).clicked() {
                 *rename = Some(e.clone());
             }
             // 不常用的收進「⋯」
@@ -573,7 +573,7 @@ fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table:
             let sui = &mut ui.new_child(UiBuilder::new().max_rect(row).layout(Layout::left_to_right(Align::Center)));
             sui.add_space(10.0);
             let mut on = d.selected.contains(&x.media.path);
-            if sui.checkbox(&mut on, "").changed() {
+            if theme::check(sui, &mut on, "").changed() {
                 if on {
                     d.selected.insert(x.media.path.clone());
                 } else {
@@ -726,7 +726,7 @@ fn shot_grid(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, area: Re
         {
             let cui = &mut ui.new_child(UiBuilder::new().max_rect(cb.shrink2(vec2(4.0, 1.0))));
             let mut v = on;
-            if cui.checkbox(&mut v, "").changed() {
+            if theme::check(cui, &mut v, "").changed() {
                 d.toggle(&e.media.path, v);
             }
         }
@@ -741,13 +741,13 @@ fn shot_grid(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, area: Re
         bui.label(RichText::new(format!("{size}{}", format_bytes(e.media.bytes))).font(theme::font(12.0)).color(p.muted));
         bui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
-            if Btn::icon_only(Icon::Edit).ghost().small().quiet(!hot).tooltip(tr!("重新命名", "Rename")).show(ui).clicked() {
+            if Btn::icon_only(Icon::Rename).ghost().small().quiet(!hot).tooltip(tr!("重新命名", "Rename")).show(ui).clicked() {
                 *rename = Some(e.clone());
             }
             if Btn::icon_only(Icon::Folder).ghost().small().quiet(!hot).tooltip(tr!("在資料夾中顯示", "Show in folder")).show(ui).clicked() {
                 *action = Some((EntryAction::Reveal, e.clone()));
             }
-            if Btn::icon_only(Icon::Cut)
+            if Btn::icon_only(Icon::Edit)
                 .ghost()
                 .small()
                 .quiet(!hot)

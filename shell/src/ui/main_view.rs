@@ -742,9 +742,9 @@ fn settings_bar(app: &mut UiApp, ui: &mut Ui) {
     let mut open: Option<Page> = None;
     // 錄影：太窄時只寫 FPS
     let rec_full = rec.join(tr!("・", " · "));
-    let rec_text = if measure(ui, &rec_full, Icon::Camera) + 200.0 <= room { rec_full.clone() } else { rec[0].clone() };
-    room -= measure(ui, &rec_text, Icon::Camera);
-    if item(&rec_text, Icon::Camera).enabled(!locked).tooltip(trf!("錄影：{rec_full}", "Recording: {rec_full}")).show(ui).clicked() {
+    let rec_text = if measure(ui, &rec_full, Icon::Video) + 200.0 <= room { rec_full.clone() } else { rec[0].clone() };
+    room -= measure(ui, &rec_text, Icon::Video);
+    if item(&rec_text, Icon::Video).enabled(!locked).tooltip(trf!("錄影：{rec_full}", "Recording: {rec_full}")).show(ui).clicked() {
         open = Some(Page::Record);
     }
     // 聲音：太窄時只剩圖示
@@ -1527,7 +1527,7 @@ fn action_buttons(app: &mut UiApp, ui: &mut Ui, path: &str, edit: bool, export: 
         if edit && Btn::new(tr!("剪輯", "Edit")).icon(Icon::Cut).small().show(ui).clicked() {
             app.act_path(EntryAction::Edit, path.to_string());
         }
-        if export && Btn::new(tr!("製作加速版 / GIF", "Speed up / GIF")).icon(Icon::Export).small().show(ui).clicked() {
+        if export && Btn::new(tr!("製作加速版 / GIF", "Speed up / GIF")).icon(Icon::Fast).small().show(ui).clicked() {
             app.act_path(EntryAction::Export, path.to_string());
         }
     });
@@ -1802,7 +1802,7 @@ fn recent_strip(app: &mut UiApp, ui: &mut Ui) {
             }
             // 一頁放幾張依寬度決定
             // 右邊「全部錄影」「全部截圖」：一樣寬，圖示與文字靠左對齊
-            let rec_btn = Btn::new(tr!("全部錄影", "All recordings")).icon(Icon::List).small().left();
+            let rec_btn = Btn::new(tr!("全部錄影", "All recordings")).icon(Icon::Video).small().left();
             let shot_btn = Btn::new(tr!("全部截圖", "All screenshots")).icon(Icon::Camera).small().left();
             let btn_w = rec_btn.width(ui).max(shot_btn.width(ui)).max(LIB_BTN_W);
             let lib_w = btn_w + 8.0;
@@ -1913,7 +1913,7 @@ fn recent_card(app: &mut UiApp, ui: &mut Ui, e: &LibraryEntry, date: String, w: 
             (EntryAction::Play, Icon::Play, tr!("播放", "Play")),
             (EntryAction::Reveal, Icon::Folder, tr!("在資料夾中顯示", "Show in folder")),
             (EntryAction::Edit, Icon::Cut, tr!("剪輯", "Edit")),
-            (EntryAction::Export, Icon::Export, tr!("製作加速版 / GIF", "Make sped-up video / GIF")),
+            (EntryAction::Export, Icon::Fast, tr!("製作加速版 / GIF", "Make sped-up video / GIF")),
         ];
         // 平常淡灰色，滑鼠移到卡片上才變深
         let hot = ui.rect_contains_pointer(rect);

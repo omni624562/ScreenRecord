@@ -22,10 +22,10 @@ pub enum Page {
 
 /// 分頁：中文名稱、英文名稱、圖示
 const PAGES: [(Page, &str, &str, Icon); 5] = [
-    (Page::Record, "錄影", "Recording", Icon::Camera),
+    (Page::Record, "錄影", "Recording", Icon::Video),
     (Page::Audio, "聲音", "Audio", Icon::Speaker),
     (Page::Save, "儲存位置", "Save location", Icon::Folder),
-    (Page::Keys, "快速鍵", "Shortcuts", Icon::List),
+    (Page::Keys, "快速鍵", "Shortcuts", Icon::Keyboard),
     (Page::Advanced, "進階", "Advanced", Icon::Settings),
 ];
 
@@ -33,7 +33,6 @@ const PAGES: [(Page, &str, &str, Icon); 5] = [
 pub struct SettingsDialog {
     pub page: Page,
     max_custom_open: bool,
-    max_text: String,
     /// 正在設定第幾個快速鍵（等使用者按下新的組合）
     key_capture: Option<usize>,
     key_msg: Option<String>,
@@ -44,7 +43,7 @@ pub struct SettingsDialog {
 pub fn open(app: &mut UiApp, page: Page) {
     match &mut app.settings_dlg {
         Some(d) => d.page = page,
-        None => app.settings_dlg = Some(SettingsDialog { page, max_custom_open: false, max_text: String::new(), key_capture: None, key_msg: None, apps: None }),
+        None => app.settings_dlg = Some(SettingsDialog { page, max_custom_open: false, key_capture: None, key_msg: None, apps: None }),
     }
 }
 
@@ -472,19 +471,17 @@ fn record_page(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
             if sel >= 0.0 {
                 app.s.max_minutes = sel;
                 app.save_settings();
-            } else {
-                d.max_text = if app.s.max_minutes > 0.0 { app.s.max_minutes.to_string() } else { String::new() };
+            } else if app.s.max_minutes <= 0.0 {
+                // 從「不限」改成自訂：先給一個常用的長度，再用 − ＋ 調整
+                app.s.max_minutes = 45.0;
+                app.save_settings();
             }
         }
         if custom {
-            if !d.max_custom_open && d.max_text.is_empty() {
-                d.max_text = app.s.max_minutes.to_string();
-            }
-            let r = ui.add(egui::TextEdit::singleline(&mut d.max_text).desired_width(64.0).min_size(vec2(0.0, 30.0)).vertical_align(Align::Center).hint_text(tr!("分鐘", "min")));
-            ui.label(theme::muted(ui, tr!("分鐘", "min")));
-            if r.changed() {
-                let v: f64 = d.max_text.trim().parse().unwrap_or(0.0);
-                app.s.max_minutes = if v.is_finite() && v > 0.0 { v.round().min(screenrecorder_core::format::MAX_MINUTES_MAX) } else { 0.0 };
+            // 用 − ＋ 調整（也可以直接打數字；看不懂的輸入不會變成「不限」）
+            let mut v = app.s.max_minutes.max(1.0);
+            if theme::stepper(ui, Id::new("max-minutes"), &mut v, 5.0, 1.0..=screenrecorder_core::format::MAX_MINUTES_MAX, 0, tr!("分鐘", "min")) {
+                app.s.max_minutes = v.round();
                 app.save_settings();
             }
         }
@@ -492,8 +489,7 @@ fn record_page(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
     form_hint(ui, tr!("時間到自動停止並儲存。", "Recording stops and saves automatically when time is up."), p.muted);
     form_row(ui, tr!("操作視窗", "Main window"), |ui| {
         let mut hide = app.s.hide_ui;
-        if ui
-            .checkbox(&mut hide, tr!("開始錄影時縮小", "Minimize when recording starts"))
+        if switch(ui, &mut hide, tr!("開始錄影時縮小", "Minimize when recording starts"), true)
             .on_hover_text(tr!("視窗不在錄影範圍內時不縮小", "Not minimized when the window is outside the capture area"))
             .changed()
         {
@@ -939,7 +935,7 @@ fn advanced_page(app: &mut UiApp, ui: &mut Ui) {
     form_section(ui, tr!("新版本", "Updates"), |_| {});
     form_row(ui, tr!("自動檢查", "Auto check"), |ui| {
         let mut on = app.update.enabled;
-        if ui.checkbox(&mut on, tr!("啟動後與每 12 小時檢查", "Check at startup and every 12 hours")).changed() {
+        if switch(ui, &mut on, tr!("啟動後與每 12 小時檢查", "Check at startup and every 12 hours"), true).changed() {
             app.core.set_check_updates(on);
             app.update = actions::update_state(&app.core);
         }

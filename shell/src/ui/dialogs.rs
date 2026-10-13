@@ -2,7 +2,7 @@
 
 use super::theme::{self, Btn};
 use super::UiApp;
-use eframe::egui::{self, vec2, Align, Align2, Color32, CornerRadius, Id, Layout, RichText};
+use eframe::egui::{self, vec2, Align, Align2, Color32, CornerRadius, Id, Layout, RichText, Stroke};
 use screenrecorder_core::version::{APP_VERSION, CHANGELOG};
 use screenrecorder_core::{tr, trf};
 use std::time::Instant;
@@ -171,12 +171,49 @@ pub fn show_toast(app: &mut UiApp, ctx: &egui::Context) {
     ctx.request_repaint_after(t.until - Instant::now());
     let p = theme::pal_ctx(ctx);
     let (fill, fg) = if t.error { (p.rec, Color32::WHITE) } else { (p.text, p.surface) };
-    egui::Area::new(Id::new("toast")).anchor(Align2::CENTER_BOTTOM, vec2(0.0, -28.0)).order(egui::Order::Tooltip).interactable(false).show(ctx, |ui| {
+    let has_actions = !t.actions.is_empty();
+    let mut clicked: Option<usize> = None;
+    let mut close = false;
+    let resp = egui::Area::new(Id::new("toast")).anchor(Align2::CENTER_BOTTOM, vec2(0.0, -28.0)).order(egui::Order::Tooltip).interactable(has_actions).show(ctx, |ui| {
         egui::Frame::new().fill(fill).corner_radius(CornerRadius::same(10)).inner_margin(egui::Margin::symmetric(16, 10)).show(ui, |ui| {
-            ui.set_max_width(560.0);
-            ui.label(RichText::new(&t.text).color(fg));
+            ui.set_max_width(if has_actions { 680.0 } else { 560.0 });
+            if !has_actions {
+                ui.label(RichText::new(&t.text).color(fg));
+                return;
+            }
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(&t.text).color(fg));
+                ui.add_space(8.0);
+                for (i, a) in t.actions.iter().enumerate() {
+                    let b = egui::Button::new(RichText::new(&a.label).color(fg).strong())
+                        .fill(fg.gamma_multiply(0.14))
+                        .stroke(Stroke::new(1.0, fg.gamma_multiply(0.35)))
+                        .corner_radius(CornerRadius::same(6));
+                    if ui.add(b).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                        clicked = Some(i);
+                    }
+                }
+                let x = egui::Button::new(RichText::new("✕").color(fg)).frame(false);
+                if ui.add(x).on_hover_text(tr!("關閉", "Close")).clicked() {
+                    close = true;
+                }
+            });
         });
     });
+    // 滑鼠在提示上時不會消失
+    if has_actions && resp.response.contains_pointer() {
+        if let Some(t) = &mut app.toast {
+            t.until = t.until.max(Instant::now() + std::time::Duration::from_millis(1500));
+        }
+    }
+    if let Some(i) = clicked {
+        if let Some(mut t) = app.toast.take() {
+            let a = t.actions.swap_remove(i);
+            (a.run)(app);
+        }
+    } else if close {
+        app.toast = None;
+    }
 }
 
 /// 更新說明（CHANGELOG.md 的簡易轉換：## / ### 標題、- 清單、`程式碼`、[文字](網址)）

@@ -404,6 +404,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                     }
                     if image {
                         if Btn::new(tr!("釘在桌面", "Pin to desktop"))
+                            .icon(Icon::Pin)
                             .small()
                             .tooltip(tr!(
                                 "把這張圖變成浮在最上層的小視窗，方便對照（點兩下或 Esc 關閉）",
@@ -431,6 +432,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                             act = Act::Qr;
                         }
                         if Btn::new(tr!("複製", "Copy"))
+                            .icon(Icon::Copy)
                             .small()
                             .tooltip(tr!("複製到剪貼簿（可直接貼到 LINE、Word、信件）", "Copy to clipboard (paste it straight into LINE, Word or an email)"))
                             .show(ui)
@@ -458,6 +460,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                             act = Act::Grab;
                         }
                         if Btn::new(tr!("複製檔案", "Copy file"))
+                            .icon(Icon::Copy)
                             .small()
                             .tooltip(tr!("複製這個影片檔，可以直接貼到 LINE、Teams、信件或資料夾", "Copy this video file so you can paste it into LINE, Teams, an email or a folder"))
                             .show(ui)
@@ -467,7 +470,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                         }
                     }
                     if !image && !is_export_name(&e.media.name) {
-                        if Btn::new(tr!("製作加速版 / GIF", "Make sped-up video / GIF")).icon(Icon::Export).small().show(ui).clicked() {
+                        if Btn::new(tr!("製作加速版 / GIF", "Make sped-up video / GIF")).icon(Icon::Fast).small().show(ui).clicked() {
                             act = Act::Entry(EntryAction::Export);
                         }
                         if Btn::new(tr!("剪輯", "Edit")).icon(Icon::Cut).small().show(ui).clicked() {

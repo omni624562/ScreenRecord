@@ -61,6 +61,20 @@ pub struct Toast {
     pub text: String,
     pub error: bool,
     pub until: Instant,
+    /// 提示上的按鈕（例如「在資料夾中顯示」）；有按鈕時停留比較久、滑鼠在上面時不會消失
+    pub actions: Vec<ToastAction>,
+}
+
+/// 提示上的一個按鈕
+pub struct ToastAction {
+    pub label: String,
+    pub run: Box<dyn FnOnce(&mut UiApp)>,
+}
+
+impl ToastAction {
+    pub fn new(label: impl Into<String>, run: impl FnOnce(&mut UiApp) + 'static) -> Self {
+        Self { label: label.into(), run: Box::new(run) }
+    }
 }
 
 /// 開檔類型
@@ -347,10 +361,36 @@ impl UiApp {
     }
 
     pub fn toast(&mut self, text: impl Into<String>, error: bool) {
+        self.toast_with(text, error, vec![]);
+    }
+
+    /// 帶按鈕的提示（例如「在資料夾中顯示」）：停留 8 秒，滑鼠移上去時不會消失，可按 ✕ 關閉
+    pub fn toast_with(&mut self, text: impl Into<String>, error: bool, actions: Vec<ToastAction>) {
         let text = text.into();
-        let secs = if error { 6 } else { 3 };
-        self.toast = Some(Toast { text, error, until: Instant::now() + Duration::from_secs(secs) });
+        let secs = if !actions.is_empty() {
+            8
+        } else if error {
+            6
+        } else {
+            3
+        };
+        self.toast = Some(Toast { text, error, until: Instant::now() + Duration::from_secs(secs), actions });
         self.ctx.request_repaint();
+    }
+
+    /// 存好一個檔案的提示：[開啟] [在資料夾中顯示]
+    pub fn toast_file(&mut self, text: impl Into<String>, path: &str) {
+        let (p1, p2) = (path.to_string(), path.to_string());
+        let mut actions = vec![];
+        if path.to_lowercase().ends_with(".mp4") || dialogs::is_image(path) || path.to_lowercase().ends_with(".gif") || path.to_lowercase().ends_with(".webp") {
+            actions.push(ToastAction::new(tr!("開啟", "Open"), move |app: &mut UiApp| app.act_path(EntryAction::Play, p1)));
+        }
+        actions.push(ToastAction::new(tr!("在資料夾中顯示", "Show in folder"), move |app: &mut UiApp| {
+            if let Err(e) = actions::open(actions::OpenAction::Reveal, &p2) {
+                app.toast(e.message().to_string(), true);
+            }
+        }));
+        self.toast_with(text, false, actions);
     }
 
     /// 執行可能失敗的動作：失敗時顯示錯誤
@@ -584,7 +624,7 @@ impl UiApp {
                 let core = self.core.clone();
                 self.toast(tr!("正在存成 M4A…", "Saving as M4A…"), false);
                 self.spawn(async move { actions::save_audio(&core, &path).await }, |app, r| match r {
-                    Ok(out) => app.toast(trf!("已存成 {}（和影片在同一個資料夾）", "Saved as {} (in the same folder as the video)", dialogs::file_name(&out)), false),
+                    Ok(out) => app.toast_file(trf!("已存成 {}（和影片在同一個資料夾）", "Saved as {} (in the same folder as the video)", dialogs::file_name(&out)), &out),
                     Err(e) => app.toast(e.message().to_string(), true),
                 });
             }
