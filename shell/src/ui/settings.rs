@@ -119,6 +119,8 @@ pub struct UiSettings {
     pub replay_sec: u32,
     /// 主畫面展開事件紀錄（預設收起來）
     pub show_log: bool,
+    /// 只錄聲音時另存一份 M4A（core 的 after_record.rs 讀這個欄位）
+    pub audio_m4a: bool,
 }
 
 /// 講稿提詞的字級範圍、不透明度下限
@@ -230,6 +232,7 @@ impl UiSettings {
             separate_audio: boolean("separateAudio").unwrap_or(false),
             replay_sec: screenrecorder_core::replay::sec_from_ui(v),
             show_log: boolean("showLog").unwrap_or(false),
+            audio_m4a: screenrecorder_core::after_record::audio_m4a(v),
         };
         s.fix_monitor(env);
         s

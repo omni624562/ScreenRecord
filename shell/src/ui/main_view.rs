@@ -706,17 +706,37 @@ fn audio_panel(app: &mut UiApp, ui: &mut Ui, area: Rect) {
         (trf!("會錄：{}", "Will record: {}", parts.join(tr!("、", ", "))), false)
     };
     ui.painter().text(c + vec2(0.0, 20.0 * s), egui::Align2::CENTER_CENTER, line, theme::font(13.5), if warn { p.warn } else { p.text });
-    let tips = tr!(
-        ["畫面不會錄下來，存成 MP4（畫面是一張「只錄聲音」的卡片，檔案幾乎只有聲音的大小）", "一樣可以暫停、加標記、剪輯、降噪；在錄影的「更多」選單選「存成 M4A」就只留下聲音"],
-        [
-            "No video is recorded. Saved as MP4 with an “Audio only” card, so the file stays small",
-            "You can still pause, add markers, edit and reduce noise. “More” → “Save as M4A” keeps just the audio"
-        ]
-    );
-    for (i, t) in tips.iter().enumerate() {
-        ui.painter().text(c + vec2(0.0, (48.0 + i as f32 * 22.0) * s), egui::Align2::CENTER_CENTER, *t, theme::font(12.0), p.muted);
-    }
-    ui.allocate_rect(area, Sense::hover());
+    // 存成：M4A（只有聲音，建議）／ MP4
+    let label = tr!("存成：", "Save as:");
+    let items = [(true, tr!("M4A（只有聲音，建議）", "M4A (audio only, recommended)")), (false, "MP4")];
+    let text_w = |t: &str, size: f32| ui.painter().layout_no_wrap(t.to_string(), theme::font(size), Color32::WHITE).size().x;
+    let row_w = text_w(label, 13.0) + 8.0 + items.iter().map(|(_, t)| text_w(t, 13.5) + 24.0).sum::<f32>() + 8.0;
+    let top = c.y + 40.0 * s;
+    let row = Rect::from_min_size(pos2(c.x - row_w / 2.0, top), vec2(row_w + 4.0, 36.0));
+    let mut m4a = app.s.audio_m4a;
+    let locked = app.locked();
+    ui.scope_builder(UiBuilder::new().max_rect(row).layout(Layout::left_to_right(Align::Center)), |ui| {
+        ui.label(RichText::new(label).font(theme::font(13.0)).color(p.muted));
+        if segmented(ui, &mut m4a, &items, !locked) {
+            app.s.audio_m4a = m4a;
+            app.save_settings();
+        }
+    });
+    let hint = if m4a {
+        tr!(
+            "M4A 是一般的聲音檔，手機、電腦都能直接播放。程式也會留一份 MP4，可以在「最近錄影」播放、剪輯、降噪。",
+            "M4A is a regular audio file that plays on any phone or computer. An MP4 copy is also kept so you can play, edit and reduce noise in “Recent recordings”."
+        )
+    } else {
+        tr!(
+            "存成 MP4：畫面是一張「只錄聲音」的卡片，檔案幾乎只有聲音的大小；一樣可以暫停、加標記、剪輯、降噪。",
+            "Saved as MP4 with an “Audio only” card, so the file stays small. You can still pause, add markers, edit and reduce noise."
+        )
+    };
+    let hint_rect = Rect::from_min_max(pos2((c.x - 270.0).max(area.min.x + 12.0), top + 42.0), pos2((c.x + 270.0).min(area.max.x - 12.0), area.max.y - 4.0));
+    ui.scope_builder(UiBuilder::new().max_rect(hint_rect).layout(Layout::top_down(Align::Center)), |ui| {
+        ui.add(egui::Label::new(RichText::new(hint).font(theme::font(12.0)).color(p.muted)).wrap().halign(Align::Center));
+    });
 }
 
 /// 目前的框選範圍：自訂範圍，或單一螢幕裡框選的部分（沒有時是整個螢幕）
@@ -1233,10 +1253,12 @@ fn rec_body(app: &mut UiApp, ui: &mut Ui, r: &screenrecorder_core::types::Record
         values[1] = format_bytes(rp.bytes);
     }
     // 高度不夠時省略比較不重要的列：待命時的影片長度、檔案大小（都還是 0）；錄影中的影片長度（和上面的計時差不多）、錄影方式
+    // 只錄聲音時沒有「錄影方式」
+    let audio_only = app.s.source_type == SourceType::Audio;
     let show = |i: usize| match i {
         0 => !tight || replay.is_some(),
         1 => !tight || active,
-        3 => !(tight && active),
+        3 => !(tight && active) && !audio_only,
         _ => true,
     };
     let key_w = keys.iter().enumerate().filter(|(i, _)| show(*i)).map(|(_, k)| ui.painter().layout_no_wrap(k.to_string(), theme::font(13.0), p.muted).size().x).fold(0.0, f32::max);
@@ -1929,12 +1951,37 @@ fn result_card(app: &mut UiApp, ui: &mut Ui, res: &screenrecorder_core::types::R
         ui.set_width(ui.available_width());
         match (&res.path, res.ok) {
             (Some(path), true) => {
-                let saved = trf!("錄影已儲存・{}・{}", "Recording saved · {} · {}", video_clock(res.video_sec), format_bytes(res.bytes.unwrap_or(0)));
+                let audio = screenrecorder_core::after_record::is_audio_recording(path);
+                let saved = if audio {
+                    trf!("錄音已儲存・{}・{}", "Audio recording saved · {} · {}", video_clock(res.video_sec), format_bytes(res.bytes.unwrap_or(0)))
+                } else {
+                    trf!("錄影已儲存・{}・{}", "Recording saved · {} · {}", video_clock(res.video_sec), format_bytes(res.bytes.unwrap_or(0)))
+                };
                 if card_title(ui, &saved, p.ok) {
                     app.main.dismissed_result = Some(key);
                 }
                 ui.label(RichText::new(file_name(path)).font(theme::mono(12.0))).on_hover_text(path);
-                action_buttons(app, ui, path, true, true);
+                action_buttons(app, ui, path, true, !audio);
+                // 只錄聲音：另存的 M4A
+                let m4a = screenrecorder_core::after_record::m4a_path(path).display().to_string();
+                if audio && std::path::Path::new(&m4a).is_file() {
+                    ui.add_space(2.0);
+                    ui.add(egui::Label::new(RichText::new(trf!("也存成 M4A：{}", "Also saved as M4A: {}", file_name(&m4a))).font(theme::font(12.5))).truncate()).on_hover_text(&m4a);
+                    ui.horizontal_wrapped(|ui| {
+                        if Btn::new(tr!("播放 M4A", "Play M4A")).icon(Icon::Play).small().tooltip(tr!("用 Windows 預設的程式播放", "Play with the Windows default app")).show(ui).clicked() {
+                            screenrecorder_core::desktop::open_with_explorer(&m4a, false);
+                        }
+                        if Btn::new(tr!("在資料夾中顯示", "Show in folder")).icon(Icon::Folder).small().show(ui).clicked() {
+                            screenrecorder_core::desktop::open_with_explorer(&m4a, true);
+                        }
+                        if Btn::new(tr!("複製檔案（貼到 LINE）", "Copy file (paste into LINE)")).icon(Icon::Copy).small().show(ui).clicked() {
+                            match screenrecorder_core::clipboard::copy_files(std::slice::from_ref(&m4a)) {
+                                Ok(()) => app.toast(tr!("已複製檔案，可以直接貼到 LINE、Teams、信件或資料夾", "File copied. Paste it into LINE, Teams, an email or a folder"), false),
+                                Err(e) => app.toast(e, true),
+                            }
+                        }
+                    });
+                }
             }
             _ => {
                 if card_title(ui, tr!("錄影沒有完成", "The recording didn't finish"), p.rec) {

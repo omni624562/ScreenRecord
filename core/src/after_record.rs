@@ -52,6 +52,23 @@ impl AfterRecord {
     }
 }
 
+/// 只錄聲音存成 M4A 的設定（操作視窗設定的 audioM4a；沒有設定時是要）
+pub const AUDIO_M4A_KEY: &str = "audioM4a";
+
+pub fn audio_m4a(ui: Option<&Value>) -> bool {
+    ui.and_then(|u| u.get(AUDIO_M4A_KEY)).and_then(Value::as_bool).unwrap_or(true)
+}
+
+/// 只錄聲音的錄影（錄影器用「錄音_」開頭的檔名）
+pub fn is_audio_recording(path: &str) -> bool {
+    Path::new(path).file_name().is_some_and(|n| n.to_string_lossy().starts_with("錄音_"))
+}
+
+/// 只錄聲音時另存的 M4A（和錄影同一個資料夾、同名）
+pub fn m4a_path(video: &str) -> std::path::PathBuf {
+    Path::new(video).with_extension("m4a")
+}
+
 /// 處理中的狀態（介面顯示、可以取消）
 #[derive(Debug, Clone)]
 pub struct AfterStatus {
@@ -195,7 +212,18 @@ impl App {
 
     /// 錄影存好之後（由錄影器呼叫）：依設定處理，完成時用系統匣通知
     pub async fn after_record(self: Arc<Self>, video: String) {
-        let after = AfterRecord::from_ui(self.settings.load().ui.as_ref());
+        let ui = self.settings.load().ui;
+        // 只錄聲音、設定「存成 M4A」（預設）：另存一份只有聲音的 M4A（不重新壓縮，一下子就好）
+        if is_audio_recording(&video) && audio_m4a(ui.as_ref()) {
+            match crate::actions::save_audio(&self, &video).await {
+                Ok(out) => info!("[錄音] 存成 M4A：{out}"),
+                Err(e) => {
+                    warn!("[錄音] 無法存成 M4A：{}", e.message());
+                    self.notify(tr!("錄音", "Audio recording"), e.message(), true);
+                }
+            }
+        }
+        let after = AfterRecord::from_ui(ui.as_ref());
         if !after.any() {
             return;
         }
@@ -427,6 +455,13 @@ impl App {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn audio_recordings_are_also_saved_as_m4a() {
+        assert!(is_audio_recording("C:\\v\\錄音_2026-10-13_10-00-00.mp4") && !is_audio_recording("C:\\v\\Rec_2026-10-13_10-00-00.mp4"));
+        assert!(audio_m4a(None) && audio_m4a(Some(&json!({}))) && !audio_m4a(Some(&json!({ "audioM4a": false }))));
+        assert_eq!(m4a_path("/v/錄音_1.mp4"), std::path::PathBuf::from("/v/錄音_1.m4a"));
+    }
 
     #[test]
     fn reads_settings() {
