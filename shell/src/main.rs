@@ -90,7 +90,7 @@ fn main() {
     if !args.no_tray && hand_over(&args, &argv) {
         return;
     }
-    info!("螢幕錄影 {APP_VERSION} — 原速錄影、事後加速匯出");
+    info!("螢幕錄影 {APP_VERSION} — 原速錄影、事後加速匯出{}", if argv.iter().any(|a| a == "--tray") { "（--tray：開機自動啟動，只常駐系統匣）" } else { "" });
     info!("程式資料夾：{}", app_dir().display());
 
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().expect("無法建立執行環境");
@@ -236,6 +236,8 @@ fn main() {
     info!("{}", if tray_ok { "已常駐於系統匣：右鍵點圖示可錄影或結束程式" } else { "系統匣無法使用：關掉操作視窗就會結束程式" });
     if !args.no_tray {
         core.schedule_update_checks();
+        // 開機自動啟動指向別的位置的程式（例如舊版留在原本的資料夾）：改成這個
+        rt.spawn(screenrecorder_core::desktop::repoint_autostart());
     }
     let c = core.clone();
     rt.spawn(async move {
