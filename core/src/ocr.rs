@@ -227,24 +227,36 @@ fn engine() -> Result<windows::Media::Ocr::OcrEngine, String> {
             }
         }
     }
-    OcrEngine::TryCreateFromUserProfileLanguages()
-        .map_err(|_| {
-            crate::tr!(
-                "Windows 沒有可用的文字辨識語言：請到「設定 → 時間與語言 → 語言與地區」新增「中文（繁體，台灣）」，並在語言選項裡安裝「光學字元辨識」",
-                "Windows has no text recognition language: go to Settings → Time & language → Language & region, add a language (e.g. English or Chinese (Traditional, Taiwan)), and install “Optical character recognition” in its language options"
-            )
-            .to_string()
-        })
+    OcrEngine::TryCreateFromUserProfileLanguages().map_err(|_| no_language().to_string())
+}
+
+/// Windows 沒有安裝文字辨識語言時的錯誤（介面看到這個訊息就改顯示「開啟 Windows 語言設定」的對話框）
+pub fn no_language() -> &'static str {
+    crate::tr!(
+        "Windows 沒有可用的文字辨識語言：請到「設定 → 時間與語言 → 語言與地區」新增「中文（繁體，台灣）」，並在語言選項裡安裝「光學字元辨識」",
+        "Windows has no text recognition language: go to Settings → Time & language → Language & region, add a language (e.g. English or Chinese (Traditional, Taiwan)), and install “Optical character recognition” in its language options"
+    )
+}
+
+/// 這個錯誤是「沒有安裝文字辨識語言」
+pub fn is_no_language(msg: &str) -> bool {
+    msg == no_language()
+}
+
+/// 開發測試：SCREENRECORDER_FAKE_OCR=nolang 時當作 Windows 沒有安裝文字辨識語言
+#[cfg(not(windows))]
+fn fake_no_language() -> Option<String> {
+    (cfg!(debug_assertions) && std::env::var("SCREENRECORDER_FAKE_OCR").as_deref() == Ok("nolang")).then(|| no_language().to_string())
 }
 
 #[cfg(not(windows))]
 pub fn recognize(_rgba: &[u8], _w: u32, _h: u32) -> Result<(String, String), String> {
-    Err(crate::tr!("文字辨識只支援 Windows", "Text recognition is only available on Windows").into())
+    Err(fake_no_language().unwrap_or_else(|| crate::tr!("文字辨識只支援 Windows", "Text recognition is only available on Windows").into()))
 }
 
 #[cfg(not(windows))]
 pub fn recognize_words(_rgba: &[u8], _w: u32, _h: u32) -> Result<Vec<Vec<Word>>, String> {
-    Err(crate::tr!("自動遮個資要用 Windows 的文字辨識，只支援 Windows", "Auto-redact uses Windows text recognition and is only available on Windows").into())
+    Err(fake_no_language().unwrap_or_else(|| crate::tr!("自動遮個資要用 Windows 的文字辨識，只支援 Windows", "Auto-redact uses Windows text recognition and is only available on Windows").into()))
 }
 
 #[cfg(test)]

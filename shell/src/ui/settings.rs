@@ -94,6 +94,10 @@ pub struct UiSettings {
     pub rec_bar_pos: Option<[i32; 2]>,
     /// 截圖後在右下角顯示小縮圖
     pub shot_preview: bool,
+    /// 框選截圖放開滑鼠就直接存檔（不留下可以調整的範圍與工具列；core 的框選畫面讀這個欄位）
+    pub snip_instant: bool,
+    /// 截圖「另存新檔」上次存到的資料夾
+    pub shot_save_dir: String,
     /// 看過哪一版的新功能介紹（例如 "3.1"）
     pub seen_version: String,
     /// 上次加到截圖或影片上的圖片（Logo）
@@ -228,6 +232,8 @@ impl UiSettings {
             rec_bar: o.get("recBar").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default(),
             rec_bar_pos: o.get("recBarPos").and_then(|v| serde_json::from_value::<[i32; 2]>(v.clone()).ok()),
             shot_preview: boolean("shotPreview").unwrap_or(true),
+            snip_instant: boolean("snipInstant").unwrap_or(false),
+            shot_save_dir: string("shotSaveDir").unwrap_or_default(),
             seen_version: string("seenVersion").unwrap_or_default(),
             last_picture: string("lastPicture").unwrap_or_default(),
             ui_scale: num("uiScale").map(|v| v as u32).filter(|v| UI_SCALES.contains(v)).unwrap_or(100),

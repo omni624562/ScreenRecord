@@ -1592,6 +1592,9 @@ impl Editor {
 
     /// 影片畫面（套用目前看得到的馬賽克 / 模糊）
     fn update_video(&mut self, ctx: &egui::Context) {
+        if self.is_shot() {
+            return shot::update_tiles(self, ctx);
+        }
         let Some(f) = &self.frame else { return };
         let effects: Vec<&Ann> = self.anns.iter().filter(|a| a.kind.is_effect() && f.time >= a.start && f.time <= a.end).collect();
         let key = hash_of(&(f.time.to_bits(), f.width, serde_json::to_string(&effects).unwrap_or_default()));
@@ -1695,7 +1698,12 @@ pub fn hash_of<T: std::hash::Hash>(v: &T) -> u64 {
 
 /// 表情符號選單用的彩色表情符號圖（用與影片相同的繪製，Windows 上是彩色的）
 fn emoji_textures(ctx: &egui::Context) -> Vec<TextureHandle> {
-    EMOJIS
+    // 彩色表情符號畫起來慢：畫過一次就記在 egui 的記憶裡，之後開啟編輯視窗直接用
+    let id = Id::new("editor-emoji-textures");
+    if let Some(list) = ctx.data(|d| d.get_temp::<Vec<TextureHandle>>(id)) {
+        return list;
+    }
+    let list: Vec<TextureHandle> = EMOJIS
         .iter()
         .enumerate()
         .filter_map(|(i, e)| {
@@ -1731,7 +1739,9 @@ fn emoji_textures(ctx: &egui::Context) -> Vec<TextureHandle> {
             let img = egui::ColorImage::from_rgba_premultiplied([pm.width() as usize, pm.height() as usize], pm.data());
             Some(ctx.load_texture(format!("emoji-{i}"), img, TextureOptions::LINEAR))
         })
-        .collect()
+        .collect();
+    ctx.data_mut(|d| d.insert_temp(id, list.clone()));
+    list
 }
 
 // ───────────── 視窗 ─────────────
@@ -1740,6 +1750,13 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
     let Some(mut ed) = app.editor.take() else {
         return;
     };
+    // 截圖還在讀：只顯示「正在開啟圖片…」（按了關閉就直接關，還沒有修改）
+    if shot::show_opening(&mut ed, ctx) {
+        if !ed.close {
+            app.editor = Some(ed);
+        }
+        return;
+    }
     let mut toast: Option<(String, bool)> = None;
     ed.poll_player();
     ed.renumber_steps();
@@ -2606,13 +2623,7 @@ fn keyboard(ed: &mut Editor, ctx: &egui::Context, toast: &mut Option<(String, bo
         ed.save_now = true;
     }
     if ed.is_shot() {
-        if key(Modifiers::COMMAND, Key::S) {
-            ed.pending = Some(shot::Act::Save);
-        }
-        // Ctrl+C 會先變成「複製」事件
-        if key(Modifiers::COMMAND, Key::C) || ctx.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Copy))) {
-            ed.pending = Some(shot::Act::Copy);
-        }
+        shot::keys(ed, ctx, toast);
     }
     shortcuts(ed, ctx, toast, key);
 }

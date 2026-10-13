@@ -641,6 +641,11 @@ fn tool_grid(ed: &mut Editor, ui: &mut egui::Ui, tools: &[(Tool, &str, &str)], c
                     ed.emoji_tex.get(ed.emoji),
                 );
                 ui.painter().text(pos2(r.center().x, r.bottom() - 11.0), Align2::CENTER_CENTER, label, theme::font(12.0), ink);
+                // 截圖：提示顯示快速鍵「箭頭（A）」
+                let resp = match super::shot::tool_tip(tool, label).filter(|_| shot) {
+                    Some(t) => resp.on_hover_text(t),
+                    None => resp,
+                };
                 if can && resp.on_hover_cursor(CursorIcon::PointingHand).clicked() {
                     ed.tool = if on { None } else { Some(tool) };
                     if ed.tool.is_some() {
@@ -713,25 +718,15 @@ fn ann_panel(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context) {
         trf!("無法讀取{w}尺寸，不能加上標註。", "Couldn't read the {w} size, so annotations can't be added.")
     } else {
         match ed.tool {
-            Some(Tool::Ann(AnnKind::Step)) => {
-                trf!("在{w}上依序點擊，放置編號 1、2、3…；完成後按 Esc 或再按一次「編號」。", "Click on the {w} in order to place numbers 1, 2, 3…; when done, press Esc or click “Number” again.")
-            }
-            Some(Tool::Emoji) => trf!(
-                "先在上面選表情符號，再在{w}上點擊放置（可連續放）；完成後按 Esc 或再按一次「表情符號」。",
-                "Pick an emoji above, then click on the {w} to place it (you can place several); when done, press Esc or click “Emoji” again."
-            ),
-            Some(Tool::Ann(AnnKind::Text)) => trf!("在{w}上點一下放置。按 Esc 取消。", "Click on the {w} to place it. Press Esc to cancel."),
-            Some(Tool::Ann(AnnKind::Pen)) => trf!(
-                "在{w}上按住拖曳手繪（可以連續畫好幾筆）；完成後按 Esc 或再按一次「畫筆」。",
-                "Drag on the {w} to draw freehand (you can draw several strokes); when done, press Esc or click “Pen” again."
-            ),
-            Some(Tool::Ann(AnnKind::Magnify)) => trf!(
-                "在{w}上按住拖曳框出要放大的地方，圓裡會顯示中心附近放大的樣子。按 Esc 取消。",
-                "Drag on the {w} to select the area to magnify; the circle shows a zoomed-in view of its center. Press Esc to cancel."
-            ),
-            Some(_) => trf!("在{w}上按住拖曳放置。按 Esc 取消。", "Drag on the {w} to place it. Press Esc to cancel."),
+            // 提示短一點，句子不要在「復／原」、「）」之間斷行
+            Some(Tool::Ann(AnnKind::Step)) => trf!("在{w}上依序點一下，放上編號 1、2、3…\n按 Esc 結束", "Click on the {w} in order to place 1, 2, 3…\nPress Esc when done"),
+            Some(Tool::Emoji) => trf!("選好表情符號，在{w}上點一下放置，可連續放\n按 Esc 結束", "Pick an emoji, then click on the {w} to place it (repeatable)\nPress Esc when done"),
+            Some(Tool::Ann(AnnKind::Text)) => trf!("在{w}上點一下放置文字。按 Esc 取消", "Click on the {w} to place it. Esc cancels"),
+            Some(Tool::Ann(AnnKind::Pen)) => trf!("在{w}上按住拖曳手繪，可以畫好幾筆\n按 Esc 結束", "Drag on the {w} to draw (several strokes are fine)\nPress Esc when done"),
+            Some(Tool::Ann(AnnKind::Magnify)) => trf!("在{w}上拖曳框出要放大的地方。按 Esc 取消", "Drag on the {w} over the area to magnify. Esc cancels"),
+            Some(_) => trf!("在{w}上按住拖曳放置。按 Esc 取消", "Drag on the {w} to place it. Esc cancels"),
             None if ed.selected().is_some() => String::new(),
-            None if shot => tr!("① 選工具 ② 在圖上點一下或拖曳放置。Ctrl+Z 復原、Ctrl+Y 重做。", "① Pick a tool ② Click or drag on the image to place it. Ctrl+Z to undo, Ctrl+Y to redo.").into(),
+            None if shot => tr!("選工具後在圖上點一下或拖曳。Ctrl+Z 復原", "Pick a tool, then click or drag on the image. Ctrl+Z undoes").into(),
             None => tr!(
                 "① 選工具 ② 在影片上點一下或拖曳放置。標註從目前位置起出現 3 秒，可在時間軸下方的標註軌拖曳調整。",
                 "① Pick a tool ② Click or drag on the video to place it. Annotations show for 3 s from the current position; drag them on the annotation track below the timeline to adjust."

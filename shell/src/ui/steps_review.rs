@@ -1,0 +1,224 @@
+//! 整理步驟截圖：截好的步驟列成清單（小圖、說明、時間），可以刪掉、調整順序、改文件標題，
+//! 再做成教學文件（一個 HTML 檔，圖片包在裡面）並用瀏覽器開啟。
+
+use super::dialogs::Ask;
+use super::theme::{self, Btn, Icon};
+use super::UiApp;
+use eframe::egui::{self, vec2, Align, ColorImage, CornerRadius, Id, Layout, RichText, Sense, TextureHandle, TextureOptions};
+use screenrecorder_core::steps::{self, Draft, Step};
+use screenrecorder_core::{tr, trf};
+
+/// 小圖的長邊（像素）
+const THUMB: u32 = 360;
+/// 清單裡小圖的大小
+const THUMB_W: f32 = 168.0;
+const THUMB_H: f32 = 96.0;
+
+pub struct Review {
+    draft: Draft,
+    title: String,
+    items: Vec<Item>,
+    /// 正在做成文件
+    busy: bool,
+}
+
+struct Item {
+    step: Step,
+    tex: Option<TextureHandle>,
+    /// 小圖讀不到
+    failed: bool,
+}
+
+enum Act {
+    Up(usize),
+    Down(usize),
+    Delete(usize),
+    Build,
+    Close,
+}
+
+/// 開啟整理視窗（App::steps_draft 有步驟時）
+pub fn open(app: &mut UiApp) {
+    let Some(draft) = app.core.steps_draft() else { return };
+    if app.steps_review.as_ref().is_some_and(|r| r.draft == draft) {
+        return;
+    }
+    let items = draft.steps.iter().map(|s| Item { step: s.clone(), tex: None, failed: false }).collect();
+    app.steps_review = Some(Review { title: draft.title(), draft, items, busy: false });
+    load_thumb(app, 0);
+}
+
+/// 一張一張在背景讀小圖（讀好一張就顯示一張）
+fn load_thumb(app: &mut UiApp, i: usize) {
+    let Some(r) = &app.steps_review else { return };
+    let Some(step) = r.draft.steps.get(i) else { return };
+    let (path, image) = (r.draft.image_path(step), step.image.clone());
+    app.spawn(async move { tokio::task::spawn_blocking(move || steps::thumb(&path, THUMB)).await.ok().flatten() }, move |app, t| {
+        let Some(r) = &mut app.steps_review else { return };
+        let Some(it) = r.items.iter_mut().find(|it| it.step.image == image) else { return load_thumb(app, i + 1) };
+        match t {
+            Some((w, h, rgba)) => {
+                let img = ColorImage::from_rgba_unmultiplied([w as usize, h as usize], &rgba);
+                it.tex = Some(app.ctx.load_texture(format!("step-{image}"), img, TextureOptions::LINEAR));
+            }
+            None => it.failed = true,
+        }
+        load_thumb(app, i + 1);
+    });
+}
+
+pub fn show(app: &mut UiApp, ctx: &egui::Context) {
+    let Some(mut r) = app.steps_review.take() else { return };
+    let mut act = None;
+    let modal = egui::Modal::new(Id::new("steps-review")).frame(theme::modal_frame(ctx)).show(ctx, |ui| {
+        ui.set_width(600.0);
+        let p = theme::pal(ui);
+        ui.horizontal(|ui| {
+            ui.label(RichText::new(tr!("整理步驟", "Organize steps")).font(theme::font_bold(17.0)));
+            ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
+                if Btn::icon_only(Icon::Close).ghost().small().enabled(!r.busy).tooltip(tr!("關閉（Esc）", "Close (Esc)")).show(ui).clicked() {
+                    act = Some(Act::Close);
+                }
+            });
+        });
+        ui.add_space(2.0);
+        let n = r.items.len();
+        let sub = if screenrecorder_core::i18n::is_en() {
+            format!("{n} step{}. Delete the ones you don't need or change the order, then make the guide.", if n == 1 { "" } else { "s" })
+        } else {
+            format!("共 {n} 步。不要的步驟可以刪掉、順序可以調整，好了再做成教學文件。")
+        };
+        ui.label(RichText::new(sub).color(p.muted));
+        ui.add_space(10.0);
+        ui.label(RichText::new(tr!("文件標題", "Title")).font(theme::font_bold(13.0)));
+        ui.add_enabled(!r.busy, egui::TextEdit::singleline(&mut r.title).desired_width(f32::INFINITY).font(theme::font(14.0)).margin(vec2(8.0, 6.0)));
+        ui.add_space(10.0);
+        let max_h = (ctx.content_rect().height() - 330.0).clamp(160.0, 520.0);
+        egui::ScrollArea::vertical().max_height(max_h).auto_shrink([false, true]).show(ui, |ui| {
+            if r.items.is_empty() {
+                ui.add_space(12.0);
+                ui.label(RichText::new(tr!("所有步驟都刪掉了。", "All steps have been deleted.")).color(p.muted));
+                ui.add_space(12.0);
+            }
+            for (i, it) in r.items.iter().enumerate() {
+                egui::Frame::new().stroke(egui::Stroke::new(1.0, p.border)).corner_radius(CornerRadius::same(theme::RADIUS_SM)).inner_margin(8.0).show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.horizontal(|ui| {
+                        let (rect, resp) = ui.allocate_exact_size(vec2(THUMB_W, THUMB_H), Sense::hover());
+                        ui.painter().rect_filled(rect, CornerRadius::same(4), p.surface2);
+                        match &it.tex {
+                            Some(t) => {
+                                let s = t.size_vec2();
+                                let k = (THUMB_W / s.x).min(THUMB_H / s.y);
+                                let img = egui::Rect::from_center_size(rect.center(), s * k);
+                                ui.painter().image(t.id(), img, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), egui::Color32::WHITE);
+                                // 移上去看大一點
+                                resp.on_hover_ui(|ui| {
+                                    ui.add(egui::Image::new((t.id(), s * (THUMB as f32 / s.x.max(s.y)).max(1.0))));
+                                });
+                            }
+                            None if it.failed => {
+                                ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, tr!("讀不到圖", "Can't read image"), theme::font(12.0), p.muted);
+                            }
+                            None => {
+                                ui.put(egui::Rect::from_center_size(rect.center(), vec2(18.0, 18.0)), egui::Spinner::new());
+                            }
+                        }
+                        ui.add_space(6.0);
+                        ui.vertical(|ui| {
+                            ui.add_space(4.0);
+                            ui.label(RichText::new(trf!("步驟 {}", "Step {}", i + 1)).font(theme::font_bold(14.0)));
+                            ui.add(egui::Label::new(steps::caption(&it.step.window)).truncate());
+                            ui.label(RichText::new(&it.step.time).font(theme::font(12.0)).color(p.muted));
+                        });
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            if Btn::icon_only(Icon::Trash).ghost().small().enabled(!r.busy).tooltip(tr!("刪除這一步", "Delete this step")).show(ui).clicked() {
+                                act = Some(Act::Delete(i));
+                            }
+                            if Btn::icon_only(Icon::ChevD).ghost().small().enabled(!r.busy && i + 1 < n).tooltip(tr!("往下移", "Move down")).show(ui).clicked() {
+                                act = Some(Act::Down(i));
+                            }
+                            if Btn::icon_only(Icon::ChevU).ghost().small().enabled(!r.busy && i > 0).tooltip(tr!("往上移", "Move up")).show(ui).clicked() {
+                                act = Some(Act::Up(i));
+                            }
+                        });
+                    });
+                });
+                ui.add_space(6.0);
+            }
+        });
+        ui.add_space(10.0);
+        ui.horizontal(|ui| {
+            if r.busy {
+                ui.spinner();
+                ui.label(tr!("正在做成教學文件…", "Making the guide…"));
+            } else {
+                ui.label(
+                    RichText::new(tr!("會做成一個 HTML 檔（圖片包在裡面），用瀏覽器開啟", "Makes one HTML file (pictures included) and opens it in your browser"))
+                        .font(theme::font(12.0))
+                        .color(p.muted),
+                );
+            }
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if Btn::new(tr!("產生教學文件", "Make guide")).primary().enabled(!r.busy && n > 0).show(ui).clicked() {
+                    act = Some(Act::Build);
+                }
+                if Btn::new(tr!("放棄", "Discard")).ghost().enabled(!r.busy).tooltip(tr!("刪掉這次截的步驟，不做成文件", "Delete these steps without making a guide")).show(ui).clicked()
+                {
+                    act = Some(Act::Close);
+                }
+            });
+        });
+    });
+    // 另一個對話框（確定放棄）開著時不處理 Esc、點外面
+    if act.is_none() && modal.should_close() && app.ask.is_none() && !r.busy {
+        act = Some(Act::Close);
+    }
+    match act {
+        Some(Act::Up(i)) => r.items.swap(i, i - 1),
+        Some(Act::Down(i)) => r.items.swap(i, i + 1),
+        Some(Act::Delete(i)) => {
+            r.items.remove(i);
+        }
+        Some(Act::Build) => {
+            r.busy = true;
+            let (title, list) = (r.title.clone(), r.items.iter().map(|it| it.step.clone()).collect::<Vec<_>>());
+            let core = app.core.clone();
+            app.spawn(async move { core.steps_build(title, list).await }, |app, res| match res {
+                Ok(path) => {
+                    app.steps_review = None;
+                    screenrecorder_core::desktop::open_with_explorer(&path, false);
+                    app.toast_file(tr!("教學文件做好了，已用瀏覽器開啟", "The step-by-step guide is ready and open in your browser"), &path);
+                }
+                Err(e) => {
+                    if let Some(r) = &mut app.steps_review {
+                        r.busy = false;
+                    }
+                    app.toast(e.message().to_string(), true);
+                }
+            });
+        }
+        Some(Act::Close) if r.items.is_empty() => {
+            // 全部刪掉了：直接放棄
+            app.core.steps_discard();
+            return;
+        }
+        Some(Act::Close) => {
+            let n = r.items.len();
+            let msg = if screenrecorder_core::i18n::is_en() {
+                format!("The {n} step{} will be deleted and no guide will be made.", if n == 1 { "" } else { "s" })
+            } else {
+                format!("這 {n} 步會刪掉，不會做成文件。")
+            };
+            let mut ask = Ask::confirm(tr!("放棄這次的步驟截圖？", "Discard these steps?"), msg, tr!("放棄", "Discard"), |app, _| {
+                app.steps_review = None;
+                app.core.steps_discard();
+            })
+            .with_cancel(tr!("返回", "Back"));
+            ask.danger = true;
+            app.ask = Some(ask);
+        }
+        None => {}
+    }
+    app.steps_review = Some(r);
+}

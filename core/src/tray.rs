@@ -545,30 +545,12 @@ impl TrayController {
             TrayCommand::StepsStart => {
                 let dir = self.config().output_dir;
                 app.steps_start(&dir).map_err(err)?;
-                self.notify(
-                    tr!("步驟截圖", "Step capture"),
-                    tr!(
-                        "開始了：之後每點一下滑鼠就截一張。做完後在系統匣選「完成步驟截圖」，就會做成教學文件",
-                        "Started: each mouse click now takes a screenshot. When you're done, choose “Finish step capture” in the system tray to make a step-by-step guide."
-                    ),
-                    false,
-                );
                 return Ok(());
             }
             TrayCommand::StepsFinish => {
-                match app.steps_finish().await.map_err(err)? {
-                    Some(path) => {
-                        crate::desktop::open_with_explorer(&path, false);
-                        self.notify(
-                            tr!("步驟截圖", "Step capture"),
-                            tr!(
-                                "教學文件做好了，已用瀏覽器開啟；文字可以直接修改，再列印成 PDF",
-                                "The step-by-step guide is ready and open in your browser. You can edit the text, then print it to PDF."
-                            ),
-                            false,
-                        );
-                    }
-                    None => self.notify(tr!("步驟截圖", "Step capture"), tr!("沒有截到任何步驟", "No steps were captured"), false),
+                // 有步驟時開啟操作視窗整理（刪掉、調整順序）再做成教學文件
+                if !app.steps_finish().await.map_err(err)? {
+                    self.notify(tr!("步驟截圖", "Step capture"), tr!("沒有截到任何步驟", "No steps were captured"), false);
                 }
                 return Ok(());
             }
@@ -585,21 +567,11 @@ impl TrayController {
             | TrayCommand::ScreenshotSelect
             | TrayCommand::ScreenshotDelay(_) => {
                 let mut cfg = self.config();
-                if let TrayCommand::ScreenshotDelay(sec) = cmd {
-                    self.notify(
-                        tr!("延遲截圖", "Delayed screenshot"),
-                        &trf!(
-                            "{sec} 秒後畫面會凍結讓你框選：現在先打開要截的選單或提示",
-                            "The screen will freeze in {sec} s so you can select an area. Open the menu or tooltip you want to capture now."
-                        ),
-                        false,
-                    );
-                    tokio::time::sleep(std::time::Duration::from_secs(sec)).await;
-                }
                 match cmd {
-                    // 框選：取消時不顯示通知
+                    // 框選（延遲截圖先在畫面上倒數，可以取消）：取消時不顯示通知
                     TrayCommand::ScreenshotSelect | TrayCommand::ScreenshotDelay(_) => {
-                        let Some(shot) = app.snip_begin(&cfg).await.map_err(err)? else { return Ok(()) };
+                        let sec = if let TrayCommand::ScreenshotDelay(sec) = cmd { sec } else { 0 };
+                        let Some(shot) = app.snip_delayed(&cfg, sec).await.map_err(err)? else { return Ok(()) };
                         self.notify_shot(&shot);
                         return Ok(());
                     }
