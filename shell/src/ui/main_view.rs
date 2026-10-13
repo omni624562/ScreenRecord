@@ -11,7 +11,7 @@ use super::{EntryAction, UiApp};
 use eframe::egui::{self, pos2, vec2, Align, Color32, CornerRadius, Id, Layout, Pos2, Rect, RichText, Sense, Stroke, StrokeKind, Ui, UiBuilder};
 use screenrecorder_core::actions;
 use screenrecorder_core::audiopipe::{SILENT_MIC, SILENT_SYSTEM};
-use screenrecorder_core::format::{clock, format_bytes, human_duration, output_size, speed_label, video_clock};
+use screenrecorder_core::format::{clock, format_bytes, human_duration, output_size, short_clock, speed_label, video_clock};
 use screenrecorder_core::i18n::is_en;
 use screenrecorder_core::types::{DownloadPhase, EncoderPreference, ExportKind, ExportState, LibraryEntry, LogLevel, MethodPreference, RecorderState, Rect as DRect};
 use screenrecorder_core::{tr, trf};
@@ -2037,9 +2037,9 @@ fn result_card(app: &mut UiApp, ui: &mut Ui, res: &screenrecorder_core::types::R
             (Some(path), true) => {
                 let audio = screenrecorder_core::after_record::is_audio_recording(path);
                 let saved = if audio {
-                    trf!("錄音已儲存・{}・{}", "Audio recording saved · {} · {}", video_clock(res.video_sec), format_bytes(res.bytes.unwrap_or(0)))
+                    trf!("錄音已儲存・{}・{}", "Audio recording saved · {} · {}", short_clock(res.video_sec), format_bytes(res.bytes.unwrap_or(0)))
                 } else {
-                    trf!("錄影已儲存・{}・{}", "Recording saved · {} · {}", video_clock(res.video_sec), format_bytes(res.bytes.unwrap_or(0)))
+                    trf!("錄影已儲存・{}・{}", "Recording saved · {} · {}", short_clock(res.video_sec), format_bytes(res.bytes.unwrap_or(0)))
                 };
                 if card_title(ui, &saved, p.ok) {
                     app.main.dismissed_result = Some(key);
@@ -2206,7 +2206,7 @@ fn job_card(app: &mut UiApp, ui: &mut Ui) {
             ui.label(RichText::new(title).font(theme::font_bold(13.5)));
             let meta = match e.state {
                 ExportState::Running => format!("{pct}%{}", e.eta_sec.map(|s| trf!("・剩 {}", " · {} left", human_duration(s))).unwrap_or_default()),
-                ExportState::Done => trf!("{}・{}", "{} · {}", video_clock(e.expected_sec), format_bytes(e.bytes.unwrap_or(0))),
+                ExportState::Done => trf!("{}・{}", "{} · {}", short_clock(e.expected_sec), format_bytes(e.bytes.unwrap_or(0))),
                 _ => String::new(),
             };
             ui.label(theme::muted(ui, meta));
@@ -2520,7 +2520,7 @@ fn recent_card(app: &mut UiApp, ui: &mut Ui, e: &LibraryEntry, date: String, w: 
         app.act(EntryAction::Play, e.clone());
     }
     let x = thumb.max.x + 10.0;
-    let meta = format!("{}・{}", e.media.duration_sec.map(video_clock).unwrap_or_else(|| "—".into()), format_bytes(e.media.bytes));
+    let meta = format!("{}・{}", e.media.duration_sec.map(short_clock).unwrap_or_else(|| "—".into()), format_bytes(e.media.bytes));
     let meta_g = painter.layout_no_wrap(meta, theme::font(12.0), p.muted);
     let meta_w = meta_g.size().x;
     painter.galley(pos2(x, rect.min.y + 28.0), meta_g, p.muted);
