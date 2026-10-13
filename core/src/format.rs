@@ -64,6 +64,12 @@ pub fn export_file_name(source_name: &str, speed: f64, format: ExportFormat) -> 
     }
 }
 
+/// 壓縮版的檔名（原速、有大小上限）：Rec_xxx.mp4 → Rec_xxx_25MB以內.mp4（英文介面 Rec_xxx_under25MB.mp4）
+pub fn compressed_file_name(source_name: &str, max_mb: f64) -> String {
+    let base = strip_mp4(source_name);
+    trf!("{base}_{}MB以內.mp4", "{base}_under{}MB.mp4", num(js_round(max_mb)))
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ParsedExport {
     /// 原片檔名（含 .mp4）
@@ -74,6 +80,8 @@ pub struct ParsedExport {
 
 static EXPORT_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^(.*)_(\d+(?:\.\d+)?)x(?:_\d+)?\.(mp4|gif|webp)$").unwrap());
 static ANIM_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^(.*?)(?:_\d+)?\.(gif|webp)$").unwrap());
+/// 壓縮版：Rec_a_25MB以內.mp4、Rec_a_under25MB_2.mp4
+static COMPRESSED_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^(.*)_(?:\d+MB以內|under\d+MB)(?:_\d+)?\.mp4$").unwrap());
 
 fn format_of(ext: &str) -> ExportFormat {
     if ext.eq_ignore_ascii_case("gif") {
@@ -89,6 +97,9 @@ fn format_of(ext: &str) -> ExportFormat {
 pub fn parse_export_name(name: &str) -> Option<ParsedExport> {
     if let Some(m) = EXPORT_RE.captures(name) {
         return Some(ParsedExport { base: format!("{}.mp4", &m[1]), speed: m[2].parse().unwrap_or(1.0), format: format_of(&m[3]) });
+    }
+    if let Some(m) = COMPRESSED_RE.captures(name) {
+        return Some(ParsedExport { base: format!("{}.mp4", &m[1]), speed: 1.0, format: ExportFormat::Mp4 });
     }
     ANIM_RE.captures(name).map(|g| ParsedExport { base: format!("{}.mp4", &g[1]), speed: 1.0, format: format_of(&g[2]) })
 }
@@ -214,6 +225,18 @@ pub fn video_clock(sec: f64) -> String {
     }
 }
 
+/// 秒 → 像播放器的時間「0:04」「1:02」「1:02:03」（清單、檢視器用；剪輯視窗要看到十分之一秒，用 video_clock）
+pub fn short_clock(sec: f64) -> String {
+    // 3.999 這種浮點誤差算成 4 秒
+    let s = if sec.is_finite() { (sec + 0.001).floor().max(0.0) as i64 } else { 0 };
+    let (h, m, r) = (s / 3600, (s % 3600) / 60, s % 60);
+    if h > 0 {
+        format!("{h}:{m:02}:{r:02}")
+    } else {
+        format!("{m}:{r:02}")
+    }
+}
+
 pub fn format_bytes(n: u64) -> String {
     if n < 1024 {
         return format!("{n} B");
@@ -267,6 +290,11 @@ mod tests {
         // 剪輯版本身是獨立的錄影；它的加速版歸在剪輯版底下
         assert_eq!(parse_export_name("Rec_2026-10-06_08-00-00_cut.mp4"), None);
         assert_eq!(parse_export_name("Rec_2026-10-06_08-00-00_cut_4x.mp4"), p("Rec_2026-10-06_08-00-00_cut.mp4", 4.0, ExportFormat::Mp4));
+        // 壓縮版（原速、有大小上限）
+        assert_eq!(compressed_file_name("操作示範.mp4", 25.0), "操作示範_25MB以內.mp4");
+        assert_eq!(parse_export_name("操作示範_25MB以內.mp4"), p("操作示範.mp4", 1.0, ExportFormat::Mp4));
+        assert_eq!(parse_export_name("Rec_a_under10MB_2.mp4"), p("Rec_a.mp4", 1.0, ExportFormat::Mp4));
+        assert!(check_recording_name("報告_25MB以內").is_some());
     }
 
     #[test]
@@ -328,6 +356,11 @@ mod tests {
         assert_eq!(clock(3_725_000.0), "01:02:05");
         assert_eq!(video_clock(25.75), "00:25.7");
         assert_eq!(video_clock(3725.0), "1:02:05.0");
+        assert_eq!(short_clock(4.0), "0:04");
+        assert_eq!(short_clock(3.9995), "0:04");
+        assert_eq!(short_clock(62.7), "1:02");
+        assert_eq!(short_clock(3723.0), "1:02:03");
+        assert_eq!(short_clock(f64::NAN), "0:00");
         assert_eq!(format_bytes(512), "512 B");
         assert_eq!(format_bytes(5_368_709), "5.12 MB");
         assert_eq!(format_bytes(104_857_600), "100.0 MB");

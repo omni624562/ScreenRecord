@@ -96,7 +96,9 @@ fn file_name(path: &str) -> String {
 }
 
 static CUT_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)_cut(_\d+)?\.mp4$").unwrap());
-static VIDEO_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)\.(mp4|gif|webp|png)$").unwrap());
+static VIDEO_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)\.(mp4|gif|webp|png|m4a)$").unwrap());
+/// 只有聲音（「存成 M4A」做出來的）：清單上單獨一筆，標示「只有聲音」
+static AUDIO_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)\.m4a$").unwrap());
 static IMAGE_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)\.png$").unwrap());
 
 /// 截圖（PNG）：清單上單獨一筆，沒有加速版
@@ -104,9 +106,9 @@ pub fn is_image_name(name: &str) -> bool {
     IMAGE_RE.is_match(name)
 }
 
-/// 去掉副檔名（.mp4 / .png）
+/// 去掉副檔名（.mp4 / .png / .m4a）
 fn strip_ext(name: &str) -> String {
-    if is_image_name(name) {
+    if is_image_name(name) || is_audio_name(name) {
         name[..name.len() - 4].to_string()
     } else {
         strip_mp4(name)
@@ -119,11 +121,20 @@ pub fn is_cut_name(name: &str) -> bool {
     CUT_RE.is_match(name)
 }
 
+pub fn is_audio_name(name: &str) -> bool {
+    AUDIO_RE.is_match(name)
+}
+
 /// 掃描資料夾：原始錄影（含剪輯版）各自一筆，加速版放在對應的原檔底下。
 /// 非同步讀取：儲存位置在網路磁碟且回應很慢時，不會卡住錄影與狀態更新。
 pub async fn scan(cache: &MediaCache, dir: &Path) -> Vec<LibraryEntry> {
+    scan_checked(cache, dir).await.unwrap_or_default()
+}
+
+/// 同 scan，但資料夾讀不到（不存在、隨身碟或網路磁碟沒接上、沒有權限）時回傳錯誤
+pub async fn scan_checked(cache: &MediaCache, dir: &Path) -> std::io::Result<Vec<LibraryEntry>> {
     let mut names = Vec::new();
-    let Ok(mut rd) = tokio::fs::read_dir(dir).await else { return vec![] };
+    let mut rd = tokio::fs::read_dir(dir).await?;
     while let Ok(Some(e)) = rd.next_entry().await {
         let name = e.file_name().to_string_lossy().into_owned();
         if VIDEO_RE.is_match(&name) {
@@ -189,7 +200,18 @@ pub async fn scan(cache: &MediaCache, dir: &Path) -> Vec<LibraryEntry> {
             p.speed.total_cmp(&q.speed).then(rank(p.format).cmp(&rank(q.format))).then(p.media.mtime.total_cmp(&q.media.mtime))
         });
     }
-    entries
+    Ok(entries)
+}
+
+/// 資料夾讀不到時給使用者看的說明；None = 當作空的資料夾（還沒錄過影，預設的資料夾還沒建立）
+fn dir_error(dir: &Path, e: &std::io::Error) -> Option<String> {
+    let shown = dir.display().to_string();
+    match e.kind() {
+        std::io::ErrorKind::NotFound if dir.parent().is_some_and(Path::is_dir) => None,
+        std::io::ErrorKind::NotFound => Some(trf!("找不到資料夾「{shown}」（隨身碟或網路磁碟可能沒接上）", "Folder “{shown}” not found (a USB drive or network drive may be disconnected)")),
+        std::io::ErrorKind::PermissionDenied => Some(trf!("沒有權限讀取資料夾「{shown}」", "No permission to read the folder “{shown}”")),
+        _ => Some(trf!("無法讀取資料夾「{shown}」（隨身碟或網路磁碟可能沒接上）", "Couldn't read the folder “{shown}” (a USB drive or network drive may be disconnected)")),
+    }
 }
 
 /// 已讀過的資訊直接帶入，沒讀過的才執行 FFmpeg
@@ -272,6 +294,50 @@ pub fn page_starts(list: &[LibraryEntry], fit_px: f64) -> Vec<usize> {
     starts
 }
 
+/// 搜尋的字是日期時要找的那一天（或那個月）：年份 None = 每一年都算
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct DateQuery {
+    year: Option<i32>,
+    month: u32,
+    day: Option<u32>,
+}
+
+/// 「10/11」「10-11」「10月11日」「2026/10/11」「2026年10月11日」「10月」「今天」「昨天」「前天」→ 要找的日期
+fn date_query(q: &str, today: chrono::NaiveDate) -> Option<DateQuery> {
+    use chrono::Datelike;
+    static MD: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(?:(\d{4})\s*[/\-.年]\s*)?(\d{1,2})\s*[/\-.月]\s*(\d{1,2})\s*[日號号]?$").unwrap());
+    static M: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(?:(\d{4})\s*年\s*)?(\d{1,2})\s*月(?:份)?$").unwrap());
+    let q = q.trim();
+    let back = |days: u64| today.checked_sub_days(chrono::Days::new(days)).map(|d| DateQuery { year: Some(d.year()), month: d.month(), day: Some(d.day()) });
+    match q {
+        "今天" | "today" => return back(0),
+        "昨天" | "yesterday" => return back(1),
+        "前天" => return back(2),
+        _ => {}
+    }
+    let (year, month, day) = match MD.captures(q) {
+        Some(m) => (m.get(1).and_then(|y| y.as_str().parse().ok()), m[2].parse().ok()?, Some(m[3].parse().ok()?)),
+        None => {
+            let m = M.captures(q)?;
+            (m.get(1).and_then(|y| y.as_str().parse().ok()), m[2].parse().ok()?, None)
+        }
+    };
+    ((1..=12).contains(&month) && day.is_none_or(|d| (1..=31).contains(&d))).then_some(DateQuery { year, month, day })
+}
+
+/// 錄影的那一天（與清單上顯示的日期相同：檔名裡的時間，沒有時用檔案的時間）
+fn entry_day(e: &LibraryEntry) -> Option<chrono::NaiveDate> {
+    use chrono::TimeZone;
+    chrono::Local.timestamp_millis_opt(sort_time(e) as i64).single().map(|d| d.date_naive())
+}
+
+impl DateQuery {
+    fn matches(&self, d: chrono::NaiveDate) -> bool {
+        use chrono::Datelike;
+        self.year.is_none_or(|y| y == d.year()) && self.month == d.month() && self.day.is_none_or(|x| x == d.day())
+    }
+}
+
 fn local_date(mtime_ms: f64) -> String {
     use chrono::TimeZone;
     chrono::Local.timestamp_millis_opt(mtime_ms as i64).single().map(|d| d.format("%Y-%m-%d").to_string()).unwrap_or_default()
@@ -297,7 +363,16 @@ fn sort_time(e: &LibraryEntry) -> f64 {
 }
 
 pub async fn list_library(cache: &Arc<MediaCache>, ffmpeg: Option<&Path>, dir: &Path, q: &LibraryQuery) -> LibraryPage {
-    let mut list = scan(cache, dir).await;
+    let mut list = match scan_checked(cache, dir).await {
+        Ok(list) => list,
+        Err(e) => {
+            let error = dir_error(dir, &e);
+            if error.is_some() {
+                crate::info!("[清單] 無法讀取資料夾 {}：{e}", dir.display());
+            }
+            return LibraryPage { dir: dir.display().to_string(), page: 1, pages: 1, error, ..Default::default() };
+        }
+    };
 
     if let Some(text) = q.q.as_deref().map(|t| t.trim().to_lowercase()).filter(|t| !t.is_empty()) {
         // 也找字幕裡說過的話（影片旁邊的 SRT）
@@ -306,14 +381,23 @@ pub async fn list_library(cache: &Arc<MediaCache>, ffmpeg: Option<&Path>, dir: &
         for e in list.iter_mut().filter(|e| !is_image_name(&e.media.name)) {
             e.hits = speech_hits(&srts, &videos, &e.media.name, &text);
         }
+        // 也可以用日期找：「10/11」「10月11日」「今天」「昨天」
+        let day = date_query(&text, chrono::Local::now().date_naive());
         list.retain(|e| {
-            e.media.name.to_lowercase().contains(&text) || local_date(e.media.time_ms()).contains(&text) || e.exports.iter().any(|x| x.media.name.to_lowercase().contains(&text)) || !e.hits.is_empty()
+            e.media.name.to_lowercase().contains(&text)
+                || local_date(e.media.time_ms()).contains(&text)
+                || day.is_some_and(|q| entry_day(e).is_some_and(|d| q.matches(d)))
+                || e.exports.iter().any(|x| x.media.name.to_lowercase().contains(&text))
+                || !e.hits.is_empty()
         });
+    }
+    if !q.audio {
+        list.retain(|e| !is_audio_name(&e.media.name));
     }
     // 錄影與截圖分開列：除了「截圖」，其他篩選都只列影片
     match q.filter {
         LibraryFilter::All | LibraryFilter::Audio => list.retain(|e| !is_image_name(&e.media.name)),
-        LibraryFilter::Original => list.retain(|e| !is_cut_name(&e.media.name) && !is_image_name(&e.media.name)),
+        LibraryFilter::Original => list.retain(|e| !is_cut_name(&e.media.name) && !is_image_name(&e.media.name) && !is_audio_name(&e.media.name)),
         LibraryFilter::Shot => list.retain(|e| is_image_name(&e.media.name)),
         LibraryFilter::Cut => list.retain(|e| is_cut_name(&e.media.name)),
         LibraryFilter::Speed => list.retain(|e| !e.exports.is_empty()),
@@ -358,7 +442,7 @@ pub async fn list_library(cache: &Arc<MediaCache>, ffmpeg: Option<&Path>, dir: &
         }
     };
     let items = if need_all { slice } else { pool_with_info(cache, ffmpeg, slice, 6).await };
-    LibraryPage { dir: dir.display().to_string(), total, page, pages, page_size, items }
+    LibraryPage { dir: dir.display().to_string(), total, page, pages, page_size, items, error: None }
 }
 
 /// 錄影改名：原片與底下的加速版 / GIF 一起改（Rec_X_4x.mp4 → 新名_4x.mp4），清單上才不會斷開。
@@ -480,6 +564,68 @@ mod tests {
         assert_eq!(page.items.iter().map(|e| (e.media.name.as_str(), e.hits.len())).collect::<Vec<_>>(), vec![("會議.mp4", 0)]);
         // 沒有搜尋：不讀字幕
         assert!(list_library(&cache, None, dir.path(), &q(None, None, LibrarySort::Old)).await.items.iter().all(|e| e.hits.is_empty()));
+    }
+
+    #[test]
+    fn dates_in_the_search_box() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 10, 13).unwrap();
+        let q = |t: &str| date_query(t, today);
+        let md = |m, d| Some(DateQuery { year: None, month: m, day: Some(d) });
+        assert_eq!(q("10/11"), md(10, 11));
+        assert_eq!(q("10-11"), md(10, 11));
+        assert_eq!(q("10月11日"), md(10, 11));
+        assert_eq!(q("10 月 11 號"), md(10, 11));
+        assert_eq!(q("2026/10/11"), Some(DateQuery { year: Some(2026), month: 10, day: Some(11) }));
+        assert_eq!(q("2026年10月11日"), Some(DateQuery { year: Some(2026), month: 10, day: Some(11) }));
+        assert_eq!(q("10月"), Some(DateQuery { year: None, month: 10, day: None }));
+        assert_eq!(q("今天"), Some(DateQuery { year: Some(2026), month: 10, day: Some(13) }));
+        assert_eq!(q("昨天"), Some(DateQuery { year: Some(2026), month: 10, day: Some(12) }));
+        assert_eq!(q("13/40"), None);
+        assert_eq!(q("會議"), None);
+        assert!(q("10/11").unwrap().matches(chrono::NaiveDate::from_ymd_opt(2025, 10, 11).unwrap()));
+        assert!(!q("2026/10/11").unwrap().matches(chrono::NaiveDate::from_ymd_opt(2025, 10, 11).unwrap()));
+    }
+
+    #[tokio::test]
+    async fn search_by_date() {
+        let dir = make(&["Rec_2026-10-11_09-00-00.mp4", "Rec_2026-10-12_09-00-00.mp4", "Shot_2026-10-11_10-00-00.png"]);
+        let cache = Arc::new(MediaCache::default());
+        let find = |text: &str| LibraryQuery { q: Some(text.into()), ..q(None, None, LibrarySort::Old) };
+        for t in ["10/11", "10月11日", "2026/10/11"] {
+            let page = list_library(&cache, None, dir.path(), &find(t)).await;
+            assert_eq!(page.items.iter().map(|e| e.media.name.as_str()).collect::<Vec<_>>(), vec!["Rec_2026-10-11_09-00-00.mp4"], "{t}");
+        }
+        let shots = list_library(&cache, None, dir.path(), &LibraryQuery { filter: LibraryFilter::Shot, ..find("10/11") }).await;
+        assert_eq!(shots.items.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn audio_files_are_listed_on_their_own() {
+        let dir = make(&["Rec_X.mp4", "Rec_X.m4a", "Shot_2026-10-09_14-30-00.png"]);
+        let cache = Arc::new(MediaCache::default());
+        let all = list_library(&cache, None, dir.path(), &LibraryQuery { audio: true, ..q(None, None, LibrarySort::Old) }).await;
+        let mut names: Vec<(&str, usize)> = all.items.iter().map(|e| (e.media.name.as_str(), e.exports.len())).collect();
+        names.sort();
+        assert_eq!(names, vec![("Rec_X.m4a", 0), ("Rec_X.mp4", 0)]);
+        // 主畫面的最近錄影不列聲音檔
+        let recent = list_library(&cache, None, dir.path(), &q(None, None, LibrarySort::Old)).await;
+        assert_eq!(recent.items.iter().map(|e| e.media.name.as_str()).collect::<Vec<_>>(), vec!["Rec_X.mp4"]);
+        // 「原始錄影」不含聲音檔
+        let originals = list_library(&cache, None, dir.path(), &LibraryQuery { filter: LibraryFilter::Original, ..q(None, None, LibrarySort::Old) }).await;
+        assert_eq!(originals.items.iter().map(|e| e.media.name.as_str()).collect::<Vec<_>>(), vec!["Rec_X.mp4"]);
+    }
+
+    #[tokio::test]
+    async fn unreachable_folder_is_reported() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = Arc::new(MediaCache::default());
+        // 還沒建立的資料夾（預設的儲存位置還沒錄過影）：當作空的
+        let page = list_library(&cache, None, &dir.path().join("Timelapse"), &q(None, None, LibrarySort::New)).await;
+        assert_eq!((page.total, page.error), (0, None));
+        // 上層也不在（隨身碟、網路磁碟沒接上）：說明找不到
+        let page = list_library(&cache, None, &dir.path().join("USB").join("Timelapse"), &q(None, None, LibrarySort::New)).await;
+        assert_eq!(page.total, 0);
+        assert!(page.error.unwrap().contains("找不到資料夾"));
     }
 
     fn entry(n: usize) -> LibraryEntry {

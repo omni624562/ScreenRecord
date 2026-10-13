@@ -93,6 +93,10 @@ pub enum EntryAction {
     SaveAudio,
     /// 章節（錄影時加的標記）複製成 YouTube 說明欄的格式
     CopyChapters,
+    /// 原速、壓縮到某個大小以內（傳 LINE / Email）：開啟製作視窗的「壓縮」
+    Compress,
+    /// 做成直式影片（Shorts / Reels）：開啟剪輯並選好「直式影片」
+    Vertical,
 }
 
 pub struct UiApp {
@@ -382,7 +386,8 @@ impl UiApp {
     pub fn toast_file(&mut self, text: impl Into<String>, path: &str) {
         let (p1, p2) = (path.to_string(), path.to_string());
         let mut actions = vec![];
-        if path.to_lowercase().ends_with(".mp4") || dialogs::is_image(path) || path.to_lowercase().ends_with(".gif") || path.to_lowercase().ends_with(".webp") {
+        let lower = path.to_lowercase();
+        if [".mp4", ".gif", ".webp", ".m4a"].iter().any(|e| lower.ends_with(e)) || dialogs::is_image(path) {
             actions.push(ToastAction::new(tr!("開啟", "Open"), move |app: &mut UiApp| app.act_path(EntryAction::Play, p1)));
         }
         actions.push(ToastAction::new(tr!("在資料夾中顯示", "Show in folder"), move |app: &mut UiApp| {
@@ -528,16 +533,18 @@ impl UiApp {
                 if let Some(l) = &mut self.library {
                     l.dirty = true;
                 }
-                if let Some(e) = &self.status.export {
+                if let Some(e) = self.status.export.clone() {
                     if e.state == screenrecorder_core::types::ExportState::Done {
                         let what = match e.kind {
                             screenrecorder_core::types::ExportKind::Cut => tr!("剪輯完成", "Edited video ready"),
                             screenrecorder_core::types::ExportKind::Merge => tr!("合併完成", "Merged video ready"),
                             screenrecorder_core::types::ExportKind::Gif => tr!("GIF 製作完成", "GIF ready"),
                             screenrecorder_core::types::ExportKind::Webp => tr!("WebP 動圖製作完成", "WebP ready"),
+                            screenrecorder_core::types::ExportKind::Speed if e.speed <= 1.0 => tr!("壓縮完成", "Compressed video ready"),
                             screenrecorder_core::types::ExportKind::Speed => tr!("加速版製作完成", "Sped-up video ready"),
                         };
-                        self.toast(what, false);
+                        // 提示上直接有「開啟」「在資料夾中顯示」
+                        self.toast_file(format!("{what}{}{}", tr!("：", ": "), dialogs::file_name(&e.output)), &e.output);
                     } else {
                         // 剪輯失敗或取消：提示並提供「回到剪輯」
                         let e = e.clone();
@@ -628,7 +635,11 @@ impl UiApp {
                 let core = self.core.clone();
                 self.toast(tr!("正在存成 M4A…", "Saving as M4A…"), false);
                 self.spawn(async move { actions::save_audio(&core, &path).await }, |app, r| match r {
-                    Ok(out) => app.toast_file(trf!("已存成 {}（和影片在同一個資料夾）", "Saved as {} (in the same folder as the video)", dialogs::file_name(&out)), &out),
+                    Ok(out) => {
+                        app.toast_file(trf!("已存成 {}（和影片在同一個資料夾）", "Saved as {} (in the same folder as the video)", dialogs::file_name(&out)), &out);
+                        // 全部錄影開著：列出新的聲音檔
+                        app.shots_changed();
+                    }
                     Err(e) => app.toast(e.message().to_string(), true),
                 });
             }
@@ -651,24 +662,43 @@ impl UiApp {
                 }
             }
             EntryAction::Edit if dialogs::is_image(&path) => editor::shot::open(self, path),
-            EntryAction::Edit | EntryAction::Export => {
-                let what = if action == EntryAction::Edit { tr!("剪輯", "edit") } else { tr!("製作加速版 / GIF", "make a sped-up video or GIF") };
-                if self.locked() {
-                    return self.toast(trf!("錄影中無法{what}，請先停止錄影", "Can't {what} while recording. Stop the recording first"), true);
-                }
-                if self.exporting() {
-                    return self.toast(tr!("目前有轉檔工作進行中，請等它完成", "A conversion is in progress. Please wait for it to finish"), true);
+            EntryAction::Edit | EntryAction::Export | EntryAction::Compress | EntryAction::Vertical => {
+                if let Some(why) = self.blocked(action) {
+                    return self.toast(why, true);
                 }
                 if entry.media.duration_sec.unwrap_or(0.0) <= 0.0 {
                     return self.toast(tr!("無法讀取影片長度", "Couldn't read the video duration"), true);
                 }
-                if action == EntryAction::Edit {
-                    editor::open(self, entry);
-                } else {
-                    self.export_dlg = Some(export_dialog::ExportDialog::new(entry));
+                match action {
+                    EntryAction::Edit => editor::open(self, entry),
+                    EntryAction::Vertical => editor::open_vertical(self, entry),
+                    _ => self.export_dlg = Some(export_dialog::ExportDialog::new(entry, &self.s, action == EntryAction::Compress)),
                 }
             }
         }
+    }
+
+    /// 現在不能剪輯、製作加速版（錄影中、轉檔進行中）的原因；清單、檢視器先停用按鈕並在滑鼠提示說明，不用關掉清單才發現
+    pub fn blocked(&self, action: EntryAction) -> Option<String> {
+        if !matches!(action, EntryAction::Edit | EntryAction::Export | EntryAction::Compress | EntryAction::Vertical) {
+            return None;
+        }
+        let edit = matches!(action, EntryAction::Edit | EntryAction::Vertical);
+        if self.locked() {
+            let what = if edit { tr!("剪輯", "edit") } else { tr!("製作", "make it") };
+            return Some(trf!("錄影中無法{what}，請先停止錄影", "Can't {what} while recording. Stop the recording first"));
+        }
+        if self.exporting() {
+            return Some(
+                if edit {
+                    tr!("轉檔進行中，完成後才能剪輯", "A conversion is in progress; you can edit when it finishes")
+                } else {
+                    tr!("轉檔進行中，完成後才能製作", "A conversion is in progress; you can make it when it finishes")
+                }
+                .into(),
+            );
+        }
+        None
     }
 
     /// 由路徑找到完整資訊後執行（剛錄好的檔案可能還不在清單裡：重新讀取）

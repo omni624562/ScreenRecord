@@ -392,11 +392,16 @@ struct DraftInfo {
 const DRAFT_EVERY: std::time::Duration = std::time::Duration::from_secs(10);
 
 pub fn open(app: &mut UiApp, entry: LibraryEntry) {
-    open_entry(app, entry, false);
+    open_entry(app, entry, false, false);
 }
 
-/// 開啟剪輯視窗；resume = 直接套用上次沒有完成的剪輯（草稿），不用再問
-fn open_entry(app: &mut UiApp, entry: LibraryEntry, resume: bool) {
+/// 開啟剪輯並選好「直式影片：放在中間」（全部錄影、檢視器的「做成直式影片（Shorts / Reels）…」）
+pub fn open_vertical(app: &mut UiApp, entry: LibraryEntry) {
+    open_entry(app, entry, false, true);
+}
+
+/// 開啟剪輯視窗；resume = 直接套用上次沒有完成的剪輯（草稿），不用再問；vertical = 選好直式影片
+fn open_entry(app: &mut UiApp, entry: LibraryEntry, resume: bool, vertical: bool) {
     let Some(ffmpeg) = app.core.ffmpeg_path() else {
         return app.toast(tr!("找不到 FFmpeg，無法剪輯", "FFmpeg not found, so videos can't be edited"), true);
     };
@@ -427,6 +432,11 @@ fn open_entry(app: &mut UiApp, entry: LibraryEntry, resume: bool) {
                     ed.draft = Some(info);
                 }
             }
+            if vertical {
+                // 直式影片的設定在「畫面」分頁
+                ed.vertical = 1;
+                ed.tab = Tab::Crop;
+            }
             app.editor = Some(ed);
             if resume {
                 app.toast(tr!("已回到上次的剪輯，修改後可以再儲存一次", "Your previous edits are back. Make changes and save again"), false);
@@ -452,7 +462,7 @@ pub fn resume(app: &mut UiApp, video: &str) {
             core.cache.probe(&ff, &p).await.ok()
         },
         |app, m| match m {
-            Some(m) => open_entry(app, LibraryEntry { media: m, exports: vec![], hits: vec![] }, true),
+            Some(m) => open_entry(app, LibraryEntry { media: m, exports: vec![], hits: vec![] }, true, false),
             None => app.toast(tr!("找不到剪輯的影片，可能已經移動或刪除", "Can't find the video being edited. It may have been moved or deleted"), true),
         },
     );

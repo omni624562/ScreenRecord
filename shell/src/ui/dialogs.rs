@@ -309,9 +309,9 @@ pub fn is_cut_name(name: &str) -> bool {
     screenrecorder_core::library::is_cut_name(name)
 }
 
-/// 顯示用名稱：去掉 .mp4
+/// 顯示用名稱：去掉 .mp4（截圖 .png、聲音檔 .m4a 也是）
 pub fn base_name(name: &str) -> String {
-    match name.strip_suffix(".png").or_else(|| name.strip_suffix(".PNG")) {
+    match name.strip_suffix(".png").or_else(|| name.strip_suffix(".PNG")).or_else(|| name.strip_suffix(".m4a")).or_else(|| name.strip_suffix(".M4A")) {
         Some(b) => b.to_string(),
         None => screenrecorder_core::format::strip_mp4(name),
     }
