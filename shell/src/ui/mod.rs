@@ -272,9 +272,21 @@ impl UiApp {
 
     /// 上次錄影時程式意外結束（當機、停電、被強制關掉）留下分段：問要不要救回
     fn check_orphans(&mut self) {
+        self.find_orphans(false);
+    }
+
+    /// 錄影失敗卡的「救回已錄的部分」：找到時問要不要救回，找不到時說明
+    pub fn recover_now(&mut self) {
+        self.find_orphans(true);
+    }
+
+    fn find_orphans(&mut self, tell_if_none: bool) {
         let (core, dir) = (self.core.clone(), self.s.out_dir(&self.env));
-        self.spawn(async move { tokio::task::spawn_blocking(move || core.orphan_recordings(&dir)).await.unwrap_or_default() }, |app, list| {
+        self.spawn(async move { tokio::task::spawn_blocking(move || core.orphan_recordings(&dir)).await.unwrap_or_default() }, move |app, list| {
             if list.is_empty() {
+                if tell_if_none {
+                    app.toast(tr!("儲存位置裡找不到可以救回的分段", "No recorded parts to recover were found at the save location"), true);
+                }
                 return;
             }
             let names = list

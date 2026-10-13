@@ -32,6 +32,10 @@ pub struct MainState {
     log_seen: u64,
     /// 第一次使用的提示：展開「進階／手動安裝」
     ffmpeg_adv: bool,
+    /// 按 ✕ 關掉的錄影結果（路徑或訊息）
+    dismissed_result: Option<String>,
+    /// 錄影失敗的卡片：展開「詳細資訊」
+    result_detail: bool,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -1389,25 +1393,13 @@ fn rec_body(app: &mut UiApp, ui: &mut Ui, r: &screenrecorder_core::types::Record
         });
     }
     job_card(app, ui);
-    // 錄影結果
+    // 錄影結果（可以按 ✕ 關掉）
     if let Some(res) = r.result.clone().filter(|_| !active) {
-        ui.add_space(8.0);
-        let (fill, stroke) = if res.ok { (p.ok_soft, p.ok) } else { (p.rec_soft, p.rec) };
-        egui::Frame::new().fill(fill).stroke(Stroke::new(1.0, stroke.gamma_multiply(0.4))).corner_radius(CornerRadius::same(theme::RADIUS_SM)).inner_margin(10.0).show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            match (&res.path, res.ok) {
-                (Some(path), true) => {
-                    let saved = trf!("錄影已儲存・{}・{}", "Recording saved · {} · {}", video_clock(res.video_sec), format_bytes(res.bytes.unwrap_or(0)));
-                    ui.label(RichText::new(saved).font(theme::font_bold(13.5)).color(p.ok));
-                    ui.label(RichText::new(file_name(path)).font(theme::mono(12.0))).on_hover_text(path);
-                    action_buttons(app, ui, path, true, true);
-                }
-                _ => {
-                    ui.label(RichText::new(tr!("錄影未完成", "Recording incomplete")).font(theme::font_bold(13.5)).color(p.rec));
-                    ui.add(egui::Label::new(RichText::new(&res.message).font(theme::font(12.5))).wrap());
-                }
-            }
-        });
+        let key = res.path.clone().unwrap_or_else(|| res.message.clone());
+        if app.main.dismissed_result.as_deref() != Some(key.as_str()) {
+            ui.add_space(8.0);
+            result_card(app, ui, &res, key);
+        }
     }
     // 快速鍵小抄或事件紀錄（放不下時整個中間部分可以捲動）
     if r.log.is_empty() && !active {
@@ -1698,14 +1690,174 @@ fn shot_button(app: &mut UiApp, ui: &mut Ui, w: f32) {
     }
 }
 
+/// 卡片標題列：左邊標題，右邊 ✕（關閉）；回傳是否按了關閉
+fn card_title(ui: &mut Ui, title: &str, color: Color32) -> bool {
+    let mut close = false;
+    ui.horizontal(|ui| {
+        ui.add(egui::Label::new(RichText::new(title).font(theme::font_bold(13.5)).color(color)).truncate());
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            close = Btn::icon_only(Icon::Close).ghost().small().height(22.0).tooltip(tr!("關閉", "Close")).show(ui).clicked();
+        });
+    });
+    close
+}
+
+/// 錄影失敗的白話說明：發生什麼事、可以試試什麼、能不能改用相容模式再錄一次
+struct Failure {
+    summary: &'static str,
+    suggest: &'static str,
+    /// 可以改用相容模式（gdigrab）再錄一次
+    compat: bool,
+}
+
+fn explain_failure(app: &UiApp, res: &screenrecorder_core::types::RecordingResult) -> Failure {
+    let m = &res.message;
+    let no_frames = res.frames == 0 && res.parts_dir.is_none() && (m.starts_with("沒有擷取到任何畫面") || m.starts_with("No frames were captured"));
+    if no_frames && app.s.method != MethodPreference::Gdigrab && app.s.source_type != SourceType::Audio {
+        return Failure {
+            summary: tr!("無法擷取畫面，沒有產生影片。", "The screen couldn't be captured, so no video was created."),
+            suggest: tr!("可以試試：改用相容模式再錄一次。", "Try this: record again in compatibility mode."),
+            compat: true,
+        };
+    }
+    if no_frames {
+        return Failure {
+            summary: tr!("無法擷取畫面，沒有產生影片。", "The screen couldn't be captured, so no video was created."),
+            suggest: tr!(
+                "可以試試：重新開機後再錄一次；一直失敗時，請把記錄檔附在問題回報裡。",
+                "Try this: restart the computer and record again. If it keeps failing, attach the log file to a problem report."
+            ),
+            compat: false,
+        };
+    }
+    if m.contains("空間") || m.to_lowercase().contains("space") {
+        return Failure {
+            summary: tr!("儲存位置的空間不夠，錄影沒有存好。", "There isn't enough space at the save location, so the recording wasn't saved."),
+            suggest: tr!(
+                "可以試試：清出空間，或在下方換一個儲存位置。已錄的部分可以按「救回已錄的部分」。",
+                "Try this: free up space or choose another save location below. Use “Recover what was recorded” to save the part already recorded."
+            ),
+            compat: false,
+        };
+    }
+    if res.parts_dir.is_some() {
+        return Failure {
+            summary: tr!("錄好的畫面沒能合併成影片，已錄的部分還保留著。", "The recorded parts couldn't be merged into a video, but they were kept."),
+            suggest: tr!("可以試試：按「救回已錄的部分」再合併一次。", "Try this: click “Recover what was recorded” to merge them again."),
+            compat: false,
+        };
+    }
+    Failure {
+        summary: tr!("錄影沒有完成。", "The recording didn't finish."),
+        suggest: tr!("可以試試：再錄一次；一直失敗時，請把記錄檔附在問題回報裡。", "Try this: record again. If it keeps failing, attach the log file to a problem report."),
+        compat: false,
+    }
+}
+
+/// 錄影結果卡：成功時可以播放、剪輯；失敗時用白話說明原因與建議，原始訊息收在「詳細資訊」
+fn result_card(app: &mut UiApp, ui: &mut Ui, res: &screenrecorder_core::types::RecordingResult, key: String) {
+    let p = theme::pal(ui);
+    let (fill, stroke) = if res.ok { (p.ok_soft, p.ok) } else { (p.rec_soft, p.rec) };
+    egui::Frame::new().fill(fill).stroke(Stroke::new(1.0, stroke.gamma_multiply(0.4))).corner_radius(CornerRadius::same(theme::RADIUS_SM)).inner_margin(10.0).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        match (&res.path, res.ok) {
+            (Some(path), true) => {
+                let saved = trf!("錄影已儲存・{}・{}", "Recording saved · {} · {}", video_clock(res.video_sec), format_bytes(res.bytes.unwrap_or(0)));
+                if card_title(ui, &saved, p.ok) {
+                    app.main.dismissed_result = Some(key);
+                }
+                ui.label(RichText::new(file_name(path)).font(theme::mono(12.0))).on_hover_text(path);
+                action_buttons(app, ui, path, true, true);
+            }
+            _ => {
+                if card_title(ui, tr!("錄影沒有完成", "The recording didn't finish"), p.rec) {
+                    app.main.dismissed_result = Some(key.clone());
+                }
+                let f = explain_failure(app, res);
+                ui.add(egui::Label::new(RichText::new(f.summary).font(theme::font(13.0)).color(p.text)).wrap());
+                ui.add(egui::Label::new(RichText::new(f.suggest).font(theme::font(12.5)).color(p.muted)).wrap());
+                ui.add_space(2.0);
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing = vec2(4.0, 4.0);
+                    let can = app.env.ffmpeg.found && app.env.ffmpeg.encoder.is_some() && !app.exporting();
+                    if f.compat
+                        && Btn::new(tr!("改用相容模式重試", "Retry in compatibility mode"))
+                            .primary()
+                            .small()
+                            .enabled(can)
+                            .tooltip(tr!(
+                                "相容模式（gdigrab）哪台電腦都能用；之後也會用這個方式（可在「設定 → 進階 → 擷取方式」改回）",
+                                "Compatibility mode (gdigrab) works on any PC and will be used from now on (change it back in Settings → Advanced → Capture method)"
+                            ))
+                            .show(ui)
+                            .clicked()
+                    {
+                        app.s.method = MethodPreference::Gdigrab;
+                        app.save_settings();
+                        app.main.dismissed_result = Some(key.clone());
+                        let config = app.s.record_config(&app.env);
+                        let core = app.core.clone();
+                        app.guarded(async move { actions::record_start(&core, config).await }, |_, _| {});
+                    }
+                    if res.parts_dir.is_some() && Btn::new(tr!("救回已錄的部分", "Recover what was recorded")).primary().small().show(ui).clicked() {
+                        app.main.dismissed_result = Some(key.clone());
+                        app.recover_now();
+                    }
+                    if Btn::new(tr!("開啟記錄檔資料夾", "Open log folder")).icon(Icon::Folder).small().show(ui).clicked() {
+                        screenrecorder_core::desktop::open_with_explorer(&screenrecorder_core::log::log_file().display().to_string(), true);
+                    }
+                    if Btn::new(tr!("複製錯誤資訊", "Copy error details"))
+                        .icon(Icon::Copy)
+                        .small()
+                        .tooltip(tr!("複製錯誤訊息與最近的事件紀錄，可以貼到問題回報裡", "Copies the error and the recent event log so you can paste it into a problem report"))
+                        .show(ui)
+                        .clicked()
+                    {
+                        let log: Vec<String> = app.status.recorder.log.iter().rev().take(15).rev().map(|l| l.text.clone()).collect();
+                        let text = format!("{} v{}\n{}\n\n{}", screenrecorder_core::winui::app_title(), app.env.app_version, res.message, log.join("\n"));
+                        app.ctx.copy_text(text);
+                        app.toast(tr!("已複製錯誤資訊，可以貼到問題回報裡", "Error details copied. Paste them into your problem report"), false);
+                    }
+                });
+                // 原始訊息（FFmpeg 的英文）收起來
+                ui.add_space(2.0);
+                let open = app.main.result_detail;
+                let row = ui
+                    .horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 4.0;
+                        let (icon, _) = ui.allocate_exact_size(vec2(14.0, 14.0), Sense::hover());
+                        theme::paint_icon(ui.painter(), icon, if open { Icon::ChevD } else { Icon::ChevR }, p.muted);
+                        ui.label(RichText::new(tr!("詳細資訊", "Details")).font(theme::font(12.5)).color(p.muted));
+                    })
+                    .response;
+                if ui.interact(row.rect, ui.id().with("result-detail"), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                    app.main.result_detail = !open;
+                }
+                if open {
+                    ui.add(egui::Label::new(RichText::new(&res.message).font(theme::font(12.0)).color(p.muted)).wrap().selectable(true));
+                }
+            }
+        }
+    });
+}
+
 /// 播放 / 顯示 / 剪輯 / 製作加速版的按鈕
 fn action_buttons(app: &mut UiApp, ui: &mut Ui, path: &str, edit: bool, export: bool) {
     ui.horizontal_wrapped(|ui| {
         if Btn::new(tr!("播放", "Play")).icon(Icon::Play).small().show(ui).clicked() {
             app.act_path(EntryAction::Play, path.to_string());
         }
-        if Btn::new(tr!("顯示", "Show in folder")).icon(Icon::Folder).small().show(ui).clicked() {
+        if Btn::new(tr!("在資料夾中顯示", "Show in folder")).icon(Icon::Folder).small().show(ui).clicked() {
             app.act_path(EntryAction::Reveal, path.to_string());
+        }
+        if Btn::new(tr!("複製檔案（貼到 LINE）", "Copy file (paste into LINE)"))
+            .icon(Icon::Copy)
+            .small()
+            .tooltip(tr!("複製檔案，可以直接貼到 LINE、Teams、信件或資料夾", "Copy the file so you can paste it into LINE, Teams, an email or a folder"))
+            .show(ui)
+            .clicked()
+        {
+            app.act_path(EntryAction::CopyFile, path.to_string());
         }
         if edit && Btn::new(tr!("剪輯", "Edit")).icon(Icon::Cut).small().show(ui).clicked() {
             app.act_path(EntryAction::Edit, path.to_string());
