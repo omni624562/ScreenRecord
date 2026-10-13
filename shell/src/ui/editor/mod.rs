@@ -1022,8 +1022,18 @@ impl Editor {
         (start, end.max(start + 0.1))
     }
 
+    /// 標註大小的基準（以 1080 為 1 倍）：畫面的短邊。用高度的話長截圖（例如 1280×8000）的標註會大得離譜
+    pub fn size_base(&self) -> f64 {
+        let h = if self.vh > 0.0 { self.vh } else { 1080.0 };
+        if self.vw > 0.0 {
+            h.min(self.vw)
+        } else {
+            h
+        }
+    }
+
     fn new_ann(&mut self, kind: AnnKind, x: f64, y: f64) -> Ann {
-        let vh = if self.vh > 0.0 { self.vh } else { 1080.0 };
+        let vh = self.size_base();
         let (start, end) = self.default_window(self.now());
         let emoji = self.tool == Some(Tool::Emoji);
         let mut a = Ann {
@@ -1650,7 +1660,7 @@ pub fn is_emoji_text(t: &str) -> bool {
 /// 每種標註上次用的顏色與大小（大小以 1080 高的畫面為準）：新放的沿用，程式執行期間都記得
 static TOOL_STYLE: std::sync::LazyLock<std::sync::Mutex<HashMap<AnnKind, (String, f64)>>> = std::sync::LazyLock::new(Default::default);
 
-/// 新標註的顏色與大小（vh = 畫面高度）
+/// 新標註的顏色與大小（vh = 大小的基準，Editor::size_base）
 pub fn style_of(kind: AnnKind, vh: f64) -> (String, f64) {
     let k = vh / 1080.0;
     if let Some((c, s)) = TOOL_STYLE.lock().unwrap().get(&kind) {

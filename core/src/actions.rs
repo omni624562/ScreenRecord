@@ -116,13 +116,13 @@ pub async fn library(app: &App, dir: &str, query: &LibraryQuery) -> LibraryPage 
 
 /// 縮圖檔（PNG）的路徑；產生失敗回傳 None
 pub async fn thumb(app: &App, path: &str) -> Option<PathBuf> {
-    let ffmpeg = app.ffmpeg_path().filter(|_| is_abs(path) && ends_with_ci(path, &[".mp4", ".gif", ".webp", ".png"]) && Path::new(path).exists())?;
+    let ffmpeg = app.ffmpeg_path().filter(|_| is_abs(path) && ends_with_ci(path, &[".mp4", ".gif", ".webp", ".png", ".jpg", ".jpeg"]) && Path::new(path).exists())?;
     app.thumbs.get(&ffmpeg, path).await
 }
 
 /// 錄影或截圖改名（錄影連同加速版 / GIF）；不能改正在錄影或轉檔的檔案。回傳新的完整路徑
 pub async fn rename(app: &App, path: &str, name: &str) -> Result<String> {
-    if !is_abs(path) || !ends_with_ci(path, &[".mp4", ".png"]) || !Path::new(path).exists() {
+    if !is_abs(path) || !ends_with_ci(path, &[".mp4", ".png", ".jpg", ".jpeg"]) || !Path::new(path).exists() {
         return Err(Error::config(trf!("找不到檔案：{path}", "File not found: {path}")));
     }
     let mut busy = exporting(app);
@@ -142,7 +142,7 @@ pub fn delete(app: &App, paths: &[String]) -> Result<usize> {
     }
     let busy = exporting(app);
     for f in paths {
-        if !is_abs(f) || !ends_with_ci(f, &[".mp4", ".gif", ".webp", ".png", ".m4a"]) || !is_file(f) {
+        if !is_abs(f) || !ends_with_ci(f, &[".mp4", ".gif", ".webp", ".png", ".jpg", ".jpeg", ".m4a"]) || !is_file(f) {
             return Err(Error::config(trf!("找不到檔案：{f}", "File not found: {f}")));
         }
         if busy.contains(&f.to_lowercase()) {
@@ -355,7 +355,7 @@ pub struct ShotProjectInfo {
 }
 
 pub async fn shot_project(app: &App, path: &str) -> Option<ShotProjectInfo> {
-    if !is_abs(path) || !ends_with_ci(path, &[".png"]) {
+    if !is_abs(path) || !ends_with_ci(path, &[".png", ".jpg", ".jpeg"]) {
         return None;
     }
     let store = app.projects.clone();
@@ -372,7 +372,7 @@ pub async fn load_image(path: &str) -> Result<(Vec<u8>, u32, u32)> {
     let p = path.to_string();
     tokio::task::spawn_blocking(move || {
         let bytes = std::fs::read(&p).map_err(|e| Error::config(trf!("讀不到圖片：{e}", "Couldn't read the image: {e}")))?;
-        let pm = tiny_skia::Pixmap::decode_png(&bytes).map_err(|e| Error::config(trf!("讀不到圖片：{e}", "Couldn't read the image: {e}")))?;
+        let pm = crate::picture::decode_pixmap(&bytes).ok_or_else(|| Error::config(tr!("讀不到圖片（格式不支援或檔案損壞）", "Couldn't read the image (unsupported format or damaged file)")))?;
         Ok((crate::shot_edit::straight_rgba(&pm), pm.width(), pm.height()))
     })
     .await
@@ -551,7 +551,7 @@ pub fn open(action: OpenAction, path: &str) -> Result<()> {
         }
         _ => {
             // 只允許開啟影片、截圖與聲音檔（.mp4 / .gif / .webp / .png / .m4a），避免執行任意檔案
-            if !ends_with_ci(p, &[".mp4", ".gif", ".webp", ".png", ".m4a"]) || !is_file(p) {
+            if !ends_with_ci(p, &[".mp4", ".gif", ".webp", ".png", ".jpg", ".jpeg", ".m4a"]) || !is_file(p) {
                 return Err(Error::config(tr!("找不到檔案", "File not found")));
             }
             crate::desktop::open_with_explorer(p, action == OpenAction::Reveal);

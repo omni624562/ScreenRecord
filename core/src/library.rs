@@ -96,12 +96,12 @@ fn file_name(path: &str) -> String {
 }
 
 static CUT_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)_cut(_\d+)?\.mp4$").unwrap());
-static VIDEO_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)\.(mp4|gif|webp|png|m4a)$").unwrap());
+static VIDEO_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)\.(mp4|gif|webp|png|jpe?g|m4a)$").unwrap());
 /// 只有聲音（「存成 M4A」做出來的）：清單上單獨一筆，標示「只有聲音」
 static AUDIO_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)\.m4a$").unwrap());
-static IMAGE_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)\.png$").unwrap());
+static IMAGE_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)\.(png|jpe?g)$").unwrap());
 
-/// 截圖（PNG）：清單上單獨一筆，沒有加速版
+/// 截圖（PNG，或截圖編輯另存的 JPG）：清單上單獨一筆，沒有加速版
 pub fn is_image_name(name: &str) -> bool {
     IMAGE_RE.is_match(name)
 }
@@ -109,7 +109,7 @@ pub fn is_image_name(name: &str) -> bool {
 /// 去掉副檔名（.mp4 / .png / .m4a）
 fn strip_ext(name: &str) -> String {
     if is_image_name(name) || is_audio_name(name) {
-        name[..name.len() - 4].to_string()
+        name.rsplit_once('.').map_or(name, |(b, _)| b).to_string()
     } else {
         strip_mp4(name)
     }
@@ -458,7 +458,8 @@ pub async fn rename_recording(cache: &MediaCache, path: &str, new_name: &str, bu
         return Err(Error::config(tr!("找不到這個錄影，可能已被移動或刪除", "This recording wasn't found. It may have been moved or deleted")));
     };
     let old_base = strip_ext(&entry.media.name);
-    let ext = if is_image_name(&entry.media.name) { "png" } else { "mp4" };
+    // 截圖保留原本的副檔名（png / jpg）
+    let ext = if is_image_name(&entry.media.name) { entry.media.name.rsplit_once('.').map_or("png", |(_, e)| e).to_lowercase() } else { "mp4".into() };
     if base == old_base {
         return Ok(entry.media.path);
     }
@@ -680,6 +681,22 @@ mod tests {
         let src = dir.path().join("Shot_2026-10-09_14-30-00.png").display().to_string();
         let out = rename_recording(&MediaCache::default(), &src, "登入畫面", &[]).await.unwrap();
         assert!(out.ends_with("登入畫面.png"), "{out}");
+    }
+
+    /// 截圖編輯另存的 JPG 也列在全部截圖，改名保留 .jpg
+    #[tokio::test]
+    async fn jpg_screenshots_are_listed_and_keep_extension() {
+        let dir = make(&["Shot_2026-10-09_14-30-00.png", "登入畫面_編輯.jpg", "Rec_X.mp4"]);
+        let cache = Arc::new(MediaCache::default());
+        let shots = list_library(&cache, None, dir.path(), &LibraryQuery { filter: LibraryFilter::Shot, ..q(None, None, LibrarySort::Old) }).await;
+        let mut names: Vec<&str> = shots.items.iter().map(|e| e.media.name.as_str()).collect();
+        names.sort();
+        assert_eq!(names, vec!["Shot_2026-10-09_14-30-00.png", "登入畫面_編輯.jpg"]);
+        let videos = list_library(&cache, None, dir.path(), &q(None, None, LibrarySort::Old)).await;
+        assert_eq!(videos.items.iter().map(|e| e.media.name.as_str()).collect::<Vec<_>>(), vec!["Rec_X.mp4"]);
+        let src = dir.path().join("登入畫面_編輯.jpg").display().to_string();
+        let out = rename_recording(&MediaCache::default(), &src, "登入步驟", &[]).await.unwrap();
+        assert!(out.ends_with("登入步驟.jpg"), "{out}");
     }
 
     #[tokio::test]

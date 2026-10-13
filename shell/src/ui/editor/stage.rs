@@ -742,7 +742,7 @@ fn drag_to(ed: &mut Editor, (px, py): (f64, f64), shift: bool) {
         }
         Drag::Pen { id, mut pts } => {
             // 移動超過一點點才加點（線比較平滑、資料比較少）
-            let k = (if ed.vh > 0.0 { ed.vh } else { 1080.0 }) / 1080.0;
+            let k = ed.size_base() / 1080.0;
             if pts.last().is_none_or(|&(lx, ly)| (px - lx).hypot(py - ly) >= 2.5 * k) {
                 pts.push((px, py));
                 if let Some(a) = ed.ann_mut(id) {
@@ -868,7 +868,7 @@ fn end_drag(ed: &mut Editor) {
         }
         Drag::Create { id, .. } => {
             // 拖曳太短：給個預設大小
-            let k = (if ed.vh > 0.0 { ed.vh } else { 1080.0 }) / 1080.0;
+            let k = ed.size_base() / 1080.0;
             if let Some(a) = ed.ann_mut(id) {
                 if a.kind == AnnKind::Magnify && a.w < 24.0 * k {
                     (a.w, a.h) = (240.0 * k, 240.0 * k);

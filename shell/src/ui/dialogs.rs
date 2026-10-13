@@ -317,7 +317,9 @@ pub fn is_cut_name(name: &str) -> bool {
 
 /// 顯示用名稱：去掉 .mp4（截圖 .png、聲音檔 .m4a 也是）
 pub fn base_name(name: &str) -> String {
-    match name.strip_suffix(".png").or_else(|| name.strip_suffix(".PNG")).or_else(|| name.strip_suffix(".m4a")).or_else(|| name.strip_suffix(".M4A")) {
+    let lower = name.to_lowercase();
+    let image_or_audio = [".png", ".jpg", ".jpeg", ".m4a"].iter().find(|e| lower.ends_with(*e));
+    match image_or_audio.map(|e| &name[..name.len() - e.len()]) {
         Some(b) => b.to_string(),
         None => screenrecorder_core::format::strip_mp4(name),
     }
@@ -325,7 +327,8 @@ pub fn base_name(name: &str) -> String {
 
 /// 圖片（截圖）
 pub fn is_image(path: &str) -> bool {
-    path.to_lowercase().ends_with(".png")
+    let p = path.to_lowercase();
+    p.ends_with(".png") || p.ends_with(".jpg") || p.ends_with(".jpeg")
 }
 
 pub fn file_name(path: &str) -> String {

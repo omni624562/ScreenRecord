@@ -220,10 +220,10 @@ fn load_current(app: &mut UiApp) {
     );
 }
 
-/// 讀取 PNG；超過顯示卡材質上限時縮小
+/// 讀取截圖（PNG、JPG）；超過顯示卡材質上限時縮小
 fn decode_image(path: &str, max_side: usize) -> Option<(egui::ColorImage, Vec2)> {
     let bytes = std::fs::read(path).ok()?;
-    let pm = tiny_skia::Pixmap::decode_png(&bytes).ok()?;
+    let pm = screenrecorder_core::picture::decode_pixmap(&bytes)?;
     let (w, h) = (pm.width() as usize, pm.height() as usize);
     let size = vec2(w as f32, h as f32);
     let k = w.max(h).div_ceil(max_side).max(1);

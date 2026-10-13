@@ -1674,7 +1674,7 @@ pub fn rename_entry(app: &mut UiApp, entry: LibraryEntry) {
     let old = base_name(&entry.media.name);
     let n = entry.exports.len();
     let mut ask = Ask::input(tr!("重新命名", "Rename"), tr!("新名稱", "New name"), old.clone(), tr!("改名", "Rename"), move |app, value| {
-        let name = value.trim().trim_end_matches(".mp4").trim_end_matches(".MP4").trim_end_matches(".png").trim_end_matches(".PNG").to_string();
+        let name = value.trim().trim_end_matches(".mp4").trim_end_matches(".MP4").trim_end_matches(".png").trim_end_matches(".PNG").trim_end_matches(".jpg").trim_end_matches(".JPG").to_string();
         if name == old {
             app.ask = None;
             return;

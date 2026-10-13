@@ -843,7 +843,7 @@ fn tool_style(ed: &mut Editor, ui: &mut egui::Ui) {
         return;
     }
     let p = theme::pal(ui);
-    let vh = if ed.vh > 0.0 { ed.vh } else { 1080.0 };
+    let vh = ed.size_base();
     let (mut color, mut size) = super::style_of(kind, vh);
     egui::Frame::new().fill(p.surface2).corner_radius(theme::RADIUS_SM).inner_margin(10).show(ui, |ui| {
         ui.set_width(ui.available_width());
@@ -882,7 +882,7 @@ pub(super) fn props(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context) {
     };
     let mut cur = a.clone();
     let (dur, now) = (ed.duration, ed.now());
-    let k = (if ed.vh > 0.0 { ed.vh } else { 1080.0 }) / 1080.0;
+    let k = ed.size_base() / 1080.0;
     let sub = ed.is_sub(a.id);
     let emoji = cur.kind == AnnKind::Text && cur.text.as_deref().is_some_and(super::is_emoji_text);
     let mut delete = false;
@@ -1037,7 +1037,7 @@ pub(super) fn props(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context) {
             }
             if (cc || sc) && !sub {
                 // 之後新放的同類標註沿用（字幕的樣式不影響一般的文字）
-                super::remember_style(cur.kind, &cur.color, cur.size, ed.vh);
+                super::remember_style(cur.kind, &cur.color, cur.size, ed.size_base());
             }
             if cur.kind == AnnKind::Text {
                 switch(ui, &mut cur.bg, tr!("深色底", "Dark background"), true);
