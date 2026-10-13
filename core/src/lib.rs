@@ -12,6 +12,9 @@ pub mod audio;
 pub mod audio_card;
 pub mod audio_out;
 pub mod audiopipe;
+pub mod bubble;
+#[cfg(windows)]
+pub mod bubble_win;
 pub mod camera_bubble;
 #[cfg(windows)]
 pub mod camera_bubble_win;

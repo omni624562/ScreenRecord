@@ -471,7 +471,7 @@ impl App {
         self.lock().shooting = false;
         let shot = r?;
         self.lock().shot = Some(shot.clone());
-        self.shot_preview(&shot.path, None);
+        self.shot_preview(&shot.path, None, crate::shot_toast::caption(shot.copied));
         crate::info!("[截圖] {}（{}×{}{}）", shot.path, shot.width, shot.height, if shot.copied { "，已複製到剪貼簿" } else { "" });
         Ok(shot)
     }
@@ -481,8 +481,9 @@ impl App {
         cfg!(windows) && self.settings.load().ui.and_then(|u| u.get("shotPreview").and_then(serde_json::Value::as_bool)).unwrap_or(true)
     }
 
-    /// 顯示截圖後的小縮圖：編輯、複製、釘選、刪除。thumb：已經做好的縮圖（沒有時讀取 path）
-    fn shot_preview(self: &Arc<Self>, path: &str, thumb: Option<tiny_skia::Pixmap>) {
+    /// 顯示截圖後的小縮圖：編輯、釘在桌面、顯示在資料夾、刪除。thumb：已經做好的縮圖（沒有時讀取 path）；
+    /// caption：圖下面的說明（「已存檔並複製到剪貼簿」，長截圖提早停止時說明原因）
+    fn shot_preview(self: &Arc<Self>, path: &str, thumb: Option<tiny_skia::Pixmap>, caption: &str) {
         if !self.shot_preview_enabled() {
             return;
         }
@@ -490,27 +491,34 @@ impl App {
         {
             use crate::shot_toast_win::Cmd;
             let me = Arc::downgrade(self);
-            crate::shot_toast_win::show(path.to_string(), thumb, move |cmd, p| {
-                let Some(app) = me.upgrade() else { return };
+            crate::shot_toast_win::show(path.to_string(), thumb, caption.to_string(), move |cmd, p| {
+                let Some(app) = me.upgrade() else { return false };
                 match cmd {
                     Cmd::Edit => app.open_ui(UiPage::EditShot),
-                    Cmd::Copy => {
-                        crate::clipboard::copy_png(Path::new(p));
-                    }
                     Cmd::Pin => {
                         if let Some(pm) = std::fs::read(p).ok().and_then(|b| tiny_skia::Pixmap::decode_png(&b).ok()) {
                             crate::pin_win::show(crate::shot_edit::straight_rgba(&pm), pm.width(), pm.height());
                         }
                     }
-                    Cmd::Delete => match crate::recycle::move_to_recycle_bin(&[p.to_string()]) {
-                        Ok(()) => crate::info!("[截圖] 從小縮圖刪除 {p}"),
-                        Err(e) => app.notify(tr!("刪除截圖", "Delete screenshot"), e.message(), true),
-                    },
+                    Cmd::Reveal => crate::desktop::open_with_explorer(p, true),
+                    Cmd::Delete => {
+                        return match crate::recycle::move_to_recycle_bin(&[p.to_string()]) {
+                            Ok(()) => {
+                                crate::info!("[截圖] 從小縮圖刪除 {p}");
+                                true
+                            }
+                            Err(e) => {
+                                app.notify(tr!("刪除截圖", "Delete screenshot"), e.message(), true);
+                                false
+                            }
+                        }
+                    }
                 }
+                true
             });
         }
         #[cfg(not(windows))]
-        let _ = (path, thumb);
+        let _ = (path, thumb, caption);
     }
 
     async fn take_screenshot(self: &Arc<Self>, config: &RecordConfig) -> crate::Result<crate::types::ShotInfo> {
@@ -686,6 +694,16 @@ impl App {
             self.snip_offer(src);
             Ok(None)
         }
+    }
+
+    /// 延遲截圖：倒數 sec 秒後框選（先打開要截的選單或提示）。Windows 上畫面上方顯示「3」秒後框選（不會被截進去），
+    /// 按 Esc 或點一下取消。取消時回傳 None
+    pub async fn snip_delayed(self: &Arc<Self>, config: &RecordConfig, sec: u64) -> crate::Result<Option<crate::types::ShotInfo>> {
+        if sec > 0 && !countdown(sec).await {
+            crate::info!("[截圖] 取消延遲截圖");
+            return Ok(None);
+        }
+        self.snip_begin(config).await
     }
 
     /// 在凍結的畫面上框選（Windows 原生視窗）：(範圍, 工具列選的動作)；取消時 None
@@ -894,7 +912,7 @@ impl App {
             let res = tokio::task::spawn_blocking(move || scroll_capture(area)).await;
             // 先結束框選再處理錯誤（背景工作出錯時也不會一直卡在「正在截圖」）
             self.snip_end(Some(&src));
-            let Some((img, steps)) = res.map_err(|e| crate::Error::other(e.to_string()))?? else {
+            let Some((img, steps, end)) = res.map_err(|e| crate::Error::other(e.to_string()))?? else {
                 crate::info!("[截圖] 取消長截圖");
                 return Ok(None);
             };
@@ -904,7 +922,16 @@ impl App {
             let (copied, thumb) = tokio::task::spawn_blocking(move || save_long_shot(img, &o)).await.map_err(|e| crate::Error::other(e.to_string()))??;
             let shot = self.shot_info(&out, w, h, copied);
             self.lock().shot = Some(shot.clone());
-            self.shot_preview(&shot.path, thumb);
+            // 提早停下來（太長、對不起來）：小縮圖上說明只截到這裡（沒有小縮圖時用通知）
+            let early = match end {
+                Some(crate::longshot::Step::Full) => Some(tr!("已到長度上限，只截到這裡", "Reached the length limit, captured up to here")),
+                Some(crate::longshot::Step::Lost) => Some(tr!("畫面對不起來，只截到這裡", "The content stopped lining up, captured up to here")),
+                _ => None,
+            };
+            if let Some(msg) = early.filter(|_| !self.shot_preview_enabled()) {
+                self.notify(tr!("長截圖", "Scrolling screenshot"), msg, false);
+            }
+            self.shot_preview(&shot.path, thumb, early.unwrap_or(crate::shot_toast::caption(copied)));
             crate::info!("[截圖] 長截圖 {}（{w}×{h}，捲動 {steps} 次）", shot.path);
             Ok(Some(shot))
         }
@@ -1024,7 +1051,7 @@ impl App {
             st.last_snip = Some(rect);
         }
         if preview {
-            self.shot_preview(&shot.path, None);
+            self.shot_preview(&shot.path, None, crate::shot_toast::caption(shot.copied));
         }
         crate::info!("[截圖] 框選 {}（{}×{}{}）", shot.path, shot.width, shot.height, if shot.copied { "，已複製到剪貼簿" } else { "" });
         Ok(shot)
@@ -1728,9 +1755,51 @@ impl Drop for LiveGuard {
     }
 }
 
-/// 接好的長圖與捲了幾次
+/// 接好的長圖、捲了幾次、為什麼停下來（None = 按了 Esc、捲到次數上限或截不到畫面）
 #[cfg(windows)]
-type LongCapture = (crate::longshot::LongImage, usize);
+type LongCapture = (crate::longshot::LongImage, usize, Option<crate::longshot::Step>);
+
+/// 倒數 sec 秒；回傳 false = 取消（Windows：畫面上方顯示倒數，按 Esc 或點一下取消）
+async fn countdown(sec: u64) -> bool {
+    #[cfg(windows)]
+    {
+        tokio::task::spawn_blocking(move || countdown_bubble(sec)).await.unwrap_or(false)
+    }
+    #[cfg(not(windows))]
+    {
+        tokio::time::sleep(Duration::from_secs(sec)).await;
+        true
+    }
+}
+
+/// 延遲截圖的倒數：「3」秒後框選截圖（先打開要截的選單・按 Esc 或點一下取消）
+#[cfg(windows)]
+fn countdown_bubble(sec: u64) -> bool {
+    use crate::bubble::Content;
+    use crate::bubble_win::{Bubble, Options};
+    let content = |n: u64| Content {
+        big: Some(n.to_string()),
+        lines: vec![tr!("秒後框選截圖", "s until you select an area").into(), tr!("先打開要截的選單或提示・按 Esc 或點一下取消", "Open the menu or tooltip now · Esc or click to cancel").into()],
+        buttons: vec![],
+    };
+    let bubble = Bubble::show(content(sec), Options { clickable: true, esc: true, near: None, bottom: false, on: None });
+    let end = std::time::Instant::now() + Duration::from_secs(sec);
+    loop {
+        if !bubble.events().is_empty() {
+            return false;
+        }
+        let left = end.saturating_duration_since(std::time::Instant::now());
+        if left.is_zero() {
+            break;
+        }
+        bubble.set(content(left.as_secs_f64().ceil() as u64));
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    drop(bubble);
+    // 等提示關掉（不會被截進去，只是讓畫面先穩定）
+    std::thread::sleep(Duration::from_millis(80));
+    true
+}
 
 /// 一邊往下捲一邊擷取範圍、接成長圖；按 Esc 而且還沒接上任何一段時回傳 None
 #[cfg(windows)]
@@ -1738,6 +1807,19 @@ fn scroll_capture(area: crate::types::Rect) -> crate::Result<Option<LongCapture>
     use crate::longshot::{Step, Stitcher};
     use crate::scroll_win::{esc_pressed, focus_at, grab_settled, park_cursor, scroll};
     crate::info!("[截圖] 開始長截圖：範圍 ({}, {}) {}×{}", area.x, area.y, area.width, area.height);
+    // 範圍旁邊顯示進度（滑鼠穿過去、不會被截進去）
+    let progress = |n: usize| {
+        crate::bubble::Content::text(if crate::i18n::is_en() {
+            format!("Scrolling screenshot · {n} part{} added · Esc to stop", if n == 1 { "" } else { "s" })
+        } else {
+            format!("長截圖中・已接 {n} 段・按 Esc 停止")
+        })
+    };
+    let bubble = crate::bubble_win::Bubble::show(
+        progress(0),
+        crate::bubble_win::Options { clickable: false, esc: false, near: Some((area.x, area.y, area.x + area.width, area.y + area.height)), bottom: true, on: None },
+    );
+    let mut added = 0;
     // 先把範圍裡的視窗切到前面，再截第一張（切換時標題列會變色，要在截第一張之前）
     focus_at(area.x + area.width / 2, area.y + area.height / 2);
     park_cursor(area);
@@ -1774,6 +1856,8 @@ fn scroll_capture(area: crate::types::Rect) -> crate::Result<Option<LongCapture>
             Step::Added(s) => {
                 same = 0;
                 retries = 0;
+                added += 1;
+                bubble.set(progress(added));
                 if !measured {
                     measured = true;
                     let per_notch = s as f64 * 120.0 / delta as f64;
@@ -1827,7 +1911,8 @@ fn scroll_capture(area: crate::types::Rect) -> crate::Result<Option<LongCapture>
             )
         }));
     }
-    Ok(Some((st.finish(), steps)))
+    drop(bubble);
+    Ok(Some((st.finish(), steps, end)))
 }
 
 /// 存長截圖並複製到剪貼簿，回傳 (是否已複製, 小縮圖)。長截圖可能有上百 MB，所以：

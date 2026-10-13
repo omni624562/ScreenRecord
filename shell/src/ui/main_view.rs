@@ -1490,10 +1490,8 @@ fn shot_button(app: &mut UiApp, ui: &mut Ui, w: f32) {
             app.toast(trf!("{sec} 秒後框選：現在先打開要截的選單或提示", "Selecting in {sec} s: open the menu or tooltip you want to capture now"), false);
         }
         app.spawn(
-            async move {
-                tokio::time::sleep(std::time::Duration::from_secs(sec)).await;
-                core.snip_begin(&config).await
-            },
+            // 延遲截圖：core 在畫面上顯示倒數（可以按 Esc 或點一下取消）
+            async move { core.snip_delayed(&config, sec).await },
             |app, r| {
                 app.main.shooting = false;
                 if let Err(e) = r {

@@ -547,21 +547,11 @@ impl TrayController {
             | TrayCommand::ScreenshotSelect
             | TrayCommand::ScreenshotDelay(_) => {
                 let mut cfg = self.config();
-                if let TrayCommand::ScreenshotDelay(sec) = cmd {
-                    self.notify(
-                        tr!("延遲截圖", "Delayed screenshot"),
-                        &trf!(
-                            "{sec} 秒後畫面會凍結讓你框選：現在先打開要截的選單或提示",
-                            "The screen will freeze in {sec} s so you can select an area. Open the menu or tooltip you want to capture now."
-                        ),
-                        false,
-                    );
-                    tokio::time::sleep(std::time::Duration::from_secs(sec)).await;
-                }
                 match cmd {
-                    // 框選：取消時不顯示通知
+                    // 框選（延遲截圖先在畫面上倒數，可以取消）：取消時不顯示通知
                     TrayCommand::ScreenshotSelect | TrayCommand::ScreenshotDelay(_) => {
-                        let Some(shot) = app.snip_begin(&cfg).await.map_err(err)? else { return Ok(()) };
+                        let sec = if let TrayCommand::ScreenshotDelay(sec) = cmd { sec } else { 0 };
+                        let Some(shot) = app.snip_delayed(&cfg, sec).await.map_err(err)? else { return Ok(()) };
                         self.notify_shot(&shot);
                         return Ok(());
                     }

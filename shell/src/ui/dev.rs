@@ -245,6 +245,28 @@ pub fn tick(app: &mut UiApp, ctx: &egui::Context) {
                     Some(("nativesnip", p)) => native_snip(app, p, screenrecorder_core::snip_win::Mode::Shot),
                     #[cfg(windows)]
                     Some(("nativeregion", p)) => native_snip(app, p, screenrecorder_core::snip_win::Mode::Record),
+                    // 延遲截圖（倒數的提示；Windows 以外沒有提示）
+                    Some(("delayshot", sec)) => {
+                        let (core, config, sec) = (app.core.clone(), app.s.record_config(&app.env), sec.parse().unwrap_or(3));
+                        app.spawn(async move { core.snip_delayed(&config, sec).await }, |app, r| match r {
+                            Ok(Some(s)) => app.toast(format!("[dev] {}", s.path), false),
+                            Ok(None) => app.toast("[dev] 取消", false),
+                            Err(e) => app.toast(e.message().to_string(), true),
+                        });
+                    }
+                    // 長截圖進行中的提示（Windows）：在 (300, 250)–(700, 520) 旁邊顯示 6 秒
+                    #[cfg(windows)]
+                    Some(("longbubble", _)) => {
+                        std::thread::spawn(|| {
+                            use screenrecorder_core::bubble::Content;
+                            use screenrecorder_core::bubble_win::{Bubble, Options};
+                            let b = Bubble::show(Content::text("長截圖中・已接 0 段・按 Esc 停止"), Options { clickable: false, esc: false, near: Some((300, 250, 700, 520)), bottom: true, on: None });
+                            for n in 1..=6 {
+                                std::thread::sleep(std::time::Duration::from_secs(1));
+                                b.set(Content::text(format!("長截圖中・已接 {n} 段・按 Esc 停止")));
+                            }
+                        });
+                    }
                     // 只選範圍（例如錄影範圍）：選好後顯示範圍
                     Some(("snipregion", p)) => {
                         if let Some(src) = fake_source(app, p) {
