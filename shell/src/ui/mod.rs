@@ -472,6 +472,11 @@ impl UiApp {
         self.status.export.as_ref().is_some_and(|e| e.state == screenrecorder_core::types::ExportState::Running)
     }
 
+    /// 進行中、而且是手動開始的轉檔（不是錄完自動處理開始的）：開始錄影前要先停止它
+    pub fn manual_export(&self) -> Option<screenrecorder_core::types::ExportStatus> {
+        self.status.export.clone().filter(|e| e.state == screenrecorder_core::types::ExportState::Running && !self.core.after_owns_export(e.id))
+    }
+
     fn poll_status(&mut self) {
         let prev_update = self.status.update.clone();
         let prev_install = self.status.install.clone();
@@ -540,7 +545,8 @@ impl UiApp {
                 if let Some(l) = &mut self.library {
                     l.dirty = true;
                 }
-                if let Some(e) = &self.status.export {
+                // 錄完自動處理開始的轉檔：由錄完自動處理的卡片說明
+                if let Some(e) = self.status.export.as_ref().filter(|e| !self.core.after_owns_export(e.id)) {
                     if e.state == screenrecorder_core::types::ExportState::Done {
                         let what = match e.kind {
                             screenrecorder_core::types::ExportKind::Cut => tr!("剪輯完成", "Edited video ready"),

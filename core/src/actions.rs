@@ -35,11 +35,42 @@ fn exporting(app: &App) -> Vec<String> {
 
 // ───────────── 錄影 ─────────────
 
+/// 開始錄影：錄影優先，背景的轉檔先讓出來（見 yield_jobs）
 pub async fn record_start(app: &App, config: RecordConfig) -> Result<()> {
-    if app.exporter.running() {
-        return Err(Error::config(tr!("正在製作加速版 / GIF，請等完成再開始錄影", "A sped-up video / GIF is being made. Start recording after it finishes")));
-    }
+    yield_jobs(app).await;
     app.recorder.start(config).await
+}
+
+/// 要開始錄影了：錄影時轉檔會搶 CPU、讓錄影掉格，所以錄完自動處理先暫停（錄完再接著做），
+/// 手動開始的轉檔（製作 GIF、剪輯…）停止。回傳被停止的手動轉檔是什麼（例如「製作 GIF」），讓系統匣通知
+pub async fn yield_jobs(app: &App) -> Option<String> {
+    let paused = app.after_yield();
+    let mut stopped = None;
+    if let Some(e) = app.exporter.status().filter(|e| e.state == ExportState::Running && !app.after_owns_export(e.id)) {
+        let what = job_label(&e);
+        crate::info!("[錄影] 為了開始錄影，停止{what}（{}）", e.output);
+        let _ = app.exporter.cancel();
+        stopped = Some(what);
+    }
+    if paused || stopped.is_some() {
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), app.exporter.wait()).await;
+    }
+    stopped
+}
+
+/// 轉檔工作的白話名稱：「製作 GIF」「剪輯」「製作 4× 加速版」…
+pub fn job_label(e: &crate::types::ExportStatus) -> String {
+    use crate::types::ExportKind;
+    let speed = if e.speed > 1.0 { format!(" {}×", crate::format::speed_label(e.speed)) } else { String::new() };
+    match e.kind {
+        ExportKind::Cut => tr!("剪輯", "Editing").to_string(),
+        ExportKind::Merge => tr!("合併錄影", "Merging recordings").to_string(),
+        ExportKind::Gif => trf!("製作 GIF{speed}", "Making a GIF{speed}"),
+        ExportKind::Webp => trf!("製作 WebP 動圖{speed}", "Making a WebP{speed}"),
+        // 原速：只壓縮
+        ExportKind::Speed if e.speed <= 1.0 => tr!("製作壓縮版", "Making a compressed copy").to_string(),
+        ExportKind::Speed => trf!("製作 {}× 加速版", "Making a {}× sped-up video", crate::format::speed_label(e.speed)),
+    }
 }
 
 /// 儲存設定：ui = 操作視窗的設定（JSON），config = 系統匣「開始錄影」用的錄影設定。回傳新的版本號

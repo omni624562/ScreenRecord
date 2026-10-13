@@ -96,7 +96,7 @@ pub struct TrayState {
     pub preset: Option<usize>,
     /// 排程錄影（例如「今天 10:30 開始，錄 30 分鐘」）
     pub scheduled: Option<String>,
-    /// 是否能開始錄影（有 FFmpeg、沒有轉檔工作）
+    /// 是否能開始錄影（有 FFmpeg）
     pub can_record: bool,
     /// 是否能截圖（有 FFmpeg）
     pub can_shot: bool,
@@ -218,7 +218,8 @@ impl TrayController {
         let has_shot = self.app.last_shot().is_some_and(|s| self.shot_exists(&s.path));
         // 檔案、設定都先查好再鎖：鎖住時不讀磁碟（網路磁碟可能卡住好幾秒，其他地方會跟著等）
         let (can_record, can_shot, has_last_snip, steps, update, keys) = (
-            self.app.ffmpeg_path().is_some() && !self.app.exporter.running(),
+            // 有轉檔工作時也能錄（錄影優先，轉檔讓出來）
+            self.app.ffmpeg_path().is_some(),
             self.app.ffmpeg_path().is_some(),
             self.app.last_snip().is_some(),
             self.app.steps_count(),
@@ -602,10 +603,6 @@ impl TrayController {
             }
             TrayCommand::StartLast | TrayCommand::StartAll | TrayCommand::StartMonitor(_) | TrayCommand::StartSelect | TrayCommand::StartLastSnip => self.config(),
         };
-        // 開始錄影
-        if app.exporter.running() {
-            return Err(tr!("轉檔進行中，請等它完成再錄影", "A video is being processed. Wait for it to finish before recording.").into());
-        }
         // 指定了要錄的範圍：錄畫面（不是只錄聲音）
         if cmd != TrayCommand::StartLast {
             cfg.audio_only = false;
@@ -634,6 +631,14 @@ impl TrayController {
                     });
             }
             _ => {}
+        }
+        // 錄影優先：錄完自動處理先暫停（錄完再接著做），手動的轉檔停止並通知
+        if let Some(what) = crate::actions::yield_jobs(app).await {
+            self.notify(
+                tr!("已停止轉檔", "Conversion stopped"),
+                &trf!("為了開始錄影，已停止「{what}」；錄完後可以再做一次", "“{what}” was stopped so recording could start. You can do it again afterwards."),
+                true,
+            );
         }
         rec.start(cfg).await.map_err(err)
     }

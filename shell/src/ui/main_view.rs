@@ -36,6 +36,8 @@ pub struct MainState {
     dismissed_result: Option<String>,
     /// 錄影失敗的卡片：展開「詳細資訊」
     result_detail: bool,
+    /// 按 ✕ 關掉的「已自動處理」結果
+    dismissed_after: Option<u64>,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -1000,32 +1002,85 @@ fn camera_menu(app: &mut UiApp, ui: &mut Ui) -> bool {
     more
 }
 
-/// 錄完自動處理中：哪一支、做到哪一步、取消
+/// 錄完自動處理中：一張卡片寫出第幾步、做什麼、進度，只有一個「取消」（轉檔的部分不另外顯示轉檔卡）
 fn after_record_strip(app: &mut UiApp, ui: &mut Ui) {
     let Some(s) = app.core.after_status() else { return };
     let p = theme::pal(ui);
+    // 轉檔的步驟用轉檔工作的進度
+    let export = app.status.export.clone().filter(|e| s.exporting && e.state == ExportState::Running);
+    let frac = match &export {
+        Some(e) => e.progress as f32,
+        None => s.progress.load(std::sync::atomic::Ordering::Relaxed) as f32 / 1000.0,
+    };
+    let recording = app.locked();
     ui.add_space(6.0);
     egui::Frame::new().fill(p.accent.gamma_multiply(0.1)).corner_radius(CornerRadius::same(theme::RADIUS_SM)).inner_margin(8.0).show(ui, |ui| {
         ui.set_width(ui.available_width());
-        ui.add(egui::Label::new(RichText::new(trf!("錄完自動處理：{}", "Post-processing: {}", s.name)).color(p.accent).font(theme::font_bold(13.0))).truncate());
+        let title = if s.step_no == 0 || s.step.is_empty() {
+            tr!("錄完自動處理：等待中", "Post-processing: waiting").to_string()
+        } else {
+            let pct = if frac > 0.0 { format!(" {}%", (frac * 100.0).floor()) } else { String::new() };
+            let step = if s.steps > 1 { trf!("（步驟 {}/{}）", " (step {}/{})", s.step_no, s.steps) } else { String::new() };
+            trf!("錄完自動處理{step}：{}{pct}", "Post-processing{step}: {}{pct}", s.step)
+        };
         ui.horizontal(|ui| {
-            let pm = s.progress.load(std::sync::atomic::Ordering::Relaxed);
-            let step = if s.step.is_empty() {
-                tr!("等待中", "Waiting").to_string()
-            } else if pm > 0 {
-                format!("{}… {}%", s.step, pm / 10)
-            } else {
-                format!("{}…", s.step)
-            };
-            ui.label(theme::muted(ui, step));
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if Btn::new(tr!("取消", "Cancel")).icon(Icon::Close).ghost().small().show(ui).clicked() {
+                if Btn::new(tr!("取消", "Cancel"))
+                    .icon(Icon::Close)
+                    .ghost()
+                    .small()
+                    .tooltip(tr!("取消這支錄影的自動處理（已經做好的會留著）", "Cancel post-processing for this recording (finished steps are kept)"))
+                    .show(ui)
+                    .clicked()
+                {
                     app.core.cancel_after();
                 }
+                ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                    ui.add(egui::Label::new(RichText::new(&title).color(p.accent).font(theme::font_bold(13.0))).wrap());
+                });
             });
         });
+        ui.add(egui::Label::new(theme::muted(ui, &s.name)).truncate());
+        if s.waiting && recording {
+            ui.label(theme::muted(ui, tr!("錄影中先暫停，錄完後繼續處理", "Paused while recording; it continues when you stop")));
+        } else if s.waiting {
+            ui.label(theme::muted(ui, tr!("等其他轉檔工作完成", "Waiting for another conversion to finish")));
+        } else if frac > 0.0 {
+            theme::progress(ui, frac, p.accent, 4.0);
+        }
     });
     ui.ctx().request_repaint_after(std::time::Duration::from_millis(500));
+}
+
+/// 錄完自動處理做完了：「已自動處理：…」，可以播放處理好的版本、在資料夾中顯示，按 ✕ 關掉
+fn after_done_card(app: &mut UiApp, ui: &mut Ui) {
+    let Some(d) = app.core.after_done() else { return };
+    if app.main.dismissed_after == Some(d.seq) || app.core.after_status().is_some() {
+        return;
+    }
+    let p = theme::pal(ui);
+    ui.add_space(8.0);
+    let (fill, stroke) = if d.ok { (p.ok_soft, p.ok) } else { (p.rec_soft, p.rec) };
+    egui::Frame::new().fill(fill).stroke(Stroke::new(1.0, stroke.gamma_multiply(0.4))).corner_radius(CornerRadius::same(theme::RADIUS_SM)).inner_margin(10.0).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        let title = if d.ok { tr!("已自動處理", "Post-processing done") } else { tr!("自動處理沒有完成", "Post-processing didn't finish") };
+        if card_title(ui, title, if d.ok { p.ok } else { p.rec }) {
+            app.main.dismissed_after = Some(d.seq);
+        }
+        ui.add(egui::Label::new(RichText::new(&d.text).font(theme::font(12.5))).wrap());
+        let target = d.output.clone().unwrap_or_else(|| d.source.clone());
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = vec2(4.0, 4.0);
+            if let Some(out) = &d.output {
+                if Btn::new(tr!("播放處理好的版本", "Play the processed version")).icon(Icon::Play).small().show(ui).clicked() {
+                    app.act_path(EntryAction::Play, out.clone());
+                }
+            }
+            if Btn::new(tr!("在資料夾中顯示", "Show in folder")).icon(Icon::Folder).small().show(ui).clicked() {
+                app.act_path(EntryAction::Reveal, target.clone());
+            }
+        });
+    });
 }
 
 // ───────────── 錄影狀態 ─────────────
@@ -1244,15 +1299,23 @@ fn rec_body(app: &mut UiApp, ui: &mut Ui, r: &screenrecorder_core::types::Record
     // 控制按鈕
     ui.horizontal(|ui| {
         if !active {
-            let can = app.env.ffmpeg.found && app.env.ffmpeg.encoder.is_some() && !app.exporting() && !region_too_small(app);
+            // 錄完自動處理不擋錄影（錄影時先暫停，錄完再繼續）；手動開始的轉檔要先停止（下方的按鈕）
+            let manual = app.manual_export();
+            let can = app.env.ffmpeg.found && app.env.ffmpeg.encoder.is_some() && manual.is_none() && !region_too_small(app);
             let tip = if !app.env.ffmpeg.found {
-                tr!("請先下載錄影元件（上方的「下載並開始使用」）", "Download the recording component first (“Download and get started” above)")
+                tr!("請先下載錄影元件（上方的「下載並開始使用」）", "Download the recording component first (“Download and get started” above)").to_string()
             } else if region_too_small(app) {
-                tr!("範圍太小：寬高至少 16 像素", "The area is too small: it must be at least 16 pixels wide and tall")
-            } else if app.exporting() {
-                tr!("轉檔進行中，完成後才能錄影", "A conversion is in progress; you can record when it finishes")
+                tr!("範圍太小：寬高至少 16 像素", "The area is too small: it must be at least 16 pixels wide and tall").to_string()
+            } else if let Some(e) = &manual {
+                trf!(
+                    "正在{}，完成後才能錄影；也可以按下方的「停止處理並開始錄影」",
+                    "{} is in progress. You can record when it finishes, or click “Stop it and start recording” below",
+                    actions::job_label(e)
+                )
+            } else if app.core.after_status().is_some() {
+                tr!("錄完自動處理會先暫停，錄完再繼續", "Post-processing pauses while you record and continues afterwards").to_string()
             } else {
-                ""
+                String::new()
             };
             // 截圖按鈕（含小箭頭）的寬度：至少 118，英文字較長時跟著加寬
             let shot_w = (Btn::new(shot_label()).icon(Icon::Camera).width(ui) + 28.0).max(118.0);
@@ -1331,6 +1394,18 @@ fn rec_body(app: &mut UiApp, ui: &mut Ui, r: &screenrecorder_core::types::Record
             }
         }
     });
+    // 手動開始的轉檔還在進行：說明為什麼不能錄，可以停止它直接開始錄影
+    if let Some(e) = app.manual_export().filter(|_| !active) {
+        ui.add_space(6.0);
+        let what = actions::job_label(&e);
+        ui.add(egui::Label::new(theme::muted(ui, trf!("正在{what}（{}%），完成後才能錄影", "{what} ({}%). You can record when it finishes", (e.progress * 100.0).floor()))).wrap());
+        if Btn::new(tr!("停止處理並開始錄影", "Stop it and start recording")).icon(Icon::Stop).small().enabled(app.env.ffmpeg.encoder.is_some()).show(ui).clicked() {
+            let config = app.s.record_config(&app.env);
+            let core = app.core.clone();
+            app.toast(trf!("已停止{what}，錄完後可以再做一次", "{what} was stopped. You can do it again after recording"), false);
+            app.guarded(async move { actions::record_start(&core, config).await }, |_, _| {});
+        }
+    }
     // 排程錄影：什麼時候開始、還有多久、取消
     if !active {
         super::schedule::strip(app, ui);
@@ -1401,6 +1476,7 @@ fn rec_body(app: &mut UiApp, ui: &mut Ui, r: &screenrecorder_core::types::Record
             result_card(app, ui, &res, key);
         }
     }
+    after_done_card(app, ui);
     // 快速鍵小抄或事件紀錄（放不下時整個中間部分可以捲動）
     if r.log.is_empty() && !active {
         // 還沒有事件：顯示常用的快速鍵（不能用的變灰色，註明「無法使用」），其他的在設定裡
@@ -1693,10 +1769,13 @@ fn shot_button(app: &mut UiApp, ui: &mut Ui, w: f32) {
 /// 卡片標題列：左邊標題，右邊 ✕（關閉）；回傳是否按了關閉
 fn card_title(ui: &mut Ui, title: &str, color: Color32) -> bool {
     let mut close = false;
+    // 先放右邊的 ✕，標題用剩下的寬度（太長時結尾「…」）
     ui.horizontal(|ui| {
-        ui.add(egui::Label::new(RichText::new(title).font(theme::font_bold(13.5)).color(color)).truncate());
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             close = Btn::icon_only(Icon::Close).ghost().small().height(22.0).tooltip(tr!("關閉", "Close")).show(ui).clicked();
+            ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                ui.add(egui::Label::new(RichText::new(title).font(theme::font_bold(13.5)).color(color)).truncate()).on_hover_text(title);
+            });
         });
     });
     close
@@ -1779,7 +1858,7 @@ fn result_card(app: &mut UiApp, ui: &mut Ui, res: &screenrecorder_core::types::R
                 ui.add_space(2.0);
                 ui.horizontal_wrapped(|ui| {
                     ui.spacing_mut().item_spacing = vec2(4.0, 4.0);
-                    let can = app.env.ffmpeg.found && app.env.ffmpeg.encoder.is_some() && !app.exporting();
+                    let can = app.env.ffmpeg.found && app.env.ffmpeg.encoder.is_some() && app.manual_export().is_none();
                     if f.compat
                         && Btn::new(tr!("改用相容模式重試", "Retry in compatibility mode"))
                             .primary()
@@ -1874,7 +1953,8 @@ fn job_card(app: &mut UiApp, ui: &mut Ui) {
     let Some(e) = app.status.export.clone() else {
         return;
     };
-    if app.dismissed_job == Some(e.id) && e.state != ExportState::Running {
+    // 錄完自動處理開始的轉檔：在錄完自動處理的卡片裡顯示
+    if (app.dismissed_job == Some(e.id) && e.state != ExportState::Running) || app.core.after_owns_export(e.id) {
         return;
     }
     ui.add_space(8.0);

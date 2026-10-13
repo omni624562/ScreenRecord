@@ -9,7 +9,7 @@ use screenrecorder_core::{tr, trf};
 
 /// 右上角的按鈕（沒在錄影時）：說明、選長度、開始
 pub fn button(app: &mut UiApp, ui: &mut Ui) {
-    let can = app.env.ffmpeg.found && app.env.ffmpeg.encoder.is_some() && !app.exporting();
+    let can = app.env.ffmpeg.found && app.env.ffmpeg.encoder.is_some() && app.manual_export().is_none();
     let tip = tr!(
         "重播緩衝：在背景一直錄、只保留最近幾分鐘，發生想留下的事時再存下來",
         "Replay buffer: keeps recording in the background, holding only the last few minutes; save them when something worth keeping happens"
