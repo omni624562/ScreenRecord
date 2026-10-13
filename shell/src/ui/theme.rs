@@ -782,6 +782,8 @@ pub fn stepper(ui: &mut Ui, id: egui::Id, value: &mut f64, step: f64, range: std
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tone {
     Plain,
+    /// 綠色（目前主畫面沒有用到，保留給其他畫面）
+    #[allow(dead_code)]
     Ok,
     Warn,
     Bad,

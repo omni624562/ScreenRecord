@@ -50,10 +50,10 @@ pub fn open(app: &mut UiApp, page: Page) {
     }
 }
 
-/// 主畫面摘要：錄影（第一項一定是 FPS）
+/// 主畫面摘要：錄影（第一項一定是每秒張數）
 pub fn record_summary(app: &UiApp) -> Vec<String> {
     let s = &app.s;
-    let mut v = vec![format!("{} FPS", s.fps)];
+    let mut v = vec![trf!("每秒 {} 張", "{} fps", s.fps)];
     if s.scale != 100 {
         v.push(trf!("解析度 {}%", "Resolution {}%", s.scale));
     }
@@ -364,9 +364,9 @@ fn record_page(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
     form_section(ui, tr!("畫面", "Video"), |_| {});
     form_row(ui, tr!("每秒張數", "Frame rate"), |ui| {
         let mut fps = app.s.fps;
-        let mut items: Vec<(f64, String, bool)> = FPS_CHOICES.iter().map(|f| (*f, format!("{f} FPS"), true)).collect();
+        let mut items: Vec<(f64, String, bool)> = FPS_CHOICES.iter().map(|f| (*f, trf!("每秒 {f} 張", "{f} fps"), true)).collect();
         if !FPS_CHOICES.contains(&fps) {
-            items.push((fps, format!("{fps} FPS"), true));
+            items.push((fps, trf!("每秒 {fps} 張", "{fps} fps"), true));
         }
         if form_combo(ui, "fps", FORM_CTRL_W, &mut fps, &items) {
             app.s.fps = fps;

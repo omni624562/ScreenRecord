@@ -898,7 +898,7 @@ fn settings_bar(app: &mut UiApp, ui: &mut Ui) {
     let item = |text: &str, icon: Icon| Btn::new(text).icon(icon).ghost().small();
     let measure = |ui: &Ui, text: &str, icon: Icon| item(text, icon).width(ui) + 2.0;
     let mut open: Option<Page> = None;
-    // 錄影：太窄時只寫 FPS
+    // 錄影：太窄時只寫每秒張數
     let rec_full = rec.join(tr!("・", " · "));
     let rec_text = if measure(ui, &rec_full, Icon::Video) + 200.0 <= room { rec_full.clone() } else { rec[0].clone() };
     room -= measure(ui, &rec_text, Icon::Video);
@@ -1175,6 +1175,20 @@ fn rec_panel(app: &mut UiApp, ui: &mut Ui) {
                 });
             });
         });
+        // 有新版本：標題下方一個明顯的「更新到 vX.Y.Z」
+        if let Some(u) = app.env.update.clone().filter(|_| !active) {
+            ui.add_space(4.0);
+            let busy = update_progress(app);
+            let label = busy.clone().unwrap_or_else(|| if can_self_update(&u) { trf!("更新到 v{}", "Update to v{}", u.version) } else { trf!("下載新版 v{}", "Download v{}", u.version) });
+            let tip = if can_self_update(&u) {
+                tr!("自動下載、核對後重新啟動；設定與錄影都會保留", "Downloads and verifies the update, then restarts. Your settings and recordings are kept")
+            } else {
+                tr!("開啟下載頁面", "Open the download page")
+            };
+            if Btn::new(label).icon(Icon::Refresh).primary().small().enabled(busy.is_none()).min_width(ui.available_width()).tooltip(tip).show(ui).clicked() {
+                ask_update(app, &u);
+            }
+        }
         ui.add_space(4.0);
         let ms = live_recorded_ms(app);
         ui.label(RichText::new(clock(ms)).font(theme::mono(46.0)).color(if r.state == RecorderState::Recording { p.rec } else { p.text }));
@@ -1207,7 +1221,7 @@ fn rec_body(app: &mut UiApp, ui: &mut Ui, r: &screenrecorder_core::types::Record
     // 統計
     let (out, method, audio) = if active {
         (
-            format!("{}×{} · {}fps", r.out_width, r.out_height, r.fps),
+            trf!("{}×{}・每秒 {} 張", "{}×{} · {} fps", r.out_width, r.out_height, r.fps),
             trf!(
                 "{}{}・{}",
                 "{}{} · {}",
@@ -1232,7 +1246,11 @@ fn rec_body(app: &mut UiApp, ui: &mut Ui, r: &screenrecorder_core::types::Record
         let system = if app.s.audio_app.is_empty() { tr!("系統聲音", "System audio").to_string() } else { app.s.audio_app.clone() };
         let parts: Vec<String> = [app.s.audio_system.then_some(system), app.s.audio_mic.then(|| tr!("麥克風", "Microphone").to_string())].into_iter().flatten().collect();
         (
-            if app.s.source_type == SourceType::Audio { tr!("只錄聲音", "Audio only").into() } else { o.map(|(w, h)| format!("{w}×{h} · {}fps", app.s.fps)).unwrap_or_else(|| "—".into()) },
+            if app.s.source_type == SourceType::Audio {
+                tr!("只錄聲音", "Audio only").into()
+            } else {
+                o.map(|(w, h)| trf!("{w}×{h}・每秒 {} 張", "{w}×{h} · {} fps", app.s.fps)).unwrap_or_else(|| "—".into())
+            },
             match (app.env.ffmpeg.encoder.is_some(), app.s.method == MethodPreference::Auto && app.s.encoder == EncoderPreference::Auto) {
                 (false, _) => "—".into(),
                 (true, true) => tr!("自動（依電腦選最順的方式）", "Auto (best for this PC)").into(),
@@ -1483,8 +1501,8 @@ fn rec_body(app: &mut UiApp, ui: &mut Ui, r: &screenrecorder_core::types::Record
     }
     if r.slow {
         msgs.push(trf!(
-            "電腦跟不上：實際約 {} fps（設定 {}），建議調低解析度或 FPS",
-            "The computer can't keep up: about {} fps (set to {}). Try a lower resolution or FPS",
+            "電腦跟不上：實際每秒約 {} 張（設定 {} 張），建議調低解析度或每秒張數",
+            "The computer can't keep up: about {} fps (set to {}). Try a lower resolution or frame rate",
             r.actual_fps.map(|f| format!("{f:.1}")).unwrap_or_else(|| "?".into()),
             r.fps
         ));
@@ -1494,6 +1512,19 @@ fn rec_body(app: &mut UiApp, ui: &mut Ui, r: &screenrecorder_core::types::Record
         egui::Frame::new().fill(p.warn_soft).corner_radius(CornerRadius::same(theme::RADIUS_SM)).inner_margin(8.0).show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.add(egui::Label::new(RichText::new(msgs.join("　")).color(p.warn)).wrap());
+            // 跟不上：一鍵改成每秒 15 張（這次錄影不變，之後的錄影用）
+            if r.slow
+                && app.s.fps > 15.0
+                && Btn::new(tr!("改成每秒 15 張", "Use 15 fps"))
+                    .small()
+                    .tooltip(tr!("之後的錄影改成每秒 15 張；這次錄影不變", "Future recordings use 15 fps; this recording isn't changed"))
+                    .show(ui)
+                    .clicked()
+            {
+                app.s.fps = 15.0;
+                app.save_settings();
+                app.toast(tr!("之後的錄影改成每秒 15 張（這次錄影不變）", "Future recordings will use 15 fps (this recording isn't changed)"), false);
+            }
         });
     }
     job_card(app, ui);
@@ -2256,70 +2287,61 @@ fn sys_status(app: &mut UiApp, ui: &mut Ui) {
     ui.label(RichText::new(tr!("系統狀態", "System status")).font(theme::font(12.0)).color(p.muted));
     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
         let ff = app.env.ffmpeg.clone();
-        let mut chips: Vec<(String, Tone, String)> = vec![];
-        let mut ok: Vec<String> = vec![];
         let ver = ff.version.clone().unwrap_or_default().split('-').next().unwrap_or("").to_string();
-        if !app.env_ready {
-            chips.push((tr!("偵測中…", "Detecting…").into(), Tone::Plain, String::new()));
-        } else if ff.found {
-            ok.push(trf!("FFmpeg {ver}（{}）", "FFmpeg {ver} ({})", ff.path.clone().unwrap_or_default()));
-            if !ff.has_ddagrab {
-                chips.push((
-                    tr!("相容模式擷取", "Compatibility capture").into(),
-                    Tone::Warn,
-                    tr!(
-                        "這個 FFmpeg 不支援顯示卡擷取（ddagrab），改用相容模式（gdigrab），大畫面時比較吃 CPU",
-                        "This FFmpeg doesn't support GPU capture (ddagrab), so compatibility mode (gdigrab) is used. It uses more CPU on large screens."
-                    )
-                    .into(),
-                ));
+        // 有問題的才另外標出來；正常時只有一個淡淡的「已就緒」，細節在滑鼠提示
+        let (text, tone, tip): (String, Tone, String) = if !app.env_ready {
+            (tr!("偵測中…", "Detecting…").into(), Tone::Plain, String::new())
+        } else if !ff.found {
+            (
+                tr!("找不到 FFmpeg", "FFmpeg not found").into(),
+                Tone::Bad,
+                tr!("請先下載錄影元件（上方的「下載並開始使用」）", "Download the recording component first (“Download and get started” above)").into(),
+            )
+        } else if ff.encoder.is_none() {
+            (
+                tr!("無 H.264 編碼器", "No H.264 encoder").into(),
+                Tone::Bad,
+                trf!("這個 FFmpeg {ver} 沒有可以用的 H.264 編碼器，請重新下載錄影元件", "This FFmpeg {ver} has no usable H.264 encoder. Download the recording component again"),
+            )
+        } else {
+            let mut lines = vec![trf!("FFmpeg {ver}（{}）", "FFmpeg {ver} ({})", ff.path.clone().unwrap_or_default())];
+            let compat = !ff.has_ddagrab || ff.ddagrab_works == Some(false);
+            let testing = ff.has_ddagrab && ff.ddagrab_works.is_none();
+            lines.push(if !ff.has_ddagrab {
+                tr!(
+                    "擷取：相容模式（gdigrab）。這個 FFmpeg 不支援顯示卡擷取，大畫面時比較吃 CPU",
+                    "Capture: compatibility mode (gdigrab). This FFmpeg doesn't support GPU capture, so it uses more CPU on large screens"
+                )
+                .into()
             } else {
                 match ff.ddagrab_works {
-                    None => chips.push((tr!("ddagrab 測試中…", "Testing ddagrab…").into(), Tone::Plain, String::new())),
-                    Some(true) => ok.push(tr!("擷取：顯示卡擷取（ddagrab）", "Capture: GPU capture (ddagrab)").into()),
-                    Some(false) => chips.push((
-                        tr!("改用相容模式擷取", "Using compatibility capture").into(),
-                        Tone::Warn,
-                        trf!(
-                            "顯示卡擷取（ddagrab）在這台電腦不能用，改用相容模式（gdigrab）\n{}",
-                            "GPU capture (ddagrab) doesn't work on this PC, so compatibility mode (gdigrab) is used\n{}",
-                            ff.ddagrab_error.clone().unwrap_or_default()
-                        ),
-                    )),
+                    None => tr!("擷取：正在測試顯示卡擷取…", "Capture: testing GPU capture…").into(),
+                    Some(true) => tr!("擷取：顯示卡擷取（ddagrab）", "Capture: GPU capture (ddagrab)").into(),
+                    Some(false) => trf!(
+                        "擷取：相容模式（gdigrab）。顯示卡擷取在這台電腦不能用\n{}",
+                        "Capture: compatibility mode (gdigrab). GPU capture doesn't work on this PC\n{}",
+                        ff.ddagrab_error.clone().unwrap_or_default()
+                    ),
                 }
-            }
-            if let Some(g) = &ff.gpu_convert {
-                ok.push(trf!("畫面處理：{g}", "Video processing: {g}"));
-            }
-            match &ff.encoder {
-                Some(e) => ok.push(trf!("編碼：{}（{e}）", "Encoding: {} ({e})", encoder_name(e))),
-                None => chips.push((tr!("無 H.264 編碼器", "No H.264 encoder").into(), Tone::Bad, String::new())),
-            }
-        } else {
-            chips.push((tr!("找不到 FFmpeg", "FFmpeg not found").into(), Tone::Bad, String::new()));
-        }
-        if !ok.is_empty() {
-            let problems = chips.iter().any(|c| matches!(c.1, Tone::Warn | Tone::Bad));
-            chips.push((if problems { format!("FFmpeg {ver}") } else { tr!("已就緒", "Ready").into() }, Tone::Ok, ok.join("\n")));
-        }
-        // 右到左：最後加的在最左邊
-        for (text, tone, tip) in chips.iter().rev() {
-            let r = chip(ui, text, *tone, false);
-            if !tip.is_empty() {
-                r.on_hover_text(tip);
-            }
-        }
-        if let Some(u) = app.env.update.clone() {
-            let busy = update_progress(app);
-            let label = busy.clone().unwrap_or_else(|| trf!("有新版本 v{}", "Update available: v{}", u.version));
-            let r = chip(ui, &label, Tone::Accent, busy.is_none()).on_hover_text(if can_self_update(&u) {
-                tr!("點一下更新（自動下載並重新啟動）", "Click to update (downloads and restarts automatically)")
-            } else {
-                tr!("點一下前往下載頁面", "Click to open the download page")
             });
-            if r.clicked() && busy.is_none() {
-                ask_update(app, &u);
+            if let Some(g) = &ff.gpu_convert {
+                lines.push(trf!("畫面處理：{g}", "Video processing: {g}"));
             }
+            if let Some(e) = &ff.encoder {
+                lines.push(trf!("編碼：{}（{e}）", "Encoding: {} ({e})", encoder_name(e)));
+            }
+            let label = if testing {
+                tr!("已就緒（檢查中…）", "Ready (checking…)")
+            } else if compat {
+                tr!("已就緒（相容模式）", "Ready (compatibility mode)")
+            } else {
+                tr!("已就緒", "Ready")
+            };
+            (label.into(), Tone::Plain, lines.join("\n"))
+        };
+        let r = chip(ui, &text, tone, false);
+        if !tip.is_empty() {
+            r.on_hover_text(tip);
         }
     });
 }
@@ -2351,20 +2373,29 @@ pub fn ask_update(app: &mut UiApp, u: &screenrecorder_core::types::UpdateInfo) {
         return;
     }
     let size = u.size.map(|s| trf!("（約 {}）", " (about {})", format_bytes(s))).unwrap_or_default();
-    app.ask = Some(Ask::confirm(
-        trf!("更新到 v{}", "Update to v{}", u.version),
-        trf!(
-            "會下載新版{size}、核對檔案後自動重新啟動程式；設定與錄影都會保留。",
-            "The new version{size} will be downloaded and verified, then the app restarts automatically. Your settings and recordings are kept."
-        ),
-        tr!("立即更新", "Update now"),
-        |app, _| {
-            app.ask = None;
-            if let Err(e) = app.core.start_self_update() {
-                app.toast(e.message().to_string(), true);
-            }
-        },
-    ));
+    // 剪輯視窗有還沒儲存的修改：更新會結束程式，先說清楚
+    let unsaved = app.editor.as_ref().is_some_and(|e| e.has_unsaved());
+    let mut msg = trf!(
+        "會下載新版{size}、核對檔案後自動重新啟動程式；設定與錄影都會保留。",
+        "The new version{size} will be downloaded and verified, then the app restarts automatically. Your settings and recordings are kept."
+    );
+    if unsaved {
+        msg += tr!("\n\n剪輯視窗有未儲存的修改，更新時會關閉，修改會不見。", "\n\nThe editor has unsaved changes. They will be lost when the app restarts.");
+    }
+    let info = u.clone();
+    let mut ask = Ask::confirm(trf!("更新到 v{}", "Update to v{}", u.version), msg, if unsaved { tr!("仍要更新", "Update anyway") } else { tr!("立即更新", "Update now") }, |app, _| {
+        app.ask = None;
+        if let Err(e) = app.core.start_self_update() {
+            app.toast(e.message().to_string(), true);
+        }
+    })
+    // 看這一版改了什麼（在瀏覽器開啟），對話框留著
+    .with_alt(tr!("看更新內容", "What's new"), move |app, _| {
+        let _ = actions::open_url(&info.url);
+        ask_update(app, &info);
+    });
+    ask.danger = unsaved;
+    app.ask = Some(ask);
 }
 
 // ───────────── 最近錄影 ─────────────
