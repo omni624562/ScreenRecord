@@ -129,6 +129,11 @@ fn main() {
                     let res = match cmd {
                         FrameCmd::Pause => r.pause().await,
                         FrameCmd::Resume => r.resume().await,
+                        // 回溯錄影：沒存下的部分停止後會刪掉，開啟操作視窗先問（和系統匣的停止一樣）
+                        FrameCmd::Stop if r.status().replay.is_some() => {
+                            c.open_ui(screenrecorder_core::app::UiPage::ReplayStop);
+                            Ok(())
+                        }
                         FrameCmd::Stop => r.stop(None).await.map(|_| ()),
                         FrameCmd::Mark => r.add_marker().map(|_| ()),
                         FrameCmd::SaveReplay => c.replay_save(true).await.map(|_| ()),

@@ -779,6 +779,16 @@ impl UiApp {
             if page == UiPage::StepsReview {
                 steps_review::open(self);
             }
+            if page == UiPage::ReplayStop {
+                // 系統匣、錄影控制列的「停止回溯錄影」：還有沒存下的內容時先問
+                match self.status.recorder.replay.clone() {
+                    Some(rp) => replay::ask_stop(self, &rp, main_view::live_recorded_ms(self)),
+                    None => {
+                        let core = self.core.clone();
+                        self.guarded(async move { core.recorder.stop(None).await }, |_, _| {});
+                    }
+                }
+            }
             if page == UiPage::EditShot {
                 match self.core.last_shot() {
                     Some(s) if self.editor.is_none() => editor::shot::open(self, s.path),

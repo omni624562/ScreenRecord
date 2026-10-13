@@ -60,7 +60,6 @@ pub fn start(app: &mut UiApp, ctx: &egui::Context) {
 
 /// 在螢幕上框選一個範圍（不存檔，例如選錄影範圍）：選好時 done(app, Some(範圍))，取消時 done(app, None)。
 /// 範圍是桌面座標（實體像素）。Windows 用原生的框選畫面（App::select_record_region），其他平台用這裡的框選視窗
-#[allow(dead_code)] // 選錄影範圍（主畫面的「在螢幕上框選…」）會用到
 pub fn pick_region(app: &mut UiApp, done: impl FnOnce(&mut UiApp, Option<DRect>) + Send + 'static) {
     let config = app.s.record_config(&app.env);
     let core = app.core.clone();

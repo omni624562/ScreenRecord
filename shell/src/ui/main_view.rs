@@ -380,7 +380,18 @@ fn source_detail(app: &mut UiApp, ui: &mut Ui, room: f32) {
             ui.add(egui::Label::new(RichText::new(text).color(if warn { p.warn } else { p.muted }).font(theme::font(12.5))).truncate());
         }
         SourceType::Region => {
-            // （最前面預留一個按鈕的位置，見 REGION_EXTRA_W）
+            // 在螢幕上直接框選（和框選截圖一樣的畫面，不存檔）：比在小預覽圖上拖曳準確
+            if app.s.follow_window.is_none() && region_pick_btn().enabled(!locked).show(ui).clicked() {
+                super::snip::pick_region(app, |app: &mut UiApp, r: Option<DRect>| {
+                    let Some(r) = r else { return };
+                    if r.width < 16 || r.height < 16 {
+                        return app.toast(trf!("範圍太小（{}×{}），寬高至少 16 像素", "The area is too small ({}×{}). It must be at least 16 pixels wide and high.", r.width, r.height), true);
+                    }
+                    set_region(app, r);
+                    app.save_settings();
+                    app.toast(trf!("錄影範圍：{}×{}", "Recording area: {}×{}", r.width, r.height), false);
+                });
+            }
             if app.s.follow_window.is_none() {
                 let open = app.main.precise;
                 if Btn::new(tr!("精確數值", "Exact values"))
@@ -412,8 +423,13 @@ fn source_detail(app: &mut UiApp, ui: &mut Ui, room: f32) {
     }
 }
 
-/// 自訂範圍那一列最前面預留的寬度（之後放「在螢幕上框選…」按鈕）
-const REGION_EXTRA_W: f32 = 150.0;
+/// 自訂範圍那一列最前面的「在螢幕上框選…」
+fn region_pick_btn() -> Btn {
+    Btn::new(tr!("在螢幕上框選…", "Select on screen…"))
+        .icon(Icon::Fullscreen)
+        .small()
+        .tooltip(tr!("用整個螢幕框選要錄的範圍（和框選截圖一樣，可以調整後按 Enter 確定）", "Select the area to record on the whole screen (like a screenshot selection; adjust it, then press Enter)"))
+}
 
 /// 範圍分頁旁的細節至少要多寬：放不下時換到第二行（文字不縮短成圖示）
 fn detail_width(app: &UiApp, ui: &Ui) -> f32 {
@@ -429,7 +445,8 @@ fn detail_width(app: &UiApp, ui: &Ui) -> f32 {
         SourceType::Region => match &app.s.follow_window {
             Some(_) => 200.0 + Btn::new(tr!("只錄視窗內容", "Window only")).small().width(ui) + 28.0 + gap * 2.0,
             None => {
-                REGION_EXTRA_W
+                region_pick_btn().width(ui)
+                    + gap
                     + Btn::new(tr!("精確數值", "Exact values")).icon(Icon::ChevR).small().width(ui)
                     + Btn::new(tr!("選擇視窗", "Choose window")).icon(Icon::Window).small().width(ui)
                     + gap * 2.0
@@ -1106,7 +1123,7 @@ fn after_done_card(app: &mut UiApp, ui: &mut Ui) {
 
 // ───────────── 錄影狀態 ─────────────
 
-fn live_recorded_ms(app: &UiApp) -> f64 {
+pub(super) fn live_recorded_ms(app: &UiApp) -> f64 {
     let r = &app.status.recorder;
     if r.state == RecorderState::Recording {
         r.recorded_ms as f64 + app.status_at.elapsed().as_millis() as f64

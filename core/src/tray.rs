@@ -470,6 +470,11 @@ impl TrayController {
                 if st == RecorderState::Stopping {
                     return Ok(());
                 }
+                // 回溯錄影中：和「停止」一樣先問要不要存下最近幾分鐘
+                if rec.status().replay.is_some() && matches!(st, RecorderState::Recording | RecorderState::Paused) {
+                    app.open_ui(UiPage::ReplayStop);
+                    return Ok(());
+                }
                 // 準備開始的期間（狀態仍是待命）再按一次也是取消
                 if st != RecorderState::Idle || rec.starting() {
                     return rec.stop(None).await.map(|_| ()).map_err(err);
@@ -500,7 +505,15 @@ impl TrayController {
                 return Ok(());
             }
             TrayCommand::Resume => return rec.resume().await.map_err(err),
-            TrayCommand::Stop => return rec.stop(None).await.map(|_| ()).map_err(err),
+            TrayCommand::Stop => {
+                // 回溯錄影中：沒存下的部分停止後會刪掉，和操作視窗一樣先問（操作視窗判斷有沒有內容）
+                let s = rec.status();
+                if s.replay.is_some() && matches!(s.state, RecorderState::Recording | RecorderState::Paused) {
+                    app.open_ui(UiPage::ReplayStop);
+                    return Ok(());
+                }
+                return rec.stop(None).await.map(|_| ()).map_err(err);
+            }
             TrayCommand::ToggleSystem | TrayCommand::ToggleMic => {
                 self.update_audio(cmd == TrayCommand::ToggleSystem);
                 return Ok(());
