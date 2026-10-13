@@ -20,8 +20,8 @@ use std::time::Instant;
 #[derive(Default)]
 pub struct MainState {
     drag: Option<RegionDrag>,
-    region_text: [String; 4],
-    region_focus: Option<usize>,
+    /// 自訂範圍：展開「精確數值」（X、Y、寬、高）
+    precise: bool,
     /// 儲存位置改了的時間（停止輸入一下子後重新讀取最近錄影）
     pub dir_changed_at: Option<Instant>,
     /// 截圖中（按鈕停用，避免連按）
@@ -226,42 +226,39 @@ fn capture_panel(app: &mut UiApp, ui: &mut Ui) {
     theme::card(ui).show(ui, |ui| {
         ui.set_min_size(ui.available_size());
         let locked = app.locked();
-        // 範圍分頁、細節、即時預覽、重新整理
+        // 範圍分頁、細節、即時預覽、重新整理：分頁名稱與按鈕的文字不縮短，放不下時細節換到第二行
+        let tabs = tr!(
+            [(SourceType::Monitor, "單一螢幕"), (SourceType::All, "所有螢幕"), (SourceType::Region, "自訂範圍"), (SourceType::Audio, "只錄聲音")],
+            [(SourceType::Monitor, "Single screen"), (SourceType::All, "All screens"), (SourceType::Region, "Custom area"), (SourceType::Audio, "Audio only")]
+        );
+        let gap = ui.spacing().item_spacing.x;
+        let text_w = |ui: &Ui, t: &str, size: f32| ui.painter().layout_no_wrap(t.to_string(), theme::font(size), Color32::WHITE).size().x;
+        let tabs_w = tabs.iter().map(|(_, t)| text_w(ui, t, 13.5) + 22.0 + 2.0).sum::<f32>() + 8.0;
+        let audio = app.s.source_type == SourceType::Audio;
+        let live_label = tr!("即時預覽", "Live preview");
+        let right_w = 28.0 + gap + if audio { 0.0 } else { 34.0 + 8.0 + text_w(ui, live_label, 14.0) + gap };
+        let one_row = tabs_w + gap + detail_width(app, ui) + gap + right_w <= ui.available_width();
         ui.horizontal(|ui| {
-            // 窄的時候「即時預覽」只留開關（滑鼠提示有說明），讓範圍的按鈕、座標放得下
-            let narrow = ui.available_width() < 720.0;
             let mut st = app.s.source_type;
-            // 窄的時候分頁名稱縮短，範圍的座標才放得下
-            let tabs = if narrow {
-                tr!(
-                    [(SourceType::Monitor, "單螢幕"), (SourceType::All, "多螢幕"), (SourceType::Region, "自訂"), (SourceType::Audio, "錄音")],
-                    [(SourceType::Monitor, "Screen"), (SourceType::All, "All"), (SourceType::Region, "Area"), (SourceType::Audio, "Audio")]
-                )
-            } else {
-                tr!(
-                    [(SourceType::Monitor, "單一螢幕"), (SourceType::All, "所有螢幕"), (SourceType::Region, "自訂範圍"), (SourceType::Audio, "只錄聲音")],
-                    [(SourceType::Monitor, "Single screen"), (SourceType::All, "All screens"), (SourceType::Region, "Custom area"), (SourceType::Audio, "Audio only")]
-                )
-            };
             if segmented(ui, &mut st, &tabs, !locked) {
                 app.s.source_type = st;
                 app.save_settings();
             }
-            // 右邊留給「即時預覽」與重新整理
-            let room = ui.available_width() - if narrow { 100.0 } else { 160.0 };
-            ui.scope(|ui| {
-                ui.set_max_width(room.max(0.0));
-                source_detail(app, ui, room);
-            });
+            if one_row {
+                let room = ui.available_width() - right_w - gap;
+                ui.scope(|ui| {
+                    ui.set_max_width(room.max(0.0));
+                    source_detail(app, ui, room);
+                });
+            }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if Btn::icon_only(Icon::Refresh).ghost().small().tooltip(tr!("重新擷取預覽並更新螢幕清單", "Refresh the preview and the screen list")).show(ui).clicked() {
                     app.preview.retry_live();
                     app.refresh_env(|_| {});
                 }
                 let mut live = app.s.live_preview;
-                let audio = app.s.source_type == SourceType::Audio;
                 if !audio
-                    && switch(ui, &mut live, if narrow { "" } else { tr!("即時預覽", "Live preview") }, true)
+                    && switch(ui, &mut live, live_label, true)
                         .on_hover_text(tr!(
                             "即時預覽：即時顯示目前畫面（每秒 5 張；切到其他視窗或錄影中 2 張）",
                             "Live preview: shows the screen as it is now (5 frames per second; 2 while recording or when another window is active)"
@@ -274,6 +271,18 @@ fn capture_panel(app: &mut UiApp, ui: &mut Ui) {
                 }
             });
         });
+        if !one_row {
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                let room = ui.available_width();
+                source_detail(app, ui, room);
+            });
+        }
+        // 自訂範圍的精確數值（展開時）
+        if app.s.source_type == SourceType::Region && app.main.precise && app.s.follow_window.is_none() {
+            ui.add_space(6.0);
+            precise_row(app, ui, locked);
+        }
         ui.add_space(10.0);
         let bar_h = BOTTOM_BAR_H;
         let desk_area = Rect::from_min_max(ui.cursor().min, pos2(ui.max_rect().max.x, ui.max_rect().max.y - bar_h - 10.0));
@@ -349,7 +358,7 @@ fn source_detail(app: &mut UiApp, ui: &mut Ui, room: f32) {
                     "{n} screens combined: {}×{}{}",
                     app.env.desktop.width,
                     app.env.desktop.height,
-                    if multi { tr!("（不同顯示卡，將用 gdigrab）", " (different graphics cards; gdigrab will be used)") } else { "" }
+                    if multi { tr!("（跨不同顯示卡，會比較吃電腦資源）", " (spans different graphics cards, so it uses more of the computer's resources)") } else { "" }
                 )
             };
             ui.add(egui::Label::new(RichText::new(&text).color(if multi { p.warn } else { p.muted }).font(theme::font(12.5))).truncate()).on_hover_text(&text);
@@ -364,34 +373,26 @@ fn source_detail(app: &mut UiApp, ui: &mut Ui, room: f32) {
             ui.add(egui::Label::new(RichText::new(text).color(if warn { p.warn } else { p.muted }).font(theme::font(12.5))).truncate());
         }
         SourceType::Region => {
-            let r = app.s.region;
-            let vals = [r.x, r.y, r.width, r.height];
-            for (i, label) in tr!(["X", "Y", "寬", "高"], ["X", "Y", "W", "H"]).iter().enumerate() {
-                ui.label(theme::muted(ui, *label));
-                if app.main.region_focus != Some(i) {
-                    app.main.region_text[i] = vals[i].to_string();
-                }
-                let resp = ui.add_enabled(!locked, egui::TextEdit::singleline(&mut app.main.region_text[i]).desired_width(if room < 330.0 { 40.0 } else { 52.0 }));
-                if resp.has_focus() {
-                    app.main.region_focus = Some(i);
-                } else if app.main.region_focus == Some(i) {
-                    app.main.region_focus = None;
-                }
-                if resp.changed() {
-                    if let Ok(v) = app.main.region_text[i].trim().parse::<f64>() {
-                        let v = v.round() as i32;
-                        match i {
-                            0 => app.s.region.x = v,
-                            1 => app.s.region.y = v,
-                            2 => app.s.region.width = v,
-                            _ => app.s.region.height = v,
-                        }
-                        app.s.follow_window = None;
-                        app.save_settings();
-                    }
+            // （最前面預留一個按鈕的位置，見 REGION_EXTRA_W）
+            if app.s.follow_window.is_none() {
+                let open = app.main.precise;
+                if Btn::new(tr!("精確數值", "Exact values"))
+                    .icon(if open { Icon::ChevD } else { Icon::ChevR })
+                    .small()
+                    .selected(open)
+                    .tooltip(tr!("用數字輸入範圍的位置與大小（X、Y、寬、高）", "Enter the area's position and size as numbers (X, Y, width, height)"))
+                    .show(ui)
+                    .clicked()
+                {
+                    app.main.precise = !open;
                 }
             }
             window_picker(app, ui, locked);
+            // 範圍太小：精確數值收起來時也要看得到
+            if region_too_small(app) && !app.main.precise {
+                ui.label(RichText::new(tr!("寬高至少 16 像素", "Width and height must be at least 16 pixels")).font(theme::font(12.5)).color(p.rec));
+                return;
+            }
             // 放得下才顯示說明
             let hint = tr!("拖曳框選或移動紅框（可跨螢幕）", "Drag to select, or move the red frame (across screens)");
             if app.s.follow_window.is_none() && ui.available_width() >= text_w(ui, hint) {
@@ -402,6 +403,79 @@ fn source_detail(app: &mut UiApp, ui: &mut Ui, room: f32) {
             }
         }
     }
+}
+
+/// 自訂範圍那一列最前面預留的寬度（之後放「在螢幕上框選…」按鈕）
+const REGION_EXTRA_W: f32 = 150.0;
+
+/// 範圍分頁旁的細節至少要多寬：放不下時換到第二行（文字不縮短成圖示）
+fn detail_width(app: &UiApp, ui: &Ui) -> f32 {
+    let gap = ui.spacing().item_spacing.x;
+    match app.s.source_type {
+        SourceType::Monitor => {
+            // 放不下完整的「螢幕 1  1920×1080・主」時會只寫「螢幕 1」
+            let buttons: f32 = app.env.monitors.iter().map(|m| Btn::new(trf!("螢幕 {}", "Screen {}", m.display_number)).small().width(ui) + gap).sum();
+            let whole = if app.s.region_in_monitor(&app.env).is_some() { Btn::new(tr!("整個螢幕", "Whole screen")).icon(Icon::Close).small().width(ui) + gap } else { 0.0 };
+            buttons.max(if app.env.monitors.is_empty() { 220.0 } else { 0.0 }) + whole
+        }
+        SourceType::All | SourceType::Audio => 220.0,
+        SourceType::Region => match &app.s.follow_window {
+            Some(_) => 200.0 + Btn::new(tr!("只錄視窗內容", "Window only")).small().width(ui) + 28.0 + gap * 2.0,
+            None => {
+                REGION_EXTRA_W
+                    + Btn::new(tr!("精確數值", "Exact values")).icon(Icon::ChevR).small().width(ui)
+                    + Btn::new(tr!("選擇視窗", "Choose window")).icon(Icon::Window).small().width(ui)
+                    + gap * 2.0
+            }
+        },
+    }
+}
+
+/// 自訂範圍太小（寬或高不到 16 像素，不能錄）
+fn region_too_small(app: &UiApp) -> bool {
+    app.s.source_type == SourceType::Region && (app.s.region.width < 16 || app.s.region.height < 16)
+}
+
+/// 自訂範圍的精確數值：X、Y、寬、高（按 − ＋ 或直接輸入）；寬高太小時直接在旁邊用紅字提示
+fn precise_row(app: &mut UiApp, ui: &mut Ui, locked: bool) {
+    let p = theme::pal(ui);
+    let d = app.env.desktop;
+    let (x0, y0, dw, dh) = if d.width > 0 && d.height > 0 { (d.x, d.y, d.width, d.height) } else { (0, 0, 7680, 4320) };
+    ui.add_enabled_ui(!locked, |ui| {
+        ui.horizontal_wrapped(|ui| {
+            let r = app.s.region;
+            let fields = [
+                (tr!("X", "X"), r.x, x0 as f64..=(x0 + dw - 1) as f64),
+                (tr!("Y", "Y"), r.y, y0 as f64..=(y0 + dh - 1) as f64),
+                (tr!("寬", "W"), r.width, 1.0..=dw as f64),
+                (tr!("高", "H"), r.height, 1.0..=dh as f64),
+            ];
+            let mut next = r;
+            for (i, (label, v, range)) in fields.into_iter().enumerate() {
+                ui.label(theme::muted(ui, label));
+                let mut val = v as f64;
+                if theme::stepper(ui, Id::new(("region-value", i)), &mut val, 10.0, range, 0, "") {
+                    let v = val.round() as i32;
+                    match i {
+                        0 => next.x = v,
+                        1 => next.y = v,
+                        2 => next.width = v,
+                        _ => next.height = v,
+                    }
+                }
+                ui.add_space(6.0);
+            }
+            if next != r {
+                app.s.region = next;
+                app.s.follow_window = None;
+                app.save_settings();
+            }
+            if next.width < 16 || next.height < 16 {
+                // 整句不拆開（放不下時換到下一行）
+                ui.add(egui::Label::new(RichText::new(tr!("寬高至少 16 像素", "Width and height must be at least 16 pixels")).font(theme::font(12.5)).color(p.rec)).extend());
+            }
+        });
+    });
 }
 
 /// 「視窗」：選一個視窗，範圍設成它的位置，錄影時跟著它移動；已選時顯示視窗名稱，✕ 取消
@@ -437,9 +511,8 @@ fn window_picker(app: &mut UiApp, ui: &mut Ui, locked: bool) {
         return;
     }
     let tip = tr!("只錄某個視窗：範圍設成那個視窗的位置，錄影時跟著它移動", "Record one window only: the area is set to that window and follows it while recording");
-    // 放不下文字時只顯示圖示
-    let full = Btn::new(tr!("選擇視窗", "Choose window")).small().width(ui);
-    let b = if ui.available_width() >= full { Btn::new(tr!("選擇視窗", "Choose window")).small() } else { Btn::icon_only(Icon::Window).ghost().small() }.enabled(!locked).tooltip(tip).show(ui);
+    // 一定寫出「選擇視窗」（放不下時整列換到第二行）
+    let b = Btn::new(tr!("選擇視窗", "Choose window")).icon(Icon::Window).small().enabled(!locked).tooltip(tip).show(ui);
     if b.clicked() {
         app.main.windows = screenrecorder_core::winui::app_windows();
     }
@@ -534,6 +607,8 @@ fn desk(app: &mut UiApp, ui: &mut Ui, area: Rect) {
     let locked = app.locked();
     // 螢幕框
     let shown: Vec<_> = if app.s.source_type == SourceType::Monitor { app.s.selected_monitor(&app.env).cloned().into_iter().collect() } else { app.env.monitors.clone() };
+    // 螢幕名稱標籤的位置（範圍大小的標籤要避開）
+    let mut tags = vec![];
     for m in &shown {
         let r = Rect::from_min_max(to_screen(m.x, m.y), to_screen(m.x + m.width, m.y + m.height));
         let selected = app.s.source_type == SourceType::All || (app.s.source_type == SourceType::Monitor && app.s.monitor_id.as_deref() == Some(&m.id));
@@ -546,6 +621,7 @@ fn desk(app: &mut UiApp, ui: &mut Ui, area: Rect) {
         let tag = Rect::from_min_size(r.min + vec2(8.0, 8.0), g.size() + vec2(12.0, 6.0));
         painter.rect_filled(tag, CornerRadius::same(5), if selected && !boxed { p.rec } else { Color32::from_black_alpha(140) });
         painter.galley(tag.min + vec2(6.0, 3.0), g, Color32::WHITE);
+        tags.push(tag);
     }
     // 自訂範圍
     let desk_resp = ui.interact(rect, Id::new("desk"), if !locked && app.s.source_type != SourceType::All { Sense::click_and_drag() } else { Sense::click() });
@@ -588,7 +664,13 @@ fn desk(app: &mut UiApp, ui: &mut Ui, area: Rect) {
         }
     }
     let g = painter.layout_no_wrap(format!("{} × {}", r.width, r.height), theme::font_bold(12.0), Color32::WHITE);
-    let tag = Rect::from_min_size(rr.min + vec2(0.0, -24.0).max(rect.min - rr.min), g.size() + vec2(12.0, 6.0));
+    let size = g.size() + vec2(12.0, 6.0);
+    // 範圍大小的標籤：放在紅框上方；會蓋到「螢幕 1」標籤時改放紅框裡面的左上角，再不行就放在紅框下方
+    let clear = |t: &Rect| !tags.iter().any(|m: &Rect| m.expand(2.0).intersects(*t));
+    let above = Rect::from_min_size(rr.min + vec2(0.0, -24.0).max(rect.min - rr.min), size);
+    let inside = Rect::from_min_size(rr.min + vec2(4.0, 4.0), size);
+    let below = Rect::from_min_size(pos2(rr.min.x, (rr.max.y + 4.0).min(rect.max.y - size.y)), size);
+    let tag = [above, inside, below].into_iter().find(|t| clear(t)).unwrap_or(below);
     painter.rect_filled(tag, CornerRadius::same(5), p.rec);
     painter.galley(tag.min + vec2(6.0, 3.0), g, Color32::WHITE);
 }
@@ -793,24 +875,22 @@ fn settings_bar(app: &mut UiApp, ui: &mut Ui) {
     let rec_full = rec.join(tr!("・", " · "));
     let rec_text = if measure(ui, &rec_full, Icon::Video) + 200.0 <= room { rec_full.clone() } else { rec[0].clone() };
     room -= measure(ui, &rec_text, Icon::Video);
-    if item(&rec_text, Icon::Video).enabled(!locked).tooltip(trf!("錄影：{rec_full}", "Recording: {rec_full}")).show(ui).clicked() {
+    if item(&rec_text, Icon::Video).enabled(!locked).tooltip(trf!("錄影：{rec_full}（點一下修改）", "Recording: {rec_full} (click to change)")).show(ui).clicked() {
         open = Some(Page::Record);
     }
     // 聲音：太窄時只剩圖示
-    let audio_text = if measure(ui, &audio, audio_icon) + 120.0 <= room { audio.clone() } else { String::new() };
+    // 聲音、攝影機太窄時寫短一點，但不會只剩圖示
+    let audio_text = if measure(ui, &audio, audio_icon) + 120.0 <= room { audio.clone() } else { tr!("聲音", "Audio").to_string() };
     room -= measure(ui, &audio_text, audio_icon);
-    if item(&audio_text, audio_icon).enabled(!locked).tooltip(trf!("錄製聲音：{audio}", "Audio: {audio}")).show(ui).clicked() {
+    if item(&audio_text, audio_icon).enabled(!locked).tooltip(trf!("錄製聲音：{audio}（點一下修改）", "Audio: {audio} (click to change)")).show(ui).clicked() {
         open = Some(Page::Audio);
     }
     // 攝影機：直接選要用哪一台（不用進設定）；太窄時只剩圖示
     let cam = camera_label(&app.s.camera);
-    let cam_text = if measure(ui, &cam, Icon::Webcam) + 80.0 <= room { cam.clone() } else { String::new() };
+    let cam_text = if measure(ui, &cam, Icon::Webcam) + 80.0 <= room { cam.clone() } else { tr!("攝影機", "Camera").to_string() };
     room -= measure(ui, &cam_text, Icon::Webcam);
-    let cam_resp = item(&cam_text, Icon::Webcam)
-        .selected(!app.s.camera.is_empty())
-        .enabled(!locked)
-        .tooltip(tr!("攝影機子母畫面：點一下選攝影機或關閉", "Camera overlay: click to choose a camera or turn it off"))
-        .show(ui);
+    let cam_resp =
+        item(&cam_text, Icon::Webcam).selected(!app.s.camera.is_empty()).enabled(!locked).tooltip(trf!("攝影機子母畫面：{cam}（點一下修改）", "Camera overlay: {cam} (click to change)")).show(ui);
     if cam_resp.clicked() {
         app.load_cameras(false);
     }
@@ -829,7 +909,7 @@ fn settings_bar(app: &mut UiApp, ui: &mut Ui) {
         (1..chars.len()).map(|i| format!("…{}", chars[i..].iter().collect::<String>())).find(|t| fits(t)).unwrap_or_default()
     };
     // 點一下：開啟資料夾或換一個資料夾（不用進設定打字）
-    let dir_resp = item(&short, Icon::Folder).enabled(!locked).tooltip(trf!("儲存位置：{dir}", "Save location: {dir}")).show(ui);
+    let dir_resp = item(&short, Icon::Folder).enabled(!locked).tooltip(trf!("儲存位置：{dir}（點一下修改）", "Save location: {dir} (click to change)")).show(ui);
     egui::Popup::menu(&dir_resp).show(|ui| {
         ui.set_min_width(200.0);
         if ui.button(tr!("在檔案總管開啟", "Open in File Explorer")).clicked() {
@@ -1160,9 +1240,11 @@ fn rec_body(app: &mut UiApp, ui: &mut Ui, r: &screenrecorder_core::types::Record
     // 控制按鈕
     ui.horizontal(|ui| {
         if !active {
-            let can = app.env.ffmpeg.found && app.env.ffmpeg.encoder.is_some() && !app.exporting();
+            let can = app.env.ffmpeg.found && app.env.ffmpeg.encoder.is_some() && !app.exporting() && !region_too_small(app);
             let tip = if !app.env.ffmpeg.found {
                 tr!("請先下載錄影元件（上方的「下載並開始使用」）", "Download the recording component first (“Download and get started” above)")
+            } else if region_too_small(app) {
+                tr!("範圍太小：寬高至少 16 像素", "The area is too small: it must be at least 16 pixels wide and tall")
             } else if app.exporting() {
                 tr!("轉檔進行中，完成後才能錄影", "A conversion is in progress; you can record when it finishes")
             } else {
