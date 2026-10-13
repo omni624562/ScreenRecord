@@ -471,6 +471,14 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                         }
                     }
                     if !image && !is_export_name(&e.media.name) {
+                        if Btn::new(tr!("壓縮", "Compress"))
+                            .small()
+                            .tooltip(tr!("壓縮到 LINE、Email 傳得出去的大小（原速）", "Compress to a size you can send via LINE or email (original speed)"))
+                            .show(ui)
+                            .clicked()
+                        {
+                            act = Act::Entry(EntryAction::Compress);
+                        }
                         if Btn::new(tr!("製作加速版 / GIF", "Make sped-up video / GIF")).icon(Icon::Fast).small().show(ui).clicked() {
                             act = Act::Entry(EntryAction::Export);
                         }
@@ -580,7 +588,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         Act::Entry(a) => {
             let Some(v) = app.viewer.as_mut() else { return };
             let e = v.cur().clone();
-            if matches!(a, EntryAction::Edit | EntryAction::Export) && !super::dialogs::is_image(&e.media.path) {
+            if matches!(a, EntryAction::Edit | EntryAction::Export | EntryAction::Compress | EntryAction::Vertical) && !super::dialogs::is_image(&e.media.path) {
                 // 改到剪輯 / 製作視窗：關掉檢視器與清單（編輯截圖蓋在上面，關掉就回來）
                 app.viewer = None;
                 app.library = None;

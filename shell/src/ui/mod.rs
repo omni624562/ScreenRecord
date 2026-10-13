@@ -93,6 +93,10 @@ pub enum EntryAction {
     SaveAudio,
     /// 章節（錄影時加的標記）複製成 YouTube 說明欄的格式
     CopyChapters,
+    /// 原速、壓縮到某個大小以內（傳 LINE / Email）：開啟製作視窗的「壓縮」
+    Compress,
+    /// 做成直式影片（Shorts / Reels）：開啟剪輯並選好「直式影片」
+    Vertical,
 }
 
 pub struct UiApp {
@@ -647,24 +651,43 @@ impl UiApp {
                 }
             }
             EntryAction::Edit if dialogs::is_image(&path) => editor::shot::open(self, path),
-            EntryAction::Edit | EntryAction::Export => {
-                let what = if action == EntryAction::Edit { tr!("剪輯", "edit") } else { tr!("製作加速版 / GIF", "make a sped-up video or GIF") };
-                if self.locked() {
-                    return self.toast(trf!("錄影中無法{what}，請先停止錄影", "Can't {what} while recording. Stop the recording first"), true);
-                }
-                if self.exporting() {
-                    return self.toast(tr!("目前有轉檔工作進行中，請等它完成", "A conversion is in progress. Please wait for it to finish"), true);
+            EntryAction::Edit | EntryAction::Export | EntryAction::Compress | EntryAction::Vertical => {
+                if let Some(why) = self.blocked(action) {
+                    return self.toast(why, true);
                 }
                 if entry.media.duration_sec.unwrap_or(0.0) <= 0.0 {
                     return self.toast(tr!("無法讀取影片長度", "Couldn't read the video duration"), true);
                 }
-                if action == EntryAction::Edit {
-                    editor::open(self, entry);
-                } else {
-                    self.export_dlg = Some(export_dialog::ExportDialog::new(entry));
+                match action {
+                    EntryAction::Edit => editor::open(self, entry),
+                    EntryAction::Vertical => editor::open_vertical(self, entry),
+                    _ => self.export_dlg = Some(export_dialog::ExportDialog::new(entry, &self.s, action == EntryAction::Compress)),
                 }
             }
         }
+    }
+
+    /// 現在不能剪輯、製作加速版（錄影中、轉檔進行中）的原因；清單、檢視器先停用按鈕並在滑鼠提示說明，不用關掉清單才發現
+    pub fn blocked(&self, action: EntryAction) -> Option<String> {
+        if !matches!(action, EntryAction::Edit | EntryAction::Export | EntryAction::Compress | EntryAction::Vertical) {
+            return None;
+        }
+        let edit = matches!(action, EntryAction::Edit | EntryAction::Vertical);
+        if self.locked() {
+            let what = if edit { tr!("剪輯", "edit") } else { tr!("製作", "make it") };
+            return Some(trf!("錄影中無法{what}，請先停止錄影", "Can't {what} while recording. Stop the recording first"));
+        }
+        if self.exporting() {
+            return Some(
+                if edit {
+                    tr!("轉檔進行中，完成後才能剪輯", "A conversion is in progress; you can edit when it finishes")
+                } else {
+                    tr!("轉檔進行中，完成後才能製作", "A conversion is in progress; you can make it when it finishes")
+                }
+                .into(),
+            );
+        }
+        None
     }
 
     /// 由路徑找到完整資訊後執行（剛錄好的檔案可能還不在清單裡：重新讀取）

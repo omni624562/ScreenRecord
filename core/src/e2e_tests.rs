@@ -273,6 +273,8 @@ async fn exports_keep_chapters_and_lengths() {
     // 縮小寬度 + 壓縮到 1 MB 以內（原速）
     ex.start(&c, &s, 1.0, true, 320.0, 1.0).await.unwrap();
     let small = finish(&ex).await;
+    // 原速只壓縮：檔名是「_1MB以內」，不是「_1x」
+    assert!(small.ends_with("Rec_2026-10-11_12-00-00_1MB以內.mp4"), "{small:?}");
     let i = probe(&ff, &small).await;
     assert_eq!(i.width, Some(320));
     assert!(i.bytes <= 1024 * 1024, "{} bytes", i.bytes);

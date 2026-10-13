@@ -140,6 +140,8 @@ pub struct ExportRequest {
     pub mp4_width: f64,
     /// 壓縮到這個大小以內（MB）；0 = 不限
     pub mp4_max_mb: f64,
+    /// 另存新檔選的位置；None = 和原片同一個資料夾、自動取名
+    pub output: Option<String>,
 }
 
 pub async fn export_start(app: &App, r: &ExportRequest) -> Result<()> {
@@ -147,9 +149,10 @@ pub async fn export_start(app: &App, r: &ExportRequest) -> Result<()> {
         return Err(Error::config(tr!("錄影中無法製作加速版 / GIF，請先停止錄影", "Can't make a sped-up video / GIF while recording. Stop recording first")));
     }
     let ctx = app.export_ctx();
+    let output = r.output.as_deref().map(PathBuf::from);
     match r.format {
-        ExportFormat::Gif | ExportFormat::Webp => app.exporter.start_gif(&ctx, &r.source, r.speed, r.gif_width, r.gif_fps, r.format).await?,
-        ExportFormat::Mp4 => app.exporter.start(&ctx, &r.source, r.speed, r.keep_audio, r.mp4_width, r.mp4_max_mb).await?,
+        ExportFormat::Gif | ExportFormat::Webp => app.exporter.start_gif_to(&ctx, &r.source, r.speed, r.gif_width, r.gif_fps, r.format, output).await?,
+        ExportFormat::Mp4 => app.exporter.start_to(&ctx, &r.source, r.speed, r.keep_audio, r.mp4_width, r.mp4_max_mb, output).await?,
     };
     Ok(())
 }
@@ -163,10 +166,12 @@ pub async fn shot_qr(path: &str) -> Result<Vec<String>> {
     tokio::task::spawn_blocking(move || crate::qr::decode(&rgba, w, h)).await.map_err(|e| Error::other(e.to_string()))
 }
 
-/// 合併多支錄影
-pub async fn merge_start(app: &App, paths: &[String]) -> Result<()> {
-    app.exporter.start_merge(&app.export_ctx(), paths).await?;
-    Ok(())
+/// 合併多支錄影：依給的順序接成一支；name = 成品的名稱（不含 .mp4）。回傳轉檔工作的編號（完成時用來找到成品）
+pub async fn merge_start(app: &App, paths: &[String], name: Option<&str>) -> Result<u64> {
+    if app.recorder.active() {
+        return Err(Error::config(tr!("錄影中無法合併，請先停止錄影", "Can't merge while recording. Stop recording first")));
+    }
+    Ok(app.exporter.start_merge_named(&app.export_ctx(), paths, name).await?.id)
 }
 
 pub async fn cut_start(app: &App, source: &str, spec: &EditSpec, replace: Option<&str>, project: Option<Value>) -> Result<()> {

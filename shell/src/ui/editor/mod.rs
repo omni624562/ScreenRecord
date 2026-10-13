@@ -295,6 +295,15 @@ pub struct Editor {
 }
 
 pub fn open(app: &mut UiApp, entry: LibraryEntry) {
+    open_with(app, entry, false);
+}
+
+/// 開啟剪輯並選好「直式影片：放在中間」（全部錄影、檢視器的「做成直式影片（Shorts / Reels）…」）
+pub fn open_vertical(app: &mut UiApp, entry: LibraryEntry) {
+    open_with(app, entry, true);
+}
+
+fn open_with(app: &mut UiApp, entry: LibraryEntry, vertical: bool) {
     let Some(ffmpeg) = app.core.ffmpeg_path() else {
         return app.toast(tr!("找不到 FFmpeg，無法剪輯", "FFmpeg not found, so videos can't be edited"), true);
     };
@@ -320,6 +329,11 @@ pub fn open(app: &mut UiApp, entry: LibraryEntry) {
             ed.cursor_smooth = screenrecorder_core::cursor::smooth(&marks.cursor, 60.0);
             ed.cursor = marks.cursor;
             ed.no_cursor = marks.no_cursor;
+            if vertical {
+                // 直式影片的設定在「畫面裁切」分頁
+                ed.vertical = 1;
+                ed.tab = Tab::Crop;
+            }
             app.editor = Some(ed);
         },
     );

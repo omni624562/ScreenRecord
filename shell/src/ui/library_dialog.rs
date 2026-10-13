@@ -515,7 +515,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         None | Some(Req::Record) => {}
         Some(Req::Entry(act, e)) => {
             // 剪輯影片、製作加速版時關掉清單；編輯截圖蓋在清單上，關掉編輯就回到清單
-            if matches!(act, EntryAction::Edit | EntryAction::Export) && !super::dialogs::is_image(&e.media.path) {
+            if matches!(act, EntryAction::Edit | EntryAction::Export | EntryAction::Compress | EntryAction::Vertical) && !super::dialogs::is_image(&e.media.path) {
                 app.library = None;
             }
             app.act(act, e);
@@ -542,8 +542,8 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         Some(Req::Merge(paths)) => {
             let core = app.core.clone();
             let n = paths.len();
-            app.spawn(async move { actions::merge_start(&core, &paths).await }, move |app, r| match r {
-                Ok(()) => {
+            app.spawn(async move { actions::merge_start(&core, &paths, None).await }, move |app, r| match r {
+                Ok(_) => {
                     if let Some(d) = &mut app.library {
                         d.selected.clear();
                     }
@@ -734,6 +734,12 @@ fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table:
                 ui.set_min_width(190.0);
                 if ui.button(tr!("製作加速版 / GIF", "Make sped-up video / GIF")).clicked() {
                     *req = Some(Req::Entry(EntryAction::Export, e.clone()));
+                }
+                if ui.button(tr!("壓縮（傳 LINE / Email）", "Compress (for LINE / email)")).clicked() {
+                    *req = Some(Req::Entry(EntryAction::Compress, e.clone()));
+                }
+                if ui.button(tr!("做成直式影片（Shorts / Reels）…", "Make a vertical video (Shorts / Reels)…")).clicked() {
+                    *req = Some(Req::Entry(EntryAction::Vertical, e.clone()));
                 }
                 if ui.button(tr!("複製檔案（貼到 LINE、資料夾）", "Copy file (paste into LINE or a folder)")).clicked() {
                     *req = Some(Req::Entry(EntryAction::CopyFile, e.clone()));
