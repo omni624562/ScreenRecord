@@ -1470,7 +1470,7 @@ pub fn run(app: &mut UiApp, ed: &mut Editor, act: Act) {
                         let msg = cover_pii(ed, &found);
                         app.toast(msg, false);
                     }
-                    Err(e) => app.toast(e.message().to_string(), true),
+                    Err(e) => crate::ui::ocr::error(app, e.message()),
                 }
             });
         }
