@@ -2,9 +2,11 @@
 //! 開機自動啟動、用檔案總管開啟檔案 / 網址。
 
 use crate::process::run;
+use std::path::Path;
 use std::time::Duration;
 
 const RUN_KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
+/// 1.x、2.x 也用同一個名稱：換了資料夾放新版時，開機仍會啟動舊位置的程式（見 repoint_autostart）
 const RUN_NAME: &str = "ScreenRecorder";
 
 /// 開發版（debug build）不設定開機自動啟動
@@ -39,6 +41,84 @@ pub async fn set_autostart(on: bool) -> crate::Result<()> {
     Ok(())
 }
 
+/// 開機自動啟動指向別的程式時（例如舊版留在另一個資料夾、或已經刪掉），改成目前這個程式；
+/// 沒有開啟開機自動啟動時不動。從暫存資料夾執行（例如在 zip 裡直接點兩下）時不改，
+/// 否則暫存檔刪掉後開機就不會啟動。回傳原本指向的位置（有改的時候）
+pub async fn repoint_autostart() -> Option<String> {
+    if !IS_RELEASE {
+        return None;
+    }
+    let cmd = read_run_value()?;
+    let exe = std::env::current_exe().ok()?;
+    if in_dir(&exe, &std::env::temp_dir()) {
+        return None;
+    }
+    let target = run_target(&cmd);
+    if target.is_some_and(|t| same_file(Path::new(t), &exe)) && cmd.contains("--tray") {
+        return None;
+    }
+    let old = target.unwrap_or(&cmd).to_string();
+    match set_autostart(true).await {
+        Ok(()) => {
+            crate::info!("開機自動啟動原本指向「{old}」，已改成目前的程式：{}", exe.display());
+            Some(old)
+        }
+        Err(e) => {
+            crate::warn!("開機自動啟動指向「{old}」，無法改成目前的程式：{}", e.message());
+            None
+        }
+    }
+}
+
+/// Run 機碼裡的命令列（例如 `"C:\錄影\ScreenRecorder.exe" --tray`）
+#[cfg(windows)]
+fn read_run_value() -> Option<String> {
+    use windows::core::w;
+    use windows::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_SZ};
+    let mut buf = vec![0u16; 4096];
+    let mut bytes = (buf.len() * 2) as u32;
+    let r =
+        unsafe { RegGetValueW(HKEY_CURRENT_USER, w!(r"Software\Microsoft\Windows\CurrentVersion\Run"), w!("ScreenRecorder"), RRF_RT_REG_SZ, None, Some(buf.as_mut_ptr().cast()), Some(&mut bytes)) };
+    if r.is_err() {
+        return None;
+    }
+    // 長度包含結尾的 0
+    let len = (bytes as usize / 2).min(buf.len());
+    Some(String::from_utf16_lossy(&buf[..len]).trim_end_matches('\0').to_string())
+}
+
+#[cfg(not(windows))]
+fn read_run_value() -> Option<String> {
+    None
+}
+
+/// 命令列裡的程式路徑：`"C:\a b\x.exe" --tray` 或 `C:\x.exe --tray`
+fn run_target(cmd: &str) -> Option<&str> {
+    let c = cmd.trim();
+    if let Some(rest) = c.strip_prefix('"') {
+        return rest.split('"').next().filter(|s| !s.is_empty());
+    }
+    // 沒有引號：路徑裡可能有空白，取到「.exe」為止（只轉換英文字母大小寫，位置不變）
+    match c.to_ascii_lowercase().find(".exe") {
+        Some(i) => Some(&c[..i + 4]),
+        None => c.split_whitespace().next(),
+    }
+}
+
+/// 是不是同一個檔案（Windows 的路徑不分大小寫；短檔名、捷徑等由 canonicalize 處理）
+fn same_file(a: &Path, b: &Path) -> bool {
+    if a.to_string_lossy().eq_ignore_ascii_case(&b.to_string_lossy()) {
+        return true;
+    }
+    matches!((std::fs::canonicalize(a), std::fs::canonicalize(b)), (Ok(x), Ok(y)) if x == y)
+}
+
+/// 檔案在不在這個資料夾裡（暫存資料夾常是短檔名，例如 C:\Users\ABCD~1\…：先換成完整路徑再比）
+fn in_dir(file: &Path, dir: &Path) -> bool {
+    let full = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    full(file).starts_with(full(dir))
+}
+
 /// 用檔案總管開啟（select = 在資料夾中選取該檔案）。
 /// 由 Shell 啟動的程式不會落在本程式的 Job Object 裡，關閉本程式時不會被一併結束。
 pub fn open_with_explorer(target: &str, select: bool) {
@@ -55,5 +135,32 @@ pub fn open_with_explorer(target: &str, select: bool) {
     #[cfg(not(windows))]
     {
         let _ = arg;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reads_the_program_path_from_the_run_value() {
+        assert_eq!(run_target(r#""C:\Program Files\錄影\ScreenRecorder.exe" --tray"#), Some(r"C:\Program Files\錄影\ScreenRecorder.exe"));
+        assert_eq!(run_target(r"C:\Tools\Screen Recorder.EXE --tray"), Some(r"C:\Tools\Screen Recorder.EXE"));
+        assert_eq!(run_target(r"C:\Tools\recorder --tray"), Some(r"C:\Tools\recorder"));
+        assert_eq!(run_target(r#""" --tray"#), None);
+    }
+
+    #[test]
+    fn compares_paths_like_windows() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("ScreenRecorder.exe");
+        std::fs::write(&exe, b"x").unwrap();
+        let upper = std::path::PathBuf::from(exe.to_string_lossy().to_uppercase());
+        assert!(same_file(&exe, &upper));
+        assert!(same_file(&exe, &dir.path().join(".").join("ScreenRecorder.exe")));
+        assert!(!same_file(&exe, &dir.path().join("old").join("ScreenRecorder.exe")));
+        assert!(in_dir(&exe, dir.path()));
+        assert!(in_dir(&exe, &dir.path().join("..").join(dir.path().file_name().unwrap())));
+        assert!(!in_dir(&exe, &dir.path().join("old")));
     }
 }
