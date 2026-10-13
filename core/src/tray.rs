@@ -10,7 +10,40 @@ use crate::types::{AudioConfig, HotkeyStatus, Hotkeys, MethodPreference, RecordC
 use crate::version::APP_VERSION;
 use crate::{tr, trf};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+
+/// 操作視窗有還沒儲存的修改（剪輯視窗）：結束程式前要先問（操作視窗每一格更新）
+static UI_UNSAVED: AtomicBool = AtomicBool::new(false);
+/// 系統匣選了「結束」但要先問：等操作視窗顯示確認對話框
+static QUIT_ASKED: AtomicBool = AtomicBool::new(false);
+/// 操作視窗改了「開機時自動啟動」：系統匣重新讀取勾選狀態
+static AUTOSTART_CHANGED: AtomicBool = AtomicBool::new(false);
+
+/// 操作視窗回報：剪輯視窗有沒有還沒儲存的修改
+pub fn set_ui_unsaved(on: bool) {
+    UI_UNSAVED.store(on, Ordering::Relaxed);
+}
+
+/// 操作視窗取出「要先問才結束」的要求（取出後清掉）
+pub fn take_quit_request() -> bool {
+    QUIT_ASKED.swap(false, Ordering::Relaxed)
+}
+
+/// 操作視窗改了開機自動啟動：系統匣選單的勾選跟著更新
+pub fn autostart_changed() {
+    AUTOSTART_CHANGED.store(true, Ordering::Relaxed);
+}
+
+/// 結束程式（系統匣「結束」、新版接手）：剪輯視窗有還沒儲存的修改、或有排程錄影時，先打開操作視窗問
+pub async fn quit_or_ask(app: &Arc<App>) {
+    if UI_UNSAVED.load(Ordering::Relaxed) || app.scheduled().is_some() {
+        QUIT_ASKED.store(true, Ordering::Relaxed);
+        app.open_ui(UiPage::Main);
+    } else {
+        app.quit(0).await;
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TrayCommand {
@@ -419,7 +452,7 @@ impl TrayController {
             }
             TrayCommand::Quit => {
                 let app = app.clone();
-                tokio::spawn(async move { app.quit(0).await });
+                tokio::spawn(async move { quit_or_ask(&app).await });
                 return Ok(());
             }
             // 開啟操作視窗：右上角的「有新版本」可以直接更新
@@ -684,6 +717,10 @@ pub async fn start(app: &Arc<App>, wait: std::time::Duration) -> bool {
             let mut iv = tokio::time::interval(std::time::Duration::from_secs(1));
             loop {
                 iv.tick().await;
+                if AUTOSTART_CHANGED.swap(false, Ordering::Relaxed) {
+                    let now = crate::desktop::get_autostart().await;
+                    ctl.ctl.lock().unwrap().autostart = now;
+                }
                 ctl.tick();
             }
         });

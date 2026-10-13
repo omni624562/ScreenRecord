@@ -443,6 +443,11 @@ impl Editor {
         self.snapshot() != self.initial
     }
 
+    /// 有還沒儲存的修改（結束程式前要先問；儲存中不算）
+    pub fn has_unsaved(&self) -> bool {
+        !self.saving && self.dirty()
+    }
+
     /// 目前的編輯內容（復原 / 重做、比對有沒有改過）
     fn snapshot(&self) -> String {
         let opts = self.shot.as_ref().map(|s| s.opts());

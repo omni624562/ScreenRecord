@@ -38,12 +38,15 @@ pub struct SettingsDialog {
     key_msg: Option<String>,
     /// 有視窗的程式（系統聲音只錄某個程式用；None = 還沒找）
     apps: Option<Vec<screenrecorder_core::winui::AppInfo>>,
+    /// 開機時自動啟動：None = 還沒讀；Some(None) = 不能設定（開發版）
+    autostart: Option<Option<bool>>,
+    autostart_busy: bool,
 }
 
 pub fn open(app: &mut UiApp, page: Page) {
     match &mut app.settings_dlg {
         Some(d) => d.page = page,
-        None => app.settings_dlg = Some(SettingsDialog { page, max_custom_open: false, key_capture: None, key_msg: None, apps: None }),
+        None => app.settings_dlg = Some(SettingsDialog { page, max_custom_open: false, key_capture: None, key_msg: None, apps: None, autostart: None, autostart_busy: false }),
     }
 }
 
@@ -149,7 +152,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                     Page::Audio => audio_page(app, &mut d, ui),
                     Page::Save => save_page(app, ui),
                     Page::Keys => keys_page(app, &mut d, ui),
-                    Page::Advanced => advanced_page(app, ui),
+                    Page::Advanced => advanced_page(app, &mut d, ui),
                 });
             });
         }
@@ -832,7 +835,7 @@ fn after_record_section(app: &mut UiApp, ui: &mut Ui) {
 
 // ───────────── 進階 ─────────────
 
-fn advanced_page(app: &mut UiApp, ui: &mut Ui) {
+fn advanced_page(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
     let p = theme::pal(ui);
     form_section(ui, tr!("介面", "Interface"), |_| {});
     // 兩種語言都寫，選錯語言時也找得到
@@ -844,6 +847,17 @@ fn advanced_page(app: &mut UiApp, ui: &mut Ui) {
         if form_combo(ui, "language", FORM_CTRL_W, &mut sel, &items) {
             app.s.language = CODES[sel].to_string();
             app.apply_language();
+            app.save_settings();
+        }
+    });
+    form_row(ui, tr!("外觀", "Appearance"), |ui| {
+        let mut t = app.s.theme.clone();
+        let items = [("system".to_string(), tr!("跟著 Windows", "Follow Windows")), ("light".into(), tr!("淺色", "Light")), ("dark".into(), tr!("深色", "Dark"))];
+        let refs: Vec<(&str, &str)> = items.iter().map(|(v, l)| (v.as_str(), *l)).collect();
+        let mut cur = refs.iter().find(|(v, _)| *v == t.as_str()).map(|(v, _)| *v).unwrap_or("system");
+        if segmented(ui, &mut cur, &refs, true) {
+            t = cur.to_string();
+            app.s.theme = t;
             app.save_settings();
         }
     });
@@ -871,6 +885,53 @@ fn advanced_page(app: &mut UiApp, ui: &mut Ui) {
     } else {
         form_hint(ui, tr!("字和按鈕放大一點比較好看清楚。", "Larger text and buttons are easier to read."), p.muted);
     }
+    // 開機時自動啟動（與系統匣選單的同一個設定）：第一次看到時讀取
+    if d.autostart.is_none() && !d.autostart_busy {
+        d.autostart_busy = true;
+        app.spawn(screenrecorder_core::desktop::get_autostart(), |app, v| {
+            if let Some(d) = &mut app.settings_dlg {
+                d.autostart = Some(v);
+                d.autostart_busy = false;
+            }
+        });
+    }
+    form_row(ui, tr!("開機", "Startup"), |ui| {
+        let state = d.autostart.flatten();
+        let mut on = state == Some(true);
+        let can = state.is_some() && !d.autostart_busy;
+        if switch(ui, &mut on, tr!("開機時自動啟動（常駐在系統匣）", "Start with Windows (in the system tray)"), can).changed() {
+            d.autostart_busy = true;
+            app.spawn(
+                async move {
+                    let r = screenrecorder_core::desktop::set_autostart(on).await;
+                    (r, screenrecorder_core::desktop::get_autostart().await)
+                },
+                |app, (r, now)| {
+                    if let Some(d) = &mut app.settings_dlg {
+                        d.autostart = Some(now);
+                        d.autostart_busy = false;
+                    }
+                    screenrecorder_core::tray::autostart_changed();
+                    if let Err(e) = r {
+                        app.toast(e.message().to_string(), true);
+                    }
+                },
+            );
+        }
+    });
+    if d.autostart == Some(None) {
+        form_hint(ui, tr!("開發版不能設定開機自動啟動。", "Start with Windows can't be set in development builds."), p.muted);
+    }
+    form_row(ui, tr!("程式", "App"), |ui| {
+        if Btn::new(tr!("結束程式", "Quit"))
+            .small()
+            .tooltip(tr!("完全結束螢幕錄影（關掉視窗只是收到系統匣）", "Quit Screen Recorder completely (closing the window only hides it in the tray)"))
+            .show(ui)
+            .clicked()
+        {
+            app.request_quit();
+        }
+    });
     form_divider(ui);
     form_section(ui, tr!("擷取與編碼", "Capture and encoding"), |_| {});
     form_row(ui, tr!("擷取方式", "Capture method"), |ui| {

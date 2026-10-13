@@ -215,9 +215,10 @@ fn main() {
                     listener,
                     ipc::Control {
                         show: Box::new(move || c1.open_ui(UiPage::Main)),
+                        // 新版接手：剪輯視窗有還沒儲存的修改、有排程錄影時先問
                         quit: Box::new(move || {
                             let c = c2.clone();
-                            rt2.spawn(async move { c.quit(0).await });
+                            rt2.spawn(async move { tray::quit_or_ask(&c).await });
                         }),
                     },
                 );

@@ -121,6 +121,10 @@ pub struct UiSettings {
     pub show_log: bool,
     /// 只錄聲音時另存一份 M4A（core 的 after_record.rs 讀這個欄位）
     pub audio_m4a: bool,
+    /// 外觀："system"（跟著 Windows）、"light"、"dark"
+    pub theme: String,
+    /// 已經說明過「關掉視窗後仍在系統匣執行」（只在第一次關掉時通知）
+    pub hide_notice_shown: bool,
 }
 
 /// 講稿提詞的字級範圍、不透明度下限
@@ -233,6 +237,8 @@ impl UiSettings {
             replay_sec: screenrecorder_core::replay::sec_from_ui(v),
             show_log: boolean("showLog").unwrap_or(false),
             audio_m4a: screenrecorder_core::after_record::audio_m4a(v),
+            theme: string("theme").filter(|v| ["light", "dark"].contains(&v.as_str())).unwrap_or_else(|| "system".into()),
+            hide_notice_shown: boolean("hideNoticeShown").unwrap_or(false),
         };
         s.fix_monitor(env);
         s
