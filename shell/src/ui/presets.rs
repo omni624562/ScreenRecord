@@ -3,7 +3,7 @@
 
 use super::dialogs::Ask;
 use super::settings::UiSettings;
-use super::theme::{Btn, Icon};
+use super::theme::{self, Btn, Icon};
 use super::UiApp;
 use eframe::egui::{self, Ui};
 use screenrecorder_core::presets::{self, Preset};
@@ -18,10 +18,16 @@ pub fn active(app: &UiApp) -> Option<usize> {
     presets::active(&app.presets, &app.s.to_value())
 }
 
+/// 上次切換或儲存的組合（目前的設定和它不一樣時，寫「已修改」並可以更新它）
+fn last_used(app: &UiApp) -> Option<usize> {
+    (!app.s.preset_name.is_empty()).then(|| presets::find(&app.presets, &app.s.preset_name)).flatten()
+}
+
 fn label(app: &UiApp, current: Option<usize>) -> String {
-    match current {
-        Some(i) => app.presets[i].name.clone(),
-        None => tr!("設定組合", "Presets").to_string(),
+    match (current, last_used(app)) {
+        (Some(i), _) => trf!("組合：{}", "Preset: {}", app.presets[i].name),
+        (None, Some(i)) => trf!("組合：{}（已修改）", "Preset: {} (modified)", app.presets[i].name),
+        (None, None) => tr!("設定組合", "Presets").to_string(),
     }
 }
 
@@ -35,9 +41,15 @@ pub fn button(app: &mut UiApp, ui: &mut Ui) {
     let locked = app.locked();
     let current = active(app);
     let label = label(app, current);
-    let tip = match current {
-        Some(i) => trf!("目前是「{}」設定組合。點一下切換或管理組合", "Using the “{}” preset. Click to switch or manage presets", app.presets[i].name),
-        None => tr!(
+    let modified = last_used(app).filter(|_| current.is_none());
+    let tip = match (current, modified) {
+        (Some(i), _) => trf!("目前是「{}」設定組合。點一下切換或管理組合", "Using the “{}” preset. Click to switch or manage presets", app.presets[i].name),
+        (None, Some(i)) => trf!(
+            "目前的設定和「{}」組合不一樣了。點一下可以更新這個組合、切換或管理組合",
+            "The current settings differ from the “{}” preset. Click to update it, switch or manage presets",
+            app.presets[i].name
+        ),
+        (None, None) => tr!(
             "把範圍、畫面、聲音、儲存位置等錄影設定存成組合（例如「教學影片」「線上會議」），之後一次切換；系統匣選單也能切換",
             "Save the recording settings (area, video, audio, save location…) as a preset such as “Tutorial” or “Meeting” and switch in one click. You can also switch from the tray menu."
         )
@@ -46,17 +58,27 @@ pub fn button(app: &mut UiApp, ui: &mut Ui) {
     let resp = Btn::new(&label).icon(Icon::List).ghost().small().enabled(!locked).tooltip(tip).show(ui);
     let mut apply = None;
     let mut save = false;
+    let mut update = None;
     let mut rename = None;
     let mut delete = None;
     egui::Popup::menu(&resp).show(|ui| {
-        ui.set_min_width(220.0);
+        ui.set_min_width(240.0);
+        // 組合裡存了什麼
+        ui.label(theme::muted(ui, tr!("包含範圍、畫面、聲音、儲存位置", "Includes the area, video, audio and save location")));
         for (i, p) in app.presets.iter().enumerate() {
-            if ui.selectable_label(current == Some(i), &p.name).clicked() && current != Some(i) {
+            let text = if modified == Some(i) { trf!("{}（已修改）", "{} (modified)", p.name) } else { p.name.clone() };
+            if ui.selectable_label(current == Some(i), text).clicked() && current != Some(i) {
                 apply = Some(i);
             }
         }
         if !app.presets.is_empty() {
             ui.separator();
+        }
+        if let Some(i) = modified {
+            if ui.button(trf!("更新「{}」組合", "Update the “{}” preset", app.presets[i].name)).on_hover_text(tr!("用目前的設定更新這個組合", "Update this preset with the current settings")).clicked()
+            {
+                update = Some(i);
+            }
         }
         let full = app.presets.len() >= presets::MAX;
         if ui
@@ -90,6 +112,10 @@ pub fn button(app: &mut UiApp, ui: &mut Ui) {
     if save {
         save_as(app);
     }
+    if let Some(i) = update {
+        let name = app.presets[i].name.clone();
+        save_now(app, &name);
+    }
     if let Some(i) = rename {
         rename_preset(app, i);
     }
@@ -109,6 +135,7 @@ pub fn apply_preset(app: &mut UiApp, i: usize) {
     let mut v = app.s.to_value();
     p.apply_to(&mut v);
     app.s = UiSettings::from_saved(Some(&v), &app.env);
+    app.s.preset_name = p.name.clone();
     app.save_settings();
     app.toast(trf!("已切換到「{}」", "Switched to “{}”", p.name), false);
 }
@@ -120,11 +147,11 @@ fn suggest(app: &UiApp) -> String {
 }
 
 fn save_as(app: &mut UiApp) {
-    let name = suggest(app);
-    app.ask = Some(Ask::input(
+    // 名稱一開始是空的（灰色提示寫例子），不用先刪掉建議的名稱
+    let mut ask = Ask::input(
         tr!("儲存設定組合", "Save preset"),
-        tr!("名稱（例如「教學影片」「線上會議」）", "Name (e.g. “Tutorial” or “Meeting”)"),
-        name,
+        tr!("名稱（範圍、畫面、聲音、儲存位置會存在一起）", "Name (the area, video, audio and save location are saved together)"),
+        "",
         tr!("儲存", "Save"),
         |app, value| {
             let Some(name) = presets::clean_name(&value) else {
@@ -148,7 +175,9 @@ fn save_as(app: &mut UiApp) {
                 None => save_now(app, &name),
             }
         },
-    ));
+    );
+    ask.hint = trf!("例如：教學影片（或「{}」）", "e.g. Tutorial (or “{}”)", suggest(app));
+    app.ask = Some(ask);
 }
 
 fn save_now(app: &mut UiApp, name: &str) {
@@ -159,6 +188,8 @@ fn save_now(app: &mut UiApp, name: &str) {
         return;
     }
     store(app, list);
+    app.s.preset_name = name.to_string();
+    app.save_settings();
     app.toast(trf!("已儲存設定組合「{name}」", "Saved preset “{name}”"), false);
 }
 
@@ -181,6 +212,11 @@ fn rename_preset(app: &mut UiApp, i: usize) {
         }
         let mut list = app.presets.clone();
         if let Some(p) = list.get_mut(i) {
+            // 改的是上次用的組合：跟著改名
+            if p.name == app.s.preset_name {
+                app.s.preset_name = name.clone();
+                app.save_settings();
+            }
             p.name = name;
         }
         store(app, list);

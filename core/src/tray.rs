@@ -397,6 +397,10 @@ impl TrayController {
         let Some(p) = saved.presets.get(i) else { return };
         let mut ui = saved.ui.clone().unwrap_or_default();
         p.apply_to(&mut ui);
+        // 操作視窗顯示「組合：…」用
+        if let Some(o) = ui.as_object_mut() {
+            o.insert("presetName".into(), serde_json::Value::String(p.name.clone()));
+        }
         let config = p.record_config().and_then(|c| serde_json::to_value(c).ok());
         info!("[系統匣] 切換設定組合：{}", p.name);
         self.app.settings.save(SettingsPatch { ui: Some(ui), config, ..Default::default() });

@@ -125,6 +125,8 @@ pub struct UiSettings {
     pub theme: String,
     /// 已經說明過「關掉視窗後仍在系統匣執行」（只在第一次關掉時通知）
     pub hide_notice_shown: bool,
+    /// 上次切換或儲存的設定組合（目前的設定和它不一樣時顯示「已修改」）
+    pub preset_name: String,
 }
 
 /// 講稿提詞的字級範圍、不透明度下限
@@ -239,6 +241,7 @@ impl UiSettings {
             audio_m4a: screenrecorder_core::after_record::audio_m4a(v),
             theme: string("theme").filter(|v| ["light", "dark"].contains(&v.as_str())).unwrap_or_else(|| "system".into()),
             hide_notice_shown: boolean("hideNoticeShown").unwrap_or(false),
+            preset_name: string("presetName").unwrap_or_default(),
         };
         s.fix_monitor(env);
         s
