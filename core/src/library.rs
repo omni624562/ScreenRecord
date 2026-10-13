@@ -391,6 +391,9 @@ pub async fn list_library(cache: &Arc<MediaCache>, ffmpeg: Option<&Path>, dir: &
                 || !e.hits.is_empty()
         });
     }
+    if !q.audio {
+        list.retain(|e| !is_audio_name(&e.media.name));
+    }
     // 錄影與截圖分開列：除了「截圖」，其他篩選都只列影片
     match q.filter {
         LibraryFilter::All | LibraryFilter::Audio => list.retain(|e| !is_image_name(&e.media.name)),
@@ -600,10 +603,13 @@ mod tests {
     async fn audio_files_are_listed_on_their_own() {
         let dir = make(&["Rec_X.mp4", "Rec_X.m4a", "Shot_2026-10-09_14-30-00.png"]);
         let cache = Arc::new(MediaCache::default());
-        let all = list_library(&cache, None, dir.path(), &q(None, None, LibrarySort::Old)).await;
+        let all = list_library(&cache, None, dir.path(), &LibraryQuery { audio: true, ..q(None, None, LibrarySort::Old) }).await;
         let mut names: Vec<(&str, usize)> = all.items.iter().map(|e| (e.media.name.as_str(), e.exports.len())).collect();
         names.sort();
         assert_eq!(names, vec![("Rec_X.m4a", 0), ("Rec_X.mp4", 0)]);
+        // 主畫面的最近錄影不列聲音檔
+        let recent = list_library(&cache, None, dir.path(), &q(None, None, LibrarySort::Old)).await;
+        assert_eq!(recent.items.iter().map(|e| e.media.name.as_str()).collect::<Vec<_>>(), vec!["Rec_X.mp4"]);
         // 「原始錄影」不含聲音檔
         let originals = list_library(&cache, None, dir.path(), &LibraryQuery { filter: LibraryFilter::Original, ..q(None, None, LibrarySort::Old) }).await;
         assert_eq!(originals.items.iter().map(|e| e.media.name.as_str()).collect::<Vec<_>>(), vec!["Rec_X.mp4"]);

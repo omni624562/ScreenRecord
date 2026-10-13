@@ -711,6 +711,8 @@ pub struct LibraryQuery {
     pub page_size: Option<f64>,
     /// 依高度分頁：表格可用的高度（px）；有指定時忽略 page_size
     pub fit_px: Option<f64>,
+    /// 也列出只有聲音的檔案（存成 M4A 的）：全部錄影、檢視器要；主畫面的最近錄影不要
+    pub audio: bool,
 }
 
 /// 全部錄影表格的列高（含 1px 分隔線）

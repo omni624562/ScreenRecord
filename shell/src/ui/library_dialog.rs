@@ -195,8 +195,8 @@ fn load(app: &mut UiApp) {
     let seq = d.seq;
     let q = Some(d.query.clone()).filter(|q| !q.trim().is_empty());
     let query = match d.kind {
-        Kind::Video => LibraryQuery { q, filter: d.filter, sort: d.sort, page: Some(d.page as f64), page_size: None, fit_px: Some(d.fit_px) },
-        Kind::Shot => LibraryQuery { q, filter: LibraryFilter::Shot, sort: d.sort, page: Some(d.page as f64), page_size: Some(d.grid_per_page.max(1) as f64), fit_px: None },
+        Kind::Video => LibraryQuery { q, filter: d.filter, sort: d.sort, page: Some(d.page as f64), page_size: None, fit_px: Some(d.fit_px), audio: true },
+        Kind::Shot => LibraryQuery { q, filter: LibraryFilter::Shot, sort: d.sort, page: Some(d.page as f64), page_size: Some(d.grid_per_page.max(1) as f64), fit_px: None, audio: false },
     };
     let dir = d.dir.clone().unwrap_or_else(|| app.s.out_dir(&app.env));
     d.loaded_dir = dir.clone();

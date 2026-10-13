@@ -135,7 +135,7 @@ pub fn open(app: &mut UiApp, entry: LibraryEntry) {
     let core = app.core.clone();
     // 同一個資料夾裡的（全部錄影也可以看之前用過的資料夾）
     let dir = std::path::Path::new(&path).parent().map(|p| p.display().to_string()).filter(|d| !d.is_empty()).unwrap_or_else(|| app.s.out_dir(&app.env));
-    let query = LibraryQuery { filter: if shots { LibraryFilter::Shot } else { LibraryFilter::All }, sort: LibrarySort::New, page_size: Some(200.0), ..Default::default() };
+    let query = LibraryQuery { filter: if shots { LibraryFilter::Shot } else { LibraryFilter::All }, sort: LibrarySort::New, page_size: Some(200.0), audio: true, ..Default::default() };
     app.spawn(async move { actions::library(&core, &dir, &query).await }, move |app, page| {
         let Some(v) = app.viewer.as_mut() else { return };
         // 加速版 / GIF 不在清單裡（列在原片底下）：只看這一個
