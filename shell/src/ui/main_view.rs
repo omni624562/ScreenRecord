@@ -1642,7 +1642,7 @@ fn rec_body(app: &mut UiApp, ui: &mut Ui, r: &screenrecorder_core::types::Record
 
 /// 截圖的方式（截圖那一列的按鈕與選單、系統匣的「截圖」選單相同的項目與順序）
 #[derive(Clone, PartialEq)]
-enum ShotAct {
+pub(super) enum ShotAct {
     /// 在螢幕上框選範圍或點選視窗；幾秒後再框選
     Select(u64),
     /// 目前的錄影範圍
@@ -1824,7 +1824,7 @@ fn shot_menu(app: &UiApp, ui: &mut Ui, act: &mut Option<ShotAct>) {
 }
 
 /// 執行截圖選單選的動作（完成後由狀態更新顯示提示、更新清單）
-fn run_shot(app: &mut UiApp, act: ShotAct) {
+pub(super) fn run_shot(app: &mut UiApp, act: ShotAct) {
     use screenrecorder_core::types::SourceConfig;
     let mut config = app.s.record_config(&app.env);
     let core = app.core.clone();
