@@ -94,6 +94,10 @@ pub struct UiSettings {
     pub rec_bar_pos: Option<[i32; 2]>,
     /// 截圖後在右下角顯示小縮圖
     pub shot_preview: bool,
+    /// 框選截圖放開滑鼠就直接存檔（不留下可以調整的範圍與工具列；core 的框選畫面讀這個欄位）
+    pub snip_instant: bool,
+    /// 截圖「另存新檔」上次存到的資料夾
+    pub shot_save_dir: String,
     /// 看過哪一版的新功能介紹（例如 "3.1"）
     pub seen_version: String,
     /// 上次加到截圖或影片上的圖片（Logo）
@@ -115,11 +119,27 @@ pub struct UiSettings {
     pub window_capture: bool,
     /// 系統聲音與麥克風分開存（分軌）
     pub separate_audio: bool,
-    /// 重播緩衝保留最近幾秒（core 的 replay.rs 也讀這個欄位：快速鍵、系統匣開始時用）
+    /// 回溯錄影保留最近幾秒（core 的 replay.rs 也讀這個欄位：快速鍵、系統匣開始時用）
     pub replay_sec: u32,
     /// 主畫面展開事件紀錄（預設收起來）
     pub show_log: bool,
+    /// 之前用過的儲存位置（全部錄影的資料夾選單；最近用的在前，最多 RECENT_DIRS 個）
+    pub recent_dirs: Vec<String>,
+    /// 只錄聲音時另存一份 M4A（core 的 after_record.rs 讀這個欄位）
+    pub audio_m4a: bool,
+    /// 外觀："system"（跟著 Windows）、"light"、"dark"
+    pub theme: String,
+    /// 已經說明過「關掉視窗後仍在系統匣執行」（只在第一次關掉時通知）
+    pub hide_notice_shown: bool,
+    /// 上次切換或儲存的設定組合（目前的設定和它不一樣時顯示「已修改」）
+    pub preset_name: String,
+    /// 等待中的排程錄影（core 的 schedule.rs 存進來；這裡只是原樣保留，並跟著 core 的狀態更新）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub schedule: Option<Value>,
 }
+
+/// 記住幾個用過的儲存位置
+pub const RECENT_DIRS: usize = 5;
 
 /// 講稿提詞的字級範圍、不透明度下限
 pub const NOTES_FONT: (u32, u32) = (16, 72);
@@ -127,6 +147,8 @@ pub const NOTES_OPACITY_MIN: u32 = 40;
 
 /// 介面大小可選的百分比
 pub const UI_SCALES: [u32; 4] = [100, 110, 125, 150];
+/// 主畫面至少要這麼大（點）才放得下：螢幕放大後比這個小的介面大小不能選
+pub const UI_MIN_SIZE: (f32, f32) = (1000.0, 600.0);
 
 /// 自訂範圍跟著的視窗
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -210,6 +232,8 @@ impl UiSettings {
             rec_bar: o.get("recBar").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default(),
             rec_bar_pos: o.get("recBarPos").and_then(|v| serde_json::from_value::<[i32; 2]>(v.clone()).ok()),
             shot_preview: boolean("shotPreview").unwrap_or(true),
+            snip_instant: boolean("snipInstant").unwrap_or(false),
+            shot_save_dir: string("shotSaveDir").unwrap_or_default(),
             seen_version: string("seenVersion").unwrap_or_default(),
             last_picture: string("lastPicture").unwrap_or_default(),
             ui_scale: num("uiScale").map(|v| v as u32).filter(|v| UI_SCALES.contains(v)).unwrap_or(100),
@@ -228,6 +252,20 @@ impl UiSettings {
             separate_audio: boolean("separateAudio").unwrap_or(false),
             replay_sec: screenrecorder_core::replay::sec_from_ui(v),
             show_log: boolean("showLog").unwrap_or(false),
+            recent_dirs: o
+                .get("recentDirs")
+                .and_then(|v| serde_json::from_value::<Vec<String>>(v.clone()).ok())
+                .unwrap_or_default()
+                .into_iter()
+                .map(|d| d.trim().to_string())
+                .filter(|d| !d.is_empty())
+                .take(RECENT_DIRS)
+                .collect(),
+            audio_m4a: screenrecorder_core::after_record::audio_m4a(v),
+            theme: string("theme").filter(|v| ["light", "dark"].contains(&v.as_str())).unwrap_or_else(|| "system".into()),
+            hide_notice_shown: boolean("hideNoticeShown").unwrap_or(false),
+            preset_name: string("presetName").unwrap_or_default(),
+            schedule: o.get(screenrecorder_core::schedule::UI_KEY).cloned(),
         };
         s.fix_monitor(env);
         s

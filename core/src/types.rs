@@ -342,11 +342,11 @@ impl Hotkeys {
 /// 每組快速鍵的名稱（依介面語言）
 pub fn hotkey_names() -> [&'static str; HOTKEY_COUNT] {
     crate::tr!(
-        ["開始 / 停止錄影", "暫停 / 繼續", "截圖（固定範圍）", "框選截圖", "錄影中加標記", "螢幕畫筆（開 / 關）", "重播（開始 / 存下）"],
+        ["開始 / 停止錄影", "暫停 / 繼續", "截圖（整個錄影範圍）", "框選截圖", "錄影中加標記", "螢幕畫筆（開 / 關）", "回溯錄影（開始 / 存下）"],
         [
             "Start / stop recording",
             "Pause / resume",
-            "Screenshot (fixed area)",
+            "Screenshot (whole recording area)",
             "Select area screenshot",
             "Add marker while recording",
             "Screen pen (on / off)",
@@ -483,6 +483,9 @@ pub struct RecordingResult {
     /// 合併失敗時保留的分段資料夾
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parts_dir: Option<String>,
+    /// 沒錄到的聲音（audiopipe::SILENT_* 全部是靜音、PARTLY_* 有一段是靜音）：結果卡說明
+    #[serde(default, skip_serializing_if = "is_zero_u8")]
+    pub silent_audio: u8,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -545,6 +548,9 @@ pub struct RecorderStatus {
     /// 重播緩衝中（不是一般錄影）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub replay: Option<ReplayStatus>,
+    /// 以靜音代替的聲音來源（audiopipe::SILENT_SYSTEM、SILENT_MIC）：錄影面板標成紅色
+    #[serde(default, skip_serializing_if = "is_zero_u8")]
+    pub silent_audio: u8,
 }
 
 /// 重播緩衝的狀態
@@ -564,8 +570,28 @@ pub struct ReplayStatus {
     pub last: Option<String>,
 }
 
+fn is_zero_u8(v: &u8) -> bool {
+    *v == 0
+}
+
 fn is_zero_u32(v: &u32) -> bool {
     *v == 0
+}
+
+fn is_zero_f64(v: &f64) -> bool {
+    *v == 0.0
+}
+
+impl MediaInfo {
+    /// 錄影開始（截圖）的時間（毫秒），檔名沒有日期時間時用：建立時間與修改時間較早的那個。
+    /// 修改時間是錄完的時間；改名不會改變建立時間。從別處複製來的檔案建立時間是複製的時候，這時修改時間比較早
+    pub fn time_ms(&self) -> f64 {
+        if self.created > 0.0 {
+            self.created.min(self.mtime)
+        } else {
+            self.mtime
+        }
+    }
 }
 
 /// 影片章節（開始的秒數與名稱）
@@ -583,6 +609,9 @@ pub struct MediaInfo {
     pub bytes: u64,
     /// 修改時間（毫秒）
     pub mtime: f64,
+    /// 建立時間（毫秒）；拿不到時 0
+    #[serde(default, skip_serializing_if = "is_zero_f64")]
+    pub created: f64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub duration_sec: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -692,6 +721,8 @@ pub struct LibraryQuery {
     pub page_size: Option<f64>,
     /// 依高度分頁：表格可用的高度（px）；有指定時忽略 page_size
     pub fit_px: Option<f64>,
+    /// 也列出只有聲音的檔案（存成 M4A 的）：全部錄影、檢視器要；主畫面的最近錄影不要
+    pub audio: bool,
 }
 
 /// 全部錄影表格的列高（含 1px 分隔線）
@@ -707,6 +738,9 @@ pub struct LibraryPage {
     pub pages: usize,
     pub page_size: usize,
     pub items: Vec<LibraryEntry>,
+    /// 資料夾讀不到（不存在、隨身碟或網路磁碟沒接上）時的說明
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

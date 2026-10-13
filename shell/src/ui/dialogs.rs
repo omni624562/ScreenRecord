@@ -2,7 +2,7 @@
 
 use super::theme::{self, Btn};
 use super::UiApp;
-use eframe::egui::{self, vec2, Align, Align2, Color32, CornerRadius, Id, Layout, RichText};
+use eframe::egui::{self, vec2, Align, Align2, Color32, CornerRadius, Id, Layout, RichText, Stroke};
 use screenrecorder_core::version::{APP_VERSION, CHANGELOG};
 use screenrecorder_core::{tr, trf};
 use std::time::Instant;
@@ -25,6 +25,10 @@ pub struct Ask {
     pub on_ok: Option<Submit>,
     /// 第二個動作（例如「刪除」）：放在確定按鈕左邊
     pub alt: Option<(String, Submit)>,
+    /// 第二個動作會刪掉東西（紅色按鈕）
+    pub alt_danger: bool,
+    /// 輸入對話框：輸入欄空白時的灰色提示（例如「例如：教學影片」）
+    pub hint: String,
     /// 取消按鈕的字（None = 取消）
     pub cancel: Option<String>,
     focused: bool,
@@ -45,6 +49,8 @@ impl Ask {
             busy: false,
             on_ok: Some(Box::new(on_ok)),
             alt: None,
+            alt_danger: false,
+            hint: String::new(),
             cancel: None,
             focused: false,
         }
@@ -98,10 +104,15 @@ pub fn show_ask(app: &mut UiApp, ctx: &egui::Context) {
         if let Some(v) = &mut ask.input {
             ui.add_space(8.0);
             ui.label(theme::muted(ui, &ask.input_label));
-            let r = ui.add_enabled(!ask.busy, egui::TextEdit::singleline(v).desired_width(f32::INFINITY));
+            let r = ui.add_enabled(!ask.busy, egui::TextEdit::singleline(v).hint_text(&ask.hint).desired_width(f32::INFINITY));
             if !ask.focused {
                 r.request_focus();
                 ask.focused = true;
+                // 全選，直接打字就取代原本的名稱
+                let mut state = egui::TextEdit::load_state(ui.ctx(), r.id).unwrap_or_default();
+                let n = v.chars().count();
+                state.cursor.set_char_range(Some(egui::text::CCursorRange::two(egui::text::CCursor::new(0), egui::text::CCursor::new(n))));
+                state.store(ui.ctx(), r.id);
             }
             if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                 submit = true;
@@ -118,7 +129,7 @@ pub fn show_ask(app: &mut UiApp, ctx: &egui::Context) {
                 submit = true;
             }
             if let Some((label, _)) = &ask.alt {
-                if Btn::new(label).enabled(!ask.busy).show(ui).clicked() {
+                if Btn::new(label).kind(if ask.alt_danger { theme::Kind::Danger } else { theme::Kind::Normal }).enabled(!ask.busy).show(ui).clicked() {
                     alt = true;
                 }
             }
@@ -166,12 +177,51 @@ pub fn show_toast(app: &mut UiApp, ctx: &egui::Context) {
     ctx.request_repaint_after(t.until - Instant::now());
     let p = theme::pal_ctx(ctx);
     let (fill, fg) = if t.error { (p.rec, Color32::WHITE) } else { (p.text, p.surface) };
-    egui::Area::new(Id::new("toast")).anchor(Align2::CENTER_BOTTOM, vec2(0.0, -28.0)).order(egui::Order::Tooltip).interactable(false).show(ctx, |ui| {
+    let has_actions = !t.actions.is_empty();
+    let mut clicked: Option<usize> = None;
+    let mut close = false;
+    let resp = egui::Area::new(Id::new("toast")).anchor(Align2::CENTER_BOTTOM, vec2(0.0, -28.0)).order(egui::Order::Tooltip).interactable(has_actions).show(ctx, |ui| {
         egui::Frame::new().fill(fill).corner_radius(CornerRadius::same(10)).inner_margin(egui::Margin::symmetric(16, 10)).show(ui, |ui| {
-            ui.set_max_width(560.0);
-            ui.label(RichText::new(&t.text).color(fg));
+            ui.set_max_width(if has_actions { 680.0 } else { 560.0 });
+            if !has_actions {
+                ui.label(RichText::new(&t.text).color(fg));
+                return;
+            }
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(&t.text).color(fg));
+                ui.add_space(8.0);
+                for (i, a) in t.actions.iter().enumerate() {
+                    let b = egui::Button::new(RichText::new(&a.label).color(fg).strong())
+                        .fill(fg.gamma_multiply(0.14))
+                        .stroke(Stroke::new(1.0, fg.gamma_multiply(0.35)))
+                        .corner_radius(CornerRadius::same(6));
+                    if ui.add(b).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                        clicked = Some(i);
+                    }
+                }
+                // 關閉（自己畫叉叉：部分字型沒有「✕」）
+                let (r, x) = ui.allocate_exact_size(vec2(18.0, 18.0), egui::Sense::click());
+                theme::paint_icon(ui.painter(), r.shrink(1.0), theme::Icon::Close, if x.hovered() { fg } else { fg.gamma_multiply(0.7) });
+                if x.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(tr!("關閉", "Close")).clicked() {
+                    close = true;
+                }
+            });
         });
     });
+    // 滑鼠在提示上時不會消失
+    if has_actions && resp.response.contains_pointer() {
+        if let Some(t) = &mut app.toast {
+            t.until = t.until.max(Instant::now() + std::time::Duration::from_millis(1500));
+        }
+    }
+    if let Some(i) = clicked {
+        if let Some(mut t) = app.toast.take() {
+            let a = t.actions.swap_remove(i);
+            (a.run)(app);
+        }
+    } else if close {
+        app.toast = None;
+    }
 }
 
 /// 更新說明（CHANGELOG.md 的簡易轉換：## / ### 標題、- 清單、`程式碼`、[文字](網址)）
@@ -265,9 +315,11 @@ pub fn is_cut_name(name: &str) -> bool {
     screenrecorder_core::library::is_cut_name(name)
 }
 
-/// 顯示用名稱：去掉 .mp4
+/// 顯示用名稱：去掉 .mp4（截圖 .png、聲音檔 .m4a 也是）
 pub fn base_name(name: &str) -> String {
-    match name.strip_suffix(".png").or_else(|| name.strip_suffix(".PNG")) {
+    let lower = name.to_lowercase();
+    let image_or_audio = [".png", ".jpg", ".jpeg", ".m4a"].iter().find(|e| lower.ends_with(*e));
+    match image_or_audio.map(|e| &name[..name.len() - e.len()]) {
         Some(b) => b.to_string(),
         None => screenrecorder_core::format::strip_mp4(name),
     }
@@ -275,14 +327,15 @@ pub fn base_name(name: &str) -> String {
 
 /// 圖片（截圖）
 pub fn is_image(path: &str) -> bool {
-    path.to_lowercase().ends_with(".png")
+    let p = path.to_lowercase();
+    p.ends_with(".png") || p.ends_with(".jpg") || p.ends_with(".jpeg")
 }
 
 pub fn file_name(path: &str) -> String {
     path.rsplit(['\\', '/']).next().unwrap_or(path).to_string()
 }
 
-/// 由檔名 Rec_2026-10-06_08-17-18 取出「10/06 08:17」；不符合格式時用修改時間
+/// 由檔名 Rec_2026-10-06_08-17-18 取出「10/06 08:17」；不符合格式時用檔案的時間（MediaInfo::time_ms）
 pub fn short_date(name: &str, mtime: f64, with_sec: bool) -> String {
     static RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| regex::Regex::new(r"(\d{4})-(\d{2})-(\d{2})_(\d{2})-(\d{2})(?:-(\d{2}))?").unwrap());
     if let Some(m) = RE.captures(name) {
@@ -296,7 +349,7 @@ pub fn short_date(name: &str, mtime: f64, with_sec: bool) -> String {
     }
 }
 
-/// 錄影的時間：檔名 Rec_2026-10-06_08-17-18（截圖 Shot_…）；不符合格式時用修改時間
+/// 錄影的時間：檔名 Rec_2026-10-06_08-17-18（截圖 Shot_…）；不符合格式時用檔案的時間（MediaInfo::time_ms）
 pub fn entry_time(name: &str, mtime: f64) -> Option<chrono::NaiveDateTime> {
     static RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| regex::Regex::new(r"(\d{4}-\d{2}-\d{2})_(\d{2})-(\d{2})-(\d{2})").unwrap());
     if let Some(m) = RE.captures(name) {

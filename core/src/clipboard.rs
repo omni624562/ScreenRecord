@@ -173,6 +173,11 @@ pub fn copy_text(text: &str) -> bool {
     arboard::Clipboard::new().and_then(|mut c| c.set_text(text.to_string())).is_ok()
 }
 
+/// 剪貼簿裡的文字（沒有文字時 None）
+pub fn read_text() -> Option<String> {
+    arboard::Clipboard::new().and_then(|mut c| c.get_text()).ok()
+}
+
 /// 把畫面（預乘 alpha）複製到剪貼簿；編輯後加了陰影的圖四周是透明的
 pub fn copy_pixmap(pm: &tiny_skia::Pixmap) -> bool {
     let bytes = crate::shot_edit::straight_rgba(pm);

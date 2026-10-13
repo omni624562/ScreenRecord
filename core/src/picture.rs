@@ -59,6 +59,20 @@ pub fn load(path: &str) -> Option<Arc<Picture>> {
     pic
 }
 
+/// 讀取截圖（PNG 或另存的 JPG）成預乘 alpha 的畫布；PNG 走 tiny-skia（比較快），其他格式用 image
+pub fn decode_pixmap(bytes: &[u8]) -> Option<Pixmap> {
+    if let Ok(pm) = Pixmap::decode_png(bytes) {
+        return Some(pm);
+    }
+    let rgba = image::load_from_memory(bytes).ok()?.to_rgba8();
+    let (w, h) = rgba.dimensions();
+    let mut pm = Pixmap::new(w, h)?;
+    for (d, s) in pm.pixels_mut().iter_mut().zip(rgba.pixels()) {
+        *d = ColorU8::from_rgba(s[0], s[1], s[2], s[3]).premultiply();
+    }
+    Some(pm)
+}
+
 /// 解碼圖片並轉成預乘 alpha 的畫布
 pub fn decode(bytes: &[u8]) -> Option<Picture> {
     let img = image::load_from_memory(bytes).ok()?;
@@ -147,6 +161,21 @@ pub fn pick_file() -> Result<Option<PathBuf>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn decodes_png_and_jpg_screenshots() {
+        let mut img = image::RgbaImage::new(4, 3);
+        img.put_pixel(1, 1, image::Rgba([200, 30, 30, 255]));
+        let mut png = Vec::new();
+        image::DynamicImage::ImageRgba8(img.clone()).write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png).unwrap();
+        let mut jpg = Vec::new();
+        image::DynamicImage::ImageRgba8(img).to_rgb8().write_to(&mut std::io::Cursor::new(&mut jpg), image::ImageFormat::Jpeg).unwrap();
+        for bytes in [&png, &jpg] {
+            let pm = decode_pixmap(bytes).unwrap();
+            assert_eq!((pm.width(), pm.height()), (4, 3));
+        }
+        assert!(decode_pixmap(b"not an image").is_none());
+    }
 
     fn png(w: u32, h: u32, rgba: [u8; 4]) -> Vec<u8> {
         let mut pm = Pixmap::new(w, h).unwrap();

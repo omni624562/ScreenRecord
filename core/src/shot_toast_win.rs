@@ -1,5 +1,5 @@
 //! 截圖後的小縮圖（Windows）：分層視窗（圓角、半透明），放在游標所在螢幕的右下角，
-//! 不搶焦點、不被擷取。點縮圖或「編輯」開啟編輯；滑鼠不在上面時 7 秒後自動消失。
+//! 不搶焦點、不被擷取。點縮圖或「編輯」開啟編輯；滑鼠不在上面時 7 秒後自動消失；刪除後顯示「已移到資源回收筒」再消失。
 //! 一次只有一個：新的截圖出現時，舊的先關掉。
 
 use crate::shot_toast::{hit, render, thumbnail, Button, Hit, Layout};
@@ -26,21 +26,23 @@ use windows::Win32::UI::WindowsAndMessaging::{
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Cmd {
     Edit,
-    Copy,
     Pin,
+    /// 在檔案總管顯示（選取這個檔案）
+    Reveal,
     Delete,
 }
 
 const WM_MOUSELEAVE: u32 = 0x02A3;
 const MA_NOACTIVATE: isize = 3;
-/// 沒碰它多久後消失
+/// 沒碰它多久後消失；刪除後的訊息顯示多久
 const LIFETIME: Duration = Duration::from_secs(7);
+const DELETED_LIFETIME: Duration = Duration::from_millis(2500);
 
 /// 目前顯示中的（新的出現時把它關掉）
 static CURRENT: Mutex<Option<isize>> = Mutex::new(None);
 
-/// 按鈕的處理函式：(要做的事, 截圖的路徑)
-type OnCmd = std::rc::Rc<dyn Fn(Cmd, &str)>;
+/// 按鈕的處理函式：(要做的事, 截圖的路徑)；回傳是否做到了（刪除成功才顯示「已移到資源回收筒」）
+type OnCmd = std::rc::Rc<dyn Fn(Cmd, &str) -> bool>;
 
 struct State {
     path: String,
@@ -52,23 +54,27 @@ struct State {
     inside: bool,
     since: Instant,
     on: OnCmd,
+    /// 圖下面的說明（「已存檔並複製到剪貼簿」）
+    caption: String,
+    /// 已經移到資源回收筒
+    deleted: bool,
 }
 
 thread_local! {
     static STATE: RefCell<Option<State>> = const { RefCell::new(None) };
 }
 
-/// 顯示這張截圖的小縮圖；按鈕交給 on 處理。thumb：已經做好的縮圖（沒有時讀取 path 再縮小）
-pub fn show(path: String, thumb: Option<Pixmap>, on: impl Fn(Cmd, &str) + Send + 'static) {
+/// 顯示這張截圖的小縮圖；按鈕交給 on 處理。thumb：已經做好的縮圖（沒有時讀取 path 再縮小）；caption：圖下面的說明
+pub fn show(path: String, thumb: Option<Pixmap>, caption: String, on: impl Fn(Cmd, &str) -> bool + Send + 'static) {
     if let Some(h) = CURRENT.lock().unwrap().take() {
         unsafe {
             let _ = PostMessageW(Some(HWND(h as *mut _)), WM_CLOSE, WPARAM(0), LPARAM(0));
         }
     }
-    let _ = std::thread::Builder::new().name("shot-toast".into()).spawn(move || unsafe { run(path, thumb, std::rc::Rc::new(on)) });
+    let _ = std::thread::Builder::new().name("shot-toast".into()).spawn(move || unsafe { run(path, thumb, caption, std::rc::Rc::new(on)) });
 }
 
-unsafe fn run(path: String, thumb: Option<Pixmap>, on: OnCmd) {
+unsafe fn run(path: String, thumb: Option<Pixmap>, caption: String, on: OnCmd) {
     let thumb = match thumb {
         Some(t) => t,
         None => {
@@ -88,7 +94,7 @@ unsafe fn run(path: String, thumb: Option<Pixmap>, on: OnCmd) {
     let (mut dx, mut dy) = (96u32, 96u32);
     let _ = GetDpiForMonitor(mon, MDT_EFFECTIVE_DPI, &mut dx, &mut dy);
     let scale = (dx as f32 / 96.0).max(1.0);
-    let Some((pm, layout)) = render(&thumb, scale, None) else { return };
+    let Some((pm, layout)) = render(&thumb, scale, None, &caption, false) else { return };
     let gap = (16.0 * scale) as i32;
     let pos = (mi.rcWork.right - layout.w as i32 - gap, mi.rcWork.bottom - layout.h as i32 - gap);
     let hinst = GetModuleHandleW(None).unwrap_or_default();
@@ -101,7 +107,7 @@ unsafe fn run(path: String, thumb: Option<Pixmap>, on: OnCmd) {
     let _ = SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE);
     *CURRENT.lock().unwrap() = Some(hwnd.0 as isize);
     present(hwnd, &pm, pos);
-    STATE.with(|s| *s.borrow_mut() = Some(State { path, thumb, scale, layout, hover: None, pos, inside: false, since: Instant::now(), on }));
+    STATE.with(|s| *s.borrow_mut() = Some(State { path, thumb, scale, layout, hover: None, pos, inside: false, since: Instant::now(), on, caption, deleted: false }));
     let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
     SetTimer(Some(hwnd), 1, 200, None);
     let mut msg = MSG::default();
@@ -140,16 +146,16 @@ pub(crate) unsafe fn present(hwnd: HWND, pm: &Pixmap, (x, y): (i32, i32)) {
     ReleaseDC(None, screen);
 }
 
-/// 滑鼠移到的地方變了：重畫
-unsafe fn set_hover(hwnd: HWND, h: Option<Hit>) {
+/// 滑鼠移到的地方變了（或刪掉了）：重畫
+unsafe fn set_hover(hwnd: HWND, h: Option<Hit>, force: bool) {
     let redraw = STATE.with(|s| {
         let mut s = s.borrow_mut();
         let st = s.as_mut()?;
-        if st.hover == h {
+        if st.hover == h && !force {
             return None;
         }
         st.hover = h;
-        let (pm, layout) = render(&st.thumb, st.scale, h)?;
+        let (pm, layout) = render(&st.thumb, st.scale, h, &st.caption, st.deleted)?;
         st.layout = layout;
         Some((pm, st.pos))
     });
@@ -179,14 +185,14 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                 let st = s.as_mut()?;
                 let was = st.inside;
                 st.inside = true;
-                Some((!was, hit(&st.layout, x, y)))
+                Some((!was, hit(&st.layout, x, y, st.deleted)))
             });
             if let Some((first, h)) = first {
                 if first {
                     let mut tme = TRACKMOUSEEVENT { cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32, dwFlags: TME_LEAVE, hwndTrack: hwnd, dwHoverTime: 0 };
                     let _ = TrackMouseEvent(&mut tme);
                 }
-                set_hover(hwnd, h);
+                set_hover(hwnd, h, false);
             }
             LRESULT(0)
         }
@@ -198,35 +204,43 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                     st.since = Instant::now();
                 }
             });
-            set_hover(hwnd, None);
+            set_hover(hwnd, None, false);
             LRESULT(0)
         }
         WM_LBUTTONUP => {
             let (x, y) = point(lparam);
-            let act = STATE.with(|s| s.borrow().as_ref().and_then(|st| hit(&st.layout, x, y)));
+            let act = STATE.with(|s| s.borrow().as_ref().and_then(|st| hit(&st.layout, x, y, st.deleted)));
             let cmd = match act {
                 Some(Hit::Image) | Some(Hit::Button(Button::Edit)) => Some(Cmd::Edit),
-                Some(Hit::Button(Button::Copy)) => Some(Cmd::Copy),
                 Some(Hit::Button(Button::Pin)) => Some(Cmd::Pin),
+                Some(Hit::Button(Button::Reveal)) => Some(Cmd::Reveal),
                 Some(Hit::Button(Button::Delete)) => Some(Cmd::Delete),
                 Some(Hit::Button(Button::Close)) => None,
                 None => return LRESULT(0),
             };
+            let mut done = false;
             if let Some(c) = cmd {
-                // 先取出再呼叫：刪除、複製可能在等的時候處理其他訊息（又進到這裡借用 STATE）
+                // 先取出再呼叫：刪除可能在等的時候處理其他訊息（又進到這裡借用 STATE）
                 let job = STATE.with(|s| s.borrow().as_ref().map(|st| (st.on.clone(), st.path.clone())));
                 if let Some((on, path)) = job {
-                    on(c, &path);
+                    done = on(c, &path);
                 }
             }
-            // 複製後留著（可能還要做別的），其他都關掉
-            if cmd != Some(Cmd::Copy) {
+            // 刪掉了：留著顯示「已移到資源回收筒」，一下子後再關；其他都關掉
+            if cmd == Some(Cmd::Delete) && done {
+                STATE.with(|s| {
+                    if let Some(st) = s.borrow_mut().as_mut() {
+                        (st.deleted, st.since) = (true, Instant::now());
+                    }
+                });
+                set_hover(hwnd, None, true);
+            } else {
                 let _ = DestroyWindow(hwnd);
             }
             LRESULT(0)
         }
         WM_TIMER => {
-            let expired = STATE.with(|s| s.borrow().as_ref().is_some_and(|st| !st.inside && st.since.elapsed() > LIFETIME));
+            let expired = STATE.with(|s| s.borrow().as_ref().is_some_and(|st| if st.deleted { st.since.elapsed() > DELETED_LIFETIME } else { !st.inside && st.since.elapsed() > LIFETIME }));
             if expired {
                 let _ = DestroyWindow(hwnd);
             }

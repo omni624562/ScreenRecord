@@ -1,9 +1,10 @@
 //! 外觀：顏色（淺色 / 深色跟著 Windows）、字型、圖示與共用的小元件（按鈕、分段選擇、開關、標籤）。
 
 use eframe::egui::{
-    self, pos2, vec2, Align2, Color32, CornerRadius, FontData, FontDefinitions, FontFamily, FontId, Painter, Pos2, Rect, Response, RichText, Sense, Shape, Stroke, StrokeKind, TextStyle, Ui, Vec2,
-    Visuals, WidgetText,
+    self, pos2, vec2, Align, Align2, Color32, CornerRadius, FontData, FontDefinitions, FontFamily, FontId, Painter, Pos2, Rect, Response, RichText, Sense, Shape, Stroke, StrokeKind, TextStyle, Ui,
+    Vec2, Visuals, WidgetText,
 };
+use screenrecorder_core::trf;
 use std::sync::Arc;
 
 #[derive(Clone, Copy)]
@@ -242,6 +243,28 @@ pub enum Icon {
     Clock,
     /// 網路攝影機（鏡頭與底座）
     Webcam,
+    /// 重新命名（文字框與游標）
+    Rename,
+    /// 加速（兩個向右的三角形）
+    Fast,
+    /// 回溯錄影（逆時針箭頭圍著時鐘指針）
+    Rewind,
+    /// 錄影（攝影機：方框與鏡頭）
+    Video,
+    /// 複製（兩張重疊的紙）
+    Copy,
+    /// 釘選（圖釘）
+    Pin,
+    /// 鍵盤（快速鍵說明）
+    Keyboard,
+    /// 全螢幕（四個角往外的框）
+    Fullscreen,
+    /// 文字辨識（掃描框裡的 T）
+    Ocr,
+    /// 打勾（完成、確定）
+    Check,
+    /// 往上（調整順序）
+    ChevU,
 }
 
 /// 在 rect（正方形）裡畫圖示
@@ -382,6 +405,58 @@ pub fn paint_icon(p: &Painter, rect: Rect, icon: Icon, color: Color32) {
             line(&[(4.0, 4.0), (12.0, 12.0)]);
             line(&[(12.0, 4.0), (4.0, 12.0)]);
         }
+        Icon::Rename => {
+            p.rect_stroke(Rect::from_min_max(at(1.5, 4.5), at(14.5, 11.5)), CornerRadius::same((1.5 * k) as u8), st, StrokeKind::Middle);
+            line(&[(4.0, 8.0), (8.0, 8.0)]);
+            line(&[(11.0, 2.5), (11.0, 13.5)]);
+            line(&[(9.5, 2.5), (12.5, 2.5)]);
+            line(&[(9.5, 13.5), (12.5, 13.5)]);
+        }
+        Icon::Fast => {
+            p.add(Shape::convex_polygon(vec![at(1.5, 4.0), at(8.0, 8.0), at(1.5, 12.0)], color, Stroke::NONE));
+            p.add(Shape::convex_polygon(vec![at(8.0, 4.0), at(14.5, 8.0), at(8.0, 12.0)], color, Stroke::NONE));
+        }
+        Icon::Rewind => {
+            arc(8.5, 8.5, 5.5, -2.6, 2.9);
+            line(&[(1.8, 3.4), (3.2, 6.6), (6.4, 5.4)]);
+            line(&[(8.5, 5.5), (8.5, 8.5), (10.8, 10.0)]);
+        }
+        Icon::Video => {
+            p.rect_stroke(Rect::from_min_max(at(1.5, 4.0), at(10.5, 12.0)), CornerRadius::same((1.5 * k) as u8), st, StrokeKind::Middle);
+            line(&[(10.5, 7.0), (14.5, 4.5), (14.5, 11.5), (10.5, 9.0)]);
+        }
+        Icon::Copy => {
+            p.rect_stroke(Rect::from_min_max(at(5.5, 5.5), at(13.5, 14.0)), CornerRadius::same((1.5 * k) as u8), st, StrokeKind::Middle);
+            line(&[(3.0, 10.5), (2.5, 10.5), (2.5, 2.5), (10.0, 2.5), (10.0, 3.0)]);
+        }
+        Icon::Pin => {
+            line(&[(6.0, 2.5), (10.0, 2.5)]);
+            line(&[(7.0, 2.5), (6.5, 7.0), (4.0, 9.5), (12.0, 9.5), (9.5, 7.0), (9.0, 2.5)]);
+            line(&[(8.0, 9.5), (8.0, 14.0)]);
+        }
+        Icon::Keyboard => {
+            p.rect_stroke(Rect::from_min_max(at(1.5, 4.0), at(14.5, 12.5)), CornerRadius::same((1.5 * k) as u8), st, StrokeKind::Middle);
+            for x in [4.5, 7.0, 9.5, 12.0] {
+                p.circle_filled(at(x, 6.8), 0.8 * k, color);
+            }
+            line(&[(5.0, 9.8), (11.0, 9.8)]);
+        }
+        Icon::Fullscreen => {
+            line(&[(2.5, 6.0), (2.5, 2.5), (6.0, 2.5)]);
+            line(&[(10.0, 2.5), (13.5, 2.5), (13.5, 6.0)]);
+            line(&[(13.5, 10.0), (13.5, 13.5), (10.0, 13.5)]);
+            line(&[(6.0, 13.5), (2.5, 13.5), (2.5, 10.0)]);
+        }
+        Icon::Ocr => {
+            // 四個角的掃描框
+            for (x, y, dx, dy) in [(1.5, 1.5, 1.0, 1.0), (14.5, 1.5, -1.0, 1.0), (1.5, 14.5, 1.0, -1.0), (14.5, 14.5, -1.0, -1.0)] {
+                line(&[(x, y + 3.5 * dy), (x, y), (x + 3.5 * dx, y)]);
+            }
+            line(&[(5.0, 5.0), (11.0, 5.0)]);
+            line(&[(8.0, 5.0), (8.0, 11.5)]);
+        }
+        Icon::Check => line(&[(2.5, 8.5), (6.5, 12.5), (13.5, 4.0)]),
+        Icon::ChevU => line(&[(4.0, 10.0), (8.0, 6.0), (12.0, 10.0)]),
     }
 }
 
@@ -642,9 +717,97 @@ pub fn switch(ui: &mut Ui, on: &mut bool, label: impl Into<WidgetText>, enabled:
     }
 }
 
+/// 勾選框（方形，勾選時填滿強調色、白色打勾；比 egui 預設的圓角框清楚，不會被看成單選）。
+/// label 空白時只有框；回傳的 Response 在改變時 changed()
+pub fn check(ui: &mut Ui, on: &mut bool, label: impl Into<WidgetText>) -> Response {
+    let p = pal(ui);
+    let label: WidgetText = label.into();
+    let galley = (!label.is_empty()).then(|| label.into_galley(ui, Some(egui::TextWrapMode::Extend), f32::INFINITY, TextStyle::Body));
+    let text_w = galley.as_ref().map(|g| g.size().x + 8.0).unwrap_or(0.0);
+    let size = vec2(18.0 + text_w, galley.as_ref().map(|g| g.size().y).unwrap_or(0.0).max(20.0));
+    let enabled = ui.is_enabled();
+    let (rect, mut resp) = ui.allocate_exact_size(size, if enabled { Sense::click() } else { Sense::hover() });
+    if resp.clicked() {
+        *on = !*on;
+        resp.mark_changed();
+    }
+    let bx = Rect::from_center_size(pos2(rect.min.x + 9.0, rect.center().y), vec2(16.0, 16.0));
+    let hover = resp.hovered() && enabled;
+    if *on {
+        let fill = if enabled { p.accent } else { p.accent.gamma_multiply(0.5) };
+        ui.painter().rect_filled(bx, CornerRadius::same(3), fill);
+        let w = Stroke::new(2.0, Color32::WHITE);
+        ui.painter().line_segment([bx.min + vec2(3.5, 8.0), bx.min + vec2(6.8, 11.2)], w);
+        ui.painter().line_segment([bx.min + vec2(6.8, 11.2), bx.min + vec2(12.5, 4.8)], w);
+    } else {
+        // 邊框對白底至少 3:1
+        let border = if hover { p.accent } else { p.muted };
+        ui.painter().rect(bx, CornerRadius::same(3), p.surface, Stroke::new(1.5, if enabled { border } else { border.gamma_multiply(0.5) }), StrokeKind::Inside);
+    }
+    if let Some(g) = galley {
+        let color = if enabled { p.text } else { p.muted };
+        ui.painter().galley_with_override_text_color(pos2(bx.max.x + 8.0, rect.center().y - g.size().y / 2.0), g, color);
+    }
+    if enabled {
+        resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+    } else {
+        resp
+    }
+}
+
+/// 數字調整：[−] 數值 [＋]（數值也可以點一下直接輸入，Enter 或離開時套用；看不懂時恢復原值）。
+/// id 要在畫面上唯一（例如 Id::new(("max-min", i))）；fmt 顯示數值、parse 解析輸入；回傳是否改變
+pub fn stepper_with(ui: &mut Ui, id: egui::Id, value: &mut f64, step: f64, range: std::ops::RangeInclusive<f64>, fmt: impl Fn(f64) -> String, parse: impl Fn(&str) -> Option<f64>) -> bool {
+    let (lo, hi) = (*range.start(), *range.end());
+    let mut changed = false;
+    let before = *value;
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 2.0;
+        if Btn::new("−").small().ghost().enabled(*value > lo).tooltip(trf!("減少 {}", "Decrease by {}", fmt(step))).show(ui).clicked() {
+            *value = (*value - step).max(lo);
+        }
+        // 輸入中的文字放在暫存區；沒在輸入時顯示目前的數值
+        let mut text: String = ui.data_mut(|d| d.get_temp::<String>(id)).unwrap_or_else(|| fmt(*value));
+        // 寬度放得下最長的數值
+        let longest = [fmt(hi), fmt(lo)].into_iter().max_by_key(|t| t.chars().count()).unwrap_or_default();
+        let width = ui.painter().layout_no_wrap(longest, font(13.0), Color32::WHITE).size().x.max(36.0) + 14.0;
+        let r = ui.add(egui::TextEdit::singleline(&mut text).id(id.with("text")).desired_width(width).horizontal_align(Align::Center).font(font(13.0)));
+        if r.has_focus() {
+            ui.data_mut(|d| d.insert_temp(id, text.clone()));
+        }
+        if r.lost_focus() {
+            ui.data_mut(|d| d.remove::<String>(id));
+            if let Some(v) = parse(text.trim()) {
+                *value = v.clamp(lo, hi);
+            }
+        }
+        if Btn::new("＋").small().ghost().enabled(*value < hi).tooltip(trf!("增加 {}", "Increase by {}", fmt(step))).show(ui).clicked() {
+            *value = (*value + step).min(hi);
+        }
+    });
+    if (*value - before).abs() > f64::EPSILON {
+        changed = true;
+    }
+    changed
+}
+
+/// 整數或小數的數字調整（decimals 位小數，後面接 suffix，例如「 分鐘」）
+pub fn stepper(ui: &mut Ui, id: egui::Id, value: &mut f64, step: f64, range: std::ops::RangeInclusive<f64>, decimals: usize, suffix: &str) -> bool {
+    ui.horizontal(|ui| {
+        let changed = stepper_with(ui, id, value, step, range, |v| format!("{v:.decimals$}"), |t| t.replace(',', ".").parse::<f64>().ok().filter(|v| v.is_finite()));
+        if !suffix.is_empty() {
+            ui.label(suffix);
+        }
+        changed
+    })
+    .inner
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tone {
     Plain,
+    /// 綠色（目前主畫面沒有用到，保留給其他畫面）
+    #[allow(dead_code)]
     Ok,
     Warn,
     Bad,

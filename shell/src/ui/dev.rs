@@ -1,7 +1,7 @@
 //! 開發用（只在 debug 版）：自動開啟某個畫面、模擬操作並截圖，在 Linux 的 Xvfb 上檢查介面。
-//! - SCREENRECORDER_DEV：要開啟的畫面（library、shots、changelog、notes（講稿小視窗）、schedule（排程錄影）、after:<路徑>（錄完自動處理）、follow:<標題>（只錄這個視窗）、record:<秒>（錄幾秒）、replay:<保留秒數>,<幾秒後存下>[,<再幾秒停止>]（重播緩衝）、export:<路徑>、edit:<路徑>、view:<路徑>、whatsnew（新功能介紹）、monitors（模擬兩個螢幕）、snip:<PNG>（用這張圖當凍結的桌面開啟框選截圖）、hotkeys（模擬已登記快速鍵）、update:<版本>（模擬有新版本）、cameras:<名稱>,<名稱>（模擬找到的攝影機）、settings:<record|audio|save|keys|advanced>、ed:<剪輯視窗指令>），以 ; 分隔
+//! - SCREENRECORDER_DEV：要開啟的畫面（library、shots、changelog、notes（講稿小視窗）、schedule（排程錄影）、after:<路徑>（錄完自動處理）、follow:<標題>（只錄這個視窗）、record:<秒>（錄幾秒）、replay:<保留秒數>,<幾秒後存下>[,<再幾秒停止>]（重播緩衝）、export:<路徑>、edit:<路徑>、view:<路徑>、whatsnew（新功能介紹）、monitors（模擬兩個螢幕）、snip:<PNG>（用這張圖當凍結的桌面開啟框選截圖）、snipregion:<PNG>（同上，只選範圍）、stepsreview:<PNG>,<PNG>（整理步驟截圖）、hotkeys（模擬已登記快速鍵）、update:<版本>（模擬有新版本）、cameras:<名稱>,<名稱>（模擬找到的攝影機）、settings:<record|audio|save|after|keys|advanced>、ed:<剪輯視窗指令>），以 ; 分隔
 //! - SCREENRECORDER_INPUT：開啟後依序模擬的操作，以 ; 分隔：
-//!   wait:毫秒、click:x,y、rclick:x,y（右鍵）、move:x,y、drag:x0,y0,x1,y1、wheel:x,y,dy、key:Space（可加 ctrl+、alt+、shift+）、type:文字、shot:路徑
+//!   wait:毫秒、click:x,y、dclick:x,y（按兩下）、rclick:x,y（右鍵）、move:x,y、drag:x0,y0,x1,y1、wheel:x,y,dy（加 ,ctrl = Ctrl+滾輪）、key:Space（可加 ctrl+、alt+、shift+）、hold:Space / release:Space（按住、放開）、type:文字、shot:路徑
 //! - SCREENRECORDER_SHOT：最後截圖存檔的路徑（存好後結束）；SCREENRECORDER_SHOT_AFTER：開始後幾毫秒截圖（預設 3000）
 
 use super::{EntryAction, UiApp};
@@ -62,6 +62,14 @@ fn parse_script(s: &str) -> VecDeque<Step> {
                 out.push_back(Step::Events(vec![b(false)]));
                 out.push_back(Step::Wait(Duration::from_millis(200)));
             }
+            "dclick" => {
+                // 按兩下：同一格送出，Xvfb 上一格很慢，分開送會超過按兩下的間隔
+                let n = nums(v);
+                let p = pos2(n[0], n[1]);
+                out.push_back(Step::Events(vec![Event::PointerMoved(p)]));
+                out.push_back(Step::Events(vec![button(p, true, Modifiers::NONE), button(p, false, Modifiers::NONE), button(p, true, Modifiers::NONE), button(p, false, Modifiers::NONE)]));
+                out.push_back(Step::Wait(Duration::from_millis(200)));
+            }
             "move" => {
                 let n = nums(v);
                 out.push_back(Step::Events(vec![Event::PointerMoved(pos2(n[0], n[1]))]));
@@ -78,11 +86,19 @@ fn parse_script(s: &str) -> VecDeque<Step> {
                 out.push_back(Step::Wait(Duration::from_millis(200)));
             }
             "wheel" => {
+                // wheel:x,y,dy（後面加 ,ctrl = 按住 Ctrl 轉滾輪）
                 let n = nums(v);
                 let p = pos2(n[0], n[1]);
+                let modifiers = if v.ends_with(",ctrl") { Modifiers::CTRL | Modifiers::COMMAND } else { Modifiers::NONE };
                 out.push_back(Step::Events(vec![Event::PointerMoved(p)]));
-                out.push_back(Step::Events(vec![Event::MouseWheel { unit: egui::MouseWheelUnit::Point, delta: egui::vec2(0.0, n[2]), phase: egui::TouchPhase::Move, modifiers: Modifiers::NONE }]));
+                out.push_back(Step::Events(vec![Event::MouseWheel { unit: egui::MouseWheelUnit::Point, delta: egui::vec2(0.0, n[2]), phase: egui::TouchPhase::Move, modifiers }]));
                 out.push_back(Step::Wait(Duration::from_millis(100)));
+            }
+            // hold:Space / release:Space：按住、放開一個鍵（例如按住空白鍵拖曳）
+            "hold" | "release" => {
+                if let Some(key) = Key::from_name(v) {
+                    out.push_back(Step::Events(vec![Event::Key { key, physical_key: None, pressed: k == "hold", repeat: false, modifiers: Modifiers::NONE }]));
+                }
             }
             "key" => {
                 // 修飾鍵：ctrl+、alt+、shift+ 可組合，例如 ctrl+alt+F9
@@ -224,6 +240,60 @@ pub fn tick(app: &mut UiApp, ctx: &egui::Context) {
                     // 模擬系統匣已登記快速鍵（Linux 上沒有系統匣）
                     _ if a == "hotkeys" => app.env.hotkeys = Some(screenrecorder_core::types::HotkeyStatus { record: true, pause: true, shot: true, snip: false, mark: true, pen: true, replay: true }),
                     Some(("snip", p)) => fake_snip(app, p),
+                    // Windows：用這張圖當凍結的桌面開啟原生的框選畫面（在 wine 上測試），選好後照工具列的動作處理
+                    #[cfg(windows)]
+                    Some(("nativesnip", p)) => native_snip(app, p, screenrecorder_core::snip_win::Mode::Shot),
+                    #[cfg(windows)]
+                    Some(("nativeregion", p)) => native_snip(app, p, screenrecorder_core::snip_win::Mode::Record),
+                    // 延遲截圖（倒數的提示；Windows 以外沒有提示）
+                    Some(("delayshot", sec)) => {
+                        let (core, config, sec) = (app.core.clone(), app.s.record_config(&app.env), sec.parse().unwrap_or(3));
+                        app.spawn(async move { core.snip_delayed(&config, sec).await }, |app, r| match r {
+                            Ok(Some(s)) => app.toast(format!("[dev] {}", s.path), false),
+                            Ok(None) => app.toast("[dev] 取消", false),
+                            Err(e) => app.toast(e.message().to_string(), true),
+                        });
+                    }
+                    // 長截圖進行中的提示（Windows）：在 (300, 250)–(700, 520) 旁邊顯示 6 秒
+                    #[cfg(windows)]
+                    Some(("longbubble", _)) => {
+                        std::thread::spawn(|| {
+                            use screenrecorder_core::bubble::Content;
+                            use screenrecorder_core::bubble_win::{Bubble, Options};
+                            let b = Bubble::show(Content::text("長截圖中・已接 0 段・按 Esc 停止"), Options { clickable: false, esc: false, near: Some((300, 250, 700, 520)), bottom: true, on: None });
+                            for n in 1..=6 {
+                                std::thread::sleep(std::time::Duration::from_secs(1));
+                                b.set(Content::text(format!("長截圖中・已接 {n} 段・按 Esc 停止")));
+                            }
+                        });
+                    }
+                    // 螢幕畫筆（Windows）
+                    #[cfg(windows)]
+                    _ if a == "pen" => screenrecorder_core::screen_pen_win::toggle(),
+                    // 步驟截圖（Windows）：開始，畫面下方有小工具列
+                    #[cfg(windows)]
+                    _ if a == "steps" => {
+                        let dir = app.s.record_config(&app.env).output_dir;
+                        if let Err(e) = app.core.steps_start(&dir) {
+                            app.toast(e.message().to_string(), true);
+                        }
+                    }
+                    // 整理步驟：用這幾張圖（, 分隔）當截好的步驟
+                    Some(("stepsreview", list)) => fake_steps(app, list),
+                    // 只選範圍（例如錄影範圍）：選好後顯示範圍
+                    Some(("snipregion", p)) => {
+                        if let Some(src) = fake_source(app, p) {
+                            super::snip::open(
+                                app,
+                                ctx,
+                                src,
+                                Some(Box::new(|app: &mut UiApp, r: Option<screenrecorder_core::types::Rect>| match r {
+                                    Some(r) => app.toast(format!("[dev] 範圍 ({}, {}) {}×{}", r.x, r.y, r.width, r.height), false),
+                                    None => app.toast("[dev] 取消", false),
+                                })),
+                            );
+                        }
+                    }
                     Some(("cameras", list)) => app.cameras = Some(list.split(',').map(|n| n.trim().to_string()).filter(|n| !n.is_empty()).collect()),
                     Some(("update", v)) => {
                         app.dev.fake_update = Some(screenrecorder_core::types::UpdateInfo {
@@ -240,6 +310,7 @@ pub fn tick(app: &mut UiApp, ctx: &egui::Context) {
                         let page = match p {
                             "audio" => Page::Audio,
                             "save" => Page::Save,
+                            "after" => Page::After,
                             "keys" => Page::Keys,
                             "advanced" => Page::Advanced,
                             _ => Page::Record,
@@ -288,6 +359,23 @@ pub fn tick(app: &mut UiApp, ctx: &egui::Context) {
 }
 
 /// 模擬兩個 1920×1080 的螢幕（Linux 上沒有螢幕資訊時檢查單一螢幕的版面）
+/// 假的步驟截圖：把圖複製到暫存資料夾的「教學_dev」，開啟整理視窗
+fn fake_steps(app: &mut UiApp, list: &str) {
+    use screenrecorder_core::steps::{Draft, Step};
+    let dir = std::env::temp_dir().join(format!("steps-dev-{}", std::process::id()));
+    let name = "教學_dev".to_string();
+    let _ = std::fs::create_dir_all(dir.join(&name));
+    let windows = ["設定", "檔案總管 - 下載", "", "記事本"];
+    let mut steps = vec![];
+    for (i, src) in list.split(',').filter(|p| !p.is_empty()).enumerate() {
+        let image = format!("{name}/step_{:02}.png", i + 1);
+        if std::fs::copy(src, dir.join(&image)).is_ok() {
+            steps.push(Step { time: format!("14:30:{:02}", i * 4), window: windows[i % windows.len()].to_string(), image });
+        }
+    }
+    app.core.steps_review(Draft { dir, name, date: "2026/10/13 14:30".into(), steps });
+}
+
 fn fake_monitors(app: &mut UiApp) {
     use screenrecorder_core::types::{MonitorInfo, Rect};
     let m = |i: u32, x: i32| MonitorInfo {
@@ -322,18 +410,54 @@ fn fake_mics(app: &mut UiApp) {
 
 /// 用一張圖當凍結的桌面開啟框選截圖（Linux 上無法真的截下桌面）；模擬兩個視窗供點選
 fn fake_snip(app: &mut UiApp, png: &str) {
+    if let Some(src) = fake_source(app, png) {
+        app.core.snip_offer(src);
+    }
+}
+
+/// 原生的框選畫面（Windows）：用一張圖當凍結的桌面；截圖照工具列選的動作存檔、複製或釘在桌面，選範圍時顯示範圍
+#[cfg(windows)]
+fn native_snip(app: &mut UiApp, png: &str, mode: screenrecorder_core::snip_win::Mode) {
+    use screenrecorder_core::snip_win::Mode;
+    let Some(src) = fake_source(app, png) else { return };
+    let (core, instant) = (app.core.clone(), app.s.snip_instant);
+    app.spawn(
+        async move {
+            let s2 = src.clone();
+            let picked = tokio::task::spawn_blocking(move || {
+                let pm = tiny_skia::Pixmap::decode_png(&std::fs::read(&s2.path).ok()?).ok()?;
+                let desk = screenrecorder_core::types::Rect { width: pm.width() as i32, height: pm.height() as i32, ..s2.desktop };
+                screenrecorder_core::snip_win::select(pm.data(), desk, s2.windows.clone(), mode, instant)
+            })
+            .await
+            .ok()
+            .flatten();
+            let msg = match picked {
+                None => "[dev] 取消".to_string(),
+                Some((r, a)) if mode == Mode::Record => format!("[dev] 範圍 ({}, {}) {}×{} {a:?}", r.x, r.y, r.width, r.height),
+                Some((r, a)) => match core.snip_finish(&src, r, a).await {
+                    Ok(shot) => format!("[dev] {a:?} {}×{} {}", r.width, r.height, shot.map(|s| s.path).unwrap_or_default()),
+                    Err(e) => format!("[dev] {a:?} 失敗：{}", e.message()),
+                },
+            };
+            screenrecorder_core::info!("{msg}");
+            msg
+        },
+        |app, msg| app.toast(msg, false),
+    );
+}
+
+/// 用一張圖當凍結的桌面（模擬兩個視窗）
+fn fake_source(app: &mut UiApp, png: &str) -> Option<screenrecorder_core::app::SnipSource> {
     use screenrecorder_core::types::Rect;
     let tmp = std::env::temp_dir().join("ScreenRecorder-dev-snip.png");
-    if std::fs::copy(png, &tmp).is_err() {
-        return;
-    }
+    std::fs::copy(png, &tmp).ok()?;
     let desktop = if app.env.desktop.width > 0 { app.env.desktop } else { Rect { x: 0, y: 0, width: 1280, height: 900 } };
-    let src = screenrecorder_core::app::SnipSource {
+    Some(screenrecorder_core::app::SnipSource {
         path: tmp,
         desktop,
         monitors: app.env.monitors.clone(),
         windows: vec![Rect { x: 100, y: 120, width: 500, height: 300 }, Rect { x: 0, y: 0, width: 900, height: 700 }],
         output_dir: app.s.out_dir(&app.env),
-    };
-    app.core.snip_offer(src);
+    })
 }

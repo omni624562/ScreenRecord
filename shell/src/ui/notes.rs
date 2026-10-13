@@ -29,6 +29,8 @@ pub struct Notes {
     rec: RecorderState,
     /// 位置與大小（點）：關閉時存進設定
     rect: Option<Rect>,
+    /// 按了「開啟講稿檔案…」（由 show 開選擇檔案的視窗）
+    open_file: bool,
 }
 
 fn file() -> PathBuf {
@@ -43,7 +45,7 @@ pub fn toggle(app: &mut UiApp) {
     let text = std::fs::read_to_string(file()).unwrap_or_default();
     // 沒有講稿時先編輯；有講稿時直接提詞
     let prompt = !text.trim().is_empty();
-    app.notes = Some(Notes { text, save_at: None, prompt, scroll: 0.0, playing: false, last_tick: None, styled: None, rec: app.status.recorder.state, rect: None });
+    app.notes = Some(Notes { text, save_at: None, prompt, scroll: 0.0, playing: false, last_tick: None, styled: None, rec: app.status.recorder.state, rect: None, open_file: false });
 }
 
 /// 測試用：notes:play（開始捲動）、notes:edit（編輯）
@@ -108,7 +110,21 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         let m = app.env.monitors.iter().find(|m| m.primary).or(app.env.monitors.first());
         let ppp = ctx.pixels_per_point();
         let (mx, my, mw) = m.map(|m| (m.x as f32 / ppp, m.y as f32 / ppp, m.width as f32 / ppp)).unwrap_or((0.0, 0.0, 1280.0));
-        [(mx + (mw - 460.0) / 2.0) as i32, (my + 40.0) as i32, 460, 280]
+        let (w, h) = (460.0, 280.0);
+        let mut r = Rect::from_min_size(pos2(mx + (mw - w) / 2.0, my + 40.0), vec2(w, h));
+        // 不要蓋住操作視窗右上角的「回溯錄影」「排程」「講稿」按鈕：會蓋到時往左移
+        if let Some(main) = ctx.input(|i| i.viewport().outer_rect) {
+            let buttons = Rect::from_min_max(pos2(main.max.x - 420.0, main.min.y), pos2(main.max.x, main.min.y + 220.0));
+            if r.intersects(buttons) {
+                r = r.translate(vec2((buttons.min.x - 16.0 - r.max.x).min(0.0), 0.0));
+                r = r.translate(vec2((mx + 8.0 - r.min.x).max(0.0), 0.0));
+                // 螢幕太窄、左邊放不下：改放到按鈕下面
+                if r.intersects(buttons) {
+                    r = r.translate(vec2(0.0, buttons.max.y + 8.0 - r.min.y));
+                }
+            }
+        }
+        [r.min.x as i32, r.min.y as i32, w as i32, h as i32]
     });
     let builder = ViewportBuilder::default()
         .with_title(winui::notes_title())
@@ -139,11 +155,45 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
     if changed {
         app.save_settings();
     }
+    // 開啟講稿檔案（.txt）：讀進來取代目前的講稿
+    if std::mem::take(&mut n.open_file) {
+        app.spawn(
+            async move {
+                tokio::task::spawn_blocking(|| screenrecorder_core::filepick::pick(tr!("開啟講稿檔案", "Open a script file"), &[(tr!("文字檔", "Text files"), "*.txt")])).await.unwrap_or(Ok(None))
+            },
+            |app, r| match r {
+                Ok(Some(path)) => match read_script(&path) {
+                    Ok(text) => {
+                        if let Some(n) = &mut app.notes {
+                            n.text = text;
+                            n.scroll = 0.0;
+                            n.playing = false;
+                            save_text(n);
+                        }
+                        app.toast(trf!("已開啟講稿「{}」", "Opened the script “{}”", path.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default()), false);
+                    }
+                    Err(e) => app.toast(e, true),
+                },
+                Ok(None) => {}
+                Err(e) => app.toast(e, true),
+            },
+        );
+    }
     if closed {
         close(app, n);
     } else {
         app.notes = Some(n);
     }
+}
+
+/// 讀講稿檔案（UTF-8；開頭的 BOM 去掉；太大的不讀）
+fn read_script(path: &std::path::Path) -> Result<String, String> {
+    let bytes = std::fs::read(path).map_err(|e| trf!("讀不到講稿檔案：{e}", "Couldn't read the script file: {e}"))?;
+    if bytes.len() > 2 * 1024 * 1024 {
+        return Err(tr!("講稿檔案太大（超過 2 MB）", "The script file is too large (over 2 MB)").into());
+    }
+    let text = String::from_utf8_lossy(&bytes);
+    Ok(text.trim_start_matches('\u{feff}').to_string())
 }
 
 /// 視窗內容；回傳設定是否改變
@@ -168,7 +218,19 @@ fn body(ui: &mut egui::Ui, n: &mut Notes, s: &mut super::settings::UiSettings) -
                 n.prompt = mode;
                 n.playing = false;
             }
+            if !n.prompt
+                && Btn::new(tr!("開啟檔案…", "Open file…"))
+                    .icon(Icon::Folder)
+                    .ghost()
+                    .small()
+                    .tooltip(tr!("開啟講稿檔案（.txt），取代目前的講稿", "Open a script file (.txt) to replace the current script"))
+                    .show(ui)
+                    .clicked()
+            {
+                n.open_file = true;
+            }
             if n.prompt {
+                let narrow = ui.available_width() < 330.0;
                 let (icon, tip) = if n.playing { (Icon::Pause, tr!("暫停（空白鍵）", "Pause (Space)")) } else { (Icon::Play, tr!("開始捲動（空白鍵）", "Start scrolling (Space)")) };
                 if Btn::icon_only(icon).small().tooltip(tip).show(ui).clicked() {
                     n.playing = !n.playing;
@@ -180,35 +242,39 @@ fn body(ui: &mut egui::Ui, n: &mut Notes, s: &mut super::settings::UiSettings) -
                     s.notes_speed -= 1;
                     changed = true;
                 }
-                ui.label(RichText::new(trf!("速度 {}", "Speed {}", s.notes_speed)).font(theme::font(12.5)));
+                let speed = if narrow { s.notes_speed.to_string() } else { trf!("速度 {}", "Speed {}", s.notes_speed) };
+                ui.label(RichText::new(speed).font(theme::font(12.5))).on_hover_text(tr!("捲動速度（1～10）", "Scroll speed (1–10)"));
                 if Btn::new("+").ghost().small().tooltip(tr!("快一點（↑）", "Faster (↑)")).show(ui).clicked() && s.notes_speed < 10 {
                     s.notes_speed += 1;
                     changed = true;
                 }
+                // 提詞字級
+                if Btn::new("A−").ghost().small().enabled(s.notes_font > NOTES_FONT.0).tooltip(tr!("字小一點", "Smaller text")).show(ui).clicked() {
+                    s.notes_font = (s.notes_font.saturating_sub(4)).max(NOTES_FONT.0);
+                    changed = true;
+                }
+                if Btn::new("A+").ghost().small().enabled(s.notes_font < NOTES_FONT.1).tooltip(tr!("字大一點", "Larger text")).show(ui).clicked() {
+                    s.notes_font = (s.notes_font + 4).min(NOTES_FONT.1);
+                    changed = true;
+                }
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let more = Btn::icon_only(Icon::More).ghost().small().tooltip(tr!("字級、不透明度、自動捲動", "Text size, opacity, auto-scroll")).show(ui);
+                let more = Btn::icon_only(Icon::More).ghost().small().tooltip(tr!("開啟講稿檔案、不透明度、自動捲動", "Open a script file, opacity, auto-scroll")).show(ui);
                 egui::Popup::menu(&more).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
                     ui.set_min_width(240.0);
-                    ui.horizontal(|ui| {
-                        ui.label(tr!("提詞字級", "Text size"));
-                        if ui.button("A−").clicked() && s.notes_font > NOTES_FONT.0 {
-                            s.notes_font = (s.notes_font - 4).max(NOTES_FONT.0);
-                            changed = true;
-                        }
-                        ui.label(s.notes_font.to_string());
-                        if ui.button("A+").clicked() && s.notes_font < NOTES_FONT.1 {
-                            s.notes_font = (s.notes_font + 4).min(NOTES_FONT.1);
-                            changed = true;
-                        }
-                    });
+                    if ui.button(tr!("開啟講稿檔案…", "Open a script file…")).on_hover_text(tr!("開啟 .txt 檔案，取代目前的講稿", "Open a .txt file to replace the current script")).clicked()
+                    {
+                        n.open_file = true;
+                        ui.close();
+                    }
+                    ui.separator();
                     ui.horizontal(|ui| {
                         ui.label(tr!("不透明度", "Opacity"));
                         ui.spacing_mut().slider_width = 130.0;
                         theme::slider_style(ui);
                         changed |= ui.add(egui::Slider::new(&mut s.notes_opacity, NOTES_OPACITY_MIN..=100).suffix("%")).changed();
                     });
-                    changed |= ui.checkbox(&mut s.notes_auto, tr!("開始錄影時自動捲動，暫停時停下", "Scroll automatically while recording, stop when paused")).changed();
+                    changed |= theme::switch(ui, &mut s.notes_auto, tr!("開始錄影時自動捲動，暫停時停下", "Scroll automatically while recording, stop when paused"), true).changed();
                     ui.separator();
                     ui.label(theme::muted(
                         ui,

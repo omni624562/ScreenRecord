@@ -1,6 +1,9 @@
 //! 剪輯專案：每個剪輯版（*_cut.mp4）記住用哪支原始影片、怎麼剪、加了哪些標註，
 //! 之後可以從原始影片重新套用並修改，再取代那個剪輯版（標註燒進影片後就改不了，所以要另外記）。
 //! 存在資料夾 edits/ 底下，檔名是剪輯版完整路徑（小寫）的雜湊；內容是介面給的 JSON，這裡不解讀。
+//!
+//! 還沒完成的剪輯（草稿）另外存在 edits/drafts/，以剪輯中的影片當索引：剪輯中每隔一段時間、開始輸出時存一份，
+//! 輸出完成或選「不儲存」時刪掉；輸出失敗、取消或程式當掉時留著，下次可以接著剪。
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -61,6 +64,11 @@ impl ProjectStore {
         rd.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "json")).filter_map(|p| Self::read(&p).map(|x| (p, x))).collect()
     }
 
+    /// 草稿（還沒完成的剪輯）：同樣的格式，output 與 source 都是剪輯中的影片
+    pub fn drafts(&self) -> ProjectStore {
+        ProjectStore::new(self.dir.join("drafts"))
+    }
+
     pub fn save(&self, output: &str, source: &str, data: Value) -> std::io::Result<()> {
         self.write(&Project { output: output.into(), source: source.into(), saved_at: crate::paths::now_ms(), data })
     }
@@ -76,8 +84,13 @@ impl ProjectStore {
         self.all().into_iter().map(|(_, p)| p).filter(|p| same(&p.source, source) && Path::new(&p.output).is_file()).max_by_key(|p| p.saved_at)
     }
 
-    /// 檔案改名：剪輯版改名就搬專案，原始影片改名就更新指向它的專案
+    /// 檔案改名：剪輯版改名就搬專案，原始影片改名就更新指向它的專案（草稿也一樣）
     pub fn renamed(&self, from: &str, to: &str) {
+        self.renamed_here(from, to);
+        self.drafts().renamed_here(from, to);
+    }
+
+    fn renamed_here(&self, from: &str, to: &str) {
         for (file, mut p) in self.all() {
             let mut changed = false;
             if same(&p.source, from) {
@@ -98,6 +111,7 @@ impl ProjectStore {
     /// 剪輯版被刪除：專案也不需要了（原始影片被刪除時保留，剪輯版仍可在找不到原片時提示）
     pub fn removed(&self, path: &str) {
         let _ = std::fs::remove_file(self.file(path));
+        let _ = std::fs::remove_file(self.drafts().file(path));
     }
 }
 
@@ -138,5 +152,25 @@ mod tests {
         store.removed(&out2);
         assert!(store.for_output(&out2).is_none());
         assert!(store.latest_for_source(&src2).is_none());
+    }
+
+    #[test]
+    fn drafts_follow_the_video() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = ProjectStore::new(dir.path().join("edits"));
+        let v = dir.path().join("Rec.mp4").display().to_string();
+        std::fs::write(&v, "x").unwrap();
+        store.drafts().save(&v, &v, json!({ "a": 1 })).unwrap();
+        // 草稿不算剪輯版
+        assert!(store.for_output(&v).is_none());
+        assert!(store.latest_for_source(&v).is_none());
+        assert_eq!(store.drafts().for_output(&v).unwrap().data, json!({ "a": 1 }));
+        // 影片改名：草稿跟著搬
+        let v2 = dir.path().join("Demo.mp4").display().to_string();
+        std::fs::rename(&v, &v2).unwrap();
+        store.renamed(&v, &v2);
+        assert_eq!(store.drafts().for_output(&v2).unwrap().source, v2);
+        store.drafts().removed(&v2);
+        assert!(store.drafts().for_output(&v2).is_none());
     }
 }

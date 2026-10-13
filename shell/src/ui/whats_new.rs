@@ -1,6 +1,6 @@
-//! 新功能介紹：更新到新的次版號（例如 3.1）後第一次開啟時顯示一次，列出重點功能，可以直接「試試看」。
+//! 新功能介紹：更新到新的次版號（例如 3.1）後第一次開啟時顯示一次，列出重點功能（最多 6 項），可以直接「試試看」。
+//! 第一次安裝（還沒看過任何介紹）時改成三個步驟的「快速上手」。
 
-use super::library_dialog::{Kind, LibraryDialog};
 use super::settings_dialog::{self, Page};
 use super::theme::{self, Btn};
 use super::UiApp;
@@ -22,157 +22,113 @@ pub fn should_show(app: &UiApp) -> bool {
 enum Try {
     None,
     Settings(Page),
-    EditLastShot,
-    Videos,
-    Shots,
+    /// 在螢幕上框選截圖
+    Snip,
+    /// 開啟全部錄影
+    Library,
 }
 
-/// 新功能清單（標題、說明、試試看）：依介面語言
-fn items() -> [(&'static str, &'static str, Try); 18] {
+/// 第一次使用（還沒看過任何介紹）：三個步驟的「快速上手」
+fn first_run(app: &UiApp) -> bool {
+    app.s.seen_version.is_empty()
+}
+
+/// 快速鍵的寫法：「（Ctrl+Alt+R）」；停用時是空的
+fn key(app: &UiApp, i: usize) -> String {
+    let k = app.keys.label(i);
+    if k.is_empty() {
+        String::new()
+    } else {
+        trf!("（{k}）", " ({k})")
+    }
+}
+
+/// 快速上手：選範圍 → 開始錄影 → 在最近錄影播放／剪輯
+fn quick_start(app: &UiApp) -> [(String, String); 3] {
     [
         (
-            "語言 Language",
+            tr!("選要錄的範圍", "Choose what to record").into(),
             tr!(
-                "介面可以換成英文：「設定 → 進階 → 語言 Language」選繁體中文、English，或跟著 Windows。",
-                "The interface can be shown in Traditional Chinese or English: Settings → Advanced → 語言 Language (or follow Windows)."
-            ),
-            Try::Settings(Page::Advanced),
+                "在左邊選「單一螢幕」「所有螢幕」「自訂範圍」（在預覽上拖曳框選），或「只錄聲音」。",
+                "On the left, choose “Single screen”, “All screens”, “Custom area” (drag on the preview to select it) or “Audio only”."
+            )
+            .into(),
         ),
         (
-            tr!("截圖旁的箭頭", "Screenshot arrow menu"),
+            tr!("開始錄影", "Start recording").into(),
+            trf!(
+                "按右邊紅色的「開始錄影」{}，倒數後開始；要停止時按螢幕上方控制列的「停止」，或再按一次快速鍵。",
+                "Click the red “Start recording” on the right{}. It starts after a countdown; to stop, click “Stop” on the bar at the top of the screen or press the shortcut again.",
+                key(app, 0)
+            ),
+        ),
+        (
+            tr!("在「最近錄影」播放、剪輯", "Play and edit in “Recent recordings”").into(),
             tr!(
-                "「截圖」旁的小箭頭：框選、延遲截圖、長截圖（自動捲動接成一張）、讀取 QR 碼、步驟截圖（做成教學文件）、取色器、尺規。框選時游標旁有放大鏡，按 C 複製色碼。",
-                "The small arrow next to “Screenshot”: select area, delayed screenshot, scrolling screenshot (scrolls automatically and stitches everything into one image), read QR codes, step capture (makes a step-by-step guide), color picker, ruler. While selecting, a magnifier follows the cursor; press C to copy the color code."
+                "錄好的影片會出現在下方「最近錄影」：點縮圖就播放，剪刀按鈕剪輯，按右鍵還有複製檔案、改名等。",
+                "Finished recordings appear under “Recent recordings” at the bottom: click a thumbnail to play it, the scissors to edit, and right-click for copy, rename and more."
+            )
+            .into(),
+        ),
+    ]
+}
+
+/// 這一版的新功能（標題、說明、試試看）：最多 6 項，快速鍵用目前的設定
+fn items(app: &UiApp) -> Vec<(String, String, Try)> {
+    vec![
+        (
+            tr!("框選截圖更好找、放開後還能調整", "Area screenshots: easier to find, adjustable").into(),
+            trf!(
+                "「開始錄影」下面就是「框選截圖」{}；框好後可以拉邊調整，再選完成、編輯、複製或釘在桌面。延遲截圖會在畫面上倒數。",
+                "“Select area”{} is right below “Start recording”. After selecting, drag the edges to adjust, then finish, edit, copy or pin it. Delayed screenshots count down on screen.",
+                key(app, 3)
+            ),
+            Try::Snip,
+        ),
+        (
+            tr!("剪輯更順手，也不怕白做", "Easier editing, no lost work").into(),
+            tr!(
+                "時間軸上方有時間尺規，按 S 在播放位置分割；字幕、聲音有自己的分頁。輸出失敗或取消時可以「回到剪輯」，關閉前會問要不要儲存。",
+                "A time ruler sits above the timeline, and S splits at the playhead. Subtitles and audio have their own tabs. If saving fails or is canceled, “Back to editing” restores everything, and closing asks whether to save."
+            )
+            .into(),
+            Try::None,
+        ),
+        (
+            tr!("截圖編輯可以放大、另存新檔", "Zoom and Save As in the screenshot editor").into(),
+            tr!(
+                "Ctrl+滾輪放大縮小，長截圖用「符合寬度」捲動標註；「儲存」旁的箭頭可以另存新檔，選 PNG 或 JPG（檔案較小）。",
+                "Ctrl+wheel zooms; long screenshots open at “Fit width” so you can scroll and annotate. The arrow next to “Save” offers Save As, as PNG or JPG (smaller file)."
+            )
+            .into(),
+            Try::None,
+        ),
+        (
+            tr!("壓縮影片傳 LINE、Email", "Compress videos for LINE or email").into(),
+            tr!(
+                "全部錄影、檢視器的「⋯」有「壓縮（傳 LINE / Email）」；每一列可按右鍵、可搜尋「10/11」「昨天」；合併、拼圖前可以調整順序。",
+                "“⋯” in All recordings and the viewer has “Compress (for LINE / email)”. Right-click any row, search “10/11” or “yesterday”, and reorder before merging or combining."
+            )
+            .into(),
+            Try::Library,
+        ),
+        (
+            tr!("回溯錄影，錄影優先", "Replay buffer; recording comes first").into(),
+            trf!(
+                "原本的「重播」改名「回溯錄影」：在背景一直錄、只留最近幾分鐘，需要時再存下{}，停止前會先問要不要存。錄完自動處理進行中也能直接開始錄影。",
+                "“Replay” is now the replay buffer: it keeps the last few minutes so you can save them{}, and asks before stopping. You can start recording even while post-processing runs.",
+                key(app, 6)
             ),
             Try::None,
         ),
         (
-            tr!("截圖編輯", "Screenshot editing"),
+            tr!("儲存位置用選的，不用打字", "Pick the save folder instead of typing").into(),
             tr!(
-                "標註、自動遮個資、聚光燈、放大鏡、加上圖片、背景與圓角、旋轉；截完右下角的小縮圖可以直接編輯、複製、釘選。",
-                "Annotations, auto-redact personal info, spotlight, magnifier, images, background and rounded corners, rotate. Right after a screenshot, use the thumbnail in the bottom-right corner to edit, copy or pin it."
-            ),
-            Try::EditLastShot,
-        ),
-        (
-            tr!("錄影效果", "Recording effects"),
-            tr!(
-                "錄影時顯示滑鼠點擊、按下的快速鍵、游標光暈，也可以在螢幕上放攝影機小視窗（錄影前就顯示，可拖曳移動、調整大小）、隱藏桌面圖示。",
-                "Show mouse clicks, pressed shortcuts and a cursor highlight while recording. You can also put a camera bubble on the screen (shown before recording starts; drag to move or resize it) and hide desktop icons."
-            ),
-            Try::Settings(Page::Record),
-        ),
-        (
-            tr!("搜尋說過的話", "Search what was said"),
-            tr!(
-                "「全部錄影」的搜尋也找字幕裡說過的話，點一下就從那一句開始播放。",
-                "Search in “All recordings” also looks inside subtitles; click a line to play from there."
-            ),
-            Try::Videos,
-        ),
-        (
-            tr!("錄完自動處理", "After recording"),
-            tr!(
-                "錄影存好後自動剪掉沒動靜的片段、產生字幕、壓縮到指定大小（設定 → 儲存位置）。",
-                "Automatically cut idle parts, generate subtitles and compress to a target size after each recording (Settings → Save location)."
-            ),
+                "「設定 → 儲存位置」或主畫面下方的資料夾按鈕可以直接選資料夾；全部錄影會顯示檔名，按每一列的「重新命名」或按兩下檔名就能改名。外觀可以選淺色或深色（設定 → 進階）。",
+                "Choose the folder in Settings → Save location or from the folder button at the bottom of the main window. All recordings shows file names; rename with the rename button or by double-clicking. Pick a light or dark appearance in Settings → Advanced."
+            )
+            .into(),
             Try::Settings(Page::Save),
-        ),
-        (
-            tr!("重播緩衝", "Replay buffer"),
-            tr!(
-                "右上角「重播」：在背景一直錄、只留最近幾分鐘，發生想留下的事時按「存下」或 Ctrl+Alt+B。",
-                "“Replay” at the top right: keeps recording in the background, holding only the last few minutes. Press “Save” or Ctrl+Alt+B when something worth keeping happens."
-            ),
-            Try::None,
-        ),
-        (
-            tr!("排程錄影", "Scheduled recording"),
-            tr!(
-                "右上角「排程」：指定時間自動開始錄影，也可以錄幾分鐘後自動停止；等待與錄影時電腦不會睡眠。",
-                "“Schedule” at the top right: start recording automatically at a set time and optionally stop after a set length. The PC stays awake while waiting and recording."
-            ),
-            Try::None,
-        ),
-        (
-            tr!("講稿小視窗", "Script window"),
-            tr!(
-                "右上角「講稿」：浮在最上層、不會被錄進影片；「提詞」用大字自動往上捲，開始錄影時自動開始、暫停時停下。",
-                "“Script” at the top right: a window that stays on top and isn't recorded. “Prompt” shows your script in large text that scrolls up automatically, starting when you record and stopping when you pause."
-            ),
-            Try::None,
-        ),
-        (
-            tr!("設定組合", "Recording presets"),
-            tr!(
-                "把範圍、畫面、聲音、儲存位置存成組合（例如「教學影片」「線上會議」），在主畫面下方「設定」旁或系統匣選單一次切換。",
-                "Save the area, video, audio and save location as a preset (e.g. “Tutorial” or “Meeting”) and switch in one click next to “Settings” at the bottom of the main window or from the tray menu."
-            ),
-            Try::None,
-        ),
-        (
-            tr!("螢幕畫筆", "Screen pen"),
-            tr!(
-                "按 Ctrl+Alt+D 直接在螢幕上畫線圈重點，錄影時會一起錄進去；1～4 換顏色，Esc 結束。",
-                "Press Ctrl+Alt+D to draw on the screen and circle key points; it is recorded along with the video. 1–4 change the color, Esc ends."
-            ),
-            Try::None,
-        ),
-        (
-            tr!("只錄聲音", "Audio only"),
-            tr!(
-                "範圍選「只錄聲音」，錄會議或口述；一樣可以剪輯、降噪，在「更多」選單存成 M4A。",
-                "Choose “Audio only” as the capture area to record meetings or narration. You can still edit it and apply noise reduction, and save it as M4A from the “More” menu."
-            ),
-            Try::None,
-        ),
-        (
-            tr!("只錄某個視窗", "Record a single window"),
-            tr!(
-                "「自訂範圍 → 選擇視窗」，視窗移到哪裡就錄到哪裡；打開「只錄視窗內容」，被其他視窗擋住也錄得到。",
-                "“Custom area → Choose window”: the recording follows the window wherever it moves. Turn on “Window content only” to record it even when other windows cover it."
-            ),
-            Try::None,
-        ),
-        (
-            tr!("錄影中加標記", "Markers while recording"),
-            tr!(
-                "錄影時按 Ctrl+Alt+M 加標記，剪輯時直接跳過去；存檔時變成影片章節，可以複製貼到 YouTube。",
-                "Press Ctrl+Alt+M while recording to add a marker, then jump straight to it in the editor. Markers become video chapters you can copy to YouTube."
-            ),
-            Try::None,
-        ),
-        (
-            tr!("剪輯", "Editing"),
-            tr!(
-                "局部加速、自動剪掉沒動靜的片段、跟著點擊放大、平滑放大的游標、直式影片（9:16）、背景與圓角、自動字幕、加上 Logo、降噪與音量平衡。",
-                "Speed up a section, auto-cut idle parts, zoom on clicks, a smooth larger cursor, vertical 9:16 video, background and rounded corners, automatic subtitles, add a logo, noise reduction and loudness normalization."
-            ),
-            Try::Videos,
-        ),
-        (
-            tr!("整理與分享", "Organize and share"),
-            tr!(
-                "做成 WebP 動圖（比 GIF 小很多）、多張截圖拼成一張、多支錄影合併成一支、壓縮到指定大小、複製成檔案貼到 LINE。",
-                "Make WebP animations (much smaller than GIF), combine several screenshots into one image, merge several recordings into one, compress to a target size, copy as a file to paste into LINE."
-            ),
-            Try::Shots,
-        ),
-        (
-            tr!("只錄某個程式的聲音、分軌", "One app's audio, separate tracks"),
-            tr!(
-                "系統聲音可以只錄某個程式（例如只錄瀏覽器，通知音不會錄進去）；也可以把系統聲音與麥克風分成兩條音軌，剪輯時分別調整音量。",
-                "System audio can come from a single app (for example just the browser, without notification sounds). System audio and the mic can also be saved as separate tracks so you can set their volumes separately when editing."
-            ),
-            Try::Settings(Page::Audio),
-        ),
-        (
-            tr!("錄影前測試音量", "Test levels before recording"),
-            tr!(
-                "主畫面「聲音」旁的「測試音量」：講幾句話，確定麥克風收得到。",
-                "Click “Test levels” next to “Audio” on the main window and say a few words to make sure the microphone picks you up."
-            ),
-            Try::None,
         ),
     ]
 }
@@ -180,11 +136,13 @@ fn items() -> [(&'static str, &'static str, Try); 18] {
 pub fn show(app: &mut UiApp, ctx: &egui::Context) {
     let mut close = false;
     let mut act = Try::None;
+    let first = first_run(app);
     let modal = egui::Modal::new(Id::new("whats-new")).frame(theme::modal_frame(ctx)).show(ctx, |ui| {
         let p = theme::pal(ui);
-        ui.set_width((ctx.content_rect().width() - 80.0).min(620.0));
+        ui.set_width((ctx.content_rect().width() - 80.0).min(600.0));
         ui.horizontal(|ui| {
-            ui.label(RichText::new(trf!("{} 版的新功能", "What's new in {}", minor_version())).font(theme::font_bold(18.0)));
+            let title = if first { tr!("快速上手：三個步驟", "Quick start: three steps").to_string() } else { trf!("{} 版的新功能", "What's new in {}", minor_version()) };
+            ui.label(RichText::new(title).font(theme::font_bold(18.0)));
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if Btn::icon_only(theme::Icon::Close).ghost().small().tooltip(tr!("關閉", "Close")).show(ui).clicked() {
                     close = true;
@@ -194,7 +152,32 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         ui.add_space(4.0);
         egui::ScrollArea::vertical().max_height(ctx.content_rect().height() - 190.0).show(ui, |ui| {
             ui.set_width(ui.available_width());
-            for (title, desc, t) in items() {
+            if first {
+                for (i, (title, desc)) in quick_start(app).into_iter().enumerate() {
+                    ui.add_space(8.0);
+                    ui.horizontal_top(|ui| {
+                        // 步驟編號：藍色圓圈
+                        let (r, _) = ui.allocate_exact_size(egui::vec2(28.0, 28.0), egui::Sense::hover());
+                        ui.painter().circle_filled(r.center(), 13.0, p.accent);
+                        ui.painter().text(r.center(), egui::Align2::CENTER_CENTER, (i + 1).to_string(), theme::font_bold(14.0), p.accent_ink);
+                        ui.vertical(|ui| {
+                            ui.spacing_mut().item_spacing.y = 2.0;
+                            ui.label(RichText::new(title).font(theme::font_bold(14.5)));
+                            ui.add(egui::Label::new(RichText::new(desc).font(theme::font(13.0)).color(p.muted)).wrap());
+                        });
+                    });
+                }
+                ui.add_space(8.0);
+                ui.add(
+                    egui::Label::new(theme::muted(
+                        ui,
+                        tr!("要截圖時按「框選截圖」；更多設定在右下角的「設定」。", "To take a screenshot, click “Select area”. More options are under “Settings” at the bottom right."),
+                    ))
+                    .wrap(),
+                );
+                return;
+            }
+            for (title, desc, t) in items(app) {
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
                     ui.vertical(|ui| {
@@ -221,7 +204,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                 app.changelog_open = true;
             }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if Btn::new(tr!("知道了", "Got it")).primary().show(ui).clicked() {
+                if Btn::new(if first { tr!("開始使用", "Get started") } else { tr!("知道了", "Got it") }).primary().show(ui).clicked() {
                     close = true;
                 }
             });
@@ -241,14 +224,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
     match act {
         Try::None => {}
         Try::Settings(page) => settings_dialog::open(app, page),
-        Try::EditLastShot => match app.core.last_shot() {
-            Some(s) => super::editor::shot::open(app, s.path),
-            None => {
-                app.library = Some(LibraryDialog::new(Kind::Shot));
-                app.toast(tr!("先截一張圖，或從這裡選一張按「編輯」", "Take a screenshot first, or pick one here and click “Edit”"), false);
-            }
-        },
-        Try::Videos => app.library = Some(LibraryDialog::new(Kind::Video)),
-        Try::Shots => app.library = Some(LibraryDialog::new(Kind::Shot)),
+        Try::Snip => super::main_view::run_shot(app, super::main_view::ShotAct::Select(0)),
+        Try::Library => app.library = Some(super::library_dialog::LibraryDialog::new(super::library_dialog::Kind::Video)),
     }
 }

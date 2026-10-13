@@ -3,7 +3,7 @@
 use crate::args::{cut_args, export_args, gif_args, EncoderSpec, GifOptions, OverlayInput, VerticalInput};
 use crate::edit::{cut_file_name, keep_parts, normalize_crop, output_length, EditSpec, Overlay, OverlayKind};
 use crate::error::{Error, Result};
-use crate::format::{export_file_name, js_round, num, speed_label, strip_mp4, FPS_MAX, SPEED_MAX, SPEED_MIN};
+use crate::format::{compressed_file_name, export_file_name, js_round, num, speed_label, strip_mp4, FPS_MAX, SPEED_MAX, SPEED_MIN};
 use crate::library::MediaCache;
 use crate::process::{command, last_lines, read_lines};
 use crate::types::{ExportFormat, ExportKind, ExportState, ExportStatus, MediaInfo, Rect};
@@ -102,15 +102,24 @@ impl Exporter {
 
     /// 製作加速版；width 為縮小後的寬度（0 = 原尺寸）；max_mb > 0 時壓縮到這個大小以內（可以是原速，只壓縮）
     pub async fn start(&self, ctx: &ExportCtx, source: &str, speed: f64, keep_audio: bool, width: f64, max_mb: f64) -> Result<ExportStatus> {
+        self.start_to(ctx, source, speed, keep_audio, width, max_mb, None).await
+    }
+
+    /// 同 start；output 有指定時存到那裡（另存新檔選的位置），否則和原片放在同一個資料夾、自動取名：
+    /// 加速版 Rec_xxx_4x.mp4，原速只壓縮的 Rec_xxx_25MB以內.mp4
+    #[allow(clippy::too_many_arguments)]
+    pub async fn start_to(&self, ctx: &ExportCtx, source: &str, speed: f64, keep_audio: bool, width: f64, max_mb: f64, output: Option<PathBuf>) -> Result<ExportStatus> {
         let _g = self.begin()?;
         let limit = max_mb.is_finite() && max_mb > 0.0;
         let min = if limit { 1.0 } else { SPEED_MIN };
         if !speed.is_finite() || !(min..=SPEED_MAX).contains(&speed) {
             return Err(Error::config(trf!("倍率需介於 {}～{}", "Speed must be between {} and {}", num(SPEED_MIN), num(SPEED_MAX))));
         }
+        let output = output.map(|o| check_output(source, o, "mp4")).transpose()?;
         let (ffmpeg, enc, info, fps) = prepare(ctx, source).await?;
         let dir = parent(source);
-        let output = crate::paths::unique_path(&dir, &strip_mp4(&export_file_name(&file_name(source), speed, ExportFormat::Mp4)), ".mp4");
+        let name = if limit && speed <= 1.0 { compressed_file_name(&file_name(source), max_mb) } else { export_file_name(&file_name(source), speed, ExportFormat::Mp4) };
+        let output = output.unwrap_or_else(|| crate::paths::unique_path(&dir, &strip_mp4(&name), ".mp4"));
         let with_audio = keep_audio && info.has_audio == Some(true);
         let w = if width.is_finite() && width >= 160.0 { js_round(width) as i32 } else { 0 };
         let src_w = info.width.map(|x| x as i32);
@@ -132,19 +141,26 @@ impl Exporter {
 
     /// 動圖：GIF 或 WebP（可同時加速；無聲音）
     pub async fn start_gif(&self, ctx: &ExportCtx, source: &str, speed: f64, width: f64, fps: f64, format: ExportFormat) -> Result<ExportStatus> {
+        self.start_gif_to(ctx, source, speed, width, fps, format, None).await
+    }
+
+    /// 同 start_gif；output 有指定時存到那裡（另存新檔選的位置）
+    #[allow(clippy::too_many_arguments)]
+    pub async fn start_gif_to(&self, ctx: &ExportCtx, source: &str, speed: f64, width: f64, fps: f64, format: ExportFormat, output: Option<PathBuf>) -> Result<ExportStatus> {
         let _g = self.begin()?;
         if !speed.is_finite() || !(1.0..=SPEED_MAX).contains(&speed) {
             return Err(Error::config(trf!("倍率需介於 1～{}", "Speed must be between 1 and {}", num(SPEED_MAX))));
         }
         let fps = if fps.is_finite() && js_round(fps) != 0.0 { js_round(fps) } else { 10.0 }.clamp(5.0, 30.0);
         let width = if width.is_finite() && js_round(width) != 0.0 { js_round(width) } else { 640.0 }.clamp(160.0, 1920.0);
+        let format = if format == ExportFormat::Webp { ExportFormat::Webp } else { ExportFormat::Gif };
+        let output = output.map(|o| check_output(source, o, format.ext())).transpose()?;
         let (ffmpeg, _enc, info, _src_fps) = prepare(ctx, source).await?;
         let output_sec = info.duration_sec.unwrap_or(0.0) / speed;
         let dir = parent(source);
-        let format = if format == ExportFormat::Webp { ExportFormat::Webp } else { ExportFormat::Gif };
         let ext = format!(".{}", format.ext());
         let name = export_file_name(&file_name(source), speed, format);
-        let output = crate::paths::unique_path(&dir, name.trim_end_matches(ext.as_str()), &ext);
+        let output = output.unwrap_or_else(|| crate::paths::unique_path(&dir, name.trim_end_matches(ext.as_str()), &ext));
         let opts = GifOptions { fps, width, src_width: info.width.unwrap_or(0) as f64, src_height: info.height.unwrap_or(0) as f64, output_sec };
         let args =
             if format == ExportFormat::Webp { crate::args::webp_args(source, &output.display().to_string(), speed, &opts)? } else { gif_args(source, &output.display().to_string(), speed, &opts)? };
@@ -159,9 +175,20 @@ impl Exporter {
     /// on_saved：完成後以最終的檔案路徑呼叫（儲存剪輯專案）
     /// 多支錄影依時間順序接成一支（尺寸、張數以第一支為準，其他的縮放並補黑邊；沒有聲音的補靜音）
     pub async fn start_merge(&self, ctx: &ExportCtx, sources: &[String]) -> Result<ExportStatus> {
+        let mut sorted: Vec<(String, f64)> = sources.iter().map(|s| (s.clone(), std::fs::metadata(s).map(|m| crate::paths::mtime_ms(&m)).unwrap_or(0.0))).collect();
+        sorted.sort_by(|a, b| a.1.total_cmp(&b.1));
+        self.start_merge_named(ctx, &sorted.into_iter().map(|s| s.0).collect::<Vec<_>>(), None).await
+    }
+
+    /// 依給的順序接成一支（全部錄影的「合併成一支」可以調整順序）；name：成品的名稱（不含 .mp4，同名時加 _2），
+    /// None 時用第一支的名稱加上「_合併」。尺寸、張數以第一支為準
+    pub async fn start_merge_named(&self, ctx: &ExportCtx, sources: &[String], name: Option<&str>) -> Result<ExportStatus> {
         let _g = self.begin()?;
         if sources.len() < 2 {
             return Err(Error::config(tr!("請選兩支以上的錄影", "Select two or more recordings")));
+        }
+        if let Some(bad) = name.and_then(crate::format::check_recording_name) {
+            return Err(Error::config(bad));
         }
         let mut list: Vec<(String, MediaInfo)> = vec![];
         let mut ff = None;
@@ -171,14 +198,14 @@ impl Exporter {
             (ff, enc) = (Some(f), Some(e));
             list.push((s.clone(), info));
         }
-        list.sort_by(|a, b| a.1.mtime.total_cmp(&b.1.mtime));
         let (Some(ffmpeg), Some(enc)) = (ff, enc) else { return Err(Error::config(tr!("FFmpeg 無法使用", "FFmpeg isn't available"))) };
         let first = &list[0].1;
         let (w, h) = (first.width.unwrap_or(1920) as i32 & !1, first.height.unwrap_or(1080) as i32 & !1);
         let fps = js_round(first.fps.unwrap_or(30.0)).clamp(1.0, FPS_MAX);
         let inputs: Vec<(String, bool, f64)> = list.iter().map(|(p, i)| (p.clone(), i.has_audio == Some(true), i.duration_sec.unwrap_or(0.0))).collect();
         let total: f64 = inputs.iter().map(|i| i.2).sum();
-        let output = crate::paths::unique_path(&parent(&list[0].0), &format!("{}_合併", strip_mp4(&file_name(&list[0].0))), ".mp4");
+        let base = name.map(|n| n.trim().to_string()).unwrap_or_else(|| format!("{}_合併", strip_mp4(&file_name(&list[0].0))));
+        let output = crate::paths::unique_path(&parent(&list[0].0), &base, ".mp4");
         let mut args = crate::args::merge_args(&inputs, &output.display().to_string(), w, h, fps, &enc);
         crate::args::drop_chapters(&mut args);
         let note = format!("合併 {} 支錄影", inputs.len());
@@ -186,13 +213,31 @@ impl Exporter {
     }
 
     pub async fn start_cut(&self, ctx: &ExportCtx, source: &str, spec: &EditSpec, replace: Option<&str>, on_saved: Option<OnSaved>) -> Result<ExportStatus> {
+        self.start_cut_with(ctx, source, spec, CutOptions { replace: replace.map(String::from), on_saved, ..Default::default() }).await
+    }
+
+    /// 剪輯（可以指定存到哪裡、章節的名稱）；見 CutOptions
+    pub async fn start_cut_with(&self, ctx: &ExportCtx, source: &str, spec: &EditSpec, opts: CutOptions) -> Result<ExportStatus> {
         let _g = self.begin()?;
+        let CutOptions { replace, output: chosen, chapters, on_saved } = opts;
+        let replace = replace.as_deref();
         if let Some(r) = replace {
             if !Path::new(r).is_file() || !crate::library::is_cut_name(&file_name(r)) {
                 return Err(Error::config(tr!("找不到要取代的剪輯版", "Couldn't find the edited version to replace")));
             }
             if r.to_lowercase() == source.to_lowercase() {
                 return Err(Error::config(tr!("不能用剪輯版取代自己", "An edited version can't replace itself")));
+            }
+        }
+        // 自己選的位置（另存新檔視窗）：資料夾要在、是 .mp4，不能是正在剪輯的影片
+        let chosen = chosen.filter(|_| replace.is_none());
+        if let Some(o) = &chosen {
+            let p = Path::new(o);
+            if !p.is_absolute() || !o.to_lowercase().ends_with(".mp4") || !p.parent().is_some_and(Path::is_dir) {
+                return Err(Error::config(tr!("無法儲存到這個位置，請重新選擇", "Can't save to this location. Choose another one")));
+            }
+            if o.to_lowercase() == source.to_lowercase() {
+                return Err(Error::config(tr!("不能覆蓋正在剪輯的影片，請換一個檔名", "Can't overwrite the video being edited. Choose another name")));
             }
         }
         let (ffmpeg, enc, info, fps) = prepare(ctx, source).await?;
@@ -240,9 +285,12 @@ impl Exporter {
                 }
             }
         };
-        let output = match replace {
-            Some(r) => crate::paths::unique_path(&parent(r), &format!("~{}.editing", strip_mp4(&file_name(r))), ".mp4"),
-            None => crate::paths::unique_path(&parent(source), &strip_mp4(&cut_file_name(&file_name(source))), ".mp4"),
+        // 要取代的檔案（剪輯版，或選的位置已經有同名檔案）：先寫到暫存檔，完成後才換掉
+        let target = replace.map(String::from).or_else(|| chosen.clone().filter(|o| Path::new(o).exists()));
+        let output = match (&target, &chosen) {
+            (Some(r), _) => crate::paths::unique_path(&parent(r), &format!("~{}.editing", strip_mp4(&file_name(r))), ".mp4"),
+            (None, Some(o)) => PathBuf::from(o),
+            (None, None) => crate::paths::unique_path(&parent(source), &strip_mp4(&cut_file_name(&file_name(source))), ".mp4"),
         };
         // 直式影片時不用跟著點擊放大、背景與圓角（介面也不能同時選）；跟著游標時不另外裁切
         let vertical_on = spec.vertical.is_some();
@@ -326,8 +374,9 @@ impl Exporter {
             cursor.as_ref(),
             vertical.as_ref(),
         )?;
-        // 章節換成剪輯後的時間（刪掉的片段裡的章節改從下一段開始）
-        let temp = with_chapters(&mut args, &crate::chapters::map_cut(&info.chapters, &keep), length, temp);
+        // 章節換成剪輯後的時間（刪掉的片段裡的章節改從下一段開始）；剪輯視窗改過標記時用它給的
+        let chapters = chapters.unwrap_or_else(|| info.chapters.clone());
+        let temp = with_chapters(&mut args, &crate::chapters::map_cut(&chapters, &keep), length, temp);
         let fast = keep.iter().filter(|p| p.2 > 1).count();
         let note = format!(
             "保留 {} 段{}{}{}{}",
@@ -341,7 +390,7 @@ impl Exporter {
             + if vertical.is_some() { "，直式影片" } else { "" };
         let follow = matches!(vertical, Some(VerticalInput::Follow { .. }));
         let cwd = (cursor.is_some() || follow).then(|| temp.clone()).flatten();
-        let finish = Finish { cleanup: temp, replace: replace.map(PathBuf::from), on_saved, cwd };
+        let finish = Finish { cleanup: temp, replace: target.map(PathBuf::from), on_saved, cwd };
         self.run_with_cleanup(ExportKind::Cut, &ffmpeg, args, source, &output, 1.0, length, &note, finish)
     }
 
@@ -555,6 +604,19 @@ impl Exporter {
 /// 剪輯完成後的回呼（參數：最終的檔案路徑）
 pub type OnSaved = Box<dyn FnOnce(&str) + Send + 'static>;
 
+/// 剪輯的選項
+#[derive(Default)]
+pub struct CutOptions {
+    /// 取代這個剪輯版（先寫到暫存檔，成功後才換掉，失敗或取消時原檔不受影響）
+    pub replace: Option<String>,
+    /// 存到這裡（另存新檔視窗選的；已經有這個檔案時和取代一樣先寫暫存檔）；None = 原影片旁邊的 *_cut.mp4
+    pub output: Option<String>,
+    /// 章節（原影片的時間）；None = 沿用原影片的章節
+    pub chapters: Option<Vec<crate::types::Chapter>>,
+    /// 完成後以最終的檔案路徑呼叫（儲存剪輯專案）
+    pub on_saved: Option<OnSaved>,
+}
+
 /// 工作結束後的處理
 /// 輸出寫入章節：章節檔放在暫存資料夾（沒有就建一個），回傳要清掉的暫存資料夾。
 /// 沒有章節時明確不要章節（FFmpeg 預設會照抄來源的章節，時間會對不上）
@@ -696,6 +758,18 @@ fn snapshot(j: &Job) -> ExportStatus {
     st
 }
 
+/// 另存新檔選的位置：要是完整路徑、副檔名對、不是原片本身，資料夾要在
+fn check_output(source: &str, out: PathBuf, ext: &str) -> Result<PathBuf> {
+    let ok_ext = out.extension().is_some_and(|e| e.eq_ignore_ascii_case(ext));
+    if !out.is_absolute() || !ok_ext || !out.parent().is_some_and(Path::is_dir) {
+        return Err(Error::config(trf!("存檔位置不正確：{}", "Invalid save location: {}", out.display())));
+    }
+    if out.display().to_string().eq_ignore_ascii_case(source) {
+        return Err(Error::config(tr!("不能存成原片本身，請換個檔名", "Can't overwrite the original. Choose another name")));
+    }
+    Ok(out)
+}
+
 fn file_name(p: &str) -> String {
     Path::new(p).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
 }
@@ -827,6 +901,19 @@ echo data > "$last"
         assert!(!names.iter().any(|n| n.starts_with('~') || n.contains("_cut_2")), "{names:?}");
         // 只能取代剪輯版、不能取代原片自己
         assert!(ex.start_cut(&c, &s, &spec, Some(&s), None).await.unwrap_err().message().contains("找不到要取代"));
+
+        // 另存新檔選的位置：直接寫到那裡；已經有同名檔案時先寫暫存檔、完成後換掉；不能是原片
+        let mine = dir.path().join("示範.mp4").display().to_string();
+        let to = |o: &str| CutOptions { output: Some(o.to_string()), ..Default::default() };
+        assert_eq!(ex.start_cut_with(&c, &s, &spec, to(&mine)).await.unwrap().output, mine);
+        ex.wait().await;
+        assert_eq!(std::fs::read_to_string(&mine).unwrap().trim(), "data");
+        std::fs::write(&mine, "old").unwrap();
+        ex.start_cut_with(&c, &s, &spec, to(&mine)).await.unwrap();
+        ex.wait().await;
+        assert_eq!(ex.status().unwrap().output, mine);
+        assert_eq!(std::fs::read_to_string(&mine).unwrap().trim(), "data");
+        assert!(ex.start_cut_with(&c, &s, &spec, to(&s)).await.unwrap_err().message().contains("不能覆蓋"));
 
         assert!(ex.start(&ExportCtx { ffmpeg: None, ..c }, &s, 4.0, true, 0.0, 0.0).await.unwrap_err().message().contains("無法使用"));
     }

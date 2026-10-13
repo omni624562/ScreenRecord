@@ -1,5 +1,6 @@
 //! 文字辨識（OCR）：把截圖裡的文字轉成可以複製的文字（Windows 內建的辨識，core::ocr_win），結果顯示在對話框。
 
+use super::dialogs;
 use super::theme::{self, Btn, Icon};
 use super::UiApp;
 use eframe::egui::{self, Align, Id, Layout, RichText};
@@ -31,9 +32,27 @@ fn done(app: &mut UiApp, r: screenrecorder_core::error::Result<(String, String)>
         Ok((text, lang)) => app.ocr = Some(Ocr { text: Some(text), lang }),
         Err(e) => {
             app.ocr = None;
-            app.toast(e.message().to_string(), true);
+            error(app, e.message());
         }
     }
+}
+
+/// 文字辨識（或自動遮個資）失敗：沒有安裝文字辨識語言時用對話框說明怎麼裝，並可以直接開啟 Windows 的語言設定；其他錯誤顯示提示
+pub fn error(app: &mut UiApp, msg: &str) {
+    if !screenrecorder_core::ocr::is_no_language(msg) {
+        return app.toast(msg.to_string(), true);
+    }
+    let ask = dialogs::Ask::confirm(
+        tr!("要先在 Windows 安裝文字辨識語言", "Install a text recognition language in Windows first"),
+        tr!(
+            "文字辨識和自動遮個資用的是 Windows 內建的文字辨識。請在「語言與地區」新增「中文（繁體，台灣）」（或英文），按語言旁的「… → 語言選項」安裝「光學字元辨識」，裝好後再試一次。",
+            "Text recognition and auto-redact use the text recognition built into Windows. In “Language & region”, add a language (e.g. English or Chinese (Traditional, Taiwan)), open “… → Language options” and install “Optical character recognition”, then try again."
+        ),
+        tr!("開啟 Windows 語言設定", "Open Windows language settings"),
+        |_, _| screenrecorder_core::desktop::open_with_explorer("ms-settings:regionlanguage", false),
+    )
+    .with_cancel(tr!("關閉", "Close"));
+    app.ask = Some(ask);
 }
 
 pub fn show(app: &mut UiApp, ctx: &egui::Context) {

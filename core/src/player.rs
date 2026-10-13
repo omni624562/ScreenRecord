@@ -68,10 +68,14 @@ fn video_args(path: &str, t: f64, w: u32, h: u32, frames: Option<u32>, keyframes
     a
 }
 
-fn audio_args(path: &str, t: f64) -> Vec<String> {
+/// rate：播放速度（1 = 原速；變速不變調）
+fn audio_args(path: &str, t: f64, rate: f64) -> Vec<String> {
     let mut a: Vec<String> = ["-hide_banner", "-loglevel", "error", "-nostdin"].iter().map(|s| s.to_string()).collect();
     a.extend(crate::args::input_at(path, &format!("{:.3}", t.max(0.0))));
     a.extend(["-vn".into(), "-sn".into()]);
+    if (rate - 1.0).abs() > 1e-3 {
+        a.extend(["-af".into(), format!("atempo={}", crate::format::num(rate))]);
+    }
     a.extend(["-f".into(), "f32le".into(), "-ac".into(), "2".into(), "-ar".into(), crate::audio_out::SAMPLE_RATE.to_string(), "-".into()]);
     a
 }
@@ -196,6 +200,18 @@ struct Inner {
     /// 暫停時要解的那一張（拖曳時只保留最新的）
     still: Option<f64>,
     still_busy: bool,
+    /// 播放速度（0 = 還沒設定，當作 1）
+    rate: f64,
+}
+
+impl Inner {
+    fn rate(&self) -> f64 {
+        if self.rate > 0.0 {
+            self.rate
+        } else {
+            1.0
+        }
+    }
 }
 
 pub struct Player {
@@ -209,7 +225,13 @@ pub struct Player {
     stop_audio: Arc<Mutex<Arc<AtomicBool>>>,
     volume: crate::audio_out::Volume,
     wake: Wake,
+    /// 只有聲音（M4A）：不解畫面
+    audio_only: bool,
 }
+
+/// 播放速度可選的範圍
+pub const RATE_MIN: f64 = 0.5;
+pub const RATE_MAX: f64 = 2.0;
 
 impl Player {
     /// src_w × src_h：原影片尺寸；解碼成不超過 max_w × max_h 的大小
@@ -226,7 +248,40 @@ impl Player {
             stop_audio: Arc::new(Mutex::new(Arc::new(AtomicBool::new(false)))),
             volume: crate::audio_out::volume(1.0),
             wake,
+            audio_only: false,
         }
+    }
+
+    /// 只有聲音的檔案（M4A）：只播放聲音，沒有畫面
+    pub fn new_audio(ffmpeg: PathBuf, spec: MediaSpec, wake: Wake) -> Player {
+        let mut p = Player::new(ffmpeg, MediaSpec { has_audio: true, ..spec }, 2, 2, 2, 2, wake);
+        p.audio_only = true;
+        p
+    }
+
+    /// 播放速度（RATE_MIN～RATE_MAX，聲音變速不變調）；播放中立即從目前的位置換成新的速度
+    pub fn set_rate(&self, rate: f64) {
+        let rate = if rate.is_finite() { rate.clamp(RATE_MIN, RATE_MAX) } else { 1.0 };
+        let playing = {
+            let mut i = self.inner.lock().unwrap();
+            if (i.rate() - rate).abs() < 1e-6 {
+                return;
+            }
+            // 換速度前先記下目前的位置（之後的時間用新的速度算）
+            let t = Self::time_of(&i, self.spec.duration);
+            i.rate = rate;
+            if !i.playing {
+                i.pos = t;
+            }
+            i.playing.then_some(t)
+        };
+        if let Some(t) = playing {
+            self.play_from(t);
+        }
+    }
+
+    pub fn rate(&self) -> f64 {
+        self.inner.lock().unwrap().rate()
     }
 
     /// 音量 0～1（播放中立即生效）
@@ -251,7 +306,7 @@ impl Player {
     fn time_of(i: &Inner, duration: f64) -> f64 {
         if i.playing {
             match i.clock {
-                Some(c) => (i.play_from + c.elapsed().as_secs_f64()).min(duration),
+                Some(c) => (i.play_from + c.elapsed().as_secs_f64() * i.rate()).min(duration),
                 None => i.play_from,
             }
         } else {
@@ -313,6 +368,10 @@ impl Player {
         {
             let mut i = self.inner.lock().unwrap();
             i.pos = t;
+            // 只有聲音：沒有畫面要解
+            if self.audio_only {
+                return;
+            }
             i.still = Some(t);
             if i.still_busy {
                 return;
@@ -371,6 +430,7 @@ impl Player {
         // 開 FFmpeg 在背景做（Windows 上啟動行程要幾十到上百毫秒，不卡住介面）
         let (ffmpeg, spec, children, inner, wake, w, h) = (self.ffmpeg.clone(), self.spec.clone(), self.children.clone(), self.inner.clone(), self.wake.clone(), self.width, self.height);
         let volume = self.volume.clone();
+        let (audio_only, rate) = (self.audio_only, self.inner.lock().unwrap().rate());
         std::thread::spawn(move || {
             // 記下子行程以便停止；已經換了一輪（暫停 / 跳到其他時間）就直接結束它
             let register = |mut child: Child| -> bool {
@@ -387,7 +447,7 @@ impl Player {
             // 聲音：開始出聲時開始計時（以聲音為準，畫面配合）
             let mut audio_started = false;
             if spec.has_audio {
-                if let Some(mut child) = spawn(&ffmpeg, &audio_args(&spec.path, from)) {
+                if let Some(mut child) = spawn(&ffmpeg, &audio_args(&spec.path, from, rate)) {
                     if let Some(out) = child.stdout.take() {
                         if !register(child) {
                             return;
@@ -414,6 +474,29 @@ impl Player {
                 }
             }
 
+            // 只有聲音：依時間判斷播完（沒有播放裝置時也照時間走）
+            if audio_only {
+                let started = Instant::now();
+                loop {
+                    std::thread::sleep(Duration::from_millis(50));
+                    let mut i = inner.lock().unwrap();
+                    if i.gen != gen {
+                        return;
+                    }
+                    if i.clock.is_none() && started.elapsed() > Duration::from_millis(800) {
+                        i.clock = Some(Instant::now());
+                    }
+                    if Self::time_of(&i, spec.duration) >= spec.duration - 0.01 {
+                        i.playing = false;
+                        i.clock = None;
+                        i.pos = spec.duration;
+                        i.ended = true;
+                        drop(i);
+                        wake();
+                        return;
+                    }
+                }
+            }
             // 連續播放用硬體解碼（大畫面時省很多 CPU）；不支援時 FFmpeg 自動改用軟體解碼
             let mut args = video_args(&spec.path, from, w, h, None, false);
             args.splice(4..4, ["-hwaccel".to_string(), "auto".into()]);
@@ -455,7 +538,7 @@ impl Player {
                                 i.clock = Some(Instant::now());
                             }
                             match i.clock {
-                                Some(c) if Instant::now() >= c => i.play_from + c.elapsed().as_secs_f64(),
+                                Some(c) if Instant::now() >= c => i.play_from + c.elapsed().as_secs_f64() * i.rate(),
                                 _ => i.play_from,
                             }
                         };
@@ -628,6 +711,30 @@ mod tests {
         assert!(!p.is_playing());
         assert!(p.take_ended());
         assert!(!p.take_ended());
+
+        // 兩倍速：時間走得快一倍；換回原速
+        p.seek(0.0);
+        p.set_rate(2.0);
+        p.play();
+        std::thread::sleep(Duration::from_millis(400));
+        let t = p.time();
+        assert!(t > 0.5 && t < 1.2, "{t}");
+        p.pause();
+        p.set_rate(1.0);
+        assert_eq!(p.rate(), 1.0);
+
+        // 只有聲音：沒有畫面，時間照走、播到結尾停止
+        let a = Player::new_audio(ffmpeg.clone(), MediaSpec { path: path.clone(), duration: 2.0, fps: 30.0, has_audio: true }, Arc::new(|| {}));
+        a.seek(1.5);
+        a.play();
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(a.is_playing() && a.time() >= 1.5);
+        let start = Instant::now();
+        while a.is_playing() && start.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(a.take_ended());
+        assert!(a.take_frame().is_none());
 
         // 時間軸縮圖
         let cancel = AtomicBool::new(false);
