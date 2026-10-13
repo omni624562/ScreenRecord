@@ -30,6 +30,8 @@ pub struct MainState {
     windows: Vec<screenrecorder_core::winui::WindowInfo>,
     /// 事件紀錄展開時看到的最後一筆的時間：收起時，之後的警告與錯誤標在標題旁
     log_seen: u64,
+    /// 第一次使用的提示：展開「進階／手動安裝」
+    ffmpeg_adv: bool,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -79,73 +81,7 @@ pub fn show(app: &mut UiApp, ui: &mut Ui) {
 fn banners(app: &mut UiApp, ui: &mut Ui) {
     let p = theme::pal(ui);
     if app.env_ready && !app.env.ffmpeg.found {
-        let d = app.status.download.clone();
-        let busy = matches!(d.phase, DownloadPhase::Downloading | DownloadPhase::Verifying | DownloadPhase::Extracting);
-        egui::Frame::new().fill(p.rec_soft).stroke(Stroke::new(1.0, p.rec.gamma_multiply(0.4))).corner_radius(CornerRadius::same(theme::RADIUS)).inner_margin(12.0).show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.horizontal(|ui| {
-                ui.vertical(|ui| {
-                    ui.set_max_width(ui.available_width() - 360.0);
-                    ui.label(RichText::new(tr!("找不到 ffmpeg.exe", "ffmpeg.exe not found")).font(theme::font_bold(14.0)).color(p.rec));
-                    let text = match d.phase {
-                        DownloadPhase::Downloading => {
-                            let pct = d.total.map(|t| d.received as f64 / t.max(1) as f64 * 100.0);
-                            let mut s = trf!("下載中 {}", "Downloading {}", format_bytes(d.received));
-                            if let (Some(t), Some(pc)) = (d.total, pct) {
-                                s += &trf!(" / {}（{}%）", " / {} ({}%)", format_bytes(t), pc.floor());
-                            }
-                            if let Some(sp) = d.speed {
-                                s += &trf!("・{}/秒", " · {}/s", format_bytes(sp as u64));
-                                if let Some(t) = d.total {
-                                    s += &trf!("・剩約 {}", " · about {} left", human_duration((t.saturating_sub(d.received)) as f64 / sp.max(1.0)));
-                                }
-                            }
-                            s
-                        }
-                        DownloadPhase::Verifying => tr!("比對 SHA-256 檢查碼…", "Verifying SHA-256 checksum…").into(),
-                        DownloadPhase::Extracting => tr!("解壓縮並確認 ffmpeg.exe 可以執行…", "Extracting and checking that ffmpeg.exe runs…").into(),
-                        DownloadPhase::Error | DownloadPhase::Canceled => d.message.clone().unwrap_or_else(|| tr!("下載失敗", "Download failed").into()),
-                        _ => trf!(
-                            "可以自動下載（gyan.dev 的 FFmpeg essentials，約 110 MB；下載後比對程式內建的 SHA-256，確認檔案完整且未遭竄改），或自行下載並把 bin\\ffmpeg.exe 放到 {}",
-                            "Download it automatically (FFmpeg essentials from gyan.dev, about 110 MB; the download is checked against a built-in SHA-256 to make sure it is complete and untampered), or download it yourself and put bin\\ffmpeg.exe in {}",
-                            app.env.app_dir
-                        ),
-                    };
-                    ui.add(egui::Label::new(RichText::new(text).color(p.text)).wrap());
-                    if busy {
-                        let frac = if d.phase == DownloadPhase::Downloading { d.total.map(|t| d.received as f32 / t.max(1) as f32).unwrap_or(0.0) } else { 1.0 };
-                        theme::progress(ui, frac, p.rec, 6.0);
-                    }
-                });
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if Btn::new(tr!("重新偵測", "Check again")).small().show(ui).clicked() {
-                        app.refresh_env(|app| {
-                            let (msg, err) = if app.env.ffmpeg.found {
-                                (trf!("已找到 FFmpeg {}", "Found FFmpeg {}", app.env.ffmpeg.version.clone().unwrap_or_default()), false)
-                            } else {
-                                (tr!("仍然找不到 ffmpeg.exe", "ffmpeg.exe still not found").into(), true)
-                            };
-                            app.toast(msg, err);
-                        });
-                    }
-                    if Btn::new(tr!("手動下載", "Manual download")).small().show(ui).clicked() {
-                        let _ = actions::open_url("https://www.gyan.dev/ffmpeg/builds/");
-                    }
-                    if busy {
-                        if Btn::new(tr!("取消", "Cancel")).small().show(ui).clicked() {
-                            app.core.downloader.cancel();
-                        }
-                    } else {
-                        let label = if matches!(d.phase, DownloadPhase::Error | DownloadPhase::Canceled) { tr!("重新下載", "Download again") } else { tr!("自動下載", "Auto download") };
-                        if Btn::new(label).primary().small().show(ui).clicked() {
-                            if let Err(e) = actions::ffmpeg_download(&app.core) {
-                                app.toast(e.message().to_string(), true);
-                            }
-                        }
-                    }
-                });
-            });
-        });
+        ffmpeg_banner(app, ui);
         ui.add_space(10.0);
     }
     let warns: Vec<String> = [app.env.ffmpeg.found.then(|| app.env.ffmpeg.error.clone()).flatten(), app.env.monitor_error.clone()].into_iter().flatten().collect();
@@ -156,6 +92,119 @@ fn banners(app: &mut UiApp, ui: &mut Ui) {
         });
         ui.add_space(10.0);
     }
+}
+
+/// 第一次使用（找不到 FFmpeg）：一個大的「下載並開始使用」；手動安裝、重新偵測收在「進階／手動安裝」裡
+fn ffmpeg_banner(app: &mut UiApp, ui: &mut Ui) {
+    let p = theme::pal(ui);
+    let d = app.status.download.clone();
+    let busy = matches!(d.phase, DownloadPhase::Downloading | DownloadPhase::Verifying | DownloadPhase::Extracting);
+    let failed = matches!(d.phase, DownloadPhase::Error | DownloadPhase::Canceled);
+    let (fill, stroke) = if failed { (p.rec_soft, p.rec) } else { (p.accent_soft, p.accent) };
+    egui::Frame::new().fill(fill).stroke(Stroke::new(1.0, stroke.gamma_multiply(0.4))).corner_radius(CornerRadius::same(theme::RADIUS)).inner_margin(14.0).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.horizontal(|ui| {
+            ui.vertical(|ui| {
+                ui.set_max_width(ui.available_width() - 240.0);
+                ui.label(RichText::new(tr!("第一次使用：需要先下載錄影元件（約 110 MB）", "First time here: the recording component needs to be downloaded (about 110 MB)")).font(theme::font_bold(15.0)).color(p.text));
+                ui.add_space(2.0);
+                let (text, color) = match d.phase {
+                    DownloadPhase::Downloading => {
+                        let pct = d.total.map(|t| d.received as f64 / t.max(1) as f64 * 100.0);
+                        let mut s = trf!("下載中 {}", "Downloading {}", format_bytes(d.received));
+                        if let (Some(t), Some(pc)) = (d.total, pct) {
+                            s += &trf!(" / {}（{}%）", " / {} ({}%)", format_bytes(t), pc.floor());
+                        }
+                        if let Some(sp) = d.speed {
+                            if let Some(t) = d.total {
+                                s += &trf!("・剩約 {}", " · about {} left", human_duration((t.saturating_sub(d.received)) as f64 / sp.max(1.0)));
+                            }
+                        }
+                        (s, p.text)
+                    }
+                    DownloadPhase::Verifying => (tr!("確認檔案完整…", "Checking the download…").into(), p.text),
+                    DownloadPhase::Extracting => (tr!("解壓縮並確認可以使用…", "Unpacking and checking that it works…").into(), p.text),
+                    DownloadPhase::Error | DownloadPhase::Canceled => (d.message.clone().unwrap_or_else(|| tr!("下載失敗", "Download failed").into()), p.rec),
+                    _ => (
+                        tr!(
+                            "錄影、截圖都要用到免費的 FFmpeg 錄影元件。按右邊的按鈕自動下載，只要一次，完成後就可以開始錄影。",
+                            "Recording and screenshots use the free FFmpeg component. Click the button on the right to download it once; then you can start recording."
+                        )
+                        .into(),
+                        p.muted,
+                    ),
+                };
+                ui.add(egui::Label::new(RichText::new(text).font(theme::font(13.0)).color(color)).wrap());
+                if busy {
+                    ui.add_space(2.0);
+                    let frac = if d.phase == DownloadPhase::Downloading { d.total.map(|t| d.received as f32 / t.max(1) as f32).unwrap_or(0.0) } else { 1.0 };
+                    theme::progress(ui, frac, p.accent, 6.0);
+                }
+            });
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if busy {
+                    if Btn::new(tr!("取消下載", "Cancel download")).show(ui).clicked() {
+                        app.core.downloader.cancel();
+                    }
+                } else {
+                    let label = if failed { tr!("重新下載", "Download again") } else { tr!("下載並開始使用", "Download and get started") };
+                    if Btn::new(label).primary().height(40.0).min_width(180.0).show(ui).clicked() {
+                        if let Err(e) = actions::ffmpeg_download(&app.core) {
+                            app.toast(e.message().to_string(), true);
+                        }
+                    }
+                }
+            });
+        });
+        // 進階／手動安裝：下載來源與檢查方式、自己放 ffmpeg.exe 的位置、重新偵測
+        ui.add_space(4.0);
+        let open = app.main.ffmpeg_adv;
+        let row = ui
+            .horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 4.0;
+                let (icon, _) = ui.allocate_exact_size(vec2(14.0, 14.0), Sense::hover());
+                theme::paint_icon(ui.painter(), icon, if open { Icon::ChevD } else { Icon::ChevR }, p.muted);
+                ui.label(RichText::new(tr!("進階／手動安裝", "Advanced / manual install")).font(theme::font(12.5)).color(p.muted));
+            })
+            .response;
+        if ui.interact(row.rect, ui.id().with("ffmpeg-adv"), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+            app.main.ffmpeg_adv = !open;
+        }
+        if open {
+            ui.add(
+                egui::Label::new(
+                    RichText::new(trf!(
+                        "自動下載的是 gyan.dev 的 FFmpeg essentials；下載後比對程式內建的 SHA-256 檢查碼，確認檔案完整且未遭竄改。也可以自行下載，把 bin\\ffmpeg.exe 放到 {}，再按「重新偵測」。",
+                        "The automatic download is FFmpeg essentials from gyan.dev, checked against a built-in SHA-256 checksum to make sure it is complete and untampered. You can also download it yourself, put bin\\ffmpeg.exe in {}, then click “Check again”.",
+                        app.env.app_dir
+                    ))
+                    .font(theme::font(12.5))
+                    .color(p.muted),
+                )
+                .wrap(),
+            );
+            ui.horizontal(|ui| {
+                if Btn::new(tr!("手動下載（開啟網頁）", "Manual download (open web page)")).small().show(ui).clicked() {
+                    let _ = actions::open_url("https://www.gyan.dev/ffmpeg/builds/");
+                }
+                if Btn::new(tr!("開啟程式資料夾", "Open app folder")).small().show(ui).clicked() {
+                    if let Err(e) = actions::open(actions::OpenAction::Folder, &app.env.app_dir) {
+                        app.toast(e.message().to_string(), true);
+                    }
+                }
+                if Btn::new(tr!("重新偵測", "Check again")).small().show(ui).clicked() {
+                    app.refresh_env(|app| {
+                        let (msg, err) = if app.env.ffmpeg.found {
+                            (trf!("已找到 FFmpeg {}", "Found FFmpeg {}", app.env.ffmpeg.version.clone().unwrap_or_default()), false)
+                        } else {
+                            (tr!("仍然找不到 ffmpeg.exe", "ffmpeg.exe still not found").into(), true)
+                        };
+                        app.toast(msg, err);
+                    });
+                }
+            });
+        }
+    });
 }
 
 // ───────────── 擷取範圍 ─────────────
@@ -1112,7 +1161,13 @@ fn rec_body(app: &mut UiApp, ui: &mut Ui, r: &screenrecorder_core::types::Record
     ui.horizontal(|ui| {
         if !active {
             let can = app.env.ffmpeg.found && app.env.ffmpeg.encoder.is_some() && !app.exporting();
-            let tip = if app.exporting() { tr!("轉檔進行中，完成後才能錄影", "A conversion is in progress; you can record when it finishes") } else { "" };
+            let tip = if !app.env.ffmpeg.found {
+                tr!("請先下載錄影元件（上方的「下載並開始使用」）", "Download the recording component first (“Download and get started” above)")
+            } else if app.exporting() {
+                tr!("轉檔進行中，完成後才能錄影", "A conversion is in progress; you can record when it finishes")
+            } else {
+                ""
+            };
             // 截圖按鈕（含小箭頭）的寬度：至少 118，英文字較長時跟著加寬
             let shot_w = (Btn::new(shot_label()).icon(Icon::Camera).width(ui) + 28.0).max(118.0);
             if Btn::new(tr!("開始錄影", "Start recording"))
@@ -1386,6 +1441,12 @@ fn shot_button(app: &mut UiApp, ui: &mut Ui, w: f32) {
         "Save the current capture area as PNG and copy it to the clipboard{hotkey}\nSmall arrow (or right-click): select area, delayed screenshot, scrolling screenshot, step capture, color picker, ruler"
     );
     let can = app.env.ffmpeg.found && !app.main.shooting;
+    // 還沒有 FFmpeg：滑鼠提示說明要先下載
+    let tip = if app.env.ffmpeg.found {
+        tip
+    } else {
+        tr!("請先下載錄影元件（上方的「下載並開始使用」）", "Download the recording component first (“Download and get started” above)").to_string()
+    };
     let arrow_w = 26.0;
     let (resp, arrow) = ui
         .scope(|ui| {

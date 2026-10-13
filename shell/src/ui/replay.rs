@@ -14,6 +14,7 @@ pub fn button(app: &mut UiApp, ui: &mut Ui) {
         "重播緩衝：在背景一直錄、只保留最近幾分鐘，發生想留下的事時再存下來",
         "Replay buffer: keeps recording in the background, holding only the last few minutes; save them when something worth keeping happens"
     );
+    let tip = if app.env.ffmpeg.found { tip } else { tr!("請先下載錄影元件", "Download the recording component first") };
     let resp = Btn::new(tr!("重播", "Replay")).icon(Icon::Rewind).ghost().small().enabled(can).tooltip(tip).show(ui);
     let mut start = false;
     egui::Popup::menu(&resp).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
