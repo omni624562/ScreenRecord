@@ -1200,7 +1200,14 @@ fn rec_panel(app: &mut UiApp, ui: &mut Ui) {
         let full = ui.max_rect();
         let body = Rect::from_min_max(ui.cursor().min, pos2(full.max.x, full.max.y - BOTTOM_BAR_H - BOTTOM_LINE_GAP - 6.0));
         // 高度不夠（視窗矮、介面放大）：省略比較不重要的列
-        let tight = body.height() < 330.0;
+        // 0 = 放得下；1 = 有點擠（省略不重要的列、列高縮小）；2 = 很擠（只留聲音一列，開始錄影的按鈕才看得到）
+        let tight = if body.height() < 180.0 {
+            2
+        } else if body.height() < 330.0 {
+            1
+        } else {
+            0
+        };
         ui.scope_builder(UiBuilder::new().max_rect(body), |ui| {
             // 捲軸佔自己的寬度，不蓋在按鈕上
             ui.spacing_mut().scroll = egui::style::ScrollStyle::solid();
@@ -1215,7 +1222,7 @@ fn rec_panel(app: &mut UiApp, ui: &mut Ui) {
 }
 
 /// 錄影面板中間可以捲動的部分
-fn rec_body(app: &mut UiApp, ui: &mut Ui, r: &screenrecorder_core::types::RecorderStatus, replay: Option<&screenrecorder_core::types::ReplayStatus>, tight: bool) {
+fn rec_body(app: &mut UiApp, ui: &mut Ui, r: &screenrecorder_core::types::RecorderStatus, replay: Option<&screenrecorder_core::types::ReplayStatus>, tight: u8) {
     let p = theme::pal(ui);
     let active = r.state != RecorderState::Idle;
     // 統計
@@ -1271,15 +1278,21 @@ fn rec_body(app: &mut UiApp, ui: &mut Ui, r: &screenrecorder_core::types::Record
         values[0] = video_clock((live_recorded_ms(app) / 1000.0).min(rp.sec as f64));
         values[1] = format_bytes(rp.bytes);
     }
-    // 高度不夠時省略比較不重要的列：待命時的影片長度、檔案大小（都還是 0）；錄影中的影片長度（和上面的計時差不多）、錄影方式
-    // 只錄聲音時沒有「錄影方式」
+    // 高度不夠時省略比較不重要的列：待命時的影片長度、檔案大小（都還是 0）；錄影中的影片長度（和上面的計時差不多）、錄影方式；
+    // 很擠的時候輸出、錄影方式也省略（下方摘要與滑鼠提示有）。只錄聲音時沒有「錄影方式」
     let audio_only = app.s.source_type == SourceType::Audio;
     let show = |i: usize| match i {
-        0 => !tight || replay.is_some(),
-        1 => !tight || active,
-        3 => !(tight && active) && !audio_only,
+        0 => tight == 0 || replay.is_some(),
+        1 => tight == 0 || active,
+        2 => tight < 2,
+        3 => !(tight > 0 && active) && tight < 2 && !audio_only,
         _ => true,
     };
+    // 擠的時候每一列矮一點
+    let row_h = ui.spacing().interact_size.y;
+    if tight > 0 {
+        ui.spacing_mut().interact_size.y = 22.0;
+    }
     let key_w = keys.iter().enumerate().filter(|(i, _)| show(*i)).map(|(_, k)| ui.painter().layout_no_wrap(k.to_string(), theme::font(13.0), p.muted).size().x).fold(0.0, f32::max);
     for (i, (k, v)) in keys.into_iter().zip(values).enumerate() {
         if !show(i) {
@@ -1346,7 +1359,8 @@ fn rec_body(app: &mut UiApp, ui: &mut Ui, r: &screenrecorder_core::types::Record
         });
     }
     ui.spacing_mut().item_spacing.y = gap_y;
-    ui.add_space(10.0);
+    ui.spacing_mut().interact_size.y = row_h;
+    ui.add_space(if tight > 0 { 6.0 } else { 10.0 });
     // 控制按鈕
     ui.horizontal(|ui| {
         if !active {
