@@ -386,7 +386,8 @@ impl UiApp {
     pub fn toast_file(&mut self, text: impl Into<String>, path: &str) {
         let (p1, p2) = (path.to_string(), path.to_string());
         let mut actions = vec![];
-        if path.to_lowercase().ends_with(".mp4") || dialogs::is_image(path) || path.to_lowercase().ends_with(".gif") || path.to_lowercase().ends_with(".webp") {
+        let lower = path.to_lowercase();
+        if [".mp4", ".gif", ".webp", ".m4a"].iter().any(|e| lower.ends_with(e)) || dialogs::is_image(path) {
             actions.push(ToastAction::new(tr!("開啟", "Open"), move |app: &mut UiApp| app.act_path(EntryAction::Play, p1)));
         }
         actions.push(ToastAction::new(tr!("在資料夾中顯示", "Show in folder"), move |app: &mut UiApp| {
@@ -630,7 +631,11 @@ impl UiApp {
                 let core = self.core.clone();
                 self.toast(tr!("正在存成 M4A…", "Saving as M4A…"), false);
                 self.spawn(async move { actions::save_audio(&core, &path).await }, |app, r| match r {
-                    Ok(out) => app.toast_file(trf!("已存成 {}（和影片在同一個資料夾）", "Saved as {} (in the same folder as the video)", dialogs::file_name(&out)), &out),
+                    Ok(out) => {
+                        app.toast_file(trf!("已存成 {}（和影片在同一個資料夾）", "Saved as {} (in the same folder as the video)", dialogs::file_name(&out)), &out);
+                        // 全部錄影開著：列出新的聲音檔
+                        app.shots_changed();
+                    }
                     Err(e) => app.toast(e.message().to_string(), true),
                 });
             }

@@ -580,7 +580,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         None | Some(Req::Record) => {}
         Some(Req::Entry(act, e)) => {
             // 剪輯影片、製作加速版時關掉清單；編輯截圖蓋在清單上，關掉編輯就回到清單
-            if matches!(act, EntryAction::Edit | EntryAction::Export | EntryAction::Compress | EntryAction::Vertical) && !super::dialogs::is_image(&e.media.path) {
+            if matches!(act, EntryAction::Edit | EntryAction::Export | EntryAction::Compress | EntryAction::Vertical) && !super::dialogs::is_image(&e.media.path) && app.blocked(act).is_none() {
                 app.library = None;
             }
             app.act(act, e);
@@ -782,7 +782,8 @@ fn export_menu(ui: &mut egui::Ui, x: &ExportInfo, req: &mut Option<Req>) {
 
 /// 滾輪在清單上：往下捲換下一頁、往上捲換上一頁（捲一段距離才換，連續捲動時至少隔 0.35 秒）
 fn wheel_pages(ui: &egui::Ui, d: &mut LibraryDialog, area: Rect) {
-    if !ui.rect_contains_pointer(area) || egui::Popup::is_any_open(ui.ctx()) {
+    // 上面蓋著合併、拼成一張的對話框或選單時不換頁
+    if !ui.rect_contains_pointer(area) || egui::Popup::is_any_open(ui.ctx()) || d.merge.is_some() || d.combine.is_some() {
         d.wheel = 0.0;
         return;
     }
