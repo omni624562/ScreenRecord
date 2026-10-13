@@ -39,6 +39,9 @@ pub struct ShotSpec {
     /// 縮放比例（%）
     #[serde(default = "default_scale")]
     pub scale: u32,
+    /// 自訂輸出的寬度（像素，不含外框與陰影；有值時取代 scale，不會比裁切後的寬度大）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<u32>,
     /// 整張圖順時針旋轉的角度（0 / 90 / 180 / 270）
     #[serde(default, skip_serializing_if = "is_zero")]
     pub rotate: u32,
@@ -71,7 +74,19 @@ fn default_scale() -> u32 {
 
 impl Default for ShotSpec {
     fn default() -> Self {
-        Self { crop: None, anns: vec![], border: None, border_width: default_border_width(), shadow: false, scale: default_scale(), rotate: 0, radius: 0, background: None, padding: default_padding() }
+        Self {
+            crop: None,
+            anns: vec![],
+            border: None,
+            border_width: default_border_width(),
+            shadow: false,
+            scale: default_scale(),
+            width: None,
+            rotate: 0,
+            radius: 0,
+            background: None,
+            padding: default_padding(),
+        }
     }
 }
 
@@ -101,7 +116,12 @@ impl ShotProject {
             "borderWidth": spec.get("borderWidth").cloned().unwrap_or(serde_json::json!(2.0)),
             "shadow": spec.get("shadow").cloned().unwrap_or(serde_json::json!(false)),
             "scale": spec.get("scale").cloned().unwrap_or(serde_json::json!(100)),
+            "width": spec.get("width"),
             "rotate": spec.get("rotate").cloned().unwrap_or(serde_json::json!(0)),
+            // 圓角、背景、留白（3.1 版存的也有，之前讀回來時漏掉了）
+            "radius": spec.get("radius").cloned().unwrap_or(serde_json::json!(0)),
+            "background": spec.get("background"),
+            "padding": spec.get("padding").cloned().unwrap_or(serde_json::json!(default_padding())),
         }))
         .ok()?;
         s.rotate = norm_rotate(s.rotate);
@@ -167,11 +187,19 @@ pub fn crop_rect(spec: &ShotSpec, vw: u32, vh: u32) -> (u32, u32, u32, u32) {
     }
 }
 
+/// 縮放的倍率：自訂寬度（不放大）或縮放比例；cw = 裁切後的寬度（原圖像素）
+pub fn scale_factor(spec: &ShotSpec, cw: u32) -> f64 {
+    match spec.width {
+        Some(w) => (w.max(1) as f64 / cw.max(1) as f64).clamp(0.01, 1.0),
+        None => spec.scale.clamp(10, 100) as f64 / 100.0,
+    }
+}
+
 /// 輸出圖的大小（含外框與陰影）
 pub fn output_size(spec: &ShotSpec, vw: u32, vh: u32) -> (u32, u32) {
     let (vw, vh) = rotated_size(vw, vh, spec.rotate);
     let (_, _, w, h) = crop_rect(spec, vw, vh);
-    let k = spec.scale.clamp(10, 100) as f64 / 100.0;
+    let k = scale_factor(spec, w);
     let (w, h) = (((w as f64 * k).round() as u32).max(1), ((h as f64 * k).round() as u32).max(1));
     let m = margin(spec, w, h) * 2;
     (w + m, h + m)
@@ -214,7 +242,8 @@ pub fn render(src: &[u8], fw: u32, fh: u32, vw: u32, vh: u32, spec: &ShotSpec, p
     let mut cropped = Pixmap::new(pw, ph)?;
     cropped.draw_pixmap(-px, -py, pm.as_ref(), &PixmapPaint::default(), Transform::identity(), None);
     // 4. 縮放（預覽不縮）
-    let k = if preview { 1.0 } else { spec.scale.clamp(10, 100) as f64 / 100.0 };
+    let scale = scale_factor(spec, cw);
+    let k = if preview { 1.0 } else { scale };
     let body = if k < 0.999 {
         let (w, h) = (((pw as f64 * k).round() as u32).max(1), ((ph as f64 * k).round() as u32).max(1));
         let mut out = Pixmap::new(w, h)?;
@@ -225,7 +254,7 @@ pub fn render(src: &[u8], fw: u32, fh: u32, vw: u32, vh: u32, spec: &ShotSpec, p
         cropped
     };
     // 預覽時外框與陰影依「預覽 / 輸出」的比例換算
-    let unit = if preview { sx * 100.0 / spec.scale.clamp(10, 100) as f64 } else { 1.0 };
+    let unit = if preview { sx / scale } else { 1.0 };
     Some(decorate(body, spec, unit))
 }
 
@@ -341,11 +370,30 @@ pub fn combine(images: &[Pixmap], vertical: bool, gap: u32) -> Option<Pixmap> {
 
 /// 編輯過的圖的檔名：Shot_…_編輯.png（已有同名時加 _2、_3…）
 pub fn edited_path(source: &std::path::Path) -> std::path::PathBuf {
+    edited_path_as(source, "png")
+}
+
+/// 編輯過的圖的檔名（副檔名 ext，例如 "jpg"）
+pub fn edited_path_as(source: &std::path::Path, ext: &str) -> std::path::PathBuf {
     let dir = source.parent().map(|p| p.to_path_buf()).unwrap_or_default();
     let stem = source.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "Shot".into());
     // 編輯過的圖再編輯：不要變成 _編輯_編輯
     let stem = stem.strip_suffix("_編輯").unwrap_or(&stem).to_string();
-    (1..).map(|i| dir.join(if i == 1 { format!("{stem}_編輯.png") } else { format!("{stem}_編輯_{i}.png") })).find(|p| !p.exists()).unwrap_or_else(|| dir.join(format!("{stem}_編輯.png")))
+    (1..).map(|i| dir.join(if i == 1 { format!("{stem}_編輯.{ext}") } else { format!("{stem}_編輯_{i}.{ext}") })).find(|p| !p.exists()).unwrap_or_else(|| dir.join(format!("{stem}_編輯.{ext}")))
+}
+
+/// 存成 JPG（quality 1～100）：透明的地方（陰影四周）變成白色
+pub fn encode_jpeg(pm: &Pixmap, quality: u8) -> Result<Vec<u8>, String> {
+    let mut rgb = Vec::with_capacity((pm.width() * pm.height() * 3) as usize);
+    for p in pm.pixels() {
+        // 預乘的顏色疊在白底上：c + (255 − a)
+        let a = p.alpha() as u32;
+        let c = |v: u8| (v as u32 + 255 - a).min(255) as u8;
+        rgb.extend_from_slice(&[c(p.red()), c(p.green()), c(p.blue())]);
+    }
+    let mut out = Vec::new();
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, quality.clamp(1, 100)).encode(&rgb, pm.width(), pm.height(), image::ExtendedColorType::Rgb8).map_err(|e| e.to_string())?;
+    Ok(out)
 }
 
 /// 依比例 k 縮放 RGBA（不透明）；k = 1 時原樣回傳
@@ -533,5 +581,37 @@ mod tests {
         std::fs::write(dir.path().join("Shot_2026-10-10_11-20-00_編輯.png"), b"x").unwrap();
         assert_eq!(edited_path(&src).file_name().unwrap(), "Shot_2026-10-10_11-20-00_編輯_2.png");
         assert_eq!(edited_path(&dir.path().join("Shot_2026-10-10_11-20-00_編輯.png")).file_name().unwrap(), "Shot_2026-10-10_11-20-00_編輯_2.png");
+    }
+
+    #[test]
+    fn custom_width_and_background_round_trip() {
+        // 自訂寬度：依比例縮小，不會放大
+        let spec = ShotSpec { width: Some(640), ..Default::default() };
+        assert_eq!(output_size(&spec, 1280, 720), (640, 360));
+        let pm = render(&img(1280, 720, 100), 1280, 720, 1280, 720, &spec, false).unwrap();
+        assert_eq!((pm.width(), pm.height()), (640, 360));
+        assert_eq!(output_size(&ShotSpec { width: Some(5000), ..Default::default() }, 1280, 720), (1280, 720));
+        // 存起來再讀回來：寬度、圓角、背景、留白都在
+        let spec = ShotSpec { width: Some(800), radius: 16, background: Some(BACKGROUNDS[1].into()), padding: 14, ..Default::default() };
+        let v = serde_json::to_value(ShotProject::new(spec.clone())).unwrap();
+        assert_eq!(ShotProject::parse(&v), Some(spec));
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(edited_path_as(&dir.path().join("Shot_1.png"), "jpg").file_name().unwrap(), "Shot_1_編輯.jpg");
+    }
+
+    #[test]
+    fn jpeg_is_smaller_and_transparent_becomes_white() {
+        // 左半邊紅色、右半邊透明（陰影的四周）
+        let mut pm = Pixmap::new(64, 32).unwrap();
+        for (i, px) in pm.pixels_mut().iter_mut().enumerate() {
+            *px = if i % 64 < 32 { tiny_skia::ColorU8::from_rgba(220, 30, 30, 255).premultiply() } else { tiny_skia::PremultipliedColorU8::TRANSPARENT };
+        }
+        let jpg = encode_jpeg(&pm, 90).unwrap();
+        assert_eq!(&jpg[..2], &[0xFF, 0xD8]);
+        let back = image::load_from_memory(&jpg).unwrap().to_rgb8();
+        assert_eq!((back.width(), back.height()), (64, 32));
+        let (l, r) = (back.get_pixel(8, 16), back.get_pixel(56, 16));
+        assert!(l[0] > 190 && l[1] < 70, "{l:?}");
+        assert!(r.0.iter().all(|c| *c > 245), "{r:?}");
     }
 }

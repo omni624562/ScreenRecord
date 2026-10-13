@@ -257,6 +257,8 @@ pub enum Icon {
     Pin,
     /// 鍵盤（快速鍵說明）
     Keyboard,
+    /// 文字辨識（掃描框裡的 T）
+    Ocr,
 }
 
 /// 在 rect（正方形）裡畫圖示
@@ -432,6 +434,14 @@ pub fn paint_icon(p: &Painter, rect: Rect, icon: Icon, color: Color32) {
                 p.circle_filled(at(x, 6.8), 0.8 * k, color);
             }
             line(&[(5.0, 9.8), (11.0, 9.8)]);
+        }
+        Icon::Ocr => {
+            // 四個角的掃描框
+            for (x, y, dx, dy) in [(1.5, 1.5, 1.0, 1.0), (14.5, 1.5, -1.0, 1.0), (1.5, 14.5, 1.0, -1.0), (14.5, 14.5, -1.0, -1.0)] {
+                line(&[(x, y + 3.5 * dy), (x, y), (x + 3.5 * dx, y)]);
+            }
+            line(&[(5.0, 5.0), (11.0, 5.0)]);
+            line(&[(8.0, 5.0), (8.0, 11.5)]);
         }
     }
 }

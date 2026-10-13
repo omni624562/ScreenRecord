@@ -376,25 +376,50 @@ pub async fn shot_pin(path: &str, spec: &crate::shot_edit::ShotSpec) -> Result<(
     }
 }
 
-/// 存成編輯過的圖（原圖保留；replace = 取代之前編輯過的那張），複製到剪貼簿，並記住編輯設定（之後可以再改）
-pub async fn shot_save(app: &App, source: &str, spec: &crate::shot_edit::ShotSpec, replace: Option<&str>) -> Result<crate::types::ShotInfo> {
+/// 存成編輯過的圖（原圖保留；replace = 取代之前編輯過的那張；jpg = 新的一張存成 JPG），複製到剪貼簿，
+/// 並記住編輯設定（之後可以再改）
+pub async fn shot_save(app: &App, source: &str, spec: &crate::shot_edit::ShotSpec, replace: Option<&str>, jpg: bool) -> Result<crate::types::ShotInfo> {
     if !is_abs(source) || !is_file(source) {
         return Err(Error::config(tr!("找不到原圖", "Original image not found")));
     }
     if replace.is_some_and(|r| !is_abs(r)) {
         return Err(Error::config(tr!("找不到要取代的圖", "The image to replace wasn't found")));
     }
-    let pm = render_shot(source, spec).await?;
     let out = match replace {
         Some(r) => PathBuf::from(r),
-        None => crate::shot_edit::edited_path(Path::new(source)),
+        None => crate::shot_edit::edited_path_as(Path::new(source), if jpg { "jpg" } else { "png" }),
     };
+    save_rendered(app, source, spec, out).await
+}
+
+/// 另存新檔：存到 out（副檔名是 .jpg / .jpeg 時存成 JPG，品質 90，檔案較小；其他存成 PNG），
+/// 複製到剪貼簿，並記住編輯設定
+pub async fn shot_save_as(app: &App, source: &str, spec: &crate::shot_edit::ShotSpec, out: &str) -> Result<crate::types::ShotInfo> {
+    if !is_abs(source) || !is_file(source) {
+        return Err(Error::config(tr!("找不到原圖", "Original image not found")));
+    }
+    if !is_abs(out) {
+        return Err(Error::config(tr!("路徑不正確", "Invalid path")));
+    }
+    save_rendered(app, source, spec, PathBuf::from(out)).await
+}
+
+/// 套用編輯後存到 out（PNG 或 JPG）、複製到剪貼簿、記住編輯設定
+async fn save_rendered(app: &App, source: &str, spec: &crate::shot_edit::ShotSpec, out: PathBuf) -> Result<crate::types::ShotInfo> {
+    let pm = render_shot(source, spec).await?;
+    let jpg = ends_with_ci(&out.display().to_string(), &[".jpg", ".jpeg"]);
     let (o, (w, h)) = (out.clone(), (pm.width(), pm.height()));
     let copied = tokio::task::spawn_blocking(move || -> Result<bool> {
+        let fail = |e: String| Error::other(trf!("無法儲存圖片：{e}", "Couldn't save the image: {e}"));
         // 先寫暫存檔再改名：取代時不會留下寫到一半的圖
-        let tmp = o.with_extension("png.tmp");
-        pm.save_png(&tmp).map_err(|e| Error::other(trf!("無法儲存圖片：{e}", "Couldn't save the image: {e}")))?;
-        std::fs::rename(&tmp, &o).map_err(|e| Error::other(trf!("無法儲存圖片：{e}", "Couldn't save the image: {e}")))?;
+        let tmp = o.with_extension(if jpg { "jpg.tmp" } else { "png.tmp" });
+        if jpg {
+            let bytes = crate::shot_edit::encode_jpeg(&pm, 90).map_err(fail)?;
+            std::fs::write(&tmp, bytes).map_err(|e| fail(e.to_string()))?;
+        } else {
+            pm.save_png(&tmp).map_err(|e| fail(e.to_string()))?;
+        }
+        std::fs::rename(&tmp, &o).map_err(|e| fail(e.to_string()))?;
         Ok(crate::clipboard::copy_pixmap(&pm))
     })
     .await

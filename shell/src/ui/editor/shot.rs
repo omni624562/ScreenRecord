@@ -94,6 +94,12 @@ pub struct ShotOpts {
     pub background: Option<String>,
     #[serde(default = "default_padding")]
     pub padding: u32,
+    /// 自訂輸出的寬度（像素）；None = 用 scale
+    #[serde(default)]
+    pub width: Option<u32>,
+    /// 「儲存」存成 JPG（檔案較小）；否則 PNG
+    #[serde(default)]
+    pub jpg: bool,
 }
 
 fn default_padding() -> u32 {
@@ -103,7 +109,7 @@ fn default_padding() -> u32 {
 impl Default for ShotOpts {
     fn default() -> Self {
         let d = ShotSpec::default();
-        Self { border: d.border, border_width: d.border_width, shadow: d.shadow, scale: d.scale, rotate: 0, radius: d.radius, background: d.background, padding: d.padding }
+        Self { border: d.border, border_width: d.border_width, shadow: d.shadow, scale: d.scale, rotate: 0, radius: d.radius, background: d.background, padding: d.padding, width: None, jpg: false }
     }
 }
 
@@ -113,6 +119,8 @@ pub struct Shot {
     opts: ShotOpts,
     /// 開啟的那張編輯過的圖（可以改回直接編輯它）
     opened_edit: Option<String>,
+    /// 載入了上次的標註：之前編輯成的那張圖（儲存時可以取代它，或另存一張新的）
+    target: Option<String>,
     /// 「輸出」分頁的預覽：(內容, 圖)
     preview: Option<(String, TextureHandle)>,
     /// 還沒旋轉的畫面（顯示用的解析度，原圖的 res 倍）與原圖大小
@@ -157,6 +165,10 @@ pub enum Act {
     Ocr,
     /// 不從原圖重新套用，直接編輯開啟的那張
     Plain,
+    /// 有還沒儲存的修改：先問要不要放棄修改再切換到直接編輯
+    AskPlain,
+    /// 另存新檔（選位置與格式：PNG / JPG）
+    SaveAs,
     /// 影片：目前這一格存成截圖
     Grab,
     /// 找出個資並打上馬賽克
@@ -273,6 +285,7 @@ fn loading_editor(app: &UiApp, path: &str, seq: u64) -> Editor {
         path: path.to_string(),
         opts: ShotOpts::default(),
         opened_edit: None,
+        target: None,
         preview: None,
         base: empty,
         orig: (0, 0),
@@ -307,7 +320,8 @@ fn fill(ed: &mut Editor, opened: String, src: String, l: Loaded, info: Option<Sh
             apply_spec(ed, &i.spec);
             ed.replace_target = Some(opened.clone());
             if let Some(s) = &mut ed.shot {
-                s.opened_edit = Some(opened);
+                s.opened_edit = Some(opened.clone());
+                s.target = Some(opened);
             }
         }
         Some(i) if i.matched == ProjectMatch::Output => ed.banner = BannerInfo::MissingSource(file_name(&i.project.source)),
@@ -382,6 +396,8 @@ fn apply_spec(ed: &mut Editor, spec: &ShotSpec) {
             radius: spec.radius,
             background: spec.background.clone(),
             padding: spec.padding,
+            width: spec.width,
+            jpg: false,
         };
     }
     sync_rotation(ed);
@@ -794,7 +810,13 @@ pub fn spec(ed: &Editor) -> ShotSpec {
         radius: o.radius,
         background: o.background,
         padding: o.padding,
+        width: o.width,
     }
+}
+
+/// 「儲存」存成 JPG（取代之前的編輯圖時沿用它的格式）
+fn jpg(ed: &Editor) -> bool {
+    ed.replace_target.is_none() && ed.shot.as_ref().is_some_and(|s| s.opts.jpg)
 }
 
 fn source(ed: &Editor) -> String {
@@ -804,24 +826,17 @@ fn source(ed: &Editor) -> String {
 /// 什麼都還沒改（不用存）
 fn unchanged(ed: &Editor) -> bool {
     let s = spec(ed);
-    s.crop.is_none() && s.anns.is_empty() && s.border.is_none() && !s.shadow && s.scale == 100 && s.rotate == 0 && s.radius == 0 && s.background.is_none()
+    s.crop.is_none() && s.anns.is_empty() && s.border.is_none() && !s.shadow && s.scale == 100 && s.width.is_none() && s.rotate == 0 && s.radius == 0 && s.background.is_none()
 }
 
 // ───────────── 畫面 ─────────────
 
-/// 說明列：正在修改哪張編輯過的圖、找不到原圖、或原圖有上次的編輯可以載入
+/// 說明列：載入了上次的標註（儲存時取代或另存）、找不到原圖、或原圖有上次的編輯可以載入
 pub fn banner(ed: &mut Editor, ui: &mut egui::Ui) {
     let p = theme::pal(ui);
-    let (text, warn): (String, bool) = if let Some(target) = &ed.replace_target {
-        (
-            trf!(
-                "正在修改「{}」：已從原圖「{}」載入上次的標註，可以直接修改。儲存時會取代這張。",
-                "Changing “{}”: your previous annotations were loaded from the original image “{}” and can be changed. Saving replaces this image.",
-                file_name(target),
-                ed.entry.media.name
-            ),
-            false,
-        )
+    let (target, opened_edit) = ed.shot.as_ref().map(|s| (s.target.clone(), s.opened_edit.is_some())).unwrap_or_default();
+    let (text, warn): (String, bool) = if target.is_some() {
+        (tr!("已載入上次的標註，可以繼續修改。", "Your previous annotations are loaded and can be changed.").into(), false)
     } else {
         match &ed.banner {
             BannerInfo::None => return,
@@ -836,24 +851,43 @@ pub fn banner(ed: &mut Editor, ui: &mut egui::Ui) {
         }
     };
     egui::Frame::new().inner_margin(egui::Margin::symmetric(18, 0)).show(ui, |ui| {
-        egui::Frame::new().fill(if warn { p.warn_soft } else { p.accent_soft }).corner_radius(theme::RADIUS_SM).inner_margin(egui::Margin::symmetric(12, 8)).show(ui, |ui| {
+        egui::Frame::new().fill(if warn { p.warn_soft } else { p.accent_soft }).corner_radius(theme::RADIUS_SM).inner_margin(egui::Margin::symmetric(12, 6)).show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal_wrapped(|ui| {
                 ui.label(RichText::new(text).color(if warn { p.warn } else { p.text }));
-                if ed.replace_target.is_some() {
-                    if Btn::new(tr!("改為另存新的一張", "Save as a new image instead")).small().show(ui).clicked() {
-                        ed.replace_target = None;
-                        ed.banner = BannerInfo::None;
+                if let Some(target) = target {
+                    // 儲存時：取代之前編輯成的那張，或另存一張新的
+                    ui.add_space(10.0);
+                    ui.label(theme::muted(ui, tr!("儲存時：", "When saving:")));
+                    let mut replace = ed.replace_target.is_some();
+                    let items = [(true, tr!("取代原本的編輯圖", "Replace the edited image")), (false, tr!("另存一張新的", "Save as a new image"))];
+                    if segmented(ui, &mut replace, &items, true) {
+                        ed.replace_target = replace.then(|| target.clone());
                     }
-                    if Btn::new(tr!("改成直接編輯這張", "Edit this image directly instead")).small().show(ui).clicked() {
-                        ed.pending = Some(Act::Plain);
+                    if opened_edit
+                        && Btn::new(tr!("改成直接編輯這張", "Edit this image directly instead"))
+                            .small()
+                            .ghost()
+                            .tooltip(trf!(
+                                "直接在「{}」上加標註：標註會變成圖的一部分，之後不能再分開修改",
+                                "Annotate “{}” itself: annotations become part of the image and can't be changed separately later",
+                                ed.entry.media.name
+                            ))
+                            .show(ui)
+                            .clicked()
+                    {
+                        // 有還沒儲存的修改：先問
+                        ed.pending = Some(if ed.dirty() { Act::AskPlain } else { Act::Plain });
                     }
                 } else if let BannerInfo::HasProject { output, data } = &ed.banner {
                     if Btn::new(tr!("載入上次的編輯來修改", "Load the previous edits to change them")).small().show(ui).clicked() {
                         let (output, data) = (output.clone(), data.clone());
                         if let Some(spec) = shot_edit::ShotProject::parse(&data) {
                             apply_spec(ed, &spec);
-                            ed.replace_target = Some(output);
+                            ed.replace_target = Some(output.clone());
+                            if let Some(s) = &mut ed.shot {
+                                s.target = Some(output);
+                            }
                             ed.banner = BannerInfo::None;
                             ed.mark_saved();
                         }
@@ -886,44 +920,61 @@ pub fn footer(ed: &mut Editor, ui: &mut egui::Ui) -> Option<Act> {
         let line = match &ed.replace_target {
             Some(t) => trf!("儲存後取代 {}，並複製到剪貼簿", "Saving replaces {} and copies it to the clipboard", file_name(t)),
             None => {
-                let name = file_name(&shot_edit::edited_path(std::path::Path::new(&source(ed))).display().to_string());
+                let name = file_name(&shot_edit::edited_path_as(std::path::Path::new(&source(ed)), if jpg(ed) { "jpg" } else { "png" }).display().to_string());
                 trf!("另存成 {}（原圖保留），並複製到剪貼簿", "Saves as {} (the original is kept) and copies it to the clipboard", name)
             }
         };
         ui.label(RichText::new(line).font(theme::font(12.0)).color(p.muted));
     });
-    // 右邊：儲存（主要）、複製；不常用的收進「更多」，全部重設也不會跟儲存並排被誤按
+    // 右邊：儲存（主要，旁邊 ▾ 另存新檔）、複製、釘在桌面、文字辨識；全部重設收進「更多」，不會跟儲存並排被誤按
     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
         let same = unchanged(ed);
-        let mut b = Btn::new(if ed.replace_target.is_some() { tr!("儲存修改", "Save changes") } else { tr!("儲存", "Save") }).primary().enabled(!same && !ed.saving).tooltip("Ctrl+S");
-        if same {
-            b = b.tooltip(tr!("還沒有任何標註、裁切或輸出設定", "No annotations, crop or output settings yet"));
-        }
-        if b.show(ui).clicked() {
-            act = Some(Act::Save);
-        }
-        if Btn::new(tr!("複製", "Copy")).tooltip(tr!("複製編輯後的圖到剪貼簿，不存檔（Ctrl+C）", "Copy the edited image to the clipboard without saving (Ctrl+C)")).show(ui).clicked()
+        ui.scope(|ui| {
+            ui.spacing_mut().item_spacing.x = 1.0;
+            let arrow = Btn::icon_only(Icon::ChevD).primary().enabled(!ed.saving).tooltip(tr!("另存新檔（選位置與格式）", "Save as (choose a location and format)")).show(ui);
+            let mut b = Btn::new(if ed.replace_target.is_some() { tr!("儲存修改", "Save changes") } else { tr!("儲存", "Save") }).primary().enabled(!same && !ed.saving).tooltip("Ctrl+S");
+            if same {
+                b = b.tooltip(tr!("還沒有任何標註、裁切或輸出設定", "No annotations, crop or output settings yet"));
+            }
+            if b.show(ui).clicked() {
+                act = Some(Act::Save);
+            }
+            egui::Popup::menu(&arrow).align(egui::RectAlign::TOP_END).show(|ui| {
+                ui.set_min_width(200.0);
+                if ui
+                    .button(tr!("另存新檔…", "Save as…"))
+                    .on_hover_text(tr!("選擇儲存的位置與檔名，可以存成 PNG 或 JPG（檔案較小）", "Choose where to save and the file name; save as PNG or JPG (smaller file)"))
+                    .clicked()
+                {
+                    act = Some(Act::SaveAs);
+                }
+            });
+        });
+        if Btn::new(tr!("複製", "Copy")).icon(Icon::Copy).tooltip(tr!("複製編輯後的圖到剪貼簿，不存檔（Ctrl+C）", "Copy the edited image to the clipboard without saving (Ctrl+C)")).show(ui).clicked()
         {
             act = Some(Act::Copy);
         }
-        let more = Btn::new(tr!("更多", "More")).icon(Icon::More).ghost().tooltip(tr!("文字辨識、釘在桌面、全部重設", "Text recognition, Pin to desktop, Reset all")).show(ui);
+        if Btn::new(tr!("釘在桌面", "Pin"))
+            .icon(Icon::Pin)
+            .ghost()
+            .tooltip(tr!("把編輯後的圖變成浮在最上層的小視窗，方便對照著打字或填表", "Show the edited image in a small always-on-top window, handy for reference while you type"))
+            .show(ui)
+            .clicked()
+        {
+            act = Some(Act::Pin);
+        }
+        if Btn::new(tr!("文字辨識", "Copy text"))
+            .icon(Icon::Ocr)
+            .ghost()
+            .tooltip(tr!("把圖裡的文字轉成可以複製的文字（Windows 內建的文字辨識）", "Turn the text in the image into text you can copy (uses the text recognition built into Windows)"))
+            .show(ui)
+            .clicked()
+        {
+            act = Some(Act::Ocr);
+        }
+        let more = Btn::icon_only(Icon::More).ghost().tooltip(tr!("更多：全部重設", "More: Reset all")).show(ui);
         egui::Popup::menu(&more).show(|ui| {
             ui.set_min_width(220.0);
-            if ui
-                .button(tr!("文字辨識（複製圖裡的文字）", "Text recognition (copy text from the image)"))
-                .on_hover_text(tr!("把圖裡的文字轉成可以複製的文字（Windows 內建的文字辨識）", "Turn the text in the image into text you can copy (uses the text recognition built into Windows)"))
-                .clicked()
-            {
-                act = Some(Act::Ocr);
-            }
-            if ui
-                .button(tr!("釘在桌面", "Pin to desktop"))
-                .on_hover_text(tr!("把編輯後的圖變成浮在最上層的小視窗，方便對照", "Show the edited image in a small always-on-top window for easy reference"))
-                .clicked()
-            {
-                act = Some(Act::Pin);
-            }
-            ui.separator();
             if ui
                 .add_enabled(!unchanged(ed), egui::Button::new(tr!("全部重設（回到原圖）", "Reset all (back to the original)")))
                 .on_hover_text(tr!("清掉標註、裁切、旋轉與輸出設定；可以按 Ctrl+Z 復原", "Clear annotations, crop, rotation and output settings; press Ctrl+Z to undo"))
@@ -967,8 +1018,9 @@ pub fn output_panel(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context) {
         if o.border.is_some() {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 8.0;
-                for c in BORDER_COLORS {
+                for (i, c) in BORDER_COLORS.iter().copied().enumerate() {
                     let (r, resp) = ui.allocate_exact_size(vec2(24.0, 24.0), Sense::click());
+                    let resp = resp.on_hover_text(border_name(i));
                     let (cr, cg, cb) = annotate::parse_color(c);
                     if o.border.as_deref() == Some(c) {
                         ui.painter().circle_stroke(r.center(), 13.5, Stroke::new(2.0, p.accent));
@@ -1005,8 +1057,9 @@ pub fn output_panel(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context) {
             if resp.on_hover_text(tr!("不要背景", "No background")).on_hover_cursor(CursorIcon::PointingHand).clicked() {
                 o.background = None;
             }
-            for bg in BACKGROUNDS {
+            for (i, bg) in BACKGROUNDS.iter().copied().enumerate() {
                 let (r, resp) = ui.allocate_exact_size(vec2(26.0, 26.0), Sense::click());
+                let resp = resp.on_hover_text(background_name(i));
                 gradient_swatch(ui.painter(), r.shrink(2.0), bg);
                 if o.background.as_deref() == Some(bg) {
                     ui.painter().rect_stroke(r.expand(1.0), CornerRadius::same(7), Stroke::new(2.0, p.accent), StrokeKind::Inside);
@@ -1026,13 +1079,62 @@ pub fn output_panel(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context) {
         "圖的四周加上柔和的陰影（沒有背景時四周留透明的邊），貼到文件或簡報比較立體",
         "Add a soft shadow around the image (with a transparent margin when there's no background) so it stands out in documents and slides"
     ));
-    // 大小
+    // 大小：比例，或自訂寬度（像素）
+    let crop_w = {
+        let sp = spec(ed);
+        let (ow, oh) = ed.shot.as_ref().map(|s| s.orig).unwrap_or_default();
+        let (vw, vh) = shot_edit::rotated_size(ow, oh, sp.rotate);
+        shot_edit::crop_rect(&sp, vw, vh).2
+    };
     ui.vertical(|ui| {
         ui.spacing_mut().item_spacing.y = 6.0;
         label(ui, tr!("大小", "Size"));
-        let items: Vec<(u32, String)> = SCALES.iter().map(|s| (*s, format!("{s}%"))).collect();
+        // 0 = 自訂寬度
+        let mut pick = if o.width.is_some() { 0 } else { o.scale };
+        let mut items: Vec<(u32, String)> = SCALES.iter().map(|s| (*s, format!("{s}%"))).collect();
+        items.push((0, tr!("自訂", "Custom").into()));
         let refs: Vec<(u32, &str)> = items.iter().map(|(v, t)| (*v, t.as_str())).collect();
-        segmented(ui, &mut o.scale, &refs, true);
+        if segmented(ui, &mut pick, &refs, true) {
+            if pick == 0 {
+                o.width = Some(((crop_w as f64 * o.scale as f64 / 100.0).round() as u32).clamp(16, crop_w.max(16)));
+            } else {
+                (o.width, o.scale) = (None, pick);
+            }
+        }
+        if let Some(w) = o.width {
+            ui.horizontal(|ui| {
+                ui.label(theme::muted(ui, tr!("自訂寬度（像素）", "Custom width (pixels)")).font(theme::font(12.0)));
+                let mut v = w as f64;
+                let max = crop_w.max(16) as f64;
+                if theme::stepper(ui, Id::new("shot-width"), &mut v, 10.0, 16.0..=max, 0, "") {
+                    o.width = Some(v.round().clamp(16.0, max) as u32);
+                }
+            });
+            ui.label(theme::muted(ui, trf!("最大 {crop_w}（原本的寬度，不會放大）；高度依比例", "Up to {crop_w} (the original width; never enlarged); the height follows")).font(theme::font(12.0)));
+        }
+    });
+    // 格式：「儲存」存成 PNG 或 JPG（取代之前的編輯圖時沿用它的格式）
+    ui.vertical(|ui| {
+        ui.spacing_mut().item_spacing.y = 6.0;
+        label(ui, tr!("格式", "Format"));
+        let replacing = ed.replace_target.is_some();
+        let mut f = o.jpg && !replacing;
+        if segmented(ui, &mut f, &[(false, "PNG"), (true, tr!("JPG（檔案較小）", "JPG (smaller)"))], !replacing) {
+            o.jpg = f;
+        }
+        let hint = if let Some(t) = &ed.replace_target {
+            let ext = std::path::Path::new(t).extension().map(|e| e.to_string_lossy().to_uppercase()).unwrap_or_default();
+            trf!("取代原本的編輯圖時沿用它的格式（{ext}）。", "Replacing the edited image keeps its format ({ext}).")
+        } else if f {
+            tr!(
+                "JPG 檔案較小，適合寄信或傳訊息；透明的地方會變成白色，也不會出現在「全部截圖」裡。",
+                "JPG files are smaller, good for email or chat; transparent areas become white, and the file won't appear in “All screenshots”."
+            )
+            .into()
+        } else {
+            tr!("PNG 畫質最好，文字清楚。", "PNG keeps the best quality and the sharpest text.").into()
+        };
+        ui.label(theme::muted(ui, hint).font(theme::font(12.0)));
     });
     if let Some(s) = &mut ed.shot {
         s.opts = o;
@@ -1084,7 +1186,21 @@ pub fn rotate_buttons(ed: &mut Editor, ui: &mut egui::Ui) {
     }
 }
 
-/// 透明處的棋盤格底
+/// 背景色塊的名稱（滑鼠移上去時顯示；順序同 BACKGROUNDS）
+fn background_name(i: usize) -> &'static str {
+    let names = tr!(
+        ["藍色漸層", "粉紅漸層", "橘黃漸層", "綠藍漸層", "紫色漸層", "深藍漸層", "淺灰色", "深灰色"],
+        ["Blue gradient", "Pink gradient", "Orange gradient", "Green-blue gradient", "Purple gradient", "Dark blue gradient", "Light gray", "Dark gray"]
+    );
+    names.get(i).copied().unwrap_or("")
+}
+
+/// 外框顏色的名稱（順序同 BORDER_COLORS）
+fn border_name(i: usize) -> &'static str {
+    let names = tr!(["淺灰色", "黑色", "紅色", "藍色"], ["Light gray", "Black", "Red", "Blue"]);
+    names.get(i).copied().unwrap_or("")
+}
+
 /// 背景的色塊：單色或從左上到右下的漸層
 pub(super) fn gradient_swatch(p: &egui::Painter, r: Rect, bg: &str) {
     let cols: Vec<Color32> = bg
@@ -1316,11 +1432,11 @@ pub fn run(app: &mut UiApp, ed: &mut Editor, act: Act) {
                 return;
             }
             ed.saving = true;
-            let replace = ed.replace_target.clone();
-            app.spawn(async move { actions::shot_save(&core, &src, &sp, replace.as_deref()).await }, |app, r| match r {
+            let (replace, jpg) = (ed.replace_target.clone(), jpg(ed));
+            app.spawn(async move { actions::shot_save(&core, &src, &sp, replace.as_deref(), jpg).await }, |app, r| match r {
                 Ok(info) => {
                     app.editor = None;
-                    app.toast(trf!("已存成 {}{}", "Saved as {}{}", file_name(&info.path), if info.copied { tr!("，並複製到剪貼簿", " and copied to the clipboard") } else { "" }), false);
+                    saved_toast(app, &info);
                     app.shots_changed();
                 }
                 Err(e) => {
@@ -1335,10 +1451,9 @@ pub fn run(app: &mut UiApp, ed: &mut Editor, act: Act) {
             Ok((w, h)) => app.toast(trf!("已複製到剪貼簿（{w}×{h}）", "Copied to the clipboard ({w}×{h})"), false),
             Err(e) => app.toast(e.message().to_string(), true),
         }),
-        Act::Pin => app.spawn(async move { actions::shot_pin(&src, &sp).await }, |app, r| {
-            if let Err(e) = r {
-                app.toast(e.message().to_string(), true);
-            }
+        Act::Pin => app.spawn(async move { actions::shot_pin(&src, &sp).await }, |app, r| match r {
+            Ok(()) => app.toast(tr!("已釘在桌面，點兩下圖片即可關閉", "Pinned to the desktop. Double-click the image to close it"), false),
+            Err(e) => app.toast(e.message().to_string(), true),
         }),
         Act::Ocr => super::super::ocr::start_spec(app, src, sp),
         Act::FindPii => {
@@ -1413,7 +1528,107 @@ pub fn run(app: &mut UiApp, ed: &mut Editor, act: Act) {
             app.editor = None;
             open_with(app, path, false);
         }
+        Act::AskPlain => {
+            let Some(path) = ed.shot.as_ref().and_then(|s| s.opened_edit.clone()) else { return };
+            let mut ask = crate::ui::dialogs::Ask::confirm(
+                tr!("改成直接編輯這張？", "Edit this image directly?"),
+                tr!("目前還沒儲存的修改會不見。", "Your unsaved changes will be lost."),
+                tr!("放棄修改並切換", "Discard changes and switch"),
+                move |app, _| {
+                    app.editor = None;
+                    open_with(app, path, false);
+                },
+            );
+            ask.danger = true;
+            app.ask = Some(ask);
+        }
+        Act::SaveAs => save_as(app, ed),
     }
+}
+
+/// 儲存（和「儲存」按鈕一樣：存成 *_編輯.png 或取代之前編輯的那張，並複製到剪貼簿），存好後關閉編輯視窗。
+/// 給關閉時的「儲存後關閉」用；沒有東西要存（沒有修改、正在存）時不做事，回傳 false
+#[allow(dead_code)] // 剪輯視窗的關閉對話框（儲存後關閉／不儲存／取消）會用到
+pub fn save(app: &mut UiApp) -> bool {
+    let Some(mut ed) = app.editor.take() else { return false };
+    let can = ed.is_shot() && !unchanged(&ed) && !ed.saving;
+    if can {
+        run(app, &mut ed, Act::Save);
+    }
+    // 存好時（背景完成後）會把 app.editor 清掉
+    app.editor = Some(ed);
+    can
+}
+
+/// 另存新檔：Windows 的另存新檔視窗（檔名預先填好、可選 PNG 或 JPG），存好後關閉編輯視窗；記住這次的資料夾
+fn save_as(app: &mut UiApp, ed: &mut Editor) {
+    if ed.saving {
+        return;
+    }
+    let (core, src, sp) = (app.core.clone(), source(ed), spec(ed));
+    let last = std::path::PathBuf::from(&app.s.shot_save_dir);
+    let dir = if !app.s.shot_save_dir.is_empty() && last.is_dir() { Some(last) } else { std::path::Path::new(&src).parent().map(|p| p.to_path_buf()) };
+    let name = match &ed.replace_target {
+        Some(t) => file_name(t),
+        None => file_name(&shot_edit::edited_path_as(std::path::Path::new(&src), if jpg(ed) { "jpg" } else { "png" }).display().to_string()),
+    };
+    // JPG 時另存新檔視窗預先選 JPG
+    let jpg_first = jpg(ed);
+    ed.saving = true;
+    app.spawn(
+        async move {
+            let mut types = vec![(tr!("PNG 圖片", "PNG image"), "*.png"), (tr!("JPG 圖片（檔案較小）", "JPG image (smaller file)"), "*.jpg")];
+            if jpg_first {
+                types.reverse();
+            }
+            let picked = tokio::task::spawn_blocking(move || screenrecorder_core::filepick::save_file(tr!("另存新檔", "Save as"), dir, &name, &types)).await.unwrap_or_else(|e| Err(e.to_string()))?;
+            let Some((path, kind)) = picked else { return Ok(None) };
+            // 自己打的副檔名優先；沒有或不認得時依選的類型
+            let ext = path.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
+            let chose_jpg = (kind == 1) != jpg_first;
+            let path = if ["png", "jpg", "jpeg"].contains(&ext.as_str()) { path } else { path.with_extension(if chose_jpg { "jpg" } else { "png" }) };
+            actions::shot_save_as(&core, &src, &sp, &path.display().to_string()).await.map(Some).map_err(|e| e.message().to_string())
+        },
+        |app, r: Result<Option<screenrecorder_core::types::ShotInfo>, String>| {
+            if let Some(ed) = &mut app.editor {
+                ed.saving = false;
+            }
+            match r {
+                Ok(Some(info)) => {
+                    if let Some(dir) = std::path::Path::new(&info.path).parent() {
+                        app.s.shot_save_dir = dir.display().to_string();
+                        app.save_settings();
+                    }
+                    app.editor = None;
+                    saved_toast(app, &info);
+                    app.shots_changed();
+                }
+                Ok(None) => {}
+                Err(e) => app.toast(e, true),
+            }
+        },
+    );
+}
+
+/// 存好的提示：[開啟] [在資料夾中顯示]
+fn saved_toast(app: &mut UiApp, info: &screenrecorder_core::types::ShotInfo) {
+    let text = trf!("已存成 {}{}", "Saved as {}{}", file_name(&info.path), if info.copied { tr!("，並複製到剪貼簿", " and copied to the clipboard") } else { "" });
+    if crate::ui::dialogs::is_image(&info.path) {
+        return app.toast_file(text, &info.path);
+    }
+    // JPG：用 Windows 預設的程式開啟
+    let (p1, p2) = (info.path.clone(), info.path.clone());
+    let open = crate::ui::ToastAction::new(tr!("開啟", "Open"), move |app: &mut UiApp| {
+        if let Err(e) = actions::open(actions::OpenAction::Play, &p1) {
+            app.toast(e.message().to_string(), true);
+        }
+    });
+    let reveal = crate::ui::ToastAction::new(tr!("在資料夾中顯示", "Show in folder"), move |app: &mut UiApp| {
+        if let Err(e) = actions::open(actions::OpenAction::Reveal, &p2) {
+            app.toast(e.message().to_string(), true);
+        }
+    });
+    app.toast_with(text, false, vec![open, reveal]);
 }
 
 /// 加上（或換成）這張圖片，並記住它（下次可以從選單直接再用）
