@@ -505,7 +505,8 @@ fn allow_dark_menus() {
 }
 
 /// 啟動系統匣執行緒；圖示加入成功後回傳控制介面與快速鍵登記結果
-pub fn start(cmd: UnboundedSender<TrayCommand>, keys: Hotkeys) -> Result<(Arc<dyn TrayUi>, HotkeyStatus), String> {
+/// wait：等系統匣執行緒準備好最多多久（開機登入時系統很忙，要等久一點）
+pub fn start(cmd: UnboundedSender<TrayCommand>, keys: Hotkeys, wait: Duration) -> Result<(Arc<dyn TrayUi>, HotkeyStatus), String> {
     let (ready_tx, ready_rx) = mpsc::channel::<Result<(isize, HotkeyStatus), String>>();
     let queue: Arc<Mutex<VecDeque<Req>>> = Arc::default();
     let q = queue.clone();
@@ -547,6 +548,6 @@ pub fn start(cmd: UnboundedSender<TrayCommand>, keys: Hotkeys) -> Result<(Arc<dy
             TRAY.with(|t| *t.borrow_mut() = None);
         })
         .map_err(|e| e.to_string())?;
-    let (hwnd, hotkeys) = ready_rx.recv_timeout(Duration::from_secs(5)).map_err(|_| "系統匣沒有回應".to_string())??;
+    let (hwnd, hotkeys) = ready_rx.recv_timeout(wait).map_err(|_| "系統匣沒有回應".to_string())??;
     Ok((Arc::new(Handle { hwnd, queue }), hotkeys))
 }

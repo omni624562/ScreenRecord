@@ -19,11 +19,14 @@ use screenrecorder_core::app::{App, UiPage};
 use screenrecorder_core::paths::app_dir;
 use screenrecorder_core::version::APP_VERSION;
 use screenrecorder_core::{error, info, instance, ipc, job, log, selfupdate, tray, warn};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 const DEFAULT_PORT: u16 = 47391;
 const PORT_RANGE: u16 = 20;
+/// 開機自動啟動時建立系統匣最多試幾次（每次最多等 30 秒，失敗後隔 5 秒再試）
+const TRAY_ATTEMPTS: u32 = 12;
 
 #[derive(Clone, Copy)]
 struct Args {
@@ -232,8 +235,29 @@ fn main() {
         c.log_startup();
     });
     // 系統匣常駐：關掉操作視窗後程式仍在背景，從圖示選單操作或結束
-    let tray_ok = !args.no_tray && rt.block_on(tray::start(&core));
-    info!("{}", if tray_ok { "已常駐於系統匣：右鍵點圖示可錄影或結束程式" } else { "系統匣無法使用：關掉操作視窗就會結束程式" });
+    let boot = argv.iter().any(|a| a == "--tray");
+    let tray_ok = Arc::new(AtomicBool::new(false));
+    if !args.no_tray && boot {
+        // 開機自動啟動：登入時系統很忙、工作列可能還沒好，多等一點、失敗就重試，不改開視窗
+        //（開機當下顯示卡可能還沒準備好，這時開的視窗常是一片空白）
+        let (c, ok) = (core.clone(), tray_ok.clone());
+        rt.spawn(async move {
+            for attempt in 1..=TRAY_ATTEMPTS {
+                if tray::start(&c, Duration::from_secs(30)).await {
+                    ok.store(true, Ordering::Relaxed);
+                    info!("已常駐於系統匣：右鍵點圖示可錄影或結束程式");
+                    return;
+                }
+                if attempt < TRAY_ATTEMPTS {
+                    tokio::time::sleep(Duration::from_secs(5)).await;
+                }
+            }
+            warn!("系統匣一直無法啟動：再執行一次程式就會開啟操作視窗");
+        });
+    } else {
+        tray_ok.store(!args.no_tray && rt.block_on(tray::start(&core, Duration::from_secs(5))), Ordering::Relaxed);
+        info!("{}", if tray_ok.load(Ordering::Relaxed) { "已常駐於系統匣：右鍵點圖示可錄影或結束程式" } else { "系統匣無法使用：關掉操作視窗就會結束程式" });
+    }
     if !args.no_tray {
         core.schedule_update_checks();
         // 開機自動啟動指向別的位置的程式（例如舊版留在原本的資料夾）：改成這個
@@ -245,8 +269,27 @@ fn main() {
         let _ = tokio::task::spawn_blocking(move || c.thumbs.prune()).await;
     });
 
-    // 沒有系統匣時一定要開視窗（否則看不到程式）
-    let visible = args.auto_open || !tray_ok;
+    // 沒有系統匣時一定要開視窗（否則看不到程式）；開機自動啟動時不開（系統匣在背景重試）
+    let visible = args.auto_open || (!boot && !tray_ok.load(Ordering::Relaxed));
+    // 不開視窗時，操作視窗等第一次要用時才建立：從系統匣開啟、再次執行程式、框選截圖、截圖後直接編輯。
+    // 開機當下顯示卡可能還沒準備好，太早建立的視窗可能一直畫不出來；平常常駐時也比較省記憶體
+    let mut seen_shot = core.last_shot().map_or(0, |s| s.seq);
+    if !visible {
+        loop {
+            if open_requests.wait(Duration::from_millis(300)) {
+                break;
+            }
+            // 截圖後直接編輯：建立操作視窗，由介面開啟編輯（seen_shot 保持舊的，介面才會處理這張）
+            let seq = core.last_shot().map_or(0, |s| s.seq);
+            if seq != seen_shot {
+                if edit_after_shot(&core) {
+                    break;
+                }
+                seen_shot = seq;
+            }
+        }
+        info!("建立操作視窗");
+    }
     let icon = screenrecorder_core::icon::render_icon(64, screenrecorder_core::icon::IconState::Idle);
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -265,10 +308,15 @@ fn main() {
         options,
         Box::new(move |cc| {
             let _ = CTX.set(cc.egui_ctx.clone());
-            Ok(Box::new(ui::UiApp::new(cc, core, handle, open_requests, tray_ok, visible)))
+            Ok(Box::new(ui::UiApp::new(cc, core, handle, open_requests, tray_ok, visible, seen_shot)))
         }),
     );
     if let Err(e) = result {
         error!("無法開啟操作視窗：{e}");
     }
+}
+
+/// 設定裡打開了「截圖後直接開啟編輯」
+fn edit_after_shot(core: &App) -> bool {
+    core.settings.load().ui.as_ref().and_then(|u| u.get("editAfterShot")).and_then(|v| v.as_bool()).unwrap_or(false)
 }

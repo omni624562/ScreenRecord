@@ -39,14 +39,21 @@ pub type Job = Box<dyn FnOnce(&mut UiApp) + Send>;
 
 /// 系統匣或再次啟動程式時要求開啟視窗
 #[derive(Clone, Default)]
-pub struct OpenRequests(Arc<Mutex<Vec<UiPage>>>);
+pub struct OpenRequests(Arc<(Mutex<Vec<UiPage>>, std::sync::Condvar)>);
 
 impl OpenRequests {
     pub fn push(&self, page: UiPage) {
-        self.0.lock().unwrap().push(page);
+        self.0 .0.lock().unwrap().push(page);
+        self.0 .1.notify_all();
     }
     fn take(&self) -> Vec<UiPage> {
-        std::mem::take(&mut *self.0.lock().unwrap())
+        std::mem::take(&mut *self.0 .0.lock().unwrap())
+    }
+    /// 等到有開啟視窗的要求（操作視窗還沒建立時，主執行緒在這裡等）；timeout 內有要求就回傳 true
+    pub fn wait(&self, timeout: Duration) -> bool {
+        let (list, cv) = &*self.0;
+        let g = cv.wait_timeout_while(list.lock().unwrap(), timeout, |l| l.is_empty()).unwrap().0;
+        !g.is_empty()
     }
 }
 
@@ -81,8 +88,8 @@ pub struct UiApp {
     tx: Sender<Job>,
     rx: Receiver<Job>,
     open_requests: OpenRequests,
-    /// 系統匣可以用：關掉視窗時只是隱藏
-    pub tray_ok: bool,
+    /// 系統匣可以用：關掉視窗時只是隱藏（開機時系統匣可能晚一點才建立好）
+    pub tray_ok: Arc<std::sync::atomic::AtomicBool>,
     pub visible: bool,
     /// 主視窗看得到（背景比對狀態時用：看不到就不叫介面重畫）
     shown_flag: Arc<std::sync::atomic::AtomicBool>,
@@ -155,7 +162,16 @@ pub struct UiApp {
 }
 
 impl UiApp {
-    pub fn new(cc: &eframe::CreationContext, core: Arc<App>, rt: tokio::runtime::Handle, open_requests: OpenRequests, tray_ok: bool, visible: bool) -> UiApp {
+    /// seen_shot：已經處理過的截圖（之後才建立操作視窗時，之前的截圖不再顯示「已截圖」）
+    pub fn new(
+        cc: &eframe::CreationContext,
+        core: Arc<App>,
+        rt: tokio::runtime::Handle,
+        open_requests: OpenRequests,
+        tray_ok: Arc<std::sync::atomic::AtomicBool>,
+        visible: bool,
+        seen_shot: u64,
+    ) -> UiApp {
         let ctx = cc.egui_ctx.clone();
         theme::setup_fonts(&ctx);
         theme::setup_visuals(&ctx);
@@ -217,7 +233,7 @@ impl UiApp {
             last_replay_path: None,
             main: main_view::MainState::default(),
             ddagrab_watch: None,
-            last_shot_seq: 0,
+            last_shot_seq: seen_shot,
             frame_parts: Vec::new(),
             slow_logged: None,
             #[cfg(debug_assertions)]
@@ -671,7 +687,7 @@ impl UiApp {
         if !ctx.input(|i| i.viewport().close_requested()) {
             return;
         }
-        if self.tray_ok {
+        if self.tray_ok.load(std::sync::atomic::Ordering::Relaxed) {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
             self.visible = false;
@@ -887,5 +903,24 @@ mod tests {
         step(300).await;
         assert_eq!(wakes.load(Ordering::SeqCst), 2);
         task.abort();
+    }
+
+    /// 操作視窗還沒建立時，主執行緒等開啟視窗的要求：沒有要求時等到逾時，有要求時（包括之前就送來的）馬上回來
+    #[test]
+    fn open_requests_wake_the_waiting_thread() {
+        let reqs = OpenRequests::default();
+        assert!(!reqs.wait(Duration::from_millis(50)));
+        let r2 = reqs.clone();
+        let sender = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            r2.push(UiPage::Main);
+        });
+        let t = Instant::now();
+        assert!(reqs.wait(Duration::from_secs(10)));
+        assert!(t.elapsed() < Duration::from_secs(5));
+        sender.join().unwrap();
+        // 已經有要求：不用等
+        assert!(reqs.wait(Duration::from_secs(10)));
+        assert_eq!(reqs.take(), vec![UiPage::Main]);
     }
 }

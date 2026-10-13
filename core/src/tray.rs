@@ -640,13 +640,14 @@ impl TrayController {
 }
 
 /// 建立系統匣圖示與全域快速鍵；失敗時回傳 false（程式改用「沒有開著的視窗就自動結束」）
-pub async fn start(app: &Arc<App>) -> bool {
+/// wait：等系統匣準備好最多多久（見 tray_win::start）
+pub async fn start(app: &Arc<App>, wait: std::time::Duration) -> bool {
     #[cfg(windows)]
     {
         let autostart = crate::desktop::get_autostart().await;
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<TrayCommand>();
         let keys = app.hotkeys();
-        let started = tokio::task::spawn_blocking(move || crate::tray_win::start(tx, keys)).await;
+        let started = tokio::task::spawn_blocking(move || crate::tray_win::start(tx, keys, wait)).await;
         let (ui, hotkeys) = match started {
             Ok(Ok(v)) => v,
             Ok(Err(e)) => {
@@ -685,7 +686,7 @@ pub async fn start(app: &Arc<App>) -> bool {
     }
     #[cfg(not(windows))]
     {
-        let _ = app;
+        let _ = (app, wait);
         false
     }
 }
