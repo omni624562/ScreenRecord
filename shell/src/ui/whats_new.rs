@@ -24,10 +24,8 @@ enum Try {
     Settings(Page),
     /// 在螢幕上框選截圖
     Snip,
-    /// 範圍切到「只錄聲音」
-    AudioOnly,
-    /// 開啟排程錄影
-    Schedule,
+    /// 開啟全部錄影
+    Library,
 }
 
 /// 第一次使用（還沒看過任何介紹）：三個步驟的「快速上手」
@@ -79,55 +77,58 @@ fn quick_start(app: &UiApp) -> [(String, String); 3] {
 fn items(app: &UiApp) -> Vec<(String, String, Try)> {
     vec![
         (
-            tr!("框選截圖更好找", "Easier area screenshots").into(),
+            tr!("框選截圖更好找、放開後還能調整", "Area screenshots: easier to find, adjustable").into(),
             trf!(
-                "「開始錄影」下面就是「框選截圖」{}與「整個範圍」；小箭頭選單和系統匣一樣分成「截圖方式」「小工具」（QR 碼、取色器、尺規、螢幕畫筆）。",
-                "“Select area”{} and “Whole area” are right below “Start recording”. The small arrow menu matches the tray: “Screenshot” and “Tools” (QR code, color picker, ruler, screen pen).",
+                "「開始錄影」下面就是「框選截圖」{}；框好後可以拉邊調整，再選完成、編輯、複製或釘在桌面。延遲截圖會在畫面上倒數。",
+                "“Select area”{} is right below “Start recording”. After selecting, drag the edges to adjust, then finish, edit, copy or pin it. Delayed screenshots count down on screen.",
                 key(app, 3)
             ),
             Try::Snip,
         ),
         (
-            tr!("錄影優先", "Recording comes first").into(),
+            tr!("剪輯更順手，也不怕白做", "Easier editing, no lost work").into(),
             tr!(
-                "錄完自動處理（剪掉沒動靜的片段、字幕、壓縮）進行中也能直接開始錄影：處理會先暫停，錄完再繼續。設定裡獨立成「錄完處理」一頁。",
-                "You can start recording even while post-processing (cutting idle parts, subtitles, compression) is running: it pauses and continues afterwards. It now has its own “After recording” page in Settings."
+                "時間軸上方有時間尺規，按 S 在播放位置分割；字幕、聲音有自己的分頁。輸出失敗或取消時可以「回到剪輯」，關閉前會問要不要儲存。",
+                "A time ruler sits above the timeline, and S splits at the playhead. Subtitles and audio have their own tabs. If saving fails or is canceled, “Back to editing” restores everything, and closing asks whether to save."
             )
             .into(),
-            Try::Settings(Page::After),
+            Try::None,
         ),
         (
-            tr!("回溯錄影", "Replay buffer").into(),
+            tr!("截圖編輯可以放大、另存新檔", "Zoom and Save As in the screenshot editor").into(),
+            tr!(
+                "Ctrl+滾輪放大縮小，長截圖用「符合寬度」捲動標註；「儲存」旁的箭頭可以另存新檔，選 PNG 或 JPG（檔案較小）。",
+                "Ctrl+wheel zooms; long screenshots open at “Fit width” so you can scroll and annotate. The arrow next to “Save” offers Save As, as PNG or JPG (smaller file)."
+            )
+            .into(),
+            Try::None,
+        ),
+        (
+            tr!("壓縮影片傳 LINE、Email", "Compress videos for LINE or email").into(),
+            tr!(
+                "全部錄影、檢視器的「⋯」有「壓縮（傳 LINE / Email）」；每一列可按右鍵、可搜尋「10/11」「昨天」；合併、拼圖前可以調整順序。",
+                "“⋯” in All recordings and the viewer has “Compress (for LINE / email)”. Right-click any row, search “10/11” or “yesterday”, and reorder before merging or combining."
+            )
+            .into(),
+            Try::Library,
+        ),
+        (
+            tr!("回溯錄影，錄影優先", "Replay buffer; recording comes first").into(),
             trf!(
-                "原本的「重播」改名「回溯錄影」：在背景一直錄、只留最近幾分鐘，需要時再存下{}；停止前會先問要不要存。",
-                "Keeps recording in the background, holding only the last few minutes; save them when you need to{}. Before stopping, it asks whether to save.",
+                "原本的「重播」改名「回溯錄影」：在背景一直錄、只留最近幾分鐘，需要時再存下{}，停止前會先問要不要存。錄完自動處理進行中也能直接開始錄影。",
+                "“Replay” is now the replay buffer: it keeps the last few minutes so you can save them{}, and asks before stopping. You can start recording even while post-processing runs.",
                 key(app, 6)
             ),
             Try::None,
         ),
         (
-            tr!("只錄聲音存成 M4A", "Audio only, saved as M4A").into(),
-            tr!("「只錄聲音」時按「開始錄音」，可以選存成 M4A（手機、電腦都能直接播放）或 MP4。", "In “Audio only”, click “Start audio recording” and choose to save as M4A (plays on any phone or computer) or MP4.")
-                .into(),
-            Try::AudioOnly,
-        ),
-        (
-            tr!("排程錄影可以選日期", "Schedule on any date").into(),
+            tr!("儲存位置用選的，不用打字", "Pick the save folder instead of typing").into(),
             tr!(
-                "排程可以選今天、明天或其他日期；程式重新開啟後也會繼續等。",
-                "Schedule a recording for today, tomorrow or another date; it keeps waiting even if you reopen the app."
+                "「設定 → 儲存位置」或主畫面下方的資料夾按鈕可以直接選資料夾；全部錄影會顯示檔名，按每一列的「重新命名」或按兩下檔名就能改名。外觀可以選淺色或深色（設定 → 進階）。",
+                "Choose the folder in Settings → Save location or from the folder button at the bottom of the main window. All recordings shows file names; rename with the rename button or by double-clicking. Pick a light or dark appearance in Settings → Advanced."
             )
             .into(),
-            Try::Schedule,
-        ),
-        (
-            tr!("外觀與開機啟動", "Appearance and startup").into(),
-            tr!(
-                "「設定 → 進階」可以選淺色或深色外觀、開機時自動啟動，也可以在這裡結束程式。",
-                "In Settings → Advanced you can choose a light or dark appearance, start with Windows, and quit the app."
-            )
-            .into(),
-            Try::Settings(Page::Advanced),
+            Try::Settings(Page::Save),
         ),
     ]
 }
@@ -224,10 +225,6 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         Try::None => {}
         Try::Settings(page) => settings_dialog::open(app, page),
         Try::Snip => super::main_view::run_shot(app, super::main_view::ShotAct::Select(0)),
-        Try::AudioOnly => {
-            app.s.source_type = super::settings::SourceType::Audio;
-            app.save_settings();
-        }
-        Try::Schedule => super::schedule::open(app),
+        Try::Library => app.library = Some(super::library_dialog::LibraryDialog::new(super::library_dialog::Kind::Video)),
     }
 }
