@@ -1167,6 +1167,8 @@ fn rec_panel(app: &mut UiApp, ui: &mut Ui) {
         // 高度不夠（視窗矮、介面放大）：省略比較不重要的列
         let tight = body.height() < 330.0;
         ui.scope_builder(UiBuilder::new().max_rect(body), |ui| {
+            // 捲軸佔自己的寬度，不蓋在按鈕上
+            ui.spacing_mut().scroll = egui::style::ScrollStyle::solid();
             egui::ScrollArea::vertical().id_salt("rec-body").auto_shrink([false, false]).max_height(body.height()).show(ui, |ui| {
                 rec_body(app, ui, &r, replay.as_ref(), tight);
             });
@@ -1317,21 +1319,13 @@ fn rec_body(app: &mut UiApp, ui: &mut Ui, r: &screenrecorder_core::types::Record
             } else {
                 String::new()
             };
-            // 截圖按鈕（含小箭頭）的寬度：至少 118，英文字較長時跟著加寬
-            let shot_w = (Btn::new(shot_label()).icon(Icon::Camera).width(ui) + 28.0).max(118.0);
-            if Btn::new(tr!("開始錄影", "Start recording"))
-                .kind(theme::Kind::Record)
-                .enabled(can)
-                .tooltip(tip)
-                .min_width(ui.available_width() - shot_w - ui.spacing().item_spacing.x)
-                .show(ui)
-                .clicked()
-            {
+            // 只錄聲音：「開始錄音」
+            let label = if app.s.source_type == SourceType::Audio { tr!("開始錄音", "Start audio recording") } else { tr!("開始錄影", "Start recording") };
+            if Btn::new(label).kind(theme::Kind::Record).enabled(can).tooltip(tip).min_width(ui.available_width()).show(ui).clicked() {
                 let config = app.s.record_config(&app.env);
                 let core = app.core.clone();
                 app.guarded(async move { actions::record_start(&core, config).await }, |_, _| {});
             }
-            shot_button(app, ui, shot_w);
         } else if let Some(rp) = replay {
             // 重播緩衝：存下最近 N 分鐘、停止（不能暫停、不能加標記）
             let w = ui.available_width();
@@ -1394,6 +1388,11 @@ fn rec_body(app: &mut UiApp, ui: &mut Ui, r: &screenrecorder_core::types::Record
             }
         }
     });
+    // 截圖（只錄聲音時不顯示）：框選截圖、整個範圍、更多
+    if !active && app.s.source_type != SourceType::Audio {
+        ui.add_space(6.0);
+        shot_row(app, ui);
+    }
     // 手動開始的轉檔還在進行：說明為什麼不能錄，可以停止它直接開始錄影
     if let Some(e) = app.manual_export().filter(|_| !active) {
         ui.add_space(6.0);
@@ -1494,7 +1493,9 @@ fn rec_body(app: &mut UiApp, ui: &mut Ui, r: &screenrecorder_core::types::Record
         if open_keys {
             settings_dialog::open(app, Page::Keys);
         }
-        ui.spacing_mut().item_spacing.y = 5.0;
+        // 一列一行字的高度就好（不用按鈕的高度）
+        ui.spacing_mut().item_spacing.y = 6.0;
+        ui.spacing_mut().interact_size.y = 18.0;
         let names = screenrecorder_core::types::hotkey_names();
         // 系統匣沒有啟動時全域快速鍵都不能用；被其他程式占用的也不能用
         let works = app.env.hotkeys.map(|h| h.all());
@@ -1578,191 +1579,279 @@ fn rec_body(app: &mut UiApp, ui: &mut Ui, r: &screenrecorder_core::types::Record
     }
 }
 
-/// 「截圖」按鈕的文字
-fn shot_label() -> &'static str {
-    tr!("截圖", "Screenshot")
+/// 截圖的方式（截圖那一列的按鈕與選單、系統匣的「截圖」選單相同的項目與順序）
+#[derive(Clone, PartialEq)]
+enum ShotAct {
+    /// 在螢幕上框選範圍或點選視窗；幾秒後再框選
+    Select(u64),
+    /// 目前的錄影範圍
+    Area,
+    /// 整個螢幕（None = 所有螢幕）
+    Screen(Option<String>),
+    /// 重複上次框選的範圍
+    Last,
+    Scroll,
+    Steps,
+    EditLast,
+    Qr,
+    /// 取色器（false）或尺規（true）
+    Tool(bool),
+    Pen,
 }
 
-/// 截圖：與錄影相同的範圍，存成 PNG 並複製到剪貼簿（完成後由狀態更新顯示提示、更新清單）
-fn shot_button(app: &mut UiApp, ui: &mut Ui, w: f32) {
-    let hotkey = if app.env.hotkeys.is_some_and(|h| h.shot) && !app.keys.label(2).is_empty() { trf!("（{}）", " ({})", app.keys.label(2)) } else { String::new() };
-    let tip = trf!(
-        "把目前的擷取範圍存成 PNG 並複製到剪貼簿{hotkey}\n旁邊的小箭頭（或按右鍵）：框選、延遲截圖、長截圖、步驟截圖、取色器、尺規",
-        "Save the current capture area as PNG and copy it to the clipboard{hotkey}\nSmall arrow (or right-click): select area, delayed screenshot, scrolling screenshot, step capture, color picker, ruler"
-    );
-    let can = app.env.ffmpeg.found && !app.main.shooting;
-    // 還沒有 FFmpeg：滑鼠提示說明要先下載
-    let tip = if app.env.ffmpeg.found {
-        tip
+/// 截圖那一列：「框選截圖」「整個範圍」與更多的小箭頭（按右鍵也有同一個選單）
+fn shot_row(app: &mut UiApp, ui: &mut Ui) {
+    let found = app.env.ffmpeg.found;
+    let can = found && !app.main.shooting;
+    let need = tr!("請先下載錄影元件（上方的「下載並開始使用」）", "Download the recording component first (“Download and get started” above)").to_string();
+    let key = |i: usize| {
+        let k = app.keys.label(i);
+        if k.is_empty() || !app.env.hotkeys.is_some_and(|h| h.all().get(i).copied().unwrap_or(false)) {
+            String::new()
+        } else {
+            trf!("（{k}）", " ({k})")
+        }
+    };
+    let select_tip = if found {
+        trf!("在螢幕上框選範圍或點一下視窗，截下來存成 PNG 並複製到剪貼簿{}", "Select an area or click a window on the screen to save it as PNG and copy it to the clipboard{}", key(3))
     } else {
-        tr!("請先下載錄影元件（上方的「下載並開始使用」）", "Download the recording component first (“Download and get started” above)").to_string()
+        need.clone()
     };
-    let arrow_w = 26.0;
-    let (resp, arrow) = ui
-        .scope(|ui| {
-            ui.spacing_mut().item_spacing.x = 2.0;
-            let resp = Btn::new(shot_label()).icon(Icon::Camera).enabled(can).tooltip(tip).min_width(w - arrow_w - 2.0).height(40.0).show(ui);
-            let arrow = Btn::icon_only(Icon::ChevD)
-                .enabled(can)
-                .tooltip(tr!(
-                    "更多截圖方式：框選範圍或視窗、延遲截圖、長截圖、步驟截圖、取色器、尺規",
-                    "More screenshot options: select an area or window, delayed screenshot, scrolling screenshot, step capture, color picker, ruler"
-                ))
-                .min_width(arrow_w)
-                .height(40.0)
-                .show(ui);
-            (resp, arrow)
-        })
-        .inner;
-    // 選單（小箭頭或按右鍵）：在螢幕上框選、等幾秒再框選（先打開要截的選單）、長截圖、步驟截圖
-    let mut snip: Option<u64> = None;
-    let mut long = false;
-    let mut steps = false;
+    let area_tip = if found {
+        trf!("截下目前的錄影範圍（{}），存成 PNG 並複製到剪貼簿{}", "Capture the current recording area ({}) as PNG and copy it to the clipboard{}", app.s.source_label(&app.env), key(2))
+    } else {
+        need.clone()
+    };
+    let mut act: Option<ShotAct> = None;
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        let arrow_w = 34.0;
+        let w = ui.available_width() - arrow_w - 8.0;
+        let select = Btn::new(tr!("框選截圖", "Select area")).icon(Icon::Camera).enabled(can).tooltip(select_tip).min_width((w * 0.55).floor()).show(ui);
+        let area = Btn::new(tr!("整個範圍", "Whole area")).enabled(can).tooltip(area_tip).min_width(ui.available_width() - arrow_w - 4.0).show(ui);
+        let arrow = Btn::icon_only(Icon::ChevD)
+            .enabled(can)
+            .tooltip(if found {
+                tr!(
+                    "更多截圖方式與小工具：延遲框選、全螢幕、長截圖、步驟截圖、讀取 QR 碼、取色器、尺規、螢幕畫筆",
+                    "More screenshot options and tools: delayed selection, full screen, scrolling screenshot, step capture, QR code, color picker, ruler, screen pen"
+                )
+                .to_string()
+            } else {
+                need.clone()
+            })
+            .min_width(arrow_w)
+            .show(ui);
+        if select.clicked() {
+            act = Some(ShotAct::Select(0));
+        }
+        if area.clicked() {
+            act = Some(ShotAct::Area);
+        }
+        for r in [&select, &area] {
+            egui::Popup::context_menu(r).show(|ui| shot_menu(app, ui, &mut act));
+        }
+        egui::Popup::menu(&arrow).show(|ui| shot_menu(app, ui, &mut act));
+    });
+    if let Some(a) = act.filter(|_| can) {
+        run_shot(app, a);
+    }
+}
+
+/// 截圖選單：「截圖方式」「小工具」兩組（與系統匣的「截圖」選單相同的項目、順序與文字）
+fn shot_menu(app: &UiApp, ui: &mut Ui, act: &mut Option<ShotAct>) {
+    let p = theme::pal(ui);
+    ui.set_min_width(250.0);
+    let heading = |ui: &mut Ui, t: &str| {
+        ui.label(RichText::new(t).font(theme::font_bold(12.0)).color(p.muted));
+    };
+    let item = |ui: &mut Ui, label: String, key: usize, enabled: bool| -> bool {
+        let k = app.keys.label(key);
+        let b = egui::Button::new(label).shortcut_text(RichText::new(k).font(theme::mono(11.5)));
+        ui.add_enabled(enabled, b).clicked()
+    };
     let steps_on = app.status.steps.is_some();
-    let mut qr = false;
-    // 取色器（false）或尺規（true）
-    let mut tool: Option<bool> = None;
-    let menu = |ui: &mut Ui, snip: &mut Option<u64>, long: &mut bool, steps: &mut bool, qr: &mut bool, tool: &mut Option<bool>| {
-        ui.set_min_width(190.0);
-        if ui.button(tr!("框選範圍或視窗…", "Select area or window…")).clicked() {
-            *snip = Some(0);
-        }
-        ui.separator();
+    heading(ui, tr!("截圖方式", "Screenshot"));
+    if item(ui, tr!("框選範圍或視窗…", "Select area or window…").into(), 3, true) {
+        *act = Some(ShotAct::Select(0));
+    }
+    ui.menu_button(tr!("延遲框選", "Delayed selection"), |ui| {
         for sec in [3u64, 5, 10] {
-            if ui.button(trf!("{sec} 秒後框選", "Select area in {sec} s")).clicked() {
-                *snip = Some(sec);
+            if ui
+                .button(trf!("{sec} 秒後", "In {sec} seconds"))
+                .on_hover_text(tr!("先打開要截的選單或提示，時間到畫面會凍結讓你框選", "Open the menu or tooltip you want to capture first; the screen freezes for selection when time is up"))
+                .clicked()
+            {
+                *act = Some(ShotAct::Select(sec));
             }
         }
-        ui.separator();
-        if ui
-            .button(tr!("長截圖（捲動）…", "Scrolling screenshot…"))
-            .on_hover_text(tr!(
-                "框選要捲動的內容（例如網頁），自動往下捲並接成一張長圖；按 Esc 停止",
-                "Select the content to scroll (e.g. a web page); it scrolls down automatically and stitches everything into one long image. Press Esc to stop."
-            ))
-            .clicked()
-        {
-            *long = true;
-        }
-        if ui
-            .button(tr!("讀取 QR 碼…", "Read QR code…"))
-            .on_hover_text(tr!("框選畫面上的 QR 碼，讀出內容（網址可以直接開啟）", "Select a QR code on the screen to read it (links can be opened directly)"))
-            .clicked()
-        {
-            *qr = true;
-        }
-        if !steps_on
-            && ui
-                .button(tr!("步驟截圖（做成教學文件）", "Step capture (step-by-step guide)"))
-                .on_hover_text(tr!(
-                    "開始後每點一下滑鼠就截一張，標出點的位置；完成時做成一份圖文並茂的教學文件",
-                    "Once started, every mouse click takes a screenshot with the click marked. When you finish, it becomes an illustrated step-by-step guide."
-                ))
-                .clicked()
-        {
-            *steps = true;
-        }
-        ui.separator();
-        if ui
-            .button(tr!("取色器…", "Color picker…"))
-            .on_hover_text(tr!(
-                "點一下畫面上的任何地方，色碼（例如 #1D4ED8）就複製到剪貼簿；有放大鏡可以對準",
-                "Click anywhere on the screen to copy its color code (e.g. #1D4ED8) to the clipboard. A magnifier helps you aim."
-            ))
-            .clicked()
-        {
-            *tool = Some(false);
-        }
-        if ui
-            .button(tr!("尺規（量距離）…", "Ruler (measure distance)…"))
-            .on_hover_text(tr!("在畫面上拖曳，量出兩點之間有幾個像素與角度", "Drag on the screen to measure the distance in pixels and the angle between two points"))
-            .clicked()
-        {
-            *tool = Some(true);
+    });
+    if item(ui, trf!("整個錄影範圍：{}", "Whole recording area: {}", app.s.source_label(&app.env)), 2, true) {
+        *act = Some(ShotAct::Area);
+    }
+    ui.add_enabled_ui(!app.env.monitors.is_empty(), |ui| {
+        ui.menu_button(tr!("全螢幕", "Full screen"), |ui| {
+            for m in &app.env.monitors {
+                let label = trf!("螢幕 {}{}　{}×{}", "Screen {}{}   {}×{}", m.display_number, if m.primary { tr!("（主螢幕）", " (primary)") } else { "" }, m.width, m.height);
+                if ui.button(label).clicked() {
+                    *act = Some(ShotAct::Screen(Some(m.id.clone())));
+                }
+            }
+            if app.env.monitors.len() > 1 {
+                ui.separator();
+                if ui.button(tr!("所有螢幕（整個延伸桌面）", "All screens (entire extended desktop)")).clicked() {
+                    *act = Some(ShotAct::Screen(None));
+                }
+            }
+        });
+    });
+    if ui.add_enabled(app.core.last_snip().is_some(), egui::Button::new(tr!("重複上次框選", "Repeat last selection"))).clicked() {
+        *act = Some(ShotAct::Last);
+    }
+    if ui
+        .button(tr!("長截圖（捲動）…", "Scrolling screenshot…"))
+        .on_hover_text(tr!(
+            "框選要捲動的內容（例如網頁），自動往下捲並接成一張長圖；按 Esc 停止",
+            "Select the content to scroll (e.g. a web page); it scrolls down automatically and stitches everything into one long image. Press Esc to stop."
+        ))
+        .clicked()
+    {
+        *act = Some(ShotAct::Scroll);
+    }
+    if ui
+        .add_enabled(!steps_on, egui::Button::new(tr!("步驟截圖（做成教學文件）", "Step capture (step-by-step guide)")))
+        .on_hover_text(tr!(
+            "開始後每點一下滑鼠就截一張，標出點的位置；完成時做成一份圖文並茂的教學文件",
+            "Once started, every mouse click takes a screenshot with the click marked. When you finish, it becomes an illustrated step-by-step guide."
+        ))
+        .clicked()
+    {
+        *act = Some(ShotAct::Steps);
+    }
+    if ui.add_enabled(app.core.last_shot().is_some(), egui::Button::new(tr!("編輯上次截圖…", "Edit last screenshot…"))).clicked() {
+        *act = Some(ShotAct::EditLast);
+    }
+    ui.separator();
+    heading(ui, tr!("小工具", "Tools"));
+    if ui
+        .button(tr!("讀取 QR 碼…", "Read QR code…"))
+        .on_hover_text(tr!("框選畫面上的 QR 碼，讀出內容（網址可以直接開啟）", "Select a QR code on the screen to read it (links can be opened directly)"))
+        .clicked()
+    {
+        *act = Some(ShotAct::Qr);
+    }
+    if ui
+        .button(tr!("取色器…", "Color picker…"))
+        .on_hover_text(tr!(
+            "點一下畫面上的任何地方，色碼（例如 #1D4ED8）就複製到剪貼簿；有放大鏡可以對準",
+            "Click anywhere on the screen to copy its color code (e.g. #1D4ED8) to the clipboard. A magnifier helps you aim."
+        ))
+        .clicked()
+    {
+        *act = Some(ShotAct::Tool(false));
+    }
+    if ui
+        .button(tr!("尺規（量距離）…", "Ruler (measure distance)…"))
+        .on_hover_text(tr!("在畫面上拖曳，量出兩點之間有幾個像素與角度", "Drag on the screen to measure the distance in pixels and the angle between two points"))
+        .clicked()
+    {
+        *act = Some(ShotAct::Tool(true));
+    }
+    if item(ui, tr!("螢幕畫筆", "Screen pen").into(), 5, true) {
+        *act = Some(ShotAct::Pen);
+    }
+}
+
+/// 執行截圖選單選的動作（完成後由狀態更新顯示提示、更新清單）
+fn run_shot(app: &mut UiApp, act: ShotAct) {
+    use screenrecorder_core::types::SourceConfig;
+    let mut config = app.s.record_config(&app.env);
+    let core = app.core.clone();
+    let done = |app: &mut UiApp, r: screenrecorder_core::Result<()>| {
+        app.main.shooting = false;
+        if let Err(e) = r {
+            app.toast(e.message().to_string(), true);
         }
     };
-    egui::Popup::context_menu(&resp).show(|ui| menu(ui, &mut snip, &mut long, &mut steps, &mut qr, &mut tool));
-    egui::Popup::menu(&arrow).show(|ui| menu(ui, &mut snip, &mut long, &mut steps, &mut qr, &mut tool));
-    if let Some(ruler) = tool.filter(|_| can) {
-        app.main.shooting = true;
-        let config = app.s.record_config(&app.env);
-        let core = app.core.clone();
-        app.spawn(async move { core.screen_tool(&config, ruler).await }, |app, r| {
-            app.main.shooting = false;
-            match r {
-                Ok(Some(hex)) => app.toast(trf!("已複製色碼 {hex}", "Copied color code {hex}"), false),
-                Ok(None) => {}
-                Err(e) => app.toast(e.message().to_string(), true),
+    match act {
+        ShotAct::Select(sec) => {
+            app.main.shooting = true;
+            if sec > 0 {
+                app.toast(trf!("{sec} 秒後框選：現在先打開要截的選單或提示", "Selecting in {sec} s: open the menu or tooltip you want to capture now"), false);
             }
-        });
-    }
-    if qr && can {
-        app.main.shooting = true;
-        let config = app.s.record_config(&app.env);
-        let core = app.core.clone();
-        app.spawn(async move { core.qr_snip(&config).await }, |app, r| {
-            app.main.shooting = false;
-            match r {
-                Ok(Some(list)) => app.show_qr(list),
-                Ok(None) => {}
-                Err(e) => app.toast(e.message().to_string(), true),
+            app.spawn(
+                async move {
+                    tokio::time::sleep(std::time::Duration::from_secs(sec)).await;
+                    core.snip_begin(&config).await.map(|_| ())
+                },
+                done,
+            );
+        }
+        ShotAct::Area | ShotAct::Screen(_) | ShotAct::Last => {
+            match act {
+                ShotAct::Screen(Some(id)) => config.source = SourceConfig::Monitor { monitor_id: id },
+                ShotAct::Screen(None) => config.source = SourceConfig::All,
+                ShotAct::Last => match app.core.last_snip() {
+                    Some(r) => config.source = SourceConfig::Region { x: r.x as f64, y: r.y as f64, width: r.width as f64, height: r.height as f64 },
+                    None => return app.toast(tr!("還沒有框選過範圍", "You haven't selected an area yet"), true),
+                },
+                _ => {}
             }
-        });
-    }
-    if steps {
-        let dir = app.s.record_config(&app.env).output_dir;
-        match app.core.steps_start(&dir) {
+            app.main.shooting = true;
+            app.spawn(async move { core.screenshot(&config).await.map(|_| ()) }, done);
+        }
+        ShotAct::Scroll => {
+            app.main.shooting = true;
+            app.spawn(async move { core.long_shot(&config).await }, |app, r| {
+                app.main.shooting = false;
+                if let Err(e) = r {
+                    // 捲動時被捲的視窗在前面，操作視窗常在它後面：沒在前面時也用系統通知說明
+                    if app.ctx.input(|i| i.viewport().focused) != Some(true) {
+                        app.core.notify(tr!("長截圖", "Scrolling screenshot"), e.message(), true);
+                    }
+                    app.toast(e.message().to_string(), true);
+                }
+            });
+        }
+        ShotAct::Steps => match app.core.steps_start(&config.output_dir) {
             Ok(()) => {
                 app.toast(tr!("步驟截圖開始：之後每點一下滑鼠就截一張，做完後按「完成」", "Step capture started: every mouse click now takes a screenshot. Click “Finish” when you're done."), false)
             }
             Err(e) => app.toast(e.message().to_string(), true),
-        }
-    }
-    if long && can {
-        app.main.shooting = true;
-        let config = app.s.record_config(&app.env);
-        let core = app.core.clone();
-        app.spawn(async move { core.long_shot(&config).await }, |app, r| {
-            app.main.shooting = false;
-            if let Err(e) = r {
-                // 捲動時被捲的視窗在前面，操作視窗常在它後面：沒在前面時也用系統通知說明
-                if app.ctx.input(|i| i.viewport().focused) != Some(true) {
-                    app.core.notify(tr!("長截圖", "Scrolling screenshot"), e.message(), true);
-                }
-                app.toast(e.message().to_string(), true);
-            }
-        });
-    }
-    if let Some(sec) = snip.filter(|_| can) {
-        app.main.shooting = true;
-        let config = app.s.record_config(&app.env);
-        let core = app.core.clone();
-        if sec > 0 {
-            app.toast(trf!("{sec} 秒後框選：現在先打開要截的選單或提示", "Selecting in {sec} s: open the menu or tooltip you want to capture now"), false);
-        }
-        app.spawn(
-            async move {
-                tokio::time::sleep(std::time::Duration::from_secs(sec)).await;
-                core.snip_begin(&config).await
-            },
-            |app, r| {
+        },
+        ShotAct::EditLast => match app.core.last_shot() {
+            Some(_) if app.editor.is_some() => app.toast(tr!("編輯視窗已經開著，請先關閉", "The editor is already open. Close it first"), true),
+            Some(s) => super::editor::shot::open(app, s.path),
+            None => app.toast(tr!("還沒有截圖", "No screenshots yet"), true),
+        },
+        ShotAct::Qr => {
+            app.main.shooting = true;
+            app.spawn(async move { core.qr_snip(&config).await }, |app, r| {
                 app.main.shooting = false;
-                if let Err(e) = r {
-                    app.toast(e.message().to_string(), true);
+                match r {
+                    Ok(Some(list)) => app.show_qr(list),
+                    Ok(None) => {}
+                    Err(e) => app.toast(e.message().to_string(), true),
                 }
-            },
-        );
-    }
-    if resp.clicked() {
-        app.main.shooting = true;
-        let config = app.s.record_config(&app.env);
-        let core = app.core.clone();
-        app.spawn(async move { core.screenshot(&config).await }, |app, r| {
-            app.main.shooting = false;
-            if let Err(e) = r {
-                app.toast(e.message().to_string(), true);
-            }
-        });
+            });
+        }
+        ShotAct::Tool(ruler) => {
+            app.main.shooting = true;
+            app.spawn(async move { core.screen_tool(&config, ruler).await }, |app, r| {
+                app.main.shooting = false;
+                match r {
+                    Ok(Some(hex)) => app.toast(trf!("已複製色碼 {hex}", "Copied color code {hex}"), false),
+                    Ok(None) => {}
+                    Err(e) => app.toast(e.message().to_string(), true),
+                }
+            });
+        }
+        ShotAct::Pen => {
+            #[cfg(windows)]
+            screenrecorder_core::screen_pen_win::toggle();
+            #[cfg(not(windows))]
+            app.toast(tr!("螢幕畫筆只支援 Windows", "The screen pen is only available on Windows"), true);
+        }
     }
 }
 

@@ -342,11 +342,11 @@ impl Hotkeys {
 /// 每組快速鍵的名稱（依介面語言）
 pub fn hotkey_names() -> [&'static str; HOTKEY_COUNT] {
     crate::tr!(
-        ["開始 / 停止錄影", "暫停 / 繼續", "截圖（固定範圍）", "框選截圖", "錄影中加標記", "螢幕畫筆（開 / 關）", "重播（開始 / 存下）"],
+        ["開始 / 停止錄影", "暫停 / 繼續", "截圖（整個錄影範圍）", "框選截圖", "錄影中加標記", "螢幕畫筆（開 / 關）", "重播（開始 / 存下）"],
         [
             "Start / stop recording",
             "Pause / resume",
-            "Screenshot (fixed area)",
+            "Screenshot (whole recording area)",
             "Select area screenshot",
             "Add marker while recording",
             "Screen pen (on / off)",
