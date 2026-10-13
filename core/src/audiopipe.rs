@@ -17,7 +17,7 @@ use crate::{tr, trf};
 use std::collections::VecDeque;
 use std::io::{ErrorKind, Write};
 use std::net::{TcpListener, TcpStream};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::mpsc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -43,6 +43,13 @@ fn frames_100ns(d: f64) -> i64 {
 }
 
 pub type LogFn = Arc<dyn Fn(LogLevel, String) + Send + Sync>;
+
+/// 無法使用、以靜音代替的來源（Timeline::silent_mask、AudioPipe::silent；錄影狀態與結果的 silent_audio）
+pub const SILENT_SYSTEM: u8 = 1;
+pub const SILENT_MIC: u8 = 2;
+/// 錄影結果：只有一段是靜音（中途斷掉或中途才恢復）
+pub const PARTLY_SYSTEM: u8 = 4;
+pub const PARTLY_MIC: u8 = 8;
 
 /// 固定容量的 float32 環狀緩衝（交錯立體聲，以「每聲道取樣數」計）
 pub struct Ring {
@@ -190,6 +197,15 @@ pub struct Timeline {
     src_buf: Vec<f32>,
 }
 
+/// 這個來源在 SILENT_SYSTEM / SILENT_MIC 裡是哪一個
+fn source_bit(spec: &AudioSourceSpec) -> u8 {
+    if spec.loopback {
+        SILENT_SYSTEM
+    } else {
+        SILENT_MIC
+    }
+}
+
 /// 送給 FFmpeg 的聲道數：一般是立體聲；分軌時多了每個來源各自的立體聲
 pub fn channels_for(sources: usize, separate: bool) -> usize {
     if separate && sources > 1 {
@@ -224,6 +240,11 @@ impl Timeline {
             t.open(i, true, now);
         }
         t
+    }
+
+    /// 目前無法使用、以靜音代替的來源（SILENT_SYSTEM、SILENT_MIC）
+    pub fn silent_mask(&self) -> u8 {
+        self.sources.iter().filter(|s| s.cap.is_none()).map(|s| source_bit(&s.spec)).fold(0, |a, b| a | b)
     }
 
     pub fn describe(&self) -> String {
@@ -488,6 +509,10 @@ pub struct AudioPipe {
     channels: usize,
     desc: String,
     synced: Arc<AtomicBool>,
+    /// 目前以靜音代替的來源（SILENT_SYSTEM、SILENT_MIC）
+    silent: Arc<AtomicU8>,
+    /// 要錄的來源
+    sources: u8,
     tx: mpsc::Sender<Cmd>,
     thread: std::sync::Mutex<Option<std::thread::JoinHandle<()>>>,
 }
@@ -500,11 +525,16 @@ impl AudioPipe {
         listener.set_nonblocking(true)?;
         let port = listener.local_addr()?.port();
         let synced = Arc::new(AtomicBool::new(false));
+        let sources = specs.iter().map(source_bit).fold(0, |a, b| a | b);
+        // 裝置還沒回應前先當作可以用（開不了時下一個 tick 就會標出來）
+        let silent = Arc::new(AtomicU8::new(0));
         let (tx, rx) = mpsc::channel::<Cmd>();
         let (desc_tx, desc_rx) = mpsc::channel::<String>();
         let flag = synced.clone();
+        let silent_flag = silent.clone();
         let thread = std::thread::Builder::new().name("audio".into()).spawn(move || {
             let mut tl = Timeline::with_tracks(&specs, opener, log.clone(), now_100ns(), separate);
+            silent_flag.store(tl.silent_mask(), Ordering::Relaxed);
             let _ = desc_tx.send(tl.describe());
             let mut out = Output { listener, sock: None, pending: VecDeque::new(), overflow_warned: false, log };
             let mut next = Instant::now() + TICK;
@@ -524,6 +554,7 @@ impl AudioPipe {
                         let bytes = tl.tick(now_100ns());
                         out.write(bytes);
                         flag.store(tl.synced(), Ordering::Relaxed);
+                        silent_flag.store(tl.silent_mask(), Ordering::Relaxed);
                     }
                 }
             }
@@ -535,7 +566,7 @@ impl AudioPipe {
         })?;
         // 開啟音訊裝置卡住時不要一直等（錄影的開始、暫停、停止都在等這裡）：裝置稍後好了照樣會送聲音
         let desc = desc_rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap_or_else(|_| tr!("音訊裝置沒有回應", "Audio device isn't responding").to_string());
-        Ok(AudioPipe { port, channels, desc, synced, tx, thread: std::sync::Mutex::new(Some(thread)) })
+        Ok(AudioPipe { port, channels, desc, synced, silent, sources, tx, thread: std::sync::Mutex::new(Some(thread)) })
     }
 
     pub fn port(&self) -> u16 {
@@ -556,6 +587,16 @@ impl AudioPipe {
 
     pub fn synced(&self) -> bool {
         self.synced.load(Ordering::Relaxed)
+    }
+
+    /// 目前以靜音代替的來源（SILENT_SYSTEM、SILENT_MIC）
+    pub fn silent(&self) -> u8 {
+        self.silent.load(Ordering::Relaxed)
+    }
+
+    /// 要錄的來源（SILENT_SYSTEM、SILENT_MIC 的組合）
+    pub fn sources(&self) -> u8 {
+        self.sources
     }
 
     pub fn on_video_frame(&self, pts_sec: f64, arrival: i64) {
@@ -755,6 +796,8 @@ mod tests {
         let spec = AudioSourceSpec { loopback: false, mic_id: "x".into(), app: String::new() };
         let mut tl = Timeline::new(&[spec], fake_opener(packets, fail.clone()), log, 0);
         assert_eq!(tl.describe(), "麥克風（無法使用，改錄靜音）");
+        // 錄影面板標成紅色、系統通知用
+        assert_eq!(tl.silent_mask(), SILENT_MIC);
         tl.on_video_frame(0.0, 0);
         let out = floats(tl.flush_to(100 * MS));
         assert_eq!(out.len(), 100 * 48 * CHANNELS);
@@ -764,11 +807,13 @@ mod tests {
         assert_eq!(tl.describe(), "麥克風（無法使用，改錄靜音）");
         tl.tick(3000 * MS);
         assert_eq!(tl.describe(), "麥克風（假裝置）");
+        assert_eq!(tl.silent_mask(), 0);
         assert!(messages.lock().unwrap().iter().any(|m| m.contains("已恢復")));
         // 裝置中斷：改以靜音代替
         fail.store(true, Ordering::Relaxed);
         tl.tick(3100 * MS);
         assert!(messages.lock().unwrap().iter().any(|m| m.contains("中斷")));
+        assert_eq!(tl.silent_mask(), SILENT_MIC);
     }
 
     #[test]
@@ -781,6 +826,7 @@ mod tests {
         // 只有一個來源：分軌沒有作用，照樣是立體聲
         assert!(pipe.input_args().windows(2).any(|w| w == ["-ac", "2"]));
         assert_eq!(pipe.describe(), "系統聲音（假裝置）");
+        assert_eq!((pipe.sources(), pipe.silent()), (SILENT_SYSTEM, 0));
         let args = pipe.input_args();
         assert_eq!(args.last().unwrap(), &format!("tcp://127.0.0.1:{}", pipe.port()));
         let mut conn = TcpStream::connect(("127.0.0.1", pipe.port())).unwrap();

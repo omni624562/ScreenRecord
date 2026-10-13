@@ -115,12 +115,23 @@ pub struct UiSettings {
     pub window_capture: bool,
     /// 系統聲音與麥克風分開存（分軌）
     pub separate_audio: bool,
-    /// 重播緩衝保留最近幾秒（core 的 replay.rs 也讀這個欄位：快速鍵、系統匣開始時用）
+    /// 回溯錄影保留最近幾秒（core 的 replay.rs 也讀這個欄位：快速鍵、系統匣開始時用）
     pub replay_sec: u32,
     /// 主畫面展開事件紀錄（預設收起來）
     pub show_log: bool,
     /// 之前用過的儲存位置（全部錄影的資料夾選單；最近用的在前，最多 RECENT_DIRS 個）
     pub recent_dirs: Vec<String>,
+    /// 只錄聲音時另存一份 M4A（core 的 after_record.rs 讀這個欄位）
+    pub audio_m4a: bool,
+    /// 外觀："system"（跟著 Windows）、"light"、"dark"
+    pub theme: String,
+    /// 已經說明過「關掉視窗後仍在系統匣執行」（只在第一次關掉時通知）
+    pub hide_notice_shown: bool,
+    /// 上次切換或儲存的設定組合（目前的設定和它不一樣時顯示「已修改」）
+    pub preset_name: String,
+    /// 等待中的排程錄影（core 的 schedule.rs 存進來；這裡只是原樣保留，並跟著 core 的狀態更新）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub schedule: Option<Value>,
 }
 
 /// 記住幾個用過的儲存位置
@@ -132,6 +143,8 @@ pub const NOTES_OPACITY_MIN: u32 = 40;
 
 /// 介面大小可選的百分比
 pub const UI_SCALES: [u32; 4] = [100, 110, 125, 150];
+/// 主畫面至少要這麼大（點）才放得下：螢幕放大後比這個小的介面大小不能選
+pub const UI_MIN_SIZE: (f32, f32) = (1000.0, 600.0);
 
 /// 自訂範圍跟著的視窗
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -242,6 +255,11 @@ impl UiSettings {
                 .filter(|d| !d.is_empty())
                 .take(RECENT_DIRS)
                 .collect(),
+            audio_m4a: screenrecorder_core::after_record::audio_m4a(v),
+            theme: string("theme").filter(|v| ["light", "dark"].contains(&v.as_str())).unwrap_or_else(|| "system".into()),
+            hide_notice_shown: boolean("hideNoticeShown").unwrap_or(false),
+            preset_name: string("presetName").unwrap_or_default(),
+            schedule: o.get(screenrecorder_core::schedule::UI_KEY).cloned(),
         };
         s.fix_monitor(env);
         s

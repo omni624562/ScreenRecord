@@ -10,7 +10,40 @@ use crate::types::{AudioConfig, HotkeyStatus, Hotkeys, MethodPreference, RecordC
 use crate::version::APP_VERSION;
 use crate::{tr, trf};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+
+/// 操作視窗有還沒儲存的修改（剪輯視窗）：結束程式前要先問（操作視窗每一格更新）
+static UI_UNSAVED: AtomicBool = AtomicBool::new(false);
+/// 系統匣選了「結束」但要先問：等操作視窗顯示確認對話框
+static QUIT_ASKED: AtomicBool = AtomicBool::new(false);
+/// 操作視窗改了「開機時自動啟動」：系統匣重新讀取勾選狀態
+static AUTOSTART_CHANGED: AtomicBool = AtomicBool::new(false);
+
+/// 操作視窗回報：剪輯視窗有沒有還沒儲存的修改
+pub fn set_ui_unsaved(on: bool) {
+    UI_UNSAVED.store(on, Ordering::Relaxed);
+}
+
+/// 操作視窗取出「要先問才結束」的要求（取出後清掉）
+pub fn take_quit_request() -> bool {
+    QUIT_ASKED.swap(false, Ordering::Relaxed)
+}
+
+/// 操作視窗改了開機自動啟動：系統匣選單的勾選跟著更新
+pub fn autostart_changed() {
+    AUTOSTART_CHANGED.store(true, Ordering::Relaxed);
+}
+
+/// 結束程式（系統匣「結束」、新版接手）：剪輯視窗有還沒儲存的修改、或有排程錄影時，先打開操作視窗問
+pub async fn quit_or_ask(app: &Arc<App>) {
+    if UI_UNSAVED.load(Ordering::Relaxed) || app.scheduled().is_some() {
+        QUIT_ASKED.store(true, Ordering::Relaxed);
+        app.open_ui(UiPage::Main);
+    } else {
+        app.quit(0).await;
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TrayCommand {
@@ -69,7 +102,7 @@ pub enum TrayCommand {
     Mark,
     /// 螢幕畫筆（開 / 關）
     Pen,
-    /// 重播緩衝：沒在錄影時開始，重播緩衝中存下最近幾分鐘（選單與快速鍵）
+    /// 回溯錄影：沒在錄影時開始，回溯錄影中存下最近幾分鐘（選單與快速鍵）
     Replay,
     OpenUpdate,
     Quit,
@@ -96,7 +129,7 @@ pub struct TrayState {
     pub preset: Option<usize>,
     /// 排程錄影（例如「今天 10:30 開始，錄 30 分鐘」）
     pub scheduled: Option<String>,
-    /// 是否能開始錄影（有 FFmpeg、沒有轉檔工作）
+    /// 是否能開始錄影（有 FFmpeg）
     pub can_record: bool,
     /// 是否能截圖（有 FFmpeg）
     pub can_shot: bool,
@@ -106,9 +139,9 @@ pub struct TrayState {
     pub has_shot: bool,
     /// 步驟截圖進行中：已經截了幾步
     pub steps: Option<u32>,
-    /// 重播緩衝的長度（例如「2 分鐘」）
+    /// 回溯錄影的長度（例如「2 分鐘」）
     pub replay_len: String,
-    /// 重播緩衝中
+    /// 回溯錄影中
     pub replay: bool,
     pub last_result: Option<String>,
     /// None = 無法設定（開發版）
@@ -218,7 +251,8 @@ impl TrayController {
         let has_shot = self.app.last_shot().is_some_and(|s| self.shot_exists(&s.path));
         // 檔案、設定都先查好再鎖：鎖住時不讀磁碟（網路磁碟可能卡住好幾秒，其他地方會跟著等）
         let (can_record, can_shot, has_last_snip, steps, update, keys) = (
-            self.app.ffmpeg_path().is_some() && !self.app.exporter.running(),
+            // 有轉檔工作時也能錄（錄影優先，轉檔讓出來）
+            self.app.ffmpeg_path().is_some(),
             self.app.ffmpeg_path().is_some(),
             self.app.last_snip().is_some(),
             self.app.steps_count(),
@@ -232,7 +266,7 @@ impl TrayController {
         TrayState {
             rec: st.state,
             tip: match (&scheduled, st.state) {
-                _ if st.replay.is_some() => trf!("螢幕錄影 {APP_VERSION} — 重播緩衝中（最近 {replay_len}）", "Screen Recorder {APP_VERSION} — Replay buffer (last {replay_len})"),
+                _ if st.replay.is_some() => trf!("螢幕錄影 {APP_VERSION} — 回溯錄影中（最近 {replay_len}）", "Screen Recorder {APP_VERSION} — Replay buffer (last {replay_len})"),
                 (Some(s), RecorderState::Idle) => trf!("螢幕錄影 {APP_VERSION} — 排程：{s}", "Screen Recorder {APP_VERSION} — Scheduled: {s}"),
                 _ => trf!("螢幕錄影 {APP_VERSION} — {}{time}", "Screen Recorder {APP_VERSION} — {}{time}", state_text(st.state)),
             },
@@ -363,6 +397,10 @@ impl TrayController {
         let Some(p) = saved.presets.get(i) else { return };
         let mut ui = saved.ui.clone().unwrap_or_default();
         p.apply_to(&mut ui);
+        // 操作視窗顯示「組合：…」用
+        if let Some(o) = ui.as_object_mut() {
+            o.insert("presetName".into(), serde_json::Value::String(p.name.clone()));
+        }
         let config = p.record_config().and_then(|c| serde_json::to_value(c).ok());
         info!("[系統匣] 切換設定組合：{}", p.name);
         self.app.settings.save(SettingsPatch { ui: Some(ui), config, ..Default::default() });
@@ -418,7 +456,7 @@ impl TrayController {
             }
             TrayCommand::Quit => {
                 let app = app.clone();
-                tokio::spawn(async move { app.quit(0).await });
+                tokio::spawn(async move { quit_or_ask(&app).await });
                 return Ok(());
             }
             // 開啟操作視窗：右上角的「有新版本」可以直接更新
@@ -602,10 +640,6 @@ impl TrayController {
             }
             TrayCommand::StartLast | TrayCommand::StartAll | TrayCommand::StartMonitor(_) | TrayCommand::StartSelect | TrayCommand::StartLastSnip => self.config(),
         };
-        // 開始錄影
-        if app.exporter.running() {
-            return Err(tr!("轉檔進行中，請等它完成再錄影", "A video is being processed. Wait for it to finish before recording.").into());
-        }
         // 指定了要錄的範圍：錄畫面（不是只錄聲音）
         if cmd != TrayCommand::StartLast {
             cfg.audio_only = false;
@@ -634,6 +668,14 @@ impl TrayController {
                     });
             }
             _ => {}
+        }
+        // 錄影優先：錄完自動處理先暫停（錄完再接著做），手動的轉檔停止並通知
+        if let Some(what) = crate::actions::yield_jobs(app).await {
+            self.notify(
+                tr!("已停止轉檔", "Conversion stopped"),
+                &trf!("為了開始錄影，已停止「{what}」；錄完後可以再做一次", "“{what}” was stopped so recording could start. You can do it again afterwards."),
+                true,
+            );
         }
         rec.start(cfg).await.map_err(err)
     }
@@ -679,6 +721,10 @@ pub async fn start(app: &Arc<App>, wait: std::time::Duration) -> bool {
             let mut iv = tokio::time::interval(std::time::Duration::from_secs(1));
             loop {
                 iv.tick().await;
+                if AUTOSTART_CHANGED.swap(false, Ordering::Relaxed) {
+                    let now = crate::desktop::get_autostart().await;
+                    ctl.ctl.lock().unwrap().autostart = now;
+                }
                 ctl.tick();
             }
         });

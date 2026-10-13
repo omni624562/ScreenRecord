@@ -30,7 +30,7 @@ const WM_WAKE: u32 = WM_APP + 2;
 const NIN_BALLOONUSERCLICK: u32 = 0x405;
 /// 圖示加不上去時重試的計時器
 const RETRY_TIMER: usize = 7;
-/// 全域快速鍵的 id：1 錄影、2 暫停、3 截圖、4 框選截圖、5 加標記、6 螢幕畫筆、7 重播緩衝（與 Hotkeys::all 的順序相同）
+/// 全域快速鍵的 id：1 錄影、2 暫停、3 截圖、4 框選截圖、5 加標記、6 螢幕畫筆、7 回溯錄影（與 Hotkeys::all 的順序相同）
 const HOTKEY_IDS: [i32; crate::types::HOTKEY_COUNT] = [1, 2, 3, 4, 5, 6, 7];
 
 /// 登記全域快速鍵（先取消舊的）；被其他程式占用時登記失敗，停用的視為成功
@@ -388,11 +388,11 @@ fn show_menu() {
             m.add(pick, tr!("重複上次框選(&R)", "Re&peat last selection"), TrayCommand::StartLastSnip, !st.has_last_snip, false);
             Menu::sub(root, tr!("錄製其他範圍(&M)", "Record another ar&ea"), pick, !idle || !st.can_record);
         }
-        // 重播緩衝：在背景一直錄、只留最近幾分鐘，需要時再存下
+        // 回溯錄影：在背景一直錄、只留最近幾分鐘，需要時再存下
         if st.replay {
             m.add(root, &trf!("存下最近 {}(&B){}", "Save the last {}{}", st.replay_len, tab(&st.keys[6])), TrayCommand::Replay, false, false);
         } else {
-            m.add(root, &trf!("開始重播緩衝（最近 {}）(&B){}", "Start replay &buffer (last {}){}", st.replay_len, tab(&st.keys[6])), TrayCommand::Replay, !idle || !st.can_record, false);
+            m.add(root, &trf!("開始回溯錄影（最近 {}）(&B){}", "Start replay &buffer (last {}){}", st.replay_len, tab(&st.keys[6])), TrayCommand::Replay, !idle || !st.can_record, false);
         }
         // 錄影設定組合：勾選的是目前的設定
         if let Ok(sets) = CreatePopupMenu() {
@@ -416,15 +416,16 @@ fn show_menu() {
         if st.rec == RecorderState::Countdown {
             m.add(root, tr!("取消倒數(&S)", "&Cancel countdown"), TrayCommand::Stop, false, false);
         } else if st.replay {
-            m.add(root, tr!("停止重播緩衝(&S)", "&Stop replay buffer"), TrayCommand::Stop, st.rec == RecorderState::Stopping, false);
+            m.add(root, tr!("停止回溯錄影(&S)", "&Stop replay buffer"), TrayCommand::Stop, st.rec == RecorderState::Stopping, false);
         } else {
             m.add(root, &trf!("停止並儲存(&S){}", "&Stop and save{}", tab(&st.keys[0])), TrayCommand::Stop, idle || st.rec == RecorderState::Stopping, false);
         }
         m.add(root, &trf!("加標記(&K){}", "Add &marker{}", tab(&st.keys[4])), TrayCommand::Mark, !matches!(st.rec, RecorderState::Recording | RecorderState::Paused) || st.replay, false);
         m.add(root, &trf!("螢幕畫筆(&D){}", "Screen pe&n{}", tab(&st.keys[5])), TrayCommand::Pen, false, crate::screen_pen_win::active());
         Menu::sep(root);
-        // 截圖：框選範圍或點選視窗、全螢幕、固定範圍（主畫面的錄影範圍）、重複上次框選
+        // 截圖：與主畫面截圖的小箭頭選單相同的項目、順序與文字（「截圖方式」「小工具」兩組，標題是灰色的項目）
         if let Ok(shot) = CreatePopupMenu() {
+            m.add(shot, tr!("截圖方式", "Screenshot"), TrayCommand::Open, true, false);
             m.add(shot, &trf!("框選範圍或視窗(&A)…{}", "Select &area or window…{}", tab(&st.keys[3])), TrayCommand::ScreenshotSelect, false, false);
             if let Ok(delay) = CreatePopupMenu() {
                 for sec in [3u64, 5, 10] {
@@ -432,11 +433,7 @@ fn show_menu() {
                 }
                 Menu::sub(shot, tr!("延遲框選(&D)", "&Delayed selection"), delay, false);
             }
-            m.add(shot, tr!("長截圖（捲動）(&L)…", "Scro&lling screenshot…"), TrayCommand::ScreenshotScroll, false, false);
-            m.add(shot, tr!("讀取 QR 碼(&Q)…", "Read &QR code…"), TrayCommand::ScreenshotQr, false, false);
-            m.add(shot, tr!("取色器(&C)…", "&Color picker…"), TrayCommand::ScreenColor, false, false);
-            m.add(shot, tr!("尺規（量距離）(&R)…", "&Ruler (measure distance)…"), TrayCommand::ScreenRuler, false, false);
-            m.add(shot, tr!("步驟截圖（做成教學文件）(&P)", "S&tep capture (step-by-step guide)"), TrayCommand::StepsStart, st.steps.is_some(), false);
+            m.add(shot, &trf!("整個錄影範圍(&X)：{}{}", "Whole recording area: {}{}", st.last_source, tab(&st.keys[2])), TrayCommand::Screenshot, false, false);
             if let Ok(full) = CreatePopupMenu() {
                 for mon in &st.monitors {
                     m.add(full, &mon.label, TrayCommand::ScreenshotMonitor(mon.id.clone()), false, false);
@@ -447,11 +444,16 @@ fn show_menu() {
                 }
                 Menu::sub(shot, tr!("全螢幕(&F)", "&Full screen"), full, st.monitors.is_empty());
             }
-            m.add(shot, &trf!("固定範圍(&X)：{}{}", "Fi&xed area: {}{}", st.last_source, tab(&st.keys[2])), TrayCommand::Screenshot, false, false);
-            Menu::sep(shot);
-            m.add(shot, tr!("重複上次框選(&R)", "Re&peat last selection"), TrayCommand::ScreenshotLast, !st.has_last_snip, false);
-            Menu::sep(shot);
+            m.add(shot, tr!("重複上次框選(&Y)", "Re&peat last selection"), TrayCommand::ScreenshotLast, !st.has_last_snip, false);
+            m.add(shot, tr!("長截圖（捲動）(&L)…", "Scro&lling screenshot…"), TrayCommand::ScreenshotScroll, false, false);
+            m.add(shot, tr!("步驟截圖（做成教學文件）(&P)", "S&tep capture (step-by-step guide)"), TrayCommand::StepsStart, st.steps.is_some(), false);
             m.add(shot, tr!("編輯上次截圖(&E)…", "&Edit last screenshot…"), TrayCommand::EditLastShot, !st.has_shot, false);
+            Menu::sep(shot);
+            m.add(shot, tr!("小工具", "Tools"), TrayCommand::Open, true, false);
+            m.add(shot, tr!("讀取 QR 碼(&Q)…", "Read &QR code…"), TrayCommand::ScreenshotQr, false, false);
+            m.add(shot, tr!("取色器(&C)…", "&Color picker…"), TrayCommand::ScreenColor, false, false);
+            m.add(shot, tr!("尺規（量距離）(&R)…", "&Ruler (measure distance)…"), TrayCommand::ScreenRuler, false, false);
+            m.add(shot, &trf!("螢幕畫筆(&N){}", "Screen pe&n{}", tab(&st.keys[5])), TrayCommand::Pen, false, crate::screen_pen_win::active());
             Menu::sub(root, tr!("截圖(&T)", "Screensho&t"), shot, !st.can_shot);
         }
         // 步驟截圖進行中：放在最上層，隨時可以完成

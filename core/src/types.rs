@@ -342,11 +342,11 @@ impl Hotkeys {
 /// 每組快速鍵的名稱（依介面語言）
 pub fn hotkey_names() -> [&'static str; HOTKEY_COUNT] {
     crate::tr!(
-        ["開始 / 停止錄影", "暫停 / 繼續", "截圖（固定範圍）", "框選截圖", "錄影中加標記", "螢幕畫筆（開 / 關）", "重播（開始 / 存下）"],
+        ["開始 / 停止錄影", "暫停 / 繼續", "截圖（整個錄影範圍）", "框選截圖", "錄影中加標記", "螢幕畫筆（開 / 關）", "回溯錄影（開始 / 存下）"],
         [
             "Start / stop recording",
             "Pause / resume",
-            "Screenshot (fixed area)",
+            "Screenshot (whole recording area)",
             "Select area screenshot",
             "Add marker while recording",
             "Screen pen (on / off)",
@@ -483,6 +483,9 @@ pub struct RecordingResult {
     /// 合併失敗時保留的分段資料夾
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parts_dir: Option<String>,
+    /// 沒錄到的聲音（audiopipe::SILENT_* 全部是靜音、PARTLY_* 有一段是靜音）：結果卡說明
+    #[serde(default, skip_serializing_if = "is_zero_u8")]
+    pub silent_audio: u8,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -545,6 +548,9 @@ pub struct RecorderStatus {
     /// 重播緩衝中（不是一般錄影）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub replay: Option<ReplayStatus>,
+    /// 以靜音代替的聲音來源（audiopipe::SILENT_SYSTEM、SILENT_MIC）：錄影面板標成紅色
+    #[serde(default, skip_serializing_if = "is_zero_u8")]
+    pub silent_audio: u8,
 }
 
 /// 重播緩衝的狀態
@@ -562,6 +568,10 @@ pub struct ReplayStatus {
     /// 最近存下的檔案
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last: Option<String>,
+}
+
+fn is_zero_u8(v: &u8) -> bool {
+    *v == 0
 }
 
 fn is_zero_u32(v: &u32) -> bool {

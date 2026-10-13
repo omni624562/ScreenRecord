@@ -1,7 +1,7 @@
-//! 設定視窗：左邊分頁（錄影 / 聲音 / 儲存位置 / 快速鍵 / 進階），右邊表單（標籤固定寬度，控制項對齊）。
+//! 設定視窗：左邊分頁（錄影 / 聲音 / 儲存位置 / 錄完處理 / 快速鍵 / 進階），右邊表單（標籤固定寬度，控制項對齊）。
 //! 主畫面下方只留摘要，點一下開到對應的分頁。
 
-use super::settings::{FPS_CHOICES, MAX_MB, MAX_PRESETS, UI_SCALES};
+use super::settings::{FPS_CHOICES, MAX_MB, MAX_PRESETS, UI_MIN_SIZE, UI_SCALES};
 use super::theme::{self, segmented, switch, Btn, Icon};
 use super::{main_view, UiApp};
 use eframe::egui::{self, pos2, vec2, Align, Color32, CornerRadius, Id, Layout, Rect, RichText, Sense, Stroke, Ui, UiBuilder};
@@ -16,15 +16,18 @@ pub enum Page {
     Record,
     Audio,
     Save,
+    /// 錄完自動處理
+    After,
     Keys,
     Advanced,
 }
 
 /// 分頁：中文名稱、英文名稱、圖示
-const PAGES: [(Page, &str, &str, Icon); 5] = [
+const PAGES: [(Page, &str, &str, Icon); 6] = [
     (Page::Record, "錄影", "Recording", Icon::Video),
     (Page::Audio, "聲音", "Audio", Icon::Speaker),
     (Page::Save, "儲存位置", "Save location", Icon::Folder),
+    (Page::After, "錄完處理", "After recording", Icon::Cut),
     (Page::Keys, "快速鍵", "Shortcuts", Icon::Keyboard),
     (Page::Advanced, "進階", "Advanced", Icon::Settings),
 ];
@@ -35,22 +38,28 @@ pub struct SettingsDialog {
     max_custom_open: bool,
     /// 正在設定第幾個快速鍵（等使用者按下新的組合）
     key_capture: Option<usize>,
-    key_msg: Option<String>,
+    /// 快速鍵的提示（第幾列、內容）：顯示在那一列下面
+    key_msg: Option<(usize, String)>,
+    /// 按下的組合已經用在別的功能：(這一列, 用到的那一列, 組合)，可以改用這組、原本的停用
+    key_conflict: Option<(usize, usize, Hotkey)>,
     /// 有視窗的程式（系統聲音只錄某個程式用；None = 還沒找）
     apps: Option<Vec<screenrecorder_core::winui::AppInfo>>,
+    /// 開機時自動啟動：None = 還沒讀；Some(None) = 不能設定（開發版）
+    autostart: Option<Option<bool>>,
+    autostart_busy: bool,
 }
 
 pub fn open(app: &mut UiApp, page: Page) {
     match &mut app.settings_dlg {
         Some(d) => d.page = page,
-        None => app.settings_dlg = Some(SettingsDialog { page, max_custom_open: false, key_capture: None, key_msg: None, apps: None }),
+        None => app.settings_dlg = Some(SettingsDialog { page, max_custom_open: false, key_capture: None, key_msg: None, key_conflict: None, apps: None, autostart: None, autostart_busy: false }),
     }
 }
 
-/// 主畫面摘要：錄影（第一項一定是 FPS）
+/// 主畫面摘要：錄影（第一項一定是每秒張數）
 pub fn record_summary(app: &UiApp) -> Vec<String> {
     let s = &app.s;
-    let mut v = vec![format!("{} FPS", s.fps)];
+    let mut v = vec![trf!("每秒 {} 張", "{} fps", s.fps)];
     if s.scale != 100 {
         v.push(trf!("解析度 {}%", "Resolution {}%", s.scale));
     }
@@ -148,8 +157,9 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                     Page::Record => record_page(app, &mut d, ui),
                     Page::Audio => audio_page(app, &mut d, ui),
                     Page::Save => save_page(app, ui),
+                    Page::After => after_record_section(app, ui),
                     Page::Keys => keys_page(app, &mut d, ui),
-                    Page::Advanced => advanced_page(app, ui),
+                    Page::Advanced => advanced_page(app, &mut d, ui),
                 });
             });
         }
@@ -361,9 +371,9 @@ fn record_page(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
     form_section(ui, tr!("畫面", "Video"), |_| {});
     form_row(ui, tr!("每秒張數", "Frame rate"), |ui| {
         let mut fps = app.s.fps;
-        let mut items: Vec<(f64, String, bool)> = FPS_CHOICES.iter().map(|f| (*f, format!("{f} FPS"), true)).collect();
+        let mut items: Vec<(f64, String, bool)> = FPS_CHOICES.iter().map(|f| (*f, trf!("每秒 {f} 張", "{f} fps"), true)).collect();
         if !FPS_CHOICES.contains(&fps) {
-            items.push((fps, format!("{fps} FPS"), true));
+            items.push((fps, trf!("每秒 {fps} 張", "{fps} fps"), true));
         }
         if form_combo(ui, "fps", FORM_CTRL_W, &mut fps, &items) {
             app.s.fps = fps;
@@ -726,8 +736,6 @@ fn save_page(app: &mut UiApp, ui: &mut Ui) {
         ui.label(RichText::new(tr!("Shot_年-月-日_時-分-秒.png", "Shot_YYYY-MM-DD_HH-MM-SS.png")).font(theme::mono(12.5)));
     });
     form_hint(ui, tr!("加速版、GIF、剪輯版存在同一個資料夾，檔名接在原檔後面。", "Sped-up versions, GIFs and edited versions are saved in the same folder, named after the original file."), p.muted);
-    form_divider(ui);
-    after_record_section(app, ui);
 }
 
 /// 用 Windows 的視窗選儲存位置（主畫面下方的資料夾按鈕也用）
@@ -750,6 +758,9 @@ fn set_output_dir(app: &mut UiApp, value: String) {
     if app.s.output_dir == value {
         return;
     }
+    // 原本的資料夾記下來（全部錄影可以切回之前用過的資料夾）
+    let old = app.s.out_dir(&app.env);
+    super::library_dialog::remember_dir(app, &old);
     app.s.output_dir = value;
     app.save_settings();
     // 重新讀取最近錄影
@@ -823,8 +834,8 @@ fn after_record_section(app: &mut UiApp, ui: &mut Ui) {
     form_hint(
         ui,
         tr!(
-            "錄影存好後依序處理（有剪輯版時，字幕與壓縮用剪輯版），錄影面板顯示進度、可以取消；新的錄影、手動的轉檔優先。系統匣、快速鍵、排程的錄影也會處理。",
-            "Runs in order after each recording is saved (subtitles and compression use the edited version when there is one). The recording panel shows progress and lets you cancel; new recordings and manual conversions go first. Recordings started from the tray, shortcuts or a schedule are processed too."
+            "錄影存好後依序處理（有剪輯版時，字幕與壓縮用剪輯版），錄影面板顯示進度、可以取消。處理中開始錄影時會先暫停，錄完再繼續；手動的轉檔也優先。系統匣、快速鍵、排程的錄影也會處理。",
+            "Runs in order after each recording is saved (subtitles and compression use the edited version when there is one). The recording panel shows progress and lets you cancel. If you start recording meanwhile, it pauses and continues afterwards; manual conversions go first too. Recordings started from the tray, shortcuts or a schedule are processed too."
         ),
         p.muted,
     );
@@ -832,7 +843,7 @@ fn after_record_section(app: &mut UiApp, ui: &mut Ui) {
 
 // ───────────── 進階 ─────────────
 
-fn advanced_page(app: &mut UiApp, ui: &mut Ui) {
+fn advanced_page(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
     let p = theme::pal(ui);
     form_section(ui, tr!("介面", "Interface"), |_| {});
     // 兩種語言都寫，選錯語言時也找得到
@@ -847,20 +858,88 @@ fn advanced_page(app: &mut UiApp, ui: &mut Ui) {
             app.save_settings();
         }
     });
-    form_row(ui, tr!("介面大小", "Interface size"), |ui| {
-        let mut z = app.s.ui_scale;
-        let items: Vec<(u32, String)> = UI_SCALES.iter().map(|v| (*v, format!("{v}%"))).collect();
-        let refs: Vec<(u32, &str)> = items.iter().map(|(v, t)| (*v, t.as_str())).collect();
-        if segmented(ui, &mut z, &refs, true) {
-            app.s.ui_scale = z;
+    form_row(ui, tr!("外觀", "Appearance"), |ui| {
+        let mut t = app.s.theme.clone();
+        let items = [("system".to_string(), tr!("跟著 Windows", "Follow Windows")), ("light".into(), tr!("淺色", "Light")), ("dark".into(), tr!("深色", "Dark"))];
+        let refs: Vec<(&str, &str)> = items.iter().map(|(v, l)| (v.as_str(), *l)).collect();
+        let mut cur = refs.iter().find(|(v, _)| *v == t.as_str()).map(|(v, _)| *v).unwrap_or("system");
+        if segmented(ui, &mut cur, &refs, true) {
+            t = cur.to_string();
+            app.s.theme = t;
             app.save_settings();
         }
     });
-    form_hint(
-        ui,
-        tr!("字和按鈕放大一點比較好看清楚；螢幕小（例如 1366×768）時建議 100%。", "Larger text and buttons are easier to read. On small screens (e.g. 1366×768), 100% is recommended."),
-        p.muted,
-    );
+    // 螢幕太小時，放大後主畫面放不下（按鈕會被擋住）：那些大小不能選（目前用的除外）
+    let base = ui.ctx().input(|i| i.viewport().monitor_size).filter(|m| m.x > 0.0 && m.y > 0.0).map(|m| m * ui.ctx().zoom_factor());
+    let fits = |v: u32| base.is_none_or(|b| b.x * 100.0 / v as f32 >= UI_MIN_SIZE.0 && b.y * 100.0 / v as f32 >= UI_MIN_SIZE.1);
+    form_row(ui, tr!("介面大小", "Interface size"), |ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        for v in UI_SCALES {
+            let on = app.s.ui_scale == v;
+            let ok = on || fits(v);
+            let tip = if ok { "" } else { tr!("螢幕太小，放大後按鈕會被擋住", "The screen is too small; buttons would be cut off at this size") };
+            if Btn::new(format!("{v}%")).small().selected(on).enabled(ok).min_width(58.0).tooltip(tip).show(ui).clicked() && !on {
+                app.s.ui_scale = v;
+                app.save_settings();
+            }
+        }
+    });
+    if !fits(app.s.ui_scale) {
+        // 目前的大小就放不下：建議放得下的最大的
+        let best = UI_SCALES.iter().rev().find(|v| fits(**v)).copied().unwrap_or(100);
+        form_hint(ui, trf!("螢幕太小，放大後按鈕會被擋住，建議改成 {best}%。", "The screen is too small and buttons get cut off at this size. {best}% is recommended."), p.warn);
+    } else if UI_SCALES.iter().any(|v| !fits(*v)) {
+        form_hint(ui, tr!("螢幕太小，放大後按鈕會被擋住：灰色的大小不能選。", "The screen is too small: buttons would be cut off at the greyed-out sizes."), p.muted);
+    } else {
+        form_hint(ui, tr!("字和按鈕放大一點比較好看清楚。", "Larger text and buttons are easier to read."), p.muted);
+    }
+    // 開機時自動啟動（與系統匣選單的同一個設定）：第一次看到時讀取
+    if d.autostart.is_none() && !d.autostart_busy {
+        d.autostart_busy = true;
+        app.spawn(screenrecorder_core::desktop::get_autostart(), |app, v| {
+            if let Some(d) = &mut app.settings_dlg {
+                d.autostart = Some(v);
+                d.autostart_busy = false;
+            }
+        });
+    }
+    form_row(ui, tr!("開機", "Startup"), |ui| {
+        let state = d.autostart.flatten();
+        let mut on = state == Some(true);
+        let can = state.is_some() && !d.autostart_busy;
+        if switch(ui, &mut on, tr!("開機時自動啟動（常駐在系統匣）", "Start with Windows (in the system tray)"), can).changed() {
+            d.autostart_busy = true;
+            app.spawn(
+                async move {
+                    let r = screenrecorder_core::desktop::set_autostart(on).await;
+                    (r, screenrecorder_core::desktop::get_autostart().await)
+                },
+                |app, (r, now)| {
+                    if let Some(d) = &mut app.settings_dlg {
+                        d.autostart = Some(now);
+                        d.autostart_busy = false;
+                    }
+                    screenrecorder_core::tray::autostart_changed();
+                    if let Err(e) = r {
+                        app.toast(e.message().to_string(), true);
+                    }
+                },
+            );
+        }
+    });
+    if d.autostart == Some(None) {
+        form_hint(ui, tr!("開發版不能設定開機自動啟動。", "Start with Windows can't be set in development builds."), p.muted);
+    }
+    form_row(ui, tr!("程式", "App"), |ui| {
+        if Btn::new(tr!("結束程式", "Quit"))
+            .small()
+            .tooltip(tr!("完全結束螢幕錄影（關掉視窗只是收到系統匣）", "Quit Screen Recorder completely (closing the window only hides it in the tray)"))
+            .show(ui)
+            .clicked()
+        {
+            app.request_quit();
+        }
+    });
     form_divider(ui);
     form_section(ui, tr!("擷取與編碼", "Capture and encoding"), |_| {});
     form_row(ui, tr!("擷取方式", "Capture method"), |ui| {
@@ -1028,33 +1107,35 @@ fn keys_page(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
         p.muted,
     );
     ui.add_space(6.0);
-    for (i, &name) in screenrecorder_core::types::hotkey_names().iter().enumerate().take(ok.len()) {
-        form_row(ui, name, |ui| {
+    let names = screenrecorder_core::types::hotkey_names();
+    let mut take_conflict = None;
+    for (i, &name) in names.iter().enumerate().take(ok.len()) {
+        key_row(ui, name, |ui| {
             let capturing = d.key_capture == Some(i);
             let label = app.keys.label(i);
+            let busy = !ok[i] && !label.is_empty();
             let text = if capturing {
                 tr!("請按下組合鍵…", "Press a key combination…").to_string()
             } else if label.is_empty() {
                 tr!("停用", "Disabled").to_string()
-            } else if !ok[i] {
-                trf!("{label}・被占用", "{label}・in use")
             } else {
                 label.clone()
             };
             let tip = if capturing {
                 tr!("按 Esc 取消", "Press Esc to cancel")
-            } else if !ok[i] && !label.is_empty() {
-                tr!("已被其他程式使用，請點一下換一組", "Used by another program. Click to choose a different one")
+            } else if busy {
+                tr!("被其他程式占用，點一下換一組", "Used by another program. Click to choose a different one")
             } else {
                 tr!("點一下後按下新的組合鍵（要包含 Ctrl 或 Alt）", "Click, then press a new key combination (must include Ctrl or Alt)")
             };
-            if Btn::new(text).small().height(30.0).selected(capturing).min_width(FORM_CTRL_W).tooltip(tip).show(ui).clicked() {
+            if Btn::new(text).small().height(30.0).selected(capturing).min_width(KEY_BTN_W).tooltip(tip).show(ui).clicked() {
                 if capturing {
                     stop_capture(app, d);
                 } else {
                     // 先暫停全部快速鍵，才按得到原本已登記的組合
                     d.key_capture = Some(i);
                     d.key_msg = None;
+                    d.key_conflict = None;
                     app.core.apply_hotkeys(&Hotkeys::none());
                 }
             }
@@ -1064,9 +1145,33 @@ fn keys_page(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
                 save_keys(app, d, k);
             }
         });
+        // 被其他程式占用：橘色說明（點一下按鍵就能換）
+        if !ok[i] && !app.keys.label(i).is_empty() && d.key_capture != Some(i) {
+            key_hint(ui, tr!("⚠ 被其他程式占用，點一下換一組", "⚠ Used by another program. Click to choose a different one"), p.warn);
+        }
+        // 這一列的提示（不支援的按鍵、和別的功能重複）寫在這一列下面
+        if let Some((_, m)) = d.key_msg.clone().filter(|(row, _)| *row == i) {
+            key_hint(ui, m, p.warn);
+        }
+        if let Some((_, j, k)) = d.key_conflict.filter(|(row, _, _)| *row == i) {
+            // 名稱比較長：靠右對齊在按鍵那一欄的右邊，放不下時往左延伸
+            ui.horizontal(|ui| {
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    ui.add_space(34.0);
+                    if Btn::new(trf!("改用這組（原本的「{}」改成停用）", "Use it here (turn off “{}”)", names[j])).small().show(ui).clicked() {
+                        take_conflict = Some((i, j, k));
+                    }
+                });
+            });
+        }
     }
-    if let Some(m) = d.key_msg.clone() {
-        form_hint(ui, m, p.warn);
+    if let Some((i, j, k)) = take_conflict {
+        let mut next = app.keys;
+        next.set(j, None);
+        next.set(i, Some(k));
+        d.key_capture = None;
+        d.key_conflict = None;
+        save_keys(app, d, next);
     }
     let Some(i) = d.key_capture else { return };
     // 等使用者按下組合鍵
@@ -1082,22 +1187,50 @@ fn keys_page(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
         return;
     }
     let Some(vk) = vk_of(key) else {
-        d.key_msg = Some(trf!("不支援「{}」，請用 A–Z、0–9、F1–F12 等按鍵", "“{}” isn't supported. Use keys like A–Z, 0–9 or F1–F12", key.name()));
+        d.key_msg = Some((i, trf!("不支援「{}」，請用 A–Z、0–9、F1–F12 等按鍵", "“{}” isn't supported. Use keys like A–Z, 0–9 or F1–F12", key.name())));
         return;
     };
     let k = Hotkey { ctrl: m.ctrl, alt: m.alt, shift: m.shift, win: false, key: vk };
     if !k.valid() {
-        d.key_msg = Some(trf!("{} 會擋到一般打字，請加上 Ctrl 或 Alt", "{} would interfere with normal typing. Add Ctrl or Alt", k.label()));
+        d.key_msg = Some((i, trf!("{} 會擋到一般打字，請加上 Ctrl 或 Alt", "{} would interfere with normal typing. Add Ctrl or Alt", k.label())));
         return;
     }
     if let Some(j) = app.keys.conflict(i, &k) {
-        d.key_msg = Some(trf!("{} 已經用在「{}」", "{} is already used for “{}”", k.label(), screenrecorder_core::types::hotkey_names()[j]));
+        // 先停止等待按鍵（恢復原本的快速鍵），讓使用者決定要不要改用這組
+        stop_capture(app, d);
+        d.key_msg = Some((i, trf!("{} 已經用在「{}」", "{} is already used for “{}”", k.label(), names[j])));
+        d.key_conflict = Some((i, j, k));
         return;
     }
     let mut next = app.keys;
     next.set(i, Some(k));
     d.key_capture = None;
     save_keys(app, d, next);
+}
+
+/// 快速鍵頁的名稱欄寬（名稱比較長，例如「回溯錄影（開始 / 存下）」）與按鍵按鈕的寬度
+const KEY_LABEL_W: f32 = 190.0;
+const KEY_BTN_W: f32 = 180.0;
+
+/// 快速鍵頁的一列：左邊名稱（比一般表單寬），右邊按鍵
+fn key_row(ui: &mut Ui, label: &str, add: impl FnOnce(&mut Ui)) {
+    let p = theme::pal(ui);
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 6.0;
+        let (r, _) = ui.allocate_exact_size(vec2(KEY_LABEL_W, FORM_ROW_H), Sense::hover());
+        let g = ui.painter().layout(label.to_string(), theme::font(13.0), p.muted, KEY_LABEL_W - 4.0);
+        ui.painter().galley(pos2(r.left(), r.center().y - g.size().y / 2.0), g, p.muted);
+        ui.set_min_height(FORM_ROW_H);
+        add(ui);
+    });
+}
+
+/// 快速鍵那一列下面的說明
+fn key_hint(ui: &mut Ui, text: impl Into<String>, color: Color32) {
+    ui.horizontal(|ui| {
+        ui.add_space(KEY_LABEL_W + 6.0);
+        ui.add(egui::Label::new(RichText::new(text.into()).font(theme::font(12.0)).color(color)).wrap());
+    });
 }
 
 /// 換分頁或關掉設定視窗時：取消設定中的快速鍵（恢復原本的登記）
@@ -1121,6 +1254,7 @@ pub fn cancel_key_capture(app: &mut UiApp) {
 fn stop_capture(app: &mut UiApp, d: &mut SettingsDialog) {
     d.key_capture = None;
     d.key_msg = None;
+    d.key_conflict = None;
     let k = app.keys;
     if let Some(st) = app.core.apply_hotkeys(&k) {
         app.env.hotkeys = Some(st);
@@ -1133,8 +1267,8 @@ fn save_keys(app: &mut UiApp, d: &mut SettingsDialog, k: Hotkeys) {
     if let Some(st) = app.core.save_hotkeys(k) {
         app.env.hotkeys = Some(st);
         let ok = st.all();
-        if let Some(i) = (0..ok.len()).find(|i| !ok[*i]) {
-            d.key_msg = Some(trf!("{} 已被其他程式使用，請換一組", "{} is used by another program. Choose a different one", k.label(i)));
+        if let Some(i) = (0..ok.len()).find(|i| !ok[*i] && !k.label(*i).is_empty()) {
+            d.key_msg = Some((i, trf!("{} 已被其他程式使用，請換一組", "{} is used by another program. Choose a different one", k.label(i))));
         }
     }
 }

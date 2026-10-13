@@ -165,13 +165,15 @@ pub struct UiApp {
     pub dismissed_job: Option<u64>,
     last_export_state: Option<screenrecorder_core::types::ExportState>,
     last_result_path: Option<String>,
-    /// 重播緩衝最近存下的檔案（快速鍵、系統匣存下時也更新最近錄影）
+    /// 回溯錄影最近存下的檔案（快速鍵、系統匣存下時也更新最近錄影）
     last_replay_path: Option<String>,
     last_state: RecorderState,
     pub main: main_view::MainState,
     ddagrab_watch: Option<Instant>,
     /// 已處理過的截圖（介面或快速鍵截好時更新清單、顯示提示）
     pub last_shot_seq: u64,
+    /// 已經套用的外觀（跟著 Windows／淺色／深色）
+    applied_theme: Option<String>,
     /// 上一格各部分花的時間（毫秒）：畫面處理太慢時寫進記錄檔，找出卡在哪裡
     frame_parts: Vec<(&'static str, f32)>,
     slow_logged: Option<Instant>,
@@ -252,6 +254,7 @@ impl UiApp {
             main: main_view::MainState::default(),
             ddagrab_watch: None,
             last_shot_seq: seen_shot,
+            applied_theme: None,
             frame_parts: Vec::new(),
             slow_logged: None,
             #[cfg(debug_assertions)]
@@ -276,9 +279,21 @@ impl UiApp {
 
     /// 上次錄影時程式意外結束（當機、停電、被強制關掉）留下分段：問要不要救回
     fn check_orphans(&mut self) {
+        self.find_orphans(false);
+    }
+
+    /// 錄影失敗卡的「救回已錄的部分」：找到時問要不要救回，找不到時說明
+    pub fn recover_now(&mut self) {
+        self.find_orphans(true);
+    }
+
+    fn find_orphans(&mut self, tell_if_none: bool) {
         let (core, dir) = (self.core.clone(), self.s.out_dir(&self.env));
-        self.spawn(async move { tokio::task::spawn_blocking(move || core.orphan_recordings(&dir)).await.unwrap_or_default() }, |app, list| {
+        self.spawn(async move { tokio::task::spawn_blocking(move || core.orphan_recordings(&dir)).await.unwrap_or_default() }, move |app, list| {
             if list.is_empty() {
+                if tell_if_none {
+                    app.toast(tr!("儲存位置裡找不到可以救回的分段", "No recorded parts to recover were found at the save location"), true);
+                }
                 return;
             }
             let names = list
@@ -465,6 +480,11 @@ impl UiApp {
         self.status.export.as_ref().is_some_and(|e| e.state == screenrecorder_core::types::ExportState::Running)
     }
 
+    /// 進行中、而且是手動開始的轉檔（不是錄完自動處理開始的）：開始錄影前要先停止它
+    pub fn manual_export(&self) -> Option<screenrecorder_core::types::ExportStatus> {
+        self.status.export.clone().filter(|e| e.state == screenrecorder_core::types::ExportState::Running && !self.core.after_owns_export(e.id))
+    }
+
     fn poll_status(&mut self) {
         let prev_update = self.status.update.clone();
         let prev_install = self.status.install.clone();
@@ -492,6 +512,11 @@ impl UiApp {
             }
         }
         self.reload_settings_if_changed();
+        // 等待中的排程：設定裡的副本跟著 core 的狀態（開始、取消後不會被這裡存回去）
+        let scheduled = self.core.scheduled();
+        if scheduled.is_none() != self.s.schedule.is_none() {
+            self.s.schedule = scheduled.as_ref().map(screenrecorder_core::schedule::to_value);
+        }
         if let Some(shot) = self.status.shot.clone().filter(|s| s.seq != self.last_shot_seq) {
             self.last_shot_seq = shot.seq;
             let name = dialogs::file_name(&shot.path);
@@ -533,7 +558,8 @@ impl UiApp {
                 if let Some(l) = &mut self.library {
                     l.dirty = true;
                 }
-                if let Some(e) = self.status.export.clone() {
+                // 錄完自動處理開始的轉檔：由錄完自動處理的卡片說明
+                if let Some(e) = self.status.export.clone().filter(|e| !self.core.after_owns_export(e.id)) {
                     if e.state == screenrecorder_core::types::ExportState::Done {
                         let what = match e.kind {
                             screenrecorder_core::types::ExportKind::Cut => tr!("剪輯完成", "Edited video ready"),
@@ -756,6 +782,56 @@ impl UiApp {
         }
     }
 
+    /// 套用設定裡的外觀：跟著 Windows、淺色或深色（改了才套用）
+    fn apply_theme(&mut self, ctx: &egui::Context) {
+        if self.applied_theme.as_deref() == Some(self.s.theme.as_str()) {
+            return;
+        }
+        self.applied_theme = Some(self.s.theme.clone());
+        ctx.set_theme(match self.s.theme.as_str() {
+            "light" => egui::ThemePreference::Light,
+            "dark" => egui::ThemePreference::Dark,
+            _ => egui::ThemePreference::System,
+        });
+    }
+
+    /// 結束程式（設定裡的「結束程式」）：剪輯視窗有還沒儲存的修改、或有排程錄影時先問
+    pub fn request_quit(&mut self) {
+        let unsaved = self.editor.as_ref().is_some_and(|e| e.has_unsaved());
+        if unsaved || self.core.scheduled().is_some() {
+            self.ask_quit();
+        } else {
+            let core = self.core.clone();
+            self.rt.spawn(async move { core.quit(0).await });
+        }
+    }
+
+    /// 結束前的確認：剪輯視窗有還沒儲存的修改、有排程錄影
+    fn ask_quit(&mut self) {
+        let unsaved = self.editor.as_ref().is_some_and(|e| e.has_unsaved());
+        let schedule = self.core.scheduled();
+        let title = if unsaved {
+            tr!("剪輯視窗有未儲存的修改，仍要結束嗎？", "The editor has unsaved changes. Quit anyway?")
+        } else {
+            tr!("有排程錄影，仍要結束嗎？", "A recording is scheduled. Quit anyway?")
+        };
+        let mut lines = vec![];
+        if unsaved {
+            lines.push(tr!("結束後，這次的剪輯、標註會不見。", "Your edits and annotations will be lost.").to_string());
+        }
+        if let Some(s) = &schedule {
+            let when = screenrecorder_core::schedule::describe(s, chrono::Local::now());
+            lines.push(trf!("有排程錄影（{when}），結束程式後不會錄。", "A recording is scheduled ({when}). It won't happen if the app isn't running."));
+        }
+        let mut ask = dialogs::Ask::confirm(title, lines.join("\n"), tr!("結束程式", "Quit"), |app, _| {
+            app.ask = None;
+            let core = app.core.clone();
+            app.rt.spawn(async move { core.quit(0).await });
+        });
+        ask.danger = true;
+        self.ask = Some(ask);
+    }
+
     /// 關掉視窗：系統匣可以用時只是隱藏（程式繼續常駐）
     fn handle_close(&mut self, ctx: &egui::Context) {
         if !ctx.input(|i| i.viewport().close_requested()) {
@@ -765,6 +841,16 @@ impl UiApp {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
             self.visible = false;
+            // 第一次關到系統匣：用系統通知說明程式還在（只說一次）
+            if !self.s.hide_notice_shown {
+                self.s.hide_notice_shown = true;
+                self.save_settings();
+                self.core.notify(
+                    tr!("螢幕錄影仍在背景執行", "Screen Recorder is still running"),
+                    tr!("可從右下角的系統匣圖示開啟或結束（也可以在「設定 → 進階」結束程式）", "Open or quit it from the tray icon at the bottom right (or quit from Settings → Advanced)"),
+                    false,
+                );
+            }
             self.preview.stop(&self.core);
             if let Some(e) = &mut self.editor {
                 e.pause();
@@ -793,6 +879,12 @@ impl eframe::App for UiApp {
         self.flush_settings();
         self.poll_status();
         self.handle_close(ctx);
+        self.apply_theme(ctx);
+        // 系統匣「結束」時剪輯視窗有沒有還沒儲存的修改；要先問時在這裡顯示確認
+        screenrecorder_core::tray::set_ui_unsaved(self.editor.as_ref().is_some_and(|e| e.has_unsaved()));
+        if screenrecorder_core::tray::take_quit_request() {
+            self.ask_quit();
+        }
         // 視窗縮小、被其他視窗完全蓋住或隱藏時 ui() 不會執行（開始錄影時操作視窗也會縮小）：
         // 在這裡停掉即時預覽（否則多開一個 FFmpeg 擷取整個桌面，跟錄影搶資源）與音量測試
         let shown = self.visible && ctx.input(|i| i.viewport().visible()) != Some(false);

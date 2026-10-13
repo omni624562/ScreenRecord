@@ -25,6 +25,10 @@ pub struct Ask {
     pub on_ok: Option<Submit>,
     /// 第二個動作（例如「刪除」）：放在確定按鈕左邊
     pub alt: Option<(String, Submit)>,
+    /// 第二個動作會刪掉東西（紅色按鈕）
+    pub alt_danger: bool,
+    /// 輸入對話框：輸入欄空白時的灰色提示（例如「例如：教學影片」）
+    pub hint: String,
     /// 取消按鈕的字（None = 取消）
     pub cancel: Option<String>,
     focused: bool,
@@ -45,6 +49,8 @@ impl Ask {
             busy: false,
             on_ok: Some(Box::new(on_ok)),
             alt: None,
+            alt_danger: false,
+            hint: String::new(),
             cancel: None,
             focused: false,
         }
@@ -98,7 +104,7 @@ pub fn show_ask(app: &mut UiApp, ctx: &egui::Context) {
         if let Some(v) = &mut ask.input {
             ui.add_space(8.0);
             ui.label(theme::muted(ui, &ask.input_label));
-            let r = ui.add_enabled(!ask.busy, egui::TextEdit::singleline(v).desired_width(f32::INFINITY));
+            let r = ui.add_enabled(!ask.busy, egui::TextEdit::singleline(v).hint_text(&ask.hint).desired_width(f32::INFINITY));
             if !ask.focused {
                 r.request_focus();
                 ask.focused = true;
@@ -123,7 +129,7 @@ pub fn show_ask(app: &mut UiApp, ctx: &egui::Context) {
                 submit = true;
             }
             if let Some((label, _)) = &ask.alt {
-                if Btn::new(label).enabled(!ask.busy).show(ui).clicked() {
+                if Btn::new(label).kind(if ask.alt_danger { theme::Kind::Danger } else { theme::Kind::Normal }).enabled(!ask.busy).show(ui).clicked() {
                     alt = true;
                 }
             }
