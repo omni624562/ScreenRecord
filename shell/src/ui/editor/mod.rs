@@ -839,11 +839,21 @@ impl Editor {
         Ok(())
     }
 
+    /// 選取標註：同時取消時間軸上選取的範圍（Delete 只會刪掉最後選的那一個）
     fn select_ann(&mut self, id: Option<u64>) {
         self.ann_sel = id;
         if id.is_some() {
+            self.sel = None;
             self.tab = Tab::Ann;
         }
+    }
+
+    /// 選取時間軸上的範圍：同時取消選取的標註（Delete 只會刪掉最後選的那一個）
+    fn set_sel(&mut self, r: Option<Range>) {
+        if r.is_some() {
+            self.ann_sel = None;
+        }
+        self.sel = r;
     }
 
     fn delete_ann(&mut self, id: u64) {
@@ -922,7 +932,7 @@ impl Editor {
         self.view.1 - self.view.0 < self.duration - 0.001
     }
 
-    /// 刪除選取的範圍
+    /// 刪除選取的範圍（提示刪了哪一段、可以復原）
     fn delete_selection(&mut self, app_toast: &mut Option<(String, bool)>) {
         let Some(sel) = self.sel.take() else { return };
         if sel.1 - sel.0 < 0.05 {
@@ -931,6 +941,7 @@ impl Editor {
             let mut list = self.spec.removed.clone();
             list.push(sel);
             self.spec.removed = normalize_ranges(&list, self.duration);
+            *app_toast = Some((trf!("已刪除 {}–{}，可按 Ctrl+Z 復原", "Removed {}–{}. Press Ctrl+Z to undo", video_clock(sel.0), video_clock(sel.1)), false));
         }
     }
 
@@ -1101,7 +1112,10 @@ impl Editor {
                 self.set_crop(CropInput { x: 200.0, y: 100.0, width: 1280.0, height: 720.0 });
             }
             "zoom" => self.set_view(2.0, 2.0 + v.parse::<f64>().unwrap_or(4.0)),
-            "selrange" => self.sel = Some((7.0, 8.5)),
+            "selrange" => {
+                let (a, b) = v.split_once(',').and_then(|(a, b)| Some((a.parse().ok()?, b.parse().ok()?))).unwrap_or((7.0, 8.5));
+                self.set_sel(Some((a, b)));
+            }
             "picture" => {
                 let _ = self.add_picture(v);
             }
@@ -1807,13 +1821,16 @@ fn shortcuts(ed: &mut Editor, ctx: &egui::Context, toast: &mut Option<(String, b
         let t = ed.now();
         ed.set_end(t);
     }
+    // Delete：刪掉最後選的（範圍與標註不會同時選取）；D 只刪範圍
     let del = key(Modifiers::NONE, Key::Delete) || key(Modifiers::NONE, Key::Backspace);
     let d = key(Modifiers::NONE, Key::D);
     if (del || d) && ed.sel.is_some() {
         ed.delete_selection(toast);
     } else if del {
-        if let Some(id) = ed.ann_sel {
+        if let Some(a) = ed.selected() {
+            let (id, name) = (a.id, annotate::label(a));
             ed.delete_ann(id);
+            *toast = Some((trf!("已刪除{}，可按 Ctrl+Z 復原", "Deleted {}. Press Ctrl+Z to undo", name), false));
         }
     }
     // [ / ]：選取的標註轉 15 度（Shift：1 度）

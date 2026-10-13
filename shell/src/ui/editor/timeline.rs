@@ -320,7 +320,7 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, toast: &mut
                 TlKind::Playhead => ed.seek(t),
                 TlKind::Select => {
                     if moved {
-                        ed.sel = Some((t0.min(t), t0.max(t)));
+                        ed.set_sel(Some((t0.min(t), t0.max(t))));
                         ed.seek(t);
                     }
                 }
@@ -516,8 +516,7 @@ fn ann_track(ed: &mut Editor, ui: &mut egui::Ui) {
                 let id = *id;
                 let orig = ed.anns.iter().find(|x| x.id == id).map(|x| (x.start, x.end)).unwrap_or_default();
                 ed.lane_freeze = Some(ed.assign_lanes());
-                ed.ann_sel = Some(id);
-                ed.tab = Tab::Ann;
+                ed.select_ann(Some(id));
                 ed.drag = Drag::AnnBar { id, edge, x0: pos.x, t0: time_at(pos.x), moved: false, orig };
             }
         }

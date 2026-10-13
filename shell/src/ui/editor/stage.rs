@@ -520,8 +520,7 @@ fn interact(ed: &mut Editor, ui: &egui::Ui, rect: Rect, resp: &egui::Response) {
             let id = a.id;
             let default_text = a.text.as_deref() == Some(super::default_text());
             ed.anns.push(a);
-            ed.ann_sel = Some(id);
-            ed.tab = Tab::Ann;
+            ed.select_ann(Some(id));
             if matches!(kind, AnnKind::Text | AnnKind::Step) {
                 // 點一下就放好；編號、表情符號繼續放下一個
                 if !tool.sticky() {
