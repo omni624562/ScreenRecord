@@ -755,8 +755,10 @@ fn after_record_section(app: &mut UiApp, ui: &mut Ui) {
             }
         });
         let m = &MODELS[(app.s.after_subs_model as usize).min(MODELS.len() - 1)];
-        if !screenrecorder_core::subtitles::model_ready(m) {
-            form_hint(ui, trf!("第一次會先下載語音模型（約 {} MB）", "The speech model (about {} MB) is downloaded the first time", m.mb), p.muted);
+        use screenrecorder_core::subtitles::{describe_downloads, pending_downloads, speech_ffmpeg_downloaded};
+        let need = pending_downloads(!app.env.ffmpeg.has_whisper && !speech_ffmpeg_downloaded(), m);
+        if !need.is_empty() {
+            form_hint(ui, trf!("第一次會先下載{}", "The first time, {} will be downloaded", describe_downloads(&need)), p.muted);
         }
     }
     form_row(ui, tr!("壓縮", "Compress"), |ui| {

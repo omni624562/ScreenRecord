@@ -794,6 +794,9 @@ pub struct FfmpegInfo {
     /// 有 gfxcapture 濾鏡（Windows Graphics Capture；FFmpeg 8.1 以後）
     #[serde(default)]
     pub has_gfxcapture: bool,
+    /// 有 whisper 濾鏡（語音辨識；沒有時自動字幕另外下載語音辨識用的 FFmpeg）
+    #[serde(default)]
+    pub has_whisper: bool,
     /// ddagrab 能在畫面沒變化時不送出（dup_frames，FFmpeg 7.0 起）：即時預覽用
     #[serde(default)]
     pub ddagrab_skip_static: bool,

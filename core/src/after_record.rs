@@ -1,6 +1,6 @@
 //! 錄完自動處理：錄影存好後依設定依序做——
 //! 1. 剪掉沒動靜的片段（畫面不動而且沒有聲音，見 idle.rs）：另存剪輯版，並存剪輯設定，之後在剪輯視窗可以再改
-//! 2. 產生字幕：在影片（有剪輯版時用剪輯版）旁邊存一份 SRT（需要時先下載語音模型）
+//! 2. 產生字幕：在影片（有剪輯版時用剪輯版）旁邊存一份 SRT（需要時先下載語音辨識用的 FFmpeg 與語音模型）
 //! 3. 壓縮到指定大小以內：另存一支（原速）
 //!
 //! 設定存在操作視窗的設定（ui）裡（設定組合也會一起存）；系統匣、快速鍵、排程的錄影一樣會處理。
@@ -177,28 +177,32 @@ impl App {
             if !self.after_wait_idle(&cancel).await {
                 return Ok(done);
             }
-            if !crate::subtitles::has_whisper(&ffmpeg).await {
-                done.push(tr!("沒有產生字幕（這個 FFmpeg 沒有語音辨識）", "no subtitles (this FFmpeg has no speech recognition)").into());
+            // 目前用的 FFmpeg 沒有 whisper：先下載語音辨識用的 FFmpeg（和語音模型一樣，只有第一次）
+            let speech = match crate::subtitles::find_speech_ffmpeg(&ffmpeg).await {
+                Some(p) => p,
+                None => {
+                    self.after_step(tr!("下載語音辨識用的 FFmpeg", "Downloading FFmpeg for speech recognition").into());
+                    crate::subtitles::download_speech_ffmpeg(progress.clone(), cancel.clone()).await?
+                }
+            };
+            let m = crate::subtitles::MODELS[after.subs_model];
+            if !crate::subtitles::model_ready(&m) {
+                self.after_step(tr!("下載語音模型", "Downloading the speech model").into());
+                let (p, c) = (progress.clone(), cancel.clone());
+                tokio::task::spawn_blocking(move || crate::subtitles::download_model(&m, &p, &c)).await.map_err(|e| e.to_string())??;
+            }
+            self.after_step(tr!("產生字幕", "Generating subtitles").into());
+            let dur = self.cache.probe(&ffmpeg, &video).await.ok().and_then(|i| i.duration_sec).unwrap_or(0.0);
+            let lang = crate::subtitles::LANGUAGES[after.subs_lang].0;
+            let cues = crate::subtitles::transcribe(&speech, &video, dur, &m, lang, progress.clone(), cancel.clone()).await?;
+            if cancel.load(Ordering::Relaxed) {
+                return Ok(done);
+            }
+            if cues.is_empty() {
+                done.push(tr!("沒有辨識出說話的內容", "no speech recognized").into());
             } else {
-                let m = crate::subtitles::MODELS[after.subs_model];
-                if !crate::subtitles::model_ready(&m) {
-                    self.after_step(tr!("下載語音模型", "Downloading the speech model").into());
-                    let (p, c) = (progress.clone(), cancel.clone());
-                    tokio::task::spawn_blocking(move || crate::subtitles::download_model(&m, &p, &c)).await.map_err(|e| e.to_string())??;
-                }
-                self.after_step(tr!("產生字幕", "Generating subtitles").into());
-                let dur = self.cache.probe(&ffmpeg, &video).await.ok().and_then(|i| i.duration_sec).unwrap_or(0.0);
-                let lang = crate::subtitles::LANGUAGES[after.subs_lang].0;
-                let cues = crate::subtitles::transcribe(&ffmpeg, &video, dur, &m, lang, progress.clone(), cancel.clone()).await?;
-                if cancel.load(Ordering::Relaxed) {
-                    return Ok(done);
-                }
-                if cues.is_empty() {
-                    done.push(tr!("沒有辨識出說話的內容", "no speech recognized").into());
-                } else {
-                    let srt = crate::subtitles::save_next_to(&video, &cues)?;
-                    done.push(trf!("字幕存成「{}」", "subtitles saved as “{}”", srt.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()));
-                }
+                let srt = crate::subtitles::save_next_to(&video, &cues)?;
+                done.push(trf!("字幕存成「{}」", "subtitles saved as “{}”", srt.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()));
             }
         }
         // 3. 壓縮

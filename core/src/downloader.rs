@@ -5,6 +5,8 @@
 //! - 主來源失敗時改用 GitHub 上的同一個檔案（同樣比對內建的 SHA-256）
 //! - 用 Windows 內建的 tar（System32，不受 PATH 上 Git / MSYS2 的 GNU tar 影響）解出 bin\ffmpeg.exe，
 //!   確認能執行後才放到定位：exe 所在資料夾可寫入就放那裡，否則放 %LOCALAPPDATA%\ScreenRecorder
+//! - 自動字幕要用有 whisper（語音辨識）的 FFmpeg：essentials 沒有，需要時另外下載同一版的 full 版本，
+//!   只給語音辨識用（見 subtitles.rs），錄影、轉檔仍用原本的 FFmpeg
 
 use crate::paths::{app_dir, data_dir};
 use crate::process::RunResult;
@@ -13,7 +15,7 @@ use crate::{tr, trf};
 use sha2::{Digest, Sha256};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -25,6 +27,46 @@ pub fn ffmpeg_urls() -> Vec<String> {
         format!("https://www.gyan.dev/ffmpeg/builds/packages/ffmpeg-{FFMPEG_VERSION}-essentials_build.zip"),
         format!("https://github.com/GyanD/codexffmpeg/releases/download/{FFMPEG_VERSION}/ffmpeg-{FFMPEG_VERSION}-essentials_build.zip"),
     ]
+}
+
+/// 語音辨識用的 FFmpeg（同一版的 full 版本，有 whisper）
+pub const SPEECH_FFMPEG_SHA256: &str = "759d0a9831c436a0eb331ad36f236c06cb04aaa0005da46571f0e9d3d9206f6b";
+/// 下載的大小（約幾 MB）
+pub const SPEECH_FFMPEG_MB: u32 = 258;
+
+/// GitHub 上的檔案已核對過 SHA-256，放在前面
+pub fn speech_ffmpeg_urls() -> Vec<String> {
+    vec![
+        format!("https://github.com/GyanD/codexffmpeg/releases/download/{FFMPEG_VERSION}/ffmpeg-{FFMPEG_VERSION}-full_build.zip"),
+        format!("https://www.gyan.dev/ffmpeg/builds/packages/ffmpeg-{FFMPEG_VERSION}-full_build.zip"),
+    ]
+}
+
+/// 下載並安裝，結束才回傳（在背景執行緒呼叫）：progress 是千分比，cancel 設成 true 就停止；完成時回傳安裝的位置
+pub fn install_wait(deps: Deps, progress: &AtomicU32, cancel: &AtomicBool) -> Result<PathBuf, String> {
+    let dl = Downloader::new(deps);
+    dl.start(|| Ok(()));
+    loop {
+        if cancel.load(Ordering::SeqCst) {
+            dl.cancel();
+        }
+        let st = dl.status();
+        match st.phase {
+            DownloadPhase::Done => {
+                dl.join();
+                progress.store(1000, Ordering::Relaxed);
+                return st.target.map(PathBuf::from).ok_or_else(|| tr!("下載失敗", "Download failed").into());
+            }
+            DownloadPhase::Error | DownloadPhase::Canceled => {
+                dl.join();
+                return Err(st.message.unwrap_or_else(|| tr!("下載失敗", "Download failed").into()));
+            }
+            // 比對、解壓縮時停在 99.9%
+            DownloadPhase::Downloading => progress.store(st.total.filter(|&t| t > 0).map_or(0, |t| (st.received * 1000 / t).min(999)) as u32, Ordering::Relaxed),
+            _ => progress.store(999, Ordering::Relaxed),
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
 }
 
 /// Windows 內建 tar（bsdtar，支援 zip）
@@ -490,6 +532,52 @@ mod tests {
         s.dl.join();
         assert_eq!(s.dl.status().phase, DownloadPhase::Done);
         assert!(s.target.exists());
+    }
+
+    fn speech_deps(target: PathBuf, fetch: FetchFn) -> Deps {
+        Deps { fetch, run: Box::new(fake_run), target: Box::new(move || Ok(target.clone())), urls: vec!["https://primary/full.zip".into()], sha256: sha(&zip_bytes()), tar: PathBuf::from("tar.exe") }
+    }
+
+    #[test]
+    fn install_wait_returns_the_installed_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("whisper").join("ffmpeg.exe");
+        let fetch: FetchFn = Box::new(|_: &str| {
+            let z = zip_bytes();
+            Ok((Some(z.len() as u64), Box::new(std::io::Cursor::new(z)) as Box<dyn Read + Send>))
+        });
+        let progress = AtomicU32::new(0);
+        let got = install_wait(speech_deps(target.clone(), fetch), &progress, &AtomicBool::new(false)).unwrap();
+        assert_eq!(got, target);
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "FAKE-FFMPEG-EXE");
+        assert_eq!(progress.load(Ordering::Relaxed), 1000);
+        // 下載失敗：回傳原因、不留下檔案
+        let target2 = dir.path().join("other").join("ffmpeg.exe");
+        let err = install_wait(speech_deps(target2.clone(), Box::new(|_: &str| Err("boom".into()))), &progress, &AtomicBool::new(false)).unwrap_err();
+        assert_eq!(err, "boom");
+        assert!(!target2.exists());
+    }
+
+    #[test]
+    fn install_wait_stops_when_canceled() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("ffmpeg.exe");
+        let cancel = Arc::new(AtomicBool::new(false));
+        let c2 = cancel.clone();
+        let stopper = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(300));
+            c2.store(true, Ordering::SeqCst);
+        });
+        let progress = AtomicU32::new(0);
+        assert!(install_wait(speech_deps(target.clone(), Box::new(|_: &str| Ok((None, Box::new(Slow) as Box<dyn Read + Send>)))), &progress, &cancel).is_err());
+        stopper.join().unwrap();
+        assert!(!target.exists());
+    }
+
+    #[test]
+    fn speech_ffmpeg_is_the_full_build_of_the_same_version() {
+        assert!(speech_ffmpeg_urls().iter().all(|u| u.ends_with(&format!("/ffmpeg-{FFMPEG_VERSION}-full_build.zip"))));
+        assert!(ffmpeg_urls().iter().all(|u| u.ends_with(&format!("/ffmpeg-{FFMPEG_VERSION}-essentials_build.zip"))));
     }
 
     #[test]

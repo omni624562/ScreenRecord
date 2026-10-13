@@ -9,6 +9,7 @@ use eframe::egui::{self, vec2, RichText};
 use screenrecorder_core::annotate::{self, Ann, AnnKind};
 use screenrecorder_core::subtitles::{self, Cue, LANGUAGES, MODELS};
 use screenrecorder_core::{tr, trf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
 use std::sync::Arc;
 
@@ -17,7 +18,7 @@ const MAX_CUES: usize = 400;
 
 /// 背景工作的進度
 pub struct SubsJob {
-    /// 0 檢查、1 下載語音模型、2 辨識語音
+    /// 0 檢查、1 下載語音模型、2 辨識語音、3 下載語音辨識用的 FFmpeg
     pub phase: Arc<AtomicU8>,
     /// 千分比
     pub progress: Arc<AtomicU32>,
@@ -46,6 +47,7 @@ pub fn panel(ed: &mut Editor, ui: &mut egui::Ui) {
         let text = match job.phase.load(Ordering::Relaxed) {
             0 => tr!("正在確認 FFmpeg 支不支援語音辨識…", "Checking whether FFmpeg supports speech recognition…").to_string(),
             1 => trf!("正在下載語音模型… {pct:.0}%", "Downloading the speech model… {pct:.0}%"),
+            3 => trf!("正在下載語音辨識用的 FFmpeg… {pct:.0}%", "Downloading FFmpeg for speech recognition… {pct:.0}%"),
             _ => trf!("正在辨識語音… {pct:.0}%", "Recognizing speech… {pct:.0}%"),
         };
         ui.horizontal(|ui| {
@@ -76,10 +78,11 @@ pub fn panel(ed: &mut Editor, ui: &mut egui::Ui) {
                 MODELS.iter().enumerate().map(|(i, m)| (i, if m.id == "base" { tr!("標準（較快）", "Standard (faster)") } else { tr!("精準（較慢）", "Accurate (slower)") })).collect();
             segmented(ui, &mut ed.subs_model, &items, true);
             let m = &MODELS[ed.subs_model.min(MODELS.len() - 1)];
-            let note = if subtitles::model_ready(m) {
-                tr!("語音模型已下載", "Speech model downloaded").to_string()
+            let need = subtitles::pending_downloads(!ed.ffmpeg_whisper && !subtitles::speech_ffmpeg_downloaded(), m);
+            let note = if need.is_empty() {
+                tr!("需要的檔案都已下載", "Everything needed is downloaded").to_string()
             } else {
-                trf!("第一次使用要下載約 {} MB 的語音模型", "The first use downloads a speech model of about {} MB", m.mb)
+                trf!("第一次使用要下載{}", "The first use downloads {}", subtitles::describe_downloads(&need))
             };
             ui.label(theme::muted(ui, note).font(theme::font(12.0)));
             if Btn::new(tr!("開始", "Start")).primary().small().show(ui).clicked() {
@@ -147,40 +150,29 @@ pub fn run(app: &mut UiApp, ed: &mut Editor, act: Act) {
             let mine = job.cancel.clone();
             let ffmpeg = ed.ffmpeg.clone();
             ed.subs = Some(job);
-            app.spawn(async move { subtitles::has_whisper(&ffmpeg).await }, move |app, ok| {
+            // 目前用的 FFmpeg 沒有 whisper 時，用（或下載）語音辨識用的 FFmpeg
+            app.spawn(async move { subtitles::find_speech_ffmpeg(&ffmpeg).await }, move |app, speech| {
                 let Some(ed) = app.editor.as_mut().filter(|e| is_current(e, &mine)) else { return };
-                if !ok {
-                    ed.subs = None;
-                    app.ask = Some(Ask::confirm(
-                        tr!("這個 FFmpeg 不能辨識語音", "This FFmpeg can't recognize speech"),
-                        tr!(
-                            "自動字幕要用 FFmpeg 8 以上、而且有 whisper（語音辨識）的版本，目前用的 FFmpeg 沒有。\n\n可以改用 BtbN 的 FFmpeg（github.com/BtbN/FFmpeg-Builds，下載 win64-gpl 版），把裡面 bin 的 ffmpeg.exe 放到本程式的資料夾，重新開啟程式即可。\n\n也可以先用其他工具（例如 YouTube 的自動字幕）產生 SRT 字幕檔，再按「匯入字幕檔」。",
-                            "Automatic subtitles need FFmpeg 8 or later built with whisper (speech recognition), and the FFmpeg in use doesn't have it.\n\nYou can switch to BtbN's FFmpeg (github.com/BtbN/FFmpeg-Builds, download the win64-gpl build): put the ffmpeg.exe from its bin folder into this program's folder and restart the program.\n\nYou can also create an SRT subtitle file with another tool (such as YouTube's automatic captions) and then press “Import subtitle file”."
-                        ),
-                        tr!("知道了", "Got it"),
-                        |app, _| app.ask = None,
-                    ));
-                    return;
-                }
                 let m = MODELS[ed.subs_model.min(MODELS.len() - 1)];
-                if subtitles::model_ready(&m) {
-                    return start(app);
+                let need = subtitles::pending_downloads(speech.is_none(), &m);
+                if need.is_empty() {
+                    return start(app, speech);
                 }
                 // 先問要不要下載（檔案不小）
                 ed.subs = None;
                 let msg = trf!(
-                    "第一次使用要下載約 {} MB 的語音模型（{}），存在「{}」，之後就不用再下載。\n\n辨識在這台電腦上進行，影片不會上傳。",
-                    "The first use downloads a speech model of about {} MB ({}) and saves it in “{}”, so you won't need to download it again.\n\nRecognition runs on this computer; the video isn't uploaded.",
-                    m.mb,
-                    m.label(),
+                    "第一次使用要下載{}，存在「{}」，之後就不用再下載。\n\n辨識在這台電腦上進行，影片不會上傳。",
+                    "The first use downloads {} to “{}”. This only happens once.\n\nRecognition runs on this computer; the video isn't uploaded.",
+                    subtitles::describe_downloads(&need),
                     subtitles::model_dir().display()
                 );
-                app.ask = Some(Ask::confirm(tr!("下載語音模型", "Download speech model"), msg, tr!("下載並開始", "Download and start"), |app, _| {
+                let first = if speech.is_none() { 3 } else { 1 };
+                app.ask = Some(Ask::confirm(tr!("下載語音辨識需要的檔案", "Download speech recognition files"), msg, tr!("下載並開始", "Download and start"), move |app, _| {
                     app.ask = None;
                     if let Some(ed) = &mut app.editor {
-                        ed.subs = Some(SubsJob { phase: Arc::new(AtomicU8::new(1)), progress: Arc::new(AtomicU32::new(0)), cancel: Arc::new(AtomicBool::new(false)) });
+                        ed.subs = Some(SubsJob { phase: Arc::new(AtomicU8::new(first)), progress: Arc::new(AtomicU32::new(0)), cancel: Arc::new(AtomicBool::new(false)) });
                     }
-                    start(app);
+                    start(app, speech);
                 }));
             });
         }
@@ -188,25 +180,34 @@ pub fn run(app: &mut UiApp, ed: &mut Editor, act: Act) {
     }
 }
 
-/// 下載模型（需要時）並辨識語音；完成後加上字幕、在影片旁邊存一份 SRT
-fn start(app: &mut UiApp) {
+/// 下載語音辨識用的 FFmpeg（speech 是 None 時）與語音模型（需要時），再辨識語音；完成後加上字幕、在影片旁邊存一份 SRT
+fn start(app: &mut UiApp, speech: Option<PathBuf>) {
     let Some(ed) = &mut app.editor else { return };
     let Some(job) = &ed.subs else { return };
     let (phase, progress, cancel) = (job.phase.clone(), job.progress.clone(), job.cancel.clone());
     let mine = job.cancel.clone();
     let m = MODELS[ed.subs_model.min(MODELS.len() - 1)];
     let lang = LANGUAGES[ed.subs_lang.min(LANGUAGES.len() - 1)].0;
-    let (ffmpeg, video, duration) = (ed.ffmpeg.clone(), ed.entry.media.path.clone(), ed.duration);
+    let (video, duration) = (ed.entry.media.path.clone(), ed.duration);
     app.spawn(
         async move {
+            let speech = match speech {
+                Some(p) => p,
+                None => {
+                    phase.store(3, Ordering::Relaxed);
+                    progress.store(0, Ordering::Relaxed);
+                    subtitles::download_speech_ffmpeg(progress.clone(), cancel.clone()).await?
+                }
+            };
             if !subtitles::model_ready(&m) {
                 phase.store(1, Ordering::Relaxed);
+                progress.store(0, Ordering::Relaxed);
                 let (p, c) = (progress.clone(), cancel.clone());
                 tokio::task::spawn_blocking(move || subtitles::download_model(&m, &p, &c)).await.map_err(|e| e.to_string())??;
             }
             phase.store(2, Ordering::Relaxed);
             progress.store(0, Ordering::Relaxed);
-            let cues = subtitles::transcribe(&ffmpeg, &video, duration, &m, lang, progress, cancel).await?;
+            let cues = subtitles::transcribe(&speech, &video, duration, &m, lang, progress, cancel).await?;
             let srt = if cues.is_empty() { None } else { subtitles::save_next_to(&video, &cues).ok() };
             Ok::<_, String>((cues, srt))
         },

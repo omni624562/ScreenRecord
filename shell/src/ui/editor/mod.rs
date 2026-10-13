@@ -262,6 +262,8 @@ pub struct Editor {
     subs: Option<subs::SubsJob>,
     subs_lang: usize,
     subs_model: usize,
+    /// 目前用的 FFmpeg 有 whisper（沒有時第一次產生字幕要另外下載語音辨識用的 FFmpeg；提示用）
+    ffmpeg_whisper: bool,
     /// 正在用文字辨識找個資
     finding_pii: bool,
     /// 正在分析沒動靜的片段
@@ -406,6 +408,7 @@ impl Editor {
             subs: None,
             subs_lang: 0,
             subs_model: 0,
+            ffmpeg_whisper: app.env.ffmpeg.has_whisper,
             finding_pii: false,
             finding_idle: false,
             fast_from: None,

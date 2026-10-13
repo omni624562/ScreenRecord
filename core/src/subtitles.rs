@@ -1,8 +1,9 @@
 //! 字幕：自動產生（FFmpeg 8 以上的 whisper 濾鏡，用 whisper.cpp 在這台電腦上辨識語音，不用上傳），
 //! 或匯入 SRT 字幕檔。結果轉成繁體中文（台灣用詞），在剪輯視窗變成一段一段的文字標註，可以修改後燒進影片。
 //!
-//! FFmpeg 不一定有 whisper 濾鏡（要編譯時打開），所以先用 `ffmpeg -filters` 確認。
-//! 語音模型（ggml 格式）第一次使用時下載到資料夾\whisper。
+//! FFmpeg 不一定有 whisper 濾鏡（要編譯時打開；程式自動下載的 essentials 版本沒有），所以先用 `ffmpeg -filters` 確認，
+//! 沒有時另外下載同一版、有 whisper 的 full 版本，只用來辨識語音。
+//! 語音辨識用的 FFmpeg 與語音模型（ggml 格式）第一次使用時下載到資料夾\whisper。
 
 use crate::{tr, trf};
 use std::path::{Path, PathBuf};
@@ -128,6 +129,66 @@ pub async fn has_whisper(ffmpeg: &Path) -> bool {
 
 fn filters_have_whisper(list: &str) -> bool {
     list.lines().any(|l| l.split_whitespace().nth(1) == Some("whisper"))
+}
+
+/// 語音辨識用的 FFmpeg（目前用的 FFmpeg 沒有 whisper 時才下載），和語音模型放在同一個資料夾
+pub fn speech_ffmpeg_path() -> PathBuf {
+    model_dir().join(if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" })
+}
+
+/// 已經下載了語音辨識用的 FFmpeg（只看檔案在不在，介面提示用）
+pub fn speech_ffmpeg_downloaded() -> bool {
+    speech_ffmpeg_path().is_file()
+}
+
+/// 用哪個 FFmpeg 辨識語音：目前用的有 whisper 就用它，否則用下載的那個；都不行時是 None（要先下載）
+pub async fn find_speech_ffmpeg(main: &Path) -> Option<PathBuf> {
+    find_speech_ffmpeg_in(main, &speech_ffmpeg_path()).await
+}
+
+async fn find_speech_ffmpeg_in(main: &Path, downloaded: &Path) -> Option<PathBuf> {
+    if has_whisper(main).await {
+        return Some(main.to_path_buf());
+    }
+    (downloaded.is_file() && has_whisper(downloaded).await).then(|| downloaded.to_path_buf())
+}
+
+/// 下載語音辨識用的 FFmpeg（progress：千分比；cancel 設成 true 就停止）
+pub async fn download_speech_ffmpeg(progress: Arc<AtomicU32>, cancel: Arc<AtomicBool>) -> Result<PathBuf, String> {
+    if !cfg!(windows) {
+        return Err(tr!("請改用有 whisper（語音辨識）的 FFmpeg", "Use an FFmpeg build with whisper (speech recognition)").into());
+    }
+    let target = speech_ffmpeg_path();
+    crate::info!("[字幕] 下載語音辨識用的 FFmpeg（{} full）", crate::downloader::FFMPEG_VERSION);
+    let deps = crate::downloader::Deps {
+        urls: crate::downloader::speech_ffmpeg_urls(),
+        sha256: crate::downloader::SPEECH_FFMPEG_SHA256.into(),
+        target: Box::new(move || Ok(target.clone())),
+        ..Default::default()
+    };
+    let path = tokio::task::spawn_blocking(move || crate::downloader::install_wait(deps, &progress, &cancel)).await.map_err(|e| e.to_string())??;
+    if !has_whisper(&path).await {
+        let _ = std::fs::remove_file(&path);
+        return Err(tr!("下載的 FFmpeg 不能辨識語音", "The downloaded FFmpeg can't recognize speech").into());
+    }
+    Ok(path)
+}
+
+/// 產生字幕前還要下載的檔案（名稱、約幾 MB）；need_ffmpeg：還沒有能辨識語音的 FFmpeg
+pub fn pending_downloads(need_ffmpeg: bool, m: &Model) -> Vec<(&'static str, u32)> {
+    let mut v = vec![];
+    if need_ffmpeg {
+        v.push((tr!("語音辨識用的 FFmpeg", "FFmpeg for speech recognition"), crate::downloader::SPEECH_FFMPEG_MB));
+    }
+    if !model_ready(m) {
+        v.push((tr!("語音模型", "the speech model"), m.mb));
+    }
+    v
+}
+
+/// 「語音辨識用的 FFmpeg（約 258 MB）與語音模型（約 148 MB）」
+pub fn describe_downloads(list: &[(&str, u32)]) -> String {
+    list.iter().map(|(name, mb)| trf!("{name}（約 {mb} MB）", "{name} (about {mb} MB)")).collect::<Vec<_>>().join(tr!("與", " and "))
 }
 
 /// 辨識語音的參數。模型與輸出都用檔名（FFmpeg 在模型的資料夾裡執行），
@@ -449,6 +510,26 @@ echo "progress=end"
         assert!(err.contains("no model ggml-base.bin"), "{err}");
     }
 
+    /// 目前用的 FFmpeg 有 whisper 就用它；沒有時用下載的那個；都沒有時要下載
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn picks_an_ffmpeg_that_can_recognize_speech() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let fake = |name: &str, filters: &str| {
+            let p = dir.path().join(name);
+            std::fs::write(&p, format!("#!/bin/sh\nprintf '{filters}'\n")).unwrap();
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+            p
+        };
+        let plain = fake("essentials", " ... aecho            A->A       Add echoing.\\n");
+        let full = fake("full", " ... aecho            A->A       Add echoing.\\n ... whisper          A->A       Transcribe audio using whisper.cpp.\\n");
+        assert_eq!(find_speech_ffmpeg_in(&full, &plain).await, Some(full.clone()));
+        assert_eq!(find_speech_ffmpeg_in(&plain, &full).await, Some(full.clone()));
+        assert_eq!(find_speech_ffmpeg_in(&plain, &dir.path().join("missing")).await, None);
+        assert_eq!(find_speech_ffmpeg_in(&plain, &plain).await, None);
+    }
+
     #[test]
     fn whisper_detection_and_args() {
         let list = " ... aecho            A->A       Add echoing to the audio.\n ... whisper          A->A       Transcribe audio using whisper.cpp.\n";
@@ -461,5 +542,6 @@ echo "progress=end"
             "-hide_banner -nostats -loglevel error -progress pipe:1 -i C:\\影片\\a.mp4 -vn -map 0:a:0 -af whisper=model=ggml-base.bin:language=zh:queue=10:format=srt:destination=job.srt -f null -"
         );
         assert!(MODELS.iter().all(|m| m.url.ends_with(m.file)));
+        assert_eq!(describe_downloads(&[("語音辨識用的 FFmpeg", 258), ("語音模型", 148)]), "語音辨識用的 FFmpeg（約 258 MB）與語音模型（約 148 MB）");
     }
 }
