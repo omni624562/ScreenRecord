@@ -45,7 +45,7 @@ fn tabs(ed: &mut Editor, ui: &mut egui::Ui) {
             (Tab::Time, tr!("修剪", "Trim"), 0),
             (Tab::Crop, tr!("畫面", "Frame"), 0),
             (Tab::Ann, tr!("標註", "Annotate"), anns),
-            (Tab::Subs, tr!("字幕", "Captions"), subs),
+            (Tab::Subs, tr!("字幕", "Subtitles"), subs),
             (Tab::Audio, tr!("聲音", "Audio"), 0),
         ]
     };
@@ -896,7 +896,7 @@ pub(super) fn props(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context) {
         ui.set_width(ui.available_width());
         ui.spacing_mut().item_spacing = vec2(8.0, 8.0);
         ui.horizontal(|ui| {
-            let title = if sub { trf!("字幕 {}", "Caption {}", annotate::label(&a)) } else { annotate::label(&a) };
+            let title = if sub { trf!("字幕 {}", "Subtitle {}", annotate::label(&a)) } else { annotate::label(&a) };
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if Btn::new(tr!("刪除", "Delete")).danger().small().tooltip(tr!("快速鍵 Delete", "Shortcut: Delete")).show(ui).clicked() {
                     delete = true;
@@ -1059,14 +1059,14 @@ pub(super) fn props(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context) {
         let en = screenrecorder_core::i18n::is_en();
         let all = match (sub, en) {
             (true, false) => format!("全部 {n} 段字幕都改成這樣"),
-            (true, true) => format!("Apply to all {n} captions"),
+            (true, true) => format!("Apply to all {n} subtitles"),
             (false, false) => format!("全部 {n} 個{}都改成這樣", cur.kind.label()),
             (false, true) => format!("Apply to all {n} {} annotations", cur.kind.label().to_lowercase()),
         };
         let tip = if sub {
-            tr!("顏色、字級、深色底套用到所有字幕（一般的文字標註不會改）", "Apply the color, font size and background to all captions (ordinary text annotations aren't changed)")
+            tr!("顏色、字級、深色底套用到所有字幕（一般的文字標註不會改）", "Apply the color, font size and background to all subtitles (ordinary text annotations aren't changed)")
         } else if cur.kind == AnnKind::Text {
-            tr!("顏色、字級、深色底套用到所有文字標註（字幕不會改）", "Apply the color, font size and background to all text annotations (captions aren't changed)")
+            tr!("顏色、字級、深色底套用到所有文字標註（字幕不會改）", "Apply the color, font size and background to all text annotations (subtitles aren't changed)")
         } else {
             tr!("顏色、大小（以及形狀、底色）套用到所有同類的標註", "Apply the color and size (and shape and background) to all annotations of this type")
         };
@@ -1202,7 +1202,7 @@ fn ann_list(ed: &mut Editor, ui: &mut egui::Ui) {
     let subs = ed.sub_ids.len();
     if ed.anns.len() <= subs {
         if subs > 0 && !ed.is_shot() {
-            hint(ui, &trf!("字幕（{subs} 段）在「字幕」分頁修改。", "Captions ({subs}) are edited in the “Captions” tab."));
+            hint(ui, &trf!("字幕（{subs} 段）在「字幕」分頁修改。", "Subtitles ({subs}) are edited in the “Subtitles” tab."));
         }
         return;
     }
@@ -1251,7 +1251,7 @@ fn ann_list(ed: &mut Editor, ui: &mut egui::Ui) {
         }
     }
     if subs > 0 && !shot {
-        hint(ui, &trf!("字幕（{subs} 段）在「字幕」分頁修改。", "Captions ({subs}) are edited in the “Captions” tab."));
+        hint(ui, &trf!("字幕（{subs} 段）在「字幕」分頁修改。", "Subtitles ({subs}) are edited in the “Subtitles” tab."));
     }
     if let Some(id) = delete {
         ed.delete_ann(id);

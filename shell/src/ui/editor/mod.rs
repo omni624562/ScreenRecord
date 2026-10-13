@@ -2027,20 +2027,20 @@ fn pick_output(app: &mut UiApp, ed: &mut Editor) {
 fn export_srt(app: &mut UiApp, ed: &Editor) {
     let cues = ed.cut_cues();
     if cues.is_empty() {
-        return app.toast(tr!("剪輯後沒有留下任何字幕（都在刪除的片段裡）", "No captions are left after editing (they're all in removed sections)"), true);
+        return app.toast(tr!("剪輯後沒有留下任何字幕（都在刪除的片段裡）", "No subtitles are left after editing (they're all in removed sections)"), true);
     }
     let dir = std::path::Path::new(&ed.entry.media.path).parent().map(std::path::Path::to_path_buf);
     let name = format!("{}.srt", screenrecorder_core::format::strip_mp4(&cut_file_name(&ed.entry.media.name)));
     app.spawn(
         async move {
             tokio::task::spawn_blocking(move || -> Result<Option<PathBuf>, String> {
-                let picked = screenrecorder_core::filepick::save_file(tr!("匯出字幕檔", "Export captions"), dir, &name, &[(tr!("SRT 字幕檔", "SRT captions"), "*.srt")])?;
+                let picked = screenrecorder_core::filepick::save_file(tr!("匯出字幕檔", "Export subtitles"), dir, &name, &[(tr!("SRT 字幕檔", "SRT subtitles"), "*.srt")])?;
                 let Some((mut path, _)) = picked else { return Ok(None) };
                 if path.extension().is_none_or(|e| !e.eq_ignore_ascii_case("srt")) {
                     path.set_extension("srt");
                 }
                 // 加上 BOM：Windows 的記事本與舊的播放器才不會變成亂碼
-                std::fs::write(&path, format!("\u{feff}{}", screenrecorder_core::subtitles::to_srt(&cues))).map_err(|e| trf!("無法儲存字幕檔：{e}", "Couldn't save the caption file: {e}"))?;
+                std::fs::write(&path, format!("\u{feff}{}", screenrecorder_core::subtitles::to_srt(&cues))).map_err(|e| trf!("無法儲存字幕檔：{e}", "Couldn't save the subtitle file: {e}"))?;
                 Ok(Some(path))
             })
             .await
@@ -2307,24 +2307,31 @@ fn transport(ed: &mut Editor, ui: &mut egui::Ui, toast: &mut Option<(String, boo
         }
         ui.add_space(4.0);
         ui.spacing_mut().item_spacing.x = 2.0;
-        if Btn::new(tr!("−1 秒", "−1 s")).ghost().small().tooltip(tr!("上一秒（Shift+←）", "Back 1 second (Shift+←)")).show(ui).clicked() {
-            ed.step(None, -1.0);
-        }
-        if Btn::new(tr!("上一格", "Prev frame")).ghost().small().tooltip(tr!("上一格（←）", "Previous frame (←)")).show(ui).clicked() {
-            ed.step(Some(-1), 0.0);
-        }
-        if Btn::new(tr!("下一格", "Next frame")).ghost().small().tooltip(tr!("下一格（→）", "Next frame (→)")).show(ui).clicked() {
-            ed.step(Some(1), 0.0);
-        }
-        if Btn::new(tr!("+1 秒", "+1 s")).ghost().small().tooltip(tr!("下一秒（Shift+→）", "Forward 1 second (Shift+→)")).show(ui).clicked() {
-            ed.step(None, 1.0);
-        }
-        ui.add_space(6.0);
-        // 右邊留給時間；放不下文字時只顯示圖示
+        // 右邊留給時間；放不下時分割、擷取只顯示圖示，再放不下就不顯示「±1 秒」（Shift+←／→ 一樣可以用）
         let clock_w = ui.painter().layout_no_wrap("00:00.0 / 00:00.0".into(), theme::mono(14.0), Color32::WHITE).size().x + 12.0;
         let split_full = Btn::new(tr!("在這裡分割（S）", "Split here (S)")).icon(theme::Icon::Cut).ghost().small();
         let grab_full = Btn::new(tr!("擷取這一格", "Grab frame")).icon(theme::Icon::Camera).ghost().small();
         let icon_w = Btn::icon_only(theme::Icon::Camera).ghost().small().width(ui) + 2.0;
+        let back = Btn::new(tr!("−1 秒", "−1 s")).ghost().small().tooltip(tr!("上一秒（Shift+←）", "Back 1 second (Shift+←)"));
+        let fwd = Btn::new(tr!("+1 秒", "+1 s")).ghost().small().tooltip(tr!("下一秒（Shift+→）", "Forward 1 second (Shift+→)"));
+        let prev = Btn::new(tr!("上一格", "Prev")).ghost().small().tooltip(tr!("上一格（←）", "Previous frame (←)"));
+        let next = Btn::new(tr!("下一格", "Next")).ghost().small().tooltip(tr!("下一格（→）", "Next frame (→)"));
+        let steps_w = prev.width(ui) + next.width(ui) + 4.0;
+        let secs_w = back.width(ui) + fwd.width(ui) + 4.0;
+        let seconds = ui.available_width() - clock_w - steps_w - secs_w - 6.0 >= icon_w * 2.0;
+        if seconds && back.show(ui).clicked() {
+            ed.step(None, -1.0);
+        }
+        if prev.show(ui).clicked() {
+            ed.step(Some(-1), 0.0);
+        }
+        if next.show(ui).clicked() {
+            ed.step(Some(1), 0.0);
+        }
+        if seconds && fwd.show(ui).clicked() {
+            ed.step(None, 1.0);
+        }
+        ui.add_space(6.0);
         let room = ui.available_width() - clock_w;
         let split_text = room >= split_full.width(ui) + icon_w;
         let grab_text = room >= split_full.width(ui) + grab_full.width(ui) + 2.0;
@@ -2405,7 +2412,7 @@ fn footer(ed: &mut Editor, ui: &mut egui::Ui) -> bool {
                 ui.label(if en { format!(" · {n} annotation{}", s(n)) } else { format!("・標註 {n} 個") });
             }
             if subs > 0 {
-                ui.label(if en { format!(" · {subs} caption{}", s(subs)) } else { format!("・字幕 {subs} 段") });
+                ui.label(if en { format!(" · {subs} subtitle{}", s(subs)) } else { format!("・字幕 {subs} 段") });
             }
             if gone > 0 {
                 let t = if !en {
@@ -2459,7 +2466,7 @@ fn footer(ed: &mut Editor, ui: &mut egui::Ui) -> bool {
             .enabled(can_reset)
             .tooltip(tr!(
                 "剪輯、裁切、標註、字幕、加速、聲音、放大、游標、直式、背景都回到原本的樣子（可以按 Ctrl+Z 復原）",
-                "Undo all cuts, crop, annotations, captions, speed-ups, audio, zoom, cursor, vertical and background settings (press Ctrl+Z to undo)"
+                "Undo all cuts, crop, annotations, subtitles, speed-ups, audio, zoom, cursor, vertical and background settings (press Ctrl+Z to undo)"
             ))
             .show(ui)
             .clicked()

@@ -42,7 +42,7 @@ fn is_current(ed: &Editor, cancel: &Arc<AtomicBool>) -> bool {
 /// 「字幕」分頁：產生或匯入字幕、選取的字幕的樣式與時間、逐段修改的清單
 pub fn tab(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context) {
     if ed.vw <= 0.0 {
-        return hint(ui, tr!("無法讀取影片尺寸，不能加上字幕。", "Couldn't read the video size, so captions can't be added."));
+        return hint(ui, tr!("無法讀取影片尺寸，不能加上字幕。", "Couldn't read the video size, so subtitles can't be added."));
     }
     panel(ed, ui);
     let n = ed.sub_ids.len();
@@ -54,14 +54,14 @@ pub fn tab(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context) {
             .small()
             .tooltip(tr!(
                 "把字幕存成 SRT 字幕檔，時間換成剪輯後的影片的時間（刪掉的片段裡的字幕不算），可以上傳到 YouTube",
-                "Save the captions as an SRT file with timing matched to the edited video (captions in removed sections are left out), e.g. for YouTube"
+                "Save the subtitles as an SRT file with timing matched to the edited video (subtitles in removed sections are left out), e.g. for YouTube"
             ))
             .show(ui)
             .clicked()
         {
             ed.vpending = Some(VAct::ExportSrt);
         }
-        if Btn::new(tr!("全部刪除", "Delete all")).ghost().small().tooltip(tr!("刪掉所有字幕（可以按 Ctrl+Z 復原）", "Delete all captions (press Ctrl+Z to undo)")).show(ui).clicked()
+        if Btn::new(tr!("全部刪除", "Delete all")).ghost().small().tooltip(tr!("刪掉所有字幕（可以按 Ctrl+Z 復原）", "Delete all subtitles (press Ctrl+Z to undo)")).show(ui).clicked()
         {
             let ids = std::mem::take(&mut ed.sub_ids);
             ed.anns.retain(|a| !ids.contains(&a.id));
@@ -91,7 +91,7 @@ fn list(ed: &mut Editor, ui: &mut egui::Ui) {
         ed.anns.iter().filter(|a| ed.is_sub(a.id)).map(|a| (a.id, a.start, a.end, a.text.clone().unwrap_or_default().replace('\n', " "), !Editor::in_output(a, &keep))).collect();
     rows.sort_by(|x, y| x.1.total_cmp(&y.1).then(x.0.cmp(&y.0)));
     let now = ed.now();
-    let (mut select, mut delete, mut edit) = (None, None, None);
+    let (mut select, mut delete, mut edit, mut seek) = (None, None, None, None);
     let w = ui.available_width();
     ui.spacing_mut().item_spacing.y = 3.0;
     for (id, start, end, mut text, gone) in rows {
@@ -129,11 +129,12 @@ fn list(ed: &mut Editor, ui: &mut egui::Ui) {
         if resp.changed() {
             edit = Some((id, text));
         }
-        if resp.gained_focus() {
-            select = Some((id, start));
+        // 開始改字：影片跳到這一段（不選取，上面不會多出設定、清單不會跳動）
+        if resp.gained_focus() && (now < start || now > end) {
+            seek = Some(start);
         }
         let x_rect = egui::Rect::from_center_size(pos2(r.right() - 15.0, r.center().y), vec2(22.0, 22.0));
-        let xr = ui.interact(x_rect, Id::new(("sub-del", id)), Sense::click()).on_hover_text(tr!("刪除這段字幕", "Delete this caption")).on_hover_cursor(CursorIcon::PointingHand);
+        let xr = ui.interact(x_rect, Id::new(("sub-del", id)), Sense::click()).on_hover_text(tr!("刪除這段字幕", "Delete this subtitle")).on_hover_cursor(CursorIcon::PointingHand);
         if xr.hovered() {
             ui.painter().circle_filled(x_rect.center(), 11.0, p.rec_soft);
         }
@@ -144,6 +145,9 @@ fn list(ed: &mut Editor, ui: &mut egui::Ui) {
     }
     if let Some((id, text)) = edit {
         ed.set_sub_text(id, &text);
+    }
+    if let Some(t) = seek {
+        ed.seek(t);
     }
     if let Some(id) = delete {
         ed.delete_ann(id);
@@ -163,7 +167,7 @@ fn list(ed: &mut Editor, ui: &mut egui::Ui) {
 pub fn panel(ed: &mut Editor, ui: &mut egui::Ui) {
     let p = theme::pal(ui);
     ui.add_space(2.0);
-    ui.label(RichText::new(tr!("字幕", "Captions")).font(theme::font_bold(13.5)));
+    ui.label(RichText::new(tr!("字幕", "Subtitles")).font(theme::font_bold(13.5)));
     if let Some(job) = &ed.subs {
         let pct = job.progress.load(Ordering::Relaxed) as f32 / 10.0;
         let text = match job.phase.load(Ordering::Relaxed) {
@@ -225,7 +229,7 @@ pub fn panel(ed: &mut Editor, ui: &mut egui::Ui) {
         ui.label(
             RichText::new(tr!(
                 "字幕會放在影片下方，之後在這裡的清單逐段修改；不滿意可以按 Ctrl+Z 復原。",
-                "Captions are placed at the bottom of the video; edit them one by one in the list here. Press Ctrl+Z to undo."
+                "Subtitles are placed at the bottom of the video; edit them one by one in the list here. Press Ctrl+Z to undo."
             ))
             .font(theme::font(12.0))
             .color(p.muted),
