@@ -688,16 +688,17 @@ impl App {
         }
     }
 
-    /// 在凍結的畫面上框選（Windows 原生視窗）；取消時 None
+    /// 在凍結的畫面上框選（Windows 原生視窗）：(範圍, 工具列選的動作)；取消時 None
     #[cfg(windows)]
-    async fn snip_pick(&self, src: &SnipSource, record: crate::snip_win::Mode) -> Option<crate::types::Rect> {
+    async fn snip_pick(&self, src: &SnipSource, record: crate::snip_win::Mode) -> Option<(crate::types::Rect, crate::snip_tools::SnipAction)> {
         self.lock().snipping = true;
         let (path, desk, windows) = (src.path.clone(), src.desktop, src.windows.clone());
+        let instant = self.snip_instant();
         tokio::task::spawn_blocking(move || {
             let pm = tiny_skia::Pixmap::decode_png(&std::fs::read(&path).ok()?).ok()?;
             // 以實際截到的大小為準
             let desk = crate::types::Rect { width: pm.width() as i32, height: pm.height() as i32, ..desk };
-            crate::snip_win::select(pm.data(), desk, windows, record)
+            crate::snip_win::select(pm.data(), desk, windows, record, instant)
         })
         .await
         .ok()
@@ -708,7 +709,7 @@ impl App {
     async fn snip_native(self: &Arc<Self>, src: SnipSource) -> crate::Result<Option<crate::types::ShotInfo>> {
         let sel = self.snip_pick(&src, crate::snip_win::Mode::Shot).await;
         let res = match sel {
-            Some(r) => self.snip_save(&src, r).await.map(Some),
+            Some((r, action)) => self.snip_finish(&src, r, action).await,
             None => {
                 crate::info!("[截圖] 取消框選");
                 Ok(None)
@@ -716,6 +717,64 @@ impl App {
         };
         self.snip_end(Some(&src));
         res
+    }
+
+    /// 框選截圖「放開滑鼠就直接存檔」（設定的 ui.snipInstant；預設關：放開後可以調整範圍，再從工具列選要做什麼）
+    pub fn snip_instant(&self) -> bool {
+        self.settings.load().ui.and_then(|u| u.get("snipInstant").and_then(serde_json::Value::as_bool)).unwrap_or(false)
+    }
+
+    /// 框選好了，依工具列選的動作：存檔並複製（完成）、存檔後開啟編輯、只複製到剪貼簿、釘在桌面（後兩個不存檔）。
+    /// 回傳存好的截圖（沒有存檔時 None）
+    pub async fn snip_finish(self: &Arc<Self>, src: &SnipSource, rect: crate::types::Rect, action: crate::snip_tools::SnipAction) -> crate::Result<Option<crate::types::ShotInfo>> {
+        use crate::snip_tools::SnipAction;
+        match action {
+            SnipAction::Save => self.snip_save(src, rect).await.map(Some),
+            SnipAction::Edit => {
+                // 直接開啟編輯：不用再顯示小縮圖
+                self.snip_store(src, rect, false).await?;
+                let edit_after = self.settings.load().ui.and_then(|u| u.get("editAfterShot").and_then(serde_json::Value::as_bool)).unwrap_or(false);
+                // 設定了「截圖後直接開啟編輯」時介面自己會開
+                if !edit_after {
+                    self.open_ui(UiPage::EditShot);
+                }
+                Ok(None)
+            }
+            SnipAction::Copy | SnipAction::Pin => {
+                let (from, desk) = (src.path.clone(), src.desktop);
+                let pm = tokio::task::spawn_blocking(move || crop_pixmap(&from, desk, rect)).await.map_err(|e| crate::Error::other(e.to_string()))??;
+                self.lock().last_snip = Some(rect);
+                if action == SnipAction::Copy {
+                    let ok = tokio::task::spawn_blocking(move || crate::clipboard::copy_pixmap(&pm)).await.unwrap_or(false);
+                    if !ok {
+                        return Err(crate::Error::other(tr!("無法複製到剪貼簿", "Couldn't copy to the clipboard")));
+                    }
+                    crate::info!("[截圖] 框選 {}×{} 只複製到剪貼簿", rect.width, rect.height);
+                } else {
+                    #[cfg(windows)]
+                    crate::pin_win::show(crate::shot_edit::straight_rgba(&pm), pm.width(), pm.height());
+                    #[cfg(not(windows))]
+                    drop(pm);
+                    if cfg!(not(windows)) {
+                        return Err(crate::Error::config(tr!("釘在桌面只支援 Windows", "Pin to desktop is only available on Windows")));
+                    }
+                    crate::info!("[截圖] 框選 {}×{} 釘在桌面", rect.width, rect.height);
+                }
+                Ok(None)
+            }
+        }
+    }
+
+    /// 截下整個桌面當作凍結的畫面，給介面的框選視窗用（例如框選錄影範圍）。用完要呼叫 snip_end
+    pub async fn snip_source(self: &Arc<Self>, config: &RecordConfig) -> crate::Result<SnipSource> {
+        {
+            let mut st = self.lock();
+            if st.shooting || st.snipping {
+                return Err(crate::Error::config(tr!("正在截圖", "A screenshot is already in progress")));
+            }
+            st.shooting = true;
+        }
+        self.snip_ready(self.snip_capture(config).await)
     }
 
     /// 取色器（tool = false）或尺規（tool = true）：凍結畫面後顯示放大鏡。
@@ -780,7 +839,7 @@ impl App {
                 st.shooting = true;
             }
             let src = self.snip_ready(self.snip_capture(config).await)?;
-            let sel = self.snip_pick(&src, crate::snip_win::Mode::Qr).await;
+            let sel = self.snip_pick(&src, crate::snip_win::Mode::Qr).await.map(|p| p.0);
             let path = src.path.clone();
             let desk = src.desktop;
             let res = match sel {
@@ -825,7 +884,7 @@ impl App {
                 st.shooting = true;
             }
             let src = self.snip_ready(self.snip_capture(config).await)?;
-            let Some(area) = self.snip_pick(&src, crate::snip_win::Mode::Scroll).await else {
+            let Some((area, _)) = self.snip_pick(&src, crate::snip_win::Mode::Scroll).await else {
                 crate::info!("[截圖] 取消長截圖");
                 self.snip_end(Some(&src));
                 return Ok(None);
@@ -863,7 +922,7 @@ impl App {
         }
         let src = self.snip_ready(self.snip_capture(config).await)?;
         #[cfg(windows)]
-        let sel = self.snip_pick(&src, crate::snip_win::Mode::Record).await;
+        let sel = self.snip_pick(&src, crate::snip_win::Mode::Record).await.map(|p| p.0);
         #[cfg(not(windows))]
         let sel = None;
         match sel {
@@ -949,6 +1008,11 @@ impl App {
 
     /// 框選好了：從凍結的畫面裁切 rect（桌面座標），存成 PNG 並複製到剪貼簿
     pub async fn snip_save(self: &Arc<Self>, src: &SnipSource, rect: crate::types::Rect) -> crate::Result<crate::types::ShotInfo> {
+        self.snip_store(src, rect, true).await
+    }
+
+    /// 裁切、存檔並複製到剪貼簿；preview = 顯示右下角的小縮圖
+    async fn snip_store(self: &Arc<Self>, src: &SnipSource, rect: crate::types::Rect, preview: bool) -> crate::Result<crate::types::ShotInfo> {
         let out = new_shot_path(&src.output_dir).await?;
         let (from, to, desk) = (src.path.clone(), out.clone(), src.desktop);
         let r = tokio::task::spawn_blocking(move || crop_png(&from, desk, rect, &to)).await.map_err(|e| crate::Error::other(e.to_string()))?;
@@ -959,7 +1023,9 @@ impl App {
             st.shot = Some(shot.clone());
             st.last_snip = Some(rect);
         }
-        self.shot_preview(&shot.path, None);
+        if preview {
+            self.shot_preview(&shot.path, None);
+        }
         crate::info!("[截圖] 框選 {}（{}×{}{}）", shot.path, shot.width, shot.height, if shot.copied { "，已複製到剪貼簿" } else { "" });
         Ok(shot)
     }
@@ -1797,6 +1863,13 @@ async fn new_shot_path(dir: &str) -> crate::Result<PathBuf> {
 
 /// 從整個桌面的 PNG（左上角是 desk 的原點）裁切 rect，存成 PNG；回傳實際的寬高
 fn crop_png(from: &Path, desk: crate::types::Rect, rect: crate::types::Rect, to: &Path) -> crate::Result<(u32, u32)> {
+    let out = crop_pixmap(from, desk, rect)?;
+    out.save_png(to).map_err(|e| crate::Error::other(trf!("無法儲存截圖：{e}", "Couldn't save the screenshot: {e}")))?;
+    Ok((out.width(), out.height()))
+}
+
+/// 從整個桌面的 PNG 裁切 rect（超出桌面的部分裁掉）
+fn crop_pixmap(from: &Path, desk: crate::types::Rect, rect: crate::types::Rect) -> crate::Result<tiny_skia::Pixmap> {
     let bytes = std::fs::read(from).map_err(|e| crate::Error::other(trf!("讀不到截下的畫面：{e}", "Couldn't read the captured screen: {e}")))?;
     let src = tiny_skia::Pixmap::decode_png(&bytes).map_err(|e| crate::Error::other(trf!("讀不到截下的畫面：{e}", "Couldn't read the captured screen: {e}")))?;
     let (sw, sh) = (src.width() as i32, src.height() as i32);
@@ -1811,8 +1884,7 @@ fn crop_png(from: &Path, desk: crate::types::Rect, rect: crate::types::Rect, to:
         let s0 = ((y0 as usize + y) * sw as usize + x0 as usize) * 4;
         out.data_mut()[y * row..(y + 1) * row].copy_from_slice(&src.data()[s0..s0 + row]);
     }
-    out.save_png(to).map_err(|e| crate::Error::other(trf!("無法儲存截圖：{e}", "Couldn't save the screenshot: {e}")))?;
-    Ok((w, h))
+    Ok(out)
 }
 
 /// 操作視窗的設定（settings.json 的 ui 欄位）裡，原本是 old 的範圍改成 new。

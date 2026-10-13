@@ -543,6 +543,19 @@ fn record_page(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
             }
         });
     });
+    form_row(ui, tr!("框選截圖", "Area screenshot"), |ui| {
+        let mut on = app.s.snip_instant;
+        if switch(ui, &mut on, tr!("放開滑鼠就直接存檔", "Save as soon as you release the mouse"), true)
+            .on_hover_text(tr!(
+                "關閉時（預設）：放開滑鼠後可以再調整範圍，並選擇完成、編輯、複製或釘在桌面",
+                "Off (default): after you release the mouse you can still adjust the area and choose Done, Edit, Copy or Pin"
+            ))
+            .changed()
+        {
+            app.s.snip_instant = on;
+            app.save_settings();
+        }
+    });
     form_hint(ui, tr!("也可以從系統匣「截圖 → 編輯上次截圖」開啟編輯。", "You can also open the editor from the system tray: “Screenshot → Edit last screenshot”."), theme::pal(ui).muted);
 }
 

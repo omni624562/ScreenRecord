@@ -259,6 +259,8 @@ pub enum Icon {
     Keyboard,
     /// 文字辨識（掃描框裡的 T）
     Ocr,
+    /// 打勾（完成、確定）
+    Check,
 }
 
 /// 在 rect（正方形）裡畫圖示
@@ -443,6 +445,7 @@ pub fn paint_icon(p: &Painter, rect: Rect, icon: Icon, color: Color32) {
             line(&[(5.0, 5.0), (11.0, 5.0)]);
             line(&[(8.0, 5.0), (8.0, 11.5)]);
         }
+        Icon::Check => line(&[(2.5, 8.5), (6.5, 12.5), (13.5, 4.0)]),
     }
 }
 
