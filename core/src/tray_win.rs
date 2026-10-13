@@ -30,7 +30,7 @@ const WM_WAKE: u32 = WM_APP + 2;
 const NIN_BALLOONUSERCLICK: u32 = 0x405;
 /// 圖示加不上去時重試的計時器
 const RETRY_TIMER: usize = 7;
-/// 全域快速鍵的 id：1 錄影、2 暫停、3 截圖、4 框選截圖、5 加標記、6 螢幕畫筆、7 重播緩衝（與 Hotkeys::all 的順序相同）
+/// 全域快速鍵的 id：1 錄影、2 暫停、3 截圖、4 框選截圖、5 加標記、6 螢幕畫筆、7 回溯錄影（與 Hotkeys::all 的順序相同）
 const HOTKEY_IDS: [i32; crate::types::HOTKEY_COUNT] = [1, 2, 3, 4, 5, 6, 7];
 
 /// 登記全域快速鍵（先取消舊的）；被其他程式占用時登記失敗，停用的視為成功
@@ -388,11 +388,11 @@ fn show_menu() {
             m.add(pick, tr!("重複上次框選(&R)", "Re&peat last selection"), TrayCommand::StartLastSnip, !st.has_last_snip, false);
             Menu::sub(root, tr!("錄製其他範圍(&M)", "Record another ar&ea"), pick, !idle || !st.can_record);
         }
-        // 重播緩衝：在背景一直錄、只留最近幾分鐘，需要時再存下
+        // 回溯錄影：在背景一直錄、只留最近幾分鐘，需要時再存下
         if st.replay {
             m.add(root, &trf!("存下最近 {}(&B){}", "Save the last {}{}", st.replay_len, tab(&st.keys[6])), TrayCommand::Replay, false, false);
         } else {
-            m.add(root, &trf!("開始重播緩衝（最近 {}）(&B){}", "Start replay &buffer (last {}){}", st.replay_len, tab(&st.keys[6])), TrayCommand::Replay, !idle || !st.can_record, false);
+            m.add(root, &trf!("開始回溯錄影（最近 {}）(&B){}", "Start replay &buffer (last {}){}", st.replay_len, tab(&st.keys[6])), TrayCommand::Replay, !idle || !st.can_record, false);
         }
         // 錄影設定組合：勾選的是目前的設定
         if let Ok(sets) = CreatePopupMenu() {
@@ -416,7 +416,7 @@ fn show_menu() {
         if st.rec == RecorderState::Countdown {
             m.add(root, tr!("取消倒數(&S)", "&Cancel countdown"), TrayCommand::Stop, false, false);
         } else if st.replay {
-            m.add(root, tr!("停止重播緩衝(&S)", "&Stop replay buffer"), TrayCommand::Stop, st.rec == RecorderState::Stopping, false);
+            m.add(root, tr!("停止回溯錄影(&S)", "&Stop replay buffer"), TrayCommand::Stop, st.rec == RecorderState::Stopping, false);
         } else {
             m.add(root, &trf!("停止並儲存(&S){}", "&Stop and save{}", tab(&st.keys[0])), TrayCommand::Stop, idle || st.rec == RecorderState::Stopping, false);
         }

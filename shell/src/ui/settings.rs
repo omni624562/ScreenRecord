@@ -115,7 +115,7 @@ pub struct UiSettings {
     pub window_capture: bool,
     /// 系統聲音與麥克風分開存（分軌）
     pub separate_audio: bool,
-    /// 重播緩衝保留最近幾秒（core 的 replay.rs 也讀這個欄位：快速鍵、系統匣開始時用）
+    /// 回溯錄影保留最近幾秒（core 的 replay.rs 也讀這個欄位：快速鍵、系統匣開始時用）
     pub replay_sec: u32,
     /// 主畫面展開事件紀錄（預設收起來）
     pub show_log: bool,

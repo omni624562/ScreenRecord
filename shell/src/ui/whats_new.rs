@@ -79,9 +79,9 @@ fn items() -> [(&'static str, &'static str, Try); 18] {
             Try::Settings(Page::Save),
         ),
         (
-            tr!("重播緩衝", "Replay buffer"),
+            tr!("回溯錄影", "Replay buffer"),
             tr!(
-                "右上角「重播」：在背景一直錄、只留最近幾分鐘，發生想留下的事時按「存下」或 Ctrl+Alt+B。",
+                "右上角「回溯錄影」：在背景一直錄、只留最近幾分鐘，發生想留下的事時按「存下」或 Ctrl+Alt+B。",
                 "“Replay” at the top right: keeps recording in the background, holding only the last few minutes. Press “Save” or Ctrl+Alt+B when something worth keeping happens."
             ),
             Try::None,

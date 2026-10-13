@@ -1,4 +1,4 @@
-//! 重播緩衝：在背景一直錄，只保留最近幾分鐘；發生想留下的事（遊戲精彩畫面、程式突然出錯）時「存下最近 N 分鐘」。
+//! 回溯錄影：在背景一直錄，只保留最近幾分鐘；發生想留下的事（遊戲精彩畫面、程式突然出錯）時「存下最近 N 分鐘」。
 //!
 //! 錄影器用 FFmpeg 的 segment 輸出，每 10 秒換一個檔案（`.parts/<開始時間>/rp_<第幾次啟動>_<第幾個>.mp4`，
 //! 每秒寫入一次），定期刪掉太舊的；存下時把最近的幾個檔案接起來（不重新壓縮，一兩秒就好），存成 `Replay_<時間>.mp4`。
@@ -83,12 +83,12 @@ pub fn stale(chunks: &[Chunk], now: SystemTime, sec: u32) -> Vec<PathBuf> {
 }
 
 impl App {
-    /// 重播緩衝中
+    /// 回溯錄影中
     pub fn replay_active(&self) -> bool {
         self.recorder.status().replay.is_some()
     }
 
-    /// 開始重播緩衝；config.replay_sec 是 0 時用操作視窗設定的長度
+    /// 開始回溯錄影；config.replay_sec 是 0 時用操作視窗設定的長度
     pub async fn replay_start(&self, config: RecordConfig) -> Result<()> {
         let sec = if config.replay_sec > 0 { config.replay_sec } else { sec_from_ui(self.settings.load().ui.as_ref()) };
         crate::actions::record_start(self, RecordConfig { replay_sec: sec, ..config }).await
@@ -101,27 +101,27 @@ impl App {
             match &r {
                 Ok(res) => {
                     let name = res.path.as_deref().map(|p| Path::new(p).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()).unwrap_or_default();
-                    self.notify(tr!("已存下重播", "Replay saved"), &trf!("{name}（{}）", "{name} ({})", crate::format::video_clock(res.video_sec)), false);
+                    self.notify(tr!("已存下回溯錄影", "Replay saved"), &trf!("{name}（{}）", "{name} ({})", crate::format::video_clock(res.video_sec)), false);
                 }
-                Err(e) => self.notify(tr!("無法存下重播", "Couldn't save the replay"), e.message(), true),
+                Err(e) => self.notify(tr!("無法存下回溯錄影", "Couldn't save the replay"), e.message(), true),
             }
         }
         r
     }
 
-    /// 重播緩衝的快速鍵：沒在錄影時開始，重播緩衝中存下；一般錄影中不動作（提示）
+    /// 回溯錄影的快速鍵：沒在錄影時開始，回溯錄影中存下；一般錄影中不動作（提示）
     pub async fn replay_hotkey(self: &Arc<Self>, config: RecordConfig) {
         if self.replay_active() {
             let _ = self.replay_save(true).await;
         } else if self.recorder.active() || self.recorder.starting() {
-            self.notify(tr!("重播緩衝", "Replay buffer"), tr!("正在錄影，停止後才能開始重播緩衝", "Recording is in progress. Stop it before starting the replay buffer."), true);
+            self.notify(tr!("回溯錄影", "Replay buffer"), tr!("正在錄影，停止後才能開始回溯錄影", "Recording is in progress. Stop it before starting the replay buffer."), true);
         } else {
             match self.replay_start(config).await {
                 Ok(()) => {
                     let sec = sec_from_ui(self.settings.load().ui.as_ref());
-                    self.notify(tr!("重播緩衝已開始", "Replay buffer started"), &trf!("再按一次快速鍵就存下最近 {}", "Press the shortcut again to save the last {}", length_label(sec)), false);
+                    self.notify(tr!("回溯錄影已開始", "Replay buffer started"), &trf!("再按一次快速鍵就存下最近 {}", "Press the shortcut again to save the last {}", length_label(sec)), false);
                 }
-                Err(e) => self.notify(tr!("無法開始重播緩衝", "Couldn't start the replay buffer"), e.message(), true),
+                Err(e) => self.notify(tr!("無法開始回溯錄影", "Couldn't start the replay buffer"), e.message(), true),
             }
         }
     }

@@ -4,7 +4,7 @@
 //! - 「停止」送 q 收尾後，以 concat demuxer（-c copy）合併所有分段成單一 MP4。
 //! - FFmpeg 意外結束（例如鎖定畫面、UAC 安全桌面造成 Desktop Duplication 中斷）時自動開新分段續錄。
 //!
-//! - 重播緩衝（config.replay_sec > 0）：FFmpeg 每 10 秒換一個檔案、定期刪掉太舊的，「存下」時接起最近的幾個（見 replay.rs）；
+//! - 回溯錄影（config.replay_sec > 0）：FFmpeg 每 10 秒換一個檔案、定期刪掉太舊的，「存下」時接起最近的幾個（見 replay.rs）；
 //!   停止時全部刪掉。
 //!
 //! 公開操作（開始、暫停、繼續、停止）依序執行，避免連點時互相干擾；狀態放在一把短暫持有的鎖裡，
@@ -97,7 +97,7 @@ const DISK_WARN: u64 = 2 << 30;
 /// 錄影中剩餘空間低於這個值自動停止並儲存（合併時還需要約一份影片大小的空間）
 const DISK_STOP: u64 = 512 << 20;
 const DISK_CHECK_MS: u64 = 10_000;
-/// 重播緩衝：每隔多久刪掉太舊的檔案
+/// 回溯錄影：每隔多久刪掉太舊的檔案
 const REPLAY_PRUNE_MS: u64 = 5_000;
 
 /// 儲存位置所在磁碟的剩餘空間；查不到（某些網路磁碟）回傳 None
@@ -232,7 +232,7 @@ struct St {
     disk_warned: bool,
     auto_stopping: bool,
     shutting_down: bool,
-    /// 重播緩衝：正在存、這次存了幾支、最近存下的檔案、緩衝的大小、上次整理（刪掉太舊的檔案）的時間
+    /// 回溯錄影：正在存、這次存了幾支、最近存下的檔案、緩衝的大小、上次整理（刪掉太舊的檔案）的時間
     replay_saving: bool,
     replay_saved: u32,
     replay_last: Option<String>,
@@ -278,7 +278,7 @@ impl St {
         self.config.as_ref().expect("錄影設定")
     }
 
-    /// 重播緩衝的長度（秒）；一般錄影是 None
+    /// 回溯錄影的長度（秒）；一般錄影是 None
     fn replay_sec(&self) -> Option<u32> {
         self.config.as_ref().map(|c| c.replay_sec).filter(|s| *s > 0)
     }
@@ -361,7 +361,7 @@ pub struct FrameInfo {
     pub markers: u32,
     /// 錄整個螢幕（不是自訂範圍）：不顯示外框，控制列放在螢幕上方中間（可以拖到別的地方，例如另一個螢幕）
     pub full: bool,
-    /// 重播緩衝中：控制列是「存下」與「停止」（不能暫停、加標記）
+    /// 回溯錄影中：控制列是「存下」與「停止」（不能暫停、加標記）
     pub replay: bool,
 }
 
@@ -473,7 +473,7 @@ impl Recorder {
 
     pub async fn pause(&self) -> Result<()> {
         if self.lock().replay_sec().is_some() {
-            return Err(Error::config(tr!("重播緩衝不能暫停", "The replay buffer can't be paused")));
+            return Err(Error::config(tr!("回溯錄影不能暫停", "The replay buffer can't be paused")));
         }
         let _q = self.0.queue.lock().await;
         self.do_pause().await
@@ -692,7 +692,7 @@ impl Recorder {
             return Err(Error::config(tr!("錄影中才能加標記", "Markers can only be added while recording")));
         }
         if st.replay_sec().is_some() {
-            return Err(Error::config(tr!("重播緩衝不能加標記", "Markers can't be added to the replay buffer")));
+            return Err(Error::config(tr!("回溯錄影不能加標記", "Markers can't be added to the replay buffer")));
         }
         let t = st.recorded_ms();
         // 連按兩次（半秒內）只算一個
@@ -847,7 +847,7 @@ impl Recorder {
             };
         }
         if config.replay_sec > 0 {
-            // 重播緩衝：馬上開始、一直錄到停止（存下的時候才需要），操作視窗不縮小
+            // 回溯錄影：馬上開始、一直錄到停止（存下的時候才需要），操作視窗不縮小
             config = RecordConfig { countdown_sec: Some(0.0), hide_ui: Some(false), max_minutes: 0.0, ..config };
         }
         let mut plan = resolve_plan(&config, &deps.monitors())?;
@@ -1001,7 +1001,7 @@ impl Recorder {
             };
             if config.replay_sec > 0 {
                 let len = crate::replay::length_label(config.replay_sec);
-                st.add_log(LogLevel::Info, &trf!("重播緩衝：保留最近 {len}，需要時再存下", "Replay buffer: keeping the last {len}; save it when you need it"));
+                st.add_log(LogLevel::Info, &trf!("回溯錄影：保留最近 {len}，需要時再存下", "Replay buffer: keeping the last {len}; save it when you need it"));
             }
             st.add_log(
                 LogLevel::Info,
@@ -1094,12 +1094,12 @@ impl Recorder {
         }
         self.stop_current().await;
         if self.lock().replay_sec().is_some() {
-            // 重播緩衝：沒存下的部分不要了
+            // 回溯錄影：沒存下的部分不要了
             {
                 let mut st = self.lock();
                 cleanup_parts(st.parts_dir.as_deref());
                 let n = st.replay_saved;
-                st.add_log(LogLevel::Info, &trf!("已停止重播緩衝（這次存下 {n} 支）", "Replay buffer stopped ({n} saved this time)"));
+                st.add_log(LogLevel::Info, &trf!("已停止回溯錄影（這次存下 {n} 支）", "Replay buffer stopped ({n} saved this time)"));
                 st.result = None;
                 st.markers.clear();
                 st.clicks.clear();
@@ -1175,7 +1175,7 @@ impl Recorder {
                 st.config().clone(),
                 st.method.unwrap_or(CaptureMethod::Gdigrab),
                 enc,
-                // 重播緩衝：FFmpeg 依樣式一直開新檔案
+                // 回溯錄影：FFmpeg 依樣式一直開新檔案
                 parts.join(if st.replay_sec().is_some() { format!("rp_{index:03}_%05d.mp4") } else { format!("seg_{index:03}.mp4") }).display().to_string(),
                 st.audio_specs.clone(),
                 index,
@@ -1673,7 +1673,7 @@ impl Recorder {
             tokio::spawn(async move { me.check_disk().await });
         }
         if let Some((dir, sec)) = prune {
-            // 重播緩衝：刪掉太舊的檔案（存下時正在讀的不會被刪：見 replay::stale），記下緩衝的大小
+            // 回溯錄影：刪掉太舊的檔案（存下時正在讀的不會被刪：見 replay::stale），記下緩衝的大小
             let me = self.clone();
             tokio::task::spawn_blocking(move || {
                 let list = crate::replay::chunks(&dir);
@@ -1687,14 +1687,14 @@ impl Recorder {
         }
     }
 
-    /// 重播緩衝：把最近的檔案接起來存成 Replay_<時間>.mp4（不重新壓縮）。與開始、停止依序執行：存的時候按停止會等存好
+    /// 回溯錄影：把最近的檔案接起來存成 Replay_<時間>.mp4（不重新壓縮）。與開始、停止依序執行：存的時候按停止會等存好
     pub fn save_replay(&self) -> BoxFut<'static, Result<RecordingResult>> {
         let me = self.clone();
         Box::pin(async move {
             {
                 let mut st = me.lock();
                 if st.replay_sec().is_none() || st.state != RecorderState::Recording {
-                    return Err(Error::config(tr!("沒有在重播緩衝中", "The replay buffer isn't running")));
+                    return Err(Error::config(tr!("沒有在回溯錄影中", "The replay buffer isn't running")));
                 }
                 if st.replay_saving {
                     return Err(Error::config(tr!("正在存，請稍等", "Already saving; please wait")));
@@ -1713,7 +1713,7 @@ impl Recorder {
                     st.replay_last = res.path.clone();
                     st.add_log(LogLevel::Info, &res.message);
                 }
-                Err(e) => st.add_log(LogLevel::Error, &trf!("無法存下重播：{}", "Couldn't save the replay: {}", e.message())),
+                Err(e) => st.add_log(LogLevel::Error, &trf!("無法存下回溯錄影：{}", "Couldn't save the replay: {}", e.message())),
             }
             r
         })
@@ -1723,7 +1723,7 @@ impl Recorder {
         let (sec, dir, output_dir, has_audio, fps) = {
             let st = self.lock();
             if st.state != RecorderState::Recording {
-                return Err(Error::config(tr!("沒有在重播緩衝中", "The replay buffer isn't running")));
+                return Err(Error::config(tr!("沒有在回溯錄影中", "The replay buffer isn't running")));
             }
             let c = st.config();
             (st.replay_sec().unwrap_or(0), st.parts_dir.clone().unwrap_or_default(), c.output_dir.clone(), !st.audio_specs.is_empty(), c.fps)
@@ -1748,7 +1748,7 @@ impl Recorder {
             frames: js_round(video_sec * fps) as u64,
             video_sec,
             bytes: std::fs::metadata(&out).map(|m| m.len()).ok(),
-            message: trf!("已存下重播 {out_str}（{}）", "Saved replay {out_str} ({})", crate::format::video_clock(video_sec)),
+            message: trf!("已存下回溯錄影 {out_str}（{}）", "Saved replay {out_str} ({})", crate::format::video_clock(video_sec)),
             parts_dir: None,
         })
     }
@@ -1777,8 +1777,8 @@ impl Recorder {
             st.disk_free_bytes = Some(free);
             if free < DISK_STOP && !st.auto_stopping && st.replay_sec().is_some() {
                 st.auto_stopping = true;
-                notify = Some((tr!("磁碟空間不足", "Low disk space"), trf!("只剩 {}，已停止重播緩衝", "Only {} left. The replay buffer was stopped", gb(free))));
-                stop_reason = Some(trf!("儲存位置只剩 {}，停止重播緩衝", "Only {} left at the save location; replay buffer stopped", gb(free)));
+                notify = Some((tr!("磁碟空間不足", "Low disk space"), trf!("只剩 {}，已停止回溯錄影", "Only {} left. The replay buffer was stopped", gb(free))));
+                stop_reason = Some(trf!("儲存位置只剩 {}，停止回溯錄影", "Only {} left at the save location; replay buffer stopped", gb(free)));
             } else if free < DISK_STOP && !st.auto_stopping {
                 st.auto_stopping = true;
                 notify = Some((tr!("磁碟空間不足", "Low disk space"), trf!("只剩 {}，已自動停止並儲存", "Only {} left. Recording was stopped and saved automatically", gb(free))));
@@ -2174,7 +2174,7 @@ mod tests {
     }
 
     /// 假的 FFmpeg：
-    /// - 錄影分段（含 -progress）：回報進度、寫出分段檔（重播緩衝的檔名樣式寫出第一個檔案），收到 q 才結束
+    /// - 錄影分段（含 -progress）：回報進度、寫出分段檔（回溯錄影的檔名樣式寫出第一個檔案），收到 q 才結束
     /// - 合併（-f concat）：寫出成品
     /// - 讀檔頭（-i 成品）：印出長度
     #[cfg(unix)]
@@ -2376,7 +2376,7 @@ esac
         assert_eq!((st.replay.as_ref().map(|r| r.sec), st.max_ms), (Some(60), 0));
         assert_eq!(s.deps.before.load(Ordering::SeqCst), 0);
         assert!(s.rec.output_path().is_none());
-        assert!(st.log.iter().any(|l| l.text.contains("重播緩衝：保留最近 1 分鐘")), "{:?}", st.log);
+        assert!(st.log.iter().any(|l| l.text.contains("回溯錄影：保留最近 1 分鐘")), "{:?}", st.log);
         // 不能暫停、加標記
         assert!(s.rec.pause().await.unwrap_err().message().contains("不能暫停"));
         assert!(s.rec.add_marker().is_err());
@@ -2397,7 +2397,7 @@ esac
         let st = s.rec.status();
         assert_eq!((st.state, st.result.is_none(), st.replay.is_none()), (RecorderState::Idle, true, true));
         assert!(!s.parts_left());
-        assert!(st.log.iter().any(|l| l.text.contains("已停止重播緩衝（這次存下 2 支）")), "{:?}", st.log);
+        assert!(st.log.iter().any(|l| l.text.contains("已停止回溯錄影（這次存下 2 支）")), "{:?}", st.log);
         assert_eq!(s.deps.after.load(Ordering::SeqCst), 1);
         assert!(s.rec.save_replay().await.is_err());
     }

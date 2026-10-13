@@ -69,7 +69,7 @@ pub enum TrayCommand {
     Mark,
     /// 螢幕畫筆（開 / 關）
     Pen,
-    /// 重播緩衝：沒在錄影時開始，重播緩衝中存下最近幾分鐘（選單與快速鍵）
+    /// 回溯錄影：沒在錄影時開始，回溯錄影中存下最近幾分鐘（選單與快速鍵）
     Replay,
     OpenUpdate,
     Quit,
@@ -106,9 +106,9 @@ pub struct TrayState {
     pub has_shot: bool,
     /// 步驟截圖進行中：已經截了幾步
     pub steps: Option<u32>,
-    /// 重播緩衝的長度（例如「2 分鐘」）
+    /// 回溯錄影的長度（例如「2 分鐘」）
     pub replay_len: String,
-    /// 重播緩衝中
+    /// 回溯錄影中
     pub replay: bool,
     pub last_result: Option<String>,
     /// None = 無法設定（開發版）
@@ -233,7 +233,7 @@ impl TrayController {
         TrayState {
             rec: st.state,
             tip: match (&scheduled, st.state) {
-                _ if st.replay.is_some() => trf!("螢幕錄影 {APP_VERSION} — 重播緩衝中（最近 {replay_len}）", "Screen Recorder {APP_VERSION} — Replay buffer (last {replay_len})"),
+                _ if st.replay.is_some() => trf!("螢幕錄影 {APP_VERSION} — 回溯錄影中（最近 {replay_len}）", "Screen Recorder {APP_VERSION} — Replay buffer (last {replay_len})"),
                 (Some(s), RecorderState::Idle) => trf!("螢幕錄影 {APP_VERSION} — 排程：{s}", "Screen Recorder {APP_VERSION} — Scheduled: {s}"),
                 _ => trf!("螢幕錄影 {APP_VERSION} — {}{time}", "Screen Recorder {APP_VERSION} — {}{time}", state_text(st.state)),
             },

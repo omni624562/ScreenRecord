@@ -1105,12 +1105,12 @@ fn rec_panel(app: &mut UiApp, ui: &mut Ui) {
         ui.set_min_size(ui.available_size());
         let r = app.status.recorder.clone();
         let active = r.state != RecorderState::Idle;
-        // 重播緩衝中（不是一般錄影）
+        // 回溯錄影中（不是一般錄影）
         let replay = r.replay.clone().filter(|_| active);
         // 狀態
         ui.horizontal(|ui| {
             let (text, tone) = match r.state {
-                RecorderState::Recording if replay.is_some() => (tr!("● 重播緩衝中", "● Replay buffer"), Tone::Bad),
+                RecorderState::Recording if replay.is_some() => (tr!("● 回溯錄影中", "● Replay buffer"), Tone::Bad),
                 RecorderState::Idle => (tr!("待命", "Ready"), Tone::Plain),
                 RecorderState::Countdown => (tr!("倒數中", "Countdown"), Tone::Warn),
                 RecorderState::Recording => (tr!("● 錄影中", "● Recording"), Tone::Bad),
@@ -1226,8 +1226,8 @@ fn rec_body(app: &mut UiApp, ui: &mut Ui, r: &screenrecorder_core::types::Record
     let mut keys = tr!(["影片長度", "檔案大小", "輸出", "錄影方式", "聲音"], ["Duration", "File size", "Output", "Method", "Audio"]);
     let mut values = [video_clock(r.video_sec), if active || r.bytes > 0 { format_bytes(r.bytes) } else { "—".into() }, out, method, audio];
     if let Some(rp) = replay {
-        // 重播緩衝：緩衝裡有幾秒（最多保留的長度）、在硬碟上佔多少
-        keys[0] = tr!("緩衝", "Buffer");
+        // 回溯錄影：緩衝裡有幾秒（最多保留的長度）、在硬碟上佔多少
+        keys[0] = tr!("已保留", "Buffer");
         keys[1] = tr!("暫存大小", "Temp size");
         values[0] = video_clock((live_recorded_ms(app) / 1000.0).min(rp.sec as f64));
         values[1] = format_bytes(rp.bytes);
@@ -1327,7 +1327,7 @@ fn rec_body(app: &mut UiApp, ui: &mut Ui, r: &screenrecorder_core::types::Record
                 app.guarded(async move { actions::record_start(&core, config).await }, |_, _| {});
             }
         } else if let Some(rp) = replay {
-            // 重播緩衝：存下最近 N 分鐘、停止（不能暫停、不能加標記）
+            // 回溯錄影：存下最近 N 分鐘、停止（不能暫停、不能加標記）
             let w = ui.available_width();
             let key = app.keys.label(6);
             let tip = if key.is_empty() { String::new() } else { trf!("快速鍵 {key}", "Shortcut {key}") };
@@ -1340,12 +1340,11 @@ fn rec_body(app: &mut UiApp, ui: &mut Ui, r: &screenrecorder_core::types::Record
                 .danger()
                 .enabled(r.state != RecorderState::Stopping && !rp.saving)
                 .min_width(ui.available_width())
-                .tooltip(tr!("停止重播緩衝（沒存下的部分會刪掉）", "Stop the replay buffer (anything not saved is discarded)"))
+                .tooltip(tr!("停止回溯錄影（沒存下的部分會刪掉）", "Stop the replay buffer (anything not saved is discarded)"))
                 .show(ui)
                 .clicked()
             {
-                let core = app.core.clone();
-                app.guarded(async move { core.recorder.stop(None).await }, |_, _| {});
+                super::replay::ask_stop(app, rp, live_recorded_ms(app));
             }
         } else {
             let w = ui.available_width();

@@ -161,7 +161,7 @@ pub struct UiApp {
     pub dismissed_job: Option<u64>,
     last_export_state: Option<screenrecorder_core::types::ExportState>,
     last_result_path: Option<String>,
-    /// 重播緩衝最近存下的檔案（快速鍵、系統匣存下時也更新最近錄影）
+    /// 回溯錄影最近存下的檔案（快速鍵、系統匣存下時也更新最近錄影）
     last_replay_path: Option<String>,
     last_state: RecorderState,
     pub main: main_view::MainState,
