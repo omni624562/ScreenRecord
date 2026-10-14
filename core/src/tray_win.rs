@@ -472,7 +472,7 @@ fn show_menu() {
         m.add(root, tr!("播放最近的錄影(&L)", "Play &latest recording"), TrayCommand::PlayLast, st.last_result.is_none(), false);
         Menu::sep(root);
         m.add(root, tr!("開機時自動啟動", "Start with Windows"), TrayCommand::Autostart, st.autostart.is_none(), st.autostart == Some(true));
-        m.add(root, &trf!("更新說明（v{}）", "Release notes (v{})", st.version), TrayCommand::Changelog, false, false);
+        m.add(root, &trf!("關於（v{}）", "About (v{})", st.version), TrayCommand::About, false, false);
         m.add(root, tr!("結束(&X)", "E&xit"), TrayCommand::Quit, false, false);
 
         let mut pt = POINT::default();

@@ -773,8 +773,8 @@ impl UiApp {
                 self.preview.retry_live();
                 self.load_recent();
             }
-            if page == UiPage::Changelog {
-                self.changelog_open = true;
+            if page == UiPage::About {
+                settings_dialog::open(self, settings_dialog::Page::About);
             }
             if page == UiPage::StepsReview {
                 steps_review::open(self);
