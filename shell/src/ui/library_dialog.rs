@@ -95,6 +95,13 @@ struct CombineDlg {
 }
 
 impl LibraryDialog {
+    /// 檔案搬動或資料夾改了：重新讀取
+    pub fn reload(&mut self) {
+        self.selected.clear();
+        self.data = None;
+        self.dirty = true;
+    }
+
     pub fn new(kind: Kind) -> Self {
         Self {
             dirty: true,
@@ -222,6 +229,12 @@ fn export_label(x: &ExportInfo) -> String {
 }
 
 fn load(app: &mut UiApp) {
+    let Some((kind, browsing)) = app.library.as_ref().map(|d| (d.kind, d.dir.is_some())) else {
+        return;
+    };
+    let home = home_dir(app, kind);
+    // 截圖資料夾＋留在原處的舊截圖（看其他資料夾時只看那個資料夾）
+    let extra_dirs = if kind == Kind::Shot && !browsing { app.s.shot_extra(&app.env) } else { vec![] };
     let Some(d) = app.library.as_mut() else {
         return;
     };
@@ -231,10 +244,10 @@ fn load(app: &mut UiApp) {
     let seq = d.seq;
     let q = Some(d.query.clone()).filter(|q| !q.trim().is_empty());
     let query = match d.kind {
-        Kind::Video => LibraryQuery { q, filter: d.filter, sort: d.sort, page: Some(d.page as f64), page_size: None, fit_px: Some(d.fit_px), audio: true },
-        Kind::Shot => LibraryQuery { q, filter: LibraryFilter::Shot, sort: d.sort, page: Some(d.page as f64), page_size: Some(d.grid_per_page.max(1) as f64), fit_px: None, audio: false },
+        Kind::Video => LibraryQuery { q, filter: d.filter, sort: d.sort, page: Some(d.page as f64), page_size: None, fit_px: Some(d.fit_px), audio: true, extra_dirs: vec![] },
+        Kind::Shot => LibraryQuery { q, filter: LibraryFilter::Shot, sort: d.sort, page: Some(d.page as f64), page_size: Some(d.grid_per_page.max(1) as f64), fit_px: None, audio: false, extra_dirs },
     };
-    let dir = d.dir.clone().unwrap_or_else(|| app.s.out_dir(&app.env));
+    let dir = d.dir.clone().unwrap_or(home);
     d.loaded_dir = dir.clone();
     let core = app.core.clone();
     app.spawn(async move { actions::library(&core, &dir, &query).await }, move |app, page| {
@@ -276,6 +289,14 @@ enum Req {
     Trash(Vec<String>),
     /// 截圖複製到剪貼簿（圖片）
     CopyImage(String),
+}
+
+/// 清單平常看的資料夾：錄影是儲存位置，截圖是截圖資料夾
+fn home_dir(app: &UiApp, kind: Kind) -> String {
+    match kind {
+        Kind::Video => app.s.out_dir(&app.env),
+        Kind::Shot => app.s.shots_dir(&app.env),
+    }
 }
 
 /// 記住用過的儲存位置（最近用的在前；資料夾選單的「之前用過的資料夾」）
@@ -363,9 +384,14 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
     let mut close = false;
     let mut req: Option<Req> = None;
     // 目前的儲存位置記在「用過的資料夾」最前面（換了儲存位置之後，舊的還能從選單切回去看）
-    let save_dir = app.s.out_dir(&app.env);
-    remember_dir(app, &save_dir);
-    let recent: Vec<String> = app.s.recent_dirs.iter().filter(|d| !d.eq_ignore_ascii_case(&save_dir)).cloned().collect();
+    let video_dir = app.s.out_dir(&app.env);
+    remember_dir(app, &video_dir);
+    let Some(kind) = app.library.as_ref().map(|d| d.kind) else { return };
+    // 截圖看截圖資料夾（之前用過的資料夾只有錄影有）
+    let save_dir = home_dir(app, kind);
+    // 留在原處的舊截圖資料夾（清單也會列出）
+    let extra: Vec<String> = if kind == Kind::Shot { app.s.shot_extra(&app.env) } else { vec![] };
+    let recent: Vec<String> = if kind == Kind::Video { app.s.recent_dirs.iter().filter(|d| !d.eq_ignore_ascii_case(&save_dir)).cloned().collect() } else { vec![] };
     // 縮圖要用 app，先取出對話框
     let Some(mut d) = app.library.take() else {
         return;
@@ -401,6 +427,8 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                 d.page = 1;
                 d.selected.clear();
                 d.data = None;
+                // 錄影與截圖存在不同的資料夾：換了就回到各自的資料夾
+                d.dir = None;
                 d.dirty = true;
             }
             rui.min_rect().width()
@@ -415,7 +443,8 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                 ui.spacing_mut().item_spacing.x = 2.0;
                 let other = d.dir.is_some();
                 // 留給下拉按鈕與「之前用過的資料夾」標籤
-                let max_w = left.width() - 34.0 - if other { 120.0 } else { 0.0 };
+                let with_extra = !other && !extra.is_empty();
+                let max_w = left.width() - 34.0 - if other || with_extra { 120.0 } else { 0.0 };
                 if folder_link(ui, &dir, max_w).clicked() {
                     req = Some(Req::OpenDir(dir.clone()));
                 }
@@ -423,7 +452,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                 egui::Popup::menu(&b).show(|ui| {
                     ui.set_min_width(280.0);
                     let font = theme::font(13.0);
-                    ui.label(theme::muted(ui, tr!("目前儲存位置", "Current save location")));
+                    ui.label(theme::muted(ui, if shot { tr!("截圖資料夾", "Screenshot folder") } else { tr!("目前儲存位置", "Current save location") }));
                     if ui.selectable_label(!other, middle_truncate(ui, &save_dir, &font, 360.0)).on_hover_text(&save_dir).clicked() {
                         req = Some(Req::Browse(None));
                     }
@@ -437,13 +466,17 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                         }
                     }
                     ui.separator();
-                    if ui.button(tr!("變更儲存位置…", "Change save location…")).clicked() {
+                    if ui.button(if shot { tr!("變更截圖資料夾…", "Change screenshot folder…") } else { tr!("變更儲存位置…", "Change save location…") }).clicked() {
                         req = Some(Req::ChooseDir);
                     }
                 });
                 if other {
                     ui.add_space(6.0);
                     chip(ui, tr!("之前用過的資料夾", "Previous folder"), Tone::Warn, false).on_hover_text(tr!("新的錄影與截圖不是存在這裡", "New recordings and screenshots aren't saved here"));
+                } else if with_extra {
+                    ui.add_space(6.0);
+                    let tip = format!("{}\n{}", tr!("也列出留在原處的舊截圖：", "Also listing older screenshots left in:"), extra.join("\n"));
+                    chip(ui, &trf!("＋舊資料夾 {n} 個", "+{n} old folder(s)", n = extra.len()), Tone::Plain, false).on_hover_text(tip);
                 }
             });
         }
@@ -631,7 +664,10 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         }
         Some(Req::Rename(e)) => rename_entry(app, e),
         Some(Req::DeleteSelected) => remove_selected(app),
-        Some(Req::ChooseDir) => super::settings_dialog::choose_output_dir(app),
+        Some(Req::ChooseDir) => match app.library.as_ref().map(|d| d.kind) {
+            Some(Kind::Shot) => super::settings_dialog::choose_shot_dir(app),
+            _ => super::settings_dialog::choose_output_dir(app),
+        },
         Some(Req::OpenDir(dir)) => {
             if let Err(e) = actions::open(actions::OpenAction::Folder, &dir) {
                 app.toast(e.message().to_string(), true);
@@ -1723,7 +1759,8 @@ fn combine_dialog(app: &mut UiApp, ctx: &egui::Context, d: &mut LibraryDialog) {
     let paths: Vec<String> = c.items.iter().map(|e| e.media.path.clone()).collect();
     let (vertical, spacing) = (c.vertical, c.spacing);
     let core = app.core.clone();
-    app.spawn(async move { core.combine_shots(paths, vertical, spacing).await }, |app, r| match r {
+    let shot_dir = app.s.shots_dir(&app.env);
+    app.spawn(async move { core.combine_shots(paths, vertical, spacing, &shot_dir).await }, |app, r| match r {
         Ok(shot) => {
             if let Some(d) = &mut app.library {
                 d.combine = None;

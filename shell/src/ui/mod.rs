@@ -137,6 +137,8 @@ pub struct UiApp {
     /// 新功能介紹（更新後第一次開啟時顯示一次）
     pub whats_new_open: bool,
     whats_new_checked: bool,
+    /// 已檢查過要不要問搬移截圖（每次啟動一次）
+    shot_move_checked: bool,
 
     pub preview: preview::Preview,
     pub thumbs: thumbs::Thumbs,
@@ -233,6 +235,7 @@ impl UiApp {
             cameras_loading: false,
             whats_new_open: false,
             whats_new_checked: false,
+            shot_move_checked: false,
             preview: preview::Preview::default(),
             thumbs: thumbs::Thumbs::default(),
             recent: None,
@@ -1012,6 +1015,15 @@ impl eframe::App for UiApp {
         }
         if self.whats_new_open {
             whats_new::show(self, &ctx);
+        }
+        // 截圖改成和錄影分開存：第一次啟動時問一次要不要把錄影資料夾裡的截圖搬到截圖資料夾（新功能介紹關掉之後）
+        if !self.shot_move_checked && self.whats_new_checked && !self.whats_new_open && self.ask.is_none() && self.editor.is_none() && self.snip.is_none() {
+            self.shot_move_checked = true;
+            let dev = std::env::var("SCREENRECORDER_DEV").is_ok_and(|v| !v.contains("shotmove"));
+            if !self.s.shot_move_asked && !dev {
+                let from = self.s.out_dir(&self.env);
+                settings_dialog::offer_shot_move(self, from, true);
+            }
         }
         if self.changelog_open {
             dialogs::changelog(self, &ctx);

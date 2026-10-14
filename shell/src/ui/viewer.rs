@@ -700,7 +700,8 @@ fn run_act(app: &mut UiApp, act: Act) {
             let Some(v) = app.viewer.as_mut() else { return };
             let (path, t) = (v.cur().media.path.clone(), v.player.as_ref().map(|p| p.time()).unwrap_or(0.0));
             let core = app.core.clone();
-            app.spawn(async move { core.grab_frame(&path, t).await }, |app, r| match r {
+            let shot_dir = app.s.shots_dir(&app.env);
+            app.spawn(async move { core.grab_frame(&path, t, &shot_dir).await }, |app, r| match r {
                 Ok(shot) => {
                     // 狀態更新的「已截圖」不用再顯示一次：這裡的提示有「開啟」「在資料夾中顯示」
                     app.last_shot_seq = app.last_shot_seq.max(shot.seq);

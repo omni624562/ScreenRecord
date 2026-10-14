@@ -967,7 +967,7 @@ fn settings_bar(app: &mut UiApp, ui: &mut Ui) {
         (1..chars.len()).map(|i| format!("…{}", chars[i..].iter().collect::<String>())).find(|t| fits(t)).unwrap_or_default()
     };
     // 點一下：開啟資料夾或換一個資料夾（不用進設定打字）
-    let dir_resp = item(&short, Icon::Folder).enabled(!locked).tooltip(trf!("儲存位置：{dir}（點一下修改）", "Save location: {dir} (click to change)")).show(ui);
+    let dir_resp = item(&short, Icon::Folder).enabled(!locked).tooltip(trf!("錄影的儲存位置：{dir}（點一下修改）", "Recordings are saved to: {dir} (click to change)")).show(ui);
     egui::Popup::menu(&dir_resp).show(|ui| {
         ui.set_min_width(200.0);
         if ui.button(tr!("在檔案總管開啟", "Open in File Explorer")).clicked() {
@@ -977,6 +977,14 @@ fn settings_bar(app: &mut UiApp, ui: &mut Ui) {
         }
         if ui.button(tr!("選擇其他資料夾…", "Choose another folder…")).clicked() {
             settings_dialog::choose_output_dir(app);
+        }
+        // 截圖和錄影分開存
+        let shots = app.s.shots_dir(&app.env);
+        if ui.button(tr!("開啟截圖資料夾", "Open screenshot folder")).on_hover_text(&shots).clicked() {
+            let _ = std::fs::create_dir_all(&shots);
+            if let Err(e) = actions::open(actions::OpenAction::Folder, &shots) {
+                app.toast(e.message().to_string(), true);
+            }
         }
         if ui.button(tr!("儲存位置設定…", "Save location settings…")).clicked() {
             open = Some(Page::Save);
@@ -1909,7 +1917,7 @@ pub(super) fn run_shot(app: &mut UiApp, act: ShotAct) {
                 }
             });
         }
-        ShotAct::Steps => match app.core.steps_start(&config.output_dir) {
+        ShotAct::Steps => match app.core.steps_start(&config.shots_dir()) {
             Ok(()) => app.toast(
                 tr!(
                     "步驟截圖開始：之後每點一下滑鼠就截一張，做完後按畫面下方的「完成」",

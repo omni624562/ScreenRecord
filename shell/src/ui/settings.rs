@@ -125,6 +125,12 @@ pub struct UiSettings {
     pub show_log: bool,
     /// 之前用過的儲存位置（全部錄影的資料夾選單；最近用的在前，最多 RECENT_DIRS 個）
     pub recent_dirs: Vec<String>,
+    /// 截圖的儲存位置（空白 = 預設的截圖資料夾，見 EnvInfo::default_shot_dir）
+    pub shot_dir: String,
+    /// 選了「留在原處」的舊截圖所在的資料夾：全部截圖也列出來
+    pub shot_extra_dirs: Vec<String>,
+    /// 已經問過要不要把錄影資料夾裡的截圖搬到截圖資料夾（截圖改成分開存之後，第一次啟動時問一次）
+    pub shot_move_asked: bool,
     /// 只錄聲音時另存一份 M4A（core 的 after_record.rs 讀這個欄位）
     pub audio_m4a: bool,
     /// 外觀："system"（跟著 Windows）、"light"、"dark"
@@ -261,6 +267,16 @@ impl UiSettings {
                 .filter(|d| !d.is_empty())
                 .take(RECENT_DIRS)
                 .collect(),
+            shot_dir: string("shotDir").map(|d| d.trim().to_string()).unwrap_or_default(),
+            shot_extra_dirs: o
+                .get("shotExtraDirs")
+                .and_then(|v| serde_json::from_value::<Vec<String>>(v.clone()).ok())
+                .unwrap_or_default()
+                .into_iter()
+                .map(|d| d.trim().to_string())
+                .filter(|d| !d.is_empty())
+                .collect(),
+            shot_move_asked: boolean("shotMoveAsked").unwrap_or(false),
             audio_m4a: screenrecorder_core::after_record::audio_m4a(v),
             theme: string("theme").filter(|v| ["light", "dark"].contains(&v.as_str())).unwrap_or_else(|| "system".into()),
             hide_notice_shown: boolean("hideNoticeShown").unwrap_or(false),
@@ -289,6 +305,20 @@ impl UiSettings {
 
     pub fn to_value(&self) -> Value {
         serde_json::to_value(self).unwrap_or(Value::Null)
+    }
+
+    /// 截圖存到哪裡
+    pub fn shots_dir(&self, env: &EnvInfo) -> String {
+        match self.shot_dir.trim() {
+            "" => env.default_shot_dir.clone(),
+            d => d.to_string(),
+        }
+    }
+
+    /// 全部截圖除了截圖資料夾，也要列出的資料夾（留在原處的舊截圖）
+    pub fn shot_extra(&self, env: &EnvInfo) -> Vec<String> {
+        let main = self.shots_dir(env);
+        self.shot_extra_dirs.iter().filter(|d| !d.eq_ignore_ascii_case(&main)).cloned().collect()
     }
 
     pub fn out_dir(&self, env: &EnvInfo) -> String {
@@ -345,6 +375,7 @@ impl UiSettings {
             max_minutes: self.max_minutes,
             method: self.method,
             output_dir: self.out_dir(env),
+            shot_dir: self.shot_dir.trim().to_string(),
             audio: AudioConfig { system: self.audio_system, mic: self.audio_mic, mic_id: self.mic_id.clone(), app: self.audio_app.clone() },
             encoder: Some(self.encoder),
             countdown_sec: Some(self.countdown_sec as f64),

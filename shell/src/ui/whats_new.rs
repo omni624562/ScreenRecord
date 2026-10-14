@@ -22,7 +22,8 @@ pub fn should_show(app: &UiApp) -> bool {
 enum Try {
     None,
     Settings(Page),
-    /// 在螢幕上框選截圖
+    /// 在螢幕上框選截圖（這一版的介紹沒用到，保留給之後）
+    #[allow(dead_code)]
     Snip,
     /// 開啟全部錄影
     Library,
@@ -74,61 +75,43 @@ fn quick_start(app: &UiApp) -> [(String, String); 3] {
 }
 
 /// 這一版的新功能（標題、說明、試試看）：最多 6 項，快速鍵用目前的設定
-fn items(app: &UiApp) -> Vec<(String, String, Try)> {
+fn items(_app: &UiApp) -> Vec<(String, String, Try)> {
     vec![
         (
-            tr!("框選截圖更好找、放開後還能調整", "Area screenshots: easier to find, adjustable").into(),
-            trf!(
-                "「開始錄影」下面就是「框選截圖」{}；框好後可以拉邊調整，再選完成、編輯、複製或釘在桌面。延遲截圖會在畫面上倒數。",
-                "“Select area”{} is right below “Start recording”. After selecting, drag the edges to adjust, then finish, edit, copy or pin it. Delayed screenshots count down on screen.",
-                key(app, 3)
-            ),
-            Try::Snip,
-        ),
-        (
-            tr!("剪輯更順手，也不怕白做", "Easier editing, no lost work").into(),
+            tr!("截圖和錄影分開存", "Screenshots and recordings are kept apart").into(),
             tr!(
-                "時間軸上方有時間尺規，按 S 在播放位置分割；字幕、聲音有自己的分頁。輸出失敗或取消時可以「回到剪輯」，關閉前會問要不要儲存。",
-                "A time ruler sits above the timeline, and S splits at the playhead. Subtitles and audio have their own tabs. If saving fails or is canceled, “Back to editing” restores everything, and closing asks whether to save."
+                "截圖改存到「圖片 → 螢幕擷取畫面」（和 Windows 的 Win+PrtScn 同一個資料夾），錄影照樣存在原本的位置；「設定 → 儲存位置」可以各自選資料夾。原本和錄影放在一起的舊截圖，可以一鍵搬過去，或留在原處（「全部截圖」照樣列得出來）。",
+                "Screenshots now go to Pictures → Screenshots (the same folder as Windows' Win+PrtScn), while recordings stay where they were. Choose each folder in Settings → Save location. Older screenshots saved with your recordings can be moved over in one click or left where they are (All screenshots still lists them)."
             )
             .into(),
-            Try::None,
+            Try::Settings(Page::Save),
         ),
         (
-            tr!("截圖編輯可以放大、另存新檔", "Zoom and Save As in the screenshot editor").into(),
+            tr!("清單可以用 Ctrl、Shift 多選", "Select several items with Ctrl and Shift").into(),
             tr!(
-                "Ctrl+滾輪放大縮小，長截圖用「符合寬度」捲動標註；「儲存」旁的箭頭可以另存新檔，選 PNG 或 JPG（檔案較小）。",
-                "Ctrl+wheel zooms; long screenshots open at “Fit width” so you can scroll and annotate. The arrow next to “Save” offers Save As, as PNG or JPG (smaller file)."
-            )
-            .into(),
-            Try::None,
-        ),
-        (
-            tr!("壓縮影片傳 LINE、Email", "Compress videos for LINE or email").into(),
-            tr!(
-                "全部錄影、檢視器的「⋯」有「壓縮（傳 LINE / Email）」；每一列可按右鍵、可搜尋「10/11」「昨天」；合併、拼圖前可以調整順序。",
-                "“⋯” in All recordings and the viewer has “Compress (for LINE / email)”. Right-click any row, search “10/11” or “yesterday”, and reorder before merging or combining."
+                "全部錄影、全部截圖：按住 Ctrl 點一下多選、按住 Shift 點一下選一段，Ctrl+A 選取這一頁全部，再一次刪除、合併或拼成一張。",
+                "In All recordings and All screenshots, Ctrl+click picks several items, Shift+click picks a range and Ctrl+A selects the whole page, ready to delete, merge or combine."
             )
             .into(),
             Try::Library,
         ),
         (
-            tr!("回溯錄影，錄影優先", "Replay buffer; recording comes first").into(),
-            trf!(
-                "原本的「重播」改名「回溯錄影」：在背景一直錄、只留最近幾分鐘，需要時再存下{}，停止前會先問要不要存。錄完自動處理進行中也能直接開始錄影。",
-                "“Replay” is now the replay buffer: it keeps the last few minutes so you can save them{}, and asks before stopping. You can start recording even while post-processing runs.",
-                key(app, 6)
-            ),
+            tr!("截圖編輯：裁切馬上看到、拖曳移動畫面", "Screenshot editor: instant crop, drag to pan").into(),
+            tr!(
+                "裁切後其他分頁只顯示保留的部分，隨時可以「調整裁切」或「還原整張」；圖比畫面大時，在空白處按住左鍵就能拖曳移動畫面。",
+                "After cropping, the other tabs show just the kept part, and you can “Adjust crop” or “Restore full image” at any time. When the image is larger than the view, drag an empty spot to pan."
+            )
+            .into(),
             Try::None,
         ),
         (
-            tr!("儲存位置用選的，不用打字", "Pick the save folder instead of typing").into(),
+            tr!("「關於」看版本與更新說明", "Versions and release notes in “About”").into(),
             tr!(
-                "「設定 → 儲存位置」或主畫面下方的資料夾按鈕可以直接選資料夾；全部錄影會顯示檔名，按每一列的「重新命名」或按兩下檔名就能改名。外觀可以選淺色或深色（設定 → 進階）。",
-                "Choose the folder in Settings → Save location or from the folder button at the bottom of the main window. All recordings shows file names; rename with the rename button or by double-clicking. Pick a light or dark appearance in Settings → Advanced."
+                "「設定 → 關於」（或系統匣選單「關於」）可以看目前的版本、每一版的更新說明，並檢查有沒有新版本。",
+                "Settings → About (or “About” in the tray menu) shows the current version and every version's release notes, and checks for updates."
             )
             .into(),
-            Try::Settings(Page::Save),
+            Try::Settings(Page::About),
         ),
     ]
 }

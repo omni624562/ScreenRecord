@@ -51,8 +51,8 @@ pub struct SnipSource {
     pub monitors: Vec<MonitorInfo>,
     /// 截下時看得到的視窗（由上層到下層）：點一下截整個視窗
     pub windows: Vec<crate::types::Rect>,
-    /// 存檔的資料夾
-    pub output_dir: String,
+    /// 截圖存檔的資料夾
+    pub shot_dir: String,
 }
 
 /// 預覽畫面（RGBA，由上而下）
@@ -592,7 +592,7 @@ impl App {
         let monitors = self.lock().monitors.clone();
         // 選了「只錄聲音」時，截圖仍截螢幕
         let plan = crate::args::resolve_plan(&RecordConfig { audio_only: false, ..config.clone() }, &monitors)?;
-        let out = new_shot_path(&config.output_dir).await?;
+        let out = new_shot_path(&config.shots_dir()).await?;
         // 操作視窗擋到範圍：先縮小（等動畫結束）再截
         let hid = crate::winui::minimize_ui(Some(&plan.rect));
         if hid {
@@ -626,11 +626,10 @@ impl App {
         Err(crate::Error::other(tr!("截圖失敗，詳見記錄檔", "Screenshot failed. See the log file for details")))
     }
 
-    /// 從影片擷取 t 秒的那一格，存成截圖（原尺寸 PNG，和影片放在同一個資料夾）並複製到剪貼簿
-    pub async fn grab_frame(self: &Arc<Self>, video: &str, t: f64) -> crate::Result<crate::types::ShotInfo> {
+    /// 從影片擷取 t 秒的那一格，存成截圖（原尺寸 PNG，存在截圖資料夾 shot_dir）並複製到剪貼簿
+    pub async fn grab_frame(self: &Arc<Self>, video: &str, t: f64, shot_dir: &str) -> crate::Result<crate::types::ShotInfo> {
         let ffmpeg = self.ffmpeg_path().ok_or_else(|| crate::Error::config(tr!("找不到 FFmpeg", "FFmpeg not found")))?;
-        let dir = Path::new(video).parent().map(|p| p.display().to_string()).unwrap_or_default();
-        let out = new_shot_path(&dir).await?;
+        let out = new_shot_path(shot_dir).await?;
         let t = if t.is_finite() { t.max(0.0) } else { 0.0 };
         let args: Vec<String> = ["-hide_banner", "-loglevel", "error"]
             .iter()
@@ -691,7 +690,7 @@ impl App {
     }
 
     /// 多張截圖拼成一張（依給的順序；左右或上下排；spacing 間距：0 無、1 小、2 大），存成新的截圖並複製到剪貼簿
-    pub async fn combine_shots(self: &Arc<Self>, paths: Vec<String>, vertical: bool, spacing: u8) -> crate::Result<crate::types::ShotInfo> {
+    pub async fn combine_shots(self: &Arc<Self>, paths: Vec<String>, vertical: bool, spacing: u8, shot_dir: &str) -> crate::Result<crate::types::ShotInfo> {
         if paths.len() < 2 {
             return Err(crate::Error::config(tr!("請選兩張以上的截圖", "Select two or more screenshots")));
         }
@@ -707,8 +706,7 @@ impl App {
             }
             images.push(pm);
         }
-        let dir = Path::new(&paths[0]).parent().map(|p| p.display().to_string()).unwrap_or_default();
-        let out = new_shot_path(&dir).await?;
+        let out = new_shot_path(shot_dir).await?;
         let o = out.clone();
         let (w, h) = tokio::task::spawn_blocking(move || {
             let gap = combine_gap(&images, spacing);
@@ -981,7 +979,7 @@ impl App {
                 crate::info!("[截圖] 取消長截圖");
                 return Ok(None);
             };
-            let out = new_shot_path(&src.output_dir).await?;
+            let out = new_shot_path(&src.shot_dir).await?;
             let o = out.clone();
             let (w, h) = (img.w, img.h);
             let (copied, thumb) = tokio::task::spawn_blocking(move || save_long_shot(img, &o)).await.map_err(|e| crate::Error::other(e.to_string()))??;
@@ -1054,7 +1052,7 @@ impl App {
             return Err(e);
         }
         let windows = crate::winui::visible_windows();
-        Ok(SnipSource { path, desktop: plan.rect, monitors: plan.monitors.clone(), windows, output_dir: config.output_dir.clone() })
+        Ok(SnipSource { path, desktop: plan.rect, monitors: plan.monitors.clone(), windows, shot_dir: config.shots_dir() })
     }
 
     /// 錄影中拖曳移動了範圍：主畫面的自訂範圍（或單一螢幕裡框選的部分）、系統匣「開始錄影」用的設定、
@@ -1105,7 +1103,7 @@ impl App {
 
     /// 裁切、存檔並複製到剪貼簿；preview = 顯示右下角的小縮圖
     async fn snip_store(self: &Arc<Self>, src: &SnipSource, rect: crate::types::Rect, preview: bool) -> crate::Result<crate::types::ShotInfo> {
-        let out = new_shot_path(&src.output_dir).await?;
+        let out = new_shot_path(&src.shot_dir).await?;
         let (from, to, desk) = (src.path.clone(), out.clone(), src.desktop);
         let r = tokio::task::spawn_blocking(move || crop_png(&from, desk, rect, &to)).await.map_err(|e| crate::Error::other(e.to_string()))?;
         let (w, h) = r?;
@@ -1321,6 +1319,7 @@ impl App {
             app_dir: crate::paths::app_dir().display().to_string(),
             app_version: APP_VERSION.to_string(),
             default_output_dir: self.default_output_dir.clone(),
+            default_shot_dir: crate::paths::default_shot_dir().display().to_string(),
             ffmpeg: st.ffmpeg.info.clone(),
             monitors: st.monitors.clone(),
             monitor_error: st.monitor_error.clone(),
@@ -2092,6 +2091,7 @@ mod tests {
             max_minutes: 0.0,
             method: MethodPreference::Auto,
             output_dir: dir.path().display().to_string(),
+            shot_dir: String::new(),
             audio: AudioConfig::default(),
             encoder: None,
             countdown_sec: None,

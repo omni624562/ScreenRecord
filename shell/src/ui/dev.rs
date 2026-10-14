@@ -287,7 +287,7 @@ pub fn tick(app: &mut UiApp, ctx: &egui::Context) {
                     // 步驟截圖（Windows）：開始，畫面下方有小工具列
                     #[cfg(windows)]
                     _ if a == "steps" => {
-                        let dir = app.s.record_config(&app.env).output_dir;
+                        let dir = app.s.record_config(&app.env).shots_dir();
                         if let Err(e) = app.core.steps_start(&dir) {
                             app.toast(e.message().to_string(), true);
                         }
@@ -473,6 +473,6 @@ fn fake_source(app: &mut UiApp, png: &str) -> Option<screenrecorder_core::app::S
         desktop,
         monitors: app.env.monitors.clone(),
         windows: vec![Rect { x: 100, y: 120, width: 500, height: 300 }, Rect { x: 0, y: 0, width: 900, height: 700 }],
-        output_dir: app.s.out_dir(&app.env),
+        shot_dir: app.s.shots_dir(&app.env),
     })
 }

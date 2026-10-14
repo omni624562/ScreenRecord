@@ -114,6 +114,31 @@ pub async fn library(app: &App, dir: &str, query: &LibraryQuery) -> LibraryPage 
     crate::library::list_library(&app.cache, ffmpeg.as_deref(), Path::new(&dir), query).await
 }
 
+/// 資料夾裡有幾張截圖（PNG / JPG，不含子資料夾）
+pub async fn count_shots(dir: &str) -> usize {
+    let d = PathBuf::from(dir);
+    tokio::task::spawn_blocking(move || crate::library::images_in(&d).len()).await.unwrap_or(0)
+}
+
+/// 截圖從 from 搬到 to（截圖資料夾）：同名的加 _2；截圖編輯的記錄（原圖在哪裡）跟著更新，之後還能再次編輯
+pub async fn move_shots(app: &App, from: &str, to: &str) -> crate::library::MoveReport {
+    let (f, t) = (PathBuf::from(from), PathBuf::from(to));
+    let r = tokio::task::spawn_blocking(move || crate::library::move_images(&f, &t)).await.unwrap_or_default();
+    let store = app.projects.clone();
+    let moved = r.moved.clone();
+    let _ = tokio::task::spawn_blocking(move || {
+        for (a, b) in &moved {
+            store.renamed(a, b);
+        }
+    })
+    .await;
+    crate::info!("[截圖] 從 {from} 搬到 {to}：{} 張，失敗 {} 張", r.moved.len(), r.failed.len());
+    for (name, why) in &r.failed {
+        crate::info!("[截圖]   沒搬成：{name}（{why}）");
+    }
+    r
+}
+
 /// 縮圖檔（PNG）的路徑；產生失敗回傳 None
 pub async fn thumb(app: &App, path: &str) -> Option<PathBuf> {
     let ffmpeg = app.ffmpeg_path().filter(|_| is_abs(path) && ends_with_ci(path, &[".mp4", ".gif", ".webp", ".png", ".jpg", ".jpeg"]) && Path::new(path).exists())?;
