@@ -953,8 +953,11 @@ fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table:
             let cell = Rect::from_min_max(pos2(thumb.max.x + 10.0, row.min.y), pos2(name_rect.max.x - 8.0, name_rect.max.y));
             // 先排右邊的標記，檔名用剩下的寬度（太長時截斷，不會擠掉標記）
             let tui = &mut ui.new_child(UiBuilder::new().max_rect(cell).layout(Layout::right_to_left(Align::Center)));
+            // 「有聲音」的位置固定保留，沒有聲音時空著，旁邊的標記才會切齊
             if e.media.has_audio == Some(true) && !audio {
                 audio_mark(tui);
+            } else {
+                tui.allocate_exact_size(vec2(16.0, 16.0), Sense::hover());
             }
             if audio {
                 chip(tui, tr!("只有聲音", "Audio only"), Tone::Plain, false)
