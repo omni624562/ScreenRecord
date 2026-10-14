@@ -878,6 +878,10 @@ fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table:
     // 內容
     let mut y = table.min.y + head_h + 2.0;
     let times = time_labels(rows.iter().map(|e| (e.media.name.as_str(), e.media.time_ms())));
+    // 時間欄固定寬度（這一頁最長的時間），檔名才會切齊
+    let time_w = times.values().map(|(_, t)| ui.fonts_mut(|f| f.layout_no_wrap(t.clone(), theme::font_bold(13.0), p.text).size().x)).fold(0.0_f32, f32::max);
+    // 檔名開始的位置（主列：縮圖、時間之後；加速版子列也對齊這裡）
+    let name_x = col_x(2) + 4.0 + 53.0 + 10.0 + time_w + 12.0;
     let today = chrono::Local::now().date_naive();
     let mut last_day = None;
     if rows.is_empty() {
@@ -968,7 +972,10 @@ fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table:
             let tags_w = tui.min_rect().width();
             let left = Rect::from_min_max(cell.min, pos2(cell.max.x - tags_w - 6.0, cell.max.y));
             let nui = &mut ui.new_child(UiBuilder::new().max_rect(left).layout(Layout::left_to_right(Align::Center)));
-            nui.label(RichText::new(time.unwrap_or_default()).font(theme::font_bold(13.0)));
+            nui.spacing_mut().item_spacing.x = 0.0;
+            let (tr_rect, _) = nui.allocate_exact_size(vec2(time_w, row.height()), Sense::hover());
+            painter.text(pos2(tr_rect.min.x, row.center().y), egui::Align2::LEFT_CENTER, time.unwrap_or_default(), theme::font_bold(13.0), p.text);
+            nui.add_space((name_x - nui.cursor().min.x).max(0.0));
             // 自己取的名稱用一般字色，預設檔名（Rec_日期_時間）用灰色
             let custom = !is_default_name(&e.media.name);
             let name = RichText::new(&e.media.name).font(theme::font(if custom { 13.0 } else { 12.5 })).color(if custom { p.text } else { p.muted });
@@ -1050,6 +1057,11 @@ fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table:
             {
                 let nui = &mut ui.new_child(UiBuilder::new().max_rect(Rect::from_min_max(pos2(bx + 18.0, row.min.y), pos2(col_x(3) - 8.0, row.max.y))).layout(Layout::left_to_right(Align::Center)));
                 chip(nui, &export_label(x), Tone::Accent, false).on_hover_text(trf!("{}（{}×）", "{} ({}×)", x.media.name, speed_label(x.speed)));
+                // 檔名和主列的檔名切齊（標籤太寬時就接在後面）
+                let gap = name_x - nui.cursor().min.x;
+                if gap > 0.0 {
+                    nui.add_space(gap);
+                }
                 nui.add(egui::Label::new(RichText::new(&x.media.name).font(theme::font(12.0)).color(p.muted)).truncate());
             }
             num(&x.media.duration_sec.map(short_clock).unwrap_or_else(|| "—".into()), col_x(4) - 10.0, row.center().y, p.text, 12.5);
