@@ -616,6 +616,9 @@ fn interact(ed: &mut Editor, ui: &egui::Ui, rect: Rect, resp: &egui::Response) {
                     Some(CropGrab::Inside) => CursorIcon::Move,
                     None => CursorIcon::Crosshair,
                 }
+            } else if ed.is_shot() && super::shot::can_drag_pan(ed) {
+                // 截圖放大到比畫面大：空白處可以按住左鍵拖曳移動
+                CursorIcon::Grab
             } else {
                 CursorIcon::PointingHand
             };
@@ -686,6 +689,12 @@ fn interact(ed: &mut Editor, ui: &egui::Ui, rect: Rect, resp: &egui::Response) {
         }
         // 只有「裁切」分頁會框選裁切範圍，其他分頁點空白處不會動到裁切（跟著游標的直式影片不另外裁切）
         let cropping = ed.tab == Tab::Crop && !follow_crop(ed);
+        if ed.is_shot() && !cropping {
+            // 截圖：點空白處取消選取標註；圖比畫面大時按住左鍵拖曳移動畫面
+            ed.ann_sel = None;
+            super::shot::start_drag_pan(ed, ui, p);
+            return;
+        }
         if ed.ann_sel.is_some() {
             // 點空白處：取消選取標註（裁切分頁同時開始框選）
             ed.ann_sel = None;

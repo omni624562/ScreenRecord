@@ -538,7 +538,7 @@ fn sharpen(s: &mut Shot, ctx: &egui::Context, phys: f32) {
     }
 }
 
-/// 按住空白鍵（或滑鼠中鍵）拖曳移動畫面；回傳 true = 正在移動畫面（這一格不放標註）
+/// 按住空白鍵（或滑鼠中鍵）拖曳移動畫面（沒有選工具時點空白處也可以直接拖曳，見 start_drag_pan）；回傳 true = 正在移動畫面（這一格不放標註）
 pub fn pan(ed: &mut Editor, ui: &egui::Ui, resp: &egui::Response) -> bool {
     let (vw, vh) = (ed.vw, ed.vh);
     let Some(s) = &mut ed.shot else { return false };
@@ -571,6 +571,25 @@ pub fn pan(ed: &mut Editor, ui: &egui::Ui, resp: &egui::Response) -> bool {
         return true;
     }
     false
+}
+
+/// 圖比畫面大（放大後有捲軸）時，點空白處按住左鍵可以拖曳移動畫面
+pub fn can_drag_pan(ed: &Editor) -> bool {
+    let Some(s) = &ed.shot else { return false };
+    let v = &s.view;
+    let k = v.k as f64;
+    ed.vw * k > v.outer.width() as f64 + 0.5 || ed.vh * k > v.outer.height() as f64 + 0.5
+}
+
+/// 開始用左鍵拖曳移動畫面（點在空白處時）；圖沒有比畫面大時回傳 false
+pub fn start_drag_pan(ed: &mut Editor, ui: &egui::Ui, p: Pos2) -> bool {
+    if !can_drag_pan(ed) {
+        return false;
+    }
+    let Some(s) = &mut ed.shot else { return false };
+    s.view.pan = Some((p, s.view.c));
+    ui.ctx().set_cursor_icon(CursorIcon::Grabbing);
+    true
 }
 
 /// 畫出截圖（切成小塊的畫面，只畫看得到的）
@@ -701,8 +720,8 @@ pub fn overlays(ed: &mut Editor, ui: &mut egui::Ui, outer: Rect, rect: Rect) {
         .scope_builder(egui::UiBuilder::new().max_rect(area.shrink2(vec2(4.0, 3.0))).layout(Layout::right_to_left(Align::Center)), |ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
             let tip = tr!(
-                "Ctrl+滾輪也可以縮放；放大後用滾輪捲動，或按住空白鍵拖曳移動畫面",
-                "You can also zoom with Ctrl+wheel. When zoomed in, scroll with the wheel or hold Space and drag to move around"
+                "Ctrl+滾輪也可以縮放；放大後用滾輪捲動，或在空白處按住左鍵（也可以按住空白鍵）拖曳移動畫面",
+                "You can also zoom with Ctrl+wheel. When zoomed in, scroll with the wheel or drag an empty spot (or hold Space and drag) to move around"
             );
             let one = 1.0 / ppp;
             if Btn::new(tr!("原尺寸", "Actual size"))
