@@ -693,36 +693,11 @@ fn app_audio_row(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
 
 fn save_page(app: &mut UiApp, ui: &mut Ui) {
     let p = theme::pal(ui);
-    form_section(ui, tr!("儲存位置", "Save location"), |_| {});
+    // 錄影
+    form_section(ui, tr!("錄影", "Recordings"), |_| {});
     let dir = app.s.out_dir(&app.env);
-    let custom = !app.s.output_dir.trim().is_empty();
-    // 目前的資料夾（不用打字）：點一下或按「選擇資料夾」用 Windows 的視窗選
-    let mut choose = false;
-    ui.horizontal(|ui| {
-        let btn = Btn::new(tr!("選擇資料夾…", "Choose folder…")).icon(Icon::Folder);
-        let w = ui.available_width() - btn.width(ui) - ui.spacing().item_spacing.x;
-        let (rect, resp) = ui.allocate_exact_size(vec2(w, 32.0), Sense::click());
-        let hover = resp.hovered();
-        ui.painter().rect(rect, CornerRadius::same(6), p.surface, Stroke::new(1.0, if hover { p.accent } else { p.border_strong }), egui::StrokeKind::Inside);
-        theme::paint_icon(ui.painter(), Rect::from_center_size(pos2(rect.min.x + 18.0, rect.center().y), vec2(16.0, 16.0)), Icon::Folder, p.muted);
-        // 太長時保留結尾（資料夾名稱比較重要）
-        let room = rect.width() - 40.0;
-        let fits = |t: &str| ui.painter().layout_no_wrap(t.to_string(), theme::font(13.0), p.text).size().x <= room;
-        let shown = if fits(&dir) {
-            dir.clone()
-        } else {
-            let chars: Vec<char> = dir.chars().collect();
-            (1..chars.len()).map(|i| format!("…{}", chars[i..].iter().collect::<String>())).find(|t| fits(t)).unwrap_or_default()
-        };
-        ui.painter().text(pos2(rect.min.x + 32.0, rect.center().y), egui::Align2::LEFT_CENTER, shown, theme::font(13.0), p.text);
-        if resp.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(trf!("{dir}\n點一下選擇其他資料夾", "{dir}\nClick to choose another folder")).clicked() {
-            choose = true;
-        }
-        if btn.show(ui).clicked() {
-            choose = true;
-        }
-    });
-    if choose {
+    let custom = !app.s.output_dir.trim().is_empty() && !app.s.output_dir.trim().eq_ignore_ascii_case(&app.env.default_output_dir);
+    if folder_row(ui, &dir, "save-video") {
         choose_output_dir(app);
     }
     ui.add_space(4.0);
@@ -735,16 +710,47 @@ fn save_page(app: &mut UiApp, ui: &mut Ui) {
     ui.add_space(4.0);
     ui.horizontal(|ui| {
         if Btn::new(tr!("在檔案總管開啟", "Open in File Explorer")).icon(Icon::Folder).small().show(ui).clicked() {
-            if let Err(e) = actions::open(actions::OpenAction::Folder, &dir) {
-                app.toast(e.message().to_string(), true);
-            }
+            open_folder(app, &dir);
         }
         if custom && Btn::new(tr!("改回預設位置", "Use default location")).small().ghost().tooltip(trf!("改存到 {}", "Save to {} instead", app.env.default_output_dir)).show(ui).clicked() {
             set_output_dir(app, String::new());
             let dir = app.s.out_dir(&app.env);
-            app.toast(trf!("之後的錄影與截圖會存到 {dir}", "New recordings and screenshots will be saved to {dir}"), false);
+            app.toast(trf!("之後的錄影會存到 {dir}", "New recordings will be saved to {dir}"), false);
         }
     });
+    form_divider(ui);
+    // 截圖（和錄影分開放）
+    form_section(ui, tr!("截圖", "Screenshots"), |_| {});
+    let shot_dir = app.s.shots_dir(&app.env);
+    let shot_custom = !app.s.shot_dir.trim().is_empty();
+    if folder_row(ui, &shot_dir, "save-shot") {
+        choose_shot_dir(app);
+    }
+    ui.add_space(4.0);
+    if !std::path::Path::new(&shot_dir).is_dir() {
+        ui.label(RichText::new(tr!("找不到這個資料夾，截圖時會自動建立", "This folder doesn't exist yet. It will be created when you take a screenshot")).font(theme::font(12.0)).color(p.warn));
+    } else if !shot_custom {
+        ui.label(RichText::new(tr!("預設位置（Windows 的「螢幕擷取畫面」資料夾）", "Default location (the Windows Screenshots folder)")).font(theme::font(12.0)).color(p.muted));
+    }
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        if Btn::new(tr!("在檔案總管開啟", "Open in File Explorer")).icon(Icon::Folder).small().show(ui).clicked() {
+            open_folder(app, &shot_dir);
+        }
+        if shot_custom && Btn::new(tr!("改回預設位置", "Use default location")).small().ghost().tooltip(trf!("改存到 {}", "Save to {} instead", app.env.default_shot_dir)).show(ui).clicked() {
+            set_shot_dir(app, String::new());
+        }
+    });
+    let extra = app.s.shot_extra(&app.env);
+    if !extra.is_empty() {
+        ui.add_space(6.0);
+        ui.label(RichText::new(trf!("「全部截圖」也會列出留在 {} 的舊截圖", "“All screenshots” also lists the older screenshots left in {}", extra.join("、"))).font(theme::font(12.0)).color(p.muted));
+        if Btn::new(tr!("把舊截圖搬到截圖資料夾…", "Move older screenshots to the screenshot folder…")).small().show(ui).clicked() {
+            if let Some(from) = extra.first() {
+                offer_shot_move(app, from.clone(), false);
+            }
+        }
+    }
     form_divider(ui);
     form_section(ui, tr!("檔名", "File names"), |_| {});
     form_row(ui, tr!("錄影", "Recordings"), |ui| {
@@ -753,7 +759,54 @@ fn save_page(app: &mut UiApp, ui: &mut Ui) {
     form_row(ui, tr!("截圖", "Screenshots"), |ui| {
         ui.label(RichText::new(tr!("Shot_年-月-日_時-分-秒.png", "Shot_YYYY-MM-DD_HH-MM-SS.png")).font(theme::mono(12.5)));
     });
-    form_hint(ui, tr!("加速版、GIF、剪輯版存在同一個資料夾，檔名接在原檔後面。", "Sped-up versions, GIFs and edited versions are saved in the same folder, named after the original file."), p.muted);
+    form_hint(
+        ui,
+        tr!(
+            "加速版、GIF、剪輯版和原片存在同一個資料夾，檔名接在原檔後面；從影片擷取的畫面、拼成一張的圖、步驟截圖存在截圖資料夾。",
+            "Sped-up versions, GIFs and edited versions are saved next to the original, named after it. Frames grabbed from videos, combined images and step captures go to the screenshot folder."
+        ),
+        p.muted,
+    );
+}
+
+/// 目前的資料夾（不用打字）：點一下或按「選擇資料夾」用 Windows 的視窗選；回傳 true = 要選資料夾
+fn folder_row(ui: &mut Ui, dir: &str, id: &str) -> bool {
+    let p = theme::pal(ui);
+    let mut choose = false;
+    ui.push_id(id, |ui| {
+        ui.horizontal(|ui| {
+            let btn = Btn::new(tr!("選擇資料夾…", "Choose folder…")).icon(Icon::Folder);
+            let w = ui.available_width() - btn.width(ui) - ui.spacing().item_spacing.x;
+            let (rect, resp) = ui.allocate_exact_size(vec2(w, 32.0), Sense::click());
+            let hover = resp.hovered();
+            ui.painter().rect(rect, CornerRadius::same(6), p.surface, Stroke::new(1.0, if hover { p.accent } else { p.border_strong }), egui::StrokeKind::Inside);
+            theme::paint_icon(ui.painter(), Rect::from_center_size(pos2(rect.min.x + 18.0, rect.center().y), vec2(16.0, 16.0)), Icon::Folder, p.muted);
+            // 太長時保留結尾（資料夾名稱比較重要）
+            let room = rect.width() - 40.0;
+            let fits = |t: &str| ui.painter().layout_no_wrap(t.to_string(), theme::font(13.0), p.text).size().x <= room;
+            let shown = if fits(dir) {
+                dir.to_string()
+            } else {
+                let chars: Vec<char> = dir.chars().collect();
+                (1..chars.len()).map(|i| format!("…{}", chars[i..].iter().collect::<String>())).find(|t| fits(t)).unwrap_or_default()
+            };
+            ui.painter().text(pos2(rect.min.x + 32.0, rect.center().y), egui::Align2::LEFT_CENTER, shown, theme::font(13.0), p.text);
+            if resp.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(trf!("{dir}\n點一下選擇其他資料夾", "{dir}\nClick to choose another folder")).clicked() {
+                choose = true;
+            }
+            if btn.show(ui).clicked() {
+                choose = true;
+            }
+        });
+    });
+    choose
+}
+
+fn open_folder(app: &mut UiApp, dir: &str) {
+    let _ = std::fs::create_dir_all(dir);
+    if let Err(e) = actions::open(actions::OpenAction::Folder, dir) {
+        app.toast(e.message().to_string(), true);
+    }
 }
 
 /// 用 Windows 的視窗選儲存位置（主畫面下方的資料夾按鈕也用）
@@ -765,7 +818,7 @@ pub fn choose_output_dir(app: &mut UiApp) {
             let value = if dir.eq_ignore_ascii_case(&app.env.default_output_dir) { String::new() } else { dir };
             set_output_dir(app, value);
             let dir = app.s.out_dir(&app.env);
-            app.toast(trf!("之後的錄影與截圖會存到 {dir}", "New recordings and screenshots will be saved to {dir}"), false);
+            app.toast(trf!("之後的錄影會存到 {dir}", "New recordings will be saved to {dir}"), false);
         }
         Ok(None) => {}
         Err(e) => app.toast(e.message().to_string(), true),
@@ -784,6 +837,142 @@ fn set_output_dir(app: &mut UiApp, value: String) {
     // 重新讀取最近錄影
     app.main.dir_changed_at = Some(Instant::now());
     app.ctx.request_repaint_after(std::time::Duration::from_millis(620));
+}
+
+/// 選截圖資料夾（設定、全部截圖的資料夾選單）
+pub fn choose_shot_dir(app: &mut UiApp) {
+    let current = app.s.shots_dir(&app.env);
+    app.spawn(async move { tokio::task::spawn_blocking(move || actions::pick_output_dir(&current)).await.unwrap_or(Ok(None)) }, |app, r| match r {
+        Ok(Some(dir)) => {
+            let value = if dir.eq_ignore_ascii_case(&app.env.default_shot_dir) { String::new() } else { dir };
+            set_shot_dir(app, value);
+        }
+        Ok(None) => {}
+        Err(e) => app.toast(e.message().to_string(), true),
+    });
+}
+
+/// 換截圖資料夾：舊資料夾裡有截圖時問要不要一起搬過去
+fn set_shot_dir(app: &mut UiApp, value: String) {
+    let old = app.s.shots_dir(&app.env);
+    if app.s.shot_dir.trim() == value.trim() {
+        return;
+    }
+    app.s.shot_dir = value;
+    app.save_settings();
+    let new = app.s.shots_dir(&app.env);
+    app.toast(trf!("之後的截圖會存到 {new}", "New screenshots will be saved to {new}"), false);
+    if !old.eq_ignore_ascii_case(&new) {
+        offer_shot_move(app, old, false);
+    }
+    if let Some(d) = &mut app.library {
+        d.reload();
+    }
+}
+
+/// 問要不要把 from 資料夾裡的截圖搬到截圖資料夾。先把 from 記成「留在原處的資料夾」（全部截圖照樣列得出來），
+/// 搬完、資料夾裡沒有截圖了再拿掉。first_run：截圖改成分開存之後第一次啟動（不想現在決定時下次再問）
+pub fn offer_shot_move(app: &mut UiApp, from: String, first_run: bool) {
+    let to = app.s.shots_dir(&app.env);
+    if from.trim().is_empty() || from.eq_ignore_ascii_case(&to) {
+        if first_run {
+            app.s.shot_move_asked = true;
+            app.save_settings();
+        }
+        return;
+    }
+    let f = from.clone();
+    app.spawn(async move { actions::count_shots(&f).await }, move |app, n| {
+        if n == 0 {
+            app.s.shot_extra_dirs.retain(|d| !d.eq_ignore_ascii_case(&from));
+            if first_run {
+                app.s.shot_move_asked = true;
+            }
+            app.save_settings();
+            return;
+        }
+        if !app.s.shot_extra_dirs.iter().any(|d| d.eq_ignore_ascii_case(&from)) {
+            app.s.shot_extra_dirs.push(from.clone());
+            app.save_settings();
+        }
+        let to = app.s.shots_dir(&app.env);
+        let (from2, to2) = (from.clone(), to.clone());
+        let mut ask = dialogs::Ask::confirm(
+            tr!("要把截圖搬到截圖資料夾嗎？", "Move your screenshots to the screenshot folder?"),
+            trf!(
+                "截圖和錄影現在分開存放，新的截圖會存到：\n{to}\n\n舊的資料夾裡還有 {n} 張截圖：\n{from}\n\n要一起搬過去嗎？同名的檔案會自動改名，不會覆蓋；截圖編輯的記錄會跟著更新，之後一樣可以再次編輯。",
+                "Screenshots and recordings are now kept apart. New screenshots are saved in:\n{to}\n\nThere are {n} screenshots in the old folder:\n{from}\n\nMove them there too? Files with the same name are renamed, never overwritten, and your screenshot edits stay editable.",
+                to = to,
+                from = from,
+                n = n
+            ),
+            tr!("搬過去", "Move them"),
+            move |app, _| {
+                app.s.shot_move_asked = true;
+                app.save_settings();
+                move_shots(app, from2, to2);
+            },
+        );
+        let keep = from.clone();
+        ask.alt = Some((
+            tr!("留在原處", "Leave them").into(),
+            Box::new(move |app: &mut UiApp, _| {
+                app.s.shot_move_asked = true;
+                if !app.s.shot_extra_dirs.iter().any(|d| d.eq_ignore_ascii_case(&keep)) {
+                    app.s.shot_extra_dirs.push(keep);
+                }
+                app.save_settings();
+                app.toast(tr!("舊截圖留在原處，「全部截圖」也會列出它們", "The older screenshots stay where they are; “All screenshots” still lists them"), false);
+            }),
+        ));
+        ask.cancel = Some(if first_run { tr!("之後再說", "Not now") } else { tr!("取消", "Cancel") }.into());
+        app.ask = Some(ask);
+    });
+}
+
+/// 搬截圖，完成後說明搬了幾張、哪些沒搬成
+fn move_shots(app: &mut UiApp, from: String, to: String) {
+    let core = app.core.clone();
+    let (f, t) = (from.clone(), to.clone());
+    app.toast(tr!("正在搬移截圖…", "Moving screenshots…"), false);
+    app.spawn(
+        async move {
+            let r = actions::move_shots(&core, &f, &t).await;
+            let left = actions::count_shots(&f).await;
+            (r, left)
+        },
+        move |app, (r, left)| {
+            if left == 0 {
+                app.s.shot_extra_dirs.retain(|d| !d.eq_ignore_ascii_case(&from));
+                app.save_settings();
+            }
+            if let Some(d) = &mut app.library {
+                d.reload();
+            }
+            if r.failed.is_empty() {
+                let dir = to.clone();
+                app.toast_with(
+                    trf!("已把 {} 張截圖搬到 {}", "Moved {} screenshots to {}", r.moved.len(), to),
+                    false,
+                    vec![super::ToastAction::new(tr!("開啟資料夾", "Open folder"), move |app: &mut UiApp| open_folder(app, &dir))],
+                );
+            } else {
+                let names: Vec<String> = r.failed.iter().take(3).map(|(n, _)| n.clone()).collect();
+                let more = if r.failed.len() > 3 { tr!("等", " and others") } else { "" };
+                app.toast(
+                    trf!(
+                        "搬了 {} 張，{} 張沒搬成（{}{}），原檔還在原處，可能正被其他程式開著；稍後可在「設定 → 儲存位置」再搬一次",
+                        "Moved {}; {} couldn't be moved ({}{}). They're still in the old folder and may be open in another app. You can try again in Settings → Save location",
+                        r.moved.len(),
+                        r.failed.len(),
+                        names.join("、"),
+                        more
+                    ),
+                    true,
+                );
+            }
+        },
+    );
 }
 
 /// 錄完自動處理：剪掉沒動靜的片段、產生字幕、壓縮

@@ -32,6 +32,36 @@ pub fn default_output_dir() -> PathBuf {
     home().join("Videos").join("Timelapse")
 }
 
+/// 預設的截圖資料夾：Windows 的「圖片\螢幕擷取畫面」（Win+PrtSc 存的地方）；
+/// 找不到時是「圖片」裡的 Screenshots，再不行用 %USERPROFILE%\Pictures\Screenshots
+pub fn default_shot_dir() -> PathBuf {
+    #[cfg(windows)]
+    {
+        use windows::Win32::UI::Shell::{FOLDERID_Pictures, FOLDERID_Screenshots};
+        if let Some(p) = known_folder(&FOLDERID_Screenshots) {
+            return p;
+        }
+        if let Some(p) = known_folder(&FOLDERID_Pictures) {
+            return p.join("Screenshots");
+        }
+    }
+    home().join("Pictures").join("Screenshots")
+}
+
+/// Windows 的特殊資料夾（圖片、螢幕擷取畫面…），使用者搬過位置（例如 OneDrive）也找得到
+#[cfg(windows)]
+fn known_folder(id: &windows_core::GUID) -> Option<PathBuf> {
+    use windows::Win32::System::Com::CoTaskMemFree;
+    use windows::Win32::UI::Shell::{SHGetKnownFolderPath, KF_FLAG_DEFAULT};
+    // SAFETY: 回傳的字串由系統配置，讀完就用 CoTaskMemFree 釋放
+    unsafe {
+        let p = SHGetKnownFolderPath(id, KF_FLAG_DEFAULT, None).ok()?;
+        let s = p.to_string().ok();
+        CoTaskMemFree(Some(p.0 as _));
+        s.filter(|s| !s.is_empty()).map(PathBuf::from)
+    }
+}
+
 /// 2026-10-05_14-30-05（當地時間）
 pub fn timestamp() -> String {
     chrono::Local::now().format("%Y-%m-%d_%H-%M-%S").to_string()

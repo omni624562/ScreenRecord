@@ -359,6 +359,7 @@ impl TrayController {
             max_minutes: 0.0,
             method: MethodPreference::Auto,
             output_dir: self.app.default_output_dir.clone(),
+            shot_dir: String::new(),
             // 與介面相同：預設錄系統聲音與麥克風
             audio: AudioConfig { system: true, mic: true, mic_id: String::new(), app: String::new() },
             encoder: None,
@@ -402,7 +403,9 @@ impl TrayController {
         if let Some(o) = ui.as_object_mut() {
             o.insert("presetName".into(), serde_json::Value::String(p.name.clone()));
         }
-        let config = p.record_config().and_then(|c| serde_json::to_value(c).ok());
+        // 截圖資料夾不屬於設定組合：保留目前的
+        let shot_dir = self.config().shot_dir;
+        let config = p.record_config().and_then(|c| serde_json::to_value(RecordConfig { shot_dir, ..c }).ok());
         info!("[系統匣] 切換設定組合：{}", p.name);
         self.app.settings.save(SettingsPatch { ui: Some(ui), config, ..Default::default() });
         self.push(true);
@@ -557,7 +560,7 @@ impl TrayController {
                 return Ok(());
             }
             TrayCommand::StepsStart => {
-                let dir = self.config().output_dir;
+                let dir = self.config().shots_dir();
                 app.steps_start(&dir).map_err(err)?;
                 return Ok(());
             }

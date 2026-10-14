@@ -362,6 +362,14 @@ fn sort_time(e: &LibraryEntry) -> f64 {
         .unwrap_or(e.media.time_ms())
 }
 
+fn same_dir(a: &Path, b: &Path) -> bool {
+    a.display().to_string().trim_end_matches(['\\', '/']).eq_ignore_ascii_case(b.display().to_string().trim_end_matches(['\\', '/']))
+}
+
+fn list_has(list: &[LibraryEntry], path: &str) -> bool {
+    list.iter().any(|e| e.media.path.eq_ignore_ascii_case(path))
+}
+
 pub async fn list_library(cache: &Arc<MediaCache>, ffmpeg: Option<&Path>, dir: &Path, q: &LibraryQuery) -> LibraryPage {
     let mut list = match scan_checked(cache, dir).await {
         Ok(list) => list,
@@ -373,6 +381,15 @@ pub async fn list_library(cache: &Arc<MediaCache>, ffmpeg: Option<&Path>, dir: &
             return LibraryPage { dir: dir.display().to_string(), page: 1, pages: 1, error, ..Default::default() };
         }
     };
+    // 截圖：也列出留在其他資料夾的舊截圖（讀不到的資料夾略過）
+    if q.filter == LibraryFilter::Shot {
+        for extra in q.extra_dirs.iter().map(Path::new).filter(|d| !same_dir(d, dir)) {
+            if let Ok(more) = scan_checked(cache, extra).await {
+                let add: Vec<LibraryEntry> = more.into_iter().filter(|e| is_image_name(&e.media.name) && !list_has(&list, &e.media.path)).collect();
+                list.extend(add);
+            }
+        }
+    }
 
     if let Some(text) = q.q.as_deref().map(|t| t.trim().to_lowercase()).filter(|t| !t.is_empty()) {
         // 也找字幕裡說過的話（影片旁邊的 SRT）
@@ -498,6 +515,86 @@ pub async fn rename_recording(cache: &MediaCache, path: &str, new_name: &str, bu
         set_created(&plan[0].1, t);
     }
     Ok(plan[0].1.display().to_string())
+}
+
+// ───────────── 截圖搬到截圖資料夾 ─────────────
+
+/// 資料夾裡（不含子資料夾）的截圖（PNG / JPG）
+pub fn images_in(dir: &Path) -> Vec<PathBuf> {
+    let Ok(rd) = std::fs::read_dir(dir) else { return vec![] };
+    let mut v: Vec<PathBuf> =
+        rd.flatten().filter(|e| e.file_type().is_ok_and(|t| t.is_file())).map(|e| e.path()).filter(|p| p.file_name().and_then(|n| n.to_str()).is_some_and(is_image_name)).collect();
+    v.sort();
+    v
+}
+
+/// 搬截圖的結果
+#[derive(Debug, Default)]
+pub struct MoveReport {
+    /// 搬好的：(原本的路徑, 新的路徑)
+    pub moved: Vec<(String, String)>,
+    /// 沒搬成的：(檔名, 原因)；原檔都還在
+    pub failed: Vec<(String, String)>,
+}
+
+/// 新資料夾裡沒人用的檔名：已經有同名的就加 _2、_3…
+fn free_name(dir: &Path, name: &str) -> PathBuf {
+    let first = dir.join(name);
+    if !first.exists() {
+        return first;
+    }
+    let (stem, ext) = name.rsplit_once('.').map_or((name, ""), |(a, b)| (a, b));
+    (2..).map(|i| dir.join(if ext.is_empty() { format!("{stem}_{i}") } else { format!("{stem}_{i}.{ext}") })).find(|p| !p.exists()).unwrap_or(first)
+}
+
+/// 搬一個檔案：同一顆磁碟直接改位置；跨磁碟時先複製（保留時間）再刪原檔，原檔刪不掉就把複製的刪掉、算失敗
+fn move_file(from: &Path, to: &Path) -> std::io::Result<()> {
+    if std::fs::rename(from, to).is_ok() {
+        return Ok(());
+    }
+    let meta = std::fs::metadata(from)?;
+    std::fs::copy(from, to)?;
+    let copied = std::fs::metadata(to).map(|m| m.len()).unwrap_or(0);
+    if copied != meta.len() {
+        let _ = std::fs::remove_file(to);
+        return Err(std::io::Error::other(tr!("複製後大小不符", "The copy doesn't match the original size")));
+    }
+    if let Ok(t) = meta.modified() {
+        if let Ok(f) = std::fs::File::options().write(true).open(to) {
+            let _ = f.set_modified(t);
+        }
+    }
+    set_created(to, created_ms(&meta));
+    if let Err(e) = std::fs::remove_file(from) {
+        let _ = std::fs::remove_file(to);
+        return Err(e);
+    }
+    Ok(())
+}
+
+/// 把 from 資料夾裡的截圖（PNG / JPG，不含子資料夾）搬到 to；同名的加 _2，不覆蓋。一張失敗不影響其他張
+pub fn move_images(from: &Path, to: &Path) -> MoveReport {
+    let mut r = MoveReport::default();
+    if same_dir(from, to) {
+        return r;
+    }
+    let files = images_in(from);
+    if files.is_empty() {
+        return r;
+    }
+    if let Err(e) = std::fs::create_dir_all(to) {
+        r.failed = files.iter().map(|f| (f.file_name().unwrap_or_default().to_string_lossy().into_owned(), e.to_string())).collect();
+        return r;
+    }
+    for f in files {
+        let name = f.file_name().unwrap_or_default().to_string_lossy().into_owned();
+        let dest = free_name(to, &name);
+        match move_file(&f, &dest) {
+            Ok(()) => r.moved.push((f.display().to_string(), dest.display().to_string())),
+            Err(e) => r.failed.push((name, e.to_string())),
+        }
+    }
+    r
 }
 
 #[cfg(test)]
@@ -754,5 +851,29 @@ mod tests {
         let busy = vec![dir.path().join("Rec_A_4x.mp4").display().to_string().to_lowercase()];
         assert!(err(rename_recording(&cache, &src, "C", &busy).await).contains("轉檔中"));
         assert_eq!(listing(dir.path()), vec!["B_4x.mp4", "Rec_A.mp4", "Rec_A_4x.mp4"]);
+    }
+    #[test]
+    fn move_images_keeps_names_and_skips_videos() {
+        let a = tempfile::tempdir().unwrap();
+        let b = tempfile::tempdir().unwrap();
+        for n in ["Shot_2026-10-14_10-00-00.png", "Shot_2026-10-14_10-00-00_編輯.png", "photo.JPG", "Rec_2026-10-14_10-00-00.mp4"] {
+            std::fs::write(a.path().join(n), n).unwrap();
+        }
+        // 新資料夾已有同名的：加 _2，不覆蓋
+        std::fs::write(b.path().join("photo.JPG"), "old").unwrap();
+        std::fs::create_dir(a.path().join("教學_2026")).unwrap();
+        let r = move_images(a.path(), b.path());
+        assert_eq!(r.moved.len(), 3);
+        assert!(r.failed.is_empty());
+        assert!(b.path().join("Shot_2026-10-14_10-00-00.png").is_file());
+        assert!(b.path().join("Shot_2026-10-14_10-00-00_編輯.png").is_file());
+        assert_eq!(std::fs::read_to_string(b.path().join("photo.JPG")).unwrap(), "old");
+        assert_eq!(std::fs::read_to_string(b.path().join("photo_2.JPG")).unwrap(), "photo.JPG");
+        // 影片與子資料夾不動
+        assert!(a.path().join("Rec_2026-10-14_10-00-00.mp4").is_file());
+        assert!(a.path().join("教學_2026").is_dir());
+        assert!(images_in(a.path()).is_empty());
+        // 同一個資料夾：什麼都不做
+        assert!(move_images(b.path(), b.path()).moved.is_empty());
     }
 }

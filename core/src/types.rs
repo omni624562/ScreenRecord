@@ -376,6 +376,9 @@ pub struct RecordConfig {
     #[serde(default)]
     pub method: MethodPreference,
     pub output_dir: String,
+    /// 截圖的儲存位置（空白 = 預設的截圖資料夾，見 paths::default_shot_dir）；錄影存在 output_dir
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub shot_dir: String,
     #[serde(default)]
     pub audio: AudioConfig,
     /// 未指定視為 auto
@@ -424,6 +427,14 @@ impl RecordConfig {
     /// 這次錄影要分軌：有打開分軌，而且系統聲音、麥克風都有錄
     pub fn separate_tracks(&self) -> bool {
         self.separate_audio && self.audio.system && self.audio.mic
+    }
+
+    /// 截圖存到哪裡（沒有指定時是預設的截圖資料夾）
+    pub fn shots_dir(&self) -> String {
+        match self.shot_dir.trim() {
+            "" => crate::paths::default_shot_dir().display().to_string(),
+            d => d.to_string(),
+        }
     }
 }
 
@@ -723,6 +734,8 @@ pub struct LibraryQuery {
     pub fit_px: Option<f64>,
     /// 也列出只有聲音的檔案（存成 M4A 的）：全部錄影、檢視器要；主畫面的最近錄影不要
     pub audio: bool,
+    /// 也列出這些資料夾裡的截圖（選了「留在原處」、沒有搬到截圖資料夾的舊截圖）
+    pub extra_dirs: Vec<String>,
 }
 
 /// 全部錄影表格的列高（含 1px 分隔線）
@@ -874,6 +887,9 @@ pub struct EnvInfo {
     pub app_dir: String,
     pub app_version: String,
     pub default_output_dir: String,
+    /// 預設的截圖資料夾
+    #[serde(default)]
+    pub default_shot_dir: String,
     pub ffmpeg: FfmpegInfo,
     pub monitors: Vec<MonitorInfo>,
     #[serde(skip_serializing_if = "Option::is_none")]

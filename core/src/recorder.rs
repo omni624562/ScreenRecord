@@ -2029,6 +2029,7 @@ mod tests {
                 max_minutes: 0.0,
                 method: MethodPreference::Auto,
                 output_dir: self.dir.path().display().to_string(),
+                shot_dir: String::new(),
                 audio: AudioConfig::default(),
                 encoder: None,
                 countdown_sec: Some(3.0),

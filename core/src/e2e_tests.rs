@@ -49,6 +49,7 @@ fn record_config() -> RecordConfig {
         max_minutes: 0.0,
         method: MethodPreference::Auto,
         output_dir: String::new(),
+        shot_dir: String::new(),
         audio: AudioConfig::default(),
         encoder: None,
         countdown_sec: None,

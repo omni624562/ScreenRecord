@@ -139,6 +139,7 @@ mod tests {
             max_minutes: 0.0,
             method: MethodPreference::Auto,
             output_dir: "D:\\教學".into(),
+            shot_dir: String::new(),
             audio: AudioConfig { system: true, mic: true, mic_id: String::new(), app: String::new() },
             encoder: None,
             countdown_sec: Some(3.0),

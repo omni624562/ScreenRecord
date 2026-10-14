@@ -1351,6 +1351,7 @@ mod tests {
             max_minutes: 0.0,
             method: MethodPreference::Auto,
             output_dir: "C:\\out".into(),
+            shot_dir: String::new(),
             audio: AudioConfig::default(),
             encoder: None,
             countdown_sec: None,

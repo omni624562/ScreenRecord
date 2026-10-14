@@ -1618,7 +1618,8 @@ pub fn run(app: &mut UiApp, ed: &mut Editor, act: Act) {
             let (video, t) = (ed.entry.media.path.clone(), ed.now());
             ed.pause();
             // 完成後由狀態更新顯示「已截圖」並更新清單
-            app.spawn(async move { core.grab_frame(&video, t).await }, |app, r| {
+            let shot_dir = app.s.shots_dir(&app.env);
+            app.spawn(async move { core.grab_frame(&video, t, &shot_dir).await }, |app, r| {
                 if let Err(e) = r {
                     app.toast(e.message().to_string(), true);
                 }
