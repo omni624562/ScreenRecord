@@ -916,8 +916,8 @@ fn image_stage(v: &mut Viewer, ui: &egui::Ui, painter: &egui::Painter, stage: Re
     }
     let r = Rect::from_center_size(stage.center() + v.pan, shown);
     painter.image(tex.id(), r, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
-    if shown.x > stage.width() || shown.y > stage.height() {
-        resp.clone().on_hover_cursor(if resp.dragged() { egui::CursorIcon::Grabbing } else { egui::CursorIcon::Grab });
+    if (shown.x > stage.width() || shown.y > stage.height()) && (resp.hovered() || resp.dragged()) {
+        theme::hand_cursor(ui.ctx(), resp.dragged());
     }
 }
 
