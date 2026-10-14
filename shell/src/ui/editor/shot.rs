@@ -63,11 +63,13 @@ struct View {
     bar: Option<(Pos2, (f64, f64))>,
     /// 這一格畫面（舞台）的範圍
     outer: Rect,
+    /// 顯示的範圍（圖上的像素 x, y, 寬, 高）：整張，或裁切後（不在「裁切與旋轉」分頁時只顯示保留的部分）
+    region: (f64, f64, f64, f64),
 }
 
 impl Default for View {
     fn default() -> Self {
-        View { fit: Fit::Auto, k: 1.0, c: (0.0, 0.0), pan: None, bar: None, outer: Rect::NOTHING }
+        View { fit: Fit::Auto, k: 1.0, c: (0.0, 0.0), pan: None, bar: None, outer: Rect::NOTHING, region: (0.0, 0.0, 0.0, 0.0) }
     }
 }
 
@@ -436,11 +438,39 @@ fn fit_k(fit: Fit, k: f32, outer: Rect, vw: f64, vh: f64) -> f32 {
 }
 
 /// 圖比畫面小的方向置中；比畫面大的方向不要捲出圖外
-fn clamp_center(v: &mut View, outer: Rect, vw: f64, vh: f64) {
+fn clamp_center(v: &mut View, outer: Rect) {
+    let (x, y, w, h) = v.region;
     let k = v.k.max(1e-4) as f64;
     let (hw, hh) = (outer.width() as f64 / 2.0 / k, outer.height() as f64 / 2.0 / k);
-    v.c.0 = if vw <= hw * 2.0 { vw / 2.0 } else { v.c.0.clamp(hw, vw - hw) };
-    v.c.1 = if vh <= hh * 2.0 { vh / 2.0 } else { v.c.1.clamp(hh, vh - hh) };
+    v.c.0 = if w <= hw * 2.0 { x + w / 2.0 } else { v.c.0.clamp(x + hw, x + w - hw) };
+    v.c.1 = if h <= hh * 2.0 { y + h / 2.0 } else { v.c.1.clamp(y + hh, y + h - hh) };
+}
+
+/// 要顯示的範圍：有裁切而且不在「裁切與旋轉」分頁時只顯示保留的部分（裁好馬上看到結果），否則整張
+fn region_of(ed: &Editor) -> (f64, f64, f64, f64) {
+    let (vw, vh) = (ed.vw, ed.vh);
+    if ed.crop_on && ed.tab != super::Tab::Crop {
+        if let Some(c) = ed.spec.crop {
+            let x = c.x.clamp(0.0, vw);
+            let y = c.y.clamp(0.0, vh);
+            let (w, h) = (c.width.min(vw - x), c.height.min(vh - y));
+            if w >= 8.0 && h >= 8.0 {
+                return (x, y, w, h);
+            }
+        }
+    }
+    (0.0, 0.0, vw, vh)
+}
+
+/// 顯示的範圍在畫面上的位置（rect 是整張圖在畫面上的位置）
+pub fn shown_rect(ed: &Editor, rect: Rect) -> Rect {
+    let Some(s) = &ed.shot else { return rect };
+    let (x, y, w, h) = s.view.region;
+    if w <= 0.0 || h <= 0.0 || ed.vw <= 0.0 {
+        return rect;
+    }
+    let k = rect.width() as f64 / ed.vw;
+    Rect::from_min_size(rect.min + vec2((x * k) as f32, (y * k) as f32), vec2((w * k) as f32, (h * k) as f32))
 }
 
 /// 縮放到 k（點 / 像素），at（畫面上的點）下的那一點縮放後還在原處
@@ -457,25 +487,34 @@ fn zoom_to(v: &mut View, outer: Rect, k: f32, at: Pos2) {
 pub fn place(ed: &mut Editor, ui: &egui::Ui, outer: Rect) -> Rect {
     poll_sharpen(ed);
     let (vw, vh) = (ed.vw, ed.vh);
-    let Some(s) = &mut ed.shot else { return outer };
-    if vw <= 0.0 || vh <= 0.0 || outer.width() < 1.0 || outer.height() < 1.0 {
+    if ed.shot.is_none() || vw <= 0.0 || vh <= 0.0 || outer.width() < 1.0 || outer.height() < 1.0 {
         return outer;
     }
     let ppp = ui.ctx().pixels_per_point();
+    let region = region_of(ed);
+    let Some(s) = &mut ed.shot else { return outer };
     let v = &mut s.view;
     v.outer = outer;
+    // 顯示的範圍變了（裁好了、回到裁切分頁、取消裁切）：重新放進畫面
+    if v.region != region {
+        if v.region.2 > 0.0 {
+            v.fit = Fit::Auto;
+        }
+        v.region = region;
+    }
+    let (rx, ry, rw, rh) = region;
     if v.fit == Fit::Auto {
         // 長截圖：寬度剛好、從最上面開始，上下捲動
-        let tall = is_tall(vw, vh) && outer.width() / vw as f32 > fit_k(Fit::Whole, 1.0, outer, vw, vh) * 1.5;
-        (v.fit, v.c) = if tall { (Fit::Width, (vw / 2.0, 0.0)) } else { (Fit::Whole, (vw / 2.0, vh / 2.0)) };
+        let tall = is_tall(rw, rh) && outer.width() / rw as f32 > fit_k(Fit::Whole, 1.0, outer, rw, rh) * 1.5;
+        (v.fit, v.c) = if tall { (Fit::Width, (rx + rw / 2.0, ry)) } else { (Fit::Whole, (rx + rw / 2.0, ry + rh / 2.0)) };
     }
-    v.k = fit_k(v.fit, v.k, outer, vw, vh);
-    clamp_center(v, outer, vw, vh);
+    v.k = fit_k(v.fit, v.k, outer, rw, rh);
+    clamp_center(v, outer);
     // 游標在畫面上（不是在蓋住它的選單上）才處理滾輪
     if ui.rect_contains_pointer(outer) {
         let (zoom, wheel, shift, at) = ui.input(|i| (i.zoom_delta(), super::wheel_delta(i), i.modifiers.shift, i.pointer.hover_pos()));
         if zoom != 1.0 {
-            let whole = fit_k(Fit::Whole, 1.0, outer, vw, vh);
+            let whole = fit_k(Fit::Whole, 1.0, outer, rw, rh);
             let k = (v.k * zoom).clamp((ZOOM_MIN / ppp).min(whole), ZOOM_MAX / ppp);
             zoom_to(v, outer, k, at.unwrap_or(outer.center()));
             // 縮回到整張剛好放得下：回到「符合視窗」
@@ -487,7 +526,7 @@ pub fn place(ed: &mut Editor, ui: &egui::Ui, outer: Rect) -> Rect {
             v.c.0 -= (dx / v.k) as f64;
             v.c.1 -= (dy / v.k) as f64;
         }
-        clamp_center(v, outer, vw, vh);
+        clamp_center(v, outer);
     }
     let k = v.k;
     let rect = Rect::from_min_size(outer.center() - vec2(v.c.0 as f32 * k, v.c.1 as f32 * k), vec2(vw as f32 * k, vh as f32 * k));
@@ -540,7 +579,6 @@ fn sharpen(s: &mut Shot, ctx: &egui::Context, phys: f32) {
 
 /// 按住空白鍵（或滑鼠中鍵）拖曳移動畫面（沒有選工具時點空白處也可以直接拖曳，見 start_drag_pan）；回傳 true = 正在移動畫面（這一格不放標註）
 pub fn pan(ed: &mut Editor, ui: &egui::Ui, resp: &egui::Response) -> bool {
-    let (vw, vh) = (ed.vw, ed.vh);
     let Some(s) = &mut ed.shot else { return false };
     let v = &mut s.view;
     let typing = ui.ctx().egui_wants_keyboard_input();
@@ -552,7 +590,7 @@ pub fn pan(ed: &mut Editor, ui: &egui::Ui, resp: &egui::Response) -> bool {
             Some(p) => {
                 v.c = (c0.0 - ((p.x - p0.x) / v.k) as f64, c0.1 - ((p.y - p0.y) / v.k) as f64);
                 let outer = v.outer;
-                clamp_center(v, outer, vw, vh);
+                clamp_center(v, outer);
                 ui.ctx().set_cursor_icon(CursorIcon::Grabbing);
             }
             None => v.pan = None,
@@ -578,7 +616,7 @@ pub fn can_drag_pan(ed: &Editor) -> bool {
     let Some(s) = &ed.shot else { return false };
     let v = &s.view;
     let k = v.k as f64;
-    ed.vw * k > v.outer.width() as f64 + 0.5 || ed.vh * k > v.outer.height() as f64 + 0.5
+    v.region.2 * k > v.outer.width() as f64 + 0.5 || v.region.3 * k > v.outer.height() as f64 + 0.5
 }
 
 /// 開始用左鍵拖曳移動畫面（點在空白處時）；圖沒有比畫面大時回傳 false
@@ -656,9 +694,52 @@ pub fn update_tiles(ed: &mut Editor, ctx: &egui::Context) {
     }
 }
 
+/// 裁切後（不在裁切分頁）畫面上方的小列：「已裁切 470×312」「調整裁切」「還原整張」（也可以按 Ctrl+Z 復原）
+fn cropped_bar(ed: &mut Editor, ui: &mut egui::Ui, outer: Rect) {
+    let Some(s) = &ed.shot else { return };
+    let (_, _, w, h) = s.view.region;
+    if s.loading.is_some() || w <= 0.0 || (w >= ed.vw - 0.5 && h >= ed.vh - 0.5) {
+        return;
+    }
+    let p = theme::pal(ui);
+    let area = Rect::from_min_size(outer.left_top() + vec2(8.0, 8.0), vec2((outer.width() - 16.0).max(0.0), 34.0));
+    let bg = ui.painter().add(egui::Shape::Noop);
+    let (mut adjust, mut restore) = (false, false);
+    let inner = ui
+        .scope_builder(egui::UiBuilder::new().max_rect(area.shrink2(vec2(8.0, 3.0))).layout(Layout::left_to_right(Align::Center)), |ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            ui.label(RichText::new(trf!("已裁切 {}×{}", "Cropped to {}×{}", w.round(), h.round())).font(theme::font(12.5)).color(p.muted));
+            ui.add_space(4.0);
+            adjust = Btn::new(tr!("調整裁切", "Adjust crop"))
+                .icon(theme::Icon::Edit)
+                .ghost()
+                .small()
+                .tooltip(tr!("回到「裁切與旋轉」分頁調整範圍", "Go to “Crop & rotate” to change the area"))
+                .show(ui)
+                .clicked();
+            restore = Btn::new(tr!("還原整張", "Show full image"))
+                .icon(theme::Icon::Undo)
+                .ghost()
+                .small()
+                .tooltip(tr!("取消裁切，回到完整的圖（也可以按 Ctrl+Z 復原）", "Remove the crop and go back to the full image (or press Ctrl+Z)"))
+                .show(ui)
+                .clicked();
+        })
+        .response
+        .rect;
+    ui.painter().set(bg, egui::epaint::RectShape::new(inner.expand2(vec2(8.0, 3.0)), CornerRadius::same(8), p.surface, Stroke::new(1.0, p.border_strong), StrokeKind::Inside));
+    if adjust {
+        ed.tab = super::Tab::Crop;
+    }
+    if restore {
+        ed.crop_on = false;
+    }
+}
+
 /// 捲軸（圖比畫面大時，可以拖曳）與右下角的縮放按鈕
 pub fn overlays(ed: &mut Editor, ui: &mut egui::Ui, outer: Rect, rect: Rect) {
-    let (vw, vh) = (ed.vw, ed.vh);
+    cropped_bar(ed, ui, outer);
+    let vw = ed.vw;
     let Some(s) = &mut ed.shot else { return };
     if vw <= 0.0 || s.loading.is_some() {
         return;
@@ -698,7 +779,7 @@ pub fn overlays(ed: &mut Editor, ui: &mut egui::Ui, outer: Rect, rect: Rect) {
             } else {
                 v.c.0 = c0.0 + ((p1.x - p0.x) * total / tl / k) as f64;
             }
-            clamp_center(v, outer, vw, vh);
+            clamp_center(v, outer);
         }
         if resp.drag_stopped() {
             v.bar = None;
@@ -709,7 +790,8 @@ pub fn overlays(ed: &mut Editor, ui: &mut egui::Ui, outer: Rect, rect: Rect) {
     }
     // 縮放：－ 100% ＋　符合視窗　（長截圖另有符合寬度）　原尺寸
     let pct = (v.k * ppp * 100.0).round();
-    let tall = vh / vw > (outer.height() / outer.width()) as f64 * 1.05;
+    let (rx, ry, rw, rh) = v.region;
+    let tall = rh / rw.max(1.0) > (outer.height() / outer.width()) as f64 * 1.05;
     let bar_h = 34.0;
     let right = outer.right() - if over_y { thick + 12.0 } else { 8.0 };
     let bottom = outer.bottom() - if over_x { thick + 12.0 } else { 8.0 };
@@ -770,12 +852,12 @@ pub fn overlays(ed: &mut Editor, ui: &mut egui::Ui, outer: Rect, rect: Rect) {
     ui.painter().set(bg, egui::epaint::RectShape::new(inner.expand2(vec2(4.0, 3.0)), CornerRadius::same(8), p.surface, Stroke::new(1.0, p.border_strong), StrokeKind::Inside));
     if let Some((fit, k)) = set {
         if fit == Fit::Scale {
-            let whole = fit_k(Fit::Whole, 1.0, outer, vw, vh);
+            let whole = fit_k(Fit::Whole, 1.0, outer, rw, rh);
             zoom_to(v, outer, k.max((ZOOM_MIN / ppp).min(whole)), outer.center());
         } else {
             v.fit = fit;
             if fit == Fit::Width {
-                v.c.1 = 0.0;
+                v.c = (rx + rw / 2.0, ry);
             }
         }
     }

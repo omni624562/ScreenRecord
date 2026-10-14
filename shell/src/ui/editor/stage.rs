@@ -100,9 +100,11 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, stage_h: f3
     let (outer, _) = ui.allocate_exact_size(vec2(avail_w, stage_h), Sense::hover());
     // 截圖可以縮放、捲動：rect 是整張圖在畫面上的位置（放大時比 outer 大，只畫得到 outer 裡面）
     let rect = if ed.is_shot() { super::shot::place(ed, ui, outer) } else { Rect::from_center_size(outer.center(), vec2(w, h)) };
-    let resp = ui.interact(rect.intersect(outer), Id::new("ed-stage"), Sense::click_and_drag());
-    let painter = ui.painter_at(outer);
-    painter.rect_filled(rect.intersect(outer), CornerRadius::ZERO, Color32::BLACK);
+    // 截圖裁切後（不在裁切分頁）只顯示保留的部分：畫面與操作都限制在那個範圍
+    let shown = if ed.is_shot() { super::shot::shown_rect(ed, rect).intersect(outer) } else { outer };
+    let resp = ui.interact(rect.intersect(shown), Id::new("ed-stage"), Sense::click_and_drag());
+    let painter = ui.painter_at(shown);
+    painter.rect_filled(rect.intersect(shown), CornerRadius::ZERO, Color32::BLACK);
     // 預覽結果時顯示跟著點擊放大的效果（只放大影片與游標；標註照原本的位置畫）
     let uv = if ed.previewing && ed.zoom_active() {
         let (z, cx, cy) = zoom::at(&zoom::focus_points(&ed.zoom_clicks()), ed.zoom, ed.now());
@@ -260,7 +262,8 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, stage_h: f3
         interact(ed, ui, rect, &resp);
     }
     if ed.is_shot() {
-        super::shot::overlays(ed, ui, outer, rect);
+        let shown = super::shot::shown_rect(ed, rect);
+        super::shot::overlays(ed, ui, outer, shown);
     }
 }
 

@@ -123,7 +123,8 @@ pub fn show_ask(app: &mut UiApp, ctx: &egui::Context) {
             ui.label(RichText::new(e).color(p.rec));
         }
         ui.add_space(12.0);
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+        // 按鈕列固定高度（with_layout 會佔滿剩下的高度，對話框就被撐得很高）
+        ui.allocate_ui_with_layout(vec2(ui.available_width(), 34.0), Layout::right_to_left(Align::Center), |ui| {
             let ok = Btn::new(&ask.ok).kind(if ask.danger { theme::Kind::Danger } else { theme::Kind::Primary }).enabled(!ask.busy).show(ui);
             if ok.clicked() {
                 submit = true;
