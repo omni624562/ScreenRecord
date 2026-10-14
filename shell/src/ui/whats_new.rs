@@ -25,7 +25,7 @@ enum Try {
     /// 在螢幕上框選截圖（這一版的介紹沒用到，保留給之後）
     #[allow(dead_code)]
     Snip,
-    /// 開啟全部錄影
+    /// 開啟全部截圖
     Library,
 }
 
@@ -78,40 +78,40 @@ fn quick_start(app: &UiApp) -> [(String, String); 3] {
 fn items(_app: &UiApp) -> Vec<(String, String, Try)> {
     vec![
         (
-            tr!("截圖和錄影分開存", "Screenshots and recordings are kept apart").into(),
+            tr!("一次選取、刪除很多張", "Select and delete many at once").into(),
             tr!(
-                "截圖改存到「圖片 → 螢幕擷取畫面」（和 Windows 的 Win+PrtScn 同一個資料夾），錄影照樣存在原本的位置；「設定 → 儲存位置」可以各自選資料夾。原本和錄影放在一起的舊截圖，可以一鍵搬過去，或留在原處（「全部截圖」照樣列得出來）。",
-                "Screenshots now go to Pictures → Screenshots (the same folder as Windows' Win+PrtScn), while recordings stay where they were. Choose each folder in Settings → Save location. Older screenshots saved with your recordings can be moved over in one click or left where they are (All screenshots still lists them)."
-            )
-            .into(),
-            Try::Settings(Page::Save),
-        ),
-        (
-            tr!("清單可以用 Ctrl、Shift 多選", "Select several items with Ctrl and Shift").into(),
-            tr!(
-                "全部錄影、全部截圖：按住 Ctrl 點一下多選、按住 Shift 點一下選一段，Ctrl+A 選取這一頁全部，再一次刪除、合併或拼成一張。",
-                "In All recordings and All screenshots, Ctrl+click picks several items, Shift+click picks a range and Ctrl+A selects the whole page, ready to delete, merge or combine."
+                "全部截圖、全部錄影勾選後，搜尋列右邊有「選取全部 N 張」（每一頁），搭配搜尋很好用：例如打「7/27」再選取全部、按 Delete。Ctrl+A 全選這一頁，再按一次就是全部。",
+                "After you tick something in All screenshots or All recordings, “Select all” next to the search box picks every page. Combine it with a search: type “7/27”, select all, press Delete. Ctrl+A selects the page; press it again for everything."
             )
             .into(),
             Try::Library,
         ),
         (
-            tr!("截圖編輯：裁切馬上看到、拖曳移動畫面", "Screenshot editor: instant crop, drag to pan").into(),
+            tr!("跨頁勾選、只看已選取", "Selections across pages, “Show selected only”").into(),
             tr!(
-                "裁切後其他分頁只顯示保留的部分，隨時可以「調整裁切」或「還原整張」；圖比畫面大時，在空白處按住左鍵就能拖曳移動畫面。",
-                "After cropping, the other tabs show just the kept part, and you can “Adjust crop” or “Restore full image” at any time. When the image is larger than the view, drag an empty spot to pan."
+                "換頁時勾選會保留，下方顯示「已選取 25 張（其他頁 13 張）」；按「只看已選取」把勾選的放在一起，刪除前再確認一次。有勾選時按 Delete 會刪除勾選的全部。",
+                "Ticks stay when you change pages, and the footer shows how many are on other pages. “Show selected only” gathers them so you can check before deleting. With items ticked, Delete removes all of them."
             )
             .into(),
             Try::None,
         ),
         (
-            tr!("「關於」看版本與更新說明", "Versions and release notes in “About”").into(),
+            tr!("縮圖可以調大小", "Adjustable thumbnail size").into(),
             tr!(
-                "「設定 → 關於」（或系統匣選單「關於」）可以看目前的版本、每一版的更新說明，並檢查有沒有新版本。",
-                "Settings → About (or “About” in the tray menu) shows the current version and every version's release notes, and checks for updates."
+                "全部截圖的排序旁邊可以選縮圖「小、中、大」，小的一頁大約放 35 張；也可以在縮圖上按住 Ctrl 轉滾輪。會記住你的選擇。",
+                "Choose small, medium or large thumbnails next to the sort menu in All screenshots (small fits about 35 per page), or hold Ctrl and turn the mouse wheel over them. Your choice is remembered."
             )
             .into(),
-            Try::Settings(Page::About),
+            Try::Library,
+        ),
+        (
+            tr!("截圖和錄影分開存、讀圖變快", "Screenshots kept apart, faster thumbnails").into(),
+            tr!(
+                "截圖改存到「圖片 → 螢幕擷取畫面」，「設定 → 儲存位置」可以各自選資料夾；全部截圖的縮圖不再經過 FFmpeg，打開與換頁快很多。",
+                "Screenshots now go to Pictures → Screenshots (choose each folder in Settings → Save location), and All screenshots no longer runs FFmpeg for thumbnails, so opening and paging are much faster."
+            )
+            .into(),
+            Try::Settings(Page::Save),
         ),
     ]
 }
@@ -208,6 +208,6 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         Try::None => {}
         Try::Settings(page) => settings_dialog::open(app, page),
         Try::Snip => super::main_view::run_shot(app, super::main_view::ShotAct::Select(0)),
-        Try::Library => app.library = Some(super::library_dialog::LibraryDialog::new(super::library_dialog::Kind::Video)),
+        Try::Library => app.library = Some(super::library_dialog::LibraryDialog::new(super::library_dialog::Kind::Shot)),
     }
 }

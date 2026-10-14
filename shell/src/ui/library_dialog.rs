@@ -64,6 +64,8 @@ pub struct LibraryDialog {
     /// 滾輪換頁：累積的捲動量、上次換頁的時間
     wheel: f32,
     wheel_at: Option<Instant>,
+    /// 只看已選取（勾選的檔案，可能在不同頁）
+    only_selected: bool,
 }
 
 /// 合併成一支：依清單的順序（可上下調整）接成一支；加速版預設不放進去
@@ -131,6 +133,7 @@ impl LibraryDialog {
             anchor: None,
             wheel: 0.0,
             wheel_at: None,
+            only_selected: false,
         }
     }
 
@@ -144,6 +147,12 @@ impl LibraryDialog {
                 self.selected.remove(&p);
             }
         }
+    }
+
+    /// 選取符合條件的全部（每一頁，含加速版）
+    fn select_everything(&mut self) {
+        let all = self.data.as_ref().map(|x| x.all_paths.clone()).unwrap_or_default();
+        self.selected.extend(all);
     }
 
     /// Ctrl＋點一下：選取 / 取消這一筆；Shift＋點一下：選取從上次點的那一筆到這一筆（order：這一頁的順序）
@@ -174,8 +183,13 @@ fn select_all_key(app: &UiApp, ui: &egui::Ui, d: &mut LibraryDialog, order: &[St
         return;
     }
     if ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::A)) {
-        for p in order {
-            d.toggle(p, true);
+        // 這一頁已經全選：再按一次選取全部（每一頁）
+        if !order.is_empty() && order.iter().all(|p| d.selected.contains(p)) {
+            d.select_everything();
+        } else {
+            for p in order {
+                d.toggle(p, true);
+            }
         }
     }
 }
@@ -243,9 +257,12 @@ fn load(app: &mut UiApp) {
     d.seq += 1;
     let seq = d.seq;
     let q = Some(d.query.clone()).filter(|q| !q.trim().is_empty());
+    let only = d.only_selected.then(|| d.selected.iter().cloned().collect());
     let query = match d.kind {
-        Kind::Video => LibraryQuery { q, filter: d.filter, sort: d.sort, page: Some(d.page as f64), page_size: None, fit_px: Some(d.fit_px), audio: true, extra_dirs: vec![] },
-        Kind::Shot => LibraryQuery { q, filter: LibraryFilter::Shot, sort: d.sort, page: Some(d.page as f64), page_size: Some(d.grid_per_page.max(1) as f64), fit_px: None, audio: false, extra_dirs },
+        Kind::Video => LibraryQuery { q, filter: d.filter, sort: d.sort, page: Some(d.page as f64), page_size: None, fit_px: Some(d.fit_px), audio: true, extra_dirs: vec![], only },
+        Kind::Shot => {
+            LibraryQuery { q, filter: LibraryFilter::Shot, sort: d.sort, page: Some(d.page as f64), page_size: Some(d.grid_per_page.max(1) as f64), fit_px: None, audio: false, extra_dirs, only }
+        }
     };
     let dir = d.dir.clone().unwrap_or(home);
     d.loaded_dir = dir.clone();
@@ -397,6 +414,12 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         return;
     };
     watch_merge(app, &mut d);
+    // 只看已選取，但全部取消了（或刪掉了）：回到全部
+    if d.only_selected && d.selected.is_empty() {
+        d.only_selected = false;
+        d.page = 1;
+        d.dirty = true;
+    }
     let dir = d.dir.clone().unwrap_or_else(|| save_dir.clone());
     // 儲存位置改了（例如按了「變更儲存位置…」）：重新讀取
     if !d.loading && !d.dirty && !d.loaded_dir.is_empty() && d.loaded_dir != dir {
@@ -405,6 +428,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         d.data = None;
         d.dirty = true;
     }
+    let mut grid_size = app.s.shot_grid_size;
     let modal = egui::Modal::new(Id::new("library")).frame(theme::modal_frame(ctx)).show(ctx, |ui| {
         let p = theme::pal(ui);
         ui.set_width(size.x - 40.0);
@@ -555,6 +579,19 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                     }
                 }
             });
+            // 截圖：縮圖大小（小的一頁放比較多張；也可以在縮圖上按住 Ctrl 轉滾輪）
+            if shot {
+                ui.add_space(4.0);
+                let mut size = grid_size;
+                if theme::segmented(ui, &mut size, &[(0u8, tr!("小", "S")), (1, tr!("中", "M")), (2, tr!("大", "L"))], true) {
+                    grid_size = size;
+                }
+                ui.label(theme::muted(ui, tr!("縮圖", "Thumbnails"))).on_hover_text(tr!(
+                    "縮圖大小：小的一頁可以放比較多張。也可以在縮圖上按住 Ctrl 轉滾輪調整",
+                    "Thumbnail size: smaller fits more per page. You can also hold Ctrl and turn the mouse wheel over the thumbnails"
+                ));
+            }
+            selection_links(ui, &mut d, shot);
         });
         if d.search_at.is_some_and(|t| t.elapsed().as_millis() > 250) {
             d.search_at = None;
@@ -565,7 +602,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         let foot_h = 40.0;
         let table = Rect::from_min_max(ui.cursor().min, pos2(ui.max_rect().max.x, ui.max_rect().max.y - foot_h - 8.0));
         if shot {
-            shot_grid(app, ui, &mut d, table, &dir, &mut req);
+            shot_grid(app, ui, &mut d, table, &dir, &mut req, &mut grid_size);
         } else {
             video_table(app, ui, &mut d, table, &dir, &mut req);
         }
@@ -576,21 +613,37 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         let fui = &mut ui.new_child(UiBuilder::new().max_rect(foot).layout(Layout::left_to_right(Align::Center)));
         let n = d.selected.len();
         let total = d.data.as_ref().map(|x| x.total).unwrap_or(0);
+        // 勾選的有幾個不在這一頁（換頁時勾選會保留）
+        let others = d
+            .data
+            .as_ref()
+            .map(|x| {
+                let here: HashSet<&str> = x.items.iter().flat_map(|e| std::iter::once(e.media.path.as_str()).chain(e.exports.iter().map(|x| x.media.path.as_str()))).collect();
+                d.selected.iter().filter(|p| !here.contains(p.as_str())).count()
+            })
+            .unwrap_or(0);
         // 沒有任何檔案時不顯示操作說明
         let hint = match (n, shot) {
             (0, _) if total == 0 => String::new(),
             (0, true) => tr!(
-                "可勾選多張一次刪除或拼成一張（Ctrl＋點一下多選、Shift＋點一下選一段、Ctrl+A 全選本頁）",
-                "Select several to delete or combine them (Ctrl+click to add, Shift+click for a range, Ctrl+A for this page)"
+                "可勾選多張一次刪除或拼成一張（Ctrl＋點一下多選、Shift＋點一下選一段、Ctrl+A 全選本頁，再按一次選取全部）",
+                "Select several to delete or combine them (Ctrl+click to add, Shift+click for a range, Ctrl+A for this page, again for all)"
             )
             .into(),
             (0, false) => tr!(
-                "可勾選多筆一次刪除（Ctrl＋點一下多選、Shift＋點一下選一段、Ctrl+A 全選本頁）",
-                "Select several to delete them at once (Ctrl+click to add, Shift+click for a range, Ctrl+A for this page)"
+                "可勾選多筆一次刪除（Ctrl＋點一下多選、Shift＋點一下選一段、Ctrl+A 全選本頁，再按一次選取全部）",
+                "Select several to delete them at once (Ctrl+click to add, Shift+click for a range, Ctrl+A for this page, again for all)"
             )
             .into(),
-            _ if is_en() => format!("{n} file{} selected", if n == 1 { "" } else { "s" }),
-            _ => format!("已選取 {n} 個檔案"),
+            _ if is_en() => {
+                let more = if others > 0 { format!(" ({others} on other pages)") } else { String::new() };
+                format!("{n} {}{} selected{more}", if shot { "screenshot" } else { "file" }, if n == 1 { "" } else { "s" })
+            }
+            _ => {
+                let unit = if shot { "張" } else { "個檔案" };
+                let more = if others > 0 { format!("（其他頁 {others} {}）", if shot { "張" } else { "個" }) } else { String::new() };
+                format!("已選取 {n} {unit}{more}")
+            }
         };
         fui.label(theme::muted(fui, hint));
         if n > 0 && Btn::new(tr!("移到資源回收筒", "Move to Recycle Bin")).icon(Icon::Trash).danger().small().show(fui).clicked() {
@@ -616,8 +669,9 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
             fui.add_space(8.0);
             fui.label(RichText::new(trf!("合併中 {:.0}%…", "Merging {:.0}%…", frac * 100.0)).font(theme::font_bold(12.5)).color(p.accent));
         }
+        // 拼成一張一次最多 20 張
         if shot
-            && n >= 2
+            && (2..=20).contains(&n)
             && Btn::new(tr!("拼成一張…", "Combine into one…"))
                 .small()
                 .tooltip(tr!("把勾選的截圖拼成一張新的截圖（可調整順序、排法與間距）", "Combines the selected screenshots into a new screenshot (you can change the order, layout and spacing)"))
@@ -632,6 +686,10 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
             }
         });
     });
+    if grid_size != app.s.shot_grid_size {
+        app.s.shot_grid_size = grid_size;
+        app.save_settings();
+    }
     let covered = d.merge.is_some() || d.combine.is_some();
     merge_dialog(app, ctx, &mut d);
     combine_dialog(app, ctx, &mut d);
@@ -1290,16 +1348,26 @@ pub fn audio_mark(ui: &mut egui::Ui) -> egui::Response {
 }
 
 /// 截圖：縮圖格（一頁放幾張依對話框大小），點縮圖開啟
-fn shot_grid(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, area: Rect, dir: &str, req: &mut Option<Req>) {
+/// 縮圖大小（0 小、1 中、2 大）：每格最小寬度
+const GRID_MIN_W: [f32; 3] = [120.0, 210.0, 300.0];
+
+fn shot_grid(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, area: Rect, dir: &str, req: &mut Option<Req>, size: &mut u8) {
     let p = theme::pal(ui);
-    let gap = 14.0;
-    let cols = ((area.width() + gap) / (210.0 + gap)).floor().max(1.0);
+    grid_zoom(ui, d, area, size);
+    // 小縮圖只放名稱：點一下檢視、按右鍵看全部操作
+    let small = *size == 0;
+    let gap = if small { 10.0 } else { 14.0 };
+    let cols = ((area.width() + gap) / (GRID_MIN_W[(*size as usize).min(2)] + gap)).floor().max(1.0);
     let cell_w = (area.width() - gap * (cols - 1.0)) / cols;
     let img_h = (cell_w * 9.0 / 16.0).round();
-    let cell_h = img_h + 64.0;
+    let cell_h = img_h + if small { 30.0 } else { 64.0 };
     let rows = ((area.height() + gap) / (cell_h + gap)).floor().max(1.0);
     let per = (cols * rows) as usize;
     if per != d.grid_per_page {
+        // 換縮圖大小或視窗大小：停在原本這一頁第一張所在的那一頁
+        if d.grid_per_page > 0 {
+            d.page = (d.page.max(1) - 1) * d.grid_per_page / per + 1;
+        }
         d.grid_per_page = per;
         d.dirty = true;
     }
@@ -1375,7 +1443,11 @@ fn shot_grid(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, area: Re
         // 名稱（預設檔名顯示日期時間）
         let title = if is_default_name(&e.media.name) { dates.get(&e.media.name).cloned().unwrap_or_default() } else { base_name(&e.media.name) };
         let tr = Rect::from_min_max(pos2(cell.min.x + 2.0, img.max.y + 6.0), pos2(cell.max.x, img.max.y + 28.0));
-        ui.new_child(UiBuilder::new().max_rect(tr).layout(Layout::left_to_right(Align::Center))).add(egui::Label::new(RichText::new(title).font(theme::font_bold(13.0))).truncate());
+        ui.new_child(UiBuilder::new().max_rect(tr).layout(Layout::left_to_right(Align::Center)))
+            .add(egui::Label::new(RichText::new(title).font(theme::font_bold(if small { 12.0 } else { 13.0 }))).truncate());
+        if small {
+            continue;
+        }
         // 解析度・大小，右邊放按鈕
         // 先排右邊的按鈕，解析度・大小用剩下的寬度（太窄時截斷，不會被按鈕蓋住）
         let br = Rect::from_min_max(pos2(cell.min.x + 2.0, img.max.y + 30.0), cell.max);
@@ -1413,6 +1485,76 @@ fn shot_grid(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, area: Re
             .on_hover_text(&info);
     }
     row_keys(app, ui, d, &items, req);
+}
+
+/// 有勾選時，搜尋列右邊：選取全部（每一頁）、只看已選取、取消選取
+fn selection_links(ui: &mut egui::Ui, d: &mut LibraryDialog, shot: bool) {
+    if d.selected.is_empty() {
+        return;
+    }
+    let total = d.data.as_ref().map(|x| x.total).unwrap_or(0);
+    let all_n = d.data.as_ref().map(|x| x.all_paths.len()).unwrap_or(0);
+    let everything = all_n > 0 && d.data.as_ref().is_some_and(|x| x.all_paths.iter().all(|p| d.selected.contains(p)));
+    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        if Btn::new(tr!("取消選取", "Clear selection")).ghost().small().show(ui).clicked() {
+            d.selected.clear();
+            d.anchor = None;
+        }
+        if Btn::new(if d.only_selected { tr!("顯示全部", "Show all") } else { tr!("只看已選取", "Show selected only") })
+            .ghost()
+            .small()
+            .selected(d.only_selected)
+            .tooltip(tr!("只列出勾選的檔案（不管在哪一頁），刪除前可以再確認一次", "Lists only the selected files, whatever page they're on, so you can check them before deleting"))
+            .show(ui)
+            .clicked()
+        {
+            d.only_selected = !d.only_selected;
+            d.page = 1;
+            d.dirty = true;
+        }
+        // 選取全部（每一頁）：搭配搜尋，例如打「7/27」再選取全部
+        if !everything && !d.only_selected {
+            let label = if shot { trf!("選取全部 {total} 張", "Select all {total}") } else { trf!("選取全部 {all_n} 個檔案", "Select all {all_n} files") };
+            if Btn::new(label)
+                .ghost()
+                .small()
+                .tooltip(tr!(
+                    "選取符合目前搜尋的全部（每一頁）；也可以在全選這一頁後再按一次 Ctrl+A",
+                    "Selects everything that matches the current search, on every page. Pressing Ctrl+A again after selecting this page does the same"
+                ))
+                .show(ui)
+                .clicked()
+            {
+                d.select_everything();
+            }
+        }
+    });
+}
+
+/// 在縮圖上按住 Ctrl 轉滾輪：調整縮圖大小（往上放大、往下縮小）
+fn grid_zoom(ui: &egui::Ui, d: &mut LibraryDialog, area: Rect, size: &mut u8) {
+    if !ui.rect_contains_pointer(area) || egui::Popup::is_any_open(ui.ctx()) || d.merge.is_some() || d.combine.is_some() {
+        return;
+    }
+    let dy: f32 = ui.input(|i| {
+        i.raw
+            .events
+            .iter()
+            .filter_map(|e| match e {
+                egui::Event::MouseWheel { delta, modifiers, .. } if modifiers.ctrl || modifiers.command => Some(delta.y),
+                _ => None,
+            })
+            .sum()
+    });
+    if dy == 0.0 || d.wheel_at.is_some_and(|t| t.elapsed().as_millis() < 250) {
+        return;
+    }
+    let next = if dy > 0.0 { size.saturating_add(1).min(2) } else { size.saturating_sub(1) };
+    if next != *size {
+        *size = next;
+        d.wheel_at = Some(Instant::now());
+    }
 }
 
 /// 一張截圖的操作（「⋯」與按右鍵的選單共用）；full：按右鍵的選單，最上面加上檢視、編輯、在資料夾中顯示、重新命名
