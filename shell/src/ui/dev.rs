@@ -1,7 +1,7 @@
 //! 開發用（只在 debug 版）：自動開啟某個畫面、模擬操作並截圖，在 Linux 的 Xvfb 上檢查介面。
 //! - SCREENRECORDER_DEV：要開啟的畫面（library、shots、changelog、notes（講稿小視窗）、schedule（排程錄影）、after:<路徑>（錄完自動處理）、follow:<標題>（只錄這個視窗）、record:<秒>（錄幾秒）、replay:<保留秒數>,<幾秒後存下>[,<再幾秒停止>]（重播緩衝）、export:<路徑>、edit:<路徑>、view:<路徑>、whatsnew（新功能介紹）、monitors（模擬兩個螢幕）、snip:<PNG>（用這張圖當凍結的桌面開啟框選截圖）、snipregion:<PNG>（同上，只選範圍）、stepsreview:<PNG>,<PNG>（整理步驟截圖）、hotkeys（模擬已登記快速鍵）、update:<版本>（模擬有新版本）、cameras:<名稱>,<名稱>（模擬找到的攝影機）、settings:<record|audio|save|after|keys|advanced|about>、ed:<剪輯視窗指令>），以 ; 分隔
 //! - SCREENRECORDER_INPUT：開啟後依序模擬的操作，以 ; 分隔：
-//!   wait:毫秒、click:x,y、dclick:x,y（按兩下）、rclick:x,y（右鍵）、move:x,y、drag:x0,y0,x1,y1、wheel:x,y,dy（加 ,ctrl = Ctrl+滾輪）、key:Space（可加 ctrl+、alt+、shift+）、hold:Space / release:Space（按住、放開）、type:文字、shot:路徑
+//!   wait:毫秒、click:x,y（可加 ,ctrl、,shift）、dclick:x,y（按兩下）、rclick:x,y（右鍵）、move:x,y、drag:x0,y0,x1,y1、wheel:x,y,dy（加 ,ctrl = Ctrl+滾輪）、key:Space（可加 ctrl+、alt+、shift+）、hold:Space / release:Space（按住、放開）、type:文字、shot:路徑
 //! - SCREENRECORDER_SHOT：最後截圖存檔的路徑（存好後結束）；SCREENRECORDER_SHOT_AFTER：開始後幾毫秒截圖（預設 3000）
 
 use super::{EntryAction, UiApp};
@@ -46,11 +46,20 @@ fn parse_script(s: &str) -> VecDeque<Step> {
             "wait" => out.push_back(Step::Wait(Duration::from_millis(v.parse().unwrap_or(300)))),
             "shot" => out.push_back(Step::Shot(v.to_string())),
             "click" => {
+                // click:x,y（後面加 ,ctrl 或 ,shift = 按住 Ctrl / Shift 點）
                 let n = nums(v);
                 let p = pos2(n[0], n[1]);
+                let m = if v.ends_with(",ctrl") {
+                    Modifiers::CTRL | Modifiers::COMMAND
+                } else if v.ends_with(",shift") {
+                    Modifiers::SHIFT
+                } else {
+                    Modifiers::NONE
+                };
                 out.push_back(Step::Events(vec![Event::PointerMoved(p)]));
-                out.push_back(Step::Events(vec![button(p, true, Modifiers::NONE)]));
-                out.push_back(Step::Events(vec![button(p, false, Modifiers::NONE)]));
+                out.push_back(Step::Events(vec![Event::ModifiersChanged(m), button(p, true, m)]));
+                out.push_back(Step::Events(vec![button(p, false, m)]));
+                out.push_back(Step::Events(vec![Event::ModifiersChanged(Modifiers::NONE)]));
                 out.push_back(Step::Wait(Duration::from_millis(200)));
             }
             "rclick" => {
