@@ -59,6 +59,8 @@ pub struct LibraryDialog {
     combine: Option<CombineDlg>,
     /// 鍵盤（Delete、F2、Enter）操作的那一列：滑鼠所在或上次點的
     cursor_row: Option<String>,
+    /// Shift＋點一下時，從這一筆選到點的那一筆（上次點或勾選的）
+    anchor: Option<String>,
     /// 滾輪換頁：累積的捲動量、上次換頁的時間
     wheel: f32,
     wheel_at: Option<Instant>,
@@ -119,6 +121,7 @@ impl LibraryDialog {
             fresh: None,
             combine: None,
             cursor_row: None,
+            anchor: None,
             wheel: 0.0,
             wheel_at: None,
         }
@@ -133,6 +136,39 @@ impl LibraryDialog {
             } else {
                 self.selected.remove(&p);
             }
+        }
+    }
+
+    /// Ctrl＋點一下：選取 / 取消這一筆；Shift＋點一下：選取從上次點的那一筆到這一筆（order：這一頁的順序）
+    fn pick(&mut self, path: &str, order: &[String], shift: bool) {
+        let from = self.anchor.as_ref().and_then(|a| order.iter().position(|p| p == a));
+        if let (true, Some(a), Some(b)) = (shift, from, order.iter().position(|p| p == path)) {
+            for p in &order[a.min(b)..=a.max(b)] {
+                self.toggle(p, true);
+            }
+            return;
+        }
+        let on = !self.selected.contains(path);
+        self.toggle(path, on);
+        self.anchor = Some(path.to_string());
+    }
+}
+
+/// 這一次點擊有沒有按著 Ctrl、Shift（多選）
+fn multi_mods(ui: &egui::Ui) -> (bool, bool) {
+    ui.input(|i| (i.modifiers.command || i.modifiers.ctrl, i.modifiers.shift))
+}
+
+/// Ctrl+A：選取這一頁全部
+fn select_all_key(app: &UiApp, ui: &egui::Ui, d: &mut LibraryDialog, order: &[String]) {
+    // 搜尋框是空的（開啟時游標在搜尋框）也可以用；有打字時 Ctrl+A 是選取搜尋框的文字
+    let typing = ui.ctx().egui_wants_keyboard_input() && !d.query.is_empty();
+    if typing || app.ask.is_some() || d.merge.is_some() || d.combine.is_some() || egui::Popup::is_any_open(ui.ctx()) {
+        return;
+    }
+    if ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::A)) {
+        for p in order {
+            d.toggle(p, true);
         }
     }
 }
@@ -510,8 +546,16 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         // 沒有任何檔案時不顯示操作說明
         let hint = match (n, shot) {
             (0, _) if total == 0 => String::new(),
-            (0, true) => tr!("可勾選多張一次刪除，或拼成一張", "Select several to delete them at once or combine them into one").into(),
-            (0, false) => tr!("可勾選多筆一次刪除", "Select several to delete them at once").into(),
+            (0, true) => tr!(
+                "可勾選多張一次刪除或拼成一張（Ctrl＋點一下多選、Shift＋點一下選一段、Ctrl+A 全選本頁）",
+                "Select several to delete or combine them (Ctrl+click to add, Shift+click for a range, Ctrl+A for this page)"
+            )
+            .into(),
+            (0, false) => tr!(
+                "可勾選多筆一次刪除（Ctrl＋點一下多選、Shift＋點一下選一段、Ctrl+A 全選本頁）",
+                "Select several to delete them at once (Ctrl+click to add, Shift+click for a range, Ctrl+A for this page)"
+            )
+            .into(),
             _ if is_en() => format!("{n} file{} selected", if n == 1 { "" } else { "s" }),
             _ => format!("已選取 {n} 個檔案"),
         };
@@ -843,6 +887,9 @@ fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table:
     }
     wheel_pages(ui, d, table);
     let rows = d.data.as_ref().map(|x| x.items.clone()).unwrap_or_default();
+    let order: Vec<String> = rows.iter().map(|e| e.media.path.clone()).collect();
+    let (ctrl, shift) = multi_mods(ui);
+    select_all_key(app, ui, d, &order);
     // 勾選、日期、檔案、長度、解析度、大小、操作
     let cols = [36.0, 104.0, 0.0, 70.0, 104.0, 90.0, 166.0];
     let name_w = table.width() - cols.iter().sum::<f32>();
@@ -912,6 +959,9 @@ fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table:
             painter.rect_filled(Rect::from_min_size(row.min + vec2(0.0, 4.0), vec2(3.0, row.height() - 8.0)), CornerRadius::same(2), p.accent);
         }
         resp.context_menu(|ui| entry_menu(ui, app, e, true, req));
+        if resp.clicked() && (ctrl || shift) {
+            d.pick(&e.media.path, &order, shift);
+        }
         let (day, time) = times.get(&e.media.name).cloned().unzip();
         // 新的一天：上方用深一點的線分隔，日期欄寫日期
         let new_day = day.is_some() && day != last_day;
@@ -924,7 +974,12 @@ fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table:
         rui.add_space(10.0);
         let mut on2 = on;
         if theme::check(rui, &mut on2, "").changed() {
-            d.toggle(&e.media.path, on2);
+            if shift {
+                d.pick(&e.media.path, &order, true);
+            } else {
+                d.toggle(&e.media.path, on2);
+                d.anchor = Some(e.media.path.clone());
+            }
         }
         if new_day {
             if let Some(dd) = day {
@@ -947,7 +1002,11 @@ fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table:
             theme::paint_icon(&painter, Rect::from_center_size(thumb.center() + vec2(1.0, 0.0), vec2(16.0, 16.0)), Icon::Play, Color32::WHITE);
         }
         if tresp.on_hover_text(tr!("播放", "Play")).clicked() {
-            *req = Some(Req::Entry(EntryAction::Play, e.clone()));
+            if ctrl || shift {
+                d.pick(&e.media.path, &order, shift);
+            } else {
+                *req = Some(Req::Entry(EntryAction::Play, e.clone()));
+            }
         }
         {
             let cell = Rect::from_min_max(pos2(thumb.max.x + 10.0, row.min.y), pos2(name_rect.max.x - 8.0, name_rect.max.y));
@@ -986,6 +1045,8 @@ fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table:
             let r = nui.add(egui::Label::new(name).truncate().sense(Sense::click())).on_hover_text(tip);
             if r.double_clicked() && !audio {
                 *req = Some(Req::Rename(e.clone()));
+            } else if r.clicked() && (ctrl || shift) {
+                d.pick(&e.media.path, &order, shift);
             }
         }
         num(&e.media.duration_sec.map(short_clock).unwrap_or_else(|| "—".into()), col_x(4) - 10.0, row.center().y, p.text, 13.0);
@@ -1213,6 +1274,9 @@ fn shot_grid(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, area: Re
     }
     let dates = date_labels(items.iter().map(|e| (e.media.name.as_str(), e.media.time_ms())));
     wheel_pages(ui, d, area);
+    let order: Vec<String> = items.iter().map(|e| e.media.path.clone()).collect();
+    let (ctrl, shift) = multi_mods(ui);
+    select_all_key(app, ui, d, &order);
     for (i, e) in items.iter().enumerate() {
         let (c, r) = ((i % cols as usize) as f32, (i / cols as usize) as f32);
         let cell = Rect::from_min_size(pos2(area.min.x + c * (cell_w + gap), area.min.y + r * (cell_h + gap)), vec2(cell_w, cell_h));
@@ -1227,8 +1291,8 @@ fn shot_grid(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, area: Re
         }
         let img = Rect::from_min_size(cell.min, vec2(cell_w, img_h));
         let resp = ui.interact(img, Id::new(("shotcell", &e.media.path)), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(trf!(
-            "{}\n點一下檢視（Enter）、按右鍵看更多",
-            "{}\nClick to view (Enter); right-click for more",
+            "{}\n點一下檢視（Enter）、Ctrl＋點一下多選、按右鍵看更多",
+            "{}\nClick to view (Enter), Ctrl+click to select; right-click for more",
             e.media.name
         ));
         resp.context_menu(|ui| shot_menu(ui, e, true, req));
@@ -1245,7 +1309,11 @@ fn shot_grid(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, area: Re
         }
         painter.rect_stroke(img, CornerRadius::same(theme::RADIUS_SM), border, egui::StrokeKind::Inside);
         if resp.clicked() {
-            *req = Some(Req::Entry(EntryAction::Play, e.clone()));
+            if ctrl || shift {
+                d.pick(&e.media.path, &order, shift);
+            } else {
+                *req = Some(Req::Entry(EntryAction::Play, e.clone()));
+            }
         }
         // 左上角勾選（白底，在深色縮圖上也看得到）
         let cb = Rect::from_min_size(img.min + vec2(6.0, 6.0), vec2(24.0, 22.0));
@@ -1256,7 +1324,12 @@ fn shot_grid(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, area: Re
             let cui = &mut ui.new_child(UiBuilder::new().max_rect(cb.shrink2(vec2(4.0, 1.0))));
             let mut v = on;
             if theme::check(cui, &mut v, "").changed() {
-                d.toggle(&e.media.path, v);
+                if shift {
+                    d.pick(&e.media.path, &order, true);
+                } else {
+                    d.toggle(&e.media.path, v);
+                    d.anchor = Some(e.media.path.clone());
+                }
             }
         }
         // 名稱（預設檔名顯示日期時間）
