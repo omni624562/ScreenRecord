@@ -270,6 +270,41 @@ pub enum Icon {
 }
 
 /// 在 rect（正方形）裡畫圖示
+/// 手掌游標（拖曳移動畫面）：Windows 沒有「手掌」系統游標（抓取會變成四向箭頭），所以隱藏系統游標、自己畫一個；
+/// closed = 按住拖曳中（握拳）
+pub fn hand_cursor(ctx: &egui::Context, closed: bool) {
+    let Some(p) = ctx.input(|i| i.pointer.latest_pos()) else { return };
+    ctx.set_cursor_icon(egui::CursorIcon::None);
+    let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Debug, egui::Id::new("hand-cursor")));
+    // 以手掌中心為游標位置；單位是點
+    let r = |x0: f32, y0: f32, x1: f32, y1: f32| Rect::from_min_max(p + vec2(x0, y0), p + vec2(x1, y1));
+    let finger = if closed { -3.5 } else { -10.0 };
+    let mut parts = vec![
+        // 手掌
+        (r(-6.0, -3.0, 6.5, 7.0), 4u8),
+        // 四根手指（中間兩根長一點）
+        (r(-6.0, finger + 2.0, -3.2, 1.0), 2),
+        (r(-2.9, finger, -0.1, 1.0), 2),
+        (r(0.2, finger + 0.5, 3.0, 1.0), 2),
+        (r(3.3, finger + 2.5, 6.1, 1.0), 2),
+    ];
+    // 大拇指（握拳時收進來）
+    parts.push(if closed { (r(-8.5, -1.0, -5.0, 3.0), 2) } else { (r(-10.0, -2.5, -5.0, 1.5), 2) });
+    let outline = Color32::from_black_alpha(230);
+    for (rect, rad) in &parts {
+        painter.rect_filled(rect.expand(1.3), CornerRadius::same(rad + 1), outline);
+    }
+    for (rect, rad) in &parts {
+        painter.rect_filled(*rect, CornerRadius::same(*rad), Color32::WHITE);
+    }
+    // 手指之間的細縫
+    if !closed {
+        for x in [-3.05, 0.05, 3.15] {
+            painter.line_segment([p + vec2(x, finger + 3.0), p + vec2(x, 0.5)], Stroke::new(0.8, Color32::from_gray(90)));
+        }
+    }
+}
+
 pub fn paint_icon(p: &Painter, rect: Rect, icon: Icon, color: Color32) {
     let k = rect.width() / 16.0;
     let o = rect.min;

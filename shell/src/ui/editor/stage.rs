@@ -104,6 +104,12 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, stage_h: f3
     let shown = if ed.is_shot() { super::shot::shown_rect(ed, rect).intersect(outer) } else { outer };
     let resp = ui.interact(rect.intersect(shown), Id::new("ed-stage"), Sense::click_and_drag());
     let painter = ui.painter_at(shown);
+    // 截圖：圖的四周加上陰影與細框，白色的圖放在淺色背景上也看得出邊界
+    let edge = if ed.is_shot() { super::shot::shown_rect(ed, rect) } else { Rect::NOTHING };
+    if edge.is_positive() {
+        let around = ui.painter_at(outer);
+        around.add(egui::epaint::Shadow { offset: [0, 2], blur: 14, spread: 0, color: Color32::from_black_alpha(70) }.as_shape(edge, CornerRadius::ZERO));
+    }
     painter.rect_filled(rect.intersect(shown), CornerRadius::ZERO, Color32::BLACK);
     // 預覽結果時顯示跟著點擊放大的效果（只放大影片與游標；標註照原本的位置畫）
     let uv = if ed.previewing && ed.zoom_active() {
@@ -116,6 +122,9 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, stage_h: f3
     };
     if ed.is_shot() {
         super::shot::paint(ed, &painter, rect);
+        if edge.is_positive() {
+            ui.painter_at(outer).rect_stroke(edge, CornerRadius::ZERO, Stroke::new(1.0, theme::pal(ui).border_strong), egui::StrokeKind::Outside);
+        }
     } else if let Some(tex) = &ed.video_tex {
         painter.image(tex.id(), rect, uv, Color32::WHITE);
     }
@@ -620,12 +629,16 @@ fn interact(ed: &mut Editor, ui: &egui::Ui, rect: Rect, resp: &egui::Response) {
                     None => CursorIcon::Crosshair,
                 }
             } else if ed.is_shot() && super::shot::can_drag_pan(ed) {
-                // 截圖放大到比畫面大：空白處可以按住左鍵拖曳移動
-                CursorIcon::Grab
+                // 截圖放大到比畫面大：空白處可以按住左鍵拖曳移動（手掌游標）
+                CursorIcon::None
             } else {
                 CursorIcon::PointingHand
             };
-            ui.ctx().set_cursor_icon(cursor);
+            if cursor == CursorIcon::None {
+                theme::hand_cursor(ui.ctx(), false);
+            } else {
+                ui.ctx().set_cursor_icon(cursor);
+            }
         }
     }
 

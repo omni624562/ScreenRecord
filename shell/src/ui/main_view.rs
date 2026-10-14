@@ -514,11 +514,18 @@ fn window_picker(app: &mut UiApp, ui: &mut Ui, locked: bool) {
     let p = theme::pal(ui);
     if let Some(w) = app.s.follow_window.clone() {
         let text = trf!("只錄「{}」", "Only “{}”", w.title);
-        let resp = ui.add(egui::Label::new(RichText::new(&text).color(p.accent).font(theme::font(12.5))).truncate()).on_hover_text(tr!(
-            "錄影時範圍跟著這個視窗移動（視窗大小改變時維持原本的大小）",
-            "While recording, the area follows this window (if the window is resized, the area keeps its original size)"
-        ));
-        let _ = resp;
+        // 先留位置給後面的「只錄視窗內容」與 ✕，視窗名稱用剩下的寬度（太長時截斷，不會蓋到右邊的即時預覽）
+        let gap = ui.spacing().item_spacing.x;
+        let after = if app.env.ffmpeg.has_gfxcapture { Btn::new(tr!("只錄視窗內容", "Window only")).small().width(ui) + gap } else { 0.0 } + if locked { 0.0 } else { 28.0 + gap };
+        let name_w = (ui.available_width() - after).max(40.0);
+        ui.scope(|ui| {
+            ui.set_max_width(name_w);
+            ui.add(egui::Label::new(RichText::new(&text).color(p.accent).font(theme::font(12.5))).truncate()).on_hover_text(trf!(
+                "{}\n錄影時範圍跟著這個視窗移動（視窗大小改變時維持原本的大小）",
+                "{}\nWhile recording, the area follows this window (if the window is resized, the area keeps its original size)",
+                w.title
+            ));
+        });
         // 只錄視窗內容（Windows Graphics Capture；FFmpeg 支援時才顯示）
         if app.env.ffmpeg.has_gfxcapture
             && Btn::new(tr!("只錄視窗內容", "Window only"))

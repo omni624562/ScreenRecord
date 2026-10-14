@@ -591,7 +591,7 @@ pub fn pan(ed: &mut Editor, ui: &egui::Ui, resp: &egui::Response) -> bool {
                 v.c = (c0.0 - ((p.x - p0.x) / v.k) as f64, c0.1 - ((p.y - p0.y) / v.k) as f64);
                 let outer = v.outer;
                 clamp_center(v, outer);
-                ui.ctx().set_cursor_icon(CursorIcon::Grabbing);
+                theme::hand_cursor(ui.ctx(), true);
             }
             None => v.pan = None,
         }
@@ -600,12 +600,12 @@ pub fn pan(ed: &mut Editor, ui: &egui::Ui, resp: &egui::Response) -> bool {
     if resp.hovered() && ((space && pressed) || middle) {
         if let Some(p) = pos {
             v.pan = Some((p, v.c));
-            ui.ctx().set_cursor_icon(CursorIcon::Grabbing);
+            theme::hand_cursor(ui.ctx(), true);
             return true;
         }
     }
     if space && resp.hovered() {
-        ui.ctx().set_cursor_icon(CursorIcon::Grab);
+        theme::hand_cursor(ui.ctx(), false);
         return true;
     }
     false
@@ -626,7 +626,7 @@ pub fn start_drag_pan(ed: &mut Editor, ui: &egui::Ui, p: Pos2) -> bool {
     }
     let Some(s) = &mut ed.shot else { return false };
     s.view.pan = Some((p, s.view.c));
-    ui.ctx().set_cursor_icon(CursorIcon::Grabbing);
+    theme::hand_cursor(ui.ctx(), true);
     true
 }
 
