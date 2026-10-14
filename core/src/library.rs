@@ -216,6 +216,16 @@ fn dir_error(dir: &Path, e: &std::io::Error) -> Option<String> {
 
 /// 已讀過的資訊直接帶入，沒讀過的才執行 FFmpeg
 async fn with_info(cache: &MediaCache, ffmpeg: Option<&Path>, e: LibraryEntry) -> LibraryEntry {
+    // 截圖只要寬高：讀檔頭就好，不必啟動 FFmpeg
+    if is_image_name(&e.media.name) {
+        let path = PathBuf::from(&e.media.path);
+        let size = tokio::task::spawn_blocking(move || image::image_dimensions(path).ok()).await.ok().flatten();
+        let mut e = e;
+        if let Some((w, h)) = size {
+            (e.media.width, e.media.height) = (Some(w), Some(h));
+        }
+        return e;
+    }
     let Some(ff) = ffmpeg else { return e };
     let media = cache.probe(ff, &e.media.path).await.unwrap_or(e.media);
     let mut exports = Vec::with_capacity(e.exports.len());

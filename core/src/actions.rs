@@ -141,8 +141,11 @@ pub async fn move_shots(app: &App, from: &str, to: &str) -> crate::library::Move
 
 /// 縮圖檔（PNG）的路徑；產生失敗回傳 None
 pub async fn thumb(app: &App, path: &str) -> Option<PathBuf> {
-    let ffmpeg = app.ffmpeg_path().filter(|_| is_abs(path) && ends_with_ci(path, &[".mp4", ".gif", ".webp", ".png", ".jpg", ".jpeg"]) && Path::new(path).exists())?;
-    app.thumbs.get(&ffmpeg, path).await
+    if !(is_abs(path) && ends_with_ci(path, &[".mp4", ".gif", ".webp", ".png", ".jpg", ".jpeg"]) && Path::new(path).exists()) {
+        return None;
+    }
+    // 截圖不需要 FFmpeg
+    app.thumbs.get(app.ffmpeg_path().as_deref(), path).await
 }
 
 /// 錄影或截圖改名（錄影連同加速版 / GIF）；不能改正在錄影或轉檔的檔案。回傳新的完整路徑

@@ -1,6 +1,7 @@
 //! 錄影清單的縮圖：用 FFmpeg 擷取一張畫面（320px 寬 PNG），存在 %LOCALAPPDATA%\ScreenRecorder\thumbs。
 //!
-//! 以「路徑 + 大小 + 修改時間」為鍵：檔案被覆寫時自動重做；同時最多產生 2 張。
+//! 截圖（PNG / JPG）不經 FFmpeg：直接在程式裡解碼、縮小（Windows 上每次啟動 FFmpeg 要幾百毫秒，一頁十幾張會很慢）。
+//! 以「路徑 + 大小 + 修改時間」為鍵：檔案被覆寫時自動重做；影片同時最多產生 2 張、截圖 4 張。
 //! 要求被取消（關掉清單、換頁）時 future 被丟棄，還在排隊的不會產生；產生失敗的檔案 10 分鐘內不再重試。
 
 use crate::paths::mtime_ms;
@@ -14,11 +15,15 @@ use tokio::sync::{OnceCell, Semaphore};
 
 const MAX_FILES: usize = 2000;
 const CONCURRENCY: usize = 2;
+const IMAGE_CONCURRENCY: usize = 4;
+/// 截圖縮圖的大小上限：寬 320（和影片一樣），長截圖高度最多 960
+const IMAGE_MAX: (u32, u32) = (320, 960);
 const RETRY_FAILED: Duration = Duration::from_secs(10 * 60);
 
 pub struct Thumbnails {
     dir: PathBuf,
     sem: Arc<Semaphore>,
+    image_sem: Arc<Semaphore>,
     inflight: Mutex<HashMap<String, Arc<OnceCell<Option<PathBuf>>>>>,
     /// 產生失敗的鍵 → 失敗時間（損壞的檔案、還在寫入的檔案）
     failed: Mutex<HashMap<String, Instant>>,
@@ -26,11 +31,15 @@ pub struct Thumbnails {
 
 impl Thumbnails {
     pub fn new(dir: PathBuf) -> Self {
-        Self { dir, sem: Arc::new(Semaphore::new(CONCURRENCY)), inflight: Mutex::default(), failed: Mutex::default() }
+        Self { dir, sem: Arc::new(Semaphore::new(CONCURRENCY)), image_sem: Arc::new(Semaphore::new(IMAGE_CONCURRENCY)), inflight: Mutex::default(), failed: Mutex::default() }
     }
 
-    /// 取得影片縮圖的檔案路徑；產生失敗回傳 None
-    pub async fn get(&self, ffmpeg: &Path, video: &str) -> Option<PathBuf> {
+    /// 取得影片或截圖縮圖的檔案路徑；產生失敗回傳 None。截圖不需要 FFmpeg
+    pub async fn get(&self, ffmpeg: Option<&Path>, video: &str) -> Option<PathBuf> {
+        let image = crate::library::is_image_name(video);
+        if !image && ffmpeg.is_none() {
+            return None;
+        }
         let meta = tokio::fs::metadata(video).await.ok()?;
         let key = {
             let mut h = Sha256::new();
@@ -47,8 +56,18 @@ impl Thumbnails {
         let cell = self.inflight.lock().unwrap().entry(key.clone()).or_default().clone();
         let result = cell
             .get_or_init(|| async {
-                let _permit = self.sem.clone().acquire_owned().await.ok()?;
+                let _permit = if image { self.image_sem.clone() } else { self.sem.clone() }.acquire_owned().await.ok()?;
                 let _ = tokio::fs::create_dir_all(&self.dir).await;
+                if image {
+                    let (src, dst) = (PathBuf::from(video), out.clone());
+                    if tokio::task::spawn_blocking(move || image_thumb(&src, &dst)).await.unwrap_or(false) {
+                        return Some(out.clone());
+                    }
+                    let _ = std::fs::remove_file(&out);
+                    self.failed.lock().unwrap().insert(key.clone(), Instant::now());
+                    return None;
+                }
+                let ffmpeg = ffmpeg?;
                 // 先取第 1 秒（避開開頭可能的黑畫面），太短的影片改取第一張；-threads 1 不和錄影搶 CPU
                 for at in ["1", "0"] {
                     let out_s = out.display().to_string();
@@ -99,6 +118,19 @@ impl Thumbnails {
     }
 }
 
+/// 截圖縮圖：解碼後縮到 IMAGE_MAX 以內（小圖不放大），存成 PNG；先寫暫存檔再改名，不會留下寫一半的縮圖
+fn image_thumb(src: &Path, dst: &Path) -> bool {
+    let Ok(img) = image::open(src) else { return false };
+    let (w, h) = (img.width(), img.height());
+    let img = if w > IMAGE_MAX.0 || h > IMAGE_MAX.1 { img.thumbnail(IMAGE_MAX.0, IMAGE_MAX.1) } else { img };
+    let tmp = dst.with_extension("tmp");
+    let ok = img.to_rgba8().save_with_format(&tmp, image::ImageFormat::Png).is_ok() && std::fs::rename(&tmp, dst).is_ok();
+    if !ok {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    ok
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -121,9 +153,30 @@ mod tests {
         let video = dir.path().join("a.mp4");
         std::fs::write(&video, "not a video").unwrap();
         let t = Thumbnails::new(dir.path().join("thumbs"));
-        assert_eq!(t.get(Path::new("false"), &video.display().to_string()).await, None);
+        assert_eq!(t.get(Some(Path::new("false")), &video.display().to_string()).await, None);
         assert_eq!(t.failed.lock().unwrap().len(), 1);
         // 失敗後 10 分鐘內直接回傳 None（不會再執行）
-        assert_eq!(t.get(Path::new("false"), &video.display().to_string()).await, None);
+        assert_eq!(t.get(Some(Path::new("false")), &video.display().to_string()).await, None);
+    }
+
+    #[tokio::test]
+    async fn screenshots_need_no_ffmpeg() {
+        let dir = tempfile::tempdir().unwrap();
+        let t = Thumbnails::new(dir.path().join("thumbs"));
+        // 寬圖縮到寬 320；長截圖高度最多 960；小圖不放大
+        for (name, w, h, want) in [("wide.png", 1920, 1080, (320, 180)), ("long.png", 800, 6000, (128, 960)), ("small.jpg", 200, 100, (200, 100))] {
+            let p = dir.path().join(name);
+            image::RgbImage::from_pixel(w, h, image::Rgb([200, 30, 30])).save(&p).unwrap();
+            let thumb = t.get(None, &p.display().to_string()).await.expect(name);
+            assert_eq!(image::image_dimensions(&thumb).unwrap(), want, "{name}");
+        }
+        // 壞掉的圖：失敗，不會留下檔案
+        let bad = dir.path().join("bad.png");
+        std::fs::write(&bad, "not a png").unwrap();
+        assert_eq!(t.get(None, &bad.display().to_string()).await, None);
+        // 影片沒有 FFmpeg 就不產生
+        let video = dir.path().join("a.mp4");
+        std::fs::write(&video, "x").unwrap();
+        assert_eq!(t.get(None, &video.display().to_string()).await, None);
     }
 }
