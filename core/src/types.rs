@@ -736,6 +736,8 @@ pub struct LibraryQuery {
     pub audio: bool,
     /// 也列出這些資料夾裡的截圖（選了「留在原處」、沒有搬到截圖資料夾的舊截圖）
     pub extra_dirs: Vec<String>,
+    /// 只列這些檔案（「只看已選取」）；原檔或底下的加速版在裡面就列出
+    pub only: Option<Vec<String>>,
 }
 
 /// 全部錄影表格的列高（含 1px 分隔線）
@@ -751,6 +753,9 @@ pub struct LibraryPage {
     pub pages: usize,
     pub page_size: usize,
     pub items: Vec<LibraryEntry>,
+    /// 符合條件的全部檔案（每一頁，含加速版），依清單順序：「選取全部」用
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub all_paths: Vec<String>,
     /// 資料夾讀不到（不存在、隨身碟或網路磁碟沒接上）時的說明
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,

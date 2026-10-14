@@ -430,6 +430,11 @@ pub async fn list_library(cache: &Arc<MediaCache>, ffmpeg: Option<&Path>, dir: &
         LibraryFilter::Speed => list.retain(|e| !e.exports.is_empty()),
     }
 
+    if let Some(only) = &q.only {
+        let set: std::collections::HashSet<String> = only.iter().map(|p| p.to_lowercase()).collect();
+        list.retain(|e| set.contains(&e.media.path.to_lowercase()) || e.exports.iter().any(|x| set.contains(&x.media.path.to_lowercase())));
+    }
+
     // 依聲音篩選、依長度排序需要每個檔案的資訊（有快取，第一次較慢）
     let need_all = q.filter == LibraryFilter::Audio || q.sort == LibrarySort::Duration;
     if need_all && ffmpeg.is_some() {
@@ -446,6 +451,7 @@ pub async fn list_library(cache: &Arc<MediaCache>, ffmpeg: Option<&Path>, dir: &
     }
 
     let total = list.len();
+    let all_paths: Vec<String> = list.iter().flat_map(|e| std::iter::once(e.media.path.clone()).chain(e.exports.iter().map(|x| x.media.path.clone()))).collect();
     let clamp_page = |pages: usize| {
         let p = q.page.filter(|p| p.is_finite()).map(f64::floor).unwrap_or(1.0);
         (if p >= 1.0 { p as usize } else { 1 }).min(pages)
@@ -469,7 +475,7 @@ pub async fn list_library(cache: &Arc<MediaCache>, ffmpeg: Option<&Path>, dir: &
         }
     };
     let items = if need_all { slice } else { pool_with_info(cache, ffmpeg, slice, 6).await };
-    LibraryPage { dir: dir.display().to_string(), total, page, pages, page_size, items, error: None }
+    LibraryPage { dir: dir.display().to_string(), total, page, pages, page_size, items, all_paths, error: None }
 }
 
 /// 錄影改名：原片與底下的加速版 / GIF 一起改（Rec_X_4x.mp4 → 新名_4x.mp4），清單上才不會斷開。
@@ -788,6 +794,24 @@ mod tests {
         let src = dir.path().join("Shot_2026-10-09_14-30-00.png").display().to_string();
         let out = rename_recording(&MediaCache::default(), &src, "登入畫面", &[]).await.unwrap();
         assert!(out.ends_with("登入畫面.png"), "{out}");
+    }
+
+    /// 「選取全部」：all_paths 是每一頁的全部（含加速版）；「只看已選取」：only 只列那些檔案
+    #[tokio::test]
+    async fn all_paths_cover_every_page_and_only_filters() {
+        let dir = make(&["Rec_A.mp4", "Rec_A_4x.mp4", "Rec_B.mp4", "Rec_C.mp4"]);
+        let cache = Arc::new(MediaCache::default());
+        let page = list_library(&cache, None, dir.path(), &LibraryQuery { page_size: Some(1.0), ..q(None, None, LibrarySort::Old) }).await;
+        assert_eq!((page.items.len(), page.total, page.pages), (1, 3, 3));
+        let names: Vec<String> = page.all_paths.iter().map(|p| file_name(p)).collect();
+        assert_eq!(names.len(), 4);
+        assert!(names.contains(&"Rec_A_4x.mp4".to_string()) && names.contains(&"Rec_C.mp4".to_string()), "{names:?}");
+        // 只看已選取：選了加速版也列出原片
+        let only = vec![dir.path().join("Rec_A_4x.mp4").display().to_string(), dir.path().join("Rec_C.mp4").display().to_string()];
+        let picked = list_library(&cache, None, dir.path(), &LibraryQuery { only: Some(only), ..q(None, None, LibrarySort::Old) }).await;
+        let mut got: Vec<&str> = picked.items.iter().map(|e| e.media.name.as_str()).collect();
+        got.sort();
+        assert_eq!(got, vec!["Rec_A.mp4", "Rec_C.mp4"]);
     }
 
     /// 截圖編輯另存的 JPG 也列在全部截圖，改名保留 .jpg
