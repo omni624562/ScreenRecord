@@ -265,6 +265,8 @@ pub enum Icon {
     Check,
     /// 往上（調整順序）
     ChevU,
+    /// 關於（圓圈裡一個 i）
+    Info,
 }
 
 /// 在 rect（正方形）裡畫圖示
@@ -457,6 +459,11 @@ pub fn paint_icon(p: &Painter, rect: Rect, icon: Icon, color: Color32) {
         }
         Icon::Check => line(&[(2.5, 8.5), (6.5, 12.5), (13.5, 4.0)]),
         Icon::ChevU => line(&[(4.0, 10.0), (8.0, 6.0), (12.0, 10.0)]),
+        Icon::Info => {
+            circle(8.0, 8.0, 6.0);
+            p.circle_filled(at(8.0, 5.2), 0.9 * k, color);
+            line(&[(8.0, 7.4), (8.0, 11.2)]);
+        }
     }
 }
 

@@ -2,11 +2,11 @@
 //! 只送出一個不帶任何個人資料的 GET 要求；網路不通或被限流時由呼叫端略過。
 
 use crate::types::UpdateInfo;
+use crate::version::PROJECT_URL;
 use serde::Deserialize;
 use std::time::Duration;
 
 pub const RELEASES_API: &str = "https://api.github.com/repos/omni624562/ScreenRecord/releases/latest";
-const PROJECT_URL: &str = "https://github.com/omni624562/ScreenRecord/";
 const LATEST_URL: &str = "https://github.com/omni624562/ScreenRecord/releases/latest";
 /// 只從本專案的 Release 下載新版 exe
 const DOWNLOAD_PREFIX: &str = "https://github.com/omni624562/ScreenRecord/releases/download/";

@@ -1,13 +1,14 @@
-//! 設定視窗：左邊分頁（錄影 / 聲音 / 儲存位置 / 錄完處理 / 快速鍵 / 進階），右邊表單（標籤固定寬度，控制項對齊）。
+//! 設定視窗：左邊分頁（錄影 / 聲音 / 儲存位置 / 錄完處理 / 快速鍵 / 進階 / 關於），右邊表單（標籤固定寬度，控制項對齊）。
 //! 主畫面下方只留摘要，點一下開到對應的分頁。
 
 use super::settings::{FPS_CHOICES, MAX_MB, MAX_PRESETS, UI_MIN_SIZE, UI_SCALES};
 use super::theme::{self, segmented, switch, Btn, Icon};
-use super::{main_view, UiApp};
+use super::{dialogs, main_view, UiApp};
 use eframe::egui::{self, pos2, vec2, Align, Color32, CornerRadius, Id, Layout, Rect, RichText, Sense, Stroke, Ui, UiBuilder};
 use screenrecorder_core::actions;
 use screenrecorder_core::format::{human_duration, output_size};
 use screenrecorder_core::types::{EncoderPreference, Hotkey, Hotkeys, MethodPreference, RecBarMode, CAMERA_SIZES};
+use screenrecorder_core::version::{release_notes, APP_VERSION, ISSUES_URL, PROJECT_URL};
 use screenrecorder_core::{tr, trf};
 use std::time::Instant;
 
@@ -20,16 +21,19 @@ pub enum Page {
     After,
     Keys,
     Advanced,
+    /// 版本、更新說明、新版本、連結
+    About,
 }
 
 /// 分頁：中文名稱、英文名稱、圖示
-const PAGES: [(Page, &str, &str, Icon); 6] = [
+const PAGES: [(Page, &str, &str, Icon); 7] = [
     (Page::Record, "錄影", "Recording", Icon::Video),
     (Page::Audio, "聲音", "Audio", Icon::Speaker),
     (Page::Save, "儲存位置", "Save location", Icon::Folder),
     (Page::After, "錄完處理", "After recording", Icon::Cut),
     (Page::Keys, "快速鍵", "Shortcuts", Icon::Keyboard),
     (Page::Advanced, "進階", "Advanced", Icon::Settings),
+    (Page::About, "關於", "About", Icon::Info),
 ];
 
 /// 設定視窗的狀態（輸入中的文字、設定中的快速鍵）
@@ -148,7 +152,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
             let ui = &mut page_ui;
             ui.spacing_mut().item_spacing = vec2(6.0, 4.0);
             egui::ScrollArea::vertical().id_salt(("settings-page", d.page as u8)).auto_shrink([false, false]).show(ui, |ui| {
-                let locked = app.locked() && d.page != Page::Keys;
+                let locked = app.locked() && !matches!(d.page, Page::Keys | Page::About);
                 if locked {
                     form_hint_full(ui, tr!("錄影中無法變更這些設定，停止錄影後再調整。", "These settings can't be changed while recording. Stop recording first."), p.warn);
                     ui.add_space(6.0);
@@ -160,6 +164,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                     Page::After => after_record_section(app, ui),
                     Page::Keys => keys_page(app, &mut d, ui),
                     Page::Advanced => advanced_page(app, &mut d, ui),
+                    Page::About => about_page(app, ui),
                 });
             });
         }
@@ -1024,6 +1029,121 @@ fn advanced_page(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
         }
     }
     form_divider(ui);
+    form_section(ui, tr!("疑難排解", "Troubleshooting"), |_| {});
+    form_row(ui, tr!("記錄檔", "Log file"), |ui| {
+        let log = screenrecorder_core::log::log_file().display().to_string();
+        if Btn::new(tr!("開啟記錄檔", "Open log file")).small().tooltip(log.clone()).show(ui).clicked() {
+            screenrecorder_core::desktop::open_with_explorer(&log, false);
+        }
+        if Btn::new(tr!("在資料夾中顯示", "Show in folder")).small().ghost().show(ui).clicked() {
+            screenrecorder_core::desktop::open_with_explorer(&log, true);
+        }
+    });
+    form_hint(
+        ui,
+        tr!(
+            "程式做了什麼、哪裡出錯都會寫在這裡。回報問題時附上最後幾十行，比較容易找到原因。",
+            "Everything the app does, and any errors, are written here. When reporting a problem, include the last few dozen lines so the cause is easier to find."
+        ),
+        p.muted,
+    );
+}
+
+// ───────────── 關於：版本、這一版更新了什麼（可看所有版本的更新說明）、新版本、連結 ─────────────
+
+/// 「這一版更新了什麼」最多列幾項（其餘在「所有版本的更新說明」看）
+const ABOUT_NOTES_MAX: usize = 6;
+
+fn about_page(app: &mut UiApp, ui: &mut Ui) {
+    let p = theme::pal(ui);
+    // 程式圖示、名稱、版本
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 14.0;
+        let tex = ui.ctx().memory_mut(|m| m.data.get_temp::<egui::TextureHandle>(Id::new("about-icon"))).unwrap_or_else(|| {
+            let rgba = screenrecorder_core::icon::render_icon(128, screenrecorder_core::icon::IconState::Idle);
+            let img = egui::ColorImage::from_rgba_unmultiplied([128, 128], &rgba);
+            let t = ui.ctx().load_texture("about-icon", img, egui::TextureOptions::LINEAR);
+            ui.ctx().memory_mut(|m| m.data.insert_temp(Id::new("about-icon"), t.clone()));
+            t
+        });
+        ui.add(egui::Image::new((tex.id(), vec2(56.0, 56.0))));
+        ui.vertical(|ui| {
+            ui.spacing_mut().item_spacing.y = 2.0;
+            ui.label(RichText::new(tr!("螢幕錄影", "Screen Recorder")).font(theme::font_bold(20.0)));
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(trf!("版本 {}", "Version {}", APP_VERSION)).font(theme::font(13.0)).color(p.muted));
+                if let Some(u) = &app.env.update {
+                    theme::chip(ui, &trf!("有新版本 v{}", "v{} available", u.version), theme::Tone::Accent, false);
+                }
+            });
+            ui.label(RichText::new(tr!("錄影、截圖、剪輯都在這裡，錄完直接分享。", "Record, screenshot and edit in one place, then share right away.")).font(theme::font(12.5)).color(p.muted));
+        });
+    });
+    form_divider(ui);
+    // 這一版更新了什麼（CHANGELOG.md 裡這一版的段落）
+    let notes = release_notes(APP_VERSION);
+    // 標題「3.2.1（2026-10-14）」：版本後面的日期放右邊
+    let date = notes.map(|(t, _)| t[APP_VERSION.len()..].trim().trim_start_matches(['（', '(']).trim_end_matches(['）', ')']).to_string()).unwrap_or_default();
+    form_section(ui, &trf!("v{APP_VERSION} 更新了什麼", "What's new in v{APP_VERSION}"), |ui| {
+        // 留一點空間給捲軸
+        ui.add_space(10.0);
+        ui.label(theme::muted(ui, date));
+    });
+    let items: Vec<&str> = notes.map(|(_, body)| body.lines().filter_map(|l| l.strip_prefix("- ")).collect()).unwrap_or_default();
+    if items.is_empty() {
+        form_hint_full(ui, tr!("這一版沒有更新說明。", "There are no release notes for this version."), p.muted);
+    }
+    for item in items.iter().take(ABOUT_NOTES_MAX) {
+        dialogs::bullet(ui, item, 0.0);
+    }
+    if items.len() > ABOUT_NOTES_MAX {
+        ui.label(theme::muted(ui, trf!("…還有 {} 項", "…and {} more", items.len() - ABOUT_NOTES_MAX)));
+    }
+    ui.add_space(6.0);
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 6.0;
+        if Btn::new(tr!("所有版本的更新說明", "All release notes"))
+            .icon(Icon::List)
+            .small()
+            .tooltip(tr!("每一版新增、變更與修正的內容", "What was added, changed and fixed in every version"))
+            .show(ui)
+            .clicked()
+        {
+            app.changelog_open = true;
+        }
+        if Btn::new(tr!("新功能介紹", "What's new tour")).small().ghost().tooltip(tr!("再看一次這一版的新功能介紹", "Show this version's feature tour again")).show(ui).clicked() {
+            app.whats_new_open = true;
+        }
+    });
+    form_divider(ui);
+    updates_section(app, ui);
+    form_divider(ui);
+    form_section(ui, tr!("連結", "Links"), |_| {});
+    let link = |ui: &mut Ui, app: &mut UiApp, label: &str, text: &str, url: &str| {
+        form_row(ui, label, |ui| {
+            if Btn::new(text).small().ghost().tooltip(url).show(ui).clicked() {
+                if let Err(e) = actions::open_url(url) {
+                    app.toast(e.message().to_string(), true);
+                }
+            }
+        });
+    };
+    link(ui, app, tr!("專案網頁", "Project page"), tr!("在瀏覽器開啟", "Open in browser"), PROJECT_URL);
+    link(ui, app, tr!("回報問題", "Report a problem"), tr!("開啟問題回報頁", "Open the issue tracker"), ISSUES_URL);
+    form_row(ui, "FFmpeg", |ui| {
+        let ff = &app.env.ffmpeg;
+        let text =
+            if ff.found { ff.version.clone().map(|v| trf!("版本 {v}", "Version {v}")).unwrap_or_else(|| tr!("已找到", "Found").into()) } else { tr!("還沒有安裝", "Not installed").into() };
+        let r = ui.label(theme::muted(ui, text));
+        if let Some(path) = &ff.path {
+            r.on_hover_text(path.clone());
+        }
+    });
+}
+
+/// 新版本：自動檢查、立即檢查、有新版本時更新
+fn updates_section(app: &mut UiApp, ui: &mut Ui) {
+    let p = theme::pal(ui);
     form_section(ui, tr!("新版本", "Updates"), |_| {});
     form_row(ui, tr!("自動檢查", "Auto check"), |ui| {
         let mut on = app.update.enabled;
@@ -1063,36 +1183,15 @@ fn advanced_page(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
                 }
             });
         }
-        if Btn::new(tr!("這一版的更新說明", "Release notes")).small().ghost().show(ui).clicked() {
-            app.changelog_open = true;
+        if app.env.update.is_none() {
+            ui.label(theme::muted(ui, trf!("v{}", "v{}", app.env.app_version)));
         }
-        let current = if app.env.update.is_some() { trf!("目前 v{}", "Current v{}", app.env.app_version) } else { format!("v{}", app.env.app_version) };
-        ui.label(theme::muted(ui, current));
     });
     if let Some(e) = &app.update.error {
         // 「立即檢查」的錯誤已經有這個開頭（中文或英文），不要重複
         let e = e.trim_start_matches("無法檢查新版本：").trim_start_matches("Couldn't check for updates: ");
         form_hint(ui, trf!("無法檢查新版本：{e}", "Couldn't check for updates: {e}"), p.warn);
     }
-    form_divider(ui);
-    form_section(ui, tr!("疑難排解", "Troubleshooting"), |_| {});
-    form_row(ui, tr!("記錄檔", "Log file"), |ui| {
-        let log = screenrecorder_core::log::log_file().display().to_string();
-        if Btn::new(tr!("開啟記錄檔", "Open log file")).small().tooltip(log.clone()).show(ui).clicked() {
-            screenrecorder_core::desktop::open_with_explorer(&log, false);
-        }
-        if Btn::new(tr!("在資料夾中顯示", "Show in folder")).small().ghost().show(ui).clicked() {
-            screenrecorder_core::desktop::open_with_explorer(&log, true);
-        }
-    });
-    form_hint(
-        ui,
-        tr!(
-            "程式做了什麼、哪裡出錯都會寫在這裡。回報問題時附上最後幾十行，比較容易找到原因。",
-            "Everything the app does, and any errors, are written here. When reporting a problem, include the last few dozen lines so the cause is easier to find."
-        ),
-        p.muted,
-    );
 }
 
 // ───────────── 快速鍵（點按鍵後按下新的組合，Esc 取消；可停用或還原預設） ─────────────

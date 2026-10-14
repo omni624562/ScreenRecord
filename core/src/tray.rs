@@ -67,7 +67,8 @@ pub enum TrayCommand {
     OpenFolder,
     PlayLast,
     Autostart,
-    Changelog,
+    /// 關於（版本、更新說明）
+    About,
     HotkeyRecord,
     HotkeyPause,
     /// 截圖：與錄影相同的範圍（選單與快速鍵）
@@ -441,8 +442,8 @@ impl TrayController {
                 app.open_ui(UiPage::Main);
                 return Ok(());
             }
-            TrayCommand::Changelog => {
-                app.open_ui(UiPage::Changelog);
+            TrayCommand::About => {
+                app.open_ui(UiPage::About);
                 return Ok(());
             }
             TrayCommand::EditLastShot => {

@@ -30,8 +30,8 @@ pub type HotkeyApplier = Arc<dyn Fn(&crate::types::Hotkeys) -> Option<HotkeyStat
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UiPage {
     Main,
-    /// 更新說明（系統匣選單「更新說明」）
-    Changelog,
+    /// 設定 → 關於（系統匣選單「關於」：版本、更新說明、檢查新版本）
+    About,
     /// 在螢幕上框選截圖（不開啟操作視窗；凍結的畫面用 App::take_snip 取得）
     Snip,
     /// 開啟操作視窗並編輯最近的截圖（App::last_shot）

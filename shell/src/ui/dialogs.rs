@@ -240,7 +240,8 @@ pub fn changelog(app: &mut UiApp, ctx: &egui::Context) {
             });
         });
         ui.separator();
-        egui::ScrollArea::vertical().max_height(ctx.content_rect().height() - 160.0).show(ui, |ui| {
+        let h = ctx.content_rect().height() - 160.0;
+        egui::ScrollArea::vertical().max_height(h).min_scrolled_height(h.min(560.0)).show(ui, |ui| {
             ui.set_width(ui.available_width());
             for line in CHANGELOG.lines() {
                 if line.starts_with("# ") {
@@ -272,7 +273,7 @@ pub fn changelog(app: &mut UiApp, ctx: &egui::Context) {
     }
 }
 
-fn bullet(ui: &mut egui::Ui, text: &str, indent: f32) {
+pub(super) fn bullet(ui: &mut egui::Ui, text: &str, indent: f32) {
     ui.horizontal_top(|ui| {
         ui.add_space(indent + 4.0);
         ui.label("•");
@@ -281,7 +282,7 @@ fn bullet(ui: &mut egui::Ui, text: &str, indent: f32) {
 }
 
 /// 去掉 Markdown 記號：`code` → code、[文字](網址) → 文字
-fn plain(s: &str) -> String {
+pub(super) fn plain(s: &str) -> String {
     let mut out = String::new();
     let mut rest = s;
     while let Some(i) = rest.find('[') {
