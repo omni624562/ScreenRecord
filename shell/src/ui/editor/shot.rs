@@ -694,8 +694,51 @@ pub fn update_tiles(ed: &mut Editor, ctx: &egui::Context) {
     }
 }
 
+/// 裁切後（不在裁切分頁）畫面上方的小列：「已裁切 470×312」「調整裁切」「還原整張」（也可以按 Ctrl+Z 復原）
+fn cropped_bar(ed: &mut Editor, ui: &mut egui::Ui, outer: Rect) {
+    let Some(s) = &ed.shot else { return };
+    let (_, _, w, h) = s.view.region;
+    if s.loading.is_some() || w <= 0.0 || (w >= ed.vw - 0.5 && h >= ed.vh - 0.5) {
+        return;
+    }
+    let p = theme::pal(ui);
+    let area = Rect::from_min_size(outer.left_top() + vec2(8.0, 8.0), vec2((outer.width() - 16.0).max(0.0), 34.0));
+    let bg = ui.painter().add(egui::Shape::Noop);
+    let (mut adjust, mut restore) = (false, false);
+    let inner = ui
+        .scope_builder(egui::UiBuilder::new().max_rect(area.shrink2(vec2(8.0, 3.0))).layout(Layout::left_to_right(Align::Center)), |ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            ui.label(RichText::new(trf!("已裁切 {}×{}", "Cropped to {}×{}", w.round(), h.round())).font(theme::font(12.5)).color(p.muted));
+            ui.add_space(4.0);
+            adjust = Btn::new(tr!("調整裁切", "Adjust crop"))
+                .icon(theme::Icon::Edit)
+                .ghost()
+                .small()
+                .tooltip(tr!("回到「裁切與旋轉」分頁調整範圍", "Go to “Crop & rotate” to change the area"))
+                .show(ui)
+                .clicked();
+            restore = Btn::new(tr!("還原整張", "Show full image"))
+                .icon(theme::Icon::Undo)
+                .ghost()
+                .small()
+                .tooltip(tr!("取消裁切，回到完整的圖（也可以按 Ctrl+Z 復原）", "Remove the crop and go back to the full image (or press Ctrl+Z)"))
+                .show(ui)
+                .clicked();
+        })
+        .response
+        .rect;
+    ui.painter().set(bg, egui::epaint::RectShape::new(inner.expand2(vec2(8.0, 3.0)), CornerRadius::same(8), p.surface, Stroke::new(1.0, p.border_strong), StrokeKind::Inside));
+    if adjust {
+        ed.tab = super::Tab::Crop;
+    }
+    if restore {
+        ed.crop_on = false;
+    }
+}
+
 /// 捲軸（圖比畫面大時，可以拖曳）與右下角的縮放按鈕
 pub fn overlays(ed: &mut Editor, ui: &mut egui::Ui, outer: Rect, rect: Rect) {
+    cropped_bar(ed, ui, outer);
     let vw = ed.vw;
     let Some(s) = &mut ed.shot else { return };
     if vw <= 0.0 || s.loading.is_some() {
