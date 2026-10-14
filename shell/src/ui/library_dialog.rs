@@ -885,13 +885,17 @@ fn wheel_pages(ui: &egui::Ui, d: &mut LibraryDialog, area: Rect) {
     }
 }
 
-/// 鍵盤操作滑鼠所在（或上次點的）那一列：Delete 移到資源回收筒、F2 改名、Enter 播放
+/// 鍵盤：Delete 移到資源回收筒（有勾選時是勾選的全部，和下方按鈕一樣；沒勾選時是滑鼠所在或上次點的那一列）、F2 改名、Enter 播放
 fn row_keys(app: &UiApp, ui: &egui::Ui, d: &LibraryDialog, rows: &[LibraryEntry], req: &mut Option<Req>) {
     if req.is_some() || app.ask.is_some() || d.merge.is_some() || d.combine.is_some() || ui.ctx().egui_wants_keyboard_input() || egui::Popup::is_any_open(ui.ctx()) {
         return;
     }
-    let Some(e) = d.cursor_row.as_ref().and_then(|p| rows.iter().find(|e| &e.media.path == p)) else { return };
     let (del, f2, enter) = ui.input(|i| (i.key_pressed(egui::Key::Delete), i.key_pressed(egui::Key::F2), i.key_pressed(egui::Key::Enter)));
+    if del && !d.selected.is_empty() {
+        *req = Some(Req::DeleteSelected);
+        return;
+    }
+    let Some(e) = d.cursor_row.as_ref().and_then(|p| rows.iter().find(|e| &e.media.path == p)) else { return };
     if del {
         *req = Some(Req::Trash(trash_list(e)));
     } else if f2 && !is_audio_file(&e.media.name) {
