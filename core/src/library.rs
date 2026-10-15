@@ -512,6 +512,23 @@ pub async fn list_library(cache: &Arc<MediaCache>, ffmpeg: Option<&Path>, dir: &
     LibraryPage { dir: dir.display().to_string(), total, page, pages, page_size, items, all_paths, start, groups, error: None }
 }
 
+/// 清理舊截圖：這些資料夾裡在 cutoff_ms（毫秒）之前的截圖，由舊到新；同一個檔案只列一次
+pub async fn shots_before(cache: &MediaCache, dirs: &[String], cutoff_ms: f64) -> Vec<MediaInfo> {
+    let mut seen = std::collections::HashSet::new();
+    let mut out: Vec<(f64, MediaInfo)> = vec![];
+    for d in dirs {
+        let Ok(list) = scan_checked(cache, Path::new(d)).await else { continue };
+        for e in list {
+            let t = sort_time(&e);
+            if is_image_name(&e.media.name) && t < cutoff_ms && seen.insert(e.media.path.to_lowercase()) {
+                out.push((t, e.media));
+            }
+        }
+    }
+    out.sort_by(|a, b| a.0.total_cmp(&b.0));
+    out.into_iter().map(|(_, m)| m).collect()
+}
+
 /// 截圖格的一格放在哪裡：第幾頁（從 0 算）、這一頁裡的 y（px，卡片上緣）、第幾欄、要不要在上面畫日期標題（標題列上緣的 y）
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct GridPlace {
@@ -908,6 +925,17 @@ mod tests {
         // 07-25：再放標題＋列要到 460，換頁；新的一頁開頭重畫標題
         assert_eq!((p[7].page, p[7].y, p[7].head_y), (1, 20.0, Some(0.0)));
         assert_eq!((p[10].page, p[10].y, p[10].col), (1, 120.0, 0));
+    }
+
+    #[tokio::test]
+    async fn old_shots_by_name_time() {
+        let dir = make(&["Shot_2020-01-02_10-00-00.png", "Shot_2020-01-01_10-00-00.png", "Shot_2099-01-01_10-00-00.png", "Rec_2020-01-01_10-00-00.mp4"]);
+        let cache = MediaCache::default();
+        let cutoff = chrono::NaiveDate::from_ymd_opt(2021, 1, 1).unwrap().and_hms_opt(0, 0, 0).unwrap().and_utc().timestamp_millis() as f64;
+        let d = dir.path().display().to_string();
+        let old = shots_before(&cache, &[d.clone(), d], cutoff).await;
+        let names: Vec<&str> = old.iter().map(|m| m.name.as_str()).collect();
+        assert_eq!(names, vec!["Shot_2020-01-01_10-00-00.png", "Shot_2020-01-02_10-00-00.png"], "由舊到新、不含錄影與新的、資料夾重複只算一次");
     }
 
     /// 截圖編輯另存的 JPG 也列在全部截圖，改名保留 .jpg

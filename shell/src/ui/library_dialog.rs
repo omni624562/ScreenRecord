@@ -75,6 +75,17 @@ pub struct LibraryDialog {
     band_base: Option<HashSet<String>>,
     /// 只看有星號的
     only_pinned: bool,
+    /// 清理舊截圖的對話框
+    cleanup: Option<CleanupDlg>,
+}
+
+/// 清理舊截圖：超過幾天的截圖（有星號的不算）移到資源回收筒
+struct CleanupDlg {
+    days: u32,
+    /// 查到的截圖（None = 查詢中）
+    list: Option<Vec<MediaInfo>>,
+    seq: u64,
+    busy: bool,
 }
 
 /// 合併成一支：依清單的順序（可上下調整）接成一支；加速版預設不放進去
@@ -106,6 +117,11 @@ struct CombineDlg {
 }
 
 impl LibraryDialog {
+    /// 上面蓋著合併、拼成一張、清理舊截圖的對話框
+    fn overlay(&self) -> bool {
+        self.merge.is_some() || self.combine.is_some() || self.cleanup.is_some()
+    }
+
     /// 檔案搬動或資料夾改了：重新讀取
     pub fn reload(&mut self) {
         self.selected.clear();
@@ -146,6 +162,7 @@ impl LibraryDialog {
             only_selected: false,
             band_base: None,
             only_pinned: false,
+            cleanup: None,
         }
     }
 
@@ -191,7 +208,7 @@ fn multi_mods(ui: &egui::Ui) -> (bool, bool) {
 fn select_all_key(app: &UiApp, ui: &egui::Ui, d: &mut LibraryDialog, order: &[String]) {
     // 搜尋框是空的（開啟時游標在搜尋框）也可以用；有打字時 Ctrl+A 是選取搜尋框的文字
     let typing = ui.ctx().egui_wants_keyboard_input() && !d.query.is_empty();
-    if typing || app.ask.is_some() || d.merge.is_some() || d.combine.is_some() || egui::Popup::is_any_open(ui.ctx()) {
+    if typing || app.ask.is_some() || d.overlay() || egui::Popup::is_any_open(ui.ctx()) {
         return;
     }
     if ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::A)) {
@@ -642,6 +659,15 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                 d.page = 1;
                 d.dirty = true;
             }
+            if shot {
+                let b = Btn::new(tr!("整理", "Tidy up")).icon(Icon::ChevD).small().ghost().tooltip(tr!("清理舊截圖、找出相似的截圖", "Clean up old screenshots, find similar ones")).show(ui);
+                egui::Popup::menu(&b).show(|ui| {
+                    ui.set_min_width(220.0);
+                    if ui.button(tr!("清理舊截圖…", "Clean up old screenshots…")).clicked() {
+                        d.cleanup = Some(CleanupDlg { days: 90, list: None, seq: 0, busy: false });
+                    }
+                });
+            }
             selection_links(ui, &mut d, shot, &app.core.pins);
         });
         if d.search_at.is_some_and(|t| t.elapsed().as_millis() > 250) {
@@ -736,9 +762,10 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         app.s.shot_grid_size = grid_size;
         app.save_settings();
     }
-    let covered = d.merge.is_some() || d.combine.is_some();
+    let covered = d.overlay();
     merge_dialog(app, ctx, &mut d);
     combine_dialog(app, ctx, &mut d);
+    cleanup_dialog(app, ctx, &mut d);
     if modal.should_close() && app.ask.is_none() && !covered {
         close = true;
     }
@@ -983,7 +1010,7 @@ fn export_menu(ui: &mut egui::Ui, x: &ExportInfo, req: &mut Option<Req>) {
 /// 滾輪在清單上：往下捲換下一頁、往上捲換上一頁（捲一段距離才換，連續捲動時至少隔 0.35 秒）
 fn wheel_pages(ui: &egui::Ui, d: &mut LibraryDialog, area: Rect) {
     // 上面蓋著合併、拼成一張的對話框或選單時不換頁
-    if !ui.rect_contains_pointer(area) || egui::Popup::is_any_open(ui.ctx()) || d.merge.is_some() || d.combine.is_some() {
+    if !ui.rect_contains_pointer(area) || egui::Popup::is_any_open(ui.ctx()) || d.overlay() {
         d.wheel = 0.0;
         return;
     }
@@ -1007,7 +1034,7 @@ fn wheel_pages(ui: &egui::Ui, d: &mut LibraryDialog, area: Rect) {
 
 /// 鍵盤：Delete 移到資源回收筒（有勾選時是勾選的全部，和下方按鈕一樣；沒勾選時是滑鼠所在或上次點的那一列）、F2 改名、Enter 播放
 fn row_keys(app: &UiApp, ui: &egui::Ui, d: &LibraryDialog, rows: &[LibraryEntry], req: &mut Option<Req>) {
-    if req.is_some() || app.ask.is_some() || d.merge.is_some() || d.combine.is_some() || ui.ctx().egui_wants_keyboard_input() || egui::Popup::is_any_open(ui.ctx()) {
+    if req.is_some() || app.ask.is_some() || d.overlay() || ui.ctx().egui_wants_keyboard_input() || egui::Popup::is_any_open(ui.ctx()) {
         return;
     }
     let (del, f2, enter) = ui.input(|i| (i.key_pressed(egui::Key::Delete), i.key_pressed(egui::Key::F2), i.key_pressed(egui::Key::Enter)));
@@ -1606,7 +1633,7 @@ fn day_headers(app: &UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, area: Rect
 /// 全部截圖用滑鼠框選：從任何地方（含縮圖上）按住左鍵拖曳，框到的縮圖都勾起來。
 /// 直接拖曳：這一頁改成只勾框到的（其他頁的勾選保留）；按住 Ctrl 拖曳：加選。回傳正在框的範圍（畫出來用）
 fn band_select(ui: &egui::Ui, d: &mut LibraryDialog, area: Rect, order: &[String], cell_at: &dyn Fn(usize) -> Rect, ctrl: bool) -> Option<Rect> {
-    if d.merge.is_some() || d.combine.is_some() || egui::Popup::is_any_open(ui.ctx()) {
+    if d.overlay() || egui::Popup::is_any_open(ui.ctx()) {
         d.band_base = None;
         return None;
     }
@@ -1712,7 +1739,7 @@ fn star_button(ui: &mut egui::Ui, rect: Rect, id: Id, pinned: bool, show: bool, 
 
 /// 在縮圖上按住 Ctrl 轉滾輪：調整縮圖大小（往上放大、往下縮小）
 fn grid_zoom(ui: &egui::Ui, d: &mut LibraryDialog, area: Rect, size: &mut u8) {
-    if !ui.rect_contains_pointer(area) || egui::Popup::is_any_open(ui.ctx()) || d.merge.is_some() || d.combine.is_some() {
+    if !ui.rect_contains_pointer(area) || egui::Popup::is_any_open(ui.ctx()) || d.overlay() {
         return;
     }
     let dy: f32 = ui.input(|i| {
@@ -1974,6 +2001,94 @@ fn open_combine(app: &mut UiApp) {
     if let Some(d) = &mut app.library {
         d.combine = Some(CombineDlg { items, vertical: false, spacing: 1, busy: false });
     }
+}
+
+/// 清理舊截圖：選天數，看會刪幾張、多大，確認後移到資源回收筒（有星號的不刪）
+fn cleanup_dialog(app: &mut UiApp, ctx: &egui::Context, d: &mut LibraryDialog) {
+    let Some(c) = &mut d.cleanup else { return };
+    // 天數改了（或剛打開）：重新查
+    let want = c.days as u64 + 1;
+    if c.seq != want {
+        c.seq = want;
+        c.list = None;
+        let dirs: Vec<String> = match &d.dir {
+            Some(dir) => vec![dir.clone()],
+            None => std::iter::once(app.s.shots_dir(&app.env)).chain(app.s.shot_extra(&app.env)).collect(),
+        };
+        let (core, days) = (app.core.clone(), c.days);
+        app.spawn(async move { actions::old_shots(&core, dirs, days).await }, move |app, list| {
+            let pins = app.core.pins.clone();
+            if let Some(c) = app.library.as_mut().and_then(|d| d.cleanup.as_mut()).filter(|c| c.seq == want) {
+                c.list = Some(list.into_iter().filter(|m| !pins.contains(&m.path)).collect());
+            }
+        });
+    }
+    let Some(c) = &mut d.cleanup else { return };
+    let mut close = false;
+    let mut go = false;
+    let modal = egui::Modal::new(Id::new("cleanup")).frame(theme::modal_frame(ctx)).show(ctx, |ui| {
+        let p = theme::pal(ui);
+        ui.set_width(460.0);
+        ui.label(RichText::new(tr!("清理舊截圖", "Clean up old screenshots")).font(theme::font_bold(16.0)));
+        ui.add_space(6.0);
+        ui.label(tr!("把超過這段時間的截圖移到資源回收筒（可以還原；有星號的不會動）：", "Move screenshots older than this to the Recycle Bin (you can restore them; starred ones are kept):"));
+        ui.add_space(6.0);
+        let mut days = c.days;
+        theme::segmented(
+            ui,
+            &mut days,
+            &[(7, tr!("一週", "1 week")), (30, tr!("一個月", "1 month")), (90, tr!("三個月", "3 months")), (180, tr!("半年", "6 months")), (365, tr!("一年", "1 year"))],
+            !c.busy,
+        );
+        c.days = days;
+        ui.add_space(10.0);
+        let (n, bytes) = c.list.as_ref().map(|l| (l.len(), l.iter().map(|m| m.bytes).sum::<u64>())).unwrap_or((0, 0));
+        match &c.list {
+            None => {
+                ui.label(theme::muted(ui, tr!("正在找…", "Looking…")));
+            }
+            Some(l) if l.is_empty() => {
+                ui.label(theme::muted(ui, tr!("沒有超過這段時間的截圖。", "No screenshots are that old.")));
+            }
+            Some(l) => {
+                let span = |m: &MediaInfo| entry_time(&m.name, m.time_ms()).map(|t| t.format("%Y/%m/%d").to_string()).unwrap_or_default();
+                ui.label(RichText::new(trf!("{n} 張，共 {}", "{n} screenshots, {} in total", format_bytes(bytes))).font(theme::font_bold(14.0)).color(p.text));
+                ui.label(theme::muted(ui, trf!("最舊 {}，最新 {}", "Oldest {}, newest {}", span(&l[0]), span(&l[l.len() - 1]))));
+            }
+        }
+        ui.add_space(12.0);
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            let label =
+                if c.busy { tr!("正在移到資源回收筒…", "Moving to the Recycle Bin…").to_string() } else { trf!("移到資源回收筒（{n} 張）", "Move {n} to the Recycle Bin") };
+            if Btn::new(label).danger().enabled(!c.busy && n > 0).show(ui).clicked() {
+                go = true;
+            }
+            if Btn::new(tr!("取消", "Cancel")).ghost().enabled(!c.busy).show(ui).clicked() {
+                close = true;
+            }
+        });
+    });
+    if (modal.should_close() || close) && !c.busy {
+        d.cleanup = None;
+        return;
+    }
+    if !go {
+        return;
+    }
+    c.busy = true;
+    let paths: Vec<String> = c.list.as_ref().map(|l| l.iter().map(|m| m.path.clone()).collect()).unwrap_or_default();
+    let core = app.core.clone();
+    app.spawn(async move { tokio::task::spawn_blocking(move || actions::delete(&core, &paths)).await.unwrap_or_else(|e| Err(screenrecorder_core::error::Error::other(e.to_string()))) }, |app, r| {
+        match r {
+            Ok(n) => app.toast(trf!("已將 {n} 張舊截圖移到資源回收筒", "Moved {n} old screenshots to the Recycle Bin"), false),
+            Err(e) => app.toast(e.message().to_string(), true),
+        }
+        if let Some(d) = &mut app.library {
+            d.cleanup = None;
+            d.reload();
+        }
+        app.load_recent();
+    });
 }
 
 /// 「拼成一張」對話框：上面是預覽，下面調整排法、間距與順序

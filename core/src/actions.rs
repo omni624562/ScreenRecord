@@ -114,6 +114,12 @@ pub async fn library(app: &App, dir: &str, query: &LibraryQuery) -> LibraryPage 
     crate::library::list_library(&app.cache, ffmpeg.as_deref(), Path::new(&dir), query).await
 }
 
+/// 清理舊截圖：這些資料夾裡超過 days 天的截圖（由舊到新）
+pub async fn old_shots(app: &App, dirs: Vec<String>, days: u32) -> Vec<crate::types::MediaInfo> {
+    let cutoff = crate::paths::now_ms() as f64 - days as f64 * 86_400_000.0;
+    crate::library::shots_before(&app.cache, &dirs, cutoff).await
+}
+
 /// 資料夾裡有幾張截圖（PNG / JPG，不含子資料夾）
 pub async fn count_shots(dir: &str) -> usize {
     let d = PathBuf::from(dir);
