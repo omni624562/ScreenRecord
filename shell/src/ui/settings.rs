@@ -139,6 +139,12 @@ pub struct UiSettings {
     pub theme: String,
     /// 已經說明過「關掉視窗後仍在系統匣執行」（只在第一次關掉時通知）
     pub hide_notice_shown: bool,
+    /// 第一次錄影的教學看到第幾步（1 起算；0 = 沒有看到一半的教學）
+    pub tour_step: u32,
+    /// 看完或跳過的教學："first"（第一次錄影）、"editor"、"shot"、"library"
+    pub tours_done: Vec<String>,
+    /// 剪輯視窗、截圖編輯、全部截圖第一次打開時顯示短提示（新安裝或按了「重新看教學」才開）
+    pub tips: bool,
     /// 上次切換或儲存的設定組合（目前的設定和它不一樣時顯示「已修改」）
     pub preset_name: String,
     /// 等待中的排程錄影（core 的 schedule.rs 存進來；這裡只是原樣保留，並跟著 core 的狀態更新）
@@ -283,6 +289,9 @@ impl UiSettings {
             audio_m4a: screenrecorder_core::after_record::audio_m4a(v),
             theme: string("theme").filter(|v| ["light", "dark"].contains(&v.as_str())).unwrap_or_else(|| "system".into()),
             hide_notice_shown: boolean("hideNoticeShown").unwrap_or(false),
+            tour_step: num("tourStep").map(|v| v as u32).filter(|v| *v <= 50).unwrap_or(0),
+            tours_done: o.get("toursDone").and_then(|v| serde_json::from_value::<Vec<String>>(v.clone()).ok()).unwrap_or_default(),
+            tips: boolean("tips").unwrap_or(false),
             preset_name: string("presetName").unwrap_or_default(),
             schedule: o.get(screenrecorder_core::schedule::UI_KEY).cloned(),
         };

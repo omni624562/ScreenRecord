@@ -7,6 +7,7 @@ use super::dialogs::{base_name, date_labels, file_name, is_cut_name, is_default_
 use super::settings::{FollowWindow, SourceType};
 use super::settings_dialog::{self, Page};
 use super::theme::{self, chip, segmented, switch, Btn, Icon, Tone};
+use super::tour::{self, Spot};
 use super::{EntryAction, UiApp};
 use eframe::egui::{self, pos2, vec2, Align, Color32, CornerRadius, Id, Layout, Pos2, Rect, RichText, Sense, Stroke, StrokeKind, Ui, UiBuilder};
 use screenrecorder_core::actions;
@@ -108,7 +109,7 @@ fn ffmpeg_banner(app: &mut UiApp, ui: &mut Ui) {
     let busy = matches!(d.phase, DownloadPhase::Downloading | DownloadPhase::Verifying | DownloadPhase::Extracting);
     let failed = matches!(d.phase, DownloadPhase::Error | DownloadPhase::Canceled);
     let (fill, stroke) = if failed { (p.rec_soft, p.rec) } else { (p.accent_soft, p.accent) };
-    egui::Frame::new().fill(fill).stroke(Stroke::new(1.0, stroke.gamma_multiply(0.4))).corner_radius(CornerRadius::same(theme::RADIUS)).inner_margin(14.0).show(ui, |ui| {
+    let banner = egui::Frame::new().fill(fill).stroke(Stroke::new(1.0, stroke.gamma_multiply(0.4))).corner_radius(CornerRadius::same(theme::RADIUS)).inner_margin(14.0).show(ui, |ui| {
         ui.set_width(ui.available_width());
         ui.horizontal(|ui| {
             ui.vertical(|ui| {
@@ -212,6 +213,7 @@ fn ffmpeg_banner(app: &mut UiApp, ui: &mut Ui) {
             });
         }
     });
+    tour::mark(ui, Spot::Download, banner.response.rect);
 }
 
 // ───────────── 擷取範圍 ─────────────
@@ -251,6 +253,7 @@ fn capture_panel(app: &mut UiApp, ui: &mut Ui) {
                 app.s.source_type = st;
                 app.save_settings();
             }
+            tour::mark(ui, Spot::Source, ui.min_rect());
             if one_row {
                 let room = ui.available_width() - right_w - gap;
                 ui.scope(|ui| {
@@ -991,7 +994,9 @@ fn settings_bar(app: &mut UiApp, ui: &mut Ui) {
         }
     });
     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-        if set_btn.show(ui).clicked() {
+        let set = set_btn.show(ui);
+        tour::mark(ui, Spot::Settings, set.rect);
+        if set.clicked() {
             open = Some(Page::Record);
         }
         super::presets::button(app, ui);
@@ -1339,7 +1344,7 @@ fn rec_body(app: &mut UiApp, ui: &mut Ui, r: &screenrecorder_core::types::Record
         }
         // 最後一列是「聲音」
         let audio_row = i == 4;
-        ui.horizontal(|ui| {
+        let row = ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 14.0;
             let (cell, _) = ui.allocate_exact_size(vec2(key_w, 18.0), Sense::hover());
             ui.painter().text(cell.left_center(), egui::Align2::LEFT_CENTER, k, theme::font(13.0), p.muted);
@@ -1396,6 +1401,9 @@ fn rec_body(app: &mut UiApp, ui: &mut Ui, r: &screenrecorder_core::types::Record
             }
             ui.add(egui::Label::new(RichText::new(&v).font(theme::font(13.0))).truncate()).on_hover_text(&v);
         });
+        if audio_row {
+            tour::mark(ui, Spot::Audio, row.response.rect.expand2(vec2(4.0, 2.0)));
+        }
     }
     ui.spacing_mut().item_spacing.y = gap_y;
     ui.spacing_mut().interact_size.y = row_h;
@@ -1423,7 +1431,9 @@ fn rec_body(app: &mut UiApp, ui: &mut Ui, r: &screenrecorder_core::types::Record
             };
             // 只錄聲音：「開始錄音」
             let label = if app.s.source_type == SourceType::Audio { tr!("開始錄音", "Start audio recording") } else { tr!("開始錄影", "Start recording") };
-            if Btn::new(label).kind(theme::Kind::Record).enabled(can).tooltip(tip).min_width(ui.available_width()).show(ui).clicked() {
+            let start = Btn::new(label).kind(theme::Kind::Record).enabled(can).tooltip(tip).min_width(ui.available_width()).show(ui);
+            tour::mark(ui, Spot::Record, start.rect);
+            if start.clicked() {
                 let config = app.s.record_config(&app.env);
                 let core = app.core.clone();
                 app.guarded(async move { actions::record_start(&core, config).await }, |_, _| {});
@@ -1483,7 +1493,9 @@ fn rec_body(app: &mut UiApp, ui: &mut Ui, r: &screenrecorder_core::types::Record
             } else {
                 tr!("停止", "Stop").into()
             };
-            if Btn::new(stop_label).icon(Icon::Stop).danger().enabled(r.state != RecorderState::Stopping).min_width(ui.available_width()).show(ui).clicked() {
+            let stop = Btn::new(stop_label).icon(Icon::Stop).danger().enabled(r.state != RecorderState::Stopping).min_width(ui.available_width()).show(ui);
+            tour::mark(ui, Spot::Record, stop.rect);
+            if stop.clicked() {
                 let core = app.core.clone();
                 app.guarded(async move { core.recorder.stop(None).await }, |_, _| {});
             }
@@ -1732,7 +1744,7 @@ fn shot_row(app: &mut UiApp, ui: &mut Ui) {
         need.clone()
     };
     let mut act: Option<ShotAct> = None;
-    ui.horizontal(|ui| {
+    let row = ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 4.0;
         let arrow_w = 34.0;
         let w = ui.available_width() - arrow_w - 8.0;
@@ -1762,6 +1774,7 @@ fn shot_row(app: &mut UiApp, ui: &mut Ui) {
         }
         egui::Popup::menu(&arrow).show(|ui| shot_menu(app, ui, &mut act));
     });
+    tour::mark(ui, Spot::Shot, row.response.rect);
     if let Some(a) = act.filter(|_| can) {
         run_shot(app, a);
     }
@@ -2458,7 +2471,7 @@ const LIB_BTN_W: f32 = 120.0;
 
 fn recent_strip(app: &mut UiApp, ui: &mut Ui) {
     let p = theme::pal(ui);
-    theme::card(ui).inner_margin(egui::Margin::symmetric(14, 10)).show(ui, |ui| {
+    let strip = theme::card(ui).inner_margin(egui::Margin::symmetric(14, 10)).show(ui, |ui| {
         ui.set_min_size(ui.available_size());
         ui.horizontal_centered(|ui| {
             ui.vertical(|ui| {
@@ -2525,6 +2538,7 @@ fn recent_strip(app: &mut UiApp, ui: &mut Ui) {
         });
         let _ = p;
     });
+    tour::mark(ui, Spot::Recent, strip.response.rect);
 }
 
 fn recent_card(app: &mut UiApp, ui: &mut Ui, e: &LibraryEntry, date: String, w: f32) {
@@ -2533,6 +2547,9 @@ fn recent_card(app: &mut UiApp, ui: &mut Ui, e: &LibraryEntry, date: String, w: 
     // 整張卡片可以按右鍵（和「⋯」同一個選單）
     let (rect, resp) = ui.allocate_exact_size(vec2(w, h), Sense::click());
     let painter = ui.painter_at(rect);
+    if app.recent.as_ref().and_then(|r| r.items.first()).is_some_and(|f| f.media.path == e.media.path) {
+        tour::mark(ui, Spot::RecentCard, rect);
+    }
     painter.rect(rect, CornerRadius::same(theme::RADIUS_SM), if resp.hovered() { p.surface2 } else { p.surface }, Stroke::new(1.0, p.border), StrokeKind::Inside);
     let thumb = Rect::from_min_size(rect.min + vec2(6.0, 6.0), vec2((h - 12.0) * 16.0 / 9.0, h - 12.0));
     painter.rect_filled(thumb, CornerRadius::same(5), p.surface2);

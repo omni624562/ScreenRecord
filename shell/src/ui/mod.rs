@@ -20,6 +20,7 @@ pub mod snip;
 pub mod steps_review;
 pub mod theme;
 pub mod thumbs;
+mod tour;
 pub mod viewer;
 mod whats_new;
 
@@ -137,6 +138,8 @@ pub struct UiApp {
     /// 新功能介紹（更新後第一次開啟時顯示一次）
     pub whats_new_open: bool,
     whats_new_checked: bool,
+    /// 一步一步的教學（第一次錄影、各功能第一次打開的提示）
+    pub tour: Option<tour::Tour>,
     /// 已檢查過要不要問搬移截圖（每次啟動一次）
     shot_move_checked: bool,
 
@@ -237,6 +240,7 @@ impl UiApp {
             cameras_loading: false,
             whats_new_open: false,
             whats_new_checked: false,
+            tour: None,
             shot_move_checked: false,
             preview: preview::Preview::default(),
             thumbs: thumbs::Thumbs::default(),
@@ -977,6 +981,8 @@ impl eframe::App for UiApp {
             app.frame_parts.push((name, t.elapsed().as_secs_f32() * 1000.0));
             t = Instant::now();
         };
+        // 教學顯示中按 Esc 只結束教學（要在各視窗檢查 Esc 之前）
+        tour::esc(self, &ctx);
         if self.snip.is_some() {
             snip::show(self, &ctx);
             part(self, "框選截圖");
@@ -1019,13 +1025,20 @@ impl eframe::App for UiApp {
         // 新功能介紹：主畫面第一次看得到、沒有其他視窗時檢查一次
         if !self.whats_new_checked && self.visible && self.env_ready && self.editor.is_none() && self.snip.is_none() {
             self.whats_new_checked = true;
-            self.whats_new_open = whats_new::should_show(self) && std::env::var("SCREENRECORDER_DEV").is_err();
+            let dev = std::env::var("SCREENRECORDER_DEV").is_ok();
+            // 第一次安裝：一步一步的教學（不顯示新功能介紹）；上次教學看到一半：問要不要接著看
+            if !dev && tour::on_launch(self, self.s.seen_version.is_empty()) {
+                self.s.seen_version = whats_new::minor_version();
+                self.save_settings();
+            } else {
+                self.whats_new_open = whats_new::should_show(self) && !dev;
+            }
         }
         if self.whats_new_open {
             whats_new::show(self, &ctx);
         }
         // 截圖改成和錄影分開存：第一次啟動時問一次要不要把錄影資料夾裡的截圖搬到截圖資料夾（新功能介紹關掉之後）
-        if !self.shot_move_checked && self.whats_new_checked && !self.whats_new_open && self.ask.is_none() && self.editor.is_none() && self.snip.is_none() {
+        if !self.shot_move_checked && self.whats_new_checked && !self.whats_new_open && self.tour.is_none() && self.ask.is_none() && self.editor.is_none() && self.snip.is_none() {
             self.shot_move_checked = true;
             let dev = std::env::var("SCREENRECORDER_DEV").is_ok_and(|v| !v.contains("shotmove"));
             if !self.s.shot_move_asked && !dev {
@@ -1039,6 +1052,7 @@ impl eframe::App for UiApp {
         if self.ask.is_some() {
             dialogs::show_ask(self, &ctx);
         }
+        tour::show(self, &ctx);
         dialogs::show_toast(self, &ctx);
         main_view::countdown_overlay(self, &ctx);
         #[cfg(debug_assertions)]

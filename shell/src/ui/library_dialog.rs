@@ -146,6 +146,16 @@ struct CombineDlg {
 }
 
 impl LibraryDialog {
+    /// 全部截圖（不是全部錄影）
+    pub fn is_shot(&self) -> bool {
+        self.kind == Kind::Shot
+    }
+
+    /// 上面蓋著其他對話框（教學的提示先收起來）
+    pub fn covered(&self) -> bool {
+        self.overlay()
+    }
+
     /// 上面蓋著合併、拼成一張、清理舊截圖的對話框
     fn overlay(&self) -> bool {
         self.merge.is_some() || self.combine.is_some() || self.cleanup.is_some() || self.similar.is_some()
@@ -629,6 +639,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                     .margin(egui::Margin { left: 6, right: 28, top: 2, bottom: 2 })
                     .vertical_align(Align::Center),
             );
+            super::tour::mark(ui, super::tour::Spot::LbSearch, r.rect);
             if d.focus_search {
                 r.request_focus();
                 d.focus_search = false;
@@ -726,7 +737,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                     }
                     d.dirty = true;
                 }
-                if Btn::new(tr!("月曆", "Calendar"))
+                let cal = Btn::new(tr!("月曆", "Calendar"))
                     .icon(Icon::Clock)
                     .small()
                     .ghost()
@@ -735,9 +746,9 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                         "一個月一頁，看每天截了幾張、那天圖裡常出現什麼字；點一天就列出那天的截圖",
                         "One month per page: how many screenshots each day and what they were about. Click a day to list them"
                     ))
-                    .show(ui)
-                    .clicked()
-                {
+                    .show(ui);
+                super::tour::mark(ui, super::tour::Spot::LbCalendar, cal.rect);
+                if cal.clicked() {
                     d.calendar = if d.calendar.is_some() { None } else { Some(browse::CalView::this_month()) };
                 }
             }
@@ -788,6 +799,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
             let grid = if d.browse {
                 let side = Rect::from_min_max(table.min, pos2(table.min.x + browse::PANEL_W, table.max.y));
                 browse::panel(ui, &mut d, side);
+                super::tour::mark(ui, super::tour::Spot::LbBrowse, side);
                 Rect::from_min_max(pos2(side.max.x + 12.0, table.min.y), table.max)
             } else {
                 table

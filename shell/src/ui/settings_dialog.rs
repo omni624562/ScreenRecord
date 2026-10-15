@@ -1303,6 +1303,18 @@ fn about_page(app: &mut UiApp, ui: &mut Ui) {
         if Btn::new(tr!("新功能介紹", "What's new tour")).small().ghost().tooltip(tr!("再看一次這一版的新功能介紹", "Show this version's feature tour again")).show(ui).clicked() {
             app.whats_new_open = true;
         }
+        if Btn::new(tr!("重新看教學", "Replay tutorial"))
+            .small()
+            .ghost()
+            .tooltip(tr!(
+                "一步一步帶你錄第一部影片；之後第一次打開剪輯、截圖編輯、全部截圖時也會再顯示小提示",
+                "Walks you through your first recording again; quick tips also reappear the next time you open the editor, screenshot editing or All screenshots"
+            ))
+            .show(ui)
+            .clicked()
+        {
+            super::tour::restart(app);
+        }
     });
     form_divider(ui);
     updates_section(app, ui);

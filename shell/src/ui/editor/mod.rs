@@ -14,6 +14,7 @@ mod timeline;
 
 use super::dialogs::file_name;
 use super::theme::{self, Btn, Icon};
+use super::tour::{self, Spot};
 use super::UiApp;
 use eframe::egui::{self, pos2, vec2, Align, Color32, Id, Key, Layout, Modifiers, RichText, TextureHandle, TextureOptions};
 use screenrecorder_core::actions::{self, EditProject, ProjectMatch};
@@ -762,7 +763,7 @@ impl Editor {
     }
 
     /// 編輯截圖（不是影片）
-    fn is_shot(&self) -> bool {
+    pub fn is_shot(&self) -> bool {
         self.shot.is_some()
     }
 
@@ -1886,18 +1887,19 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                 let r = ui.cursor();
                 ui.painter().vline(r.left(), r.top()..=r.top() + body_h - 8.0, egui::Stroke::new(1.0, p.border));
                 ui.add_space(12.0);
-                ui.allocate_ui_with_layout(vec2(side_w, body_h), Layout::top_down(Align::Min), |ui| {
+                let side = ui.allocate_ui_with_layout(vec2(side_w, body_h), Layout::top_down(Align::Min), |ui| {
                     ui.set_width(side_w);
                     ui.set_height(body_h - 8.0);
                     side::show(&mut ed, ui, ctx, &mut toast);
                 });
+                tour::mark(ui, if ed.is_shot() { Spot::ShSide } else { Spot::EdSide }, side.response.rect);
             }
         });
 
         // 摘要與儲存
         let r = ui.cursor();
         ui.painter().hline(r.x_range(), r.top(), egui::Stroke::new(1.0, p.border));
-        egui::Frame::new().inner_margin(egui::Margin::symmetric(18, 10)).show(ui, |ui| {
+        let foot = egui::Frame::new().inner_margin(egui::Margin::symmetric(18, 10)).show(ui, |ui| {
             ui.horizontal(|ui| {
                 if ed.is_shot() {
                     if let Some(a) = shot::footer(&mut ed, ui) {
@@ -1908,6 +1910,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                 }
             });
         });
+        tour::mark(ui, if ed.is_shot() { Spot::ShFoot } else { Spot::EdFoot }, foot.response.rect);
     });
 
     // Ctrl+S：和按「另存剪輯版 / 儲存修改」一樣；還不能存時說明原因
@@ -2330,12 +2333,15 @@ fn main_column(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, toast: &
     if ed.is_shot() {
         // 截圖：沒有時間軸，畫面用全部的高度
         let h = (ui.available_height() - 8.0).max(140.0);
+        tour::mark(ui, Spot::ShCanvas, egui::Rect::from_min_size(ui.cursor().min, vec2(ui.available_width(), h)));
         return stage::show(ed, ui, ctx, h);
     }
     let below = timeline::RULER_H + timeline::TL_H + 4.0 + timeline::ann_track_h(ed) + 4.0 + timeline::SCROLL_H + 8.0 + timeline::TOOLS_H + 8.0 + 34.0 + 8.0;
     let stage_h = (ui.available_height() - below - 8.0).max(140.0);
     stage::show(ed, ui, ctx, stage_h);
+    let top = ui.cursor().min.y;
     timeline::show(ed, ui, ctx, toast);
+    tour::mark(ui, Spot::EdTimeline, egui::Rect::from_min_max(pos2(ui.max_rect().min.x, top), pos2(ui.max_rect().max.x, ui.cursor().min.y)));
     transport(ed, ui, toast);
 }
 
