@@ -77,6 +77,11 @@ pub fn mtime_ms(meta: &std::fs::Metadata) -> f64 {
     meta.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs_f64() * 1000.0).unwrap_or(0.0)
 }
 
+/// 兩個修改時間（毫秒）是不是同一個：存進 JSON 再讀回來的小數可能差最後一位，不能用 == 比
+pub fn same_mtime(a: f64, b: f64) -> bool {
+    (a - b).abs() < 0.01
+}
+
 /// 建立時間（毫秒）；檔案系統不支援時 0
 pub fn created_ms(meta: &std::fs::Metadata) -> f64 {
     meta.created().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs_f64() * 1000.0).unwrap_or(0.0)
@@ -140,5 +145,12 @@ mod tests {
         let t = timestamp();
         assert_eq!(t.len(), 19);
         assert_eq!(&t[10..11], "_");
+    }
+
+    #[test]
+    fn mtime_survives_a_json_round_trip_off_by_the_last_digit() {
+        let t = 1_760_501_234_567.890_1_f64;
+        assert!(same_mtime(t, t + t * f64::EPSILON));
+        assert!(!same_mtime(t, t + 1.0), "差 1 毫秒就是改過了");
     }
 }
