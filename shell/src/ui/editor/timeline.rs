@@ -58,6 +58,56 @@ pub struct Strip {
     tiles: Vec<Option<TextureHandle>>,
 }
 
+/// 聲音波形（開啟剪輯視窗後在背景讀一次）
+#[derive(Default)]
+pub struct Wave {
+    started: bool,
+    data: Arc<Mutex<Option<Arc<Vec<u8>>>>>,
+    cancel: Arc<AtomicBool>,
+}
+
+impl Drop for Wave {
+    fn drop(&mut self) {
+        self.cancel.store(true, Ordering::Relaxed);
+    }
+}
+
+impl Wave {
+    fn peaks(&mut self, ffmpeg: &std::path::Path, path: &str, ctx: &egui::Context) -> Option<Arc<Vec<u8>>> {
+        if !self.started {
+            self.started = true;
+            let (ffmpeg, path, data, cancel, c) = (ffmpeg.to_path_buf(), path.to_string(), self.data.clone(), self.cancel.clone(), ctx.clone());
+            std::thread::spawn(move || {
+                if let Some(p) = screenrecorder_core::waveform::load(&ffmpeg, &path, &cancel) {
+                    *data.lock().unwrap() = Some(Arc::new(p));
+                    c.request_repaint();
+                }
+            });
+        }
+        self.data.lock().unwrap().clone()
+    }
+}
+
+/// 縮圖下方的聲音波形（以中線上下對稱，越大聲越高）
+fn draw_wave(painter: &egui::Painter, rect: Rect, peaks: &[u8], view: (f64, f64), color: Color32) {
+    let band = Rect::from_min_max(pos2(rect.left(), rect.bottom() - rect.height() * 0.42), rect.max);
+    painter.rect_filled(band, CornerRadius::ZERO, Color32::from_black_alpha(175));
+    let (a, b) = view;
+    let per_px = (b - a) / rect.width().max(1.0) as f64;
+    let mid = band.center().y;
+    let half = band.height() / 2.0 - 2.0;
+    let mut x = band.left();
+    while x < band.right() {
+        let t = a + (x - rect.left()) as f64 * per_px;
+        let v = screenrecorder_core::waveform::max_in(peaks, t, t + per_px * 2.0);
+        if v > 0.02 {
+            let h = (v * half).max(1.0);
+            painter.line_segment([pos2(x + 0.5, mid - h), pos2(x + 0.5, mid + h)], Stroke::new(1.5, color));
+        }
+        x += 2.0;
+    }
+}
+
 impl Default for Strip {
     fn default() -> Self {
         Strip { key: 0, due: None, cancel: Arc::new(AtomicBool::new(false)), gen: 0, inbox: Arc::default(), tiles: vec![] }
@@ -209,6 +259,9 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, toast: &mut
             let r = Rect::from_min_size(pos2(rect.left() + i as f32 * tile_w, rect.top()), vec2(tile_w.ceil(), TL_H));
             painter.image(t.id(), r, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::from_white_alpha(235));
         }
+    }
+    if let Some(peaks) = ed.wave.peaks(&ed.ffmpeg, &ed.entry.media.path, ctx) {
+        draw_wave(&painter, rect, &peaks, ed.view, Color32::from_rgb(140, 205, 255));
     }
     let cut_bg = Color32::from_black_alpha(158);
     let cut_line = Color32::from_rgba_unmultiplied(229, 72, 77, 115);

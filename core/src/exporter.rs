@@ -266,7 +266,10 @@ impl Exporter {
             && spec.zoom.is_none()
             && spec.frame.is_none()
             && spec.cursor.is_none()
-            && spec.vertical.is_none();
+            && spec.vertical.is_none()
+            && spec.intro.is_none()
+            && spec.outro.is_none()
+            && spec.music.is_none();
         if unchanged {
             return Err(Error::config(tr!("沒有任何剪輯、裁切或標註", "There are no edits, crops or annotations")));
         }
@@ -357,6 +360,44 @@ impl Exporter {
             }
             _ => return Err(Error::config(tr!("無法讀取影片尺寸，不能做成直式影片", "Couldn't read the video size, so it can't be made vertical"))),
         };
+        // 片頭、片尾卡片（畫成和輸出影片一樣大）與背景音樂
+        let (extras, temp) = {
+            let intro = spec.intro.as_ref().filter(|c| !c.is_empty());
+            let outro = spec.outro.as_ref().filter(|c| !c.is_empty());
+            let music = match &spec.music {
+                Some(m) if !Path::new(&m.path).is_file() => {
+                    remove_dir(&temp);
+                    return Err(Error::config(trf!("找不到背景音樂：{}", "Background music not found: {}", file_name(&m.path))));
+                }
+                Some(m) => Some(crate::args::MusicInput { path: m.path.clone(), volume: m.volume, duck: m.duck }),
+                None => None,
+            };
+            if intro.is_none() && outro.is_none() && music.is_none() {
+                (None, temp)
+            } else {
+                let size = output_size(info.width, info.height, crop, vertical.as_ref());
+                let Some((w, h)) = size else {
+                    remove_dir(&temp);
+                    return Err(Error::config(tr!("無法讀取影片尺寸，不能加上片頭片尾", "Couldn't read the video size, so title cards can't be added")));
+                };
+                let dir = temp.unwrap_or_else(|| std::env::temp_dir().join(format!("ScreenRecorder-overlays-{}-{}", std::process::id(), crate::paths::now_ms())));
+                let card = |c: Option<&crate::cards::TitleCard>, name: &str| -> Result<Option<(String, f64)>> {
+                    let Some(c) = c else { return Ok(None) };
+                    let f = dir.join(format!("{name}.png"));
+                    std::fs::create_dir_all(&dir).map_err(|e| Error::config(e.to_string()))?;
+                    crate::cards::save(c, w as u32, h as u32, &f).map_err(Error::config)?;
+                    Ok(Some((f.display().to_string(), c.secs())))
+                };
+                let (intro, outro) = match (card(intro, "intro"), card(outro, "outro")) {
+                    (Ok(a), Ok(b)) => (a, b),
+                    (Err(e), _) | (_, Err(e)) => {
+                        let _ = std::fs::remove_dir_all(&dir);
+                        return Err(e);
+                    }
+                };
+                (Some(crate::args::Extras { intro, outro, size: (w, h), main_len: length, music }), Some(dir))
+            }
+        };
         // 分別調整系統聲音與麥克風：只有分軌錄影（3 條音軌）才做得到
         let audio = crate::edit::AudioFx { tracks: spec.audio.tracks.filter(|_| info.audio_tracks >= 3), ..spec.audio };
         let mut args = cut_args(
@@ -373,10 +414,14 @@ impl Exporter {
             frame.as_ref(),
             cursor.as_ref(),
             vertical.as_ref(),
+            extras.as_ref(),
         )?;
-        // 章節換成剪輯後的時間（刪掉的片段裡的章節改從下一段開始）；剪輯視窗改過標記時用它給的
+        // 章節換成剪輯後的時間（刪掉的片段裡的章節改從下一段開始）；剪輯視窗改過標記時用它給的；有片頭時往後移
         let chapters = chapters.unwrap_or_else(|| info.chapters.clone());
-        let temp = with_chapters(&mut args, &crate::chapters::map_cut(&chapters, &keep), length, temp);
+        let shift = extras.as_ref().and_then(|x| x.intro.as_ref()).map_or(0.0, |c| c.1);
+        let mapped: Vec<crate::types::Chapter> = crate::chapters::map_cut(&chapters, &keep).into_iter().map(|c| crate::types::Chapter { start: c.start + shift, ..c }).collect();
+        let length = extras.as_ref().map_or(length, |x| x.total());
+        let temp = with_chapters(&mut args, &mapped, length, temp);
         let fast = keep.iter().filter(|p| p.2 > 1).count();
         let note = format!(
             "保留 {} 段{}{}{}{}",
@@ -387,7 +432,9 @@ impl Exporter {
             if overlays.is_empty() { String::new() } else { format!("，標註 {} 個", overlays.len()) }
         ) + if frame.is_some() { "，背景與圓角" } else { "" }
             + if cursor.is_some() { "，平滑放大的游標" } else { "" }
-            + if vertical.is_some() { "，直式影片" } else { "" };
+            + if vertical.is_some() { "，直式影片" } else { "" }
+            + if extras.as_ref().is_some_and(|x| x.intro.is_some() || x.outro.is_some()) { "，片頭片尾" } else { "" }
+            + if extras.as_ref().is_some_and(|x| x.music.is_some()) { "，背景音樂" } else { "" };
         let follow = matches!(vertical, Some(VerticalInput::Follow { .. }));
         let cwd = (cursor.is_some() || follow).then(|| temp.clone()).flatten();
         let finish = Finish { cleanup: temp, replace: target.map(PathBuf::from), on_saved, cwd };
@@ -620,6 +667,22 @@ pub struct CutOptions {
 /// 工作結束後的處理
 /// 輸出寫入章節：章節檔放在暫存資料夾（沒有就建一個），回傳要清掉的暫存資料夾。
 /// 沒有章節時明確不要章節（FFmpeg 預設會照抄來源的章節，時間會對不上）
+fn remove_dir(dir: &Option<PathBuf>) {
+    if let Some(d) = dir {
+        let _ = std::fs::remove_dir_all(d);
+    }
+}
+
+/// 剪輯後輸出影片的大小（裁切、直式影片之後）
+fn output_size(w: Option<u32>, h: Option<u32>, crop: Option<crate::types::Rect>, vertical: Option<&VerticalInput>) -> Option<(i32, i32)> {
+    match vertical {
+        Some(VerticalInput::Fit { w, h }) => return Some((*w, *h)),
+        Some(VerticalInput::Follow { w, h, scale, .. }) => return Some(scale.unwrap_or((*w, *h))),
+        None => {}
+    }
+    crop.map(|c| (c.width, c.height)).or_else(|| Some((w? as i32, h? as i32)))
+}
+
 fn with_chapters(args: &mut Vec<String>, chapters: &[crate::types::Chapter], duration: f64, temp: Option<PathBuf>) -> Option<PathBuf> {
     if chapters.is_empty() {
         crate::args::drop_chapters(args);

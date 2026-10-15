@@ -62,6 +62,26 @@ pub fn tab(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, toast: &mut 
         {
             ed.vpending = Some(VAct::ExportSrt);
         }
+        if Btn::new(tr!("找出贅字和停頓", "Find fillers and pauses"))
+            .small()
+            .tooltip(tr!(
+                "找出只有「嗯、呃、那個」的句子，和句子之間超過 1 秒沒講話的地方，勾選後一次剪掉（停頓前後各留一點，聽起來比較自然）",
+                "Find sentences that are only “um”, “uh” and the like, and gaps of over 1 second between sentences, then cut the ones you tick (a little is kept around each pause so it sounds natural)"
+            ))
+            .show(ui)
+            .clicked()
+        {
+            let found = ed.find_fillers();
+            if found.is_empty() {
+                *toast = Some((tr!("沒有找到贅字或停頓", "No fillers or pauses found").into(), false));
+                ed.fillers = None;
+            } else {
+                ed.fillers = Some(found.into_iter().map(|f| {
+                    let on = f.default_on();
+                    (f, on)
+                }).collect());
+            }
+        }
         if Btn::new(tr!("依字幕產生章節", "Chapters from subtitles"))
             .small()
             .tooltip(tr!(
@@ -82,6 +102,7 @@ pub fn tab(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, toast: &mut 
             }
         }
     });
+    fillers_panel(ed, ui, toast);
     // 選取的字幕：顏色、字級、深色底（可以套用到全部字幕）、出現時間
     let picked: Vec<u64> = ed.sub_picked.iter().copied().filter(|id| ed.is_sub(*id)).collect();
     if ed.ann_sel.is_some_and(|id| ed.is_sub(id)) {
@@ -119,6 +140,69 @@ pub fn tab(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, toast: &mut 
         }
     }
     list(ed, ui, toast);
+}
+
+/// 找到的贅字與停頓：勾選要剪的，一次剪掉
+fn fillers_panel(ed: &mut Editor, ui: &mut egui::Ui, toast: &mut Option<(String, bool)>) {
+    use screenrecorder_core::fillers::{Kind, LONG_PAUSE};
+    let Some(list) = ed.fillers.as_mut() else { return };
+    let p = theme::pal(ui);
+    let (mut close, mut cut, mut seek) = (false, false, None);
+    egui::Frame::new().fill(p.surface2).corner_radius(CornerRadius::same(8)).inner_margin(10.0).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.horizontal(|ui| {
+            ui.label(RichText::new(trf!("贅字和停頓（{} 段）", "Fillers and pauses ({})", list.len())).font(theme::font_bold(13.0)));
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if Btn::icon_only(theme::Icon::Close).ghost().small().tooltip(tr!("關閉", "Close")).show(ui).clicked() {
+                    close = true;
+                }
+                let all = list.iter().all(|x| x.1);
+                if Btn::new(if all { tr!("全部不選", "Select none") } else { tr!("全選", "Select all") }).ghost().small().show(ui).clicked() {
+                    for x in list.iter_mut() {
+                        x.1 = !all;
+                    }
+                }
+            });
+        });
+        egui::ScrollArea::vertical().id_salt("fillers").max_height(200.0).show(ui, |ui| {
+            for (f, on) in list.iter_mut() {
+                ui.horizontal(|ui| {
+                    theme::check(ui, on, "");
+                    let t = ui
+                        .add(egui::Label::new(RichText::new(video_clock(f.start)).font(theme::mono(11.5)).color(p.accent)).sense(Sense::click()))
+                        .on_hover_text(tr!("跳到這裡聽聽看", "Jump here to listen"))
+                        .on_hover_cursor(CursorIcon::PointingHand);
+                    if t.clicked() {
+                        seek = Some(f.start);
+                    }
+                    let text = match f.kind {
+                        Kind::Word => trf!("「{}」", "“{}”", f.text),
+                        Kind::Pause if f.len() > LONG_PAUSE => trf!("停頓 {:.1} 秒（可能在操作畫面）", "{:.1} s pause (you may be showing something)", f.len()),
+                        Kind::Pause => trf!("停頓 {:.1} 秒", "{:.1} s pause", f.len()),
+                    };
+                    ui.label(RichText::new(text).font(theme::font(12.5)));
+                });
+            }
+        });
+        let picked: Vec<(f64, f64)> = list.iter().filter(|x| x.1).map(|x| (x.0.start, x.0.end)).collect();
+        let secs: f64 = picked.iter().map(|(a, b)| b - a).sum();
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            let b = Btn::new(trf!("剪掉勾選的 {} 段（共 {}）", "Cut {} selected ({})", picked.len(), video_clock(secs))).icon(theme::Icon::Cut).primary().small().enabled(!picked.is_empty());
+            if b.show(ui).clicked() {
+                cut = true;
+            }
+        });
+    });
+    ui.add_space(6.0);
+    if let Some(t) = seek {
+        ed.seek(t);
+    }
+    if cut {
+        *toast = Some((ed.cut_fillers(), false));
+    } else if close {
+        ed.fillers = None;
+    }
 }
 
 fn hint(ui: &mut egui::Ui, text: &str) {
@@ -534,6 +618,24 @@ impl Editor {
         }
     }
 
+    /// 從字幕找出贅字與停頓（已經剪掉的不算）
+    pub(crate) fn find_fillers(&self) -> Vec<screenrecorder_core::fillers::Filler> {
+        let cues: Vec<Cue> = self.anns.iter().filter(|a| self.is_sub(a.id)).map(|a| Cue { start: a.start, end: a.end, text: a.text.clone().unwrap_or_default() }).collect();
+        screenrecorder_core::fillers::find(&cues, &self.spec.removed, self.duration)
+    }
+
+    /// 剪掉勾選的贅字與停頓；回傳要顯示的訊息
+    pub(crate) fn cut_fillers(&mut self) -> String {
+        let Some(list) = self.fillers.take() else { return String::new() };
+        let spans: Vec<(f64, f64)> = list.iter().filter(|x| x.1).map(|x| (x.0.start, x.0.end)).collect();
+        let mut all = self.spec.removed.clone();
+        all.extend(spans.iter().copied());
+        self.spec.removed = normalize_ranges(&all, self.duration);
+        self.sel = None;
+        let secs: f64 = spans.iter().map(|(a, b)| b - a).sum();
+        trf!("剪掉 {} 段贅字和停頓（共 {}），可按 Ctrl+Z 復原", "Cut {} fillers and pauses ({}). Press Ctrl+Z to undo", spans.len(), video_clock(secs))
+    }
+
     /// 還原剪掉的這一句（只還原這句的時間，前後剪掉的部分不動）
     pub(crate) fn uncut_sub(&mut self, id: u64) {
         let Some((a, b)) = self.anns.iter().find(|x| x.id == id).map(|x| (x.start, x.end)) else { return };
@@ -578,6 +680,8 @@ impl Editor {
     /// 字幕換成剪輯後的時間（刪掉的片段裡的不算；跨過刪掉的片段時從第一段保留的開始到最後一段保留的結束）
     pub fn cut_cues(&self) -> Vec<Cue> {
         let parts = self.parts();
+        // 有片頭時字幕往後移
+        let shift = self.spec.intro.as_ref().filter(|c| !c.is_empty()).map_or(0.0, |c| c.secs());
         let mut subs: Vec<&Ann> = self.anns.iter().filter(|a| self.is_sub(a.id)).collect();
         subs.sort_by(|x, y| x.start.total_cmp(&y.start));
         subs.into_iter()
@@ -586,7 +690,7 @@ impl Editor {
                 let (first, last) = (over.first()?, over.last()?);
                 let start = screenrecorder_core::zoom::map_time(&parts, a.start.max(first.0))?;
                 let end = screenrecorder_core::zoom::map_time(&parts, (a.end.min(last.1) - 0.001).max(first.0))? + 0.001;
-                (end - start >= 0.05).then(|| Cue { start, end, text: a.text.clone().unwrap_or_default() })
+                (end - start >= 0.05).then(|| Cue { start: start + shift, end: end + shift, text: a.text.clone().unwrap_or_default() })
             })
             .collect()
     }

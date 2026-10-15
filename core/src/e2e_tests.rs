@@ -397,6 +397,7 @@ async fn cut_with_every_effect() {
         frame: Some(crate::video_frame::VideoFrame::default()),
         cursor: Some(crate::cursor::CursorFx { size: 2.0, track: vec![[0.0, 0.2, 0.2], [2.0, 0.6, 0.5], [4.0, 0.3, 0.7]] }),
         vertical: None,
+        ..Default::default()
     };
     let expect = crate::edit::output_length(&crate::edit::keep_parts(6.0, &spec));
     assert!(near(expect, 4.0, 0.01), "{expect}");

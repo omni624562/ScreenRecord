@@ -74,6 +74,13 @@ struct Extras {
     /// 標記（改過才存；None = 用錄影時加的）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     markers: Option<Vec<Marker>>,
+    /// 片頭、片尾、背景音樂
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    intro: Option<screenrecorder_core::cards::TitleCard>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    outro: Option<screenrecorder_core::cards::TitleCard>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    music: Option<screenrecorder_core::cards::Music>,
 }
 
 /// 存起來的剪輯專案：ProjectData 加上 Extras（同一層）
@@ -94,6 +101,8 @@ enum VAct {
     ExportSrt,
     /// 標記改名（第幾個）
     RenameMarker(usize),
+    /// 選擇背景音樂
+    PickMusic,
 }
 
 /// 影片播放器；編輯截圖時沒有（所有操作都不做事，時間固定是 0）
@@ -304,6 +313,8 @@ pub struct Editor {
     /// 用文字剪：字幕清單裡選起來、要一起剪掉的幾句（Ctrl / Shift＋點時間）；最後點的那句
     sub_picked: HashSet<u64>,
     sub_anchor: Option<u64>,
+    /// 找到的贅字與停頓（勾選的要剪）；None = 沒有在看
+    fillers: Option<Vec<(screenrecorder_core::fillers::Filler, bool)>>,
     /// 分割點（原片的時間）：時間軸分成一段一段，點一下選取一段
     splits: Vec<f64>,
     /// 跟著點擊放大時不放大的點擊（點擊的時間）
@@ -365,6 +376,10 @@ pub struct Editor {
     stage_frame: Option<(u64, TextureHandle, TextureHandle)>,
     overlay: stage::Overlay,
     strip: timeline::Strip,
+    /// 時間軸上的聲音波形
+    wave: timeline::Wave,
+    /// 片頭、片尾卡片的預覽（內容的 hash, 圖）
+    card_tex: [Option<(u64, TextureHandle)>; 2],
     emoji_tex: Vec<TextureHandle>,
 
     drag: Drag,
@@ -576,6 +591,7 @@ impl Editor {
             sub_ids: HashSet::new(),
             sub_picked: HashSet::new(),
             sub_anchor: None,
+            fillers: None,
             splits: vec![],
             zoom_skip: vec![],
             vpending: None,
@@ -611,6 +627,8 @@ impl Editor {
             stage_frame: None,
             overlay: stage::Overlay::default(),
             strip: timeline::Strip::default(),
+            wave: timeline::Wave::default(),
+            card_tex: [None, None],
             emoji_tex: emoji_textures(&app.ctx),
             drag: Drag::None,
             wheel_at: Instant::now(),
@@ -855,6 +873,9 @@ impl Editor {
             splits: self.splits.clone(),
             zoom_skip: self.zoom_skip.clone(),
             markers: markers_changed.then(|| self.markers.clone()),
+            intro: self.spec.intro.clone(),
+            outro: self.spec.outro.clone(),
+            music: self.spec.music.clone(),
         }
     }
 
@@ -868,6 +889,25 @@ impl Editor {
             None => self.rec_markers.iter().map(|&t| Marker { t, name: String::new() }).collect(),
         };
         self.markers.sort_by(|a, b| a.t.total_cmp(&b.t));
+        self.spec.intro = x.intro;
+        self.spec.outro = x.outro;
+        self.spec.music = x.music;
+    }
+
+    /// 片頭預設的標題：自己取過的檔名（預設的 Rec_時間 名稱就空白）
+    fn default_card_title(&self) -> String {
+        let stem = self.entry.media.name.rsplit_once('.').map_or(self.entry.media.name.as_str(), |(s, _)| s);
+        let stem = stem.trim_end_matches("_cut");
+        if screenrecorder_core::naming::is_auto_name(stem) {
+            String::new()
+        } else {
+            stem.replace('_', " ")
+        }
+    }
+
+    /// 片頭加片尾的秒數
+    fn cards_secs(&self) -> f64 {
+        [&self.spec.intro, &self.spec.outro].iter().filter_map(|c| c.as_ref().filter(|c| !c.is_empty())).map(|c| c.secs()).sum()
     }
 
     /// 剪輯專案的 JSON（ProjectData 加上剪輯視窗自己用的資料）
@@ -1515,6 +1555,9 @@ impl Editor {
             && self.spec.frame.is_none()
             && !self.cursor_on()
             && self.vertical_spec().is_none()
+            && self.spec.intro.is_none()
+            && self.spec.outro.is_none()
+            && self.spec.music.is_none()
     }
 
     /// 可以儲存（有修改、剪完還有長度）
@@ -1598,6 +1641,9 @@ impl Editor {
             "clickzoom" => self.zoom = v.parse().unwrap_or(2.0),
             "preview" => self.start_preview(),
             "vertical" => self.vertical = v.parse().unwrap_or(1),
+            "intro" => self.spec.intro = Some(screenrecorder_core::cards::TitleCard { subtitle: "業務部教學".into(), ..screenrecorder_core::cards::TitleCard::new(v) }),
+            "outro" => self.spec.outro = Some(screenrecorder_core::cards::TitleCard { style: screenrecorder_core::cards::CardStyle::Blue, ..screenrecorder_core::cards::TitleCard::new(v) }),
+            "music" => self.spec.music = Some(screenrecorder_core::cards::Music::new(v)),
             "srt" => {
                 if let Ok(c) = screenrecorder_core::subtitles::read_file(std::path::Path::new(v)) {
                     self.add_subtitles(&c);
@@ -2039,6 +2085,37 @@ fn run_vact(app: &mut UiApp, ed: &mut Editor, act: VAct) {
     match act {
         VAct::ExportSrt => export_srt(app, ed),
         VAct::PickOutput => pick_output(app, ed),
+        VAct::PickMusic => {
+            let video = ed.entry.media.path.clone();
+            app.spawn(
+                async move {
+                    tokio::task::spawn_blocking(|| {
+                        screenrecorder_core::filepick::pick(
+                            tr!("選擇背景音樂", "Choose background music"),
+                            &tr!(
+                                [("音樂檔（MP3、M4A、WAV…）", "*.mp3;*.m4a;*.aac;*.wav;*.flac;*.ogg;*.opus;*.wma"), ("所有檔案", "*.*")],
+                                [("Music files (MP3, M4A, WAV…)", "*.mp3;*.m4a;*.aac;*.wav;*.flac;*.ogg;*.opus;*.wma"), ("All files", "*.*")]
+                            ),
+                        )
+                    })
+                    .await
+                    .unwrap_or(Ok(None))
+                },
+                move |app, r| match r {
+                    Ok(Some(p)) => {
+                        if let Some(ed) = app.editor.as_mut().filter(|e| e.entry.media.path == video) {
+                            let path = p.display().to_string();
+                            match &mut ed.spec.music {
+                                Some(m) => m.path = path,
+                                None => ed.spec.music = Some(screenrecorder_core::cards::Music::new(&path)),
+                            }
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(e) => app.toast(e, true),
+                },
+            );
+        }
         VAct::RenameMarker(i) => {
             let Some(m) = ed.markers.get(i) else { return };
             let t = m.t;
@@ -2444,7 +2521,7 @@ fn footer(ed: &mut Editor, ui: &mut egui::Ui) -> bool {
     let p = theme::pal(ui);
     let keep = ed.keep();
     let parts = ed.parts();
-    let length = output_length(&parts);
+    let length = output_length(&parts) + ed.cards_secs();
     let fast = parts.iter().filter(|p| p.2 > 1).count();
     let crop = if ed.crop_on && ed.vertical != 2 { normalize_crop(ed.spec.crop, ed.vw as i32, ed.vh as i32) } else { None };
     let size = ed.output_size(crop).map(|(w, h)| format!("{w}×{h}")).unwrap_or_default();
@@ -2479,6 +2556,12 @@ fn footer(ed: &mut Editor, ui: &mut egui::Ui) -> bool {
             }
             if ed.spec.frame.is_some() && ed.vertical == 0 {
                 ui.label(tr!("・背景與圓角", " · Background and rounded corners"));
+            }
+            if ed.cards_secs() > 0.0 {
+                ui.label(tr!("・片頭片尾", " · Intro/outro"));
+            }
+            if ed.spec.music.is_some() {
+                ui.label(tr!("・背景音樂", " · Background music"));
             }
             if !size.is_empty() {
                 ui.label(tr!("・解析度 ", " · Resolution "));
@@ -2616,6 +2699,9 @@ fn start_save(app: &mut UiApp, ed: &mut Editor) {
         frame: ed.spec.frame.clone().filter(|_| ed.vertical == 0),
         cursor: ed.cursor_on().then(|| screenrecorder_core::cursor::CursorFx { size: ed.cursor_size, track: ed.cursor.clone() }),
         vertical: ed.vertical_spec(),
+        intro: ed.spec.intro.clone().filter(|c| !c.is_empty()),
+        outro: ed.spec.outro.clone().filter(|c| !c.is_empty()),
+        music: ed.spec.music.clone(),
     };
     let project = Some(ed.project_value());
     // 開始輸出時先存草稿（標記為輸出中）：輸出失敗或取消時可以「回到剪輯」，完成時會刪掉

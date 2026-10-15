@@ -18,6 +18,7 @@ pub mod bubble_win;
 pub mod camera_bubble;
 #[cfg(windows)]
 pub mod camera_bubble_win;
+pub mod cards;
 pub mod chapters;
 pub mod clipboard;
 pub mod clock;
@@ -33,6 +34,7 @@ pub mod exporter;
 pub mod facets;
 pub mod ffmpeg;
 pub mod filepick;
+pub mod fillers;
 pub mod fonts;
 pub mod format;
 pub mod http;
@@ -102,6 +104,7 @@ pub mod updater;
 pub mod version;
 pub mod vertical;
 pub mod video_frame;
+pub mod waveform;
 pub mod winui;
 pub mod zoom;
 

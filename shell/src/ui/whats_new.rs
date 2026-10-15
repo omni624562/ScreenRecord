@@ -21,7 +21,8 @@ pub fn should_show(app: &UiApp) -> bool {
 #[derive(Clone, Copy)]
 enum Try {
     None,
-    /// 打開設定的某一頁
+    /// 打開設定的某一頁（這一版的介紹沒用到，保留給之後）
+    #[allow(dead_code)]
     Settings(Page),
     /// 在螢幕上框選截圖（這一版的介紹沒用到，保留給之後）
     #[allow(dead_code)]
@@ -38,40 +39,40 @@ enum Try {
 fn items(_app: &UiApp) -> Vec<(String, String, Try)> {
     vec![
         (
-            tr!("只抓文字", "Grab text").into(),
+            tr!("一鍵剪掉贅字和停頓", "Cut fillers and pauses in one go").into(),
             tr!(
-                "框選畫面上的一塊，裡面的字直接複製起來，不用存成圖；是表格時會照欄位排好，可以直接貼到 Excel。在「截圖 → 小工具」或系統匣選單裡。",
-                "Select part of the screen and the text in it is copied right away, no image saved. Tables keep their columns, so you can paste straight into Excel. Find it under Screenshot → Tools or in the tray menu."
+                "有字幕的影片，在「字幕」分頁按「找出贅字和停頓」：列出只有「嗯、呃、那個」的句子和超過 1 秒沒講話的地方，勾選後一次剪掉。",
+                "For videos with subtitles, click “Find fillers and pauses” in the Subtitles tab to list sentences that are only “um” or “uh” and gaps of over a second, then cut the ones you tick."
             )
             .into(),
             Try::None,
         ),
         (
-            tr!("用文字剪影片", "Edit video by text").into(),
+            tr!("時間軸聲音波形", "Audio waveform on the timeline").into(),
             tr!(
-                "有字幕的影片，在剪輯視窗的「字幕」分頁按句子旁邊的剪刀，那一句講話的片段就剪掉了；Ctrl 或 Shift＋點時間可以選好幾句一起剪，按還原放回去。",
-                "For videos with subtitles, click the scissors next to a sentence in the editor's Subtitles tab to cut that part. Ctrl- or Shift-click times to cut several at once; click restore to put one back."
+                "剪輯視窗的時間軸下方畫出聲音大小，一眼看出哪裡在講話、哪裡沒聲音，剪得更準。",
+                "The editor's timeline shows how loud the audio is, so you can see where people talk and where it's quiet."
             )
             .into(),
             Try::None,
         ),
         (
-            tr!("自動命名", "Automatic names").into(),
+            tr!("片頭、片尾", "Intro and outro").into(),
             tr!(
-                "依說的話、畫面上的字、錄影時在用的程式取名（例如「報價單的填法_10-15」）。改名時會先給一個建議名稱；也可以設定錄完自動命名，自己取過的名稱不會動。",
-                "Names recordings from what was said, text on screen and the app you used (e.g. “Quote form_10-15”). Rename suggests a name, and you can have recordings named automatically after recording; names you chose are kept."
+                "在「畫面」分頁打開片頭或片尾，輸入標題、副標，選深色、淺色或藍色，影片前後就會多一張幾秒的標題卡（淡入淡出）。",
+                "Turn on an intro or outro in the Picture tab, type a title and subtitle and pick dark, light or blue to add a title card with fades before or after the video."
             )
             .into(),
-            Try::Settings(Page::After),
+            Try::None,
         ),
         (
-            tr!("英文字幕、中英對照", "English and bilingual subtitles").into(),
+            tr!("背景音樂", "Background music").into(),
             tr!(
-                "自動產生字幕時可以選「翻成英文」或「中英對照」，英文字幕另存成「同名.en.srt」；錄完自動處理也可以順便做英文字幕。全部在這台電腦上辨識，不用上傳。",
-                "When generating subtitles, choose “English” or “Both” for bilingual subtitles; English is also saved as “name.en.srt”. After-recording processing can make English subtitles too. Everything runs on this computer; nothing is uploaded."
+                "在「聲音」分頁選一首音樂：重複播放到影片結束、最後淡出，講話的時候自動調小聲。",
+                "Pick a song in the Audio tab: it loops to the end of the video, fades out, and turns down automatically while you talk."
             )
             .into(),
-            Try::Settings(Page::After),
+            Try::None,
         ),
     ]
 }
