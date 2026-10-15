@@ -124,10 +124,7 @@ pub async fn analyze(ffmpeg: &Path, input: &str, duration: f64, has_audio: bool)
         return Err(crate::Error::other(tr!("無法分析這支影片，詳見記錄檔", "Couldn't analyze this video. See the log file for details.")));
     }
     let (freeze, silence) = parse(&r.stderr, duration);
-    let found = Found {
-        idle: idle_ranges(&freeze, has_audio.then_some(&silence[..]), duration),
-        quiet: if has_audio { quiet_ranges(&freeze, &silence, duration) } else { vec![] },
-    };
+    let found = Found { idle: idle_ranges(&freeze, has_audio.then_some(&silence[..]), duration), quiet: if has_audio { quiet_ranges(&freeze, &silence, duration) } else { vec![] } };
     crate::info!("[剪輯] {input}：畫面不動 {} 段、沒聲音 {} 段，可刪 {} 段、可加速 {} 段", freeze.len(), silence.len(), found.idle.len(), found.quiet.len());
     Ok(found)
 }

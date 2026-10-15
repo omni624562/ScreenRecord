@@ -741,7 +741,11 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         // 沒有任何檔案時不顯示操作說明
         let hint = match (n, shot) {
             (0, _) if total == 0 => String::new(),
-            (0, true) => tr!("勾選多張可一次刪除或拼成一張（從空白處拖曳框選、Ctrl / Shift＋點一下、Ctrl+A）；縮圖可以拖到其他程式", "Select several to delete or combine them (drag a box from empty space, Ctrl/Shift+click, Ctrl+A); drag thumbnails into other apps").into(),
+            (0, true) => tr!(
+                "勾選多張可一次刪除或拼成一張（從空白處拖曳框選、Ctrl / Shift＋點一下、Ctrl+A）；縮圖可以拖到其他程式",
+                "Select several to delete or combine them (drag a box from empty space, Ctrl/Shift+click, Ctrl+A); drag thumbnails into other apps"
+            )
+            .into(),
             (0, false) => {
                 tr!("勾選多筆可一次刪除（Ctrl / Shift＋點一下、Ctrl+A 全選本頁，再按一次選取全部）", "Select several to delete them at once (Ctrl/Shift+click, Ctrl+A for this page, again for all)")
                     .into()
@@ -1824,6 +1828,7 @@ fn selection_links(ui: &mut egui::Ui, d: &mut LibraryDialog, shot: bool, pins: &
 }
 
 /// 星號（釘選）按鈕：有星號時一直顯示（黃色實心），沒有時 show 才顯示外框；點一下切換
+#[allow(clippy::too_many_arguments)]
 fn star_button(ui: &mut egui::Ui, rect: Rect, id: Id, pinned: bool, show: bool, bg: bool, req: &mut Option<Req>, path: &str) {
     if !pinned && !show {
         return;

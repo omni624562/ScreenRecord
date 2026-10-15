@@ -249,7 +249,14 @@ mod tests {
         for i in 0..40 {
             let name = if i == 0 { "大家好，今天介紹 設定\n畫面。".to_string() } else { format!("第 {i} 句") };
             cues.push(cue(t, t + 4.5, &name));
-            t += 4.5 + if i == 6 { 1.5 } else if i == 12 || i == 25 { 4.0 } else { 0.5 };
+            t += 4.5
+                + if i == 6 {
+                    1.5
+                } else if i == 12 || i == 25 {
+                    4.0
+                } else {
+                    0.5
+                };
         }
         let m = from_subtitles(&cues, 180.0);
         assert_eq!(m.len(), 3, "{m:?}");

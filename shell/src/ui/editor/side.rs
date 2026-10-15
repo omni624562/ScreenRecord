@@ -210,7 +210,13 @@ fn time_panel(ed: &mut Editor, ui: &mut egui::Ui, toast: &mut Option<(String, bo
             idle::MIN_IDLE
         )
     };
-    if Btn::new(if busy { tr!("正在分析…", "Analyzing…") } else { tr!("找出沒動靜、沒說話的片段", "Find idle and quiet parts") }).small().enabled(!busy && ed.duration > 0.0).tooltip(tip).show(ui).clicked() {
+    if Btn::new(if busy { tr!("正在分析…", "Analyzing…") } else { tr!("找出沒動靜、沒說話的片段", "Find idle and quiet parts") })
+        .small()
+        .enabled(!busy && ed.duration > 0.0)
+        .tooltip(tip)
+        .show(ui)
+        .clicked()
+    {
         ed.pending = Some(super::shot::Act::FindIdle);
     }
     found_panel(ed, ui, toast);
@@ -251,13 +257,20 @@ fn found_panel(ed: &mut Editor, ui: &mut egui::Ui, toast: &mut Option<(String, b
             ui.horizontal(|ui| {
                 let (r, _) = ui.allocate_exact_size(vec2(10.0, 10.0), Sense::hover());
                 ui.painter().rect_filled(r, CornerRadius::same(2), super::timeline::QUIET_MARK);
-                ui.label(RichText::new(trf!("沒說話（畫面在動）：{} 段，共 {}", "Quiet (picture moving): {}, {} in total", found.quiet.len(), video_clock(total(&found.quiet)))).font(theme::font(12.5)));
+                ui.label(
+                    RichText::new(trf!("沒說話（畫面在動）：{} 段，共 {}", "Quiet (picture moving): {}, {} in total", found.quiet.len(), video_clock(total(&found.quiet)))).font(theme::font(12.5)),
+                );
             });
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 4.0;
                 ui.label(theme::muted(ui, tr!("加速", "Speed up")).font(theme::font(12.0)));
                 for s in [2u32, 4, 8] {
-                    if Btn::new(format!("{s}×")).small().tooltip(trf!("打字、捲動、等待的地方以 {s} 倍速帶過（沒有聲音）", "Play typing, scrolling and waiting at {s}× speed (no sound)")).show(ui).clicked() {
+                    if Btn::new(format!("{s}×"))
+                        .small()
+                        .tooltip(trf!("打字、捲動、等待的地方以 {s} 倍速帶過（沒有聲音）", "Play typing, scrolling and waiting at {s}× speed (no sound)"))
+                        .show(ui)
+                        .clicked()
+                    {
                         *toast = Some((ed.speed_found(&found.quiet, s), false));
                         if let Some(f) = &mut ed.idle_found {
                             f.quiet.clear();

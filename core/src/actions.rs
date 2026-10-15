@@ -157,10 +157,8 @@ pub async fn similar_shots(app: &App, dirs: Vec<String>, level: u8) -> Vec<Vec<c
         let prints = store.fingerprints(&paths);
         let (idx, items): (Vec<usize>, Vec<_>) = prints.iter().enumerate().filter_map(|(i, f)| f.map(|f| (i, f))).unzip();
         // all 由舊到新：組內反過來就是由新到舊；組之間依最新那張（在 all 裡的位置）由新到舊排
-        let mut groups: Vec<(usize, Vec<crate::types::MediaInfo>)> = crate::similar::group(&items, crate::similar::max_diff(level))
-            .into_iter()
-            .map(|g| (idx[*g.last().unwrap()], g.into_iter().rev().map(|k| all[idx[k]].clone()).collect()))
-            .collect();
+        let mut groups: Vec<(usize, Vec<crate::types::MediaInfo>)> =
+            crate::similar::group(&items, crate::similar::max_diff(level)).into_iter().map(|g| (idx[*g.last().unwrap()], g.into_iter().rev().map(|k| all[idx[k]].clone()).collect())).collect();
         groups.sort_by_key(|g| std::cmp::Reverse(g.0));
         let groups: Vec<Vec<crate::types::MediaInfo>> = groups.into_iter().map(|(_, g)| g).collect();
         crate::info!("[相似截圖] {} 張，{} 組", paths.len(), groups.len());

@@ -11,7 +11,7 @@ pub fn drag_files(paths: &[String]) -> Result<bool, String> {
     use windows::Win32::System::Com::IDataObject;
     use windows::Win32::System::Ole::{IDropSource, DROPEFFECT_COPY, DROPEFFECT_NONE};
     use windows::Win32::UI::Shell::Common::ITEMIDLIST;
-    use windows::Win32::UI::Shell::{ILCreateFromPathW, ILFree, IShellItemArray, SHCreateShellItemArrayFromIDLists, SHDoDragDrop, BHID_DataObject};
+    use windows::Win32::UI::Shell::{BHID_DataObject, ILCreateFromPathW, ILFree, IShellItemArray, SHCreateShellItemArrayFromIDLists, SHDoDragDrop};
 
     if paths.is_empty() {
         return Ok(false);
