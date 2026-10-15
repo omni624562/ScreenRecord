@@ -80,58 +80,49 @@ fn quick_start(app: &UiApp) -> [(String, String); 3] {
 fn items(_app: &UiApp) -> Vec<(String, String, Try)> {
     vec![
         (
-            tr!("搜尋截圖裡的字", "Search the text inside screenshots").into(),
+            tr!("用點的找截圖", "Find screenshots by clicking").into(),
             tr!(
-                "全部截圖會在背景用 Windows 內建的文字辨識讀出每張圖裡的字，搜尋時一起找：打「502」就找到那張錯誤畫面。找到的縮圖左下角有「字」。",
-                "All screenshots reads the text in each image in the background (with Windows' built-in text recognition), so searching also finds words inside images: type “502” to find that error page. Matches show a “T” badge."
+                "不用記得關鍵字：全部截圖左邊的「用點的找」列出截圖時在用的程式、內容（錯誤訊息、網頁、對話、表格…）、圖裡常出現的詞、時間與顏色，點幾下就縮小範圍，每個選項旁都有張數。",
+                "No need to remember keywords: “Browse” on the left of All screenshots lists the app you were using, the content (errors, web pages, chats, tables…), common words, dates and colours. Click a few to narrow down; each shows how many match."
             )
             .into(),
             Try::Library,
         ),
         (
-            tr!("找出相似的截圖、清理舊截圖", "Find similar screenshots, clean up old ones").into(),
+            tr!("記下截圖時在用的程式", "Remembers the app you captured").into(),
             tr!(
-                "全部截圖的「整理」選單：「找出相似的截圖」把一樣或很像的排成一組，每組留最新的一張；「清理舊截圖」一次把超過一週到一年的截圖移到資源回收筒。",
-                "The “Tidy up” menu in All screenshots: “Find similar screenshots” groups identical or near-identical images and keeps the newest in each group; “Clean up old screenshots” moves everything older than a week to a year to the Recycle Bin."
-            )
-            .into(),
-            Try::Library,
-        ),
-        (
-            tr!("加星號、依日期分組", "Stars and grouping by day").into(),
-            tr!(
-                "重要的截圖、錄影按右上角的星號，「選取全部」和清理都會略過它們，「有星號的」只看它們。全部截圖依日期分組，日期旁的勾選框一次選一整天。",
-                "Star important screenshots and recordings: “Select all” and clean-up skip them, and “Starred” shows only them. All screenshots is grouped by day; the box next to a date selects the whole day."
-            )
-            .into(),
-            Try::Library,
-        ),
-        (
-            tr!("直接拖到其他程式", "Drag files into other apps").into(),
-            tr!(
-                "把縮圖拖到 LINE、Teams、Word、瀏覽器或檔案總管就能直接傳過去（勾選多張時一起拖）；從空白處拖曳則是框選。",
-                "Drag a thumbnail into chat apps, Word, a browser or File Explorer to share it (ticked items go together); dragging from empty space draws a selection box."
-            )
-            .into(),
-            Try::Library,
-        ),
-        (
-            tr!("剪輯：找出沒動靜、沒說話的片段", "Editor: find idle and quiet parts").into(),
-            tr!(
-                "剪輯視窗「修剪」分頁的「找出沒動靜、沒說話的片段」會在時間軸上標出畫面不動又沒聲音、以及沒說話（打字、等待）的地方，再選全部刪除或加速 2～8 倍。",
-                "In the editor's Trim tab, “Find idle and quiet parts” marks still, silent parts and quiet parts (typing, waiting) on the timeline, then removes them or speeds them up 2–8×."
+                "之後的截圖會記下當時在用的程式與視窗標題（例如 Chrome 的網頁標題），用程式就能找到。",
+                "New screenshots remember the app and window title you were using (such as the web page title in Chrome), so you can find them by app."
             )
             .into(),
             Try::None,
         ),
         (
-            tr!("依字幕自動分章節", "Chapters from subtitles").into(),
+            tr!("搜尋時給建議", "Search suggestions").into(),
             tr!(
-                "有字幕的影片，在「字幕」分頁按「依字幕產生章節」，在講話停頓最久的地方切成幾章、用第一句當標題，輸出時寫進影片，也能貼到 YouTube。",
-                "For videos with subtitles, “Chapters from subtitles” in the Subtitles tab splits at the longest pauses, titles each chapter with its first line, and writes the chapters into the output video (also ready for YouTube)."
+                "打一兩個字就列出圖裡真的有的詞與張數（打「報」出現「報價單 18 張」）；辨識常認錯的 0 和 O、1 和 l 也找得到，「錯誤」也會找 error。",
+                "Type a letter or two to see words that really appear in your screenshots, with counts. Common recognition mix-ups (0/O, 1/l) are tolerated, and Chinese and English equivalents are searched together."
+            )
+            .into(),
+            Try::Library,
+        ),
+        (
+            tr!("相關的截圖", "Related screenshots").into(),
+            tr!(
+                "檢視截圖時，下方列出同一個程式、時間接近、內容相近的截圖。先找到附近的一張，就能順著找到要的那張。",
+                "When viewing a screenshot, related ones (same app, around the same time, similar content) appear below. Find one nearby and follow the trail to the one you want."
             )
             .into(),
             Try::None,
+        ),
+        (
+            tr!("月曆", "Calendar").into(),
+            tr!(
+                "全部截圖的「月曆」一個月一頁，看每天截了幾張、那天圖裡常出現什麼字；點一天就列出那天的截圖。",
+                "“Calendar” in All screenshots shows a month at a time: how many screenshots each day and what they were about. Click a day to list them."
+            )
+            .into(),
+            Try::Library,
         ),
     ]
 }

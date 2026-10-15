@@ -115,6 +115,8 @@ struct State {
     shot: Option<crate::types::ShotInfo>,
     /// 截圖中（避免連按快速鍵同時截好幾張）
     shooting: bool,
+    /// 這次截圖開始時在用的程式（存檔時記進截圖的來歷）
+    shot_meta: Option<crate::shot_meta::ShotMeta>,
     /// 上次框選的範圍（「重複上次框選」）
     last_snip: Option<crate::types::Rect>,
     /// 等介面顯示框選畫面的凍結畫面
@@ -145,6 +147,10 @@ pub struct App {
     pub pins: Arc<crate::pins::PinStore>,
     /// 截圖的文字索引（搜尋圖裡的字）
     pub ocr: Arc<crate::ocr_index::OcrIndex>,
+    /// 截圖的來歷（截圖當下的程式、視窗標題）
+    pub shot_meta: Arc<crate::shot_meta::ShotMetaStore>,
+    /// 截圖的字整理出來的常見詞（快取）
+    pub vocab: Arc<crate::facets::VocabCache>,
     /// 截圖的長相指紋（找相似的截圖）
     pub hashes: Arc<crate::similar::HashStore>,
     pub default_output_dir: String,
@@ -290,6 +296,8 @@ impl App {
             markers: Arc::new(crate::projects::ProjectStore::new(dir.join("markers"))),
             pins: Arc::new(crate::pins::PinStore::new(dir.join("pins.json"))),
             ocr: Arc::new(crate::ocr_index::OcrIndex::new(dir.join("ocr_index.json"))),
+            shot_meta: Arc::new(crate::shot_meta::ShotMetaStore::new(dir.join("shot_meta.json"))),
+            vocab: Arc::new(crate::facets::VocabCache::default()),
             hashes: Arc::new(crate::similar::HashStore::new(dir.join("shot_hashes.json"))),
             cache: Arc::default(),
             default_output_dir: default_output_dir().display().to_string(),
@@ -543,6 +551,7 @@ impl App {
             }
             st.shooting = true;
         }
+        self.note_app("");
         let r = self.take_screenshot(config).await;
         self.lock().shooting = false;
         let shot = r?;
@@ -653,6 +662,8 @@ impl App {
             crate::info!("[截圖] 擷取影片畫面失敗：{}", r.stderr.trim());
             return Err(crate::Error::other(tr!("無法擷取這一格，請換個時間點再試", "Couldn't capture this frame. Try a different moment")));
         }
+        let title = Path::new(video).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        self.lock().shot_meta = Some(crate::shot_meta::ShotMeta { app: String::new(), title, src: "frame".into() });
         let shot = self.finish_shot(&out, 0, 0).await;
         self.lock().shot = Some(shot.clone());
         crate::info!("[截圖] 從 {video} 的 {t:.2} 秒擷取 {}（{}×{}）", shot.path, shot.width, shot.height);
@@ -725,6 +736,7 @@ impl App {
         })
         .await
         .map_err(|e| crate::Error::other(e.to_string()))??;
+        self.lock().shot_meta = Some(crate::shot_meta::ShotMeta { src: "combine".into(), ..Default::default() });
         let shot = self.finish_shot(&out, w, h).await;
         self.lock().shot = Some(shot.clone());
         crate::info!("[截圖] {} 張{}拼成 {}（{w}×{h}）", paths.len(), if vertical { "上下" } else { "左右" }, shot.path);
@@ -739,8 +751,17 @@ impl App {
         self.shot_info(out, width, height, copied)
     }
 
-    /// 存好的截圖編上序號
+    /// 記下這次截圖當下在用的程式（存檔時寫進截圖的來歷）；src：怎麼截的（見 ShotMeta）
+    fn note_app(&self, src: &str) {
+        let app = crate::winui::foreground_app();
+        self.lock().shot_meta = Some(crate::shot_meta::ShotMeta { app: app.as_ref().map(|a| a.exe.clone()).unwrap_or_default(), title: app.map(|a| a.title).unwrap_or_default(), src: src.into() });
+    }
+
+    /// 存好的截圖編上序號，記下來歷
     fn shot_info(&self, out: &Path, width: u32, height: u32, copied: bool) -> crate::types::ShotInfo {
+        if let Some(m) = self.lock().shot_meta.take() {
+            self.shot_meta.record(&out.display().to_string(), m);
+        }
         let seq = self.lock().shot.as_ref().map(|s| s.seq + 1).unwrap_or(1);
         crate::types::ShotInfo { seq, path: out.display().to_string(), width, height, copied }
     }
@@ -758,6 +779,7 @@ impl App {
             }
             st.shooting = true;
         }
+        self.note_app("");
         let src = self.snip_ready(self.snip_capture(config).await)?;
         #[cfg(windows)]
         return self.snip_native(src).await;
@@ -973,6 +995,7 @@ impl App {
                 }
                 st.shooting = true;
             }
+            self.note_app("long");
             let src = self.snip_ready(self.snip_capture(config).await)?;
             let Some((area, _)) = self.snip_pick(&src, crate::snip_win::Mode::Scroll).await else {
                 crate::info!("[截圖] 取消長截圖");

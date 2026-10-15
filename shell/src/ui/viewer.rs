@@ -13,7 +13,7 @@ use screenrecorder_core::actions;
 use screenrecorder_core::format::{format_bytes, short_clock, speed_label};
 use screenrecorder_core::library::{is_audio_name, is_image_name};
 use screenrecorder_core::player::{MediaSpec, Player};
-use screenrecorder_core::types::{LibraryEntry, LibraryFilter, LibraryQuery, LibrarySort};
+use screenrecorder_core::types::{LibraryEntry, LibraryFilter, LibraryQuery, LibrarySort, MediaInfo};
 use screenrecorder_core::{tr, trf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -58,6 +58,8 @@ pub struct Viewer {
     full: bool,
     /// 改名的對話框關掉後重新載入（改名前先放開檔案，Windows 上播放中的檔案不能改名）
     reload_after_ask: bool,
+    /// 截圖：相關的截圖（同一個程式、時間接近、有共同的詞、長得像）
+    related: Vec<MediaInfo>,
 }
 
 impl Viewer {
@@ -130,6 +132,7 @@ pub fn open(app: &mut UiApp, entry: LibraryEntry) {
         start_at: None,
         full: false,
         reload_after_ask: false,
+        related: vec![],
     });
     load_current(app);
     let core = app.core.clone();
@@ -149,6 +152,25 @@ pub fn open(app: &mut UiApp, entry: LibraryEntry) {
     });
 }
 
+/// 在背景找和這張相關的截圖（截圖資料夾、留在原處的舊截圖、這張所在的資料夾）
+fn load_related(app: &mut UiApp, path: &str) {
+    if let Some(v) = app.viewer.as_mut() {
+        v.related.clear();
+    }
+    let mut dirs: Vec<String> = std::iter::once(app.s.shots_dir(&app.env)).chain(app.s.shot_extra(&app.env)).collect();
+    if let Some(parent) = std::path::Path::new(path).parent().map(|p| p.display().to_string()) {
+        if !dirs.iter().any(|d| d.trim_end_matches(['\\', '/']).eq_ignore_ascii_case(parent.trim_end_matches(['\\', '/']))) {
+            dirs.push(parent);
+        }
+    }
+    let (core, p, q) = (app.core.clone(), path.to_string(), path.to_string());
+    app.spawn(async move { actions::related_shots(&core, &q, dirs, 12).await }, move |app, list| {
+        if let Some(v) = app.viewer.as_mut().filter(|v| v.cur().media.path == p) {
+            v.related = list;
+        }
+    });
+}
+
 /// 載入目前這一個（圖片解碼、影片讀取資訊後開始播放）
 fn load_current(app: &mut UiApp) {
     let Some(v) = app.viewer.as_mut() else { return };
@@ -157,6 +179,7 @@ fn load_current(app: &mut UiApp) {
     let e = v.cur().clone();
     let seq = LOAD_SEQ.fetch_add(1, Ordering::Relaxed) + 1;
     if is_image_name(&e.media.name) {
+        load_related(app, &e.media.path);
         let max_side = app.ctx.input(|i| i.max_texture_side).max(2048);
         let path = e.media.path.clone();
         app.spawn(async move { tokio::task::spawn_blocking(move || decode_image(&path, max_side)).await.ok().flatten() }, move |app, img| {
@@ -354,6 +377,8 @@ enum Act {
     /// 影片：目前這一格存成截圖
     Grab,
     Rename,
+    /// 打開相關的截圖（第幾張）
+    Related(usize),
 }
 
 /// 標題列的一個按鈕；視窗窄時依序從後面的開始收進「⋯」
@@ -481,6 +506,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
     } else {
         (vec2((screen.width() - 32.0).max(600.0), (screen.height() - 32.0).max(400.0)), theme::modal_frame(ctx).inner_margin(0), egui::Modal::default_area(Id::new("viewer")))
     };
+    let rel_thumbs: Vec<Option<TextureHandle>> = v.related.iter().take(16).map(|m| app.thumb(&m.path, m.mtime)).collect();
     let modal = egui::Modal::new(Id::new("viewer")).area(area).frame(frame).show(ctx, |ui| {
         ui.set_width(size.x);
         ui.set_height(size.y);
@@ -491,10 +517,11 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         if !v.full {
             egui::Frame::new().inner_margin(egui::Margin::symmetric(18, 12)).show(ui, |ui| header(&mut v, ui, &e, &buttons, &mut act));
         }
-        // 畫面
+        // 畫面（截圖下方留一列相關的截圖）
         let bar_h = 52.0;
+        let strip_h = if image && !v.full && !v.related.is_empty() { 104.0 } else { 0.0 };
         let full = ui.available_rect_before_wrap();
-        let stage = Rect::from_min_max(full.min, pos2(full.max.x, full.max.y - bar_h));
+        let stage = Rect::from_min_max(full.min, pos2(full.max.x, full.max.y - bar_h - strip_h));
         let resp = ui.allocate_rect(stage, Sense::click_and_drag());
         let painter = ui.painter_at(stage);
         painter.rect_filled(stage, CornerRadius::ZERO, Color32::from_gray(24));
@@ -540,8 +567,14 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                 }
             }
         }
+        if strip_h > 0.0 {
+            let strip = Rect::from_min_max(pos2(full.min.x, stage.max.y), pos2(full.max.x, stage.max.y + strip_h));
+            if let Some(i) = related_strip(&v, ui, strip, &rel_thumbs) {
+                act = Act::Related(i);
+            }
+        }
         // 下方控制列
-        let bar = Rect::from_min_max(pos2(full.min.x, stage.max.y), full.max);
+        let bar = Rect::from_min_max(pos2(full.min.x, full.max.y - bar_h), full.max);
         ui.painter().hline(bar.x_range(), bar.min.y, Stroke::new(1.0, p.border));
         let bui = &mut ui.new_child(egui::UiBuilder::new().max_rect(bar.shrink2(vec2(16.0, 0.0))).layout(Layout::left_to_right(Align::Center)));
         if image {
@@ -561,6 +594,41 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
     }
     app.viewer = Some(v);
     run_act(app, act);
+}
+
+/// 相關的截圖：一列小縮圖（同一個程式、時間接近、有共同的詞、長得像）；回傳點了第幾張
+fn related_strip(v: &Viewer, ui: &mut egui::Ui, strip: Rect, thumbs: &[Option<TextureHandle>]) -> Option<usize> {
+    let p = theme::pal(ui);
+    ui.painter().hline(strip.x_range(), strip.min.y, Stroke::new(1.0, p.border));
+    ui.painter().text(
+        pos2(strip.min.x + 16.0, strip.min.y + 12.0),
+        Align2::LEFT_CENTER,
+        tr!("相關的截圖（同一個程式、時間接近、內容相近）", "Related screenshots (same app, around the same time, similar content)"),
+        theme::font(11.5),
+        p.muted,
+    );
+    let (tw, th, gap) = (112.0, 63.0, 8.0);
+    let mut x = strip.min.x + 16.0;
+    let y = strip.min.y + 24.0;
+    let mut pick = None;
+    for (i, m) in v.related.iter().enumerate() {
+        if x + tw > strip.max.x - 16.0 {
+            break;
+        }
+        let r = Rect::from_min_size(pos2(x, y), vec2(tw, th));
+        let resp = ui.interact(r, Id::new(("viewer-related", i)), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(&m.name);
+        ui.painter().rect_filled(r, CornerRadius::same(4), p.surface2);
+        if let Some(Some(t)) = thumbs.get(i) {
+            theme::paint_thumb(ui.painter(), r.shrink(2.0), t);
+        }
+        let border = if resp.hovered() { Stroke::new(2.0, p.accent) } else { Stroke::new(1.0, p.border) };
+        ui.painter().rect_stroke(r, CornerRadius::same(4), border, egui::StrokeKind::Inside);
+        if resp.clicked() {
+            pick = Some(i);
+        }
+        x += tw + gap;
+    }
+    pick
 }
 
 /// 進入 / 離開全螢幕（整個視窗全螢幕，檢視器蓋滿）
@@ -683,6 +751,19 @@ fn run_act(app: &mut UiApp, act: Act) {
     match act {
         Act::None => {}
         Act::Prev => go(app, -1),
+        Act::Related(i) => {
+            let Some(v) = app.viewer.as_mut() else { return };
+            let Some(m) = v.related.get(i).cloned() else { return };
+            match v.list.iter().position(|e| e.media.path == m.path) {
+                Some(j) => v.idx = j,
+                None => {
+                    let at = v.idx + 1;
+                    v.list.insert(at, LibraryEntry { media: m, exports: vec![], hits: vec![] });
+                    v.idx = at;
+                }
+            }
+            load_current(app);
+        }
         Act::Next => go(app, 1),
         Act::Copy => copy_image(app),
         Act::Delete => delete_current(app),

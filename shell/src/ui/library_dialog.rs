@@ -13,12 +13,14 @@ use screenrecorder_core::i18n::is_en;
 use screenrecorder_core::library::{grid_layout, GridPlace};
 use screenrecorder_core::pins::PinStore;
 use screenrecorder_core::types::{
-    DayGroup, ExportFormat, ExportInfo, ExportKind, ExportState, GridFit, LibraryEntry, LibraryFilter, LibraryPage, LibraryQuery, LibrarySort, MediaInfo, LIBRARY_HITS_SHOWN, LIBRARY_ROW_MAIN_PX,
-    LIBRARY_ROW_SUB_PX,
+    DayGroup, ExportFormat, ExportInfo, ExportKind, ExportState, FacetQuery, GridFit, LibraryEntry, LibraryFilter, LibraryPage, LibraryQuery, LibrarySort, MediaInfo, LIBRARY_HITS_SHOWN,
+    LIBRARY_ROW_MAIN_PX, LIBRARY_ROW_SUB_PX,
 };
 use screenrecorder_core::{tr, trf};
 use std::collections::HashSet;
 use std::time::Instant;
+
+mod browse;
 
 /// 看錄影還是截圖
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -81,6 +83,13 @@ pub struct LibraryDialog {
     similar: Option<SimilarDlg>,
     /// 這個畫面要開始拖到其他程式的檔案（畫完再交給系統的拖曳）
     drag_out: Option<Vec<String>>,
+    /// 全部截圖左邊的瀏覽欄開著、選的條件
+    browse: bool,
+    facet: FacetQuery,
+    /// 月曆（開著時取代縮圖格）
+    calendar: Option<browse::CalView>,
+    /// 搜尋框的建議
+    suggest: browse::Suggest,
     /// 已經開始建立截圖的文字索引（打開全部截圖時一次）
     ocr_started: bool,
     /// 上一個畫面文字索引還在做（做完時重新搜尋）
@@ -185,6 +194,10 @@ impl LibraryDialog {
             cleanup: None,
             similar: None,
             drag_out: None,
+            browse: true,
+            facet: FacetQuery::default(),
+            calendar: None,
+            suggest: browse::Suggest::default(),
             ocr_started: false,
             ocr_running: false,
         }
@@ -348,6 +361,7 @@ fn load(app: &mut UiApp) {
             only,
             grid: d.grid_fit,
             anchor: d.page_anchor.take(),
+            facet: (d.browse || !d.facet.is_empty()).then(|| d.facet.clone()),
         },
     };
     let dir = d.dir.clone().unwrap_or(home);
@@ -516,6 +530,10 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         d.data = None;
         d.dirty = true;
     }
+    // 搜尋建議開著時，Esc 只關掉建議（要在對話框檢查 Esc 之前先拿走）
+    if browse::showing(&d) && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+        d.suggest.open = false;
+    }
     let mut grid_size = app.s.shot_grid_size;
     let modal = egui::Modal::new(Id::new("library")).frame(theme::modal_frame(ctx)).show(ctx, |ui| {
         let p = theme::pal(ui);
@@ -617,6 +635,12 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
             }
             if r.changed() {
                 d.search_at = Some(Instant::now());
+                if shot {
+                    browse::query_changed(&mut d);
+                }
+            }
+            if shot {
+                browse::popup(ui, &mut d, &r);
             }
             if !d.query.is_empty() {
                 let x = Rect::from_center_size(pos2(r.rect.max.x - 15.0, r.rect.center().y), vec2(22.0, 22.0));
@@ -679,6 +703,44 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                     "Thumbnail size: smaller fits more per page. You can also hold Ctrl and turn the mouse wheel over the thumbnails"
                 ));
             }
+            // 截圖：用點的找（瀏覽欄）、月曆
+            if shot {
+                ui.add_space(4.0);
+                if Btn::new(tr!("用點的找", "Browse"))
+                    .icon(Icon::List)
+                    .small()
+                    .ghost()
+                    .selected(d.browse && d.calendar.is_none())
+                    .tooltip(tr!(
+                        "左邊列出程式、內容、常出現的詞、時間、顏色，點幾下就能縮小範圍，不用記得關鍵字（再按一次收起來）",
+                        "Lists apps, content types, common words, dates and colours on the left. Click a few to narrow down without remembering keywords (click again to hide)"
+                    ))
+                    .show(ui)
+                    .clicked()
+                {
+                    if d.calendar.is_some() {
+                        d.calendar = None;
+                        d.browse = true;
+                    } else {
+                        d.browse = !d.browse;
+                    }
+                    d.dirty = true;
+                }
+                if Btn::new(tr!("月曆", "Calendar"))
+                    .icon(Icon::Clock)
+                    .small()
+                    .ghost()
+                    .selected(d.calendar.is_some())
+                    .tooltip(tr!(
+                        "一個月一頁，看每天截了幾張、那天圖裡常出現什麼字；點一天就列出那天的截圖",
+                        "One month per page: how many screenshots each day and what they were about. Click a day to list them"
+                    ))
+                    .show(ui)
+                    .clicked()
+                {
+                    d.calendar = if d.calendar.is_some() { None } else { Some(browse::CalView::this_month()) };
+                }
+            }
             // 只看有星號的
             ui.add_space(4.0);
             if Btn::new(tr!("有星號的", "Starred"))
@@ -709,6 +771,9 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
             }
             selection_links(ui, &mut d, shot, &app.core.pins);
         });
+        if shot {
+            browse::tick(app, &mut d);
+        }
         if d.search_at.is_some_and(|t| t.elapsed().as_millis() > 250) {
             d.search_at = None;
             d.page = 1;
@@ -717,8 +782,17 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         ui.add_space(8.0);
         let foot_h = 40.0;
         let table = Rect::from_min_max(ui.cursor().min, pos2(ui.max_rect().max.x, ui.max_rect().max.y - foot_h - 8.0));
-        if shot {
-            shot_grid(app, ui, &mut d, table, &dir, &mut req, &mut grid_size);
+        if shot && d.calendar.is_some() {
+            browse::calendar(app, ui, &mut d, table);
+        } else if shot {
+            let grid = if d.browse {
+                let side = Rect::from_min_max(table.min, pos2(table.min.x + browse::PANEL_W, table.max.y));
+                browse::panel(ui, &mut d, side);
+                Rect::from_min_max(pos2(side.max.x + 12.0, table.min.y), table.max)
+            } else {
+                table
+            };
+            shot_grid(app, ui, &mut d, grid, &dir, &mut req, &mut grid_size);
         } else {
             video_table(app, ui, &mut d, table, &dir, &mut req);
         }

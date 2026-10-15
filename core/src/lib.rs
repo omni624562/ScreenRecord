@@ -29,6 +29,7 @@ pub mod edit;
 pub mod effects;
 pub mod error;
 pub mod exporter;
+pub mod facets;
 pub mod ffmpeg;
 pub mod filepick;
 pub mod fonts;
@@ -78,6 +79,7 @@ pub mod scroll_win;
 pub mod selfupdate;
 pub mod settings;
 pub mod shot_edit;
+pub mod shot_meta;
 pub mod shot_toast;
 #[cfg(windows)]
 pub mod shot_toast_win;

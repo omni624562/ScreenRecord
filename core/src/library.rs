@@ -384,8 +384,9 @@ pub async fn list_library(cache: &Arc<MediaCache>, ffmpeg: Option<&Path>, dir: &
     list_library_with(cache, ffmpeg, dir, q, None).await
 }
 
-/// 同上；ocr：截圖的文字索引，搜尋時也找圖裡的字
-pub async fn list_library_with(cache: &Arc<MediaCache>, ffmpeg: Option<&Path>, dir: &Path, q: &LibraryQuery, ocr: Option<&crate::ocr_index::OcrIndex>) -> LibraryPage {
+/// 同上；shots：截圖的文字索引與分類資料（搜尋時也找圖裡的字、中英對照；瀏覽欄的條件與張數）
+pub async fn list_library_with(cache: &Arc<MediaCache>, ffmpeg: Option<&Path>, dir: &Path, q: &LibraryQuery, shots: Option<&crate::facets::Sources<'_>>) -> LibraryPage {
+    let ocr = shots.map(|s| s.ocr);
     let mut list = match scan_checked(cache, dir).await {
         Ok(list) => list,
         Err(e) => {
@@ -417,9 +418,11 @@ pub async fn list_library_with(cache: &Arc<MediaCache>, ffmpeg: Option<&Path>, d
         let day = date_query(&text, chrono::Local::now().date_naive());
         // 截圖裡的字（文字索引）：符合時加一筆說明，清單上標出「圖裡有這段字」
         let norm = crate::ocr_index::normalize(&text);
+        // 也找中英對照的詞（打「錯誤」也找得到 error）
+        let alts: Vec<String> = std::iter::once(norm.clone()).chain(crate::facets::synonyms(&norm)).collect();
         if let Some(o) = ocr {
             for e in list.iter_mut().filter(|e| is_image_name(&e.media.name)) {
-                if o.matches(&e.media.path, &norm) {
+                if alts.iter().any(|a| o.matches(&e.media.path, a)) {
                     e.hits = vec![crate::types::SpeechHit { start: -1.0, text: text.clone() }];
                 }
             }
@@ -443,6 +446,20 @@ pub async fn list_library_with(cache: &Arc<MediaCache>, ffmpeg: Option<&Path>, d
         LibraryFilter::Cut => list.retain(|e| is_cut_name(&e.media.name)),
         LibraryFilter::Speed => list.retain(|e| !e.exports.is_empty()),
     }
+
+    // 瀏覽欄的條件（只有截圖）：篩選並算出每個選項的張數
+    let facets = match (shots, &q.facet) {
+        (Some(src), Some(fq)) if q.filter == LibraryFilter::Shot => {
+            let prep = crate::facets::prepare(src);
+            let items: Vec<crate::facets::Facets> =
+                list.iter().map(|e| crate::facets::describe(&prep, &e.media.path, &e.media.name, sort_time(e), e.media.width.unwrap_or(0), e.media.height.unwrap_or(0))).collect();
+            let (keep, counts) = crate::facets::filter_and_count(&items, fq, &prep);
+            let mut it = keep.into_iter();
+            list.retain(|_| it.next().unwrap_or(true));
+            Some(counts)
+        }
+        _ => None,
+    };
 
     if let Some(only) = &q.only {
         let set: std::collections::HashSet<String> = only.iter().map(|p| p.to_lowercase()).collect();
@@ -523,10 +540,27 @@ pub async fn list_library_with(cache: &Arc<MediaCache>, ffmpeg: Option<&Path>, d
         vec![]
     };
     let items = if need_all { slice } else { pool_with_info(cache, ffmpeg, slice, 6).await };
-    LibraryPage { dir: dir.display().to_string(), total, page, pages, page_size, items, all_paths, start, groups, error: None }
+    LibraryPage { dir: dir.display().to_string(), total, page, pages, page_size, items, all_paths, start, groups, facets, error: None }
 }
 
 /// 清理舊截圖：這些資料夾裡在 cutoff_ms（毫秒）之前的截圖，由舊到新；同一個檔案只列一次
+/// 這些資料夾裡全部的截圖與時間（檔名或修改時間；同一個檔案只算一次），由舊到新
+pub async fn shots_with_time(cache: &MediaCache, dirs: &[String]) -> Vec<(MediaInfo, f64)> {
+    let mut seen = std::collections::HashSet::new();
+    let mut out: Vec<(MediaInfo, f64)> = vec![];
+    for d in dirs {
+        let Ok(list) = scan_checked(cache, Path::new(d)).await else { continue };
+        for e in list {
+            if is_image_name(&e.media.name) && seen.insert(e.media.path.to_lowercase()) {
+                let t = sort_time(&e);
+                out.push((e.media, t));
+            }
+        }
+    }
+    out.sort_by(|a, b| a.1.total_cmp(&b.1));
+    out
+}
+
 pub async fn shots_before(cache: &MediaCache, dirs: &[String], cutoff_ms: f64) -> Vec<MediaInfo> {
     let mut seen = std::collections::HashSet::new();
     let mut out: Vec<(f64, MediaInfo)> = vec![];

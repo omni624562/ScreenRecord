@@ -111,7 +111,8 @@ pub async fn check_update(app: &App) -> Result<Option<UpdateInfo>> {
 pub async fn library(app: &App, dir: &str, query: &LibraryQuery) -> LibraryPage {
     let dir = Some(dir.trim()).filter(|d| !d.is_empty()).map(str::to_string).unwrap_or_else(|| app.default_output_dir.clone());
     let ffmpeg = app.ffmpeg_path();
-    crate::library::list_library_with(&app.cache, ffmpeg.as_deref(), Path::new(&dir), query, Some(&app.ocr)).await
+    let src = shot_sources(app);
+    crate::library::list_library_with(&app.cache, ffmpeg.as_deref(), Path::new(&dir), query, Some(&src)).await
 }
 
 /// 在背景建立截圖的文字索引（這些資料夾裡的截圖，新的先做）；已經在做時馬上回傳
@@ -126,20 +127,70 @@ pub async fn ocr_index(app: &App, dirs: Vec<String>) {
     paths.sort_by(|a, b| b.0.total_cmp(&a.0));
     let paths: Vec<String> = paths.into_iter().map(|(_, p)| p).collect();
     app.ocr.prune();
+    // 同時在背景算每張的長相指紋與主要顏色（瀏覽欄的「顏色」、相關截圖、找相似的截圖都用得到）
+    let hashes = app.hashes.clone();
+    let all = paths.clone();
+    let colors = tokio::task::spawn_blocking(move || {
+        hashes.fingerprints(&all);
+    });
     app.ocr
         .build(paths, |p| async move {
             // 開發測試（非 Windows）：SCREENRECORDER_FAKE_OCR=name 時把檔名當成圖裡的字
-            if cfg!(debug_assertions) && std::env::var("SCREENRECORDER_FAKE_OCR").as_deref() == Ok("name") {
-                return Ok(file_stem(&p));
+            // SCREENRECORDER_FAKE_OCR=sidecar 時讀同名的 .txt（沒有時用檔名）
+            match std::env::var("SCREENRECORDER_FAKE_OCR").as_deref() {
+                Ok("name") if cfg!(debug_assertions) => return Ok(file_stem(&p)),
+                Ok("sidecar") if cfg!(debug_assertions) => return Ok(std::fs::read_to_string(format!("{p}.txt")).unwrap_or_else(|_| file_stem(&p))),
+                _ => {}
             }
             let (rgba, w, h) = load_image(&p).await.map_err(|e| e.message().to_string())?;
             tokio::task::spawn_blocking(move || crate::ocr::recognize(&rgba, w, h).map(|(t, _)| t)).await.map_err(|e| e.to_string())?
         })
         .await;
+    let _ = colors.await;
 }
 
 fn file_stem(p: &str) -> String {
     Path::new(p).file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default()
+}
+
+fn shot_sources(app: &App) -> crate::facets::Sources<'_> {
+    crate::facets::Sources { ocr: &app.ocr, meta: &app.shot_meta, hashes: &app.hashes, pins: &app.pins, vocab: &app.vocab }
+}
+
+/// 搜尋框打字時的建議：圖裡真的有、包含這幾個字的詞與張數（最多 limit 個）
+pub fn shot_suggest(app: &App, query: &str, limit: usize) -> Vec<(String, usize)> {
+    crate::facets::suggest(&app.vocab.get(&app.ocr), query, limit)
+}
+
+/// 和這張相關的截圖（同一個程式、時間接近、有共同的詞、長得像），最相關的在前面，最多 limit 張
+pub async fn related_shots(app: &App, path: &str, dirs: Vec<String>, limit: usize) -> Vec<crate::types::MediaInfo> {
+    let all = crate::library::shots_with_time(&app.cache, &dirs).await;
+    let src = shot_sources(app);
+    let prep = crate::facets::prepare(&src);
+    let me = all.iter().find(|(m, _)| m.path.eq_ignore_ascii_case(path));
+    let Some((mm, mt)) = me else { return vec![] };
+    let mine = crate::facets::describe(&prep, &mm.path, &mm.name, *mt, mm.width.unwrap_or(0), mm.height.unwrap_or(0));
+    let mp = prep.print(&mm.path);
+    let mut scored: Vec<(f64, crate::types::MediaInfo)> = all
+        .iter()
+        .filter(|(m, _)| !m.path.eq_ignore_ascii_case(path))
+        .map(|(m, t)| {
+            let f = crate::facets::describe(&prep, &m.path, &m.name, *t, m.width.unwrap_or(0), m.height.unwrap_or(0));
+            (crate::facets::related_score(&prep, (&mine, *mt, mp), (&f, *t, prep.print(&m.path))), m.clone())
+        })
+        .filter(|(s, _)| *s >= 3.0)
+        .collect();
+    scored.sort_by(|a, b| b.0.total_cmp(&a.0));
+    scored.into_iter().take(limit).map(|(_, m)| m).collect()
+}
+
+/// 月曆：某個月每一天的截圖張數與那天的常見詞
+pub async fn shot_calendar(app: &App, dirs: Vec<String>, year: i32, month: u32) -> Vec<crate::facets::CalDay> {
+    let all = crate::library::shots_with_time(&app.cache, &dirs).await;
+    let src = shot_sources(app);
+    let prep = crate::facets::prepare(&src);
+    let items: Vec<crate::facets::Facets> = all.iter().map(|(m, t)| crate::facets::describe(&prep, &m.path, &m.name, *t, m.width.unwrap_or(0), m.height.unwrap_or(0))).collect();
+    crate::facets::calendar(&prep, &items, year, month)
 }
 
 /// 清理舊截圖：這些資料夾裡超過 days 天的截圖（由舊到新）
@@ -178,12 +229,13 @@ pub async fn count_shots(dir: &str) -> usize {
 pub async fn move_shots(app: &App, from: &str, to: &str) -> crate::library::MoveReport {
     let (f, t) = (PathBuf::from(from), PathBuf::from(to));
     let r = tokio::task::spawn_blocking(move || crate::library::move_images(&f, &t)).await.unwrap_or_default();
-    let (store, pins) = (app.projects.clone(), app.pins.clone());
+    let (store, pins, meta) = (app.projects.clone(), app.pins.clone(), app.shot_meta.clone());
     let moved = r.moved.clone();
     let _ = tokio::task::spawn_blocking(move || {
         for (a, b) in &moved {
             store.renamed(a, b);
             pins.renamed(a, b);
+            meta.renamed(a, b);
         }
     })
     .await;
@@ -216,6 +268,7 @@ pub async fn rename(app: &App, path: &str, name: &str) -> Result<String> {
     app.projects.renamed(path, &new_path);
     app.markers.renamed(path, &new_path);
     app.pins.renamed(path, &new_path);
+    app.shot_meta.renamed(path, &new_path);
     Ok(new_path)
 }
 
@@ -238,6 +291,7 @@ pub fn delete(app: &App, paths: &[String]) -> Result<usize> {
         app.projects.removed(f);
         app.markers.removed(f);
         app.pins.removed(f);
+        app.shot_meta.removed(f);
     }
     Ok(paths.len())
 }
@@ -607,6 +661,9 @@ async fn save_rendered(app: &App, source: &str, spec: &crate::shot_edit::ShotSpe
         if let Err(e) = app.projects.save(&out.display().to_string(), source, data) {
             crate::info!("[截圖] 無法儲存編輯設定：{e}");
         }
+    }
+    if out.display().to_string() != source {
+        app.shot_meta.copy_edited(source, &out.display().to_string());
     }
     crate::info!("[截圖] 編輯後存成 {}（{w}×{h}{}）", out.display(), if copied { "，已複製到剪貼簿" } else { "" });
     Ok(crate::types::ShotInfo { seq: 0, path: out.display().to_string(), width: w, height: h, copied })
