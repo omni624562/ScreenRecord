@@ -1239,7 +1239,7 @@ pub fn cut_args(
     // 片頭片尾、背景音樂：輸入放在其他輸入後面，濾鏡接在 [vout] / [aout] 後面，改輸出 [vfin] / [afin]
     let mut out_audio = with_audio;
     if let Some(x) = extras {
-        let (inputs, g, has_audio) = extras_graph(x, next_input, fps, &enc.pix_fmt, with_audio);
+        let (inputs, g, has_audio) = extras_graph(x, next_input, fps, enc.pix_fmt, with_audio);
         out_audio = has_audio;
         let at = a.iter().position(|s| s == "-filter_complex").unwrap_or(a.len());
         a.splice(at..at, inputs);
