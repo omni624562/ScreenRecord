@@ -35,6 +35,15 @@ pub fn normalize(s: &str) -> String {
     s.chars().filter(|c| !c.is_whitespace()).flat_map(char::to_lowercase).collect()
 }
 
+/// 存的鍵：Windows 不分大小寫，用小寫；其他平台照原樣（prune 檢查檔案還在不在時才找得到）
+fn key(p: &str) -> String {
+    if cfg!(windows) {
+        p.to_lowercase()
+    } else {
+        p.to_string()
+    }
+}
+
 fn stamp(path: &str) -> Option<(u64, f64)> {
     let m = std::fs::metadata(path).ok()?;
     Some((m.len(), mtime_ms(&m)))
@@ -60,12 +69,12 @@ impl OcrIndex {
     /// 這張截圖辨識過、而且之後沒改過
     fn fresh(&self, path: &str) -> bool {
         let Some((bytes, mtime)) = stamp(path) else { return false };
-        self.map.lock().unwrap().get(&path.to_lowercase()).is_some_and(|e| e.bytes == bytes && e.mtime == mtime)
+        self.map.lock().unwrap().get(&key(path)).is_some_and(|e| e.bytes == bytes && e.mtime == mtime)
     }
 
     /// 圖裡的字有沒有 query（已正規化）；還沒辨識的算沒有
     pub fn matches(&self, path: &str, query: &str) -> bool {
-        !query.is_empty() && self.map.lock().unwrap().get(&path.to_lowercase()).is_some_and(|e| e.text.contains(query))
+        !query.is_empty() && self.map.lock().unwrap().get(&key(path)).is_some_and(|e| e.text.contains(query))
     }
 
     /// 進度：(做完, 總共)；沒有在做時 None
@@ -80,7 +89,7 @@ impl OcrIndex {
     /// 存一張的結果
     fn put(&self, path: &str, text: &str) {
         if let Some((bytes, mtime)) = stamp(path) {
-            self.map.lock().unwrap().insert(path.to_lowercase(), Entry { bytes, mtime, text: normalize(text) });
+            self.map.lock().unwrap().insert(key(path), Entry { bytes, mtime, text: normalize(text) });
         }
     }
 
@@ -126,7 +135,6 @@ impl OcrIndex {
     pub fn prune(&self) {
         let mut m = self.map.lock().unwrap();
         let before = m.len();
-        // 路徑存成小寫：Windows 不分大小寫，直接查得到
         m.retain(|p, _| Path::new(p).exists());
         let changed = m.len() != before;
         drop(m);

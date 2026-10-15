@@ -77,6 +77,8 @@ pub struct LibraryDialog {
     only_pinned: bool,
     /// 清理舊截圖的對話框
     cleanup: Option<CleanupDlg>,
+    /// 找相似截圖的對話框
+    similar: Option<SimilarDlg>,
     /// 已經開始建立截圖的文字索引（打開全部截圖時一次）
     ocr_started: bool,
     /// 上一個畫面文字索引還在做（做完時重新搜尋）
@@ -88,6 +90,18 @@ struct CleanupDlg {
     days: u32,
     /// 查到的截圖（None = 查詢中）
     list: Option<Vec<MediaInfo>>,
+    seq: u64,
+    busy: bool,
+}
+
+/// 找出相似的截圖：一組一列，每組預設留最新的一張（有星號的也留），其他的移到資源回收筒
+struct SimilarDlg {
+    /// 0 完全一樣、1 幾乎一樣、2 相似
+    level: u8,
+    /// 找到的組（None = 比對中）
+    groups: Option<Vec<Vec<MediaInfo>>>,
+    /// 要移到資源回收筒的
+    remove: HashSet<String>,
     seq: u64,
     busy: bool,
 }
@@ -123,7 +137,7 @@ struct CombineDlg {
 impl LibraryDialog {
     /// 上面蓋著合併、拼成一張、清理舊截圖的對話框
     fn overlay(&self) -> bool {
-        self.merge.is_some() || self.combine.is_some() || self.cleanup.is_some()
+        self.merge.is_some() || self.combine.is_some() || self.cleanup.is_some() || self.similar.is_some()
     }
 
     /// 檔案搬動或資料夾改了：重新讀取
@@ -167,6 +181,7 @@ impl LibraryDialog {
             band_base: None,
             only_pinned: false,
             cleanup: None,
+            similar: None,
             ocr_started: false,
             ocr_running: false,
         }
@@ -684,6 +699,9 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                     if ui.button(tr!("清理舊截圖…", "Clean up old screenshots…")).clicked() {
                         d.cleanup = Some(CleanupDlg { days: 90, list: None, seq: 0, busy: false });
                     }
+                    if ui.button(tr!("找出相似的截圖…", "Find similar screenshots…")).clicked() {
+                        d.similar = Some(SimilarDlg { level: 1, groups: None, remove: HashSet::new(), seq: 0, busy: false });
+                    }
                 });
             }
             selection_links(ui, &mut d, shot, &app.core.pins);
@@ -797,6 +815,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
     merge_dialog(app, ctx, &mut d);
     combine_dialog(app, ctx, &mut d);
     cleanup_dialog(app, ctx, &mut d);
+    similar_dialog(app, ctx, &mut d);
     if modal.should_close() && app.ask.is_none() && !covered {
         close = true;
     }
@@ -2049,10 +2068,7 @@ fn cleanup_dialog(app: &mut UiApp, ctx: &egui::Context, d: &mut LibraryDialog) {
     if c.seq != want {
         c.seq = want;
         c.list = None;
-        let dirs: Vec<String> = match &d.dir {
-            Some(dir) => vec![dir.clone()],
-            None => std::iter::once(app.s.shots_dir(&app.env)).chain(app.s.shot_extra(&app.env)).collect(),
-        };
+        let dirs = shot_dirs(app, &d.dir);
         let (core, days) = (app.core.clone(), c.days);
         app.spawn(async move { actions::old_shots(&core, dirs, days).await }, move |app, list| {
             let pins = app.core.pins.clone();
@@ -2123,6 +2139,152 @@ fn cleanup_dialog(app: &mut UiApp, ctx: &egui::Context, d: &mut LibraryDialog) {
         }
         if let Some(d) = &mut app.library {
             d.cleanup = None;
+            d.reload();
+        }
+        app.load_recent();
+    });
+}
+
+/// 這次要看的截圖資料夾：選了某個資料夾就只看那個，否則截圖資料夾和其他會放截圖的資料夾
+fn shot_dirs(app: &UiApp, dir: &Option<String>) -> Vec<String> {
+    match dir {
+        Some(dir) => vec![dir.clone()],
+        None => std::iter::once(app.s.shots_dir(&app.env)).chain(app.s.shot_extra(&app.env)).collect(),
+    }
+}
+
+/// 找出相似的截圖：選靈敏度，一組一列；點縮圖切換「保留／刪除」，確認後移到資源回收筒
+fn similar_dialog(app: &mut UiApp, ctx: &egui::Context, d: &mut LibraryDialog) {
+    let Some(c) = &mut d.similar else { return };
+    let want = c.level as u64 + 1;
+    if c.seq != want {
+        c.seq = want;
+        c.groups = None;
+        let (core, level, dirs) = (app.core.clone(), c.level, shot_dirs(app, &d.dir));
+        app.spawn(async move { actions::similar_shots(&core, dirs, level).await }, move |app, groups| {
+            let pins = app.core.pins.clone();
+            if let Some(c) = app.library.as_mut().and_then(|d| d.similar.as_mut()).filter(|c| c.seq == want) {
+                // 每組留最新的一張和有星號的
+                c.remove = groups.iter().flat_map(|g| g.iter().skip(1)).filter(|m| !pins.contains(&m.path)).map(|m| m.path.clone()).collect();
+                c.groups = Some(groups);
+            }
+        });
+    }
+    let pins = app.core.pins.clone();
+    let thumbs: Vec<Vec<Option<egui::TextureHandle>>> = match d.similar.as_ref().and_then(|c| c.groups.as_ref()) {
+        Some(g) => g.iter().map(|g| g.iter().map(|m| app.thumb(&m.path, m.mtime)).collect()).collect(),
+        None => vec![],
+    };
+    let Some(c) = &mut d.similar else { return };
+    let mut close = false;
+    let mut go = false;
+    let modal = egui::Modal::new(Id::new("similar")).frame(theme::modal_frame(ctx)).show(ctx, |ui| {
+        let p = theme::pal(ui);
+        ui.set_width(640.0);
+        ui.label(RichText::new(tr!("找出相似的截圖", "Find similar screenshots")).font(theme::font_bold(16.0)));
+        ui.add_space(6.0);
+        ui.label(tr!(
+            "長得一樣或很像的截圖排在同一組。每組預設留最新的一張（有星號的也會留），點縮圖可以切換保留或刪除。",
+            "Screenshots that look the same are grouped. The newest in each group is kept by default (starred ones too); click a thumbnail to switch between keep and delete."
+        ));
+        ui.add_space(6.0);
+        let mut level = c.level;
+        theme::segmented(ui, &mut level, &[(0u8, tr!("完全一樣", "Identical")), (1, tr!("幾乎一樣", "Nearly identical")), (2, tr!("相似", "Similar"))], !c.busy);
+        c.level = level;
+        ui.add_space(8.0);
+        match &c.groups {
+            None => {
+                let (done, total) = (app.core.hashes.done.load(std::sync::atomic::Ordering::Relaxed), app.core.hashes.total.load(std::sync::atomic::Ordering::Relaxed));
+                let text = if total > 0 && done < total {
+                    trf!("正在比對… {done} / {total}（第一次比較久，之後會快很多）", "Comparing… {done} / {total} (the first time takes longer)")
+                } else {
+                    tr!("正在比對…", "Comparing…").to_string()
+                };
+                ui.label(theme::muted(ui, text));
+                ui.ctx().request_repaint_after(std::time::Duration::from_millis(300));
+            }
+            Some(g) if g.is_empty() => {
+                ui.label(theme::muted(ui, tr!("沒有找到相似的截圖。", "No similar screenshots found.")));
+            }
+            Some(groups) => {
+                let (tw, th) = (128.0, 80.0);
+                egui::ScrollArea::vertical().max_height(380.0).auto_shrink([false, true]).show(ui, |ui| {
+                    for (gi, g) in groups.iter().enumerate() {
+                        ui.label(theme::muted(ui, trf!("第 {} 組 · {} 張", "Group {} · {}", gi + 1, g.len())));
+                        egui::ScrollArea::horizontal().id_salt(("simrow", gi)).show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                for (mi, m) in g.iter().enumerate() {
+                                    let pinned = pins.contains(&m.path);
+                                    let del = c.remove.contains(&m.path);
+                                    let (r, resp) = ui.allocate_exact_size(vec2(tw, th + 20.0), if pinned || c.busy { Sense::hover() } else { Sense::click() });
+                                    let img = Rect::from_min_size(r.min, vec2(tw, th));
+                                    ui.painter().rect_filled(img, CornerRadius::same(4), p.border);
+                                    if let Some(Some(t)) = thumbs.get(gi).and_then(|t| t.get(mi)) {
+                                        theme::paint_thumb(ui.painter(), img.shrink(1.0), t);
+                                    }
+                                    if del {
+                                        ui.painter().rect_filled(img, CornerRadius::same(4), Color32::from_black_alpha(140));
+                                    }
+                                    let col = if del { p.rec } else { p.ok };
+                                    ui.painter().rect_stroke(img, CornerRadius::same(4), Stroke::new(if resp.hovered() { 3.0 } else { 2.0 }, col), egui::StrokeKind::Inside);
+                                    let tag = if pinned {
+                                        tr!("★ 保留", "★ Keep")
+                                    } else if del {
+                                        tr!("刪除", "Delete")
+                                    } else {
+                                        tr!("保留", "Keep")
+                                    };
+                                    let tr_ = Rect::from_min_size(img.min + vec2(4.0, 4.0), vec2(if pinned { 52.0 } else { 40.0 }, 18.0));
+                                    ui.painter().rect_filled(tr_, CornerRadius::same(3), col);
+                                    ui.painter().text(tr_.center(), egui::Align2::CENTER_CENTER, tag, theme::font_bold(11.0), Color32::WHITE);
+                                    let when = entry_time(&m.name, m.time_ms()).map(|t| t.format("%m/%d %H:%M").to_string()).unwrap_or_default();
+                                    ui.painter().text(pos2(img.min.x + 2.0, img.max.y + 10.0), egui::Align2::LEFT_CENTER, format!("{when} · {}", format_bytes(m.bytes)), theme::font(11.0), p.muted);
+                                    let resp = resp.on_hover_text(&m.name);
+                                    if resp.clicked() && !c.remove.remove(&m.path) {
+                                        c.remove.insert(m.path.clone());
+                                    }
+                                }
+                            });
+                        });
+                        ui.add_space(6.0);
+                    }
+                });
+            }
+        }
+        ui.add_space(10.0);
+        let all: Vec<&MediaInfo> = c.groups.iter().flatten().flatten().filter(|m| c.remove.contains(&m.path)).collect();
+        let (n, bytes) = (all.len(), all.iter().map(|m| m.bytes).sum::<u64>());
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            let label = if c.busy {
+                tr!("正在移到資源回收筒…", "Moving to the Recycle Bin…").to_string()
+            } else {
+                trf!("移到資源回收筒（{n} 張，{}）", "Move {n} to the Recycle Bin ({})", format_bytes(bytes))
+            };
+            if Btn::new(label).danger().enabled(!c.busy && n > 0).show(ui).clicked() {
+                go = true;
+            }
+            if Btn::new(tr!("取消", "Cancel")).ghost().enabled(!c.busy).show(ui).clicked() {
+                close = true;
+            }
+        });
+    });
+    if (modal.should_close() || close) && !c.busy {
+        d.similar = None;
+        return;
+    }
+    if !go {
+        return;
+    }
+    c.busy = true;
+    let paths: Vec<String> = c.remove.iter().cloned().collect();
+    let core = app.core.clone();
+    app.spawn(async move { tokio::task::spawn_blocking(move || actions::delete(&core, &paths)).await.unwrap_or_else(|e| Err(screenrecorder_core::error::Error::other(e.to_string()))) }, |app, r| {
+        match r {
+            Ok(n) => app.toast(trf!("已將 {n} 張相似的截圖移到資源回收筒", "Moved {n} similar screenshots to the Recycle Bin"), false),
+            Err(e) => app.toast(e.message().to_string(), true),
+        }
+        if let Some(d) = &mut app.library {
+            d.similar = None;
             d.reload();
         }
         app.load_recent();

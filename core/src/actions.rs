@@ -148,6 +148,28 @@ pub async fn old_shots(app: &App, dirs: Vec<String>, days: u32) -> Vec<crate::ty
     crate::library::shots_before(&app.cache, &dirs, cutoff).await
 }
 
+/// 找出相似的截圖：level 0 完全一樣、1 幾乎一樣、2 相似。每組由新到舊；組依最新那張由新到舊
+pub async fn similar_shots(app: &App, dirs: Vec<String>, level: u8) -> Vec<Vec<crate::types::MediaInfo>> {
+    let all = crate::library::shots_before(&app.cache, &dirs, f64::INFINITY).await;
+    let store = app.hashes.clone();
+    tokio::task::spawn_blocking(move || {
+        let paths: Vec<String> = all.iter().map(|m| m.path.clone()).collect();
+        let prints = store.fingerprints(&paths);
+        let (idx, items): (Vec<usize>, Vec<_>) = prints.iter().enumerate().filter_map(|(i, f)| f.map(|f| (i, f))).unzip();
+        // all 由舊到新：組內反過來就是由新到舊；組之間依最新那張（在 all 裡的位置）由新到舊排
+        let mut groups: Vec<(usize, Vec<crate::types::MediaInfo>)> = crate::similar::group(&items, crate::similar::max_diff(level))
+            .into_iter()
+            .map(|g| (idx[*g.last().unwrap()], g.into_iter().rev().map(|k| all[idx[k]].clone()).collect()))
+            .collect();
+        groups.sort_by(|a, b| b.0.cmp(&a.0));
+        let groups: Vec<Vec<crate::types::MediaInfo>> = groups.into_iter().map(|(_, g)| g).collect();
+        crate::info!("[相似截圖] {} 張，{} 組", paths.len(), groups.len());
+        groups
+    })
+    .await
+    .unwrap_or_default()
+}
+
 /// 資料夾裡有幾張截圖（PNG / JPG，不含子資料夾）
 pub async fn count_shots(dir: &str) -> usize {
     let d = PathBuf::from(dir);

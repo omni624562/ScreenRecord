@@ -145,6 +145,8 @@ pub struct App {
     pub pins: Arc<crate::pins::PinStore>,
     /// 截圖的文字索引（搜尋圖裡的字）
     pub ocr: Arc<crate::ocr_index::OcrIndex>,
+    /// 截圖的長相指紋（找相似的截圖）
+    pub hashes: Arc<crate::similar::HashStore>,
     pub default_output_dir: String,
     st: Mutex<State>,
     /// 硬體編碼器測試完成（false = 測試中）
@@ -288,6 +290,7 @@ impl App {
             markers: Arc::new(crate::projects::ProjectStore::new(dir.join("markers"))),
             pins: Arc::new(crate::pins::PinStore::new(dir.join("pins.json"))),
             ocr: Arc::new(crate::ocr_index::OcrIndex::new(dir.join("ocr_index.json"))),
+            hashes: Arc::new(crate::similar::HashStore::new(dir.join("shot_hashes.json"))),
             cache: Arc::default(),
             default_output_dir: default_output_dir().display().to_string(),
             st: Mutex::default(),

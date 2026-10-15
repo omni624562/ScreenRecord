@@ -56,6 +56,7 @@ pub mod picture;
 pub mod pin_win;
 pub mod ocr_index;
 pub mod pins;
+pub mod similar;
 pub mod player;
 pub mod power;
 pub mod presets;
