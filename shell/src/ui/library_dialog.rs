@@ -20,6 +20,7 @@ use screenrecorder_core::{tr, trf};
 use std::collections::HashSet;
 use std::time::Instant;
 
+mod batch;
 mod browse;
 
 /// 看錄影還是截圖
@@ -60,6 +61,8 @@ pub struct LibraryDialog {
     /// 合併成一支的對話框、進行中的合併工作（編號）
     merge: Option<MergeDlg>,
     merge_job: Option<u64>,
+    /// 一次處理多支的對話框
+    batch: Option<batch::BatchDlg>,
     /// 剛做好的檔案（合併的成品）：排在最上面並標示「新的」
     fresh: Option<String>,
     /// 拼成一張的對話框
@@ -158,7 +161,7 @@ impl LibraryDialog {
 
     /// 上面蓋著合併、拼成一張、清理舊截圖的對話框
     fn overlay(&self) -> bool {
-        self.merge.is_some() || self.combine.is_some() || self.cleanup.is_some() || self.similar.is_some()
+        self.merge.is_some() || self.batch.is_some() || self.combine.is_some() || self.cleanup.is_some() || self.similar.is_some()
     }
 
     /// 檔案搬動或資料夾改了：重新讀取
@@ -191,6 +194,7 @@ impl LibraryDialog {
             focus_search: true,
             jump: None,
             merge: None,
+            batch: None,
             merge_job: None,
             fresh: None,
             combine: None,
@@ -412,6 +416,8 @@ enum Req {
     Record,
     /// 開啟「合併成一支」：勾選的 MP4
     Merge(Vec<String>),
+    /// 開啟「一次處理」：勾選的 MP4
+    Batch(Vec<String>),
     /// 開啟「拼成一張」
     Combine,
     /// 比對勾選的兩張截圖
@@ -891,7 +897,26 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                 .show(fui)
                 .clicked()
         {
-            req = Some(Req::Merge(mp4s));
+            req = Some(Req::Merge(mp4s.clone()));
+        }
+        let batching = batch::running(app);
+        if !shot
+            && mp4s.len() >= 2
+            && batching.is_none()
+            && Btn::new(tr!("一次處理…", "Process all…"))
+                .small()
+                .tooltip(tr!(
+                    "勾選的錄影一次剪掉沒動靜的片段、產生字幕、做加速版或壓縮（一支一支依序做）",
+                    "Cut idle parts, generate subtitles, make sped-up versions or compress all the selected recordings (one at a time)"
+                ))
+                .show(fui)
+                .clicked()
+        {
+            req = Some(Req::Batch(mp4s));
+        }
+        if let Some((i, n)) = batching.filter(|_| !shot) {
+            fui.add_space(8.0);
+            fui.label(RichText::new(trf!("一次處理中（第 {i}/{n} 支）…", "Processing {i} of {n}…")).font(theme::font_bold(12.5)).color(p.accent));
         }
         if let Some(frac) = merging {
             fui.add_space(8.0);
@@ -933,6 +958,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
     }
     let covered = d.overlay();
     merge_dialog(app, ctx, &mut d);
+    batch::show(app, ctx, &mut d);
     combine_dialog(app, ctx, &mut d);
     cleanup_dialog(app, ctx, &mut d);
     similar_dialog(app, ctx, &mut d);
@@ -989,6 +1015,12 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
             }
         }
         Some(Req::Merge(paths)) => open_merge(app, paths),
+        Some(Req::Batch(paths)) => {
+            let dlg = batch::BatchDlg::new(app, paths);
+            if let Some(d) = &mut app.library {
+                d.batch = Some(dlg);
+            }
+        }
         Some(Req::Combine) => open_combine(app),
         Some(Req::Compare) => compare_selected(app),
         Some(Req::Trash(paths)) => trash_paths(app, paths),
