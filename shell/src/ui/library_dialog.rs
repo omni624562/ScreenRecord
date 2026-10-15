@@ -79,6 +79,8 @@ pub struct LibraryDialog {
     cleanup: Option<CleanupDlg>,
     /// 找相似截圖的對話框
     similar: Option<SimilarDlg>,
+    /// 這個畫面要開始拖到其他程式的檔案（畫完再交給系統的拖曳）
+    drag_out: Option<Vec<String>>,
     /// 已經開始建立截圖的文字索引（打開全部截圖時一次）
     ocr_started: bool,
     /// 上一個畫面文字索引還在做（做完時重新搜尋）
@@ -182,6 +184,7 @@ impl LibraryDialog {
             only_pinned: false,
             cleanup: None,
             similar: None,
+            drag_out: None,
             ocr_started: false,
             ocr_running: false,
         }
@@ -738,7 +741,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         // 沒有任何檔案時不顯示操作說明
         let hint = match (n, shot) {
             (0, _) if total == 0 => String::new(),
-            (0, true) => tr!("勾選多張可一次刪除或拼成一張（拖曳框選、Ctrl / Shift＋點一下、Ctrl+A）", "Select several to delete or combine them (drag a box, Ctrl/Shift+click, Ctrl+A)").into(),
+            (0, true) => tr!("勾選多張可一次刪除或拼成一張（從空白處拖曳框選、Ctrl / Shift＋點一下、Ctrl+A）；縮圖可以拖到其他程式", "Select several to delete or combine them (drag a box from empty space, Ctrl/Shift+click, Ctrl+A); drag thumbnails into other apps").into(),
             (0, false) => {
                 tr!("勾選多筆可一次刪除（Ctrl / Shift＋點一下、Ctrl+A 全選本頁，再按一次選取全部）", "Select several to delete them at once (Ctrl/Shift+click, Ctrl+A for this page, again for all)")
                     .into()
@@ -816,6 +819,9 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
     combine_dialog(app, ctx, &mut d);
     cleanup_dialog(app, ctx, &mut d);
     similar_dialog(app, ctx, &mut d);
+    if let Some(list) = d.drag_out.take() {
+        drag_out(app, &list);
+    }
     if modal.should_close() && app.ask.is_none() && !covered {
         close = true;
     }
@@ -1175,7 +1181,7 @@ fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table:
     for e in &rows {
         let row = Rect::from_min_size(pos2(table.min.x, y), vec2(table.width(), LIBRARY_ROW_MAIN_PX as f32));
         // 整列可按右鍵（所有操作的選單）；點一下記住這一列（鍵盤 Delete、F2、Enter 操作它）
-        let resp = ui.interact(row.shrink2(vec2(0.0, 1.0)), Id::new(("librow", &e.media.path)), Sense::click());
+        let resp = ui.interact(row.shrink2(vec2(0.0, 1.0)), Id::new(("librow", &e.media.path)), drag_sense());
         // 子列（加速版）也算在這一列的範圍內：滑鼠在子列上時，原片的按鈕也亮起來
         let sub_rows = e.exports.len() + e.hits.len().min(LIBRARY_HITS_SHOWN);
         let group = Rect::from_min_size(row.min, vec2(row.width(), LIBRARY_ROW_MAIN_PX as f32 + sub_rows as f32 * LIBRARY_ROW_SUB_PX as f32));
@@ -1226,7 +1232,10 @@ fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table:
         // 檔案欄：縮圖（點一下播放）、時間、檔名（資料夾裡看到的名稱），右邊是剪輯版、有聲音
         let name_rect = Rect::from_min_max(pos2(col_x(2), row.min.y), pos2(col_x(3), row.max.y));
         let thumb = Rect::from_min_size(pos2(name_rect.min.x + 4.0, row.center().y - 15.0), vec2(53.0, 30.0));
-        let tresp = ui.interact(thumb, Id::new(("libthumb", &e.media.path)), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
+        let tresp = ui.interact(thumb, Id::new(("libthumb", &e.media.path)), drag_sense()).on_hover_cursor(egui::CursorIcon::PointingHand);
+        if resp.drag_started_by(egui::PointerButton::Primary) || tresp.drag_started_by(egui::PointerButton::Primary) {
+            d.drag_out = Some(drag_list(d, &e.media.path));
+        }
         painter.rect_filled(thumb, CornerRadius::same(4), p.surface2);
         if audio {
             theme::paint_icon(&painter, Rect::from_center_size(thumb.center(), vec2(18.0, 18.0)), Icon::Speaker, p.muted);
@@ -1537,7 +1546,7 @@ fn shot_grid(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, area: Re
         Rect::from_min_size(pos2(area.min.x + pl.col as f32 * (cell_w + gap), area.min.y + pl.y as f32), vec2(cell_w, cell_h))
     };
     // 用滑鼠框選（先登記，縮圖、按鈕的點一下照樣優先；拖曳超過幾個像素才算框選）
-    let band = band_select(ui, d, area, &order, &cell_at, ctrl);
+    let band = band_select(ui, d, area, &order, &cell_at, img_h, ctrl);
     // 日期標題列（在框選之後登記，勾選框才點得到）
     day_headers(app, ui, d, area, &groups, &places);
     for (i, e) in items.iter().enumerate() {
@@ -1554,8 +1563,8 @@ fn shot_grid(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, area: Re
         }
         let img = Rect::from_min_size(cell.min, vec2(cell_w, img_h));
         let resp = ui.interact(img, Id::new(("shotcell", &e.media.path)), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(trf!(
-            "{}\n點一下檢視（Enter）、Ctrl＋點一下多選、按右鍵看更多",
-            "{}\nClick to view (Enter), Ctrl+click to select; right-click for more",
+            "{}\n點一下檢視（Enter）、Ctrl＋點一下多選、按右鍵看更多\n拖到其他程式（LINE、Word、檔案總管…）可以直接傳過去",
+            "{}\nClick to view (Enter), Ctrl+click to select; right-click for more\nDrag into other apps (chat, Word, File Explorer…) to share it",
             e.media.name
         ));
         resp.context_menu(|ui| shot_menu(ui, e, true, pinned_e, req));
@@ -1609,7 +1618,7 @@ fn shot_grid(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, area: Re
         let title = if is_default_name(&e.media.name) { dates.get(&e.media.name).cloned().unwrap_or_default() } else { base_name(&e.media.name) };
         let tr = Rect::from_min_max(pos2(cell.min.x + 2.0, img.max.y + 6.0), pos2(cell.max.x, img.max.y + 28.0));
         ui.new_child(UiBuilder::new().max_rect(tr).layout(Layout::left_to_right(Align::Center)))
-            .add(egui::Label::new(RichText::new(title).font(theme::font_bold(if small { 12.0 } else { 13.0 }))).truncate());
+            .add(egui::Label::new(RichText::new(title).font(theme::font_bold(if small { 12.0 } else { 13.0 }))).truncate().selectable(false));
         if small {
             continue;
         }
@@ -1646,7 +1655,7 @@ fn shot_grid(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, area: Re
         });
         let left = Rect::from_min_max(br.min, pos2(br.max.x - bui.min_rect().width() - 4.0, br.max.y));
         ui.new_child(UiBuilder::new().max_rect(left).layout(Layout::left_to_right(Align::Center)))
-            .add(egui::Label::new(RichText::new(&info).font(theme::font(12.0)).color(p.muted)).truncate())
+            .add(egui::Label::new(RichText::new(&info).font(theme::font(12.0)).color(p.muted)).truncate().selectable(false))
             .on_hover_text(&info);
     }
     if let Some(r) = band {
@@ -1689,13 +1698,22 @@ fn day_headers(app: &UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, area: Rect
 
 /// 全部截圖用滑鼠框選：從任何地方（含縮圖上）按住左鍵拖曳，框到的縮圖都勾起來。
 /// 直接拖曳：這一頁改成只勾框到的（其他頁的勾選保留）；按住 Ctrl 拖曳：加選。回傳正在框的範圍（畫出來用）
-fn band_select(ui: &egui::Ui, d: &mut LibraryDialog, area: Rect, order: &[String], cell_at: &dyn Fn(usize) -> Rect, ctrl: bool) -> Option<Rect> {
+#[allow(clippy::too_many_arguments)]
+fn band_select(ui: &egui::Ui, d: &mut LibraryDialog, area: Rect, order: &[String], cell_at: &dyn Fn(usize) -> Rect, img_h: f32, ctrl: bool) -> Option<Rect> {
     if d.overlay() || egui::Popup::is_any_open(ui.ctx()) {
         d.band_base = None;
         return None;
     }
     let resp = ui.interact(area, Id::new("shotBand"), Sense::drag());
     if resp.drag_started_by(egui::PointerButton::Primary) {
+        // 從縮圖上開始拖：把檔案拖到其他程式（和檔案總管一樣；從空白處、檔名開始拖才是框選）
+        let origin = ui.input(|i| i.pointer.press_origin());
+        let on_img = (0..order.len()).find(|&i| origin.is_some_and(|o| Rect::from_min_size(cell_at(i).min, vec2(cell_at(i).width(), img_h)).contains(o)));
+        if let (Some(i), true, false) = (on_img, can_drag_out(), ctrl) {
+            d.drag_out = Some(drag_list(d, &order[i]));
+            d.band_base = None;
+            return None;
+        }
         let mut base = d.selected.clone();
         if !ctrl {
             for p in order {
@@ -1719,6 +1737,45 @@ fn band_select(ui: &egui::Ui, d: &mut LibraryDialog, area: Rect, order: &[String
         d.anchor = Some((*last).clone());
     }
     Some(r)
+}
+
+/// 可以把檔案拖到其他程式（Windows；開發測試時 SCREENRECORDER_FAKE_DRAG=1 只記錄）
+fn can_drag_out() -> bool {
+    cfg!(windows) || (cfg!(debug_assertions) && std::env::var_os("SCREENRECORDER_FAKE_DRAG").is_some())
+}
+
+fn drag_sense() -> Sense {
+    if can_drag_out() {
+        Sense::click_and_drag()
+    } else {
+        Sense::click()
+    }
+}
+
+/// 從這個檔案開始拖：它有勾選就拖全部勾選的，否則只拖它
+fn drag_list(d: &LibraryDialog, path: &str) -> Vec<String> {
+    if d.selected.contains(path) {
+        let mut v: Vec<String> = d.selected.iter().cloned().collect();
+        v.sort();
+        v
+    } else {
+        vec![path.to_string()]
+    }
+}
+
+/// 交給系統拖曳（放開滑鼠才回來）
+fn drag_out(app: &mut UiApp, list: &[String]) {
+    screenrecorder_core::info!("[拖曳] {} 個檔案", list.len());
+    if !cfg!(windows) {
+        return;
+    }
+    let r = screenrecorder_core::dragout::drag_files(list);
+    app.release_pointer = true;
+    match r {
+        Ok(true) => screenrecorder_core::info!("[拖曳] 已放下"),
+        Ok(false) => {}
+        Err(e) => app.toast(trf!("沒辦法拖曳：{e}", "Couldn't drag: {e}"), true),
+    }
 }
 
 /// 有勾選時，搜尋列右邊：選取全部（每一頁）、只看已選取、取消選取

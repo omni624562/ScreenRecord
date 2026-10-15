@@ -161,7 +161,7 @@ pub async fn similar_shots(app: &App, dirs: Vec<String>, level: u8) -> Vec<Vec<c
             .into_iter()
             .map(|g| (idx[*g.last().unwrap()], g.into_iter().rev().map(|k| all[idx[k]].clone()).collect()))
             .collect();
-        groups.sort_by(|a, b| b.0.cmp(&a.0));
+        groups.sort_by_key(|g| std::cmp::Reverse(g.0));
         let groups: Vec<Vec<crate::types::MediaInfo>> = groups.into_iter().map(|(_, g)| g).collect();
         crate::info!("[相似截圖] {} 張，{} 組", paths.len(), groups.len());
         groups

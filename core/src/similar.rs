@@ -19,6 +19,9 @@ struct Entry {
     hash: [u64; 4],
 }
 
+/// 寬、高、指紋
+pub type Print = (u32, u32, [u64; 4]);
+
 pub struct HashStore {
     file: PathBuf,
     map: Mutex<HashMap<String, Entry>>,
@@ -121,10 +124,10 @@ impl HashStore {
     }
 
     /// 這些圖的 (寬, 高, 指紋)；沒算過或改過的才讀圖（用幾條執行緒一起算）。讀不到的圖是 None
-    pub fn fingerprints(&self, paths: &[String]) -> Vec<Option<(u32, u32, [u64; 4])>> {
+    pub fn fingerprints(&self, paths: &[String]) -> Vec<Option<Print>> {
         let stamp = |p: &str| std::fs::metadata(p).ok().map(|m| (m.len(), mtime_ms(&m)));
         let stamps: Vec<Option<(u64, f64)>> = paths.iter().map(|p| stamp(p)).collect();
-        let mut out: Vec<Option<(u32, u32, [u64; 4])>> = vec![None; paths.len()];
+        let mut out: Vec<Option<Print>> = vec![None; paths.len()];
         let mut todo = vec![];
         {
             let map = self.map.lock().unwrap();
@@ -143,7 +146,7 @@ impl HashStore {
         }
         let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(2).clamp(1, 4);
         let next = AtomicUsize::new(0);
-        let results: Mutex<Vec<(usize, Option<(u32, u32, [u64; 4])>)>> = Mutex::new(vec![]);
+        let results: Mutex<Vec<(usize, Option<Print>)>> = Mutex::new(vec![]);
         std::thread::scope(|s| {
             for _ in 0..threads {
                 s.spawn(|| loop {
