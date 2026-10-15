@@ -33,6 +33,7 @@ pub mod exporter;
 pub mod facets;
 pub mod ffmpeg;
 pub mod filepick;
+pub mod fillers;
 pub mod fonts;
 pub mod format;
 pub mod http;

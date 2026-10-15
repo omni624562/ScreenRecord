@@ -304,6 +304,8 @@ pub struct Editor {
     /// 用文字剪：字幕清單裡選起來、要一起剪掉的幾句（Ctrl / Shift＋點時間）；最後點的那句
     sub_picked: HashSet<u64>,
     sub_anchor: Option<u64>,
+    /// 找到的贅字與停頓（勾選的要剪）；None = 沒有在看
+    fillers: Option<Vec<(screenrecorder_core::fillers::Filler, bool)>>,
     /// 分割點（原片的時間）：時間軸分成一段一段，點一下選取一段
     splits: Vec<f64>,
     /// 跟著點擊放大時不放大的點擊（點擊的時間）
@@ -576,6 +578,7 @@ impl Editor {
             sub_ids: HashSet::new(),
             sub_picked: HashSet::new(),
             sub_anchor: None,
+            fillers: None,
             splits: vec![],
             zoom_skip: vec![],
             vpending: None,
