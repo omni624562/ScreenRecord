@@ -57,6 +57,7 @@ pub mod monitors;
 pub mod naming;
 pub mod ocr;
 pub mod ocr_index;
+pub mod ooxml;
 pub mod paths;
 pub mod picture;
 #[cfg(windows)]

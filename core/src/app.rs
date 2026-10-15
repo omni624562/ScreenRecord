@@ -582,10 +582,15 @@ impl App {
 
     /// 做成教學文件（一個 HTML 檔，圖片包在裡面）：steps = 整理後的步驟；成功後刪掉暫放的截圖，回傳文件路徑
     pub async fn steps_build(&self, title: String, steps: Vec<crate::steps::Step>) -> crate::Result<String> {
+        self.steps_build_as(title, steps, crate::steps::DocFormat::Html).await
+    }
+
+    /// 同上，指定格式（HTML、Word、PowerPoint）
+    pub async fn steps_build_as(&self, title: String, steps: Vec<crate::steps::Step>, format: crate::steps::DocFormat) -> crate::Result<String> {
         let draft = self.lock().steps_draft.clone().ok_or_else(|| crate::Error::config(tr!("沒有要整理的步驟", "There are no steps to organize")))?;
         let d = draft.clone();
         let n = steps.len();
-        let path = tokio::task::spawn_blocking(move || crate::steps::build(&d, &title, &steps)).await.map_err(|e| crate::Error::other(e.to_string()))?.map_err(crate::Error::other)?;
+        let path = tokio::task::spawn_blocking(move || crate::steps::build_as(&d, &title, &steps, format)).await.map_err(|e| crate::Error::other(e.to_string()))?.map_err(crate::Error::other)?;
         let mut st = self.lock();
         if st.steps_draft.as_ref() == Some(&draft) {
             st.steps_draft = None;

@@ -20,6 +20,8 @@ pub struct Review {
     items: Vec<Item>,
     /// 正在做成文件
     busy: bool,
+    /// 做成哪一種文件
+    format: screenrecorder_core::steps::DocFormat,
 }
 
 struct Item {
@@ -44,7 +46,7 @@ pub fn open(app: &mut UiApp) {
         return;
     }
     let items = draft.steps.iter().map(|s| Item { step: s.clone(), tex: None, failed: false }).collect();
-    app.steps_review = Some(Review { title: draft.title(), draft, items, busy: false });
+    app.steps_review = Some(Review { title: draft.title(), draft, items, busy: false, format: Default::default() });
     load_thumb(app, 0);
 }
 
@@ -153,11 +155,15 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                 ui.spinner();
                 ui.label(tr!("正在做成教學文件…", "Making the guide…"));
             } else {
-                ui.label(
-                    RichText::new(tr!("會做成一個 HTML 檔（圖片包在裡面），用瀏覽器開啟", "Makes one HTML file (pictures included) and opens it in your browser"))
-                        .font(theme::font(12.0))
-                        .color(p.muted),
-                );
+                use screenrecorder_core::steps::DocFormat;
+                let items = [(DocFormat::Html, tr!("網頁", "Web page")), (DocFormat::Word, "Word"), (DocFormat::PowerPoint, "PowerPoint")];
+                theme::segmented(ui, &mut r.format, &items, true);
+                let note = match r.format {
+                    DocFormat::Html => tr!("一個 HTML 檔（圖片包在裡面），用瀏覽器開啟、可以直接改字", "One HTML file (pictures included); opens in your browser, where you can edit the text"),
+                    DocFormat::Word => tr!("Word 文件（.docx），每一步一段說明和一張圖", "A Word document (.docx) with a caption and picture for each step"),
+                    DocFormat::PowerPoint => tr!("PowerPoint 簡報（.pptx），一步一張投影片", "A PowerPoint deck (.pptx) with one slide per step"),
+                };
+                ui.label(RichText::new(note).font(theme::font(12.0)).color(p.muted));
             }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if Btn::new(tr!("產生教學文件", "Make guide")).primary().enabled(!r.busy && n > 0).show(ui).clicked() {
@@ -182,13 +188,17 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         }
         Some(Act::Build) => {
             r.busy = true;
-            let (title, list) = (r.title.clone(), r.items.iter().map(|it| it.step.clone()).collect::<Vec<_>>());
+            let (title, list, format) = (r.title.clone(), r.items.iter().map(|it| it.step.clone()).collect::<Vec<_>>(), r.format);
             let core = app.core.clone();
-            app.spawn(async move { core.steps_build(title, list).await }, |app, res| match res {
+            app.spawn(async move { core.steps_build_as(title, list, format).await }, move |app, res| match res {
                 Ok(path) => {
                     app.steps_review = None;
                     screenrecorder_core::desktop::open_with_explorer(&path, false);
-                    app.toast_file(tr!("教學文件做好了，已用瀏覽器開啟", "The step-by-step guide is ready and open in your browser"), &path);
+                    let msg = match format {
+                        screenrecorder_core::steps::DocFormat::Html => tr!("教學文件做好了，已用瀏覽器開啟", "The step-by-step guide is ready and open in your browser"),
+                        _ => tr!("教學文件做好了，已經打開", "The step-by-step guide is ready and open"),
+                    };
+                    app.toast_file(msg, &path);
                 }
                 Err(e) => {
                     if let Some(r) = &mut app.steps_review {
