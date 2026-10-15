@@ -742,6 +742,62 @@ pub struct LibraryQuery {
     pub grid: Option<GridFit>,
     /// 換縮圖大小時：回傳含有第幾筆（從 0 算）的那一頁，忽略 page
     pub anchor: Option<usize>,
+    /// 截圖的瀏覽條件（瀏覽欄）；有指定時回傳每個選項的張數
+    pub facet: Option<FacetQuery>,
+}
+
+/// 瀏覽欄選的條件：同一組裡選多個是「其中一個」，常見詞是「全部都有」；不同組之間是「而且」
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct FacetQuery {
+    /// 程式（執行檔名稱，例如 chrome.exe）
+    pub apps: Vec<String>,
+    /// 內容類型（error、web、chat…）
+    pub kinds: Vec<String>,
+    /// 常見詞
+    pub terms: Vec<String>,
+    /// 日期範圍（today、yesterday、week、month、lastmonth、older）
+    pub when: Vec<String>,
+    /// 一天裡的時段（morning、afternoon、evening）
+    pub hours: Vec<String>,
+    /// 顏色（dark、light、red…）
+    pub colors: Vec<String>,
+    /// 其他（long、edited、starred、frame、text）
+    pub other: Vec<String>,
+    /// 某一天（2026-10-08，月曆點一天）
+    pub day: Option<String>,
+}
+
+impl FacetQuery {
+    pub fn is_empty(&self) -> bool {
+        self.count() == 0
+    }
+
+    /// 選了幾個條件
+    pub fn count(&self) -> usize {
+        self.apps.len() + self.kinds.len() + self.terms.len() + self.when.len() + self.hours.len() + self.colors.len() + self.other.len() + usize::from(self.day.is_some())
+    }
+}
+
+/// 瀏覽欄的一個選項：代號、顯示的名稱、符合的張數
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct FacetOption {
+    pub id: String,
+    pub label: String,
+    pub count: usize,
+}
+
+/// 瀏覽欄每一組的選項（張數是加上這個條件後會剩幾張）
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct FacetCounts {
+    pub apps: Vec<FacetOption>,
+    pub kinds: Vec<FacetOption>,
+    pub terms: Vec<FacetOption>,
+    pub when: Vec<FacetOption>,
+    pub hours: Vec<FacetOption>,
+    pub colors: Vec<FacetOption>,
+    pub other: Vec<FacetOption>,
+    /// 還有幾張截圖的字還沒讀（瀏覽欄提示分類還不完整）
+    pub pending_text: usize,
 }
 
 /// 截圖格的版面：每列幾格、可用高度、一列（含間距）的高度、日期標題列的高度（px）
@@ -791,6 +847,9 @@ pub struct LibraryPage {
     /// 依日期分組時：這一頁出現的每一天
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub groups: Vec<DayGroup>,
+    /// 瀏覽欄的選項與張數（查詢有 facet 時）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub facets: Option<FacetCounts>,
     /// 資料夾讀不到（不存在、隨身碟或網路磁碟沒接上）時的說明
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,

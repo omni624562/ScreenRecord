@@ -60,6 +60,21 @@ pub fn audio_apps() -> Vec<AppInfo> {
     Vec::new()
 }
 
+/// 截圖當下在用的程式（執行檔名稱、視窗標題）：最上層的視窗；是本程式（從操作視窗按截圖）時改用它下面的第一個程式。
+/// 開發測試：SCREENRECORDER_FAKE_APP=chrome.exe|網頁標題
+pub fn foreground_app() -> Option<AppInfo> {
+    if cfg!(debug_assertions) {
+        if let Ok(v) = std::env::var("SCREENRECORDER_FAKE_APP") {
+            let (exe, title) = v.split_once('|').unwrap_or((v.as_str(), ""));
+            return Some(AppInfo { exe: exe.to_lowercase(), title: title.to_string() });
+        }
+    }
+    #[cfg(windows)]
+    return imp::foreground_app();
+    #[cfg(not(windows))]
+    None
+}
+
 /// 這個執行檔（例如 chrome.exe）目前的程序代碼：有視窗的那個（瀏覽器的主程序，聲音的子程序也算在內）
 pub fn pid_for_exe(exe: &str) -> Option<u32> {
     #[cfg(windows)]
@@ -216,6 +231,24 @@ mod imp {
             out.push(AppInfo { exe, title: w.title });
         }
         out
+    }
+
+    pub fn foreground_app() -> Option<AppInfo> {
+        use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
+        let me = own_exe();
+        let skip = |exe: &str| exe == me || ["textinputhost.exe", "applicationframehost.exe", "shellexperiencehost.exe", "searchhost.exe"].contains(&exe);
+        unsafe {
+            let fg = GetForegroundWindow();
+            if let (Some(w), Some((_, exe))) = (titled_window(fg), window_process(fg)) {
+                if !skip(&exe) {
+                    return Some(AppInfo { exe, title: w.title });
+                }
+            }
+        }
+        app_windows().into_iter().find_map(|w| {
+            let (_, exe) = window_process(HWND(w.id as *mut _))?;
+            (!skip(&exe)).then_some(AppInfo { exe, title: w.title })
+        })
     }
 
     pub fn pid_for_exe(exe: &str) -> Option<u32> {

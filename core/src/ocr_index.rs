@@ -17,7 +17,16 @@ struct Entry {
     mtime: f64,
     /// 正規化過的字（小寫、去掉空白）
     text: String,
+    /// 小寫、保留字與字之間一個空白（找常見詞時分得出英文單字）
+    #[serde(default)]
+    words: String,
+    /// 格式版本：舊版沒有 words，要重新辨識一次
+    #[serde(default)]
+    v: u8,
 }
+
+/// 目前的格式版本
+const VERSION: u8 = 2;
 
 pub struct OcrIndex {
     file: PathBuf,
@@ -28,6 +37,24 @@ pub struct OcrIndex {
     done: AtomicUsize,
     /// 不能辨識（不支援、沒有語言）：這次執行不再試
     unavailable: AtomicBool,
+    /// 內容改過幾次（常見詞等統計用它判斷要不要重算）
+    generation: std::sync::atomic::AtomicU64,
+}
+
+/// 小寫、連續的空白變成一個
+pub fn words(s: &str) -> String {
+    s.split_whitespace().map(|w| w.to_lowercase()).collect::<Vec<_>>().join(" ")
+}
+
+/// 辨識常認錯的字當成一樣：o 與 0、l / i / | 與 1（只用在比對）
+pub fn fold(s: &str) -> String {
+    s.chars()
+        .map(|c| match c {
+            'o' => '0',
+            'l' | 'i' | '|' => '1',
+            c => c,
+        })
+        .collect()
 }
 
 /// 搜尋與存的字都這樣處理：小寫、去掉所有空白（中文辨識常在字中間加空白）
@@ -52,7 +79,15 @@ fn stamp(path: &str) -> Option<(u64, f64)> {
 impl OcrIndex {
     pub fn new(file: PathBuf) -> Self {
         let map = std::fs::read(&file).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
-        Self { file, map: Mutex::new(map), running: AtomicBool::new(false), total: AtomicUsize::new(0), done: AtomicUsize::new(0), unavailable: AtomicBool::new(false) }
+        Self {
+            file,
+            map: Mutex::new(map),
+            running: AtomicBool::new(false),
+            total: AtomicUsize::new(0),
+            done: AtomicUsize::new(0),
+            unavailable: AtomicBool::new(false),
+            generation: std::sync::atomic::AtomicU64::new(1),
+        }
     }
 
     fn save(&self) {
@@ -69,12 +104,36 @@ impl OcrIndex {
     /// 這張截圖辨識過、而且之後沒改過
     fn fresh(&self, path: &str) -> bool {
         let Some((bytes, mtime)) = stamp(path) else { return false };
-        self.map.lock().unwrap().get(&key(path)).is_some_and(|e| e.bytes == bytes && crate::paths::same_mtime(e.mtime, mtime))
+        self.map.lock().unwrap().get(&key(path)).is_some_and(|e| e.v >= VERSION && e.bytes == bytes && crate::paths::same_mtime(e.mtime, mtime))
     }
 
-    /// 圖裡的字有沒有 query（已正規化）；還沒辨識的算沒有
+    /// 圖裡的字有沒有 query（已正規化；o 與 0、l 與 1 當成一樣）；還沒辨識的算沒有
     pub fn matches(&self, path: &str, query: &str) -> bool {
-        !query.is_empty() && self.map.lock().unwrap().get(&key(path)).is_some_and(|e| e.text.contains(query))
+        if query.is_empty() {
+            return false;
+        }
+        let q = fold(query);
+        self.map.lock().unwrap().get(&key(path)).is_some_and(|e| e.text.contains(query) || fold(&e.text).contains(&q))
+    }
+
+    /// 內容改過幾次
+    pub fn generation(&self) -> u64 {
+        self.generation.load(Ordering::Relaxed)
+    }
+
+    /// 全部辨識過的字：(路徑鍵, 小寫保留空白的字)；舊格式沒有 words 時用正規化的字
+    pub fn docs(&self) -> Vec<(String, String)> {
+        self.map.lock().unwrap().iter().map(|(k, e)| (k.clone(), if e.words.is_empty() { e.text.clone() } else { e.words.clone() })).collect()
+    }
+
+    /// 查表用的鍵（和 docs() 的鍵一樣）
+    pub fn key(path: &str) -> String {
+        key(path)
+    }
+
+    /// 一張截圖的字（正規化過）；還沒辨識時 None
+    pub fn text(&self, path: &str) -> Option<String> {
+        self.map.lock().unwrap().get(&key(path)).map(|e| e.text.clone())
     }
 
     /// 進度：(做完, 總共)；沒有在做時 None
@@ -89,7 +148,8 @@ impl OcrIndex {
     /// 存一張的結果
     fn put(&self, path: &str, text: &str) {
         if let Some((bytes, mtime)) = stamp(path) {
-            self.map.lock().unwrap().insert(key(path), Entry { bytes, mtime, text: normalize(text) });
+            self.map.lock().unwrap().insert(key(path), Entry { bytes, mtime, text: normalize(text), words: words(text), v: VERSION });
+            self.generation.fetch_add(1, Ordering::Relaxed);
         }
     }
 

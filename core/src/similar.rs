@@ -17,10 +17,24 @@ struct Entry {
     w: u32,
     h: u32,
     hash: [u64; 4],
+    /// 主要顏色（COLOR_* 位元）；舊版沒有，要重算
+    #[serde(default)]
+    colors: Option<u8>,
 }
+
+pub const COLOR_DARK: u8 = 1;
+pub const COLOR_LIGHT: u8 = 2;
+pub const COLOR_RED: u8 = 4;
+pub const COLOR_YELLOW: u8 = 8;
+pub const COLOR_GREEN: u8 = 16;
+pub const COLOR_BLUE: u8 = 32;
+pub const COLOR_PURPLE: u8 = 64;
 
 /// 寬、高、指紋
 pub type Print = (u32, u32, [u64; 4]);
+
+/// 讀一張圖算出來的：指紋與主要顏色
+type Analyzed = (Print, u8);
 
 pub struct HashStore {
     file: PathBuf,
@@ -50,6 +64,52 @@ pub fn fingerprint(img: &image::DynamicImage) -> [u64; 4] {
                 out[bit / 64] |= 1 << (bit % 64);
             }
             bit += 1;
+        }
+    }
+    out
+}
+
+/// 主要顏色：整體偏暗、偏亮，以及占一定面積的鮮明顏色（紅、黃、綠、藍、紫）
+pub fn colors(img: &image::DynamicImage) -> u8 {
+    let small = img.resize_exact(48, 48, image::imageops::FilterType::Triangle).to_rgb8();
+    let n = (small.width() * small.height()) as f32;
+    let mut luma = 0.0f32;
+    let mut hues = [0f32; 5];
+    for p in small.pixels() {
+        let [r, g, b] = p.0.map(|c| c as f32 / 255.0);
+        luma += 0.299 * r + 0.587 * g + 0.114 * b;
+        let (max, min) = (r.max(g).max(b), r.min(g).min(b));
+        let sat = if max > 0.0 { (max - min) / max } else { 0.0 };
+        if sat < 0.45 || max < 0.35 {
+            continue;
+        }
+        let d = max - min;
+        let h = if max == r {
+            60.0 * (((g - b) / d).rem_euclid(6.0))
+        } else if max == g {
+            60.0 * ((b - r) / d + 2.0)
+        } else {
+            60.0 * ((r - g) / d + 4.0)
+        };
+        let bucket = match h {
+            h if !(20.0..330.0).contains(&h) => 0,
+            h if h < 70.0 => 1,
+            h if h < 170.0 => 2,
+            h if h < 260.0 => 3,
+            _ => 4,
+        };
+        hues[bucket] += 1.0;
+    }
+    let luma = luma / n;
+    let mut out = 0u8;
+    if luma < 0.32 {
+        out |= COLOR_DARK;
+    } else if luma > 0.75 {
+        out |= COLOR_LIGHT;
+    }
+    for (i, bit) in [COLOR_RED, COLOR_YELLOW, COLOR_GREEN, COLOR_BLUE, COLOR_PURPLE].into_iter().enumerate() {
+        if hues[i] / n > 0.06 {
+            out |= bit;
         }
     }
     out
@@ -123,6 +183,16 @@ impl HashStore {
         }
     }
 
+    /// 算過的全部：路徑鍵 → (寬, 高, 指紋, 主要顏色)
+    pub fn snapshot(&self) -> HashMap<String, (Print, u8)> {
+        self.map.lock().unwrap().iter().map(|(k, e)| (k.clone(), ((e.w, e.h, e.hash), e.colors.unwrap_or(0)))).collect()
+    }
+
+    /// 查表用的鍵（和 snapshot() 的鍵一樣）
+    pub fn key(path: &str) -> String {
+        key(path)
+    }
+
     /// 這些圖的 (寬, 高, 指紋)；沒算過或改過的才讀圖（用幾條執行緒一起算）。讀不到的圖是 None
     pub fn fingerprints(&self, paths: &[String]) -> Vec<Option<Print>> {
         let stamp = |p: &str| std::fs::metadata(p).ok().map(|m| (m.len(), mtime_ms(&m)));
@@ -134,7 +204,7 @@ impl HashStore {
             for (i, p) in paths.iter().enumerate() {
                 let Some((bytes, mtime)) = stamps[i] else { continue };
                 match map.get(&key(p)) {
-                    Some(e) if e.bytes == bytes && crate::paths::same_mtime(e.mtime, mtime) => out[i] = Some((e.w, e.h, e.hash)),
+                    Some(e) if e.colors.is_some() && e.bytes == bytes && crate::paths::same_mtime(e.mtime, mtime) => out[i] = Some((e.w, e.h, e.hash)),
                     _ => todo.push(i),
                 }
             }
@@ -146,13 +216,13 @@ impl HashStore {
         }
         let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(2).clamp(1, 4);
         let next = AtomicUsize::new(0);
-        let results: Mutex<Vec<(usize, Option<Print>)>> = Mutex::new(vec![]);
+        let results: Mutex<Vec<(usize, Option<Analyzed>)>> = Mutex::new(vec![]);
         std::thread::scope(|s| {
             for _ in 0..threads {
                 s.spawn(|| loop {
                     let k = next.fetch_add(1, Ordering::Relaxed);
                     let Some(&i) = todo.get(k) else { break };
-                    let r = image::open(&paths[i]).ok().map(|img| (img.width(), img.height(), fingerprint(&img)));
+                    let r = image::open(&paths[i]).ok().map(|img| ((img.width(), img.height(), fingerprint(&img)), colors(&img)));
                     results.lock().unwrap().push((i, r));
                     self.done.fetch_add(1, Ordering::Relaxed);
                 });
@@ -160,10 +230,10 @@ impl HashStore {
         });
         let mut map = self.map.lock().unwrap();
         for (i, r) in results.into_inner().unwrap() {
-            if let (Some((w, h, hash)), Some((bytes, mtime))) = (r, stamps[i]) {
-                map.insert(key(&paths[i]), Entry { bytes, mtime, w, h, hash });
+            if let (Some(((w, h, hash), c)), Some((bytes, mtime))) = (r, stamps[i]) {
+                map.insert(key(&paths[i]), Entry { bytes, mtime, w, h, hash, colors: Some(c) });
             }
-            out[i] = r;
+            out[i] = r.map(|(p, _)| p);
         }
         // 刪掉已經不存在的檔案的紀錄
         map.retain(|p, _| std::path::Path::new(p).exists());
@@ -219,5 +289,21 @@ mod tests {
         let again = HashStore::new(file);
         assert_eq!(again.fingerprints(&paths)[0], r[0]);
         assert_eq!(again.total.load(Ordering::Relaxed), 0, "讀檔就好，不用重算");
+    }
+
+    #[test]
+    fn colors_find_dark_light_and_red() {
+        let solid = |c: [u8; 4]| image::DynamicImage::ImageRgba8(RgbaImage::from_pixel(64, 64, Rgba(c)));
+        assert_eq!(colors(&solid([20, 20, 30, 255])), COLOR_DARK);
+        assert_eq!(colors(&solid([250, 250, 250, 255])), COLOR_LIGHT);
+        // 白底上一大塊紅
+        let mut img = RgbaImage::from_pixel(64, 64, Rgba([255, 255, 255, 255]));
+        for y in 0..20 {
+            for x in 0..64 {
+                img.put_pixel(x, y, Rgba([220, 30, 30, 255]));
+            }
+        }
+        let c = colors(&image::DynamicImage::ImageRgba8(img));
+        assert!(c & COLOR_RED != 0 && c & COLOR_BLUE == 0, "{c}");
     }
 }
