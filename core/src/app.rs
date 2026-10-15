@@ -951,39 +951,72 @@ impl App {
         }
         #[cfg(windows)]
         {
-            {
-                let mut st = self.lock();
-                if st.shooting || st.snipping {
-                    return Err(crate::Error::config(tr!("正在截圖", "A screenshot is already in progress")));
-                }
-                st.shooting = true;
-            }
-            let src = self.snip_ready(self.snip_capture(config).await)?;
-            let sel = self.snip_pick(&src, crate::snip_win::Mode::Qr).await.map(|p| p.0);
-            let path = src.path.clone();
-            let desk = src.desktop;
-            let res = match sel {
-                None => Ok(None),
-                Some(r) => tokio::task::spawn_blocking(move || -> crate::Result<Vec<String>> {
-                    let pm = tiny_skia::Pixmap::decode_png(&std::fs::read(&path).map_err(|e| crate::Error::other(e.to_string()))?).map_err(|e| crate::Error::other(e.to_string()))?;
-                    let (x, y) = ((r.x - desk.x).max(0) as u32, (r.y - desk.y).max(0) as u32);
-                    let (w, h) = ((r.width as u32).min(pm.width().saturating_sub(x)), (r.height as u32).min(pm.height().saturating_sub(y)));
-                    let mut rgba = Vec::with_capacity((w * h * 4) as usize);
-                    let data = crate::shot_edit::straight_rgba(&pm);
-                    for row in y..y + h {
-                        let i = ((row * pm.width() + x) * 4) as usize;
-                        rgba.extend_from_slice(&data[i..i + (w * 4) as usize]);
-                    }
-                    Ok(crate::qr::decode(&rgba, w, h))
-                })
-                .await
-                .map_err(|e| crate::Error::other(e.to_string()))
-                .and_then(|r| r.map(Some)),
-            };
-            // 不管成功失敗（包括背景工作出錯）都要結束框選，否則之後的截圖都會被當成「正在截圖」
-            self.snip_end(Some(&src));
-            res
+            self.snip_pixels(config, crate::snip_win::Mode::Qr, |rgba, w, h| Ok(crate::qr::decode(&rgba, w, h))).await
         }
+    }
+
+    /// 只抓文字：在螢幕上框選，辨識裡面的字直接複製到剪貼簿（不存圖）；對齊的欄排成 Tab 分隔，可以直接貼到 Excel
+    pub async fn text_snip(self: &Arc<Self>, config: &RecordConfig) -> crate::Result<Option<crate::ocr::Layout>> {
+        #[cfg(not(windows))]
+        {
+            let _ = config;
+            Err(crate::Error::config(tr!("只抓文字要用 Windows 的文字辨識，只支援 Windows", "Grab text uses Windows text recognition and is only available on Windows")))
+        }
+        #[cfg(windows)]
+        {
+            let r = self
+                .snip_pixels(config, crate::snip_win::Mode::Text, |rgba, w, h| {
+                    let lines = crate::ocr::recognize_words(&rgba, w, h).map_err(crate::Error::other)?;
+                    Ok(crate::ocr::layout(&lines))
+                })
+                .await?;
+            if let Some(l) = r.as_ref().filter(|l| !l.text.trim().is_empty()) {
+                crate::clipboard::copy_text(&l.text);
+            }
+            Ok(r)
+        }
+    }
+
+    /// 凍結畫面讓使用者框選一塊（或點一下選視窗），把那塊的像素（RGBA）交給 f 處理；取消時 None
+    #[cfg(windows)]
+    async fn snip_pixels<T: Send + 'static>(
+        self: &Arc<Self>,
+        config: &RecordConfig,
+        mode: crate::snip_win::Mode,
+        f: impl FnOnce(Vec<u8>, u32, u32) -> crate::Result<T> + Send + 'static,
+    ) -> crate::Result<Option<T>> {
+        {
+            let mut st = self.lock();
+            if st.shooting || st.snipping {
+                return Err(crate::Error::config(tr!("正在截圖", "A screenshot is already in progress")));
+            }
+            st.shooting = true;
+        }
+        let src = self.snip_ready(self.snip_capture(config).await)?;
+        let sel = self.snip_pick(&src, mode).await.map(|p| p.0);
+        let path = src.path.clone();
+        let desk = src.desktop;
+        let res = match sel {
+            None => Ok(None),
+            Some(r) => tokio::task::spawn_blocking(move || -> crate::Result<T> {
+                let pm = tiny_skia::Pixmap::decode_png(&std::fs::read(&path).map_err(|e| crate::Error::other(e.to_string()))?).map_err(|e| crate::Error::other(e.to_string()))?;
+                let (x, y) = ((r.x - desk.x).max(0) as u32, (r.y - desk.y).max(0) as u32);
+                let (w, h) = ((r.width as u32).min(pm.width().saturating_sub(x)), (r.height as u32).min(pm.height().saturating_sub(y)));
+                let mut rgba = Vec::with_capacity((w * h * 4) as usize);
+                let data = crate::shot_edit::straight_rgba(&pm);
+                for row in y..y + h {
+                    let i = ((row * pm.width() + x) * 4) as usize;
+                    rgba.extend_from_slice(&data[i..i + (w * 4) as usize]);
+                }
+                f(rgba, w, h)
+            })
+            .await
+            .map_err(|e| crate::Error::other(e.to_string()))
+            .and_then(|r| r.map(Some)),
+        };
+        // 不管成功失敗（包括背景工作出錯）都要結束框選，否則之後的截圖都會被當成「正在截圖」
+        self.snip_end(Some(&src));
+        res
     }
 
     /// 長截圖：框選範圍（或點一下選視窗）後，自動一邊往下捲一邊擷取，接成一張長圖，

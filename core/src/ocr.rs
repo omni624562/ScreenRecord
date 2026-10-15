@@ -259,9 +259,118 @@ pub fn recognize_words(_rgba: &[u8], _w: u32, _h: u32) -> Result<Vec<Vec<Word>>,
     Err(fake_no_language().unwrap_or_else(|| crate::tr!("自動遮個資要用 Windows 的文字辨識，只支援 Windows", "Auto-redact uses Windows text recognition and is only available on Windows").into()))
 }
 
+/// 「只抓文字」的結果：排好的文字，表格時是 Tab 分隔（可以直接貼到 Excel）
+#[derive(Debug, Clone, PartialEq)]
+pub struct Layout {
+    pub text: String,
+    /// 有對齊的欄：每一列用 Tab 分隔欄位
+    pub table: bool,
+}
+
+/// 把辨識出的字（一行一組，原圖的像素位置）排成文字：同一行裡字和字之間空很大（超過字高的 1.2 倍）就是不同欄；
+/// 有兩列以上、而且大部分列都分成好幾欄時當成表格，依欄的位置對齊（缺的欄留空），用 Tab 分隔
+pub fn layout(lines: &[Vec<Word>]) -> Layout {
+    // 每一行切成幾格：(格子左邊的 x, 文字)
+    let mut rows: Vec<Vec<(f64, String)>> = vec![];
+    let mut heights: Vec<f64> = vec![];
+    for line in lines {
+        let mut words: Vec<&Word> = line.iter().filter(|w| !w.text.trim().is_empty()).collect();
+        if words.is_empty() {
+            continue;
+        }
+        words.sort_by(|a, b| a.x.total_cmp(&b.x));
+        let mut hs: Vec<f64> = words.iter().map(|w| w.h).collect();
+        hs.sort_by(f64::total_cmp);
+        let h = hs[hs.len() / 2].max(1.0);
+        heights.push(h);
+        let mut cells: Vec<(f64, String)> = vec![];
+        let mut end = f64::NEG_INFINITY;
+        for w in words {
+            match cells.last_mut() {
+                Some(c) if w.x - end <= h * 1.2 => {
+                    c.1.push(' ');
+                    c.1.push_str(&w.text);
+                }
+                _ => cells.push((w.x, w.text.clone())),
+            }
+            end = end.max(w.x + w.w);
+        }
+        rows.push(cells.into_iter().map(|(x, t)| (x, tidy(&t))).collect());
+    }
+    let multi = rows.iter().filter(|r| r.len() >= 2).count();
+    let table = multi >= 2 && multi * 2 >= rows.len();
+    if !table {
+        let text = rows.iter().map(|r| r.iter().map(|c| c.1.as_str()).collect::<Vec<_>>().join("  ")).collect::<Vec<_>>().join("\n");
+        return Layout { text, table: false };
+    }
+    // 欄的位置：多欄列的格子左邊依位置分群（相差不到兩個字高算同一欄）
+    heights.sort_by(f64::total_cmp);
+    let h = heights[heights.len() / 2];
+    let mut xs: Vec<f64> = rows.iter().filter(|r| r.len() >= 2).flat_map(|r| r.iter().map(|c| c.0)).collect();
+    xs.sort_by(f64::total_cmp);
+    let mut cols: Vec<(f64, usize)> = vec![];
+    for x in xs {
+        match cols.last_mut() {
+            Some((cx, n)) if x - *cx / *n as f64 <= h * 2.0 => {
+                *cx += x;
+                *n += 1;
+            }
+            _ => cols.push((x, 1)),
+        }
+    }
+    let cols: Vec<f64> = cols.into_iter().map(|(sum, n)| sum / n as f64).collect();
+    let text = rows
+        .iter()
+        .map(|r| {
+            let mut out = vec![String::new(); cols.len()];
+            for (x, t) in r {
+                // 最接近的欄（同一欄已經有字時接在後面）
+                let i = cols.iter().enumerate().min_by(|a, b| (a.1 - x).abs().total_cmp(&(b.1 - x).abs())).map(|(i, _)| i).unwrap_or(0);
+                if !out[i].is_empty() {
+                    out[i].push(' ');
+                }
+                out[i].push_str(t);
+            }
+            out.join("\t").trim_end_matches('\t').to_string()
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    Layout { text, table: true }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn w(text: &str, x: f64, y: f64) -> Word {
+        Word { text: text.into(), x, y, w: 20.0 * text.chars().count() as f64, h: 20.0 }
+    }
+
+    #[test]
+    fn plain_text_keeps_lines_and_joins_chinese() {
+        // Windows 的辨識結果中文字一個一個分開
+        let lines = vec![vec![w("報", 0.0, 0.0), w("價", 21.0, 0.0), w("單", 42.0, 0.0)], vec![w("Hello", 0.0, 30.0), w("world", 110.0, 30.0)]];
+        assert_eq!(layout(&lines), Layout { text: "報價單\nHello world".into(), table: false });
+    }
+
+    #[test]
+    fn aligned_columns_become_a_tab_separated_table() {
+        let lines = vec![
+            vec![w("品項", 0.0, 0.0), w("數量", 200.0, 0.0), w("單價", 400.0, 0.0)],
+            vec![w("滑鼠", 0.0, 30.0), w("2", 205.0, 30.0), w("350", 398.0, 30.0)],
+            // 中間那欄沒有字：留空，後面的欄還是對齊
+            vec![w("鍵盤", 0.0, 60.0), w("990", 402.0, 60.0)],
+        ];
+        let l = layout(&lines);
+        assert!(l.table);
+        assert_eq!(l.text, "品項\t數量\t單價\n滑鼠\t2\t350\n鍵盤\t\t990");
+    }
+
+    #[test]
+    fn one_wide_line_is_not_a_table() {
+        let lines = vec![vec![w("標題", 0.0, 0.0), w("右上角", 600.0, 0.0)], vec![w("內文第一行", 0.0, 30.0)], vec![w("內文第二行", 0.0, 60.0)]];
+        assert!(!layout(&lines).table);
+    }
 
     fn line(words: &[&str]) -> Vec<Word> {
         // 每個字 10 像素寬、20 像素高，字之間空 5 像素

@@ -253,6 +253,20 @@ pub fn normalize_ranges(ranges: &[Range], duration: f64) -> Vec<Range> {
     out.into_iter().map(|(a, b)| (ms(a), ms(b))).collect()
 }
 
+/// 把 cut 從刪除的區段裡拿掉（還原這一段；它前後還是刪除的部分留著）
+pub fn unremove(removed: &[Range], cut: Range, duration: f64) -> Vec<Range> {
+    let mut out = vec![];
+    for &(a, b) in removed {
+        if cut.1 <= a || cut.0 >= b {
+            out.push((a, b));
+            continue;
+        }
+        out.push((a, cut.0.max(a)));
+        out.push((cut.1.min(b), b));
+    }
+    normalize_ranges(&out, duration)
+}
+
 /// 實際保留的區段：[start, end] 扣掉 removed
 pub fn keep_ranges(duration: f64, spec: &EditSpec) -> Vec<Range> {
     let start = spec.start.min(duration).max(0.0);
@@ -305,6 +319,15 @@ pub fn cut_file_name(source_name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unremove_restores_only_that_part() {
+        let removed = vec![(1.0, 5.0), (8.0, 9.0)];
+        assert_eq!(unremove(&removed, (2.0, 3.0), 10.0), vec![(1.0, 2.0), (3.0, 5.0), (8.0, 9.0)]);
+        // 整段還原、沒有重疊的不動
+        assert_eq!(unremove(&removed, (0.5, 5.5), 10.0), vec![(8.0, 9.0)]);
+        assert_eq!(unremove(&removed, (6.0, 7.0), 10.0), removed);
+    }
 
     #[test]
     fn fast_ranges_split_the_kept_parts() {
