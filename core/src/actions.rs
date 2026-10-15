@@ -111,7 +111,35 @@ pub async fn check_update(app: &App) -> Result<Option<UpdateInfo>> {
 pub async fn library(app: &App, dir: &str, query: &LibraryQuery) -> LibraryPage {
     let dir = Some(dir.trim()).filter(|d| !d.is_empty()).map(str::to_string).unwrap_or_else(|| app.default_output_dir.clone());
     let ffmpeg = app.ffmpeg_path();
-    crate::library::list_library(&app.cache, ffmpeg.as_deref(), Path::new(&dir), query).await
+    crate::library::list_library_with(&app.cache, ffmpeg.as_deref(), Path::new(&dir), query, Some(&app.ocr)).await
+}
+
+/// 在背景建立截圖的文字索引（這些資料夾裡的截圖，新的先做）；已經在做時馬上回傳
+pub async fn ocr_index(app: &App, dirs: Vec<String>) {
+    let mut paths: Vec<(f64, String)> = vec![];
+    for d in &dirs {
+        for p in crate::library::images_in(Path::new(d)) {
+            let t = std::fs::metadata(&p).map(|m| crate::paths::mtime_ms(&m)).unwrap_or(0.0);
+            paths.push((t, p.display().to_string()));
+        }
+    }
+    paths.sort_by(|a, b| b.0.total_cmp(&a.0));
+    let paths: Vec<String> = paths.into_iter().map(|(_, p)| p).collect();
+    app.ocr.prune();
+    app.ocr
+        .build(paths, |p| async move {
+            // 開發測試（非 Windows）：SCREENRECORDER_FAKE_OCR=name 時把檔名當成圖裡的字
+            if cfg!(debug_assertions) && std::env::var("SCREENRECORDER_FAKE_OCR").as_deref() == Ok("name") {
+                return Ok(file_stem(&p));
+            }
+            let (rgba, w, h) = load_image(&p).await.map_err(|e| e.message().to_string())?;
+            tokio::task::spawn_blocking(move || crate::ocr::recognize(&rgba, w, h).map(|(t, _)| t)).await.map_err(|e| e.to_string())?
+        })
+        .await;
+}
+
+fn file_stem(p: &str) -> String {
+    Path::new(p).file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default()
 }
 
 /// 清理舊截圖：這些資料夾裡超過 days 天的截圖（由舊到新）

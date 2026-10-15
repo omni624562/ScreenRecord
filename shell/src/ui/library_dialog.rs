@@ -77,6 +77,10 @@ pub struct LibraryDialog {
     only_pinned: bool,
     /// 清理舊截圖的對話框
     cleanup: Option<CleanupDlg>,
+    /// 已經開始建立截圖的文字索引（打開全部截圖時一次）
+    ocr_started: bool,
+    /// 上一個畫面文字索引還在做（做完時重新搜尋）
+    ocr_running: bool,
 }
 
 /// 清理舊截圖：超過幾天的截圖（有星號的不算）移到資源回收筒
@@ -163,6 +167,8 @@ impl LibraryDialog {
             band_base: None,
             only_pinned: false,
             cleanup: None,
+            ocr_started: false,
+            ocr_running: false,
         }
     }
 
@@ -281,6 +287,18 @@ fn load(app: &mut UiApp) {
     // 截圖資料夾＋留在原處的舊截圖（看其他資料夾時只看那個資料夾）
     let extra_dirs = if kind == Kind::Shot && !browsing { app.s.shot_extra(&app.env) } else { vec![] };
     let pinned = app.core.pins.list();
+    // 截圖：在背景讀出圖裡的字（搜尋用）；打開時開始一次，已經做過的不再做
+    if kind == Kind::Shot && app.library.as_ref().is_some_and(|d| !d.ocr_started) {
+        let dirs: Vec<String> = match app.library.as_ref().and_then(|d| d.dir.clone()) {
+            Some(dir) => vec![dir],
+            None => std::iter::once(home.clone()).chain(extra_dirs.iter().cloned()).collect(),
+        };
+        let core = app.core.clone();
+        app.spawn(async move { actions::ocr_index(&core, dirs).await }, |_, _| {});
+        if let Some(d) = app.library.as_mut() {
+            d.ocr_started = true;
+        }
+    }
     let Some(d) = app.library.as_mut() else {
         return;
     };
@@ -562,7 +580,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         // 搜尋、篩選、排序
         ui.horizontal(|ui| {
             let hint = if shot {
-                tr!("搜尋檔名或日期（例如 10/11）", "Search names or dates (e.g. 10/11)")
+                tr!("搜尋檔名、日期（例如 10/11）或圖裡的字", "Search names, dates (e.g. 10/11) or text in the image")
             } else {
                 tr!("搜尋檔名、日期（例如 10/11）或字幕裡說過的話", "Search names, dates (e.g. 10/11) or words spoken")
             };
@@ -717,7 +735,20 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                 format!("已選取 {n} {unit}{more}")
             }
         };
-        fui.label(theme::muted(fui, hint));
+        // 截圖的文字索引進度（做完時重新搜尋，才找得到剛讀出來的字）
+        let ocr = if shot { app.core.ocr.progress() } else { None };
+        if let Some((done, all)) = ocr.filter(|(_, all)| *all > 0) {
+            ctx.request_repaint_after(std::time::Duration::from_millis(800));
+            if n == 0 {
+                fui.label(theme::muted(fui, trf!("正在讀取截圖裡的字 {done} / {all}（搜尋時會一起找）", "Reading text in screenshots {done} / {all} (search includes it)")));
+            }
+        } else if d.ocr_running && !d.query.trim().is_empty() {
+            d.dirty = true;
+        }
+        d.ocr_running = ocr.is_some();
+        if n > 0 || ocr.filter(|(_, all)| *all > 0).is_none() {
+            fui.label(theme::muted(fui, hint));
+        }
         if n > 0 && Btn::new(tr!("移到資源回收筒", "Move to Recycle Bin")).icon(Icon::Trash).danger().small().show(fui).clicked() {
             req = Some(Req::DeleteSelected);
         }
@@ -1548,6 +1579,13 @@ fn shot_grid(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, area: Re
         // 右上角星號
         let sr = Rect::from_min_size(pos2(img.max.x - 30.0, img.min.y + 6.0), vec2(24.0, 22.0));
         star_button(ui, sr, Id::new(("shotstar", &e.media.path)), pinned_e, hot, true, req, &e.media.path);
+        // 搜尋時是因為圖裡的字找到的：左下角標出來
+        if let Some(h) = e.hits.first() {
+            let br = Rect::from_min_size(pos2(img.min.x + 6.0, img.max.y - 26.0), vec2(26.0, 20.0));
+            painter.rect_filled(br, CornerRadius::same(5), p.accent);
+            painter.text(br.center(), egui::Align2::CENTER_CENTER, tr!("字", "T"), theme::font_bold(12.0), p.accent_ink);
+            ui.interact(br, Id::new(("ocrhit", &e.media.path)), Sense::hover()).on_hover_text(trf!("圖裡有「{}」", "The image contains “{}”", h.text));
+        }
         // 名稱（預設檔名顯示日期時間）
         let title = if is_default_name(&e.media.name) { dates.get(&e.media.name).cloned().unwrap_or_default() } else { base_name(&e.media.name) };
         let tr = Rect::from_min_max(pos2(cell.min.x + 2.0, img.max.y + 6.0), pos2(cell.max.x, img.max.y + 28.0));

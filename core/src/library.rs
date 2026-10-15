@@ -381,6 +381,11 @@ fn list_has(list: &[LibraryEntry], path: &str) -> bool {
 }
 
 pub async fn list_library(cache: &Arc<MediaCache>, ffmpeg: Option<&Path>, dir: &Path, q: &LibraryQuery) -> LibraryPage {
+    list_library_with(cache, ffmpeg, dir, q, None).await
+}
+
+/// 同上；ocr：截圖的文字索引，搜尋時也找圖裡的字
+pub async fn list_library_with(cache: &Arc<MediaCache>, ffmpeg: Option<&Path>, dir: &Path, q: &LibraryQuery, ocr: Option<&crate::ocr_index::OcrIndex>) -> LibraryPage {
     let mut list = match scan_checked(cache, dir).await {
         Ok(list) => list,
         Err(e) => {
@@ -410,6 +415,15 @@ pub async fn list_library(cache: &Arc<MediaCache>, ffmpeg: Option<&Path>, dir: &
         }
         // 也可以用日期找：「10/11」「10月11日」「今天」「昨天」
         let day = date_query(&text, chrono::Local::now().date_naive());
+        // 截圖裡的字（文字索引）：符合時加一筆說明，清單上標出「圖裡有這段字」
+        let norm = crate::ocr_index::normalize(&text);
+        if let Some(o) = ocr {
+            for e in list.iter_mut().filter(|e| is_image_name(&e.media.name)) {
+                if o.matches(&e.media.path, &norm) {
+                    e.hits = vec![crate::types::SpeechHit { start: -1.0, text: text.clone() }];
+                }
+            }
+        }
         list.retain(|e| {
             e.media.name.to_lowercase().contains(&text)
                 || local_date(e.media.time_ms()).contains(&text)
