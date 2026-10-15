@@ -21,8 +21,7 @@ pub fn should_show(app: &UiApp) -> bool {
 #[derive(Clone, Copy)]
 enum Try {
     None,
-    /// 打開設定的某一頁（這一版的介紹沒用到，保留給之後）
-    #[allow(dead_code)]
+    /// 打開設定的某一頁
     Settings(Page),
     /// 在螢幕上框選截圖（這一版的介紹沒用到，保留給之後）
     #[allow(dead_code)]
@@ -30,7 +29,8 @@ enum Try {
     /// 開啟全部截圖（這一版的介紹沒用到，保留給之後）
     #[allow(dead_code)]
     Library,
-    /// 開始一步一步的教學
+    /// 開始一步一步的教學（這一版的介紹沒用到，保留給之後）
+    #[allow(dead_code)]
     Tour,
 }
 
@@ -38,45 +38,40 @@ enum Try {
 fn items(_app: &UiApp) -> Vec<(String, String, Try)> {
     vec![
         (
-            tr!("一步一步的教學", "Step-by-step tutorial").into(),
+            tr!("只抓文字", "Grab text").into(),
             tr!(
-                "第一次使用時，畫面會變暗、只亮出要按的地方，一步一步帶你錄第一部影片：選範圍、確認聲音、開始錄影、在最近錄影播放剪輯、截圖。按「試試看」現在就走一遍。",
-                "On first use the screen dims and highlights exactly what to click, walking you through your first recording: choose an area, check the audio, record, then play and edit it and take a screenshot. Click “Try it” to go through it now."
-            )
-            .into(),
-            Try::Tour,
-        ),
-        (
-            tr!("各功能的小提示", "Quick tips for each tool").into(),
-            tr!(
-                "新安裝或重新看過教學後，第一次打開剪輯視窗、截圖編輯、全部截圖時，會用三步說明最常用的地方。",
-                "After a fresh install or replaying the tutorial, the first time you open the editor, screenshot editing or All screenshots, three short steps point out the essentials."
+                "框選畫面上的一塊，裡面的字直接複製起來，不用存成圖；是表格時會照欄位排好，可以直接貼到 Excel。在「截圖 → 小工具」或系統匣選單裡。",
+                "Select part of the screen and the text in it is copied right away, no image saved. Tables keep their columns, so you can paste straight into Excel. Find it under Screenshot → Tools or in the tray menu."
             )
             .into(),
             Try::None,
         ),
         (
-            tr!("子資料夾一起列出", "Subfolders are listed too").into(),
+            tr!("用文字剪影片", "Edit video by text").into(),
             tr!(
-                "自己分到「教學」「會議」等子資料夾的錄影和截圖，也會出現在最近錄影、全部錄影、全部截圖，縮圖上標出所在的資料夾。",
-                "Recordings and screenshots you sorted into subfolders such as “Tutorials” or “Meetings” now appear in Recent recordings, All recordings and All screenshots, labelled with their folder."
+                "有字幕的影片，在剪輯視窗的「字幕」分頁按句子旁邊的剪刀，那一句講話的片段就剪掉了；Ctrl 或 Shift＋點時間可以選好幾句一起剪，按還原放回去。",
+                "For videos with subtitles, click the scissors next to a sentence in the editor's Subtitles tab to cut that part. Ctrl- or Shift-click times to cut several at once; click restore to put one back."
             )
             .into(),
             Try::None,
         ),
         (
-            tr!("接上、拔掉外接螢幕", "Connecting and disconnecting screens").into(),
+            tr!("自動命名", "Automatic names").into(),
             tr!(
-                "會自動發現螢幕變了，並記住你選的是哪一台；錄影中拔掉錄的那台會馬上停止並存下已錄的部分。",
-                "Screen changes are detected automatically and the app remembers which screen you chose. If the screen being recorded is unplugged, recording stops right away and what was recorded is saved."
+                "依說的話、畫面上的字、錄影時在用的程式取名（例如「報價單的填法_10-15」）。改名時會先給一個建議名稱；也可以設定錄完自動命名，自己取過的名稱不會動。",
+                "Names recordings from what was said, text on screen and the app you used (e.g. “Quote form_10-15”). Rename suggests a name, and you can have recordings named automatically after recording; names you chose are kept."
             )
             .into(),
-            Try::None,
+            Try::Settings(Page::After),
         ),
         (
-            tr!("隨時重看", "Replay any time").into(),
-            tr!("教學看到一半關掉程式，下次會問要不要接著看；想再看一次：「設定 → 關於 → 重新看教學」。", "Closed the app halfway? You'll be asked whether to continue next time. To see it again: Settings → About → “Replay tutorial”.").into(),
-            Try::None,
+            tr!("英文字幕、中英對照", "English and bilingual subtitles").into(),
+            tr!(
+                "自動產生字幕時可以選「翻成英文」或「中英對照」，英文字幕另存成「同名.en.srt」；錄完自動處理也可以順便做英文字幕。全部在這台電腦上辨識，不用上傳。",
+                "When generating subtitles, choose “English” or “Both” for bilingual subtitles; English is also saved as “name.en.srt”. After-recording processing can make English subtitles too. Everything runs on this computer; nothing is uploaded."
+            )
+            .into(),
+            Try::Settings(Page::After),
         ),
     ]
 }
