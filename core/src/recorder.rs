@@ -1117,6 +1117,10 @@ impl Recorder {
         if self.lock().config.as_ref().is_some_and(|c| c.hide_icons) {
             crate::winui::set_desktop_icons(false);
         }
+        // 錄影時打開勿擾（停止後由 after_stop 恢復）
+        if self.lock().config.as_ref().is_some_and(|c| c.quiet) {
+            crate::quiet::begin();
+        }
         if self.canceled() {
             // 已經要求不睡眠（keep_awake）：after_stop 一定要呼叫才會放掉
             return self.abandon(true);
@@ -1330,7 +1334,7 @@ impl Recorder {
                     Recorder(inner).add_log(level, &text);
                 }
             });
-            Some(Arc::new(AudioPipe::new(specs, self.deps().audio_opener(), log, config.separate_tracks()).map_err(|e| trf!("無法建立聲音管線：{e}", "Couldn't set up audio capture: {e}"))?))
+            Some(Arc::new(AudioPipe::new(specs, self.deps().audio_opener(), log, config.pipe_separate()).map_err(|e| trf!("無法建立聲音管線：{e}", "Couldn't set up audio capture: {e}"))?))
         };
         if let Some(a) = &audio {
             let mut st = self.lock();
@@ -2151,6 +2155,9 @@ mod tests {
                 audio_only: false,
                 window_capture: false,
                 separate_audio: false,
+                mic_denoise: false,
+                quiet: false,
+                masks: vec![],
                 replay_sec: 0,
                 monitor_key: None,
             }

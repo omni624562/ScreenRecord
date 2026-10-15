@@ -68,6 +68,7 @@ pub mod presets;
 pub mod process;
 pub mod projects;
 pub mod qr;
+pub mod quiet;
 #[cfg(windows)]
 pub mod rec_frame_win;
 pub mod recorder;

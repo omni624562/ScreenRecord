@@ -445,6 +445,15 @@ pub struct RecordConfig {
     /// 系統聲音與麥克風分開存（多兩條音軌；第一條仍是混在一起的，一般播放器照常播放）
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub separate_audio: bool,
+    /// 錄影時把麥克風的雜音（風扇、冷氣、鍵盤）降低（FFmpeg afftdn，只處理麥克風）
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub mic_denoise: bool,
+    /// 錄影時打開 Windows 的勿擾（只允許鬧鐘），停止後恢復
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub quiet: bool,
+    /// 錄影時打上馬賽克的固定範圍（虛擬桌面絕對座標）；只錄視窗內容時不適用
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub masks: Vec<Rect>,
     /// 重播緩衝：在背景一直錄、只保留最近這麼多秒，需要時再存下來（0 = 一般錄影）
     #[serde(default, skip_serializing_if = "is_zero_u32")]
     pub replay_sec: u32,
@@ -457,6 +466,16 @@ impl RecordConfig {
     /// 這次錄影要分軌：有打開分軌，而且系統聲音、麥克風都有錄
     pub fn separate_tracks(&self) -> bool {
         self.separate_audio && self.audio.system && self.audio.mic
+    }
+
+    /// 這次錄影要幫麥克風降噪
+    pub fn denoise_mic(&self) -> bool {
+        self.mic_denoise && self.audio.mic
+    }
+
+    /// 聲音管線要把系統聲音與麥克風分開送：分軌，或系統聲音與麥克風都錄、只有麥克風要降噪
+    pub fn pipe_separate(&self) -> bool {
+        self.audio.system && self.audio.mic && (self.separate_audio || self.mic_denoise)
     }
 
     /// 截圖存到哪裡（沒有指定時是預設的截圖資料夾）
