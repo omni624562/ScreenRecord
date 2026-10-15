@@ -52,6 +52,7 @@ pub mod log;
 pub mod longshot;
 pub mod meter;
 pub mod monitors;
+pub mod naming;
 pub mod ocr;
 pub mod ocr_index;
 pub mod paths;

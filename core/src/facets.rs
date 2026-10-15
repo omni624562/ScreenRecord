@@ -149,7 +149,7 @@ pub struct Vocab {
     pub n: usize,
 }
 
-fn is_cjk(c: char) -> bool {
+pub(crate) fn is_cjk(c: char) -> bool {
     ('\u{4e00}'..='\u{9fff}').contains(&c) || ('\u{3400}'..='\u{4dbf}').contains(&c)
 }
 
@@ -162,7 +162,7 @@ const EN_STOP: [&str; 40] = [
 ];
 
 /// 一段字裡的候選詞：中文連續 2～4 字的片段、英文 3 個字母以上的單字（不含純數字）
-fn candidates(words: &str) -> HashSet<String> {
+pub(crate) fn candidates(words: &str) -> HashSet<String> {
     let mut out = HashSet::new();
     let mut run: Vec<char> = vec![];
     let mut latin = String::new();

@@ -28,10 +28,12 @@ pub struct AfterRecord {
     pub subs_lang: usize,
     /// 壓縮到這個大小以內（MB）；0 = 不壓縮
     pub compress_mb: u32,
+    /// 依內容自動命名（只改預設的 Rec_時間 名稱）
+    pub auto_name: bool,
 }
 
 /// ui 設定裡的欄位名稱（設定組合也存這些）
-pub const UI_KEYS: [&str; 5] = ["afterIdleCut", "afterSubs", "afterSubsModel", "afterSubsLang", "afterCompressMb"];
+pub const UI_KEYS: [&str; 6] = ["afterIdleCut", "afterSubs", "afterSubsModel", "afterSubsLang", "afterCompressMb", "afterAutoName"];
 
 impl AfterRecord {
     pub fn from_ui(ui: Option<&Value>) -> AfterRecord {
@@ -44,6 +46,7 @@ impl AfterRecord {
             subs_model: (n(UI_KEYS[2]) as usize).min(crate::subtitles::MODELS.len() - 1),
             subs_lang: (n(UI_KEYS[3]) as usize).min(crate::subtitles::LANGUAGES.len() - 1),
             compress_mb: n(UI_KEYS[4]).min(10_000) as u32,
+            auto_name: b(UI_KEYS[5]),
         }
     }
 
@@ -225,6 +228,9 @@ impl App {
         }
         let after = AfterRecord::from_ui(ui.as_ref());
         if !after.any() {
+            if after.auto_name {
+                self.after_auto_name(&video, None).await;
+            }
             return;
         }
         // 前一支還在處理：等它做完（一次一支）
@@ -274,6 +280,21 @@ impl App {
                 Some(AfterDone { seq: DONE_SEQ.fetch_add(1, Ordering::Relaxed) + 1, ok: false, text: e, output: None, source: video.clone() })
             }
         };
+        // 自動命名放最後：字幕做好了才能依說的話取名
+        let done = match (after.auto_name, done) {
+            (true, Some(mut d)) => {
+                if let Some((v, o)) = self.after_auto_name(&video, d.output.clone().as_deref()).await {
+                    d.source = v;
+                    d.output = o.or(d.output);
+                }
+                Some(d)
+            }
+            (true, None) => {
+                self.after_auto_name(&video, None).await;
+                None
+            }
+            (false, d) => d,
+        };
         let mut st = self.after.lock().unwrap();
         match done {
             // 留著結果給介面顯示（處理中的狀態不算）
@@ -285,6 +306,26 @@ impl App {
             }
             None => *st = None,
         }
+    }
+
+    /// 自動命名：錄影（與錄完處理做出來、名稱接在後面的檔案，例如 _cut）改成依內容想的名稱；回傳 (新的錄影路徑, 新的輸出路徑)
+    async fn after_auto_name(&self, video: &str, output: Option<&str>) -> Option<(String, Option<String>)> {
+        let old_stem = Path::new(video).file_stem()?.to_string_lossy().into_owned();
+        let new_video = crate::actions::auto_rename(self, video).await?;
+        let new_stem = Path::new(&new_video).file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+        let mut new_out = None;
+        if let Some(o) = output {
+            let o_stem = Path::new(o).file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+            if let Some(rest) = o_stem.strip_prefix(&old_stem) {
+                match crate::actions::rename(self, o, &format!("{new_stem}{rest}")).await {
+                    Ok(p) => new_out = Some(p),
+                    Err(e) => warn!("[自動命名] {o}：{}", e.message()),
+                }
+            }
+        }
+        info!("[自動命名] {old_stem} → {new_stem}");
+        self.notify(tr!("自動命名", "Auto-named"), &trf!("錄影已命名為「{}」", "Recording named “{}”", new_stem), false);
+        Some((new_video, new_out))
     }
 
     /// 開始一步：第幾步、做什麼
@@ -466,8 +507,8 @@ mod tests {
     #[test]
     fn reads_settings() {
         assert!(!AfterRecord::from_ui(None).any());
-        let a = AfterRecord::from_ui(Some(&json!({ "afterIdleCut": true, "afterSubs": true, "afterSubsModel": 9, "afterSubsLang": 1, "afterCompressMb": 25 })));
-        assert_eq!(a, AfterRecord { idle_cut: true, subtitles: true, subs_model: crate::subtitles::MODELS.len() - 1, subs_lang: 1, compress_mb: 25 });
+        let a = AfterRecord::from_ui(Some(&json!({ "afterIdleCut": true, "afterSubs": true, "afterSubsModel": 9, "afterSubsLang": 1, "afterCompressMb": 25, "afterAutoName": true })));
+        assert_eq!(a, AfterRecord { idle_cut: true, subtitles: true, subs_model: crate::subtitles::MODELS.len() - 1, subs_lang: 1, compress_mb: 25, auto_name: true });
         assert!(a.any());
         assert!(AfterRecord::from_ui(Some(&json!({ "afterCompressMb": 10 }))).any());
     }

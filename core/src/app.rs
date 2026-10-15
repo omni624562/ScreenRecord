@@ -14,6 +14,7 @@ use crate::types::{AudioEnv, EnvInfo, FfmpegInfo, HotkeyStatus, MonitorInfo, Rec
 use crate::updater::{check_for_update, UpdateError};
 use crate::version::APP_VERSION;
 use crate::{info, tr, trf, warn};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -170,6 +171,10 @@ pub struct App {
     schedule_gen: AtomicU64,
     /// 錄影中不讓電腦睡眠
     awake: Mutex<Option<crate::power::KeepAwake>>,
+    /// 錄影中每幾秒記一次在用的程式（自動命名用）：(執行檔, 視窗標題) → 次數；None = 沒在記
+    rec_apps: Arc<Mutex<Option<HashMap<(String, String), u32>>>>,
+    /// 剛錄完那支最常用的程式（存好時記到 shot_meta）
+    last_rec_app: Mutex<Option<(String, String)>>,
     /// 錄完自動處理中（after_record.rs）
     pub(crate) after: Mutex<Option<crate::after_record::AfterStatus>>,
     /// 主畫面看得到時，介面目前的錄影設定（每一格更新；看不到時是 None）：選了攝影機就先顯示攝影機小視窗
@@ -185,6 +190,17 @@ pub struct App {
     tray_dispose: Mutex<Option<Box<dyn FnOnce() + Send>>>,
     /// 重新登記全域快速鍵（系統匣執行緒）
     hotkey_applier: Mutex<Option<HotkeyApplier>>,
+}
+
+/// 錄影中最常用的程式（依執行檔加總）與它最常出現的視窗標題
+fn most_used_app(counts: &HashMap<(String, String), u32>) -> Option<(String, String)> {
+    let mut by_exe: HashMap<&str, u32> = HashMap::new();
+    for ((exe, _), n) in counts {
+        *by_exe.entry(exe).or_default() += n;
+    }
+    let exe = by_exe.into_iter().max_by(|a, b| a.1.cmp(&b.1).then_with(|| b.0.cmp(a.0)))?.0;
+    let title = counts.iter().filter(|((e, _), _)| e == exe).max_by(|a, b| a.1.cmp(b.1).then_with(|| b.0 .1.cmp(&a.0 .1))).map(|((_, t), _)| t.clone()).unwrap_or_default();
+    Some((exe.to_string(), title))
 }
 
 /// 錄影器需要的環境（以 Weak 參照 App，避免循環參照）
@@ -240,6 +256,7 @@ impl RecorderDeps for RecDeps {
         // 錄影中不讓電腦因為閒置而睡眠、螢幕也不關（暫停後繼續、移動範圍時沿用同一個；停止時 after_stop 放掉）
         if let Some(a) = self.0.upgrade() {
             a.awake.lock().unwrap().get_or_insert_with(|| crate::power::keep_awake(true));
+            a.sample_apps();
         }
     }
     fn before_capture(&self, area: Rect) -> BoxFut<'_, ()> {
@@ -258,6 +275,9 @@ impl RecorderDeps for RecDeps {
     }
     fn saved(&self, path: &str) {
         if let Some(a) = self.0.upgrade() {
+            if let Some((app, title)) = a.last_rec_app.lock().unwrap().take() {
+                a.shot_meta.record(path, crate::shot_meta::ShotMeta { app, title, src: "rec".into() });
+            }
             tokio::spawn(a.after_record(path.to_string()));
         }
     }
@@ -266,6 +286,8 @@ impl RecorderDeps for RecDeps {
         crate::winui::set_desktop_icons(true);
         if let Some(a) = self.0.upgrade() {
             a.awake.lock().unwrap().take();
+            let counts = a.rec_apps.lock().unwrap().take().unwrap_or_default();
+            *a.last_rec_app.lock().unwrap() = most_used_app(&counts);
         }
     }
     fn save_markers(&self, output: &str, marks: &crate::recorder::Marks) {
@@ -313,6 +335,8 @@ impl App {
             schedule: Mutex::default(),
             schedule_gen: AtomicU64::new(0),
             awake: Mutex::default(),
+            rec_apps: Arc::default(),
+            last_rec_app: Mutex::default(),
             after: Mutex::default(),
             camera_preview: Mutex::new(None),
             rec_bar: Mutex::new((0, crate::types::RecBarPrefs::default())),
@@ -323,6 +347,31 @@ impl App {
             tray_dispose: Mutex::default(),
             hotkey_applier: Mutex::default(),
         })
+    }
+
+    /// 錄影開始：每 4 秒記一次在用的程式（已經在記就不重來；停止時 after_stop 收起來）
+    fn sample_apps(&self) {
+        {
+            let mut g = self.rec_apps.lock().unwrap();
+            if g.is_some() {
+                return;
+            }
+            *g = Some(HashMap::new());
+        }
+        let apps = self.rec_apps.clone();
+        std::thread::spawn(move || {
+            let mut wait = Duration::from_secs(1);
+            loop {
+                std::thread::sleep(wait);
+                wait = Duration::from_secs(4);
+                let info = crate::winui::foreground_app();
+                let mut g = apps.lock().unwrap();
+                let Some(m) = g.as_mut() else { break };
+                if let Some(i) = info.filter(|i| !i.exe.is_empty()) {
+                    *m.entry((i.exe, i.title)).or_default() += 1;
+                }
+            }
+        });
     }
 
     fn lock(&self) -> MutexGuard<'_, State> {

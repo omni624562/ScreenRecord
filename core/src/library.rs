@@ -728,6 +728,33 @@ pub fn grid_layout(days: &[String], g: GridFit) -> Vec<GridPlace> {
 
 /// 錄影改名：原片與底下的加速版 / GIF 一起改（Rec_X_4x.mp4 → 新名_4x.mp4），清單上才不會斷開。
 /// 任何一個失敗就把已改的改回去。busy = 正在錄影 / 轉檔的檔案（小寫完整路徑）。回傳新的完整路徑。
+/// 跟著錄影的檔案：字幕 stem.srt、stem_2.srt、stem.en.srt，只有聲音的 stem.m4a；回傳 (路徑, 名稱 stem 後面的部分)。
+/// stem_2.srt 是另一支錄影 stem_2.mp4 的字幕時不算
+fn sidecars(dir: &Path, stem: &str) -> Vec<(String, String)> {
+    static RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^((_\d+)?(\.[a-z]{2}(-[a-z]{2,4})?)?\.srt|\.m4a)$").unwrap());
+    let Ok(rd) = std::fs::read_dir(dir) else { return vec![] };
+    let lower = stem.to_lowercase();
+    let mut out = vec![];
+    for e in rd.flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        if !name.to_lowercase().starts_with(&lower) || !name.is_char_boundary(stem.len()) {
+            continue;
+        }
+        let rest = &name[stem.len()..];
+        if !RE.is_match(rest) {
+            continue;
+        }
+        if let Some(n) = rest.strip_prefix('_').and_then(|r| r.split('.').next()) {
+            if dir.join(format!("{stem}_{n}.mp4")).exists() {
+                continue;
+            }
+        }
+        out.push((e.path().display().to_string(), rest.to_string()));
+    }
+    out.sort();
+    out
+}
+
 pub async fn rename_recording(cache: &MediaCache, path: &str, new_name: &str, busy: &[String]) -> Result<String> {
     let base = strip_ext(new_name.trim()).trim().to_string();
     if let Some(bad) = check_recording_name(&base) {
@@ -749,6 +776,12 @@ pub async fn rename_recording(cache: &MediaCache, path: &str, new_name: &str, bu
     for x in &entry.exports {
         let suffix: String = x.media.name.chars().skip(old_len).collect();
         plan.push((x.media.path.clone(), dir.join(format!("{base}{suffix}"))));
+    }
+    // 字幕（搜尋說過的話用它）、只有聲音的 M4A 一起改
+    if ext == "mp4" {
+        for (from, suffix) in sidecars(&dir, &old_base) {
+            plan.push((from, dir.join(format!("{base}{suffix}"))));
+        }
     }
     for (from, to) in &plan {
         if busy.contains(&from.to_lowercase()) {
@@ -865,6 +898,13 @@ pub fn move_images(from: &Path, to: &Path) -> MoveReport {
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn sidecars_follow_the_recording_but_not_other_recordings() {
+        let d = make(&["Rec_a.mp4", "Rec_a.srt", "Rec_a_2.srt", "Rec_a.en.srt", "Rec_a.m4a", "Rec_a_3.mp4", "Rec_a_3.srt", "Rec_ab.srt", "Rec_a.txt"]);
+        let got: Vec<String> = sidecars(d.path(), "Rec_a").into_iter().map(|(_, rest)| rest).collect();
+        assert_eq!(got, vec![".en.srt", ".m4a", ".srt", "_2.srt"]);
+    }
 
     fn make(names: &[&str]) -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();

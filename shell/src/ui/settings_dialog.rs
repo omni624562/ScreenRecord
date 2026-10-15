@@ -1112,6 +1112,19 @@ fn after_record_section(app: &mut UiApp, ui: &mut Ui) {
             app.save_settings();
         }
     });
+    form_row(ui, tr!("命名", "Name"), |ui| {
+        let mut on = app.s.after_auto_name;
+        if switch(ui, &mut on, tr!("依內容自動命名", "Name by content"), true)
+            .on_hover_text(tr!(
+                "依說的話（有字幕時）、畫面上的字、錄影時在用的程式取名，例如「報價單討論_10-15」。只改預設的 Rec_時間 名稱，自己取過的名稱不會動",
+                "Names the recording from what was said (with subtitles), text on screen and the app you used, e.g. “Quote review_10-15”. Only default Rec_time names are changed; names you chose are kept."
+            ))
+            .changed()
+        {
+            app.s.after_auto_name = on;
+            app.save_settings();
+        }
+    });
     form_hint(
         ui,
         tr!(
