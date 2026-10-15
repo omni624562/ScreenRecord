@@ -950,10 +950,14 @@ mod tests {
         assert_eq!(found.items.len(), 1);
         assert_eq!(found.items[0].media.name, "Rec_B.mp4");
         // 展開資料夾：最上層、子資料夾（最多 3 層），不含程式自己的資料夾
+        // 比對相對於最上層的路徑：暫存資料夾的名稱是隨機的（可能剛好以 d 結尾）
         let all = expand_dirs(vec![dir.path().display().to_string()], true).await;
-        assert!(all.iter().any(|d| d.ends_with("2026")));
-        assert!(all.iter().any(|d| d.ends_with('c')));
-        assert!(!all.iter().any(|d| d.ends_with('d') || d.contains(".parts") || d.contains("markers") || d.contains("RECYCLE")));
+        let rel: Vec<String> = all.iter().map(|d| Path::new(d).strip_prefix(dir.path()).unwrap().display().to_string()).collect();
+        let abc = ["a", "b", "c"].join(&sep.to_string());
+        assert!(rel.contains(&String::new()));
+        assert!(rel.contains(&format!("教學{sep}2026")));
+        assert!(rel.contains(&abc));
+        assert!(!rel.iter().any(|d| d.ends_with(&format!("{sep}d")) || d.contains(".parts") || d.contains("markers") || d.contains("RECYCLE")));
         assert_eq!(expand_dirs(vec!["x".into()], false).await, vec!["x".to_string()]);
     }
 
