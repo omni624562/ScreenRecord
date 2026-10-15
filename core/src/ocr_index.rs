@@ -69,7 +69,7 @@ impl OcrIndex {
     /// 這張截圖辨識過、而且之後沒改過
     fn fresh(&self, path: &str) -> bool {
         let Some((bytes, mtime)) = stamp(path) else { return false };
-        self.map.lock().unwrap().get(&key(path)).is_some_and(|e| e.bytes == bytes && e.mtime == mtime)
+        self.map.lock().unwrap().get(&key(path)).is_some_and(|e| e.bytes == bytes && crate::paths::same_mtime(e.mtime, mtime))
     }
 
     /// 圖裡的字有沒有 query（已正規化）；還沒辨識的算沒有

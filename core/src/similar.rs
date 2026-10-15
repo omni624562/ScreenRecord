@@ -134,7 +134,7 @@ impl HashStore {
             for (i, p) in paths.iter().enumerate() {
                 let Some((bytes, mtime)) = stamps[i] else { continue };
                 match map.get(&key(p)) {
-                    Some(e) if e.bytes == bytes && e.mtime == mtime => out[i] = Some((e.w, e.h, e.hash)),
+                    Some(e) if e.bytes == bytes && crate::paths::same_mtime(e.mtime, mtime) => out[i] = Some((e.w, e.h, e.hash)),
                     _ => todo.push(i),
                 }
             }
