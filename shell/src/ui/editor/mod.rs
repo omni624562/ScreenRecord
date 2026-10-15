@@ -301,6 +301,9 @@ pub struct Editor {
     rec_markers: Vec<f64>,
     /// 字幕的標註（id）
     sub_ids: HashSet<u64>,
+    /// 用文字剪：字幕清單裡選起來、要一起剪掉的幾句（Ctrl / Shift＋點時間）；最後點的那句
+    sub_picked: HashSet<u64>,
+    sub_anchor: Option<u64>,
     /// 分割點（原片的時間）：時間軸分成一段一段，點一下選取一段
     splits: Vec<f64>,
     /// 跟著點擊放大時不放大的點擊（點擊的時間）
@@ -340,6 +343,8 @@ pub struct Editor {
     subs: Option<subs::SubsJob>,
     subs_lang: usize,
     subs_model: usize,
+    /// 產生的字幕：0 = 說的語言、1 = 翻成英文、2 = 中英對照
+    subs_out: usize,
     /// 目前用的 FFmpeg 有 whisper（沒有時第一次產生字幕要另外下載語音辨識用的 FFmpeg；提示用）
     ffmpeg_whisper: bool,
     /// 正在用文字辨識找個資
@@ -569,6 +574,8 @@ impl Editor {
             markers: vec![],
             rec_markers: vec![],
             sub_ids: HashSet::new(),
+            sub_picked: HashSet::new(),
+            sub_anchor: None,
             splits: vec![],
             zoom_skip: vec![],
             vpending: None,
@@ -591,6 +598,7 @@ impl Editor {
             subs: None,
             subs_lang: 0,
             subs_model: 0,
+            subs_out: 0,
             ffmpeg_whisper: app.env.ffmpeg.has_whisper,
             finding_pii: false,
             finding_idle: false,

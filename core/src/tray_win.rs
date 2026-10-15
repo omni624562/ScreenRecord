@@ -450,6 +450,7 @@ fn show_menu() {
             m.add(shot, tr!("編輯上次截圖(&E)…", "&Edit last screenshot…"), TrayCommand::EditLastShot, !st.has_shot, false);
             Menu::sep(shot);
             m.add(shot, tr!("小工具", "Tools"), TrayCommand::Open, true, false);
+            m.add(shot, tr!("只抓文字(&X)…", "Grab te&xt…"), TrayCommand::ScreenshotText, false, false);
             m.add(shot, tr!("讀取 QR 碼(&Q)…", "Read &QR code…"), TrayCommand::ScreenshotQr, false, false);
             m.add(shot, tr!("取色器(&C)…", "&Color picker…"), TrayCommand::ScreenColor, false, false);
             m.add(shot, tr!("尺規（量距離）(&R)…", "&Ruler (measure distance)…"), TrayCommand::ScreenRuler, false, false);

@@ -724,6 +724,15 @@ impl Recorder {
         self.lock().parts_dir.clone()
     }
 
+    /// 錄好的檔案改名了：結果卡跟著顯示新的檔案
+    pub fn result_renamed(&self, from: &str, to: &str) {
+        if let Some(r) = self.lock().result.as_mut() {
+            if r.path.as_deref().is_some_and(|p| p.eq_ignore_ascii_case(from)) {
+                r.path = Some(to.to_string());
+            }
+        }
+    }
+
     pub fn output_path(&self) -> Option<PathBuf> {
         let st = self.lock();
         if st.state != RecorderState::Idle && st.replay_sec().is_none() {

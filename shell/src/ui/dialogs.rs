@@ -31,6 +31,11 @@ pub struct Ask {
     pub hint: String,
     /// 取消按鈕的字（None = 取消）
     pub cancel: Option<String>,
+    /// 輸入對話框：建議的值（點一下填進去），例如依內容想的名稱
+    pub suggest: Option<String>,
+    /// 正在想建議的值；suggest_key 是它屬於哪個檔案（對話框換了就不套用）
+    pub suggest_pending: bool,
+    pub suggest_key: String,
     focused: bool,
 }
 
@@ -52,6 +57,9 @@ impl Ask {
             alt_danger: false,
             hint: String::new(),
             cancel: None,
+            suggest: None,
+            suggest_pending: false,
+            suggest_key: String::new(),
             focused: false,
         }
     }
@@ -116,6 +124,25 @@ pub fn show_ask(app: &mut UiApp, ctx: &egui::Context) {
             }
             if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                 submit = true;
+            }
+            if ask.suggest_pending {
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    ui.add(egui::Spinner::new().size(12.0));
+                    ui.label(theme::muted(ui, tr!("正在依內容想名稱…", "Thinking of a name from the content…")).font(theme::font(12.0)));
+                });
+            } else if let Some(s) = ask.suggest.clone() {
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    ui.label(theme::muted(ui, tr!("建議名稱：", "Suggested: ")).font(theme::font(12.0)));
+                    let b = ui
+                        .add_enabled(!ask.busy, egui::Button::new(RichText::new(&s).font(theme::font(12.5)).color(p.accent)).frame(false))
+                        .on_hover_text(tr!("依說的話、畫面上的字、在用的程式想的名稱；點一下套用", "Based on what was said, text on screen and the app used. Click to use it"))
+                        .on_hover_cursor(egui::CursorIcon::PointingHand);
+                    if b.clicked() {
+                        ask.input = Some(s.clone());
+                    }
+                });
             }
         }
         if let Some(e) = &ask.error {

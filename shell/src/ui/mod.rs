@@ -402,6 +402,21 @@ impl UiApp {
         });
     }
 
+    /// 只抓文字的結果（core 已經複製到剪貼簿）：提示幾個字，可以打開來看
+    pub fn show_grabbed_text(&mut self, l: screenrecorder_core::ocr::Layout) {
+        if l.text.trim().is_empty() {
+            return self.toast(tr!("沒有認出文字（框大一點、或把畫面放大再試試）", "No text recognized (try a larger area or zoom in)"), true);
+        }
+        let n = l.text.chars().filter(|c| !c.is_whitespace()).count();
+        let msg = if l.table {
+            trf!("已複製成表格（{n} 個字），可以直接貼到 Excel", "Copied as a table ({n} characters); paste it straight into Excel")
+        } else {
+            trf!("已複製 {n} 個字", "Copied {n} characters")
+        };
+        let text = l.text.clone();
+        self.toast_with(msg, false, vec![ToastAction::new(tr!("看內容", "Show"), move |app| app.ocr = Some(ocr::Ocr { text: Some(text), lang: String::new() }))]);
+    }
+
     pub fn toast(&mut self, text: impl Into<String>, error: bool) {
         self.toast_with(text, error, vec![]);
     }

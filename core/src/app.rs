@@ -14,6 +14,7 @@ use crate::types::{AudioEnv, EnvInfo, FfmpegInfo, HotkeyStatus, MonitorInfo, Rec
 use crate::updater::{check_for_update, UpdateError};
 use crate::version::APP_VERSION;
 use crate::{info, tr, trf, warn};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -170,6 +171,10 @@ pub struct App {
     schedule_gen: AtomicU64,
     /// 錄影中不讓電腦睡眠
     awake: Mutex<Option<crate::power::KeepAwake>>,
+    /// 錄影中每幾秒記一次在用的程式（自動命名用）：(執行檔, 視窗標題) → 次數；None = 沒在記
+    rec_apps: Arc<Mutex<Option<AppCounts>>>,
+    /// 剛錄完那支最常用的程式（存好時記到 shot_meta）
+    last_rec_app: Mutex<Option<(String, String)>>,
     /// 錄完自動處理中（after_record.rs）
     pub(crate) after: Mutex<Option<crate::after_record::AfterStatus>>,
     /// 主畫面看得到時，介面目前的錄影設定（每一格更新；看不到時是 None）：選了攝影機就先顯示攝影機小視窗
@@ -185,6 +190,20 @@ pub struct App {
     tray_dispose: Mutex<Option<Box<dyn FnOnce() + Send>>>,
     /// 重新登記全域快速鍵（系統匣執行緒）
     hotkey_applier: Mutex<Option<HotkeyApplier>>,
+}
+
+/// (執行檔, 視窗標題) → 記到幾次
+type AppCounts = HashMap<(String, String), u32>;
+
+/// 錄影中最常用的程式（依執行檔加總）與它最常出現的視窗標題
+fn most_used_app(counts: &AppCounts) -> Option<(String, String)> {
+    let mut by_exe: HashMap<&str, u32> = HashMap::new();
+    for ((exe, _), n) in counts {
+        *by_exe.entry(exe).or_default() += n;
+    }
+    let exe = by_exe.into_iter().max_by(|a, b| a.1.cmp(&b.1).then_with(|| b.0.cmp(a.0)))?.0;
+    let title = counts.iter().filter(|((e, _), _)| e == exe).max_by(|a, b| a.1.cmp(b.1).then_with(|| b.0 .1.cmp(&a.0 .1))).map(|((_, t), _)| t.clone()).unwrap_or_default();
+    Some((exe.to_string(), title))
 }
 
 /// 錄影器需要的環境（以 Weak 參照 App，避免循環參照）
@@ -240,6 +259,7 @@ impl RecorderDeps for RecDeps {
         // 錄影中不讓電腦因為閒置而睡眠、螢幕也不關（暫停後繼續、移動範圍時沿用同一個；停止時 after_stop 放掉）
         if let Some(a) = self.0.upgrade() {
             a.awake.lock().unwrap().get_or_insert_with(|| crate::power::keep_awake(true));
+            a.sample_apps();
         }
     }
     fn before_capture(&self, area: Rect) -> BoxFut<'_, ()> {
@@ -258,6 +278,9 @@ impl RecorderDeps for RecDeps {
     }
     fn saved(&self, path: &str) {
         if let Some(a) = self.0.upgrade() {
+            if let Some((app, title)) = a.last_rec_app.lock().unwrap().take() {
+                a.shot_meta.record(path, crate::shot_meta::ShotMeta { app, title, src: "rec".into() });
+            }
             tokio::spawn(a.after_record(path.to_string()));
         }
     }
@@ -266,6 +289,8 @@ impl RecorderDeps for RecDeps {
         crate::winui::set_desktop_icons(true);
         if let Some(a) = self.0.upgrade() {
             a.awake.lock().unwrap().take();
+            let counts = a.rec_apps.lock().unwrap().take().unwrap_or_default();
+            *a.last_rec_app.lock().unwrap() = most_used_app(&counts);
         }
     }
     fn save_markers(&self, output: &str, marks: &crate::recorder::Marks) {
@@ -313,6 +338,8 @@ impl App {
             schedule: Mutex::default(),
             schedule_gen: AtomicU64::new(0),
             awake: Mutex::default(),
+            rec_apps: Arc::default(),
+            last_rec_app: Mutex::default(),
             after: Mutex::default(),
             camera_preview: Mutex::new(None),
             rec_bar: Mutex::new((0, crate::types::RecBarPrefs::default())),
@@ -323,6 +350,31 @@ impl App {
             tray_dispose: Mutex::default(),
             hotkey_applier: Mutex::default(),
         })
+    }
+
+    /// 錄影開始：每 4 秒記一次在用的程式（已經在記就不重來；停止時 after_stop 收起來）
+    fn sample_apps(&self) {
+        {
+            let mut g = self.rec_apps.lock().unwrap();
+            if g.is_some() {
+                return;
+            }
+            *g = Some(HashMap::new());
+        }
+        let apps = self.rec_apps.clone();
+        std::thread::spawn(move || {
+            let mut wait = Duration::from_secs(1);
+            loop {
+                std::thread::sleep(wait);
+                wait = Duration::from_secs(4);
+                let info = crate::winui::foreground_app();
+                let mut g = apps.lock().unwrap();
+                let Some(m) = g.as_mut() else { break };
+                if let Some(i) = info.filter(|i| !i.exe.is_empty()) {
+                    *m.entry((i.exe, i.title)).or_default() += 1;
+                }
+            }
+        });
     }
 
     fn lock(&self) -> MutexGuard<'_, State> {
@@ -951,39 +1003,72 @@ impl App {
         }
         #[cfg(windows)]
         {
-            {
-                let mut st = self.lock();
-                if st.shooting || st.snipping {
-                    return Err(crate::Error::config(tr!("正在截圖", "A screenshot is already in progress")));
-                }
-                st.shooting = true;
-            }
-            let src = self.snip_ready(self.snip_capture(config).await)?;
-            let sel = self.snip_pick(&src, crate::snip_win::Mode::Qr).await.map(|p| p.0);
-            let path = src.path.clone();
-            let desk = src.desktop;
-            let res = match sel {
-                None => Ok(None),
-                Some(r) => tokio::task::spawn_blocking(move || -> crate::Result<Vec<String>> {
-                    let pm = tiny_skia::Pixmap::decode_png(&std::fs::read(&path).map_err(|e| crate::Error::other(e.to_string()))?).map_err(|e| crate::Error::other(e.to_string()))?;
-                    let (x, y) = ((r.x - desk.x).max(0) as u32, (r.y - desk.y).max(0) as u32);
-                    let (w, h) = ((r.width as u32).min(pm.width().saturating_sub(x)), (r.height as u32).min(pm.height().saturating_sub(y)));
-                    let mut rgba = Vec::with_capacity((w * h * 4) as usize);
-                    let data = crate::shot_edit::straight_rgba(&pm);
-                    for row in y..y + h {
-                        let i = ((row * pm.width() + x) * 4) as usize;
-                        rgba.extend_from_slice(&data[i..i + (w * 4) as usize]);
-                    }
-                    Ok(crate::qr::decode(&rgba, w, h))
-                })
-                .await
-                .map_err(|e| crate::Error::other(e.to_string()))
-                .and_then(|r| r.map(Some)),
-            };
-            // 不管成功失敗（包括背景工作出錯）都要結束框選，否則之後的截圖都會被當成「正在截圖」
-            self.snip_end(Some(&src));
-            res
+            self.snip_pixels(config, crate::snip_win::Mode::Qr, |rgba, w, h| Ok(crate::qr::decode(&rgba, w, h))).await
         }
+    }
+
+    /// 只抓文字：在螢幕上框選，辨識裡面的字直接複製到剪貼簿（不存圖）；對齊的欄排成 Tab 分隔，可以直接貼到 Excel
+    pub async fn text_snip(self: &Arc<Self>, config: &RecordConfig) -> crate::Result<Option<crate::ocr::Layout>> {
+        #[cfg(not(windows))]
+        {
+            let _ = config;
+            Err(crate::Error::config(tr!("只抓文字要用 Windows 的文字辨識，只支援 Windows", "Grab text uses Windows text recognition and is only available on Windows")))
+        }
+        #[cfg(windows)]
+        {
+            let r = self
+                .snip_pixels(config, crate::snip_win::Mode::Text, |rgba, w, h| {
+                    let lines = crate::ocr::recognize_words(&rgba, w, h).map_err(crate::Error::other)?;
+                    Ok(crate::ocr::layout(&lines))
+                })
+                .await?;
+            if let Some(l) = r.as_ref().filter(|l| !l.text.trim().is_empty()) {
+                crate::clipboard::copy_text(&l.text);
+            }
+            Ok(r)
+        }
+    }
+
+    /// 凍結畫面讓使用者框選一塊（或點一下選視窗），把那塊的像素（RGBA）交給 f 處理；取消時 None
+    #[cfg(windows)]
+    async fn snip_pixels<T: Send + 'static>(
+        self: &Arc<Self>,
+        config: &RecordConfig,
+        mode: crate::snip_win::Mode,
+        f: impl FnOnce(Vec<u8>, u32, u32) -> crate::Result<T> + Send + 'static,
+    ) -> crate::Result<Option<T>> {
+        {
+            let mut st = self.lock();
+            if st.shooting || st.snipping {
+                return Err(crate::Error::config(tr!("正在截圖", "A screenshot is already in progress")));
+            }
+            st.shooting = true;
+        }
+        let src = self.snip_ready(self.snip_capture(config).await)?;
+        let sel = self.snip_pick(&src, mode).await.map(|p| p.0);
+        let path = src.path.clone();
+        let desk = src.desktop;
+        let res = match sel {
+            None => Ok(None),
+            Some(r) => tokio::task::spawn_blocking(move || -> crate::Result<T> {
+                let pm = tiny_skia::Pixmap::decode_png(&std::fs::read(&path).map_err(|e| crate::Error::other(e.to_string()))?).map_err(|e| crate::Error::other(e.to_string()))?;
+                let (x, y) = ((r.x - desk.x).max(0) as u32, (r.y - desk.y).max(0) as u32);
+                let (w, h) = ((r.width as u32).min(pm.width().saturating_sub(x)), (r.height as u32).min(pm.height().saturating_sub(y)));
+                let mut rgba = Vec::with_capacity((w * h * 4) as usize);
+                let data = crate::shot_edit::straight_rgba(&pm);
+                for row in y..y + h {
+                    let i = ((row * pm.width() + x) * 4) as usize;
+                    rgba.extend_from_slice(&data[i..i + (w * 4) as usize]);
+                }
+                f(rgba, w, h)
+            })
+            .await
+            .map_err(|e| crate::Error::other(e.to_string()))
+            .and_then(|r| r.map(Some)),
+        };
+        // 不管成功失敗（包括背景工作出錯）都要結束框選，否則之後的截圖都會被當成「正在截圖」
+        self.snip_end(Some(&src));
+        res
     }
 
     /// 長截圖：框選範圍（或點一下選視窗）後，自動一邊往下捲一邊擷取，接成一張長圖，

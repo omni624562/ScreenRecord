@@ -1097,6 +1097,19 @@ fn after_record_section(app: &mut UiApp, ui: &mut Ui) {
                 app.save_settings();
             }
         });
+        form_row(ui, tr!("英文字幕", "English"), |ui| {
+            let mut on = app.s.after_subs_en;
+            if switch(ui, &mut on, tr!("也翻成英文（存成 .en.srt）", "Also translate to English (.en.srt)"), true)
+                .on_hover_text(tr!(
+                    "再辨識一次並翻成英文，另存「同名.en.srt」，可以給外國客戶或上傳 YouTube；時間大約多一倍。剪輯視窗也可以做中英對照的字幕",
+                    "Recognizes once more and translates to English, saved as “name.en.srt” for international viewers or YouTube; takes about twice as long. The editor can also make bilingual subtitles"
+                ))
+                .changed()
+            {
+                app.s.after_subs_en = on;
+                app.save_settings();
+            }
+        });
         let m = &MODELS[(app.s.after_subs_model as usize).min(MODELS.len() - 1)];
         use screenrecorder_core::subtitles::{describe_downloads, pending_downloads, speech_ffmpeg_downloaded};
         let need = pending_downloads(!app.env.ffmpeg.has_whisper && !speech_ffmpeg_downloaded(), m);
@@ -1109,6 +1122,19 @@ fn after_record_section(app: &mut UiApp, ui: &mut Ui) {
         let items: Vec<(u32, String, bool)> = MAX_MB.iter().map(|v| (*v, if *v == 0 { tr!("不壓縮", "Don't compress").to_string() } else { trf!("{v} MB 以內", "Under {v} MB") }, true)).collect();
         if form_combo(ui, "after-compress", FORM_CTRL_W, &mut mb, &items) {
             app.s.after_compress_mb = mb;
+            app.save_settings();
+        }
+    });
+    form_row(ui, tr!("命名", "Name"), |ui| {
+        let mut on = app.s.after_auto_name;
+        if switch(ui, &mut on, tr!("依內容自動命名", "Name by content"), true)
+            .on_hover_text(tr!(
+                "依說的話（有字幕時）、畫面上的字、錄影時在用的程式取名，例如「報價單討論_10-15」。只改預設的 Rec_時間 名稱，自己取過的名稱不會動",
+                "Names the recording from what was said (with subtitles), text on screen and the app you used, e.g. “Quote review_10-15”. Only default Rec_time names are changed; names you chose are kept."
+            ))
+            .changed()
+        {
+            app.s.after_auto_name = on;
             app.save_settings();
         }
     });

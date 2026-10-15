@@ -81,6 +81,8 @@ pub enum Mode {
     Scroll,
     /// 讀取 QR 碼
     Qr,
+    /// 只抓文字（辨識後複製到剪貼簿）
+    Text,
     /// 取色器：點一下複製色碼
     Color,
     /// 尺規：拖曳量距離
@@ -193,6 +195,7 @@ fn run(rgba: &[u8], desk: Rect, windows: Vec<Rect>, record: Mode, instant: bool)
             Mode::Record => tr!("框選錄影範圍", "Select area to record"),
             Mode::Scroll => tr!("長截圖", "Scrolling screenshot"),
             Mode::Qr => tr!("讀取 QR 碼", "Read QR code"),
+            Mode::Text => tr!("只抓文字", "Grab text"),
             Mode::Color => tr!("取色器", "Color picker"),
             Mode::Ruler => tr!("尺規", "Ruler"),
             Mode::Shot => tr!("框選截圖", "Screenshot of selected area"),
@@ -634,6 +637,10 @@ fn tip_text(st: &State) -> &'static str {
             "Select what to scroll (e.g. part of a web page) or click a window; it then scrolls down and stitches a long image. Esc stops"
         ),
         Mode::Qr => tr!("框選 QR 碼（大一點沒關係），或點一下選視窗　　Esc 或右鍵取消", "Select the QR code (larger is fine), or click a window    Esc or right-click to cancel"),
+        Mode::Text => tr!(
+            "框選要抓的文字（圖片、影片裡的字也可以），或點一下選視窗；字會直接複製到剪貼簿　　Esc 或右鍵取消",
+            "Select the text to grab (text in images and videos works too), or click a window; it's copied straight to the clipboard    Esc or right-click to cancel"
+        ),
         Mode::Color => tr!(
             "移到要取色的地方點一下（或按 C），色碼會複製到剪貼簿；方向鍵可以微調　　Esc 或右鍵取消",
             "Click a spot (or press C) to copy its color code; arrow keys fine-tune    Esc or right-click to cancel"
@@ -690,6 +697,7 @@ unsafe fn paint(hwnd: HWND) {
                         Mode::Record => tr!("選這個視窗", "select it"),
                         Mode::Scroll => tr!("捲動擷取", "scroll and capture"),
                         Mode::Qr => tr!("讀取 QR 碼", "read the QR code"),
+                        Mode::Text => tr!("抓裡面的文字", "grab its text"),
                         Mode::Shot if st.adjust => tr!("選這個視窗", "select it"),
                         Mode::Shot | Mode::Color | Mode::Ruler => tr!("擷取", "capture"),
                     }

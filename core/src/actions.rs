@@ -283,6 +283,7 @@ pub async fn rename(app: &App, path: &str, name: &str) -> Result<String> {
     app.markers.renamed(path, &new_path);
     app.pins.renamed(path, &new_path);
     app.shot_meta.renamed(path, &new_path);
+    app.recorder.result_renamed(path, &new_path);
     Ok(new_path)
 }
 
@@ -750,6 +751,77 @@ pub fn open_url(url: &str) -> Result<()> {
     }
     crate::desktop::open_with_explorer(u, false);
     Ok(())
+}
+
+/// 想名稱用的線索：字幕（旁邊的 SRT）、畫面上的字（Windows 的文字辨識，錄影取 3 個畫面；截圖用文字索引）、錄影 / 截圖時在用的程式
+pub async fn name_hints(app: &App, path: &str) -> crate::naming::Hints {
+    let p = Path::new(path);
+    let stem = p.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    let date = crate::naming::date_of(&stem)
+        .unwrap_or_else(|| std::fs::metadata(p).and_then(|m| m.modified()).map(|t| chrono::DateTime::<chrono::Local>::from(t).format("%m-%d").to_string()).unwrap_or_default());
+    let meta = app.shot_meta.get(path).unwrap_or_default();
+    let mut h = crate::naming::Hints { app: meta.app, title: meta.title, date, ..Default::default() };
+    if crate::library::is_image_name(&p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()) {
+        if let Some(t) = app.ocr.text(path).filter(|t| !t.trim().is_empty()) {
+            h.screen.push(t);
+        }
+        return h;
+    }
+    let srt = p.with_extension("srt");
+    if let Ok(cues) = crate::subtitles::read_file(&srt) {
+        h.subs = cues.into_iter().map(|c| c.text).collect();
+    }
+    if cfg!(windows) {
+        if let Some(ffmpeg) = app.ffmpeg_path() {
+            h.screen = screen_text(app, &ffmpeg, path).await;
+        }
+    }
+    h
+}
+
+/// 影片 1/4、1/2、3/4 處畫面上的字
+async fn screen_text(app: &App, ffmpeg: &Path, path: &str) -> Vec<String> {
+    let Ok(info) = app.cache.probe(ffmpeg, path).await else { return vec![] };
+    let (Some(d), Some(w), Some(hh)) = (info.duration_sec, info.width, info.height) else { return vec![] };
+    let (ffmpeg, path) = (ffmpeg.to_path_buf(), path.to_string());
+    tokio::task::spawn_blocking(move || {
+        let (fw, fh) = crate::player::fit_size(w, hh, 1920, 1080);
+        [0.25, 0.5, 0.75]
+            .iter()
+            .filter_map(|f| crate::player::decode_frame(&ffmpeg, &path, d * f, fw, fh, false))
+            .filter_map(|rgba| crate::ocr::recognize(&rgba, fw, fh).ok().map(|(t, _)| t))
+            .filter(|t| !t.trim().is_empty())
+            .collect()
+    })
+    .await
+    .unwrap_or_default()
+}
+
+/// 依內容建議一個名稱（不含副檔名）；想不出來時 None
+pub async fn suggest_name(app: &App, path: &str) -> Option<String> {
+    let h = name_hints(app, path).await;
+    crate::naming::suggest(&h)
+}
+
+/// 錄完自動命名：還是預設名稱（Rec_時間）時改成建議的名稱，同名時加 _2、_3；回傳新的路徑
+pub async fn auto_rename(app: &App, path: &str) -> Option<String> {
+    let stem = Path::new(path).file_stem()?.to_string_lossy().into_owned();
+    if !crate::naming::is_auto_name(&stem) {
+        return None;
+    }
+    let name = suggest_name(app, path).await?;
+    for n in 1..=9 {
+        let cand = if n == 1 { name.clone() } else { format!("{name}_{n}") };
+        match rename(app, path, &cand).await {
+            Ok(p) => return Some(p),
+            Err(e) if e.message().contains(tr!("已有同名的檔案", "A file with this name already exists")) => continue,
+            Err(e) => {
+                crate::warn!("[自動命名] 無法改名：{}", e.message());
+                return None;
+            }
+        }
+    }
+    None
 }
 
 #[cfg(test)]

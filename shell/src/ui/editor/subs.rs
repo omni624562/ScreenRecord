@@ -6,8 +6,9 @@ use super::{Editor, VAct};
 use crate::ui::dialogs::{file_name, Ask};
 use crate::ui::theme::{self, segmented, Btn};
 use crate::ui::UiApp;
-use eframe::egui::{self, pos2, vec2, Align2, Color32, CornerRadius, CursorIcon, Id, RichText, Sense, Stroke};
+use eframe::egui::{self, pos2, vec2, Align, Align2, Color32, CornerRadius, CursorIcon, Id, Layout, RichText, Sense, Stroke};
 use screenrecorder_core::annotate::{self, Ann, AnnKind};
+use screenrecorder_core::edit::normalize_ranges;
 use screenrecorder_core::format::video_clock;
 use screenrecorder_core::subtitles::{self, Cue, LANGUAGES, MODELS};
 use screenrecorder_core::{tr, trf};
@@ -82,27 +83,60 @@ pub fn tab(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, toast: &mut 
         }
     });
     // 選取的字幕：顏色、字級、深色底（可以套用到全部字幕）、出現時間
+    let picked: Vec<u64> = ed.sub_picked.iter().copied().filter(|id| ed.is_sub(*id)).collect();
     if ed.ann_sel.is_some_and(|id| ed.is_sub(id)) {
         super::side::props(ed, ui, ctx);
     } else {
-        hint(ui, tr!("點清單裡的時間可以跳到那一段並調整樣式；直接在文字上修改。", "Click a time in the list to jump there and change its style; edit the text right in the list."));
+        // 說明和「選了好幾句」的按鈕放在同一個位置、一樣高，選句子時下面的清單不會跳動
+        let hint_h = Id::new("sub-hint-h");
+        let h = ui.data(|d| d.get_temp::<f32>(hint_h)).unwrap_or(0.0);
+        if picked.is_empty() {
+            let r = ui
+                .scope(|ui| {
+                    hint(
+                        ui,
+                        tr!(
+                            "用文字剪影片：按句子右邊的剪刀就剪掉那一句講話的片段；Ctrl 或 Shift＋點時間可以選好幾句一起剪。點時間跳過去，直接在文字上修改。",
+                            "Edit by text: click the scissors next to a sentence to cut that part of the video; Ctrl- or Shift-click times to pick several. Click a time to jump there; edit the text right in the list."
+                        ),
+                    )
+                })
+                .response
+                .rect;
+            ui.data_mut(|d| d.insert_temp(hint_h, r.height()));
+        } else {
+            let w = ui.available_width();
+            ui.allocate_ui_with_layout(vec2(w, h), Layout::left_to_right(Align::Center), |ui| {
+                ui.set_min_height(h);
+                ui.label(RichText::new(trf!("已選 {} 句", "{} selected", picked.len())).font(theme::font(12.5)));
+                if Btn::new(trf!("剪掉這 {} 句", "Cut {} sentences", picked.len())).icon(theme::Icon::Cut).small().primary().show(ui).clicked() {
+                    *toast = Some((ed.cut_subs(&picked), false));
+                }
+                if Btn::new(tr!("取消選取", "Clear selection")).ghost().small().show(ui).clicked() {
+                    ed.sub_picked.clear();
+                }
+            });
+        }
     }
-    list(ed, ui);
+    list(ed, ui, toast);
 }
 
 fn hint(ui: &mut egui::Ui, text: &str) {
     ui.label(theme::muted(ui, text).font(theme::font(12.0)));
 }
 
-/// 每一段字幕一行：時間（點一下跳過去並選取）、可以直接修改的文字、刪除
-fn list(ed: &mut Editor, ui: &mut egui::Ui) {
+/// 每一段字幕一行：時間（點一下跳過去並選取；Ctrl / Shift＋點選好幾句）、可以直接修改的文字、
+/// 剪掉這一句（剪掉的顯示還原）、刪除字幕
+fn list(ed: &mut Editor, ui: &mut egui::Ui, toast: &mut Option<(String, bool)>) {
     let p = theme::pal(ui);
     let keep = ed.keep();
     let mut rows: Vec<(u64, f64, f64, String, bool)> =
-        ed.anns.iter().filter(|a| ed.is_sub(a.id)).map(|a| (a.id, a.start, a.end, a.text.clone().unwrap_or_default().replace('\n', " "), !Editor::in_output(a, &keep))).collect();
+        ed.anns.iter().filter(|a| ed.is_sub(a.id)).map(|a| (a.id, a.start, a.end, subtitles::flat(&a.text.clone().unwrap_or_default()), !Editor::in_output(a, &keep))).collect();
     rows.sort_by(|x, y| x.1.total_cmp(&y.1).then(x.0.cmp(&y.0)));
     let now = ed.now();
-    let (mut select, mut delete, mut edit, mut seek) = (None, None, None, None);
+    let order: Vec<u64> = rows.iter().map(|r| r.0).collect();
+    let mods = ui.input(|i| i.modifiers);
+    let (mut select, mut delete, mut edit, mut seek, mut cut, mut uncut, mut pick) = (None, None, None, None, None, None, None);
     let w = ui.available_width();
     ui.spacing_mut().item_spacing.y = 3.0;
     for (id, start, end, mut text, gone) in rows {
@@ -112,9 +146,17 @@ fn list(ed: &mut Editor, ui: &mut egui::Ui) {
             continue;
         }
         let on = ed.ann_sel == Some(id);
+        let picked = ed.sub_picked.contains(&id);
         let playing_here = now >= start && now < end;
         let painter = ui.painter();
-        painter.rect(r, CornerRadius::same(6), if on { p.accent.gamma_multiply(0.12) } else { Color32::TRANSPARENT }, Stroke::new(1.0, if on { p.accent } else { p.border }), egui::StrokeKind::Inside);
+        let fill = if picked {
+            p.accent_soft
+        } else if on {
+            p.accent.gamma_multiply(0.12)
+        } else {
+            Color32::TRANSPARENT
+        };
+        painter.rect(r, CornerRadius::same(6), fill, Stroke::new(1.0, if on || picked { p.accent } else { p.border }), egui::StrokeKind::Inside);
         if playing_here {
             painter.rect_filled(egui::Rect::from_min_size(r.min + vec2(1.0, 5.0), vec2(3.0, r.height() - 10.0)), CornerRadius::same(2), p.accent);
         }
@@ -130,13 +172,51 @@ fn list(ed: &mut Editor, ui: &mut egui::Ui) {
         ui.painter().text(pos2(tr_rect.left() + 8.0, r.center().y), Align2::LEFT_CENTER, video_clock(start), theme::mono(11.5), tcolor);
         let gone_note = if gone { tr!("（在刪除的片段中，不會出現）", " (in a removed section; won't appear)") } else { "" };
         if t.on_hover_cursor(CursorIcon::PointingHand)
-            .on_hover_text(trf!("{} – {}{}・點一下跳到這一段並選取", "{} – {}{} · click to jump here and select it", video_clock(start), video_clock(end), gone_note))
+            .on_hover_text(trf!(
+                "{} – {}{}・點一下跳到這一段並選取；Ctrl / Shift＋點選好幾句一起剪",
+                "{} – {}{} · click to jump here and select it; Ctrl/Shift-click to pick several to cut",
+                video_clock(start),
+                video_clock(end),
+                gone_note
+            ))
             .clicked()
         {
-            select = Some((id, start));
+            if mods.command || mods.shift {
+                pick = Some((id, mods.shift));
+            } else {
+                select = Some((id, start));
+            }
         }
-        let er = egui::Rect::from_min_max(pos2(r.left() + 64.0, r.top() + 3.0), pos2(r.right() - 30.0, r.bottom() - 3.0));
-        let resp = ui.put(er, egui::TextEdit::singleline(&mut text).id(Id::new(("sub-text", id))).font(theme::font(13.0)).margin(vec2(4.0, 3.0)));
+        let er = egui::Rect::from_min_max(pos2(r.left() + 64.0, r.top() + 3.0), pos2(r.right() - 56.0, r.bottom() - 3.0));
+        let mut te = egui::TextEdit::singleline(&mut text).id(Id::new(("sub-text", id))).font(theme::font(13.0)).margin(vec2(4.0, 3.0));
+        if gone {
+            te = te.text_color(p.muted);
+        }
+        let resp = ui.put(er, te);
+        // 剪掉這一句（剪掉的顯示還原）
+        let c_rect = egui::Rect::from_center_size(pos2(r.right() - 41.0, r.center().y), vec2(22.0, 22.0));
+        let tip = if gone {
+            tr!("還原這一句（把這句講話的片段放回影片）", "Restore this sentence (put this part back into the video)")
+        } else {
+            tr!("剪掉這一句講話的片段", "Cut this part of the video")
+        };
+        let cr = ui.interact(c_rect, Id::new(("sub-cut", id)), Sense::click()).on_hover_text(tip).on_hover_cursor(CursorIcon::PointingHand);
+        if cr.hovered() {
+            ui.painter().circle_filled(c_rect.center(), 11.0, p.accent_soft);
+        }
+        theme::paint_icon(
+            ui.painter(),
+            egui::Rect::from_center_size(c_rect.center(), vec2(14.0, 14.0)),
+            if gone { theme::Icon::Undo } else { theme::Icon::Cut },
+            if cr.hovered() { p.accent } else { p.muted },
+        );
+        if cr.clicked() {
+            if gone {
+                uncut = Some(id);
+            } else {
+                cut = Some(id);
+            }
+        }
         if resp.changed() {
             edit = Some((id, text));
         }
@@ -156,6 +236,32 @@ fn list(ed: &mut Editor, ui: &mut egui::Ui) {
     }
     if let Some((id, text)) = edit {
         ed.set_sub_text(id, &text);
+    }
+    if let Some(id) = cut {
+        *toast = Some((ed.cut_subs(&[id]), false));
+    }
+    if let Some(id) = uncut {
+        ed.uncut_sub(id);
+        *toast = Some((tr!("已還原這一句，可按 Ctrl+Z 復原", "Sentence restored. Press Ctrl+Z to undo").into(), false));
+    }
+    // Ctrl＋點：加入或拿掉；Shift＋點：從上次點的那句選到這句
+    if let Some((id, range)) = pick {
+        let anchor = ed.sub_anchor.and_then(|a| order.iter().position(|x| *x == a));
+        match (range, anchor, order.iter().position(|x| *x == id)) {
+            (true, Some(a), Some(b)) => {
+                for x in &order[a.min(b)..=a.max(b)] {
+                    ed.sub_picked.insert(*x);
+                }
+            }
+            _ => {
+                if !ed.sub_picked.remove(&id) {
+                    ed.sub_picked.insert(id);
+                }
+            }
+        }
+        ed.sub_anchor = Some(id);
+        // 收起單一字幕的設定，上面才看得到「剪掉這幾句」
+        ed.ann_sel = None;
     }
     if let Some(t) = seek {
         ed.seek(t);
@@ -185,6 +291,7 @@ pub fn panel(ed: &mut Editor, ui: &mut egui::Ui) {
             0 => tr!("正在確認 FFmpeg 支不支援語音辨識…", "Checking whether FFmpeg supports speech recognition…").to_string(),
             1 => trf!("正在下載語音模型… {pct:.0}%", "Downloading the speech model… {pct:.0}%"),
             3 => trf!("正在下載語音辨識用的 FFmpeg… {pct:.0}%", "Downloading FFmpeg for speech recognition… {pct:.0}%"),
+            4 => trf!("正在翻成英文… {pct:.0}%", "Translating to English… {pct:.0}%"),
             _ => trf!("正在辨識語音… {pct:.0}%", "Recognizing speech… {pct:.0}%"),
         };
         ui.horizontal(|ui| {
@@ -214,6 +321,12 @@ pub fn panel(ed: &mut Editor, ui: &mut egui::Ui) {
             let items: Vec<(usize, &str)> =
                 MODELS.iter().enumerate().map(|(i, m)| (i, if m.id == "base" { tr!("標準（較快）", "Standard (faster)") } else { tr!("精準（較慢）", "Accurate (slower)") })).collect();
             segmented(ui, &mut ed.subs_model, &items, true);
+            ui.label(theme::muted(ui, tr!("字幕", "Subtitles")).font(theme::font(12.0)));
+            let items = [(0, tr!("原文", "Original")), (1, tr!("翻成英文", "English")), (2, tr!("中英對照", "Both"))];
+            segmented(ui, &mut ed.subs_out, &items, true);
+            if ed.subs_out == 2 {
+                ui.label(theme::muted(ui, tr!("辨識兩次（原文、英文），時間大約多一倍", "Recognizes twice (original and English), so it takes about twice as long")).font(theme::font(12.0)));
+            }
             let m = &MODELS[ed.subs_model.min(MODELS.len() - 1)];
             let need = subtitles::pending_downloads(!ed.ffmpeg_whisper && !subtitles::speech_ffmpeg_downloaded(), m);
             let note = if need.is_empty() {
@@ -327,6 +440,8 @@ fn start(app: &mut UiApp, speech: Option<PathBuf>) {
     let mine = job.cancel.clone();
     let m = MODELS[ed.subs_model.min(MODELS.len() - 1)];
     let lang = LANGUAGES[ed.subs_lang.min(LANGUAGES.len() - 1)].0;
+    // 說英文時「翻成英文」就是原文
+    let out = if lang == "en" { 0 } else { ed.subs_out };
     let (video, duration) = (ed.entry.media.path.clone(), ed.duration);
     app.spawn(
         async move {
@@ -344,11 +459,34 @@ fn start(app: &mut UiApp, speech: Option<PathBuf>) {
                 let (p, c) = (progress.clone(), cancel.clone());
                 tokio::task::spawn_blocking(move || subtitles::download_model(&m, &p, &c)).await.map_err(|e| e.to_string())??;
             }
-            phase.store(2, Ordering::Relaxed);
-            progress.store(0, Ordering::Relaxed);
-            let cues = subtitles::transcribe(&speech, &video, duration, &m, lang, progress, cancel).await?;
-            let srt = if cues.is_empty() { None } else { subtitles::save_next_to(&video, &cues).ok() };
-            Ok::<_, String>((cues, srt))
+            let orig = if out != 1 {
+                phase.store(2, Ordering::Relaxed);
+                progress.store(0, Ordering::Relaxed);
+                subtitles::transcribe(&speech, &video, duration, &m, lang, progress.clone(), cancel.clone()).await?
+            } else {
+                vec![]
+            };
+            let en = if out != 0 && !(out == 2 && orig.is_empty()) {
+                phase.store(4, Ordering::Relaxed);
+                progress.store(0, Ordering::Relaxed);
+                subtitles::translate(&speech, &video, duration, &m, lang, progress, cancel).await?
+            } else {
+                vec![]
+            };
+            // 原文存成「同名.srt」、英文存成「同名.en.srt」
+            let mut saved = vec![];
+            if !orig.is_empty() {
+                saved.extend(subtitles::save_next_to(&video, &orig).ok());
+            }
+            if !en.is_empty() {
+                saved.extend(subtitles::save_english_next_to(&video, &en).ok());
+            }
+            let cues = match out {
+                1 => en,
+                2 => subtitles::pair(&orig, &en),
+                _ => orig,
+            };
+            Ok::<_, String>((cues, saved))
         },
         move |app, r| {
             let Some(ed) = app.editor.as_mut().filter(|e| is_current(e, &mine)) else { return };
@@ -359,7 +497,8 @@ fn start(app: &mut UiApp, speech: Option<PathBuf>) {
                 Ok((cues, _)) if cues.is_empty() => app.toast(tr!("沒有辨識出說話的內容", "No speech was recognized"), false),
                 Ok((cues, srt)) => {
                     let n = ed.add_subtitles(&cues);
-                    let saved = srt.map(|p| trf!("，也存了一份「{}」", " and saved a copy as “{}”", file_name(&p.to_string_lossy()))).unwrap_or_default();
+                    let names = srt.iter().map(|p| file_name(&p.to_string_lossy())).collect::<Vec<_>>().join(tr!("」「", "”, “"));
+                    let saved = if names.is_empty() { String::new() } else { trf!("，也存了一份「{}」", " and saved a copy as “{}”", names) };
                     let msg = if screenrecorder_core::i18n::is_en() {
                         format!("Added {n} subtitle{}{saved}. Check for typos; click a subtitle to edit it", if n == 1 { "" } else { "s" })
                     } else {
@@ -375,12 +514,44 @@ fn start(app: &mut UiApp, speech: Option<PathBuf>) {
 }
 
 impl Editor {
+    /// 用文字剪：剪掉這幾句字幕的時間（加到刪除的片段，前後多留一點點不切到字）；回傳要顯示的訊息
+    pub(crate) fn cut_subs(&mut self, ids: &[u64]) -> String {
+        let spans: Vec<(f64, f64)> = self.anns.iter().filter(|a| ids.contains(&a.id) && self.is_sub(a.id)).map(|a| (a.start, a.end)).collect();
+        if spans.is_empty() {
+            return String::new();
+        }
+        let mut list = self.spec.removed.clone();
+        list.extend(spans.iter().copied());
+        self.spec.removed = normalize_ranges(&list, self.duration);
+        self.sub_picked.clear();
+        self.sel = None;
+        let secs: f64 = spans.iter().map(|(a, b)| b - a).sum();
+        let n = spans.len();
+        if screenrecorder_core::i18n::is_en() {
+            format!("Cut {n} sentence{} ({}). Press Ctrl+Z to undo", if n == 1 { "" } else { "s" }, video_clock(secs))
+        } else {
+            format!("剪掉 {n} 句（共 {}），可按 Ctrl+Z 復原", video_clock(secs))
+        }
+    }
+
+    /// 還原剪掉的這一句（只還原這句的時間，前後剪掉的部分不動）
+    pub(crate) fn uncut_sub(&mut self, id: u64) {
+        let Some((a, b)) = self.anns.iter().find(|x| x.id == id).map(|x| (x.start, x.end)) else { return };
+        self.spec.removed = screenrecorder_core::edit::unremove(&self.spec.removed, (a, b), self.duration);
+        // 剪掉頭尾的部分裡：把頭尾放寬到包含這一句
+        if a < self.spec.start {
+            self.spec.start = a;
+        }
+        if b > self.spec.end {
+            self.spec.end = b;
+        }
+    }
+
     /// 改一段字幕的文字（太長自動斷成兩行）：寬度變了以下緣中間為準，位置不跑掉
     pub fn set_sub_text(&mut self, id: u64, text: &str) {
         let Some(a) = self.ann_mut(id) else { return };
-        let ascii = text.chars().filter(|ch| ch.is_ascii()).count() * 2 > text.chars().count();
         let (cx, bottom) = (a.x + a.w / 2.0, a.y + a.h);
-        a.text = Some(subtitles::wrap(text, if ascii { 42 } else { 22 }));
+        a.text = Some(subtitles::unflat(text));
         annotate::measure(a);
         a.x = cx - a.w / 2.0;
         a.y = bottom - a.h;
@@ -433,8 +604,7 @@ impl Editor {
                 continue;
             }
             // 中文一行約 22 字、英文約 42 個字母
-            let ascii = c.text.chars().filter(|ch| ch.is_ascii()).count() * 2 > c.text.chars().count();
-            let text = subtitles::wrap(&c.text, if ascii { 42 } else { 22 });
+            let text = subtitles::wrap_lines(&c.text);
             let mut a = Ann {
                 id: self.next_id,
                 kind: AnnKind::Text,

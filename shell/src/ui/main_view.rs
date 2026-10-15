@@ -1718,6 +1718,8 @@ pub(super) enum ShotAct {
     Steps,
     EditLast,
     Qr,
+    /// 只抓文字（框選後辨識，複製到剪貼簿）
+    Text,
     /// 取色器（false）或尺規（true）
     Tool(bool),
     Pen,
@@ -1859,6 +1861,16 @@ fn shot_menu(app: &UiApp, ui: &mut Ui, act: &mut Option<ShotAct>) {
     ui.separator();
     heading(ui, tr!("小工具", "Tools"));
     if ui
+        .button(tr!("只抓文字…", "Grab text…"))
+        .on_hover_text(tr!(
+            "框選畫面上的字（圖片、影片、不能選取的視窗也可以），直接複製到剪貼簿，不存圖；表格可以貼到 Excel",
+            "Select text anywhere on the screen (even in images, videos or windows that don't allow selection) to copy it straight to the clipboard without saving an image; tables paste into Excel"
+        ))
+        .clicked()
+    {
+        *act = Some(ShotAct::Text);
+    }
+    if ui
         .button(tr!("讀取 QR 碼…", "Read QR code…"))
         .on_hover_text(tr!("框選畫面上的 QR 碼，讀出內容（網址可以直接開啟）", "Select a QR code on the screen to read it (links can be opened directly)"))
         .clicked()
@@ -1956,6 +1968,17 @@ pub(super) fn run_shot(app: &mut UiApp, act: ShotAct) {
                     Ok(Some(list)) => app.show_qr(list),
                     Ok(None) => {}
                     Err(e) => app.toast(e.message().to_string(), true),
+                }
+            });
+        }
+        ShotAct::Text => {
+            app.main.shooting = true;
+            app.spawn(async move { core.text_snip(&config).await }, |app, r| {
+                app.main.shooting = false;
+                match r {
+                    Ok(Some(l)) => app.show_grabbed_text(l),
+                    Ok(None) => {}
+                    Err(e) => super::ocr::error(app, e.message()),
                 }
             });
         }

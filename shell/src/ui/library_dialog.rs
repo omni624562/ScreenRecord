@@ -2605,8 +2605,26 @@ fn combine_dialog(app: &mut UiApp, ctx: &egui::Context, d: &mut LibraryDialog) {
     });
 }
 
-/// 改名：原片與底下的加速版一起改；送出時檢查衝突、使用中，錯誤留在對話框裡
+/// 改名：原片與底下的加速版一起改；送出時檢查衝突、使用中，錯誤留在對話框裡。
+/// 同時在背景依內容想一個名稱（字幕、畫面上的字、在用的程式），想好顯示在輸入欄下面
 pub fn rename_entry(app: &mut UiApp, entry: LibraryEntry) {
+    let path = entry.media.path.clone();
+    rename_dialog(app, entry);
+    if let Some(a) = &mut app.ask {
+        a.suggest_pending = true;
+        a.suggest_key = path.clone();
+    }
+    let core = app.core.clone();
+    let key = path.clone();
+    app.spawn(async move { actions::suggest_name(&core, &path).await }, move |app, r: Option<String>| {
+        if let Some(a) = app.ask.as_mut().filter(|a| a.suggest_key == key) {
+            a.suggest_pending = false;
+            a.suggest = r;
+        }
+    });
+}
+
+fn rename_dialog(app: &mut UiApp, entry: LibraryEntry) {
     let old = base_name(&entry.media.name);
     let n = entry.exports.len();
     let mut ask = Ask::input(tr!("重新命名", "Rename"), tr!("新名稱", "New name"), old.clone(), tr!("改名", "Rename"), move |app, value| {
@@ -2673,10 +2691,11 @@ fn rename_retry(app: &mut UiApp, entry: LibraryEntry) {
     let Some(a) = app.ask.take() else { return };
     let value = a.input.clone().unwrap_or_default();
     let error = a.error.clone();
-    rename_entry(app, entry);
+    rename_dialog(app, entry);
     if let Some(n) = &mut app.ask {
         n.input = Some(value);
         n.error = error;
+        (n.suggest, n.suggest_pending, n.suggest_key) = (a.suggest, a.suggest_pending, a.suggest_key);
     }
 }
 

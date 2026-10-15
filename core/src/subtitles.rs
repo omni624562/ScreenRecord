@@ -193,22 +193,65 @@ pub fn describe_downloads(list: &[(&str, u32)]) -> String {
 
 /// 辨識語音的參數。模型與輸出都用檔名（FFmpeg 在模型的資料夾裡執行），
 /// 濾鏡參數裡就不會有「C:」的冒號與反斜線要跳脫。track：用第幾條音軌（分軌錄影用麥克風那條，沒有背景音樂、系統音效）
-pub fn whisper_args(input: &str, model_file: &str, out_file: &str, language: &str, track: usize) -> Vec<String> {
+/// translate：翻成英文（whisper 的翻譯，FFmpeg 9 以上）
+pub fn whisper_args(input: &str, model_file: &str, out_file: &str, language: &str, track: usize, translate: bool) -> Vec<String> {
     let mut a: Vec<String> = ["-hide_banner", "-nostats", "-loglevel", "error", "-progress", "pipe:1", "-i"].iter().map(|s| s.to_string()).collect();
     a.push(input.into());
     a.extend(["-vn".to_string(), "-map".into(), format!("0:a:{track}"), "-af".into()]);
-    a.push(format!("whisper=model={model_file}:language={language}:queue=10:format=srt:destination={out_file}"));
+    let tr = if translate { ":translate=1" } else { "" };
+    a.push(format!("whisper=model={model_file}:language={language}{tr}:queue=10:format=srt:destination={out_file}"));
     a.extend(["-f", "null", "-"].iter().map(|s| s.to_string()));
     a
 }
 
 /// 辨識整支影片的語音（progress：千分比；cancel 設成 true 就停止）
 pub async fn transcribe(ffmpeg: &Path, input: &str, duration: f64, model: &Model, language: &str, progress: Arc<AtomicU32>, cancel: Arc<AtomicBool>) -> Result<Vec<Cue>, String> {
-    transcribe_in(&model_dir(), ffmpeg, input, duration, model, language, progress, cancel).await
+    transcribe_in(&model_dir(), ffmpeg, input, duration, model, language, false, progress, cancel).await
+}
+
+/// 辨識語音並翻成英文（FFmpeg 9 以上的 whisper 才有翻譯）
+pub async fn translate(ffmpeg: &Path, input: &str, duration: f64, model: &Model, language: &str, progress: Arc<AtomicU32>, cancel: Arc<AtomicBool>) -> Result<Vec<Cue>, String> {
+    transcribe_in(&model_dir(), ffmpeg, input, duration, model, language, true, progress, cancel).await.map_err(|e| {
+        if e.contains("translate") {
+            tr!("這個 FFmpeg 不支援翻成英文，請更新到 FFmpeg 9 以上", "This FFmpeg can't translate to English. Update to FFmpeg 9 or later").to_string()
+        } else {
+            e
+        }
+    })
+}
+
+/// 中英對照：每一句英文放到時間重疊最多的那句原文下面
+pub fn pair(orig: &[Cue], en: &[Cue]) -> Vec<Cue> {
+    let mut extra: Vec<Vec<&str>> = vec![vec![]; orig.len()];
+    for e in en {
+        let best = orig.iter().enumerate().map(|(i, o)| (i, (o.end.min(e.end) - o.start.max(e.start)).max(0.0))).filter(|(_, ov)| *ov > 0.0).max_by(|a, b| a.1.total_cmp(&b.1));
+        if let Some((i, _)) = best {
+            extra[i].push(e.text.trim());
+        }
+    }
+    orig.iter()
+        .zip(extra)
+        .map(|(o, en)| {
+            let en = en.join(" ").replace('\n', " ");
+            // 原文自動換行的那一行接回來（中文直接接、英文中間空一格），一行原文、一行英文
+            let joint = if o.text.chars().any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c)) { "" } else { " " };
+            Cue { text: if en.is_empty() { o.text.clone() } else { format!("{}\n{}", o.text.replace('\n', joint), en) }, ..o.clone() }
+        })
+        .collect()
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn transcribe_in(dir: &Path, ffmpeg: &Path, input: &str, duration: f64, model: &Model, language: &str, progress: Arc<AtomicU32>, cancel: Arc<AtomicBool>) -> Result<Vec<Cue>, String> {
+async fn transcribe_in(
+    dir: &Path,
+    ffmpeg: &Path,
+    input: &str,
+    duration: f64,
+    model: &Model,
+    language: &str,
+    translate: bool,
+    progress: Arc<AtomicU32>,
+    cancel: Arc<AtomicBool>,
+) -> Result<Vec<Cue>, String> {
     let dir = dir.to_path_buf();
     let out_name = format!("job-{}-{}.srt", std::process::id(), crate::paths::now_ms());
     let out = dir.join(&out_name);
@@ -216,7 +259,7 @@ async fn transcribe_in(dir: &Path, ffmpeg: &Path, input: &str, duration: f64, mo
     let head = crate::process::run(ffmpeg, &["-hide_banner", "-i", input], std::time::Duration::from_secs(15)).await;
     let track = if crate::args::parse_media_info(&head.stderr).audio_tracks >= 3 { 2 } else { 0 };
     let mut child = crate::process::command(ffmpeg)
-        .args(whisper_args(input, model.file, &out_name, language, track))
+        .args(whisper_args(input, model.file, &out_name, language, track, translate))
         .current_dir(&dir)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
@@ -412,11 +455,54 @@ pub fn wrap(text: &str, max_chars: usize) -> String {
     format!("{}\n{}", a.trim_end(), b.trim_start())
 }
 
+fn mostly_ascii(t: &str) -> bool {
+    t.chars().filter(|c| c.is_ascii()).count() * 2 > t.chars().count()
+}
+
+/// 字幕放進影片前斷行：每一行（中英對照是原文一行、英文一行）太長時各自斷成兩行；英文一行最多 42 個字母、中文 22 個字
+pub fn wrap_lines(text: &str) -> String {
+    text.lines().filter(|l| !l.trim().is_empty()).map(|l| wrap(l.trim(), if mostly_ascii(l) { 42 } else { 22 })).collect::<Vec<_>>().join("\n")
+}
+
+/// 字幕在清單裡用一行顯示：自動斷行的接回來；中英對照的兩種語言中間用「 / 」隔開（改完用 unflat 換回來）
+pub fn flat(text: &str) -> String {
+    let lines: Vec<&str> = text.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+    let mut out = String::new();
+    for (i, l) in lines.iter().enumerate() {
+        if i > 0 {
+            let prev = lines[i - 1];
+            out.push_str(if mostly_ascii(prev) != mostly_ascii(l) {
+                " / "
+            } else if mostly_ascii(l) {
+                " "
+            } else {
+                ""
+            });
+        }
+        out.push_str(l);
+    }
+    out
+}
+
+/// flat 的反過來：「 / 」換成換行，每一行再自動斷行
+pub fn unflat(text: &str) -> String {
+    wrap_lines(&text.split(" / ").collect::<Vec<_>>().join("\n"))
+}
+
 /// 在影片旁邊存一份 SRT（同名；已經有就加 _2）
 pub fn save_next_to(video: &str, cues: &[Cue]) -> Result<PathBuf, String> {
+    save_next_to_as(video, cues, ".srt")
+}
+
+/// 英文字幕存成「同名.en.srt」（播放器、YouTube 認得語言）
+pub fn save_english_next_to(video: &str, cues: &[Cue]) -> Result<PathBuf, String> {
+    save_next_to_as(video, cues, ".en.srt")
+}
+
+fn save_next_to_as(video: &str, cues: &[Cue], ext: &str) -> Result<PathBuf, String> {
     let p = Path::new(video);
     let (Some(dir), Some(stem)) = (p.parent(), p.file_stem()) else { return Err(tr!("檔名不正確", "Invalid file name").into()) };
-    let out = crate::paths::unique_path(dir, &stem.to_string_lossy(), ".srt");
+    let out = crate::paths::unique_path(dir, &stem.to_string_lossy(), ext);
     // 加上 BOM：Windows 的記事本與舊的播放器才不會變成亂碼
     std::fs::write(&out, format!("\u{feff}{}", to_srt(cues))).map_err(|e| trf!("無法儲存字幕檔：{e}", "Couldn't save the subtitle file: {e}"))?;
     Ok(out)
@@ -499,14 +585,14 @@ echo "progress=end"
         std::fs::create_dir_all(&models).unwrap();
         std::fs::write(models.join(MODELS[0].file), b"lmgg").unwrap();
         let progress = Arc::new(AtomicU32::new(0));
-        let cues = transcribe_in(&models, &fake, "/videos/a.mp4", 2.0, &MODELS[0], "zh", progress.clone(), Arc::new(AtomicBool::new(false))).await.unwrap();
+        let cues = transcribe_in(&models, &fake, "/videos/a.mp4", 2.0, &MODELS[0], "zh", false, progress.clone(), Arc::new(AtomicBool::new(false))).await.unwrap();
         assert_eq!(cues, vec![Cue { start: 0.0, end: 1.5, text: "測試字幕".into() }]);
         assert_eq!(progress.load(Ordering::Relaxed), 1000);
         // 暫存的 SRT 已刪掉，只剩模型
         assert_eq!(std::fs::read_dir(&models).unwrap().count(), 1);
         // FFmpeg 失敗：回報最後一行錯誤
         std::fs::remove_file(models.join(MODELS[0].file)).unwrap();
-        let err = transcribe_in(&models, &fake, "a.mp4", 2.0, &MODELS[0], "zh", progress, Arc::new(AtomicBool::new(false))).await.unwrap_err();
+        let err = transcribe_in(&models, &fake, "a.mp4", 2.0, &MODELS[0], "zh", false, progress, Arc::new(AtomicBool::new(false))).await.unwrap_err();
         assert!(err.contains("no model ggml-base.bin"), "{err}");
     }
 
@@ -535,13 +621,34 @@ echo "progress=end"
         let list = " ... aecho            A->A       Add echoing to the audio.\n ... whisper          A->A       Transcribe audio using whisper.cpp.\n";
         assert!(filters_have_whisper(list));
         assert!(!filters_have_whisper(" ... aecho  A->A  x\n"));
-        let a = whisper_args("C:\\影片\\a.mp4", "ggml-base.bin", "job.srt", "zh", 0).join(" ");
-        assert!(whisper_args("a.mp4", "m.bin", "j.srt", "zh", 2).join(" ").contains("-map 0:a:2"));
+        let a = whisper_args("C:\\影片\\a.mp4", "ggml-base.bin", "job.srt", "zh", 0, false).join(" ");
+        assert!(whisper_args("a.mp4", "m.bin", "j.srt", "zh", 2, false).join(" ").contains("-map 0:a:2"));
+        assert!(whisper_args("a.mp4", "m.bin", "j.srt", "zh", 0, true).join(" ").contains("language=zh:translate=1:"));
         assert_eq!(
             a,
             "-hide_banner -nostats -loglevel error -progress pipe:1 -i C:\\影片\\a.mp4 -vn -map 0:a:0 -af whisper=model=ggml-base.bin:language=zh:queue=10:format=srt:destination=job.srt -f null -"
         );
         assert!(MODELS.iter().all(|m| m.url.ends_with(m.file)));
         assert_eq!(describe_downloads(&[("語音辨識用的 FFmpeg", 258), ("語音模型", 148)]), "語音辨識用的 FFmpeg（約 258 MB）與語音模型（約 148 MB）");
+    }
+
+    #[test]
+    fn pair_puts_english_under_the_overlapping_sentence() {
+        let c = |a: f64, b: f64, t: &str| Cue { start: a, end: b, text: t.into() };
+        let zh = vec![c(0.0, 2.0, "大家好"), c(2.0, 5.0, "今天介紹\n報價單"), c(5.0, 6.0, "謝謝")];
+        let en = vec![c(0.1, 1.9, "Hello everyone"), c(2.2, 3.5, "Today I'll show"), c(3.5, 5.2, "the quote form")];
+        let p = pair(&zh, &en);
+        assert_eq!(p.iter().map(|c| c.text.as_str()).collect::<Vec<_>>(), vec!["大家好\nHello everyone", "今天介紹報價單\nToday I'll show the quote form", "謝謝"]);
+        assert_eq!((p[1].start, p[1].end), (2.0, 5.0));
+    }
+
+    #[test]
+    fn flat_and_unflat_keep_the_two_languages_apart() {
+        assert_eq!(flat("今天介紹\n報價單"), "今天介紹報價單");
+        assert_eq!(flat("Hello every\nbody"), "Hello every body");
+        assert_eq!(flat("大家好\nHello everyone"), "大家好 / Hello everyone");
+        assert_eq!(unflat("大家好 / Hello everyone"), "大家好\nHello everyone");
+        assert_eq!(unflat("短句"), "短句");
+        assert_eq!(wrap_lines("大家好\nHello"), "大家好\nHello");
     }
 }

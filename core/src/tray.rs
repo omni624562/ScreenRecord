@@ -87,6 +87,8 @@ pub enum TrayCommand {
     ScreenshotScroll,
     /// 讀取畫面上的 QR 碼
     ScreenshotQr,
+    /// 只抓文字（框選後辨識，複製到剪貼簿）
+    ScreenshotText,
     /// 取色器（點一下複製色碼）
     ScreenColor,
     /// 尺規（量畫面上的距離）
@@ -550,6 +552,18 @@ impl TrayController {
                     crate::clipboard::copy_text(&text);
                     let short: String = text.chars().take(100).collect();
                     self.notify(tr!("QR 碼內容（已複製）", "QR code content (copied)"), &short, false);
+                }
+                return Ok(());
+            }
+            TrayCommand::ScreenshotText => {
+                let cfg = self.config();
+                let Some(l) = app.text_snip(&cfg).await.map_err(err)? else { return Ok(()) };
+                if l.text.trim().is_empty() {
+                    self.notify(tr!("只抓文字", "Grab text"), tr!("沒有認出文字（框大一點、或把畫面放大再試試）", "No text recognized (try a larger area or zoom in)"), true);
+                } else {
+                    let short: String = l.text.chars().take(100).collect();
+                    let title = if l.table { tr!("已複製成表格（可以貼到 Excel）", "Copied as a table (paste into Excel)") } else { tr!("已複製文字", "Text copied") };
+                    self.notify(title, &short, false);
                 }
                 return Ok(());
             }
