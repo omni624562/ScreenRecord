@@ -120,6 +120,8 @@ pub struct UiSettings {
     pub after_compress_mb: u32,
     /// 錄完依內容自動命名（只改預設的 Rec_時間 名稱）
     pub after_auto_name: bool,
+    /// 錄完產生字幕時也翻成英文（同名.en.srt）
+    pub after_subs_en: bool,
     /// 只錄某個視窗時只錄視窗的內容（Windows Graphics Capture）
     pub window_capture: bool,
     /// 系統聲音與麥克風分開存（分軌）
@@ -275,6 +277,7 @@ impl UiSettings {
             after_subs_model: num("afterSubsModel").map(|v| v as u32).filter(|v| (*v as usize) < screenrecorder_core::subtitles::MODELS.len()).unwrap_or(0),
             after_subs_lang: num("afterSubsLang").map(|v| v as u32).filter(|v| (*v as usize) < screenrecorder_core::subtitles::LANGUAGES.len()).unwrap_or(0),
             after_auto_name: boolean("afterAutoName").unwrap_or(false),
+            after_subs_en: boolean("afterSubsEn").unwrap_or(false),
             after_compress_mb: num("afterCompressMb").map(|v| v as u32).filter(|v| MAX_MB.contains(v)).unwrap_or(0),
             window_capture: boolean("windowCapture").unwrap_or(false),
             separate_audio: boolean("separateAudio").unwrap_or(false),

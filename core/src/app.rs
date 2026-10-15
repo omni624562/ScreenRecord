@@ -172,7 +172,7 @@ pub struct App {
     /// 錄影中不讓電腦睡眠
     awake: Mutex<Option<crate::power::KeepAwake>>,
     /// 錄影中每幾秒記一次在用的程式（自動命名用）：(執行檔, 視窗標題) → 次數；None = 沒在記
-    rec_apps: Arc<Mutex<Option<HashMap<(String, String), u32>>>>,
+    rec_apps: Arc<Mutex<Option<AppCounts>>>,
     /// 剛錄完那支最常用的程式（存好時記到 shot_meta）
     last_rec_app: Mutex<Option<(String, String)>>,
     /// 錄完自動處理中（after_record.rs）
@@ -192,8 +192,11 @@ pub struct App {
     hotkey_applier: Mutex<Option<HotkeyApplier>>,
 }
 
+/// (執行檔, 視窗標題) → 記到幾次
+type AppCounts = HashMap<(String, String), u32>;
+
 /// 錄影中最常用的程式（依執行檔加總）與它最常出現的視窗標題
-fn most_used_app(counts: &HashMap<(String, String), u32>) -> Option<(String, String)> {
+fn most_used_app(counts: &AppCounts) -> Option<(String, String)> {
     let mut by_exe: HashMap<&str, u32> = HashMap::new();
     for ((exe, _), n) in counts {
         *by_exe.entry(exe).or_default() += n;

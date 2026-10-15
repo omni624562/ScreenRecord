@@ -131,7 +131,7 @@ fn list(ed: &mut Editor, ui: &mut egui::Ui, toast: &mut Option<(String, bool)>) 
     let p = theme::pal(ui);
     let keep = ed.keep();
     let mut rows: Vec<(u64, f64, f64, String, bool)> =
-        ed.anns.iter().filter(|a| ed.is_sub(a.id)).map(|a| (a.id, a.start, a.end, a.text.clone().unwrap_or_default().replace('\n', " "), !Editor::in_output(a, &keep))).collect();
+        ed.anns.iter().filter(|a| ed.is_sub(a.id)).map(|a| (a.id, a.start, a.end, subtitles::flat(&a.text.clone().unwrap_or_default()), !Editor::in_output(a, &keep))).collect();
     rows.sort_by(|x, y| x.1.total_cmp(&y.1).then(x.0.cmp(&y.0)));
     let now = ed.now();
     let order: Vec<u64> = rows.iter().map(|r| r.0).collect();
@@ -291,6 +291,7 @@ pub fn panel(ed: &mut Editor, ui: &mut egui::Ui) {
             0 => tr!("正在確認 FFmpeg 支不支援語音辨識…", "Checking whether FFmpeg supports speech recognition…").to_string(),
             1 => trf!("正在下載語音模型… {pct:.0}%", "Downloading the speech model… {pct:.0}%"),
             3 => trf!("正在下載語音辨識用的 FFmpeg… {pct:.0}%", "Downloading FFmpeg for speech recognition… {pct:.0}%"),
+            4 => trf!("正在翻成英文… {pct:.0}%", "Translating to English… {pct:.0}%"),
             _ => trf!("正在辨識語音… {pct:.0}%", "Recognizing speech… {pct:.0}%"),
         };
         ui.horizontal(|ui| {
@@ -320,6 +321,12 @@ pub fn panel(ed: &mut Editor, ui: &mut egui::Ui) {
             let items: Vec<(usize, &str)> =
                 MODELS.iter().enumerate().map(|(i, m)| (i, if m.id == "base" { tr!("標準（較快）", "Standard (faster)") } else { tr!("精準（較慢）", "Accurate (slower)") })).collect();
             segmented(ui, &mut ed.subs_model, &items, true);
+            ui.label(theme::muted(ui, tr!("字幕", "Subtitles")).font(theme::font(12.0)));
+            let items = [(0, tr!("原文", "Original")), (1, tr!("翻成英文", "English")), (2, tr!("中英對照", "Both"))];
+            segmented(ui, &mut ed.subs_out, &items, true);
+            if ed.subs_out == 2 {
+                ui.label(theme::muted(ui, tr!("辨識兩次（原文、英文），時間大約多一倍", "Recognizes twice (original and English), so it takes about twice as long")).font(theme::font(12.0)));
+            }
             let m = &MODELS[ed.subs_model.min(MODELS.len() - 1)];
             let need = subtitles::pending_downloads(!ed.ffmpeg_whisper && !subtitles::speech_ffmpeg_downloaded(), m);
             let note = if need.is_empty() {
@@ -433,6 +440,8 @@ fn start(app: &mut UiApp, speech: Option<PathBuf>) {
     let mine = job.cancel.clone();
     let m = MODELS[ed.subs_model.min(MODELS.len() - 1)];
     let lang = LANGUAGES[ed.subs_lang.min(LANGUAGES.len() - 1)].0;
+    // 說英文時「翻成英文」就是原文
+    let out = if lang == "en" { 0 } else { ed.subs_out };
     let (video, duration) = (ed.entry.media.path.clone(), ed.duration);
     app.spawn(
         async move {
@@ -450,11 +459,34 @@ fn start(app: &mut UiApp, speech: Option<PathBuf>) {
                 let (p, c) = (progress.clone(), cancel.clone());
                 tokio::task::spawn_blocking(move || subtitles::download_model(&m, &p, &c)).await.map_err(|e| e.to_string())??;
             }
-            phase.store(2, Ordering::Relaxed);
-            progress.store(0, Ordering::Relaxed);
-            let cues = subtitles::transcribe(&speech, &video, duration, &m, lang, progress, cancel).await?;
-            let srt = if cues.is_empty() { None } else { subtitles::save_next_to(&video, &cues).ok() };
-            Ok::<_, String>((cues, srt))
+            let orig = if out != 1 {
+                phase.store(2, Ordering::Relaxed);
+                progress.store(0, Ordering::Relaxed);
+                subtitles::transcribe(&speech, &video, duration, &m, lang, progress.clone(), cancel.clone()).await?
+            } else {
+                vec![]
+            };
+            let en = if out != 0 && !(out == 2 && orig.is_empty()) {
+                phase.store(4, Ordering::Relaxed);
+                progress.store(0, Ordering::Relaxed);
+                subtitles::translate(&speech, &video, duration, &m, lang, progress, cancel).await?
+            } else {
+                vec![]
+            };
+            // 原文存成「同名.srt」、英文存成「同名.en.srt」
+            let mut saved = vec![];
+            if !orig.is_empty() {
+                saved.extend(subtitles::save_next_to(&video, &orig).ok());
+            }
+            if !en.is_empty() {
+                saved.extend(subtitles::save_english_next_to(&video, &en).ok());
+            }
+            let cues = match out {
+                1 => en,
+                2 => subtitles::pair(&orig, &en),
+                _ => orig,
+            };
+            Ok::<_, String>((cues, saved))
         },
         move |app, r| {
             let Some(ed) = app.editor.as_mut().filter(|e| is_current(e, &mine)) else { return };
@@ -465,7 +497,8 @@ fn start(app: &mut UiApp, speech: Option<PathBuf>) {
                 Ok((cues, _)) if cues.is_empty() => app.toast(tr!("沒有辨識出說話的內容", "No speech was recognized"), false),
                 Ok((cues, srt)) => {
                     let n = ed.add_subtitles(&cues);
-                    let saved = srt.map(|p| trf!("，也存了一份「{}」", " and saved a copy as “{}”", file_name(&p.to_string_lossy()))).unwrap_or_default();
+                    let names = srt.iter().map(|p| file_name(&p.to_string_lossy())).collect::<Vec<_>>().join(tr!("」「", "”, “"));
+                    let saved = if names.is_empty() { String::new() } else { trf!("，也存了一份「{}」", " and saved a copy as “{}”", names) };
                     let msg = if screenrecorder_core::i18n::is_en() {
                         format!("Added {n} subtitle{}{saved}. Check for typos; click a subtitle to edit it", if n == 1 { "" } else { "s" })
                     } else {
@@ -517,9 +550,8 @@ impl Editor {
     /// 改一段字幕的文字（太長自動斷成兩行）：寬度變了以下緣中間為準，位置不跑掉
     pub fn set_sub_text(&mut self, id: u64, text: &str) {
         let Some(a) = self.ann_mut(id) else { return };
-        let ascii = text.chars().filter(|ch| ch.is_ascii()).count() * 2 > text.chars().count();
         let (cx, bottom) = (a.x + a.w / 2.0, a.y + a.h);
-        a.text = Some(subtitles::wrap(text, if ascii { 42 } else { 22 }));
+        a.text = Some(subtitles::unflat(text));
         annotate::measure(a);
         a.x = cx - a.w / 2.0;
         a.y = bottom - a.h;
@@ -572,8 +604,7 @@ impl Editor {
                 continue;
             }
             // 中文一行約 22 字、英文約 42 個字母
-            let ascii = c.text.chars().filter(|ch| ch.is_ascii()).count() * 2 > c.text.chars().count();
-            let text = subtitles::wrap(&c.text, if ascii { 42 } else { 22 });
+            let text = subtitles::wrap_lines(&c.text);
             let mut a = Ann {
                 id: self.next_id,
                 kind: AnnKind::Text,

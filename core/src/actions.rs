@@ -753,38 +753,6 @@ pub fn open_url(url: &str) -> Result<()> {
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn urls_and_paths_are_checked() {
-        assert!(open_url("ftp://x").unwrap_err().message().contains("http"));
-        assert!(open_url("notaurl").unwrap_err().message().contains("網址不正確"));
-        assert!(open_url("https:///x").is_err());
-        assert!(open_url("https://a b").is_err());
-        assert!(open(OpenAction::Play, "relative.mp4").unwrap_err().message().contains("路徑"));
-        let dir = tempfile::tempdir().unwrap();
-        let exe = dir.path().join("x.exe");
-        std::fs::write(&exe, "x").unwrap();
-        assert!(open(OpenAction::Play, &exe.display().to_string()).unwrap_err().message().contains("找不到檔案"));
-    }
-
-    #[tokio::test]
-    async fn guards_before_touching_files() {
-        let dir = tempfile::tempdir().unwrap();
-        let app = App::with_data_dir(dir.path().to_path_buf());
-        assert!(delete(&app, &[]).unwrap_err().message().contains("沒有選取"));
-        assert!(delete(&app, &["relative.mp4".into()]).unwrap_err().message().contains("找不到"));
-        assert!(rename(&app, "relative.mp4", "x").await.unwrap_err().message().contains("找不到"));
-        let spec = EditSpec { start: 1.0, end: 2.0, removed: vec![], crop: None, overlays: vec![], ..Default::default() };
-        let src = dir.path().join("Rec.mp4").display().to_string();
-        assert!(cut_start(&app, &src, &spec, Some("Rec_cut.mp4"), None).await.unwrap_err().message().contains("找不到要取代"));
-        assert!(edit_project(&app, &src).await.is_none());
-        assert!(edit_project(&app, "relative.mp4").await.is_none());
-    }
-}
-
 /// 想名稱用的線索：字幕（旁邊的 SRT）、畫面上的字（Windows 的文字辨識，錄影取 3 個畫面；截圖用文字索引）、錄影 / 截圖時在用的程式
 pub async fn name_hints(app: &App, path: &str) -> crate::naming::Hints {
     let p = Path::new(path);
@@ -854,4 +822,36 @@ pub async fn auto_rename(app: &App, path: &str) -> Option<String> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn urls_and_paths_are_checked() {
+        assert!(open_url("ftp://x").unwrap_err().message().contains("http"));
+        assert!(open_url("notaurl").unwrap_err().message().contains("網址不正確"));
+        assert!(open_url("https:///x").is_err());
+        assert!(open_url("https://a b").is_err());
+        assert!(open(OpenAction::Play, "relative.mp4").unwrap_err().message().contains("路徑"));
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("x.exe");
+        std::fs::write(&exe, "x").unwrap();
+        assert!(open(OpenAction::Play, &exe.display().to_string()).unwrap_err().message().contains("找不到檔案"));
+    }
+
+    #[tokio::test]
+    async fn guards_before_touching_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = App::with_data_dir(dir.path().to_path_buf());
+        assert!(delete(&app, &[]).unwrap_err().message().contains("沒有選取"));
+        assert!(delete(&app, &["relative.mp4".into()]).unwrap_err().message().contains("找不到"));
+        assert!(rename(&app, "relative.mp4", "x").await.unwrap_err().message().contains("找不到"));
+        let spec = EditSpec { start: 1.0, end: 2.0, removed: vec![], crop: None, overlays: vec![], ..Default::default() };
+        let src = dir.path().join("Rec.mp4").display().to_string();
+        assert!(cut_start(&app, &src, &spec, Some("Rec_cut.mp4"), None).await.unwrap_err().message().contains("找不到要取代"));
+        assert!(edit_project(&app, &src).await.is_none());
+        assert!(edit_project(&app, "relative.mp4").await.is_none());
+    }
 }

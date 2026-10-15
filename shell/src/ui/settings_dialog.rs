@@ -1097,6 +1097,19 @@ fn after_record_section(app: &mut UiApp, ui: &mut Ui) {
                 app.save_settings();
             }
         });
+        form_row(ui, tr!("英文字幕", "English"), |ui| {
+            let mut on = app.s.after_subs_en;
+            if switch(ui, &mut on, tr!("也翻成英文（存成 .en.srt）", "Also translate to English (.en.srt)"), true)
+                .on_hover_text(tr!(
+                    "再辨識一次並翻成英文，另存「同名.en.srt」，可以給外國客戶或上傳 YouTube；時間大約多一倍。剪輯視窗也可以做中英對照的字幕",
+                    "Recognizes once more and translates to English, saved as “name.en.srt” for international viewers or YouTube; takes about twice as long. The editor can also make bilingual subtitles"
+                ))
+                .changed()
+            {
+                app.s.after_subs_en = on;
+                app.save_settings();
+            }
+        });
         let m = &MODELS[(app.s.after_subs_model as usize).min(MODELS.len() - 1)];
         use screenrecorder_core::subtitles::{describe_downloads, pending_downloads, speech_ffmpeg_downloaded};
         let need = pending_downloads(!app.env.ffmpeg.has_whisper && !speech_ffmpeg_downloaded(), m);

@@ -30,10 +30,12 @@ pub struct AfterRecord {
     pub compress_mb: u32,
     /// 依內容自動命名（只改預設的 Rec_時間 名稱）
     pub auto_name: bool,
+    /// 產生字幕時也翻成英文（另存 同名.en.srt）
+    pub subs_en: bool,
 }
 
 /// ui 設定裡的欄位名稱（設定組合也存這些）
-pub const UI_KEYS: [&str; 6] = ["afterIdleCut", "afterSubs", "afterSubsModel", "afterSubsLang", "afterCompressMb", "afterAutoName"];
+pub const UI_KEYS: [&str; 7] = ["afterIdleCut", "afterSubs", "afterSubsModel", "afterSubsLang", "afterCompressMb", "afterAutoName", "afterSubsEn"];
 
 impl AfterRecord {
     pub fn from_ui(ui: Option<&Value>) -> AfterRecord {
@@ -47,6 +49,7 @@ impl AfterRecord {
             subs_lang: (n(UI_KEYS[3]) as usize).min(crate::subtitles::LANGUAGES.len() - 1),
             compress_mb: n(UI_KEYS[4]).min(10_000) as u32,
             auto_name: b(UI_KEYS[5]),
+            subs_en: b(UI_KEYS[6]),
         }
     }
 
@@ -455,6 +458,34 @@ impl App {
             } else {
                 let srt = crate::subtitles::save_next_to(&video, &cues)?;
                 done.push(trf!("字幕存成「{}」", "subtitles saved as “{}”", srt.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()));
+                // 英文字幕（說英文時原文就是英文，不用再做）
+                if after.subs_en && lang != "en" {
+                    let en = loop {
+                        if !self.after_wait_idle(&cancel).await {
+                            return Ok(done);
+                        }
+                        self.after_begin(step_no, tr!("翻成英文字幕", "Translating subtitles to English").into());
+                        self.after_arm();
+                        self.after_set(|s| s.transcribing = true);
+                        let r = crate::subtitles::translate(&speech, &video, dur, &m, lang, progress.clone(), stop_step.clone()).await;
+                        self.after_set(|s| s.transcribing = false);
+                        if self.after_take_preempted() {
+                            continue;
+                        }
+                        break r;
+                    };
+                    if cancel.load(Ordering::Relaxed) {
+                        return Ok(done);
+                    }
+                    match en {
+                        Ok(en) if !en.is_empty() => {
+                            let p = crate::subtitles::save_english_next_to(&video, &en)?;
+                            done.push(trf!("英文字幕存成「{}」", "English subtitles saved as “{}”", p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()));
+                        }
+                        Ok(_) => {}
+                        Err(e) => done.push(trf!("英文字幕沒有做成：{e}", "English subtitles failed: {e}")),
+                    }
+                }
             }
         }
         // 3. 壓縮
@@ -508,7 +539,7 @@ mod tests {
     fn reads_settings() {
         assert!(!AfterRecord::from_ui(None).any());
         let a = AfterRecord::from_ui(Some(&json!({ "afterIdleCut": true, "afterSubs": true, "afterSubsModel": 9, "afterSubsLang": 1, "afterCompressMb": 25, "afterAutoName": true })));
-        assert_eq!(a, AfterRecord { idle_cut: true, subtitles: true, subs_model: crate::subtitles::MODELS.len() - 1, subs_lang: 1, compress_mb: 25, auto_name: true });
+        assert_eq!(a, AfterRecord { idle_cut: true, subtitles: true, subs_model: crate::subtitles::MODELS.len() - 1, subs_lang: 1, compress_mb: 25, auto_name: true, subs_en: false });
         assert!(a.any());
         assert!(AfterRecord::from_ui(Some(&json!({ "afterCompressMb": 10 }))).any());
     }
