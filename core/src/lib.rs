@@ -59,6 +59,7 @@ pub mod ocr;
 pub mod ocr_index;
 pub mod ooxml;
 pub mod paths;
+pub mod phone_share;
 pub mod picture;
 #[cfg(windows)]
 pub mod pin_win;
