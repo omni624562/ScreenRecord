@@ -752,6 +752,28 @@ fn save_page(app: &mut UiApp, ui: &mut Ui) {
         }
     }
     form_divider(ui);
+    // 清單：子資料夾
+    form_section(ui, tr!("清單", "Lists"), |_| {});
+    let mut subdirs = app.s.list_subdirs;
+    if theme::check(ui, &mut subdirs, tr!("也列出子資料夾裡的錄影和截圖", "Also list recordings and screenshots in subfolders")).changed() {
+        app.s.list_subdirs = subdirs;
+        // core 讀設定決定要不要列子資料夾：先存好再重新讀清單
+        app.save_settings_now();
+        app.load_recent();
+        if let Some(d) = app.library.as_mut() {
+            d.reload();
+        }
+    }
+    form_hint_full(
+        ui,
+        trf!(
+            "自己分到子資料夾（例如「教學」「會議」）的檔案也會出現在最近錄影、全部錄影、全部截圖，縮圖上標出在哪個子資料夾，搜尋、月曆、清理、找相似也包含它們。最多往下 {} 層；程式自己用的資料夾（.parts、markers）不列。",
+            "Files you sorted into subfolders (such as “Tutorials” or “Meetings”) also appear in Recent recordings, All recordings and All screenshots, labelled with their subfolder, and are included in search, the calendar, cleanup and duplicate finding. Up to {} levels deep; the app's own folders (.parts, markers) are skipped.",
+            screenrecorder_core::library::SUBDIR_DEPTH
+        ),
+        p.muted,
+    );
+    form_divider(ui);
     form_section(ui, tr!("檔名", "File names"), |_| {});
     form_row(ui, tr!("錄影", "Recordings"), |ui| {
         ui.label(RichText::new(tr!("Rec_年-月-日_時-分-秒.mp4", "Rec_YYYY-MM-DD_HH-MM-SS.mp4")).font(theme::mono(12.5)));

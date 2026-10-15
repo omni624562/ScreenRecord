@@ -139,6 +139,8 @@ pub struct UiSettings {
     pub theme: String,
     /// 已經說明過「關掉視窗後仍在系統匣執行」（只在第一次關掉時通知）
     pub hide_notice_shown: bool,
+    /// 清單（最近錄影、全部錄影、全部截圖）也列出子資料夾裡的（core 的 actions::list_subdirs 讀這個欄位）
+    pub list_subdirs: bool,
     /// 第一次錄影的教學看到第幾步（1 起算；0 = 沒有看到一半的教學）
     pub tour_step: u32,
     /// 看完或跳過的教學："first"（第一次錄影）、"editor"、"shot"、"library"
@@ -289,6 +291,7 @@ impl UiSettings {
             audio_m4a: screenrecorder_core::after_record::audio_m4a(v),
             theme: string("theme").filter(|v| ["light", "dark"].contains(&v.as_str())).unwrap_or_else(|| "system".into()),
             hide_notice_shown: boolean("hideNoticeShown").unwrap_or(false),
+            list_subdirs: boolean("listSubdirs").unwrap_or(true),
             tour_step: num("tourStep").map(|v| v as u32).filter(|v| *v <= 50).unwrap_or(0),
             tours_done: o.get("toursDone").and_then(|v| serde_json::from_value::<Vec<String>>(v.clone()).ok()).unwrap_or_default(),
             tips: boolean("tips").unwrap_or(false),

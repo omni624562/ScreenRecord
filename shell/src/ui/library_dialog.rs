@@ -372,6 +372,8 @@ fn load(app: &mut UiApp) {
             grid: d.grid_fit,
             anchor: d.page_anchor.take(),
             facet: (d.browse || !d.facet.is_empty()).then(|| d.facet.clone()),
+            // core 依設定決定（actions::library）
+            subdirs: false,
         },
     };
     let dir = d.dir.clone().unwrap_or(home);
@@ -1381,6 +1383,10 @@ fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table:
             let custom = !is_default_name(&e.media.name);
             let name = RichText::new(&e.media.name).font(theme::font(if custom { 13.0 } else { 12.5 })).color(if custom { p.text } else { p.muted });
             let tip = if audio { e.media.name.clone() } else { trf!("{}\n按兩下改名（F2）", "{}\nDouble-click to rename (F2)", e.media.name) };
+            if !e.media.folder.is_empty() {
+                nui.spacing_mut().item_spacing.x = 6.0;
+                folder_chip(nui, &e.media.folder);
+            }
             let r = nui.add(egui::Label::new(name).truncate().sense(Sense::click())).on_hover_text(tip);
             if r.double_clicked() && !audio {
                 *req = Some(Req::Rename(e.clone()));
@@ -1582,6 +1588,15 @@ fn highlight(job: &mut egui::text::LayoutJob, text: &str, query: &str, color: Co
 }
 
 /// 「有聲音」：灰色小喇叭（滑鼠提示說明），不用彩色標籤
+/// 在哪個子資料夾：灰色小標籤（只寫最後一層，滑鼠提示有完整的）；不在子資料夾時不顯示
+pub fn folder_chip(ui: &mut egui::Ui, folder: &str) {
+    if folder.is_empty() {
+        return;
+    }
+    let last = folder.rsplit(['\\', '/']).next().unwrap_or(folder);
+    theme::chip(ui, last, theme::Tone::Plain, false).on_hover_text(trf!("在子資料夾「{}」", "In subfolder “{}”", screenrecorder_core::facets::folder_label(folder)));
+}
+
 pub fn audio_mark(ui: &mut egui::Ui) -> egui::Response {
     let (r, resp) = ui.allocate_exact_size(vec2(16.0, 16.0), Sense::hover());
     theme::paint_icon(ui.painter(), r, Icon::Speaker, theme::pal(ui).muted);
@@ -1707,8 +1722,14 @@ fn shot_grid(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, area: Re
         // 名稱（預設檔名顯示日期時間）
         let title = if is_default_name(&e.media.name) { dates.get(&e.media.name).cloned().unwrap_or_default() } else { base_name(&e.media.name) };
         let tr = Rect::from_min_max(pos2(cell.min.x + 2.0, img.max.y + 6.0), pos2(cell.max.x, img.max.y + 28.0));
-        ui.new_child(UiBuilder::new().max_rect(tr).layout(Layout::left_to_right(Align::Center)))
-            .add(egui::Label::new(RichText::new(title).font(theme::font_bold(if small { 12.0 } else { 13.0 }))).truncate().selectable(false));
+        {
+            let tui = &mut ui.new_child(UiBuilder::new().max_rect(tr).layout(Layout::left_to_right(Align::Center)));
+            tui.spacing_mut().item_spacing.x = 6.0;
+            if !small {
+                folder_chip(tui, &e.media.folder);
+            }
+            tui.add(egui::Label::new(RichText::new(title).font(theme::font_bold(if small { 12.0 } else { 13.0 }))).truncate().selectable(false));
+        }
         if small {
             continue;
         }

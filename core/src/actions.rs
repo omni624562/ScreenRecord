@@ -112,11 +112,21 @@ pub async fn library(app: &App, dir: &str, query: &LibraryQuery) -> LibraryPage 
     let dir = Some(dir.trim()).filter(|d| !d.is_empty()).map(str::to_string).unwrap_or_else(|| app.default_output_dir.clone());
     let ffmpeg = app.ffmpeg_path();
     let src = shot_sources(app);
-    crate::library::list_library_with(&app.cache, ffmpeg.as_deref(), Path::new(&dir), query, Some(&src)).await
+    let query = LibraryQuery { subdirs: list_subdirs(app), ..query.clone() };
+    crate::library::list_library_with(&app.cache, ffmpeg.as_deref(), Path::new(&dir), &query, Some(&src)).await
 }
+
+/// 清單也列出子資料夾裡的錄影與截圖（設定的 ui.listSubdirs，預設是）
+pub fn list_subdirs(app: &App) -> bool {
+    app.settings.load().ui.as_ref().and_then(|u| u.get(LIST_SUBDIRS_KEY)).and_then(serde_json::Value::as_bool).unwrap_or(true)
+}
+
+/// 設定裡「也列出子資料夾」的欄位名稱（操作視窗的設定存在 ui 底下）
+pub const LIST_SUBDIRS_KEY: &str = "listSubdirs";
 
 /// 在背景建立截圖的文字索引（這些資料夾裡的截圖，新的先做）；已經在做時馬上回傳
 pub async fn ocr_index(app: &App, dirs: Vec<String>) {
+    let dirs = crate::library::expand_dirs(dirs, list_subdirs(app)).await;
     let mut paths: Vec<(f64, String)> = vec![];
     for d in &dirs {
         for p in crate::library::images_in(Path::new(d)) {
@@ -164,6 +174,7 @@ pub fn shot_suggest(app: &App, query: &str, limit: usize) -> Vec<(String, usize)
 
 /// 和這張相關的截圖（同一個程式、時間接近、有共同的詞、長得像），最相關的在前面，最多 limit 張
 pub async fn related_shots(app: &App, path: &str, dirs: Vec<String>, limit: usize) -> Vec<crate::types::MediaInfo> {
+    let dirs = crate::library::expand_dirs(dirs, list_subdirs(app)).await;
     let all = crate::library::shots_with_time(&app.cache, &dirs).await;
     let src = shot_sources(app);
     let prep = crate::facets::prepare(&src);
@@ -186,6 +197,7 @@ pub async fn related_shots(app: &App, path: &str, dirs: Vec<String>, limit: usiz
 
 /// 月曆：某個月每一天的截圖張數與那天的常見詞
 pub async fn shot_calendar(app: &App, dirs: Vec<String>, year: i32, month: u32) -> Vec<crate::facets::CalDay> {
+    let dirs = crate::library::expand_dirs(dirs, list_subdirs(app)).await;
     let all = crate::library::shots_with_time(&app.cache, &dirs).await;
     let src = shot_sources(app);
     let prep = crate::facets::prepare(&src);
@@ -196,11 +208,13 @@ pub async fn shot_calendar(app: &App, dirs: Vec<String>, year: i32, month: u32) 
 /// 清理舊截圖：這些資料夾裡超過 days 天的截圖（由舊到新）
 pub async fn old_shots(app: &App, dirs: Vec<String>, days: u32) -> Vec<crate::types::MediaInfo> {
     let cutoff = crate::paths::now_ms() as f64 - days as f64 * 86_400_000.0;
+    let dirs = crate::library::expand_dirs(dirs, list_subdirs(app)).await;
     crate::library::shots_before(&app.cache, &dirs, cutoff).await
 }
 
 /// 找出相似的截圖：level 0 完全一樣、1 幾乎一樣、2 相似。每組由新到舊；組依最新那張由新到舊
 pub async fn similar_shots(app: &App, dirs: Vec<String>, level: u8) -> Vec<Vec<crate::types::MediaInfo>> {
+    let dirs = crate::library::expand_dirs(dirs, list_subdirs(app)).await;
     let all = crate::library::shots_before(&app.cache, &dirs, f64::INFINITY).await;
     let store = app.hashes.clone();
     tokio::task::spawn_blocking(move || {

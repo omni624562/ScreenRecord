@@ -2592,6 +2592,7 @@ fn recent_card(app: &mut UiApp, ui: &mut Ui, e: &LibraryEntry, date: String, w: 
         if is_cut_name(&e.media.name) {
             chip(ui, tr!("剪輯版", "Edited"), Tone::Warn, false);
         }
+        super::library_dialog::folder_chip(ui, &e.media.folder);
         // 有聲音：灰色小喇叭（不用彩色標籤）
         if e.media.has_audio == Some(true) {
             super::library_dialog::audio_mark(ui);

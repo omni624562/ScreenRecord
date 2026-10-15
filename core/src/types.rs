@@ -639,6 +639,9 @@ pub struct MediaInfo {
     /// 幾條音軌（分軌錄影是 3：混音、系統聲音、麥克風）
     #[serde(default, skip_serializing_if = "is_zero_u32")]
     pub audio_tracks: u32,
+    /// 在儲存位置的哪個子資料夾（例如「教學\2026」；空的 = 儲存位置本身）
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub folder: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -744,6 +747,8 @@ pub struct LibraryQuery {
     pub anchor: Option<usize>,
     /// 截圖的瀏覽條件（瀏覽欄）；有指定時回傳每個選項的張數
     pub facet: Option<FacetQuery>,
+    /// 也列出子資料夾裡的（最多 SUBDIR_DEPTH 層）
+    pub subdirs: bool,
 }
 
 /// 瀏覽欄選的條件：同一組裡選多個是「其中一個」，常見詞是「全部都有」；不同組之間是「而且」
@@ -765,6 +770,9 @@ pub struct FacetQuery {
     pub other: Vec<String>,
     /// 某一天（2026-10-08，月曆點一天）
     pub day: Option<String>,
+    /// 子資料夾（MediaInfo::folder；空的 = 儲存位置本身）
+    #[serde(default)]
+    pub folders: Vec<String>,
 }
 
 impl FacetQuery {
@@ -774,7 +782,7 @@ impl FacetQuery {
 
     /// 選了幾個條件
     pub fn count(&self) -> usize {
-        self.apps.len() + self.kinds.len() + self.terms.len() + self.when.len() + self.hours.len() + self.colors.len() + self.other.len() + usize::from(self.day.is_some())
+        self.folders.len() + self.apps.len() + self.kinds.len() + self.terms.len() + self.when.len() + self.hours.len() + self.colors.len() + self.other.len() + usize::from(self.day.is_some())
     }
 }
 
@@ -789,6 +797,8 @@ pub struct FacetOption {
 /// 瀏覽欄每一組的選項（張數是加上這個條件後會剩幾張）
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct FacetCounts {
+    /// 子資料夾（只有一個資料夾時是空的）
+    pub folders: Vec<FacetOption>,
     pub apps: Vec<FacetOption>,
     pub kinds: Vec<FacetOption>,
     pub terms: Vec<FacetOption>,

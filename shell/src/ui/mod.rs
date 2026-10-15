@@ -452,6 +452,12 @@ impl UiApp {
         self.ctx.request_repaint_after(Duration::from_millis(310));
     }
 
+    /// 馬上存檔（core 接著就要讀這個設定時）
+    pub fn save_settings_now(&mut self) {
+        self.save_at = Some(Instant::now());
+        self.flush_settings();
+    }
+
     fn flush_settings(&mut self) {
         if self.save_at.is_some_and(|t| Instant::now() >= t) {
             self.save_at = None;
