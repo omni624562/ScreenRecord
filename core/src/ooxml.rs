@@ -164,6 +164,7 @@ const NS_A: &str = "http://schemas.openxmlformats.org/drawingml/2006/main";
 const SLIDE_W: u64 = 12_192_000;
 const SLIDE_H: u64 = 6_858_000;
 
+#[allow(clippy::too_many_arguments)]
 fn p_textbox(id: usize, x: u64, y: u64, cx: u64, cy: u64, text: &str, size_100pt: u32, bold: bool, color: &str, center: bool) -> String {
     let algn = if center { r#" algn="ctr""# } else { "" };
     let b = if bold { r#" b="1""# } else { "" };
