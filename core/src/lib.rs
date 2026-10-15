@@ -84,6 +84,7 @@ pub mod screen_pen_win;
 pub mod scroll_win;
 pub mod selfupdate;
 pub mod settings;
+pub mod shot_diff;
 pub mod shot_edit;
 pub mod shot_meta;
 pub mod shot_toast;

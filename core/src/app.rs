@@ -809,6 +809,32 @@ impl App {
         Ok(shot)
     }
 
+    /// 比對兩張截圖（before 較舊、after 較新）：在 after 上用紅框標出不一樣的地方，存成新的截圖；回傳 (截圖, 幾處不一樣)
+    pub async fn compare_shots(self: &Arc<Self>, before: String, after: String, shot_dir: &str) -> crate::Result<(crate::types::ShotInfo, usize)> {
+        let (a, aw, ah) = crate::actions::load_image(&before).await?;
+        let (b, bw, bh) = crate::actions::load_image(&after).await?;
+        let out = new_shot_path(shot_dir).await?;
+        let o = out.clone();
+        let (n, w, h) = tokio::task::spawn_blocking(move || {
+            // 框畫在後面那張（原本的大小）；比較時前面那張縮放成一樣大
+            let boxes = crate::shot_diff::find(&b, bw, bh, &a, aw, ah);
+            let mut pm = tiny_skia::Pixmap::new(bw, bh).ok_or_else(|| crate::Error::config(tr!("圖片太大", "Image is too large")))?;
+            for (d, s) in pm.pixels_mut().iter_mut().zip(b.as_chunks::<4>().0) {
+                *d = tiny_skia::ColorU8::from_rgba(s[0], s[1], s[2], s[3]).premultiply();
+            }
+            crate::shot_diff::mark(&mut pm, &boxes);
+            pm.save_png(&o).map_err(|e| crate::Error::other(trf!("無法儲存圖片：{e}", "Couldn't save the image: {e}")))?;
+            Ok::<_, crate::Error>((boxes.len(), bw, bh))
+        })
+        .await
+        .map_err(|e| crate::Error::other(e.to_string()))??;
+        self.lock().shot_meta = Some(crate::shot_meta::ShotMeta { src: "compare".into(), ..Default::default() });
+        let shot = self.finish_shot(&out, w, h).await;
+        self.lock().shot = Some(shot.clone());
+        crate::info!("[截圖] 比對 {} 與 {}：{n} 處不一樣", before, after);
+        Ok((shot, n))
+    }
+
     /// 截好的 PNG：複製到剪貼簿（失敗不影響已存好的檔案），編上序號
     async fn finish_shot(&self, out: &Path, w: u32, h: u32) -> crate::types::ShotInfo {
         let png = out.to_path_buf();
