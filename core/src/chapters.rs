@@ -116,6 +116,55 @@ pub fn youtube_text(chapters: &[Chapter], duration: f64) -> String {
     lines.join("\n")
 }
 
+/// 每章至少這麼長（秒）
+const SUB_MIN_CHAPTER: f64 = 30.0;
+/// 字幕間停頓至少這麼久才算換段（秒）
+const SUB_MIN_GAP: f64 = 1.0;
+/// 章節標題最多幾個字
+const SUB_TITLE_CHARS: usize = 24;
+
+/// 字幕 → 章節標記：在講話停頓最久的地方切開（每章至少 30 秒，大約每分鐘最多一章），
+/// 標題用那一章第一句字幕。影片太短或沒有停頓時回傳空的
+pub fn from_subtitles(cues: &[crate::subtitles::Cue], duration: f64) -> Vec<Marker> {
+    let mut cues: Vec<&crate::subtitles::Cue> = cues.iter().filter(|c| !c.text.trim().is_empty() && c.start < duration).collect();
+    cues.sort_by(|a, b| a.start.total_cmp(&b.start));
+    if cues.is_empty() || duration < SUB_MIN_CHAPTER * 2.0 {
+        return vec![];
+    }
+    let max_chapters = ((duration / 60.0).ceil() as usize).clamp(2, 20);
+    // 候選切點：每段停頓後的下一句開頭，停頓越久越優先
+    let mut gaps: Vec<(f64, usize)> = (1..cues.len()).map(|i| (cues[i].start - cues[i - 1].end, i)).filter(|(g, _)| *g >= SUB_MIN_GAP).collect();
+    gaps.sort_by(|a, b| b.0.total_cmp(&a.0));
+    let mut picked: Vec<usize> = vec![];
+    for (_, i) in gaps {
+        if picked.len() + 1 >= max_chapters {
+            break;
+        }
+        let t = cues[i].start;
+        let far = t >= SUB_MIN_CHAPTER && duration - t >= SUB_MIN_CHAPTER && picked.iter().all(|&j| (cues[j].start - t).abs() >= SUB_MIN_CHAPTER);
+        if far {
+            picked.push(i);
+        }
+    }
+    if picked.is_empty() {
+        return vec![];
+    }
+    picked.sort();
+    let title = |c: &crate::subtitles::Cue| {
+        let flat: String = c.text.split_whitespace().collect::<Vec<_>>().join(" ");
+        let flat = flat.trim_end_matches(['，', '。', ',', '.', '、', '！', '？', '!', '?']).to_string();
+        if flat.chars().count() > SUB_TITLE_CHARS {
+            format!("{}…", flat.chars().take(SUB_TITLE_CHARS).collect::<String>())
+        } else {
+            flat
+        }
+    };
+    let mut out = vec![Marker { t: 0.0, name: title(cues[0]) }];
+    // 停頓的中間開始新的一章，跳過去時不會切掉第一個字
+    out.extend(picked.into_iter().map(|i| Marker { t: ((cues[i - 1].end + cues[i].start) / 2.0).max(cues[i].start - 0.5), name: title(cues[i]) }));
+    out
+}
+
 static CHAPTER_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"Chapter #\d+:\d+: start (-?\d+(?:\.\d+)?)").unwrap());
 static TITLE_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\s*title\s*:\s?(.*)$").unwrap());
 
@@ -188,5 +237,30 @@ mod tests {
         assert_eq!(youtube_text(&c[1..], 4000.0), "0:00:00 開頭\n0:01:23 標記 1");
         let stderr = "Input #0, mov,mp4, from 'a.mp4':\n  Duration: 00:01:00.00, start: 0.000000, bitrate: 1 kb/s\n  Chapters:\n    Chapter #0:0: start 0.000000, end 12.500000\r\n      Metadata:\n        title           : 開頭\n    Chapter #0:1: start 12.500000, end 60.000000\n      Metadata:\n        title           : 標記 1\n  Stream #0:0[0x1](und): Video: h264\n      Metadata:\n        title           : 不是章節\n";
         assert_eq!(titles(&parse(stderr)), vec![(0.0, "開頭"), (12.5, "標記 1")]);
+    }
+
+    #[test]
+    fn chapters_from_subtitles_split_at_longest_pauses() {
+        use crate::subtitles::Cue;
+        let cue = |a: f64, b: f64, t: &str| Cue { start: a, end: b, text: t.into() };
+        // 三分鐘：每 5 秒一句；第 12、25 句之後停頓 4 秒，第 6 句之後停頓 1.5 秒（比較短，章數夠了就不切）
+        let mut cues = vec![];
+        let mut t: f64 = 0.0;
+        for i in 0..40 {
+            let name = if i == 0 { "大家好，今天介紹 設定\n畫面。".to_string() } else { format!("第 {i} 句") };
+            cues.push(cue(t, t + 4.5, &name));
+            t += 4.5 + if i == 6 { 1.5 } else if i == 12 || i == 25 { 4.0 } else { 0.5 };
+        }
+        let m = from_subtitles(&cues, 180.0);
+        assert_eq!(m.len(), 3, "{m:?}");
+        assert_eq!(m[0].t, 0.0);
+        assert_eq!(m[0].name, "大家好，今天介紹 設定 畫面");
+        assert_eq!(m[1].name, "第 13 句");
+        assert_eq!(m[2].name, "第 26 句");
+        assert!(m[1].t > cues[12].end && m[1].t < cues[13].start, "在停頓裡：{}", m[1].t);
+        assert!(m.iter().skip(1).all(|x| x.name.starts_with("第 ")));
+        // 太短、沒字幕：不產生
+        assert!(from_subtitles(&cues, 50.0).is_empty());
+        assert!(from_subtitles(&[], 600.0).is_empty());
     }
 }

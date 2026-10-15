@@ -27,7 +27,7 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, toast: &mut
             Tab::Crop => crop_panel(ed, ui),
             Tab::Ann => ann_panel(ed, ui, ctx),
             Tab::Output => super::shot::output_panel(ed, ui, ctx),
-            Tab::Subs => super::subs::tab(ed, ui, ctx),
+            Tab::Subs => super::subs::tab(ed, ui, ctx, toast),
             Tab::Audio => audio_panel(ed, ui),
         }
     });
