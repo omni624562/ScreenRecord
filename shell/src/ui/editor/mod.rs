@@ -367,6 +367,8 @@ pub struct Editor {
     stage_frame: Option<(u64, TextureHandle, TextureHandle)>,
     overlay: stage::Overlay,
     strip: timeline::Strip,
+    /// 時間軸上的聲音波形
+    wave: timeline::Wave,
     emoji_tex: Vec<TextureHandle>,
 
     drag: Drag,
@@ -614,6 +616,7 @@ impl Editor {
             stage_frame: None,
             overlay: stage::Overlay::default(),
             strip: timeline::Strip::default(),
+            wave: timeline::Wave::default(),
             emoji_tex: emoji_textures(&app.ctx),
             drag: Drag::None,
             wheel_at: Instant::now(),

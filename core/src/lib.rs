@@ -103,6 +103,7 @@ pub mod updater;
 pub mod version;
 pub mod vertical;
 pub mod video_frame;
+pub mod waveform;
 pub mod winui;
 pub mod zoom;
 
