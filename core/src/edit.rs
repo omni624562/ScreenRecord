@@ -48,6 +48,15 @@ pub struct EditSpec {
     /// 直式影片（9:16）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vertical: Option<crate::vertical::Vertical>,
+    /// 片頭卡片
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub intro: Option<crate::cards::TitleCard>,
+    /// 片尾卡片
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outro: Option<crate::cards::TitleCard>,
+    /// 背景音樂
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub music: Option<crate::cards::Music>,
 }
 
 /// 跟著點擊放大：倍率與錄影時記下的點擊（原影片的秒數, x, y；x、y 為 0～1）

@@ -680,6 +680,8 @@ impl Editor {
     /// 字幕換成剪輯後的時間（刪掉的片段裡的不算；跨過刪掉的片段時從第一段保留的開始到最後一段保留的結束）
     pub fn cut_cues(&self) -> Vec<Cue> {
         let parts = self.parts();
+        // 有片頭時字幕往後移
+        let shift = self.spec.intro.as_ref().filter(|c| !c.is_empty()).map_or(0.0, |c| c.secs());
         let mut subs: Vec<&Ann> = self.anns.iter().filter(|a| self.is_sub(a.id)).collect();
         subs.sort_by(|x, y| x.start.total_cmp(&y.start));
         subs.into_iter()
@@ -688,7 +690,7 @@ impl Editor {
                 let (first, last) = (over.first()?, over.last()?);
                 let start = screenrecorder_core::zoom::map_time(&parts, a.start.max(first.0))?;
                 let end = screenrecorder_core::zoom::map_time(&parts, (a.end.min(last.1) - 0.001).max(first.0))? + 0.001;
-                (end - start >= 0.05).then(|| Cue { start, end, text: a.text.clone().unwrap_or_default() })
+                (end - start >= 0.05).then(|| Cue { start: start + shift, end: end + shift, text: a.text.clone().unwrap_or_default() })
             })
             .collect()
     }

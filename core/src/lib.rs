@@ -18,6 +18,7 @@ pub mod bubble_win;
 pub mod camera_bubble;
 #[cfg(windows)]
 pub mod camera_bubble_win;
+pub mod cards;
 pub mod chapters;
 pub mod clipboard;
 pub mod clock;

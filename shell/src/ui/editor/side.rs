@@ -24,11 +24,19 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, toast: &mut
         ui.spacing_mut().item_spacing = vec2(8.0, 10.0);
         match ed.tab {
             Tab::Time => time_panel(ed, ui, toast),
-            Tab::Crop => crop_panel(ed, ui),
+            Tab::Crop => {
+                crop_panel(ed, ui);
+                if !ed.is_shot() {
+                    cards_panel(ed, ui, ctx);
+                }
+            }
             Tab::Ann => ann_panel(ed, ui, ctx),
             Tab::Output => super::shot::output_panel(ed, ui, ctx),
             Tab::Subs => super::subs::tab(ed, ui, ctx, toast),
-            Tab::Audio => audio_panel(ed, ui),
+            Tab::Audio => {
+                audio_panel(ed, ui);
+                music_panel(ed, ui);
+            }
         }
     });
 }
@@ -1338,5 +1346,117 @@ fn ann_list(ed: &mut Editor, ui: &mut egui::Ui) {
             ed.seek(start);
         }
         ed.select_ann(Some(id));
+    }
+}
+
+/// 片頭、片尾卡片：開關、標題、副標、樣式、秒數，下面是預覽
+fn cards_panel(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context) {
+    use screenrecorder_core::cards::{CardStyle, TitleCard};
+    section(ui, tr!("片頭、片尾", "Intro and outro"), false);
+    if ed.vw <= 0.0 {
+        return hint(ui, tr!("無法讀取影片尺寸，不能加上片頭片尾。", "Couldn't read the video size, so title cards can't be added."));
+    }
+    let default_title = ed.default_card_title();
+    for (i, (label, tip)) in [
+        (
+            tr!("加上片頭", "Add an intro"),
+            tr!("影片開始前先顯示幾秒標題卡（淡入淡出），例如課程名稱、日期", "Show a title card for a few seconds before the video (with fades), e.g. the course name and date"),
+        ),
+        (tr!("加上片尾", "Add an outro"), tr!("影片結束後顯示幾秒卡片，例如「謝謝收看」、聯絡方式", "Show a card for a few seconds after the video, e.g. “Thanks for watching” or contact details")),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let slot = if i == 0 { &mut ed.spec.intro } else { &mut ed.spec.outro };
+        let mut on = slot.is_some();
+        if switch(ui, &mut on, label, true).on_hover_text(tip).changed() {
+            *slot = on.then(|| TitleCard::new(if i == 0 { &default_title } else { tr!("謝謝收看", "Thanks for watching") }));
+        }
+        let Some(card) = slot.as_mut() else { continue };
+        egui::Grid::new(("card-form", i)).num_columns(2).spacing(vec2(8.0, 6.0)).show(ui, |ui| {
+            ui.label(theme::muted(ui, tr!("標題", "Title")).font(theme::font(12.0)));
+            ui.add(egui::TextEdit::singleline(&mut card.title).desired_width(ui.available_width()).hint_text(tr!("例如：報價單的填法", "e.g. How to fill in a quote")));
+            ui.end_row();
+            ui.label(theme::muted(ui, tr!("副標", "Subtitle")).font(theme::font(12.0)));
+            ui.add(egui::TextEdit::singleline(&mut card.subtitle).desired_width(ui.available_width()).hint_text(tr!("（可以不填）", "(optional)")));
+            ui.end_row();
+            ui.label(theme::muted(ui, tr!("樣式", "Style")).font(theme::font(12.0)));
+            let items = [(CardStyle::Dark, tr!("深色", "Dark")), (CardStyle::Light, tr!("淺色", "Light")), (CardStyle::Blue, tr!("藍色", "Blue"))];
+            segmented(ui, &mut card.style, &items, true);
+            ui.end_row();
+            ui.label(theme::muted(ui, tr!("長度", "Length")).font(theme::font(12.0)));
+            theme::stepper(ui, Id::new(("card-secs", i)), &mut card.secs, 0.5, TitleCard::MIN_SECS..=TitleCard::MAX_SECS, 1, tr!(" 秒", " s"));
+            ui.end_row();
+        });
+        // 預覽（和輸出一樣的畫法，縮小）
+        let w = ui.available_width().min(260.0);
+        let h = (w as f64 * ed.vh / ed.vw).round() as f32;
+        let key = {
+            use std::hash::{Hash, Hasher};
+            let mut s = std::collections::hash_map::DefaultHasher::new();
+            (&card.title, &card.subtitle, card.style as u8, w as u32, h as u32).hash(&mut s);
+            s.finish()
+        };
+        if ed.card_tex[i].as_ref().is_none_or(|(k, _)| *k != key) {
+            let ppp = ctx.pixels_per_point();
+            let (pw, ph) = ((w * ppp) as u32, (h * ppp) as u32);
+            ed.card_tex[i] = screenrecorder_core::cards::render(card, pw.max(2), ph.max(2)).map(|pm| {
+                let img = egui::ColorImage::from_rgba_premultiplied([pm.width() as usize, pm.height() as usize], pm.data());
+                (key, ctx.load_texture(format!("card-{i}"), img, egui::TextureOptions::LINEAR))
+            });
+        }
+        if let Some((_, t)) = &ed.card_tex[i] {
+            let (r, _) = ui.allocate_exact_size(vec2(w, h), Sense::hover());
+            ui.painter().image(t.id(), r, egui::Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+            ui.painter().rect_stroke(r, CornerRadius::same(4), Stroke::new(1.0, theme::pal(ui).border), egui::StrokeKind::Outside);
+        }
+    }
+}
+
+/// 背景音樂：選檔、音量、講話時自動調小
+fn music_panel(ed: &mut Editor, ui: &mut egui::Ui) {
+    section(ui, tr!("背景音樂", "Background music"), false);
+    match &mut ed.spec.music {
+        None => {
+            hint(
+                ui,
+                tr!(
+                    "加一首音樂當背景：重複播放到影片結束，最後 2 秒淡出；講話時自動調小。",
+                    "Add music in the background: it loops to the end of the video and fades out over the last 2 seconds, and turns down while you talk."
+                ),
+            );
+            if Btn::new(tr!("選擇音樂檔…", "Choose a music file…")).icon(Icon::Folder).small().show(ui).clicked() {
+                ed.vpending = Some(super::VAct::PickMusic);
+            }
+        }
+        Some(m) => {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(file_name(&m.path)).font(theme::font(12.5))).on_hover_text(&m.path);
+            });
+            let mut remove = false;
+            ui.horizontal(|ui| {
+                if Btn::new(tr!("換一首…", "Change…")).small().show(ui).clicked() {
+                    ed.vpending = Some(super::VAct::PickMusic);
+                }
+                if Btn::new(tr!("移除", "Remove")).ghost().small().show(ui).clicked() {
+                    remove = true;
+                }
+            });
+            ui.horizontal(|ui| {
+                ui.label(theme::muted(ui, tr!("音量", "Volume")).font(theme::font(12.0)));
+                ui.spacing_mut().slider_width = (ui.available_width() - 70.0).max(80.0).floor();
+                theme::slider_style(ui);
+                let mut pct = (m.volume * 100.0).round() as i32;
+                if ui.add(egui::Slider::new(&mut pct, 5..=100).step_by(5.0).suffix("%")).changed() {
+                    m.volume = pct as f64 / 100.0;
+                }
+            });
+            let has_voice = ed.entry.media.has_audio == Some(true) && !ed.spec.audio.mute;
+            switch(ui, &mut m.duck, tr!("講話時自動調小", "Turn down while talking"), has_voice)
+                .on_hover_text(tr!("影片裡有聲音（講話）的時候，音樂自動變小聲，講完再慢慢回來", "When there's sound (talking) in the video, the music gets quieter and comes back afterwards"));
+            if remove {
+                ed.spec.music = None;
+            }
+        }
     }
 }
