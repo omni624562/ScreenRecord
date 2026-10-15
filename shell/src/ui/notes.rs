@@ -38,6 +38,22 @@ fn file() -> PathBuf {
 }
 
 /// 開啟或關閉
+/// 螢幕改變後：記住的位置不在任何螢幕上（例如在拔掉的外接螢幕上）時，改回預設位置（主螢幕上方中間）。
+/// 回傳給使用者看的說明（講稿開著時）
+pub fn fix_position(app: &mut UiApp) -> Option<String> {
+    let [x, y, w, _] = app.s.notes_rect?;
+    let ppp = app.ctx.pixels_per_point();
+    // 標題列的中間（拖得到視窗的地方）要在某個螢幕上
+    let (cx, cy) = (((x + w / 2) as f32 * ppp) as i32, ((y + 16) as f32 * ppp) as i32);
+    if app.env.monitors.is_empty() || app.env.monitors.iter().any(|m| cx >= m.x && cx < m.x + m.width && cy >= m.y && cy < m.y + m.height) {
+        return None;
+    }
+    app.s.notes_rect = None;
+    let n = app.notes.as_mut()?;
+    n.rect = None;
+    Some(tr!("講稿小視窗移回主螢幕", "The script window was moved back to the main screen").into())
+}
+
 pub fn toggle(app: &mut UiApp) {
     if app.notes.take().is_some() {
         return;

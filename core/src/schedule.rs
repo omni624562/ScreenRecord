@@ -235,6 +235,7 @@ mod tests {
             window_capture: false,
             separate_audio: false,
             replay_sec: 0,
+            monitor_key: None,
         }
     }
 
@@ -263,6 +264,7 @@ mod tests {
             window_capture: false,
             separate_audio: false,
             replay_sec: 0,
+            monitor_key: None,
         };
         let now = local(2026, 10, 11, 9, 30);
         let s = Schedule { at: local(2026, 10, 11, 10, 0), minutes: 45, config: config.clone() };

@@ -211,7 +211,22 @@ mod tests {
     use super::*;
 
     fn mon(x: i32, y: i32, w: i32, h: i32) -> MonitorInfo {
-        MonitorInfo { id: format!("0:{x}"), adapter: 0, output: 0, adapter_name: "GPU".into(), device_name: String::new(), display_number: 1, x, y, width: w, height: h, primary: x == 0, rotation: 1 }
+        MonitorInfo {
+            id: format!("0:{x}"),
+            adapter: 0,
+            output: 0,
+            adapter_name: "GPU".into(),
+            device_name: String::new(),
+            display_number: 1,
+            x,
+            y,
+            width: w,
+            height: h,
+            primary: x == 0,
+            rotation: 1,
+            key: String::new(),
+            name: String::new(),
+        }
     }
 
     fn cam(corner: u8, size: u32) -> CameraConfig {

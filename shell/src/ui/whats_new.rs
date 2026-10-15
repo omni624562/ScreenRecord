@@ -56,6 +56,24 @@ fn items(_app: &UiApp) -> Vec<(String, String, Try)> {
             Try::None,
         ),
         (
+            tr!("子資料夾一起列出", "Subfolders are listed too").into(),
+            tr!(
+                "自己分到「教學」「會議」等子資料夾的錄影和截圖，也會出現在最近錄影、全部錄影、全部截圖，縮圖上標出所在的資料夾。",
+                "Recordings and screenshots you sorted into subfolders such as “Tutorials” or “Meetings” now appear in Recent recordings, All recordings and All screenshots, labelled with their folder."
+            )
+            .into(),
+            Try::None,
+        ),
+        (
+            tr!("接上、拔掉外接螢幕", "Connecting and disconnecting screens").into(),
+            tr!(
+                "會自動發現螢幕變了，並記住你選的是哪一台；錄影中拔掉錄的那台會馬上停止並存下已錄的部分。",
+                "Screen changes are detected automatically and the app remembers which screen you chose. If the screen being recorded is unplugged, recording stops right away and what was recorded is saved."
+            )
+            .into(),
+            Try::None,
+        ),
+        (
             tr!("隨時重看", "Replay any time").into(),
             tr!("教學看到一半關掉程式，下次會問要不要接著看；想再看一次：「設定 → 關於 → 重新看教學」。", "Closed the app halfway? You'll be asked whether to continue next time. To see it again: Settings → About → “Replay tutorial”.").into(),
             Try::None,

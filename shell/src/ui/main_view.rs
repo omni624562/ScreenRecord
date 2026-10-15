@@ -329,9 +329,11 @@ fn source_detail(app: &mut UiApp, ui: &mut Ui, room: f32) {
             for m in monitors {
                 let on = app.s.monitor_id.as_deref() == Some(&m.id);
                 let label = if short { trf!("螢幕 {}", "Screen {}", m.display_number) } else { full(&m) };
-                let tip = trf!("{}（{}）", "{} ({})", full(&m), m.adapter_name);
+                // 滑鼠提示：螢幕型號（有的話）與顯示卡
+                let tip = if m.name.is_empty() { trf!("{}（{}）", "{} ({})", full(&m), m.adapter_name) } else { trf!("{}\n{}（{}）", "{}\n{} ({})", full(&m), m.name, m.adapter_name) };
                 if Btn::new(label).small().selected(on).enabled(!locked).tooltip(tip).show(ui).clicked() && !on {
                     app.s.monitor_id = Some(m.id.clone());
+                    app.s.monitor_key = m.key.clone();
                     app.s.monitor_region = None;
                     app.save_settings();
                 }
@@ -673,6 +675,7 @@ fn desk(app: &mut UiApp, ui: &mut Ui, area: Rect) {
             let y = view.y + ((pos.y - rect.min.y) / rect.height() * view.height as f32) as i32;
             if let Some(m) = app.env.monitors.iter().find(|m| x >= m.x && x < m.x + m.width && y >= m.y && y < m.y + m.height) {
                 app.s.monitor_id = Some(m.id.clone());
+                app.s.monitor_key = m.key.clone();
                 app.save_settings();
             }
         }

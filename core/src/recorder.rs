@@ -594,6 +594,99 @@ impl Recorder {
         Ok(rect)
     }
 
+    /// 螢幕配置改變了（接上、拔掉外接螢幕、改解析度、改排列；App 偵測到時呼叫）：
+    /// 錄的螢幕不見或改了解析度：馬上停止並存下已錄的部分（不再重試一兩分鐘）；
+    /// 只是編號或位置變了（例如拔掉另一台）：重新對應到同一台螢幕，開新分段繼續錄（停止時一樣合併成一個檔案）
+    pub async fn displays_changed(&self) {
+        // 倒數期間 start 佔著佇列：不排隊（和移動範圍一樣）
+        let _q = if self.lock().state != RecorderState::Countdown { Some(self.0.queue.lock().await) } else { None };
+        let monitors = self.deps().monitors();
+        let (change, recording, old_plan) = {
+            let st = self.lock();
+            let recording = match st.state {
+                RecorderState::Recording => true,
+                RecorderState::Countdown | RecorderState::Paused => false,
+                _ => return,
+            };
+            // 只錄視窗內容：和螢幕排列無關
+            if st.method == Some(CaptureMethod::Gfxcapture) || st.auto_stopping {
+                return;
+            }
+            let (Some(cfg), Some(plan)) = (st.config.as_ref(), st.plan.as_ref()) else { return };
+            (crate::displays::check(cfg, &plan.monitors, &monitors), recording, plan.clone())
+        };
+        let stop = |me: &Self, title: &str, text: String| {
+            {
+                let mut st = me.lock();
+                st.auto_stopping = true;
+                st.retry = None;
+                st.add_log(LogLevel::Warn, &text);
+            }
+            me.deps().notify(title, &text, true);
+            me.stop_later(Some(text));
+        };
+        let new_config = match change {
+            crate::displays::LayoutChange::Same => return,
+            crate::displays::LayoutChange::Gone(name) => {
+                return stop(
+                    self,
+                    tr!("錄的螢幕不見了", "The screen being recorded is gone"),
+                    trf!("{name} 已拔掉或關掉，已停止錄影並存下之前錄到的部分", "{name} was disconnected or turned off. Recording stopped and what was recorded so far was saved"),
+                );
+            }
+            crate::displays::LayoutChange::Resized(name) => {
+                return stop(
+                    self,
+                    tr!("螢幕解析度改變了", "Screen resolution changed"),
+                    trf!("{name} 的解析度改變了，已停止錄影並存下之前錄到的部分", "The resolution of {name} changed. Recording stopped and what was recorded so far was saved"),
+                );
+            }
+            crate::displays::LayoutChange::Remap(c) => *c,
+        };
+        // 重新對應：輸出大小要一樣才接得起來（同一個檔案）
+        let plan = match resolve_plan(&new_config, &monitors) {
+            Ok(p) if (p.out_width, p.out_height) == (old_plan.out_width, old_plan.out_height) => p,
+            _ => {
+                return stop(
+                    self,
+                    tr!("螢幕排列改變了", "Screen arrangement changed"),
+                    tr!("螢幕的排列改變了，已停止錄影並存下之前錄到的部分", "The screen arrangement changed. Recording stopped and what was recorded so far was saved").to_string(),
+                );
+            }
+        };
+        if recording {
+            {
+                let mut st = self.lock();
+                st.close_span();
+                st.state = RecorderState::Paused;
+                st.busy = Some(tr!("螢幕排列改變，重新對應中…", "Screens changed; reconnecting…").into());
+            }
+            self.stop_current().await;
+        }
+        {
+            let mut st = self.lock();
+            st.plan = Some(plan);
+            st.config = Some(new_config);
+            st.retry = None;
+            st.add_log(LogLevel::Info, tr!("螢幕的編號或位置改變了，繼續錄同一台螢幕", "Screen numbering or position changed; still recording the same screen"));
+            if !recording {
+                return;
+            }
+            st.busy = None;
+            // 這段期間按了停止：不再開新分段
+            if st.state != RecorderState::Paused {
+                return;
+            }
+            st.state = RecorderState::Recording;
+            st.span_start = Some(now_ms());
+        }
+        if !self.try_start_segment() {
+            self.stop_later(Some(
+                tr!("螢幕改變後無法繼續錄影，已停止並儲存先前錄到的部分", "Couldn't continue recording after the screens changed. Stopped and saved what was recorded so far").into(),
+            ));
+        }
+    }
+
     /// 停止並儲存。開始的過程中（準備、倒數、縮小視窗）直接取消：start 還在佇列裡，不能排在它後面
     pub fn stop(&self, reason: Option<String>) -> BoxFut<'static, Result<Option<RecordingResult>>> {
         {
@@ -882,6 +975,8 @@ impl Recorder {
             // 回溯錄影：馬上開始、一直錄到停止（存下的時候才需要），操作視窗不縮小
             config = RecordConfig { countdown_sec: Some(0.0), hide_ui: Some(false), max_minutes: 0.0, ..config };
         }
+        // 單一螢幕：依實體螢幕找回現在的編號（拔掉、接上螢幕後順序可能變了；系統匣、快速鍵、排程開始時也一樣）
+        crate::displays::rebind(&mut config, &deps.monitors()).map_err(Error::config)?;
         let mut plan = resolve_plan(&config, &deps.monitors())?;
         let encoders = deps.encoders().await;
         let enc_pref = config.encoder.unwrap_or_default();
@@ -1927,6 +2022,8 @@ mod tests {
             height: 1080,
             primary: true,
             rotation: 1,
+            key: String::new(),
+            name: String::new(),
         }
     }
 
@@ -1949,6 +2046,8 @@ mod tests {
         gfx: bool,
         /// 存下的標記、點擊、游標位置
         marks: Mutex<Option<Marks>>,
+        /// 改過的螢幕清單（模擬接上、拔掉螢幕）；None = 只有 mon()
+        screens: Mutex<Option<Vec<MonitorInfo>>>,
     }
 
     impl RecorderDeps for Fake {
@@ -1973,7 +2072,7 @@ mod tests {
         }
         fn learn_gpu(&self) {}
         fn monitors(&self) -> Vec<MonitorInfo> {
-            vec![mon()]
+            self.screens.lock().unwrap().clone().unwrap_or_else(|| vec![mon()])
         }
         fn ddagrab_usable(&self) -> BoxFut<'_, bool> {
             let usable = self.ffmpeg.is_none() || self.dda;
@@ -2044,6 +2143,7 @@ mod tests {
                 window_capture: false,
                 separate_audio: false,
                 replay_sec: 0,
+                monitor_key: None,
             }
         }
         fn release(&self) {
@@ -2449,6 +2549,66 @@ esac
         assert!(st.log.iter().any(|l| l.text.contains("已停止回溯錄影（這次存下 2 支）")), "{:?}", st.log);
         assert_eq!(s.deps.after.load(Ordering::SeqCst), 1);
         assert!(s.rec.save_replay().await.is_err());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn recorded_screen_unplugged_stops_and_saves_at_once() {
+        let tools = tempfile::tempdir().unwrap();
+        let s = Setup::new(Fake { ffmpeg: Some(fake_ffmpeg(tools.path())), ..Default::default() });
+        s.release();
+        s.rec.start(RecordConfig { countdown_sec: Some(0.0), hide_ui: Some(false), ..s.config() }).await.unwrap();
+        for _ in 0..100 {
+            if s.rec.status().frames > 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        // 只剩另一台螢幕（錄的那台拔掉了）
+        *s.deps.screens.lock().unwrap() = Some(vec![MonitorInfo { id: "0:0".into(), device_name: r"\\.\DISPLAY2".into(), display_number: 2, ..mon() }]);
+        s.rec.displays_changed().await;
+        for _ in 0..200 {
+            if s.rec.status().state == RecorderState::Idle {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let st = s.rec.status();
+        assert_eq!(st.state, RecorderState::Idle);
+        assert!(st.log.iter().any(|l| l.text.contains("已拔掉或關掉")), "{:?}", st.log);
+        // 之前錄到的部分有存下來
+        assert!(st.result.as_ref().is_some_and(|r| r.ok), "{:?}", st.result);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn renumbered_screen_keeps_recording_the_same_one() {
+        let tools = tempfile::tempdir().unwrap();
+        let s = Setup::new(Fake { ffmpeg: Some(fake_ffmpeg(tools.path())), ..Default::default() });
+        s.release();
+        s.rec.start(RecordConfig { countdown_sec: Some(0.0), hide_ui: Some(false), ..s.config() }).await.unwrap();
+        let wait_frames = || async {
+            for _ in 0..100 {
+                if s.rec.status().frames > 0 && s.rec.status().busy.is_none() {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            panic!("沒有收到進度");
+        };
+        wait_frames().await;
+        // 同一台螢幕，編號變了（例如拔掉了另一台）
+        *s.deps.screens.lock().unwrap() = Some(vec![MonitorInfo { id: "1:0".into(), adapter: 1, ..mon() }]);
+        s.rec.displays_changed().await;
+        let st = s.rec.status();
+        assert_eq!(st.state, RecorderState::Recording);
+        assert!(st.log.iter().any(|l| l.text.contains("繼續錄同一台螢幕")), "{:?}", st.log);
+        // 沒變：什麼都不做
+        s.rec.displays_changed().await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let res = s.rec.stop(None).await.unwrap().unwrap();
+        assert!(res.ok, "{}", res.message);
+        assert!(res.message.contains("2 個分段"), "{}", res.message);
     }
 
     #[cfg(unix)]

@@ -31,6 +31,9 @@ pub struct UiSettings {
     pub source_type: SourceType,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub monitor_id: Option<String>,
+    /// 選的那台實體螢幕（MonitorInfo::key）：拔掉、接上其他螢幕後編號變了也找得回來
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub monitor_key: String,
     /// 單一螢幕模式下只錄其中一部分（桌面座標，在選的螢幕內）；None = 整個螢幕
     #[serde(skip_serializing_if = "Option::is_none")]
     pub monitor_region: Option<Rect>,
@@ -185,6 +188,11 @@ fn primary(env: &EnvInfo) -> Option<&MonitorInfo> {
 impl UiSettings {
     /// 從存檔讀取（欄位缺少或不合理時用預設值）
     pub fn from_saved(v: Option<&Value>, env: &EnvInfo) -> UiSettings {
+        Self::from_saved_noted(v, env).0
+    }
+
+    /// 同上，也回傳因為螢幕改變而調整的說明（啟動時提示使用者）
+    pub fn from_saved_noted(v: Option<&Value>, env: &EnvInfo) -> (UiSettings, Vec<String>) {
         let empty = serde_json::Map::new();
         let o = v.and_then(Value::as_object).unwrap_or(&empty);
         let num = |k: &str| o.get(k).and_then(Value::as_f64);
@@ -203,6 +211,7 @@ impl UiSettings {
                 _ => SourceType::Monitor,
             },
             monitor_id: string("monitorId"),
+            monitor_key: string("monitorKey").unwrap_or_default(),
             monitor_region: o.get("monitorRegion").and_then(|r| serde_json::from_value::<Rect>(r.clone()).ok()),
             region,
             fps: num("fps").filter(|f| f.fract() == 0.0 && *f >= 1.0 && *f <= 60.0).unwrap_or(30.0),
@@ -298,18 +307,70 @@ impl UiSettings {
             preset_name: string("presetName").unwrap_or_default(),
             schedule: o.get(screenrecorder_core::schedule::UI_KEY).cloned(),
         };
-        s.fix_monitor(env);
-        s
+        let notes = s.fix_monitor(env);
+        (s, notes)
     }
 
-    /// 選的螢幕不存在（換了螢幕）：改用主螢幕；範圍不在螢幕內（解析度變了）就錄整個螢幕
-    pub fn fix_monitor(&mut self, env: &EnvInfo) {
-        if !env.monitors.iter().any(|m| Some(&m.id) == self.monitor_id.as_ref()) {
-            self.monitor_id = primary(env).map(|m| m.id.clone());
+    /// 螢幕改變後（接上、拔掉外接螢幕、改解析度、改排列）調整設定，回傳給使用者看的說明：
+    /// - 依實體螢幕找回選的那台（編號變了也一樣）；那台沒接上時改用主螢幕
+    /// - 單一螢幕裡框選的範圍不在螢幕內（解析度變了）：改錄整個螢幕
+    /// - 自訂範圍不在任何螢幕上：移到主螢幕；有一部分超出桌面：移回桌面內
+    ///
+    /// 還沒偵測到螢幕時不動（啟動時偵測完成前）
+    pub fn fix_monitor(&mut self, env: &EnvInfo) -> Vec<String> {
+        use screenrecorder_core::{tr, trf};
+        let mut notes = vec![];
+        let Some(p) = primary(env) else { return notes };
+        // 1. 選的螢幕：先依實體螢幕找
+        let by_key = (!self.monitor_key.is_empty()).then(|| env.monitors.iter().find(|m| m.key.eq_ignore_ascii_case(&self.monitor_key))).flatten();
+        match by_key {
+            Some(m) => self.monitor_id = Some(m.id.clone()),
+            // 記得的那台沒接上（這次拿得到識別才能確定）
+            None if !self.monitor_key.is_empty() && env.monitors.iter().any(|m| !m.key.is_empty()) => {
+                if self.source_type == SourceType::Monitor {
+                    notes.push(trf!("選的螢幕沒有接上，改錄{}", "The selected screen isn't connected; recording {} instead", p.label()));
+                }
+                self.monitor_id = Some(p.id.clone());
+                self.monitor_region = None;
+            }
+            None if !env.monitors.iter().any(|m| Some(&m.id) == self.monitor_id.as_ref()) => {
+                if self.monitor_id.is_some() && self.source_type == SourceType::Monitor {
+                    notes.push(trf!("選的螢幕不見了，改錄{}", "The selected screen is gone; recording {} instead", p.label()));
+                }
+                self.monitor_id = Some(p.id.clone());
+            }
+            None => {}
         }
+        if let Some(m) = self.selected_monitor(env) {
+            self.monitor_key = m.key.clone();
+        }
+        // 2. 單一螢幕裡框選的範圍
         if self.monitor_region.is_some() && self.region_in_monitor(env).is_none() {
+            if self.source_type == SourceType::Monitor {
+                notes.push(tr!("框選的範圍已經不在螢幕上，改錄整個螢幕", "The selected area is no longer on the screen; recording the whole screen").into());
+            }
             self.monitor_region = None;
         }
+        // 3. 自訂範圍
+        let r = self.region;
+        let on = |m: &MonitorInfo| r.x < m.x + m.width && r.x + r.width > m.x && r.y < m.y + m.height && r.y + r.height > m.y;
+        let dk = env.desktop;
+        if !env.monitors.iter().any(on) {
+            let (w, h) = (r.width.min(p.width), r.height.min(p.height));
+            self.region = Rect { x: p.x + (p.width - w) / 2, y: p.y + (p.height - h) / 2, width: w, height: h };
+            if self.source_type == SourceType::Region {
+                notes.push(trf!("自訂範圍不在任何螢幕上，已移到{}", "The custom area wasn't on any screen; moved it to {}", p.label()));
+            }
+        } else if dk.width > 0 && (r.x < dk.x || r.y < dk.y || r.x + r.width > dk.x + dk.width || r.y + r.height > dk.y + dk.height) {
+            let (w, h) = (r.width.min(dk.width), r.height.min(dk.height));
+            let x = r.x.clamp(dk.x, dk.x + dk.width - w);
+            let y = r.y.clamp(dk.y, dk.y + dk.height - h);
+            self.region = Rect { x, y, width: w, height: h };
+            if self.source_type == SourceType::Region {
+                notes.push(tr!("自訂範圍有一部分超出螢幕，已移回螢幕內", "Part of the custom area was off screen; moved it back").into());
+            }
+        }
+        notes
     }
 
     /// 單一螢幕模式的範圍（要完全在選的螢幕內）
@@ -411,6 +472,7 @@ impl UiSettings {
             window_capture: self.window_capture && self.source_type == SourceType::Region && self.follow_window.is_some(),
             separate_audio: self.separate_audio,
             replay_sec: 0,
+            monitor_key: (self.source_type == SourceType::Monitor && self.region_in_monitor(env).is_none() && !self.monitor_key.is_empty()).then(|| self.monitor_key.clone()),
         }
     }
 }
@@ -435,6 +497,8 @@ mod tests {
                 height: 1080,
                 primary: true,
                 rotation: 1,
+                key: "K1".into(),
+                name: String::new(),
             }],
             desktop: Rect { x: 0, y: 0, width: 1920, height: 1080 },
             ..Default::default()
@@ -526,5 +590,54 @@ mod tests {
         s.monitor_region = Some(Rect { x: 1500, y: 0, width: 800, height: 600 });
         assert_eq!(s.record_config(&env()).source, SourceConfig::Monitor { monitor_id: "0:0".into() });
         assert_eq!(UiSettings::from_saved(Some(&s.to_value()), &env()).monitor_region, None);
+    }
+
+    /// 筆電（K1）＋外接螢幕（K2）；swap：拔掉筆電螢幕後外接螢幕變成 0:0
+    fn two(swap: bool) -> EnvInfo {
+        let m = |id: &str, key: &str, x: i32, primary: bool| MonitorInfo { id: id.into(), key: key.into(), x, width: 1920, height: 1080, primary, display_number: 1, ..Default::default() };
+        let monitors = if swap { vec![m("0:0", "K2", 0, true)] } else { vec![m("0:0", "K1", 0, true), m("0:1", "K2", 1920, false)] };
+        let w = monitors.len() as i32 * 1920;
+        EnvInfo { default_output_dir: "C:\\Videos".into(), monitors, desktop: Rect { x: 0, y: 0, width: w, height: 1080 }, ..Default::default() }
+    }
+
+    #[test]
+    fn remembers_the_physical_screen() {
+        let mut s = UiSettings::from_saved(None, &two(false));
+        s.source_type = SourceType::Monitor;
+        // 舊版的設定只有編號：依編號記住是哪一台
+        s.monitor_id = Some("0:1".into());
+        s.monitor_key.clear();
+        assert!(s.fix_monitor(&two(false)).is_empty());
+        assert_eq!(s.monitor_key, "K2");
+        assert_eq!(s.record_config(&two(false)).monitor_key.as_deref(), Some("K2"));
+        // 編號變了（拔掉筆電螢幕）：還是同一台，不用說明
+        assert!(s.fix_monitor(&two(true)).is_empty());
+        assert_eq!(s.monitor_id.as_deref(), Some("0:0"));
+        // 外接螢幕拔掉：改用主螢幕並說明
+        let mut s = UiSettings { monitor_id: Some("0:1".into()), monitor_key: "K2".into(), ..s };
+        let only_laptop = EnvInfo { monitors: vec![two(false).monitors[0].clone()], desktop: Rect { x: 0, y: 0, width: 1920, height: 1080 }, ..two(false) };
+        assert_eq!(s.fix_monitor(&only_laptop).len(), 1);
+        assert_eq!((s.monitor_id.as_deref(), s.monitor_key.as_str()), (Some("0:0"), "K1"));
+        // 還沒偵測到螢幕：不動
+        let mut s2 = UiSettings { monitor_id: Some("0:1".into()), monitor_key: "K2".into(), ..s.clone() };
+        assert!(s2.fix_monitor(&EnvInfo::default()).is_empty());
+        assert_eq!(s2.monitor_id.as_deref(), Some("0:1"));
+    }
+
+    #[test]
+    fn custom_area_moves_back_on_screen() {
+        let mut s = UiSettings::from_saved(None, &two(false));
+        s.source_type = SourceType::Region;
+        // 在拔掉的外接螢幕上：移到主螢幕中間
+        s.region = Rect { x: 2400, y: 100, width: 800, height: 600 };
+        let only_laptop = EnvInfo { monitors: vec![two(false).monitors[0].clone()], desktop: Rect { x: 0, y: 0, width: 1920, height: 1080 }, ..two(false) };
+        assert_eq!(s.fix_monitor(&only_laptop).len(), 1);
+        assert_eq!(s.region, Rect { x: 560, y: 240, width: 800, height: 600 });
+        // 有一部分超出桌面：移回桌面內
+        s.region = Rect { x: 1500, y: 100, width: 800, height: 600 };
+        assert_eq!(s.fix_monitor(&only_laptop).len(), 1);
+        assert_eq!(s.region, Rect { x: 1120, y: 100, width: 800, height: 600 });
+        // 在螢幕內：不動
+        assert!(s.fix_monitor(&only_laptop).is_empty());
     }
 }

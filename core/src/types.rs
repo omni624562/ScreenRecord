@@ -22,6 +22,33 @@ pub struct MonitorInfo {
     pub primary: bool,
     /// DXGI_MODE_ROTATION：1 = 不旋轉
     pub rotation: u32,
+    /// 實體螢幕的識別（Windows 的螢幕裝置路徑；拔掉再接上、順序改變都一樣）；拿不到時空白
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub key: String,
+    /// 螢幕的型號名稱（例如 DELL U2415）；拿不到時空白
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub name: String,
+}
+
+impl MonitorInfo {
+    /// 是不是同一台實體螢幕：有識別時比識別，否則比 \\.\DISPLAYn
+    pub fn same_screen(&self, other: &MonitorInfo) -> bool {
+        if !self.key.is_empty() && !other.key.is_empty() {
+            self.key.eq_ignore_ascii_case(&other.key)
+        } else {
+            self.device_name.eq_ignore_ascii_case(&other.device_name)
+        }
+    }
+
+    /// 給使用者看的名稱：「螢幕 2（DELL U2415）」
+    pub fn label(&self) -> String {
+        let n = crate::trf!("螢幕 {}", "Screen {}", self.display_number);
+        if self.name.is_empty() {
+            n
+        } else {
+            crate::trf!("{n}（{}）", "{n} ({})", self.name)
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -421,6 +448,9 @@ pub struct RecordConfig {
     /// 重播緩衝：在背景一直錄、只保留最近這麼多秒，需要時再存下來（0 = 一般錄影）
     #[serde(default, skip_serializing_if = "is_zero_u32")]
     pub replay_sec: u32,
+    /// 單一螢幕：選的那台實體螢幕（MonitorInfo::key）。開始錄影時依它找回正確的 monitorId（拔掉、接上螢幕後順序可能變了）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub monitor_key: Option<String>,
 }
 
 impl RecordConfig {

@@ -23,6 +23,7 @@ pub mod clipboard;
 pub mod clock;
 pub mod cursor;
 pub mod desktop;
+pub mod displays;
 pub mod downloader;
 pub mod dragout;
 pub mod edit;

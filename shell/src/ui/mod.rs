@@ -176,6 +176,8 @@ pub struct UiApp {
     /// 回溯錄影最近存下的檔案（快速鍵、系統匣存下時也更新最近錄影）
     last_replay_path: Option<String>,
     last_state: RecorderState,
+    /// 看過的螢幕配置改變次數（core 的 Status::monitors_rev）
+    monitors_rev: u64,
     pub main: main_view::MainState,
     ddagrab_watch: Option<Instant>,
     /// 已處理過的截圖（介面或快速鍵截好時更新清單、顯示提示）
@@ -231,6 +233,7 @@ impl UiApp {
             schedule_dlg: None,
             save_at: None,
             last_state: status.recorder.state,
+            monitors_rev: status.monitors_rev,
             status,
             status_at: Instant::now(),
             toast: None,
@@ -280,7 +283,13 @@ impl UiApp {
             app.env = app.core.env();
             app.env_ready = true;
             let saved = app.core.settings.load();
-            app.s = UiSettings::from_saved(saved.ui.as_ref(), &app.env);
+            let (s, notes) = UiSettings::from_saved_noted(saved.ui.as_ref(), &app.env);
+            app.s = s;
+            // 上次選的螢幕沒接上等：說明改成什麼（並存回設定，系統匣、快速鍵開始的錄影也用新的）
+            if !notes.is_empty() {
+                app.toast(notes.join("\n"), false);
+                app.save_settings();
+            }
             app.settings_rev = saved.rev;
             app.presets = saved.presets;
             app.preview.reset();
@@ -548,6 +557,13 @@ impl UiApp {
                 editor::shot::open(self, shot.path.clone());
             }
         }
+        // 接上、拔掉外接螢幕、改解析度或排列（core 偵測到）：重新讀螢幕、調整選的螢幕與範圍、重開預覽
+        if self.status.monitors_rev != self.monitors_rev {
+            self.monitors_rev = self.status.monitors_rev;
+            if self.env_ready {
+                self.displays_changed();
+            }
+        }
         let state = self.status.recorder.state;
         if state != self.last_state {
             // 開始 / 結束錄影時調整即時預覽的張數
@@ -617,12 +633,43 @@ impl UiApp {
         self.ddagrab_watch = Some(Instant::now() + Duration::from_secs(1));
     }
 
+    /// 螢幕配置改變了：重新讀螢幕清單、調整選的螢幕與範圍、講稿小視窗的位置，重開即時預覽並說明
+    fn displays_changed(&mut self) {
+        let mut env = self.core.env();
+        env.update = self.env.update.clone();
+        self.apply_displays(env);
+    }
+
+    /// 套用新的螢幕清單（測試時可以直接給）
+    pub fn apply_displays(&mut self, env: screenrecorder_core::types::EnvInfo) {
+        let before = self.env.monitors.len();
+        self.env = env;
+        let mut notes = self.s.fix_monitor(&self.env);
+        notes.extend(notes::fix_position(self));
+        self.save_settings();
+        self.preview.reset();
+        self.preview.retry_live();
+        let n = self.env.monitors.len();
+        let head = match n.cmp(&before) {
+            std::cmp::Ordering::Greater => trf!("接上了螢幕，現在有 {n} 個螢幕", "A screen was connected; {n} screens now"),
+            std::cmp::Ordering::Less => trf!("拔掉了螢幕，現在有 {n} 個螢幕", "A screen was disconnected; {n} screens now"),
+            std::cmp::Ordering::Equal => tr!("螢幕的解析度或排列改變了", "Screen resolution or arrangement changed").into(),
+        };
+        // 錄影中的處理（停止或繼續）由錄影器說明，這裡只說螢幕的變化
+        let text = std::iter::once(head).chain(notes).collect::<Vec<_>>().join("\n");
+        self.toast(text, false);
+    }
+
     /// 重新偵測環境（FFmpeg、螢幕、音訊裝置）
     pub fn refresh_env(&mut self, then: impl FnOnce(&mut UiApp) + Send + 'static) {
         let core = self.core.clone();
         self.spawn(async move { core.refresh(false).await }, move |app, env| {
             app.env = env;
-            app.s.fix_monitor(&app.env);
+            let notes = app.s.fix_monitor(&app.env);
+            if !notes.is_empty() {
+                app.toast(notes.join("\n"), false);
+                app.save_settings();
+            }
             app.preview.reset();
             app.watch_ddagrab();
             app.load_recent();

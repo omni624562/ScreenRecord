@@ -1,5 +1,5 @@
 //! 開發用（只在 debug 版）：自動開啟某個畫面、模擬操作並截圖，在 Linux 的 Xvfb 上檢查介面。
-//! - SCREENRECORDER_DEV：要開啟的畫面（library、shots、changelog、notes（講稿小視窗）、schedule（排程錄影）、after:<路徑>（錄完自動處理）、follow:<標題>（只錄這個視窗）、followfake:<標題>（模擬已選好視窗）、record:<秒>（錄幾秒）、replay:<保留秒數>,<幾秒後存下>[,<再幾秒停止>]（重播緩衝）、export:<路徑>、edit:<路徑>、view:<路徑>、whatsnew（新功能介紹）、monitors（模擬兩個螢幕）、snip:<PNG>（用這張圖當凍結的桌面開啟框選截圖）、snipregion:<PNG>（同上，只選範圍）、stepsreview:<PNG>,<PNG>（整理步驟截圖）、hotkeys（模擬已登記快速鍵）、update:<版本>（模擬有新版本）、cameras:<名稱>,<名稱>（模擬找到的攝影機）、settings:<record|audio|save|after|keys|advanced|about>、ed:<剪輯視窗指令>、tour:<first|editor|shot|library>[,<第幾步>]（教學）），以 ; 分隔
+//! - SCREENRECORDER_DEV：要開啟的畫面（library、shots、changelog、notes（講稿小視窗）、schedule（排程錄影）、after:<路徑>（錄完自動處理）、follow:<標題>（只錄這個視窗）、followfake:<標題>（模擬已選好視窗）、record:<秒>（錄幾秒）、replay:<保留秒數>,<幾秒後存下>[,<再幾秒停止>]（重播緩衝）、export:<路徑>、edit:<路徑>、view:<路徑>、whatsnew（新功能介紹）、monitors（模擬兩個螢幕）、unplug（模擬拔掉外接螢幕）、snip:<PNG>（用這張圖當凍結的桌面開啟框選截圖）、snipregion:<PNG>（同上，只選範圍）、stepsreview:<PNG>,<PNG>（整理步驟截圖）、hotkeys（模擬已登記快速鍵）、update:<版本>（模擬有新版本）、cameras:<名稱>,<名稱>（模擬找到的攝影機）、settings:<record|audio|save|after|keys|advanced|about>、ed:<剪輯視窗指令>、tour:<first|editor|shot|library>[,<第幾步>]（教學）），以 ; 分隔
 //! - SCREENRECORDER_INPUT：開啟後依序模擬的操作，以 ; 分隔：
 //!   wait:毫秒、click:x,y（可加 ,ctrl、,shift）、dclick:x,y（按兩下）、rclick:x,y（右鍵）、move:x,y、drag:x0,y0,x1,y1、wheel:x,y,dy（加 ,ctrl = Ctrl+滾輪）、key:Space（可加 ctrl+、alt+、shift+）、hold:Space / release:Space（按住、放開）、type:文字、shot:路徑
 //! - SCREENRECORDER_SHOT：最後截圖存檔的路徑（存好後結束）；SCREENRECORDER_SHOT_AFTER：開始後幾毫秒截圖（預設 3000）
@@ -259,6 +259,7 @@ pub fn tick(app: &mut UiApp, ctx: &egui::Context) {
                         app.whats_new_open = true;
                     }
                     _ if a == "monitors" => fake_monitors(app),
+                    _ if a == "unplug" => fake_unplug(app),
                     // 名稱很長的音訊裝置（檢查設定視窗不會被撐寬）
                     _ if a == "mics" => fake_mics(app),
                     // 模擬系統匣已登記快速鍵（Linux 上沒有系統匣）
@@ -416,10 +417,25 @@ fn fake_monitors(app: &mut UiApp) {
         height: 1080,
         primary: i == 0,
         rotation: 1,
+        key: format!("\\\\?\\DISPLAY#FAKE{i}"),
+        name: if i == 0 { "Built-in".into() } else { "DELL U2415".into() },
     };
     app.env.monitors = vec![m(0, 0), m(1, 1920)];
     app.env.desktop = Rect { x: 0, y: 0, width: 3840, height: 1080 };
     app.s.fix_monitor(&app.env);
+}
+
+/// 模擬拔掉外接螢幕：先選第二個螢幕、講稿放在它上面，再只留下第一個（和偵測到螢幕改變時一樣處理）
+fn fake_unplug(app: &mut UiApp) {
+    fake_monitors(app);
+    let ext = app.env.monitors[1].clone();
+    app.s.source_type = super::settings::SourceType::Monitor;
+    app.s.monitor_id = Some(ext.id.clone());
+    app.s.monitor_key = ext.key.clone();
+    let mut env = app.env.clone();
+    env.monitors.truncate(1);
+    env.desktop = screenrecorder_core::types::Rect { x: 0, y: 0, width: 1920, height: 1080 };
+    app.apply_displays(env);
 }
 
 fn fake_mics(app: &mut UiApp) {

@@ -31,6 +31,8 @@ struct Slot {
     state: Option<PreviewState>,
     /// 即時預覽失敗的時間：之後一段時間改用單張
     live_failed: Option<Instant>,
+    /// 即時預覽有畫面之後意外結束（例如螢幕被拔掉、解析度改變）：下一格重新開始，不停在最後一張
+    ended: bool,
 }
 
 /// 要執行的預覽：範圍（"" 整個桌面或螢幕 id）、每秒張數（0 = 單張）、即時預覽的寬度
@@ -108,8 +110,14 @@ impl Preview {
             self.slot.lock().unwrap().state = Some(PreviewState::Failed(tr!("需要 FFmpeg 才能顯示預覽", "FFmpeg is needed to show the preview").into()));
             return;
         }
-        if self.slot.lock().unwrap().live_failed.is_some_and(|t| t.elapsed() < LIVE_RETRY) {
-            fps = 0;
+        {
+            let mut s = self.slot.lock().unwrap();
+            if std::mem::take(&mut s.ended) {
+                self.current = None;
+            }
+            if s.live_failed.is_some_and(|t| t.elapsed() < LIVE_RETRY) {
+                fps = 0;
+            }
         }
         let want = Want { key: key.to_string(), fps, width: if fps > 0 { width } else { 0 } };
         if self.current.as_ref() == Some(&want) {
@@ -169,9 +177,15 @@ impl Preview {
                         break;
                     }
                     if out.read_exact(bytemuck::cast_slice_mut(&mut cur)).await.is_err() {
-                        if !got && !stop.load(Ordering::Relaxed) {
-                            // 串流失敗（例如 ddagrab 暫時無法使用）：先改用單張
-                            slot.lock().unwrap().live_failed = Some(Instant::now());
+                        if !stop.load(Ordering::Relaxed) {
+                            let mut s = slot.lock().unwrap();
+                            if got {
+                                // 有畫面之後才結束（螢幕被拔掉、解析度改變…）：重新開始，不停在最後一張
+                                s.ended = true;
+                            } else {
+                                // 串流失敗（例如 ddagrab 暫時無法使用）：先改用單張
+                                s.live_failed = Some(Instant::now());
+                            }
                         }
                         break;
                     }
