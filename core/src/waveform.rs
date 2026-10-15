@@ -42,7 +42,7 @@ pub fn load(ffmpeg: &Path, path: &str, cancel: &AtomicBool) -> Option<Vec<u8>> {
         if bytes.len() % 2 == 1 {
             carry = bytes.pop();
         }
-        for s in bytes.chunks_exact(2) {
+        for s in bytes.as_chunks::<2>().0 {
             let v = (i16::from_le_bytes([s[0], s[1]]) as i32).abs();
             cur = cur.max(v);
             n += 1;
