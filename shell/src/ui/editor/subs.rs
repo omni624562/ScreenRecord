@@ -40,7 +40,7 @@ fn is_current(ed: &Editor, cancel: &Arc<AtomicBool>) -> bool {
 }
 
 /// 「字幕」分頁：產生或匯入字幕、選取的字幕的樣式與時間、逐段修改的清單
-pub fn tab(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context) {
+pub fn tab(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, toast: &mut Option<(String, bool)>) {
     if ed.vw <= 0.0 {
         return hint(ui, tr!("無法讀取影片尺寸，不能加上字幕。", "Couldn't read the video size, so subtitles can't be added."));
     }
@@ -49,7 +49,7 @@ pub fn tab(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context) {
     if n == 0 {
         return;
     }
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         if Btn::new(tr!("匯出 SRT（依剪輯後的時間）", "Export SRT (edited timing)"))
             .small()
             .tooltip(tr!(
@@ -60,6 +60,17 @@ pub fn tab(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context) {
             .clicked()
         {
             ed.vpending = Some(VAct::ExportSrt);
+        }
+        if Btn::new(tr!("依字幕產生章節", "Chapters from subtitles"))
+            .small()
+            .tooltip(tr!(
+                "在講話停頓最久的地方切成幾章（每章至少 30 秒），用那一章第一句當標題，變成時間軸上的標記；輸出時寫進影片，也能貼到 YouTube 說明欄",
+                "Split the video into chapters at the longest pauses in speech (at least 30 s each), titled with each chapter's first line. They become markers on the timeline and are written into the output video"
+            ))
+            .show(ui)
+            .clicked()
+        {
+            *toast = Some((ed.chapters_from_subs(), false));
         }
         if Btn::new(tr!("全部刪除", "Delete all")).ghost().small().tooltip(tr!("刪掉所有字幕（可以按 Ctrl+Z 復原）", "Delete all subtitles (press Ctrl+Z to undo)")).show(ui).clicked()
         {
@@ -373,6 +384,24 @@ impl Editor {
         annotate::measure(a);
         a.x = cx - a.w / 2.0;
         a.y = bottom - a.h;
+    }
+
+    /// 依字幕產生章節標記（取代離新章節很近的舊標記）；回傳要顯示的訊息
+    pub fn chapters_from_subs(&mut self) -> String {
+        let mut cues: Vec<Cue> = self.anns.iter().filter(|a| self.is_sub(a.id)).map(|a| Cue { start: a.start, end: a.end, text: a.text.clone().unwrap_or_default() }).collect();
+        cues.sort_by(|x, y| x.start.total_cmp(&y.start));
+        let marks = screenrecorder_core::chapters::from_subtitles(&cues, self.duration);
+        if marks.is_empty() {
+            return tr!("影片太短或講話沒有明顯的停頓，沒辦法分章節", "The video is too short or has no clear pauses in speech, so it can't be split into chapters").into();
+        }
+        self.markers.retain(|m| marks.iter().all(|x| (x.t - m.t).abs() >= 2.0));
+        let n = marks.len();
+        self.markers.extend(marks);
+        self.markers.sort_by(|a, b| a.t.total_cmp(&b.t));
+        trf!(
+            "分成 {n} 章，標在時間軸上（按兩下旗子可以改名），輸出時寫進影片",
+            "Split into {n} chapters, marked on the timeline (double-click a flag to rename); they're written into the output video"
+        )
     }
 
     /// 字幕換成剪輯後的時間（刪掉的片段裡的不算；跨過刪掉的片段時從第一段保留的開始到最後一段保留的結束）

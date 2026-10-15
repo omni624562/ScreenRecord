@@ -27,7 +27,7 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, toast: &mut
             Tab::Crop => crop_panel(ed, ui),
             Tab::Ann => ann_panel(ed, ui, ctx),
             Tab::Output => super::shot::output_panel(ed, ui, ctx),
-            Tab::Subs => super::subs::tab(ed, ui, ctx),
+            Tab::Subs => super::subs::tab(ed, ui, ctx, toast),
             Tab::Audio => audio_panel(ed, ui),
         }
     });
@@ -193,24 +193,104 @@ fn time_panel(ed: &mut Editor, ui: &mut egui::Ui, toast: &mut Option<(String, bo
             "To select a section, Shift + drag across the thumbnails (or turn on “Select range”), or press “Split here (S)” and click a section. Then press “Delete section” or the Delete key to remove it, or speed it up."
         ),
     );
-    // 自動找出畫面不動又沒聲音的片段
+    // 自動找出畫面不動又沒聲音、沒說話的片段：先標在時間軸上，再選刪除或加速
     let busy = ed.finding_idle;
-    let tip = if ed.entry.media.has_audio == Some(true) {
+    let has_audio = ed.entry.media.has_audio == Some(true);
+    let tip = if has_audio {
         trf!(
-            "分析整支影片，找出畫面不動、也沒有聲音超過 {} 秒的地方，直接刪掉（可按 Ctrl+Z 復原）",
-            "Analyze the whole video and remove places where the picture is still and silent for more than {} s (press Ctrl+Z to undo)",
-            idle::MIN_IDLE
+            "分析整支影片，找出畫面不動、也沒有聲音超過 {} 秒的地方，以及沒說話超過 {} 秒的地方，標在時間軸上，再決定刪除或加速",
+            "Analyze the whole video for places where the picture is still and silent for more than {} s, and quiet parts longer than {} s. They're marked on the timeline so you can remove or speed them up",
+            idle::MIN_IDLE,
+            idle::MIN_QUIET
         )
     } else {
         trf!(
-            "分析整支影片，找出畫面不動超過 {} 秒的地方，直接刪掉（可按 Ctrl+Z 復原）",
-            "Analyze the whole video and remove places where the picture is still for more than {} s (press Ctrl+Z to undo)",
+            "分析整支影片，找出畫面不動超過 {} 秒的地方，標在時間軸上，再決定刪除或加速",
+            "Analyze the whole video for places where the picture is still for more than {} s. They're marked on the timeline so you can remove or speed them up",
             idle::MIN_IDLE
         )
     };
-    if Btn::new(if busy { tr!("正在分析…", "Analyzing…") } else { tr!("自動剪掉沒動靜的片段", "Auto-cut idle parts") }).small().enabled(!busy && ed.duration > 0.0).tooltip(tip).show(ui).clicked()
+    if Btn::new(if busy { tr!("正在分析…", "Analyzing…") } else { tr!("找出沒動靜、沒說話的片段", "Find idle and quiet parts") })
+        .small()
+        .enabled(!busy && ed.duration > 0.0)
+        .tooltip(tip)
+        .show(ui)
+        .clicked()
     {
         ed.pending = Some(super::shot::Act::FindIdle);
+    }
+    found_panel(ed, ui, toast);
+}
+
+/// 分析的結果：兩種片段各一列（幾段、共多久），按鈕刪除或加速；時間軸上用顏色標出來
+fn found_panel(ed: &mut Editor, ui: &mut egui::Ui, toast: &mut Option<(String, bool)>) {
+    let Some(found) = ed.idle_found.clone() else { return };
+    let total = |v: &[(f64, f64)]| v.iter().map(|(a, b)| b - a).sum::<f64>();
+    egui::Frame::new().fill(theme::pal(ui).surface2).corner_radius(6).inner_margin(8).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.spacing_mut().item_spacing.y = 6.0;
+        if !found.idle.is_empty() {
+            ui.horizontal(|ui| {
+                let (r, _) = ui.allocate_exact_size(vec2(10.0, 10.0), Sense::hover());
+                ui.painter().rect_filled(r, CornerRadius::same(2), super::timeline::IDLE_MARK);
+                ui.label(RichText::new(trf!("不動又沒聲音：{} 段，共 {}", "Still and silent: {}, {} in total", found.idle.len(), video_clock(total(&found.idle)))).font(theme::font(12.5)));
+            });
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 4.0;
+                if Btn::new(tr!("全部刪除", "Remove all")).danger().small().show(ui).clicked() {
+                    *toast = Some((ed.remove_idle(&found.idle), false));
+                    if let Some(f) = &mut ed.idle_found {
+                        f.idle.clear();
+                    }
+                }
+                for s in [4u32, 8] {
+                    if Btn::new(format!("{s}×")).small().tooltip(trf!("這些片段以 {s} 倍速播放（沒有聲音）", "Play these parts at {s}× speed (no sound)")).show(ui).clicked() {
+                        *toast = Some((ed.speed_found(&found.idle, s), false));
+                        if let Some(f) = &mut ed.idle_found {
+                            f.idle.clear();
+                        }
+                    }
+                }
+            });
+        }
+        if !found.quiet.is_empty() {
+            ui.horizontal(|ui| {
+                let (r, _) = ui.allocate_exact_size(vec2(10.0, 10.0), Sense::hover());
+                ui.painter().rect_filled(r, CornerRadius::same(2), super::timeline::QUIET_MARK);
+                ui.label(
+                    RichText::new(trf!("沒說話（畫面在動）：{} 段，共 {}", "Quiet (picture moving): {}, {} in total", found.quiet.len(), video_clock(total(&found.quiet)))).font(theme::font(12.5)),
+                );
+            });
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 4.0;
+                ui.label(theme::muted(ui, tr!("加速", "Speed up")).font(theme::font(12.0)));
+                for s in [2u32, 4, 8] {
+                    if Btn::new(format!("{s}×"))
+                        .small()
+                        .tooltip(trf!("打字、捲動、等待的地方以 {s} 倍速帶過（沒有聲音）", "Play typing, scrolling and waiting at {s}× speed (no sound)"))
+                        .show(ui)
+                        .clicked()
+                    {
+                        *toast = Some((ed.speed_found(&found.quiet, s), false));
+                        if let Some(f) = &mut ed.idle_found {
+                            f.quiet.clear();
+                        }
+                    }
+                }
+                if Btn::new(tr!("刪除", "Remove")).ghost().small().show(ui).clicked() {
+                    *toast = Some((ed.remove_idle(&found.quiet), false));
+                    if let Some(f) = &mut ed.idle_found {
+                        f.quiet.clear();
+                    }
+                }
+            });
+        }
+        if Btn::new(tr!("不用了，清除標示", "Dismiss")).ghost().small().show(ui).clicked() {
+            ed.idle_found = None;
+        }
+    });
+    if ed.idle_found.as_ref().is_some_and(|f| f.idle.is_empty() && f.quiet.is_empty()) {
+        ed.idle_found = None;
     }
 }
 

@@ -24,6 +24,7 @@ pub mod clock;
 pub mod cursor;
 pub mod desktop;
 pub mod downloader;
+pub mod dragout;
 pub mod edit;
 pub mod effects;
 pub mod error;
@@ -50,10 +51,12 @@ pub mod longshot;
 pub mod meter;
 pub mod monitors;
 pub mod ocr;
+pub mod ocr_index;
 pub mod paths;
 pub mod picture;
 #[cfg(windows)]
 pub mod pin_win;
+pub mod pins;
 pub mod player;
 pub mod power;
 pub mod presets;
@@ -78,6 +81,7 @@ pub mod shot_edit;
 pub mod shot_toast;
 #[cfg(windows)]
 pub mod shot_toast_win;
+pub mod similar;
 pub mod snip_tools;
 #[cfg(windows)]
 pub mod snip_win;

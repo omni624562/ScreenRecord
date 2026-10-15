@@ -111,7 +111,61 @@ pub async fn check_update(app: &App) -> Result<Option<UpdateInfo>> {
 pub async fn library(app: &App, dir: &str, query: &LibraryQuery) -> LibraryPage {
     let dir = Some(dir.trim()).filter(|d| !d.is_empty()).map(str::to_string).unwrap_or_else(|| app.default_output_dir.clone());
     let ffmpeg = app.ffmpeg_path();
-    crate::library::list_library(&app.cache, ffmpeg.as_deref(), Path::new(&dir), query).await
+    crate::library::list_library_with(&app.cache, ffmpeg.as_deref(), Path::new(&dir), query, Some(&app.ocr)).await
+}
+
+/// 在背景建立截圖的文字索引（這些資料夾裡的截圖，新的先做）；已經在做時馬上回傳
+pub async fn ocr_index(app: &App, dirs: Vec<String>) {
+    let mut paths: Vec<(f64, String)> = vec![];
+    for d in &dirs {
+        for p in crate::library::images_in(Path::new(d)) {
+            let t = std::fs::metadata(&p).map(|m| crate::paths::mtime_ms(&m)).unwrap_or(0.0);
+            paths.push((t, p.display().to_string()));
+        }
+    }
+    paths.sort_by(|a, b| b.0.total_cmp(&a.0));
+    let paths: Vec<String> = paths.into_iter().map(|(_, p)| p).collect();
+    app.ocr.prune();
+    app.ocr
+        .build(paths, |p| async move {
+            // 開發測試（非 Windows）：SCREENRECORDER_FAKE_OCR=name 時把檔名當成圖裡的字
+            if cfg!(debug_assertions) && std::env::var("SCREENRECORDER_FAKE_OCR").as_deref() == Ok("name") {
+                return Ok(file_stem(&p));
+            }
+            let (rgba, w, h) = load_image(&p).await.map_err(|e| e.message().to_string())?;
+            tokio::task::spawn_blocking(move || crate::ocr::recognize(&rgba, w, h).map(|(t, _)| t)).await.map_err(|e| e.to_string())?
+        })
+        .await;
+}
+
+fn file_stem(p: &str) -> String {
+    Path::new(p).file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default()
+}
+
+/// 清理舊截圖：這些資料夾裡超過 days 天的截圖（由舊到新）
+pub async fn old_shots(app: &App, dirs: Vec<String>, days: u32) -> Vec<crate::types::MediaInfo> {
+    let cutoff = crate::paths::now_ms() as f64 - days as f64 * 86_400_000.0;
+    crate::library::shots_before(&app.cache, &dirs, cutoff).await
+}
+
+/// 找出相似的截圖：level 0 完全一樣、1 幾乎一樣、2 相似。每組由新到舊；組依最新那張由新到舊
+pub async fn similar_shots(app: &App, dirs: Vec<String>, level: u8) -> Vec<Vec<crate::types::MediaInfo>> {
+    let all = crate::library::shots_before(&app.cache, &dirs, f64::INFINITY).await;
+    let store = app.hashes.clone();
+    tokio::task::spawn_blocking(move || {
+        let paths: Vec<String> = all.iter().map(|m| m.path.clone()).collect();
+        let prints = store.fingerprints(&paths);
+        let (idx, items): (Vec<usize>, Vec<_>) = prints.iter().enumerate().filter_map(|(i, f)| f.map(|f| (i, f))).unzip();
+        // all 由舊到新：組內反過來就是由新到舊；組之間依最新那張（在 all 裡的位置）由新到舊排
+        let mut groups: Vec<(usize, Vec<crate::types::MediaInfo>)> =
+            crate::similar::group(&items, crate::similar::max_diff(level)).into_iter().map(|g| (idx[*g.last().unwrap()], g.into_iter().rev().map(|k| all[idx[k]].clone()).collect())).collect();
+        groups.sort_by_key(|g| std::cmp::Reverse(g.0));
+        let groups: Vec<Vec<crate::types::MediaInfo>> = groups.into_iter().map(|(_, g)| g).collect();
+        crate::info!("[相似截圖] {} 張，{} 組", paths.len(), groups.len());
+        groups
+    })
+    .await
+    .unwrap_or_default()
 }
 
 /// 資料夾裡有幾張截圖（PNG / JPG，不含子資料夾）
@@ -124,11 +178,12 @@ pub async fn count_shots(dir: &str) -> usize {
 pub async fn move_shots(app: &App, from: &str, to: &str) -> crate::library::MoveReport {
     let (f, t) = (PathBuf::from(from), PathBuf::from(to));
     let r = tokio::task::spawn_blocking(move || crate::library::move_images(&f, &t)).await.unwrap_or_default();
-    let store = app.projects.clone();
+    let (store, pins) = (app.projects.clone(), app.pins.clone());
     let moved = r.moved.clone();
     let _ = tokio::task::spawn_blocking(move || {
         for (a, b) in &moved {
             store.renamed(a, b);
+            pins.renamed(a, b);
         }
     })
     .await;
@@ -160,6 +215,7 @@ pub async fn rename(app: &App, path: &str, name: &str) -> Result<String> {
     let new_path = crate::library::rename_recording(&app.cache, path, name, &busy).await?;
     app.projects.renamed(path, &new_path);
     app.markers.renamed(path, &new_path);
+    app.pins.renamed(path, &new_path);
     Ok(new_path)
 }
 
@@ -181,6 +237,7 @@ pub fn delete(app: &App, paths: &[String]) -> Result<usize> {
     for f in paths {
         app.projects.removed(f);
         app.markers.removed(f);
+        app.pins.removed(f);
     }
     Ok(paths.len())
 }

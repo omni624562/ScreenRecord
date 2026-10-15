@@ -21,6 +21,8 @@ pub fn should_show(app: &UiApp) -> bool {
 #[derive(Clone, Copy)]
 enum Try {
     None,
+    /// 打開設定的某一頁（這一版的介紹沒用到，保留給之後）
+    #[allow(dead_code)]
     Settings(Page),
     /// 在螢幕上框選截圖（這一版的介紹沒用到，保留給之後）
     #[allow(dead_code)]
@@ -78,40 +80,58 @@ fn quick_start(app: &UiApp) -> [(String, String); 3] {
 fn items(_app: &UiApp) -> Vec<(String, String, Try)> {
     vec![
         (
-            tr!("一次選取、刪除很多張", "Select and delete many at once").into(),
+            tr!("搜尋截圖裡的字", "Search the text inside screenshots").into(),
             tr!(
-                "全部截圖、全部錄影勾選後，搜尋列右邊有「選取全部 N 張」（每一頁），搭配搜尋很好用：例如打「7/27」再選取全部、按 Delete。Ctrl+A 全選這一頁，再按一次就是全部。",
-                "After you tick something in All screenshots or All recordings, “Select all” next to the search box picks every page. Combine it with a search: type “7/27”, select all, press Delete. Ctrl+A selects the page; press it again for everything."
+                "全部截圖會在背景用 Windows 內建的文字辨識讀出每張圖裡的字，搜尋時一起找：打「502」就找到那張錯誤畫面。找到的縮圖左下角有「字」。",
+                "All screenshots reads the text in each image in the background (with Windows' built-in text recognition), so searching also finds words inside images: type “502” to find that error page. Matches show a “T” badge."
             )
             .into(),
             Try::Library,
         ),
         (
-            tr!("跨頁勾選、只看已選取", "Selections across pages, “Show selected only”").into(),
+            tr!("找出相似的截圖、清理舊截圖", "Find similar screenshots, clean up old ones").into(),
             tr!(
-                "換頁時勾選會保留，下方顯示「已選取 25 張（其他頁 13 張）」；按「只看已選取」把勾選的放在一起，刪除前再確認一次。有勾選時按 Delete 會刪除勾選的全部。",
-                "Ticks stay when you change pages, and the footer shows how many are on other pages. “Show selected only” gathers them so you can check before deleting. With items ticked, Delete removes all of them."
+                "全部截圖的「整理」選單：「找出相似的截圖」把一樣或很像的排成一組，每組留最新的一張；「清理舊截圖」一次把超過一週到一年的截圖移到資源回收筒。",
+                "The “Tidy up” menu in All screenshots: “Find similar screenshots” groups identical or near-identical images and keeps the newest in each group; “Clean up old screenshots” moves everything older than a week to a year to the Recycle Bin."
+            )
+            .into(),
+            Try::Library,
+        ),
+        (
+            tr!("加星號、依日期分組", "Stars and grouping by day").into(),
+            tr!(
+                "重要的截圖、錄影按右上角的星號，「選取全部」和清理都會略過它們，「有星號的」只看它們。全部截圖依日期分組，日期旁的勾選框一次選一整天。",
+                "Star important screenshots and recordings: “Select all” and clean-up skip them, and “Starred” shows only them. All screenshots is grouped by day; the box next to a date selects the whole day."
+            )
+            .into(),
+            Try::Library,
+        ),
+        (
+            tr!("直接拖到其他程式", "Drag files into other apps").into(),
+            tr!(
+                "把縮圖拖到 LINE、Teams、Word、瀏覽器或檔案總管就能直接傳過去（勾選多張時一起拖）；從空白處拖曳則是框選。",
+                "Drag a thumbnail into chat apps, Word, a browser or File Explorer to share it (ticked items go together); dragging from empty space draws a selection box."
+            )
+            .into(),
+            Try::Library,
+        ),
+        (
+            tr!("剪輯：找出沒動靜、沒說話的片段", "Editor: find idle and quiet parts").into(),
+            tr!(
+                "剪輯視窗「修剪」分頁的「找出沒動靜、沒說話的片段」會在時間軸上標出畫面不動又沒聲音、以及沒說話（打字、等待）的地方，再選全部刪除或加速 2～8 倍。",
+                "In the editor's Trim tab, “Find idle and quiet parts” marks still, silent parts and quiet parts (typing, waiting) on the timeline, then removes them or speeds them up 2–8×."
             )
             .into(),
             Try::None,
         ),
         (
-            tr!("縮圖可以調大小", "Adjustable thumbnail size").into(),
+            tr!("依字幕自動分章節", "Chapters from subtitles").into(),
             tr!(
-                "全部截圖的排序旁邊可以選縮圖「小、中、大」，小的一頁大約放 35 張；也可以在縮圖上按住 Ctrl 轉滾輪。會記住你的選擇。",
-                "Choose small, medium or large thumbnails next to the sort menu in All screenshots (small fits about 35 per page), or hold Ctrl and turn the mouse wheel over them. Your choice is remembered."
+                "有字幕的影片，在「字幕」分頁按「依字幕產生章節」，在講話停頓最久的地方切成幾章、用第一句當標題，輸出時寫進影片，也能貼到 YouTube。",
+                "For videos with subtitles, “Chapters from subtitles” in the Subtitles tab splits at the longest pauses, titles each chapter with its first line, and writes the chapters into the output video (also ready for YouTube)."
             )
             .into(),
-            Try::Library,
-        ),
-        (
-            tr!("截圖和錄影分開存、讀圖變快", "Screenshots kept apart, faster thumbnails").into(),
-            tr!(
-                "截圖改存到「圖片 → 螢幕擷取畫面」，「設定 → 儲存位置」可以各自選資料夾；全部截圖的縮圖不再經過 FFmpeg，打開與換頁快很多。",
-                "Screenshots now go to Pictures → Screenshots (choose each folder in Settings → Save location), and All screenshots no longer runs FFmpeg for thumbnails, so opening and paging are much faster."
-            )
-            .into(),
-            Try::Settings(Page::Save),
+            Try::None,
         ),
     ]
 }
