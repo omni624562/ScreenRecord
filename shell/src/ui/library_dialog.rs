@@ -10,8 +10,11 @@ use eframe::egui::{self, pos2, vec2, Align, Color32, CornerRadius, Id, Layout, R
 use screenrecorder_core::actions;
 use screenrecorder_core::format::{check_recording_name, format_bytes, human_duration, short_clock, speed_label};
 use screenrecorder_core::i18n::is_en;
+use screenrecorder_core::library::{grid_layout, GridPlace};
+use screenrecorder_core::pins::PinStore;
 use screenrecorder_core::types::{
-    ExportFormat, ExportInfo, ExportKind, ExportState, LibraryEntry, LibraryFilter, LibraryPage, LibraryQuery, LibrarySort, MediaInfo, LIBRARY_HITS_SHOWN, LIBRARY_ROW_MAIN_PX, LIBRARY_ROW_SUB_PX,
+    DayGroup, ExportFormat, ExportInfo, ExportKind, ExportState, GridFit, LibraryEntry, LibraryFilter, LibraryPage, LibraryQuery, LibrarySort, MediaInfo, LIBRARY_HITS_SHOWN, LIBRARY_ROW_MAIN_PX,
+    LIBRARY_ROW_SUB_PX,
 };
 use screenrecorder_core::{tr, trf};
 use std::collections::HashSet;
@@ -45,7 +48,9 @@ pub struct LibraryDialog {
     fit_at: Option<Instant>,
     fit_px: f64,
     /// 截圖格一頁放幾張（依對話框大小）
-    grid_per_page: usize,
+    grid_fit: Option<GridFit>,
+    /// 換縮圖大小或視窗大小後：讀取含有這一筆（從 0 算）的那一頁
+    page_anchor: Option<usize>,
     seq: u64,
     focus_search: bool,
     /// 點了說過的話：開啟影片並跳到那一句
@@ -68,6 +73,8 @@ pub struct LibraryDialog {
     only_selected: bool,
     /// 全部截圖用滑鼠框選：開始拖曳時的勾選（框到的加在上面）
     band_base: Option<HashSet<String>>,
+    /// 只看有星號的
+    only_pinned: bool,
 }
 
 /// 合併成一支：依清單的順序（可上下調整）接成一支；加速版預設不放進去
@@ -123,7 +130,8 @@ impl LibraryDialog {
             search_at: None,
             fit_at: None,
             fit_px: 0.0,
-            grid_per_page: 0,
+            grid_fit: None,
+            page_anchor: None,
             seq: 0,
             focus_search: true,
             jump: None,
@@ -137,6 +145,7 @@ impl LibraryDialog {
             wheel_at: None,
             only_selected: false,
             band_base: None,
+            only_pinned: false,
         }
     }
 
@@ -152,10 +161,10 @@ impl LibraryDialog {
         }
     }
 
-    /// 選取符合條件的全部（每一頁，含加速版）
-    fn select_everything(&mut self) {
+    /// 選取符合條件的全部（每一頁，含加速版）；有星號的不選
+    fn select_everything(&mut self, pins: &PinStore) {
         let all = self.data.as_ref().map(|x| x.all_paths.clone()).unwrap_or_default();
-        self.selected.extend(all);
+        self.selected.extend(all.into_iter().filter(|p| !pins.contains(p)));
     }
 
     /// Ctrl＋點一下：選取 / 取消這一筆；Shift＋點一下：選取從上次點的那一筆到這一筆（order：這一頁的順序）
@@ -187,10 +196,12 @@ fn select_all_key(app: &UiApp, ui: &egui::Ui, d: &mut LibraryDialog, order: &[St
     }
     if ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::A)) {
         // 這一頁已經全選：再按一次選取全部（每一頁）
-        if !order.is_empty() && order.iter().all(|p| d.selected.contains(p)) {
-            d.select_everything();
+        let pins = &app.core.pins;
+        let page: Vec<&String> = order.iter().filter(|p| !pins.contains(p)).collect();
+        if !page.is_empty() && page.iter().all(|p| d.selected.contains(*p)) {
+            d.select_everything(pins);
         } else {
-            for p in order {
+            for p in page {
                 d.toggle(p, true);
             }
         }
@@ -252,6 +263,7 @@ fn load(app: &mut UiApp) {
     let home = home_dir(app, kind);
     // 截圖資料夾＋留在原處的舊截圖（看其他資料夾時只看那個資料夾）
     let extra_dirs = if kind == Kind::Shot && !browsing { app.s.shot_extra(&app.env) } else { vec![] };
+    let pinned = app.core.pins.list();
     let Some(d) = app.library.as_mut() else {
         return;
     };
@@ -260,12 +272,30 @@ fn load(app: &mut UiApp) {
     d.seq += 1;
     let seq = d.seq;
     let q = Some(d.query.clone()).filter(|q| !q.trim().is_empty());
-    let only = d.only_selected.then(|| d.selected.iter().cloned().collect());
+    let only = if d.only_selected {
+        Some(d.selected.iter().cloned().collect())
+    } else if d.only_pinned {
+        Some(pinned)
+    } else {
+        None
+    };
     let query = match d.kind {
-        Kind::Video => LibraryQuery { q, filter: d.filter, sort: d.sort, page: Some(d.page as f64), page_size: None, fit_px: Some(d.fit_px), audio: true, extra_dirs: vec![], only },
-        Kind::Shot => {
-            LibraryQuery { q, filter: LibraryFilter::Shot, sort: d.sort, page: Some(d.page as f64), page_size: Some(d.grid_per_page.max(1) as f64), fit_px: None, audio: false, extra_dirs, only }
+        Kind::Video => {
+            LibraryQuery { q, filter: d.filter, sort: d.sort, page: Some(d.page as f64), page_size: None, fit_px: Some(d.fit_px), audio: true, extra_dirs: vec![], only, ..Default::default() }
         }
+        Kind::Shot => LibraryQuery {
+            q,
+            filter: LibraryFilter::Shot,
+            sort: d.sort,
+            page: Some(d.page as f64),
+            page_size: None,
+            fit_px: None,
+            audio: false,
+            extra_dirs,
+            only,
+            grid: d.grid_fit,
+            anchor: d.page_anchor.take(),
+        },
     };
     let dir = d.dir.clone().unwrap_or(home);
     d.loaded_dir = dir.clone();
@@ -309,6 +339,8 @@ enum Req {
     Trash(Vec<String>),
     /// 截圖複製到剪貼簿（圖片）
     CopyImage(String),
+    /// 加上 / 移除星號
+    Pin(String, bool),
 }
 
 /// 清單平常看的資料夾：錄影是儲存位置，截圖是截圖資料夾
@@ -594,7 +626,23 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                     "Thumbnail size: smaller fits more per page. You can also hold Ctrl and turn the mouse wheel over the thumbnails"
                 ));
             }
-            selection_links(ui, &mut d, shot);
+            // 只看有星號的
+            ui.add_space(4.0);
+            if Btn::new(tr!("有星號的", "Starred"))
+                .icon(Icon::Star)
+                .small()
+                .ghost()
+                .selected(d.only_pinned)
+                .tooltip(tr!("只列出加了星號的檔案（再按一次顯示全部）", "Show only starred files (click again to show all)"))
+                .show(ui)
+                .clicked()
+            {
+                d.only_pinned = !d.only_pinned;
+                d.only_selected = false;
+                d.page = 1;
+                d.dirty = true;
+            }
+            selection_links(ui, &mut d, shot, &app.core.pins);
         });
         if d.search_at.is_some_and(|t| t.elapsed().as_millis() > 250) {
             d.search_at = None;
@@ -628,16 +676,11 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         // 沒有任何檔案時不顯示操作說明
         let hint = match (n, shot) {
             (0, _) if total == 0 => String::new(),
-            (0, true) => tr!(
-                "可勾選多張一次刪除或拼成一張（拖曳框選、Ctrl＋點一下多選、Shift＋點一下選一段、Ctrl+A 全選本頁，再按一次選取全部）",
-                "Select several to delete or combine them (drag a box, Ctrl+click to add, Shift+click for a range, Ctrl+A for this page, again for all)"
-            )
-            .into(),
-            (0, false) => tr!(
-                "可勾選多筆一次刪除（Ctrl＋點一下多選、Shift＋點一下選一段、Ctrl+A 全選本頁，再按一次選取全部）",
-                "Select several to delete them at once (Ctrl+click to add, Shift+click for a range, Ctrl+A for this page, again for all)"
-            )
-            .into(),
+            (0, true) => tr!("勾選多張可一次刪除或拼成一張（拖曳框選、Ctrl / Shift＋點一下、Ctrl+A）", "Select several to delete or combine them (drag a box, Ctrl/Shift+click, Ctrl+A)").into(),
+            (0, false) => {
+                tr!("勾選多筆可一次刪除（Ctrl / Shift＋點一下、Ctrl+A 全選本頁，再按一次選取全部）", "Select several to delete them at once (Ctrl/Shift+click, Ctrl+A for this page, again for all)")
+                    .into()
+            }
             _ if is_en() => {
                 let more = if others > 0 { format!(" ({others} on other pages)") } else { String::new() };
                 format!("{n} {}{} selected{more}", if shot { "screenshot" } else { "file" }, if n == 1 { "" } else { "s" })
@@ -749,6 +792,18 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         Some(Req::Combine) => open_combine(app),
         Some(Req::Trash(paths)) => trash_paths(app, paths),
         Some(Req::CopyImage(path)) => super::viewer::copy_png(app, path),
+        Some(Req::Pin(path, on)) => {
+            app.core.pins.set(&path, on);
+            // 加上星號就不要留在勾選裡（避免接著刪掉）；只看有星號時重新讀取
+            if let Some(d) = &mut app.library {
+                if on {
+                    d.selected.remove(&path);
+                }
+                if d.only_pinned {
+                    d.dirty = true;
+                }
+            }
+        }
     }
 }
 
@@ -866,6 +921,10 @@ fn entry_menu(ui: &mut egui::Ui, app: &UiApp, e: &LibraryEntry, full: bool, req:
             *req = Some(Req::Rename(e.clone()));
         }
         ui.separator();
+    }
+    let pinned = app.core.pins.contains(&e.media.path);
+    if ui.button(if pinned { tr!("移除星號", "Remove star") } else { tr!("加上星號", "Add star") }).clicked() {
+        *req = Some(Req::Pin(e.media.path.clone(), !pinned));
     }
     if !audio {
         if menu_item(ui, tr!("製作加速版 / GIF…", "Make sped-up video / GIF…"), app.blocked(EntryAction::Export)) {
@@ -1113,6 +1172,9 @@ fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table:
             let cell = Rect::from_min_max(pos2(thumb.max.x + 10.0, row.min.y), pos2(name_rect.max.x - 8.0, name_rect.max.y));
             // 先排右邊的標記，檔名用剩下的寬度（太長時截斷，不會擠掉標記）
             let tui = &mut ui.new_child(UiBuilder::new().max_rect(cell).layout(Layout::right_to_left(Align::Center)));
+            // 星號（最右邊，位置固定）
+            let (sr, _) = tui.allocate_exact_size(vec2(20.0, 20.0), Sense::hover());
+            star_button(tui, sr, Id::new(("vidstar", &e.media.path)), app.core.pins.contains(&e.media.path), hot, false, req, &e.media.path);
             // 「有聲音」的位置固定保留，沒有聲音時空著，旁邊的標記才會切齊
             if e.media.has_audio == Some(true) && !audio {
                 audio_mark(tui);
@@ -1364,14 +1426,15 @@ fn shot_grid(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, area: Re
     let cell_w = (area.width() - gap * (cols - 1.0)) / cols;
     let img_h = (cell_w * 9.0 / 16.0).round();
     let cell_h = img_h + if small { 30.0 } else { 64.0 };
-    let rows = ((area.height() + gap) / (cell_h + gap)).floor().max(1.0);
-    let per = (cols * rows) as usize;
-    if per != d.grid_per_page {
+    // 依日期分組：每天從新的一列開始，上面一列日期標題（含「選這一天」）
+    let head_h = 30.0;
+    let fit = GridFit { cols: cols as usize, height: area.height() as f64 + gap as f64, row_h: (cell_h + gap) as f64, head_h };
+    if d.grid_fit != Some(fit) {
         // 換縮圖大小或視窗大小：停在原本這一頁第一張所在的那一頁
-        if d.grid_per_page > 0 {
-            d.page = (d.page.max(1) - 1) * d.grid_per_page / per + 1;
+        if d.grid_fit.is_some() {
+            d.page_anchor = d.data.as_ref().map(|x| x.start);
         }
-        d.grid_per_page = per;
+        d.grid_fit = Some(fit);
         d.dirty = true;
     }
     let items = d.data.as_ref().map(|x| x.items.clone()).unwrap_or_default();
@@ -1388,14 +1451,21 @@ fn shot_grid(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, area: Re
     let order: Vec<String> = items.iter().map(|e| e.media.path.clone()).collect();
     let (ctrl, shift) = multi_mods(ui);
     select_all_key(app, ui, d, &order);
+    // 每一筆的日期（由這一頁的分組得出）與位置；與 core 分頁用同一套排法
+    let groups = d.data.as_ref().map(|x| x.groups.clone()).unwrap_or_default();
+    let days: Vec<String> = (0..items.len()).map(|i| groups.iter().rev().find(|g| g.first <= i).map(|g| g.day.clone()).unwrap_or_default()).collect();
+    let places = grid_layout(&days, fit);
     let cell_at = |i: usize| {
-        let (c, r) = ((i % cols as usize) as f32, (i / cols as usize) as f32);
-        Rect::from_min_size(pos2(area.min.x + c * (cell_w + gap), area.min.y + r * (cell_h + gap)), vec2(cell_w, cell_h))
+        let pl = places.get(i).copied().unwrap_or(GridPlace { page: 0, y: 0.0, col: i, head_y: None });
+        Rect::from_min_size(pos2(area.min.x + pl.col as f32 * (cell_w + gap), area.min.y + pl.y as f32), vec2(cell_w, cell_h))
     };
     // 用滑鼠框選（先登記，縮圖、按鈕的點一下照樣優先；拖曳超過幾個像素才算框選）
     let band = band_select(ui, d, area, &order, &cell_at, ctrl);
+    // 日期標題列（在框選之後登記，勾選框才點得到）
+    day_headers(app, ui, d, area, &groups, &places);
     for (i, e) in items.iter().enumerate() {
         let cell = cell_at(i);
+        let pinned_e = app.core.pins.contains(&e.media.path);
         let hot = ui.rect_contains_pointer(cell);
         if hot {
             d.cursor_row = Some(e.media.path.clone());
@@ -1411,7 +1481,7 @@ fn shot_grid(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, area: Re
             "{}\nClick to view (Enter), Ctrl+click to select; right-click for more",
             e.media.name
         ));
-        resp.context_menu(|ui| shot_menu(ui, e, true, req));
+        resp.context_menu(|ui| shot_menu(ui, e, true, pinned_e, req));
         let border = if on {
             Stroke::new(2.0, p.accent)
         } else if resp.hovered() {
@@ -1448,6 +1518,9 @@ fn shot_grid(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, area: Re
                 }
             }
         }
+        // 右上角星號
+        let sr = Rect::from_min_size(pos2(img.max.x - 30.0, img.min.y + 6.0), vec2(24.0, 22.0));
+        star_button(ui, sr, Id::new(("shotstar", &e.media.path)), pinned_e, hot, true, req, &e.media.path);
         // 名稱（預設檔名顯示日期時間）
         let title = if is_default_name(&e.media.name) { dates.get(&e.media.name).cloned().unwrap_or_default() } else { base_name(&e.media.name) };
         let tr = Rect::from_min_max(pos2(cell.min.x + 2.0, img.max.y + 6.0), pos2(cell.max.x, img.max.y + 28.0));
@@ -1466,7 +1539,7 @@ fn shot_grid(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, area: Re
             // 由右往左排：畫面上是「檢視 · 編輯 · 資料夾 · 改名 · ⋯」（與全部錄影的順序相同）
             ui.spacing_mut().item_spacing.x = 2.0;
             let more = Btn::icon_only(Icon::More).ghost().small().quiet(!hot).tooltip(tr!("更多（也可以在圖上按右鍵）", "More (or right-click the image)")).show(ui);
-            egui::Popup::menu(&more).show(|ui| shot_menu(ui, e, false, req));
+            egui::Popup::menu(&more).show(|ui| shot_menu(ui, e, false, pinned_e, req));
             if Btn::icon_only(Icon::Rename).ghost().small().quiet(!hot).tooltip(tr!("重新命名（F2）", "Rename (F2)")).show(ui).clicked() {
                 *req = Some(Req::Rename(e.clone()));
             }
@@ -1497,6 +1570,37 @@ fn shot_grid(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, area: Re
         painter.rect_stroke(r, CornerRadius::same(2), Stroke::new(1.0, p.accent), egui::StrokeKind::Inside);
     }
     row_keys(app, ui, d, &items, req);
+}
+
+/// 截圖格的日期標題列：「☐ 7/27（一）· 8 張」，勾選框選取或取消那一天全部（每一頁；有星號的不選）
+fn day_headers(app: &UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, area: Rect, groups: &[DayGroup], places: &[GridPlace]) {
+    let p = theme::pal(ui);
+    let today = chrono::Local::now().date_naive();
+    for g in groups {
+        let Some(y) = places.get(g.first).and_then(|pl| pl.head_y) else { continue };
+        let r = Rect::from_min_size(pos2(area.min.x, area.min.y + y as f32), vec2(area.width(), 26.0));
+        let pick: Vec<&String> = g.paths.iter().filter(|x| !app.core.pins.contains(x)).collect();
+        let all_on = !pick.is_empty() && pick.iter().all(|x| d.selected.contains(*x));
+        let hui = &mut ui.new_child(UiBuilder::new().max_rect(r).layout(Layout::left_to_right(Align::Center)));
+        hui.spacing_mut().item_spacing.x = 6.0;
+        let mut v = all_on;
+        if theme::check(hui, &mut v, "").on_hover_text(tr!("選取這一天全部（包括其他頁的；有星號的不選）", "Select this whole day, including other pages (starred files are skipped)")).changed()
+        {
+            for x in &pick {
+                if v {
+                    d.selected.insert((*x).clone());
+                } else {
+                    d.selected.remove(*x);
+                }
+            }
+        }
+        let label = chrono::NaiveDate::parse_from_str(&g.day, "%Y-%m-%d").map(|dd| day_label(dd, today)).unwrap_or_else(|_| tr!("日期不明", "Unknown date").into());
+        hui.label(RichText::new(label).font(theme::font_bold(13.5)).color(p.text));
+        let more = if g.continued { tr!("（接上一頁）", " (continued)") } else { "" };
+        hui.label(theme::muted(hui, trf!("· {} 張{more}", "· {}{more}", g.total)));
+        let line_x = hui.min_rect().max.x + 8.0;
+        ui.painter().hline(line_x..=r.max.x, r.center().y, Stroke::new(1.0, p.border));
+    }
 }
 
 /// 全部截圖用滑鼠框選：從任何地方（含縮圖上）按住左鍵拖曳，框到的縮圖都勾起來。
@@ -1534,7 +1638,7 @@ fn band_select(ui: &egui::Ui, d: &mut LibraryDialog, area: Rect, order: &[String
 }
 
 /// 有勾選時，搜尋列右邊：選取全部（每一頁）、只看已選取、取消選取
-fn selection_links(ui: &mut egui::Ui, d: &mut LibraryDialog, shot: bool) {
+fn selection_links(ui: &mut egui::Ui, d: &mut LibraryDialog, shot: bool, pins: &PinStore) {
     if d.selected.is_empty() {
         return;
     }
@@ -1572,10 +1676,38 @@ fn selection_links(ui: &mut egui::Ui, d: &mut LibraryDialog, shot: bool) {
                 .show(ui)
                 .clicked()
             {
-                d.select_everything();
+                d.select_everything(pins);
             }
         }
     });
+}
+
+/// 星號（釘選）按鈕：有星號時一直顯示（黃色實心），沒有時 show 才顯示外框；點一下切換
+fn star_button(ui: &mut egui::Ui, rect: Rect, id: Id, pinned: bool, show: bool, bg: bool, req: &mut Option<Req>, path: &str) {
+    if !pinned && !show {
+        return;
+    }
+    let p = theme::pal(ui);
+    let r = ui.interact(rect, id, Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(if pinned {
+        tr!("移除星號", "Remove star")
+    } else {
+        tr!("加上星號：重要的檔案，「選取全部」「全選本頁」與清理舊截圖都會略過", "Add a star: “Select all”, Ctrl+A and cleaning up old screenshots skip starred files")
+    });
+    if bg {
+        ui.painter().rect_filled(rect, CornerRadius::same(5), p.surface.gamma_multiply(0.92));
+    }
+    let icon_rect = Rect::from_center_size(rect.center(), vec2(15.0, 15.0));
+    let color = if pinned {
+        Color32::from_rgb(0xF5, 0xB7, 0x00)
+    } else if r.hovered() {
+        p.text
+    } else {
+        p.muted
+    };
+    theme::paint_icon(ui.painter(), icon_rect, if pinned { Icon::StarOn } else { Icon::Star }, color);
+    if r.clicked() {
+        *req = Some(Req::Pin(path.to_string(), !pinned));
+    }
 }
 
 /// 在縮圖上按住 Ctrl 轉滾輪：調整縮圖大小（往上放大、往下縮小）
@@ -1604,7 +1736,7 @@ fn grid_zoom(ui: &egui::Ui, d: &mut LibraryDialog, area: Rect, size: &mut u8) {
 }
 
 /// 一張截圖的操作（「⋯」與按右鍵的選單共用）；full：按右鍵的選單，最上面加上檢視、編輯、在資料夾中顯示、重新命名
-fn shot_menu(ui: &mut egui::Ui, e: &LibraryEntry, full: bool, req: &mut Option<Req>) {
+fn shot_menu(ui: &mut egui::Ui, e: &LibraryEntry, full: bool, pinned: bool, req: &mut Option<Req>) {
     ui.set_min_width(210.0);
     let pick = |a: EntryAction, req: &mut Option<Req>| *req = Some(Req::Entry(a, e.clone()));
     if full {
@@ -1621,6 +1753,9 @@ fn shot_menu(ui: &mut egui::Ui, e: &LibraryEntry, full: bool, req: &mut Option<R
             *req = Some(Req::Rename(e.clone()));
         }
         ui.separator();
+    }
+    if ui.button(if pinned { tr!("移除星號", "Remove star") } else { tr!("加上星號", "Add star") }).clicked() {
+        *req = Some(Req::Pin(e.media.path.clone(), !pinned));
     }
     if ui.button(tr!("複製圖片（貼到 LINE、Word）", "Copy image (paste into LINE or Word)")).clicked() {
         *req = Some(Req::CopyImage(e.media.path.clone()));

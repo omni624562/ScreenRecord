@@ -738,6 +738,35 @@ pub struct LibraryQuery {
     pub extra_dirs: Vec<String>,
     /// 只列這些檔案（「只看已選取」）；原檔或底下的加速版在裡面就列出
     pub only: Option<Vec<String>>,
+    /// 截圖格依日期分組分頁（每天從新的一列開始、上面有標題列）；有指定時忽略 page_size、fit_px
+    pub grid: Option<GridFit>,
+    /// 換縮圖大小時：回傳含有第幾筆（從 0 算）的那一頁，忽略 page
+    pub anchor: Option<usize>,
+}
+
+/// 截圖格的版面：每列幾格、可用高度、一列（含間距）的高度、日期標題列的高度（px）
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct GridFit {
+    pub cols: usize,
+    pub height: f64,
+    pub row_h: f64,
+    pub head_h: f64,
+}
+
+/// 截圖格裡的一天（這一頁出現的）
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DayGroup {
+    /// 2026-07-27
+    pub day: String,
+    /// 這一天在這一頁的第一筆（items 的索引）
+    pub first: usize,
+    /// 這一天一共幾筆（每一頁）
+    pub total: usize,
+    /// 這一天全部的檔案（每一頁）：「選這一天」用
+    pub paths: Vec<String>,
+    /// 這一天從前一頁接過來
+    pub continued: bool,
 }
 
 /// 全部錄影表格的列高（含 1px 分隔線）
@@ -756,6 +785,12 @@ pub struct LibraryPage {
     /// 符合條件的全部檔案（每一頁，含加速版），依清單順序：「選取全部」用
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub all_paths: Vec<String>,
+    /// 這一頁第一筆在全部裡是第幾筆（從 0 算）
+    #[serde(default)]
+    pub start: usize,
+    /// 依日期分組時：這一頁出現的每一天
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub groups: Vec<DayGroup>,
     /// 資料夾讀不到（不存在、隨身碟或網路磁碟沒接上）時的說明
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,

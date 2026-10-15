@@ -6,7 +6,7 @@ use crate::error::{Error, Result};
 use crate::format::{check_recording_name, parse_export_name, strip_mp4};
 use crate::paths::{created_ms, mtime_ms, set_created};
 use crate::process::run;
-use crate::types::{ExportFormat, ExportInfo, LibraryEntry, LibraryFilter, LibraryPage, LibraryQuery, LibrarySort, MediaInfo, LIBRARY_ROW_MAIN_PX, LIBRARY_ROW_SUB_PX};
+use crate::types::{DayGroup, ExportFormat, ExportInfo, GridFit, LibraryEntry, LibraryFilter, LibraryPage, LibraryQuery, LibrarySort, MediaInfo, LIBRARY_ROW_MAIN_PX, LIBRARY_ROW_SUB_PX};
 use crate::{tr, trf};
 use regex::Regex;
 use std::collections::HashMap;
@@ -456,26 +456,105 @@ pub async fn list_library(cache: &Arc<MediaCache>, ffmpeg: Option<&Path>, dir: &
         let p = q.page.filter(|p| p.is_finite()).map(f64::floor).unwrap_or(1.0);
         (if p >= 1.0 { p as usize } else { 1 }).min(pages)
     };
-    let (pages, page, slice, page_size) = match q.fit_px.filter(|f| f.is_finite()) {
-        Some(fit) => {
+    let days: Vec<String> = list.iter().map(|e| entry_day(e).map(|d| d.format("%Y-%m-%d").to_string()).unwrap_or_default()).collect();
+    let grid = q.grid.filter(|g| g.cols > 0 && g.height.is_finite() && g.row_h > 0.0);
+    let start;
+    let (pages, page, slice, page_size) = match (grid, q.fit_px.filter(|f| f.is_finite())) {
+        (Some(g), _) => {
+            let places = grid_layout(&days, g);
+            let pages = places.last().map_or(1, |p| p.page + 1);
+            let page = match q.anchor.filter(|a| *a < places.len()) {
+                Some(a) => places[a].page + 1,
+                None => clamp_page(pages),
+            };
+            let idx: Vec<usize> = places.iter().enumerate().filter(|(_, p)| p.page + 1 == page).map(|(i, _)| i).collect();
+            start = idx.first().copied().unwrap_or(0);
+            let slice: Vec<LibraryEntry> = idx.iter().map(|i| list[*i].clone()).collect();
+            let n = slice.len();
+            (pages, page, slice, n)
+        }
+        (None, Some(fit)) => {
             let starts = page_starts(&list, fit.max(LIBRARY_ROW_MAIN_PX));
             let pages = starts.len();
             let page = clamp_page(pages);
             let end = starts.get(page).copied().unwrap_or(list.len());
-            let slice: Vec<LibraryEntry> = list[starts[page - 1]..end].to_vec();
+            start = starts[page - 1];
+            let slice: Vec<LibraryEntry> = list[start..end].to_vec();
             let n = slice.len();
             (pages, page, slice, n)
         }
-        None => {
+        (None, None) => {
             let ps = q.page_size.filter(|p| p.is_finite()).map(f64::floor).unwrap_or(30.0).clamp(1.0, 200.0) as usize;
             let pages = total.div_ceil(ps).max(1);
             let page = clamp_page(pages);
-            let slice: Vec<LibraryEntry> = list.iter().skip((page - 1) * ps).take(ps).cloned().collect();
+            start = (page - 1) * ps;
+            let slice: Vec<LibraryEntry> = list.iter().skip(start).take(ps).cloned().collect();
             (pages, page, slice, ps)
         }
     };
+    // 依日期分組：這一頁出現的每一天，連同那一天全部的檔案（選這一天用）
+    let groups = if grid.is_some() {
+        let mut out: Vec<DayGroup> = vec![];
+        for i in 0..slice.len() {
+            let day = &days[start + i];
+            if i > 0 && &days[start + i - 1] == day {
+                continue;
+            }
+            let all: Vec<usize> = (0..list.len()).filter(|j| &days[*j] == day).collect();
+            let paths = all.iter().flat_map(|j| std::iter::once(list[*j].media.path.clone()).chain(list[*j].exports.iter().map(|x| x.media.path.clone()))).collect();
+            out.push(DayGroup { day: day.clone(), first: i, total: all.len(), paths, continued: i == 0 && start > 0 && &days[start - 1] == day });
+        }
+        out
+    } else {
+        vec![]
+    };
     let items = if need_all { slice } else { pool_with_info(cache, ffmpeg, slice, 6).await };
-    LibraryPage { dir: dir.display().to_string(), total, page, pages, page_size, items, all_paths, error: None }
+    LibraryPage { dir: dir.display().to_string(), total, page, pages, page_size, items, all_paths, start, groups, error: None }
+}
+
+/// 截圖格的一格放在哪裡：第幾頁（從 0 算）、這一頁裡的 y（px，卡片上緣）、第幾欄、要不要在上面畫日期標題（標題列上緣的 y）
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GridPlace {
+    pub page: usize,
+    pub y: f64,
+    pub col: usize,
+    pub head_y: Option<f64>,
+}
+
+/// 依日期分組排截圖格：每天從新的一列開始、上面有標題列；放不下就換頁（新的一頁開頭再畫一次那天的標題）。
+/// days：每一筆的日期（同一天的要相鄰）。介面排版與分頁都用這個，兩邊才會一致
+pub fn grid_layout(days: &[String], g: GridFit) -> Vec<GridPlace> {
+    let cols = g.cols.max(1);
+    let mut out = Vec::with_capacity(days.len());
+    let (mut page, mut used, mut col, mut row_y) = (0usize, 0.0f64, cols, 0.0f64);
+    for (i, d) in days.iter().enumerate() {
+        let page_start = used == 0.0;
+        let new_day = i == 0 || &days[i - 1] != d;
+        // 這一筆需要：新的一天（或新的一頁）先放標題列＋新的一列；同一天放滿一列就換列
+        let head = new_day || page_start;
+        let new_row = head || col >= cols;
+        let need = if head { g.head_h } else { 0.0 } + if new_row { g.row_h } else { 0.0 };
+        if !page_start && used + need > g.height + 0.5 {
+            page += 1;
+            used = 0.0;
+        }
+        let page_start = used == 0.0;
+        let head = new_day || page_start;
+        let new_row = head || col >= cols;
+        let mut head_y = None;
+        if head {
+            head_y = Some(used);
+            used += g.head_h;
+        }
+        if new_row {
+            row_y = used;
+            used += g.row_h;
+            col = 0;
+        }
+        out.push(GridPlace { page, y: row_y, col, head_y });
+        col += 1;
+    }
+    out
 }
 
 /// 錄影改名：原片與底下的加速版 / GIF 一起改（Rec_X_4x.mp4 → 新名_4x.mp4），清單上才不會斷開。
@@ -812,6 +891,23 @@ mod tests {
         let mut got: Vec<&str> = picked.items.iter().map(|e| e.media.name.as_str()).collect();
         got.sort();
         assert_eq!(got, vec!["Rec_A.mp4", "Rec_C.mp4"]);
+    }
+
+    #[test]
+    fn grid_layout_groups_days_and_pages() {
+        let d = |s: &str, n: usize| vec![s.to_string(); n];
+        let days: Vec<String> = [d("07-27", 5), d("07-26", 2), d("07-25", 4)].concat();
+        // 每列 3 格；標題 20、列高 100、可用 360：一頁放「標題＋3 列」（20+300=320）或「標題＋列＋標題＋列」…
+        let g = GridFit { cols: 3, height: 360.0, row_h: 100.0, head_h: 20.0 };
+        let p = grid_layout(&days, g);
+        // 07-27：標題 0，第 1 列 y=20（3 格）、第 2 列 y=120（2 格）
+        assert_eq!((p[0].page, p[0].y, p[0].col, p[0].head_y), (0, 20.0, 0, Some(0.0)));
+        assert_eq!((p[3].y, p[3].col, p[3].head_y), (120.0, 0, None));
+        // 07-26：新的一天，標題 220、列 240；放得下（340 ≤ 360）
+        assert_eq!((p[5].page, p[5].y, p[5].head_y), (0, 240.0, Some(220.0)));
+        // 07-25：再放標題＋列要到 460，換頁；新的一頁開頭重畫標題
+        assert_eq!((p[7].page, p[7].y, p[7].head_y), (1, 20.0, Some(0.0)));
+        assert_eq!((p[10].page, p[10].y, p[10].col), (1, 120.0, 0));
     }
 
     /// 截圖編輯另存的 JPG 也列在全部截圖，改名保留 .jpg

@@ -124,11 +124,12 @@ pub async fn count_shots(dir: &str) -> usize {
 pub async fn move_shots(app: &App, from: &str, to: &str) -> crate::library::MoveReport {
     let (f, t) = (PathBuf::from(from), PathBuf::from(to));
     let r = tokio::task::spawn_blocking(move || crate::library::move_images(&f, &t)).await.unwrap_or_default();
-    let store = app.projects.clone();
+    let (store, pins) = (app.projects.clone(), app.pins.clone());
     let moved = r.moved.clone();
     let _ = tokio::task::spawn_blocking(move || {
         for (a, b) in &moved {
             store.renamed(a, b);
+            pins.renamed(a, b);
         }
     })
     .await;
@@ -160,6 +161,7 @@ pub async fn rename(app: &App, path: &str, name: &str) -> Result<String> {
     let new_path = crate::library::rename_recording(&app.cache, path, name, &busy).await?;
     app.projects.renamed(path, &new_path);
     app.markers.renamed(path, &new_path);
+    app.pins.renamed(path, &new_path);
     Ok(new_path)
 }
 
@@ -181,6 +183,7 @@ pub fn delete(app: &App, paths: &[String]) -> Result<usize> {
     for f in paths {
         app.projects.removed(f);
         app.markers.removed(f);
+        app.pins.removed(f);
     }
     Ok(paths.len())
 }

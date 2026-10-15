@@ -267,6 +267,9 @@ pub enum Icon {
     ChevU,
     /// 關於（圓圈裡一個 i）
     Info,
+    /// 星號（外框）；StarOn 是實心
+    Star,
+    StarOn,
 }
 
 /// 在 rect（正方形）裡畫圖示
@@ -465,6 +468,26 @@ pub fn paint_icon(p: &Painter, rect: Rect, icon: Icon, color: Color32) {
         Icon::Copy => {
             p.rect_stroke(Rect::from_min_max(at(5.5, 5.5), at(13.5, 14.0)), CornerRadius::same((1.5 * k) as u8), st, StrokeKind::Middle);
             line(&[(3.0, 10.5), (2.5, 10.5), (2.5, 2.5), (10.0, 2.5), (10.0, 3.0)]);
+        }
+        Icon::Star | Icon::StarOn => {
+            // 五角星：外圈半徑 6.6、內圈 2.8，中心 (8, 8.4)
+            let pts: Vec<Pos2> = (0..10)
+                .map(|i| {
+                    let r = if i % 2 == 0 { 6.6 } else { 2.8 };
+                    let a = -std::f32::consts::FRAC_PI_2 + i as f32 * std::f32::consts::PI / 5.0;
+                    at(8.0 + r * a.cos(), 8.4 + r * a.sin())
+                })
+                .collect();
+            if icon == Icon::StarOn {
+                // 非凸多邊形：從中心拆成三角形填滿
+                for i in 0..10 {
+                    p.add(Shape::convex_polygon(vec![at(8.0, 8.4), pts[i], pts[(i + 1) % 10]], color, Stroke::NONE));
+                }
+            } else {
+                let mut closed = pts.clone();
+                closed.push(pts[0]);
+                p.add(Shape::line(closed, st));
+            }
         }
         Icon::Pin => {
             line(&[(6.0, 2.5), (10.0, 2.5)]);

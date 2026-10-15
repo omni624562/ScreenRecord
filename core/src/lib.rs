@@ -54,6 +54,7 @@ pub mod paths;
 pub mod picture;
 #[cfg(windows)]
 pub mod pin_win;
+pub mod pins;
 pub mod player;
 pub mod power;
 pub mod presets;
