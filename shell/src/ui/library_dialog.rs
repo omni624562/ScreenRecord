@@ -66,6 +66,8 @@ pub struct LibraryDialog {
     wheel_at: Option<Instant>,
     /// 只看已選取（勾選的檔案，可能在不同頁）
     only_selected: bool,
+    /// 全部截圖用滑鼠框選：開始拖曳時的勾選（框到的加在上面）
+    band_base: Option<HashSet<String>>,
 }
 
 /// 合併成一支：依清單的順序（可上下調整）接成一支；加速版預設不放進去
@@ -134,6 +136,7 @@ impl LibraryDialog {
             wheel: 0.0,
             wheel_at: None,
             only_selected: false,
+            band_base: None,
         }
     }
 
@@ -626,8 +629,8 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         let hint = match (n, shot) {
             (0, _) if total == 0 => String::new(),
             (0, true) => tr!(
-                "可勾選多張一次刪除或拼成一張（Ctrl＋點一下多選、Shift＋點一下選一段、Ctrl+A 全選本頁，再按一次選取全部）",
-                "Select several to delete or combine them (Ctrl+click to add, Shift+click for a range, Ctrl+A for this page, again for all)"
+                "可勾選多張一次刪除或拼成一張（拖曳框選、Ctrl＋點一下多選、Shift＋點一下選一段、Ctrl+A 全選本頁，再按一次選取全部）",
+                "Select several to delete or combine them (drag a box, Ctrl+click to add, Shift+click for a range, Ctrl+A for this page, again for all)"
             )
             .into(),
             (0, false) => tr!(
@@ -1385,9 +1388,14 @@ fn shot_grid(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, area: Re
     let order: Vec<String> = items.iter().map(|e| e.media.path.clone()).collect();
     let (ctrl, shift) = multi_mods(ui);
     select_all_key(app, ui, d, &order);
-    for (i, e) in items.iter().enumerate() {
+    let cell_at = |i: usize| {
         let (c, r) = ((i % cols as usize) as f32, (i / cols as usize) as f32);
-        let cell = Rect::from_min_size(pos2(area.min.x + c * (cell_w + gap), area.min.y + r * (cell_h + gap)), vec2(cell_w, cell_h));
+        Rect::from_min_size(pos2(area.min.x + c * (cell_w + gap), area.min.y + r * (cell_h + gap)), vec2(cell_w, cell_h))
+    };
+    // 用滑鼠框選（先登記，縮圖、按鈕的點一下照樣優先；拖曳超過幾個像素才算框選）
+    let band = band_select(ui, d, area, &order, &cell_at, ctrl);
+    for (i, e) in items.iter().enumerate() {
+        let cell = cell_at(i);
         let hot = ui.rect_contains_pointer(cell);
         if hot {
             d.cursor_row = Some(e.media.path.clone());
@@ -1484,7 +1492,45 @@ fn shot_grid(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, area: Re
             .add(egui::Label::new(RichText::new(&info).font(theme::font(12.0)).color(p.muted)).truncate())
             .on_hover_text(&info);
     }
+    if let Some(r) = band {
+        painter.rect_filled(r, CornerRadius::same(2), p.accent.gamma_multiply(0.15));
+        painter.rect_stroke(r, CornerRadius::same(2), Stroke::new(1.0, p.accent), egui::StrokeKind::Inside);
+    }
     row_keys(app, ui, d, &items, req);
+}
+
+/// 全部截圖用滑鼠框選：從任何地方（含縮圖上）按住左鍵拖曳，框到的縮圖都勾起來。
+/// 直接拖曳：這一頁改成只勾框到的（其他頁的勾選保留）；按住 Ctrl 拖曳：加選。回傳正在框的範圍（畫出來用）
+fn band_select(ui: &egui::Ui, d: &mut LibraryDialog, area: Rect, order: &[String], cell_at: &dyn Fn(usize) -> Rect, ctrl: bool) -> Option<Rect> {
+    if d.merge.is_some() || d.combine.is_some() || egui::Popup::is_any_open(ui.ctx()) {
+        d.band_base = None;
+        return None;
+    }
+    let resp = ui.interact(area, Id::new("shotBand"), Sense::drag());
+    if resp.drag_started_by(egui::PointerButton::Primary) {
+        let mut base = d.selected.clone();
+        if !ctrl {
+            for p in order {
+                base.remove(p);
+            }
+        }
+        d.band_base = Some(base);
+    }
+    if !resp.dragged() {
+        d.band_base = None;
+        return None;
+    }
+    let base = d.band_base.as_ref()?;
+    let (Some(from), Some(to)) = (ui.input(|i| i.pointer.press_origin()), ui.input(|i| i.pointer.interact_pos())) else { return None };
+    let r = Rect::from_two_pos(from, to).intersect(area.expand(2.0));
+    let hits: Vec<&String> = order.iter().enumerate().filter(|(i, _)| cell_at(*i).intersects(r)).map(|(_, p)| p).collect();
+    let mut sel = base.clone();
+    sel.extend(hits.iter().map(|p| (*p).clone()));
+    d.selected = sel;
+    if let Some(last) = hits.last() {
+        d.anchor = Some((*last).clone());
+    }
+    Some(r)
 }
 
 /// 有勾選時，搜尋列右邊：選取全部（每一頁）、只看已選取、取消選取

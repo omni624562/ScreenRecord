@@ -86,13 +86,22 @@ fn parse_script(s: &str) -> VecDeque<Step> {
             "drag" => {
                 let n = nums(v);
                 let (a, b) = (pos2(n[0], n[1]), pos2(n[2], n[3]));
+                // 有 ctrl 時按住 Ctrl 拖曳（直到放開）
+                let m = if v.contains(",ctrl") { Modifiers::CTRL | Modifiers::COMMAND } else { Modifiers::NONE };
                 out.push_back(Step::Events(vec![Event::PointerMoved(a)]));
-                out.push_back(Step::Events(vec![button(a, true, Modifiers::NONE)]));
+                out.push_back(Step::Events(vec![Event::ModifiersChanged(m), button(a, true, m)]));
                 for i in 1..=8 {
                     out.push_back(Step::Events(vec![Event::PointerMoved(a + (b - a) * (i as f32 / 8.0))]));
                 }
-                out.push_back(Step::Events(vec![button(b, false, Modifiers::NONE)]));
+                // drag:x1,y1,x2,y2,hold：不放開（截圖看拖曳中的畫面），之後用 drag:x2,y2,x2,y2 放開
+                if !v.contains(",hold") {
+                    out.push_back(Step::Events(vec![button(b, false, m), Event::ModifiersChanged(Modifiers::NONE)]));
+                }
                 out.push_back(Step::Wait(Duration::from_millis(200)));
+            }
+            "mouseup" => {
+                let n = nums(v);
+                out.push_back(Step::Events(vec![button(pos2(n[0], n[1]), false, Modifiers::NONE), Event::ModifiersChanged(Modifiers::NONE)]));
             }
             "wheel" => {
                 // wheel:x,y,dy（後面加 ,ctrl = 按住 Ctrl 轉滾輪）
