@@ -96,6 +96,9 @@ mod tests {
             audio_only: false,
             window_capture: false,
             separate_audio: false,
+            mic_denoise: false,
+            quiet: false,
+            masks: vec![],
             replay_sec: 0,
             monitor_key: None,
         }

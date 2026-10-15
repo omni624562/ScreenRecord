@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 /// ui 裡屬於設定組合的欄位：範圍、畫面、聲音、儲存位置、倒數、錄影時的效果、攝影機、錄完自動處理
-pub const KEYS: [&str; 35] = [
+pub const KEYS: [&str; 38] = [
     "sourceType",
     "monitorId",
     "monitorRegion",
@@ -45,6 +45,9 @@ pub const KEYS: [&str; 35] = [
     "afterSubsEn",
     "windowCapture",
     "separateAudio",
+    "micDenoise",
+    "recQuiet",
+    "recMasks",
 ];
 
 /// 最多幾組
@@ -155,6 +158,9 @@ mod tests {
             audio_only: false,
             window_capture: false,
             separate_audio: false,
+            mic_denoise: false,
+            quiet: false,
+            masks: vec![],
             replay_sec: 0,
             monitor_key: None,
         }

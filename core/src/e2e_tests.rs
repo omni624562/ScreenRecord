@@ -63,6 +63,9 @@ fn record_config() -> RecordConfig {
         audio_only: true,
         window_capture: false,
         separate_audio: false,
+        mic_denoise: false,
+        quiet: false,
+        masks: vec![],
         replay_sec: 0,
         monitor_key: None,
     }
@@ -813,6 +816,31 @@ fn record_with_audio_pipe(ff: &Path, card: &Path, out: &Path, separate: bool, se
     let _ = reader.join();
     drop(stdin);
     first.unwrap()
+}
+
+/// 錄影時麥克風降噪：系統聲音與麥克風分開送進來，麥克風降噪後混成一條（分軌時是三條）
+#[tokio::test]
+async fn mic_denoise_while_recording() {
+    let Some(ff) = ffmpeg() else { return };
+    if !has(&ff, "-encoders", "libx264") || !has(&ff, "-filters", "afftdn") {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let card = write_card(dir.path());
+    // 系統聲音 440 Hz；麥克風 880 Hz 加上雜音
+    let sys = "0.3*sin(440*2*PI*t)";
+    let mic = "0.3*sin(880*2*PI*t)+0.05*(random(0)-0.5)";
+    let src = format!("aevalsrc={sys}+{mic}|{sys}+{mic}|{sys}|{sys}|{mic}|{mic}:s=48000:c=5.1");
+    for separate in [false, true] {
+        let config =
+            RecordConfig { audio: crate::types::AudioConfig { system: true, mic: true, mic_id: String::new(), app: String::new() }, separate_audio: separate, mic_denoise: true, ..record_config() };
+        assert!(config.pipe_separate());
+        let out = dir.path().join(format!("dn_{}.mp4", separate as u8));
+        record_segment_with(&ff, &card, &out, 2.0, false, &config, &src);
+        let i = probe(&ff, &out).await;
+        assert_eq!((i.has_audio, i.audio_tracks), (Some(true), if separate { 3 } else { 1 }), "分軌 = {separate}");
+        assert!(max_volume(&ff, &out) > -20.0);
+    }
 }
 
 #[tokio::test]

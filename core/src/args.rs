@@ -259,7 +259,8 @@ impl GpuPath {
     }
     /// 這個範圍、設定能不能用（錄影中移動範圍到別的螢幕時會變）
     pub fn applies(&self, plan: &CapturePlan, config: &RecordConfig) -> bool {
-        plan.dda.as_ref().is_some_and(|d| d.tiles.len() == 1 && d.adapter == self.adapter) && !config.audio_only
+        // 要打馬賽克時畫面要回到 CPU 處理
+        plan.dda.as_ref().is_some_and(|d| d.tiles.len() == 1 && d.adapter == self.adapter) && !config.audio_only && mask_rects(plan, config).is_empty()
     }
     /// 編碼器換了（例如 GPU 編碼器失敗改用 CPU）：只有同一張顯示卡的編碼器能直接接
     pub fn for_encoder(self, enc: &EncoderSpec) -> GpuPath {
@@ -501,6 +502,65 @@ fn ddagrab_chain_opts(plan: &CapturePlan, fps: f64, draw_mouse: bool, skip_stati
     format!("{};{stack}", parts.join(";"))
 }
 
+/// 錄影時要打馬賽克的範圍（相對於擷取範圍的左上角、裁到範圍內）；太小的不算
+pub fn mask_rects(plan: &CapturePlan, config: &RecordConfig) -> Vec<Rect> {
+    if config.audio_only || config.window_capture {
+        return vec![];
+    }
+    let r = plan.rect;
+    config
+        .masks
+        .iter()
+        .filter_map(|m| {
+            let x0 = m.x.max(r.x);
+            let y0 = m.y.max(r.y);
+            let x1 = (m.x + m.width).min(r.x + r.width);
+            let y1 = (m.y + m.height).min(r.y + r.height);
+            (x1 - x0 >= 4 && y1 - y0 >= 4).then(|| Rect { x: x0 - r.x, y: y0 - r.y, width: x1 - x0, height: y1 - y0 })
+        })
+        .collect()
+}
+
+/// 畫面來源 src（濾鏡鏈或輸入標籤 [0:v]）之後打上馬賽克，再接 tail，輸出 [vout]
+fn masked_graph(src: &str, tail: &str, masks: &[Rect]) -> String {
+    let label = src.ends_with(']');
+    if masks.is_empty() {
+        return if label { format!("{src}{tail}[vout]") } else { format!("{src},{tail}[vout]") };
+    }
+    let mut g = vec![if label { format!("{src}null[mk0]") } else { format!("{src}[mk0]") }];
+    for (i, m) in masks.iter().enumerate() {
+        let (w, h, x, y) = (m.width, m.height, m.x, m.y);
+        g.push(format!("[mk{i}]split=2[mka{i}][mkb{i}];[mkb{i}]crop={w}:{h}:{x}:{y},{}[mkc{i}];[mka{i}][mkc{i}]overlay={x}:{y}[mk{}]", blur_effect(w, h, true, false), i + 1));
+    }
+    g.push(format!("[mk{}]{tail}[vout]", masks.len()));
+    g.join(";")
+}
+
+/// 錄影時的麥克風降噪（FFT 降噪、追蹤雜音的變化）
+const MIC_DENOISE: &str = "afftdn=nr=12:nf=-40:tn=1";
+
+/// 錄影的聲音：分軌、降噪時的濾鏡（另一個 -filter_complex）與要 map 的輸出；都不用時 None（直接 map 輸入）
+fn record_audio_graph(i: usize, config: &RecordConfig) -> Option<(String, Vec<&'static str>)> {
+    let mic = |extra: &str| format!("pan=stereo|c0=c4|c1=c5{extra}");
+    let dn = format!(",{MIC_DENOISE}");
+    match (config.separate_tracks(), config.denoise_mic(), config.pipe_separate()) {
+        // 分軌、不降噪：拆成 混音、系統聲音、麥克風 三條
+        (true, false, _) => {
+            Some((format!("[{i}:a]asplit=3[sa0][sa1][sa2];[sa0]pan=stereo|c0=c0|c1=c1[amix];[sa1]pan=stereo|c0=c2|c1=c3[asys];[sa2]{}[amic]", mic("")), vec!["[amix]", "[asys]", "[amic]"]))
+        }
+        // 分軌又降噪：混音改用降噪後的麥克風重新混
+        (true, true, _) => Some((
+            format!("[{i}:a]asplit=2[sa1][sa2];[sa1]pan=stereo|c0=c2|c1=c3,asplit=2[asys][as2];[sa2]{},asplit=2[amic][am2];[as2][am2]amix=inputs=2:normalize=0[amix]", mic(&dn)),
+            vec!["[amix]", "[asys]", "[amic]"],
+        )),
+        // 系統聲音＋麥克風、只降噪：分開送進來，麥克風降噪後再混成一條
+        (false, true, true) => Some((format!("[{i}:a]asplit=2[sa1][sa2];[sa1]pan=stereo|c0=c2|c1=c3[as];[sa2]{}[am];[as][am]amix=inputs=2:normalize=0[amix]", mic(&dn)), vec!["[amix]"])),
+        // 只有麥克風：整條降噪
+        (false, true, false) => Some((format!("[{i}:a]{MIC_DENOISE}[amix]"), vec!["[amix]"])),
+        (false, false, _) => None,
+    }
+}
+
 /// 裁成偶數 → 縮放 + 色彩轉換（BT.709 limited）
 fn convert_filters(plan: &CapturePlan, config: &RecordConfig, enc: &EncoderSpec) -> Vec<String> {
     let mut f = Vec::new();
@@ -597,7 +657,7 @@ pub fn capture_spec(plan: &CapturePlan, config: &RecordConfig, method: CaptureMe
                 }
                 format!("{}[vout]", f.join(","))
             }
-            None => format!("{},{tail}[vout]", ddagrab_chain(plan, config.fps, config.draw_mouse)),
+            None => masked_graph(&ddagrab_chain(plan, config.fps, config.draw_mouse), &tail, &mask_rects(plan, config)),
         };
         return Ok(CaptureSpec { pre: vec!["-init_hw_device".into(), format!("d3d11va=dda:{}", dda.adapter), "-filter_hw_device".into(), "dda".into()], inputs: vec![], input_count: 0, graph });
     }
@@ -645,7 +705,7 @@ pub fn capture_spec(plan: &CapturePlan, config: &RecordConfig, method: CaptureMe
             "desktop".into(),
         ],
         input_count: 1,
-        graph: format!("[0:v]{tail}[vout]"),
+        graph: masked_graph("[0:v]", &tail, &mask_rects(plan, config)),
     })
 }
 
@@ -682,17 +742,21 @@ pub fn segment_args(plan: &CapturePlan, config: &RecordConfig, method: CaptureMe
     // 分軌：送進來的 6 個聲道是 混音、系統聲音、麥克風 各兩個，拆成三條立體聲音軌。
     // 拆聲音要放在另一個濾鏡圖：和畫面放在同一個時，FFmpeg 7 以後要等聲音進來才處理畫面，
     // 而聲音管線要看到第一張畫面才開始送（對齊時間），兩邊互等、一張畫面都錄不到
-    let separate = audio_input.is_some() && config.separate_tracks();
+    // 麥克風降噪也一樣放在聲音自己的濾鏡圖
+    let audio_graph = audio_input.and_then(|_| record_audio_graph(spec.input_count, config));
     a.extend(["-filter_complex".into(), spec.graph]);
-    if separate {
-        let i = spec.input_count;
-        a.extend(["-filter_complex".into(), format!("[{i}:a]asplit=3[sa0][sa1][sa2];[sa0]pan=stereo|c0=c0|c1=c1[amix];[sa1]pan=stereo|c0=c2|c1=c3[asys];[sa2]pan=stereo|c0=c4|c1=c5[amic]")]);
+    if let Some((g, _)) = &audio_graph {
+        a.extend(["-filter_complex".into(), g.clone()]);
     }
     a.extend(strs(&["-map", "[vout]"]));
-    if separate {
-        a.extend(strs(&["-map", "[amix]", "-map", "[asys]", "-map", "[amic]"]));
+    if let Some((_, outs)) = &audio_graph {
+        for o in outs {
+            a.extend(["-map".into(), o.to_string()]);
+        }
         a.extend(strs(&AUDIO_ENCODE));
-        a.extend(track_tags());
+        if outs.len() == 3 {
+            a.extend(track_tags());
+        }
         a.extend(strs(&["-max_muxing_queue_size", "4096"]));
     } else if audio_input.is_some() {
         a.extend(["-map".into(), format!("{}:a", spec.input_count)]);
@@ -1485,6 +1549,9 @@ mod tests {
             audio_only: false,
             window_capture: false,
             separate_audio: false,
+            mic_denoise: false,
+            quiet: false,
+            masks: vec![],
             replay_sec: 0,
             monitor_key: None,
         }
@@ -2201,6 +2268,79 @@ dummy: Immediate exit requested";
             let d = info.duration_sec.unwrap();
             assert!((d - 4.5).abs() < 0.25, "{with_audio} {music_on}: {d}");
             assert_eq!(info.has_audio, with_audio || music_on, "{with_audio} {music_on}");
+        }
+    }
+
+    #[test]
+    fn masks_are_cut_to_the_capture_area() {
+        let mut c = cfg();
+        c.masks = vec![Rect { x: 1800, y: 0, width: 300, height: 100 }, Rect { x: 5000, y: 0, width: 50, height: 50 }, Rect { x: 100, y: 100, width: 2, height: 2 }];
+        let plan = CapturePlan { rect: Rect { x: 0, y: 0, width: 1920, height: 1080 }, dda: None, monitors: vec![], out_width: 1920, out_height: 1080, card: None };
+        // 超出範圍的裁掉、範圍外與太小的不算
+        assert_eq!(mask_rects(&plan, &c), vec![Rect { x: 1800, y: 0, width: 120, height: 100 }]);
+        let g = masked_graph("[0:v]null", "format=yuv420p", &mask_rects(&plan, &c));
+        assert!(g.starts_with("[0:v]null[mk0];[mk0]split=2") && g.contains("crop=120:100:1800:0") && g.ends_with("[mk1]format=yuv420p[vout]"), "{g}");
+        assert_eq!(masked_graph("[0:v]", "format=yuv420p", &[]), "[0:v]format=yuv420p[vout]");
+        assert_eq!(masked_graph("ddagrab=0", "format=yuv420p", &[]), "ddagrab=0,format=yuv420p[vout]");
+        // 只錄視窗內容時不打
+        c.window_capture = true;
+        assert!(mask_rects(&plan, &c).is_empty());
+    }
+
+    #[test]
+    fn mic_denoise_graphs() {
+        let both = AudioConfig { system: true, mic: true, mic_id: String::new(), app: String::new() };
+        let c = |separate: bool, dn: bool, system: bool| RecordConfig { audio: AudioConfig { system, ..both.clone() }, separate_audio: separate, mic_denoise: dn, ..cfg() };
+        assert!(record_audio_graph(2, &c(false, false, true)).is_none());
+        let (g, outs) = record_audio_graph(2, &c(false, true, true)).unwrap();
+        assert!(g.contains("c0=c4|c1=c5,afftdn") && g.contains("amix=inputs=2:normalize=0[amix]") && outs == vec!["[amix]"], "{g}");
+        assert!(c(false, true, true).pipe_separate());
+        let (g, outs) = record_audio_graph(2, &c(true, true, true)).unwrap();
+        assert!(g.contains("afftdn") && outs.len() == 3, "{g}");
+        let (g, _) = record_audio_graph(2, &c(true, false, true)).unwrap();
+        assert!(!g.contains("afftdn"));
+        let (g, _) = record_audio_graph(2, &c(false, true, false)).unwrap();
+        assert_eq!(g, "[2:a]afftdn=nr=12:nf=-40:tn=1[amix]");
+        assert!(!c(false, true, false).pipe_separate());
+    }
+
+    /// 馬賽克與降噪的濾鏡：有 FFmpeg 時實際跑一次
+    #[test]
+    fn mask_and_denoise_graphs_run_in_ffmpeg() {
+        let Some(ffmpeg) = std::env::var_os("PATH").and_then(|p| std::env::split_paths(&p).map(|d| d.join("ffmpeg")).find(|p| p.is_file())) else { return };
+        let masks = [Rect { x: 10, y: 10, width: 100, height: 60 }, Rect { x: 200, y: 100, width: 80, height: 80 }];
+        let v = masked_graph("[0:v]", "format=yuv420p", &masks);
+        let both = AudioConfig { system: true, mic: true, mic_id: String::new(), app: String::new() };
+        for separate in [false, true] {
+            let c = RecordConfig { audio: both.clone(), separate_audio: separate, mic_denoise: true, ..cfg() };
+            let (a, outs) = record_audio_graph(1, &c).unwrap();
+            let mut args: Vec<String> = [
+                "-v",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc=size=320x240:rate=10:d=1",
+                "-f",
+                "lavfi",
+                "-i",
+                "anoisesrc=d=1:r=48000,pan=6c|c0=c0|c1=c0|c2=c0|c3=c0|c4=c0|c5=c0",
+                "-filter_complex",
+                &v,
+                "-filter_complex",
+                &a,
+                "-map",
+                "[vout]",
+            ]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+            for o in outs {
+                args.extend(["-map".into(), o.to_string()]);
+            }
+            args.extend(["-f".into(), "null".into(), "-".into()]);
+            let r = std::process::Command::new(&ffmpeg).args(&args).output().unwrap();
+            assert!(r.status.success(), "{}", String::from_utf8_lossy(&r.stderr));
         }
     }
 }

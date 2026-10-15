@@ -287,6 +287,7 @@ impl RecorderDeps for RecDeps {
     fn after_stop(&self) {
         crate::winui::restore_ui_after_recording();
         crate::winui::set_desktop_icons(true);
+        crate::quiet::end();
         if let Some(a) = self.0.upgrade() {
             a.awake.lock().unwrap().take();
             let counts = a.rec_apps.lock().unwrap().take().unwrap_or_default();
@@ -1457,6 +1458,7 @@ impl App {
 
     /// 標記第一次偵測已完成（refresh 結束時自動呼叫）
     pub fn mark_ready(&self) {
+        crate::quiet::recover();
         self.ready.send_replace(true);
     }
 
@@ -2261,6 +2263,9 @@ mod tests {
             audio_only: false,
             window_capture: false,
             separate_audio: false,
+            mic_denoise: false,
+            quiet: false,
+            masks: vec![],
             replay_sec: 0,
             monitor_key: None,
         };

@@ -462,6 +462,20 @@ fn record_page(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
             app.save_settings();
         }
     });
+    form_row(ui, tr!("通知", "Notifications"), |ui| {
+        let mut v = app.s.rec_quiet;
+        if switch(ui, &mut v, tr!("錄影時打開勿擾", "Turn on Do not disturb while recording"), true)
+            .on_hover_text(tr!(
+                "開始錄影時打開 Windows 的勿擾（只允許鬧鐘），LINE、Outlook 等的通知不會跳出來被錄進去；停止後恢復原本的設定。自己畫通知視窗的程式擋不住",
+                "Turns on Windows Do not disturb (alarms only) when recording starts so notifications from apps like Outlook don't pop up in the video; your previous setting comes back when you stop. Apps that draw their own pop-ups can't be blocked"
+            ))
+            .changed()
+        {
+            app.s.rec_quiet = v;
+            app.save_settings();
+        }
+    });
+    masks_row(app, ui);
     camera_rows(app, ui);
     form_divider(ui);
     form_section(ui, tr!("開始與結束", "Start and stop"), |_| {});
@@ -630,6 +644,19 @@ fn audio_page(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
             .changed()
         {
             app.s.separate_audio = on;
+            app.save_settings();
+        }
+    });
+    form_row(ui, tr!("降噪", "Noise reduction"), |ui| {
+        let mut on = app.s.mic_denoise;
+        if switch(ui, &mut on, tr!("錄影時降低麥克風雜音", "Reduce mic noise while recording"), app.s.audio_mic)
+            .on_hover_text(tr!(
+                "錄影的同時去掉麥克風收到的風扇、冷氣、鍵盤等持續的雜音，不用事後再處理；只處理麥克風，系統聲音（影片、音樂）不受影響",
+                "Removes steady background noise from the mic (fans, air conditioning, keyboards) while recording, so there's nothing to fix afterwards. Only the mic is processed; system audio (videos, music) isn't affected"
+            ))
+            .changed()
+        {
+            app.s.mic_denoise = on;
             app.save_settings();
         }
     });
@@ -1690,4 +1717,56 @@ fn save_keys(app: &mut UiApp, d: &mut SettingsDialog, k: Hotkeys) {
 fn vk_of(key: egui::Key) -> Option<u32> {
     let name = key.name();
     (0x20..=0x7B).find(|vk| screenrecorder_core::types::key_name(*vk).as_deref() == Some(name))
+}
+
+/// 錄影時遮住的固定範圍：列出已框好的範圍，可以新增（在螢幕上框選）或刪除
+fn masks_row(app: &mut UiApp, ui: &mut Ui) {
+    let p = theme::pal(ui);
+    let mut remove = None;
+    let mut add = false;
+    form_row(ui, tr!("遮住範圍", "Hidden areas"), |ui| {
+        ui.vertical(|ui| {
+            for (i, r) in app.s.rec_masks.iter().enumerate() {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(trf!("範圍 {}：{}×{}（{}, {}）", "Area {}: {}×{} at ({}, {})", i + 1, r.width, r.height, r.x, r.y)).font(theme::font(12.5)));
+                    if Btn::icon_only(Icon::Close).ghost().small().tooltip(tr!("刪除這個範圍", "Remove this area")).show(ui).clicked() {
+                        remove = Some(i);
+                    }
+                });
+            }
+            let label = if app.s.rec_masks.is_empty() { tr!("在螢幕上框選要遮住的地方…", "Select an area to hide on screen…") } else { tr!("再加一個…", "Add another…") };
+            let b = Btn::new(label).icon(Icon::Fullscreen).small().enabled(app.env.ffmpeg.found && app.s.rec_masks.len() < 20).tooltip(tr!(
+                "框選螢幕上不想被錄到的地方（例如帳號、聊天視窗、通知區），錄影時直接打上馬賽克",
+                "Select places on screen you don't want recorded (e.g. account names, chat windows, the notification area); they're pixelated while recording"
+            ));
+            if b.show(ui).clicked() {
+                add = true;
+            }
+        });
+    });
+    if !app.s.rec_masks.is_empty() {
+        form_hint(
+            ui,
+            tr!(
+                "錄影時這些範圍會打上馬賽克（範圍是固定在螢幕上的位置，視窗移走就遮不到）。只錄視窗內容時不適用；顯示卡加速轉換會改用一般方式。",
+                "These areas are pixelated while recording (they're fixed screen positions, so a window that moves away isn't covered). Not applied with Window only; GPU conversion is turned off while they're in use."
+            ),
+            p.muted,
+        );
+    }
+    if let Some(i) = remove {
+        app.s.rec_masks.remove(i);
+        app.save_settings();
+    }
+    if add {
+        super::snip::pick_region(app, |app: &mut UiApp, r| {
+            let Some(r) = r else { return };
+            if r.width < 4 || r.height < 4 {
+                return app.toast(tr!("範圍太小", "The area is too small"), true);
+            }
+            app.s.rec_masks.push(r);
+            app.save_settings();
+            app.toast(tr!("已加上要遮住的範圍，錄影時會打上馬賽克", "Hidden area added; it'll be pixelated while recording"), false);
+        });
+    }
 }

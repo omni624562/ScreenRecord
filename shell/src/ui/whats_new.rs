@@ -21,8 +21,7 @@ pub fn should_show(app: &UiApp) -> bool {
 #[derive(Clone, Copy)]
 enum Try {
     None,
-    /// 打開設定的某一頁（這一版的介紹沒用到，保留給之後）
-    #[allow(dead_code)]
+    /// 打開設定的某一頁
     Settings(Page),
     /// 在螢幕上框選截圖（這一版的介紹沒用到，保留給之後）
     #[allow(dead_code)]
@@ -39,40 +38,31 @@ enum Try {
 fn items(_app: &UiApp) -> Vec<(String, String, Try)> {
     vec![
         (
-            tr!("一鍵剪掉贅字和停頓", "Cut fillers and pauses in one go").into(),
+            tr!("錄影時打開勿擾", "Do not disturb while recording").into(),
             tr!(
-                "有字幕的影片，在「字幕」分頁按「找出贅字和停頓」：列出只有「嗯、呃、那個」的句子和超過 1 秒沒講話的地方，勾選後一次剪掉。",
-                "For videos with subtitles, click “Find fillers and pauses” in the Subtitles tab to list sentences that are only “um” or “uh” and gaps of over a second, then cut the ones you tick."
+                "開始錄影時自動打開 Windows 的勿擾，LINE、Outlook 等的通知不會跳出來被錄進去；停止後恢復原本的設定。",
+                "Windows Do not disturb turns on when recording starts, so notifications from apps like Outlook don't pop up in your video; your previous setting comes back when you stop."
             )
             .into(),
-            Try::None,
+            Try::Settings(Page::Record),
         ),
         (
-            tr!("時間軸聲音波形", "Audio waveform on the timeline").into(),
+            tr!("錄影時降低麥克風雜音", "Reduce mic noise while recording").into(),
             tr!(
-                "剪輯視窗的時間軸下方畫出聲音大小，一眼看出哪裡在講話、哪裡沒聲音，剪得更準。",
-                "The editor's timeline shows how loud the audio is, so you can see where people talk and where it's quiet."
+                "錄影的同時去掉風扇、冷氣、鍵盤等持續的雜音，不用事後再處理；系統聲音不受影響。",
+                "Removes steady fan, air-conditioning and keyboard noise from the mic while you record; system audio isn't affected."
             )
             .into(),
-            Try::None,
+            Try::Settings(Page::Audio),
         ),
         (
-            tr!("片頭、片尾", "Intro and outro").into(),
+            tr!("錄影時遮住固定範圍", "Hide fixed areas while recording").into(),
             tr!(
-                "在「畫面」分頁打開片頭或片尾，輸入標題、副標，選深色、淺色或藍色，影片前後就會多一張幾秒的標題卡（淡入淡出）。",
-                "Turn on an intro or outro in the Picture tab, type a title and subtitle and pick dark, light or blue to add a title card with fades before or after the video."
+                "先在螢幕上框好不想被錄到的地方（帳號、聊天視窗、通知區），錄影時直接打上馬賽克，不用事後再剪。",
+                "Mark places on screen you don't want recorded (account names, chat windows, the notification area) and they're pixelated as you record, with nothing to edit afterwards."
             )
             .into(),
-            Try::None,
-        ),
-        (
-            tr!("背景音樂", "Background music").into(),
-            tr!(
-                "在「聲音」分頁選一首音樂：重複播放到影片結束、最後淡出，講話的時候自動調小聲。",
-                "Pick a song in the Audio tab: it loops to the end of the video, fades out, and turns down automatically while you talk."
-            )
-            .into(),
-            Try::None,
+            Try::Settings(Page::Record),
         ),
     ]
 }

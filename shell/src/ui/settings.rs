@@ -90,6 +90,13 @@ pub struct UiSettings {
     pub cursor_halo: bool,
     /// 錄影時隱藏桌面圖示
     pub hide_icons: bool,
+    /// 錄影時打開 Windows 的勿擾
+    pub rec_quiet: bool,
+    /// 錄影時打上馬賽克的固定範圍（桌面座標）
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub rec_masks: Vec<Rect>,
+    /// 錄影時麥克風降噪
+    pub mic_denoise: bool,
     /// 錄影時螢幕上的控制列：完整、精簡、不顯示（core 的 rec_bar_prefs 讀這個欄位）
     pub rec_bar: RecBarMode,
     /// 錄整個螢幕時控制列拖到的位置（控制列上拖曳後由 core 存進來；這裡只是原樣保留）
@@ -258,6 +265,9 @@ impl UiSettings {
             camera_pos: o.get("cameraPos").and_then(|v| serde_json::from_value::<[u16; 2]>(v.clone()).ok()).filter(|p| p.iter().all(|c| *c <= 10000)),
             cursor_halo: boolean("cursorHalo").unwrap_or(false),
             hide_icons: boolean("hideIcons").unwrap_or(false),
+            rec_quiet: boolean("recQuiet").unwrap_or(false),
+            rec_masks: o.get("recMasks").and_then(|v| serde_json::from_value::<Vec<Rect>>(v.clone()).ok()).unwrap_or_default().into_iter().filter(|r| r.width >= 4 && r.height >= 4).take(20).collect(),
+            mic_denoise: boolean("micDenoise").unwrap_or(false),
             rec_bar: o.get("recBar").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default(),
             rec_bar_pos: o.get("recBarPos").and_then(|v| serde_json::from_value::<[i32; 2]>(v.clone()).ok()),
             shot_preview: boolean("shotPreview").unwrap_or(true),
@@ -477,6 +487,9 @@ impl UiSettings {
             audio_only: self.source_type == SourceType::Audio,
             window_capture: self.window_capture && self.source_type == SourceType::Region && self.follow_window.is_some(),
             separate_audio: self.separate_audio,
+            mic_denoise: self.mic_denoise,
+            quiet: self.rec_quiet,
+            masks: self.rec_masks.clone(),
             replay_sec: 0,
             monitor_key: (self.source_type == SourceType::Monitor && self.region_in_monitor(env).is_none() && !self.monitor_key.is_empty()).then(|| self.monitor_key.clone()),
         }
