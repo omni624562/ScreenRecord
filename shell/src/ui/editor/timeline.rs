@@ -43,6 +43,9 @@ const MARK: Color32 = Color32::from_rgb(0xff, 0x8a, 0x1f);
 const FLAG_H: f32 = 22.0;
 /// 加速的片段
 const FAST: Color32 = Color32::from_rgb(0x00, 0x78, 0xff);
+/// 分析找到的片段：不動又沒聲音（青綠色）、沒說話（紫色）
+pub(crate) const IDLE_MARK: Color32 = Color32::from_rgb(0x14, 0xb8, 0xa6);
+pub(crate) const QUIET_MARK: Color32 = Color32::from_rgb(0xa8, 0x55, 0xf7);
 
 /// 時間軸縮圖：在背景依序解出時間軸上各個時間點的小圖（放大後只解顯示的範圍）；
 /// 一張一張出現；關閉、換影片或再次縮放時停止。
@@ -236,6 +239,23 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, toast: &mut
             let c = pos2(r.center().x, rect.top() + 21.0);
             painter.rect_filled(Rect::from_center_size(c, g.size() + vec2(8.0, 2.0)), CornerRadius::same(4), FAST);
             painter.galley(c - g.size() / 2.0, g, Color32::WHITE);
+        }
+    }
+    // 分析找到、還沒處理的片段：淡淡的底色，上緣一條色帶
+    if let Some(found) = &ed.idle_found {
+        for (list, col) in [(&found.idle, IDLE_MARK), (&found.quiet, QUIET_MARK)] {
+            for &(f0, f1) in list.iter().filter(|(f0, f1)| *f1 > a && *f0 < b) {
+                let r = full(f0, f1).shrink2(vec2(1.0, 0.0));
+                painter.rect_filled(r, CornerRadius::ZERO, col.gamma_multiply(0.30));
+                // 下緣一條色帶，夠寬時寫上是哪一種
+                let band = Rect::from_min_max(pos2(r.left(), r.bottom() - 16.0), r.max);
+                painter.rect_filled(band, CornerRadius::ZERO, col);
+                let label = if col == IDLE_MARK { tr!("沒動靜", "Idle") } else { tr!("沒說話", "Quiet") };
+                let g = painter.layout_no_wrap(label.to_string(), theme::font_bold(11.0), Color32::WHITE);
+                if band.width() > g.size().x + 6.0 {
+                    painter.galley(band.center() - g.size() / 2.0, g, Color32::WHITE);
+                }
+            }
         }
     }
     // 分割點：白色直線（尺規上一個小三角形）

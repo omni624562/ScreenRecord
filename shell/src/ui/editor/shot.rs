@@ -1602,14 +1602,16 @@ pub fn run(app: &mut UiApp, ed: &mut Editor, act: Act) {
             }
             ed.finding_idle = true;
             let (ffmpeg, video, dur, audio) = (ed.ffmpeg.clone(), ed.entry.media.path.clone(), ed.duration, ed.entry.media.has_audio == Some(true));
-            app.spawn(async move { screenrecorder_core::idle::find(&ffmpeg, &video, dur, audio).await }, |app, r| {
+            app.spawn(async move { screenrecorder_core::idle::analyze(&ffmpeg, &video, dur, audio).await }, |app, r| {
                 let Some(ed) = &mut app.editor else { return };
                 ed.finding_idle = false;
                 match r {
-                    Ok(found) => {
-                        let msg = ed.remove_idle(&found);
-                        app.toast(msg, false);
+                    Ok(found) if found.idle.is_empty() && found.quiet.is_empty() => {
+                        ed.idle_found = None;
+                        app.toast(tr!("沒有找到不動又沒聲音、或是沒說話的片段", "No still, silent or quiet parts were found"), false);
                     }
+                    // 標在時間軸上，側邊欄讓使用者選要刪除還是加速
+                    Ok(found) => ed.idle_found = Some(found),
                     Err(e) => app.toast(e.message().to_string(), true),
                 }
             });

@@ -345,6 +345,8 @@ pub struct Editor {
     finding_pii: bool,
     /// 正在分析沒動靜的片段
     finding_idle: bool,
+    /// 分析找到的片段（標在時間軸上，等使用者決定刪除或加速）
+    pub(crate) idle_found: Option<screenrecorder_core::idle::Found>,
     /// 預覽到加速的片段時，上次跳過去的位置
     fast_from: Option<f64>,
     /// 最新解出的畫面（套用馬賽克 / 模糊前）
@@ -591,6 +593,7 @@ impl Editor {
             ffmpeg_whisper: app.env.ffmpeg.has_whisper,
             finding_pii: false,
             finding_idle: false,
+            idle_found: None,
             fast_from: None,
             frame: None,
             video_tex: None,
@@ -1248,19 +1251,44 @@ impl Editor {
         }
     }
 
-    /// 刪掉找到的沒動靜片段（只算保留範圍內的）；回傳要顯示的訊息
-    pub(crate) fn remove_idle(&mut self, found: &[Range]) -> String {
+    /// 找到的片段裡還保留著的部分（太短的不算）
+    fn kept_parts(&self, found: &[Range]) -> Vec<Range> {
         let keep = self.keep();
-        // 只刪還保留著的部分
-        let mut add: Vec<Range> = vec![];
+        let mut out: Vec<Range> = vec![];
         for &(a, b) in found {
             for &(c, d) in &keep {
                 let (x, y) = (a.max(c), b.min(d));
                 if y - x >= 0.5 {
-                    add.push((x, y));
+                    out.push((x, y));
                 }
             }
         }
+        out
+    }
+
+    /// 找到的片段加速（只算保留範圍內的）；回傳要顯示的訊息
+    pub(crate) fn speed_found(&mut self, found: &[Range], speed: u32) -> String {
+        let add = self.kept_parts(found);
+        if add.is_empty() {
+            return tr!("找到的片段都已經刪掉了", "The parts found have already been removed").into();
+        }
+        for &(a, b) in &add {
+            screenrecorder_core::edit::set_fast(&mut self.spec.fast, a, b, speed);
+        }
+        self.sel = None;
+        let secs: f64 = add.iter().map(|(a, b)| b - a).sum();
+        let n = add.len();
+        if screenrecorder_core::i18n::is_en() {
+            format!("Sped up {n} part{} ({} in total) to {speed}×. Press Ctrl+Z to undo", if n == 1 { "" } else { "s" }, video_clock(secs))
+        } else {
+            format!("{n} 段（共 {}）改成 {speed} 倍速，可按 Ctrl+Z 復原", video_clock(secs))
+        }
+    }
+
+    /// 刪掉找到的沒動靜片段（只算保留範圍內的）；回傳要顯示的訊息
+    pub(crate) fn remove_idle(&mut self, found: &[Range]) -> String {
+        // 只刪還保留著的部分
+        let add = self.kept_parts(found);
         if add.is_empty() {
             return if found.is_empty() {
                 trf!("沒有找到超過 {} 秒不動又沒聲音的片段", "No still, silent parts longer than {} s were found", screenrecorder_core::idle::MIN_IDLE)

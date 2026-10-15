@@ -69,8 +69,50 @@ pub fn idle_ranges(freeze: &[Range], silence: Option<&[Range]>, duration: f64) -
         .collect()
 }
 
-/// 分析整支影片，回傳沒動靜的片段
-pub async fn find(ffmpeg: &Path, input: &str, duration: f64, has_audio: bool) -> crate::Result<Vec<Range>> {
+/// 沒說話（但畫面在動）超過這麼久才算：打字、捲動、等待讀取，適合加速帶過
+pub const MIN_QUIET: f64 = 3.0;
+
+/// a 扣掉 b 的部分（兩邊都由小到大、不重疊）
+fn subtract(a: &[Range], b: &[Range]) -> Vec<Range> {
+    let mut out = vec![];
+    for &(mut x, y) in a {
+        for &(c, d) in b {
+            if d <= x || c >= y {
+                continue;
+            }
+            if c > x {
+                out.push((x, c));
+            }
+            x = x.max(d);
+        }
+        if y > x {
+            out.push((x, y));
+        }
+    }
+    out
+}
+
+/// 沒有聲音、但畫面在動的片段（例如打字、捲動、等待讀取），頭尾各留一點；太短的不算
+pub fn quiet_ranges(freeze: &[Range], silence: &[Range], duration: f64) -> Vec<Range> {
+    subtract(silence, freeze)
+        .into_iter()
+        .map(|(a, b)| ((a + PAD).max(0.0), (b - PAD).min(duration)))
+        .filter(|&(a, b)| b - a >= MIN_QUIET - PAD * 2.0)
+        .map(|(a, b)| ((a * 1000.0).round() / 1000.0, (b * 1000.0).round() / 1000.0))
+        .collect()
+}
+
+/// 分析的結果
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Found {
+    /// 畫面不動、也沒聲音：可以刪掉
+    pub idle: Vec<Range>,
+    /// 沒說話、畫面在動：可以加速帶過（沒有聲音的影片是空的）
+    pub quiet: Vec<Range>,
+}
+
+/// 分析整支影片：沒動靜的片段與沒說話的片段
+pub async fn analyze(ffmpeg: &Path, input: &str, duration: f64, has_audio: bool) -> crate::Result<Found> {
     let args = detect_args(input, has_audio);
     // 解碼整支影片：給到影片長度的兩倍再加一分鐘
     let r = crate::process::run(ffmpeg, &args, Duration::from_secs_f64(duration.max(0.0) * 2.0 + 60.0)).await;
@@ -82,9 +124,17 @@ pub async fn find(ffmpeg: &Path, input: &str, duration: f64, has_audio: bool) ->
         return Err(crate::Error::other(tr!("無法分析這支影片，詳見記錄檔", "Couldn't analyze this video. See the log file for details.")));
     }
     let (freeze, silence) = parse(&r.stderr, duration);
-    let found = idle_ranges(&freeze, has_audio.then_some(&silence[..]), duration);
-    crate::info!("[剪輯] {input}：畫面不動 {} 段、沒聲音 {} 段，可刪 {} 段", freeze.len(), silence.len(), found.len());
+    let found = Found {
+        idle: idle_ranges(&freeze, has_audio.then_some(&silence[..]), duration),
+        quiet: if has_audio { quiet_ranges(&freeze, &silence, duration) } else { vec![] },
+    };
+    crate::info!("[剪輯] {input}：畫面不動 {} 段、沒聲音 {} 段，可刪 {} 段、可加速 {} 段", freeze.len(), silence.len(), found.idle.len(), found.quiet.len());
     Ok(found)
+}
+
+/// 分析整支影片，回傳沒動靜的片段
+pub async fn find(ffmpeg: &Path, input: &str, duration: f64, has_audio: bool) -> crate::Result<Vec<Range>> {
+    Ok(analyze(ffmpeg, input, duration, has_audio).await?.idle)
 }
 
 #[cfg(test)]
@@ -114,5 +164,16 @@ mod tests {
         let a = detect_args("in.mp4", true).join(" ");
         assert!(a.contains("freezedetect=n=-60dB:d=2") && a.contains("silencedetect=n=-45dB:d=2") && a.ends_with("-f null -"));
         assert!(detect_args("in.mp4", false).contains(&"-an".to_string()));
+    }
+
+    #[test]
+    fn quiet_is_silence_where_the_picture_moves() {
+        // 沒聲音 2–12 秒，其中 5–8 秒畫面也不動 → 沒說話但畫面在動：2–5、8–12（頭尾各留 0.3 秒）
+        let q = quiet_ranges(&[(5.0, 8.0)], &[(2.0, 12.0)], 20.0);
+        assert_eq!(q, vec![(2.3, 4.7), (8.3, 11.7)]);
+        // 太短的不算：沒聲音 2–4 秒
+        assert!(quiet_ranges(&[], &[(2.0, 4.0)], 20.0).is_empty());
+        assert_eq!(subtract(&[(0.0, 10.0)], &[(2.0, 3.0), (5.0, 6.0)]), vec![(0.0, 2.0), (3.0, 5.0), (6.0, 10.0)]);
+        assert!(quiet_ranges(&[], &[], 10.0).is_empty());
     }
 }
