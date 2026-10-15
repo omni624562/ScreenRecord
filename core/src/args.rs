@@ -1329,6 +1329,8 @@ mod tests {
             height: h,
             primary,
             rotation: 1,
+            key: String::new(),
+            name: String::new(),
         }
     }
     // 同一張顯示卡：主螢幕 1920×1080，右邊接一台較高的 2560×1440（上緣比主螢幕高 180）
@@ -1366,6 +1368,7 @@ mod tests {
             window_capture: false,
             separate_audio: false,
             replay_sec: 0,
+            monitor_key: None,
         }
     }
     fn region(x: f64, y: f64, w: f64, h: f64) -> SourceConfig {

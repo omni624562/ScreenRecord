@@ -152,6 +152,8 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
             let ui = &mut page_ui;
             ui.spacing_mut().item_spacing = vec2(6.0, 4.0);
             egui::ScrollArea::vertical().id_salt(("settings-page", d.page as u8)).auto_shrink([false, false]).show(ui, |ui| {
+                // 右邊留給捲軸，按鈕不會貼著捲軸
+                ui.set_max_width(ui.available_width() - 14.0);
                 let locked = app.locked() && !matches!(d.page, Page::Keys | Page::About);
                 if locked {
                     form_hint_full(ui, tr!("錄影中無法變更這些設定，停止錄影後再調整。", "These settings can't be changed while recording. Stop recording first."), p.warn);
@@ -693,65 +695,99 @@ fn app_audio_row(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
 
 fn save_page(app: &mut UiApp, ui: &mut Ui) {
     let p = theme::pal(ui);
-    // 錄影
-    form_section(ui, tr!("錄影", "Recordings"), |_| {});
+    // 錄影：標題列右邊「在檔案總管開啟」，下面資料夾，再下面一行說明（和「改回預設位置」）
     let dir = app.s.out_dir(&app.env);
     let custom = !app.s.output_dir.trim().is_empty() && !app.s.output_dir.trim().eq_ignore_ascii_case(&app.env.default_output_dir);
+    let mut open: Option<String> = None;
+    form_section(ui, tr!("錄影", "Recordings"), |ui| {
+        if Btn::new(tr!("在檔案總管開啟", "Open in File Explorer")).icon(Icon::Folder).small().ghost().show(ui).clicked() {
+            open = Some(dir.clone());
+        }
+    });
     if folder_row(ui, &dir, "save-video") {
         choose_output_dir(app);
     }
-    ui.add_space(4.0);
-    // 狀態一列、按鈕一列（英文的說明比較長，放同一列會疊在一起）
-    if !std::path::Path::new(&dir).is_dir() {
-        ui.label(RichText::new(tr!("找不到這個資料夾，錄影時會自動建立", "This folder doesn't exist yet. It will be created when you record")).font(theme::font(12.0)).color(p.warn));
-    } else if !custom {
-        ui.label(RichText::new(tr!("預設位置（「影片」資料夾裡的 Timelapse）", "Default location (Timelapse in your Videos folder)")).font(theme::font(12.0)).color(p.muted));
+    let missing = !std::path::Path::new(&dir).is_dir();
+    let mut reset = false;
+    folder_status(
+        ui,
+        if missing {
+            Some((tr!("找不到這個資料夾，錄影時會自動建立", "This folder doesn't exist yet. It will be created when you record"), p.warn))
+        } else if !custom {
+            Some((tr!("預設位置（「影片」資料夾裡的 Timelapse）", "Default location (Timelapse in your Videos folder)"), p.muted))
+        } else {
+            None
+        },
+        custom.then(|| trf!("改存到 {}", "Save to {} instead", app.env.default_output_dir)),
+        &mut reset,
+    );
+    if reset {
+        set_output_dir(app, String::new());
+        let dir = app.s.out_dir(&app.env);
+        app.toast(trf!("之後的錄影會存到 {dir}", "New recordings will be saved to {dir}"), false);
     }
-    ui.add_space(4.0);
-    ui.horizontal(|ui| {
-        if Btn::new(tr!("在檔案總管開啟", "Open in File Explorer")).icon(Icon::Folder).small().show(ui).clicked() {
-            open_folder(app, &dir);
-        }
-        if custom && Btn::new(tr!("改回預設位置", "Use default location")).small().ghost().tooltip(trf!("改存到 {}", "Save to {} instead", app.env.default_output_dir)).show(ui).clicked() {
-            set_output_dir(app, String::new());
-            let dir = app.s.out_dir(&app.env);
-            app.toast(trf!("之後的錄影會存到 {dir}", "New recordings will be saved to {dir}"), false);
-        }
-    });
-    form_divider(ui);
+    save_gap(ui);
     // 截圖（和錄影分開放）
-    form_section(ui, tr!("截圖", "Screenshots"), |_| {});
     let shot_dir = app.s.shots_dir(&app.env);
     let shot_custom = !app.s.shot_dir.trim().is_empty();
+    form_section(ui, tr!("截圖", "Screenshots"), |ui| {
+        if Btn::new(tr!("在檔案總管開啟", "Open in File Explorer")).icon(Icon::Folder).small().ghost().show(ui).clicked() {
+            open = Some(shot_dir.clone());
+        }
+    });
     if folder_row(ui, &shot_dir, "save-shot") {
         choose_shot_dir(app);
     }
-    ui.add_space(4.0);
-    if !std::path::Path::new(&shot_dir).is_dir() {
-        ui.label(RichText::new(tr!("找不到這個資料夾，截圖時會自動建立", "This folder doesn't exist yet. It will be created when you take a screenshot")).font(theme::font(12.0)).color(p.warn));
-    } else if !shot_custom {
-        ui.label(RichText::new(tr!("預設位置（Windows 的「螢幕擷取畫面」資料夾）", "Default location (the Windows Screenshots folder)")).font(theme::font(12.0)).color(p.muted));
+    let missing = !std::path::Path::new(&shot_dir).is_dir();
+    let mut reset = false;
+    folder_status(
+        ui,
+        if missing {
+            Some((tr!("找不到這個資料夾，截圖時會自動建立", "This folder doesn't exist yet. It will be created when you take a screenshot"), p.warn))
+        } else if !shot_custom {
+            Some((tr!("預設位置（Windows 的「螢幕擷取畫面」資料夾）", "Default location (the Windows Screenshots folder)"), p.muted))
+        } else {
+            None
+        },
+        shot_custom.then(|| trf!("改存到 {}", "Save to {} instead", app.env.default_shot_dir)),
+        &mut reset,
+    );
+    if reset {
+        set_shot_dir(app, String::new());
     }
-    ui.add_space(4.0);
-    ui.horizontal(|ui| {
-        if Btn::new(tr!("在檔案總管開啟", "Open in File Explorer")).icon(Icon::Folder).small().show(ui).clicked() {
-            open_folder(app, &shot_dir);
-        }
-        if shot_custom && Btn::new(tr!("改回預設位置", "Use default location")).small().ghost().tooltip(trf!("改存到 {}", "Save to {} instead", app.env.default_shot_dir)).show(ui).clicked() {
-            set_shot_dir(app, String::new());
-        }
-    });
     let extra = app.s.shot_extra(&app.env);
     if !extra.is_empty() {
         ui.add_space(6.0);
-        ui.label(RichText::new(trf!("「全部截圖」也會列出留在 {} 的舊截圖", "“All screenshots” also lists the older screenshots left in {}", extra.join("、"))).font(theme::font(12.0)).color(p.muted));
+        form_hint_full(ui, trf!("「全部截圖」也會列出留在 {} 的舊截圖", "“All screenshots” also lists the older screenshots left in {}", extra.join("、")), p.muted);
+        ui.add_space(2.0);
         if Btn::new(tr!("把舊截圖搬到截圖資料夾…", "Move older screenshots to the screenshot folder…")).small().show(ui).clicked() {
             if let Some(from) = extra.first() {
                 offer_shot_move(app, from.clone(), false);
             }
         }
     }
-    form_divider(ui);
+    save_gap(ui);
+    // 清單：子資料夾
+    form_section(ui, tr!("清單", "Lists"), |_| {});
+    let mut subdirs = app.s.list_subdirs;
+    if theme::check(ui, &mut subdirs, tr!("也列出子資料夾裡的錄影和截圖", "Also list recordings and screenshots in subfolders")).changed() {
+        app.s.list_subdirs = subdirs;
+        // core 讀設定決定要不要列子資料夾：先存好再重新讀清單
+        app.save_settings_now();
+        app.load_recent();
+        if let Some(d) = app.library.as_mut() {
+            d.reload();
+        }
+    }
+    indented_hint(
+        ui,
+        trf!(
+            "例如「教學」「會議」裡的檔案也會列出，縮圖上標出所在的資料夾。最多往下 {} 層。",
+            "Files in folders such as “Tutorials” or “Meetings” are listed too, labelled with their folder. Up to {} levels deep.",
+            screenrecorder_core::library::SUBDIR_DEPTH
+        ),
+    );
+    save_gap(ui);
     form_section(ui, tr!("檔名", "File names"), |_| {});
     form_row(ui, tr!("錄影", "Recordings"), |ui| {
         ui.label(RichText::new(tr!("Rec_年-月-日_時-分-秒.mp4", "Rec_YYYY-MM-DD_HH-MM-SS.mp4")).font(theme::mono(12.5)));
@@ -759,14 +795,52 @@ fn save_page(app: &mut UiApp, ui: &mut Ui) {
     form_row(ui, tr!("截圖", "Screenshots"), |ui| {
         ui.label(RichText::new(tr!("Shot_年-月-日_時-分-秒.png", "Shot_YYYY-MM-DD_HH-MM-SS.png")).font(theme::mono(12.5)));
     });
-    form_hint(
+    ui.add_space(4.0);
+    form_hint_full(
         ui,
         tr!(
-            "加速版、GIF、剪輯版和原片存在同一個資料夾，檔名接在原檔後面；從影片擷取的畫面、拼成一張的圖、步驟截圖存在截圖資料夾。",
-            "Sped-up versions, GIFs and edited versions are saved next to the original, named after it. Frames grabbed from videos, combined images and step captures go to the screenshot folder."
+            "加速版、GIF、剪輯版存在原片旁邊；擷取的畫面、拼圖、步驟截圖存在截圖資料夾。",
+            "Sped-up versions, GIFs and edits are saved next to the original; grabbed frames, combined images and step captures go to the screenshot folder."
         ),
         p.muted,
     );
+    if let Some(d) = open {
+        open_folder(app, &d);
+    }
+}
+
+/// 儲存位置分頁：段落之間的間距與分隔線（比其他分頁寬鬆一點）
+fn save_gap(ui: &mut Ui) {
+    ui.add_space(6.0);
+    form_divider(ui);
+    ui.add_space(6.0);
+}
+
+/// 資料夾下面一行：狀態說明（預設位置、找不到資料夾）與「改回預設位置」；兩個都沒有時不佔位置
+fn folder_status(ui: &mut Ui, status: Option<(&str, Color32)>, reset_tip: Option<String>, reset: &mut bool) {
+    if status.is_none() && reset_tip.is_none() {
+        return;
+    }
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        if let Some((text, color)) = status {
+            ui.label(RichText::new(text).font(theme::font(12.0)).color(color));
+        }
+        if let Some(tip) = reset_tip {
+            if Btn::new(tr!("改回預設位置", "Use default location")).small().ghost().tooltip(tip).show(ui).clicked() {
+                *reset = true;
+            }
+        }
+    });
+}
+
+/// 勾選框下面的說明：對齊勾選框的文字
+fn indented_hint(ui: &mut Ui, text: impl Into<String>) {
+    let p = theme::pal(ui);
+    ui.horizontal(|ui| {
+        ui.add_space(26.0);
+        ui.add(egui::Label::new(RichText::new(text.into()).font(theme::font(12.0)).color(p.muted)).wrap());
+    });
 }
 
 /// 目前的資料夾（不用打字）：點一下或按「選擇資料夾」用 Windows 的視窗選；回傳 true = 要選資料夾
@@ -1302,6 +1376,18 @@ fn about_page(app: &mut UiApp, ui: &mut Ui) {
         }
         if Btn::new(tr!("新功能介紹", "What's new tour")).small().ghost().tooltip(tr!("再看一次這一版的新功能介紹", "Show this version's feature tour again")).show(ui).clicked() {
             app.whats_new_open = true;
+        }
+        if Btn::new(tr!("重新看教學", "Replay tutorial"))
+            .small()
+            .ghost()
+            .tooltip(tr!(
+                "一步一步帶你錄第一部影片；之後第一次打開剪輯、截圖編輯、全部截圖時也會再顯示小提示",
+                "Walks you through your first recording again; quick tips also reappear the next time you open the editor, screenshot editing or All screenshots"
+            ))
+            .show(ui)
+            .clicked()
+        {
+            super::tour::restart(app);
         }
     });
     form_divider(ui);

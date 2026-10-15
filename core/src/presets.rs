@@ -154,6 +154,7 @@ mod tests {
             window_capture: false,
             separate_audio: false,
             replay_sec: 0,
+            monitor_key: None,
         }
     }
 

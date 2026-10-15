@@ -239,6 +239,8 @@ fn main() {
     rt.spawn(async move {
         c.refresh(false).await;
         c.log_startup();
+        // 接上、拔掉外接螢幕時自動重新偵測
+        c.watch_displays();
     });
     // 系統匣常駐：關掉操作視窗後程式仍在背景，從圖示選單操作或結束
     let boot = argv.iter().any(|a| a == "--tray");

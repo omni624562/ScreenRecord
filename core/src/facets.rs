@@ -418,6 +418,8 @@ fn hour_label(id: &str) -> String {
 /// 一張截圖的分類
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Facets {
+    /// 子資料夾（MediaInfo::folder；分類時不知道，列清單時填上）
+    pub folder: String,
     pub app: String,
     pub kinds: u16,
     pub terms: Vec<u32>,
@@ -539,6 +541,16 @@ pub fn describe(prep: &Prepared, path: &str, name: &str, time_ms: f64, w: u32, h
         other,
         day: t.format("%Y-%m-%d").to_string(),
         read: doc.is_some(),
+        folder: String::new(),
+    }
+}
+
+/// 子資料夾顯示的名稱（空的 = 儲存位置本身）
+pub fn folder_label(folder: &str) -> String {
+    if folder.is_empty() {
+        tr!("（不在子資料夾）", "(Top level)").to_string()
+    } else {
+        folder.replace(['\\', '/'], tr!("／", " / "))
     }
 }
 
@@ -550,6 +562,7 @@ fn widen(t: &[(u8, &'static str)]) -> Vec<(u16, &'static str)> {
 
 #[derive(Clone, Copy, PartialEq)]
 enum Group {
+    Folders,
     Apps,
     Kinds,
     Terms,
@@ -560,7 +573,7 @@ enum Group {
     Day,
 }
 
-const GROUPS: [Group; 8] = [Group::Apps, Group::Kinds, Group::Terms, Group::When, Group::Hours, Group::Colors, Group::Other, Group::Day];
+const GROUPS: [Group; 9] = [Group::Folders, Group::Apps, Group::Kinds, Group::Terms, Group::When, Group::Hours, Group::Colors, Group::Other, Group::Day];
 
 fn bit_of<T: Copy + Into<u16>>(table: &[(T, &str)], id: &str) -> u16 {
     table.iter().find(|(_, x)| *x == id).map(|(b, _)| (*b).into()).unwrap_or(0)
@@ -568,6 +581,7 @@ fn bit_of<T: Copy + Into<u16>>(table: &[(T, &str)], id: &str) -> u16 {
 
 /// 選的條件換成好比對的形式
 struct Compiled {
+    folders: HashSet<String>,
     apps: HashSet<String>,
     kinds: u16,
     terms: Vec<Option<u32>>,
@@ -582,6 +596,7 @@ fn compile(q: &FacetQuery, vocab: &Vocab) -> Compiled {
     let index: HashMap<&str, u32> = vocab.terms.iter().enumerate().map(|(i, t)| (t.text.as_str(), i as u32)).collect();
     let mask = |ids: &[String], f: &dyn Fn(&str) -> u16| ids.iter().fold(0u16, |m, id| m | f(id));
     Compiled {
+        folders: q.folders.iter().cloned().collect(),
         apps: q.apps.iter().cloned().collect(),
         kinds: mask(&q.kinds, &|id| bit_of(&KINDS, id)),
         terms: q.terms.iter().map(|t| index.get(t.as_str()).copied()).collect(),
@@ -595,6 +610,7 @@ fn compile(q: &FacetQuery, vocab: &Vocab) -> Compiled {
 
 fn group_ok(c: &Compiled, f: &Facets, g: Group) -> bool {
     match g {
+        Group::Folders => c.folders.is_empty() || c.folders.contains(&f.folder),
         Group::Apps => c.apps.is_empty() || c.apps.contains(&f.app),
         Group::Kinds => c.kinds == 0 || f.kinds & c.kinds != 0,
         // 常見詞：全部都要有（認不得的詞算沒有）
@@ -624,6 +640,23 @@ pub fn filter_and_count(items: &[Facets], q: &FacetQuery, prep: &Prepared) -> (V
     let bits = |table: &[(u16, &str)], g: Group, get: &dyn Fn(&Facets) -> u16, label: &dyn Fn(&str) -> String, selected: &[String]| {
         let pairs = table.iter().map(|(b, id)| (id.to_string(), label(id), base(g).filter(|f| get(f) & b != 0).count())).collect();
         opts(pairs, selected)
+    };
+
+    // 子資料夾：只有一個資料夾時不列；儲存位置本身在最前面，其他依名稱
+    let mut folders: HashMap<String, usize> = HashMap::new();
+    for f in base(Group::Folders) {
+        *folders.entry(f.folder.clone()).or_default() += 1;
+    }
+    for d in &q.folders {
+        folders.entry(d.clone()).or_default();
+    }
+    let all_folders: HashSet<&str> = items.iter().map(|f| f.folder.as_str()).collect();
+    let folders: Vec<FacetOption> = if all_folders.len() < 2 {
+        vec![]
+    } else {
+        let mut v: Vec<(String, usize)> = folders.into_iter().collect();
+        v.sort_by(|a, b| (!a.0.is_empty()).cmp(&!b.0.is_empty()).then_with(|| a.0.to_lowercase().cmp(&b.0.to_lowercase())));
+        v.into_iter().map(|(id, count)| FacetOption { label: folder_label(&id), id, count }).collect()
     };
 
     // 程式：依張數由多到少
@@ -665,6 +698,7 @@ pub fn filter_and_count(items: &[Facets], q: &FacetQuery, prep: &Prepared) -> (V
     terms[selected..].sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.id.cmp(&b.id)));
 
     let counts = FacetCounts {
+        folders,
         apps,
         kinds: bits(&KINDS, Group::Kinds, &|f| f.kinds, &kind_label, &q.kinds),
         terms,
@@ -844,5 +878,29 @@ mod tests {
         assert_eq!(time_bits(at(10, 14, 20), now), (2 | 4 | 8, 4));
         assert_eq!(time_bits(at(9, 30, 13), now), (16, 2));
         assert_eq!(time_bits(at(8, 1, 13), now).0, 32);
+    }
+
+    #[test]
+    fn folders_group_lists_only_when_more_than_one() {
+        let t = tempfile::tempdir().unwrap();
+        let src_ocr = crate::ocr_index::OcrIndex::new(t.path().join("ocr.json"));
+        let meta = ShotMetaStore::new(t.path().join("meta.json"));
+        let hashes = HashStore::new(t.path().join("hash.json"));
+        let pins = PinStore::new(t.path().join("pins.json"));
+        let vocab = VocabCache::default();
+        let prep = prepare(&Sources { ocr: &src_ocr, meta: &meta, hashes: &hashes, pins: &pins, vocab: &vocab });
+        let f = |folder: &str| Facets { folder: folder.into(), day: "2026-10-08".into(), ..Default::default() };
+        let one = [f(""), f("")];
+        let (_, c) = filter_and_count(&one, &FacetQuery::default(), &prep);
+        assert!(c.folders.is_empty());
+        let items = [f(""), f("教學"), f("教學"), f("會議")];
+        let (keep, c) = filter_and_count(&items, &FacetQuery::default(), &prep);
+        assert_eq!(keep, [true; 4]);
+        // 最上層在最前面，其他依名稱
+        assert_eq!(c.folders.iter().map(|o| (o.id.as_str(), o.count)).collect::<Vec<_>>(), [("", 1), ("教學", 2), ("會議", 1)]);
+        let (keep, c) = filter_and_count(&items, &FacetQuery { folders: vec!["教學".into()], ..Default::default() }, &prep);
+        assert_eq!(keep, [false, true, true, false]);
+        // 同一組的張數不受自己已選的影響
+        assert_eq!(c.folders.len(), 3);
     }
 }

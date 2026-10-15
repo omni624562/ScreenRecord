@@ -22,6 +22,33 @@ pub struct MonitorInfo {
     pub primary: bool,
     /// DXGI_MODE_ROTATION：1 = 不旋轉
     pub rotation: u32,
+    /// 實體螢幕的識別（Windows 的螢幕裝置路徑；拔掉再接上、順序改變都一樣）；拿不到時空白
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub key: String,
+    /// 螢幕的型號名稱（例如 DELL U2415）；拿不到時空白
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub name: String,
+}
+
+impl MonitorInfo {
+    /// 是不是同一台實體螢幕：有識別時比識別，否則比 \\.\DISPLAYn
+    pub fn same_screen(&self, other: &MonitorInfo) -> bool {
+        if !self.key.is_empty() && !other.key.is_empty() {
+            self.key.eq_ignore_ascii_case(&other.key)
+        } else {
+            self.device_name.eq_ignore_ascii_case(&other.device_name)
+        }
+    }
+
+    /// 給使用者看的名稱：「螢幕 2（DELL U2415）」
+    pub fn label(&self) -> String {
+        let n = crate::trf!("螢幕 {}", "Screen {}", self.display_number);
+        if self.name.is_empty() {
+            n
+        } else {
+            crate::trf!("{n}（{}）", "{n} ({})", self.name)
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -421,6 +448,9 @@ pub struct RecordConfig {
     /// 重播緩衝：在背景一直錄、只保留最近這麼多秒，需要時再存下來（0 = 一般錄影）
     #[serde(default, skip_serializing_if = "is_zero_u32")]
     pub replay_sec: u32,
+    /// 單一螢幕：選的那台實體螢幕（MonitorInfo::key）。開始錄影時依它找回正確的 monitorId（拔掉、接上螢幕後順序可能變了）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub monitor_key: Option<String>,
 }
 
 impl RecordConfig {
@@ -639,6 +669,9 @@ pub struct MediaInfo {
     /// 幾條音軌（分軌錄影是 3：混音、系統聲音、麥克風）
     #[serde(default, skip_serializing_if = "is_zero_u32")]
     pub audio_tracks: u32,
+    /// 在儲存位置的哪個子資料夾（例如「教學\2026」；空的 = 儲存位置本身）
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub folder: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -744,6 +777,8 @@ pub struct LibraryQuery {
     pub anchor: Option<usize>,
     /// 截圖的瀏覽條件（瀏覽欄）；有指定時回傳每個選項的張數
     pub facet: Option<FacetQuery>,
+    /// 也列出子資料夾裡的（最多 SUBDIR_DEPTH 層）
+    pub subdirs: bool,
 }
 
 /// 瀏覽欄選的條件：同一組裡選多個是「其中一個」，常見詞是「全部都有」；不同組之間是「而且」
@@ -765,6 +800,9 @@ pub struct FacetQuery {
     pub other: Vec<String>,
     /// 某一天（2026-10-08，月曆點一天）
     pub day: Option<String>,
+    /// 子資料夾（MediaInfo::folder；空的 = 儲存位置本身）
+    #[serde(default)]
+    pub folders: Vec<String>,
 }
 
 impl FacetQuery {
@@ -774,7 +812,7 @@ impl FacetQuery {
 
     /// 選了幾個條件
     pub fn count(&self) -> usize {
-        self.apps.len() + self.kinds.len() + self.terms.len() + self.when.len() + self.hours.len() + self.colors.len() + self.other.len() + usize::from(self.day.is_some())
+        self.folders.len() + self.apps.len() + self.kinds.len() + self.terms.len() + self.when.len() + self.hours.len() + self.colors.len() + self.other.len() + usize::from(self.day.is_some())
     }
 }
 
@@ -789,6 +827,8 @@ pub struct FacetOption {
 /// 瀏覽欄每一組的選項（張數是加上這個條件後會剩幾張）
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct FacetCounts {
+    /// 子資料夾（只有一個資料夾時是空的）
+    pub folders: Vec<FacetOption>,
     pub apps: Vec<FacetOption>,
     pub kinds: Vec<FacetOption>,
     pub terms: Vec<FacetOption>,

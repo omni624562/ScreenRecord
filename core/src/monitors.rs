@@ -45,6 +45,7 @@ pub fn ensure_dpi_aware() {
 pub fn enumerate_monitors() -> Result<Vec<MonitorInfo>, String> {
     use windows::Win32::Graphics::Dxgi::{CreateDXGIFactory1, IDXGIFactory1};
     ensure_dpi_aware();
+    let names = display_names();
     let mut monitors = Vec::new();
     unsafe {
         let factory: IDXGIFactory1 = CreateDXGIFactory1().map_err(|e| crate::trf!("CreateDXGIFactory1 失敗 ({e})", "CreateDXGIFactory1 failed ({e})"))?;
@@ -58,6 +59,7 @@ pub fn enumerate_monitors() -> Result<Vec<MonitorInfo>, String> {
                         let r = d.DesktopCoordinates;
                         let device_name = wide(&d.DeviceName);
                         let display_number = display_number(&device_name).unwrap_or(monitors.len() as u32 + 1);
+                        let (key, name) = names.get(&device_name.to_lowercase()).cloned().unwrap_or_default();
                         monitors.push(MonitorInfo {
                             id: format!("{a}:{o}"),
                             adapter: a,
@@ -71,6 +73,8 @@ pub fn enumerate_monitors() -> Result<Vec<MonitorInfo>, String> {
                             height: r.bottom - r.top,
                             primary: r.left == 0 && r.top == 0,
                             rotation: d.Rotation.0 as u32,
+                            key,
+                            name,
                         });
                     }
                 }
@@ -85,6 +89,76 @@ pub fn enumerate_monitors() -> Result<Vec<MonitorInfo>, String> {
 #[cfg(not(windows))]
 pub fn enumerate_monitors() -> Result<Vec<MonitorInfo>, String> {
     Ok(vec![])
+}
+
+/// 每個 \\.\DISPLAYn（小寫）接的實體螢幕：裝置路徑（穩定的識別）與型號名稱
+#[cfg(windows)]
+fn display_names() -> std::collections::HashMap<String, (String, String)> {
+    use windows::Win32::Devices::Display::{
+        DisplayConfigGetDeviceInfo, GetDisplayConfigBufferSizes, QueryDisplayConfig, DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME, DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME, DISPLAYCONFIG_MODE_INFO,
+        DISPLAYCONFIG_PATH_INFO, DISPLAYCONFIG_SOURCE_DEVICE_NAME, DISPLAYCONFIG_TARGET_DEVICE_NAME, QDC_ONLY_ACTIVE_PATHS,
+    };
+    let mut map = std::collections::HashMap::new();
+    unsafe {
+        let (mut np, mut nm) = (0u32, 0u32);
+        if GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &mut np, &mut nm).is_err() {
+            return map;
+        }
+        let mut paths = vec![DISPLAYCONFIG_PATH_INFO::default(); np as usize];
+        let mut modes = vec![DISPLAYCONFIG_MODE_INFO::default(); nm as usize];
+        if QueryDisplayConfig(QDC_ONLY_ACTIVE_PATHS, &mut np, paths.as_mut_ptr(), &mut nm, modes.as_mut_ptr(), None).is_err() {
+            return map;
+        }
+        for p in paths.iter().take(np as usize) {
+            let mut src = DISPLAYCONFIG_SOURCE_DEVICE_NAME::default();
+            src.header.r#type = DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME;
+            src.header.size = std::mem::size_of::<DISPLAYCONFIG_SOURCE_DEVICE_NAME>() as u32;
+            src.header.adapterId = p.sourceInfo.adapterId;
+            src.header.id = p.sourceInfo.id;
+            if DisplayConfigGetDeviceInfo(&mut src.header) != 0 {
+                continue;
+            }
+            let mut tgt = DISPLAYCONFIG_TARGET_DEVICE_NAME::default();
+            tgt.header.r#type = DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME;
+            tgt.header.size = std::mem::size_of::<DISPLAYCONFIG_TARGET_DEVICE_NAME>() as u32;
+            tgt.header.adapterId = p.targetInfo.adapterId;
+            tgt.header.id = p.targetInfo.id;
+            if DisplayConfigGetDeviceInfo(&mut tgt.header) != 0 {
+                continue;
+            }
+            map.entry(wide(&src.viewGdiDeviceName).to_lowercase()).or_insert((wide(&tgt.monitorDevicePath), wide(&tgt.monitorFriendlyDeviceName).trim().to_string()));
+        }
+    }
+    map
+}
+
+/// 目前的螢幕配置（每個螢幕的名稱與位置、大小）：很快，可以常常比對有沒有變（接上、拔掉、改解析度、改排列）
+#[cfg(windows)]
+pub fn layout_signature() -> String {
+    use windows::Win32::Foundation::{LPARAM, RECT};
+    use windows::Win32::Graphics::Gdi::{EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFOEXW};
+    unsafe extern "system" fn visit(m: HMONITOR, _: HDC, _: *mut RECT, data: LPARAM) -> windows::core::BOOL {
+        let list = &mut *(data.0 as *mut Vec<String>);
+        let mut info = MONITORINFOEXW::default();
+        info.monitorInfo.cbSize = std::mem::size_of::<MONITORINFOEXW>() as u32;
+        if GetMonitorInfoW(m, &mut info.monitorInfo as *mut _).as_bool() {
+            let r = info.monitorInfo.rcMonitor;
+            list.push(format!("{} {} {} {} {} {}", wide(&info.szDevice), r.left, r.top, r.right, r.bottom, info.monitorInfo.dwFlags));
+        }
+        true.into()
+    }
+    ensure_dpi_aware();
+    let mut list: Vec<String> = vec![];
+    unsafe {
+        let _ = EnumDisplayMonitors(None, None, Some(visit), LPARAM(&mut list as *mut Vec<String> as isize));
+    }
+    list.sort();
+    list.join("|")
+}
+
+#[cfg(not(windows))]
+pub fn layout_signature() -> String {
+    String::new()
 }
 
 #[cfg(test)]
@@ -105,6 +179,8 @@ mod tests {
             height: 1080,
             primary,
             rotation: 1,
+            key: String::new(),
+            name: String::new(),
         }
     }
 

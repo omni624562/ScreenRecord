@@ -63,6 +63,7 @@ impl MediaCache {
                     has_audio: Some(p.has_audio),
                     chapters: p.chapters,
                     audio_tracks: p.audio_tracks,
+                    folder: String::new(),
                 })
             })
             .await;
@@ -203,6 +204,68 @@ pub async fn scan_checked(cache: &MediaCache, dir: &Path) -> std::io::Result<Vec
     Ok(entries)
 }
 
+/// 子資料夾最多往下讀幾層、最多幾個（儲存位置設在整顆磁碟或網路磁碟時不會讀很久）
+pub const SUBDIR_DEPTH: usize = 3;
+const SUBDIR_MAX: usize = 300;
+
+/// 不列出的子資料夾：程式自己用的（.parts 錄影中的片段、markers 標記與游標紀錄）、系統的（資源回收筒等）
+fn skip_subdir(name: &str) -> bool {
+    let n = name.to_lowercase();
+    n.starts_with('.') || n.starts_with('$') || n == "markers" || n == "system volume information" || n == "node_modules"
+}
+
+/// root 底下的子資料夾（不含 root；最多 SUBDIR_DEPTH 層、SUBDIR_MAX 個；不跟著捷徑 / 連結）：路徑與相對路徑（例如「教學\2026」）
+pub fn subdirs_of(root: &Path) -> Vec<(PathBuf, String)> {
+    let mut out: Vec<(PathBuf, String)> = vec![];
+    let mut level: Vec<(PathBuf, String)> = vec![(root.to_path_buf(), String::new())];
+    for _ in 0..SUBDIR_DEPTH {
+        let mut next = vec![];
+        for (dir, rel) in &level {
+            let Ok(rd) = std::fs::read_dir(dir) else { continue };
+            let mut subs: Vec<(PathBuf, String)> = rd
+                .flatten()
+                .filter(|e| e.file_type().is_ok_and(|t| t.is_dir() && !t.is_symlink()))
+                .filter_map(|e| {
+                    let name = e.file_name().to_string_lossy().into_owned();
+                    (!skip_subdir(&name)).then(|| (e.path(), if rel.is_empty() { name.clone() } else { format!("{rel}{}{name}", std::path::MAIN_SEPARATOR) }))
+                })
+                .collect();
+            subs.sort_by_key(|a| a.1.to_lowercase());
+            for s in subs {
+                if out.len() >= SUBDIR_MAX {
+                    return out;
+                }
+                out.push(s.clone());
+                next.push(s);
+            }
+        }
+        level = next;
+    }
+    out
+}
+
+/// 這些資料夾，subdirs 時再加上各自的子資料夾（同一個資料夾只列一次）
+pub async fn expand_dirs(dirs: Vec<String>, subdirs: bool) -> Vec<String> {
+    if !subdirs {
+        return dirs;
+    }
+    tokio::task::spawn_blocking(move || {
+        let mut seen = std::collections::HashSet::new();
+        let mut out = vec![];
+        for d in dirs {
+            let subs = subdirs_of(Path::new(&d));
+            for p in std::iter::once(d).chain(subs.into_iter().map(|(p, _)| p.display().to_string())) {
+                if seen.insert(p.trim_end_matches(['\\', '/']).to_lowercase()) {
+                    out.push(p);
+                }
+            }
+        }
+        out
+    })
+    .await
+    .unwrap_or_default()
+}
+
 /// 資料夾讀不到時給使用者看的說明；None = 當作空的資料夾（還沒錄過影，預設的資料夾還沒建立）
 fn dir_error(dir: &Path, e: &std::io::Error) -> Option<String> {
     let shown = dir.display().to_string();
@@ -227,7 +290,9 @@ async fn with_info(cache: &MediaCache, ffmpeg: Option<&Path>, e: LibraryEntry) -
         return e;
     }
     let Some(ff) = ffmpeg else { return e };
-    let media = cache.probe(ff, &e.media.path).await.unwrap_or(e.media);
+    let folder = e.media.folder.clone();
+    let mut media = cache.probe(ff, &e.media.path).await.unwrap_or(e.media);
+    media.folder = folder;
     let mut exports = Vec::with_capacity(e.exports.len());
     for x in e.exports {
         let m = cache.probe(ff, &x.media.path).await.unwrap_or(x.media);
@@ -376,6 +441,15 @@ fn same_dir(a: &Path, b: &Path) -> bool {
     a.display().to_string().trim_end_matches(['\\', '/']).eq_ignore_ascii_case(b.display().to_string().trim_end_matches(['\\', '/']))
 }
 
+/// 記下在哪個子資料夾（加速版、GIF 也一樣）
+fn in_folder(mut e: LibraryEntry, rel: &str) -> LibraryEntry {
+    e.media.folder = rel.to_string();
+    for x in &mut e.exports {
+        x.media.folder = rel.to_string();
+    }
+    e
+}
+
 fn list_has(list: &[LibraryEntry], path: &str) -> bool {
     list.iter().any(|e| e.media.path.eq_ignore_ascii_case(path))
 }
@@ -397,19 +471,44 @@ pub async fn list_library_with(cache: &Arc<MediaCache>, ffmpeg: Option<&Path>, d
             return LibraryPage { dir: dir.display().to_string(), page: 1, pages: 1, error, ..Default::default() };
         }
     };
+    // 讀過的資料夾（找字幕用）
+    let mut scanned: Vec<PathBuf> = vec![dir.to_path_buf()];
+    // 子資料夾：一起列出，記下在哪個子資料夾（讀不到的略過）
+    if q.subdirs {
+        let root = dir.to_path_buf();
+        let subs = tokio::task::spawn_blocking(move || subdirs_of(&root)).await.unwrap_or_default();
+        for (sub, rel) in subs {
+            if let Ok(more) = scan_checked(cache, &sub).await {
+                list.extend(more.into_iter().map(|e| in_folder(e, &rel)));
+                scanned.push(sub);
+            }
+        }
+    }
     // 截圖：也列出留在其他資料夾的舊截圖（讀不到的資料夾略過）
     if q.filter == LibraryFilter::Shot {
         for extra in q.extra_dirs.iter().map(Path::new).filter(|d| !same_dir(d, dir)) {
-            if let Ok(more) = scan_checked(cache, extra).await {
-                let add: Vec<LibraryEntry> = more.into_iter().filter(|e| is_image_name(&e.media.name) && !list_has(&list, &e.media.path)).collect();
-                list.extend(add);
+            let mut dirs: Vec<(PathBuf, String)> = vec![(extra.to_path_buf(), String::new())];
+            if q.subdirs {
+                let root = extra.to_path_buf();
+                dirs.extend(tokio::task::spawn_blocking(move || subdirs_of(&root)).await.unwrap_or_default());
+            }
+            for (d, rel) in dirs {
+                if let Ok(more) = scan_checked(cache, &d).await {
+                    let add: Vec<LibraryEntry> = more.into_iter().filter(|e| is_image_name(&e.media.name) && !list_has(&list, &e.media.path)).map(|e| in_folder(e, &rel)).collect();
+                    list.extend(add);
+                }
             }
         }
     }
 
     if let Some(text) = q.q.as_deref().map(|t| t.trim().to_lowercase()).filter(|t| !t.is_empty()) {
-        // 也找字幕裡說過的話（影片旁邊的 SRT）
-        let srts = srt_files(dir);
+        // 也找字幕裡說過的話（影片旁邊的 SRT；子資料夾裡的也找）
+        let mut srts: HashMap<String, Vec<PathBuf>> = HashMap::new();
+        for d in &scanned {
+            for (k, v) in srt_files(d) {
+                srts.entry(k).or_default().extend(v);
+            }
+        }
         let videos: std::collections::HashSet<String> = list.iter().map(|e| strip_ext(&e.media.name).to_lowercase()).collect();
         for e in list.iter_mut().filter(|e| !is_image_name(&e.media.name)) {
             e.hits = speech_hits(&srts, &videos, &e.media.name, &text);
@@ -451,8 +550,13 @@ pub async fn list_library_with(cache: &Arc<MediaCache>, ffmpeg: Option<&Path>, d
     let facets = match (shots, &q.facet) {
         (Some(src), Some(fq)) if q.filter == LibraryFilter::Shot => {
             let prep = crate::facets::prepare(src);
-            let items: Vec<crate::facets::Facets> =
-                list.iter().map(|e| crate::facets::describe(&prep, &e.media.path, &e.media.name, sort_time(e), e.media.width.unwrap_or(0), e.media.height.unwrap_or(0))).collect();
+            let items: Vec<crate::facets::Facets> = list
+                .iter()
+                .map(|e| crate::facets::Facets {
+                    folder: e.media.folder.clone(),
+                    ..crate::facets::describe(&prep, &e.media.path, &e.media.name, sort_time(e), e.media.width.unwrap_or(0), e.media.height.unwrap_or(0))
+                })
+                .collect();
             let (keep, counts) = crate::facets::filter_and_count(&items, fq, &prep);
             let mut it = keep.into_iter();
             list.retain(|_| it.next().unwrap_or(true));
@@ -772,6 +876,45 @@ mod tests {
 
     fn q(fit_px: Option<f64>, page: Option<f64>, sort: LibrarySort) -> LibraryQuery {
         LibraryQuery { page_size: Some(50.0), fit_px, page, sort, ..Default::default() }
+    }
+
+    #[tokio::test]
+    async fn subfolders_are_listed_with_their_folder() {
+        let dir = make(&["Rec_A.mp4", "Rec_A.srt"]);
+        let sub = dir.path().join("教學").join("2026");
+        fs::create_dir_all(&sub).unwrap();
+        fs::write(sub.join("Rec_B.mp4"), "x").unwrap();
+        fs::write(sub.join("Rec_B_4x.mp4"), "x").unwrap();
+        fs::write(sub.join("Rec_B.srt"), "1\n00:00:01,000 --> 00:00:02,000\n報價單\n").unwrap();
+        // 程式自己的資料夾、太深的資料夾不列
+        for skip in [".parts", "markers", "$RECYCLE.BIN"] {
+            fs::create_dir_all(dir.path().join(skip)).unwrap();
+            fs::write(dir.path().join(skip).join("Rec_X.mp4"), "x").unwrap();
+        }
+        let deep = dir.path().join("a").join("b").join("c").join("d");
+        fs::create_dir_all(&deep).unwrap();
+        fs::write(deep.join("Rec_Deep.mp4"), "x").unwrap();
+        let cache = Arc::new(MediaCache::default());
+        // 沒開：只有最上層
+        let page = list_library(&cache, None, dir.path(), &q(None, None, LibrarySort::Old)).await;
+        assert_eq!(page.items.iter().map(|e| e.media.name.as_str()).collect::<Vec<_>>(), ["Rec_A.mp4"]);
+        let page = list_library(&cache, None, dir.path(), &LibraryQuery { subdirs: true, ..q(None, None, LibrarySort::Old) }).await;
+        let got: Vec<(&str, &str)> = page.items.iter().map(|e| (e.media.name.as_str(), e.media.folder.as_str())).collect();
+        let sep = std::path::MAIN_SEPARATOR;
+        assert_eq!(got, [("Rec_A.mp4", ""), ("Rec_B.mp4", format!("教學{sep}2026").as_str())]);
+        // 加速版跟著原片、也記下子資料夾
+        assert_eq!(page.items[1].exports.len(), 1);
+        assert_eq!(page.items[1].exports[0].media.folder, format!("教學{sep}2026"));
+        // 子資料夾裡的字幕也找得到
+        let found = list_library(&cache, None, dir.path(), &LibraryQuery { subdirs: true, q: Some("報價單".into()), ..q(None, None, LibrarySort::Old) }).await;
+        assert_eq!(found.items.len(), 1);
+        assert_eq!(found.items[0].media.name, "Rec_B.mp4");
+        // 展開資料夾：最上層、子資料夾（最多 3 層），不含程式自己的資料夾
+        let all = expand_dirs(vec![dir.path().display().to_string()], true).await;
+        assert!(all.iter().any(|d| d.ends_with("2026")));
+        assert!(all.iter().any(|d| d.ends_with('c')));
+        assert!(!all.iter().any(|d| d.ends_with('d') || d.contains(".parts") || d.contains("markers") || d.contains("RECYCLE")));
+        assert_eq!(expand_dirs(vec!["x".into()], false).await, vec!["x".to_string()]);
     }
 
     #[tokio::test]

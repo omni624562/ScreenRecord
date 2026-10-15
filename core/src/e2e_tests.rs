@@ -64,6 +64,7 @@ fn record_config() -> RecordConfig {
         window_capture: false,
         separate_audio: false,
         replay_sec: 0,
+        monitor_key: None,
     }
 }
 
@@ -79,6 +80,8 @@ fn record_segment_with(ff: &Path, card: &Path, out: &Path, secs: f64, crash: boo
     let audio: Vec<String> = ["-re", "-f", "lavfi", "-i", audio_src].iter().map(|s| s.to_string()).collect();
     let args = segment_args(&plan, config, CaptureMethod::Gdigrab, &ENCODERS[0], &out.display().to_string(), Some(&audio), None).unwrap();
     let mut child = Command::new(ff).args(&args).stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
+    // 從 FFmpeg 真的開始寫檔案才開始計時：電腦忙的時候（CI）讀取輸入、準備編碼器要好幾秒，固定等 secs 秒會錄得太短
+    wait_until(|| out.metadata().is_ok_and(|m| m.len() > 0), "FFmpeg 沒有開始寫檔案");
     std::thread::sleep(Duration::from_secs_f64(secs));
     let mut stdin = child.stdin.take().unwrap();
     if crash {
@@ -99,6 +102,15 @@ fn record_segment_with(ff: &Path, card: &Path, out: &Path, secs: f64, crash: boo
     let _ = child.wait();
     drop(stdin);
     assert!(out.metadata().is_ok_and(|m| m.len() > 0), "沒有錄到 {}", out.display());
+}
+
+/// 等到 ok() 成立（最多 30 秒）
+fn wait_until(ok: impl Fn() -> bool, what: &str) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    while !ok() {
+        assert!(std::time::Instant::now() < deadline, "{what}");
+        std::thread::sleep(Duration::from_millis(20));
+    }
 }
 
 fn write_card(dir: &Path) -> PathBuf {
@@ -588,6 +600,8 @@ async fn replay_buffer_saves_while_recording() {
     let i = args.iter().position(|a| a == "-segment_time").unwrap();
     args[i + 1] = "2".into();
     let mut child = Command::new(&ff).args(&args).stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
+    // 從第一個檔案有內容才開始計時（電腦忙的時候 FFmpeg 準備要好幾秒）
+    wait_until(|| crate::replay::chunks(&parts).first().is_some_and(|c| c.len > 0), "FFmpeg 沒有開始寫檔案");
     std::thread::sleep(Duration::from_millis(7500));
     // 還在錄的時候存下最近 4 秒：包含正在寫的檔案
     let chunks = crate::replay::chunks(&parts);
@@ -601,7 +615,18 @@ async fn replay_buffer_saves_while_recording() {
     std::fs::create_dir_all(&work).unwrap();
     let out = dir.path().join("Replay_2026-10-11_14-00-07.mp4");
     let dur = crate::recorder::merge_segments(&ff, &files, &work, &out, true, None).await.unwrap().unwrap();
-    assert!((3.0..=7.0).contains(&dur), "{dur}");
+    // 存下的至少 3 秒（最近 4 秒，最新的檔案還在寫）。檔案只在關鍵畫面切開，第一個常常比 2 秒長（錯過 2 秒那個切點就到 4 秒），
+    // 所以不用固定的上限，而是看接起來的長度：已經寫完的檔案都要在裡面（接的地方沒有掉），
+    // 也不會比現在所有挑到的檔案加起來還長（沒有重複；最新的那個合併之後還在變長）
+    let (mut done, mut all) = (0.0, 0.0);
+    for (i, f) in files.iter().enumerate() {
+        let d = probe(&ff, Path::new(f)).await.duration_sec.unwrap_or(0.0);
+        all += d;
+        if i + 1 < files.len() {
+            done += d;
+        }
+    }
+    assert!(dur >= 3.0 && dur >= done - 0.3 && dur <= all + 0.3, "接起來 {dur} 秒；寫完的檔案 {done} 秒、全部 {all} 秒（{} 個檔案）", files.len());
     let info = probe(&ff, &out).await;
     assert_eq!((info.has_audio, info.width), (Some(true), Some(640)));
     // 測試音約 -21 dB；接起來的地方沒有斷掉（每個檔案的聲音都在）

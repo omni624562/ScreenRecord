@@ -78,6 +78,8 @@ pub struct Status {
     pub shot: Option<crate::types::ShotInfo>,
     /// 步驟截圖進行中：已經截了幾步
     pub steps: Option<u32>,
+    /// 螢幕配置改變的次數（接上、拔掉外接螢幕、改解析度、改排列）
+    pub monitors_rev: u64,
 }
 
 /// 預覽畫面的最大寬度
@@ -103,6 +105,8 @@ struct State {
     ffmpeg: Ffmpeg,
     monitors: Vec<MonitorInfo>,
     monitor_error: Option<String>,
+    /// 螢幕配置改變的次數（介面看到變了就重新讀螢幕清單）
+    monitors_rev: u64,
     audio: AudioEnv,
     /// 全域快速鍵登記結果（系統匣啟動後才知道；被其他程式占用時為 false）
     hotkeys: Option<HotkeyStatus>,
@@ -399,7 +403,10 @@ impl App {
     pub fn status(&self) -> Status {
         // 先取出、放開鎖再組合：結構裡的暫時鎖會留到整個運算式結束，
         // 而 steps_count 在 Windows 上也要鎖同一把，寫在一起會卡住（主視窗打不開）
-        let shot = self.lock().shot.clone();
+        let (shot, monitors_rev) = {
+            let st = self.lock();
+            (st.shot.clone(), st.monitors_rev)
+        };
         Status {
             recorder: self.recorder.status(),
             export: self.exporter.status(),
@@ -409,6 +416,7 @@ impl App {
             install: Some(self.installer.status()).filter(|s| s.phase != crate::selfupdate::InstallPhase::Idle),
             shot,
             steps: self.steps_count(),
+            monitors_rev,
         }
     }
 
@@ -1373,6 +1381,37 @@ impl App {
         let _ = tokio::time::timeout(Duration::from_secs(60), rx.wait_for(|v| *v)).await;
     }
 
+    /// 每 2 秒比對螢幕配置（很快）；變了就重新列舉螢幕與音訊裝置（HDMI 螢幕也會帶來播放裝置），
+    /// 通知介面（Status::monitors_rev），錄影中交給錄影器處理（錄的螢幕不見就停止並存下，只是順序變了就繼續錄）
+    pub fn watch_displays(self: &Arc<Self>) {
+        let me = Arc::downgrade(self);
+        tokio::spawn(async move {
+            let sig = || async { tokio::task::spawn_blocking(crate::monitors::layout_signature).await.unwrap_or_default() };
+            let mut last = sig().await;
+            loop {
+                tokio::time::sleep(Duration::from_secs(2)).await;
+                let now = sig().await;
+                // 空的：暫時拿不到（例如螢幕全部休眠、遠端桌面切換中），不算改變
+                if now == last || now.is_empty() {
+                    continue;
+                }
+                // 接上螢幕時 Windows 會連續調整好幾次：等穩定一點再讀
+                tokio::time::sleep(Duration::from_millis(1500)).await;
+                last = sig().await;
+                let Some(app) = me.upgrade() else { return };
+                let before: Vec<String> = app.lock().monitors.iter().map(MonitorInfo::label).collect();
+                app.refresh_devices().await;
+                let after: Vec<String> = {
+                    let mut st = app.lock();
+                    st.monitors_rev += 1;
+                    st.monitors.iter().map(MonitorInfo::label).collect()
+                };
+                info!("[螢幕] 配置改變：{} → {}", before.join("、"), after.join("、"));
+                app.recorder.displays_changed().await;
+            }
+        });
+    }
+
     pub async fn refresh_devices(&self) {
         let (monitors, audio) =
             tokio::task::spawn_blocking(|| (crate::monitors::enumerate_monitors(), crate::audio::list_audio_devices())).await.unwrap_or_else(|e| (Err(e.to_string()), Err(e.to_string())));
@@ -2138,6 +2177,7 @@ mod tests {
             window_capture: false,
             separate_audio: false,
             replay_sec: 0,
+            monitor_key: None,
         };
         let later = Schedule { at: chrono::Local::now() + chrono::Duration::minutes(30), minutes: 10, config: config.clone() };
         let a = app.clone();

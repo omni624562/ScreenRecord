@@ -201,6 +201,11 @@ pub fn panel(ui: &mut egui::Ui, d: &mut LibraryDialog, rect: Rect) {
             ui.add_space(4.0);
             ui.label(RichText::new(trf!("還有 {} 張的字沒讀完，分類會越來越完整", "{} screenshots still being read; categories will fill in", fc.pending_text)).font(theme::font(11.5)).color(p.muted));
         }
+        // 子資料夾（有兩個以上的資料夾才列）
+        if !fc.folders.is_empty() {
+            section(ui, tr!("資料夾", "Folder"));
+            changed |= rows(ui, &fc.folders, &mut d.facet.folders, false);
+        }
         section(ui, tr!("程式", "App"));
         if fc.apps.is_empty() {
             ui.label(RichText::new(tr!("之後的截圖會記下截圖時在用的程式", "New screenshots will remember the app you were using")).font(theme::font(11.5)).color(p.muted));
