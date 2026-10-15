@@ -32,6 +32,10 @@ pub struct AfterRecord {
     pub auto_name: bool,
     /// 產生字幕時也翻成英文（另存 同名.en.srt）
     pub subs_en: bool,
+    /// 另存加速版（幾倍；0 = 不做）。只有一次處理多支時用，錄完自動處理沒有這一項
+    pub speed: f64,
+    /// 加速版保留聲音
+    pub keep_audio: bool,
 }
 
 /// ui 設定裡的欄位名稱（設定組合也存這些）
@@ -50,11 +54,17 @@ impl AfterRecord {
             compress_mb: n(UI_KEYS[4]).min(10_000) as u32,
             auto_name: b(UI_KEYS[5]),
             subs_en: b(UI_KEYS[6]),
+            ..Default::default()
         }
     }
 
     pub fn any(&self) -> bool {
-        self.idle_cut || self.subtitles || self.compress_mb > 0
+        self.idle_cut || self.subtitles || self.compress_mb > 0 || self.speed > 1.0
+    }
+
+    /// 要做幾步
+    fn steps(&self) -> usize {
+        [self.idle_cut, self.subtitles, self.speed > 1.0, self.compress_mb > 0].iter().filter(|b| **b).count()
     }
 }
 
@@ -103,6 +113,8 @@ pub struct AfterStatus {
     pub waiting: bool,
     /// 處理完了（介面顯示結果）
     pub done: Option<AfterDone>,
+    /// 一次處理多支：第幾支、總共幾支
+    pub batch: Option<(usize, usize)>,
 }
 
 /// 處理完的結果（介面顯示「已自動處理：…」）
@@ -115,11 +127,22 @@ pub struct AfterDone {
     pub text: String,
     /// 處理好的影片（剪輯版或壓縮版）；沒有另存影片時是 None
     pub output: Option<String>,
-    /// 原本的錄影
+    /// 原本的錄影（一次處理多支時是最後一支）
     pub source: String,
+    /// 一次處理多支的結果
+    pub batch: bool,
 }
 
 static DONE_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// 處理一支的結果
+enum Processed {
+    Done(AfterDone),
+    /// 使用者取消
+    Canceled,
+    /// 沒有需要處理的
+    Nothing,
+}
 
 impl App {
     /// 錄完自動處理中（介面顯示用；處理完就是 None）
@@ -236,20 +259,59 @@ impl App {
             }
             return;
         }
-        // 前一支還在處理：等它做完（一次一支）
-        while self.after_status().is_some() {
-            tokio::time::sleep(Duration::from_millis(500)).await;
+        self.after_process(video, &after, None).await;
+    }
+
+    /// 一次處理多支錄影（全部錄影勾選後）：一支一支做，做完用系統匣通知一次；取消時剩下的也不做
+    pub async fn batch_process(self: Arc<Self>, videos: Vec<String>, after: AfterRecord) {
+        let after = AfterRecord { auto_name: false, ..after };
+        let n = videos.len();
+        info!("[一次處理多支] 開始：{n} 支");
+        let (mut ok, mut failed, mut outputs) = (0, vec![], vec![]);
+        let mut last = String::new();
+        for (i, video) in videos.into_iter().enumerate() {
+            last = video.clone();
+            match self.after_process(video.clone(), &after, Some((i + 1, n))).await {
+                Processed::Canceled => {
+                    info!("[一次處理多支] 已取消（做完 {i} 支）");
+                    if i == 0 {
+                        *self.after.lock().unwrap() = None;
+                        return;
+                    }
+                    break;
+                }
+                Processed::Done(d) if d.ok => {
+                    ok += 1;
+                    outputs.extend(d.output);
+                }
+                Processed::Done(d) => failed.push(format!("{}：{}", Path::new(&video).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(), d.text)),
+                Processed::Nothing => ok += 1,
+            }
         }
-        let name = Path::new(&video).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-        let (progress, cancel) = (Arc::new(AtomicU32::new(0)), Arc::new(AtomicBool::new(false)));
-        let steps = [after.idle_cut, after.subtitles, after.compress_mb > 0].iter().filter(|b| **b).count();
-        *self.after.lock().unwrap() = Some(AfterStatus {
-            name: name.clone(),
+        let mut text = trf!("處理好 {ok} 支錄影", "{ok} recording(s) processed");
+        if !failed.is_empty() {
+            text += &trf!("；{} 支沒有完成（{}）", "; {} didn't finish ({})", failed.len(), failed.join(tr!("、", ", ")));
+        }
+        info!("[一次處理多支] 完成：{text}");
+        self.notify(tr!("一次處理多支錄影", "Batch processing"), &text, !failed.is_empty() && ok == 0);
+        // 輸出只有一支時可以直接播放
+        let output = if outputs.len() == 1 { outputs.pop() } else { None };
+        let done = AfterDone { seq: DONE_SEQ.fetch_add(1, Ordering::Relaxed) + 1, ok: ok > 0, text, output, source: last, batch: true };
+        // 留著這次的狀態（轉檔工作的編號：介面不另外顯示那些轉檔卡），只加上結果
+        let mut st = self.after.lock().unwrap();
+        let s = st.get_or_insert_with(|| Self::new_status(String::new(), 0, Default::default(), Default::default(), None));
+        s.done = Some(done);
+        s.exporting = false;
+    }
+
+    fn new_status(name: String, steps: usize, progress: Arc<AtomicU32>, cancel: Arc<AtomicBool>, batch: Option<(usize, usize)>) -> AfterStatus {
+        AfterStatus {
+            name,
             step: String::new(),
             step_no: 0,
             steps,
-            progress: progress.clone(),
-            cancel: cancel.clone(),
+            progress,
+            cancel,
             stop_step: Arc::new(AtomicBool::new(false)),
             preempted: Arc::new(AtomicBool::new(false)),
             exporting: false,
@@ -257,10 +319,30 @@ impl App {
             export_ids: vec![],
             waiting: false,
             done: None,
-        });
+            batch,
+        }
+    }
+
+    /// 處理一支錄影。batch = 一次處理多支的第幾支：結果不留給介面、不另外通知（全部做完再一起說）
+    async fn after_process(self: &Arc<Self>, video: String, after: &AfterRecord, batch: Option<(usize, usize)>) -> Processed {
+        // 前一支還在處理：等它做完（一次一支）。一次處理多支時，上一支的狀態會留到全部做完（新的錄影等全部做完再處理）
+        while self.after_status().is_some_and(|s| batch.is_none() || s.batch.is_none()) {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+        let name = Path::new(&video).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let (progress, cancel) = (Arc::new(AtomicU32::new(0)), Arc::new(AtomicBool::new(false)));
+        {
+            let mut st = self.after.lock().unwrap();
+            let mut s = Self::new_status(name.clone(), after.steps(), progress.clone(), cancel.clone(), batch);
+            // 一次處理多支：沿用前幾支開始的轉檔工作編號
+            if let Some(prev) = st.as_ref().filter(|p| batch.is_some() && p.batch.is_some()) {
+                s.export_ids = prev.export_ids.clone();
+            }
+            *st = Some(s);
+        }
         info!("[錄完自動處理] 開始：{name}");
         let mut output = None;
-        let r = self.after_run(&video, &after, progress, cancel.clone(), &mut output).await;
+        let r = self.after_run(&video, after, progress, cancel.clone(), &mut output).await;
         let title = tr!("錄完自動處理", "Post-recording processing");
         let done = match r {
             _ if cancel.load(Ordering::Relaxed) => {
@@ -274,15 +356,20 @@ impl App {
             Ok(done) => {
                 let text = done.join(tr!("；", "; "));
                 info!("[錄完自動處理] 完成：{name}：{text}");
-                self.notify(title, &text, false);
-                Some(AfterDone { seq: DONE_SEQ.fetch_add(1, Ordering::Relaxed) + 1, ok: true, text, output, source: video.clone() })
+                if batch.is_none() {
+                    self.notify(title, &text, false);
+                }
+                Some(AfterDone { seq: DONE_SEQ.fetch_add(1, Ordering::Relaxed) + 1, ok: true, text, output, source: video.clone(), batch: false })
             }
             Err(e) => {
                 warn!("[錄完自動處理] {name}：{e}");
-                self.notify(title, &e, true);
-                Some(AfterDone { seq: DONE_SEQ.fetch_add(1, Ordering::Relaxed) + 1, ok: false, text: e, output: None, source: video.clone() })
+                if batch.is_none() {
+                    self.notify(title, &e, true);
+                }
+                Some(AfterDone { seq: DONE_SEQ.fetch_add(1, Ordering::Relaxed) + 1, ok: false, text: e, output: None, source: video.clone(), batch: false })
             }
         };
+        let canceled = cancel.load(Ordering::Relaxed);
         // 自動命名放最後：字幕做好了才能依說的話取名
         let done = match (after.auto_name, done) {
             (true, Some(mut d)) => {
@@ -300,14 +387,25 @@ impl App {
         };
         let mut st = self.after.lock().unwrap();
         match done {
-            // 留著結果給介面顯示（處理中的狀態不算）
-            Some(d) => {
+            // 一次處理多支：狀態留著（下一支接著用），全部做完再一起顯示
+            _ if batch.is_some() => {
                 if let Some(s) = st.as_mut() {
-                    s.done = Some(d);
+                    s.exporting = false;
+                }
+            }
+            // 留著結果給介面顯示（處理中的狀態不算）
+            Some(ref d) => {
+                if let Some(s) = st.as_mut() {
+                    s.done = Some(d.clone());
                     s.exporting = false;
                 }
             }
             None => *st = None,
+        }
+        match done {
+            _ if canceled => Processed::Canceled,
+            Some(d) => Processed::Done(d),
+            None => Processed::Nothing,
         }
     }
 
@@ -488,7 +586,21 @@ impl App {
                 }
             }
         }
-        // 3. 壓縮
+        // 3. 加速版（一次處理多支）
+        if after.speed > 1.0 {
+            step_no += 1;
+            if !self.after_wait_idle(&cancel).await {
+                return Ok(done);
+            }
+            self.after_begin(step_no, trf!("製作 {} 倍加速版", "Making a {}× sped-up version", crate::format::num(after.speed)));
+            let (me, src, speed, keep) = (self, video.as_str(), after.speed, after.keep_audio);
+            let Some(out) = self.after_export(&cancel, move || Box::pin(async move { me.exporter.start(&me.export_ctx(), src, speed, keep, 0.0, 0.0).await.map(|_| ()) })).await? else {
+                return Ok(done);
+            };
+            done.push(trf!("{} 倍加速版", "{}× sped-up version", crate::format::num(after.speed)));
+            *output = Some(out);
+        }
+        // 4. 壓縮
         if after.compress_mb > 0 {
             step_no += 1;
             if !self.after_wait_idle(&cancel).await {
@@ -539,7 +651,7 @@ mod tests {
     fn reads_settings() {
         assert!(!AfterRecord::from_ui(None).any());
         let a = AfterRecord::from_ui(Some(&json!({ "afterIdleCut": true, "afterSubs": true, "afterSubsModel": 9, "afterSubsLang": 1, "afterCompressMb": 25, "afterAutoName": true })));
-        assert_eq!(a, AfterRecord { idle_cut: true, subtitles: true, subs_model: crate::subtitles::MODELS.len() - 1, subs_lang: 1, compress_mb: 25, auto_name: true, subs_en: false });
+        assert_eq!(a, AfterRecord { idle_cut: true, subtitles: true, subs_model: crate::subtitles::MODELS.len() - 1, subs_lang: 1, compress_mb: 25, auto_name: true, ..Default::default() });
         assert!(a.any());
         assert!(AfterRecord::from_ui(Some(&json!({ "afterCompressMb": 10 }))).any());
     }

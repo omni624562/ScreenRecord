@@ -180,19 +180,67 @@ fn doc_png(path: &Path) -> Result<Vec<u8>, String> {
     })
 }
 
+/// 教學文件的格式
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DocFormat {
+    /// 一個 HTML 檔（圖片包在裡面，用瀏覽器開啟、可以直接改文字）
+    #[default]
+    Html,
+    /// Word（.docx）
+    Word,
+    /// PowerPoint（.pptx）：一步一張投影片
+    PowerPoint,
+}
+
+impl DocFormat {
+    fn ext(self) -> &'static str {
+        match self {
+            DocFormat::Html => "html",
+            DocFormat::Word => "docx",
+            DocFormat::PowerPoint => "pptx",
+        }
+    }
+}
+
+/// 做成 Word 或 PowerPoint 的內容
+fn office(draft: &Draft, title: &str, steps: &[Step], format: DocFormat) -> Result<Vec<u8>, String> {
+    let mut items = Vec::with_capacity(steps.len());
+    for s in steps {
+        let path = draft.image_path(s);
+        let png = std::fs::read(&path).map_err(|e| trf!("無法讀取「{}」：{e}", "Couldn't read “{}”: {e}", s.image))?;
+        let (width, height) = image::ImageReader::new(std::io::Cursor::new(&png)).with_guessed_format().ok().and_then(|r| r.into_dimensions().ok()).unwrap_or((1280, 720));
+        items.push(crate::ooxml::Item { caption: caption(&s.window), png, width, height });
+    }
+    Ok(match format {
+        DocFormat::PowerPoint => crate::ooxml::pptx(title, &draft.date, &items),
+        _ => crate::ooxml::docx(title, &draft.date, &items),
+    })
+}
+
 /// 做成教學文件：steps 是整理後（刪掉、調整順序）的步驟；寫成 儲存資料夾/文件名稱.html（已經有同名檔案時加上編號），
 /// 成功後刪掉放截圖的資料夾。回傳文件的路徑。
 pub fn build(draft: &Draft, title: &str, steps: &[Step]) -> Result<PathBuf, String> {
-    let srcs = steps.iter().map(|s| data_uri(&draft.image_path(s)).map_err(|e| trf!("無法讀取「{}」：{e}", "Couldn't read “{}”: {e}", s.image))).collect::<Result<Vec<_>, _>>()?;
+    build_as(draft, title, steps, DocFormat::Html)
+}
+
+/// 同上，指定格式（HTML、Word、PowerPoint）
+pub fn build_as(draft: &Draft, title: &str, steps: &[Step], format: DocFormat) -> Result<PathBuf, String> {
     let title = if title.trim().is_empty() { draft.title() } else { title.trim().to_string() };
-    let doc = html(&title, &draft.date, steps, &srcs);
-    let mut path = draft.dir.join(format!("{}.html", draft.name));
+    let doc: Vec<u8> = match format {
+        DocFormat::Html => {
+            let srcs = steps.iter().map(|s| data_uri(&draft.image_path(s)).map_err(|e| trf!("無法讀取「{}」：{e}", "Couldn't read “{}”: {e}", s.image))).collect::<Result<Vec<_>, _>>()?;
+            html(&title, &draft.date, steps, &srcs).into_bytes()
+        }
+        _ => office(draft, &title, steps, format)?,
+    };
+    let ext = format.ext();
+    let mut path = draft.dir.join(format!("{}.{ext}", draft.name));
     let mut n = 2;
     while path.exists() {
-        path = draft.dir.join(format!("{} ({n}).html", draft.name));
+        path = draft.dir.join(format!("{} ({n}).{ext}", draft.name));
         n += 1;
     }
-    let tmp = path.with_extension("html.tmp");
+    let tmp = path.with_extension(format!("{ext}.tmp"));
     std::fs::write(&tmp, doc).and_then(|_| std::fs::rename(&tmp, &path)).map_err(|e| {
         let _ = std::fs::remove_file(&tmp);
         trf!("無法儲存教學文件：{e}", "Couldn't save the step-by-step guide: {e}")

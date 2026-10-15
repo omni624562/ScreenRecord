@@ -1089,7 +1089,10 @@ fn after_record_strip(app: &mut UiApp, ui: &mut Ui) {
         } else {
             let pct = if frac > 0.0 { format!(" {}%", (frac * 100.0).floor()) } else { String::new() };
             let step = if s.steps > 1 { trf!("（步驟 {}/{}）", " (step {}/{})", s.step_no, s.steps) } else { String::new() };
-            trf!("錄完自動處理{step}：{}{pct}", "Post-processing{step}: {}{pct}", s.step)
+            match s.batch {
+                Some((i, n)) => trf!("一次處理（第 {i}/{n} 支）：{}{pct}", "Processing {i} of {n}: {}{pct}", s.step),
+                None => trf!("錄完自動處理{step}：{}{pct}", "Post-processing{step}: {}{pct}", s.step),
+            }
         };
         ui.horizontal(|ui| {
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -1097,7 +1100,11 @@ fn after_record_strip(app: &mut UiApp, ui: &mut Ui) {
                     .icon(Icon::Close)
                     .ghost()
                     .small()
-                    .tooltip(tr!("取消這支錄影的自動處理（已經做好的會留著）", "Cancel post-processing for this recording (finished steps are kept)"))
+                    .tooltip(if s.batch.is_some() {
+                        tr!("取消（這一支與還沒開始的都不做了；已經做好的會留著）", "Cancel this one and the rest (finished results are kept)")
+                    } else {
+                        tr!("取消這支錄影的自動處理（已經做好的會留著）", "Cancel post-processing for this recording (finished steps are kept)")
+                    })
                     .show(ui)
                     .clicked()
                 {
@@ -1131,7 +1138,12 @@ fn after_done_card(app: &mut UiApp, ui: &mut Ui) {
     let (fill, stroke) = if d.ok { (p.ok_soft, p.ok) } else { (p.rec_soft, p.rec) };
     egui::Frame::new().fill(fill).stroke(Stroke::new(1.0, stroke.gamma_multiply(0.4))).corner_radius(CornerRadius::same(theme::RADIUS_SM)).inner_margin(10.0).show(ui, |ui| {
         ui.set_width(ui.available_width());
-        let title = if d.ok { tr!("已自動處理", "Post-processing done") } else { tr!("自動處理沒有完成", "Post-processing didn't finish") };
+        let title = match (d.batch, d.ok) {
+            (true, true) => tr!("一次處理完成", "Batch processing done"),
+            (true, false) => tr!("一次處理沒有完成", "Batch processing didn't finish"),
+            (false, true) => tr!("已自動處理", "Post-processing done"),
+            (false, false) => tr!("自動處理沒有完成", "Post-processing didn't finish"),
+        };
         if card_title(ui, title, if d.ok { p.ok } else { p.rec }) {
             app.main.dismissed_after = Some(d.seq);
         }

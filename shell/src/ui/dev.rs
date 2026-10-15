@@ -189,6 +189,7 @@ pub fn tick(app: &mut UiApp, ctx: &egui::Context) {
                     Some(("export", p)) => app.act_path(EntryAction::Export, p.to_string()),
                     Some(("edit", p)) => app.act_path(EntryAction::Edit, p.to_string()),
                     Some(("view", p)) => app.act_path(EntryAction::Play, p.to_string()),
+                    Some(("phone", p)) => app.act_path(EntryAction::Phone, p.to_string()),
                     Some(("ed", c)) => app.dev.editor_cmds.push(c.to_string()),
                     _ if a == "library" => app.library = Some(super::library_dialog::LibraryDialog::new(super::library_dialog::Kind::Video)),
                     _ if a == "shots" => app.library = Some(super::library_dialog::LibraryDialog::new(super::library_dialog::Kind::Shot)),

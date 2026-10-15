@@ -40,6 +40,13 @@ pub fn is_url(text: &str) -> bool {
     (t.starts_with("http://") || t.starts_with("https://")) && !t.contains(char::is_whitespace)
 }
 
+/// 產生 QR 碼：每邊幾格與每一格是不是黑的（一列一列，不含外圍留白）
+pub fn encode(text: &str) -> Option<(usize, Vec<bool>)> {
+    let code = qrcode::QrCode::with_error_correction_level(text.as_bytes(), qrcode::EcLevel::M).ok()?;
+    let cells = code.to_colors().into_iter().map(|c| c == qrcode::Color::Dark).collect();
+    Some((code.width(), cells))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -64,6 +71,25 @@ mod tests {
             }
         }
         (img, size, size)
+    }
+
+    #[test]
+    fn encodes_readable_codes() {
+        let url = "http://192.168.1.23:51234/0123456789abcdef0123456789abcdef";
+        let (n, cells) = encode(url).unwrap();
+        assert_eq!(cells.len(), n * n);
+        let (scale, size) = (6, (n as u32 + 8) * 6);
+        let mut img = vec![255u8; (size * size * 4) as usize];
+        for (i, _) in cells.iter().enumerate().filter(|(_, &d)| d) {
+            let (x, y) = ((i % n) as u32, (i / n) as u32);
+            for dy in 0..scale {
+                for dx in 0..scale {
+                    let p = ((((y + 4) * scale + dy) * size + (x + 4) * scale + dx) * 4) as usize;
+                    img[p..p + 3].copy_from_slice(&[0, 0, 0]);
+                }
+            }
+        }
+        assert_eq!(decode(&img, size, size), vec![url.to_string()]);
     }
 
     #[test]

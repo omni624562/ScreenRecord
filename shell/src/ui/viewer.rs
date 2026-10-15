@@ -423,6 +423,12 @@ fn head_buttons(app: &UiApp, e: &LibraryEntry, image: bool, audio: bool) -> Vec<
                 tr!("把這張圖變成浮在最上層的小視窗，方便對照（點兩下或 Esc 關閉）", "Turn this image into a small always-on-top window for reference (double-click or Esc to close)"),
                 || Act::Pin,
             ),
+            b(
+                tr!("傳到手機", "Send to phone"),
+                None,
+                tr!("用手機掃 QR 碼就能看、下載（手機和電腦要在同一個 Wi-Fi）", "Scan a QR code to view and download it on your phone (same Wi-Fi as this computer)"),
+                || Act::Entry(EntryAction::Phone),
+            ),
             open,
         ];
     }
@@ -459,6 +465,12 @@ fn head_buttons(app: &UiApp, e: &LibraryEntry, image: bool, audio: bool) -> Vec<
         Some(Icon::Copy),
         tr!("複製這個檔案，可以直接貼到 LINE、Teams、信件或資料夾", "Copy this file so you can paste it into LINE, Teams, an email or a folder"),
         || Act::Entry(EntryAction::CopyFile),
+    ));
+    list.push(b(
+        tr!("傳到手機", "Send to phone"),
+        None,
+        tr!("用手機掃 QR 碼就能看、下載（手機和電腦要在同一個 Wi-Fi）", "Scan a QR code to view and download it on your phone (same Wi-Fi as this computer)"),
+        || Act::Entry(EntryAction::Phone),
     ));
     list.push(open);
     list

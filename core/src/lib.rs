@@ -57,7 +57,9 @@ pub mod monitors;
 pub mod naming;
 pub mod ocr;
 pub mod ocr_index;
+pub mod ooxml;
 pub mod paths;
+pub mod phone_share;
 pub mod picture;
 #[cfg(windows)]
 pub mod pin_win;
@@ -83,6 +85,7 @@ pub mod screen_pen_win;
 pub mod scroll_win;
 pub mod selfupdate;
 pub mod settings;
+pub mod shot_diff;
 pub mod shot_edit;
 pub mod shot_meta;
 pub mod shot_toast;

@@ -582,10 +582,15 @@ impl App {
 
     /// 做成教學文件（一個 HTML 檔，圖片包在裡面）：steps = 整理後的步驟；成功後刪掉暫放的截圖，回傳文件路徑
     pub async fn steps_build(&self, title: String, steps: Vec<crate::steps::Step>) -> crate::Result<String> {
+        self.steps_build_as(title, steps, crate::steps::DocFormat::Html).await
+    }
+
+    /// 同上，指定格式（HTML、Word、PowerPoint）
+    pub async fn steps_build_as(&self, title: String, steps: Vec<crate::steps::Step>, format: crate::steps::DocFormat) -> crate::Result<String> {
         let draft = self.lock().steps_draft.clone().ok_or_else(|| crate::Error::config(tr!("沒有要整理的步驟", "There are no steps to organize")))?;
         let d = draft.clone();
         let n = steps.len();
-        let path = tokio::task::spawn_blocking(move || crate::steps::build(&d, &title, &steps)).await.map_err(|e| crate::Error::other(e.to_string()))?.map_err(crate::Error::other)?;
+        let path = tokio::task::spawn_blocking(move || crate::steps::build_as(&d, &title, &steps, format)).await.map_err(|e| crate::Error::other(e.to_string()))?.map_err(crate::Error::other)?;
         let mut st = self.lock();
         if st.steps_draft.as_ref() == Some(&draft) {
             st.steps_draft = None;
@@ -802,6 +807,32 @@ impl App {
         self.lock().shot = Some(shot.clone());
         crate::info!("[截圖] {} 張{}拼成 {}（{w}×{h}）", paths.len(), if vertical { "上下" } else { "左右" }, shot.path);
         Ok(shot)
+    }
+
+    /// 比對兩張截圖（before 較舊、after 較新）：在 after 上用紅框標出不一樣的地方，存成新的截圖；回傳 (截圖, 幾處不一樣)
+    pub async fn compare_shots(self: &Arc<Self>, before: String, after: String, shot_dir: &str) -> crate::Result<(crate::types::ShotInfo, usize)> {
+        let (a, aw, ah) = crate::actions::load_image(&before).await?;
+        let (b, bw, bh) = crate::actions::load_image(&after).await?;
+        let out = new_shot_path(shot_dir).await?;
+        let o = out.clone();
+        let (n, w, h) = tokio::task::spawn_blocking(move || {
+            // 框畫在後面那張（原本的大小）；比較時前面那張縮放成一樣大
+            let boxes = crate::shot_diff::find(&b, bw, bh, &a, aw, ah);
+            let mut pm = tiny_skia::Pixmap::new(bw, bh).ok_or_else(|| crate::Error::config(tr!("圖片太大", "Image is too large")))?;
+            for (d, s) in pm.pixels_mut().iter_mut().zip(b.as_chunks::<4>().0) {
+                *d = tiny_skia::ColorU8::from_rgba(s[0], s[1], s[2], s[3]).premultiply();
+            }
+            crate::shot_diff::mark(&mut pm, &boxes);
+            pm.save_png(&o).map_err(|e| crate::Error::other(trf!("無法儲存圖片：{e}", "Couldn't save the image: {e}")))?;
+            Ok::<_, crate::Error>((boxes.len(), bw, bh))
+        })
+        .await
+        .map_err(|e| crate::Error::other(e.to_string()))??;
+        self.lock().shot_meta = Some(crate::shot_meta::ShotMeta { src: "compare".into(), ..Default::default() });
+        let shot = self.finish_shot(&out, w, h).await;
+        self.lock().shot = Some(shot.clone());
+        crate::info!("[截圖] 比對 {} 與 {}：{n} 處不一樣", before, after);
+        Ok((shot, n))
     }
 
     /// 截好的 PNG：複製到剪貼簿（失敗不影響已存好的檔案），編上序號

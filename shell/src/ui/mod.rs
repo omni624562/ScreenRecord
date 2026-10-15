@@ -10,6 +10,7 @@ pub mod library_dialog;
 pub mod main_view;
 pub mod notes;
 pub mod ocr;
+pub mod phone;
 pub mod presets;
 pub mod preview;
 pub mod replay;
@@ -91,6 +92,8 @@ pub enum EntryAction {
     Export,
     /// 把檔案複製到剪貼簿（貼到 LINE、Teams、資料夾）
     CopyFile,
+    /// 傳到手機：區域網路下載頁＋QR 碼
+    Phone,
     /// 只留下聲音，另存成 .m4a
     SaveAudio,
     /// 章節（錄影時加的標記）複製成 YouTube 說明欄的格式
@@ -166,6 +169,8 @@ pub struct UiApp {
     pub snip: Option<snip::Snip>,
     /// 整理步驟截圖（做成教學文件前）
     pub steps_review: Option<steps_review::Review>,
+    /// 傳到手機（正在分享）
+    pub phone: Option<phone::Phone>,
     /// 目前設定的全域快速鍵（顯示用）
     pub keys: screenrecorder_core::types::Hotkeys,
     pub editor: Option<editor::Editor>,
@@ -261,6 +266,7 @@ impl UiApp {
             settings_dlg: None,
             snip: None,
             steps_review: None,
+            phone: None,
             keys: saved.hotkeys.unwrap_or_default(),
             editor: None,
             dismissed_job: None,
@@ -756,6 +762,7 @@ impl UiApp {
                 self.ctx.copy_text(screenrecorder_core::chapters::youtube_text(&entry.media.chapters, duration));
                 self.toast(tr!("已複製章節，可以貼到 YouTube 影片的說明欄", "Chapters copied. Paste them into the YouTube video description"), false);
             }
+            EntryAction::Phone => phone::open(self, path),
             EntryAction::CopyFile => match screenrecorder_core::clipboard::copy_files(std::slice::from_ref(&path)) {
                 Ok(()) => self.toast(tr!("已複製檔案，可以直接貼到 LINE、Teams、信件或資料夾", "File copied. Paste it into LINE, Teams, an email or a folder"), false),
                 Err(e) => self.toast(e, true),
@@ -1089,6 +1096,9 @@ impl eframe::App for UiApp {
         }
         if self.steps_review.is_some() {
             steps_review::show(self, &ctx);
+        }
+        if self.phone.is_some() {
+            phone::show(self, &ctx);
         }
         // 新功能介紹：主畫面第一次看得到、沒有其他視窗時檢查一次
         if !self.whats_new_checked && self.visible && self.env_ready && self.editor.is_none() && self.snip.is_none() {

@@ -20,6 +20,7 @@ use screenrecorder_core::{tr, trf};
 use std::collections::HashSet;
 use std::time::Instant;
 
+mod batch;
 mod browse;
 
 /// 看錄影還是截圖
@@ -60,6 +61,8 @@ pub struct LibraryDialog {
     /// 合併成一支的對話框、進行中的合併工作（編號）
     merge: Option<MergeDlg>,
     merge_job: Option<u64>,
+    /// 一次處理多支的對話框
+    batch: Option<batch::BatchDlg>,
     /// 剛做好的檔案（合併的成品）：排在最上面並標示「新的」
     fresh: Option<String>,
     /// 拼成一張的對話框
@@ -158,7 +161,7 @@ impl LibraryDialog {
 
     /// 上面蓋著合併、拼成一張、清理舊截圖的對話框
     fn overlay(&self) -> bool {
-        self.merge.is_some() || self.combine.is_some() || self.cleanup.is_some() || self.similar.is_some()
+        self.merge.is_some() || self.batch.is_some() || self.combine.is_some() || self.cleanup.is_some() || self.similar.is_some()
     }
 
     /// 檔案搬動或資料夾改了：重新讀取
@@ -191,6 +194,7 @@ impl LibraryDialog {
             focus_search: true,
             jump: None,
             merge: None,
+            batch: None,
             merge_job: None,
             fresh: None,
             combine: None,
@@ -412,8 +416,12 @@ enum Req {
     Record,
     /// 開啟「合併成一支」：勾選的 MP4
     Merge(Vec<String>),
+    /// 開啟「一次處理」：勾選的 MP4
+    Batch(Vec<String>),
     /// 開啟「拼成一張」
     Combine,
+    /// 比對勾選的兩張截圖
+    Compare,
     /// 這些檔案移到資源回收筒（先確認）
     Trash(Vec<String>),
     /// 截圖複製到剪貼簿（圖片）
@@ -626,6 +634,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         let shot = d.kind == Kind::Shot;
         ui.add_space(8.0);
         // 搜尋、篩選、排序
+        let mut links_below = false;
         ui.horizontal(|ui| {
             let hint = if shot {
                 tr!("搜尋檔名、日期（例如 10/11）或圖裡的字", "Search names, dates (e.g. 10/11) or text in the image")
@@ -782,8 +791,17 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                     }
                 });
             }
-            selection_links(ui, &mut d, shot, &app.core.pins);
+            // 視窗窄、工具列放不下時，選取的連結改放到下一行，免得疊在別的按鈕上
+            if ui.available_width() >= SELECTION_W {
+                selection_links(ui, &mut d, shot, &app.core.pins);
+            } else {
+                links_below = true;
+            }
         });
+        if links_below && !d.selected.is_empty() {
+            ui.add_space(4.0);
+            ui.horizontal(|ui| selection_links(ui, &mut d, shot, &app.core.pins));
+        }
         if shot {
             browse::tick(app, &mut d);
         }
@@ -879,7 +897,26 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                 .show(fui)
                 .clicked()
         {
-            req = Some(Req::Merge(mp4s));
+            req = Some(Req::Merge(mp4s.clone()));
+        }
+        let batching = batch::running(app);
+        if !shot
+            && mp4s.len() >= 2
+            && batching.is_none()
+            && Btn::new(tr!("一次處理…", "Process all…"))
+                .small()
+                .tooltip(tr!(
+                    "勾選的錄影一次剪掉沒動靜的片段、產生字幕、做加速版或壓縮（一支一支依序做）",
+                    "Cut idle parts, generate subtitles, make sped-up versions or compress all the selected recordings (one at a time)"
+                ))
+                .show(fui)
+                .clicked()
+        {
+            req = Some(Req::Batch(mp4s));
+        }
+        if let Some((i, n)) = batching.filter(|_| !shot) {
+            fui.add_space(8.0);
+            fui.label(RichText::new(trf!("一次處理中（第 {i}/{n} 支）…", "Processing {i} of {n}…")).font(theme::font_bold(12.5)).color(p.accent));
         }
         if let Some(frac) = merging {
             fui.add_space(8.0);
@@ -896,6 +933,19 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         {
             req = Some(Req::Combine);
         }
+        if shot
+            && n == 2
+            && Btn::new(tr!("比較差異", "Compare"))
+                .small()
+                .tooltip(tr!(
+                    "找出兩張截圖不一樣的地方，在較新的那張上用紅框標出來，存成新的截圖",
+                    "Finds what's different between the two screenshots and marks it with red boxes on the newer one, saved as a new screenshot"
+                ))
+                .show(fui)
+                .clicked()
+        {
+            req = Some(Req::Compare);
+        }
         fui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             if total > 0 {
                 pager(ui, &mut d);
@@ -908,6 +958,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
     }
     let covered = d.overlay();
     merge_dialog(app, ctx, &mut d);
+    batch::show(app, ctx, &mut d);
     combine_dialog(app, ctx, &mut d);
     cleanup_dialog(app, ctx, &mut d);
     similar_dialog(app, ctx, &mut d);
@@ -964,7 +1015,14 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
             }
         }
         Some(Req::Merge(paths)) => open_merge(app, paths),
+        Some(Req::Batch(paths)) => {
+            let dlg = batch::BatchDlg::new(app, paths);
+            if let Some(d) = &mut app.library {
+                d.batch = Some(dlg);
+            }
+        }
         Some(Req::Combine) => open_combine(app),
+        Some(Req::Compare) => compare_selected(app),
         Some(Req::Trash(paths)) => trash_paths(app, paths),
         Some(Req::CopyImage(path)) => super::viewer::copy_png(app, path),
         Some(Req::Pin(path, on)) => {
@@ -1116,6 +1174,9 @@ fn entry_menu(ui: &mut egui::Ui, app: &UiApp, e: &LibraryEntry, full: bool, req:
     if ui.button(tr!("複製檔案（貼到 LINE、資料夾）", "Copy file (paste into LINE or a folder)")).clicked() {
         pick(EntryAction::CopyFile, req);
     }
+    if ui.button(tr!("傳到手機…", "Send to phone…")).clicked() {
+        pick(EntryAction::Phone, req);
+    }
     if ui.button(tr!("用 Windows 開啟", "Open in Windows")).clicked() {
         pick(EntryAction::External, req);
     }
@@ -1148,6 +1209,9 @@ fn export_menu(ui: &mut egui::Ui, x: &ExportInfo, req: &mut Option<Req>) {
     }
     if ui.button(tr!("複製檔案（貼到 LINE、資料夾）", "Copy file (paste into LINE or a folder)")).clicked() {
         *req = Some(Req::Entry(EntryAction::CopyFile, entry()));
+    }
+    if ui.button(tr!("傳到手機…", "Send to phone…")).clicked() {
+        *req = Some(Req::Entry(EntryAction::Phone, entry()));
     }
     ui.separator();
     if trash_item(ui) {
@@ -1890,6 +1954,9 @@ fn drag_out(app: &mut UiApp, list: &[String]) {
 }
 
 /// 有勾選時，搜尋列右邊：選取全部（每一頁）、只看已選取、取消選取
+/// 選取連結（取消選取、只看已選取、選取全部）大概要多寬
+const SELECTION_W: f32 = 340.0;
+
 fn selection_links(ui: &mut egui::Ui, d: &mut LibraryDialog, shot: bool, pins: &PinStore) {
     if d.selected.is_empty() {
         return;
@@ -2015,6 +2082,9 @@ fn shot_menu(ui: &mut egui::Ui, e: &LibraryEntry, full: bool, pinned: bool, req:
     }
     if ui.button(tr!("複製檔案（貼到資料夾）", "Copy file (paste into a folder)")).clicked() {
         pick(EntryAction::CopyFile, req);
+    }
+    if ui.button(tr!("傳到手機…", "Send to phone…")).clicked() {
+        pick(EntryAction::Phone, req);
     }
     ui.separator();
     if trash_item(ui) {
@@ -2227,6 +2297,50 @@ fn open_combine(app: &mut UiApp) {
     if let Some(d) = &mut app.library {
         d.combine = Some(CombineDlg { items, vertical: false, spacing: 1, busy: false });
     }
+}
+
+/// 比對勾選的兩張截圖（較舊的當作「之前」）：做好後開啟結果
+fn compare_selected(app: &mut UiApp) {
+    let Some(d) = &app.library else { return };
+    let mut items: Vec<_> = d.selected.iter().filter(|p| super::dialogs::is_image(p)).filter_map(|p| find_media(app, p)).map(|(m, _)| m).collect();
+    if items.len() != 2 {
+        return app.toast(tr!("請勾選兩張截圖", "Select two screenshots"), true);
+    }
+    items.sort_by_key(|m| entry_time(&m.name, m.time_ms()));
+    let (before, after) = (items[0].path.clone(), items[1].path.clone());
+    let core = app.core.clone();
+    let dir = app.s.shots_dir(&app.env);
+    app.toast(tr!("正在比較…", "Comparing…"), false);
+    app.spawn(async move { core.compare_shots(before, after, &dir).await }, |app, r| match r {
+        Ok((shot, n)) => {
+            if let Some(d) = &mut app.library {
+                d.selected.clear();
+            }
+            app.last_shot_seq = app.last_shot_seq.max(shot.seq);
+            let msg = if n == 0 {
+                tr!("兩張看起來一樣，沒有找到不一樣的地方", "The two look the same; no differences found").to_string()
+            } else if screenrecorder_core::i18n::is_en() {
+                format!("Found {n} difference{}, marked with red boxes on the newer screenshot", if n == 1 { "" } else { "s" })
+            } else {
+                format!("找到 {n} 處不一樣，已在較新的那張上用紅框標出")
+            };
+            let (p1, p2) = (shot.path.clone(), shot.path.clone());
+            app.toast_with(
+                msg,
+                false,
+                vec![
+                    ToastAction::new(tr!("看結果", "View"), move |app: &mut UiApp| super::editor::shot::open(app, p1)),
+                    ToastAction::new(tr!("在資料夾中顯示", "Show in folder"), move |app: &mut UiApp| {
+                        if let Err(e) = actions::open(actions::OpenAction::Reveal, &p2) {
+                            app.toast(e.message().to_string(), true);
+                        }
+                    }),
+                ],
+            );
+            app.shots_changed();
+        }
+        Err(e) => app.toast(e.message().to_string(), true),
+    });
 }
 
 /// 清理舊截圖：選天數，看會刪幾張、多大，確認後移到資源回收筒（有星號的不刪）
