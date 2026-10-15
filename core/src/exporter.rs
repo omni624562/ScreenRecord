@@ -415,6 +415,7 @@ impl Exporter {
             cursor.as_ref(),
             vertical.as_ref(),
             extras.as_ref(),
+            spec.fade_cuts,
         )?;
         // 章節換成剪輯後的時間（刪掉的片段裡的章節改從下一段開始）；剪輯視窗改過標記時用它給的；有片頭時往後移
         let chapters = chapters.unwrap_or_else(|| info.chapters.clone());
@@ -434,7 +435,8 @@ impl Exporter {
             + if cursor.is_some() { "，平滑放大的游標" } else { "" }
             + if vertical.is_some() { "，直式影片" } else { "" }
             + if extras.as_ref().is_some_and(|x| x.intro.is_some() || x.outro.is_some()) { "，片頭片尾" } else { "" }
-            + if extras.as_ref().is_some_and(|x| x.music.is_some()) { "，背景音樂" } else { "" };
+            + if extras.as_ref().is_some_and(|x| x.music.is_some()) { "，背景音樂" } else { "" }
+            + if spec.fade_cuts { "，接縫淡入淡出" } else { "" };
         let follow = matches!(vertical, Some(VerticalInput::Follow { .. }));
         let cwd = (cursor.is_some() || follow).then(|| temp.clone()).flatten();
         let finish = Finish { cleanup: temp, replace: target.map(PathBuf::from), on_saved, cwd };

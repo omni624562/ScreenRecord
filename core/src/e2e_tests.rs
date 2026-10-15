@@ -313,6 +313,51 @@ async fn exports_keep_chapters_and_lengths() {
     assert!(i.chapters.is_empty());
 }
 
+/// 從 t 秒開始 len 秒的聲音（單聲道 16 位元）裡最大的振幅
+fn peak_at(ff: &Path, file: &Path, t: f64, len: f64) -> i32 {
+    let o = Command::new(ff)
+        .args(["-hide_banner", "-loglevel", "error", "-nostdin", "-ss", &t.to_string(), "-t", &len.to_string(), "-i"])
+        .arg(file)
+        .args(["-map", "0:a:0", "-ac", "1", "-ar", "48000", "-f", "s16le", "-"])
+        .output()
+        .unwrap();
+    o.stdout.chunks_exact(2).map(|b| (i16::from_le_bytes([b[0], b[1]]) as i32).abs()).max().unwrap_or(0)
+}
+
+fn mean(v: &[u8]) -> f64 {
+    v.iter().map(|&x| x as f64).sum::<f64>() / v.len().max(1) as f64
+}
+
+#[tokio::test]
+async fn cut_fades_at_joins() {
+    let Some(ff) = ffmpeg() else { return };
+    if !has(&ff, "-encoders", "libx264") {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let src = make_source(&ff, dir.path());
+    let s = src.display().to_string();
+    let c = ctx(&ff);
+    let ex = Exporter::new();
+    // 留 0.5～5.5、刪掉 2～3：接縫在剪好的 1.5 秒；長度不變
+    let spec = EditSpec { start: 0.5, end: 5.5, removed: vec![(2.0, 3.0)], fade_cuts: true, ..Default::default() };
+    ex.start_cut(&c, &s, &spec, None, None).await.unwrap();
+    let cut = finish(&ex).await;
+    let i = probe(&ff, &cut).await;
+    assert!(near(i.duration_sec.unwrap(), 4.0, 0.15), "{:?}", i.duration_sec);
+    // 接縫前後的畫面變暗，離接縫遠的地方照常
+    let normal = mean(&gray_frame(&ff, &cut, 0.8, 640, 360));
+    let before = mean(&gray_frame(&ff, &cut, 1.47, 640, 360));
+    let after = mean(&gray_frame(&ff, &cut, 1.52, 640, 360));
+    let later = mean(&gray_frame(&ff, &cut, 2.5, 640, 360));
+    assert!(normal > 60.0 && later > 60.0, "{normal} {later}");
+    assert!(before < normal * 0.35 && after < later * 0.35, "{before} {after}");
+    // 聲音也在接縫降到幾乎沒有
+    let loud = peak_at(&ff, &cut, 0.8, 0.02);
+    let quiet = peak_at(&ff, &cut, 1.49, 0.02);
+    assert!(loud > 1000 && quiet < loud / 5, "{loud} {quiet}");
+}
+
 #[tokio::test]
 async fn animations_gif_and_webp() {
     let Some(ff) = ffmpeg() else { return };

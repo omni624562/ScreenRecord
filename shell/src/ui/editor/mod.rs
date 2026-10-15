@@ -81,6 +81,9 @@ struct Extras {
     outro: Option<screenrecorder_core::cards::TitleCard>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     music: Option<screenrecorder_core::cards::Music>,
+    /// 刪掉片段的接縫淡入淡出
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    fade_cuts: bool,
 }
 
 /// 存起來的剪輯專案：ProjectData 加上 Extras（同一層）
@@ -876,6 +879,7 @@ impl Editor {
             intro: self.spec.intro.clone(),
             outro: self.spec.outro.clone(),
             music: self.spec.music.clone(),
+            fade_cuts: self.spec.fade_cuts,
         }
     }
 
@@ -892,6 +896,7 @@ impl Editor {
         self.spec.intro = x.intro;
         self.spec.outro = x.outro;
         self.spec.music = x.music;
+        self.spec.fade_cuts = x.fade_cuts;
     }
 
     /// 片頭預設的標題：自己取過的檔名（預設的 Rec_時間 名稱就空白）
@@ -1623,6 +1628,11 @@ impl Editor {
             }
             "sel" => self.select_ann(v.parse().ok()),
             "seek" => self.seek(v.parse().unwrap_or(0.0)),
+            "remove" => {
+                if let Some((a, b)) = v.split_once(',').and_then(|(a, b)| Some((a.parse::<f64>().ok()?, b.parse::<f64>().ok()?))) {
+                    self.spec.removed.push((a, b));
+                }
+            }
             "tool" => self.tool = Some(if v == "emoji" { Tool::Emoji } else { Tool::Ann(serde_json::from_value(Value::String(v.into())).unwrap_or(AnnKind::Text)) }),
             "crop" => {
                 self.crop_on = true;
@@ -2702,6 +2712,7 @@ fn start_save(app: &mut UiApp, ed: &mut Editor) {
         intro: ed.spec.intro.clone().filter(|c| !c.is_empty()),
         outro: ed.spec.outro.clone().filter(|c| !c.is_empty()),
         music: ed.spec.music.clone(),
+        fade_cuts: ed.spec.fade_cuts && ed.spec.removed.iter().any(|r| r.1 > r.0),
     };
     let project = Some(ed.project_value());
     // 開始輸出時先存草稿（標記為輸出中）：輸出失敗或取消時可以「回到剪輯」，完成時會刪掉

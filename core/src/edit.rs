@@ -57,6 +57,9 @@ pub struct EditSpec {
     /// 背景音樂
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub music: Option<crate::cards::Music>,
+    /// 刪掉片段的接縫淡入淡出
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub fade_cuts: bool,
 }
 
 /// 跟著點擊放大：倍率與錄影時記下的點擊（原影片的秒數, x, y；x、y 為 0～1）
@@ -145,6 +148,30 @@ pub fn keep_parts(duration: f64, spec: &EditSpec) -> Vec<(f64, f64, u32)> {
         }
     }
     out.into_iter().map(|(a, b, s)| (ms(a), ms(b), s)).collect()
+}
+
+/// 接縫淡出、淡入各多久（秒）
+pub const CUT_FADE: f64 = 0.2;
+
+/// 接縫淡入淡出：剪好的影片裡每個接縫的時間與淡出（淡入）長度。
+/// 只有中間刪掉片段的地方才算接縫（加速、原速交界不算）；片段很短時縮短，不超過前後片段的一半
+pub fn cut_fades(parts: &[(f64, f64, u32)]) -> Vec<(f64, f64)> {
+    let mut out = vec![];
+    let mut t = 0.0;
+    for (i, &(a, b, s)) in parts.iter().enumerate() {
+        let len = (b - a) / s.max(1) as f64;
+        if i > 0 {
+            let (pa, pb, ps) = parts[i - 1];
+            if a - pb > 0.001 {
+                let d = CUT_FADE.min((pb - pa) / ps.max(1) as f64 / 2.0).min(len / 2.0);
+                if d >= 0.04 {
+                    out.push((ms(t), ms(d)));
+                }
+            }
+        }
+        t += len;
+    }
+    out
 }
 
 /// 輸出的長度（加速的片段變短）
@@ -413,5 +440,16 @@ mod tests {
         let s: EditSpec = serde_json::from_str(r#"{"start":1,"end":5.5,"removed":[[2,3]],"crop":{"x":1,"y":2,"width":30,"height":40}}"#).unwrap();
         assert_eq!(s.removed, vec![(2.0, 3.0)]);
         assert_eq!(s.crop.unwrap().width, 30.0);
+    }
+
+    #[test]
+    fn fades_only_at_removed_joins() {
+        // 0～2 原速、2～6 加速 4 倍（長 1 秒）、刪掉 6～7、7～9 原速：只有 6～7 的接縫（剪好的 3 秒）
+        let parts = [(0.0, 2.0, 1), (2.0, 6.0, 4), (7.0, 9.0, 1)];
+        assert_eq!(cut_fades(&parts), vec![(3.0, CUT_FADE)]);
+        // 前後片段很短：淡出淡入縮短成片段的一半；太短就不做
+        assert_eq!(cut_fades(&[(0.0, 0.2, 1), (1.0, 3.0, 1)]), vec![(0.2, 0.1)]);
+        assert!(cut_fades(&[(0.0, 0.05, 1), (1.0, 3.0, 1)]).is_empty());
+        assert!(cut_fades(&[(0.0, 5.0, 1)]).is_empty());
     }
 }
