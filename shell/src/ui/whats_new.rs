@@ -21,7 +21,8 @@ pub fn should_show(app: &UiApp) -> bool {
 #[derive(Clone, Copy)]
 enum Try {
     None,
-    /// 打開設定的某一頁
+    /// 打開設定的某一頁（這一版的介紹沒用到，保留給之後）
+    #[allow(dead_code)]
     Settings(Page),
     /// 在螢幕上框選截圖（這一版的介紹沒用到，保留給之後）
     #[allow(dead_code)]
@@ -34,46 +35,16 @@ enum Try {
 }
 
 /// 這一版的新功能（標題、說明、試試看）：最多 6 項，快速鍵用目前的設定
-fn items(app: &UiApp) -> Vec<(String, String, Try)> {
-    let mute = app.keys.label(7);
-    let mute = if mute.is_empty() { String::new() } else { trf!("（{mute}）", " ({mute})") };
-    vec![
-        (
-            tr!("開會時提醒錄影", "Reminders to record meetings").into(),
-            tr!(
-                "Teams、Zoom、Google Meet、LINE 等開始通話時，右下角會問要不要錄影；通話結束時再問要不要停止。只提醒，不會自己錄。",
-                "When Teams, Zoom, Google Meet, LINE and similar apps start a call, a prompt asks whether to record; when the call ends it asks whether to stop. It only asks."
-            )
-            .into(),
-            Try::Settings(Page::Record),
-        ),
-        (
-            tr!("錄影中麥克風靜音", "Mute the microphone while recording").into(),
-            trf!(
-                "要咳嗽、接電話時，按快速鍵{mute}或錄影面板的麥克風按鈕暫時靜音，剪輯時時間軸上會標出靜音的段落。",
-                "Need to cough or take a call? Press the shortcut{mute} or the microphone button to mute for a moment. Muted parts are marked on the editing timeline."
-            ),
-            Try::Settings(Page::Keys),
-        ),
-        (
-            tr!("做封面", "Make a cover").into(),
-            tr!(
-                "錄影的「更多」選單或檢視器按「做封面」，挑一格畫面打上標題，做成 YouTube 用的封面圖，也能設成影片在檔案總管的縮圖。",
-                "Choose “Make cover” to pick a frame, add a title and save a YouTube cover image. It can also become the video's thumbnail in File Explorer."
-            )
-            .into(),
-            Try::Library(false),
-        ),
-        (
-            tr!("接縫淡入淡出", "Fade at cuts").into(),
-            tr!(
-                "剪輯時刪掉片段的地方，勾選「接縫淡入淡出」，畫面和聲音會先淡出再淡入，不會突然跳過去或「啪」一聲。",
-                "Turn on “Fade at cuts” when editing: where a section was removed, the picture and sound fade out and back in instead of jumping or popping."
-            )
-            .into(),
-            Try::Library(false),
-        ),
-    ]
+fn items(_app: &UiApp) -> Vec<(String, String, Try)> {
+    vec![(
+        tr!("滑過就預覽影片", "Preview videos by hovering").into(),
+        tr!(
+            "在最近錄影或全部錄影裡，滑鼠停在影片縮圖上左右移動，就能看到不同時間點的畫面，不用打開也知道錄了什麼。",
+            "Hover over a video thumbnail in Recent or All recordings and move left and right to see frames from across the video, without opening it."
+        )
+        .into(),
+        Try::Library(false),
+    )]
 }
 
 pub fn show(app: &mut UiApp, ctx: &egui::Context) {
