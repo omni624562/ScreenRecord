@@ -4,8 +4,128 @@
 use crate::{tr, trf};
 use std::io;
 
+/// Proxy 伺服器的設定（設定 → 外部元件）
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum ProxyMode {
+    /// 跟著系統：環境變數 HTTPS_PROXY 等，或 Windows 的 Proxy 設定（手動設定的那一個）
+    #[default]
+    Auto,
+    /// 不用 Proxy
+    Off,
+    /// 自己填的，例如 proxy.company.com:8080
+    Custom(String),
+}
+
+static PROXY: std::sync::RwLock<ProxyMode> = std::sync::RwLock::new(ProxyMode::Auto);
+
+/// 從操作視窗的設定讀出 Proxy（"proxyMode"：auto / off / custom，"proxy"：位址）
+pub fn proxy_from_ui(ui: Option<&serde_json::Value>) -> ProxyMode {
+    let get = |k: &str| ui.and_then(|u| u.get(k)).and_then(|v| v.as_str()).map(str::trim).unwrap_or_default();
+    match get("proxyMode") {
+        "off" => ProxyMode::Off,
+        "custom" if !get("proxy").is_empty() => ProxyMode::Custom(get("proxy").to_string()),
+        _ => ProxyMode::Auto,
+    }
+}
+
+/// 套用設定（啟動時、存設定時）
+pub fn configure(ui: Option<&serde_json::Value>) {
+    let m = proxy_from_ui(ui);
+    let mut g = PROXY.write().unwrap_or_else(|e| e.into_inner());
+    if *g != m {
+        crate::info!("[網路] Proxy：{}", describe_mode(&m));
+        *g = m;
+    }
+}
+
+fn describe_mode(m: &ProxyMode) -> String {
+    match m {
+        ProxyMode::Auto => match system_proxy() {
+            Some(p) => format!("跟著系統（{p}）"),
+            None => "跟著系統（沒有設定）".into(),
+        },
+        ProxyMode::Off => "不使用".into(),
+        ProxyMode::Custom(p) => p.clone(),
+    }
+}
+
+/// 系統的 Proxy：環境變數，或 Windows「設定 → 網路和網際網路 → Proxy」手動設定的伺服器（自動設定指令碼 PAC 不支援）
+pub fn system_proxy() -> Option<String> {
+    for k in ["HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy", "HTTP_PROXY", "http_proxy"] {
+        if let Some(v) = std::env::var(k).ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty()) {
+            return Some(v);
+        }
+    }
+    windows_proxy()
+}
+
+/// Windows 的 ProxyServer 可能是 "host:port" 或 "http=a:80;https=b:443"：優先用 https 那一個
+pub fn pick_proxy_server(v: &str) -> Option<String> {
+    let v = v.trim();
+    if v.is_empty() {
+        return None;
+    }
+    if !v.contains('=') {
+        return Some(v.to_string());
+    }
+    let parts: Vec<(&str, &str)> = v.split(';').filter_map(|p| p.split_once('=')).map(|(k, v)| (k.trim(), v.trim())).filter(|(_, v)| !v.is_empty()).collect();
+    ["https", "http"].iter().find_map(|want| parts.iter().find(|(k, _)| k.eq_ignore_ascii_case(want)).map(|(_, v)| v.to_string()))
+}
+
+#[cfg(windows)]
+fn windows_proxy() -> Option<String> {
+    use windows::core::w;
+    use windows::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_DWORD, RRF_RT_REG_SZ};
+    let key = w!(r"Software\Microsoft\Windows\CurrentVersion\Internet Settings");
+    unsafe {
+        let mut on: u32 = 0;
+        let mut n = 4u32;
+        if RegGetValueW(HKEY_CURRENT_USER, key, w!("ProxyEnable"), RRF_RT_REG_DWORD, None, Some((&mut on as *mut u32).cast()), Some(&mut n)).is_err() || on == 0 {
+            return None;
+        }
+        let mut buf = vec![0u16; 1024];
+        let mut bytes = (buf.len() * 2) as u32;
+        if RegGetValueW(HKEY_CURRENT_USER, key, w!("ProxyServer"), RRF_RT_REG_SZ, None, Some(buf.as_mut_ptr().cast()), Some(&mut bytes)).is_err() {
+            return None;
+        }
+        let len = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+        pick_proxy_server(&String::from_utf16_lossy(&buf[..len]))
+    }
+}
+
+#[cfg(not(windows))]
+fn windows_proxy() -> Option<String> {
+    None
+}
+
+/// 目前要用的 Proxy（None：直接連線）
+pub fn current_proxy() -> Option<String> {
+    match &*PROXY.read().unwrap_or_else(|e| e.into_inner()) {
+        // 測試連到本機的假伺服器，不經過開發環境的 Proxy
+        ProxyMode::Auto if cfg!(test) => None,
+        ProxyMode::Auto => system_proxy(),
+        ProxyMode::Off => None,
+        ProxyMode::Custom(p) => Some(p.clone()),
+    }
+}
+
+/// 試著連線下載來源（設定 → 外部元件的「測試連線」）：成功回傳 Ok，失敗回傳原因
+pub fn test_connection() -> Result<(), String> {
+    let agent = agent().timeout_connect(std::time::Duration::from_secs(15)).timeout_read(std::time::Duration::from_secs(15)).build();
+    match agent.head("https://github.com/").call() {
+        Ok(_) | Err(ureq::Error::Status(..)) => Ok(()),
+        Err(e) => Err(describe(&e)),
+    }
+}
+
 pub fn agent() -> ureq::AgentBuilder {
-    let b = ureq::AgentBuilder::new();
+    let mut b = ureq::AgentBuilder::new();
+    if let Some(p) = current_proxy() {
+        match ureq::Proxy::new(&p) {
+            Ok(proxy) => b = b.proxy(proxy),
+            Err(_) => crate::warn!("[網路] Proxy 位址看不懂，改成直接連線"),
+        }
+    }
     #[cfg(windows)]
     let b = match native_tls::TlsConnector::new() {
         Ok(c) => b.tls_connector(std::sync::Arc::new(c)),
@@ -73,6 +193,20 @@ fn io_source(t: &ureq::Transport) -> Option<&io::Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn proxy_settings() {
+        assert_eq!(pick_proxy_server("proxy.corp:8080").as_deref(), Some("proxy.corp:8080"));
+        assert_eq!(pick_proxy_server("http=a:80;https=b:443;ftp=c:21").as_deref(), Some("b:443"));
+        assert_eq!(pick_proxy_server("http=a:80").as_deref(), Some("a:80"));
+        assert_eq!(pick_proxy_server("ftp=c:21"), None);
+        assert_eq!(pick_proxy_server(" "), None);
+        let ui = serde_json::json!({ "proxyMode": "custom", "proxy": " proxy.corp:8080 " });
+        assert_eq!(proxy_from_ui(Some(&ui)), ProxyMode::Custom("proxy.corp:8080".into()));
+        assert_eq!(proxy_from_ui(Some(&serde_json::json!({ "proxyMode": "custom", "proxy": "" }))), ProxyMode::Auto);
+        assert_eq!(proxy_from_ui(Some(&serde_json::json!({ "proxyMode": "off" }))), ProxyMode::Off);
+        assert_eq!(proxy_from_ui(None), ProxyMode::Auto);
+    }
     use std::net::TcpListener;
     use std::time::Duration;
 

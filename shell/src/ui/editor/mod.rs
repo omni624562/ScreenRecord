@@ -1652,6 +1652,7 @@ impl Editor {
                 }
             }
             "sel" => self.select_ann(v.parse().ok()),
+            "act" if v == "autosubs" => self.pending = Some(shot::Act::AutoSubs),
             "seek" => self.seek(v.parse().unwrap_or(0.0)),
             "zoommark" => {
                 let v: Vec<f64> = v.split(',').filter_map(|x| x.parse().ok()).collect();

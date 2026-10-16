@@ -267,6 +267,8 @@ pub enum Icon {
     ChevU,
     /// 關於（圓圈裡一個 i）
     Info,
+    /// 下載（往下的箭頭到托盤）
+    Download,
     /// 星號（外框）；StarOn 是實心
     Star,
     StarOn,
@@ -517,6 +519,11 @@ pub fn paint_icon(p: &Painter, rect: Rect, icon: Icon, color: Color32) {
         }
         Icon::Check => line(&[(2.5, 8.5), (6.5, 12.5), (13.5, 4.0)]),
         Icon::ChevU => line(&[(4.0, 10.0), (8.0, 6.0), (12.0, 10.0)]),
+        Icon::Download => {
+            line(&[(8.0, 2.5), (8.0, 10.0)]);
+            line(&[(4.5, 6.8), (8.0, 10.3), (11.5, 6.8)]);
+            line(&[(2.5, 10.5), (2.5, 13.5), (13.5, 13.5), (13.5, 10.5)]);
+        }
         Icon::Info => {
             circle(8.0, 8.0, 6.0);
             p.circle_filled(at(8.0, 5.2), 0.9 * k, color);
@@ -871,8 +878,7 @@ pub fn stepper(ui: &mut Ui, id: egui::Id, value: &mut f64, step: f64, range: std
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tone {
     Plain,
-    /// 綠色（目前主畫面沒有用到，保留給其他畫面）
-    #[allow(dead_code)]
+    /// 綠色（設定 → 外部元件的「已安裝」）
     Ok,
     Warn,
     Bad,

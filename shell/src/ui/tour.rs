@@ -274,7 +274,7 @@ fn finish(app: &mut UiApp, completed: bool) {
 
 /// 各功能第一次打開時的短提示：剪輯視窗、截圖編輯、全部截圖
 fn auto_tips(app: &mut UiApp) {
-    if !app.s.tips || app.tour.is_some() || app.ask.is_some() {
+    if !app.s.tips || app.tour.is_some() || app.ask.is_some() || app.settings_dlg.is_some() {
         return;
     }
     let kind = if let Some(e) = &app.editor {
@@ -298,7 +298,7 @@ fn visible(app: &UiApp, kind: Kind) -> Option<bool> {
     if !app.visible {
         return Some(false);
     }
-    let others = app.ask.is_some() || app.changelog_open || app.whats_new_open || app.snip.is_some() || app.ocr.is_some();
+    let others = app.ask.is_some() || app.changelog_open || app.whats_new_open || app.snip.is_some() || app.ocr.is_some() || app.settings_dlg.is_some();
     match kind {
         // 倒數時不蓋住倒數的數字
         Kind::First => Some(

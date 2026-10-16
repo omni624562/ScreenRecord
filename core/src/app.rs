@@ -140,6 +140,8 @@ pub struct App {
     pub recorder: Recorder,
     pub exporter: Exporter,
     pub downloader: Downloader,
+    /// 語音辨識用的 FFmpeg、語音模型的下載（設定 → 外部元件）
+    pub components: crate::components::Components,
     /// 程式內更新
     pub installer: crate::selfupdate::Installer,
     pub thumbs: Thumbnails,
@@ -310,7 +312,9 @@ impl RecorderDeps for RecDeps {
 
 impl App {
     pub fn new() -> Arc<App> {
-        Self::with_data_dir(data_dir())
+        let app = Self::with_data_dir(data_dir());
+        crate::http::configure(app.settings.load().ui.as_ref());
+        app
     }
 
     /// 設定與縮圖放在 dir（測試用暫存資料夾）
@@ -320,6 +324,7 @@ impl App {
             recorder: Recorder::new(Arc::new(RecDeps(weak.clone()))),
             exporter: Exporter::new(),
             downloader: Downloader::new(DownloadDeps::default()),
+            components: Default::default(),
             installer: crate::selfupdate::Installer::default(),
             thumbs: Thumbnails::new(dir.join("thumbs")),
             projects: Arc::new(crate::projects::ProjectStore::new(dir.join("edits"))),
@@ -1116,6 +1121,10 @@ impl App {
             if let Some(l) = r.as_ref().filter(|l| !l.text.trim().is_empty()) {
                 crate::clipboard::copy_text(&l.text);
             }
+            // 框選完的地方馬上提示有沒有抓到（不靠 Windows 通知，通知可能被關掉；操作視窗也可能縮小著）
+            if let Some(l) = &r {
+                self.flash_near_cursor(grab_text_flash(l), Duration::from_millis(2200));
+            }
             Ok(r)
         }
     }
@@ -1276,6 +1285,22 @@ impl App {
         let text =
             if muted { tr!("🔇 麥克風已靜音・再按一次取消", "🔇 Microphone muted · press again to unmute") } else { tr!("🎙 麥克風已取消靜音", "🎙 Microphone unmuted") };
         self.flash(text);
+    }
+
+    /// 在滑鼠旁邊短暫顯示一句話（例如只抓文字完成時）
+    pub fn flash_near_cursor(&self, text: impl Into<String>, dur: Duration) {
+        let text: String = text.into();
+        #[cfg(windows)]
+        {
+            let near = crate::winui::cursor_pos().map(|(x, y)| (x - 8, y - 8, x + 8, y + 8));
+            std::thread::spawn(move || {
+                let b = crate::bubble_win::Bubble::show(crate::bubble::Content::text(text), crate::bubble_win::Options { clickable: false, esc: false, near, bottom: true, on: None });
+                std::thread::sleep(dur);
+                drop(b);
+            });
+        }
+        #[cfg(not(windows))]
+        let _ = (text, dur);
     }
 
     /// 錄影中：錄影範圍下方短暫顯示一句話（1.5 秒，不會被錄進去）
@@ -2344,6 +2369,24 @@ fn move_ui_region(ui: &mut serde_json::Value, old: Rect, new: Rect, monitors: &[
     }
 }
 
+/// 只抓文字完成時，滑鼠旁的提示：「✓ 已複製 12 個字：報價單 2026…」
+pub fn grab_text_flash(l: &crate::ocr::Layout) -> String {
+    let n = l.text.chars().filter(|c| !c.is_whitespace()).count();
+    if n == 0 {
+        return tr!("沒有認出文字（框大一點、或把畫面放大再試試）", "No text recognized (try a larger area or zoom in)").into();
+    }
+    let flat: String = l.text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut preview: String = flat.chars().take(24).collect();
+    if flat.chars().count() > 24 {
+        preview.push('…');
+    }
+    if l.table {
+        trf!("✓ 已複製成表格（{n} 個字），可以貼到 Excel", "✓ Copied as a table ({n} characters); paste into Excel")
+    } else {
+        trf!("✓ 已複製 {n} 個字：{preview}", "✓ Copied {n} characters: {preview}")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #[tokio::test]
@@ -2443,6 +2486,15 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn grab_text_flash_says_what_was_copied() {
+        use crate::ocr::Layout;
+        assert!(grab_text_flash(&Layout { text: " \n ".into(), table: false }).contains("沒有認出"));
+        let t = grab_text_flash(&Layout { text: "報價單\n2026 年 10 月 16 日 總金額 NT$ 12,345 元整".into(), table: false });
+        assert!(t.starts_with("✓ 已複製 ") && t.ends_with('…'), "{t}");
+        assert!(grab_text_flash(&Layout { text: "a\tb\nc\td".into(), table: true }).contains("表格"));
+    }
 
     #[tokio::test]
     async fn wait_ready_returns_after_first_detection() {

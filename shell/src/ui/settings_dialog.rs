@@ -6,6 +6,7 @@ use super::theme::{self, segmented, switch, Btn, Icon};
 use super::{dialogs, main_view, UiApp};
 use eframe::egui::{self, pos2, vec2, Align, Color32, CornerRadius, Id, Layout, Rect, RichText, Sense, Stroke, Ui, UiBuilder};
 use screenrecorder_core::actions;
+use screenrecorder_core::components::Kind;
 use screenrecorder_core::format::{human_duration, output_size};
 use screenrecorder_core::types::{EncoderPreference, Hotkey, Hotkeys, MethodPreference, RecBarMode, CAMERA_SIZES};
 use screenrecorder_core::version::{release_notes, APP_VERSION, ISSUES_URL, PROJECT_URL};
@@ -21,18 +22,21 @@ pub enum Page {
     After,
     Keys,
     Advanced,
+    /// 外部元件：FFmpeg、語音辨識用的 FFmpeg、語音模型的下載與 Proxy
+    Components,
     /// 版本、更新說明、新版本、連結
     About,
 }
 
 /// 分頁：中文名稱、英文名稱、圖示
-const PAGES: [(Page, &str, &str, Icon); 7] = [
+const PAGES: [(Page, &str, &str, Icon); 8] = [
     (Page::Record, "錄影", "Recording", Icon::Video),
     (Page::Audio, "聲音", "Audio", Icon::Speaker),
     (Page::Save, "儲存位置", "Save location", Icon::Folder),
     (Page::After, "錄完處理", "After recording", Icon::Cut),
     (Page::Keys, "快速鍵", "Shortcuts", Icon::Keyboard),
     (Page::Advanced, "進階", "Advanced", Icon::Settings),
+    (Page::Components, "外部元件", "Components", Icon::Download),
     (Page::About, "關於", "About", Icon::Info),
 ];
 
@@ -51,12 +55,31 @@ pub struct SettingsDialog {
     /// 開機時自動啟動：None = 還沒讀；Some(None) = 不能設定（開發版）
     autostart: Option<Option<bool>>,
     autostart_busy: bool,
+    /// 外部元件：正在安裝選擇的檔案
+    installing: Option<Kind>,
+    /// 外部元件：測試連線中 / 結果
+    net_testing: bool,
+    net_result: Option<Result<(), String>>,
 }
 
 pub fn open(app: &mut UiApp, page: Page) {
     match &mut app.settings_dlg {
         Some(d) => d.page = page,
-        None => app.settings_dlg = Some(SettingsDialog { page, max_custom_open: false, key_capture: None, key_msg: None, key_conflict: None, apps: None, autostart: None, autostart_busy: false }),
+        None => {
+            app.settings_dlg = Some(SettingsDialog {
+                page,
+                max_custom_open: false,
+                key_capture: None,
+                key_msg: None,
+                key_conflict: None,
+                apps: None,
+                autostart: None,
+                autostart_busy: false,
+                installing: None,
+                net_testing: false,
+                net_result: None,
+            })
+        }
     }
 }
 
@@ -163,9 +186,10 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                     Page::Record => record_page(app, &mut d, ui),
                     Page::Audio => audio_page(app, &mut d, ui),
                     Page::Save => save_page(app, ui),
-                    Page::After => after_record_section(app, ui),
+                    Page::After => after_record_section(app, &mut d, ui),
                     Page::Keys => keys_page(app, &mut d, ui),
                     Page::Advanced => advanced_page(app, &mut d, ui),
+                    Page::Components => components_page(app, &mut d, ui),
                     Page::About => about_page(app, ui),
                 });
             });
@@ -1176,7 +1200,7 @@ fn move_shots(app: &mut UiApp, from: String, to: String) {
 }
 
 /// 錄完自動處理：剪掉沒動靜的片段、產生字幕、壓縮
-fn after_record_section(app: &mut UiApp, ui: &mut Ui) {
+fn after_record_section(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
     use screenrecorder_core::subtitles::{language_name, MODELS};
     let p = theme::pal(ui);
     form_section(ui, tr!("錄完自動處理", "After recording"), |_| {});
@@ -1236,11 +1260,22 @@ fn after_record_section(app: &mut UiApp, ui: &mut Ui) {
                 app.save_settings();
             }
         });
-        let m = &MODELS[(app.s.after_subs_model as usize).min(MODELS.len() - 1)];
-        use screenrecorder_core::subtitles::{describe_downloads, pending_downloads, speech_ffmpeg_downloaded};
-        let need = pending_downloads(!app.env.ffmpeg.has_whisper && !speech_ffmpeg_downloaded(), m);
+        let need = screenrecorder_core::components::missing_for_subtitles(app.env.ffmpeg.has_whisper, app.s.after_subs_model as usize);
         if !need.is_empty() {
-            form_hint(ui, trf!("第一次會先下載{}", "The first time, {} will be downloaded", describe_downloads(&need)), p.muted);
+            form_hint(
+                ui,
+                trf!(
+                    "還沒下載{}，字幕這一步會跳過。請先到「外部元件」下載。",
+                    "{} isn't downloaded yet, so this step will be skipped. Download it in Components first.",
+                    screenrecorder_core::components::describe(&need)
+                ),
+                p.warn,
+            );
+            form_row(ui, "", |ui| {
+                if Btn::new(tr!("前往外部元件", "Go to Components")).small().icon(Icon::Download).show(ui).clicked() {
+                    d.page = Page::Components;
+                }
+            });
         }
     }
     form_row(ui, tr!("壓縮", "Compress"), |ui| {
@@ -1868,4 +1903,278 @@ fn masks_row(app: &mut UiApp, ui: &mut Ui) {
             app.toast(tr!("已加上要遮住的範圍，錄影時會打上馬賽克", "Hidden area added; it'll be pixelated while recording"), false);
         });
     }
+}
+
+// ───────────── 外部元件 ─────────────
+
+/// 外部元件：FFmpeg（必要）、語音辨識用的 FFmpeg 與語音模型（自動字幕）；下載不了時可以設定 Proxy，或自己下載後選擇檔案
+fn components_page(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
+    let p = theme::pal(ui);
+    form_hint_full(
+        ui,
+        tr!(
+            "這些元件都是免費軟體，下載一次就好，存在這台電腦上。下載後會檢查檔案是否完整。",
+            "These are free components. They're downloaded once and kept on this computer, and checked after downloading."
+        ),
+        p.muted,
+    );
+    ui.add_space(8.0);
+    form_section(ui, tr!("錄影", "Recording"), |_| {});
+    component_card(app, d, ui, Kind::Ffmpeg);
+    ui.add_space(12.0);
+    form_section(ui, tr!("自動字幕（語音辨識）", "Auto subtitles (speech recognition)"), |_| {});
+    form_hint_full(
+        ui,
+        tr!(
+            "剪輯視窗的「自動產生字幕」、錄完自動處理的字幕要用到；不做字幕就不用下載。",
+            "Needed for “Generate subtitles” in the editor and subtitles after recording. Skip these if you don't use subtitles."
+        ),
+        p.muted,
+    );
+    ui.add_space(4.0);
+    for k in Kind::all().into_iter().filter(|k| *k != Kind::Ffmpeg) {
+        component_card(app, d, ui, k);
+        ui.add_space(6.0);
+    }
+    ui.add_space(8.0);
+    form_divider(ui);
+    network_section(app, d, ui);
+    ui.add_space(8.0);
+    form_section(ui, tr!("無法下載時", "If downloads don't work"), |_| {});
+    for line in [
+        tr!(
+            "1. 確認已連上網路；公司網路請在上面設定 Proxy，或請 IT 放行 github.com、gyan.dev、huggingface.co。",
+            "1. Check your internet connection. On a company network, set the proxy above, or ask IT to allow github.com, gyan.dev and huggingface.co."
+        ),
+        tr!("2. 按「用瀏覽器下載」，在瀏覽器（或另一台電腦）下載。", "2. Press “Download in browser” to download it in your browser (or on another computer)."),
+        tr!(
+            "3. 回到這裡按「選擇已下載的檔案…」：FFmpeg 可以選 zip 或 ffmpeg.exe，語音模型選 .bin。",
+            "3. Come back and press “Choose downloaded file…”: for FFmpeg choose the zip or ffmpeg.exe; for speech models choose the .bin file."
+        ),
+    ] {
+        form_hint_full(ui, line, p.muted);
+    }
+    // 下載中：持續更新進度
+    if Kind::all().iter().any(|k| app.core.component_status(*k).running) || d.installing.is_some() || d.net_testing {
+        ui.ctx().request_repaint_after(std::time::Duration::from_millis(250));
+    }
+}
+
+/// 一個元件：名稱、狀態、說明、進度或錯誤、按鈕
+fn component_card(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui, k: Kind) {
+    use theme::Tone;
+    let p = theme::pal(ui);
+    let st = app.core.component_status(k);
+    // 目前的 FFmpeg 就能辨識語音：不用另外下載
+    let builtin = k == Kind::SpeechFfmpeg && app.env.ffmpeg.has_whisper;
+    let installed = app.core.component_installed(k);
+    let installing = d.installing == Some(k);
+    egui::Frame::new().fill(p.surface2).corner_radius(CornerRadius::same(theme::RADIUS_SM)).inner_margin(10.0).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.horizontal(|ui| {
+            ui.label(RichText::new(k.name()).font(theme::font_bold(13.5)).color(p.text));
+            let (text, tone) = if st.running {
+                (trf!("下載中 {}%", "Downloading {}%", (st.progress * 100.0).floor() as u32), Tone::Accent)
+            } else if installing {
+                (tr!("安裝中…", "Installing…").to_string(), Tone::Accent)
+            } else if installed {
+                (tr!("已安裝", "Installed").to_string(), Tone::Ok)
+            } else if st.error.is_some() {
+                (tr!("下載失敗", "Download failed").to_string(), Tone::Bad)
+            } else {
+                (tr!("未安裝", "Not installed").to_string(), Tone::Plain)
+            };
+            theme::chip(ui, &text, tone, false);
+        });
+        let info = match k {
+            Kind::Ffmpeg if installed => trf!("版本 {}：{}", "Version {}: {}", app.env.ffmpeg.version.clone().unwrap_or_default(), app.env.ffmpeg.path.clone().unwrap_or_default()),
+            Kind::Ffmpeg => tr!("錄影、截圖、轉檔都要用到（必要，約 100 MB）。", "Required for recording, screenshots and conversion (about 100 MB).").into(),
+            _ if builtin => tr!("目前用的 FFmpeg 已經能辨識語音，不用另外下載。", "The FFmpeg in use can already recognize speech, so nothing else is needed.").into(),
+            Kind::SpeechFfmpeg => trf!("有語音辨識功能的 FFmpeg（約 {} MB），只用來產生字幕。", "An FFmpeg build with speech recognition (about {} MB), used only for subtitles.", k.mb()),
+            Kind::Model(_) => tr!("模型越大辨識越準，但比較慢。只需要其中一個。", "Bigger models are more accurate but slower. You only need one.").into(),
+        };
+        ui.add(egui::Label::new(RichText::new(info).font(theme::font(12.0)).color(p.muted)).wrap());
+        if st.running {
+            ui.add_space(4.0);
+            theme::progress(ui, st.progress, p.accent, 6.0);
+        }
+        if let Some(e) = st.error.as_ref().filter(|_| !st.running) {
+            ui.add_space(2.0);
+            ui.add(egui::Label::new(RichText::new(e).font(theme::font(12.0)).color(p.rec)).wrap());
+        }
+        if builtin {
+            return;
+        }
+        ui.add_space(4.0);
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
+            if st.running {
+                if Btn::new(tr!("取消下載", "Cancel download")).small().show(ui).clicked() {
+                    app.core.component_cancel(k);
+                }
+                return;
+            }
+            let busy = installing || app.locked();
+            if !installed || k == Kind::Ffmpeg {
+                let label = match (installed, st.error.is_some()) {
+                    (true, _) => tr!("重新下載", "Download again"),
+                    (false, true) => tr!("重試", "Retry"),
+                    (false, false) => tr!("下載", "Download"),
+                };
+                let tip = if busy { tr!("錄影中或安裝中，稍後再下載", "Wait until recording or installing is done") } else { "" };
+                let b = Btn::new(label).small().icon(Icon::Download).enabled(!busy).tooltip(tip);
+                if (if installed { b } else { b.primary() }).show(ui).clicked() {
+                    app.core.component_download(k);
+                }
+            }
+            if Btn::new(tr!("用瀏覽器下載", "Download in browser"))
+                .small()
+                .ghost()
+                .tooltip(tr!("自動下載失敗時：用瀏覽器下載，再按「選擇已下載的檔案…」", "If the automatic download fails: download it in your browser, then press “Choose downloaded file…”"))
+                .show(ui)
+                .clicked()
+            {
+                if let Err(e) = actions::open_url(&k.url()) {
+                    app.toast(e.message().to_string(), true);
+                }
+            }
+            if Btn::new(tr!("選擇已下載的檔案…", "Choose downloaded file…")).small().ghost().enabled(!busy).show(ui).clicked() {
+                pick_component_file(app, d, k);
+            }
+            if k == Kind::Ffmpeg {
+                if Btn::new(tr!("重新偵測", "Detect again")).small().ghost().show(ui).clicked() {
+                    app.refresh_env(|app| {
+                        let (msg, err) = if app.env.ffmpeg.found {
+                            (trf!("已找到 FFmpeg {}", "Found FFmpeg {}", app.env.ffmpeg.version.clone().unwrap_or_default()), false)
+                        } else {
+                            (tr!("仍然找不到 ffmpeg.exe", "ffmpeg.exe still not found").into(), true)
+                        };
+                        app.toast(msg, err);
+                    });
+                }
+            } else if installed
+                && Btn::new(tr!("移除", "Remove"))
+                    .small()
+                    .ghost()
+                    .enabled(!busy)
+                    .tooltip(tr!("刪除下載的檔案，釋放空間；之後要用時再下載", "Delete the downloaded file to free up space; download it again when needed"))
+                    .show(ui)
+                    .clicked()
+            {
+                match app.core.component_remove(k) {
+                    Ok(()) => app.toast(trf!("已移除{}", "Removed {}", k.name()), false),
+                    Err(e) => app.toast(e, true),
+                }
+            }
+            // FFmpeg：目前用的那一個所在的資料夾（可能是自己放的或 PATH 上的）
+            let path = match (k, &app.env.ffmpeg.path) {
+                (Kind::Ffmpeg, Some(found)) => Some(std::path::PathBuf::from(found)),
+                _ => k.path(),
+            };
+            if let Some(dir) = path.and_then(|p| p.parent().map(|d| d.to_path_buf())).filter(|d| d.is_dir()) {
+                if Btn::icon_only(Icon::Folder).small().ghost().tooltip(tr!("開啟所在的資料夾", "Open the folder")).show(ui).clicked() {
+                    if let Err(e) = actions::open(actions::OpenAction::Folder, &dir.display().to_string()) {
+                        app.toast(e.message().to_string(), true);
+                    }
+                }
+            }
+        });
+    });
+}
+
+/// 選擇自己下載的檔案並安裝
+fn pick_component_file(app: &mut UiApp, d: &mut SettingsDialog, k: Kind) {
+    d.installing = Some(k);
+    let core = app.core.clone();
+    let title = trf!("選擇已下載的{}", "Choose the downloaded {}", k.name());
+    let filter = (tr!("檔案", "Files"), k.file_filter());
+    app.spawn(
+        async move {
+            let picked = tokio::task::spawn_blocking(move || screenrecorder_core::filepick::pick(&title, &[filter])).await.unwrap_or_else(|e| Err(e.to_string()))?;
+            let Some(path) = picked else { return Ok(false) };
+            core.component_install_file(k, path).await.map(|_| true)
+        },
+        move |app, r: Result<bool, String>| {
+            if let Some(d) = &mut app.settings_dlg {
+                d.installing = None;
+            }
+            match r {
+                Ok(true) => {
+                    app.toast(trf!("已安裝{}", "Installed {}", k.name()), false);
+                    // FFmpeg 換了：重新讀環境（主畫面、剪輯都要用）
+                    app.refresh_env(|_| {});
+                }
+                Ok(false) => {}
+                Err(e) => app.toast(e, true),
+            }
+        },
+    );
+}
+
+/// 網路：Proxy 與測試連線
+fn network_section(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
+    let p = theme::pal(ui);
+    form_section(ui, tr!("網路", "Network"), |_| {});
+    form_row(ui, "Proxy", |ui| {
+        let items = [("auto", tr!("跟著系統", "System")), ("off", tr!("不使用", "None")), ("custom", tr!("自訂", "Custom"))];
+        let mut cur = items.iter().find(|(v, _)| *v == app.s.proxy_mode).map(|(v, _)| *v).unwrap_or("auto");
+        if segmented(ui, &mut cur, &items, true) {
+            app.s.proxy_mode = cur.to_string();
+            d.net_result = None;
+            app.save_settings_now();
+        }
+    });
+    match app.s.proxy_mode.as_str() {
+        "custom" => {
+            form_row(ui, tr!("位址", "Address"), |ui| {
+                let r = ui.add(egui::TextEdit::singleline(&mut app.s.proxy).desired_width(FORM_CTRL_W).hint_text("proxy.company.com:8080"));
+                if r.changed() {
+                    d.net_result = None;
+                    app.save_settings();
+                }
+            });
+            form_hint(
+                ui,
+                tr!(
+                    "例如 proxy.company.com:8080；需要帳號密碼時寫成 http://帳號:密碼@proxy.company.com:8080",
+                    "e.g. proxy.company.com:8080; with a password: http://user:password@proxy.company.com:8080"
+                ),
+                p.muted,
+            );
+        }
+        "auto" => {
+            let text = match screenrecorder_core::http::system_proxy() {
+                Some(px) => trf!("系統設定的 Proxy：{px}", "System proxy: {px}"),
+                None => tr!(
+                    "系統沒有設定 Proxy，直接連線（自動設定指令碼 PAC 不支援，請改用「自訂」）",
+                    "No system proxy is set, so connections are direct (automatic configuration scripts aren't supported; use Custom instead)"
+                )
+                .into(),
+            };
+            form_hint(ui, text, p.muted);
+        }
+        _ => {}
+    }
+    form_row(ui, "", |ui| {
+        if Btn::new(if d.net_testing { tr!("測試中…", "Testing…") } else { tr!("測試連線", "Test connection") }).small().enabled(!d.net_testing).show(ui).clicked() {
+            d.net_testing = true;
+            d.net_result = None;
+            app.save_settings_now();
+            app.spawn(async move { tokio::task::spawn_blocking(screenrecorder_core::http::test_connection).await.unwrap_or_else(|e| Err(e.to_string())) }, |app, r| {
+                if let Some(d) = &mut app.settings_dlg {
+                    d.net_testing = false;
+                    d.net_result = Some(r);
+                }
+            });
+        }
+        match &d.net_result {
+            Some(Ok(())) => {
+                ui.label(RichText::new(tr!("可以連上下載來源", "The download sources can be reached")).font(theme::font(12.5)).color(p.ok));
+            }
+            Some(Err(e)) => {
+                ui.add(egui::Label::new(RichText::new(e).font(theme::font(12.5)).color(p.rec)).wrap());
+            }
+            None => {}
+        }
+    });
 }

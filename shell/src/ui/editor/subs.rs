@@ -5,9 +5,10 @@ use super::shot::Act;
 use super::{Editor, VAct};
 use crate::ui::dialogs::{file_name, Ask};
 use crate::ui::theme::{self, segmented, Btn};
-use crate::ui::UiApp;
+use crate::ui::{settings_dialog, UiApp};
 use eframe::egui::{self, pos2, vec2, Align, Align2, Color32, CornerRadius, CursorIcon, Id, Layout, RichText, Sense, Stroke};
 use screenrecorder_core::annotate::{self, Ann, AnnKind};
+use screenrecorder_core::components;
 use screenrecorder_core::edit::normalize_ranges;
 use screenrecorder_core::format::video_clock;
 use screenrecorder_core::subtitles::{self, Cue, LANGUAGES, MODELS};
@@ -373,8 +374,6 @@ pub fn panel(ed: &mut Editor, ui: &mut egui::Ui) {
         let pct = job.progress.load(Ordering::Relaxed) as f32 / 10.0;
         let text = match job.phase.load(Ordering::Relaxed) {
             0 => tr!("正在確認 FFmpeg 支不支援語音辨識…", "Checking whether FFmpeg supports speech recognition…").to_string(),
-            1 => trf!("正在下載語音模型… {pct:.0}%", "Downloading the speech model… {pct:.0}%"),
-            3 => trf!("正在下載語音辨識用的 FFmpeg… {pct:.0}%", "Downloading FFmpeg for speech recognition… {pct:.0}%"),
             4 => trf!("正在翻成英文… {pct:.0}%", "Translating to English… {pct:.0}%"),
             _ => trf!("正在辨識語音… {pct:.0}%", "Recognizing speech… {pct:.0}%"),
         };
@@ -411,14 +410,11 @@ pub fn panel(ed: &mut Editor, ui: &mut egui::Ui) {
             if ed.subs_out == 2 {
                 ui.label(theme::muted(ui, tr!("辨識兩次（原文、英文），時間大約多一倍", "Recognizes twice (original and English), so it takes about twice as long")).font(theme::font(12.0)));
             }
-            let m = &MODELS[ed.subs_model.min(MODELS.len() - 1)];
-            let need = subtitles::pending_downloads(!ed.ffmpeg_whisper && !subtitles::speech_ffmpeg_downloaded(), m);
-            let note = if need.is_empty() {
-                tr!("需要的檔案都已下載", "Everything needed is downloaded").to_string()
-            } else {
-                trf!("第一次使用要下載{}", "The first use downloads {}", subtitles::describe_downloads(&need))
-            };
-            ui.label(theme::muted(ui, note).font(theme::font(12.0)));
+            let need = components::missing_for_subtitles(ed.ffmpeg_whisper, ed.subs_model);
+            if !need.is_empty() {
+                let note = trf!("要先到「設定 → 外部元件」下載{}", "First download {} in Settings → Components", components::describe(&need));
+                ui.label(RichText::new(note).font(theme::font(12.0)).color(theme::pal(ui).warn));
+            }
             if Btn::new(tr!("開始", "Start")).primary().small().show(ui).clicked() {
                 ed.pending = Some(Act::AutoSubs);
                 ui.close();
@@ -486,38 +482,36 @@ pub fn run(app: &mut UiApp, ed: &mut Editor, act: Act) {
             let mine = job.cancel.clone();
             let ffmpeg = ed.ffmpeg.clone();
             ed.subs = Some(job);
-            // 目前用的 FFmpeg 沒有 whisper 時，用（或下載）語音辨識用的 FFmpeg
+            // 語音辨識用的 FFmpeg、語音模型都在「設定 → 外部元件」下載；還沒下載時請使用者先去下載
             app.spawn(async move { subtitles::find_speech_ffmpeg(&ffmpeg).await }, move |app, speech| {
                 let Some(ed) = app.editor.as_mut().filter(|e| is_current(e, &mine)) else { return };
-                let m = MODELS[ed.subs_model.min(MODELS.len() - 1)];
-                let need = subtitles::pending_downloads(speech.is_none(), &m);
-                if need.is_empty() {
-                    return start(app, speech);
+                let mut need = components::missing_for_subtitles(true, ed.subs_model);
+                if speech.is_none() {
+                    need.insert(0, components::Kind::SpeechFfmpeg);
                 }
-                // 先問要不要下載（檔案不小）
-                ed.subs = None;
-                let msg = trf!(
-                    "第一次使用要下載{}，存在「{}」，之後就不用再下載。\n\n辨識在這台電腦上進行，影片不會上傳。",
-                    "The first use downloads {} to “{}”. This only happens once.\n\nRecognition runs on this computer; the video isn't uploaded.",
-                    subtitles::describe_downloads(&need),
-                    subtitles::model_dir().display()
-                );
-                let first = if speech.is_none() { 3 } else { 1 };
-                app.ask = Some(Ask::confirm(tr!("下載語音辨識需要的檔案", "Download speech recognition files"), msg, tr!("下載並開始", "Download and start"), move |app, _| {
-                    app.ask = None;
-                    if let Some(ed) = &mut app.editor {
-                        ed.subs = Some(SubsJob { phase: Arc::new(AtomicU8::new(first)), progress: Arc::new(AtomicU32::new(0)), cancel: Arc::new(AtomicBool::new(false)) });
+                match speech {
+                    Some(speech) if need.is_empty() => start(app, speech),
+                    _ => {
+                        ed.subs = None;
+                        let msg = trf!(
+                            "自動產生字幕要先下載{}。\n\n請到「設定 → 外部元件」下載（下載不了時，也可以在那裡選擇自己下載的檔案）。辨識在這台電腦上進行，影片不會上傳。",
+                            "Auto subtitles need {} first.\n\nDownload it in Settings → Components (if the download doesn't work, you can choose a file you downloaded yourself there). Recognition runs on this computer; the video isn't uploaded.",
+                            components::describe(&need)
+                        );
+                        app.ask = Some(Ask::confirm(tr!("需要先下載語音辨識的檔案", "Speech recognition files needed"), msg, tr!("前往外部元件", "Go to Components"), |app, _| {
+                            app.ask = None;
+                            settings_dialog::open(app, settings_dialog::Page::Components);
+                        }));
                     }
-                    start(app, speech);
-                }));
+                }
             });
         }
         _ => {}
     }
 }
 
-/// 下載語音辨識用的 FFmpeg（speech 是 None 時）與語音模型（需要時），再辨識語音；完成後加上字幕、在影片旁邊存一份 SRT
-fn start(app: &mut UiApp, speech: Option<PathBuf>) {
+/// 辨識語音（需要的檔案都已下載）；完成後加上字幕、在影片旁邊存一份 SRT
+fn start(app: &mut UiApp, speech: PathBuf) {
     let Some(ed) = &mut app.editor else { return };
     let Some(job) = &ed.subs else { return };
     let (phase, progress, cancel) = (job.phase.clone(), job.progress.clone(), job.cancel.clone());
@@ -529,20 +523,6 @@ fn start(app: &mut UiApp, speech: Option<PathBuf>) {
     let (video, duration) = (ed.entry.media.path.clone(), ed.duration);
     app.spawn(
         async move {
-            let speech = match speech {
-                Some(p) => p,
-                None => {
-                    phase.store(3, Ordering::Relaxed);
-                    progress.store(0, Ordering::Relaxed);
-                    subtitles::download_speech_ffmpeg(progress.clone(), cancel.clone()).await?
-                }
-            };
-            if !subtitles::model_ready(&m) {
-                phase.store(1, Ordering::Relaxed);
-                progress.store(0, Ordering::Relaxed);
-                let (p, c) = (progress.clone(), cancel.clone());
-                tokio::task::spawn_blocking(move || subtitles::download_model(&m, &p, &c)).await.map_err(|e| e.to_string())??;
-            }
             let orig = if out != 1 {
                 phase.store(2, Ordering::Relaxed);
                 progress.store(0, Ordering::Relaxed);
