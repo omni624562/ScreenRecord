@@ -92,6 +92,8 @@ pub struct UiSettings {
     pub hide_icons: bool,
     /// 錄影時打開 Windows 的勿擾
     pub rec_quiet: bool,
+    /// 開會時（Teams、Zoom… 用麥克風）提醒錄影（core 的 tray 讀這個欄位）
+    pub meeting_remind: bool,
     /// 錄影時打上馬賽克的固定範圍（桌面座標）
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub rec_masks: Vec<Rect>,
@@ -266,6 +268,7 @@ impl UiSettings {
             cursor_halo: boolean("cursorHalo").unwrap_or(false),
             hide_icons: boolean("hideIcons").unwrap_or(false),
             rec_quiet: boolean("recQuiet").unwrap_or(false),
+            meeting_remind: boolean("meetingRemind").unwrap_or(true),
             rec_masks: o.get("recMasks").and_then(|v| serde_json::from_value::<Vec<Rect>>(v.clone()).ok()).unwrap_or_default().into_iter().filter(|r| r.width >= 4 && r.height >= 4).take(20).collect(),
             mic_denoise: boolean("micDenoise").unwrap_or(false),
             rec_bar: o.get("recBar").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default(),

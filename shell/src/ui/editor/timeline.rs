@@ -46,6 +46,8 @@ const FAST: Color32 = Color32::from_rgb(0x00, 0x78, 0xff);
 /// 分析找到的片段：不動又沒聲音（青綠色）、沒說話（紫色）
 pub(crate) const IDLE_MARK: Color32 = Color32::from_rgb(0x14, 0xb8, 0xa6);
 pub(crate) const QUIET_MARK: Color32 = Color32::from_rgb(0xa8, 0x55, 0xf7);
+/// 錄影時麥克風靜音的時段
+const MUTE_MARK: Color32 = Color32::from_rgb(0x64, 0x74, 0x8b);
 
 /// 時間軸縮圖：在背景依序解出時間軸上各個時間點的小圖（放大後只解顯示的範圍）；
 /// 一張一張出現；關閉、換影片或再次縮放時停止。
@@ -292,6 +294,19 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, toast: &mut
             let c = pos2(r.center().x, rect.top() + 21.0);
             painter.rect_filled(Rect::from_center_size(c, g.size() + vec2(8.0, 2.0)), CornerRadius::same(4), FAST);
             painter.galley(c - g.size() / 2.0, g, Color32::WHITE);
+        }
+    }
+    // 錄影時麥克風靜音的時段：上緣一條灰色帶（夠寬時寫「麥克風靜音」）
+    for &[m0, m1] in ed.mutes.iter().filter(|m| m[1] > a && m[0] < b) {
+        let r = full(m0, m1).shrink2(vec2(1.0, 0.0));
+        let band = Rect::from_min_max(pos2(r.left(), r.top() + 6.0), pos2(r.right(), r.top() + 22.0));
+        painter.rect_filled(band, CornerRadius::ZERO, MUTE_MARK);
+        for label in [tr!("🔇 麥克風靜音", "🔇 Mic muted"), "🔇"] {
+            let g = painter.layout_no_wrap(label.to_string(), theme::font_bold(10.5), Color32::WHITE);
+            if band.width() > g.size().x + 6.0 {
+                painter.galley(band.center() - g.size() / 2.0, g, Color32::WHITE);
+                break;
+            }
         }
     }
     // 分析找到、還沒處理的片段：淡淡的底色，上緣一條色帶

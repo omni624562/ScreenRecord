@@ -1169,6 +1169,9 @@ fn entry_menu(ui: &mut egui::Ui, app: &UiApp, e: &LibraryEntry, full: bool, req:
         if menu_item(ui, tr!("做成直式影片（Shorts / Reels）…", "Make a vertical video (Shorts / Reels)…"), app.blocked(EntryAction::Vertical)) {
             pick(EntryAction::Vertical, req);
         }
+        if ui.button(tr!("做封面（YouTube 縮圖）…", "Make a cover (YouTube thumbnail)…")).clicked() {
+            pick(EntryAction::Cover, req);
+        }
         ui.separator();
     }
     if ui.button(tr!("複製檔案（貼到 LINE、資料夾）", "Copy file (paste into LINE or a folder)")).clicked() {

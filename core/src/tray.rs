@@ -105,6 +105,8 @@ pub enum TrayCommand {
     Mark,
     /// 螢幕畫筆（開 / 關）
     Pen,
+    /// 錄影中麥克風靜音 / 取消靜音
+    MuteMic,
     /// 回溯錄影：沒在錄影時開始，回溯錄影中存下最近幾分鐘（選單與快速鍵）
     Replay,
     OpenUpdate,
@@ -146,6 +148,8 @@ pub struct TrayState {
     pub replay_len: String,
     /// 回溯錄影中
     pub replay: bool,
+    /// 錄影中有錄麥克風：是否暫時靜音中（選單打勾）
+    pub mic_muted: Option<bool>,
     pub last_result: Option<String>,
     /// None = 無法設定（開發版）
     pub autostart: Option<bool>,
@@ -293,6 +297,7 @@ impl TrayController {
             has_shot,
             steps,
             replay: st.replay.is_some(),
+            mic_muted: st.mic_muted,
             replay_len,
             last_result: if last_result { c.last_result_path.clone() } else { None },
             autostart: c.autostart,
@@ -397,6 +402,66 @@ impl TrayController {
         let mut ui = self.app.settings.load().ui.filter(|v| v.is_object()).unwrap_or_else(|| serde_json::json!({}));
         ui[if system { "audioSystem" } else { "audioMic" }] = serde_json::Value::Bool(on);
         self.app.settings.save(SettingsPatch { config: serde_json::to_value(&cfg).ok(), ui: Some(ui), ..Default::default() });
+    }
+
+    /// 開會時提醒錄影（設定 → 錄影，預設打開）
+    #[cfg_attr(not(windows), allow(dead_code))]
+    fn meeting_remind(&self) -> bool {
+        self.app.settings.load().ui.as_ref().and_then(|u| u.get("meetingRemind")).and_then(|v| v.as_bool()).unwrap_or(true)
+    }
+
+    /// 開會時提醒：畫面右下角問要不要開始 / 停止錄影（不會被錄進去；30 秒沒回答就收起來）
+    #[cfg_attr(not(windows), allow(dead_code))]
+    fn meeting_prompt(self: &Arc<Self>, p: crate::meeting::Prompt) {
+        use crate::meeting::Prompt;
+        const YES: u32 = 1;
+        const NO: u32 = 2;
+        const NEVER: u32 = 3;
+        let (lines, yes, cmd) = match &p {
+            Prompt::Start(app) => {
+                (vec![trf!("{app} 開始通話了", "{app} is in a call"), tr!("要錄下這場會議嗎？", "Record this meeting?").to_string()], tr!("開始錄影", "Start recording"), TrayCommand::StartLast)
+            }
+            Prompt::Stop(app) => (
+                vec![trf!("{app} 的通話結束了", "The {app} call has ended"), tr!("要停止錄影並儲存嗎？", "Stop and save the recording?").to_string()],
+                tr!("停止並儲存", "Stop and save"),
+                TrayCommand::Stop,
+            ),
+        };
+        info!("[會議] {}", lines.join(" "));
+        #[cfg(windows)]
+        {
+            let content = crate::bubble::Content {
+                big: None,
+                lines,
+                buttons: vec![(YES, yes.to_string(), true), (NO, tr!("不用", "No").to_string(), false), (NEVER, tr!("不要再提醒", "Don't remind me").to_string(), false)],
+            };
+            let me = self.clone();
+            let rt = tokio::runtime::Handle::current();
+            std::thread::spawn(move || {
+                let b = crate::bubble_win::Bubble::show(content, crate::bubble_win::Options { clickable: true, esc: true, near: None, bottom: true, on: None });
+                let end = std::time::Instant::now() + std::time::Duration::from_secs(30);
+                let mut choice = None;
+                while choice.is_none() && std::time::Instant::now() < end {
+                    choice = b.events().into_iter().find(|e| [YES, NO, NEVER].contains(e) || *e == crate::bubble_win::ESC);
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                }
+                drop(b);
+                match choice {
+                    Some(YES) => {
+                        rt.spawn(async move { me.run(cmd).await });
+                    }
+                    Some(NEVER) => {
+                        let mut ui = me.app.settings.load().ui.filter(|v| v.is_object()).unwrap_or_else(|| serde_json::json!({}));
+                        ui["meetingRemind"] = serde_json::Value::Bool(false);
+                        me.app.settings.save(SettingsPatch { ui: Some(ui), ..Default::default() });
+                        info!("[會議] 不再提醒（可以在「設定 → 錄影」打開）");
+                    }
+                    _ => {}
+                }
+            });
+        }
+        #[cfg(not(windows))]
+        let _ = (lines, yes, cmd, YES, NO, NEVER);
     }
 
     /// 切換錄影設定組合：操作視窗的設定換成組合裡的值（看到 rev 變了會重新讀取），錄影設定直接用組合的
@@ -507,6 +572,13 @@ impl TrayController {
             }
             TrayCommand::Mark => {
                 let _ = rec.add_marker();
+                return Ok(());
+            }
+            // 沒在錄影、沒錄麥克風時按快速鍵：不提示
+            TrayCommand::MuteMic => {
+                if let Ok(muted) = rec.toggle_mic_mute() {
+                    app.mic_mute_changed(muted);
+                }
                 return Ok(());
             }
             TrayCommand::Replay => {
@@ -726,6 +798,8 @@ pub async fn start(app: &Arc<App>, wait: std::time::Duration) -> bool {
         });
         tokio::spawn(async move {
             let mut iv = tokio::time::interval(std::time::Duration::from_secs(1));
+            let mut watch = crate::meeting::Watch::default();
+            let mut n = 0u64;
             loop {
                 iv.tick().await;
                 if AUTOSTART_CHANGED.swap(false, Ordering::Relaxed) {
@@ -733,6 +807,16 @@ pub async fn start(app: &Arc<App>, wait: std::time::Duration) -> bool {
                     ctl.ctl.lock().unwrap().autostart = now;
                 }
                 ctl.tick();
+                // 開會時提醒錄影：每 3 秒看一次哪個會議程式在用麥克風
+                n += 1;
+                if n.is_multiple_of(3) && ctl.meeting_remind() {
+                    let using = tokio::task::spawn_blocking(crate::meeting::using_mic).await.unwrap_or_default();
+                    let st = ctl.app.recorder.status();
+                    let recording = st.replay.is_none() && matches!(st.state, RecorderState::Countdown | RecorderState::Recording | RecorderState::Paused);
+                    if let Some(p) = watch.step(using.first().copied(), recording) {
+                        ctl.meeting_prompt(p);
+                    }
+                }
             }
         });
         true
@@ -797,6 +881,11 @@ mod tests {
         assert_eq!(s.last_source, "所有螢幕"); // 沒有螢幕資訊時
         assert!(!s.can_record); // 沒有 FFmpeg
         assert!(s.audio_system && s.audio_mic); // 預設錄系統聲音與麥克風
+                                                // 開會時提醒錄影：預設打開，操作視窗關掉後不提醒
+        assert!(ctl.meeting_remind());
+        app.settings.save(SettingsPatch { ui: Some(serde_json::json!({ "meetingRemind": false })), ..Default::default() });
+        assert!(!ctl.meeting_remind());
+        app.settings.save(SettingsPatch { ui: Some(serde_json::json!({})), ..Default::default() });
 
         ctl.run(TrayCommand::ToggleSystem).await;
         let saved = app.settings.load();

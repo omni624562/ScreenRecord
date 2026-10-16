@@ -21,8 +21,7 @@ pub fn should_show(app: &UiApp) -> bool {
 #[derive(Clone, Copy)]
 enum Try {
     None,
-    /// 打開設定的某一頁（這一版的介紹沒用到，保留給之後）
-    #[allow(dead_code)]
+    /// 打開設定的某一頁
     Settings(Page),
     /// 在螢幕上框選截圖（這一版的介紹沒用到，保留給之後）
     #[allow(dead_code)]
@@ -35,40 +34,41 @@ enum Try {
 }
 
 /// 這一版的新功能（標題、說明、試試看）：最多 6 項，快速鍵用目前的設定
-fn items(_app: &UiApp) -> Vec<(String, String, Try)> {
+fn items(app: &UiApp) -> Vec<(String, String, Try)> {
+    let mute = app.keys.label(7);
+    let mute = if mute.is_empty() { String::new() } else { trf!("（{mute}）", " ({mute})") };
     vec![
         (
-            tr!("步驟教學另存成 Word、PowerPoint", "Save step-by-step guides as Word or PowerPoint").into(),
+            tr!("開會時提醒錄影", "Reminders to record meetings").into(),
             tr!(
-                "步驟截圖整理好後，除了網頁，也可以直接做成 Word 文件或 PowerPoint 簡報（一步一張投影片），拿去改、轉寄都方便。",
-                "Besides a web page, organized step screenshots can now become a Word document or a PowerPoint deck (one slide per step), ready to edit or forward."
+                "Teams、Zoom、Google Meet、LINE 等開始通話時，右下角會問要不要錄影；通話結束時再問要不要停止。只提醒，不會自己錄。",
+                "When Teams, Zoom, Google Meet, LINE and similar apps start a call, a prompt asks whether to record; when the call ends it asks whether to stop. It only asks."
             )
             .into(),
-            Try::None,
+            Try::Settings(Page::Record),
         ),
         (
-            tr!("比較兩張截圖", "Compare two screenshots").into(),
-            tr!(
-                "在全部截圖勾兩張，按「比較差異」，不一樣的地方會在較新的那張上用紅框標出來，改版前後、找錯都很快。",
-                "Select two screenshots and press Compare: what changed is boxed in red on the newer one, handy for before/after checks."
-            )
-            .into(),
-            Try::Library(true),
+            tr!("錄影中麥克風靜音", "Mute the microphone while recording").into(),
+            trf!(
+                "要咳嗽、接電話時，按快速鍵{mute}或錄影面板的麥克風按鈕暫時靜音，剪輯時時間軸上會標出靜音的段落。",
+                "Need to cough or take a call? Press the shortcut{mute} or the microphone button to mute for a moment. Muted parts are marked on the editing timeline."
+            ),
+            Try::Settings(Page::Keys),
         ),
         (
-            tr!("傳到手機", "Send to phone").into(),
+            tr!("做封面", "Make a cover").into(),
             tr!(
-                "錄影或截圖的「傳到手機」會顯示 QR 碼，手機用相機掃一下就能看、下載，不用傳 LINE 給自己（手機和電腦要在同一個 Wi-Fi）。",
-                "“Send to phone” shows a QR code; scan it with your phone's camera to view and download the file, no need to message it to yourself (same Wi-Fi as this computer)."
+                "錄影的「更多」選單或檢視器按「做封面」，挑一格畫面打上標題，做成 YouTube 用的封面圖，也能設成影片在檔案總管的縮圖。",
+                "Choose “Make cover” to pick a frame, add a title and save a YouTube cover image. It can also become the video's thumbnail in File Explorer."
             )
             .into(),
             Try::Library(false),
         ),
         (
-            tr!("多支錄影一次處理", "Process several recordings at once").into(),
+            tr!("接縫淡入淡出", "Fade at cuts").into(),
             tr!(
-                "在全部錄影勾選幾支，按「一次處理」，就能一起剪掉沒動靜的片段、產生字幕、做加速版或壓縮，一支一支自動做完。",
-                "Select recordings and press Process all to cut idle parts, generate subtitles, make sped-up versions or compress them, one after another."
+                "剪輯時刪掉片段的地方，勾選「接縫淡入淡出」，畫面和聲音會先淡出再淡入，不會突然跳過去或「啪」一聲。",
+                "Turn on “Fade at cuts” when editing: where a section was removed, the picture and sound fade out and back in instead of jumping or popping."
             )
             .into(),
             Try::Library(false),

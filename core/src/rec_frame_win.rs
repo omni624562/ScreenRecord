@@ -19,9 +19,10 @@ use windows::core::w;
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND};
 use windows::Win32::Graphics::Gdi::{
-    BeginPaint, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, CreateFontW, CreateSolidBrush, DeleteDC, DeleteObject, DrawTextW, Ellipse, EndPaint, FillRect, GetMonitorInfoW, GetStockObject,
-    InvalidateRect, MonitorFromPoint, MonitorFromRect, Polygon, RoundRect, SelectObject, SetBkMode, SetTextColor, CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS, DEFAULT_CHARSET, DT_LEFT, DT_SINGLELINE,
-    DT_VCENTER, FW_SEMIBOLD, HDC, MONITORINFO, MONITOR_DEFAULTTONEAREST, MONITOR_DEFAULTTONULL, NULL_PEN, OUT_DEFAULT_PRECIS, PAINTSTRUCT, SRCCOPY, TRANSPARENT,
+    BeginPaint, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, CreateFontW, CreatePen, CreateSolidBrush, DeleteDC, DeleteObject, DrawTextW, Ellipse, EndPaint, FillRect, GetMonitorInfoW,
+    GetStockObject, InvalidateRect, LineTo, MonitorFromPoint, MonitorFromRect, MoveToEx, Polygon, RoundRect, SelectObject, SetBkMode, SetTextColor, CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS,
+    DEFAULT_CHARSET, DT_LEFT, DT_SINGLELINE, DT_VCENTER, FW_SEMIBOLD, HDC, MONITORINFO, MONITOR_DEFAULTTONEAREST, MONITOR_DEFAULTTONULL, NULL_PEN, OUT_DEFAULT_PRECIS, PAINTSTRUCT, PS_SOLID, SRCCOPY,
+    TRANSPARENT,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
@@ -56,6 +57,8 @@ pub enum FrameCmd {
     Stop,
     /// 加標記
     Mark,
+    /// 麥克風靜音 / 取消靜音
+    MuteMic,
     /// 重播緩衝：存下最近幾分鐘
     SaveReplay,
     /// 把範圍移到 (x, y)（左上角，虛擬桌面座標）
@@ -68,6 +71,8 @@ pub enum FrameCmd {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Button {
+    /// 麥克風（true = 靜音中，畫一條紅色斜線）
+    Mic(bool),
     Mark,
     Save,
     Pause,
@@ -195,25 +200,31 @@ fn bar_for(f: &FrameInfo, scale: f32, mode: RecBarMode) -> Option<Bar> {
     let bar = match (f.state, mode) {
         (RecorderState::Countdown, _) => Bar { text: trf!("倒數 {}", "Starts in {}", f.countdown_ms.unwrap_or(0).div_ceil(1000)), marks: 0, dot: GREY, buttons: vec![Button::Stop], scale },
         (_, RecBarMode::Hidden) => return None,
-        // 精簡：狀態點與停止（暫停中多一個繼續、重播緩衝多一個存下）
+        // 精簡：狀態點與停止（暫停中多一個繼續、重播緩衝多一個存下；麥克風靜音中多一個麥克風，看得出來）
         (_, RecBarMode::Compact) => {
-            let buttons = if f.replay {
+            let mut buttons = if f.replay {
                 vec![Button::Save, Button::Stop, Button::Expand]
             } else if paused {
                 vec![Button::Resume, Button::Stop, Button::Expand]
             } else {
                 vec![Button::Stop, Button::Expand]
             };
+            if f.mic_muted == Some(true) {
+                buttons.insert(0, Button::Mic(true));
+            }
             Bar { text: String::new(), marks: 0, dot, buttons, scale }
         }
         (_, RecBarMode::Full) => {
-            let (marks, buttons) = if f.replay {
+            let (marks, mut buttons) = if f.replay {
                 (0, vec![Button::Save, Button::Stop, Button::Shrink])
             } else if paused {
                 (f.markers, vec![Button::Mark, Button::Resume, Button::Stop, Button::Shrink])
             } else {
                 (f.markers, vec![Button::Mark, Button::Pause, Button::Stop, Button::Shrink])
             };
+            if let Some(m) = f.mic_muted {
+                buttons.insert(0, Button::Mic(m));
+            }
             Bar { text: clock(f.recorded_ms as f64), marks, dot, buttons, scale }
         }
     };
@@ -273,6 +284,7 @@ unsafe fn run(info: impl Fn() -> Option<FrameInfo>, prefs: impl Fn() -> RecBarPr
                 Button::Resume => FrameCmd::Resume,
                 Button::Stop => FrameCmd::Stop,
                 Button::Mark => FrameCmd::Mark,
+                Button::Mic(_) => FrameCmd::MuteMic,
                 Button::Save => FrameCmd::SaveReplay,
                 Button::Shrink => FrameCmd::SetMode(RecBarMode::Compact),
                 Button::Expand => FrameCmd::SetMode(RecBarMode::Full),
@@ -689,6 +701,31 @@ unsafe fn paint_bar(hwnd: HWND, hdc: HDC) {
                 SelectObject(mem, prev);
                 let _ = DeleteObject(wb.into());
             }
+            Button::Mic(muted) => {
+                // 麥克風：圓角的頭、下面的 U 形支架與底座；靜音中變灰，再畫一條紅色斜線
+                let color = if *muted { GREY } else { WHITE };
+                let hb = CreateSolidBrush(color);
+                let prev = SelectObject(mem, hb.into());
+                let (hw, top, bot) = (px(3.0, s), cy - k, cy + px(1.5, s));
+                let _ = RoundRect(mem, cx - hw, top, cx + hw + 1, bot, hw * 2, hw * 2);
+                SelectObject(mem, prev);
+                let _ = DeleteObject(hb.into());
+                let t = px(1.5, s).max(1);
+                let (aw, ay) = (px(5.0, s), cy - px(1.0, s));
+                fill(mem, &RECT { left: cx - aw, top: ay, right: cx - aw + t, bottom: cy + px(2.5, s) }, color);
+                fill(mem, &RECT { left: cx + aw - t + 1, top: ay, right: cx + aw + 1, bottom: cy + px(2.5, s) }, color);
+                fill(mem, &RECT { left: cx - aw, top: cy + px(2.5, s), right: cx + aw + 1, bottom: cy + px(2.5, s) + t }, color);
+                fill(mem, &RECT { left: cx - t / 2, top: cy + px(2.5, s), right: cx - t / 2 + t, bottom: cy + k }, color);
+                fill(mem, &RECT { left: cx - px(3.0, s), top: cy + k - t, right: cx + px(3.0, s) + 1, bottom: cy + k }, color);
+                if *muted {
+                    let pen = CreatePen(PS_SOLID, px(2.0, s).max(2), RED);
+                    let prev = SelectObject(mem, pen.into());
+                    let _ = MoveToEx(mem, cx - k, cy - k, None);
+                    let _ = LineTo(mem, cx + k, cy + k);
+                    SelectObject(mem, prev);
+                    let _ = DeleteObject(pen.into());
+                }
+            }
             Button::Mark => {
                 // 小旗子：旗桿 + 三角旗
                 let pole = px(2.0, s).max(1);
@@ -738,7 +775,7 @@ mod tests {
     use super::*;
 
     fn info(state: RecorderState) -> FrameInfo {
-        FrameInfo { area: Rect { x: 0, y: 0, width: 640, height: 480 }, state, recorded_ms: 61_000, countdown_ms: Some(2_500), markers: 2, full: true, replay: false }
+        FrameInfo { area: Rect { x: 0, y: 0, width: 640, height: 480 }, state, recorded_ms: 61_000, countdown_ms: Some(2_500), markers: 2, full: true, replay: false, mic_muted: None }
     }
 
     #[test]
@@ -757,8 +794,15 @@ mod tests {
         assert!(bar_for(&info(RecorderState::Recording), 1.0, RecBarMode::Hidden).is_none());
         assert!(bar_for(&info(RecorderState::Paused), 1.0, RecBarMode::Hidden).is_none());
         assert_eq!(bar_for(&info(RecorderState::Countdown), 1.0, RecBarMode::Hidden).unwrap().buttons, [Button::Stop]);
+        // 有錄麥克風：完整的控制列最前面是麥克風；靜音中精簡的也顯示
+        let mic = FrameInfo { mic_muted: Some(false), ..info(RecorderState::Recording) };
+        assert_eq!(bar_for(&mic, 1.0, RecBarMode::Full).unwrap().buttons[0], Button::Mic(false));
+        assert_eq!(bar_for(&mic, 1.0, RecBarMode::Compact).unwrap().buttons, [Button::Stop, Button::Expand]);
+        let muted = FrameInfo { mic_muted: Some(true), ..mic };
+        assert_eq!(bar_for(&muted, 1.0, RecBarMode::Compact).unwrap().buttons, [Button::Mic(true), Button::Stop, Button::Expand]);
+        let with_mic = bar_for(&muted, 1.0, RecBarMode::Full).unwrap();
         // 按鈕都在控制列裡、不重疊
-        for b in [&full, &compact] {
+        for b in [&full, &compact, &with_mic] {
             let (w, _) = bar_size(b);
             for i in 0..b.buttons.len() {
                 let r = button_rect(b, i);

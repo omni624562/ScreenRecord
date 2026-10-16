@@ -30,8 +30,8 @@ const WM_WAKE: u32 = WM_APP + 2;
 const NIN_BALLOONUSERCLICK: u32 = 0x405;
 /// 圖示加不上去時重試的計時器
 const RETRY_TIMER: usize = 7;
-/// 全域快速鍵的 id：1 錄影、2 暫停、3 截圖、4 框選截圖、5 加標記、6 螢幕畫筆、7 回溯錄影（與 Hotkeys::all 的順序相同）
-const HOTKEY_IDS: [i32; crate::types::HOTKEY_COUNT] = [1, 2, 3, 4, 5, 6, 7];
+/// 全域快速鍵的 id：1 錄影、2 暫停、3 截圖、4 框選截圖、5 加標記、6 螢幕畫筆、7 回溯錄影、8 麥克風靜音（與 Hotkeys::all 的順序相同）
+const HOTKEY_IDS: [i32; crate::types::HOTKEY_COUNT] = [1, 2, 3, 4, 5, 6, 7, 8];
 
 /// 登記全域快速鍵（先取消舊的）；被其他程式占用時登記失敗，停用的視為成功
 fn register_hotkeys(hwnd: HWND, keys: &Hotkeys) -> HotkeyStatus {
@@ -280,6 +280,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                 // 畫筆直接在這裡開關（不用等）；視窗在自己的執行緒
                 6 => crate::screen_pen_win::toggle(),
                 7 => send_cmd(TrayCommand::Replay),
+                8 => send_cmd(TrayCommand::MuteMic),
                 _ => {}
             }
             LRESULT(0)
@@ -421,6 +422,9 @@ fn show_menu() {
             m.add(root, &trf!("停止並儲存(&S){}", "&Stop and save{}", tab(&st.keys[0])), TrayCommand::Stop, idle || st.rec == RecorderState::Stopping, false);
         }
         m.add(root, &trf!("加標記(&K){}", "Add &marker{}", tab(&st.keys[4])), TrayCommand::Mark, !matches!(st.rec, RecorderState::Recording | RecorderState::Paused) || st.replay, false);
+        if let Some(muted) = st.mic_muted {
+            m.add(root, &trf!("麥克風靜音(&U){}", "M&ute microphone{}", tab(&st.keys[7])), TrayCommand::MuteMic, false, muted);
+        }
         m.add(root, &trf!("螢幕畫筆(&D){}", "Screen pe&n{}", tab(&st.keys[5])), TrayCommand::Pen, false, crate::screen_pen_win::active());
         Menu::sep(root);
         // 截圖：與主畫面截圖的小箭頭選單相同的項目、順序與文字（「截圖方式」「小工具」兩組，標題是灰色的項目）

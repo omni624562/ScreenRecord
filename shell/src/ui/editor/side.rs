@@ -166,6 +166,11 @@ fn time_panel(ed: &mut Editor, ui: &mut egui::Ui, toast: &mut Option<(String, bo
         if let Some(i) = restore {
             ed.restore_removed(i);
         }
+        // 接縫淡入淡出：刪掉片段的地方不會突然跳過去
+        theme::check(ui, &mut ed.spec.fade_cuts, RichText::new(tr!("接縫淡入淡出", "Fade at cuts")).font(theme::font(12.5))).on_hover_text(tr!(
+            "刪掉片段的地方，畫面和聲音先淡出、再淡入（各 0.2 秒），不會突然跳過去或「啪」一聲。輸出時才會套用",
+            "Where a section was removed, the picture and sound fade out and back in (0.2 s each) instead of jumping or popping. Applied when you save"
+        ));
     }
     // 加速的片段
     if !ed.spec.fast.is_empty() {

@@ -475,6 +475,19 @@ fn record_page(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
             app.save_settings();
         }
     });
+    form_row(ui, tr!("會議", "Meetings"), |ui| {
+        let mut v = app.s.meeting_remind;
+        if switch(ui, &mut v, tr!("開會時提醒錄影", "Remind me to record meetings"), true)
+            .on_hover_text(tr!(
+                "Teams、Zoom、Google Meet（瀏覽器）、LINE 等開始通話（用麥克風）時，右下角問要不要開始錄影；通話結束時問要不要停止。只會提醒，不會自己開始錄",
+                "When Teams, Zoom, Google Meet (in a browser), LINE and similar apps start a call (use the microphone), a prompt asks whether to start recording; when the call ends it asks whether to stop. It only asks and never records on its own"
+            ))
+            .changed()
+        {
+            app.s.meeting_remind = v;
+            app.save_settings();
+        }
+    });
     masks_row(app, ui);
     camera_rows(app, ui);
     form_divider(ui);

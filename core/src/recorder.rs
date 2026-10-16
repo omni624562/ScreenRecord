@@ -210,6 +210,9 @@ struct St {
     clicks: Vec<(u64, f32, f32)>,
     /// 游標的位置（剪輯時換成平滑、放大的游標用；見 cursor.rs）
     cursor: Vec<crate::cursor::Sample>,
+    /// 麥克風暫時靜音的時段（已錄的毫秒數）；muted_at = 目前這段從哪裡開始（靜音中）
+    mutes: Vec<(u64, u64)>,
+    muted_at: Option<u64>,
     busy: Option<String>,
     config: Option<RecordConfig>,
     plan: Option<CapturePlan>,
@@ -286,6 +289,29 @@ impl St {
         let full = self.silent_ever & !self.audio_ok_ever;
         let partly = self.silent_ever & self.audio_ok_ever;
         full | (partly << 2)
+    }
+
+    /// None = 這次沒錄麥克風；Some(true) = 暫時靜音中
+    fn mic_muted(&self) -> Option<bool> {
+        self.config.as_ref().filter(|c| c.audio.mic).map(|_| self.muted_at.is_some())
+    }
+
+    /// 錄完：靜音的時段（還在靜音中的算到結尾），並取消靜音
+    fn take_mutes(&mut self) -> Vec<[f64; 2]> {
+        if let Some(a) = self.muted_at.take() {
+            let t = self.recorded_ms();
+            if t > a {
+                self.mutes.push((a, t));
+            }
+        }
+        crate::audiopipe::MIC_MUTED.store(false, std::sync::atomic::Ordering::Relaxed);
+        std::mem::take(&mut self.mutes).into_iter().map(|(a, b)| [a as f64 / 1000.0, b as f64 / 1000.0]).collect()
+    }
+
+    fn reset_mutes(&mut self) {
+        self.mutes.clear();
+        self.muted_at = None;
+        crate::audiopipe::MIC_MUTED.store(false, std::sync::atomic::Ordering::Relaxed);
     }
 
     fn recorded_ms(&self) -> u64 {
@@ -394,6 +420,8 @@ pub struct FrameInfo {
     pub full: bool,
     /// 回溯錄影中：控制列是「存下」與「停止」（不能暫停、加標記）
     pub replay: bool,
+    /// 麥克風：None = 這次沒錄麥克風；Some(true) = 暫時靜音中
+    pub mic_muted: Option<bool>,
 }
 
 /// 錄影時記下的時間點：標記與滑鼠點擊（存在 markers/，剪輯時用）
@@ -411,11 +439,14 @@ pub struct Marks {
     /// 錄影時沒有把游標錄進影片（剪輯時換成大游標才不會重疊）
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub no_cursor: bool,
+    /// 麥克風暫時靜音的時段：[開始秒, 結束秒]（剪輯時標在時間軸上）
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mutes: Vec<[f64; 2]>,
 }
 
 impl Marks {
     pub fn is_empty(&self) -> bool {
-        self.markers.is_empty() && self.clicks.is_empty() && self.cursor.is_empty()
+        self.markers.is_empty() && self.clicks.is_empty() && self.cursor.is_empty() && self.mutes.is_empty()
     }
 }
 
@@ -752,7 +783,16 @@ impl Recorder {
         let c = st.config.as_ref()?;
         let full = c.audio_only || !matches!(c.source, SourceConfig::Region { .. });
         let countdown_ms = if st.state == RecorderState::Countdown { st.countdown.as_ref().map(|c| c.ends_at.saturating_sub(now_ms())) } else { None };
-        Some(FrameInfo { area: st.plan.as_ref()?.rect, state: st.state, recorded_ms: st.recorded_ms(), countdown_ms, markers: st.markers.len() as u32, full, replay: st.replay_sec().is_some() })
+        Some(FrameInfo {
+            area: st.plan.as_ref()?.rect,
+            state: st.state,
+            recorded_ms: st.recorded_ms(),
+            countdown_ms,
+            markers: st.markers.len() as u32,
+            full,
+            replay: st.replay_sec().is_some(),
+            mic_muted: st.mic_muted(),
+        })
     }
 
     /// 攝影機小視窗：倒數、錄影、暫停中，而且選了攝影機（只錄聲音時沒有）
@@ -838,6 +878,34 @@ impl Recorder {
         Ok(n)
     }
 
+    /// 錄影中麥克風靜音 / 取消靜音（只有這次有錄麥克風時）；回傳現在是不是靜音中
+    pub fn toggle_mic_mute(&self) -> Result<bool> {
+        let mut st = self.lock();
+        if !matches!(st.state, RecorderState::Recording | RecorderState::Paused) {
+            return Err(Error::config(tr!("錄影中才能把麥克風靜音", "The microphone can only be muted while recording")));
+        }
+        if st.mic_muted().is_none() {
+            return Err(Error::config(tr!("這次錄影沒有錄麥克風", "This recording doesn't include the microphone")));
+        }
+        let t = st.recorded_ms();
+        let muted = match st.muted_at.take() {
+            Some(a) => {
+                if t > a {
+                    st.mutes.push((a, t));
+                }
+                false
+            }
+            None => {
+                st.muted_at = Some(t);
+                true
+            }
+        };
+        crate::audiopipe::MIC_MUTED.store(muted, std::sync::atomic::Ordering::Relaxed);
+        let at = crate::format::video_clock(t as f64 / 1000.0);
+        st.add_log(LogLevel::Info, &if muted { trf!("麥克風靜音（{at}）", "Microphone muted ({at})") } else { trf!("麥克風取消靜音（{at}）", "Microphone unmuted ({at})") });
+        Ok(muted)
+    }
+
     /// 正在準備開始（狀態可能仍是待命）；快速鍵用來判斷再按一次是「取消」
     pub fn starting(&self) -> bool {
         self.lock().starting_now
@@ -882,6 +950,7 @@ impl Recorder {
                 countdown_covers_ui: None,
                 disk_free_bytes: if st.state == RecorderState::Idle { None } else { st.disk_free_bytes },
                 markers: st.markers.len() as u32,
+                mic_muted: if st.state == RecorderState::Idle { None } else { st.mic_muted() },
                 result: st.result.clone(),
                 log: st.log.clone(),
                 silent_audio: if st.state == RecorderState::Idle { 0 } else { st.silent_now },
@@ -1073,6 +1142,7 @@ impl Recorder {
             st.markers = Vec::new();
             st.clicks = Vec::new();
             st.cursor = Vec::new();
+            st.reset_mutes();
             st.audio_specs = audio_specs;
             st.audio_desc = None;
             (st.silent_now, st.silent_ever, st.audio_ok_ever, st.silent_notified) = (0, 0, 0, 0);
@@ -1245,6 +1315,7 @@ impl Recorder {
                 st.markers.clear();
                 st.clicks.clear();
                 st.cursor.clear();
+                st.reset_mutes();
                 st.ticker = 0;
                 st.busy = None;
                 st.state = RecorderState::Idle;
@@ -1277,6 +1348,7 @@ impl Recorder {
                 clicks: std::mem::take(&mut st.clicks).into_iter().map(|(t, x, y)| [t as f64 / 1000.0, x as f64, y as f64]).collect(),
                 cursor: std::mem::take(&mut st.cursor),
                 no_cursor: st.config.as_ref().is_some_and(|c| !c.draw_mouse),
+                mutes: st.take_mutes(),
             };
             if let (true, Some(p), false) = (result.ok, &result.path, marks.is_empty()) {
                 self.deps().save_markers(p, &marks);
@@ -2348,6 +2420,11 @@ mod tests {
         let script = r#"#!/bin/bash
 for last; do :; done
 case " $* " in
+  *" -f null - -progress "*)
+    # 量分段的聲音長度（合併時用）
+    printf 'out_time_us=2400000\nprogress=end\n'
+    exit 0
+    ;;
   *" -progress "*)
     case "$last" in
       *%05d*) head -c 5000 /dev/zero > "$(printf '%s' "$last" | sed 's/%05d/00000/')";;
@@ -2519,6 +2596,44 @@ esac
         assert!(m.no_cursor && m.markers.is_empty());
         assert_eq!(m.cursor.iter().map(|c| (c[1], c[2])).collect::<Vec<_>>(), [(0.5, 0.5), (1.0, 0.0)]);
         assert!(m.cursor[1][0] > m.cursor[0][0]);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn mic_mute_is_toggled_and_saved_with_the_recording() {
+        let tools = tempfile::tempdir().unwrap();
+        let s = Setup::new(Fake { ffmpeg: Some(fake_ffmpeg(tools.path())), ..Default::default() });
+        s.release();
+        assert!(s.rec.toggle_mic_mute().is_err(), "沒在錄影");
+        // 沒錄麥克風：不能靜音
+        s.rec.start(RecordConfig { countdown_sec: Some(0.0), hide_ui: Some(false), ..s.config() }).await.unwrap();
+        assert_eq!(s.rec.status().mic_muted, None);
+        assert!(s.rec.toggle_mic_mute().unwrap_err().message().contains("沒有錄麥克風"));
+        assert!(s.rec.stop(None).await.unwrap().unwrap().ok);
+        // 有錄麥克風：靜音一段、取消，再靜音到結尾
+        let audio = AudioConfig { system: false, mic: true, mic_id: String::new(), app: String::new() };
+        s.rec.start(RecordConfig { countdown_sec: Some(0.0), hide_ui: Some(false), audio, ..s.config() }).await.unwrap();
+        assert_eq!(s.rec.status().mic_muted, Some(false));
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        assert!(s.rec.toggle_mic_mute().unwrap());
+        assert!(crate::audiopipe::MIC_MUTED.load(Ordering::Relaxed));
+        assert_eq!(s.rec.status().mic_muted, Some(true));
+        assert_eq!(s.rec.frame_info().unwrap().mic_muted, Some(true));
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        assert!(!s.rec.toggle_mic_mute().unwrap());
+        assert!(!crate::audiopipe::MIC_MUTED.load(Ordering::Relaxed));
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        assert!(s.rec.toggle_mic_mute().unwrap());
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        let st = s.rec.status();
+        assert!(st.log.iter().any(|l| l.text.contains("麥克風靜音")), "{:?}", st.log);
+        assert!(s.rec.stop(None).await.unwrap().unwrap().ok);
+        // 錄完：取消靜音，兩段都存下來（第二段算到結尾）
+        assert!(!crate::audiopipe::MIC_MUTED.load(Ordering::Relaxed));
+        assert_eq!(s.rec.status().mic_muted, None);
+        let m = s.deps.marks.lock().unwrap().clone().expect("有靜音的時段就要存");
+        assert_eq!(m.mutes.len(), 2, "{:?}", m.mutes);
+        assert!(m.mutes[0][1] - m.mutes[0][0] >= 0.07 && m.mutes[1][0] > m.mutes[0][1], "{:?}", m.mutes);
     }
 
     #[cfg(unix)]

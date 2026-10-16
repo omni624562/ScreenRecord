@@ -1499,6 +1499,25 @@ fn rec_body(app: &mut UiApp, ui: &mut Ui, r: &screenrecorder_core::types::Record
                     }
                 }
             }
+            // 麥克風靜音 / 取消靜音（這次有錄麥克風時）
+            if let Some(muted) = r.mic_muted {
+                let key = app.keys.label(7);
+                let mk = if key.is_empty() { String::new() } else { trf!("（{key}）", " ({key})") };
+                let tip = if muted {
+                    trf!("麥克風靜音中，點一下取消靜音{mk}", "The microphone is muted. Click to unmute{mk}")
+                } else {
+                    trf!(
+                        "暫時把麥克風靜音（咳嗽、接電話時），剪輯時會在時間軸上標出來{mk}",
+                        "Mute the microphone for a moment (to cough or take a call). Muted parts are marked on the editing timeline{mk}"
+                    )
+                };
+                if Btn::icon_only(Icon::Mic).selected(muted).tooltip(tip).show(ui).clicked() {
+                    match app.core.recorder.toggle_mic_mute() {
+                        Ok(m) => app.core.mic_mute_changed(m),
+                        Err(e) => app.toast(e.message().to_string(), true),
+                    }
+                }
+            }
             let stop_label = if r.state == RecorderState::Countdown {
                 if r.countdown_covers_ui == Some(false) {
                     trf!("{} 秒後開始・取消", "Starts in {} s · Cancel", countdown_left(app))
@@ -1516,6 +1535,11 @@ fn rec_body(app: &mut UiApp, ui: &mut Ui, r: &screenrecorder_core::types::Record
             }
         }
     });
+    // 麥克風靜音中：按鈕下面寫清楚（錄到的是靜音）
+    if active && r.mic_muted == Some(true) {
+        ui.add_space(4.0);
+        ui.label(RichText::new(tr!("🔇 麥克風靜音中，這段不會錄到你的聲音", "🔇 Microphone muted. Your voice isn't being recorded")).color(p.rec).font(theme::font(12.5)));
+    }
     // 截圖（只錄聲音時不顯示）：框選截圖、整個範圍、更多
     if !active && app.s.source_type != SourceType::Audio {
         ui.add_space(6.0);
