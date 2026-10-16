@@ -321,7 +321,7 @@ fn peak_at(ff: &Path, file: &Path, t: f64, len: f64) -> i32 {
         .args(["-map", "0:a:0", "-ac", "1", "-ar", "48000", "-f", "s16le", "-"])
         .output()
         .unwrap();
-    o.stdout.chunks_exact(2).map(|b| (i16::from_le_bytes([b[0], b[1]]) as i32).abs()).max().unwrap_or(0)
+    o.stdout.as_chunks::<2>().0.iter().map(|b| (i16::from_le_bytes(*b) as i32).abs()).max().unwrap_or(0)
 }
 
 fn mean(v: &[u8]) -> f64 {
