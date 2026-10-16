@@ -115,6 +115,49 @@ pub enum TrayCommand {
     Quit,
 }
 
+impl TrayCommand {
+    /// 會擷取畫面（截圖、框選、取色、錄影）
+    pub fn captures_screen(&self) -> bool {
+        matches!(
+            self,
+            TrayCommand::Screenshot
+                | TrayCommand::ScreenshotMonitor(_)
+                | TrayCommand::ScreenshotAll
+                | TrayCommand::ScreenshotLast
+                | TrayCommand::ScreenshotSelect
+                | TrayCommand::ScreenshotDelay(_)
+                | TrayCommand::ScreenshotScroll
+                | TrayCommand::ScreenshotText
+                | TrayCommand::ScreenshotQr
+                | TrayCommand::ScreenColor
+                | TrayCommand::ScreenRuler
+                | TrayCommand::StartLast
+                | TrayCommand::StartAll
+                | TrayCommand::StartMonitor(_)
+                | TrayCommand::StartSelect
+                | TrayCommand::StartLastSnip
+        )
+    }
+}
+
+/// 等系統匣的隱藏圖示面板收起來（最多 0.6 秒，還開著就直接收起來），再多等一下收合的動畫
+async fn settle_tray() {
+    #[cfg(windows)]
+    {
+        if !crate::tray_win::overflow_open() {
+            return;
+        }
+        for _ in 0..12 {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            if !crate::tray_win::overflow_open() {
+                break;
+            }
+        }
+        crate::tray_win::close_overflow();
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct TrayMonitor {
     pub id: String,
@@ -487,6 +530,10 @@ impl TrayController {
     pub async fn run(self: &Arc<Self>, cmd: TrayCommand) {
         // 剛啟動時（偵測還沒完成）按快速鍵：等偵測完成，才不會誤報「找不到 ffmpeg.exe」
         self.app.wait_ready().await;
+        // 從「^」隱藏圖示面板裡的圖示選截圖、錄影時，面板還沒收起來就會被拍進去：先等它收起來
+        if cmd.captures_screen() {
+            settle_tray().await;
+        }
         if let Err(e) = self.run_inner(cmd).await {
             self.notify(tr!("無法執行", "Couldn't run this"), &e, true);
         }

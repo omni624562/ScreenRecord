@@ -78,6 +78,12 @@ pub struct EditSpec {
     /// 旁白（錄的或文字轉語音）、點擊音效
     #[serde(default, skip_serializing_if = "crate::narration::Narration::is_empty")]
     pub narration: crate::narration::Narration,
+    /// 調色（亮度、對比、飽和度、銳利化）
+    #[serde(default, skip_serializing_if = "crate::look::Look::is_default")]
+    pub look: crate::look::Look,
+    /// 日期時間浮水印（錄影當時的時間）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stamp: Option<crate::look::Stamp>,
 }
 
 fn one() -> f64 {
@@ -453,6 +459,9 @@ pub struct Overlay {
     /// 反過來：範圍外模糊（或馬賽克），範圍內清楚
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub invert: bool,
+    /// 出現方式（annotate::Ann::anim）：0 直接出現、1 淡入淡出、2 放大出現
+    #[serde(default)]
+    pub anim: u8,
 }
 
 /// 片段短於這個長度就忽略（約一張畫面以下）

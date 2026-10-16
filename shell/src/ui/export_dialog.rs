@@ -49,6 +49,8 @@ struct Opts {
     /// 加速版的大小上限（0 = 不限）
     mp4_max_mb: u32,
     keep_audio: bool,
+    /// 動圖來回播放（不存成預設）
+    bounce: bool,
 }
 
 impl Opts {
@@ -63,6 +65,7 @@ impl Opts {
             mp4_width: s.mp4_width,
             mp4_max_mb: s.mp4_max_mb,
             keep_audio: s.keep_audio,
+            bounce: false,
         }
     }
 }
@@ -482,6 +485,31 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
             if dlg.mode == Mode::Speed {
                 limit_row(ui, Mode::Speed, &mut o.mp4_max_mb);
             }
+            if gif {
+                row(ui, tr!("播放", "Playback"), |ui| {
+                    let one_way = speed.filter(|_| dur > 0.0).map(|sp| dur / sp);
+                    let fits = one_way.is_none_or(|t| t <= screenrecorder_core::args::BOUNCE_MAX_SEC);
+                    if !fits {
+                        o.bounce = false;
+                    }
+                    ui.horizontal(|ui| {
+                        ui.set_height(ROW_H);
+                        ui.add_enabled_ui(fits, |ui| {
+                            theme::check(ui, &mut o.bounce, RichText::new(tr!("來回播放（播完倒著播回來）", "Back and forth (plays, then reverses)")).font(theme::font(13.0)));
+                        });
+                    });
+                    let note = if fits {
+                        tr!("循環播放時不會從結尾跳回開頭；長度變兩倍", "Loops smoothly without jumping back to the start; twice as long").to_string()
+                    } else {
+                        trf!(
+                            "只能用在 {} 秒以內的動圖（可以加速或先剪短）",
+                            "Only for animations up to {} s (speed it up or trim it first)",
+                            screenrecorder_core::format::num(screenrecorder_core::args::BOUNCE_MAX_SEC)
+                        )
+                    };
+                    helper(ui, note, p.muted);
+                });
+            }
             row(ui, tr!("聲音", "Audio"), |ui| {
                 ui.horizontal(|ui| {
                     ui.set_height(ROW_H);
@@ -539,8 +567,9 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                     ui.painter().line_segment([a, b], st);
                     ui.painter().line_segment([b, b + vec2(-6.0, -6.0)], st);
                     ui.painter().line_segment([b, b + vec2(-6.0, 6.0)], st);
+                    let twice = if gif && o.bounce { 2.0 } else { 1.0 };
                     let out_time = match speed {
-                        Some(sp) if dur > 0.0 => short_clock(dur / sp),
+                        Some(sp) if dur > 0.0 => short_clock(dur / sp * twice),
                         _ => "—".into(),
                     };
                     let out_sub = match (dims, speed.filter(|_| dur > 0.0)) {
@@ -556,6 +585,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                                 height: h as f64,
                                 gif_fps: Some(o.gif_fps as f64),
                             });
+                            let (lo, hi) = (lo * twice, hi * twice);
                             let cap = (max_mb > 0).then_some(max_mb as f64 * 1024.0 * 1024.0);
                             match cap {
                                 Some(c) if hi > c || dlg.mode == Mode::Compress => trf!("{w}×{h}・{} 以內", "{w}×{h}・up to {}", format_bytes(c as u64)),
@@ -717,6 +747,7 @@ fn start(app: &mut UiApp, dlg: &mut ExportDialog, speed: f64) {
         format,
         gif_width: o.gif_width as f64,
         gif_fps: o.gif_fps as f64,
+        bounce: o.bounce && format.is_animation(),
         mp4_width: o.mp4_width as f64,
         mp4_max_mb: dlg.max_mb() as f64,
         output: dlg.output.clone(),

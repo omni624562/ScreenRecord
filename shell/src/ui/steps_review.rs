@@ -22,6 +22,9 @@ pub struct Review {
     busy: bool,
     /// 做成哪一種文件
     format: screenrecorder_core::steps::DocFormat,
+    /// 做成影片：每一步至少幾秒、唸出說明
+    secs: f64,
+    speak: bool,
 }
 
 struct Item {
@@ -46,7 +49,7 @@ pub fn open(app: &mut UiApp) {
         return;
     }
     let items = draft.steps.iter().map(|s| Item { step: s.clone(), tex: None, failed: false }).collect();
-    app.steps_review = Some(Review { title: draft.title(), draft, items, busy: false, format: Default::default() });
+    app.steps_review = Some(Review { title: draft.title(), draft, items, busy: false, format: Default::default(), secs: 3.0, speak: cfg!(windows) });
     load_thumb(app, 0);
 }
 
@@ -150,23 +153,46 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
             }
         });
         ui.add_space(10.0);
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             if r.busy {
                 ui.spinner();
-                ui.label(tr!("正在做成教學文件…", "Making the guide…"));
+                ui.label(if r.format == screenrecorder_core::steps::DocFormat::Video {
+                    tr!("正在做成教學影片…", "Making the video…")
+                } else {
+                    tr!("正在做成教學文件…", "Making the guide…")
+                });
             } else {
                 use screenrecorder_core::steps::DocFormat;
-                let items = [(DocFormat::Html, tr!("網頁", "Web page")), (DocFormat::Word, "Word"), (DocFormat::PowerPoint, "PowerPoint")];
+                let items = [(DocFormat::Html, tr!("網頁", "Web page")), (DocFormat::Word, "Word"), (DocFormat::PowerPoint, "PowerPoint"), (DocFormat::Video, tr!("影片", "Video"))];
                 theme::segmented(ui, &mut r.format, &items, true);
-                let note = match r.format {
-                    DocFormat::Html => tr!("一個 HTML 檔（圖片包在裡面），用瀏覽器開啟、可以直接改字", "One HTML file (pictures included); opens in your browser, where you can edit the text"),
-                    DocFormat::Word => tr!("Word 文件（.docx），每一步一段說明和一張圖", "A Word document (.docx) with a caption and picture for each step"),
-                    DocFormat::PowerPoint => tr!("PowerPoint 簡報（.pptx），一步一張投影片", "A PowerPoint deck (.pptx) with one slide per step"),
-                };
-                ui.label(RichText::new(note).font(theme::font(12.0)).color(p.muted));
+                if r.format == DocFormat::Video {
+                    let secs: Vec<(u32, String)> = steps::VIDEO_SECS.iter().map(|s| (*s as u32, trf!("每步 {} 秒", "{} s each", s))).collect();
+                    let refs: Vec<(u32, &str)> = secs.iter().map(|(v, t)| (*v, t.as_str())).collect();
+                    let mut v = r.secs as u32;
+                    if theme::segmented(ui, &mut v, &refs, true) {
+                        r.secs = v as f64;
+                    }
+                    ui.add_enabled_ui(cfg!(windows), |ui| {
+                        theme::check(ui, &mut r.speak, RichText::new(tr!("唸出說明", "Read captions aloud")).font(theme::font(12.5))).on_hover_text(tr!(
+                            "用 Windows 內建的語音唸出每一步的說明（不用網路）；唸比較久的步驟會停久一點",
+                            "Read each step's caption with the voice built into Windows (no internet); longer captions stay on screen longer"
+                        ));
+                    });
+                } else {
+                    let note = match r.format {
+                        DocFormat::Html => tr!("一個 HTML 檔（圖片包在裡面），用瀏覽器開啟、可以直接改字", "One HTML file (pictures included); opens in your browser, where you can edit the text"),
+                        DocFormat::Word => tr!("Word 文件（.docx），每一步一段說明和一張圖", "A Word document (.docx) with a caption and picture for each step"),
+                        _ => tr!("PowerPoint 簡報（.pptx），一步一張投影片", "A PowerPoint deck (.pptx) with one slide per step"),
+                    };
+                    ui.label(RichText::new(note).font(theme::font(12.0)).color(p.muted));
+                }
             }
+        });
+        ui.add_space(6.0);
+        ui.horizontal(|ui| {
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if Btn::new(tr!("產生教學文件", "Make guide")).primary().enabled(!r.busy && n > 0).show(ui).clicked() {
+                let make = if r.format == screenrecorder_core::steps::DocFormat::Video { tr!("產生教學影片", "Make video") } else { tr!("產生教學文件", "Make guide") };
+                if Btn::new(make).primary().enabled(!r.busy && n > 0).show(ui).clicked() {
                     act = Some(Act::Build);
                 }
                 if Btn::new(tr!("放棄", "Discard")).ghost().enabled(!r.busy).tooltip(tr!("刪掉這次截的步驟，不做成文件", "Delete these steps without making a guide")).show(ui).clicked()
@@ -189,13 +215,22 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         Some(Act::Build) => {
             r.busy = true;
             let (title, list, format) = (r.title.clone(), r.items.iter().map(|it| it.step.clone()).collect::<Vec<_>>(), r.format);
+            let (secs, speak) = (r.secs, r.speak && cfg!(windows));
             let core = app.core.clone();
-            app.spawn(async move { core.steps_build_as(title, list, format).await }, move |app, res| match res {
+            let job = async move {
+                if format == screenrecorder_core::steps::DocFormat::Video {
+                    core.steps_build_video(title, list, secs, speak).await
+                } else {
+                    core.steps_build_as(title, list, format).await
+                }
+            };
+            app.spawn(job, move |app, res| match res {
                 Ok(path) => {
                     app.steps_review = None;
                     screenrecorder_core::desktop::open_with_explorer(&path, false);
                     let msg = match format {
                         screenrecorder_core::steps::DocFormat::Html => tr!("教學文件做好了，已用瀏覽器開啟", "The step-by-step guide is ready and open in your browser"),
+                        screenrecorder_core::steps::DocFormat::Video => tr!("教學影片做好了，已經打開", "The step-by-step video is ready and open"),
                         _ => tr!("教學文件做好了，已經打開", "The step-by-step guide is ready and open"),
                     };
                     app.toast_file(msg, &path);

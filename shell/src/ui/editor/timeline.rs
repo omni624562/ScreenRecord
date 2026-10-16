@@ -635,12 +635,15 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, toast: &mut
                 ed.seek(t);
                 let seg = ed.segment_at(t);
                 ed.set_sel(seg);
-                if seg.is_some() {
+                // 在「加速」分頁時留在那裡（選好一段就能設定速度）
+                if seg.is_some() && ed.tab != Tab::Speed {
                     ed.tab = Tab::Time;
                 }
             } else if matches!(kind, TlKind::Select | TlKind::SelA | TlKind::SelB) && ed.sel.is_some() {
-                // 選好要刪除的範圍：顯示「刪除這段」的按鈕
-                ed.tab = Tab::Time;
+                // 選好要刪除的範圍：顯示「刪除這段」的按鈕（在「加速」分頁時顯示速度的按鈕）
+                if ed.tab != Tab::Speed {
+                    ed.tab = Tab::Time;
+                }
             }
             ed.drag = Drag::None;
         }

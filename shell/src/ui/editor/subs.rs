@@ -101,6 +101,29 @@ pub fn tab(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, toast: &mut 
         {
             ed.vpending = Some(VAct::ExportSrt);
         }
+        let tr_btn = Btn::new(tr!("匯出逐字稿", "Export transcript"))
+            .small()
+            .tooltip(tr!(
+                "把字幕整理成一段一段的文字（停比較久就換一段），存成 TXT 或 Word，適合會議記錄、上課筆記",
+                "Turn the subtitles into paragraphs (a new one after each longer pause) and save as TXT or Word, for meeting minutes or class notes"
+            ))
+            .show(ui);
+        egui::Popup::menu(&tr_btn).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
+            ui.set_min_width(220.0);
+            ui.spacing_mut().item_spacing = vec2(8.0, 8.0);
+            theme::check(ui, &mut ed.transcript_time, RichText::new(tr!("每段加上時間", "Time at each paragraph")).font(theme::font(12.5)));
+            theme::check(ui, &mut ed.transcript_clean, RichText::new(tr!("去掉「嗯、呃」等贅字", "Remove fillers like “um”")).font(theme::font(12.5)));
+            ui.horizontal(|ui| {
+                if Btn::new(tr!("存成 Word", "Save as Word")).primary().small().show(ui).clicked() {
+                    ed.vpending = Some(VAct::ExportTranscript(true));
+                    ui.close();
+                }
+                if Btn::new(tr!("存成 TXT", "Save as TXT")).small().show(ui).clicked() {
+                    ed.vpending = Some(VAct::ExportTranscript(false));
+                    ui.close();
+                }
+            });
+        });
         if Btn::new(tr!("找出贅字和停頓", "Find fillers and pauses"))
             .small()
             .tooltip(tr!(
@@ -771,6 +794,7 @@ impl Editor {
                 invert: false,
                 rot: 0.0,
                 pts: vec![],
+                anim: 0,
             };
             annotate::measure(&mut a);
             (a.x, a.y) = style.place(a.w, a.h, self.vw, self.vh);

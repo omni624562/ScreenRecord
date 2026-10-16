@@ -960,6 +960,20 @@ pub struct GifOptions {
     pub src_height: f64,
     /// 輸出長度（秒），用來估算記憶體
     pub output_sec: f64,
+    /// 來回播放：播到底再倒著播回來（循環時不會跳一下；長度變兩倍）
+    pub bounce: bool,
+}
+
+/// 來回播放最長幾秒（單程）：倒著播要先把整段畫面放在記憶體
+pub const BOUNCE_MAX_SEC: f64 = 30.0;
+
+/// 來回播放：接上倒過來的畫面（去掉重複的轉折那一張）
+fn bounce_chain(on: bool) -> &'static str {
+    if on {
+        ",split[bf][br];[br]reverse,trim=start_frame=1,setpts=PTS-STARTPTS[brv];[bf][brv]concat=n=2:v=1:a=0"
+    } else {
+        ""
+    }
 }
 
 /// 整段共用一個調色盤時，FFmpeg 要先暫存所有畫面；超過這個量改用每張畫面各自的調色盤
@@ -972,7 +986,7 @@ pub fn gif_args(source: &str, out_file: &str, speed: f64, o: &GifOptions) -> Res
     }
     let width = o.width.min(if o.src_width > 0.0 { o.src_width } else { o.width }).max(2.0);
     let height = if o.src_width > 0.0 && o.src_height > 0.0 { crate::format::js_round(o.src_height * width / o.src_width) } else { width * 9.0 / 16.0 };
-    let frames = (o.output_sec * o.fps).ceil();
+    let frames = (o.output_sec * o.fps * if o.bounce { 2.0 } else { 1.0 }).ceil();
     let global = frames * width * height * 4.0 <= GIF_GLOBAL_PALETTE_MAX_BYTES;
     let palette = if global {
         "palettegen=stats_mode=diff[p];[b][p]paletteuse=dither=bayer:bayer_scale=5:diff_mode=rectangle"
@@ -983,7 +997,7 @@ pub fn gif_args(source: &str, out_file: &str, speed: f64, o: &GifOptions) -> Res
     let mut a = strs(&["-hide_banner", "-nostats", "-loglevel", "error", "-i"]);
     a.push(source.into());
     a.extend(strs(&["-map", "0:v:0", "-an", "-sn", "-dn", "-vf"]));
-    a.push(format!("{time}fps={},scale={}:-2:flags=lanczos,split[a][b];[a]{palette}", num(o.fps), num(width)));
+    a.push(format!("{time}fps={},scale={}:-2:flags=lanczos{},split[a][b];[a]{palette}", num(o.fps), num(width), bounce_chain(o.bounce)));
     a.extend(strs(&["-loop", "0", "-progress", "pipe:1", "-stats_period", "0.5", "-y"]));
     a.push(out_file.into());
     Ok(a)
@@ -999,7 +1013,7 @@ pub fn webp_args(source: &str, out_file: &str, speed: f64, o: &GifOptions) -> Re
     let mut a = strs(&["-hide_banner", "-nostats", "-loglevel", "error", "-i"]);
     a.push(source.into());
     a.extend(strs(&["-map", "0:v:0", "-an", "-sn", "-dn", "-vf"]));
-    a.push(format!("{time}fps={},scale={}:-2:flags=lanczos", num(o.fps), num(width)));
+    a.push(format!("{time}fps={},scale={}:-2:flags=lanczos{}", num(o.fps), num(width), bounce_chain(o.bounce)));
     a.extend(strs(&["-c:v", "libwebp_anim", "-lossless", "0", "-quality", "80", "-compression_level", "4", "-loop", "0"]));
     a.extend(strs(&["-progress", "pipe:1", "-stats_period", "0.5", "-y"]));
     a.push(out_file.into());
@@ -1010,8 +1024,8 @@ pub fn webp_args(source: &str, out_file: &str, speed: f64, o: &GifOptions) -> Re
 /// 剪輯時加上的標註（已換算成影片像素、檔案已寫好）
 #[derive(Debug, Clone, PartialEq)]
 pub enum OverlayInput {
-    /// 透明 PNG：疊在 (x, y)
-    Image { path: String, x: i32, y: i32, start: f64, end: f64 },
+    /// 透明 PNG：疊在 (x, y)；anim：0 直接出現、1 淡入淡出、2 放大出現（size = 圖的大小，放大時以中心為準）
+    Image { path: String, x: i32, y: i32, start: f64, end: f64, anim: u8, size: (i32, i32) },
     /// 範圍模糊或馬賽克（寬高為偶數、至少 8）。mask = 形狀遮罩圖檔（沒有就是方形）；
     /// invert = 範圍外模糊、範圍內清楚（frame 為整個畫面的寬高）
     Blur { rect: Rect, start: f64, end: f64, mosaic: bool, mask: Option<String>, invert: bool, frame: (i32, i32) },
@@ -1270,6 +1284,13 @@ fn enable(start: f64, end: f64) -> String {
     format!("enable='between(t,{},{})'", num(start), num(end))
 }
 
+/// 剪輯的其他畫面處理：調色濾鏡（接在裁切後面）、日期時間浮水印的 drawtext（在原影片的時間畫上去）
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct CutMore {
+    pub look: Option<String>,
+    pub stamp: Option<String>,
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn cut_args(
     source: &str,
@@ -1287,6 +1308,28 @@ pub fn cut_args(
     vertical: Option<&VerticalInput>,
     extras: Option<&Extras>,
     fade_cuts: bool,
+) -> Result<Vec<String>> {
+    cut_args_more(source, out_file, keep, crop, fps, enc, with_audio, overlays, audio, zoom, frame, cursor, vertical, extras, fade_cuts, &CutMore::default())
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn cut_args_more(
+    source: &str,
+    out_file: &str,
+    keep: &[Part],
+    crop: Option<Rect>,
+    fps: f64,
+    enc: &EncoderSpec,
+    with_audio: bool,
+    overlays: &[OverlayInput],
+    audio: AudioFx,
+    zoom: Option<&str>,
+    frame: Option<&FrameInput>,
+    cursor: Option<&CursorInput>,
+    vertical: Option<&VerticalInput>,
+    extras: Option<&Extras>,
+    fade_cuts: bool,
+    more: &CutMore,
 ) -> Result<Vec<String>> {
     // 選了「不要聲音」
     let with_audio = with_audio && !audio.mute;
@@ -1319,14 +1362,18 @@ pub fn cut_args(
     if let Some(c) = crop {
         vf.push(format!("crop={}:{}:{}:{}", c.width, c.height, c.x, c.y));
     }
+    // 要先在原影片的時間處理的：標註、游標、跟著游標的直式裁切、日期時間（片段改了順序時也走這條，才接得上 segment_graph）
+    let follow = matches!(vertical, Some(VerticalInput::Follow { .. }));
+    let pre = !overlays.is_empty() || cursor.is_some() || follow || segments || more.stamp.is_some();
+    // 調色：有標註時在最前面先調（標註、游標、浮水印的顏色不受影響），否則接在裁切後面
+    if let Some(l) = more.look.as_ref().filter(|_| !pre) {
+        vf.push(l.clone());
+    }
     // 直式影片（放在中間）：剪好的畫面放在直式畫面中間，上下是放大、模糊的同一個畫面
     let fit = matches!(vertical, Some(VerticalInput::Fit { .. }));
     if let Some(VerticalInput::Fit { w, h }) = vertical {
         vf.push(crate::vertical::fit_filter(*w, *h));
     }
-    // 要先在原影片的時間處理的：標註、游標、跟著游標的直式裁切（片段改了順序時也走這條，才接得上 segment_graph）
-    let follow = matches!(vertical, Some(VerticalInput::Follow { .. }));
-    let pre = !overlays.is_empty() || cursor.is_some() || follow || segments;
     // 濾鏡有多個輸入（不能用 -vf）
     let complex = frame.is_some() || fit || extras.is_some();
     let mut a = strs(&["-hide_banner", "-nostats", "-loglevel", "error", "-i"]);
@@ -1390,6 +1437,10 @@ pub fn cut_args(
         // 標註以原影片的時間顯示，所以先疊上標註，再挑選保留的片段
         let mut graph = Vec::new();
         let mut cur = "[0:v]".to_string();
+        if let Some(l) = &more.look {
+            graph.push(format!("{cur}{l}[look]"));
+            cur = "[look]".into();
+        }
         // 游標在最底下（標註、馬賽克蓋在它上面）：sendcmd 依原影片的時間移動 overlay@cursor
         if let Some(c) = cursor {
             a.extend(["-i".into(), c.image.clone()]);
@@ -1400,9 +1451,28 @@ pub fn cut_args(
         for (i, o) in overlays.iter().enumerate() {
             let out = format!("[o{i}]");
             match o {
-                OverlayInput::Image { path, x, y, start, end } => {
+                OverlayInput::Image { path, x, y, start, end, anim: 0, .. } => {
                     a.extend(["-i".into(), path.clone()]);
                     graph.push(format!("{cur}[{next_input}:v]overlay={x}:{y}:{}{out}", enable(*start, *end)));
+                    next_input += 1;
+                }
+                OverlayInput::Image { path, x, y, start, end, anim, size } => {
+                    // 動畫：圖片重複成影片（時間和原影片一樣從 0 開始），淡入淡出改透明度，放大出現再由一半大小變回原本
+                    a.extend(["-loop".into(), "1".into(), "-framerate".into(), num(fps), "-t".into(), num(end + 0.1), "-i".into(), path.clone()]);
+                    let d = crate::annotate::anim_secs(*start, *end);
+                    let fade = format!("fade=t=in:st={}:d={}:alpha=1,fade=t=out:st={}:d={}:alpha=1", num(*start), num(d), num(end - d), num(d));
+                    if *anim == 2 {
+                        let k = format!("if(lt(t,{s}),0.5,min(1,0.5+0.5*(t-{s})/{d}))", s = num(*start), d = num(d));
+                        let (cx, cy) = (*x as f64 + size.0 as f64 / 2.0, *y as f64 + size.1 as f64 / 2.0);
+                        graph.push(format!(
+                            "[{next_input}:v]format=rgba,scale=w='max(2,trunc(iw*{k}))':h='max(2,trunc(ih*{k}))':eval=frame,{fade}[a{i}];{cur}[a{i}]overlay=x='{}-overlay_w/2':y='{}-overlay_h/2':eval=frame:{}{out}",
+                            num(cx),
+                            num(cy),
+                            enable(*start, *end)
+                        ));
+                    } else {
+                        graph.push(format!("[{next_input}:v]format=rgba,{fade}[a{i}];{cur}[a{i}]overlay={x}:{y}:{}{out}", enable(*start, *end)));
+                    }
                     next_input += 1;
                 }
                 OverlayInput::Blur { rect: r, start, end, mosaic, mask, invert, frame } => {
@@ -1435,6 +1505,11 @@ pub fn cut_args(
                 }
             }
             cur = out;
+        }
+        // 日期時間浮水印：在原影片的時間畫上去（顯示的是錄影當時的時間）
+        if let Some(st) = &more.stamp {
+            graph.push(format!("{cur}{st}[stamp]"));
+            cur = "[stamp]".into();
         }
         // 跟著游標的直式裁切：在標註之後（標註跟著畫面一起裁），sendcmd 依原影片的時間移動 crop@vertical
         if let Some(VerticalInput::Follow { commands, w, h, x, y, scale }) = vertical {
@@ -1845,7 +1920,7 @@ mod tests {
         );
         assert!(!j.contains(" -vf "));
         // 加上標註：標註的圖片接在底圖、遮罩之後
-        let overlays = [OverlayInput::Image { path: "o.png".into(), x: 10, y: 20, start: 1.0, end: 2.0 }];
+        let overlays = [OverlayInput::Image { path: "o.png".into(), x: 10, y: 20, start: 1.0, end: 2.0, anim: 0, size: (10, 10) }];
         let a = cut_args("in.mp4", "out.mp4", &[Part::new(1.0, 5.0, 1.0)], None, 30.0, &x264(), true, &overlays, AudioFx::default(), None, Some(&f), None, None, None, false).unwrap();
         let g = graph_of(&a);
         assert!(g.starts_with("[0:v][3:v]overlay=10:20:"), "{g}");
@@ -2139,7 +2214,7 @@ dummy: Immediate exit requested";
 
     #[test]
     fn gif() {
-        let o = |out: f64, src_w: f64, src_h: f64| GifOptions { fps: 10.0, width: 640.0, src_width: src_w, src_height: src_h, output_sec: out };
+        let o = |out: f64, src_w: f64, src_h: f64| GifOptions { fps: 10.0, width: 640.0, src_width: src_w, src_height: src_h, output_sec: out, bounce: false };
         let short = gif_args("in.mp4", "out.gif", 4.0, &o(10.0, 1920.0, 1080.0)).unwrap();
         assert!(after(&short, "-vf").contains("setpts=PTS/4,fps=10,scale=640:-2"));
         assert!(after(&short, "-vf").contains("stats_mode=diff"));
@@ -2365,7 +2440,7 @@ dummy: Immediate exit requested";
 
         // 標註：先疊上（原影片時間），再挑選保留的片段與裁切
         let overlays = [
-            OverlayInput::Image { path: "a.png".into(), x: 10, y: 20, start: 1.0, end: 3.5 },
+            OverlayInput::Image { path: "a.png".into(), x: 10, y: 20, start: 1.0, end: 3.5, anim: 0, size: (10, 10) },
             OverlayInput::Blur { rect: Rect { x: 100, y: 50, width: 120, height: 60 }, start: 0.0, end: 9.0, mosaic: false, mask: None, invert: false, frame: (1280, 720) },
             OverlayInput::Blur { rect: Rect { x: 0, y: 0, width: 240, height: 120 }, start: 2.0, end: 4.0, mosaic: true, mask: None, invert: false, frame: (1280, 720) },
             // 橢圓模糊：遮罩縮放成範圍大小，alphamerge 後疊上
@@ -2507,6 +2582,84 @@ dummy: Immediate exit requested";
     }
 
     /// 放慢、定格、旁白與點擊音效：有 FFmpeg 時實際跑一次，確認長度、畫面張數與聲音
+    #[test]
+    fn look_and_stamp_run_in_ffmpeg() {
+        let Some(ffmpeg) = std::env::var_os("PATH").and_then(|p| std::env::split_paths(&p).map(|d| d.join("ffmpeg")).find(|p| p.is_file())) else { return };
+        let Some(font) = crate::look::stamp_font() else { return };
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("in.mp4");
+        let run = |args: &[String]| std::process::Command::new(&ffmpeg).current_dir(dir.path()).args(args).output().unwrap();
+        let gen: Vec<String> =
+            ["-loglevel", "error", "-f", "lavfi", "-i", "testsrc=size=320x240:rate=30:d=4", "-pix_fmt", "yuv420p"].iter().map(|s| s.to_string()).chain([src.display().to_string()]).collect();
+        assert!(run(&gen).status.success());
+        std::fs::copy(font, dir.path().join("stamp.ttf")).unwrap();
+        std::fs::write(dir.path().join("stamp.txt"), crate::look::stamp_text(1_760_600_000_000)).unwrap();
+        let look = crate::look::Look { brightness: 20, contrast: 10, saturation: -20, sharpen: 1 };
+        let area = Rect { x: 40, y: 20, width: 240, height: 200 };
+        let more = CutMore { look: look.filter(), stamp: Some(crate::look::stamp_filter(&crate::look::Stamp::default(), "stamp.ttf", "stamp.txt", area)) };
+        // 刪掉中間、改順序（浮水印在原影片的時間畫上去）
+        let keep = [Part::new(2.5, 4.0, 1.0), Part::new(0.0, 1.0, 1.0)];
+        let out = dir.path().join("out.mp4");
+        let a = cut_args_more(src.to_str().unwrap(), out.to_str().unwrap(), &keep, Some(area), 30.0, &x264(), false, &[], AudioFx::default(), None, None, None, None, None, false, &more).unwrap();
+        assert!(a.iter().any(|s| s.contains("drawtext=fontfile=stamp.ttf") && s.contains("[stamp]")) && a.iter().any(|s| s.contains("[0:v]eq=") && s.contains("[look]")), "{a:?}");
+        let r = run(&a);
+        assert!(r.status.success(), "{}", String::from_utf8_lossy(&r.stderr));
+        let info = parse_media_info(&String::from_utf8_lossy(&run(&["-hide_banner".into(), "-i".into(), out.display().to_string()]).stderr));
+        assert!((info.duration_sec.unwrap() - 2.5).abs() < 0.15 && info.width == Some(240), "{info:?}");
+    }
+
+    #[test]
+    fn animated_overlays_run_in_ffmpeg() {
+        let Some(ffmpeg) = std::env::var_os("PATH").and_then(|p| std::env::split_paths(&p).map(|d| d.join("ffmpeg")).find(|p| p.is_file())) else { return };
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("in.mp4");
+        let run = |args: &[String]| std::process::Command::new(&ffmpeg).args(args).output().unwrap();
+        let gen: Vec<String> =
+            ["-loglevel", "error", "-f", "lavfi", "-i", "testsrc=size=320x240:rate=30:d=3", "-pix_fmt", "yuv420p"].iter().map(|s| s.to_string()).chain([src.display().to_string()]).collect();
+        assert!(run(&gen).status.success());
+        let png = dir.path().join("o.png");
+        let mut pm = tiny_skia::Pixmap::new(60, 30).unwrap();
+        pm.fill(tiny_skia::Color::from_rgba8(255, 0, 0, 200));
+        pm.save_png(&png).unwrap();
+        let ov = |anim: u8, x: i32| OverlayInput::Image { path: png.display().to_string(), x, y: 20, start: 0.5, end: 2.5, anim, size: (60, 30) };
+        let overlays = [ov(1, 10), ov(2, 120), ov(0, 220)];
+        let out = dir.path().join("out.mp4");
+        // 刪掉中間一段：動畫在原影片的時間
+        let keep = [Part::new(0.0, 1.0, 1.0), Part::new(1.5, 3.0, 1.0)];
+        let a = cut_args(src.to_str().unwrap(), out.to_str().unwrap(), &keep, None, 30.0, &x264(), false, &overlays, AudioFx::default(), None, None, None, None, None, false).unwrap();
+        assert!(a.iter().any(|s| s.contains("fade=t=in:st=0.5:d=0.3:alpha=1") && s.contains("overlay_w/2") && s.contains("eval=frame")), "{a:?}");
+        let r = run(&a);
+        assert!(r.status.success(), "{}", String::from_utf8_lossy(&r.stderr));
+        let info = parse_media_info(&String::from_utf8_lossy(&run(&["-hide_banner".into(), "-i".into(), out.display().to_string()]).stderr));
+        assert!((info.duration_sec.unwrap() - 2.5).abs() < 0.15, "{info:?}");
+        assert_eq!(crate::annotate::anim_at(2, 0.5, 2.5, 0.5), (0.0, 0.5));
+        assert_eq!(crate::annotate::anim_at(1, 0.5, 2.5, 1.5), (1.0, 1.0));
+        assert_eq!(crate::annotate::anim_at(0, 0.5, 2.5, 0.5), (1.0, 1.0));
+    }
+
+    #[test]
+    fn bounce_runs_in_ffmpeg() {
+        let Some(ffmpeg) = std::env::var_os("PATH").and_then(|p| std::env::split_paths(&p).map(|d| d.join("ffmpeg")).find(|p| p.is_file())) else { return };
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("in.mp4");
+        let run = |args: &[String]| std::process::Command::new(&ffmpeg).args(args).output().unwrap();
+        let gen: Vec<String> =
+            ["-loglevel", "error", "-f", "lavfi", "-i", "testsrc=size=320x240:rate=30:d=2", "-pix_fmt", "yuv420p"].iter().map(|s| s.to_string()).chain([src.display().to_string()]).collect();
+        assert!(run(&gen).status.success());
+        let o = GifOptions { fps: 10.0, width: 160.0, src_width: 320.0, src_height: 240.0, output_sec: 2.0, bounce: true };
+        let out = dir.path().join("b.gif");
+        let a = gif_args(src.to_str().unwrap(), out.to_str().unwrap(), 1.0, &o).unwrap();
+        assert!(a.iter().any(|s| s.contains("reverse,trim=start_frame=1")));
+        let r = run(&a);
+        assert!(r.status.success(), "{}", String::from_utf8_lossy(&r.stderr));
+        // 20 張往前 + 19 張倒回來
+        let count = run(&["-v".into(), "error".into(), "-i".into(), out.display().to_string(), "-f".into(), "null".into(), "-progress".into(), "pipe:1".into(), "-".into()]);
+        let text = String::from_utf8_lossy(&count.stdout);
+        let frames: u32 = text.lines().filter_map(|l| l.strip_prefix("frame=")).filter_map(|v| v.trim().parse().ok()).next_back().unwrap();
+        assert!((38..=40).contains(&frames), "{frames}");
+        assert!(!gif_args("a", "b", 1.0, &GifOptions { bounce: false, ..o }).unwrap().iter().any(|s| s.contains("reverse")));
+    }
+
     #[test]
     fn retime_and_voice_run_in_ffmpeg() {
         let Some(ffmpeg) = std::env::var_os("PATH").and_then(|p| std::env::split_paths(&p).map(|d| d.join("ffmpeg")).find(|p| p.is_file())) else { return };

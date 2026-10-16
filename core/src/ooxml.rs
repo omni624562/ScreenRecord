@@ -156,6 +156,39 @@ pub fn docx(title: &str, subtitle: &str, items: &[Item]) -> Vec<u8> {
     zip(&all)
 }
 
+/// 只有文字的 Word 文件（逐字稿）：標題、副標，每段前面可以有灰色的時間標記
+pub fn docx_text(title: &str, subtitle: &str, paras: &[(Option<String>, String)]) -> Vec<u8> {
+    let mut body = String::new();
+    body.push_str(&w_text(title, 40, true, "1F2328"));
+    if !subtitle.is_empty() {
+        body.push_str(&w_text(subtitle, 22, false, "6E7781"));
+    }
+    let run = |text: &str, color: &str| {
+        format!(
+            r#"<w:r><w:rPr><w:rFonts w:ascii="Segoe UI" w:hAnsi="Segoe UI" w:eastAsia="Microsoft JhengHei"/><w:color w:val="{color}"/><w:sz w:val="24"/><w:szCs w:val="24"/></w:rPr><w:t xml:space="preserve">{}</w:t></w:r>"#,
+            esc(text)
+        )
+    };
+    for (time, text) in paras {
+        let t = time.as_ref().map(|t| run(&format!("{t} "), "6E7781")).unwrap_or_default();
+        body.push_str(&format!(r#"<w:p><w:pPr><w:spacing w:before="120" w:after="120" w:line="360" w:lineRule="auto"/></w:pPr>{t}{}</w:p>"#, run(text, "1F2328")));
+    }
+    let document = format!(
+        r#"{XML}<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="{NS_R}"><w:body>{body}<w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="1134" w:right="1134" w:bottom="1134" w:left="1134" w:header="720" w:footer="720" w:gutter="0"/></w:sectPr></w:body></w:document>"#
+    );
+    zip(&[
+        (
+            "[Content_Types].xml".to_string(),
+            format!(r#"{XML}<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>"#).into_bytes(),
+        ),
+        (
+            "_rels/.rels".to_string(),
+            format!(r#"{XML}<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>"#).into_bytes(),
+        ),
+        ("word/document.xml".to_string(), document.into_bytes()),
+    ])
+}
+
 // ───────────── PowerPoint ─────────────
 
 const NS_P: &str = "http://schemas.openxmlformats.org/presentationml/2006/main";

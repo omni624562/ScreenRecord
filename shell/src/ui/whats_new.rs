@@ -37,15 +37,35 @@ enum Try {
 
 /// 這一版的新功能（標題、說明、試試看）：最多 6 項，快速鍵用目前的設定
 fn items(_app: &UiApp) -> Vec<(String, String, Try)> {
-    vec![(
-        tr!("更準的中文字幕：「最精準」語音模型", "More accurate Chinese subtitles: the \"Most accurate\" model").into(),
-        tr!(
-            "新的語音模型（約 570 MB）辨識中文比「精準」準很多。到「外部元件」下載後，自動字幕選「最精準」就能用。",
-            "A new speech model (about 570 MB) recognizes Chinese much better than \"Accurate\". Download it in Components, then pick \"Most accurate\" for auto subtitles."
-        )
-        .into(),
-        Try::Settings(Page::Components),
-    )]
+    vec![
+        (
+            tr!("剪輯視窗的「加速」分頁", "The Speed tab in the editor").into(),
+            tr!(
+                "整支加速可以自訂倍率或輸入想要的長度；選取的片段可以加速、放慢、自訂倍率，定格也在這裡。",
+                "Speed up the whole video by any amount or to a target length; speed up, slow down or freeze sections — all in one place."
+            )
+            .into(),
+            Try::None,
+        ),
+        (
+            tr!("調色、日期時間、標註動畫", "Color, date and time, animated annotations").into(),
+            tr!(
+                "「畫面」分頁調亮度、對比、飽和度，角落可以顯示錄影當時的時間；標註可以淡入淡出或放大出現。",
+                "Adjust brightness, contrast and saturation, show the recording time in a corner, and make annotations fade or pop in."
+            )
+            .into(),
+            Try::None,
+        ),
+        (
+            tr!("逐字稿、步驟教學影片、來回播放的動圖", "Transcripts, step videos, back-and-forth GIFs").into(),
+            tr!(
+                "字幕可以匯出成 Word 逐字稿；步驟截圖可以做成會唸出說明的教學影片；GIF／WebP 可以來回播放。",
+                "Export subtitles as a Word transcript, turn step captures into a narrated video, and make GIF/WebP loop back and forth."
+            )
+            .into(),
+            Try::None,
+        ),
+    ]
 }
 
 pub fn show(app: &mut UiApp, ctx: &egui::Context) {

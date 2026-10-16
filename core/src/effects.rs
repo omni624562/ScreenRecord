@@ -226,7 +226,7 @@ mod tests {
     }
 
     fn ann(kind: AnnKind, shape: Option<Shape>, invert: bool) -> Ann {
-        Ann { id: 1, kind, x: 20.0, y: 20.0, w: 40.0, h: 40.0, start: 0.0, end: 1.0, color: "#000000".into(), size: 8.0, text: None, bg: false, n: None, shape, invert, rot: 0.0, pts: vec![] }
+        Ann { id: 1, kind, x: 20.0, y: 20.0, w: 40.0, h: 40.0, start: 0.0, end: 1.0, color: "#000000".into(), size: 8.0, text: None, bg: false, n: None, shape, invert, rot: 0.0, pts: vec![], anim: 0 }
     }
 
     fn at(v: &[u8], w: usize, x: usize, y: usize) -> u8 {
