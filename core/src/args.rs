@@ -73,8 +73,79 @@ pub const ENCODERS: [EncoderSpec; 5] = [
 /// 硬體編碼器（實測可用才會列入選項）；h264_mf 只在沒有 libx264 時當軟體備援
 pub const HARDWARE_ENCODERS: [&str; 3] = ["h264_nvenc", "h264_qsv", "h264_amf"];
 
+/// HEVC、AV1 的顯示卡編碼器（同樣畫質檔案比 H.264 小，但舊的顯示卡沒有）；MP4 裡的 HEVC 標成 hvc1，Windows、Mac 才認得
+pub const CODEC_ENCODERS: [EncoderSpec; 6] = [
+    EncoderSpec {
+        name: "hevc_nvenc",
+        pix_fmt: "yuv420p",
+        live: &["-c:v", "hevc_nvenc", "-preset", "p4", "-rc", "vbr", "-cq", "27", "-b:v", "0", "-tag:v", "hvc1"],
+        offline: &["-c:v", "hevc_nvenc", "-preset", "p6", "-rc", "vbr", "-cq", "25", "-b:v", "0", "-tag:v", "hvc1"],
+    },
+    EncoderSpec {
+        name: "hevc_qsv",
+        pix_fmt: "nv12",
+        live: &["-c:v", "hevc_qsv", "-preset", "veryfast", "-global_quality", "26", "-tag:v", "hvc1"],
+        offline: &["-c:v", "hevc_qsv", "-preset", "medium", "-global_quality", "24", "-tag:v", "hvc1"],
+    },
+    EncoderSpec {
+        name: "hevc_amf",
+        pix_fmt: "nv12",
+        live: &["-c:v", "hevc_amf", "-usage", "lowlatency", "-rc", "cqp", "-qp_i", "24", "-qp_p", "26", "-tag:v", "hvc1"],
+        offline: &["-c:v", "hevc_amf", "-quality", "quality", "-rc", "cqp", "-qp_i", "22", "-qp_p", "24", "-tag:v", "hvc1"],
+    },
+    EncoderSpec {
+        name: "av1_nvenc",
+        pix_fmt: "yuv420p",
+        live: &["-c:v", "av1_nvenc", "-preset", "p4", "-rc", "vbr", "-cq", "32", "-b:v", "0"],
+        offline: &["-c:v", "av1_nvenc", "-preset", "p6", "-rc", "vbr", "-cq", "30", "-b:v", "0"],
+    },
+    EncoderSpec {
+        name: "av1_qsv",
+        pix_fmt: "nv12",
+        live: &["-c:v", "av1_qsv", "-preset", "veryfast", "-global_quality", "30"],
+        offline: &["-c:v", "av1_qsv", "-preset", "medium", "-global_quality", "28"],
+    },
+    EncoderSpec {
+        name: "av1_amf",
+        pix_fmt: "nv12",
+        live: &["-c:v", "av1_amf", "-usage", "lowlatency", "-rc", "cqp", "-qp_i", "30", "-qp_p", "32"],
+        offline: &["-c:v", "av1_amf", "-quality", "quality", "-rc", "cqp", "-qp_i", "28", "-qp_p", "30"],
+    },
+];
+
 pub fn encoder_spec(name: &str) -> Option<EncoderSpec> {
-    ENCODERS.iter().copied().find(|e| e.name == name)
+    ENCODERS.iter().chain(CODEC_ENCODERS.iter()).copied().find(|e| e.name == name)
+}
+
+/// 編碼器是哪種影片格式
+pub fn codec_of(name: &str) -> crate::types::VideoCodec {
+    if name.starts_with("hevc_") {
+        crate::types::VideoCodec::Hevc
+    } else if name.starts_with("av1_") {
+        crate::types::VideoCodec::Av1
+    } else {
+        crate::types::VideoCodec::H264
+    }
+}
+
+/// 選了 HEVC / AV1 時改用的編碼器：優先用和選好的 H.264 編碼器同一張顯示卡的（h264_qsv → hevc_qsv），
+/// 否則用第一個實測可用的。回傳 (編碼器, 說明)；CPU 編碼、沒有可用的時候回傳 Err(原因)，維持 H.264
+pub fn choose_codec(codec: crate::types::VideoCodec, pref: EncoderPreference, chosen: &EncoderSpec, available: &[EncoderSpec]) -> std::result::Result<(EncoderSpec, String), String> {
+    use crate::types::VideoCodec;
+    if codec == VideoCodec::H264 {
+        return Err(String::new());
+    }
+    let label = codec.label();
+    if pref == EncoderPreference::Cpu {
+        return Err(trf!("設定為 CPU 編碼，{label} 只能用顯示卡壓縮，這次用 H.264", "CPU encoding is selected and {label} needs the GPU, so H.264 is used this time"));
+    }
+    let of_codec: Vec<&EncoderSpec> = available.iter().filter(|e| codec_of(e.name) == codec).collect();
+    let vendor = chosen.name.rsplit('_').next().unwrap_or("");
+    let pick = of_codec.iter().find(|e| e.name.ends_with(&format!("_{vendor}"))).or_else(|| of_codec.first());
+    match pick {
+        Some(e) => Ok((**e, trf!("用顯示卡壓縮成 {label}（{}）", "Encoding to {label} on the GPU ({})", e.name))),
+        None => Err(trf!("這台電腦的顯示卡不支援 {label} 壓縮，這次用 H.264", "This PC's GPU can't encode {label}, so H.264 is used this time")),
+    }
 }
 
 /// 「自動」模式：每秒處理的像素超過 1080p60 就改用 GPU 編碼
@@ -819,10 +890,15 @@ pub fn audio_file_args(src: &str, out_file: &str) -> Vec<String> {
 }
 
 /// chapters：章節檔（FFMETADATA，錄影時加的標記）
-pub fn concat_args(list_file: &str, out_file: &str, chapters: Option<&str>) -> Vec<String> {
+/// hevc：分段是 HEVC（標成 hvc1，Windows、Mac 的播放程式才認得）
+pub fn concat_args(list_file: &str, out_file: &str, chapters: Option<&str>, hevc: bool) -> Vec<String> {
     let mut a = strs(&["-hide_banner", "-nostats", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i"]);
     a.push(list_file.into());
-    a.extend(strs(&["-map", "0", "-c", "copy", "-movflags", "+faststart", "-y"]));
+    a.extend(strs(&["-map", "0", "-c", "copy"]));
+    if hevc {
+        a.extend(strs(&["-tag:v", "hvc1"]));
+    }
+    a.extend(strs(&["-movflags", "+faststart", "-y"]));
     a.push(out_file.into());
     if let Some(c) = chapters {
         add_chapters(&mut a, c);
@@ -948,6 +1024,44 @@ pub fn export_args(
     a.extend(["-g".into(), num(fps * 2.0)]);
     a.extend(strs(&COLOR_TAGS));
     a.extend(strs(&["-movflags", "+faststart", "-progress", "pipe:1", "-stats_period", "0.5", "-y"]));
+    a.push(out_file.into());
+    Ok(a)
+}
+
+/// 同 export_args，存成 WebM：VP9（CPU，多執行緒）+ Opus。limit_kbps：壓縮到指定大小用的位元率
+#[allow(clippy::too_many_arguments)]
+pub fn webm_export_args(source: &str, out_file: &str, speed: f64, fps: f64, with_audio: bool, width: Option<i32>, src_width: Option<i32>, limit_kbps: Option<u32>) -> Result<Vec<String>> {
+    let min = if limit_kbps.is_some() { 1.0 } else { SPEED_MIN };
+    if !(min..=SPEED_MAX).contains(&speed) {
+        return Err(Error::config(trf!("倍率需介於 {}～{}", "Speed must be between {} and {}", num(SPEED_MIN), num(SPEED_MAX))));
+    }
+    let scale = match (width, src_width) {
+        (Some(w), Some(sw)) if w > 0 && sw > 0 && w < sw => format!("scale={}:-2:flags=bicubic,", even(w as f64)),
+        _ => String::new(),
+    };
+    let mut a = strs(&["-hide_banner", "-nostats", "-loglevel", "error", "-i"]);
+    a.push(source.into());
+    a.extend(strs(&["-map", "0:v:0"]));
+    a.extend(if with_audio { strs(&["-map", "0:a:0"]) } else { strs(&["-an"]) });
+    a.extend(strs(&["-sn", "-dn", "-vf"]));
+    a.push(format!("setpts=PTS/{},fps={},{scale}format=yuv420p", num(speed), num(fps)));
+    if with_audio {
+        if speed > 1.0 {
+            a.push("-af".into());
+            a.push(atempo_chain(speed));
+        }
+        a.extend(strs(&["-c:a", "libopus", "-b:a"]));
+        a.push(if limit_kbps.is_some() { "64k".into() } else { "128k".into() });
+    }
+    // 畫面多半是不動的文字：good + cpu-used 4 速度與畫質平衡；row-mt 讓多核心都用上
+    a.extend(strs(&["-c:v", "libvpx-vp9", "-deadline", "good", "-cpu-used", "4", "-row-mt", "1", "-tile-columns", "2"]));
+    match limit_kbps {
+        Some(k) => a.extend(["-b:v".into(), format!("{k}k"), "-maxrate".into(), format!("{}k", k * 3 / 2), "-bufsize".into(), format!("{}k", k * 2)]),
+        None => a.extend(strs(&["-crf", "32", "-b:v", "0"])),
+    }
+    a.extend(["-g".into(), num(fps * 2.0)]);
+    a.extend(strs(&COLOR_TAGS));
+    a.extend(strs(&["-f", "webm", "-progress", "pipe:1", "-stats_period", "0.5", "-y"]));
     a.push(out_file.into());
     Ok(a)
 }
@@ -1770,6 +1884,7 @@ mod tests {
             shot_dir: String::new(),
             audio: AudioConfig::default(),
             encoder: None,
+            codec: Default::default(),
             countdown_sec: None,
             hide_ui: None,
             show_clicks: false,
@@ -2277,6 +2392,35 @@ dummy: Immediate exit requested";
     fn concat() {
         assert_eq!(concat_list(&["C:\\Users\\O'Neil\\seg_000.mp4".into()], &[]), "file 'C:/Users/O'\\''Neil/seg_000.mp4'\n");
         assert_eq!(concat_list(&["a.mp4".into(), "b.mp4".into()], &[Some(1.5), None]), "file 'a.mp4'\noutpoint 1.500000\nfile 'b.mp4'\n");
+    }
+
+    #[test]
+    fn codec_choice() {
+        use crate::types::VideoCodec;
+        let qsv = encoder_spec("h264_qsv").unwrap();
+        let x264 = encoder_spec("libx264").unwrap();
+        let avail: Vec<EncoderSpec> = ["hevc_nvenc", "hevc_qsv", "av1_nvenc"].iter().filter_map(|n| encoder_spec(n)).collect();
+        let pick = |c, pref, chosen: &EncoderSpec| choose_codec(c, pref, chosen, &avail).map(|(e, _)| e.name);
+        // H.264：不換
+        assert_eq!(pick(VideoCodec::H264, EncoderPreference::Auto, &qsv), Err(String::new()));
+        // 同一張顯示卡優先
+        assert_eq!(pick(VideoCodec::Hevc, EncoderPreference::Auto, &qsv), Ok("hevc_qsv"));
+        // 原本用 CPU（自動）：用第一個能用的
+        assert_eq!(pick(VideoCodec::Hevc, EncoderPreference::Auto, &x264), Ok("hevc_nvenc"));
+        assert_eq!(pick(VideoCodec::Av1, EncoderPreference::Gpu, &qsv), Ok("av1_nvenc"));
+        // 指定 CPU、沒有支援的顯示卡：維持 H.264，說明原因
+        assert!(pick(VideoCodec::Hevc, EncoderPreference::Cpu, &x264).unwrap_err().contains("CPU"));
+        assert!(choose_codec(VideoCodec::Av1, EncoderPreference::Auto, &qsv, &[]).unwrap_err().contains("AV1"));
+        assert_eq!(codec_of("hevc_amf"), VideoCodec::Hevc);
+        assert_eq!(codec_of("h264_amf"), VideoCodec::H264);
+        // HEVC 的錄影都標成 hvc1；合併時也是
+        assert!(encoder_spec("hevc_qsv").unwrap().live().join(" ").ends_with("-tag:v hvc1"));
+        assert!(concat_args("l.txt", "o.mp4", None, true).join(" ").contains("-c copy -tag:v hvc1 -movflags"));
+        assert!(!concat_args("l.txt", "o.mp4", None, false).join(" ").contains("hvc1"));
+        // 設定存檔：H.264 不寫
+        let cfg = cfg();
+        assert!(!serde_json::to_string(&cfg).unwrap().contains("codec"));
+        assert!(serde_json::to_string(&RecordConfig { codec: VideoCodec::Av1, ..cfg }).unwrap().contains("\"codec\":\"av1\""));
     }
 
     #[test]

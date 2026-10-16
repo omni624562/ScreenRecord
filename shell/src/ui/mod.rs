@@ -103,6 +103,8 @@ pub enum EntryAction {
     SaveAudio,
     /// 章節（錄影時加的標記）複製成 YouTube 說明欄的格式
     CopyChapters,
+    /// 錄影時記下的操作步驟（點了什麼、按了哪些快速鍵）複製成文字清單
+    CopySteps,
     /// 原速、壓縮到某個大小以內（傳 LINE / Email）：開啟製作視窗的「壓縮」
     Compress,
     /// 做成直式影片（Shorts / Reels）：開啟剪輯並選好「直式影片」
@@ -467,7 +469,7 @@ impl UiApp {
         let (p1, p2) = (path.to_string(), path.to_string());
         let mut actions = vec![];
         let lower = path.to_lowercase();
-        if [".mp4", ".gif", ".webp", ".m4a"].iter().any(|e| lower.ends_with(e)) || dialogs::is_image(path) {
+        if [".mp4", ".gif", ".webp", ".webm", ".m4a"].iter().any(|e| lower.ends_with(e)) || dialogs::is_image(path) {
             actions.push(ToastAction::new(tr!("開啟", "Open"), move |app: &mut UiApp| app.act_path(EntryAction::Play, p1)));
         }
         actions.push(ToastAction::new(tr!("在資料夾中顯示", "Show in folder"), move |app: &mut UiApp| {
@@ -770,7 +772,7 @@ impl UiApp {
         use actions::OpenAction;
         let path = entry.media.path.clone();
         // 主畫面正在播這個檔案：剪輯、製作、改名等要用到檔案時先停下來（Windows 上播放中的檔案不能改名、取代）
-        let keeps = matches!(action, EntryAction::PlayHere | EntryAction::Reveal | EntryAction::CopyFile | EntryAction::CopyChapters | EntryAction::Phone);
+        let keeps = matches!(action, EntryAction::PlayHere | EntryAction::Reveal | EntryAction::CopyFile | EntryAction::CopyChapters | EntryAction::CopySteps | EntryAction::Phone);
         if !keeps && self.inline.as_ref().is_some_and(|i| i.is(&path)) {
             self.inline = None;
         }
@@ -793,6 +795,23 @@ impl UiApp {
                 let duration = entry.media.duration_sec.unwrap_or(0.0);
                 self.ctx.copy_text(screenrecorder_core::chapters::youtube_text(&entry.media.chapters, duration));
                 self.toast(tr!("已複製章節，可以貼到 YouTube 影片的說明欄", "Chapters copied. Paste them into the YouTube video description"), false);
+            }
+            EntryAction::CopySteps => {
+                let core = self.core.clone();
+                self.spawn(async move { actions::steps_text(&core, &path).await }, |app, text| match text {
+                    Some(t) => {
+                        let n = t.lines().filter(|l| l.chars().next().is_some_and(|c| c.is_ascii_digit())).count();
+                        app.ctx.copy_text(t);
+                        app.toast(trf!("已複製 {n} 個操作步驟，可以貼到文件或信件裡", "Copied {n} steps. Paste them into a document or email"), false);
+                    }
+                    None => app.toast(
+                        tr!(
+                            "這支錄影沒有記到操作步驟（3.21 以後在 Windows 上錄的影片，錄影中點的按鈕、按的快速鍵才會記下來）",
+                            "No steps were recorded for this video (buttons clicked and shortcuts pressed are recorded on Windows from version 3.21)"
+                        ),
+                        true,
+                    ),
+                });
             }
             EntryAction::Phone => phone::open(self, path),
             EntryAction::Convert => self.convert(path),

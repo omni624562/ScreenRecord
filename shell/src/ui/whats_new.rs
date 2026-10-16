@@ -37,15 +37,37 @@ enum Try {
 
 /// 這一版的新功能（標題、說明、試試看）：最多 6 項，快速鍵用目前的設定
 fn items(_app: &UiApp) -> Vec<(String, String, Try)> {
-    vec![(
-        tr!("在主畫面直接播放", "Play right in the main window").into(),
-        tr!(
-            "按「最近錄影」卡片的播放鍵，影片就在預覽的位置播放（藍色外框），看完按 ✕ 或 Esc 回到即時預覽；錄音也能聽、會顯示波形。要用更多功能時按「在播放器開啟」。",
-            "Press Play on a Recent card and it plays where the live preview is (blue frame); press ✕ or Esc to go back. Audio recordings show a waveform. Use “Open in the player” for more."
-        )
-        .into(),
-        Try::None,
-    )]
+    vec![
+        (
+            tr!("操作步驟清單", "Step list").into(),
+            tr!(
+                "錄影時會記下點了哪些按鈕和快速鍵。在錄影卡片上按右鍵選「複製操作步驟（文字）」，就能貼成「1. 點「存檔」」這樣的清單。",
+                "Buttons you click and shortcuts you press are noted while recording. Right-click a recording and choose “Copy steps (text)” to paste a numbered list."
+            )
+            .into(),
+            Try::None,
+        ),
+        (
+            tr!("曲線箭頭", "Curved arrows").into(),
+            tr!("選取箭頭後拖曳中間的圓點，就能彎成弧線，繞過要指的東西。", "Select an arrow and drag the dot in the middle to curve it around things.").into(),
+            Try::None,
+        ),
+        (
+            tr!("自訂檔名", "Custom file names").into(),
+            tr!("用「客戶A_{日期}_{序號}」這樣的規則幫錄影和截圖取名，序號自動往下編。", "Name recordings and screenshots with a pattern like “ClientA_{date}_{n}”; the number counts up for you.")
+                .into(),
+            Try::Settings(Page::Save),
+        ),
+        (
+            tr!("更小的檔案：HEVC／AV1、WebM", "Smaller files: HEVC/AV1, WebM").into(),
+            tr!(
+                "錄影可以改用 HEVC 或 AV1（顯示卡壓縮，不支援時自動用 H.264）；加速版、壓縮可以存成 WebM。字幕也能匯入、匯出 VTT。",
+                "Record in HEVC or AV1 on the GPU (falls back to H.264), save sped-up and compressed versions as WebM, and import or export VTT subtitles."
+            )
+            .into(),
+            Try::Settings(Page::Advanced),
+        ),
+    ]
 }
 
 pub fn show(app: &mut UiApp, ctx: &egui::Context) {

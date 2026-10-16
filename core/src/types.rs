@@ -425,6 +425,30 @@ pub enum EncoderPreference {
     Gpu,
 }
 
+/// 錄影的影片格式：HEVC、AV1 同樣畫質檔案比較小，但要顯示卡支援（不能用時自動改用 H.264）
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum VideoCodec {
+    #[default]
+    H264,
+    Hevc,
+    Av1,
+}
+
+impl VideoCodec {
+    pub fn label(self) -> &'static str {
+        match self {
+            VideoCodec::H264 => "H.264",
+            VideoCodec::Hevc => "HEVC",
+            VideoCodec::Av1 => "AV1",
+        }
+    }
+}
+
+fn is_h264(c: &VideoCodec) -> bool {
+    *c == VideoCodec::H264
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RecordConfig {
@@ -445,6 +469,9 @@ pub struct RecordConfig {
     /// 未指定視為 auto
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub encoder: Option<EncoderPreference>,
+    /// 影片格式（HEVC、AV1 要用顯示卡壓縮；沒有支援的顯示卡時用 H.264）
+    #[serde(default, skip_serializing_if = "is_h264")]
+    pub codec: VideoCodec,
     /// 開始前倒數秒數（0 = 立即開始）；未指定視為 3
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub countdown_sec: Option<f64>,
@@ -738,6 +765,8 @@ pub enum ExportFormat {
     Gif,
     /// WebP 動圖：比 GIF 小很多、顏色也比較好
     Webp,
+    /// WebM 影片（VP9 + Opus）：檔案比 MP4 小，網頁可以直接放
+    Webm,
 }
 
 impl ExportFormat {
@@ -746,6 +775,7 @@ impl ExportFormat {
             ExportFormat::Mp4 => "mp4",
             ExportFormat::Gif => "gif",
             ExportFormat::Webp => "webp",
+            ExportFormat::Webm => "webm",
         }
     }
 
@@ -1041,6 +1071,9 @@ pub struct FfmpegInfo {
     /// 有 whisper 濾鏡（語音辨識；沒有時自動字幕另外下載語音辨識用的 FFmpeg）
     #[serde(default)]
     pub has_whisper: bool,
+    /// 有 VP9 與 Opus 編碼器（可以匯出 WebM）
+    #[serde(default)]
+    pub has_webm: bool,
     /// ddagrab 能在畫面沒變化時不送出（dup_frames，FFmpeg 7.0 起）：即時預覽用
     #[serde(default)]
     pub ddagrab_skip_static: bool,
@@ -1050,6 +1083,9 @@ pub struct FfmpegInfo {
     /// 實測可用的硬體編碼器；None = 測試中
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hw_encoders: Option<Vec<String>>,
+    /// 實測可用的 HEVC、AV1 顯示卡編碼器（hevc_nvenc、av1_qsv…）；None = 測試中
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codec_encoders: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub prefer_gpu: Option<bool>,
     /// ddagrab 實測：None = 尚未測試

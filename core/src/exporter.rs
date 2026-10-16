@@ -104,35 +104,42 @@ impl Exporter {
 
     /// 製作加速版；width 為縮小後的寬度（0 = 原尺寸）；max_mb > 0 時壓縮到這個大小以內（可以是原速，只壓縮）
     pub async fn start(&self, ctx: &ExportCtx, source: &str, speed: f64, keep_audio: bool, width: f64, max_mb: f64) -> Result<ExportStatus> {
-        self.start_to(ctx, source, speed, keep_audio, width, max_mb, None).await
+        self.start_to(ctx, source, speed, keep_audio, width, max_mb, ExportFormat::Mp4, None).await
     }
 
-    /// 同 start；output 有指定時存到那裡（另存新檔選的位置），否則和原片放在同一個資料夾、自動取名：
-    /// 加速版 Rec_xxx_4x.mp4，原速只壓縮的 Rec_xxx_25MB以內.mp4
+    /// 同 start；format：MP4 或 WebM；output 有指定時存到那裡（另存新檔選的位置），否則和原片放在同一個資料夾、自動取名：
+    /// 加速版 Rec_xxx_4x.mp4，原速只壓縮的 Rec_xxx_25MB以內.mp4（WebM 一樣，副檔名 .webm）
     #[allow(clippy::too_many_arguments)]
-    pub async fn start_to(&self, ctx: &ExportCtx, source: &str, speed: f64, keep_audio: bool, width: f64, max_mb: f64, output: Option<PathBuf>) -> Result<ExportStatus> {
+    pub async fn start_to(&self, ctx: &ExportCtx, source: &str, speed: f64, keep_audio: bool, width: f64, max_mb: f64, format: ExportFormat, output: Option<PathBuf>) -> Result<ExportStatus> {
         let _g = self.begin()?;
         let limit = max_mb.is_finite() && max_mb > 0.0;
         let min = if limit { 1.0 } else { SPEED_MIN };
         if !speed.is_finite() || !(min..=SPEED_MAX).contains(&speed) {
             return Err(Error::config(trf!("倍率需介於 {}～{}", "Speed must be between {} and {}", num(SPEED_MIN), num(SPEED_MAX))));
         }
-        let output = output.map(|o| check_output(source, o, "mp4")).transpose()?;
+        let webm = format == ExportFormat::Webm;
+        let ext = if webm { "webm" } else { "mp4" };
+        let output = output.map(|o| check_output(source, o, ext)).transpose()?;
         let (ffmpeg, enc, info, fps) = prepare(ctx, source).await?;
         let dir = parent(source);
         let name = if limit && speed <= 1.0 { compressed_file_name(&file_name(source), max_mb) } else { export_file_name(&file_name(source), speed, ExportFormat::Mp4) };
-        let output = output.unwrap_or_else(|| crate::paths::unique_path(&dir, &strip_mp4(&name), ".mp4"));
+        let output = output.unwrap_or_else(|| crate::paths::unique_path(&dir, &strip_mp4(&name), &format!(".{ext}")));
         let with_audio = keep_audio && info.has_audio == Some(true);
         let w = if width.is_finite() && width >= 160.0 { js_round(width) as i32 } else { 0 };
         let src_w = info.width.map(|x| x as i32);
         let scaled = w > 0 && src_w.is_some_and(|sw| w < sw);
         let out_sec = info.duration_sec.unwrap_or(0.0) / speed;
         let kbps = limit.then(|| crate::args::size_bitrate(max_mb * 1024.0 * 1024.0, out_sec, if with_audio { crate::args::SMALL_AUDIO_KBPS } else { 0 }));
-        let mut args = export_args(source, &output.display().to_string(), speed, fps, &enc, with_audio, Some(w), src_w, kbps)?;
+        let mut args = if webm {
+            crate::args::webm_export_args(source, &output.display().to_string(), speed, fps, with_audio, Some(w), src_w, kbps)?
+        } else {
+            export_args(source, &output.display().to_string(), speed, fps, &enc, with_audio, Some(w), src_w, kbps)?
+        };
         // 章節（錄影時加的標記）跟著加速換算時間
         let cleanup = with_chapters(&mut args, &crate::chapters::scale(&info.chapters, speed), out_sec, None);
         let note = format!(
-            "{}{}{}{}",
+            "{}{}{}{}{}",
+            if webm { "WebM，" } else { "" },
             if speed > 1.0 { format!("{}×", speed_label(speed)) } else { "原速".into() },
             if with_audio { "，含聲音" } else { "" },
             if scaled { format!("，寬 {w}") } else { String::new() },

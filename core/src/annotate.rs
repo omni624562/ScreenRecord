@@ -153,6 +153,9 @@ pub struct Ann {
     /// 影片標註的出現方式：0 直接出現、1 淡入淡出、2 放大出現（淡入淡出加上由小變大）
     #[serde(default, skip_serializing_if = "is_zero_u8")]
     pub anim: u8,
+    /// 箭頭彎曲的程度：弧線中點離直線中點多遠（影片像素，正負是往哪一邊彎）；0 = 直線
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub bend: f64,
 }
 
 /// 出現方式的動畫時間（秒）：標註很短時縮短
@@ -312,6 +315,7 @@ pub fn plain_text(text: &str, size: f64, color: &str) -> Ann {
         rot: 0.0,
         pts: vec![],
         anim: 0,
+        bend: 0.0,
     };
     measure(&mut a);
     a
@@ -454,9 +458,12 @@ pub fn bbox(a: &Ann) -> (f64, f64, f64, f64) {
 pub fn local_bbox(a: &Ann) -> (f64, f64, f64, f64) {
     if a.kind == AnnKind::Arrow {
         let pad = a.size * 2.5;
-        let x0 = a.x.min(a.x + a.w);
-        let y0 = a.y.min(a.y + a.h);
-        return (x0 - pad, y0 - pad, a.w.abs() + pad * 2.0, a.h.abs() + pad * 2.0);
+        let pts = arrow_points(a, 24);
+        let (mut x0, mut y0, mut x1, mut y1) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
+        for (x, y) in pts {
+            (x0, y0, x1, y1) = (x0.min(x), y0.min(y), x1.max(x), y1.max(y));
+        }
+        return (x0 - pad, y0 - pad, x1 - x0 + pad * 2.0, y1 - y0 + pad * 2.0);
     }
     let pad = match a.kind {
         AnnKind::Rect | AnnKind::Ellipse => a.size,
@@ -474,10 +481,12 @@ pub fn local_bbox(a: &Ann) -> (f64, f64, f64, f64) {
 pub fn hit(a: &Ann, x: f64, y: f64, tolerance: f64) -> bool {
     if a.kind == AnnKind::Arrow {
         let (x2, y2) = (a.x + a.w, a.y + a.h);
-        let len2 = (a.w * a.w + a.h * a.h).max(1.0);
-        let t = (((x - a.x) * a.w + (y - a.y) * a.h) / len2).clamp(0.0, 1.0);
-        let (dx, dy) = (x - (a.x + t * a.w), y - (a.y + t * a.h));
-        return dx.hypot(dy) <= a.size * 2.0 + tolerance || (x - x2).hypot(y - y2) <= a.size * 3.0 + tolerance;
+        let near = |(x0, y0): (f64, f64), (x1, y1): (f64, f64)| {
+            let (dx, dy) = (x1 - x0, y1 - y0);
+            let t = (((x - x0) * dx + (y - y0) * dy) / (dx * dx + dy * dy).max(1.0)).clamp(0.0, 1.0);
+            (x - (x0 + t * dx)).hypot(y - (y0 + t * dy)) <= a.size * 2.0 + tolerance
+        };
+        return arrow_points(a, 24).windows(2).any(|p| near(p[0], p[1])) || (x - x2).hypot(y - y2) <= a.size * 3.0 + tolerance;
     }
     let (x, y) = to_local(a, x, y);
     if a.kind == AnnKind::Pen && a.pts.len() > 1 {
@@ -494,10 +503,55 @@ pub fn hit(a: &Ann, x: f64, y: f64, tolerance: f64) -> bool {
     x >= bx - tolerance && x <= bx + bw + tolerance && y >= by - tolerance && y <= by + bh + tolerance
 }
 
-/// 調整大小的把手位置（影片像素）：箭頭為兩端，其他為右下角（跟著旋轉）
+/// 箭頭的法向量（垂直於起點→終點，長度 1）
+fn arrow_normal(a: &Ann) -> (f64, f64) {
+    let len = a.w.hypot(a.h).max(1e-9);
+    (-a.h / len, a.w / len)
+}
+
+/// 彎曲箭頭（二次曲線）的控制點：弧線的中點剛好在直線中點往法向量移 bend 的地方
+pub fn arrow_ctrl(a: &Ann) -> (f64, f64) {
+    let (nx, ny) = arrow_normal(a);
+    let b = if a.bend.is_finite() { a.bend } else { 0.0 };
+    (a.x + a.w / 2.0 + nx * b * 2.0, a.y + a.h / 2.0 + ny * b * 2.0)
+}
+
+/// 彎曲把手的位置（弧線的中點）
+pub fn arrow_mid(a: &Ann) -> (f64, f64) {
+    let (nx, ny) = arrow_normal(a);
+    let b = if a.bend.is_finite() { a.bend } else { 0.0 };
+    (a.x + a.w / 2.0 + nx * b, a.y + a.h / 2.0 + ny * b)
+}
+
+/// 拖彎曲把手到 (px, py)：依離直線多遠決定彎曲程度；很接近直線時拉直
+pub fn set_bend(a: &mut Ann, px: f64, py: f64) {
+    let (nx, ny) = arrow_normal(a);
+    let d = (px - (a.x + a.w / 2.0)) * nx + (py - (a.y + a.h / 2.0)) * ny;
+    let len = a.w.hypot(a.h);
+    let max = len * 0.75;
+    a.bend = if d.abs() < (a.size * 0.8).max(len * 0.03) { 0.0 } else { d.clamp(-max, max).round() };
+}
+
+/// 箭頭線上的點（直線就是兩端；彎的取 n 段）
+pub fn arrow_points(a: &Ann, n: usize) -> Vec<(f64, f64)> {
+    let (x2, y2) = (a.x + a.w, a.y + a.h);
+    if a.bend == 0.0 || !a.bend.is_finite() {
+        return vec![(a.x, a.y), (x2, y2)];
+    }
+    let (cx, cy) = arrow_ctrl(a);
+    (0..=n)
+        .map(|i| {
+            let t = i as f64 / n as f64;
+            let u = 1.0 - t;
+            (u * u * a.x + 2.0 * u * t * cx + t * t * x2, u * u * a.y + 2.0 * u * t * cy + t * t * y2)
+        })
+        .collect()
+}
+
+/// 調整大小的把手位置（影片像素）：箭頭為兩端與中間的彎曲把手，其他為右下角（跟著旋轉）
 pub fn handles(a: &Ann) -> Vec<(f64, f64)> {
     if a.kind == AnnKind::Arrow {
-        vec![(a.x, a.y), (a.x + a.w, a.y + a.h)]
+        vec![(a.x, a.y), (a.x + a.w, a.y + a.h), arrow_mid(a)]
     } else {
         vec![to_world(a, a.x + a.w, a.y + a.h)]
     }
@@ -778,11 +832,20 @@ pub fn draw(pixmap: &mut Pixmap, a: &Ann, t: Transform) {
         }
         AnnKind::Arrow => {
             let (x2, y2) = (x + w, y + h);
-            let ang = h.atan2(w);
+            let bent = a.bend != 0.0 && a.bend.is_finite();
+            let (cx, cy) = arrow_ctrl(a);
+            let (cx, cy) = (cx as f32, cy as f32);
+            // 箭頭頭部的方向：彎的箭頭用終點的切線方向
+            let ang = if bent { (y2 - cy).atan2(x2 - cx) } else { h.atan2(w) };
             let head = size * 3.2;
             let mut pb = PathBuilder::new();
             pb.move_to(x, y);
-            pb.line_to(x2 - ang.cos() * head * 0.6, y2 - ang.sin() * head * 0.6);
+            let (ex, ey) = (x2 - ang.cos() * head * 0.6, y2 - ang.sin() * head * 0.6);
+            if bent {
+                pb.quad_to(cx, cy, ex, ey);
+            } else {
+                pb.line_to(ex, ey);
+            }
             if let Some(shaft) = pb.finish() {
                 pixmap.stroke_path(&shaft, &paint(Color::from_rgba8(0, 0, 0, 89)), &stroke(a.size + 3.0), t, None);
                 pixmap.stroke_path(&shaft, &paint(color(&a.color, 1.0)), &stroke(a.size), t, None);
@@ -1075,6 +1138,40 @@ mod tests {
         assert_eq!(l.last().unwrap().size, 19.0);
     }
 
+    #[test]
+    fn curved_arrows() {
+        let mut a = Ann { x: 100.0, y: 100.0, w: 200.0, h: 0.0, size: 6.0, ..ann(AnnKind::Arrow) };
+        // 直的：把手在兩端與中間
+        assert_eq!(handles(&a), vec![(100.0, 100.0), (300.0, 100.0), (200.0, 100.0)]);
+        // 拖中間的圓點往下 60：弧線的中點就在那裡
+        set_bend(&mut a, 200.0, 160.0);
+        assert_eq!(a.bend, 60.0);
+        assert_eq!(arrow_mid(&a), (200.0, 160.0));
+        let pts = arrow_points(&a, 24);
+        assert!((pts[12].0 - 200.0).abs() < 1e-6 && (pts[12].1 - 160.0).abs() < 1e-6, "{:?}", pts[12]);
+        // 點弧線上可以選到，點原本直線的位置選不到
+        assert!(hit(&a, 200.0, 158.0, 2.0));
+        assert!(!hit(&a, 200.0, 100.0, 2.0));
+        // 範圍包含弧線
+        let (_, y, _, h) = local_bbox(&a);
+        assert!(y + h >= 160.0);
+        // 很接近直線時拉直；拉太遠有上限
+        set_bend(&mut a, 200.0, 102.0);
+        assert_eq!(a.bend, 0.0);
+        set_bend(&mut a, 200.0, 10_000.0);
+        assert_eq!(a.bend, 150.0);
+        // 畫得出來：弧線最低點有顏色、原本直線的中間沒有
+        a.bend = 60.0;
+        a.color = "#ff0000".into();
+        let mut pm = Pixmap::new(400, 300).unwrap();
+        draw(&mut pm, &a, Transform::identity());
+        assert!(pm.pixel(200, 160).unwrap().alpha() > 200);
+        assert_eq!(pm.pixel(200, 100).unwrap().alpha(), 0);
+        // 存檔：直的箭頭不寫 bend
+        assert!(!serde_json::to_string(&Ann { bend: 0.0, ..a.clone() }).unwrap().contains("bend"));
+        assert!(serde_json::to_string(&a).unwrap().contains("\"bend\":60.0"));
+    }
+
     fn ann(kind: AnnKind) -> Ann {
         Ann {
             id: 1,
@@ -1095,6 +1192,7 @@ mod tests {
             rot: 0.0,
             pts: vec![],
             anim: 0,
+            bend: 0.0,
         }
     }
 

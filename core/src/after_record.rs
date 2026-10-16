@@ -44,6 +44,11 @@ pub struct AfterRecord {
 pub const COPY_KEY: &str = "afterCopyTo";
 
 /// ui 設定裡的欄位名稱（設定組合也存這些）
+/// 錄影的命名規則（介面設定裡的 key；空的 = 不用）
+pub const NAME_RULE_KEY: &str = "nameRule";
+/// 截圖的命名規則
+pub const SHOT_NAME_RULE_KEY: &str = "shotNameRule";
+
 pub const UI_KEYS: [&str; 7] = ["afterIdleCut", "afterSubs", "afterSubsModel", "afterSubsLang", "afterCompressMb", "afterAutoName", "afterSubsEn"];
 
 impl AfterRecord {
@@ -248,6 +253,16 @@ impl App {
     /// 錄影存好之後（由錄影器呼叫）：依設定處理，完成時用系統匣通知
     pub async fn after_record(self: Arc<Self>, video: String) {
         let ui = self.settings.load().ui;
+        // 命名規則：先改名，之後做出來的檔案（剪輯版、壓縮版、字幕）都接在新的名稱後面
+        let rule = ui.as_ref().and_then(|u| u.get(NAME_RULE_KEY)).and_then(Value::as_str).unwrap_or("").to_string();
+        let renamed = match crate::actions::apply_name_rule(&self, &video, &rule).await {
+            Some(p) => {
+                info!("[命名規則] {video} → {p}");
+                Some(p)
+            }
+            None => None,
+        };
+        let video = renamed.clone().unwrap_or(video);
         // 只錄聲音、設定「存成 M4A」（預設）：另存一份只有聲音的 M4A（不重新壓縮，一下子就好）
         if is_audio_recording(&video) && audio_m4a(ui.as_ref()) {
             match crate::actions::save_audio(&self, &video).await {
@@ -258,7 +273,11 @@ impl App {
                 }
             }
         }
-        let after = AfterRecord::from_ui(ui.as_ref());
+        let mut after = AfterRecord::from_ui(ui.as_ref());
+        // 已經依命名規則取好名稱：不再自動命名
+        if renamed.is_some() {
+            after.auto_name = false;
+        }
         if !after.any() {
             if after.auto_name {
                 self.after_auto_name(&video, None).await;

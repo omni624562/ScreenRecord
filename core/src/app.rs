@@ -760,7 +760,7 @@ impl App {
         let monitors = self.lock().monitors.clone();
         // 選了「只錄聲音」時，截圖仍截螢幕
         let plan = crate::args::resolve_plan(&RecordConfig { audio_only: false, ..config.clone() }, &monitors)?;
-        let out = new_shot_path(&config.shots_dir()).await?;
+        let out = self.new_shot_path(&config.shots_dir()).await?;
         // 操作視窗擋到範圍：先縮小（等動畫結束）再截
         let hid = crate::winui::minimize_ui(Some(&plan.rect));
         if hid {
@@ -797,7 +797,7 @@ impl App {
     /// 從影片擷取 t 秒的那一格，存成截圖（原尺寸 PNG，存在截圖資料夾 shot_dir）並複製到剪貼簿
     pub async fn grab_frame(self: &Arc<Self>, video: &str, t: f64, shot_dir: &str) -> crate::Result<crate::types::ShotInfo> {
         let ffmpeg = self.ffmpeg_path().ok_or_else(|| crate::Error::config(tr!("找不到 FFmpeg", "FFmpeg not found")))?;
-        let out = new_shot_path(shot_dir).await?;
+        let out = self.new_shot_path(shot_dir).await?;
         let t = if t.is_finite() { t.max(0.0) } else { 0.0 };
         let args: Vec<String> = ["-hide_banner", "-loglevel", "error"]
             .iter()
@@ -935,7 +935,7 @@ impl App {
             }
             images.push(pm);
         }
-        let out = new_shot_path(shot_dir).await?;
+        let out = self.new_shot_path(shot_dir).await?;
         let o = out.clone();
         let (w, h) = tokio::task::spawn_blocking(move || {
             let gap = combine_gap(&images, spacing);
@@ -956,7 +956,7 @@ impl App {
     pub async fn compare_shots(self: &Arc<Self>, before: String, after: String, shot_dir: &str) -> crate::Result<(crate::types::ShotInfo, usize)> {
         let (a, aw, ah) = crate::actions::load_image(&before).await?;
         let (b, bw, bh) = crate::actions::load_image(&after).await?;
-        let out = new_shot_path(shot_dir).await?;
+        let out = self.new_shot_path(shot_dir).await?;
         let o = out.clone();
         let (n, w, h) = tokio::task::spawn_blocking(move || {
             // 框畫在後面那張（原本的大小）；比較時前面那張縮放成一樣大
@@ -1283,7 +1283,7 @@ impl App {
                 crate::info!("[截圖] 取消長截圖");
                 return Ok(None);
             };
-            let out = new_shot_path(&src.shot_dir).await?;
+            let out = self.new_shot_path(&src.shot_dir).await?;
             let o = out.clone();
             let (w, h) = (img.w, img.h);
             let (copied, thumb) = tokio::task::spawn_blocking(move || save_long_shot(img, &o)).await.map_err(|e| crate::Error::other(e.to_string()))??;
@@ -1445,7 +1445,7 @@ impl App {
 
     /// 裁切、存檔並複製到剪貼簿；preview = 顯示右下角的小縮圖
     async fn snip_store(self: &Arc<Self>, src: &SnipSource, rect: crate::types::Rect, preview: bool) -> crate::Result<crate::types::ShotInfo> {
-        let out = new_shot_path(&src.shot_dir).await?;
+        let out = self.new_shot_path(&src.shot_dir).await?;
         let (from, to, desk) = (src.path.clone(), out.clone(), src.desktop);
         let r = tokio::task::spawn_blocking(move || crop_png(&from, desk, rect, &to)).await.map_err(|e| crate::Error::other(e.to_string()))?;
         let (w, h) = r?;
@@ -1625,7 +1625,11 @@ impl App {
         let mut rx = self.hw_ready.subscribe();
         let _ = rx.wait_for(|v| *v).await;
         let st = self.lock();
-        Encoders { cpu: st.ffmpeg.encoder, gpu: st.ffmpeg.info.hw_encoders.clone().unwrap_or_default().iter().filter_map(|n| encoder_spec(n)).collect() }
+        Encoders {
+            cpu: st.ffmpeg.encoder,
+            gpu: st.ffmpeg.info.hw_encoders.clone().unwrap_or_default().iter().filter_map(|n| encoder_spec(n)).collect(),
+            codec: st.ffmpeg.info.codec_encoders.clone().unwrap_or_default().iter().filter_map(|n| encoder_spec(n)).collect(),
+        }
     }
 
     /// 清除「自動改用 GPU」的紀錄（例如換了更快的電腦，或當時只是暫時忙碌）
@@ -1751,6 +1755,7 @@ impl App {
             // 硬體編碼器實測結果同樣保留（換了 ffmpeg.exe 才重測）
             if probe.info.path == old.path && old.hw_encoders.is_some() {
                 probe.info.hw_encoders = old.hw_encoders.clone();
+                probe.info.codec_encoders = old.codec_encoders.clone();
             }
             probe.info.prefer_gpu = Some(prefer_gpu);
             let info = &probe.info;
@@ -1776,6 +1781,8 @@ impl App {
                 };
                 // 測試出錯時視為「沒有可用的 GPU」，不能讓之後每次錄影都因此失敗
                 let list = test_hw_encoders(&PathBuf::from(&path), &listed).await;
+                // HEVC、AV1：只測同一家顯示卡（H.264 能用的那家）的，沒有顯示卡編碼器時不用測
+                let codecs = crate::ffmpeg::test_codec_encoders(&PathBuf::from(&path), &listed, &list).await;
                 {
                     let mut st = app.lock();
                     if st.ffmpeg.info.path.as_deref() == Some(path.as_str()) {
@@ -1784,7 +1791,11 @@ impl App {
                         } else {
                             info!("可用的 GPU 編碼器：{}", list.join("、"));
                         }
+                        if !codecs.is_empty() {
+                            info!("可用的 HEVC / AV1 編碼器：{}", codecs.join("、"));
+                        }
                         st.ffmpeg.info.hw_encoders = Some(list);
+                        st.ffmpeg.info.codec_encoders = Some(codecs);
                     }
                 }
                 app.hw_ready.send_replace(true);
@@ -2386,12 +2397,25 @@ pub fn combine_gap(images: &[tiny_skia::Pixmap], spacing: u8) -> u32 {
     }
 }
 
-/// 新截圖的檔名：Shot_日期_時間.png（同一秒有好幾張時加 _2、_3…）
-async fn new_shot_path(dir: &str) -> crate::Result<PathBuf> {
-    let dir = PathBuf::from(dir);
-    tokio::fs::create_dir_all(&dir).await.map_err(|e| crate::Error::config(trf!("無法建立儲存資料夾：{e}", "Couldn't create the save folder: {e}")))?;
-    let stamp = crate::paths::timestamp();
-    Ok((1..).map(|i| dir.join(if i == 1 { format!("Shot_{stamp}.png") } else { format!("Shot_{stamp}_{i}.png") })).find(|p| !p.exists()).unwrap_or_else(|| dir.join(format!("Shot_{stamp}.png"))))
+impl App {
+    /// 新截圖的檔名：Shot_日期_時間.png（同一秒有好幾張時加 _2、_3…）；設了命名規則時依規則取名
+    /// （{程式}、{視窗} 用這次截圖記下的程式；{內容} 截圖時還不知道，空白）
+    async fn new_shot_path(&self, dir: &str) -> crate::Result<PathBuf> {
+        let dir = PathBuf::from(dir);
+        tokio::fs::create_dir_all(&dir).await.map_err(|e| crate::Error::config(trf!("無法建立儲存資料夾：{e}", "Couldn't create the save folder: {e}")))?;
+        let stamp = crate::paths::timestamp();
+        let rule = self.settings.load().ui.as_ref().and_then(|u| u.get(crate::after_record::SHOT_NAME_RULE_KEY)).and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let base = if rule.trim().is_empty() {
+            None
+        } else {
+            let meta = self.lock().shot_meta.clone().unwrap_or_default();
+            let c = crate::naming::RuleCtx { app: meta.app, title: meta.title, ..crate::naming::RuleCtx::from_stem(&format!("Shot_{stamp}")) };
+            let existing: Vec<String> = std::fs::read_dir(&dir).map(|r| r.filter_map(|e| e.ok()).map(|e| e.file_name().to_string_lossy().into_owned()).collect()).unwrap_or_default();
+            crate::naming::apply_rule(&rule, &c, "png", &existing)
+        };
+        let base = base.unwrap_or_else(|| format!("Shot_{stamp}"));
+        Ok((1..).map(|i| dir.join(if i == 1 { format!("{base}.png") } else { format!("{base}_{i}.png") })).take(1000).find(|p| !p.exists()).unwrap_or_else(|| dir.join(format!("Shot_{stamp}.png"))))
+    }
 }
 
 /// 從整個桌面的 PNG（左上角是 desk 的原點）裁切 rect，存成 PNG；回傳實際的寬高
@@ -2486,6 +2510,7 @@ mod tests {
             shot_dir: String::new(),
             audio: AudioConfig::default(),
             encoder: None,
+            codec: Default::default(),
             countdown_sec: None,
             hide_ui: None,
             show_clicks: false,

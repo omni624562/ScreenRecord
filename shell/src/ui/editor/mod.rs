@@ -1283,6 +1283,7 @@ impl Editor {
             rot: 0.0,
             pts: vec![],
             anim: 0,
+            bend: 0.0,
         };
         self.next_id += 1;
         if kind == AnnKind::Text {
@@ -2154,6 +2155,7 @@ fn emoji_textures(ctx: &egui::Context) -> Vec<TextureHandle> {
                 rot: 0.0,
                 pts: vec![],
                 anim: 0,
+                bend: 0.0,
             };
             annotate::measure(&mut a);
             // 只要表情符號本身：用深色底的版面量大小，但不畫底色
@@ -2517,7 +2519,7 @@ fn pick_output(app: &mut UiApp, ed: &mut Editor) {
     );
 }
 
-/// 字幕匯出成 SRT（剪輯後的時間），用另存新檔視窗選位置
+/// 字幕匯出成 SRT 或 VTT（剪輯後的時間），用另存新檔視窗選位置與類型
 fn export_srt(app: &mut UiApp, ed: &Editor) {
     let cues = ed.cut_cues();
     if cues.is_empty() {
@@ -2528,13 +2530,23 @@ fn export_srt(app: &mut UiApp, ed: &Editor) {
     app.spawn(
         async move {
             tokio::task::spawn_blocking(move || -> Result<Option<PathBuf>, String> {
-                let picked = screenrecorder_core::filepick::save_file(tr!("匯出字幕檔", "Export subtitles"), dir, &name, &[(tr!("SRT 字幕檔", "SRT subtitles"), "*.srt")])?;
-                let Some((mut path, _)) = picked else { return Ok(None) };
-                if path.extension().is_none_or(|e| !e.eq_ignore_ascii_case("srt")) {
-                    path.set_extension("srt");
+                let filters = [(tr!("SRT 字幕檔（YouTube）", "SRT subtitles (YouTube)"), "*.srt"), (tr!("WebVTT 字幕檔（網頁、Teams）", "WebVTT subtitles (web, Teams)"), "*.vtt")];
+                let picked = screenrecorder_core::filepick::save_file(tr!("匯出字幕檔", "Export subtitles"), dir, &name, &filters)?;
+                let Some((mut path, kind)) = picked else { return Ok(None) };
+                // 打的副檔名優先，沒打就看選的類型
+                let typed = path.extension().map(|e| e.to_string_lossy().to_ascii_lowercase());
+                let vtt = match typed.as_deref() {
+                    Some("vtt") => true,
+                    Some("srt") => false,
+                    _ => kind == 1,
+                };
+                if typed.as_deref() != Some(if vtt { "vtt" } else { "srt" }) {
+                    path.set_extension(if vtt { "vtt" } else { "srt" });
                 }
-                // 加上 BOM：Windows 的記事本與舊的播放器才不會變成亂碼
-                std::fs::write(&path, format!("\u{feff}{}", screenrecorder_core::subtitles::to_srt(&cues))).map_err(|e| trf!("無法儲存字幕檔：{e}", "Couldn't save the subtitle file: {e}"))?;
+                let body = if vtt { screenrecorder_core::subtitles::to_vtt(&cues) } else { screenrecorder_core::subtitles::to_srt(&cues) };
+                // SRT 加上 BOM：Windows 的記事本與舊的播放器才不會變成亂碼（VTT 規定不能有 BOM 以外的東西在前面，BOM 可以省略）
+                let body = if vtt { body } else { format!("\u{feff}{body}") };
+                std::fs::write(&path, body).map_err(|e| trf!("無法儲存字幕檔：{e}", "Couldn't save the subtitle file: {e}"))?;
                 Ok(Some(path))
             })
             .await

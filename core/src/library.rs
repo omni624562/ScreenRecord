@@ -199,6 +199,7 @@ pub async fn scan_checked(cache: &MediaCache, dir: &Path) -> std::io::Result<Vec
             let rank = |f: Option<ExportFormat>| match f {
                 Some(ExportFormat::Gif) => 1u8,
                 Some(ExportFormat::Webp) => 2,
+                Some(ExportFormat::Webm) => 3,
                 _ => 0,
             };
             p.speed.total_cmp(&q.speed).then(rank(p.format).cmp(&rank(q.format))).then(p.media.mtime.total_cmp(&q.media.mtime))

@@ -54,6 +54,8 @@ pub struct UiSettings {
     pub keep_audio: bool,
     pub live_preview: bool,
     pub encoder: EncoderPreference,
+    /// 錄影的影片格式（H.264 / HEVC / AV1）
+    pub codec: screenrecorder_core::types::VideoCodec,
     pub countdown_sec: u32,
     pub hide_ui: bool,
     pub export_format: ExportFormat,
@@ -146,6 +148,12 @@ pub struct UiSettings {
     /// 錄完處理後複製到這個資料夾（core::after_record 讀這個欄位）
     #[serde(skip_serializing_if = "String::is_empty")]
     pub after_copy_to: String,
+    /// 錄影的命名規則（例如「客戶A_{日期}_{序號}」；空的 = Rec_時間）。core 讀這個欄位
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub name_rule: String,
+    /// 截圖的命名規則（空的 = Shot_時間）
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub shot_name_rule: String,
     /// 只錄某個視窗時只錄視窗的內容（Windows Graphics Capture）
     pub window_capture: bool,
     /// 系統聲音與麥克風分開存（分軌）
@@ -257,6 +265,7 @@ impl UiSettings {
             keep_audio: boolean("keepAudio").unwrap_or(true),
             live_preview: boolean("livePreview").unwrap_or(true),
             encoder: o.get("encoder").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default(),
+            codec: o.get("codec").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default(),
             countdown_sec: num("countdownSec").map(|v| v as u32).filter(|v| [0, 3, 5, 10].contains(v)).unwrap_or(3),
             hide_ui: boolean("hideUi").unwrap_or(true),
             export_format: match o.get("exportFormat").and_then(Value::as_str) {
@@ -327,6 +336,8 @@ impl UiSettings {
             after_auto_name: boolean("afterAutoName").unwrap_or(false),
             after_subs_en: boolean("afterSubsEn").unwrap_or(false),
             after_copy_to: o.get(screenrecorder_core::after_record::COPY_KEY).and_then(Value::as_str).unwrap_or("").trim().to_string(),
+            name_rule: o.get(screenrecorder_core::after_record::NAME_RULE_KEY).and_then(Value::as_str).unwrap_or("").chars().take(120).collect(),
+            shot_name_rule: o.get(screenrecorder_core::after_record::SHOT_NAME_RULE_KEY).and_then(Value::as_str).unwrap_or("").chars().take(120).collect(),
             after_compress_mb: num("afterCompressMb").map(|v| v as u32).filter(|v| MAX_MB.contains(v)).unwrap_or(0),
             window_capture: boolean("windowCapture").unwrap_or(false),
             separate_audio: boolean("separateAudio").unwrap_or(false),
@@ -509,6 +520,7 @@ impl UiSettings {
             shot_dir: self.shot_dir.trim().to_string(),
             audio: AudioConfig { system: self.audio_system, mic: self.audio_mic, mic_id: self.mic_id.clone(), app: self.audio_app.clone() },
             encoder: Some(self.encoder),
+            codec: self.codec,
             countdown_sec: Some(self.countdown_sec as f64),
             hide_ui: Some(self.hide_ui),
             show_clicks: self.show_clicks,

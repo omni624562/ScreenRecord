@@ -297,14 +297,14 @@ pub async fn rename(app: &App, path: &str, name: &str) -> Result<String> {
     Ok(new_path)
 }
 
-/// 移到資源回收筒（可還原）；只接受 .mp4 / .gif / .webp / .png / .m4a，且不能刪正在轉檔的檔案
+/// 移到資源回收筒（可還原）；只接受 .mp4 / .gif / .webp / .webm / .png / .m4a，且不能刪正在轉檔的檔案
 pub fn delete(app: &App, paths: &[String]) -> Result<usize> {
     if paths.is_empty() {
         return Err(Error::config(tr!("沒有選取檔案", "No files selected")));
     }
     let busy = exporting(app);
     for f in paths {
-        if !is_abs(f) || !ends_with_ci(f, &[".mp4", ".gif", ".webp", ".png", ".jpg", ".jpeg", ".m4a"]) || !is_file(f) {
+        if !is_abs(f) || !ends_with_ci(f, &[".mp4", ".gif", ".webp", ".webm", ".png", ".jpg", ".jpeg", ".m4a"]) || !is_file(f) {
             return Err(Error::config(trf!("找不到檔案：{f}", "File not found: {f}")));
         }
         if busy.contains(&f.to_lowercase()) {
@@ -349,7 +349,7 @@ pub async fn export_start(app: &App, r: &ExportRequest) -> Result<()> {
     let output = r.output.as_deref().map(PathBuf::from);
     match r.format {
         ExportFormat::Gif | ExportFormat::Webp => app.exporter.start_gif_to(&ctx, &r.source, r.speed, r.gif_width, r.gif_fps, r.format, r.bounce, output).await?,
-        ExportFormat::Mp4 => app.exporter.start_to(&ctx, &r.source, r.speed, r.keep_audio, r.mp4_width, r.mp4_max_mb, output).await?,
+        ExportFormat::Mp4 | ExportFormat::Webm => app.exporter.start_to(&ctx, &r.source, r.speed, r.keep_audio, r.mp4_width, r.mp4_max_mb, r.format, output).await?,
     };
     Ok(())
 }
@@ -597,7 +597,19 @@ pub async fn marks(app: &App, path: &str) -> crate::recorder::Marks {
     m.zooms.sort_by(|a, b| a[0].total_cmp(&b[0]));
     m.cursor.retain(|c| c.iter().all(|v| v.is_finite()) && c[0] >= 0.0);
     m.cursor.sort_by(|a, b| a[0].total_cmp(&b[0]));
+    m.actions.retain(|a| a.t.is_finite() && a.t >= 0.0);
+    m.actions.sort_by(|a, b| a.t.total_cmp(&b.t));
     m
+}
+
+/// 錄影時記下的操作步驟整理成文字清單；沒有記到時 None
+pub async fn steps_text(app: &App, path: &str) -> Option<String> {
+    let m = marks(app, path).await;
+    if m.actions.is_empty() {
+        return None;
+    }
+    let title = Path::new(path).file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    Some(crate::steps_log::to_text(&m.actions, &title))
 }
 
 // ───────────── 截圖編輯 ─────────────
@@ -812,7 +824,7 @@ pub fn open(action: OpenAction, path: &str) -> Result<()> {
         }
         _ => {
             // 只允許開啟影片、截圖與聲音檔（.mp4 / .gif / .webp / .png / .m4a），避免執行任意檔案
-            if !ends_with_ci(p, &[".mp4", ".gif", ".webp", ".png", ".jpg", ".jpeg", ".m4a"]) || !is_file(p) {
+            if !ends_with_ci(p, &[".mp4", ".gif", ".webp", ".webm", ".png", ".jpg", ".jpeg", ".m4a"]) || !is_file(p) {
                 return Err(Error::config(tr!("找不到檔案", "File not found")));
             }
             crate::desktop::open_with_explorer(p, action == OpenAction::Reveal);
@@ -905,6 +917,42 @@ async fn screen_text(app: &App, ffmpeg: &Path, path: &str) -> Vec<String> {
 pub async fn suggest_name(app: &App, path: &str) -> Option<String> {
     let h = name_hints(app, path).await;
     crate::naming::suggest(&h)
+}
+
+/// 依命名規則（設定裡的「命名規則」）改名：只改預設的名稱（Rec_時間、Shot_時間；只錄聲音的錄音不改），回傳新的路徑。
+/// 規則裡有 {內容} 時，依內容想名稱（同自動命名）
+pub async fn apply_name_rule(app: &App, path: &str, rule: &str) -> Option<String> {
+    let p = Path::new(path);
+    let stem = p.file_stem()?.to_string_lossy().into_owned();
+    if rule.trim().is_empty() || !crate::naming::is_auto_name(&stem) || stem.starts_with("錄音_") {
+        return None;
+    }
+    let ext = p.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_else(|| "mp4".into());
+    let meta = app.shot_meta.get(path).unwrap_or_default();
+    let mut c = crate::naming::RuleCtx { app: meta.app, title: meta.title, ..crate::naming::RuleCtx::from_stem(&stem) };
+    if crate::naming::rule_uses(rule, 5) {
+        let mut h = name_hints(app, path).await;
+        h.date.clear();
+        c.content = crate::naming::suggest(&h).unwrap_or_default();
+    }
+    let dir = p.parent()?.to_path_buf();
+    let existing: Vec<String> = std::fs::read_dir(&dir).ok()?.filter_map(|e| e.ok()).map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+    let name = crate::naming::apply_rule(rule, &c, &ext, &existing)?;
+    if name.eq_ignore_ascii_case(&stem) {
+        return None;
+    }
+    for n in 1..=20 {
+        let cand = if n == 1 { name.clone() } else { format!("{name}_{n}") };
+        match rename(app, path, &cand).await {
+            Ok(p) => return Some(p),
+            Err(e) if e.message().contains(tr!("已有同名的檔案", "A file with this name already exists")) => continue,
+            Err(e) => {
+                crate::warn!("[命名規則] 無法改名：{}", e.message());
+                return None;
+            }
+        }
+    }
+    None
 }
 
 /// 錄完自動命名：還是預設名稱（Rec_時間）時改成建議的名稱，同名時加 _2、_3；回傳新的路徑

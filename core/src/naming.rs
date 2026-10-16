@@ -171,9 +171,132 @@ pub fn suggest(h: &Hints) -> Option<String> {
     crate::format::check_recording_name(&name).is_none().then_some(name)
 }
 
+// ───────────── 命名規則 ─────────────
+
+/// 命名規則可以用的欄位：（中文, 英文, 說明）
+pub const RULE_TOKENS: [(&str, &str); 6] = [("{日期}", "{date}"), ("{時間}", "{time}"), ("{序號}", "{n}"), ("{程式}", "{app}"), ("{視窗}", "{title}"), ("{內容}", "{content}")];
+
+/// 套用命名規則需要的資料
+#[derive(Debug, Clone, Default)]
+pub struct RuleCtx {
+    /// 2026-10-16
+    pub date: String,
+    /// 14-30-05
+    pub time: String,
+    /// 錄影 / 截圖時在用的程式（執行檔名稱）
+    pub app: String,
+    /// 那個程式的視窗標題
+    pub title: String,
+    /// 依內容想的名稱（{內容}；沒有時空白）
+    pub content: String,
+}
+
+impl RuleCtx {
+    /// 從預設名稱（Rec_2026-10-16_14-30-05）取出日期與時間；不是預設名稱時用現在的時間
+    pub fn from_stem(stem: &str) -> RuleCtx {
+        static RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"_(\d{4}-\d{2}-\d{2})_(\d{2}-\d{2}-\d{2})").unwrap());
+        match RE.captures(stem) {
+            Some(m) => RuleCtx { date: m[1].to_string(), time: m[2].to_string(), ..Default::default() },
+            None => {
+                let now = chrono::Local::now();
+                RuleCtx { date: now.format("%Y-%m-%d").to_string(), time: now.format("%H-%M-%S").to_string(), ..Default::default() }
+            }
+        }
+    }
+}
+
+/// 規則裡有沒有這個欄位（中文或英文的寫法都算）
+pub fn rule_uses(rule: &str, token: usize) -> bool {
+    let (zh, en) = RULE_TOKENS[token];
+    rule.contains(zh) || rule.to_lowercase().contains(en)
+}
+
+/// 換掉序號以外的欄位
+fn fill(rule: &str, c: &RuleCtx) -> String {
+    let app = if c.app.is_empty() { String::new() } else { crate::shot_meta::app_label(&c.app.to_lowercase()) };
+    let title: String = c.title.chars().take(40).collect();
+    let content: String = c.content.chars().take(40).collect();
+    let mut out = rule.to_string();
+    for (i, v) in [c.date.as_str(), c.time.as_str(), "\u{E001}", app.as_str(), title.as_str(), content.as_str()].iter().enumerate() {
+        let (zh, en) = RULE_TOKENS[i];
+        out = out.replace(zh, v);
+        // 英文欄位不分大小寫
+        let re = Regex::new(&format!("(?i){}", regex::escape(en))).unwrap();
+        out = re.replace_all(&out, regex::NoExpand(v)).into_owned();
+    }
+    out
+}
+
+/// 去掉檔名不能用的字、空掉的欄位留下的多餘分隔符號
+fn tidy_name(s: &str) -> String {
+    static BAD: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"[\\/:*?"<>|\x00-\x1f]"#).unwrap());
+    // 空掉的欄位兩邊的分隔符號：「_ _」「__」只留一個；「 - 」這種刻意的寫法不動
+    static SEP: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"([_\-.]) *[_\-.]+").unwrap());
+    static SPACES: LazyLock<Regex> = LazyLock::new(|| Regex::new(r" {2,}").unwrap());
+    let s = BAD.replace_all(s, " ");
+    let s = SEP.replace_all(&s, "$1");
+    let s = SPACES.replace_all(&s, " ");
+    let s: String = s.trim_matches(|c: char| c == ' ' || c == '_' || c == '-' || c == '.').chars().take(100).collect();
+    s.trim_end_matches(['.', ' ']).to_string()
+}
+
+/// 套用命名規則（不含副檔名）。{序號} 是同一個資料夾裡、其他部分都一樣的檔案的下一個號碼（001、002…）；
+/// exists：這個檔名（含副檔名）已經有了。結果是空的、或不是合法的檔名時 None
+pub fn apply_rule(rule: &str, c: &RuleCtx, ext: &str, existing: &[String]) -> Option<String> {
+    let rule = rule.trim();
+    if rule.is_empty() {
+        return None;
+    }
+    let filled = fill(rule, c);
+    let name = if filled.contains('\u{E001}') {
+        // 已經用過的號碼：其他部分一樣、序號是數字的檔案
+        let pat = tidy_name(&filled.replace('\u{E001}', "\u{E002}"));
+        let (head, tail) = pat.split_once('\u{E002}').unwrap_or((&pat, ""));
+        let re = Regex::new(&format!(r"(?i)^{}(\d+){}(?:_\d+)?\.{}$", regex::escape(head), regex::escape(tail), regex::escape(ext))).ok()?;
+        let max = existing.iter().filter_map(|f| re.captures(f).and_then(|m| m[1].parse::<u32>().ok())).max().unwrap_or(0);
+        format!("{head}{:03}{tail}", max + 1)
+    } else {
+        tidy_name(&filled)
+    };
+    let name = tidy_name(&name);
+    (!name.is_empty() && crate::format::check_recording_name(&name).is_none()).then_some(name)
+}
+
+/// 設定畫面的範例：用現在的時間、「Excel」試套一次
+pub fn rule_preview(rule: &str, ext: &str) -> Option<String> {
+    let now = chrono::Local::now();
+    let c = RuleCtx {
+        date: now.format("%Y-%m-%d").to_string(),
+        time: now.format("%H-%M-%S").to_string(),
+        app: "excel.exe".into(),
+        title: crate::tr!("報價單.xlsx", "Quote.xlsx").into(),
+        content: crate::tr!("報價單討論", "Quote review").into(),
+    };
+    apply_rule(rule, &c, ext, &[]).map(|n| format!("{n}.{ext}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn naming_rules() {
+        let c = RuleCtx { date: "2026-10-16".into(), time: "14-30-05".into(), app: "EXCEL.EXE".into(), title: "報價單: 第2版".into(), content: String::new() };
+        assert_eq!(apply_rule("客戶A_{日期}_{序號}", &c, "mp4", &[]).as_deref(), Some("客戶A_2026-10-16_001"));
+        let have = vec!["客戶A_2026-10-16_001.mp4".to_string(), "客戶A_2026-10-16_007_2.MP4".into(), "客戶A_2026-10-15_009.mp4".into(), "客戶A_2026-10-16_x.mp4".into()];
+        assert_eq!(apply_rule("客戶A_{日期}_{序號}", &c, "mp4", &have).as_deref(), Some("客戶A_2026-10-16_008"));
+        // 不同副檔名分開算
+        assert_eq!(apply_rule("客戶A_{日期}_{序號}", &c, "png", &have).as_deref(), Some("客戶A_2026-10-16_001"));
+        // 英文欄位、不能用的字換掉
+        assert_eq!(apply_rule("{APP} - {title} {time}", &c, "mp4", &[]).as_deref(), Some("Excel - 報價單 第2版 14-30-05"));
+        // 空掉的欄位不留多餘的分隔
+        assert_eq!(apply_rule("{內容}_{日期}", &c, "mp4", &[]).as_deref(), Some("2026-10-16"));
+        assert_eq!(apply_rule("{內容}", &c, "mp4", &[]), None);
+        assert_eq!(apply_rule("  ", &c, "mp4", &[]), None);
+        assert!(rule_uses("a{序號}", 2) && rule_uses("a{N}", 2) && !rule_uses("{日期}", 2));
+        let r = RuleCtx::from_stem("Rec_2026-10-16_14-30-05_2");
+        assert_eq!((r.date.as_str(), r.time.as_str()), ("2026-10-16", "14-30-05"));
+    }
 
     fn subs(v: &[&str]) -> Vec<String> {
         v.iter().map(|s| s.to_string()).collect()

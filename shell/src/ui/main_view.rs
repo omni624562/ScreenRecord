@@ -219,10 +219,15 @@ fn capture_panel(app: &mut UiApp, ui: &mut Ui) {
         let one_row = tabs_w + gap + detail_width(app, ui) + gap + right_w <= ui.available_width();
         ui.horizontal(|ui| {
             let mut st = app.s.source_type;
-            // 播放中不能切換範圍（看的是影片，不是螢幕）
-            if segmented(ui, &mut st, &tabs, !locked && app.inline.is_none()) {
-                app.s.source_type = st;
-                app.save_settings();
+            // 播放中點範圍分頁：停止播放，回到錄影畫面（點的是不同的分頁時也一起切換）
+            if segmented(ui, &mut st, &tabs, !locked)
+                || (app.inline.is_some() && ui.min_rect().contains(ui.ctx().input(|i| i.pointer.interact_pos()).unwrap_or_default()) && ui.ctx().input(|i| i.pointer.primary_clicked()))
+            {
+                app.inline = None;
+                if st != app.s.source_type {
+                    app.s.source_type = st;
+                    app.save_settings();
+                }
             }
             tour::mark(ui, Spot::Source, ui.min_rect());
             if one_row {
@@ -2715,6 +2720,14 @@ fn recent_menu(app: &mut UiApp, ui: &mut Ui, e: &LibraryEntry) {
     }
     if !e.media.chapters.is_empty() && ui.button(tr!("複製章節（貼到 YouTube）", "Copy chapters (for YouTube)")).clicked() {
         act(app, EntryAction::CopyChapters);
+    }
+    if !screenrecorder_core::after_record::is_audio_recording(&e.media.path)
+        && ui
+            .button(tr!("複製操作步驟（文字）", "Copy steps (text)"))
+            .on_hover_text(tr!("錄影時點了哪些按鈕、按了哪些快速鍵，整理成「1. 點「存檔」」這樣的清單", "The buttons you clicked and shortcuts you pressed while recording, as a numbered list"))
+            .clicked()
+    {
+        act(app, EntryAction::CopySteps);
     }
     if ui.button(tr!("重新命名", "Rename")).clicked() {
         if app.inline.as_ref().is_some_and(|i| i.is(&e.media.path)) {

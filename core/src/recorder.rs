@@ -40,6 +40,8 @@ pub type BoxFut<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 pub struct Encoders {
     pub cpu: Option<EncoderSpec>,
     pub gpu: Vec<EncoderSpec>,
+    /// 實測可用的 HEVC、AV1 顯示卡編碼器
+    pub codec: Vec<EncoderSpec>,
 }
 
 pub trait RecorderDeps: Send + Sync + 'static {
@@ -208,6 +210,8 @@ struct St {
     markers: Vec<u64>,
     /// 滑鼠點擊：(已錄的毫秒數, 在擷取範圍內的位置 0～1)
     clicks: Vec<(u64, f32, f32)>,
+    /// 操作步驟：點了什麼、按了哪些快速鍵（錄完可以整理成文字清單）
+    actions: Vec<crate::steps_log::Action>,
     /// 游標的位置（剪輯時換成平滑、放大的游標用；見 cursor.rs）
     cursor: Vec<crate::cursor::Sample>,
     /// 按快速鍵標記要放大的地方：(已錄的毫秒數, 在擷取範圍內的位置 0～1)
@@ -373,7 +377,12 @@ pub(crate) async fn merge_segments(ffmpeg: &Path, files: &[String], parts_dir: &
         }
         None => None,
     };
-    let r = run(ffmpeg, &concat_args(&list_file.display().to_string(), &out_str, meta.as_deref()), Duration::from_secs(30 * 60)).await;
+    // HEVC 的錄影：合併時標成 hvc1（Windows、Mac 的播放程式才認得）
+    let hevc = match files.first() {
+        Some(f) => run(ffmpeg, &["-hide_banner".to_string(), "-i".into(), f.clone()], Duration::from_secs(30)).await.stderr.contains("Video: hevc"),
+        None => false,
+    };
+    let r = run(ffmpeg, &concat_args(&list_file.display().to_string(), &out_str, meta.as_deref(), hevc), Duration::from_secs(30 * 60)).await;
     if r.code != 0 || !out.exists() {
         let tail = last_lines(&r.stderr, 3);
         return Err(if tail.is_empty() { trf!("結束代碼 {}", "exit code {}", r.code) } else { tail });
@@ -441,6 +450,9 @@ pub struct Marks {
     /// 錄影時沒有把游標錄進影片（剪輯時換成大游標才不會重疊）
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub no_cursor: bool,
+    /// 操作步驟：點了什麼、按了哪些快速鍵
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub actions: Vec<crate::steps_log::Action>,
     /// 麥克風暫時靜音的時段：[開始秒, 結束秒]（剪輯時標在時間軸上）
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub mutes: Vec<[f64; 2]>,
@@ -451,7 +463,7 @@ pub struct Marks {
 
 impl Marks {
     pub fn is_empty(&self) -> bool {
-        self.markers.is_empty() && self.clicks.is_empty() && self.cursor.is_empty() && self.mutes.is_empty() && self.zooms.is_empty()
+        self.markers.is_empty() && self.clicks.is_empty() && self.cursor.is_empty() && self.mutes.is_empty() && self.zooms.is_empty() && self.actions.is_empty()
     }
 }
 
@@ -836,19 +848,41 @@ impl Recorder {
         Some((st.config.as_ref()?.follow_window?, st.plan.as_ref()?.rect))
     }
 
-    /// 記下一次滑鼠點擊（桌面的實體像素座標）；範圍外、暫停中不記
-    pub fn add_click(&self, x: i32, y: i32) {
+    /// 記下一次滑鼠點擊（桌面的實體像素座標）；範圍外、暫停中不記。回傳影片裡的時間（秒），之後用來記下點了什麼
+    pub fn add_click(&self, x: i32, y: i32) -> Option<f64> {
         let mut st = self.lock();
         if st.state != RecorderState::Recording || st.clicks.len() >= 20_000 || st.config.as_ref().is_some_and(|c| c.audio_only) {
-            return;
+            return None;
         }
-        let Some(r) = st.plan.as_ref().map(|p| p.rect) else { return };
+        let r = st.plan.as_ref().map(|p| p.rect)?;
         if x < r.x || y < r.y || x >= r.x + r.width || y >= r.y + r.height || r.width <= 0 || r.height <= 0 {
-            return;
+            return None;
         }
         let t = st.recorded_ms();
         let (fx, fy) = ((x - r.x) as f32 / r.width as f32, (y - r.y) as f32 / r.height as f32);
         st.clicks.push((t, fx, fy));
+        Some(t as f64 / 1000.0)
+    }
+
+    /// 記下一個操作步驟（點到的東西由另一個執行緒讀出來，可能晚一點才到；停止後就不收了）
+    pub fn add_action(&self, a: crate::steps_log::Action) {
+        let mut st = self.lock();
+        if !matches!(st.state, RecorderState::Recording | RecorderState::Paused) || st.actions.len() >= crate::steps_log::MAX_ACTIONS {
+            return;
+        }
+        st.actions.push(a);
+    }
+
+    /// 錄影中按了快速鍵（「Ctrl + S」）：記成操作步驟；暫停中、只錄聲音時不記。window：在哪個視窗
+    pub fn add_key(&self, label: &str, window: &str) {
+        let t = {
+            let st = self.lock();
+            if st.state != RecorderState::Recording || st.config.as_ref().is_some_and(|c| c.audio_only) {
+                return;
+            }
+            st.recorded_ms() as f64 / 1000.0
+        };
+        self.add_action(crate::steps_log::Action { t, kind: crate::steps_log::KEY, name: label.to_string(), role: String::new(), window: window.to_string() });
     }
 
     /// 記下游標的位置（桌面的實體像素座標；錄影中約每 30 毫秒一次）：剪輯時換成平滑、放大的游標
@@ -1089,6 +1123,12 @@ impl Recorder {
         let encoders = deps.encoders().await;
         let enc_pref = config.encoder.unwrap_or_default();
         let (enc, reason) = choose_encoder(enc_pref, plan.out_width, plan.out_height, config.fps, encoders.cpu, &encoders.gpu, deps.prefer_gpu())?;
+        // HEVC / AV1：換成同一張顯示卡的那種編碼器；不能用時維持 H.264（開始時失敗也會自動改回 H.264）
+        let (enc, reason): (EncoderSpec, String) = match crate::args::choose_codec(config.codec, enc_pref, &enc, &encoders.codec) {
+            Ok((e, why)) => (e, why),
+            Err(why) if why.is_empty() => (enc, reason.to_string()),
+            Err(why) => (enc, format!("{reason}；{why}")),
+        };
         let method = match config.method {
             _ if config.audio_only => CaptureMethod::Gdigrab,
             MethodPreference::Gdigrab => CaptureMethod::Gdigrab,
@@ -1171,6 +1211,7 @@ impl Recorder {
             st.log = Vec::new();
             st.markers = Vec::new();
             st.clicks = Vec::new();
+            st.actions = Vec::new();
             st.cursor = Vec::new();
             st.zooms = Vec::new();
             st.reset_mutes();
@@ -1257,8 +1298,8 @@ impl Recorder {
                     enc.name
                 ),
             );
-            if Some(enc) != encoders.cpu {
-                st.add_log(LogLevel::Info, reason);
+            if Some(enc) != encoders.cpu || config.codec != crate::types::VideoCodec::H264 {
+                st.add_log(LogLevel::Info, &reason);
             }
             if let Some(g) = st.gpu {
                 st.add_log(LogLevel::Info, &g.describe());
@@ -1345,6 +1386,7 @@ impl Recorder {
                 st.result = None;
                 st.markers.clear();
                 st.clicks.clear();
+                st.actions.clear();
                 st.cursor.clear();
                 st.zooms.clear();
                 st.reset_mutes();
@@ -1378,6 +1420,7 @@ impl Recorder {
             let marks = Marks {
                 markers: std::mem::take(&mut st.markers).into_iter().map(|m| m as f64 / 1000.0).collect(),
                 clicks: std::mem::take(&mut st.clicks).into_iter().map(|(t, x, y)| [t as f64 / 1000.0, x as f64, y as f64]).collect(),
+                actions: std::mem::take(&mut st.actions),
                 cursor: std::mem::take(&mut st.cursor),
                 no_cursor: st.config.as_ref().is_some_and(|c| !c.draw_mouse),
                 mutes: st.take_mutes(),
@@ -1690,7 +1733,9 @@ impl Recorder {
                     let next = startup_fallback(&FallbackInput {
                         stderr: &st.segments[index].stderr,
                         gpu_encoder_in_use: st.cpu_encoder.is_some() && st.enc != st.cpu_encoder,
-                        encoder_auto: st.config().encoder.unwrap_or_default() == crate::types::EncoderPreference::Auto,
+                        // HEVC / AV1 的編碼器開始就失敗：不管設定，都改用 CPU 的 H.264
+                        encoder_auto: st.config().encoder.unwrap_or_default() == crate::types::EncoderPreference::Auto
+                            || st.enc.is_some_and(|e| crate::args::codec_of(e.name) != crate::types::VideoCodec::H264),
                         has_cpu_encoder: st.cpu_encoder.is_some(),
                         ddagrab_in_use: seg_method == CaptureMethod::Ddagrab,
                         method_auto,
@@ -2182,7 +2227,7 @@ mod tests {
             let mut rx = self.gate.get_or_init(|| watch::channel(false).0).subscribe();
             Box::pin(async move {
                 let _ = rx.wait_for(|v| *v).await;
-                Encoders { cpu: Some(ENCODERS[0]), gpu: vec![] }
+                Encoders { cpu: Some(ENCODERS[0]), gpu: vec![], codec: vec![] }
             })
         }
         fn prefer_gpu(&self) -> bool {
@@ -2249,6 +2294,7 @@ mod tests {
                 shot_dir: String::new(),
                 audio: AudioConfig::default(),
                 encoder: None,
+                codec: Default::default(),
                 countdown_sec: Some(3.0),
                 hide_ui: Some(true),
                 show_clicks: false,
@@ -2629,6 +2675,37 @@ esac
         assert!(m.no_cursor && m.markers.is_empty());
         assert_eq!(m.cursor.iter().map(|c| (c[1], c[2])).collect::<Vec<_>>(), [(0.5, 0.5), (1.0, 0.0)]);
         assert!(m.cursor[1][0] > m.cursor[0][0]);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn steps_are_saved_with_the_recording() {
+        use crate::steps_log::{Action, CLICK, KEY};
+        let tools = tempfile::tempdir().unwrap();
+        let s = Setup::new(Fake { ffmpeg: Some(fake_ffmpeg(tools.path())), ..Default::default() });
+        s.release();
+        // 還沒開始：不記
+        assert!(s.rec.add_click(10, 10).is_none());
+        s.rec.add_key("Ctrl + C", "");
+        s.rec.start(RecordConfig { countdown_sec: Some(0.0), hide_ui: Some(false), ..s.config() }).await.unwrap();
+        for _ in 0..100 {
+            if s.rec.status().frames > 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let t = s.rec.add_click(960, 540).expect("範圍內的點擊");
+        s.rec.add_action(Action { t, kind: CLICK, name: "存檔".into(), role: "按鈕".into(), window: "記事本".into() });
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        s.rec.add_key("Ctrl + S", "記事本");
+        assert!(s.rec.stop(None).await.unwrap().unwrap().ok);
+        // 停止後才讀到的不收
+        s.rec.add_action(Action { t: 9.0, kind: CLICK, name: "晚到".into(), role: String::new(), window: String::new() });
+        let m = s.deps.marks.lock().unwrap().clone().expect("有操作步驟就要存");
+        assert_eq!(m.actions.iter().map(|a| (a.kind, a.name.as_str())).collect::<Vec<_>>(), [(CLICK, "存檔"), (KEY, "Ctrl + S")]);
+        assert!(m.actions[1].t >= m.actions[0].t);
+        let text = crate::steps_log::to_text(&m.actions, "Rec");
+        assert!(text.contains("在「記事本」點「存檔」（按鈕）") && text.contains("按 Ctrl + S"), "{text}");
     }
 
     #[cfg(unix)]
