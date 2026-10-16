@@ -78,6 +78,8 @@ pub struct LibraryDialog {
     only_selected: bool,
     /// 全部截圖用滑鼠框選：開始拖曳時的勾選（框到的加在上面）
     band_base: Option<HashSet<String>>,
+    /// 按下了、還沒移動到算拖曳的距離（只點一下的話交給縮圖的點一下）
+    band_pending: bool,
     /// 只看有星號的
     only_pinned: bool,
     /// 清理舊截圖的對話框
@@ -204,6 +206,7 @@ impl LibraryDialog {
             wheel_at: None,
             only_selected: false,
             band_base: None,
+            band_pending: false,
             only_pinned: false,
             cleanup: None,
             similar: None,
@@ -1916,13 +1919,27 @@ fn band_select(ui: &egui::Ui, d: &mut LibraryDialog, area: Rect, order: &[String
         return None;
     }
     let resp = ui.interact(area, Id::new("shotBand"), Sense::drag());
+    // 只感應拖曳的範圍一按下就算拖曳：要移動超過幾個像素才開始（否則點縮圖時會變成拖出檔案、點不到）
     if resp.drag_started_by(egui::PointerButton::Primary) {
+        d.band_pending = true;
+        d.band_base = None;
+    }
+    if !resp.dragged() {
+        d.band_pending = false;
+        d.band_base = None;
+        return None;
+    }
+    let origin = ui.input(|i| i.pointer.press_origin());
+    if d.band_pending {
+        let moved = ui.input(|i| i.pointer.interact_pos()).zip(origin).is_some_and(|(p, o)| p.distance(o) > DRAG_DIST);
+        if !moved {
+            return None;
+        }
+        d.band_pending = false;
         // 從縮圖上開始拖：把檔案拖到其他程式（和檔案總管一樣；從空白處、檔名開始拖才是框選）
-        let origin = ui.input(|i| i.pointer.press_origin());
         let on_img = (0..order.len()).find(|&i| origin.is_some_and(|o| Rect::from_min_size(cell_at(i).min, vec2(cell_at(i).width(), img_h)).contains(o)));
         if let (Some(i), true, false) = (on_img, can_drag_out(), ctrl) {
             d.drag_out = Some(drag_list(d, &order[i]));
-            d.band_base = None;
             return None;
         }
         let mut base = d.selected.clone();
@@ -1932,10 +1949,6 @@ fn band_select(ui: &egui::Ui, d: &mut LibraryDialog, area: Rect, order: &[String
             }
         }
         d.band_base = Some(base);
-    }
-    if !resp.dragged() {
-        d.band_base = None;
-        return None;
     }
     let base = d.band_base.as_ref()?;
     let (Some(from), Some(to)) = (ui.input(|i| i.pointer.press_origin()), ui.input(|i| i.pointer.interact_pos())) else { return None };
@@ -1949,6 +1962,9 @@ fn band_select(ui: &egui::Ui, d: &mut LibraryDialog, area: Rect, order: &[String
     }
     Some(r)
 }
+
+/// 從按下的地方移動超過這個距離才算拖曳（框選、拖出檔案）
+const DRAG_DIST: f32 = 6.0;
 
 /// 可以把檔案拖到其他程式（Windows；開發測試時 SCREENRECORDER_FAKE_DRAG=1 只記錄）
 fn can_drag_out() -> bool {
@@ -1982,6 +1998,8 @@ fn drag_out(app: &mut UiApp, list: &[String]) {
     }
     let r = screenrecorder_core::dragout::drag_files(list);
     app.release_pointer = true;
+    // 放回自己的視窗時，不要當成拖進來匯入
+    app.dragged_out = Some((list.to_vec(), std::time::Instant::now()));
     match r {
         Ok(true) => screenrecorder_core::info!("[拖曳] 已放下"),
         Ok(false) => {}
