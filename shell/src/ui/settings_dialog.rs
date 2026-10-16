@@ -807,6 +807,8 @@ fn save_page(app: &mut UiApp, ui: &mut Ui) {
         }
     }
     save_gap(ui);
+    watch_section(app, ui, &mut open);
+    save_gap(ui);
     // 清單：子資料夾
     form_section(ui, tr!("清單", "Lists"), |_| {});
     let mut subdirs = app.s.list_subdirs;
@@ -847,6 +849,90 @@ fn save_page(app: &mut UiApp, ui: &mut Ui) {
     if let Some(d) = open {
         open_folder(app, &d);
     }
+}
+
+/// 自動匯入：看的資料夾（可以加、移除、開啟），匯入後要不要接著做錄完自動處理
+fn watch_section(app: &mut UiApp, ui: &mut Ui, open: &mut Option<String>) {
+    let p = theme::pal(ui);
+    form_section(ui, tr!("自動匯入", "Auto import"), |ui| {
+        if app.s.watch_dirs.len() < 10 && Btn::new(tr!("加入資料夾…", "Add folder…")).icon(Icon::Folder).small().ghost().show(ui).clicked() {
+            add_watch_dir(app);
+        }
+    });
+    form_hint_full(
+        ui,
+        tr!(
+            "這些資料夾裡有新的影片時，自動匯入到錄影的儲存位置（MOV、MKV 等會轉成 MP4，原本的檔案不會動）。適合 OBS 的輸出資料夾、手機同步資料夾或 NAS。加入時資料夾裡原本的影片不會匯入。",
+            "When new videos appear in these folders, they're imported into your recordings folder (MOV, MKV and others are converted to MP4; the originals stay as they are). Handy for OBS output, phone sync folders or a NAS. Videos already in a folder when you add it aren't imported."
+        ),
+        p.muted,
+    );
+    let mut remove = None;
+    for (i, d) in app.s.watch_dirs.iter().enumerate() {
+        ui.horizontal(|ui| {
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if Btn::icon_only(Icon::Close).ghost().small().tooltip(tr!("不再自動匯入這個資料夾", "Stop importing from this folder")).show(ui).clicked() {
+                    remove = Some(i);
+                }
+                if Btn::icon_only(Icon::Folder).ghost().small().tooltip(tr!("在檔案總管開啟", "Open in File Explorer")).show(ui).clicked() {
+                    *open = Some(d.clone());
+                }
+                let missing = !std::path::Path::new(d).is_dir();
+                let text = if missing { trf!("{d}（找不到，接上後會繼續）", "{d} (not found; resumes when available)") } else { d.clone() };
+                ui.add(egui::Label::new(RichText::new(text).font(theme::font(12.5)).color(if missing { p.warn } else { p.text })).truncate());
+            });
+        });
+    }
+    if let Some(i) = remove {
+        app.s.watch_dirs.remove(i);
+        app.save_settings();
+    }
+    if !app.s.watch_dirs.is_empty() {
+        let mut v = app.s.watch_after;
+        if theme::check(ui, &mut v, tr!("匯入後接著做「錄完自動處理」（字幕、剪掉沒動靜的片段…）", "Then run post-processing (subtitles, cutting idle parts…)")).changed()
+        {
+            app.s.watch_after = v;
+            app.save_settings();
+        }
+        indented_hint(
+            ui,
+            tr!(
+                "要做哪些處理在「錄完處理」分頁設定。錄影中、轉檔中時會等到結束再匯入。",
+                "Choose what to do on the Post-processing page. While recording or converting, imports wait until it's done."
+            ),
+        );
+    }
+}
+
+fn add_watch_dir(app: &mut UiApp) {
+    app.spawn(
+        async move {
+            tokio::task::spawn_blocking(|| screenrecorder_core::filepick::pick_folder(tr!("選擇要自動匯入的資料夾", "Choose a folder to import from automatically"), None)).await.unwrap_or(Ok(None))
+        },
+        |app, r| match r {
+            Ok(Some(dir)) => {
+                let d = dir.display().to_string();
+                let out = std::path::PathBuf::from(app.s.out_dir(&app.env));
+                if screenrecorder_core::watch::inside(&dir, &out) || screenrecorder_core::watch::inside(&out, &dir) {
+                    return app.toast(
+                        tr!(
+                            "不能選儲存位置本身、它裡面或包含它的資料夾（匯入的影片會再被匯入一次）",
+                            "You can't choose the save folder, a folder inside it or one that contains it (imported videos would be imported again)"
+                        ),
+                        true,
+                    );
+                }
+                if app.s.watch_dirs.iter().any(|x| x.eq_ignore_ascii_case(&d)) {
+                    return;
+                }
+                app.s.watch_dirs.push(d.clone());
+                app.save_settings();
+                app.toast(trf!("之後 {d} 裡新增的影片會自動匯入", "New videos in {d} will be imported automatically"), false);
+            }
+            Ok(None) => {}
+            Err(e) => app.toast(e, true),
+        },
+    );
 }
 
 /// 儲存位置分頁：段落之間的間距與分隔線（比其他分頁寬鬆一點）

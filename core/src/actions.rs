@@ -373,14 +373,30 @@ pub async fn merge_start(app: &App, paths: &[String], name: Option<&str>) -> Res
 pub struct ImportReport {
     /// 做好的 MP4（轉好的或複製過來的）
     pub done: Vec<String>,
+    /// 匯入成功的原檔（與 done 一一對應）
+    pub done_src: Vec<String>,
     /// 已經在儲存位置裡的 MP4（不用匯入）
     pub already: usize,
     /// 不是影片、略過的檔案
     pub skipped: usize,
     /// 失敗的檔案與原因
     pub failed: Vec<(String, String)>,
+    /// 失敗的原檔路徑（與 failed 一一對應）
+    pub failed_src: Vec<String>,
     /// 中途被取消（例如開始錄影）
     pub canceled: bool,
+}
+
+impl ImportReport {
+    fn ok(&mut self, src: &str, out: String) {
+        self.done.push(out);
+        self.done_src.push(src.to_string());
+    }
+
+    fn fail(&mut self, src: &str, name: String, why: String) {
+        self.failed.push((name, why));
+        self.failed_src.push(src.to_string());
+    }
 }
 
 /// 轉成 MP4（清單上的 MOV、MKV…）：存在原檔旁邊，原檔保留。回傳轉檔工作的編號
@@ -415,27 +431,27 @@ pub async fn import_videos(app: &App, paths: &[String], dest: &Path) -> ImportRe
             let stem = Path::new(&name).file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
             let to = crate::paths::unique_path(dest, &stem, ".mp4");
             match tokio::fs::copy(p, &to).await {
-                Ok(_) => r.done.push(to.display().to_string()),
-                Err(e) => r.failed.push((name, e.to_string())),
+                Ok(_) => r.ok(p, to.display().to_string()),
+                Err(e) => r.fail(p, name, e.to_string()),
             }
             continue;
         }
         let st = match app.exporter.start_convert(&app.export_ctx(), p, Some(dest.to_path_buf())).await {
             Ok(st) => st,
             Err(e) => {
-                r.failed.push((name, e.message().to_string()));
+                r.fail(p, name, e.message().to_string());
                 continue;
             }
         };
         app.exporter.wait().await;
         match app.exporter.status().filter(|s| s.id == st.id) {
-            Some(s) if s.state == ExportState::Done => r.done.push(s.output),
+            Some(s) if s.state == ExportState::Done => r.ok(p, s.output),
             Some(s) if s.state == ExportState::Canceled => {
                 r.canceled = true;
                 break;
             }
-            Some(s) => r.failed.push((name, s.message.unwrap_or_default())),
-            None => r.failed.push((name, String::new())),
+            Some(s) => r.fail(p, name, s.message.unwrap_or_default()),
+            None => r.fail(p, name, String::new()),
         }
     }
     crate::info!("[匯入] 完成 {} 支、已在儲存位置 {}、略過 {}、失敗 {}{}", r.done.len(), r.already, r.skipped, r.failed.len(), if r.canceled { "（中途停止）" } else { "" });

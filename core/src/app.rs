@@ -736,6 +736,65 @@ impl App {
         Ok(shot)
     }
 
+    /// 自動匯入資料夾（設定 → 儲存位置）：每 10 秒看一次，有寫完的新影片就匯入到儲存位置；
+    /// 設定了「匯入後接著自動處理」時，再做錄完自動處理（字幕、剪掉沒動靜的片段…）
+    pub fn spawn_folder_watcher(self: &Arc<Self>) {
+        let me = Arc::downgrade(self);
+        tokio::spawn(async move {
+            let mut w = crate::watch::Watcher::load(Some(crate::paths::data_dir().join("watch_seen.json")));
+            loop {
+                tokio::time::sleep(Duration::from_secs(crate::watch::POLL_SEC)).await;
+                let Some(app) = me.upgrade() else { return };
+                let ui = app.settings.load().ui;
+                let dirs = crate::watch::dirs_from_ui(ui.as_ref());
+                if dirs.is_empty() {
+                    continue;
+                }
+                // 錄影、轉檔、錄完自動處理進行中：先不做（錄影優先）
+                if app.recorder.active() || app.exporter.running() || app.after_status().is_some() {
+                    continue;
+                }
+                let Some(out) = app.settings.load().record_config().map(|c| c.output_dir).filter(|d| !d.trim().is_empty()) else { continue };
+                let out = PathBuf::from(out);
+                let found: Vec<(PathBuf, Vec<crate::watch::Seen>)> = tokio::task::spawn_blocking({
+                    let (dirs, out) = (dirs.clone(), out.clone());
+                    move || dirs.into_iter().filter(|d| !crate::watch::inside(d, &out)).map(|d| (d.clone(), crate::watch::list(&d))).collect()
+                })
+                .await
+                .unwrap_or_default();
+                let ready = w.ready(&found, crate::paths::now_ms() as f64);
+                if ready.is_empty() {
+                    continue;
+                }
+                let files: Vec<crate::watch::Seen> = found.iter().flat_map(|(_, f)| f.iter()).filter(|f| ready.contains(&f.path)).cloned().collect();
+                crate::info!("[自動匯入] 發現 {} 支新影片：{}", ready.len(), ready.join("、"));
+                let r = crate::actions::import_videos(&app, &ready, &out).await;
+                w.finished(&files, &r.done_src, &r.failed_src);
+                if r.done.is_empty() {
+                    if !r.failed.is_empty() {
+                        app.notify(tr!("自動匯入", "Auto import"), &trf!("{} 支影片無法匯入（詳見記錄檔）", "{} video(s) couldn't be imported (see the log file)", r.failed.len()), true);
+                    }
+                    continue;
+                }
+                let names: Vec<String> = r.done.iter().map(|p| Path::new(p).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()).collect();
+                let after = crate::after_record::AfterRecord::from_ui(ui.as_ref());
+                let process = crate::watch::after_from_ui(ui.as_ref()) && after.any();
+                app.notify(
+                    tr!("自動匯入", "Auto import"),
+                    &if process {
+                        trf!("已匯入 {}，接著自動處理", "Imported {}; processing it now", names.join(tr!("、", ", ")))
+                    } else {
+                        trf!("已匯入 {}", "Imported {}", names.join(tr!("、", ", ")))
+                    },
+                    false,
+                );
+                if process {
+                    app.clone().batch_process(r.done.clone(), after).await;
+                }
+            }
+        });
+    }
+
     /// 「只錄這個視窗」：視窗移動後（停下來 0.4 秒）錄影範圍跟著移過去；大小改變時維持原本的大小
     pub fn spawn_window_follower(self: &Arc<Self>) {
         let me = Arc::downgrade(self);
