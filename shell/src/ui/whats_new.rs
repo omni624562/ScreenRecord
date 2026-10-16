@@ -36,15 +36,26 @@ enum Try {
 
 /// 這一版的新功能（標題、說明、試試看）：最多 6 項，快速鍵用目前的設定
 fn items(_app: &UiApp) -> Vec<(String, String, Try)> {
-    vec![(
-        tr!("滑過就預覽影片", "Preview videos by hovering").into(),
-        tr!(
-            "在最近錄影或全部錄影裡，滑鼠停在影片縮圖上左右移動，就能看到不同時間點的畫面，不用打開也知道錄了什麼。",
-            "Hover over a video thumbnail in Recent or All recordings and move left and right to see frames from across the video, without opening it."
-        )
-        .into(),
-        Try::Library(false),
-    )]
+    vec![
+        (
+            tr!("滑過就預覽影片", "Preview videos by hovering").into(),
+            tr!(
+                "在最近錄影或全部錄影裡，滑鼠停在影片縮圖上左右移動，就能看到不同時間點的畫面，不用打開也知道錄了什麼。",
+                "Hover over a video thumbnail in Recent or All recordings and move left and right to see frames from across the video, without opening it."
+            )
+            .into(),
+            Try::Library(false),
+        ),
+        (
+            tr!("匯入手機、其他軟體錄的影片", "Import videos from your phone or other apps").into(),
+            tr!(
+                "把影片拖進視窗，或在全部錄影按「匯入影片」。MOV、MKV 等會自動轉成 MP4，就能用字幕、剪輯、找出沒動靜的片段等功能。",
+                "Drop videos onto the window or press Import videos in All recordings. MOV, MKV and others become MP4, ready for subtitles, editing and more."
+            )
+            .into(),
+            Try::Library(false),
+        ),
+    ]
 }
 
 pub fn show(app: &mut UiApp, ctx: &egui::Context) {
