@@ -7,8 +7,8 @@ use crate::ui::dialogs::file_name;
 use crate::ui::theme::{self, segmented, switch, Btn, Icon};
 use eframe::egui::{self, pos2, vec2, Align, Align2, Color32, CornerRadius, CursorIcon, Id, Layout, RichText, Sense, Stroke};
 use screenrecorder_core::annotate::{self, AnnKind, Shape, COLORS};
-use screenrecorder_core::edit::{normalize_crop, normalize_ranges, set_fast, CropInput, FAST_SPEEDS};
-use screenrecorder_core::format::video_clock;
+use screenrecorder_core::edit::{normalize_crop, normalize_ranges, set_fast, CropInput, Freeze, FAST_SPEEDS, FREEZE_SECS, SLOW_SPEEDS};
+use screenrecorder_core::format::{speed_label, video_clock};
 use screenrecorder_core::idle;
 use screenrecorder_core::picture;
 use screenrecorder_core::shot_edit::BACKGROUNDS;
@@ -17,6 +17,9 @@ use screenrecorder_core::zoom;
 use screenrecorder_core::{tr, trf};
 
 pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, toast: &mut Option<(String, bool)>) {
+    if let Some(m) = ed.voice_msg.take() {
+        *toast = Some(m);
+    }
     tabs(ed, ui);
     ui.add_space(4.0);
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
@@ -35,6 +38,7 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, toast: &mut
             Tab::Subs => super::subs::tab(ed, ui, ctx, toast),
             Tab::Audio => {
                 audio_panel(ed, ui);
+                super::voice::panel(ed, ui, toast);
                 music_panel(ed, ui);
             }
         }
@@ -98,6 +102,20 @@ fn hint(ui: &mut egui::Ui, text: &str) {
     ui.label(theme::muted(ui, text).font(theme::font(12.0)));
 }
 
+pub(super) fn hint_text(ui: &mut egui::Ui, text: &str) {
+    hint(ui, text);
+}
+
+/// 第一節的標題（沒有分隔線）
+pub(super) fn section_title(ui: &mut egui::Ui, title: &str) {
+    section(ui, title, false);
+}
+
+/// 有分隔線的小節標題
+pub(super) fn section_title_sep(ui: &mut egui::Ui, title: &str) {
+    section(ui, title, false);
+}
+
 fn time_panel(ed: &mut Editor, ui: &mut egui::Ui, toast: &mut Option<(String, bool)>) {
     let p = theme::pal(ui);
     ui.horizontal(|ui| {
@@ -111,6 +129,25 @@ fn time_panel(ed: &mut Editor, ui: &mut egui::Ui, toast: &mut Option<(String, bo
         }
     });
     ui.label(theme::muted(ui, trf!("開頭 {}　結尾 {}", "Start {} · End {}", video_clock(ed.spec.start), video_clock(ed.spec.end))));
+    // 定格：停在播放點這一格幾秒（搭配文字標註解說）
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        ui.label(theme::muted(ui, tr!("在播放點定格", "Freeze at playhead")).font(theme::font(12.0)));
+        for secs in FREEZE_SECS {
+            let label = trf!("{} 秒", "{}s", speed_label(secs));
+            if Btn::new(&label)
+                .small()
+                .tooltip(trf!("影片停在這一格 {label}，再繼續播放（可以加文字標註說明）", "The video holds on this frame for {label}, then continues (add a text annotation to explain)"))
+                .show(ui)
+                .clicked()
+            {
+                let at_ms = (ed.now() * 1000.0).round() as u64;
+                ed.spec.freezes.retain(|f| f.at_ms.abs_diff(at_ms) >= 50);
+                ed.spec.freezes.push(Freeze { at_ms, ms: (secs * 1000.0) as u64 });
+                ed.spec.freezes.sort_by_key(|f| f.at_ms);
+            }
+        }
+    });
     if let Some((a, b)) = ed.sel {
         egui::Frame::new().fill(Color32::from_rgba_unmultiplied(214, 140, 18, 31)).corner_radius(6).inner_margin(8).show(ui, |ui| {
             ui.set_width(ui.available_width());
@@ -130,14 +167,27 @@ fn time_panel(ed: &mut Editor, ui: &mut egui::Ui, toast: &mut Option<(String, bo
                 ui.label(theme::muted(ui, tr!("這段加速", "Speed up")).font(theme::font(12.0)));
                 for s in FAST_SPEEDS {
                     if Btn::new(format!("{s}×")).small().tooltip(trf!("這段以 {s} 倍速播放（沒有聲音）", "Play this section at {s}× speed (no sound)")).show(ui).clicked() {
-                        set_fast(&mut ed.spec.fast, a, b, s);
+                        set_fast(&mut ed.spec.fast, a, b, s as f64);
                         ed.sel = None;
                     }
                 }
                 let overlaps = ed.spec.fast.iter().any(|f| f.start() < b && f.end() > a);
                 if overlaps && Btn::new(tr!("原速", "1×")).ghost().small().tooltip(tr!("這段恢復原本的速度", "Restore this section's original speed")).show(ui).clicked() {
-                    set_fast(&mut ed.spec.fast, a, b, 1);
+                    set_fast(&mut ed.spec.fast, a, b, 1.0);
                     ed.sel = None;
+                }
+            });
+            // 局部放慢：快速的操作慢慢看清楚
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 4.0;
+                ui.label(theme::muted(ui, tr!("這段放慢", "Slow down")).font(theme::font(12.0)));
+                for s in SLOW_SPEEDS {
+                    let label = format!("{}×", speed_label(s));
+                    if Btn::new(&label).small().tooltip(trf!("這段以 {label} 播放（變長，沒有原本的聲音）", "Play this section at {label} (longer, without the original sound)")).show(ui).clicked()
+                    {
+                        set_fast(&mut ed.spec.fast, a, b, s);
+                        ed.sel = None;
+                    }
                 }
             });
         });
@@ -177,10 +227,10 @@ fn time_panel(ed: &mut Editor, ui: &mut egui::Ui, toast: &mut Option<(String, bo
         let mut remove = None;
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
-            // 加速的片段沒有聲音：影片有聲音時寫出來
+            // 變速的片段沒有聲音：影片有聲音時寫出來
             let mute = if ed.entry.media.has_audio == Some(true) { tr!("（無聲）", " (muted)") } else { "" };
             for (i, f) in ed.spec.fast.iter().enumerate() {
-                let g = ui.painter().layout_no_wrap(format!("{}×{mute} {} – {}", f.speed, video_clock(f.start()), video_clock(f.end())), theme::mono(12.0), p.accent);
+                let g = ui.painter().layout_no_wrap(format!("{}×{mute} {} – {}", speed_label(f.speed), video_clock(f.start()), video_clock(f.end())), theme::mono(12.0), p.accent);
                 let (r, _) = ui.allocate_exact_size(vec2(g.size().x + 10.0 + 24.0, 24.0), Sense::hover());
                 ui.painter().rect_filled(r, CornerRadius::same(12), p.accent.gamma_multiply(0.14));
                 ui.painter().galley(pos2(r.left() + 10.0, r.center().y - g.size().y / 2.0), g, p.accent);
@@ -199,11 +249,37 @@ fn time_panel(ed: &mut Editor, ui: &mut egui::Ui, toast: &mut Option<(String, bo
             ed.spec.fast.remove(i);
         }
     }
+    // 定格的地方
+    if !ed.spec.freezes.is_empty() {
+        let mut remove = None;
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
+            for (i, f) in ed.spec.freezes.iter().enumerate() {
+                let text = trf!("定格 {} 停 {} 秒", "Freeze {} for {}s", video_clock(f.at()), speed_label(f.secs()));
+                let g = ui.painter().layout_no_wrap(text, theme::mono(12.0), p.accent);
+                let (r, _) = ui.allocate_exact_size(vec2(g.size().x + 10.0 + 24.0, 24.0), Sense::hover());
+                ui.painter().rect_filled(r, CornerRadius::same(12), p.accent.gamma_multiply(0.14));
+                ui.painter().galley(pos2(r.left() + 10.0, r.center().y - g.size().y / 2.0), g, p.accent);
+                let x = egui::Rect::from_center_size(pos2(r.right() - 13.0, r.center().y), vec2(20.0, 20.0));
+                let xr = ui.interact(x, Id::new(("ed-freeze", i)), Sense::click()).on_hover_text(tr!("拿掉這個定格", "Remove this freeze")).on_hover_cursor(CursorIcon::PointingHand);
+                if xr.hovered() {
+                    ui.painter().circle_filled(x.center(), 10.0, p.accent.gamma_multiply(0.2));
+                }
+                ui.painter().text(x.center(), Align2::CENTER_CENTER, "×", theme::font(14.0), p.accent);
+                if xr.clicked() {
+                    remove = Some(i);
+                }
+            }
+        });
+        if let Some(i) = remove {
+            ed.spec.freezes.remove(i);
+        }
+    }
     hint(
         ui,
         tr!(
-            "選取一段：在縮圖上按住 Shift 拖過去（或先打開「選取範圍」），也可以按「在這裡分割（S）」把影片切開後點一段。選好後按「刪除這段」或 Delete 鍵刪除，或讓這段加速。",
-            "To select a section, Shift + drag across the thumbnails (or turn on “Select range”), or press “Split here (S)” and click a section. Then press “Delete section” or the Delete key to remove it, or speed it up."
+            "選取一段：在縮圖上按住 Shift 拖過去（或先打開「選取範圍」），也可以按「在這裡分割（S）」把影片切開後點一段。選好後按「刪除這段」或 Delete 鍵刪除，或讓這段加速、放慢。",
+            "To select a section, Shift + drag across the thumbnails (or turn on “Select range”), or press “Split here (S)” and click a section. Then press “Delete section” or the Delete key to remove it, or speed it up or slow it down."
         ),
     );
     // 自動找出畫面不動又沒聲音、沒說話的片段：先標在時間軸上，再選刪除或加速

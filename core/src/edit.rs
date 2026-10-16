@@ -60,6 +60,62 @@ pub struct EditSpec {
     /// 刪掉片段的接縫淡入淡出
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub fade_cuts: bool,
+    /// 定格畫面（原影片的時間）
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub freezes: Vec<Freeze>,
+    /// 旁白（錄的或文字轉語音）、點擊音效
+    #[serde(default, skip_serializing_if = "crate::narration::Narration::is_empty")]
+    pub narration: crate::narration::Narration,
+}
+
+/// 定格畫面：在原影片 at_ms 的畫面停住 ms 毫秒
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Freeze {
+    pub at_ms: u64,
+    pub ms: u64,
+}
+
+impl Freeze {
+    pub fn at(&self) -> f64 {
+        self.at_ms as f64 / 1000.0
+    }
+    pub fn secs(&self) -> f64 {
+        self.ms as f64 / 1000.0
+    }
+}
+
+/// 定格可選的秒數
+pub const FREEZE_SECS: [f64; 4] = [1.0, 2.0, 3.0, 5.0];
+
+/// 剪好的影片裡的一段：原影片 [a, b) 以 rate 倍播放（大於 1 加速、小於 1 放慢）；
+/// hold 大於 0 時是定格（a == b，停住 hold 秒）
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Part {
+    pub a: f64,
+    pub b: f64,
+    pub rate: f64,
+    pub hold: f64,
+}
+
+impl Part {
+    pub fn new(a: f64, b: f64, rate: f64) -> Part {
+        Part { a, b, rate, hold: 0.0 }
+    }
+    /// 在剪好的影片裡多長
+    pub fn len(&self) -> f64 {
+        if self.hold > 0.0 {
+            self.hold
+        } else {
+            (self.b - self.a) / self.rate.max(0.01)
+        }
+    }
+    pub fn is_hold(&self) -> bool {
+        self.hold > 0.0
+    }
+    /// 不是原速（加速、放慢或定格）：沒有原本的聲音
+    pub fn retimed(&self) -> bool {
+        self.is_hold() || (self.rate - 1.0).abs() > 1e-9
+    }
 }
 
 /// 跟著點擊放大：倍率與錄影時記下的點擊（原影片的秒數, x, y；x、y 為 0～1）
@@ -69,13 +125,13 @@ pub struct ClickZoom {
     pub clicks: Vec<[f64; 3]>,
 }
 
-/// 局部加速：這段時間以 speed 倍播放（加速的片段沒有聲音）
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// 局部加速或放慢：這段時間以 speed 倍播放（大於 1 加速、小於 1 放慢；變速的片段沒有原本的聲音）
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct FastRange {
     /// 毫秒（整數，方便比對與存檔）
     pub start_ms: u64,
     pub end_ms: u64,
-    pub speed: u32,
+    pub speed: f64,
 }
 
 impl FastRange {
@@ -90,8 +146,16 @@ impl FastRange {
 /// 局部加速可選的倍率（整數倍：每 N 張留一張）
 pub const FAST_SPEEDS: [u32; 4] = [2, 4, 8, 16];
 
-/// 把 [a, b) 設成 speed 倍（1 = 恢復原速）；和原有的加速片段重疊的部分以新的為準
-pub fn set_fast(list: &mut Vec<FastRange>, a: f64, b: f64, speed: u32) {
+/// 局部放慢可選的倍率
+pub const SLOW_SPEEDS: [f64; 2] = [0.5, 0.25];
+
+/// 倍率可以用：加速 2～16 倍、放慢 0.25～0.5 倍
+pub fn valid_speed(s: f64) -> bool {
+    s.is_finite() && ((1.01..=16.0).contains(&s) || (0.25..=0.99).contains(&s))
+}
+
+/// 把 [a, b) 設成 speed 倍（1 = 恢復原速）；和原有的變速片段重疊的部分以新的為準
+pub fn set_fast(list: &mut Vec<FastRange>, a: f64, b: f64, speed: f64) {
     let (a, b) = (a.min(b).max(0.0), a.max(b).max(0.0));
     let (am, bm) = ((a * 1000.0).round() as u64, (b * 1000.0).round() as u64);
     if bm <= am {
@@ -110,7 +174,7 @@ pub fn set_fast(list: &mut Vec<FastRange>, a: f64, b: f64, speed: u32) {
             out.push(FastRange { start_ms: bm, ..r });
         }
     }
-    if speed > 1 {
+    if valid_speed(speed) {
         out.push(FastRange { start_ms: am, end_ms: bm, speed });
     }
     out.retain(|r| r.end_ms >= r.start_ms + 20);
@@ -126,44 +190,64 @@ pub fn set_fast(list: &mut Vec<FastRange>, a: f64, b: f64, speed: u32) {
     *list = merged;
 }
 
-/// 保留的片段再依加速切開：(開始, 結束, 倍率)；倍率 1 = 原速
-pub fn keep_parts(duration: f64, spec: &EditSpec) -> Vec<(f64, f64, u32)> {
+/// 保留的片段再依變速切開，並插入定格
+pub fn keep_parts(duration: f64, spec: &EditSpec) -> Vec<Part> {
     let mut fast = spec.fast.clone();
     fast.sort_by_key(|f| f.start_ms);
-    let mut out = vec![];
+    let mut out: Vec<Part> = vec![];
     for (a, b) in keep_ranges(duration, spec) {
         let mut t = a;
-        for f in fast.iter().filter(|f| f.speed > 1 && f.end() > a && f.start() < b) {
+        for f in fast.iter().filter(|f| valid_speed(f.speed) && f.end() > a && f.start() < b) {
             let (fa, fb) = (f.start().max(a), f.end().min(b));
             if fa - t >= MIN_RANGE {
-                out.push((t, fa, 1));
+                out.push(Part::new(t, fa, 1.0));
             }
             if fb - fa >= MIN_RANGE {
-                out.push((fa.max(t), fb, f.speed));
+                out.push(Part::new(fa.max(t), fb, f.speed));
             }
             t = t.max(fb);
         }
         if b - t >= MIN_RANGE {
-            out.push((t, b, 1));
+            out.push(Part::new(t, b, 1.0));
         }
     }
-    out.into_iter().map(|(a, b, s)| (ms(a), ms(b), s)).collect()
+    let mut out: Vec<Part> = out.into_iter().map(|p| Part::new(ms(p.a), ms(p.b), p.rate)).collect();
+    // 定格：落在保留的片段裡（或最後一段的結尾）才有；在那裡把片段切開
+    let mut freezes = spec.freezes.clone();
+    freezes.sort_by_key(|f| f.at_ms);
+    for f in freezes.iter().filter(|f| f.ms >= 100) {
+        let t = ms(f.at());
+        let hold = Part { a: t, b: t, rate: 1.0, hold: ms(f.secs()) };
+        if let Some(i) = out.iter().position(|p| !p.is_hold() && t >= p.a && t < p.b) {
+            let p = out[i];
+            if t - p.a < MIN_RANGE {
+                out.insert(i, hold);
+            } else {
+                out[i] = Part { b: t, ..p };
+                out.insert(i + 1, hold);
+                out.insert(i + 2, Part { a: t, ..p });
+            }
+        } else if out.last().is_some_and(|p| !p.is_hold() && (t - p.b).abs() < 0.05) {
+            out.push(Part { a: out.last().unwrap().b, b: out.last().unwrap().b, ..hold });
+        }
+    }
+    out
 }
 
 /// 接縫淡出、淡入各多久（秒）
 pub const CUT_FADE: f64 = 0.2;
 
 /// 接縫淡入淡出：剪好的影片裡每個接縫的時間與淡出（淡入）長度。
-/// 只有中間刪掉片段的地方才算接縫（加速、原速交界不算）；片段很短時縮短，不超過前後片段的一半
-pub fn cut_fades(parts: &[(f64, f64, u32)]) -> Vec<(f64, f64)> {
+/// 只有中間刪掉片段的地方才算接縫（變速、定格的交界不算）；片段很短時縮短，不超過前後片段的一半
+pub fn cut_fades(parts: &[Part]) -> Vec<(f64, f64)> {
     let mut out = vec![];
     let mut t = 0.0;
-    for (i, &(a, b, s)) in parts.iter().enumerate() {
-        let len = (b - a) / s.max(1) as f64;
+    for (i, p) in parts.iter().enumerate() {
+        let len = p.len();
         if i > 0 {
-            let (pa, pb, ps) = parts[i - 1];
-            if a - pb > 0.001 {
-                let d = CUT_FADE.min((pb - pa) / ps.max(1) as f64 / 2.0).min(len / 2.0);
+            let prev = parts[i - 1];
+            if p.a - prev.b > 0.001 {
+                let d = CUT_FADE.min(prev.len() / 2.0).min(len / 2.0);
                 if d >= 0.04 {
                     out.push((ms(t), ms(d)));
                 }
@@ -174,9 +258,34 @@ pub fn cut_fades(parts: &[(f64, f64, u32)]) -> Vec<(f64, f64)> {
     out
 }
 
-/// 輸出的長度（加速的片段變短）
-pub fn output_length(parts: &[(f64, f64, u32)]) -> f64 {
-    parts.iter().map(|&(a, b, s)| (b - a) / s.max(1) as f64).sum()
+/// 輸出的長度（加速的片段變短、放慢的變長，加上定格）
+pub fn output_length(parts: &[Part]) -> f64 {
+    parts.iter().map(Part::len).sum()
+}
+
+/// 原影片的時間 → 剪輯後的時間（刪掉的片段裡的點不算）
+pub fn map_time(parts: &[Part], t: f64) -> Option<f64> {
+    let mut out = 0.0;
+    for p in parts {
+        if !p.is_hold() && t >= p.a && t < p.b {
+            return Some(out + (t - p.a) / p.rate.max(0.01));
+        }
+        out += p.len();
+    }
+    None
+}
+
+/// 剪輯後的時間 → 原影片的時間（定格時是定格的那一格）
+pub fn source_time(parts: &[Part], out_t: f64) -> Option<f64> {
+    let mut o = 0.0;
+    for p in parts {
+        let len = p.len();
+        if out_t < o + len {
+            return Some(if p.is_hold() { p.a } else { p.a + (out_t - o).max(0.0) * p.rate });
+        }
+        o += len;
+    }
+    None
 }
 
 /// 剪輯時的聲音處理
@@ -368,27 +477,55 @@ mod tests {
     #[test]
     fn fast_ranges_split_the_kept_parts() {
         let mut fast = vec![];
-        set_fast(&mut fast, 2.0, 6.0, 4);
-        set_fast(&mut fast, 8.0, 9.0, 2);
+        set_fast(&mut fast, 2.0, 6.0, 4.0);
+        set_fast(&mut fast, 8.0, 9.0, 2.0);
         assert_eq!(fast.len(), 2);
         // 重疊的部分以新的為準；設回原速就拿掉
-        set_fast(&mut fast, 5.0, 8.5, 8);
-        assert_eq!(fast.iter().map(|f| (f.start_ms, f.end_ms, f.speed)).collect::<Vec<_>>(), vec![(2000, 5000, 4), (5000, 8500, 8), (8500, 9000, 2)]);
-        set_fast(&mut fast, 0.0, 10.0, 1);
+        set_fast(&mut fast, 5.0, 8.5, 8.0);
+        assert_eq!(fast.iter().map(|f| (f.start_ms, f.end_ms, f.speed)).collect::<Vec<_>>(), vec![(2000, 5000, 4.0), (5000, 8500, 8.0), (8500, 9000, 2.0)]);
+        set_fast(&mut fast, 0.0, 10.0, 1.0);
         assert!(fast.is_empty());
         // 相鄰而且倍率相同的合併
-        set_fast(&mut fast, 1.0, 2.0, 4);
-        set_fast(&mut fast, 2.0, 3.0, 4);
+        set_fast(&mut fast, 1.0, 2.0, 4.0);
+        set_fast(&mut fast, 2.0, 3.0, 4.0);
         assert_eq!(fast.iter().map(|f| (f.start_ms, f.end_ms)).collect::<Vec<_>>(), vec![(1000, 3000)]);
+        // 不能用的倍率不會加
+        set_fast(&mut fast, 5.0, 6.0, 0.1);
+        assert_eq!(fast.len(), 1);
 
         let mut sp = spec(0.0, 10.0, &[(4.0, 5.0)]);
-        set_fast(&mut sp.fast, 2.0, 6.0, 4);
+        set_fast(&mut sp.fast, 2.0, 6.0, 4.0);
         let parts = keep_parts(10.0, &sp);
-        assert_eq!(parts, vec![(0.0, 2.0, 1), (2.0, 4.0, 4), (5.0, 6.0, 4), (6.0, 10.0, 1)]);
+        assert_eq!(parts, vec![Part::new(0.0, 2.0, 1.0), Part::new(2.0, 4.0, 4.0), Part::new(5.0, 6.0, 4.0), Part::new(6.0, 10.0, 1.0)]);
         assert!((output_length(&parts) - (2.0 + 0.5 + 0.25 + 4.0)).abs() < 1e-9);
-        // 沒有加速時和 keep_ranges 一樣
+        // 沒有變速時和 keep_ranges 一樣
         let plain = spec(1.0, 9.0, &[(3.0, 4.0)]);
-        assert_eq!(keep_parts(10.0, &plain), keep_ranges(10.0, &plain).into_iter().map(|(a, b)| (a, b, 1)).collect::<Vec<_>>());
+        assert_eq!(keep_parts(10.0, &plain), keep_ranges(10.0, &plain).into_iter().map(|(a, b)| Part::new(a, b, 1.0)).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn slow_parts_and_freezes() {
+        let mut sp = spec(0.0, 10.0, &[(8.0, 9.0)]);
+        set_fast(&mut sp.fast, 2.0, 4.0, 0.5);
+        // 定格：2 秒處停 3 秒、刪掉的片段裡的不算、結尾也可以停
+        sp.freezes = vec![Freeze { at_ms: 6000, ms: 3000 }, Freeze { at_ms: 8500, ms: 2000 }, Freeze { at_ms: 10000, ms: 1000 }];
+        let parts = keep_parts(10.0, &sp);
+        let hold = |t: f64, h: f64| Part { a: t, b: t, rate: 1.0, hold: h };
+        assert_eq!(parts, vec![Part::new(0.0, 2.0, 1.0), Part::new(2.0, 4.0, 0.5), Part::new(4.0, 6.0, 1.0), hold(6.0, 3.0), Part::new(6.0, 8.0, 1.0), Part::new(9.0, 10.0, 1.0), hold(10.0, 1.0)]);
+        // 2 + 4（放慢）+ 2 + 3（定格）+ 2 + 1 + 1
+        assert!((output_length(&parts) - 15.0).abs() < 1e-9);
+        assert_eq!(map_time(&parts, 3.0), Some(4.0));
+        assert_eq!(map_time(&parts, 6.0), Some(11.0));
+        assert_eq!(map_time(&parts, 8.5), None);
+        assert_eq!(source_time(&parts, 4.0), Some(3.0));
+        assert_eq!(source_time(&parts, 9.5), Some(6.0));
+        assert_eq!(source_time(&parts, 11.5), Some(6.5));
+        assert_eq!(source_time(&parts, 99.0), None);
+        // 定格、變速的交界不是接縫
+        assert_eq!(cut_fades(&parts).len(), 1);
+        // 舊的專案檔：倍率是整數
+        let f: FastRange = serde_json::from_str(r#"{"start_ms":1000,"end_ms":2000,"speed":4}"#).unwrap();
+        assert_eq!(f.speed, 4.0);
     }
 
     fn spec(start: f64, end: f64, removed: &[Range]) -> EditSpec {
@@ -445,11 +582,12 @@ mod tests {
     #[test]
     fn fades_only_at_removed_joins() {
         // 0～2 原速、2～6 加速 4 倍（長 1 秒）、刪掉 6～7、7～9 原速：只有 6～7 的接縫（剪好的 3 秒）
-        let parts = [(0.0, 2.0, 1), (2.0, 6.0, 4), (7.0, 9.0, 1)];
+        let p = Part::new;
+        let parts = [p(0.0, 2.0, 1.0), p(2.0, 6.0, 4.0), p(7.0, 9.0, 1.0)];
         assert_eq!(cut_fades(&parts), vec![(3.0, CUT_FADE)]);
         // 前後片段很短：淡出淡入縮短成片段的一半；太短就不做
-        assert_eq!(cut_fades(&[(0.0, 0.2, 1), (1.0, 3.0, 1)]), vec![(0.2, 0.1)]);
-        assert!(cut_fades(&[(0.0, 0.05, 1), (1.0, 3.0, 1)]).is_empty());
-        assert!(cut_fades(&[(0.0, 5.0, 1)]).is_empty());
+        assert_eq!(cut_fades(&[p(0.0, 0.2, 1.0), p(1.0, 3.0, 1.0)]), vec![(0.2, 0.1)]);
+        assert!(cut_fades(&[p(0.0, 0.05, 1.0), p(1.0, 3.0, 1.0)]).is_empty());
+        assert!(cut_fades(&[p(0.0, 5.0, 1.0)]).is_empty());
     }
 }

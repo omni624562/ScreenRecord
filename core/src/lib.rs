@@ -59,6 +59,7 @@ pub mod meeting;
 pub mod meter;
 pub mod monitors;
 pub mod naming;
+pub mod narration;
 pub mod ocr;
 pub mod ocr_index;
 pub mod ooxml;

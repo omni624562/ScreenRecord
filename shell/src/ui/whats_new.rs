@@ -38,22 +38,31 @@ enum Try {
 fn items(_app: &UiApp) -> Vec<(String, String, Try)> {
     vec![
         (
-            tr!("外部元件集中在設定裡", "Components in one place").into(),
+            tr!("旁白：錄音或文字轉語音", "Narration: record or type it").into(),
             tr!(
-                "FFmpeg、自動字幕要用的語音辨識檔案，都在「設定 → 外部元件」下載、取消或移除。下載不了時可以設定 Proxy，或用瀏覽器下載後選擇檔案安裝。",
-                "FFmpeg and the speech recognition files for subtitles are downloaded, canceled or removed in Settings → Components. If downloads don't work, set a proxy or download in your browser and choose the file."
-            )
-            .into(),
-            Try::Settings(Page::Components),
-        ),
-        (
-            tr!("只抓文字會告訴你抓到了", "Grab text tells you what it copied").into(),
-            tr!(
-                "框選完，滑鼠旁邊馬上顯示複製了幾個字和開頭的內容；沒認出字時也會說。",
-                "Right after you select an area, a note next to the pointer shows how many characters were copied and how they start, or that no text was found."
+                "剪輯時在「聲音」分頁邊看影片邊錄旁白，講錯可以重錄那一段；也可以打字，用 Windows 內建的語音念出來。",
+                "In the editor's Audio tab, record narration while the video plays and redo any part; or type text and have a built-in Windows voice read it."
             )
             .into(),
             Try::None,
+        ),
+        (
+            tr!("定格、放慢、點擊音效", "Freeze frames, slow motion, click sounds").into(),
+            tr!(
+                "在「修剪」分頁讓畫面停幾秒、把快速的操作放慢；錄影時記下的點擊可以加上「喀」一聲。",
+                "In the Trim tab, hold a frame for a few seconds or slow a fast part down; recorded clicks can get a click sound."
+            )
+            .into(),
+            Try::None,
+        ),
+        (
+            tr!("錄完自動複製到雲端硬碟", "Copy recordings to a sync folder").into(),
+            tr!(
+                "在「設定 → 錄完處理」選 OneDrive、Google 雲端硬碟的同步資料夾或 NAS，處理完自動複製一份過去。",
+                "In Settings → Post-processing, pick a OneDrive or Google Drive sync folder or a NAS and recordings are copied there when processing finishes."
+            )
+            .into(),
+            Try::Settings(Page::After),
         ),
     ]
 }

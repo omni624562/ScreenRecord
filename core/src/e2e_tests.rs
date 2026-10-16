@@ -572,7 +572,7 @@ async fn cut_with_every_effect() {
         overlays: vec![ov(OverlayKind::Image, 10.0, 10.0, Some(png)), ov(OverlayKind::Blur, 200.0, 100.0, None), ov(OverlayKind::Mosaic, 400.0, 200.0, None)],
         audio: AudioFx { denoise: true, normalize: true, mute: false, tracks: None },
         // 3～5 秒 4 倍速：2 秒變 0.5 秒
-        fast: vec![FastRange { start_ms: 3000, end_ms: 5000, speed: 4 }],
+        fast: vec![FastRange { start_ms: 3000, end_ms: 5000, speed: 4.0 }],
         zoom: Some(ClickZoom { factor: 1.5, clicks: vec![[2.0, 0.3, 0.4]] }),
         frame: Some(crate::video_frame::VideoFrame::default()),
         cursor: Some(crate::cursor::CursorFx { size: 2.0, track: vec![[0.0, 0.2, 0.2], [2.0, 0.6, 0.5], [4.0, 0.3, 0.7]] }),
@@ -595,6 +595,39 @@ async fn cut_with_every_effect() {
     ex.start_cut(&ctx(&ff), &s, &mute, None, None).await.unwrap();
     let out = finish(&ex).await;
     assert_eq!(probe(&ff, &out).await.has_audio, Some(false));
+
+    // 放慢、定格、旁白、點擊音效（加上接縫淡入淡出、片頭），影片變長；旁白檔不見的那段略過
+    let voice = std::path::Path::new(&s).with_file_name("voice.wav");
+    std::fs::write(&voice, crate::narration::wav_mono16(&[0.2; 48000], 48000)).unwrap();
+    let slow = EditSpec {
+        start: 0.0,
+        end: 6.0,
+        removed: vec![(1.0, 1.5)],
+        fast: vec![FastRange { start_ms: 2000, end_ms: 3000, speed: 0.5 }, FastRange { start_ms: 4000, end_ms: 6000, speed: 4.0 }],
+        freezes: vec![crate::edit::Freeze { at_ms: 3500, ms: 1500 }],
+        narration: crate::narration::Narration {
+            clips: vec![
+                crate::narration::VoiceClip { file: voice.display().to_string(), at_ms: 500, ms: 1000, text: String::new() },
+                crate::narration::VoiceClip { file: "missing.wav".into(), at_ms: 3000, ms: 1000, text: String::new() },
+            ],
+            click_volume: 80,
+            clicks: vec![2.5, 5.0],
+            ..Default::default()
+        },
+        fade_cuts: true,
+        intro: Some(crate::cards::TitleCard::new("片頭")),
+        ..Default::default()
+    };
+    let parts = crate::edit::keep_parts(6.0, &slow);
+    // 1 + 0.5 + 2（放慢）+ 0.5 + 1.5（定格）+ 0.5 + 0.5（加速）
+    let expect = crate::edit::output_length(&parts);
+    assert!(near(expect, 6.5, 0.01), "{expect}");
+    ex.start_cut(&ctx(&ff), &s, &slow, None, None).await.unwrap();
+    let out = finish(&ex).await;
+    let i = probe(&ff, &out).await;
+    let total = expect + slow.intro.as_ref().unwrap().secs();
+    assert!(near(i.duration_sec.unwrap(), total, 0.25), "{:?} vs {total}", i.duration_sec);
+    assert_eq!(i.has_audio, Some(true));
 }
 
 #[tokio::test]

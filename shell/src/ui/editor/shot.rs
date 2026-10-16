@@ -191,6 +191,10 @@ pub enum Act {
     ImportSrt,
     /// 停止產生字幕
     CancelSubs,
+    /// 影片：文字轉語音，放在播放點
+    Speak,
+    /// 影片：每段字幕產生語音
+    SpeakSubs,
 }
 
 /// 開啟截圖編輯：編輯過的圖會從原圖重新套用上次的編輯
@@ -1589,6 +1593,7 @@ pub fn run(app: &mut UiApp, ed: &mut Editor, act: Act) {
             });
         }
         Act::AutoSubs | Act::ImportSrt | Act::CancelSubs => super::subs::run(app, ed, act),
+        Act::Speak | Act::SpeakSubs => super::voice::run(app, ed, act),
         Act::LastPicture => {
             let path = ed.last_picture.clone();
             match ed.add_picture(&path) {

@@ -1,6 +1,6 @@
 //! 組 FFmpeg 參數（純函式，方便測試）。
 
-use crate::edit::AudioFx;
+use crate::edit::{AudioFx, Part};
 use crate::error::{Error, Result};
 use crate::format::{even, num, output_size, FPS_MAX, FPS_MIN, MAX_MINUTES_MAX, SPEED_MAX, SPEED_MIN};
 use crate::types::{CaptureMethod, EncoderPreference, MonitorInfo, RecordConfig, Rect, SourceConfig, SCALE_OPTIONS};
@@ -1067,6 +1067,17 @@ pub struct Extras {
     pub size: (i32, i32),
     pub main_len: f64,
     pub music: Option<MusicInput>,
+    /// 旁白與點擊音效（剪輯後的時間，片頭之前）
+    pub voice: Option<VoiceInput>,
+}
+
+/// 旁白：WAV 檔與開始時間（剪輯後的秒數）、旁白音量、原本的聲音在旁白時的音量濾鏡；點擊音效的聲音檔（從 0 開始）
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct VoiceInput {
+    pub clips: Vec<(String, f64)>,
+    pub volume: f64,
+    pub duck: Option<String>,
+    pub clicks: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1092,7 +1103,8 @@ fn extras_graph(x: &Extras, first: usize, fps: f64, pix_fmt: &str, with_audio: b
     let mut inputs = vec![];
     let mut g = vec![];
     let mut idx = first;
-    let out_audio = with_audio || x.music.is_some();
+    let has_voice = x.voice.as_ref().is_some_and(|v| !v.clips.is_empty() || v.clicks.is_some());
+    let out_audio = with_audio || x.music.is_some() || has_voice;
     let (w, h) = x.size;
     let mut card = |png: &str, secs: f64, name: &str, inputs: &mut Vec<String>, g: &mut Vec<String>| {
         inputs.extend(["-loop".into(), "1".into(), "-framerate".into(), num(fps), "-t".into(), num(secs), "-i".into(), png.to_string()]);
@@ -1109,15 +1121,37 @@ fn extras_graph(x: &Extras, first: usize, fps: f64, pix_fmt: &str, with_audio: b
         segs.push("in");
     }
     g.push(format!("[vout]setsar=1,format={pix_fmt}[vmain]"));
+    let main = if has_voice { "[amainx]" } else { "[amain]" };
     if with_audio {
-        g.push(format!("[aout]{AFMT}[amain]"));
+        g.push(format!("[aout]{AFMT}{main}"));
     } else if out_audio {
-        g.push(format!("anullsrc=r=48000:cl=stereo:d={}[amain]", num(x.main_len)));
+        g.push(format!("anullsrc=r=48000:cl=stereo:d={}{main}", num(x.main_len)));
     }
     segs.push("main");
     if let Some((png, secs)) = &x.outro {
         card(png, *secs, "out", &mut inputs, &mut g);
         segs.push("out");
+    }
+    // 旁白、點擊音效：混進剪好的聲音（旁白時原本的聲音調小），長度不變
+    if let Some(v) = x.voice.as_ref().filter(|_| has_voice) {
+        let mut mix = vec![];
+        let duck = v.duck.as_deref().filter(|_| with_audio).map(|d| format!(",{d}")).unwrap_or_default();
+        g.push(format!("{main}anull{duck}[avbase]"));
+        mix.push("[avbase]".to_string());
+        for (i, (file, at)) in v.clips.iter().enumerate() {
+            inputs.extend(["-i".into(), file.clone()]);
+            let ms = (at * 1000.0).round().max(0.0) as u64;
+            g.push(format!("[{idx}:a]{AFMT},volume={},adelay={ms}:all=1[vo{i}]", num(v.volume)));
+            mix.push(format!("[vo{i}]"));
+            idx += 1;
+        }
+        if let Some(c) = &v.clicks {
+            inputs.extend(["-i".into(), c.clone()]);
+            g.push(format!("[{idx}:a]{AFMT}[vclk]"));
+            mix.push("[vclk]".into());
+            idx += 1;
+        }
+        g.push(format!("{}amix=inputs={}:duration=first:normalize=0,atrim=0:{}[amain]", mix.join(""), mix.len(), num(x.main_len)));
     }
     let alabel = if x.music.is_some() { "[amixin]" } else { "[afin]" };
     if segs.len() > 1 {
@@ -1148,6 +1182,57 @@ fn extras_graph(x: &Extras, first: usize, fps: f64, pix_fmt: &str, with_audio: b
     (inputs, g.join(";"), out_audio)
 }
 
+/// 要不要用時間對應：有定格、放慢，或加速不是整數倍
+fn needs_retime(keep: &[Part]) -> bool {
+    keep.iter().any(|p| p.is_hold() || p.rate < 1.0 || p.rate.fract().abs() > 1e-9)
+}
+
+/// 時間對應的畫面濾鏡：挑出保留的畫面 → 每張換成剪輯後的時間 → 固定張數（放慢、定格時重複前一張，加速時丟掉）；
+/// 開頭的定格由 fps 的 start_time=0 補上，結尾的用 tpad 延長最後一張
+fn retime_video(keep: &[Part], expr: &str, fps: f64) -> Vec<String> {
+    let mut off = 0.0;
+    let mut map = vec![];
+    for p in keep {
+        if !p.is_hold() {
+            map.push(format!("gte(T,{})*lt(T,{})*({}+(T-{})/{})", num(p.a), num(p.b), num(off), num(p.a), num(p.rate)));
+        }
+        off += p.len();
+    }
+    let mut vf = vec![format!("select='{expr}'"), format!("setpts='({})/TB'", map.join("+")), format!("fps={}:start_time=0", num(fps))];
+    let tail: f64 = keep.iter().rev().take_while(|p| p.is_hold()).map(Part::len).sum();
+    if tail > 0.0 {
+        vf.push(format!("tpad=stop_mode=clone:stop_duration={}", num(tail)));
+    }
+    // 長度剛好是剪好的長度
+    vf.push(format!("trim=end={}", num(off)));
+    vf
+}
+
+/// 時間對應的聲音：原速的片段用原本的聲音，變速、定格的片段換成同樣長度的靜音，再接起來 → [acut]
+fn retime_audio(input: &str, keep: &[Part]) -> String {
+    let normal = keep.iter().filter(|p| !p.retimed()).count();
+    let mut g = vec![];
+    let labels: Vec<String> = (0..normal).map(|i| format!("[an{i}]")).collect();
+    match normal {
+        0 => g.push(format!("{input}anullsink")),
+        1 => g.push(format!("{input}anull{}", labels[0])),
+        n => g.push(format!("{input}asplit={n}{}", labels.join(""))),
+    }
+    let mut segs = vec![];
+    let mut k = 0;
+    for (i, p) in keep.iter().enumerate() {
+        if p.retimed() {
+            g.push(format!("anullsrc=r=48000:cl=stereo,atrim=end={}[as{i}]", num(p.len())));
+        } else {
+            g.push(format!("{}atrim={}:{},asetpts=PTS-STARTPTS,{AFMT}[as{i}]", labels[k], num(p.a), num(p.b)));
+            k += 1;
+        }
+        segs.push(format!("[as{i}]"));
+    }
+    g.push(format!("{}concat=n={}:v=0:a=1[acut]", segs.join(""), segs.len()));
+    g.join(";")
+}
+
 fn enable(start: f64, end: f64) -> String {
     format!("enable='between(t,{},{})'", num(start), num(end))
 }
@@ -1156,7 +1241,7 @@ fn enable(start: f64, end: f64) -> String {
 pub fn cut_args(
     source: &str,
     out_file: &str,
-    keep: &[(f64, f64, u32)],
+    keep: &[Part],
     crop: Option<Rect>,
     fps: f64,
     enc: &EncoderSpec,
@@ -1175,10 +1260,16 @@ pub fn cut_args(
     if keep.is_empty() {
         return Err(Error::config(tr!("剪輯後沒有留下任何片段", "Nothing is left after editing")));
     }
+    // 有放慢、定格（或不是整數倍的加速）時改用時間對應：挑出保留的畫面、換成剪輯後的時間，再補齊（重複）或丟掉畫面
+    let retime = needs_retime(keep);
     // 單引號內的逗號不會被當成濾鏡分隔；加速的片段每 N 張（聲音每 N 個音框）留一個
-    let expr =
-        keep.iter().map(|&(a, b, s)| if s > 1 { format!("gte(t,{})*lt(t,{})*not(mod(n,{s}))", num(a), num(b)) } else { format!("gte(t,{})*lt(t,{})", num(a), num(b)) }).collect::<Vec<_>>().join("+");
-    let mut vf = vec![format!("select='{expr}'"), format!("setpts=N/({}*TB)", num(fps))];
+    let expr = keep
+        .iter()
+        .filter(|p| !p.is_hold())
+        .map(|p| if p.rate > 1.0 && !retime { format!("gte(t,{})*lt(t,{})*not(mod(n,{}))", num(p.a), num(p.b), p.rate as u32) } else { format!("gte(t,{})*lt(t,{})", num(p.a), num(p.b)) })
+        .collect::<Vec<_>>()
+        .join("+");
+    let mut vf = if retime { retime_video(keep, &expr, fps) } else { vec![format!("select='{expr}'"), format!("setpts=N/({}*TB)", num(fps))] };
     // 跟著點擊放大（剪輯後的時間）
     if let Some(z) = zoom {
         vf.push(z.to_string());
@@ -1216,8 +1307,11 @@ pub fn cut_args(
     vf.push(format!("format={}", enc.pix_fmt));
     // 聲音：加速的片段沒有聲音（快轉的聲音聽不清楚），只留保留的片段，再做聲音處理
     let af: Vec<String> = if with_audio {
-        let mut af: Vec<String> = keep.iter().filter(|p| p.2 > 1).map(|&(a, b, _)| format!("volume=0:enable='between(t,{},{})'", num(a), num(b))).collect();
-        af.push(format!("aselect='{expr}',asetpts=N/SR/TB"));
+        let mut af: Vec<String> = vec![];
+        if !retime {
+            af.extend(keep.iter().filter(|p| p.rate > 1.0).map(|p| format!("volume=0:enable='between(t,{},{})'", num(p.a), num(p.b))));
+            af.push(format!("aselect='{expr}',asetpts=N/SR/TB"));
+        }
         for &(t, d) in &fades {
             af.push(format!("afade=t=out:st={}:d={}:enable='between(t,{},{})'", num(t - d), num(d), num(t - d), num(t)));
             af.push(format!("afade=t=in:st={}:d={}:enable='between(t,{},{})'", num(t), num(d), num(t), num(t + d)));
@@ -1227,11 +1321,17 @@ pub fn cut_args(
     } else {
         vec![]
     };
+    let af_chain = if af.is_empty() { "anull".to_string() } else { af.join(",") };
     // 分軌錄影：系統聲音與麥克風分別調整後重新混合，接著同樣處理（放進 -filter_complex）
-    let mut track_graph = audio.track_graph().filter(|_| with_audio).map(|g| format!("{g};[amixed]{}[aout]", af.join(",")));
+    let mut track_graph =
+        audio.track_graph().filter(|_| with_audio).map(|g| if retime { format!("{g};{};[acut]{af_chain}[aout]", retime_audio("[amixed]", keep)) } else { format!("{g};[amixed]{af_chain}[aout]") });
+    // 時間對應：聲音一段一段接起來（變速、定格的地方是靜音）
+    if retime && with_audio && track_graph.is_none() {
+        track_graph = Some(format!("{};[acut]{af_chain}[aout]", retime_audio("[0:a:0]", keep)));
+    }
     // 片頭片尾、背景音樂：聲音也要在 -filter_complex 裡（[aout]），才能接起來、混音
     if extras.is_some() && with_audio && track_graph.is_none() {
-        track_graph = Some(format!("[0:a:0]{}[aout]", af.join(",")));
+        track_graph = Some(format!("[0:a:0]{af_chain}[aout]"));
     }
     if !pre && !complex {
         a.extend(strs(&["-map", "0:v:0"]));
@@ -1690,7 +1790,7 @@ mod tests {
     #[test]
     fn cut_with_background_frame() {
         let f = FrameInput { base: "bg.png".into(), cover: "cover.png".into(), x: 134, y: 76, w: 1650, h: 928 };
-        let a = cut_args("in.mp4", "out.mp4", &[(1.0, 5.0, 1)], None, 30.0, &x264(), true, &[], AudioFx::default(), None, Some(&f), None, None, None, false).unwrap();
+        let a = cut_args("in.mp4", "out.mp4", &[Part::new(1.0, 5.0, 1.0)], None, 30.0, &x264(), true, &[], AudioFx::default(), None, Some(&f), None, None, None, false).unwrap();
         let j = a.join(" ");
         assert!(j.contains("-i in.mp4 -loop 1 -framerate 30 -i bg.png -loop 1 -framerate 30 -i cover.png"), "{j}");
         assert_eq!(
@@ -1700,7 +1800,7 @@ mod tests {
         assert!(!j.contains(" -vf "));
         // 加上標註：標註的圖片接在底圖、遮罩之後
         let overlays = [OverlayInput::Image { path: "o.png".into(), x: 10, y: 20, start: 1.0, end: 2.0 }];
-        let a = cut_args("in.mp4", "out.mp4", &[(1.0, 5.0, 1)], None, 30.0, &x264(), true, &overlays, AudioFx::default(), None, Some(&f), None, None, None, false).unwrap();
+        let a = cut_args("in.mp4", "out.mp4", &[Part::new(1.0, 5.0, 1.0)], None, 30.0, &x264(), true, &overlays, AudioFx::default(), None, Some(&f), None, None, None, false).unwrap();
         let g = graph_of(&a);
         assert!(g.starts_with("[0:v][3:v]overlay=10:20:"), "{g}");
         assert!(g.ends_with("[fb][2:v]overlay=0:0:shortest=1,format=yuv420p[vout]"), "{g}");
@@ -2131,7 +2231,7 @@ dummy: Immediate exit requested";
 
     #[test]
     fn cut_with_fades() {
-        let a = cut_args("in.mp4", "out.mp4", &[(1.0, 2.0, 1), (4.0, 5.5, 1)], None, 30.0, &x264(), true, &[], AudioFx::default(), None, None, None, None, None, true).unwrap();
+        let a = cut_args("in.mp4", "out.mp4", &[Part::new(1.0, 2.0, 1.0), Part::new(4.0, 5.5, 1.0)], None, 30.0, &x264(), true, &[], AudioFx::default(), None, None, None, None, None, true).unwrap();
         let vf = after(&a, "-vf");
         assert!(vf.contains("fade=t=out:st=0.8:d=0.2:enable='between(t,0.8,1)',fade=t=in:st=1:d=0.2:enable='between(t,1,1.2)',format=yuv420p"), "{vf}");
         let af = after(&a, "-af");
@@ -2143,7 +2243,7 @@ dummy: Immediate exit requested";
         let args = cut_args(
             "in.mp4",
             "out.mp4",
-            &[(1.0, 2.0, 1), (4.0, 5.5, 1)],
+            &[Part::new(1.0, 2.0, 1.0), Part::new(4.0, 5.5, 1.0)],
             Some(Rect { x: 40, y: 40, width: 200, height: 160 }),
             30.0,
             &x264(),
@@ -2160,14 +2260,30 @@ dummy: Immediate exit requested";
         .unwrap();
         assert_eq!(after(&args, "-vf"), "select='gte(t,1)*lt(t,2)+gte(t,4)*lt(t,5.5)',setpts=N/(30*TB),crop=200:160:40:40,format=yuv420p");
         assert_eq!(after(&args, "-af"), "aselect='gte(t,1)*lt(t,2)+gte(t,4)*lt(t,5.5)',asetpts=N/SR/TB");
-        let no_audio = cut_args("in.mp4", "out.mp4", &[(0.0, 3.0, 1)], None, 30.0, &x264(), false, &[], AudioFx::default(), None, None, None, None, None, false).unwrap();
+        let no_audio = cut_args("in.mp4", "out.mp4", &[Part::new(0.0, 3.0, 1.0)], None, 30.0, &x264(), false, &[], AudioFx::default(), None, None, None, None, None, false).unwrap();
         // 降噪、音量平衡接在剪輯後面；不要聲音時整個拿掉
-        let fx =
-            cut_args("in.mp4", "out.mp4", &[(0.0, 3.0, 1)], None, 30.0, &x264(), true, &[], AudioFx { denoise: true, normalize: true, mute: false, tracks: None }, None, None, None, None, None, false)
-                .unwrap()
-                .join(" ");
+        let fx = cut_args(
+            "in.mp4",
+            "out.mp4",
+            &[Part::new(0.0, 3.0, 1.0)],
+            None,
+            30.0,
+            &x264(),
+            true,
+            &[],
+            AudioFx { denoise: true, normalize: true, mute: false, tracks: None },
+            None,
+            None,
+            None,
+            None,
+            None,
+            false,
+        )
+        .unwrap()
+        .join(" ");
         assert!(fx.contains("asetpts=N/SR/TB,afftdn=nf=-25,loudnorm=I=-16:TP=-1.5:LRA=11,aresample=48000"), "{fx}");
-        let muted = cut_args("in.mp4", "out.mp4", &[(0.0, 3.0, 1)], None, 30.0, &x264(), true, &[], AudioFx { mute: true, ..Default::default() }, None, None, None, None, None, false).unwrap();
+        let muted =
+            cut_args("in.mp4", "out.mp4", &[Part::new(0.0, 3.0, 1.0)], None, 30.0, &x264(), true, &[], AudioFx { mute: true, ..Default::default() }, None, None, None, None, None, false).unwrap();
         assert!(muted.contains(&"-an".to_string()) && !muted.iter().any(|a| a.contains("aselect")));
         assert!(no_audio.contains(&"-an".to_string()));
         assert!(!no_audio.contains(&"-af".to_string()));
@@ -2178,7 +2294,24 @@ dummy: Immediate exit requested";
         assert_eq!(normalize_crop(None, 100, 100), None);
 
         // 局部加速：每 4 張留一張，那段的聲音關掉
-        let fast = cut_args("in.mp4", "out.mp4", &[(0.0, 2.0, 1), (2.0, 6.0, 4), (6.0, 8.0, 1)], None, 30.0, &x264(), true, &[], AudioFx::default(), None, None, None, None, None, false).unwrap();
+        let fast = cut_args(
+            "in.mp4",
+            "out.mp4",
+            &[Part::new(0.0, 2.0, 1.0), Part::new(2.0, 6.0, 4.0), Part::new(6.0, 8.0, 1.0)],
+            None,
+            30.0,
+            &x264(),
+            true,
+            &[],
+            AudioFx::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            false,
+        )
+        .unwrap();
         let vf = &fast[fast.iter().position(|a| a == "-vf").unwrap() + 1];
         assert!(vf.starts_with("select='gte(t,0)*lt(t,2)+gte(t,2)*lt(t,6)*not(mod(n,4))+gte(t,6)*lt(t,8)',setpts=N/(30*TB)"), "{vf}");
         let af = &fast[fast.iter().position(|a| a == "-af").unwrap() + 1];
@@ -2199,7 +2332,7 @@ dummy: Immediate exit requested";
         let args = cut_args(
             "in.mp4",
             "out.mp4",
-            &[(1.0, 5.0, 1)],
+            &[Part::new(1.0, 5.0, 1.0)],
             Some(Rect { x: 40, y: 40, width: 200, height: 160 }),
             30.0,
             &x264(),
@@ -2232,7 +2365,7 @@ dummy: Immediate exit requested";
         assert_eq!(cut_file_name("a.mp4"), "a_cut.mp4");
         // 平滑、放大的游標：在標註底下，sendcmd 依原影片的時間移動它；沒有其他標註時也走同一條路
         let c = CursorInput { image: "cursor.png".into(), commands: "cursor.txt".into(), x: 96, y: 50 };
-        let args = cut_args("in.mp4", "out.mp4", &[(1.0, 5.0, 1)], None, 30.0, &x264(), false, &overlays[..1], AudioFx::default(), None, None, Some(&c), None, None, false).unwrap();
+        let args = cut_args("in.mp4", "out.mp4", &[Part::new(1.0, 5.0, 1.0)], None, 30.0, &x264(), false, &overlays[..1], AudioFx::default(), None, None, Some(&c), None, None, false).unwrap();
         let inputs: Vec<&String> = args.iter().zip(args.iter().skip(1)).filter(|(k, _)| *k == "-i").map(|(_, v)| v).collect();
         assert_eq!(inputs, ["in.mp4", "cursor.png", "a.png"]);
         assert!(
@@ -2240,14 +2373,14 @@ dummy: Immediate exit requested";
             "{}",
             after(&args, "-filter_complex")
         );
-        let only = cut_args("in.mp4", "out.mp4", &[(0.0, 5.0, 1)], None, 30.0, &x264(), false, &[], AudioFx::default(), None, None, Some(&c), None, None, false).unwrap();
+        let only = cut_args("in.mp4", "out.mp4", &[Part::new(0.0, 5.0, 1.0)], None, 30.0, &x264(), false, &[], AudioFx::default(), None, None, Some(&c), None, None, false).unwrap();
         assert!(!only.contains(&"-vf".to_string()) && after(&only, "-map") == "[vout]");
         // 直式影片：放在中間（剪好的畫面再放進直式畫面）
         let fit = VerticalInput::Fit { w: 1080, h: 1920 };
         let a = cut_args(
             "in.mp4",
             "out.mp4",
-            &[(0.0, 5.0, 1)],
+            &[Part::new(0.0, 5.0, 1.0)],
             Some(Rect { x: 0, y: 0, width: 800, height: 600 }),
             30.0,
             &x264(),
@@ -2265,7 +2398,7 @@ dummy: Immediate exit requested";
         assert_eq!(after(&a, "-filter_complex"), format!("[0:v]select='gte(t,0)*lt(t,5)',setpts=N/(30*TB),crop=800:600:0:0,{},format=yuv420p[vout]", crate::vertical::fit_filter(1080, 1920)));
         // 跟著游標：在原影片的時間裁切（游標、標註之後），太大時縮小
         let follow = VerticalInput::Follow { commands: "vertical.txt".into(), w: 1214, h: 2158, x: 1300, y: 1, scale: Some((1080, 1920)) };
-        let a = cut_args("in.mp4", "out.mp4", &[(0.0, 5.0, 1)], None, 30.0, &x264(), false, &[], AudioFx::default(), None, None, Some(&c), Some(&follow), None, false).unwrap();
+        let a = cut_args("in.mp4", "out.mp4", &[Part::new(0.0, 5.0, 1.0)], None, 30.0, &x264(), false, &[], AudioFx::default(), None, None, Some(&c), Some(&follow), None, false).unwrap();
         assert_eq!(
             after(&a, "-filter_complex"),
             "[0:v]sendcmd=f=cursor.txt[cs];[cs][1:v]overlay@cursor=x=96:y=50[cur0];[cur0]sendcmd=f=vertical.txt,crop@vertical=w=1214:h=2158:x=1300:y=1,scale=1080:1920:flags=bicubic[vert];\
@@ -2313,9 +2446,11 @@ dummy: Immediate exit requested";
                 size: (320, 240),
                 main_len: 2.0,
                 music: music_on.then(|| MusicInput { path: music.display().to_string(), volume: 0.3, duck: true }),
+                voice: None,
             };
             let a =
-                cut_args(src.to_str().unwrap(), out.to_str().unwrap(), &[(0.5, 2.5, 1)], None, 30.0, &x264(), with_audio, &[], AudioFx::default(), None, None, None, None, Some(&x), false).unwrap();
+                cut_args(src.to_str().unwrap(), out.to_str().unwrap(), &[Part::new(0.5, 2.5, 1.0)], None, 30.0, &x264(), with_audio, &[], AudioFx::default(), None, None, None, None, Some(&x), false)
+                    .unwrap();
             let r = run(&a);
             assert!(r.status.success(), "{with_audio} {music_on}: {}", String::from_utf8_lossy(&r.stderr));
             let info = parse_media_info(&probe(&out));
@@ -2323,6 +2458,67 @@ dummy: Immediate exit requested";
             assert!((d - 4.5).abs() < 0.25, "{with_audio} {music_on}: {d}");
             assert_eq!(info.has_audio, with_audio || music_on, "{with_audio} {music_on}");
         }
+    }
+
+    /// 放慢、定格、旁白與點擊音效：有 FFmpeg 時實際跑一次，確認長度、畫面張數與聲音
+    #[test]
+    fn retime_and_voice_run_in_ffmpeg() {
+        let Some(ffmpeg) = std::env::var_os("PATH").and_then(|p| std::env::split_paths(&p).map(|d| d.join("ffmpeg")).find(|p| p.is_file())) else { return };
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("in.mp4");
+        let run = |args: &[String]| std::process::Command::new(&ffmpeg).args(args).output().unwrap();
+        let ok = |a: &[String]| {
+            let r = run(a);
+            assert!(r.status.success(), "{}", String::from_utf8_lossy(&r.stderr));
+        };
+        ok(&["-loglevel", "error", "-f", "lavfi", "-i", "testsrc=size=320x240:rate=30:d=6", "-f", "lavfi", "-i", "sine=f=300:d=6", "-shortest", "-pix_fmt", "yuv420p", "-c:a", "aac"]
+            .iter()
+            .map(|s| s.to_string())
+            .chain([src.display().to_string()])
+            .collect::<Vec<_>>());
+        let voice = dir.path().join("v.wav");
+        std::fs::write(&voice, crate::narration::wav_mono16(&[0.3; 48000], 48000)).unwrap();
+        let clicks = dir.path().join("c.wav");
+        std::fs::write(&clicks, crate::narration::click_track(&[0.5, 2.0], 7.0, 100)).unwrap();
+        let probe = |f: &std::path::Path| String::from_utf8_lossy(&run(&["-hide_banner".into(), "-i".into(), f.display().to_string()]).stderr).to_string();
+        let hold = |t: f64, h: f64| Part { a: t, b: t, rate: 1.0, hold: h };
+        // 0～1 原速、1～2 放慢一半（2 秒）、2 秒處定格 1 秒、2～4 加速 1.5 倍、刪掉 4～5、5～6 原速、結尾定格 0.5 秒
+        let keep = [Part::new(0.0, 1.0, 1.0), Part::new(1.0, 2.0, 0.5), hold(2.0, 1.0), Part::new(2.0, 4.0, 1.5), Part::new(5.0, 6.0, 1.0), hold(6.0, 0.5)];
+        let total = crate::edit::output_length(&keep);
+        assert!((total - (1.0 + 2.0 + 1.0 + 4.0 / 3.0 + 1.0 + 0.5)).abs() < 1e-9);
+        for (with_audio, tracks) in [(true, false), (false, false)] {
+            let out = dir.path().join(format!("out-{with_audio}-{tracks}.mp4"));
+            let x = Extras {
+                intro: None,
+                outro: None,
+                size: (320, 240),
+                main_len: total,
+                music: None,
+                voice: Some(VoiceInput {
+                    clips: vec![(voice.display().to_string(), 1.5)],
+                    volume: 1.0,
+                    duck: crate::narration::duck_filter(&[crate::narration::Placed { file: String::new(), at: 1.5, len: 1.0 }], 20),
+                    clicks: Some(clicks.display().to_string()),
+                }),
+            };
+            let a = cut_args(src.to_str().unwrap(), out.to_str().unwrap(), &keep, None, 30.0, &x264(), with_audio, &[], AudioFx::default(), None, None, None, None, Some(&x), false).unwrap();
+            ok(&a);
+            let info = parse_media_info(&probe(&out));
+            let d = info.duration_sec.unwrap();
+            assert!((d - total).abs() < 0.15, "{with_audio}: {d} vs {total}");
+            assert!(info.has_audio, "{with_audio}");
+        }
+        // 沒有旁白、只有時間對應：畫面張數對
+        let out = dir.path().join("plain.mp4");
+        let a = cut_args(src.to_str().unwrap(), out.to_str().unwrap(), &keep, None, 30.0, &x264(), true, &[], AudioFx::default(), None, None, None, None, None, true).unwrap();
+        assert!(a.iter().any(|s| s.contains("fps=30:start_time=0")) && a.iter().any(|s| s.contains("tpad=stop_mode=clone")));
+        ok(&a);
+        let frames = run(&["-hide_banner".into(), "-i".into(), out.display().to_string(), "-map".into(), "0:v:0".into(), "-f".into(), "null".into(), "-".into()]);
+        let err = String::from_utf8_lossy(&frames.stderr);
+        let n: f64 = err.rsplit("frame=").next().and_then(|s| s.split_whitespace().next()).and_then(|s| s.parse().ok()).unwrap();
+        assert!((n - total * 30.0).abs() <= 3.0, "{n} frames vs {}", total * 30.0);
+        let d = parse_media_info(&probe(&out)).duration_sec.unwrap();
+        assert!((d - total).abs() < 0.15, "{d} vs {total}");
     }
 
     #[test]

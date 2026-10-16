@@ -45,6 +45,8 @@ windows = { version = "0.62", features = [
   "Globalization",
   "Graphics_Imaging",
   "Media_Ocr",
+  "Media_Core",
+  "Media_SpeechSynthesis",
   "Storage_Streams",
   "Win32_Foundation",
   "Win32_Devices_Display",

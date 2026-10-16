@@ -78,10 +78,10 @@ pub fn scale(chapters: &[Chapter], speed: f64) -> Vec<Chapter> {
 }
 
 /// 剪輯後：換成剪輯後的時間；開頭落在刪掉的片段裡時，改從下一個保留的片段開始（重疊的合併）
-pub fn map_cut(chapters: &[Chapter], keep: &[(f64, f64, u32)]) -> Vec<Chapter> {
+pub fn map_cut(chapters: &[Chapter], keep: &[crate::edit::Part]) -> Vec<Chapter> {
     let mut out: Vec<Chapter> = Vec::new();
     for c in chapters {
-        let t = crate::zoom::map_time(keep, c.start).or_else(|| keep.iter().find(|k| k.0 > c.start).and_then(|k| crate::zoom::map_time(keep, k.0)));
+        let t = crate::zoom::map_time(keep, c.start).or_else(|| keep.iter().find(|k| !k.is_hold() && k.a > c.start).and_then(|k| crate::zoom::map_time(keep, k.a)));
         let Some(t) = t else { continue };
         match out.last_mut() {
             // 同一個時間點：後面的章節取代前面的（例如開頭被刪掉）
@@ -223,11 +223,12 @@ mod tests {
         let c = vec![Chapter { start: 0.0, title: "A".into() }, Chapter { start: 20.0, title: "B".into() }, Chapter { start: 45.0, title: "C".into() }];
         assert_eq!(titles(&scale(&c, 4.0)), vec![(0.0, "A"), (5.0, "B"), (11.25, "C")]);
         // 保留 0–10、30–60：B 落在刪掉的片段裡，改從 30（剪輯後 10）開始；C 在 45 → 25
-        assert_eq!(titles(&map_cut(&c, &[(0.0, 10.0, 1), (30.0, 60.0, 1)])), vec![(0.0, "A"), (10.0, "B"), (25.0, "C")]);
+        use crate::edit::Part as P;
+        assert_eq!(titles(&map_cut(&c, &[P::new(0.0, 10.0, 1.0), P::new(30.0, 60.0, 1.0)])), vec![(0.0, "A"), (10.0, "B"), (25.0, "C")]);
         // 開頭被剪掉：A 從第一個保留的片段開始；加速的片段時間變短（25–45 以 2 倍播放只佔 10 秒）
-        assert_eq!(titles(&map_cut(&c, &[(15.0, 25.0, 1), (25.0, 45.0, 2), (45.0, 50.0, 1)])), vec![(0.0, "A"), (5.0, "B"), (20.0, "C")]);
+        assert_eq!(titles(&map_cut(&c, &[P::new(15.0, 25.0, 1.0), P::new(25.0, 45.0, 2.0), P::new(45.0, 50.0, 1.0)])), vec![(0.0, "A"), (5.0, "B"), (20.0, "C")]);
         // 兩章落在同一個地方：留後面那一章
-        assert_eq!(titles(&map_cut(&c, &[(30.0, 60.0, 1)])), vec![(0.0, "B"), (15.0, "C")]);
+        assert_eq!(titles(&map_cut(&c, &[P::new(30.0, 60.0, 1.0)])), vec![(0.0, "B"), (15.0, "C")]);
     }
 
     #[test]

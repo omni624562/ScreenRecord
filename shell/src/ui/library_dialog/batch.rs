@@ -138,6 +138,8 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context, d: &mut LibraryDialog) {
         speed: b.speed as f64,
         keep_audio: app.s.keep_audio,
         auto_name: false,
+        // 一次處理多支時不複製（要複製的話在檔案總管一次複製比較快）
+        copy_to: String::new(),
     };
     let n = b.paths.len();
     let core = app.core.clone();

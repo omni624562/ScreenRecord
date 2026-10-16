@@ -88,17 +88,9 @@ pub fn zoompan(points: &[Point], factor: f64, w: i32, h: i32, fps: f64) -> Optio
     Some(format!("zoompan=z='{z}':x='({})*iw-iw/zoom/2':y='({})*ih-ih/zoom/2':d=1:s={w}x{h}:fps={}", axis(1), axis(2), num(fps)))
 }
 
-/// 原影片的時間 → 剪輯後的時間（刪掉的片段裡的點不算；加速的片段時間變短）
-pub fn map_time(parts: &[(f64, f64, u32)], t: f64) -> Option<f64> {
-    let mut out = 0.0;
-    for &(a, b, s) in parts {
-        let s = s.max(1) as f64;
-        if t >= a && t < b {
-            return Some(out + (t - a) / s);
-        }
-        out += (b - a) / s;
-    }
-    None
+/// 原影片的時間 → 剪輯後的時間（刪掉的片段裡的點不算；變速、定格都算進去）
+pub fn map_time(parts: &[crate::edit::Part], t: f64) -> Option<f64> {
+    crate::edit::map_time(parts, t)
 }
 
 #[cfg(test)]
@@ -121,7 +113,7 @@ mod tests {
         assert!((x - 0.25).abs() < 1e-9 && (y - 0.35).abs() < 1e-9);
         assert!(at(&[], 2.0, 3.0) == (1.0, 0.5, 0.5));
         // 剪掉的地方沒有時間；加速的片段變短
-        let parts = [(0.0, 4.0, 1), (6.0, 10.0, 2)];
+        let parts = [crate::edit::Part::new(0.0, 4.0, 1.0), crate::edit::Part::new(6.0, 10.0, 2.0)];
         assert_eq!(map_time(&parts, 3.0), Some(3.0));
         assert_eq!(map_time(&parts, 5.0), None);
         assert_eq!(map_time(&parts, 8.0), Some(5.0));

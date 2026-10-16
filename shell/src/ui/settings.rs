@@ -140,6 +140,9 @@ pub struct UiSettings {
     pub after_auto_name: bool,
     /// 錄完產生字幕時也翻成英文（同名.en.srt）
     pub after_subs_en: bool,
+    /// 錄完處理後複製到這個資料夾（core::after_record 讀這個欄位）
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub after_copy_to: String,
     /// 只錄某個視窗時只錄視窗的內容（Windows Graphics Capture）
     pub window_capture: bool,
     /// 系統聲音與麥克風分開存（分軌）
@@ -312,6 +315,7 @@ impl UiSettings {
             after_subs_lang: num("afterSubsLang").map(|v| v as u32).filter(|v| (*v as usize) < screenrecorder_core::subtitles::LANGUAGES.len()).unwrap_or(0),
             after_auto_name: boolean("afterAutoName").unwrap_or(false),
             after_subs_en: boolean("afterSubsEn").unwrap_or(false),
+            after_copy_to: o.get(screenrecorder_core::after_record::COPY_KEY).and_then(Value::as_str).unwrap_or("").trim().to_string(),
             after_compress_mb: num("afterCompressMb").map(|v| v as u32).filter(|v| MAX_MB.contains(v)).unwrap_or(0),
             window_capture: boolean("windowCapture").unwrap_or(false),
             separate_audio: boolean("separateAudio").unwrap_or(false),
@@ -578,8 +582,10 @@ mod tests {
         let mut s = UiSettings::from_saved(None, &env());
         assert!(!screenrecorder_core::after_record::AfterRecord::from_ui(Some(&s.to_value())).any());
         (s.after_idle_cut, s.after_subs, s.after_subs_lang, s.after_compress_mb, s.after_auto_name) = (true, true, 1, 25, true);
+        s.after_copy_to = "D:\\Sync".into();
         let a = screenrecorder_core::after_record::AfterRecord::from_ui(Some(&s.to_value()));
         assert_eq!((a.idle_cut, a.subtitles, a.subs_lang, a.compress_mb, a.auto_name), (true, true, 1, 25, true));
+        assert_eq!(a.copy_to, "D:\\Sync");
         // 設定組合也存這些欄位
         for k in screenrecorder_core::after_record::UI_KEYS {
             assert!(screenrecorder_core::presets::KEYS.contains(&k), "{k}");

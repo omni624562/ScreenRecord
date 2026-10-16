@@ -283,9 +283,10 @@ impl Exporter {
             None => None,
         };
         let unchanged = keep.len() == 1
-            && keep[0].0 == 0.0
-            && keep[0].1 >= duration - 0.05
-            && keep[0].2 == 1
+            && keep[0].a == 0.0
+            && keep[0].b >= duration - 0.05
+            && !keep[0].retimed()
+            && spec.narration.is_empty()
             && crop.is_none()
             && spec.overlays.is_empty()
             && spec.audio.is_default()
@@ -398,15 +399,39 @@ impl Exporter {
                 Some(m) => Some(crate::args::MusicInput { path: m.path.clone(), volume: m.volume, duck: m.duck }),
                 None => None,
             };
-            if intro.is_none() && outro.is_none() && music.is_none() {
+            // 旁白（剪輯後的時間）與點擊音效
+            let n = &spec.narration;
+            let placed = crate::narration::place(&keep, &n.clips, length);
+            let click_times: Vec<f64> = if n.click_volume > 0 { n.clicks.iter().filter_map(|&t| crate::zoom::map_time(&keep, t)).collect() } else { vec![] };
+            if intro.is_none() && outro.is_none() && music.is_none() && placed.is_empty() && click_times.is_empty() {
                 (None, temp)
             } else {
                 let size = output_size(info.width, info.height, crop, vertical.as_ref());
-                let Some((w, h)) = size else {
+                let Some((w, h)) = size.or((intro.is_none() && outro.is_none()).then_some((0, 0))) else {
                     remove_dir(&temp);
                     return Err(Error::config(tr!("無法讀取影片尺寸，不能加上片頭片尾", "Couldn't read the video size, so title cards can't be added")));
                 };
                 let dir = temp.unwrap_or_else(|| std::env::temp_dir().join(format!("ScreenRecorder-overlays-{}-{}", std::process::id(), crate::paths::now_ms())));
+                let voice = if placed.is_empty() && click_times.is_empty() {
+                    None
+                } else {
+                    let clicks = if click_times.is_empty() {
+                        None
+                    } else {
+                        let f = dir.join("clicks.wav");
+                        if let Err(e) = std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&f, crate::narration::click_track(&click_times, length, n.click_volume))) {
+                            let _ = std::fs::remove_dir_all(&dir);
+                            return Err(Error::config(e.to_string()));
+                        }
+                        Some(f.display().to_string())
+                    };
+                    Some(crate::args::VoiceInput {
+                        clips: placed.iter().map(|p| (p.file.clone(), p.at)).collect(),
+                        volume: n.volume.min(200) as f64 / 100.0,
+                        duck: crate::narration::duck_filter(&placed, n.original),
+                        clicks,
+                    })
+                };
                 let card = |c: Option<&crate::cards::TitleCard>, name: &str| -> Result<Option<(String, f64)>> {
                     let Some(c) = c else { return Ok(None) };
                     let f = dir.join(format!("{name}.png"));
@@ -421,7 +446,7 @@ impl Exporter {
                         return Err(e);
                     }
                 };
-                (Some(crate::args::Extras { intro, outro, size: (w, h), main_len: length, music }), Some(dir))
+                (Some(crate::args::Extras { intro, outro, size: (w, h), main_len: length, music, voice }), Some(dir))
             }
         };
         // 分別調整系統聲音與麥克風：只有分軌錄影（3 條音軌）才做得到
@@ -449,11 +474,13 @@ impl Exporter {
         let mapped: Vec<crate::types::Chapter> = crate::chapters::map_cut(&chapters, &keep).into_iter().map(|c| crate::types::Chapter { start: c.start + shift, ..c }).collect();
         let length = extras.as_ref().map_or(length, |x| x.total());
         let temp = with_chapters(&mut args, &mapped, length, temp);
-        let fast = keep.iter().filter(|p| p.2 > 1).count();
+        let fast = keep.iter().filter(|p| p.rate > 1.0).count();
+        let slow = keep.iter().filter(|p| !p.is_hold() && p.rate < 1.0).count();
+        let holds = keep.iter().filter(|p| p.is_hold()).count();
         let note = format!(
             "保留 {} 段{}{}{}{}",
-            keep.iter().filter(|p| p.2 == 1).count() + fast,
-            if fast > 0 { format!("，加速 {fast} 段") } else { String::new() },
+            keep.iter().filter(|p| !p.is_hold()).count(),
+            [(fast, "加速"), (slow, "放慢"), (holds, "定格")].iter().filter(|(n, _)| *n > 0).map(|(n, w)| format!("，{w} {n} 段")).collect::<String>(),
             if zoom.is_some() { "，跟著點擊放大" } else { "" },
             crop.map(|c| format!("，裁切 {}×{}", c.width, c.height)).unwrap_or_default(),
             if overlays.is_empty() { String::new() } else { format!("，標註 {} 個", overlays.len()) }
@@ -462,6 +489,8 @@ impl Exporter {
             + if vertical.is_some() { "，直式影片" } else { "" }
             + if extras.as_ref().is_some_and(|x| x.intro.is_some() || x.outro.is_some()) { "，片頭片尾" } else { "" }
             + if extras.as_ref().is_some_and(|x| x.music.is_some()) { "，背景音樂" } else { "" }
+            + if extras.as_ref().and_then(|x| x.voice.as_ref()).is_some_and(|v| !v.clips.is_empty()) { "，旁白" } else { "" }
+            + if extras.as_ref().and_then(|x| x.voice.as_ref()).is_some_and(|v| v.clicks.is_some()) { "，點擊音效" } else { "" }
             + if spec.fade_cuts { "，接縫淡入淡出" } else { "" };
         let follow = matches!(vertical, Some(VerticalInput::Follow { .. }));
         let cwd = (cursor.is_some() || follow).then(|| temp.clone()).flatten();

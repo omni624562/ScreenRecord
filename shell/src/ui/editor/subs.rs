@@ -666,10 +666,10 @@ impl Editor {
         subs.sort_by(|x, y| x.start.total_cmp(&y.start));
         subs.into_iter()
             .filter_map(|a| {
-                let over: Vec<&(f64, f64, u32)> = parts.iter().filter(|p| p.0 < a.end && p.1 > a.start).collect();
+                let over: Vec<&screenrecorder_core::edit::Part> = parts.iter().filter(|p| !p.is_hold() && p.a < a.end && p.b > a.start).collect();
                 let (first, last) = (over.first()?, over.last()?);
-                let start = screenrecorder_core::zoom::map_time(&parts, a.start.max(first.0))?;
-                let end = screenrecorder_core::zoom::map_time(&parts, (a.end.min(last.1) - 0.001).max(first.0))? + 0.001;
+                let start = screenrecorder_core::zoom::map_time(&parts, a.start.max(first.a))?;
+                let end = screenrecorder_core::zoom::map_time(&parts, (a.end.min(last.b) - 0.001).max(first.a))? + 0.001;
                 (end - start >= 0.05).then(|| Cue { start: start + shift, end: end + shift, text: a.text.clone().unwrap_or_default() })
             })
             .collect()
