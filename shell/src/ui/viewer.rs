@@ -63,7 +63,7 @@ pub struct Viewer {
 }
 
 impl Viewer {
-    fn cur(&self) -> &LibraryEntry {
+    pub(crate) fn cur(&self) -> &LibraryEntry {
         &self.list[self.idx]
     }
 
@@ -376,6 +376,8 @@ enum Act {
     Qr,
     /// 影片：目前這一格存成截圖
     Grab,
+    /// 影片：從目前這一格做封面
+    Cover,
     Rename,
     /// 打開相關的截圖（第幾張）
     Related(usize),
@@ -458,6 +460,12 @@ fn head_buttons(app: &UiApp, e: &LibraryEntry, image: bool, audio: bool) -> Vec<
             Some(Icon::Camera),
             tr!("把目前這一格存成截圖（原尺寸 PNG），並複製到剪貼簿", "Save the current frame as a screenshot (full-size PNG) and copy it to the clipboard"),
             || Act::Grab,
+        ));
+        list.push(b(
+            tr!("做封面", "Make cover"),
+            None,
+            tr!("用目前這一格加上標題，做成 YouTube 用的封面圖（1280×720）", "Use the current frame with a title to make a YouTube cover image (1280×720)"),
+            || Act::Cover,
         ));
     }
     list.push(b(
@@ -788,6 +796,14 @@ fn run_act(app: &mut UiApp, act: Act) {
                 v.reload_after_ask = true;
             }
             super::library_dialog::rename_entry(app, e);
+        }
+        Act::Cover => {
+            let Some(v) = app.viewer.as_mut() else { return };
+            let (entry, t) = (v.cur().clone(), v.player.as_ref().map(|p| p.time()));
+            if let Some(p) = &mut v.player {
+                p.pause();
+            }
+            super::cover::open(app, entry, t);
         }
         Act::Grab => {
             let Some(v) = app.viewer.as_mut() else { return };

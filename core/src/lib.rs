@@ -22,6 +22,7 @@ pub mod cards;
 pub mod chapters;
 pub mod clipboard;
 pub mod clock;
+pub mod cover;
 pub mod cursor;
 pub mod desktop;
 pub mod displays;

@@ -359,6 +359,46 @@ async fn cut_fades_at_joins() {
 }
 
 #[tokio::test]
+async fn cover_is_saved_and_written_into_the_video() {
+    let Some(ff) = ffmpeg() else { return };
+    if !has(&ff, "-encoders", "libx264") {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let src = make_source(&ff, dir.path());
+    let s = src.display().to_string();
+    let before = probe(&ff, &src).await;
+    let mtime = std::fs::metadata(&src).unwrap().modified().unwrap();
+    let frame = crate::cover::frame_at(&ff, &s, 2.0).await.unwrap();
+    assert_eq!((frame.width(), frame.height()), (640, 360));
+    let c = crate::cover::Cover { title: "報價單怎麼填".into(), subtitle: "業務部教學".into(), style: crate::cover::CoverStyle::Band };
+    let pm = crate::cover::render(&frame, &c).unwrap();
+    let saved = crate::cover::save(Some(&ff), &s, &pm, true).await.unwrap();
+    assert!(saved.embedded, "{:?}", saved.embed_error);
+    assert!(saved.png.ends_with("Rec_2026-10-11_12-00-00_封面.png"));
+    let png = tiny_skia::Pixmap::load_png(&saved.png).unwrap();
+    assert_eq!((png.width(), png.height()), (1280, 720));
+    // 影片照常：長度、聲音、章節不變，多了一張封面圖；修改時間不變
+    let after = probe(&ff, &src).await;
+    assert!(near(after.duration_sec.unwrap(), before.duration_sec.unwrap(), 0.05));
+    assert_eq!((after.width, after.has_audio), (Some(640), Some(true)));
+    assert_eq!(starts(&after.chapters), starts(&before.chapters));
+    assert_eq!(std::fs::metadata(&src).unwrap().modified().unwrap(), mtime);
+    let o = Command::new(&ff).args(["-hide_banner", "-i"]).arg(&src).output().unwrap();
+    let info = String::from_utf8_lossy(&o.stderr);
+    assert_eq!(info.matches("(attached pic)").count(), 1, "{info}");
+    // 再做一次：換掉原本的封面，不會變成兩張；暫存檔不留下
+    crate::cover::save(Some(&ff), &s, &pm, true).await.unwrap();
+    let o = Command::new(&ff).args(["-hide_banner", "-i"]).arg(&src).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&o.stderr).matches("(attached pic)").count(), 1);
+    let left: Vec<_> = std::fs::read_dir(dir.path()).unwrap().filter_map(|e| e.ok()).map(|e| e.file_name().to_string_lossy().into_owned()).filter(|n| n.contains("cover-tmp")).collect();
+    assert!(left.is_empty(), "{left:?}");
+    // 播放器仍然讀得到畫面（只看主要的畫面，不是封面）
+    let f = crate::cover::frame_at(&ff, &s, 1.0).await.unwrap();
+    assert_eq!(f.width(), 640);
+}
+
+#[tokio::test]
 async fn animations_gif_and_webp() {
     let Some(ff) = ffmpeg() else { return };
     if !has(&ff, "-encoders", "libx264") {

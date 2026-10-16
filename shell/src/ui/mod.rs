@@ -1,6 +1,7 @@
 //! 操作視窗（egui）：主畫面、製作加速版 / GIF、全部錄影、剪輯、更新說明。
 //! 直接呼叫後端（screenrecorder-core），非同步的工作在 tokio 上執行，完成後把結果交回介面執行緒。
 
+pub mod cover;
 #[cfg(debug_assertions)]
 mod dev;
 pub mod dialogs;
@@ -102,6 +103,8 @@ pub enum EntryAction {
     Compress,
     /// 做成直式影片（Shorts / Reels）：開啟剪輯並選好「直式影片」
     Vertical,
+    /// 做封面（YouTube 縮圖）
+    Cover,
 }
 
 pub struct UiApp {
@@ -171,6 +174,8 @@ pub struct UiApp {
     pub steps_review: Option<steps_review::Review>,
     /// 傳到手機（正在分享）
     pub phone: Option<phone::Phone>,
+    /// 做封面
+    pub cover: Option<cover::CoverDialog>,
     /// 目前設定的全域快速鍵（顯示用）
     pub keys: screenrecorder_core::types::Hotkeys,
     pub editor: Option<editor::Editor>,
@@ -267,6 +272,7 @@ impl UiApp {
             snip: None,
             steps_review: None,
             phone: None,
+            cover: None,
             keys: saved.hotkeys.unwrap_or_default(),
             editor: None,
             dismissed_job: None,
@@ -765,6 +771,7 @@ impl UiApp {
                 self.toast(tr!("已複製章節，可以貼到 YouTube 影片的說明欄", "Chapters copied. Paste them into the YouTube video description"), false);
             }
             EntryAction::Phone => phone::open(self, path),
+            EntryAction::Cover => cover::open(self, entry, None),
             EntryAction::CopyFile => match screenrecorder_core::clipboard::copy_files(std::slice::from_ref(&path)) {
                 Ok(()) => self.toast(tr!("已複製檔案，可以直接貼到 LINE、Teams、信件或資料夾", "File copied. Paste it into LINE, Teams, an email or a folder"), false),
                 Err(e) => self.toast(e, true),
@@ -1101,6 +1108,9 @@ impl eframe::App for UiApp {
         }
         if self.phone.is_some() {
             phone::show(self, &ctx);
+        }
+        if self.cover.is_some() {
+            cover::show(self, &ctx);
         }
         // 新功能介紹：主畫面第一次看得到、沒有其他視窗時檢查一次
         if !self.whats_new_checked && self.visible && self.env_ready && self.editor.is_none() && self.snip.is_none() {
