@@ -29,7 +29,12 @@ pub fn handle_drop(app: &mut UiApp, ctx: &egui::Context) {
         );
     }
     if !dropped.is_empty() {
-        start(app, dropped.iter().map(|p| p.display().to_string()).collect());
+        let paths: Vec<String> = dropped.iter().map(|p| p.display().to_string()).collect();
+        // 從清單拖出去又放回這個視窗：不是要匯入
+        let own = app.dragged_out.as_ref().is_some_and(|(list, at)| at.elapsed().as_secs() < 5 && paths.iter().all(|p| list.iter().any(|l| l.eq_ignore_ascii_case(p))));
+        if !own {
+            start(app, paths);
+        }
     }
 }
 

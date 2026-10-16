@@ -199,6 +199,8 @@ pub struct UiApp {
     pub last_shot_seq: u64,
     /// 剛把檔案拖到其他程式：系統拖曳吃掉了放開滑鼠的訊息，下一個畫面補一個「放開」
     pub release_pointer: bool,
+    /// 剛從清單拖出去的檔案（放回自己的視窗時不匯入）
+    pub dragged_out: Option<(Vec<String>, std::time::Instant)>,
     /// 已經套用的外觀（跟著 Windows／淺色／深色）
     applied_theme: Option<String>,
     /// 上一格各部分花的時間（毫秒）：畫面處理太慢時寫進記錄檔，找出卡在哪裡
@@ -289,6 +291,7 @@ impl UiApp {
             ddagrab_watch: None,
             last_shot_seq: seen_shot,
             release_pointer: false,
+            dragged_out: None,
             applied_theme: None,
             frame_parts: Vec::new(),
             slow_logged: None,
