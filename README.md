@@ -118,7 +118,7 @@ ScreenRecorder.exe
 ffmpeg.exe          ← 放在同一個資料夾
 ```
 
-找不到 `ffmpeg.exe` 時，介面上方會出現提示，按「自動下載」即可：從 [gyan.dev](https://www.gyan.dev/ffmpeg/builds/) 下載固定版本 FFmpeg 9.0.2 essentials（約 110 MB，失敗時改用 GitHub 上的同一檔案），比對程式內建的 SHA-256（不是從下載網站取得，檔案遭竄改也會被擋下）後，用 Windows 內建的 `System32\tar.exe` 解出 `ffmpeg.exe`，放到 exe 旁邊（沒有寫入權限時放 `%LOCALAPPDATA%\ScreenRecorder`），完成後自動偵測，不用重開程式。下載可取消，不會留下未完成的檔案。無法下載時，到「設定 → 外部元件」設定 Proxy，或按「用瀏覽器下載」自行下載後按「選擇已下載的檔案…」（zip 或 ffmpeg.exe 都可以），也可以自己放好再按「重新偵測」。  
+找不到 `ffmpeg.exe` 時，主畫面上方會出現提示，按「下載並開始使用」即可：從 [gyan.dev](https://www.gyan.dev/ffmpeg/builds/) 下載固定版本 FFmpeg 9.0.2 essentials（約 110 MB，失敗時改用 GitHub 上的同一檔案），比對程式內建的 SHA-256（不是從下載網站取得，檔案遭竄改也會被擋下）後，用 Windows 內建的 `System32\tar.exe` 解出 `ffmpeg.exe`，放到 exe 旁邊（沒有寫入權限時放 `%LOCALAPPDATA%\ScreenRecorder`），完成後自動偵測，不用重開程式。下載可取消，不會留下未完成的檔案。無法下載時，到「設定 → 外部元件」設定 Proxy，或按「用瀏覽器下載」自行下載後按「選擇已下載的檔案…」（zip 或 ffmpeg.exe 都可以），也可以自己放好再按「重新偵測」。  
 搜尋順序：`exe 所在資料夾\ffmpeg.exe` → `ffmpeg\bin\ffmpeg.exe` → `bin\ffmpeg.exe` → `%LOCALAPPDATA%\ScreenRecorder\ffmpeg.exe` → `PATH`。
 
 自動字幕需要有 whisper（語音辨識）的 FFmpeg，essentials 沒有。在「設定 → 外部元件」下載同一版的 FFmpeg 9.0.2 full（約 258 MB，從 GitHub 下載，失敗時改用 gyan.dev，一樣比對內建的 SHA-256）與語音模型，放在 `%LOCALAPPDATA%\ScreenRecorder\whisper`，只用來辨識語音；錄影、轉檔仍用原本的 FFmpeg。目前用的 FFmpeg 已經有 whisper 時不用下載。剪輯視窗、錄完自動處理不會自己下載：缺少時剪輯視窗會請你到外部元件下載，錄完自動處理則跳過字幕這一步。
