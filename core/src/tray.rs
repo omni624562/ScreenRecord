@@ -809,7 +809,7 @@ pub async fn start(app: &Arc<App>, wait: std::time::Duration) -> bool {
                 ctl.tick();
                 // 開會時提醒錄影：每 3 秒看一次哪個會議程式在用麥克風
                 n += 1;
-                if n % 3 == 0 && ctl.meeting_remind() {
+                if n.is_multiple_of(3) && ctl.meeting_remind() {
                     let using = tokio::task::spawn_blocking(crate::meeting::using_mic).await.unwrap_or_default();
                     let st = ctl.app.recorder.status();
                     let recording = st.replay.is_none() && matches!(st.state, RecorderState::Countdown | RecorderState::Recording | RecorderState::Paused);
