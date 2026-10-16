@@ -408,6 +408,8 @@ enum Req {
     DeleteSelected,
     /// 換儲存位置（Windows 的選資料夾視窗）
     ChooseDir,
+    /// 匯入影片（選檔案；MOV、MKV 等轉成 MP4）
+    Import,
     /// 在檔案總管開啟資料夾
     OpenDir(String),
     /// 看哪個資料夾（None = 目前的儲存位置）
@@ -779,6 +781,21 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                 d.page = 1;
                 d.dirty = true;
             }
+            // 匯入其他地方的影片（也可以直接把檔案拖進視窗）
+            if !shot
+                && Btn::new(tr!("匯入影片…", "Import videos…"))
+                    .icon(Icon::Folder)
+                    .small()
+                    .ghost()
+                    .tooltip(tr!(
+                        "把手機、其他軟體錄的影片放進儲存位置（MOV、MKV、AVI、WMV、WebM 等會轉成 MP4，原本的檔案不會動）。也可以直接把檔案拖進這個視窗",
+                        "Bring videos from your phone or other apps into your save folder (MOV, MKV, AVI, WMV, WebM and others are converted to MP4; the originals stay as they are). You can also drop files onto this window"
+                    ))
+                    .show(ui)
+                    .clicked()
+            {
+                req = Some(Req::Import);
+            }
             if shot {
                 let b = Btn::new(tr!("整理", "Tidy up")).icon(Icon::ChevD).small().ghost().tooltip(tr!("清理舊截圖、找出相似的截圖", "Clean up old screenshots, find similar ones")).show(ui);
                 egui::Popup::menu(&b).show(|ui| {
@@ -994,6 +1011,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         }
         Some(Req::Rename(e)) => rename_entry(app, e),
         Some(Req::DeleteSelected) => remove_selected(app),
+        Some(Req::Import) => super::import::pick(app),
         Some(Req::ChooseDir) => match app.library.as_ref().map(|d| d.kind) {
             Some(Kind::Shot) => super::settings_dialog::choose_shot_dir(app),
             _ => super::settings_dialog::choose_output_dir(app),
@@ -1158,6 +1176,10 @@ fn entry_menu(ui: &mut egui::Ui, app: &UiApp, e: &LibraryEntry, full: bool, req:
     let pinned = app.core.pins.contains(&e.media.path);
     if ui.button(if pinned { tr!("移除星號", "Remove star") } else { tr!("加上星號", "Add star") }).clicked() {
         *req = Some(Req::Pin(e.media.path.clone(), !pinned));
+    }
+    // MOV、MKV…：先轉成 MP4 才能剪輯、製作加速版
+    if screenrecorder_core::import::is_other_video(&e.media.path) && menu_item(ui, tr!("轉成 MP4", "Convert to MP4"), app.blocked(EntryAction::Export)) {
+        pick(EntryAction::Convert, req);
     }
     if !audio {
         if menu_item(ui, tr!("製作加速版 / GIF…", "Make sped-up video / GIF…"), app.blocked(EntryAction::Export)) {
@@ -1437,6 +1459,12 @@ fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table:
             }
             if is_cut_name(&e.media.name) {
                 chip(tui, tr!("剪輯版", "Edited"), Tone::Warn, false);
+            }
+            if screenrecorder_core::import::is_other_video(&e.media.name) {
+                chip(tui, &screenrecorder_core::import::format_label(&e.media.name), Tone::Plain, false).on_hover_text(tr!(
+                    "可以播放；要剪輯、製作加速版等，請在「⋯」選「轉成 MP4」（原本的檔案會保留）",
+                    "You can play it. To edit it or make a sped-up version, choose “Convert to MP4” under “⋯” (the original is kept)"
+                ));
             }
             if fresh {
                 if Btn::new(tr!("播放", "Play")).icon(Icon::Play).primary().small().show(tui).clicked() {

@@ -21,6 +21,7 @@ fn kind_text(k: ExportKind) -> &'static str {
         ExportKind::Webp => "WebP",
         ExportKind::Cut => "剪輯",
         ExportKind::Merge => "合併",
+        ExportKind::Convert => "轉成 MP4",
     }
 }
 
@@ -32,6 +33,7 @@ fn kind_text_en(k: ExportKind) -> &'static str {
         ExportKind::Webp => "WebP",
         ExportKind::Cut => "Edit",
         ExportKind::Merge => "Merge",
+        ExportKind::Convert => "Convert to MP4",
     }
 }
 
@@ -210,6 +212,30 @@ impl Exporter {
         crate::args::drop_chapters(&mut args);
         let note = format!("合併 {} 支錄影", inputs.len());
         self.run_with_cleanup(ExportKind::Merge, &ffmpeg, args, &list[0].0, &output, 1.0, total, &note, Finish { cleanup: None, replace: None, on_saved: None, cwd: None })
+    }
+
+    /// 轉成 MP4（MOV、MKV… 或拖進來的影片）：存到 dir（None = 和原檔同一個資料夾），同名時加 _2；原檔不動。
+    /// H.264 / HEVC 直接換外殼，其他的重新壓縮
+    pub async fn start_convert(&self, ctx: &ExportCtx, source: &str, dir: Option<PathBuf>) -> Result<ExportStatus> {
+        let _g = self.begin()?;
+        let (Some(ffmpeg), Some(enc)) = (ctx.ffmpeg.clone(), ctx.encoder) else {
+            return Err(Error::config(tr!("FFmpeg 無法使用", "FFmpeg isn't available")));
+        };
+        if !crate::import::is_importable(source) || !Path::new(source).is_file() {
+            return Err(Error::config(tr!("找不到影片檔", "Video file not found")));
+        }
+        let probe = crate::process::run(&ffmpeg, &["-hide_banner".to_string(), "-i".into(), source.to_string()], std::time::Duration::from_secs(30)).await;
+        let codec = crate::import::video_codec(&probe.stderr);
+        if codec.is_none() {
+            return Err(Error::config(trf!("「{}」裡沒有畫面，或檔案已損壞", "“{}” has no video or is damaged", file_name(source))));
+        }
+        let info = ctx.cache.probe(&ffmpeg, source).await.unwrap_or_default();
+        let copy = crate::import::can_copy_video(codec.as_deref());
+        let stem = Path::new(source).file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "video".into());
+        let output = crate::paths::unique_path(&dir.unwrap_or_else(|| parent(source)), &stem, ".mp4");
+        let args = crate::import::convert_args(source, &output.display().to_string(), copy, &enc);
+        let note = format!("轉成 MP4（{}，{}）", codec.as_deref().unwrap_or("?"), if copy { "不重新壓縮" } else { "重新壓縮" });
+        self.run(ExportKind::Convert, &ffmpeg, args, source, &output, 1.0, info.duration_sec.unwrap_or(0.0), &note)
     }
 
     pub async fn start_cut(&self, ctx: &ExportCtx, source: &str, spec: &EditSpec, replace: Option<&str>, on_saved: Option<OnSaved>) -> Result<ExportStatus> {
@@ -847,6 +873,13 @@ async fn prepare(ctx: &ExportCtx, source: &str) -> Result<(PathBuf, EncoderSpec,
     let (Some(ffmpeg), Some(enc)) = (ctx.ffmpeg.clone(), ctx.encoder) else {
         return Err(Error::config(tr!("FFmpeg 無法使用", "FFmpeg isn't available")));
     };
+    if crate::import::is_other_video(source) {
+        return Err(Error::config(trf!(
+            "{} 檔要先轉成 MP4 才能這樣做（在「⋯」選「轉成 MP4」）",
+            "{} files must be converted to MP4 first (choose “Convert to MP4” under “⋯”)",
+            crate::import::format_label(source)
+        )));
+    }
     if !source.to_lowercase().ends_with(".mp4") || !Path::new(source).is_file() {
         return Err(Error::config(tr!("找不到影片檔", "Video file not found")));
     }

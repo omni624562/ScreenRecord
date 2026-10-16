@@ -97,7 +97,8 @@ fn file_name(path: &str) -> String {
 }
 
 static CUT_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)_cut(_\d+)?\.mp4$").unwrap());
-static VIDEO_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)\.(mp4|gif|webp|png|jpe?g|m4a)$").unwrap());
+/// 其他格式的影片（MOV、MKV…，見 import.rs）也列出來，可以播放、轉成 MP4
+static VIDEO_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)\.(mp4|gif|webp|png|jpe?g|m4a|mov|mkv|avi|wmv|webm|m4v|flv|mpg|mpeg|ts|3gp)$").unwrap());
 /// 只有聲音（「存成 M4A」做出來的）：清單上單獨一筆，標示「只有聲音」
 static AUDIO_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)\.m4a$").unwrap());
 static IMAGE_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)\.(png|jpe?g)$").unwrap());
@@ -109,7 +110,7 @@ pub fn is_image_name(name: &str) -> bool {
 
 /// 去掉副檔名（.mp4 / .png / .m4a）
 fn strip_ext(name: &str) -> String {
-    if is_image_name(name) || is_audio_name(name) {
+    if is_image_name(name) || is_audio_name(name) || crate::import::is_other_video(name) {
         name.rsplit_once('.').map_or(name, |(b, _)| b).to_string()
     } else {
         strip_mp4(name)
@@ -178,6 +179,8 @@ pub async fn scan_checked(cache: &MediaCache, dir: &Path) -> std::io::Result<Vec
             Some(p) if by_name.contains_key(&p.base.to_lowercase()) => {
                 derived.push((p.base.to_lowercase(), ExportInfo { media: f.clone(), speed: p.speed, format: Some(p.format) }));
             }
+            // 已經轉成 MP4 的其他格式（同名的 .mp4 在旁邊）：只列 MP4
+            _ if crate::import::is_other_video(&f.name) && by_name.contains_key(&format!("{}.mp4", strip_ext(&f.name)).to_lowercase()) => {}
             _ if !GIF_RE.is_match(&f.name) => {
                 index.insert(f.name.to_lowercase(), entries.len());
                 entries.push(LibraryEntry { media: f.clone(), exports: vec![], hits: vec![] });
@@ -766,8 +769,9 @@ pub async fn rename_recording(cache: &MediaCache, path: &str, new_name: &str, bu
         return Err(Error::config(tr!("找不到這個錄影，可能已被移動或刪除", "This recording wasn't found. It may have been moved or deleted")));
     };
     let old_base = strip_ext(&entry.media.name);
-    // 截圖保留原本的副檔名（png / jpg）
-    let ext = if is_image_name(&entry.media.name) { entry.media.name.rsplit_once('.').map_or("png", |(_, e)| e).to_lowercase() } else { "mp4".into() };
+    // 截圖、其他格式的影片保留原本的副檔名（png / jpg、mov / mkv…）
+    let ext =
+        if is_image_name(&entry.media.name) || crate::import::is_other_video(&entry.media.name) { entry.media.name.rsplit_once('.').map_or("png", |(_, e)| e).to_lowercase() } else { "mp4".into() };
     if base == old_base {
         return Ok(entry.media.path);
     }
@@ -778,7 +782,7 @@ pub async fn rename_recording(cache: &MediaCache, path: &str, new_name: &str, bu
         plan.push((x.media.path.clone(), dir.join(format!("{base}{suffix}"))));
     }
     // 字幕（搜尋說過的話用它）、只有聲音的 M4A 一起改
-    if ext == "mp4" {
+    if !is_image_name(&entry.media.name) {
         for (from, suffix) in sidecars(&dir, &old_base) {
             plan.push((from, dir.join(format!("{base}{suffix}"))));
         }

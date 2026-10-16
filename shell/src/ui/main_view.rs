@@ -2292,6 +2292,7 @@ fn job_card(app: &mut UiApp, ui: &mut Ui) {
     let label = match e.kind {
         ExportKind::Cut => tr!("剪輯", "edited video").to_string(),
         ExportKind::Merge => tr!("合併錄影", "merged video").to_string(),
+        ExportKind::Convert => tr!("轉成 MP4", "MP4 copy").to_string(),
         ExportKind::Gif => trf!("製作 GIF{gif_speed}", "GIF{gif_speed}"),
         ExportKind::Webp => trf!("製作 WebP 動圖{gif_speed}", "WebP{gif_speed}"),
         // 原速：只壓縮

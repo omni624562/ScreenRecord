@@ -7,6 +7,7 @@ mod dev;
 pub mod dialogs;
 pub mod editor;
 pub mod export_dialog;
+pub mod import;
 pub mod library_dialog;
 pub mod main_view;
 pub mod notes;
@@ -103,6 +104,8 @@ pub enum EntryAction {
     Compress,
     /// 做成直式影片（Shorts / Reels）：開啟剪輯並選好「直式影片」
     Vertical,
+    /// MOV、MKV 等其他格式轉成 MP4（存在原檔旁邊）
+    Convert,
     /// 做封面（YouTube 縮圖）
     Cover,
 }
@@ -174,6 +177,8 @@ pub struct UiApp {
     pub steps_review: Option<steps_review::Review>,
     /// 傳到手機（正在分享）
     pub phone: Option<phone::Phone>,
+    /// 正在匯入影片（拖進來的、「匯入影片…」）
+    pub importing: bool,
     /// 做封面
     pub cover: Option<cover::CoverDialog>,
     /// 目前設定的全域快速鍵（顯示用）
@@ -272,6 +277,7 @@ impl UiApp {
             snip: None,
             steps_review: None,
             phone: None,
+            importing: false,
             cover: None,
             keys: saved.hotkeys.unwrap_or_default(),
             editor: None,
@@ -624,11 +630,14 @@ impl UiApp {
                     l.dirty = true;
                 }
                 // 錄完自動處理開始的轉檔：由錄完自動處理的卡片說明
-                if let Some(e) = self.status.export.clone().filter(|e| !self.core.after_owns_export(e.id)) {
+                // 匯入中的轉檔：匯入完成時一次說明（不要每一支都跳提示）
+                let importing = self.importing && self.status.export.as_ref().is_some_and(|e| e.kind == screenrecorder_core::types::ExportKind::Convert);
+                if let Some(e) = self.status.export.clone().filter(|e| !self.core.after_owns_export(e.id) && !importing) {
                     if e.state == screenrecorder_core::types::ExportState::Done {
                         let what = match e.kind {
                             screenrecorder_core::types::ExportKind::Cut => tr!("剪輯完成", "Edited video ready"),
                             screenrecorder_core::types::ExportKind::Merge => tr!("合併完成", "Merged video ready"),
+                            screenrecorder_core::types::ExportKind::Convert => tr!("已轉成 MP4", "Converted to MP4"),
                             screenrecorder_core::types::ExportKind::Gif => tr!("GIF 製作完成", "GIF ready"),
                             screenrecorder_core::types::ExportKind::Webp => tr!("WebP 動圖製作完成", "WebP ready"),
                             screenrecorder_core::types::ExportKind::Speed if e.speed <= 1.0 => tr!("壓縮完成", "Compressed video ready"),
@@ -771,6 +780,19 @@ impl UiApp {
                 self.toast(tr!("已複製章節，可以貼到 YouTube 影片的說明欄", "Chapters copied. Paste them into the YouTube video description"), false);
             }
             EntryAction::Phone => phone::open(self, path),
+            EntryAction::Convert => self.convert(path),
+            // 其他格式（MOV、MKV…）要先轉成 MP4 才能剪輯、製作加速版：直接開始轉，轉好再做
+            EntryAction::Edit | EntryAction::Export | EntryAction::Compress | EntryAction::Vertical if screenrecorder_core::import::is_other_video(&path) => {
+                self.toast(
+                    trf!(
+                        "{} 檔要先轉成 MP4 才能這樣做，現在開始轉換；轉好後在清單裡選 MP4 那一筆",
+                        "{} files must be converted to MP4 first. Converting now; afterwards use the MP4 version in the list",
+                        screenrecorder_core::import::format_label(&path)
+                    ),
+                    false,
+                );
+                self.convert(path)
+            }
             EntryAction::Cover => cover::open(self, entry, None),
             EntryAction::CopyFile => match screenrecorder_core::clipboard::copy_files(std::slice::from_ref(&path)) {
                 Ok(()) => self.toast(tr!("已複製檔案，可以直接貼到 LINE、Teams、信件或資料夾", "File copied. Paste it into LINE, Teams, an email or a folder"), false),
@@ -800,6 +822,19 @@ impl UiApp {
                 }
             }
         }
+    }
+
+    /// 轉成 MP4（存在原檔旁邊，原檔保留）；完成時由轉檔完成的提示說明
+    fn convert(&mut self, path: String) {
+        if let Some(why) = self.blocked(EntryAction::Export) {
+            return self.toast(why, true);
+        }
+        let core = self.core.clone();
+        self.spawn(async move { actions::convert_start(&core, &path).await }, |app, r| {
+            if let Err(e) = r {
+                app.toast(e.message().to_string(), true);
+            }
+        });
     }
 
     /// 現在不能剪輯、製作加速版（錄影中、轉檔進行中）的原因；清單、檢視器先停用按鈕並在滑鼠提示說明，不用關掉清單才發現
@@ -1142,6 +1177,7 @@ impl eframe::App for UiApp {
         if self.ask.is_some() {
             dialogs::show_ask(self, &ctx);
         }
+        import::handle_drop(self, &ctx);
         tour::show(self, &ctx);
         dialogs::show_toast(self, &ctx);
         main_view::countdown_overlay(self, &ctx);

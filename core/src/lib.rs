@@ -42,6 +42,7 @@ pub mod http;
 pub mod i18n;
 pub mod icon;
 pub mod idle;
+pub mod import;
 pub mod input_overlay;
 #[cfg(windows)]
 pub mod input_overlay_win;
