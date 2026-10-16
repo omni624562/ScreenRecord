@@ -183,7 +183,7 @@ pub fn install_model_file(m: &Model, src: &Path) -> Result<(), String> {
     if !subtitles::model_size_ok(m, src) {
         return Err(trf!("檔案不完整（應該約 {} MB），請重新下載", "The file is incomplete (it should be about {} MB). Please download it again", m.mb));
     }
-    let target = subtitles::model_path(m);
+    let target = subtitles::model_install_path(m);
     if let Some(dir) = target.parent() {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
@@ -292,7 +292,7 @@ impl App {
                 r.map(|_| ())
             }
             Kind::SpeechFfmpeg => {
-                let target = subtitles::speech_ffmpeg_path();
+                let target = subtitles::speech_ffmpeg_install_path();
                 let (s, t) = (src.clone(), target.clone());
                 let r = tokio::task::spawn_blocking(move || crate::downloader::install_local(&s, &t)).await.map_err(|e| e.to_string()).and_then(|r| r);
                 match r {

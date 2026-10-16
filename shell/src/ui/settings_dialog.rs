@@ -2052,6 +2052,11 @@ fn component_card(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui, k: Kind)
                 k.path().map(|p| p.display().to_string()).unwrap_or_default()
             ),
             Kind::SpeechFfmpeg => trf!("有語音辨識功能的 FFmpeg（約 {} MB），只用來產生字幕。", "An FFmpeg build with speech recognition (about {} MB), used only for subtitles.", k.mb()),
+            Kind::Model(_) if installed => trf!(
+                "模型越大辨識越準，但比較慢。只需要其中一個。位置：{}",
+                "Bigger models are more accurate but slower. You only need one. Location: {}",
+                k.path().map(|p| p.display().to_string()).unwrap_or_default()
+            ),
             Kind::Model(_) => tr!("模型越大辨識越準，但比較慢。只需要其中一個。", "Bigger models are more accurate but slower. You only need one.").into(),
         };
         ui.add(egui::Label::new(RichText::new(info).font(theme::font(12.0)).color(p.muted)).wrap());
