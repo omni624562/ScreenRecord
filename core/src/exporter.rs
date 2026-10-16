@@ -291,6 +291,7 @@ impl Exporter {
             && spec.overlays.is_empty()
             && spec.audio.is_default()
             && spec.zoom.is_none()
+            && spec.zoom_regions.is_empty()
             && spec.frame.is_none()
             && spec.cursor.is_none()
             && spec.vertical.is_none()
@@ -326,13 +327,24 @@ impl Exporter {
         let vertical_on = spec.vertical.is_some();
         let crop = if matches!(spec.vertical, Some(crate::vertical::Vertical::Follow { .. })) { None } else { crop };
         // 跟著點擊放大：點擊的時間換成剪輯後的時間（刪掉的片段裡的不算）
-        let zoom = match (&spec.zoom, crop, info.width, info.height) {
+        // 手動放大（剪輯後的時間）；附近的點擊不再放大
+        let spans = if vertical_on || crop.is_some() { vec![] } else { crate::zoom::map_regions(&keep, &spec.zoom_regions) };
+        let click_zoom = match (&spec.zoom, crop, info.width, info.height) {
             _ if vertical_on => None,
             (Some(z), None, Some(w), Some(h)) if z.factor > 1.0 => {
                 let pts: Vec<[f64; 3]> = z.clicks.iter().filter_map(|c| crate::zoom::map_time(&keep, c[0]).map(|t| [t, c[1], c[2]])).collect();
-                crate::zoom::zoompan(&crate::zoom::focus_points(&pts), z.factor, w as i32, h as i32, fps)
+                crate::zoom::zoompan(&crate::zoom::outside_spans(&crate::zoom::focus_points(&pts), &spans), z.factor, w as i32, h as i32, fps)
             }
             _ => None,
+        };
+        let manual = match (info.width, info.height) {
+            (Some(w), Some(h)) => crate::zoom::regions_zoompan(&spans, w as i32, h as i32, fps),
+            _ => None,
+        };
+        // 兩種放大不會同時發生（不放大時 zoompan 原樣輸出），接在一起
+        let zoom = match (click_zoom, manual) {
+            (Some(a), Some(b)) => Some(format!("{a},{b}")),
+            (a, b) => a.or(b),
         };
         // 背景與圓角：依輸出大小（裁切後）畫好底圖與遮罩
         let (frame, temp) = match (&spec.frame, info.width, info.height) {
@@ -474,14 +486,15 @@ impl Exporter {
         let mapped: Vec<crate::types::Chapter> = crate::chapters::map_cut(&chapters, &keep).into_iter().map(|c| crate::types::Chapter { start: c.start + shift, ..c }).collect();
         let length = extras.as_ref().map_or(length, |x| x.total());
         let temp = with_chapters(&mut args, &mapped, length, temp);
-        let fast = keep.iter().filter(|p| p.rate > 1.0).count();
+        let whole = crate::edit::whole_speed(spec);
+        let fast = keep.iter().filter(|p| p.rate > whole + 1e-9).count();
         let slow = keep.iter().filter(|p| !p.is_hold() && p.rate < 1.0).count();
         let holds = keep.iter().filter(|p| p.is_hold()).count();
         let note = format!(
             "保留 {} 段{}{}{}{}",
             keep.iter().filter(|p| !p.is_hold()).count(),
             [(fast, "加速"), (slow, "放慢"), (holds, "定格")].iter().filter(|(n, _)| *n > 0).map(|(n, w)| format!("，{w} {n} 段")).collect::<String>(),
-            if zoom.is_some() { "，跟著點擊放大" } else { "" },
+            if zoom.is_some() { "，放大" } else { "" },
             crop.map(|c| format!("，裁切 {}×{}", c.width, c.height)).unwrap_or_default(),
             if overlays.is_empty() { String::new() } else { format!("，標註 {} 個", overlays.len()) }
         ) + if frame.is_some() { "，背景與圓角" } else { "" }
@@ -491,7 +504,8 @@ impl Exporter {
             + if extras.as_ref().is_some_and(|x| x.music.is_some()) { "，背景音樂" } else { "" }
             + if extras.as_ref().and_then(|x| x.voice.as_ref()).is_some_and(|v| !v.clips.is_empty()) { "，旁白" } else { "" }
             + if extras.as_ref().and_then(|x| x.voice.as_ref()).is_some_and(|v| v.clicks.is_some()) { "，點擊音效" } else { "" }
-            + if spec.fade_cuts { "，接縫淡入淡出" } else { "" };
+            + if spec.fade_cuts { "，接縫淡入淡出" } else { "" }
+            + &if whole > 1.0 { format!("，整支 {} 倍速", crate::format::speed_label(whole)) } else { String::new() };
         let follow = matches!(vertical, Some(VerticalInput::Follow { .. }));
         let cwd = (cursor.is_some() || follow).then(|| temp.clone()).flatten();
         let finish = Finish { cleanup: temp, replace: target.map(PathBuf::from), on_saved, cwd };
@@ -831,7 +845,8 @@ fn write_cursor(c: &crate::cursor::CursorFx, w: i32, h: i32, fps: f64, dir: &Pat
     let (img, tip) = cursor::image(cursor::height_for(h, size)).ok_or_else(|| Error::config(tr!("無法畫出游標", "Couldn't draw the cursor")))?;
     img.save_png(dir.join("cursor.png")).map_err(|e| Error::other(e.to_string()))?;
     let smoothed = cursor::smooth(&c.track, fps.min(60.0));
-    std::fs::write(dir.join("cursor.txt"), cursor::commands(&smoothed, w, h, tip))?;
+    let hide = if c.hide_idle { cursor::idle_ranges(&smoothed) } else { vec![] };
+    std::fs::write(dir.join("cursor.txt"), cursor::commands(&smoothed, w, h, tip, &hide))?;
     // 第一個位置之前放在畫面外
     let (x, y) = smoothed.first().map(|p| cursor::origin((p[1], p[2]), w, h, tip)).unwrap_or((-1000, -1000));
     Ok(crate::args::CursorInput { image: "cursor.png".into(), commands: "cursor.txt".into(), x, y })

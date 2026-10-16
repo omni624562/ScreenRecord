@@ -64,12 +64,45 @@ pub fn language_name(i: usize) -> &'static str {
     crate::tr!(l.1, l.2)
 }
 
-pub fn model_dir() -> PathBuf {
-    crate::paths::data_dir().join("whisper")
+/// 語音模型與語音辨識用的 FFmpeg 可以放的資料夾：先找 ScreenRecorder.exe 旁邊的 whisper（整個資料夾帶著走也能用），
+/// 再找 %LOCALAPPDATA%\ScreenRecorder\whisper
+pub fn model_dirs() -> Vec<PathBuf> {
+    let mut v = vec![crate::paths::app_dir().join("whisper"), crate::paths::data_dir().join("whisper")];
+    v.dedup();
+    v
 }
 
+/// 下載、安裝時放的資料夾：exe 旁邊的 whisper 能寫入就放那裡，否則（例如放在 Program Files）放 %LOCALAPPDATA%
+pub fn install_dir() -> PathBuf {
+    let dirs = model_dirs();
+    for dir in &dirs {
+        let probe = dir.join(format!(".write-test-{}", std::process::id()));
+        if std::fs::create_dir_all(dir).is_ok() && std::fs::write(&probe, "").is_ok() {
+            let _ = std::fs::remove_file(&probe);
+            return dir.clone();
+        }
+    }
+    dirs.last().cloned().unwrap_or_default()
+}
+
+/// 第一個有這個檔案的資料夾裡的位置；都沒有時是安裝的位置（不建立資料夾）
+fn find_in_dirs(name: &str, ok: impl Fn(&Path) -> bool) -> Option<PathBuf> {
+    model_dirs().into_iter().map(|d| d.join(name)).find(|p| ok(p))
+}
+
+/// 語音模型的位置：已經有的那一個（exe 旁邊優先），沒有時是要安裝的位置
 pub fn model_path(m: &Model) -> PathBuf {
-    model_dir().join(m.file)
+    find_in_dirs(m.file, |p| model_size_ok(m, p) && magic_ok(p)).unwrap_or_else(|| model_install_path(m))
+}
+
+/// 語音模型要安裝到哪裡
+pub fn model_install_path(m: &Model) -> PathBuf {
+    install_dir().join(m.file)
+}
+
+/// 辨識時 FFmpeg 在模型所在的資料夾裡執行
+fn model_dir_of(m: &Model) -> PathBuf {
+    model_path(m).parent().map(Path::to_path_buf).unwrap_or_else(install_dir)
 }
 
 /// whisper.cpp 的模型檔開頭是 "lmgg"（0x67676d6c，little-endian）
@@ -98,7 +131,7 @@ pub fn model_size_ok(m: &Model, path: &Path) -> bool {
 /// 下載模型（會等到下載完成；progress：千分比；cancel 設成 true 就停止）
 pub fn download_model(m: &Model, progress: &AtomicU32, cancel: &AtomicBool) -> Result<(), String> {
     use std::io::{Read, Write};
-    let dir = model_dir();
+    let dir = install_dir();
     std::fs::create_dir_all(&dir).map_err(|e| trf!("無法建立資料夾：{e}", "Couldn't create the folder: {e}"))?;
     let part = dir.join(format!("{}.part", m.file));
     let resp = crate::http::agent().redirects(8).build().get(m.url).call().map_err(|e| trf!("下載語音模型失敗：{}", "Couldn't download the speech model: {}", crate::http::describe(&e)))?;
@@ -126,7 +159,7 @@ pub fn download_model(m: &Model, progress: &AtomicU32, cancel: &AtomicBool) -> R
         let _ = std::fs::remove_file(&part);
         return Err(tr!("下載的語音模型不完整，請再試一次", "The downloaded speech model is incomplete. Please try again.").into());
     }
-    std::fs::rename(&part, model_path(m)).map_err(|e| trf!("無法儲存語音模型：{e}", "Couldn't save the speech model: {e}"))?;
+    std::fs::rename(&part, dir.join(m.file)).map_err(|e| trf!("無法儲存語音模型：{e}", "Couldn't save the speech model: {e}"))?;
     crate::info!("[字幕] 已下載語音模型 {}（{} MB）", m.file, got / 1_000_000);
     Ok(())
 }
@@ -143,7 +176,14 @@ fn filters_have_whisper(list: &str) -> bool {
 
 /// 語音辨識用的 FFmpeg（目前用的 FFmpeg 沒有 whisper 時才下載），和語音模型放在同一個資料夾
 pub fn speech_ffmpeg_path() -> PathBuf {
-    model_dir().join(if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" })
+    find_in_dirs(FFMPEG_NAME, |p| p.is_file()).unwrap_or_else(speech_ffmpeg_install_path)
+}
+
+const FFMPEG_NAME: &str = if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" };
+
+/// 語音辨識用的 FFmpeg 要安裝到哪裡
+pub fn speech_ffmpeg_install_path() -> PathBuf {
+    install_dir().join(FFMPEG_NAME)
 }
 
 /// 已經下載了語音辨識用的 FFmpeg（只看檔案在不在，介面提示用）
@@ -168,7 +208,7 @@ pub async fn download_speech_ffmpeg(progress: Arc<AtomicU32>, cancel: Arc<Atomic
     if !cfg!(windows) {
         return Err(tr!("請改用有 whisper（語音辨識）的 FFmpeg", "Use an FFmpeg build with whisper (speech recognition)").into());
     }
-    let target = speech_ffmpeg_path();
+    let target = speech_ffmpeg_install_path();
     crate::info!("[字幕] 下載語音辨識用的 FFmpeg（{} full）", crate::downloader::FFMPEG_VERSION);
     let deps = crate::downloader::Deps {
         urls: crate::downloader::speech_ffmpeg_urls(),
@@ -199,12 +239,12 @@ pub fn whisper_args(input: &str, model_file: &str, out_file: &str, language: &st
 
 /// 辨識整支影片的語音（progress：千分比；cancel 設成 true 就停止）
 pub async fn transcribe(ffmpeg: &Path, input: &str, duration: f64, model: &Model, language: &str, progress: Arc<AtomicU32>, cancel: Arc<AtomicBool>) -> Result<Vec<Cue>, String> {
-    transcribe_in(&model_dir(), ffmpeg, input, duration, model, language, false, progress, cancel).await
+    transcribe_in(&model_dir_of(model), ffmpeg, input, duration, model, language, false, progress, cancel).await
 }
 
 /// 辨識語音並翻成英文（FFmpeg 9 以上的 whisper 才有翻譯）
 pub async fn translate(ffmpeg: &Path, input: &str, duration: f64, model: &Model, language: &str, progress: Arc<AtomicU32>, cancel: Arc<AtomicBool>) -> Result<Vec<Cue>, String> {
-    transcribe_in(&model_dir(), ffmpeg, input, duration, model, language, true, progress, cancel).await.map_err(|e| {
+    transcribe_in(&model_dir_of(model), ffmpeg, input, duration, model, language, true, progress, cancel).await.map_err(|e| {
         if e.contains("translate") {
             tr!("這個 FFmpeg 不支援翻成英文，請更新到 FFmpeg 9 以上", "This FFmpeg can't translate to English. Update to FFmpeg 9 or later").to_string()
         } else {
@@ -517,9 +557,87 @@ pub fn read_file(path: &Path) -> Result<Vec<Cue>, String> {
     Ok(cues)
 }
 
+/// 字幕的樣式（剪輯視窗套用到全部字幕，之後加的字幕也用這個）
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct SubStyle {
+    /// 字級：0 = 小、1 = 中、2 = 大
+    #[serde(default = "mid")]
+    pub size: u8,
+    /// 文字顏色 #rrggbb
+    #[serde(default = "white")]
+    pub color: String,
+    /// 半透明深色底
+    #[serde(default = "yes")]
+    pub bg: bool,
+    /// 放在畫面上方（否則下方）
+    #[serde(default)]
+    pub top: bool,
+}
+
+fn mid() -> u8 {
+    1
+}
+fn white() -> String {
+    "#ffffff".into()
+}
+fn yes() -> bool {
+    true
+}
+
+impl Default for SubStyle {
+    fn default() -> Self {
+        SubStyle { size: 1, color: white(), bg: true, top: false }
+    }
+}
+
+/// 字幕可選的文字顏色：白、黃、淺藍
+pub const SUB_COLORS: [&str; 3] = ["#ffffff", "#ffd84d", "#7fe7ff"];
+
+impl SubStyle {
+    /// 字級（像素）：1080p 時小 32、中 40、大 52
+    pub fn font_px(&self, video_h: f64) -> f64 {
+        let base = [32.0, 40.0, 52.0][self.size.min(2) as usize];
+        (base * video_h / 1080.0).round().max(14.0)
+    }
+
+    /// 放好的位置（左上角）：水平置中，離上緣或下緣 6%
+    pub fn place(&self, w: f64, h: f64, video_w: f64, video_h: f64) -> (f64, f64) {
+        let x = ((video_w - w) / 2.0).round().max(0.0);
+        let margin = video_h * 0.06;
+        let y = if self.top { margin.round() } else { (video_h - h - margin).round().max(0.0) };
+        (x, y)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn exe_folder_comes_first() {
+        let dirs = model_dirs();
+        assert_eq!(dirs[0], crate::paths::app_dir().join("whisper"));
+        assert!(dirs.contains(&crate::paths::data_dir().join("whisper")));
+        // 安裝的位置一定是其中之一；還沒有檔案時，找的位置就是安裝的位置
+        let inst = install_dir();
+        assert!(dirs.contains(&inst), "{inst:?}");
+        if !dirs.iter().any(|d| d.join("ggml-small.bin").exists()) {
+            assert_eq!(model_path(&MODELS[1]), inst.join("ggml-small.bin"));
+        }
+    }
+
+    #[test]
+    fn subtitle_style_sizes_and_places() {
+        let st = SubStyle::default();
+        assert_eq!(st.font_px(1080.0), 40.0);
+        assert_eq!(SubStyle { size: 2, ..st.clone() }.font_px(720.0), 35.0);
+        assert_eq!(SubStyle { size: 0, ..st.clone() }.font_px(200.0), 14.0);
+        assert_eq!(st.place(400.0, 60.0, 1920.0, 1080.0), (760.0, 955.0));
+        assert_eq!(SubStyle { top: true, ..st.clone() }.place(400.0, 60.0, 1920.0, 1080.0), (760.0, 65.0));
+        // 舊的專案沒有這個欄位：用預設
+        let s: SubStyle = serde_json::from_str("{}").unwrap();
+        assert_eq!(s, SubStyle::default());
+    }
 
     #[test]
     fn reads_whisper_srt() {

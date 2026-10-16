@@ -42,6 +42,43 @@ fn is_current(ed: &Editor, cancel: &Arc<AtomicBool>) -> bool {
 }
 
 /// 「字幕」分頁：產生或匯入字幕、選取的字幕的樣式與時間、逐段修改的清單
+/// 字幕樣式：改了就套用到全部字幕
+fn style_panel(ed: &mut Editor, ui: &mut egui::Ui) {
+    let p = theme::pal(ui);
+    let mut st = ed.sub_style.clone();
+    egui::CollapsingHeader::new(RichText::new(tr!("字幕樣式", "Subtitle style")).font(theme::font_bold(13.0))).id_salt("ed-sub-style").show(ui, |ui| {
+        ui.horizontal(|ui| {
+            ui.label(theme::muted(ui, tr!("大小", "Size")).font(theme::font(12.0)));
+            segmented(ui, &mut st.size, &[(0u8, tr!("小", "Small")), (1, tr!("中", "Medium")), (2, tr!("大", "Large"))], true);
+        });
+        ui.horizontal(|ui| {
+            ui.label(theme::muted(ui, tr!("位置", "Position")).font(theme::font(12.0)));
+            segmented(ui, &mut st.top, &[(false, tr!("下方", "Bottom")), (true, tr!("上方", "Top"))], true);
+        });
+        ui.horizontal(|ui| {
+            ui.label(theme::muted(ui, tr!("顏色", "Color")).font(theme::font(12.0)));
+            for (c, name) in subtitles::SUB_COLORS.iter().zip([tr!("白色", "White"), tr!("黃色", "Yellow"), tr!("淺藍", "Light blue")]) {
+                let (r, g, b) = annotate::parse_color(c);
+                let col = Color32::from_rgb(r, g, b);
+                let (rect, resp) = ui.allocate_exact_size(vec2(22.0, 22.0), Sense::click());
+                ui.painter().circle_filled(rect.center(), 9.0, col);
+                let on = st.color.eq_ignore_ascii_case(c);
+                ui.painter().circle_stroke(rect.center(), 10.5, Stroke::new(if on { 2.0 } else { 1.0 }, if on { p.accent } else { p.border }));
+                if resp.on_hover_text(name).on_hover_cursor(CursorIcon::PointingHand).clicked() {
+                    st.color = c.to_string();
+                }
+            }
+            ui.add_space(8.0);
+            theme::check(ui, &mut st.bg, RichText::new(tr!("深色底", "Dark background")).font(theme::font(12.5)));
+        });
+        hint(ui, tr!("改了會套用到全部字幕（個別移動過的也會放回原位）；之後加的字幕也用這個樣式。", "Changes apply to all subtitles (moved ones go back into place) and to subtitles you add later."));
+    });
+    if st != ed.sub_style {
+        ed.sub_style = st;
+        ed.apply_sub_style();
+    }
+}
+
 pub fn tab(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, toast: &mut Option<(String, bool)>) {
     if ed.vw <= 0.0 {
         return hint(ui, tr!("無法讀取影片尺寸，不能加上字幕。", "Couldn't read the video size, so subtitles can't be added."));
@@ -51,6 +88,7 @@ pub fn tab(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, toast: &mut 
     if n == 0 {
         return;
     }
+    style_panel(ed, ui);
     ui.horizontal_wrapped(|ui| {
         if Btn::new(tr!("匯出 SRT（依剪輯後的時間）", "Export SRT (edited timing)"))
             .small()
@@ -675,12 +713,27 @@ impl Editor {
             .collect()
     }
 
-    /// 字幕變成文字標註：白字深色底，放在影片下方中間；回傳加了幾段
+    /// 字幕樣式套用到全部字幕（字級、顏色、底色、位置；手動移過的也放回去）
+    pub fn apply_sub_style(&mut self) {
+        let style = self.sub_style.clone();
+        let (vw, vh) = (self.vw, self.vh);
+        let ids = self.sub_ids.clone();
+        for a in self.anns.iter_mut().filter(|a| ids.contains(&a.id)) {
+            a.color = style.color.clone();
+            a.bg = style.bg;
+            a.size = style.font_px(vh);
+            a.rot = 0.0;
+            annotate::measure(a);
+            (a.x, a.y) = style.place(a.w, a.h, vw, vh);
+        }
+    }
+
+    /// 字幕變成文字標註：依字幕樣式（預設白字深色底，放在影片下方中間）；回傳加了幾段
     pub fn add_subtitles(&mut self, cues: &[Cue]) -> usize {
         if self.vw <= 0.0 {
             return 0;
         }
-        let k = self.vh / 1080.0;
+        let style = self.sub_style.clone();
         let mut n = 0;
         for c in cues.iter().take(MAX_CUES) {
             let (start, end) = (c.start.clamp(0.0, self.duration), c.end.clamp(0.0, self.duration));
@@ -698,10 +751,10 @@ impl Editor {
                 h: 0.0,
                 start,
                 end,
-                color: "#ffffff".into(),
-                size: (40.0 * k).round().max(14.0),
+                color: style.color.clone(),
+                size: style.font_px(self.vh),
                 text: Some(text),
-                bg: true,
+                bg: style.bg,
                 n: None,
                 shape: None,
                 invert: false,
@@ -709,8 +762,7 @@ impl Editor {
                 pts: vec![],
             };
             annotate::measure(&mut a);
-            a.x = ((self.vw - a.w) / 2.0).round().max(0.0);
-            a.y = (self.vh - a.h - self.vh * 0.06).round().max(0.0);
+            (a.x, a.y) = style.place(a.w, a.h, self.vw, self.vh);
             self.next_id += 1;
             self.sub_ids.insert(a.id);
             self.anns.push(a);

@@ -1184,7 +1184,19 @@ fn extras_graph(x: &Extras, first: usize, fps: f64, pix_fmt: &str, with_audio: b
 
 /// 要不要用時間對應：有定格、放慢，或加速不是整數倍
 fn needs_retime(keep: &[Part]) -> bool {
-    keep.iter().any(|p| p.is_hold() || p.rate < 1.0 || p.rate.fract().abs() > 1e-9)
+    keep.iter().any(|p| p.is_hold() || p.rate < 1.0 || p.rate.fract().abs() > 1e-9 || (p.keep_audio && p.retimed()))
+}
+
+/// 聲音變快、音調不變：atempo 每個最多 2 倍，接起來
+fn atempo(rate: f64) -> String {
+    let mut r = rate.clamp(0.5, 100.0);
+    let mut v = vec![];
+    while r > 2.0 + 1e-9 {
+        v.push("atempo=2".to_string());
+        r /= 2.0;
+    }
+    v.push(format!("atempo={}", num((r * 10000.0).round() / 10000.0)));
+    v.join(",")
 }
 
 /// 時間對應的畫面濾鏡：挑出保留的畫面 → 每張換成剪輯後的時間 → 固定張數（放慢、定格時重複前一張，加速時丟掉）；
@@ -1208,9 +1220,28 @@ fn retime_video(keep: &[Part], expr: &str, fps: f64) -> Vec<String> {
     vf
 }
 
+/// 片段改了順序：每一段各自剪下來（變速時改時間、定格時重複那一張）再照順序接起來 → [seg]
+fn segment_graph(input: &str, keep: &[Part], fps: f64) -> String {
+    let n = keep.len();
+    let labels: Vec<String> = (0..n).map(|i| format!("[sg{i}]")).collect();
+    let mut g = vec![if n == 1 { format!("{input}null{}", labels[0]) } else { format!("{input}split={n}{}", labels.join("")) }];
+    for (i, p) in keep.iter().enumerate() {
+        let chain = if p.is_hold() {
+            // 定格：只留那一張，延長成 hold 秒
+            format!("trim=start={}:duration={},setpts=PTS-STARTPTS,tpad=stop_mode=clone:stop_duration={},trim=duration={}", num(p.a), num(1.0 / fps), num(p.hold), num(p.hold))
+        } else {
+            format!("trim={}:{},setpts=(PTS-STARTPTS)/{}", num(p.a), num(p.b), num(p.rate))
+        };
+        g.push(format!("{}{chain},fps={}[sc{i}]", labels[i], num(fps)));
+    }
+    let segs: String = (0..n).map(|i| format!("[sc{i}]")).collect();
+    g.push(format!("{segs}concat=n={n}:v=1:a=0[seg]"));
+    g.join(";")
+}
+
 /// 時間對應的聲音：原速的片段用原本的聲音，變速、定格的片段換成同樣長度的靜音，再接起來 → [acut]
 fn retime_audio(input: &str, keep: &[Part]) -> String {
-    let normal = keep.iter().filter(|p| !p.retimed()).count();
+    let normal = keep.iter().filter(|p| !p.silent()).count();
     let mut g = vec![];
     let labels: Vec<String> = (0..normal).map(|i| format!("[an{i}]")).collect();
     match normal {
@@ -1221,10 +1252,12 @@ fn retime_audio(input: &str, keep: &[Part]) -> String {
     let mut segs = vec![];
     let mut k = 0;
     for (i, p) in keep.iter().enumerate() {
-        if p.retimed() {
+        if p.silent() {
             g.push(format!("anullsrc=r=48000:cl=stereo,atrim=end={}[as{i}]", num(p.len())));
         } else {
-            g.push(format!("{}atrim={}:{},asetpts=PTS-STARTPTS,{AFMT}[as{i}]", labels[k], num(p.a), num(p.b)));
+            // 整支加速保留聲音：變快、音調不變，長度剛好是這一段
+            let tempo = if p.retimed() { format!(",{},atrim=end={}", atempo(p.rate), num(p.len())) } else { String::new() };
+            g.push(format!("{}atrim={}:{},asetpts=PTS-STARTPTS{tempo},{AFMT}[as{i}]", labels[k], num(p.a), num(p.b)));
             k += 1;
         }
         segs.push(format!("[as{i}]"));
@@ -1260,8 +1293,10 @@ pub fn cut_args(
     if keep.is_empty() {
         return Err(Error::config(tr!("剪輯後沒有留下任何片段", "Nothing is left after editing")));
     }
+    // 片段的順序改了：每一段分開剪下來再接起來（select 不能改變前後順序）
+    let segments = crate::edit::reordered(keep);
     // 有放慢、定格（或不是整數倍的加速）時改用時間對應：挑出保留的畫面、換成剪輯後的時間，再補齊（重複）或丟掉畫面
-    let retime = needs_retime(keep);
+    let retime = segments || needs_retime(keep);
     // 單引號內的逗號不會被當成濾鏡分隔；加速的片段每 N 張（聲音每 N 個音框）留一個
     let expr = keep
         .iter()
@@ -1269,7 +1304,14 @@ pub fn cut_args(
         .map(|p| if p.rate > 1.0 && !retime { format!("gte(t,{})*lt(t,{})*not(mod(n,{}))", num(p.a), num(p.b), p.rate as u32) } else { format!("gte(t,{})*lt(t,{})", num(p.a), num(p.b)) })
         .collect::<Vec<_>>()
         .join("+");
-    let mut vf = if retime { retime_video(keep, &expr, fps) } else { vec![format!("select='{expr}'"), format!("setpts=N/({}*TB)", num(fps))] };
+    let mut vf = if segments {
+        // 片段已經在 segment_graph 裡接好（[seg]），這裡只固定張數
+        vec![format!("fps={}:start_time=0", num(fps))]
+    } else if retime {
+        retime_video(keep, &expr, fps)
+    } else {
+        vec![format!("select='{expr}'"), format!("setpts=N/({}*TB)", num(fps))]
+    };
     // 跟著點擊放大（剪輯後的時間）
     if let Some(z) = zoom {
         vf.push(z.to_string());
@@ -1282,9 +1324,9 @@ pub fn cut_args(
     if let Some(VerticalInput::Fit { w, h }) = vertical {
         vf.push(crate::vertical::fit_filter(*w, *h));
     }
-    // 要先在原影片的時間處理的：標註、游標、跟著游標的直式裁切
+    // 要先在原影片的時間處理的：標註、游標、跟著游標的直式裁切（片段改了順序時也走這條，才接得上 segment_graph）
     let follow = matches!(vertical, Some(VerticalInput::Follow { .. }));
-    let pre = !overlays.is_empty() || cursor.is_some() || follow;
+    let pre = !overlays.is_empty() || cursor.is_some() || follow || segments;
     // 濾鏡有多個輸入（不能用 -vf）
     let complex = frame.is_some() || fit || extras.is_some();
     let mut a = strs(&["-hide_banner", "-nostats", "-loglevel", "error", "-i"]);
@@ -1399,6 +1441,10 @@ pub fn cut_args(
             let sc = scale.map(|(sw, sh)| format!(",scale={sw}:{sh}:flags=bicubic")).unwrap_or_default();
             graph.push(format!("{cur}sendcmd=f={commands},crop@vertical=w={w}:h={h}:x={x}:y={y}{sc}[vert]"));
             cur = "[vert]".into();
+        }
+        if segments {
+            graph.push(segment_graph(&cur, keep, fps));
+            cur = "[seg]".into();
         }
         graph.push(format!("{cur}{}[vout]", vf.join(",")));
         if let Some(t) = &track_graph {
@@ -2271,7 +2317,7 @@ dummy: Immediate exit requested";
             &x264(),
             true,
             &[],
-            AudioFx { denoise: true, normalize: true, mute: false, tracks: None },
+            AudioFx { denoise: true, normalize: true, mute: false, voice: true, tracks: None },
             None,
             None,
             None,
@@ -2281,7 +2327,7 @@ dummy: Immediate exit requested";
         )
         .unwrap()
         .join(" ");
-        assert!(fx.contains("asetpts=N/SR/TB,afftdn=nf=-25,loudnorm=I=-16:TP=-1.5:LRA=11,aresample=48000"), "{fx}");
+        assert!(fx.contains(&format!("asetpts=N/SR/TB,afftdn=nf=-25,{},loudnorm=I=-16:TP=-1.5:LRA=11,aresample=48000", crate::edit::VOICE_FX)), "{fx}");
         let muted =
             cut_args("in.mp4", "out.mp4", &[Part::new(0.0, 3.0, 1.0)], None, 30.0, &x264(), true, &[], AudioFx { mute: true, ..Default::default() }, None, None, None, None, None, false).unwrap();
         assert!(muted.contains(&"-an".to_string()) && !muted.iter().any(|a| a.contains("aselect")));
@@ -2481,7 +2527,7 @@ dummy: Immediate exit requested";
         let clicks = dir.path().join("c.wav");
         std::fs::write(&clicks, crate::narration::click_track(&[0.5, 2.0], 7.0, 100)).unwrap();
         let probe = |f: &std::path::Path| String::from_utf8_lossy(&run(&["-hide_banner".into(), "-i".into(), f.display().to_string()]).stderr).to_string();
-        let hold = |t: f64, h: f64| Part { a: t, b: t, rate: 1.0, hold: h };
+        let hold = |t: f64, h: f64| Part { a: t, b: t, rate: 1.0, hold: h, keep_audio: false };
         // 0～1 原速、1～2 放慢一半（2 秒）、2 秒處定格 1 秒、2～4 加速 1.5 倍、刪掉 4～5、5～6 原速、結尾定格 0.5 秒
         let keep = [Part::new(0.0, 1.0, 1.0), Part::new(1.0, 2.0, 0.5), hold(2.0, 1.0), Part::new(2.0, 4.0, 1.5), Part::new(5.0, 6.0, 1.0), hold(6.0, 0.5)];
         let total = crate::edit::output_length(&keep);
@@ -2508,6 +2554,26 @@ dummy: Immediate exit requested";
             assert!((d - total).abs() < 0.15, "{with_audio}: {d} vs {total}");
             assert!(info.has_audio, "{with_audio}");
         }
+        // 整支 2 倍加速保留聲音（其中一段再局部 4 倍）：長度對、有聲音
+        let fastw = [Part { keep_audio: true, ..Part::new(0.0, 2.0, 2.0) }, Part::new(2.0, 4.0, 8.0), Part { keep_audio: true, ..Part::new(4.0, 6.0, 2.0) }];
+        assert!(atempo(8.0) == "atempo=2,atempo=2,atempo=2" && atempo(1.5) == "atempo=1.5");
+        let out = dir.path().join("whole.mp4");
+        let a = cut_args(src.to_str().unwrap(), out.to_str().unwrap(), &fastw, None, 30.0, &x264(), true, &[], AudioFx::default(), None, None, None, None, None, false).unwrap();
+        assert!(a.iter().any(|s| s.contains("atempo=2")));
+        ok(&a);
+        let info = parse_media_info(&probe(&out));
+        assert!((info.duration_sec.unwrap() - 2.25).abs() < 0.15, "{:?}", info.duration_sec);
+        assert!(info.has_audio);
+        // 片段改了順序（含放慢、定格）：長度、聲音都對
+        let moved = [Part::new(4.0, 6.0, 1.0), Part::new(0.0, 1.0, 1.0), hold(1.0, 0.5), Part::new(1.0, 2.0, 0.5), Part::new(2.0, 4.0, 2.0)];
+        let len = crate::edit::output_length(&moved);
+        let out = dir.path().join("moved.mp4");
+        let a = cut_args(src.to_str().unwrap(), out.to_str().unwrap(), &moved, None, 30.0, &x264(), true, &[], AudioFx::default(), None, None, None, None, None, true).unwrap();
+        assert!(a.iter().any(|s| s.contains("concat=n=5:v=1:a=0[seg]")));
+        ok(&a);
+        let info = parse_media_info(&probe(&out));
+        assert!((info.duration_sec.unwrap() - len).abs() < 0.15, "{:?} vs {len}", info.duration_sec);
+        assert!(info.has_audio);
         // 沒有旁白、只有時間對應：畫面張數對
         let out = dir.path().join("plain.mp4");
         let a = cut_args(src.to_str().unwrap(), out.to_str().unwrap(), &keep, None, 30.0, &x264(), true, &[], AudioFx::default(), None, None, None, None, None, true).unwrap();

@@ -123,6 +123,9 @@ pub struct UiSettings {
     pub seen_version: String,
     /// 上次加到截圖或影片上的圖片（Logo）
     pub last_picture: String,
+    /// 標註的「我的樣式」
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub ann_styles: Vec<screenrecorder_core::annotate::AnnStyle>,
     /// 講稿小視窗：提詞的字級、捲動速度（1～10）、不透明度（%）、開始錄影時自動捲動、位置與大小（點）
     pub notes_font: u32,
     pub notes_speed: u32,
@@ -302,6 +305,14 @@ impl UiSettings {
             shot_save_dir: string("shotSaveDir").unwrap_or_default(),
             seen_version: string("seenVersion").unwrap_or_default(),
             last_picture: string("lastPicture").unwrap_or_default(),
+            ann_styles: o
+                .get("annStyles")
+                .and_then(|v| serde_json::from_value::<Vec<screenrecorder_core::annotate::AnnStyle>>(v.clone()).ok())
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|s| s.size.is_finite() && s.size >= 1.0 && s.color.starts_with('#'))
+                .take(screenrecorder_core::annotate::MAX_STYLES)
+                .collect(),
             ui_scale: num("uiScale").map(|v| v as u32).filter(|v| UI_SCALES.contains(v)).unwrap_or(100),
             language: string("language").filter(|v| ["zh-TW", "en"].contains(&v.as_str())).unwrap_or_else(|| "auto".into()),
             notes_font: num("notesFont").map(|v| v as u32).filter(|v| (NOTES_FONT.0..=NOTES_FONT.1).contains(v)).unwrap_or(30),

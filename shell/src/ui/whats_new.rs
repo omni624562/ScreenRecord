@@ -19,6 +19,7 @@ pub fn should_show(app: &UiApp) -> bool {
 }
 
 #[derive(Clone, Copy)]
+#[allow(dead_code)] // 有些版本的新功能介紹沒有「到設定看看」
 enum Try {
     None,
     /// 打開設定的某一頁
@@ -38,31 +39,31 @@ enum Try {
 fn items(_app: &UiApp) -> Vec<(String, String, Try)> {
     vec![
         (
-            tr!("旁白：錄音或文字轉語音", "Narration: record or type it").into(),
+            tr!("手動放大、整支加速、調整片段順序", "Zoom into an area, speed up, reorder").into(),
             tr!(
-                "剪輯時在「聲音」分頁邊看影片邊錄旁白，講錯可以重錄那一段；也可以打字，用 Windows 內建的語音念出來。",
-                "In the editor's Audio tab, record narration while the video plays and redo any part; or type text and have a built-in Windows voice read it."
+                "剪輯時在影片上框一塊平順地放大過去；整支影片加速存檔時一次做好；保留的片段可以改變前後順序。",
+                "In the editor, frame an area to zoom into, speed up the whole video when you save, and move kept sections around."
             )
             .into(),
             Try::None,
         ),
         (
-            tr!("定格、放慢、點擊音效", "Freeze frames, slow motion, click sounds").into(),
+            tr!("字幕樣式、人聲加強", "Subtitle style, voice enhancement").into(),
             tr!(
-                "在「修剪」分頁讓畫面停幾秒、把快速的操作放慢；錄影時記下的點擊可以加上「喀」一聲。",
-                "In the Trim tab, hold a frame for a few seconds or slow a fast part down; recorded clicks can get a click sound."
+                "字幕可以改大小、顏色、放在上方或下方，一次套用到全部；「聲音」分頁的人聲加強讓講話更清楚。",
+                "Change subtitle size, color and position for all subtitles at once; Enhance voice in the Audio tab makes speech clearer."
             )
             .into(),
             Try::None,
         ),
         (
-            tr!("錄完自動複製到雲端硬碟", "Copy recordings to a sync folder").into(),
+            tr!("我的樣式、游標閒置時隱藏", "My styles, hide idle cursor").into(),
             tr!(
-                "在「設定 → 錄完處理」選 OneDrive、Google 雲端硬碟的同步資料夾或 NAS，處理完自動複製一份過去。",
-                "In Settings → Post-processing, pick a OneDrive or Google Drive sync folder or a NAS and recordings are copied there when processing finishes."
+                "常用的標註顏色與大小存起來一鍵套用；平滑游標停著不動時自動藏起來。",
+                "Save annotation colors and sizes you use often and apply them in one click; the smooth cursor hides itself when idle."
             )
             .into(),
-            Try::Settings(Page::After),
+            Try::None,
         ),
     ]
 }

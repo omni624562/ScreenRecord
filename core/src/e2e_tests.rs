@@ -570,12 +570,12 @@ async fn cut_with_every_effect() {
         removed: vec![(1.0, 1.5)],
         crop: Some(CropInput { x: 20.0, y: 10.0, width: 600.0, height: 340.0 }),
         overlays: vec![ov(OverlayKind::Image, 10.0, 10.0, Some(png)), ov(OverlayKind::Blur, 200.0, 100.0, None), ov(OverlayKind::Mosaic, 400.0, 200.0, None)],
-        audio: AudioFx { denoise: true, normalize: true, mute: false, tracks: None },
+        audio: AudioFx { denoise: true, normalize: true, mute: false, voice: true, tracks: None },
         // 3～5 秒 4 倍速：2 秒變 0.5 秒
         fast: vec![FastRange { start_ms: 3000, end_ms: 5000, speed: 4.0 }],
         zoom: Some(ClickZoom { factor: 1.5, clicks: vec![[2.0, 0.3, 0.4]] }),
         frame: Some(crate::video_frame::VideoFrame::default()),
-        cursor: Some(crate::cursor::CursorFx { size: 2.0, track: vec![[0.0, 0.2, 0.2], [2.0, 0.6, 0.5], [4.0, 0.3, 0.7]] }),
+        cursor: Some(crate::cursor::CursorFx { size: 2.0, track: vec![[0.0, 0.2, 0.2], [2.0, 0.6, 0.5], [4.0, 0.3, 0.7]], hide_idle: true }),
         vertical: None,
         ..Default::default()
     };
@@ -616,6 +616,9 @@ async fn cut_with_every_effect() {
         },
         fade_cuts: true,
         intro: Some(crate::cards::TitleCard::new("片頭")),
+        // 手動放大一塊，加上跟著點擊放大（兩個 zoompan 接在一起）
+        zoom_regions: vec![crate::zoom::Region { start: 0.2, end: 2.5, x: 0.25, y: 0.25, w: 0.5, h: 0.5 }],
+        zoom: Some(ClickZoom { factor: 2.0, clicks: vec![[5.5, 0.3, 0.4]] }),
         ..Default::default()
     };
     let parts = crate::edit::keep_parts(6.0, &slow);
@@ -882,7 +885,7 @@ async fn smooth_cursor_is_drawn_where_it_should_be() {
     run_ok(&ff, &["-f", "lavfi", "-i", "color=black:s=640x360:r=30", "-t", "3", "-c:v", "libx264", "-pix_fmt", "yuv420p", &src.display().to_string()]);
     // 0.5 秒時從左上移到右下，之後不動
     let track = vec![[0.0, 0.2, 0.2], [0.5, 0.2, 0.2], [0.53, 0.7, 0.6], [3.0, 0.7, 0.6]];
-    let spec = EditSpec { start: 0.0, end: 3.0, cursor: Some(crate::cursor::CursorFx { size: 2.0, track: track.clone() }), ..Default::default() };
+    let spec = EditSpec { start: 0.0, end: 3.0, cursor: Some(crate::cursor::CursorFx { size: 2.0, track: track.clone(), hide_idle: false }), ..Default::default() };
     let ex = Exporter::new();
     ex.start_cut(&ctx(&ff), &src.display().to_string(), &spec, None, None).await.unwrap();
     let out = finish(&ex).await;
