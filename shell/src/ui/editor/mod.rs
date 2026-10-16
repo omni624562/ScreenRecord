@@ -91,6 +91,18 @@ struct Extras {
     /// 定格畫面
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     freezes: Vec<screenrecorder_core::edit::Freeze>,
+    /// 平滑游標停著不動時隱藏
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    cursor_hide: bool,
+    /// 手動放大
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    zoom_regions: Vec<screenrecorder_core::zoom::Region>,
+    /// 保留的片段的順序（各片段開頭的毫秒）
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    order: Vec<u64>,
+    /// 字幕樣式
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    sub_style: Option<screenrecorder_core::subtitles::SubStyle>,
     /// 旁白與點擊音效（點擊的時間不存，輸出時才放進去）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     narration: Option<screenrecorder_core::narration::Narration>,
@@ -372,6 +384,18 @@ pub struct Editor {
     pub(crate) mutes: Vec<[f64; 2]>,
     /// 平滑、放大的游標的大小（0 = 不加）
     cursor_size: f64,
+    /// 標註的「我的樣式」（改了會存回設定）
+    pub(crate) ann_styles: Vec<screenrecorder_core::annotate::AnnStyle>,
+    /// 平滑游標停著不動時隱藏
+    pub(crate) cursor_hide: bool,
+    /// 正在影片上框選要手動放大的地方
+    pub(crate) zoom_pick: bool,
+    /// 框選手動放大時按下的位置（0～1）
+    pub(crate) zoom_from: Option<(f64, f64)>,
+    /// 字幕樣式（套用到全部字幕、新加的字幕）
+    pub(crate) sub_style: screenrecorder_core::subtitles::SubStyle,
+    /// 平滑游標要隱藏的時段（預覽用）
+    pub(crate) cursor_idle: Vec<(f64, f64)>,
     /// 預覽用的游標圖
     cursor_tex: Option<CursorTex>,
     /// 直式影片：0 = 不用、1 = 放在中間、2 = 跟著游標；跟著游標時鏡頭的位置（預覽用，需要時才算）
@@ -399,6 +423,8 @@ pub struct Editor {
     hold_until: Option<(f64, std::time::Instant)>,
     /// 上一次檢查預覽時的播放位置（看有沒有經過定格的地方）
     last_tick: f64,
+    /// 片段改了順序時，預覽正在播第幾段（依新的順序）
+    seg_cur: Option<usize>,
     /// 旁白：錄音、試聽、文字轉語音
     pub(crate) voice: voice::VoiceState,
     /// 旁白錄完的訊息（下一格顯示）
@@ -564,6 +590,7 @@ impl Editor {
         ed.clicks = marks.clicks;
         ed.zooms = marks.zooms;
         ed.cursor_smooth = screenrecorder_core::cursor::smooth(&marks.cursor, 60.0);
+        ed.cursor_idle = screenrecorder_core::cursor::idle_ranges(&ed.cursor_smooth);
         ed.cursor = marks.cursor;
         ed.no_cursor = marks.no_cursor;
         ed.mutes = marks.mutes;
@@ -649,10 +676,16 @@ impl Editor {
             no_cursor: false,
             mutes: vec![],
             cursor_size: 0.0,
+            cursor_hide: false,
+            zoom_pick: false,
+            zoom_from: None,
+            cursor_idle: vec![],
+            sub_style: Default::default(),
             cursor_tex: None,
             vertical: 0,
             vertical_pan: vec![],
             last_picture: app.s.last_picture.clone(),
+            ann_styles: app.s.ann_styles.clone(),
             subs: None,
             subs_lang: 0,
             subs_model: 0,
@@ -664,6 +697,7 @@ impl Editor {
             fast_from: None,
             hold_until: None,
             last_tick: 0.0,
+            seg_cur: None,
             voice: voice::VoiceState::new(&app.s.mic_id),
             voice_msg: None,
             frame: None,
@@ -925,6 +959,10 @@ impl Editor {
             music: self.spec.music.clone(),
             fade_cuts: self.spec.fade_cuts,
             freezes: self.spec.freezes.clone(),
+            cursor_hide: self.cursor_hide,
+            zoom_regions: self.spec.zoom_regions.clone(),
+            order: self.spec.order.clone(),
+            sub_style: (self.sub_style != Default::default()).then(|| self.sub_style.clone()),
             narration: (self.spec.narration != Default::default()).then(|| screenrecorder_core::narration::Narration { clicks: vec![], ..self.spec.narration.clone() }),
         }
     }
@@ -946,6 +984,10 @@ impl Editor {
         self.spec.fade_cuts = x.fade_cuts;
         self.spec.freezes = x.freezes.into_iter().filter(|f| f.at() <= d + 0.05 && (100..=60_000).contains(&f.ms)).collect();
         self.spec.narration = x.narration.unwrap_or_default();
+        self.cursor_hide = x.cursor_hide;
+        self.spec.zoom_regions = screenrecorder_core::zoom::clean_regions(&x.zoom_regions);
+        self.spec.order = x.order;
+        self.sub_style = x.sub_style.unwrap_or_default();
     }
 
     /// 片頭預設的標題：自己取過的檔名（預設的 Rec_時間 名稱就空白）
@@ -1010,6 +1052,28 @@ impl Editor {
 
     fn keep(&self) -> Vec<Range> {
         keep_ranges(self.duration, &self.spec)
+    }
+
+    /// 保留的片段，依調整過的順序
+    pub(crate) fn ordered_keep(&self) -> Vec<Range> {
+        screenrecorder_core::edit::ordered_ranges(self.duration, &self.spec)
+    }
+
+    /// 片段的順序和原本不一樣
+    pub(crate) fn is_reordered(&self) -> bool {
+        !self.spec.order.is_empty() && self.ordered_keep() != self.keep()
+    }
+
+    /// 第 i 段（依目前的順序）往前（-1）或往後（+1）移
+    pub(crate) fn move_segment(&mut self, i: usize, dir: i32) {
+        let mut list: Vec<u64> = self.ordered_keep().iter().map(|r| (r.0 * 1000.0).round() as u64).collect();
+        let j = i as i64 + dir as i64;
+        if j < 0 || j as usize >= list.len() || i >= list.len() {
+            return;
+        }
+        list.swap(i, j as usize);
+        let natural: Vec<u64> = self.keep().iter().map(|r| (r.0 * 1000.0).round() as u64).collect();
+        self.spec.order = if list == natural { vec![] } else { list };
     }
 
     /// 有打開平滑、放大的游標（而且有記下游標的位置）
@@ -1434,14 +1498,15 @@ impl Editor {
 
     /// 預覽結果：從保留的第一段開始播放，跳過刪除的片段，播到結尾就停
     fn start_preview(&mut self) {
-        let keep = self.keep();
+        let keep = self.ordered_keep();
         let Some(first) = keep.first() else { return };
         self.sel = None;
         self.previewing = true;
         let t = self.now();
-        // 播放頭已在保留範圍內（且不在最後）就從那裡開始，否則從頭
-        let inside = keep.iter().any(|&(a, b)| t >= a && t < b - 0.1);
-        let from = if inside { t } else { first.0 };
+        // 播放頭已在保留範圍內（且不在最後）就從那裡開始，否則從頭（片段改了順序時從第一段開始）
+        let inside = keep.iter().position(|&(a, b)| t >= a && t < b - 0.1);
+        self.seg_cur = Some(inside.unwrap_or(0));
+        let from = if inside.is_some() { t } else { first.0 };
         self.player.pause();
         self.seek(from);
         self.player.play();
@@ -1473,6 +1538,29 @@ impl Editor {
             return;
         }
         let t = self.now();
+        // 片段改了順序：播完一段跳到下一段（依新的順序），全部播完就停
+        if self.is_reordered() {
+            let order = self.ordered_keep();
+            let cur = self.seg_cur.filter(|&i| order.get(i).is_some_and(|r| t >= r.0 - 0.05 && t < r.1 - 0.03));
+            match cur.or_else(|| order.iter().position(|r| t >= r.0 - 0.02 && t < r.1 - 0.03)) {
+                Some(i) => self.seg_cur = Some(i),
+                None => {
+                    let next = self.seg_cur.map_or(0, |i| i + 1);
+                    match order.get(next) {
+                        Some(r) => {
+                            self.seg_cur = Some(next);
+                            self.seek(r.0);
+                        }
+                        None => {
+                            self.seg_cur = None;
+                            self.stop_preview();
+                            self.player.pause();
+                        }
+                    }
+                    return;
+                }
+            }
+        }
         let keep = self.keep();
         if keep.iter().any(|&(a, b)| t >= a - 0.02 && t < b) {
             // 經過定格的地方：停在那一格，停夠了再繼續播放
@@ -1573,6 +1661,20 @@ impl Editor {
     }
 
     /// 跟著點擊放大要用的點擊（不含設定成這次不放大的）
+    /// 手動放大（原影片的時間；裁切、直式影片時不用）
+    pub(crate) fn region_spans(&self) -> Vec<screenrecorder_core::zoom::Span> {
+        if self.crop_on || self.vertical != 0 {
+            return vec![];
+        }
+        screenrecorder_core::zoom::clean_regions(&self.spec.zoom_regions)
+            .iter()
+            .map(|r| {
+                let (cx, cy) = r.center();
+                (r.start, r.end, r.factor(), cx, cy)
+            })
+            .collect()
+    }
+
     /// 有打開點擊音效（而且錄影時有記下點擊）
     pub(crate) fn click_sound_on(&self) -> bool {
         self.spec.narration.click_volume > 0 && !self.clicks.is_empty()
@@ -1641,6 +1743,7 @@ impl Editor {
             && keep[0].0 == 0.0
             && keep[0].1 >= self.duration - 0.05
             && !self.parts().iter().any(Part::retimed)
+            && self.spec.zoom_regions.is_empty()
             && self.spec.narration.clips.is_empty()
             && !self.click_sound_on()
             && !self.zoom_active()
@@ -1759,6 +1862,27 @@ impl Editor {
             "remove" => {
                 if let Some((a, b)) = v.split_once(',').and_then(|(a, b)| Some((a.parse::<f64>().ok()?, b.parse::<f64>().ok()?))) {
                     self.spec.removed.push((a, b));
+                }
+            }
+            // 開發用：removed=開始,結束；order=毫秒,毫秒…；region=開始,結束,x,y,w,h；subcues=段數；mystyle=顏色,大小
+            "removed" | "order" | "region" | "subcues" | "mystyle" => {
+                let n: Vec<f64> = v.split(',').filter_map(|x| x.trim().trim_start_matches('#').parse().ok()).collect();
+                match k {
+                    "removed" if n.len() == 2 => self.spec.removed.push((n[0], n[1])),
+                    "order" => self.spec.order = n.iter().map(|x| *x as u64).collect(),
+                    "region" if n.len() == 6 => self.spec.zoom_regions.push(screenrecorder_core::zoom::Region { start: n[0], end: n[1], x: n[2], y: n[3], w: n[4], h: n[5] }),
+                    "subcues" => {
+                        let cues: Vec<screenrecorder_core::subtitles::Cue> = (0..n.first().copied().unwrap_or(3.0) as usize)
+                            .map(|i| screenrecorder_core::subtitles::Cue { start: i as f64 * 2.0, end: i as f64 * 2.0 + 1.8, text: format!("這是第 {} 句字幕", i + 1) })
+                            .collect();
+                        self.add_subtitles(&cues);
+                    }
+                    "mystyle" => {
+                        if let Some((c, sz)) = v.split_once(',') {
+                            screenrecorder_core::annotate::save_style(&mut self.ann_styles, c, sz.parse().unwrap_or(6.0));
+                        }
+                    }
+                    _ => {}
                 }
             }
             "tool" => self.tool = Some(if v == "emoji" { Tool::Emoji } else { Tool::Ann(serde_json::from_value(Value::String(v.into())).unwrap_or(AnnKind::Text)) }),
@@ -1989,6 +2113,11 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         return;
     }
     let mut toast: Option<(String, bool)> = None;
+    // 「我的樣式」改了：存回設定（下次開啟、截圖編輯也用得到）
+    if ed.ann_styles != app.s.ann_styles {
+        app.s.ann_styles = ed.ann_styles.clone();
+        app.save_settings();
+    }
     ed.poll_player();
     ed.renumber_steps();
     if app.ask.is_none() {
@@ -2694,6 +2823,13 @@ fn footer(ed: &mut Editor, ui: &mut egui::Ui) -> bool {
             if ed.click_sound_on() {
                 ui.label(tr!("・點擊音效", " · Click sounds"));
             }
+            if ed.is_reordered() {
+                ui.label(tr!("・改了片段順序", " · Sections reordered"));
+            }
+            let zr = ed.region_spans().len();
+            if zr > 0 {
+                ui.label(if en { format!(" · {zr} manual zoom{}", s(zr)) } else { format!("・手動放大 {zr} 處") });
+            }
             if zooming {
                 ui.label(tr!("・跟著點擊放大", " · Zoom on clicks"));
             }
@@ -2846,13 +2982,15 @@ fn start_save(app: &mut UiApp, ed: &mut Editor) {
         fast: ed.spec.fast.clone(),
         zoom: ed.zoom_active().then(|| ClickZoom { factor: ed.zoom, clicks: ed.zoom_clicks() }),
         frame: ed.spec.frame.clone().filter(|_| ed.vertical == 0),
-        cursor: ed.cursor_on().then(|| screenrecorder_core::cursor::CursorFx { size: ed.cursor_size, track: ed.cursor.clone() }),
+        cursor: ed.cursor_on().then(|| screenrecorder_core::cursor::CursorFx { size: ed.cursor_size, track: ed.cursor.clone(), hide_idle: ed.cursor_hide }),
         vertical: ed.vertical_spec(),
         intro: ed.spec.intro.clone().filter(|c| !c.is_empty()),
         outro: ed.spec.outro.clone().filter(|c| !c.is_empty()),
         music: ed.spec.music.clone(),
         fade_cuts: ed.spec.fade_cuts && ed.spec.removed.iter().any(|r| r.1 > r.0),
         freezes: ed.spec.freezes.clone(),
+        zoom_regions: ed.spec.zoom_regions.clone(),
+        order: ed.spec.order.clone(),
         narration: screenrecorder_core::narration::Narration { clicks: if ed.click_sound_on() { ed.clicks.iter().map(|c| c[0]).collect() } else { vec![] }, ..ed.spec.narration.clone() },
     };
     let project = Some(ed.project_value());

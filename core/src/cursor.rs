@@ -30,6 +30,42 @@ const PAD: f32 = 2.0;
 pub struct CursorFx {
     pub size: f64,
     pub track: Vec<Sample>,
+    /// 停著不動一陣子就隱藏，一動就出現
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub hide_idle: bool,
+}
+
+/// 停著不動多久後隱藏（秒）
+pub const IDLE: f64 = 1.5;
+
+/// 平滑後的游標停著不動、要隱藏的時段：從停下來 IDLE 秒後，到下一次移動
+pub fn idle_ranges(smoothed: &[Sample]) -> Vec<(f64, f64)> {
+    // 移動不到畫面的 0.1% 算沒動（彈簧收尾的微小移動）
+    const STILL: f64 = 0.001;
+    let mut out = vec![];
+    let Some(first) = smoothed.first() else { return out };
+    let (mut anchor, mut since) = ((first[1], first[2]), first[0]);
+    for p in smoothed {
+        if (p[1] - anchor.0).abs() > STILL || (p[2] - anchor.1).abs() > STILL {
+            if p[0] - since >= IDLE {
+                out.push((since + IDLE, p[0]));
+            }
+            anchor = (p[1], p[2]);
+            since = p[0];
+        }
+    }
+    // 最後停住到結束：一直隱藏
+    if let Some(last) = smoothed.last() {
+        if last[0] - since >= IDLE {
+            out.push((since + IDLE, f64::INFINITY));
+        }
+    }
+    out
+}
+
+/// 時間 t 是不是在隱藏的時段裡
+pub fn hidden(ranges: &[(f64, f64)], t: f64) -> bool {
+    ranges.iter().any(|&(a, b)| t >= a && t < b)
 }
 
 fn round(v: f64, k: f64) -> f64 {
@@ -166,15 +202,26 @@ pub fn origin(p: (f64, f64), w: i32, h: i32, tip: (i32, i32)) -> (i32, i32) {
     ((p.0 * w as f64).round() as i32 - tip.0, (p.1 * h as f64).round() as i32 - tip.1)
 }
 
-/// FFmpeg sendcmd 的指令：位置有變才更新 overlay@cursor 的 x、y（原影片的時間）
-pub fn commands(smoothed: &[Sample], w: i32, h: i32, tip: (i32, i32)) -> String {
+/// FFmpeg sendcmd 的指令：位置有變才更新 overlay@cursor 的 x、y（原影片的時間）；
+/// hide 的時段裡移到畫面外（隱藏）
+pub fn commands(smoothed: &[Sample], w: i32, h: i32, tip: (i32, i32), hide: &[(f64, f64)]) -> String {
     let mut s = String::new();
     let mut last = None;
+    let mut was_hidden = false;
     for p in smoothed {
+        let t = num((p[0] * 1000.0).round() / 1000.0);
+        if hidden(hide, p[0]) {
+            if !was_hidden {
+                let _ = writeln!(s, "{t} overlay@cursor x -10000;");
+                was_hidden = true;
+            }
+            continue;
+        }
         let xy = origin((p[1], p[2]), w, h, tip);
-        if last != Some(xy) {
-            let _ = writeln!(s, "{} overlay@cursor x {}, overlay@cursor y {};", num((p[0] * 1000.0).round() / 1000.0), xy.0, xy.1);
+        if last != Some(xy) || was_hidden {
+            let _ = writeln!(s, "{t} overlay@cursor x {}, overlay@cursor y {};", xy.0, xy.1);
             last = Some(xy);
+            was_hidden = false;
         }
     }
     s
@@ -228,7 +275,24 @@ mod tests {
         assert!(pm.pixel(tip.0 as u32 + 1, tip.1 as u32 + 3).unwrap().alpha() > 200);
         assert_eq!(pm.pixel(0, 0).unwrap().alpha(), 0);
         let s = vec![[0.0, 0.5, 0.5], [0.033, 0.5, 0.5], [0.066, 0.6, 0.5]];
-        let c = commands(&s, 1000, 800, (4, 4));
+        let c = commands(&s, 1000, 800, (4, 4), &[]);
         assert_eq!(c, "0 overlay@cursor x 496, overlay@cursor y 396;\n0.066 overlay@cursor x 596, overlay@cursor y 396;\n");
+    }
+
+    #[test]
+    fn idle_cursor_hides_until_it_moves() {
+        // 0～1 秒移動，停到 4 秒再移動，之後停到 5 秒結束
+        let track: Vec<Sample> = vec![[0.0, 0.1, 0.1], [1.0, 0.3, 0.3], [4.0, 0.3, 0.3], [4.1, 0.6, 0.6], [5.0, 0.6, 0.6]];
+        let s = smooth(&track, 30.0);
+        let r = idle_ranges(&s);
+        assert_eq!(r.len(), 1, "{r:?}");
+        // 彈簧收尾後才算停下來：約 1.3 秒停住，2.8 秒左右隱藏，4 秒多一動就出現
+        assert!(r[0].0 > 2.5 && r[0].0 < 3.2 && r[0].1 > 4.0 && r[0].1 < 4.2, "{r:?}");
+        assert!(hidden(&r, 3.5) && !hidden(&r, 2.0) && !hidden(&r, 4.5));
+        let c = commands(&s, 1000, 800, (4, 4), &r);
+        assert_eq!(c.matches("x -10000").count(), 1);
+        // 出現時位置一定要再設一次
+        let after: Vec<&str> = c.lines().skip_while(|l| !l.contains("-10000")).collect();
+        assert!(after.get(1).is_some_and(|l| l.contains("overlay@cursor y")), "{c}");
     }
 }

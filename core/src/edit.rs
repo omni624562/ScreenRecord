@@ -63,6 +63,12 @@ pub struct EditSpec {
     /// 定格畫面（原影片的時間）
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub freezes: Vec<Freeze>,
+    /// 手動放大（原影片的時間）
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub zoom_regions: Vec<crate::zoom::Region>,
+    /// 保留的片段的順序：各片段開頭的時間（毫秒）；空的 = 原本的順序
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub order: Vec<u64>,
     /// 旁白（錄的或文字轉語音）、點擊音效
     #[serde(default, skip_serializing_if = "crate::narration::Narration::is_empty")]
     pub narration: crate::narration::Narration,
@@ -195,7 +201,7 @@ pub fn keep_parts(duration: f64, spec: &EditSpec) -> Vec<Part> {
     let mut fast = spec.fast.clone();
     fast.sort_by_key(|f| f.start_ms);
     let mut out: Vec<Part> = vec![];
-    for (a, b) in keep_ranges(duration, spec) {
+    for (a, b) in ordered_ranges(duration, spec) {
         let mut t = a;
         for f in fast.iter().filter(|f| valid_speed(f.speed) && f.end() > a && f.start() < b) {
             let (fa, fb) = (f.start().max(a), f.end().min(b));
@@ -234,6 +240,27 @@ pub fn keep_parts(duration: f64, spec: &EditSpec) -> Vec<Part> {
     out
 }
 
+/// 保留的片段，依 spec.order 排好。順序裡記的是片段的開頭；之後又刪掉一段、片段被切開時，
+/// 後半段跟著原本的那一段（開頭在它之前、最近的那個）；更前面沒有的放在最後
+pub fn ordered_ranges(duration: f64, spec: &EditSpec) -> Vec<Range> {
+    let mut list = keep_ranges(duration, spec);
+    if spec.order.is_empty() {
+        return list;
+    }
+    let key = |r: &Range| {
+        let ms = (r.0 * 1000.0).round() as u64;
+        let parent = spec.order.iter().enumerate().filter(|(_, &o)| o <= ms + 20).max_by_key(|(_, &o)| o).map(|(i, _)| i);
+        (parent.unwrap_or(spec.order.len()), ms)
+    };
+    list.sort_by_key(key);
+    list
+}
+
+/// 片段的順序和原本不一樣（有片段往前移）
+pub fn reordered(parts: &[Part]) -> bool {
+    parts.windows(2).any(|w| w[1].a < w[0].b - 0.001)
+}
+
 /// 接縫淡出、淡入各多久（秒）
 pub const CUT_FADE: f64 = 0.2;
 
@@ -246,7 +273,7 @@ pub fn cut_fades(parts: &[Part]) -> Vec<(f64, f64)> {
         let len = p.len();
         if i > 0 {
             let prev = parts[i - 1];
-            if p.a - prev.b > 0.001 {
+            if (p.a - prev.b).abs() > 0.001 {
                 let d = CUT_FADE.min(prev.len() / 2.0).min(len / 2.0);
                 if d >= 0.04 {
                     out.push((ms(t), ms(d)));
@@ -301,10 +328,16 @@ pub struct AudioFx {
     /// 不要聲音
     #[serde(default)]
     pub mute: bool,
+    /// 人聲加強（濾掉低頻的嗡嗡聲、講話的頻段稍微提高、大小聲壓得比較平均）
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub voice: bool,
     /// 分軌錄影：系統聲音與麥克風分別調整音量後重新混合（降噪只處理麥克風）；None = 用混好的那條
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tracks: Option<TrackMix>,
 }
+
+/// 人聲加強：濾掉 80 Hz 以下（冷氣、桌面震動），3 kHz 附近（咬字）提高 3 dB，再壓縮大小聲
+pub const VOICE_FX: &str = "highpass=f=80,equalizer=f=3000:t=q:w=1.2:g=3,acompressor=threshold=0.1:ratio=3:attack=10:release=200:makeup=2";
 
 /// 分軌錄影的音量（%）
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -327,7 +360,15 @@ impl AudioFx {
     /// 分軌時重新混合系統聲音與麥克風的濾鏡（輸入 [0:a:1]、[0:a:2]，輸出 [amixed]）
     pub fn track_graph(&self) -> Option<String> {
         let t = self.tracks?;
-        let mic = if self.denoise { format!("afftdn=nf=-25,volume={}", t.mic as f64 / 100.0) } else { format!("volume={}", t.mic as f64 / 100.0) };
+        let mut mic = vec![];
+        if self.denoise {
+            mic.push("afftdn=nf=-25".to_string());
+        }
+        if self.voice {
+            mic.push(VOICE_FX.to_string());
+        }
+        mic.push(format!("volume={}", t.mic as f64 / 100.0));
+        let mic = mic.join(",");
         Some(format!("[0:a:1]volume={}[tsys];[0:a:2]{mic}[tmic];[tsys][tmic]amix=inputs=2:duration=longest:normalize=0[amixed]", t.system as f64 / 100.0))
     }
 
@@ -337,6 +378,10 @@ impl AudioFx {
         // 分軌時降噪只套用在麥克風（見 track_graph）
         if self.denoise && self.tracks.is_none() {
             f.push("afftdn=nf=-25");
+        }
+        // 分軌時人聲加強只套用在麥克風（見 track_graph）
+        if self.voice && self.tracks.is_none() {
+            f.push(VOICE_FX);
         }
         if self.normalize {
             // loudnorm 會把取樣率改成 192k：轉回 48k
@@ -501,6 +546,26 @@ mod tests {
         // 沒有變速時和 keep_ranges 一樣
         let plain = spec(1.0, 9.0, &[(3.0, 4.0)]);
         assert_eq!(keep_parts(10.0, &plain), keep_ranges(10.0, &plain).into_iter().map(|(a, b)| Part::new(a, b, 1.0)).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn segments_can_be_reordered() {
+        let mut sp = spec(0.0, 10.0, &[(3.0, 4.0), (6.0, 7.0)]);
+        assert!(!reordered(&keep_parts(10.0, &sp)));
+        // 最後一段移到最前面；順序裡沒有的照原本的先後放在後面
+        sp.order = vec![7000, 0];
+        let parts = keep_parts(10.0, &sp);
+        assert_eq!(parts.iter().map(|p| (p.a, p.b)).collect::<Vec<_>>(), vec![(7.0, 10.0), (0.0, 3.0), (4.0, 6.0)]);
+        assert!(reordered(&parts));
+        assert_eq!(map_time(&parts, 1.0), Some(4.0));
+        assert_eq!(map_time(&parts, 8.0), Some(1.0));
+        // 順序改了的地方都是接縫
+        assert_eq!(cut_fades(&parts).len(), 2);
+        assert!((output_length(&parts) - 8.0).abs() < 1e-9);
+        // 之後在移到前面的那一段中間又刪掉一段：後半段跟著它
+        sp.removed.push((8.0, 8.5));
+        let parts = keep_parts(10.0, &sp);
+        assert_eq!(parts.iter().map(|p| (p.a, p.b)).collect::<Vec<_>>(), vec![(7.0, 8.0), (8.5, 10.0), (0.0, 3.0), (4.0, 6.0)]);
     }
 
     #[test]

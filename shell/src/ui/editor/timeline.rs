@@ -47,6 +47,10 @@ const FAST: Color32 = Color32::from_rgb(0x00, 0x78, 0xff);
 pub(crate) const IDLE_MARK: Color32 = Color32::from_rgb(0x14, 0xb8, 0xa6);
 pub(crate) const QUIET_MARK: Color32 = Color32::from_rgb(0xa8, 0x55, 0xf7);
 /// 錄影時麥克風靜音的時段
+/// 片段順序的編號
+const ORDER_MARK: Color32 = Color32::from_rgb(214, 120, 0);
+/// 手動放大的色帶
+const REGION_MARK: Color32 = Color32::from_rgb(0, 130, 230);
 /// 旁白的色帶
 const VOICE_MARK: Color32 = Color32::from_rgb(28, 150, 90);
 /// 定格的線
@@ -307,6 +311,28 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, toast: &mut
         painter.rect_filled(band, CornerRadius::same(3), VOICE_MARK);
         let label = if c.text.is_empty() { tr!("旁白", "Narration").to_string() } else { c.text.chars().take(20).collect::<String>() };
         let g = painter.layout_no_wrap(label, theme::font_bold(10.0), Color32::WHITE);
+        if band.width() > g.size().x + 6.0 {
+            painter.galley(pos2(band.left() + 3.0, band.center().y - g.size().y / 2.0), g, Color32::WHITE);
+        }
+    }
+    // 片段改了順序：每段開頭標上第幾段
+    if ed.is_reordered() {
+        for (i, (s0, s1)) in ed.ordered_keep().iter().enumerate().filter(|(_, r)| r.1 > a && r.0 < b) {
+            let x = x_of(s0.max(a));
+            let g = painter.layout_no_wrap(format!("{}", i + 1), theme::font_bold(11.0), Color32::WHITE);
+            let c = pos2(x + 11.0, rect.bottom() - 12.0);
+            if x_of(*s1) - x > 22.0 {
+                painter.circle_filled(c, 9.0, ORDER_MARK);
+                painter.galley(c - g.size() / 2.0, g, Color32::WHITE);
+            }
+        }
+    }
+    // 手動放大：上緣一條藍色帶
+    for r in ed.spec.zoom_regions.iter().filter(|r| r.end > a && r.start < b) {
+        let rr = full(r.start, r.end).shrink2(vec2(1.0, 0.0));
+        let band = Rect::from_min_max(pos2(rr.left(), rr.top() + 2.0), pos2(rr.right(), rr.top() + 14.0));
+        painter.rect_filled(band, CornerRadius::same(3), REGION_MARK);
+        let g = painter.layout_no_wrap(trf!("放大 {}×", "Zoom {}×", screenrecorder_core::format::speed_label((r.factor() * 10.0).round() / 10.0)), theme::font_bold(10.0), Color32::WHITE);
         if band.width() > g.size().x + 6.0 {
             painter.galley(pos2(band.left() + 3.0, band.center().y - g.size().y / 2.0), g, Color32::WHITE);
         }

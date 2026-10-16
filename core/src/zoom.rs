@@ -88,6 +88,106 @@ pub fn zoompan(points: &[Point], factor: f64, w: i32, h: i32, fps: f64) -> Optio
     Some(format!("zoompan=z='{z}':x='({})*iw-iw/zoom/2':y='({})*ih-ih/zoom/2':d=1:s={w}x{h}:fps={}", axis(1), axis(2), num(fps)))
 }
 
+/// 手動放大的一塊：從 start 到 end（秒）放大到畫面上的範圍（x、y、w、h 是 0～1）
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Region {
+    pub start: f64,
+    pub end: f64,
+    pub x: f64,
+    pub y: f64,
+    pub w: f64,
+    pub h: f64,
+}
+
+/// 手動放大：拉近、拉遠各花多久（秒；放大的時間很短時縮短成一半）
+const REGION_RAMP: f64 = 0.6;
+/// 最多放大幾倍
+pub const REGION_MAX: f64 = 6.0;
+
+impl Region {
+    /// 放大的倍率：整塊放得進畫面
+    pub fn factor(&self) -> f64 {
+        (1.0 / self.w.max(1e-3)).min(1.0 / self.h.max(1e-3)).clamp(1.0, REGION_MAX)
+    }
+    pub fn center(&self) -> (f64, f64) {
+        (self.x + self.w / 2.0, self.y + self.h / 2.0)
+    }
+    /// 時間、範圍合理
+    pub fn valid(&self) -> bool {
+        [self.start, self.end, self.x, self.y, self.w, self.h].iter().all(|v| v.is_finite()) && self.end - self.start >= 0.3 && self.w > 0.02 && self.h > 0.02
+    }
+}
+
+/// 整理手動放大：去掉不合理的，依時間排序，和前一塊重疊的從前一塊結束後開始
+pub fn clean_regions(list: &[Region]) -> Vec<Region> {
+    let mut v: Vec<Region> = list.iter().copied().filter(Region::valid).collect();
+    v.sort_by(|a, b| a.start.total_cmp(&b.start));
+    let mut out: Vec<Region> = vec![];
+    for mut r in v {
+        if let Some(l) = out.last() {
+            r.start = r.start.max(l.end);
+        }
+        if r.valid() {
+            out.push(r);
+        }
+    }
+    out
+}
+
+/// 一段放大（輸出用）：開始、結束（秒）、倍率、中心 x、y
+pub type Span = (f64, f64, f64, f64, f64);
+
+fn ramp(a: f64, b: f64) -> f64 {
+    REGION_RAMP.min((b - a) / 2.0).max(0.05)
+}
+
+/// 時間 t 的 (倍率, 中心 x, 中心 y)；沒有在放大時 None
+pub fn region_at(spans: &[Span], t: f64) -> Option<(f64, f64, f64)> {
+    spans.iter().find(|s| t > s.0 && t < s.1).map(|&(a, b, f, cx, cy)| {
+        let r = ramp(a, b);
+        let e = smooth(((t - a) / r).min((b - t) / r));
+        (1.0 + (f - 1.0) * e, 0.5 + (cx - 0.5) * e, 0.5 + (cy - 0.5) * e)
+    })
+}
+
+/// 手動放大的 zoompan（it = 輸入的秒數，剪輯後的時間），輸出 w × h；spans 不能重疊
+pub fn regions_zoompan(spans: &[Span], w: i32, h: i32, fps: f64) -> Option<String> {
+    if spans.is_empty() {
+        return None;
+    }
+    let s = |e: String| format!("st(1,clip({e},0,1));ld(1)*ld(1)*(3-2*ld(1))");
+    let env = |a: f64, b: f64| {
+        let r = ramp(a, b);
+        s(format!("min((it-{})/{},({}-it)/{})", num(a), num(r), num(b), num(r)))
+    };
+    let sum = |f: &dyn Fn(&Span) -> f64| spans.iter().map(|sp| format!("{}*({})", num(f(sp)), env(sp.0, sp.1))).collect::<Vec<_>>().join("+");
+    let z = format!("1+{}", sum(&|sp| sp.2 - 1.0));
+    let x = format!("0.5+{}", sum(&|sp| sp.3 - 0.5));
+    let y = format!("0.5+{}", sum(&|sp| sp.4 - 0.5));
+    Some(format!("zoompan=z='{z}':x='({x})*iw-iw/zoom/2':y='({y})*ih-ih/zoom/2':d=1:s={w}x{h}:fps={}", num(fps)))
+}
+
+/// 手動放大換成剪輯後的時間：開始落在刪掉的片段裡時從下一段保留的開始，結束落在刪掉的片段裡時到上一段保留的結束
+pub fn map_regions(parts: &[crate::edit::Part], regions: &[Region]) -> Vec<Span> {
+    clean_regions(regions)
+        .into_iter()
+        .filter_map(|r| {
+            let a = map_time(parts, r.start).or_else(|| parts.iter().find(|p| !p.is_hold() && p.a > r.start).and_then(|p| map_time(parts, p.a)))?;
+            let b = map_time(parts, r.end - 0.001).or_else(|| {
+                let p = parts.iter().rev().find(|p| !p.is_hold() && p.b < r.end)?;
+                map_time(parts, p.b - 0.001)
+            })?;
+            let (cx, cy) = r.center();
+            (b - a >= 0.3).then_some((a, b, r.factor(), cx, cy))
+        })
+        .collect()
+}
+
+/// 跟著點擊放大時，手動放大的前後不要再放大點擊（兩種不會同時發生）
+pub fn outside_spans(points: &[Point], spans: &[Span]) -> Vec<Point> {
+    points.iter().copied().filter(|p| spans.iter().all(|s| p[0] < s.0 - HOLD - RAMP_OUT || p[0] > s.1 + RAMP_IN)).collect()
+}
+
 /// 原影片的時間 → 剪輯後的時間（刪掉的片段裡的點不算；變速、定格都算進去）
 pub fn map_time(parts: &[crate::edit::Part], t: f64) -> Option<f64> {
     crate::edit::map_time(parts, t)
@@ -96,6 +196,31 @@ pub fn map_time(parts: &[crate::edit::Part], t: f64) -> Option<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn manual_regions_zoom_in_and_out() {
+        let r = Region { start: 2.0, end: 5.0, x: 0.5, y: 0.5, w: 0.25, h: 0.5 };
+        assert_eq!(r.factor(), 2.0);
+        assert_eq!(r.center(), (0.625, 0.75));
+        // 重疊的往後挪、太短的拿掉
+        let list = clean_regions(&[Region { start: 4.0, end: 6.0, ..r }, r, Region { start: 9.0, end: 9.1, ..r }]);
+        assert_eq!(list.iter().map(|r| (r.start, r.end)).collect::<Vec<_>>(), vec![(2.0, 5.0), (5.0, 6.0)]);
+        // 剪掉 0～1：剪輯後 1～4
+        let parts = [crate::edit::Part::new(1.0, 10.0, 1.0)];
+        let spans = map_regions(&parts, &[r]);
+        assert_eq!(spans.len(), 1);
+        assert!((spans[0].0 - 1.0).abs() < 1e-9 && (spans[0].1 - 4.0).abs() < 0.01 && spans[0].2 == 2.0, "{spans:?}");
+        // 中間放大到位，頭尾慢慢拉近拉遠
+        assert_eq!(region_at(&spans, 0.5), None);
+        let (z, cx, _) = region_at(&spans, 2.5).unwrap();
+        assert!((z - 2.0).abs() < 1e-9 && (cx - 0.625).abs() < 1e-9);
+        assert!(region_at(&spans, 1.1).unwrap().0 < 1.2);
+        let f = regions_zoompan(&spans, 1280, 720, 30.0).unwrap();
+        assert!(f.starts_with("zoompan=z='1+1*(") && f.ends_with(":d=1:s=1280x720:fps=30"), "{f}");
+        // 點擊在手動放大附近的不放大
+        let pts = [[0.5, 0.1, 0.1], [2.0, 0.2, 0.2], [9.0, 0.3, 0.3]];
+        assert_eq!(outside_spans(&pts, &spans), vec![[9.0, 0.3, 0.3]]);
+    }
 
     #[test]
     fn points_windows_and_zoom_curve() {

@@ -973,6 +973,26 @@ pub fn to_overlay(a: &Ann, vw: f64, vh: f64) -> Option<Overlay> {
     Some(Overlay { kind: OverlayKind::Image, x: x0, y: y0, w: x1 - x0, h: y1 - y0, start: a.start, end: a.end, png: pm.encode_png().ok(), mask: None, invert: false })
 }
 
+/// 「我的樣式」：存起來的顏色與大小（大小以 1080 高的畫面為準），截圖與剪輯都能一鍵套用
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AnnStyle {
+    pub color: String,
+    pub size: f64,
+}
+
+/// 最多存幾個
+pub const MAX_STYLES: usize = 8;
+
+/// 存一個樣式：一樣的不重複存，太多時去掉最舊的
+pub fn save_style(list: &mut Vec<AnnStyle>, color: &str, size: f64) {
+    let size = size.round().max(1.0);
+    list.retain(|s| !(s.color.eq_ignore_ascii_case(color) && (s.size - size).abs() < 0.5));
+    list.push(AnnStyle { color: color.to_string(), size });
+    if list.len() > MAX_STYLES {
+        list.remove(0);
+    }
+}
+
 /// 存起來的剪輯設定與標註（之後可以再修改）；與 2.1 版的格式相同
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1021,6 +1041,19 @@ pub struct ProjectSpec {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn my_styles_dedupe_and_cap() {
+        let mut l = vec![];
+        save_style(&mut l, "#ff0000", 6.2);
+        save_style(&mut l, "#FF0000", 6.0);
+        assert_eq!(l, vec![AnnStyle { color: "#FF0000".into(), size: 6.0 }]);
+        for i in 0..10 {
+            save_style(&mut l, "#00ff00", i as f64 + 10.0);
+        }
+        assert_eq!(l.len(), MAX_STYLES);
+        assert_eq!(l.last().unwrap().size, 19.0);
+    }
 
     fn ann(kind: AnnKind) -> Ann {
         Ann {

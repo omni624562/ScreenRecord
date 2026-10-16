@@ -60,6 +60,9 @@ fn cursor_overlay(ed: &mut Editor, ctx: &egui::Context, painter: &egui::Painter,
     if !ed.cursor_on() || ed.vw <= 0.0 || ed.vh <= 0.0 {
         return;
     }
+    if ed.cursor_hide && cursor::hidden(&ed.cursor_idle, ed.now()) {
+        return;
+    }
     let Some(pos) = cursor::at(&ed.cursor_smooth, ed.now()) else { return };
     let h = cursor::height_for(ed.vh as i32, ed.cursor_size);
     if ed.cursor_tex.as_ref().is_none_or(|c| c.0 != h) {
@@ -112,8 +115,14 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, stage_h: f3
     }
     painter.rect_filled(rect.intersect(shown), CornerRadius::ZERO, Color32::BLACK);
     // 預覽結果時顯示跟著點擊放大的效果（只放大影片與游標；標註照原本的位置畫）
-    let uv = if ed.previewing && ed.zoom_active() {
-        let (z, cx, cy) = zoom::at(&zoom::focus_points(&ed.zoom_clicks()), ed.zoom, ed.now());
+    let spans = ed.region_spans();
+    let manual = if ed.previewing { zoom::region_at(&spans, ed.now()) } else { None };
+    let uv = if let Some((z, cx, cy)) = manual {
+        let (hw, hh) = (0.5 / z as f32, 0.5 / z as f32);
+        let (cx, cy) = ((cx as f32).clamp(hw, 1.0 - hw), (cy as f32).clamp(hh, 1.0 - hh));
+        Rect::from_min_max(pos2(cx - hw, cy - hh), pos2(cx + hw, cy + hh))
+    } else if ed.previewing && ed.zoom_active() {
+        let (z, cx, cy) = zoom::at(&zoom::outside_spans(&zoom::focus_points(&ed.zoom_clicks()), &spans), ed.zoom, ed.now());
         let (hw, hh) = (0.5 / z as f32, 0.5 / z as f32);
         let (cx, cy) = ((cx as f32).clamp(hw, 1.0 - hw), (cy as f32).clamp(hh, 1.0 - hh));
         Rect::from_min_max(pos2(cx - hw, cy - hh), pos2(cx + hw, cy + hh))
@@ -258,13 +267,35 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, stage_h: f3
                 }
             }
         }
-    } else if ed.tab == Tab::Crop && ed.vw > 0.0 && ed.tool.is_none() && !follow_crop(ed) {
+    } else if ed.tab == Tab::Crop && ed.vw > 0.0 && ed.tool.is_none() && !follow_crop(ed) && !ed.zoom_pick {
         let g = painter.layout_no_wrap(trf!("在{}上拖曳，框出要保留的範圍", "Drag on the {} to select the area to keep", ed.what()), theme::font(13.0), Color32::WHITE);
         // 截圖放大時圖的上緣可能在畫面外：放在看得到的範圍裡
         let vis = rect.intersect(outer);
         let pill = Rect::from_center_size(pos2(vis.center().x, vis.top() + 24.0), g.size() + vec2(24.0, 12.0));
         painter.rect_filled(pill, CornerRadius::same(255), Color32::from_black_alpha(170));
         painter.galley(pill.min + vec2(12.0, 6.0), g, Color32::WHITE);
+    }
+    // 手動放大：拖曳框出範圍；目前時間有手動放大時（沒在預覽）畫出範圍
+    if !ed.is_shot() {
+        if ed.zoom_pick {
+            pick_region(ed, ui, &painter, rect, &resp);
+            return;
+        }
+        if !ed.previewing {
+            let t = ed.now();
+            for r in ed.spec.zoom_regions.iter().filter(|r| t >= r.start && t <= r.end) {
+                let rr = Rect::from_min_max(
+                    pos2(rect.left() + r.x as f32 * rect.width(), rect.top() + r.y as f32 * rect.height()),
+                    pos2(rect.left() + (r.x + r.w) as f32 * rect.width(), rect.top() + (r.y + r.h) as f32 * rect.height()),
+                );
+                let pts = vec![rr.left_top(), rr.right_top(), rr.right_bottom(), rr.left_bottom(), rr.left_top()];
+                painter.extend(egui::Shape::dashed_line(&pts, Stroke::new(1.5, ZOOM_MARK), 6.0, 4.0));
+                let g = painter.layout_no_wrap(trf!("放大 {}×", "Zoom {}×", screenrecorder_core::format::speed_label((r.factor() * 10.0).round() / 10.0)), theme::font_bold(11.0), Color32::WHITE);
+                let pill = Rect::from_min_size(rr.min + vec2(4.0, 4.0), g.size() + vec2(10.0, 4.0));
+                painter.rect_filled(pill, CornerRadius::same(4), ZOOM_MARK);
+                painter.galley(pill.min + vec2(5.0, 2.0), g, Color32::WHITE);
+            }
+        }
     }
     // 截圖：按住空白鍵（或中鍵）拖曳是移動畫面，不放標註
     if !(ed.is_shot() && super::shot::pan(ed, ui, &resp)) {
@@ -273,6 +304,59 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, stage_h: f3
     if ed.is_shot() {
         let shown = super::shot::shown_rect(ed, rect);
         super::shot::overlays(ed, ui, outer, shown);
+    }
+}
+
+/// 手動放大的範圍框
+const ZOOM_MARK: Color32 = Color32::from_rgb(0, 150, 255);
+
+/// 框選要手動放大的地方：拖曳時畫出範圍（維持影片的長寬比），放開後從播放點開始放大 3 秒
+fn pick_region(ed: &mut Editor, ui: &egui::Ui, painter: &egui::Painter, rect: Rect, resp: &egui::Response) {
+    let dim = Color32::from_black_alpha(90);
+    painter.rect_filled(rect, CornerRadius::ZERO, dim);
+    if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+        ed.zoom_pick = false;
+        return;
+    }
+    let norm = |p: Pos2| (((p.x - rect.left()) / rect.width()).clamp(0.0, 1.0) as f64, ((p.y - rect.top()) / rect.height()).clamp(0.0, 1.0) as f64);
+    // 和裁切一樣看按下、按住、放開（不靠 egui 的拖曳判斷：很快的拖曳也算）
+    let (pressed, released, pos) = ui.input(|i| (i.pointer.primary_pressed(), i.pointer.primary_released(), i.pointer.latest_pos()));
+    if pressed && resp.hovered() {
+        ed.zoom_from = pos.map(norm);
+    }
+    let sel = match (ed.zoom_from, pos) {
+        (Some(a), Some(p)) => {
+            let b = norm(p);
+            // 維持影片的長寬比（放大後剛好填滿畫面）：以拖曳的寬或高中比較大的為準
+            let w = (b.0 - a.0).abs().max((b.1 - a.1).abs()).min(1.0);
+            let x = (if b.0 < a.0 { a.0 - w } else { a.0 }).clamp(0.0, 1.0 - w);
+            let y = (if b.1 < a.1 { a.1 - w } else { a.1 }).clamp(0.0, 1.0 - w);
+            Some((x, y, w, w))
+        }
+        _ => None,
+    };
+    let g = painter.layout_no_wrap(tr!("拖曳框出要放大的地方", "Drag to frame the area to zoom into").to_string(), theme::font(13.0), Color32::WHITE);
+    let pill = Rect::from_center_size(pos2(rect.center().x, rect.top() + 24.0), g.size() + vec2(24.0, 12.0));
+    painter.rect_filled(pill, CornerRadius::same(255), Color32::from_black_alpha(170));
+    painter.galley(pill.min + vec2(12.0, 6.0), g, Color32::WHITE);
+    let Some((x, y, w, h)) = sel else { return };
+    let rr = Rect::from_min_max(
+        pos2(rect.left() + x as f32 * rect.width(), rect.top() + y as f32 * rect.height()),
+        pos2(rect.left() + (x + w) as f32 * rect.width(), rect.top() + (y + h) as f32 * rect.height()),
+    );
+    painter.rect_stroke(rr, CornerRadius::ZERO, Stroke::new(2.0, ZOOM_MARK), egui::StrokeKind::Outside);
+    if released {
+        ed.zoom_from = None;
+        ed.zoom_pick = false;
+        if w < 0.05 {
+            return;
+        }
+        let t = ed.now();
+        let r = zoom::Region { start: t, end: (t + 3.0).min(ed.duration), x, y, w, h };
+        // 和其他的重疊時，其他的讓開（新框的優先）
+        ed.spec.zoom_regions.retain(|o| o.end <= r.start || o.start >= r.end);
+        ed.spec.zoom_regions.push(r);
+        ed.spec.zoom_regions = zoom::clean_regions(&ed.spec.zoom_regions);
     }
 }
 

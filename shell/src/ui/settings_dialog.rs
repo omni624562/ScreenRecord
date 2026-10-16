@@ -2040,7 +2040,17 @@ fn component_card(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui, k: Kind)
         let info = match k {
             Kind::Ffmpeg if installed => trf!("版本 {}：{}", "Version {}: {}", app.env.ffmpeg.version.clone().unwrap_or_default(), app.env.ffmpeg.path.clone().unwrap_or_default()),
             Kind::Ffmpeg => tr!("錄影、截圖、轉檔都要用到（必要，約 100 MB）。", "Required for recording, screenshots and conversion (about 100 MB).").into(),
-            _ if builtin => tr!("目前用的 FFmpeg 已經能辨識語音，不用另外下載。", "The FFmpeg in use can already recognize speech, so nothing else is needed.").into(),
+            _ if builtin => trf!(
+                "就是上面「FFmpeg」那一個（版本 {}：{}），它本身就能辨識語音，不用另外下載。",
+                "It's the same FFmpeg as above (version {}: {}); it can already recognize speech, so nothing else is needed.",
+                app.env.ffmpeg.version.clone().unwrap_or_default(),
+                app.env.ffmpeg.path.clone().unwrap_or_default()
+            ),
+            Kind::SpeechFfmpeg if installed => trf!(
+                "另外下載的、有語音辨識功能的 FFmpeg，只用來產生字幕：{}",
+                "A separate FFmpeg build with speech recognition, used only for subtitles: {}",
+                k.path().map(|p| p.display().to_string()).unwrap_or_default()
+            ),
             Kind::SpeechFfmpeg => trf!("有語音辨識功能的 FFmpeg（約 {} MB），只用來產生字幕。", "An FFmpeg build with speech recognition (about {} MB), used only for subtitles.", k.mb()),
             Kind::Model(_) => tr!("模型越大辨識越準，但比較慢。只需要其中一個。", "Bigger models are more accurate but slower. You only need one.").into(),
         };

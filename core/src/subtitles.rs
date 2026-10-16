@@ -517,9 +517,74 @@ pub fn read_file(path: &Path) -> Result<Vec<Cue>, String> {
     Ok(cues)
 }
 
+/// 字幕的樣式（剪輯視窗套用到全部字幕，之後加的字幕也用這個）
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct SubStyle {
+    /// 字級：0 = 小、1 = 中、2 = 大
+    #[serde(default = "mid")]
+    pub size: u8,
+    /// 文字顏色 #rrggbb
+    #[serde(default = "white")]
+    pub color: String,
+    /// 半透明深色底
+    #[serde(default = "yes")]
+    pub bg: bool,
+    /// 放在畫面上方（否則下方）
+    #[serde(default)]
+    pub top: bool,
+}
+
+fn mid() -> u8 {
+    1
+}
+fn white() -> String {
+    "#ffffff".into()
+}
+fn yes() -> bool {
+    true
+}
+
+impl Default for SubStyle {
+    fn default() -> Self {
+        SubStyle { size: 1, color: white(), bg: true, top: false }
+    }
+}
+
+/// 字幕可選的文字顏色：白、黃、淺藍
+pub const SUB_COLORS: [&str; 3] = ["#ffffff", "#ffd84d", "#7fe7ff"];
+
+impl SubStyle {
+    /// 字級（像素）：1080p 時小 32、中 40、大 52
+    pub fn font_px(&self, video_h: f64) -> f64 {
+        let base = [32.0, 40.0, 52.0][self.size.min(2) as usize];
+        (base * video_h / 1080.0).round().max(14.0)
+    }
+
+    /// 放好的位置（左上角）：水平置中，離上緣或下緣 6%
+    pub fn place(&self, w: f64, h: f64, video_w: f64, video_h: f64) -> (f64, f64) {
+        let x = ((video_w - w) / 2.0).round().max(0.0);
+        let margin = video_h * 0.06;
+        let y = if self.top { margin.round() } else { (video_h - h - margin).round().max(0.0) };
+        (x, y)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn subtitle_style_sizes_and_places() {
+        let st = SubStyle::default();
+        assert_eq!(st.font_px(1080.0), 40.0);
+        assert_eq!(SubStyle { size: 2, ..st.clone() }.font_px(720.0), 35.0);
+        assert_eq!(SubStyle { size: 0, ..st.clone() }.font_px(200.0), 14.0);
+        assert_eq!(st.place(400.0, 60.0, 1920.0, 1080.0), (760.0, 955.0));
+        assert_eq!(SubStyle { top: true, ..st.clone() }.place(400.0, 60.0, 1920.0, 1080.0), (760.0, 65.0));
+        // 舊的專案沒有這個欄位：用預設
+        let s: SubStyle = serde_json::from_str("{}").unwrap();
+        assert_eq!(s, SubStyle::default());
+    }
 
     #[test]
     fn reads_whisper_srt() {
