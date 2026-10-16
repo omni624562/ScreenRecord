@@ -36,6 +36,8 @@ pub fn ann_track_h(ed: &Editor) -> f32 {
     }
 }
 pub const SCROLL_H: f32 = 10.0;
+/// 標註軌上比這個窄（像素）的一條，兩端的拖曳範圍會重疊：改成依拖的方向決定拉哪一端
+const NARROW_BAR: f32 = 24.0;
 
 const YELLOW: Color32 = Color32::from_rgb(0xf5, 0xb3, 0x01);
 /// 錄影時加的標記（和錄影外框上的「・標記 N」同色）
@@ -904,7 +906,18 @@ fn ann_track(ed: &mut Editor, ui: &mut egui::Ui) {
     } else if let Drag::AnnBar { id, edge, x0, t0, moved, orig } = ed.drag {
         let lx = latest.map(|p| p.x).unwrap_or(x0);
         if down {
-            let moved = moved || (lx - x0).abs() > 3.0;
+            let first = !moved && (lx - x0).abs() > 3.0;
+            let moved = moved || first;
+            // 很短的一條（兩端的拖曳範圍重疊）：依拖的方向決定，往右拉長結尾、往左拉長開頭
+            let edge = if first && (((orig.1 - orig.0) / span) as f32 * rect.width()) < NARROW_BAR {
+                if lx > x0 {
+                    Edge::End
+                } else {
+                    Edge::Start
+                }
+            } else {
+                edge
+            };
             ed.drag = Drag::AnnBar { id, edge, x0, t0, moved, orig };
             if !moved {
                 return;
