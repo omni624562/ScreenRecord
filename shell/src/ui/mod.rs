@@ -105,6 +105,8 @@ pub enum EntryAction {
     CopyChapters,
     /// 錄影時記下的操作步驟（點了什麼、按了哪些快速鍵）複製成文字清單
     CopySteps,
+    /// 錄影時記下的操作步驟做成步驟教學（每一步附上那一刻的畫面），在步驟整理視窗整理後做成文件
+    StepsGuide,
     /// 原速、壓縮到某個大小以內（傳 LINE / Email）：開啟製作視窗的「壓縮」
     Compress,
     /// 做成直式影片（Shorts / Reels）：開啟剪輯並選好「直式影片」
@@ -113,6 +115,33 @@ pub enum EntryAction {
     Convert,
     /// 做封面（YouTube 縮圖）
     Cover,
+}
+
+/// 錄影的「步驟教學」子選單：複製成文字，或做成附圖的步驟教學（和步驟截圖同一個整理視窗）
+pub(crate) fn steps_menu(ui: &mut egui::Ui) -> Option<EntryAction> {
+    let mut pick = None;
+    ui.menu_button(tr!("步驟教學", "Step-by-step guide"), |ui| {
+        if ui
+            .button(tr!("做成文件（附圖）…", "Make a guide with pictures…"))
+            .on_hover_text(tr!(
+                "錄影時點的每個按鈕、按的快速鍵各做成一步，附上那一刻的畫面（圈出點的地方），整理後存成 HTML、Word、PowerPoint 或影片",
+                "Each button you clicked and shortcut you pressed becomes a step with the frame from that moment (the click is circled). Tidy them up, then save as HTML, Word, PowerPoint or video"
+            ))
+            .clicked()
+        {
+            pick = Some(EntryAction::StepsGuide);
+            ui.close();
+        }
+        if ui
+            .button(tr!("複製成文字", "Copy as text"))
+            .on_hover_text(tr!("整理成「1. 點「存檔」」這樣的清單，貼到文件或信件裡", "A numbered list like “1. Click “Save””, to paste into a document or email"))
+            .clicked()
+        {
+            pick = Some(EntryAction::CopySteps);
+            ui.close();
+        }
+    });
+    pick
 }
 
 pub struct UiApp {
@@ -811,6 +840,21 @@ impl UiApp {
                         ),
                         true,
                     ),
+                });
+            }
+            EntryAction::StepsGuide => {
+                let core = self.core.clone();
+                self.toast(tr!("正在擷取每一步的畫面…", "Capturing a frame for each step…"), false);
+                self.spawn(async move { actions::steps_from_recording(&core, &path).await }, |app, r| match r {
+                    Ok(0) => app.toast(
+                        tr!(
+                            "這支錄影沒有記到操作步驟（3.21 以後在 Windows 上錄的影片，錄影中點的按鈕、按的快速鍵才會記下來）",
+                            "No steps were recorded for this video (buttons clicked and shortcuts pressed are recorded on Windows from version 3.21)"
+                        ),
+                        true,
+                    ),
+                    Ok(n) => app.toast(trf!("擷取了 {n} 步，整理好後做成文件", "Captured {n} steps. Tidy them up, then make the guide"), false),
+                    Err(e) => app.toast(e.message().to_string(), true),
                 });
             }
             EntryAction::Phone => phone::open(self, path),

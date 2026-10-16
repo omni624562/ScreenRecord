@@ -429,6 +429,8 @@ fn record_page(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
         let note = if big { tr!("（很大，建議 50%）", " (very large; 50% recommended)") } else { "" };
         form_hint(ui, trf!("目前範圍 {}×{}，輸出 {w}×{h}{note}", "Current area {}×{}, output {w}×{h}{note}", r.width, r.height), if big { p.warn } else { p.muted });
     }
+    form_divider(ui);
+    form_section(ui, tr!("游標與強調", "Cursor and highlights"), |_| {});
     form_row(ui, tr!("滑鼠游標", "Mouse cursor"), |ui| {
         let mut dm = app.s.draw_mouse;
         if switch(ui, &mut dm, tr!("錄進影片", "Include in recording"), true)
@@ -442,7 +444,7 @@ fn record_page(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
             app.save_settings();
         }
     });
-    form_row(ui, tr!("畫面效果", "Effects"), |ui| {
+    form_row(ui, tr!("點擊與按鍵", "Clicks and keys"), |ui| {
         ui.vertical(|ui| {
             let mut c = app.s.show_clicks;
             if switch(ui, &mut c, tr!("顯示滑鼠點擊", "Show mouse clicks"), true)
@@ -466,19 +468,31 @@ fn record_page(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
                 app.s.show_keys = k;
                 app.save_settings();
             }
-            let mut h = app.s.cursor_halo;
-            if switch(ui, &mut h, tr!("游標周圍加光暈", "Cursor highlight"), true)
-                .on_hover_text(tr!("游標周圍有一圈淡黃色的光暈，看影片的人比較容易跟上游標在哪裡", "Adds a soft yellow glow around the cursor so viewers can follow it more easily"))
-                .changed()
-            {
-                app.s.cursor_halo = h;
-                app.save_settings();
-            }
         });
+    });
+    form_row(ui, tr!("光暈", "Highlight"), |ui| {
+        let mut h = app.s.cursor_halo;
+        if switch(ui, &mut h, tr!("游標周圍加光暈", "Cursor highlight"), true)
+            .on_hover_text(tr!("游標周圍有一圈淡黃色的光暈，看影片的人比較容易跟上游標在哪裡", "Adds a soft yellow glow around the cursor so viewers can follow it more easily"))
+            .changed()
+        {
+            app.s.cursor_halo = h;
+            app.save_settings();
+        }
     });
     if app.s.show_clicks || app.s.show_keys || app.s.cursor_halo {
         form_hint(ui, tr!("波紋、按鍵與光暈會錄進影片；只支援 Windows。", "Ripples, keys and the highlight are recorded into the video. Windows only."), p.muted);
     }
+    form_hint(
+        ui,
+        tr!(
+            "平滑放大的游標、跟著點擊放大、點擊音效不用在錄影前決定：錄完在剪輯視窗的「畫面」「聲音」分頁加上。",
+            "A smooth, larger cursor, zoom on clicks and click sounds don't need to be decided before recording: add them later in the editor's Frame and Audio tabs."
+        ),
+        p.muted,
+    );
+    form_divider(ui);
+    form_section(ui, tr!("錄影時", "While recording"), |_| {});
     form_row(ui, tr!("桌面", "Desktop"), |ui| {
         let mut v = app.s.hide_icons;
         if switch(ui, &mut v, tr!("錄影時隱藏桌面圖示", "Hide desktop icons while recording"), true)
@@ -1437,6 +1451,15 @@ fn after_record_section(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
             app.save_settings();
         }
     });
+    form_row(ui, tr!("加速版", "Sped-up"), |ui| {
+        let mut v = app.s.after_speed;
+        let mut items: Vec<(u32, String, bool)> = vec![(0, tr!("不做", "Don't make").to_string(), true)];
+        items.extend(screenrecorder_core::edit::FAST_SPEEDS.iter().map(|s| (*s, trf!("另存 {s}× 加速版", "Save a {s}× version"), true)));
+        if form_combo(ui, "after-speed", FORM_CTRL_W, &mut v, &items) {
+            app.s.after_speed = v;
+            app.save_settings();
+        }
+    });
     form_row(ui, tr!("命名", "Name"), |ui| {
         let mut on = app.s.after_auto_name;
         if switch(ui, &mut on, tr!("依內容自動命名", "Name by content"), true)
@@ -1478,8 +1501,8 @@ fn after_record_section(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
     form_hint(
         ui,
         tr!(
-            "錄影存好後依序處理（有剪輯版時，字幕與壓縮用剪輯版），錄影面板顯示進度、可以取消。處理中開始錄影時會先暫停，錄完再繼續；手動的轉檔也優先。系統匣、快速鍵、排程的錄影也會處理。",
-            "Runs in order after each recording is saved (subtitles and compression use the edited version when there is one). The recording panel shows progress and lets you cancel. If you start recording meanwhile, it pauses and continues afterwards; manual conversions go first too. Recordings started from the tray, shortcuts or a schedule are processed too."
+            "錄影存好後依序處理（有剪輯版時，字幕與壓縮用剪輯版），錄影面板顯示進度、可以取消。處理中開始錄影時會先暫停，錄完再繼續；手動的轉檔也優先。系統匣、快速鍵、排程的錄影也會處理。在「全部錄影」勾選好幾支、按「一次處理」時，也是用這裡的設定。",
+            "Runs in order after each recording is saved (subtitles and compression use the edited version when there is one). The recording panel shows progress and lets you cancel. If you start recording meanwhile, it pauses and continues afterwards; manual conversions go first too. Recordings started from the tray, shortcuts or a schedule are processed too. “Process” for several recordings in All recordings uses these settings as well."
         ),
         p.muted,
     );

@@ -630,7 +630,7 @@ impl App {
             frames.push((png.display().to_string(), 2.5));
             voices.push(None);
             for (i, s) in list.iter().enumerate() {
-                let text = crate::steps::caption(&s.window);
+                let text = s.caption();
                 let png = t2.join(format!("frame_{i:03}.png"));
                 crate::steps::video_frame(&d.image_path(s), i + 1, &text, w, h)?.save_png(&png).map_err(|e| e.to_string())?;
                 let voice = if speak {

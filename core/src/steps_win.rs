@@ -117,7 +117,7 @@ unsafe fn run(dir: &std::path::Path, folder: &str, stop: &AtomicBool, count: Arc
             crate::warn!("步驟截圖：無法儲存第 {n} 步：{e}");
             continue;
         }
-        steps.push(Step { time: chrono::Local::now().format("%H:%M:%S").to_string(), window, image: format!("{folder}/{name}") });
+        steps.push(Step { time: chrono::Local::now().format("%H:%M:%S").to_string(), window, image: format!("{folder}/{name}"), text: String::new() });
         count.store(steps.len() as u32, Ordering::Relaxed);
     }
     drop(bar);

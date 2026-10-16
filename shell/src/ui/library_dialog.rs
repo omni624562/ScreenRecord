@@ -1223,13 +1223,10 @@ fn entry_menu(ui: &mut egui::Ui, app: &UiApp, e: &LibraryEntry, full: bool, req:
     if !e.media.chapters.is_empty() && ui.button(tr!("複製章節（貼到 YouTube）", "Copy chapters (for YouTube)")).clicked() {
         pick(EntryAction::CopyChapters, req);
     }
-    if !audio
-        && ui
-            .button(tr!("複製操作步驟（文字）", "Copy steps (text)"))
-            .on_hover_text(tr!("錄影時點了哪些按鈕、按了哪些快速鍵，整理成「1. 點「存檔」」這樣的清單", "The buttons you clicked and shortcuts you pressed while recording, as a numbered list"))
-            .clicked()
-    {
-        pick(EntryAction::CopySteps, req);
+    if !audio {
+        if let Some(a) = super::steps_menu(ui) {
+            pick(a, req);
+        }
     }
     ui.separator();
     if trash_item(ui) {

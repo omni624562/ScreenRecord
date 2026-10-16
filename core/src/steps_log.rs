@@ -42,7 +42,7 @@ pub fn clip(s: &str, max: usize) -> String {
 }
 
 /// 一行的說明（不含編號與時間）
-fn line(a: &Action) -> String {
+pub fn line(a: &Action) -> String {
     match a.kind {
         KEY => trf!("按 {}", "Press {}", a.name),
         k => {
@@ -57,18 +57,27 @@ fn line(a: &Action) -> String {
     }
 }
 
+/// 算成一步的操作：連續點同一個東西只算一次（按鍵每次都算）
+pub fn steps(actions: &[Action]) -> Vec<&Action> {
+    let mut out = Vec::new();
+    let mut prev: Option<(u8, &str, &str)> = None;
+    for a in actions {
+        let key = (a.kind, a.name.as_str(), a.role.as_str());
+        if prev == Some(key) && a.kind != KEY {
+            continue;
+        }
+        prev = Some(key);
+        out.push(a);
+    }
+    out
+}
+
 /// 整理成文字清單：視窗換了才寫「在…」；連續點同一個東西只算一次；title：清單的標題（錄影的名稱）
 pub fn to_text(actions: &[Action], title: &str) -> String {
     let mut out = vec![trf!("操作步驟：{title}", "Steps: {title}"), String::new()];
     let mut window = String::new();
-    let mut prev: Option<(u8, String, String)> = None;
     let mut n = 0;
-    for a in actions {
-        let key = (a.kind, a.name.clone(), a.role.clone());
-        if prev.as_ref() == Some(&key) && a.kind != KEY {
-            continue;
-        }
-        prev = Some(key);
+    for a in steps(actions) {
         n += 1;
         let mut text = line(a);
         if !a.window.is_empty() && a.window != window {
@@ -137,6 +146,19 @@ mod tests {
 
     fn a(t: f64, kind: u8, name: &str, role: &str, window: &str) -> Action {
         Action { t, kind, name: name.into(), role: role.into(), window: window.into() }
+    }
+
+    #[test]
+    fn steps_skip_repeated_clicks_but_keep_keys() {
+        let list = [
+            a(1.0, CLICK, "存檔", "按鈕", "記事本"),
+            a(1.5, CLICK, "存檔", "按鈕", "記事本"),
+            a(2.0, KEY, "Ctrl + S", "", "記事本"),
+            a(2.5, KEY, "Ctrl + S", "", "記事本"),
+            a(3.0, CLICK, "關閉", "按鈕", "記事本"),
+        ];
+        let got: Vec<f64> = steps(&list).iter().map(|x| x.t).collect();
+        assert_eq!(got, vec![1.0, 2.0, 2.5, 3.0]);
     }
 
     #[test]

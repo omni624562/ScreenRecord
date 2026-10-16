@@ -414,7 +414,7 @@ fn fake_steps(app: &mut UiApp, list: &str) {
     for (i, src) in list.split(',').filter(|p| !p.is_empty()).enumerate() {
         let image = format!("{name}/step_{:02}.png", i + 1);
         if std::fs::copy(src, dir.join(&image)).is_ok() {
-            steps.push(Step { time: format!("14:30:{:02}", i * 4), window: windows[i % windows.len()].to_string(), image });
+            steps.push(Step { time: format!("14:30:{:02}", i * 4), window: windows[i % windows.len()].to_string(), image, text: String::new() });
         }
     }
     app.core.steps_review(Draft { dir, name, date: "2026/10/13 14:30".into(), steps });

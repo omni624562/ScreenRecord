@@ -31,7 +31,8 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, toast: &mut
             Tab::Crop => {
                 crop_panel(ed, ui);
                 if !ed.is_shot() {
-                    cards_panel(ed, ui, ctx);
+                    let on = ed.spec.intro.as_ref().is_some_and(|c| !c.is_empty()) || ed.spec.outro.as_ref().is_some_and(|c| !c.is_empty());
+                    fold(ed, ui, "cards", tr!("片頭、片尾", "Intro and outro"), on, |ed, ui| cards_panel(ed, ui, ctx));
                 }
             }
             Tab::Ann => ann_panel(ed, ui, ctx),
@@ -219,37 +220,162 @@ fn time_panel(ed: &mut Editor, ui: &mut egui::Ui, toast: &mut Option<(String, bo
             "To select a section, Shift + drag across the thumbnails (or turn on “Select range”), or press “Split here (S)” and click a section. Then press “Delete section” or the Delete key to remove it. Speed changes and freeze frames are in the Speed tab."
         ),
     );
-    find_idle_button(ed, ui);
-    found_panel(ed, ui, toast);
+    cleanup_panel(ed, ui, toast);
+    chapters_panel(ed, ui, toast);
 }
 
-/// 自動找出畫面不動又沒聲音、沒說話的片段：先標在時間軸上，再選刪除或加速
-pub(super) fn find_idle_button(ed: &mut Editor, ui: &mut egui::Ui) {
+/// 章節：標記清單（跳過去、改名、刪除），加標記、依字幕產生、複製成 YouTube 說明欄的格式
+fn chapters_panel(ed: &mut Editor, ui: &mut egui::Ui, toast: &mut Option<(String, bool)>) {
+    section(ui, tr!("章節", "Chapters"), false);
+    let has_subs = !ed.sub_ids.is_empty();
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing = vec2(4.0, 4.0);
+        if Btn::new(tr!("＋ 在播放頭加標記（M）", "+ Marker at playhead (M)")).small().enabled(ed.duration > 0.0).show(ui).clicked() {
+            *toast = Some(ed.add_marker());
+        }
+        if Btn::new(tr!("依字幕產生", "From subtitles"))
+            .small()
+            .enabled(has_subs)
+            .tooltip(if has_subs {
+                tr!(
+                    "在講話停頓最久的地方切成幾章（每章至少 30 秒），用那一章第一句當標題",
+                    "Split into chapters at the longest pauses in speech (at least 30 s each), titled with each chapter's first line"
+                )
+            } else {
+                tr!("要先在「字幕」分頁產生字幕", "Generate subtitles in the Subtitles tab first")
+            })
+            .show(ui)
+            .clicked()
+        {
+            *toast = Some((ed.chapters_from_subs(), false));
+        }
+        if !ed.markers.is_empty()
+            && Btn::new(tr!("複製（貼到 YouTube）", "Copy (for YouTube)"))
+                .small()
+                .ghost()
+                .tooltip(tr!("依剪輯後的時間複製成 YouTube 說明欄的章節格式", "Copy as YouTube description chapters, using the edited timing"))
+                .show(ui)
+                .clicked()
+        {
+            let named = screenrecorder_core::chapters::from_named(&ed.markers, ed.duration);
+            let shift = ed.spec.intro.as_ref().filter(|c| !c.is_empty()).map_or(0.0, |c| c.secs());
+            let mapped: Vec<_> = screenrecorder_core::chapters::map_cut(&named, &ed.parts()).into_iter().map(|c| screenrecorder_core::types::Chapter { start: c.start + shift, ..c }).collect();
+            let total = screenrecorder_core::edit::output_length(&ed.parts()) + shift;
+            ui.ctx().copy_text(screenrecorder_core::chapters::youtube_text(&mapped, total));
+            *toast = Some((tr!("已複製章節，可以貼到 YouTube 影片的說明欄", "Chapters copied. Paste them into the YouTube video description").into(), false));
+        }
+    });
+    if ed.markers.is_empty() {
+        return hint(
+            ui,
+            tr!("標記會在輸出時變成影片的章節。也可以在時間軸上按「＋ 加標記」或按 M。", "Markers become chapters in the output video. You can also press “+ Marker” on the timeline or M."),
+        );
+    }
+    let p = theme::pal(ui);
+    let (mut seek, mut rename, mut remove) = (None, None, None);
+    for i in 0..ed.markers.len() {
+        let t = ed.markers[i].t;
+        let name = ed.marker_name(i);
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 6.0;
+            let r = ui
+                .add(egui::Label::new(RichText::new(video_clock(t)).font(theme::mono(12.0)).color(p.accent)).sense(Sense::click()))
+                .on_hover_text(tr!("跳到這裡", "Jump here"))
+                .on_hover_cursor(CursorIcon::PointingHand);
+            if r.clicked() {
+                seek = Some(t);
+            }
+            ui.add(egui::Label::new(RichText::new(name).font(theme::font(12.5))).truncate());
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if Btn::icon_only(theme::Icon::Trash).ghost().small().tooltip(tr!("刪除", "Delete")).show(ui).clicked() {
+                    remove = Some(i);
+                }
+                if Btn::icon_only(theme::Icon::Rename).ghost().small().tooltip(tr!("改名", "Rename")).show(ui).clicked() {
+                    rename = Some(i);
+                }
+            });
+        });
+    }
+    if let Some(t) = seek {
+        ed.seek(t);
+    }
+    if let Some(i) = rename {
+        ed.vpending = Some(super::VAct::RenameMarker(i));
+    }
+    if let Some(i) = remove {
+        ed.markers.remove(i);
+    }
+}
+
+/// 清掉空白：沒動靜（畫面不動又沒聲音）、沒說話（畫面在動）、贅字和停頓（依字幕）一起找，
+/// 找到的標在時間軸上，再選刪除或加速
+pub(super) fn cleanup_panel(ed: &mut Editor, ui: &mut egui::Ui, toast: &mut Option<(String, bool)>) {
+    section(ui, tr!("清掉空白", "Clean up blank parts"), false);
     let busy = ed.finding_idle;
     let has_audio = ed.entry.media.has_audio == Some(true);
-    let tip = if has_audio {
-        trf!(
-            "分析整支影片，找出畫面不動、也沒有聲音超過 {} 秒的地方，以及沒說話超過 {} 秒的地方，標在時間軸上，再決定刪除或加速",
-            "Analyze the whole video for places where the picture is still and silent for more than {} s, and quiet parts longer than {} s. They're marked on the timeline so you can remove or speed them up",
-            idle::MIN_IDLE,
-            idle::MIN_QUIET
-        )
-    } else {
-        trf!(
-            "分析整支影片，找出畫面不動超過 {} 秒的地方，標在時間軸上，再決定刪除或加速",
-            "Analyze the whole video for places where the picture is still for more than {} s. They're marked on the timeline so you can remove or speed them up",
-            idle::MIN_IDLE
-        )
-    };
-    if Btn::new(if busy { tr!("正在分析…", "Analyzing…") } else { tr!("找出沒動靜、沒說話的片段", "Find idle and quiet parts") })
-        .small()
-        .enabled(!busy && ed.duration > 0.0)
-        .tooltip(tip)
-        .show(ui)
-        .clicked()
-    {
-        ed.pending = Some(super::shot::Act::FindIdle);
+    let has_subs = !ed.sub_ids.is_empty();
+    hint(ui, tr!("勾選要找的，找到的地方會標在時間軸上，再決定刪除或加速。", "Choose what to look for. What's found is marked on the timeline, then you decide whether to remove or speed it up."));
+    let kinds: [(String, String, bool); 3] = [
+        (tr!("沒動靜", "Idle").into(), trf!("畫面不動、也沒有聲音超過 {} 秒（等待、發呆）", "The picture is still and silent for more than {} s (waiting, pauses)", idle::MIN_IDLE), true),
+        (
+            tr!("沒說話", "Quiet").into(),
+            if has_audio {
+                trf!("畫面在動、但超過 {} 秒沒講話（打字、捲動、等待）", "The picture moves but nobody speaks for more than {} s (typing, scrolling, waiting)", idle::MIN_QUIET)
+            } else {
+                tr!("這支影片沒有聲音", "This video has no sound").into()
+            },
+            has_audio,
+        ),
+        (
+            tr!("贅字和停頓", "Fillers and pauses").into(),
+            if has_subs {
+                tr!("只有「嗯、呃、那個」的句子，和句子之間超過 1 秒的停頓（依字幕）", "Sentences that are only “um”, “uh” and the like, and gaps of over 1 s between sentences (from subtitles)")
+                    .into()
+            } else {
+                tr!("要先在「字幕」分頁產生字幕", "Generate subtitles in the Subtitles tab first").into()
+            },
+            has_subs,
+        ),
+    ];
+    for (i, (label, tip, can)) in kinds.iter().enumerate() {
+        ui.add_enabled_ui(*can, |ui| {
+            let mut on = ed.clean_kinds[i] && *can;
+            ui.horizontal(|ui| {
+                if theme::check(ui, &mut on, RichText::new(label.as_str()).font(theme::font(12.5))).on_hover_text(tip.as_str()).changed() {
+                    ed.clean_kinds[i] = on;
+                }
+                ui.add(egui::Label::new(theme::muted(ui, tip.as_str()).font(theme::font(11.5))).wrap());
+            });
+        });
     }
+    let want = [ed.clean_kinds[0], ed.clean_kinds[1] && has_audio, ed.clean_kinds[2] && has_subs];
+    let any = want.iter().any(|w| *w);
+    let tip = if any { "" } else { tr!("至少勾選一種", "Choose at least one") };
+    if Btn::new(if busy { tr!("正在分析…", "Analyzing…") } else { tr!("找出來", "Find them") }).small().enabled(!busy && any && ed.duration > 0.0).tooltip(tip).show(ui).clicked() {
+        ed.idle_found = None;
+        ed.fillers = None;
+        if want[2] {
+            let found = ed.find_fillers();
+            if !found.is_empty() {
+                ed.fillers = Some(
+                    found
+                        .into_iter()
+                        .map(|f| {
+                            let on = f.default_on();
+                            (f, on)
+                        })
+                        .collect(),
+                );
+            }
+        }
+        if want[0] || want[1] {
+            ed.pending = Some(super::shot::Act::FindIdle);
+        } else if ed.fillers.is_none() {
+            *toast = Some((tr!("沒有找到贅字或停頓", "No fillers or pauses found").into(), false));
+        }
+    }
+    found_panel(ed, ui, toast);
+    super::subs::fillers_panel(ed, ui, toast);
 }
 
 /// 分析的結果：兩種片段各一列（幾段、共多久），按鈕刪除或加速；時間軸上用顏色標出來
@@ -407,13 +533,62 @@ fn crop_panel(ed: &mut Editor, ui: &mut egui::Ui) {
         crop_controls(ed, ui);
     }
     if !shot {
-        look_panel(ed, ui);
-        stamp_panel(ed, ui);
-        region_panel(ed, ui);
-        zoom_panel(ed, ui);
-        cursor_panel(ed, ui);
-        vertical_panel(ed, ui);
-        frame_panel(ed, ui);
+        // 其他效果收起來：有開的才展開（標題旁邊顯示「已開啟」），畫面分頁不會一長串
+        let on = ed.zoom > 1.0 || !ed.spec.zoom_regions.is_empty() || ed.cursor_size > 0.0;
+        fold(ed, ui, "cursor", tr!("游標與放大", "Cursor and zoom"), on, |ed, ui| {
+            zoom_panel(ed, ui);
+            region_panel(ed, ui);
+            cursor_panel(ed, ui);
+        });
+        let on = !ed.spec.look.is_default();
+        fold(ed, ui, "look", tr!("調色", "Color"), on, look_panel);
+        let on = ed.spec.stamp.is_some();
+        fold(ed, ui, "stamp", tr!("日期時間", "Date and time"), on, stamp_panel);
+        let on = ed.vertical != 0;
+        fold(ed, ui, "vertical", tr!("直式影片（9:16）", "Vertical video (9:16)"), on, vertical_panel);
+        let on = ed.spec.frame.is_some();
+        fold(ed, ui, "frame", tr!("背景與圓角", "Background and rounded corners"), on, frame_panel);
+    }
+}
+
+/// 小標題（收合區塊裡面的一小節）
+fn sub_title(ui: &mut egui::Ui, title: &str) {
+    ui.add_space(2.0);
+    ui.label(RichText::new(title).font(theme::font_bold(12.5)));
+}
+
+/// 可以收起來的區塊：標題列點一下展開／收起；有開啟的效果時預設展開，標題旁邊標「已開啟」
+pub(super) fn fold(ed: &mut Editor, ui: &mut egui::Ui, key: &str, title: &str, on: bool, body: impl FnOnce(&mut Editor, &mut egui::Ui)) {
+    let p = theme::pal(ui);
+    let id = Id::new(("ed-fold", key));
+    let mut open = ui.data(|d| d.get_temp::<bool>(id)).unwrap_or(on);
+    ui.add_space(2.0);
+    let r = ui.cursor();
+    ui.painter().hline(r.x_range(), r.top(), Stroke::new(1.0, p.border));
+    let w = ui.available_width();
+    let (rect, resp) = ui.allocate_exact_size(vec2(w, 30.0), Sense::click());
+    if resp.hovered() {
+        ui.painter().rect_filled(rect, CornerRadius::same(4), p.surface2);
+    }
+    let icon = egui::Rect::from_center_size(pos2(rect.left() + 9.0, rect.center().y), vec2(14.0, 14.0));
+    theme::paint_icon(ui.painter(), icon, if open { theme::Icon::ChevD } else { theme::Icon::ChevR }, p.muted);
+    let g = ui.painter().layout_no_wrap(title.to_string(), theme::font_bold(13.5), p.text);
+    let tx = rect.left() + 22.0;
+    let gw = g.size().x;
+    ui.painter().galley(pos2(tx, rect.center().y - g.size().y / 2.0), g, p.text);
+    if on {
+        let b = ui.painter().layout_no_wrap(tr!("已開啟", "On").to_string(), theme::font(11.5), p.accent);
+        let br = egui::Rect::from_min_size(pos2(tx + gw + 8.0, rect.center().y - b.size().y / 2.0 - 2.0), b.size() + vec2(12.0, 4.0));
+        ui.painter().rect_filled(br, CornerRadius::same(8), p.accent.gamma_multiply(0.15));
+        ui.painter().galley(br.min + vec2(6.0, 2.0), b, p.accent);
+    }
+    if resp.on_hover_cursor(CursorIcon::PointingHand).clicked() {
+        open = !open;
+        ui.data_mut(|d| d.insert_temp(id, open));
+    }
+    if open {
+        body(ed, ui);
+        ui.add_space(4.0);
     }
 }
 
@@ -485,12 +660,6 @@ fn warn_hint(ui: &mut egui::Ui, text: &str) {
 /// 調色：亮度、對比、飽和度（預覽看得到）、銳利化（輸出才有）
 fn look_panel(ed: &mut Editor, ui: &mut egui::Ui) {
     use screenrecorder_core::look::{RANGE, SHARPEN_MAX};
-    let p = theme::pal(ui);
-    ui.add_space(4.0);
-    let r = ui.cursor();
-    ui.painter().hline(r.x_range(), r.top(), Stroke::new(1.0, p.border));
-    ui.add_space(6.0);
-    ui.label(RichText::new(tr!("調色", "Color")).font(theme::font_bold(13.5)));
     let look = &mut ed.spec.look;
     for (v, label) in [(&mut look.brightness, tr!("亮度", "Brightness")), (&mut look.contrast, tr!("對比", "Contrast")), (&mut look.saturation, tr!("飽和度", "Saturation"))] {
         ui.horizontal(|ui| {
@@ -520,12 +689,6 @@ fn look_panel(ed: &mut Editor, ui: &mut egui::Ui) {
 
 /// 日期時間浮水印：畫面角落顯示錄影當時的時間
 fn stamp_panel(ed: &mut Editor, ui: &mut egui::Ui) {
-    let p = theme::pal(ui);
-    ui.add_space(4.0);
-    let r = ui.cursor();
-    ui.painter().hline(r.x_range(), r.top(), Stroke::new(1.0, p.border));
-    ui.add_space(6.0);
-    ui.label(RichText::new(tr!("日期時間", "Date and time")).font(theme::font_bold(13.5)));
     let start = ed.rec_start_ms();
     let mut on = ed.spec.stamp.is_some();
     if switch(ui, &mut on, tr!("顯示錄影當時的日期時間", "Show when it was recorded"), start.is_some())
@@ -560,11 +723,6 @@ fn stamp_panel(ed: &mut Editor, ui: &mut egui::Ui) {
 
 fn frame_panel(ed: &mut Editor, ui: &mut egui::Ui) {
     let p = theme::pal(ui);
-    ui.add_space(4.0);
-    let r = ui.cursor();
-    ui.painter().hline(r.x_range(), r.top(), Stroke::new(1.0, p.border));
-    ui.add_space(6.0);
-    ui.label(RichText::new(tr!("背景與圓角", "Background and rounded corners")).font(theme::font_bold(13.5)));
     let mut on = ed.spec.frame.is_some();
     if ed.vertical != 0 {
         // 用不了時說明原因（直式影片已經有自己的背景）
@@ -661,7 +819,7 @@ fn frame_preview(ed: &Editor, f: &VideoFrame, crop: Option<screenrecorder_core::
 /// 跟著點擊放大：錄影時記下的點擊，輸出時放大到點擊的地方
 /// 手動放大一塊：在影片上框選，設定從幾秒到幾秒
 fn region_panel(ed: &mut Editor, ui: &mut egui::Ui) {
-    section(ui, tr!("手動放大一塊", "Zoom into an area"), false);
+    sub_title(ui, tr!("手動放大一塊", "Zoom into an area"));
     let can = !ed.crop_on && ed.vertical == 0;
     if !can {
         let why = if ed.vertical != 0 {
@@ -735,12 +893,7 @@ fn region_panel(ed: &mut Editor, ui: &mut egui::Ui) {
 }
 
 fn zoom_panel(ed: &mut Editor, ui: &mut egui::Ui) {
-    let p = theme::pal(ui);
-    ui.add_space(4.0);
-    let r = ui.cursor();
-    ui.painter().hline(r.x_range(), r.top(), Stroke::new(1.0, p.border));
-    ui.add_space(6.0);
-    ui.label(RichText::new(tr!("跟著點擊放大", "Zoom on clicks")).font(theme::font_bold(13.5)));
+    sub_title(ui, tr!("跟著點擊放大", "Zoom on clicks"));
     if ed.clicks.is_empty() && ed.zooms.is_empty() {
         return hint(
             ui,
@@ -804,12 +957,6 @@ fn zoom_panel(ed: &mut Editor, ui: &mut egui::Ui) {
 
 /// 直式影片（9:16）：放在中間，或跟著游標裁切
 fn vertical_panel(ed: &mut Editor, ui: &mut egui::Ui) {
-    let p = theme::pal(ui);
-    ui.add_space(4.0);
-    let r = ui.cursor();
-    ui.painter().hline(r.x_range(), r.top(), Stroke::new(1.0, p.border));
-    ui.add_space(6.0);
-    ui.label(RichText::new(tr!("直式影片（9:16）", "Vertical video (9:16)")).font(theme::font_bold(13.5)));
     let can_follow = !ed.cursor.is_empty() || !ed.clicks.is_empty();
     let mut v = ed.vertical;
     let items = [(0u8, tr!("不用", "Off")), (1, tr!("放在中間", "Fit")), (2, tr!("跟著游標", "Follow cursor"))];
@@ -843,11 +990,7 @@ fn vertical_panel(ed: &mut Editor, ui: &mut egui::Ui) {
 /// 平滑、放大的游標：錄影時記下的游標位置，輸出時畫成大的箭頭、平順地移動
 fn cursor_panel(ed: &mut Editor, ui: &mut egui::Ui) {
     let p = theme::pal(ui);
-    ui.add_space(4.0);
-    let r = ui.cursor();
-    ui.painter().hline(r.x_range(), r.top(), Stroke::new(1.0, p.border));
-    ui.add_space(6.0);
-    ui.label(RichText::new(tr!("平滑、放大的游標", "Smooth, larger cursor")).font(theme::font_bold(13.5)));
+    sub_title(ui, tr!("平滑、放大的游標", "Smooth, larger cursor"));
     if ed.cursor.is_empty() {
         return hint(
             ui,
@@ -1634,7 +1777,6 @@ fn ann_list(ed: &mut Editor, ui: &mut egui::Ui) {
 /// 片頭、片尾卡片：開關、標題、副標、樣式、秒數，下面是預覽
 fn cards_panel(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context) {
     use screenrecorder_core::cards::{CardStyle, TitleCard};
-    section(ui, tr!("片頭、片尾", "Intro and outro"), false);
     if ed.vw <= 0.0 {
         return hint(ui, tr!("無法讀取影片尺寸，不能加上片頭片尾。", "Couldn't read the video size, so title cards can't be added."));
     }

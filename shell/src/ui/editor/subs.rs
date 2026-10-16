@@ -124,37 +124,6 @@ pub fn tab(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, toast: &mut 
                 }
             });
         });
-        if Btn::new(tr!("找出贅字和停頓", "Find fillers and pauses"))
-            .small()
-            .tooltip(tr!(
-                "找出只有「嗯、呃、那個」的句子，和句子之間超過 1 秒沒講話的地方，勾選後一次剪掉（停頓前後各留一點，聽起來比較自然）",
-                "Find sentences that are only “um”, “uh” and the like, and gaps of over 1 second between sentences, then cut the ones you tick (a little is kept around each pause so it sounds natural)"
-            ))
-            .show(ui)
-            .clicked()
-        {
-            let found = ed.find_fillers();
-            if found.is_empty() {
-                *toast = Some((tr!("沒有找到贅字或停頓", "No fillers or pauses found").into(), false));
-                ed.fillers = None;
-            } else {
-                ed.fillers = Some(found.into_iter().map(|f| {
-                    let on = f.default_on();
-                    (f, on)
-                }).collect());
-            }
-        }
-        if Btn::new(tr!("依字幕產生章節", "Chapters from subtitles"))
-            .small()
-            .tooltip(tr!(
-                "在講話停頓最久的地方切成幾章（每章至少 30 秒），用那一章第一句當標題，變成時間軸上的標記；輸出時寫進影片，也能貼到 YouTube 說明欄",
-                "Split the video into chapters at the longest pauses in speech (at least 30 s each), titled with each chapter's first line. They become markers on the timeline and are written into the output video"
-            ))
-            .show(ui)
-            .clicked()
-        {
-            *toast = Some((ed.chapters_from_subs(), false));
-        }
         if Btn::new(tr!("全部刪除", "Delete all")).ghost().small().tooltip(tr!("刪掉所有字幕（可以按 Ctrl+Z 復原）", "Delete all subtitles (press Ctrl+Z to undo)")).show(ui).clicked()
         {
             let ids = std::mem::take(&mut ed.sub_ids);
@@ -164,7 +133,7 @@ pub fn tab(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, toast: &mut 
             }
         }
     });
-    fillers_panel(ed, ui, toast);
+    hint(ui, tr!("要剪掉「嗯、呃」等贅字和停頓：到「修剪」分頁的「清掉空白」。", "To cut fillers like “um” and pauses, use “Clean up blank parts” in the Trim tab."));
     // 選取的字幕：顏色、字級、深色底（可以套用到全部字幕）、出現時間
     let picked: Vec<u64> = ed.sub_picked.iter().copied().filter(|id| ed.is_sub(*id)).collect();
     if ed.ann_sel.is_some_and(|id| ed.is_sub(id)) {
@@ -205,7 +174,7 @@ pub fn tab(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, toast: &mut 
 }
 
 /// 找到的贅字與停頓：勾選要剪的，一次剪掉
-fn fillers_panel(ed: &mut Editor, ui: &mut egui::Ui, toast: &mut Option<(String, bool)>) {
+pub(super) fn fillers_panel(ed: &mut Editor, ui: &mut egui::Ui, toast: &mut Option<(String, bool)>) {
     use screenrecorder_core::fillers::{Kind, LONG_PAUSE};
     let Some(list) = ed.fillers.as_mut() else { return };
     let p = theme::pal(ui);

@@ -14,6 +14,19 @@ pub struct Step {
     pub window: String,
     /// 圖檔（相對於儲存資料夾的路徑：資料夾/step_NN.png）
     pub image: String,
+    /// 說明（從錄影的操作步驟做的才有，例如「點「檔案」（選單）」）；空的 = 用視窗標題組成
+    pub text: String,
+}
+
+impl Step {
+    /// 這一步的說明
+    pub fn caption(&self) -> String {
+        if self.text.trim().is_empty() {
+            caption(&self.window)
+        } else {
+            self.text.trim().to_string()
+        }
+    }
 }
 
 /// 截好、還沒做成文件的步驟（在操作視窗整理）
@@ -73,7 +86,7 @@ pub fn html(title: &str, date: &str, steps: &[Step], srcs: &[String]) -> String 
             "<li><p class=\"cap\" contenteditable=\"true\"><b>步驟 {}</b>　{}</p><p class=\"time\">{}</p><img src=\"{}\" alt=\"步驟 {}\"></li>\n",
             "<li><p class=\"cap\" contenteditable=\"true\"><b>Step {}</b> {}</p><p class=\"time\">{}</p><img src=\"{}\" alt=\"Step {}\"></li>\n",
             i + 1,
-            esc(&caption(&s.window)),
+            esc(&s.caption()),
             esc(&s.time),
             esc(src),
             i + 1
@@ -212,7 +225,7 @@ fn office(draft: &Draft, title: &str, steps: &[Step], format: DocFormat) -> Resu
         let path = draft.image_path(s);
         let png = std::fs::read(&path).map_err(|e| trf!("無法讀取「{}」：{e}", "Couldn't read “{}”: {e}", s.image))?;
         let (width, height) = image::ImageReader::new(std::io::Cursor::new(&png)).with_guessed_format().ok().and_then(|r| r.into_dimensions().ok()).unwrap_or((1280, 720));
-        items.push(crate::ooxml::Item { caption: caption(&s.window), png, width, height });
+        items.push(crate::ooxml::Item { caption: s.caption(), png, width, height });
     }
     Ok(match format {
         DocFormat::PowerPoint => crate::ooxml::pptx(title, &draft.date, &items),
@@ -251,6 +264,23 @@ pub fn build_as(draft: &Draft, title: &str, steps: &[Step], format: DocFormat) -
     })?;
     draft.discard();
     Ok(path)
+}
+
+/// 在 PNG 上圈出點的位置（x、y 是在畫面裡的位置 0～1），直接覆寫
+pub fn ring_png(path: &Path, x: f64, y: f64) -> Result<(), String> {
+    use tiny_skia::{Color, Paint, PathBuilder, Pixmap, Stroke, Transform};
+    let mut pm = Pixmap::load_png(path).map_err(|e| e.to_string())?;
+    let (w, h) = (pm.width() as f32, pm.height() as f32);
+    let r = (w.min(h) * 0.035).max(12.0);
+    let (cx, cy) = (x.clamp(0.0, 1.0) as f32 * w, y.clamp(0.0, 1.0) as f32 * h);
+    let circle = PathBuilder::from_circle(cx, cy, r).ok_or("circle")?;
+    let mut paint = Paint { anti_alias: true, ..Default::default() };
+    // 白邊＋紅圈：深色、淺色畫面都看得清楚
+    paint.set_color(Color::from_rgba8(255, 255, 255, 230));
+    pm.stroke_path(&circle, &paint, &Stroke { width: r * 0.32, ..Default::default() }, Transform::identity(), None);
+    paint.set_color(Color::from_rgba8(230, 40, 40, 255));
+    pm.stroke_path(&circle, &paint, &Stroke { width: r * 0.18, ..Default::default() }, Transform::identity(), None);
+    pm.save_png(path).map_err(|e| e.to_string())
 }
 
 // ───────────── 做成影片 ─────────────
@@ -349,6 +379,29 @@ mod tests {
     use super::*;
 
     #[test]
+    fn caption_prefers_recorded_text() {
+        let mut s = Step { time: "0:05".into(), window: "記事本".into(), image: "a/step_01.png".into(), text: String::new() };
+        assert_eq!(s.caption(), caption("記事本"));
+        s.text = " 點「存檔」（按鈕） ".into();
+        assert_eq!(s.caption(), "點「存檔」（按鈕）");
+    }
+
+    #[test]
+    fn ring_marks_the_click() {
+        let dir = tempfile::tempdir().unwrap();
+        let png = dir.path().join("f.png");
+        let mut pm = tiny_skia::Pixmap::new(400, 200).unwrap();
+        pm.fill(tiny_skia::Color::BLACK);
+        pm.save_png(&png).unwrap();
+        ring_png(&png, 0.5, 0.5).unwrap();
+        let pm = tiny_skia::Pixmap::load_png(&png).unwrap();
+        // 圈上（半徑約 12 像素）有紅色，圓心沒有
+        let at = |x: u32, y: u32| pm.pixel(x, y).unwrap();
+        assert!(at(200 + 12, 100).red() > 150);
+        assert_eq!(at(200, 100).red(), 0);
+    }
+
+    #[test]
     fn makes_a_video_in_ffmpeg() {
         let dir = tempfile::tempdir().unwrap();
         let shot = dir.path().join("s.png");
@@ -382,8 +435,8 @@ mod tests {
     #[test]
     fn builds_the_document() {
         let steps = vec![
-            Step { time: "14:30:05".into(), window: "設定 <進階>".into(), image: "教學_1/step_01.png".into() },
-            Step { time: "14:30:09".into(), window: " ".into(), image: "教學_1/step_02.png".into() },
+            Step { time: "14:30:05".into(), window: "設定 <進階>".into(), image: "教學_1/step_01.png".into(), text: String::new() },
+            Step { time: "14:30:09".into(), window: " ".into(), image: "教學_1/step_02.png".into(), text: String::new() },
         ];
         let h = html("登入流程", "2026/10/10", &steps, &["data:image/png;base64,AAAA".into(), "b.png".into()]);
         assert!(h.contains("<title>登入流程</title>"));
@@ -425,7 +478,7 @@ mod tests {
         for (i, w) in [(1, 40), (2, 2400)] {
             let img = image::RgbaImage::from_pixel(w, 30, image::Rgba([200, 30, 30, 255]));
             img.save(draft.folder().join(format!("step_0{i}.png"))).unwrap();
-            steps.push(Step { time: format!("09:00:0{i}"), window: "記事本".into(), image: format!("教學_測試/step_0{i}.png") });
+            steps.push(Step { time: format!("09:00:0{i}"), window: "記事本".into(), image: format!("教學_測試/step_0{i}.png"), text: String::new() });
         }
         let t = thumb(&draft.image_path(&steps[1]), 240).unwrap();
         assert_eq!((t.0, t.1, t.2.len()), (240, 3, 240 * 3 * 4));
