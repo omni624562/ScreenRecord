@@ -269,6 +269,14 @@ pub async fn thumb(app: &App, path: &str) -> Option<PathBuf> {
     app.thumbs.get(app.ffmpeg_path().as_deref(), path).await
 }
 
+/// 滑過預覽用的長條圖（影片才有）
+pub async fn thumb_strip(app: &App, path: &str, duration: f64) -> Option<PathBuf> {
+    if !(is_abs(path) && ends_with_ci(path, &[".mp4"]) && Path::new(path).exists()) {
+        return None;
+    }
+    app.thumbs.strip(app.ffmpeg_path().as_deref(), path, duration).await
+}
+
 /// 錄影或截圖改名（錄影連同加速版 / GIF）；不能改正在錄影或轉檔的檔案。回傳新的完整路徑
 pub async fn rename(app: &App, path: &str, name: &str) -> Result<String> {
     if !is_abs(path) || !ends_with_ci(path, &[".mp4", ".png", ".jpg", ".jpeg"]) || !Path::new(path).exists() {

@@ -1402,11 +1402,16 @@ fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table:
             theme::paint_thumb(&painter, thumb, &t);
         }
         if tresp.hovered() {
-            // 滑鼠移上去：縮圖上出現播放鍵
+            // 滑鼠移上去：縮圖上出現播放鍵；影片在旁邊浮出預覽，左右移動看不同時間的畫面
             painter.rect_filled(thumb, CornerRadius::same(4), Color32::from_black_alpha(90));
             theme::paint_icon(&painter, Rect::from_center_size(thumb.center() + vec2(1.0, 0.0), vec2(16.0, 16.0)), Icon::Play, Color32::WHITE);
+            if !audio && !tresp.dragged() {
+                super::thumbs::scrub_preview(app, ui, thumb, thumb, &e.media.path, e.media.mtime, e.media.duration_sec.unwrap_or(0.0));
+            }
         }
-        if tresp.on_hover_text(tr!("播放", "Play")).clicked() {
+        // 影片滑過時有預覽，不另外顯示「播放」提示（會擋住預覽）
+        let tresp = if audio { tresp.on_hover_text(tr!("播放", "Play")) } else { tresp };
+        if tresp.clicked() {
             if ctrl || shift {
                 d.pick(&e.media.path, &order, shift);
             } else {

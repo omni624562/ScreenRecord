@@ -399,6 +399,28 @@ async fn cover_is_saved_and_written_into_the_video() {
 }
 
 #[tokio::test]
+async fn hover_preview_strip_has_every_frame() {
+    let Some(ff) = ffmpeg() else { return };
+    if !has(&ff, "-encoders", "libx264") {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let src = make_source(&ff, dir.path());
+    let thumbs = crate::thumbs::Thumbnails::new(dir.path().join("thumbs"));
+    let out = thumbs.strip(Some(&ff), &src.display().to_string(), 6.0).await.expect("長條圖");
+    let pm = tiny_skia::Pixmap::load_png(&out).unwrap();
+    // 12 格、每格 240 寬（640×360 → 240×135，高度取偶數）
+    assert_eq!((pm.width(), pm.height()), (240 * crate::thumbs::STRIP_FRAMES as u32, 136));
+    // 第二次直接用快取；沒有留下暫存檔
+    assert_eq!(thumbs.strip(Some(&ff), &src.display().to_string(), 6.0).await, Some(out.clone()));
+    let names: Vec<String> = std::fs::read_dir(dir.path().join("thumbs")).unwrap().filter_map(|e| e.ok()).map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+    assert_eq!(names.len(), 1, "{names:?}");
+    // 不同時間的格子內容不一樣（testsrc2 的畫面會動）
+    let cell = |i: u32| (0..135).flat_map(|y| (0..240).map(move |x| (x, y))).map(|(x, y)| pm.pixel(i * 240 + x, y).unwrap().red() as u64).sum::<u64>();
+    assert_ne!(cell(0), cell(11));
+}
+
+#[tokio::test]
 async fn animations_gif_and_webp() {
     let Some(ff) = ffmpeg() else { return };
     if !has(&ff, "-encoders", "libx264") {
