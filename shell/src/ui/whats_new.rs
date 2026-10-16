@@ -37,35 +37,15 @@ enum Try {
 
 /// 這一版的新功能（標題、說明、試試看）：最多 6 項，快速鍵用目前的設定
 fn items(_app: &UiApp) -> Vec<(String, String, Try)> {
-    vec![
-        (
-            tr!("手動放大、整支加速、調整片段順序", "Zoom into an area, speed up, reorder").into(),
-            tr!(
-                "剪輯時在影片上框一塊平順地放大過去；整支影片加速存檔時一次做好；保留的片段可以改變前後順序。",
-                "In the editor, frame an area to zoom into, speed up the whole video when you save, and move kept sections around."
-            )
-            .into(),
-            Try::None,
-        ),
-        (
-            tr!("字幕樣式、人聲加強", "Subtitle style, voice enhancement").into(),
-            tr!(
-                "字幕可以改大小、顏色、放在上方或下方，一次套用到全部；「聲音」分頁的人聲加強讓講話更清楚。",
-                "Change subtitle size, color and position for all subtitles at once; Enhance voice in the Audio tab makes speech clearer."
-            )
-            .into(),
-            Try::None,
-        ),
-        (
-            tr!("我的樣式、游標閒置時隱藏", "My styles, hide idle cursor").into(),
-            tr!(
-                "常用的標註顏色與大小存起來一鍵套用；平滑游標停著不動時自動藏起來。",
-                "Save annotation colors and sizes you use often and apply them in one click; the smooth cursor hides itself when idle."
-            )
-            .into(),
-            Try::None,
-        ),
-    ]
+    vec![(
+        tr!("更準的中文字幕：「最精準」語音模型", "More accurate Chinese subtitles: the \"Most accurate\" model").into(),
+        tr!(
+            "新的語音模型（約 570 MB）辨識中文比「精準」準很多。到「外部元件」下載後，自動字幕選「最精準」就能用。",
+            "A new speech model (about 570 MB) recognizes Chinese much better than \"Accurate\". Download it in Components, then pick \"Most accurate\" for auto subtitles."
+        )
+        .into(),
+        Try::Settings(Page::Components),
+    )]
 }
 
 pub fn show(app: &mut UiApp, ctx: &egui::Context) {

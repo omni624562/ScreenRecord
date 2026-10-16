@@ -31,7 +31,7 @@ impl Kind {
         v
     }
 
-    fn model(self) -> Option<&'static Model> {
+    pub fn model(self) -> Option<&'static Model> {
         match self {
             Kind::Model(i) => MODELS.get(i),
             _ => None,
@@ -158,6 +158,15 @@ pub fn missing_for_subtitles(main_has_whisper: bool, model: usize) -> Vec<Kind> 
         v.push(Kind::Model(m));
     }
     v
+}
+
+/// 翻成英文還缺的模型：選的模型不能翻譯、也沒有其他能翻譯的模型時，要下載「精準」
+pub fn missing_for_translation(model: usize) -> Vec<Kind> {
+    let m = &MODELS[model.min(MODELS.len() - 1)];
+    if subtitles::translation_model(m).is_some() {
+        return vec![];
+    }
+    vec![Kind::Model(MODELS.iter().rposition(|o| o.translates).unwrap_or(0))]
 }
 
 /// 「語音辨識用的 FFmpeg（約 258 MB）、語音模型：標準（約 150 MB）」

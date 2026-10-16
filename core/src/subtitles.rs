@@ -29,6 +29,10 @@ pub struct Model {
     pub mb: u32,
     /// 說明（中文、英文）
     pub labels: [&'static str; 2],
+    /// 短的名稱（中文、英文）
+    pub short: [&'static str; 2],
+    /// 能翻成英文（large-v3-turbo 訓練時拿掉了翻譯）
+    pub translates: bool,
 }
 
 impl Model {
@@ -36,15 +40,22 @@ impl Model {
     pub fn label(&self) -> &'static str {
         crate::tr!(self.labels[0], self.labels[1])
     }
+
+    /// 短的名稱（依介面語言）
+    pub fn short(&self) -> &'static str {
+        crate::tr!(self.short[0], self.short[1])
+    }
 }
 
-pub const MODELS: [Model; 2] = [
+pub const MODELS: [Model; 3] = [
     Model {
         id: "base",
         file: "ggml-base.bin",
         url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin",
         mb: 148,
         labels: ["標準（約 150 MB，較快）", "Standard (about 150 MB, faster)"],
+        short: ["標準（較快）", "Standard (faster)"],
+        translates: true,
     },
     Model {
         id: "small",
@@ -52,8 +63,27 @@ pub const MODELS: [Model; 2] = [
         url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin",
         mb: 488,
         labels: ["精準（約 490 MB，較慢）", "Accurate (about 490 MB, slower)"],
+        short: ["精準（較慢）", "Accurate (slower)"],
+        translates: true,
+    },
+    Model {
+        id: "turbo",
+        file: "ggml-large-v3-turbo-q5_0.bin",
+        url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin",
+        mb: 574,
+        labels: ["最精準（約 570 MB，最慢；中文建議）", "Most accurate (about 570 MB, slowest; best for Chinese)"],
+        short: ["最精準（最慢）", "Most accurate (slowest)"],
+        translates: false,
     },
 ];
+
+/// 翻成英文用的模型：選的模型能翻譯就用它，否則用已經下載好、能翻譯的（精準優先）
+pub fn translation_model(m: &Model) -> Option<Model> {
+    if m.translates {
+        return Some(*m);
+    }
+    MODELS.iter().rev().find(|o| o.translates && model_ready(o)).copied()
+}
 
 /// 辨識的語言：(代碼, 中文名稱, 英文名稱)
 pub const LANGUAGES: [(&str, &str, &str); 3] = [("zh", "中文", "Chinese"), ("en", "英文", "English"), ("auto", "自動偵測", "Detect automatically")];
@@ -244,6 +274,14 @@ pub async fn transcribe(ffmpeg: &Path, input: &str, duration: f64, model: &Model
 
 /// 辨識語音並翻成英文（FFmpeg 9 以上的 whisper 才有翻譯）
 pub async fn translate(ffmpeg: &Path, input: &str, duration: f64, model: &Model, language: &str, progress: Arc<AtomicU32>, cancel: Arc<AtomicBool>) -> Result<Vec<Cue>, String> {
+    let Some(model) = translation_model(model) else {
+        return Err(tr!(
+            "「最精準」模型不能翻成英文，請先到「設定 → 外部元件」下載「精準」或「標準」模型",
+            "The \"Most accurate\" model can't translate to English. Download the \"Accurate\" or \"Standard\" model in Settings → Components first"
+        )
+        .to_string());
+    };
+    let model = &model;
     transcribe_in(&model_dir_of(model), ffmpeg, input, duration, model, language, true, progress, cancel).await.map_err(|e| {
         if e.contains("translate") {
             tr!("這個 FFmpeg 不支援翻成英文，請更新到 FFmpeg 9 以上", "This FFmpeg can't translate to English. Update to FFmpeg 9 or later").to_string()
@@ -624,6 +662,21 @@ mod tests {
         if !dirs.iter().any(|d| d.join("ggml-small.bin").exists()) {
             assert_eq!(model_path(&MODELS[1]), inst.join("ggml-small.bin"));
         }
+    }
+
+    #[test]
+    fn turbo_translates_with_another_model() {
+        let turbo = MODELS.iter().find(|m| m.id == "turbo").unwrap();
+        assert!(!turbo.translates && MODELS.iter().filter(|m| m.translates).count() == 2);
+        assert_eq!(translation_model(&MODELS[0]), Some(MODELS[0]));
+        // 最精準不能翻譯：用已下載、能翻譯的模型，沒有就 None（要請使用者下載）
+        match translation_model(turbo) {
+            Some(m) => assert!(m.translates && model_ready(&m)),
+            None => assert!(!MODELS.iter().any(|m| m.translates && model_ready(m))),
+        }
+        let need = crate::components::missing_for_translation(2);
+        assert_eq!(need.is_empty(), translation_model(turbo).is_some());
+        assert!(crate::components::missing_for_translation(0).is_empty());
     }
 
     #[test]

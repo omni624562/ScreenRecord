@@ -1286,7 +1286,10 @@ fn after_record_section(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
                 app.save_settings();
             }
         });
-        let need = screenrecorder_core::components::missing_for_subtitles(app.env.ffmpeg.has_whisper, app.s.after_subs_model as usize);
+        let mut need = screenrecorder_core::components::missing_for_subtitles(app.env.ffmpeg.has_whisper, app.s.after_subs_model as usize);
+        if app.s.after_subs_en {
+            need.extend(screenrecorder_core::components::missing_for_translation(app.s.after_subs_model as usize));
+        }
         if !need.is_empty() {
             form_hint(
                 ui,
@@ -2058,6 +2061,11 @@ fn component_card(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui, k: Kind)
                 k.path().map(|p| p.display().to_string()).unwrap_or_default()
             ),
             Kind::Model(_) => tr!("模型越大辨識越準，但比較慢。只需要其中一個。", "Bigger models are more accurate but slower. You only need one.").into(),
+        };
+        let info = if k.model().is_some_and(|m| !m.translates) {
+            info + tr!("這個模型不能翻成英文，要英文字幕時另外需要「精準」或「標準」。", " This model can't translate to English; English subtitles also need \"Accurate\" or \"Standard\".")
+        } else {
+            info
         };
         ui.add(egui::Label::new(RichText::new(info).font(theme::font(12.0)).color(p.muted)).wrap());
         if st.running {

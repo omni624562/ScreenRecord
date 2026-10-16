@@ -439,8 +439,7 @@ pub fn panel(ed: &mut Editor, ui: &mut egui::Ui) {
             let items: Vec<(usize, &str)> = LANGUAGES.iter().enumerate().map(|(i, _)| (i, subtitles::language_name(i))).collect();
             segmented(ui, &mut ed.subs_lang, &items, true);
             ui.label(theme::muted(ui, tr!("辨識的品質", "Recognition quality")).font(theme::font(12.0)));
-            let items: Vec<(usize, &str)> =
-                MODELS.iter().enumerate().map(|(i, m)| (i, if m.id == "base" { tr!("標準（較快）", "Standard (faster)") } else { tr!("精準（較慢）", "Accurate (slower)") })).collect();
+            let items: Vec<(usize, &str)> = MODELS.iter().enumerate().map(|(i, m)| (i, m.short())).collect();
             segmented(ui, &mut ed.subs_model, &items, true);
             ui.label(theme::muted(ui, tr!("字幕", "Subtitles")).font(theme::font(12.0)));
             let items = [(0, tr!("原文", "Original")), (1, tr!("翻成英文", "English")), (2, tr!("中英對照", "Both"))];
@@ -448,7 +447,16 @@ pub fn panel(ed: &mut Editor, ui: &mut egui::Ui) {
             if ed.subs_out == 2 {
                 ui.label(theme::muted(ui, tr!("辨識兩次（原文、英文），時間大約多一倍", "Recognizes twice (original and English), so it takes about twice as long")).font(theme::font(12.0)));
             }
-            let need = components::missing_for_subtitles(ed.ffmpeg_whisper, ed.subs_model);
+            let translating = ed.subs_out != 0 && LANGUAGES[ed.subs_lang.min(LANGUAGES.len() - 1)].0 != "en";
+            let mut need = components::missing_for_subtitles(ed.ffmpeg_whisper, ed.subs_model);
+            if translating {
+                if !MODELS[ed.subs_model.min(MODELS.len() - 1)].translates {
+                    let note =
+                        tr!("「最精準」不能翻成英文，英文的部分會改用「精準」或「標準」模型", "\"Most accurate\" can't translate, so the English part uses the \"Accurate\" or \"Standard\" model");
+                    ui.label(theme::muted(ui, note).font(theme::font(12.0)));
+                }
+                need.extend(components::missing_for_translation(ed.subs_model));
+            }
             if !need.is_empty() {
                 let note = trf!("要先到「設定 → 外部元件」下載{}", "First download {} in Settings → Components", components::describe(&need));
                 ui.label(RichText::new(note).font(theme::font(12.0)).color(theme::pal(ui).warn));
@@ -524,6 +532,9 @@ pub fn run(app: &mut UiApp, ed: &mut Editor, act: Act) {
             app.spawn(async move { subtitles::find_speech_ffmpeg(&ffmpeg).await }, move |app, speech| {
                 let Some(ed) = app.editor.as_mut().filter(|e| is_current(e, &mine)) else { return };
                 let mut need = components::missing_for_subtitles(true, ed.subs_model);
+                if ed.subs_out != 0 && LANGUAGES[ed.subs_lang.min(LANGUAGES.len() - 1)].0 != "en" {
+                    need.extend(components::missing_for_translation(ed.subs_model));
+                }
                 if speech.is_none() {
                     need.insert(0, components::Kind::SpeechFfmpeg);
                 }
