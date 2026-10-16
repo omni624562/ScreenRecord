@@ -1740,11 +1740,8 @@ pub(super) enum ShotAct {
     Scroll,
     Steps,
     EditLast,
-    Qr,
     /// 只抓文字（框選後辨識，複製到剪貼簿）
     Text,
-    /// 取色器（false）或尺規（true）
-    Tool(bool),
     Pen,
 }
 
@@ -1782,8 +1779,8 @@ fn shot_row(app: &mut UiApp, ui: &mut Ui) {
             .enabled(can)
             .tooltip(if found {
                 tr!(
-                    "更多截圖方式與小工具：延遲框選、全螢幕、長截圖、步驟截圖、讀取 QR 碼、取色器、尺規、螢幕畫筆",
-                    "More screenshot options and tools: delayed selection, full screen, scrolling screenshot, step capture, QR code, color picker, ruler, screen pen"
+                    "更多截圖方式與小工具：延遲框選、全螢幕、長截圖、步驟截圖、只抓文字、螢幕畫筆",
+                    "More screenshot options and tools: delayed selection, full screen, scrolling screenshot, step capture, grab text, screen pen"
                 )
                 .to_string()
             } else {
@@ -1893,30 +1890,6 @@ fn shot_menu(app: &UiApp, ui: &mut Ui, act: &mut Option<ShotAct>) {
     {
         *act = Some(ShotAct::Text);
     }
-    if ui
-        .button(tr!("讀取 QR 碼…", "Read QR code…"))
-        .on_hover_text(tr!("框選畫面上的 QR 碼，讀出內容（網址可以直接開啟）", "Select a QR code on the screen to read it (links can be opened directly)"))
-        .clicked()
-    {
-        *act = Some(ShotAct::Qr);
-    }
-    if ui
-        .button(tr!("取色器…", "Color picker…"))
-        .on_hover_text(tr!(
-            "點一下畫面上的任何地方，色碼（例如 #1D4ED8）就複製到剪貼簿；有放大鏡可以對準",
-            "Click anywhere on the screen to copy its color code (e.g. #1D4ED8) to the clipboard. A magnifier helps you aim."
-        ))
-        .clicked()
-    {
-        *act = Some(ShotAct::Tool(false));
-    }
-    if ui
-        .button(tr!("尺規（量距離）…", "Ruler (measure distance)…"))
-        .on_hover_text(tr!("在畫面上拖曳，量出兩點之間有幾個像素與角度", "Drag on the screen to measure the distance in pixels and the angle between two points"))
-        .clicked()
-    {
-        *act = Some(ShotAct::Tool(true));
-    }
     if item(ui, tr!("螢幕畫筆", "Screen pen").into(), 5, true) {
         *act = Some(ShotAct::Pen);
     }
@@ -1983,17 +1956,6 @@ pub(super) fn run_shot(app: &mut UiApp, act: ShotAct) {
             Some(s) => super::editor::shot::open(app, s.path),
             None => app.toast(tr!("還沒有截圖", "No screenshots yet"), true),
         },
-        ShotAct::Qr => {
-            app.main.shooting = true;
-            app.spawn(async move { core.qr_snip(&config).await }, |app, r| {
-                app.main.shooting = false;
-                match r {
-                    Ok(Some(list)) => app.show_qr(list),
-                    Ok(None) => {}
-                    Err(e) => app.toast(e.message().to_string(), true),
-                }
-            });
-        }
         ShotAct::Text => {
             app.main.shooting = true;
             app.spawn(async move { core.text_snip(&config).await }, |app, r| {
@@ -2002,17 +1964,6 @@ pub(super) fn run_shot(app: &mut UiApp, act: ShotAct) {
                     Ok(Some(l)) => app.show_grabbed_text(l),
                     Ok(None) => {}
                     Err(e) => super::ocr::error(app, e.message()),
-                }
-            });
-        }
-        ShotAct::Tool(ruler) => {
-            app.main.shooting = true;
-            app.spawn(async move { core.screen_tool(&config, ruler).await }, |app, r| {
-                app.main.shooting = false;
-                match r {
-                    Ok(Some(hex)) => app.toast(trf!("已複製色碼 {hex}", "Copied color code {hex}"), false),
-                    Ok(None) => {}
-                    Err(e) => app.toast(e.message().to_string(), true),
                 }
             });
         }

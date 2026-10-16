@@ -357,12 +357,6 @@ pub async fn export_start(app: &App, r: &ExportRequest) -> Result<()> {
 // ───────────── 剪輯 ─────────────
 
 /// 開始剪輯。replace = 取代這個剪輯版（修改之前的剪輯）；project = 介面的剪輯設定與標註，完成後存起來供之後修改
-/// 讀取截圖裡的 QR 碼
-pub async fn shot_qr(path: &str) -> Result<Vec<String>> {
-    let (rgba, w, h) = load_image(path).await?;
-    tokio::task::spawn_blocking(move || crate::qr::decode(&rgba, w, h)).await.map_err(|e| Error::other(e.to_string()))
-}
-
 /// 合併多支錄影：依給的順序接成一支；name = 成品的名稱（不含 .mp4）。回傳轉檔工作的編號（完成時用來找到成品）
 pub async fn merge_start(app: &App, paths: &[String], name: Option<&str>) -> Result<u64> {
     if app.recorder.active() {

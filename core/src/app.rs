@@ -820,65 +820,6 @@ impl App {
         Ok(shot)
     }
 
-    /// 自動匯入資料夾（設定 → 儲存位置）：每 10 秒看一次，有寫完的新影片就匯入到儲存位置；
-    /// 設定了「匯入後接著自動處理」時，再做錄完自動處理（字幕、剪掉沒動靜的片段…）
-    pub fn spawn_folder_watcher(self: &Arc<Self>) {
-        let me = Arc::downgrade(self);
-        tokio::spawn(async move {
-            let mut w = crate::watch::Watcher::load(Some(crate::paths::data_dir().join("watch_seen.json")));
-            loop {
-                tokio::time::sleep(Duration::from_secs(crate::watch::POLL_SEC)).await;
-                let Some(app) = me.upgrade() else { return };
-                let ui = app.settings.load().ui;
-                let dirs = crate::watch::dirs_from_ui(ui.as_ref());
-                if dirs.is_empty() {
-                    continue;
-                }
-                // 錄影、轉檔、錄完自動處理進行中：先不做（錄影優先）
-                if app.recorder.active() || app.exporter.running() || app.after_status().is_some() {
-                    continue;
-                }
-                let Some(out) = app.settings.load().record_config().map(|c| c.output_dir).filter(|d| !d.trim().is_empty()) else { continue };
-                let out = PathBuf::from(out);
-                let found: Vec<(PathBuf, Vec<crate::watch::Seen>)> = tokio::task::spawn_blocking({
-                    let (dirs, out) = (dirs.clone(), out.clone());
-                    move || dirs.into_iter().filter(|d| !crate::watch::inside(d, &out)).map(|d| (d.clone(), crate::watch::list(&d))).collect()
-                })
-                .await
-                .unwrap_or_default();
-                let ready = w.ready(&found, crate::paths::now_ms() as f64);
-                if ready.is_empty() {
-                    continue;
-                }
-                let files: Vec<crate::watch::Seen> = found.iter().flat_map(|(_, f)| f.iter()).filter(|f| ready.contains(&f.path)).cloned().collect();
-                crate::info!("[自動匯入] 發現 {} 支新影片：{}", ready.len(), ready.join("、"));
-                let r = crate::actions::import_videos(&app, &ready, &out).await;
-                w.finished(&files, &r.done_src, &r.failed_src);
-                if r.done.is_empty() {
-                    if !r.failed.is_empty() {
-                        app.notify(tr!("自動匯入", "Auto import"), &trf!("{} 支影片無法匯入（詳見記錄檔）", "{} video(s) couldn't be imported (see the log file)", r.failed.len()), true);
-                    }
-                    continue;
-                }
-                let names: Vec<String> = r.done.iter().map(|p| Path::new(p).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()).collect();
-                let after = crate::after_record::AfterRecord::from_ui(ui.as_ref());
-                let process = crate::watch::after_from_ui(ui.as_ref()) && after.any();
-                app.notify(
-                    tr!("自動匯入", "Auto import"),
-                    &if process {
-                        trf!("已匯入 {}，接著自動處理", "Imported {}; processing it now", names.join(tr!("、", ", ")))
-                    } else {
-                        trf!("已匯入 {}", "Imported {}", names.join(tr!("、", ", ")))
-                    },
-                    false,
-                );
-                if process {
-                    app.clone().batch_process(r.done.clone(), after).await;
-                }
-            }
-        });
-    }
-
     /// 「只錄這個視窗」：視窗移動後（停下來 0.4 秒）錄影範圍跟著移過去；大小改變時維持原本的大小
     pub fn spawn_window_follower(self: &Arc<Self>) {
         let me = Arc::downgrade(self);
@@ -1122,64 +1063,6 @@ impl App {
             st.shooting = true;
         }
         self.snip_ready(self.snip_capture(config).await)
-    }
-
-    /// 取色器（tool = false）或尺規（tool = true）：凍結畫面後顯示放大鏡。
-    /// 取色器點一下把色碼（#1D4ED8）複製到剪貼簿並回傳；尺規只是量，回傳 None。只有 Windows
-    pub async fn screen_tool(self: &Arc<Self>, config: &RecordConfig, ruler: bool) -> crate::Result<Option<String>> {
-        #[cfg(not(windows))]
-        {
-            let _ = (config, ruler);
-            Err(crate::Error::config(tr!("取色器與尺規只支援 Windows", "Color picker and ruler are only available on Windows")))
-        }
-        #[cfg(windows)]
-        {
-            {
-                let mut st = self.lock();
-                if st.shooting || st.snipping {
-                    return Err(crate::Error::config(tr!("正在截圖", "A screenshot is already in progress")));
-                }
-                st.shooting = true;
-            }
-            let src = self.snip_ready(self.snip_capture(config).await)?;
-            let (path, desk) = (src.path.clone(), src.desktop);
-            let color = tokio::task::spawn_blocking(move || {
-                let pm = tiny_skia::Pixmap::decode_png(&std::fs::read(&path).ok()?).ok()?;
-                let desk = crate::types::Rect { width: pm.width() as i32, height: pm.height() as i32, ..desk };
-                if ruler {
-                    crate::snip_win::ruler(pm.data(), desk);
-                    None
-                } else {
-                    crate::snip_win::pick_color(pm.data(), desk)
-                }
-            })
-            .await
-            .ok()
-            .flatten();
-            self.snip_end(Some(&src));
-            let hex = color.map(crate::snip_tools::hex);
-            if let Some(h) = &hex {
-                crate::clipboard::copy_text(h);
-                crate::info!("[取色器] {h}（已複製到剪貼簿）");
-            }
-            Ok(hex)
-        }
-    }
-
-    /// 讀取畫面上的 QR 碼：框選範圍（或點一下選視窗）後解出內容；取消時 None。只有 Windows
-    pub async fn qr_snip(self: &Arc<Self>, config: &RecordConfig) -> crate::Result<Option<Vec<String>>> {
-        #[cfg(not(windows))]
-        {
-            let _ = config;
-            Err(crate::Error::config(tr!(
-                "讀取畫面上的 QR 碼只支援 Windows；可以在檢視器開啟截圖後按「讀取 QR 碼」",
-                "Reading QR codes on screen is only available on Windows; open a screenshot in the viewer and click “Read QR code” instead"
-            )))
-        }
-        #[cfg(windows)]
-        {
-            self.snip_pixels(config, crate::snip_win::Mode::Qr, |rgba, w, h| Ok(crate::qr::decode(&rgba, w, h))).await
-        }
     }
 
     /// 只抓文字：在螢幕上框選，辨識裡面的字直接複製到剪貼簿（不存圖）；對齊的欄排成 Tab 分隔，可以直接貼到 Excel

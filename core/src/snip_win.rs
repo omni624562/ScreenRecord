@@ -2,10 +2,10 @@
 //! 顯示凍結的畫面並變暗；拖曳框選範圍，或點一下選游標下的視窗；Esc 或右鍵取消。截圖與錄影共用。
 //! 截圖、選錄影範圍時放開滑鼠後範圍留著：可以拖曳邊、角調整或整個移動，下方的工具列選要做什麼
 //! （完成、編輯、複製、釘在桌面、取消；Enter 完成、在範圍裡點兩下也是完成）。設定「放開滑鼠就直接存檔」時放開就截。
-//! 游標旁有放大鏡（看清楚像素、按 C 複製色碼、方向鍵微調位置）；也用來當取色器與尺規。
+//! 游標旁有放大鏡（看清楚像素、方向鍵微調位置）。
 //! 座標都是實體像素（程式已宣告 Per-Monitor DPI aware）。
 
-use crate::snip_tools::{drag_grab, grab_at, handles, hex, loupe_pos, render_loupe, ruler_text, ruler_ticks, snap, toolbar_pos, tools, Grab, SnipAction, Tool};
+use crate::snip_tools::{drag_grab, grab_at, handles, loupe_pos, render_loupe, toolbar_pos, tools, Grab, SnipAction, Tool};
 use crate::types::Rect;
 use crate::{tr, trf};
 use std::cell::RefCell;
@@ -19,7 +19,7 @@ use windows::Win32::Graphics::Gdi::{
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
-use windows::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, ReleaseCapture, SetCapture, SetFocus, VK_CONTROL, VK_SHIFT};
+use windows::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, ReleaseCapture, SetCapture, SetFocus, VK_CONTROL};
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetCursorPos, GetMessageW, LoadCursorW, PostQuitMessage, RegisterClassExW, SetCursor, SetCursorPos, SetForegroundWindow,
     ShowWindow, TranslateMessage, CS_DBLCLKS, IDC_ARROW, IDC_CROSS, IDC_HAND, IDC_SIZEALL, IDC_SIZENESW, IDC_SIZENS, IDC_SIZENWSE, IDC_SIZEWE, MSG, SW_SHOW, WM_DESTROY, WM_ERASEBKGND, WM_KEYDOWN,
@@ -64,12 +64,6 @@ struct State {
     pressed: Option<Tool>,
     /// 游標位置（視窗座標）
     cursor: Option<POINT>,
-    /// 剛按 C 複製了色碼（放大鏡下方顯示「已複製」）
-    copied: bool,
-    /// 取色器選到的顏色
-    color: Option<[u8; 3]>,
-    /// 尺規：量的線（放開後留著，可以再量）
-    ruler: Option<(POINT, POINT)>,
 }
 
 /// 框選的用途
@@ -79,25 +73,14 @@ pub enum Mode {
     Record,
     /// 長截圖（捲動截圖）
     Scroll,
-    /// 讀取 QR 碼
-    Qr,
     /// 只抓文字（辨識後複製到剪貼簿）
     Text,
-    /// 取色器：點一下複製色碼
-    Color,
-    /// 尺規：拖曳量距離
-    Ruler,
 }
 
 impl Mode {
-    /// 顯示放大鏡（可以按 C 複製色碼）
+    /// 顯示放大鏡（框選時對準用）
     fn loupe(self) -> bool {
-        matches!(self, Mode::Shot | Mode::Record | Mode::Color | Mode::Ruler)
-    }
-
-    /// 不變暗、不選視窗（取色器、尺規）
-    fn tool(self) -> bool {
-        matches!(self, Mode::Color | Mode::Ruler)
+        matches!(self, Mode::Shot | Mode::Record)
     }
 }
 
@@ -109,21 +92,11 @@ thread_local! {
 /// rgba：整個桌面的畫面（由上而下、不透明）；windows：看得到的視窗（上層在前）；record：用途；
 /// instant：截圖時放開滑鼠就直接存檔（不留下範圍調整）。回傳 (範圍, 工具列選的動作)
 pub fn select(rgba: &[u8], desk: Rect, windows: Vec<Rect>, record: Mode, instant: bool) -> Option<(Rect, SnipAction)> {
-    run(rgba, desk, windows, record, instant).and_then(|r| r.0.map(|rect| (rect, r.2)))
+    run(rgba, desk, windows, record, instant).and_then(|r| r.0.map(|rect| (rect, r.1)))
 }
 
-/// 取色器：在凍結的畫面上點一下（或按 C），回傳那個像素的顏色；取消時 None
-pub fn pick_color(rgba: &[u8], desk: Rect) -> Option<[u8; 3]> {
-    run(rgba, desk, vec![], Mode::Color, true).and_then(|r| r.1)
-}
-
-/// 尺規：在凍結的畫面上拖曳量距離，Esc 或右鍵結束
-pub fn ruler(rgba: &[u8], desk: Rect) {
-    run(rgba, desk, vec![], Mode::Ruler, true);
-}
-
-/// 顯示畫面直到結束：(框選的範圍, 取色器選的顏色, 工具列選的動作)
-fn run(rgba: &[u8], desk: Rect, windows: Vec<Rect>, record: Mode, instant: bool) -> Option<(Option<Rect>, Option<[u8; 3]>, SnipAction)> {
+/// 顯示畫面直到結束：(框選的範圍, 工具列選的動作)
+fn run(rgba: &[u8], desk: Rect, windows: Vec<Rect>, record: Mode, instant: bool) -> Option<(Option<Rect>, SnipAction)> {
     let (w, h) = (desk.width, desk.height);
     if w <= 0 || h <= 0 || rgba.len() < (w * h * 4) as usize {
         return None;
@@ -181,9 +154,6 @@ fn run(rgba: &[u8], desk: Rect, windows: Vec<Rect>, record: Mode, instant: bool)
             hot: None,
             pressed: None,
             cursor: None,
-            copied: false,
-            color: None,
-            ruler: None,
         };
         STATE.with(|s| *s.borrow_mut() = Some(state));
 
@@ -194,10 +164,7 @@ fn run(rgba: &[u8], desk: Rect, windows: Vec<Rect>, record: Mode, instant: bool)
         let title: Vec<u16> = match record {
             Mode::Record => tr!("框選錄影範圍", "Select area to record"),
             Mode::Scroll => tr!("長截圖", "Scrolling screenshot"),
-            Mode::Qr => tr!("讀取 QR 碼", "Read QR code"),
             Mode::Text => tr!("只抓文字", "Grab text"),
-            Mode::Color => tr!("取色器", "Color picker"),
-            Mode::Ruler => tr!("尺規", "Ruler"),
             Mode::Shot => tr!("框選截圖", "Screenshot of selected area"),
         }
         .encode_utf16()
@@ -222,7 +189,7 @@ fn run(rgba: &[u8], desk: Rect, windows: Vec<Rect>, record: Mode, instant: bool)
             let _ = DeleteObject(b.into());
         }
         let _ = DeleteObject(st.font.into());
-        Some((st.result, st.color, st.action))
+        Some((st.result, st.action))
     }
 }
 
@@ -422,19 +389,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             STATE.with(|s| {
                 if let Some(st) = s.borrow_mut().as_mut() {
                     st.cursor = Some(p);
-                    st.copied = false;
-                    if st.record == Mode::Ruler {
-                        if let Some((a, _)) = st.drag {
-                            let b = if key_down(VK_SHIFT.0) {
-                                let (x, y) = snap((a.x, a.y), (p.x, p.y));
-                                POINT { x, y }
-                            } else {
-                                p
-                            };
-                            st.drag = Some((a, b));
-                            st.ruler = Some((a, b));
-                        }
-                    } else if let Some((g, p0, orig)) = st.grab {
+                    if let Some((g, p0, orig)) = st.grab {
                         let bounds = (0, 0, st.desk.width, st.desk.height);
                         st.sel = Some(rect_of(drag_grab(tuple(orig), g, (p.x - p0.x, p.y - p0.y), bounds)));
                     } else if let Some((a, _)) = st.drag {
@@ -474,19 +429,6 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             let done = STATE.with(|s| {
                 let mut b = s.borrow_mut();
                 let st = b.as_mut()?;
-                if st.record == Mode::Color {
-                    // 取色器：點一下選這個像素
-                    st.drag = None;
-                    st.color = pixel(st, p.x, p.y);
-                    return st.color.map(|_| ());
-                }
-                if st.record == Mode::Ruler {
-                    // 尺規：量好的線留著（點一下沒拖曳就清掉）
-                    if let Some((a, b)) = st.drag.take() {
-                        st.ruler = (a.x != b.x || a.y != b.y).then_some((a, b));
-                    }
-                    return None;
-                }
                 if let Some(t) = st.pressed.take() {
                     return (bar_hit(st, p) == Some(t) && run_tool(st, t)).then_some(());
                 }
@@ -547,7 +489,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             }
             LRESULT(0)
         }
-        // Ctrl+C：框好範圍時只複製到剪貼簿；C：複製游標下的色碼（取色器直接結束）
+        // Ctrl+C：框好範圍時只複製到剪貼簿
         WM_KEYDOWN if wparam.0 == 0x43 => {
             let copy_area = key_down(VK_CONTROL.0)
                 && STATE.with(|s| {
@@ -557,43 +499,10 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                 });
             if copy_area {
                 let _ = DestroyWindow(hwnd);
-                return LRESULT(0);
-            }
-            // 剪貼簿在放開 STATE 之後才寫（寫的時候可能處理其他訊息，又進到這裡借用）
-            let picked = STATE.with(|s| {
-                let mut b = s.borrow_mut();
-                let st = b.as_mut()?;
-                if !st.record.loupe() {
-                    return None;
-                }
-                let p = st.cursor?;
-                let c = pixel(st, p.x, p.y)?;
-                if st.record == Mode::Color {
-                    st.color = Some(c);
-                    return Some((true, c));
-                }
-                Some((false, c))
-            });
-            let done = match picked {
-                Some((false, c)) => {
-                    let ok = crate::clipboard::copy_text(&hex(c));
-                    STATE.with(|s| {
-                        if let Some(st) = s.borrow_mut().as_mut() {
-                            st.copied = ok;
-                        }
-                    });
-                    Some(false)
-                }
-                other => other.map(|p| p.0),
-            };
-            if done == Some(true) {
-                let _ = DestroyWindow(hwnd);
-            } else {
-                let _ = InvalidateRect(Some(hwnd), None, false);
             }
             LRESULT(0)
         }
-        // 方向鍵：游標移動一個像素（取色、框選對齊用）
+        // 方向鍵：游標移動一個像素（框選對齊用）
         WM_KEYDOWN if (0x25..=0x28).contains(&wparam.0) => {
             let mut cur = POINT::default();
             if GetCursorPos(&mut cur).is_ok() {
@@ -636,18 +545,9 @@ fn tip_text(st: &State) -> &'static str {
             "框選要捲動的內容（例如網頁中間的部分），或點一下選視窗；選好後自動往下捲並接成長圖，按 Esc 停止",
             "Select what to scroll (e.g. part of a web page) or click a window; it then scrolls down and stitches a long image. Esc stops"
         ),
-        Mode::Qr => tr!("框選 QR 碼（大一點沒關係），或點一下選視窗　　Esc 或右鍵取消", "Select the QR code (larger is fine), or click a window    Esc or right-click to cancel"),
         Mode::Text => tr!(
             "框選要抓的文字（圖片、影片裡的字也可以），或點一下選視窗；字會直接複製到剪貼簿　　Esc 或右鍵取消",
             "Select the text to grab (text in images and videos works too), or click a window; it's copied straight to the clipboard    Esc or right-click to cancel"
-        ),
-        Mode::Color => tr!(
-            "移到要取色的地方點一下（或按 C），色碼會複製到剪貼簿；方向鍵可以微調　　Esc 或右鍵取消",
-            "Click a spot (or press C) to copy its color code; arrow keys fine-tune    Esc or right-click to cancel"
-        ),
-        Mode::Ruler => tr!(
-            "拖曳量距離（按住 Shift 保持水平、垂直或 45°），可以重複量　　Esc 或右鍵結束",
-            "Drag to measure (hold Shift for horizontal, vertical or 45°); measure as often as you like    Esc or right-click to finish"
         ),
         Mode::Shot if adjusting => {
             tr!("拖曳邊框調整範圍，在範圍裡點兩下或按 Enter 完成　　Esc 取消", "Drag the edges to adjust; double-click inside or press Enter to finish    Esc to cancel")
@@ -667,11 +567,9 @@ unsafe fn paint(hwnd: HWND) {
         let Some(st) = b.as_mut() else { return };
         let (w, h) = (st.desk.width, st.desk.height);
         let mem = st.back;
-        // 取色器、尺規：不變暗
-        let _ = BitBlt(mem, 0, 0, w, h, Some(if st.record.tool() { st.bright } else { st.dim }), 0, 0, SRCCOPY);
+        let _ = BitBlt(mem, 0, 0, w, h, Some(st.dim), 0, 0, SRCCOPY);
         // 選取範圍（或游標下的視窗）用原本的亮度，外框與尺寸
         let (sel, sized) = match (st.drag, st.sel) {
-            _ if st.record.tool() => (None, false),
             (Some((a, b)), _) => (Some(drag_rect(a, b)), true),
             (None, Some(r)) => (Some(r), true),
             (None, None) => (st.hover.map(|r| win_rect(st, r)), false),
@@ -696,10 +594,9 @@ unsafe fn paint(hwnd: HWND) {
                     match st.record {
                         Mode::Record => tr!("選這個視窗", "select it"),
                         Mode::Scroll => tr!("捲動擷取", "scroll and capture"),
-                        Mode::Qr => tr!("讀取 QR 碼", "read the QR code"),
                         Mode::Text => tr!("抓裡面的文字", "grab its text"),
                         Mode::Shot if st.adjust => tr!("選這個視窗", "select it"),
-                        Mode::Shot | Mode::Color | Mode::Ruler => tr!("擷取", "capture"),
+                        Mode::Shot => tr!("擷取", "capture"),
                     }
                 )
             };
@@ -721,9 +618,6 @@ unsafe fn paint(hwnd: HWND) {
             if st.grab.is_none() {
                 draw_toolbar(mem, st, r, scale);
             }
-        }
-        if let Some((a, b)) = st.ruler {
-            draw_ruler(mem, a, b, brush);
         }
         // 游標所在螢幕的上方：說明（游標移過去時改到下方，才不會擋住）
         let mut cur = POINT::default();
@@ -749,13 +643,7 @@ unsafe fn paint(hwnd: HWND) {
         let show_loupe = st.sel.is_none() || st.grab.is_some();
         if let Some(c) = st.cursor.filter(|_| st.record.loupe() && show_loupe) {
             let area = (m.left, m.top, m.right, m.bottom);
-            let hint = if st.copied {
-                tr!("已複製色碼", "Color code copied")
-            } else if st.record == Mode::Color {
-                tr!("點一下複製", "Click to copy")
-            } else {
-                tr!("按 C 複製色碼", "Press C to copy")
-            };
+            let hint = tr!("方向鍵可以微調", "Arrow keys fine-tune");
             draw_loupe(mem, st, c, area, scale, hint);
         }
         let _ = DeleteObject(brush.into());
@@ -858,26 +746,6 @@ unsafe fn draw_loupe(hdc: HDC, st: &State, c: POINT, area: (i32, i32, i32, i32),
     let _ = BitBlt(hdc, x, y, lw, lh, Some(dc), 0, 0, SRCCOPY);
     let _ = DeleteDC(dc);
     let _ = DeleteObject(bmp.into());
-}
-
-/// 尺規：白底藍線、兩端的短槓，旁邊標上長度與角度
-unsafe fn draw_ruler(hdc: HDC, a: POINT, b: POINT, brush: HBRUSH) {
-    let ticks = ruler_ticks((a.x, a.y), (b.x, b.y), 7.0);
-    for (width, color) in [(5, COLORREF(0x00FF_FFFF)), (2, ACCENT)] {
-        let pen = CreatePen(PS_SOLID, width, color);
-        let old = SelectObject(hdc, pen.into());
-        let _ = MoveToEx(hdc, a.x, a.y, None);
-        let _ = LineTo(hdc, b.x, b.y);
-        for (p, q) in ticks {
-            let _ = MoveToEx(hdc, p.0, p.1, None);
-            let _ = LineTo(hdc, q.0, q.1);
-        }
-        SelectObject(hdc, old);
-        let _ = DeleteObject(pen.into());
-    }
-    let text = ruler_text((a.x, a.y), (b.x, b.y));
-    let (mx, my) = ((a.x + b.x) / 2, (a.y + b.y) / 2);
-    label(hdc, &text, mx + 12, my + 12, brush);
 }
 
 /// 藍底白字的小標籤

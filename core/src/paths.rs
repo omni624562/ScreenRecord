@@ -118,9 +118,23 @@ pub fn is_windows_abs(p: &str) -> bool {
     (b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && b[2] == b'\\') || p.starts_with("\\\\")
 }
 
+/// dir 是不是 root 本身或它底下的資料夾（不分大小寫、斜線方向）
+pub fn inside(dir: &std::path::Path, root: &std::path::Path) -> bool {
+    let norm = |p: &std::path::Path| p.display().to_string().replace('\\', "/").trim_end_matches('/').to_lowercase();
+    let (d, r) = (norm(dir), norm(root));
+    !r.is_empty() && (d == r || d.starts_with(&format!("{r}/")))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn inside_matches_the_folder_and_below() {
+        assert!(inside(std::path::Path::new("C:\\Videos\\Timelapse\\sub"), std::path::Path::new("C:\\Videos\\Timelapse")));
+        assert!(inside(std::path::Path::new("c:/videos/timelapse/"), std::path::Path::new("C:\\Videos\\Timelapse")));
+        assert!(!inside(std::path::Path::new("C:\\Videos\\Timelapse2"), std::path::Path::new("C:\\Videos\\Timelapse")));
+    }
 
     #[test]
     fn unique_names() {

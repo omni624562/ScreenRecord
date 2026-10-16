@@ -85,14 +85,8 @@ pub enum TrayCommand {
     ScreenshotDelay(u64),
     /// 長截圖（框選後自動往下捲，接成長圖）
     ScreenshotScroll,
-    /// 讀取畫面上的 QR 碼
-    ScreenshotQr,
     /// 只抓文字（框選後辨識，複製到剪貼簿）
     ScreenshotText,
-    /// 取色器（點一下複製色碼）
-    ScreenColor,
-    /// 尺規（量畫面上的距離）
-    ScreenRuler,
     /// 開始步驟截圖（每點一下截一張）
     StepsStart,
     /// 完成步驟截圖（做成教學文件）
@@ -128,9 +122,6 @@ impl TrayCommand {
                 | TrayCommand::ScreenshotDelay(_)
                 | TrayCommand::ScreenshotScroll
                 | TrayCommand::ScreenshotText
-                | TrayCommand::ScreenshotQr
-                | TrayCommand::ScreenColor
-                | TrayCommand::ScreenRuler
                 | TrayCommand::StartLast
                 | TrayCommand::StartAll
                 | TrayCommand::StartMonitor(_)
@@ -619,19 +610,6 @@ impl TrayController {
                 crate::desktop::open_with_explorer(&dir, false);
                 return Ok(());
             }
-            TrayCommand::ScreenshotQr => {
-                let cfg = self.config();
-                let Some(list) = app.qr_snip(&cfg).await.map_err(err)? else { return Ok(()) };
-                if list.is_empty() {
-                    self.notify(tr!("讀取 QR 碼", "Read QR code"), tr!("沒有找到 QR 碼（框大一點再試試）", "No QR code found (try selecting a larger area)"), true);
-                } else {
-                    let text = list.join("\n");
-                    crate::clipboard::copy_text(&text);
-                    let short: String = text.chars().take(100).collect();
-                    self.notify(tr!("QR 碼內容（已複製）", "QR code content (copied)"), &short, false);
-                }
-                return Ok(());
-            }
             TrayCommand::ScreenshotText => {
                 let cfg = self.config();
                 let Some(l) = app.text_snip(&cfg).await.map_err(err)? else { return Ok(()) };
@@ -641,13 +619,6 @@ impl TrayController {
                     let short: String = l.text.chars().take(100).collect();
                     let title = if l.table { tr!("已複製成表格（可以貼到 Excel）", "Copied as a table (paste into Excel)") } else { tr!("已複製文字", "Text copied") };
                     self.notify(title, &short, false);
-                }
-                return Ok(());
-            }
-            TrayCommand::ScreenColor | TrayCommand::ScreenRuler => {
-                let cfg = self.config();
-                if let Some(hex) = app.screen_tool(&cfg, cmd == TrayCommand::ScreenRuler).await.map_err(err)? {
-                    self.notify(tr!("取色器", "Color picker"), &trf!("{hex}（已複製到剪貼簿）", "{hex} (copied to the clipboard)"), false);
                 }
                 return Ok(());
             }
