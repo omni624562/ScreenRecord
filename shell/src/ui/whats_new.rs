@@ -37,15 +37,35 @@ enum Try {
 
 /// 這一版的新功能（標題、說明、試試看）：最多 6 項，快速鍵用目前的設定
 fn items(_app: &UiApp) -> Vec<(String, String, Try)> {
-    vec![(
-        tr!("沒動靜時自動暫停", "Auto-pause when idle").into(),
-        tr!(
-            "去倒杯水、想一下怎麼講時，滑鼠鍵盤都沒動又沒聲音，錄影會自動暫停；動一下滑鼠就接著錄，影片裡不會有一大段空白。",
-            "When the mouse, keyboard and sound are all idle, recording pauses by itself and continues as soon as you move the mouse, so there are no long blank stretches."
-        )
-        .into(),
-        Try::Settings(Page::Record),
-    )]
+    vec![
+        (
+            tr!("剪輯視窗整理好了", "A tidier editor").into(),
+            tr!(
+                "「修剪」分頁的「清掉空白」一次找出沒動靜、沒說話、贅字和停頓；「章節」列出所有標記，可以複製成 YouTube 章節。「畫面」分頁的效果收起來，有開的才展開。",
+                "“Clean up blank parts” in the Trim tab finds idle parts, quiet parts, fillers and pauses in one go; “Chapters” lists every marker and copies them for YouTube. Effects in the Frame tab are folded away unless they're on."
+            )
+            .into(),
+            Try::None,
+        ),
+        (
+            tr!("錄影直接做成步驟教學", "Step guides from a recording").into(),
+            tr!(
+                "錄影卡片「更多 → 步驟教學 → 做成文件（附圖）」：點過的每個按鈕各做成一步，附上當時的畫面，存成 Word、PowerPoint、網頁或影片。",
+                "On a recording card, More → Step-by-step guide → Make a guide: every button you clicked becomes a step with the picture from that moment, saved as Word, PowerPoint, a web page or a video."
+            )
+            .into(),
+            Try::None,
+        ),
+        (
+            tr!("錄完處理與一次處理多支共用設定", "One set of processing options").into(),
+            tr!(
+                "錄完自動處理也能另存加速版；在「全部錄影」一次處理多支時，預設就是同一套設定。",
+                "After recording can now also save a sped-up version, and processing several recordings at once starts from the same settings."
+            )
+            .into(),
+            Try::Settings(Page::After),
+        ),
+    ]
 }
 
 pub fn show(app: &mut UiApp, ctx: &egui::Context) {

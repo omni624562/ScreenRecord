@@ -369,7 +369,7 @@ pub struct Editor {
     sub_picked: HashSet<u64>,
     sub_anchor: Option<u64>,
     /// 找到的贅字與停頓（勾選的要剪）；None = 沒有在看
-    fillers: Option<Vec<(screenrecorder_core::fillers::Filler, bool)>>,
+    pub(crate) fillers: Option<Vec<(screenrecorder_core::fillers::Filler, bool)>>,
     /// 分割點（原片的時間）：時間軸分成一段一段，點一下選取一段
     splits: Vec<f64>,
     /// 跟著點擊放大時不放大的點擊（點擊的時間）
@@ -443,6 +443,8 @@ pub struct Editor {
     finding_idle: bool,
     /// 分析找到的片段（標在時間軸上，等使用者決定刪除或加速）
     pub(crate) idle_found: Option<screenrecorder_core::idle::Found>,
+    /// 「清掉空白」要找哪幾種：沒動靜、沒說話、贅字和停頓（要有字幕）
+    pub(crate) clean_kinds: [bool; 3],
     /// 預覽到加速的片段時，上次跳過去的位置
     fast_from: Option<f64>,
     /// 預覽到定格：停在這個時間，到這個時候再繼續播放
@@ -724,6 +726,7 @@ impl Editor {
             finding_pii: false,
             finding_idle: false,
             idle_found: None,
+            clean_kinds: [true; 3],
             fast_from: None,
             hold_until: None,
             last_tick: 0.0,

@@ -1610,10 +1610,22 @@ pub fn run(app: &mut UiApp, ed: &mut Editor, act: Act) {
             app.spawn(async move { screenrecorder_core::idle::analyze(&ffmpeg, &video, dur, audio).await }, |app, r| {
                 let Some(ed) = &mut app.editor else { return };
                 ed.finding_idle = false;
+                // 只留下「清掉空白」勾選的種類
+                let r = r.map(|mut f| {
+                    if !ed.clean_kinds[0] {
+                        f.idle.clear();
+                    }
+                    if !ed.clean_kinds[1] {
+                        f.quiet.clear();
+                    }
+                    f
+                });
                 match r {
                     Ok(found) if found.idle.is_empty() && found.quiet.is_empty() => {
                         ed.idle_found = None;
-                        app.toast(tr!("沒有找到不動又沒聲音、或是沒說話的片段", "No still, silent or quiet parts were found"), false);
+                        if ed.fillers.is_none() {
+                            app.toast(tr!("沒有找到可以清掉的空白", "No blank parts were found"), false);
+                        }
                     }
                     // 標在時間軸上，側邊欄讓使用者選要刪除還是加速
                     Ok(found) => ed.idle_found = Some(found),

@@ -612,6 +612,69 @@ pub async fn steps_text(app: &App, path: &str) -> Option<String> {
     Some(crate::steps_log::to_text(&m.actions, &title))
 }
 
+/// 一支錄影最多做成幾步的教學文件
+pub const RECORDING_STEPS_MAX: usize = 80;
+
+/// 錄影的操作步驟做成步驟教學（和步驟截圖一樣在操作視窗整理，再做成 HTML / Word / PowerPoint / 影片）：
+/// 每一步擷取點下去那一刻的畫面、圈出點的位置，說明用記下的按鈕名稱。回傳幾步；沒有操作步驟時回傳 0
+pub async fn steps_from_recording(app: &Arc<App>, path: &str) -> Result<usize> {
+    if app.steps_draft().is_some() {
+        app.open_ui(crate::app::UiPage::StepsReview);
+        return Err(Error::config(tr!(
+            "上一次的步驟還沒做成文件：請先在操作視窗做成文件或放棄",
+            "The steps from last time haven't been made into a guide yet. Finish or discard them in the main window first"
+        )));
+    }
+    let m = marks(app, path).await;
+    let picked: Vec<crate::steps_log::Action> = crate::steps_log::steps(&m.actions).into_iter().take(RECORDING_STEPS_MAX).cloned().collect();
+    if picked.is_empty() {
+        return Ok(0);
+    }
+    let ffmpeg = app.ffmpeg_path().ok_or_else(|| Error::config(tr!("找不到 FFmpeg", "FFmpeg not found")))?;
+    let video = Path::new(path);
+    let dir = video.parent().map(Path::to_path_buf).unwrap_or_default();
+    let stem = video.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    let name = format!("教學_{stem}_{}", crate::paths::timestamp());
+    let folder = dir.join(&name);
+    tokio::fs::create_dir_all(&folder).await.map_err(|e| Error::config(trf!("無法建立資料夾：{e}", "Couldn't create the folder: {e}")))?;
+    let mut steps = Vec::with_capacity(picked.len());
+    for (i, a) in picked.iter().enumerate() {
+        let file = format!("step_{:02}.png", i + 1);
+        let out = folder.join(&file);
+        // 點下去之前一點點：看得到要點的東西（點完畫面可能已經換了）
+        let t = (a.t - 0.1).max(0.0);
+        let args: Vec<String> = ["-hide_banner", "-loglevel", "error"]
+            .iter()
+            .map(|s| s.to_string())
+            .chain(crate::args::input_at(path, &format!("{t:.3}")))
+            .chain(["-frames:v", "1", "-update", "1", "-y"].iter().map(|s| s.to_string()))
+            .chain(std::iter::once(out.display().to_string()))
+            .collect();
+        let r = crate::process::run(&ffmpeg, &args, std::time::Duration::from_secs(30)).await;
+        if r.code != 0 || !tokio::fs::metadata(&out).await.map(|x| x.len() > 0).unwrap_or(false) {
+            crate::info!("[截圖] 操作步驟擷取 {t:.2} 秒失敗：{}", r.stderr.trim());
+            continue;
+        }
+        // 圈出點的位置（同一個時間附近的點擊）
+        if a.kind != crate::steps_log::KEY {
+            if let Some(c) = m.clicks.iter().filter(|c| (c[0] - a.t).abs() < 0.5).min_by(|x, y| (x[0] - a.t).abs().total_cmp(&(y[0] - a.t).abs())) {
+                let (png, x, y) = (out.clone(), c[1], c[2]);
+                let _ = tokio::task::spawn_blocking(move || crate::steps::ring_png(&png, x, y)).await;
+            }
+        }
+        steps.push(crate::steps::Step { time: crate::format::short_clock(a.t), window: a.window.clone(), image: format!("{name}/{file}"), text: crate::steps_log::line(a) });
+    }
+    if steps.is_empty() {
+        let _ = tokio::fs::remove_dir_all(&folder).await;
+        return Err(Error::other(tr!("無法擷取錄影的畫面", "Couldn't capture frames from the recording")));
+    }
+    let n = steps.len();
+    let date = chrono::Local::now().format("%Y/%m/%d %H:%M").to_string();
+    crate::info!("[截圖] 錄影 {path} 的操作步驟做成步驟教學：{n} 步");
+    app.steps_review(crate::steps::Draft { dir, name, date, steps });
+    Ok(n)
+}
+
 // ───────────── 截圖編輯 ─────────────
 
 /// 截圖之前的編輯：path 是編輯過的圖時回傳它自己的；是原圖時回傳最近一次用它編輯的

@@ -1,5 +1,5 @@
 //! 剪輯視窗「加速」分頁：整支加速（倍率、自訂、做成指定長度）、選取的片段加速或放慢、定格、
-//! 變速片段的清單，以及自動找出沒動靜的片段加速
+//! 變速片段的清單（自動找出沒動靜的片段在「修剪」分頁的「清掉空白」）
 
 use super::side::{hint, section, section_title};
 use super::Editor;
@@ -17,7 +17,16 @@ pub(super) fn panel(ed: &mut Editor, ui: &mut egui::Ui, toast: &mut Option<(Stri
     sections(ed, ui);
     freezes(ed, ui);
     section(ui, tr!("自動加速", "Automatic"), false);
-    super::side::find_idle_button(ed, ui);
+    hint(
+        ui,
+        tr!(
+            "要把等待、打字的地方自動加速：到「修剪」分頁的「清掉空白」找出來，再選 2×、4×、8×。",
+            "To speed up waiting and typing automatically, use “Clean up blank parts” in the Trim tab, then pick 2×, 4× or 8×."
+        ),
+    );
+    if Btn::new(tr!("前往清掉空白", "Go to Clean up")).small().ghost().show(ui).clicked() {
+        ed.tab = super::Tab::Time;
+    }
     super::side::found_panel(ed, ui, toast);
 }
 

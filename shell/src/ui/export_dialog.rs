@@ -386,6 +386,12 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
             if dlg.mode != Mode::Compress {
                 row(ui, tr!("加速", "Speed up"), |ui| {
                     segmented(ui, &mut o.export_mode, &[(ExportMode::Speed, tr!("指定倍率", "By speed")), (ExportMode::Target, tr!("指定長度", "By length"))], true);
+                    // 這裡是整支加速；局部加速、放慢、定格集中在剪輯視窗的「加速」分頁
+                    helper(
+                        ui,
+                        tr!("整支一起加速。只加速、放慢其中一段，請用剪輯視窗的「加速」分頁。", "Speeds up the whole video. To speed up or slow down one part, use the Speed tab in the editor."),
+                        p.muted,
+                    );
                 });
                 match o.export_mode {
                     ExportMode::Speed => row(ui, tr!("倍率", "Speed"), |ui| {

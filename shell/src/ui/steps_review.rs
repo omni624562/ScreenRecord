@@ -1,4 +1,4 @@
-//! 整理步驟截圖：截好的步驟列成清單（小圖、說明、時間），可以刪掉、調整順序、改文件標題，
+//! 整理步驟教學（步驟截圖、或錄影記下的操作步驟）：步驟列成清單（小圖、說明、時間），可以刪掉、調整順序、改文件標題，
 //! 再做成教學文件（一個 HTML 檔，圖片包在裡面）並用瀏覽器開啟。
 
 use super::dialogs::Ask;
@@ -39,6 +39,8 @@ enum Act {
     Down(usize),
     Delete(usize),
     Build,
+    /// 只要文字：說明整理成編號清單複製（不附圖，不會關閉）
+    CopyText,
     Close,
 }
 
@@ -133,7 +135,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                         ui.vertical(|ui| {
                             ui.add_space(4.0);
                             ui.label(RichText::new(trf!("步驟 {}", "Step {}", i + 1)).font(theme::font_bold(14.0)));
-                            ui.add(egui::Label::new(steps::caption(&it.step.window)).truncate());
+                            ui.add(egui::Label::new(it.step.caption()).truncate());
                             ui.label(RichText::new(&it.step.time).font(theme::font(12.0)).color(p.muted));
                         });
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -195,6 +197,15 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                 if Btn::new(make).primary().enabled(!r.busy && n > 0).show(ui).clicked() {
                     act = Some(Act::Build);
                 }
+                if Btn::new(tr!("複製成文字", "Copy as text"))
+                    .ghost()
+                    .enabled(!r.busy && n > 0)
+                    .tooltip(tr!("不要圖、只要文字：每一步的說明整理成編號清單，貼到文件或信件裡", "Text only, no pictures: copy the captions as a numbered list to paste into a document or email"))
+                    .show(ui)
+                    .clicked()
+                {
+                    act = Some(Act::CopyText);
+                }
                 if Btn::new(tr!("放棄", "Discard")).ghost().enabled(!r.busy).tooltip(tr!("刪掉這次截的步驟，不做成文件", "Delete these steps without making a guide")).show(ui).clicked()
                 {
                     act = Some(Act::Close);
@@ -211,6 +222,12 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         Some(Act::Down(i)) => r.items.swap(i, i + 1),
         Some(Act::Delete(i)) => {
             r.items.remove(i);
+        }
+        Some(Act::CopyText) => {
+            let title = if r.title.trim().is_empty() { r.draft.title() } else { r.title.trim().to_string() };
+            let lines: Vec<String> = r.items.iter().enumerate().map(|(i, it)| format!("{}. {}", i + 1, it.step.caption())).collect();
+            ctx.copy_text(format!("{title}\n\n{}", lines.join("\n")));
+            app.toast(trf!("已複製 {} 個步驟（文字）", "Copied {} steps as text", lines.len()), false);
         }
         Some(Act::Build) => {
             r.busy = true;
@@ -255,7 +272,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
             } else {
                 format!("這 {n} 步會刪掉，不會做成文件。")
             };
-            let mut ask = Ask::confirm(tr!("放棄這次的步驟截圖？", "Discard these steps?"), msg, tr!("放棄", "Discard"), |app, _| {
+            let mut ask = Ask::confirm(tr!("放棄這些步驟？", "Discard these steps?"), msg, tr!("放棄", "Discard"), |app, _| {
                 app.steps_review = None;
                 app.core.steps_discard();
             })

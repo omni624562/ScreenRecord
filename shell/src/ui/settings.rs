@@ -147,6 +147,8 @@ pub struct UiSettings {
     pub after_auto_name: bool,
     /// 錄完產生字幕時也翻成英文（同名.en.srt）
     pub after_subs_en: bool,
+    /// 錄完另存加速版（幾倍；0 = 不做；一次處理多支也用這個當預設）
+    pub after_speed: u32,
     /// 錄完處理後複製到這個資料夾（core::after_record 讀這個欄位）
     #[serde(skip_serializing_if = "String::is_empty")]
     pub after_copy_to: String,
@@ -340,6 +342,7 @@ impl UiSettings {
             after_subs_lang: num("afterSubsLang").map(|v| v as u32).filter(|v| (*v as usize) < screenrecorder_core::subtitles::LANGUAGES.len()).unwrap_or(0),
             after_auto_name: boolean("afterAutoName").unwrap_or(false),
             after_subs_en: boolean("afterSubsEn").unwrap_or(false),
+            after_speed: num("afterSpeed").map(|v| v as u32).filter(|v| screenrecorder_core::edit::FAST_SPEEDS.contains(v)).unwrap_or(0),
             after_copy_to: o.get(screenrecorder_core::after_record::COPY_KEY).and_then(Value::as_str).unwrap_or("").trim().to_string(),
             name_rule: o.get(screenrecorder_core::after_record::NAME_RULE_KEY).and_then(Value::as_str).unwrap_or("").chars().take(120).collect(),
             shot_name_rule: o.get(screenrecorder_core::after_record::SHOT_NAME_RULE_KEY).and_then(Value::as_str).unwrap_or("").chars().take(120).collect(),
@@ -612,7 +615,10 @@ mod tests {
         assert!(!screenrecorder_core::after_record::AfterRecord::from_ui(Some(&s.to_value())).any());
         (s.after_idle_cut, s.after_subs, s.after_subs_lang, s.after_compress_mb, s.after_auto_name) = (true, true, 1, 25, true);
         s.after_copy_to = "D:\\Sync".into();
+        s.after_speed = 4;
         let a = screenrecorder_core::after_record::AfterRecord::from_ui(Some(&s.to_value()));
+        // 加速版：錄完自動處理與一次處理多支共用
+        assert_eq!(a.speed, 4.0);
         assert_eq!((a.idle_cut, a.subtitles, a.subs_lang, a.compress_mb, a.auto_name), (true, true, 1, 25, true));
         assert_eq!(a.copy_to, "D:\\Sync");
         // 設定組合也存這些欄位

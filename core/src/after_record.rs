@@ -32,7 +32,7 @@ pub struct AfterRecord {
     pub auto_name: bool,
     /// 產生字幕時也翻成英文（另存 同名.en.srt）
     pub subs_en: bool,
-    /// 另存加速版（幾倍；0 = 不做）。只有一次處理多支時用，錄完自動處理沒有這一項
+    /// 另存加速版（幾倍；0 = 不做）。錄完自動處理與一次處理多支共用
     pub speed: f64,
     /// 加速版保留聲音
     pub keep_audio: bool,
@@ -49,7 +49,7 @@ pub const NAME_RULE_KEY: &str = "nameRule";
 /// 截圖的命名規則
 pub const SHOT_NAME_RULE_KEY: &str = "shotNameRule";
 
-pub const UI_KEYS: [&str; 7] = ["afterIdleCut", "afterSubs", "afterSubsModel", "afterSubsLang", "afterCompressMb", "afterAutoName", "afterSubsEn"];
+pub const UI_KEYS: [&str; 8] = ["afterIdleCut", "afterSubs", "afterSubsModel", "afterSubsLang", "afterCompressMb", "afterAutoName", "afterSubsEn", "afterSpeed"];
 
 impl AfterRecord {
     pub fn from_ui(ui: Option<&Value>) -> AfterRecord {
@@ -64,8 +64,9 @@ impl AfterRecord {
             compress_mb: n(UI_KEYS[4]).min(10_000) as u32,
             auto_name: b(UI_KEYS[5]),
             subs_en: b(UI_KEYS[6]),
+            speed: Some(n(UI_KEYS[7]) as u32).filter(|v| crate::edit::FAST_SPEEDS.contains(v)).map_or(0.0, f64::from),
+            keep_audio: o.get("keepAudio").and_then(Value::as_bool).unwrap_or(true),
             copy_to: o.get(COPY_KEY).and_then(Value::as_str).unwrap_or("").trim().to_string(),
-            ..Default::default()
         }
     }
 
@@ -780,8 +781,15 @@ mod tests {
     fn reads_settings() {
         assert!(!AfterRecord::from_ui(None).any());
         let a = AfterRecord::from_ui(Some(&json!({ "afterIdleCut": true, "afterSubs": true, "afterSubsModel": 9, "afterSubsLang": 1, "afterCompressMb": 25, "afterAutoName": true })));
-        assert_eq!(a, AfterRecord { idle_cut: true, subtitles: true, subs_model: crate::subtitles::MODELS.len() - 1, subs_lang: 1, compress_mb: 25, auto_name: true, ..Default::default() });
+        assert_eq!(
+            a,
+            AfterRecord { idle_cut: true, subtitles: true, subs_model: crate::subtitles::MODELS.len() - 1, subs_lang: 1, compress_mb: 25, auto_name: true, keep_audio: true, ..Default::default() }
+        );
         assert!(a.any());
+        // 加速版：只接受 2、4、8、16 倍；保留聲音照製作加速版的設定
+        let a = AfterRecord::from_ui(Some(&json!({ "afterSpeed": 8, "keepAudio": false })));
+        assert!(a.speed == 8.0 && !a.keep_audio && a.any());
+        assert_eq!(AfterRecord::from_ui(Some(&json!({ "afterSpeed": 3 }))).speed, 0.0);
         assert!(AfterRecord::from_ui(Some(&json!({ "afterCompressMb": 10 }))).any());
     }
 }

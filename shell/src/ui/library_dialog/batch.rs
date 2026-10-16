@@ -18,13 +18,15 @@ pub struct BatchDlg {
     speed: u32,
     /// 壓縮到幾 MB 以內（0 = 不壓縮）
     mb: u32,
+    /// 這次的選擇也存成「錄完自動處理」的設定（兩邊共用同一套）
+    save: bool,
 }
 
 impl BatchDlg {
     /// 預設沿用「錄完自動處理」的設定
     pub fn new(app: &UiApp, paths: Vec<String>) -> BatchDlg {
         let s = &app.s;
-        BatchDlg { paths, idle_cut: s.after_idle_cut, subs: s.after_subs, subs_en: s.after_subs_en, speed: 0, mb: s.after_compress_mb }
+        BatchDlg { paths, idle_cut: s.after_idle_cut, subs: s.after_subs, subs_en: s.after_subs_en, speed: s.after_speed, mb: s.after_compress_mb, save: false }
     }
 
     fn any(&self) -> bool {
@@ -57,8 +59,8 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context, d: &mut LibraryDialog) {
             egui::Label::new(theme::muted(
                 ui,
                 tr!(
-                    "勾選要做的事，會一支一支依序處理；原本的錄影都會保留，做好的另存在同一個資料夾。",
-                    "Choose what to do. Recordings are processed one at a time; the originals are kept and the results are saved in the same folder."
+                    "預設和「錄完自動處理」一樣。勾選要做的事，會一支一支依序處理；原本的錄影都會保留，做好的另存在同一個資料夾。",
+                    "Starts with your After recording settings. Choose what to do; recordings are processed one at a time, the originals are kept and the results are saved in the same folder."
                 ),
             ))
             .wrap(),
@@ -100,6 +102,9 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context, d: &mut LibraryDialog) {
                 theme::segmented(ui, &mut b.mb, &items, true);
             }
         });
+        ui.add_space(6.0);
+        theme::check(ui, &mut b.save, RichText::new(tr!("也存成「錄完自動處理」的設定", "Also use these for After recording")).font(theme::font(12.5)))
+            .on_hover_text(tr!("之後每次錄完也照這些設定處理（設定 → 錄完處理）", "Every new recording is then processed the same way (Settings → After recording)"));
         ui.add_space(10.0);
         ui.label(
             RichText::new(tr!(
@@ -128,6 +133,10 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context, d: &mut LibraryDialog) {
         return;
     }
     let Some(b) = d.batch.take() else { return };
+    if b.save {
+        (app.s.after_idle_cut, app.s.after_subs, app.s.after_subs_en, app.s.after_speed, app.s.after_compress_mb) = (b.idle_cut, b.subs, b.subs_en, b.speed, b.mb);
+        app.save_settings();
+    }
     let after = AfterRecord {
         idle_cut: b.idle_cut,
         subtitles: b.subs,
