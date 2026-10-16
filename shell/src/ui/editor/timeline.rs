@@ -47,6 +47,10 @@ const FAST: Color32 = Color32::from_rgb(0x00, 0x78, 0xff);
 pub(crate) const IDLE_MARK: Color32 = Color32::from_rgb(0x14, 0xb8, 0xa6);
 pub(crate) const QUIET_MARK: Color32 = Color32::from_rgb(0xa8, 0x55, 0xf7);
 /// 錄影時麥克風靜音的時段
+/// 旁白的色帶
+const VOICE_MARK: Color32 = Color32::from_rgb(28, 150, 90);
+/// 定格的線
+const FREEZE_MARK: Color32 = Color32::from_rgb(150, 80, 220);
 const MUTE_MARK: Color32 = Color32::from_rgb(0x64, 0x74, 0x8b);
 
 /// 時間軸縮圖：在背景依序解出時間軸上各個時間點的小圖（放大後只解顯示的範圍）；
@@ -288,13 +292,33 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, toast: &mut
         let r = full(f.start(), f.end());
         painter.rect_filled(r, CornerRadius::ZERO, Color32::from_rgba_unmultiplied(0, 120, 255, 70));
         painter.hline(r.x_range(), r.bottom() - 2.0, Stroke::new(3.0, FAST));
-        let label = format!("{}×", f.speed);
+        let label = format!("{}×", screenrecorder_core::format::speed_label(f.speed));
         let g = painter.layout_no_wrap(label, theme::font_bold(12.0), Color32::WHITE);
         if r.width() > g.size().x + 8.0 {
             let c = pos2(r.center().x, rect.top() + 21.0);
             painter.rect_filled(Rect::from_center_size(c, g.size() + vec2(8.0, 2.0)), CornerRadius::same(4), FAST);
             painter.galley(c - g.size() / 2.0, g, Color32::WHITE);
         }
+    }
+    // 旁白：下緣一條綠色帶（夠寬時寫「旁白」或語音的內容）
+    for c in ed.spec.narration.clips.iter().filter(|c| c.end() > a && c.at() < b) {
+        let r = full(c.at(), c.end().min(ed.duration)).shrink2(vec2(1.0, 0.0));
+        let band = Rect::from_min_max(pos2(r.left(), r.bottom() - 14.0), pos2(r.right(), r.bottom() - 2.0));
+        painter.rect_filled(band, CornerRadius::same(3), VOICE_MARK);
+        let label = if c.text.is_empty() { tr!("旁白", "Narration").to_string() } else { c.text.chars().take(20).collect::<String>() };
+        let g = painter.layout_no_wrap(label, theme::font_bold(10.0), Color32::WHITE);
+        if band.width() > g.size().x + 6.0 {
+            painter.galley(pos2(band.left() + 3.0, band.center().y - g.size().y / 2.0), g, Color32::WHITE);
+        }
+    }
+    // 定格：一條直線，上面寫停幾秒
+    for f in ed.spec.freezes.iter().filter(|f| f.at() >= a && f.at() <= b) {
+        let x = x_of(f.at());
+        painter.vline(x, rect.y_range(), Stroke::new(2.0, FREEZE_MARK));
+        let g = painter.layout_no_wrap(trf!("定格 {} 秒", "Freeze {}s", screenrecorder_core::format::speed_label(f.secs())), theme::font_bold(10.5), Color32::WHITE);
+        let c = pos2(x, rect.top() + 21.0);
+        painter.rect_filled(Rect::from_center_size(c, g.size() + vec2(8.0, 2.0)), CornerRadius::same(4), FREEZE_MARK);
+        painter.galley(c - g.size() / 2.0, g, Color32::WHITE);
     }
     // 錄影時麥克風靜音的時段：上緣一條灰色帶（夠寬時寫「麥克風靜音」）
     for &[m0, m1] in ed.mutes.iter().filter(|m| m[1] > a && m[0] < b) {

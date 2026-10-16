@@ -36,7 +36,12 @@ pub struct AfterRecord {
     pub speed: f64,
     /// 加速版保留聲音
     pub keep_audio: bool,
+    /// 處理完複製到這個資料夾（雲端硬碟的同步資料夾、NAS）；空的 = 不複製
+    pub copy_to: String,
 }
+
+/// ui 設定裡「錄完複製到資料夾」的欄位名稱（是位置，不放進設定組合）
+pub const COPY_KEY: &str = "afterCopyTo";
 
 /// ui 設定裡的欄位名稱（設定組合也存這些）
 pub const UI_KEYS: [&str; 7] = ["afterIdleCut", "afterSubs", "afterSubsModel", "afterSubsLang", "afterCompressMb", "afterAutoName", "afterSubsEn"];
@@ -54,17 +59,18 @@ impl AfterRecord {
             compress_mb: n(UI_KEYS[4]).min(10_000) as u32,
             auto_name: b(UI_KEYS[5]),
             subs_en: b(UI_KEYS[6]),
+            copy_to: o.get(COPY_KEY).and_then(Value::as_str).unwrap_or("").trim().to_string(),
             ..Default::default()
         }
     }
 
     pub fn any(&self) -> bool {
-        self.idle_cut || self.subtitles || self.compress_mb > 0 || self.speed > 1.0
+        self.idle_cut || self.subtitles || self.compress_mb > 0 || self.speed > 1.0 || !self.copy_to.is_empty()
     }
 
     /// 要做幾步
     fn steps(&self) -> usize {
-        [self.idle_cut, self.subtitles, self.speed > 1.0, self.compress_mb > 0].iter().filter(|b| **b).count()
+        [self.idle_cut, self.subtitles, self.speed > 1.0, self.compress_mb > 0, !self.copy_to.is_empty()].iter().filter(|b| **b).count()
     }
 }
 
@@ -385,6 +391,42 @@ impl App {
             }
             (false, d) => d,
         };
+        // 複製到資料夾放最後：名稱、字幕、處理好的版本都好了才複製
+        let done = if after.copy_to.is_empty() || canceled {
+            done
+        } else {
+            let (src, out) = match &done {
+                Some(d) => (d.source.clone(), d.output.clone()),
+                None => (video.clone(), None),
+            };
+            self.after_begin(after.steps(), trf!("複製到「{}」", "Copying to “{}”", folder_name(&after.copy_to)));
+            let dest = after.copy_to.clone();
+            let r = tokio::task::spawn_blocking(move || copy_results(&src, out.as_deref(), Path::new(&dest))).await.unwrap_or_else(|e| Err(e.to_string()));
+            let (ok, note) = match r {
+                Ok(n) => {
+                    info!("[錄完自動處理] 複製 {n} 個檔案到 {}", after.copy_to);
+                    (true, trf!("複製 {n} 個檔案到「{}」", "copied {n} files to “{}”", folder_name(&after.copy_to)))
+                }
+                Err(e) => {
+                    warn!("[錄完自動處理] 複製到 {} 失敗：{e}", after.copy_to);
+                    (false, trf!("沒有複製到「{}」：{e}", "couldn't copy to “{}”: {e}", folder_name(&after.copy_to)))
+                }
+            };
+            let sep = tr!("；", "; ");
+            match done {
+                Some(mut d) => {
+                    d.text = format!("{}{sep}{note}", d.text);
+                    d.ok &= ok;
+                    Some(d)
+                }
+                None => {
+                    if batch.is_none() {
+                        self.notify(tr!("錄完自動處理", "Post-recording processing"), &note, !ok);
+                    }
+                    Some(AfterDone { seq: DONE_SEQ.fetch_add(1, Ordering::Relaxed) + 1, ok, text: note, output: None, source: video.clone(), batch: false })
+                }
+            }
+        };
         let mut st = self.after.lock().unwrap();
         match done {
             // 一次處理多支：狀態留著（下一支接著用），全部做完再一起顯示
@@ -639,9 +681,73 @@ impl App {
     }
 }
 
+/// 資料夾的名稱（訊息裡用）
+fn folder_name(dir: &str) -> String {
+    Path::new(dir).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| dir.to_string())
+}
+
+/// 錄完處理的結果要複製的檔案：錄影、處理好的版本，和它們旁邊的字幕（.srt、.en.srt）與 M4A
+pub fn result_files(video: &str, output: Option<&str>) -> Vec<std::path::PathBuf> {
+    let mut out = vec![];
+    for f in std::iter::once(video).chain(output) {
+        let p = Path::new(f);
+        if !p.is_file() || out.iter().any(|o: &std::path::PathBuf| o == p) {
+            continue;
+        }
+        out.push(p.to_path_buf());
+        for side in [p.with_extension("srt"), p.with_extension("en.srt"), p.with_extension("m4a")] {
+            if side.is_file() && !out.contains(&side) {
+                out.push(side);
+            }
+        }
+    }
+    out
+}
+
+/// 複製到資料夾（資料夾沒有就建立；已經有同名檔案時加上 _2、_3…，不覆蓋）；回傳複製了幾個
+pub fn copy_results(video: &str, output: Option<&str>, dest: &Path) -> Result<usize, String> {
+    if !dest.is_absolute() {
+        return Err(tr!("資料夾位置不對，請重新選擇", "The folder location isn't valid. Choose it again").into());
+    }
+    std::fs::create_dir_all(dest).map_err(|e| e.to_string())?;
+    let files = result_files(video, output);
+    for f in &files {
+        let name = f.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let (stem, ext) = match name.split_once('.') {
+            Some((s, e)) => (s.to_string(), format!(".{e}")),
+            None => (name.clone(), String::new()),
+        };
+        let to = crate::paths::unique_path(dest, &stem, &ext);
+        std::fs::copy(f, &to).map_err(|e| e.to_string())?;
+    }
+    Ok(files.len())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn copies_the_results_with_subtitles() {
+        let dir = tempfile::tempdir().unwrap();
+        let v = dir.path().join("Rec_1.mp4");
+        let cut = dir.path().join("Rec_1_cut.mp4");
+        for f in [&v, &cut, &dir.path().join("Rec_1.srt"), &dir.path().join("Rec_1.en.srt"), &dir.path().join("Rec_1_cut.srt")] {
+            std::fs::write(f, b"x").unwrap();
+        }
+        let (v, cut) = (v.display().to_string(), cut.display().to_string());
+        assert_eq!(result_files(&v, Some(&cut)).len(), 5);
+        let dest = dir.path().join("sync");
+        assert_eq!(copy_results(&v, Some(&cut), &dest), Ok(5));
+        assert!(dest.join("Rec_1.en.srt").is_file());
+        // 再複製一次：不覆蓋，加上 _2
+        assert_eq!(copy_results(&v, None, &dest), Ok(3));
+        assert!(dest.join("Rec_1_2.mp4").is_file() && dest.join("Rec_1_2.en.srt").is_file());
+        assert!(copy_results(&v, None, Path::new("relative")).is_err());
+        let a = AfterRecord::from_ui(Some(&serde_json::json!({ "afterCopyTo": " D:\\Sync " })));
+        assert_eq!(a.copy_to, "D:\\Sync");
+        assert!(a.any());
+    }
     use serde_json::json;
 
     #[test]

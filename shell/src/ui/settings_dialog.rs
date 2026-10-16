@@ -928,6 +928,32 @@ fn watch_section(app: &mut UiApp, ui: &mut Ui, open: &mut Option<String>) {
     }
 }
 
+/// 資料夾的最後一段（太長時只顯示名稱）
+fn short_dir(dir: &str) -> String {
+    std::path::Path::new(dir).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| dir.to_string())
+}
+
+/// 選「錄完複製到」的資料夾（不能是儲存位置本身或它裡面，否則複製的檔案會出現在清單裡）
+fn pick_copy_dir(app: &mut UiApp) {
+    app.spawn(
+        async move {
+            tokio::task::spawn_blocking(|| screenrecorder_core::filepick::pick_folder(tr!("選擇錄完要複製到的資料夾", "Choose the folder to copy recordings to"), None)).await.unwrap_or(Ok(None))
+        },
+        |app, r| match r {
+            Ok(Some(dir)) => {
+                let out = std::path::PathBuf::from(app.s.out_dir(&app.env));
+                if screenrecorder_core::watch::inside(&dir, &out) {
+                    return app.toast(tr!("不能選儲存位置本身或它裡面的資料夾", "You can't choose the save folder or a folder inside it"), true);
+                }
+                app.s.after_copy_to = dir.display().to_string();
+                app.save_settings();
+            }
+            Ok(None) => {}
+            Err(e) => app.toast(e, true),
+        },
+    );
+}
+
 fn add_watch_dir(app: &mut UiApp) {
     app.spawn(
         async move {
@@ -1297,6 +1323,31 @@ fn after_record_section(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
         {
             app.s.after_auto_name = on;
             app.save_settings();
+        }
+    });
+    // 複製到資料夾：雲端硬碟（OneDrive、Google 雲端硬碟）的同步資料夾或 NAS，由同步軟體上傳
+    form_row(ui, tr!("複製", "Copy"), |ui| {
+        let mut on = !app.s.after_copy_to.is_empty();
+        let label = if on { trf!("複製到「{}」", "Copy to “{}”", short_dir(&app.s.after_copy_to)) } else { tr!("處理完複製到資料夾", "Copy to a folder when done").to_string() };
+        let r = switch(ui, &mut on, label, true).on_hover_text(if app.s.after_copy_to.is_empty() {
+            tr!(
+                "錄影、處理好的版本和字幕都複製一份到另一個資料夾，例如 OneDrive、Google 雲端硬碟的同步資料夾或 NAS（由同步軟體上傳，不用另外登入）",
+                "Copy the recording, processed versions and subtitles to another folder, such as a OneDrive or Google Drive sync folder or a NAS (the sync app uploads them; no extra sign-in)"
+            )
+            .to_string()
+        } else {
+            app.s.after_copy_to.clone()
+        });
+        if r.changed() {
+            if on {
+                pick_copy_dir(app);
+            } else {
+                app.s.after_copy_to.clear();
+                app.save_settings();
+            }
+        }
+        if !app.s.after_copy_to.is_empty() && Btn::new(tr!("換資料夾…", "Change…")).small().ghost().show(ui).clicked() {
+            pick_copy_dir(app);
         }
     });
     form_hint(

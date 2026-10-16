@@ -11,6 +11,7 @@ mod side;
 mod stage;
 mod subs;
 mod timeline;
+mod voice;
 
 use super::dialogs::file_name;
 use super::theme::{self, Btn, Icon};
@@ -20,7 +21,7 @@ use eframe::egui::{self, pos2, vec2, Align, Color32, Id, Key, Layout, Modifiers,
 use screenrecorder_core::actions::{self, EditProject, ProjectMatch};
 use screenrecorder_core::annotate::{self, Ann, AnnKind, ProjectData, ProjectSpec, Shape, COLORS, EMOJIS};
 use screenrecorder_core::chapters::Marker;
-use screenrecorder_core::edit::{cut_file_name, keep_parts, keep_ranges, normalize_crop, normalize_ranges, output_length, ClickZoom, CropInput, EditSpec, FastRange, Range};
+use screenrecorder_core::edit::{cut_file_name, keep_parts, keep_ranges, normalize_crop, normalize_ranges, output_length, ClickZoom, CropInput, EditSpec, FastRange, Part, Range};
 use screenrecorder_core::format::video_clock;
 use screenrecorder_core::picture;
 use screenrecorder_core::player::{Frame, MediaSpec, Player};
@@ -87,6 +88,12 @@ struct Extras {
     /// 刪掉片段的接縫淡入淡出
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     fade_cuts: bool,
+    /// 定格畫面
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    freezes: Vec<screenrecorder_core::edit::Freeze>,
+    /// 旁白與點擊音效（點擊的時間不存，輸出時才放進去）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    narration: Option<screenrecorder_core::narration::Narration>,
 }
 
 /// 存起來的剪輯專案：ProjectData 加上 Extras（同一層）
@@ -140,6 +147,16 @@ impl Pl {
     fn play(&self) {
         if let Some(p) = &self.0 {
             p.play();
+        }
+    }
+    fn set_rate(&self, r: f64) {
+        if let Some(p) = &self.0 {
+            p.set_rate(r);
+        }
+    }
+    fn set_volume(&self, v: f32) {
+        if let Some(p) = &self.0 {
+            p.set_volume(v);
         }
     }
 }
@@ -378,6 +395,14 @@ pub struct Editor {
     pub(crate) idle_found: Option<screenrecorder_core::idle::Found>,
     /// 預覽到加速的片段時，上次跳過去的位置
     fast_from: Option<f64>,
+    /// 預覽到定格：停在這個時間，到這個時候再繼續播放
+    hold_until: Option<(f64, std::time::Instant)>,
+    /// 上一次檢查預覽時的播放位置（看有沒有經過定格的地方）
+    last_tick: f64,
+    /// 旁白：錄音、試聽、文字轉語音
+    pub(crate) voice: voice::VoiceState,
+    /// 旁白錄完的訊息（下一格顯示）
+    voice_msg: Option<(String, bool)>,
     /// 最新解出的畫面（套用馬賽克 / 模糊前）
     frame: Option<Frame>,
     video_tex: Option<TextureHandle>,
@@ -637,6 +662,10 @@ impl Editor {
             finding_idle: false,
             idle_found: None,
             fast_from: None,
+            hold_until: None,
+            last_tick: 0.0,
+            voice: voice::VoiceState::new(&app.s.mic_id),
+            voice_msg: None,
             frame: None,
             video_tex: None,
             video_key: 0,
@@ -865,7 +894,7 @@ impl Editor {
         }
         self.spec.audio = data.get("audio").and_then(|a| serde_json::from_value(a.clone()).ok()).unwrap_or_default();
         self.spec.fast = data.get("fast").and_then(|a| serde_json::from_value::<Vec<FastRange>>(a.clone()).ok()).unwrap_or_default();
-        self.spec.fast.retain(|f| f.end() <= d + 0.05 && f.speed > 1 && f.speed <= 16);
+        self.spec.fast.retain(|f| f.end() <= d + 0.05 && screenrecorder_core::edit::valid_speed(f.speed));
         self.zoom = data.get("zoom").and_then(Value::as_f64).filter(|z| (1.0..=4.0).contains(z)).unwrap_or(0.0);
         self.cursor_size = data.get("cursor").and_then(Value::as_f64).filter(|s| screenrecorder_core::cursor::SIZES.contains(s)).unwrap_or(0.0);
         self.vertical = data.get("vertical").and_then(Value::as_u64).filter(|v| *v <= 2).unwrap_or(0) as u8;
@@ -895,6 +924,8 @@ impl Editor {
             outro: self.spec.outro.clone(),
             music: self.spec.music.clone(),
             fade_cuts: self.spec.fade_cuts,
+            freezes: self.spec.freezes.clone(),
+            narration: (self.spec.narration != Default::default()).then(|| screenrecorder_core::narration::Narration { clicks: vec![], ..self.spec.narration.clone() }),
         }
     }
 
@@ -913,6 +944,8 @@ impl Editor {
         self.spec.outro = x.outro;
         self.spec.music = x.music;
         self.spec.fade_cuts = x.fade_cuts;
+        self.spec.freezes = x.freezes.into_iter().filter(|f| f.at() <= d + 0.05 && (100..=60_000).contains(&f.ms)).collect();
+        self.spec.narration = x.narration.unwrap_or_default();
     }
 
     /// 片頭預設的標題：自己取過的檔名（預設的 Rec_時間 名稱就空白）
@@ -1040,7 +1073,7 @@ impl Editor {
     }
 
     /// 保留的片段依加速切開：(開始, 結束, 倍率)
-    fn parts(&self) -> Vec<(f64, f64, u32)> {
+    fn parts(&self) -> Vec<Part> {
         keep_parts(self.duration, &self.spec)
     }
 
@@ -1270,6 +1303,8 @@ impl Editor {
                 }
             }
             self.fast_from = None;
+            self.hold_until = None;
+            self.last_tick = self.now();
             self.player.play();
         }
     }
@@ -1347,12 +1382,13 @@ impl Editor {
 
     /// 找到的片段加速（只算保留範圍內的）；回傳要顯示的訊息
     pub(crate) fn speed_found(&mut self, found: &[Range], speed: u32) -> String {
+        let speed_f = speed as f64;
         let add = self.kept_parts(found);
         if add.is_empty() {
             return tr!("找到的片段都已經刪掉了", "The parts found have already been removed").into();
         }
         for &(a, b) in &add {
-            screenrecorder_core::edit::set_fast(&mut self.spec.fast, a, b, speed);
+            screenrecorder_core::edit::set_fast(&mut self.spec.fast, a, b, speed_f);
         }
         self.sel = None;
         let secs: f64 = add.iter().map(|(a, b)| b - a).sum();
@@ -1421,18 +1457,40 @@ impl Editor {
 
     /// 預覽或播放中：播到刪除的片段就跳到下一段保留的開頭，播完最後一段就停
     fn preview_tick(&mut self) {
+        // 定格中：時間到了繼續播放
+        if let Some((_, until)) = self.hold_until {
+            if std::time::Instant::now() >= until {
+                self.hold_until = None;
+                self.last_tick = self.now() + 0.001;
+                self.player.play();
+            } else {
+                return;
+            }
+        }
+        voice::tick(self);
         if !self.skipping() {
+            self.player.set_rate(1.0);
             return;
         }
         let t = self.now();
         let keep = self.keep();
         if keep.iter().any(|&(a, b)| t >= a - 0.02 && t < b) {
-            // 加速的片段：每播 0.5 秒往後跳 (倍率 - 1) × 0.5 秒，看起來像快轉
-            match self.parts().into_iter().find(|&(a, b, s)| s > 1 && t >= a - 0.02 && t < b) {
-                Some((_, b, s)) => {
+            // 經過定格的地方：停在那一格，停夠了再繼續播放
+            let last = std::mem::replace(&mut self.last_tick, t);
+            if let Some(f) = self.spec.freezes.iter().find(|f| f.at() > last && f.at() <= t + 0.02 && t - last < 1.0).copied() {
+                self.player.pause();
+                self.seek(f.at());
+                self.hold_until = Some((f.at(), std::time::Instant::now() + std::time::Duration::from_secs_f64(f.secs())));
+                return;
+            }
+            // 變速的片段：加速時每播 0.5 秒往後跳 (倍率 - 1) × 0.5 秒，看起來像快轉；放慢時用慢速播放
+            let part = self.parts().into_iter().find(|p| !p.is_hold() && (p.rate - 1.0).abs() > 1e-9 && t >= p.a - 0.02 && t < p.b);
+            self.player.set_rate(part.filter(|p| p.rate < 1.0).map_or(1.0, |p| p.rate));
+            match part.filter(|p| p.rate > 1.0) {
+                Some(p) => {
                     let from = *self.fast_from.get_or_insert(t);
                     if t - from >= 0.5 || t < from {
-                        let to = (t + 0.5 * (s - 1) as f64).min(b);
+                        let to = (t + 0.5 * (p.rate - 1.0)).min(p.b);
                         self.fast_from = Some(to);
                         self.seek(to);
                     }
@@ -1515,6 +1573,11 @@ impl Editor {
     }
 
     /// 跟著點擊放大要用的點擊（不含設定成這次不放大的）
+    /// 有打開點擊音效（而且錄影時有記下點擊）
+    pub(crate) fn click_sound_on(&self) -> bool {
+        self.spec.narration.click_volume > 0 && !self.clicks.is_empty()
+    }
+
     fn zoom_clicks(&self) -> Vec<[f64; 3]> {
         self.zoom_source().iter().filter(|c| !self.click_skipped(c[0])).copied().collect()
     }
@@ -1577,7 +1640,9 @@ impl Editor {
         keep.len() == 1
             && keep[0].0 == 0.0
             && keep[0].1 >= self.duration - 0.05
-            && !self.parts().iter().any(|p| p.2 > 1)
+            && !self.parts().iter().any(Part::retimed)
+            && self.spec.narration.clips.is_empty()
+            && !self.click_sound_on()
             && !self.zoom_active()
             && crop.is_none()
             && self.anns.is_empty()
@@ -1592,7 +1657,7 @@ impl Editor {
 
     /// 可以儲存（有修改、剪完還有長度）
     fn can_save(&self) -> bool {
-        !self.unchanged() && (self.is_shot() || output_length(&self.parts()) >= 0.1)
+        !self.voice.recording() && !self.unchanged() && (self.is_shot() || output_length(&self.parts()) >= 0.1)
     }
 
     /// 儲存的位置：取代的剪輯版、選的位置，或原影片旁邊實際會用的檔名（*_cut.mp4，已經有就 _cut_2…）
@@ -1653,6 +1718,32 @@ impl Editor {
             }
             "sel" => self.select_ann(v.parse().ok()),
             "act" if v == "autosubs" => self.pending = Some(shot::Act::AutoSubs),
+            // 開發用：fast=開始,結束,倍率；freeze=時間,秒數；voice=時間,秒數[,文字]；clicks=音量
+            "fast" | "freeze" | "voice" => {
+                let n: Vec<&str> = v.splitn(3, ',').collect();
+                let f = |i: usize| n.get(i).and_then(|x| x.parse::<f64>().ok()).unwrap_or(0.0);
+                match k {
+                    "fast" => screenrecorder_core::edit::set_fast(&mut self.spec.fast, f(0), f(1), f(2)),
+                    "freeze" => self.spec.freezes.push(screenrecorder_core::edit::Freeze { at_ms: (f(0) * 1000.0) as u64, ms: (f(1) * 1000.0) as u64 }),
+                    _ => {
+                        let path = screenrecorder_core::narration::new_voice_path("dev");
+                        let _ = std::fs::write(&path, screenrecorder_core::narration::wav_mono16(&vec![0.0; (f(1) * 48000.0) as usize], 48000));
+                        let text = n.get(2).map(|s| s.to_string()).unwrap_or_default();
+                        self.spec.narration.put(screenrecorder_core::narration::VoiceClip {
+                            file: path.to_string_lossy().into_owned(),
+                            at_ms: (f(0) * 1000.0) as u64,
+                            ms: (f(1) * 1000.0) as u64,
+                            text,
+                        });
+                    }
+                }
+            }
+            "clicks" => {
+                if self.clicks.is_empty() {
+                    self.clicks = vec![[1.0, 0.5, 0.5], [3.0, 0.3, 0.3]];
+                }
+                self.spec.narration.click_volume = v.parse().unwrap_or(60);
+            }
             "seek" => self.seek(v.parse().unwrap_or(0.0)),
             "zoommark" => {
                 let v: Vec<f64> = v.split(',').filter_map(|x| x.parse().ok()).collect();
@@ -2569,7 +2660,9 @@ fn footer(ed: &mut Editor, ui: &mut egui::Ui) -> bool {
     let keep = ed.keep();
     let parts = ed.parts();
     let length = output_length(&parts) + ed.cards_secs();
-    let fast = parts.iter().filter(|p| p.2 > 1).count();
+    let fast = parts.iter().filter(|p| !p.is_hold() && (p.rate - 1.0).abs() > 1e-9).count();
+    let holds = parts.iter().filter(|p| p.is_hold()).count();
+    let voices = ed.spec.narration.clips.len();
     let crop = if ed.crop_on && ed.vertical != 2 { normalize_crop(ed.spec.crop, ed.vw as i32, ed.vh as i32) } else { None };
     let size = ed.output_size(crop).map(|(w, h)| format!("{w}×{h}")).unwrap_or_default();
     let gone = ed.gone_count(&keep);
@@ -2590,7 +2683,16 @@ fn footer(ed: &mut Editor, ui: &mut egui::Ui) -> bool {
             let (orig, kept) = (video_clock(ed.duration), keep.len());
             ui.label(if en { format!(" (original {orig}) · {kept} section{} kept", s(kept)) } else { format!("（原 {orig}）・保留 {kept} 段") });
             if fast > 0 {
-                ui.label(if en { format!(" · {fast} sped-up section{}", s(fast)) } else { format!("・加速 {fast} 段") });
+                ui.label(if en { format!(" · {fast} speed change{}", s(fast)) } else { format!("・變速 {fast} 段") });
+            }
+            if holds > 0 {
+                ui.label(if en { format!(" · {holds} freeze frame{}", s(holds)) } else { format!("・定格 {holds} 處") });
+            }
+            if voices > 0 {
+                ui.label(if en { format!(" · {voices} narration clip{}", s(voices)) } else { format!("・旁白 {voices} 段") });
+            }
+            if ed.click_sound_on() {
+                ui.label(tr!("・點擊音效", " · Click sounds"));
             }
             if zooming {
                 ui.label(tr!("・跟著點擊放大", " · Zoom on clicks"));
@@ -2750,6 +2852,8 @@ fn start_save(app: &mut UiApp, ed: &mut Editor) {
         outro: ed.spec.outro.clone().filter(|c| !c.is_empty()),
         music: ed.spec.music.clone(),
         fade_cuts: ed.spec.fade_cuts && ed.spec.removed.iter().any(|r| r.1 > r.0),
+        freezes: ed.spec.freezes.clone(),
+        narration: screenrecorder_core::narration::Narration { clicks: if ed.click_sound_on() { ed.clicks.iter().map(|c| c[0]).collect() } else { vec![] }, ..ed.spec.narration.clone() },
     };
     let project = Some(ed.project_value());
     // 開始輸出時先存草稿（標記為輸出中）：輸出失敗或取消時可以「回到剪輯」，完成時會刪掉
