@@ -344,6 +344,8 @@ pub struct Editor {
     cursor: Vec<[f64; 3]>,
     cursor_smooth: Vec<[f64; 3]>,
     no_cursor: bool,
+    /// 錄影時麥克風暫時靜音的時段（原片的時間；時間軸上標出來）
+    pub(crate) mutes: Vec<[f64; 2]>,
     /// 平滑、放大的游標的大小（0 = 不加）
     cursor_size: f64,
     /// 預覽用的游標圖
@@ -531,6 +533,7 @@ impl Editor {
         ed.cursor_smooth = screenrecorder_core::cursor::smooth(&marks.cursor, 60.0);
         ed.cursor = marks.cursor;
         ed.no_cursor = marks.no_cursor;
+        ed.mutes = marks.mutes;
         match info {
             Some(EditProject { project, matched: ProjectMatch::Output, source: Some(src) }) => {
                 // 開啟的是剪輯版：改用原始影片，套用上次的設定
@@ -609,6 +612,7 @@ impl Editor {
             cursor: vec![],
             cursor_smooth: vec![],
             no_cursor: false,
+            mutes: vec![],
             cursor_size: 0.0,
             cursor_tex: None,
             vertical: 0,
@@ -1628,6 +1632,11 @@ impl Editor {
             }
             "sel" => self.select_ann(v.parse().ok()),
             "seek" => self.seek(v.parse().unwrap_or(0.0)),
+            "mute" => {
+                if let Some((a, b)) = v.split_once(',').and_then(|(a, b)| Some((a.parse::<f64>().ok()?, b.parse::<f64>().ok()?))) {
+                    self.mutes.push([a, b]);
+                }
+            }
             "remove" => {
                 if let Some((a, b)) = v.split_once(',').and_then(|(a, b)| Some((a.parse::<f64>().ok()?, b.parse::<f64>().ok()?))) {
                     self.spec.removed.push((a, b));

@@ -105,6 +105,8 @@ pub enum TrayCommand {
     Mark,
     /// 螢幕畫筆（開 / 關）
     Pen,
+    /// 錄影中麥克風靜音 / 取消靜音
+    MuteMic,
     /// 回溯錄影：沒在錄影時開始，回溯錄影中存下最近幾分鐘（選單與快速鍵）
     Replay,
     OpenUpdate,
@@ -146,6 +148,8 @@ pub struct TrayState {
     pub replay_len: String,
     /// 回溯錄影中
     pub replay: bool,
+    /// 錄影中有錄麥克風：是否暫時靜音中（選單打勾）
+    pub mic_muted: Option<bool>,
     pub last_result: Option<String>,
     /// None = 無法設定（開發版）
     pub autostart: Option<bool>,
@@ -293,6 +297,7 @@ impl TrayController {
             has_shot,
             steps,
             replay: st.replay.is_some(),
+            mic_muted: st.mic_muted,
             replay_len,
             last_result: if last_result { c.last_result_path.clone() } else { None },
             autostart: c.autostart,
@@ -507,6 +512,13 @@ impl TrayController {
             }
             TrayCommand::Mark => {
                 let _ = rec.add_marker();
+                return Ok(());
+            }
+            // 沒在錄影、沒錄麥克風時按快速鍵：不提示
+            TrayCommand::MuteMic => {
+                if let Ok(muted) = rec.toggle_mic_mute() {
+                    app.mic_mute_changed(muted);
+                }
                 return Ok(());
             }
             TrayCommand::Replay => {

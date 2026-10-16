@@ -181,6 +181,9 @@ impl Source {
     }
 }
 
+/// 錄影中暫時關掉麥克風（快速鍵、錄影面板、控制列）：麥克風改送靜音，系統聲音照常
+pub static MIC_MUTED: AtomicBool = AtomicBool::new(false);
+
 /// 時間軸與混音（不含執行緒與網路，方便測試）
 pub struct Timeline {
     sources: Vec<Source>,
@@ -195,6 +198,8 @@ pub struct Timeline {
     separate: bool,
     /// 分軌時每個來源先取到這裡
     src_buf: Vec<f32>,
+    /// 麥克風靜音的開關（平常是 MIC_MUTED；測試時換成自己的，不和其他測試互相影響）
+    mic_mute: &'static AtomicBool,
 }
 
 /// 這個來源在 SILENT_SYSTEM / SILENT_MIC 裡是哪一個
@@ -235,7 +240,18 @@ impl Timeline {
             })
             .collect();
         let separate = separate && specs.len() > 1;
-        let mut t = Timeline { sources, opener, log, t0: None, first_video_at: None, t0_estimate: f64::INFINITY, mix_buf: vec![0.0; SAMPLE_RATE as usize * CHANNELS], separate, src_buf: Vec::new() };
+        let mut t = Timeline {
+            sources,
+            opener,
+            log,
+            t0: None,
+            first_video_at: None,
+            t0_estimate: f64::INFINITY,
+            mix_buf: vec![0.0; SAMPLE_RATE as usize * CHANNELS],
+            separate,
+            src_buf: Vec::new(),
+            mic_mute: &MIC_MUTED,
+        };
         for i in 0..t.sources.len() {
             t.open(i, true, now);
         }
@@ -359,18 +375,20 @@ impl Timeline {
                 }
             }
             let t0 = self.t0;
+            // 麥克風靜音中：照常讀取（不讓裝置的緩衝塞滿），只是改成靜音
+            let muted = !self.sources[i].spec.loopback && self.mic_mute.load(Ordering::Relaxed);
             let s = &mut self.sources[i];
             let mut cap = s.cap.take().unwrap();
             let result = match t0 {
                 None => {
                     // 零點確定前先保留（只有開頭約 1 秒）
-                    let r = cap.read(&mut |data, frames, qpc| s.pre.push_back(PrePacket { qpc, frames, data: data.map(|d| d[..frames * CHANNELS].to_vec()) }));
+                    let r = cap.read(&mut |data, frames, qpc| s.pre.push_back(PrePacket { qpc, frames, data: data.filter(|_| !muted).map(|d| d[..frames * CHANNELS].to_vec()) }));
                     while s.pre.front().is_some_and(|p| p.qpc.is_some_and(|q| now - q > PRE_BUFFER_100NS)) {
                         s.pre.pop_front();
                     }
                     r
                 }
-                Some(t0) => cap.read(&mut |data, frames, qpc| s.place(t0, data.map(|d| &d[..frames * CHANNELS]), frames, qpc)),
+                Some(t0) => cap.read(&mut |data, frames, qpc| s.place(t0, data.filter(|_| !muted).map(|d| &d[..frames * CHANNELS]), frames, qpc)),
             };
             match result {
                 Ok(()) => s.cap = Some(cap),
@@ -786,6 +804,30 @@ mod tests {
         assert!(out[6 * 48..].iter().all(|v| *v == 0.0));
         assert_eq!(channels_for(2, false), 2);
         assert_eq!(channels_for(1, true), 2);
+    }
+
+    #[test]
+    fn muted_mic_records_silence() {
+        static MUTE: AtomicBool = AtomicBool::new(false);
+        let packets: Packets = Default::default();
+        let fail = Arc::new(AtomicBool::new(false));
+        let (log, _) = logs();
+        let spec = AudioSourceSpec { loopback: false, mic_id: String::new(), app: String::new() };
+        let mut tl = Timeline::new(&[spec], fake_opener(packets.clone(), fail), log, 0);
+        tl.mic_mute = &MUTE;
+        tl.on_video_frame(0.0, 0);
+        packets.lock().unwrap().push_back((Some(seq(1, 48)), 48, Some(0)));
+        assert_eq!(floats(tl.flush_to(MS))[..2], [1.0, -1.0]);
+        // 靜音中：麥克風的聲音照樣讀走，但送出的是靜音；取消後恢復
+        MUTE.store(true, Ordering::Relaxed);
+        packets.lock().unwrap().push_back((Some(seq(1, 48)), 48, Some(MS)));
+        let out = floats(tl.flush_to(2 * MS));
+        assert_eq!(out.len(), 48 * CHANNELS);
+        assert!(out.iter().all(|v| *v == 0.0));
+        assert!(packets.lock().unwrap().is_empty());
+        MUTE.store(false, Ordering::Relaxed);
+        packets.lock().unwrap().push_back((Some(seq(1, 48)), 48, Some(2 * MS)));
+        assert_eq!(floats(tl.flush_to(3 * MS))[..2], [1.0, -1.0]);
     }
 
     #[test]

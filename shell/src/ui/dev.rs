@@ -1,5 +1,5 @@
 //! 開發用（只在 debug 版）：自動開啟某個畫面、模擬操作並截圖，在 Linux 的 Xvfb 上檢查介面。
-//! - SCREENRECORDER_DEV：要開啟的畫面（library、shots、changelog、notes（講稿小視窗）、schedule（排程錄影）、after:<路徑>（錄完自動處理）、follow:<標題>（只錄這個視窗）、followfake:<標題>（模擬已選好視窗）、record:<秒>（錄幾秒）、replay:<保留秒數>,<幾秒後存下>[,<再幾秒停止>]（重播緩衝）、export:<路徑>、edit:<路徑>、view:<路徑>、whatsnew（新功能介紹）、monitors（模擬兩個螢幕）、unplug（模擬拔掉外接螢幕）、snip:<PNG>（用這張圖當凍結的桌面開啟框選截圖）、snipregion:<PNG>（同上，只選範圍）、stepsreview:<PNG>,<PNG>（整理步驟截圖）、hotkeys（模擬已登記快速鍵）、update:<版本>（模擬有新版本）、cameras:<名稱>,<名稱>（模擬找到的攝影機）、settings:<record|audio|save|after|keys|advanced|about>、ed:<剪輯視窗指令>、tour:<first|editor|shot|library>[,<第幾步>]（教學）），以 ; 分隔
+//! - SCREENRECORDER_DEV：要開啟的畫面（library、shots、changelog、notes（講稿小視窗）、schedule（排程錄影）、after:<路徑>（錄完自動處理）、follow:<標題>（只錄這個視窗）、followfake:<標題>（模擬已選好視窗）、record:<秒>（錄幾秒）、replay:<保留秒數>,<幾秒後存下>[,<再幾秒停止>]（重播緩衝）、export:<路徑>、edit:<路徑>、view:<路徑>、whatsnew（新功能介紹）、monitors（模擬兩個螢幕）、unplug（模擬拔掉外接螢幕）、snip:<PNG>（用這張圖當凍結的桌面開啟框選截圖）、snipregion:<PNG>（同上，只選範圍）、stepsreview:<PNG>,<PNG>（整理步驟截圖）、hotkeys（模擬已登記快速鍵）、fakerec:<0|1>（模擬錄影中、有錄麥克風，1 = 靜音中）、update:<版本>（模擬有新版本）、cameras:<名稱>,<名稱>（模擬找到的攝影機）、settings:<record|audio|save|after|keys|advanced|about>、ed:<剪輯視窗指令>、tour:<first|editor|shot|library>[,<第幾步>]（教學）），以 ; 分隔
 //! - SCREENRECORDER_INPUT：開啟後依序模擬的操作，以 ; 分隔：
 //!   wait:毫秒、click:x,y（可加 ,ctrl、,shift）、dclick:x,y（按兩下）、rclick:x,y（右鍵）、move:x,y、drag:x0,y0,x1,y1、wheel:x,y,dy（加 ,ctrl = Ctrl+滾輪）、key:Space（可加 ctrl+、alt+、shift+）、hold:Space / release:Space（按住、放開）、type:文字、shot:路徑
 //! - SCREENRECORDER_SHOT：最後截圖存檔的路徑（存好後結束）；SCREENRECORDER_SHOT_AFTER：開始後幾毫秒截圖（預設 3000）
@@ -31,6 +31,8 @@ pub struct Dev {
     final_requested: bool,
     /// update:<版本> 模擬的新版本（啟動時的檢查會蓋掉，所以每一格都重新設定）
     fake_update: Option<screenrecorder_core::types::UpdateInfo>,
+    /// fakerec:<0|1> 模擬錄影中（有錄麥克風；1 = 靜音中），檢查錄影面板
+    fake_rec: Option<bool>,
 }
 
 fn button(p: Pos2, pressed: bool, modifiers: Modifiers) -> Event {
@@ -167,6 +169,14 @@ pub fn input(app: &mut UiApp, ctx: &egui::Context, raw: &mut egui::RawInput) {
     }
 }
 
+/// 讀到新的狀態後：換成模擬的錄影狀態（fakerec）
+pub fn fake_status(app: &mut UiApp) {
+    if let Some(m) = app.dev.fake_rec {
+        let r = &mut app.status.recorder;
+        (r.state, r.mic_muted, r.recorded_ms, r.markers) = (screenrecorder_core::types::RecorderState::Recording, Some(m), 83_000, 1);
+    }
+}
+
 pub fn tick(app: &mut UiApp, ctx: &egui::Context) {
     if let Some(u) = &app.dev.fake_update {
         app.env.update = Some(u.clone());
@@ -255,6 +265,7 @@ pub fn tick(app: &mut UiApp, ctx: &egui::Context) {
                     }
                     Some(("notes", c)) => super::notes::dev(app, c),
                     Some(("tour", c)) => super::tour::dev(app, c),
+                    _ if a.starts_with("fakerec:") => app.dev.fake_rec = Some(a.ends_with('1')),
                     _ if a == "whatsnew" => {
                         app.whats_new_checked = true;
                         app.whats_new_open = true;
@@ -264,7 +275,9 @@ pub fn tick(app: &mut UiApp, ctx: &egui::Context) {
                     // 名稱很長的音訊裝置（檢查設定視窗不會被撐寬）
                     _ if a == "mics" => fake_mics(app),
                     // 模擬系統匣已登記快速鍵（Linux 上沒有系統匣）
-                    _ if a == "hotkeys" => app.env.hotkeys = Some(screenrecorder_core::types::HotkeyStatus { record: true, pause: true, shot: true, snip: false, mark: true, pen: true, replay: true }),
+                    _ if a == "hotkeys" => {
+                        app.env.hotkeys = Some(screenrecorder_core::types::HotkeyStatus { record: true, pause: true, shot: true, snip: false, mark: true, pen: true, replay: true, mute: true })
+                    }
                     Some(("snip", p)) => fake_snip(app, p),
                     // Windows：用這張圖當凍結的桌面開啟原生的框選畫面（在 wine 上測試），選好後照工具列的動作處理
                     #[cfg(windows)]

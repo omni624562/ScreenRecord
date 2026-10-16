@@ -146,17 +146,19 @@ pub struct HotkeyStatus {
     pub pen: bool,
     #[serde(default)]
     pub replay: bool,
+    #[serde(default)]
+    pub mute: bool,
 }
 
 impl HotkeyStatus {
     /// 依 Hotkeys::all 的順序
     pub fn all(&self) -> [bool; HOTKEY_COUNT] {
-        [self.record, self.pause, self.shot, self.snip, self.mark, self.pen, self.replay]
+        [self.record, self.pause, self.shot, self.snip, self.mark, self.pen, self.replay, self.mute]
     }
 
     pub fn from_list(ok: &[bool]) -> HotkeyStatus {
         let g = |i: usize| ok.get(i).copied().unwrap_or(false);
-        HotkeyStatus { record: g(0), pause: g(1), shot: g(2), snip: g(3), mark: g(4), pen: g(5), replay: g(6) }
+        HotkeyStatus { record: g(0), pause: g(1), shot: g(2), snip: g(3), mark: g(4), pen: g(5), replay: g(6), mute: g(7) }
     }
 }
 
@@ -265,7 +267,7 @@ pub fn shown_keys(vk: u32, ctrl: bool, alt: bool, shift: bool, win: bool) -> Opt
 }
 
 /// 全域快速鍵的數量
-pub const HOTKEY_COUNT: usize = 7;
+pub const HOTKEY_COUNT: usize = 8;
 
 /// 錄影時螢幕上的控制列（設定的 recBar）
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -304,6 +306,9 @@ pub struct Hotkeys {
     /// 重播緩衝：沒在錄影時開始，重播緩衝中存下最近幾分鐘（3.1 新增）
     #[serde(default = "default_replay")]
     pub replay: Option<Hotkey>,
+    /// 錄影中麥克風靜音 / 取消靜音（3.12 新增）
+    #[serde(default = "default_mute")]
+    pub mute: Option<Hotkey>,
 }
 
 fn default_mark() -> Option<Hotkey> {
@@ -318,6 +323,10 @@ fn default_replay() -> Option<Hotkey> {
     Some(Hotkey::ctrl_alt(0x42))
 }
 
+fn default_mute() -> Option<Hotkey> {
+    Some(Hotkey::ctrl_alt(0x55))
+}
+
 impl Default for Hotkeys {
     fn default() -> Self {
         Hotkeys {
@@ -328,14 +337,15 @@ impl Default for Hotkeys {
             mark: default_mark(),
             pen: default_pen(),
             replay: default_replay(),
+            mute: default_mute(),
         }
     }
 }
 
 impl Hotkeys {
-    /// 依序：開始 / 停止錄影、暫停 / 繼續、截圖、框選截圖、加標記、螢幕畫筆、重播緩衝
+    /// 依序：開始 / 停止錄影、暫停 / 繼續、截圖、框選截圖、加標記、螢幕畫筆、重播緩衝、麥克風靜音
     pub fn all(&self) -> [Option<Hotkey>; HOTKEY_COUNT] {
-        [self.record, self.pause, self.shot, self.snip, self.mark, self.pen, self.replay]
+        [self.record, self.pause, self.shot, self.snip, self.mark, self.pen, self.replay, self.mute]
     }
 
     pub fn set(&mut self, i: usize, k: Option<Hotkey>) {
@@ -346,13 +356,14 @@ impl Hotkeys {
             3 => self.snip = k,
             4 => self.mark = k,
             5 => self.pen = k,
-            _ => self.replay = k,
+            6 => self.replay = k,
+            _ => self.mute = k,
         }
     }
 
     /// 全部停用（設定新的快速鍵時暫停）
     pub fn none() -> Hotkeys {
-        Hotkeys { record: None, pause: None, shot: None, snip: None, mark: None, pen: None, replay: None }
+        Hotkeys { record: None, pause: None, shot: None, snip: None, mark: None, pen: None, replay: None, mute: None }
     }
 
     /// 第 i 個的名稱（停用時是空字串）
@@ -369,7 +380,7 @@ impl Hotkeys {
 /// 每組快速鍵的名稱（依介面語言）
 pub fn hotkey_names() -> [&'static str; HOTKEY_COUNT] {
     crate::tr!(
-        ["開始 / 停止錄影", "暫停 / 繼續", "截圖（整個錄影範圍）", "框選截圖", "錄影中加標記", "螢幕畫筆（開 / 關）", "回溯錄影（開始 / 存下）"],
+        ["開始 / 停止錄影", "暫停 / 繼續", "截圖（整個錄影範圍）", "框選截圖", "錄影中加標記", "螢幕畫筆（開 / 關）", "回溯錄影（開始 / 存下）", "錄影中麥克風靜音 / 取消靜音"],
         [
             "Start / stop recording",
             "Pause / resume",
@@ -377,7 +388,8 @@ pub fn hotkey_names() -> [&'static str; HOTKEY_COUNT] {
             "Select area screenshot",
             "Add marker while recording",
             "Screen pen (on / off)",
-            "Replay buffer (start / save the last minutes)"
+            "Replay buffer (start / save the last minutes)",
+            "Mute / unmute the microphone while recording"
         ]
     )
 }
@@ -605,6 +617,9 @@ pub struct RecorderStatus {
     /// 這次錄影加了幾個標記
     #[serde(default, skip_serializing_if = "is_zero_u32")]
     pub markers: u32,
+    /// 麥克風：None = 這次沒錄麥克風；Some(true) = 暫時靜音中
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mic_muted: Option<bool>,
     /// 重播緩衝中（不是一般錄影）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub replay: Option<ReplayStatus>,

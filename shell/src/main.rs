@@ -136,6 +136,7 @@ fn main() {
                         }
                         FrameCmd::Stop => r.stop(None).await.map(|_| ()),
                         FrameCmd::Mark => r.add_marker().map(|_| ()),
+                        FrameCmd::MuteMic => r.toggle_mic_mute().map(|m| c.mic_mute_changed(m)),
                         FrameCmd::SaveReplay => c.replay_save(true).await.map(|_| ()),
                         FrameCmd::SetMode(m) => {
                             c.set_rec_bar_mode(m);

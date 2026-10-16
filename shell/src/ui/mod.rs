@@ -539,6 +539,8 @@ impl UiApp {
         let prev_update = self.status.update.clone();
         let prev_install = self.status.install.clone();
         self.status = self.core.status();
+        #[cfg(debug_assertions)]
+        dev::fake_status(self);
         self.status_at = Instant::now();
         if self.status.update != prev_update {
             self.update = actions::update_state(&self.core);
