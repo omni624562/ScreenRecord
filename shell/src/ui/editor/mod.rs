@@ -81,13 +81,11 @@ struct Extras {
     /// 有標記要放大的地方時，改成每次點擊都放大
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     zoom_all_clicks: bool,
-    /// 片頭、片尾、背景音樂
+    /// 片頭、片尾
     #[serde(default, skip_serializing_if = "Option::is_none")]
     intro: Option<screenrecorder_core::cards::TitleCard>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     outro: Option<screenrecorder_core::cards::TitleCard>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    music: Option<screenrecorder_core::cards::Music>,
     /// 刪掉片段的接縫淡入淡出
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     fade_cuts: bool,
@@ -146,8 +144,6 @@ enum VAct {
     ExportTranscript(bool),
     /// 標記改名（第幾個）
     RenameMarker(usize),
-    /// 選擇背景音樂
-    PickMusic,
 }
 
 /// 影片播放器；編輯截圖時沒有（所有操作都不做事，時間固定是 0）
@@ -453,7 +449,7 @@ pub struct Editor {
     last_tick: f64,
     /// 片段改了順序時，預覽正在播第幾段（依新的順序）
     seg_cur: Option<usize>,
-    /// 旁白：錄音、試聽、文字轉語音
+    /// 旁白：錄音、試聽
     pub(crate) voice: voice::VoiceState,
     /// 旁白錄完的訊息（下一格顯示）
     voice_msg: Option<(String, bool)>,
@@ -989,7 +985,6 @@ impl Editor {
             zoom_all_clicks: self.zoom_all_clicks,
             intro: self.spec.intro.clone(),
             outro: self.spec.outro.clone(),
-            music: self.spec.music.clone(),
             fade_cuts: self.spec.fade_cuts,
             freezes: self.spec.freezes.clone(),
             cursor_hide: self.cursor_hide,
@@ -1017,7 +1012,6 @@ impl Editor {
         self.markers.sort_by(|a, b| a.t.total_cmp(&b.t));
         self.spec.intro = x.intro;
         self.spec.outro = x.outro;
-        self.spec.music = x.music;
         self.spec.fade_cuts = x.fade_cuts;
         self.spec.freezes = x.freezes.into_iter().filter(|f| f.at() <= d + 0.05 && (100..=60_000).contains(&f.ms)).collect();
         self.spec.narration = x.narration.unwrap_or_default();
@@ -1811,7 +1805,6 @@ impl Editor {
             && self.vertical_spec().is_none()
             && self.spec.intro.is_none()
             && self.spec.outro.is_none()
-            && self.spec.music.is_none()
             && self.spec.look.is_default()
             && self.spec.stamp.is_none()
     }
@@ -1976,7 +1969,6 @@ impl Editor {
             "vertical" => self.vertical = v.parse().unwrap_or(1),
             "intro" => self.spec.intro = Some(screenrecorder_core::cards::TitleCard { subtitle: "業務部教學".into(), ..screenrecorder_core::cards::TitleCard::new(v) }),
             "outro" => self.spec.outro = Some(screenrecorder_core::cards::TitleCard { style: screenrecorder_core::cards::CardStyle::Blue, ..screenrecorder_core::cards::TitleCard::new(v) }),
-            "music" => self.spec.music = Some(screenrecorder_core::cards::Music::new(v)),
             "srt" => {
                 if let Ok(c) = screenrecorder_core::subtitles::read_file(std::path::Path::new(v)) {
                     self.add_subtitles(&c);
@@ -2431,37 +2423,6 @@ fn run_vact(app: &mut UiApp, ed: &mut Editor, act: VAct) {
         VAct::ExportSrt => export_srt(app, ed),
         VAct::ExportTranscript(word) => export_transcript(app, ed, word),
         VAct::PickOutput => pick_output(app, ed),
-        VAct::PickMusic => {
-            let video = ed.entry.media.path.clone();
-            app.spawn(
-                async move {
-                    tokio::task::spawn_blocking(|| {
-                        screenrecorder_core::filepick::pick(
-                            tr!("選擇背景音樂", "Choose background music"),
-                            &tr!(
-                                [("音樂檔（MP3、M4A、WAV…）", "*.mp3;*.m4a;*.aac;*.wav;*.flac;*.ogg;*.opus;*.wma"), ("所有檔案", "*.*")],
-                                [("Music files (MP3, M4A, WAV…)", "*.mp3;*.m4a;*.aac;*.wav;*.flac;*.ogg;*.opus;*.wma"), ("All files", "*.*")]
-                            ),
-                        )
-                    })
-                    .await
-                    .unwrap_or(Ok(None))
-                },
-                move |app, r| match r {
-                    Ok(Some(p)) => {
-                        if let Some(ed) = app.editor.as_mut().filter(|e| e.entry.media.path == video) {
-                            let path = p.display().to_string();
-                            match &mut ed.spec.music {
-                                Some(m) => m.path = path,
-                                None => ed.spec.music = Some(screenrecorder_core::cards::Music::new(&path)),
-                            }
-                        }
-                    }
-                    Ok(None) => {}
-                    Err(e) => app.toast(e, true),
-                },
-            );
-        }
         VAct::RenameMarker(i) => {
             let Some(m) = ed.markers.get(i) else { return };
             let t = m.t;
@@ -2986,9 +2947,6 @@ fn footer(ed: &mut Editor, ui: &mut egui::Ui) -> bool {
             if ed.cards_secs() > 0.0 {
                 ui.label(tr!("・片頭片尾", " · Intro/outro"));
             }
-            if ed.spec.music.is_some() {
-                ui.label(tr!("・背景音樂", " · Background music"));
-            }
             if !ed.spec.look.is_default() {
                 ui.label(tr!("・調色", " · Color"));
             }
@@ -3133,7 +3091,6 @@ fn start_save(app: &mut UiApp, ed: &mut Editor) {
         vertical: ed.vertical_spec(),
         intro: ed.spec.intro.clone().filter(|c| !c.is_empty()),
         outro: ed.spec.outro.clone().filter(|c| !c.is_empty()),
-        music: ed.spec.music.clone(),
         fade_cuts: ed.spec.fade_cuts && ed.spec.removed.iter().any(|r| r.1 > r.0),
         freezes: ed.spec.freezes.clone(),
         zoom_regions: ed.spec.zoom_regions.clone(),

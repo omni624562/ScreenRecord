@@ -54,9 +54,6 @@ pub struct EditSpec {
     /// 片尾卡片
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub outro: Option<crate::cards::TitleCard>,
-    /// 背景音樂
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub music: Option<crate::cards::Music>,
     /// 刪掉片段的接縫淡入淡出
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub fade_cuts: bool,
@@ -75,7 +72,7 @@ pub struct EditSpec {
     /// 保留的片段的順序：各片段開頭的時間（毫秒）；空的 = 原本的順序
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub order: Vec<u64>,
-    /// 旁白（錄的或文字轉語音）、點擊音效
+    /// 旁白（自己錄的；舊版的文字轉語音旁白也照樣播）、點擊音效
     #[serde(default, skip_serializing_if = "crate::narration::Narration::is_empty")]
     pub narration: crate::narration::Narration,
     /// 調色（亮度、對比、飽和度、銳利化）

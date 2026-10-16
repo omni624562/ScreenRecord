@@ -1186,15 +1186,14 @@ pub enum VerticalInput {
     Follow { commands: String, w: i32, h: i32, x: i32, y: i32, scale: Option<(i32, i32)> },
 }
 
-/// 片頭、片尾卡片與背景音樂（cards.rs）：卡片圖檔與秒數、輸出影片的大小（卡片放大到一樣大才能接起來）、
-/// 剪好的影片長度（沒有聲音時補靜音）、背景音樂
+/// 片頭、片尾卡片（cards.rs）：卡片圖檔與秒數、輸出影片的大小（卡片放大到一樣大才能接起來）、
+/// 剪好的影片長度（沒有聲音時補靜音）
 #[derive(Debug, Clone, PartialEq)]
 pub struct Extras {
     pub intro: Option<(String, f64)>,
     pub outro: Option<(String, f64)>,
     pub size: (i32, i32),
     pub main_len: f64,
-    pub music: Option<MusicInput>,
     /// 旁白與點擊音效（剪輯後的時間，片頭之前）
     pub voice: Option<VoiceInput>,
 }
@@ -1208,13 +1207,6 @@ pub struct VoiceInput {
     pub clicks: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct MusicInput {
-    pub path: String,
-    pub volume: f64,
-    pub duck: bool,
-}
-
 impl Extras {
     /// 加上片頭片尾後的總長度
     pub fn total(&self) -> f64 {
@@ -1225,14 +1217,14 @@ impl Extras {
 /// 聲音統一成 48 kHz 立體聲，才能接起來、混在一起
 const AFMT: &str = "aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo";
 
-/// 片頭片尾、背景音樂的輸入與濾鏡：接在 [vout]（與有聲音時的 [aout]）後面，輸出 [vfin]（與 [afin]）。
+/// 片頭片尾、旁白的輸入與濾鏡：接在 [vout]（與有聲音時的 [aout]）後面，輸出 [vfin]（與 [afin]）。
 /// first：第一個輸入的編號；回傳 (輸入參數, 濾鏡, 有沒有聲音)
 fn extras_graph(x: &Extras, first: usize, fps: f64, pix_fmt: &str, with_audio: bool) -> (Vec<String>, String, bool) {
     let mut inputs = vec![];
     let mut g = vec![];
     let mut idx = first;
     let has_voice = x.voice.as_ref().is_some_and(|v| !v.clips.is_empty() || v.clicks.is_some());
-    let out_audio = with_audio || x.music.is_some() || has_voice;
+    let out_audio = with_audio || has_voice;
     let (w, h) = x.size;
     let mut card = |png: &str, secs: f64, name: &str, inputs: &mut Vec<String>, g: &mut Vec<String>| {
         inputs.extend(["-loop".into(), "1".into(), "-framerate".into(), num(fps), "-t".into(), num(secs), "-i".into(), png.to_string()]);
@@ -1277,34 +1269,20 @@ fn extras_graph(x: &Extras, first: usize, fps: f64, pix_fmt: &str, with_audio: b
             inputs.extend(["-i".into(), c.clone()]);
             g.push(format!("[{idx}:a]{AFMT}[vclk]"));
             mix.push("[vclk]".into());
-            idx += 1;
         }
         g.push(format!("{}amix=inputs={}:duration=first:normalize=0,atrim=0:{}[amain]", mix.join(""), mix.len(), num(x.main_len)));
     }
-    let alabel = if x.music.is_some() { "[amixin]" } else { "[afin]" };
     if segs.len() > 1 {
         let pairs: String = segs.iter().map(|s| if out_audio { format!("[v{s}][a{s}]") } else { format!("[v{s}]") }).collect();
         if out_audio {
-            g.push(format!("{pairs}concat=n={}:v=1:a=1[vfin]{alabel}", segs.len()));
+            g.push(format!("{pairs}concat=n={}:v=1:a=1[vfin][afin]", segs.len()));
         } else {
             g.push(format!("{pairs}concat=n={}:v=1:a=0[vfin]", segs.len()));
         }
     } else {
         g.push("[vmain]null[vfin]".into());
         if out_audio {
-            g.push(format!("[amain]anull{alabel}"));
-        }
-    }
-    // 背景音樂：重複播放到影片結束，最後 2 秒淡出；講話時（原本的聲音）自動調小
-    if let Some(m) = &x.music {
-        inputs.extend(["-stream_loop".into(), "-1".into(), "-i".into(), m.path.clone()]);
-        let total = x.total();
-        let fade = (total - 2.0).max(0.0);
-        g.push(format!("[{idx}:a]{AFMT},volume={},atrim=0:{},afade=t=out:st={}:d=2[mus]", num(m.volume.clamp(0.0, 1.0)), num(total), num(fade)));
-        if m.duck && with_audio {
-            g.push("[amixin]asplit=2[aspk][akey];[mus][akey]sidechaincompress=threshold=0.02:ratio=10:attack=30:release=500[mduck];[aspk][mduck]amix=inputs=2:duration=first:normalize=0[afin]".into());
-        } else {
-            g.push("[amixin][mus]amix=inputs=2:duration=first:normalize=0[afin]".into());
+            g.push("[amain]anull[afin]".into());
         }
     }
     (inputs, g.join(";"), out_audio)
@@ -1532,7 +1510,7 @@ pub fn cut_args_more(
     if retime && with_audio && track_graph.is_none() {
         track_graph = Some(format!("{};[acut]{af_chain}[aout]", retime_audio("[0:a:0]", keep)));
     }
-    // 片頭片尾、背景音樂：聲音也要在 -filter_complex 裡（[aout]），才能接起來、混音
+    // 片頭片尾、旁白：聲音也要在 -filter_complex 裡（[aout]），才能接起來、混音
     if extras.is_some() && with_audio && track_graph.is_none() {
         track_graph = Some(format!("[0:a:0]{af_chain}[aout]"));
     }
@@ -1646,7 +1624,7 @@ pub fn cut_args_more(
         (true, None) => strs(&["-map", "0:a:0"]),
         _ => strs(&["-an"]),
     });
-    // 片頭片尾、背景音樂：輸入放在其他輸入後面，濾鏡接在 [vout] / [aout] 後面，改輸出 [vfin] / [afin]
+    // 片頭片尾、旁白：輸入放在其他輸入後面，濾鏡接在 [vout] / [aout] 後面，改輸出 [vfin] / [afin]
     let mut out_audio = with_audio;
     if let Some(x) = extras {
         let (inputs, g, has_audio) = extras_graph(x, next_input, fps, enc.pix_fmt, with_audio);
@@ -2672,13 +2650,12 @@ dummy: Immediate exit requested";
         );
     }
 
-    /// 片頭片尾與背景音樂：有 FFmpeg 時實際跑一次，確認濾鏡接得起來、長度對
+    /// 片頭片尾：有 FFmpeg 時實際跑一次，確認濾鏡接得起來、長度對
     #[test]
     fn extras_run_in_ffmpeg() {
         let Some(ffmpeg) = std::env::var_os("PATH").and_then(|p| std::env::split_paths(&p).map(|d| d.join("ffmpeg")).find(|p| p.is_file())) else { return };
         let dir = tempfile::tempdir().unwrap();
         let src = dir.path().join("in.mp4");
-        let music = dir.path().join("m.m4a");
         let card = dir.path().join("card.png");
         let run = |args: &[String]| std::process::Command::new(&ffmpeg).args(args).output().unwrap();
         let gen = |a: &[&str]| assert!(run(&a.iter().map(|s| s.to_string()).collect::<Vec<_>>()).status.success());
@@ -2700,29 +2677,21 @@ dummy: Immediate exit requested";
             "aac",
             src.to_str().unwrap(),
         ]);
-        gen(&["-loglevel", "error", "-f", "lavfi", "-i", "sine=f=600:d=1", "-c:a", "aac", music.to_str().unwrap()]);
         crate::cards::save(&crate::cards::TitleCard::new("片頭"), 320, 240, &card).unwrap();
         let card = card.display().to_string();
         let probe = |f: &std::path::Path| String::from_utf8_lossy(&run(&["-hide_banner".into(), "-i".into(), f.display().to_string()]).stderr).to_string();
-        for (with_audio, music_on) in [(true, true), (false, true), (true, false), (false, false)] {
-            let out = dir.path().join(format!("out-{with_audio}-{music_on}.mp4"));
-            let x = Extras {
-                intro: Some((card.clone(), 1.0)),
-                outro: Some((card.clone(), 1.5)),
-                size: (320, 240),
-                main_len: 2.0,
-                music: music_on.then(|| MusicInput { path: music.display().to_string(), volume: 0.3, duck: true }),
-                voice: None,
-            };
+        for with_audio in [true, false] {
+            let out = dir.path().join(format!("out-{with_audio}.mp4"));
+            let x = Extras { intro: Some((card.clone(), 1.0)), outro: Some((card.clone(), 1.5)), size: (320, 240), main_len: 2.0, voice: None };
             let a =
                 cut_args(src.to_str().unwrap(), out.to_str().unwrap(), &[Part::new(0.5, 2.5, 1.0)], None, 30.0, &x264(), with_audio, &[], AudioFx::default(), None, None, None, None, Some(&x), false)
                     .unwrap();
             let r = run(&a);
-            assert!(r.status.success(), "{with_audio} {music_on}: {}", String::from_utf8_lossy(&r.stderr));
+            assert!(r.status.success(), "{with_audio}: {}", String::from_utf8_lossy(&r.stderr));
             let info = parse_media_info(&probe(&out));
             let d = info.duration_sec.unwrap();
-            assert!((d - 4.5).abs() < 0.25, "{with_audio} {music_on}: {d}");
-            assert_eq!(info.has_audio, with_audio || music_on, "{with_audio} {music_on}");
+            assert!((d - 4.5).abs() < 0.25, "{with_audio}: {d}");
+            assert_eq!(info.has_audio, with_audio, "{with_audio}");
         }
     }
 
@@ -2837,7 +2806,6 @@ dummy: Immediate exit requested";
                 outro: None,
                 size: (320, 240),
                 main_len: total,
-                music: None,
                 voice: Some(VoiceInput {
                     clips: vec![(voice.display().to_string(), 1.5)],
                     volume: 1.0,

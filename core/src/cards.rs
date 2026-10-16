@@ -1,4 +1,4 @@
-//! 片頭、片尾卡片與背景音樂（剪輯輸出時接在影片前後、混進聲音）。
+//! 片頭、片尾卡片（剪輯輸出時接在影片前後）。
 //! 卡片用 tiny-skia 畫成和輸出影片一樣大的 PNG，FFmpeg 做成幾秒的畫面（淡入淡出）再和影片接起來。
 
 use crate::annotate;
@@ -57,27 +57,6 @@ impl TitleCard {
 
     pub fn is_empty(&self) -> bool {
         self.title.trim().is_empty() && self.subtitle.trim().is_empty()
-    }
-}
-
-/// 背景音樂
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Music {
-    pub path: String,
-    /// 音量（0～1）
-    pub volume: f64,
-    /// 講話時自動把音樂調小
-    #[serde(default = "yes")]
-    pub duck: bool,
-}
-
-fn yes() -> bool {
-    true
-}
-
-impl Music {
-    pub fn new(path: &str) -> Music {
-        Music { path: path.into(), volume: 0.3, duck: true }
     }
 }
 
@@ -163,7 +142,5 @@ mod tests {
         assert_eq!(TitleCard { secs: 99.0, ..card.clone() }.secs(), TitleCard::MAX_SECS);
         let j = serde_json::to_string(&card).unwrap();
         assert_eq!(serde_json::from_str::<TitleCard>(&j).unwrap(), card);
-        let m: Music = serde_json::from_str(r#"{"path":"a.mp3","volume":0.2}"#).unwrap();
-        assert!(m.duck);
     }
 }

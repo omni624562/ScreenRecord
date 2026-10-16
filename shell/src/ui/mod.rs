@@ -13,7 +13,6 @@ pub mod library_dialog;
 pub mod main_view;
 pub mod notes;
 pub mod ocr;
-pub mod phone;
 pub mod presets;
 pub mod preview;
 pub mod replay;
@@ -97,8 +96,6 @@ pub enum EntryAction {
     Export,
     /// 把檔案複製到剪貼簿（貼到 LINE、Teams、資料夾）
     CopyFile,
-    /// 傳到手機：區域網路下載頁＋QR 碼
-    Phone,
     /// 只留下聲音，另存成 .m4a
     SaveAudio,
     /// 章節（錄影時加的標記）複製成 YouTube 說明欄的格式
@@ -211,8 +208,6 @@ pub struct UiApp {
     pub snip: Option<snip::Snip>,
     /// 整理步驟截圖（做成教學文件前）
     pub steps_review: Option<steps_review::Review>,
-    /// 傳到手機（正在分享）
-    pub phone: Option<phone::Phone>,
     /// 正在匯入影片（拖進來的、「匯入影片…」）
     pub importing: bool,
     /// 做封面
@@ -315,7 +310,6 @@ impl UiApp {
             settings_dlg: None,
             snip: None,
             steps_review: None,
-            phone: None,
             importing: false,
             cover: None,
             keys: saved.hotkeys.unwrap_or_default(),
@@ -801,7 +795,7 @@ impl UiApp {
         use actions::OpenAction;
         let path = entry.media.path.clone();
         // 主畫面正在播這個檔案：剪輯、製作、改名等要用到檔案時先停下來（Windows 上播放中的檔案不能改名、取代）
-        let keeps = matches!(action, EntryAction::PlayHere | EntryAction::Reveal | EntryAction::CopyFile | EntryAction::CopyChapters | EntryAction::CopySteps | EntryAction::Phone);
+        let keeps = matches!(action, EntryAction::PlayHere | EntryAction::Reveal | EntryAction::CopyFile | EntryAction::CopyChapters | EntryAction::CopySteps);
         if !keeps && self.inline.as_ref().is_some_and(|i| i.is(&path)) {
             self.inline = None;
         }
@@ -857,7 +851,6 @@ impl UiApp {
                     Err(e) => app.toast(e.message().to_string(), true),
                 });
             }
-            EntryAction::Phone => phone::open(self, path),
             EntryAction::Convert => self.convert(path),
             // 其他格式（MOV、MKV…）要先轉成 MP4 才能剪輯、製作加速版：直接開始轉，轉好再做
             EntryAction::Edit | EntryAction::Export | EntryAction::Compress | EntryAction::Vertical if screenrecorder_core::import::is_other_video(&path) => {
@@ -1215,9 +1208,6 @@ impl eframe::App for UiApp {
         }
         if self.steps_review.is_some() {
             steps_review::show(self, &ctx);
-        }
-        if self.phone.is_some() {
-            phone::show(self, &ctx);
         }
         if self.cover.is_some() {
             cover::show(self, &ctx);

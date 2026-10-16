@@ -212,14 +212,6 @@ pub fn panel(ui: &mut egui::Ui, d: &mut LibraryDialog, rect: Rect) {
         } else {
             changed |= rows(ui, &fc.apps, &mut d.facet.apps, false);
         }
-        if !fc.kinds.is_empty() {
-            section(ui, tr!("內容", "Content"));
-            changed |= rows(ui, &fc.kinds, &mut d.facet.kinds, false);
-        }
-        if !fc.terms.is_empty() {
-            section(ui, tr!("圖裡常出現的詞", "Common words"));
-            changed |= term_chips(ui, &fc.terms, &mut d.facet);
-        }
         if !fc.when.is_empty() || !fc.hours.is_empty() {
             section(ui, tr!("時間", "When"));
             changed |= rows(ui, &fc.when, &mut d.facet.when, false);
@@ -228,13 +220,39 @@ pub fn panel(ui: &mut egui::Ui, d: &mut LibraryDialog, rect: Rect) {
                 changed |= rows(ui, &fc.hours, &mut d.facet.hours, false);
             }
         }
-        if !fc.colors.is_empty() {
-            section(ui, tr!("顏色", "Colour"));
-            changed |= rows(ui, &fc.colors, &mut d.facet.colors, true);
-        }
         if !fc.other.is_empty() {
             section(ui, tr!("其他", "Other"));
             changed |= rows(ui, &fc.other, &mut d.facet.other, false);
+        }
+        // 內容、常見詞、顏色比較少用：收在「更多分類」，有選的時候自動打開
+        if !fc.kinds.is_empty() || !fc.terms.is_empty() || !fc.colors.is_empty() {
+            let picked = !d.facet.kinds.is_empty() || !d.facet.terms.is_empty() || !d.facet.colors.is_empty();
+            let id = egui::Id::new("browse-more");
+            let mut open = picked || ui.data(|x| x.get_temp::<bool>(id)).unwrap_or(false);
+            ui.add_space(8.0);
+            let (r, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 22.0), egui::Sense::click());
+            let icon = egui::Rect::from_center_size(egui::pos2(r.left() + 7.0, r.center().y), egui::vec2(12.0, 12.0));
+            theme::paint_icon(ui.painter(), icon, if open { Icon::ChevD } else { Icon::ChevR }, p.muted);
+            ui.painter().text(egui::pos2(r.left() + 18.0, r.center().y), Align2::LEFT_CENTER, tr!("更多分類", "More categories"), theme::font_bold(12.5), p.muted);
+            if resp.on_hover_text(tr!("依內容類型、圖裡常出現的詞、顏色找", "Browse by content type, common words and colour")).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() && !picked
+            {
+                open = !open;
+                ui.data_mut(|x| x.insert_temp(id, open));
+            }
+            if open {
+                if !fc.kinds.is_empty() {
+                    section(ui, tr!("內容", "Content"));
+                    changed |= rows(ui, &fc.kinds, &mut d.facet.kinds, false);
+                }
+                if !fc.terms.is_empty() {
+                    section(ui, tr!("圖裡常出現的詞", "Common words"));
+                    changed |= term_chips(ui, &fc.terms, &mut d.facet);
+                }
+                if !fc.colors.is_empty() {
+                    section(ui, tr!("顏色", "Colour"));
+                    changed |= rows(ui, &fc.colors, &mut d.facet.colors, true);
+                }
+            }
         }
         ui.add_space(8.0);
     });

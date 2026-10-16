@@ -96,8 +96,6 @@ pub struct UiSettings {
     pub hide_icons: bool,
     /// 錄影時打開 Windows 的勿擾
     pub rec_quiet: bool,
-    /// 開會時（Teams、Zoom… 用麥克風）提醒錄影（core 的 tray 讀這個欄位）
-    pub meeting_remind: bool,
     /// 自動匯入的資料夾（core::watch 讀這個欄位）
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub watch_dirs: Vec<String>,
@@ -299,7 +297,6 @@ impl UiSettings {
             cursor_halo: boolean("cursorHalo").unwrap_or(false),
             hide_icons: boolean("hideIcons").unwrap_or(false),
             rec_quiet: boolean("recQuiet").unwrap_or(false),
-            meeting_remind: boolean("meetingRemind").unwrap_or(true),
             watch_dirs: o
                 .get("watchDirs")
                 .and_then(|v| serde_json::from_value::<Vec<String>>(v.clone()).ok())
