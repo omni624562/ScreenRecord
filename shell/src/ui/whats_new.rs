@@ -35,26 +35,25 @@ enum Try {
 }
 
 /// 這一版的新功能（標題、說明、試試看）：最多 6 項，快速鍵用目前的設定
-fn items(app: &UiApp) -> Vec<(String, String, Try)> {
-    let zoom = app.keys.label(8);
-    let zoom = if zoom.is_empty() { String::new() } else { trf!("（{zoom}）", " ({zoom})") };
+fn items(_app: &UiApp) -> Vec<(String, String, Try)> {
     vec![
         (
-            tr!("錄影時標出要放大的地方", "Mark spots to zoom in on while recording").into(),
-            trf!(
-                "錄影時把滑鼠移到重點上按快速鍵{zoom}，剪輯時「跟著點擊放大」可以選只放大標記的地方，不用每次點擊都放大。",
-                "While recording, point at something and press the shortcut{zoom}. When editing, “Zoom on clicks” can zoom in only on the marked spots instead of every click."
-            ),
-            Try::Settings(Page::Keys),
-        ),
-        (
-            tr!("自動匯入資料夾", "Auto-import folders").into(),
+            tr!("外部元件集中在設定裡", "Components in one place").into(),
             tr!(
-                "在設定的「儲存位置」加入 OBS 的輸出資料夾、手機同步資料夾或 NAS，有新影片時自動匯入並轉成 MP4，還可以接著自動處理（字幕、剪掉沒動靜的片段…）。",
-                "Add your OBS output folder, a phone sync folder or a NAS under Save location in Settings. New videos are imported and converted to MP4 automatically, and can go through the after-recording steps too."
+                "FFmpeg、自動字幕要用的語音辨識檔案，都在「設定 → 外部元件」下載、取消或移除。下載不了時可以設定 Proxy，或用瀏覽器下載後選擇檔案安裝。",
+                "FFmpeg and the speech recognition files for subtitles are downloaded, canceled or removed in Settings → Components. If downloads don't work, set a proxy or download in your browser and choose the file."
             )
             .into(),
-            Try::Settings(Page::Save),
+            Try::Settings(Page::Components),
+        ),
+        (
+            tr!("只抓文字會告訴你抓到了", "Grab text tells you what it copied").into(),
+            tr!(
+                "框選完，滑鼠旁邊馬上顯示複製了幾個字和開頭的內容；沒認出字時也會說。",
+                "Right after you select an area, a note next to the pointer shows how many characters were copied and how they start, or that no text was found."
+            )
+            .into(),
+            Try::None,
         ),
     ]
 }
