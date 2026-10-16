@@ -540,6 +540,7 @@ mod tests {
             invert: false,
             rot: 0.0,
             pts: vec![],
+            anim: 0,
         };
         let spec = ShotSpec { anns: vec![a], border: Some("#e5484d".into()), border_width: 3.0, ..Default::default() };
         let pm = render(&src, 100, 100, 100, 100, &spec, false).unwrap();

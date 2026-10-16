@@ -69,6 +69,7 @@ pub fn key_pill(text: &str, scale: f32) -> Option<Pixmap> {
         invert: false,
         rot: 0.0,
         pts: vec![],
+        anim: 0,
     };
     annotate::measure(&mut a);
     let mut pm = Pixmap::new(a.w.ceil().max(1.0) as u32, a.h.ceil().max(1.0) as u32)?;

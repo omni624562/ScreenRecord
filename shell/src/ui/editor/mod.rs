@@ -8,6 +8,7 @@
 
 pub mod shot;
 mod side;
+mod speed;
 mod stage;
 mod subs;
 mod timeline;
@@ -46,8 +47,10 @@ static SIDE_OPEN: AtomicBool = AtomicBool::new(true);
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Tab {
-    /// 修剪：頭尾、刪除的片段、加速
+    /// 修剪：頭尾、刪除的片段、片段順序
     Time,
+    /// 加速：整支加速、局部加速與放慢、定格
+    Speed,
     /// 畫面：裁切、跟著點擊放大、游標、直式、背景與圓角（截圖：裁切與旋轉）
     Crop,
     Ann,
@@ -111,6 +114,12 @@ struct Extras {
     /// 旁白與點擊音效（點擊的時間不存，輸出時才放進去）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     narration: Option<screenrecorder_core::narration::Narration>,
+    /// 調色
+    #[serde(default, skip_serializing_if = "screenrecorder_core::look::Look::is_default")]
+    look: screenrecorder_core::look::Look,
+    /// 日期時間浮水印（開始的時間不存，輸出時依錄影的時間算）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    stamp: Option<screenrecorder_core::look::Stamp>,
 }
 
 fn is_zero_or_one(v: &f64) -> bool {
@@ -133,6 +142,8 @@ enum VAct {
     PickOutput,
     /// 字幕匯出成 SRT（剪輯後的時間）
     ExportSrt,
+    /// 字幕整理成逐字稿（true = Word，false = TXT）
+    ExportTranscript(bool),
     /// 標記改名（第幾個）
     RenameMarker(usize),
     /// 選擇背景音樂
@@ -397,6 +408,12 @@ pub struct Editor {
     pub(crate) ann_styles: Vec<screenrecorder_core::annotate::AnnStyle>,
     /// 平滑游標停著不動時隱藏
     pub(crate) cursor_hide: bool,
+    /// 「加速」分頁：做成指定長度的輸入、選取片段的自訂倍率
+    pub(crate) speed_target: String,
+    pub(crate) sel_speed: f64,
+    /// 逐字稿：每段加上時間、去掉贅字
+    pub(crate) transcript_time: bool,
+    pub(crate) transcript_clean: bool,
     /// 正在影片上框選要手動放大的地方
     pub(crate) zoom_pick: bool,
     /// 框選手動放大時按下的位置（0～1）
@@ -686,6 +703,10 @@ impl Editor {
             mutes: vec![],
             cursor_size: 0.0,
             cursor_hide: false,
+            speed_target: String::new(),
+            sel_speed: 1.5,
+            transcript_time: true,
+            transcript_clean: true,
             zoom_pick: false,
             zoom_from: None,
             cursor_idle: vec![],
@@ -975,6 +996,8 @@ impl Editor {
             speed_audio: self.spec.speed_audio,
             sub_style: (self.sub_style != Default::default()).then(|| self.sub_style.clone()),
             narration: (self.spec.narration != Default::default()).then(|| screenrecorder_core::narration::Narration { clicks: vec![], ..self.spec.narration.clone() }),
+            look: self.spec.look.clamped(),
+            stamp: self.spec.stamp.map(|st| screenrecorder_core::look::Stamp { start_ms: 0, ..st }),
         }
     }
 
@@ -998,9 +1021,17 @@ impl Editor {
         self.cursor_hide = x.cursor_hide;
         self.spec.zoom_regions = screenrecorder_core::zoom::clean_regions(&x.zoom_regions);
         self.spec.order = x.order;
-        self.spec.speed = if screenrecorder_core::edit::WHOLE_SPEEDS.contains(&x.speed) { x.speed } else { 1.0 };
+        self.spec.speed = if x.speed.is_finite() && (1.0..=16.0).contains(&x.speed) { x.speed } else { 1.0 };
         self.spec.speed_audio = x.speed_audio;
         self.sub_style = x.sub_style.unwrap_or_default();
+        self.spec.look = x.look.clamped();
+        self.spec.stamp = x.stamp.map(|st| screenrecorder_core::look::Stamp { start_ms: 0, corner: st.corner.min(3), size: st.size.min(2) });
+    }
+
+    /// 錄影開始的時間（1970 年起的毫秒）：檔名裡的錄影時間，否則用修改時間減掉長度
+    pub(crate) fn rec_start_ms(&self) -> Option<i64> {
+        let m = &self.entry.media;
+        screenrecorder_core::library::name_time_ms(&m.name).or_else(|| (m.mtime > 0.0).then_some(m.mtime - self.duration * 1000.0)).map(|t| t as i64)
     }
 
     /// 片頭預設的標題：自己取過的檔名（預設的 Rec_時間 名稱就空白）
@@ -1149,6 +1180,11 @@ impl Editor {
         })
     }
 
+    /// 「加速」分頁上的數字：變速的片段與定格各算一個，整支加速算一個
+    pub(crate) fn speed_count(&self) -> usize {
+        self.spec.fast.len() + self.spec.freezes.len() + usize::from(screenrecorder_core::edit::whole_speed(&self.spec) > 1.0)
+    }
+
     /// 保留的片段依加速切開：(開始, 結束, 倍率)
     fn parts(&self) -> Vec<Part> {
         keep_parts(self.duration, &self.spec)
@@ -1246,6 +1282,7 @@ impl Editor {
             invert: false,
             rot: 0.0,
             pts: vec![],
+            anim: 0,
         };
         self.next_id += 1;
         if kind == AnnKind::Text {
@@ -1771,6 +1808,8 @@ impl Editor {
             && self.spec.intro.is_none()
             && self.spec.outro.is_none()
             && self.spec.music.is_none()
+            && self.spec.look.is_default()
+            && self.spec.stamp.is_none()
     }
 
     /// 可以儲存（有修改、剪完還有長度）
@@ -1831,11 +1870,13 @@ impl Editor {
                     "crop" => Tab::Crop,
                     "subs" => Tab::Subs,
                     "audio" => Tab::Audio,
+                    "speed" => Tab::Speed,
                     _ => Tab::Time,
                 }
             }
             "sel" => self.select_ann(v.parse().ok()),
             "act" if v == "autosubs" => self.pending = Some(shot::Act::AutoSubs),
+            "act" if v == "transcript" || v == "transcript-txt" => self.vpending = Some(VAct::ExportTranscript(v == "transcript")),
             // 開發用：fast=開始,結束,倍率；freeze=時間,秒數；voice=時間,秒數[,文字]；clicks=音量
             "fast" | "freeze" | "voice" => {
                 let n: Vec<&str> = v.splitn(3, ',').collect();
@@ -1880,6 +1921,13 @@ impl Editor {
                 }
             }
             // 開發用：removed=開始,結束；order=毫秒,毫秒…；region=開始,結束,x,y,w,h；subcues=段數；mystyle=顏色,大小
+            // 開發用：look=亮度,對比,飽和度,銳利；stamp=角落
+            "look" => {
+                let n: Vec<i32> = v.split(',').filter_map(|x| x.parse().ok()).collect();
+                let g = |i: usize| n.get(i).copied().unwrap_or(0);
+                self.spec.look = screenrecorder_core::look::Look { brightness: g(0), contrast: g(1), saturation: g(2), sharpen: g(3).max(0) as u32 };
+            }
+            "stamp" => self.spec.stamp = Some(screenrecorder_core::look::Stamp { corner: v.parse().unwrap_or(0), ..Default::default() }),
             "wspeed" => {
                 self.spec.speed = v.parse().unwrap_or(1.0);
                 self.spec.speed_audio = self.spec.speed <= 2.0;
@@ -1971,19 +2019,24 @@ impl Editor {
         }
         let Some(f) = &self.frame else { return };
         let effects: Vec<&Ann> = self.anns.iter().filter(|a| a.kind.is_effect() && f.time >= a.start && f.time <= a.end).collect();
-        let key = hash_of(&(f.time.to_bits(), f.width, serde_json::to_string(&effects).unwrap_or_default()));
+        let look = if self.is_shot() { Default::default() } else { self.spec.look.clamped() };
+        let key = hash_of(&(f.time.to_bits(), f.width, serde_json::to_string(&effects).unwrap_or_default(), look));
         if key == self.video_key && self.video_tex.is_some() {
             return;
         }
         self.video_key = key;
         let size = [f.width as usize, f.height as usize];
         // 沒有馬賽克 / 模糊時直接用解出來的畫面（不多複製一份）
-        let img = if effects.is_empty() || self.vw <= 0.0 {
+        let img = if (effects.is_empty() || self.vw <= 0.0) && look.is_default() {
             egui::ColorImage::from_rgba_unmultiplied(size, &f.rgba)
         } else {
             let mut rgba = f.rgba.clone();
-            for a in &effects {
-                screenrecorder_core::effects::apply(&mut rgba, f.width as usize, f.height as usize, a, self.vw, self.vh);
+            // 調色先做（輸出時也是先調色、再疊標註的馬賽克 / 模糊結果相近）
+            look.apply_rgba(&mut rgba);
+            if self.vw > 0.0 {
+                for a in &effects {
+                    screenrecorder_core::effects::apply(&mut rgba, f.width as usize, f.height as usize, a, self.vw, self.vh);
+                }
             }
             egui::ColorImage::from_rgba_unmultiplied(size, &rgba)
         };
@@ -2100,6 +2153,7 @@ fn emoji_textures(ctx: &egui::Context) -> Vec<TextureHandle> {
                 invert: false,
                 rot: 0.0,
                 pts: vec![],
+                anim: 0,
             };
             annotate::measure(&mut a);
             // 只要表情符號本身：用深色底的版面量大小，但不畫底色
@@ -2370,6 +2424,7 @@ fn close_dialog(ed: &Editor) -> super::dialogs::Ask {
 fn run_vact(app: &mut UiApp, ed: &mut Editor, act: VAct) {
     match act {
         VAct::ExportSrt => export_srt(app, ed),
+        VAct::ExportTranscript(word) => export_transcript(app, ed, word),
         VAct::PickOutput => pick_output(app, ed),
         VAct::PickMusic => {
             let video = ed.entry.media.path.clone();
@@ -2489,6 +2544,52 @@ fn export_srt(app: &mut UiApp, ed: &Editor) {
             Ok(Some(p)) => {
                 let p = p.to_string_lossy().to_string();
                 app.toast_file(trf!("已匯出字幕檔 {}", "Exported {}", file_name(&p)), &p);
+            }
+            Ok(None) => {}
+            Err(e) => app.toast(e, true),
+        },
+    );
+}
+
+/// 字幕整理成逐字稿（剪輯後的時間），存成 Word 或 TXT
+fn export_transcript(app: &mut UiApp, ed: &Editor, word: bool) {
+    let cues = ed.cut_cues();
+    let paras = screenrecorder_core::transcript::paragraphs(&cues, ed.transcript_clean);
+    if paras.is_empty() {
+        return app.toast(tr!("剪輯後沒有留下任何字幕（都在刪除的片段裡）", "No subtitles are left after editing (they're all in removed sections)"), true);
+    }
+    let with_time = ed.transcript_time;
+    let stem = screenrecorder_core::format::strip_mp4(&ed.entry.media.name);
+    let title = if screenrecorder_core::naming::is_auto_name(&stem) { tr!("逐字稿", "Transcript").to_string() } else { stem.clone() };
+    let date = ed.rec_start_ms().map(|ms| screenrecorder_core::look::stamp_preview(ms, 0.0)).unwrap_or_default();
+    let dir = std::path::Path::new(&ed.entry.media.path).parent().map(std::path::Path::to_path_buf);
+    let (ext, filter) = if word { ("docx", tr!("Word 文件", "Word document")) } else { ("txt", tr!("文字檔", "Text file")) };
+    let name = format!("{stem}_{}.{ext}", tr!("逐字稿", "transcript"));
+    app.spawn(
+        async move {
+            tokio::task::spawn_blocking(move || -> Result<Option<PathBuf>, String> {
+                let pattern = format!("*.{ext}");
+                let picked = screenrecorder_core::filepick::save_file(tr!("匯出逐字稿", "Export transcript"), dir, &name, &[(filter, pattern.as_str())])?;
+                let Some((mut path, _)) = picked else { return Ok(None) };
+                if path.extension().is_none_or(|e| !e.eq_ignore_ascii_case(ext)) {
+                    path.set_extension(ext);
+                }
+                let bytes = if word {
+                    screenrecorder_core::transcript::docx(&title, &date, &paras, with_time)
+                } else {
+                    // 加上 BOM：記事本才不會變成亂碼
+                    format!("\u{feff}{}", screenrecorder_core::transcript::text(&title, &paras, with_time)).into_bytes()
+                };
+                std::fs::write(&path, bytes).map_err(|e| trf!("無法儲存逐字稿：{e}", "Couldn't save the transcript: {e}"))?;
+                Ok(Some(path))
+            })
+            .await
+            .unwrap_or_else(|e| Err(e.to_string()))
+        },
+        |app, r| match r {
+            Ok(Some(p)) => {
+                let p = p.to_string_lossy().to_string();
+                app.toast_file(trf!("已匯出逐字稿 {}", "Exported {}", file_name(&p)), &p);
             }
             Ok(None) => {}
             Err(e) => app.toast(e, true),
@@ -2873,6 +2974,12 @@ fn footer(ed: &mut Editor, ui: &mut egui::Ui) -> bool {
             if ed.spec.music.is_some() {
                 ui.label(tr!("・背景音樂", " · Background music"));
             }
+            if !ed.spec.look.is_default() {
+                ui.label(tr!("・調色", " · Color"));
+            }
+            if ed.spec.stamp.is_some() {
+                ui.label(tr!("・日期時間", " · Date and time"));
+            }
             if !size.is_empty() {
                 ui.label(tr!("・解析度 ", " · Resolution "));
                 ui.label(RichText::new(size).font(theme::font_bold(13.5)));
@@ -3019,6 +3126,8 @@ fn start_save(app: &mut UiApp, ed: &mut Editor) {
         speed: ed.spec.speed,
         speed_audio: ed.spec.speed_audio,
         narration: screenrecorder_core::narration::Narration { clicks: if ed.click_sound_on() { ed.clicks.iter().map(|c| c[0]).collect() } else { vec![] }, ..ed.spec.narration.clone() },
+        look: ed.spec.look.clamped(),
+        stamp: ed.spec.stamp.and_then(|st| ed.rec_start_ms().map(|start_ms| screenrecorder_core::look::Stamp { start_ms, ..st })),
     };
     let project = Some(ed.project_value());
     // 開始輸出時先存草稿（標記為輸出中）：輸出失敗或取消時可以「回到剪輯」，完成時會刪掉

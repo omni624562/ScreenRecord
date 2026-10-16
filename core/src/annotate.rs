@@ -150,6 +150,25 @@ pub struct Ann {
     /// 畫筆的點（0～1，相對於 x, y, w, h；調整大小時跟著縮放）
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pts: Vec<[f32; 2]>,
+    /// 影片標註的出現方式：0 直接出現、1 淡入淡出、2 放大出現（淡入淡出加上由小變大）
+    #[serde(default, skip_serializing_if = "is_zero_u8")]
+    pub anim: u8,
+}
+
+/// 出現方式的動畫時間（秒）：標註很短時縮短
+pub fn anim_secs(start: f64, end: f64) -> f64 {
+    ((end - start) / 3.0).clamp(0.05, 0.3)
+}
+
+/// 標註在時間 t 的不透明度與縮放（預覽用；輸出時 FFmpeg 算一樣的值）
+pub fn anim_at(anim: u8, start: f64, end: f64, t: f64) -> (f32, f32) {
+    if anim == 0 {
+        return (1.0, 1.0);
+    }
+    let d = anim_secs(start, end);
+    let a = ((t - start) / d).min((end - t) / d).clamp(0.0, 1.0) as f32;
+    let k = if anim == 2 { 0.5 + 0.5 * ((t - start) / d).clamp(0.0, 1.0) as f32 } else { 1.0 };
+    (a, k)
 }
 
 fn is_zero(v: &f64) -> bool {
@@ -292,6 +311,7 @@ pub fn plain_text(text: &str, size: f64, color: &str) -> Ann {
         invert: false,
         rot: 0.0,
         pts: vec![],
+        anim: 0,
     };
     measure(&mut a);
     a
@@ -930,7 +950,7 @@ pub fn to_overlay(a: &Ann, vw: f64, vh: f64) -> Option<Overlay> {
         let r = rotation(a);
         if r == 0.0 {
             let (x, y, w, h) = (a.x.round(), a.y.round(), a.w.round(), a.h.round());
-            let mut o = Overlay { kind, x, y, w, h, start: a.start, end: a.end, png: None, mask: None, invert: a.invert };
+            let mut o = Overlay { kind, x, y, w, h, start: a.start, end: a.end, png: None, mask: None, invert: a.invert, anim: 0 };
             if a.shape.is_some_and(|s| s != Shape::Rect) && w >= 2.0 && h >= 2.0 {
                 let mut m = Pixmap::new(w as u32, h as u32)?;
                 m.fill(Color::BLACK);
@@ -957,7 +977,7 @@ pub fn to_overlay(a: &Ann, vw: f64, vh: f64) -> Option<Overlay> {
         if let Some(p) = shape_path(a.shape, a.x, a.y, a.w, a.h) {
             m.fill_path(&p, &paint(Color::WHITE), FillRule::Winding, t, None);
         }
-        return Some(Overlay { kind, x: x0, y: y0, w: x1 - x0, h: y1 - y0, start: a.start, end: a.end, png: None, mask: m.encode_png().ok(), invert: a.invert });
+        return Some(Overlay { kind, x: x0, y: y0, w: x1 - x0, h: y1 - y0, start: a.start, end: a.end, png: None, mask: m.encode_png().ok(), invert: a.invert, anim: 0 });
     }
     let (bx, by, bw, bh) = bbox(a);
     // 只保留畫面內的部分
@@ -970,7 +990,7 @@ pub fn to_overlay(a: &Ann, vw: f64, vh: f64) -> Option<Overlay> {
     }
     let mut pm = Pixmap::new((x1 - x0) as u32, (y1 - y0) as u32)?;
     draw(&mut pm, a, Transform::from_translate(-x0 as f32, -y0 as f32));
-    Some(Overlay { kind: OverlayKind::Image, x: x0, y: y0, w: x1 - x0, h: y1 - y0, start: a.start, end: a.end, png: pm.encode_png().ok(), mask: None, invert: false })
+    Some(Overlay { kind: OverlayKind::Image, x: x0, y: y0, w: x1 - x0, h: y1 - y0, start: a.start, end: a.end, png: pm.encode_png().ok(), mask: None, invert: false, anim: a.anim.min(2) })
 }
 
 /// 「我的樣式」：存起來的顏色與大小（大小以 1080 高的畫面為準），截圖與剪輯都能一鍵套用
@@ -1074,6 +1094,7 @@ mod tests {
             invert: false,
             rot: 0.0,
             pts: vec![],
+            anim: 0,
         }
     }
 

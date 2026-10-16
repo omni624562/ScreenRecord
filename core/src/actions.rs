@@ -331,6 +331,8 @@ pub struct ExportRequest {
     pub format: ExportFormat,
     pub gif_width: f64,
     pub gif_fps: f64,
+    /// 動圖來回播放
+    pub bounce: bool,
     /// 加速版縮小後的寬度；0 = 原尺寸
     pub mp4_width: f64,
     /// 壓縮到這個大小以內（MB）；0 = 不限
@@ -346,7 +348,7 @@ pub async fn export_start(app: &App, r: &ExportRequest) -> Result<()> {
     let ctx = app.export_ctx();
     let output = r.output.as_deref().map(PathBuf::from);
     match r.format {
-        ExportFormat::Gif | ExportFormat::Webp => app.exporter.start_gif_to(&ctx, &r.source, r.speed, r.gif_width, r.gif_fps, r.format, output).await?,
+        ExportFormat::Gif | ExportFormat::Webp => app.exporter.start_gif_to(&ctx, &r.source, r.speed, r.gif_width, r.gif_fps, r.format, r.bounce, output).await?,
         ExportFormat::Mp4 => app.exporter.start_to(&ctx, &r.source, r.speed, r.keep_audio, r.mp4_width, r.mp4_max_mb, output).await?,
     };
     Ok(())

@@ -55,6 +55,7 @@ pub mod library;
 pub mod llhook_win;
 pub mod log;
 pub mod longshot;
+pub mod look;
 pub mod meeting;
 pub mod meter;
 pub mod monitors;
@@ -105,6 +106,7 @@ pub mod steps;
 pub mod steps_win;
 pub mod subtitles;
 pub mod thumbs;
+pub mod transcript;
 pub mod tray;
 #[cfg(windows)]
 pub mod tray_win;

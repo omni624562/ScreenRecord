@@ -79,6 +79,41 @@ fn cursor_overlay(ed: &mut Editor, ctx: &egui::Context, painter: &egui::Painter,
     painter.with_clip_rect(rect).image(tex.id(), r, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
 }
 
+/// 日期時間浮水印的預覽：位置、大小和輸出一樣（在裁切後的範圍裡）
+fn stamp_overlay(ed: &Editor, painter: &egui::Painter, rect: Rect, uv: Rect) {
+    let (Some(st), Some(start)) = (ed.spec.stamp, ed.rec_start_ms()) else { return };
+    if ed.vw <= 0.0 || ed.vh <= 0.0 || ed.is_shot() {
+        return;
+    }
+    let area = if ed.crop_on && ed.vertical != 2 { screenrecorder_core::edit::normalize_crop(ed.spec.crop, ed.vw as i32, ed.vh as i32) } else { None }.unwrap_or(screenrecorder_core::types::Rect {
+        x: 0,
+        y: 0,
+        width: ed.vw as i32,
+        height: ed.vh as i32,
+    });
+    let px = (area.height as f64 / [36.0, 26.0, 18.0][st.size.min(2) as usize]).round().max(10.0);
+    let m = (px * 0.7).round();
+    let x = if st.corner.is_multiple_of(2) { (area.x + area.width) as f64 - m } else { area.x as f64 + m };
+    let y = if st.corner < 2 { (area.y + area.height) as f64 - m } else { area.y as f64 + m };
+    let map = |x: f64, y: f64| pos2(rect.left() + ((x / ed.vw) as f32 - uv.left()) / uv.width() * rect.width(), rect.top() + ((y / ed.vh) as f32 - uv.top()) / uv.height() * rect.height());
+    let k = rect.height() / (uv.height() * ed.vh as f32);
+    let align = match st.corner {
+        0 => Align2::RIGHT_BOTTOM,
+        1 => Align2::LEFT_BOTTOM,
+        2 => Align2::RIGHT_TOP,
+        _ => Align2::LEFT_TOP,
+    };
+    let text = screenrecorder_core::look::stamp_preview(start, ed.now());
+    let font = egui::FontId::monospace(px as f32 * k);
+    let at = map(x, y);
+    let painter = painter.with_clip_rect(rect);
+    let o = (px as f32 * k / 12.0).max(1.0);
+    for d in [vec2(-o, 0.0), vec2(o, 0.0), vec2(0.0, -o), vec2(0.0, o)] {
+        painter.text(at + d, align, &text, font.clone(), Color32::from_black_alpha(180));
+    }
+    painter.text(at, align, text, font, Color32::WHITE);
+}
+
 pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, stage_h: f32) {
     let avail_w = ui.available_width();
     // 截圖的「輸出」分頁：大畫面顯示輸出的樣子（背景、圓角、陰影、外框都看得清楚）
@@ -138,6 +173,7 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, stage_h: f3
         painter.image(tex.id(), rect, uv, Color32::WHITE);
     }
     cursor_overlay(ed, ctx, &painter, rect, uv);
+    stamp_overlay(ed, &painter, rect, uv);
     vertical_window(ed, &painter, rect);
     if ed.vw <= 0.0 {
         interact(ed, ui, rect, &resp);
@@ -160,9 +196,11 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, stage_h: f3
         if let Some(sp) = ed.overlay.sprites.get(&a.id) {
             let min = pos2(rect.left() + ((a.x + sp.off.0) * css) as f32, rect.top() + ((a.y + sp.off.1) * css) as f32);
             let r = Rect::from_min_size(min, vec2((sp.size.0 * css) as f32, (sp.size.1 * css) as f32));
-            // 選取中、但目前時間看不到的標註畫淡一點
-            let tint = if visible { Color32::WHITE } else { Color32::from_white_alpha(89) };
-            painter.with_clip_rect(rect).image(sp.tex.id(), r, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), tint);
+            // 選取中、但目前時間看不到的標註畫淡一點；有出現方式時照動畫的透明度與大小
+            let (alpha, k) = if visible { annotate::anim_at(a.anim, a.start, a.end, t) } else { (0.35, 1.0) };
+            let alpha = if ed.ann_sel == Some(a.id) { alpha.max(0.35) } else { alpha };
+            let r = Rect::from_center_size(r.center(), r.size() * k);
+            painter.with_clip_rect(rect).image(sp.tex.id(), r, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::from_white_alpha((alpha * 255.0) as u8));
         }
     }
     let to_screen = |x: f64, y: f64| pos2(rect.left() + (x * css) as f32, rect.top() + (y * css) as f32);
@@ -441,6 +479,7 @@ fn result_view(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, avail_w:
     };
     painter.image(tex.id(), dest, uv, Color32::WHITE);
     cursor_overlay(ed, ctx, &painter.with_clip_rect(dest), dest, uv);
+    stamp_overlay(ed, &painter, dest, uv);
     // 標註：影片座標 → 畫面（跟著影片縮放、裁切）
     let t = ed.now();
     let full_w = dest.width() / uv.width().max(1e-6);
@@ -453,7 +492,8 @@ fn result_view(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, avail_w:
         }
         if let Some(sp) = ed.overlay.sprites.get(&a.id) {
             let r = Rect::from_min_max(to_screen(a.x + sp.off.0, a.y + sp.off.1), to_screen(a.x + sp.off.0 + sp.size.0, a.y + sp.off.1 + sp.size.1));
-            clip.image(sp.tex.id(), r, unit, Color32::WHITE);
+            let (alpha, k) = annotate::anim_at(a.anim, a.start, a.end, t);
+            clip.image(sp.tex.id(), Rect::from_center_size(r.center(), r.size() * k), unit, Color32::from_white_alpha((alpha * 255.0) as u8));
         }
     }
     if let Some(m) = cover {

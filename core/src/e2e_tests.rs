@@ -563,7 +563,7 @@ async fn cut_with_every_effect() {
         pm.fill(tiny_skia::Color::from_rgba8(255, 0, 0, 200));
         png.extend(pm.encode_png().unwrap());
     }
-    let ov = |kind, x, y, png: Option<Vec<u8>>| Overlay { kind, x, y, w: 80.0, h: 40.0, start: 0.5, end: 4.0, png, mask: None, invert: false };
+    let ov = |kind, x, y, png: Option<Vec<u8>>| Overlay { kind, x, y, w: 80.0, h: 40.0, start: 0.5, end: 4.0, png, mask: None, invert: false, anim: 0 };
     let spec = EditSpec {
         start: 0.0,
         end: 6.0,

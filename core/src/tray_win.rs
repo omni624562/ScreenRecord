@@ -559,3 +559,36 @@ pub fn start(cmd: UnboundedSender<TrayCommand>, keys: Hotkeys, wait: Duration) -
     let (hwnd, hotkeys) = ready_rx.recv_timeout(wait).map_err(|_| "系統匣沒有回應".to_string())??;
     Ok((Arc::new(Handle { hwnd, queue }), hotkeys))
 }
+
+/// 系統匣「^」展開的隱藏圖示面板（Windows 10、11）
+fn overflow_windows() -> Vec<HWND> {
+    use windows::Win32::UI::WindowsAndMessaging::{FindWindowW, IsWindowVisible};
+    let mut v = vec![];
+    for class in [w!("NotifyIconOverflowWindow"), w!("TopLevelWindowForOverflowXamlIsland")] {
+        // SAFETY: 只查詢視窗，不改變它
+        unsafe {
+            if let Ok(h) = FindWindowW(class, PCWSTR::null()) {
+                if !h.is_invalid() && IsWindowVisible(h).as_bool() {
+                    v.push(h);
+                }
+            }
+        }
+    }
+    v
+}
+
+/// 隱藏圖示面板還開著（或還在收合）
+pub fn overflow_open() -> bool {
+    !overflow_windows().is_empty()
+}
+
+/// 把隱藏圖示面板收起來
+pub fn close_overflow() {
+    use windows::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_HIDE};
+    for h in overflow_windows() {
+        // SAFETY: 隱藏 Explorer 的面板視窗；下次按「^」會再顯示
+        unsafe {
+            let _ = ShowWindow(h, SW_HIDE);
+        }
+    }
+}

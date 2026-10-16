@@ -1,6 +1,6 @@
 //! 轉檔工作：製作加速版、GIF、剪輯。同一時間只跑一個，避免搶 CPU；原檔不變。
 
-use crate::args::{cut_args, export_args, gif_args, EncoderSpec, GifOptions, OverlayInput, VerticalInput};
+use crate::args::{export_args, gif_args, EncoderSpec, GifOptions, OverlayInput, VerticalInput};
 use crate::edit::{cut_file_name, keep_parts, normalize_crop, output_length, EditSpec, Overlay, OverlayKind};
 use crate::error::{Error, Result};
 use crate::format::{compressed_file_name, export_file_name, js_round, num, speed_label, strip_mp4, FPS_MAX, SPEED_MAX, SPEED_MIN};
@@ -143,12 +143,12 @@ impl Exporter {
 
     /// 動圖：GIF 或 WebP（可同時加速；無聲音）
     pub async fn start_gif(&self, ctx: &ExportCtx, source: &str, speed: f64, width: f64, fps: f64, format: ExportFormat) -> Result<ExportStatus> {
-        self.start_gif_to(ctx, source, speed, width, fps, format, None).await
+        self.start_gif_to(ctx, source, speed, width, fps, format, false, None).await
     }
 
-    /// 同 start_gif；output 有指定時存到那裡（另存新檔選的位置）
+    /// 同 start_gif；bounce：來回播放；output 有指定時存到那裡（另存新檔選的位置）
     #[allow(clippy::too_many_arguments)]
-    pub async fn start_gif_to(&self, ctx: &ExportCtx, source: &str, speed: f64, width: f64, fps: f64, format: ExportFormat, output: Option<PathBuf>) -> Result<ExportStatus> {
+    pub async fn start_gif_to(&self, ctx: &ExportCtx, source: &str, speed: f64, width: f64, fps: f64, format: ExportFormat, bounce: bool, output: Option<PathBuf>) -> Result<ExportStatus> {
         let _g = self.begin()?;
         if !speed.is_finite() || !(1.0..=SPEED_MAX).contains(&speed) {
             return Err(Error::config(trf!("倍率需介於 1～{}", "Speed must be between 1 and {}", num(SPEED_MAX))));
@@ -159,17 +159,25 @@ impl Exporter {
         let output = output.map(|o| check_output(source, o, format.ext())).transpose()?;
         let (ffmpeg, _enc, info, _src_fps) = prepare(ctx, source).await?;
         let output_sec = info.duration_sec.unwrap_or(0.0) / speed;
+        if bounce && output_sec > crate::args::BOUNCE_MAX_SEC {
+            return Err(Error::config(trf!(
+                "來回播放只能用在 {} 秒以內的動圖（可以先加速或剪短）",
+                "Back-and-forth only works for animations up to {} s (speed it up or trim it first)",
+                num(crate::args::BOUNCE_MAX_SEC)
+            )));
+        }
         let dir = parent(source);
         let ext = format!(".{}", format.ext());
         let name = export_file_name(&file_name(source), speed, format);
         let output = output.unwrap_or_else(|| crate::paths::unique_path(&dir, name.trim_end_matches(ext.as_str()), &ext));
-        let opts = GifOptions { fps, width, src_width: info.width.unwrap_or(0) as f64, src_height: info.height.unwrap_or(0) as f64, output_sec };
+        let opts = GifOptions { fps, width, src_width: info.width.unwrap_or(0) as f64, src_height: info.height.unwrap_or(0) as f64, output_sec, bounce };
         let args =
             if format == ExportFormat::Webp { crate::args::webp_args(source, &output.display().to_string(), speed, &opts)? } else { gif_args(source, &output.display().to_string(), speed, &opts)? };
         let shown_w = info.width.map(|sw| width.min(sw as f64)).unwrap_or(width);
-        let note = format!("{}寬 {}、{} fps", if speed > 1.0 { format!("{}×，", speed_label(speed)) } else { String::new() }, num(shown_w), num(fps));
+        let note = format!("{}寬 {}、{} fps{}", if speed > 1.0 { format!("{}×，", speed_label(speed)) } else { String::new() }, num(shown_w), num(fps), if bounce { "，來回播放" } else { "" });
         let kind = if format == ExportFormat::Webp { ExportKind::Webp } else { ExportKind::Gif };
-        self.run(kind, &ffmpeg, args, source, &output, speed, output_sec, &note)
+        let total = if bounce { output_sec * 2.0 } else { output_sec };
+        self.run(kind, &ffmpeg, args, source, &output, speed, total, &note)
     }
 
     /// 剪輯：剪頭尾、刪除中間片段、裁切畫面，另存成 *_cut.mp4
@@ -297,7 +305,9 @@ impl Exporter {
             && spec.vertical.is_none()
             && spec.intro.is_none()
             && spec.outro.is_none()
-            && spec.music.is_none();
+            && spec.music.is_none()
+            && spec.look.is_default()
+            && spec.stamp.is_none();
         if unchanged {
             return Err(Error::config(tr!("沒有任何剪輯、裁切或標註", "There are no edits, crops or annotations")));
         }
@@ -461,9 +471,35 @@ impl Exporter {
                 (Some(crate::args::Extras { intro, outro, size: (w, h), main_len: length, music, voice }), Some(dir))
             }
         };
+        // 日期時間浮水印：字型與文字檔放在暫存資料夾（FFmpeg 在那裡執行，濾鏡裡不用寫 Windows 路徑）
+        let (stamp, temp) = match (&spec.stamp, info.width, info.height) {
+            (Some(st), Some(w), Some(h)) => {
+                let Some(font) = crate::look::stamp_font() else {
+                    remove_dir(&temp);
+                    return Err(Error::config(tr!("找不到浮水印用的字型", "Couldn't find a font for the date and time")));
+                };
+                let dir = temp.unwrap_or_else(|| std::env::temp_dir().join(format!("ScreenRecorder-overlays-{}-{}", std::process::id(), crate::paths::now_ms())));
+                let written = std::fs::create_dir_all(&dir)
+                    .and_then(|_| std::fs::copy(&font, dir.join("stamp.ttf")).map(|_| ()))
+                    .and_then(|_| std::fs::write(dir.join("stamp.txt"), crate::look::stamp_text(st.start_ms)));
+                if let Err(e) = written {
+                    let _ = std::fs::remove_dir_all(&dir);
+                    return Err(Error::config(e.to_string()));
+                }
+                // 跟著游標的直式影片會自己裁切，位置用整個畫面
+                let area = crop.unwrap_or(crate::types::Rect { x: 0, y: 0, width: w as i32, height: h as i32 });
+                (Some(crate::look::stamp_filter(st, "stamp.ttf", "stamp.txt", area)), Some(dir))
+            }
+            (Some(_), ..) => {
+                remove_dir(&temp);
+                return Err(Error::config(tr!("無法讀取影片尺寸，不能加上日期時間", "Couldn't read the video size, so the date and time can't be added")));
+            }
+            (None, ..) => (None, temp),
+        };
+        let more = crate::args::CutMore { look: spec.look.filter(), stamp };
         // 分別調整系統聲音與麥克風：只有分軌錄影（3 條音軌）才做得到
         let audio = crate::edit::AudioFx { tracks: spec.audio.tracks.filter(|_| info.audio_tracks >= 3), ..spec.audio };
-        let mut args = cut_args(
+        let mut args = crate::args::cut_args_more(
             source,
             &output.display().to_string(),
             &keep,
@@ -479,6 +515,7 @@ impl Exporter {
             vertical.as_ref(),
             extras.as_ref(),
             spec.fade_cuts,
+            &more,
         )?;
         // 章節換成剪輯後的時間（刪掉的片段裡的章節改從下一段開始）；剪輯視窗改過標記時用它給的；有片頭時往後移
         let chapters = chapters.unwrap_or_else(|| info.chapters.clone());
@@ -505,9 +542,11 @@ impl Exporter {
             + if extras.as_ref().and_then(|x| x.voice.as_ref()).is_some_and(|v| !v.clips.is_empty()) { "，旁白" } else { "" }
             + if extras.as_ref().and_then(|x| x.voice.as_ref()).is_some_and(|v| v.clicks.is_some()) { "，點擊音效" } else { "" }
             + if spec.fade_cuts { "，接縫淡入淡出" } else { "" }
+            + if more.look.is_some() { "，調色" } else { "" }
+            + if more.stamp.is_some() { "，日期時間" } else { "" }
             + &if whole > 1.0 { format!("，整支 {} 倍速", crate::format::speed_label(whole)) } else { String::new() };
         let follow = matches!(vertical, Some(VerticalInput::Follow { .. }));
-        let cwd = (cursor.is_some() || follow).then(|| temp.clone()).flatten();
+        let cwd = (cursor.is_some() || follow || more.stamp.is_some()).then(|| temp.clone()).flatten();
         let finish = Finish { cleanup: temp, replace: target.map(PathBuf::from), on_saved, cwd };
         self.run_with_cleanup(ExportKind::Cut, &ffmpeg, args, source, &output, 1.0, length, &note, finish)
     }
@@ -809,7 +848,7 @@ fn write_overlays(list: &[Overlay], vw: i32, vh: i32, duration: f64, dir: &Path)
                 std::fs::write(&path, bytes)?;
                 let x = (o.x.round() as i32).clamp(-vw, vw);
                 let y = (o.y.round() as i32).clamp(-vh, vh);
-                out.push(OverlayInput::Image { path: path.display().to_string(), x, y, start, end });
+                out.push(OverlayInput::Image { path: path.display().to_string(), x, y, start, end, anim: o.anim.min(2), size: (o.w.round() as i32, o.h.round() as i32) });
             }
             OverlayKind::Blur | OverlayKind::Mosaic => {
                 // 限制在畫面內、取偶數（4:2:0 的裁切需要），太小的略過
@@ -1067,7 +1106,7 @@ mod overlay_tests {
 
     #[allow(clippy::too_many_arguments)]
     fn ov(kind: OverlayKind, x: f64, y: f64, w: f64, h: f64, start: f64, end: f64, png: Option<Vec<u8>>) -> Overlay {
-        Overlay { kind, x, y, w, h, start, end, png, mask: None, invert: false }
+        Overlay { kind, x, y, w, h, start, end, png, mask: None, invert: false, anim: 0 }
     }
 
     #[test]
@@ -1090,7 +1129,7 @@ mod overlay_tests {
         let out = write_overlays(&list, 1920, 1080, 10.0, dir.path()).unwrap();
         assert_eq!(out.len(), 3);
         match &out[0] {
-            OverlayInput::Image { path, x, y, start, end } => {
+            OverlayInput::Image { path, x, y, start, end, .. } => {
                 assert_eq!((*x, *y, *start, *end), (10, -5, 1.0, 3.0));
                 assert_eq!(std::fs::read(path).unwrap(), png);
             }

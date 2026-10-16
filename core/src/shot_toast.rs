@@ -104,6 +104,7 @@ fn text_at(pm: &mut Pixmap, s: &str, cx: f32, cy: f32, size: f32, color: &str, l
         invert: false,
         rot: 0.0,
         pts: vec![],
+        anim: 0,
     };
     annotate::measure(&mut a);
     a.x = left.map(|l| l as f64).unwrap_or(cx as f64 - a.w / 2.0);

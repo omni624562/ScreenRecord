@@ -422,7 +422,7 @@ fn local_date(mtime_ms: f64) -> String {
 }
 
 /// 檔名裡的錄影時間（毫秒）：Rec_2026-10-06_08-17-18…、Shot_…；沒有時 None
-fn name_time_ms(name: &str) -> Option<f64> {
+pub fn name_time_ms(name: &str) -> Option<f64> {
     static RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(\d{4}-\d{2}-\d{2})_(\d{2})-(\d{2})-(\d{2})").unwrap());
     use chrono::TimeZone;
     RE.captures(name)
