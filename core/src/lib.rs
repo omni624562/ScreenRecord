@@ -53,6 +53,7 @@ pub mod library;
 pub mod llhook_win;
 pub mod log;
 pub mod longshot;
+pub mod meeting;
 pub mod meter;
 pub mod monitors;
 pub mod naming;
