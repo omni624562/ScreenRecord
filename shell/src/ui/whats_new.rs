@@ -40,8 +40,8 @@ fn items(_app: &UiApp) -> Vec<(String, String, Try)> {
     vec![(
         tr!("變得更精簡", "Leaner and simpler").into(),
         tr!(
-            "拿掉了比較少人用的文字轉語音旁白、背景音樂、開會時提醒錄影、傳到手機；全部截圖的「內容、常見詞、顏色」收進「更多分類」。自己錄的旁白、點擊音效都還在。",
-            "Removed rarely used features: text-to-speech narration, background music, meeting reminders and Send to phone. Content, common words and colour in All screenshots are now under “More categories”. Recorded narration and click sounds are still here."
+            "拿掉了比較少人用的文字轉語音旁白、背景音樂、開會時提醒錄影、傳到手機、讀取 QR 碼、取色器、尺規、自動匯入資料夾；全部截圖的「內容、常見詞、顏色」收進「更多分類」。自己錄的旁白、點擊音效、手動匯入影片都還在。",
+            "Removed rarely used features: text-to-speech narration, background music, meeting reminders, Send to phone, QR code reading, the color picker, the ruler and auto-import folders. Content, common words and colour in All screenshots are now under “More categories”. Recorded narration, click sounds and manual import are still here."
         )
         .into(),
         Try::None,

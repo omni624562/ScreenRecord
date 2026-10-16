@@ -373,7 +373,6 @@ enum Act {
     Delete,
     Ocr,
     Pin,
-    Qr,
     /// 影片：目前這一格存成截圖
     Grab,
     /// 影片：從目前這一格做封面
@@ -411,12 +410,6 @@ fn head_buttons(app: &UiApp, e: &LibraryEntry, image: bool, audio: bool) -> Vec<
                 Some(Icon::Copy),
                 tr!("複製到剪貼簿（Ctrl+C；可直接貼到 LINE、Word、信件）", "Copy to clipboard (Ctrl+C; paste it straight into LINE, Word or an email)"),
                 || Act::Copy,
-            ),
-            b(
-                tr!("讀取 QR 碼", "Read QR code"),
-                None,
-                tr!("找出圖裡的 QR 碼，讀出內容（網址可以直接開啟）", "Find a QR code in the image and read its content (links can be opened directly)"),
-                || Act::Qr,
             ),
             b(tr!("文字辨識", "OCR"), None, tr!("把圖裡的文字轉成可以複製的文字", "Text recognition (OCR): turn the text in the image into text you can copy"), || Act::Ocr),
             b(
@@ -806,13 +799,6 @@ fn run_act(app: &mut UiApp, act: Act) {
                     app.toast_file(trf!("已擷取這一格：{}{copied}", "Frame saved: {}{copied}", super::dialogs::file_name(&shot.path)), &shot.path);
                     app.shots_changed();
                 }
-                Err(e) => app.toast(e.message().to_string(), true),
-            });
-        }
-        Act::Qr => {
-            let Some(path) = app.viewer.as_ref().map(|v| v.cur().media.path.clone()) else { return };
-            app.spawn(async move { screenrecorder_core::actions::shot_qr(&path).await }, |app, r| match r {
-                Ok(list) => app.show_qr(list),
                 Err(e) => app.toast(e.message().to_string(), true),
             });
         }

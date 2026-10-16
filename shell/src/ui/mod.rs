@@ -439,21 +439,6 @@ impl UiApp {
         });
     }
 
-    /// 顯示讀到的 QR 碼內容（複製到剪貼簿；是網址時可以直接開啟）
-    pub fn show_qr(&mut self, list: Vec<String>) {
-        if list.is_empty() {
-            return self.toast(tr!("沒有找到 QR 碼（框大一點、或把畫面放大再試試）", "No QR code found (try selecting a larger area or zooming in)"), true);
-        }
-        let text = list.join("\n");
-        self.ctx.copy_text(text.clone());
-        let url = list.iter().find(|t| screenrecorder_core::qr::is_url(t)).cloned();
-        let msg = trf!("{text}\n\n（已複製到剪貼簿）", "{text}\n\n(Copied to the clipboard)");
-        self.ask = Some(match url {
-            Some(u) => dialogs::Ask::confirm(tr!("QR 碼內容", "QR code content"), msg, tr!("開啟連結", "Open link"), move |_, _| screenrecorder_core::desktop::open_with_explorer(&u, false)),
-            None => dialogs::Ask::confirm(tr!("QR 碼內容", "QR code content"), msg, tr!("好", "OK"), |_, _| {}),
-        });
-    }
-
     /// 只抓文字的結果（core 已經複製到剪貼簿）：提示幾個字，可以打開來看
     pub fn show_grabbed_text(&mut self, l: screenrecorder_core::ocr::Layout) {
         if l.text.trim().is_empty() {

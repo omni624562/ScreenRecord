@@ -1,8 +1,8 @@
-//! 框選畫面上的小工具：放大鏡與取色（色碼）、尺規（量距離），以及框選後調整範圍（把手）與工具列的位置。
+//! 框選畫面上的小工具：放大鏡（顯示色碼與座標），以及框選後調整範圍（把手）與工具列的位置。
 //! 這裡只有計算與繪製（可以在任何平台測試），Windows 的框選視窗（snip_win.rs）與介面的框選視窗（shell 的 snip.rs）負責顯示與操作。
 
 use crate::annotate;
-use crate::{tr, trf};
+use crate::tr;
 use tiny_skia::{Color, Paint, Pixmap, Rect, Transform};
 
 /// 放大鏡顯示游標周圍幾格（奇數，正中間是游標所在的像素）
@@ -101,43 +101,6 @@ fn text(pm: &mut Pixmap, s: &str, x: f32, cy: f32, size: f32, centered: bool) {
     a.x = if centered { x as f64 - a.w / 2.0 } else { x as f64 };
     a.y = cy as f64 - a.h / 2.0;
     annotate::draw(pm, &a, Transform::identity());
-}
-
-/// 尺規：按住 Shift 時鎖定成水平、垂直或 45 度
-pub fn snap((ax, ay): (i32, i32), (bx, by): (i32, i32)) -> (i32, i32) {
-    let (dx, dy) = (bx - ax, by - ay);
-    let (adx, ady) = (dx.abs(), dy.abs());
-    if adx * 2 < ady {
-        (ax, by)
-    } else if ady * 2 < adx {
-        (bx, ay)
-    } else {
-        let d = adx.max(ady);
-        (ax + d * dx.signum(), ay + d * dy.signum())
-    }
-}
-
-/// 尺規的說明：320 px（寬 300、高 110）・20°
-pub fn ruler_text((ax, ay): (i32, i32), (bx, by): (i32, i32)) -> String {
-    let (dx, dy) = (bx - ax, by - ay);
-    let len = ((dx * dx + dy * dy) as f64).sqrt();
-    // 角度：向右為 0、逆時針為正（和量角器一樣）
-    let deg = (-(dy as f64)).atan2(dx as f64).to_degrees();
-    let mut s = format!("{} px", len.round() as i64);
-    if dx != 0 && dy != 0 {
-        s.push_str(&trf!("（寬 {}、高 {}）", " (W {}, H {})", dx.abs(), dy.abs()));
-    }
-    s.push_str(&trf!("・{}°", " · {}°", deg.round() as i64));
-    s
-}
-
-/// 量好的距離畫成線的兩端小橫槓（垂直於線）：回傳兩條短線的端點
-pub fn ruler_ticks((ax, ay): (i32, i32), (bx, by): (i32, i32), len: f64) -> [((i32, i32), (i32, i32)); 2] {
-    let (dx, dy) = ((bx - ax) as f64, (by - ay) as f64);
-    let d = dx.hypot(dy).max(1e-9);
-    let (nx, ny) = (-dy / d * len, dx / d * len);
-    let tick = |x: i32, y: i32| (((x as f64 - nx).round() as i32, (y as f64 - ny).round() as i32), ((x as f64 + nx).round() as i32, (y as f64 + ny).round() as i32));
-    [tick(ax, ay), tick(bx, by)]
 }
 
 // ───────────── 框選後調整範圍、工具列 ─────────────
@@ -341,18 +304,6 @@ mod tests {
         // 資訊列的顏色方塊是游標下的顏色（藍）
         let c = pm.pixel(15, 135).unwrap();
         assert_eq!((c.red(), c.blue()), (0, 255));
-    }
-
-    #[test]
-    fn ruler() {
-        assert_eq!(snap((0, 0), (100, 10)), (100, 0));
-        assert_eq!(snap((0, 0), (-8, 90)), (0, 90));
-        assert_eq!(snap((0, 0), (40, -50)), (50, -50));
-        assert_eq!(ruler_text((0, 0), (300, 0)), "300 px・0°");
-        assert_eq!(ruler_text((0, 0), (0, -120)), "120 px・90°");
-        assert_eq!(ruler_text((10, 10), (310, 120)), "320 px（寬 300、高 110）・-20°");
-        let [(a, b), _] = ruler_ticks((0, 0), (100, 0), 6.0);
-        assert_eq!((a, b), ((0, -6), (0, 6)));
     }
 
     #[test]

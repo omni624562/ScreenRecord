@@ -456,9 +456,6 @@ fn show_menu() {
             Menu::sep(shot);
             m.add(shot, tr!("小工具", "Tools"), TrayCommand::Open, true, false);
             m.add(shot, tr!("只抓文字(&X)…", "Grab te&xt…"), TrayCommand::ScreenshotText, false, false);
-            m.add(shot, tr!("讀取 QR 碼(&Q)…", "Read &QR code…"), TrayCommand::ScreenshotQr, false, false);
-            m.add(shot, tr!("取色器(&C)…", "&Color picker…"), TrayCommand::ScreenColor, false, false);
-            m.add(shot, tr!("尺規（量距離）(&R)…", "&Ruler (measure distance)…"), TrayCommand::ScreenRuler, false, false);
             m.add(shot, &trf!("螢幕畫筆(&N){}", "Screen pe&n{}", tab(&st.keys[5])), TrayCommand::Pen, false, crate::screen_pen_win::active());
             Menu::sub(root, tr!("截圖(&T)", "Screensho&t"), shot, !st.can_shot);
         }
