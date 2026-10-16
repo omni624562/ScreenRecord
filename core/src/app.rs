@@ -604,6 +604,85 @@ impl App {
         Ok(path.display().to_string())
     }
 
+    /// 做成影片（MP4）：每一步一張畫面（截圖＋說明）至少顯示 secs 秒、淡入淡出；speak = 用 Windows 內建的語音唸出說明。
+    /// 存成 儲存資料夾/文件名稱.mp4（已經有同名檔案時加上編號），成功後刪掉暫放的截圖
+    pub async fn steps_build_video(&self, title: String, steps: Vec<crate::steps::Step>, secs: f64, speak: bool) -> crate::Result<String> {
+        let draft = self.lock().steps_draft.clone().ok_or_else(|| crate::Error::config(tr!("沒有要整理的步驟", "There are no steps to organize")))?;
+        if steps.is_empty() {
+            return Err(crate::Error::config(tr!("沒有要整理的步驟", "There are no steps to organize")));
+        }
+        let ffmpeg = self.ffmpeg_path().ok_or_else(|| crate::Error::config(tr!("找不到 FFmpeg，不能做成影片", "FFmpeg wasn't found, so the video can't be made")))?;
+        let tmp = std::env::temp_dir().join(format!("ScreenRecorder-steps-{}-{}", std::process::id(), crate::paths::now_ms()));
+        let title = if title.trim().is_empty() { draft.title() } else { title.trim().to_string() };
+        let (d, list, t) = (draft.clone(), steps.clone(), title.clone());
+        let t2 = tmp.clone();
+        // 畫面與語音（背景執行緒）
+        let prepared = tokio::task::spawn_blocking(move || -> Result<crate::steps::VideoParts, String> {
+            std::fs::create_dir_all(&t2).map_err(|e| e.to_string())?;
+            let (w, h) = crate::steps::VIDEO_SIZE;
+            let mut frames = vec![];
+            let mut voices = vec![];
+            // 第一張是標題
+            let subtitle = if t.contains(&d.date) { String::new() } else { d.date.clone() };
+            let card = crate::cards::TitleCard { subtitle, ..crate::cards::TitleCard::new(&t) };
+            let png = t2.join("title.png");
+            crate::cards::save(&card, w, h, &png)?;
+            frames.push((png.display().to_string(), 2.5));
+            voices.push(None);
+            for (i, s) in list.iter().enumerate() {
+                let text = crate::steps::caption(&s.window);
+                let png = t2.join(format!("frame_{i:03}.png"));
+                crate::steps::video_frame(&d.image_path(s), i + 1, &text, w, h)?.save_png(&png).map_err(|e| e.to_string())?;
+                let voice = if speak {
+                    let wav = t2.join(format!("voice_{i:03}.wav"));
+                    let said = trf!("步驟 {}，{}", "Step {}. {}", i + 1, text);
+                    match crate::narration::speak_to_file(&said, "", 1.0, &wav) {
+                        Ok(ms) => Some((wav.display().to_string(), ms)),
+                        Err(e) => return Err(e),
+                    }
+                } else {
+                    None
+                };
+                frames.push((png.display().to_string(), crate::steps::step_secs(secs, voice.as_ref().map(|v| v.1))));
+                voices.push(voice.map(|v| v.0));
+            }
+            Ok((frames, voices))
+        })
+        .await
+        .map_err(|e| crate::Error::other(e.to_string()))?;
+        let (frames, voices) = match prepared {
+            Ok(v) => v,
+            Err(e) => {
+                let _ = std::fs::remove_dir_all(&tmp);
+                return Err(crate::Error::other(e));
+            }
+        };
+        let mut path = draft.dir.join(format!("{}.mp4", draft.name));
+        let mut n = 2;
+        while path.exists() {
+            path = draft.dir.join(format!("{} ({n}).mp4", draft.name));
+            n += 1;
+        }
+        let out = crate::process::command(&ffmpeg).args(crate::steps::video_args(&frames, &voices, &path.display().to_string())).output().await;
+        let _ = std::fs::remove_dir_all(&tmp);
+        match out {
+            Ok(o) if o.status.success() => {}
+            Ok(o) => {
+                let _ = std::fs::remove_file(&path);
+                let err = String::from_utf8_lossy(&o.stderr).lines().last().unwrap_or_default().to_string();
+                return Err(crate::Error::other(trf!("無法做成影片：{err}", "Couldn't make the video: {err}")));
+            }
+            Err(e) => return Err(crate::Error::other(e.to_string())),
+        }
+        draft.discard();
+        let mut st = self.lock();
+        if st.steps_draft.as_ref() == Some(&draft) {
+            st.steps_draft = None;
+        }
+        crate::info!("[截圖] 步驟截圖做成影片：{} 步，{}", steps.len(), path.display());
+        Ok(path.display().to_string())
+    }
+
     /// 放棄整理中的步驟（刪掉截好的圖）
     pub fn steps_discard(&self) {
         if let Some(d) = self.lock().steps_draft.take() {

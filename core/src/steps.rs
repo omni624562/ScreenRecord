@@ -190,6 +190,8 @@ pub enum DocFormat {
     Word,
     /// PowerPoint（.pptx）：一步一張投影片
     PowerPoint,
+    /// 影片（.mp4）：一步一張畫面加上說明，可以唸出來（App::steps_build_video）
+    Video,
 }
 
 impl DocFormat {
@@ -198,6 +200,7 @@ impl DocFormat {
             DocFormat::Html => "html",
             DocFormat::Word => "docx",
             DocFormat::PowerPoint => "pptx",
+            DocFormat::Video => "mp4",
         }
     }
 }
@@ -231,6 +234,7 @@ pub fn build_as(draft: &Draft, title: &str, steps: &[Step], format: DocFormat) -
             let srcs = steps.iter().map(|s| data_uri(&draft.image_path(s)).map_err(|e| trf!("無法讀取「{}」：{e}", "Couldn't read “{}”: {e}", s.image))).collect::<Result<Vec<_>, _>>()?;
             html(&title, &draft.date, steps, &srcs).into_bytes()
         }
+        DocFormat::Video => return Err(tr!("影片要用 App::steps_build_video 做", "Videos are made with steps_build_video").into()),
         _ => office(draft, &title, steps, format)?,
     };
     let ext = format.ext();
@@ -249,6 +253,90 @@ pub fn build_as(draft: &Draft, title: &str, steps: &[Step], format: DocFormat) -
     Ok(path)
 }
 
+// ───────────── 做成影片 ─────────────
+
+/// 影片每一步至少顯示幾秒
+pub const VIDEO_SECS: [f64; 4] = [2.0, 3.0, 5.0, 8.0];
+/// 影片的大小與每秒張數
+pub const VIDEO_SIZE: (u32, u32) = (1920, 1080);
+const VIDEO_FPS: f64 = 30.0;
+/// 淡入淡出幾秒
+const VIDEO_FADE: f64 = 0.4;
+
+/// 影片的一格畫面：深色背景，截圖放在上方（縮放到放得下），下方是「步驟 N：說明」
+pub fn video_frame(image: &Path, n: usize, text: &str, w: u32, h: u32) -> Result<tiny_skia::Pixmap, String> {
+    use tiny_skia::{Color, FilterQuality, Pixmap, PixmapPaint, Transform};
+    let mut pm = Pixmap::new(w, h).ok_or("frame")?;
+    pm.fill(Color::from_rgba8(24, 26, 31, 255));
+    let shot = Pixmap::load_png(image).map_err(|e| trf!("無法讀取截圖：{e}", "Couldn't read the screenshot: {e}"))?;
+    let (wf, hf) = (w as f32, h as f32);
+    let bar = hf * 0.16;
+    let (aw, ah) = (wf * 0.92, hf - bar - hf * 0.06);
+    let k = (aw / shot.width() as f32).min(ah / shot.height() as f32).min(2.0);
+    let (sw, sh) = (shot.width() as f32 * k, shot.height() as f32 * k);
+    let (x, y) = ((wf - sw) / 2.0, hf * 0.04 + (ah - sh) / 2.0);
+    let paint = PixmapPaint { quality: FilterQuality::Bicubic, ..Default::default() };
+    pm.draw_pixmap(0, 0, shot.as_ref(), &paint, Transform::from_row(k, 0.0, 0.0, k, x, y), None);
+    // 說明（太長時縮小）
+    let label = trf!("步驟 {n}：{}", "Step {n}: {}", text.trim());
+    let size = (hf * 0.05) as f64;
+    let mut a = crate::annotate::plain_text(&crate::subtitles::wrap_lines(&label), size, "#ffffff");
+    let max_w = wf as f64 * 0.9;
+    if a.w > max_w {
+        a = crate::annotate::plain_text(&crate::subtitles::wrap_lines(&label), (size * max_w / a.w).max(10.0), "#ffffff");
+    }
+    a.x = ((wf as f64 - a.w) / 2.0).round();
+    a.y = ((hf - bar) as f64 + (bar as f64 - a.h) / 2.0).round();
+    crate::annotate::draw(&mut pm, &a, Transform::identity());
+    Ok(pm)
+}
+
+/// 做影片的材料：(畫面 PNG, 秒數) 與每一步的語音 WAV
+pub type VideoParts = (Vec<(String, f64)>, Vec<Option<String>>);
+
+/// 一步要顯示幾秒：至少 min_secs，有語音時唸完再停一下
+pub fn step_secs(min_secs: f64, voice_ms: Option<u64>) -> f64 {
+    voice_ms.map_or(min_secs, |ms| min_secs.max(ms as f64 / 1000.0 + 0.8))
+}
+
+/// 接成影片的 FFmpeg 參數：frames = (畫面 PNG, 秒數)，voices = 每一步的語音 WAV（沒有時 None）；
+/// 每一步淡入淡出，有任何語音時加上聲音（沒有語音的步驟是靜音）
+pub fn video_args(frames: &[(String, f64)], voices: &[Option<String>], out: &str) -> Vec<String> {
+    use crate::format::num;
+    let mut a: Vec<String> = ["-hide_banner", "-nostats", "-loglevel", "error"].iter().map(|s| s.to_string()).collect();
+    for (png, secs) in frames {
+        a.extend(["-loop".into(), "1".into(), "-framerate".into(), num(VIDEO_FPS), "-t".into(), num(*secs), "-i".into(), png.clone()]);
+    }
+    let audio = voices.iter().any(Option::is_some);
+    let mut vi = frames.len();
+    let mut g = vec![];
+    let mut pairs = String::new();
+    for (i, (_, secs)) in frames.iter().enumerate() {
+        let d = VIDEO_FADE.min(secs / 4.0);
+        g.push(format!("[{i}:v]format=yuv420p,fade=t=in:st=0:d={},fade=t=out:st={}:d={}[v{i}]", num(d), num(secs - d), num(d)));
+        pairs.push_str(&format!("[v{i}]"));
+        if audio {
+            match voices.get(i).cloned().flatten() {
+                Some(w) => {
+                    a.extend(["-i".into(), w]);
+                    g.push(format!("[{vi}:a]aformat=sample_rates=48000:channel_layouts=stereo,adelay=300|300,apad,atrim=0:{}[a{i}]", num(*secs)));
+                    vi += 1;
+                }
+                None => g.push(format!("anullsrc=r=48000:cl=stereo,atrim=0:{}[a{i}]", num(*secs))),
+            }
+            pairs.push_str(&format!("[a{i}]"));
+        }
+    }
+    g.push(format!("{pairs}concat=n={}:v=1:a={}[vout]{}", frames.len(), u8::from(audio), if audio { "[aout]" } else { "" }));
+    a.extend(["-filter_complex".into(), g.join(";"), "-map".into(), "[vout]".into()]);
+    if audio {
+        a.extend(["-map".into(), "[aout]".into(), "-c:a".into(), "aac".into(), "-b:a".into(), "160k".into()]);
+    }
+    a.extend(["-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p", "-r", "30", "-movflags", "+faststart", "-y"].iter().map(|s| s.to_string()));
+    a.push(out.into());
+    a
+}
+
 /// 整理步驟時的小圖（未預乘 RGBA）：長邊縮到 max 以內
 pub fn thumb(path: &Path, max: u32) -> Option<(u32, u32, Vec<u8>)> {
     let img = image::open(path).ok()?.thumbnail(max, max).to_rgba8();
@@ -259,6 +347,37 @@ pub fn thumb(path: &Path, max: u32) -> Option<(u32, u32, Vec<u8>)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn makes_a_video_in_ffmpeg() {
+        let dir = tempfile::tempdir().unwrap();
+        let shot = dir.path().join("s.png");
+        let mut pm = tiny_skia::Pixmap::new(800, 500).unwrap();
+        pm.fill(tiny_skia::Color::from_rgba8(240, 240, 240, 255));
+        pm.save_png(&shot).unwrap();
+        let f = video_frame(&shot, 1, "在「記事本」點一下", 640, 360).unwrap();
+        // 上方是截圖（淺色）、下方說明列是深色背景
+        assert!(f.pixel(320, 150).unwrap().red() > 200 && f.pixel(5, 355).unwrap().red() < 60);
+        assert_eq!(step_secs(3.0, None), 3.0);
+        assert_eq!(step_secs(3.0, Some(4000)), 4.8);
+        let Some(ffmpeg) = std::env::var_os("PATH").and_then(|p| std::env::split_paths(&p).map(|d| d.join("ffmpeg")).find(|p| p.is_file())) else { return };
+        let (a, b) = (dir.path().join("f1.png"), dir.path().join("f2.png"));
+        f.save_png(&a).unwrap();
+        f.save_png(&b).unwrap();
+        let wav = dir.path().join("v.wav");
+        std::fs::write(&wav, crate::narration::wav_mono16(&[0.2; 24000], 48000)).unwrap();
+        let out = dir.path().join("out.mp4");
+        let frames = vec![(a.display().to_string(), 2.0), (b.display().to_string(), 1.5)];
+        for (voices, audio) in [(vec![Some(wav.display().to_string()), None], true), (vec![None, None], false)] {
+            let args = video_args(&frames, &voices, out.to_str().unwrap());
+            let r = std::process::Command::new(&ffmpeg).args(&args).output().unwrap();
+            assert!(r.status.success(), "{}", String::from_utf8_lossy(&r.stderr));
+            let probe = std::process::Command::new(&ffmpeg).args(["-hide_banner", "-i", out.to_str().unwrap()]).output().unwrap();
+            let info = crate::args::parse_media_info(&String::from_utf8_lossy(&probe.stderr));
+            assert!((info.duration_sec.unwrap() - 3.5).abs() < 0.15, "{info:?}");
+            assert_eq!(info.has_audio, audio);
+        }
+    }
 
     #[test]
     fn builds_the_document() {
