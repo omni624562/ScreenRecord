@@ -697,7 +697,7 @@ impl Editor {
             ann_styles: app.s.ann_styles.clone(),
             subs: None,
             subs_lang: 0,
-            subs_model: 0,
+            subs_model: screenrecorder_core::subtitles::MODELS.iter().rposition(screenrecorder_core::subtitles::model_ready).unwrap_or(0),
             subs_out: 0,
             ffmpeg_whisper: app.env.ffmpeg.has_whisper,
             finding_pii: false,
