@@ -53,6 +53,7 @@ fn record_config() -> RecordConfig {
         audio: AudioConfig::default(),
         encoder: None,
         codec: Default::default(),
+        auto_pause_sec: 0,
         countdown_sec: None,
         hide_ui: None,
         show_clicks: false,

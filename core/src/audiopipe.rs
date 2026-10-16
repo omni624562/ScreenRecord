@@ -17,7 +17,7 @@ use crate::{tr, trf};
 use std::collections::VecDeque;
 use std::io::{ErrorKind, Write};
 use std::net::{TcpListener, TcpStream};
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::mpsc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -520,6 +520,14 @@ enum Cmd {
     Close,
 }
 
+/// 這段聲音（f32le）裡有沒有不算安靜的聲音：超過 −30 dBFS（一般講話、播放影片；背景雜音不算）
+pub fn loud(bytes: &[u8]) -> bool {
+    bytes.as_chunks::<4>().0.iter().any(|b| f32::from_le_bytes(*b).abs() > LOUD)
+}
+
+/// 「有聲音」的門檻（−30 dBFS）
+pub const LOUD: f32 = 0.0316;
+
 /// 錄一個分段期間的聲音管線
 pub struct AudioPipe {
     port: u16,
@@ -531,6 +539,8 @@ pub struct AudioPipe {
     silent: Arc<AtomicU8>,
     /// 要錄的來源
     sources: u8,
+    /// 最後一次有聲音（不是安靜的）的時間（Unix 毫秒；沒動靜時自動暫停用）
+    last_sound: Arc<AtomicU64>,
     tx: mpsc::Sender<Cmd>,
     thread: std::sync::Mutex<Option<std::thread::JoinHandle<()>>>,
 }
@@ -550,6 +560,8 @@ impl AudioPipe {
         let (desc_tx, desc_rx) = mpsc::channel::<String>();
         let flag = synced.clone();
         let silent_flag = silent.clone();
+        let last_sound = Arc::new(AtomicU64::new(0));
+        let sound_at = last_sound.clone();
         let thread = std::thread::Builder::new().name("audio".into()).spawn(move || {
             let mut tl = Timeline::with_tracks(&specs, opener, log.clone(), now_100ns(), separate);
             silent_flag.store(tl.silent_mask(), Ordering::Relaxed);
@@ -570,6 +582,9 @@ impl AudioPipe {
                     Err(mpsc::RecvTimeoutError::Timeout) => {
                         next = Instant::now() + TICK;
                         let bytes = tl.tick(now_100ns());
+                        if loud(bytes) {
+                            sound_at.store(crate::paths::now_ms(), Ordering::Relaxed);
+                        }
                         out.write(bytes);
                         flag.store(tl.synced(), Ordering::Relaxed);
                         silent_flag.store(tl.silent_mask(), Ordering::Relaxed);
@@ -584,7 +599,7 @@ impl AudioPipe {
         })?;
         // 開啟音訊裝置卡住時不要一直等（錄影的開始、暫停、停止都在等這裡）：裝置稍後好了照樣會送聲音
         let desc = desc_rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap_or_else(|_| tr!("音訊裝置沒有回應", "Audio device isn't responding").to_string());
-        Ok(AudioPipe { port, channels, desc, synced, silent, sources, tx, thread: std::sync::Mutex::new(Some(thread)) })
+        Ok(AudioPipe { port, channels, desc, synced, silent, sources, last_sound, tx, thread: std::sync::Mutex::new(Some(thread)) })
     }
 
     pub fn port(&self) -> u16 {
@@ -610,6 +625,11 @@ impl AudioPipe {
     /// 目前以靜音代替的來源（SILENT_SYSTEM、SILENT_MIC）
     pub fn silent(&self) -> u8 {
         self.silent.load(Ordering::Relaxed)
+    }
+
+    /// 最後一次有聲音的時間（Unix 毫秒；0 = 還沒有）
+    pub fn last_sound_ms(&self) -> u64 {
+        self.last_sound.load(Ordering::Relaxed)
     }
 
     /// 要錄的來源（SILENT_SYSTEM、SILENT_MIC 的組合）

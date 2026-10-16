@@ -1177,11 +1177,15 @@ fn rec_panel(app: &mut UiApp, ui: &mut Ui) {
                 RecorderState::Idle => (tr!("待命", "Ready"), Tone::Plain),
                 RecorderState::Countdown => (tr!("倒數中", "Countdown"), Tone::Warn),
                 RecorderState::Recording => (tr!("● 錄影中", "● Recording"), Tone::Bad),
+                RecorderState::Paused if r.auto_paused => (tr!("沒動靜，已自動暫停", "Idle, paused"), Tone::Warn),
                 RecorderState::Paused => (tr!("已暫停", "Paused"), Tone::Warn),
                 RecorderState::Stopping => (tr!("處理中", "Processing"), Tone::Accent),
             };
             chip(ui, text, tone, false);
             let mut busy = r.busy.clone().unwrap_or_default();
+            if busy.is_empty() && r.auto_paused {
+                busy = tr!("動一下滑鼠或按鍵就繼續", "Move the mouse or press a key to continue").into();
+            }
             if busy.is_empty() && r.max_ms > 0 && active {
                 busy = trf!("剩餘 {}", "{} left", clock((r.max_ms as f64 - live_recorded_ms(app)).max(0.0)));
             }

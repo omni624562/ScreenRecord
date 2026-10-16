@@ -106,6 +106,9 @@ pub fn record_summary(app: &UiApp) -> Vec<String> {
     if s.max_minutes > 0.0 {
         v.push(trf!("最長 {}", "Max {}", human_duration(s.max_minutes * 60.0)));
     }
+    if s.auto_pause_sec > 0 {
+        v.push(trf!("沒動靜 {} 自動暫停", "Auto-pause after {} idle", human_duration(s.auto_pause_sec as f64)));
+    }
     v
 }
 
@@ -555,6 +558,23 @@ fn record_page(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
         }
     });
     form_hint(ui, tr!("時間到自動停止並儲存。", "Recording stops and saves automatically when time is up."), p.muted);
+    form_row(ui, tr!("沒動靜時", "When idle"), |ui| {
+        let mut sec = app.s.auto_pause_sec;
+        let label = |s: u32| if s == 0 { tr!("繼續錄", "Keep recording").to_string() } else { trf!("{} 後自動暫停", "Pause after {}", human_duration(s as f64)) };
+        let items: Vec<(u32, String, bool)> = super::settings::AUTO_PAUSE.iter().map(|s| (*s, label(*s), true)).collect();
+        if form_combo(ui, "autoPause", FORM_CTRL_W, &mut sec, &items) {
+            app.s.auto_pause_sec = sec;
+            app.save_settings();
+        }
+    });
+    form_hint(
+        ui,
+        tr!(
+            "滑鼠、鍵盤都沒動、也沒有聲音時自動暫停，動一下滑鼠或按鍵就接著錄，影片裡不會有一大段空白。只錄聲音、回溯錄影不適用。",
+            "Pauses when the mouse and keyboard are idle and there's no sound; move the mouse or press a key to continue, so the video has no long blank stretches. Not used for audio-only or the replay buffer."
+        ),
+        p.muted,
+    );
     form_row(ui, tr!("操作視窗", "Main window"), |ui| {
         let mut hide = app.s.hide_ui;
         if switch(ui, &mut hide, tr!("開始錄影時縮小", "Minimize when recording starts"), true)
