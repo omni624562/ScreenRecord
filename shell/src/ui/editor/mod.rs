@@ -100,12 +100,21 @@ struct Extras {
     /// 保留的片段的順序（各片段開頭的毫秒）
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     order: Vec<u64>,
+    /// 整支加速（0 = 沒有存，當成 1）與保留聲音
+    #[serde(default, skip_serializing_if = "is_zero_or_one")]
+    speed: f64,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    speed_audio: bool,
     /// 字幕樣式
     #[serde(default, skip_serializing_if = "Option::is_none")]
     sub_style: Option<screenrecorder_core::subtitles::SubStyle>,
     /// 旁白與點擊音效（點擊的時間不存，輸出時才放進去）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     narration: Option<screenrecorder_core::narration::Narration>,
+}
+
+fn is_zero_or_one(v: &f64) -> bool {
+    *v == 0.0 || *v == 1.0
 }
 
 /// 存起來的剪輯專案：ProjectData 加上 Extras（同一層）
@@ -962,6 +971,8 @@ impl Editor {
             cursor_hide: self.cursor_hide,
             zoom_regions: self.spec.zoom_regions.clone(),
             order: self.spec.order.clone(),
+            speed: self.spec.speed,
+            speed_audio: self.spec.speed_audio,
             sub_style: (self.sub_style != Default::default()).then(|| self.sub_style.clone()),
             narration: (self.spec.narration != Default::default()).then(|| screenrecorder_core::narration::Narration { clicks: vec![], ..self.spec.narration.clone() }),
         }
@@ -987,6 +998,8 @@ impl Editor {
         self.cursor_hide = x.cursor_hide;
         self.spec.zoom_regions = screenrecorder_core::zoom::clean_regions(&x.zoom_regions);
         self.spec.order = x.order;
+        self.spec.speed = if screenrecorder_core::edit::WHOLE_SPEEDS.contains(&x.speed) { x.speed } else { 1.0 };
+        self.spec.speed_audio = x.speed_audio;
         self.sub_style = x.sub_style.unwrap_or_default();
     }
 
@@ -1572,9 +1585,11 @@ impl Editor {
                 return;
             }
             // 變速的片段：加速時每播 0.5 秒往後跳 (倍率 - 1) × 0.5 秒，看起來像快轉；放慢時用慢速播放
+            // 2 倍以內（含整支加速）直接用播放速度，更快的跳著播
             let part = self.parts().into_iter().find(|p| !p.is_hold() && (p.rate - 1.0).abs() > 1e-9 && t >= p.a - 0.02 && t < p.b);
-            self.player.set_rate(part.filter(|p| p.rate < 1.0).map_or(1.0, |p| p.rate));
-            match part.filter(|p| p.rate > 1.0) {
+            let rate = part.map_or(1.0, |p| p.rate);
+            self.player.set_rate(if rate <= 2.0 { rate } else { 1.0 });
+            match part.filter(|p| p.rate > 2.0) {
                 Some(p) => {
                     let from = *self.fast_from.get_or_insert(t);
                     if t - from >= 0.5 || t < from {
@@ -1865,6 +1880,10 @@ impl Editor {
                 }
             }
             // 開發用：removed=開始,結束；order=毫秒,毫秒…；region=開始,結束,x,y,w,h；subcues=段數；mystyle=顏色,大小
+            "wspeed" => {
+                self.spec.speed = v.parse().unwrap_or(1.0);
+                self.spec.speed_audio = self.spec.speed <= 2.0;
+            }
             "removed" | "order" | "region" | "subcues" | "mystyle" => {
                 let n: Vec<f64> = v.split(',').filter_map(|x| x.trim().trim_start_matches('#').parse().ok()).collect();
                 match k {
@@ -2789,7 +2808,9 @@ fn footer(ed: &mut Editor, ui: &mut egui::Ui) -> bool {
     let keep = ed.keep();
     let parts = ed.parts();
     let length = output_length(&parts) + ed.cards_secs();
-    let fast = parts.iter().filter(|p| !p.is_hold() && (p.rate - 1.0).abs() > 1e-9).count();
+    // 局部變速：和整支加速不一樣的片段
+    let whole_rate = screenrecorder_core::edit::whole_speed(&ed.spec);
+    let fast = parts.iter().filter(|p| !p.is_hold() && (p.rate - whole_rate).abs() > 1e-9).count();
     let holds = parts.iter().filter(|p| p.is_hold()).count();
     let voices = ed.spec.narration.clips.len();
     let crop = if ed.crop_on && ed.vertical != 2 { normalize_crop(ed.spec.crop, ed.vw as i32, ed.vh as i32) } else { None };
@@ -2825,6 +2846,10 @@ fn footer(ed: &mut Editor, ui: &mut egui::Ui) -> bool {
             }
             if ed.is_reordered() {
                 ui.label(tr!("・改了片段順序", " · Sections reordered"));
+            }
+            let whole = screenrecorder_core::edit::whole_speed(&ed.spec);
+            if whole > 1.0 {
+                ui.label(trf!("・整支 {}×", " · Whole video {}×", screenrecorder_core::format::speed_label(whole)));
             }
             let zr = ed.region_spans().len();
             if zr > 0 {
@@ -2991,6 +3016,8 @@ fn start_save(app: &mut UiApp, ed: &mut Editor) {
         freezes: ed.spec.freezes.clone(),
         zoom_regions: ed.spec.zoom_regions.clone(),
         order: ed.spec.order.clone(),
+        speed: ed.spec.speed,
+        speed_audio: ed.spec.speed_audio,
         narration: screenrecorder_core::narration::Narration { clicks: if ed.click_sound_on() { ed.clicks.iter().map(|c| c[0]).collect() } else { vec![] }, ..ed.spec.narration.clone() },
     };
     let project = Some(ed.project_value());

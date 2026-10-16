@@ -7,7 +7,7 @@ use crate::ui::dialogs::file_name;
 use crate::ui::theme::{self, segmented, switch, Btn, Icon};
 use eframe::egui::{self, pos2, vec2, Align, Align2, Color32, CornerRadius, CursorIcon, Id, Layout, RichText, Sense, Stroke};
 use screenrecorder_core::annotate::{self, AnnKind, Shape, COLORS};
-use screenrecorder_core::edit::{normalize_crop, normalize_ranges, set_fast, CropInput, Freeze, FAST_SPEEDS, FREEZE_SECS, SLOW_SPEEDS};
+use screenrecorder_core::edit::{normalize_crop, normalize_ranges, set_fast, CropInput, Freeze, FAST_SPEEDS, FREEZE_SECS, SLOW_SPEEDS, WHOLE_SPEEDS};
 use screenrecorder_core::format::{speed_label, video_clock};
 use screenrecorder_core::idle;
 use screenrecorder_core::picture;
@@ -129,6 +129,31 @@ fn time_panel(ed: &mut Editor, ui: &mut egui::Ui, toast: &mut Option<(String, bo
         }
     });
     ui.label(theme::muted(ui, trf!("開頭 {}　結尾 {}", "Start {} · End {}", video_clock(ed.spec.start), video_clock(ed.spec.end))));
+    // 整支加速：存檔時一次做好（和局部變速相乘）
+    ui.horizontal(|ui| {
+        ui.label(theme::muted(ui, tr!("整支加速", "Whole video speed")).font(theme::font(12.0)));
+        let label = |s: f64| if s == 1.0 { tr!("原速（不加速）", "1× (normal)").to_string() } else { format!("{}×", speed_label(s)) };
+        let cur = screenrecorder_core::edit::whole_speed(&ed.spec);
+        let mut picked = None;
+        egui::ComboBox::from_id_salt("ed-whole-speed").selected_text(label(cur)).width(130.0).show_ui(ui, |ui| {
+            for s in WHOLE_SPEEDS {
+                if ui.selectable_label((s - cur).abs() < 1e-9, label(s)).clicked() {
+                    picked = Some(s);
+                }
+            }
+        });
+        if let Some(s) = picked {
+            ed.spec.speed = s;
+            // 2 倍以內講話還聽得懂：預設保留聲音
+            ed.spec.speed_audio = s <= 2.0;
+        }
+    });
+    if ed.spec.speed > 1.0 {
+        theme::check(ui, &mut ed.spec.speed_audio, RichText::new(tr!("保留聲音（變快、音調不變）", "Keep sound (faster, same pitch)")).font(theme::font(12.5))).on_hover_text(tr!(
+            "不勾的話整支影片沒有原本的聲音（旁白、背景音樂照樣有）。另外設了加速、放慢的片段一樣沒有原本的聲音",
+            "If unticked, the whole video has no original sound (narration and music still play). Sections with their own speed change have no original sound either"
+        ));
+    }
     // 定格：停在播放點這一格幾秒（搭配文字標註解說）
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 4.0;

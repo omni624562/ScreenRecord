@@ -1184,7 +1184,19 @@ fn extras_graph(x: &Extras, first: usize, fps: f64, pix_fmt: &str, with_audio: b
 
 /// 要不要用時間對應：有定格、放慢，或加速不是整數倍
 fn needs_retime(keep: &[Part]) -> bool {
-    keep.iter().any(|p| p.is_hold() || p.rate < 1.0 || p.rate.fract().abs() > 1e-9)
+    keep.iter().any(|p| p.is_hold() || p.rate < 1.0 || p.rate.fract().abs() > 1e-9 || (p.keep_audio && p.retimed()))
+}
+
+/// 聲音變快、音調不變：atempo 每個最多 2 倍，接起來
+fn atempo(rate: f64) -> String {
+    let mut r = rate.clamp(0.5, 100.0);
+    let mut v = vec![];
+    while r > 2.0 + 1e-9 {
+        v.push("atempo=2".to_string());
+        r /= 2.0;
+    }
+    v.push(format!("atempo={}", num((r * 10000.0).round() / 10000.0)));
+    v.join(",")
 }
 
 /// 時間對應的畫面濾鏡：挑出保留的畫面 → 每張換成剪輯後的時間 → 固定張數（放慢、定格時重複前一張，加速時丟掉）；
@@ -1229,7 +1241,7 @@ fn segment_graph(input: &str, keep: &[Part], fps: f64) -> String {
 
 /// 時間對應的聲音：原速的片段用原本的聲音，變速、定格的片段換成同樣長度的靜音，再接起來 → [acut]
 fn retime_audio(input: &str, keep: &[Part]) -> String {
-    let normal = keep.iter().filter(|p| !p.retimed()).count();
+    let normal = keep.iter().filter(|p| !p.silent()).count();
     let mut g = vec![];
     let labels: Vec<String> = (0..normal).map(|i| format!("[an{i}]")).collect();
     match normal {
@@ -1240,10 +1252,12 @@ fn retime_audio(input: &str, keep: &[Part]) -> String {
     let mut segs = vec![];
     let mut k = 0;
     for (i, p) in keep.iter().enumerate() {
-        if p.retimed() {
+        if p.silent() {
             g.push(format!("anullsrc=r=48000:cl=stereo,atrim=end={}[as{i}]", num(p.len())));
         } else {
-            g.push(format!("{}atrim={}:{},asetpts=PTS-STARTPTS,{AFMT}[as{i}]", labels[k], num(p.a), num(p.b)));
+            // 整支加速保留聲音：變快、音調不變，長度剛好是這一段
+            let tempo = if p.retimed() { format!(",{},atrim=end={}", atempo(p.rate), num(p.len())) } else { String::new() };
+            g.push(format!("{}atrim={}:{},asetpts=PTS-STARTPTS{tempo},{AFMT}[as{i}]", labels[k], num(p.a), num(p.b)));
             k += 1;
         }
         segs.push(format!("[as{i}]"));
@@ -2513,7 +2527,7 @@ dummy: Immediate exit requested";
         let clicks = dir.path().join("c.wav");
         std::fs::write(&clicks, crate::narration::click_track(&[0.5, 2.0], 7.0, 100)).unwrap();
         let probe = |f: &std::path::Path| String::from_utf8_lossy(&run(&["-hide_banner".into(), "-i".into(), f.display().to_string()]).stderr).to_string();
-        let hold = |t: f64, h: f64| Part { a: t, b: t, rate: 1.0, hold: h };
+        let hold = |t: f64, h: f64| Part { a: t, b: t, rate: 1.0, hold: h, keep_audio: false };
         // 0～1 原速、1～2 放慢一半（2 秒）、2 秒處定格 1 秒、2～4 加速 1.5 倍、刪掉 4～5、5～6 原速、結尾定格 0.5 秒
         let keep = [Part::new(0.0, 1.0, 1.0), Part::new(1.0, 2.0, 0.5), hold(2.0, 1.0), Part::new(2.0, 4.0, 1.5), Part::new(5.0, 6.0, 1.0), hold(6.0, 0.5)];
         let total = crate::edit::output_length(&keep);
@@ -2540,6 +2554,16 @@ dummy: Immediate exit requested";
             assert!((d - total).abs() < 0.15, "{with_audio}: {d} vs {total}");
             assert!(info.has_audio, "{with_audio}");
         }
+        // 整支 2 倍加速保留聲音（其中一段再局部 4 倍）：長度對、有聲音
+        let fastw = [Part { keep_audio: true, ..Part::new(0.0, 2.0, 2.0) }, Part::new(2.0, 4.0, 8.0), Part { keep_audio: true, ..Part::new(4.0, 6.0, 2.0) }];
+        assert!(atempo(8.0) == "atempo=2,atempo=2,atempo=2" && atempo(1.5) == "atempo=1.5");
+        let out = dir.path().join("whole.mp4");
+        let a = cut_args(src.to_str().unwrap(), out.to_str().unwrap(), &fastw, None, 30.0, &x264(), true, &[], AudioFx::default(), None, None, None, None, None, false).unwrap();
+        assert!(a.iter().any(|s| s.contains("atempo=2")));
+        ok(&a);
+        let info = parse_media_info(&probe(&out));
+        assert!((info.duration_sec.unwrap() - 2.25).abs() < 0.15, "{:?}", info.duration_sec);
+        assert!(info.has_audio);
         // 片段改了順序（含放慢、定格）：長度、聲音都對
         let moved = [Part::new(4.0, 6.0, 1.0), Part::new(0.0, 1.0, 1.0), hold(1.0, 0.5), Part::new(1.0, 2.0, 0.5), Part::new(2.0, 4.0, 2.0)];
         let len = crate::edit::output_length(&moved);

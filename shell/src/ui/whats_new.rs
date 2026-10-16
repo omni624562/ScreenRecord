@@ -39,10 +39,10 @@ enum Try {
 fn items(_app: &UiApp) -> Vec<(String, String, Try)> {
     vec![
         (
-            tr!("手動放大一塊、調整片段順序", "Zoom into an area, reorder sections").into(),
+            tr!("手動放大、整支加速、調整片段順序", "Zoom into an area, speed up, reorder").into(),
             tr!(
-                "剪輯時在影片上框一塊，平順地放大過去再拉回；保留的片段可以改變前後順序，例如把結論移到開頭。",
-                "In the editor, frame an area to smoothly zoom in and back out, and move kept sections around, e.g. put the conclusion first."
+                "剪輯時在影片上框一塊平順地放大過去；整支影片加速存檔時一次做好；保留的片段可以改變前後順序。",
+                "In the editor, frame an area to zoom into, speed up the whole video when you save, and move kept sections around."
             )
             .into(),
             Try::None,

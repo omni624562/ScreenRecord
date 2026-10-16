@@ -486,7 +486,8 @@ impl Exporter {
         let mapped: Vec<crate::types::Chapter> = crate::chapters::map_cut(&chapters, &keep).into_iter().map(|c| crate::types::Chapter { start: c.start + shift, ..c }).collect();
         let length = extras.as_ref().map_or(length, |x| x.total());
         let temp = with_chapters(&mut args, &mapped, length, temp);
-        let fast = keep.iter().filter(|p| p.rate > 1.0).count();
+        let whole = crate::edit::whole_speed(spec);
+        let fast = keep.iter().filter(|p| p.rate > whole + 1e-9).count();
         let slow = keep.iter().filter(|p| !p.is_hold() && p.rate < 1.0).count();
         let holds = keep.iter().filter(|p| p.is_hold()).count();
         let note = format!(
@@ -503,7 +504,8 @@ impl Exporter {
             + if extras.as_ref().is_some_and(|x| x.music.is_some()) { "，背景音樂" } else { "" }
             + if extras.as_ref().and_then(|x| x.voice.as_ref()).is_some_and(|v| !v.clips.is_empty()) { "，旁白" } else { "" }
             + if extras.as_ref().and_then(|x| x.voice.as_ref()).is_some_and(|v| v.clicks.is_some()) { "，點擊音效" } else { "" }
-            + if spec.fade_cuts { "，接縫淡入淡出" } else { "" };
+            + if spec.fade_cuts { "，接縫淡入淡出" } else { "" }
+            + &if whole > 1.0 { format!("，整支 {} 倍速", crate::format::speed_label(whole)) } else { String::new() };
         let follow = matches!(vertical, Some(VerticalInput::Follow { .. }));
         let cwd = (cursor.is_some() || follow).then(|| temp.clone()).flatten();
         let finish = Finish { cleanup: temp, replace: target.map(PathBuf::from), on_saved, cwd };
