@@ -90,11 +90,11 @@ pub fn tab(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, toast: &mut 
     }
     style_panel(ed, ui);
     ui.horizontal_wrapped(|ui| {
-        if Btn::new(tr!("匯出 SRT（依剪輯後的時間）", "Export SRT (edited timing)"))
+        if Btn::new(tr!("匯出字幕檔（依剪輯後的時間）", "Export subtitles (edited timing)"))
             .small()
             .tooltip(tr!(
-                "把字幕存成 SRT 字幕檔，時間換成剪輯後的影片的時間（刪掉的片段裡的字幕不算），可以上傳到 YouTube",
-                "Save the subtitles as an SRT file with timing matched to the edited video (subtitles in removed sections are left out), e.g. for YouTube"
+                "把字幕存成 SRT 或 VTT 字幕檔（另存新檔時選類型），時間換成剪輯後的影片的時間（刪掉的片段裡的字幕不算）。SRT 給 YouTube，VTT 給網頁播放器、Teams、Stream",
+                "Save the subtitles as an SRT or VTT file (pick the type when saving), with timing matched to the edited video (subtitles in removed sections are left out). SRT for YouTube, VTT for web players, Teams and Stream"
             ))
             .show(ui)
             .clicked()
@@ -491,7 +491,10 @@ pub fn panel(ed: &mut Editor, ui: &mut egui::Ui) {
         });
         if Btn::new(tr!("匯入字幕檔…", "Import subtitle file…"))
             .small()
-            .tooltip(tr!("匯入 SRT 字幕檔（例如 YouTube 或其他工具產生的），變成可以修改的字幕", "Import an SRT subtitle file (e.g. from YouTube or another tool) as subtitles you can edit"))
+            .tooltip(tr!(
+                "匯入 SRT 或 VTT 字幕檔（例如 YouTube、Teams 或其他工具產生的），變成可以修改的字幕",
+                "Import an SRT or VTT subtitle file (e.g. from YouTube, Teams or another tool) as subtitles you can edit"
+            ))
             .show(ui)
             .clicked()
         {
@@ -795,6 +798,7 @@ impl Editor {
                 rot: 0.0,
                 pts: vec![],
                 anim: 0,
+                bend: 0.0,
             };
             annotate::measure(&mut a);
             (a.x, a.y) = style.place(a.w, a.h, self.vw, self.vh);

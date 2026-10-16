@@ -25,8 +25,14 @@ use windows::Win32::UI::WindowsAndMessaging::{
 
 /// 在背景執行緒顯示點擊與按鍵；info 取得錄影狀態（None = 沒在錄影），on_click 收到點擊的桌面座標，
 /// on_cursor 在錄影中約每 30 毫秒收到游標的桌面座標（剪輯時換成平滑、放大的游標用）
-pub fn spawn(info: impl Fn() -> Option<OverlayInfo> + Send + 'static, on_click: impl Fn(i32, i32) + Send + 'static, on_cursor: impl Fn(i32, i32) + Send + 'static) {
-    let _ = std::thread::Builder::new().name("input-overlay".into()).spawn(move || unsafe { run(info, on_click, on_cursor) });
+/// on_key 收到快速鍵（「Ctrl + S」，一般打字不會有；記成操作步驟）。
+pub fn spawn(
+    info: impl Fn() -> Option<OverlayInfo> + Send + 'static,
+    on_click: impl Fn(i32, i32, bool) + Send + 'static,
+    on_cursor: impl Fn(i32, i32) + Send + 'static,
+    on_key: impl Fn(&str) + Send + 'static,
+) {
+    let _ = std::thread::Builder::new().name("input-overlay".into()).spawn(move || unsafe { run(info, on_click, on_cursor, on_key) });
 }
 
 unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
@@ -40,7 +46,7 @@ struct Show {
     since: Option<Instant>,
 }
 
-unsafe fn run(info: impl Fn() -> Option<OverlayInfo>, on_click: impl Fn(i32, i32), on_cursor: impl Fn(i32, i32)) {
+unsafe fn run(info: impl Fn() -> Option<OverlayInfo>, on_click: impl Fn(i32, i32, bool), on_cursor: impl Fn(i32, i32), on_key: impl Fn(&str)) {
     let hinst = GetModuleHandleW(None).unwrap_or_default();
     let class = w!("ScreenRecorderInputOverlay");
     let wc = WNDCLASSEXW { cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32, lpfnWndProc: Some(wnd_proc), hInstance: hinst.into(), lpszClassName: class, ..Default::default() };
@@ -75,10 +81,11 @@ unsafe fn run(info: impl Fn() -> Option<OverlayInfo>, on_click: impl Fn(i32, i32
         if polled.elapsed() >= Duration::from_millis(200) {
             polled = Instant::now();
             let next = info();
-            if next.map(|n| n.show_keys) != cur.map(|c| c.show_keys) || next.is_some() != cur.is_some() {
+            // 錄影中一直攔截快速鍵（記成操作步驟）；畫面上要不要顯示看 show_keys
+            if next.is_some() != cur.is_some() {
                 hooks = None;
-                if let Some(n) = next {
-                    hooks = Hook::start(n.show_keys);
+                if next.is_some() {
+                    hooks = Hook::start(true);
                 }
             }
             if next.is_none_or(|n| !n.cursor_halo) {
@@ -98,7 +105,7 @@ unsafe fn run(info: impl Fn() -> Option<OverlayInfo>, on_click: impl Fn(i32, i32
             for ev in events {
                 match ev {
                     HookEvent::MouseDown { x, y, right } => {
-                        on_click(x, y);
+                        on_click(x, y, right);
                         let a = info.area;
                         if info.show_clicks && x >= a.x && y >= a.y && x < a.x + a.width && y < a.y + a.height {
                             click = Some((x, y, right));
@@ -106,6 +113,10 @@ unsafe fn run(info: impl Fn() -> Option<OverlayInfo>, on_click: impl Fn(i32, i32
                         }
                     }
                     HookEvent::Key(label) => {
+                        on_key(&label);
+                        if !info.show_keys {
+                            continue;
+                        }
                         // 連續按同一組（還在顯示時）：加上次數
                         let count = match &key {
                             Some((l, n, _)) if *l == label && key_fx.since.is_some() => n + 1,

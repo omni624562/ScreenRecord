@@ -469,7 +469,12 @@ fn parse_time(s: &str) -> Option<f64> {
     let s = s.trim().replace('.', ",");
     let (hms, ms) = s.split_once(',').unwrap_or((&s, "0"));
     let p: Vec<&str> = hms.split(':').collect();
-    let [h, m, sec] = p.as_slice() else { return None };
+    // VTT 可以省略小時（「01:02.345」）
+    let (h, m, sec) = match p.as_slice() {
+        [h, m, sec] => (*h, *m, *sec),
+        [m, sec] => ("0", *m, *sec),
+        _ => return None,
+    };
     let v = h.trim().parse::<f64>().ok()? * 3600.0 + m.trim().parse::<f64>().ok()? * 60.0 + sec.trim().parse::<f64>().ok()? + ms.trim().parse::<f64>().ok()? / 10f64.powi(ms.trim().len() as i32);
     Some(v)
 }
@@ -479,19 +484,48 @@ fn fmt_time(t: f64) -> String {
     format!("{:02}:{:02}:{:02},{:03}", ms / 3_600_000, ms / 60_000 % 60, ms / 1000 % 60, ms % 1000)
 }
 
-/// 讀 SRT（編號從 0 或 1 開始都可以、時間可以用逗號或句點、Windows 換行也可以）
+/// 讀 SRT 或 WebVTT（編號從 0 或 1 開始都可以、時間可以用逗號或句點、Windows 換行也可以；
+/// VTT 的檔頭、NOTE / STYLE 區塊、位置設定與 <v 說話者>、<b> 等標記會略過）
 pub fn parse_srt(s: &str) -> Vec<Cue> {
     let s = s.trim_start_matches('\u{feff}').replace("\r\n", "\n");
+    let vtt = s.trim_start().starts_with("WEBVTT");
     let mut out = Vec::new();
     for block in s.split("\n\n") {
         let lines: Vec<&str> = block.lines().filter(|l| !l.trim().is_empty()).collect();
+        if vtt && lines.first().is_some_and(|l| l.starts_with("NOTE") || l.starts_with("STYLE") || l.starts_with("REGION")) {
+            continue;
+        }
         let Some(i) = lines.iter().position(|l| l.contains("-->")) else { continue };
         let Some((a, b)) = lines[i].split_once("-->") else { continue };
         let (Some(start), Some(end)) = (parse_time(a), parse_time(b.split_whitespace().next().unwrap_or(""))) else { continue };
         let text = lines[i + 1..].join("\n");
+        let text = if vtt { strip_tags(&text) } else { text };
         out.push(Cue { start, end, text });
     }
     out
+}
+
+/// 去掉 VTT 的標記（<v 說話者>、<b>、<00:00:01.000>…），還原 &amp; 等
+fn strip_tags(t: &str) -> String {
+    let mut out = String::with_capacity(t.len());
+    let mut depth = false;
+    for c in t.chars() {
+        match c {
+            '<' => depth = true,
+            '>' if depth => depth = false,
+            _ if !depth => out.push(c),
+            _ => {}
+        }
+    }
+    out.replace("&lt;", "<").replace("&gt;", ">").replace("&nbsp;", " ").replace("&amp;", "&")
+}
+
+/// 存成 WebVTT（網頁播放器、Teams、Stream 用）
+pub fn to_vtt(cues: &[Cue]) -> String {
+    let t = |x: f64| fmt_time(x).replace(',', ".");
+    let esc = |s: &str| s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
+    let body: Vec<String> = cues.iter().map(|c| format!("{} --> {}\n{}\n", t(c.start), t(c.end), esc(&c.text))).collect();
+    format!("WEBVTT\n\n{}", body.join("\n"))
 }
 
 /// 在字幕裡找說過的話（不分大小寫；多行的字幕接成一行）
@@ -581,10 +615,13 @@ fn save_next_to_as(video: &str, cues: &[Cue], ext: &str) -> Result<PathBuf, Stri
 
 /// 選一個 SRT 字幕檔
 pub fn pick_file() -> Result<Option<PathBuf>, String> {
-    crate::filepick::pick(tr!("選擇字幕檔", "Choose a subtitle file"), &tr!([("字幕檔（SRT）", "*.srt"), ("所有檔案", "*.*")], [("Subtitle files (SRT)", "*.srt"), ("All files", "*.*")]))
+    crate::filepick::pick(
+        tr!("選擇字幕檔", "Choose a subtitle file"),
+        &tr!([("字幕檔（SRT、VTT）", "*.srt;*.vtt"), ("所有檔案", "*.*")], [("Subtitle files (SRT, VTT)", "*.srt;*.vtt"), ("All files", "*.*")]),
+    )
 }
 
-/// 讀 SRT 檔（UTF-8；不是 UTF-8 時當作 Big5 以外的編碼無法處理，回報錯誤）
+/// 讀 SRT 或 VTT 檔（UTF-8；不是 UTF-8 時當作 Big5 以外的編碼無法處理，回報錯誤）
 pub fn read_file(path: &Path) -> Result<Vec<Cue>, String> {
     let bytes = std::fs::read(path).map_err(|e| trf!("無法讀取字幕檔：{e}", "Couldn't read the subtitle file: {e}"))?;
     let text = String::from_utf8(bytes).map_err(|_| tr!("字幕檔不是 UTF-8 編碼，請先用記事本另存成 UTF-8", "The subtitle file isn't UTF-8 encoded. Save it as UTF-8 in Notepad first.").to_string())?;
@@ -650,6 +687,21 @@ impl SubStyle {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn vtt_round_trip_and_tags() {
+        let v = "WEBVTT\nKind: captions\n\nNOTE 這是註解\n\nintro\n00:01.500 --> 00:03.000 align:start\n<v 小明>大家好 &amp; 歡迎</v>\n\n00:00:04.000 --> 00:00:05.250\n第二句\n";
+        let cues = parse_srt(v);
+        assert_eq!(cues.len(), 2);
+        assert!((cues[0].start - 1.5).abs() < 1e-9 && (cues[0].end - 3.0).abs() < 1e-9);
+        assert_eq!(cues[0].text, "大家好 & 歡迎");
+        assert!((cues[1].end - 5.25).abs() < 1e-9);
+        let out = to_vtt(&cues);
+        assert!(out.starts_with("WEBVTT\n\n00:00:01.500 --> 00:00:03.000\n大家好 &amp; 歡迎\n"), "{out}");
+        assert_eq!(parse_srt(&out), cues);
+        // SRT 不會去掉 < >
+        assert_eq!(parse_srt("1\n00:00:01,000 --> 00:00:02,000\na <b> c\n")[0].text, "a <b> c");
+    }
 
     #[test]
     fn exe_folder_comes_first() {

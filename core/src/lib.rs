@@ -102,6 +102,7 @@ pub mod snip_tools;
 #[cfg(windows)]
 pub mod snip_win;
 pub mod steps;
+pub mod steps_log;
 #[cfg(windows)]
 pub mod steps_win;
 pub mod subtitles;

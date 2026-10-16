@@ -64,6 +64,14 @@ pub fn export_file_name(source_name: &str, speed: f64, format: ExportFormat) -> 
     }
 }
 
+/// 換副檔名（「a.mp4」→「a.webm」）
+pub fn with_ext(name: &str, ext: &str) -> String {
+    match name.rsplit_once('.') {
+        Some((base, _)) => format!("{base}.{ext}"),
+        None => format!("{name}.{ext}"),
+    }
+}
+
 /// 壓縮版的檔名（原速、有大小上限）：Rec_xxx.mp4 → Rec_xxx_25MB以內.mp4（英文介面 Rec_xxx_under25MB.mp4）
 pub fn compressed_file_name(source_name: &str, max_mb: f64) -> String {
     let base = strip_mp4(source_name);
@@ -78,16 +86,18 @@ pub struct ParsedExport {
     pub format: ExportFormat,
 }
 
-static EXPORT_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^(.*)_(\d+(?:\.\d+)?)x(?:_\d+)?\.(mp4|gif|webp)$").unwrap());
+static EXPORT_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^(.*)_(\d+(?:\.\d+)?)x(?:_\d+)?\.(mp4|gif|webp|webm)$").unwrap());
 static ANIM_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^(.*?)(?:_\d+)?\.(gif|webp)$").unwrap());
 /// 壓縮版：Rec_a_25MB以內.mp4、Rec_a_under25MB_2.mp4
-static COMPRESSED_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^(.*)_(?:\d+MB以內|under\d+MB)(?:_\d+)?\.mp4$").unwrap());
+static COMPRESSED_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^(.*)_(?:\d+MB以內|under\d+MB)(?:_\d+)?\.(mp4|webm)$").unwrap());
 
 fn format_of(ext: &str) -> ExportFormat {
     if ext.eq_ignore_ascii_case("gif") {
         ExportFormat::Gif
     } else if ext.eq_ignore_ascii_case("webp") {
         ExportFormat::Webp
+    } else if ext.eq_ignore_ascii_case("webm") {
+        ExportFormat::Webm
     } else {
         ExportFormat::Mp4
     }
@@ -99,7 +109,7 @@ pub fn parse_export_name(name: &str) -> Option<ParsedExport> {
         return Some(ParsedExport { base: format!("{}.mp4", &m[1]), speed: m[2].parse().unwrap_or(1.0), format: format_of(&m[3]) });
     }
     if let Some(m) = COMPRESSED_RE.captures(name) {
-        return Some(ParsedExport { base: format!("{}.mp4", &m[1]), speed: 1.0, format: ExportFormat::Mp4 });
+        return Some(ParsedExport { base: format!("{}.mp4", &m[1]), speed: 1.0, format: format_of(&m[2]) });
     }
     ANIM_RE.captures(name).map(|g| ParsedExport { base: format!("{}.mp4", &g[1]), speed: 1.0, format: format_of(&g[2]) })
 }
@@ -135,6 +145,8 @@ pub fn estimate_bytes(o: &EstimateInput) -> (f64, f64) {
     }
     let area = if o.src_width > 0.0 && o.src_height > 0.0 { o.width * o.height / (o.src_width * o.src_height) } else { 1.0 };
     let mid = o.src_bytes / o.src_sec * out_sec * o.speed.sqrt().min(4.0) * area.powf(0.75);
+    // VP9 同樣的畫質大約比 H.264 小三成
+    let mid = if o.format == ExportFormat::Webm { mid * 0.7 } else { mid };
     (mid * 0.5, mid * 1.8)
 }
 
@@ -292,6 +304,10 @@ mod tests {
         assert_eq!(parse_export_name("Rec_2026-10-06_08-00-00_cut_4x.mp4"), p("Rec_2026-10-06_08-00-00_cut.mp4", 4.0, ExportFormat::Mp4));
         // 壓縮版（原速、有大小上限）
         assert_eq!(compressed_file_name("操作示範.mp4", 25.0), "操作示範_25MB以內.mp4");
+        assert_eq!(export_file_name("Rec_a.mp4", 4.0, ExportFormat::Webm), "Rec_a_4x.webm");
+        assert_eq!(parse_export_name("Rec_a_4x_2.webm"), p("Rec_a.mp4", 4.0, ExportFormat::Webm));
+        assert_eq!(parse_export_name("Rec_a_25MB以內.webm"), p("Rec_a.mp4", 1.0, ExportFormat::Webm));
+        assert_eq!(with_ext("Rec_a_25MB以內.mp4", "webm"), "Rec_a_25MB以內.webm");
         assert_eq!(parse_export_name("操作示範_25MB以內.mp4"), p("操作示範.mp4", 1.0, ExportFormat::Mp4));
         assert_eq!(parse_export_name("Rec_a_under10MB_2.mp4"), p("Rec_a.mp4", 1.0, ExportFormat::Mp4));
         assert!(check_recording_name("報告_25MB以內").is_some());

@@ -40,6 +40,8 @@ pub enum Mode {
 struct Opts {
     /// 動圖的格式（GIF 或 WebP）
     anim: ExportFormat,
+    /// 加速版、壓縮的檔案格式（MP4 或 WebM）
+    video: ExportFormat,
     export_mode: ExportMode,
     export_target: String,
     speed: f64,
@@ -57,6 +59,7 @@ impl Opts {
     fn from(s: &UiSettings) -> Opts {
         Opts {
             anim: if s.export_format.is_animation() { s.export_format } else { ExportFormat::Gif },
+            video: if s.export_format == ExportFormat::Webm { ExportFormat::Webm } else { ExportFormat::Mp4 },
             export_mode: s.export_mode,
             export_target: s.export_target.clone(),
             speed: s.speed,
@@ -113,7 +116,7 @@ impl ExportDialog {
         if self.mode == Mode::Anim {
             self.o.anim
         } else {
-            ExportFormat::Mp4
+            self.o.video
         }
     }
 
@@ -153,7 +156,11 @@ fn existing(e: &LibraryEntry, speed: f64, format: ExportFormat) -> Option<&Expor
 
 /// 實際會存成的檔名：同名已存在時會加上 _2、_3
 fn output_name(e: &LibraryEntry, speed: f64, format: ExportFormat, max_mb: u32) -> String {
-    let name = if format == ExportFormat::Mp4 && max_mb > 0 && speed <= 1.0 { compressed_file_name(&e.media.name, max_mb as f64) } else { export_file_name(&e.media.name, speed, format) };
+    let name = if !format.is_animation() && max_mb > 0 && speed <= 1.0 {
+        screenrecorder_core::format::with_ext(&compressed_file_name(&e.media.name, max_mb as f64), format.ext())
+    } else {
+        export_file_name(&e.media.name, speed, format)
+    };
     let taken: Vec<String> = e.exports.iter().map(|x| x.media.name.to_lowercase()).collect();
     if !taken.contains(&name.to_lowercase()) {
         return name;
@@ -237,6 +244,7 @@ fn choose_output(app: &mut UiApp, dir: String, name: String, format: ExportForma
         ExportFormat::Gif => (tr!("GIF 動畫", "Animated GIF"), "*.gif"),
         ExportFormat::Webp => (tr!("WebP 動圖", "Animated WebP"), "*.webp"),
         ExportFormat::Mp4 => (tr!("MP4 影片", "MP4 video"), "*.mp4"),
+        ExportFormat::Webm => (tr!("WebM 影片", "WebM video"), "*.webm"),
     };
     app.spawn(
         async move {
@@ -263,6 +271,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
     let mut play_existing: Option<LibraryEntry> = None;
     let mut change_output: Option<(String, String)> = None;
     let e = dlg.entry.clone();
+    let has_webm = app.env.ffmpeg.has_webm;
     let dur = e.media.duration_sec.unwrap_or(0.0);
     let has_audio = e.media.has_audio == Some(true);
     let (sw, sh) = (e.media.width.unwrap_or(0) as i32, e.media.height.unwrap_or(0) as i32);
@@ -343,6 +352,35 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
             if dlg.mode == Mode::Anim {
                 row(ui, tr!("格式", "Format"), |ui| {
                     segmented(ui, &mut o.anim, &[(ExportFormat::Gif, tr!("GIF 動畫", "Animated GIF")), (ExportFormat::Webp, tr!("WebP 動圖", "Animated WebP"))], true);
+                });
+            } else {
+                // MP4 或 WebM（FFmpeg 沒有 VP9 編碼器時只能 MP4）
+                if !has_webm {
+                    o.video = ExportFormat::Mp4;
+                }
+                row(ui, tr!("格式", "Format"), |ui| {
+                    segmented(
+                        ui,
+                        &mut o.video,
+                        &[(ExportFormat::Mp4, tr!("MP4（最通用）", "MP4 (works everywhere)")), (ExportFormat::Webm, tr!("WebM（較小、網頁用）", "WebM (smaller, for the web)"))],
+                        has_webm,
+                    );
+                    let note = if !has_webm {
+                        tr!(
+                            "這個 FFmpeg 沒有 VP9 編碼器，不能存成 WebM（可以在設定的「系統」重新下載完整版 FFmpeg）",
+                            "This FFmpeg has no VP9 encoder, so WebM isn't available (re-download the full FFmpeg in Settings → System)"
+                        )
+                    } else if o.video == ExportFormat::Webm {
+                        tr!(
+                            "WebM 比 MP4 小約三成，可以直接放在網頁上；製作比較久。LINE、iPhone 請用 MP4",
+                            "WebM is about 30% smaller and plays right on web pages, but takes longer to make. Use MP4 for LINE and iPhone"
+                        )
+                    } else {
+                        ""
+                    };
+                    if !note.is_empty() {
+                        helper(ui, note, p.muted);
+                    }
                 });
             }
             if dlg.mode != Mode::Compress {
@@ -687,7 +725,9 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                 let label = match (dlg.mode, speed) {
                     (_, None) => make_word.to_string(),
                     (Mode::Compress, _) if again => trf!("再壓縮一份（{max_mb} MB 以內）", "Compress again (up to {max_mb} MB)"),
+                    (Mode::Compress, _) if format == ExportFormat::Webm => trf!("壓縮成 WebM（{max_mb} MB 以內）", "Compress to WebM (under {max_mb} MB)"),
                     (Mode::Compress, _) => trf!("壓縮到 {max_mb} MB 以內", "Compress to under {max_mb} MB"),
+                    (Mode::Speed, Some(sp)) if format == ExportFormat::Webm => trf!("{make_word} {}× 加速版 WebM{cap}", "{make_word} {}× sped-up WebM{cap}", speed_label(sp)),
                     (Mode::Anim, Some(sp)) => format!("{make_word} {anim}{}", if sp > 1.0 { trf!("（{}×）", " ({}×)", speed_label(sp)) } else { String::new() }),
                     (Mode::Speed, Some(sp)) => trf!("{make_word} {}× 加速版{cap}", "{make_word} {}× sped-up video{cap}", speed_label(sp)),
                 };

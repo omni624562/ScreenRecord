@@ -266,8 +266,13 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, stage_h: f3
                 painter.galley(tag.min + vec2(5.0, 3.0), g, Color32::WHITE);
             }
         }
-        for (hx, hy) in annotate::handles(a) {
+        for (i, (hx, hy)) in annotate::handles(a).into_iter().enumerate() {
             let c = to_screen(hx, hy);
+            if a.kind == AnnKind::Arrow && i == 2 {
+                // 箭頭中間的圓點：拖曳可以彎成弧線
+                painter.circle(c, 6.0, Color32::WHITE, Stroke::new(1.5, SEL_BLUE));
+                continue;
+            }
             let hr = Rect::from_center_size(c, vec2(10.0, 10.0));
             painter.rect(hr, CornerRadius::ZERO, Color32::WHITE, Stroke::new(1.5, SEL_BLUE), egui::StrokeKind::Middle);
         }
@@ -542,7 +547,7 @@ fn look_key(a: &Ann, spot: bool, s: f64, vw: f64, vh: f64) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
     a.kind.hash(&mut h);
-    let mut nums = vec![a.w, a.h, a.size, a.rot, s, vw, vh];
+    let mut nums = vec![a.w, a.h, a.size, a.rot, a.bend, s, vw, vh];
     if spot {
         nums.extend([a.x, a.y]);
     }
@@ -932,6 +937,10 @@ fn drag_to(ed: &mut Editor, (px, py): (f64, f64), shift: bool) {
             if let Some(a) = ed.ann_mut(id) {
                 let o = &orig;
                 match a.kind {
+                    AnnKind::Arrow if handle == 2 => {
+                        // 中間的圓點：拉成弧線（拉回直線附近就變直）
+                        annotate::set_bend(a, px, py);
+                    }
                     AnnKind::Arrow if handle == 0 => {
                         // 移動起點，終點不動
                         a.x = px;

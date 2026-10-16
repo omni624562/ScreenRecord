@@ -855,12 +855,15 @@ fn save_page(app: &mut UiApp, ui: &mut Ui) {
     );
     save_gap(ui);
     form_section(ui, tr!("檔名", "File names"), |_| {});
-    form_row(ui, tr!("錄影", "Recordings"), |ui| {
-        ui.label(RichText::new(tr!("Rec_年-月-日_時-分-秒.mp4", "Rec_YYYY-MM-DD_HH-MM-SS.mp4")).font(theme::mono(12.5)));
-    });
-    form_row(ui, tr!("截圖", "Screenshots"), |ui| {
-        ui.label(RichText::new(tr!("Shot_年-月-日_時-分-秒.png", "Shot_YYYY-MM-DD_HH-MM-SS.png")).font(theme::mono(12.5)));
-    });
+    name_rule_row(app, ui, false);
+    name_rule_row(app, ui, true);
+    indented_hint(
+        ui,
+        tr!(
+            "可以用 {日期} {時間} {序號} {程式} {視窗} {內容}。{序號} 依同一個資料夾的檔案往下編；{內容} 依說的話和畫面上的字取名（只有錄影）。空白就用預設名稱；只錄聲音的錄音不套用",
+            "Use {date} {time} {n} {app} {title} {content}. {n} counts up from the files in the same folder; {content} names it from what was said and shown (recordings only). Leave empty for the default names; audio-only recordings keep theirs."
+        ),
+    );
     ui.add_space(4.0);
     form_hint_full(
         ui,
@@ -873,6 +876,105 @@ fn save_page(app: &mut UiApp, ui: &mut Ui) {
     if let Some(d) = open {
         open_folder(app, &d);
     }
+}
+
+/// 影片格式：H.264（預設）、HEVC、AV1；HEVC / AV1 要這台電腦的顯示卡支援
+fn codec_row(app: &mut UiApp, ui: &mut Ui) {
+    use screenrecorder_core::types::VideoCodec;
+    let p = theme::pal(ui);
+    let list = app.env.ffmpeg.codec_encoders.clone();
+    let has = |c: VideoCodec| list.as_ref().is_some_and(|l| l.iter().any(|n| screenrecorder_core::args::codec_of(n) == c));
+    let label = |c: VideoCodec, text: &str| match &list {
+        None => trf!("{text}（偵測中…）", "{text} (detecting…)"),
+        Some(_) if !has(c) => trf!("{text}（這台電腦的顯示卡不支援）", "{text} (not supported by this PC's GPU)"),
+        _ => text.to_string(),
+    };
+    form_row(ui, tr!("影片格式", "Video format"), |ui| {
+        let mut c = app.s.codec;
+        let items = [
+            (VideoCodec::H264, tr!("H.264（最通用，建議）", "H.264 (works everywhere, recommended)").to_string(), true),
+            (VideoCodec::Hevc, label(VideoCodec::Hevc, tr!("HEVC（檔案小約 4 成）", "HEVC (about 40% smaller)")), has(VideoCodec::Hevc) || app.s.codec == VideoCodec::Hevc),
+            (VideoCodec::Av1, label(VideoCodec::Av1, tr!("AV1（檔案最小，新顯示卡）", "AV1 (smallest, newer GPUs)")), has(VideoCodec::Av1) || app.s.codec == VideoCodec::Av1),
+        ];
+        if form_combo(ui, "codec", FORM_CTRL_W, &mut c, &items) {
+            app.s.codec = c;
+            app.save_settings();
+        }
+    });
+    if app.s.codec != VideoCodec::H264 {
+        let warn = list.is_some() && !has(app.s.codec);
+        let text = if warn {
+            trf!("這台電腦的顯示卡不支援 {}，錄影時會用 H.264。", "This PC's GPU doesn't support {}, so recordings use H.264.", app.s.codec.label())
+        } else {
+            tr!(
+                "用顯示卡壓縮；不能用時自動改用 H.264。剪輯、加速版、壓縮做出來的仍是 H.264。舊電腦、部分手機和 LINE 可能播不了，要分享時建議做成壓縮版。",
+                "Encoded on the GPU; falls back to H.264 automatically. Edits, sped-up and compressed versions are still H.264. Older PCs, some phones and LINE may not play it, so share a compressed version."
+            )
+            .to_string()
+        };
+        form_hint(ui, text, if warn { p.warn } else { p.muted });
+    }
+}
+
+/// 命名規則的一列：常用的範本、自己打，旁邊顯示套用後的樣子
+fn name_rule_row(app: &mut UiApp, ui: &mut Ui, shot: bool) {
+    let p = theme::pal(ui);
+    let (label, ext, default) = if shot { (tr!("截圖", "Screenshots"), "png", "Shot_") } else { (tr!("錄影", "Recordings"), "mp4", "Rec_") };
+    form_row(ui, label, |ui| {
+        ui.vertical(|ui| {
+            ui.spacing_mut().item_spacing.y = 4.0;
+            ui.horizontal(|ui| {
+                let rule = if shot { &mut app.s.shot_name_rule } else { &mut app.s.name_rule };
+                let hint = trf!("{default}年-月-日_時-分-秒（預設）", "{default}YYYY-MM-DD_HH-MM-SS (default)");
+                let r = ui.add(egui::TextEdit::singleline(rule).desired_width(FORM_CTRL_W - 34.0).char_limit(120).hint_text(hint).font(theme::mono(12.5)));
+                let mut changed = r.changed();
+                let b = Btn::icon_only(Icon::More).ghost().small().tooltip(tr!("常用的範本", "Common patterns")).show(ui);
+                egui::Popup::menu(&b).show(|ui| {
+                    ui.set_min_width(240.0);
+                    let presets: [(&str, &str); 5] = if screenrecorder_core::i18n::is_en() {
+                        [
+                            ("", "Default"),
+                            ("{date}_{n}", "Date + number"),
+                            ("Project_{date}_{n}", "Project name + date + number"),
+                            ("{app}_{date}_{time}", "App + date + time"),
+                            ("{content}_{date}", "Content + date (recordings)"),
+                        ]
+                    } else {
+                        [
+                            ("", "預設"),
+                            ("{日期}_{序號}", "日期＋序號"),
+                            ("專案名稱_{日期}_{序號}", "專案名稱＋日期＋序號"),
+                            ("{程式}_{日期}_{時間}", "程式＋日期＋時間"),
+                            ("{內容}_{日期}", "內容＋日期（錄影）"),
+                        ]
+                    };
+                    for (v, name) in presets {
+                        if shot && (v.contains("{內容}") || v.contains("{content}")) {
+                            continue;
+                        }
+                        if ui.button(name).clicked() {
+                            *rule = v.to_string();
+                            changed = true;
+                        }
+                    }
+                });
+                if changed {
+                    app.save_settings();
+                }
+            });
+            let rule = if shot { app.s.shot_name_rule.clone() } else { app.s.name_rule.clone() };
+            if !rule.trim().is_empty() {
+                let (text, color) = match screenrecorder_core::naming::rule_preview(&rule, ext) {
+                    Some(n) => (trf!("例如：{n}", "e.g. {n}"), p.muted),
+                    None => (
+                        tr!("這樣取不出檔名（可能只有不能用的字），會用預設的名稱", "This doesn't make a usable name (maybe only invalid characters); the default name will be used").to_string(),
+                        p.warn,
+                    ),
+                };
+                ui.label(RichText::new(text).font(theme::font(12.0)).color(color));
+            }
+        });
+    });
 }
 
 /// 自動匯入：看的資料夾（可以加、移除、開啟），匯入後要不要接著做錄完自動處理
@@ -1532,6 +1634,7 @@ fn advanced_page(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
             app.toast(tr!("已重設，之後的錄影平常會用 CPU 編碼", "Reset. Future recordings will normally use CPU encoding"), false);
         }
     }
+    codec_row(app, ui);
     form_divider(ui);
     form_section(ui, tr!("疑難排解", "Troubleshooting"), |_| {});
     form_row(ui, tr!("記錄檔", "Log file"), |ui| {

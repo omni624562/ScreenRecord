@@ -85,6 +85,7 @@ mod tests {
             shot_dir: String::new(),
             audio: Default::default(),
             encoder: None,
+            codec: Default::default(),
             countdown_sec: None,
             hide_ui: None,
             show_clicks: false,

@@ -1418,6 +1418,26 @@ pub(super) fn props(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context) {
         if n > 1 && Btn::new(all).ghost().small().tooltip(tip).show(ui).clicked() {
             apply_all = same;
         }
+        // 箭頭：彎成弧線（拖中間的圓點，或用這裡的滑桿）
+        if cur.kind == AnnKind::Arrow {
+            ui.horizontal(|ui| {
+                ui.label(theme::muted(ui, tr!("彎曲", "Curve")).font(theme::font(12.0)));
+                let len = cur.w.hypot(cur.h).max(1.0);
+                let mut pct = (cur.bend / len * 100.0).round();
+                ui.spacing_mut().slider_width = ui.available_width() - 120.0;
+                theme::slider_style(ui);
+                if ui
+                    .add(egui::Slider::new(&mut pct, -75.0..=75.0).step_by(1.0).fixed_decimals(0).suffix("%"))
+                    .on_hover_text(tr!("也可以直接拖曳箭頭中間的圓點；左右是往哪一邊彎", "You can also drag the dot in the middle of the arrow; the sign picks which way it bends"))
+                    .changed()
+                {
+                    cur.bend = (pct / 100.0 * len).round();
+                }
+                if Btn::new(tr!("拉直", "Straighten")).ghost().small().enabled(cur.bend != 0.0).show(ui).clicked() {
+                    cur.bend = 0.0;
+                }
+            });
+        }
         // 角度（箭頭不用：兩端本來就能指向任何方向；字幕不用）
         if cur.kind.rotatable() && !sub {
             ui.horizontal(|ui| {

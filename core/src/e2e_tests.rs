@@ -52,6 +52,7 @@ fn record_config() -> RecordConfig {
         shot_dir: String::new(),
         audio: AudioConfig::default(),
         encoder: None,
+        codec: Default::default(),
         countdown_sec: None,
         hide_ui: None,
         show_clicks: false,
@@ -311,6 +312,70 @@ async fn exports_keep_chapters_and_lengths() {
     let i = probe(&ff, &merged).await;
     assert!(near(i.duration_sec.unwrap(), 10.0, 0.3), "{:?}", i.duration_sec);
     assert!(i.chapters.is_empty());
+}
+
+#[tokio::test]
+async fn hevc_segments_merge_as_hvc1() {
+    let Some(ff) = ffmpeg() else { return };
+    if !has(&ff, "-encoders", "libx265") {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let parts = dir.path().join(".parts").join("x");
+    std::fs::create_dir_all(&parts).unwrap();
+    let mut files = vec![];
+    for i in 0..2 {
+        let f = parts.join(format!("seg_{i:03}.mp4"));
+        let ok = Command::new(&ff)
+            .args(["-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=s=320x240:r=30:d=1", "-f", "lavfi", "-i", "sine=d=1:sample_rate=48000"])
+            .args(["-c:v", "libx265", "-preset", "ultrafast", "-tag:v", "hvc1", "-c:a", "aac", "-movflags", "+empty_moov+default_base_moof", "-frag_duration", "1000000", "-y"])
+            .arg(&f)
+            .status()
+            .unwrap()
+            .success();
+        assert!(ok);
+        files.push(f.display().to_string());
+    }
+    let out = dir.path().join("Rec.mp4");
+    let d = crate::recorder::merge_segments(&ff, &files, &parts, &out, true, None).await.unwrap().unwrap();
+    assert!(near(d, 2.0, 0.2), "{d}");
+    let o = Command::new(&ff).args(["-hide_banner", "-i"]).arg(&out).output().unwrap();
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(err.contains("hevc") && err.contains("hvc1"), "{err}");
+}
+
+#[tokio::test]
+async fn webm_exports() {
+    let Some(ff) = ffmpeg() else { return };
+    if !has(&ff, "-encoders", "libx264") || !has(&ff, "-encoders", "libvpx-vp9") || !has(&ff, "-encoders", "libopus") {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let src = make_source(&ff, dir.path());
+    let s = src.display().to_string();
+    let c = ctx(&ff);
+    let ex = Exporter::new();
+    // 加速版 2×：VP9 + Opus，長度減半、章節跟著換算
+    ex.start_to(&c, &s, 2.0, true, 0.0, 0.0, ExportFormat::Webm, None).await.unwrap();
+    let fast = finish(&ex).await;
+    assert!(fast.ends_with("Rec_2026-10-11_12-00-00_2x.webm"), "{fast:?}");
+    let i = probe(&ff, &fast).await;
+    assert!(near(i.duration_sec.unwrap(), 3.0, 0.15), "{:?}", i.duration_sec);
+    assert_eq!(i.has_audio, Some(true));
+    assert_eq!(starts(&i.chapters), [0.0, 1.0, 2.0]);
+    let codecs = Command::new(&ff).args(["-hide_banner", "-i"]).arg(&fast).output().unwrap();
+    let err = String::from_utf8_lossy(&codecs.stderr);
+    assert!(err.contains("vp9") && err.contains("opus"), "{err}");
+    // 原速壓縮到 1 MB 以內：檔名「_1MB以內.webm」，掛在原片底下
+    ex.start_to(&c, &s, 1.0, true, 320.0, 1.0, ExportFormat::Webm, None).await.unwrap();
+    let small = finish(&ex).await;
+    assert!(small.ends_with("Rec_2026-10-11_12-00-00_1MB以內.webm"), "{small:?}");
+    let i = probe(&ff, &small).await;
+    assert_eq!(i.width, Some(320));
+    assert!(i.bytes <= 1024 * 1024, "{} bytes", i.bytes);
+    let lib = crate::library::scan(&crate::library::MediaCache::default(), dir.path()).await;
+    let e = lib.iter().find(|e| e.media.name == "Rec_2026-10-11_12-00-00.mp4").unwrap();
+    assert_eq!(e.exports.iter().filter(|x| x.format == Some(ExportFormat::Webm)).count(), 2);
 }
 
 /// 從 t 秒開始 len 秒的聲音（單聲道 16 位元）裡最大的振幅

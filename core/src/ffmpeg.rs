@@ -39,6 +39,19 @@ pub async fn encoder_works(ffmpeg: &Path, enc: &EncoderSpec) -> bool {
     run(ffmpeg, &a, Duration::from_secs(15)).await.code == 0
 }
 
+/// 實測 HEVC、AV1 的顯示卡編碼器：只測 H.264 實測可用的那幾家顯示卡的（同一家才可能有），回傳可用的名稱
+pub async fn test_codec_encoders(ffmpeg: &Path, listed: &[String], hw_ok: &[String]) -> Vec<String> {
+    let vendors: Vec<&str> = hw_ok.iter().filter_map(|n| n.rsplit('_').next()).collect();
+    let mut ok = Vec::new();
+    for spec in crate::args::CODEC_ENCODERS {
+        let vendor = spec.name.rsplit('_').next().unwrap_or("");
+        if vendors.contains(&vendor) && listed.iter().any(|l| l == spec.name) && encoder_works(ffmpeg, &spec).await {
+            ok.push(spec.name.to_string());
+        }
+    }
+    ok
+}
+
 /// 實測硬體編碼器，依 HARDWARE_ENCODERS 的順序回傳可用的名稱
 pub async fn test_hw_encoders(ffmpeg: &Path, listed: &[String]) -> Vec<String> {
     let mut ok = Vec::new();
@@ -75,6 +88,11 @@ pub struct Probe {
     pub gpu_filters: Vec<GpuConvert>,
 }
 
+/// `ffmpeg -encoders` 裡有沒有這個編碼器
+pub fn has_encoder(encoders_stdout: &str, name: &str) -> bool {
+    Regex::new(&format!(r"(?m)^\s*[VAS]\S*\s+{}\s", regex::escape(name))).unwrap().is_match(encoders_stdout)
+}
+
 /// `ffmpeg -filters` 裡有沒有這個濾鏡
 fn has_filter(filters_stdout: &str, name: &str) -> bool {
     Regex::new(&format!(r"(?m)^\s*\S+\s+{}\s", regex::escape(name))).unwrap().is_match(filters_stdout)
@@ -109,7 +127,9 @@ pub async fn probe_ffmpeg() -> Probe {
             }
         }
     }
-    let hw_listed = listed.iter().filter(|e| HARDWARE_ENCODERS.contains(&e.name)).map(|e| e.name.to_string()).collect();
+    // 列得出來的顯示卡編碼器（H.264 與 HEVC、AV1），之後實測
+    let mut hw_listed: Vec<String> = listed.iter().filter(|e| HARDWARE_ENCODERS.contains(&e.name)).map(|e| e.name.to_string()).collect();
+    hw_listed.extend(crate::args::CODEC_ENCODERS.iter().filter(|e| has_encoder(&encoders.stdout, e.name)).map(|e| e.name.to_string()));
     Probe {
         info: FfmpegInfo {
             found: true,
@@ -118,6 +138,7 @@ pub async fn probe_ffmpeg() -> Probe {
             has_ddagrab: DDAGRAB_RE.is_match(&filters.stdout),
             has_gfxcapture: has_filter(&filters.stdout, "gfxcapture"),
             has_whisper: has_filter(&filters.stdout, "whisper"),
+            has_webm: has_encoder(&encoders.stdout, "libvpx-vp9") && has_encoder(&encoders.stdout, "libopus"),
             ddagrab_skip_static: dda_help.stdout.contains("dup_frames"),
             has_gdigrab: GDIGRAB_RE.is_match(&devices.stdout),
             encoder: encoder.map(|e| e.name.to_string()),

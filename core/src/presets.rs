@@ -147,6 +147,7 @@ mod tests {
             shot_dir: String::new(),
             audio: AudioConfig { system: true, mic: true, mic_id: String::new(), app: String::new() },
             encoder: None,
+            codec: Default::default(),
             countdown_sec: Some(3.0),
             hide_ui: None,
             show_clicks: true,

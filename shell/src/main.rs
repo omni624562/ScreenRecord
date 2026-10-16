@@ -174,17 +174,33 @@ fn main() {
     // 錄影中：記下滑鼠點擊與游標位置（剪輯時跟著點擊放大、平滑放大的游標用），並依設定在畫面上顯示點擊與快速鍵（會錄進影片）
     #[cfg(windows)]
     {
-        let (c1, c2, c3) = (Arc::downgrade(&core), Arc::downgrade(&core), Arc::downgrade(&core));
+        let (c1, c2, c3, c4, c5) = (Arc::downgrade(&core), Arc::downgrade(&core), Arc::downgrade(&core), Arc::downgrade(&core), Arc::downgrade(&core));
+        // 點到的東西（按鈕、選單的名稱）在另一個執行緒讀：UI Automation 可能要等那個程式回應，不能卡住畫波紋
+        let (tx, rx) = std::sync::mpsc::channel::<(f64, i32, i32, bool)>();
+        let _ = std::thread::Builder::new().name("click-target".into()).spawn(move || {
+            for (t, x, y, right) in rx {
+                let (name, role, window) = screenrecorder_core::steps_log::describe(x, y);
+                let Some(c) = c4.upgrade() else { break };
+                let kind = if right { screenrecorder_core::steps_log::RIGHT } else { screenrecorder_core::steps_log::CLICK };
+                c.recorder.add_action(screenrecorder_core::steps_log::Action { t, kind, name, role, window });
+            }
+        });
         screenrecorder_core::input_overlay_win::spawn(
             move || c1.upgrade()?.recorder.overlay_info(),
-            move |x, y| {
-                if let Some(c) = c2.upgrade() {
-                    c.recorder.add_click(x, y);
+            move |x, y, right| {
+                if let Some(t) = c2.upgrade().and_then(|c| c.recorder.add_click(x, y)) {
+                    let _ = tx.send((t, x, y, right));
                 }
             },
             move |x, y| {
                 if let Some(c) = c3.upgrade() {
                     c.recorder.add_cursor(x, y);
+                }
+            },
+            move |label| {
+                if let Some(c) = c5.upgrade() {
+                    let window = screenrecorder_core::winui::foreground_app().map(|a| a.title).unwrap_or_default();
+                    c.recorder.add_key(label, &window);
                 }
             },
         );

@@ -1218,7 +1218,7 @@ fn video_bar(v: &mut Viewer, ui: &mut egui::Ui, act: &mut Act) {
 
 /// 加速版、GIF（不能再剪輯或製作加速版）
 fn is_export_name(name: &str) -> bool {
-    static RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| regex::Regex::new(r"(?i)(_\d+(\.\d+)?x\.mp4|\.gif|\.webp)$").unwrap());
+    static RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| regex::Regex::new(r"(?i)(_\d+(\.\d+)?x\.mp4|\.gif|\.webp|\.webm)$").unwrap());
     RE.is_match(name)
 }
 
