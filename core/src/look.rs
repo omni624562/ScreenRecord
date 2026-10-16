@@ -66,7 +66,7 @@ impl Look {
         // 亮度、對比：每個值查表
         let lut: Vec<f32> = (0..256).map(|v| (((v as f64 / 255.0 - 0.5) * c + 0.5 + b) * 255.0) as f32).collect();
         let s = s as f32;
-        for px in rgba.chunks_exact_mut(4) {
+        for px in rgba.as_chunks_mut::<4>().0 {
             let (r, g, bl) = (lut[px[0] as usize], lut[px[1] as usize], lut[px[2] as usize]);
             let y = 0.299 * r + 0.587 * g + 0.114 * bl;
             px[0] = (y + (r - y) * s).clamp(0.0, 255.0) as u8;
