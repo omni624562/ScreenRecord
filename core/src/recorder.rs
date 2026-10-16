@@ -212,6 +212,14 @@ struct St {
     clicks: Vec<(u64, f32, f32)>,
     /// 操作步驟：點了什麼、按了哪些快速鍵（錄完可以整理成文字清單）
     actions: Vec<crate::steps_log::Action>,
+    /// 最後一次有動靜（滑鼠移動、點擊、按鍵、有聲音）的時間（Unix 毫秒；沒動靜時自動暫停用）
+    last_activity: u64,
+    /// 上次記下的游標位置（有沒有移動）
+    last_pos: Option<(i32, i32)>,
+    /// 沒動靜自動暫停中：(暫停的時間)；一有動靜就繼續
+    auto_paused: Option<u64>,
+    /// 正在自動暫停 / 繼續（不要重複觸發）
+    auto_switching: bool,
     /// 游標的位置（剪輯時換成平滑、放大的游標用；見 cursor.rs）
     cursor: Vec<crate::cursor::Sample>,
     /// 按快速鍵標記要放大的地方：(已錄的毫秒數, 在擷取範圍內的位置 0～1)
@@ -276,6 +284,13 @@ struct St {
 }
 
 impl St {
+    /// 有動靜（錄影或暫停中）：沒動靜自動暫停的計時重來；自動暫停中的話接著繼續
+    fn note_activity(&mut self) {
+        if matches!(self.state, RecorderState::Recording | RecorderState::Paused) {
+            self.last_activity = now_ms();
+        }
+    }
+
     fn add_log(&mut self, level: LogLevel, text: &str) {
         self.log.push(LogEntry { t: now_ms(), level, text: text.to_string() });
         if self.log.len() > MAX_LOG {
@@ -851,6 +866,7 @@ impl Recorder {
     /// 記下一次滑鼠點擊（桌面的實體像素座標）；範圍外、暫停中不記。回傳影片裡的時間（秒），之後用來記下點了什麼
     pub fn add_click(&self, x: i32, y: i32) -> Option<f64> {
         let mut st = self.lock();
+        st.note_activity();
         if st.state != RecorderState::Recording || st.clicks.len() >= 20_000 || st.config.as_ref().is_some_and(|c| c.audio_only) {
             return None;
         }
@@ -876,7 +892,8 @@ impl Recorder {
     /// 錄影中按了快速鍵（「Ctrl + S」）：記成操作步驟；暫停中、只錄聲音時不記。window：在哪個視窗
     pub fn add_key(&self, label: &str, window: &str) {
         let t = {
-            let st = self.lock();
+            let mut st = self.lock();
+            st.note_activity();
             if st.state != RecorderState::Recording || st.config.as_ref().is_some_and(|c| c.audio_only) {
                 return;
             }
@@ -888,6 +905,12 @@ impl Recorder {
     /// 記下游標的位置（桌面的實體像素座標；錄影中約每 30 毫秒一次）：剪輯時換成平滑、放大的游標
     pub fn add_cursor(&self, x: i32, y: i32) {
         let mut st = self.lock();
+        if st.last_pos != Some((x, y)) {
+            if st.last_pos.is_some() {
+                st.note_activity();
+            }
+            st.last_pos = Some((x, y));
+        }
         if st.state != RecorderState::Recording || st.config.as_ref().is_none_or(|c| c.audio_only || c.replay_sec > 0) {
             return;
         }
@@ -1015,6 +1038,7 @@ impl Recorder {
                 disk_free_bytes: if st.state == RecorderState::Idle { None } else { st.disk_free_bytes },
                 markers: st.markers.len() as u32,
                 mic_muted: if st.state == RecorderState::Idle { None } else { st.mic_muted() },
+                auto_paused: st.state == RecorderState::Paused && st.auto_paused.is_some(),
                 result: st.result.clone(),
                 log: st.log.clone(),
                 silent_audio: if st.state == RecorderState::Idle { 0 } else { st.silent_now },
@@ -1210,6 +1234,10 @@ impl Recorder {
             st.auto_stopping = false;
             st.log = Vec::new();
             st.markers = Vec::new();
+            st.last_activity = now_ms();
+            st.last_pos = None;
+            st.auto_paused = None;
+            st.auto_switching = false;
             st.clicks = Vec::new();
             st.actions = Vec::new();
             st.cursor = Vec::new();
@@ -1352,6 +1380,8 @@ impl Recorder {
             if st.state != RecorderState::Paused {
                 return Err(Error::config(tr!("目前不是暫停狀態", "Not paused")));
             }
+            st.auto_paused = None;
+            st.last_activity = now_ms();
             st.state = RecorderState::Recording;
             st.span_start = Some(now_ms());
             st.add_log(LogLevel::Info, tr!("繼續錄影", "Resumed recording"));
@@ -1902,8 +1932,62 @@ impl Recorder {
         });
     }
 
+    /// 沒動靜時自動暫停：錄影中超過設定的秒數沒有動靜就暫停；自動暫停後一有動靜就繼續
+    fn auto_pause_check(&self, now: u64) {
+        enum Do {
+            Pause(u32),
+            Resume,
+        }
+        let what = {
+            let mut st = self.lock();
+            let Some(cfg) = st.config.as_ref() else { return };
+            let sec = cfg.auto_pause_sec;
+            if sec == 0 || cfg.audio_only || cfg.replay_sec > 0 || st.busy.is_some() || st.auto_switching {
+                return;
+            }
+            // 有聲音也算有動靜
+            if let Some(t) = st.current.and_then(|i| st.segments[i].audio.as_ref()).map(|a| a.last_sound_ms()) {
+                st.last_activity = st.last_activity.max(t);
+            }
+            match (st.state, st.auto_paused) {
+                (RecorderState::Recording, _) if now.saturating_sub(st.last_activity) >= sec as u64 * 1000 => Do::Pause(sec),
+                (RecorderState::Paused, Some(at)) if st.last_activity > at => Do::Resume,
+                _ => return,
+            }
+        };
+        self.lock().auto_switching = true;
+        let me = self.clone();
+        tokio::spawn(async move {
+            match what {
+                Do::Pause(sec) => {
+                    // 先標成自動暫停、寫進紀錄（暫停的過程中狀態就會變成「暫停」）
+                    {
+                        let mut st = me.lock();
+                        st.auto_paused = Some(now_ms());
+                        st.add_log(
+                            LogLevel::Info,
+                            &trf!("{sec} 秒沒有動靜，自動暫停（動一下滑鼠或按鍵就繼續）", "Nothing happened for {sec} s; paused automatically (move the mouse or press a key to continue)"),
+                        );
+                    }
+                    if me.pause().await.is_err() {
+                        me.lock().auto_paused = None;
+                    }
+                }
+                Do::Resume => {
+                    // 使用者自己按了繼續 / 停止：pause 狀態已經不是自動暫停
+                    let still = me.lock().auto_paused.is_some();
+                    if still && me.resume().await.is_ok() {
+                        me.add_log(LogLevel::Info, tr!("有動靜，自動繼續錄影", "Activity detected; resumed automatically"));
+                    }
+                }
+            }
+            me.lock().auto_switching = false;
+        });
+    }
+
     fn tick(&self) {
         let now = now_ms();
+        self.auto_pause_check(now);
         let mut stop_reason = None;
         let mut check_disk = false;
         let mut prune = None;
@@ -2295,6 +2379,7 @@ mod tests {
                 audio: AudioConfig::default(),
                 encoder: None,
                 codec: Default::default(),
+                auto_pause_sec: 0,
                 countdown_sec: Some(3.0),
                 hide_ui: Some(true),
                 show_clicks: false,
@@ -2675,6 +2760,62 @@ esac
         assert!(m.no_cursor && m.markers.is_empty());
         assert_eq!(m.cursor.iter().map(|c| (c[1], c[2])).collect::<Vec<_>>(), [(0.5, 0.5), (1.0, 0.0)]);
         assert!(m.cursor[1][0] > m.cursor[0][0]);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn pauses_when_nothing_happens_and_resumes_on_activity() {
+        let tools = tempfile::tempdir().unwrap();
+        let s = Setup::new(Fake { ffmpeg: Some(fake_ffmpeg(tools.path())), ..Default::default() });
+        s.release();
+        s.rec.start(RecordConfig { countdown_sec: Some(0.0), hide_ui: Some(false), auto_pause_sec: 1, ..s.config() }).await.unwrap();
+        let wait = |want: RecorderState, ms: u64| {
+            let rec = s.rec.clone();
+            async move {
+                for _ in 0..ms / 20 {
+                    if rec.status().state == want {
+                        return true;
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+                false
+            }
+        };
+        assert!(wait(RecorderState::Recording, 3000).await);
+        // 一直有動靜（移動滑鼠）：不暫停
+        for i in 0..8 {
+            s.rec.add_cursor(100 + i, 100);
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+        assert_eq!(s.rec.status().state, RecorderState::Recording);
+        // 1 秒沒動靜：自動暫停
+        assert!(wait(RecorderState::Paused, 4000).await, "應該要自動暫停");
+        let st = s.rec.status();
+        assert!(st.auto_paused);
+        assert!(st.log.iter().any(|l| l.text.contains("自動暫停")), "{:?}", st.log);
+        // 游標沒動（同一個位置）不算
+        s.rec.add_cursor(107, 100);
+        tokio::time::sleep(Duration::from_millis(600)).await;
+        assert_eq!(s.rec.status().state, RecorderState::Paused);
+        // 動一下滑鼠：自動繼續
+        s.rec.add_cursor(300, 300);
+        assert!(wait(RecorderState::Recording, 3000).await, "應該要自動繼續");
+        assert!(!s.rec.status().auto_paused);
+        // 自己按暫停：有動靜也不會自動繼續
+        s.rec.pause().await.unwrap();
+        s.rec.add_cursor(400, 400);
+        tokio::time::sleep(Duration::from_millis(600)).await;
+        assert_eq!(s.rec.status().state, RecorderState::Paused);
+        assert!(!s.rec.status().auto_paused);
+        assert!(s.rec.stop(None).await.unwrap().unwrap().ok);
+    }
+
+    #[test]
+    fn loud_sound_counts_as_activity() {
+        let quiet: Vec<u8> = [0.001f32, -0.02, 0.01].iter().flat_map(|v| v.to_le_bytes()).collect();
+        let speech: Vec<u8> = [0.001f32, -0.2, 0.01].iter().flat_map(|v| v.to_le_bytes()).collect();
+        assert!(!crate::audiopipe::loud(&quiet));
+        assert!(crate::audiopipe::loud(&speech));
     }
 
     #[cfg(unix)]

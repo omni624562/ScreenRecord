@@ -148,6 +148,7 @@ mod tests {
             audio: AudioConfig { system: true, mic: true, mic_id: String::new(), app: String::new() },
             encoder: None,
             codec: Default::default(),
+            auto_pause_sec: 0,
             countdown_sec: Some(3.0),
             hide_ui: None,
             show_clicks: true,

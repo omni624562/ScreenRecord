@@ -42,6 +42,8 @@ pub struct UiSettings {
     pub scale: u32,
     pub draw_mouse: bool,
     pub max_minutes: f64,
+    /// 沒動靜幾秒後自動暫停（0 = 不用）
+    pub auto_pause_sec: u32,
     pub method: MethodPreference,
     pub output_dir: String,
     pub speed: f64,
@@ -214,6 +216,8 @@ pub struct FollowWindow {
 
 pub const FPS_CHOICES: [f64; 8] = [10.0, 15.0, 20.0, 24.0, 25.0, 30.0, 50.0, 60.0];
 pub const MAX_PRESETS: [f64; 4] = [0.0, 30.0, 60.0, 120.0];
+/// 沒動靜時自動暫停的秒數（0 = 不用）
+pub const AUTO_PAUSE: [u32; 6] = [0, 15, 30, 60, 120, 300];
 /// 加速版的大小上限（MB）；0 = 不限
 pub const MAX_MB: [u32; 5] = [0, 10, 25, 50, 100];
 
@@ -254,6 +258,7 @@ impl UiSettings {
             scale: num("scale").map(|v| v as u32).filter(|v| [100, 75, 50, 25].contains(v)).unwrap_or(100),
             draw_mouse: boolean("drawMouse").unwrap_or(true),
             max_minutes: num("maxMinutes").filter(|v| v.is_finite() && *v >= 0.0).unwrap_or(0.0),
+            auto_pause_sec: num("autoPauseSec").map(|v| v as u32).filter(|v| AUTO_PAUSE.contains(v)).unwrap_or(0),
             method: o.get("method").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default(),
             output_dir: string("outputDir").map(|d| d.trim().to_string()).filter(|d| !d.is_empty()).unwrap_or_else(|| env.default_output_dir.clone()),
             speed: num("speed").filter(|v| *v >= 1.0).unwrap_or(4.0),
@@ -515,6 +520,7 @@ impl UiSettings {
             scale: self.scale as f64,
             draw_mouse: self.draw_mouse,
             max_minutes: self.max_minutes,
+            auto_pause_sec: self.auto_pause_sec,
             method: self.method,
             output_dir: self.out_dir(env),
             shot_dir: self.shot_dir.trim().to_string(),

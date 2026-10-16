@@ -445,6 +445,10 @@ impl VideoCodec {
     }
 }
 
+fn is_zero_u32_cfg(v: &u32) -> bool {
+    *v == 0
+}
+
 fn is_h264(c: &VideoCodec) -> bool {
     *c == VideoCodec::H264
 }
@@ -472,6 +476,9 @@ pub struct RecordConfig {
     /// 影片格式（HEVC、AV1 要用顯示卡壓縮；沒有支援的顯示卡時用 H.264）
     #[serde(default, skip_serializing_if = "is_h264")]
     pub codec: VideoCodec,
+    /// 滑鼠、鍵盤、聲音都沒動靜幾秒後自動暫停，一有動靜就繼續（0 = 不用）
+    #[serde(default, skip_serializing_if = "is_zero_u32_cfg")]
+    pub auto_pause_sec: u32,
     /// 開始前倒數秒數（0 = 立即開始）；未指定視為 3
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub countdown_sec: Option<f64>,
@@ -669,6 +676,9 @@ pub struct RecorderStatus {
     /// 麥克風：None = 這次沒錄麥克風；Some(true) = 暫時靜音中
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mic_muted: Option<bool>,
+    /// 沒動靜，自動暫停中（一有動靜就繼續）
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub auto_paused: bool,
     /// 重播緩衝中（不是一般錄影）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub replay: Option<ReplayStatus>,
