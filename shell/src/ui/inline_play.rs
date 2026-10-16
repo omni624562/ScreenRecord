@@ -1,4 +1,4 @@
-//! 主畫面內播放：按「最近錄影」卡片的播放鍵，影片（或錄音）就在即時預覽的位置播放，看完按 ✕ 或 Esc 回到即時預覽。
+//! 主畫面內播放：按「最近錄影」卡片的播放鍵，影片（或錄音）就在即時預覽的位置播放，看完按「回到錄影畫面」、Esc 或點範圍分頁回到即時預覽。
 //! 外框與標籤用藍色（錄影範圍是紅色），一看就知道是在播放。只放基本控制（播放、進度、速度、音量、全螢幕）；
 //! 要用其他功能（章節、擷取這一格、做封面…）按「在播放器開啟」，從目前的位置接著播。
 //! 開始錄影（含倒數）時自動停止播放。
@@ -292,16 +292,24 @@ pub fn show(app: &mut UiApp, ui: &mut egui::Ui, area: Rect) {
     let tag = Rect::from_min_size(shown.min + vec2(8.0, 8.0), g.size() + vec2(12.0, 6.0));
     painter.rect_filled(tag, CornerRadius::same(5), p.accent);
     painter.galley(tag.min + vec2(6.0, 3.0), g, Color32::WHITE);
-    // 右上角：回到即時預覽
-    let close_r = Rect::from_min_size(pos2(shown.max.x - 36.0, shown.min.y + 6.0), vec2(30.0, 30.0));
+    // 點畫面：播放 / 暫停；點兩下：在播放器開啟。要比上面的按鈕先登記，按鈕才收得到點擊（後登記的蓋在上面）
+    let resp = ui.interact(stage, egui::Id::new("inline-stage"), Sense::click());
+    // 右上角：回到錄影畫面（即時預覽），有文字比較好找
+    let close_r = Rect::from_min_max(pos2(shown.max.x - 220.0, shown.min.y + 6.0), pos2(shown.max.x - 6.0, shown.min.y + 38.0));
     let mut close_now = false;
-    ui.scope_builder(UiBuilder::new().max_rect(close_r), |ui| {
-        if Btn::icon_only(Icon::Close).small().tooltip(tr!("回到即時預覽（Esc）", "Back to live preview (Esc)")).show(ui).clicked() {
+    let mut btn_r = close_r;
+    ui.scope_builder(UiBuilder::new().max_rect(close_r).layout(Layout::right_to_left(Align::Min)), |ui| {
+        let r = Btn::new(tr!("回到錄影畫面", "Back to recording"))
+            .icon(Icon::Video)
+            .small()
+            .tooltip(tr!("停止播放，回到即時預覽，可以接著錄影（Esc；切換上面的範圍分頁也可以）", "Stop playing and go back to the live preview to record (Esc, or pick a capture tab above)"))
+            .show(ui);
+        btn_r = r.rect;
+        if r.clicked() {
             close_now = true;
         }
     });
-    // 點畫面：播放 / 暫停；點兩下：在播放器開啟
-    let resp = ui.interact(stage, egui::Id::new("inline-stage"), Sense::click());
+    let close_r = btn_r;
     let mut open_viewer = resp.double_clicked();
     if let Some(pl) = &i.player {
         if resp.clicked() && !close_r.contains(resp.interact_pointer_pos().unwrap_or_default()) {

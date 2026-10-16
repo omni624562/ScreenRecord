@@ -219,10 +219,15 @@ fn capture_panel(app: &mut UiApp, ui: &mut Ui) {
         let one_row = tabs_w + gap + detail_width(app, ui) + gap + right_w <= ui.available_width();
         ui.horizontal(|ui| {
             let mut st = app.s.source_type;
-            // 播放中不能切換範圍（看的是影片，不是螢幕）
-            if segmented(ui, &mut st, &tabs, !locked && app.inline.is_none()) {
-                app.s.source_type = st;
-                app.save_settings();
+            // 播放中點範圍分頁：停止播放，回到錄影畫面（點的是不同的分頁時也一起切換）
+            if segmented(ui, &mut st, &tabs, !locked)
+                || (app.inline.is_some() && ui.min_rect().contains(ui.ctx().input(|i| i.pointer.interact_pos()).unwrap_or_default()) && ui.ctx().input(|i| i.pointer.primary_clicked()))
+            {
+                app.inline = None;
+                if st != app.s.source_type {
+                    app.s.source_type = st;
+                    app.save_settings();
+                }
             }
             tour::mark(ui, Spot::Source, ui.min_rect());
             if one_row {
