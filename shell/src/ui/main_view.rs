@@ -219,7 +219,8 @@ fn capture_panel(app: &mut UiApp, ui: &mut Ui) {
         let one_row = tabs_w + gap + detail_width(app, ui) + gap + right_w <= ui.available_width();
         ui.horizontal(|ui| {
             let mut st = app.s.source_type;
-            if segmented(ui, &mut st, &tabs, !locked) {
+            // 播放中不能切換範圍（看的是影片，不是螢幕）
+            if segmented(ui, &mut st, &tabs, !locked && app.inline.is_none()) {
                 app.s.source_type = st;
                 app.save_settings();
             }
@@ -555,6 +556,13 @@ fn window_picker(app: &mut UiApp, ui: &mut Ui, locked: bool) {
 /// 預覽圖、螢幕框、自訂範圍的紅框
 fn desk(app: &mut UiApp, ui: &mut Ui, area: Rect) {
     let p = theme::pal(ui);
+    // 主畫面內播放：在預覽的位置播放（暫停即時預覽）
+    if app.inline.is_some() {
+        if app.preview.running() {
+            app.preview.stop(&app.core);
+        }
+        return super::inline_play::show(app, ui, area);
+    }
     if app.s.source_type == SourceType::Audio {
         if app.preview.running() {
             app.preview.stop(&app.core);
@@ -1123,7 +1131,7 @@ fn after_done_card(app: &mut UiApp, ui: &mut Ui) {
             ui.spacing_mut().item_spacing = vec2(4.0, 4.0);
             if let Some(out) = &d.output {
                 if Btn::new(tr!("播放處理好的版本", "Play the processed version")).icon(Icon::Play).small().show(ui).clicked() {
-                    app.act_path(EntryAction::Play, out.clone());
+                    app.act_path(EntryAction::PlayHere, out.clone());
                 }
             }
             if Btn::new(tr!("在資料夾中顯示", "Show in folder")).icon(Icon::Folder).small().show(ui).clicked() {
@@ -2224,7 +2232,7 @@ fn result_card(app: &mut UiApp, ui: &mut Ui, res: &screenrecorder_core::types::R
 fn action_buttons(app: &mut UiApp, ui: &mut Ui, path: &str, edit: bool, export: bool) {
     ui.horizontal_wrapped(|ui| {
         if Btn::new(tr!("播放", "Play")).icon(Icon::Play).small().show(ui).clicked() {
-            app.act_path(EntryAction::Play, path.to_string());
+            app.act_path(EntryAction::PlayHere, path.to_string());
         }
         if Btn::new(tr!("在資料夾中顯示", "Show in folder")).icon(Icon::Folder).small().show(ui).clicked() {
             app.act_path(EntryAction::Reveal, path.to_string());
@@ -2583,7 +2591,9 @@ fn recent_card(app: &mut UiApp, ui: &mut Ui, e: &LibraryEntry, date: String, w: 
     if app.recent.as_ref().and_then(|r| r.items.first()).is_some_and(|f| f.media.path == e.media.path) {
         tour::mark(ui, Spot::RecentCard, rect);
     }
-    painter.rect(rect, CornerRadius::same(theme::RADIUS_SM), if resp.hovered() { p.surface2 } else { p.surface }, Stroke::new(1.0, p.border), StrokeKind::Inside);
+    let playing = app.inline.as_ref().is_some_and(|i| i.is(&e.media.path));
+    let edge = if playing { Stroke::new(2.0, p.accent) } else { Stroke::new(1.0, p.border) };
+    painter.rect(rect, CornerRadius::same(theme::RADIUS_SM), if resp.hovered() { p.surface2 } else { p.surface }, edge, StrokeKind::Inside);
     let thumb = Rect::from_min_size(rect.min + vec2(6.0, 6.0), vec2((h - 12.0) * 16.0 / 9.0, h - 12.0));
     painter.rect_filled(thumb, CornerRadius::same(5), p.surface2);
     if let Some(t) = app.thumb(&e.media.path, e.media.mtime) {
@@ -2603,6 +2613,12 @@ fn recent_card(app: &mut UiApp, ui: &mut Ui, e: &LibraryEntry, date: String, w: 
     let c = thumb.center();
     painter.add(egui::Shape::convex_polygon(vec![c + vec2(-4.0, -6.5), c + vec2(7.0, 0.0), c + vec2(-4.0, 6.5)], Color32::WHITE, Stroke::NONE));
     if thumb_resp.clicked() {
+        app.known.insert(e.media.path.clone(), e.clone());
+        app.act(EntryAction::PlayHere, e.clone());
+    }
+    // 點兩下卡片：在播放器開啟（完整的功能）
+    if resp.double_clicked() || thumb_resp.double_clicked() {
+        app.inline = None;
         app.known.insert(e.media.path.clone(), e.clone());
         app.act(EntryAction::Play, e.clone());
     }
@@ -2648,14 +2664,14 @@ fn recent_card(app: &mut UiApp, ui: &mut Ui, e: &LibraryEntry, date: String, w: 
         let ui = &mut ui.new_child(UiBuilder::new().max_rect(row).layout(Layout::left_to_right(Align::Center)));
         ui.spacing_mut().item_spacing.x = 2.0;
         let acts = [
-            (EntryAction::Play, Icon::Play, tr!("播放", "Play")),
+            (EntryAction::PlayHere, Icon::Play, tr!("播放（點兩下卡片：在播放器開啟）", "Play (double-click the card to open in the player)")),
             (EntryAction::Reveal, Icon::Folder, tr!("在資料夾中顯示", "Show in folder")),
             (EntryAction::Edit, Icon::Cut, tr!("剪輯", "Edit")),
             (EntryAction::Export, Icon::Fast, tr!("製作加速版 / GIF", "Make sped-up video / GIF")),
         ];
         let hot = ui.rect_contains_pointer(rect);
         for (act, icon, tip) in acts {
-            if Btn::icon_only(icon).ghost().small().quiet(!hot && act != EntryAction::Play).tooltip(tip).show(ui).clicked() {
+            if Btn::icon_only(icon).ghost().small().quiet(!hot && act != EntryAction::PlayHere).tooltip(tip).show(ui).clicked() {
                 app.known.insert(e.media.path.clone(), e.clone());
                 app.act(act, e.clone());
             }
@@ -2675,6 +2691,10 @@ fn recent_menu(app: &mut UiApp, ui: &mut Ui, e: &LibraryEntry) {
         app.act(a, e.clone());
     };
     if ui.button(tr!("播放", "Play")).clicked() {
+        act(app, EntryAction::PlayHere);
+    }
+    if ui.button(tr!("在播放器開啟", "Open in the player")).clicked() {
+        app.inline = None;
         act(app, EntryAction::Play);
     }
     if ui.button(tr!("在資料夾中顯示", "Show in folder")).clicked() {
@@ -2697,6 +2717,9 @@ fn recent_menu(app: &mut UiApp, ui: &mut Ui, e: &LibraryEntry) {
         act(app, EntryAction::CopyChapters);
     }
     if ui.button(tr!("重新命名", "Rename")).clicked() {
+        if app.inline.as_ref().is_some_and(|i| i.is(&e.media.path)) {
+            app.inline = None;
+        }
         super::library_dialog::rename_entry(app, e.clone());
     }
 }
