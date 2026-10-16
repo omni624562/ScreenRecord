@@ -73,6 +73,11 @@ pub fn model_path(m: &Model) -> PathBuf {
 }
 
 /// whisper.cpp 的模型檔開頭是 "lmgg"（0x67676d6c，little-endian）
+/// 是 whisper.cpp 的模型檔（選擇已下載的檔案時檢查）
+pub fn is_model_file(path: &Path) -> bool {
+    magic_ok(path)
+}
+
 fn magic_ok(path: &Path) -> bool {
     use std::io::Read;
     let mut b = [0u8; 4];
@@ -82,7 +87,12 @@ fn magic_ok(path: &Path) -> bool {
 /// 模型已經下載好
 pub fn model_ready(m: &Model) -> bool {
     let p = model_path(m);
-    std::fs::metadata(&p).is_ok_and(|md| md.len() > m.mb as u64 * 900_000) && magic_ok(&p)
+    model_size_ok(m, &p) && magic_ok(&p)
+}
+
+/// 檔案大小合理（下載中斷的檔案會比較小）
+pub fn model_size_ok(m: &Model, path: &Path) -> bool {
+    std::fs::metadata(path).is_ok_and(|md| md.len() > m.mb as u64 * 900_000)
 }
 
 /// 下載模型（會等到下載完成；progress：千分比；cancel 設成 true 就停止）
@@ -172,23 +182,6 @@ pub async fn download_speech_ffmpeg(progress: Arc<AtomicU32>, cancel: Arc<Atomic
         return Err(tr!("下載的 FFmpeg 不能辨識語音", "The downloaded FFmpeg can't recognize speech").into());
     }
     Ok(path)
-}
-
-/// 產生字幕前還要下載的檔案（名稱、約幾 MB）；need_ffmpeg：還沒有能辨識語音的 FFmpeg
-pub fn pending_downloads(need_ffmpeg: bool, m: &Model) -> Vec<(&'static str, u32)> {
-    let mut v = vec![];
-    if need_ffmpeg {
-        v.push((tr!("語音辨識用的 FFmpeg", "FFmpeg for speech recognition"), crate::downloader::SPEECH_FFMPEG_MB));
-    }
-    if !model_ready(m) {
-        v.push((tr!("語音模型", "the speech model"), m.mb));
-    }
-    v
-}
-
-/// 「語音辨識用的 FFmpeg（約 258 MB）與語音模型（約 148 MB）」
-pub fn describe_downloads(list: &[(&str, u32)]) -> String {
-    list.iter().map(|(name, mb)| trf!("{name}（約 {mb} MB）", "{name} (about {mb} MB)")).collect::<Vec<_>>().join(tr!("與", " and "))
 }
 
 /// 辨識語音的參數。模型與輸出都用檔名（FFmpeg 在模型的資料夾裡執行），
@@ -629,7 +622,6 @@ echo "progress=end"
             "-hide_banner -nostats -loglevel error -progress pipe:1 -i C:\\影片\\a.mp4 -vn -map 0:a:0 -af whisper=model=ggml-base.bin:language=zh:queue=10:format=srt:destination=job.srt -f null -"
         );
         assert!(MODELS.iter().all(|m| m.url.ends_with(m.file)));
-        assert_eq!(describe_downloads(&[("語音辨識用的 FFmpeg", 258), ("語音模型", 148)]), "語音辨識用的 FFmpeg（約 258 MB）與語音模型（約 148 MB）");
     }
 
     #[test]

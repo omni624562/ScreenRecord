@@ -87,6 +87,66 @@ pub fn download_target() -> Result<PathBuf, String> {
     Err(tr!("找不到可寫入的資料夾", "No writable folder found").into())
 }
 
+/// 從 zip 解出 ffmpeg.exe（bin\ffmpeg.exe，或壓縮檔裡唯一的 ffmpeg.exe）到 work，回傳解出的位置
+pub fn extract_ffmpeg(zip: &Path, work: &Path, tar: &Path, run: &RunFn) -> Result<PathBuf, String> {
+    let zip_s = zip.display().to_string();
+    let list = run(tar, &["-tf".into(), zip_s.clone()], Duration::from_secs(60));
+    if list.code != 0 {
+        return Err(trf!("無法讀取壓縮檔：{}", "Couldn't read the archive: {}", list.stderr.trim()));
+    }
+    let names: Vec<&str> = list.stdout.lines().map(str::trim).collect();
+    let is_bin = |l: &str| {
+        let lower = l.to_lowercase();
+        lower == "bin/ffmpeg.exe" || lower.ends_with("/bin/ffmpeg.exe")
+    };
+    let is_any = |l: &str| {
+        let lower = l.to_lowercase();
+        lower == "ffmpeg.exe" || lower.ends_with("/ffmpeg.exe")
+    };
+    let entry = names
+        .iter()
+        .find(|l| is_bin(l))
+        .or_else(|| names.iter().find(|l| is_any(l)))
+        .ok_or_else(|| tr!("壓縮檔裡找不到 bin/ffmpeg.exe", "bin/ffmpeg.exe not found in the archive").to_string())?
+        .to_string();
+    let ex = run(tar, &["-xf".into(), zip_s, "-C".into(), work.display().to_string(), entry.clone()], Duration::from_secs(120));
+    let extracted = entry.split('/').fold(work.to_path_buf(), |p, part| p.join(part));
+    if ex.code != 0 || !extracted.exists() {
+        return Err(trf!("解壓縮失敗：{}", "Extraction failed: {}", ex.stderr.trim()));
+    }
+    Ok(extracted)
+}
+
+/// 確認 ffmpeg 能執行，再放到 target（先放暫存名稱再改名，避免留下半個檔案）；回傳版本
+pub fn place_ffmpeg(src: &Path, target: &Path, run: &RunFn) -> Result<Option<String>, String> {
+    let ver = run(src, &["-hide_banner".into(), "-version".into()], Duration::from_secs(15));
+    if ver.code != 0 || !ver.stdout.contains("ffmpeg version") {
+        return Err(tr!("這個 ffmpeg.exe 無法執行（可能不完整或不是 64 位元 Windows 版）", "This ffmpeg.exe can't run (it may be incomplete or not a 64-bit Windows build)").into());
+    }
+    if let Some(dir) = target.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    let staging = PathBuf::from(format!("{}.download", target.display()));
+    std::fs::copy(src, &staging).map_err(|e| e.to_string())?;
+    let _ = std::fs::remove_file(target);
+    std::fs::rename(&staging, target).map_err(|e| e.to_string())?;
+    Ok(crate::ffmpeg::parse_version(&ver.stdout))
+}
+
+/// 安裝使用者自己下載的 FFmpeg（無法自動下載時）：可以是 ffmpeg.exe，或 FFmpeg 的 zip 壓縮檔。回傳版本
+pub fn install_local(src: &Path, target: &Path) -> Result<Option<String>, String> {
+    let run: RunFn = Box::new(run_blocking);
+    let is_zip = src.extension().is_some_and(|e| e.eq_ignore_ascii_case("zip"));
+    if !is_zip {
+        return place_ffmpeg(src, target, &run);
+    }
+    let work = std::env::temp_dir().join(format!("ScreenRecorder-ffmpeg-local-{}-{}", crate::paths::now_ms(), std::process::id()));
+    std::fs::create_dir_all(&work).map_err(|e| e.to_string())?;
+    let r = extract_ffmpeg(src, &work, &system_tar(), &run).and_then(|exe| place_ffmpeg(&exe, target, &run));
+    let _ = std::fs::remove_dir_all(&work);
+    r
+}
+
 /// 網路回應：內容長度（可能未知）與內容
 pub type Body = (Option<u64>, Box<dyn Read + Send>);
 
@@ -288,44 +348,12 @@ impl Downloader {
 
         // 2. 解壓縮：只取 bin\ffmpeg.exe
         self.set(|s| s.phase = DownloadPhase::Extracting);
-        let tar = &self.deps.tar;
-        let zip_s = zip.display().to_string();
-        let list = (self.deps.run)(tar, &["-tf".into(), zip_s.clone()], Duration::from_secs(60));
-        if list.code != 0 {
-            return Err(Fail::Error(trf!("無法讀取壓縮檔：{}", "Couldn't read the archive: {}", list.stderr.trim())));
-        }
-        let entry = list
-            .stdout
-            .lines()
-            .map(str::trim)
-            .find(|l| {
-                let lower = l.to_lowercase();
-                lower == "bin/ffmpeg.exe" || lower.ends_with("/bin/ffmpeg.exe")
-            })
-            .ok_or_else(|| Fail::Error(tr!("壓縮檔裡找不到 bin/ffmpeg.exe", "bin/ffmpeg.exe not found in the archive").into()))?
-            .to_string();
-        let ex = (self.deps.run)(tar, &["-xf".into(), zip_s, "-C".into(), work.display().to_string(), entry.clone()], Duration::from_secs(120));
-        let extracted = entry.split('/').fold(work.to_path_buf(), |p, part| p.join(part));
-        if ex.code != 0 || !extracted.exists() {
-            return Err(Fail::Error(trf!("解壓縮失敗：{}", "Extraction failed: {}", ex.stderr.trim())));
-        }
+        let extracted = extract_ffmpeg(&zip, work, &self.deps.tar, &self.deps.run).map_err(Fail::Error)?;
         if cancel.load(Ordering::SeqCst) {
             return Err(Fail::Canceled);
         }
-
-        // 3. 確認能執行再放到定位（先放暫存名稱再改名，避免留下半個檔案）
-        let ver = (self.deps.run)(&extracted, &["-hide_banner".into(), "-version".into()], Duration::from_secs(15));
-        if ver.code != 0 {
-            return Err(Fail::Error(tr!("下載的 ffmpeg.exe 無法執行", "The downloaded ffmpeg.exe can't run").into()));
-        }
-        if let Some(dir) = target.parent() {
-            std::fs::create_dir_all(dir).map_err(|e| Fail::Error(e.to_string()))?;
-        }
-        let staging = PathBuf::from(format!("{}.download", target.display()));
-        std::fs::copy(&extracted, &staging).map_err(|e| Fail::Error(e.to_string()))?;
-        let _ = std::fs::remove_file(target);
-        std::fs::rename(&staging, target).map_err(|e| Fail::Error(e.to_string()))?;
-        let version = crate::ffmpeg::parse_version(&ver.stdout);
+        // 3. 確認能執行再放到定位
+        let version = place_ffmpeg(&extracted, target, &self.deps.run).map_err(Fail::Error)?;
         let msg = trf!("已安裝 FFmpeg {}：{}", "Installed FFmpeg {}: {}", version.clone().unwrap_or_default(), target.display());
         self.set(|s| {
             s.version = version;

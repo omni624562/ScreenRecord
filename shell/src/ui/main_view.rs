@@ -32,8 +32,6 @@ pub struct MainState {
     windows: Vec<screenrecorder_core::winui::WindowInfo>,
     /// 事件紀錄展開時看到的最後一筆的時間：收起時，之後的警告與錯誤標在標題旁
     log_seen: u64,
-    /// 第一次使用的提示：展開「進階／手動安裝」
-    ffmpeg_adv: bool,
     /// 按 ✕ 關掉的錄影結果（路徑或訊息）
     dismissed_result: Option<String>,
     /// 錄影失敗的卡片：展開「詳細資訊」
@@ -102,7 +100,8 @@ fn banners(app: &mut UiApp, ui: &mut Ui) {
     }
 }
 
-/// 第一次使用（找不到 FFmpeg）：一個大的「下載並開始使用」；手動安裝、重新偵測收在「進階／手動安裝」裡
+/// 第一次使用（找不到 FFmpeg）：一個大的「下載並開始使用」（和設定 → 外部元件的下載是同一個）；
+/// 下載不了時到外部元件設定 Proxy 或選擇自己下載的檔案
 fn ffmpeg_banner(app: &mut UiApp, ui: &mut Ui) {
     let p = theme::pal(ui);
     let d = app.status.download.clone();
@@ -114,7 +113,11 @@ fn ffmpeg_banner(app: &mut UiApp, ui: &mut Ui) {
         ui.horizontal(|ui| {
             ui.vertical(|ui| {
                 ui.set_max_width(ui.available_width() - 240.0);
-                ui.label(RichText::new(tr!("第一次使用：需要先下載錄影元件（約 110 MB）", "First time here: the recording component needs to be downloaded (about 110 MB)")).font(theme::font_bold(15.0)).color(p.text));
+                ui.label(
+                    RichText::new(tr!("第一次使用：需要先下載錄影元件（約 110 MB）", "First time here: the recording component needs to be downloaded (about 110 MB)"))
+                        .font(theme::font_bold(15.0))
+                        .color(p.text),
+                );
                 ui.add_space(2.0);
                 let (text, color) = match d.phase {
                     DownloadPhase::Downloading => {
@@ -164,54 +167,21 @@ fn ffmpeg_banner(app: &mut UiApp, ui: &mut Ui) {
                 }
             });
         });
-        // 進階／手動安裝：下載來源與檢查方式、自己放 ffmpeg.exe 的位置、重新偵測
-        ui.add_space(4.0);
-        let open = app.main.ffmpeg_adv;
-        let row = ui
-            .horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 4.0;
-                let (icon, _) = ui.allocate_exact_size(vec2(14.0, 14.0), Sense::hover());
-                theme::paint_icon(ui.painter(), icon, if open { Icon::ChevD } else { Icon::ChevR }, p.muted);
-                ui.label(RichText::new(tr!("進階／手動安裝", "Advanced / manual install")).font(theme::font(12.5)).color(p.muted));
-            })
-            .response;
-        if ui.interact(row.rect, ui.id().with("ffmpeg-adv"), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
-            app.main.ffmpeg_adv = !open;
-        }
-        if open {
-            ui.add(
-                egui::Label::new(
-                    RichText::new(trf!(
-                        "自動下載的是 gyan.dev 的 FFmpeg essentials；下載後比對程式內建的 SHA-256 檢查碼，確認檔案完整且未遭竄改。也可以自行下載，把 bin\\ffmpeg.exe 放到 {}，再按「重新偵測」。",
-                        "The automatic download is FFmpeg essentials from gyan.dev, checked against a built-in SHA-256 checksum to make sure it is complete and untampered. You can also download it yourself, put bin\\ffmpeg.exe in {}, then click “Check again”.",
-                        app.env.app_dir
-                    ))
-                    .font(theme::font(12.5))
-                    .color(p.muted),
-                )
-                .wrap(),
-            );
-            ui.horizontal(|ui| {
-                if Btn::new(tr!("手動下載（開啟網頁）", "Manual download (open web page)")).small().show(ui).clicked() {
-                    let _ = actions::open_url("https://www.gyan.dev/ffmpeg/builds/");
-                }
-                if Btn::new(tr!("開啟程式資料夾", "Open app folder")).small().show(ui).clicked() {
-                    if let Err(e) = actions::open(actions::OpenAction::Folder, &app.env.app_dir) {
-                        app.toast(e.message().to_string(), true);
-                    }
-                }
-                if Btn::new(tr!("重新偵測", "Check again")).small().show(ui).clicked() {
-                    app.refresh_env(|app| {
-                        let (msg, err) = if app.env.ffmpeg.found {
-                            (trf!("已找到 FFmpeg {}", "Found FFmpeg {}", app.env.ffmpeg.version.clone().unwrap_or_default()), false)
-                        } else {
-                            (tr!("仍然找不到 ffmpeg.exe", "ffmpeg.exe still not found").into(), true)
-                        };
-                        app.toast(msg, err);
-                    });
-                }
-            });
-        }
+        // 下載不了（公司網路、沒有網路）：設定 → 外部元件可以設定 Proxy，或選擇自己下載的檔案
+        ui.add_space(6.0);
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 6.0;
+            ui.label(RichText::new(tr!("無法下載，或已經有 FFmpeg？", "Download not working, or already have FFmpeg?")).font(theme::font(12.5)).color(p.muted));
+            if Btn::new(tr!("到「設定 → 外部元件」", "Open Settings → Components"))
+                .small()
+                .ghost()
+                .tooltip(tr!("設定 Proxy、用瀏覽器下載後選擇檔案，或重新偵測", "Set a proxy, choose a file downloaded in your browser, or detect again"))
+                .show(ui)
+                .clicked()
+            {
+                settings_dialog::open(app, settings_dialog::Page::Components);
+            }
+        });
     });
     tour::mark(ui, Spot::Download, banner.response.rect);
 }

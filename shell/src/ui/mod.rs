@@ -1130,10 +1130,6 @@ impl eframe::App for UiApp {
             viewer::show(self, &ctx);
             part(self, "檢視器");
         }
-        if self.settings_dlg.is_some() {
-            settings_dialog::show(self, &ctx);
-            settings_dialog::check_key_capture(self);
-        }
         if self.editor.is_some() {
             editor::show(self, &ctx);
             part(self, "剪輯視窗");
@@ -1149,6 +1145,11 @@ impl eframe::App for UiApp {
         }
         if self.cover.is_some() {
             cover::show(self, &ctx);
+        }
+        // 設定視窗在其他視窗之後畫：從剪輯視窗、全部錄影開啟時（例如「前往外部元件」）在最上面
+        if self.settings_dlg.is_some() {
+            settings_dialog::show(self, &ctx);
+            settings_dialog::check_key_capture(self);
         }
         // 新功能介紹：主畫面第一次看得到、沒有其他視窗時檢查一次
         if !self.whats_new_checked && self.visible && self.env_ready && self.editor.is_none() && self.snip.is_none() {

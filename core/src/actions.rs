@@ -77,6 +77,7 @@ pub fn job_label(e: &crate::types::ExportStatus) -> String {
 /// 儲存設定：ui = 操作視窗的設定（JSON），config = 系統匣「開始錄影」用的錄影設定。回傳新的版本號
 pub fn save_settings(app: &App, ui: Option<Value>, config: Option<&RecordConfig>) -> u64 {
     let config = config.and_then(|c| serde_json::to_value(c).ok());
+    crate::http::configure(ui.as_ref());
     app.settings.save(crate::settings::SettingsPatch { ui, config, ..Default::default() }).rev
 }
 

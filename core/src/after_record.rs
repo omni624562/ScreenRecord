@@ -517,73 +517,77 @@ impl App {
             if !self.after_wait_idle(&cancel).await {
                 return Ok(done);
             }
-            // 目前用的 FFmpeg 沒有 whisper：先下載語音辨識用的 FFmpeg（和語音模型一樣，只有第一次）
-            let speech = match crate::subtitles::find_speech_ffmpeg(&ffmpeg).await {
-                Some(p) => p,
-                None => {
-                    self.after_begin(step_no, tr!("下載語音辨識用的 FFmpeg", "Downloading FFmpeg for speech recognition").into());
-                    crate::subtitles::download_speech_ffmpeg(progress.clone(), cancel.clone()).await?
-                }
-            };
+            // 語音辨識需要的檔案在「設定 → 外部元件」下載；還沒下載時跳過字幕（不在背景自己下載幾百 MB）
+            let speech = crate::subtitles::find_speech_ffmpeg(&ffmpeg).await;
             let m = crate::subtitles::MODELS[after.subs_model];
+            let mut missing = vec![];
+            if speech.is_none() {
+                missing.push(crate::components::Kind::SpeechFfmpeg);
+            }
             if !crate::subtitles::model_ready(&m) {
-                self.after_begin(step_no, tr!("下載語音模型", "Downloading the speech model").into());
-                let (p, c) = (progress.clone(), cancel.clone());
-                tokio::task::spawn_blocking(move || crate::subtitles::download_model(&m, &p, &c)).await.map_err(|e| e.to_string())??;
+                missing.push(crate::components::Kind::Model(after.subs_model));
             }
-            let dur = self.cache.probe(&ffmpeg, &video).await.ok().and_then(|i| i.duration_sec).unwrap_or(0.0);
-            let lang = crate::subtitles::LANGUAGES[after.subs_lang].0;
-            // 辨識很吃 CPU：開始錄影時停下來，錄完再重新辨識
-            let cues = loop {
-                if !self.after_wait_idle(&cancel).await {
-                    return Ok(done);
-                }
-                self.after_begin(step_no, tr!("產生字幕", "Generating subtitles").into());
-                self.after_arm();
-                self.after_set(|s| s.transcribing = true);
-                let r = crate::subtitles::transcribe(&speech, &video, dur, &m, lang, progress.clone(), stop_step.clone()).await;
-                self.after_set(|s| s.transcribing = false);
-                if self.after_take_preempted() {
-                    continue;
-                }
-                break r?;
-            };
-            if cancel.load(Ordering::Relaxed) {
-                return Ok(done);
-            }
-            if cues.is_empty() {
-                done.push(tr!("沒有辨識出說話的內容", "no speech recognized").into());
-            } else {
-                let srt = crate::subtitles::save_next_to(&video, &cues)?;
-                done.push(trf!("字幕存成「{}」", "subtitles saved as “{}”", srt.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()));
-                // 英文字幕（說英文時原文就是英文，不用再做）
-                if after.subs_en && lang != "en" {
-                    let en = loop {
-                        if !self.after_wait_idle(&cancel).await {
-                            return Ok(done);
-                        }
-                        self.after_begin(step_no, tr!("翻成英文字幕", "Translating subtitles to English").into());
-                        self.after_arm();
-                        self.after_set(|s| s.transcribing = true);
-                        let r = crate::subtitles::translate(&speech, &video, dur, &m, lang, progress.clone(), stop_step.clone()).await;
-                        self.after_set(|s| s.transcribing = false);
-                        if self.after_take_preempted() {
-                            continue;
-                        }
-                        break r;
-                    };
-                    if cancel.load(Ordering::Relaxed) {
+            if let (true, Some(speech)) = (missing.is_empty(), speech) {
+                let dur = self.cache.probe(&ffmpeg, &video).await.ok().and_then(|i| i.duration_sec).unwrap_or(0.0);
+                let lang = crate::subtitles::LANGUAGES[after.subs_lang].0;
+                // 辨識很吃 CPU：開始錄影時停下來，錄完再重新辨識
+                let cues = loop {
+                    if !self.after_wait_idle(&cancel).await {
                         return Ok(done);
                     }
-                    match en {
-                        Ok(en) if !en.is_empty() => {
-                            let p = crate::subtitles::save_english_next_to(&video, &en)?;
-                            done.push(trf!("英文字幕存成「{}」", "English subtitles saved as “{}”", p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()));
+                    self.after_begin(step_no, tr!("產生字幕", "Generating subtitles").into());
+                    self.after_arm();
+                    self.after_set(|s| s.transcribing = true);
+                    let r = crate::subtitles::transcribe(&speech, &video, dur, &m, lang, progress.clone(), stop_step.clone()).await;
+                    self.after_set(|s| s.transcribing = false);
+                    if self.after_take_preempted() {
+                        continue;
+                    }
+                    break r?;
+                };
+                if cancel.load(Ordering::Relaxed) {
+                    return Ok(done);
+                }
+                if cues.is_empty() {
+                    done.push(tr!("沒有辨識出說話的內容", "no speech recognized").into());
+                } else {
+                    let srt = crate::subtitles::save_next_to(&video, &cues)?;
+                    done.push(trf!("字幕存成「{}」", "subtitles saved as “{}”", srt.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()));
+                    // 英文字幕（說英文時原文就是英文，不用再做）
+                    if after.subs_en && lang != "en" {
+                        let en = loop {
+                            if !self.after_wait_idle(&cancel).await {
+                                return Ok(done);
+                            }
+                            self.after_begin(step_no, tr!("翻成英文字幕", "Translating subtitles to English").into());
+                            self.after_arm();
+                            self.after_set(|s| s.transcribing = true);
+                            let r = crate::subtitles::translate(&speech, &video, dur, &m, lang, progress.clone(), stop_step.clone()).await;
+                            self.after_set(|s| s.transcribing = false);
+                            if self.after_take_preempted() {
+                                continue;
+                            }
+                            break r;
+                        };
+                        if cancel.load(Ordering::Relaxed) {
+                            return Ok(done);
                         }
-                        Ok(_) => {}
-                        Err(e) => done.push(trf!("英文字幕沒有做成：{e}", "English subtitles failed: {e}")),
+                        match en {
+                            Ok(en) if !en.is_empty() => {
+                                let p = crate::subtitles::save_english_next_to(&video, &en)?;
+                                done.push(trf!("英文字幕存成「{}」", "English subtitles saved as “{}”", p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()));
+                            }
+                            Ok(_) => {}
+                            Err(e) => done.push(trf!("英文字幕沒有做成：{e}", "English subtitles failed: {e}")),
+                        }
                     }
                 }
+            } else {
+                crate::warn!("[錄完自動處理] 跳過字幕：還沒下載 {}", crate::components::describe(&missing));
+                done.push(trf!("沒有產生字幕：請先到「設定 → 外部元件」下載{}", "no subtitles: download {} in Settings → Components first", crate::components::describe(&missing)));
+            }
+            if cancel.load(Ordering::Relaxed) {
+                return Ok(done);
             }
         }
         // 3. 加速版（一次處理多支）
