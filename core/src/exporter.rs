@@ -312,7 +312,6 @@ impl Exporter {
             && spec.vertical.is_none()
             && spec.intro.is_none()
             && spec.outro.is_none()
-            && spec.music.is_none()
             && spec.look.is_default()
             && spec.stamp.is_none();
         if unchanged {
@@ -416,23 +415,15 @@ impl Exporter {
             }
             _ => return Err(Error::config(tr!("無法讀取影片尺寸，不能做成直式影片", "Couldn't read the video size, so it can't be made vertical"))),
         };
-        // 片頭、片尾卡片（畫成和輸出影片一樣大）與背景音樂
+        // 片頭、片尾卡片（畫成和輸出影片一樣大）
         let (extras, temp) = {
             let intro = spec.intro.as_ref().filter(|c| !c.is_empty());
             let outro = spec.outro.as_ref().filter(|c| !c.is_empty());
-            let music = match &spec.music {
-                Some(m) if !Path::new(&m.path).is_file() => {
-                    remove_dir(&temp);
-                    return Err(Error::config(trf!("找不到背景音樂：{}", "Background music not found: {}", file_name(&m.path))));
-                }
-                Some(m) => Some(crate::args::MusicInput { path: m.path.clone(), volume: m.volume, duck: m.duck }),
-                None => None,
-            };
             // 旁白（剪輯後的時間）與點擊音效
             let n = &spec.narration;
             let placed = crate::narration::place(&keep, &n.clips, length);
             let click_times: Vec<f64> = if n.click_volume > 0 { n.clicks.iter().filter_map(|&t| crate::zoom::map_time(&keep, t)).collect() } else { vec![] };
-            if intro.is_none() && outro.is_none() && music.is_none() && placed.is_empty() && click_times.is_empty() {
+            if intro.is_none() && outro.is_none() && placed.is_empty() && click_times.is_empty() {
                 (None, temp)
             } else {
                 let size = output_size(info.width, info.height, crop, vertical.as_ref());
@@ -475,7 +466,7 @@ impl Exporter {
                         return Err(e);
                     }
                 };
-                (Some(crate::args::Extras { intro, outro, size: (w, h), main_len: length, music, voice }), Some(dir))
+                (Some(crate::args::Extras { intro, outro, size: (w, h), main_len: length, voice }), Some(dir))
             }
         };
         // 日期時間浮水印：字型與文字檔放在暫存資料夾（FFmpeg 在那裡執行，濾鏡裡不用寫 Windows 路徑）
@@ -545,7 +536,6 @@ impl Exporter {
             + if cursor.is_some() { "，平滑放大的游標" } else { "" }
             + if vertical.is_some() { "，直式影片" } else { "" }
             + if extras.as_ref().is_some_and(|x| x.intro.is_some() || x.outro.is_some()) { "，片頭片尾" } else { "" }
-            + if extras.as_ref().is_some_and(|x| x.music.is_some()) { "，背景音樂" } else { "" }
             + if extras.as_ref().and_then(|x| x.voice.as_ref()).is_some_and(|v| !v.clips.is_empty()) { "，旁白" } else { "" }
             + if extras.as_ref().and_then(|x| x.voice.as_ref()).is_some_and(|v| v.clicks.is_some()) { "，點擊音效" } else { "" }
             + if spec.fade_cuts { "，接縫淡入淡出" } else { "" }

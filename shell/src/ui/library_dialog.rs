@@ -1211,9 +1211,6 @@ fn entry_menu(ui: &mut egui::Ui, app: &UiApp, e: &LibraryEntry, full: bool, req:
     if ui.button(tr!("複製檔案（貼到 LINE、資料夾）", "Copy file (paste into LINE or a folder)")).clicked() {
         pick(EntryAction::CopyFile, req);
     }
-    if ui.button(tr!("傳到手機…", "Send to phone…")).clicked() {
-        pick(EntryAction::Phone, req);
-    }
     if ui.button(tr!("用 Windows 開啟", "Open in Windows")).clicked() {
         pick(EntryAction::External, req);
     }
@@ -1251,9 +1248,6 @@ fn export_menu(ui: &mut egui::Ui, x: &ExportInfo, req: &mut Option<Req>) {
     }
     if ui.button(tr!("複製檔案（貼到 LINE、資料夾）", "Copy file (paste into LINE or a folder)")).clicked() {
         *req = Some(Req::Entry(EntryAction::CopyFile, entry()));
-    }
-    if ui.button(tr!("傳到手機…", "Send to phone…")).clicked() {
-        *req = Some(Req::Entry(EntryAction::Phone, entry()));
     }
     ui.separator();
     if trash_item(ui) {
@@ -2150,9 +2144,6 @@ fn shot_menu(ui: &mut egui::Ui, e: &LibraryEntry, full: bool, pinned: bool, req:
     }
     if ui.button(tr!("複製檔案（貼到資料夾）", "Copy file (paste into a folder)")).clicked() {
         pick(EntryAction::CopyFile, req);
-    }
-    if ui.button(tr!("傳到手機…", "Send to phone…")).clicked() {
-        pick(EntryAction::Phone, req);
     }
     ui.separator();
     if trash_item(ui) {

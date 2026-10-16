@@ -1,10 +1,8 @@
-//! 剪輯視窗的旁白：從播放點開始錄旁白（播放影片、原本的聲音關掉），文字轉語音，點擊音效；
+//! 剪輯視窗的旁白：從播放點開始錄旁白（播放影片、原本的聲音關掉），點擊音效；
 //! 播放時一起播旁白（原本的聲音照設定調小）。
 
-use super::shot::Act;
 use super::Editor;
 use crate::ui::theme::{self, segmented, switch, Btn, Icon};
-use crate::ui::UiApp;
 use eframe::egui::{self, vec2, RichText, Sense};
 use screenrecorder_core::narration::{self, VoiceClip, VoiceRecorder};
 use screenrecorder_core::player::{MediaSpec, Player};
@@ -17,16 +15,11 @@ pub struct VoiceState {
     rec: Option<(VoiceRecorder, f64)>,
     /// 正在播的旁白：檔案、播放器
     play: Option<(String, Player)>,
-    pub text: String,
-    voice: String,
-    voices: Option<Vec<(String, String)>>,
-    /// 正在產生語音
-    speaking: bool,
 }
 
 impl VoiceState {
     pub fn new(mic_id: &str) -> VoiceState {
-        VoiceState { mic_id: mic_id.to_string(), rec: None, play: None, text: String::new(), voice: String::new(), voices: None, speaking: false }
+        VoiceState { mic_id: mic_id.to_string(), rec: None, play: None }
     }
 
     pub fn recording(&self) -> bool {
@@ -99,7 +92,7 @@ fn stop_recording(ed: &mut Editor, toast: Option<&mut Option<(String, bool)>>) {
     }
 }
 
-/// 「聲音」分頁的旁白、文字轉語音與點擊音效
+/// 「聲音」分頁的旁白與點擊音效
 pub fn panel(ed: &mut Editor, ui: &mut egui::Ui, toast: &mut Option<(String, bool)>) {
     let p = theme::pal(ui);
     super::side::section_title(ui, tr!("旁白", "Narration"));
@@ -147,49 +140,6 @@ pub fn panel(ed: &mut Editor, ui: &mut egui::Ui, toast: &mut Option<(String, boo
             n.original = v;
         }
     }
-
-    // 文字轉語音
-    super::side::section_title_sep(ui, tr!("文字轉語音", "Text to speech"));
-    let voices = ed.voice.voices.get_or_insert_with(narration::voices).clone();
-    if voices.is_empty() && !cfg!(windows) {
-        super::side::hint_text(ui, tr!("文字轉語音要用 Windows 內建的語音，只支援 Windows。", "Text to speech uses the voices built into Windows and is only available on Windows."));
-    }
-    super::side::hint_text(
-        ui,
-        tr!("打字產生旁白（用 Windows 內建的語音，不用網路），放在播放點。", "Type text to make narration with the voices built into Windows (no internet needed), placed at the playhead."),
-    );
-    ui.add(egui::TextEdit::multiline(&mut ed.voice.text).desired_rows(3).desired_width(f32::INFINITY).hint_text(tr!("要說的話…", "What to say…")));
-    if !voices.is_empty() {
-        let current = voices.iter().find(|v| v.0 == ed.voice.voice).map(|v| v.1.clone()).unwrap_or_else(|| tr!("自動（依介面語言）", "Automatic (interface language)").into());
-        egui::ComboBox::from_id_salt("ed-tts-voice").selected_text(current).width(ui.available_width().min(260.0)).show_ui(ui, |ui| {
-            ui.selectable_value(&mut ed.voice.voice, String::new(), tr!("自動（依介面語言）", "Automatic (interface language)"));
-            for (id, name) in &voices {
-                ui.selectable_value(&mut ed.voice.voice, id.clone(), name);
-            }
-        });
-    }
-    let busy = ed.voice.speaking;
-    let has_subs = !ed.sub_ids.is_empty();
-    ui.horizontal_wrapped(|ui| {
-        if Btn::new(if busy { tr!("產生中…", "Generating…") } else { tr!("在播放點加入", "Add at playhead") }).small().enabled(!busy && !ed.voice.text.trim().is_empty()).show(ui).clicked()
-        {
-            ed.pending = Some(Act::Speak);
-        }
-        if Btn::new(tr!("把字幕變成語音", "Speak the subtitles"))
-            .small()
-            .ghost()
-            .enabled(!busy && has_subs)
-            .tooltip(if has_subs {
-                tr!("每一段字幕產生一段語音，放在字幕開始的地方", "Makes a speech clip for each subtitle, placed where the subtitle starts")
-            } else {
-                tr!("先在「字幕」分頁加上字幕", "Add subtitles in the Subtitles tab first")
-            })
-            .show(ui)
-            .clicked()
-        {
-            ed.pending = Some(Act::SpeakSubs);
-        }
-    });
 
     // 點擊音效
     super::side::section_title_sep(ui, tr!("點擊音效", "Click sounds"));
@@ -260,60 +210,4 @@ fn clip_list(ed: &mut Editor, ui: &mut egui::Ui) {
         ed.seek(t);
         ed.player.play();
     }
-}
-
-/// 文字轉語音（在背景產生）
-pub fn run(app: &mut UiApp, ed: &mut Editor, act: Act) {
-    let jobs: Vec<(String, f64)> = match act {
-        Act::Speak => vec![(ed.voice.text.trim().to_string(), ed.now())],
-        Act::SpeakSubs => {
-            let mut subs: Vec<(String, f64)> =
-                ed.anns.iter().filter(|a| ed.sub_ids.contains(&a.id)).map(|a| (a.text.clone().unwrap_or_default(), a.start)).filter(|(t, _)| !t.trim().is_empty()).collect();
-            subs.sort_by(|a, b| a.1.total_cmp(&b.1));
-            subs
-        }
-        _ => return,
-    };
-    if jobs.is_empty() {
-        return;
-    }
-    ed.voice.speaking = true;
-    let (voice, video) = (ed.voice.voice.clone(), ed.entry.media.path.clone());
-    let single = matches!(act, Act::Speak);
-    app.spawn(
-        async move {
-            tokio::task::spawn_blocking(move || {
-                jobs.into_iter()
-                    .map(|(text, at)| {
-                        let path = narration::new_voice_path("speech");
-                        narration::speak_to_file(&text, &voice, 1.0, &path).map(|ms| VoiceClip { file: path.to_string_lossy().into_owned(), at_ms: (at * 1000.0).round() as u64, ms, text })
-                    })
-                    .collect::<Vec<_>>()
-            })
-            .await
-            .unwrap_or_default()
-        },
-        move |app, results| {
-            let Some(ed) = app.editor.as_mut().filter(|e| e.entry.media.path == video) else { return };
-            ed.voice.speaking = false;
-            let mut added = 0;
-            let mut err = None;
-            for r in results {
-                match r {
-                    Ok(c) => {
-                        ed.spec.narration.put(c);
-                        added += 1;
-                    }
-                    Err(e) => err = Some(e),
-                }
-            }
-            if single && added > 0 {
-                ed.voice.text.clear();
-            }
-            match (added, err) {
-                (0, Some(e)) => app.toast(e, true),
-                (n, _) => app.toast(trf!("已加上 {n} 段語音旁白", "Added {n} speech clip(s)"), false),
-            }
-        },
-    );
 }

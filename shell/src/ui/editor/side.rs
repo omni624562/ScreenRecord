@@ -41,7 +41,6 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, toast: &mut
             Tab::Audio => {
                 audio_panel(ed, ui);
                 super::voice::panel(ed, ui, toast);
-                music_panel(ed, ui);
             }
         }
     });
@@ -1833,54 +1832,6 @@ fn cards_panel(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context) {
             let (r, _) = ui.allocate_exact_size(vec2(w, h), Sense::hover());
             ui.painter().image(t.id(), r, egui::Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
             ui.painter().rect_stroke(r, CornerRadius::same(4), Stroke::new(1.0, theme::pal(ui).border), egui::StrokeKind::Outside);
-        }
-    }
-}
-
-/// 背景音樂：選檔、音量、講話時自動調小
-fn music_panel(ed: &mut Editor, ui: &mut egui::Ui) {
-    section(ui, tr!("背景音樂", "Background music"), false);
-    match &mut ed.spec.music {
-        None => {
-            hint(
-                ui,
-                tr!(
-                    "加一首音樂當背景：重複播放到影片結束，最後 2 秒淡出；講話時自動調小。",
-                    "Add music in the background: it loops to the end of the video and fades out over the last 2 seconds, and turns down while you talk."
-                ),
-            );
-            if Btn::new(tr!("選擇音樂檔…", "Choose a music file…")).icon(Icon::Folder).small().show(ui).clicked() {
-                ed.vpending = Some(super::VAct::PickMusic);
-            }
-        }
-        Some(m) => {
-            ui.horizontal(|ui| {
-                ui.label(RichText::new(file_name(&m.path)).font(theme::font(12.5))).on_hover_text(&m.path);
-            });
-            let mut remove = false;
-            ui.horizontal(|ui| {
-                if Btn::new(tr!("換一首…", "Change…")).small().show(ui).clicked() {
-                    ed.vpending = Some(super::VAct::PickMusic);
-                }
-                if Btn::new(tr!("移除", "Remove")).ghost().small().show(ui).clicked() {
-                    remove = true;
-                }
-            });
-            ui.horizontal(|ui| {
-                ui.label(theme::muted(ui, tr!("音量", "Volume")).font(theme::font(12.0)));
-                ui.spacing_mut().slider_width = (ui.available_width() - 70.0).max(80.0).floor();
-                theme::slider_style(ui);
-                let mut pct = (m.volume * 100.0).round() as i32;
-                if ui.add(egui::Slider::new(&mut pct, 5..=100).step_by(5.0).suffix("%")).changed() {
-                    m.volume = pct as f64 / 100.0;
-                }
-            });
-            let has_voice = ed.entry.media.has_audio == Some(true) && !ed.spec.audio.mute;
-            switch(ui, &mut m.duck, tr!("講話時自動調小", "Turn down while talking"), has_voice)
-                .on_hover_text(tr!("影片裡有聲音（講話）的時候，音樂自動變小聲，講完再慢慢回來", "When there's sound (talking) in the video, the music gets quieter and comes back afterwards"));
-            if remove {
-                ed.spec.music = None;
-            }
         }
     }
 }

@@ -91,8 +91,8 @@ fn whole(ed: &mut Editor, ui: &mut egui::Ui) {
     ui.label(theme::muted(ui, trf!("剪好 {} → 輸出 {}", "Edited {} → output {}", video_clock(moving + holds), video_clock(out))).font(theme::font(12.0)));
     if cur > 1.0 {
         theme::check(ui, &mut ed.spec.speed_audio, RichText::new(tr!("保留聲音（變快、音調不變）", "Keep sound (faster, same pitch)")).font(theme::font(12.5))).on_hover_text(tr!(
-            "不勾的話整支影片沒有原本的聲音（旁白、背景音樂照樣有）。另外設了加速、放慢的片段一樣沒有原本的聲音",
-            "If unticked, the whole video has no original sound (narration and music still play). Sections with their own speed change have no original sound either"
+            "不勾的話整支影片沒有原本的聲音（旁白照樣有）。另外設了加速、放慢的片段一樣沒有原本的聲音",
+            "If unticked, the whole video has no original sound (narration still plays). Sections with their own speed change have no original sound either"
         ));
         if cur > 2.0 && ed.spec.speed_audio {
             hint(ui, tr!("超過 2 倍時講話很難聽清楚。", "Speech is hard to follow above 2×."));

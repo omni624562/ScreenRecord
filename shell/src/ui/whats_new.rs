@@ -37,35 +37,15 @@ enum Try {
 
 /// 這一版的新功能（標題、說明、試試看）：最多 6 項，快速鍵用目前的設定
 fn items(_app: &UiApp) -> Vec<(String, String, Try)> {
-    vec![
-        (
-            tr!("剪輯視窗整理好了", "A tidier editor").into(),
-            tr!(
-                "「修剪」分頁的「清掉空白」一次找出沒動靜、沒說話、贅字和停頓；「章節」列出所有標記，可以複製成 YouTube 章節。「畫面」分頁的效果收起來，有開的才展開。",
-                "“Clean up blank parts” in the Trim tab finds idle parts, quiet parts, fillers and pauses in one go; “Chapters” lists every marker and copies them for YouTube. Effects in the Frame tab are folded away unless they're on."
-            )
-            .into(),
-            Try::None,
-        ),
-        (
-            tr!("錄影直接做成步驟教學", "Step guides from a recording").into(),
-            tr!(
-                "錄影卡片「更多 → 步驟教學 → 做成文件（附圖）」：點過的每個按鈕各做成一步，附上當時的畫面，存成 Word、PowerPoint、網頁或影片。",
-                "On a recording card, More → Step-by-step guide → Make a guide: every button you clicked becomes a step with the picture from that moment, saved as Word, PowerPoint, a web page or a video."
-            )
-            .into(),
-            Try::None,
-        ),
-        (
-            tr!("錄完處理與一次處理多支共用設定", "One set of processing options").into(),
-            tr!(
-                "錄完自動處理也能另存加速版；在「全部錄影」一次處理多支時，預設就是同一套設定。",
-                "After recording can now also save a sped-up version, and processing several recordings at once starts from the same settings."
-            )
-            .into(),
-            Try::Settings(Page::After),
-        ),
-    ]
+    vec![(
+        tr!("變得更精簡", "Leaner and simpler").into(),
+        tr!(
+            "拿掉了比較少人用的文字轉語音旁白、背景音樂、開會時提醒錄影、傳到手機；全部截圖的「內容、常見詞、顏色」收進「更多分類」。自己錄的旁白、點擊音效都還在。",
+            "Removed rarely used features: text-to-speech narration, background music, meeting reminders and Send to phone. Content, common words and colour in All screenshots are now under “More categories”. Recorded narration and click sounds are still here."
+        )
+        .into(),
+        Try::None,
+    )]
 }
 
 pub fn show(app: &mut UiApp, ctx: &egui::Context) {
