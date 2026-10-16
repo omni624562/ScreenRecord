@@ -574,6 +574,8 @@ pub async fn marks(app: &App, path: &str) -> crate::recorder::Marks {
     m.markers.sort_by(f64::total_cmp);
     m.clicks.retain(|c| c.iter().all(|v| v.is_finite()) && c[0] >= 0.0);
     m.clicks.sort_by(|a, b| a[0].total_cmp(&b[0]));
+    m.zooms.retain(|c| c.iter().all(|v| v.is_finite()) && c[0] >= 0.0);
+    m.zooms.sort_by(|a, b| a[0].total_cmp(&b[0]));
     m.cursor.retain(|c| c.iter().all(|v| v.is_finite()) && c[0] >= 0.0);
     m.cursor.sort_by(|a, b| a[0].total_cmp(&b[0]));
     m

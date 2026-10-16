@@ -1212,12 +1212,16 @@ impl App {
         Ok(SnipSource { path, desktop: plan.rect, monitors: plan.monitors.clone(), windows, shot_dir: config.shots_dir() })
     }
 
-    /// 錄影中拖曳移動了範圍：主畫面的自訂範圍（或單一螢幕裡框選的部分）、系統匣「開始錄影」用的設定、
-    /// 「重複上次框選」原本是 old 的，都改成 new，下次錄影直接用新位置（操作視窗看到設定變了會重新讀取）
     /// 麥克風靜音 / 取消靜音後：錄影範圍下方短暫提示（不會被錄進去）
     pub fn mic_mute_changed(&self, muted: bool) {
         let text =
             if muted { tr!("🔇 麥克風已靜音・再按一次取消", "🔇 Microphone muted · press again to unmute") } else { tr!("🎙 麥克風已取消靜音", "🎙 Microphone unmuted") };
+        self.flash(text);
+    }
+
+    /// 錄影中：錄影範圍下方短暫顯示一句話（1.5 秒，不會被錄進去）
+    pub fn flash(&self, text: impl Into<String>) {
+        let text: String = text.into();
         crate::info!("[錄影] {text}");
         #[cfg(windows)]
         {
@@ -1230,6 +1234,8 @@ impl App {
         }
     }
 
+    /// 錄影中拖曳移動了範圍：主畫面的自訂範圍（或單一螢幕裡框選的部分）、系統匣「開始錄影」用的設定、
+    /// 「重複上次框選」原本是 old 的，都改成 new，下次錄影直接用新位置（操作視窗看到設定變了會重新讀取）
     pub fn region_moved(&self, old: Rect, new: Rect) {
         let monitors = {
             let mut st = self.lock();

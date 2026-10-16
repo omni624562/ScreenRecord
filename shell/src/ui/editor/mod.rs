@@ -74,6 +74,9 @@ struct Extras {
     /// 標記（改過才存；None = 用錄影時加的）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     markers: Option<Vec<Marker>>,
+    /// 有標記要放大的地方時，改成每次點擊都放大
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    zoom_all_clicks: bool,
     /// 片頭、片尾、背景音樂
     #[serde(default, skip_serializing_if = "Option::is_none")]
     intro: Option<screenrecorder_core::cards::TitleCard>,
@@ -338,6 +341,10 @@ pub struct Editor {
     reset_toast: bool,
     /// 錄影時的滑鼠點擊（秒, x, y；原片的時間）
     clicks: Vec<[f64; 3]>,
+    /// 錄影時按快速鍵標記要放大的地方（原片的時間, x, y）
+    pub(crate) zooms: Vec<[f64; 3]>,
+    /// 有標記要放大的地方時，改成每次點擊都放大（預設只放大標記的地方）
+    zoom_all_clicks: bool,
     /// 跟著點擊放大的倍率（0 = 不放大）
     zoom: f64,
     /// 錄影時記下的游標位置（原片的時間）、平滑後的位置（預覽用）、錄影時沒有把游標錄進影片
@@ -530,6 +537,7 @@ impl Editor {
         ed.markers = marks.markers.iter().map(|&t| Marker { t, name: String::new() }).collect();
         ed.rec_markers = marks.markers;
         ed.clicks = marks.clicks;
+        ed.zooms = marks.zooms;
         ed.cursor_smooth = screenrecorder_core::cursor::smooth(&marks.cursor, 60.0);
         ed.cursor = marks.cursor;
         ed.no_cursor = marks.no_cursor;
@@ -608,6 +616,8 @@ impl Editor {
             show_removed: false,
             reset_toast: false,
             clicks: vec![],
+            zooms: vec![],
+            zoom_all_clicks: false,
             zoom: 0.0,
             cursor: vec![],
             cursor_smooth: vec![],
@@ -880,6 +890,7 @@ impl Editor {
             splits: self.splits.clone(),
             zoom_skip: self.zoom_skip.clone(),
             markers: markers_changed.then(|| self.markers.clone()),
+            zoom_all_clicks: self.zoom_all_clicks,
             intro: self.spec.intro.clone(),
             outro: self.spec.outro.clone(),
             music: self.spec.music.clone(),
@@ -892,6 +903,7 @@ impl Editor {
         let d = self.duration;
         self.splits = x.splits.into_iter().filter(|t| t.is_finite() && *t > 0.0 && *t < d).collect();
         self.zoom_skip = x.zoom_skip.into_iter().filter(|t| t.is_finite()).collect();
+        self.zoom_all_clicks = x.zoom_all_clicks;
         self.markers = match x.markers {
             Some(list) => list.into_iter().filter(|m| m.t.is_finite() && m.t >= 0.0 && m.t <= d).collect(),
             None => self.rec_markers.iter().map(|&t| Marker { t, name: String::new() }).collect(),
@@ -972,14 +984,23 @@ impl Editor {
         self.cursor_size > 0.0 && !self.cursor.is_empty()
     }
 
-    /// 有打開跟著點擊放大（而且有點擊、沒有裁切、不是直式影片）
-    fn zoom_on(&self) -> bool {
-        self.zoom > 1.0 && !self.clicks.is_empty() && !self.crop_on && self.vertical == 0
+    /// 跟著點擊放大用哪些點：有按快速鍵標記的地方就只用那些（除非選了每次點擊），否則用錄影時的點擊
+    pub(crate) fn zoom_source(&self) -> &[[f64; 3]] {
+        if !self.zooms.is_empty() && !self.zoom_all_clicks {
+            &self.zooms
+        } else {
+            &self.clicks
+        }
     }
 
-    /// 跟著點擊放大會真的放大（有開、而且至少一次點擊要放大）
+    /// 有打開跟著點擊放大（而且有點擊或標記、沒有裁切、不是直式影片）
+    fn zoom_on(&self) -> bool {
+        self.zoom > 1.0 && !self.zoom_source().is_empty() && !self.crop_on && self.vertical == 0
+    }
+
+    /// 跟著點擊放大會真的放大（有開、而且至少一個點要放大）
     fn zoom_active(&self) -> bool {
-        self.zoom_on() && self.clicks.iter().any(|c| !self.click_skipped(c[0]))
+        self.zoom_on() && self.zoom_source().iter().any(|c| !self.click_skipped(c[0]))
     }
 
     /// 跟著游標的直式影片要跟的位置：游標（沒有記下時用點擊）
@@ -1495,7 +1516,7 @@ impl Editor {
 
     /// 跟著點擊放大要用的點擊（不含設定成這次不放大的）
     fn zoom_clicks(&self) -> Vec<[f64; 3]> {
-        self.clicks.iter().filter(|c| !self.click_skipped(c[0])).copied().collect()
+        self.zoom_source().iter().filter(|c| !self.click_skipped(c[0])).copied().collect()
     }
 
     fn click_skipped(&self, t: f64) -> bool {
@@ -1632,6 +1653,12 @@ impl Editor {
             }
             "sel" => self.select_ann(v.parse().ok()),
             "seek" => self.seek(v.parse().unwrap_or(0.0)),
+            "zoommark" => {
+                let v: Vec<f64> = v.split(',').filter_map(|x| x.parse().ok()).collect();
+                if let [t, x, y] = v[..] {
+                    self.zooms.push([t, x, y]);
+                }
+            }
             "mute" => {
                 if let Some((a, b)) = v.split_once(',').and_then(|(a, b)| Some((a.parse::<f64>().ok()?, b.parse::<f64>().ok()?))) {
                     self.mutes.push([a, b]);

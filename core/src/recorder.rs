@@ -210,6 +210,8 @@ struct St {
     clicks: Vec<(u64, f32, f32)>,
     /// 游標的位置（剪輯時換成平滑、放大的游標用；見 cursor.rs）
     cursor: Vec<crate::cursor::Sample>,
+    /// 按快速鍵標記要放大的地方：(已錄的毫秒數, 在擷取範圍內的位置 0～1)
+    zooms: Vec<(u64, f32, f32)>,
     /// 麥克風暫時靜音的時段（已錄的毫秒數）；muted_at = 目前這段從哪裡開始（靜音中）
     mutes: Vec<(u64, u64)>,
     muted_at: Option<u64>,
@@ -442,11 +444,14 @@ pub struct Marks {
     /// 麥克風暫時靜音的時段：[開始秒, 結束秒]（剪輯時標在時間軸上）
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub mutes: Vec<[f64; 2]>,
+    /// 按快速鍵標記要放大的地方：[影片的秒數, x, y]（剪輯時的「跟著點擊放大」改用這些）
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub zooms: Vec<[f64; 3]>,
 }
 
 impl Marks {
     pub fn is_empty(&self) -> bool {
-        self.markers.is_empty() && self.clicks.is_empty() && self.cursor.is_empty() && self.mutes.is_empty()
+        self.markers.is_empty() && self.clicks.is_empty() && self.cursor.is_empty() && self.mutes.is_empty() && self.zooms.is_empty()
     }
 }
 
@@ -906,6 +911,31 @@ impl Recorder {
         Ok(muted)
     }
 
+    /// 錄影中按快速鍵標記要放大的地方（游標現在的位置，桌面的實體像素座標）；回傳這是第幾個
+    pub fn add_zoom_mark(&self, x: i32, y: i32) -> Result<usize> {
+        let mut st = self.lock();
+        if !matches!(st.state, RecorderState::Recording | RecorderState::Paused) {
+            return Err(Error::config(tr!("錄影中才能標記要放大的地方", "Zoom spots can only be marked while recording")));
+        }
+        if st.replay_sec().is_some() || st.config.as_ref().is_some_and(|c| c.audio_only) {
+            return Err(Error::config(tr!("回溯錄影、只錄聲音時不能標記要放大的地方", "Zoom spots can't be marked in the replay buffer or audio-only recordings")));
+        }
+        let Some(r) = st.plan.as_ref().map(|p| p.rect).filter(|r| r.width > 0 && r.height > 0) else { return Err(Error::config(tr!("還沒開始擷取畫面", "Capture hasn't started yet"))) };
+        if x < r.x || y < r.y || x >= r.x + r.width || y >= r.y + r.height {
+            return Err(Error::config(tr!("游標不在錄影範圍裡，請把游標移到要放大的地方再按", "The cursor isn't inside the recording area. Move it to the spot to zoom in on and press again")));
+        }
+        let t = st.recorded_ms();
+        let (fx, fy) = ((x - r.x) as f32 / r.width as f32, (y - r.y) as f32 / r.height as f32);
+        // 連按兩次（半秒內）只算一個，換成新的位置
+        if st.zooms.last().is_some_and(|z| t.saturating_sub(z.0) < 500) {
+            st.zooms.pop();
+        }
+        st.zooms.push((t, fx, fy));
+        let n = st.zooms.len();
+        st.add_log(LogLevel::Info, &trf!("標記要放大的地方 {n}（{}）", "Zoom spot {n} ({})", crate::format::video_clock(t as f64 / 1000.0)));
+        Ok(n)
+    }
+
     /// 正在準備開始（狀態可能仍是待命）；快速鍵用來判斷再按一次是「取消」
     pub fn starting(&self) -> bool {
         self.lock().starting_now
@@ -1142,6 +1172,7 @@ impl Recorder {
             st.markers = Vec::new();
             st.clicks = Vec::new();
             st.cursor = Vec::new();
+            st.zooms = Vec::new();
             st.reset_mutes();
             st.audio_specs = audio_specs;
             st.audio_desc = None;
@@ -1315,6 +1346,7 @@ impl Recorder {
                 st.markers.clear();
                 st.clicks.clear();
                 st.cursor.clear();
+                st.zooms.clear();
                 st.reset_mutes();
                 st.ticker = 0;
                 st.busy = None;
@@ -1349,6 +1381,7 @@ impl Recorder {
                 cursor: std::mem::take(&mut st.cursor),
                 no_cursor: st.config.as_ref().is_some_and(|c| !c.draw_mouse),
                 mutes: st.take_mutes(),
+                zooms: std::mem::take(&mut st.zooms).into_iter().map(|(t, x, y)| [t as f64 / 1000.0, x as f64, y as f64]).collect(),
             };
             if let (true, Some(p), false) = (result.ok, &result.path, marks.is_empty()) {
                 self.deps().save_markers(p, &marks);
@@ -2596,6 +2629,30 @@ esac
         assert!(m.no_cursor && m.markers.is_empty());
         assert_eq!(m.cursor.iter().map(|c| (c[1], c[2])).collect::<Vec<_>>(), [(0.5, 0.5), (1.0, 0.0)]);
         assert!(m.cursor[1][0] > m.cursor[0][0]);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn zoom_marks_are_saved_with_the_recording() {
+        let tools = tempfile::tempdir().unwrap();
+        let s = Setup::new(Fake { ffmpeg: Some(fake_ffmpeg(tools.path())), ..Default::default() });
+        s.release();
+        assert!(s.rec.add_zoom_mark(10, 10).is_err(), "沒在錄影");
+        s.rec.start(RecordConfig { countdown_sec: Some(0.0), hide_ui: Some(false), ..s.config() }).await.unwrap();
+        let r = s.rec.frame_info().unwrap().area;
+        // 範圍外：不算，說明要把游標移進去
+        assert!(s.rec.add_zoom_mark(r.x - 5, r.y).unwrap_err().message().contains("不在錄影範圍"));
+        assert_eq!(s.rec.add_zoom_mark(r.x + r.width / 4, r.y + r.height / 2).unwrap(), 1);
+        // 半秒內連按：換成新的位置，不多算一個
+        assert_eq!(s.rec.add_zoom_mark(r.x + r.width / 2, r.y + r.height / 2).unwrap(), 1);
+        tokio::time::sleep(Duration::from_millis(600)).await;
+        assert_eq!(s.rec.add_zoom_mark(r.x, r.y).unwrap(), 2);
+        assert!(s.rec.stop(None).await.unwrap().unwrap().ok);
+        let m = s.deps.marks.lock().unwrap().clone().expect("有標記就要存");
+        assert_eq!(m.zooms.len(), 2);
+        assert_eq!((m.zooms[0][1], m.zooms[0][2]), (0.5, 0.5));
+        assert_eq!((m.zooms[1][1], m.zooms[1][2]), (0.0, 0.0));
+        assert!(m.zooms[1][0] > m.zooms[0][0]);
     }
 
     #[cfg(unix)]

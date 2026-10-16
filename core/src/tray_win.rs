@@ -30,8 +30,8 @@ const WM_WAKE: u32 = WM_APP + 2;
 const NIN_BALLOONUSERCLICK: u32 = 0x405;
 /// 圖示加不上去時重試的計時器
 const RETRY_TIMER: usize = 7;
-/// 全域快速鍵的 id：1 錄影、2 暫停、3 截圖、4 框選截圖、5 加標記、6 螢幕畫筆、7 回溯錄影、8 麥克風靜音（與 Hotkeys::all 的順序相同）
-const HOTKEY_IDS: [i32; crate::types::HOTKEY_COUNT] = [1, 2, 3, 4, 5, 6, 7, 8];
+/// 全域快速鍵的 id：1 錄影、2 暫停、3 截圖、4 框選截圖、5 加標記、6 螢幕畫筆、7 回溯錄影、8 麥克風靜音、9 標記要放大的地方（與 Hotkeys::all 的順序相同）
+const HOTKEY_IDS: [i32; crate::types::HOTKEY_COUNT] = [1, 2, 3, 4, 5, 6, 7, 8, 9];
 
 /// 登記全域快速鍵（先取消舊的）；被其他程式占用時登記失敗，停用的視為成功
 fn register_hotkeys(hwnd: HWND, keys: &Hotkeys) -> HotkeyStatus {
@@ -281,6 +281,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                 6 => crate::screen_pen_win::toggle(),
                 7 => send_cmd(TrayCommand::Replay),
                 8 => send_cmd(TrayCommand::MuteMic),
+                9 => send_cmd(TrayCommand::ZoomMark),
                 _ => {}
             }
             LRESULT(0)

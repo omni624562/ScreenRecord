@@ -277,7 +277,8 @@ pub fn tick(app: &mut UiApp, ctx: &egui::Context) {
                     _ if a == "mics" => fake_mics(app),
                     // 模擬系統匣已登記快速鍵（Linux 上沒有系統匣）
                     _ if a == "hotkeys" => {
-                        app.env.hotkeys = Some(screenrecorder_core::types::HotkeyStatus { record: true, pause: true, shot: true, snip: false, mark: true, pen: true, replay: true, mute: true })
+                        app.env.hotkeys =
+                            Some(screenrecorder_core::types::HotkeyStatus { record: true, pause: true, shot: true, snip: false, mark: true, pen: true, replay: true, mute: true, zoom: true })
                     }
                     Some(("snip", p)) => fake_snip(app, p),
                     // Windows：用這張圖當凍結的桌面開啟原生的框選畫面（在 wine 上測試），選好後照工具列的動作處理

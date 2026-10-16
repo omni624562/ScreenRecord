@@ -148,17 +148,19 @@ pub struct HotkeyStatus {
     pub replay: bool,
     #[serde(default)]
     pub mute: bool,
+    #[serde(default)]
+    pub zoom: bool,
 }
 
 impl HotkeyStatus {
     /// 依 Hotkeys::all 的順序
     pub fn all(&self) -> [bool; HOTKEY_COUNT] {
-        [self.record, self.pause, self.shot, self.snip, self.mark, self.pen, self.replay, self.mute]
+        [self.record, self.pause, self.shot, self.snip, self.mark, self.pen, self.replay, self.mute, self.zoom]
     }
 
     pub fn from_list(ok: &[bool]) -> HotkeyStatus {
         let g = |i: usize| ok.get(i).copied().unwrap_or(false);
-        HotkeyStatus { record: g(0), pause: g(1), shot: g(2), snip: g(3), mark: g(4), pen: g(5), replay: g(6), mute: g(7) }
+        HotkeyStatus { record: g(0), pause: g(1), shot: g(2), snip: g(3), mark: g(4), pen: g(5), replay: g(6), mute: g(7), zoom: g(8) }
     }
 }
 
@@ -267,7 +269,7 @@ pub fn shown_keys(vk: u32, ctrl: bool, alt: bool, shift: bool, win: bool) -> Opt
 }
 
 /// 全域快速鍵的數量
-pub const HOTKEY_COUNT: usize = 8;
+pub const HOTKEY_COUNT: usize = 9;
 
 /// 錄影時螢幕上的控制列（設定的 recBar）
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -309,6 +311,9 @@ pub struct Hotkeys {
     /// 錄影中麥克風靜音 / 取消靜音（3.12 新增）
     #[serde(default = "default_mute")]
     pub mute: Option<Hotkey>,
+    /// 錄影中標記要放大的地方（3.14 新增）
+    #[serde(default = "default_zoom")]
+    pub zoom: Option<Hotkey>,
 }
 
 fn default_mark() -> Option<Hotkey> {
@@ -327,6 +332,10 @@ fn default_mute() -> Option<Hotkey> {
     Some(Hotkey::ctrl_alt(0x55))
 }
 
+fn default_zoom() -> Option<Hotkey> {
+    Some(Hotkey::ctrl_alt(0x5A))
+}
+
 impl Default for Hotkeys {
     fn default() -> Self {
         Hotkeys {
@@ -338,14 +347,15 @@ impl Default for Hotkeys {
             pen: default_pen(),
             replay: default_replay(),
             mute: default_mute(),
+            zoom: default_zoom(),
         }
     }
 }
 
 impl Hotkeys {
-    /// 依序：開始 / 停止錄影、暫停 / 繼續、截圖、框選截圖、加標記、螢幕畫筆、重播緩衝、麥克風靜音
+    /// 依序：開始 / 停止錄影、暫停 / 繼續、截圖、框選截圖、加標記、螢幕畫筆、重播緩衝、麥克風靜音、標記要放大的地方
     pub fn all(&self) -> [Option<Hotkey>; HOTKEY_COUNT] {
-        [self.record, self.pause, self.shot, self.snip, self.mark, self.pen, self.replay, self.mute]
+        [self.record, self.pause, self.shot, self.snip, self.mark, self.pen, self.replay, self.mute, self.zoom]
     }
 
     pub fn set(&mut self, i: usize, k: Option<Hotkey>) {
@@ -357,13 +367,14 @@ impl Hotkeys {
             4 => self.mark = k,
             5 => self.pen = k,
             6 => self.replay = k,
-            _ => self.mute = k,
+            7 => self.mute = k,
+            _ => self.zoom = k,
         }
     }
 
     /// 全部停用（設定新的快速鍵時暫停）
     pub fn none() -> Hotkeys {
-        Hotkeys { record: None, pause: None, shot: None, snip: None, mark: None, pen: None, replay: None, mute: None }
+        Hotkeys { record: None, pause: None, shot: None, snip: None, mark: None, pen: None, replay: None, mute: None, zoom: None }
     }
 
     /// 第 i 個的名稱（停用時是空字串）
@@ -380,7 +391,17 @@ impl Hotkeys {
 /// 每組快速鍵的名稱（依介面語言）
 pub fn hotkey_names() -> [&'static str; HOTKEY_COUNT] {
     crate::tr!(
-        ["開始 / 停止錄影", "暫停 / 繼續", "截圖（整個錄影範圍）", "框選截圖", "錄影中加標記", "螢幕畫筆（開 / 關）", "回溯錄影（開始 / 存下）", "錄影中麥克風靜音 / 取消靜音"],
+        [
+            "開始 / 停止錄影",
+            "暫停 / 繼續",
+            "截圖（整個錄影範圍）",
+            "框選截圖",
+            "錄影中加標記",
+            "螢幕畫筆（開 / 關）",
+            "回溯錄影（開始 / 存下）",
+            "錄影中麥克風靜音 / 取消靜音",
+            "錄影中標記要放大的地方"
+        ],
         [
             "Start / stop recording",
             "Pause / resume",
@@ -389,7 +410,8 @@ pub fn hotkey_names() -> [&'static str; HOTKEY_COUNT] {
             "Add marker while recording",
             "Screen pen (on / off)",
             "Replay buffer (start / save the last minutes)",
-            "Mute / unmute the microphone while recording"
+            "Mute / unmute the microphone while recording",
+            "Mark a spot to zoom in on while recording"
         ]
     )
 }

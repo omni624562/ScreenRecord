@@ -564,7 +564,7 @@ fn zoom_panel(ed: &mut Editor, ui: &mut egui::Ui) {
     ui.painter().hline(r.x_range(), r.top(), Stroke::new(1.0, p.border));
     ui.add_space(6.0);
     ui.label(RichText::new(tr!("跟著點擊放大", "Zoom on clicks")).font(theme::font_bold(13.5)));
-    if ed.clicks.is_empty() {
+    if ed.clicks.is_empty() && ed.zooms.is_empty() {
         return hint(
             ui,
             tr!("這支錄影沒有記下滑鼠點擊（3.1 版以後在 Windows 上錄的影片才有）。", "This recording has no saved mouse clicks (only videos recorded on Windows with version 3.1 or later have them)."),
@@ -573,7 +573,13 @@ fn zoom_panel(ed: &mut Editor, ui: &mut egui::Ui) {
     let can = !ed.crop_on && ed.vertical == 0;
     let mut on = ed.zoom > 1.0;
     let n = ed.clicks.len();
-    let label = if screenrecorder_core::i18n::is_en() { format!("Zoom in on clicks ({n} click{})", if n == 1 { "" } else { "s" }) } else { format!("點擊時放大（{n} 次點擊）") };
+    let label = if !ed.zooms.is_empty() {
+        tr!("放大", "Zoom in").to_string()
+    } else if screenrecorder_core::i18n::is_en() {
+        format!("Zoom in on clicks ({n} click{})", if n == 1 { "" } else { "s" })
+    } else {
+        format!("點擊時放大（{n} 次點擊）")
+    };
     if switch(ui, &mut on, label, can).changed() {
         ed.zoom = if on { 2.0 } else { 0.0 };
     }
@@ -584,8 +590,27 @@ fn zoom_panel(ed: &mut Editor, ui: &mut egui::Ui) {
         if segmented(ui, &mut z, &refs, can) {
             ed.zoom = z as f64 / 10.0;
         }
+        // 錄影時按快速鍵標記了要放大的地方：預設只放大那些，也可以改成每次點擊
+        if !ed.zooms.is_empty() {
+            let m = ed.zooms.len();
+            let marked = trf!("標記的地方（{m}）", "Marked spots ({m})");
+            let all = trf!("每次點擊（{n}）", "Every click ({n})");
+            let mut v = ed.zoom_all_clicks;
+            let items = if n > 0 { vec![(false, marked.as_str()), (true, all.as_str())] } else { vec![(false, marked.as_str())] };
+            if segmented(ui, &mut v, &items, can) {
+                ed.zoom_all_clicks = v;
+            }
+        }
     }
-    if can {
+    if can && !ed.zooms.is_empty() && !ed.zoom_all_clicks {
+        hint(
+            ui,
+            tr!(
+                "只在錄影時按快速鍵（預設 Ctrl+Alt+Z）標記的地方慢慢放大，停一下再拉回全畫面。時間軸上的藍點是標記的地方，點一下可以設定這裡不放大；按「預覽結果」可以看到效果。",
+                "Zooms in only on the spots you marked with the shortcut while recording (Ctrl+Alt+Z by default), then zooms back out. The blue dots on the timeline are the marked spots; click one to skip it. Press “Preview result” to see the effect."
+            ),
+        );
+    } else if can {
         hint(
             ui,
             tr!(
