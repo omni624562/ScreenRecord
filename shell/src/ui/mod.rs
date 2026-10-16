@@ -8,6 +8,7 @@ pub mod dialogs;
 pub mod editor;
 pub mod export_dialog;
 pub mod import;
+pub mod inline_play;
 pub mod library_dialog;
 pub mod main_view;
 pub mod notes;
@@ -87,6 +88,8 @@ impl ToastAction {
 pub enum EntryAction {
     /// 在內建檢視器開啟
     Play,
+    /// 在主畫面（即時預覽的位置）播放；截圖仍用檢視器
+    PlayHere,
     /// 用 Windows 預設的程式開啟
     External,
     Reveal,
@@ -164,6 +167,8 @@ pub struct UiApp {
     pub export_dlg: Option<export_dialog::ExportDialog>,
     pub library: Option<library_dialog::LibraryDialog>,
     pub viewer: Option<viewer::Viewer>,
+    /// 主畫面內播放（最近錄影的播放鍵）
+    pub inline: Option<inline_play::Inline>,
     /// 文字辨識的結果
     pub ocr: Option<ocr::Ocr>,
     /// 錄影前的音量表（主畫面看得到、沒在錄影時才開）
@@ -272,6 +277,7 @@ impl UiApp {
             export_dlg: None,
             library: None,
             viewer: None,
+            inline: None,
             ocr: None,
             meter: None,
             meter_until: None,
@@ -763,8 +769,14 @@ impl UiApp {
     pub fn act(&mut self, action: EntryAction, entry: LibraryEntry) {
         use actions::OpenAction;
         let path = entry.media.path.clone();
+        // 主畫面正在播這個檔案：剪輯、製作、改名等要用到檔案時先停下來（Windows 上播放中的檔案不能改名、取代）
+        let keeps = matches!(action, EntryAction::PlayHere | EntryAction::Reveal | EntryAction::CopyFile | EntryAction::CopyChapters | EntryAction::Phone);
+        if !keeps && self.inline.as_ref().is_some_and(|i| i.is(&path)) {
+            self.inline = None;
+        }
         match action {
             EntryAction::Play => viewer::open(self, entry),
+            EntryAction::PlayHere => inline_play::open(self, entry),
             EntryAction::SaveAudio => {
                 let core = self.core.clone();
                 self.toast(tr!("正在存成 M4A…", "Saving as M4A…"), false);
@@ -1126,6 +1138,7 @@ impl eframe::App for UiApp {
             library_dialog::show(self, &ctx);
             part(self, "全部錄影");
         }
+        inline_play::tick(self, &ctx);
         if self.viewer.is_some() {
             viewer::show(self, &ctx);
             part(self, "檢視器");
