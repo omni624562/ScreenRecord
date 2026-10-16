@@ -1901,6 +1901,16 @@ impl Editor {
                 self.spec.narration.click_volume = v.parse().unwrap_or(60);
             }
             "seek" => self.seek(v.parse().unwrap_or(0.0)),
+            // 加一個文字標註：ann=開始,結束（秒）
+            "ann" => {
+                let t: Vec<f64> = v.split(',').filter_map(|x| x.parse().ok()).collect();
+                let (vw, vh) = (self.vw, self.vh);
+                let mut a = self.new_ann(AnnKind::Text, vw / 2.0, vh / 2.0);
+                if let [s0, s1] = t[..] {
+                    (a.start, a.end) = (s0, s1);
+                }
+                self.anns.push(a);
+            }
             "zoommark" => {
                 let v: Vec<f64> = v.split(',').filter_map(|x| x.parse().ok()).collect();
                 if let [t, x, y] = v[..] {
