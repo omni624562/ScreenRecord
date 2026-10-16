@@ -10,6 +10,62 @@ pub fn pick(title: &str, filters: &[(&str, &str)]) -> Result<Option<PathBuf>, St
     run(title, filters, false, None).map_err(|e| crate::trf!("無法開啟選擇檔案的視窗：{}", "Couldn't open the file picker: {}", e))
 }
 
+/// 一次選好幾個檔案（取消時回傳空的清單）
+#[cfg(windows)]
+pub fn pick_many(title: &str, filters: &[(&str, &str)]) -> Result<Vec<PathBuf>, String> {
+    let title = title.to_string();
+    let filters: Vec<(String, String)> = filters.iter().map(|(a, b)| (a.to_string(), b.to_string())).collect();
+    std::thread::Builder::new()
+        .name("file-dialog".into())
+        .spawn(move || {
+            let f: Vec<(&str, &str)> = filters.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
+            many_sta(&title, &f).map_err(|e| e.message())
+        })
+        .map_err(|e| e.to_string())?
+        .join()
+        .unwrap_or_else(|_| Err(crate::tr!("視窗意外關閉", "The window closed unexpectedly").into()))
+        .map_err(|e| crate::trf!("無法開啟選擇檔案的視窗：{}", "Couldn't open the file picker: {}", e))
+}
+
+#[cfg(windows)]
+fn many_sta(title: &str, filters: &[(&str, &str)]) -> windows::core::Result<Vec<PathBuf>> {
+    use windows::core::{HSTRING, PCWSTR};
+    use windows::Win32::System::Com::{CoCreateInstance, CoInitializeEx, CoTaskMemFree, CoUninitialize, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED};
+    use windows::Win32::UI::Shell::Common::COMDLG_FILTERSPEC;
+    use windows::Win32::UI::Shell::{FileOpenDialog, IFileOpenDialog, FOS_ALLOWMULTISELECT, FOS_FILEMUSTEXIST, FOS_FORCEFILESYSTEM, SIGDN_FILESYSPATH};
+    let names: Vec<HSTRING> = filters.iter().map(|f| HSTRING::from(f.0)).collect();
+    let specs: Vec<HSTRING> = filters.iter().map(|f| HSTRING::from(f.1)).collect();
+    let list: Vec<COMDLG_FILTERSPEC> = names.iter().zip(&specs).map(|(n, s)| COMDLG_FILTERSPEC { pszName: PCWSTR(n.as_ptr()), pszSpec: PCWSTR(s.as_ptr()) }).collect();
+    let title = HSTRING::from(title);
+    unsafe {
+        let inited = CoInitializeEx(None, COINIT_APARTMENTTHREADED).is_ok();
+        let r = (|| -> windows::core::Result<Vec<PathBuf>> {
+            let dlg: IFileOpenDialog = CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER)?;
+            if !list.is_empty() {
+                dlg.SetFileTypes(&list)?;
+            }
+            dlg.SetTitle(&title)?;
+            dlg.SetOptions(dlg.GetOptions()? | FOS_ALLOWMULTISELECT | FOS_FILEMUSTEXIST | FOS_FORCEFILESYSTEM)?;
+            if dlg.Show(None).is_err() {
+                return Ok(vec![]);
+            }
+            let items = dlg.GetResults()?;
+            let mut out = vec![];
+            for i in 0..items.GetCount()? {
+                let item = items.GetItemAt(i)?;
+                let name = item.GetDisplayName(SIGDN_FILESYSPATH)?;
+                out.push(PathBuf::from(PCWSTR(name.0).to_string().unwrap_or_default()));
+                CoTaskMemFree(Some(name.0 as *const _));
+            }
+            Ok(out)
+        })();
+        if inited {
+            CoUninitialize();
+        }
+        r
+    }
+}
+
 /// 選擇資料夾；start：一開始顯示的資料夾（不存在時由 Windows 決定）
 #[cfg(windows)]
 pub fn pick_folder(title: &str, start: Option<PathBuf>) -> Result<Option<PathBuf>, String> {
@@ -151,6 +207,16 @@ fn fake() -> Option<Option<PathBuf>> {
 #[cfg(not(windows))]
 pub fn pick(_title: &str, _filters: &[(&str, &str)]) -> Result<Option<PathBuf>, String> {
     fake().ok_or_else(|| crate::tr!("這個系統不支援選擇檔案的視窗", "The file picker isn't supported on this system").into())
+}
+
+/// 開發測試用：SCREENRECORDER_FAKE_PICK 以 | 分隔多個檔案
+#[cfg(not(windows))]
+pub fn pick_many(_title: &str, _filters: &[(&str, &str)]) -> Result<Vec<PathBuf>, String> {
+    match fake() {
+        Some(Some(p)) => Ok(p.to_string_lossy().split('|').map(PathBuf::from).collect()),
+        Some(None) => Ok(vec![]),
+        None => Err(crate::tr!("這個系統不支援選擇檔案的視窗", "The file picker isn't supported on this system").into()),
+    }
 }
 
 #[cfg(not(windows))]

@@ -2292,6 +2292,7 @@ fn job_card(app: &mut UiApp, ui: &mut Ui) {
     let label = match e.kind {
         ExportKind::Cut => tr!("剪輯", "edited video").to_string(),
         ExportKind::Merge => tr!("合併錄影", "merged video").to_string(),
+        ExportKind::Convert => tr!("轉成 MP4", "MP4 copy").to_string(),
         ExportKind::Gif => trf!("製作 GIF{gif_speed}", "GIF{gif_speed}"),
         ExportKind::Webp => trf!("製作 WebP 動圖{gif_speed}", "WebP{gif_speed}"),
         // 原速：只壓縮
@@ -2619,8 +2620,15 @@ fn recent_card(app: &mut UiApp, ui: &mut Ui, e: &LibraryEntry, date: String, w: 
         theme::paint_thumb(&painter, thumb, &t);
     }
     // 縮圖：點一下就播放（中間有播放鍵，滑鼠移上去變明顯）
-    let thumb_resp = ui.interact(thumb, Id::new(("recent-thumb", &e.media.path)), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(tr!("播放", "Play"));
+    let thumb_resp = ui.interact(thumb, Id::new(("recent-thumb", &e.media.path)), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
     let hot_thumb = thumb_resp.hovered();
+    // 滑過縮圖：旁邊浮出預覽，左右移動看不同時間的畫面（聲音檔仍顯示「播放」提示）
+    let thumb_resp = if hot_thumb && e.media.path.to_ascii_lowercase().ends_with(".mp4") {
+        super::thumbs::scrub_preview(app, ui, thumb, thumb, &e.media.path, e.media.mtime, e.media.duration_sec.unwrap_or(0.0));
+        thumb_resp
+    } else {
+        thumb_resp.on_hover_text(tr!("播放", "Play"))
+    };
     painter.circle_filled(thumb.center(), if hot_thumb { 15.0 } else { 13.0 }, Color32::from_black_alpha(if hot_thumb { 170 } else { 110 }));
     let c = thumb.center();
     painter.add(egui::Shape::convex_polygon(vec![c + vec2(-4.0, -6.5), c + vec2(7.0, 0.0), c + vec2(-4.0, 6.5)], Color32::WHITE, Stroke::NONE));

@@ -65,6 +65,7 @@ pub fn job_label(e: &crate::types::ExportStatus) -> String {
     match e.kind {
         ExportKind::Cut => tr!("剪輯", "Editing").to_string(),
         ExportKind::Merge => tr!("合併錄影", "Merging recordings").to_string(),
+        ExportKind::Convert => tr!("轉成 MP4", "Converting to MP4").to_string(),
         ExportKind::Gif => trf!("製作 GIF{speed}", "Making a GIF{speed}"),
         ExportKind::Webp => trf!("製作 WebP 動圖{speed}", "Making a WebP{speed}"),
         // 原速：只壓縮
@@ -262,11 +263,19 @@ pub async fn move_shots(app: &App, from: &str, to: &str) -> crate::library::Move
 
 /// 縮圖檔（PNG）的路徑；產生失敗回傳 None
 pub async fn thumb(app: &App, path: &str) -> Option<PathBuf> {
-    if !(is_abs(path) && ends_with_ci(path, &[".mp4", ".gif", ".webp", ".png", ".jpg", ".jpeg"]) && Path::new(path).exists()) {
+    if !(is_abs(path) && (ends_with_ci(path, &[".mp4", ".gif", ".webp", ".png", ".jpg", ".jpeg"]) || crate::import::is_other_video(path)) && Path::new(path).exists()) {
         return None;
     }
     // 截圖不需要 FFmpeg
     app.thumbs.get(app.ffmpeg_path().as_deref(), path).await
+}
+
+/// 滑過預覽用的長條圖（影片才有）
+pub async fn thumb_strip(app: &App, path: &str, duration: f64) -> Option<PathBuf> {
+    if !(is_abs(path) && ends_with_ci(path, &[".mp4"]) && Path::new(path).exists()) {
+        return None;
+    }
+    app.thumbs.strip(app.ffmpeg_path().as_deref(), path, duration).await
 }
 
 /// 錄影或截圖改名（錄影連同加速版 / GIF）；不能改正在錄影或轉檔的檔案。回傳新的完整路徑
@@ -357,6 +366,80 @@ pub async fn merge_start(app: &App, paths: &[String], name: Option<&str>) -> Res
         return Err(Error::config(tr!("錄影中無法合併，請先停止錄影", "Can't merge while recording. Stop recording first")));
     }
     Ok(app.exporter.start_merge_named(&app.export_ctx(), paths, name).await?.id)
+}
+
+/// 匯入影片的結果
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ImportReport {
+    /// 做好的 MP4（轉好的或複製過來的）
+    pub done: Vec<String>,
+    /// 已經在儲存位置裡的 MP4（不用匯入）
+    pub already: usize,
+    /// 不是影片、略過的檔案
+    pub skipped: usize,
+    /// 失敗的檔案與原因
+    pub failed: Vec<(String, String)>,
+    /// 中途被取消（例如開始錄影）
+    pub canceled: bool,
+}
+
+/// 轉成 MP4（清單上的 MOV、MKV…）：存在原檔旁邊，原檔保留。回傳轉檔工作的編號
+pub async fn convert_start(app: &App, path: &str) -> Result<u64> {
+    if app.recorder.active() {
+        return Err(Error::config(tr!("錄影中無法轉檔，請先停止錄影", "Can't convert while recording. Stop recording first")));
+    }
+    Ok(app.exporter.start_convert(&app.export_ctx(), path, None).await?.id)
+}
+
+/// 匯入影片（拖進視窗、「匯入影片…」）：MP4 複製到 dest，其他格式轉成 MP4 存到 dest（原檔都不動）；一支一支依序做。
+/// 已經在 dest（或它的子資料夾）裡的 MP4 不重複複製；轉檔進度在錄影面板顯示，錄影時會被停止（canceled）
+pub async fn import_videos(app: &App, paths: &[String], dest: &Path) -> ImportReport {
+    let mut r = ImportReport::default();
+    let _ = tokio::fs::create_dir_all(dest).await;
+    let dest_l = dest.display().to_string().to_lowercase();
+    for p in paths {
+        let name = Path::new(p).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        if !crate::import::is_importable(&name) || !Path::new(p).is_file() {
+            r.skipped += 1;
+            continue;
+        }
+        if app.recorder.active() {
+            r.canceled = true;
+            break;
+        }
+        if !crate::import::is_other_video(&name) {
+            if p.to_lowercase().starts_with(&dest_l) {
+                r.already += 1;
+                continue;
+            }
+            let stem = Path::new(&name).file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+            let to = crate::paths::unique_path(dest, &stem, ".mp4");
+            match tokio::fs::copy(p, &to).await {
+                Ok(_) => r.done.push(to.display().to_string()),
+                Err(e) => r.failed.push((name, e.to_string())),
+            }
+            continue;
+        }
+        let st = match app.exporter.start_convert(&app.export_ctx(), p, Some(dest.to_path_buf())).await {
+            Ok(st) => st,
+            Err(e) => {
+                r.failed.push((name, e.message().to_string()));
+                continue;
+            }
+        };
+        app.exporter.wait().await;
+        match app.exporter.status().filter(|s| s.id == st.id) {
+            Some(s) if s.state == ExportState::Done => r.done.push(s.output),
+            Some(s) if s.state == ExportState::Canceled => {
+                r.canceled = true;
+                break;
+            }
+            Some(s) => r.failed.push((name, s.message.unwrap_or_default())),
+            None => r.failed.push((name, String::new())),
+        }
+    }
+    crate::info!("[匯入] 完成 {} 支、已在儲存位置 {}、略過 {}、失敗 {}{}", r.done.len(), r.already, r.skipped, r.failed.len(), if r.canceled { "（中途停止）" } else { "" });
+    r
 }
 
 pub async fn cut_start(app: &App, source: &str, spec: &EditSpec, replace: Option<&str>, project: Option<Value>) -> Result<()> {

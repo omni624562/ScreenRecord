@@ -948,6 +948,8 @@ pub enum ExportKind {
     Cut,
     /// 多支錄影合併成一支
     Merge,
+    /// 其他格式（MOV、MKV…）轉成 MP4
+    Convert,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

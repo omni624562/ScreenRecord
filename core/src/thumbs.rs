@@ -19,6 +19,9 @@ const IMAGE_CONCURRENCY: usize = 4;
 /// 截圖縮圖的大小上限：寬 320（和影片一樣），長截圖高度最多 960
 const IMAGE_MAX: (u32, u32) = (320, 960);
 const RETRY_FAILED: Duration = Duration::from_secs(10 * 60);
+/// 滑過預覽：幾格畫面、每格多寬
+pub const STRIP_FRAMES: usize = 12;
+const STRIP_W: u32 = 240;
 
 pub struct Thumbnails {
     dir: PathBuf,
@@ -93,6 +96,48 @@ impl Thumbnails {
         result
     }
 
+    /// 滑過預覽用的長條圖：平均取 STRIP_FRAMES 格畫面（每格寬 240）左右接起來；一樣以「路徑 + 大小 + 修改時間」快取
+    pub async fn strip(&self, ffmpeg: Option<&Path>, video: &str, duration: f64) -> Option<PathBuf> {
+        let ffmpeg = ffmpeg?;
+        if !(duration.is_finite() && duration > 0.0) {
+            return None;
+        }
+        let meta = tokio::fs::metadata(video).await.ok()?;
+        let key = {
+            let mut h = Sha256::new();
+            h.update(format!("strip|{}|{}|{}", video.to_lowercase(), meta.len(), mtime_ms(&meta)).as_bytes());
+            h.finalize().iter().take(20).map(|b| format!("{b:02x}")).collect::<String>()
+        };
+        let out = self.dir.join(format!("{key}.png"));
+        if out.is_file() {
+            return Some(out);
+        }
+        if self.failed.lock().unwrap().get(&key).is_some_and(|t| t.elapsed() < RETRY_FAILED) {
+            return None;
+        }
+        let cell = self.inflight.lock().unwrap().entry(key.clone()).or_default().clone();
+        let result = cell
+            .get_or_init(|| async {
+                let _permit = self.sem.clone().acquire_owned().await.ok()?;
+                let _ = tokio::fs::create_dir_all(&self.dir).await;
+                // 先寫暫存檔再改名：不會留下寫一半的圖
+                let tmp = out.with_extension("tmp.png");
+                let args = strip_args(video, duration, &tmp.display().to_string());
+                let r = run(ffmpeg, &args, Duration::from_secs(60)).await;
+                if r.code == 0 && std::fs::metadata(&tmp).map(|m| m.len() > 0).unwrap_or(false) && std::fs::rename(&tmp, &out).is_ok() {
+                    return Some(out.clone());
+                }
+                crate::info!("[縮圖] 滑過預覽產生失敗：{}", r.stderr.trim());
+                let _ = std::fs::remove_file(&tmp);
+                self.failed.lock().unwrap().insert(key.clone(), Instant::now());
+                None
+            })
+            .await
+            .clone();
+        self.inflight.lock().unwrap().remove(&key);
+        result
+    }
+
     /// 啟動時整理：刪掉舊版（2.x）的 JPEG 縮圖；超過上限就刪掉最舊的縮圖
     pub fn prune(&self) {
         let Ok(rd) = std::fs::read_dir(&self.dir) else { return };
@@ -118,6 +163,30 @@ impl Thumbnails {
     }
 }
 
+/// 滑過預覽的長條圖：每格從影片的 (i + 0.5) / N 處跳過去取一張（快速跳轉，不用解整支影片），縮成寬 240 後左右接起來
+fn strip_args(video: &str, duration: f64, out: &str) -> Vec<String> {
+    let mut a: Vec<String> = ["-hide_banner", "-loglevel", "error"].iter().map(|s| s.to_string()).collect();
+    let mut graph = String::new();
+    let mut stack = String::new();
+    for i in 0..STRIP_FRAMES {
+        let t = duration * (i as f64 + 0.5) / STRIP_FRAMES as f64;
+        a.extend(["-threads".to_string(), "1".into()]);
+        a.extend(crate::args::input_at(video, &format!("{t:.3}")));
+        graph.push_str(&format!("[{i}:v]trim=end_frame=1,scale={STRIP_W}:-2:flags=bilinear,setsar=1[v{i}];"));
+        stack.push_str(&format!("[v{i}]"));
+    }
+    graph.push_str(&format!("{stack}hstack=inputs={STRIP_FRAMES}"));
+    a.extend(["-filter_complex".to_string(), graph, "-frames:v".into(), "1".into(), "-y".into(), out.into()]);
+    a
+}
+
+/// 滑過預覽：游標在縮圖上的位置（0～1）→ 第幾格、影片的第幾秒
+pub fn strip_pick(frac: f64, duration: f64) -> (usize, f64) {
+    let frac = if frac.is_finite() { frac.clamp(0.0, 1.0) } else { 0.0 };
+    let i = ((frac * STRIP_FRAMES as f64) as usize).min(STRIP_FRAMES - 1);
+    (i, duration.max(0.0) * (i as f64 + 0.5) / STRIP_FRAMES as f64)
+}
+
 /// 截圖縮圖：解碼後縮到 IMAGE_MAX 以內（小圖不放大），存成 PNG；先寫暫存檔再改名，不會留下寫一半的縮圖
 fn image_thumb(src: &Path, dst: &Path) -> bool {
     let Ok(img) = image::open(src) else { return false };
@@ -134,6 +203,23 @@ fn image_thumb(src: &Path, dst: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn strip_picks_frames_and_seeks_each_one() {
+        // 12 格：左邊第一格、右邊最後一格，時間是那一格的中間
+        assert_eq!(strip_pick(0.0, 120.0), (0, 5.0));
+        assert_eq!(strip_pick(1.0, 120.0), (11, 115.0));
+        assert_eq!(strip_pick(0.5, 120.0), (6, 65.0));
+        assert_eq!(strip_pick(f64::NAN, 120.0).0, 0);
+        assert_eq!(strip_pick(-3.0, 120.0).0, 0);
+        let a = strip_args("v.mp4", 120.0, "out.png");
+        assert_eq!(a.iter().filter(|s| *s == "-i").count(), STRIP_FRAMES);
+        assert!(a.windows(2).any(|w| w[0] == "-ss" && w[1] == "5.000"));
+        assert!(a.windows(2).any(|w| w[0] == "-ss" && w[1] == "115.000"));
+        let g = &a[a.iter().position(|s| s == "-filter_complex").unwrap() + 1];
+        assert!(g.ends_with("[v11]hstack=inputs=12"), "{g}");
+        assert!(a.ends_with(&["-frames:v".into(), "1".into(), "-y".into(), "out.png".into()]));
+    }
 
     #[test]
     fn prune_keeps_newest() {

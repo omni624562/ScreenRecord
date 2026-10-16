@@ -399,6 +399,98 @@ async fn cover_is_saved_and_written_into_the_video() {
 }
 
 #[tokio::test]
+async fn hover_preview_strip_has_every_frame() {
+    let Some(ff) = ffmpeg() else { return };
+    if !has(&ff, "-encoders", "libx264") {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let src = make_source(&ff, dir.path());
+    let thumbs = crate::thumbs::Thumbnails::new(dir.path().join("thumbs"));
+    let out = thumbs.strip(Some(&ff), &src.display().to_string(), 6.0).await.expect("長條圖");
+    let pm = tiny_skia::Pixmap::load_png(&out).unwrap();
+    // 12 格、每格 240 寬（640×360 → 240×135，高度取偶數）
+    assert_eq!((pm.width(), pm.height()), (240 * crate::thumbs::STRIP_FRAMES as u32, 136));
+    // 第二次直接用快取；沒有留下暫存檔
+    assert_eq!(thumbs.strip(Some(&ff), &src.display().to_string(), 6.0).await, Some(out.clone()));
+    let names: Vec<String> = std::fs::read_dir(dir.path().join("thumbs")).unwrap().filter_map(|e| e.ok()).map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+    assert_eq!(names.len(), 1, "{names:?}");
+    // 不同時間的格子內容不一樣（testsrc2 的畫面會動）
+    let cell = |i: u32| (0..135).flat_map(|y| (0..240).map(move |x| (x, y))).map(|(x, y)| pm.pixel(i * 240 + x, y).unwrap().red() as u64).sum::<u64>();
+    assert_ne!(cell(0), cell(11));
+}
+
+#[tokio::test]
+async fn other_formats_are_converted_to_mp4() {
+    let Some(ff) = ffmpeg() else { return };
+    if !has(&ff, "-encoders", "libx264") {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let c = ctx(&ff);
+    let ex = Exporter::new();
+    // H.264 的 MKV（OBS 預設）：直接換成 MP4，不重新壓縮；聲音轉成 AAC
+    let mkv = dir.path().join("2026-10-16 10-00-00.mkv");
+    run_ok(
+        &ff,
+        &[
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=640x360:rate=30:duration=3",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:sample_rate=48000:duration=3",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "ultrafast",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "libopus",
+            &mkv.display().to_string(),
+        ],
+    );
+    let out_dir = dir.path().join("Videos");
+    std::fs::create_dir_all(&out_dir).unwrap();
+    ex.start_convert(&c, &mkv.display().to_string(), Some(out_dir.clone())).await.unwrap();
+    let mp4 = finish(&ex).await;
+    assert_eq!(mp4, out_dir.join("2026-10-16 10-00-00.mp4"));
+    let i = probe(&ff, &mp4).await;
+    assert!(near(i.duration_sec.unwrap(), 3.0, 0.15), "{:?}", i.duration_sec);
+    assert_eq!((i.width, i.has_audio), (Some(640), Some(true)));
+    assert!(mkv.is_file(), "原檔保留");
+    // 再轉一次：同名時加 _2
+    ex.start_convert(&c, &mkv.display().to_string(), Some(out_dir.clone())).await.unwrap();
+    assert_eq!(finish(&ex).await, out_dir.join("2026-10-16 10-00-00_2.mp4"));
+    // VP9 的 WebM：重新壓縮成 H.264
+    if has(&ff, "-encoders", "libvpx-vp9") {
+        let webm = dir.path().join("clip.webm");
+        run_ok(&ff, &["-f", "lavfi", "-i", "testsrc2=size=321x241:rate=30:duration=2", "-c:v", "libvpx-vp9", "-deadline", "realtime", "-an", &webm.display().to_string()]);
+        ex.start_convert(&c, &webm.display().to_string(), None).await.unwrap();
+        let out = finish(&ex).await;
+        assert_eq!(out, dir.path().join("clip.mp4"));
+        let o = Command::new(&ff).args(["-hide_banner", "-i"]).arg(&out).output().unwrap();
+        let info = String::from_utf8_lossy(&o.stderr);
+        assert_eq!(crate::import::video_codec(&info).as_deref(), Some("h264"), "{info}");
+        // 寬高變成偶數
+        assert_eq!(probe(&ff, &out).await.width, Some(320));
+    }
+    // 清單：列出 MKV，但已經轉好同名 MP4 的不重複列出
+    let cache = crate::library::MediaCache::default();
+    let list = crate::library::scan(&cache, dir.path()).await;
+    let names: Vec<&str> = list.iter().map(|e| e.media.name.as_str()).collect();
+    assert!(names.contains(&"2026-10-16 10-00-00.mkv"), "{names:?}");
+    if has(&ff, "-encoders", "libvpx-vp9") {
+        assert!(names.contains(&"clip.mp4") && !names.contains(&"clip.webm"), "{names:?}");
+    }
+    // 不是影片：不能轉
+    assert!(ex.start_convert(&c, &dir.path().join("a.txt").display().to_string(), None).await.is_err());
+}
+
+#[tokio::test]
 async fn animations_gif_and_webp() {
     let Some(ff) = ffmpeg() else { return };
     if !has(&ff, "-encoders", "libx264") {
