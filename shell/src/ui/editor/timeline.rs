@@ -385,7 +385,7 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, toast: &mut
         .collect();
     // 跟著點擊放大：點擊的時間（藍點；設定成這次不放大的是空心灰點），點一下切換
     let dots: Vec<(Pos2, f64, bool)> =
-        if ed.zoom_on() { ed.clicks.iter().filter(|c| c[0] >= a && c[0] <= b).map(|c| (pos2(x_of(c[0]), rect.bottom() - 7.0), c[0], ed.click_skipped(c[0]))).collect() } else { vec![] };
+        if ed.zoom_on() { ed.zoom_source().iter().filter(|c| c[0] >= a && c[0] <= b).map(|c| (pos2(x_of(c[0]), rect.bottom() - 7.0), c[0], ed.click_skipped(c[0]))).collect() } else { vec![] };
     for &(c, _, skipped) in &dots {
         if skipped {
             painter.circle(c, 4.5, Color32::from_black_alpha(90), Stroke::new(1.5, Color32::from_gray(200)));

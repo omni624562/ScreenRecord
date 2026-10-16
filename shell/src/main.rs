@@ -169,6 +169,7 @@ fn main() {
     {
         let _g = rt.enter();
         core.spawn_window_follower();
+        core.spawn_folder_watcher();
     }
     // 錄影中：記下滑鼠點擊與游標位置（剪輯時跟著點擊放大、平滑放大的游標用），並依設定在畫面上顯示點擊與快速鍵（會錄進影片）
     #[cfg(windows)]

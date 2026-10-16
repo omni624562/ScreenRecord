@@ -94,6 +94,11 @@ pub struct UiSettings {
     pub rec_quiet: bool,
     /// 開會時（Teams、Zoom… 用麥克風）提醒錄影（core 的 tray 讀這個欄位）
     pub meeting_remind: bool,
+    /// 自動匯入的資料夾（core::watch 讀這個欄位）
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub watch_dirs: Vec<String>,
+    /// 自動匯入後接著做錄完自動處理
+    pub watch_after: bool,
     /// 錄影時打上馬賽克的固定範圍（桌面座標）
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub rec_masks: Vec<Rect>,
@@ -269,6 +274,16 @@ impl UiSettings {
             hide_icons: boolean("hideIcons").unwrap_or(false),
             rec_quiet: boolean("recQuiet").unwrap_or(false),
             meeting_remind: boolean("meetingRemind").unwrap_or(true),
+            watch_dirs: o
+                .get("watchDirs")
+                .and_then(|v| serde_json::from_value::<Vec<String>>(v.clone()).ok())
+                .unwrap_or_default()
+                .into_iter()
+                .map(|d| d.trim().to_string())
+                .filter(|d| !d.is_empty())
+                .take(10)
+                .collect(),
+            watch_after: boolean("watchAfter").unwrap_or(false),
             rec_masks: o.get("recMasks").and_then(|v| serde_json::from_value::<Vec<Rect>>(v.clone()).ok()).unwrap_or_default().into_iter().filter(|r| r.width >= 4 && r.height >= 4).take(20).collect(),
             mic_denoise: boolean("micDenoise").unwrap_or(false),
             rec_bar: o.get("recBar").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default(),

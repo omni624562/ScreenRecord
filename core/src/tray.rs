@@ -107,6 +107,8 @@ pub enum TrayCommand {
     Pen,
     /// 錄影中麥克風靜音 / 取消靜音
     MuteMic,
+    /// 錄影中標記要放大的地方（游標現在的位置）
+    ZoomMark,
     /// 回溯錄影：沒在錄影時開始，回溯錄影中存下最近幾分鐘（選單與快速鍵）
     Replay,
     OpenUpdate,
@@ -572,6 +574,17 @@ impl TrayController {
             }
             TrayCommand::Mark => {
                 let _ = rec.add_marker();
+                return Ok(());
+            }
+            // 沒在錄影時按快速鍵：不提示
+            TrayCommand::ZoomMark => {
+                if let Some((x, y)) = crate::winui::cursor_pos() {
+                    match rec.add_zoom_mark(x, y) {
+                        Ok(n) => app.flash(trf!("🔍 已標記要放大的地方（第 {n} 個，剪輯時套用）", "🔍 Zoom spot marked (#{n}, applied when editing)")),
+                        Err(e) if rec.status().state != RecorderState::Idle => app.flash(e.message().to_string()),
+                        Err(_) => {}
+                    }
+                }
                 return Ok(());
             }
             // 沒在錄影、沒錄麥克風時按快速鍵：不提示

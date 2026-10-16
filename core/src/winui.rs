@@ -385,6 +385,17 @@ mod imp {
     }
 }
 
+/// 滑鼠游標的位置（桌面的實體像素座標）
+pub fn cursor_pos() -> Option<(i32, i32)> {
+    #[cfg(windows)]
+    unsafe {
+        let mut p = windows::Win32::Foundation::POINT::default();
+        windows::Win32::UI::WindowsAndMessaging::GetCursorPos(&mut p).ok().map(|_| (p.x, p.y))
+    }
+    #[cfg(not(windows))]
+    None
+}
+
 /// 是否有看得到的操作視窗在 area 內（倒數時決定要不要蓋上全畫面倒數）；無法判斷時回傳 true
 pub fn ui_in_area(area: &Rect) -> bool {
     #[cfg(windows)]

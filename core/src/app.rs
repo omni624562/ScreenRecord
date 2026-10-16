@@ -736,6 +736,65 @@ impl App {
         Ok(shot)
     }
 
+    /// 自動匯入資料夾（設定 → 儲存位置）：每 10 秒看一次，有寫完的新影片就匯入到儲存位置；
+    /// 設定了「匯入後接著自動處理」時，再做錄完自動處理（字幕、剪掉沒動靜的片段…）
+    pub fn spawn_folder_watcher(self: &Arc<Self>) {
+        let me = Arc::downgrade(self);
+        tokio::spawn(async move {
+            let mut w = crate::watch::Watcher::load(Some(crate::paths::data_dir().join("watch_seen.json")));
+            loop {
+                tokio::time::sleep(Duration::from_secs(crate::watch::POLL_SEC)).await;
+                let Some(app) = me.upgrade() else { return };
+                let ui = app.settings.load().ui;
+                let dirs = crate::watch::dirs_from_ui(ui.as_ref());
+                if dirs.is_empty() {
+                    continue;
+                }
+                // 錄影、轉檔、錄完自動處理進行中：先不做（錄影優先）
+                if app.recorder.active() || app.exporter.running() || app.after_status().is_some() {
+                    continue;
+                }
+                let Some(out) = app.settings.load().record_config().map(|c| c.output_dir).filter(|d| !d.trim().is_empty()) else { continue };
+                let out = PathBuf::from(out);
+                let found: Vec<(PathBuf, Vec<crate::watch::Seen>)> = tokio::task::spawn_blocking({
+                    let (dirs, out) = (dirs.clone(), out.clone());
+                    move || dirs.into_iter().filter(|d| !crate::watch::inside(d, &out)).map(|d| (d.clone(), crate::watch::list(&d))).collect()
+                })
+                .await
+                .unwrap_or_default();
+                let ready = w.ready(&found, crate::paths::now_ms() as f64);
+                if ready.is_empty() {
+                    continue;
+                }
+                let files: Vec<crate::watch::Seen> = found.iter().flat_map(|(_, f)| f.iter()).filter(|f| ready.contains(&f.path)).cloned().collect();
+                crate::info!("[自動匯入] 發現 {} 支新影片：{}", ready.len(), ready.join("、"));
+                let r = crate::actions::import_videos(&app, &ready, &out).await;
+                w.finished(&files, &r.done_src, &r.failed_src);
+                if r.done.is_empty() {
+                    if !r.failed.is_empty() {
+                        app.notify(tr!("自動匯入", "Auto import"), &trf!("{} 支影片無法匯入（詳見記錄檔）", "{} video(s) couldn't be imported (see the log file)", r.failed.len()), true);
+                    }
+                    continue;
+                }
+                let names: Vec<String> = r.done.iter().map(|p| Path::new(p).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()).collect();
+                let after = crate::after_record::AfterRecord::from_ui(ui.as_ref());
+                let process = crate::watch::after_from_ui(ui.as_ref()) && after.any();
+                app.notify(
+                    tr!("自動匯入", "Auto import"),
+                    &if process {
+                        trf!("已匯入 {}，接著自動處理", "Imported {}; processing it now", names.join(tr!("、", ", ")))
+                    } else {
+                        trf!("已匯入 {}", "Imported {}", names.join(tr!("、", ", ")))
+                    },
+                    false,
+                );
+                if process {
+                    app.clone().batch_process(r.done.clone(), after).await;
+                }
+            }
+        });
+    }
+
     /// 「只錄這個視窗」：視窗移動後（停下來 0.4 秒）錄影範圍跟著移過去；大小改變時維持原本的大小
     pub fn spawn_window_follower(self: &Arc<Self>) {
         let me = Arc::downgrade(self);
@@ -1212,12 +1271,16 @@ impl App {
         Ok(SnipSource { path, desktop: plan.rect, monitors: plan.monitors.clone(), windows, shot_dir: config.shots_dir() })
     }
 
-    /// 錄影中拖曳移動了範圍：主畫面的自訂範圍（或單一螢幕裡框選的部分）、系統匣「開始錄影」用的設定、
-    /// 「重複上次框選」原本是 old 的，都改成 new，下次錄影直接用新位置（操作視窗看到設定變了會重新讀取）
     /// 麥克風靜音 / 取消靜音後：錄影範圍下方短暫提示（不會被錄進去）
     pub fn mic_mute_changed(&self, muted: bool) {
         let text =
             if muted { tr!("🔇 麥克風已靜音・再按一次取消", "🔇 Microphone muted · press again to unmute") } else { tr!("🎙 麥克風已取消靜音", "🎙 Microphone unmuted") };
+        self.flash(text);
+    }
+
+    /// 錄影中：錄影範圍下方短暫顯示一句話（1.5 秒，不會被錄進去）
+    pub fn flash(&self, text: impl Into<String>) {
+        let text: String = text.into();
         crate::info!("[錄影] {text}");
         #[cfg(windows)]
         {
@@ -1230,6 +1293,8 @@ impl App {
         }
     }
 
+    /// 錄影中拖曳移動了範圍：主畫面的自訂範圍（或單一螢幕裡框選的部分）、系統匣「開始錄影」用的設定、
+    /// 「重複上次框選」原本是 old 的，都改成 new，下次錄影直接用新位置（操作視窗看到設定變了會重新讀取）
     pub fn region_moved(&self, old: Rect, new: Rect) {
         let monitors = {
             let mut st = self.lock();
