@@ -1,5 +1,5 @@
 //! 開發用（只在 debug 版）：自動開啟某個畫面、模擬操作並截圖，在 Linux 的 Xvfb 上檢查介面。
-//! - SCREENRECORDER_DEV：要開啟的畫面（library、shots、changelog、notes（講稿小視窗）、schedule（排程錄影）、after:<路徑>（錄完自動處理）、follow:<標題>（只錄這個視窗）、followfake:<標題>（模擬已選好視窗）、record:<秒>（錄幾秒）、replay:<保留秒數>,<幾秒後存下>[,<再幾秒停止>]（重播緩衝）、export:<路徑>、edit:<路徑>、tags:<路徑>（影片資訊）、view:<路徑>、play:<路徑>（在主畫面播放）、whatsnew（新功能介紹）、monitors（模擬兩個螢幕）、unplug（模擬拔掉外接螢幕）、snip:<PNG>（用這張圖當凍結的桌面開啟框選截圖）、snipregion:<PNG>（同上，只選範圍）、stepsreview:<PNG>,<PNG>（整理步驟截圖）、hotkeys（模擬已登記快速鍵）、fakerec:<0|1>（模擬錄影中、有錄麥克風，1 = 靜音中）、update:<版本>（模擬有新版本）、cameras:<名稱>,<名稱>（模擬找到的攝影機）、settings:<record|audio|save|after|keys|advanced|components|about>、ed:<剪輯視窗指令>、tour:<first|editor|shot|library>[,<第幾步>]（教學）），以 ; 分隔
+//! - SCREENRECORDER_DEV：要開啟的畫面（library、shots、changelog、notes（講稿小視窗）、schedule（排程錄影）、after:<路徑>（錄完自動處理）、follow:<標題>（只錄這個視窗）、followfake:<標題>（模擬已選好視窗）、record:<秒>（錄幾秒）、replay:<保留秒數>,<幾秒後存下>[,<再幾秒停止>]（重播緩衝）、export:<路徑>、edit:<路徑>、tags:<路徑>（影片資訊）、compress:<路徑>（壓縮）、merge:<路徑>|<路徑>（合併）、view:<路徑>、play:<路徑>（在主畫面播放）、whatsnew（新功能介紹）、monitors（模擬兩個螢幕）、unplug（模擬拔掉外接螢幕）、snip:<PNG>（用這張圖當凍結的桌面開啟框選截圖）、snipregion:<PNG>（同上，只選範圍）、stepsreview:<PNG>,<PNG>（整理步驟截圖）、hotkeys（模擬已登記快速鍵）、fakerec:<0|1>（模擬錄影中、有錄麥克風，1 = 靜音中）、update:<版本>（模擬有新版本）、cameras:<名稱>,<名稱>（模擬找到的攝影機）、settings:<record|audio|save|after|keys|advanced|components|about>、ed:<剪輯視窗指令>、tour:<first|editor|shot|library>[,<第幾步>]（教學）），以 ; 分隔
 //! - SCREENRECORDER_INPUT：開啟後依序模擬的操作，以 ; 分隔：
 //!   wait:毫秒、click:x,y（可加 ,ctrl、,shift）、dclick:x,y（按兩下）、rclick:x,y（右鍵）、move:x,y、drag:x0,y0,x1,y1、wheel:x,y,dy（加 ,ctrl = Ctrl+滾輪）、key:Space（可加 ctrl+、alt+、shift+）、hold:Space / release:Space（按住、放開）、type:文字、shot:路徑
 //! - SCREENRECORDER_SHOT：最後截圖存檔的路徑（存好後結束）；SCREENRECORDER_SHOT_AFTER：開始後幾毫秒截圖（預設 3000）
@@ -199,6 +199,12 @@ pub fn tick(app: &mut UiApp, ctx: &egui::Context) {
                     Some(("export", p)) => app.act_path(EntryAction::Export, p.to_string()),
                     Some(("edit", p)) => app.act_path(EntryAction::Edit, p.to_string()),
                     Some(("tags", p)) => app.act_path(EntryAction::Tags, p.to_string()),
+                    Some(("compress", p)) => app.act_path(EntryAction::Compress, p.to_string()),
+                    // 合併對話框：路徑用 | 分開
+                    Some(("merge", ps)) => {
+                        app.library = Some(super::library_dialog::LibraryDialog::new(super::library_dialog::Kind::Video));
+                        super::library_dialog::open_merge(app, ps.split('|').map(String::from).collect());
+                    }
                     Some(("view", p)) => app.act_path(EntryAction::Play, p.to_string()),
                     Some(("play", p)) => app.act_path(EntryAction::PlayHere, p.to_string()),
                     Some(("ed", c)) => app.dev.editor_cmds.push(c.to_string()),

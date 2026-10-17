@@ -105,7 +105,7 @@ pub enum EntryAction {
     CopySteps,
     /// 錄影時記下的操作步驟做成步驟教學（每一步附上那一刻的畫面），在步驟整理視窗整理後做成文件
     StepsGuide,
-    /// 原速、壓縮到某個大小以內（傳 LINE / Email）：開啟製作視窗的「壓縮」
+    /// 原速壓縮（依畫質，或壓縮到某個大小以內傳 LINE / Email）：開啟製作視窗的「壓縮」
     Compress,
     /// 做成直式影片（Shorts / Reels）：開啟剪輯並選好「直式影片」
     Vertical,

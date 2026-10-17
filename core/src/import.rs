@@ -34,6 +34,31 @@ pub fn video_codec(ffmpeg_info: &str) -> Option<String> {
     })
 }
 
+/// 合併時判斷能不能直接接起來（不重新壓縮）：從 `ffmpeg -i` 的輸出取出每個串流的格式
+/// （編碼、像素格式、尺寸、時間單位、聲音的取樣率與聲道）和畫面的旋轉；位元率、張數會隨內容變，不算。
+/// 其他串流（章節、資料）只記種類：concat 依串流的順序對應，順序也要一樣。每支影片算出來一樣才能接；沒有畫面時 None
+pub fn stream_signature(ffmpeg_info: &str) -> Option<String> {
+    let mut parts = vec![];
+    let mut has_video = false;
+    for l in ffmpeg_info.lines().map(str::trim) {
+        if l.starts_with("Stream #") {
+            let Some((kind, rest)) = ["Video", "Audio", "Data", "Subtitle", "Attachment"].iter().find_map(|k| l.split_once(&format!(": {k}: ")).map(|(_, r)| (*k, r))) else { continue };
+            match kind {
+                "Video" if l.contains("(attached pic)") => continue,
+                "Video" | "Audio" => {
+                    has_video |= kind == "Video";
+                    let keep: Vec<&str> = rest.split(", ").map(|t| t.trim_end_matches(" (default)").trim()).filter(|t| !t.ends_with("kb/s") && !t.ends_with(" fps") && !t.ends_with(" tbr")).collect();
+                    parts.push(format!("{kind}: {}", keep.join(", ")));
+                }
+                _ => parts.push(kind.to_string()),
+            }
+        } else if l.contains("rotation of") {
+            parts.push(l.to_string());
+        }
+    }
+    has_video.then(|| parts.join(" | "))
+}
+
 /// MP4 可以直接裝、Windows 和手機都播得了的畫面編碼：不用重新壓縮
 pub fn can_copy_video(codec: Option<&str>) -> bool {
     matches!(codec, Some("h264") | Some("hevc"))
@@ -58,6 +83,25 @@ pub fn convert_args(src: &str, out: &str, copy: bool, enc: &EncoderSpec) -> Vec<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stream_signature_ignores_bitrate_and_fps_but_not_format() {
+        let a = "  Stream #0:0[0x1](eng): Video: hevc (Main) (hvc1 / 0x31637668), yuv420p(tv, bt709), 1920x1080, 20046 kb/s, 30.01 fps, 30 tbr, 90k tbn (default)
+      displaymatrix: rotation of -90.00 degrees
+  Stream #0:1[0x2](eng): Audio: aac (LC) (mp4a / 0x6134706D), 48000 Hz, stereo, fltp, 256 kb/s (default)
+  Stream #0:2[0x3](eng): Data: none (mett / 0x7474656D), 0 kb/s";
+        let b = a.replace("20046 kb/s", "18000 kb/s").replace("30.01 fps", "29.97 fps").replace("256 kb/s", "250 kb/s");
+        assert_eq!(stream_signature(a), stream_signature(&b));
+        assert!(stream_signature(a).unwrap().contains("rotation of -90.00"));
+        // 尺寸、旋轉、聲音不同就不能直接接
+        assert_ne!(stream_signature(a), stream_signature(&a.replace("1920x1080", "1280x720")));
+        assert_ne!(stream_signature(a), stream_signature(&a.replace("-90.00", "90.00")));
+        assert_ne!(stream_signature(a), stream_signature(&a.replace("48000 Hz", "44100 Hz")));
+        // 封面圖不算；沒有畫面時 None
+        let cover = format!("{a}\n  Stream #0:3: Video: png, rgb24(pc), 640x360, 90k tbn (attached pic)");
+        assert_eq!(stream_signature(&cover), stream_signature(a));
+        assert_eq!(stream_signature("  Stream #0:0: Audio: aac (LC), 48000 Hz, stereo, fltp, 128 kb/s"), None);
+    }
     use crate::args::ENCODERS;
 
     #[test]

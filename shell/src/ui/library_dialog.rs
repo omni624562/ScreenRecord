@@ -8,6 +8,7 @@ use super::theme::{self, chip, Btn, Icon, Tone};
 use super::{EntryAction, ToastAction, UiApp};
 use eframe::egui::{self, pos2, vec2, Align, Color32, CornerRadius, Id, Layout, Rect, RichText, Sense, Stroke, UiBuilder, Vec2};
 use screenrecorder_core::actions;
+use screenrecorder_core::args::Quality;
 use screenrecorder_core::format::{check_recording_name, format_bytes, human_duration, short_clock, speed_label};
 use screenrecorder_core::i18n::is_en;
 use screenrecorder_core::library::{grid_layout, GridPlace};
@@ -126,6 +127,8 @@ struct SimilarDlg {
 struct MergeDlg {
     items: Vec<MergeItem>,
     name: String,
+    /// None = 保留原畫質（格式一樣時直接接起來，很快）；Some = 重新壓縮成這個畫質
+    quality: Option<Quality>,
     error: Option<String>,
     busy: bool,
 }
@@ -1197,7 +1200,7 @@ fn entry_menu(ui: &mut egui::Ui, app: &UiApp, e: &LibraryEntry, full: bool, req:
         if menu_item(ui, tr!("製作加速版 / GIF…", "Make sped-up video / GIF…"), app.blocked(EntryAction::Export)) {
             pick(EntryAction::Export, req);
         }
-        if menu_item(ui, tr!("壓縮（傳 LINE / Email）…", "Compress (for LINE / email)…"), app.blocked(EntryAction::Compress)) {
+        if menu_item(ui, tr!("壓縮（縮小檔案）…", "Compress (smaller file)…"), app.blocked(EntryAction::Compress)) {
             pick(EntryAction::Compress, req);
         }
         if menu_item(ui, tr!("做成直式影片（Shorts / Reels）…", "Make a vertical video (Shorts / Reels)…"), app.blocked(EntryAction::Vertical)) {
@@ -2194,7 +2197,7 @@ fn find_media(app: &UiApp, path: &str) -> Option<(MediaInfo, bool)> {
 }
 
 /// 開啟「合併成一支」：勾選的錄影依時間排好；加速版預設不放進去
-fn open_merge(app: &mut UiApp, paths: Vec<String>) {
+pub(super) fn open_merge(app: &mut UiApp, paths: Vec<String>) {
     let mut items: Vec<(f64, MergeItem)> = paths
         .iter()
         .map(|p| {
@@ -2210,7 +2213,7 @@ fn open_merge(app: &mut UiApp, paths: Vec<String>) {
     let day = items.iter().find(|i| i.on).and_then(|i| find_media(app, &i.path)).and_then(|(m, _)| entry_time(&m.name, m.time_ms())).unwrap_or_else(|| chrono::Local::now().naive_local());
     let name = trf!("合併_{}", "Merged_{}", day.format("%m-%d"));
     if let Some(d) = &mut app.library {
-        d.merge = Some(MergeDlg { items, name, error: None, busy: false });
+        d.merge = Some(MergeDlg { items, name, quality: None, error: None, busy: false });
     }
 }
 
@@ -2295,6 +2298,20 @@ fn merge_dialog(app: &mut UiApp, ctx: &egui::Context, d: &mut LibraryDialog) {
             }
             ui.label(RichText::new(".mp4").color(p.muted));
         });
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            ui.label(RichText::new(tr!("畫質", "Quality")).color(p.muted));
+            let items: Vec<(Option<Quality>, &str)> = std::iter::once((None, tr!("原畫質", "Original"))).chain(Quality::ALL.iter().map(|q| (Some(*q), q.label()))).collect();
+            theme::segmented(ui, &mut m.quality, &items, !m.busy);
+        });
+        let hint = match m.quality {
+            None => tr!(
+                "格式一樣的影片（同一支手機、同樣設定錄的）直接接起來：幾秒就好，畫質跟原檔一樣；格式不同時以高畫質重新壓縮",
+                "Videos in the same format (same phone or same settings) are joined directly: takes seconds and keeps the original quality. Otherwise they're re-encoded in high quality"
+            ),
+            Some(q) => q.hint(),
+        };
+        ui.add(egui::Label::new(theme::muted(ui, hint)).wrap());
         if let Some(e) = &m.error {
             ui.label(RichText::new(e).color(p.rec));
         }
@@ -2330,8 +2347,9 @@ fn merge_dialog(app: &mut UiApp, ctx: &egui::Context, d: &mut LibraryDialog) {
     m.busy = true;
     let paths: Vec<String> = m.items.iter().filter(|i| i.on).map(|i| i.path.clone()).collect();
     let n = paths.len();
+    let quality = m.quality;
     let core = app.core.clone();
-    app.spawn(async move { actions::merge_start(&core, &paths, Some(&name)).await }, move |app, r| {
+    app.spawn(async move { actions::merge_start(&core, &paths, Some(&name), quality).await }, move |app, r| {
         let Some(d) = &mut app.library else { return };
         match r {
             Ok(id) => {

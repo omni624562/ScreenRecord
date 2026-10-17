@@ -518,9 +518,12 @@ fn head_buttons(app: &UiApp, e: &LibraryEntry, image: bool, audio: bool) -> Vec<
             EntryAction::Export,
         ));
         list.push(gate(
-            b(tr!("壓縮", "Compress"), None, tr!("壓縮到 LINE、Email 傳得出去的大小（原速）", "Compress to a size you can send via LINE or email (original speed)"), || {
-                Act::Entry(EntryAction::Compress)
-            }),
+            b(
+                tr!("壓縮", "Compress"),
+                None,
+                tr!("縮小檔案：保留畫質，或壓縮到 LINE、Email 傳得出去的大小（原速）", "Make the file smaller: keep the quality, or fit a size you can send via LINE or email (original speed)"),
+                || Act::Entry(EntryAction::Compress),
+            ),
             EntryAction::Compress,
         ));
     }

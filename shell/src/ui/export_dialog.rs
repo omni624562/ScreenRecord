@@ -7,6 +7,7 @@ use super::theme::{self, segmented, switch, Btn, Icon};
 use super::{EntryAction, UiApp};
 use eframe::egui::{self, pos2, vec2, Align, Align2, Color32, CornerRadius, Id, Layout, RichText, Sense, Stroke};
 use screenrecorder_core::actions::{self, ExportRequest};
+use screenrecorder_core::args::Quality;
 use screenrecorder_core::format::{
     compressed_file_name, estimate_bytes, export_file_name, format_bytes, human_duration, parse_clock, scaled_size, short_clock, speed_for_target, speed_label, EstimateInput, MP4_WIDTHS, SPEED_MAX,
     SPEED_MIN,
@@ -29,7 +30,7 @@ static LAST_COMPRESS_MB: AtomicU32 = AtomicU32::new(25);
 pub enum Mode {
     /// 加速版（MP4）
     Speed,
-    /// 原速、只壓縮到某個大小以內（傳 LINE / Email）
+    /// 原速壓縮：依畫質縮小檔案，或壓縮到某個大小以內（傳 LINE / Email）
     Compress,
     /// GIF / WebP 動圖
     Anim,
@@ -79,6 +80,9 @@ pub struct ExportDialog {
     o: Opts,
     /// 壓縮的大小上限（MB）
     compress_mb: u32,
+    /// 壓縮：依畫質（不限大小）；false = 壓縮到大小上限以內
+    by_quality: bool,
+    quality: Quality,
     speed_text: String,
     speed_focus: bool,
     /// 內容最高到過多高：切換格式、加速方式時視窗不會忽大忽小（只會變高一次，不會縮回去）
@@ -94,7 +98,7 @@ pub struct ExportDialog {
 }
 
 impl ExportDialog {
-    /// compress：從「壓縮（傳 LINE / Email）」開啟
+    /// compress：從「壓縮」開啟
     pub fn new(entry: LibraryEntry, s: &UiSettings, compress: bool) -> Self {
         let mut o = Opts::from(s);
         let mode = if compress {
@@ -109,7 +113,24 @@ impl ExportDialog {
             o.speed = 4.0;
         }
         let compress_mb = if compress && COMPRESS_MB.contains(&s.mp4_max_mb) { s.mp4_max_mb } else { LAST_COMPRESS_MB.load(Ordering::Relaxed) };
-        Self { entry, mode, o, compress_mb, speed_text: String::new(), speed_focus: false, body_h: 0.0, top: None, max_h: 0.0, frames: 0, output: None, busy: false }
+        // 大檔案（例如合併後、手機拍的）預設依畫質縮小；小的預設壓縮到傳得出去的大小
+        let by_quality = entry.media.bytes > 100 * 1024 * 1024;
+        Self {
+            entry,
+            mode,
+            o,
+            compress_mb,
+            by_quality,
+            quality: Quality::Standard,
+            speed_text: String::new(),
+            speed_focus: false,
+            body_h: 0.0,
+            top: None,
+            max_h: 0.0,
+            frames: 0,
+            output: None,
+            busy: false,
+        }
     }
 
     fn format(&self) -> ExportFormat {
@@ -123,6 +144,7 @@ impl ExportDialog {
     fn max_mb(&self) -> u32 {
         match self.mode {
             Mode::Speed => self.o.mp4_max_mb,
+            Mode::Compress if self.by_quality => 0,
             Mode::Compress => self.compress_mb,
             Mode::Anim => 0,
         }
@@ -155,9 +177,12 @@ fn existing(e: &LibraryEntry, speed: f64, format: ExportFormat) -> Option<&Expor
 }
 
 /// 實際會存成的檔名：同名已存在時會加上 _2、_3
-fn output_name(e: &LibraryEntry, speed: f64, format: ExportFormat, max_mb: u32) -> String {
+/// by_quality：依畫質壓縮（Rec_xxx_壓縮.mp4）
+fn output_name(e: &LibraryEntry, speed: f64, format: ExportFormat, max_mb: u32, by_quality: bool) -> String {
     let name = if !format.is_animation() && max_mb > 0 && speed <= 1.0 {
         screenrecorder_core::format::with_ext(&compressed_file_name(&e.media.name, max_mb as f64), format.ext())
+    } else if !format.is_animation() && by_quality && speed <= 1.0 {
+        screenrecorder_core::format::with_ext(&screenrecorder_core::format::quality_file_name(&e.media.name), format.ext())
     } else {
         export_file_name(&e.media.name, speed, format)
     };
@@ -495,7 +520,29 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                 });
             };
             if dlg.mode == Mode::Compress {
-                limit_row(ui, Mode::Compress, &mut dlg.compress_mb);
+                row(ui, tr!("方式", "Method"), |ui| {
+                    ui.horizontal(|ui| {
+                        ui.set_height(ROW_H);
+                        segmented(
+                            ui,
+                            &mut dlg.by_quality,
+                            &[(true, tr!("保留畫質，縮小檔案", "Keep quality, smaller file")), (false, tr!("指定大小（傳 LINE / Email）", "Fit a size (LINE / email)"))],
+                            true,
+                        );
+                    });
+                });
+                if dlg.by_quality {
+                    row(ui, tr!("畫質", "Quality"), |ui| {
+                        ui.horizontal(|ui| {
+                            ui.set_height(ROW_H);
+                            let items: Vec<(Quality, &str)> = Quality::ALL.iter().map(|q| (*q, q.label())).collect();
+                            segmented(ui, &mut dlg.quality, &items, true);
+                        });
+                        helper(ui, dlg.quality.hint(), p.muted);
+                    });
+                } else {
+                    limit_row(ui, Mode::Compress, &mut dlg.compress_mb);
+                }
             }
             row(ui, tr!("尺寸", "Size"), |ui| {
                 ui.horizontal(|ui| {
@@ -633,6 +680,8 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                             let cap = (max_mb > 0).then_some(max_mb as f64 * 1024.0 * 1024.0);
                             match cap {
                                 Some(c) if hi > c || dlg.mode == Mode::Compress => trf!("{w}×{h}・{} 以內", "{w}×{h}・up to {}", format_bytes(c as u64)),
+                                // 依畫質：大小看影片內容，估不準
+                                None if dlg.mode == Mode::Compress => trf!("{w}×{h}・{}", "{w}×{h}・{}", dlg.quality.label()),
                                 _ => trf!("{w}×{h}・約 {}～{}", "{w}×{h}・about {}–{}", format_bytes(lo as u64), format_bytes(hi as u64)),
                             }
                         }
@@ -651,7 +700,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 6.0;
-                    let name = speed.map(|sp| output_name(&e, sp, format, max_mb)).unwrap_or_default();
+                    let name = speed.map(|sp| output_name(&e, sp, format, max_mb, dlg.mode == Mode::Compress && dlg.by_quality)).unwrap_or_default();
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         let src_dir = std::path::Path::new(&e.media.path).parent().map(|d| d.display().to_string()).unwrap_or_default();
                         let tip = tr!("用「另存新檔」選別的資料夾或檔名", "Choose another folder or file name with Save As");
@@ -730,6 +779,8 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                 let cap = if max_mb > 0 { trf!("（{max_mb} MB 以內）", " (up to {max_mb} MB)") } else { String::new() };
                 let label = match (dlg.mode, speed) {
                     (_, None) => make_word.to_string(),
+                    (Mode::Compress, _) if dlg.by_quality && again => trf!("再壓縮一份（{}）", "Compress again ({})", dlg.quality.label()),
+                    (Mode::Compress, _) if dlg.by_quality => trf!("壓縮（{}）", "Compress ({})", dlg.quality.label()),
                     (Mode::Compress, _) if again => trf!("再壓縮一份（{max_mb} MB 以內）", "Compress again (up to {max_mb} MB)"),
                     (Mode::Compress, _) if format == ExportFormat::Webm => trf!("壓縮成 WebM（{max_mb} MB 以內）", "Compress to WebM (under {max_mb} MB)"),
                     (Mode::Compress, _) => trf!("壓縮到 {max_mb} MB 以內", "Compress to under {max_mb} MB"),
@@ -797,6 +848,7 @@ fn start(app: &mut UiApp, dlg: &mut ExportDialog, speed: f64) {
         mp4_width: o.mp4_width as f64,
         mp4_max_mb: dlg.max_mb() as f64,
         output: dlg.output.clone(),
+        quality: (dlg.mode == Mode::Compress && dlg.by_quality).then_some(dlg.quality),
     };
     let core = app.core.clone();
     app.spawn(async move { actions::export_start(&core, &req).await }, |app, r| match r {
