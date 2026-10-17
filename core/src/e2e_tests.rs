@@ -1175,3 +1175,63 @@ async fn recording_with_the_audio_pipe_starts_right_away() {
         assert_eq!((i.has_audio, i.audio_tracks), (Some(true), if separate { 3 } else { 1 }), "分軌 = {separate}");
     }
 }
+
+/// 影片資訊（標題、作者、說明）在另存時跟著帶過去：加速版、壓縮、剪輯（各種效果）、WebM、直式、合併
+#[tokio::test]
+async fn video_details_carry_over_to_exports() {
+    let Some(ff) = ffmpeg() else { return };
+    if !has(&ff, "-encoders", "libx264") {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let src = make_source(&ff, dir.path());
+    let s = src.display().to_string();
+    let tags: std::collections::HashMap<String, String> =
+        [("title", "報價單怎麼填"), ("artist", "業務部"), ("comment", "第一行\n第二行")].iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+    crate::video_tags::write(Some(&ff), &s, &tags).await.unwrap();
+    let c = ctx(&ff);
+    let ex = Exporter::new();
+    let check = |what: &'static str, out: PathBuf| {
+        let (ff, tags) = (ff.clone(), tags.clone());
+        async move {
+            let got = crate::video_tags::read(&ff, &out.display().to_string()).await.unwrap();
+            for (k, v) in &tags {
+                assert_eq!(got.get(k), Some(v), "{what}：{k}");
+            }
+        }
+    };
+    ex.start(&c, &s, 2.0, true, 0.0, 0.0).await.unwrap();
+    check("加速版", finish(&ex).await).await;
+    ex.start(&c, &s, 1.0, true, 320.0, 1.0).await.unwrap();
+    check("壓縮", finish(&ex).await).await;
+    let cut = EditSpec { start: 0.5, end: 5.5, removed: vec![(2.0, 3.0)], ..Default::default() };
+    ex.start_cut(&c, &s, &cut, None, None).await.unwrap();
+    check("剪輯", finish(&ex).await).await;
+    // 片頭是另外產生的畫面、局部加速分好幾段、降噪改了聲音：資訊仍然來自原影片
+    let fx = EditSpec {
+        start: 0.0,
+        end: 5.0,
+        intro: Some(crate::cards::TitleCard::new("片頭")),
+        fast: vec![FastRange { start_ms: 1000, end_ms: 3000, speed: 4.0 }],
+        audio: AudioFx { denoise: has(&ff, "-filters", "afftdn"), ..Default::default() },
+        ..Default::default()
+    };
+    ex.start_cut(&c, &s, &fx, None, None).await.unwrap();
+    check("剪輯（片頭、局部加速）", finish(&ex).await).await;
+    // 自訂章節（多一個章節檔輸入）
+    let opts = crate::exporter::CutOptions { chapters: Some(vec![Chapter { start: 1.0, title: "第一段".into() }]), ..Default::default() };
+    ex.start_cut_with(&c, &s, &EditSpec { start: 0.0, end: 4.0, ..Default::default() }, opts).await.unwrap();
+    check("剪輯（自訂章節）", finish(&ex).await).await;
+    if has(&ff, "-filters", "sendcmd") {
+        let v = EditSpec { start: 0.0, end: 4.0, vertical: Some(crate::vertical::Vertical::Fit), ..Default::default() };
+        ex.start_cut(&c, &s, &v, None, None).await.unwrap();
+        check("直式影片", finish(&ex).await).await;
+    }
+    if has(&ff, "-encoders", "libvpx-vp9") && has(&ff, "-encoders", "libopus") {
+        ex.start_to(&c, &s, 2.0, true, 0.0, 0.0, ExportFormat::Webm, None).await.unwrap();
+        check("WebM", finish(&ex).await).await;
+    }
+    // 合併：用第一支的資訊
+    ex.start_merge(&c, &[s.clone(), s.clone()]).await.unwrap();
+    check("合併", finish(&ex).await).await;
+}
