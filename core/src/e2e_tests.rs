@@ -648,6 +648,38 @@ async fn player_decodes_frames_at_times() {
     assert_ne!(a, b);
 }
 
+/// 手機直拍的影片（橫的畫面＋旋轉 90° 標記）：尺寸讀成直的，播放、剪輯都是直的，不會被壓扁
+#[tokio::test]
+async fn phone_videos_with_rotation_stay_upright() {
+    let Some(ff) = ffmpeg() else { return };
+    if !has(&ff, "-encoders", "libx264") {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let flat = dir.path().join("flat.mp4");
+    let phone = dir.path().join("PXL_20260910_150228804.mp4");
+    // 左半白、右半黑的 320x180；標記「旋轉 90°」後看到的是 180x320、上下各一半
+    run_ok(&ff, &["-f", "lavfi", "-i", "color=black:s=320x180:r=30,drawbox=x=0:y=0:w=160:h=180:color=white:t=fill", "-t", "2", "-c:v", "libx264", "-pix_fmt", "yuv420p", &flat.display().to_string()]);
+    run_ok(&ff, &["-display_rotation", "90", "-i", &flat.display().to_string(), "-c", "copy", &phone.display().to_string()]);
+    let s = phone.display().to_string();
+    let i = probe(&ff, &phone).await;
+    assert_eq!((i.width, i.height), (Some(180), Some(320)));
+    // 播放器用讀到的尺寸解碼：畫面是直的，上下一白一黑（不是左右被壓扁）
+    let (w, h) = crate::player::fit_size(180, 320, 640, 640);
+    assert_eq!((w, h), (180, 320));
+    let rgba = crate::player::decode_frame(&ff, &s, 0.5, w, h, false).unwrap();
+    let px = |x: u32, y: u32| rgba[((y * w + x) * 4) as usize];
+    let (top, bottom) = (px(w / 2, h / 4), px(w / 2, h * 3 / 4));
+    assert!((top > 200) != (bottom > 200), "{top} {bottom}");
+    assert!(px(w / 4, h / 4) == top && px(w * 3 / 4, h / 4) == top, "同一列左右一樣");
+    // 剪輯另存：輸出也是直的
+    let ex = Exporter::new();
+    ex.start_cut(&ctx(&ff), &s, &EditSpec { start: 0.0, end: 1.5, ..Default::default() }, None, None).await.unwrap();
+    let out = finish(&ex).await;
+    let o = probe(&ff, &out).await;
+    assert_eq!((o.width, o.height), (Some(180), Some(320)));
+}
+
 #[tokio::test]
 async fn cut_with_every_effect() {
     let Some(ff) = ffmpeg() else { return };
