@@ -612,7 +612,7 @@ impl App {
             return Err(crate::Error::config(tr!("沒有要整理的步驟", "There are no steps to organize")));
         }
         let ffmpeg = self.ffmpeg_path().ok_or_else(|| crate::Error::config(tr!("找不到 FFmpeg，不能做成影片", "FFmpeg wasn't found, so the video can't be made")))?;
-        let tmp = std::env::temp_dir().join(format!("ScreenRecorder-steps-{}-{}", std::process::id(), crate::paths::now_ms()));
+        let tmp = crate::paths::unique_temp("ScreenRecorder-steps", "");
         let title = if title.trim().is_empty() { draft.title() } else { title.trim().to_string() };
         let (d, list, t) = (draft.clone(), steps.clone(), title.clone());
         let t2 = tmp.clone();

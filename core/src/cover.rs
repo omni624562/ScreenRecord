@@ -187,7 +187,7 @@ pub fn embed_args(video: &str, png: &str, out: &str) -> Vec<String> {
 
 /// 讀出影片 t 秒的那一格（縮成寬 1280 以內，夠做封面也比較快）
 pub async fn frame_at(ffmpeg: &Path, video: &str, t: f64) -> Result<Pixmap> {
-    let out = std::env::temp_dir().join(format!("ScreenRecorder-cover-{}-{}.png", std::process::id(), crate::paths::now_ms()));
+    let out = crate::paths::unique_temp("ScreenRecorder-cover", ".png");
     let t = if t.is_finite() { t.max(0.0) } else { 0.0 };
     let args: Vec<String> = ["-hide_banner", "-loglevel", "error"]
         .iter()
@@ -317,7 +317,7 @@ pub async fn set_thumbnail(ffmpeg: Option<&Path>, video: &str, t: f64) -> Result
         Err(_) if t > 0.0 => frame_at(ff, video, (t - 0.5).max(0.0)).await?,
         Err(e) => return Err(e),
     };
-    let png = std::env::temp_dir().join(format!("ScreenRecorder-thumb-{}-{}.png", std::process::id(), crate::paths::now_ms()));
+    let png = crate::paths::unique_temp("ScreenRecorder-thumb", ".png");
     let data = pm.encode_png().map_err(|e| Error::other(e.to_string()))?;
     tokio::fs::write(&png, data).await.map_err(|e| Error::other(e.to_string()))?;
     let r = embed_png(ffmpeg, video, &png).await;

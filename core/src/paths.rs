@@ -68,6 +68,13 @@ pub fn timestamp() -> String {
 }
 
 /// 現在時間（Unix 毫秒）
+/// 暫存檔、暫存資料夾的路徑（系統暫存資料夾裡）：程序編號＋時間＋流水號，同一毫秒同時開始的工作也不會撞名
+pub fn unique_temp(prefix: &str, ext: &str) -> PathBuf {
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    std::env::temp_dir().join(format!("{prefix}-{}-{}-{n}{ext}", std::process::id(), now_ms()))
+}
+
 pub fn now_ms() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
 }
@@ -128,6 +135,13 @@ pub fn inside(dir: &std::path::Path, root: &std::path::Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn temp_names_never_repeat() {
+        let names: std::collections::HashSet<PathBuf> = (0..1000).map(|_| unique_temp("ScreenRecorder-x", ".png")).collect();
+        assert_eq!(names.len(), 1000);
+        assert!(names.iter().all(|p| p.extension().is_some_and(|e| e == "png")));
+    }
 
     #[test]
     fn inside_matches_the_folder_and_below() {
