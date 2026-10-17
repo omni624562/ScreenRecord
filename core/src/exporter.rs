@@ -1,6 +1,6 @@
 //! 轉檔工作：製作加速版、GIF、剪輯。同一時間只跑一個，避免搶 CPU；原檔不變。
 
-use crate::args::{export_args, gif_args, EncoderSpec, GifOptions, OverlayInput, VerticalInput};
+use crate::args::{export_args, gif_args, EncoderSpec, GifOptions, OverlayInput, Quality, VerticalInput};
 use crate::edit::{cut_file_name, keep_parts, normalize_crop, output_length, EditSpec, Overlay, OverlayKind};
 use crate::error::{Error, Result};
 use crate::format::{compressed_file_name, export_file_name, js_round, num, speed_label, strip_mp4, FPS_MAX, SPEED_MAX, SPEED_MIN};
@@ -111,9 +111,32 @@ impl Exporter {
     /// 加速版 Rec_xxx_4x.mp4，原速只壓縮的 Rec_xxx_25MB以內.mp4（WebM 一樣，副檔名 .webm）
     #[allow(clippy::too_many_arguments)]
     pub async fn start_to(&self, ctx: &ExportCtx, source: &str, speed: f64, keep_audio: bool, width: f64, max_mb: f64, format: ExportFormat, output: Option<PathBuf>) -> Result<ExportStatus> {
+        self.start_video(ctx, source, speed, keep_audio, width, max_mb, None, format, output).await
+    }
+
+    /// 原速壓縮：依畫質（不限大小），存成 Rec_xxx_壓縮.mp4；其他同 start_to
+    #[allow(clippy::too_many_arguments)]
+    pub async fn start_quality_to(&self, ctx: &ExportCtx, source: &str, keep_audio: bool, width: f64, quality: Quality, format: ExportFormat, output: Option<PathBuf>) -> Result<ExportStatus> {
+        self.start_video(ctx, source, 1.0, keep_audio, width, 0.0, Some(quality), format, output).await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn start_video(
+        &self,
+        ctx: &ExportCtx,
+        source: &str,
+        speed: f64,
+        keep_audio: bool,
+        width: f64,
+        max_mb: f64,
+        quality: Option<Quality>,
+        format: ExportFormat,
+        output: Option<PathBuf>,
+    ) -> Result<ExportStatus> {
         let _g = self.begin()?;
         let limit = max_mb.is_finite() && max_mb > 0.0;
-        let min = if limit { 1.0 } else { SPEED_MIN };
+        let quality = quality.filter(|_| !limit);
+        let min = if limit || quality.is_some() { 1.0 } else { SPEED_MIN };
         if !speed.is_finite() || !(min..=SPEED_MAX).contains(&speed) {
             return Err(Error::config(trf!("倍率需介於 {}～{}", "Speed must be between {} and {}", num(SPEED_MIN), num(SPEED_MAX))));
         }
@@ -122,7 +145,13 @@ impl Exporter {
         let output = output.map(|o| check_output(source, o, ext)).transpose()?;
         let (ffmpeg, enc, info, fps) = prepare(ctx, source).await?;
         let dir = parent(source);
-        let name = if limit && speed <= 1.0 { compressed_file_name(&file_name(source), max_mb) } else { export_file_name(&file_name(source), speed, ExportFormat::Mp4) };
+        let name = if limit && speed <= 1.0 {
+            compressed_file_name(&file_name(source), max_mb)
+        } else if quality.is_some() && speed <= 1.0 {
+            crate::format::quality_file_name(&file_name(source))
+        } else {
+            export_file_name(&file_name(source), speed, ExportFormat::Mp4)
+        };
         let output = output.unwrap_or_else(|| crate::paths::unique_path(&dir, &strip_mp4(&name), &format!(".{ext}")));
         let with_audio = keep_audio && info.has_audio == Some(true);
         let w = if width.is_finite() && width >= 160.0 { js_round(width) as i32 } else { 0 };
@@ -135,9 +164,9 @@ impl Exporter {
         let cover = cover.map(|c| c.0);
         let kbps = limit.then(|| crate::args::size_bitrate(budget, out_sec, if with_audio { crate::args::SMALL_AUDIO_KBPS } else { 0 }));
         let mut args = if webm {
-            crate::args::webm_export_args(source, &output.display().to_string(), speed, fps, with_audio, Some(w), src_w, kbps)?
+            crate::args::webm_export_args(source, &output.display().to_string(), speed, fps, with_audio, Some(w), src_w, kbps, quality)?
         } else {
-            export_args(source, &output.display().to_string(), speed, fps, &enc, with_audio, Some(w), src_w, kbps)?
+            export_args(source, &output.display().to_string(), speed, fps, &enc, with_audio, Some(w), src_w, kbps, quality)?
         };
         // 章節（錄影時加的標記）跟著加速換算時間
         let cleanup = with_chapters(&mut args, &crate::chapters::scale(&info.chapters, speed), out_sec, None);
@@ -147,7 +176,7 @@ impl Exporter {
             if speed > 1.0 { format!("{}×", speed_label(speed)) } else { "原速".into() },
             if with_audio { "，含聲音" } else { "" },
             if scaled { format!("，寬 {w}") } else { String::new() },
-            if limit { format!("，{} MB 以內", num(max_mb)) } else { String::new() }
+            if limit { format!("，{} MB 以內", num(max_mb)) } else { quality.map(|q| format!("，畫質 {}", q.label())).unwrap_or_default() }
         );
         let time = recorded_at(&ffmpeg, &[source.to_string()]).await;
         self.run_with_cleanup(ExportKind::Speed, &ffmpeg, args, source, &output, speed, out_sec, &note, Finish { cleanup, replace: None, on_saved: None, cwd: None, cover, time })
@@ -206,6 +235,12 @@ impl Exporter {
     /// 依給的順序接成一支（全部錄影的「合併成一支」可以調整順序）；name：成品的名稱（不含 .mp4，同名時加 _2），
     /// None 時用第一支的名稱加上「_合併」。尺寸、張數以第一支為準
     pub async fn start_merge_named(&self, ctx: &ExportCtx, sources: &[String], name: Option<&str>) -> Result<ExportStatus> {
+        self.start_merge_with(ctx, sources, name, None).await
+    }
+
+    /// 同 start_merge_named；quality：None = 保留原畫質（格式都一樣時直接接起來，不重新壓縮；
+    /// 不一樣時以高畫質重新壓縮），Some = 用這個畫質重新壓縮（檔案較小）
+    pub async fn start_merge_with(&self, ctx: &ExportCtx, sources: &[String], name: Option<&str>, quality: Option<Quality>) -> Result<ExportStatus> {
         let _g = self.begin()?;
         if sources.len() < 2 {
             return Err(Error::config(tr!("請選兩支以上的錄影", "Select two or more recordings")));
@@ -229,11 +264,23 @@ impl Exporter {
         let total: f64 = inputs.iter().map(|i| i.2).sum();
         let base = name.map(|n| n.trim().to_string()).unwrap_or_else(|| format!("{}_合併", strip_mp4(&file_name(&list[0].0))));
         let output = crate::paths::unique_path(&parent(&list[0].0), &base, ".mp4");
-        let mut args = crate::args::merge_args(&inputs, &output.display().to_string(), w, h, fps, &enc);
-        crate::args::drop_chapters(&mut args);
-        let note = format!("合併 {} 支錄影", inputs.len());
         // 合併：用最早的那支錄的時間
         let time = recorded_at(&ffmpeg, &list.iter().map(|(p, _)| p.clone()).collect::<Vec<_>>()).await;
+        if quality.is_none() && can_join(&ffmpeg, &inputs.iter().map(|i| i.0.clone()).collect::<Vec<_>>()).await {
+            let dir = crate::paths::unique_temp("ScreenRecorder-merge", "");
+            std::fs::create_dir_all(&dir).map_err(|e| Error::other(e.to_string()))?;
+            let file = dir.join("list.txt");
+            let paths: Vec<String> = inputs.iter().map(|i| i.0.clone()).collect();
+            std::fs::write(&file, crate::args::concat_list(&paths, &[])).map_err(|e| Error::other(e.to_string()))?;
+            let mut args = crate::args::merge_copy_args(&file.display().to_string(), &inputs[0].0, &output.display().to_string(), inputs[0].1);
+            crate::args::drop_chapters(&mut args);
+            let note = format!("合併 {} 支錄影（格式相同，不重新壓縮）", inputs.len());
+            return self.run_with_cleanup(ExportKind::Merge, &ffmpeg, args, &list[0].0, &output, 1.0, total, &note, Finish { cleanup: Some(dir), time, ..Finish::default() });
+        }
+        let quality = quality.unwrap_or_default();
+        let mut args = crate::args::merge_args(&inputs, &output.display().to_string(), w, h, fps, &enc, quality);
+        crate::args::drop_chapters(&mut args);
+        let note = format!("合併 {} 支錄影（畫質 {}）", inputs.len(), quality.label());
         self.run_with_cleanup(ExportKind::Merge, &ffmpeg, args, &list[0].0, &output, 1.0, total, &note, Finish { time, ..Finish::default() })
     }
 
@@ -869,6 +916,31 @@ fn with_chapters(args: &mut Vec<String>, chapters: &[crate::types::Chapter], dur
         crate::args::drop_chapters(args);
     }
     Some(dir)
+}
+
+/// 合併時能不能直接接起來：都是 MP4 / MOV，每支的串流格式都一樣（見 import::stream_signature）
+async fn can_join(ffmpeg: &Path, paths: &[String]) -> bool {
+    let mp4 = |p: &String| {
+        let l = p.to_ascii_lowercase();
+        l.ends_with(".mp4") || l.ends_with(".m4v") || l.ends_with(".mov")
+    };
+    if !paths.iter().all(mp4) {
+        return false;
+    }
+    let mut first: Option<String> = None;
+    for p in paths {
+        let r = crate::process::run(ffmpeg, &["-hide_banner".to_string(), "-i".into(), p.clone()], std::time::Duration::from_secs(30)).await;
+        let Some(sig) = crate::import::stream_signature(&r.stderr) else { return false };
+        match &first {
+            None => first = Some(sig),
+            Some(f) if *f == sig => {}
+            Some(f) => {
+                crate::info!("[合併] 格式不同，重新壓縮：{f} ≠ {sig}");
+                return false;
+            }
+        }
+    }
+    true
 }
 
 #[derive(Default)]

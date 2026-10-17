@@ -339,6 +339,8 @@ pub struct ExportRequest {
     pub mp4_max_mb: f64,
     /// 另存新檔選的位置；None = 和原片同一個資料夾、自動取名
     pub output: Option<String>,
+    /// 原速、不限大小時依畫質壓縮（存成 *_壓縮.mp4）
+    pub quality: Option<crate::args::Quality>,
 }
 
 pub async fn export_start(app: &App, r: &ExportRequest) -> Result<()> {
@@ -349,7 +351,10 @@ pub async fn export_start(app: &App, r: &ExportRequest) -> Result<()> {
     let output = r.output.as_deref().map(PathBuf::from);
     match r.format {
         ExportFormat::Gif | ExportFormat::Webp => app.exporter.start_gif_to(&ctx, &r.source, r.speed, r.gif_width, r.gif_fps, r.format, r.bounce, output).await?,
-        ExportFormat::Mp4 | ExportFormat::Webm => app.exporter.start_to(&ctx, &r.source, r.speed, r.keep_audio, r.mp4_width, r.mp4_max_mb, r.format, output).await?,
+        ExportFormat::Mp4 | ExportFormat::Webm => match r.quality {
+            Some(q) if r.mp4_max_mb <= 0.0 => app.exporter.start_quality_to(&ctx, &r.source, r.keep_audio, r.mp4_width, q, r.format, output).await?,
+            _ => app.exporter.start_to(&ctx, &r.source, r.speed, r.keep_audio, r.mp4_width, r.mp4_max_mb, r.format, output).await?,
+        },
     };
     Ok(())
 }
@@ -358,11 +363,12 @@ pub async fn export_start(app: &App, r: &ExportRequest) -> Result<()> {
 
 /// 開始剪輯。replace = 取代這個剪輯版（修改之前的剪輯）；project = 介面的剪輯設定與標註，完成後存起來供之後修改
 /// 合併多支錄影：依給的順序接成一支；name = 成品的名稱（不含 .mp4）。回傳轉檔工作的編號（完成時用來找到成品）
-pub async fn merge_start(app: &App, paths: &[String], name: Option<&str>) -> Result<u64> {
+/// quality：None = 保留原畫質（格式都一樣時直接接起來），Some = 用這個畫質重新壓縮
+pub async fn merge_start(app: &App, paths: &[String], name: Option<&str>, quality: Option<crate::args::Quality>) -> Result<u64> {
     if app.recorder.active() {
         return Err(Error::config(tr!("錄影中無法合併，請先停止錄影", "Can't merge while recording. Stop recording first")));
     }
-    Ok(app.exporter.start_merge_named(&app.export_ctx(), paths, name).await?.id)
+    Ok(app.exporter.start_merge_with(&app.export_ctx(), paths, name, quality).await?.id)
 }
 
 /// 匯入影片的結果

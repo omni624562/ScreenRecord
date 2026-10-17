@@ -1,7 +1,6 @@
 //! 操作視窗（egui）：主畫面、製作加速版 / GIF、全部錄影、剪輯、更新說明。
 //! 直接呼叫後端（screenrecorder-core），非同步的工作在 tokio 上執行，完成後把結果交回介面執行緒。
 
-pub mod cover;
 #[cfg(debug_assertions)]
 mod dev;
 pub mod dialogs;
@@ -106,14 +105,12 @@ pub enum EntryAction {
     CopySteps,
     /// 錄影時記下的操作步驟做成步驟教學（每一步附上那一刻的畫面），在步驟整理視窗整理後做成文件
     StepsGuide,
-    /// 原速、壓縮到某個大小以內（傳 LINE / Email）：開啟製作視窗的「壓縮」
+    /// 原速壓縮（依畫質，或壓縮到某個大小以內傳 LINE / Email）：開啟製作視窗的「壓縮」
     Compress,
     /// 做成直式影片（Shorts / Reels）：開啟剪輯並選好「直式影片」
     Vertical,
     /// MOV、MKV 等其他格式轉成 MP4（存在原檔旁邊）
     Convert,
-    /// 做封面（YouTube 縮圖）
-    Cover,
     /// 設為封面：開啟播放器，找到要的那一格再按「設為封面」
     SetThumb,
     /// 影片資訊（標題、作者、說明…）
@@ -224,8 +221,6 @@ pub struct UiApp {
     pub steps_review: Option<steps_review::Review>,
     /// 正在匯入影片（拖進來的、「匯入影片…」）
     pub importing: bool,
-    /// 做封面
-    pub cover: Option<cover::CoverDialog>,
     /// 影片資訊
     pub video_tags: Option<video_tags::TagsDialog>,
     /// 目前設定的全域快速鍵（顯示用）
@@ -331,7 +326,6 @@ impl UiApp {
             snip: None,
             steps_review: None,
             importing: false,
-            cover: None,
             video_tags: None,
             keys: saved.hotkeys.unwrap_or_default(),
             editor: None,
@@ -913,7 +907,6 @@ impl UiApp {
                 );
                 self.convert(path)
             }
-            EntryAction::Cover => cover::open(self, entry, None),
             EntryAction::Tags => video_tags::open(self, entry),
             EntryAction::SendToLibrary => self.send_to_library(&path),
             EntryAction::SetThumb => {
@@ -1265,9 +1258,6 @@ impl eframe::App for UiApp {
         }
         if self.steps_review.is_some() {
             steps_review::show(self, &ctx);
-        }
-        if self.cover.is_some() {
-            cover::show(self, &ctx);
         }
         if self.video_tags.is_some() {
             video_tags::show(self, &ctx);

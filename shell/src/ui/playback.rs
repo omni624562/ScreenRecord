@@ -48,6 +48,21 @@ impl Playback {
         }
     }
 
+    /// 拖曳進度條中：mpv 先跳到附近的關鍵畫面（畫面跟得上手）
+    pub fn scrub(&self, t: f64) {
+        match self {
+            Playback::Ff(p) => p.seek(t),
+            Playback::Mpv { p, .. } => p.scrub(t),
+        }
+    }
+
+    /// 放開進度條：mpv 再跳到精確的那一格
+    pub fn end_scrub(&self) {
+        if let Playback::Mpv { p, .. } = self {
+            p.seek(p.time());
+        }
+    }
+
     pub fn rate(&self) -> f64 {
         match self {
             Playback::Ff(p) => p.rate(),

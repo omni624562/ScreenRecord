@@ -40,6 +40,65 @@ impl EncoderSpec {
     pub fn offline(&self) -> Vec<String> {
         self.offline.iter().map(|s| s.to_string()).collect()
     }
+
+    /// 依畫質調整 offline 的參數：CRF、CQ、QP 數字越大檔案越小
+    pub fn offline_at(&self, q: Quality) -> Vec<String> {
+        let d = q.step();
+        let mut a = self.offline();
+        for i in 1..a.len() {
+            let Ok(v) = a[i].parse::<i32>() else { continue };
+            a[i] = match a[i - 1].as_str() {
+                "-crf" | "-cq" | "-global_quality" | "-qp_i" | "-qp_p" => v + d,
+                // h264_mf：數字越大畫質越好
+                "-quality" => v - d * 5 / 2,
+                _ => continue,
+            }
+            .to_string();
+        }
+        a
+    }
+}
+
+/// 壓縮、合併時的畫質
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Quality {
+    /// 跟製作加速版一樣（幾乎看不出差別）
+    #[default]
+    High,
+    /// 檔案大約再小一半，仔細看細節才看得出來
+    Standard,
+    /// 檔案最小，細節（樹葉、頭髮、暗處）會糊
+    Small,
+}
+
+impl Quality {
+    pub const ALL: [Quality; 3] = [Quality::High, Quality::Standard, Quality::Small];
+
+    /// CRF / CQ / QP 加多少
+    fn step(self) -> i32 {
+        match self {
+            Quality::High => 0,
+            Quality::Standard => 4,
+            Quality::Small => 8,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Quality::High => tr!("高畫質", "High quality"),
+            Quality::Standard => tr!("標準", "Standard"),
+            Quality::Small => tr!("省空間", "Smallest"),
+        }
+    }
+
+    pub fn hint(self) -> &'static str {
+        match self {
+            Quality::High => tr!("幾乎看不出差別", "Looks nearly the same"),
+            Quality::Standard => tr!("檔案更小，仔細看細節才看得出來", "Smaller; differences only show in fine detail"),
+            Quality::Small => tr!("檔案最小，樹葉、頭髮、暗處等細節會變糊", "Smallest; fine detail (leaves, hair, dark areas) gets blurry"),
+        }
+    }
 }
 
 pub const ENCODERS: [EncoderSpec; 5] = [
@@ -951,7 +1010,7 @@ pub fn size_bitrate(max_bytes: f64, seconds: f64, audio_kbps: u32) -> u32 {
 pub const SMALL_AUDIO_KBPS: u32 = 96;
 
 /// 合併多支影片：每支縮放到 w × h（等比，不足補黑邊）、統一張數；沒有聲音的補一段靜音，再用 concat 接起來
-pub fn merge_args(inputs: &[(String, bool, f64)], out_file: &str, w: i32, h: i32, fps: f64, enc: &EncoderSpec) -> Vec<String> {
+pub fn merge_args(inputs: &[(String, bool, f64)], out_file: &str, w: i32, h: i32, fps: f64, enc: &EncoderSpec, quality: Quality) -> Vec<String> {
     let mut a = strs(&["-hide_banner", "-nostats", "-loglevel", "error"]);
     for (p, _, _) in inputs {
         a.extend(["-i".into(), p.clone()]);
@@ -970,10 +1029,26 @@ pub fn merge_args(inputs: &[(String, bool, f64)], out_file: &str, w: i32, h: i32
     graph.push(format!("{pairs}concat=n={}:v=1:a=1[vout][aout]", inputs.len()));
     a.extend(["-filter_complex".into(), graph.join(";"), "-map".into(), "[vout]".into(), "-map".into(), "[aout]".into()]);
     a.extend(strs(&AUDIO_ENCODE));
-    a.extend(enc.offline());
+    a.extend(enc.offline_at(quality));
     a.extend(["-r".into(), num(fps)]);
     a.extend(strs(&COLOR_TAGS));
     a.extend(strs(&["-movflags", "+faststart", "-progress", "pipe:1", "-stats_period", "0.5", "-y"]));
+    a.push(out_file.into());
+    a
+}
+
+/// 合併：格式都一樣的影片直接接起來（不重新壓縮，很快、畫質不變）。list：concat_list 寫成的清單檔（不截尾）
+/// first：第一支影片，只用來帶上它的影片資訊（標題、作者等；concat 讀不到）
+pub fn merge_copy_args(list: &str, first: &str, out_file: &str, audio: bool) -> Vec<String> {
+    let mut a = strs(&["-hide_banner", "-nostats", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i"]);
+    a.push(list.into());
+    a.push("-i".into());
+    a.push(first.into());
+    a.extend(strs(&["-map", "0:v:0"]));
+    if audio {
+        a.extend(strs(&["-map", "0:a:0"]));
+    }
+    a.extend(strs(&["-map_metadata", "1", "-c", "copy", "-movflags", "+faststart", "-progress", "pipe:1", "-stats_period", "0.5", "-y"]));
     a.push(out_file.into());
     a
 }
@@ -992,8 +1067,9 @@ pub fn export_args(
     width: Option<i32>,
     src_width: Option<i32>,
     limit_kbps: Option<u32>,
+    quality: Option<Quality>,
 ) -> Result<Vec<String>> {
-    let min = if limit_kbps.is_some() { 1.0 } else { SPEED_MIN };
+    let min = if limit_kbps.is_some() || quality.is_some() { 1.0 } else { SPEED_MIN };
     if !(min..=SPEED_MAX).contains(&speed) {
         return Err(Error::config(trf!("倍率需介於 {}～{}", "Speed must be between {} and {}", num(SPEED_MIN), num(SPEED_MAX))));
     }
@@ -1019,7 +1095,7 @@ pub fn export_args(
     }
     match limit_kbps {
         Some(k) => a.extend(enc.bitrate(k)),
-        None => a.extend(enc.offline()),
+        None => a.extend(enc.offline_at(quality.unwrap_or_default())),
     }
     a.extend(["-g".into(), num(fps * 2.0)]);
     a.extend(strs(&COLOR_TAGS));
@@ -1030,8 +1106,18 @@ pub fn export_args(
 
 /// 同 export_args，存成 WebM：VP9（CPU，多執行緒）+ Opus。limit_kbps：壓縮到指定大小用的位元率
 #[allow(clippy::too_many_arguments)]
-pub fn webm_export_args(source: &str, out_file: &str, speed: f64, fps: f64, with_audio: bool, width: Option<i32>, src_width: Option<i32>, limit_kbps: Option<u32>) -> Result<Vec<String>> {
-    let min = if limit_kbps.is_some() { 1.0 } else { SPEED_MIN };
+pub fn webm_export_args(
+    source: &str,
+    out_file: &str,
+    speed: f64,
+    fps: f64,
+    with_audio: bool,
+    width: Option<i32>,
+    src_width: Option<i32>,
+    limit_kbps: Option<u32>,
+    quality: Option<Quality>,
+) -> Result<Vec<String>> {
+    let min = if limit_kbps.is_some() || quality.is_some() { 1.0 } else { SPEED_MIN };
     if !(min..=SPEED_MAX).contains(&speed) {
         return Err(Error::config(trf!("倍率需介於 {}～{}", "Speed must be between {} and {}", num(SPEED_MIN), num(SPEED_MAX))));
     }
@@ -1057,7 +1143,7 @@ pub fn webm_export_args(source: &str, out_file: &str, speed: f64, fps: f64, with
     a.extend(strs(&["-c:v", "libvpx-vp9", "-deadline", "good", "-cpu-used", "4", "-row-mt", "1", "-tile-columns", "2"]));
     match limit_kbps {
         Some(k) => a.extend(["-b:v".into(), format!("{k}k"), "-maxrate".into(), format!("{}k", k * 3 / 2), "-bufsize".into(), format!("{}k", k * 2)]),
-        None => a.extend(strs(&["-crf", "32", "-b:v", "0"])),
+        None => a.extend(["-crf".into(), (32 + quality.unwrap_or_default().step()).to_string(), "-b:v".into(), "0".into()]),
     }
     a.extend(["-g".into(), num(fps * 2.0)]);
     a.extend(strs(&COLOR_TAGS));
@@ -2069,7 +2155,7 @@ mod tests {
     #[test]
     fn merge() {
         let inputs = [("a.mp4".to_string(), true, 3.0), ("b.mp4".to_string(), false, 2.5)];
-        let a = merge_args(&inputs, "out.mp4", 1920, 1080, 30.0, &x264());
+        let a = merge_args(&inputs, "out.mp4", 1920, 1080, 30.0, &x264(), Quality::High);
         let j = a.join(" ");
         assert!(j.starts_with("-hide_banner -nostats -loglevel error -i a.mp4 -i b.mp4 -filter_complex"));
         let g = graph_of(&a);
@@ -2079,6 +2165,20 @@ mod tests {
         assert!(j.contains("-map [vout] -map [aout] -c:a aac") && j.ends_with("-y out.mp4"));
     }
 
+    #[test]
+    fn quality_raises_crf_cq_and_qp() {
+        let get = |name: &str, q: Quality| encoder_spec(name).unwrap().offline_at(q).join(" ");
+        assert!(get("libx264", Quality::High).contains("-crf 20"));
+        assert!(get("libx264", Quality::Standard).contains("-crf 24"));
+        assert!(get("libx264", Quality::Small).contains("-crf 28"));
+        assert!(get("h264_nvenc", Quality::Small).contains("-cq 30"));
+        assert!(get("h264_qsv", Quality::Standard).contains("-global_quality 26"));
+        assert!(get("h264_amf", Quality::Small).contains("-qp_i 28 -qp_p 30"));
+        assert!(get("h264_mf", Quality::Small).contains("-quality 60"));
+        assert_eq!(encoder_spec("libx264").unwrap().offline_at(Quality::High), encoder_spec("libx264").unwrap().offline());
+        let j = merge_copy_args("list.txt", "a.mp4", "out.mp4", true).join(" ");
+        assert!(j.contains("-f concat -safe 0 -i list.txt -i a.mp4 -map 0:v:0 -map 0:a:0 -map_metadata 1 -c copy"), "{j}");
+    }
     #[test]
     fn camera_list() {
         let new_style = "\
@@ -2340,20 +2440,20 @@ dummy: Immediate exit requested";
 
     #[test]
     fn export() {
-        let args = export_args("in.mp4", "out.mp4", 4.0, 30.0, &x264(), false, None, None, None).unwrap();
+        let args = export_args("in.mp4", "out.mp4", 4.0, 30.0, &x264(), false, None, None, None, None).unwrap();
         assert_eq!(after(&args, "-vf"), "setpts=PTS/4,fps=30,format=yuv420p");
         assert!(args.contains(&"-an".to_string()));
-        assert!(export_args("in.mp4", "out.mp4", 1.0, 30.0, &x264(), false, None, None, None).unwrap_err().is_config());
+        assert!(export_args("in.mp4", "out.mp4", 1.0, 30.0, &x264(), false, None, None, None, None).unwrap_err().is_config());
         // 指定大小：原速也可以，改用位元率
-        let small = export_args("in.mp4", "out.mp4", 1.0, 30.0, &x264(), true, None, None, Some(1500)).unwrap().join(" ");
+        let small = export_args("in.mp4", "out.mp4", 1.0, 30.0, &x264(), true, None, None, Some(1500), None).unwrap().join(" ");
         assert!(small.contains("-b:v 1500k -maxrate 2250k -bufsize 3000k") && !small.contains("-crf") && !small.contains("atempo") && small.contains("-b:a 96k"), "{small}");
         assert_eq!(size_bitrate(25.0 * 1024.0 * 1024.0, 100.0, 96), 1938);
         assert_eq!(size_bitrate(1.0, 100.0, 96), 80);
-        let vf = |w, sw| export_args("in.mp4", "out.mp4", 4.0, 30.0, &x264(), false, Some(w), Some(sw), None).unwrap();
+        let vf = |w, sw| export_args("in.mp4", "out.mp4", 4.0, 30.0, &x264(), false, Some(w), Some(sw), None, None).unwrap();
         assert_eq!(after(&vf(1920, 3840), "-vf"), "setpts=PTS/4,fps=30,scale=1920:-2:flags=bicubic,format=yuv420p");
         assert_eq!(after(&vf(1920, 1920), "-vf"), "setpts=PTS/4,fps=30,format=yuv420p");
         assert_eq!(after(&vf(0, 3840), "-vf"), "setpts=PTS/4,fps=30,format=yuv420p");
-        let audio = export_args("in.mp4", "out.mp4", 16.0, 30.0, &x264(), true, None, None, None).unwrap();
+        let audio = export_args("in.mp4", "out.mp4", 16.0, 30.0, &x264(), true, None, None, None, None).unwrap();
         assert_eq!(after(&audio, "-af"), "atempo=2,atempo=2,atempo=2,atempo=2");
         assert!(audio.join(" ").contains("-map 0:v:0 -map 0:a:0"));
         assert_eq!(atempo_chain(1.5), "atempo=1.5");

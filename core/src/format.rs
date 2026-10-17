@@ -78,6 +78,12 @@ pub fn compressed_file_name(source_name: &str, max_mb: f64) -> String {
     trf!("{base}_{}MB以內.mp4", "{base}_under{}MB.mp4", num(js_round(max_mb)))
 }
 
+/// 依畫質壓縮的檔名（原速）：Rec_xxx.mp4 → Rec_xxx_壓縮.mp4（英文介面 Rec_xxx_compressed.mp4）
+pub fn quality_file_name(source_name: &str) -> String {
+    let base = strip_mp4(source_name);
+    trf!("{base}_壓縮.mp4", "{base}_compressed.mp4")
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ParsedExport {
     /// 原片檔名（含 .mp4）
@@ -88,8 +94,8 @@ pub struct ParsedExport {
 
 static EXPORT_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^(.*)_(\d+(?:\.\d+)?)x(?:_\d+)?\.(mp4|gif|webp|webm)$").unwrap());
 static ANIM_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^(.*?)(?:_\d+)?\.(gif|webp)$").unwrap());
-/// 壓縮版：Rec_a_25MB以內.mp4、Rec_a_under25MB_2.mp4
-static COMPRESSED_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^(.*)_(?:\d+MB以內|under\d+MB)(?:_\d+)?\.(mp4|webm)$").unwrap());
+/// 壓縮版：Rec_a_25MB以內.mp4、Rec_a_under25MB_2.mp4、Rec_a_壓縮.mp4、Rec_a_compressed.mp4
+static COMPRESSED_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^(.*)_(?:\d+MB以內|under\d+MB|壓縮|compressed)(?:_\d+)?\.(mp4|webm)$").unwrap());
 
 fn format_of(ext: &str) -> ExportFormat {
     if ext.eq_ignore_ascii_case("gif") {

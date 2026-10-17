@@ -27,8 +27,7 @@ enum Try {
     /// 在螢幕上框選截圖（這一版的介紹沒用到，保留給之後）
     #[allow(dead_code)]
     Snip,
-    /// 開啟全部截圖（true）或全部錄影（這一版的介紹沒用到，保留給之後）
-    #[allow(dead_code)]
+    /// 開啟全部截圖（true）或全部錄影
     Library(bool),
     /// 開始一步一步的教學（這一版的介紹沒用到，保留給之後）
     #[allow(dead_code)]
@@ -39,50 +38,41 @@ enum Try {
 fn items(_app: &UiApp) -> Vec<(String, String, Try)> {
     vec![
         (
+            tr!("合併影片快很多、畫質不變", "Much faster merging, same quality").into(),
+            tr!(
+                "全部錄影勾兩支以上 →「合併成一支」：同一支手機或同樣設定錄的影片直接接起來，幾秒就好，畫質跟原檔一樣。想要檔案小一點，可以在「畫質」選高畫質、標準或省空間。",
+                "Select two or more in All recordings → “Merge into one”: videos from the same phone or recorded with the same settings are joined directly in seconds, keeping the original quality. For a smaller file, pick High quality, Standard or Smallest under “Quality”."
+            )
+            .into(),
+            Try::Library(false),
+        ),
+        (
+            tr!("壓縮：保留畫質、縮小檔案", "Compress: keep quality, smaller file").into(),
+            tr!(
+                "錄影卡片「⋯」選單或檢視器上方的「壓縮」，除了壓縮到 LINE、Email 傳得出去的大小，也可以選「保留畫質，縮小檔案」：手機拍的、合併好的大檔案選「標準」，通常會小很多又看不太出差別。",
+                "“Compress” in a recording card's ⋯ menu or at the top of the viewer can now also “Keep quality, smaller file”, besides fitting a size for LINE or email. For big phone videos or merged files, “Standard” usually saves a lot of space with little visible difference."
+            )
+            .into(),
+            Try::None,
+        ),
+        (
             tr!("播放更順：mpv 播放元件", "Smoother playback: mpv component").into(),
             tr!(
-                "到設定 →「外部元件」下載 mpv 播放元件（約 32 MB），檢視器和主畫面的播放都改用 mpv：顯示卡解碼、畫面直接畫在視窗裡，手機的 4K、60 fps 影片也跟 Windows 的播放器一樣順。不下載也可以照常播放。",
-                "Download the mpv component (about 32 MB) in Settings → Components and the viewer and the main screen play videos with mpv: decoded on the graphics card and drawn straight into the window, so even 4K 60 fps phone videos play as smoothly as in the Windows player. Videos still play without it."
+                "到設定 →「外部元件」下載 mpv 播放元件（約 32 MB），檢視器和主畫面的播放都改用 mpv：顯示卡解碼，手機的 4K、60 fps 影片也很順，拖曳進度條畫面馬上跟上。播放有問題時可以在同一頁關掉。",
+                "Download the mpv component (about 32 MB) in Settings → Components and the viewer and the main screen play videos with mpv: decoded on the graphics card, smooth even for 4K 60 fps phone videos, and the picture follows the seek bar as you drag. You can turn it off on the same page if playback has problems."
             )
             .into(),
             Try::Settings(settings_dialog::Page::Components),
         ),
         (
-            tr!("設為封面", "Set as cover").into(),
+            tr!("拿掉「做 YouTube 封面圖」", "Removed “Make YouTube cover”").into(),
             tr!(
-                "播放影片時停在想要的那一格，按上方的「設為封面」：檔案總管和多數播放器看到的縮圖就是這一格。影片內容不變，這一格不會被移到開頭。",
-                "Pause a video on the frame you want and click “Set as cover” at the top: File Explorer and most players show it as the thumbnail. The video itself is unchanged and the frame isn't moved to the start."
+                "比較少人用的「做 YouTube 封面圖」拿掉了。「設為封面」（選一格當檔案總管看到的縮圖）照樣可以用。",
+                "The rarely used “Make YouTube cover” is gone. “Set as cover” (pick a frame as the thumbnail File Explorer shows) still works."
             )
             .into(),
             Try::None,
         ),
-        (
-            tr!("錄完通知 Jellyfin", "Notify Jellyfin").into(),
-            tr!(
-                "家裡有 Jellyfin 媒體伺服器的話：設定 →「錄完處理」的「複製」選它的媒體庫資料夾，再填網址和 API 金鑰，錄完複製好就通知它掃描，新影片馬上出現（影片資訊、封面、章節都會帶過去）。",
-                "If you run a Jellyfin media server: in Settings → After recording, set “Copy” to its library folder and fill in the address and API key. Jellyfin is told to scan as soon as the copy is done, so new videos (with their details, cover and chapters) show up right away."
-            )
-            .into(),
-            Try::None,
-        ),
-        (
-            tr!("影片資訊", "Video details").into(),
-            tr!(
-                "按檢視器上方的「影片資訊」，或錄影卡片「⋯」選單的「影片資訊」，改寫在影片檔裡的標題、作者、說明等；檔案總管的「內容 → 詳細資料」看得到。剪輯、加速版、壓縮另存時，影片資訊和封面都會一起帶上。",
-                "Click “Details” at the top of the viewer, or “Video details” in a recording card's ⋯ menu, to edit the title, author, description and more stored in the video file; File Explorer shows them under Properties → Details. Edited, sped-up and compressed copies keep them, along with the cover."
-            )
-            .into(),
-            Try::None,
-        ),
-        (
-        tr!("變得更精簡", "Leaner and simpler").into(),
-        tr!(
-            "拿掉了比較少人用的文字轉語音旁白、背景音樂、開會時提醒錄影、傳到手機、讀取 QR 碼、取色器、尺規、自動匯入資料夾；全部截圖的「內容、常見詞、顏色」收進「更多分類」。自己錄的旁白、點擊音效、手動匯入影片都還在。",
-            "Removed rarely used features: text-to-speech narration, background music, meeting reminders, Send to phone, QR code reading, the color picker, the ruler and auto-import folders. Content, common words and colour in All screenshots are now under “More categories”. Recorded narration, click sounds and manual import are still here."
-        )
-        .into(),
-        Try::None,
-    ),
     ]
 }
 

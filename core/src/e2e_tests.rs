@@ -425,7 +425,7 @@ async fn cut_fades_at_joins() {
 }
 
 #[tokio::test]
-async fn cover_is_saved_and_written_into_the_video() {
+async fn cover_is_written_into_the_video() {
     let Some(ff) = ffmpeg() else { return };
     if !has(&ff, "-encoders", "libx264") {
         return;
@@ -437,13 +437,7 @@ async fn cover_is_saved_and_written_into_the_video() {
     let mtime = std::fs::metadata(&src).unwrap().modified().unwrap();
     let frame = crate::cover::frame_at(&ff, &s, 2.0).await.unwrap();
     assert_eq!((frame.width(), frame.height()), (640, 360));
-    let c = crate::cover::Cover { title: "報價單怎麼填".into(), subtitle: "業務部教學".into(), style: crate::cover::CoverStyle::Band };
-    let pm = crate::cover::render(&frame, &c).unwrap();
-    let saved = crate::cover::save(Some(&ff), &s, &pm, true).await.unwrap();
-    assert!(saved.embedded, "{:?}", saved.embed_error);
-    assert!(saved.png.ends_with("Rec_2026-10-11_12-00-00_封面.png"));
-    let png = tiny_skia::Pixmap::load_png(&saved.png).unwrap();
-    assert_eq!((png.width(), png.height()), (1280, 720));
+    crate::cover::set_thumbnail(Some(&ff), &s, 2.0).await.unwrap();
     // 影片照常：長度、聲音、章節不變，多了一張封面圖；修改時間不變
     let after = probe(&ff, &src).await;
     assert!(near(after.duration_sec.unwrap(), before.duration_sec.unwrap(), 0.05));
@@ -454,7 +448,7 @@ async fn cover_is_saved_and_written_into_the_video() {
     let info = String::from_utf8_lossy(&o.stderr);
     assert_eq!(info.matches("(attached pic)").count(), 1, "{info}");
     // 再做一次：換掉原本的封面，不會變成兩張；暫存檔不留下
-    crate::cover::save(Some(&ff), &s, &pm, true).await.unwrap();
+    crate::cover::set_thumbnail(Some(&ff), &s, 1.0).await.unwrap();
     let o = Command::new(&ff).args(["-hide_banner", "-i"]).arg(&src).output().unwrap();
     assert_eq!(String::from_utf8_lossy(&o.stderr).matches("(attached pic)").count(), 1);
     let left: Vec<_> = std::fs::read_dir(dir.path()).unwrap().filter_map(|e| e.ok()).map(|e| e.file_name().to_string_lossy().into_owned()).filter(|n| n.contains("rewrite-tmp")).collect();
@@ -1391,4 +1385,50 @@ async fn video_details_carry_over_to_exports() {
     // 合併：用第一支的資訊
     ex.start_merge(&c, &[s.clone(), s.clone()]).await.unwrap();
     check("合併", finish(&ex).await).await;
+}
+
+/// 合併：格式一樣的直接接起來（串流格式不變、大小約相加），選了畫質才重新壓縮；壓縮可以依畫質（不限大小）
+#[tokio::test]
+async fn merge_joins_same_format_without_reencoding_and_compress_by_quality() {
+    let Some(ff) = ffmpeg() else { return };
+    if !has(&ff, "-encoders", "libx264") {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let a = make_source(&ff, dir.path());
+    let b = dir.path().join("Rec_2026-10-11_12-10-00.mp4");
+    std::fs::copy(&a, &b).unwrap();
+    let sig = |p: &Path| {
+        let o = Command::new(&ff).args(["-hide_banner", "-i"]).arg(p).output().unwrap();
+        // 章節的資料串流不帶過去（合併後章節對不上）
+        crate::import::stream_signature(&String::from_utf8_lossy(&o.stderr)).unwrap().replace(" | Data", "")
+    };
+    let c = ctx(&ff);
+    let ex = Exporter::new();
+    let paths = [a.display().to_string(), b.display().to_string()];
+    ex.start_merge_with(&c, &paths, Some("合併_原畫質"), None).await.unwrap();
+    let joined = finish(&ex).await;
+    let i = probe(&ff, &joined).await;
+    assert!(near(i.duration_sec.unwrap(), 12.0, 0.2), "{:?}", i.duration_sec);
+    assert_eq!(i.has_audio, Some(true));
+    assert_eq!(sig(&joined), sig(&a), "沒有重新壓縮");
+    let src_bytes = std::fs::metadata(&a).unwrap().len() * 2;
+    assert!((i.bytes as f64 - src_bytes as f64).abs() < src_bytes as f64 * 0.1, "{} vs {src_bytes}", i.bytes);
+    // 選了畫質：重新壓縮
+    ex.start_merge_with(&c, &paths, Some("合併_標準"), Some(crate::args::Quality::Standard)).await.unwrap();
+    let re = finish(&ex).await;
+    assert!(near(probe(&ff, &re).await.duration_sec.unwrap(), 12.0, 0.3));
+    assert_ne!(sig(&re), sig(&a));
+    // 依畫質壓縮：檔名 _壓縮，省空間比高畫質小
+    let s = a.display().to_string();
+    ex.start_quality_to(&c, &s, true, 0.0, crate::args::Quality::High, ExportFormat::Mp4, None).await.unwrap();
+    let high = finish(&ex).await;
+    assert!(high.ends_with("Rec_2026-10-11_12-00-00_壓縮.mp4"), "{high:?}");
+    ex.start_quality_to(&c, &s, true, 0.0, crate::args::Quality::Small, ExportFormat::Mp4, None).await.unwrap();
+    let small = finish(&ex).await;
+    assert!(small.ends_with("Rec_2026-10-11_12-00-00_壓縮_2.mp4"), "{small:?}");
+    let (h, sm) = (probe(&ff, &high).await, probe(&ff, &small).await);
+    assert!(sm.bytes < h.bytes, "{} < {}", sm.bytes, h.bytes);
+    assert!(near(sm.duration_sec.unwrap(), 6.0, 0.2));
+    assert_eq!(crate::format::parse_export_name(&high.file_name().unwrap().to_string_lossy()).map(|p| p.base), Some("Rec_2026-10-11_12-00-00.mp4".into()));
 }

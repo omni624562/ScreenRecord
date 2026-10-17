@@ -456,8 +456,6 @@ enum Act {
     Pin,
     /// 影片：目前這一格存成截圖
     Grab,
-    /// 影片：從目前這一格做封面
-    Cover,
     /// 影片：目前這一格寫進影片當縮圖（檔案總管看到的那一張）
     SetThumb,
     /// 影片：改標題、作者、說明等影片資訊
@@ -520,9 +518,12 @@ fn head_buttons(app: &UiApp, e: &LibraryEntry, image: bool, audio: bool) -> Vec<
             EntryAction::Export,
         ));
         list.push(gate(
-            b(tr!("壓縮", "Compress"), None, tr!("壓縮到 LINE、Email 傳得出去的大小（原速）", "Compress to a size you can send via LINE or email (original speed)"), || {
-                Act::Entry(EntryAction::Compress)
-            }),
+            b(
+                tr!("壓縮", "Compress"),
+                None,
+                tr!("縮小檔案：保留畫質，或壓縮到 LINE、Email 傳得出去的大小（原速）", "Make the file smaller: keep the quality, or fit a size you can send via LINE or email (original speed)"),
+                || Act::Entry(EntryAction::Compress),
+            ),
             EntryAction::Compress,
         ));
     }
@@ -552,12 +553,6 @@ fn head_buttons(app: &UiApp, e: &LibraryEntry, image: bool, audio: bool) -> Vec<
             Some(Icon::Camera),
             tr!("把目前這一格存成截圖（原尺寸 PNG），並複製到剪貼簿", "Save the current frame as a screenshot (full-size PNG) and copy it to the clipboard"),
             || Act::Grab,
-        ));
-        list.push(b(
-            tr!("做 YouTube 封面圖", "Make YouTube cover"),
-            None,
-            tr!("用目前這一格加上標題，做成 YouTube 用的封面圖（1280×720）", "Use the current frame with a title to make a YouTube cover image (1280×720)"),
-            || Act::Cover,
         ));
     }
     list.push(b(
@@ -952,14 +947,6 @@ fn run_act(app: &mut UiApp, act: Act) {
             }
             super::library_dialog::rename_entry(app, e);
         }
-        Act::Cover => {
-            let Some(v) = app.viewer.as_mut() else { return };
-            let (entry, t) = (v.cur().clone(), v.player.as_ref().map(|p| p.time()));
-            if let Some(p) = &mut v.player {
-                p.pause();
-            }
-            super::cover::open(app, entry, t);
-        }
         Act::SetThumb => {
             let Some(v) = app.viewer.as_ref() else { return };
             let path = v.cur().media.path.clone();
@@ -1310,10 +1297,13 @@ fn video_bar(v: &mut Viewer, ui: &mut egui::Ui, act: &mut Act) {
     }
     if v.seeking.is_some() {
         if let Some(pos) = resp.interact_pointer_pos() {
-            player.seek(to_t(pos));
+            player.scrub(to_t(pos));
         }
-        if !resp.is_pointer_button_down_on() && !resp.dragged() && v.seeking.take() == Some(true) {
-            player.play();
+        if !resp.is_pointer_button_down_on() && !resp.dragged() {
+            player.end_scrub();
+            if v.seeking.take() == Some(true) {
+                player.play();
+            }
         }
     }
     resp.on_hover_cursor(egui::CursorIcon::PointingHand);
