@@ -13,6 +13,10 @@ regex = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "fs", "io-util", "time", "sync"] }
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 sha2 = "0.10"
+# 用 mpv 播放影片（檢視器）：執行時才載入 libmpv（不是必要的元件，見 mpv.rs）
+libloading = "0.8"
+# 下載的 libmpv 是 7z 壓縮檔（Windows 10 內建的 tar 解不了 LZMA）：純 Rust 解壓縮
+sevenz-rust2 = { version = "0.24", default-features = false }
 # 標註繪製（文字、箭頭、框線、編號、遮罩）：預覽與匯出用同一套
 tiny-skia = "0.12"
 # 長截圖一列一列寫成 PNG（不用先接成一整塊）；image 與 tiny-skia 已經在用同一版

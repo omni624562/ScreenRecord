@@ -1,4 +1,4 @@
-//! 外部元件（設定 → 外部元件）：FFmpeg、語音辨識用的 FFmpeg、語音模型，下載、取消、移除都在這裡。
+//! 外部元件（設定 → 外部元件）：FFmpeg、mpv 播放元件、語音辨識用的 FFmpeg、語音模型，下載、取消、移除都在這裡。
 //! 其他功能（剪輯視窗的自動字幕、錄完自動處理）缺少元件時不自己下載，請使用者到設定下載。
 //!
 //! 無法自動下載時（公司網路擋住、沒有網路……）：
@@ -18,6 +18,8 @@ use std::sync::{Arc, Mutex};
 pub enum Kind {
     /// 錄影、轉檔用的 FFmpeg（必要）
     Ffmpeg,
+    /// mpv 播放元件（libmpv-2.dll）：檢視器播放更順（沒有時用 FFmpeg 播放）
+    Mpv,
     /// 語音辨識用的 FFmpeg（目前的 FFmpeg 沒有 whisper 時才需要）
     SpeechFfmpeg,
     /// 語音模型（MODELS 的第幾個）
@@ -26,7 +28,7 @@ pub enum Kind {
 
 impl Kind {
     pub fn all() -> Vec<Kind> {
-        let mut v = vec![Kind::Ffmpeg, Kind::SpeechFfmpeg];
+        let mut v = vec![Kind::Ffmpeg, Kind::Mpv, Kind::SpeechFfmpeg];
         v.extend((0..MODELS.len()).map(Kind::Model));
         v
     }
@@ -42,6 +44,7 @@ impl Kind {
     pub fn name(self) -> String {
         match self {
             Kind::Ffmpeg => "FFmpeg".into(),
+            Kind::Mpv => tr!("mpv 播放元件", "mpv playback component").into(),
             Kind::SpeechFfmpeg => tr!("語音辨識用的 FFmpeg", "FFmpeg for speech recognition").into(),
             Kind::Model(_) => trf!("語音模型：{}", "Speech model: {}", self.model().map(|m| m.label()).unwrap_or_default()),
         }
@@ -51,6 +54,7 @@ impl Kind {
     pub fn mb(self) -> u32 {
         match self {
             Kind::Ffmpeg => 100,
+            Kind::Mpv => crate::mpv_download::MPV_MB,
             Kind::SpeechFfmpeg => crate::downloader::SPEECH_FFMPEG_MB,
             Kind::Model(_) => self.model().map(|m| m.mb).unwrap_or(0),
         }
@@ -60,6 +64,7 @@ impl Kind {
     pub fn url(self) -> String {
         match self {
             Kind::Ffmpeg => crate::downloader::ffmpeg_urls().into_iter().next().unwrap_or_default(),
+            Kind::Mpv => crate::mpv_download::mpv_urls().into_iter().next().unwrap_or_default(),
             Kind::SpeechFfmpeg => crate::downloader::speech_ffmpeg_urls().into_iter().next().unwrap_or_default(),
             Kind::Model(_) => self.model().map(|m| m.url.to_string()).unwrap_or_default(),
         }
@@ -69,6 +74,7 @@ impl Kind {
     pub fn file_filter(self) -> &'static str {
         match self {
             Kind::Ffmpeg | Kind::SpeechFfmpeg => "ffmpeg.exe;*.zip",
+            Kind::Mpv => "libmpv-2.dll;*.7z",
             Kind::Model(_) => "*.bin",
         }
     }
@@ -77,6 +83,7 @@ impl Kind {
     pub fn path(self) -> Option<PathBuf> {
         match self {
             Kind::Ffmpeg => crate::downloader::download_target().ok(),
+            Kind::Mpv => Some(crate::mpv_download::installed_path().unwrap_or_else(crate::mpv_download::install_path)),
             Kind::SpeechFfmpeg => Some(subtitles::speech_ffmpeg_path()),
             Kind::Model(_) => self.model().map(subtitles::model_path),
         }
@@ -209,6 +216,8 @@ impl App {
     pub fn component_installed(&self, k: Kind) -> bool {
         match k {
             Kind::Ffmpeg => self.env().ffmpeg.found,
+            // 下載的，或系統裝的（Linux：apt install libmpv2）
+            Kind::Mpv => crate::mpv_download::installed_path().is_some() || crate::mpv::available(),
             Kind::SpeechFfmpeg => self.env().ffmpeg.has_whisper || subtitles::speech_ffmpeg_downloaded(),
             Kind::Model(_) => k.model().is_some_and(subtitles::model_ready),
         }
@@ -242,6 +251,7 @@ impl App {
         tokio::spawn(async move {
             let r = match k {
                 Kind::SpeechFfmpeg => subtitles::download_speech_ffmpeg(progress, cancel).await.map(|_| ()),
+                Kind::Mpv => tokio::task::spawn_blocking(move || crate::mpv_download::download(&progress, &cancel)).await.map_err(|e| e.to_string()).and_then(|r| r.map(|_| ())),
                 Kind::Model(_) => match k.model().copied() {
                     Some(m) => tokio::task::spawn_blocking(move || subtitles::download_model(&m, &progress, &cancel)).await.map_err(|e| e.to_string()).and_then(|r| r),
                     None => Ok(()),
@@ -271,12 +281,21 @@ impl App {
     pub fn component_remove(&self, k: Kind) -> Result<(), String> {
         let path = match k {
             Kind::Ffmpeg => return Err(tr!("FFmpeg 是錄影必要的元件，不能移除", "FFmpeg is required for recording and can't be removed").into()),
+            Kind::Mpv => crate::mpv_download::installed_path()
+                .ok_or_else(|| tr!("這是系統安裝的 libmpv，請用系統的套件管理程式移除", "This libmpv is installed by the system. Remove it with your package manager").to_string())?,
             _ => k.path().ok_or_else(|| tr!("找不到檔案", "File not found").to_string())?,
         };
         if self.after_status().is_some() {
             return Err(tr!("錄完自動處理進行中，完成後再移除", "Processing after recording is running. Remove it when it's done").into());
         }
-        std::fs::remove_file(&path).map_err(|e| e.to_string())?;
+        std::fs::remove_file(&path).map_err(|e| {
+            // 播放過之後 DLL 已經載入，Windows 上刪不掉
+            if k == Kind::Mpv {
+                tr!("播放元件使用中，請重新開啟程式後再移除", "The playback component is in use. Restart the app and then remove it").to_string()
+            } else {
+                e.to_string()
+            }
+        })?;
         crate::info!("[外部元件] 已移除 {}", path.display());
         self.components.set_error(k, None);
         Ok(())
@@ -299,6 +318,10 @@ impl App {
                     }
                 }
                 r.map(|_| ())
+            }
+            Kind::Mpv => {
+                let (s, t) = (src.clone(), crate::mpv_download::install_path());
+                tokio::task::spawn_blocking(move || crate::mpv_download::install_file(&s, &t)).await.map_err(|e| e.to_string()).and_then(|r| r)
             }
             Kind::SpeechFfmpeg => {
                 let target = subtitles::speech_ffmpeg_install_path();

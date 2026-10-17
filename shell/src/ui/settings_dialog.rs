@@ -2096,6 +2096,9 @@ fn components_page(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
     form_section(ui, tr!("錄影", "Recording"), |_| {});
     component_card(app, d, ui, Kind::Ffmpeg);
     ui.add_space(12.0);
+    form_section(ui, tr!("播放", "Playback"), |_| {});
+    component_card(app, d, ui, Kind::Mpv);
+    ui.add_space(12.0);
     form_section(ui, tr!("自動字幕（語音辨識）", "Auto subtitles (speech recognition)"), |_| {});
     form_hint_full(
         ui,
@@ -2106,7 +2109,7 @@ fn components_page(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
         p.muted,
     );
     ui.add_space(4.0);
-    for k in Kind::all().into_iter().filter(|k| *k != Kind::Ffmpeg) {
+    for k in Kind::all().into_iter().filter(|k| !matches!(k, Kind::Ffmpeg | Kind::Mpv)) {
         component_card(app, d, ui, k);
         ui.add_space(6.0);
     }
@@ -2117,13 +2120,13 @@ fn components_page(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
     form_section(ui, tr!("無法下載時", "If downloads don't work"), |_| {});
     for line in [
         tr!(
-            "1. 確認已連上網路；公司網路請在上面設定 Proxy，或請 IT 放行 github.com、gyan.dev、huggingface.co。",
-            "1. Check your internet connection. On a company network, set the proxy above, or ask IT to allow github.com, gyan.dev and huggingface.co."
+            "1. 確認已連上網路；公司網路請在上面設定 Proxy，或請 IT 放行 github.com、gyan.dev、sourceforge.net、huggingface.co。",
+            "1. Check your internet connection. On a company network, set the proxy above, or ask IT to allow github.com, gyan.dev, sourceforge.net and huggingface.co."
         ),
         tr!("2. 按「用瀏覽器下載」，在瀏覽器（或另一台電腦）下載。", "2. Press “Download in browser” to download it in your browser (or on another computer)."),
         tr!(
-            "3. 回到這裡按「選擇已下載的檔案…」：FFmpeg 可以選 zip 或 ffmpeg.exe，語音模型選 .bin。",
-            "3. Come back and press “Choose downloaded file…”: for FFmpeg choose the zip or ffmpeg.exe; for speech models choose the .bin file."
+            "3. 回到這裡按「選擇已下載的檔案…」：FFmpeg 可以選 zip 或 ffmpeg.exe，mpv 播放元件選 .7z 或 libmpv-2.dll，語音模型選 .bin。",
+            "3. Come back and press “Choose downloaded file…”: for FFmpeg choose the zip or ffmpeg.exe; for the mpv component choose the .7z or libmpv-2.dll; for speech models choose the .bin file."
         ),
     ] {
         form_hint_full(ui, line, p.muted);
@@ -2163,6 +2166,16 @@ fn component_card(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui, k: Kind)
         let info = match k {
             Kind::Ffmpeg if installed => trf!("版本 {}：{}", "Version {}: {}", app.env.ffmpeg.version.clone().unwrap_or_default(), app.env.ffmpeg.path.clone().unwrap_or_default()),
             Kind::Ffmpeg => tr!("錄影、截圖、轉檔都要用到（必要，約 100 MB）。", "Required for recording, screenshots and conversion (about 100 MB).").into(),
+            Kind::Mpv if installed => trf!(
+                "播放影片時用 mpv（顯示卡解碼），4K、60 fps 的影片也很順。位置：{}",
+                "Videos play with mpv (decoded on the graphics card), so even 4K 60 fps videos play smoothly. Location: {}",
+                k.path().filter(|p| p.is_file()).map(|p| p.display().to_string()).unwrap_or_else(|| screenrecorder_core::mpv::LIB_NAME.into())
+            ),
+            Kind::Mpv => trf!(
+                "讓檢視器播放影片更順（手機的 4K、60 fps 影片也一樣），約 {} MB。不下載也可以播放，只是大影片可能卡卡的。",
+                "Makes videos play more smoothly in the viewer (including 4K 60 fps phone videos), about {} MB. Videos still play without it, but large ones may stutter.",
+                k.mb()
+            ),
             _ if builtin => trf!(
                 "就是上面「FFmpeg」那一個（版本 {}：{}），它本身就能辨識語音，不用另外下載。",
                 "It's the same FFmpeg as above (version {}: {}); it can already recognize speech, so nothing else is needed.",
