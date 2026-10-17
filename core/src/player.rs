@@ -91,9 +91,12 @@ fn probe_turn(ffmpeg: &Path, path: &str) -> Option<&'static str> {
 }
 
 /// 連續播放的參數（w × h：轉正後的大小）。
+/// - rate：固定成每秒幾張（時間依張數計算，手機影片的張數不固定）；None = 照影片原本的。
+///   CPU 解碼時有 rate 就是省力播放：解碼略過去區塊濾波、較快的縮小方式
 /// - turn：大畫面不讓 FFmpeg 先把整張轉正，縮小後再轉（見 turn_filter）；None = 照 FFmpeg 自動轉正
 /// - gpu：在顯示卡上解碼、縮小（D3D11），只把縮小後的畫面拿回來；不然每一張 4K 都要從顯示卡搬回來、用 CPU 縮小
-fn play_args(path: &str, t: f64, w: u32, h: u32, light: bool, turn: Option<&str>, gpu: bool) -> Vec<String> {
+fn play_args(path: &str, t: f64, w: u32, h: u32, rate: Option<f64>, turn: Option<&str>, gpu: bool) -> Vec<String> {
+    let light = rate.is_some() && !gpu;
     let mut a: Vec<String> = ["-hide_banner", "-loglevel", "error", "-nostdin"].iter().map(|s| s.to_string()).collect();
     let hw: &[&str] = if gpu {
         &["-init_hw_device", "d3d11va=gpu", "-filter_hw_device", "gpu", "-hwaccel", "d3d11va", "-hwaccel_device", "gpu", "-hwaccel_output_format", "d3d11"]
@@ -113,8 +116,8 @@ fn play_args(path: &str, t: f64, w: u32, h: u32, light: bool, turn: Option<&str>
     // 轉正之前的大小
     let (sw, sh) = if turn.is_some_and(|t| t.starts_with("transpose")) { (h, w) } else { (w, h) };
     let mut f: Vec<String> = Vec::new();
-    if light {
-        f.push(format!("fps={}", crate::format::num(LIGHT_FPS)));
+    if let Some(r) = rate {
+        f.push(format!("fps={}", crate::format::num(r)));
     }
     if gpu {
         f.extend([format!("scale_d3d11=width={sw}:height={sh}:format=nv12"), "hwdownload".into(), "format=nv12".into()]);
@@ -589,8 +592,12 @@ impl Player {
             }
             // 連續播放用硬體解碼（大畫面時省很多 CPU）
             let turn = if big { *turn_cell.get_or_init(|| probe_turn(&ffmpeg, &spec.path)) } else { None };
+            // 顯示卡：解得動，照原本的張數（60p 就是每秒 60 張）；CPU：大畫面高張數時每秒 LIGHT_FPS 張
+            let native = spec.fps.max(1.0);
+            let rate_of = |gpu: bool| if light && !gpu { LIGHT_FPS } else { native };
             let start = |gpu: bool| -> Option<ChildStdout> {
-                let mut child = spawn(&ffmpeg, &play_args(&spec.path, from, w, h, light, turn, gpu))?;
+                let fixed = (gpu || light).then(|| rate_of(gpu));
+                let mut child = spawn(&ffmpeg, &play_args(&spec.path, from, w, h, fixed, turn, gpu))?;
                 let out = child.stdout.take()?;
                 register(child).then_some(out)
             };
@@ -598,6 +605,7 @@ impl Player {
             let Some(mut out) = start(try_gpu) else { return };
             let mut buf = vec![0u8; (w * h * 4) as usize];
             let mut first = read_frame(&mut out, &mut buf);
+            let mut used_gpu = try_gpu;
             if try_gpu {
                 if first {
                     crate::info!("[播放] 在顯示卡縮小畫面：{}", spec.path);
@@ -605,13 +613,14 @@ impl Player {
                     // 顯示卡或 FFmpeg 不支援（例如太舊的顯示卡解不了 HEVC 10-bit）：改用一般方式，之後也不再試
                     gpu_failed.store(true, Ordering::Relaxed);
                     crate::info!("[播放] 無法在顯示卡縮小畫面，改用一般方式：{}", spec.path);
+                    used_gpu = false;
                     let Some(o) = start(false) else { return };
                     out = o;
                     first = read_frame(&mut out, &mut buf);
                 }
             }
-            // 省力播放時每秒只送出 LIGHT_FPS 張：時間依送出的張數計算
-            let (fps, duration) = (if light { LIGHT_FPS } else { spec.fps.max(1.0) }, spec.duration);
+            // 時間依送出的張數計算
+            let (fps, duration) = (rate_of(used_gpu), spec.duration);
             std::thread::spawn(move || {
                 let mut pending = Some(first);
                 let mut n: u64 = 0;
@@ -709,20 +718,20 @@ mod tests {
         assert!(!heavy(1920, 1080, 60.0) && !heavy(3840, 2160, 30.0) && !heavy(2560, 1440, 30.0));
         assert!(big(3840, 2160) && big(2560, 1440) && !big(1920, 1080));
         // 一般影片：和以前一樣（硬體解碼、FFmpeg 自動轉正）
-        let a = play_args("a.mp4", 1.0, 1280, 720, false, None, false).join(" ");
+        let a = play_args("a.mp4", 1.0, 1280, 720, None, None, false).join(" ");
         assert!(a.starts_with("-hide_banner -loglevel error -nostdin -hwaccel auto -ss 1.000 -i a.mp4"), "{a}");
         assert!(a.contains("-vf scale=1280:720:flags=bilinear,format=rgba -f rawvideo"), "{a}");
         // 4K 60p：每秒 30 張、略過去區塊濾波
-        let b = play_args("a.mp4", 1.0, 1280, 720, true, Some(""), false).join(" ");
+        let b = play_args("a.mp4", 1.0, 1280, 720, Some(LIGHT_FPS), Some(""), false).join(" ");
         assert!(b.contains("-skip_loop_filter all -noautorotate -ss 1.000 -i a.mp4"), "{b}");
         assert!(b.contains("-vf fps=30,scale=1280:720:flags=fast_bilinear,format=rgba"), "{b}");
         // 直拍：先縮成橫的小畫面再轉正（不轉整張 4K）
-        let c = play_args("a.mp4", 0.0, 360, 640, true, Some("transpose=clock"), false).join(" ");
+        let c = play_args("a.mp4", 0.0, 360, 640, Some(LIGHT_FPS), Some("transpose=clock"), false).join(" ");
         assert!(c.contains("-vf fps=30,scale=640:360:flags=fast_bilinear,transpose=clock,format=rgba"), "{c}");
-        // 顯示卡：解碼、縮小都在顯示卡上，只拿回小畫面
-        let d = play_args("a.mp4", 0.0, 360, 640, true, Some("transpose=cclock"), true).join(" ");
-        assert!(d.contains("-hwaccel d3d11va -hwaccel_device gpu -hwaccel_output_format d3d11 -skip_loop_filter all -noautorotate"), "{d}");
-        assert!(d.contains("-vf fps=30,scale_d3d11=width=640:height=360:format=nv12,hwdownload,format=nv12,transpose=cclock,format=rgba"), "{d}");
+        // 顯示卡：解碼、縮小都在顯示卡上，只拿回小畫面；照原本的張數
+        let d = play_args("a.mp4", 0.0, 360, 640, Some(59.94), Some("transpose=cclock"), true).join(" ");
+        assert!(d.contains("-hwaccel d3d11va -hwaccel_device gpu -hwaccel_output_format d3d11 -noautorotate"), "{d}");
+        assert!(d.contains("-vf fps=59.94,scale_d3d11=width=640:height=360:format=nv12,hwdownload,format=nv12,transpose=cclock,format=rgba"), "{d}");
         assert!(!d.contains("-hwaccel auto"), "{d}");
     }
 
@@ -769,7 +778,7 @@ mod tests {
             let turn = probe_turn(&ffmpeg, &path);
             assert!(turn.is_some_and(|t| !t.is_empty()), "{rot}: {turn:?}");
             let auto = decode_frame(&ffmpeg, &path, 0.0, w, h, false).expect("自動轉正");
-            let mut args = play_args(&path, 0.0, w, h, true, turn, false);
+            let mut args = play_args(&path, 0.0, w, h, Some(LIGHT_FPS), turn, false);
             args.splice(args.len() - 7..args.len() - 7, ["-frames:v".to_string(), "1".into()]);
             let mut child = spawn(&ffmpeg, &args).unwrap();
             let mut ours = vec![0u8; (w * h * 4) as usize];
