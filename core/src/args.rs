@@ -1684,22 +1684,27 @@ static VIDEO_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?m)Stream #\S+
 static SIZE_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r",\s*(\d{2,5})x(\d{2,5})[\s,\[]").unwrap());
 static FPS_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r",\s*(\d+(?:\.\d+)?)\s*fps").unwrap());
 static AUDIO_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"Stream #\S+.*?Audio:").unwrap());
+static ROTATION_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"rotation of (-?\d+(?:\.\d+)?) degrees").unwrap());
 
 /// 解析 `ffmpeg -i file` 的 stderr：長度、解析度、fps、有無聲音
 pub fn parse_media_info(stderr: &str) -> ParsedMedia {
     let duration_sec = DURATION_RE.captures(stderr).map(|d| d[1].parse::<f64>().unwrap_or(0.0) * 3600.0 + d[2].parse::<f64>().unwrap_or(0.0) * 60.0 + d[3].parse::<f64>().unwrap_or(0.0));
-    let video = VIDEO_RE.find(stderr).map(|m| m.as_str().trim_end_matches('\r')).unwrap_or("");
+    let found = VIDEO_RE.find(stderr);
+    let video = found.map(|m| m.as_str().trim_end_matches('\r')).unwrap_or("");
     let size = SIZE_RE.captures(video);
     let fps = FPS_RE.captures(video).and_then(|c| c[1].parse().ok());
-    ParsedMedia {
-        duration_sec,
-        width: size.as_ref().and_then(|s| s[1].parse().ok()),
-        height: size.as_ref().and_then(|s| s[2].parse().ok()),
-        fps,
-        has_audio: AUDIO_RE.is_match(stderr),
-        chapters: crate::chapters::parse(stderr),
-        audio_tracks: AUDIO_RE.find_iter(stderr).count() as u32,
+    let (mut width, mut height) = (size.as_ref().and_then(|s| s[1].parse::<u32>().ok()), size.as_ref().and_then(|s| s[2].parse::<u32>().ok()));
+    // 手機直拍的影片：檔案裡是橫的畫面加上「旋轉 90°」標記（這條串流的 Side data），FFmpeg 解碼時會自動轉正。
+    // 回報轉正後（看到的）寬高，播放、剪輯、轉檔才不會把直的畫面壓成橫的
+    let block = found.map(|m| {
+        let rest = &stderr[m.end()..];
+        &rest[..rest.find("Stream #").unwrap_or(rest.len())]
+    });
+    let rotation = block.and_then(|b| ROTATION_RE.captures(b)).and_then(|c| c[1].parse::<f64>().ok()).unwrap_or(0.0);
+    if (rotation.abs().round() as i64) % 180 == 90 {
+        std::mem::swap(&mut width, &mut height);
     }
+    ParsedMedia { duration_sec, width, height, fps, has_audio: AUDIO_RE.is_match(stderr), chapters: crate::chapters::parse(stderr), audio_tracks: AUDIO_RE.find_iter(stderr).count() as u32 }
 }
 
 /// 從第 t 秒開始讀 path：`-ss t -i path`（快速跳到附近的關鍵畫面）。
@@ -2348,6 +2353,14 @@ dummy: Immediate exit requested";
         let first3: Vec<&str> = stderr.lines().take(3).collect();
         assert!(!parse_media_info(&first3.join("\n")).has_audio);
         // WebP 動圖：檔頭沒有長度，另外量
+        // 手機直拍：檔案是 1920x1080 加上旋轉標記 → 看到的是 1080x1920；下一條串流的旋轉不算
+        let phone = "  Stream #0:0[0x1](und): Video: h264 (High) (avc1 / 0x31637661), yuv420p(tv, bt709, progressive), 1920x1080, 20000 kb/s, 30 fps\n    Metadata:\n      handler_name    : VideoHandle\n    Side data:\n      displaymatrix: rotation of -90.00 degrees\n  Stream #0:1[0x2](eng): Audio: aac (LC), 48000 Hz, stereo, fltp, 256 kb/s (default)";
+        let m = parse_media_info(phone);
+        assert_eq!((m.width, m.height), (Some(1080), Some(1920)));
+        let upside = phone.replace("-90.00", "180.00");
+        assert_eq!(parse_media_info(&upside).width, Some(1920));
+        let other = "  Stream #0:0: Video: h264, yuv420p, 1920x1080, 30 fps\n  Stream #0:1: Video: mjpeg, 300x300 (attached pic)\n    Side data:\n      displaymatrix: rotation of 90.00 degrees";
+        assert_eq!(parse_media_info(other).width, Some(1920));
         let webp = "Input #0, webp_pipe, from 'a.webp':\n  Duration: N/A, start: 0.000000, bitrate: N/A\n  Stream #0:0: Video: webp_anim, argb, 480x270, 10 fps, 10 tbr, 1k tbn";
         assert_eq!(parse_media_info(webp).duration_sec, None);
         assert_eq!(measure_duration_args("a.webp").join(" "), "-hide_banner -i a.webp -map 0:v:0 -c copy -f null -");
