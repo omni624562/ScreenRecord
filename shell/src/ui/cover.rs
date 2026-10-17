@@ -208,6 +208,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                             None if s.embedded => {
                                 app.thumbs.forget(&video);
                                 app.toast_file(tr!("已存好封面，也寫進影片了", "Cover saved and written into the video"), &png);
+                                app.sync_edited(&video);
                             }
                             None => app.toast_file(trf!("已存好封面 {}", "Cover saved as {}", dialogs::file_name(&png)), &png),
                         }

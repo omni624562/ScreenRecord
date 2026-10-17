@@ -841,6 +841,7 @@ fn run_act(app: &mut UiApp, act: Act) {
                     Ok(()) => {
                         app.thumbs.forget(&path);
                         app.toast(tr!("已設為封面：檔案總管看到的縮圖就是這一格", "Set as cover: File Explorer now shows this frame as the thumbnail"), false);
+                        app.sync_edited(&path);
                     }
                     Err(e) => app.toast(e.message().to_string(), true),
                 }

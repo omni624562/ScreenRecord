@@ -462,6 +462,21 @@ impl UiApp {
         self.toast_with(msg, false, vec![ToastAction::new(tr!("看內容", "Show"), move |app| app.ocr = Some(ocr::Ocr { text: Some(text), lang: String::new() }))]);
     }
 
+    /// 改了影片（封面、影片資訊）之後：「複製」資料夾（Jellyfin 的媒體庫）裡的那一份也換成改好的，並請 Jellyfin 重新讀取
+    pub fn sync_edited(&mut self, path: &str) {
+        let jf = screenrecorder_core::jellyfin::Jellyfin::new(&self.s.jellyfin_url, &self.s.jellyfin_key);
+        let copy_to = self.s.after_copy_to.clone();
+        if copy_to.trim().is_empty() {
+            return;
+        }
+        let video = std::path::PathBuf::from(path);
+        self.spawn(async move { tokio::task::spawn_blocking(move || screenrecorder_core::jellyfin::sync_edited(jf.as_ref(), &copy_to, &video)).await.ok().flatten() }, |app, r| match r {
+            Some(Ok(msg)) => app.toast(msg, false),
+            Some(Err(e)) => app.toast(e, true),
+            None => {}
+        });
+    }
+
     pub fn toast(&mut self, text: impl Into<String>, error: bool) {
         self.toast_with(text, error, vec![]);
     }
