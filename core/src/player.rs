@@ -54,17 +54,31 @@ pub fn fit_size(src_w: u32, src_h: u32, max_w: u32, max_h: u32) -> (u32, u32) {
     (w, h)
 }
 
-fn video_args(path: &str, t: f64, w: u32, h: u32, frames: Option<u32>, keyframes_only: bool) -> Vec<String> {
+/// 連續播放時每秒最多送出幾張：大畫面高張數（手機 4K 60p）解碼、縮小、轉色彩、送到介面都很吃力，
+/// 跟不上時會一直跳張（看起來卡卡的）；預覽用 30 張就夠順
+pub const LIGHT_FPS: f64 = 30.0;
+
+/// 大於 1080p 又超過 30 fps 的影片：連續播放時改用省力的方式（見 LIGHT_FPS）
+pub fn heavy(src_w: u32, src_h: u32, fps: f64) -> bool {
+    (src_w as u64 * src_h as u64) > 1920 * 1080 * 11 / 10 && fps > LIGHT_FPS + 2.0
+}
+
+/// light：省力播放：每秒 LIGHT_FPS 張、解碼略過去區塊濾波（預覽大小看不出差別）、較快的縮小方式
+fn video_args(path: &str, t: f64, w: u32, h: u32, frames: Option<u32>, keyframes_only: bool, light: bool) -> Vec<String> {
     let mut a: Vec<String> = ["-hide_banner", "-loglevel", "error", "-nostdin"].iter().map(|s| s.to_string()).collect();
     if keyframes_only {
         a.extend(["-skip_frame".into(), "nokey".into()]);
+    }
+    if light {
+        a.extend(["-skip_loop_filter".into(), "all".into()]);
     }
     a.extend(crate::args::input_at(path, &format!("{:.3}", t.max(0.0))));
     a.extend(["-an".into(), "-sn".into()]);
     if let Some(n) = frames {
         a.extend(["-frames:v".into(), n.to_string()]);
     }
-    a.extend(["-vf".into(), format!("scale={w}:{h}:flags=bilinear,format=rgba"), "-f".into(), "rawvideo".into(), "-pix_fmt".into(), "rgba".into(), "-".into()]);
+    let vf = if light { format!("fps={},scale={w}:{h}:flags=fast_bilinear,format=rgba", crate::format::num(LIGHT_FPS)) } else { format!("scale={w}:{h}:flags=bilinear,format=rgba") };
+    a.extend(["-vf".into(), vf, "-f".into(), "rawvideo".into(), "-pix_fmt".into(), "rgba".into(), "-".into()]);
     a
 }
 
@@ -98,7 +112,7 @@ fn read_frame(r: &mut impl Read, buf: &mut [u8]) -> bool {
 
 /// 解出時間 t 的一張畫面
 pub fn decode_frame(ffmpeg: &Path, path: &str, t: f64, w: u32, h: u32, keyframes_only: bool) -> Option<Vec<u8>> {
-    let mut child = spawn(ffmpeg, &video_args(path, t, w, h, Some(1), keyframes_only))?;
+    let mut child = spawn(ffmpeg, &video_args(path, t, w, h, Some(1), keyframes_only, false))?;
     let mut out = child.stdout.take()?;
     let mut buf = vec![0u8; (w * h * 4) as usize];
     let ok = read_frame(&mut out, &mut buf);
@@ -153,7 +167,7 @@ fn scrub_frame(sc: &mut Scrub, ffmpeg: &Path, path: &str, fps: f64, idx: i64, w:
         let start = if backward_step { (idx - (SCRUB_BACK_SEC * fps) as i64 + 1).max(0) } else { idx };
         // 從半張前開始找，第一張輸出的就是第 start 張
         let ss = ((start as f64 - 0.5) / fps).max(0.0);
-        let mut args = video_args(path, ss, w, h, None, false);
+        let mut args = video_args(path, ss, w, h, None, false, false);
         let at = args.iter().position(|a| a == "-vf").unwrap_or(args.len());
         args.splice(at..at, ["-fps_mode".to_string(), "cfr".into(), "-r".into(), format!("{fps}")]);
         let mut child = spawn(ffmpeg, &args)?;
@@ -227,6 +241,8 @@ pub struct Player {
     wake: Wake,
     /// 只有聲音（M4A）：不解畫面
     audio_only: bool,
+    /// 大畫面高張數：連續播放時用省力的方式（見 heavy）
+    light: bool,
 }
 
 /// 播放速度可選的範圍
@@ -237,6 +253,7 @@ impl Player {
     /// src_w × src_h：原影片尺寸；解碼成不超過 max_w × max_h 的大小
     pub fn new(ffmpeg: PathBuf, spec: MediaSpec, src_w: u32, src_h: u32, max_w: u32, max_h: u32, wake: Wake) -> Player {
         let (width, height) = fit_size(src_w, src_h, max_w, max_h);
+        let light = heavy(src_w, src_h, spec.fps);
         Player {
             ffmpeg,
             spec,
@@ -249,6 +266,7 @@ impl Player {
             volume: crate::audio_out::volume(1.0),
             wake,
             audio_only: false,
+            light,
         }
     }
 
@@ -430,7 +448,7 @@ impl Player {
         // 開 FFmpeg 在背景做（Windows 上啟動行程要幾十到上百毫秒，不卡住介面）
         let (ffmpeg, spec, children, inner, wake, w, h) = (self.ffmpeg.clone(), self.spec.clone(), self.children.clone(), self.inner.clone(), self.wake.clone(), self.width, self.height);
         let volume = self.volume.clone();
-        let (audio_only, rate) = (self.audio_only, self.inner.lock().unwrap().rate());
+        let (audio_only, light, rate) = (self.audio_only, self.light, self.inner.lock().unwrap().rate());
         std::thread::spawn(move || {
             // 記下子行程以便停止；已經換了一輪（暫停 / 跳到其他時間）就直接結束它
             let register = |mut child: Child| -> bool {
@@ -498,7 +516,7 @@ impl Player {
                 }
             }
             // 連續播放用硬體解碼（大畫面時省很多 CPU）；不支援時 FFmpeg 自動改用軟體解碼
-            let mut args = video_args(&spec.path, from, w, h, None, false);
+            let mut args = video_args(&spec.path, from, w, h, None, false, light);
             args.splice(4..4, ["-hwaccel".to_string(), "auto".into()]);
             let Some(mut child) = spawn(&ffmpeg, &args) else {
                 return;
@@ -507,11 +525,13 @@ impl Player {
             if !register(child) {
                 return;
             }
-            let (fps, duration) = (spec.fps.max(1.0), spec.duration);
+            // 省力播放時每秒只送出 LIGHT_FPS 張：時間依送出的張數計算
+            let (fps, duration) = (if light { LIGHT_FPS } else { spec.fps.max(1.0) }, spec.duration);
             std::thread::spawn(move || {
                 let mut buf = vec![0u8; (w * h * 4) as usize];
                 let mut n: u64 = 0;
                 let waited_for_audio = Instant::now();
+                let mut last_shown = Instant::now();
                 loop {
                     if !read_frame(&mut out, &mut buf) {
                         let mut i = inner.lock().unwrap();
@@ -547,15 +567,17 @@ impl Player {
                         }
                         std::thread::sleep(Duration::from_secs_f64((t - now_t).min(0.02)));
                     }
-                    // 跟不上：已經晚了兩張以上就跳過（不顯示）
+                    // 跟不上：已經晚了兩張以上就跳過（不顯示）；但最多 0.15 秒就要顯示一張，
+                    // 不然解碼一直落後時每一張都「晚了」，畫面會整個停住
                     let late = {
                         let i = inner.lock().unwrap();
                         let now_t = Self::time_of(&i, duration);
                         n > 1 && now_t - t > 2.0 / fps
                     };
-                    if late {
+                    if late && last_shown.elapsed() < Duration::from_millis(150) {
                         continue;
                     }
+                    last_shown = Instant::now();
                     let mut i = inner.lock().unwrap();
                     if i.gen != gen {
                         return;
@@ -594,6 +616,18 @@ pub fn strip_frames(ffmpeg: &Path, path: &str, times: &[f64], w: u32, h: u32, ca
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn heavy_videos_play_lighter() {
+        // 手機 4K 60p（直的、橫的）：省力播放；1080p 60p、4K 30p、一般錄影：照原本的方式
+        assert!(heavy(3840, 2160, 60.0) && heavy(2160, 3840, 59.94));
+        assert!(!heavy(1920, 1080, 60.0) && !heavy(3840, 2160, 30.0) && !heavy(2560, 1440, 30.0));
+        let a = video_args("a.mp4", 1.0, 1280, 720, None, false, true).join(" ");
+        assert!(a.contains("-skip_loop_filter all -ss 1.000 -i a.mp4"), "{a}");
+        assert!(a.contains("fps=30,scale=1280:720:flags=fast_bilinear,format=rgba"), "{a}");
+        let b = video_args("a.mp4", 1.0, 1280, 720, None, false, false).join(" ");
+        assert!(!b.contains("skip_loop_filter") && b.contains("-vf scale=1280:720:flags=bilinear,format=rgba"), "{b}");
+    }
 
     /// 測試影片：每一張畫面的亮度 = 張數 × 8（看得出是第幾張），30 fps、2 秒，有聲音
     fn test_video(dir: &Path) -> Option<(PathBuf, String)> {
