@@ -1225,9 +1225,6 @@ fn entry_menu(ui: &mut egui::Ui, app: &UiApp, e: &LibraryEntry, full: bool, req:
         {
             pick(EntryAction::Tags, req);
         }
-        if ui.button(tr!("做 YouTube 封面圖…", "Make a YouTube cover image…")).clicked() {
-            pick(EntryAction::Cover, req);
-        }
         if let Some(folder) = app.library_folder() {
             let tip = tr!(
                 "複製到「錄完處理 → 複製」的資料夾（同名的覆蓋，連同字幕），有設定 Jellyfin 時通知它",

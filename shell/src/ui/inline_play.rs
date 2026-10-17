@@ -443,10 +443,13 @@ fn controls(i: &mut Inline, ui: &mut egui::Ui) -> bool {
     }
     if i.seeking.is_some() {
         if let Some(pos) = resp.interact_pointer_pos() {
-            player.seek(to_t(pos));
+            player.scrub(to_t(pos));
         }
-        if !resp.is_pointer_button_down_on() && !resp.dragged() && i.seeking.take() == Some(true) {
-            player.play();
+        if !resp.is_pointer_button_down_on() && !resp.dragged() {
+            player.end_scrub();
+            if i.seeking.take() == Some(true) {
+                player.play();
+            }
         }
     }
     // 播放速度
