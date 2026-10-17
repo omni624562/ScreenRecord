@@ -7,11 +7,14 @@
 //! 用法：在介面的 OpenGL 執行緒 MpvPlayer::new 開始播放（先建立 render context 才開檔，
 //! 不然 mpv 開檔時沒有畫面輸出會放棄）→ 每一格 poll()，wants_render() 時 render() 畫到材質的 FBO。
 //! render context 一定要在 OpenGL 執行緒建立與釋放（Drop 也是）。
+//!
+//! 介面執行緒絕對不能等 mpv：mpv 的主執行緒有時在等介面畫下一張畫面，這時同步讀寫屬性（mpv_get_property、
+//! mpv_command）會互相等，整個程式卡住。所以播放中的狀態都用 mpv_observe_property 訂閱、在 poll() 裡從事件收下，
+//! 播放、暫停、跳轉、速度、音量用非同步的 mpv_set_property_async、mpv_command_async 送出（不等回應）。
 
 use crate::player::Wake;
 use std::ffi::{c_char, c_int, c_void, CStr, CString};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 type Handle = *mut c_void;
@@ -48,6 +51,13 @@ struct Event {
 }
 
 #[repr(C)]
+struct EventProperty {
+    name: *const c_char,
+    format: c_int,
+    data: *mut c_void,
+}
+
+#[repr(C)]
 struct EndFile {
     reason: c_int,
     error: c_int,
@@ -60,7 +70,7 @@ const FORMAT_DOUBLE: c_int = 5;
 const EVENT_NONE: c_int = 0;
 const EVENT_END_FILE: c_int = 7;
 const EVENT_FILE_LOADED: c_int = 8;
-const EVENT_PLAYBACK_RESTART: c_int = 21;
+const EVENT_PROPERTY_CHANGE: c_int = 22;
 const END_FILE_REASON_ERROR: c_int = 4;
 const PARAM_API_TYPE: c_int = 1;
 const PARAM_OPENGL_INIT_PARAMS: c_int = 2;
@@ -78,12 +88,11 @@ struct Lib {
     initialize: unsafe extern "C" fn(Handle) -> c_int,
     terminate_destroy: unsafe extern "C" fn(Handle),
     set_option_string: unsafe extern "C" fn(Handle, *const c_char, *const c_char) -> c_int,
-    set_property: unsafe extern "C" fn(Handle, *const c_char, c_int, *mut c_void) -> c_int,
-    get_property: unsafe extern "C" fn(Handle, *const c_char, c_int, *mut c_void) -> c_int,
-    command: unsafe extern "C" fn(Handle, *mut *const c_char) -> c_int,
+    set_property_async: unsafe extern "C" fn(Handle, u64, *const c_char, c_int, *mut c_void) -> c_int,
+    observe_property: unsafe extern "C" fn(Handle, u64, *const c_char, c_int) -> c_int,
+    command_async: unsafe extern "C" fn(Handle, u64, *mut *const c_char) -> c_int,
     wait_event: unsafe extern "C" fn(Handle, f64) -> *mut Event,
     error_string: unsafe extern "C" fn(c_int) -> *const c_char,
-    free: unsafe extern "C" fn(*mut c_void),
     render_create: unsafe extern "C" fn(*mut RenderCtx, Handle, *mut RenderParam) -> c_int,
     render_set_update_callback: unsafe extern "C" fn(RenderCtx, Option<UpdateCb>, *mut c_void),
     render_update: unsafe extern "C" fn(RenderCtx) -> u64,
@@ -113,12 +122,11 @@ impl Lib {
                 initialize: f!("mpv_initialize"),
                 terminate_destroy: f!("mpv_terminate_destroy"),
                 set_option_string: f!("mpv_set_option_string"),
-                set_property: f!("mpv_set_property"),
-                get_property: f!("mpv_get_property"),
-                command: f!("mpv_command"),
+                set_property_async: f!("mpv_set_property_async"),
+                observe_property: f!("mpv_observe_property"),
+                command_async: f!("mpv_command_async"),
                 wait_event: f!("mpv_wait_event"),
                 error_string: f!("mpv_error_string"),
-                free: f!("mpv_free"),
                 render_create: f!("mpv_render_context_create"),
                 render_set_update_callback: f!("mpv_render_context_set_update_callback"),
                 render_update: f!("mpv_render_context_update"),
@@ -160,7 +168,7 @@ fn lib() -> Result<Arc<Lib>, String> {
     if let Some(l) = g.as_ref() {
         return Ok(l.clone());
     }
-    let mut last = format!("找不到 {LIB_NAME}");
+    let mut errors: Vec<String> = Vec::new();
     for p in candidates() {
         // 絕對路徑要檔案存在才試（不讓系統去別的地方找同名的 DLL）
         if p.is_absolute() && !p.is_file() {
@@ -173,10 +181,27 @@ fn lib() -> Result<Arc<Lib>, String> {
                 *g = Some(l.clone());
                 return Ok(l);
             }
-            Err(e) => last = format!("{}：{e}", p.display()),
+            Err(e) => errors.push(format!("{}：{e}", p.display())),
         }
     }
+    let last = if errors.is_empty() { format!("找不到 {LIB_NAME}") } else { errors.join("；") };
+    // 載入失敗的原因寫進記錄檔（同樣的原因只寫一次）：例如缺少其他 DLL、版本太舊
+    let mut logged = LAST_ERROR.lock().unwrap();
+    if *logged != last {
+        crate::info!("[mpv] 無法載入播放元件（改用 FFmpeg 播放）：{last}");
+        logged.clone_from(&last);
+    }
     Err(last)
+}
+
+/// 上一次寫進記錄檔的載入失敗原因
+static LAST_ERROR: Mutex<String> = Mutex::new(String::new());
+
+/// 程式開啟時在背景先載入（DLL 約 100 MB，第一次載入要將近 1 秒，不要等到播放時才卡住畫面）
+pub fn preload() {
+    std::thread::spawn(|| {
+        let _ = lib();
+    });
 }
 
 /// 有 libmpv 可以用嗎（會試著載入）
@@ -207,6 +232,18 @@ pub struct Start {
     pub volume: f32,
 }
 
+/// 播放的狀態（從 mpv 的屬性變更事件收下來；播放、暫停、跳轉時先照要求改，不等 mpv 回應）
+#[derive(Debug, Default)]
+struct State {
+    time: f64,
+    paused: bool,
+    speed: f64,
+    /// 播到最後了（mpv 的 eof-reached）
+    ended: bool,
+    /// 播完已經回報過（take_ended）
+    reported: bool,
+}
+
 /// 一支正在播放的影片
 pub struct MpvPlayer {
     lib: Arc<Lib>,
@@ -215,16 +252,14 @@ pub struct MpvPlayer {
     /// 有新畫面時叫醒介面（render context 的更新通知用）
     wake: *mut Wake,
     duration: f64,
-    /// 最後讀到的時間（剛跳轉、還在載入時讀不到）
-    last_time: Mutex<f64>,
-    ended: AtomicBool,
-    /// 播完已經回報過（take_ended）
-    reported: AtomicBool,
+    st: Mutex<State>,
     /// 開檔失敗（格式不支援…）：介面改用 FFmpeg 播放
     failed: Option<String>,
     loaded: bool,
     /// 已經記下用哪一種解碼（記錄檔，查播放不順用）
     logged_hwdec: bool,
+    hwdec: String,
+    codec: String,
 }
 
 // SAFETY: mpv 的 handle 可以從任何執行緒呼叫；render context 只在介面執行緒使用（見模組說明）
@@ -253,18 +288,16 @@ impl MpvPlayer {
             rc: std::ptr::null_mut(),
             wake: Box::into_raw(Box::new(wake)),
             duration,
-            last_time: Mutex::new(start),
-            ended: AtomicBool::new(false),
-            reported: AtomicBool::new(false),
+            st: Mutex::new(State { time: start, speed: rate, ..Default::default() }),
             failed: None,
             loaded: false,
             logged_hwdec: false,
+            hwdec: String::new(),
+            codec: String::new(),
         };
         let opts: &[(&str, &str)] = &[
             // 畫進介面（render API），不開自己的視窗
             ("vo", vo),
-            // 顯示卡解碼（不支援時自動改用 CPU）
-            ("hwdec", "auto-safe"),
             // 播完停在最後一張（不關掉檔案）
             ("keep-open", "yes"),
             ("idle", "yes"),
@@ -288,6 +321,11 @@ impl MpvPlayer {
         ];
         for (k, v) in opts {
             p.option(k, v);
+        }
+        // 顯示卡解碼，解好的畫面複製回來再交給 OpenGL（不用顯示卡和 OpenGL 之間直接共用畫面：
+        // 那要看驅動程式支援，嵌在別的程式裡容易出問題）；不支援時自動改用 CPU。舊版 mpv 沒有 auto-copy-safe
+        if !p.option("hwdec", "auto-copy-safe") {
+            p.option("hwdec", "auto-safe");
         }
         if gl.is_some_and(|(_, software)| software) {
             // 軟體算的 OpenGL（Mesa llvmpipe）用 mpv 預設的高品質縮放會畫出全黑或只剩綠色：改用最簡單的畫法（也最省力）。
@@ -315,25 +353,36 @@ impl MpvPlayer {
         if let Some((gl, _)) = gl {
             p.init_gl(gl)?;
         }
+        // 播放中要知道的狀態：變了就送事件過來（不用每一格去問、等 mpv 回答）
+        for (name, format) in
+            [("time-pos", FORMAT_DOUBLE), ("pause", FORMAT_FLAG), ("eof-reached", FORMAT_FLAG), ("speed", FORMAT_DOUBLE), ("hwdec-current", FORMAT_STRING), ("video-codec", FORMAT_STRING)]
+        {
+            let n = cstr(name);
+            // SAFETY: 字串在呼叫期間有效
+            unsafe { (p.lib.observe_property)(p.h, 0, n.as_ptr(), format) };
+        }
         p.command(&["loadfile", path])?;
         Ok(p)
     }
 
-    fn option(&self, k: &str, v: &str) {
+    /// 設定選項（開始播放前）；回傳有沒有設定成功
+    fn option(&self, k: &str, v: &str) -> bool {
         let (k, v) = (cstr(k), cstr(v));
         // SAFETY: 字串在呼叫期間有效
         let r = unsafe { (self.lib.set_option_string)(self.h, k.as_ptr(), v.as_ptr()) };
         if r < 0 {
-            crate::info!("[mpv] 設定 {:?} 失敗：{}", k, self.lib.err(r));
+            crate::info!("[mpv] 設定 {:?}={:?} 失敗：{}", k, v, self.lib.err(r));
         }
+        r >= 0
     }
 
+    /// 送出指令，不等執行完
     fn command(&self, args: &[&str]) -> Result<(), String> {
         let owned: Vec<CString> = args.iter().map(|a| cstr(a)).collect();
         let mut ptrs: Vec<*const c_char> = owned.iter().map(|s| s.as_ptr()).collect();
         ptrs.push(std::ptr::null());
-        // SAFETY: 以 NULL 結尾的字串陣列，呼叫期間有效
-        let r = unsafe { (self.lib.command)(self.h, ptrs.as_mut_ptr()) };
+        // SAFETY: 以 NULL 結尾的字串陣列，mpv 立刻複製
+        let r = unsafe { (self.lib.command_async)(self.h, 0, ptrs.as_mut_ptr()) };
         if r < 0 {
             return Err(format!("{}：{}", args.first().unwrap_or(&""), self.lib.err(r)));
         }
@@ -343,45 +392,15 @@ impl MpvPlayer {
     fn set_flag(&self, name: &str, v: bool) {
         let n = cstr(name);
         let mut f: c_int = v.into();
-        // SAFETY: MPV_FORMAT_FLAG 用 int
-        unsafe { (self.lib.set_property)(self.h, n.as_ptr(), FORMAT_FLAG, &mut f as *mut c_int as *mut c_void) };
+        // SAFETY: MPV_FORMAT_FLAG 用 int；mpv 立刻複製，不等設定完
+        unsafe { (self.lib.set_property_async)(self.h, 0, n.as_ptr(), FORMAT_FLAG, &mut f as *mut c_int as *mut c_void) };
     }
 
     fn set_double(&self, name: &str, v: f64) {
         let n = cstr(name);
         let mut d = v;
-        // SAFETY: MPV_FORMAT_DOUBLE 用 double
-        unsafe { (self.lib.set_property)(self.h, n.as_ptr(), FORMAT_DOUBLE, &mut d as *mut f64 as *mut c_void) };
-    }
-
-    fn get_flag(&self, name: &str) -> Option<bool> {
-        let n = cstr(name);
-        let mut f: c_int = 0;
-        // SAFETY: 同上
-        let r = unsafe { (self.lib.get_property)(self.h, n.as_ptr(), FORMAT_FLAG, &mut f as *mut c_int as *mut c_void) };
-        (r >= 0).then_some(f != 0)
-    }
-
-    fn get_string(&self, name: &str) -> Option<String> {
-        let n = cstr(name);
-        let mut p: *mut c_char = std::ptr::null_mut();
-        // SAFETY: MPV_FORMAT_STRING 回傳要用 mpv_free 釋放的字串
-        let r = unsafe { (self.lib.get_property)(self.h, n.as_ptr(), FORMAT_STRING, &mut p as *mut *mut c_char as *mut c_void) };
-        if r < 0 || p.is_null() {
-            return None;
-        }
-        // SAFETY: 同上
-        let s = unsafe { CStr::from_ptr(p).to_string_lossy().into_owned() };
-        unsafe { (self.lib.free)(p as *mut c_void) };
-        Some(s)
-    }
-
-    fn get_double(&self, name: &str) -> Option<f64> {
-        let n = cstr(name);
-        let mut d = 0.0f64;
-        // SAFETY: 同上
-        let r = unsafe { (self.lib.get_property)(self.h, n.as_ptr(), FORMAT_DOUBLE, &mut d as *mut f64 as *mut c_void) };
-        (r >= 0).then_some(d)
+        // SAFETY: MPV_FORMAT_DOUBLE 用 double；同上
+        unsafe { (self.lib.set_property_async)(self.h, 0, n.as_ptr(), FORMAT_DOUBLE, &mut d as *mut f64 as *mut c_void) };
     }
 
     /// 在介面的 OpenGL 執行緒（context 是目前的）建立 render context
@@ -408,19 +427,40 @@ impl MpvPlayer {
         Ok(())
     }
 
-    /// 處理 mpv 的事件（每一格呼叫）：開檔失敗、播完
+    /// 處理 mpv 的事件（每一格呼叫，不等待）：屬性變更、開檔失敗、播完
     pub fn poll(&mut self) {
+        let mut pause_now = false;
         loop {
             // SAFETY: 不等待；回傳的事件在下一次呼叫前有效
             let ev = unsafe { &*(self.lib.wait_event)(self.h, 0.0) };
             match ev.event_id {
                 EVENT_NONE => break,
                 EVENT_FILE_LOADED => self.loaded = true,
-                EVENT_PLAYBACK_RESTART if !self.logged_hwdec => {
-                    self.logged_hwdec = true;
-                    let hw = self.get_string("hwdec-current").filter(|h| !h.is_empty() && h != "no");
-                    let codec = self.get_string("video-codec").unwrap_or_default();
-                    crate::info!("[mpv] 解碼：{}（{codec}）", hw.map(|h| format!("顯示卡 {h}")).unwrap_or_else(|| "CPU".into()));
+                EVENT_PROPERTY_CHANGE if !ev.data.is_null() => {
+                    // SAFETY: PROPERTY_CHANGE 的 data 是 mpv_event_property；值的型別照 format
+                    let prop = unsafe { &*(ev.data as *const EventProperty) };
+                    let name = unsafe { CStr::from_ptr(prop.name) }.to_bytes();
+                    if prop.data.is_null() {
+                        continue;
+                    }
+                    let mut st = self.st.lock().unwrap();
+                    match (name, prop.format) {
+                        (b"time-pos", FORMAT_DOUBLE) => st.time = unsafe { *(prop.data as *const f64) },
+                        (b"speed", FORMAT_DOUBLE) => st.speed = unsafe { *(prop.data as *const f64) },
+                        (b"pause", FORMAT_FLAG) => st.paused = unsafe { *(prop.data as *const c_int) } != 0,
+                        (b"eof-reached", FORMAT_FLAG) => {
+                            let eof = unsafe { *(prop.data as *const c_int) } != 0;
+                            if eof && !st.ended {
+                                // 播完：跟 FFmpeg 播放一樣停在最後、暫停
+                                st.ended = true;
+                                st.paused = true;
+                                pause_now = true;
+                            }
+                        }
+                        (b"video-codec", FORMAT_STRING) => self.codec = unsafe { CStr::from_ptr(*(prop.data as *const *const c_char)) }.to_string_lossy().into_owned(),
+                        (b"hwdec-current", FORMAT_STRING) => self.hwdec = unsafe { CStr::from_ptr(*(prop.data as *const *const c_char)) }.to_string_lossy().into_owned(),
+                        _ => {}
+                    }
                 }
                 EVENT_END_FILE => {
                     // SAFETY: END_FILE 的 data 是 mpv_event_end_file
@@ -434,9 +474,14 @@ impl MpvPlayer {
                 _ => {}
             }
         }
-        if self.get_flag("eof-reached") == Some(true) && !self.ended.swap(true, Ordering::Relaxed) {
-            // 播完：跟 FFmpeg 播放一樣停在最後、暫停
+        if pause_now {
             self.set_flag("pause", true);
+        }
+        // 用哪一種解碼（兩個屬性的事件先後不一定）
+        if !self.logged_hwdec && !self.hwdec.is_empty() && !self.codec.is_empty() {
+            self.logged_hwdec = true;
+            let how = if self.hwdec == "no" { "CPU".to_string() } else { format!("顯示卡 {}", self.hwdec) };
+            crate::info!("[mpv] 解碼：{how}（{}）", self.codec);
         }
     }
 
@@ -484,60 +529,75 @@ impl MpvPlayer {
 
     /// 目前播到幾秒
     pub fn time(&self) -> f64 {
-        let mut last = self.last_time.lock().unwrap();
-        if let Some(t) = self.get_double("time-pos") {
-            *last = t;
-        }
-        last.clamp(0.0, self.duration.max(0.0))
+        self.st.lock().unwrap().time.clamp(0.0, self.duration.max(0.0))
     }
 
     pub fn is_playing(&self) -> bool {
-        self.get_flag("pause") == Some(false) && !self.ended.load(Ordering::Relaxed)
+        let st = self.st.lock().unwrap();
+        !st.paused && !st.ended
     }
 
     /// 播完了（只回報一次）
     pub fn take_ended(&self) -> bool {
-        self.ended.load(Ordering::Relaxed) && !self.reported.swap(true, Ordering::Relaxed)
-    }
-
-    /// 重新開始播放或跳轉：之後播完要再回報
-    fn rearm(&self) {
-        self.ended.store(false, Ordering::Relaxed);
-        self.reported.store(false, Ordering::Relaxed);
+        let mut st = self.st.lock().unwrap();
+        let first = st.ended && !st.reported;
+        st.reported |= st.ended;
+        first
     }
 
     pub fn play(&self) {
-        // 播完之後再按播放：從頭開始
-        if self.ended.load(Ordering::Relaxed) {
-            self.rearm();
+        let ended = {
+            let mut st = self.st.lock().unwrap();
+            let ended = st.ended;
+            if ended {
+                // 播完之後再按播放：從頭開始
+                st.ended = false;
+                st.reported = false;
+                st.time = 0.0;
+            }
+            st.paused = false;
+            ended
+        };
+        if ended {
             let _ = self.command(&["seek", "0", "absolute+exact"]);
         }
         self.set_flag("pause", false);
     }
 
     pub fn pause(&self) {
+        self.st.lock().unwrap().paused = true;
         self.set_flag("pause", true);
     }
 
     pub fn seek(&self, t: f64) {
         let t = t.clamp(0.0, self.duration.max(0.0));
-        *self.last_time.lock().unwrap() = t;
-        self.rearm();
+        {
+            let mut st = self.st.lock().unwrap();
+            st.time = t;
+            st.ended = false;
+            st.reported = false;
+        }
         let _ = self.command(&["seek", &format!("{t:.3}"), "absolute+exact"]);
     }
 
     pub fn set_rate(&self, rate: f64) {
+        self.st.lock().unwrap().speed = rate;
         self.set_double("speed", rate);
     }
 
     pub fn rate(&self) -> f64 {
-        self.get_double("speed").unwrap_or(1.0)
+        self.st.lock().unwrap().speed
     }
 
     pub fn set_volume(&self, v: f32) {
         self.set_double("volume", (v.clamp(0.0, 1.0) * 100.0) as f64);
     }
 }
+
+/// 在背景結束 mpv 用（handle 可以在任何執行緒使用）
+struct SendHandle(Handle);
+// SAFETY: 同上
+unsafe impl Send for SendHandle {}
 
 impl Drop for MpvPlayer {
     fn drop(&mut self) {
@@ -546,9 +606,15 @@ impl Drop for MpvPlayer {
             if !self.rc.is_null() {
                 (self.lib.render_free)(self.rc);
             }
-            (self.lib.terminate_destroy)(self.h);
             drop(Box::from_raw(self.wake));
         }
+        // 結束 mpv 要等它關掉檔案、聲音：在背景做，不卡住介面
+        let (lib, h) = (self.lib.clone(), SendHandle(self.h));
+        std::thread::spawn(move || {
+            let h = h;
+            // SAFETY: handle 之後不再使用
+            unsafe { (lib.terminate_destroy)(h.0) };
+        });
     }
 }
 

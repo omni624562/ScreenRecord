@@ -1,18 +1,20 @@
 //! 主畫面內播放：按「最近錄影」卡片的播放鍵，影片（或錄音）就在即時預覽的位置播放，看完按「回到錄影畫面」、Esc 或點範圍分頁回到即時預覽。
 //! 外框與標籤用藍色（錄影範圍是紅色），一看就知道是在播放。只放基本控制（播放、進度、速度、音量、全螢幕）；
 //! 要用其他功能（章節、擷取這一格、設為封面…）按「在播放器開啟」，從目前的位置接著播。
-//! 開始錄影（含倒數）時自動停止播放。
+//! 開始錄影（含倒數）時自動停止播放。有 mpv 播放元件時用 mpv 播放（見 playback.rs），沒有時用 FFmpeg 解碼。
 
+use super::playback::{self, Playback};
 use super::theme::{self, Btn, Icon};
 use super::UiApp;
 use eframe::egui::{self, pos2, vec2, Align, Color32, CornerRadius, Key, Layout, Pos2, Rect, RichText, Sense, Stroke, StrokeKind, TextureHandle, TextureOptions, UiBuilder, Vec2};
 use screenrecorder_core::format::{short_clock, speed_label};
 use screenrecorder_core::library::is_audio_name;
+use screenrecorder_core::mpv::{MpvPlayer, Start};
 use screenrecorder_core::player::{MediaSpec, Player};
 use screenrecorder_core::types::LibraryEntry;
 use screenrecorder_core::{tr, trf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 /// 解碼的最大尺寸（預覽區不大，720p 就夠清楚）
 const DECODE_MAX: (u32, u32) = (1280, 720);
@@ -22,11 +24,17 @@ const RATES: [f64; 5] = [0.5, 1.0, 1.25, 1.5, 2.0];
 const BAR_H: f32 = 36.0;
 /// 載入順序：切換很快時丟掉舊的結果
 static SEQ: AtomicU64 = AtomicU64::new(0);
+/// mpv 播不了的檔案：改用 FFmpeg 播放
+static NO_MPV: Mutex<Option<String>> = Mutex::new(None);
 
 pub struct Inline {
     pub entry: LibraryEntry,
-    player: Option<Player>,
+    player: Option<Playback>,
     tex: Option<TextureHandle>,
+    /// mpv 畫好第一張畫面之後：共用材質（UiApp::inline_surface）的 id
+    mpv_tex: Option<egui::TextureId>,
+    /// mpv 要畫多大（上一次顯示的大小，像素）
+    video_px: [u32; 2],
     size: Vec2,
     /// 拖曳進度列時暫停，放開後若原本在播放就繼續
     seeking: Option<bool>,
@@ -85,6 +93,8 @@ pub fn open(app: &mut UiApp, entry: LibraryEntry) {
         entry: entry.clone(),
         player: None,
         tex: None,
+        mpv_tex: None,
+        video_px: [0, 0],
         size: Vec2::ZERO,
         seeking: None,
         volume,
@@ -120,6 +130,8 @@ pub fn open(app: &mut UiApp, entry: LibraryEntry) {
             }
             let Some(ffmpeg) = app.core.ffmpeg_path() else { return };
             let ctx = app.ctx.clone();
+            let gl = app.proc_address.clone().filter(|_| app.s.use_mpv && app.gl.is_some() && screenrecorder_core::mpv::available());
+            let software_gl = app.gl.as_ref().is_some_and(|g| playback::software_gl(g));
             let Some(i) = app.inline.as_mut() else { return };
             i.loading = false;
             let Some(m) = media.filter(|m| m.duration_sec.is_some_and(|d| d > 0.0)) else {
@@ -133,11 +145,22 @@ pub fn open(app: &mut UiApp, entry: LibraryEntry) {
             let wake = Arc::new(move || c.request_repaint());
             let audio = is_audio_name(&m.name) || screenrecorder_core::after_record::is_audio_recording(&m.path) || m.width.is_none();
             i.sound_only = audio;
-            let player = if audio { Player::new_audio(ffmpeg.clone(), spec, wake) } else { Player::new(ffmpeg.clone(), spec, w, h, DECODE_MAX.0, DECODE_MAX.1, wake) };
-            player.set_volume(i.volume_now());
-            player.play();
             i.size = vec2(w as f32, h as f32);
-            i.player = Some(player);
+            // 有 libmpv 就用 mpv 播；聲音、mpv 播不了的檔案用 FFmpeg
+            let no_mpv = NO_MPV.lock().unwrap().as_deref() == Some(m.path.as_str());
+            let mpv = gl.filter(|_| !audio && !no_mpv).and_then(|gl| {
+                MpvPlayer::new(&m.path, spec.duration, Start { at: 0.0, rate: 1.0, volume: i.volume_now() }, wake.clone(), &gl, software_gl)
+                    .map_err(|e| screenrecorder_core::info!("[主畫面播放] 無法用 mpv 播放，改用 FFmpeg：{e}"))
+                    .ok()
+            });
+            if let Some(p) = mpv {
+                i.player = Some(Playback::Mpv { p, has_audio: spec.has_audio });
+            } else {
+                let player = if audio { Player::new_audio(ffmpeg.clone(), spec, wake) } else { Player::new(ffmpeg.clone(), spec, w, h, DECODE_MAX.0, DECODE_MAX.1, wake) };
+                player.set_volume(i.volume_now());
+                player.play();
+                i.player = Some(Playback::Ff(player));
+            }
             // 錄音：在背景讀波形
             if audio {
                 let (path, cancel) = (m.path.clone(), i.cancel.clone());
@@ -189,7 +212,7 @@ pub fn tick(app: &mut UiApp, ctx: &egui::Context) {
             p.pause();
         }
     }
-    if let Some(f) = i.player.as_ref().and_then(|p| p.take_frame()) {
+    if let Some(f) = i.player.as_ref().and_then(|p| if let Playback::Ff(p) = p { p.take_frame() } else { None }) {
         let img = egui::ColorImage::from_rgba_unmultiplied([f.width as usize, f.height as usize], &f.rgba);
         match &mut i.tex {
             Some(t) => t.set(img, TextureOptions::LINEAR),
@@ -204,11 +227,34 @@ pub fn tick(app: &mut UiApp, ctx: &egui::Context) {
     }
 }
 
-fn toggle(p: &Player) {
+/// 每一格畫面開始時（OpenGL context 是目前的）：mpv 有新畫面就畫到材質；mpv 播不了就改用 FFmpeg 重新開
+pub fn render(app: &mut UiApp, frame: &mut eframe::Frame) {
+    let Some(i) = app.inline.as_mut() else { return };
+    let Some(Playback::Mpv { p, .. }) = i.player.as_mut() else { return };
+    let size = if i.video_px[0] > 0 {
+        i.video_px
+    } else {
+        let (w, h) = screenrecorder_core::player::fit_size(i.size.x as u32, i.size.y as u32, DECODE_MAX.0, DECODE_MAX.1);
+        [w, h]
+    };
+    match playback::render_mpv(app.gl.as_ref(), &mut app.inline_surface, frame, p, size) {
+        Ok(Some(id)) => i.mpv_tex = Some(id),
+        Ok(None) => {}
+        Err(e) => {
+            screenrecorder_core::info!("[主畫面播放] mpv 無法播放，改用 FFmpeg：{e}");
+            let entry = i.entry.clone();
+            *NO_MPV.lock().unwrap() = Some(entry.media.path.clone());
+            app.inline = None;
+            open(app, entry);
+        }
+    }
+}
+
+fn toggle(p: &Playback) {
     if p.is_playing() {
         p.pause();
     } else {
-        if p.time() >= p.spec().duration - 0.05 {
+        if p.time() >= p.duration() - 0.05 {
             p.seek(0.0);
         }
         p.play();
@@ -251,7 +297,7 @@ fn keyboard(app: &mut UiApp, ctx: &egui::Context) {
     }
     if left || right {
         let d = if right { 5.0 } else { -5.0 };
-        p.seek((p.time() + d).clamp(0.0, p.spec().duration));
+        p.seek((p.time() + d).clamp(0.0, p.duration()));
     }
 }
 
@@ -268,15 +314,18 @@ pub fn show(app: &mut UiApp, ui: &mut egui::Ui, area: Rect) {
     let mut shown = stage;
     if audio {
         wave_view(i, &painter, stage, p);
-    } else if let Some(tex) = &i.tex {
-        let src = if i.size.x > 0.0 { i.size } else { tex.size_vec2() };
+    } else if let Some((id, size, uv)) = i.tex.as_ref().map(|t| (t.id(), t.size_vec2(), Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)))).or(i.mpv_tex.map(|id| (id, i.size, playback::mpv_uv()))) {
+        let src = if i.size.x > 0.0 { i.size } else { size };
         let k = (stage.width() / src.x).min(stage.height() / src.y);
         shown = Rect::from_center_size(stage.center(), src * k);
-        painter.image(tex.id(), shown, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+        painter.image(id, shown, uv, Color32::WHITE);
+        // mpv 照顯示的大小（像素）畫
+        let ppp = ui.ctx().pixels_per_point();
+        i.video_px = [(shown.width() * ppp).round() as u32, (shown.height() * ppp).round() as u32];
     }
     let msg = if let Some(e) = &i.error {
         Some(e.clone())
-    } else if i.loading || (!audio && i.tex.is_none()) {
+    } else if i.loading || (!audio && i.tex.is_none() && i.mpv_tex.is_none()) {
         Some(tr!("讀取中…", "Loading…").to_string())
     } else {
         None
@@ -344,7 +393,7 @@ fn wave_view(i: &Inline, painter: &egui::Painter, stage: Rect, p: &theme::Pal) {
     };
     let r = stage.shrink2(vec2(24.0, stage.height() * 0.22));
     let n = (r.width() / 3.0).max(1.0) as usize;
-    let dur = i.player.as_ref().map_or(1.0, |pl| pl.spec().duration.max(0.001));
+    let dur = i.player.as_ref().map_or(1.0, |pl| pl.duration().max(0.001));
     let t = i.player.as_ref().map_or(0.0, |pl| pl.time());
     let per = w.len() as f64 / n as f64;
     for k in 0..n {
@@ -368,7 +417,7 @@ fn controls(i: &mut Inline, ui: &mut egui::Ui) -> bool {
         return false;
     };
     let playing = player.is_playing();
-    let dur = player.spec().duration.max(0.001);
+    let dur = player.duration().max(0.001);
     let t = player.time().min(dur);
     let tip = if playing { tr!("暫停（空白鍵）", "Pause (Space)") } else { tr!("播放（空白鍵）", "Play (Space)") };
     if Btn::icon_only(if playing { Icon::Pause } else { Icon::Play }).small().tooltip(tip).show(ui).clicked() {
@@ -414,7 +463,7 @@ fn controls(i: &mut Inline, ui: &mut egui::Ui) -> bool {
         });
     });
     // 音量
-    let has_audio = player.spec().has_audio;
+    let has_audio = player.has_audio();
     let tip = if !has_audio {
         tr!("沒有聲音", "No audio")
     } else if i.muted {

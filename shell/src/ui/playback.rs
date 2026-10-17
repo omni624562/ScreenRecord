@@ -1,4 +1,4 @@
-//! 檢視器的影片播放：有 libmpv 時用 mpv（畫面直接畫進 OpenGL 材質，跟 Windows 的播放器一樣順），
+//! 檢視器與主畫面內播放的影片：有 libmpv 時用 mpv（畫面直接畫進 OpenGL 材質，跟 Windows 的播放器一樣順），
 //! 沒有或 mpv 播不了時用 FFmpeg 解碼（core::player）。
 
 use eframe::egui;
@@ -89,6 +89,26 @@ impl Playback {
             Playback::Mpv { has_audio, .. } => *has_audio,
         }
     }
+}
+
+/// 每一格開始時（OpenGL context 是目前的）：處理 mpv 的事件，有新畫面就畫到 surface（第一次用時建立）。
+/// size：要畫多大（像素）；回傳畫好的材質（還沒有畫面時 None）。mpv 播不了時回傳錯誤，呼叫的地方改用 FFmpeg
+pub fn render_mpv(gl: Option<&Arc<glow::Context>>, surface: &mut Option<VideoSurface>, frame: &mut eframe::Frame, p: &mut MpvPlayer, size: [u32; 2]) -> Result<Option<egui::TextureId>, String> {
+    p.poll();
+    if let Some(e) = p.failed() {
+        return Err(e.to_string());
+    }
+    let Some(gl) = gl else { return Err("沒有 OpenGL".into()) };
+    if surface.is_none() {
+        *surface = Some(VideoSurface::new(gl, frame)?);
+    }
+    let s = surface.as_mut().expect("剛建立");
+    Ok(s.draw(p, size)?.then_some(s.id))
+}
+
+/// mpv 畫在材質上是上下顛倒的（不顛倒時直拍的影片在某些 mpv 版本畫不出來）：顯示時用這個 uv 翻回來
+pub fn mpv_uv() -> egui::Rect {
+    egui::Rect::from_min_max(egui::pos2(0.0, 1.0), egui::pos2(1.0, 0.0))
 }
 
 /// OpenGL 是軟體算的嗎（沒有顯示卡的虛擬機器：Mesa llvmpipe / softpipe、Windows 的 GDI Generic）

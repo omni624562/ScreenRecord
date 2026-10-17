@@ -207,6 +207,8 @@ pub struct UiApp {
     pub gl: Option<Arc<eframe::glow::Context>>,
     pub proc_address: Option<screenrecorder_core::mpv::ProcAddress>,
     pub video_surface: Option<playback::VideoSurface>,
+    /// 主畫面內播放用的（和檢視器分開：檢視器蓋在上面時主畫面的播放只是暫停）
+    pub inline_surface: Option<playback::VideoSurface>,
     /// 主畫面內播放（最近錄影的播放鍵）
     pub inline: Option<inline_play::Inline>,
     /// 文字辨識的結果
@@ -320,6 +322,7 @@ impl UiApp {
             gl: cc.gl.clone(),
             proc_address: cc.get_proc_address.clone(),
             video_surface: None,
+            inline_surface: None,
             inline: None,
             ocr: None,
             meter: None,
@@ -1213,6 +1216,7 @@ impl eframe::App for UiApp {
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         viewer::render(self, frame);
+        inline_play::render(self, frame);
         // 關到系統匣（視窗隱藏）時什麼都不畫：eframe 只看「縮小 / 被蓋住」判斷看不看得到，
         // 隱藏的視窗仍會一直呼叫這裡；畫主畫面會重新開始即時預覽，背景就一直有 FFmpeg 在擷取桌面
         if !self.visible {
