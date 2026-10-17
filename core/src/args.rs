@@ -1697,6 +1697,14 @@ pub fn parse_creation_time(stderr: &str) -> Option<std::time::SystemTime> {
     (t.timestamp() > 86_400).then(|| t.with_timezone(&chrono::Utc).into())
 }
 
+/// 第一條影片串流的旋轉標記（FFmpeg 顯示的度數，逆時針為正；手機直拍的影片是 ±90）：沒有標記時 0，沒有影片串流時 None
+pub fn parse_rotation(stderr: &str) -> Option<f64> {
+    let m = VIDEO_RE.find(stderr)?;
+    let rest = &stderr[m.end()..];
+    let block = &rest[..rest.find("Stream #").unwrap_or(rest.len())];
+    Some(ROTATION_RE.captures(block).and_then(|c| c[1].parse::<f64>().ok()).unwrap_or(0.0))
+}
+
 /// 解析 `ffmpeg -i file` 的 stderr：長度、解析度、fps、有無聲音
 pub fn parse_media_info(stderr: &str) -> ParsedMedia {
     let duration_sec = DURATION_RE.captures(stderr).map(|d| d[1].parse::<f64>().unwrap_or(0.0) * 3600.0 + d[2].parse::<f64>().unwrap_or(0.0) * 60.0 + d[3].parse::<f64>().unwrap_or(0.0));
@@ -1707,12 +1715,7 @@ pub fn parse_media_info(stderr: &str) -> ParsedMedia {
     let (mut width, mut height) = (size.as_ref().and_then(|s| s[1].parse::<u32>().ok()), size.as_ref().and_then(|s| s[2].parse::<u32>().ok()));
     // 手機直拍的影片：檔案裡是橫的畫面加上「旋轉 90°」標記（這條串流的 Side data），FFmpeg 解碼時會自動轉正。
     // 回報轉正後（看到的）寬高，播放、剪輯、轉檔才不會把直的畫面壓成橫的
-    let block = found.map(|m| {
-        let rest = &stderr[m.end()..];
-        &rest[..rest.find("Stream #").unwrap_or(rest.len())]
-    });
-    let rotation = block.and_then(|b| ROTATION_RE.captures(b)).and_then(|c| c[1].parse::<f64>().ok()).unwrap_or(0.0);
-    if (rotation.abs().round() as i64) % 180 == 90 {
+    if (parse_rotation(stderr).unwrap_or(0.0).abs().round() as i64) % 180 == 90 {
         std::mem::swap(&mut width, &mut height);
     }
     ParsedMedia { duration_sec, width, height, fps, has_audio: AUDIO_RE.is_match(stderr), chapters: crate::chapters::parse(stderr), audio_tracks: AUDIO_RE.find_iter(stderr).count() as u32 }
