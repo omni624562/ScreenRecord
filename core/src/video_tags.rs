@@ -42,7 +42,8 @@ pub async fn read(ffmpeg: &Path, video: &str) -> Result<HashMap<String, String>>
         crate::info!("[影片資訊] 讀取 {video} 失敗：{}", r.stderr.trim());
         return Err(Error::other(tr!("讀不到這支影片的資訊", "Couldn't read this video's details")));
     }
-    let all = parse_ffmetadata(&r.stdout);
+    // MKV、WebM 存成大寫（ARTIST、COMMENT）：不分大小寫
+    let all: HashMap<String, String> = parse_ffmetadata(&r.stdout).into_iter().map(|(k, v)| (k.to_ascii_lowercase(), v)).collect();
     Ok(fields().iter().map(|f| (f.key.to_string(), all.get(f.key).cloned().unwrap_or_default())).collect())
 }
 
@@ -131,6 +132,8 @@ mod tests {
         assert_eq!(m["encoder"], "Lavf60");
         assert_eq!(m.get("TIMEBASE"), None, "章節的內容不算");
         assert_eq!(m.len(), 5);
+        // MKV、WebM 的欄位是大寫
+        assert_eq!(parse_ffmetadata(";FFMETADATA1\nARTIST=王小明\n")["ARTIST"], "王小明");
     }
 
     #[test]

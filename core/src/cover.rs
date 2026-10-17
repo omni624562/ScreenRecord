@@ -242,7 +242,7 @@ pub fn can_embed(video: &str) -> bool {
     lower.ends_with(".mp4") || lower.ends_with(".m4v") || lower.ends_with(".mov")
 }
 
-/// 把 PNG 寫進影片當封面（先寫到暫存檔，成功才換掉原檔，修改時間保留）；失敗時回傳給使用者看的原因
+/// 把圖檔（PNG、JPEG）寫進影片當封面（先寫到暫存檔，成功才換掉原檔，修改時間保留）；失敗時回傳給使用者看的原因
 pub async fn embed_png(ffmpeg: Option<&Path>, video: &str, png: &Path) -> std::result::Result<(), String> {
     if !can_embed(video) {
         return Err(tr!("只有 MP4 影片可以寫入封面", "Only MP4 videos can have a cover written into them").into());
@@ -254,6 +254,29 @@ pub async fn embed_png(ffmpeg: Option<&Path>, video: &str, png: &Path) -> std::r
     rewrite_in_place(ffmpeg, video, |tmp| embed_args(video, &png, tmp)).await?;
     crate::info!("[封面] 已寫進 {video}");
     Ok(())
+}
+
+/// 取出 from 的封面（有設定過才有）存成 JPEG，給加速版、壓縮另存時帶上封面用。
+/// width：縮到這個寬度以內（和輸出一樣寬；0 = 不縮）。回傳暫存檔與它的大小；沒有封面時 None
+pub async fn extract_cover(ffmpeg: &Path, from: &str, to: &Path, width: i32) -> Option<(PathBuf, u64)> {
+    if !can_embed(from) || !can_embed(&to.display().to_string()) {
+        return None;
+    }
+    // 暫存檔放在輸出旁邊（隱藏檔名，用完就刪）
+    let jpg = to.with_file_name(format!(".{}.cover-tmp.jpg", to.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default()));
+    let scale = if width > 0 { format!("scale='min({width},iw)':-2") } else { "null".into() };
+    // 0:v 去掉 0:V 剩下的就是封面圖
+    let args = ["-hide_banner", "-loglevel", "error", "-i", from, "-map", "0:v", "-map", "-0:V", "-frames:v", "1", "-vf", &scale, "-q:v", "3", "-y"];
+    let mut args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+    args.push(jpg.display().to_string());
+    let r = crate::process::run(ffmpeg, &args, Duration::from_secs(30)).await;
+    match std::fs::metadata(&jpg) {
+        Ok(m) if r.code == 0 && m.len() > 0 => Some((jpg, m.len())),
+        _ => {
+            let _ = std::fs::remove_file(&jpg);
+            None
+        }
+    }
 }
 
 /// 用 FFmpeg 改寫影片（只複製串流）：args 拿暫存檔路徑產生參數，先寫到暫存檔，成功才換掉原檔；

@@ -129,7 +129,11 @@ impl Exporter {
         let src_w = info.width.map(|x| x as i32);
         let scaled = w > 0 && src_w.is_some_and(|sw| w < sw);
         let out_sec = info.duration_sec.unwrap_or(0.0) / speed;
-        let kbps = limit.then(|| crate::args::size_bitrate(max_mb * 1024.0 * 1024.0, out_sec, if with_audio { crate::args::SMALL_AUDIO_KBPS } else { 0 }));
+        // 畫面沒變：原影片有封面就帶上（縮到和輸出一樣寬）；壓縮到指定大小時先扣掉封面的大小
+        let cover = crate::cover::extract_cover(&ffmpeg, source, &output, if scaled { w } else { 0 }).await;
+        let budget = max_mb * 1024.0 * 1024.0 - cover.as_ref().map(|c| c.1 as f64).unwrap_or(0.0);
+        let cover = cover.map(|c| c.0);
+        let kbps = limit.then(|| crate::args::size_bitrate(budget, out_sec, if with_audio { crate::args::SMALL_AUDIO_KBPS } else { 0 }));
         let mut args = if webm {
             crate::args::webm_export_args(source, &output.display().to_string(), speed, fps, with_audio, Some(w), src_w, kbps)?
         } else {
@@ -145,7 +149,7 @@ impl Exporter {
             if scaled { format!("，寬 {w}") } else { String::new() },
             if limit { format!("，{} MB 以內", num(max_mb)) } else { String::new() }
         );
-        self.run_with_cleanup(ExportKind::Speed, &ffmpeg, args, source, &output, speed, out_sec, &note, Finish { cleanup, replace: None, on_saved: None, cwd: None })
+        self.run_with_cleanup(ExportKind::Speed, &ffmpeg, args, source, &output, speed, out_sec, &note, Finish { cleanup, replace: None, on_saved: None, cwd: None, cover })
     }
 
     /// 動圖：GIF 或 WebP（可同時加速；無聲音）
@@ -226,7 +230,7 @@ impl Exporter {
         let mut args = crate::args::merge_args(&inputs, &output.display().to_string(), w, h, fps, &enc);
         crate::args::drop_chapters(&mut args);
         let note = format!("合併 {} 支錄影", inputs.len());
-        self.run_with_cleanup(ExportKind::Merge, &ffmpeg, args, &list[0].0, &output, 1.0, total, &note, Finish { cleanup: None, replace: None, on_saved: None, cwd: None })
+        self.run_with_cleanup(ExportKind::Merge, &ffmpeg, args, &list[0].0, &output, 1.0, total, &note, Finish { cleanup: None, replace: None, on_saved: None, cwd: None, cover: None })
     }
 
     /// 轉成 MP4（MOV、MKV… 或拖進來的影片）：存到 dir（None = 和原檔同一個資料夾），同名時加 _2；原檔不動。
@@ -544,7 +548,7 @@ impl Exporter {
             + &if whole > 1.0 { format!("，整支 {} 倍速", crate::format::speed_label(whole)) } else { String::new() };
         let follow = matches!(vertical, Some(VerticalInput::Follow { .. }));
         let cwd = (cursor.is_some() || follow || more.stamp.is_some()).then(|| temp.clone()).flatten();
-        let finish = Finish { cleanup: temp, replace: target.map(PathBuf::from), on_saved, cwd };
+        let finish = Finish { cleanup: temp, replace: target.map(PathBuf::from), on_saved, cwd, cover: None };
         self.run_with_cleanup(ExportKind::Cut, &ffmpeg, args, source, &output, 1.0, length, &note, finish)
     }
 
@@ -590,7 +594,7 @@ impl Exporter {
     /// output：FFmpeg 寫入的檔案；finish：結束後的處理（見 Finish）
     #[allow(clippy::too_many_arguments)]
     fn run_with_cleanup(&self, kind: ExportKind, ffmpeg: &Path, args: Vec<String>, source: &str, output: &Path, speed: f64, expected_sec: f64, note: &str, finish: Finish) -> Result<ExportStatus> {
-        let Finish { cleanup, replace, on_saved, cwd } = finish;
+        let Finish { cleanup, replace, on_saved, cwd, cover } = finish;
         let remove_temp = |dir: &Option<PathBuf>| {
             if let Some(d) = dir {
                 let _ = std::fs::remove_dir_all(d);
@@ -650,6 +654,7 @@ impl Exporter {
 
         let state = self.state.clone();
         let finished = self.finished.clone();
+        let ffmpeg_path = ffmpeg.to_path_buf();
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
         let st_out = state.clone();
@@ -695,6 +700,16 @@ impl Exporter {
                 }
             };
             let (_, _, code) = tokio::join!(progress, errors, wait);
+            // 帶上原影片的封面（失敗時影片照樣存好，只是沒有封面）
+            if let Some(img) = &cover {
+                let canceled = state.lock().unwrap().job.as_ref().is_some_and(|j| j.status.id == id && j.canceled);
+                if code == Some(0) && !canceled && write_path.exists() {
+                    if let Err(e) = crate::cover::embed_png(Some(&ffmpeg_path), &write_path.display().to_string(), img).await {
+                        crate::info!("[封面] 沒有帶到 {}：{e}", write_path.display());
+                    }
+                }
+                let _ = std::fs::remove_file(img);
+            }
             let message = {
                 let mut s = state.lock().unwrap();
                 let Some(j) = s.job.as_mut().filter(|j| j.status.id == id) else { return };
@@ -814,6 +829,8 @@ struct Finish {
     on_saved: Option<OnSaved>,
     /// FFmpeg 的工作資料夾（濾鏡用相對檔名讀暫存檔）
     cwd: Option<PathBuf>,
+    /// 完成後寫進輸出當封面的圖檔（加速版、壓縮帶上原影片的封面；結束後刪掉）
+    cover: Option<PathBuf>,
 }
 
 /// 標註最多幾個（避免濾鏡圖過大；字幕一段就是一個）

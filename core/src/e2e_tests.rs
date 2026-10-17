@@ -1175,3 +1175,123 @@ async fn recording_with_the_audio_pipe_starts_right_away() {
         assert_eq!((i.has_audio, i.audio_tracks), (Some(true), if separate { 3 } else { 1 }), "分軌 = {separate}");
     }
 }
+
+/// 加速版、壓縮另存時帶上原影片的封面（畫面沒變）；剪輯不帶（畫面可能裁切、改過）
+#[tokio::test]
+async fn cover_carries_over_to_sped_up_and_compressed_copies() {
+    let Some(ff) = ffmpeg() else { return };
+    if !has(&ff, "-encoders", "libx264") {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let src = make_source(&ff, dir.path());
+    let s = src.display().to_string();
+    let covers = |p: &Path| String::from_utf8_lossy(&Command::new(&ff).args(["-hide_banner", "-i"]).arg(p).output().unwrap().stderr).matches("(attached pic)").count();
+    let c = ctx(&ff);
+    let ex = Exporter::new();
+    // 還沒設封面：輸出也沒有
+    ex.start(&c, &s, 2.0, true, 0.0, 0.0).await.unwrap();
+    let plain = finish(&ex).await;
+    assert_eq!(covers(&plain), 0);
+    std::fs::remove_file(&plain).unwrap();
+
+    crate::cover::set_thumbnail(Some(&ff), &s, 4.0).await.unwrap();
+    // 封面那一格（4 秒）和開頭不一樣：縮圖是封面就對了
+    let thumb_of = |p: &Path| {
+        let o = Command::new(&ff)
+            .args(["-hide_banner", "-loglevel", "error", "-i"])
+            .arg(p)
+            .args(["-map", "0:v", "-map", "-0:V", "-frames:v", "1", "-vf", "scale=16:9,format=gray", "-f", "rawvideo", "-"])
+            .output()
+            .unwrap();
+        o.stdout
+    };
+    let want = thumb_of(&src);
+    assert_eq!(want.len(), 16 * 9);
+    ex.start(&c, &s, 2.0, true, 0.0, 0.0).await.unwrap();
+    let fast = finish(&ex).await;
+    ex.start(&c, &s, 1.0, true, 320.0, 1.0).await.unwrap();
+    let small = finish(&ex).await;
+    for out in [&fast, &small] {
+        assert_eq!(covers(out), 1, "{out:?}");
+        let got = thumb_of(out);
+        let diff = got.iter().zip(&want).map(|(a, b)| (*a as i32 - *b as i32).abs()).max().unwrap();
+        assert!(diff < 40, "{out:?}：{diff}");
+        // 影片本身照常：長度、聲音、章節
+        let i = probe(&ff, out).await;
+        assert_eq!(i.has_audio, Some(true));
+        assert_eq!(i.chapters.len(), 3);
+    }
+    assert!(near(probe(&ff, &fast).await.duration_sec.unwrap(), 3.0, 0.15));
+    assert!(std::fs::metadata(&small).unwrap().len() <= 1024 * 1024);
+    // 寬度縮成 320：封面也縮成 320 寬（壓縮到指定大小時不浪費空間）
+    let info = String::from_utf8_lossy(&Command::new(&ff).args(["-hide_banner", "-i"]).arg(&small).output().unwrap().stderr).into_owned();
+    let pic = info.lines().find(|l| l.contains("(attached pic)")).unwrap();
+    assert!(pic.contains("320x180"), "{pic}");
+    // 剪輯不帶封面
+    ex.start_cut(&c, &s, &EditSpec { start: 0.0, end: 4.0, ..Default::default() }, None, None).await.unwrap();
+    assert_eq!(covers(&finish(&ex).await), 0);
+    // 暫存檔不留下
+    let left: Vec<_> = std::fs::read_dir(dir.path()).unwrap().filter_map(|e| e.ok()).map(|e| e.file_name().to_string_lossy().into_owned()).filter(|n| n.starts_with('.')).collect();
+    assert!(left.is_empty(), "{left:?}");
+}
+
+/// 影片資訊（標題、作者、說明）在另存時跟著帶過去：加速版、壓縮、剪輯（各種效果）、WebM、直式、合併
+#[tokio::test]
+async fn video_details_carry_over_to_exports() {
+    let Some(ff) = ffmpeg() else { return };
+    if !has(&ff, "-encoders", "libx264") {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let src = make_source(&ff, dir.path());
+    let s = src.display().to_string();
+    let tags: std::collections::HashMap<String, String> =
+        [("title", "報價單怎麼填"), ("artist", "業務部"), ("comment", "第一行\n第二行")].iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+    crate::video_tags::write(Some(&ff), &s, &tags).await.unwrap();
+    let c = ctx(&ff);
+    let ex = Exporter::new();
+    let check = |what: &'static str, out: PathBuf| {
+        let (ff, tags) = (ff.clone(), tags.clone());
+        async move {
+            let got = crate::video_tags::read(&ff, &out.display().to_string()).await.unwrap();
+            for (k, v) in &tags {
+                assert_eq!(got.get(k), Some(v), "{what}：{k}");
+            }
+        }
+    };
+    ex.start(&c, &s, 2.0, true, 0.0, 0.0).await.unwrap();
+    check("加速版", finish(&ex).await).await;
+    ex.start(&c, &s, 1.0, true, 320.0, 1.0).await.unwrap();
+    check("壓縮", finish(&ex).await).await;
+    let cut = EditSpec { start: 0.5, end: 5.5, removed: vec![(2.0, 3.0)], ..Default::default() };
+    ex.start_cut(&c, &s, &cut, None, None).await.unwrap();
+    check("剪輯", finish(&ex).await).await;
+    // 片頭是另外產生的畫面、局部加速分好幾段、降噪改了聲音：資訊仍然來自原影片
+    let fx = EditSpec {
+        start: 0.0,
+        end: 5.0,
+        intro: Some(crate::cards::TitleCard::new("片頭")),
+        fast: vec![FastRange { start_ms: 1000, end_ms: 3000, speed: 4.0 }],
+        audio: AudioFx { denoise: has(&ff, "-filters", "afftdn"), ..Default::default() },
+        ..Default::default()
+    };
+    ex.start_cut(&c, &s, &fx, None, None).await.unwrap();
+    check("剪輯（片頭、局部加速）", finish(&ex).await).await;
+    // 自訂章節（多一個章節檔輸入）
+    let opts = crate::exporter::CutOptions { chapters: Some(vec![Chapter { start: 1.0, title: "第一段".into() }]), ..Default::default() };
+    ex.start_cut_with(&c, &s, &EditSpec { start: 0.0, end: 4.0, ..Default::default() }, opts).await.unwrap();
+    check("剪輯（自訂章節）", finish(&ex).await).await;
+    if has(&ff, "-filters", "sendcmd") {
+        let v = EditSpec { start: 0.0, end: 4.0, vertical: Some(crate::vertical::Vertical::Fit), ..Default::default() };
+        ex.start_cut(&c, &s, &v, None, None).await.unwrap();
+        check("直式影片", finish(&ex).await).await;
+    }
+    if has(&ff, "-encoders", "libvpx-vp9") && has(&ff, "-encoders", "libopus") {
+        ex.start_to(&c, &s, 2.0, true, 0.0, 0.0, ExportFormat::Webm, None).await.unwrap();
+        check("WebM", finish(&ex).await).await;
+    }
+    // 合併：用第一支的資訊
+    ex.start_merge(&c, &[s.clone(), s.clone()]).await.unwrap();
+    check("合併", finish(&ex).await).await;
+}
