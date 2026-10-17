@@ -24,6 +24,7 @@ pub mod steps_review;
 pub mod theme;
 pub mod thumbs;
 mod tour;
+pub mod video_tags;
 pub mod viewer;
 mod whats_new;
 
@@ -114,6 +115,8 @@ pub enum EntryAction {
     Cover,
     /// 設為封面：開啟播放器，找到要的那一格再按「設為封面」
     SetThumb,
+    /// 影片資訊（標題、作者、說明…）
+    Tags,
 }
 
 /// 錄影的「步驟教學」子選單：複製成文字，或做成附圖的步驟教學（和步驟截圖同一個整理視窗）
@@ -214,6 +217,8 @@ pub struct UiApp {
     pub importing: bool,
     /// 做封面
     pub cover: Option<cover::CoverDialog>,
+    /// 影片資訊
+    pub video_tags: Option<video_tags::TagsDialog>,
     /// 目前設定的全域快速鍵（顯示用）
     pub keys: screenrecorder_core::types::Hotkeys,
     pub editor: Option<editor::Editor>,
@@ -314,6 +319,7 @@ impl UiApp {
             steps_review: None,
             importing: false,
             cover: None,
+            video_tags: None,
             keys: saved.hotkeys.unwrap_or_default(),
             editor: None,
             dismissed_job: None,
@@ -852,6 +858,7 @@ impl UiApp {
                 self.convert(path)
             }
             EntryAction::Cover => cover::open(self, entry, None),
+            EntryAction::Tags => video_tags::open(self, entry),
             EntryAction::SetThumb => {
                 viewer::open(self, entry);
                 self.toast(tr!("播放或拖曳到想要的那一格，暫停後按上方的「設為封面」", "Play or drag to the frame you want, pause, then click \"Set as cover\" at the top"), false);
@@ -1202,6 +1209,9 @@ impl eframe::App for UiApp {
         }
         if self.cover.is_some() {
             cover::show(self, &ctx);
+        }
+        if self.video_tags.is_some() {
+            video_tags::show(self, &ctx);
         }
         // 設定視窗在其他視窗之後畫：從剪輯視窗、全部錄影開啟時（例如「前往外部元件」）在最上面
         if self.settings_dlg.is_some() {

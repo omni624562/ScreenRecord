@@ -102,6 +102,25 @@ impl Viewer {
     }
 }
 
+/// 要換掉檔案之前（設封面、改影片資訊）：檢視器正在播這支就先放開（Windows 上播放中的檔案換不掉），回傳播到哪裡
+pub fn release(app: &mut UiApp, path: &str) -> Option<f64> {
+    let v = app.viewer.as_mut().filter(|v| v.cur().media.path == path)?;
+    let t = v.player.as_ref().map(|p| p.time()).unwrap_or(0.0);
+    v.clear_media();
+    v.loading = true;
+    Some(t)
+}
+
+/// 換好之後：檢視器還在這支就從 t 秒重新載入（release 有放開才會有 t）
+pub fn reload(app: &mut UiApp, path: &str, t: Option<f64>) {
+    let Some(t) = t else { return };
+    let Some(v) = app.viewer.as_mut().filter(|v| v.cur().media.path == path) else { return };
+    // load_current 會往前 0.5 秒開始播；太接近結尾時往前退（停在最後會沒有畫面）
+    let end = v.cur().media.duration_sec.unwrap_or(f64::MAX);
+    v.start_at = Some((t + 0.5).min(end - 1.0).max(0.0));
+    load_current(app);
+}
+
 /// 開啟檢視器；同類的檔案（截圖或錄影）在背景載入，供上一個 / 下一個切換
 /// 開啟影片並從 t 秒開始播放（搜尋到的說過的話）
 pub fn open_at(app: &mut UiApp, entry: LibraryEntry, t: f64) {
@@ -379,6 +398,8 @@ enum Act {
     Cover,
     /// 影片：目前這一格寫進影片當縮圖（檔案總管看到的那一張）
     SetThumb,
+    /// 影片：改標題、作者、說明等影片資訊
+    Tags,
     Rename,
     /// 打開相關的截圖（第幾張）
     Related(usize),
@@ -452,6 +473,15 @@ fn head_buttons(app: &UiApp, e: &LibraryEntry, image: bool, audio: bool) -> Vec<
                 "Make the current frame this video's cover: File Explorer and most players show it as the thumbnail (the video itself is unchanged; the frame isn't moved to the start)"
             ),
             || Act::SetThumb,
+        ));
+        list.push(b(
+            tr!("影片資訊", "Details"),
+            Some(Icon::Edit),
+            tr!(
+                "改寫在影片檔裡的標題、作者、說明等（檔案總管「內容 → 詳細資料」看得到；影片內容不變）",
+                "Edit the title, author, description and more stored in the video file (shown in File Explorer under Properties → Details; the video itself is unchanged)"
+            ),
+            || Act::Tags,
         ));
     }
     if !audio {
@@ -800,14 +830,13 @@ fn run_act(app: &mut UiApp, act: Act) {
             super::cover::open(app, entry, t);
         }
         Act::SetThumb => {
-            let Some(v) = app.viewer.as_mut() else { return };
-            let (path, t) = (v.cur().media.path.clone(), v.player.as_ref().map(|p| p.time()).unwrap_or(0.0));
-            // 先停止播放、放開檔案（Windows 上播放中的檔案不能換掉），寫好再從同一格重新載入
-            v.clear_media();
-            v.loading = true;
+            let Some(v) = app.viewer.as_ref() else { return };
+            let path = v.cur().media.path.clone();
+            // 先停止播放、放開檔案，寫好再從同一格重新載入
+            let t = release(app, &path);
             let ff = app.core.ffmpeg_path();
             let p2 = path.clone();
-            app.spawn(async move { screenrecorder_core::cover::set_thumbnail(ff.as_deref(), &p2, t).await }, move |app, r| {
+            app.spawn(async move { screenrecorder_core::cover::set_thumbnail(ff.as_deref(), &p2, t.unwrap_or(0.0)).await }, move |app, r| {
                 match r {
                     Ok(()) => {
                         app.thumbs.forget(&path);
@@ -815,12 +844,14 @@ fn run_act(app: &mut UiApp, act: Act) {
                     }
                     Err(e) => app.toast(e.message().to_string(), true),
                 }
-                let Some(v) = app.viewer.as_mut() else { return };
-                if v.cur().media.path == path {
-                    v.start_at = Some(t + 0.5);
-                    load_current(app);
-                }
+                reload(app, &path, t);
             });
+        }
+        Act::Tags => {
+            let Some(v) = app.viewer.as_mut() else { return };
+            let e = v.cur().clone();
+            v.pause();
+            super::video_tags::open(app, e);
         }
         Act::Grab => {
             let Some(v) = app.viewer.as_mut() else { return };

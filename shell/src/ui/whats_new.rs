@@ -48,6 +48,15 @@ fn items(_app: &UiApp) -> Vec<(String, String, Try)> {
             Try::None,
         ),
         (
+            tr!("影片資訊", "Video details").into(),
+            tr!(
+                "按檢視器上方的「影片資訊」，改寫在影片檔裡的標題、作者、說明等；檔案總管的「內容 → 詳細資料」看得到。影片內容、封面、章節都不變。",
+                "Click “Details” at the top of the viewer to edit the title, author, description and more stored in the video file; File Explorer shows them under Properties → Details. The video, cover and chapters stay the same."
+            )
+            .into(),
+            Try::None,
+        ),
+        (
         tr!("變得更精簡", "Leaner and simpler").into(),
         tr!(
             "拿掉了比較少人用的文字轉語音旁白、背景音樂、開會時提醒錄影、傳到手機、讀取 QR 碼、取色器、尺規、自動匯入資料夾；全部截圖的「內容、常見詞、顏色」收進「更多分類」。自己錄的旁白、點擊音效、手動匯入影片都還在。",

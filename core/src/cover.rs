@@ -250,27 +250,34 @@ pub async fn embed_png(ffmpeg: Option<&Path>, video: &str, png: &Path) -> std::r
     let Some(ffmpeg) = ffmpeg else {
         return Err(tr!("找不到 FFmpeg", "FFmpeg not found").into());
     };
+    let png = png.display().to_string();
+    rewrite_in_place(ffmpeg, video, |tmp| embed_args(video, &png, tmp)).await?;
+    crate::info!("[封面] 已寫進 {video}");
+    Ok(())
+}
+
+/// 用 FFmpeg 改寫影片（只複製串流）：args 拿暫存檔路徑產生參數，先寫到暫存檔，成功才換掉原檔；
+/// 原檔的修改時間保留（清單依時間排序，不要跳到最上面）。失敗時回傳給使用者看的原因
+pub(crate) async fn rewrite_in_place(ffmpeg: &Path, video: &str, args: impl FnOnce(&str) -> Vec<String>) -> std::result::Result<(), String> {
     let v = Path::new(video);
-    let tmp = v.with_file_name(format!(".{}.cover-tmp.mp4", v.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default()));
-    let args = embed_args(video, &png.display().to_string(), &tmp.display().to_string());
-    let r = crate::process::run(ffmpeg, &args, Duration::from_secs(600)).await;
+    let ext = v.extension().map(|e| e.to_string_lossy().into_owned()).unwrap_or_else(|| "mp4".into());
+    let tmp = v.with_file_name(format!(".{}.rewrite-tmp.{ext}", v.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default()));
+    let r = crate::process::run(ffmpeg, &args(&tmp.display().to_string()), Duration::from_secs(600)).await;
     let ok = r.code == 0 && tokio::fs::metadata(&tmp).await.map(|m| m.len() > 0).unwrap_or(false);
     if !ok {
         let _ = tokio::fs::remove_file(&tmp).await;
-        crate::info!("[封面] 寫入影片失敗：{}", r.stderr.trim());
+        crate::info!("[改寫影片] {video} 失敗：{}", r.stderr.trim());
         return Err(tr!("無法寫進影片（詳見記錄檔）", "Couldn't write it into the video (see the log file)").into());
     }
-    // 原檔的修改時間保留（清單依時間排序，不要跳到最上面）
     let mtime = std::fs::metadata(v).and_then(|m| m.modified()).ok();
     if let Err(e) = tokio::fs::rename(&tmp, v).await {
         let _ = tokio::fs::remove_file(&tmp).await;
-        crate::info!("[封面] 換掉原檔失敗：{e}");
-        return Err(tr!("影片正在使用中（播放中或被其他程式開啟），沒有寫進影片", "The video is in use (playing or open in another program), so the cover wasn't written into it").into());
+        crate::info!("[改寫影片] 換掉 {video} 失敗：{e}");
+        return Err(tr!("影片正在使用中（播放中或被其他程式開啟），沒有改到影片", "The video is in use (playing or open in another program), so it wasn't changed").into());
     }
     if let (Some(t), Ok(f)) = (mtime, std::fs::File::options().write(true).open(v)) {
         let _ = f.set_modified(t);
     }
-    crate::info!("[封面] 已寫進 {video}");
     Ok(())
 }
 

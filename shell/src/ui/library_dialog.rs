@@ -1214,6 +1214,17 @@ fn entry_menu(ui: &mut egui::Ui, app: &UiApp, e: &LibraryEntry, full: bool, req:
         {
             pick(EntryAction::SetThumb, req);
         }
+        if screenrecorder_core::video_tags::can_tag(&e.media.path)
+            && ui
+                .button(tr!("影片資訊（標題、作者、說明）…", "Video details (title, author, description)…"))
+                .on_hover_text(tr!(
+                    "改寫在影片檔裡的資訊：檔案總管「內容 → 詳細資料」和多數播放器看得到（影片內容不變）",
+                    "Edit the details stored in the video file, shown in File Explorer under Properties → Details and in most players (the video itself is unchanged)"
+                ))
+                .clicked()
+        {
+            pick(EntryAction::Tags, req);
+        }
         if ui.button(tr!("做 YouTube 封面圖…", "Make a YouTube cover image…")).clicked() {
             pick(EntryAction::Cover, req);
         }
