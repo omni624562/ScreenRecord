@@ -22,6 +22,7 @@ fn kind_text(k: ExportKind) -> &'static str {
         ExportKind::Cut => "剪輯",
         ExportKind::Merge => "合併",
         ExportKind::Convert => "轉成 MP4",
+        ExportKind::Upright => "轉好畫面另存",
     }
 }
 
@@ -34,6 +35,7 @@ fn kind_text_en(k: ExportKind) -> &'static str {
         ExportKind::Cut => "Edit",
         ExportKind::Merge => "Merge",
         ExportKind::Convert => "Convert to MP4",
+        ExportKind::Upright => "Save upright copy",
     }
 }
 
@@ -252,7 +254,7 @@ impl Exporter {
         let mut ff = None;
         let mut enc = None;
         for s in sources {
-            let (f, e, info, _) = prepare(ctx, s).await?;
+            let (f, e, info, _) = prepare_with(ctx, s, true).await?;
             (ff, enc) = (Some(f), Some(e));
             list.push((s.clone(), info));
         }
@@ -262,7 +264,8 @@ impl Exporter {
         let fps = js_round(first.fps.unwrap_or(30.0)).clamp(1.0, FPS_MAX);
         let inputs: Vec<(String, bool, f64)> = list.iter().map(|(p, i)| (p.clone(), i.has_audio == Some(true), i.duration_sec.unwrap_or(0.0))).collect();
         let total: f64 = inputs.iter().map(|i| i.2).sum();
-        let base = name.map(|n| n.trim().to_string()).unwrap_or_else(|| format!("{}_合併", strip_mp4(&file_name(&list[0].0))));
+        let stem = Path::new(&list[0].0).file_stem().map(|x| x.to_string_lossy().into_owned()).unwrap_or_default();
+        let base = name.map(|n| n.trim().to_string()).unwrap_or_else(|| format!("{stem}_合併"));
         let output = crate::paths::unique_path(&parent(&list[0].0), &base, ".mp4");
         // 合併：用最早的那支錄的時間
         let time = recorded_at(&ffmpeg, &list.iter().map(|(p, _)| p.clone()).collect::<Vec<_>>()).await;
@@ -307,6 +310,22 @@ impl Exporter {
         let note = format!("轉成 MP4（{}，{}）", codec.as_deref().unwrap_or("?"), if copy { "不重新壓縮" } else { "重新壓縮" });
         let time = recorded_at(&ffmpeg, &[source.to_string()]).await;
         self.run(ExportKind::Convert, &ffmpeg, args, source, &output, 1.0, info.duration_sec.unwrap_or(0.0), &note, time)
+    }
+
+    /// 另存一份畫面真的轉好的影片（照旋轉標記轉過來、不帶旋轉標記，任何播放器都正確）：重新壓縮成高畫質，
+    /// 存成 Rec_xxx_轉正.mp4；影片資訊、章節照搬
+    pub async fn start_upright(&self, ctx: &ExportCtx, source: &str) -> Result<ExportStatus> {
+        let _g = self.begin()?;
+        let (ffmpeg, enc, info, _) = prepare(ctx, source).await?;
+        let rot = crate::rotate::rotation_of(&ffmpeg, source).await?;
+        if rot.abs() < 1.0 {
+            return Err(Error::config(tr!("這支影片沒有旋轉標記，畫面本來就是正的，不用另存", "This video has no rotation tag; its picture is already upright")));
+        }
+        let output = crate::paths::unique_path(&parent(source), &format!("{}{}", strip_mp4(&file_name(source)), tr!("_轉正", "_upright")), ".mp4");
+        let args = crate::args::upright_args(source, &output.display().to_string(), &enc, info.has_audio == Some(true));
+        let note = format!("照旋轉標記（{rot}°）轉好畫面另存");
+        let time = recorded_at(&ffmpeg, &[source.to_string()]).await;
+        self.run(ExportKind::Upright, &ffmpeg, args, source, &output, 1.0, info.duration_sec.unwrap_or(0.0), &note, time)
     }
 
     pub async fn start_cut(&self, ctx: &ExportCtx, source: &str, spec: &EditSpec, replace: Option<&str>, on_saved: Option<OnSaved>) -> Result<ExportStatus> {
@@ -918,7 +937,7 @@ fn with_chapters(args: &mut Vec<String>, chapters: &[crate::types::Chapter], dur
     Some(dir)
 }
 
-/// 合併時能不能直接接起來：都是 MP4 / MOV，每支的串流格式都一樣（見 import::stream_signature）
+/// 合併時能不能直接接起來：都是 MP4 / MOV、MP4 裝得了的編碼，每支的串流格式都一樣（見 import::stream_signature）
 async fn can_join(ffmpeg: &Path, paths: &[String]) -> bool {
     let mp4 = |p: &String| {
         let l = p.to_ascii_lowercase();
@@ -931,6 +950,11 @@ async fn can_join(ffmpeg: &Path, paths: &[String]) -> bool {
     for p in paths {
         let r = crate::process::run(ffmpeg, &["-hide_banner".to_string(), "-i".into(), p.clone()], std::time::Duration::from_secs(30)).await;
         let Some(sig) = crate::import::stream_signature(&r.stderr) else { return false };
+        // MOV 裡也可能是 MP4 裝不了的編碼（ProRes、PCM 聲音）：那就重新壓縮
+        if !crate::import::mp4_can_hold(&sig) {
+            crate::info!("[合併] {p} 的格式 MP4 裝不了，重新壓縮：{sig}");
+            return false;
+        }
         match &first {
             None => first = Some(sig),
             Some(f) if *f == sig => {}
@@ -1093,17 +1117,23 @@ fn parent(p: &str) -> PathBuf {
 }
 
 async fn prepare(ctx: &ExportCtx, source: &str) -> Result<(PathBuf, EncoderSpec, MediaInfo, f64)> {
+    prepare_with(ctx, source, false).await
+}
+
+/// any：MOV、MKV 等其他格式也可以（合併：會讀進來重新接成 MP4）
+async fn prepare_with(ctx: &ExportCtx, source: &str, any: bool) -> Result<(PathBuf, EncoderSpec, MediaInfo, f64)> {
     let (Some(ffmpeg), Some(enc)) = (ctx.ffmpeg.clone(), ctx.encoder) else {
         return Err(Error::config(tr!("FFmpeg 無法使用", "FFmpeg isn't available")));
     };
-    if crate::import::is_other_video(source) {
+    let other = crate::import::is_other_video(source);
+    if other && !any {
         return Err(Error::config(trf!(
             "{} 檔要先轉成 MP4 才能這樣做（在「⋯」選「轉成 MP4」）",
             "{} files must be converted to MP4 first (choose “Convert to MP4” under “⋯”)",
             crate::import::format_label(source)
         )));
     }
-    if !source.to_lowercase().ends_with(".mp4") || !Path::new(source).is_file() {
+    if !(source.to_lowercase().ends_with(".mp4") || other) || !Path::new(source).is_file() {
         return Err(Error::config(tr!("找不到影片檔", "Video file not found")));
     }
     let info = ctx.cache.probe(&ffmpeg, source).await?;

@@ -915,7 +915,8 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         if n > 0 && Btn::new(tr!("移到資源回收筒", "Move to Recycle Bin")).icon(Icon::Trash).danger().small().show(fui).clicked() {
             req = Some(Req::DeleteSelected);
         }
-        let mp4s: Vec<String> = d.selected.iter().filter(|p| p.to_lowercase().ends_with(".mp4")).cloned().collect();
+        // MP4 和 MOV、MKV 等其他影片格式都能合併（成品是 MP4）
+        let mp4s: Vec<String> = d.selected.iter().filter(|p| screenrecorder_core::import::is_importable(p)).cloned().collect();
         let merging = app.status.export.as_ref().filter(|x| x.state == ExportState::Running && x.kind == ExportKind::Merge).map(|x| x.progress);
         if !shot
             && mp4s.len() >= 2
@@ -1227,6 +1228,11 @@ fn entry_menu(ui: &mut egui::Ui, app: &UiApp, e: &LibraryEntry, full: bool, req:
                 .clicked()
         {
             pick(EntryAction::Tags, req);
+        }
+        if screenrecorder_core::video_tags::can_tag(&e.media.path) {
+            if let Some(a) = super::rotate_menu(ui) {
+                pick(a, req);
+            }
         }
         if let Some(folder) = app.library_folder() {
             let tip = tr!(

@@ -2231,6 +2231,7 @@ fn job_card(app: &mut UiApp, ui: &mut Ui) {
         ExportKind::Cut => tr!("剪輯", "edited video").to_string(),
         ExportKind::Merge => tr!("合併錄影", "merged video").to_string(),
         ExportKind::Convert => tr!("轉成 MP4", "MP4 copy").to_string(),
+        ExportKind::Upright => tr!("轉好畫面另存", "upright copy").to_string(),
         ExportKind::Gif => trf!("製作 GIF{gif_speed}", "GIF{gif_speed}"),
         ExportKind::Webp => trf!("製作 WebP 動圖{gif_speed}", "WebP{gif_speed}"),
         // 原速：只壓縮
@@ -2687,6 +2688,12 @@ fn recent_menu(app: &mut UiApp, ui: &mut Ui, e: &LibraryEntry) {
                 app.inline = None;
             }
             act(app, EntryAction::Tags);
+        }
+    }
+    if !screenrecorder_core::after_record::is_audio_recording(&e.media.path) && screenrecorder_core::video_tags::can_tag(&e.media.path) {
+        if let Some(a) = super::rotate_menu(ui) {
+            app.inline = None;
+            act(app, a);
         }
     }
     if let Some(folder) = app.library_folder() {

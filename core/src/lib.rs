@@ -83,6 +83,7 @@ pub mod recorder;
 pub mod recovery;
 pub mod recycle;
 pub mod replay;
+pub mod rotate;
 pub mod schedule;
 pub mod screen_pen;
 #[cfg(windows)]

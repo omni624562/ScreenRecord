@@ -1012,6 +1012,8 @@ pub enum ExportKind {
     Merge,
     /// 其他格式（MOV、MKV…）轉成 MP4
     Convert,
+    /// 另存畫面轉好的影片（照旋轉標記把畫面轉過來，重新壓縮）
+    Upright,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

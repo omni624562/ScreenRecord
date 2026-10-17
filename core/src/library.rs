@@ -24,6 +24,11 @@ pub struct MediaCache {
 }
 
 impl MediaCache {
+    /// 這個檔案下次重新讀（改了內容但大小、修改時間不變時，例如旋轉）
+    pub fn forget(&self, path: &str) {
+        self.map.lock().unwrap().remove(path);
+    }
+
     pub async fn probe(&self, ffmpeg: &Path, path: &str) -> Result<MediaInfo> {
         let meta = tokio::fs::metadata(path).await?;
         let key = format!("{}:{}", meta.len(), mtime_ms(&meta));
