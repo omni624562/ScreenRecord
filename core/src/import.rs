@@ -35,7 +35,7 @@ pub fn video_codec(ffmpeg_info: &str) -> Option<String> {
 }
 
 /// 合併時判斷能不能直接接起來（不重新壓縮）：從 `ffmpeg -i` 的輸出取出每個串流的格式
-/// （編碼、像素格式、尺寸、時間單位、聲音的取樣率與聲道）和畫面的旋轉；位元率、張數會隨內容變，不算。
+/// （編碼、像素格式、尺寸、時間單位、聲音的取樣率與聲道）和畫面的旋轉；位元率、張數、開始時間（新版 FFmpeg 的 start）每支不同，不算。
 /// 其他串流（章節、資料）只記種類：concat 依串流的順序對應，順序也要一樣。每支影片算出來一樣才能接；沒有畫面時 None
 pub fn stream_signature(ffmpeg_info: &str) -> Option<String> {
     let mut parts = vec![];
@@ -47,7 +47,11 @@ pub fn stream_signature(ffmpeg_info: &str) -> Option<String> {
                 "Video" if l.contains("(attached pic)") => continue,
                 "Video" | "Audio" => {
                     has_video |= kind == "Video";
-                    let keep: Vec<&str> = rest.split(", ").map(|t| t.trim_end_matches(" (default)").trim()).filter(|t| !t.ends_with("kb/s") && !t.ends_with(" fps") && !t.ends_with(" tbr")).collect();
+                    let keep: Vec<&str> = rest
+                        .split(", ")
+                        .map(|t| t.trim_end_matches(" (default)").trim())
+                        .filter(|t| !t.ends_with("kb/s") && !t.ends_with(" fps") && !t.ends_with(" tbr") && !t.starts_with("start "))
+                        .collect();
                     parts.push(format!("{kind}: {}", keep.join(", ")));
                 }
                 _ => parts.push(kind.to_string()),
@@ -90,7 +94,7 @@ mod tests {
       displaymatrix: rotation of -90.00 degrees
   Stream #0:1[0x2](eng): Audio: aac (LC) (mp4a / 0x6134706D), 48000 Hz, stereo, fltp, 256 kb/s (default)
   Stream #0:2[0x3](eng): Data: none (mett / 0x7474656D), 0 kb/s";
-        let b = a.replace("20046 kb/s", "18000 kb/s").replace("30.01 fps", "29.97 fps").replace("256 kb/s", "250 kb/s");
+        let b = a.replace("20046 kb/s", "18000 kb/s").replace("30.01 fps", "29.97 fps").replace("256 kb/s", "250 kb/s").replace("90k tbn", "90k tbn, start 0.021354");
         assert_eq!(stream_signature(a), stream_signature(&b));
         assert!(stream_signature(a).unwrap().contains("rotation of -90.00"));
         // 尺寸、旋轉、聲音不同就不能直接接
