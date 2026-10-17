@@ -37,7 +37,26 @@ enum Try {
 
 /// 這一版的新功能（標題、說明、試試看）：最多 6 項，快速鍵用目前的設定
 fn items(_app: &UiApp) -> Vec<(String, String, Try)> {
-    vec![(
+    vec![
+        (
+            tr!("設為封面", "Set as cover").into(),
+            tr!(
+                "播放影片時停在想要的那一格，按上方的「設為封面」：檔案總管和多數播放器看到的縮圖就是這一格。影片內容不變，這一格不會被移到開頭。",
+                "Pause a video on the frame you want and click “Set as cover” at the top: File Explorer and most players show it as the thumbnail. The video itself is unchanged and the frame isn't moved to the start."
+            )
+            .into(),
+            Try::None,
+        ),
+        (
+            tr!("影片資訊", "Video details").into(),
+            tr!(
+                "按檢視器上方的「影片資訊」，改寫在影片檔裡的標題、作者、說明等；檔案總管的「內容 → 詳細資料」看得到。影片內容、封面、章節都不變。",
+                "Click “Details” at the top of the viewer to edit the title, author, description and more stored in the video file; File Explorer shows them under Properties → Details. The video, cover and chapters stay the same."
+            )
+            .into(),
+            Try::None,
+        ),
+        (
         tr!("變得更精簡", "Leaner and simpler").into(),
         tr!(
             "拿掉了比較少人用的文字轉語音旁白、背景音樂、開會時提醒錄影、傳到手機、讀取 QR 碼、取色器、尺規、自動匯入資料夾；全部截圖的「內容、常見詞、顏色」收進「更多分類」。自己錄的旁白、點擊音效、手動匯入影片都還在。",
@@ -45,7 +64,8 @@ fn items(_app: &UiApp) -> Vec<(String, String, Try)> {
         )
         .into(),
         Try::None,
-    )]
+    ),
+    ]
 }
 
 pub fn show(app: &mut UiApp, ctx: &egui::Context) {

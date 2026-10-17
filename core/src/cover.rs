@@ -225,45 +225,81 @@ pub async fn save(ffmpeg: Option<&Path>, video: &str, pm: &Pixmap, embed: bool) 
     if !embed {
         return Ok(saved);
     }
+    match embed_png(ffmpeg, video, &png).await {
+        Ok(()) => {}
+        Err(e) => {
+            saved.embed_error = Some(e);
+            return Ok(saved);
+        }
+    }
+    saved.embedded = true;
+    Ok(saved)
+}
+
+/// 可以寫入封面（縮圖）的影片
+pub fn can_embed(video: &str) -> bool {
     let lower = video.to_ascii_lowercase();
-    if !(lower.ends_with(".mp4") || lower.ends_with(".m4v") || lower.ends_with(".mov")) {
-        saved.embed_error = Some(tr!("只有 MP4 影片可以寫入封面", "Only MP4 videos can have a cover written into them").into());
-        return Ok(saved);
+    lower.ends_with(".mp4") || lower.ends_with(".m4v") || lower.ends_with(".mov")
+}
+
+/// 把 PNG 寫進影片當封面（先寫到暫存檔，成功才換掉原檔，修改時間保留）；失敗時回傳給使用者看的原因
+pub async fn embed_png(ffmpeg: Option<&Path>, video: &str, png: &Path) -> std::result::Result<(), String> {
+    if !can_embed(video) {
+        return Err(tr!("只有 MP4 影片可以寫入封面", "Only MP4 videos can have a cover written into them").into());
     }
     let Some(ffmpeg) = ffmpeg else {
-        saved.embed_error = Some(tr!("找不到 FFmpeg", "FFmpeg not found").into());
-        return Ok(saved);
+        return Err(tr!("找不到 FFmpeg", "FFmpeg not found").into());
     };
+    let png = png.display().to_string();
+    rewrite_in_place(ffmpeg, video, |tmp| embed_args(video, &png, tmp)).await?;
+    crate::info!("[封面] 已寫進 {video}");
+    Ok(())
+}
+
+/// 用 FFmpeg 改寫影片（只複製串流）：args 拿暫存檔路徑產生參數，先寫到暫存檔，成功才換掉原檔；
+/// 原檔的修改時間保留（清單依時間排序，不要跳到最上面）。失敗時回傳給使用者看的原因
+pub(crate) async fn rewrite_in_place(ffmpeg: &Path, video: &str, args: impl FnOnce(&str) -> Vec<String>) -> std::result::Result<(), String> {
     let v = Path::new(video);
-    let tmp = v.with_file_name(format!(".{}.cover-tmp.mp4", v.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default()));
-    let args = embed_args(video, &png.display().to_string(), &tmp.display().to_string());
-    let r = crate::process::run(ffmpeg, &args, Duration::from_secs(600)).await;
+    let ext = v.extension().map(|e| e.to_string_lossy().into_owned()).unwrap_or_else(|| "mp4".into());
+    let tmp = v.with_file_name(format!(".{}.rewrite-tmp.{ext}", v.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default()));
+    let r = crate::process::run(ffmpeg, &args(&tmp.display().to_string()), Duration::from_secs(600)).await;
     let ok = r.code == 0 && tokio::fs::metadata(&tmp).await.map(|m| m.len() > 0).unwrap_or(false);
     if !ok {
         let _ = tokio::fs::remove_file(&tmp).await;
-        crate::info!("[封面] 寫入影片失敗：{}", r.stderr.trim());
-        saved.embed_error = Some(tr!("無法寫進影片（詳見記錄檔），封面圖已經存好", "Couldn't write it into the video (see the log file). The cover image was saved").into());
-        return Ok(saved);
+        crate::info!("[改寫影片] {video} 失敗：{}", r.stderr.trim());
+        return Err(tr!("無法寫進影片（詳見記錄檔）", "Couldn't write it into the video (see the log file)").into());
     }
-    // 原檔的修改時間保留（清單依時間排序，不要跳到最上面）
     let mtime = std::fs::metadata(v).and_then(|m| m.modified()).ok();
     if let Err(e) = tokio::fs::rename(&tmp, v).await {
         let _ = tokio::fs::remove_file(&tmp).await;
-        crate::info!("[封面] 換掉原檔失敗：{e}");
-        saved.embed_error = Some(
-            tr!(
-                "影片正在使用中（播放中或被其他程式開啟），封面圖已經存好，但沒有寫進影片",
-                "The video is in use (playing or open in another program). The cover image was saved but not written into the video"
-            )
-            .into(),
-        );
-        return Ok(saved);
+        crate::info!("[改寫影片] 換掉 {video} 失敗：{e}");
+        return Err(tr!("影片正在使用中（播放中或被其他程式開啟），沒有改到影片", "The video is in use (playing or open in another program), so it wasn't changed").into());
     }
     if let (Some(t), Ok(f)) = (mtime, std::fs::File::options().write(true).open(v)) {
         let _ = f.set_modified(t);
     }
-    saved.embedded = true;
-    Ok(saved)
+    Ok(())
+}
+
+/// 設為封面：影片 t 秒的那一格（不加字、不另存圖檔）寫進影片當縮圖。影片內容不變，
+/// 檔案總管等會讀封面的地方顯示這一格
+pub async fn set_thumbnail(ffmpeg: Option<&Path>, video: &str, t: f64) -> Result<()> {
+    let ff = ffmpeg.ok_or_else(|| Error::config(tr!("找不到 FFmpeg", "FFmpeg not found")))?;
+    if !can_embed(video) {
+        return Err(Error::config(tr!("只有 MP4 影片可以設定封面", "Only MP4 videos can have a cover")));
+    }
+    // 播到最後停下來時時間剛好是影片長度，那裡已經沒有畫面：往前退一點再讀
+    let pm = match frame_at(ff, video, t).await {
+        Ok(pm) => pm,
+        Err(_) if t > 0.0 => frame_at(ff, video, (t - 0.5).max(0.0)).await?,
+        Err(e) => return Err(e),
+    };
+    let png = std::env::temp_dir().join(format!("ScreenRecorder-thumb-{}-{}.png", std::process::id(), crate::paths::now_ms()));
+    let data = pm.encode_png().map_err(|e| Error::other(e.to_string()))?;
+    tokio::fs::write(&png, data).await.map_err(|e| Error::other(e.to_string()))?;
+    let r = embed_png(ffmpeg, video, &png).await;
+    let _ = tokio::fs::remove_file(&png).await;
+    r.map_err(Error::other)
 }
 
 #[cfg(test)]

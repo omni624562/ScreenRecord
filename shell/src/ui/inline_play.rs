@@ -1,6 +1,6 @@
 //! 主畫面內播放：按「最近錄影」卡片的播放鍵，影片（或錄音）就在即時預覽的位置播放，看完按「回到錄影畫面」、Esc 或點範圍分頁回到即時預覽。
 //! 外框與標籤用藍色（錄影範圍是紅色），一看就知道是在播放。只放基本控制（播放、進度、速度、音量、全螢幕）；
-//! 要用其他功能（章節、擷取這一格、做封面…）按「在播放器開啟」，從目前的位置接著播。
+//! 要用其他功能（章節、擷取這一格、設為封面…）按「在播放器開啟」，從目前的位置接著播。
 //! 開始錄影（含倒數）時自動停止播放。
 
 use super::theme::{self, Btn, Icon};
@@ -446,7 +446,7 @@ fn controls(i: &mut Inline, ui: &mut egui::Ui) -> bool {
         if Btn::icon_only(Icon::Fullscreen)
             .ghost()
             .small()
-            .tooltip(tr!("在播放器開啟（F、點兩下畫面）：全螢幕、章節、擷取這一格、做封面等", "Open in the player (F, or double-click): full screen, chapters, frame capture, cover…"))
+            .tooltip(tr!("在播放器開啟（F、點兩下畫面）：全螢幕、章節、擷取這一格、設為封面等", "Open in the player (F, or double-click): full screen, chapters, frame capture, set as cover…"))
             .show(ui)
             .clicked()
         {

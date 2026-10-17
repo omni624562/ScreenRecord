@@ -71,7 +71,21 @@ impl Thumbnails {
                     return None;
                 }
                 let ffmpeg = ffmpeg?;
-                // 先取第 1 秒（避開開頭可能的黑畫面），太短的影片改取第一張；-threads 1 不和錄影搶 CPU
+                // 有設定封面（寫在影片裡的 attached_pic）就用封面：0:v 去掉 0:V 剩下的就是封面圖
+                if crate::cover::can_embed(video) {
+                    let out_s = out.display().to_string();
+                    let args: Vec<String> =
+                        ["-hide_banner", "-loglevel", "error", "-threads", "1", "-i", video, "-map", "0:v", "-map", "-0:V", "-frames:v", "1", "-vf", "scale=320:-2:flags=bilinear", "-y", &out_s]
+                            .iter()
+                            .map(|s| s.to_string())
+                            .collect();
+                    let r = run(ffmpeg, &args, Duration::from_secs(20)).await;
+                    if r.code == 0 && std::fs::metadata(&out).map(|m| m.len() > 0).unwrap_or(false) {
+                        return Some(out.clone());
+                    }
+                    let _ = std::fs::remove_file(&out);
+                }
+                // 沒有封面：取第 1 秒（避開開頭可能的黑畫面），太短的影片改取第一張；-threads 1 不和錄影搶 CPU
                 for at in ["1", "0"] {
                     let out_s = out.display().to_string();
                     let mut args: Vec<String> = ["-hide_banner", "-loglevel", "error", "-threads", "1"].iter().map(|s| s.to_string()).collect();
@@ -243,6 +257,41 @@ mod tests {
         assert_eq!(t.failed.lock().unwrap().len(), 1);
         // 失敗後 10 分鐘內直接回傳 None（不會再執行）
         assert_eq!(t.get(Some(Path::new("false")), &video.display().to_string()).await, None);
+    }
+
+    /// 設為封面：有 FFmpeg 時實際跑一次。縮圖改用選的那一格，影片本身（開頭、長度）不變
+    #[tokio::test]
+    async fn thumbnail_uses_the_cover_set_from_a_frame() {
+        let Some(ffmpeg) = std::env::var_os("PATH").and_then(|p| std::env::split_paths(&p).map(|d| d.join("ffmpeg")).find(|p| p.is_file())) else { return };
+        let dir = tempfile::tempdir().unwrap();
+        let video = dir.path().join("a.mp4");
+        let v = video.display().to_string();
+        // 前 1.5 秒紅色、後 1.5 秒藍色
+        let ok = std::process::Command::new(&ffmpeg)
+            .args(["-loglevel", "error", "-f", "lavfi", "-i", "color=red:s=320x240:r=30:d=1.5", "-f", "lavfi", "-i", "color=blue:s=320x240:r=30:d=1.5"])
+            .args(["-filter_complex", "[0][1]concat=n=2:v=1[v]", "-map", "[v]", "-pix_fmt", "yuv420p", &v])
+            .status()
+            .unwrap()
+            .success();
+        assert!(ok);
+        let rgb = |p: &Path| image::open(p).unwrap().to_rgb8().get_pixel(40, 40).0;
+        let t = Thumbnails::new(dir.path().join("thumbs"));
+        let before = t.get(Some(&ffmpeg), &v).await.unwrap();
+        assert!(rgb(&before)[0] > 200, "沒有封面：取第 1 秒（紅色）");
+        let mtime = std::fs::metadata(&video).unwrap().modified().unwrap();
+        crate::cover::set_thumbnail(Some(&ffmpeg), &v, 2.5).await.unwrap();
+        assert_eq!(std::fs::metadata(&video).unwrap().modified().unwrap(), mtime, "修改時間保留");
+        let after = t.get(Some(&ffmpeg), &v).await.unwrap();
+        let c = rgb(&after);
+        assert!(c[2] > 200 && c[0] < 60, "縮圖是選的那一格（藍色）：{c:?}");
+        // 影片內容不變：開頭還是紅色，再設一次也只有一張封面
+        assert!(crate::cover::frame_at(&ffmpeg, &v, 0.2).await.unwrap().pixel(40, 40).unwrap().red() > 200);
+        // 播完停在最後（時間 = 影片長度）也設得起來
+        crate::cover::set_thumbnail(Some(&ffmpeg), &v, 3.0).await.unwrap();
+        let probe = std::process::Command::new(&ffmpeg).args(["-hide_banner", "-i", &v]).output().unwrap();
+        let info = String::from_utf8_lossy(&probe.stderr);
+        assert_eq!(info.matches("attached pic").count(), 1, "{info}");
+        assert_eq!(info.matches("Video:").count(), 2, "{info}");
     }
 
     #[tokio::test]

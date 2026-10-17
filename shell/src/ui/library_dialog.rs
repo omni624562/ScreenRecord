@@ -1203,7 +1203,29 @@ fn entry_menu(ui: &mut egui::Ui, app: &UiApp, e: &LibraryEntry, full: bool, req:
         if menu_item(ui, tr!("做成直式影片（Shorts / Reels）…", "Make a vertical video (Shorts / Reels)…"), app.blocked(EntryAction::Vertical)) {
             pick(EntryAction::Vertical, req);
         }
-        if ui.button(tr!("做封面（YouTube 縮圖）…", "Make a cover (YouTube thumbnail)…")).clicked() {
+        if screenrecorder_core::cover::can_embed(&e.media.path)
+            && ui
+                .button(tr!("設為封面（選一格當縮圖）…", "Set cover (pick a frame as the thumbnail)…"))
+                .on_hover_text(tr!(
+                    "選影片裡的一格當封面：檔案總管和多數播放器看到的縮圖就是這一格（影片內容不變）",
+                    "Pick a frame as the cover: File Explorer and most players show it as the thumbnail (the video itself is unchanged)"
+                ))
+                .clicked()
+        {
+            pick(EntryAction::SetThumb, req);
+        }
+        if screenrecorder_core::video_tags::can_tag(&e.media.path)
+            && ui
+                .button(tr!("影片資訊（標題、作者、說明）…", "Video details (title, author, description)…"))
+                .on_hover_text(tr!(
+                    "改寫在影片檔裡的資訊：檔案總管「內容 → 詳細資料」和多數播放器看得到（影片內容不變）",
+                    "Edit the details stored in the video file, shown in File Explorer under Properties → Details and in most players (the video itself is unchanged)"
+                ))
+                .clicked()
+        {
+            pick(EntryAction::Tags, req);
+        }
+        if ui.button(tr!("做 YouTube 封面圖…", "Make a YouTube cover image…")).clicked() {
             pick(EntryAction::Cover, req);
         }
         ui.separator();

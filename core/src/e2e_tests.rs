@@ -457,11 +457,45 @@ async fn cover_is_saved_and_written_into_the_video() {
     crate::cover::save(Some(&ff), &s, &pm, true).await.unwrap();
     let o = Command::new(&ff).args(["-hide_banner", "-i"]).arg(&src).output().unwrap();
     assert_eq!(String::from_utf8_lossy(&o.stderr).matches("(attached pic)").count(), 1);
-    let left: Vec<_> = std::fs::read_dir(dir.path()).unwrap().filter_map(|e| e.ok()).map(|e| e.file_name().to_string_lossy().into_owned()).filter(|n| n.contains("cover-tmp")).collect();
+    let left: Vec<_> = std::fs::read_dir(dir.path()).unwrap().filter_map(|e| e.ok()).map(|e| e.file_name().to_string_lossy().into_owned()).filter(|n| n.contains("rewrite-tmp")).collect();
     assert!(left.is_empty(), "{left:?}");
     // 播放器仍然讀得到畫面（只看主要的畫面，不是封面）
     let f = crate::cover::frame_at(&ff, &s, 1.0).await.unwrap();
     assert_eq!(f.width(), 640);
+}
+
+#[tokio::test]
+async fn video_details_are_written_without_touching_the_rest() {
+    let Some(ff) = ffmpeg() else { return };
+    if !has(&ff, "-encoders", "libx264") {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let src = make_source(&ff, dir.path());
+    let s = src.display().to_string();
+    // 先設好封面：改資訊時封面要留著
+    crate::cover::set_thumbnail(Some(&ff), &s, 1.0).await.unwrap();
+    let before = probe(&ff, &src).await;
+    let mtime = std::fs::metadata(&src).unwrap().modified().unwrap();
+    let set = |pairs: &[(&str, &str)]| pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect::<std::collections::HashMap<_, _>>();
+    let tags = crate::video_tags::read(&ff, &s).await.unwrap();
+    assert_eq!(tags["title"], "");
+    crate::video_tags::write(Some(&ff), &s, &set(&[("title", "報價單 = 怎麼填; #1"), ("artist", "王小明"), ("comment", "第一行\n第二行"), ("date", "2026")])).await.unwrap();
+    let tags = crate::video_tags::read(&ff, &s).await.unwrap();
+    assert_eq!((tags["title"].as_str(), tags["artist"].as_str(), tags["comment"].as_str(), tags["date"].as_str()), ("報價單 = 怎麼填; #1", "王小明", "第一行\n第二行", "2026"));
+    // 長度、聲音、章節、封面、修改時間都不變
+    let after = probe(&ff, &src).await;
+    assert!(near(after.duration_sec.unwrap(), before.duration_sec.unwrap(), 0.05));
+    assert_eq!((after.width, after.has_audio), (before.width, Some(true)));
+    assert_eq!(starts(&after.chapters), starts(&before.chapters));
+    assert_eq!(std::fs::metadata(&src).unwrap().modified().unwrap(), mtime);
+    let info = |p: &Path| String::from_utf8_lossy(&Command::new(&ff).args(["-hide_banner", "-i"]).arg(p).output().unwrap().stderr).into_owned();
+    assert_eq!(info(&src).matches("(attached pic)").count(), 1, "{}", info(&src));
+    // 清空一欄 = 刪掉；沒給的欄位不動
+    crate::video_tags::write(Some(&ff), &s, &set(&[("artist", "")])).await.unwrap();
+    let tags = crate::video_tags::read(&ff, &s).await.unwrap();
+    assert_eq!((tags["artist"].as_str(), tags["title"].as_str()), ("", "報價單 = 怎麼填; #1"));
+    assert_eq!(info(&src).matches("(attached pic)").count(), 1);
 }
 
 #[tokio::test]

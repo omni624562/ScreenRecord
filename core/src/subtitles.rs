@@ -383,12 +383,26 @@ async fn transcribe_in(
         return Err(trf!("語音辨識失敗：{}", "Speech recognition failed: {}", if last_err.is_empty() { tr!("FFmpeg 結束時發生錯誤", "FFmpeg exited with an error").to_string() } else { last_err }));
     }
     progress.store(1000, Ordering::Relaxed);
-    Ok(tidy(parse_srt(&text)))
+    Ok(tidy(parse_srt(&text)).into_iter().filter(|c| !is_hallucination(&c.text)).collect())
 }
 
 /// 轉成繁體中文（台灣用詞）、去掉空白的段落與辨識不出來的標記
 pub fn tidy(cues: Vec<Cue>) -> Vec<Cue> {
     cues.into_iter().map(|c| Cue { text: traditional(c.text.trim()), ..c }).filter(|c| !c.text.is_empty() && !is_noise(&c.text) && c.end > c.start).collect()
+}
+
+/// whisper 在沒有說話（安靜、只有音樂）的地方常「聽」出訓練資料裡 YouTube 影片結尾的固定句子，
+/// 例如「請不吝點讚 訂閱 轉發 打賞支持明鏡與點點欄目」「字幕由 Amara.org 社群提供」。
+/// 只認一定是這種句子的特徵（打賞、Amara.org、明鏡與點點…），一般的「謝謝觀看」不算，免得刪到真的講的話
+fn is_hallucination(t: &str) -> bool {
+    let s: String = t.chars().filter(|c| c.is_alphanumeric()).collect::<String>().to_lowercase();
+    const ANY: [&str; 12] =
+        ["打賞", "明鏡與點點", "明鏡需要您的支持", "點點欄目", "amaraorg", "字幕志願者", "優優獨播劇場", "yoyotelevisionseries", "字幕由amara", "請不吝點讚", "請不吝點贊", "訂閱我的頻道"];
+    if ANY.iter().any(|k| s.contains(k)) {
+        return true;
+    }
+    // 「點讚」「訂閱」「轉發」同時出現兩個以上
+    ["點讚", "點贊", "訂閱", "轉發", "分享"].iter().filter(|k| s.contains(*k)).count() >= 2 || s.contains("likeandsubscribe") || (s.contains("subscribe") && s.contains("channel"))
 }
 
 /// whisper 在沒有說話時常輸出 [BLANK_AUDIO]、(音樂) 之類的標記
@@ -742,6 +756,23 @@ mod tests {
         // 舊的專案沒有這個欄位：用預設
         let s: SubStyle = serde_json::from_str("{}").unwrap();
         assert_eq!(s, SubStyle::default());
+    }
+
+    #[test]
+    fn drops_whisper_hallucinations() {
+        for t in [
+            "請不吝點讚 訂閱 轉發 打賞支持明鏡與點點欄目",
+            "字幕由 Amara.org 社群提供",
+            "請不吝點贊訂閱",
+            "優優獨播劇場——YoYo Television Series Exclusive",
+            "Please like and subscribe!",
+            "Subscribe to my channel",
+        ] {
+            assert!(is_hallucination(&traditional(t)), "{t}");
+        }
+        for t in ["謝謝觀看", "接下來點開設定", "把檔案分享給同事", "Thanks for watching", "訂單編號在右上角"] {
+            assert!(!is_hallucination(t), "{t}");
+        }
     }
 
     #[test]
