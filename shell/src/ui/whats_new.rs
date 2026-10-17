@@ -48,6 +48,15 @@ fn items(_app: &UiApp) -> Vec<(String, String, Try)> {
             Try::None,
         ),
         (
+            tr!("錄完通知 Jellyfin", "Notify Jellyfin").into(),
+            tr!(
+                "家裡有 Jellyfin 媒體伺服器的話：設定 →「錄完處理」的「複製」選它的媒體庫資料夾，再填網址和 API 金鑰，錄完複製好就通知它掃描，新影片馬上出現（影片資訊、封面、章節都會帶過去）。",
+                "If you run a Jellyfin media server: in Settings → After recording, set “Copy” to its library folder and fill in the address and API key. Jellyfin is told to scan as soon as the copy is done, so new videos (with their details, cover and chapters) show up right away."
+            )
+            .into(),
+            Try::None,
+        ),
+        (
             tr!("影片資訊", "Video details").into(),
             tr!(
                 "按檢視器上方的「影片資訊」，或錄影卡片「⋯」選單的「影片資訊」，改寫在影片檔裡的標題、作者、說明等；檔案總管的「內容 → 詳細資料」看得到。剪輯、加速版、壓縮另存時，影片資訊和封面都會一起帶上。",

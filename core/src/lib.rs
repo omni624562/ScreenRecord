@@ -49,6 +49,7 @@ pub mod input_overlay;
 pub mod input_overlay_win;
 pub mod instance;
 pub mod ipc;
+pub mod jellyfin;
 pub mod job;
 pub mod library;
 #[cfg(windows)]

@@ -38,6 +38,8 @@ pub struct AfterRecord {
     pub keep_audio: bool,
     /// 處理完複製到這個資料夾（雲端硬碟的同步資料夾、NAS）；空的 = 不複製
     pub copy_to: String,
+    /// 複製好之後通知 Jellyfin 重新掃描（有設定網址與 API 金鑰時）
+    pub jellyfin: Option<crate::jellyfin::Jellyfin>,
 }
 
 /// ui 設定裡「錄完複製到資料夾」的欄位名稱（是位置，不放進設定組合）
@@ -67,6 +69,7 @@ impl AfterRecord {
             speed: Some(n(UI_KEYS[7]) as u32).filter(|v| crate::edit::FAST_SPEEDS.contains(v)).map_or(0.0, f64::from),
             keep_audio: o.get("keepAudio").and_then(Value::as_bool).unwrap_or(true),
             copy_to: o.get(COPY_KEY).and_then(Value::as_str).unwrap_or("").trim().to_string(),
+            jellyfin: crate::jellyfin::Jellyfin::from_ui(ui),
         }
     }
 
@@ -425,7 +428,21 @@ impl App {
             let (ok, note) = match r {
                 Ok(n) => {
                     info!("[錄完自動處理] 複製 {n} 個檔案到 {}", after.copy_to);
-                    (true, trf!("複製 {n} 個檔案到「{}」", "copied {n} files to “{}”", folder_name(&after.copy_to)))
+                    let note = trf!("複製 {n} 個檔案到「{}」", "copied {n} files to “{}”", folder_name(&after.copy_to));
+                    // 複製到 Jellyfin 的媒體庫資料夾：請它馬上掃描（失敗只提示，檔案已經複製好了）
+                    match after.jellyfin.clone() {
+                        Some(jf) => match tokio::task::spawn_blocking(move || jf.refresh()).await.unwrap_or_else(|e| Err(e.to_string())) {
+                            Ok(()) => {
+                                info!("[錄完自動處理] 已通知 Jellyfin 掃描");
+                                (true, format!("{note}{}", tr!("，已通知 Jellyfin 掃描", ", Jellyfin notified to scan")))
+                            }
+                            Err(e) => {
+                                warn!("[錄完自動處理] 通知 Jellyfin 失敗：{e}");
+                                (false, format!("{note}{}", trf!("，但沒有通知到 Jellyfin：{e}", ", but couldn't notify Jellyfin: {e}")))
+                            }
+                        },
+                        None => (true, note),
+                    }
                 }
                 Err(e) => {
                     warn!("[錄完自動處理] 複製到 {} 失敗：{e}", after.copy_to);
