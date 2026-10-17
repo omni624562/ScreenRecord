@@ -39,6 +39,15 @@ enum Try {
 fn items(_app: &UiApp) -> Vec<(String, String, Try)> {
     vec![
         (
+            tr!("播放更順：mpv 播放元件", "Smoother playback: mpv component").into(),
+            tr!(
+                "到設定 →「外部元件」下載 mpv 播放元件（約 32 MB），檢視器改用 mpv 播放：顯示卡解碼、畫面直接畫在視窗裡，手機的 4K、60 fps 影片也跟 Windows 的播放器一樣順。不下載也可以照常播放。",
+                "Download the mpv component (about 32 MB) in Settings → Components and the viewer plays videos with mpv: decoded on the graphics card and drawn straight into the window, so even 4K 60 fps phone videos play as smoothly as in the Windows player. Videos still play without it."
+            )
+            .into(),
+            Try::Settings(settings_dialog::Page::Components),
+        ),
+        (
             tr!("設為封面", "Set as cover").into(),
             tr!(
                 "播放影片時停在想要的那一格，按上方的「設為封面」：檔案總管和多數播放器看到的縮圖就是這一格。影片內容不變，這一格不會被移到開頭。",

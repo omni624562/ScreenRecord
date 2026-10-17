@@ -1440,6 +1440,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f9f8bd3e56ce4dfc153cf470fffbfa98c7620958b312ca5c3a4b8d5181fd13c6"
 
 [[package]]
+name = "lzma-rust2"
+version = "0.22.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7277c9742229dc25243236d578b6471a798c554512c6f6a04365ec2e87c2a3bb"
+
+[[package]]
 name = "memchr"
 version = "2.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2403,17 +2409,19 @@ checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 
 [[package]]
 name = "screenrecorder-core"
-version = "3.32.2"
+version = "3.33.0"
 dependencies = [
  "arboard",
  "chrono",
  "image",
+ "libloading",
  "memmap2",
  "native-tls",
  "png",
  "regex",
  "serde",
  "serde_json",
+ "sevenz-rust2",
  "sha2",
  "tempfile",
  "tiny-skia",
@@ -2427,7 +2435,7 @@ dependencies = [
 
 [[package]]
 name = "screenrecorder-ui"
-version = "3.32.2"
+version = "3.33.0"
 dependencies = [
  "bytemuck",
  "chrono",
@@ -2527,6 +2535,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4e7523beb55eece201a2356bee0bbca0d1ab466c14c07703b2e0ee6d42cb0c2c"
 dependencies = [
  "serde_core",
+]
+
+[[package]]
+name = "sevenz-rust2"
+version = "0.24.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d6453a8fa345fc92002478a7ffb2102ebd0ce26f138bdd5746f0a53b3a84f14b"
+dependencies = [
+ "crc32fast",
+ "js-sys",
+ "lzma-rust2",
+ "wasm-bindgen",
 ]
 
 [[package]]

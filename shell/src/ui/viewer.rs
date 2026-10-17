@@ -1,17 +1,21 @@
 //! 內建檢視器（不必開 Windows 的相片 / 媒體播放器）：
 //! - 截圖：適合視窗 / 原尺寸、滾輪縮放、拖曳移動、上一張 / 下一張、複製到剪貼簿
-//! - 錄影（含加速版、GIF）：播放 / 暫停、拖曳進度、音量、播放速度、全螢幕、上一部 / 下一部、剪輯、製作加速版、壓縮
+//! - 錄影（含加速版、GIF）：播放 / 暫停、拖曳進度、音量、播放速度、全螢幕、上一部 / 下一部、剪輯、製作加速版、壓縮。
+//!   有 mpv 播放元件時用 mpv 播放（見 playback.rs），沒有時用 FFmpeg 解碼
 //! - 只有聲音的檔案（M4A）：播放聲音
 //!
 //! 都可以「用 Windows 開啟」、在資料夾中顯示、移到資源回收筒；視窗窄時不常用的按鈕收進「⋯」。
 
 use super::dialogs::{base_name, is_default_name, short_date, Ask};
+use super::playback::{Playback, VideoSurface};
 use super::theme::{self, Btn, Icon};
 use super::{EntryAction, UiApp};
 use eframe::egui::{self, pos2, vec2, Align, Align2, Color32, CornerRadius, Id, Key, Layout, Pos2, Rect, RichText, Sense, Stroke, TextureHandle, TextureOptions, Vec2};
 use screenrecorder_core::actions;
+use screenrecorder_core::components::{JobStatus, Kind};
 use screenrecorder_core::format::{format_bytes, short_clock, speed_label};
 use screenrecorder_core::library::{is_audio_name, is_image_name};
+use screenrecorder_core::mpv::{MpvPlayer, Start};
 use screenrecorder_core::player::{MediaSpec, Player};
 use screenrecorder_core::types::{LibraryEntry, LibraryFilter, LibraryQuery, LibrarySort, MediaInfo};
 use screenrecorder_core::{tr, trf};
@@ -42,8 +46,18 @@ pub struct Viewer {
     zoom: Option<f32>,
     pan: Vec2,
     /// 影片
-    player: Option<Player>,
+    player: Option<Playback>,
     video_tex: Option<TextureHandle>,
+    /// mpv 畫好第一張畫面之後：共用材質（UiApp::video_surface）的 id
+    mpv_tex: Option<egui::TextureId>,
+    /// mpv 要畫多大（上一次顯示的大小，像素）
+    video_px: [u32; 2],
+    /// 這個檔案 mpv 播不了：改用 FFmpeg 播放
+    no_mpv: Option<String>,
+    /// 按了提示的「下載」：下載好就改用 mpv 重新載入
+    mpv_waiting: bool,
+    /// 這次開啟時關掉了下載 mpv 的提示
+    mpv_hint_closed: bool,
     video_size: Vec2,
     /// 拖曳進度列時暫停，放開後若原本在播放就繼續
     seeking: Option<bool>,
@@ -80,6 +94,8 @@ impl Viewer {
         self.image = None;
         self.player = None;
         self.video_tex = None;
+        self.mpv_tex = None;
+        self.video_px = [0, 0];
         self.video_size = Vec2::ZERO;
         self.zoom = None;
         self.pan = Vec2::ZERO;
@@ -141,6 +157,11 @@ pub fn open(app: &mut UiApp, entry: LibraryEntry) {
         pan: Vec2::ZERO,
         player: None,
         video_tex: None,
+        mpv_tex: None,
+        video_px: [0, 0],
+        no_mpv: None,
+        mpv_waiting: false,
+        mpv_hint_closed: false,
         video_size: Vec2::ZERO,
         seeking: None,
         volume: VOLUME.load(Ordering::Relaxed) as f32 / 100.0,
@@ -238,6 +259,8 @@ fn load_current(app: &mut UiApp) {
                 return;
             }
             let Some(ffmpeg) = app.core.ffmpeg_path() else { return };
+            let gl = app.proc_address.clone().filter(|_| app.gl.is_some() && screenrecorder_core::mpv::available());
+            let software_gl = app.gl.as_ref().is_some_and(|g| super::playback::software_gl(g));
             let ctx = app.ctx.clone();
             let Some(v) = app.viewer.as_mut() else { return };
             v.loading = false;
@@ -250,16 +273,66 @@ fn load_current(app: &mut UiApp) {
             let (w, h) = (m.width.unwrap_or(1280), m.height.unwrap_or(720));
             let c = ctx.clone();
             let wake = Arc::new(move || c.request_repaint());
+            let rate = RATE.load(Ordering::Relaxed) as f64 / 100.0;
+            // 從說過的話開始：往前一點，聽得到整句
+            let start = v.start_at.take().map(|t| (t - 0.5).max(0.0)).unwrap_or(0.0);
+            v.video_size = vec2(w as f32, h as f32);
+            // 有 libmpv 就用 mpv 播（跟 Windows 的播放器一樣順）；只有聲音的檔案、mpv 播不了的檔案用 FFmpeg
+            if let Some(gl) = gl.filter(|_| !is_audio_name(&m.name) && v.no_mpv.as_deref() != Some(m.path.as_str())) {
+                match MpvPlayer::new(&m.path, spec.duration, Start { at: start, rate, volume: v.volume_now() }, wake.clone(), &gl, software_gl) {
+                    Ok(p) => {
+                        v.player = Some(Playback::Mpv { p, has_audio: spec.has_audio });
+                        return;
+                    }
+                    Err(e) => screenrecorder_core::info!("[檢視器] 無法用 mpv 播放，改用 FFmpeg：{e}"),
+                }
+            }
             let player = if is_audio_name(&m.name) { Player::new_audio(ffmpeg, spec, wake) } else { Player::new(ffmpeg, spec, w, h, DECODE_MAX.0, DECODE_MAX.1, wake) };
             player.set_volume(v.volume_now());
-            player.set_rate(RATE.load(Ordering::Relaxed) as f64 / 100.0);
-            // 從說過的話開始：往前一點，聽得到整句
-            player.seek(v.start_at.take().map(|t| (t - 0.5).max(0.0)).unwrap_or(0.0));
+            player.set_rate(rate);
+            player.seek(start);
             player.play();
-            v.video_size = vec2(w as f32, h as f32);
-            v.player = Some(player);
+            v.player = Some(Playback::Ff(player));
         },
     );
+}
+
+/// 每一格畫面開始時（介面執行緒、OpenGL context 是目前的）：mpv 有新畫面就畫到共用的材質；
+/// mpv 播不了（格式不支援、顯示卡不支援）就改用 FFmpeg 重新載入
+pub fn render(app: &mut UiApp, frame: &mut eframe::Frame) {
+    let Some(v) = app.viewer.as_mut() else { return };
+    let Some(Playback::Mpv { p, .. }) = v.player.as_mut() else { return };
+    p.poll();
+    let r = (|| -> Result<(), String> {
+        if let Some(e) = p.failed() {
+            return Err(e.to_string());
+        }
+        let Some(gl) = &app.gl else { return Err("沒有 OpenGL".into()) };
+        if app.video_surface.is_none() {
+            app.video_surface = Some(VideoSurface::new(gl, frame)?);
+        }
+        let surface = app.video_surface.as_mut().expect("剛建立");
+        // 還沒顯示過：先照影片大小（最大 1920 × 1080）
+        let size = if v.video_px[0] > 0 {
+            v.video_px
+        } else {
+            let (w, h) = screenrecorder_core::player::fit_size(v.video_size.x as u32, v.video_size.y as u32, DECODE_MAX.0, DECODE_MAX.1);
+            [w, h]
+        };
+        if surface.draw(p, size)? {
+            v.mpv_tex = Some(surface.id);
+        }
+        Ok(())
+    })();
+    if let Err(e) = r {
+        screenrecorder_core::info!("[檢視器] mpv 無法播放，改用 FFmpeg：{e}");
+        let t = v.player.as_ref().map(|p| p.time());
+        v.no_mpv = Some(v.cur().media.path.clone());
+        let path = v.cur().media.path.clone();
+        v.clear_media();
+        v.loading = true;
+        reload(app, &path, t);
+    }
 }
 
 /// 讀取截圖（PNG、JPG）；超過顯示卡材質上限時縮小
@@ -510,7 +583,7 @@ fn head_buttons(app: &UiApp, e: &LibraryEntry, image: bool, audio: bool) -> Vec<
 
 pub fn show(app: &mut UiApp, ctx: &egui::Context) {
     let Some(mut v) = app.viewer.take() else { return };
-    if let Some(f) = v.player.as_ref().and_then(|p| p.take_frame()) {
+    if let Some(f) = v.player.as_ref().and_then(|p| if let Playback::Ff(p) = p { p.take_frame() } else { None }) {
         let img = egui::ColorImage::from_rgba_unmultiplied([f.width as usize, f.height as usize], &f.rgba);
         match &mut v.video_tex {
             Some(t) => t.set(img, TextureOptions::LINEAR),
@@ -551,6 +624,28 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         (vec2((screen.width() - 32.0).max(600.0), (screen.height() - 32.0).max(400.0)), theme::modal_frame(ctx).inner_margin(0), egui::Modal::default_area(Id::new("viewer")))
     };
     let rel_thumbs: Vec<Option<TextureHandle>> = v.related.iter().take(16).map(|m| app.thumb(&m.path, m.mtime)).collect();
+    // 大影片（大於 1080p）用 FFmpeg 播放時：提示下載 mpv 播放元件（播放更順）
+    let mpv_job = app.core.component_status(Kind::Mpv);
+    if v.mpv_waiting && !mpv_job.running {
+        v.mpv_waiting = false;
+        if app.core.component_installed(Kind::Mpv) {
+            let (path, t) = (v.cur().media.path.clone(), v.player.as_ref().map(|p| p.time()));
+            app.viewer = Some(v);
+            if let Some(v) = app.viewer.as_mut() {
+                v.clear_media();
+                v.loading = true;
+            }
+            reload(app, &path, t);
+            return;
+        }
+    }
+    let show_hint = (cfg!(windows) || std::env::var("SCREENRECORDER_DEV").is_ok_and(|d| d.contains("mpvhint")))
+        && matches!(v.player, Some(Playback::Ff(_)))
+        && screenrecorder_core::player::big(v.video_size.x as u32, v.video_size.y as u32)
+        && !v.mpv_hint_closed
+        && !app.s.mpv_hint_off
+        && !app.core.component_installed(Kind::Mpv);
+    let (mut hint_download, mut hint_close, mut hint_never) = (false, false, false);
     let modal = egui::Modal::new(Id::new("viewer")).area(area).frame(frame).show(ctx, |ui| {
         ui.set_width(size.x);
         ui.set_height(size.y);
@@ -573,13 +668,16 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
             image_stage(&mut v, ui, &painter, stage, &resp);
         } else {
             video_stage(&mut v, &painter, stage, &resp, audio);
+            if show_hint {
+                mpv_hint(ui, stage, &mpv_job, &mut hint_download, &mut hint_close, &mut hint_never);
+            }
         }
         // 點兩下畫面：全螢幕
         if !image && resp.double_clicked() {
             let on = !v.full;
             set_full(&mut v, ui.ctx(), on);
         }
-        if v.loading && v.image.is_none() && v.video_tex.is_none() && !(audio && v.player.is_some()) {
+        if v.loading && v.image.is_none() && v.video_tex.is_none() && v.mpv_tex.is_none() && !(audio && v.player.is_some()) {
             painter.text(stage.center(), Align2::CENTER_CENTER, tr!("讀取中…", "Loading…"), theme::font(14.0), Color32::from_gray(200));
         }
         if let Some(err) = &v.error {
@@ -630,6 +728,17 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
     if modal.should_close() && app.ask.is_none() {
         v.close = true;
     }
+    if hint_download {
+        v.mpv_waiting = true;
+        app.core.component_download(Kind::Mpv);
+    }
+    if hint_close || hint_never {
+        v.mpv_hint_closed = true;
+    }
+    if hint_never {
+        app.s.mpv_hint_off = true;
+        app.save_settings();
+    }
     if v.close {
         if v.full {
             ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
@@ -638,6 +747,38 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
     }
     app.viewer = Some(v);
     run_act(app, act);
+}
+
+/// 畫面上方的提示：下載 mpv 播放元件讓大影片播放更順（下載中顯示進度）
+fn mpv_hint(ui: &mut egui::Ui, stage: Rect, job: &JobStatus, download: &mut bool, close: &mut bool, never: &mut bool) {
+    let w = (stage.width() - 32.0).min(560.0);
+    let r = Rect::from_min_size(pos2(stage.center().x - w / 2.0, stage.min.y + 12.0), vec2(w, 40.0));
+    ui.painter().rect_filled(r, CornerRadius::same(8), Color32::from_black_alpha(200));
+    ui.scope_builder(egui::UiBuilder::new().max_rect(r.shrink2(vec2(12.0, 6.0))).layout(Layout::left_to_right(Align::Center)), |ui| {
+        ui.spacing_mut().item_spacing.x = 8.0;
+        if job.running {
+            ui.label(RichText::new(trf!("正在下載 mpv 播放元件 {}%…", "Downloading the mpv component {}%…", (job.progress * 100.0).floor() as u32)).font(theme::font(12.5)).color(Color32::WHITE));
+            ui.ctx().request_repaint_after(std::time::Duration::from_millis(250));
+            return;
+        }
+        let text = match &job.error {
+            Some(e) => trf!("下載失敗：{}", "Download failed: {}", e),
+            None => trf!("大影片卡卡的？下載 mpv 播放元件（約 {} MB）播放會更順", "Large video stuttering? Download the mpv component (about {} MB) for smoother playback", Kind::Mpv.mb()),
+        };
+        ui.add(egui::Label::new(RichText::new(text).font(theme::font(12.5)).color(Color32::WHITE)).truncate());
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            if Btn::icon_only(Icon::Close).ghost().small().tooltip(tr!("這次先不要", "Not now")).show(ui).clicked() {
+                *close = true;
+            }
+            if Btn::new(tr!("不再提示", "Don't ask again")).ghost().small().show(ui).clicked() {
+                *never = true;
+            }
+            let label = if job.error.is_some() { tr!("重試", "Retry") } else { tr!("下載", "Download") };
+            if Btn::new(label).primary().small().icon(Icon::Download).show(ui).clicked() {
+                *download = true;
+            }
+        });
+    });
 }
 
 /// 相關的截圖：一列小縮圖（同一個程式、時間接近、有共同的詞、長得像）；回傳點了第幾張
@@ -978,10 +1119,10 @@ fn keyboard(v: &mut Viewer, ctx: &egui::Context, act: &mut Act) {
             p.seek(0.0);
         }
         if i.key_pressed(Key::End) {
-            p.seek((p.spec().duration - 0.1).max(0.0));
+            p.seek((p.duration() - 0.1).max(0.0));
         }
         // M 靜音；↑↓ 音量（每次 10%）
-        if p.spec().has_audio {
+        if p.has_audio() {
             if i.key_pressed(Key::M) {
                 v.muted = !v.muted;
             }
@@ -1006,12 +1147,12 @@ fn keyboard(v: &mut Viewer, ctx: &egui::Context, act: &mut Act) {
     }
 }
 
-fn toggle_play(p: &Player) {
+fn toggle_play(p: &Playback) {
     if p.is_playing() {
         p.pause();
     } else {
         // 播完了：從頭播
-        if p.time() >= p.spec().duration - 0.05 {
+        if p.time() >= p.duration() - 0.05 {
             p.seek(0.0);
         }
         p.play();
@@ -1108,11 +1249,20 @@ fn video_stage(v: &mut Viewer, painter: &egui::Painter, stage: Rect, resp: &egui
         painter.circle_filled(c, 56.0, Color32::from_gray(48));
         theme::paint_icon(painter, Rect::from_center_size(c, vec2(56.0, 56.0)), Icon::Speaker, Color32::from_gray(220));
         painter.text(c + vec2(0.0, 84.0), Align2::CENTER_CENTER, tr!("只有聲音", "Audio only"), theme::font(14.0), Color32::from_gray(200));
-    } else if let Some(tex) = &v.video_tex {
-        let src = if v.video_size.x > 0.0 { v.video_size } else { tex.size_vec2() };
+    } else if let Some((id, size, uv)) = v
+        .video_tex
+        .as_ref()
+        .map(|t| (t.id(), t.size_vec2(), Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0))))
+        // mpv 上下顛倒地畫（不顛倒時直拍的影片在某些 mpv 版本畫不出來）：顯示時再翻回來
+        .or(v.mpv_tex.map(|id| (id, v.video_size, Rect::from_min_max(pos2(0.0, 1.0), pos2(1.0, 0.0)))))
+    {
+        let src = if v.video_size.x > 0.0 { v.video_size } else { size };
         let k = ((stage.width() - 24.0) / src.x).min((stage.height() - 24.0) / src.y);
         let r = Rect::from_center_size(stage.center(), src * k);
-        painter.image(tex.id(), r, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+        painter.image(id, r, uv, Color32::WHITE);
+        // mpv 照顯示的大小（像素）畫，縮放由 mpv 在顯示卡上做
+        let ppp = painter.ctx().pixels_per_point();
+        v.video_px = [(r.width() * ppp).round() as u32, (r.height() * ppp).round() as u32];
     } else {
         return;
     }
@@ -1133,7 +1283,7 @@ fn video_bar(v: &mut Viewer, ui: &mut egui::Ui, act: &mut Act) {
     let full = v.full;
     let Some(player) = &v.player else { return };
     let playing = player.is_playing();
-    let dur = player.spec().duration.max(0.001);
+    let dur = player.duration().max(0.001);
     let t = player.time().min(dur);
     let tip = if playing { tr!("暫停（空白鍵）", "Pause (Space)") } else { tr!("播放（空白鍵）", "Play (Space)") };
     if Btn::icon_only(if playing { Icon::Pause } else { Icon::Play }).small().tooltip(tip).show(ui).clicked() {
@@ -1226,7 +1376,7 @@ fn video_bar(v: &mut Viewer, ui: &mut egui::Ui, act: &mut Act) {
     let Some(player) = &v.player else { return };
     // 音量
     ui.add_space(4.0);
-    let has_audio = player.spec().has_audio;
+    let has_audio = player.has_audio();
     let icon_tip = if !has_audio {
         tr!("這個影片沒有聲音", "This video has no audio")
     } else if v.muted {

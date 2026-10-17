@@ -59,6 +59,8 @@ pub mod longshot;
 pub mod look;
 pub mod meter;
 pub mod monitors;
+pub mod mpv;
+pub mod mpv_download;
 pub mod naming;
 pub mod narration;
 pub mod ocr;

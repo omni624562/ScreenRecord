@@ -13,6 +13,7 @@ pub mod library_dialog;
 pub mod main_view;
 pub mod notes;
 pub mod ocr;
+pub mod playback;
 pub mod presets;
 pub mod preview;
 pub mod replay;
@@ -202,6 +203,10 @@ pub struct UiApp {
     pub export_dlg: Option<export_dialog::ExportDialog>,
     pub library: Option<library_dialog::LibraryDialog>,
     pub viewer: Option<viewer::Viewer>,
+    /// 介面的 OpenGL（mpv 直接畫進材質，見 playback.rs）
+    pub gl: Option<Arc<eframe::glow::Context>>,
+    pub proc_address: Option<screenrecorder_core::mpv::ProcAddress>,
+    pub video_surface: Option<playback::VideoSurface>,
     /// 主畫面內播放（最近錄影的播放鍵）
     pub inline: Option<inline_play::Inline>,
     /// 文字辨識的結果
@@ -312,6 +317,9 @@ impl UiApp {
             export_dlg: None,
             library: None,
             viewer: None,
+            gl: cc.gl.clone(),
+            proc_address: cc.get_proc_address.clone(),
+            video_surface: None,
             inline: None,
             ocr: None,
             meter: None,
@@ -1203,7 +1211,8 @@ impl eframe::App for UiApp {
         }
     }
 
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        viewer::render(self, frame);
         // 關到系統匣（視窗隱藏）時什麼都不畫：eframe 只看「縮小 / 被蓋住」判斷看不看得到，
         // 隱藏的視窗仍會一直呼叫這裡；畫主畫面會重新開始即時預覽，背景就一直有 FFmpeg 在擷取桌面
         if !self.visible {
