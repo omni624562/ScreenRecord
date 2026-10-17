@@ -755,7 +755,7 @@ pub fn copy_results(video: &str, output: Option<&str>, dest: &Path) -> Result<us
             None => (name.clone(), String::new()),
         };
         let to = crate::paths::unique_path(dest, &stem, &ext);
-        std::fs::copy(f, &to).map_err(|e| e.to_string())?;
+        crate::paths::copy_keep_time(f, &to).map_err(|e| e.to_string())?;
     }
     Ok(files.len())
 }

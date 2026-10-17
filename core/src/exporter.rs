@@ -149,7 +149,8 @@ impl Exporter {
             if scaled { format!("，寬 {w}") } else { String::new() },
             if limit { format!("，{} MB 以內", num(max_mb)) } else { String::new() }
         );
-        self.run_with_cleanup(ExportKind::Speed, &ffmpeg, args, source, &output, speed, out_sec, &note, Finish { cleanup, replace: None, on_saved: None, cwd: None, cover })
+        let time = recorded_at(&ffmpeg, &[source.to_string()]).await;
+        self.run_with_cleanup(ExportKind::Speed, &ffmpeg, args, source, &output, speed, out_sec, &note, Finish { cleanup, replace: None, on_saved: None, cwd: None, cover, time })
     }
 
     /// 動圖：GIF 或 WebP（可同時加速；無聲音）
@@ -188,7 +189,8 @@ impl Exporter {
         let note = format!("{}寬 {}、{} fps{}", if speed > 1.0 { format!("{}×，", speed_label(speed)) } else { String::new() }, num(shown_w), num(fps), if bounce { "，來回播放" } else { "" });
         let kind = if format == ExportFormat::Webp { ExportKind::Webp } else { ExportKind::Gif };
         let total = if bounce { output_sec * 2.0 } else { output_sec };
-        self.run(kind, &ffmpeg, args, source, &output, speed, total, &note)
+        let time = recorded_at(&ffmpeg, &[source.to_string()]).await;
+        self.run(kind, &ffmpeg, args, source, &output, speed, total, &note, time)
     }
 
     /// 剪輯：剪頭尾、刪除中間片段、裁切畫面，另存成 *_cut.mp4
@@ -230,7 +232,9 @@ impl Exporter {
         let mut args = crate::args::merge_args(&inputs, &output.display().to_string(), w, h, fps, &enc);
         crate::args::drop_chapters(&mut args);
         let note = format!("合併 {} 支錄影", inputs.len());
-        self.run_with_cleanup(ExportKind::Merge, &ffmpeg, args, &list[0].0, &output, 1.0, total, &note, Finish { cleanup: None, replace: None, on_saved: None, cwd: None, cover: None })
+        // 合併：用最早的那支錄的時間
+        let time = recorded_at(&ffmpeg, &list.iter().map(|(p, _)| p.clone()).collect::<Vec<_>>()).await;
+        self.run_with_cleanup(ExportKind::Merge, &ffmpeg, args, &list[0].0, &output, 1.0, total, &note, Finish { time, ..Finish::default() })
     }
 
     /// 轉成 MP4（MOV、MKV… 或拖進來的影片）：存到 dir（None = 和原檔同一個資料夾），同名時加 _2；原檔不動。
@@ -254,7 +258,8 @@ impl Exporter {
         let output = crate::paths::unique_path(&dir.unwrap_or_else(|| parent(source)), &stem, ".mp4");
         let args = crate::import::convert_args(source, &output.display().to_string(), copy, &enc);
         let note = format!("轉成 MP4（{}，{}）", codec.as_deref().unwrap_or("?"), if copy { "不重新壓縮" } else { "重新壓縮" });
-        self.run(ExportKind::Convert, &ffmpeg, args, source, &output, 1.0, info.duration_sec.unwrap_or(0.0), &note)
+        let time = recorded_at(&ffmpeg, &[source.to_string()]).await;
+        self.run(ExportKind::Convert, &ffmpeg, args, source, &output, 1.0, info.duration_sec.unwrap_or(0.0), &note, time)
     }
 
     pub async fn start_cut(&self, ctx: &ExportCtx, source: &str, spec: &EditSpec, replace: Option<&str>, on_saved: Option<OnSaved>) -> Result<ExportStatus> {
@@ -550,7 +555,8 @@ impl Exporter {
         let cwd = (cursor.is_some() || follow || more.stamp.is_some()).then(|| temp.clone()).flatten();
         // 原影片設過封面就帶上（最寬 1280；直式影片、裁切後仍用原本那一格）
         let cover = crate::cover::extract_cover(&ffmpeg, source, &output, 1280).await.map(|c| c.0);
-        let finish = Finish { cleanup: temp, replace: target.map(PathBuf::from), on_saved, cwd, cover };
+        let time = recorded_at(&ffmpeg, &[source.to_string()]).await;
+        let finish = Finish { cleanup: temp, replace: target.map(PathBuf::from), on_saved, cwd, cover, time };
         self.run_with_cleanup(ExportKind::Cut, &ffmpeg, args, source, &output, 1.0, length, &note, finish)
     }
 
@@ -589,14 +595,30 @@ impl Exporter {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn run(&self, kind: ExportKind, ffmpeg: &Path, args: Vec<String>, source: &str, output: &Path, speed: f64, expected_sec: f64, note: &str) -> Result<ExportStatus> {
-        self.run_with_cleanup(kind, ffmpeg, args, source, output, speed, expected_sec, note, Finish::default())
+    #[allow(clippy::too_many_arguments)]
+    fn run(
+        &self,
+        kind: ExportKind,
+        ffmpeg: &Path,
+        args: Vec<String>,
+        source: &str,
+        output: &Path,
+        speed: f64,
+        expected_sec: f64,
+        note: &str,
+        time: Option<std::time::SystemTime>,
+    ) -> Result<ExportStatus> {
+        self.run_with_cleanup(kind, ffmpeg, args, source, output, speed, expected_sec, note, Finish { time, ..Finish::default() })
     }
 
     /// output：FFmpeg 寫入的檔案；finish：結束後的處理（見 Finish）
     #[allow(clippy::too_many_arguments)]
     fn run_with_cleanup(&self, kind: ExportKind, ffmpeg: &Path, args: Vec<String>, source: &str, output: &Path, speed: f64, expected_sec: f64, note: &str, finish: Finish) -> Result<ExportStatus> {
-        let Finish { cleanup, replace, on_saved, cwd, cover } = finish;
+        let Finish { cleanup, replace, on_saved, cwd, cover, time } = finish;
+        let mut args = args;
+        if let Some(t) = time {
+            set_creation_time(&mut args, t);
+        }
         let remove_temp = |dir: &Option<PathBuf>| {
             if let Some(d) = dir {
                 let _ = std::fs::remove_dir_all(d);
@@ -744,6 +766,9 @@ impl Exporter {
                             }
                         }
                     }
+                    if let Some(t) = time {
+                        crate::paths::set_mtime(&fin, t);
+                    }
                     j.status.output = fin.display().to_string();
                     j.status.message = Some(trf!("已儲存 {}{note}", "Saved {}{note}", j.status.output));
                     saved = Some(j.status.output.clone());
@@ -789,6 +814,30 @@ pub struct CutOptions {
 }
 
 /// 工作結束後的處理
+/// 影片「錄的時間」：影片裡的建立時間（手機影片是拍攝時間；creation_time），沒有時用檔案的修改時間。
+/// 好幾支時取最早的（合併）
+async fn recorded_at(ffmpeg: &Path, paths: &[String]) -> Option<std::time::SystemTime> {
+    let mut best: Option<std::time::SystemTime> = None;
+    for p in paths {
+        let args = ["-hide_banner".to_string(), "-i".into(), p.clone()];
+        let r = crate::process::run(ffmpeg, &args, std::time::Duration::from_secs(20)).await;
+        let t = crate::args::parse_creation_time(&r.stderr).or_else(|| std::fs::metadata(p).and_then(|m| m.modified()).ok());
+        if let Some(t) = t {
+            best = Some(best.map_or(t, |b| b.min(t)));
+        }
+    }
+    best
+}
+
+/// 輸出加上建立時間（放在輸出檔名前面；GIF、WebP 沒有這個欄位，FFmpeg 會略過）
+fn set_creation_time(args: &mut Vec<String>, t: std::time::SystemTime) {
+    let Some(out) = args.pop() else { return };
+    let utc: chrono::DateTime<chrono::Utc> = t.into();
+    args.push("-metadata".into());
+    args.push(format!("creation_time={}", utc.format("%Y-%m-%dT%H:%M:%S%.6fZ")));
+    args.push(out);
+}
+
 /// 輸出寫入章節：章節檔放在暫存資料夾（沒有就建一個），回傳要清掉的暫存資料夾。
 /// 沒有章節時明確不要章節（FFmpeg 預設會照抄來源的章節，時間會對不上）
 fn remove_dir(dir: &Option<PathBuf>) {
@@ -833,6 +882,9 @@ struct Finish {
     cwd: Option<PathBuf>,
     /// 完成後寫進輸出當封面的圖檔（加速版、壓縮帶上原影片的封面；結束後刪掉）
     cover: Option<PathBuf>,
+    /// 原影片錄的時間：寫進輸出的建立時間（creation_time），完成後也設成檔案的修改時間，
+    /// 清單、檔案總管、Jellyfin 才會排在原影片旁邊，而不是「做好的時間」
+    time: Option<std::time::SystemTime>,
 }
 
 /// 標註最多幾個（避免濾鏡圖過大；字幕一段就是一個）

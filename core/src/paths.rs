@@ -67,6 +67,22 @@ pub fn timestamp() -> String {
     chrono::Local::now().format("%Y-%m-%d_%H-%M-%S").to_string()
 }
 
+/// 設定檔案的修改時間（失敗就算了：只影響排序）
+pub fn set_mtime(path: &Path, t: std::time::SystemTime) {
+    if let Ok(f) = std::fs::File::options().write(true).open(path) {
+        let _ = f.set_modified(t);
+    }
+}
+
+/// 複製檔案並保留修改時間（傳到 NAS 的那一份和原檔同一個時間）
+pub fn copy_keep_time(from: &Path, to: &Path) -> std::io::Result<u64> {
+    let n = std::fs::copy(from, to)?;
+    if let Ok(t) = std::fs::metadata(from).and_then(|m| m.modified()) {
+        set_mtime(to, t);
+    }
+    Ok(n)
+}
+
 /// 現在時間（Unix 毫秒）
 /// 暫存檔、暫存資料夾的路徑（系統暫存資料夾裡）：程序編號＋時間＋流水號，同一毫秒同時開始的工作也不會撞名
 pub fn unique_temp(prefix: &str, ext: &str) -> PathBuf {

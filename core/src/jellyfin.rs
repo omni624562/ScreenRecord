@@ -110,7 +110,7 @@ pub fn sync_edited(jf: Option<&Jellyfin>, copy_to: &str, video: &std::path::Path
         if !dest.is_file() {
             return None;
         }
-        if let Err(e) = std::fs::copy(video, &dest) {
+        if let Err(e) = crate::paths::copy_keep_time(video, &dest) {
             crate::warn!("[Jellyfin] 更新 {} 失敗：{e}", dest.display());
             return Some(Err(trf!("沒有更新「複製」資料夾裡的那一份：{e}", "Couldn't update the copy in the “Copy” folder: {e}")));
         }
@@ -151,7 +151,7 @@ pub fn send_file(jf: Option<&Jellyfin>, copy_to: &str, file: &std::path::Path) -
         let copied = std::fs::create_dir_all(lib).and_then(|_| {
             for f in &files {
                 if let Some(n) = f.file_name() {
-                    std::fs::copy(f, lib.join(n))?;
+                    crate::paths::copy_keep_time(f, &lib.join(n))?;
                 }
             }
             Ok(())

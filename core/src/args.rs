@@ -1686,6 +1686,17 @@ static FPS_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r",\s*(\d+(?:\.\d+)
 static AUDIO_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"Stream #\S+.*?Audio:").unwrap());
 static ROTATION_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"rotation of (-?\d+(?:\.\d+)?) degrees").unwrap());
 
+static CREATION_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?m)^\s*creation_time\s*:\s*(\S+)").unwrap());
+
+/// `ffmpeg -i file` 的 stderr 裡整個檔案的建立時間（Stream 之前的那一段；手機影片是拍攝時間）
+pub fn parse_creation_time(stderr: &str) -> Option<std::time::SystemTime> {
+    let head = &stderr[..stderr.find("Stream #").unwrap_or(stderr.len())];
+    let s = CREATION_RE.captures(head)?.get(1)?.as_str().trim();
+    let t = chrono::DateTime::parse_from_rfc3339(s).ok()?;
+    // 1970 年（有些程式寫 0）不算
+    (t.timestamp() > 86_400).then(|| t.with_timezone(&chrono::Utc).into())
+}
+
 /// 解析 `ffmpeg -i file` 的 stderr：長度、解析度、fps、有無聲音
 pub fn parse_media_info(stderr: &str) -> ParsedMedia {
     let duration_sec = DURATION_RE.captures(stderr).map(|d| d[1].parse::<f64>().unwrap_or(0.0) * 3600.0 + d[2].parse::<f64>().unwrap_or(0.0) * 60.0 + d[3].parse::<f64>().unwrap_or(0.0));
@@ -2353,6 +2364,12 @@ dummy: Immediate exit requested";
         let first3: Vec<&str> = stderr.lines().take(3).collect();
         assert!(!parse_media_info(&first3.join("\n")).has_audio);
         // WebP 動圖：檔頭沒有長度，另外量
+        // 建立時間：只看整個檔案的（Stream 之前），1970 年不算
+        let ct = "Input #0, mov,mp4, from 'a.mp4':\n  Metadata:\n    creation_time   : 2025-09-10T07:02:28.000000Z\n  Duration: 00:00:03.00\n  Stream #0:0: Video: h264, 1920x1080\n    Metadata:\n      creation_time   : 2030-01-01T00:00:00.000000Z";
+        let t: chrono::DateTime<chrono::Utc> = parse_creation_time(ct).unwrap().into();
+        assert_eq!(t.to_rfc3339(), "2025-09-10T07:02:28+00:00");
+        assert!(parse_creation_time("  Metadata:\n    creation_time   : 1970-01-01T00:00:00.000000Z\n").is_none());
+        assert!(parse_creation_time("  Stream #0:0: Video\n      creation_time   : 2030-01-01T00:00:00Z").is_none());
         // 手機直拍：檔案是 1920x1080 加上旋轉標記 → 看到的是 1080x1920；下一條串流的旋轉不算
         let phone = "  Stream #0:0[0x1](und): Video: h264 (High) (avc1 / 0x31637661), yuv420p(tv, bt709, progressive), 1920x1080, 20000 kb/s, 30 fps\n    Metadata:\n      handler_name    : VideoHandle\n    Side data:\n      displaymatrix: rotation of -90.00 degrees\n  Stream #0:1[0x2](eng): Audio: aac (LC), 48000 Hz, stereo, fltp, 256 kb/s (default)";
         let m = parse_media_info(phone);

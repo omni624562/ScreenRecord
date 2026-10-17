@@ -1283,6 +1283,56 @@ async fn cover_carries_over_to_exports() {
     assert!(left.is_empty(), "{left:?}");
 }
 
+/// 另存的影片用原影片錄的時間：影片裡的建立時間（手機影片的拍攝時間）優先，沒有時用檔案的修改時間；
+/// 合併用最早的那支。寫進輸出的 creation_time，檔案的修改時間也一樣
+#[tokio::test]
+async fn exports_keep_the_recording_time() {
+    let Some(ff) = ffmpeg() else { return };
+    if !has(&ff, "-encoders", "libx264") {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let phone = dir.path().join("PXL_20250910.mp4");
+    let rec = dir.path().join("Rec_2026-01-02_10-00-00.mp4");
+    let src = |out: &Path, extra: &[&str]| {
+        let mut a = vec!["-f", "lavfi", "-i", "testsrc=s=320x240:r=30", "-f", "lavfi", "-i", "sine", "-t", "2", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac"];
+        a.extend_from_slice(extra);
+        let o = out.display().to_string();
+        a.push(&o);
+        run_ok(&ff, &a);
+    };
+    // 手機影片：裡面記著 2025-09-10 拍的；檔案本身是剛剛複製過來的（修改時間是現在）
+    src(&phone, &["-metadata", "creation_time=2025-09-10T07:02:28Z"]);
+    // 一般錄影：沒有建立時間，檔案的修改時間是 2026-01-02
+    src(&rec, &[]);
+    let rec_time = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_767_348_000);
+    crate::paths::set_mtime(&rec, rec_time);
+    let phone_time = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_757_487_748);
+    let created = |p: &Path| {
+        let o = Command::new(&ff).args(["-hide_banner", "-i"]).arg(p).output().unwrap();
+        crate::args::parse_creation_time(&String::from_utf8_lossy(&o.stderr))
+    };
+    let mtime = |p: &Path| std::fs::metadata(p).unwrap().modified().unwrap();
+    let c = ctx(&ff);
+    let ex = Exporter::new();
+    // 加速版（手機影片）：拍攝時間
+    ex.start(&c, &phone.display().to_string(), 2.0, true, 0.0, 0.0).await.unwrap();
+    let fast = finish(&ex).await;
+    assert_eq!((created(&fast), mtime(&fast)), (Some(phone_time), phone_time));
+    // 剪輯（一般錄影）：檔案的修改時間
+    ex.start_cut(&c, &rec.display().to_string(), &EditSpec { start: 0.0, end: 1.5, ..Default::default() }, None, None).await.unwrap();
+    let cut = finish(&ex).await;
+    assert_eq!((created(&cut), mtime(&cut)), (Some(rec_time), rec_time));
+    // 合併（一般錄影在前）：最早的那支（手機影片 2025-09-10）
+    ex.start_merge(&c, &[rec.display().to_string(), phone.display().to_string()]).await.unwrap();
+    let merged = finish(&ex).await;
+    assert_eq!((created(&merged), mtime(&merged)), (Some(phone_time), phone_time));
+    // 傳到 NAS 的那一份：和本機的同一個時間
+    let nas = dir.path().join("nas");
+    crate::jellyfin::send_file(None, &nas.display().to_string(), &cut).unwrap().unwrap();
+    assert_eq!(mtime(&nas.join(cut.file_name().unwrap())), rec_time);
+}
+
 /// 影片資訊（標題、作者、說明）在另存時跟著帶過去：加速版、壓縮、剪輯（各種效果）、WebM、直式、合併
 #[tokio::test]
 async fn video_details_carry_over_to_exports() {
