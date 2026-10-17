@@ -3,7 +3,7 @@
 //! 勾選原檔時連同底下的加速版一起勾選，可再個別取消。
 //! 截圖用縮圖格：點縮圖開啟。
 
-use super::dialogs::{base_name, date_labels, day_label, entry_time, file_name, is_cut_name, is_default_name, short_date, time_labels, Ask};
+use super::dialogs::{base_name, date_labels, day_label, day_parts, entry_time, file_name, is_cut_name, is_default_name, short_date, time_labels, Ask};
 use super::theme::{self, chip, Btn, Icon, Tone};
 use super::{EntryAction, ToastAction, UiApp};
 use eframe::egui::{self, pos2, vec2, Align, Color32, CornerRadius, Id, Layout, Rect, RichText, Sense, Stroke, UiBuilder, Vec2};
@@ -18,7 +18,7 @@ use screenrecorder_core::types::{
     LIBRARY_ROW_MAIN_PX, LIBRARY_ROW_SUB_PX,
 };
 use screenrecorder_core::{tr, trf};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
 mod batch;
@@ -909,8 +909,11 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
             d.dirty = true;
         }
         d.ocr_running = ocr.is_some();
-        if n > 0 || ocr.filter(|(_, all)| *all > 0).is_none() {
+        if n > 0 {
             fui.label(theme::muted(fui, hint));
+        } else if !hint.is_empty() && ocr.filter(|(_, all)| *all > 0).is_none() {
+            // 沒勾選時操作說明收起來，滑鼠移上去才看
+            fui.label(theme::muted(fui, tr!("多選小技巧", "Multi-select tips"))).on_hover_text(hint);
         }
         if n > 0 && Btn::new(tr!("移到資源回收筒", "Move to Recycle Bin")).icon(Icon::Trash).danger().small().show(fui).clicked() {
             req = Some(Req::DeleteSelected);
@@ -952,8 +955,17 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
             fui.label(RichText::new(trf!("一次處理中（第 {i}/{n} 支）…", "Processing {i} of {n}…")).font(theme::font_bold(12.5)).color(p.accent));
         }
         if let Some(frac) = merging {
+            // 進度條＋百分比＋取消（原本只有一行小字，很容易錯過）
             fui.add_space(8.0);
-            fui.label(RichText::new(trf!("合併中 {:.0}%…", "Merging {:.0}%…", frac * 100.0)).font(theme::font_bold(12.5)).color(p.accent));
+            fui.label(RichText::new(tr!("合併中", "Merging")).font(theme::font_bold(12.5)).color(p.accent));
+            let (bar, _) = fui.allocate_exact_size(vec2(120.0, 6.0), Sense::hover());
+            fui.painter().rect_filled(bar, CornerRadius::same(3), p.surface2);
+            fui.painter().rect_filled(Rect::from_min_size(bar.min, vec2(bar.width() * (frac as f32).clamp(0.0, 1.0), bar.height())), CornerRadius::same(3), p.accent);
+            fui.label(RichText::new(format!("{:.0}%", frac * 100.0)).font(theme::font_bold(12.5)).color(p.accent));
+            if Btn::new(tr!("取消", "Cancel")).small().ghost().tooltip(tr!("停止合併（做到一半的檔案會刪掉）", "Stop merging (the unfinished file is deleted)")).show(fui).clicked() {
+                let _ = app.core.exporter.cancel();
+            }
+            ctx.request_repaint_after(std::time::Duration::from_millis(500));
         }
         // 拼成一張一次最多 20 張
         if shot
@@ -1363,7 +1375,7 @@ fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table:
     let (ctrl, shift) = multi_mods(ui);
     select_all_key(app, ui, d, &order);
     // 勾選、日期、檔案、長度、解析度、大小、操作
-    let cols = [36.0, 104.0, 0.0, 70.0, 104.0, 90.0, 166.0];
+    let cols = [36.0, 104.0, 0.0, 70.0, 86.0, 90.0, 166.0];
     let name_w = table.width() - cols.iter().sum::<f32>();
     let col_x = |i: usize| -> f32 {
         let widths = [cols[0], cols[1], name_w, cols[3], cols[4], cols[5], cols[6]];
@@ -1397,8 +1409,20 @@ fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table:
     // 內容
     let mut y = table.min.y + head_h + 2.0;
     let times = time_labels(rows.iter().map(|e| (e.media.name.as_str(), e.media.time_ms())));
-    // 時間欄固定寬度（這一頁最長的時間），檔名才會切齊
-    let time_w = times.values().map(|(_, t)| ui.fonts_mut(|f| f.layout_no_wrap(t.clone(), theme::font_bold(13.0), p.text).size().x)).fold(0.0_f32, f32::max);
+    // 時間一律寫「時:分」；同一分鐘有好幾支時，後面用淡色小字補秒數。欄寬固定，檔名才會切齊
+    let hm_w = ui.fonts_mut(|f| f.layout_no_wrap("00:00".into(), theme::font_bold(13.0), p.text).size().x);
+    let sec_w = ui.fonts_mut(|f| f.layout_no_wrap(":00".into(), theme::font(11.0), p.muted).size().x);
+    let time_w = hm_w + if times.values().any(|(_, t)| t.len() > 5) { sec_w + 1.0 } else { 0.0 };
+    // 每一天（這一頁）的支數、總長度、總大小：日期欄第二行與提示
+    let mut days: HashMap<chrono::NaiveDate, (usize, f64, u64)> = HashMap::new();
+    for e in &rows {
+        if let Some((dd, _)) = times.get(&e.media.name) {
+            let x = days.entry(*dd).or_default();
+            x.0 += 1;
+            x.1 += e.media.duration_sec.unwrap_or(0.0);
+            x.2 += e.media.bytes;
+        }
+    }
     // 檔名開始的位置（主列：縮圖、時間之後；加速版子列也對齊這裡）
     let name_x = col_x(2) + 4.0 + 53.0 + 10.0 + time_w + 12.0;
     let today = chrono::Local::now().date_naive();
@@ -1455,7 +1479,38 @@ fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table:
         }
         if new_day {
             if let Some(dd) = day {
-                painter.text(pos2(col_x(1) + 6.0, row.center().y), egui::Align2::LEFT_CENTER, day_label(dd, today), theme::font_bold(13.0), p.text);
+                // 第一行「12/30 週二」；第二行淡色小字：年份（不是今年時）、這天有幾支
+                let (main, year) = day_parts(dd, today);
+                let (cnt, dur, bytes) = days.get(&dd).copied().unwrap_or_default();
+                let mut sub: Vec<String> = year.into_iter().collect();
+                if cnt > 1 {
+                    sub.push(trf!("{cnt} 支", "{cnt} videos"));
+                }
+                let x = col_x(1) + 6.0;
+                if sub.is_empty() {
+                    painter.text(pos2(x, row.center().y), egui::Align2::LEFT_CENTER, &main, theme::font_bold(13.0), p.text);
+                } else {
+                    painter.text(pos2(x, row.center().y - 1.0), egui::Align2::LEFT_BOTTOM, &main, theme::font_bold(13.0), p.text);
+                    painter.text(pos2(x, row.center().y + 1.0), egui::Align2::LEFT_TOP, sub.join(" · "), theme::font(11.0), p.muted);
+                }
+                // 點日期：勾選（或取消）這一天全部
+                let cell = Rect::from_min_max(pos2(col_x(1), row.min.y + 4.0), pos2(col_x(2) - 4.0, row.max.y - 4.0));
+                let dresp = ui.interact(cell, Id::new(("libday", dd)), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
+                let same: Vec<&String> = rows.iter().filter(|x| times.get(&x.media.name).map(|t| t.0) == Some(dd)).map(|x| &x.media.path).collect();
+                let all_on = same.iter().all(|p| d.selected.contains(*p));
+                let tip = trf!(
+                    "{}（這一頁）：{cnt} 支，共 {}、{}\n點一下{}這一天全部",
+                    "{} (this page): {cnt} videos, {} total, {}\nClick to {} all of this day",
+                    day_label(dd, today),
+                    short_clock(dur),
+                    format_bytes(bytes),
+                    if all_on { tr!("取消勾選", "unselect") } else { tr!("勾選", "select") }
+                );
+                if dresp.on_hover_text(tip).clicked() {
+                    for p in same {
+                        d.toggle(p, !all_on);
+                    }
+                }
             }
         }
         // 檔案欄：縮圖（點一下播放）、時間、檔名（資料夾裡看到的名稱），右邊是剪輯版、有聲音
@@ -1495,24 +1550,11 @@ fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table:
             // 星號（最右邊，位置固定）
             let (sr, _) = tui.allocate_exact_size(vec2(20.0, 20.0), Sense::hover());
             star_button(tui, sr, Id::new(("vidstar", &e.media.path)), app.core.pins.contains(&e.media.path), hot, false, req, &e.media.path);
-            // 「有聲音」的位置固定保留，沒有聲音時空著，旁邊的標記才會切齊
-            if e.media.has_audio == Some(true) && !audio {
-                audio_mark(tui);
+            // 大部分錄影都有聲音，只標出「沒有聲音」的；位置固定保留，星號才會切齊
+            if e.media.has_audio == Some(false) && e.media.duration_sec.is_some() && !audio {
+                no_audio_mark(tui);
             } else {
                 tui.allocate_exact_size(vec2(16.0, 16.0), Sense::hover());
-            }
-            if audio {
-                chip(tui, tr!("只有聲音", "Audio only"), Tone::Plain, false)
-                    .on_hover_text(tr!("存成 M4A 的聲音檔（可以在這裡播放，或在「⋯」用 Windows 開啟）", "Audio saved as M4A (play it here, or open it in Windows from “⋯”)"));
-            }
-            if is_cut_name(&e.media.name) {
-                chip(tui, tr!("剪輯版", "Edited"), Tone::Warn, false);
-            }
-            if screenrecorder_core::import::is_other_video(&e.media.name) {
-                chip(tui, &screenrecorder_core::import::format_label(&e.media.name), Tone::Plain, false).on_hover_text(tr!(
-                    "可以播放；要剪輯、製作加速版等，請在「⋯」選「轉成 MP4」（原本的檔案會保留）",
-                    "You can play it. To edit it or make a sped-up version, choose “Convert to MP4” under “⋯” (the original is kept)"
-                ));
             }
             if fresh {
                 if Btn::new(tr!("播放", "Play")).icon(Icon::Play).primary().small().show(tui).clicked() {
@@ -1525,8 +1567,36 @@ fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table:
             let nui = &mut ui.new_child(UiBuilder::new().max_rect(left).layout(Layout::left_to_right(Align::Center)));
             nui.spacing_mut().item_spacing.x = 0.0;
             let (tr_rect, _) = nui.allocate_exact_size(vec2(time_w, row.height()), Sense::hover());
-            painter.text(pos2(tr_rect.min.x, row.center().y), egui::Align2::LEFT_CENTER, time.unwrap_or_default(), theme::font_bold(13.0), p.text);
+            let time = time.unwrap_or_default();
+            let (hm, sec) = time.split_at(time.len().min(5));
+            painter.text(pos2(tr_rect.min.x, row.center().y), egui::Align2::LEFT_CENTER, hm, theme::font_bold(13.0), p.text);
+            if !sec.is_empty() {
+                painter.text(pos2(tr_rect.min.x + hm_w + 1.0, row.center().y + 1.0), egui::Align2::LEFT_CENTER, sec, theme::font(11.0), p.muted);
+            }
             nui.add_space((name_x - nui.cursor().min.x).max(0.0));
+            // 格式、剪輯版等標記緊接在檔名後面（不要隔一大段空白）；先量好寬度，檔名太長時截斷
+            let mut tags: Vec<(String, Tone, Option<&str>)> = Vec::new();
+            if screenrecorder_core::import::is_other_video(&e.media.name) {
+                tags.push((
+                    screenrecorder_core::import::format_label(&e.media.name),
+                    Tone::Plain,
+                    Some(tr!(
+                        "可以播放、合併；要剪輯、製作加速版等，請在「⋯」選「轉成 MP4」（原本的檔案會保留）",
+                        "You can play and merge it. To edit it or make a sped-up version, choose “Convert to MP4” under “⋯” (the original is kept)"
+                    )),
+                ));
+            }
+            if is_cut_name(&e.media.name) {
+                tags.push((tr!("剪輯版", "Edited").into(), Tone::Warn, None));
+            }
+            if audio {
+                tags.push((
+                    tr!("只有聲音", "Audio only").into(),
+                    Tone::Plain,
+                    Some(tr!("存成 M4A 的聲音檔（可以在這裡播放，或在「⋯」用 Windows 開啟）", "Audio saved as M4A (play it here, or open it in Windows from “⋯”)")),
+                ));
+            }
+            let chips_w: f32 = tags.iter().map(|(t, _, _)| ui.fonts_mut(|f| f.layout_no_wrap(t.clone(), theme::font_bold(11.5), p.text).size().x) + 14.0 + 6.0).sum();
             // 自己取的名稱用一般字色，預設檔名（Rec_日期_時間）用灰色
             let custom = !is_default_name(&e.media.name);
             let name = RichText::new(&e.media.name).font(theme::font(if custom { 13.0 } else { 12.5 })).color(if custom { p.text } else { p.muted });
@@ -1535,7 +1605,20 @@ fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table:
                 nui.spacing_mut().item_spacing.x = 6.0;
                 folder_chip(nui, &e.media.folder);
             }
-            let r = nui.add(egui::Label::new(name).truncate().sense(Sense::click())).on_hover_text(tip);
+            let room = (nui.available_width() - chips_w).max(40.0);
+            let want = nui.fonts_mut(|f| f.layout_no_wrap(e.media.name.clone(), theme::font(if custom { 13.0 } else { 12.5 }), p.text).size().x) + 1.0;
+            let r = nui
+                .allocate_ui_with_layout(vec2(want.min(room), row.height()), Layout::left_to_right(Align::Center), |ui| ui.add(egui::Label::new(name).truncate().sense(Sense::click())))
+                .inner
+                .on_hover_text(tip);
+            nui.spacing_mut().item_spacing.x = 6.0;
+            for (t, tone, hint) in &tags {
+                nui.add_space(6.0);
+                let c = chip(nui, t, *tone, false);
+                if let Some(h) = hint {
+                    c.on_hover_text(*h);
+                }
+            }
             if r.double_clicked() && !audio {
                 *req = Some(Req::Rename(e.clone()));
             } else if r.clicked() && (ctrl || shift) {
@@ -1543,11 +1626,28 @@ fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table:
             }
         }
         num(&e.media.duration_sec.map(short_clock).unwrap_or_else(|| "—".into()), col_x(4) - 10.0, row.center().y, p.text, 13.0);
-        let res = match (e.media.width, e.media.height) {
-            (Some(w), Some(h)) => format!("{w}×{h}"),
-            _ => "—".into(),
-        };
-        num(&res, col_x(5) - 10.0, row.center().y, p.muted, 12.5);
+        // 畫面大小用白話（4K 直、1080p 橫），滑鼠移上去看實際像素
+        match (e.media.width, e.media.height) {
+            (Some(w), Some(h)) if !audio => {
+                let rr = Rect::from_min_max(pos2(col_x(4), row.min.y + 8.0), pos2(col_x(5) - 6.0, row.max.y - 8.0));
+                let label = super::dialogs::res_label(w, h);
+                let g = ui.fonts_mut(|f| f.layout_no_wrap(label.clone(), theme::font(12.5), p.muted));
+                let tx = rr.max.x - 4.0 - g.size().x;
+                painter.galley(pos2(tx, row.center().y - g.size().y / 2.0), g, p.muted);
+                // 直／橫的小框
+                let (iw, ih) = if w < h {
+                    (7.0, 11.0)
+                } else if w > h {
+                    (11.0, 7.0)
+                } else {
+                    (9.0, 9.0)
+                };
+                let ir = Rect::from_center_size(pos2(tx - 5.0 - iw / 2.0, row.center().y), vec2(iw, ih));
+                painter.rect_stroke(ir, CornerRadius::same(1), Stroke::new(1.2, p.muted), egui::StrokeKind::Inside);
+                ui.interact(rr, Id::new(("libres", &e.media.path)), Sense::hover()).on_hover_text(format!("{w}×{h}"));
+            }
+            _ => num("—", col_x(5) - 10.0, row.center().y, p.muted, 12.5),
+        }
         num(&format_bytes(e.media.bytes), col_x(6) - 10.0, row.center().y, p.text, 13.0);
         {
             // 操作：播放 · 剪輯 · 資料夾 · 改名 · ⋯（全部截圖的格子也是這個順序）
@@ -1743,6 +1843,13 @@ pub fn folder_chip(ui: &mut egui::Ui, folder: &str) {
     }
     let last = folder.rsplit(['\\', '/']).next().unwrap_or(folder);
     theme::chip(ui, last, theme::Tone::Plain, false).on_hover_text(trf!("在子資料夾「{}」", "In subfolder “{}”", screenrecorder_core::facets::folder_label(folder)));
+}
+
+/// 沒有聲音：灰色喇叭加叉
+pub fn no_audio_mark(ui: &mut egui::Ui) -> egui::Response {
+    let (r, resp) = ui.allocate_exact_size(vec2(16.0, 16.0), Sense::hover());
+    theme::paint_icon(ui.painter(), r, Icon::Muted, theme::pal(ui).muted);
+    resp.on_hover_text(tr!("沒有聲音", "No audio"))
 }
 
 pub fn audio_mark(ui: &mut egui::Ui) -> egui::Response {
