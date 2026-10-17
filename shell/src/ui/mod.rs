@@ -117,6 +117,8 @@ pub enum EntryAction {
     SetThumb,
     /// 影片資訊（標題、作者、說明…）
     Tags,
+    /// 傳到「錄完處理 → 複製」的資料夾（NAS、Jellyfin 媒體庫），並通知 Jellyfin
+    SendToLibrary,
 }
 
 /// 錄影的「步驟教學」子選單：複製成文字，或做成附圖的步驟教學（和步驟截圖同一個整理視窗）
@@ -462,6 +464,44 @@ impl UiApp {
         self.toast_with(msg, false, vec![ToastAction::new(tr!("看內容", "Show"), move |app| app.ocr = Some(ocr::Ocr { text: Some(text), lang: String::new() }))]);
     }
 
+    /// 「複製」資料夾的名稱（選單上顯示）；沒設定時 None
+    pub fn library_folder(&self) -> Option<String> {
+        let d = self.s.after_copy_to.trim();
+        (!d.is_empty()).then(|| std::path::Path::new(d).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| d.to_string()))
+    }
+
+    /// 把檔案（連同字幕）傳到「複製」的資料夾（NAS、Jellyfin 媒體庫），並通知 Jellyfin；
+    /// 剪輯、加速版另存好時自動呼叫，也可以從選單手動傳
+    pub fn send_to_library(&mut self, path: &str) {
+        let Some(folder) = self.library_folder() else {
+            return self.toast(tr!("請先在設定 →「錄完處理」的「複製」選資料夾", "Choose a folder under Settings → After recording → Copy first"), true);
+        };
+        let jf = screenrecorder_core::jellyfin::Jellyfin::new(&self.s.jellyfin_url, &self.s.jellyfin_key);
+        let copy_to = self.s.after_copy_to.clone();
+        let file = std::path::PathBuf::from(path);
+        self.toast(trf!("正在傳到「{}」：{}", "Sending to “{}”: {}", folder, dialogs::file_name(path)), false);
+        self.spawn(async move { tokio::task::spawn_blocking(move || screenrecorder_core::jellyfin::send_file(jf.as_ref(), &copy_to, &file)).await.ok().flatten() }, |app, r| match r {
+            Some(Ok(msg)) => app.toast(msg, false),
+            Some(Err(e)) => app.toast(e, true),
+            None => {}
+        });
+    }
+
+    /// 改了影片（封面、影片資訊）之後：「複製」資料夾（Jellyfin 的媒體庫）裡的那一份也換成改好的，並請 Jellyfin 重新讀取
+    pub fn sync_edited(&mut self, path: &str) {
+        let jf = screenrecorder_core::jellyfin::Jellyfin::new(&self.s.jellyfin_url, &self.s.jellyfin_key);
+        let copy_to = self.s.after_copy_to.clone();
+        if copy_to.trim().is_empty() {
+            return;
+        }
+        let video = std::path::PathBuf::from(path);
+        self.spawn(async move { tokio::task::spawn_blocking(move || screenrecorder_core::jellyfin::sync_edited(jf.as_ref(), &copy_to, &video)).await.ok().flatten() }, |app, r| match r {
+            Some(Ok(msg)) => app.toast(msg, false),
+            Some(Err(e)) => app.toast(e, true),
+            None => {}
+        });
+    }
+
     pub fn toast(&mut self, text: impl Into<String>, error: bool) {
         self.toast_with(text, error, vec![]);
     }
@@ -672,6 +712,11 @@ impl UiApp {
                         };
                         // 提示上直接有「開啟」「在資料夾中顯示」
                         self.toast_file(format!("{what}{}{}", tr!("：", ": "), dialogs::file_name(&e.output)), &e.output);
+                        // 剪輯、加速版、壓縮、合併的影片：也傳到「複製」的資料夾（NAS、Jellyfin）
+                        let video = matches!(e.kind, screenrecorder_core::types::ExportKind::Cut | screenrecorder_core::types::ExportKind::Speed | screenrecorder_core::types::ExportKind::Merge);
+                        if video && self.s.copy_exports && self.library_folder().is_some() {
+                            self.send_to_library(&e.output.clone());
+                        }
                     } else {
                         // 剪輯失敗或取消：提示並提供「回到剪輯」
                         let e = e.clone();
@@ -859,6 +904,7 @@ impl UiApp {
             }
             EntryAction::Cover => cover::open(self, entry, None),
             EntryAction::Tags => video_tags::open(self, entry),
+            EntryAction::SendToLibrary => self.send_to_library(&path),
             EntryAction::SetThumb => {
                 viewer::open(self, entry);
                 self.toast(tr!("播放或拖曳到想要的那一格，暫停後按上方的「設為封面」", "Play or drag to the frame you want, pause, then click \"Set as cover\" at the top"), false);

@@ -133,6 +133,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                     app.video_tags = None;
                     remember_genres(app, &used);
                     app.toast(trf!("已更新影片資訊：{}", "Video details updated: {}", dialogs::file_name(&path)), false);
+                    app.sync_edited(&path);
                 }
                 Err(e) => {
                     if let Some(d) = &mut app.video_tags {
