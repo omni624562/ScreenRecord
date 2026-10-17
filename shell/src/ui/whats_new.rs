@@ -50,8 +50,8 @@ fn items(_app: &UiApp) -> Vec<(String, String, Try)> {
         (
             tr!("影片資訊", "Video details").into(),
             tr!(
-                "按檢視器上方的「影片資訊」，或錄影卡片「⋯」選單的「影片資訊」，改寫在影片檔裡的標題、作者、說明等；檔案總管的「內容 → 詳細資料」看得到。剪輯、加速版另存時也會帶上；加速版和壓縮連封面也一起帶上。",
-                "Click “Details” at the top of the viewer, or “Video details” in a recording card's ⋯ menu, to edit the title, author, description and more stored in the video file; File Explorer shows them under Properties → Details. Edited and sped-up copies keep them, and sped-up and compressed copies keep the cover too."
+                "按檢視器上方的「影片資訊」，或錄影卡片「⋯」選單的「影片資訊」，改寫在影片檔裡的標題、作者、說明等；檔案總管的「內容 → 詳細資料」看得到。剪輯、加速版、壓縮另存時，影片資訊和封面都會一起帶上。",
+                "Click “Details” at the top of the viewer, or “Video details” in a recording card's ⋯ menu, to edit the title, author, description and more stored in the video file; File Explorer shows them under Properties → Details. Edited, sped-up and compressed copies keep them, along with the cover."
             )
             .into(),
             Try::None,

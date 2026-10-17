@@ -548,7 +548,9 @@ impl Exporter {
             + &if whole > 1.0 { format!("，整支 {} 倍速", crate::format::speed_label(whole)) } else { String::new() };
         let follow = matches!(vertical, Some(VerticalInput::Follow { .. }));
         let cwd = (cursor.is_some() || follow || more.stamp.is_some()).then(|| temp.clone()).flatten();
-        let finish = Finish { cleanup: temp, replace: target.map(PathBuf::from), on_saved, cwd, cover: None };
+        // 原影片設過封面就帶上（最寬 1280；直式影片、裁切後仍用原本那一格）
+        let cover = crate::cover::extract_cover(&ffmpeg, source, &output, 1280).await.map(|c| c.0);
+        let finish = Finish { cleanup: temp, replace: target.map(PathBuf::from), on_saved, cwd, cover };
         self.run_with_cleanup(ExportKind::Cut, &ffmpeg, args, source, &output, 1.0, length, &note, finish)
     }
 
