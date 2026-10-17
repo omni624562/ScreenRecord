@@ -327,7 +327,7 @@ impl Exporter {
             let (Some(w), Some(h)) = (info.width, info.height) else {
                 return Err(Error::config(tr!("無法讀取影片尺寸，不能加上標註", "Couldn't read the video size, so annotations can't be added")));
             };
-            let dir = std::env::temp_dir().join(format!("ScreenRecorder-overlays-{}-{}", std::process::id(), crate::paths::now_ms()));
+            let dir = crate::paths::unique_temp("ScreenRecorder-overlays", "");
             match write_overlays(&spec.overlays, w as i32, h as i32, duration, &dir) {
                 Ok(list) => (list, Some(dir)),
                 Err(e) => {
@@ -371,7 +371,7 @@ impl Exporter {
             _ if vertical_on => (None, temp),
             (Some(f), Some(w), Some(h)) => {
                 let (ow, oh) = crop.map(|c| (c.width, c.height)).unwrap_or((w as i32, h as i32));
-                let dir = temp.unwrap_or_else(|| std::env::temp_dir().join(format!("ScreenRecorder-overlays-{}-{}", std::process::id(), crate::paths::now_ms())));
+                let dir = temp.unwrap_or_else(|| crate::paths::unique_temp("ScreenRecorder-overlays", ""));
                 match write_frame(f, ow, oh, &dir) {
                     Ok(fi) => (Some(fi), Some(dir)),
                     Err(e) => {
@@ -386,7 +386,7 @@ impl Exporter {
         // 平滑、放大的游標：游標圖與移動它的指令檔（FFmpeg 在暫存資料夾裡執行，濾鏡裡的檔名不用處理 Windows 路徑）
         let (cursor, temp) = match (&spec.cursor, info.width, info.height) {
             (Some(c), Some(w), Some(h)) if !c.track.is_empty() => {
-                let dir = temp.unwrap_or_else(|| std::env::temp_dir().join(format!("ScreenRecorder-overlays-{}-{}", std::process::id(), crate::paths::now_ms())));
+                let dir = temp.unwrap_or_else(|| crate::paths::unique_temp("ScreenRecorder-overlays", ""));
                 match write_cursor(c, w as i32, h as i32, fps, &dir) {
                     Ok(ci) => (Some(ci), Some(dir)),
                     Err(e) => {
@@ -408,7 +408,7 @@ impl Exporter {
                 (Some(VerticalInput::Fit { w, h }), temp)
             }
             (Some(crate::vertical::Vertical::Follow { track }), Some(w), Some(h)) => {
-                let dir = temp.unwrap_or_else(|| std::env::temp_dir().join(format!("ScreenRecorder-overlays-{}-{}", std::process::id(), crate::paths::now_ms())));
+                let dir = temp.unwrap_or_else(|| crate::paths::unique_temp("ScreenRecorder-overlays", ""));
                 match write_vertical(track, w as i32, h as i32, fps, &dir) {
                     Ok(v) => (Some(v), Some(dir)),
                     Err(e) => {
@@ -435,7 +435,7 @@ impl Exporter {
                     remove_dir(&temp);
                     return Err(Error::config(tr!("無法讀取影片尺寸，不能加上片頭片尾", "Couldn't read the video size, so title cards can't be added")));
                 };
-                let dir = temp.unwrap_or_else(|| std::env::temp_dir().join(format!("ScreenRecorder-overlays-{}-{}", std::process::id(), crate::paths::now_ms())));
+                let dir = temp.unwrap_or_else(|| crate::paths::unique_temp("ScreenRecorder-overlays", ""));
                 let voice = if placed.is_empty() && click_times.is_empty() {
                     None
                 } else {
@@ -480,7 +480,7 @@ impl Exporter {
                     remove_dir(&temp);
                     return Err(Error::config(tr!("找不到浮水印用的字型", "Couldn't find a font for the date and time")));
                 };
-                let dir = temp.unwrap_or_else(|| std::env::temp_dir().join(format!("ScreenRecorder-overlays-{}-{}", std::process::id(), crate::paths::now_ms())));
+                let dir = temp.unwrap_or_else(|| crate::paths::unique_temp("ScreenRecorder-overlays", ""));
                 let written = std::fs::create_dir_all(&dir)
                     .and_then(|_| std::fs::copy(&font, dir.join("stamp.ttf")).map(|_| ()))
                     .and_then(|_| std::fs::write(dir.join("stamp.txt"), crate::look::stamp_text(st.start_ms)));
@@ -812,7 +812,7 @@ fn with_chapters(args: &mut Vec<String>, chapters: &[crate::types::Chapter], dur
         crate::args::drop_chapters(args);
         return temp;
     }
-    let dir = temp.unwrap_or_else(|| std::env::temp_dir().join(format!("ScreenRecorder-chapters-{}-{}", std::process::id(), crate::paths::now_ms())));
+    let dir = temp.unwrap_or_else(|| crate::paths::unique_temp("ScreenRecorder-chapters", ""));
     let file = dir.join("chapters.txt");
     if std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&file, crate::chapters::ffmetadata(chapters, duration))).is_ok() {
         crate::args::add_chapters(args, &file.display().to_string());
