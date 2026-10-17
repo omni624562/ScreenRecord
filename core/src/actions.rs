@@ -66,6 +66,7 @@ pub fn job_label(e: &crate::types::ExportStatus) -> String {
         ExportKind::Cut => tr!("剪輯", "Editing").to_string(),
         ExportKind::Merge => tr!("合併錄影", "Merging recordings").to_string(),
         ExportKind::Convert => tr!("轉成 MP4", "Converting to MP4").to_string(),
+        ExportKind::Upright => tr!("轉好畫面另存", "Saving an upright copy").to_string(),
         ExportKind::Gif => trf!("製作 GIF{speed}", "Making a GIF{speed}"),
         ExportKind::Webp => trf!("製作 WebP 動圖{speed}", "Making a WebP{speed}"),
         // 原速：只壓縮
@@ -369,6 +370,27 @@ pub async fn merge_start(app: &App, paths: &[String], name: Option<&str>, qualit
         return Err(Error::config(tr!("錄影中無法合併，請先停止錄影", "Can't merge while recording. Stop recording first")));
     }
     Ok(app.exporter.start_merge_with(&app.export_ctx(), paths, name, quality).await?.id)
+}
+
+/// 旋轉影片（改旋轉標記，不重新壓縮；原檔換掉、修改時間保留）。回傳重新讀的影片資訊（寬高對調了）
+pub async fn rotate_video(app: &App, path: &str, turn: crate::rotate::Turn) -> Result<crate::types::MediaInfo> {
+    if app.recorder.active() {
+        return Err(Error::config(tr!("錄影中無法旋轉影片，請先停止錄影", "Can't rotate a video while recording. Stop recording first")));
+    }
+    let ff = app.ffmpeg_path();
+    let r = crate::rotate::rotate_in_place(ff.as_deref(), path, turn).await;
+    app.cache.forget(path);
+    r?;
+    let ff = ff.ok_or_else(|| Error::config(tr!("找不到 FFmpeg", "FFmpeg not found")))?;
+    app.cache.probe(&ff, path).await
+}
+
+/// 另存畫面轉好的影片（重新壓縮）：回傳轉檔工作的編號
+pub async fn upright_start(app: &App, path: &str) -> Result<u64> {
+    if app.recorder.active() {
+        return Err(Error::config(tr!("錄影中無法轉檔，請先停止錄影", "Can't convert while recording. Stop recording first")));
+    }
+    Ok(app.exporter.start_upright(&app.export_ctx(), path).await?.id)
 }
 
 /// 匯入影片的結果

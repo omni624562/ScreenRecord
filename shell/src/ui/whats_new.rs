@@ -38,10 +38,19 @@ enum Try {
 fn items(_app: &UiApp) -> Vec<(String, String, Try)> {
     vec![
         (
+            tr!("旋轉影片", "Rotate videos").into(),
+            tr!(
+                "拍歪了、橫的變直的？按檢視器上方的「向左轉」「向右轉」，或錄影卡片「⋯」選單的「旋轉」：直接改原檔的旋轉設定，幾秒就好、畫質不變，轉錯再轉回來就好。少數舊播放器不看這個設定時，可以用「另存畫面轉好的影片」。",
+                "Recorded sideways? Click “Rotate left” or “Rotate right” at the top of the viewer, or “Rotate” in a recording card's ⋯ menu: the original's rotation setting changes in seconds without losing quality, and you can rotate back anytime. For old players that ignore the setting, use “Save an upright copy”."
+            )
+            .into(),
+            Try::Library(false),
+        ),
+        (
             tr!("合併影片快很多、畫質不變", "Much faster merging, same quality").into(),
             tr!(
-                "全部錄影勾兩支以上 →「合併成一支」：同一支手機或同樣設定錄的影片直接接起來，幾秒就好，畫質跟原檔一樣。想要檔案小一點，可以在「畫質」選高畫質、標準或省空間。",
-                "Select two or more in All recordings → “Merge into one”: videos from the same phone or recorded with the same settings are joined directly in seconds, keeping the original quality. For a smaller file, pick High quality, Standard or Smallest under “Quality”."
+                "全部錄影勾兩支以上 →「合併成一支」：同一支手機或同樣設定錄的影片直接接起來，幾秒就好，畫質跟原檔一樣；iPhone、相機的 MOV 也可以。想要檔案小一點，可以在「畫質」選高畫質、標準或省空間。",
+                "Select two or more in All recordings → “Merge into one”: videos from the same phone or recorded with the same settings are joined directly in seconds, keeping the original quality; iPhone and camera MOV files work too. For a smaller file, pick High quality, Standard or Smallest under “Quality”."
             )
             .into(),
             Try::Library(false),

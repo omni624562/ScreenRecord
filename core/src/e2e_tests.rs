@@ -1432,3 +1432,72 @@ async fn merge_joins_same_format_without_reencoding_and_compress_by_quality() {
     assert!(near(sm.duration_sec.unwrap(), 6.0, 0.2));
     assert_eq!(crate::format::parse_export_name(&high.file_name().unwrap().to_string_lossy()).map(|p| p.base), Some("Rec_2026-10-11_12-00-00.mp4".into()));
 }
+
+/// 旋轉：只改旋轉標記（大小、長度、章節、修改時間不變），轉回來就沒有標記；另存轉好的影片沒有標記、寬高對調
+#[tokio::test]
+async fn rotating_changes_only_the_tag_and_upright_copy_turns_the_picture() {
+    let Some(ff) = ffmpeg() else { return };
+    if !has(&ff, "-encoders", "libx264") {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let src = make_source(&ff, dir.path());
+    let s = src.display().to_string();
+    let before = probe(&ff, &src).await;
+    let mtime = std::fs::metadata(&src).unwrap().modified().unwrap();
+    let c = ctx(&ff);
+    let ex = Exporter::new();
+    // 畫面本來就是正的：不用另存
+    assert!(ex.start_upright(&c, &s).await.unwrap_err().is_config());
+    crate::rotate::rotate_in_place(Some(&ff), &s, crate::rotate::Turn::Right).await.unwrap();
+    assert_eq!(crate::rotate::rotation_of(&ff, &s).await.unwrap(), -90.0);
+    let after = probe(&ff, &src).await;
+    assert_eq!((after.width, after.height), (Some(360), Some(640)), "看到的寬高對調");
+    assert!(near(after.duration_sec.unwrap(), before.duration_sec.unwrap(), 0.01));
+    assert_eq!(starts(&after.chapters), starts(&before.chapters));
+    assert_eq!(after.has_audio, Some(true));
+    assert_eq!(std::fs::metadata(&src).unwrap().modified().unwrap(), mtime);
+    // 另存轉好的影片：沒有旋轉標記，檔案本身就是直的
+    ex.start_upright(&c, &s).await.unwrap();
+    let up = finish(&ex).await;
+    assert!(up.ends_with("Rec_2026-10-11_12-00-00_轉正.mp4"), "{up:?}");
+    let u = up.display().to_string();
+    assert_eq!(crate::rotate::rotation_of(&ff, &u).await.unwrap(), 0.0);
+    let i = probe(&ff, &up).await;
+    assert_eq!((i.width, i.height, i.has_audio), (Some(360), Some(640), Some(true)));
+    assert_eq!(starts(&i.chapters), starts(&before.chapters));
+    // 向左轉回去：沒有標記，跟原本一樣
+    crate::rotate::rotate_in_place(Some(&ff), &s, crate::rotate::Turn::Left).await.unwrap();
+    assert_eq!(crate::rotate::rotation_of(&ff, &s).await.unwrap(), 0.0);
+    assert_eq!(probe(&ff, &src).await.width, Some(640));
+    crate::rotate::rotate_in_place(Some(&ff), &s, crate::rotate::Turn::Half).await.unwrap();
+    assert_eq!(crate::rotate::rotation_of(&ff, &s).await.unwrap().abs(), 180.0);
+}
+
+/// MOV 也能合併：兩支 MOV（H.264 + AAC）直接接成 MP4，MOV 和 MP4 混在一起也可以
+#[tokio::test]
+async fn mov_files_can_be_merged() {
+    let Some(ff) = ffmpeg() else { return };
+    if !has(&ff, "-encoders", "libx264") {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let mp4 = make_source(&ff, dir.path());
+    let movs: Vec<PathBuf> = ["IMG_0001.MOV", "IMG_0002.MOV"].iter().map(|n| dir.path().join(n)).collect();
+    for m in &movs {
+        run_ok(&ff, &["-i", &mp4.display().to_string(), "-map", "0:v", "-map", "0:a", "-c", "copy", "-y", &m.display().to_string()]);
+    }
+    let c = ctx(&ff);
+    let ex = Exporter::new();
+    let paths: Vec<String> = movs.iter().map(|m| m.display().to_string()).collect();
+    ex.start_merge_with(&c, &paths, None, None).await.unwrap();
+    let out = finish(&ex).await;
+    assert!(out.ends_with("IMG_0001_合併.mp4"), "{out:?}");
+    let i = probe(&ff, &out).await;
+    assert!(near(i.duration_sec.unwrap(), 12.0, 0.2), "{:?}", i.duration_sec);
+    assert_eq!((i.width, i.has_audio), (Some(640), Some(true)));
+    // MOV + MP4
+    ex.start_merge_with(&c, &[paths[0].clone(), mp4.display().to_string()], Some("混合"), None).await.unwrap();
+    let mixed = finish(&ex).await;
+    assert!(near(probe(&ff, &mixed).await.duration_sec.unwrap(), 12.0, 0.3));
+}

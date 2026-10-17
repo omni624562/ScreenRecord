@@ -1053,6 +1053,23 @@ pub fn merge_copy_args(list: &str, first: &str, out_file: &str, audio: bool) -> 
     a
 }
 
+/// 另存畫面轉好的影片：FFmpeg 解碼時照旋轉標記自動轉正（輸出不帶旋轉標記），寬高取偶數，重新壓縮成高畫質
+pub fn upright_args(source: &str, out_file: &str, enc: &EncoderSpec, audio: bool) -> Vec<String> {
+    let mut a = strs(&["-hide_banner", "-nostats", "-loglevel", "error", "-i"]);
+    a.push(source.into());
+    a.extend(strs(&["-map", "0:V:0"]));
+    if audio {
+        a.extend(strs(&["-map", "0:a:0"]));
+        a.extend(strs(&AUDIO_ENCODE));
+    }
+    a.push("-vf".into());
+    a.push(format!("scale=trunc(iw/2)*2:trunc(ih/2)*2,format={}", enc.pix_fmt));
+    a.extend(enc.offline_at(Quality::High));
+    a.extend(strs(&["-map_metadata", "0", "-map_chapters", "0", "-movflags", "+faststart", "-progress", "pipe:1", "-stats_period", "0.5", "-y"]));
+    a.push(out_file.into());
+    a
+}
+
 /// 製作加速版：setpts 壓縮時間軸，fps 維持原本的影格率（多出來的影格直接捨棄，不做混合，文字才不會有殘影）；
 /// 聲音以 atempo 變速不變調。width：縮小到這個寬度（高度等比、取偶數）；不小於原寬時維持原尺寸。
 /// limit_kbps：壓縮到指定大小（影片位元率）；這時可以是原速（1×，只壓縮）

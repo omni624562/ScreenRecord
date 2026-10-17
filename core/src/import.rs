@@ -63,6 +63,15 @@ pub fn stream_signature(ffmpeg_info: &str) -> Option<String> {
     has_video.then(|| parts.join(" | "))
 }
 
+/// stream_signature 裡的畫面、聲音編碼 MP4 都裝得了（直接接起來時不用重新壓縮）：畫面 H.264 / HEVC，聲音 AAC / MP3 / AC-3 / ALAC
+pub fn mp4_can_hold(signature: &str) -> bool {
+    signature.split(" | ").all(|part| match part.split_once(": ") {
+        Some(("Video", rest)) => ["h264 ", "hevc "].iter().any(|c| rest.starts_with(c)),
+        Some(("Audio", rest)) => ["aac ", "mp3", "ac3", "eac3", "alac"].iter().any(|c| rest.starts_with(c)),
+        _ => true,
+    })
+}
+
 /// MP4 可以直接裝、Windows 和手機都播得了的畫面編碼：不用重新壓縮
 pub fn can_copy_video(codec: Option<&str>) -> bool {
     matches!(codec, Some("h264") | Some("hevc"))
@@ -105,6 +114,10 @@ mod tests {
         let cover = format!("{a}\n  Stream #0:3: Video: png, rgb24(pc), 640x360, 90k tbn (attached pic)");
         assert_eq!(stream_signature(&cover), stream_signature(a));
         assert_eq!(stream_signature("  Stream #0:0: Audio: aac (LC), 48000 Hz, stereo, fltp, 128 kb/s"), None);
+        // MOV：H.264 + AAC 裝得進 MP4；ProRes、PCM 不行
+        assert!(mp4_can_hold(&stream_signature(a).unwrap()));
+        assert!(!mp4_can_hold(&stream_signature(&a.replace("hevc (Main)", "prores (HQ)")).unwrap()));
+        assert!(!mp4_can_hold(&stream_signature(&a.replace("aac (LC)", "pcm_s16le")).unwrap()));
     }
     use crate::args::ENCODERS;
 

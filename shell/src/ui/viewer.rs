@@ -38,7 +38,7 @@ const RATES: [f64; 5] = [0.5, 1.0, 1.25, 1.5, 2.0];
 
 pub struct Viewer {
     /// 上一個 / 下一個切換的清單（同類：截圖或錄影，最新的在前）
-    list: Vec<LibraryEntry>,
+    pub(super) list: Vec<LibraryEntry>,
     idx: usize,
     /// 圖片：材質、原始尺寸
     image: Option<(TextureHandle, Vec2)>,
@@ -546,6 +546,11 @@ fn head_buttons(app: &UiApp, e: &LibraryEntry, image: bool, audio: bool) -> Vec<
             ),
             || Act::Tags,
         ));
+    }
+    if !audio && screenrecorder_core::video_tags::can_tag(&e.media.path) {
+        let tip = tr!("直接改原檔，幾秒就好、畫質不變；轉錯再轉回來就好", "Changes the original in seconds without losing quality; just rotate back if needed");
+        list.push(b(tr!("向左轉", "Rotate left"), None, tip, || Act::Entry(EntryAction::RotateLeft)));
+        list.push(b(tr!("向右轉", "Rotate right"), None, tip, || Act::Entry(EntryAction::RotateRight)));
     }
     if !audio {
         list.push(b(

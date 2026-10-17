@@ -117,6 +117,43 @@ pub enum EntryAction {
     Tags,
     /// 傳到「錄完處理 → 複製」的資料夾（NAS、Jellyfin 媒體庫），並通知 Jellyfin
     SendToLibrary,
+    /// 旋轉影片（改旋轉標記，不重新壓縮）：向左 90°、向右 90°、180°
+    RotateLeft,
+    RotateRight,
+    Rotate180,
+    /// 另存畫面真的轉好的影片（重新壓縮，舊播放器也正確）
+    Upright,
+}
+
+/// 影片的「旋轉」子選單
+pub(crate) fn rotate_menu(ui: &mut egui::Ui) -> Option<EntryAction> {
+    let mut pick = None;
+    ui.menu_button(tr!("旋轉", "Rotate"), |ui| {
+        let tip = tr!("直接改原檔，幾秒就好、畫質不變；轉錯再轉回來就好", "Changes the original in seconds without losing quality; just rotate back if needed");
+        for (a, label) in [
+            (EntryAction::RotateLeft, tr!("向左轉 90°", "Rotate left 90°")),
+            (EntryAction::RotateRight, tr!("向右轉 90°", "Rotate right 90°")),
+            (EntryAction::Rotate180, tr!("轉 180°", "Rotate 180°")),
+        ] {
+            if ui.button(label).on_hover_text(tip).clicked() {
+                pick = Some(a);
+                ui.close();
+            }
+        }
+        ui.separator();
+        if ui
+            .button(tr!("另存畫面轉好的影片…", "Save an upright copy…"))
+            .on_hover_text(tr!(
+                "少數舊播放器、網頁編輯器不看旋轉的設定時用：把畫面真的轉過來另存一份（重新壓縮，比較慢）",
+                "For old players or web editors that ignore the rotation setting: saves a copy with the picture actually turned (re-encoded, slower)"
+            ))
+            .clicked()
+        {
+            pick = Some(EntryAction::Upright);
+            ui.close();
+        }
+    });
+    pick
 }
 
 /// 錄影的「步驟教學」子選單：複製成文字，或做成附圖的步驟教學（和步驟截圖同一個整理視窗）
@@ -710,6 +747,7 @@ impl UiApp {
                             screenrecorder_core::types::ExportKind::Cut => tr!("剪輯完成", "Edited video ready"),
                             screenrecorder_core::types::ExportKind::Merge => tr!("合併完成", "Merged video ready"),
                             screenrecorder_core::types::ExportKind::Convert => tr!("已轉成 MP4", "Converted to MP4"),
+                            screenrecorder_core::types::ExportKind::Upright => tr!("已另存畫面轉好的影片", "Upright copy saved"),
                             screenrecorder_core::types::ExportKind::Gif => tr!("GIF 製作完成", "GIF ready"),
                             screenrecorder_core::types::ExportKind::Webp => tr!("WebP 動圖製作完成", "WebP ready"),
                             screenrecorder_core::types::ExportKind::Speed if e.speed <= 1.0 => tr!("壓縮完成", "Compressed video ready"),
@@ -826,6 +864,35 @@ impl UiApp {
         });
     }
 
+    /// 旋轉影片：檢視器正在播這支就先放開，改好再從同一個位置播；縮圖、清單重新讀
+    pub fn rotate(&mut self, path: &str, turn: screenrecorder_core::rotate::Turn) {
+        let t = viewer::release(self, path);
+        let core = self.core.clone();
+        let p = path.to_string();
+        self.spawn(async move { actions::rotate_video(&core, &p, turn).await }, {
+            let path = path.to_string();
+            move |app, r| {
+                match r {
+                    Ok(info) => {
+                        // 檢視器裡這支的寬高跟著換（畫面依這個大小擺）
+                        if let Some(v) = app.viewer.as_mut() {
+                            for e in v.list.iter_mut().filter(|e| e.media.path == path) {
+                                (e.media.width, e.media.height) = (info.width, info.height);
+                            }
+                        }
+                        app.thumbs.forget(&path);
+                        app.toast(tr!("已旋轉（再轉一次可以轉回來）", "Rotated (rotate again to undo)"), false);
+                        app.sync_edited(&path);
+                        app.shots_changed();
+                        app.load_recent();
+                    }
+                    Err(e) => app.toast(e.message().to_string(), true),
+                }
+                viewer::reload(app, &path, t);
+            }
+        });
+    }
+
     /// 截圖新增或改了：重新讀取清單
     pub fn shots_changed(&mut self) {
         if let Some(d) = &mut self.library {
@@ -843,6 +910,19 @@ impl UiApp {
             self.inline = None;
         }
         match action {
+            EntryAction::RotateLeft => self.rotate(&path, screenrecorder_core::rotate::Turn::Left),
+            EntryAction::RotateRight => self.rotate(&path, screenrecorder_core::rotate::Turn::Right),
+            EntryAction::Rotate180 => self.rotate(&path, screenrecorder_core::rotate::Turn::Half),
+            EntryAction::Upright => {
+                let core = self.core.clone();
+                self.spawn(async move { actions::upright_start(&core, &path).await }, |app, r| match r {
+                    Ok(_) => {
+                        app.dismissed_job = None;
+                        app.toast(tr!("已開始另存畫面轉好的影片，進度顯示在右側", "Saving an upright copy. Progress is shown on the right"), false);
+                    }
+                    Err(e) => app.toast(e.message().to_string(), true),
+                });
+            }
             EntryAction::Play => viewer::open(self, entry),
             EntryAction::PlayHere => inline_play::open(self, entry),
             EntryAction::SaveAudio => {
