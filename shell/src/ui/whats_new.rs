@@ -38,6 +38,15 @@ enum Try {
 fn items(_app: &UiApp) -> Vec<(String, String, Try)> {
     vec![
         (
+            tr!("全部錄影更好讀", "An easier-to-read recordings list").into(),
+            tr!(
+                "日期改成「12/30 週二」，去年以前的在下面寫年份和這天有幾支；點日期就能勾選這一天全部。畫面大小改成「4K 直」「1080p 橫」，只有沒聲音的影片才標出來；合併時下方有進度條，可以取消。",
+                "Dates now read “Tue 12/30”, with the year and the number of videos underneath for older days; click a date to select that whole day. Sizes now read “4K tall” or “1080p wide”, only videos without audio are marked, and merging shows a progress bar you can cancel."
+            )
+            .into(),
+            Try::Library(false),
+        ),
+        (
             tr!("旋轉影片", "Rotate videos").into(),
             tr!(
                 "拍歪了、橫的變直的？按檢視器上方的「向左轉」「向右轉」，或錄影卡片「⋯」選單的「旋轉」：直接改原檔的旋轉設定，幾秒就好、畫質不變，轉錯再轉回來就好。少數舊播放器不看這個設定時，可以用「另存畫面轉好的影片」。",

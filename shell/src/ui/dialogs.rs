@@ -407,6 +407,40 @@ pub fn day_label(d: chrono::NaiveDate, today: chrono::NaiveDate) -> String {
     }
 }
 
+/// 表格日期欄的兩行：(「今天」「12/30 週二」, 不是今年時的年份「2025」)。比 day_label 短，窄欄位放得下
+pub fn day_parts(d: chrono::NaiveDate, today: chrono::NaiveDate) -> (String, Option<String>) {
+    use chrono::Datelike;
+    let year = (d.year() != today.year()).then(|| d.year().to_string());
+    if d == today {
+        return (tr!("今天", "Today").into(), year);
+    }
+    if today.pred_opt() == Some(d) {
+        return (tr!("昨天", "Yesterday").into(), year);
+    }
+    let wd = tr!(["週一", "週二", "週三", "週四", "週五", "週六", "週日"], ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"])[d.weekday().num_days_from_monday() as usize];
+    (trf!("{} {wd}", "{wd} {}", d.format("%m/%d")), year)
+}
+
+/// 畫面大小的白話說法：2160×3840 →「4K 直」，1920×1080 →「1080p 橫」（以短邊算，手機直拍也一樣）
+pub fn res_label(w: u32, h: u32) -> String {
+    let short = w.min(h);
+    let q = match short {
+        s if s >= 2160 => "4K".to_string(),
+        s if s >= 1440 => "1440p".to_string(),
+        s if s >= 1080 => "1080p".to_string(),
+        s if s >= 720 => "720p".to_string(),
+        s => format!("{s}p"),
+    };
+    let o = if w < h {
+        tr!("直", "tall")
+    } else if w > h {
+        tr!("橫", "wide")
+    } else {
+        tr!("方", "square")
+    };
+    format!("{q} {o}")
+}
+
 /// 一組錄影的日期與時間：(那一天, 時間「23:18」)。同一天同一分鐘有好幾支時加上秒數，才分得出來
 pub fn time_labels<'a>(items: impl Iterator<Item = (&'a str, f64)> + Clone) -> std::collections::HashMap<String, (chrono::NaiveDate, String)> {
     let mut count = std::collections::HashMap::<String, usize>::new();
@@ -460,6 +494,14 @@ mod tests {
         assert_eq!(day_label(today.pred_opt().unwrap(), today), "昨天");
         assert_eq!(day_label(d, today), "10/06（二）");
         assert_eq!(day_label(chrono::NaiveDate::from_ymd_opt(2025, 12, 31).unwrap(), today), "2025/12/31（三）");
+        assert_eq!(day_parts(d, today), ("10/06 週二".to_string(), None));
+        assert_eq!(day_parts(chrono::NaiveDate::from_ymd_opt(2025, 12, 30).unwrap(), today), ("12/30 週二".to_string(), Some("2025".to_string())));
+        assert_eq!(day_parts(today, today).0, "今天");
+        assert_eq!(res_label(2160, 3840), "4K 直");
+        assert_eq!(res_label(1920, 1080), "1080p 橫");
+        assert_eq!(res_label(1080, 1920), "1080p 直");
+        assert_eq!(res_label(1280, 720), "720p 橫");
+        assert_eq!(res_label(640, 480), "480p 橫");
         assert_eq!(file_name("C:\\Videos\\a.mp4"), "a.mp4");
         assert_eq!(plain("見 [說明](https://x.y/z) 與 `code`"), "見 說明 與 code");
     }

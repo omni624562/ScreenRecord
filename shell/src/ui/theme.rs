@@ -223,6 +223,8 @@ pub enum Icon {
     Trash,
     Mic,
     Speaker,
+    /// 沒有聲音（喇叭加一個叉）
+    Muted,
     Close,
     Camera,
     Eye,
@@ -388,6 +390,11 @@ pub fn paint_icon(p: &Painter, rect: Rect, icon: Icon, color: Color32) {
         Icon::Speaker => {
             line(&[(2.5, 6.0), (5.0, 6.0), (8.5, 3.0), (8.5, 13.0), (5.0, 10.0), (2.5, 10.0), (2.5, 6.0)]);
             arc(11.0, 8.0, 2.5, -1.1, 1.1);
+        }
+        Icon::Muted => {
+            line(&[(2.5, 6.0), (5.0, 6.0), (8.5, 3.0), (8.5, 13.0), (5.0, 10.0), (2.5, 10.0), (2.5, 6.0)]);
+            line(&[(10.5, 6.0), (14.0, 9.5)]);
+            line(&[(14.0, 6.0), (10.5, 9.5)]);
         }
         Icon::Camera => {
             p.rect_stroke(Rect::from_min_max(at(2.0, 5.0), at(14.0, 13.5)), CornerRadius::same((2.0 * k) as u8), st, StrokeKind::Middle);
