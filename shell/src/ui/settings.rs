@@ -145,6 +145,11 @@ pub struct UiSettings {
     /// 錄完處理後複製到這個資料夾（core::after_record 讀這個欄位）
     #[serde(skip_serializing_if = "String::is_empty")]
     pub after_copy_to: String,
+    /// Jellyfin 伺服器網址與 API 金鑰：複製到資料夾後通知它掃描（core::jellyfin 讀這兩個欄位）
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub jellyfin_url: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub jellyfin_key: String,
     /// 錄影的命名規則（例如「客戶A_{日期}_{序號}」；空的 = Rec_時間）。core 讀這個欄位
     #[serde(skip_serializing_if = "String::is_empty")]
     pub name_rule: String,
@@ -183,6 +188,8 @@ pub struct UiSettings {
     pub tours_done: Vec<String>,
     /// 剪輯視窗、截圖編輯、全部截圖第一次打開時顯示短提示（新安裝或按了「重新看教學」才開）
     pub tips: bool,
+    /// 影片資訊用過的類型（點一下就能再用；最近用的在前，最多 RECENT_GENRES 個）
+    pub genres: Vec<String>,
     /// 上次切換或儲存的設定組合（目前的設定和它不一樣時顯示「已修改」）
     pub preset_name: String,
     /// 等待中的排程錄影（core 的 schedule.rs 存進來；這裡只是原樣保留，並跟著 core 的狀態更新）
@@ -192,6 +199,9 @@ pub struct UiSettings {
 
 /// 記住幾個用過的儲存位置
 pub const RECENT_DIRS: usize = 5;
+
+/// 記住幾個用過的類型（影片資訊）
+pub const RECENT_GENRES: usize = 30;
 
 /// 講稿提詞的字級範圍、不透明度下限
 pub const NOTES_FONT: (u32, u32) = (16, 72);
@@ -326,6 +336,8 @@ impl UiSettings {
             after_subs_en: boolean("afterSubsEn").unwrap_or(false),
             after_speed: num("afterSpeed").map(|v| v as u32).filter(|v| screenrecorder_core::edit::FAST_SPEEDS.contains(v)).unwrap_or(0),
             after_copy_to: o.get(screenrecorder_core::after_record::COPY_KEY).and_then(Value::as_str).unwrap_or("").trim().to_string(),
+            jellyfin_url: o.get(screenrecorder_core::jellyfin::URL_KEY).and_then(Value::as_str).unwrap_or("").trim().to_string(),
+            jellyfin_key: o.get(screenrecorder_core::jellyfin::API_KEY).and_then(Value::as_str).unwrap_or("").trim().to_string(),
             name_rule: o.get(screenrecorder_core::after_record::NAME_RULE_KEY).and_then(Value::as_str).unwrap_or("").chars().take(120).collect(),
             shot_name_rule: o.get(screenrecorder_core::after_record::SHOT_NAME_RULE_KEY).and_then(Value::as_str).unwrap_or("").chars().take(120).collect(),
             after_compress_mb: num("afterCompressMb").map(|v| v as u32).filter(|v| MAX_MB.contains(v)).unwrap_or(0),
@@ -360,6 +372,15 @@ impl UiSettings {
             tour_step: num("tourStep").map(|v| v as u32).filter(|v| *v <= 50).unwrap_or(0),
             tours_done: o.get("toursDone").and_then(|v| serde_json::from_value::<Vec<String>>(v.clone()).ok()).unwrap_or_default(),
             tips: boolean("tips").unwrap_or(false),
+            genres: o
+                .get("genres")
+                .and_then(|v| serde_json::from_value::<Vec<String>>(v.clone()).ok())
+                .unwrap_or_default()
+                .into_iter()
+                .map(|g| g.trim().to_string())
+                .filter(|g| !g.is_empty())
+                .take(RECENT_GENRES)
+                .collect(),
             preset_name: string("presetName").unwrap_or_default(),
             schedule: o.get(screenrecorder_core::schedule::UI_KEY).cloned(),
         };
@@ -603,6 +624,11 @@ mod tests {
         assert_eq!(a.speed, 4.0);
         assert_eq!((a.idle_cut, a.subtitles, a.subs_lang, a.compress_mb, a.auto_name), (true, true, 1, 25, true));
         assert_eq!(a.copy_to, "D:\\Sync");
+        // Jellyfin：網址與金鑰都填了才通知
+        assert_eq!(a.jellyfin, None);
+        (s.jellyfin_url, s.jellyfin_key) = ("192.168.1.10:8096".into(), "abc".into());
+        let jf = screenrecorder_core::after_record::AfterRecord::from_ui(Some(&s.to_value())).jellyfin.unwrap();
+        assert_eq!((jf.url.as_str(), jf.key.as_str()), ("http://192.168.1.10:8096", "abc"));
         // 設定組合也存這些欄位
         for k in screenrecorder_core::after_record::UI_KEYS {
             assert!(screenrecorder_core::presets::KEYS.contains(&k), "{k}");

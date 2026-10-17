@@ -60,6 +60,9 @@ pub struct SettingsDialog {
     /// 外部元件：測試連線中 / 結果
     net_testing: bool,
     net_result: Option<Result<(), String>>,
+    /// Jellyfin：測試連線中 / 結果（成功時是伺服器名稱）
+    jf_testing: bool,
+    jf_result: Option<Result<String, String>>,
 }
 
 pub fn open(app: &mut UiApp, page: Page) {
@@ -78,6 +81,8 @@ pub fn open(app: &mut UiApp, page: Page) {
                 installing: None,
                 net_testing: false,
                 net_result: None,
+                jf_testing: false,
+                jf_result: None,
             })
         }
     }
@@ -1399,6 +1404,63 @@ fn after_record_section(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
             pick_copy_dir(app);
         }
     });
+    // Jellyfin：複製到它的媒體庫資料夾後，通知它馬上掃描
+    form_row(ui, "Jellyfin", |ui| {
+        let r = ui.add(egui::TextEdit::singleline(&mut app.s.jellyfin_url).desired_width(FORM_CTRL_W).hint_text(tr!("網址，例如 192.168.1.10:8096", "Address, e.g. 192.168.1.10:8096")));
+        if r.changed() {
+            d.jf_result = None;
+            app.save_settings();
+        }
+    });
+    form_row(ui, tr!("API 金鑰", "API key"), |ui| {
+        let r = ui.add(egui::TextEdit::singleline(&mut app.s.jellyfin_key).password(true).desired_width(FORM_CTRL_W).hint_text(tr!("Jellyfin 控制台 → API 金鑰", "Jellyfin Dashboard → API Keys")));
+        if r.changed() {
+            d.jf_result = None;
+            app.save_settings();
+        }
+    });
+    let jf = screenrecorder_core::jellyfin::Jellyfin::new(&app.s.jellyfin_url, &app.s.jellyfin_key);
+    form_row(ui, "", |ui| {
+        let label = if d.jf_testing { tr!("測試中…", "Testing…") } else { tr!("測試連線", "Test connection") };
+        if Btn::new(label).small().enabled(jf.is_some() && !d.jf_testing).show(ui).clicked() {
+            if let Some(jf) = jf.clone() {
+                d.jf_testing = true;
+                d.jf_result = None;
+                app.spawn(async move { tokio::task::spawn_blocking(move || jf.test()).await.unwrap_or_else(|e| Err(e.to_string())) }, |app, r| {
+                    if let Some(d) = &mut app.settings_dlg {
+                        d.jf_testing = false;
+                        d.jf_result = Some(r);
+                    }
+                });
+            }
+        }
+        match &d.jf_result {
+            Some(Ok(name)) => {
+                ui.label(RichText::new(trf!("已連上 {}", "Connected to {}", name)).font(theme::font(12.5)).color(p.ok));
+            }
+            Some(Err(e)) => {
+                ui.add(egui::Label::new(RichText::new(e).font(theme::font(12.5)).color(p.rec)).wrap());
+            }
+            None => {}
+        }
+    });
+    form_hint(
+        ui,
+        if app.s.after_copy_to.is_empty() {
+            tr!(
+                "「複製」選 Jellyfin 媒體庫的資料夾（例如 \\\\伺服器\\videos），再填這兩個，複製好就會通知 Jellyfin 掃描，新影片馬上出現。",
+                "Set “Copy” to a Jellyfin library folder (e.g. \\\\server\\videos) and fill these in: Jellyfin is told to scan right after copying, so new videos show up at once."
+            )
+        } else if jf.is_some() {
+            tr!("複製好之後會通知 Jellyfin 掃描，新影片馬上出現。", "Jellyfin is told to scan right after copying, so new videos show up at once.")
+        } else {
+            tr!(
+                "「複製」的資料夾是 Jellyfin 的媒體庫時，填這兩個就會在複製好之後通知它掃描（不填就等 Jellyfin 定時掃描）。",
+                "If the “Copy” folder is a Jellyfin library, fill these in to have it scan right after copying (otherwise Jellyfin finds them on its next scheduled scan)."
+            )
+        },
+        p.muted,
+    );
     form_hint(
         ui,
         tr!(

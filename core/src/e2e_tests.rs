@@ -1176,9 +1176,9 @@ async fn recording_with_the_audio_pipe_starts_right_away() {
     }
 }
 
-/// 加速版、壓縮另存時帶上原影片的封面（畫面沒變）；剪輯不帶（畫面可能裁切、改過）
+/// 加速版、壓縮、剪輯另存時帶上原影片的封面
 #[tokio::test]
-async fn cover_carries_over_to_sped_up_and_compressed_copies() {
+async fn cover_carries_over_to_exports() {
     let Some(ff) = ffmpeg() else { return };
     if !has(&ff, "-encoders", "libx264") {
         return;
@@ -1228,9 +1228,24 @@ async fn cover_carries_over_to_sped_up_and_compressed_copies() {
     let info = String::from_utf8_lossy(&Command::new(&ff).args(["-hide_banner", "-i"]).arg(&small).output().unwrap().stderr).into_owned();
     let pic = info.lines().find(|l| l.contains("(attached pic)")).unwrap();
     assert!(pic.contains("320x180"), "{pic}");
-    // 剪輯不帶封面
-    ex.start_cut(&c, &s, &EditSpec { start: 0.0, end: 4.0, ..Default::default() }, None, None).await.unwrap();
-    assert_eq!(covers(&finish(&ex).await), 0);
+    // 剪輯也帶上同一張封面；直式影片也一樣
+    ex.start_cut(&c, &s, &EditSpec { start: 0.5, end: 5.5, removed: vec![(2.0, 3.0)], ..Default::default() }, None, None).await.unwrap();
+    let cut = finish(&ex).await;
+    assert_eq!(covers(&cut), 1);
+    let diff = thumb_of(&cut).iter().zip(&want).map(|(a, b)| (*a as i32 - *b as i32).abs()).max().unwrap();
+    assert!(diff < 40, "{diff}");
+    assert!(near(probe(&ff, &cut).await.duration_sec.unwrap(), 4.0, 0.15));
+    if has(&ff, "-filters", "sendcmd") {
+        ex.start_cut(&c, &s, &EditSpec { start: 0.0, end: 4.0, vertical: Some(crate::vertical::Vertical::Fit), ..Default::default() }, None, None).await.unwrap();
+        assert_eq!(covers(&finish(&ex).await), 1);
+    }
+    // 取代既有的剪輯版：新的剪輯版也有封面
+    let opts = crate::exporter::CutOptions { replace: Some(cut.display().to_string()), ..Default::default() };
+    ex.start_cut_with(&c, &s, &EditSpec { start: 0.0, end: 3.0, ..Default::default() }, opts).await.unwrap();
+    let replaced = finish(&ex).await;
+    assert_eq!(replaced, cut);
+    assert_eq!(covers(&replaced), 1);
+    assert!(near(probe(&ff, &replaced).await.duration_sec.unwrap(), 3.0, 0.15));
     // 暫存檔不留下
     let left: Vec<_> = std::fs::read_dir(dir.path()).unwrap().filter_map(|e| e.ok()).map(|e| e.file_name().to_string_lossy().into_owned()).filter(|n| n.starts_with('.')).collect();
     assert!(left.is_empty(), "{left:?}");

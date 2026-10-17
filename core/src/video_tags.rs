@@ -21,7 +21,9 @@ pub fn fields() -> [Field; 7] {
         Field { key: "title", label: tr!("標題", "Title"), hint: tr!("例如：報價單怎麼填", "e.g. How to fill in a quote"), multiline: false },
         Field { key: "artist", label: tr!("作者", "Author"), hint: tr!("例如：業務部 王小明", "e.g. Sales team, Alex Wang"), multiline: false },
         Field { key: "album", label: tr!("系列", "Series"), hint: tr!("例如：新人教育訓練", "e.g. New hire training"), multiline: false },
-        Field { key: "genre", label: tr!("類型", "Genre"), hint: tr!("例如：教學", "e.g. Tutorial"), multiline: false },
+        Field {
+            key: "genre", label: tr!("類型", "Genre"), hint: tr!("例如：教學; 業務（好幾個用 ; 或、隔開）", "e.g. Tutorial; Sales (separate several with ;)"), multiline: false
+        },
         Field { key: "date", label: tr!("年份", "Year"), hint: tr!("例如：2026", "e.g. 2026"), multiline: false },
         Field { key: "comment", label: tr!("說明", "Description"), hint: tr!("這支影片在講什麼（可以換行）", "What this video is about (can be several lines)"), multiline: true },
         Field { key: "copyright", label: tr!("版權", "Copyright"), hint: tr!("例如：© 2026 某某公司", "e.g. © 2026 Example Inc."), multiline: false },
@@ -67,12 +69,31 @@ pub fn write_args(video: &str, values: &HashMap<String, String>, out: &str) -> V
             // 換行統一成 \n；單行的欄位不留換行
             let v = v.replace("\r\n", "\n");
             let v = if f.multiline { v.trim().to_string() } else { v.replace('\n', " ").trim().to_string() };
+            // 類型：好幾個時統一用「; 」隔開（全形的、，；也算），Jellyfin 才會拆成好幾個
+            let v = if f.key == "genre" { join_genres(&split_genres(&v)) } else { v };
             a.push("-metadata".into());
             a.push(format!("{}={v}", f.key));
         }
     }
     a.extend(["-movflags", "+faststart", "-y", out].iter().map(|s| s.to_string()));
     a
+}
+
+/// 把「類型」拆成一個一個：半形 / ; | , \ 和全形的、，；／都算分隔；去掉空白與重複（不分大小寫）
+pub fn split_genres(text: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for g in text.split(['/', ';', '|', ',', '\\', '、', '，', '；', '／']) {
+        let g = g.trim();
+        if !g.is_empty() && !out.iter().any(|o| o.to_lowercase() == g.to_lowercase()) {
+            out.push(g.to_string());
+        }
+    }
+    out
+}
+
+/// 寫進影片的寫法：「教學; 業務」（Windows 照原樣顯示，Jellyfin 拆成兩個）
+pub fn join_genres(genres: &[String]) -> String {
+    genres.join("; ")
 }
 
 /// FFmpeg 的 ffmetadata 格式：第一段（第一個 [區段] 之前）是整個檔案的資訊；
@@ -147,6 +168,14 @@ mod tests {
         assert!(a.contains(&"artist=".to_string()), "空的 = 刪掉");
         assert!(!j.contains("album="), "沒給的欄位不動");
         assert!(a.ends_with(&["-y".to_string(), "out.mp4".to_string()]));
+    }
+
+    #[test]
+    fn genres_split_on_half_and_full_width_separators() {
+        assert_eq!(split_genres(" 教學、業務；新人訓練 , 教學/ Tutorial|tutorial "), ["教學", "業務", "新人訓練", "Tutorial"]);
+        assert!(split_genres(" ; 、 ").is_empty());
+        let values: HashMap<String, String> = [("genre".to_string(), "教學、業務，教學".to_string())].into();
+        assert!(write_args("in.mp4", &values, "out.mp4").contains(&"genre=教學; 業務".to_string()));
     }
 
     #[test]

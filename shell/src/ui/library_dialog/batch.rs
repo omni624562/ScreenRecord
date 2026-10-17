@@ -149,6 +149,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context, d: &mut LibraryDialog) {
         auto_name: false,
         // 一次處理多支時不複製（要複製的話在檔案總管一次複製比較快）
         copy_to: String::new(),
+        jellyfin: None,
     };
     let n = b.paths.len();
     let core = app.core.clone();

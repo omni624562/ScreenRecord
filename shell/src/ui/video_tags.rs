@@ -44,6 +44,13 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
     let Some(mut d) = app.video_tags.take() else { return };
     let mut close = false;
     let mut save = false;
+    // 以前用過的類型，加上這支影片原本的（點一下加入或拿掉）
+    let mut known = app.s.genres.clone();
+    for g in d.orig.as_ref().and_then(|o| o.get("genre")).map(|g| video_tags::split_genres(g)).unwrap_or_default() {
+        if !known.iter().any(|k| k.to_lowercase() == g.to_lowercase()) {
+            known.push(g);
+        }
+    }
     let changed = d.orig.as_ref().is_some_and(|o| o.iter().any(|(k, v)| d.values.get(k).is_some_and(|n| n.trim() != v.trim())));
     let modal = egui::Modal::new(Id::new("video-tags")).frame(theme::modal_frame(ctx)).show(ctx, |ui| {
         ui.set_width((ctx.content_rect().width() - 80.0).clamp(320.0, 520.0));
@@ -71,8 +78,16 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                     for f in video_tags::fields() {
                         ui.label(f.label);
                         let v = d.values.entry(f.key.to_string()).or_default();
-                        let edit = if f.multiline { egui::TextEdit::multiline(v).desired_rows(4) } else { egui::TextEdit::singleline(v) };
-                        ui.add(edit.desired_width(ui.available_width()).hint_text(f.hint));
+                        if f.key != "genre" {
+                            let edit = if f.multiline { egui::TextEdit::multiline(v).desired_rows(4) } else { egui::TextEdit::singleline(v) };
+                            ui.add(edit.desired_width(ui.available_width()).hint_text(f.hint));
+                            ui.end_row();
+                            continue;
+                        }
+                        ui.vertical(|ui| {
+                            ui.add(egui::TextEdit::singleline(v).desired_width(ui.available_width()).hint_text(f.hint));
+                            genre_chips(ui, v, &known);
+                        });
                         ui.end_row();
                     }
                 });
@@ -111,10 +126,12 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         let t = super::viewer::release(app, &path);
         let ff = app.core.ffmpeg_path();
         let p2 = path.clone();
+        let used = video_tags::split_genres(d.values.get("genre").map(String::as_str).unwrap_or(""));
         app.spawn(async move { video_tags::write(ff.as_deref(), &p2, &values).await }, move |app, r| {
             match r {
                 Ok(()) => {
                     app.video_tags = None;
+                    remember_genres(app, &used);
                     app.toast(trf!("已更新影片資訊：{}", "Video details updated: {}", dialogs::file_name(&path)), false);
                 }
                 Err(e) => {
@@ -128,4 +145,45 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         });
     }
     app.video_tags = Some(d);
+}
+
+/// 類型欄下面的小標籤：以前用過的類型，點一下加入或拿掉（已選的反白）
+fn genre_chips(ui: &mut egui::Ui, value: &mut String, known: &[String]) {
+    if known.is_empty() {
+        return;
+    }
+    let mut chosen = video_tags::split_genres(value);
+    let mut toggled = None;
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
+        for g in known {
+            let on = chosen.iter().any(|c| c.to_lowercase() == g.to_lowercase());
+            let tip = if on { tr!("點一下拿掉", "Click to remove") } else { tr!("點一下加入", "Click to add") };
+            if theme::chip(ui, g, if on { theme::Tone::Accent } else { theme::Tone::Plain }, true).on_hover_text(tip).clicked() {
+                toggled = Some((g.clone(), on));
+            }
+        }
+    });
+    if let Some((g, on)) = toggled {
+        if on {
+            chosen.retain(|c| c.to_lowercase() != g.to_lowercase());
+        } else {
+            chosen.push(g);
+        }
+        *value = video_tags::join_genres(&chosen);
+    }
+}
+
+/// 存好之後記住用過的類型（最近用的在前）
+fn remember_genres(app: &mut UiApp, used: &[String]) {
+    if used.is_empty() {
+        return;
+    }
+    let mut list = used.to_vec();
+    list.extend(app.s.genres.iter().filter(|g| !used.iter().any(|u| u.to_lowercase() == g.to_lowercase())).cloned());
+    list.truncate(super::settings::RECENT_GENRES);
+    if list != app.s.genres {
+        app.s.genres = list;
+        app.save_settings();
+    }
 }
