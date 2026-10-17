@@ -24,6 +24,13 @@ fn decode(path: &std::path::Path) -> Option<ColorImage> {
     Some(ColorImage::from_rgba_premultiplied([pm.width() as usize, pm.height() as usize], pm.data()))
 }
 
+impl Thumbs {
+    /// 這個檔案的縮圖重做（設了封面：修改時間保留，鍵不會變）
+    pub fn forget(&mut self, path: &str) {
+        self.map.retain(|k, _| k.0 != path);
+    }
+}
+
 impl UiApp {
     /// 縮圖材質（還沒產生時開始產生，回傳 None）
     pub fn thumb(&mut self, path: &str, mtime: f64) -> Option<TextureHandle> {

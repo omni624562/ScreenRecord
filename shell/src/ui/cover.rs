@@ -197,14 +197,18 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                 app.viewer = None;
             }
             let ff = app.core.ffmpeg_path();
-            app.spawn(async move { cover::save(ff.as_deref(), &path, &pm, embed).await }, |app, r| {
+            let video = path.clone();
+            app.spawn(async move { cover::save(ff.as_deref(), &path, &pm, embed).await }, move |app, r| {
                 app.cover = None;
                 match r {
                     Ok(s) => {
                         let png = s.png.display().to_string();
                         match s.embed_error {
                             Some(e) => app.toast(e, true),
-                            None if s.embedded => app.toast_file(tr!("已存好封面，也寫進影片了", "Cover saved and written into the video"), &png),
+                            None if s.embedded => {
+                                app.thumbs.forget(&video);
+                                app.toast_file(tr!("已存好封面，也寫進影片了", "Cover saved and written into the video"), &png);
+                            }
                             None => app.toast_file(trf!("已存好封面 {}", "Cover saved as {}", dialogs::file_name(&png)), &png),
                         }
                         app.shots_changed();

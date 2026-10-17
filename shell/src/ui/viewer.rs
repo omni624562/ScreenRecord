@@ -377,6 +377,8 @@ enum Act {
     Grab,
     /// 影片：從目前這一格做封面
     Cover,
+    /// 影片：目前這一格寫進影片當縮圖（檔案總管看到的那一張）
+    SetThumb,
     Rename,
     /// 打開相關的截圖（第幾張）
     Related(usize),
@@ -441,6 +443,17 @@ fn head_buttons(app: &UiApp, e: &LibraryEntry, image: bool, audio: bool) -> Vec<
             EntryAction::Compress,
         ));
     }
+    if !audio && screenrecorder_core::cover::can_embed(&e.media.path) {
+        list.push(b(
+            tr!("設為封面", "Set as cover"),
+            Some(Icon::Image),
+            tr!(
+                "把目前這一格設為這支影片的封面：檔案總管和多數播放器看到的縮圖就是這一格（影片內容不變，不會移到開頭）",
+                "Make the current frame this video's cover: File Explorer and most players show it as the thumbnail (the video itself is unchanged; the frame isn't moved to the start)"
+            ),
+            || Act::SetThumb,
+        ));
+    }
     if !audio {
         list.push(b(
             tr!("擷取這一格", "Grab frame"),
@@ -449,7 +462,7 @@ fn head_buttons(app: &UiApp, e: &LibraryEntry, image: bool, audio: bool) -> Vec<
             || Act::Grab,
         ));
         list.push(b(
-            tr!("做封面", "Make cover"),
+            tr!("做 YouTube 封面圖", "Make YouTube cover"),
             None,
             tr!("用目前這一格加上標題，做成 YouTube 用的封面圖（1280×720）", "Use the current frame with a title to make a YouTube cover image (1280×720)"),
             || Act::Cover,
@@ -785,6 +798,29 @@ fn run_act(app: &mut UiApp, act: Act) {
                 p.pause();
             }
             super::cover::open(app, entry, t);
+        }
+        Act::SetThumb => {
+            let Some(v) = app.viewer.as_mut() else { return };
+            let (path, t) = (v.cur().media.path.clone(), v.player.as_ref().map(|p| p.time()).unwrap_or(0.0));
+            // 先停止播放、放開檔案（Windows 上播放中的檔案不能換掉），寫好再從同一格重新載入
+            v.clear_media();
+            v.loading = true;
+            let ff = app.core.ffmpeg_path();
+            let p2 = path.clone();
+            app.spawn(async move { screenrecorder_core::cover::set_thumbnail(ff.as_deref(), &p2, t).await }, move |app, r| {
+                match r {
+                    Ok(()) => {
+                        app.thumbs.forget(&path);
+                        app.toast(tr!("已設為封面：檔案總管看到的縮圖就是這一格", "Set as cover: File Explorer now shows this frame as the thumbnail"), false);
+                    }
+                    Err(e) => app.toast(e.message().to_string(), true),
+                }
+                let Some(v) = app.viewer.as_mut() else { return };
+                if v.cur().media.path == path {
+                    v.start_at = Some(t + 0.5);
+                    load_current(app);
+                }
+            });
         }
         Act::Grab => {
             let Some(v) = app.viewer.as_mut() else { return };

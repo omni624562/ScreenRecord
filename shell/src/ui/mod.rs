@@ -112,6 +112,8 @@ pub enum EntryAction {
     Convert,
     /// 做封面（YouTube 縮圖）
     Cover,
+    /// 設為封面：開啟播放器，找到要的那一格再按「設為封面」
+    SetThumb,
 }
 
 /// 錄影的「步驟教學」子選單：複製成文字，或做成附圖的步驟教學（和步驟截圖同一個整理視窗）
@@ -850,6 +852,10 @@ impl UiApp {
                 self.convert(path)
             }
             EntryAction::Cover => cover::open(self, entry, None),
+            EntryAction::SetThumb => {
+                viewer::open(self, entry);
+                self.toast(tr!("播放或拖曳到想要的那一格，暫停後按上方的「設為封面」", "Play or drag to the frame you want, pause, then click \"Set as cover\" at the top"), false);
+            }
             EntryAction::CopyFile => match screenrecorder_core::clipboard::copy_files(std::slice::from_ref(&path)) {
                 Ok(()) => self.toast(tr!("已複製檔案，可以直接貼到 LINE、Teams、信件或資料夾", "File copied. Paste it into LINE, Teams, an email or a folder"), false),
                 Err(e) => self.toast(e, true),
