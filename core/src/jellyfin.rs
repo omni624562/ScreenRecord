@@ -131,6 +131,49 @@ pub fn sync_edited(jf: Option<&Jellyfin>, copy_to: &str, video: &std::path::Path
     })
 }
 
+/// 把檔案（連同旁邊的字幕）傳到「複製」的資料夾（NAS、Jellyfin 媒體庫）：同名的覆蓋（同一支影片的新版本），
+/// 有設定 Jellyfin 時請它重新讀取（新的檔案就請它掃描）。剪輯、加速版另存好、或使用者按「傳到」時用。
+/// 回傳給使用者看的結果；沒設定「複製」資料夾時 None
+pub fn send_file(jf: Option<&Jellyfin>, copy_to: &str, file: &std::path::Path) -> Option<Result<String, String>> {
+    let copy_to = copy_to.trim();
+    if copy_to.is_empty() {
+        return None;
+    }
+    let lib = std::path::Path::new(copy_to);
+    let name = file.file_name()?.to_string_lossy().into_owned();
+    let folder = lib.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| copy_to.to_string());
+    // 就在那個資料夾裡：不用複製
+    if !file.parent().is_some_and(|d| same_dir(d, lib)) {
+        if !lib.is_absolute() {
+            return Some(Err(tr!("「複製」的資料夾位置不對，請在設定裡重新選擇", "The “Copy” folder isn't valid. Choose it again in Settings").into()));
+        }
+        let files = crate::after_record::result_files(&file.display().to_string(), None);
+        let copied = std::fs::create_dir_all(lib).and_then(|_| {
+            for f in &files {
+                if let Some(n) = f.file_name() {
+                    std::fs::copy(f, lib.join(n))?;
+                }
+            }
+            Ok(())
+        });
+        if let Err(e) = copied {
+            crate::warn!("[傳到資料夾] {name} → {copy_to} 失敗：{e}");
+            return Some(Err(trf!("沒有傳到「{folder}」：{e}", "Couldn't send it to “{folder}”: {e}")));
+        }
+        crate::info!("[傳到資料夾] {name}（{} 個檔案）→ {copy_to}", files.len());
+    }
+    let sent = trf!("已傳到「{folder}」：{name}", "Sent to “{folder}”: {name}");
+    let Some(jf) = jf else { return Some(Ok(sent)) };
+    Some(match jf.refresh_file(&name) {
+        Ok(0) => Ok(format!("{sent}{}", tr!("，已請 Jellyfin 掃描", ", Jellyfin asked to scan"))),
+        Ok(_) => Ok(format!("{sent}{}", tr!("，已請 Jellyfin 重新讀取", ", Jellyfin asked to reload it"))),
+        Err(e) => {
+            crate::warn!("[Jellyfin] 通知 {name} 失敗：{e}");
+            Err(format!("{sent}{}", trf!("，但沒有通知到 Jellyfin：{e}", ", but Jellyfin couldn't be notified: {e}")))
+        }
+    })
+}
+
 /// 兩個資料夾是不是同一個（不分大小寫、/ 和 \ 都算、結尾的分隔符號不算）
 fn same_dir(a: &std::path::Path, b: &std::path::Path) -> bool {
     let norm = |p: &std::path::Path| p.display().to_string().replace('\\', "/").trim_end_matches('/').to_lowercase();
@@ -280,6 +323,32 @@ mod tests {
         let msg = sync_edited(Some(&jf), &format!("{copy_to}/"), &lib.join("a.mp4")).unwrap().unwrap();
         assert!(!msg.contains("複製") && !msg.contains("Copy"), "{msg}");
         assert_eq!(h.join().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn send_copies_with_subtitles_and_replaces_older_versions() {
+        let dir = tempfile::tempdir().unwrap();
+        let (local, lib) = (dir.path().join("local"), dir.path().join("nas"));
+        std::fs::create_dir_all(&local).unwrap();
+        let video = local.join("Rec_1_cut.mp4");
+        std::fs::write(&video, "v2").unwrap();
+        std::fs::write(local.join("Rec_1_cut.srt"), "subs").unwrap();
+        assert!(send_file(None, "", &video).is_none());
+        // 資料夾還沒有：建立；字幕一起過去
+        let copy_to = lib.display().to_string();
+        let msg = send_file(None, &copy_to, &video).unwrap().unwrap();
+        assert!(msg.contains("nas") && msg.contains("Rec_1_cut.mp4"), "{msg}");
+        assert_eq!(std::fs::read_to_string(lib.join("Rec_1_cut.srt")).unwrap(), "subs");
+        // 再傳一次新版本：覆蓋同名的，不會多出 _2
+        std::fs::write(&video, "v3").unwrap();
+        send_file(None, &copy_to, &video).unwrap().unwrap();
+        assert_eq!(std::fs::read_to_string(lib.join("Rec_1_cut.mp4")).unwrap(), "v3");
+        assert_eq!(std::fs::read_dir(&lib).unwrap().count(), 2);
+        // 有 Jellyfin：新檔案請它掃描
+        let (url, h) = serve_seq(vec![("200 OK", r#"{"Items":[]}"#.to_string()), ("204 No Content", String::new())]);
+        let jf = Jellyfin::new(&url, "k").unwrap();
+        assert!(send_file(Some(&jf), &copy_to, &video).unwrap().is_ok());
+        assert!(h.join().unwrap()[1].starts_with("POST /Library/Refresh "));
     }
 
     #[test]

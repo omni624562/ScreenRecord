@@ -145,6 +145,8 @@ pub struct UiSettings {
     /// 錄完處理後複製到這個資料夾（core::after_record 讀這個欄位）
     #[serde(skip_serializing_if = "String::is_empty")]
     pub after_copy_to: String,
+    /// 剪輯、加速版、壓縮另存好之後也傳到「複製」的資料夾（有設定資料夾時）
+    pub copy_exports: bool,
     /// Jellyfin 伺服器網址與 API 金鑰：複製到資料夾後通知它掃描（core::jellyfin 讀這兩個欄位）
     #[serde(skip_serializing_if = "String::is_empty")]
     pub jellyfin_url: String,
@@ -333,6 +335,7 @@ impl UiSettings {
             after_subs_model: num("afterSubsModel").map(|v| v as u32).filter(|v| (*v as usize) < screenrecorder_core::subtitles::MODELS.len()).unwrap_or(0),
             after_subs_lang: num("afterSubsLang").map(|v| v as u32).filter(|v| (*v as usize) < screenrecorder_core::subtitles::LANGUAGES.len()).unwrap_or(0),
             after_auto_name: boolean("afterAutoName").unwrap_or(false),
+            copy_exports: boolean("copyExports").unwrap_or(true),
             after_subs_en: boolean("afterSubsEn").unwrap_or(false),
             after_speed: num("afterSpeed").map(|v| v as u32).filter(|v| screenrecorder_core::edit::FAST_SPEEDS.contains(v)).unwrap_or(0),
             after_copy_to: o.get(screenrecorder_core::after_record::COPY_KEY).and_then(Value::as_str).unwrap_or("").trim().to_string(),

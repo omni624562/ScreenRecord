@@ -1404,6 +1404,17 @@ fn after_record_section(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
             pick_copy_dir(app);
         }
     });
+    if !app.s.after_copy_to.is_empty() {
+        form_row(ui, "", |ui| {
+            let r = switch(ui, &mut app.s.copy_exports, tr!("剪輯、加速版另存好也傳過去", "Also send edited and sped-up copies"), true).on_hover_text(tr!(
+                "剪輯、加速版、壓縮、合併另存好之後，也複製到這個資料夾（同名的覆蓋），有設定 Jellyfin 時通知它。其他檔案可以在錄影卡片的「⋯」選單按「傳到…」",
+                "After an edited, sped-up, compressed or merged copy is saved, copy it to this folder too (replacing one with the same name) and notify Jellyfin if set up. For other files, use “Send to…” in a recording card's ⋯ menu"
+            ));
+            if r.changed() {
+                app.save_settings();
+            }
+        });
+    }
     // Jellyfin：複製到它的媒體庫資料夾後，通知它馬上掃描
     form_row(ui, "Jellyfin", |ui| {
         let r = ui.add(egui::TextEdit::singleline(&mut app.s.jellyfin_url).desired_width(FORM_CTRL_W).hint_text(tr!("網址，例如 192.168.1.10:8096", "Address, e.g. 192.168.1.10:8096")));
