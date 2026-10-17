@@ -149,6 +149,8 @@ pub struct UiSettings {
     pub copy_exports: bool,
     /// 檢視器播放大影片時不再提示下載 mpv 播放元件
     pub mpv_hint_off: bool,
+    /// 有 mpv 播放元件時用它播放（播放有問題時可以關掉，改用 FFmpeg）
+    pub use_mpv: bool,
     /// Jellyfin 伺服器網址與 API 金鑰：複製到資料夾後通知它掃描（core::jellyfin 讀這兩個欄位）
     #[serde(skip_serializing_if = "String::is_empty")]
     pub jellyfin_url: String,
@@ -339,6 +341,7 @@ impl UiSettings {
             after_auto_name: boolean("afterAutoName").unwrap_or(false),
             copy_exports: boolean("copyExports").unwrap_or(true),
             mpv_hint_off: boolean("mpvHintOff").unwrap_or(false),
+            use_mpv: boolean("useMpv").unwrap_or(true),
             after_subs_en: boolean("afterSubsEn").unwrap_or(false),
             after_speed: num("afterSpeed").map(|v| v as u32).filter(|v| screenrecorder_core::edit::FAST_SPEEDS.contains(v)).unwrap_or(0),
             after_copy_to: o.get(screenrecorder_core::after_record::COPY_KEY).and_then(Value::as_str).unwrap_or("").trim().to_string(),

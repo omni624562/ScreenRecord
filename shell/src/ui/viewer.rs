@@ -7,7 +7,7 @@
 //! 都可以「用 Windows 開啟」、在資料夾中顯示、移到資源回收筒；視窗窄時不常用的按鈕收進「⋯」。
 
 use super::dialogs::{base_name, is_default_name, short_date, Ask};
-use super::playback::{Playback, VideoSurface};
+use super::playback::Playback;
 use super::theme::{self, Btn, Icon};
 use super::{EntryAction, UiApp};
 use eframe::egui::{self, pos2, vec2, Align, Align2, Color32, CornerRadius, Id, Key, Layout, Pos2, Rect, RichText, Sense, Stroke, TextureHandle, TextureOptions, Vec2};
@@ -259,7 +259,7 @@ fn load_current(app: &mut UiApp) {
                 return;
             }
             let Some(ffmpeg) = app.core.ffmpeg_path() else { return };
-            let gl = app.proc_address.clone().filter(|_| app.gl.is_some() && screenrecorder_core::mpv::available());
+            let gl = app.proc_address.clone().filter(|_| app.s.use_mpv && app.gl.is_some() && screenrecorder_core::mpv::available());
             let software_gl = app.gl.as_ref().is_some_and(|g| super::playback::software_gl(g));
             let ctx = app.ctx.clone();
             let Some(v) = app.viewer.as_mut() else { return };
@@ -302,36 +302,25 @@ fn load_current(app: &mut UiApp) {
 pub fn render(app: &mut UiApp, frame: &mut eframe::Frame) {
     let Some(v) = app.viewer.as_mut() else { return };
     let Some(Playback::Mpv { p, .. }) = v.player.as_mut() else { return };
-    p.poll();
-    let r = (|| -> Result<(), String> {
-        if let Some(e) = p.failed() {
-            return Err(e.to_string());
+    // 還沒顯示過：先照影片大小（最大 1920 × 1080）
+    let size = if v.video_px[0] > 0 {
+        v.video_px
+    } else {
+        let (w, h) = screenrecorder_core::player::fit_size(v.video_size.x as u32, v.video_size.y as u32, DECODE_MAX.0, DECODE_MAX.1);
+        [w, h]
+    };
+    match super::playback::render_mpv(app.gl.as_ref(), &mut app.video_surface, frame, p, size) {
+        Ok(Some(id)) => v.mpv_tex = Some(id),
+        Ok(None) => {}
+        Err(e) => {
+            screenrecorder_core::info!("[檢視器] mpv 無法播放，改用 FFmpeg：{e}");
+            let t = v.player.as_ref().map(|p| p.time());
+            v.no_mpv = Some(v.cur().media.path.clone());
+            let path = v.cur().media.path.clone();
+            v.clear_media();
+            v.loading = true;
+            reload(app, &path, t);
         }
-        let Some(gl) = &app.gl else { return Err("沒有 OpenGL".into()) };
-        if app.video_surface.is_none() {
-            app.video_surface = Some(VideoSurface::new(gl, frame)?);
-        }
-        let surface = app.video_surface.as_mut().expect("剛建立");
-        // 還沒顯示過：先照影片大小（最大 1920 × 1080）
-        let size = if v.video_px[0] > 0 {
-            v.video_px
-        } else {
-            let (w, h) = screenrecorder_core::player::fit_size(v.video_size.x as u32, v.video_size.y as u32, DECODE_MAX.0, DECODE_MAX.1);
-            [w, h]
-        };
-        if surface.draw(p, size)? {
-            v.mpv_tex = Some(surface.id);
-        }
-        Ok(())
-    })();
-    if let Err(e) = r {
-        screenrecorder_core::info!("[檢視器] mpv 無法播放，改用 FFmpeg：{e}");
-        let t = v.player.as_ref().map(|p| p.time());
-        v.no_mpv = Some(v.cur().media.path.clone());
-        let path = v.cur().media.path.clone();
-        v.clear_media();
-        v.loading = true;
-        reload(app, &path, t);
     }
 }
 
@@ -644,6 +633,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         && screenrecorder_core::player::big(v.video_size.x as u32, v.video_size.y as u32)
         && !v.mpv_hint_closed
         && !app.s.mpv_hint_off
+        && app.s.use_mpv
         && !app.core.component_installed(Kind::Mpv);
     let (mut hint_download, mut hint_close, mut hint_never) = (false, false, false);
     let modal = egui::Modal::new(Id::new("viewer")).area(area).frame(frame).show(ctx, |ui| {
@@ -1249,12 +1239,8 @@ fn video_stage(v: &mut Viewer, painter: &egui::Painter, stage: Rect, resp: &egui
         painter.circle_filled(c, 56.0, Color32::from_gray(48));
         theme::paint_icon(painter, Rect::from_center_size(c, vec2(56.0, 56.0)), Icon::Speaker, Color32::from_gray(220));
         painter.text(c + vec2(0.0, 84.0), Align2::CENTER_CENTER, tr!("只有聲音", "Audio only"), theme::font(14.0), Color32::from_gray(200));
-    } else if let Some((id, size, uv)) = v
-        .video_tex
-        .as_ref()
-        .map(|t| (t.id(), t.size_vec2(), Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0))))
-        // mpv 上下顛倒地畫（不顛倒時直拍的影片在某些 mpv 版本畫不出來）：顯示時再翻回來
-        .or(v.mpv_tex.map(|id| (id, v.video_size, Rect::from_min_max(pos2(0.0, 1.0), pos2(1.0, 0.0)))))
+    } else if let Some((id, size, uv)) =
+        v.video_tex.as_ref().map(|t| (t.id(), t.size_vec2(), Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)))).or(v.mpv_tex.map(|id| (id, v.video_size, super::playback::mpv_uv())))
     {
         let src = if v.video_size.x > 0.0 { v.video_size } else { size };
         let k = ((stage.width() - 24.0) / src.x).min((stage.height() - 24.0) / src.y);

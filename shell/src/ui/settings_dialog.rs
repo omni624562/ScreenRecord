@@ -2098,6 +2098,15 @@ fn components_page(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
     ui.add_space(12.0);
     form_section(ui, tr!("播放", "Playback"), |_| {});
     component_card(app, d, ui, Kind::Mpv);
+    ui.add_space(4.0);
+    let mut on = app.s.use_mpv;
+    if switch(ui, &mut on, tr!("用 mpv 播放", "Play with mpv"), true)
+        .on_hover_text(tr!("播放有問題時可以關掉，改用 FFmpeg 播放", "Turn off if playback has problems; FFmpeg is used instead"))
+        .changed()
+    {
+        app.s.use_mpv = on;
+        app.save_settings();
+    }
     ui.add_space(12.0);
     form_section(ui, tr!("自動字幕（語音辨識）", "Auto subtitles (speech recognition)"), |_| {});
     form_hint_full(
@@ -2172,8 +2181,8 @@ fn component_card(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui, k: Kind)
                 k.path().filter(|p| p.is_file()).map(|p| p.display().to_string()).unwrap_or_else(|| screenrecorder_core::mpv::LIB_NAME.into())
             ),
             Kind::Mpv => trf!(
-                "讓檢視器播放影片更順（手機的 4K、60 fps 影片也一樣），約 {} MB。不下載也可以播放，只是大影片可能卡卡的。",
-                "Makes videos play more smoothly in the viewer (including 4K 60 fps phone videos), about {} MB. Videos still play without it, but large ones may stutter.",
+                "讓檢視器、主畫面播放影片更順（手機的 4K、60 fps 影片也一樣），約 {} MB。不下載也可以播放，只是大影片可能卡卡的。",
+                "Makes videos play more smoothly in the viewer and on the main screen (including 4K 60 fps phone videos), about {} MB. Videos still play without it, but large ones may stutter.",
                 k.mb()
             ),
             _ if builtin => trf!(
