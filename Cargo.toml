@@ -5,11 +5,7 @@ members = ["core", "shell"]
 resolver = "2"
 
 [workspace.package]
-<<<<<<< HEAD
 version = "3.34.0"
-=======
-version = "3.33.1"
->>>>>>> origin/main
 edition = "2021"
 publish = false
 license = "MIT"

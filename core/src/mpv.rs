@@ -70,13 +70,10 @@ const FORMAT_DOUBLE: c_int = 5;
 const EVENT_NONE: c_int = 0;
 const EVENT_END_FILE: c_int = 7;
 const EVENT_FILE_LOADED: c_int = 8;
-<<<<<<< HEAD
 const EVENT_PLAYBACK_RESTART: c_int = 21;
 const EVENT_COMMAND_REPLY: c_int = 25;
 /// 跳轉指令的 reply_userdata（失敗時從 COMMAND_REPLY 認出來）
 const SEEK_REPLY: u64 = 1;
-=======
->>>>>>> origin/main
 const EVENT_PROPERTY_CHANGE: c_int = 22;
 const END_FILE_REASON_ERROR: c_int = 4;
 const PARAM_API_TYPE: c_int = 1;
@@ -249,7 +246,6 @@ struct State {
     ended: bool,
     /// 播完已經回報過（take_ended）
     reported: bool,
-<<<<<<< HEAD
     /// 送出、mpv 還沒跳完的跳轉（送出的時間）：跳完（PLAYBACK_RESTART）之前不再送新的，
     /// 拖曳進度條時只留最後一個位置，不然 mpv 一直從頭跳、畫面一直不更新
     pending: Option<std::time::Instant>,
@@ -257,8 +253,6 @@ struct State {
     target: Option<(f64, bool)>,
     /// 等前一個跳完再送的
     queued: Option<(f64, bool)>,
-=======
->>>>>>> origin/main
 }
 
 /// 一支正在播放的影片
@@ -403,11 +397,7 @@ impl MpvPlayer {
         let mut ptrs: Vec<*const c_char> = owned.iter().map(|s| s.as_ptr()).collect();
         ptrs.push(std::ptr::null());
         // SAFETY: 以 NULL 結尾的字串陣列，mpv 立刻複製
-<<<<<<< HEAD
         let r = unsafe { (self.lib.command_async)(self.h, reply, ptrs.as_mut_ptr()) };
-=======
-        let r = unsafe { (self.lib.command_async)(self.h, 0, ptrs.as_mut_ptr()) };
->>>>>>> origin/main
         if r < 0 {
             return Err(format!("{}：{}", args.first().unwrap_or(&""), self.lib.err(r)));
         }
@@ -455,21 +445,15 @@ impl MpvPlayer {
     /// 處理 mpv 的事件（每一格呼叫，不等待）：屬性變更、開檔失敗、播完
     pub fn poll(&mut self) {
         let mut pause_now = false;
-<<<<<<< HEAD
         let mut seek_done = false;
-=======
->>>>>>> origin/main
         loop {
             // SAFETY: 不等待；回傳的事件在下一次呼叫前有效
             let ev = unsafe { &*(self.lib.wait_event)(self.h, 0.0) };
             match ev.event_id {
                 EVENT_NONE => break,
                 EVENT_FILE_LOADED => self.loaded = true,
-<<<<<<< HEAD
                 EVENT_PLAYBACK_RESTART => seek_done = true,
                 EVENT_COMMAND_REPLY if ev.reply_userdata == SEEK_REPLY && ev.error < 0 => seek_done = true,
-=======
->>>>>>> origin/main
                 EVENT_PROPERTY_CHANGE if !ev.data.is_null() => {
                     // SAFETY: PROPERTY_CHANGE 的 data 是 mpv_event_property；值的型別照 format
                     let prop = unsafe { &*(ev.data as *const EventProperty) };
@@ -479,12 +463,8 @@ impl MpvPlayer {
                     }
                     let mut st = self.st.lock().unwrap();
                     match (name, prop.format) {
-<<<<<<< HEAD
                         // 跳轉中：顯示要跳去的位置（mpv 還在回報舊的位置）
                         (b"time-pos", FORMAT_DOUBLE) if st.pending.is_none() && st.queued.is_none() => st.time = unsafe { *(prop.data as *const f64) },
-=======
-                        (b"time-pos", FORMAT_DOUBLE) => st.time = unsafe { *(prop.data as *const f64) },
->>>>>>> origin/main
                         (b"speed", FORMAT_DOUBLE) => st.speed = unsafe { *(prop.data as *const f64) },
                         (b"pause", FORMAT_FLAG) => st.paused = unsafe { *(prop.data as *const c_int) } != 0,
                         (b"eof-reached", FORMAT_FLAG) => {
@@ -516,7 +496,6 @@ impl MpvPlayer {
         if pause_now {
             self.set_flag("pause", true);
         }
-<<<<<<< HEAD
         let next = {
             let mut st = self.st.lock().unwrap();
             // 太久沒跳完（例如還沒讀到檔案）也照樣送下一個
@@ -536,8 +515,6 @@ impl MpvPlayer {
         if let Some((t, exact)) = next {
             self.send_seek(t, exact);
         }
-=======
->>>>>>> origin/main
         // 用哪一種解碼（兩個屬性的事件先後不一定）
         if !self.logged_hwdec && !self.hwdec.is_empty() && !self.codec.is_empty() {
             self.logged_hwdec = true;
@@ -620,11 +597,7 @@ impl MpvPlayer {
             ended
         };
         if ended {
-<<<<<<< HEAD
             self.seek_to(0.0, true);
-=======
-            let _ = self.command(&["seek", "0", "absolute+exact"]);
->>>>>>> origin/main
         }
         self.set_flag("pause", false);
     }
@@ -651,7 +624,6 @@ impl MpvPlayer {
             st.time = t;
             st.ended = false;
             st.reported = false;
-<<<<<<< HEAD
             // 同一個位置不重送（拖曳時滑鼠沒動，每一格都會呼叫）
             if st.target.is_some_and(|(at, ex)| (at - t).abs() < 0.001 && (ex || !exact)) {
                 return;
@@ -672,10 +644,6 @@ impl MpvPlayer {
             crate::info!("[mpv] 跳轉失敗：{e}");
             self.st.lock().unwrap().pending = None;
         }
-=======
-        }
-        let _ = self.command(&["seek", &format!("{t:.3}"), "absolute+exact"]);
->>>>>>> origin/main
     }
 
     pub fn set_rate(&self, rate: f64) {
