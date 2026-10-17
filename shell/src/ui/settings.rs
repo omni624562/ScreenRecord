@@ -183,6 +183,8 @@ pub struct UiSettings {
     pub tours_done: Vec<String>,
     /// 剪輯視窗、截圖編輯、全部截圖第一次打開時顯示短提示（新安裝或按了「重新看教學」才開）
     pub tips: bool,
+    /// 影片資訊用過的類型（點一下就能再用；最近用的在前，最多 RECENT_GENRES 個）
+    pub genres: Vec<String>,
     /// 上次切換或儲存的設定組合（目前的設定和它不一樣時顯示「已修改」）
     pub preset_name: String,
     /// 等待中的排程錄影（core 的 schedule.rs 存進來；這裡只是原樣保留，並跟著 core 的狀態更新）
@@ -192,6 +194,9 @@ pub struct UiSettings {
 
 /// 記住幾個用過的儲存位置
 pub const RECENT_DIRS: usize = 5;
+
+/// 記住幾個用過的類型（影片資訊）
+pub const RECENT_GENRES: usize = 30;
 
 /// 講稿提詞的字級範圍、不透明度下限
 pub const NOTES_FONT: (u32, u32) = (16, 72);
@@ -360,6 +365,15 @@ impl UiSettings {
             tour_step: num("tourStep").map(|v| v as u32).filter(|v| *v <= 50).unwrap_or(0),
             tours_done: o.get("toursDone").and_then(|v| serde_json::from_value::<Vec<String>>(v.clone()).ok()).unwrap_or_default(),
             tips: boolean("tips").unwrap_or(false),
+            genres: o
+                .get("genres")
+                .and_then(|v| serde_json::from_value::<Vec<String>>(v.clone()).ok())
+                .unwrap_or_default()
+                .into_iter()
+                .map(|g| g.trim().to_string())
+                .filter(|g| !g.is_empty())
+                .take(RECENT_GENRES)
+                .collect(),
             preset_name: string("presetName").unwrap_or_default(),
             schedule: o.get(screenrecorder_core::schedule::UI_KEY).cloned(),
         };
