@@ -14,7 +14,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdout, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 /// 一張畫面（RGBA，由上而下）
@@ -58,27 +58,89 @@ pub fn fit_size(src_w: u32, src_h: u32, max_w: u32, max_h: u32) -> (u32, u32) {
 /// 跟不上時會一直跳張（看起來卡卡的）；預覽用 30 張就夠順
 pub const LIGHT_FPS: f64 = 30.0;
 
-/// 大於 1080p 又超過 30 fps 的影片：連續播放時改用省力的方式（見 LIGHT_FPS）
-pub fn heavy(src_w: u32, src_h: u32, fps: f64) -> bool {
-    (src_w as u64 * src_h as u64) > 1920 * 1080 * 11 / 10 && fps > LIGHT_FPS + 2.0
+/// 大於 1080p 的畫面（4K、2K）
+pub fn big(src_w: u32, src_h: u32) -> bool {
+    (src_w as u64 * src_h as u64) > 1920 * 1080 * 11 / 10
 }
 
-/// light：省力播放：每秒 LIGHT_FPS 張、解碼略過去區塊濾波（預覽大小看不出差別）、較快的縮小方式
-fn video_args(path: &str, t: f64, w: u32, h: u32, frames: Option<u32>, keyframes_only: bool, light: bool) -> Vec<String> {
+/// 大於 1080p 又超過 30 fps 的影片：連續播放時改用省力的方式（見 LIGHT_FPS）
+pub fn heavy(src_w: u32, src_h: u32, fps: f64) -> bool {
+    big(src_w, src_h) && fps > LIGHT_FPS + 2.0
+}
+
+/// 旋轉標記（見 args::parse_rotation）換成縮小之後再轉正的濾鏡：不轉時空字串；不是 90° 的倍數時 None（交給 FFmpeg 自動轉正）
+pub fn turn_filter(rotation: f64) -> Option<&'static str> {
+    let r = rotation.round();
+    if (rotation - r).abs() > 0.5 {
+        return None;
+    }
+    // FFmpeg 自動轉正的做法：順時針轉 -rotation 度
+    match (-(r as i64)).rem_euclid(360) {
+        0 => Some(""),
+        90 => Some("transpose=clock"),
+        180 => Some("hflip,vflip"),
+        270 => Some("transpose=cclock"),
+        _ => None,
+    }
+}
+
+/// 讀影片的旋轉標記（ffmpeg -i，很快）：讀不到時 None
+fn probe_turn(ffmpeg: &Path, path: &str) -> Option<&'static str> {
+    let out = std_command(ffmpeg).args(["-hide_banner", "-nostdin", "-i", path]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped()).output().ok()?;
+    turn_filter(crate::args::parse_rotation(&String::from_utf8_lossy(&out.stderr))?)
+}
+
+/// 連續播放的參數（w × h：轉正後的大小）。
+/// - turn：大畫面不讓 FFmpeg 先把整張轉正，縮小後再轉（見 turn_filter）；None = 照 FFmpeg 自動轉正
+/// - gpu：在顯示卡上解碼、縮小（D3D11），只把縮小後的畫面拿回來；不然每一張 4K 都要從顯示卡搬回來、用 CPU 縮小
+fn play_args(path: &str, t: f64, w: u32, h: u32, light: bool, turn: Option<&str>, gpu: bool) -> Vec<String> {
+    let mut a: Vec<String> = ["-hide_banner", "-loglevel", "error", "-nostdin"].iter().map(|s| s.to_string()).collect();
+    let hw: &[&str] = if gpu {
+        &["-init_hw_device", "d3d11va=gpu", "-filter_hw_device", "gpu", "-hwaccel", "d3d11va", "-hwaccel_device", "gpu", "-hwaccel_output_format", "d3d11"]
+    } else {
+        // 不支援時 FFmpeg 自動改用軟體解碼
+        &["-hwaccel", "auto"]
+    };
+    a.extend(hw.iter().map(|s| s.to_string()));
+    if light {
+        a.extend(["-skip_loop_filter".into(), "all".into()]);
+    }
+    if turn.is_some() {
+        a.push("-noautorotate".into());
+    }
+    a.extend(crate::args::input_at(path, &format!("{:.3}", t.max(0.0))));
+    a.extend(["-an".into(), "-sn".into()]);
+    // 轉正之前的大小
+    let (sw, sh) = if turn.is_some_and(|t| t.starts_with("transpose")) { (h, w) } else { (w, h) };
+    let mut f: Vec<String> = Vec::new();
+    if light {
+        f.push(format!("fps={}", crate::format::num(LIGHT_FPS)));
+    }
+    if gpu {
+        f.extend([format!("scale_d3d11=width={sw}:height={sh}:format=nv12"), "hwdownload".into(), "format=nv12".into()]);
+    } else {
+        f.push(format!("scale={sw}:{sh}:flags={}", if light { "fast_bilinear" } else { "bilinear" }));
+    }
+    if let Some(t) = turn.filter(|t| !t.is_empty()) {
+        f.push(t.into());
+    }
+    f.push("format=rgba".into());
+    a.extend(["-vf".into(), f.join(","), "-f".into(), "rawvideo".into(), "-pix_fmt".into(), "rgba".into(), "-".into()]);
+    a
+}
+
+/// 解出單張畫面（暫停時、時間軸縮圖）的參數
+fn video_args(path: &str, t: f64, w: u32, h: u32, frames: Option<u32>, keyframes_only: bool) -> Vec<String> {
     let mut a: Vec<String> = ["-hide_banner", "-loglevel", "error", "-nostdin"].iter().map(|s| s.to_string()).collect();
     if keyframes_only {
         a.extend(["-skip_frame".into(), "nokey".into()]);
-    }
-    if light {
-        a.extend(["-skip_loop_filter".into(), "all".into()]);
     }
     a.extend(crate::args::input_at(path, &format!("{:.3}", t.max(0.0))));
     a.extend(["-an".into(), "-sn".into()]);
     if let Some(n) = frames {
         a.extend(["-frames:v".into(), n.to_string()]);
     }
-    let vf = if light { format!("fps={},scale={w}:{h}:flags=fast_bilinear,format=rgba", crate::format::num(LIGHT_FPS)) } else { format!("scale={w}:{h}:flags=bilinear,format=rgba") };
-    a.extend(["-vf".into(), vf, "-f".into(), "rawvideo".into(), "-pix_fmt".into(), "rgba".into(), "-".into()]);
+    a.extend(["-vf".into(), format!("scale={w}:{h}:flags=bilinear,format=rgba"), "-f".into(), "rawvideo".into(), "-pix_fmt".into(), "rgba".into(), "-".into()]);
     a
 }
 
@@ -112,7 +174,7 @@ fn read_frame(r: &mut impl Read, buf: &mut [u8]) -> bool {
 
 /// 解出時間 t 的一張畫面
 pub fn decode_frame(ffmpeg: &Path, path: &str, t: f64, w: u32, h: u32, keyframes_only: bool) -> Option<Vec<u8>> {
-    let mut child = spawn(ffmpeg, &video_args(path, t, w, h, Some(1), keyframes_only, false))?;
+    let mut child = spawn(ffmpeg, &video_args(path, t, w, h, Some(1), keyframes_only))?;
     let mut out = child.stdout.take()?;
     let mut buf = vec![0u8; (w * h * 4) as usize];
     let ok = read_frame(&mut out, &mut buf);
@@ -167,7 +229,7 @@ fn scrub_frame(sc: &mut Scrub, ffmpeg: &Path, path: &str, fps: f64, idx: i64, w:
         let start = if backward_step { (idx - (SCRUB_BACK_SEC * fps) as i64 + 1).max(0) } else { idx };
         // 從半張前開始找，第一張輸出的就是第 start 張
         let ss = ((start as f64 - 0.5) / fps).max(0.0);
-        let mut args = video_args(path, ss, w, h, None, false, false);
+        let mut args = video_args(path, ss, w, h, None, false);
         let at = args.iter().position(|a| a == "-vf").unwrap_or(args.len());
         args.splice(at..at, ["-fps_mode".to_string(), "cfr".into(), "-r".into(), format!("{fps}")]);
         let mut child = spawn(ffmpeg, &args)?;
@@ -243,6 +305,12 @@ pub struct Player {
     audio_only: bool,
     /// 大畫面高張數：連續播放時用省力的方式（見 heavy）
     light: bool,
+    /// 大於 1080p（見 big）：縮小後再轉正，Windows 上在顯示卡縮小
+    big: bool,
+    /// 縮小後再轉正的濾鏡（第一次播放時讀）
+    turn: Arc<OnceLock<Option<&'static str>>>,
+    /// 在顯示卡縮小失敗過（不支援）：之後都用一般方式
+    gpu_failed: Arc<AtomicBool>,
 }
 
 /// 播放速度可選的範圍
@@ -267,6 +335,9 @@ impl Player {
             wake,
             audio_only: false,
             light,
+            big: big(src_w, src_h),
+            turn: Arc::default(),
+            gpu_failed: Arc::default(),
         }
     }
 
@@ -449,6 +520,7 @@ impl Player {
         let (ffmpeg, spec, children, inner, wake, w, h) = (self.ffmpeg.clone(), self.spec.clone(), self.children.clone(), self.inner.clone(), self.wake.clone(), self.width, self.height);
         let volume = self.volume.clone();
         let (audio_only, light, rate) = (self.audio_only, self.light, self.inner.lock().unwrap().rate());
+        let (big, turn_cell, gpu_failed) = (self.big, self.turn.clone(), self.gpu_failed.clone());
         std::thread::spawn(move || {
             // 記下子行程以便停止；已經換了一輪（暫停 / 跳到其他時間）就直接結束它
             let register = |mut child: Child| -> bool {
@@ -515,25 +587,38 @@ impl Player {
                     }
                 }
             }
-            // 連續播放用硬體解碼（大畫面時省很多 CPU）；不支援時 FFmpeg 自動改用軟體解碼
-            let mut args = video_args(&spec.path, from, w, h, None, false, light);
-            args.splice(4..4, ["-hwaccel".to_string(), "auto".into()]);
-            let Some(mut child) = spawn(&ffmpeg, &args) else {
-                return;
+            // 連續播放用硬體解碼（大畫面時省很多 CPU）
+            let turn = if big { *turn_cell.get_or_init(|| probe_turn(&ffmpeg, &spec.path)) } else { None };
+            let start = |gpu: bool| -> Option<ChildStdout> {
+                let mut child = spawn(&ffmpeg, &play_args(&spec.path, from, w, h, light, turn, gpu))?;
+                let out = child.stdout.take()?;
+                register(child).then_some(out)
             };
-            let Some(mut out) = child.stdout.take() else { return };
-            if !register(child) {
-                return;
+            let try_gpu = cfg!(windows) && big && turn.is_some() && !gpu_failed.load(Ordering::Relaxed);
+            let Some(mut out) = start(try_gpu) else { return };
+            let mut buf = vec![0u8; (w * h * 4) as usize];
+            let mut first = read_frame(&mut out, &mut buf);
+            if try_gpu {
+                if first {
+                    crate::info!("[播放] 在顯示卡縮小畫面：{}", spec.path);
+                } else if inner.lock().unwrap().gen == gen {
+                    // 顯示卡或 FFmpeg 不支援（例如太舊的顯示卡解不了 HEVC 10-bit）：改用一般方式，之後也不再試
+                    gpu_failed.store(true, Ordering::Relaxed);
+                    crate::info!("[播放] 無法在顯示卡縮小畫面，改用一般方式：{}", spec.path);
+                    let Some(o) = start(false) else { return };
+                    out = o;
+                    first = read_frame(&mut out, &mut buf);
+                }
             }
             // 省力播放時每秒只送出 LIGHT_FPS 張：時間依送出的張數計算
             let (fps, duration) = (if light { LIGHT_FPS } else { spec.fps.max(1.0) }, spec.duration);
             std::thread::spawn(move || {
-                let mut buf = vec![0u8; (w * h * 4) as usize];
+                let mut pending = Some(first);
                 let mut n: u64 = 0;
                 let waited_for_audio = Instant::now();
                 let mut last_shown = Instant::now();
                 loop {
-                    if !read_frame(&mut out, &mut buf) {
+                    if !pending.take().unwrap_or_else(|| read_frame(&mut out, &mut buf)) {
                         let mut i = inner.lock().unwrap();
                         if i.gen == gen {
                             i.playing = false;
@@ -622,11 +707,77 @@ mod tests {
         // 手機 4K 60p（直的、橫的）：省力播放；1080p 60p、4K 30p、一般錄影：照原本的方式
         assert!(heavy(3840, 2160, 60.0) && heavy(2160, 3840, 59.94));
         assert!(!heavy(1920, 1080, 60.0) && !heavy(3840, 2160, 30.0) && !heavy(2560, 1440, 30.0));
-        let a = video_args("a.mp4", 1.0, 1280, 720, None, false, true).join(" ");
-        assert!(a.contains("-skip_loop_filter all -ss 1.000 -i a.mp4"), "{a}");
-        assert!(a.contains("fps=30,scale=1280:720:flags=fast_bilinear,format=rgba"), "{a}");
-        let b = video_args("a.mp4", 1.0, 1280, 720, None, false, false).join(" ");
-        assert!(!b.contains("skip_loop_filter") && b.contains("-vf scale=1280:720:flags=bilinear,format=rgba"), "{b}");
+        assert!(big(3840, 2160) && big(2560, 1440) && !big(1920, 1080));
+        // 一般影片：和以前一樣（硬體解碼、FFmpeg 自動轉正）
+        let a = play_args("a.mp4", 1.0, 1280, 720, false, None, false).join(" ");
+        assert!(a.starts_with("-hide_banner -loglevel error -nostdin -hwaccel auto -ss 1.000 -i a.mp4"), "{a}");
+        assert!(a.contains("-vf scale=1280:720:flags=bilinear,format=rgba -f rawvideo"), "{a}");
+        // 4K 60p：每秒 30 張、略過去區塊濾波
+        let b = play_args("a.mp4", 1.0, 1280, 720, true, Some(""), false).join(" ");
+        assert!(b.contains("-skip_loop_filter all -noautorotate -ss 1.000 -i a.mp4"), "{b}");
+        assert!(b.contains("-vf fps=30,scale=1280:720:flags=fast_bilinear,format=rgba"), "{b}");
+        // 直拍：先縮成橫的小畫面再轉正（不轉整張 4K）
+        let c = play_args("a.mp4", 0.0, 360, 640, true, Some("transpose=clock"), false).join(" ");
+        assert!(c.contains("-vf fps=30,scale=640:360:flags=fast_bilinear,transpose=clock,format=rgba"), "{c}");
+        // 顯示卡：解碼、縮小都在顯示卡上，只拿回小畫面
+        let d = play_args("a.mp4", 0.0, 360, 640, true, Some("transpose=cclock"), true).join(" ");
+        assert!(d.contains("-hwaccel d3d11va -hwaccel_device gpu -hwaccel_output_format d3d11 -skip_loop_filter all -noautorotate"), "{d}");
+        assert!(d.contains("-vf fps=30,scale_d3d11=width=640:height=360:format=nv12,hwdownload,format=nv12,transpose=cclock,format=rgba"), "{d}");
+        assert!(!d.contains("-hwaccel auto"), "{d}");
+    }
+
+    #[test]
+    fn turn_filters_match_ffmpeg_autorotate() {
+        assert_eq!(turn_filter(0.0), Some(""));
+        assert_eq!(turn_filter(-90.0), Some("transpose=clock"));
+        assert_eq!(turn_filter(90.0), Some("transpose=cclock"));
+        assert_eq!(turn_filter(270.0), Some("transpose=clock"));
+        assert_eq!(turn_filter(180.0), Some("hflip,vflip"));
+        assert_eq!(turn_filter(-180.0), Some("hflip,vflip"));
+        assert_eq!(turn_filter(45.0), None);
+        assert_eq!(turn_filter(89.6), Some("transpose=cclock"));
+    }
+
+    /// 縮小後再轉正，和 FFmpeg 自動轉正（先轉再縮）看起來一樣
+    #[test]
+    fn turning_after_scaling_matches_autorotate() {
+        let Some(ffmpeg) = which_ffmpeg() else { return };
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src.mp4");
+        let made = std::process::Command::new(&ffmpeg)
+            .args(["-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc=s=320x180:r=30:d=1", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-y"])
+            .arg(&src)
+            .status()
+            .is_ok_and(|s| s.success());
+        if !made {
+            return;
+        }
+        for rot in ["90", "-90", "180"] {
+            let file = dir.path().join(format!("rot{rot}.mp4"));
+            let ok = std::process::Command::new(&ffmpeg)
+                .args(["-hide_banner", "-loglevel", "error", "-display_rotation", rot, "-i"])
+                .arg(&src)
+                .args(["-c", "copy", "-y"])
+                .arg(&file)
+                .status()
+                .is_ok_and(|s| s.success());
+            if !ok {
+                return; // 太舊的 FFmpeg 沒有 -display_rotation
+            }
+            let path = file.display().to_string();
+            let (w, h) = if rot == "180" { (160, 90) } else { (90, 160) };
+            let turn = probe_turn(&ffmpeg, &path);
+            assert!(turn.is_some_and(|t| !t.is_empty()), "{rot}: {turn:?}");
+            let auto = decode_frame(&ffmpeg, &path, 0.0, w, h, false).expect("自動轉正");
+            let mut args = play_args(&path, 0.0, w, h, true, turn, false);
+            args.splice(args.len() - 7..args.len() - 7, ["-frames:v".to_string(), "1".into()]);
+            let mut child = spawn(&ffmpeg, &args).unwrap();
+            let mut ours = vec![0u8; (w * h * 4) as usize];
+            assert!(read_frame(child.stdout.as_mut().unwrap(), &mut ours), "{rot}: 沒有畫面");
+            let _ = child.wait();
+            let diff = auto.iter().zip(&ours).map(|(a, b)| (*a as i32 - *b as i32).unsigned_abs() as u64).sum::<u64>() / auto.len() as u64;
+            assert!(diff < 12, "{rot}: 平均差 {diff}");
+        }
     }
 
     /// 測試影片：每一張畫面的亮度 = 張數 × 8（看得出是第幾張），30 fps、2 秒，有聲音
