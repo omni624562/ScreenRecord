@@ -848,23 +848,23 @@ fn region_drag(app: &mut UiApp, ui: &Ui, resp: &egui::Response, rect: Rect, view
             DragMode::Move => {
                 let pt = to_desk(pos, false);
                 let (dx, dy) = (pt.0 - d.from.0, pt.1 - d.from.1);
-                DRect { x: (o.x + dx).clamp(dk.x, dk.x + dk.width - o.width), y: (o.y + dy).clamp(dk.y, dk.y + dk.height - o.height), ..o }
+                DRect { x: (o.x + dx).min(dk.x + dk.width - o.width).max(dk.x), y: (o.y + dy).min(dk.y + dk.height - o.height).max(dk.y), ..o }
             }
             DragMode::Resize { n, s, e, w } => {
                 let pt = to_desk(pos, false);
                 let (dx, dy) = (pt.0 - d.from.0, pt.1 - d.from.1);
                 let (mut l, mut t, mut rt, mut b) = (o.x, o.y, o.x + o.width, o.y + o.height);
                 if w {
-                    l = (o.x + dx).clamp(dk.x, rt - MIN);
+                    l = (o.x + dx).min(rt - MIN).max(dk.x);
                 }
                 if e {
-                    rt = (rt + dx).clamp(l + MIN, dk.x + dk.width);
+                    rt = (rt + dx).min(dk.x + dk.width).max(l + MIN);
                 }
                 if n {
-                    t = (o.y + dy).clamp(dk.y, b - MIN);
+                    t = (o.y + dy).min(b - MIN).max(dk.y);
                 }
                 if s {
-                    b = (b + dy).clamp(t + MIN, dk.y + dk.height);
+                    b = (b + dy).min(dk.y + dk.height).max(t + MIN);
                 }
                 DRect { x: l, y: t, width: rt - l, height: b - t }
             }
@@ -876,8 +876,9 @@ fn region_drag(app: &mut UiApp, ui: &Ui, resp: &egui::Response, rect: Rect, view
             r.width = r.width.max(MIN).min(dk_of(app, view).width);
             r.height = r.height.max(MIN).min(dk_of(app, view).height);
             let b = dk_of(app, view);
-            r.x = r.x.clamp(b.x, b.x + b.width - r.width);
-            r.y = r.y.clamp(b.y, b.y + b.height - r.height);
+            // 範圍比桌面大時（螢幕排列改過）也不會出錯：先靠右下、再靠左上
+            r.x = r.x.min(b.x + b.width - r.width).max(b.x);
+            r.y = r.y.min(b.y + b.height - r.height).max(b.y);
             set_region(app, r);
         }
         app.save_settings();

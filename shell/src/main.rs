@@ -21,7 +21,7 @@ use screenrecorder_core::version::APP_VERSION;
 use screenrecorder_core::{error, info, instance, ipc, job, log, selfupdate, tray, warn};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const DEFAULT_PORT: u16 = 47391;
 const PORT_RANGE: u16 = 20;
@@ -81,7 +81,11 @@ fn main() {
     let argv: Vec<String> = std::env::args().collect();
     // 程式內更新後由舊版啟動：等舊版結束（否則會被當成重複執行），再清掉舊版留下的檔案
     if let Some(pid) = argv.iter().find_map(|a| a.strip_prefix("--wait-pid=")).and_then(|p| p.parse::<u32>().ok()) {
-        info!("已更新到 v{APP_VERSION}，等舊版結束");
+        if argv.iter().any(|a| a == "--restarted") {
+            info!("操作視窗意外結束後重新開啟，等上一個結束");
+        } else {
+            info!("已更新到 v{APP_VERSION}，等舊版結束");
+        }
         selfupdate::wait_for_exit(pid, Duration::from_secs(60));
     }
     if let Ok(exe) = std::env::current_exe() {
@@ -332,16 +336,37 @@ fn main() {
         ..Default::default()
     };
     let handle = rt.handle().clone();
-    let result = eframe::run_native(
-        "screenrecorder",
-        options,
-        Box::new(move |cc| {
-            let _ = CTX.set(cc.egui_ctx.clone());
-            Ok(Box::new(ui::UiApp::new(cc, core, handle, open_requests, tray_ok, visible, seen_shot)))
-        }),
-    );
-    if let Err(e) = result {
-        error!("無法開啟操作視窗：{e}");
+    let keep = core.clone();
+    let started = Instant::now();
+    // 介面出錯（例如電腦睡眠、螢幕關閉後顯示卡的繪圖環境失效，或介面程式內部錯誤）時不要整個程式消失：
+    // 把正在錄的影片好好收尾，再自動重新開啟程式
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        eframe::run_native(
+            "screenrecorder",
+            options,
+            Box::new(move |cc| {
+                let _ = CTX.set(cc.egui_ctx.clone());
+                Ok(Box::new(ui::UiApp::new(cc, core, handle, open_requests, tray_ok, visible, seen_shot)))
+            }),
+        )
+    }));
+    let why = match result {
+        Ok(Ok(())) => return,
+        Ok(Err(e)) => e.to_string(),
+        Err(_) => "介面程式內部錯誤".to_string(),
+    };
+    // 剛啟動就失敗：多半是顯示卡、驅動程式的問題，重開也一樣，只記錄下來
+    if started.elapsed() < Duration::from_secs(20) {
+        error!("無法開啟操作視窗：{why}");
+        return;
+    }
+    error!("操作視窗意外結束（{why}），收尾後重新開啟程式");
+    rt.block_on(keep.recorder.shutdown());
+    if let Ok(exe) = std::env::current_exe() {
+        let args = vec![format!("--wait-pid={}", std::process::id()), "--restarted".to_string()];
+        if let Err(e) = screenrecorder_core::job::spawn_detached(&exe.to_string_lossy(), &args) {
+            error!("無法重新開啟程式：{e}");
+        }
     }
 }
 

@@ -397,7 +397,7 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, toast: &mut
             painter.rect(grip, CornerRadius::same(3), p.warn, Stroke::new(1.0, Color32::WHITE), egui::StrokeKind::Outside);
         }
         let g = painter.layout_no_wrap(trf!("已選取 {} 秒", "{} s selected", fmt_secs(s1 - s0)), theme::font_bold(11.5), Color32::WHITE);
-        let c = pos2(((x0 + x1) / 2.0).clamp(rect.left() + g.size().x / 2.0 + 6.0, rect.right() - g.size().x / 2.0 - 6.0), rect.top() + 21.0);
+        let c = pos2(((x0 + x1) / 2.0).max(rect.left() + g.size().x / 2.0 + 6.0).min(rect.right() - g.size().x / 2.0 - 6.0), rect.top() + 21.0);
         painter.rect_filled(Rect::from_center_size(c, g.size() + vec2(10.0, 4.0)), CornerRadius::same(4), p.warn);
         painter.galley(c - g.size() / 2.0, g, Color32::WHITE);
     }
@@ -933,11 +933,11 @@ fn ann_track(ed: &mut Editor, ui: &mut egui::Ui) {
                         seek_to = Some(an.start);
                     }
                     Edge::Start => {
-                        an.start = (orig.0 + d).clamp(0.0, an.end - 0.1);
+                        an.start = (orig.0 + d).min(an.end - 0.1).max(0.0);
                         seek_to = Some(an.start);
                     }
                     Edge::End => {
-                        an.end = (orig.1 + d).clamp(an.start + 0.1, dur);
+                        an.end = (orig.1 + d).min(dur).max(an.start + 0.1);
                         seek_to = Some(an.end - 0.001);
                     }
                 }

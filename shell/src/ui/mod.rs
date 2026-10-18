@@ -1288,8 +1288,11 @@ impl eframe::App for UiApp {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
-        viewer::render(self, frame);
-        inline_play::render(self, frame);
+        // 視窗縮到最小時不畫影片（mpv）：睡眠、顯示卡重設後繪圖環境可能已失效，畫上去會讓程式整個當掉
+        if !ui.ctx().input(|i| i.viewport().minimized == Some(true)) {
+            viewer::render(self, frame);
+            inline_play::render(self, frame);
+        }
         // 關到系統匣（視窗隱藏）時什麼都不畫：eframe 只看「縮小 / 被蓋住」判斷看不看得到，
         // 隱藏的視窗仍會一直呼叫這裡；畫主畫面會重新開始即時預覽，背景就一直有 FFmpeg 在擷取桌面
         if !self.visible {

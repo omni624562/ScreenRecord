@@ -111,7 +111,8 @@ mod win {
                 if stop.load(Ordering::Relaxed) {
                     break;
                 }
-                let padding = client.GetCurrentPadding().unwrap_or(size);
+                // 裝置失效（睡眠後、耳機拔掉）：結束，播放改用畫面的時間，不要一直空轉
+                let padding = client.GetCurrentPadding().map_err(|e| trf!("聲音裝置無法使用 ({})", "The audio device is unavailable ({})", hex(&e)))?;
                 let free = (size - padding) as usize;
                 if !eof && free > 0 {
                     let n = read_full(&mut reader, &mut bytes[..free * BYTES_PER_FRAME]);
