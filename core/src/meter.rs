@@ -69,6 +69,7 @@ impl Meter {
                 l.lock().unwrap().error = Some(errors.join(tr!("；", "; ")));
             }
             let (mut ls, mut lm) = (0.0f32, 0.0f32);
+            let mut tick = 0u32;
             while !s.load(Ordering::Relaxed) {
                 let read = |c: &mut Option<Box<dyn crate::audio::Capture>>, level: &mut f32| {
                     let mut p = 0.0f32;
@@ -88,6 +89,16 @@ impl Meter {
                 };
                 read(&mut sys, &mut ls);
                 read(&mut mic, &mut lm);
+                // 聲音裝置中斷（睡眠後、耳機拔掉）：每 2 秒試著重新開啟，音量表不會一直停在 0
+                tick += 1;
+                if tick.is_multiple_of(50) {
+                    if system && sys.is_none() {
+                        sys = open(&AudioSourceSpec { loopback: true, mic_id: String::new(), app: String::new() }).ok();
+                    }
+                    if let (Some(id), None) = (&m, &mic) {
+                        mic = open(&AudioSourceSpec { loopback: false, mic_id: id.clone(), app: String::new() }).ok();
+                    }
+                }
                 {
                     let mut g = l.lock().unwrap();
                     if g.system.is_some() {

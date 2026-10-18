@@ -682,13 +682,13 @@ fn bubble(app: &UiApp, ctx: &egui::Context, screen: Rect, hole: Option<Rect>, ti
     let pos = match hole {
         None => pos2(screen.center().x - w / 2.0, screen.center().y - h / 2.0),
         Some(r) => {
-            let x = (r.center().x - w / 2.0).clamp(screen.min.x + 16.0, screen.max.x - w - 16.0);
+            let x = (r.center().x - w / 2.0).max(screen.min.x + 16.0).min(screen.max.x - w - 16.0);
             if r.max.y + gap + h <= screen.max.y - 8.0 {
                 pos2(x, r.max.y + gap)
             } else if r.min.y - gap - h >= screen.min.y + 8.0 {
                 pos2(x, r.min.y - gap - h)
             } else {
-                let y = (r.center().y - h / 2.0).clamp(screen.min.y + 16.0, screen.max.y - h - 16.0);
+                let y = (r.center().y - h / 2.0).max(screen.min.y + 16.0).min(screen.max.y - h - 16.0);
                 if r.max.x + gap + w <= screen.max.x - 8.0 {
                     pos2(r.max.x + gap, y)
                 } else if r.min.x - gap - w >= screen.min.x + 8.0 {
@@ -776,7 +776,7 @@ fn bubble(app: &UiApp, ctx: &egui::Context, screen: Rect, hole: Option<Rect>, ti
     if let Some(r) = hole {
         let b = resp.response.rect;
         let painter = ctx.layer_painter(LayerId::new(Order::Debug, Id::new("tour-arrow")));
-        let x = r.center().x.clamp(b.min.x + 20.0, b.max.x - 20.0);
+        let x = r.center().x.max(b.min.x + 20.0).min(b.max.x - 20.0);
         if b.min.y >= r.max.y {
             painter.add(egui::Shape::convex_polygon(vec![pos2(x, b.min.y - 8.0), pos2(x + 9.0, b.min.y + 1.0), pos2(x - 9.0, b.min.y + 1.0)], p.surface, Stroke::NONE));
         } else if b.max.y <= r.min.y {

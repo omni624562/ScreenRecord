@@ -1607,6 +1607,10 @@ impl App {
             tokio::task::spawn_blocking(|| (crate::monitors::enumerate_monitors(), crate::audio::list_audio_devices())).await.unwrap_or_else(|e| (Err(e.to_string()), Err(e.to_string())));
         let mut st = self.lock();
         match monitors {
+            // 螢幕關閉、睡眠中時可能暫時一台都列不出來：保留原本的清單，不要因此改掉設定
+            Ok(m) if m.is_empty() && !st.monitors.is_empty() => {
+                warn!("暫時列不出任何螢幕（可能螢幕已關閉），先沿用原本的 {} 台", st.monitors.len());
+            }
             Ok(m) => {
                 st.monitor_error = m.is_empty().then(|| tr!("找不到任何螢幕", "No screens found").to_string());
                 st.monitors = m;

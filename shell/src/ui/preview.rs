@@ -53,11 +53,13 @@ pub struct Preview {
     texture: Option<TextureHandle>,
     tex_seq: u64,
     pub size: Option<(u32, u32)>,
+    /// 上次即時預覽意外結束的時間：短時間內又結束（螢幕關閉、鎖定畫面）就先改用單張，不一直重開 FFmpeg
+    last_end: Option<Instant>,
 }
 
 impl Default for Preview {
     fn default() -> Self {
-        Preview { current: None, pending: None, slot: Arc::default(), stop: Arc::new(AtomicBool::new(false)), texture: None, tex_seq: 0, size: None }
+        Preview { current: None, pending: None, slot: Arc::default(), stop: Arc::new(AtomicBool::new(false)), texture: None, tex_seq: 0, size: None, last_end: None }
     }
 }
 
@@ -114,6 +116,10 @@ impl Preview {
             let mut s = self.slot.lock().unwrap();
             if std::mem::take(&mut s.ended) {
                 self.current = None;
+                if self.last_end.is_some_and(|t| t.elapsed() < Duration::from_secs(10)) {
+                    s.live_failed = Some(Instant::now());
+                }
+                self.last_end = Some(Instant::now());
             }
             if s.live_failed.is_some_and(|t| t.elapsed() < LIVE_RETRY) {
                 fps = 0;
@@ -135,8 +141,10 @@ impl Preview {
                     return;
                 }
             };
-            if since.elapsed() < SETTLE {
-                ctx.request_repaint_after(SETTLE - since.elapsed());
+            // 只讀一次經過時間：讀兩次時第二次可能已超過 SETTLE，相減會讓程式當掉（鎖定畫面、切換視窗改變張數時常碰到）
+            let left = SETTLE.saturating_sub(since.elapsed());
+            if !left.is_zero() {
+                ctx.request_repaint_after(left);
                 return;
             }
         }

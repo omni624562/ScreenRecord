@@ -529,7 +529,9 @@ pub fn plan_tiles(rect: &Rect, monitors: &[MonitorInfo]) -> (Vec<MonitorInfo>, O
         })
         .collect();
     let same_adapter = involved.windows(2).all(|p| p[0].adapter == p[1].adapter);
-    let dda = (!involved.is_empty() && same_adapter).then(|| Dda { adapter: involved[0].adapter, tiles: tiles.into_iter().filter(|t| t.width >= 2 && t.height >= 2).collect() });
+    // 每一塊都太小（例如自訂範圍只跟螢幕重疊 1 像素，螢幕排列改過後常見）時不用 ddagrab，後面才不會取不到第一塊
+    let tiles: Vec<Tile> = tiles.into_iter().filter(|t| t.width >= 2 && t.height >= 2).collect();
+    let dda = (!involved.is_empty() && same_adapter && !tiles.is_empty()).then(|| Dda { adapter: involved[0].adapter, tiles });
     (involved, dda)
 }
 
@@ -2440,6 +2442,11 @@ dummy: Immediate exit requested";
         assert_eq!(preview_size(&Rect { x: 0, y: 0, width: 1001, height: 501 }, 1600), (1000, 500));
         let ids: Vec<_> = plan_tiles(&Rect { x: 0, y: 0, width: 100, height: 100 }, &same_gpu()).0.iter().map(|m| m.id.clone()).collect();
         assert_eq!(ids, vec!["0:0"]);
+        // 只跟螢幕重疊 1 像素（螢幕排列改過後舊的自訂範圍）：不用 ddagrab，之後才不會取不到第一塊
+        let m = &same_gpu()[0];
+        let (involved, dda) = plan_tiles(&Rect { x: m.x + m.width - 1, y: m.y, width: 1, height: 100 }, &same_gpu());
+        assert_eq!(involved.len(), 1);
+        assert!(dda.is_none());
     }
 
     #[test]

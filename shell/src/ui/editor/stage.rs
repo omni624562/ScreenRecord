@@ -154,12 +154,12 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, stage_h: f3
     let manual = if ed.previewing { zoom::region_at(&spans, ed.now()) } else { None };
     let uv = if let Some((z, cx, cy)) = manual {
         let (hw, hh) = (0.5 / z as f32, 0.5 / z as f32);
-        let (cx, cy) = ((cx as f32).clamp(hw, 1.0 - hw), (cy as f32).clamp(hh, 1.0 - hh));
+        let (cx, cy) = ((cx as f32).max(hw).min(1.0 - hw), (cy as f32).max(hh).min(1.0 - hh));
         Rect::from_min_max(pos2(cx - hw, cy - hh), pos2(cx + hw, cy + hh))
     } else if ed.previewing && ed.zoom_active() {
         let (z, cx, cy) = zoom::at(&zoom::outside_spans(&zoom::focus_points(&ed.zoom_clicks()), &spans), ed.zoom, ed.now());
         let (hw, hh) = (0.5 / z as f32, 0.5 / z as f32);
-        let (cx, cy) = ((cx as f32).clamp(hw, 1.0 - hw), (cy as f32).clamp(hh, 1.0 - hh));
+        let (cx, cy) = ((cx as f32).max(hw).min(1.0 - hw), (cy as f32).max(hh).min(1.0 - hh));
         Rect::from_min_max(pos2(cx - hw, cy - hh), pos2(cx + hw, cy + hh))
     } else {
         Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0))
@@ -372,8 +372,8 @@ fn pick_region(ed: &mut Editor, ui: &egui::Ui, painter: &egui::Painter, rect: Re
             let b = norm(p);
             // 維持影片的長寬比（放大後剛好填滿畫面）：以拖曳的寬或高中比較大的為準
             let w = (b.0 - a.0).abs().max((b.1 - a.1).abs()).min(1.0);
-            let x = (if b.0 < a.0 { a.0 - w } else { a.0 }).clamp(0.0, 1.0 - w);
-            let y = (if b.1 < a.1 { a.1 - w } else { a.1 }).clamp(0.0, 1.0 - w);
+            let x = (if b.0 < a.0 { a.0 - w } else { a.0 }).max(0.0).min(1.0 - w);
+            let y = (if b.1 < a.1 { a.1 - w } else { a.1 }).max(0.0).min(1.0 - w);
             Some((x, y, w, w))
         }
         _ => None,
@@ -433,7 +433,7 @@ fn result_view(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, avail_w:
     if ed.zoom_active() {
         let (z, cx, cy) = zoom::at(&zoom::focus_points(&ed.zoom_clicks()), ed.zoom, ed.now());
         let (hw, hh) = (0.5 / z as f32, 0.5 / z as f32);
-        let (cx, cy) = ((cx as f32).clamp(hw, 1.0 - hw), (cy as f32).clamp(hh, 1.0 - hh));
+        let (cx, cy) = ((cx as f32).max(hw).min(1.0 - hw), (cy as f32).max(hh).min(1.0 - hh));
         uv = Rect::from_min_max(pos2(cx - hw, cy - hh), pos2(cx + hw, cy + hh));
     }
     let content_ar = uv.width() * vw / (uv.height() * vh).max(1e-6);
