@@ -363,6 +363,22 @@ async fn pool_with_info(cache: &Arc<MediaCache>, ffmpeg: Option<&Path>, list: Ve
     out.into_iter().flatten().collect()
 }
 
+/// 在背景讀好這些檔案的影片資訊（放進快取，換頁時就不用等）。全部共用 2 個名額，
+/// 不會跟目前這一頁搶，連續換頁時也不會越堆越多
+fn warm_info(cache: &Arc<MediaCache>, ffmpeg: Option<&Path>, list: Vec<LibraryEntry>) {
+    static SEM: std::sync::LazyLock<Arc<Semaphore>> = std::sync::LazyLock::new(|| Arc::new(Semaphore::new(2)));
+    if list.is_empty() {
+        return;
+    }
+    let (cache, ff) = (cache.clone(), ffmpeg.map(Path::to_path_buf));
+    tokio::spawn(async move {
+        for e in list {
+            let Ok(_permit) = SEM.clone().acquire_owned().await else { return };
+            with_info(&cache, ff.as_deref(), e).await;
+        }
+    });
+}
+
 /// 依高度分頁：回傳每頁第一筆的索引。一筆（含子列）放不下一整頁時自己一頁
 pub fn page_starts(list: &[LibraryEntry], fit_px: f64) -> Vec<usize> {
     let mut starts = vec![0];
@@ -603,6 +619,8 @@ pub async fn list_library_with(cache: &Arc<MediaCache>, ffmpeg: Option<&Path>, d
     let days: Vec<String> = list.iter().map(|e| entry_day(e).map(|d| d.format("%Y-%m-%d").to_string()).unwrap_or_default()).collect();
     let grid = q.grid.filter(|g| g.cols > 0 && g.height.is_finite() && g.row_h > 0.0);
     let start;
+    // 前後一頁的範圍（在背景先讀好影片資訊、縮圖，換頁時就不用等）
+    let mut near: Vec<std::ops::Range<usize>> = vec![];
     let (pages, page, slice, page_size) = match (grid, q.fit_px.filter(|f| f.is_finite())) {
         (Some(g), _) => {
             let places = grid_layout(&days, g);
@@ -612,6 +630,12 @@ pub async fn list_library_with(cache: &Arc<MediaCache>, ffmpeg: Option<&Path>, d
                 None => clamp_page(pages),
             };
             let idx: Vec<usize> = places.iter().enumerate().filter(|(_, p)| p.page + 1 == page).map(|(i, _)| i).collect();
+            for other in [page + 1, page.saturating_sub(1)] {
+                let pos: Vec<usize> = places.iter().enumerate().filter(|(_, p)| other != page && p.page + 1 == other).map(|(i, _)| i).collect();
+                if let (Some(a), Some(b)) = (pos.first(), pos.last()) {
+                    near.push(*a..*b + 1);
+                }
+            }
             start = idx.first().copied().unwrap_or(0);
             let slice: Vec<LibraryEntry> = idx.iter().map(|i| list[*i].clone()).collect();
             let n = slice.len();
@@ -623,6 +647,12 @@ pub async fn list_library_with(cache: &Arc<MediaCache>, ffmpeg: Option<&Path>, d
             let page = clamp_page(pages);
             let end = starts.get(page).copied().unwrap_or(list.len());
             start = starts[page - 1];
+            if page < pages {
+                near.push(end..starts.get(page + 1).copied().unwrap_or(list.len()));
+            }
+            if page > 1 {
+                near.push(starts[page - 2]..start);
+            }
             let slice: Vec<LibraryEntry> = list[start..end].to_vec();
             let n = slice.len();
             (pages, page, slice, n)
@@ -632,6 +662,10 @@ pub async fn list_library_with(cache: &Arc<MediaCache>, ffmpeg: Option<&Path>, d
             let pages = total.div_ceil(ps).max(1);
             let page = clamp_page(pages);
             start = (page - 1) * ps;
+            near.push((start + ps).min(list.len())..(start + 2 * ps).min(list.len()));
+            if start > 0 {
+                near.push(start.saturating_sub(ps)..start);
+            }
             let slice: Vec<LibraryEntry> = list.iter().skip(start).take(ps).cloned().collect();
             (pages, page, slice, ps)
         }
@@ -653,7 +687,16 @@ pub async fn list_library_with(cache: &Arc<MediaCache>, ffmpeg: Option<&Path>, d
         vec![]
     };
     let items = if need_all { slice } else { pool_with_info(cache, ffmpeg, slice, 6).await };
-    LibraryPage { dir: dir.display().to_string(), total, page, pages, page_size, items, all_paths, start, groups, facets, error: None }
+    // 下一頁（再來是上一頁）：介面先產生縮圖；影片資訊在背景讀好放進快取
+    let ahead: Vec<(String, f64)> = near.iter().flat_map(|r| list[r.clone()].iter()).map(|e| (e.media.path.clone(), e.media.mtime)).collect();
+    if !need_all && ffmpeg.is_some() {
+        // 先讀前後一頁，再讀其他頁（跳到第 5 頁也不用等）；這一頁已經讀過的會直接從快取拿
+        let mut warm: Vec<LibraryEntry> = near.iter().flat_map(|r| list[r.clone()].to_vec()).collect();
+        let shown = start..start + page_size.min(list.len().saturating_sub(start));
+        warm.extend(list.iter().enumerate().filter(|(i, _)| !shown.contains(i) && !near.iter().any(|r| r.contains(i))).map(|(_, e)| e.clone()));
+        warm_info(cache, ffmpeg, warm);
+    }
+    LibraryPage { dir: dir.display().to_string(), total, page, pages, page_size, items, all_paths, start, groups, facets, ahead, error: None }
 }
 
 /// 清理舊截圖：這些資料夾裡在 cutoff_ms（毫秒）之前的截圖，由舊到新；同一個檔案只列一次

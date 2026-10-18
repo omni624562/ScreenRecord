@@ -12,10 +12,10 @@ use std::cell::RefCell;
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM};
 use windows::Win32::Graphics::Gdi::{
-    BeginPaint, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, CreateDIBSection, CreateFontW, CreatePen, CreateSolidBrush, DeleteDC, DeleteObject, DrawTextW, EndPaint, FillRect, FrameRect,
-    GetDC, GetMonitorInfoW, GetTextExtentPoint32W, InvalidateRect, LineTo, MonitorFromPoint, MoveToEx, ReleaseDC, RoundRect, SelectObject, SetBkMode, SetTextColor, BITMAPINFO, BITMAPINFOHEADER,
-    BI_RGB, CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS, DEFAULT_CHARSET, DIB_RGB_COLORS, DT_CENTER, DT_SINGLELINE, DT_VCENTER, FW_NORMAL, FW_SEMIBOLD, HBITMAP, HBRUSH, HDC, HFONT, MONITORINFO,
-    MONITOR_DEFAULTTONEAREST, OUT_DEFAULT_PRECIS, PAINTSTRUCT, PS_SOLID, SRCCOPY, TRANSPARENT,
+    BeginPaint, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, CreateDIBSection, CreateFontW, CreatePen, CreateRectRgn, CreateSolidBrush, DeleteDC, DeleteObject, DrawTextW, EndPaint, FillRect,
+    FrameRect, GetDC, GetMonitorInfoW, GetTextExtentPoint32W, GetUpdateRgn, InvalidateRect, LineTo, MonitorFromPoint, MoveToEx, ReleaseDC, RoundRect, SelectClipRgn, SelectObject, SetBkMode,
+    SetTextColor, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS, DEFAULT_CHARSET, DIB_RGB_COLORS, DT_CENTER, DT_SINGLELINE, DT_VCENTER, FW_NORMAL, FW_SEMIBOLD, HBITMAP,
+    HBRUSH, HDC, HFONT, MONITORINFO, MONITOR_DEFAULTTONEAREST, OUT_DEFAULT_PRECIS, PAINTSTRUCT, PS_SOLID, SRCCOPY, TRANSPARENT,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
@@ -64,6 +64,10 @@ struct State {
     pressed: Option<Tool>,
     /// 游標位置（視窗座標）
     cursor: Option<POINT>,
+    /// 放大鏡的大小（第一次畫的時候量到；算要重畫的地方用）
+    loupe_size: Option<(i32, i32)>,
+    /// 上次畫在變暗畫面上的東西在哪裡（下次只要擦掉這些、畫新的）
+    drawn: Option<Vec<RECT>>,
 }
 
 /// 框選的用途
@@ -154,6 +158,8 @@ fn run(rgba: &[u8], desk: Rect, windows: Vec<Rect>, record: Mode, instant: bool)
             hot: None,
             pressed: None,
             cursor: None,
+            loupe_size: None,
+            drawn: None,
         };
         STATE.with(|s| *s.borrow_mut() = Some(state));
 
@@ -386,8 +392,14 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
         }
         WM_MOUSEMOVE => {
             let p = point(lparam);
-            STATE.with(|s| {
-                if let Some(st) = s.borrow_mut().as_mut() {
+            // 只重畫有變的地方（之前和現在的選取範圍、標籤、工具列、放大鏡、說明）：
+            // 整個桌面（4K、多螢幕）每動一下都重畫會跟不上滑鼠
+            let dirty = STATE.with(|s| {
+                let mut b = s.borrow_mut();
+                let st = b.as_mut()?;
+                let before = st.drawn.clone();
+                let old_cursor = st.cursor;
+                {
                     st.cursor = Some(p);
                     if let Some((g, p0, orig)) = st.grab {
                         let bounds = (0, 0, st.desk.width, st.desk.height);
@@ -399,8 +411,24 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                     }
                     st.hot = bar_hit(st, p);
                 }
+                let after = frame_rects(st);
+                // 換到另一台螢幕（縮放可能不同，放大鏡、說明的大小跟著變）：整個重畫一次
+                let mon = |c: Option<POINT>| c.map(|c| tuple(monitor_at(st, c).0));
+                if mon(old_cursor) != mon(st.cursor) {
+                    return None;
+                }
+                Some([before?, after?].concat())
             });
-            let _ = InvalidateRect(Some(hwnd), None, false);
+            match dirty {
+                Some(list) => {
+                    for r in list.iter().filter(|r| r.right > r.left && r.bottom > r.top) {
+                        let _ = InvalidateRect(Some(hwnd), Some(r), false);
+                    }
+                }
+                None => {
+                    let _ = InvalidateRect(Some(hwnd), None, false);
+                }
+            }
             LRESULT(0)
         }
         WM_LBUTTONDOWN => {
@@ -560,6 +588,9 @@ fn tip_text(st: &State) -> &'static str {
 
 /// 先畫在 back 裡再一次貼上（不閃爍）
 unsafe fn paint(hwnd: HWND) {
+    // 只畫要更新的地方：先取得更新範圍（BeginPaint 之後就清掉了），畫在記憶體 DC 上時也只畫那裡
+    let rgn = CreateRectRgn(0, 0, 0, 0);
+    let _ = GetUpdateRgn(hwnd, rgn, false);
     let mut ps = PAINTSTRUCT::default();
     let hdc = BeginPaint(hwnd, &mut ps);
     STATE.with(|s| {
@@ -567,41 +598,20 @@ unsafe fn paint(hwnd: HWND) {
         let Some(st) = b.as_mut() else { return };
         let (w, h) = (st.desk.width, st.desk.height);
         let mem = st.back;
+        SelectClipRgn(mem, Some(rgn));
         let _ = BitBlt(mem, 0, 0, w, h, Some(st.dim), 0, 0, SRCCOPY);
         // 選取範圍（或游標下的視窗）用原本的亮度，外框與尺寸
-        let (sel, sized) = match (st.drag, st.sel) {
-            (Some((a, b)), _) => (Some(drag_rect(a, b)), true),
-            (None, Some(r)) => (Some(r), true),
-            (None, None) => (st.hover.map(|r| win_rect(st, r)), false),
-        };
         SetBkMode(mem, TRANSPARENT);
         SelectObject(mem, st.font.into());
         let brush = CreateSolidBrush(ACCENT);
-        if let Some(r) = sel.filter(|r| r.right > r.left && r.bottom > r.top) {
+        if let Some((r, text)) = sel_label(st) {
             let _ = BitBlt(mem, r.left, r.top, r.right - r.left, r.bottom - r.top, Some(st.bright), r.left, r.top, SRCCOPY);
             for i in 0..2 {
                 let f = RECT { left: r.left - 1 - i, top: r.top - 1 - i, right: r.right + 1 + i, bottom: r.bottom + 1 + i };
                 FrameRect(mem, &f, brush);
             }
-            let text = if sized {
-                format!("{} × {}", r.right - r.left, r.bottom - r.top)
-            } else {
-                trf!(
-                    "視窗 {} × {}・點一下{}",
-                    "Window {} × {} · Click to {}",
-                    r.right - r.left,
-                    r.bottom - r.top,
-                    match st.record {
-                        Mode::Record => tr!("選這個視窗", "select it"),
-                        Mode::Scroll => tr!("捲動擷取", "scroll and capture"),
-                        Mode::Text => tr!("抓裡面的文字", "grab its text"),
-                        Mode::Shot if st.adjust => tr!("選這個視窗", "select it"),
-                        Mode::Shot => tr!("擷取", "capture"),
-                    }
-                )
-            };
-            let top = if r.top >= 34 { r.top - 34 } else { r.top + 6 };
-            label(mem, &text, r.left.max(0), top, brush);
+            let (x, y) = label_pos(r);
+            label(mem, &text, x, y, brush);
         }
         // 框好的範圍：八個把手與工具列
         st.bar.clear();
@@ -620,20 +630,9 @@ unsafe fn paint(hwnd: HWND) {
             }
         }
         // 游標所在螢幕的上方：說明（游標移過去時改到下方，才不會擋住）
-        let mut cur = POINT::default();
-        let _ = GetCursorPos(&mut cur);
-        let curw = POINT { x: cur.x - st.desk.x, y: cur.y - st.desk.y };
-        let (m, scale) = monitor_at(st, curw);
         SelectObject(mem, st.font.into());
+        let (mut r, m, scale) = tip_rect(st, st.cursor.unwrap_or_else(|| cursor_now(st)));
         let mut t: Vec<u16> = tip_text(st).encode_utf16().collect();
-        let mut sz = SIZE::default();
-        let _ = GetTextExtentPoint32W(mem, &t, &mut sz);
-        let cx = (m.left + m.right) / 2;
-        let bar_h = sz.cy + 14;
-        let top_at = m.top + 24;
-        let near_top = curw.y < top_at + bar_h + 48 && curw.x > cx - sz.cx / 2 - 64 && curw.x < cx + sz.cx / 2 + 64;
-        let y = if near_top { m.bottom - 24 - bar_h } else { top_at };
-        let mut r = RECT { left: cx - sz.cx / 2 - 16, top: y, right: cx + sz.cx / 2 + 16, bottom: y + bar_h };
         let bg = CreateSolidBrush(COLORREF(0x0020_2020));
         FillRect(mem, &r, bg);
         let _ = DeleteObject(bg.into());
@@ -644,25 +643,112 @@ unsafe fn paint(hwnd: HWND) {
         if let Some(c) = st.cursor.filter(|_| st.record.loupe() && show_loupe) {
             let area = (m.left, m.top, m.right, m.bottom);
             let hint = tr!("方向鍵可以微調", "Arrow keys fine-tune");
-            draw_loupe(mem, st, c, area, scale, hint);
+            st.loupe_size = draw_loupe(mem, st, c, area, scale, hint);
         }
         let _ = DeleteObject(brush.into());
+        SelectClipRgn(mem, None);
+        st.drawn = frame_rects(st);
         let p = ps.rcPaint;
         let _ = BitBlt(hdc, p.left, p.top, p.right - p.left, p.bottom - p.top, Some(mem), p.left, p.top, SRCCOPY);
     });
     let _ = EndPaint(hwnd, &ps);
+    let _ = DeleteObject(rgn.into());
+}
+
+/// 亮起來的範圍（拖曳中、框好的範圍，或游標下的視窗）與它旁邊標籤的文字
+fn sel_label(st: &State) -> Option<(RECT, String)> {
+    let (sel, sized) = match (st.drag, st.sel) {
+        (Some((a, b)), _) => (Some(drag_rect(a, b)), true),
+        (None, Some(r)) => (Some(r), true),
+        (None, None) => (st.hover.map(|r| win_rect(st, r)), false),
+    };
+    let r = sel.filter(|r| r.right > r.left && r.bottom > r.top)?;
+    let text = if sized {
+        format!("{} × {}", r.right - r.left, r.bottom - r.top)
+    } else {
+        trf!(
+            "視窗 {} × {}・點一下{}",
+            "Window {} × {} · Click to {}",
+            r.right - r.left,
+            r.bottom - r.top,
+            match st.record {
+                Mode::Record => tr!("選這個視窗", "select it"),
+                Mode::Scroll => tr!("捲動擷取", "scroll and capture"),
+                Mode::Text => tr!("抓裡面的文字", "grab its text"),
+                Mode::Shot if st.adjust => tr!("選這個視窗", "select it"),
+                Mode::Shot => tr!("擷取", "capture"),
+            }
+        )
+    };
+    Some((r, text))
+}
+
+/// 尺寸標籤的位置：範圍上方，放不下時放在範圍裡面
+fn label_pos(r: RECT) -> (i32, i32) {
+    (r.left.max(0), if r.top >= 34 { r.top - 34 } else { r.top + 6 })
+}
+
+/// 游標現在的位置（視窗座標）
+unsafe fn cursor_now(st: &State) -> POINT {
+    let mut cur = POINT::default();
+    let _ = GetCursorPos(&mut cur);
+    POINT { x: cur.x - st.desk.x, y: cur.y - st.desk.y }
+}
+
+/// 說明的位置（游標所在螢幕的上方；游標移過去時改到下方），與那台螢幕和它的縮放
+unsafe fn tip_rect(st: &State, curw: POINT) -> (RECT, RECT, f32) {
+    let (m, scale) = monitor_at(st, curw);
+    SelectObject(st.back, st.font.into());
+    let t: Vec<u16> = tip_text(st).encode_utf16().collect();
+    let mut sz = SIZE::default();
+    let _ = GetTextExtentPoint32W(st.back, &t, &mut sz);
+    let cx = (m.left + m.right) / 2;
+    let bar_h = sz.cy + 14;
+    let top_at = m.top + 24;
+    let near_top = curw.y < top_at + bar_h + 48 && curw.x > cx - sz.cx / 2 - 64 && curw.x < cx + sz.cx / 2 + 64;
+    let y = if near_top { m.bottom - 24 - bar_h } else { top_at };
+    (RECT { left: cx - sz.cx / 2 - 16, top: y, right: cx + sz.cx / 2 + 16, bottom: y + bar_h }, m, scale)
+}
+
+/// 這個狀態下畫在變暗畫面上的東西各在哪裡（滑鼠移動前後各算一次，只重畫這些地方）。
+/// 還不知道放大鏡多大（還沒畫過）時回傳 None：整個重畫
+unsafe fn frame_rects(st: &State) -> Option<Vec<RECT>> {
+    let grow = |r: RECT, d: i32| RECT { left: r.left - d, top: r.top - d, right: r.right + d, bottom: r.bottom + d };
+    let mut out = vec![];
+    if let Some((r, text)) = sel_label(st) {
+        let scale = monitor_at(st, POINT { x: r.left, y: r.top }).1;
+        // 外框、八個把手
+        out.push(grow(r, (6.0 * scale).ceil() as i32 + 3));
+        SelectObject(st.back, st.font.into());
+        let t: Vec<u16> = text.encode_utf16().collect();
+        let mut sz = SIZE::default();
+        let _ = GetTextExtentPoint32W(st.back, &t, &mut sz);
+        let (x, y) = label_pos(r);
+        out.push(RECT { left: x, top: y, right: x + sz.cx + 17, bottom: y + sz.cy + 9 });
+    }
+    if let Some(r) = st.sel.filter(|_| st.adjust && st.drag.is_none() && st.grab.is_none()) {
+        out.push(grow(toolbar_rect(st, r), 2));
+    }
+    let (tip, m, scale) = tip_rect(st, st.cursor.unwrap_or_else(|| cursor_now(st)));
+    out.push(grow(tip, 1));
+    if let Some(c) = st.cursor.filter(|_| st.record.loupe() && (st.sel.is_none() || st.grab.is_some())) {
+        let (lw, lh) = st.loupe_size?;
+        let (x, y) = loupe_pos((c.x, c.y), (lw, lh), (m.left, m.top, m.right, m.bottom), (24.0 * scale) as i32);
+        out.push(RECT { left: x - 1, top: y - 1, right: x + lw + 1, bottom: y + lh + 1 });
+    }
+    Some(out)
 }
 
 /// 框好範圍下方的工具列：整個螢幕｜編輯、複製、釘在桌面｜取消、完成（只選範圍時只有整個螢幕、取消、確定）。
 /// 記下每個按鈕的位置（點的時候用）
-unsafe fn draw_toolbar(hdc: HDC, st: &mut State, sel: RECT, scale: f32) {
-    let record = st.record == Mode::Record;
+/// 工具列的按鈕：哪一個、文字（UTF-16）、寬度
+type BarItem = (Tool, Vec<u16>, i32);
+
+/// 工具列各按鈕的文字與寬度、整條的大小（用 hdc 目前的字型量）
+unsafe fn toolbar_layout(hdc: HDC, record: bool, scale: f32) -> (Vec<BarItem>, i32, i32) {
     let px = |v: f32| (v * scale).round() as i32;
-    let font = CreateFontW(-px(14.0), 0, 0, 0, FW_NORMAL.0 as i32, 0, 0, 0, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, 0, w!("Microsoft JhengHei UI"));
-    let old = SelectObject(hdc, font.into());
     let (pad, h, gap, sep, icon) = (px(12.0), px(34.0), px(2.0), px(10.0), px(14.0));
-    // 每個按鈕的寬度（取消、完成前面有圖示）
-    let list: Vec<(Tool, Vec<u16>, i32)> = tools(record)
+    let list: Vec<BarItem> = tools(record)
         .iter()
         .map(|t| {
             let text: Vec<u16> = t.label(record).encode_utf16().collect();
@@ -672,10 +758,39 @@ unsafe fn draw_toolbar(hdc: HDC, st: &mut State, sel: RECT, scale: f32) {
             (*t, text, sz.cx + pad * 2 + if with_icon { icon + px(6.0) } else { 0 })
         })
         .collect();
-    // 分組之間多留一點空：整個螢幕｜編輯、複製、釘在桌面｜取消、完成
     let group_end = |t: Tool| matches!(t, Tool::Full | Tool::Pin);
     let inner: i32 = list.iter().map(|(t, _, w)| w + if group_end(*t) { sep } else { gap }).sum::<i32>() - gap;
-    let (bw, bh) = (inner + px(8.0), h + px(8.0));
+    (list, inner + px(8.0), h + px(8.0))
+}
+
+fn toolbar_font(scale: f32) -> HFONT {
+    unsafe {
+        CreateFontW(-((14.0 * scale).round() as i32), 0, 0, 0, FW_NORMAL.0 as i32, 0, 0, 0, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, 0, w!("Microsoft JhengHei UI"))
+    }
+}
+
+/// 工具列在哪裡（算要重畫的地方用）
+unsafe fn toolbar_rect(st: &State, sel: RECT) -> RECT {
+    let scale = monitor_at(st, POINT { x: sel.left, y: sel.top }).1;
+    let font = toolbar_font(scale);
+    let old = SelectObject(st.back, font.into());
+    let (_, bw, bh) = toolbar_layout(st.back, st.record == Mode::Record, scale);
+    SelectObject(st.back, old);
+    let _ = DeleteObject(font.into());
+    let (mon, _) = monitor_at(st, POINT { x: (sel.left + sel.right) / 2, y: (sel.top + sel.bottom) / 2 });
+    let (x, y) = toolbar_pos(tuple(sel), (bw, bh), tuple(mon), (8.0 * scale).round() as i32);
+    RECT { left: x, top: y, right: x + bw, bottom: y + bh }
+}
+
+unsafe fn draw_toolbar(hdc: HDC, st: &mut State, sel: RECT, scale: f32) {
+    let record = st.record == Mode::Record;
+    let px = |v: f32| (v * scale).round() as i32;
+    let font = toolbar_font(scale);
+    let old = SelectObject(hdc, font.into());
+    let (pad, h, gap, sep, icon) = (px(12.0), px(34.0), px(2.0), px(10.0), px(14.0));
+    // 每個按鈕的寬度（取消、完成前面有圖示）；分組之間多留一點空：整個螢幕｜編輯、複製、釘在桌面｜取消、完成
+    let (list, bw, bh) = toolbar_layout(hdc, record, scale);
+    let group_end = |t: Tool| matches!(t, Tool::Full | Tool::Pin);
     let (mon, _) = monitor_at(st, POINT { x: (sel.left + sel.right) / 2, y: (sel.top + sel.bottom) / 2 });
     let (x, y) = toolbar_pos(tuple(sel), (bw, bh), tuple(mon), px(8.0));
     // 底：深色圓角
@@ -732,8 +847,8 @@ unsafe fn draw_toolbar(hdc: HDC, st: &mut State, sel: RECT, scale: f32) {
 }
 
 /// 放大鏡：畫好（tiny-skia）後貼到 hdc 上游標的旁邊
-unsafe fn draw_loupe(hdc: HDC, st: &State, c: POINT, area: (i32, i32, i32, i32), scale: f32, hint: &str) {
-    let Some(pm) = render_loupe(|x, y| pixel(st, x, y), c.x, c.y, scale, hint) else { return };
+unsafe fn draw_loupe(hdc: HDC, st: &State, c: POINT, area: (i32, i32, i32, i32), scale: f32, hint: &str) -> Option<(i32, i32)> {
+    let pm = render_loupe(|x, y| pixel(st, x, y), c.x, c.y, scale, hint)?;
     let (lw, lh) = (pm.width() as i32, pm.height() as i32);
     let (x, y) = loupe_pos((c.x, c.y), (lw, lh), area, (24.0 * scale) as i32);
     let Some((dc, bmp, _)) = dib(hdc, lw, lh, |dst| {
@@ -741,11 +856,12 @@ unsafe fn draw_loupe(hdc: HDC, st: &State, c: POINT, area: (i32, i32, i32, i32),
             *d = [s[2], s[1], s[0], 255];
         }
     }) else {
-        return;
+        return Some((lw, lh));
     };
     let _ = BitBlt(hdc, x, y, lw, lh, Some(dc), 0, 0, SRCCOPY);
     let _ = DeleteDC(dc);
     let _ = DeleteObject(bmp.into());
+    Some((lw, lh))
 }
 
 /// 藍底白字的小標籤

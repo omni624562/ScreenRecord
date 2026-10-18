@@ -34,6 +34,8 @@ pub enum Kind {
 pub struct LibraryDialog {
     /// 需要重新讀取（開啟、換頁、轉檔完成）
     pub dirty: bool,
+    /// 前後一頁的縮圖：這一頁的縮圖都排上去之後才開始產生（換頁時馬上看得到）
+    prefetch: Vec<(String, f64)>,
     kind: Kind,
     /// 看哪個資料夾：None = 目前的儲存位置；也可以看之前用過的資料夾
     dir: Option<String>,
@@ -179,6 +181,7 @@ impl LibraryDialog {
     pub fn new(kind: Kind) -> Self {
         Self {
             dirty: true,
+            prefetch: vec![],
             kind,
             dir: None,
             loaded_dir: String::new(),
@@ -411,6 +414,7 @@ fn load(app: &mut UiApp) {
         for e in &page.items {
             app.known.insert(e.media.path.clone(), e.clone());
         }
+        d.prefetch = page.ahead.clone();
         d.data = Some(page);
     });
 }
@@ -859,6 +863,20 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
             shot_grid(app, ui, &mut d, grid, &dir, &mut req, &mut grid_size);
         } else {
             video_table(app, ui, &mut d, table, &dir, &mut req);
+        }
+        // 換頁中：馬上把舊的那頁變淡、顯示「讀取第 N 頁」，不會像沒反應
+        if d.loading && d.data.as_ref().is_some_and(|x| x.page != d.page) {
+            ui.painter().rect_filled(table, CornerRadius::same(6), p.surface.gamma_multiply(0.6));
+            let chip = Rect::from_center_size(table.center(), vec2(150.0, 34.0));
+            ui.painter().rect_filled(chip, CornerRadius::same(17), p.surface2);
+            ui.painter().text(chip.center(), egui::Align2::CENTER_CENTER, trf!("讀取第 {} 頁…", "Loading page {}…", d.page), theme::font_bold(13.0), p.text);
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        }
+        // 這一頁的縮圖都排好了，再排前後一頁的
+        if !d.loading {
+            for (path, mtime) in std::mem::take(&mut d.prefetch) {
+                app.thumb(&path, mtime);
+            }
         }
         // 下方：選取與分頁
         let painter = ui.painter().clone();

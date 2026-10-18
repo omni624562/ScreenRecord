@@ -986,6 +986,9 @@ pub struct LibraryPage {
     /// 瀏覽欄的選項與張數（查詢有 facet 時）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub facets: Option<FacetCounts>,
+    /// 前後一頁的檔案（路徑、修改時間）：介面先產生縮圖，換頁時馬上看得到
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ahead: Vec<(String, f64)>,
     /// 資料夾讀不到（不存在、隨身碟或網路磁碟沒接上）時的說明
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
