@@ -424,17 +424,24 @@ impl App {
             };
             self.after_begin(after.steps(), trf!("複製到「{}」", "Copying to “{}”", folder_name(&after.copy_to)));
             let dest = after.copy_to.clone();
+            let extras = crate::jellyfin::Extras::read(self.ffmpeg_path().as_deref(), Path::new(&src)).await;
             let r = tokio::task::spawn_blocking(move || copy_results(&src, out.as_deref(), Path::new(&dest))).await.unwrap_or_else(|e| Err(e.to_string()));
             let (ok, note) = match r {
-                Ok(n) => {
+                Ok(copied) => {
+                    let n = copied.len();
+                    let first = copied.first().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
                     info!("[錄完自動處理] 複製 {n} 個檔案到 {}", after.copy_to);
                     let note = trf!("複製 {n} 個檔案到「{}」", "copied {n} files to “{}”", folder_name(&after.copy_to));
                     // 複製到 Jellyfin 的媒體庫資料夾：請它馬上掃描（失敗只提示，檔案已經複製好了）
                     match after.jellyfin.clone() {
-                        Some(jf) => match tokio::task::spawn_blocking(move || jf.refresh()).await.unwrap_or_else(|e| Err(e.to_string())) {
-                            Ok(()) => {
+                        // 掃描後等它收到這支、設好標籤和章節縮圖（最多等 1 分鐘）
+                        Some(jf) => match tokio::task::spawn_blocking(move || jf.refresh().map(|_| jf.after_upload(&first, &extras, vec![], std::time::Duration::from_secs(60))))
+                            .await
+                            .unwrap_or_else(|e| Err(e.to_string()))
+                        {
+                            Ok(more) => {
                                 info!("[錄完自動處理] 已通知 Jellyfin 掃描");
-                                (true, format!("{note}{}", tr!("，已通知 Jellyfin 掃描", ", Jellyfin notified to scan")))
+                                (true, format!("{note}{}{more}", tr!("，已通知 Jellyfin 掃描", ", Jellyfin notified to scan")))
                             }
                             Err(e) => {
                                 warn!("[錄完自動處理] 通知 Jellyfin 失敗：{e}");
@@ -741,23 +748,26 @@ pub fn result_files(video: &str, output: Option<&str>) -> Vec<std::path::PathBuf
     out
 }
 
-/// 複製到資料夾（資料夾沒有就建立；已經有同名檔案時加上 _2、_3…，不覆蓋）；回傳複製了幾個
-pub fn copy_results(video: &str, output: Option<&str>, dest: &Path) -> Result<usize, String> {
+/// 複製到資料夾（資料夾沒有就建立；已經有同名檔案時加上 _2、_3…，不覆蓋；中文字幕加上語言，見 jellyfin::library_name）；
+/// 回傳複製好的檔案（第一個是原影片）
+pub fn copy_results(video: &str, output: Option<&str>, dest: &Path) -> Result<Vec<std::path::PathBuf>, String> {
     if !dest.is_absolute() {
         return Err(tr!("資料夾位置不對，請重新選擇", "The folder location isn't valid. Choose it again").into());
     }
     std::fs::create_dir_all(dest).map_err(|e| e.to_string())?;
     let files = result_files(video, output);
+    let mut copied = vec![];
     for f in &files {
-        let name = f.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let name = crate::jellyfin::library_name(f);
         let (stem, ext) = match name.split_once('.') {
             Some((s, e)) => (s.to_string(), format!(".{e}")),
             None => (name.clone(), String::new()),
         };
         let to = crate::paths::unique_path(dest, &stem, &ext);
         crate::paths::copy_keep_time(f, &to).map_err(|e| e.to_string())?;
+        copied.push(to);
     }
-    Ok(files.len())
+    Ok(copied)
 }
 
 #[cfg(test)]
@@ -775,10 +785,10 @@ mod tests {
         let (v, cut) = (v.display().to_string(), cut.display().to_string());
         assert_eq!(result_files(&v, Some(&cut)).len(), 5);
         let dest = dir.path().join("sync");
-        assert_eq!(copy_results(&v, Some(&cut), &dest), Ok(5));
+        assert_eq!(copy_results(&v, Some(&cut), &dest).map(|c| c.len()), Ok(5));
         assert!(dest.join("Rec_1.en.srt").is_file());
         // 再複製一次：不覆蓋，加上 _2
-        assert_eq!(copy_results(&v, None, &dest), Ok(3));
+        assert_eq!(copy_results(&v, None, &dest).map(|c| c.len()), Ok(3));
         assert!(dest.join("Rec_1_2.mp4").is_file() && dest.join("Rec_1_2.en.srt").is_file());
         assert!(copy_results(&v, None, Path::new("relative")).is_err());
         let a = AfterRecord::from_ui(Some(&serde_json::json!({ "afterCopyTo": " D:\\Sync " })));

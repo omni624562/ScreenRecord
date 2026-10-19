@@ -274,6 +274,8 @@ pub enum Icon {
     /// 星號（外框）；StarOn 是實心
     Star,
     StarOn,
+    /// 連結（兩個扣在一起的環）
+    Link,
 }
 
 /// 在 rect（正方形）裡畫圖示
@@ -477,6 +479,12 @@ pub fn paint_icon(p: &Painter, rect: Rect, icon: Icon, color: Color32) {
         Icon::Copy => {
             p.rect_stroke(Rect::from_min_max(at(5.5, 5.5), at(13.5, 14.0)), CornerRadius::same((1.5 * k) as u8), st, StrokeKind::Middle);
             line(&[(3.0, 10.5), (2.5, 10.5), (2.5, 2.5), (10.0, 2.5), (10.0, 3.0)]);
+        }
+        Icon::Link => {
+            // 兩個斜放的圓角環，中間一段重疊
+            arc(5.5, 10.5, 3.2, 0.25 * std::f32::consts::PI, 1.75 * std::f32::consts::PI);
+            arc(10.5, 5.5, 3.2, 1.25 * std::f32::consts::PI, 2.75 * std::f32::consts::PI);
+            line(&[(6.0, 10.0), (10.0, 6.0)]);
         }
         Icon::Star | Icon::StarOn => {
             // 五角星：外圈半徑 6.6、內圈 2.8，中心 (8, 8.4)

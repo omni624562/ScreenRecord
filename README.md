@@ -28,7 +28,7 @@ Windows 11 螢幕錄影工具：**原速錄影並完整保留，停止後再選�
 | 接縫淡入淡出 | 剪輯「修剪」分頁勾「接縫淡入淡出」：刪掉片段的接縫前後畫面與聲音各淡出、淡入 0.2 秒（FFmpeg fade／afade 加 enable，在剪好的時間上） |
 | 錄影中麥克風靜音 | `Ctrl+Alt+U`、錄影面板、控制列或系統匣：麥克風改送靜音（聲音管線照常讀取），靜音時段存進標記檔，剪輯時間軸上標出 |
 | 設為封面 | 檢視器上方的圖片圖示（把這一格設為封面）：目前這一格寫進 MP4 當縮圖（attached_pic，只複製串流，修改時間保留）；影片內容不變。檔案總管、多數播放器與程式裡的清單顯示這一格 |
-| 通知 Jellyfin 掃描 | 設定 → 錄完處理：Jellyfin 網址與 API 金鑰；錄完自動處理複製到資料夾後 `POST /Library/Refresh`（`core/src/jellyfin.rs`，直接連線不經 Proxy） |
+| 通知 Jellyfin 掃描 | 設定 → 錄完處理：Jellyfin 網址與 API 金鑰；錄完自動處理複製到資料夾後 `POST /Library/Refresh`（`core/src/jellyfin.rs`，直接連線不經 Proxy）。之後每 3 秒查一次（最多 1 分鐘）確認 Jellyfin 收到，結果寫「✓ Jellyfin 已收到」；影片資訊的「標籤」設成 Jellyfin 的 Tags（取回整筆資料換掉 Tags 再 `POST /Items/{id}`）；有章節時執行「擷取章節圖片」排程工作（媒體庫沒打開這個選項時提醒）；中文字幕傳過去改名為 `同名.zh-TW.srt`。檢視器的連結圖示複製這支在 Jellyfin 的網址（`/web/#/details?id=…&serverId=…`） |
 | 影片資訊 | 檢視器上方的 ⓘ 圖示（影片資訊）：改 MP4 裡的標題、作者、系列、類型、年份、說明、版權（ffmetadata 讀出、`-c copy -map_metadata 0 -map_chapters 0` 寫回，封面與章節保留，修改時間保留） |
 | 步驟教學 Word／PowerPoint | 「整理步驟」可選網頁、Word（.docx）、PowerPoint（.pptx）；自己產生 Office Open XML，不需要安裝 Office |
 | 比較兩張截圖 | 全部截圖勾兩張按「比較差異」：以 8 像素小格比對，不一樣的地方在較新的那張上用紅框標出，另存成新截圖 |
