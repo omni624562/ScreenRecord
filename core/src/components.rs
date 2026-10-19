@@ -154,6 +154,68 @@ impl Components {
     }
 }
 
+/// 外部元件以程式所在的資料夾為主（整個資料夾帶著走也能用）：以前因為那裡不能寫入等原因放到
+/// %LOCALAPPDATA%\ScreenRecorder 的 FFmpeg、mpv 播放元件、語音辨識用的 FFmpeg 與語音模型，程式資料夾能寫入時搬過去。
+/// 啟動時、還沒開始用這些檔案之前呼叫（另一個執行中的程式可能正在用：要在確定只有自己在執行之後）
+pub fn move_to_app_dir() {
+    for line in move_components(&crate::paths::data_dir(), &crate::paths::app_dir()) {
+        crate::info!("[外部元件] {line}");
+    }
+}
+
+/// 可能放在資料夾裡的外部元件（相對位置）
+fn component_files() -> Vec<PathBuf> {
+    let exe = if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" };
+    let mut v = vec![PathBuf::from(exe), PathBuf::from(crate::mpv::LIB_NAME), Path::new("whisper").join(exe)];
+    v.extend(MODELS.iter().map(|m| Path::new("whisper").join(m.file)));
+    v
+}
+
+/// 把 from 裡的外部元件搬到 to（to 不能寫入時不動）；to 已經有同樣大小的檔案時，from 的那份用不到了，刪掉。回傳做了什麼（寫進記錄檔）
+fn move_components(from: &Path, to: &Path) -> Vec<String> {
+    let mut log = vec![];
+    if crate::paths::inside(from, to) && crate::paths::inside(to, from) {
+        return log;
+    }
+    let files: Vec<PathBuf> = component_files().into_iter().filter(|f| from.join(f).is_file()).collect();
+    if files.is_empty() {
+        return log;
+    }
+    if !crate::selfupdate::dir_writable(to) {
+        log.push(format!("程式資料夾 {} 不能寫入，元件留在 {}", to.display(), from.display()));
+        return log;
+    }
+    for f in files {
+        let (src, dst) = (from.join(&f), to.join(&f));
+        let size = |p: &Path| std::fs::metadata(p).map(|m| m.len()).ok();
+        if dst.exists() {
+            if size(&src) == size(&dst) {
+                match std::fs::remove_file(&src) {
+                    Ok(()) => log.push(format!("程式資料夾已經有 {}，刪掉 {} 裡用不到的那份", f.display(), from.display())),
+                    Err(e) => log.push(format!("無法刪掉用不到的 {}：{e}", src.display())),
+                }
+            } else {
+                log.push(format!("{} 和 {} 都有 {}（大小不同），保留不動", from.display(), to.display(), f.display()));
+            }
+            continue;
+        }
+        if let Some(dir) = dst.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        // 同一顆硬碟直接搬；不同顆時複製好再刪掉原本的（複製到一半不會留下不完整的元件）
+        let moved = std::fs::rename(&src, &dst).is_ok() || {
+            let part = dst.with_extension("part");
+            let ok = crate::paths::copy_keep_time(&src, &part).is_ok() && std::fs::rename(&part, &dst).is_ok();
+            let _ = std::fs::remove_file(&part);
+            ok && std::fs::remove_file(&src).is_ok()
+        };
+        log.push(if moved { format!("已把 {} 搬到 {}", src.display(), dst.display()) } else { format!("無法把 {} 搬到 {}，留在原處", src.display(), dst.display()) });
+    }
+    // 搬空了的 whisper 資料夾（remove_dir 只刪空的）
+    let _ = std::fs::remove_dir(from.join("whisper"));
+    log
+}
+
 /// 自動字幕還缺哪些元件（main_has_whisper：目前用的 FFmpeg 能辨識語音）
 pub fn missing_for_subtitles(main_has_whisper: bool, model: usize) -> Vec<Kind> {
     let mut v = vec![];
@@ -374,6 +436,51 @@ mod tests {
         let short = dir.path().join("my-base.bin");
         std::fs::write(&short, b"lmgg....").unwrap();
         assert!(install_model_file(&MODELS[0], &short).unwrap_err().contains("148"), "太小：下載不完整");
+    }
+
+    #[test]
+    fn components_move_next_to_the_program() {
+        let (from, to) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let (f, t) = (from.path(), to.path());
+        let exe = if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" };
+        std::fs::create_dir_all(f.join("whisper")).unwrap();
+        for (name, body) in [(exe.to_string(), "ff"), (crate::mpv::LIB_NAME.to_string(), "mpv"), (format!("whisper/{exe}"), "speech"), (format!("whisper/{}", MODELS[0].file), "model")] {
+            std::fs::write(f.join(&name), body).unwrap();
+        }
+        // 不是元件的檔案（設定、記錄檔）不動
+        std::fs::write(f.join("settings.json"), "{}").unwrap();
+        let log = move_components(f, t);
+        assert_eq!(log.len(), 4, "{log:?}");
+        assert_eq!(std::fs::read_to_string(t.join(crate::mpv::LIB_NAME)).unwrap(), "mpv");
+        assert_eq!(std::fs::read_to_string(t.join("whisper").join(MODELS[0].file)).unwrap(), "model");
+        assert_eq!(std::fs::read_to_string(t.join("whisper").join(exe)).unwrap(), "speech");
+        assert!(!f.join(exe).exists() && !f.join("whisper").exists(), "搬空的 whisper 資料夾也刪掉");
+        assert!(f.join("settings.json").exists() && !t.join("settings.json").exists());
+        // 再搬一次：沒有東西要做
+        assert!(move_components(f, t).is_empty());
+    }
+
+    #[test]
+    fn components_already_next_to_the_program() {
+        let (from, to) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let (f, t) = (from.path(), to.path());
+        let lib = crate::mpv::LIB_NAME;
+        let exe = if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" };
+        std::fs::write(f.join(lib), "same").unwrap();
+        std::fs::write(t.join(lib), "same").unwrap();
+        std::fs::write(f.join(exe), "old build").unwrap();
+        std::fs::write(t.join(exe), "new").unwrap();
+        move_components(f, t);
+        assert!(!f.join(lib).exists(), "一樣的那份用不到了，刪掉");
+        assert_eq!(std::fs::read_to_string(f.join(exe)).unwrap(), "old build", "大小不同：兩份都留著");
+        assert_eq!(std::fs::read_to_string(t.join(exe)).unwrap(), "new");
+        // 同一個資料夾：什麼都不做
+        assert!(move_components(t, t).is_empty());
+        // 程式資料夾不能寫入（這裡用一個檔案代替資料夾）：留在原處
+        let file = t.join("not-a-dir");
+        std::fs::write(&file, "").unwrap();
+        let log = move_components(f, &file);
+        assert!(f.join(exe).exists() && log.len() == 1, "{log:?}");
     }
 
     #[test]

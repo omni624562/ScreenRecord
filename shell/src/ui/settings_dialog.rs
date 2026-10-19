@@ -2089,9 +2089,10 @@ fn components_page(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
     let p = theme::pal(ui);
     form_hint_full(
         ui,
-        tr!(
-            "這些元件都是免費軟體，下載一次就好，存在這台電腦上。下載後會檢查檔案是否完整。",
-            "These are free components. They're downloaded once and kept on this computer, and checked after downloading."
+        trf!(
+            "這些元件都是免費軟體，下載一次就好，下載後會檢查檔案是否完整。放在程式所在的資料夾（{}），整個資料夾帶著走也能用；那裡不能寫入時（例如放在 Program Files）才放到 %LOCALAPPDATA%\\ScreenRecorder。",
+            "These are free components. They're downloaded once and checked after downloading. They're kept in the app's folder ({}), so you can move the whole folder and they come along. Only if that folder isn't writable (e.g. in Program Files) are they kept in %LOCALAPPDATA%\\ScreenRecorder.",
+            screenrecorder_core::paths::app_dir().display()
         ),
         p.muted,
     );
@@ -2206,6 +2207,11 @@ fn component_card(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui, k: Kind)
                 k.path().map(|p| p.display().to_string()).unwrap_or_default()
             ),
             Kind::Model(_) => tr!("模型越大辨識越準，但比較慢。只需要其中一個。", "Bigger models are more accurate but slower. You only need one.").into(),
+        };
+        // 程式資料夾不能寫入（例如放在 Program Files）才會放在 %LOCALAPPDATA%：說明原因
+        let info = match k.path().filter(|p| installed && !builtin && p.is_file() && screenrecorder_core::paths::inside(p, &screenrecorder_core::paths::data_dir())) {
+            Some(_) => info + tr!("（程式所在的資料夾不能寫入，所以放在這裡）", " (the app's folder isn't writable, so it's kept here)"),
+            None => info,
         };
         let info = if k.model().is_some_and(|m| !m.translates) {
             info + tr!("這個模型不能翻成英文，要英文字幕時另外需要「精準」或「標準」。", " This model can't translate to English; English subtitles also need \"Accurate\" or \"Standard\".")
