@@ -4,6 +4,7 @@
 //! 截圖用縮圖格：點縮圖開啟。
 
 use super::dialogs::{base_name, date_labels, day_label, day_parts, entry_time, file_name, is_cut_name, is_default_name, short_date, time_labels, Ask};
+use super::entry_menu::Place;
 use super::theme::{self, chip, Btn, Icon, Tone};
 use super::{EntryAction, ToastAction, UiApp};
 use eframe::egui::{self, pos2, vec2, Align, Color32, CornerRadius, Id, Layout, Rect, RichText, Sense, Stroke, UiBuilder, Vec2};
@@ -1112,18 +1113,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         Some(Req::Compare) => compare_selected(app),
         Some(Req::Trash(paths)) => trash_paths(app, paths),
         Some(Req::CopyImage(path)) => super::viewer::copy_png(app, path),
-        Some(Req::Pin(path, on)) => {
-            app.core.pins.set(&path, on);
-            // 加上星號就不要留在勾選裡（避免接著刪掉）；只看有星號時重新讀取
-            if let Some(d) = &mut app.library {
-                if on {
-                    d.selected.remove(&path);
-                }
-                if d.only_pinned {
-                    d.dirty = true;
-                }
-            }
-        }
+        Some(Req::Pin(path, on)) => set_star(app, &path, on),
     }
 }
 
@@ -1208,136 +1198,14 @@ fn is_audio_file(name: &str) -> bool {
     name.to_lowercase().ends_with(".m4a")
 }
 
-/// 選單的一個項目；不能用時停用並在滑鼠提示說明原因
-fn menu_item(ui: &mut egui::Ui, label: &str, blocked: Option<String>) -> bool {
-    let r = ui.add_enabled(blocked.is_none(), egui::Button::new(label));
-    match blocked {
-        Some(why) => r.on_disabled_hover_text(why).clicked(),
-        None => r.clicked(),
-    }
-}
-
 /// 移到資源回收筒的項目（紅字，會先確認）
 fn trash_item(ui: &mut egui::Ui) -> bool {
     ui.button(RichText::new(tr!("移到資源回收筒…", "Move to Recycle Bin…")).color(theme::pal(ui).rec)).clicked()
 }
 
-/// 一支錄影的操作（「⋯」與按右鍵的選單共用）；full：按右鍵的選單，最上面加上播放、剪輯、在資料夾中顯示、重新命名
-fn entry_menu(ui: &mut egui::Ui, app: &UiApp, e: &LibraryEntry, full: bool, req: &mut Option<Req>) {
-    ui.set_min_width(220.0);
-    let audio = is_audio_file(&e.media.name);
-    let pick = |a: EntryAction, req: &mut Option<Req>| *req = Some(Req::Entry(a, e.clone()));
-    if full {
-        if ui.button(tr!("播放", "Play")).clicked() {
-            pick(EntryAction::Play, req);
-        }
-        if !audio && menu_item(ui, tr!("剪輯", "Edit"), app.blocked(EntryAction::Edit)) {
-            pick(EntryAction::Edit, req);
-        }
-        if ui.button(tr!("在資料夾中顯示", "Show in folder")).clicked() {
-            pick(EntryAction::Reveal, req);
-        }
-        if !audio && ui.button(tr!("重新命名…", "Rename…")).clicked() {
-            *req = Some(Req::Rename(e.clone()));
-        }
-        ui.separator();
-    }
-    let pinned = app.core.pins.contains(&e.media.path);
-    if ui.button(if pinned { tr!("移除星號", "Remove star") } else { tr!("加上星號", "Add star") }).clicked() {
-        *req = Some(Req::Pin(e.media.path.clone(), !pinned));
-    }
-    // MOV、MKV…：先轉成 MP4 才能剪輯、製作加速版
-    if screenrecorder_core::import::is_other_video(&e.media.path) && menu_item(ui, tr!("轉成 MP4", "Convert to MP4"), app.blocked(EntryAction::Export)) {
-        pick(EntryAction::Convert, req);
-    }
-    if !audio {
-        if menu_item(ui, tr!("製作加速版 / GIF…", "Make sped-up video / GIF…"), app.blocked(EntryAction::Export)) {
-            pick(EntryAction::Export, req);
-        }
-        if menu_item(ui, tr!("壓縮（縮小檔案）…", "Compress (smaller file)…"), app.blocked(EntryAction::Compress)) {
-            pick(EntryAction::Compress, req);
-        }
-        if menu_item(ui, tr!("做成直式影片（Shorts / Reels）…", "Make a vertical video (Shorts / Reels)…"), app.blocked(EntryAction::Vertical)) {
-            pick(EntryAction::Vertical, req);
-        }
-        if screenrecorder_core::cover::can_embed(&e.media.path)
-            && ui
-                .button(tr!("設為封面（選一格當縮圖）…", "Set cover (pick a frame as the thumbnail)…"))
-                .on_hover_text(tr!(
-                    "選影片裡的一格當封面：檔案總管和多數播放器看到的縮圖就是這一格（影片內容不變）",
-                    "Pick a frame as the cover: File Explorer and most players show it as the thumbnail (the video itself is unchanged)"
-                ))
-                .clicked()
-        {
-            pick(EntryAction::SetThumb, req);
-        }
-        if screenrecorder_core::video_tags::can_tag(&e.media.path)
-            && ui
-                .button(tr!("影片資訊（標題、作者、說明）…", "Video details (title, author, description)…"))
-                .on_hover_text(tr!(
-                    "改寫在影片檔裡的資訊：檔案總管「內容 → 詳細資料」和多數播放器看得到（影片內容不變）",
-                    "Edit the details stored in the video file, shown in File Explorer under Properties → Details and in most players (the video itself is unchanged)"
-                ))
-                .clicked()
-        {
-            pick(EntryAction::Tags, req);
-        }
-        if screenrecorder_core::video_tags::can_tag(&e.media.path) {
-            if let Some(a) = super::rotate_menu(ui) {
-                pick(a, req);
-            }
-        }
-        let (label, tip) = app.send_label();
-        if ui.button(label).on_hover_text(tip).clicked() {
-            pick(EntryAction::SendToLibrary, req);
-        }
-        ui.separator();
-    }
-    if ui.button(tr!("複製檔案（貼到 LINE、資料夾）", "Copy file (paste into LINE or a folder)")).clicked() {
-        pick(EntryAction::CopyFile, req);
-    }
-    if ui.button(tr!("用 Windows 開啟", "Open in Windows")).clicked() {
-        pick(EntryAction::External, req);
-    }
-    if !audio && e.media.has_audio != Some(false) && ui.button(tr!("存成 M4A（只留聲音）", "Save as M4A (audio only)")).clicked() {
-        pick(EntryAction::SaveAudio, req);
-    }
-    if !e.media.chapters.is_empty() && ui.button(tr!("複製章節（貼到 YouTube）", "Copy chapters (for YouTube)")).clicked() {
-        pick(EntryAction::CopyChapters, req);
-    }
-    if !audio {
-        if let Some(a) = super::steps_menu(ui) {
-            pick(a, req);
-        }
-    }
-    ui.separator();
-    if trash_item(ui) {
-        *req = Some(Req::Trash(trash_list(e)));
-    }
-}
-
 /// 移到資源回收筒的檔案：錄影連同底下的加速版、GIF
 fn trash_list(e: &LibraryEntry) -> Vec<String> {
     std::iter::once(e.media.path.clone()).chain(e.exports.iter().map(|x| x.media.path.clone())).collect()
-}
-
-/// 加速版 / GIF 子列的操作
-fn export_menu(ui: &mut egui::Ui, x: &ExportInfo, req: &mut Option<Req>) {
-    ui.set_min_width(200.0);
-    let entry = || LibraryEntry { media: x.media.clone(), exports: vec![], hits: vec![] };
-    if ui.button(tr!("播放", "Play")).clicked() {
-        *req = Some(Req::Entry(EntryAction::Play, entry()));
-    }
-    if ui.button(tr!("在資料夾中顯示", "Show in folder")).clicked() {
-        *req = Some(Req::Entry(EntryAction::Reveal, entry()));
-    }
-    if ui.button(tr!("複製檔案（貼到 LINE、資料夾）", "Copy file (paste into LINE or a folder)")).clicked() {
-        *req = Some(Req::Entry(EntryAction::CopyFile, entry()));
-    }
-    ui.separator();
-    if trash_item(ui) {
-        *req = Some(Req::Trash(vec![x.media.path.clone()]));
-    }
 }
 
 /// 滾輪在清單上：往下捲換下一頁、往上捲換上一頁（捲一段距離才換，連續捲動時至少隔 0.35 秒）
@@ -1490,7 +1358,12 @@ fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table:
         if fresh {
             painter.rect_filled(Rect::from_min_size(row.min + vec2(0.0, 4.0), vec2(3.0, row.height() - 8.0)), CornerRadius::same(2), p.accent);
         }
-        resp.context_menu(|ui| entry_menu(ui, app, e, true, req));
+        let groups = super::entry_menu::groups(app, e, Place::Library);
+        resp.context_menu(|ui| {
+            if let Some(a) = super::entry_menu::menu(ui, &groups) {
+                *req = Some(Req::Entry(a, e.clone()));
+            }
+        });
         if resp.clicked() && (ctrl || shift) {
             d.pick(&e.media.path, &order, shift);
         }
@@ -1686,39 +1559,12 @@ fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table:
         }
         num(&format_bytes(e.media.bytes), col_x(6) - 10.0, row.center().y, p.text, 13.0);
         {
-            // 操作：播放 · 剪輯 · 資料夾 · 改名 · ⋯（全部截圖的格子也是這個順序）
+            // 播放、剪輯、製作、傳到媒體庫直接按得到，其他在「⋯」（和主畫面卡片、檢視器同一份清單）
             let aui = &mut ui.new_child(UiBuilder::new().max_rect(Rect::from_min_max(pos2(col_x(6), row.min.y), row.max)).layout(Layout::left_to_right(Align::Center)));
             aui.spacing_mut().item_spacing.x = 2.0;
-            if Btn::icon_only(Icon::Play).ghost().small().quiet(!hot).tooltip(tr!("播放（Enter）", "Play (Enter)")).show(aui).clicked() {
-                *req = Some(Req::Entry(EntryAction::Play, e.clone()));
+            if let Some(a) = super::entry_menu::quick_icons(aui, &groups, hot, tr!("更多（也可以在這一列按右鍵）", "More (or right-click the row)")) {
+                *req = Some(Req::Entry(a, e.clone()));
             }
-            if audio {
-                aui.add_space(28.0);
-            } else {
-                let blocked = app.blocked(EntryAction::Edit);
-                let tip = blocked.clone().unwrap_or_else(|| tr!("剪輯", "Edit").into());
-                if Btn::icon_only(Icon::Cut).ghost().small().quiet(!hot).enabled(blocked.is_none()).tooltip(tip).show(aui).clicked() {
-                    *req = Some(Req::Entry(EntryAction::Edit, e.clone()));
-                }
-            }
-            if Btn::icon_only(Icon::Folder).ghost().small().quiet(!hot).tooltip(tr!("在資料夾中顯示", "Show in folder")).show(aui).clicked() {
-                *req = Some(Req::Entry(EntryAction::Reveal, e.clone()));
-            }
-            if audio {
-                aui.add_space(28.0);
-            } else {
-                let tip = if e.exports.is_empty() {
-                    tr!("重新命名（F2）", "Rename (F2)")
-                } else {
-                    tr!("重新命名（加速版、GIF 一起改；F2）", "Rename (sped-up versions and GIFs too; F2)")
-                };
-                if Btn::icon_only(Icon::Rename).ghost().small().quiet(!hot).tooltip(tip).show(aui).clicked() {
-                    *req = Some(Req::Rename(e.clone()));
-                }
-            }
-            // 不常用的收進「⋯」
-            let more = Btn::icon_only(Icon::More).ghost().small().quiet(!hot).tooltip(tr!("更多（也可以在這一列按右鍵）", "More (or right-click the row)")).show(aui);
-            egui::Popup::menu(&more).show(|ui| entry_menu(ui, app, e, false, req));
         }
         y += LIBRARY_ROW_MAIN_PX as f32;
         // 加速版 / GIF 子列
@@ -1731,7 +1577,13 @@ fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table:
             } else if sresp.hovered() {
                 painter.rect_filled(row, CornerRadius::same(4), p.surface2.gamma_multiply(0.6));
             }
-            sresp.context_menu(|ui| export_menu(ui, x, req));
+            let entry = LibraryEntry { media: x.media.clone(), exports: vec![], hits: vec![] };
+            let sub_groups = super::entry_menu::groups(app, &entry, Place::Library);
+            sresp.context_menu(|ui| {
+                if let Some(a) = super::entry_menu::menu(ui, &sub_groups) {
+                    *req = Some(Req::Entry(a, entry.clone()));
+                }
+            });
             painter.hline(row.x_range(), row.max.y, Stroke::new(1.0, p.border.gamma_multiply(0.6)));
             let sui = &mut ui.new_child(UiBuilder::new().max_rect(row).layout(Layout::left_to_right(Align::Center)));
             sui.add_space(10.0);
@@ -1764,22 +1616,12 @@ fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table:
             };
             num(&res, col_x(5) - 10.0, row.center().y, p.muted, 12.0);
             num(&format_bytes(x.media.bytes), col_x(6) - 10.0, row.center().y, p.text, 12.5);
-            // 與原片的按鈕對齊：播放 ·（不能剪輯）· 資料夾 · 複製檔案 · ⋯
+            // 與原片的按鈕對齊：播放 ·（不能剪輯、製作）· 傳到媒體庫 · ⋯
             let aui = &mut ui.new_child(UiBuilder::new().max_rect(Rect::from_min_max(pos2(col_x(6), row.min.y), row.max)).layout(Layout::left_to_right(Align::Center)));
             aui.spacing_mut().item_spacing.x = 2.0;
-            let entry = || LibraryEntry { media: x.media.clone(), exports: vec![], hits: vec![] };
-            if Btn::icon_only(Icon::Play).ghost().small().quiet(!hot).tooltip(tr!("播放", "Play")).show(aui).clicked() {
-                *req = Some(Req::Entry(EntryAction::Play, entry()));
+            if let Some(a) = super::entry_menu::quick_icons(aui, &sub_groups, hot, tr!("更多（也可以在這一列按右鍵）", "More (or right-click the row)")) {
+                *req = Some(Req::Entry(a, entry.clone()));
             }
-            aui.add_space(30.0);
-            if Btn::icon_only(Icon::Folder).ghost().small().quiet(!hot).tooltip(tr!("在資料夾中顯示", "Show in folder")).show(aui).clicked() {
-                *req = Some(Req::Entry(EntryAction::Reveal, entry()));
-            }
-            if Btn::icon_only(Icon::Copy).ghost().small().quiet(!hot).tooltip(tr!("複製檔案（貼到 LINE、資料夾）", "Copy file (paste into LINE or a folder)")).show(aui).clicked() {
-                *req = Some(Req::Entry(EntryAction::CopyFile, entry()));
-            }
-            let more = Btn::icon_only(Icon::More).ghost().small().quiet(!hot).tooltip(tr!("更多", "More")).show(aui);
-            egui::Popup::menu(&more).show(|ui| export_menu(ui, x, req));
             y += LIBRARY_ROW_SUB_PX as f32;
         }
         // 搜尋到的說過的話：時間與那一句（點一下從那裡播放）
@@ -3044,6 +2886,7 @@ fn rename_dialog(app: &mut UiApp, entry: LibraryEntry) {
             Ok(new_path) => {
                 // 檢視器開著這個檔案：路徑跟著改
                 super::viewer::renamed(app, &e2.media.path, &new_path);
+                app.sync_renamed(renamed_pairs(&e2, &new_path));
                 app.ask = None;
                 app.toast(trf!("已改名為 {name}", "Renamed to {name}"), false);
                 if let Some(d) = &mut app.library {
@@ -3078,6 +2921,20 @@ fn rename_dialog(app: &mut UiApp, entry: LibraryEntry) {
     app.ask = Some(ask);
 }
 
+/// 改名前後的路徑（錄影和底下的加速版、GIF：名稱開頭跟著換），媒體庫那一份照這個改
+fn renamed_pairs(e: &LibraryEntry, new_path: &str) -> Vec<(std::path::PathBuf, std::path::PathBuf)> {
+    let new = std::path::PathBuf::from(new_path);
+    let dir = new.parent().map(|d| d.to_path_buf()).unwrap_or_default();
+    let (old_base, new_base) = (base_name(&e.media.name), base_name(&file_name(new_path)));
+    let mut pairs = vec![(std::path::PathBuf::from(&e.media.path), new)];
+    for x in &e.exports {
+        if let Some(rest) = x.media.name.strip_prefix(&old_base) {
+            pairs.push((std::path::PathBuf::from(&x.media.path), dir.join(format!("{new_base}{rest}"))));
+        }
+    }
+    pairs
+}
+
 /// 改名失敗後：保留對話框（含輸入的文字與錯誤訊息），讓使用者再送出一次
 fn rename_retry(app: &mut UiApp, entry: LibraryEntry) {
     let Some(a) = app.ask.take() else { return };
@@ -3109,28 +2966,31 @@ fn remove_selected(app: &mut UiApp) {
     } else {
         (format!("把 {} 個檔案移到資源回收筒？", list.len()), format!("可從資源回收筒還原。{}", if kept > 0 { format!("\n未勾選的 {kept} 個加速版會保留。") } else { String::new() }))
     };
-    let mut ask = Ask::confirm(title, message, tr!("移到資源回收筒", "Move to Recycle Bin"), move |app, _| {
-        app.ask = None;
-        match actions::delete(&app.core, &list) {
-            Ok(n) => {
-                let text = if is_en() { format!("Moved {n} file{} to the Recycle Bin", plural(n)) } else { format!("已將 {n} 個檔案移到資源回收筒") };
-                app.toast(text, false);
-                if let Some(d) = &mut app.library {
-                    d.selected.clear();
-                    d.dirty = true;
-                }
-                app.load_recent();
-            }
-            Err(e) => app.toast(e.message().to_string(), true),
-        }
-    });
-    ask.danger = true;
-    ask.list = d.selected.iter().map(|p| file_name(p)).collect();
-    ask.list.sort();
-    app.ask = Some(ask);
+    let mut list = list;
+    list.sort_by_key(|p| file_name(p));
+    app.confirm_trash(title, &message, list, trashed);
 }
 
-/// 一個檔案（錄影連同底下的加速版、GIF）移到資源回收筒：先確認
+/// 加上 / 移除星號
+pub fn set_star(app: &mut UiApp, path: &str, on: bool) {
+    app.core.pins.set(path, on);
+    // 加上星號就不要留在勾選裡（避免接著刪掉）；只看有星號時重新讀取
+    if let Some(d) = &mut app.library {
+        if on {
+            d.selected.remove(path);
+        }
+        if d.only_pinned {
+            d.dirty = true;
+        }
+    }
+}
+
+/// 一支錄影（連同底下的加速版、GIF）移到資源回收筒：先確認
+pub fn trash_entry(app: &mut UiApp, e: &LibraryEntry) {
+    trash_paths(app, trash_list(e));
+}
+
+/// 這些檔案（錄影連同底下的加速版、GIF）移到資源回收筒：先確認（媒體庫也有時問要不要一起刪）
 fn trash_paths(app: &mut UiApp, paths: Vec<String>) {
     if paths.is_empty() {
         return;
@@ -3141,27 +3001,21 @@ fn trash_paths(app: &mut UiApp, paths: Vec<String>) {
         _ if is_en() => format!("Move this recording and its {n} sped-up version{} to the Recycle Bin?", if n == 1 { "" } else { "s" }),
         _ => format!("把這部錄影和底下的 {n} 個加速版移到資源回收筒？"),
     };
-    let names: Vec<String> = paths.iter().map(|p| file_name(p)).collect();
-    let mut ask = Ask::confirm(title, tr!("可從資源回收筒還原。", "You can restore files from the Recycle Bin."), tr!("移到資源回收筒", "Move to Recycle Bin"), move |app, _| {
-        app.ask = None;
-        match actions::delete(&app.core, &paths) {
-            Ok(n) => {
-                let text = if is_en() { format!("Moved {n} file{} to the Recycle Bin", if n == 1 { "" } else { "s" }) } else { format!("已將 {n} 個檔案移到資源回收筒") };
-                app.toast(text, false);
-                if let Some(d) = &mut app.library {
-                    for p in &paths {
-                        d.selected.remove(p);
-                    }
-                    d.dirty = true;
-                }
-                app.load_recent();
-            }
-            Err(e) => app.toast(e.message().to_string(), true),
+    app.confirm_trash(title, tr!("可從資源回收筒還原。", "You can restore files from the Recycle Bin."), paths, trashed);
+}
+
+/// 刪好之後：清單的勾選拿掉、重新讀取
+fn trashed(app: &mut UiApp, paths: &[String], ok: bool) {
+    if !ok {
+        return;
+    }
+    if let Some(d) = &mut app.library {
+        for p in paths {
+            d.selected.remove(p);
         }
-    });
-    ask.danger = true;
-    ask.list = names;
-    app.ask = Some(ask);
+        d.dirty = true;
+    }
+    app.load_recent();
 }
 
 #[cfg(test)]

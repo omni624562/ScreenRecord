@@ -4,6 +4,7 @@
 //! - 下：最近錄影（橫向分頁）
 
 use super::dialogs::{base_name, date_labels, file_name, is_cut_name, is_default_name, Ask};
+use super::entry_menu::Place;
 use super::settings::{FollowWindow, SourceType};
 use super::settings_dialog::{self, Page};
 use super::theme::{self, chip, segmented, switch, Btn, Icon, Tone};
@@ -2631,106 +2632,20 @@ fn recent_card(app: &mut UiApp, ui: &mut Ui, e: &LibraryEntry, date: String, w: 
     {
         let ui = &mut ui.new_child(UiBuilder::new().max_rect(row).layout(Layout::left_to_right(Align::Center)));
         ui.spacing_mut().item_spacing.x = 2.0;
-        let acts = [
-            (EntryAction::PlayHere, Icon::Play, tr!("播放（點兩下卡片：在播放器開啟）", "Play (double-click the card to open in the player)")),
-            (EntryAction::Reveal, Icon::Folder, tr!("在資料夾中顯示", "Show in folder")),
-            (EntryAction::Edit, Icon::Cut, tr!("剪輯", "Edit")),
-            (EntryAction::Export, Icon::Fast, tr!("製作加速版 / GIF", "Make sped-up video / GIF")),
-        ];
-        // 傳到媒體庫（Jellyfin、NAS）也直接放在卡片上，不用點進「⋯」
-        let (dest, send_tip) = app.send_label();
-        let send = (EntryAction::SendToLibrary, Icon::Upload, format!("{dest}\n{send_tip}"));
+        // 播放、剪輯、製作、傳到媒體庫直接按得到，其他在「⋯」（和全部錄影、檢視器同一份清單）
+        let groups = super::entry_menu::groups(app, e, Place::Home);
         let hot = ui.rect_contains_pointer(rect);
-        for (act, icon, tip) in acts.map(|(a, i, t)| (a, i, t.to_string())).into_iter().chain([send]) {
-            if Btn::icon_only(icon).ghost().small().quiet(!hot && act != EntryAction::PlayHere).tooltip(tip).show(ui).clicked() {
-                app.known.insert(e.media.path.clone(), e.clone());
-                app.act(act, e.clone());
-            }
+        if let Some(a) = super::entry_menu::quick_icons(ui, &groups, hot, tr!("更多（也可以在卡片上按右鍵）", "More (or right-click the card)")) {
+            app.known.insert(e.media.path.clone(), e.clone());
+            app.act(a, e.clone());
         }
-        let more = Btn::icon_only(Icon::More).ghost().small().quiet(!hot).tooltip(tr!("更多（也可以在卡片上按右鍵）", "More (or right-click the card)")).show(ui);
-        egui::Popup::menu(&more).show(|ui| recent_menu(app, ui, e));
     }
-    egui::Popup::context_menu(&resp).show(|ui| recent_menu(app, ui, e));
-    resp.on_hover_text(&e.media.name);
-}
-
-/// 最近錄影卡片的選單（「⋯」與按右鍵相同）
-fn recent_menu(app: &mut UiApp, ui: &mut Ui, e: &LibraryEntry) {
-    ui.set_min_width(200.0);
-    let act = |app: &mut UiApp, a: EntryAction| {
+    let groups = super::entry_menu::groups(app, e, Place::Home);
+    if let Some(a) = egui::Popup::context_menu(&resp).show(|ui| super::entry_menu::menu(ui, &groups)).and_then(|r| r.inner) {
         app.known.insert(e.media.path.clone(), e.clone());
         app.act(a, e.clone());
-    };
-    if ui.button(tr!("播放", "Play")).clicked() {
-        act(app, EntryAction::PlayHere);
     }
-    if ui.button(tr!("在播放器開啟", "Open in the player")).clicked() {
-        app.inline = None;
-        act(app, EntryAction::Play);
-    }
-    if ui.button(tr!("在資料夾中顯示", "Show in folder")).clicked() {
-        act(app, EntryAction::Reveal);
-    }
-    if ui.button(tr!("剪輯", "Edit")).clicked() {
-        act(app, EntryAction::Edit);
-    }
-    if ui.button(tr!("製作加速版 / GIF", "Make sped-up video / GIF")).clicked() {
-        act(app, EntryAction::Export);
-    }
-    if !screenrecorder_core::after_record::is_audio_recording(&e.media.path) && screenrecorder_core::cover::can_embed(&e.media.path) {
-        let tip = tr!(
-            "選影片裡的一格當封面：檔案總管和多數播放器看到的縮圖就是這一格（影片內容不變）",
-            "Pick a frame as the cover: File Explorer and most players show it as the thumbnail (the video itself is unchanged)"
-        );
-        if ui.button(tr!("設為封面（選一格當縮圖）…", "Set cover (pick a frame as the thumbnail)…")).on_hover_text(tip).clicked() {
-            app.inline = None;
-            act(app, EntryAction::SetThumb);
-        }
-    }
-    if screenrecorder_core::video_tags::can_tag(&e.media.path) {
-        let tip = tr!(
-            "改寫在影片檔裡的資訊：檔案總管「內容 → 詳細資料」和多數播放器看得到（影片內容不變）",
-            "Edit the details stored in the video file, shown in File Explorer under Properties → Details and in most players (the video itself is unchanged)"
-        );
-        if ui.button(tr!("影片資訊（標題、作者、說明）…", "Video details (title, author, description)…")).on_hover_text(tip).clicked() {
-            // 主畫面正在播這支：先停掉（播放中的檔案換不掉）
-            if app.inline.as_ref().is_some_and(|i| i.is(&e.media.path)) {
-                app.inline = None;
-            }
-            act(app, EntryAction::Tags);
-        }
-    }
-    if !screenrecorder_core::after_record::is_audio_recording(&e.media.path) && screenrecorder_core::video_tags::can_tag(&e.media.path) {
-        if let Some(a) = super::rotate_menu(ui) {
-            app.inline = None;
-            act(app, a);
-        }
-    }
-    let (label, tip) = app.send_label();
-    if ui.button(label).on_hover_text(tip).clicked() {
-        act(app, EntryAction::SendToLibrary);
-    }
-    ui.separator();
-    if ui.button(tr!("複製檔案（貼到 LINE、資料夾）", "Copy file (paste into LINE or a folder)")).clicked() {
-        act(app, EntryAction::CopyFile);
-    }
-    if e.media.has_audio != Some(false) && ui.button(tr!("存成 M4A（只留聲音）", "Save as M4A (audio only)")).clicked() {
-        act(app, EntryAction::SaveAudio);
-    }
-    if !e.media.chapters.is_empty() && ui.button(tr!("複製章節（貼到 YouTube）", "Copy chapters (for YouTube)")).clicked() {
-        act(app, EntryAction::CopyChapters);
-    }
-    if !screenrecorder_core::after_record::is_audio_recording(&e.media.path) {
-        if let Some(a) = super::steps_menu(ui) {
-            act(app, a);
-        }
-    }
-    if ui.button(tr!("重新命名", "Rename")).clicked() {
-        if app.inline.as_ref().is_some_and(|i| i.is(&e.media.path)) {
-            app.inline = None;
-        }
-        super::library_dialog::rename_entry(app, e.clone());
-    }
+    resp.on_hover_text(&e.media.name);
 }
 
 // ───────────── 倒數 ─────────────

@@ -366,6 +366,54 @@ pub fn send_file(jf: Option<&Jellyfin>, copy_to: &str, file: &std::path::Path, e
     })
 }
 
+/// 檔案本來就放在「複製」的資料夾（媒體庫）裡：改名、刪除就是改到媒體庫那一份
+pub fn in_library(copy_to: &str, file: &std::path::Path) -> bool {
+    let copy_to = copy_to.trim();
+    !copy_to.is_empty() && file.parent().is_some_and(|d| same_dir(d, std::path::Path::new(copy_to)))
+}
+
+/// 「複製」資料夾（媒體庫）裡屬於這個檔案的那一份：同名的檔案和它的字幕（同名.srt、同名.zh-TW.srt…）。
+/// 檔案本來就在那個資料夾時是同一份，回傳空的；file 不用還在（改名、刪除之後也查得到）
+pub fn library_copies(copy_to: &str, file: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let copy_to = copy_to.trim();
+    let (Some(name), Some(stem)) = (file.file_name(), file.file_stem()) else { return vec![] };
+    if copy_to.is_empty() || in_library(copy_to, file) {
+        return vec![];
+    }
+    let (name, stem) = (name.to_string_lossy().to_lowercase(), stem.to_string_lossy().to_lowercase());
+    let Ok(dir) = std::fs::read_dir(copy_to) else { return vec![] };
+    let mut out: Vec<_> = dir
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.is_file())
+        .filter(|p| {
+            let n = p.file_name().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_default();
+            n == name || n.strip_prefix(&stem).is_some_and(|rest| rest.starts_with('.') && [".srt", ".vtt", ".ass"].iter().any(|x| rest.ends_with(x)))
+        })
+        .collect();
+    out.sort();
+    out
+}
+
+/// 改名後：媒體庫裡那一份（連同字幕）也換成新名稱；回傳改了幾個檔案
+pub fn rename_copies(copy_to: &str, old: &std::path::Path, new: &std::path::Path) -> Result<usize, String> {
+    let (Some(old_stem), Some(new_stem)) = (old.file_stem(), new.file_stem()) else { return Ok(0) };
+    let skip = old_stem.to_string_lossy().chars().count();
+    let new_stem = new_stem.to_string_lossy();
+    let mut n = 0;
+    for f in library_copies(copy_to, old) {
+        let name = f.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let to = f.with_file_name(format!("{new_stem}{}", name.chars().skip(skip).collect::<String>()));
+        if to.exists() {
+            return Err(trf!("媒體庫裡已經有「{}」", "The library already has “{}”", to.file_name().unwrap_or_default().to_string_lossy()));
+        }
+        std::fs::rename(&f, &to).map_err(|e| e.to_string())?;
+        crate::info!("[傳到資料夾] 跟著改名：{} → {}", f.display(), to.display());
+        n += 1;
+    }
+    Ok(n)
+}
+
 /// 兩個資料夾是不是同一個（不分大小寫、/ 和 \ 都算、結尾的分隔符號不算）
 fn same_dir(a: &std::path::Path, b: &std::path::Path) -> bool {
     let norm = |p: &std::path::Path| p.display().to_string().replace('\\', "/").trim_end_matches('/').to_lowercase();
@@ -614,5 +662,32 @@ mod tests {
         assert_eq!(library_name(&en), "Rec_2.srt");
         assert_eq!(library_name(&dir.path().join("Rec_1.en.srt")), "Rec_1.en.srt");
         assert_eq!(library_name(&dir.path().join("Rec_1.mp4")), "Rec_1.mp4");
+    }
+
+    #[test]
+    fn library_copies_follow_renames_and_skip_the_same_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let (rec, lib) = (dir.path().join("rec"), dir.path().join("lib"));
+        std::fs::create_dir_all(&rec).unwrap();
+        std::fs::create_dir_all(&lib).unwrap();
+        for f in ["會議.mp4", "會議.zh-TW.srt", "會議.en.srt", "會議_2x.mp4", "會議 2.mp4", "其他.mp4"] {
+            std::fs::write(lib.join(f), "x").unwrap();
+        }
+        let copy_to = lib.display().to_string();
+        let names = |v: Vec<std::path::PathBuf>| v.iter().map(|p| p.file_name().unwrap().to_string_lossy().into_owned()).collect::<Vec<_>>();
+        // 只有同名的影片和字幕，加速版、名字開頭一樣的別支不算
+        assert_eq!(names(library_copies(&copy_to, &rec.join("會議.mp4"))), ["會議.en.srt", "會議.mp4", "會議.zh-TW.srt"]);
+        assert_eq!(names(library_copies(&copy_to, &rec.join("會議_2x.mp4"))), ["會議_2x.mp4"]);
+        // 本來就在媒體庫裡：同一份，不算
+        assert!(library_copies(&copy_to, &lib.join("會議.mp4")).is_empty());
+        assert!(in_library(&format!("{copy_to}/"), &lib.join("會議.mp4")));
+        assert!(library_copies("", &rec.join("會議.mp4")).is_empty());
+
+        assert_eq!(rename_copies(&copy_to, &rec.join("會議.mp4"), &rec.join("週會.mp4")).unwrap(), 3);
+        assert_eq!(names(library_copies(&copy_to, &rec.join("週會.mp4"))), ["週會.en.srt", "週會.mp4", "週會.zh-TW.srt"]);
+        assert!(library_copies(&copy_to, &rec.join("會議.mp4")).is_empty());
+        // 新名稱媒體庫裡已經有：不蓋掉
+        assert!(rename_copies(&copy_to, &rec.join("週會.mp4"), &rec.join("其他.mp4")).is_err());
+        assert_eq!(rename_copies(&copy_to, &rec.join("沒傳過.mp4"), &rec.join("新.mp4")).unwrap(), 0);
     }
 }

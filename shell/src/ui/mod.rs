@@ -5,6 +5,7 @@
 mod dev;
 pub mod dialogs;
 pub mod editor;
+pub mod entry_menu;
 pub mod export_dialog;
 pub mod import;
 pub mod inline_play;
@@ -123,64 +124,14 @@ pub enum EntryAction {
     Rotate180,
     /// 另存畫面真的轉好的影片（重新壓縮，舊播放器也正確）
     Upright,
-}
-
-/// 影片的「旋轉」子選單
-pub(crate) fn rotate_menu(ui: &mut egui::Ui) -> Option<EntryAction> {
-    let mut pick = None;
-    ui.menu_button(tr!("旋轉", "Rotate"), |ui| {
-        let tip = tr!("直接改原檔，幾秒就好、畫質不變；轉錯再轉回來就好", "Changes the original in seconds without losing quality; just rotate back if needed");
-        for (a, label) in [
-            (EntryAction::RotateLeft, tr!("向左轉 90°", "Rotate left 90°")),
-            (EntryAction::RotateRight, tr!("向右轉 90°", "Rotate right 90°")),
-            (EntryAction::Rotate180, tr!("轉 180°", "Rotate 180°")),
-        ] {
-            if ui.button(label).on_hover_text(tip).clicked() {
-                pick = Some(a);
-                ui.close();
-            }
-        }
-        ui.separator();
-        if ui
-            .button(tr!("另存畫面轉好的影片…", "Save an upright copy…"))
-            .on_hover_text(tr!(
-                "少數舊播放器、網頁編輯器不看旋轉的設定時用：把畫面真的轉過來另存一份（重新壓縮，比較慢）",
-                "For old players or web editors that ignore the rotation setting: saves a copy with the picture actually turned (re-encoded, slower)"
-            ))
-            .clicked()
-        {
-            pick = Some(EntryAction::Upright);
-            ui.close();
-        }
-    });
-    pick
-}
-
-/// 錄影的「步驟教學」子選單：複製成文字，或做成附圖的步驟教學（和步驟截圖同一個整理視窗）
-pub(crate) fn steps_menu(ui: &mut egui::Ui) -> Option<EntryAction> {
-    let mut pick = None;
-    ui.menu_button(tr!("步驟教學", "Step-by-step guide"), |ui| {
-        if ui
-            .button(tr!("做成文件（附圖）…", "Make a guide with pictures…"))
-            .on_hover_text(tr!(
-                "錄影時點的每個按鈕、按的快速鍵各做成一步，附上那一刻的畫面（圈出點的地方），整理後存成 HTML、Word、PowerPoint 或影片",
-                "Each button you clicked and shortcut you pressed becomes a step with the frame from that moment (the click is circled). Tidy them up, then save as HTML, Word, PowerPoint or video"
-            ))
-            .clicked()
-        {
-            pick = Some(EntryAction::StepsGuide);
-            ui.close();
-        }
-        if ui
-            .button(tr!("複製成文字", "Copy as text"))
-            .on_hover_text(tr!("整理成「1. 點「存檔」」這樣的清單，貼到文件或信件裡", "A numbered list like “1. Click “Save””, to paste into a document or email"))
-            .clicked()
-        {
-            pick = Some(EntryAction::CopySteps);
-            ui.close();
-        }
-    });
-    pick
+    /// 重新命名（加速版、GIF 一起改；媒體庫那一份也跟著改）
+    Rename,
+    /// 加上 / 移除星號
+    Star,
+    /// 移到資源回收筒（連同底下的加速版；媒體庫也有時問要不要一起刪）
+    Trash,
+    /// 複製這支在 Jellyfin 的網址
+    JellyfinLink,
 }
 
 pub struct UiApp {
@@ -589,6 +540,94 @@ impl UiApp {
         );
     }
 
+    /// 移到資源回收筒前的確認。「複製」資料夾（Jellyfin 媒體庫）裡也有同名的那一份時，
+    /// 問要兩邊都刪，還是只刪這台電腦的；done：刪好之後（清單、檢視器跟著更新）
+    pub fn confirm_trash(&mut self, title: String, message: &str, paths: Vec<String>, done: fn(&mut UiApp, &[String], bool)) {
+        use screenrecorder_core::jellyfin::{in_library, library_copies};
+        let copy_to = self.s.after_copy_to.clone();
+        let copies: Vec<std::path::PathBuf> = paths.iter().flat_map(|p| library_copies(&copy_to, std::path::Path::new(p))).collect();
+        // 檔案本來就放在媒體庫裡：刪了就是從媒體庫刪掉，請 Jellyfin 重新掃描
+        let in_lib = paths.iter().any(|p| in_library(&copy_to, std::path::Path::new(p)));
+        let names: Vec<String> = paths.iter().map(|p| dialogs::file_name(p)).collect();
+        let mut ask = if copies.is_empty() {
+            dialogs::Ask::confirm(title, message, tr!("移到資源回收筒", "Move to Recycle Bin"), move |app, _| trash_now(app, paths, vec![], in_lib, done))
+        } else {
+            let folder = self.library_folder().unwrap_or_default();
+            let n = copies.len();
+            let more = trf!(
+                "媒體庫「{folder}」裡也有 {n} 個同名的檔案（影片、字幕），要一起刪掉嗎？NAS 上的檔案可能無法從資源回收筒還原。",
+                "The library “{folder}” also has {n} matching file(s) (video, subtitles). Delete them too? Files on a NAS may not be restorable from the Recycle Bin."
+            );
+            let (p2, c2) = (paths.clone(), copies.clone());
+            let mut ask = dialogs::Ask::confirm(title, format!("{message}\n{more}"), tr!("兩邊都刪", "Delete both"), move |app, _| trash_now(app, p2, c2, true, done));
+            ask.alt = Some((tr!("只刪這台電腦的", "Only on this PC").to_string(), Box::new(move |app, _| trash_now(app, paths, vec![], in_lib, done))));
+            ask.alt_danger = true;
+            ask
+        };
+        ask.danger = true;
+        ask.list = names;
+        self.ask = Some(ask);
+    }
+
+    /// 改名後：媒體庫裡那一份（連同字幕、加速版）也換成新名稱，並請 Jellyfin 重新掃描
+    pub fn sync_renamed(&mut self, pairs: Vec<(std::path::PathBuf, std::path::PathBuf)>) {
+        use screenrecorder_core::jellyfin::{in_library, rename_copies, Jellyfin};
+        let copy_to = self.s.after_copy_to.clone();
+        if copy_to.trim().is_empty() {
+            return;
+        }
+        let in_lib = pairs.iter().any(|(_, new)| in_library(&copy_to, new));
+        let jf = Jellyfin::new(&self.s.jellyfin_url, &self.s.jellyfin_key);
+        self.spawn(
+            async move {
+                tokio::task::spawn_blocking(move || -> Result<Option<String>, String> {
+                    let mut n = 0;
+                    for (old, new) in &pairs {
+                        n += rename_copies(&copy_to, old, new)?;
+                    }
+                    if n == 0 && !in_lib {
+                        return Ok(None);
+                    }
+                    let done =
+                        if n > 0 { tr!("媒體庫裡的那一份也改名了", "The copy in the library was renamed too") } else { tr!("媒體庫裡的檔案已改名", "Renamed in the library") };
+                    Ok(Some(match jf.map(|jf| jf.refresh()) {
+                        Some(Ok(())) => format!("{done}{}", tr!("，已請 Jellyfin 重新掃描", "; Jellyfin was asked to rescan")),
+                        Some(Err(e)) => format!("{done}{}", trf!("，但沒有通知到 Jellyfin：{e}", ", but Jellyfin couldn't be notified: {e}")),
+                        None => done.to_string(),
+                    }))
+                })
+                .await
+                .unwrap_or_else(|e| Err(e.to_string()))
+            },
+            |app, r| match r {
+                Ok(Some(msg)) => app.toast(msg, false),
+                Ok(None) => {}
+                Err(e) => app.toast(trf!("媒體庫裡的那一份沒有改名：{e}", "The copy in the library wasn't renamed: {e}"), true),
+            },
+        );
+    }
+
+    /// 複製這支影片在 Jellyfin 的網址（要先傳到媒體庫）
+    pub fn copy_jellyfin_link(&mut self, path: &str) {
+        let name = dialogs::file_name(path).to_string();
+        let Some(jf) = screenrecorder_core::jellyfin::Jellyfin::new(&self.s.jellyfin_url, &self.s.jellyfin_key) else { return };
+        self.spawn(
+            async move {
+                tokio::task::spawn_blocking(move || -> Result<Option<String>, String> { Ok(jf.find(&name)?.first().map(|id| jf.link(id, jf.server_id().as_deref()))) })
+                    .await
+                    .unwrap_or_else(|e| Err(e.to_string()))
+            },
+            |app, r| match r {
+                Ok(Some(url)) => {
+                    app.ctx.copy_text(url.clone());
+                    app.toast(trf!("已複製 Jellyfin 連結：{url}", "Jellyfin link copied: {url}"), false);
+                }
+                Ok(None) => app.toast(tr!("Jellyfin 還沒有這支影片：先按「傳到媒體庫」，或等錄完自動處理複製過去", "Jellyfin doesn't have this video yet. Send it to the library first"), true),
+                Err(e) => app.toast(trf!("查不到 Jellyfin：{e}", "Couldn't check Jellyfin: {e}"), true),
+            },
+        );
+    }
+
     /// 改了影片（封面、影片資訊）之後：「複製」資料夾（Jellyfin 的媒體庫）裡的那一份也換成改好的，並請 Jellyfin 重新讀取
     pub fn sync_edited(&mut self, path: &str) {
         let jf = screenrecorder_core::jellyfin::Jellyfin::new(&self.s.jellyfin_url, &self.s.jellyfin_key);
@@ -972,11 +1011,20 @@ impl UiApp {
         use actions::OpenAction;
         let path = entry.media.path.clone();
         // 主畫面正在播這個檔案：剪輯、製作、改名等要用到檔案時先停下來（Windows 上播放中的檔案不能改名、取代）
-        let keeps = matches!(action, EntryAction::PlayHere | EntryAction::Reveal | EntryAction::CopyFile | EntryAction::CopyChapters | EntryAction::CopySteps);
+        let keeps =
+            matches!(action, EntryAction::PlayHere | EntryAction::Reveal | EntryAction::CopyFile | EntryAction::CopyChapters | EntryAction::CopySteps | EntryAction::Star | EntryAction::JellyfinLink);
         if !keeps && self.inline.as_ref().is_some_and(|i| i.is(&path)) {
             self.inline = None;
         }
         match action {
+            EntryAction::Rename => library_dialog::rename_entry(self, entry),
+            EntryAction::Star => {
+                let on = !self.core.pins.contains(&path);
+                library_dialog::set_star(self, &path, on);
+                self.toast(if on { tr!("已加上星號：清理時會略過", "Starred: cleanup will skip it") } else { tr!("已移除星號", "Star removed") }, false);
+            }
+            EntryAction::Trash => library_dialog::trash_entry(self, &entry),
+            EntryAction::JellyfinLink => self.copy_jellyfin_link(&path),
             EntryAction::RotateLeft => self.rotate(&path, screenrecorder_core::rotate::Turn::Left),
             EntryAction::RotateRight => self.rotate(&path, screenrecorder_core::rotate::Turn::Right),
             EntryAction::Rotate180 => self.rotate(&path, screenrecorder_core::rotate::Turn::Half),
@@ -1510,6 +1558,58 @@ async fn watch_changes<T: PartialEq>(every: Duration, shown: Arc<std::sync::atom
             wake();
         }
         last = Some(now);
+    }
+}
+
+/// 移到資源回收筒（confirm_trash 確認後）：copies 是媒體庫裡也要刪的那一份；notify：刪好後請 Jellyfin 重新掃描
+fn trash_now(app: &mut UiApp, paths: Vec<String>, copies: Vec<std::path::PathBuf>, notify: bool, done: fn(&mut UiApp, &[String], bool)) {
+    app.ask = None;
+    // 先停止播放（Windows 上檔案使用中無法刪除）
+    if app.inline.as_ref().is_some_and(|i| paths.iter().any(|p| i.is(p))) {
+        app.inline = None;
+    }
+    if let Some(v) = app.viewer.as_mut().filter(|v| paths.contains(&v.cur().media.path)) {
+        v.clear_media();
+    }
+    match actions::delete(&app.core, &paths) {
+        Ok(n) => {
+            app.toast(trf!("已將 {n} 個檔案移到資源回收筒", "Moved {n} file(s) to the Recycle Bin"), false);
+            if notify {
+                let jf = screenrecorder_core::jellyfin::Jellyfin::new(&app.s.jellyfin_url, &app.s.jellyfin_key);
+                app.spawn(
+                    async move {
+                        tokio::task::spawn_blocking(move || -> Result<String, String> {
+                            let gone = if copies.is_empty() {
+                                ""
+                            } else {
+                                let list: Vec<String> = copies.iter().map(|c| c.display().to_string()).collect();
+                                screenrecorder_core::recycle::move_to_recycle_bin(&list).map_err(|e| e.message().to_string())?;
+                                screenrecorder_core::info!("[傳到資料夾] 媒體庫的那一份也刪了：{}", list.join("、"));
+                                tr!("媒體庫裡的那一份也刪了", "The copy in the library was deleted too")
+                            };
+                            Ok(match jf.map(|jf| jf.refresh()) {
+                                Some(Ok(())) if gone.is_empty() => tr!("已請 Jellyfin 重新掃描", "Jellyfin was asked to rescan").to_string(),
+                                Some(Ok(())) => format!("{gone}{}", tr!("，已請 Jellyfin 重新掃描", "; Jellyfin was asked to rescan")),
+                                Some(Err(e)) => format!("{gone}{}", trf!("（沒有通知到 Jellyfin：{e}）", " (Jellyfin couldn't be notified: {e})")),
+                                None => gone.to_string(),
+                            })
+                        })
+                        .await
+                        .unwrap_or_else(|e| Err(e.to_string()))
+                    },
+                    |app, r| match r {
+                        Ok(msg) if msg.is_empty() => {}
+                        Ok(msg) => app.toast(msg, false),
+                        Err(e) => app.toast(trf!("媒體庫裡的那一份沒有刪掉：{e}", "The copy in the library wasn't deleted: {e}"), true),
+                    },
+                );
+            }
+            done(app, &paths, true);
+        }
+        Err(e) => {
+            app.toast(e.message().to_string(), true);
+            done(app, &paths, false);
+        }
     }
 }
 
