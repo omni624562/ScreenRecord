@@ -6,7 +6,8 @@
 //!
 //! 都可以「用 Windows 開啟」、在資料夾中顯示、移到資源回收筒；視窗窄時不常用的按鈕收進「⋯」。
 
-use super::dialogs::{base_name, is_default_name, short_date, Ask};
+use super::dialogs::{base_name, is_default_name, short_date};
+use super::entry_menu::{Node, Place};
 use super::playback::Playback;
 use super::theme::{self, Btn, Icon};
 use super::{EntryAction, UiApp};
@@ -99,7 +100,7 @@ impl Viewer {
         is_audio_name(&self.cur().media.name)
     }
 
-    fn clear_media(&mut self) {
+    pub(crate) fn clear_media(&mut self) {
         self.image = None;
         self.player = None;
         self.video_tex = None;
@@ -401,55 +402,35 @@ fn delete_current(app: &mut UiApp) {
     let e = v.cur().clone();
     let mut paths = vec![e.media.path.clone()];
     paths.extend(e.exports.iter().map(|x| x.media.path.clone()));
-    let mut ask = Ask::confirm(
-        if paths.len() > 1 {
-            let n = paths.len() - 1;
-            if screenrecorder_core::i18n::is_en() {
-                format!("Move this recording and its {n} sped-up version{} to the Recycle Bin?", if n == 1 { "" } else { "s" })
-            } else {
-                format!("把這部錄影和底下的 {n} 個加速版移到資源回收筒？")
-            }
+    let title = if paths.len() > 1 {
+        let n = paths.len() - 1;
+        if screenrecorder_core::i18n::is_en() {
+            format!("Move this recording and its {n} sped-up version{} to the Recycle Bin?", if n == 1 { "" } else { "s" })
         } else {
-            tr!("把這個檔案移到資源回收筒？", "Move this file to the Recycle Bin?").into()
-        },
-        tr!("可從資源回收筒還原。", "You can restore files from the Recycle Bin."),
-        tr!("移到資源回收筒", "Move to Recycle Bin"),
-        move |app, _| {
-            app.ask = None;
-            // 先停止播放（Windows 上檔案使用中無法刪除）
-            if let Some(v) = app.viewer.as_mut() {
-                v.clear_media();
-            }
-            match actions::delete(&app.core, &paths) {
-                Ok(n) => {
-                    app.toast(
-                        if screenrecorder_core::i18n::is_en() {
-                            format!("Moved {n} file{} to the Recycle Bin", if n == 1 { "" } else { "s" })
-                        } else {
-                            format!("已將 {n} 個檔案移到資源回收筒")
-                        },
-                        false,
-                    );
-                    if let Some(d) = &mut app.library {
-                        d.dirty = true;
-                    }
-                    app.load_recent();
-                    let Some(v) = app.viewer.as_mut() else { return };
-                    v.list.retain(|x| x.media.path != paths[0]);
-                    if v.list.is_empty() {
-                        app.viewer = None;
-                        return;
-                    }
-                    v.idx = v.idx.min(v.list.len() - 1);
-                }
-                Err(err) => app.toast(err.message().to_string(), true),
-            }
-            load_current(app);
-        },
-    );
-    ask.danger = true;
-    ask.list = std::iter::once(e.media.name.clone()).chain(e.exports.iter().map(|x| x.media.name.clone())).collect();
-    app.ask = Some(ask);
+            format!("把這部錄影和底下的 {n} 個加速版移到資源回收筒？")
+        }
+    } else {
+        tr!("把這個檔案移到資源回收筒？", "Move this file to the Recycle Bin?").into()
+    };
+    app.confirm_trash(title, tr!("可從資源回收筒還原。", "You can restore files from the Recycle Bin."), paths, deleted);
+}
+
+/// 刪好之後換到下一個；沒刪成（檔案使用中等）就重新載入這一個
+fn deleted(app: &mut UiApp, paths: &[String], ok: bool) {
+    if ok {
+        if let Some(d) = &mut app.library {
+            d.dirty = true;
+        }
+        app.load_recent();
+        let Some(v) = app.viewer.as_mut() else { return };
+        v.list.retain(|x| x.media.path != paths[0]);
+        if v.list.is_empty() {
+            app.viewer = None;
+            return;
+        }
+        v.idx = v.idx.min(v.list.len() - 1);
+    }
+    load_current(app);
 }
 
 fn copy_image(app: &mut UiApp) {
@@ -470,6 +451,7 @@ pub fn copy_png(app: &mut UiApp, path: String) {
     });
 }
 
+#[derive(Clone, Copy)]
 enum Act {
     None,
     Prev,
@@ -488,8 +470,6 @@ enum Act {
     Rename,
     /// 打開相關的截圖（第幾張）
     Related(usize),
-    /// 複製這支影片在 Jellyfin 的網址
-    JellyfinLink,
 }
 
 /// 標題列的一個按鈕；視窗窄時依序從後面的開始收進「⋯」
@@ -497,7 +477,7 @@ struct HeadBtn {
     label: String,
     icon: Option<Icon>,
     tip: String,
-    act: fn() -> Act,
+    act: Act,
     /// 現在不能用的原因（轉檔進行中等）
     blocked: Option<String>,
     /// 最主要的動作（藍底）
@@ -510,150 +490,69 @@ struct HeadBtn {
     items: Vec<HeadBtn>,
 }
 
-fn head_btn(label: &str, icon: Option<Icon>, tip: &str, act: fn() -> Act) -> HeadBtn {
+fn head_btn(label: &str, icon: Option<Icon>, tip: &str, act: Act) -> HeadBtn {
     HeadBtn { label: label.to_string(), icon, tip: tip.to_string(), act, blocked: None, primary: false, icon_only: false, group: false, items: vec![] }
 }
 
 /// 只有圖示的按鈕（滑鼠移上去顯示名稱與說明）
-fn head_icon(label: &str, icon: Icon, tip: &str, act: fn() -> Act) -> HeadBtn {
+fn head_icon(label: &str, icon: Icon, tip: &str, act: Act) -> HeadBtn {
     HeadBtn { icon_only: true, ..head_btn(label, Some(icon), tip, act) }
 }
 
-/// 檢視器標題列上的按鈕（由左到右，越前面越常用；放不下的從後面開始收進「⋯」）：
-/// 最常用的有文字（剪輯、製作、複製檔案），其他是一排小圖示，都不用點進選單
-fn head_buttons(app: &UiApp, e: &LibraryEntry, image: bool, audio: bool) -> Vec<HeadBtn> {
+/// 檢視器標題列上的按鈕（由左到右，越前面越常用；放不下的從後面開始收進「⋯」）。
+/// 錄影：和主畫面卡片、全部錄影同一份清單（entry_menu），常用的（剪輯、製作、傳到媒體庫）有文字放最前面，
+/// 其他照清單的分組和順序排成一排小圖示；資料夾、刪除固定在右上角
+fn head_buttons(app: &UiApp, e: &LibraryEntry, image: bool) -> Vec<HeadBtn> {
     let b = head_btn;
-    let gate = |mut x: HeadBtn, a: EntryAction| {
-        x.blocked = app.blocked(a);
-        x
-    };
-    let open_tip = if image { tr!("用 Windows 的「相片」開啟", "Open in the Windows Photos app") } else { tr!("用 Windows 的媒體播放器開啟", "Open in the Windows media player") };
-    let mut open = head_icon(tr!("用 Windows 開啟", "Open in Windows"), Icon::Export, open_tip, || Act::Entry(EntryAction::External));
-    open.group = true;
     if image {
         let mut edit = b(
             tr!("編輯", "Edit"),
             Some(Icon::Edit),
             tr!("加上標註、遮住個資、裁切（另存一張，原圖保留）", "Add annotations, redact personal info, crop (saved as a new image; the original is kept)"),
-            || Act::Entry(EntryAction::Edit),
+            Act::Entry(EntryAction::Edit),
         );
         edit.primary = true;
+        let mut open = head_icon(tr!("用 Windows 開啟", "Open in Windows"), Icon::Export, tr!("用 Windows 的「相片」開啟", "Open in the Windows Photos app"), Act::Entry(EntryAction::External));
+        open.group = true;
         return vec![
             edit,
             b(
                 tr!("複製", "Copy"),
                 Some(Icon::Copy),
                 tr!("複製到剪貼簿（Ctrl+C；可直接貼到 LINE、Word、信件）", "Copy to clipboard (Ctrl+C; paste it straight into LINE, Word or an email)"),
-                || Act::Copy,
+                Act::Copy,
             ),
-            b(tr!("文字辨識", "OCR"), Some(Icon::Ocr), tr!("把圖裡的文字轉成可以複製的文字", "Text recognition (OCR): turn the text in the image into text you can copy"), || {
-                Act::Ocr
-            }),
+            b(tr!("文字辨識", "OCR"), Some(Icon::Ocr), tr!("把圖裡的文字轉成可以複製的文字", "Text recognition (OCR): turn the text in the image into text you can copy"), Act::Ocr),
             b(
                 tr!("釘在桌面", "Pin to desktop"),
                 Some(Icon::Pin),
                 tr!("把這張圖變成浮在最上層的小視窗，方便對照（點兩下或 Esc 關閉）", "Turn this image into a small always-on-top window for reference (double-click or Esc to close)"),
-                || Act::Pin,
+                Act::Pin,
             ),
             open,
         ];
     }
-    let export = is_export_name(&e.media.name);
-    let mut list = vec![];
-    if !audio && !export {
-        let mut edit = gate(b(tr!("剪輯", "Edit"), Some(Icon::Cut), tr!("剪掉頭尾、刪除片段、加上標註", "Trim, cut out parts, add annotations"), || Act::Entry(EntryAction::Edit)), EntryAction::Edit);
-        edit.primary = true;
-        list.push(edit);
-        // 「製作 ▾」：另存成別的檔案（原檔不變）
-        let mut make = b(
-            tr!("製作", "Make"),
-            Some(Icon::Fast),
-            tr!("另存加速版、GIF、WebP、直式影片、M4A，或壓縮檔案（原檔不變）", "Save a sped-up version, GIF, WebP, vertical video or M4A, or compress the file (the original is kept)"),
-            || Act::None,
-        );
-        make.items = vec![
-            gate(
-                b(tr!("加速版、GIF、WebP…", "Sped-up video, GIF, WebP…"), None, tr!("另存加速版、GIF 或 WebP 動圖", "Save a sped-up version, GIF or WebP"), || {
-                    Act::Entry(EntryAction::Export)
-                }),
-                EntryAction::Export,
-            ),
-            gate(
-                b(
-                    tr!("壓縮…", "Compress…"),
-                    None,
-                    tr!("縮小檔案：保留畫質，或壓縮到 LINE、Email 傳得出去的大小（原速）", "Make the file smaller: keep the quality, or fit a size you can send via LINE or email (original speed)"),
-                    || Act::Entry(EntryAction::Compress),
-                ),
-                EntryAction::Compress,
-            ),
-            gate(b(tr!("直式影片（Shorts / Reels）…", "Vertical video (Shorts / Reels)…"), None, "", || Act::Entry(EntryAction::Vertical)), EntryAction::Vertical),
-        ];
-        if e.media.has_audio != Some(false) {
-            make.items.push(b(tr!("存成 M4A（只留聲音）", "Save as M4A (audio only)"), None, "", || Act::Entry(EntryAction::SaveAudio)));
+    // 有自己做法的：設為封面用現在這一格、改名和影片資訊先放開檔案、刪除後換到下一個
+    let act_of = |a: EntryAction| match a {
+        EntryAction::SetThumb => Act::SetThumb,
+        EntryAction::Tags => Act::Tags,
+        EntryAction::Rename => Act::Rename,
+        EntryAction::Trash => Act::Delete,
+        a => Act::Entry(a),
+    };
+    let one = |it: &super::entry_menu::Item| HeadBtn { blocked: it.blocked.clone(), primary: it.action == EntryAction::Edit, ..head_btn(&it.label, it.icon, &it.tip, act_of(it.action)) };
+    let node = |n: &Node| match n {
+        Node::One(it) => one(it),
+        Node::Sub { label, icon, tip, items } => HeadBtn { items: items.iter().map(one).collect(), ..head_btn(label, Some(*icon), tip, Act::None) },
+    };
+    let groups = super::entry_menu::groups(app, e, Place::Viewer);
+    let mut list: Vec<HeadBtn> = groups.iter().flatten().filter(|n| n.quick()).map(node).collect();
+    for g in &groups {
+        let mut first = true;
+        for n in g.iter().filter(|n| !n.quick()) {
+            list.push(HeadBtn { icon_only: true, group: std::mem::take(&mut first), ..node(n) });
         }
-        list.push(make);
     }
-    list.push(b(
-        tr!("複製檔案", "Copy file"),
-        Some(Icon::Copy),
-        tr!("複製這個檔案，可以直接貼到 LINE、Teams、信件或資料夾", "Copy this file so you can paste it into LINE, Teams, an email or a folder"),
-        || Act::Entry(EntryAction::CopyFile),
-    ));
-    // 傳到「複製」的資料夾（Jellyfin 媒體庫、NAS）：有文字才找得到；還沒選資料夾時按了會打開設定
-    let (dest, tip) = app.send_label();
-    list.push(b(tr!("傳到媒體庫", "Send to library"), Some(Icon::Upload), &format!("{dest}\n{tip}"), || Act::Entry(EntryAction::SendToLibrary)));
-    // 小圖示：封面、影片資訊；轉向；改名、用 Windows 開啟
-    if !audio && screenrecorder_core::cover::can_embed(&e.media.path) {
-        let mut cover = head_icon(
-            tr!("把這一格設為封面", "Set this frame as cover"),
-            Icon::Image,
-            tr!(
-                "檔案總管和多數播放器看到的縮圖就是這一格（影片內容不變，不會移到開頭）",
-                "File Explorer and most players show it as the thumbnail (the video itself is unchanged; the frame isn't moved to the start)"
-            ),
-            || Act::SetThumb,
-        );
-        cover.group = true;
-        list.push(cover);
-        list.push(head_icon(
-            tr!("影片資訊…", "Details…"),
-            Icon::Info,
-            tr!(
-                "改寫在影片檔裡的標題、作者、說明等（檔案總管「內容 → 詳細資料」看得到；影片內容不變）",
-                "Edit the title, author, description and more stored in the video file (shown in File Explorer under Properties → Details; the video itself is unchanged)"
-            ),
-            || Act::Tags,
-        ));
-    }
-    if !audio && screenrecorder_core::video_tags::can_tag(&e.media.path) {
-        let tip = tr!("直接改原檔，幾秒就好、畫質不變；轉錯再轉回來就好", "Changes the original in seconds without losing quality; just rotate back if needed");
-        let mut left = head_icon(tr!("向左轉 90°", "Rotate left 90°"), Icon::RotL, tip, || Act::Entry(EntryAction::RotateLeft));
-        left.group = true;
-        list.push(left);
-        list.push(head_icon(tr!("向右轉 90°", "Rotate right 90°"), Icon::RotR, tip, || Act::Entry(EntryAction::RotateRight)));
-    }
-    // 有設定 Jellyfin：複製這支在 Jellyfin 的網址（要先傳到媒體庫）
-    if !audio && screenrecorder_core::jellyfin::Jellyfin::new(&app.s.jellyfin_url, &app.s.jellyfin_key).is_some() {
-        let mut link = head_icon(
-            tr!("複製 Jellyfin 連結", "Copy Jellyfin link"),
-            Icon::Link,
-            tr!(
-                "複製這支影片在 Jellyfin 的網址，貼給別人就能在瀏覽器看（要先傳到 Jellyfin 的媒體庫）",
-                "Copy this video's Jellyfin address so others can watch it in a browser (send it to the Jellyfin library first)"
-            ),
-            || Act::JellyfinLink,
-        );
-        link.group = true;
-        list.push(link);
-    }
-    if !audio && !export {
-        let mut rename = head_icon(tr!("重新命名…", "Rename…"), Icon::Rename, "", || Act::Rename);
-        rename.group = true;
-        list.push(rename);
-        open.group = false;
-    }
-    list.push(open);
     list
 }
 
@@ -690,7 +589,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         keyboard(&mut v, ctx, &mut act);
     }
     let e = v.cur().clone();
-    let buttons = head_buttons(app, &e, v.is_image(), v.is_audio());
+    let buttons = head_buttons(app, &e, v.is_image());
 
     let screen = ctx.content_rect();
     let (size, frame, area) = if v.full {
@@ -991,7 +890,7 @@ fn header(v: &mut Viewer, ui: &mut egui::Ui, e: &LibraryEntry, buttons: &[HeadBt
                 let items: Vec<&HeadBtn> = if b.items.is_empty() { vec![b] } else { b.items.iter().collect() };
                 for it in items {
                     if menu_entry(ui, it) {
-                        *act = (it.act)();
+                        *act = it.act;
                     }
                 }
             }
@@ -1002,14 +901,14 @@ fn header(v: &mut Viewer, ui: &mut egui::Ui, e: &LibraryEntry, buttons: &[HeadBt
         let r = head_style(b).show(rui);
         if b.items.is_empty() {
             if r.clicked() {
-                *act = (b.act)();
+                *act = b.act;
             }
         } else {
             egui::Popup::menu(&r).show(|ui| {
                 ui.set_min_width(200.0);
                 for it in &b.items {
                     if menu_entry(ui, it) {
-                        *act = (it.act)();
+                        *act = it.act;
                     }
                 }
             });
@@ -1098,26 +997,6 @@ fn run_act(app: &mut UiApp, act: Act) {
             let e = v.cur().clone();
             v.pause();
             super::video_tags::open(app, e);
-        }
-        Act::JellyfinLink => {
-            let Some(v) = app.viewer.as_ref() else { return };
-            let name = super::dialogs::file_name(&v.cur().media.path).to_string();
-            let Some(jf) = screenrecorder_core::jellyfin::Jellyfin::new(&app.s.jellyfin_url, &app.s.jellyfin_key) else { return };
-            app.spawn(
-                async move {
-                    tokio::task::spawn_blocking(move || -> Result<Option<String>, String> { Ok(jf.find(&name)?.first().map(|id| jf.link(id, jf.server_id().as_deref()))) })
-                        .await
-                        .unwrap_or_else(|e| Err(e.to_string()))
-                },
-                |app, r| match r {
-                    Ok(Some(url)) => {
-                        app.ctx.copy_text(url.clone());
-                        app.toast(trf!("已複製 Jellyfin 連結：{url}", "Jellyfin link copied: {url}"), false);
-                    }
-                    Ok(None) => app.toast(tr!("Jellyfin 還沒有這支影片：先按「傳到」或等錄完自動處理複製過去", "Jellyfin doesn't have this video yet. Send it to the library first"), true),
-                    Err(e) => app.toast(trf!("查不到 Jellyfin：{e}", "Couldn't check Jellyfin: {e}"), true),
-                },
-            );
         }
         Act::Grab => {
             let Some(v) = app.viewer.as_mut() else { return };
@@ -1543,7 +1422,7 @@ fn video_bar(v: &mut Viewer, ui: &mut egui::Ui, act: &mut Act) {
 }
 
 /// 加速版、GIF（不能再剪輯或製作加速版）
-fn is_export_name(name: &str) -> bool {
+pub(crate) fn is_export_name(name: &str) -> bool {
     static RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| regex::Regex::new(r"(?i)(_\d+(\.\d+)?x\.mp4|\.gif|\.webp|\.webm)$").unwrap());
     RE.is_match(name)
 }

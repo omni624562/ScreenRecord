@@ -38,58 +38,31 @@ enum Try {
 fn items(_app: &UiApp) -> Vec<(String, String, Try)> {
     vec![
         (
-            tr!("全部錄影更好讀", "An easier-to-read recordings list").into(),
+            tr!("每個地方的按鈕都一樣了", "Same buttons everywhere").into(),
             tr!(
-                "日期改成「12/30 週二」，去年以前的在下面寫年份和這天有幾支；點日期就能勾選這一天全部。畫面大小改成「4K 直」「1080p 橫」，只有沒聲音的影片才標出來；合併時下方有進度條，可以取消。",
-                "Dates now read “Tue 12/30”, with the year and the number of videos underneath for older days; click a date to select that whole day. Sizes now read “4K tall” or “1080p wide”, only videos without audio are marked, and merging shows a progress bar you can cancel."
+                "主畫面的錄影卡片、「全部錄影」、檢視器現在用同一份清單：名稱、圖示、順序都一樣。直接露出「播放、剪輯、製作、傳到媒體庫」，其他都在「⋯」（和按右鍵一樣），分成看、改、做、分享、管理五組，在哪裡都找得到。",
+                "Recording cards on the main screen, All recordings and the viewer now share one list: same names, icons and order. Play, Edit, Make and Send to library are right there; everything else is under ⋯ (same as right-click), grouped into watch, change, make, share and manage."
             )
             .into(),
             Try::Library(false),
         ),
         (
-            tr!("旋轉影片", "Rotate videos").into(),
+            tr!("「製作 ▾」集中在一起", "Everything under “Make ▾”").into(),
             tr!(
-                "拍歪了、橫的變直的？按檢視器上方的「向左轉」「向右轉」，或錄影卡片「⋯」選單的「旋轉」：直接改原檔的旋轉設定，幾秒就好、畫質不變，轉錯再轉回來就好。少數舊播放器不看這個設定時，可以用「另存畫面轉好的影片」。",
-                "Recorded sideways? Click “Rotate left” or “Rotate right” at the top of the viewer, or “Rotate” in a recording card's ⋯ menu: the original's rotation setting changes in seconds without losing quality, and you can rotate back anytime. For old players that ignore the setting, use “Save an upright copy”."
-            )
-            .into(),
-            Try::Library(false),
-        ),
-        (
-            tr!("合併影片快很多、畫質不變", "Much faster merging, same quality").into(),
-            tr!(
-                "全部錄影勾兩支以上 →「合併成一支」：同一支手機或同樣設定錄的影片直接接起來，幾秒就好，畫質跟原檔一樣；iPhone、相機的 MOV 也可以。想要檔案小一點，可以在「畫質」選高畫質、標準或省空間。",
-                "Select two or more in All recordings → “Merge into one”: videos from the same phone or recorded with the same settings are joined directly in seconds, keeping the original quality; iPhone and camera MOV files work too. For a smaller file, pick High quality, Standard or Smallest under “Quality”."
-            )
-            .into(),
-            Try::Library(false),
-        ),
-        (
-            tr!("壓縮：保留畫質、縮小檔案", "Compress: keep quality, smaller file").into(),
-            tr!(
-                "錄影卡片「⋯」選單或檢視器上方的「壓縮」，除了壓縮到 LINE、Email 傳得出去的大小，也可以選「保留畫質，縮小檔案」：手機拍的、合併好的大檔案選「標準」，通常會小很多又看不太出差別。",
-                "“Compress” in a recording card's ⋯ menu or at the top of the viewer can now also “Keep quality, smaller file”, besides fitting a size for LINE or email. For big phone videos or merged files, “Standard” usually saves a lot of space with little visible difference."
+                "加速版、GIF、WebP、壓縮、直式影片、存成 M4A、步驟教學文件都在「製作 ▾」裡，卡片、清單、檢視器都一樣。",
+                "Sped-up video, GIF, WebP, compress, vertical video, M4A and step guides are all under “Make ▾”, on cards, in the list and in the viewer."
             )
             .into(),
             Try::None,
         ),
         (
-            tr!("播放更順：mpv 播放元件", "Smoother playback: mpv component").into(),
+            tr!("改名、刪除也同步到 Jellyfin", "Renames and deletes reach Jellyfin").into(),
             tr!(
-                "到設定 →「外部元件」下載 mpv 播放元件（約 32 MB），檢視器和主畫面的播放都改用 mpv：顯示卡解碼，手機的 4K、60 fps 影片也很順，拖曳進度條畫面馬上跟上。播放有問題時可以在同一頁關掉。",
-                "Download the mpv component (about 32 MB) in Settings → Components and the viewer and the main screen play videos with mpv: decoded on the graphics card, smooth even for 4K 60 fps phone videos, and the picture follows the seek bar as you drag. You can turn it off on the same page if playback has problems."
+                "已經傳到媒體庫的錄影：重新命名時，媒體庫裡那一份（連同字幕、加速版）也跟著改名；移到資源回收筒時會問「兩邊都刪」或「只刪這台電腦的」，之後自動請 Jellyfin 重新掃描。",
+                "For recordings already in the library: renaming also renames the library copy (with subtitles and sped-up versions), and moving to the Recycle Bin asks whether to delete both or only on this PC. Jellyfin is asked to rescan afterwards."
             )
             .into(),
-            Try::Settings(settings_dialog::Page::Components),
-        ),
-        (
-            tr!("拿掉「做 YouTube 封面圖」", "Removed “Make YouTube cover”").into(),
-            tr!(
-                "比較少人用的「做 YouTube 封面圖」拿掉了。「設為封面」（選一格當檔案總管看到的縮圖）照樣可以用。",
-                "The rarely used “Make YouTube cover” is gone. “Set as cover” (pick a frame as the thumbnail File Explorer shows) still works."
-            )
-            .into(),
-            Try::None,
+            Try::Settings(settings_dialog::Page::After),
         ),
     ]
 }
