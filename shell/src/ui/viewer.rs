@@ -475,29 +475,34 @@ struct HeadBtn {
     blocked: Option<String>,
     /// 最主要的動作（藍底）
     primary: bool,
+    /// 只顯示圖示（滑鼠移上去顯示名稱）：常用但不是最主要的動作，不用點進選單也按得到
+    icon_only: bool,
+    /// 前面畫一條分隔線（新的一組）
+    group: bool,
     /// 有子項目時是「▾」選單按鈕；收進「⋯」時直接列出子項目
     items: Vec<HeadBtn>,
 }
 
-/// 檢視器的按鈕：bar 排在標題列（由左到右，越前面越常用），more 一直放在「⋯」裡（一組一組，中間畫分隔線）
-struct HeadButtons {
-    bar: Vec<HeadBtn>,
-    more: Vec<Vec<HeadBtn>>,
-}
-
 fn head_btn(label: &'static str, icon: Option<Icon>, tip: &str, act: fn() -> Act) -> HeadBtn {
-    HeadBtn { label, icon, tip: tip.to_string(), act, blocked: None, primary: false, items: vec![] }
+    HeadBtn { label, icon, tip: tip.to_string(), act, blocked: None, primary: false, icon_only: false, group: false, items: vec![] }
 }
 
-/// 檢視器上的按鈕：常用的（剪輯、製作、複製檔案）放標題列，其他收進「⋯」
-fn head_buttons(app: &UiApp, e: &LibraryEntry, image: bool, audio: bool) -> HeadButtons {
+/// 只有圖示的按鈕（滑鼠移上去顯示名稱與說明）
+fn head_icon(label: &'static str, icon: Icon, tip: &str, act: fn() -> Act) -> HeadBtn {
+    HeadBtn { icon_only: true, ..head_btn(label, Some(icon), tip, act) }
+}
+
+/// 檢視器標題列上的按鈕（由左到右，越前面越常用；放不下的從後面開始收進「⋯」）：
+/// 最常用的有文字（剪輯、製作、複製檔案），其他是一排小圖示，都不用點進選單
+fn head_buttons(app: &UiApp, e: &LibraryEntry, image: bool, audio: bool) -> Vec<HeadBtn> {
     let b = head_btn;
     let gate = |mut x: HeadBtn, a: EntryAction| {
         x.blocked = app.blocked(a);
         x
     };
     let open_tip = if image { tr!("用 Windows 的「相片」開啟", "Open in the Windows Photos app") } else { tr!("用 Windows 的媒體播放器開啟", "Open in the Windows media player") };
-    let open = b(tr!("用 Windows 開啟", "Open in Windows"), None, open_tip, || Act::Entry(EntryAction::External));
+    let mut open = head_icon(tr!("用 Windows 開啟", "Open in Windows"), Icon::Export, open_tip, || Act::Entry(EntryAction::External));
+    open.group = true;
     if image {
         let mut edit = b(
             tr!("編輯", "Edit"),
@@ -506,35 +511,42 @@ fn head_buttons(app: &UiApp, e: &LibraryEntry, image: bool, audio: bool) -> Head
             || Act::Entry(EntryAction::Edit),
         );
         edit.primary = true;
-        let bar =
-            vec![
-                edit,
-                b(
-                    tr!("複製", "Copy"),
-                    Some(Icon::Copy),
-                    tr!("複製到剪貼簿（Ctrl+C；可直接貼到 LINE、Word、信件）", "Copy to clipboard (Ctrl+C; paste it straight into LINE, Word or an email)"),
-                    || Act::Copy,
-                ),
-                b(tr!("文字辨識", "OCR"), Some(Icon::Ocr), tr!("把圖裡的文字轉成可以複製的文字", "Text recognition (OCR): turn the text in the image into text you can copy"), || Act::Ocr),
-                b(
-                    tr!("釘在桌面", "Pin to desktop"),
-                    Some(Icon::Pin),
-                    tr!("把這張圖變成浮在最上層的小視窗，方便對照（點兩下或 Esc 關閉）", "Turn this image into a small always-on-top window for reference (double-click or Esc to close)"),
-                    || Act::Pin,
-                ),
-            ];
-        return HeadButtons { bar, more: vec![vec![open]] };
+        return vec![
+            edit,
+            b(
+                tr!("複製", "Copy"),
+                Some(Icon::Copy),
+                tr!("複製到剪貼簿（Ctrl+C；可直接貼到 LINE、Word、信件）", "Copy to clipboard (Ctrl+C; paste it straight into LINE, Word or an email)"),
+                || Act::Copy,
+            ),
+            b(tr!("文字辨識", "OCR"), Some(Icon::Ocr), tr!("把圖裡的文字轉成可以複製的文字", "Text recognition (OCR): turn the text in the image into text you can copy"), || {
+                Act::Ocr
+            }),
+            b(
+                tr!("釘在桌面", "Pin to desktop"),
+                Some(Icon::Pin),
+                tr!("把這張圖變成浮在最上層的小視窗，方便對照（點兩下或 Esc 關閉）", "Turn this image into a small always-on-top window for reference (double-click or Esc to close)"),
+                || Act::Pin,
+            ),
+            open,
+        ];
     }
     let export = is_export_name(&e.media.name);
-    let mut bar = vec![];
+    let mut list = vec![];
     if !audio && !export {
         let mut edit = gate(b(tr!("剪輯", "Edit"), Some(Icon::Cut), tr!("剪掉頭尾、刪除片段、加上標註", "Trim, cut out parts, add annotations"), || Act::Entry(EntryAction::Edit)), EntryAction::Edit);
         edit.primary = true;
-        bar.push(edit);
-        let mut make = b(tr!("製作", "Make"), Some(Icon::Fast), tr!("另存加速版、GIF、WebP，或壓縮檔案", "Save a sped-up version, GIF or WebP, or compress the file"), || Act::None);
+        list.push(edit);
+        // 「製作 ▾」：另存成別的檔案（原檔不變）
+        let mut make = b(
+            tr!("製作", "Make"),
+            Some(Icon::Fast),
+            tr!("另存加速版、GIF、WebP、直式影片、M4A，或壓縮檔案（原檔不變）", "Save a sped-up version, GIF, WebP, vertical video or M4A, or compress the file (the original is kept)"),
+            || Act::None,
+        );
         make.items = vec![
             gate(
-                b(tr!("加速版、GIF、WebP…", "Sped-up video, GIF, WebP…"), Some(Icon::Fast), tr!("另存加速版、GIF 或 WebP 動圖", "Save a sped-up version, GIF or WebP"), || {
+                b(tr!("加速版、GIF、WebP…", "Sped-up video, GIF, WebP…"), None, tr!("另存加速版、GIF 或 WebP 動圖", "Save a sped-up version, GIF or WebP"), || {
                     Act::Entry(EntryAction::Export)
                 }),
                 EntryAction::Export,
@@ -548,30 +560,35 @@ fn head_buttons(app: &UiApp, e: &LibraryEntry, image: bool, audio: bool) -> Head
                 ),
                 EntryAction::Compress,
             ),
+            gate(b(tr!("直式影片（Shorts / Reels）…", "Vertical video (Shorts / Reels)…"), None, "", || Act::Entry(EntryAction::Vertical)), EntryAction::Vertical),
         ];
-        bar.push(make);
+        if e.media.has_audio != Some(false) {
+            make.items.push(b(tr!("存成 M4A（只留聲音）", "Save as M4A (audio only)"), None, "", || Act::Entry(EntryAction::SaveAudio)));
+        }
+        list.push(make);
     }
-    bar.push(b(
+    list.push(b(
         tr!("複製檔案", "Copy file"),
         Some(Icon::Copy),
         tr!("複製這個檔案，可以直接貼到 LINE、Teams、信件或資料夾", "Copy this file so you can paste it into LINE, Teams, an email or a folder"),
         || Act::Entry(EntryAction::CopyFile),
     ));
-    // 「⋯」：影片檔本身的設定、轉向、其他格式、改名
-    let mut file = vec![];
+    // 小圖示：封面、影片資訊；轉向；改名、用 Windows 開啟
     if !audio && screenrecorder_core::cover::can_embed(&e.media.path) {
-        file.push(b(
+        let mut cover = head_icon(
             tr!("把這一格設為封面", "Set this frame as cover"),
-            None,
+            Icon::Image,
             tr!(
-                "把目前這一格設為這支影片的封面：檔案總管和多數播放器看到的縮圖就是這一格（影片內容不變，不會移到開頭）",
-                "Make the current frame this video's cover: File Explorer and most players show it as the thumbnail (the video itself is unchanged; the frame isn't moved to the start)"
+                "檔案總管和多數播放器看到的縮圖就是這一格（影片內容不變，不會移到開頭）",
+                "File Explorer and most players show it as the thumbnail (the video itself is unchanged; the frame isn't moved to the start)"
             ),
             || Act::SetThumb,
-        ));
-        file.push(b(
+        );
+        cover.group = true;
+        list.push(cover);
+        list.push(head_icon(
             tr!("影片資訊…", "Details…"),
-            None,
+            Icon::Info,
             tr!(
                 "改寫在影片檔裡的標題、作者、說明等（檔案總管「內容 → 詳細資料」看得到；影片內容不變）",
                 "Edit the title, author, description and more stored in the video file (shown in File Explorer under Properties → Details; the video itself is unchanged)"
@@ -579,27 +596,21 @@ fn head_buttons(app: &UiApp, e: &LibraryEntry, image: bool, audio: bool) -> Head
             || Act::Tags,
         ));
     }
-    let mut turn = vec![];
     if !audio && screenrecorder_core::video_tags::can_tag(&e.media.path) {
         let tip = tr!("直接改原檔，幾秒就好、畫質不變；轉錯再轉回來就好", "Changes the original in seconds without losing quality; just rotate back if needed");
-        turn.push(b(tr!("向左轉 90°", "Rotate left 90°"), Some(Icon::RotL), tip, || Act::Entry(EntryAction::RotateLeft)));
-        turn.push(b(tr!("向右轉 90°", "Rotate right 90°"), Some(Icon::RotR), tip, || Act::Entry(EntryAction::RotateRight)));
-    }
-    let mut other = vec![];
-    if !audio && !export && e.media.has_audio != Some(false) {
-        other.push(b(tr!("存成 M4A（只留聲音）", "Save as M4A (audio only)"), None, "", || Act::Entry(EntryAction::SaveAudio)));
-    }
-    if !e.media.chapters.is_empty() {
-        other.push(b(tr!("複製章節（貼到 YouTube）", "Copy chapters (for YouTube)"), None, "", || Act::Entry(EntryAction::CopyChapters)));
+        let mut left = head_icon(tr!("向左轉 90°", "Rotate left 90°"), Icon::RotL, tip, || Act::Entry(EntryAction::RotateLeft));
+        left.group = true;
+        list.push(left);
+        list.push(head_icon(tr!("向右轉 90°", "Rotate right 90°"), Icon::RotR, tip, || Act::Entry(EntryAction::RotateRight)));
     }
     if !audio && !export {
-        other.push(gate(b(tr!("做成直式影片（Shorts / Reels）…", "Make a vertical video (Shorts / Reels)…"), None, "", || Act::Entry(EntryAction::Vertical)), EntryAction::Vertical));
+        let mut rename = head_icon(tr!("重新命名…", "Rename…"), Icon::Rename, "", || Act::Rename);
+        rename.group = true;
+        list.push(rename);
+        open.group = false;
     }
-    let mut last = vec![open];
-    if !audio && !export {
-        last.push(b(tr!("重新命名…", "Rename…"), None, "", || Act::Rename));
-    }
-    HeadButtons { bar, more: vec![file, turn, other, last] }
+    list.push(open);
+    list
 }
 
 pub fn show(app: &mut UiApp, ctx: &egui::Context) {
@@ -848,8 +859,15 @@ fn set_full(v: &mut Viewer, ctx: &egui::Context, on: bool) {
 
 /// 標題列按鈕的樣子（量寬度、畫出來都用這個）
 fn head_style(b: &HeadBtn) -> Btn {
-    let mut btn = Btn::new(b.label).small().enabled(b.blocked.is_none()).tooltip(b.blocked.clone().unwrap_or_else(|| b.tip.clone()));
-    if let Some(i) = b.icon {
+    let tip = match (&b.blocked, b.icon_only) {
+        (Some(why), _) => why.clone(),
+        (None, true) if b.tip.is_empty() => b.label.to_string(),
+        (None, true) => format!("{}\n{}", b.label, b.tip),
+        (None, false) => b.tip.clone(),
+    };
+    let mut btn = if b.icon_only { Btn::icon_only(b.icon.unwrap_or(Icon::More)).ghost() } else { Btn::new(b.label) };
+    btn = btn.small().enabled(b.blocked.is_none()).tooltip(tip);
+    if let (Some(i), false) = (b.icon, b.icon_only) {
         btn = btn.icon(i);
     }
     if b.primary {
@@ -873,28 +891,36 @@ fn menu_entry(ui: &mut egui::Ui, b: &HeadBtn) -> bool {
 }
 
 /// 標題列裡的直線分隔
+const SEP_W: f32 = 9.0;
 fn head_sep(ui: &mut egui::Ui) {
-    let (r, _) = ui.allocate_exact_size(vec2(9.0, 20.0), Sense::hover());
+    let (r, _) = ui.allocate_exact_size(vec2(SEP_W, 20.0), Sense::hover());
     ui.painter().vline(r.center().x, r.y_range(), Stroke::new(1.0, theme::pal(ui).border));
 }
 
-/// 標題列：左邊名稱與資訊（太長時截斷），右邊常用的按鈕；其他的與視窗窄時放不下的收進「⋯ 更多」
-fn header(v: &mut Viewer, ui: &mut egui::Ui, e: &LibraryEntry, buttons: &HeadButtons, act: &mut Act) {
+/// 標題列：左邊名稱與資訊（太長時截斷），右邊按鈕都直接按得到；視窗窄放不下的才收進「⋯ 更多」
+fn header(v: &mut Viewer, ui: &mut egui::Ui, e: &LibraryEntry, buttons: &[HeadBtn], act: &mut Act) {
     let p = theme::pal(ui);
     let image = v.is_image();
     let head = Rect::from_min_size(ui.cursor().min, vec2(ui.available_width(), 40.0));
-    // 先算右邊放得下幾個按鈕（關閉、資源回收筒、資料夾、⋯ 固定在最右邊；左邊至少留 260 給名稱）
+    // 先算右邊放得下幾個按鈕（關閉、資源回收筒、資料夾固定在最右邊；左邊至少留 170 給名稱，太長時截斷）
     let gap = ui.spacing().item_spacing.x;
-    let fixed = 34.0 + 16.0 + 3.0 * (28.0 + gap) + 2.0 * (9.0 + gap) + 8.0;
-    let mut room = head.width() - fixed - 260.0;
-    let mut shown = 0;
-    for b in &buttons.bar {
-        let w = head_style(b).width(ui) + gap;
-        if w > room {
-            break;
+    let fixed = 34.0 + 16.0 + 2.0 * (28.0 + gap) + SEP_W + gap + 8.0;
+    let mut room = head.width() - fixed - 170.0;
+    let width = |b: &HeadBtn| head_style(b).width(ui).max(if b.icon_only { 28.0 } else { 0.0 }) + gap + if b.group { SEP_W + gap } else { 0.0 };
+    let all: f32 = buttons.iter().map(width).sum();
+    let mut shown = buttons.len();
+    if all > room {
+        // 放不下：留一個「⋯」的位置，從後面開始收
+        room -= 28.0 + SEP_W + 2.0 * gap;
+        shown = 0;
+        for b in buttons {
+            let w = width(b);
+            if w > room {
+                break;
+            }
+            room -= w;
+            shown += 1;
         }
-        room -= w;
-        shown += 1;
     }
     let rui = &mut ui.new_child(egui::UiBuilder::new().max_rect(head).layout(Layout::right_to_left(Align::Center)));
     if Btn::icon_only(Icon::Close).ghost().tooltip(tr!("關閉（Esc）", "Close (Esc)")).show(rui).clicked() {
@@ -905,46 +931,48 @@ fn header(v: &mut Viewer, ui: &mut egui::Ui, e: &LibraryEntry, buttons: &HeadBut
     if Btn::icon_only(Icon::Trash).ghost().small().tooltip(tr!("移到資源回收筒（Delete）", "Move to Recycle Bin (Delete)")).show(rui).clicked() {
         *act = Act::Delete;
     }
-    head_sep(rui);
     if Btn::icon_only(Icon::Folder).ghost().small().tooltip(tr!("在資料夾中顯示", "Show in folder")).show(rui).clicked() {
         *act = Act::Entry(EntryAction::Reveal);
     }
     head_sep(rui);
-    // 「⋯ 更多」：放不下的按鈕，加上不常用的（封面、影片資訊、轉向、其他格式、改名…）
-    let more = Btn::icon_only(Icon::More).ghost().small().tooltip(tr!("更多", "More")).show(rui);
-    egui::Popup::menu(&more).show(|ui| {
-        ui.set_min_width(220.0);
-        let mut groups: Vec<Vec<&HeadBtn>> = vec![buttons.bar[shown..].iter().flat_map(|b| if b.items.is_empty() { vec![b] } else { b.items.iter().collect() }).collect()];
-        groups.extend(buttons.more.iter().map(|g| g.iter().collect()));
-        let mut first = true;
-        for g in groups.iter().filter(|g| !g.is_empty()) {
-            if !first {
-                ui.separator();
-            }
-            first = false;
-            for b in g {
-                if menu_entry(ui, b) {
-                    *act = (b.act)();
+    if shown < buttons.len() {
+        // 「⋯ 更多」：視窗太窄放不下的按鈕（「製作」直接列出它的項目）
+        let more = Btn::icon_only(Icon::More).ghost().small().tooltip(tr!("更多", "More")).show(rui);
+        egui::Popup::menu(&more).show(|ui| {
+            ui.set_min_width(220.0);
+            for (i, b) in buttons[shown..].iter().enumerate() {
+                if b.group && i > 0 {
+                    ui.separator();
+                }
+                let items: Vec<&HeadBtn> = if b.items.is_empty() { vec![b] } else { b.items.iter().collect() };
+                for it in items {
+                    if menu_entry(ui, it) {
+                        *act = (it.act)();
+                    }
                 }
             }
-        }
-    });
-    for b in buttons.bar[..shown].iter().rev() {
+        });
+        head_sep(rui);
+    }
+    for b in buttons[..shown].iter().rev() {
         let r = head_style(b).show(rui);
         if b.items.is_empty() {
             if r.clicked() {
                 *act = (b.act)();
             }
-            continue;
-        }
-        egui::Popup::menu(&r).show(|ui| {
-            ui.set_min_width(200.0);
-            for it in &b.items {
-                if menu_entry(ui, it) {
-                    *act = (it.act)();
+        } else {
+            egui::Popup::menu(&r).show(|ui| {
+                ui.set_min_width(200.0);
+                for it in &b.items {
+                    if menu_entry(ui, it) {
+                        *act = (it.act)();
+                    }
                 }
-            }
-        });
+            });
+        }
+        if b.group {
+            head_sep(rui);
+        }
     }
     let right_w = rui.min_rect().width();
     let left = Rect::from_min_max(head.min, pos2(head.max.x - right_w - 16.0, head.max.y));
