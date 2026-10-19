@@ -2637,8 +2637,11 @@ fn recent_card(app: &mut UiApp, ui: &mut Ui, e: &LibraryEntry, date: String, w: 
             (EntryAction::Edit, Icon::Cut, tr!("剪輯", "Edit")),
             (EntryAction::Export, Icon::Fast, tr!("製作加速版 / GIF", "Make sped-up video / GIF")),
         ];
+        // 傳到媒體庫（Jellyfin、NAS）也直接放在卡片上，不用點進「⋯」
+        let (dest, send_tip) = app.send_label();
+        let send = (EntryAction::SendToLibrary, Icon::Upload, format!("{dest}\n{send_tip}"));
         let hot = ui.rect_contains_pointer(rect);
-        for (act, icon, tip) in acts {
+        for (act, icon, tip) in acts.map(|(a, i, t)| (a, i, t.to_string())).into_iter().chain([send]) {
             if Btn::icon_only(icon).ghost().small().quiet(!hot && act != EntryAction::PlayHere).tooltip(tip).show(ui).clicked() {
                 app.known.insert(e.media.path.clone(), e.clone());
                 app.act(act, e.clone());

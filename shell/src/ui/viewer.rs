@@ -600,6 +600,9 @@ fn head_buttons(app: &UiApp, e: &LibraryEntry, image: bool, audio: bool) -> Vec<
         tr!("複製這個檔案，可以直接貼到 LINE、Teams、信件或資料夾", "Copy this file so you can paste it into LINE, Teams, an email or a folder"),
         || Act::Entry(EntryAction::CopyFile),
     ));
+    // 傳到「複製」的資料夾（Jellyfin 媒體庫、NAS）：有文字才找得到；還沒選資料夾時按了會打開設定
+    let (dest, tip) = app.send_label();
+    list.push(b(tr!("傳到媒體庫", "Send to library"), Some(Icon::Upload), &format!("{dest}\n{tip}"), || Act::Entry(EntryAction::SendToLibrary)));
     // 小圖示：封面、影片資訊；轉向；改名、用 Windows 開啟
     if !audio && screenrecorder_core::cover::can_embed(&e.media.path) {
         let mut cover = head_icon(
@@ -630,13 +633,6 @@ fn head_buttons(app: &UiApp, e: &LibraryEntry, image: bool, audio: bool) -> Vec<
         list.push(left);
         list.push(head_icon(tr!("向右轉 90°", "Rotate right 90°"), Icon::RotR, tip, || Act::Entry(EntryAction::RotateRight)));
     }
-    // 傳到「複製」的資料夾（Jellyfin 媒體庫、NAS）；還沒選資料夾時按了會打開設定
-    if !export {
-        let (label, tip) = app.send_label();
-        let mut send = head_icon(&label, Icon::Upload, tip, || Act::Entry(EntryAction::SendToLibrary));
-        send.group = true;
-        list.push(send);
-    }
     // 有設定 Jellyfin：複製這支在 Jellyfin 的網址（要先傳到媒體庫）
     if !audio && screenrecorder_core::jellyfin::Jellyfin::new(&app.s.jellyfin_url, &app.s.jellyfin_key).is_some() {
         let mut link = head_icon(
@@ -648,7 +644,7 @@ fn head_buttons(app: &UiApp, e: &LibraryEntry, image: bool, audio: bool) -> Vec<
             ),
             || Act::JellyfinLink,
         );
-        link.group = false;
+        link.group = true;
         list.push(link);
     }
     if !audio && !export {
