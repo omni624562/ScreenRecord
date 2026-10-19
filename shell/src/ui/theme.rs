@@ -550,6 +550,9 @@ fn pal_from(c: Color32) -> Color32 {
 
 // ───────────── 按鈕 ─────────────
 
+/// 下拉選單按鈕文字後面的箭頭佔的寬度
+const MENU_ARROW: f32 = 15.0;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
     Normal,
@@ -575,11 +578,18 @@ pub struct Btn {
     left: bool,
     /// 平常淡灰色，滑鼠移上去才變深（一整排操作按鈕時不搶眼）
     quiet: bool,
+    /// 文字後面加「▾」：按下去會打開選單
+    menu: bool,
 }
 
 impl Btn {
     pub fn new(text: impl Into<String>) -> Self {
-        Self { text: text.into(), icon: None, kind: Kind::Normal, small: false, enabled: true, min_width: 0.0, tooltip: None, selected: false, height: None, left: false, quiet: false }
+        Self { text: text.into(), icon: None, kind: Kind::Normal, small: false, enabled: true, min_width: 0.0, tooltip: None, selected: false, height: None, left: false, quiet: false, menu: false }
+    }
+    /// 文字後面加向下的箭頭（下拉選單按鈕）
+    pub fn menu(mut self) -> Self {
+        self.menu = true;
+        self
     }
     pub fn quiet(mut self, q: bool) -> Self {
         self.quiet = q;
@@ -649,7 +659,7 @@ impl Btn {
     pub fn width(&self, ui: &Ui) -> f32 {
         let (_, _, pad, fid) = self.metrics();
         let text = (!self.text.is_empty()).then(|| ui.painter().layout_no_wrap(self.text.clone(), fid, Color32::WHITE).size().x);
-        pad * 2.0 + text.unwrap_or(0.0) + if self.icon.is_some() { 16.0 + if text.is_some() { 6.0 } else { 0.0 } } else { 0.0 }
+        pad * 2.0 + text.unwrap_or(0.0) + if self.icon.is_some() { 16.0 + if text.is_some() { 6.0 } else { 0.0 } } else { 0.0 } + if self.menu { MENU_ARROW } else { 0.0 }
     }
 
     pub fn show(self, ui: &mut Ui) -> Response {
@@ -682,6 +692,9 @@ impl Btn {
         }
         if galley.is_none() && self.icon.is_some() {
             w = h;
+        }
+        if self.menu {
+            w += MENU_ARROW;
         }
         let size = vec2(w.max(self.min_width), h);
         let sense = if self.enabled { Sense::click() } else { Sense::hover() };
@@ -727,6 +740,10 @@ impl Btn {
             }
             if let Some(g) = &galley {
                 painter.galley_with_override_text_color(pos2(x, rect.center().y - g.size().y / 2.0), g.clone(), color);
+                x += g.size().x;
+            }
+            if self.menu {
+                paint_icon(painter, Rect::from_min_size(pos2(x + 3.0, rect.center().y - 6.0), Vec2::splat(12.0)), Icon::ChevD, color);
             }
         }
         let resp = if self.enabled { resp.on_hover_cursor(egui::CursorIcon::PointingHand) } else { resp };
