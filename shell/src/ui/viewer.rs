@@ -68,6 +68,8 @@ pub struct Viewer {
     close: bool,
     /// 影片從這裡開始播（搜尋說過的話時跳到那一句）
     start_at: Option<f64>,
+    /// 影片開好就播放；點兩下卡片、按清單開啟時不播，停在第一個畫面等按播放
+    autoplay: bool,
     /// 全螢幕（只顯示畫面與下方的控制列）
     full: bool,
     /// 改名的對話框關掉後重新載入（改名前先放開檔案，Windows 上播放中的檔案不能改名）
@@ -122,6 +124,8 @@ impl Viewer {
 pub fn release(app: &mut UiApp, path: &str) -> Option<f64> {
     let v = app.viewer.as_mut().filter(|v| v.cur().media.path == path)?;
     let t = v.player.as_ref().map(|p| p.time()).unwrap_or(0.0);
+    // 換好重新載入時照原本的：播放中就接著播
+    v.autoplay = v.player.as_ref().is_some_and(|p| p.is_playing());
     v.clear_media();
     v.loading = true;
     Some(t)
@@ -143,6 +147,14 @@ pub fn open_at(app: &mut UiApp, entry: LibraryEntry, t: f64) {
     open(app, entry);
     if let Some(v) = &mut app.viewer {
         v.start_at = Some(t.max(0.0));
+        v.autoplay = true;
+    }
+}
+
+/// 影片開好之後要不要直接播放（在 open / open_at 之後呼叫）
+pub fn set_autoplay(app: &mut UiApp, on: bool) {
+    if let Some(v) = &mut app.viewer {
+        v.autoplay = on;
     }
 }
 
@@ -170,6 +182,7 @@ pub fn open(app: &mut UiApp, entry: LibraryEntry) {
         error: None,
         close: false,
         start_at: None,
+        autoplay: false,
         full: false,
         reload_after_ask: false,
         related: vec![],
@@ -279,7 +292,7 @@ fn load_current(app: &mut UiApp) {
             v.video_size = vec2(w as f32, h as f32);
             // 有 libmpv 就用 mpv 播（跟 Windows 的播放器一樣順）；只有聲音的檔案、mpv 播不了的檔案用 FFmpeg
             if let Some(gl) = gl.filter(|_| !is_audio_name(&m.name) && v.no_mpv.as_deref() != Some(m.path.as_str())) {
-                match MpvPlayer::new(&m.path, spec.duration, Start { at: start, rate, volume: v.volume_now() }, wake.clone(), &gl, software_gl) {
+                match MpvPlayer::new(&m.path, spec.duration, Start { at: start, rate, volume: v.volume_now(), paused: !v.autoplay }, wake.clone(), &gl, software_gl) {
                     Ok(p) => {
                         v.player = Some(Playback::Mpv { p, has_audio: spec.has_audio });
                         return;
@@ -291,7 +304,9 @@ fn load_current(app: &mut UiApp) {
             player.set_volume(v.volume_now());
             player.set_rate(rate);
             player.seek(start);
-            player.play();
+            if v.autoplay {
+                player.play();
+            }
             v.player = Some(Playback::Ff(player));
         },
     );
@@ -367,6 +382,8 @@ fn go(app: &mut UiApp, step: i64) {
         return;
     }
     v.idx = i as usize;
+    // 上一個 / 下一個：正在播就接著播下一個，暫停中就停在第一個畫面
+    v.autoplay = v.player.as_ref().is_some_and(|p| p.is_playing());
     load_current(app);
 }
 

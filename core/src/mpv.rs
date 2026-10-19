@@ -234,6 +234,8 @@ pub struct Start {
     pub at: f64,
     pub rate: f64,
     pub volume: f32,
+    /// 開好之後先停在第一個畫面，等按播放
+    pub paused: bool,
 }
 
 /// 播放的狀態（從 mpv 的屬性變更事件收下來；播放、暫停、跳轉時先照要求改，不等 mpv 回應）
@@ -286,7 +288,7 @@ impl MpvPlayer {
     /// gl 是 None 時（測試沒有 OpenGL）畫面輸出用 null
     fn with_vo(path: &str, duration: f64, start: Start, wake: Wake, gl: Option<(&ProcAddress, bool)>) -> Result<MpvPlayer, String> {
         let vo = if gl.is_some() { "libmpv" } else { "null" };
-        let Start { at: start, rate, volume } = start;
+        let Start { at: start, rate, volume, paused } = start;
         let lib = lib()?;
         // SAFETY: 照 libmpv 的用法建立、設定、初始化
         let h = unsafe { (lib.create)() };
@@ -299,7 +301,7 @@ impl MpvPlayer {
             rc: std::ptr::null_mut(),
             wake: Box::into_raw(Box::new(wake)),
             duration,
-            st: Mutex::new(State { time: start, speed: rate, ..Default::default() }),
+            st: Mutex::new(State { time: start, speed: rate, paused, ..Default::default() }),
             failed: None,
             loaded: false,
             logged_hwdec: false,
@@ -328,6 +330,7 @@ impl MpvPlayer {
             ("audio-client-name", "ScreenRecorder"),
             ("start", &format!("{start:.3}")),
             ("speed", &format!("{rate}")),
+            ("pause", if paused { "yes" } else { "no" }),
             ("volume", &format!("{}", (volume.clamp(0.0, 1.0) * 100.0).round())),
         ];
         for (k, v) in opts {
@@ -734,7 +737,7 @@ mod tests {
         }
         let dir = tempfile::tempdir().unwrap();
         let Some(path) = test_video(dir.path()) else { return };
-        let mut p = MpvPlayer::with_vo(&path, 2.0, Start { at: 0.5, rate: 1.0, volume: 0.0 }, Arc::new(|| {}), None).unwrap();
+        let mut p = MpvPlayer::with_vo(&path, 2.0, Start { at: 0.5, rate: 1.0, volume: 0.0, paused: false }, Arc::new(|| {}), None).unwrap();
         assert!(wait_until(&mut p, 5.0, |p| p.loaded()), "讀不到檔案：{:?}", p.failed());
         assert!(wait_until(&mut p, 5.0, |p| p.time() > 0.7), "沒有往前播：{}", p.time());
         assert!(p.is_playing());
@@ -760,7 +763,7 @@ mod tests {
         }
         let dir = tempfile::tempdir().unwrap();
         let Some(path) = test_video(dir.path()) else { return };
-        let mut p = MpvPlayer::with_vo(&path, 2.0, Start { at: 0.0, rate: 1.0, volume: 0.0 }, Arc::new(|| {}), None).unwrap();
+        let mut p = MpvPlayer::with_vo(&path, 2.0, Start { at: 0.0, rate: 1.0, volume: 0.0, paused: false }, Arc::new(|| {}), None).unwrap();
         assert!(wait_until(&mut p, 5.0, |p| p.loaded()), "讀不到檔案：{:?}", p.failed());
         p.pause();
         for i in 0..60 {
@@ -791,7 +794,7 @@ mod tests {
         if !ok {
             return;
         }
-        let mut p = MpvPlayer::with_vo(&path.display().to_string(), 8.0, Start { at: 0.0, rate: 1.0, volume: 0.0 }, Arc::new(|| {}), None).unwrap();
+        let mut p = MpvPlayer::with_vo(&path.display().to_string(), 8.0, Start { at: 0.0, rate: 1.0, volume: 0.0, paused: false }, Arc::new(|| {}), None).unwrap();
         assert!(wait_until(&mut p, 5.0, |p| p.loaded() && p.time() > 0.2), "讀不到檔案：{:?}", p.failed());
         p.set_rate(2.0);
         let (t0, w0) = (p.time(), Instant::now());
@@ -810,7 +813,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let bad = dir.path().join("bad.mp4");
         std::fs::write(&bad, b"not a video").unwrap();
-        let mut p = MpvPlayer::with_vo(&bad.display().to_string(), 2.0, Start { at: 0.0, rate: 1.0, volume: 0.0 }, Arc::new(|| {}), None).unwrap();
+        let mut p = MpvPlayer::with_vo(&bad.display().to_string(), 2.0, Start { at: 0.0, rate: 1.0, volume: 0.0, paused: false }, Arc::new(|| {}), None).unwrap();
         assert!(wait_until(&mut p, 5.0, |p| p.failed().is_some()));
     }
 }

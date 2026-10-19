@@ -149,7 +149,7 @@ pub fn open(app: &mut UiApp, entry: LibraryEntry) {
             // 有 libmpv 就用 mpv 播；聲音、mpv 播不了的檔案用 FFmpeg
             let no_mpv = NO_MPV.lock().unwrap().as_deref() == Some(m.path.as_str());
             let mpv = gl.filter(|_| !audio && !no_mpv).and_then(|gl| {
-                MpvPlayer::new(&m.path, spec.duration, Start { at: 0.0, rate: 1.0, volume: i.volume_now() }, wake.clone(), &gl, software_gl)
+                MpvPlayer::new(&m.path, spec.duration, Start { at: 0.0, rate: 1.0, volume: i.volume_now(), paused: false }, wake.clone(), &gl, software_gl)
                     .map_err(|e| screenrecorder_core::info!("[主畫面播放] 無法用 mpv 播放，改用 FFmpeg：{e}"))
                     .ok()
             });
@@ -191,9 +191,12 @@ pub fn close(app: &mut UiApp) {
 fn to_viewer(app: &mut UiApp) {
     let Some(i) = app.inline.take() else { return };
     let t = i.player.as_ref().map_or(0.0, |p| p.time());
+    let playing = i.player.as_ref().is_some_and(|p| p.is_playing());
     let entry = i.entry.clone();
     drop(i);
     super::viewer::open_at(app, entry, t + 0.5);
+    // 在主畫面暫停著就暫停著開
+    super::viewer::set_autoplay(app, playing);
 }
 
 /// 每一格：錄影開始了、或被其他視窗蓋住時停下來；收下解出來的畫面
