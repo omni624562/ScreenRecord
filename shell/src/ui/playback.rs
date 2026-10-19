@@ -121,6 +121,14 @@ pub fn render_mpv(gl: Option<&Arc<glow::Context>>, surface: &mut Option<VideoSur
     Ok(s.draw(p, size)?.then_some(s.id))
 }
 
+/// 把畫面的位置和大小對齊螢幕的像素，回傳對齊後的範圍與像素大小（mpv 照這個大小畫）。
+/// 沒對齊時材質的每個像素會落在螢幕兩個像素中間，被內插成一半一半，字就糊了
+pub fn pixel_rect(r: egui::Rect, ppp: f32) -> (egui::Rect, [u32; 2]) {
+    let px = [(r.width() * ppp).round().max(1.0), (r.height() * ppp).round().max(1.0)];
+    let min = egui::pos2((r.min.x * ppp).round() / ppp, (r.min.y * ppp).round() / ppp);
+    (egui::Rect::from_min_size(min, egui::vec2(px[0] / ppp, px[1] / ppp)), [px[0] as u32, px[1] as u32])
+}
+
 /// mpv 畫在材質上是上下顛倒的（不顛倒時直拍的影片在某些 mpv 版本畫不出來）：顯示時用這個 uv 翻回來
 pub fn mpv_uv() -> egui::Rect {
     egui::Rect::from_min_max(egui::pos2(0.0, 1.0), egui::pos2(1.0, 0.0))
@@ -148,8 +156,9 @@ impl VideoSurface {
         unsafe {
             let tex = gl.create_texture()?;
             gl.bind_texture(glow::TEXTURE_2D, Some(tex));
-            gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MIN_FILTER, glow::LINEAR as i32);
-            gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MAG_FILTER, glow::LINEAR as i32);
+            // mpv 已經照顯示的像素大小畫好（縮放由 mpv 做），一個像素對一個像素，不再內插
+            gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MIN_FILTER, glow::NEAREST as i32);
+            gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MAG_FILTER, glow::NEAREST as i32);
             gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_WRAP_S, glow::CLAMP_TO_EDGE as i32);
             gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_WRAP_T, glow::CLAMP_TO_EDGE as i32);
             gl.bind_texture(glow::TEXTURE_2D, None);

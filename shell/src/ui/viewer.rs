@@ -24,6 +24,13 @@ use std::sync::Arc;
 
 /// 播放時解碼的最大尺寸
 const DECODE_MAX: (u32, u32) = (1920, 1080);
+
+/// FFmpeg 播放時解出的畫面最大多大：至少 1080p，視窗的實際像素比較大時（2K、4K 螢幕、Windows 縮放 150%）照視窗的像素，
+/// 不然 2K / 4K 的錄影先縮成 1080p 再放大顯示，字會糊
+fn decode_max(ctx: &egui::Context) -> (u32, u32) {
+    let px = ctx.content_rect().size() * ctx.pixels_per_point();
+    ((px.x.round() as u32).max(DECODE_MAX.0), (px.y.round() as u32).max(DECODE_MAX.1))
+}
 const ZOOM_MIN: f32 = 0.05;
 const ZOOM_MAX: f32 = 8.0;
 
@@ -275,6 +282,7 @@ fn load_current(app: &mut UiApp) {
             let gl = app.proc_address.clone().filter(|_| app.s.use_mpv && app.gl.is_some() && screenrecorder_core::mpv::available());
             let software_gl = app.gl.as_ref().is_some_and(|g| super::playback::software_gl(g));
             let ctx = app.ctx.clone();
+            let max = decode_max(&ctx);
             let Some(v) = app.viewer.as_mut() else { return };
             v.loading = false;
             let Some(m) = media.filter(|m| m.duration_sec.is_some_and(|d| d > 0.0)) else {
@@ -300,7 +308,7 @@ fn load_current(app: &mut UiApp) {
                     Err(e) => screenrecorder_core::info!("[檢視器] 無法用 mpv 播放，改用 FFmpeg：{e}"),
                 }
             }
-            let player = if is_audio_name(&m.name) { Player::new_audio(ffmpeg, spec, wake) } else { Player::new(ffmpeg, spec, w, h, DECODE_MAX.0, DECODE_MAX.1, wake) };
+            let player = if is_audio_name(&m.name) { Player::new_audio(ffmpeg, spec, wake) } else { Player::new(ffmpeg, spec, w, h, max.0, max.1, wake) };
             player.set_volume(v.volume_now());
             player.set_rate(rate);
             player.seek(start);
@@ -1331,11 +1339,10 @@ fn video_stage(v: &mut Viewer, painter: &egui::Painter, stage: Rect, resp: &egui
     {
         let src = if v.video_size.x > 0.0 { v.video_size } else { size };
         let k = ((stage.width() - 24.0) / src.x).min((stage.height() - 24.0) / src.y);
-        let r = Rect::from_center_size(stage.center(), src * k);
+        // 對齊螢幕像素；mpv 照顯示的大小（像素）畫，縮放由 mpv 在顯示卡上做
+        let (r, px) = super::playback::pixel_rect(Rect::from_center_size(stage.center(), src * k), painter.ctx().pixels_per_point());
         painter.image(id, r, uv, Color32::WHITE);
-        // mpv 照顯示的大小（像素）畫，縮放由 mpv 在顯示卡上做
-        let ppp = painter.ctx().pixels_per_point();
-        v.video_px = [(r.width() * ppp).round() as u32, (r.height() * ppp).round() as u32];
+        v.video_px = px;
     } else {
         return;
     }

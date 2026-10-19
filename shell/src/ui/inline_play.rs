@@ -320,11 +320,11 @@ pub fn show(app: &mut UiApp, ui: &mut egui::Ui, area: Rect) {
     } else if let Some((id, size, uv)) = i.tex.as_ref().map(|t| (t.id(), t.size_vec2(), Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)))).or(i.mpv_tex.map(|id| (id, i.size, playback::mpv_uv()))) {
         let src = if i.size.x > 0.0 { i.size } else { size };
         let k = (stage.width() / src.x).min(stage.height() / src.y);
-        shown = Rect::from_center_size(stage.center(), src * k);
+        // 對齊螢幕像素；mpv 照顯示的大小（像素）畫
+        let (r, px) = playback::pixel_rect(Rect::from_center_size(stage.center(), src * k), ui.ctx().pixels_per_point());
+        shown = r;
         painter.image(id, shown, uv, Color32::WHITE);
-        // mpv 照顯示的大小（像素）畫
-        let ppp = ui.ctx().pixels_per_point();
-        i.video_px = [(shown.width() * ppp).round() as u32, (shown.height() * ppp).round() as u32];
+        i.video_px = px;
     }
     let msg = if let Some(e) = &i.error {
         Some(e.clone())
