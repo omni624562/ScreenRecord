@@ -655,7 +655,6 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         let shot = d.kind == Kind::Shot;
         ui.add_space(8.0);
         // 搜尋、篩選、排序
-        let mut links_below = false;
         ui.horizontal(|ui| {
             let hint = if shot {
                 tr!("搜尋檔名、日期（例如 10/11）或圖裡的字", "Search names, dates (e.g. 10/11) or text in the image")
@@ -827,17 +826,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                     }
                 });
             }
-            // 視窗窄、工具列放不下時，選取的連結改放到下一行，免得疊在別的按鈕上
-            if ui.available_width() >= SELECTION_W {
-                selection_links(ui, &mut d, shot, &app.core.pins);
-            } else {
-                links_below = true;
-            }
         });
-        if links_below && !d.selected.is_empty() {
-            ui.add_space(4.0);
-            ui.horizontal(|ui| selection_links(ui, &mut d, shot, &app.core.pins));
-        }
         if shot {
             browse::tick(app, &mut d);
         }
@@ -882,9 +871,17 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         let painter = ui.painter().clone();
         let foot = Rect::from_min_max(pos2(table.min.x, ui.max_rect().max.y - foot_h), ui.max_rect().max);
         painter.hline(foot.x_range(), foot.min.y - 4.0, Stroke::new(1.0, p.border));
-        let fui = &mut ui.new_child(UiBuilder::new().max_rect(foot).layout(Layout::left_to_right(Align::Center)));
         let n = d.selected.len();
         let total = d.data.as_ref().map(|x| x.total).unwrap_or(0);
+        // 右邊先放頁碼，量好寬度；左邊（勾選的數量、操作、選取）只用剩下的地方，不會疊在頁碼上
+        let pager_w = if total > 0 {
+            let right = &mut ui.new_child(UiBuilder::new().max_rect(foot).layout(Layout::right_to_left(Align::Center)));
+            pager(right, &mut d);
+            right.min_rect().width() + 16.0
+        } else {
+            0.0
+        };
+        let fui = &mut ui.new_child(UiBuilder::new().max_rect(Rect::from_min_max(foot.min, pos2(foot.max.x - pager_w, foot.max.y))).layout(Layout::left_to_right(Align::Center)));
         // 勾選的有幾個不在這一頁（換頁時勾選會保留）
         let others = d
             .data
@@ -1009,11 +1006,11 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         {
             req = Some(Req::Compare);
         }
-        fui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            if total > 0 {
-                pager(ui, &mut d);
-            }
-        });
+        // 取消選取、只看已選取、選取全部：放在下面這一行（高度固定），勾選時上面的清單才不會跳動
+        if n > 0 {
+            fui.add_space(6.0);
+            selection_links(fui, &mut d, shot, &app.core.pins);
+        }
     });
     if grid_size != app.s.shot_grid_size {
         app.s.shot_grid_size = grid_size;
@@ -2177,52 +2174,76 @@ fn drag_out(app: &mut UiApp, list: &[String]) {
     }
 }
 
-/// 有勾選時，搜尋列右邊：選取全部（每一頁）、只看已選取、取消選取
-/// 選取連結（取消選取、只看已選取、選取全部）大概要多寬
-const SELECTION_W: f32 = 340.0;
-
+/// 有勾選時，下方操作按鈕的後面：取消選取、只看已選取、選取全部（每一頁）。
+/// 放不下時收成「取消選取」＋「⋯」選單，再放不下只剩「⋯」。不放在搜尋列或另外一行：
+/// 那裡出現、消失會讓清單整個上下跳動（清單變矮還會重新分頁），也可能疊在別的按鈕上
 fn selection_links(ui: &mut egui::Ui, d: &mut LibraryDialog, shot: bool, pins: &PinStore) {
-    if d.selected.is_empty() {
-        return;
-    }
     let total = d.data.as_ref().map(|x| x.total).unwrap_or(0);
     let all_n = d.data.as_ref().map(|x| x.all_paths.len()).unwrap_or(0);
     let everything = all_n > 0 && d.data.as_ref().is_some_and(|x| x.all_paths.iter().all(|p| d.selected.contains(p)));
-    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-        ui.spacing_mut().item_spacing.x = 4.0;
-        if Btn::new(tr!("取消選取", "Clear selection")).ghost().small().show(ui).clicked() {
-            d.selected.clear();
-            d.anchor = None;
-        }
-        if Btn::new(if d.only_selected { tr!("顯示全部", "Show all") } else { tr!("只看已選取", "Show selected only") })
-            .ghost()
-            .small()
-            .selected(d.only_selected)
-            .tooltip(tr!("只列出勾選的檔案（不管在哪一頁），刪除前可以再確認一次", "Lists only the selected files, whatever page they're on, so you can check them before deleting"))
-            .show(ui)
-            .clicked()
-        {
-            d.only_selected = !d.only_selected;
-            d.page = 1;
-            d.dirty = true;
-        }
-        // 選取全部（每一頁）：搭配搜尋，例如打「7/27」再選取全部
-        if !everything && !d.only_selected {
-            let label = if shot { trf!("選取全部 {total} 張", "Select all {total}") } else { trf!("選取全部 {all_n} 個檔案", "Select all {all_n} files") };
-            if Btn::new(label)
-                .ghost()
-                .small()
-                .tooltip(tr!(
-                    "選取符合目前搜尋的全部（每一頁）；也可以在全選這一頁後再按一次 Ctrl+A",
-                    "Selects everything that matches the current search, on every page. Pressing Ctrl+A again after selecting this page does the same"
-                ))
-                .show(ui)
-                .clicked()
-            {
-                d.select_everything(pins);
+    // 選取全部（每一頁）：搭配搜尋，例如打「7/27」再選取全部
+    let all_label =
+        (!everything && !d.only_selected).then(|| if shot { trf!("選取全部 {total} 張", "Select all {total}") } else { trf!("選取全部 {all_n} 個檔案", "Select all {all_n} files") });
+    let all_tip = tr!(
+        "選取符合目前搜尋的全部（每一頁）；也可以在全選這一頁後再按一次 Ctrl+A",
+        "Selects everything that matches the current search, on every page. Pressing Ctrl+A again after selecting this page does the same"
+    );
+    let clear_label = tr!("取消選取", "Clear selection");
+    let only_label = if d.only_selected { tr!("顯示全部", "Show all") } else { tr!("只看已選取", "Show selected only") };
+    let only_tip = tr!("只列出勾選的檔案（不管在哪一頁），刪除前可以再確認一次", "Lists only the selected files, whatever page they're on, so you can check them before deleting");
+    let clear = Btn::new(clear_label).ghost().small();
+    let only = Btn::new(only_label).ghost().small().selected(d.only_selected).tooltip(only_tip);
+    let all = all_label.clone().map(|l| Btn::new(l).ghost().small().tooltip(all_tip));
+    let gap = 4.0;
+    let more_w = 28.0;
+    let clear_w = clear.width(ui);
+    let full_w = clear_w + gap + only.width(ui) + all.as_ref().map_or(0.0, |b| gap + b.width(ui));
+    let avail = ui.available_width();
+    let toggle_only = |d: &mut LibraryDialog| {
+        d.only_selected = !d.only_selected;
+        d.page = 1;
+        d.dirty = true;
+    };
+    ui.spacing_mut().item_spacing.x = gap;
+    // 收起來時：「⋯」選單裡的項目（menu_clear = 取消選取也放進選單）
+    let menu = |ui: &mut egui::Ui, d: &mut LibraryDialog, menu_clear: bool| {
+        let more = Btn::icon_only(Icon::More).ghost().small().tooltip(tr!("取消選取、只看已選取、選取全部", "Clear, show selected only, select all")).show(ui);
+        egui::Popup::menu(&more).show(|ui| {
+            ui.set_min_width(200.0);
+            if menu_clear && ui.button(clear_label).clicked() {
+                d.selected.clear();
+                d.anchor = None;
             }
+            if ui.button(only_label).on_hover_text(only_tip).clicked() {
+                toggle_only(d);
+            }
+            if let Some(l) = &all_label {
+                if ui.button(l).on_hover_text(all_tip).clicked() {
+                    d.select_everything(pins);
+                }
+            }
+        });
+    };
+    if avail < clear_w + gap + more_w {
+        menu(ui, d, true);
+        return;
+    }
+    if clear.show(ui).clicked() {
+        d.selected.clear();
+        d.anchor = None;
+    }
+    if avail < full_w {
+        menu(ui, d, false);
+        return;
+    }
+    if only.show(ui).clicked() {
+        toggle_only(d);
+    }
+    if let Some(b) = all {
+        if b.show(ui).clicked() {
+            d.select_everything(pins);
         }
-    });
+    }
 }
 
 /// 星號（釘選）按鈕：有星號時一直顯示（黃色實心），沒有時 show 才顯示外框；點一下切換
