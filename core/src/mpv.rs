@@ -465,7 +465,14 @@ impl MpvPlayer {
                     match (name, prop.format) {
                         // 跳轉中：顯示要跳去的位置（mpv 還在回報舊的位置）
                         (b"time-pos", FORMAT_DOUBLE) if st.pending.is_none() && st.queued.is_none() => st.time = unsafe { *(prop.data as *const f64) },
-                        (b"speed", FORMAT_DOUBLE) => st.speed = unsafe { *(prop.data as *const f64) },
+                        (b"speed", FORMAT_DOUBLE) => {
+                            let v = unsafe { *(prop.data as *const f64) };
+                            // 跟要求的不一樣（mpv 不接受、被改回來）才記下來，查「變速沒作用」用
+                            if (v - st.speed).abs() > 1e-3 {
+                                crate::info!("[mpv] 播放速度變成 {}×（要求 {}×）", crate::format::num(v), crate::format::num(st.speed));
+                            }
+                            st.speed = v;
+                        }
                         (b"pause", FORMAT_FLAG) => st.paused = unsafe { *(prop.data as *const c_int) } != 0,
                         (b"eof-reached", FORMAT_FLAG) => {
                             let eof = unsafe { *(prop.data as *const c_int) } != 0;
@@ -649,6 +656,7 @@ impl MpvPlayer {
     pub fn set_rate(&self, rate: f64) {
         self.st.lock().unwrap().speed = rate;
         self.set_double("speed", rate);
+        crate::info!("[mpv] 播放速度 {}×", crate::format::num(rate));
     }
 
     pub fn rate(&self) -> f64 {
@@ -763,6 +771,35 @@ mod tests {
         p.seek(p.time());
         assert!(wait_until(&mut p, 3.0, |p| p.st.lock().unwrap().pending.is_none() && p.st.lock().unwrap().queued.is_none()));
         assert!(wait_until(&mut p, 3.0, |p| (p.time() - 1.38).abs() < 0.05), "停在放開的位置：{}", p.time());
+    }
+
+    /// 播放速度：2× 時一秒播兩秒的內容
+    #[test]
+    fn speed_changes_how_fast_it_plays() {
+        if !available() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let Some(ffmpeg) = crate::ffmpeg::which("ffmpeg") else { return };
+        let path = dir.path().join("long.mp4");
+        let ok = std::process::Command::new(&ffmpeg)
+            .args(["-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc=s=160x90:r=30:d=8", "-f", "lavfi", "-i", "sine=f=440:d=8"])
+            .args(["-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", "-y"])
+            .arg(&path)
+            .status()
+            .is_ok_and(|s| s.success());
+        if !ok {
+            return;
+        }
+        let mut p = MpvPlayer::with_vo(&path.display().to_string(), 8.0, Start { at: 0.0, rate: 1.0, volume: 0.0 }, Arc::new(|| {}), None).unwrap();
+        assert!(wait_until(&mut p, 5.0, |p| p.loaded() && p.time() > 0.2), "讀不到檔案：{:?}", p.failed());
+        p.set_rate(2.0);
+        let (t0, w0) = (p.time(), Instant::now());
+        wait_until(&mut p, 1.5, |_| false);
+        let played = p.time() - t0;
+        let wall = w0.elapsed().as_secs_f64();
+        eprintln!("2×：{wall:.2} 秒播了 {played:.2} 秒，rate() = {}", p.rate());
+        assert!(played > wall * 1.6, "2× 沒有變快：{wall:.2} 秒播了 {played:.2} 秒");
     }
 
     #[test]

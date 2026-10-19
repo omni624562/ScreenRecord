@@ -1888,7 +1888,7 @@ fn shot_menu(app: &UiApp, ui: &mut Ui, act: &mut Option<ShotAct>) {
     ui.separator();
     heading(ui, tr!("小工具", "Tools"));
     if ui
-        .button(tr!("只抓文字…", "Grab text…"))
+        .add(egui::Button::new(tr!("只抓文字…", "Grab text…")).shortcut_text(RichText::new(app.keys.label(9)).font(theme::mono(11.5))))
         .on_hover_text(tr!(
             "框選畫面上的字（圖片、影片、不能選取的視窗也可以），直接複製到剪貼簿，不存圖；表格可以貼到 Excel",
             "Select text anywhere on the screen (even in images, videos or windows that don't allow selection) to copy it straight to the clipboard without saving an image; tables paste into Excel"

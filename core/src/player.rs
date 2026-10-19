@@ -359,6 +359,7 @@ impl Player {
             if (i.rate() - rate).abs() < 1e-6 {
                 return;
             }
+            crate::info!("[播放] 播放速度 {}×", crate::format::num(rate));
             // 換速度前先記下目前的位置（之後的時間用新的速度算）
             let t = Self::time_of(&i, self.spec.duration);
             i.rate = rate;
