@@ -494,7 +494,7 @@ enum Act {
 
 /// 標題列的一個按鈕；視窗窄時依序從後面的開始收進「⋯」
 struct HeadBtn {
-    label: &'static str,
+    label: String,
     icon: Option<Icon>,
     tip: String,
     act: fn() -> Act,
@@ -510,12 +510,12 @@ struct HeadBtn {
     items: Vec<HeadBtn>,
 }
 
-fn head_btn(label: &'static str, icon: Option<Icon>, tip: &str, act: fn() -> Act) -> HeadBtn {
-    HeadBtn { label, icon, tip: tip.to_string(), act, blocked: None, primary: false, icon_only: false, group: false, items: vec![] }
+fn head_btn(label: &str, icon: Option<Icon>, tip: &str, act: fn() -> Act) -> HeadBtn {
+    HeadBtn { label: label.to_string(), icon, tip: tip.to_string(), act, blocked: None, primary: false, icon_only: false, group: false, items: vec![] }
 }
 
 /// 只有圖示的按鈕（滑鼠移上去顯示名稱與說明）
-fn head_icon(label: &'static str, icon: Icon, tip: &str, act: fn() -> Act) -> HeadBtn {
+fn head_icon(label: &str, icon: Icon, tip: &str, act: fn() -> Act) -> HeadBtn {
     HeadBtn { icon_only: true, ..head_btn(label, Some(icon), tip, act) }
 }
 
@@ -630,6 +630,13 @@ fn head_buttons(app: &UiApp, e: &LibraryEntry, image: bool, audio: bool) -> Vec<
         list.push(left);
         list.push(head_icon(tr!("向右轉 90°", "Rotate right 90°"), Icon::RotR, tip, || Act::Entry(EntryAction::RotateRight)));
     }
+    // 傳到「複製」的資料夾（Jellyfin 媒體庫、NAS）；還沒選資料夾時按了會打開設定
+    if !export {
+        let (label, tip) = app.send_label();
+        let mut send = head_icon(&label, Icon::Upload, tip, || Act::Entry(EntryAction::SendToLibrary));
+        send.group = true;
+        list.push(send);
+    }
     // 有設定 Jellyfin：複製這支在 Jellyfin 的網址（要先傳到媒體庫）
     if !audio && screenrecorder_core::jellyfin::Jellyfin::new(&app.s.jellyfin_url, &app.s.jellyfin_key).is_some() {
         let mut link = head_icon(
@@ -641,7 +648,7 @@ fn head_buttons(app: &UiApp, e: &LibraryEntry, image: bool, audio: bool) -> Vec<
             ),
             || Act::JellyfinLink,
         );
-        link.group = true;
+        link.group = false;
         list.push(link);
     }
     if !audio && !export {
@@ -906,7 +913,7 @@ fn head_style(b: &HeadBtn) -> Btn {
         (None, true) => format!("{}\n{}", b.label, b.tip),
         (None, false) => b.tip.clone(),
     };
-    let mut btn = if b.icon_only { Btn::icon_only(b.icon.unwrap_or(Icon::More)).ghost() } else { Btn::new(b.label) };
+    let mut btn = if b.icon_only { Btn::icon_only(b.icon.unwrap_or(Icon::More)).ghost() } else { Btn::new(b.label.as_str()) };
     btn = btn.small().enabled(b.blocked.is_none()).tooltip(tip);
     if let (Some(i), false) = (b.icon, b.icon_only) {
         btn = btn.icon(i);
@@ -922,7 +929,7 @@ fn head_style(b: &HeadBtn) -> Btn {
 
 /// 選單裡的一個項目（不能用時說明原因）；回傳是否按下
 fn menu_entry(ui: &mut egui::Ui, b: &HeadBtn) -> bool {
-    let r = ui.add_enabled(b.blocked.is_none(), egui::Button::new(b.label));
+    let r = ui.add_enabled(b.blocked.is_none(), egui::Button::new(b.label.as_str()));
     let r = if b.tip.is_empty() { r } else { r.on_hover_text(&b.tip) };
     let r = match &b.blocked {
         Some(why) => r.on_disabled_hover_text(why),

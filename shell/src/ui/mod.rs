@@ -537,11 +537,38 @@ impl UiApp {
         (!d.is_empty()).then(|| std::path::Path::new(d).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| d.to_string()))
     }
 
+    /// 「傳到」選單項目的名稱與說明；還沒選資料夾時是「傳到媒體庫…」（按了打開設定）
+    pub fn send_label(&self) -> (String, &'static str) {
+        match self.library_folder() {
+            Some(folder) => (
+                trf!("傳到「{}」", "Send to “{}”", folder),
+                tr!(
+                    "複製到「錄完處理 → 複製」的資料夾（同名的覆蓋，連同字幕），有設定 Jellyfin 時通知它",
+                    "Copy to the After recording → Copy folder (replacing one with the same name, subtitles included) and notify Jellyfin if set up"
+                ),
+            ),
+            None => (
+                tr!("傳到媒體庫…", "Send to library…").to_string(),
+                tr!(
+                    "還沒選資料夾：按了打開設定 →「錄完處理」，在「複製」選 Jellyfin 媒體庫或 NAS 的資料夾",
+                    "No folder yet: opens Settings → After recording so you can pick a Jellyfin library or NAS folder under Copy"
+                ),
+            ),
+        }
+    }
+
     /// 把檔案（連同字幕）傳到「複製」的資料夾（NAS、Jellyfin 媒體庫），並通知 Jellyfin；
     /// 剪輯、加速版另存好時自動呼叫，也可以從選單手動傳
     pub fn send_to_library(&mut self, path: &str) {
         let Some(folder) = self.library_folder() else {
-            return self.toast(tr!("請先在設定 →「錄完處理」的「複製」選資料夾", "Choose a folder under Settings → After recording → Copy first"), true);
+            self.toast(
+                tr!(
+                    "請先在「錄完處理」的「複製」選資料夾（例如 Jellyfin 的媒體庫），之後就能直接傳",
+                    "Choose a folder under After recording → Copy first (such as your Jellyfin library); then you can send files there"
+                ),
+                false,
+            );
+            return settings_dialog::open(self, settings_dialog::Page::After);
         };
         let jf = screenrecorder_core::jellyfin::Jellyfin::new(&self.s.jellyfin_url, &self.s.jellyfin_key);
         let copy_to = self.s.after_copy_to.clone();

@@ -427,6 +427,12 @@ mod tests {
         assert!(Jellyfin::from_ui(Some(&serde_json::json!({ URL_KEY: "nas:8096" }))).is_none());
     }
 
+    /// 讀完請求的內容再回應：沒讀完就關掉連線時，Windows 會送 RST，用戶端可能收不到回應
+    fn read_body(r: &mut impl std::io::Read, headers: &[String]) {
+        let len = headers.iter().find_map(|h| h.split_once(':').filter(|(k, _)| k.eq_ignore_ascii_case("content-length")).and_then(|(_, v)| v.trim().parse::<usize>().ok()));
+        r.read_exact(&mut vec![0; len.unwrap_or(0)]).unwrap();
+    }
+
     /// 假的 Jellyfin：回應一次，回傳收到的請求行與標頭
     fn serve_once(status: &str, body: &'static str) -> (String, std::thread::JoinHandle<Vec<String>>) {
         let l = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -444,6 +450,7 @@ mod tests {
                 }
                 lines.push(line.trim().to_string());
             }
+            read_body(&mut r, &lines);
             write!(s, "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
             lines
         });
@@ -462,13 +469,16 @@ mod tests {
                 let mut first = String::new();
                 r.read_line(&mut first).unwrap();
                 got.push(first.trim().to_string());
+                let mut headers = vec![];
                 loop {
                     let mut line = String::new();
                     r.read_line(&mut line).unwrap();
                     if line.trim().is_empty() {
                         break;
                     }
+                    headers.push(line.trim().to_string());
                 }
+                read_body(&mut r, &headers);
                 write!(s, "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
             }
             got
