@@ -285,8 +285,28 @@ pub struct UiApp {
     /// 上一格各部分花的時間（毫秒）：畫面處理太慢時寫進記錄檔，找出卡在哪裡
     frame_parts: Vec<(&'static str, f32)>,
     slow_logged: Option<Instant>,
+    /// 開啟時螢幕上放不下原本的大小：第一個畫面顯示之後最大化
+    start_max: bool,
+    /// 上次檢查視窗位置的時間、當時的螢幕配置（改變時把視窗拉回看得到的地方）
+    win_check: Instant,
+    screens_sig: String,
     #[cfg(debug_assertions)]
     dev: dev::Dev,
+}
+
+/// 把還沒顯示的操作視窗放到螢幕上看得到的位置（Windows）：記住的位置，或滑鼠所在的螢幕、在扣掉工作列的範圍置中；
+/// 回傳要不要最大化（螢幕放不下原本的大小）
+fn place_window(cc: &eframe::CreationContext, saved: Option<screenrecorder_core::main_window::Placement>) -> bool {
+    #[cfg(windows)]
+    {
+        use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+        if let Ok(RawWindowHandle::Win32(h)) = cc.window_handle().map(|h| h.as_raw()) {
+            screenrecorder_core::main_window::attach(h.hwnd.get());
+        }
+    }
+    #[cfg(not(windows))]
+    let _ = cc;
+    screenrecorder_core::main_window::place_at_start(saved, settings::WINDOW_SIZE)
 }
 
 impl UiApp {
@@ -308,6 +328,8 @@ impl UiApp {
         let env = core.env();
         let saved = core.settings.load();
         let s = UiSettings::from_saved(saved.ui.as_ref(), &env);
+        // 視窗還沒顯示：先放到螢幕上看得到的位置（扣掉工作列）
+        let start_max = place_window(cc, s.window);
         let status = core.status();
         let app = UiApp {
             update: actions::update_state(&core),
@@ -378,6 +400,9 @@ impl UiApp {
             applied_theme: None,
             frame_parts: Vec::new(),
             slow_logged: None,
+            start_max,
+            win_check: Instant::now(),
+            screens_sig: screenrecorder_core::main_window::screens_signature(),
             #[cfg(debug_assertions)]
             dev: Default::default(),
         };
@@ -1092,6 +1117,10 @@ impl UiApp {
                 ctx.request_repaint();
                 continue;
             }
+            if !self.visible {
+                // 隱藏期間螢幕可能改了（拔掉外接螢幕、改解析度）：顯示前先放回看得到的地方
+                screenrecorder_core::main_window::keep_on_screen();
+            }
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
             ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
             ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
@@ -1177,12 +1206,37 @@ impl UiApp {
         self.ask = Some(ask);
     }
 
+    /// 每秒檢查一次：螢幕配置變了（解析度、縮放比例、外接螢幕、工作列）就把視窗拉回看得到的地方；位置變了就記下來
+    fn watch_window(&mut self) {
+        if self.win_check.elapsed() < Duration::from_secs(1) {
+            return;
+        }
+        self.win_check = Instant::now();
+        let sig = screenrecorder_core::main_window::screens_signature();
+        if sig != self.screens_sig {
+            self.screens_sig = sig;
+            screenrecorder_core::main_window::keep_on_screen();
+        }
+        self.remember_window();
+    }
+
+    /// 記下視窗目前的位置、大小、是否最大化（下次開啟時用）
+    fn remember_window(&mut self) {
+        if let Some(p) = screenrecorder_core::main_window::current() {
+            if self.s.window != Some(p) {
+                self.s.window = Some(p);
+                self.save_settings();
+            }
+        }
+    }
+
     /// 關掉視窗：系統匣可以用時只是隱藏（程式繼續常駐）
     fn handle_close(&mut self, ctx: &egui::Context) {
         if !ctx.input(|i| i.viewport().close_requested()) {
             return;
         }
         if self.tray_ok.load(std::sync::atomic::Ordering::Relaxed) {
+            self.remember_window();
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
             self.visible = false;
@@ -1221,6 +1275,10 @@ impl eframe::App for UiApp {
             job(self);
         }
         self.handle_open_requests(ctx);
+        if std::mem::take(&mut self.start_max) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(true));
+        }
+        self.watch_window();
         self.flush_settings();
         self.poll_status();
         self.handle_close(ctx);

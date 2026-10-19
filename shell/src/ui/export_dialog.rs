@@ -87,6 +87,8 @@ pub struct ExportDialog {
     speed_focus: bool,
     /// 內容最高到過多高：切換格式、加速方式時視窗不會忽大忽小（只會變高一次，不會縮回去）
     body_h: f32,
+    /// 下方按鈕列的高度（上一格量到的）：視窗矮時中間可以捲動的高度要扣掉它
+    foot_h: f32,
     /// 對話框上緣的位置：開啟時置中後固定，內容變高時往下長（超出視窗才往上移），按鈕不會跟著上下跳
     top: Option<f32>,
     /// 對話框最高到過多高、顯示了幾格（前幾格還在量大小）
@@ -125,6 +127,7 @@ impl ExportDialog {
             speed_text: String::new(),
             speed_focus: false,
             body_h: 0.0,
+            foot_h: 80.0,
             top: None,
             max_h: 0.0,
             frames: 0,
@@ -308,6 +311,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
     }
     let modal = egui::Modal::new(Id::new("export")).area(area).frame(theme::modal_frame(ctx).inner_margin(0)).show(ctx, |ui| {
         ui.set_width(WIDTH);
+        let dlg_top = ui.cursor().min.y;
         ui.spacing_mut().item_spacing = vec2(8.0, 8.0);
         let compact = screen.height() < 700.0;
         let p = theme::pal(ui);
@@ -359,415 +363,444 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         let r = ui.cursor();
         ui.painter().hline(r.x_range(), r.top() - 8.0, Stroke::new(1.0, p.border));
 
-        // ── 設定 ──
+        // ── 設定、結果：視窗矮（小螢幕、介面放大）放不下時這一段可以捲動，標題和按鈕一直看得到 ──
         let body_top = ui.cursor().min.y;
-        egui::Frame::new().inner_margin(egui::Margin { left: PAD, right: PAD, top: 8, bottom: 4 }).show(ui, |ui| {
-            // 視窗矮（1024×640 等）時列距縮小，整個對話框才放得下
-            ui.spacing_mut().item_spacing.y = if compact { 4.0 } else { 10.0 };
-            let o = &mut dlg.o;
-            row(ui, tr!("製作", "Make"), |ui| {
-                let mut m = dlg.mode;
-                if segmented(ui, &mut m, &[(Mode::Speed, tr!("加速版", "Sped-up video")), (Mode::Compress, tr!("壓縮", "Compress")), (Mode::Anim, tr!("GIF / WebP 動圖", "GIF / WebP"))], true) {
-                    dlg.mode = m;
-                    if m == Mode::Speed && o.speed < SPEED_MIN {
-                        o.speed = 4.0;
-                    }
-                }
-            });
-            if dlg.mode == Mode::Anim {
-                row(ui, tr!("格式", "Format"), |ui| {
-                    segmented(ui, &mut o.anim, &[(ExportFormat::Gif, tr!("GIF 動畫", "Animated GIF")), (ExportFormat::Webp, tr!("WebP 動圖", "Animated WebP"))], true);
-                });
-            } else {
-                // MP4 或 WebM（FFmpeg 沒有 VP9 編碼器時只能 MP4）
-                if !has_webm {
-                    o.video = ExportFormat::Mp4;
-                }
-                row(ui, tr!("格式", "Format"), |ui| {
-                    segmented(
-                        ui,
-                        &mut o.video,
-                        &[(ExportFormat::Mp4, tr!("MP4（最通用）", "MP4 (works everywhere)")), (ExportFormat::Webm, tr!("WebM（較小、網頁用）", "WebM (smaller, for the web)"))],
-                        has_webm,
-                    );
-                    let note = if !has_webm {
-                        tr!(
-                            "這個 FFmpeg 沒有 VP9 編碼器，不能存成 WebM（可以在設定的「系統」重新下載完整版 FFmpeg）",
-                            "This FFmpeg has no VP9 encoder, so WebM isn't available (re-download the full FFmpeg in Settings → System)"
-                        )
-                    } else if o.video == ExportFormat::Webm {
-                        tr!(
-                            "WebM 比 MP4 小約三成，可以直接放在網頁上；製作比較久。LINE、iPhone 請用 MP4",
-                            "WebM is about 30% smaller and plays right on web pages, but takes longer to make. Use MP4 for LINE and iPhone"
-                        )
-                    } else {
-                        ""
-                    };
-                    if !note.is_empty() {
-                        helper(ui, note, p.muted);
-                    }
-                });
-            }
-            if dlg.mode != Mode::Compress {
-                row(ui, tr!("加速", "Speed up"), |ui| {
-                    segmented(ui, &mut o.export_mode, &[(ExportMode::Speed, tr!("指定倍率", "By speed")), (ExportMode::Target, tr!("指定長度", "By length"))], true);
-                    // 這裡是整支加速；局部加速、放慢、定格集中在剪輯視窗的「加速」分頁
-                    helper(
-                        ui,
-                        tr!("整支一起加速。只加速、放慢其中一段，請用剪輯視窗的「加速」分頁。", "Speeds up the whole video. To speed up or slow down one part, use the Speed tab in the editor."),
-                        p.muted,
-                    );
-                });
-                match o.export_mode {
-                    ExportMode::Speed => row(ui, tr!("倍率", "Speed"), |ui| {
-                        ui.horizontal(|ui| {
-                            ui.set_height(ROW_H);
-                            ui.spacing_mut().item_spacing.x = 6.0;
-                            // 動圖可以原速；「原速」固定放在最前面，切換格式時其他按鈕不會移動
-                            let mut presets: Vec<(f64, String)> = SPEED_PRESETS.iter().map(|v| (*v, format!("{}×", speed_label(*v)))).collect();
-                            if gif {
-                                presets.insert(0, (1.0, tr!("原速", "Original speed").into()));
+        let body_max = (screen.height() - 16.0 - (body_top - dlg_top) - dlg.foot_h).max(120.0);
+        let ex = egui::ScrollArea::vertical()
+            .id_salt("export-body")
+            .max_height(body_max)
+            .auto_shrink([false, true])
+            .show(ui, |ui| {
+                // ── 設定 ──
+                egui::Frame::new().inner_margin(egui::Margin { left: PAD, right: PAD, top: 8, bottom: 4 }).show(ui, |ui| {
+                    // 視窗矮（小螢幕、介面放大）時列距縮小，能放下更多（還是放不下時中間可以捲動）
+                    ui.spacing_mut().item_spacing.y = if compact { 4.0 } else { 10.0 };
+                    let o = &mut dlg.o;
+                    row(ui, tr!("製作", "Make"), |ui| {
+                        let mut m = dlg.mode;
+                        if segmented(ui, &mut m, &[(Mode::Speed, tr!("加速版", "Sped-up video")), (Mode::Compress, tr!("壓縮", "Compress")), (Mode::Anim, tr!("GIF / WebP 動圖", "GIF / WebP"))], true)
+                        {
+                            dlg.mode = m;
+                            if m == Mode::Speed && o.speed < SPEED_MIN {
+                                o.speed = 4.0;
                             }
-                            for (v, label) in &presets {
-                                if Btn::new(label).small().selected((o.speed - v).abs() < 1e-9).show(ui).clicked() {
-                                    o.speed = *v;
-                                }
-                            }
-                            if !dlg.speed_focus {
-                                dlg.speed_text = speed_label(o.speed);
-                            }
-                            ui.add_space(4.0);
-                            let r = ui.add(egui::TextEdit::singleline(&mut dlg.speed_text).desired_width(52.0).font(theme::font(13.5)).margin(vec2(8.0, 5.0)).horizontal_align(Align::Center));
-                            dlg.speed_focus = r.has_focus();
-                            ui.label(RichText::new("×").font(theme::font(14.0)).color(p.muted));
-                            if r.changed() {
-                                if let Ok(v) = dlg.speed_text.trim().parse::<f64>() {
-                                    let min = if gif { 1.0 } else { SPEED_MIN };
-                                    if v.is_finite() && v >= min && v <= SPEED_MAX {
-                                        o.speed = (v * 100.0).round() / 100.0;
-                                    }
-                                }
-                            }
-                        });
-                        let range = if gif {
-                            trf!("可輸入 1–{}×，1× 為原速", "Enter 1–{}×; 1× keeps the original speed", speed_label(SPEED_MAX))
-                        } else {
-                            trf!("可輸入 {}–{}×", "Enter {}–{}×", speed_label(SPEED_MIN), speed_label(SPEED_MAX))
-                        };
-                        // 1 小時的錄影會變成多長
-                        let per_hour = speed.filter(|sp| *sp > 1.0).map(|sp| {
-                            let fit = if sp >= 8.0 { tr!("，適合縮時影片", ", good for time-lapse") } else { "" };
-                            trf!("・{}×：1 小時的錄影 ≈ {}{fit}", " · {}×: a 1-hour recording ≈ {}{fit}", speed_label(sp), human_duration(3600.0 / sp))
-                        });
-                        helper(ui, format!("{range}{}", per_hour.unwrap_or_default()), p.muted);
-                    }),
-                    ExportMode::Target => row(ui, tr!("長度", "Length"), |ui| {
-                        ui.horizontal(|ui| {
-                            ui.set_height(ROW_H);
-                            ui.spacing_mut().item_spacing.x = 6.0;
-                            for t in TARGET_PRESETS {
-                                if Btn::new(t).small().selected(o.export_target == t).show(ui).clicked() {
-                                    o.export_target = t.into();
-                                }
-                            }
-                            ui.add_space(4.0);
-                            ui.add(
-                                egui::TextEdit::singleline(&mut o.export_target).desired_width(64.0).font(theme::font(13.5)).margin(vec2(8.0, 5.0)).horizontal_align(Align::Center).hint_text("1:00"),
-                            );
-                            ui.label(RichText::new(tr!("分:秒", "min:sec")).font(theme::font(12.5)).color(p.muted));
-                        });
-                        let target = parse_clock(&o.export_target);
-                        let hint = match (target, speed) {
-                            (None, _) => tr!("請輸入長度，例如 1:00、90（秒）或 1:02:03", "Enter a length, e.g. 1:00, 90 (seconds) or 1:02:03").to_string(),
-                            _ if dur <= 0.0 => tr!("無法讀取原片長度", "Can't read the original's duration").into(),
-                            (Some(t), Some(sp)) if dur / sp > t + 0.5 => {
-                                trf!("最多只能加速到 {}×，實際約 {}", "The maximum speed is {}×, so it will be about {}", speed_label(SPEED_MAX), short_clock(dur / sp))
-                            }
-                            (Some(t), Some(sp)) if dur / sp < t - 0.5 => {
-                                let how = if gif {
-                                    tr!("以原速製作", "it will be made at original speed").to_string()
-                                } else {
-                                    trf!("以最低倍率 {}× 製作", "it will be made at the minimum {}×", speed_label(sp))
-                                };
-                                trf!("原片只有 {}，{how}", "The original is only {}, so {how}", short_clock(dur))
-                            }
-                            (_, Some(sp)) => trf!("需要加速 {}×", "Needs {}× speed", speed_label(sp)),
-                            _ => String::new(),
-                        };
-                        helper(ui, hint, if target.is_none() { p.rec } else { p.muted });
-                    }),
-                }
-            }
-            // 壓縮：大小上限放在最前面（這就是要做的事）
-            let limit_row = |ui: &mut egui::Ui, mode: Mode, value: &mut u32| {
-                row(ui, tr!("大小上限", "Size limit"), |ui| {
-                    ui.horizontal(|ui| {
-                        ui.set_height(ROW_H);
-                        let list: &[u32] = if mode == Mode::Compress { &COMPRESS_MB } else { &crate::ui::settings::MAX_MB };
-                        let opts: Vec<(u32, String)> = list.iter().map(|m| (*m, if *m == 0 { tr!("不限", "No limit").to_string() } else { trf!("{m} MB 以內", "Up to {m} MB") })).collect();
-                        combo(ui, "mp4max", 130.0, value, &opts);
-                    });
-                    // 說明放在下方自己一行（太長時換行），不會把下拉選單擠開
-                    if mode == Mode::Compress {
-                        helper(ui, tr!("降低畫質讓檔案小於上限，方便用 LINE、Email 傳送", "Lowers the quality so the file fits the limit, for sending via LINE or email"), p.muted);
-                    } else if *value > 0 {
-                        helper(
-                            ui,
-                            tr!("降低畫質讓加速版小於上限；只想壓縮、不加速請選上面的「壓縮」", "Lowers quality so the sped-up video fits the limit. To only compress, choose “Compress” above"),
-                            p.muted,
-                        );
-                    }
-                });
-            };
-            if dlg.mode == Mode::Compress {
-                row(ui, tr!("方式", "Method"), |ui| {
-                    ui.horizontal(|ui| {
-                        ui.set_height(ROW_H);
-                        segmented(
-                            ui,
-                            &mut dlg.by_quality,
-                            &[(true, tr!("保留畫質，縮小檔案", "Keep quality, smaller file")), (false, tr!("指定大小（傳 LINE / Email）", "Fit a size (LINE / email)"))],
-                            true,
-                        );
-                    });
-                });
-                if dlg.by_quality {
-                    row(ui, tr!("畫質", "Quality"), |ui| {
-                        ui.horizontal(|ui| {
-                            ui.set_height(ROW_H);
-                            let items: Vec<(Quality, &str)> = Quality::ALL.iter().map(|q| (*q, q.label())).collect();
-                            segmented(ui, &mut dlg.quality, &items, true);
-                        });
-                        helper(ui, dlg.quality.hint(), p.muted);
-                    });
-                } else {
-                    limit_row(ui, Mode::Compress, &mut dlg.compress_mb);
-                }
-            }
-            row(ui, tr!("尺寸", "Size"), |ui| {
-                ui.horizontal(|ui| {
-                    ui.set_height(ROW_H);
-                    if gif {
-                        let widths: Vec<(u32, String)> = [320, 480, 640, 960, 1280].iter().map(|w| (*w, trf!("寬 {w} px", "Width {w} px"))).collect();
-                        combo(ui, "gifw", 130.0, &mut o.gif_width, &widths);
-                        ui.add_space(8.0);
-                        let fps: Vec<(u32, String)> = [5, 10, 15, 20].iter().map(|f| (*f, fps_text(*f as f64))).collect();
-                        combo(ui, "giffps", 110.0, &mut o.gif_fps, &fps);
-                    } else if sw > 0 && sh > 0 {
-                        // 只列出比原片小的選項
-                        let opts: Vec<(u32, String)> = MP4_WIDTHS
-                            .iter()
-                            .copied()
-                            .filter(|w| *w == 0 || (*w as i32) < sw)
-                            .map(|w| {
-                                let (a, b) = scaled_size(sw, sh, w as i32);
-                                (w, if w == 0 { trf!("原尺寸（{a}×{b}）", "Original ({a}×{b})") } else { trf!("寬 {w}（{a}×{b}）", "Width {w} ({a}×{b})") })
-                            })
-                            .collect();
-                        if !opts.iter().any(|(w, _)| *w == o.mp4_width) {
-                            o.mp4_width = 0;
                         }
-                        combo(ui, "mp4w", 230.0, &mut o.mp4_width, &opts);
-                    } else {
-                        ui.label(theme::muted(ui, tr!("原尺寸", "Original size")));
-                    }
-                });
-            });
-            if dlg.mode == Mode::Speed {
-                limit_row(ui, Mode::Speed, &mut o.mp4_max_mb);
-            }
-            if gif {
-                row(ui, tr!("播放", "Playback"), |ui| {
-                    let one_way = speed.filter(|_| dur > 0.0).map(|sp| dur / sp);
-                    let fits = one_way.is_none_or(|t| t <= screenrecorder_core::args::BOUNCE_MAX_SEC);
-                    if !fits {
-                        o.bounce = false;
-                    }
-                    ui.horizontal(|ui| {
-                        ui.set_height(ROW_H);
-                        ui.add_enabled_ui(fits, |ui| {
-                            theme::check(ui, &mut o.bounce, RichText::new(tr!("來回播放（播完倒著播回來）", "Back and forth (plays, then reverses)")).font(theme::font(13.0)));
-                        });
                     });
-                    let note = if fits {
-                        tr!("循環播放時不會從結尾跳回開頭；長度變兩倍", "Loops smoothly without jumping back to the start; twice as long").to_string()
+                    if dlg.mode == Mode::Anim {
+                        row(ui, tr!("格式", "Format"), |ui| {
+                            segmented(ui, &mut o.anim, &[(ExportFormat::Gif, tr!("GIF 動畫", "Animated GIF")), (ExportFormat::Webp, tr!("WebP 動圖", "Animated WebP"))], true);
+                        });
                     } else {
-                        trf!(
-                            "只能用在 {} 秒以內的動圖（可以加速或先剪短）",
-                            "Only for animations up to {} s (speed it up or trim it first)",
-                            screenrecorder_core::format::num(screenrecorder_core::args::BOUNCE_MAX_SEC)
-                        )
-                    };
-                    helper(ui, note, p.muted);
-                });
-            }
-            row(ui, tr!("聲音", "Audio"), |ui| {
-                ui.horizontal(|ui| {
-                    ui.set_height(ROW_H);
-                    if format == ExportFormat::Webp {
-                        ui.add(
-                            egui::Label::new(theme::muted(
+                        // MP4 或 WebM（FFmpeg 沒有 VP9 編碼器時只能 MP4）
+                        if !has_webm {
+                            o.video = ExportFormat::Mp4;
+                        }
+                        row(ui, tr!("格式", "Format"), |ui| {
+                            segmented(
+                                ui,
+                                &mut o.video,
+                                &[(ExportFormat::Mp4, tr!("MP4（最通用）", "MP4 (works everywhere)")), (ExportFormat::Webm, tr!("WebM（較小、網頁用）", "WebM (smaller, for the web)"))],
+                                has_webm,
+                            );
+                            let note = if !has_webm {
+                                tr!(
+                                    "這個 FFmpeg 沒有 VP9 編碼器，不能存成 WebM（可以在設定的「系統」重新下載完整版 FFmpeg）",
+                                    "This FFmpeg has no VP9 encoder, so WebM isn't available (re-download the full FFmpeg in Settings → System)"
+                                )
+                            } else if o.video == ExportFormat::Webm {
+                                tr!(
+                                    "WebM 比 MP4 小約三成，可以直接放在網頁上；製作比較久。LINE、iPhone 請用 MP4",
+                                    "WebM is about 30% smaller and plays right on web pages, but takes longer to make. Use MP4 for LINE and iPhone"
+                                )
+                            } else {
+                                ""
+                            };
+                            if !note.is_empty() {
+                                helper(ui, note, p.muted);
+                            }
+                        });
+                    }
+                    if dlg.mode != Mode::Compress {
+                        row(ui, tr!("加速", "Speed up"), |ui| {
+                            segmented(ui, &mut o.export_mode, &[(ExportMode::Speed, tr!("指定倍率", "By speed")), (ExportMode::Target, tr!("指定長度", "By length"))], true);
+                            // 這裡是整支加速；局部加速、放慢、定格集中在剪輯視窗的「加速」分頁
+                            helper(
                                 ui,
                                 tr!(
-                                    "WebP 動圖不含聲音；檔案約為 GIF 的 1/6、顏色更好，瀏覽器、Slack、Discord 都能看",
-                                    "WebP has no audio; about 1/6 the size of a GIF with better colors, and works in browsers, Slack and Discord"
+                                    "整支一起加速。只加速、放慢其中一段，請用剪輯視窗的「加速」分頁。",
+                                    "Speeds up the whole video. To speed up or slow down one part, use the Speed tab in the editor."
                                 ),
-                            ))
-                            .wrap(),
-                        );
-                    } else if gif {
-                        ui.label(theme::muted(ui, tr!("GIF 不含聲音；檔案較大，建議 1 分鐘以內", "GIFs have no audio and are large; keep them under 1 min")));
-                    } else if !has_audio {
-                        ui.label(theme::muted(ui, tr!("原片沒有聲音", "The original has no audio")));
-                    } else {
-                        let label = if dlg.mode == Mode::Compress { tr!("保留聲音", "Keep audio") } else { tr!("保留聲音（變速不變調）", "Keep audio (pitch preserved)") };
-                        switch(ui, &mut o.keep_audio, label, true);
+                                p.muted,
+                            );
+                        });
+                        match o.export_mode {
+                            ExportMode::Speed => row(ui, tr!("倍率", "Speed"), |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.set_height(ROW_H);
+                                    ui.spacing_mut().item_spacing.x = 6.0;
+                                    // 動圖可以原速；「原速」固定放在最前面，切換格式時其他按鈕不會移動
+                                    let mut presets: Vec<(f64, String)> = SPEED_PRESETS.iter().map(|v| (*v, format!("{}×", speed_label(*v)))).collect();
+                                    if gif {
+                                        presets.insert(0, (1.0, tr!("原速", "Original speed").into()));
+                                    }
+                                    for (v, label) in &presets {
+                                        if Btn::new(label).small().selected((o.speed - v).abs() < 1e-9).show(ui).clicked() {
+                                            o.speed = *v;
+                                        }
+                                    }
+                                    if !dlg.speed_focus {
+                                        dlg.speed_text = speed_label(o.speed);
+                                    }
+                                    ui.add_space(4.0);
+                                    let r = ui.add(egui::TextEdit::singleline(&mut dlg.speed_text).desired_width(52.0).font(theme::font(13.5)).margin(vec2(8.0, 5.0)).horizontal_align(Align::Center));
+                                    dlg.speed_focus = r.has_focus();
+                                    ui.label(RichText::new("×").font(theme::font(14.0)).color(p.muted));
+                                    if r.changed() {
+                                        if let Ok(v) = dlg.speed_text.trim().parse::<f64>() {
+                                            let min = if gif { 1.0 } else { SPEED_MIN };
+                                            if v.is_finite() && v >= min && v <= SPEED_MAX {
+                                                o.speed = (v * 100.0).round() / 100.0;
+                                            }
+                                        }
+                                    }
+                                });
+                                let range = if gif {
+                                    trf!("可輸入 1–{}×，1× 為原速", "Enter 1–{}×; 1× keeps the original speed", speed_label(SPEED_MAX))
+                                } else {
+                                    trf!("可輸入 {}–{}×", "Enter {}–{}×", speed_label(SPEED_MIN), speed_label(SPEED_MAX))
+                                };
+                                // 1 小時的錄影會變成多長
+                                let per_hour = speed.filter(|sp| *sp > 1.0).map(|sp| {
+                                    let fit = if sp >= 8.0 { tr!("，適合縮時影片", ", good for time-lapse") } else { "" };
+                                    trf!("・{}×：1 小時的錄影 ≈ {}{fit}", " · {}×: a 1-hour recording ≈ {}{fit}", speed_label(sp), human_duration(3600.0 / sp))
+                                });
+                                helper(ui, format!("{range}{}", per_hour.unwrap_or_default()), p.muted);
+                            }),
+                            ExportMode::Target => row(ui, tr!("長度", "Length"), |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.set_height(ROW_H);
+                                    ui.spacing_mut().item_spacing.x = 6.0;
+                                    for t in TARGET_PRESETS {
+                                        if Btn::new(t).small().selected(o.export_target == t).show(ui).clicked() {
+                                            o.export_target = t.into();
+                                        }
+                                    }
+                                    ui.add_space(4.0);
+                                    ui.add(
+                                        egui::TextEdit::singleline(&mut o.export_target)
+                                            .desired_width(64.0)
+                                            .font(theme::font(13.5))
+                                            .margin(vec2(8.0, 5.0))
+                                            .horizontal_align(Align::Center)
+                                            .hint_text("1:00"),
+                                    );
+                                    ui.label(RichText::new(tr!("分:秒", "min:sec")).font(theme::font(12.5)).color(p.muted));
+                                });
+                                let target = parse_clock(&o.export_target);
+                                let hint = match (target, speed) {
+                                    (None, _) => tr!("請輸入長度，例如 1:00、90（秒）或 1:02:03", "Enter a length, e.g. 1:00, 90 (seconds) or 1:02:03").to_string(),
+                                    _ if dur <= 0.0 => tr!("無法讀取原片長度", "Can't read the original's duration").into(),
+                                    (Some(t), Some(sp)) if dur / sp > t + 0.5 => {
+                                        trf!("最多只能加速到 {}×，實際約 {}", "The maximum speed is {}×, so it will be about {}", speed_label(SPEED_MAX), short_clock(dur / sp))
+                                    }
+                                    (Some(t), Some(sp)) if dur / sp < t - 0.5 => {
+                                        let how = if gif {
+                                            tr!("以原速製作", "it will be made at original speed").to_string()
+                                        } else {
+                                            trf!("以最低倍率 {}× 製作", "it will be made at the minimum {}×", speed_label(sp))
+                                        };
+                                        trf!("原片只有 {}，{how}", "The original is only {}, so {how}", short_clock(dur))
+                                    }
+                                    (_, Some(sp)) => trf!("需要加速 {}×", "Needs {}× speed", speed_label(sp)),
+                                    _ => String::new(),
+                                };
+                                helper(ui, hint, if target.is_none() { p.rec } else { p.muted });
+                            }),
+                        }
                     }
-                });
-            });
-        });
-        // 存檔位置的副檔名跟格式不合（換了格式）：改回自動取名
-        if dlg.output.as_deref().is_some_and(|o| !o.to_lowercase().ends_with(&format!(".{}", format.ext()))) {
-            dlg.output = None;
-        }
-
-        // ── 結果：原片 → 輸出 ──
-        let ex = speed.and_then(|sp| existing(&e, sp, format)).cloned();
-        let o = dlg.o.clone();
-        egui::Frame::new().inner_margin(egui::Margin { left: PAD, right: PAD, top: 6, bottom: 0 }).show(ui, |ui| {
-            let dims = (sw > 0 && sh > 0).then(|| scaled_size(sw, sh, if gif { o.gif_width as i32 } else { o.mp4_width as i32 }));
-            egui::Frame::new().fill(p.surface2).corner_radius(CornerRadius::same(theme::RADIUS)).inner_margin(egui::Margin::symmetric(18, 14)).show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                let col_w = (ui.available_width() - 56.0) / 2.0;
-                let side = |ui: &mut egui::Ui, title: &str, time: String, sub: String| {
-                    ui.allocate_ui_with_layout(vec2(col_w, 64.0), Layout::top_down(Align::Min), |ui| {
-                        ui.spacing_mut().item_spacing.y = 2.0;
-                        ui.label(RichText::new(title).font(theme::font(12.5)).color(p.muted));
-                        ui.label(RichText::new(time).font(theme::font_bold(24.0)).color(p.text));
-                        ui.add(egui::Label::new(RichText::new(sub).font(theme::font(12.5)).color(p.muted)).truncate());
-                    });
-                };
-                ui.horizontal_top(|ui| {
-                    ui.spacing_mut().item_spacing.x = 0.0;
-                    let from: Vec<String> = [(sw > 0).then(|| format!("{sw}×{sh}")), Some(format_bytes(e.media.bytes))].into_iter().flatten().collect();
-                    side(ui, tr!("原片", "Original"), if dur > 0.0 { short_clock(dur) } else { "—".into() }, from.join("・"));
-                    // 箭頭
-                    let (r, _) = ui.allocate_exact_size(vec2(56.0, 64.0), Sense::hover());
-                    let (a, b) = (pos2(r.left() + 12.0, r.top() + 34.0), pos2(r.right() - 16.0, r.top() + 34.0));
-                    let st = Stroke::new(2.0, p.muted);
-                    ui.painter().line_segment([a, b], st);
-                    ui.painter().line_segment([b, b + vec2(-6.0, -6.0)], st);
-                    ui.painter().line_segment([b, b + vec2(-6.0, 6.0)], st);
-                    let twice = if gif && o.bounce { 2.0 } else { 1.0 };
-                    let out_time = match speed {
-                        Some(sp) if dur > 0.0 => short_clock(dur / sp * twice),
-                        _ => "—".into(),
-                    };
-                    let out_sub = match (dims, speed.filter(|_| dur > 0.0)) {
-                        (Some((w, h)), Some(sp)) => {
-                            let (lo, hi) = estimate_bytes(&EstimateInput {
-                                format,
-                                src_bytes: e.media.bytes as f64,
-                                src_sec: dur,
-                                src_width: sw as f64,
-                                src_height: sh as f64,
-                                speed: sp,
-                                width: w as f64,
-                                height: h as f64,
-                                gif_fps: Some(o.gif_fps as f64),
+                    // 壓縮：大小上限放在最前面（這就是要做的事）
+                    let limit_row = |ui: &mut egui::Ui, mode: Mode, value: &mut u32| {
+                        row(ui, tr!("大小上限", "Size limit"), |ui| {
+                            ui.horizontal(|ui| {
+                                ui.set_height(ROW_H);
+                                let list: &[u32] = if mode == Mode::Compress { &COMPRESS_MB } else { &crate::ui::settings::MAX_MB };
+                                let opts: Vec<(u32, String)> = list.iter().map(|m| (*m, if *m == 0 { tr!("不限", "No limit").to_string() } else { trf!("{m} MB 以內", "Up to {m} MB") })).collect();
+                                combo(ui, "mp4max", 130.0, value, &opts);
                             });
-                            let (lo, hi) = (lo * twice, hi * twice);
-                            let cap = (max_mb > 0).then_some(max_mb as f64 * 1024.0 * 1024.0);
-                            match cap {
-                                Some(c) if hi > c || dlg.mode == Mode::Compress => trf!("{w}×{h}・{} 以內", "{w}×{h}・up to {}", format_bytes(c as u64)),
-                                // 依畫質：大小看影片內容，估不準
-                                None if dlg.mode == Mode::Compress => trf!("{w}×{h}・{}", "{w}×{h}・{}", dlg.quality.label()),
-                                _ => trf!("{w}×{h}・約 {}～{}", "{w}×{h}・about {}–{}", format_bytes(lo as u64), format_bytes(hi as u64)),
+                            // 說明放在下方自己一行（太長時換行），不會把下拉選單擠開
+                            if mode == Mode::Compress {
+                                helper(ui, tr!("降低畫質讓檔案小於上限，方便用 LINE、Email 傳送", "Lowers the quality so the file fits the limit, for sending via LINE or email"), p.muted);
+                            } else if *value > 0 {
+                                helper(
+                                    ui,
+                                    tr!(
+                                        "降低畫質讓加速版小於上限；只想壓縮、不加速請選上面的「壓縮」",
+                                        "Lowers quality so the sped-up video fits the limit. To only compress, choose “Compress” above"
+                                    ),
+                                    p.muted,
+                                );
                             }
-                        }
-                        _ => String::new(),
+                        });
                     };
-                    let title = match dlg.mode {
-                        Mode::Anim => anim,
-                        Mode::Compress => tr!("壓縮版", "Compressed"),
-                        Mode::Speed => tr!("加速版", "Sped-up"),
-                    };
-                    side(ui, title, out_time, out_sub);
-                });
-                // 存成的檔名與位置：「存成 操作示範_4x.mp4（和原片同一個資料夾）」，可按「變更…」另存到別處
-                let r = ui.cursor();
-                ui.painter().hline(r.x_range(), r.top() + 2.0, Stroke::new(1.0, p.border));
-                ui.add_space(6.0);
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 6.0;
-                    let name = speed.map(|sp| output_name(&e, sp, format, max_mb, dlg.mode == Mode::Compress && dlg.by_quality)).unwrap_or_default();
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        let src_dir = std::path::Path::new(&e.media.path).parent().map(|d| d.display().to_string()).unwrap_or_default();
-                        let tip = tr!("用「另存新檔」選別的資料夾或檔名", "Choose another folder or file name with Save As");
-                        if Btn::new(tr!("變更…", "Change…")).small().enabled(!name.is_empty()).tooltip(tip).show(ui).clicked() {
-                            let (dir, n) = match &dlg.output {
-                                Some(o) => (std::path::Path::new(o).parent().map(|d| d.display().to_string()).unwrap_or(src_dir.clone()), file_name(o)),
-                                None => (src_dir.clone(), name.clone()),
-                            };
-                            change_output = Some((dir, n));
+                    if dlg.mode == Mode::Compress {
+                        row(ui, tr!("方式", "Method"), |ui| {
+                            ui.horizontal(|ui| {
+                                ui.set_height(ROW_H);
+                                segmented(
+                                    ui,
+                                    &mut dlg.by_quality,
+                                    &[(true, tr!("保留畫質，縮小檔案", "Keep quality, smaller file")), (false, tr!("指定大小（傳 LINE / Email）", "Fit a size (LINE / email)"))],
+                                    true,
+                                );
+                            });
+                        });
+                        if dlg.by_quality {
+                            row(ui, tr!("畫質", "Quality"), |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.set_height(ROW_H);
+                                    let items: Vec<(Quality, &str)> = Quality::ALL.iter().map(|q| (*q, q.label())).collect();
+                                    segmented(ui, &mut dlg.quality, &items, true);
+                                });
+                                helper(ui, dlg.quality.hint(), p.muted);
+                            });
+                        } else {
+                            limit_row(ui, Mode::Compress, &mut dlg.compress_mb);
                         }
-                        ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-                            if name.is_empty() {
-                                return;
-                            }
-                            ui.label(RichText::new(tr!("存成", "Save as")).font(theme::font(12.5)).color(p.muted));
-                            let (shown, where_, full) = match &dlg.output {
-                                Some(o) => {
-                                    let dir = std::path::Path::new(o).parent().map(|d| d.display().to_string()).unwrap_or_default();
-                                    (file_name(o), trf!("（在 {dir}）", " (in {dir})"), o.clone())
+                    }
+                    row(ui, tr!("尺寸", "Size"), |ui| {
+                        ui.horizontal(|ui| {
+                            ui.set_height(ROW_H);
+                            if gif {
+                                let widths: Vec<(u32, String)> = [320, 480, 640, 960, 1280].iter().map(|w| (*w, trf!("寬 {w} px", "Width {w} px"))).collect();
+                                combo(ui, "gifw", 130.0, &mut o.gif_width, &widths);
+                                ui.add_space(8.0);
+                                let fps: Vec<(u32, String)> = [5, 10, 15, 20].iter().map(|f| (*f, fps_text(*f as f64))).collect();
+                                combo(ui, "giffps", 110.0, &mut o.gif_fps, &fps);
+                            } else if sw > 0 && sh > 0 {
+                                // 只列出比原片小的選項
+                                let opts: Vec<(u32, String)> = MP4_WIDTHS
+                                    .iter()
+                                    .copied()
+                                    .filter(|w| *w == 0 || (*w as i32) < sw)
+                                    .map(|w| {
+                                        let (a, b) = scaled_size(sw, sh, w as i32);
+                                        (w, if w == 0 { trf!("原尺寸（{a}×{b}）", "Original ({a}×{b})") } else { trf!("寬 {w}（{a}×{b}）", "Width {w} ({a}×{b})") })
+                                    })
+                                    .collect();
+                                if !opts.iter().any(|(w, _)| *w == o.mp4_width) {
+                                    o.mp4_width = 0;
                                 }
-                                None => (name.clone(), tr!("（和原片同一個資料夾）", " (same folder as the original)").to_string(), std::path::Path::new(&src_dir).join(&name).display().to_string()),
+                                combo(ui, "mp4w", 230.0, &mut o.mp4_width, &opts);
+                            } else {
+                                ui.label(theme::muted(ui, tr!("原尺寸", "Original size")));
+                            }
+                        });
+                    });
+                    if dlg.mode == Mode::Speed {
+                        limit_row(ui, Mode::Speed, &mut o.mp4_max_mb);
+                    }
+                    if gif {
+                        row(ui, tr!("播放", "Playback"), |ui| {
+                            let one_way = speed.filter(|_| dur > 0.0).map(|sp| dur / sp);
+                            let fits = one_way.is_none_or(|t| t <= screenrecorder_core::args::BOUNCE_MAX_SEC);
+                            if !fits {
+                                o.bounce = false;
+                            }
+                            ui.horizontal(|ui| {
+                                ui.set_height(ROW_H);
+                                ui.add_enabled_ui(fits, |ui| {
+                                    theme::check(ui, &mut o.bounce, RichText::new(tr!("來回播放（播完倒著播回來）", "Back and forth (plays, then reverses)")).font(theme::font(13.0)));
+                                });
+                            });
+                            let note = if fits {
+                                tr!("循環播放時不會從結尾跳回開頭；長度變兩倍", "Loops smoothly without jumping back to the start; twice as long").to_string()
+                            } else {
+                                trf!(
+                                    "只能用在 {} 秒以內的動圖（可以加速或先剪短）",
+                                    "Only for animations up to {} s (speed it up or trim it first)",
+                                    screenrecorder_core::format::num(screenrecorder_core::args::BOUNCE_MAX_SEC)
+                                )
                             };
-                            let mut job = egui::text::LayoutJob::default();
-                            job.append(&shown, 0.0, egui::TextFormat::simple(theme::font_bold(12.5), p.text));
-                            job.append(&where_, 0.0, egui::TextFormat::simple(theme::font(12.5), p.muted));
-                            ui.add(egui::Label::new(job).truncate()).on_hover_text(full);
+                            helper(ui, note, p.muted);
+                        });
+                    }
+                    row(ui, tr!("聲音", "Audio"), |ui| {
+                        ui.horizontal(|ui| {
+                            ui.set_height(ROW_H);
+                            if format == ExportFormat::Webp {
+                                ui.add(
+                                    egui::Label::new(theme::muted(
+                                        ui,
+                                        tr!(
+                                            "WebP 動圖不含聲音；檔案約為 GIF 的 1/6、顏色更好，瀏覽器、Slack、Discord 都能看",
+                                            "WebP has no audio; about 1/6 the size of a GIF with better colors, and works in browsers, Slack and Discord"
+                                        ),
+                                    ))
+                                    .wrap(),
+                                );
+                            } else if gif {
+                                ui.label(theme::muted(ui, tr!("GIF 不含聲音；檔案較大，建議 1 分鐘以內", "GIFs have no audio and are large; keep them under 1 min")));
+                            } else if !has_audio {
+                                ui.label(theme::muted(ui, tr!("原片沒有聲音", "The original has no audio")));
+                            } else {
+                                let label = if dlg.mode == Mode::Compress { tr!("保留聲音", "Keep audio") } else { tr!("保留聲音（變速不變調）", "Keep audio (pitch preserved)") };
+                                switch(ui, &mut o.keep_audio, label, true);
+                            }
                         });
                     });
                 });
-            });
+                // 存檔位置的副檔名跟格式不合（換了格式）：改回自動取名
+                if dlg.output.as_deref().is_some_and(|o| !o.to_lowercase().ends_with(&format!(".{}", format.ext()))) {
+                    dlg.output = None;
+                }
 
-            // 提醒：已經夠小、已有同倍率的成品、加速後太短
-            if small_enough {
-                let text = trf!("原片只有 {}，已小於 {max_mb} MB，不用壓縮", "The original is only {}, already under {max_mb} MB. No need to compress", format_bytes(e.media.bytes));
-                notice(ui, p.ok_soft, &text, p.ok, None);
-            } else if let Some(x) = &ex {
-                let what = match dlg.mode {
-                    Mode::Anim => format!("{anim}{}", speed.filter(|v| *v > 1.0).map(|v| format!(" {}×", speed_label(v))).unwrap_or_else(|| tr!("（原速）", " (original speed)").into())),
-                    Mode::Compress => tr!("壓縮版", "compressed version").to_string(),
-                    Mode::Speed => trf!("{}× 加速版", "{}× sped-up video", speed_label(speed.unwrap_or(0.0))),
-                };
-                let info = format!("{}{}", x.media.duration_sec.map(|d| format!("{}・", short_clock(d))).unwrap_or_default(), format_bytes(x.media.bytes));
-                let text = trf!("已經有 {what}（{info}），再製作會另存一份", "A {what} already exists ({info}). Making it again saves another copy");
-                if notice(ui, p.accent_soft, &text, p.text, Some((tr!("播放現有的", "Play existing"), Icon::Play))) {
-                    play_existing = Some(LibraryEntry { media: x.media.clone(), exports: vec![], hits: vec![] });
-                }
-            }
-            if let Some(sp) = speed.filter(|sp| dlg.mode != Mode::Compress && dur > 0.0 && dur / sp < TOO_SHORT_SEC && *sp > 1.0) {
-                let text = trf!("加速後只有 {:.1} 秒，可能太快看不清楚", "Only {:.1} s after speeding up; it may be too fast to follow", dur / sp);
-                let button = (dlg.o.export_mode == ExportMode::Speed).then_some((tr!("改用指定長度", "Set length instead"), Icon::Clock));
-                if notice(ui, p.warn_soft, &text, p.warn, button) {
-                    // 預設 1:00，原片不到 1 分鐘時用原片長度的一半（至少 5 秒）
-                    let half = (dur / 2.0).round().max(5.0) as u32;
-                    dlg.o.export_target = if dur < 60.0 { format!("0:{half:02}") } else { "1:00".into() };
-                    dlg.o.export_mode = ExportMode::Target;
-                }
-            }
-        });
+                // ── 結果：原片 → 輸出 ──
+                let ex = speed.and_then(|sp| existing(&e, sp, format)).cloned();
+                let o = dlg.o.clone();
+                egui::Frame::new().inner_margin(egui::Margin { left: PAD, right: PAD, top: 6, bottom: 0 }).show(ui, |ui| {
+                    let dims = (sw > 0 && sh > 0).then(|| scaled_size(sw, sh, if gif { o.gif_width as i32 } else { o.mp4_width as i32 }));
+                    egui::Frame::new().fill(p.surface2).corner_radius(CornerRadius::same(theme::RADIUS)).inner_margin(egui::Margin::symmetric(18, 14)).show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        let col_w = (ui.available_width() - 56.0) / 2.0;
+                        let side = |ui: &mut egui::Ui, title: &str, time: String, sub: String| {
+                            ui.allocate_ui_with_layout(vec2(col_w, 64.0), Layout::top_down(Align::Min), |ui| {
+                                ui.spacing_mut().item_spacing.y = 2.0;
+                                ui.label(RichText::new(title).font(theme::font(12.5)).color(p.muted));
+                                ui.label(RichText::new(time).font(theme::font_bold(24.0)).color(p.text));
+                                ui.add(egui::Label::new(RichText::new(sub).font(theme::font(12.5)).color(p.muted)).truncate());
+                            });
+                        };
+                        ui.horizontal_top(|ui| {
+                            ui.spacing_mut().item_spacing.x = 0.0;
+                            let from: Vec<String> = [(sw > 0).then(|| format!("{sw}×{sh}")), Some(format_bytes(e.media.bytes))].into_iter().flatten().collect();
+                            side(ui, tr!("原片", "Original"), if dur > 0.0 { short_clock(dur) } else { "—".into() }, from.join("・"));
+                            // 箭頭
+                            let (r, _) = ui.allocate_exact_size(vec2(56.0, 64.0), Sense::hover());
+                            let (a, b) = (pos2(r.left() + 12.0, r.top() + 34.0), pos2(r.right() - 16.0, r.top() + 34.0));
+                            let st = Stroke::new(2.0, p.muted);
+                            ui.painter().line_segment([a, b], st);
+                            ui.painter().line_segment([b, b + vec2(-6.0, -6.0)], st);
+                            ui.painter().line_segment([b, b + vec2(-6.0, 6.0)], st);
+                            let twice = if gif && o.bounce { 2.0 } else { 1.0 };
+                            let out_time = match speed {
+                                Some(sp) if dur > 0.0 => short_clock(dur / sp * twice),
+                                _ => "—".into(),
+                            };
+                            let out_sub = match (dims, speed.filter(|_| dur > 0.0)) {
+                                (Some((w, h)), Some(sp)) => {
+                                    let (lo, hi) = estimate_bytes(&EstimateInput {
+                                        format,
+                                        src_bytes: e.media.bytes as f64,
+                                        src_sec: dur,
+                                        src_width: sw as f64,
+                                        src_height: sh as f64,
+                                        speed: sp,
+                                        width: w as f64,
+                                        height: h as f64,
+                                        gif_fps: Some(o.gif_fps as f64),
+                                    });
+                                    let (lo, hi) = (lo * twice, hi * twice);
+                                    let cap = (max_mb > 0).then_some(max_mb as f64 * 1024.0 * 1024.0);
+                                    match cap {
+                                        Some(c) if hi > c || dlg.mode == Mode::Compress => trf!("{w}×{h}・{} 以內", "{w}×{h}・up to {}", format_bytes(c as u64)),
+                                        // 依畫質：大小看影片內容，估不準
+                                        None if dlg.mode == Mode::Compress => trf!("{w}×{h}・{}", "{w}×{h}・{}", dlg.quality.label()),
+                                        _ => trf!("{w}×{h}・約 {}～{}", "{w}×{h}・about {}–{}", format_bytes(lo as u64), format_bytes(hi as u64)),
+                                    }
+                                }
+                                _ => String::new(),
+                            };
+                            let title = match dlg.mode {
+                                Mode::Anim => anim,
+                                Mode::Compress => tr!("壓縮版", "Compressed"),
+                                Mode::Speed => tr!("加速版", "Sped-up"),
+                            };
+                            side(ui, title, out_time, out_sub);
+                        });
+                        // 存成的檔名與位置：「存成 操作示範_4x.mp4（和原片同一個資料夾）」，可按「變更…」另存到別處
+                        let r = ui.cursor();
+                        ui.painter().hline(r.x_range(), r.top() + 2.0, Stroke::new(1.0, p.border));
+                        ui.add_space(6.0);
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 6.0;
+                            let name = speed.map(|sp| output_name(&e, sp, format, max_mb, dlg.mode == Mode::Compress && dlg.by_quality)).unwrap_or_default();
+                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                let src_dir = std::path::Path::new(&e.media.path).parent().map(|d| d.display().to_string()).unwrap_or_default();
+                                let tip = tr!("用「另存新檔」選別的資料夾或檔名", "Choose another folder or file name with Save As");
+                                if Btn::new(tr!("變更…", "Change…")).small().enabled(!name.is_empty()).tooltip(tip).show(ui).clicked() {
+                                    let (dir, n) = match &dlg.output {
+                                        Some(o) => (std::path::Path::new(o).parent().map(|d| d.display().to_string()).unwrap_or(src_dir.clone()), file_name(o)),
+                                        None => (src_dir.clone(), name.clone()),
+                                    };
+                                    change_output = Some((dir, n));
+                                }
+                                ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                                    if name.is_empty() {
+                                        return;
+                                    }
+                                    ui.label(RichText::new(tr!("存成", "Save as")).font(theme::font(12.5)).color(p.muted));
+                                    let (shown, where_, full) = match &dlg.output {
+                                        Some(o) => {
+                                            let dir = std::path::Path::new(o).parent().map(|d| d.display().to_string()).unwrap_or_default();
+                                            (file_name(o), trf!("（在 {dir}）", " (in {dir})"), o.clone())
+                                        }
+                                        None => (
+                                            name.clone(),
+                                            tr!("（和原片同一個資料夾）", " (same folder as the original)").to_string(),
+                                            std::path::Path::new(&src_dir).join(&name).display().to_string(),
+                                        ),
+                                    };
+                                    let mut job = egui::text::LayoutJob::default();
+                                    job.append(&shown, 0.0, egui::TextFormat::simple(theme::font_bold(12.5), p.text));
+                                    job.append(&where_, 0.0, egui::TextFormat::simple(theme::font(12.5), p.muted));
+                                    ui.add(egui::Label::new(job).truncate()).on_hover_text(full);
+                                });
+                            });
+                        });
+                    });
+
+                    // 提醒：已經夠小、已有同倍率的成品、加速後太短
+                    if small_enough {
+                        let text = trf!("原片只有 {}，已小於 {max_mb} MB，不用壓縮", "The original is only {}, already under {max_mb} MB. No need to compress", format_bytes(e.media.bytes));
+                        notice(ui, p.ok_soft, &text, p.ok, None);
+                    } else if let Some(x) = &ex {
+                        let what = match dlg.mode {
+                            Mode::Anim => format!("{anim}{}", speed.filter(|v| *v > 1.0).map(|v| format!(" {}×", speed_label(v))).unwrap_or_else(|| tr!("（原速）", " (original speed)").into())),
+                            Mode::Compress => tr!("壓縮版", "compressed version").to_string(),
+                            Mode::Speed => trf!("{}× 加速版", "{}× sped-up video", speed_label(speed.unwrap_or(0.0))),
+                        };
+                        let info = format!("{}{}", x.media.duration_sec.map(|d| format!("{}・", short_clock(d))).unwrap_or_default(), format_bytes(x.media.bytes));
+                        let text = trf!("已經有 {what}（{info}），再製作會另存一份", "A {what} already exists ({info}). Making it again saves another copy");
+                        if notice(ui, p.accent_soft, &text, p.text, Some((tr!("播放現有的", "Play existing"), Icon::Play))) {
+                            play_existing = Some(LibraryEntry { media: x.media.clone(), exports: vec![], hits: vec![] });
+                        }
+                    }
+                    if let Some(sp) = speed.filter(|sp| dlg.mode != Mode::Compress && dur > 0.0 && dur / sp < TOO_SHORT_SEC && *sp > 1.0) {
+                        let text = trf!("加速後只有 {:.1} 秒，可能太快看不清楚", "Only {:.1} s after speeding up; it may be too fast to follow", dur / sp);
+                        let button = (dlg.o.export_mode == ExportMode::Speed).then_some((tr!("改用指定長度", "Set length instead"), Icon::Clock));
+                        if notice(ui, p.warn_soft, &text, p.warn, button) {
+                            // 預設 1:00，原片不到 1 分鐘時用原片長度的一半（至少 5 秒）
+                            let half = (dur / 2.0).round().max(5.0) as u32;
+                            dlg.o.export_target = if dur < 60.0 { format!("0:{half:02}") } else { "1:00".into() };
+                            dlg.o.export_mode = ExportMode::Target;
+                        }
+                    }
+                });
+
+                ex
+            })
+            .inner;
 
         // 出現提醒而變高後就不再縮回（切換設定時按鈕不會跳動）
         let used = ui.cursor().min.y - body_top;
-        if used < dlg.body_h {
-            ui.add_space(dlg.body_h - used);
+        let keep = dlg.body_h.min(body_max);
+        if used < keep {
+            ui.add_space(keep - used);
         }
         dlg.body_h = dlg.body_h.max(used);
 
         // ── 按鈕 ──
+        let foot_top = ui.cursor().min.y;
         ui.add_space(8.0);
         let r = ui.cursor();
         ui.painter().hline(r.x_range(), r.top(), Stroke::new(1.0, p.border));
@@ -796,6 +829,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                 }
             });
         });
+        dlg.foot_h = ui.cursor().min.y - foot_top;
         speed
     });
     // 開啟時置中（前幾格還在量大小），之後上緣固定：內容變高只往下長，超出視窗才往上移

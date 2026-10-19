@@ -57,6 +57,7 @@ pub mod llhook_win;
 pub mod log;
 pub mod longshot;
 pub mod look;
+pub mod main_window;
 pub mod meter;
 pub mod monitors;
 pub mod mpv;

@@ -10,8 +10,8 @@ build = "build.rs"
 [dependencies]
 screenrecorder-core = { path = "../core" }
 eframe = { version = "0.36", default-features = false, features = ["glow", "default_fonts"] }
-# 與 eframe 相同版本：從系統匣顯示 / 隱藏視窗
-winit = { version = "0.30.13", default-features = false }
+# 與 eframe 相同版本：從系統匣顯示 / 隱藏視窗；取得操作視窗的 HWND（開啟時放到螢幕上看得到的位置）
+winit = { version = "0.30.13", default-features = false, features = ["rwh_06"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "io-util", "process", "sync"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
