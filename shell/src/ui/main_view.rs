@@ -1167,6 +1167,12 @@ fn rec_panel(app: &mut UiApp, ui: &mut Ui) {
     let p = theme::pal(ui);
     theme::card(ui).show(ui, |ui| {
         ui.set_min_size(ui.available_size());
+        // 視窗矮（小螢幕、介面放大）時計時器的字小一點，開始錄影、截圖的按鈕才放得下
+        let clock_size = match ui.available_height() {
+            h if h < 340.0 => 30.0,
+            h if h < 420.0 => 38.0,
+            _ => 46.0,
+        };
         let r = app.status.recorder.clone();
         let active = r.state != RecorderState::Idle;
         // 回溯錄影中（不是一般錄影）
@@ -1238,7 +1244,7 @@ fn rec_panel(app: &mut UiApp, ui: &mut Ui) {
         }
         ui.add_space(4.0);
         let ms = live_recorded_ms(app);
-        ui.label(RichText::new(clock(ms)).font(theme::mono(46.0)).color(if r.state == RecorderState::Recording { p.rec } else { p.text }));
+        ui.label(RichText::new(clock(ms)).font(theme::mono(clock_size)).color(if r.state == RecorderState::Recording { p.rec } else { p.text }));
         if r.max_ms > 0 && active && r.state != RecorderState::Countdown {
             theme::progress(ui, (ms / r.max_ms as f64) as f32, p.rec, 4.0);
         }

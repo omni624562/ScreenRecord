@@ -36,6 +36,8 @@ pub struct LibraryDialog {
     pub dirty: bool,
     /// 前後一頁的縮圖：這一頁的縮圖都排上去之後才開始產生（換頁時馬上看得到）
     prefetch: Vec<(String, f64)>,
+    /// 工具列搜尋框右邊所有東西的寬度（上一格量到的；[錄影, 截圖][完整, 只有圖示]）：視窗窄時搜尋框縮短、按鈕只顯示圖示
+    bar_w: [[f32; 2]; 2],
     kind: Kind,
     /// 看哪個資料夾：None = 目前的儲存位置；也可以看之前用過的資料夾
     dir: Option<String>,
@@ -182,6 +184,7 @@ impl LibraryDialog {
         Self {
             dirty: true,
             prefetch: vec![],
+            bar_w: [[440.0, 300.0], [560.0, 330.0]],
             kind,
             dir: None,
             loaded_dir: String::new(),
@@ -654,8 +657,22 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         ui.advance_cursor_after_rect(head);
         let shot = d.kind == Kind::Shot;
         ui.add_space(8.0);
-        // 搜尋、篩選、排序
+        // 搜尋、篩選、排序：放不下（視窗窄、介面放大）時搜尋框縮短，再放不下按鈕只顯示圖示（名稱在滑鼠提示）
         ui.horizontal(|ui| {
+            const SEARCH_MIN: f32 = 180.0;
+            let row_w = ui.available_width();
+            let gap = ui.spacing().item_spacing.x;
+            let widths = d.bar_w[shot as usize];
+            let compact = row_w - widths[0] - gap < SEARCH_MIN;
+            let search_w = (row_w - widths[compact as usize] - gap).clamp(SEARCH_MIN, 340.0);
+            // 按鈕：放得下時圖示加文字，放不下時只有圖示
+            let btn = |text: &str, icon: Icon, tip: &str| {
+                if compact {
+                    Btn::icon_only(icon).tooltip(format!("{text}：{tip}"))
+                } else {
+                    Btn::new(text).icon(icon).tooltip(tip)
+                }
+            };
             let hint = if shot {
                 tr!("搜尋檔名、日期（例如 10/11）或圖裡的字", "Search names, dates (e.g. 10/11) or text in the image")
             } else {
@@ -665,12 +682,13 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
             let r = ui.add(
                 egui::TextEdit::singleline(&mut d.query)
                     .hint_text(hint)
-                    .desired_width(340.0)
+                    .desired_width(search_w)
                     .min_size(vec2(0.0, 30.0))
                     .margin(egui::Margin { left: 6, right: 28, top: 2, bottom: 2 })
                     .vertical_align(Align::Center),
             );
             super::tour::mark(ui, super::tour::Spot::LbSearch, r.rect);
+            let search_right = r.rect.right();
             if d.focus_search {
                 r.request_focus();
                 d.focus_search = false;
@@ -737,28 +755,33 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
             if shot {
                 ui.add_space(4.0);
                 let mut size = grid_size;
+                let tip = tr!(
+                    "縮圖大小：小的一頁可以放比較多張。也可以在縮圖上按住 Ctrl 轉滾輪調整",
+                    "Thumbnail size: smaller fits more per page. You can also hold Ctrl and turn the mouse wheel over the thumbnails"
+                );
                 if theme::segmented(ui, &mut size, &[(0u8, tr!("小", "S")), (1, tr!("中", "M")), (2, tr!("大", "L"))], true) {
                     grid_size = size;
                 }
-                ui.label(theme::muted(ui, tr!("縮圖", "Thumbnails"))).on_hover_text(tr!(
-                    "縮圖大小：小的一頁可以放比較多張。也可以在縮圖上按住 Ctrl 轉滾輪調整",
-                    "Thumbnail size: smaller fits more per page. You can also hold Ctrl and turn the mouse wheel over the thumbnails"
-                ));
+                if !compact {
+                    ui.label(theme::muted(ui, tr!("縮圖", "Thumbnails"))).on_hover_text(tip);
+                }
             }
             // 截圖：用點的找（瀏覽欄）、月曆
             if shot {
                 ui.add_space(4.0);
-                if Btn::new(tr!("用點的找", "Browse"))
-                    .icon(Icon::List)
-                    .small()
-                    .ghost()
-                    .selected(d.browse && d.calendar.is_none())
-                    .tooltip(tr!(
+                if btn(
+                    tr!("用點的找", "Browse"),
+                    Icon::List,
+                    tr!(
                         "左邊列出程式、內容、常出現的詞、時間、顏色，點幾下就能縮小範圍，不用記得關鍵字（再按一次收起來）",
                         "Lists apps, content types, common words, dates and colours on the left. Click a few to narrow down without remembering keywords (click again to hide)"
-                    ))
-                    .show(ui)
-                    .clicked()
+                    ),
+                )
+                .small()
+                .ghost()
+                .selected(d.browse && d.calendar.is_none())
+                .show(ui)
+                .clicked()
                 {
                     if d.calendar.is_some() {
                         d.calendar = None;
@@ -768,16 +791,18 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                     }
                     d.dirty = true;
                 }
-                let cal = Btn::new(tr!("月曆", "Calendar"))
-                    .icon(Icon::Clock)
-                    .small()
-                    .ghost()
-                    .selected(d.calendar.is_some())
-                    .tooltip(tr!(
+                let cal = btn(
+                    tr!("月曆", "Calendar"),
+                    Icon::Clock,
+                    tr!(
                         "一個月一頁，看每天截了幾張、那天圖裡常出現什麼字；點一天就列出那天的截圖",
                         "One month per page: how many screenshots each day and what they were about. Click a day to list them"
-                    ))
-                    .show(ui);
+                    ),
+                )
+                .small()
+                .ghost()
+                .selected(d.calendar.is_some())
+                .show(ui);
                 super::tour::mark(ui, super::tour::Spot::LbCalendar, cal.rect);
                 if cal.clicked() {
                     d.calendar = if d.calendar.is_some() { None } else { Some(browse::CalView::this_month()) };
@@ -785,12 +810,10 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
             }
             // 只看有星號的
             ui.add_space(4.0);
-            if Btn::new(tr!("有星號的", "Starred"))
-                .icon(Icon::Star)
+            if btn(tr!("有星號的", "Starred"), Icon::Star, tr!("只列出加了星號的檔案（再按一次顯示全部）", "Show only starred files (click again to show all)"))
                 .small()
                 .ghost()
                 .selected(d.only_pinned)
-                .tooltip(tr!("只列出加了星號的檔案（再按一次顯示全部）", "Show only starred files (click again to show all)"))
                 .show(ui)
                 .clicked()
             {
@@ -801,16 +824,18 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
             }
             // 匯入其他地方的影片（也可以直接把檔案拖進視窗）
             if !shot
-                && Btn::new(tr!("匯入影片…", "Import videos…"))
-                    .icon(Icon::Folder)
-                    .small()
-                    .ghost()
-                    .tooltip(tr!(
+                && btn(
+                    tr!("匯入影片…", "Import videos…"),
+                    Icon::Folder,
+                    tr!(
                         "把手機、其他軟體錄的影片放進儲存位置（MOV、MKV、AVI、WMV、WebM 等會轉成 MP4，原本的檔案不會動）。也可以直接把檔案拖進這個視窗",
                         "Bring videos from your phone or other apps into your save folder (MOV, MKV, AVI, WMV, WebM and others are converted to MP4; the originals stay as they are). You can also drop files onto this window"
-                    ))
-                    .show(ui)
-                    .clicked()
+                    ),
+                )
+                .small()
+                .ghost()
+                .show(ui)
+                .clicked()
             {
                 req = Some(Req::Import);
             }
@@ -826,6 +851,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                     }
                 });
             }
+            d.bar_w[shot as usize][compact as usize] = ui.min_rect().right() - search_right;
         });
         if shot {
             browse::tick(app, &mut d);

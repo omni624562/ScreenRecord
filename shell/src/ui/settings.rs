@@ -110,6 +110,9 @@ pub struct UiSettings {
     /// 錄整個螢幕時控制列拖到的位置（控制列上拖曳後由 core 存進來；這裡只是原樣保留）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rec_bar_pos: Option<[i32; 2]>,
+    /// 操作視窗上次的位置、大小、是否最大化（下次開啟時用；不在螢幕上了就重新計算）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub window: Option<screenrecorder_core::main_window::Placement>,
     /// 截圖後在右下角顯示小縮圖
     pub shot_preview: bool,
     /// 框選截圖放開滑鼠就直接存檔（不留下可以調整的範圍與工具列；core 的框選畫面讀這個欄位）
@@ -215,8 +218,10 @@ pub const NOTES_OPACITY_MIN: u32 = 40;
 
 /// 介面大小可選的百分比
 pub const UI_SCALES: [u32; 4] = [100, 110, 125, 150];
-/// 主畫面至少要這麼大（點）才放得下：螢幕放大後比這個小的介面大小不能選
-pub const UI_MIN_SIZE: (f32, f32) = (1000.0, 600.0);
+/// 操作視窗開啟時的大小（點，100% 縮放）；螢幕上放不下時縮小、最大化
+pub const WINDOW_SIZE: (f32, f32) = (1280.0, 900.0);
+/// 主畫面至少要這麼大（點）才放得下：視窗的最小大小；螢幕放大後比這個小的介面大小不能選
+pub const UI_MIN_SIZE: (f32, f32) = (960.0, 520.0);
 
 /// 自訂範圍跟著的視窗
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -314,6 +319,7 @@ impl UiSettings {
             mic_denoise: boolean("micDenoise").unwrap_or(false),
             rec_bar: o.get("recBar").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default(),
             rec_bar_pos: o.get("recBarPos").and_then(|v| serde_json::from_value::<[i32; 2]>(v.clone()).ok()),
+            window: o.get("window").and_then(|v| serde_json::from_value::<screenrecorder_core::main_window::Placement>(v.clone()).ok()).filter(|p| p.valid()),
             shot_preview: boolean("shotPreview").unwrap_or(true),
             snip_instant: boolean("snipInstant").unwrap_or(false),
             shot_save_dir: string("shotSaveDir").unwrap_or_default(),

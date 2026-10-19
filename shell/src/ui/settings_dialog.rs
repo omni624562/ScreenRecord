@@ -1510,8 +1510,11 @@ fn advanced_page(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
             app.save_settings();
         }
     });
-    // 螢幕太小時，放大後主畫面放不下（按鈕會被擋住）：那些大小不能選（目前用的除外）
-    let base = ui.ctx().input(|i| i.viewport().monitor_size).filter(|m| m.x > 0.0 && m.y > 0.0).map(|m| m * ui.ctx().zoom_factor());
+    // 螢幕太小時，放大後主畫面放不下（按鈕會被擋住）：那些大小不能選（目前用的除外）。
+    // 用視窗所在的螢幕最大化時的大小（扣掉工作列、標題列）；不知道時用整個螢幕
+    let base = screenrecorder_core::main_window::max_content_here()
+        .map(|(w, h)| vec2(w, h))
+        .or_else(|| ui.ctx().input(|i| i.viewport().monitor_size).filter(|m| m.x > 0.0 && m.y > 0.0).map(|m| m * ui.ctx().zoom_factor()));
     let fits = |v: u32| base.is_none_or(|b| b.x * 100.0 / v as f32 >= UI_MIN_SIZE.0 && b.y * 100.0 / v as f32 >= UI_MIN_SIZE.1);
     form_row(ui, tr!("介面大小", "Interface size"), |ui| {
         ui.spacing_mut().item_spacing.x = 4.0;

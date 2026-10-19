@@ -327,8 +327,8 @@ fn main() {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title(screenrecorder_core::winui::app_title())
-            .with_inner_size([1280.0, 900.0])
-            .with_min_inner_size([1024.0, 640.0])
+            .with_inner_size([ui::settings::WINDOW_SIZE.0, ui::settings::WINDOW_SIZE.1])
+            .with_min_inner_size([ui::settings::UI_MIN_SIZE.0, ui::settings::UI_MIN_SIZE.1])
             .with_visible(visible)
             .with_icon(egui::IconData { rgba: icon, width: 64, height: 64 })
             .with_app_id("screenrecorder"),
