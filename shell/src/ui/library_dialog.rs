@@ -1287,14 +1287,9 @@ fn entry_menu(ui: &mut egui::Ui, app: &UiApp, e: &LibraryEntry, full: bool, req:
                 pick(a, req);
             }
         }
-        if let Some(folder) = app.library_folder() {
-            let tip = tr!(
-                "複製到「錄完處理 → 複製」的資料夾（同名的覆蓋，連同字幕），有設定 Jellyfin 時通知它",
-                "Copy to the After recording → Copy folder (replacing one with the same name, subtitles included) and notify Jellyfin if set up"
-            );
-            if ui.button(trf!("傳到「{}」", "Send to “{}”", folder)).on_hover_text(tip).clicked() {
-                pick(EntryAction::SendToLibrary, req);
-            }
+        let (label, tip) = app.send_label();
+        if ui.button(label).on_hover_text(tip).clicked() {
+            pick(EntryAction::SendToLibrary, req);
         }
         ui.separator();
     }
