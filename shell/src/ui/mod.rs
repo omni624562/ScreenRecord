@@ -547,11 +547,19 @@ impl UiApp {
         let copy_to = self.s.after_copy_to.clone();
         let file = std::path::PathBuf::from(path);
         self.toast(trf!("正在傳到「{}」：{}", "Sending to “{}”: {}", folder, dialogs::file_name(path)), false);
-        self.spawn(async move { tokio::task::spawn_blocking(move || screenrecorder_core::jellyfin::send_file(jf.as_ref(), &copy_to, &file)).await.ok().flatten() }, |app, r| match r {
-            Some(Ok(msg)) => app.toast(msg, false),
-            Some(Err(e)) => app.toast(e, true),
-            None => {}
-        });
+        let ffmpeg = self.core.ffmpeg_path();
+        self.spawn(
+            async move {
+                // 影片資訊的標籤、有沒有章節：傳好之後設到 Jellyfin
+                let extras = screenrecorder_core::jellyfin::Extras::read(ffmpeg.as_deref(), &file).await;
+                tokio::task::spawn_blocking(move || screenrecorder_core::jellyfin::send_file(jf.as_ref(), &copy_to, &file, &extras)).await.ok().flatten()
+            },
+            |app, r| match r {
+                Some(Ok(msg)) => app.toast(msg, false),
+                Some(Err(e)) => app.toast(e, true),
+                None => {}
+            },
+        );
     }
 
     /// 改了影片（封面、影片資訊）之後：「複製」資料夾（Jellyfin 的媒體庫）裡的那一份也換成改好的，並請 Jellyfin 重新讀取
@@ -562,11 +570,18 @@ impl UiApp {
             return;
         }
         let video = std::path::PathBuf::from(path);
-        self.spawn(async move { tokio::task::spawn_blocking(move || screenrecorder_core::jellyfin::sync_edited(jf.as_ref(), &copy_to, &video)).await.ok().flatten() }, |app, r| match r {
-            Some(Ok(msg)) => app.toast(msg, false),
-            Some(Err(e)) => app.toast(e, true),
-            None => {}
-        });
+        let ffmpeg = self.core.ffmpeg_path();
+        self.spawn(
+            async move {
+                let extras = screenrecorder_core::jellyfin::Extras::read(ffmpeg.as_deref(), &video).await;
+                tokio::task::spawn_blocking(move || screenrecorder_core::jellyfin::sync_edited(jf.as_ref(), &copy_to, &video, &extras)).await.ok().flatten()
+            },
+            |app, r| match r {
+                Some(Ok(msg)) => app.toast(msg, false),
+                Some(Err(e)) => app.toast(e, true),
+                None => {}
+            },
+        );
     }
 
     pub fn toast(&mut self, text: impl Into<String>, error: bool) {

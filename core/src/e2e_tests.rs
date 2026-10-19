@@ -1323,7 +1323,7 @@ async fn exports_keep_the_recording_time() {
     assert_eq!((created(&merged), mtime(&merged)), (Some(phone_time), phone_time));
     // 傳到 NAS 的那一份：和本機的同一個時間
     let nas = dir.path().join("nas");
-    crate::jellyfin::send_file(None, &nas.display().to_string(), &cut).unwrap().unwrap();
+    crate::jellyfin::send_file(None, &nas.display().to_string(), &cut, &Default::default()).unwrap().unwrap();
     assert_eq!(mtime(&nas.join(cut.file_name().unwrap())), rec_time);
 }
 

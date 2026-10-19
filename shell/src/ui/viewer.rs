@@ -488,6 +488,8 @@ enum Act {
     Rename,
     /// 打開相關的截圖（第幾張）
     Related(usize),
+    /// 複製這支影片在 Jellyfin 的網址
+    JellyfinLink,
 }
 
 /// 標題列的一個按鈕；視窗窄時依序從後面的開始收進「⋯」
@@ -627,6 +629,20 @@ fn head_buttons(app: &UiApp, e: &LibraryEntry, image: bool, audio: bool) -> Vec<
         left.group = true;
         list.push(left);
         list.push(head_icon(tr!("向右轉 90°", "Rotate right 90°"), Icon::RotR, tip, || Act::Entry(EntryAction::RotateRight)));
+    }
+    // 有設定 Jellyfin：複製這支在 Jellyfin 的網址（要先傳到媒體庫）
+    if !audio && screenrecorder_core::jellyfin::Jellyfin::new(&app.s.jellyfin_url, &app.s.jellyfin_key).is_some() {
+        let mut link = head_icon(
+            tr!("複製 Jellyfin 連結", "Copy Jellyfin link"),
+            Icon::Link,
+            tr!(
+                "複製這支影片在 Jellyfin 的網址，貼給別人就能在瀏覽器看（要先傳到 Jellyfin 的媒體庫）",
+                "Copy this video's Jellyfin address so others can watch it in a browser (send it to the Jellyfin library first)"
+            ),
+            || Act::JellyfinLink,
+        );
+        link.group = true;
+        list.push(link);
     }
     if !audio && !export {
         let mut rename = head_icon(tr!("重新命名…", "Rename…"), Icon::Rename, "", || Act::Rename);
@@ -1079,6 +1095,26 @@ fn run_act(app: &mut UiApp, act: Act) {
             let e = v.cur().clone();
             v.pause();
             super::video_tags::open(app, e);
+        }
+        Act::JellyfinLink => {
+            let Some(v) = app.viewer.as_ref() else { return };
+            let name = super::dialogs::file_name(&v.cur().media.path).to_string();
+            let Some(jf) = screenrecorder_core::jellyfin::Jellyfin::new(&app.s.jellyfin_url, &app.s.jellyfin_key) else { return };
+            app.spawn(
+                async move {
+                    tokio::task::spawn_blocking(move || -> Result<Option<String>, String> { Ok(jf.find(&name)?.first().map(|id| jf.link(id, jf.server_id().as_deref()))) })
+                        .await
+                        .unwrap_or_else(|e| Err(e.to_string()))
+                },
+                |app, r| match r {
+                    Ok(Some(url)) => {
+                        app.ctx.copy_text(url.clone());
+                        app.toast(trf!("已複製 Jellyfin 連結：{url}", "Jellyfin link copied: {url}"), false);
+                    }
+                    Ok(None) => app.toast(tr!("Jellyfin 還沒有這支影片：先按「傳到」或等錄完自動處理複製過去", "Jellyfin doesn't have this video yet. Send it to the library first"), true),
+                    Err(e) => app.toast(trf!("查不到 Jellyfin：{e}", "Couldn't check Jellyfin: {e}"), true),
+                },
+            );
         }
         Act::Grab => {
             let Some(v) = app.viewer.as_mut() else { return };

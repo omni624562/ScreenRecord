@@ -15,14 +15,20 @@ pub struct Field {
     pub multiline: bool,
 }
 
-/// 可以改的欄位（依序顯示）。title ©nam、artist ©ART、album ©alb、genre ©gen、date ©day、comment ©cmt、copyright cprt
-pub fn fields() -> [Field; 7] {
+/// 可以改的欄位（依序顯示）。title ©nam、artist ©ART、album ©alb、genre ©gen、keywords（標籤）、date ©day、comment ©cmt、copyright cprt
+pub fn fields() -> [Field; 8] {
     [
         Field { key: "title", label: tr!("標題", "Title"), hint: tr!("例如：報價單怎麼填", "e.g. How to fill in a quote"), multiline: false },
         Field { key: "artist", label: tr!("作者", "Author"), hint: tr!("例如：業務部 王小明", "e.g. Sales team, Alex Wang"), multiline: false },
         Field { key: "album", label: tr!("系列", "Series"), hint: tr!("例如：新人教育訓練", "e.g. New hire training"), multiline: false },
         Field {
             key: "genre", label: tr!("類型", "Genre"), hint: tr!("例如：教學; 業務（好幾個用 ; 或、隔開）", "e.g. Tutorial; Sales (separate several with ;)"), multiline: false
+        },
+        Field {
+            key: "keywords",
+            label: tr!("標籤", "Tags"),
+            hint: tr!("例如：報價; 新人（好幾個用 ; 或、隔開；傳到 Jellyfin 時也設成它的標籤）", "e.g. Quotes; Onboarding (separate several with ;; also set as Jellyfin tags)"),
+            multiline: false,
         },
         Field { key: "date", label: tr!("年份", "Year"), hint: tr!("例如：2026", "e.g. 2026"), multiline: false },
         Field { key: "comment", label: tr!("說明", "Description"), hint: tr!("這支影片在講什麼（可以換行）", "What this video is about (can be several lines)"), multiline: true },
@@ -70,7 +76,7 @@ pub fn write_args(video: &str, values: &HashMap<String, String>, out: &str) -> V
             let v = v.replace("\r\n", "\n");
             let v = if f.multiline { v.trim().to_string() } else { v.replace('\n', " ").trim().to_string() };
             // 類型：好幾個時統一用「; 」隔開（全形的、，；也算），Jellyfin 才會拆成好幾個
-            let v = if f.key == "genre" { join_genres(&split_genres(&v)) } else { v };
+            let v = if f.key == "genre" || f.key == "keywords" { join_genres(&split_genres(&v)) } else { v };
             a.push("-metadata".into());
             a.push(format!("{}={v}", f.key));
         }
