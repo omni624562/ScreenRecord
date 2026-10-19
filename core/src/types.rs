@@ -150,17 +150,19 @@ pub struct HotkeyStatus {
     pub mute: bool,
     #[serde(default)]
     pub zoom: bool,
+    #[serde(default)]
+    pub text: bool,
 }
 
 impl HotkeyStatus {
     /// 依 Hotkeys::all 的順序
     pub fn all(&self) -> [bool; HOTKEY_COUNT] {
-        [self.record, self.pause, self.shot, self.snip, self.mark, self.pen, self.replay, self.mute, self.zoom]
+        [self.record, self.pause, self.shot, self.snip, self.mark, self.pen, self.replay, self.mute, self.zoom, self.text]
     }
 
     pub fn from_list(ok: &[bool]) -> HotkeyStatus {
         let g = |i: usize| ok.get(i).copied().unwrap_or(false);
-        HotkeyStatus { record: g(0), pause: g(1), shot: g(2), snip: g(3), mark: g(4), pen: g(5), replay: g(6), mute: g(7), zoom: g(8) }
+        HotkeyStatus { record: g(0), pause: g(1), shot: g(2), snip: g(3), mark: g(4), pen: g(5), replay: g(6), mute: g(7), zoom: g(8), text: g(9) }
     }
 }
 
@@ -269,7 +271,7 @@ pub fn shown_keys(vk: u32, ctrl: bool, alt: bool, shift: bool, win: bool) -> Opt
 }
 
 /// 全域快速鍵的數量
-pub const HOTKEY_COUNT: usize = 9;
+pub const HOTKEY_COUNT: usize = 10;
 
 /// 錄影時螢幕上的控制列（設定的 recBar）
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -314,6 +316,9 @@ pub struct Hotkeys {
     /// 錄影中標記要放大的地方（3.14 新增）
     #[serde(default = "default_zoom")]
     pub zoom: Option<Hotkey>,
+    /// 只抓文字：框選後辨識，文字複製到剪貼簿（3.36.6 新增）
+    #[serde(default = "default_text")]
+    pub text: Option<Hotkey>,
 }
 
 fn default_mark() -> Option<Hotkey> {
@@ -336,6 +341,10 @@ fn default_zoom() -> Option<Hotkey> {
     Some(Hotkey::ctrl_alt(0x5A))
 }
 
+fn default_text() -> Option<Hotkey> {
+    Some(Hotkey::ctrl_alt(0x54))
+}
+
 impl Default for Hotkeys {
     fn default() -> Self {
         Hotkeys {
@@ -348,14 +357,15 @@ impl Default for Hotkeys {
             replay: default_replay(),
             mute: default_mute(),
             zoom: default_zoom(),
+            text: default_text(),
         }
     }
 }
 
 impl Hotkeys {
-    /// 依序：開始 / 停止錄影、暫停 / 繼續、截圖、框選截圖、加標記、螢幕畫筆、重播緩衝、麥克風靜音、標記要放大的地方
+    /// 依序：開始 / 停止錄影、暫停 / 繼續、截圖、框選截圖、加標記、螢幕畫筆、重播緩衝、麥克風靜音、標記要放大的地方、只抓文字
     pub fn all(&self) -> [Option<Hotkey>; HOTKEY_COUNT] {
-        [self.record, self.pause, self.shot, self.snip, self.mark, self.pen, self.replay, self.mute, self.zoom]
+        [self.record, self.pause, self.shot, self.snip, self.mark, self.pen, self.replay, self.mute, self.zoom, self.text]
     }
 
     pub fn set(&mut self, i: usize, k: Option<Hotkey>) {
@@ -368,13 +378,14 @@ impl Hotkeys {
             5 => self.pen = k,
             6 => self.replay = k,
             7 => self.mute = k,
-            _ => self.zoom = k,
+            8 => self.zoom = k,
+            _ => self.text = k,
         }
     }
 
     /// 全部停用（設定新的快速鍵時暫停）
     pub fn none() -> Hotkeys {
-        Hotkeys { record: None, pause: None, shot: None, snip: None, mark: None, pen: None, replay: None, mute: None, zoom: None }
+        Hotkeys { record: None, pause: None, shot: None, snip: None, mark: None, pen: None, replay: None, mute: None, zoom: None, text: None }
     }
 
     /// 第 i 個的名稱（停用時是空字串）
@@ -400,7 +411,8 @@ pub fn hotkey_names() -> [&'static str; HOTKEY_COUNT] {
             "螢幕畫筆（開 / 關）",
             "回溯錄影（開始 / 存下）",
             "錄影中麥克風靜音 / 取消靜音",
-            "錄影中標記要放大的地方"
+            "錄影中標記要放大的地方",
+            "只抓文字（框選後複製文字）"
         ],
         [
             "Start / stop recording",
@@ -411,7 +423,8 @@ pub fn hotkey_names() -> [&'static str; HOTKEY_COUNT] {
             "Screen pen (on / off)",
             "Replay buffer (start / save the last minutes)",
             "Mute / unmute the microphone while recording",
-            "Mark a spot to zoom in on while recording"
+            "Mark a spot to zoom in on while recording",
+            "Grab text (select an area, copy its text)"
         ]
     )
 }
@@ -1188,6 +1201,11 @@ mod tests {
         // 重播緩衝也是 3.1 新增
         assert_eq!(k.label(6), "Ctrl+Alt+B");
         assert_eq!(serde_json::from_str::<Hotkeys>(old).unwrap().replay, Some(Hotkey::ctrl_alt(0x42)));
+        // 只抓文字是 3.36.6 新增：舊的設定也有預設的 Ctrl+Alt+T，而且不和其他的重複
+        assert_eq!(serde_json::from_str::<Hotkeys>(old).unwrap().text, Some(Hotkey::ctrl_alt(0x54)));
+        assert_eq!(k.label(9), "Ctrl+Alt+T");
+        let d = Hotkeys::default();
+        assert!((0..crate::types::HOTKEY_COUNT).all(|i| d.all()[i].is_none_or(|h| d.conflict(i, &h).is_none())));
     }
 
     #[test]

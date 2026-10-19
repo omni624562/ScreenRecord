@@ -30,8 +30,8 @@ const WM_WAKE: u32 = WM_APP + 2;
 const NIN_BALLOONUSERCLICK: u32 = 0x405;
 /// 圖示加不上去時重試的計時器
 const RETRY_TIMER: usize = 7;
-/// 全域快速鍵的 id：1 錄影、2 暫停、3 截圖、4 框選截圖、5 加標記、6 螢幕畫筆、7 回溯錄影、8 麥克風靜音、9 標記要放大的地方（與 Hotkeys::all 的順序相同）
-const HOTKEY_IDS: [i32; crate::types::HOTKEY_COUNT] = [1, 2, 3, 4, 5, 6, 7, 8, 9];
+/// 全域快速鍵的 id：1 錄影、2 暫停、3 截圖、4 框選截圖、5 加標記、6 螢幕畫筆、7 回溯錄影、8 麥克風靜音、9 標記要放大的地方、10 只抓文字（與 Hotkeys::all 的順序相同）
+const HOTKEY_IDS: [i32; crate::types::HOTKEY_COUNT] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
 
 /// 登記全域快速鍵（先取消舊的）；被其他程式占用時登記失敗，停用的視為成功
 fn register_hotkeys(hwnd: HWND, keys: &Hotkeys) -> HotkeyStatus {
@@ -282,6 +282,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                 7 => send_cmd(TrayCommand::Replay),
                 8 => send_cmd(TrayCommand::MuteMic),
                 9 => send_cmd(TrayCommand::ZoomMark),
+                10 => send_cmd(TrayCommand::ScreenshotText),
                 _ => {}
             }
             LRESULT(0)
@@ -455,7 +456,7 @@ fn show_menu() {
             m.add(shot, tr!("編輯上次截圖(&E)…", "&Edit last screenshot…"), TrayCommand::EditLastShot, !st.has_shot, false);
             Menu::sep(shot);
             m.add(shot, tr!("小工具", "Tools"), TrayCommand::Open, true, false);
-            m.add(shot, tr!("只抓文字(&X)…", "Grab te&xt…"), TrayCommand::ScreenshotText, false, false);
+            m.add(shot, &trf!("只抓文字(&X)…{}", "Grab te&xt…{}", tab(&st.keys[9])), TrayCommand::ScreenshotText, false, false);
             m.add(shot, &trf!("螢幕畫筆(&N){}", "Screen pe&n{}", tab(&st.keys[5])), TrayCommand::Pen, false, crate::screen_pen_win::active());
             Menu::sub(root, tr!("截圖(&T)", "Screensho&t"), shot, !st.can_shot);
         }
