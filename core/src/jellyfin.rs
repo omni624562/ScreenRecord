@@ -87,9 +87,10 @@ impl Jellyfin {
         }
     }
 
-    /// 把影片的標籤設成 tags（影片資訊的「標籤」；空的不動 Jellyfin 上的）：取回整筆資料、換掉 Tags 再存回去
-    pub fn set_tags(&self, id: &str, tags: &[String]) -> Result<(), String> {
-        if tags.is_empty() {
+    /// 把影片資訊（標題、說明、類型、年份、標籤；空的不動 Jellyfin 上的）設到這支影片：取回整筆資料、換上去再存回去。
+    /// Jellyfin 預設不用影片檔裡的標題、也不一定讀說明，所以直接寫過去
+    pub fn set_details(&self, id: &str, x: &Extras) -> Result<(), String> {
+        if !x.has_details() {
             return Ok(());
         }
         let body = match self.call(agent().get(&format!("{}/Items/{id}", self.url))) {
@@ -100,7 +101,7 @@ impl Jellyfin {
                 self.call(agent().get(&format!("{}/Users/{uid}/Items/{id}", self.url)))?.into_string().map_err(|e| e.to_string())?
             }
         };
-        let item = with_tags(&body, tags).ok_or_else(|| tr!("Jellyfin 的影片資料看不懂", "Couldn't understand Jellyfin's item data").to_string())?;
+        let item = with_details(&body, x).ok_or_else(|| tr!("Jellyfin 的影片資料看不懂", "Couldn't understand Jellyfin's item data").to_string())?;
         self.call_body(agent().post(&format!("{}/Items/{id}", self.url)), &item).map(|_| ())
     }
 
@@ -136,13 +137,13 @@ impl Jellyfin {
             ids
         };
         let mut notes = vec![tr!("✓ Jellyfin 已收到", "✓ Jellyfin has it").to_string()];
-        if !extras.tags.is_empty() {
-            let failed = ids.iter().filter_map(|id| self.set_tags(id, &extras.tags).err()).next();
+        if extras.has_details() {
+            let failed = ids.iter().filter_map(|id| self.set_details(id, extras).err()).next();
             notes.push(match failed {
-                None => trf!("標籤：{}", "tags: {}", extras.tags.join("、")),
+                None => tr!("影片資訊已更新", "details updated").to_string(),
                 Some(e) => {
-                    crate::warn!("[Jellyfin] 設定 {file_name} 的標籤失敗：{e}");
-                    trf!("標籤沒有設好：{e}", "tags not set: {e}")
+                    crate::warn!("[Jellyfin] 設定 {file_name} 的影片資訊失敗：{e}");
+                    trf!("影片資訊沒有設好：{e}", "details not set: {e}")
                 }
             });
         }
@@ -176,7 +177,7 @@ impl Jellyfin {
             return Ok(ids);
         }
         for id in &ids {
-            let url = format!("{}/Items/{id}/Refresh?metadataRefreshMode=FullRefresh&imageRefreshMode=FullRefresh&replaceAllMetadata=true&replaceAllImages=true", self.url);
+            let url = format!("{}/Items/{id}/Refresh?metadataRefreshMode=Default&imageRefreshMode=FullRefresh&replaceAllMetadata=false&replaceAllImages=true", self.url);
             self.call(agent().post(&url))?;
         }
         Ok(ids)
@@ -201,13 +202,33 @@ impl Jellyfin {
 pub struct Extras {
     pub tags: Vec<String>,
     pub chapters: bool,
+    /// 影片資訊的標題、說明、類型、年份（空的不動 Jellyfin 上的）
+    pub title: String,
+    pub overview: String,
+    pub genres: Vec<String>,
+    pub year: Option<i32>,
 }
 
 impl Extras {
-    /// 從影片的 ffmetadata 讀出（keywords、[CHAPTER]）
+    /// 從影片的 ffmetadata 讀出（標題、說明、類型、年份、keywords、[CHAPTER]）
     pub fn from_ffmetadata(text: &str) -> Extras {
-        let tags = text.lines().find_map(|l| l.strip_prefix("keywords=").or_else(|| l.strip_prefix("KEYWORDS="))).map(|v| crate::video_tags::split_genres(&v.replace("\\;", ";"))).unwrap_or_default();
-        Extras { tags, chapters: text.lines().any(|l| l.trim() == "[CHAPTER]") }
+        let m: std::collections::HashMap<String, String> = crate::video_tags::parse_ffmetadata(text).into_iter().map(|(k, v)| (k.to_lowercase(), v.trim().to_string())).collect();
+        let get = |k: &str| m.get(k).cloned().unwrap_or_default();
+        let overview = if get("comment").is_empty() { get("description") } else { get("comment") };
+        let year = get("date").chars().take(4).collect::<String>().parse().ok().filter(|y| (1900..=2999).contains(y));
+        Extras {
+            tags: crate::video_tags::split_genres(&get("keywords")),
+            chapters: text.lines().any(|l| l.trim() == "[CHAPTER]"),
+            title: get("title"),
+            overview,
+            genres: crate::video_tags::split_genres(&get("genre")),
+            year,
+        }
+    }
+
+    /// 有影片資訊要設到 Jellyfin
+    pub fn has_details(&self) -> bool {
+        !self.tags.is_empty() || !self.title.is_empty() || !self.overview.is_empty() || !self.genres.is_empty() || self.year.is_some()
     }
 
     /// 讀影片（FFmpeg 讀不到時當作沒有）
@@ -224,10 +245,25 @@ impl Extras {
     }
 }
 
-/// 整筆影片資料換掉 Tags（其他欄位照原樣送回去，不然 Jellyfin 會清掉）
-pub fn with_tags(item_json: &str, tags: &[String]) -> Option<String> {
+/// 整筆影片資料換上影片資訊：標題、說明、類型、年份、標籤（空的照舊；其他欄位照原樣送回去，不然 Jellyfin 會清掉）
+pub fn with_details(item_json: &str, x: &Extras) -> Option<String> {
     let mut v: Value = serde_json::from_str(item_json).ok()?;
-    v.as_object_mut()?.insert("Tags".into(), Value::from(tags.to_vec()));
+    let o = v.as_object_mut()?;
+    if !x.title.is_empty() {
+        o.insert("Name".into(), Value::from(x.title.clone()));
+    }
+    if !x.overview.is_empty() {
+        o.insert("Overview".into(), Value::from(x.overview.clone()));
+    }
+    if !x.genres.is_empty() {
+        o.insert("Genres".into(), Value::from(x.genres.clone()));
+    }
+    if let Some(y) = x.year {
+        o.insert("ProductionYear".into(), Value::from(y));
+    }
+    if !x.tags.is_empty() {
+        o.insert("Tags".into(), Value::from(x.tags.clone()));
+    }
     serde_json::to_string(&v).ok()
 }
 
@@ -543,7 +579,7 @@ mod tests {
         assert_eq!(Jellyfin::new(&url, "k").unwrap().refresh_file("Rec_1.mp4").unwrap(), 2);
         let req = h.join().unwrap();
         assert!(req[0].starts_with("GET /Items?recursive=true&") && req[0].contains("fields=Path"), "{req:?}");
-        assert!(req[1].starts_with("POST /Items/a1/Refresh?metadataRefreshMode=FullRefresh&imageRefreshMode=FullRefresh&replaceAllMetadata=true&replaceAllImages=true"), "{req:?}");
+        assert!(req[1].starts_with("POST /Items/a1/Refresh?metadataRefreshMode=Default&imageRefreshMode=FullRefresh&replaceAllMetadata=false&replaceAllImages=true"), "{req:?}");
         assert!(req[2].starts_with("POST /Items/c3/Refresh?"), "{req:?}");
         // Jellyfin 還沒有這支：請它掃描媒體庫
         let (url, h) = serve_seq(vec![("200 OK", r#"{"Items":[]}"#.to_string()), ("204 No Content", String::new())]);
@@ -631,21 +667,31 @@ mod tests {
     #[test]
     fn extras_tags_links_and_chapter_task() {
         let meta = ";FFMETADATA1\ntitle=x\nkeywords=報價\\; 新人、報價\n[CHAPTER]\nTIMEBASE=1/1000\n";
-        assert_eq!(Extras::from_ffmetadata(meta), Extras { tags: vec!["報價".into(), "新人".into()], chapters: true });
+        assert_eq!(Extras::from_ffmetadata(meta), Extras { tags: vec!["報價".into(), "新人".into()], chapters: true, title: "x".into(), ..Default::default() });
+        let x = Extras::from_ffmetadata(";FFMETADATA1\nTITLE=報價單怎麼填\ncomment=第一行\\\n第二行\ngenre=教學; 業務\ndate=2026-10-19\n");
+        assert_eq!((x.title.as_str(), x.overview.as_str(), x.genres.clone(), x.year), ("報價單怎麼填", "第一行\n第二行", vec!["教學".to_string(), "業務".into()], Some(2026)));
         assert_eq!(Extras::from_ffmetadata(";FFMETADATA1\n"), Extras::default());
         let jf = Jellyfin::new("nas:8096", "k").unwrap();
         assert_eq!(jf.link("abc", Some("s1")), "http://nas:8096/web/#/details?id=abc&serverId=s1");
         assert_eq!(jf.link("abc", None), "http://nas:8096/web/#/details?id=abc");
-        let item = with_tags(r#"{"Id":"abc","Name":"Rec","Genres":["教學"],"Tags":["old"]}"#, &["新".into()]).unwrap();
+        let item = with_details(
+            r#"{"Id":"abc","Name":"Rec","Overview":"舊","Genres":["教學"],"Tags":["old"]}"#,
+            &Extras { tags: vec!["新".into()], title: "報價單".into(), year: Some(2026), ..Default::default() },
+        )
+        .unwrap();
         let v: Value = serde_json::from_str(&item).unwrap();
         assert_eq!(v["Tags"], serde_json::json!(["新"]));
+        assert_eq!(v["Name"], "報價單");
+        assert_eq!(v["ProductionYear"], 2026);
+        // 沒填的照舊
         assert_eq!(v["Genres"], serde_json::json!(["教學"]));
+        assert_eq!(v["Overview"], "舊");
         assert_eq!(task_id(r#"[{"Key":"Other","Id":"1"},{"Key":"RefreshChapterImages","Id":"42"}]"#, "RefreshChapterImages").as_deref(), Some("42"));
         assert!(chapter_images_enabled(r#"[{"LibraryOptions":{"EnableChapterImageExtraction":false}},{"LibraryOptions":{"EnableChapterImageExtraction":true}}]"#));
         assert!(!chapter_images_enabled(r#"[{"LibraryOptions":{}}]"#));
         // 標籤：取回整筆、換掉 Tags 再送回去
         let (url, h) = serve_seq(vec![("200 OK", r#"{"Id":"abc","Name":"Rec","Tags":[]}"#.to_string()), ("204 No Content", String::new())]);
-        Jellyfin::new(&url, "k").unwrap().set_tags("abc", &["新".into()]).unwrap();
+        Jellyfin::new(&url, "k").unwrap().set_details("abc", &Extras { tags: vec!["新".into()], ..Default::default() }).unwrap();
         let req = h.join().unwrap();
         assert!(req[0].starts_with("GET /Items/abc "), "{req:?}");
         assert!(req[1].starts_with("POST /Items/abc "), "{req:?}");
