@@ -1,5 +1,5 @@
 //! 一支錄影（影片、聲音檔）能做的事：主畫面卡片、全部錄影、檢視器共用同一份清單，
-//! 名稱、圖示、分組、順序都一樣。各處只差在直接露出幾個（播放、剪輯、製作、傳到媒體庫），
+//! 名稱、圖示、分組、順序都一樣。各處只差在直接露出幾個（播放、剪輯、製作、傳到媒體庫、資料夾），
 //! 其他在「⋯」裡、順序不變，所以在哪裡學會的，到別的地方也找得到
 
 use super::theme::{Btn, Icon};
@@ -48,10 +48,10 @@ impl Node {
         }
     }
 
-    /// 卡片、清單的每一列直接露出的那幾個：播放、剪輯、製作、傳到媒體庫
+    /// 卡片、清單的每一列直接露出的那幾個：播放、剪輯、製作、傳到媒體庫、在資料夾中顯示（常用的都要一按就到）
     pub fn quick(&self) -> bool {
         match self {
-            Node::One(i) => matches!(i.action, EntryAction::Play | EntryAction::PlayHere | EntryAction::Edit | EntryAction::SendToLibrary),
+            Node::One(i) => matches!(i.action, EntryAction::Play | EntryAction::PlayHere | EntryAction::Edit | EntryAction::SendToLibrary | EntryAction::Reveal),
             Node::Sub { items, .. } => items.iter().any(|i| i.action == EntryAction::Export),
         }
     }
@@ -305,7 +305,7 @@ pub fn menu(ui: &mut egui::Ui, groups: &[Vec<Node>]) -> Option<EntryAction> {
 pub fn quick_icons(ui: &mut egui::Ui, groups: &[Vec<Node>], hot: bool, more_tip: &str) -> Option<EntryAction> {
     let mut pick = None;
     let quick: Vec<&Node> = groups.iter().flatten().filter(|n| n.quick()).collect();
-    for slot in 0..4 {
+    for slot in 0..5 {
         let n = quick.iter().find(|n| slot_of(n) == slot);
         let Some(n) = n else {
             ui.add_space(28.0);
@@ -344,13 +344,14 @@ pub fn quick_icons(ui: &mut egui::Ui, groups: &[Vec<Node>], hot: bool, more_tip:
     pick
 }
 
-/// 直接露出的圖示固定的位置：播放、剪輯、製作、傳到媒體庫
+/// 直接露出的圖示固定的位置：播放、剪輯、製作、傳到媒體庫、在資料夾中顯示
 fn slot_of(n: &Node) -> usize {
     match n {
         Node::One(it) => match it.action {
             EntryAction::Play | EntryAction::PlayHere => 0,
             EntryAction::Edit => 1,
-            _ => 3,
+            EntryAction::SendToLibrary => 3,
+            _ => 4,
         },
         Node::Sub { .. } => 2,
     }
