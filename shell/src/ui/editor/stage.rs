@@ -116,7 +116,7 @@ fn stamp_overlay(ed: &Editor, painter: &egui::Painter, rect: Rect, uv: Rect) {
 
 pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, stage_h: f32) {
     let avail_w = ui.available_width();
-    // 截圖的「輸出」分頁：大畫面顯示輸出的樣子（背景、圓角、陰影、外框都看得清楚）
+    // 截圖的「外觀與輸出」分頁：大畫面顯示輸出的樣子（背景、圓角、陰影、外框都看得清楚）
     if ed.is_shot() && ed.tab == Tab::Output {
         if let Some(tex) = super::shot::output_texture(ed) {
             let (outer, _) = ui.allocate_exact_size(vec2(avail_w, stage_h), Sense::hover());

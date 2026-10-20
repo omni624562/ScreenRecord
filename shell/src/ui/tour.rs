@@ -474,13 +474,13 @@ fn content(app: &UiApp, t: &Tour) -> (Option<Spot>, String, String, Go) {
             let has = app.recent.as_ref().is_some_and(|r| !r.items.is_empty());
             let body = if t.recorded && has {
                 tr!(
-                    "剛錄好的在這裡。下面一排是：播放、剪輯（剪掉頭尾、加標註）、製作（加速版、GIF、壓縮）、傳到媒體庫；複製檔案、改名等其他功能在「⋯」，也可以按右鍵。",
-                    "Your new recording is here. The buttons below are Play, Edit (trim, annotate), Make (sped-up video, GIF, compress) and Send to library; copy file, rename and more are under ⋯ or a right-click."
+                    "剛錄好的在這裡。下面一排是：播放、剪輯（剪掉頭尾、加標註）、製作（加速版、GIF、壓縮）、傳到媒體庫、在資料夾中顯示；複製檔案、改名等其他功能在「⋯」，也可以按右鍵。",
+                    "Your new recording is here. The buttons below are Play, Edit (trim, annotate), Make (sped-up video, GIF, compress), Send to library and Show in folder; copy file, rename and more are under ⋯ or a right-click."
                 )
             } else {
                 tr!(
-                    "錄好的影片會出現在這裡。下面一排是：播放、剪輯、製作（加速版、GIF、壓縮）、傳到媒體庫；其他功能在「⋯」，也可以按右鍵。右邊「全部錄影」看以前錄的。",
-                    "Your recordings appear here. The buttons below are Play, Edit, Make (sped-up video, GIF, compress) and Send to library; everything else is under ⋯ or a right-click. “All recordings” on the right shows older ones."
+                    "錄好的影片會出現在這裡。下面一排是：播放、剪輯、製作（加速版、GIF、壓縮）、傳到媒體庫、在資料夾中顯示；其他功能在「⋯」，也可以按右鍵。右邊「檔案庫 → 錄影」看以前錄的。",
+                    "Your recordings appear here. The buttons below are Play, Edit, Make (sped-up video, GIF, compress), Send to library and Show in folder; everything else is under ⋯ or a right-click. “Library → Videos” on the right shows older ones."
                 )
             };
             (Some(if has { Spot::RecentCard } else { Spot::Recent }), tr!("在「最近錄影」播放、剪輯", "Play and edit in “Recent recordings”").into(), body.into(), next())
@@ -489,8 +489,8 @@ fn content(app: &UiApp, t: &Tour) -> (Option<Spot>, String, String, Go) {
             Some(Spot::Shot),
             tr!("截圖", "Screenshots").into(),
             trf!(
-                "「框選截圖」{}在螢幕上拖曳框選一塊（或點一下視窗），存成圖片並複製到剪貼簿，可以直接貼上。旁邊的箭頭還有延遲截圖、長截圖、步驟截圖等。截過的圖在右下角的「全部截圖」。",
-                "“Select area”{} lets you drag over part of the screen (or click a window); it's saved as an image and copied to the clipboard, ready to paste. The arrow next to it has delayed, scrolling and step screenshots. Find your screenshots under “All screenshots” at the bottom right.",
+                "「框選截圖」{}在螢幕上拖曳框選一塊（或點一下視窗），存成圖片並複製到剪貼簿，可以直接貼上。旁邊的箭頭還有延遲截圖、長截圖、步驟截圖等。截過的圖在右下角的「檔案庫 → 截圖」。",
+                "“Select area”{} lets you drag over part of the screen (or click a window); it's saved as an image and copied to the clipboard, ready to paste. The arrow next to it has delayed, scrolling and step screenshots. Find your screenshots under “Library → Screenshots” at the bottom right.",
                 key(app, 3)
             ),
             next(),
@@ -499,8 +499,8 @@ fn content(app: &UiApp, t: &Tour) -> (Option<Spot>, String, String, Go) {
             Some(Spot::Settings),
             tr!("完成了！", "You're all set!").into(),
             tr!(
-                "畫質、每秒張數、儲存位置、快速鍵都在「設定」。之後第一次打開剪輯、截圖編輯、全部截圖時，也會有幾步小提示。想再看一次這個教學：「設定 → 關於 → 重新看教學」。",
-                "Quality, frame rate, save location and shortcuts are in “Settings”. The first time you open the editor, screenshot editing or All screenshots, you'll get a few quick tips too. To see this tutorial again: Settings → About → “Replay tutorial”."
+                "畫質、每秒張數、存檔位置、快速鍵、語言都在「設定」；回溯錄影、排程錄影、講稿小視窗在右上角「更多工具」。之後第一次打開剪輯、截圖編輯、全部截圖時，也會有幾步小提示。想再看一次這個教學：「設定 → 關於 → 重新看教學」。",
+                "Quality, frame rate, where files are saved, shortcuts and language are in “Settings”; the replay buffer, scheduled recording and the script window are under “More tools” at the top right. The first time you open the editor, screenshot editing or All screenshots, you'll get a few quick tips too. To see this tutorial again: Settings → About → “Replay tutorial”."
             )
             .into(),
             Go::Button(tr!("開始使用", "Get started").into()),

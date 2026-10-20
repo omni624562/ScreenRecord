@@ -38,22 +38,22 @@ enum Try {
 fn items(_app: &UiApp) -> Vec<(String, String, Try)> {
     vec![
         (
-            tr!("設定分得更清楚", "Clearer settings").into(),
+            tr!("剪輯：拖過去就選好一段", "Editor: drag to select").into(),
             tr!(
-                "設定分成 10 頁：語言、外觀、介面大小、開機啟動在「一般」；截圖的選項有自己的一頁；「進階」只剩擷取與編碼、疑難排解。",
-                "Settings now have 10 pages: language, appearance, interface size and startup are under General; screenshots have their own page; Advanced keeps only capture, encoding and troubleshooting."
+                "在時間軸的縮圖上拖過一段就選好了，不用再按住 Shift；按「刪除這段」或 Delete 就剪掉。「修剪」分頁一開始就寫好 3 個步驟。",
+                "Drag across the timeline thumbnails to select a section; no Shift needed. Press “Delete section” or Delete to cut it. The Trim tab now starts with three simple steps."
             )
             .into(),
-            Try::Settings(Page::General),
+            Try::None,
         ),
         (
-            tr!("存檔與分享：媒體庫", "Saving & sharing: Media library").into(),
+            tr!("剪輯：控制列一排就好", "Editor: one control row").into(),
             tr!(
-                "媒體庫資料夾（NAS、Jellyfin）和 Jellyfin 的設定都在「存檔與分享」。選了資料夾不一定要錄完自動傳：在「錄完自動處理」另外打開就好，只用「傳到媒體庫」手動傳也可以。",
-                "The library folder (NAS, Jellyfin) and the Jellyfin settings are under Saving & sharing. Choosing a folder no longer means every recording is copied automatically: turn that on in After recording, or just use “Send to library” by hand."
+                "時間軸下方的按鈕收成一排，影片畫面大一點；章節移到「字幕」分頁，加標記一樣按 M。",
+                "The buttons under the timeline fit in one row, so the video is bigger. Chapters moved to the Subtitles tab; press M to add a marker as before."
             )
             .into(),
-            Try::Settings(Page::Save),
+            Try::None,
         ),
     ]
 }
