@@ -609,11 +609,11 @@ impl Player {
             let mut used_gpu = try_gpu;
             if try_gpu {
                 if first {
-                    crate::info!("[播放] 在顯示卡縮小畫面：{}", spec.path);
+                    crate::info!("[播放] 在顯示卡縮小畫面：{}", crate::jellyfin::redact(&spec.path));
                 } else if inner.lock().unwrap().gen == gen {
                     // 顯示卡或 FFmpeg 不支援（例如太舊的顯示卡解不了 HEVC 10-bit）：改用一般方式，之後也不再試
                     gpu_failed.store(true, Ordering::Relaxed);
-                    crate::info!("[播放] 無法在顯示卡縮小畫面，改用一般方式：{}", spec.path);
+                    crate::info!("[播放] 無法在顯示卡縮小畫面，改用一般方式：{}", crate::jellyfin::redact(&spec.path));
                     used_gpu = false;
                     let Some(o) = start(false) else { return };
                     out = o;

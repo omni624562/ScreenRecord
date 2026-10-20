@@ -1273,6 +1273,7 @@ fn more_tools(app: &mut UiApp, ui: &mut Ui, active: bool) {
         .show(ui);
     let mut schedule = false;
     let mut notes = false;
+    let mut jellyfin = false;
     egui::Popup::menu(&resp).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
         ui.set_min_width(220.0);
         if !active {
@@ -1308,6 +1309,15 @@ fn more_tools(app: &mut UiApp, ui: &mut Ui, active: bool) {
             notes = true;
             ui.close();
         }
+        if app.jellyfin().is_some()
+            && ui
+                .button(tr!("瀏覽 Jellyfin…", "Browse Jellyfin…"))
+                .on_hover_text(tr!("看 Jellyfin 上的影片（家人傳上去的也看得到），點了就在這裡播放", "Watch videos on Jellyfin (including ones family uploaded) right here"))
+                .clicked()
+        {
+            jellyfin = true;
+            ui.close();
+        }
         if !active && app.presets.is_empty() {
             ui.add_enabled_ui(!app.locked(), |ui| {
                 ui.menu_button(tr!("設定組合", "Presets"), |ui| super::presets::menu_body(app, ui));
@@ -1319,6 +1329,9 @@ fn more_tools(app: &mut UiApp, ui: &mut Ui, active: bool) {
     }
     if notes {
         super::notes::toggle(app);
+    }
+    if jellyfin {
+        super::jellyfin_browse::open(app);
     }
 }
 

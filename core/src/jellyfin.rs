@@ -251,6 +251,81 @@ impl Jellyfin {
             .ok_or_else(|| tr!("Jellyfin 沒有使用者", "Jellyfin has no users").to_string())
     }
 
+    /// 瀏覽用的使用者：有選「星號同步到」的帳號就用它（看得到它的觀看紀錄），不然用第一個管理員
+    pub fn browse_user(&self, preferred: &str) -> Result<String, String> {
+        if preferred.is_empty() {
+            self.admin_id()
+        } else {
+            Ok(preferred.to_string())
+        }
+    }
+
+    /// 這個使用者看得到的媒體庫（最上層）
+    pub fn views(&self, user: &str) -> Result<Vec<JfItem>, String> {
+        let body = self.call(agent().get(&format!("{}/Users/{user}/Views", self.url)))?.into_string().map_err(|e| e.to_string())?;
+        Ok(parse_items(&body).0.into_iter().map(|i| JfItem { kind: JfKind::Folder, ..i }).collect())
+    }
+
+    /// 一個資料夾（媒體庫、合集）裡的東西：資料夾在前，影片依日期新的在前；search 不是空的時找整個伺服器。
+    /// 回傳（這一頁, 全部幾個）
+    pub fn items(&self, user: &str, parent: Option<&str>, search: &str, start: usize, limit: usize) -> Result<(Vec<JfItem>, usize), String> {
+        let mut req = agent()
+            .get(&format!("{}/Users/{user}/Items", self.url))
+            .query("fields", "Path,MediaStreams,DateCreated,PremiereDate,ChildCount")
+            .query("startIndex", &start.to_string())
+            .query("limit", &limit.to_string())
+            .query("enableImageTypes", "Primary")
+            .query("imageTypeLimit", "1");
+        let search = search.trim();
+        if search.is_empty() {
+            req = req.query("sortBy", "IsFolder,PremiereDate,DateCreated,SortName").query("sortOrder", "Descending,Descending,Descending,Ascending");
+            if let Some(p) = parent {
+                req = req.query("parentId", p);
+            }
+        } else {
+            req = req.query("searchTerm", search).query("recursive", "true").query("includeItemTypes", "Video,Movie,Episode,MusicVideo,Folder,BoxSet");
+        }
+        let body = self.call(req)?.into_string().map_err(|e| e.to_string())?;
+        Ok(parse_items(&body))
+    }
+
+    /// 串流播放的網址（原檔直接傳過來，不在 NAS 上轉檔；可以跳著看）
+    pub fn stream_url(&self, id: &str) -> String {
+        format!("{}/Videos/{id}/stream?static=true&api_key={}", self.url, self.key)
+    }
+
+    /// 清單上的縮圖（寬 400 以內的 JPEG）；沒有時 None
+    pub fn poster(&self, id: &str) -> Option<Vec<u8>> {
+        let r = self.call(agent().get(&format!("{}/Items/{id}/Images/Primary", self.url)).query("fillWidth", "400").query("quality", "80")).ok()?;
+        let mut buf = vec![];
+        std::io::Read::read_to_end(&mut std::io::Read::take(r.into_reader(), 8 << 20), &mut buf).ok()?;
+        (!buf.is_empty()).then_some(buf)
+    }
+
+    /// 從 Jellyfin 刪掉這支影片（伺服器上的檔案也一起刪，不會進資源回收筒）
+    pub fn delete_item(&self, id: &str) -> Result<(), String> {
+        match self.auth(agent().delete(&format!("{}/Items/{id}", self.url))).call() {
+            Ok(_) => Ok(()),
+            Err(ureq::Error::Status(401 | 403, _)) => {
+                Err(tr!("Jellyfin 不允許刪除：到 Jellyfin 控制台 → 使用者，打開「允許刪除媒體」", "Jellyfin doesn't allow deleting: in the Jellyfin Dashboard → Users, turn on “Allow media deletion”")
+                    .into())
+            }
+            Err(e) => Err(describe(&e)),
+        }
+    }
+
+    /// 串流網址裡的影片編號（/Videos/{id}/stream）
+    pub fn item_of_stream(url: &str) -> Option<String> {
+        let rest = url.split("/Videos/").nth(1)?;
+        let id = rest.split('/').next()?;
+        (!id.is_empty()).then(|| id.to_string())
+    }
+
+    /// 在程式裡看完了：標成這個使用者看過（Jellyfin 的「已看過」、家人看過了沒都會更新）
+    pub fn mark_played(&self, user: &str, id: &str) -> Result<(), String> {
+        self.call(agent().post(&format!("{}/Users/{user}/PlayedItems/{id}", self.url))).map(|_| ())
+    }
+
     /// Jellyfin 的使用者（編號, 名稱）：星號同步選「我的帳號」用
     pub fn users(&self) -> Result<Vec<(String, String)>, String> {
         let body = self.call(agent().get(&format!("{}/Users", self.url)))?.into_string().map_err(|e| e.to_string())?;
@@ -678,6 +753,87 @@ pub fn server_path(server_root: &str, local_root: &str, local_dir: &std::path::P
         out.push(sep);
     }
     Some(out)
+}
+
+/// Jellyfin 上的一個東西：資料夾（媒體庫、資料夾、合集）或影片
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JfKind {
+    Folder,
+    Video,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct JfItem {
+    pub id: String,
+    pub name: String,
+    pub kind: JfKind,
+    /// 影片的檔名（播放時判斷格式用）；資料夾是空的
+    pub file_name: String,
+    /// 秒；資料夾 0
+    pub duration: f64,
+    pub width: u32,
+    pub height: u32,
+    pub fps: f64,
+    pub has_audio: bool,
+    /// YYYY-MM-DD（首映日期，沒有時加入日期）
+    pub date: String,
+    /// 這個使用者看過了
+    pub played: bool,
+    /// 資料夾裡有幾個
+    pub children: u32,
+    pub has_image: bool,
+}
+
+/// 把 Jellyfin 的網址參數 api_key 遮掉（寫進記錄檔時用）
+pub fn redact(text: &str) -> String {
+    match text.find("api_key=") {
+        Some(i) => {
+            let end = text[i..].find('&').map_or(text.len(), |j| i + j);
+            format!("{}api_key=…{}", &text[..i], &text[end..])
+        }
+        None => text.to_string(),
+    }
+}
+
+/// /Items、/Views 的回應：（東西, 全部幾個）。照片、音樂等不是影片也不是資料夾的略過
+pub fn parse_items(json: &str) -> (Vec<JfItem>, usize) {
+    let Ok(v) = serde_json::from_str::<Value>(json) else { return (vec![], 0) };
+    let total = v.get("TotalRecordCount").and_then(Value::as_u64).unwrap_or(0) as usize;
+    let items = v
+        .get("Items")
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(|i| {
+                    let kind = match i.get("Type").and_then(Value::as_str).unwrap_or("") {
+                        "Video" | "Movie" | "Episode" | "MusicVideo" => JfKind::Video,
+                        _ if i.get("IsFolder").and_then(Value::as_bool) == Some(true) => JfKind::Folder,
+                        _ => return None,
+                    };
+                    let streams = i.get("MediaStreams").and_then(Value::as_array).cloned().unwrap_or_default();
+                    let video = streams.iter().find(|s| s.get("Type").and_then(Value::as_str) == Some("Video") && s.get("IsExternal").and_then(Value::as_bool) != Some(true));
+                    let num = |s: Option<&Value>, k: &str| s.and_then(|s| s.get(k)).and_then(Value::as_f64).unwrap_or(0.0);
+                    let date = ["PremiereDate", "DateCreated"].iter().find_map(|k| i.get(*k).and_then(Value::as_str)).and_then(|d| d.get(..10)).unwrap_or("").to_string();
+                    Some(JfItem {
+                        id: i.get("Id")?.as_str()?.to_string(),
+                        name: i.get("Name").and_then(Value::as_str).unwrap_or("?").to_string(),
+                        kind,
+                        file_name: i.get("Path").and_then(Value::as_str).and_then(|p| p.rsplit(['/', '\\']).next()).unwrap_or("").to_string(),
+                        duration: i.get("RunTimeTicks").and_then(Value::as_f64).unwrap_or(0.0) / 1e7,
+                        width: num(video, "Width") as u32,
+                        height: num(video, "Height") as u32,
+                        fps: [num(video, "RealFrameRate"), num(video, "AverageFrameRate")].into_iter().find(|f| *f > 0.0).unwrap_or(30.0),
+                        has_audio: streams.iter().any(|s| s.get("Type").and_then(Value::as_str) == Some("Audio")),
+                        date,
+                        played: i.pointer("/UserData/Played").and_then(Value::as_bool) == Some(true),
+                        children: i.get("ChildCount").and_then(Value::as_u64).unwrap_or(0) as u32,
+                        has_image: i.pointer("/ImageTags/Primary").is_some(),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    (items, total)
 }
 
 /// 家人看過了沒、我的最愛（Jellyfin::watch_state）
@@ -1913,5 +2069,38 @@ mod tests {
         assert_eq!(crate::actions::tv_unfriendly(Some("av1")).as_deref(), Some("AV1"));
         assert_eq!(crate::actions::tv_unfriendly(Some("h264")), None);
         assert_eq!(crate::actions::tv_unfriendly(None), None);
+    }
+
+    #[test]
+    fn jellyfin_items_are_parsed_for_browsing() {
+        let json = r#"{"TotalRecordCount":7,"Items":[
+            {"Id":"f1","Name":"family","Type":"Folder","IsFolder":true,"ChildCount":12,"ImageTags":{}},
+            {"Id":"v1","Name":"練琴","Type":"Video","Path":"/v/family/練琴.mp4","RunTimeTicks":1234000000,"PremiereDate":"2026-10-12T06:57:33Z",
+             "MediaStreams":[{"Type":"Video","Width":1920,"Height":1080,"RealFrameRate":29.97},{"Type":"Audio"}],"UserData":{"Played":true},"ImageTags":{"Primary":"x"}},
+            {"Id":"p1","Name":"照片","Type":"Photo"}]}"#;
+        let (items, total) = parse_items(json);
+        assert_eq!(total, 7);
+        assert_eq!(items.len(), 2);
+        assert_eq!((items[0].kind, items[0].children, items[0].has_image), (JfKind::Folder, 12, false));
+        let v = &items[1];
+        assert_eq!((v.kind, v.file_name.as_str(), v.width, v.height, v.has_audio, v.played, v.date.as_str()), (JfKind::Video, "練琴.mp4", 1920, 1080, true, true, "2026-10-12"));
+        assert!((v.duration - 123.4).abs() < 1e-6 && (v.fps - 29.97).abs() < 1e-6);
+        let jf = Jellyfin::new("nas:8096", "secret").unwrap();
+        let url = jf.stream_url("v1");
+        assert_eq!(url, "http://nas:8096/Videos/v1/stream?static=true&api_key=secret");
+        assert!(!redact(&url).contains("secret") && redact("x?api_key=s&y=1").ends_with("&y=1"));
+        assert_eq!(Jellyfin::item_of_stream(&url).as_deref(), Some("v1"));
+        assert_eq!(Jellyfin::item_of_stream("D:\\a.mp4"), None);
+    }
+
+    #[test]
+    fn deleting_reports_missing_permission() {
+        let (url, h) = serve_seq(vec![("204 No Content", String::new()), ("403 Forbidden", String::new())]);
+        let jf = Jellyfin::new(&url, "k").unwrap();
+        jf.delete_item("v1").unwrap();
+        let e = jf.delete_item("v2").unwrap_err();
+        assert!(e.contains("允許刪除") || e.contains("Allow media deletion"), "{e}");
+        let got = h.join().unwrap();
+        assert!(got[0].starts_with("DELETE /Items/v1"), "{got:?}");
     }
 }

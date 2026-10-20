@@ -446,6 +446,8 @@ enum Req {
     ChooseDir,
     /// 匯入影片（選檔案；MOV、MKV 等轉成 MP4）
     Import,
+    /// 瀏覽 Jellyfin 上的影片
+    Jellyfin,
     /// 在檔案總管開啟資料夾
     OpenDir(String),
     /// 看哪個資料夾（None = 目前的儲存位置）
@@ -871,6 +873,17 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
             {
                 req = Some(Req::Import);
             }
+            // 瀏覽 Jellyfin 上的影片（家人傳上去的也看得到），在這裡串流播放
+            if !shot
+                && app.jellyfin().is_some()
+                && btn("Jellyfin", Icon::Video, tr!("瀏覽 Jellyfin 上的影片，點了就在這裡播放（不在家也能看）", "Browse videos on Jellyfin and play them here (works away from home too)"))
+                    .small()
+                    .ghost()
+                    .show(ui)
+                    .clicked()
+            {
+                req = Some(Req::Jellyfin);
+            }
             if shot {
                 let b = Btn::new(tr!("整理", "Tidy up")).icon(Icon::ChevD).small().ghost().tooltip(tr!("清理舊截圖、找出相似的截圖", "Clean up old screenshots, find similar ones")).show(ui);
                 egui::Popup::menu(&b).show(|ui| {
@@ -1127,6 +1140,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         Some(Req::Rename(e)) => rename_entry(app, e),
         Some(Req::DeleteSelected) => remove_selected(app),
         Some(Req::Import) => super::import::pick(app),
+        Some(Req::Jellyfin) => super::jellyfin_browse::open(app),
         Some(Req::ChooseDir) => match app.library.as_ref().map(|d| d.kind) {
             Some(Kind::Shot) => super::settings_dialog::choose_shot_dir(app),
             _ => super::settings_dialog::choose_output_dir(app),

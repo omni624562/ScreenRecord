@@ -9,6 +9,7 @@ pub mod entry_menu;
 pub mod export_dialog;
 pub mod import;
 pub mod inline_play;
+pub mod jellyfin_browse;
 pub mod library_dialog;
 pub mod library_send;
 pub mod main_view;
@@ -178,6 +179,8 @@ pub struct UiApp {
     /// Jellyfin 上誰看過哪支、我的最愛（什麼時候讀的）；正在背景讀
     pub jf_watch: Option<(Instant, screenrecorder_core::jellyfin::WatchState)>,
     pub jf_watch_loading: bool,
+    /// 瀏覽 Jellyfin 的視窗
+    pub jf_browse: Option<jellyfin_browse::JfBrowse>,
     pub changelog_open: bool,
     /// 找到的攝影機（None = 還沒找完）；主畫面的攝影機選單與設定視窗共用
     pub cameras: Option<Vec<String>>,
@@ -195,6 +198,14 @@ pub struct UiApp {
     pub recent: Option<LibraryPage>,
     pub recent_page: usize,
     recent_seq: u64,
+    /// 最近錄影上次讀的時間；視窗上次有沒有焦點、檔案庫上次開著沒（從檔案總管、手機同步放進資料夾的影片，
+    /// 程式不會知道：切回視窗、關掉檔案庫、每 2 分鐘重讀一次）
+    recent_at: Instant,
+    was_focused: bool,
+    library_was_open: bool,
+    /// 儲存位置上次的樣子（檔名、大小、修改時間算出來的值）；定時檢查有變才重讀最近錄影
+    recent_sig: Option<u64>,
+    recent_checking: bool,
     pub recent_per_page: usize,
     /// 已知的錄影（最近錄影、全部錄影），操作按鈕用完整資訊
     pub known: HashMap<String, LibraryEntry>,
@@ -328,6 +339,7 @@ impl UiApp {
             pending_busy: false,
             jf_watch: None,
             jf_watch_loading: false,
+            jf_browse: None,
             changelog_open: false,
             cameras: None,
             cameras_loading: false,
@@ -340,6 +352,11 @@ impl UiApp {
             recent: None,
             recent_page: 1,
             recent_seq: 0,
+            recent_at: Instant::now(),
+            was_focused: true,
+            library_was_open: false,
+            recent_sig: None,
+            recent_checking: false,
             recent_per_page: 4,
             known: HashMap::new(),
             export_dlg: None,
@@ -982,6 +999,7 @@ impl UiApp {
     }
 
     pub fn load_recent(&mut self) {
+        self.recent_at = Instant::now();
         self.recent_seq += 1;
         let seq = self.recent_seq;
         let core = self.core.clone();
@@ -996,6 +1014,36 @@ impl UiApp {
                 app.known.insert(e.media.path.clone(), e.clone());
             }
             app.recent = Some(page);
+        });
+    }
+
+    /// 資料夾裡的影片可能被別的程式加進去、刪掉（檔案總管、手機同步）：切回這個視窗、關掉檔案庫時重讀最近錄影；
+    /// 另外每 2 分鐘只看一下資料夾的檔名、大小、時間有沒有變（不讀影片），有變才重讀。錄影中不檢查
+    fn refresh_recent_if_stale(&mut self, ctx: &egui::Context) {
+        let focused = ctx.input(|i| i.viewport().focused).unwrap_or(true);
+        let library_open = self.library.is_some();
+        let back = (focused && !self.was_focused) || (self.library_was_open && !library_open);
+        (self.was_focused, self.library_was_open) = (focused, library_open);
+        if !self.visible || self.recent.is_none() {
+            return;
+        }
+        if back {
+            return self.load_recent();
+        }
+        let recording = self.status.recorder.state != RecorderState::Idle;
+        if recording || self.recent_checking || self.recent_at.elapsed() < Duration::from_secs(120) {
+            return;
+        }
+        self.recent_at = Instant::now();
+        self.recent_checking = true;
+        let (dir, subdirs) = (self.s.out_dir(&self.env), self.s.list_subdirs);
+        self.spawn(async move { tokio::task::spawn_blocking(move || folder_signature(&dir, subdirs)).await.unwrap_or(0) }, |app, sig| {
+            app.recent_checking = false;
+            let changed = app.recent_sig != Some(sig);
+            app.recent_sig = Some(sig);
+            if changed {
+                app.load_recent();
+            }
         });
     }
 
@@ -1410,6 +1458,7 @@ impl eframe::App for UiApp {
         self.watch_window();
         self.flush_settings();
         self.flush_pending();
+        self.refresh_recent_if_stale(ctx);
         self.poll_status();
         self.handle_close(ctx);
         self.apply_theme(ctx);
@@ -1440,13 +1489,14 @@ impl eframe::App for UiApp {
         // 主畫面閒置時不定時重畫：狀態有變化由 watch_status 叫醒，其餘每 5 秒保險一次；視窗隱藏時 2 秒
         self.shown_flag.store(shown, std::sync::atomic::Ordering::Relaxed);
         // 選了攝影機時，主畫面看得到（沒有開著剪輯、檢視、製作、全部錄影）就先顯示攝影機小視窗
-        let covered = self.editor.is_some() || self.viewer.is_some() || self.export_dlg.is_some() || self.library.is_some();
+        let covered = self.editor.is_some() || self.viewer.is_some() || self.export_dlg.is_some() || self.library.is_some() || self.jf_browse.is_some();
         self.core.set_camera_preview((shown && !covered && self.env_ready).then(|| self.s.record_config(&self.env)));
         let busy = self.status.recorder.state != RecorderState::Idle
             || self.editor.is_some()
             || self.viewer.is_some()
             || self.export_dlg.is_some()
             || self.library.is_some()
+            || self.jf_browse.is_some()
             || self.status.export.as_ref().is_some_and(|e| e.state == screenrecorder_core::types::ExportState::Running)
             || matches!(self.status.download.phase, DownloadPhase::Downloading | DownloadPhase::Verifying | DownloadPhase::Extracting)
             || self.status.install.is_some();
@@ -1514,6 +1564,9 @@ impl eframe::App for UiApp {
         if self.library.is_some() {
             library_dialog::show(self, &ctx);
             part(self, "全部錄影");
+        }
+        if self.jf_browse.is_some() {
+            jellyfin_browse::show(self, &ctx);
         }
         inline_play::tick(self, &ctx);
         if self.viewer.is_some() {
@@ -1603,6 +1656,30 @@ async fn watch_changes<T: PartialEq>(every: Duration, shown: Arc<std::sync::atom
         }
         last = Some(now);
     }
+}
+
+/// 資料夾（和子資料夾）裡檔案的樣子：檔名、大小、修改時間算出一個值，只讀目錄不打開檔案
+fn folder_signature(dir: &str, subdirs: bool) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let root = std::path::PathBuf::from(dir);
+    let mut dirs = vec![root.clone()];
+    if subdirs {
+        dirs.extend(screenrecorder_core::library::subdirs_of(&root).into_iter().map(|(d, _)| d));
+    }
+    let mut items: Vec<(String, u64, u128)> = dirs
+        .iter()
+        .filter_map(|d| std::fs::read_dir(d).ok())
+        .flat_map(|rd| rd.flatten())
+        .filter_map(|e| {
+            let m = e.metadata().ok().filter(|m| m.is_file())?;
+            let t = m.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_millis());
+            Some((e.path().display().to_string(), m.len(), t))
+        })
+        .collect();
+    items.sort();
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    items.hash(&mut h);
+    h.finish()
 }
 
 /// 移到資源回收筒（confirm_trash 確認後）：copies 是媒體庫裡也要刪的那一份；notify：刪好後請 Jellyfin 重新掃描
