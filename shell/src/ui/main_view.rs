@@ -2519,9 +2519,13 @@ fn recent_strip(app: &mut UiApp, ui: &mut Ui) {
                 ui.horizontal_centered(|ui| {
                     if items.is_empty() {
                         let dir = app.s.out_dir(&app.env);
-                        // 路徑很長時截斷（滑鼠提示有完整內容），不蓋到右邊的按鈕
-                        let text = trf!("「{dir}」還沒有錄影，按「開始錄影」試試看。", "No recordings in “{dir}” yet. Click “Start recording” to try it.");
-                        ui.add(egui::Label::new(theme::muted(ui, &text)).truncate()).on_hover_text(&text);
+                        // 只寫資料夾名稱（完整路徑在滑鼠提示）；太長時截斷，不蓋到右邊的按鈕
+                        let name = std::path::Path::new(&dir).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| dir.clone());
+                        let text = trf!(
+                            "還沒有錄影。按「開始錄影」錄第一支，錄好會出現在這裡（存在「{name}」資料夾）。",
+                            "No recordings yet. Click “Start recording” to make your first one; it will show up here (saved in the “{name}” folder)."
+                        );
+                        ui.add(egui::Label::new(theme::muted(ui, &text)).truncate()).on_hover_text(&dir);
                     }
                     let dates = date_labels(items.iter().map(|e| (e.media.name.as_str(), e.media.time_ms())));
                     for e in &items {
