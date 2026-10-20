@@ -171,6 +171,13 @@ pub struct UiSettings {
     pub jellyfin_key: String,
     /// 傳到 Jellyfin 後依資料夾放進合集（core::jellyfin::COLLECTIONS_KEY）
     pub jellyfin_collections: bool,
+    /// 傳到媒體庫時 HEVC、AV1 的影片先轉成 H.264（任何電視都能直接播）
+    pub library_h264: bool,
+    /// 星號和這個 Jellyfin 使用者的我的最愛同步（編號、名稱；空的 = 不同步）
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub jellyfin_user: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub jellyfin_user_name: String,
     /// 錄影的命名規則（例如「客戶A_{日期}_{序號}」；空的 = Rec_時間）。core 讀這個欄位
     #[serde(skip_serializing_if = "String::is_empty")]
     pub name_rule: String,
@@ -372,6 +379,9 @@ impl UiSettings {
             jellyfin_url: o.get(screenrecorder_core::jellyfin::URL_KEY).and_then(Value::as_str).unwrap_or("").trim().to_string(),
             jellyfin_key: o.get(screenrecorder_core::jellyfin::API_KEY).and_then(Value::as_str).unwrap_or("").trim().to_string(),
             jellyfin_collections: boolean(screenrecorder_core::jellyfin::COLLECTIONS_KEY).unwrap_or(true),
+            library_h264: boolean("libraryH264").unwrap_or(false),
+            jellyfin_user: o.get("jellyfinUser").and_then(Value::as_str).unwrap_or("").to_string(),
+            jellyfin_user_name: o.get("jellyfinUserName").and_then(Value::as_str).unwrap_or("").to_string(),
             name_rule: o.get(screenrecorder_core::after_record::NAME_RULE_KEY).and_then(Value::as_str).unwrap_or("").chars().take(120).collect(),
             shot_name_rule: o.get(screenrecorder_core::after_record::SHOT_NAME_RULE_KEY).and_then(Value::as_str).unwrap_or("").chars().take(120).collect(),
             after_compress_mb: num("afterCompressMb").map(|v| v as u32).filter(|v| MAX_MB.contains(v)).unwrap_or(0),

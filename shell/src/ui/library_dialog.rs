@@ -1514,9 +1514,11 @@ fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table:
             // 已經傳到媒體庫（NAS 上有同名同大小的一份）、剪輯版：各自固定一欄，上下切齊（設定了媒體庫才留媒體庫那一欄）
             if !app.s.after_copy_to.trim().is_empty() {
                 let at = app.library_where(&e.media.path, e.media.bytes);
-                tag_column(tui, &["Jellyfin", tr!("媒體庫", "Library"), tr!("待傳", "Queued")], |ui| {
+                let watched = if at.is_some() { app.watched_by(&e.media.name) } else { vec![] };
+                // 「Jellyfin」後面可能有看過的眼睛：多留一點寬度
+                tag_column(tui, &["Jellyfin      ", tr!("媒體庫", "Library"), tr!("待傳", "Queued")], |ui| {
                     if let Some(at) = at {
-                        library_chip(ui, app, &at);
+                        library_chip(ui, app, &at, &watched);
                     } else {
                         pending_chip(ui, &e.media.path);
                     }
@@ -1790,14 +1792,28 @@ pub fn no_audio_mark(ui: &mut egui::Ui) -> egui::Response {
 }
 
 /// 已在媒體庫（NAS 上有同名同大小的一份）：綠色標籤，有設定 Jellyfin 時寫「Jellyfin」，滑鼠移上去寫在哪個資料夾
-pub fn library_chip(ui: &mut egui::Ui, app: &UiApp, at: &[String]) -> egui::Response {
+/// watched：在 Jellyfin 誰看過（名稱, 日期）；有人看過時標籤旁邊多一個眼睛
+pub fn library_chip(ui: &mut egui::Ui, app: &UiApp, at: &[String], watched: &[(String, String)]) -> egui::Response {
     let jellyfin = app.jellyfin().is_some();
-    let (text, tip) = if jellyfin {
+    let (text, mut tip) = if jellyfin {
         ("Jellyfin", trf!("已傳到 Jellyfin 的媒體庫：{}", "Already in the Jellyfin library: {}", at.join(tr!("、", ", "))))
     } else {
         (tr!("媒體庫", "Library"), trf!("已傳到媒體庫：{}", "Already in the library: {}", at.join(tr!("、", ", "))))
     };
-    chip(ui, text, Tone::Ok, false).on_hover_text(tip)
+    if !watched.is_empty() {
+        let who: Vec<String> =
+            watched.iter().map(|(n, d)| if d.len() >= 10 { format!("{n}（{}/{}）", d[5..7].trim_start_matches('0'), d[8..10].trim_start_matches('0')) } else { n.clone() }).collect();
+        tip.push_str(&trf!("\n看過：{}", "\nWatched by: {}", who.join(tr!("、", ", "))));
+    } else if jellyfin {
+        tip.push_str(tr!("\n還沒有人看過", "\nNot watched yet"));
+    }
+    let r = chip(ui, text, Tone::Ok, false).on_hover_text(&tip);
+    if !watched.is_empty() {
+        let (rect, resp) = ui.allocate_exact_size(vec2(16.0, 16.0), Sense::hover());
+        theme::paint_icon(ui.painter(), rect, Icon::Eye, theme::pal(ui).ok);
+        resp.on_hover_text(&tip);
+    }
+    r
 }
 
 /// 在待傳清單裡（連不到 NAS，連上後自動傳）：灰色「待傳」標籤
@@ -3062,6 +3078,8 @@ fn remove_selected(app: &mut UiApp) {
 /// 加上 / 移除星號
 pub fn set_star(app: &mut UiApp, path: &str, on: bool) {
     app.core.pins.set(path, on);
+    // Jellyfin 的我的最愛也跟著改
+    app.sync_favorite(path, on);
     // 加上星號就不要留在勾選裡（避免接著刪掉）；只看有星號時重新讀取
     if let Some(d) = &mut app.library {
         if on {

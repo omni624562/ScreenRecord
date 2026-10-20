@@ -425,6 +425,52 @@ impl ImportReport {
 }
 
 /// 轉成 MP4（清單上的 MOV、MKV…）：存在原檔旁邊，原檔保留。回傳轉檔工作的編號
+/// 傳到媒體庫前檢查畫面格式：HEVC、AV1、VP9 這類有些電視、手機不能直接播（Jellyfin 要在 NAS 上即時轉檔，可能卡頓）。
+/// 回傳編碼名稱（顯示用，例如「HEVC」）；H.264 或看不出來時 None
+pub async fn tv_unfriendly_codec(app: &App, path: &str) -> Option<String> {
+    let ffmpeg = app.ffmpeg_path()?;
+    let probe = crate::process::run(&ffmpeg, &["-hide_banner".to_string(), "-i".into(), path.to_string()], std::time::Duration::from_secs(30)).await;
+    tv_unfriendly(crate::import::video_codec(&probe.stderr).as_deref())
+}
+
+/// 不是 H.264 的畫面編碼（顯示用的名稱）；聲音檔、H.264、看不出來時 None
+pub fn tv_unfriendly(codec: Option<&str>) -> Option<String> {
+    match codec? {
+        "h264" | "mjpeg" | "png" => None,
+        "hevc" => Some("HEVC".into()),
+        c => Some(c.to_ascii_uppercase()),
+    }
+}
+
+/// 另存一份 H.264 + AAC 的（傳到媒體庫用，任何電視都能直接播）：放在新的暫存資料夾、檔名不變，旁邊的字幕也複製過去。
+/// 回傳新檔案；呼叫的人用完把它所在的資料夾刪掉
+pub async fn h264_for_library(app: &App, path: &str) -> Result<PathBuf> {
+    let (Some(ffmpeg), Some(enc)) = (app.ffmpeg_path(), app.export_ctx().encoder) else {
+        return Err(Error::config(tr!("FFmpeg 無法使用", "FFmpeg isn't available")));
+    };
+    let dir = crate::paths::unique_temp("ScreenRecorder-h264", "");
+    std::fs::create_dir_all(&dir).map_err(|e| Error::other(e.to_string()))?;
+    let src = Path::new(path);
+    let out = dir.join(src.file_name().unwrap_or_default());
+    let args = crate::import::convert_args(path, &out.display().to_string(), false, &enc);
+    let r = crate::process::run(&ffmpeg, &args, std::time::Duration::from_secs(6 * 3600)).await;
+    if r.code != 0 || !out.is_file() {
+        let _ = std::fs::remove_dir_all(&dir);
+        crate::info!("[傳到資料夾] 轉成 H.264 失敗：{}", r.stderr.trim());
+        return Err(Error::other(tr!("轉成 H.264 失敗（詳見記錄檔）", "Couldn't convert to H.264 (see the log file)")));
+    }
+    // 字幕跟著（傳的時候一起傳）；修改時間和原檔一樣
+    for f in crate::after_record::result_files(path, None).into_iter().filter(|f| f.as_path() != src) {
+        if let Some(n) = f.file_name() {
+            let _ = std::fs::copy(&f, dir.join(n));
+        }
+    }
+    if let Ok(t) = std::fs::metadata(src).and_then(|m| m.modified()) {
+        crate::paths::set_mtime(&out, t);
+    }
+    Ok(out)
+}
+
 pub async fn convert_start(app: &App, path: &str) -> Result<u64> {
     if app.recorder.active() {
         return Err(Error::config(tr!("錄影中無法轉檔，請先停止錄影", "Can't convert while recording. Stop recording first")));

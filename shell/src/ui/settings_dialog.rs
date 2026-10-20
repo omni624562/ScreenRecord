@@ -72,6 +72,8 @@ pub struct SettingsDialog {
     jf_result: Option<Result<(String, Option<screenrecorder_core::jellyfin::LibraryCheck>), String>>,
     /// Jellyfin：一鍵修好媒體庫設定中
     jf_fixing: bool,
+    /// Jellyfin 的使用者（編號, 名稱）：測試連線時讀，「星號同步到」用
+    jf_users: Option<Vec<(String, String)>>,
     /// Jellyfin：在區域網路上找伺服器中 / 找到的（名稱, 網址）
     jf_finding: bool,
     jf_found: Option<Vec<(String, String)>>,
@@ -96,6 +98,7 @@ pub fn open(app: &mut UiApp, page: Page) {
                 jf_testing: false,
                 jf_finding: false,
                 jf_fixing: false,
+                jf_users: None,
                 jf_found: None,
                 jf_result: None,
             })
@@ -1100,11 +1103,14 @@ fn jellyfin_rows(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui, no_folder
                 d.jf_testing = true;
                 d.jf_result = None;
                 // 連上之後順便看媒體庫類型對不對（不是「家庭影片和照片」時提醒）
-                let job = move || jf.test().map(|name| (name, jf.check_library()));
+                let job = move || jf.test().map(|name| (name, jf.check_library(), jf.users().unwrap_or_default()));
                 app.spawn(async move { tokio::task::spawn_blocking(job).await.unwrap_or_else(|e| Err(e.to_string())) }, |app, r| {
                     if let Some(d) = &mut app.settings_dlg {
                         d.jf_testing = false;
-                        d.jf_result = Some(r);
+                        d.jf_result = Some(r.map(|(name, check, users)| {
+                            d.jf_users = Some(users);
+                            (name, check)
+                        }));
                     }
                 });
             }
@@ -1152,7 +1158,46 @@ fn jellyfin_rows(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui, no_folder
             });
         }
     }
+    form_row(ui, "", |ui| {
+        if switch(ui, &mut app.s.library_h264, tr!("傳的時候轉成 H.264", "Convert to H.264 when sending"), true)
+            .on_hover_text(tr!(
+                "HEVC、AV1 的影片有些電視、手機不能直接播，Jellyfin 要在 NAS 上即時轉檔，可能卡頓。打開後傳到媒體庫時先轉成 H.264（要花一點時間，本機的原檔不變）",
+                "Some TVs and phones can't play HEVC or AV1 directly, so Jellyfin converts them on the NAS while playing, which can stutter. When on, such videos are converted to H.264 before sending (takes a while; your original stays as is)"
+            ))
+            .changed()
+        {
+            app.save_settings();
+        }
+    });
+    // 星號和誰的「我的最愛」同步
     if jf.is_some() {
+        let mut users: Vec<(String, String)> = d.jf_users.clone().unwrap_or_default();
+        if !app.s.jellyfin_user.is_empty() && !users.iter().any(|(id, _)| *id == app.s.jellyfin_user) {
+            users.push((app.s.jellyfin_user.clone(), app.s.jellyfin_user_name.clone()));
+        }
+        let mut items: Vec<(usize, String, bool)> = vec![(0, tr!("不同步", "Don't sync").to_string(), true)];
+        items.extend(users.iter().enumerate().map(|(i, (_, n))| (i + 1, n.clone(), true)));
+        let mut cur = users.iter().position(|(id, _)| *id == app.s.jellyfin_user).map_or(0, |i| i + 1);
+        form_row(ui, tr!("星號同步到", "Sync stars to"), |ui| {
+            if form_combo(ui, "jf-user", FORM_CTRL_W, &mut cur, &items) {
+                (app.s.jellyfin_user, app.s.jellyfin_user_name) = if cur == 0 { (String::new(), String::new()) } else { users[cur - 1].clone() };
+                app.save_settings();
+                app.jf_watch = None;
+            }
+            if d.jf_users.is_none() && users.is_empty() {
+                ui.label(RichText::new(tr!("按「測試連線」載入帳號", "Click “Test connection” to load accounts")).font(theme::font(12.0)).color(p.muted));
+            }
+        });
+        if cur > 0 {
+            form_hint(
+                ui,
+                tr!(
+                    "這裡加上、拿掉星號時，這個帳號的「我的最愛」也跟著改；在 Jellyfin 加進我的最愛的，這裡也會加上星號。",
+                    "Starring or unstarring here also updates this account's Favorites, and favorites added in Jellyfin get a star here."
+                ),
+                p.muted,
+            );
+        }
         form_row(ui, "", |ui| {
             if switch(ui, &mut app.s.jellyfin_collections, tr!("依資料夾放進合集", "Add to collections by folder"), true)
                 .on_hover_text(tr!(

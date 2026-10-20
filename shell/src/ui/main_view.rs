@@ -2686,7 +2686,8 @@ fn recent_card(app: &mut UiApp, ui: &mut Ui, e: &LibraryEntry, date: String, w: 
         }
         // 已經傳到媒體庫（Jellyfin）：綠色標籤
         if let Some(at) = app.library_where(&e.media.path, e.media.bytes) {
-            super::library_dialog::library_chip(ui, app, &at);
+            let watched = app.watched_by(&e.media.name);
+            super::library_dialog::library_chip(ui, app, &at, &watched);
         } else {
             super::library_dialog::pending_chip(ui, &e.media.path);
         }

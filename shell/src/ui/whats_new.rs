@@ -38,31 +38,40 @@ enum Try {
 fn items(_app: &UiApp) -> Vec<(String, String, Try)> {
     vec![
         (
-            tr!("不在家也能先「傳」", "Queue sends when you're away").into(),
+            tr!("家人看過了沒", "See who watched").into(),
             tr!(
-                "連不到 NAS 時，傳到媒體庫和錄完自動處理會先記下來，檔案庫標出「待傳」；回家連上 NAS 就自動補傳。傳的時候右下角顯示進度，可以取消，網路中斷也不會留下半支壞檔。",
-                "When the NAS isn't reachable, sends are queued and marked “Queued” in the library; they go out automatically once you're back. A progress bar shows while sending, you can cancel, and a dropped connection never leaves a broken file."
+                "已經在 Jellyfin 的錄影，有人看過時「Jellyfin」標籤旁邊多一個眼睛，滑鼠移上去看誰看過、哪一天看的。",
+                "When someone has watched a recording in Jellyfin, an eye appears next to its “Jellyfin” tag; hover to see who and when."
             )
             .into(),
             Try::Library(false),
         ),
         (
-            tr!("Jellyfin 設定一鍵修好", "Fix Jellyfin settings in one click").into(),
+            tr!("星號和我的最愛同步", "Stars sync with Favorites").into(),
             tr!(
-                "「測試連線」後如果媒體庫類型或選項不對，按「一鍵修好」就改成「家庭影片和照片」並打開即時監控、章節圖片、時間軸預覽縮圖。",
-                "After “Test connection”, if the library type or options aren't right, “Fix it” switches to Home Videos and Photos and turns on real-time monitoring, chapter images and trickplay."
+                "在設定選「星號同步到」哪個 Jellyfin 帳號，這裡的星號和那個帳號的我的最愛就會互相同步。錄影的功能清單也多了「在 Jellyfin 開啟」。",
+                "Pick a Jellyfin account under “Sync stars to” and stars here stay in sync with its Favorites. Recordings also have “Open in Jellyfin”."
             )
             .into(),
             Try::Settings(Page::Save),
         ),
         (
-            tr!("電視上更好看", "Nicer on the TV").into(),
+            tr!("人物、只給大人看", "People and adults only").into(),
             tr!(
-                "傳到 family › 2024 的影片自動放進「family 2024」合集；依錄影時間排序；首頁大圖用封面補上；拖時間軸看得到預覽小畫面。",
-                "Videos sent to family › 2024 go into a “family 2024” collection, sort by when they were recorded, get a backdrop from their cover, and show previews while scrubbing."
+                "「影片資訊」可以填影片裡有誰，Jellyfin 點人名就列出他的影片；勾「只給大人看」，小孩帳號就看不到。",
+                "In Video details, list who's in the video (tap a name in Jellyfin to see their videos), or mark it adults only to hide it from children's profiles."
             )
             .into(),
             Try::None,
+        ),
+        (
+            tr!("電視播不順？傳之前先檢查", "Checked before sending").into(),
+            tr!(
+                "HEVC、AV1 的影片有些電視不能直接播：傳的時候會提醒，也可以在設定打開「傳的時候轉成 H.264」。",
+                "Some TVs can't play HEVC or AV1 directly: you're told when sending, and Settings can convert them to H.264 first."
+            )
+            .into(),
+            Try::Settings(Page::Save),
         ),
     ]
 }

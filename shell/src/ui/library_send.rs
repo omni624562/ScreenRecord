@@ -141,16 +141,14 @@ impl UiApp {
         let file = std::path::PathBuf::from(path);
         let place = place_label(self, sub);
         self.toast(trf!("正在傳到「{place}」：{}", "Sending to “{place}”: {}", dialogs::file_name(path)), false);
-        let ffmpeg = self.core.ffmpeg_path();
         let (key, sub) = (path.to_string(), sub.to_string());
+        let (core, h264) = (self.core.clone(), self.s.library_h264);
         self.spawn(
             async move {
                 if !reachable_bg(&root).await {
                     return None;
                 }
-                // 影片資訊的標籤、有沒有章節：傳好之後設到 Jellyfin
-                let extras = jellyfin::Extras::read(ffmpeg.as_deref(), &file).await;
-                let r = tokio::task::spawn_blocking(move || jellyfin::send_file(jf.as_ref(), &dest, &file, &extras)).await.ok().flatten();
+                let r = send_one(&core, jf, &dest, &file, h264).await;
                 // 傳到一半斷線：也算連不到
                 if matches!(r, Some(Err(_))) && !reachable_bg(&root).await {
                     return None;
@@ -189,7 +187,7 @@ impl UiApp {
         }
         self.pending_busy = true;
         let jf = self.jellyfin();
-        let ffmpeg = self.core.ffmpeg_path();
+        let (core, h264) = (self.core.clone(), self.s.library_h264);
         self.spawn(
             async move {
                 let mut done: Vec<(String, Result<(), String>)> = vec![];
@@ -203,9 +201,7 @@ impl UiApp {
                         done.push((p.file, Ok(())));
                         continue;
                     }
-                    let extras = jellyfin::Extras::read(ffmpeg.as_deref(), &file).await;
-                    let (jf, dest) = (jf.clone(), jellyfin::library_dest(&root, &p.sub));
-                    let r = tokio::task::spawn_blocking(move || jellyfin::send_file(jf.as_ref(), &dest, &file, &extras)).await.ok().flatten();
+                    let r = send_one(&core, jf.clone(), &jellyfin::library_dest(&root, &p.sub), &file, h264).await;
                     let failed = matches!(r, Some(Err(_)));
                     done.push((p.file, r.unwrap_or(Ok(String::new())).map(|_| ())));
                     // 又斷線了：剩下的下次再傳
@@ -239,6 +235,86 @@ impl UiApp {
     pub fn send_auto(&mut self, path: &str) {
         let sub = self.s.after_copy_sub.clone();
         self.send_now(path, &sub);
+    }
+
+    /// 誰在 Jellyfin 看過這支（名稱, 日期）；每 5 分鐘在背景重讀一次（也順便同步我的最愛）
+    pub fn watched_by(&mut self, name: &str) -> Vec<(String, String)> {
+        let jf = self.jellyfin();
+        let fresh = self.jf_watch.as_ref().is_some_and(|(at, _)| at.elapsed() < Duration::from_secs(300));
+        if jf.is_some() && !fresh && !self.jf_watch_loading {
+            self.refresh_watch();
+        }
+        self.jf_watch.as_ref().and_then(|(_, st)| st.watched.get(&name.to_lowercase()).cloned()).unwrap_or_default()
+    }
+
+    /// 重讀 Jellyfin 的觀看紀錄與我的最愛；我的最愛有變化時本機的星號跟著改
+    pub fn refresh_watch(&mut self) {
+        let Some(jf) = self.jellyfin() else { return };
+        self.jf_watch_loading = true;
+        let user = self.s.jellyfin_user.clone();
+        let dirs = vec![self.s.out_dir(&self.env)];
+        let subdirs = self.s.list_subdirs;
+        self.spawn(
+            async move {
+                let st = tokio::task::spawn_blocking(move || jf.watch_state(Some(&user).filter(|u| !u.is_empty()).map(|u| u.as_str()))).await.ok()?.ok()?;
+                // 我的最愛和上次比：新加的本機也加星號，拿掉的本機也拿掉
+                let mut pins: Vec<(String, bool)> = vec![];
+                if st.fav_user.is_some() {
+                    let (added, removed) = jellyfin::favorites_changed(&st.favorites);
+                    if !added.is_empty() || !removed.is_empty() {
+                        let dirs = screenrecorder_core::library::expand_dirs(dirs, subdirs).await;
+                        for (path, name) in local_files(&dirs) {
+                            if added.contains(&name) {
+                                pins.push((path, true));
+                            } else if removed.contains(&name) {
+                                pins.push((path, false));
+                            }
+                        }
+                    }
+                }
+                Some((st, pins))
+            },
+            |app, r| {
+                app.jf_watch_loading = false;
+                let Some((st, pins)) = r else {
+                    // 連不到 Jellyfin：5 分鐘後再試
+                    app.jf_watch = Some((Instant::now(), Default::default()));
+                    return;
+                };
+                for (path, on) in &pins {
+                    if app.core.pins.contains(path) != *on {
+                        app.core.pins.set(path, *on);
+                    }
+                }
+                if !pins.is_empty() {
+                    if let Some(d) = app.library.as_mut() {
+                        d.library_index_changed();
+                    }
+                }
+                app.jf_watch = Some((Instant::now(), st));
+            },
+        );
+    }
+
+    /// 本機改了星號：Jellyfin 我的最愛也跟著改（有選「星號同步到」的帳號、Jellyfin 有這支時）
+    pub fn sync_favorite(&mut self, path: &str, on: bool) {
+        let user = self.s.jellyfin_user.clone();
+        let Some(jf) = self.jellyfin().filter(|_| !user.is_empty()) else { return };
+        let name = dialogs::file_name(path).to_string();
+        self.spawn(async move { tokio::task::spawn_blocking(move || jf.set_favorite(&user, &name, on).map(|n| (n, name))).await.unwrap_or_else(|e| Err(e.to_string())) }, move |app, r| match r {
+            Ok((n, name)) if n > 0 => {
+                jellyfin::favorite_set(&name, on);
+                if let Some((_, st)) = app.jf_watch.as_mut() {
+                    if on {
+                        st.favorites.insert(name.to_lowercase());
+                    } else {
+                        st.favorites.remove(&name.to_lowercase());
+                    }
+                }
+            }
+            Ok(_) => {}
+            Err(e) => screenrecorder_core::warn!("[Jellyfin] 同步我的最愛失敗：{e}"),
+        });
     }
 
     /// 媒體庫的索引（整個媒體庫的檔名、大小）；還沒讀過或太舊時在背景重讀，這次先回傳舊的或 None
@@ -433,6 +509,46 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
     }
 }
 
+/// 傳一支到媒體庫的資料夾 dest：先看畫面格式，HEVC、AV1 這類有些電視不能直接播——h264 時先轉成 H.264 再傳
+/// （NAS 上那一份和本機大小不同，記下對照），不然在結果後面提醒。沒設定媒體庫時 None
+async fn send_one(core: &std::sync::Arc<screenrecorder_core::app::App>, jf: Option<jellyfin::Jellyfin>, dest: &str, file: &std::path::Path, h264: bool) -> Option<Result<String, String>> {
+    let path = file.display().to_string();
+    // 影片資訊的標籤、有沒有章節：傳好之後設到 Jellyfin（從原檔讀，轉檔不一定留得住）
+    let extras = jellyfin::Extras::read(core.ffmpeg_path().as_deref(), file).await;
+    let codec =
+        if screenrecorder_core::video_tags::can_tag(&path) && !path.to_ascii_lowercase().ends_with(".m4a") { screenrecorder_core::actions::tv_unfriendly_codec(core, &path).await } else { None };
+    let mut send = file.to_path_buf();
+    if codec.is_some() && h264 {
+        match screenrecorder_core::actions::h264_for_library(core, &path).await {
+            Ok(p) => send = p,
+            Err(e) => return Some(Err(e.message().to_string())),
+        }
+    }
+    let (dest2, send2) = (dest.to_string(), send.clone());
+    let r = tokio::task::spawn_blocking(move || jellyfin::send_file(jf.as_ref(), &dest2, &send2, &extras)).await.ok().flatten();
+    if send != file {
+        // 轉好的那一份傳完就刪；NAS 上的大小和本機不同，記下是同一支
+        let name = send.file_name().unwrap_or_default().to_string_lossy().into_owned();
+        if let (Ok(a), Ok(b)) = (std::fs::metadata(file), std::fs::metadata(std::path::Path::new(dest).join(&name))) {
+            jellyfin::remember_link(&name, a.len(), b.len());
+        }
+        if let Some(dir) = send.parent() {
+            let _ = std::fs::remove_dir_all(dir);
+        }
+    }
+    match (r, codec) {
+        (Some(Ok(msg)), Some(c)) if !h264 => Some(Ok(format!(
+            "{msg}{}",
+            trf!(
+                "（這支是 {c}：有些電視播放時 NAS 要即時轉檔，可能卡頓。可以在「設定 → 存檔與分享」打開「傳的時候轉成 H.264」）",
+                " (This video is {c}; some TVs make the NAS convert it while playing, which can stutter. Turn on “Convert to H.264 when sending” in Settings → Saving & sharing)"
+            )
+        ))),
+        (Some(Ok(msg)), Some(_)) => Some(Ok(format!("{msg}{}", tr!("（已轉成 H.264，電視都能直接播）", " (converted to H.264 so any TV can play it)")))),
+        (r, _) => r,
+    }
+}
+
 /// 連得到媒體庫資料夾嗎（NAS 沒回應時可能要等好幾秒，在背景執行緒查）
 async fn reachable_bg(root: &str) -> bool {
     let root = root.to_string();
@@ -468,4 +584,14 @@ pub fn transfer_bar(app: &mut UiApp, ctx: &egui::Context) {
     });
     let _ = app;
     ctx.request_repaint_after(Duration::from_millis(250));
+}
+
+/// 這些資料夾裡的影片（路徑, 小寫檔名）
+fn local_files(dirs: &[String]) -> Vec<(String, String)> {
+    dirs.iter()
+        .filter_map(|d| std::fs::read_dir(d).ok())
+        .flat_map(|rd| rd.flatten())
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
+        .map(|e| (e.path().display().to_string(), e.file_name().to_string_lossy().to_lowercase()))
+        .collect()
 }

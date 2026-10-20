@@ -220,6 +220,12 @@ pub fn groups(app: &UiApp, e: &LibraryEntry, place: Place) -> Vec<Vec<Node>> {
     share.push(one(item(EntryAction::SendToLibrary, tr!("傳到媒體庫", "Send to library"), Some(Icon::Upload), &format!("{dest}\n{send_tip}"))));
     if !m4a && app.jellyfin().is_some() {
         share.push(one(item(
+            EntryAction::OpenJellyfin,
+            tr!("在 Jellyfin 開啟", "Open in Jellyfin"),
+            Some(Icon::Video),
+            tr!("用瀏覽器打開這支影片在 Jellyfin 的頁面（要先傳到 Jellyfin 的媒體庫）", "Open this video's Jellyfin page in your browser (send it to the Jellyfin library first)"),
+        )));
+        share.push(one(item(
             EntryAction::JellyfinLink,
             tr!("複製 Jellyfin 連結", "Copy Jellyfin link"),
             Some(Icon::Link),

@@ -251,6 +251,42 @@ impl Jellyfin {
             .ok_or_else(|| tr!("Jellyfin 沒有使用者", "Jellyfin has no users").to_string())
     }
 
+    /// Jellyfin 的使用者（編號, 名稱）：星號同步選「我的帳號」用
+    pub fn users(&self) -> Result<Vec<(String, String)>, String> {
+        let body = self.call(agent().get(&format!("{}/Users", self.url)))?.into_string().map_err(|e| e.to_string())?;
+        Ok(users_of(&body))
+    }
+
+    /// 家人看過了沒、我的最愛：每個使用者看過的影片（小寫檔名 → [(誰, 最後一次看的日期)]），
+    /// fav_user 的我的最愛（小寫檔名）
+    pub fn watch_state(&self, fav_user: Option<&str>) -> Result<WatchState, String> {
+        let mut st = WatchState::default();
+        for (uid, name) in self.users()? {
+            let url = format!("{}/Users/{uid}/Items?recursive=true&includeItemTypes=Movie,Video,MusicVideo,Episode&isPlayed=true&fields=Path&enableImages=false", self.url);
+            let body = self.call(agent().get(&url))?.into_string().map_err(|e| e.to_string())?;
+            for (file, date) in played_items(&body) {
+                st.watched.entry(file).or_default().push((name.clone(), date));
+            }
+        }
+        if let Some(uid) = fav_user.filter(|u| !u.is_empty()) {
+            let url = format!("{}/Users/{uid}/Items?recursive=true&includeItemTypes=Movie,Video,MusicVideo,Episode&isFavorite=true&fields=Path&enableImages=false", self.url);
+            let body = self.call(agent().get(&url))?.into_string().map_err(|e| e.to_string())?;
+            st.favorites = played_items(&body).into_iter().map(|(f, _)| f).collect();
+            st.fav_user = Some(uid.to_string());
+        }
+        Ok(st)
+    }
+
+    /// 把這個檔名的影片加進（或拿出）user 的我的最愛；回傳改了幾支（Jellyfin 還沒有這支時 0）
+    pub fn set_favorite(&self, user: &str, file_name: &str, on: bool) -> Result<usize, String> {
+        let ids = self.find(file_name)?;
+        for id in &ids {
+            let url = format!("{}/Users/{user}/FavoriteItems/{id}", self.url);
+            self.call(if on { agent().post(&url) } else { agent().delete(&url) })?;
+        }
+        Ok(ids.len())
+    }
+
     /// 執行排程工作（Key 是 key 的那個）
     fn run_task(&self, key: &str) -> Result<(), String> {
         let tasks = self.call(agent().get(&format!("{}/ScheduledTasks?isHidden=false", self.url)))?.into_string().map_err(|e| e.to_string())?;
@@ -420,6 +456,10 @@ pub struct Extras {
     pub year: Option<i32>,
     /// 錄影時間（UTC，Jellyfin 的格式）：設成首映日期與加入日期，依日期排序時照錄影的時間排
     pub recorded: Option<String>,
+    /// 影片裡的人物（設成 Jellyfin 的演員，點一個人就列出他的影片）
+    pub people: Vec<String>,
+    /// 只給大人看：分級設成 R，並留著「18+」標籤（兒童帳號的家長控制可以擋掉）
+    pub adult: bool,
 }
 
 impl Extras {
@@ -429,8 +469,14 @@ impl Extras {
         let get = |k: &str| m.get(k).cloned().unwrap_or_default();
         let overview = if get("comment").is_empty() { get("description") } else { get("comment") };
         let year = get("date").chars().take(4).collect::<String>().parse().ok().filter(|y| (1900..=2999).contains(y));
+        let (mut tags, people, adult) = crate::video_tags::split_keywords(&get("keywords"));
+        if adult {
+            tags.push(crate::video_tags::ADULT_TAG.into());
+        }
         Extras {
-            tags: crate::video_tags::split_genres(&get("keywords")),
+            tags,
+            people,
+            adult,
             chapters: text.lines().any(|l| l.trim() == "[CHAPTER]"),
             title: get("title"),
             overview,
@@ -442,7 +488,14 @@ impl Extras {
 
     /// 有影片資訊要設到 Jellyfin
     pub fn has_details(&self) -> bool {
-        !self.tags.is_empty() || !self.title.is_empty() || !self.overview.is_empty() || !self.genres.is_empty() || self.year.is_some() || self.recorded.is_some()
+        !self.tags.is_empty()
+            || !self.title.is_empty()
+            || !self.overview.is_empty()
+            || !self.genres.is_empty()
+            || self.year.is_some()
+            || self.recorded.is_some()
+            || !self.people.is_empty()
+            || self.adult
     }
 
     /// 讀影片（FFmpeg 讀不到時當作沒有）
@@ -532,6 +585,15 @@ pub fn with_details(item_json: &str, x: &Extras) -> Option<String> {
     if let Some(y) = x.year.or_else(|| x.recorded_year().filter(|_| o.get("ProductionYear").is_none_or(Value::is_null))) {
         o.insert("ProductionYear".into(), Value::from(y));
     }
+    if !x.people.is_empty() {
+        o.insert("People".into(), x.people.iter().map(|n| serde_json::json!({ "Name": n, "Type": "Actor" })).collect());
+    }
+    // 只給大人看：R 級（兒童帳號設最高分級就看不到）；拿掉時清掉我們設的 R
+    if x.adult {
+        o.insert("OfficialRating".into(), Value::from("R"));
+    } else if o.get("OfficialRating").and_then(Value::as_str) == Some("R") {
+        o.insert("OfficialRating".into(), Value::from(""));
+    }
     if let Some(r) = &x.recorded {
         o.insert("PremiereDate".into(), Value::from(r.clone()));
         o.insert("DateCreated".into(), Value::from(r.clone()));
@@ -616,6 +678,82 @@ pub fn server_path(server_root: &str, local_root: &str, local_dir: &std::path::P
         out.push(sep);
     }
     Some(out)
+}
+
+/// 家人看過了沒、我的最愛（Jellyfin::watch_state）
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct WatchState {
+    /// 小寫檔名 → [(誰, 最後一次看的日期 YYYY-MM-DD)]
+    pub watched: std::collections::HashMap<String, Vec<(String, String)>>,
+    /// 我的最愛（小寫檔名）
+    pub favorites: std::collections::HashSet<String>,
+    /// 我的最愛是哪個使用者的
+    pub fav_user: Option<String>,
+}
+
+/// /Users 的回應：（編號, 名稱）
+fn users_of(json: &str) -> Vec<(String, String)> {
+    let Ok(v) = serde_json::from_str::<Value>(json) else { return vec![] };
+    v.as_array().map(|a| a.iter().filter_map(|u| Some((u.get("Id")?.as_str()?.to_string(), u.get("Name").and_then(Value::as_str).unwrap_or("?").to_string()))).collect()).unwrap_or_default()
+}
+
+/// /Items 的回應：每支影片的（小寫檔名, 最後一次看的日期 YYYY-MM-DD；沒有時空的）
+fn played_items(json: &str) -> Vec<(String, String)> {
+    let Ok(v) = serde_json::from_str::<Value>(json) else { return vec![] };
+    v.get("Items")
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(|i| {
+                    let path = i.get("Path")?.as_str()?;
+                    let name = path.rsplit(['/', '\\']).next()?.to_lowercase();
+                    let date = i.pointer("/UserData/LastPlayedDate").and_then(Value::as_str).and_then(|d| d.get(..10)).unwrap_or("").to_string();
+                    Some((name, date))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// 上次同步時 Jellyfin 我的最愛裡的檔名（小寫）：比對出新加的、拿掉的，本機的星號跟著改。存在設定資料夾的 jellyfin-favorites.json
+static FAVS: std::sync::Mutex<Option<(Option<std::path::PathBuf>, std::collections::BTreeSet<String>)>> = std::sync::Mutex::new(None);
+
+pub fn init_favorites(file: std::path::PathBuf) {
+    let mut g = FAVS.lock().unwrap();
+    if g.as_ref().is_some_and(|(f, _)| f.is_some()) {
+        return;
+    }
+    let mut set: std::collections::BTreeSet<String> = std::fs::read_to_string(&file).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+    set.extend(g.take().map(|(_, s)| s).unwrap_or_default());
+    *g = Some((Some(file), set));
+}
+
+/// 和上次比：(新加進我的最愛的, 拿掉的)，並記下這次的
+pub fn favorites_changed(now: &std::collections::HashSet<String>) -> (Vec<String>, Vec<String>) {
+    let mut g = FAVS.lock().unwrap();
+    let (file, prev) = g.get_or_insert_with(|| (None, Default::default()));
+    let added: Vec<String> = now.iter().filter(|n| !prev.contains(*n)).cloned().collect();
+    let removed: Vec<String> = prev.iter().filter(|n| !now.contains(*n)).cloned().collect();
+    if !added.is_empty() || !removed.is_empty() {
+        *prev = now.iter().cloned().collect();
+        if let Some(f) = file.as_ref() {
+            let _ = std::fs::write(f, serde_json::to_string(prev).unwrap_or_default());
+        }
+    }
+    (added, removed)
+}
+
+/// 本機改了星號、也改到 Jellyfin 之後記下（下次比對才不會又改回來）
+pub fn favorite_set(name: &str, on: bool) {
+    let mut g = FAVS.lock().unwrap();
+    let (file, prev) = g.get_or_insert_with(|| (None, Default::default()));
+    let name = name.to_lowercase();
+    let changed = if on { prev.insert(name) } else { prev.remove(&name) };
+    if changed {
+        if let Some(f) = file.as_ref() {
+            let _ = std::fs::write(f, serde_json::to_string(prev).unwrap_or_default());
+        }
+    }
 }
 
 /// 媒體庫 l 的資料夾有沒有包含 root（伺服器上的路徑；/ 和 \\ 都算、不分大小寫），或在 root 底下
@@ -1732,5 +1870,48 @@ mod tests {
         assert!(msg.contains("錄影 (2)") || msg.contains("Recordings"), "{msg}");
         let got = h.join().unwrap();
         assert!(got[2].starts_with("POST /Library/VirtualFolders?") && got[2].contains("collectionType=homevideos"), "{got:?}");
+    }
+
+    #[test]
+    fn watched_and_favorites_are_read_per_user() {
+        let users = r#"[{"Id":"u1","Name":"媽媽"},{"Id":"u2","Name":"小明"}]"#.to_string();
+        let played1 = r#"{"Items":[{"Path":"/v/family/Rec_1.mp4","UserData":{"LastPlayedDate":"2026-10-18T12:00:00Z","Played":true}}]}"#.to_string();
+        let played2 = r#"{"Items":[{"Path":"D:\\v\\REC_1.mp4","UserData":{"Played":true}},{"Path":"/v/b.mp4"}]}"#.to_string();
+        let favs = r#"{"Items":[{"Path":"/v/b.mp4"}]}"#.to_string();
+        let (url, h) = serve_seq(vec![("200 OK", users), ("200 OK", played1), ("200 OK", played2), ("200 OK", favs)]);
+        let st = Jellyfin::new(&url, "k").unwrap().watch_state(Some("u2")).unwrap();
+        h.join().unwrap();
+        assert_eq!(st.watched["rec_1.mp4"], vec![("媽媽".to_string(), "2026-10-18".to_string()), ("小明".to_string(), String::new())]);
+        assert_eq!(st.watched["b.mp4"].len(), 1);
+        assert!(st.favorites.contains("b.mp4") && st.fav_user.as_deref() == Some("u2"));
+        // 和上次比：第一次全部是新加的；本機改了也記下
+        let now: std::collections::HashSet<String> = ["fav_a.mp4".to_string(), "fav_b.mp4".to_string()].into();
+        let (added, _) = favorites_changed(&now);
+        assert!(added.contains(&"fav_a.mp4".to_string()));
+        favorite_set("FAV_C.mp4", true);
+        let (added, removed) = favorites_changed(&now);
+        assert!(added.is_empty() && removed == ["fav_c.mp4"], "{added:?} {removed:?}");
+    }
+
+    #[test]
+    fn people_and_adults_only_go_to_jellyfin() {
+        let x = Extras::from_ffmetadata(";FFMETADATA1\nkeywords=家庭; @爸爸; @小明; 18+\n");
+        assert_eq!(x.people, ["爸爸", "小明"]);
+        assert!(x.adult && x.tags == ["家庭", "18+"], "{:?}", x.tags);
+        let item: Value = serde_json::from_str(&with_details(r#"{"Name":"a"}"#, &x).unwrap()).unwrap();
+        assert_eq!(item["People"][1]["Name"], "小明");
+        assert_eq!(item["People"][0]["Type"], "Actor");
+        assert_eq!(item["OfficialRating"], "R");
+        // 拿掉「只給大人看」：清掉 R；別的分級不動
+        let kid = Extras { title: "t".into(), ..Default::default() };
+        let item: Value = serde_json::from_str(&with_details(r#"{"OfficialRating":"R"}"#, &kid).unwrap()).unwrap();
+        assert_eq!(item["OfficialRating"], "");
+        let item: Value = serde_json::from_str(&with_details(r#"{"OfficialRating":"PG"}"#, &kid).unwrap()).unwrap();
+        assert_eq!(item["OfficialRating"], "PG");
+        // 播放前檢查格式
+        assert_eq!(crate::actions::tv_unfriendly(Some("hevc")).as_deref(), Some("HEVC"));
+        assert_eq!(crate::actions::tv_unfriendly(Some("av1")).as_deref(), Some("AV1"));
+        assert_eq!(crate::actions::tv_unfriendly(Some("h264")), None);
+        assert_eq!(crate::actions::tv_unfriendly(None), None);
     }
 }
