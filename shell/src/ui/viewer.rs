@@ -408,6 +408,13 @@ fn go(app: &mut UiApp, step: i64) {
 fn delete_current(app: &mut UiApp) {
     let Some(v) = &app.viewer else { return };
     let e = v.cur().clone();
+    // 串流的 Jellyfin 影片：從 Jellyfin 刪除
+    if is_remote(&e.media.path) {
+        if let Some(id) = screenrecorder_core::jellyfin::Jellyfin::item_of_stream(&e.media.path) {
+            super::jellyfin_browse::confirm_delete(app, id, base_name(&e.media.name));
+        }
+        return;
+    }
     let mut paths = vec![e.media.path.clone()];
     paths.extend(e.exports.iter().map(|x| x.media.path.clone()));
     let title = if paths.len() > 1 {
@@ -893,7 +900,8 @@ fn header(v: &mut Viewer, ui: &mut egui::Ui, e: &LibraryEntry, buttons: &[HeadBt
     // 刪除離關閉遠一點，不容易按錯
     rui.add_space(16.0);
     let remote = is_remote(&e.media.path);
-    if !remote && Btn::icon_only(Icon::Trash).ghost().small().tooltip(tr!("移到資源回收筒（Delete）", "Move to Recycle Bin (Delete)")).show(rui).clicked() {
+    let trash_tip = if remote { tr!("從 Jellyfin 刪除（Delete）", "Delete from Jellyfin (Delete)") } else { tr!("移到資源回收筒（Delete）", "Move to Recycle Bin (Delete)") };
+    if Btn::icon_only(Icon::Trash).ghost().small().tooltip(trash_tip).show(rui).clicked() {
         *act = Act::Delete;
     }
     if !remote && Btn::icon_only(Icon::Folder).ghost().small().tooltip(tr!("在資料夾中顯示", "Show in folder")).show(rui).clicked() {
@@ -1099,7 +1107,7 @@ fn keyboard(v: &mut Viewer, ctx: &egui::Context, act: &mut Act) {
     // 全螢幕要在讀完輸入之後才切換（讀輸入時不能送視窗指令）
     let mut toggle_full = false;
     ctx.input(|i| {
-        if i.key_pressed(Key::Delete) && !v.cur().media.path.starts_with("http") {
+        if i.key_pressed(Key::Delete) {
             *act = Act::Delete;
         }
         if image {

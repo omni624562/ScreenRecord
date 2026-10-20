@@ -203,6 +203,9 @@ pub struct UiApp {
     recent_at: Instant,
     was_focused: bool,
     library_was_open: bool,
+    /// 儲存位置上次的樣子（檔名、大小、修改時間算出來的值）；定時檢查有變才重讀最近錄影
+    recent_sig: Option<u64>,
+    recent_checking: bool,
     pub recent_per_page: usize,
     /// 已知的錄影（最近錄影、全部錄影），操作按鈕用完整資訊
     pub known: HashMap<String, LibraryEntry>,
@@ -352,6 +355,8 @@ impl UiApp {
             recent_at: Instant::now(),
             was_focused: true,
             library_was_open: false,
+            recent_sig: None,
+            recent_checking: false,
             recent_per_page: 4,
             known: HashMap::new(),
             export_dlg: None,
@@ -1012,16 +1017,34 @@ impl UiApp {
         });
     }
 
-    /// 資料夾裡的影片可能被別的程式加進去、刪掉（檔案總管、手機同步）：切回這個視窗、關掉檔案庫時、
-    /// 或每 2 分鐘，重讀最近錄影
+    /// 資料夾裡的影片可能被別的程式加進去、刪掉（檔案總管、手機同步）：切回這個視窗、關掉檔案庫時重讀最近錄影；
+    /// 另外每 2 分鐘只看一下資料夾的檔名、大小、時間有沒有變（不讀影片），有變才重讀。錄影中不檢查
     fn refresh_recent_if_stale(&mut self, ctx: &egui::Context) {
         let focused = ctx.input(|i| i.viewport().focused).unwrap_or(true);
         let library_open = self.library.is_some();
         let back = (focused && !self.was_focused) || (self.library_was_open && !library_open);
         (self.was_focused, self.library_was_open) = (focused, library_open);
-        if self.visible && self.recent.is_some() && (back || self.recent_at.elapsed() > Duration::from_secs(120)) {
-            self.load_recent();
+        if !self.visible || self.recent.is_none() {
+            return;
         }
+        if back {
+            return self.load_recent();
+        }
+        let recording = self.status.recorder.state != RecorderState::Idle;
+        if recording || self.recent_checking || self.recent_at.elapsed() < Duration::from_secs(120) {
+            return;
+        }
+        self.recent_at = Instant::now();
+        self.recent_checking = true;
+        let (dir, subdirs) = (self.s.out_dir(&self.env), self.s.list_subdirs);
+        self.spawn(async move { tokio::task::spawn_blocking(move || folder_signature(&dir, subdirs)).await.unwrap_or(0) }, |app, sig| {
+            app.recent_checking = false;
+            let changed = app.recent_sig != Some(sig);
+            app.recent_sig = Some(sig);
+            if changed {
+                app.load_recent();
+            }
+        });
     }
 
     /// 旋轉影片：檢視器正在播這支就先放開，改好再從同一個位置播；縮圖、清單重新讀
@@ -1633,6 +1656,30 @@ async fn watch_changes<T: PartialEq>(every: Duration, shown: Arc<std::sync::atom
         }
         last = Some(now);
     }
+}
+
+/// 資料夾（和子資料夾）裡檔案的樣子：檔名、大小、修改時間算出一個值，只讀目錄不打開檔案
+fn folder_signature(dir: &str, subdirs: bool) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let root = std::path::PathBuf::from(dir);
+    let mut dirs = vec![root.clone()];
+    if subdirs {
+        dirs.extend(screenrecorder_core::library::subdirs_of(&root).into_iter().map(|(d, _)| d));
+    }
+    let mut items: Vec<(String, u64, u128)> = dirs
+        .iter()
+        .filter_map(|d| std::fs::read_dir(d).ok())
+        .flat_map(|rd| rd.flatten())
+        .filter_map(|e| {
+            let m = e.metadata().ok().filter(|m| m.is_file())?;
+            let t = m.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_millis());
+            Some((e.path().display().to_string(), m.len(), t))
+        })
+        .collect();
+    items.sort();
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    items.hash(&mut h);
+    h.finish()
 }
 
 /// 移到資源回收筒（confirm_trash 確認後）：copies 是媒體庫裡也要刪的那一份；notify：刪好後請 Jellyfin 重新掃描

@@ -302,6 +302,25 @@ impl Jellyfin {
         (!buf.is_empty()).then_some(buf)
     }
 
+    /// 從 Jellyfin 刪掉這支影片（伺服器上的檔案也一起刪，不會進資源回收筒）
+    pub fn delete_item(&self, id: &str) -> Result<(), String> {
+        match self.auth(agent().delete(&format!("{}/Items/{id}", self.url))).call() {
+            Ok(_) => Ok(()),
+            Err(ureq::Error::Status(401 | 403, _)) => {
+                Err(tr!("Jellyfin 不允許刪除：到 Jellyfin 控制台 → 使用者，打開「允許刪除媒體」", "Jellyfin doesn't allow deleting: in the Jellyfin Dashboard → Users, turn on “Allow media deletion”")
+                    .into())
+            }
+            Err(e) => Err(describe(&e)),
+        }
+    }
+
+    /// 串流網址裡的影片編號（/Videos/{id}/stream）
+    pub fn item_of_stream(url: &str) -> Option<String> {
+        let rest = url.split("/Videos/").nth(1)?;
+        let id = rest.split('/').next()?;
+        (!id.is_empty()).then(|| id.to_string())
+    }
+
     /// 在程式裡看完了：標成這個使用者看過（Jellyfin 的「已看過」、家人看過了沒都會更新）
     pub fn mark_played(&self, user: &str, id: &str) -> Result<(), String> {
         self.call(agent().post(&format!("{}/Users/{user}/PlayedItems/{id}", self.url))).map(|_| ())
@@ -2070,5 +2089,18 @@ mod tests {
         let url = jf.stream_url("v1");
         assert_eq!(url, "http://nas:8096/Videos/v1/stream?static=true&api_key=secret");
         assert!(!redact(&url).contains("secret") && redact("x?api_key=s&y=1").ends_with("&y=1"));
+        assert_eq!(Jellyfin::item_of_stream(&url).as_deref(), Some("v1"));
+        assert_eq!(Jellyfin::item_of_stream("D:\\a.mp4"), None);
+    }
+
+    #[test]
+    fn deleting_reports_missing_permission() {
+        let (url, h) = serve_seq(vec![("204 No Content", String::new()), ("403 Forbidden", String::new())]);
+        let jf = Jellyfin::new(&url, "k").unwrap();
+        jf.delete_item("v1").unwrap();
+        let e = jf.delete_item("v2").unwrap_err();
+        assert!(e.contains("允許刪除") || e.contains("Allow media deletion"), "{e}");
+        let got = h.join().unwrap();
+        assert!(got[0].starts_with("DELETE /Items/v1"), "{got:?}");
     }
 }

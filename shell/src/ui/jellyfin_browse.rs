@@ -116,6 +116,42 @@ fn load_poster(app: &mut UiApp, id: &str) {
     );
 }
 
+/// 從 Jellyfin 刪掉這支影片（先確認）：伺服器上的檔案一起刪，不能復原；這台電腦上的檔案不動。
+/// 刪好之後瀏覽清單拿掉它，檢視器正在播它就關掉
+pub fn confirm_delete(app: &mut UiApp, id: String, name: String) {
+    let msg = tr!(
+        "會從 Jellyfin 和 NAS 上刪掉這個檔案，不會進資源回收筒，刪了不能復原。這台電腦上的檔案不會動。",
+        "This deletes the file from Jellyfin and the NAS. It doesn't go to a Recycle Bin and can't be undone. Files on this computer aren't touched."
+    );
+    let shown = name.clone();
+    let mut ask = super::dialogs::Ask::confirm(tr!("從 Jellyfin 刪除這支影片？", "Delete this video from Jellyfin?"), msg, tr!("刪除", "Delete"), move |app, _| {
+        let Some(jf) = app.jellyfin() else { return };
+        let key = id.clone();
+        app.spawn(async move { tokio::task::spawn_blocking(move || jf.delete_item(&key)).await.unwrap_or_else(|e| Err(e.to_string())) }, move |app, r| match r {
+            Ok(()) => {
+                if let Some(d) = app.jf_browse.as_mut() {
+                    if let Some(items) = d.items.as_mut() {
+                        let n = items.len();
+                        items.retain(|i| i.id != id);
+                        d.total = d.total.saturating_sub(n - items.len());
+                    }
+                }
+                if app.viewer.as_ref().is_some_and(|v| screenrecorder_core::jellyfin::Jellyfin::item_of_stream(&v.cur().media.path).as_deref() == Some(id.as_str())) {
+                    app.viewer = None;
+                }
+                // NAS 上的檔案少了：「Jellyfin」標籤重讀
+                app.lib_index = None;
+                app.jf_watch = None;
+                app.toast(trf!("已從 Jellyfin 刪除：{name}", "Deleted from Jellyfin: {name}"), false);
+            }
+            Err(e) => app.toast(trf!("沒有刪掉：{e}", "Couldn't delete it: {e}"), true),
+        });
+    });
+    ask.list = vec![shown];
+    ask.danger = true;
+    app.ask = Some(ask);
+}
+
 /// 在檢視器裡串流播放
 fn play(app: &mut UiApp, item: &JfItem) {
     let Some(jf) = app.jellyfin() else { return };
@@ -155,6 +191,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
     let mut close = false;
     let mut reload = false;
     let mut open_item: Option<JfItem> = None;
+    let mut delete_item: Option<JfItem> = None;
     let mut want_posters: Vec<String> = vec![];
     let modal = egui::Modal::new(Id::new("jellyfin-browse")).frame(theme::modal_frame(ctx)).show(ctx, |ui| {
         let p = theme::pal(ui);
@@ -253,7 +290,20 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                                 let icon = if it.kind == JfKind::Folder { Icon::Folder } else { Icon::Video };
                                 theme::paint_icon(painter, Rect::from_center_size(img.center(), vec2(32.0, 32.0)), icon, p.muted);
                             }
-                            if resp.hovered() {
+                            // 影片：滑鼠移上去時左下角有刪除鈕（從 Jellyfin 和 NAS 刪掉）
+                            let trash = Rect::from_min_size(pos2(img.min.x + 6.0, img.max.y - 30.0), vec2(24.0, 24.0));
+                            let hovering = resp.hovered() || ui.rect_contains_pointer(trash) && ui.rect_contains_pointer(cell);
+                            if it.kind == JfKind::Video && hovering {
+                                let tr_resp = ui.interact(trash, Id::new(("jf-del", &it.id)), Sense::click()).on_hover_text(tr!("從 Jellyfin 刪除", "Delete from Jellyfin"));
+                                let painter = ui.painter();
+                                painter.rect_filled(trash, 6.0, if tr_resp.hovered() { p.rec } else { egui::Color32::from_black_alpha(160) });
+                                theme::paint_icon(painter, trash.shrink(4.0), Icon::Trash, egui::Color32::WHITE);
+                                if tr_resp.clicked() {
+                                    delete_item = Some(it.clone());
+                                }
+                            }
+                            let painter = ui.painter();
+                            if hovering {
                                 painter.rect_stroke(img, 8.0, egui::Stroke::new(2.0, p.accent), egui::StrokeKind::Inside);
                                 if it.kind == JfKind::Video {
                                     theme::paint_icon(painter, Rect::from_center_size(img.center(), vec2(40.0, 40.0)), Icon::Play, egui::Color32::WHITE);
@@ -279,7 +329,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                             };
                             painter.text(pos2(cell.min.x, img.max.y + 24.0), Align2::LEFT_TOP, sub, theme::font(11.5), p.muted);
                             let resp = resp.on_hover_text(&it.name);
-                            if resp.clicked() {
+                            if resp.clicked() && delete_item.is_none() {
                                 open_item = Some(it.clone());
                             }
                         }
@@ -310,6 +360,11 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
     });
     // 檢視器開著時 Esc 是關檢視器，不要連瀏覽視窗一起關
     if close || (modal.should_close() && app.viewer.is_none()) {
+        return;
+    }
+    if let Some(it) = delete_item {
+        app.jf_browse = Some(d);
+        confirm_delete(app, it.id, it.name);
         return;
     }
     if let Some(it) = open_item {
