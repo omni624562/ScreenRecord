@@ -116,7 +116,7 @@ pub enum EntryAction {
     SetThumb,
     /// 影片資訊（標題、作者、說明…）
     Tags,
-    /// 傳到「錄完處理 → 複製」的資料夾（NAS、Jellyfin 媒體庫），並通知 Jellyfin
+    /// 傳到媒體庫資料夾（NAS、Jellyfin 媒體庫），並通知 Jellyfin
     SendToLibrary,
     /// 旋轉影片（改旋轉標記，不重新壓縮）：向左 90°、向右 90°、180°
     RotateLeft,
@@ -482,7 +482,7 @@ impl UiApp {
         self.toast_with(msg, false, vec![ToastAction::new(tr!("看內容", "Show"), move |app| app.ocr = Some(ocr::Ocr { text: Some(text), lang: String::new() }))]);
     }
 
-    /// 「複製」資料夾的名稱（選單上顯示）；沒設定時 None
+    /// 媒體庫資料夾的名稱（選單上顯示）；沒設定時 None
     pub fn library_folder(&self) -> Option<String> {
         let d = self.s.after_copy_to.trim();
         (!d.is_empty()).then(|| std::path::Path::new(d).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| d.to_string()))
@@ -494,32 +494,29 @@ impl UiApp {
             Some(folder) => (
                 trf!("傳到「{}」", "Send to “{}”", folder),
                 tr!(
-                    "複製到「錄完處理 → 複製」的資料夾（同名的覆蓋，連同字幕），有設定 Jellyfin 時通知它",
-                    "Copy to the After recording → Copy folder (replacing one with the same name, subtitles included) and notify Jellyfin if set up"
+                    "複製到媒體庫資料夾（同名的覆蓋，連同字幕），有設定 Jellyfin 時通知它。資料夾在「設定 → 存檔與分享」",
+                    "Copy to the library folder (replacing one with the same name, subtitles included) and notify Jellyfin if set up. The folder is in Settings → Saving & sharing"
                 ),
             ),
             None => (
                 tr!("傳到媒體庫…", "Send to library…").to_string(),
                 tr!(
-                    "還沒選資料夾：按了打開設定 →「錄完處理」，在「複製」選 Jellyfin 媒體庫或 NAS 的資料夾",
-                    "No folder yet: opens Settings → After recording so you can pick a Jellyfin library or NAS folder under Copy"
+                    "還沒選資料夾：按了打開「設定 → 存檔與分享」，選 Jellyfin 媒體庫或 NAS 的資料夾",
+                    "No folder yet: opens Settings → Saving & sharing so you can pick a Jellyfin library or NAS folder"
                 ),
             ),
         }
     }
 
-    /// 把檔案（連同字幕）傳到「複製」的資料夾（NAS、Jellyfin 媒體庫），並通知 Jellyfin；
+    /// 把檔案（連同字幕）傳到媒體庫資料夾（NAS、Jellyfin 媒體庫），並通知 Jellyfin；
     /// 剪輯、加速版另存好時自動呼叫，也可以從選單手動傳
     pub fn send_to_library(&mut self, path: &str) {
         let Some(folder) = self.library_folder() else {
             self.toast(
-                tr!(
-                    "請先在「錄完處理」的「複製」選資料夾（例如 Jellyfin 的媒體庫），之後就能直接傳",
-                    "Choose a folder under After recording → Copy first (such as your Jellyfin library); then you can send files there"
-                ),
+                tr!("請先在「媒體庫」選資料夾（例如 Jellyfin 的媒體庫），之後就能直接傳", "Choose a library folder first (such as your Jellyfin library); then you can send files there"),
                 false,
             );
-            return settings_dialog::open(self, settings_dialog::Page::After);
+            return settings_dialog::open(self, settings_dialog::Page::Save);
         };
         let jf = screenrecorder_core::jellyfin::Jellyfin::new(&self.s.jellyfin_url, &self.s.jellyfin_key);
         let copy_to = self.s.after_copy_to.clone();
@@ -540,7 +537,7 @@ impl UiApp {
         );
     }
 
-    /// 移到資源回收筒前的確認。「複製」資料夾（Jellyfin 媒體庫）裡也有同名的那一份時，
+    /// 移到資源回收筒前的確認。媒體庫資料夾（Jellyfin 媒體庫）裡也有同名的那一份時，
     /// 問要兩邊都刪，還是只刪這台電腦的；done：刪好之後（清單、檢視器跟著更新）
     pub fn confirm_trash(&mut self, title: String, message: &str, paths: Vec<String>, done: fn(&mut UiApp, &[String], bool)) {
         use screenrecorder_core::jellyfin::{in_library, library_copies};
@@ -628,7 +625,7 @@ impl UiApp {
         );
     }
 
-    /// 改了影片（封面、影片資訊）之後：「複製」資料夾（Jellyfin 的媒體庫）裡的那一份也換成改好的，並請 Jellyfin 重新讀取
+    /// 改了影片（封面、影片資訊）之後：媒體庫資料夾（Jellyfin 的媒體庫）裡的那一份也換成改好的，並請 Jellyfin 重新讀取
     pub fn sync_edited(&mut self, path: &str) {
         let jf = screenrecorder_core::jellyfin::Jellyfin::new(&self.s.jellyfin_url, &self.s.jellyfin_key);
         let copy_to = self.s.after_copy_to.clone();
@@ -861,7 +858,7 @@ impl UiApp {
                         };
                         // 提示上直接有「開啟」「在資料夾中顯示」
                         self.toast_file(format!("{what}{}{}", tr!("：", ": "), dialogs::file_name(&e.output)), &e.output);
-                        // 剪輯、加速版、壓縮、合併的影片：也傳到「複製」的資料夾（NAS、Jellyfin）
+                        // 剪輯、加速版、壓縮、合併的影片：也傳到媒體庫資料夾（NAS、Jellyfin）
                         let video = matches!(e.kind, screenrecorder_core::types::ExportKind::Cut | screenrecorder_core::types::ExportKind::Speed | screenrecorder_core::types::ExportKind::Merge);
                         if video && self.s.copy_exports && self.library_folder().is_some() {
                             self.send_to_library(&e.output.clone());
@@ -1336,7 +1333,7 @@ impl UiApp {
                 self.save_settings();
                 self.core.notify(
                     tr!("螢幕錄影仍在背景執行", "Screen Recorder is still running"),
-                    tr!("可從右下角的系統匣圖示開啟或結束（也可以在「設定 → 進階」結束程式）", "Open or quit it from the tray icon at the bottom right (or quit from Settings → Advanced)"),
+                    tr!("可從右下角的系統匣圖示開啟或結束（也可以在「設定 → 一般」結束程式）", "Open or quit it from the tray icon at the bottom right (or quit from Settings → General)"),
                     false,
                 );
             }
@@ -1390,7 +1387,7 @@ impl eframe::App for UiApp {
                 self.meter_until = None;
             }
         }
-        // 介面大小（設定 → 進階）
+        // 介面大小（設定 → 一般）
         let zoom = self.s.ui_scale as f32 / 100.0;
         if (ctx.zoom_factor() - zoom).abs() > 0.001 {
             ctx.set_zoom_factor(zoom);
