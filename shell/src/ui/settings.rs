@@ -169,6 +169,8 @@ pub struct UiSettings {
     pub jellyfin_url: String,
     #[serde(skip_serializing_if = "String::is_empty")]
     pub jellyfin_key: String,
+    /// 傳到 Jellyfin 後依資料夾放進合集（core::jellyfin::COLLECTIONS_KEY）
+    pub jellyfin_collections: bool,
     /// 錄影的命名規則（例如「客戶A_{日期}_{序號}」；空的 = Rec_時間）。core 讀這個欄位
     #[serde(skip_serializing_if = "String::is_empty")]
     pub name_rule: String,
@@ -369,6 +371,7 @@ impl UiSettings {
             library_last_sub: o.get("libraryLastSub").and_then(Value::as_str).unwrap_or("").trim().to_string(),
             jellyfin_url: o.get(screenrecorder_core::jellyfin::URL_KEY).and_then(Value::as_str).unwrap_or("").trim().to_string(),
             jellyfin_key: o.get(screenrecorder_core::jellyfin::API_KEY).and_then(Value::as_str).unwrap_or("").trim().to_string(),
+            jellyfin_collections: boolean(screenrecorder_core::jellyfin::COLLECTIONS_KEY).unwrap_or(true),
             name_rule: o.get(screenrecorder_core::after_record::NAME_RULE_KEY).and_then(Value::as_str).unwrap_or("").chars().take(120).collect(),
             shot_name_rule: o.get(screenrecorder_core::after_record::SHOT_NAME_RULE_KEY).and_then(Value::as_str).unwrap_or("").chars().take(120).collect(),
             after_compress_mb: num("afterCompressMb").map(|v| v as u32).filter(|v| MAX_MB.contains(v)).unwrap_or(0),

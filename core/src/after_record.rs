@@ -38,6 +38,9 @@ pub struct AfterRecord {
     pub keep_audio: bool,
     /// 處理完複製到這個資料夾（雲端硬碟的同步資料夾、NAS）；空的 = 不複製
     pub copy_to: String,
+    /// 媒體庫資料夾（最上層）與要放進的子資料夾：連不到 NAS 時記進待傳清單用
+    pub copy_root: String,
+    pub copy_sub: String,
     /// 複製好之後通知 Jellyfin 重新掃描（有設定網址與 API 金鑰時）
     pub jellyfin: Option<crate::jellyfin::Jellyfin>,
 }
@@ -78,6 +81,8 @@ impl AfterRecord {
             } else {
                 String::new()
             },
+            copy_root: o.get(COPY_KEY).and_then(Value::as_str).unwrap_or("").trim().to_string(),
+            copy_sub: crate::jellyfin::normalize_subfolder(o.get(COPY_SUB_KEY).and_then(Value::as_str).unwrap_or("")),
             jellyfin: crate::jellyfin::Jellyfin::from_ui(ui),
         }
     }
@@ -433,6 +438,7 @@ impl App {
             };
             self.after_begin(after.steps(), trf!("複製到「{}」", "Copying to “{}”", folder_name(&after.copy_to)));
             let dest = after.copy_to.clone();
+            let waiting: Vec<String> = std::iter::once(src.clone()).chain(out.clone()).collect();
             let extras = crate::jellyfin::Extras::read(self.ffmpeg_path().as_deref(), Path::new(&src)).await;
             let r = tokio::task::spawn_blocking(move || copy_results(&src, out.as_deref(), Path::new(&dest))).await.unwrap_or_else(|e| Err(e.to_string()));
             let (ok, note) = match r {
@@ -445,7 +451,7 @@ impl App {
                     // 複製到 Jellyfin 的媒體庫資料夾：請它馬上掃描（失敗只提示，檔案已經複製好了）
                     match after.jellyfin.clone() {
                         // 掃描後等它收到這支、設好標籤和章節縮圖（最多等 1 分鐘）
-                        Some(jf) => match tokio::task::spawn_blocking(move || jf.scan(&scan).map(|_| jf.after_upload(&first, &extras, vec![], std::time::Duration::from_secs(60))))
+                        Some(jf) => match tokio::task::spawn_blocking(move || jf.scan(&scan).map(|_| jf.after_upload(&first, &extras, vec![], std::time::Duration::from_secs(60), Some(&scan))))
                             .await
                             .unwrap_or_else(|e| Err(e.to_string()))
                         {
@@ -460,6 +466,13 @@ impl App {
                         },
                         None => (true, note),
                     }
+                }
+                // 連不到 NAS（不在家、NAS 沒開）：記進待傳清單，連上後補傳
+                Err(_) if !after.copy_root.is_empty() && !crate::transfer::reachable(&after.copy_root) => {
+                    for f in &waiting {
+                        crate::transfer::add_pending(Path::new(f), &after.copy_sub);
+                    }
+                    (true, trf!("連不到「{}」，連上後會自動傳過去", "“{}” isn't reachable; it will be sent once it is", folder_name(&after.copy_to)))
                 }
                 Err(e) => {
                     warn!("[錄完自動處理] 複製到 {} 失敗：{e}", after.copy_to);
@@ -774,7 +787,7 @@ pub fn copy_results(video: &str, output: Option<&str>, dest: &Path) -> Result<Ve
             None => (name.clone(), String::new()),
         };
         let to = crate::paths::unique_path(dest, &stem, &ext);
-        crate::paths::copy_keep_time(f, &to).map_err(|e| e.to_string())?;
+        crate::transfer::copy(f, &to).map_err(|e| e.to_string())?;
         copied.push(to);
     }
     Ok(copied)

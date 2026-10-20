@@ -110,6 +110,7 @@ pub mod steps_win;
 pub mod subtitles;
 pub mod thumbs;
 pub mod transcript;
+pub mod transfer;
 pub mod tray;
 #[cfg(windows)]
 pub mod tray_win;

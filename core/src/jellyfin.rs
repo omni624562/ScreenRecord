@@ -17,6 +17,20 @@ pub struct Jellyfin {
     pub key: String,
     /// 這台電腦上的媒體庫資料夾（例如 Y:\）：知道它在伺服器上叫什麼時，傳好只掃描那個資料夾
     pub root: String,
+    /// 傳好之後依資料夾放進 Jellyfin 的合集（family/2024 → 「family 2024」）
+    pub collections: bool,
+}
+
+/// ui 設定裡「依資料夾放進合集」的欄位名稱（沒設定時是要）
+pub const COLLECTIONS_KEY: &str = "jellyfinCollections";
+
+/// 測試連線時看媒體庫設定的結果
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LibraryCheck {
+    /// 給使用者看的說明
+    pub note: String,
+    /// 類型、選項都好了
+    pub ok: bool,
 }
 
 /// 這台電腦的媒體庫資料夾在伺服器上的路徑（網址|資料夾 → 路徑、什麼時候查的）；查不到的 5 分鐘內不再查
@@ -28,13 +42,14 @@ impl Jellyfin {
     pub fn from_ui(ui: Option<&Value>) -> Option<Jellyfin> {
         let o = ui?.as_object()?;
         let get = |k: &str| o.get(k).and_then(Value::as_str).unwrap_or("").trim().to_string();
-        Jellyfin::new(&get(URL_KEY), &get(API_KEY)).map(|j| j.with_root(&get(crate::after_record::COPY_KEY)))
+        let collections = o.get(COLLECTIONS_KEY).and_then(Value::as_bool).unwrap_or(true);
+        Jellyfin::new(&get(URL_KEY), &get(API_KEY)).map(|j| Jellyfin { collections, ..j.with_root(&get(crate::after_record::COPY_KEY)) })
     }
 
     pub fn new(url: &str, key: &str) -> Option<Jellyfin> {
         let url = normalize_url(url)?;
         let key = key.trim();
-        (!key.is_empty()).then(|| Jellyfin { url, key: key.to_string(), root: String::new() })
+        (!key.is_empty()).then(|| Jellyfin { url, key: key.to_string(), root: String::new(), collections: true })
     }
 
     /// 帶著這台電腦上的媒體庫資料夾
@@ -87,13 +102,56 @@ impl Jellyfin {
 
     /// 媒體庫的設定看起來對不對：媒體庫資料夾在伺服器上對應到哪個 Jellyfin 媒體庫、類型是不是「家庭影片和照片」。
     /// 回傳給使用者看的說明（測試連線時接在後面）；看不出來時 None
-    pub fn check_library(&self) -> Option<String> {
+    pub fn check_library(&self) -> Option<LibraryCheck> {
         if self.root.is_empty() {
             return None;
         }
         let root = self.server_root();
         let libs = self.call(agent().get(&format!("{}/Library/VirtualFolders", self.url))).ok()?.into_string().ok()?;
-        library_note(&libs, root.as_deref())
+        library_check(&libs, root.as_deref())
+    }
+
+    /// 一鍵修好媒體庫設定：媒體庫資料夾所在的「家庭影片和照片」媒體庫打開即時監控、擷取章節圖片、時間軸預覽縮圖；
+    /// 沒有這種媒體庫時新建一個指到同一個資料夾。回傳做了什麼
+    pub fn fix_library(&self) -> Result<String, String> {
+        let root = self.server_root().ok_or_else(|| {
+            tr!(
+                "Jellyfin 的媒體庫裡還沒有從這個資料夾來的影片，看不出資料夾在伺服器上的位置：先傳一支過去再按",
+                "Jellyfin has no videos from this folder yet, so its location on the server is unknown. Send one video first"
+            )
+            .to_string()
+        })?;
+        let body = self.call(agent().get(&format!("{}/Library/VirtualFolders", self.url)))?.into_string().map_err(|e| e.to_string())?;
+        let libs: Value = serde_json::from_str(&body).map_err(|e| e.to_string())?;
+        let home: Vec<&Value> = libs.as_array().map(|a| a.iter().filter(|l| covers(l, &root) && l.get("CollectionType").and_then(Value::as_str) == Some("homevideos")).collect()).unwrap_or_default();
+        if home.is_empty() {
+            // 新建：名稱撞到時加上 (2)、(3)…
+            let names: Vec<&str> = libs.as_array().map(|a| a.iter().filter_map(|l| l.get("Name").and_then(Value::as_str)).collect()).unwrap_or_default();
+            let base = tr!("錄影", "Recordings");
+            let name = (1..100).map(|i| if i == 1 { base.to_string() } else { format!("{base} ({i})") }).find(|n| !names.contains(&n.as_str())).unwrap_or_else(|| base.to_string());
+            let opts = serde_json::json!({ "LibraryOptions": with_good_options(&serde_json::json!({ "PathInfos": [{ "Path": root }] })) });
+            let req = agent().post(&format!("{}/Library/VirtualFolders", self.url)).query("name", &name).query("collectionType", "homevideos").query("paths", &root).query("refreshLibrary", "true");
+            self.call_body(req, &opts.to_string())?;
+            crate::info!("[Jellyfin] 新建家庭影片媒體庫「{name}」：{root}");
+            let old: Vec<&str> = libs.as_array().map(|a| a.iter().filter(|l| covers(l, &root)).filter_map(|l| l.get("Name").and_then(Value::as_str)).collect()).unwrap_or_default();
+            let mut msg = trf!("已新建「家庭影片和照片」媒體庫「{name}」，指到 {root}", "Created the Home Videos and Photos library “{name}” for {root}");
+            if !old.is_empty() {
+                msg.push_str(&trf!(
+                    "。原本的「{}」也會列出同一批影片，可以到 Jellyfin 控制台把這個資料夾從它移除",
+                    ". “{}” still lists the same videos; you can remove this folder from it in the Jellyfin Dashboard",
+                    old.join("、")
+                ));
+            }
+            return Ok(msg);
+        }
+        for l in &home {
+            let id = l.get("ItemId").and_then(Value::as_str).ok_or_else(|| tr!("Jellyfin 的媒體庫資料看不懂", "Couldn't understand Jellyfin's library data").to_string())?;
+            let opts = with_good_options(l.get("LibraryOptions").unwrap_or(&Value::Null));
+            self.call_body(agent().post(&format!("{}/Library/VirtualFolders/LibraryOptions", self.url)), &serde_json::json!({ "Id": id, "LibraryOptions": opts }).to_string())?;
+        }
+        let names: Vec<&str> = home.iter().filter_map(|l| l.get("Name").and_then(Value::as_str)).collect();
+        crate::info!("[Jellyfin] 打開媒體庫選項：{}", names.join("、"));
+        Ok(trf!("已打開「{}」的即時監控、擷取章節圖片、時間軸預覽縮圖", "Turned on real-time monitoring, chapter images and trickplay for “{}”", names.join("、")))
     }
 
     /// 測試連線：成功回傳「伺服器名稱（版本）」
@@ -171,9 +229,15 @@ impl Jellyfin {
     }
 
     /// 換掉這支影片在 Jellyfin 的封面（主要圖片）：圖片用 base64 送過去
+    /// 換封面時橫幅圖、縮圖也一起換（不然首頁還是舊的那一格）
     pub fn set_cover(&self, id: &str, jpeg: &[u8]) -> Result<(), String> {
-        let req = self.auth(agent().post(&format!("{}/Items/{id}/Images/Primary", self.url))).set("Content-Type", "image/jpeg");
-        req.send_string(&crate::steps::base64(jpeg)).map(|_| ()).map_err(|e| describe(&e))
+        self.set_image(id, "Primary", jpeg)?;
+        for kind in ["Backdrop", "Thumb"] {
+            if let Err(e) = self.set_image(id, kind, jpeg) {
+                crate::info!("[Jellyfin] 換 {kind} 圖失敗：{e}");
+            }
+        }
+        Ok(())
     }
 
     fn admin_id(&self) -> Result<String, String> {
@@ -187,6 +251,61 @@ impl Jellyfin {
             .ok_or_else(|| tr!("Jellyfin 沒有使用者", "Jellyfin has no users").to_string())
     }
 
+    /// 執行排程工作（Key 是 key 的那個）
+    fn run_task(&self, key: &str) -> Result<(), String> {
+        let tasks = self.call(agent().get(&format!("{}/ScheduledTasks?isHidden=false", self.url)))?.into_string().map_err(|e| e.to_string())?;
+        let id = task_id(&tasks, key).ok_or_else(|| trf!("這版 Jellyfin 沒有 {key} 工作", "This Jellyfin has no {key} task"))?;
+        self.call(agent().post(&format!("{}/ScheduledTasks/Running/{id}", self.url))).map(|_| ())
+    }
+
+    /// 有沒有任何一個媒體庫打開了「時間軸預覽縮圖」（Trickplay）
+    fn trickplay_enabled(&self) -> bool {
+        self.call(agent().get(&format!("{}/Library/VirtualFolders", self.url))).ok().and_then(|r| r.into_string().ok()).is_some_and(|libs| library_option_on(&libs, "EnableTrickplayImageExtraction"))
+    }
+
+    /// 這支影片還沒有橫幅圖（Backdrop）、縮圖（Thumb）時，用它的封面補上（首頁「繼續觀看」、「最近加入」的大圖才不會空白）
+    fn fill_backdrop(&self, id: &str) {
+        let Ok(item) = self.call(agent().get(&format!("{}/Items/{id}", self.url))).and_then(|r| r.into_string().map_err(|e| e.to_string())) else { return };
+        let missing = missing_images(&item);
+        if missing.is_empty() {
+            return;
+        }
+        let Some(jpeg) = self.image(id, "Primary") else { return };
+        for kind in missing {
+            if let Err(e) = self.set_image(id, kind, &jpeg) {
+                crate::info!("[Jellyfin] 設定 {kind} 圖失敗：{e}");
+            }
+        }
+    }
+
+    /// 下載這支影片的某種圖片（Primary 等）；沒有時 None
+    fn image(&self, id: &str, kind: &str) -> Option<Vec<u8>> {
+        let r = self.call(agent().get(&format!("{}/Items/{id}/Images/{kind}", self.url))).ok()?;
+        let mut buf = vec![];
+        std::io::Read::read_to_end(&mut std::io::Read::take(r.into_reader(), 20 << 20), &mut buf).ok()?;
+        (!buf.is_empty()).then_some(buf)
+    }
+
+    /// 換掉這支影片的某種圖片（Primary 封面、Backdrop 橫幅圖、Thumb 縮圖）：圖片用 base64 送過去
+    fn set_image(&self, id: &str, kind: &str, jpeg: &[u8]) -> Result<(), String> {
+        let ct = if jpeg.starts_with(b"\x89PNG") { "image/png" } else { "image/jpeg" };
+        let req = self.auth(agent().post(&format!("{}/Items/{id}/Images/{kind}", self.url))).set("Content-Type", ct);
+        req.send_string(&crate::steps::base64(jpeg)).map(|_| ()).map_err(|e| describe(&e))
+    }
+
+    /// 把影片放進合集（沒有這個合集就新建）
+    fn add_to_collection(&self, name: &str, id: &str) -> Result<(), String> {
+        let req = agent().get(&format!("{}/Items", self.url)).query("recursive", "true").query("includeItemTypes", "BoxSet").query("searchTerm", name);
+        let body = self.call(req)?.into_string().map_err(|e| e.to_string())?;
+        match collection_id(&body, name) {
+            Some(cid) => self.call(agent().post(&format!("{}/Collections/{cid}/Items", self.url)).query("ids", id)).map(|_| ()),
+            None => {
+                crate::info!("[Jellyfin] 新建合集「{name}」");
+                self.call(agent().post(&format!("{}/Collections", self.url)).query("name", name).query("ids", id)).map(|_| ())
+            }
+        }
+    }
+
     /// 請 Jellyfin 產生章節縮圖（執行「擷取章節圖片」排程工作）。回傳媒體庫有沒有打開「擷取章節圖片」（沒打開時工作不會做）
     pub fn chapter_images(&self) -> Result<bool, String> {
         let tasks = self.call(agent().get(&format!("{}/ScheduledTasks?isHidden=false", self.url)))?.into_string().map_err(|e| e.to_string())?;
@@ -197,7 +316,8 @@ impl Jellyfin {
     }
 
     /// 傳好之後：等 Jellyfin 掃到這支（新檔案），設好標籤、請它做章節縮圖；回傳接在結果後面的說明
-    pub fn after_upload(&self, file_name: &str, extras: &Extras, ids: Vec<String>, wait: Duration) -> String {
+    /// local：媒體庫裡那一份（依它在哪個資料夾放進合集）
+    pub fn after_upload(&self, file_name: &str, extras: &Extras, ids: Vec<String>, wait: Duration, local: Option<&std::path::Path>) -> String {
         let ids = if ids.is_empty() {
             match self.wait_for(file_name, wait) {
                 Ok(Some(id)) => vec![id],
@@ -217,6 +337,23 @@ impl Jellyfin {
                     trf!("影片資訊沒有設好：{e}", "details not set: {e}")
                 }
             });
+        }
+        // 首頁「繼續觀看」的橫幅圖、縮圖：沒有時用封面（Jellyfin 的主要圖片）
+        for id in &ids {
+            self.fill_backdrop(id);
+        }
+        if let Some(name) = local.filter(|_| self.collections).and_then(|l| collection_name(&self.root, l)) {
+            notes.push(match ids.iter().try_for_each(|id| self.add_to_collection(&name, id)) {
+                Ok(()) => trf!("放進合集「{name}」", "added to the “{name}” collection"),
+                Err(e) => {
+                    crate::warn!("[Jellyfin] 放進合集「{name}」失敗：{e}");
+                    trf!("沒有放進合集：{e}", "not added to a collection: {e}")
+                }
+            });
+        }
+        // 時間軸預覽縮圖（10.9 以後）：媒體庫有打開才做，沒打開時設定裡的「一鍵修好」會打開
+        if self.trickplay_enabled() && self.run_task("RefreshTrickplayImages").is_ok() {
+            notes.push(tr!("正在做時間軸預覽縮圖", "making trickplay previews").into());
         }
         if extras.chapters {
             notes.push(match self.chapter_images() {
@@ -281,6 +418,8 @@ pub struct Extras {
     pub overview: String,
     pub genres: Vec<String>,
     pub year: Option<i32>,
+    /// 錄影時間（UTC，Jellyfin 的格式）：設成首映日期與加入日期，依日期排序時照錄影的時間排
+    pub recorded: Option<String>,
 }
 
 impl Extras {
@@ -297,25 +436,83 @@ impl Extras {
             overview,
             genres: crate::video_tags::split_genres(&get("genre")),
             year,
+            recorded: None,
         }
     }
 
     /// 有影片資訊要設到 Jellyfin
     pub fn has_details(&self) -> bool {
-        !self.tags.is_empty() || !self.title.is_empty() || !self.overview.is_empty() || !self.genres.is_empty() || self.year.is_some()
+        !self.tags.is_empty() || !self.title.is_empty() || !self.overview.is_empty() || !self.genres.is_empty() || self.year.is_some() || self.recorded.is_some()
     }
 
     /// 讀影片（FFmpeg 讀不到時當作沒有）
     pub async fn read(ffmpeg: Option<&std::path::Path>, video: &std::path::Path) -> Extras {
-        let Some(ff) = ffmpeg else { return Extras::default() };
+        let recorded = recorded_at(video);
+        let Some(ff) = ffmpeg else { return Extras { recorded, ..Default::default() } };
         let v = video.display().to_string();
         let args = ["-hide_banner", "-loglevel", "error", "-i", v.as_str(), "-f", "ffmetadata", "-"];
         let r = crate::process::run(ff, &args, Duration::from_secs(30)).await;
-        if r.code == 0 {
-            Extras::from_ffmetadata(&r.stdout)
-        } else {
-            Extras::default()
+        let x = if r.code == 0 { Extras::from_ffmetadata(&r.stdout) } else { Extras::default() };
+        Extras { recorded, ..x }
+    }
+}
+
+/// 錄影時間：檔名裡的時間（Rec_2026-10-20_07-30-00、PXL_20261012_145733464、VID_20240501_103000…，當地時間），
+/// 沒有時用檔案的修改時間。回傳 Jellyfin 的日期格式（UTC）
+pub fn recorded_at(video: &std::path::Path) -> Option<String> {
+    use chrono::TimeZone;
+    let name = video.file_stem()?.to_string_lossy().into_owned();
+    let from_name = name_time(&name).and_then(|t| chrono::Local.from_local_datetime(&t).earliest()).map(|t| t.with_timezone(&chrono::Utc));
+    let t = from_name.or_else(|| std::fs::metadata(video).and_then(|m| m.modified()).ok().map(chrono::DateTime::<chrono::Utc>::from))?;
+    Some(t.format("%Y-%m-%dT%H:%M:%S.0000000Z").to_string())
+}
+
+/// 檔名裡的日期時間：2026-10-20_07-30-00、20261012_145733、2026-10-20 07.30.00 這類寫法
+fn name_time(name: &str) -> Option<chrono::NaiveDateTime> {
+    let digits: Vec<(usize, String)> = {
+        // 連續數字一段一段取出（位置, 數字）
+        let mut out = vec![];
+        let mut cur = String::new();
+        let mut at = 0;
+        for (i, c) in name.char_indices() {
+            if c.is_ascii_digit() {
+                if cur.is_empty() {
+                    at = i;
+                }
+                cur.push(c);
+            } else if !cur.is_empty() {
+                out.push((at, std::mem::take(&mut cur)));
+            }
         }
+        if !cur.is_empty() {
+            out.push((at, cur));
+        }
+        out
+    };
+    let nums: Vec<&str> = digits.iter().map(|(_, d)| d.as_str()).collect();
+    for i in 0..nums.len() {
+        // 20261012 + 145733（後面可能多毫秒）
+        if nums[i].len() == 8 && nums.get(i + 1).is_some_and(|t| t.len() >= 6) {
+            let s = format!("{}{}", nums[i], &nums[i + 1][..6]);
+            if let Ok(t) = chrono::NaiveDateTime::parse_from_str(&s, "%Y%m%d%H%M%S") {
+                return Some(t);
+            }
+        }
+        // 2026 10 20 07 30 00
+        if nums[i].len() == 4 && nums.len() >= i + 6 && nums[i + 1..i + 6].iter().all(|n| n.len() == 2) {
+            let s = nums[i..i + 6].join("-");
+            if let Ok(t) = chrono::NaiveDateTime::parse_from_str(&s, "%Y-%m-%d-%H-%M-%S") {
+                return Some(t);
+            }
+        }
+    }
+    None
+}
+
+impl Extras {
+    /// 錄影時間的年份（影片資訊沒填年份時用）
+    fn recorded_year(&self) -> Option<i32> {
+        self.recorded.as_deref().and_then(|r| r.get(..4)).and_then(|y| y.parse().ok())
     }
 }
 
@@ -332,8 +529,12 @@ pub fn with_details(item_json: &str, x: &Extras) -> Option<String> {
     if !x.genres.is_empty() {
         o.insert("Genres".into(), Value::from(x.genres.clone()));
     }
-    if let Some(y) = x.year {
+    if let Some(y) = x.year.or_else(|| x.recorded_year().filter(|_| o.get("ProductionYear").is_none_or(Value::is_null))) {
         o.insert("ProductionYear".into(), Value::from(y));
+    }
+    if let Some(r) = &x.recorded {
+        o.insert("PremiereDate".into(), Value::from(r.clone()));
+        o.insert("DateCreated".into(), Value::from(r.clone()));
     }
     if !x.tags.is_empty() {
         o.insert("Tags".into(), Value::from(x.tags.clone()));
@@ -417,48 +618,128 @@ pub fn server_path(server_root: &str, local_root: &str, local_dir: &std::path::P
     Some(out)
 }
 
-/// /Library/VirtualFolders 的回應裡，包含 server_root 的媒體庫類型對不對：不是「家庭影片和照片」時回傳建議。
-/// server_root 不知道時（媒體庫還沒有影片）看不出來，None
-pub fn library_note(vf_json: &str, server_root: Option<&str>) -> Option<String> {
-    let root = server_root?.replace('\\', "/").trim_end_matches('/').to_lowercase();
+/// 媒體庫 l 的資料夾有沒有包含 root（伺服器上的路徑；/ 和 \\ 都算、不分大小寫），或在 root 底下
+fn covers(l: &Value, root: &str) -> bool {
+    let norm = |p: &str| p.replace('\\', "/").trim_end_matches('/').to_lowercase();
+    let root = norm(root);
+    let under = |a: &str, b: &str| a == b || a.strip_prefix(b).is_some_and(|r| r.starts_with('/')) || b.is_empty();
+    l.get("Locations").and_then(Value::as_array).is_some_and(|a| a.iter().filter_map(Value::as_str).map(norm).any(|loc| under(&root, &loc) || under(&loc, &root)))
+}
+
+/// 一鍵修好要打開的媒體庫選項：即時監控、擷取章節圖片（含掃描時）、時間軸預覽縮圖（含掃描時）
+const GOOD_OPTIONS: [&str; 5] =
+    ["EnableRealtimeMonitor", "EnableChapterImageExtraction", "ExtractChapterImagesDuringLibraryScan", "EnableTrickplayImageExtraction", "ExtractTrickplayImagesDuringLibraryScan"];
+
+/// 媒體庫選項打開 GOOD_OPTIONS（其他照原樣）
+fn with_good_options(opts: &Value) -> Value {
+    let mut o = if opts.is_object() { opts.clone() } else { serde_json::json!({}) };
+    if let Some(m) = o.as_object_mut() {
+        for k in GOOD_OPTIONS {
+            m.insert(k.into(), Value::Bool(true));
+        }
+    }
+    o
+}
+
+/// 有沒有任何一個媒體庫打開了這個選項
+fn library_option_on(vf_json: &str, key: &str) -> bool {
+    serde_json::from_str::<Value>(vf_json)
+        .ok()
+        .and_then(|v| v.as_array().map(|libs| libs.iter().any(|l| l.pointer(&format!("/LibraryOptions/{key}")).and_then(Value::as_bool) == Some(true))))
+        .unwrap_or(false)
+}
+
+/// /Library/VirtualFolders 的回應裡，包含 server_root 的媒體庫設定對不對：類型是不是「家庭影片和照片」、
+/// 即時監控、章節圖片、時間軸預覽縮圖有沒有打開。server_root 不知道時（媒體庫還沒有影片）看不出來，None
+pub fn library_check(vf_json: &str, server_root: Option<&str>) -> Option<LibraryCheck> {
+    let root = server_root?;
     let v: Value = serde_json::from_str(vf_json).ok()?;
-    let inside = |loc: &str| {
-        let loc = loc.replace('\\', "/").trim_end_matches('/').to_lowercase();
-        let under = |a: &str, b: &str| a == b || a.strip_prefix(b).is_some_and(|r| r.starts_with('/')) || b.is_empty();
-        under(&root, &loc) || under(&loc, &root)
-    };
-    let libs: Vec<&Value> = v.as_array()?.iter().filter(|l| l.get("Locations").and_then(Value::as_array).is_some_and(|a| a.iter().filter_map(Value::as_str).any(inside))).collect();
+    let libs: Vec<&Value> = v.as_array()?.iter().filter(|l| covers(l, root)).collect();
     if libs.is_empty() {
         return None;
     }
-    let notes: Vec<String> = libs
-        .iter()
-        .filter_map(|l| {
-            let name = l.get("Name").and_then(Value::as_str).unwrap_or("?");
-            let kind = match l.get("CollectionType").and_then(Value::as_str).unwrap_or("") {
-                "homevideos" => return None,
-                "movies" => tr!("電影", "Movies"),
-                "tvshows" => tr!("節目", "Shows"),
-                "musicvideos" => tr!("音樂影片", "Music Videos"),
-                "music" => tr!("音樂", "Music"),
-                "books" => tr!("書籍", "Books"),
-                _ => tr!("混合內容", "Mixed content"),
-            };
-            Some(trf!("媒體庫「{name}」的類型是「{kind}」", "Library “{name}” is set to “{kind}”"))
-        })
-        .collect();
-    if notes.is_empty() {
-        let names: Vec<&str> = libs.iter().filter_map(|l| l.get("Name").and_then(Value::as_str)).collect();
-        return Some(trf!("媒體庫「{}」是家庭影片和照片 ✓", "Library “{}” is Home Videos and Photos ✓", names.join("、")));
+    let name = |l: &Value| l.get("Name").and_then(Value::as_str).unwrap_or("?").to_string();
+    let home: Vec<&Value> = libs.iter().copied().filter(|l| l.get("CollectionType").and_then(Value::as_str) == Some("homevideos")).collect();
+    if home.is_empty() {
+        let notes: Vec<String> = libs
+            .iter()
+            .map(|l| {
+                let kind = match l.get("CollectionType").and_then(Value::as_str).unwrap_or("") {
+                    "movies" => tr!("電影", "Movies"),
+                    "tvshows" => tr!("節目", "Shows"),
+                    "musicvideos" => tr!("音樂影片", "Music Videos"),
+                    "music" => tr!("音樂", "Music"),
+                    "books" => tr!("書籍", "Books"),
+                    _ => tr!("混合內容", "Mixed content"),
+                };
+                trf!("媒體庫「{}」的類型是「{kind}」", "Library “{}” is set to “{kind}”", name(l))
+            })
+            .collect();
+        let note = format!(
+            "{}{}",
+            notes.join(tr!("；", "; ")),
+            tr!(
+                "：錄影會被當成電影或影集去網路上找資訊，可能配錯封面、名稱。按「一鍵修好」新建一個「家庭影片和照片」媒體庫",
+                ". Recordings get matched like films or episodes and may get the wrong cover or title. Click “Fix it” to create a Home Videos and Photos library"
+            )
+        );
+        return Some(LibraryCheck { note, ok: false });
     }
-    Some(format!(
-        "{}{}",
-        notes.join(tr!("；", "; ")),
-        tr!(
-            "：錄影會被當成電影或影集去網路上找資訊，可能配錯封面、名稱。建議在 Jellyfin 控制台把它改成（或另外加一個）「家庭影片和照片」類型的媒體庫",
-            ". Recordings get matched like films or episodes and may get the wrong cover or title. In the Jellyfin Dashboard, use a “Home Videos and Photos” library instead"
-        )
-    ))
+    // 舊版沒有的選項（例如 10.9 以前沒有時間軸預覽縮圖）不算
+    let labels = [
+        ("EnableRealtimeMonitor", tr!("即時監控", "real-time monitoring")),
+        ("EnableChapterImageExtraction", tr!("擷取章節圖片", "chapter images")),
+        ("EnableTrickplayImageExtraction", tr!("時間軸預覽縮圖", "trickplay previews")),
+    ];
+    let off: Vec<&str> = labels.iter().filter(|(k, _)| home.iter().any(|l| l.pointer(&format!("/LibraryOptions/{k}")).and_then(Value::as_bool) == Some(false))).map(|(_, t)| *t).collect();
+    let names = home.iter().map(|l| name(l)).collect::<Vec<_>>().join("、");
+    if off.is_empty() {
+        return Some(LibraryCheck { note: trf!("媒體庫「{names}」是家庭影片和照片 ✓", "Library “{names}” is Home Videos and Photos ✓"), ok: true });
+    }
+    let off = off.join(tr!("、", ", "));
+    Some(LibraryCheck {
+        note: trf!("媒體庫「{names}」是家庭影片和照片，但{off}沒打開：按「一鍵修好」打開", "Library “{names}” is Home Videos and Photos, but {off} is off. Click “Fix it” to turn it on"),
+        ok: false,
+    })
+}
+
+/// 依媒體庫裡的位置取合集名稱：Y:\family\2024\a.mp4 → 「family 2024」；直接放在最上層的不放進合集
+pub fn collection_name(root: &str, local: &std::path::Path) -> Option<String> {
+    let norm = |s: &str| s.replace('\\', "/").trim_end_matches('/').to_string();
+    // 用字串拆（/ 和 \\ 都算），不靠 Path::parent：測試在 Linux 上跑也看得懂 Windows 路徑
+    let (root, full) = (norm(root.trim()), norm(&local.display().to_string()));
+    let dir = full.rsplit_once('/')?.0.to_string();
+    if root.is_empty() || dir.len() <= root.len() || !dir.is_char_boundary(root.len()) || !dir[..root.len()].eq_ignore_ascii_case(&root) {
+        return None;
+    }
+    let rest = &dir[root.len()..];
+    if !rest.starts_with('/') {
+        return None;
+    }
+    let parts: Vec<&str> = rest.split('/').filter(|p| !p.is_empty()).collect();
+    (!parts.is_empty()).then(|| parts.join(" "))
+}
+
+/// /Items（合集）的回應裡名稱是 name 的那一個（不分大小寫）
+fn collection_id(json: &str, name: &str) -> Option<String> {
+    let v: Value = serde_json::from_str(json).ok()?;
+    v.get("Items")?.as_array()?.iter().find(|i| i.get("Name").and_then(Value::as_str).is_some_and(|n| n.eq_ignore_ascii_case(name))).and_then(|i| i.get("Id").and_then(Value::as_str)).map(String::from)
+}
+
+/// 影片資料裡還沒有的圖片：Backdrop（BackdropImageTags 是空的）、Thumb（ImageTags 沒有 Thumb）；有封面時才補
+fn missing_images(item_json: &str) -> Vec<&'static str> {
+    let Ok(v) = serde_json::from_str::<Value>(item_json) else { return vec![] };
+    if v.pointer("/ImageTags/Primary").is_none() {
+        return vec![];
+    }
+    let mut out = vec![];
+    if v.get("BackdropImageTags").and_then(Value::as_array).is_none_or(|a| a.is_empty()) {
+        out.push("Backdrop");
+    }
+    if v.pointer("/ImageTags/Thumb").is_none() {
+        out.push("Thumb");
+    }
+    out
 }
 
 /// /Items 的回應裡，檔名是 file_name 的項目編號（伺服器上的路徑和這台電腦看到的不一樣，只比對檔名，不分大小寫）
@@ -518,7 +799,7 @@ pub fn sync_edited(jf: Option<&Jellyfin>, copy_to: &str, video: &std::path::Path
             }
             return Some(Ok(msg));
         }
-        if let Err(e) = crate::paths::copy_keep_time(video, dest) {
+        if let Err(e) = crate::transfer::copy(video, dest) {
             crate::warn!("[Jellyfin] 更新 {} 失敗：{e}", dest.display());
             return Some(Err(trf!("沒有更新「複製」資料夾裡的那一份：{e}", "Couldn't update the copy in the “Copy” folder: {e}")));
         }
@@ -533,7 +814,7 @@ pub fn sync_edited(jf: Option<&Jellyfin>, copy_to: &str, video: &std::path::Path
     Some(match jf.refresh_items(&name, Some(&target)) {
         Ok(ids) if ids.is_empty() => Ok(format!("{done}{}", tr!("Jellyfin 還沒有這支影片，已請它掃描媒體庫", "Jellyfin doesn't have this video yet, so it was asked to scan"))),
         Ok(ids) => {
-            let more = jf.after_upload(&name, extras, ids, Duration::ZERO);
+            let more = jf.after_upload(&name, extras, ids, Duration::ZERO, Some(&target));
             Ok(format!("{done}{}{more}", tr!("已請 Jellyfin 重新讀取這支影片", "Jellyfin was asked to reload this video")))
         }
         Err(e) => {
@@ -662,7 +943,7 @@ pub fn send_file(jf: Option<&Jellyfin>, copy_to: &str, file: &std::path::Path, e
         let files = crate::after_record::result_files(&file.display().to_string(), None);
         let copied = std::fs::create_dir_all(lib).and_then(|_| {
             for f in &files {
-                crate::paths::copy_keep_time(f, &lib.join(library_name(f)))?;
+                crate::transfer::copy(f, &lib.join(library_name(f)))?;
             }
             Ok(())
         });
@@ -678,7 +959,7 @@ pub fn send_file(jf: Option<&Jellyfin>, copy_to: &str, file: &std::path::Path, e
     Some(match jf.refresh_items(&name, Some(&lib.join(library_name(file)))) {
         Ok(ids) => {
             let what = if ids.is_empty() { tr!("，已請 Jellyfin 掃描", ", Jellyfin asked to scan") } else { tr!("，已請 Jellyfin 重新讀取", ", Jellyfin asked to reload it") };
-            let more = jf.after_upload(&name, extras, ids, Duration::from_secs(60));
+            let more = jf.after_upload(&name, extras, ids, Duration::from_secs(60), Some(&lib.join(library_name(file))));
             Ok(format!("{sent}{what}{more}"))
         }
         Err(e) => {
@@ -971,7 +1252,7 @@ mod tests {
         assert_eq!(normalize_url("my server"), None);
         assert!(Jellyfin::new("nas:8096", "  ").is_none());
         let ui = serde_json::json!({ URL_KEY: "nas:8096", API_KEY: " abc " });
-        assert_eq!(Jellyfin::from_ui(Some(&ui)), Some(Jellyfin { url: "http://nas:8096".into(), key: "abc".into(), root: String::new() }));
+        assert_eq!(Jellyfin::from_ui(Some(&ui)), Some(Jellyfin { url: "http://nas:8096".into(), key: "abc".into(), root: String::new(), collections: true }));
         assert!(Jellyfin::from_ui(Some(&serde_json::json!({ URL_KEY: "nas:8096" }))).is_none());
     }
 
@@ -1308,14 +1589,14 @@ mod tests {
         let vf = r#"[{"Name":"錄影","CollectionType":"homevideos","Locations":["/volume1/video"]},
                      {"Name":"電影","CollectionType":"movies","Locations":["/volume1/movies"]},
                      {"Name":"混合","Locations":["/volume1/mix/"]}]"#;
-        assert!(library_note(vf, Some("/volume1/video")).unwrap().ends_with('✓'));
-        let n = library_note(vf, Some("/volume1/movies/sub")).unwrap();
+        assert!(library_check(vf, Some("/volume1/video")).unwrap().ok);
+        let n = library_check(vf, Some("/volume1/movies/sub")).unwrap().note;
         assert!(n.contains("電影") || n.contains("Movies"), "{n}");
         assert!(n.contains("家庭影片") || n.contains("Home Videos"), "{n}");
-        let n = library_note(vf, Some("/volume1/mix")).unwrap();
+        let n = library_check(vf, Some("/volume1/mix")).unwrap().note;
         assert!(n.contains("混合") || n.contains("Mixed"), "{n}");
-        assert_eq!(library_note(vf, Some("/other")), None);
-        assert_eq!(library_note(vf, None), None);
+        assert_eq!(library_check(vf, Some("/other")), None);
+        assert_eq!(library_check(vf, None), None);
     }
 
     #[test]
@@ -1372,5 +1653,84 @@ mod tests {
         sync_edited(Some(&jf), &copy_to, &renamed, &Extras::default(), Edit::Cover, Some(b"jpeg")).unwrap().unwrap();
         assert_eq!(std::fs::read_to_string(lib.join("family/j3新名.mp4")).unwrap(), "new cover!");
         drop(h);
+    }
+
+    #[test]
+    fn recording_time_comes_from_the_name_or_the_file() {
+        let t = |s: &str| name_time(s).map(|t| t.format("%Y-%m-%d %H:%M:%S").to_string());
+        assert_eq!(t("Rec_2026-10-20_07-30-05").as_deref(), Some("2026-10-20 07:30:05"));
+        assert_eq!(t("PXL_20261012_145733464").as_deref(), Some("2026-10-12 14:57:33"));
+        assert_eq!(t("VID_20240501_103000_cut").as_deref(), Some("2024-05-01 10:30:00"));
+        assert_eq!(t("Velfie_2_cut"), None);
+        assert_eq!(t("Rec_2026-13-40_07-30-05"), None);
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("Velfie_2.mp4");
+        std::fs::write(&f, "x").unwrap();
+        crate::paths::set_mtime(&f, std::time::SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000));
+        assert_eq!(recorded_at(&f).as_deref(), Some("2023-11-14T22:13:20.0000000Z"));
+        // 寫進影片資料：首映日期、加入日期；沒填年份時用錄影的年份
+        let x = Extras { recorded: recorded_at(&f), ..Default::default() };
+        assert!(x.has_details());
+        let item: Value = serde_json::from_str(&with_details(r#"{"Name":"a","ProductionYear":null}"#, &x).unwrap()).unwrap();
+        assert_eq!(item["PremiereDate"], "2023-11-14T22:13:20.0000000Z");
+        assert_eq!(item["DateCreated"], "2023-11-14T22:13:20.0000000Z");
+        assert_eq!(item["ProductionYear"], 2023);
+        let item: Value = serde_json::from_str(&with_details(r#"{"ProductionYear":2020}"#, &x).unwrap()).unwrap();
+        assert_eq!(item["ProductionYear"], 2020);
+    }
+
+    #[test]
+    fn collections_follow_the_folder() {
+        let p = std::path::Path::new;
+        assert_eq!(collection_name("Y:\\", p("Y:\\family\\2024\\a.mp4")).as_deref(), Some("family 2024"));
+        assert_eq!(collection_name("Y:\\", p("Y:\\a.mp4")), None);
+        assert_eq!(collection_name("\\\\nas\\video", p("\\\\NAS\\video\\baseball\\a.mp4")).as_deref(), Some("baseball"));
+        assert_eq!(collection_name("Y:\\video", p("Y:\\videos\\x\\a.mp4")), None);
+        assert_eq!(collection_name("", p("Y:\\x\\a.mp4")), None);
+        let items = r#"{"Items":[{"Id":"c1","Name":"Family 2024"},{"Id":"c2","Name":"family"}]}"#;
+        assert_eq!(collection_id(items, "family 2024").as_deref(), Some("c1"));
+        assert_eq!(collection_id(items, "baseball"), None);
+    }
+
+    #[test]
+    fn backdrops_are_filled_only_when_missing() {
+        assert_eq!(missing_images(r#"{"ImageTags":{"Primary":"p"},"BackdropImageTags":[]}"#), ["Backdrop", "Thumb"]);
+        assert_eq!(missing_images(r#"{"ImageTags":{"Primary":"p","Thumb":"t"},"BackdropImageTags":["b"]}"#), Vec::<&str>::new());
+        // 還沒有封面：沒東西可以補
+        assert_eq!(missing_images(r#"{"ImageTags":{},"BackdropImageTags":[]}"#), Vec::<&str>::new());
+    }
+
+    #[test]
+    fn library_options_are_checked_and_fixed() {
+        let vf = r#"[{"Name":"錄影","CollectionType":"homevideos","ItemId":"L1","Locations":["/v"],
+                      "LibraryOptions":{"EnableRealtimeMonitor":false,"EnableChapterImageExtraction":true,"EnableTrickplayImageExtraction":false,"Other":1}}]"#;
+        let c = library_check(vf, Some("/v")).unwrap();
+        assert!(!c.ok);
+        assert!(c.note.contains("即時監控") || c.note.contains("real-time"), "{}", c.note);
+        assert!(!(c.note.contains("擷取章節圖片") || c.note.contains("chapter images")), "{}", c.note);
+        let fixed = with_good_options(&serde_json::json!({ "EnableRealtimeMonitor": false, "Other": 1 }));
+        assert_eq!(fixed["EnableRealtimeMonitor"], true);
+        assert_eq!(fixed["ExtractTrickplayImagesDuringLibraryScan"], true);
+        assert_eq!(fixed["Other"], 1);
+        assert!(library_option_on(vf, "EnableChapterImageExtraction") && !library_option_on(vf, "EnableTrickplayImageExtraction"));
+
+        // 一鍵修好：已經是家庭影片 → 打開選項
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("x")).unwrap();
+        std::fs::write(dir.path().join("x/a.mp4"), "x").unwrap();
+        let items = r#"{"Items":[{"Path":"/v/x/a.mp4"}]}"#.to_string();
+        let (url, h) = serve_seq(vec![("200 OK", items.clone()), ("200 OK", vf.to_string()), ("204 No Content", String::new())]);
+        let jf = Jellyfin::new(&url, "k").unwrap().with_root(&dir.path().display().to_string());
+        let msg = jf.fix_library().unwrap();
+        assert!(msg.contains("錄影"), "{msg}");
+        assert!(h.join().unwrap()[2].starts_with("POST /Library/VirtualFolders/LibraryOptions"));
+        // 是電影類型 → 新建家庭影片媒體庫（名稱撞到時加 (2)）
+        let movies = r#"[{"Name":"錄影","CollectionType":"movies","ItemId":"M","Locations":["/v"]}]"#.to_string();
+        let (url, h) = serve_seq(vec![("200 OK", items), ("200 OK", movies), ("204 No Content", String::new())]);
+        let jf = Jellyfin::new(&url, "k").unwrap().with_root(&dir.path().display().to_string());
+        let msg = jf.fix_library().unwrap();
+        assert!(msg.contains("錄影 (2)") || msg.contains("Recordings"), "{msg}");
+        let got = h.join().unwrap();
+        assert!(got[2].starts_with("POST /Library/VirtualFolders?") && got[2].contains("collectionType=homevideos"), "{got:?}");
     }
 }

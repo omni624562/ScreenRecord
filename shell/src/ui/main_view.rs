@@ -2687,6 +2687,8 @@ fn recent_card(app: &mut UiApp, ui: &mut Ui, e: &LibraryEntry, date: String, w: 
         // 已經傳到媒體庫（Jellyfin）：綠色標籤
         if let Some(at) = app.library_where(&e.media.path, e.media.bytes) {
             super::library_dialog::library_chip(ui, app, &at);
+        } else {
+            super::library_dialog::pending_chip(ui, &e.media.path);
         }
         super::library_dialog::folder_chip(ui, &e.media.folder);
         // 有聲音：灰色小喇叭（不用彩色標籤）

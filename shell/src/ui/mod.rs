@@ -170,6 +170,9 @@ pub struct UiApp {
     /// 媒體庫的檔名索引（清單上標「已在媒體庫」）；正在背景讀
     pub lib_index: Option<library_send::LibIndex>,
     pub lib_index_loading: bool,
+    /// 待傳清單：上次看 NAS 連不連得到的時間、正在補傳
+    pub pending_check: Instant,
+    pub pending_busy: bool,
     pub changelog_open: bool,
     /// 找到的攝影機（None = 還沒找完）；主畫面的攝影機選單與設定視窗共用
     pub cameras: Option<Vec<String>>,
@@ -316,6 +319,8 @@ impl UiApp {
             send_dlg: None,
             lib_index: None,
             lib_index_loading: false,
+            pending_check: Instant::now(),
+            pending_busy: false,
             changelog_open: false,
             cameras: None,
             cameras_loading: false,
@@ -574,6 +579,7 @@ impl UiApp {
                 tokio::task::spawn_blocking(move || -> Result<Option<String>, String> {
                     let mut renamed = vec![];
                     for (old, new) in &pairs {
+                        screenrecorder_core::transfer::rename_pending(&old.display().to_string(), &new.display().to_string());
                         renamed.extend(rename_copies(&copy_to, old, new)?);
                     }
                     if renamed.is_empty() && !in_lib {
@@ -605,7 +611,8 @@ impl UiApp {
 
     /// 設定好的 Jellyfin（網址和 API 金鑰都有填），帶著媒體庫資料夾（傳好只掃描放進去的資料夾用）
     pub fn jellyfin(&self) -> Option<screenrecorder_core::jellyfin::Jellyfin> {
-        screenrecorder_core::jellyfin::Jellyfin::new(&self.s.jellyfin_url, &self.s.jellyfin_key).map(|j| j.with_root(&self.s.after_copy_to))
+        screenrecorder_core::jellyfin::Jellyfin::new(&self.s.jellyfin_url, &self.s.jellyfin_key)
+            .map(|j| screenrecorder_core::jellyfin::Jellyfin { collections: self.s.jellyfin_collections, ..j.with_root(&self.s.after_copy_to) })
     }
 
     /// 複製這支影片在 Jellyfin 的網址（要先傳到媒體庫）
@@ -1380,6 +1387,7 @@ impl eframe::App for UiApp {
         }
         self.watch_window();
         self.flush_settings();
+        self.flush_pending();
         self.poll_status();
         self.handle_close(ctx);
         self.apply_theme(ctx);
@@ -1503,6 +1511,7 @@ impl eframe::App for UiApp {
         if self.video_tags.is_some() {
             video_tags::show(self, &ctx);
         }
+        library_send::transfer_bar(self, &ctx);
         // 設定視窗在其他視窗之後畫：從剪輯視窗、全部錄影開啟時（例如「前往外部元件」）在最上面
         if self.settings_dlg.is_some() {
             settings_dialog::show(self, &ctx);
@@ -1588,6 +1597,10 @@ fn trash_now(app: &mut UiApp, paths: Vec<String>, copies: Vec<std::path::PathBuf
     }
     match actions::delete(&app.core, &paths) {
         Ok(n) => {
+            // 刪掉的就不用再補傳
+            for p in &paths {
+                screenrecorder_core::transfer::remove_pending(p);
+            }
             app.toast(trf!("已將 {n} 個檔案移到資源回收筒", "Moved {n} file(s) to the Recycle Bin"), false);
             if notify {
                 let jf = app.jellyfin();

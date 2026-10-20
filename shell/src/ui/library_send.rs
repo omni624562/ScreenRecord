@@ -4,7 +4,7 @@
 use super::theme::{self, Btn, Icon};
 use super::{dialogs, UiApp};
 use eframe::egui::{self, vec2, Align, Id, Layout, RichText};
-use screenrecorder_core::jellyfin;
+use screenrecorder_core::{jellyfin, transfer};
 use screenrecorder_core::{tr, trf};
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -131,27 +131,105 @@ impl UiApp {
         });
     }
 
-    /// 真的傳過去（sub：媒體庫的哪個資料夾，「family/2024」，空的 = 最上層）
+    /// 真的傳過去（sub：媒體庫的哪個資料夾，「family/2024」，空的 = 最上層）。
+    /// 連不到 NAS（不在家、NAS 沒開）時記進待傳清單，連上後自動補傳
     pub fn send_now(&mut self, path: &str, sub: &str) {
         let Some(_) = self.library_folder() else { return };
         let jf = self.jellyfin();
-        let dest = jellyfin::library_dest(&self.s.after_copy_to, sub);
+        let root = self.s.after_copy_to.clone();
+        let dest = jellyfin::library_dest(&root, sub);
         let file = std::path::PathBuf::from(path);
-        self.toast(trf!("正在傳到「{}」：{}", "Sending to “{}”: {}", place_label(self, sub), dialogs::file_name(path)), false);
+        let place = place_label(self, sub);
+        self.toast(trf!("正在傳到「{place}」：{}", "Sending to “{place}”: {}", dialogs::file_name(path)), false);
         let ffmpeg = self.core.ffmpeg_path();
+        let (key, sub) = (path.to_string(), sub.to_string());
         self.spawn(
             async move {
+                if !reachable_bg(&root).await {
+                    return None;
+                }
                 // 影片資訊的標籤、有沒有章節：傳好之後設到 Jellyfin
                 let extras = jellyfin::Extras::read(ffmpeg.as_deref(), &file).await;
-                tokio::task::spawn_blocking(move || jellyfin::send_file(jf.as_ref(), &dest, &file, &extras)).await.ok().flatten()
+                let r = tokio::task::spawn_blocking(move || jellyfin::send_file(jf.as_ref(), &dest, &file, &extras)).await.ok().flatten();
+                // 傳到一半斷線：也算連不到
+                if matches!(r, Some(Err(_))) && !reachable_bg(&root).await {
+                    return None;
+                }
+                Some(r)
             },
-            |app, r| {
+            move |app, r| {
                 // 媒體庫的檔案變了：標註重讀
                 app.lib_index = None;
                 match r {
-                    Some(Ok(msg)) => app.toast(msg, false),
-                    Some(Err(e)) => app.toast(e, true),
-                    None => {}
+                    None => {
+                        transfer::add_pending(std::path::Path::new(&key), &sub);
+                        app.toast(trf!("連不到「{place}」：已記下，連上 NAS 後會自動傳過去", "Can't reach “{place}”. It's queued and will be sent once the NAS is reachable"), false);
+                    }
+                    Some(Some(Ok(msg))) => {
+                        transfer::remove_pending(&key);
+                        app.toast(msg, false);
+                    }
+                    Some(Some(Err(e))) => app.toast(e, true),
+                    Some(None) => {}
+                }
+            },
+        );
+    }
+
+    /// 待傳清單：每分鐘看一次 NAS 連不連得到，連得到就一支一支補傳（logic 每一畫格呼叫）
+    pub fn flush_pending(&mut self) {
+        if self.pending_busy || self.pending_check.elapsed() < Duration::from_secs(60) {
+            return;
+        }
+        self.pending_check = Instant::now();
+        let list = transfer::pending();
+        let root = self.s.after_copy_to.trim().to_string();
+        if list.is_empty() || root.is_empty() {
+            return;
+        }
+        self.pending_busy = true;
+        let jf = self.jellyfin();
+        let ffmpeg = self.core.ffmpeg_path();
+        self.spawn(
+            async move {
+                let mut done: Vec<(String, Result<(), String>)> = vec![];
+                if !reachable_bg(&root).await {
+                    return done;
+                }
+                for p in list {
+                    let file = std::path::PathBuf::from(&p.file);
+                    if !file.is_file() {
+                        // 本機的檔案已經刪掉了：不用再傳
+                        done.push((p.file, Ok(())));
+                        continue;
+                    }
+                    let extras = jellyfin::Extras::read(ffmpeg.as_deref(), &file).await;
+                    let (jf, dest) = (jf.clone(), jellyfin::library_dest(&root, &p.sub));
+                    let r = tokio::task::spawn_blocking(move || jellyfin::send_file(jf.as_ref(), &dest, &file, &extras)).await.ok().flatten();
+                    let failed = matches!(r, Some(Err(_)));
+                    done.push((p.file, r.unwrap_or(Ok(String::new())).map(|_| ())));
+                    // 又斷線了：剩下的下次再傳
+                    if failed && !reachable_bg(&root).await {
+                        break;
+                    }
+                }
+                done
+            },
+            |app, done| {
+                app.pending_busy = false;
+                let mut sent = 0;
+                for (file, r) in &done {
+                    match r {
+                        Ok(()) => {
+                            transfer::remove_pending(file);
+                            sent += std::path::Path::new(file).is_file() as usize;
+                        }
+                        Err(e) => screenrecorder_core::warn!("[傳到資料夾] 補傳 {file} 失敗：{e}"),
+                    }
+                }
+                if sent > 0 {
+                    app.lib_index = None;
+                    app.toast(trf!("NAS 連上了：已補傳 {sent} 支", "The NAS is back: sent {sent} queued file(s)"), false);
                 }
             },
         );
@@ -353,4 +431,41 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
     } else if let Some(sub) = go {
         app.picker_go(sub, true);
     }
+}
+
+/// 連得到媒體庫資料夾嗎（NAS 沒回應時可能要等好幾秒，在背景執行緒查）
+async fn reachable_bg(root: &str) -> bool {
+    let root = root.to_string();
+    tokio::task::spawn_blocking(move || transfer::reachable(&root)).await.unwrap_or(false)
+}
+
+/// 傳到 NAS 的進度（右下角）：檔名、百分比、已傳 / 全部，可以取消
+pub fn transfer_bar(app: &mut UiApp, ctx: &egui::Context) {
+    let list = transfer::active();
+    if list.is_empty() {
+        return;
+    }
+    let gb = |b: u64| screenrecorder_core::format::format_bytes(b);
+    egui::Area::new(Id::new("transfer-bar")).anchor(egui::Align2::RIGHT_BOTTOM, vec2(-16.0, -16.0)).order(egui::Order::Foreground).show(ctx, |ui| {
+        theme::modal_frame(ctx).show(ui, |ui| {
+            let p = theme::pal(ui);
+            ui.set_width(300.0);
+            for t in &list {
+                let frac = if t.total > 0 { t.done as f32 / t.total as f32 } else { 0.0 };
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(tr!("傳到 NAS", "Sending to NAS")).font(theme::font_bold(12.5)));
+                    ui.add(egui::Label::new(RichText::new(&t.name).font(theme::font(12.0)).color(p.muted)).truncate());
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if Btn::icon_only(Icon::Close).ghost().small().tooltip(tr!("取消（NAS 上原本的那一份不會動）", "Cancel (the copy already on the NAS stays)")).show(ui).clicked() {
+                            transfer::cancel(t.id);
+                        }
+                    });
+                });
+                ui.add(egui::ProgressBar::new(frac).desired_height(6.0).fill(p.accent));
+                ui.label(RichText::new(format!("{:.0}%　{} / {}", frac * 100.0, gb(t.done), gb(t.total))).font(theme::font(11.5)).color(p.muted));
+            }
+        });
+    });
+    let _ = app;
+    ctx.request_repaint_after(Duration::from_millis(250));
 }

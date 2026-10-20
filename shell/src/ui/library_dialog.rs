@@ -1514,9 +1514,11 @@ fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table:
             // 已經傳到媒體庫（NAS 上有同名同大小的一份）、剪輯版：各自固定一欄，上下切齊（設定了媒體庫才留媒體庫那一欄）
             if !app.s.after_copy_to.trim().is_empty() {
                 let at = app.library_where(&e.media.path, e.media.bytes);
-                tag_column(tui, &["Jellyfin", tr!("媒體庫", "Library")], |ui| {
+                tag_column(tui, &["Jellyfin", tr!("媒體庫", "Library"), tr!("待傳", "Queued")], |ui| {
                     if let Some(at) = at {
                         library_chip(ui, app, &at);
+                    } else {
+                        pending_chip(ui, &e.media.path);
                     }
                 });
             }
@@ -1796,6 +1798,13 @@ pub fn library_chip(ui: &mut egui::Ui, app: &UiApp, at: &[String]) -> egui::Resp
         (tr!("媒體庫", "Library"), trf!("已傳到媒體庫：{}", "Already in the library: {}", at.join(tr!("、", ", "))))
     };
     chip(ui, text, Tone::Ok, false).on_hover_text(tip)
+}
+
+/// 在待傳清單裡（連不到 NAS，連上後自動傳）：灰色「待傳」標籤
+pub fn pending_chip(ui: &mut egui::Ui, path: &str) {
+    if let Some(p) = screenrecorder_core::transfer::pending().into_iter().find(|p| p.file == path) {
+        chip(ui, tr!("待傳", "Queued"), Tone::Plain, false).on_hover_text(screenrecorder_core::transfer::pending_tip(&p.sub));
+    }
 }
 
 /// 清單右邊固定寬度的一欄（right_to_left 排版裡）：標籤靠左放，沒有標籤時留空，上下各列才會切齊

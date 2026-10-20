@@ -38,31 +38,31 @@ enum Try {
 fn items(_app: &UiApp) -> Vec<(String, String, Try)> {
     vec![
         (
-            tr!("自動找到 Jellyfin", "Find Jellyfin automatically").into(),
+            tr!("不在家也能先「傳」", "Queue sends when you're away").into(),
             tr!(
-                "「設定 → 存檔與分享」的 Jellyfin 網址旁邊多了「尋找」：在區域網路上找伺服器，找到就填好網址。測試連線時也會看媒體庫的類型，建議用「家庭影片和照片」，錄影才不會被當成電影配錯封面。",
-                "Settings → Saving & sharing has a new “Find” button next to the Jellyfin address: it looks for the server on your network and fills it in. Test connection also checks the library type and suggests “Home Videos and Photos” so recordings don't get matched like films."
+                "連不到 NAS 時，傳到媒體庫和錄完自動處理會先記下來，檔案庫標出「待傳」；回家連上 NAS 就自動補傳。傳的時候右下角顯示進度，可以取消，網路中斷也不會留下半支壞檔。",
+                "When the NAS isn't reachable, sends are queued and marked “Queued” in the library; they go out automatically once you're back. A progress bar shows while sending, you can cancel, and a dropped connection never leaves a broken file."
+            )
+            .into(),
+            Try::Library(false),
+        ),
+        (
+            tr!("Jellyfin 設定一鍵修好", "Fix Jellyfin settings in one click").into(),
+            tr!(
+                "「測試連線」後如果媒體庫類型或選項不對，按「一鍵修好」就改成「家庭影片和照片」並打開即時監控、章節圖片、時間軸預覽縮圖。",
+                "After “Test connection”, if the library type or options aren't right, “Fix it” switches to Home Videos and Photos and turns on real-time monitoring, chapter images and trickplay."
             )
             .into(),
             Try::Settings(Page::Save),
         ),
         (
-            tr!("傳好幾秒就出現在 Jellyfin", "Shows up in Jellyfin in seconds").into(),
+            tr!("電視上更好看", "Nicer on the TV").into(),
             tr!(
-                "傳到媒體庫、改名、刪除後，只請 Jellyfin 掃描那一個資料夾，不再掃描整個媒體庫，大的媒體庫也很快。",
-                "After sending, renaming or deleting, Jellyfin is asked to scan just that folder instead of the whole library, so even a big library updates fast."
+                "傳到 family › 2024 的影片自動放進「family 2024」合集；依錄影時間排序；首頁大圖用封面補上；拖時間軸看得到預覽小畫面。",
+                "Videos sent to family › 2024 go into a “family 2024” collection, sort by when they were recorded, get a backdrop from their cover, and show previews while scrubbing."
             )
             .into(),
             Try::None,
-        ),
-        (
-            tr!("改封面、影片資訊不用重傳整支", "Cover and detail changes skip the re-send").into(),
-            tr!(
-                "改了封面或影片資訊，Jellyfin 已經有這支時直接透過 Jellyfin 換上，不用再把好幾 GB 的影片傳到 NAS 一次；「Jellyfin」標籤、改名、刪除照樣認得那一份。",
-                "When you change a cover or the video details and Jellyfin already has the video, the change goes straight to Jellyfin instead of copying gigabytes to the NAS again. The “Jellyfin” tag, renames and deletes still recognize the copy."
-            )
-            .into(),
-            Try::Library(false),
         ),
     ]
 }
