@@ -1756,9 +1756,6 @@ fn shortcut_line(app: &mut UiApp, ui: &mut Ui) {
     let mut open_keys = false;
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 6.0;
-        if !parts.is_empty() {
-            ui.label(RichText::new(parts.join(tr!("・", " · "))).font(theme::mono(12.0)).color(p.muted));
-        }
         // 右邊：「全部快速鍵…」；有不能用的時候直接寫幾個不能用（點一下去換）
         let tip = match works {
             _ if broken == 0 => tr!("在「設定 → 快速鍵」查看與更換", "View and change them in Settings → Shortcuts"),
@@ -1769,6 +1766,13 @@ fn shortcut_line(app: &mut UiApp, ui: &mut Ui) {
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             if Btn::new(label).ghost().small().tooltip(tip).show(ui).clicked() {
                 open_keys = true;
+            }
+            // 左邊：常用的快速鍵，先放按鈕再用剩下的寬度，放不下就截斷，不會和按鈕疊在一起
+            if !parts.is_empty() {
+                let text = parts.join(tr!("・", " · "));
+                ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                    ui.add(egui::Label::new(RichText::new(&text).font(theme::mono(12.0)).color(p.muted)).truncate()).on_hover_text(&text);
+                });
             }
         });
     });

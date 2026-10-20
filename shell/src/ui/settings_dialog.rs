@@ -141,7 +141,7 @@ pub fn audio_summary(app: &UiApp) -> (String, Icon) {
     (label, if app.s.audio_mic && !app.s.audio_system { Icon::Mic } else { Icon::Speaker })
 }
 
-const NAV_W: f32 = 148.0;
+const NAV_W: f32 = 180.0;
 const BODY_W: f32 = 600.0;
 /// 內容區的高度（視窗太矮時縮短，內容可捲動）
 const BODY_H: f32 = 470.0;
@@ -271,9 +271,12 @@ fn form_row(ui: &mut Ui, label: &str, add: impl FnOnce(&mut Ui)) {
     let p = theme::pal(ui);
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 6.0;
-        let (r, _) = ui.allocate_exact_size(vec2(FORM_LABEL_W, FORM_ROW_H), Sense::hover());
-        ui.painter().text(pos2(r.left(), r.center().y), egui::Align2::LEFT_CENTER, label, theme::font(13.0), p.muted);
-        ui.set_min_height(FORM_ROW_H);
+        // 標籤太長（例如英文）就在這一欄裡換行，這一列跟著變高，不會壓到右邊的控制項或下一列
+        let g = ui.painter().layout(label.to_string(), theme::font(13.0), p.muted, FORM_LABEL_W - 4.0);
+        let h = FORM_ROW_H.max(g.size().y + 8.0);
+        let (r, _) = ui.allocate_exact_size(vec2(FORM_LABEL_W, h), Sense::hover());
+        ui.painter().galley(pos2(r.left(), r.center().y - g.size().y / 2.0), g, p.muted);
+        ui.set_min_height(h);
         add(ui);
     });
 }
@@ -2074,10 +2077,12 @@ fn key_row(ui: &mut Ui, label: &str, add: impl FnOnce(&mut Ui)) {
     let p = theme::pal(ui);
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 6.0;
-        let (r, _) = ui.allocate_exact_size(vec2(KEY_LABEL_W, FORM_ROW_H), Sense::hover());
+        // 名稱換成兩行時這一列跟著變高，不會和下一列擠在一起
         let g = ui.painter().layout(label.to_string(), theme::font(13.0), p.muted, KEY_LABEL_W - 4.0);
+        let h = FORM_ROW_H.max(g.size().y + 8.0);
+        let (r, _) = ui.allocate_exact_size(vec2(KEY_LABEL_W, h), Sense::hover());
         ui.painter().galley(pos2(r.left(), r.center().y - g.size().y / 2.0), g, p.muted);
-        ui.set_min_height(FORM_ROW_H);
+        ui.set_min_height(h);
         add(ui);
     });
 }

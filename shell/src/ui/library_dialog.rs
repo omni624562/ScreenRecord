@@ -777,7 +777,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                     Icon::List,
                     tr!(
                         "左邊列出程式、內容、常出現的詞、時間、顏色，點幾下就能縮小範圍，不用記得關鍵字（再按一次收起來）",
-                        "Lists apps, content types, common words, dates and colours on the left. Click a few to narrow down without remembering keywords (click again to hide)"
+                        "Lists apps, content types, common words, dates and colors on the left. Click a few to narrow down without remembering keywords (click again to hide)"
                     ),
                 )
                 .small()
