@@ -569,6 +569,10 @@ pub async fn list_library_with(cache: &Arc<MediaCache>, ffmpeg: Option<&Path>, d
         LibraryFilter::Shot => list.retain(|e| is_image_name(&e.media.name)),
         LibraryFilter::Cut => list.retain(|e| is_cut_name(&e.media.name)),
         LibraryFilter::Speed => list.retain(|e| !e.exports.is_empty()),
+        LibraryFilter::NotInLibrary => {
+            let have: std::collections::HashSet<(String, u64)> = q.in_library.iter().cloned().collect();
+            list.retain(|e| !is_image_name(&e.media.name) && !have.contains(&(e.media.name.to_lowercase(), e.media.bytes)))
+        }
     }
 
     // 瀏覽欄的條件（只有截圖）：篩選並算出每個選項的張數

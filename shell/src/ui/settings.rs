@@ -152,6 +152,12 @@ pub struct UiSettings {
     pub after_copy_to: String,
     /// 錄完處理好之後複製到媒體庫資料夾（core::after_record 讀這個欄位）
     pub after_copy: bool,
+    /// 錄完自動傳到媒體庫的哪個子資料夾（第一層；空的 = 最上層；core::after_record 讀這個欄位）
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub after_copy_sub: String,
+    /// 上次手動「傳到媒體庫」選的子資料夾（下次預先選好）
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub library_last_sub: String,
     /// 剪輯、加速版、壓縮另存好之後也傳到媒體庫資料夾（有設定資料夾時）
     pub copy_exports: bool,
     /// 檢視器播放大影片時不再提示下載 mpv 播放元件
@@ -359,6 +365,8 @@ impl UiSettings {
             // 舊版選了「複製」的資料夾就是錄完要複製
             after_copy: boolean(screenrecorder_core::after_record::COPY_ON_KEY)
                 .unwrap_or_else(|| o.get(screenrecorder_core::after_record::COPY_KEY).and_then(Value::as_str).is_some_and(|d| !d.trim().is_empty())),
+            after_copy_sub: o.get(screenrecorder_core::after_record::COPY_SUB_KEY).and_then(Value::as_str).unwrap_or("").trim().to_string(),
+            library_last_sub: o.get("libraryLastSub").and_then(Value::as_str).unwrap_or("").trim().to_string(),
             jellyfin_url: o.get(screenrecorder_core::jellyfin::URL_KEY).and_then(Value::as_str).unwrap_or("").trim().to_string(),
             jellyfin_key: o.get(screenrecorder_core::jellyfin::API_KEY).and_then(Value::as_str).unwrap_or("").trim().to_string(),
             name_rule: o.get(screenrecorder_core::after_record::NAME_RULE_KEY).and_then(Value::as_str).unwrap_or("").chars().take(120).collect(),

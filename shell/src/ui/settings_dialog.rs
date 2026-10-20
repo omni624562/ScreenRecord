@@ -943,7 +943,10 @@ fn library_section(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui, open: &
         let text = if dir.is_empty() {
             tr!("選了之後，錄影卡片的「傳到媒體庫」一按就複製過去（連同字幕）", "Once chosen, “Send to library” on a recording copies it there (with subtitles)")
         } else {
-            tr!("「傳到媒體庫」複製到這裡（同名的覆蓋，連同字幕）", "“Send to library” copies here (replacing one with the same name, with subtitles)")
+            tr!(
+                "「傳到媒體庫」時選要放進這裡的哪個子資料夾（同一個資料夾裡同名的覆蓋，連同字幕）",
+                "“Send to library” lets you pick a subfolder here (replacing one with the same name in that folder, with subtitles)"
+            )
         };
         ui.add(egui::Label::new(RichText::new(text).font(theme::font(12.0)).color(p.muted)).wrap());
         if !dir.is_empty() && Btn::new(tr!("不用媒體庫", "Stop using")).small().ghost().show(ui).clicked() {
@@ -972,9 +975,10 @@ fn library_section(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui, open: &
     jellyfin_rows(app, d, ui, dir.is_empty());
 }
 
-/// 媒體庫：錄完、另存好之後也傳過去
+/// 媒體庫：錄完、另存好之後也傳過去，放在哪個子資料夾
 fn library_checks(app: &mut UiApp, ui: &mut Ui) {
     ui.add_space(4.0);
+    auto_sub_row(app, ui);
     if theme::check(ui, &mut app.s.after_copy, tr!("錄完自動處理好之後也傳過去", "Also send new recordings after processing"))
         .on_hover_text(tr!("和「錄完自動處理 → 媒體庫」是同一個設定", "Same setting as After recording → Library"))
         .changed()
@@ -990,6 +994,44 @@ fn library_checks(app: &mut UiApp, ui: &mut Ui) {
     {
         app.save_settings();
     }
+}
+
+/// 錄完、剪輯好自動傳的時候放進媒體庫的哪個子資料夾（手動傳的時候每次選）
+fn auto_sub_row(app: &mut UiApp, ui: &mut Ui) {
+    let folder = app.library_folder().unwrap_or_default();
+    let mut subs = app.library_subs().unwrap_or_default();
+    let cur = app.s.after_copy_sub.clone();
+    // 選的資料夾還沒建立（傳的時候會建立）也列出來
+    if !cur.is_empty() && !subs.iter().any(|s| s.eq_ignore_ascii_case(&cur)) {
+        subs.push(cur.clone());
+    }
+    let top = trf!("{folder}（最上層）", "{folder} (top level)");
+    form_row(ui, tr!("自動傳到", "Auto-send to"), |ui| {
+        let shown = if cur.is_empty() { top.clone() } else { cur.clone() };
+        let mut pick: Option<String> = None;
+        egui::ComboBox::from_id_salt("auto-sub")
+            .width(FORM_CTRL_W)
+            .selected_text(shown)
+            .show_ui(ui, |ui| {
+                if ui.selectable_label(cur.is_empty(), &top).clicked() {
+                    pick = Some(String::new());
+                }
+                for s in &subs {
+                    if ui.selectable_label(cur.eq_ignore_ascii_case(s), s).clicked() {
+                        pick = Some(s.clone());
+                    }
+                }
+            })
+            .response
+            .on_hover_text(tr!(
+                "錄完自動處理、剪輯和加速版另存好自動傳的時候，放進媒體庫的這個資料夾。手動按「傳到媒體庫」時每次都可以選",
+                "Where automatic sends go (after recording, and after an edited or sped-up copy is saved). When you click “Send to library” you choose each time"
+            ));
+        if let Some(sub) = pick.filter(|s| *s != cur) {
+            app.s.after_copy_sub = sub;
+            app.save_settings();
+        }
+    });
 }
 
 /// Jellyfin：傳到它的媒體庫資料夾後，通知它馬上掃描；影片資訊、改名、刪除也同步過去
@@ -1547,7 +1589,7 @@ fn after_record_section(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
         let has = !app.s.after_copy_to.is_empty();
         let mut on = has && app.s.after_copy;
         let label = if has {
-            trf!("處理完傳到「{}」", "Send to “{}” when done", short_dir(&app.s.after_copy_to))
+            trf!("處理完傳到「{}」", "Send to “{}” when done", short_dir(&screenrecorder_core::jellyfin::library_dest(&app.s.after_copy_to, &app.s.after_copy_sub)))
         } else {
             tr!("處理完傳到媒體庫", "Send to the library when done").to_string()
         };
