@@ -250,7 +250,7 @@ pub enum Icon {
     /// 加速（兩個向右的三角形）
     Fast,
     /// 回溯錄影（逆時針箭頭圍著時鐘指針）
-    Rewind,
+
     /// 錄影（攝影機：方框與鏡頭）
     Video,
     /// 複製（兩張重疊的紙）
@@ -469,11 +469,6 @@ pub fn paint_icon(p: &Painter, rect: Rect, icon: Icon, color: Color32) {
             p.add(Shape::convex_polygon(vec![at(1.5, 4.0), at(8.0, 8.0), at(1.5, 12.0)], color, Stroke::NONE));
             p.add(Shape::convex_polygon(vec![at(8.0, 4.0), at(14.5, 8.0), at(8.0, 12.0)], color, Stroke::NONE));
         }
-        Icon::Rewind => {
-            arc(8.5, 8.5, 5.5, -2.6, 2.9);
-            line(&[(1.8, 3.4), (3.2, 6.6), (6.4, 5.4)]);
-            line(&[(8.5, 5.5), (8.5, 8.5), (10.8, 10.0)]);
-        }
         Icon::Video => {
             p.rect_stroke(Rect::from_min_max(at(1.5, 4.0), at(10.5, 12.0)), CornerRadius::same((1.5 * k) as u8), st, StrokeKind::Middle);
             line(&[(10.5, 7.0), (14.5, 4.5), (14.5, 11.5), (10.5, 9.0)]);
@@ -608,10 +603,6 @@ impl Btn {
     }
     pub fn quiet(mut self, q: bool) -> Self {
         self.quiet = q;
-        self
-    }
-    pub fn left(mut self) -> Self {
-        self.left = true;
         self
     }
     pub fn height(mut self, h: f32) -> Self {

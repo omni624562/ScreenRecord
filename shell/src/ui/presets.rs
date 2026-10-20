@@ -56,12 +56,19 @@ pub fn button(app: &mut UiApp, ui: &mut Ui) {
         .to_string(),
     };
     let resp = Btn::new(&label).icon(Icon::List).ghost().small().enabled(!locked).tooltip(tip).show(ui);
+    egui::Popup::menu(&resp).show(|ui| menu_body(app, ui));
+}
+
+/// 組合清單與管理（下方設定列的按鈕、主畫面「更多工具」的子選單都用這個）
+pub fn menu_body(app: &mut UiApp, ui: &mut Ui) {
+    let current = active(app);
+    let modified = last_used(app).filter(|_| current.is_none());
     let mut apply = None;
     let mut save = false;
     let mut update = None;
     let mut rename = None;
     let mut delete = None;
-    egui::Popup::menu(&resp).show(|ui| {
+    {
         ui.set_min_width(240.0);
         // 組合裡存了什麼
         ui.label(theme::muted(ui, tr!("包含範圍、畫面、聲音、儲存位置", "Includes the area, video, audio and save location")));
@@ -105,7 +112,7 @@ pub fn button(app: &mut UiApp, ui: &mut Ui) {
                 }
             });
         }
-    });
+    }
     if let Some(i) = apply {
         apply_preset(app, i);
     }
