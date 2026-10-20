@@ -123,7 +123,7 @@ pub struct Shot {
     opened_edit: Option<String>,
     /// 載入了上次的標註：之前編輯成的那張圖（儲存時可以取代它，或另存一張新的）
     target: Option<String>,
-    /// 「輸出」分頁的預覽：(內容, 圖)
+    /// 「外觀與輸出」分頁的預覽：(內容, 圖)
     preview: Option<(String, TextureHandle)>,
     /// 還沒旋轉的畫面（顯示用的解析度，原圖的 res 倍）與原圖大小
     base: Frame,
@@ -1091,13 +1091,15 @@ pub fn footer(ed: &mut Editor, ui: &mut egui::Ui) -> Option<Act> {
     act
 }
 
-/// 「輸出」分頁：外框、陰影、大小，以及輸出的樣子
+/// 「外觀與輸出」分頁：外觀（外框、圓角、背景、陰影）和輸出（大小、格式）兩區，左邊大畫面顯示輸出的樣子
 pub fn output_panel(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context) {
     let p = theme::pal(ui);
     let Some(mut o) = ed.shot.as_ref().map(|s| s.opts()) else { return };
     let label = |ui: &mut egui::Ui, t: &str| {
         ui.label(theme::muted(ui, t).font(theme::font(12.0)));
     };
+    // ── 外觀：讓截圖貼到文件、簡報比較好看 ──
+    super::side::section(ui, tr!("外觀", "Look"), true);
     // 外框
     ui.vertical(|ui| {
         ui.spacing_mut().item_spacing.y = 6.0;
@@ -1180,6 +1182,8 @@ pub fn output_panel(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context) {
         "圖的四周加上柔和的陰影（沒有背景時四周留透明的邊），貼到文件或簡報比較立體",
         "Add a soft shadow around the image (with a transparent margin when there's no background) so it stands out in documents and slides"
     ));
+    // ── 輸出：存成多大、什麼格式 ──
+    super::side::section(ui, tr!("輸出", "Output"), false);
     // 大小：比例，或自訂寬度（像素）
     let crop_w = {
         let sp = spec(ed);
@@ -1323,7 +1327,7 @@ pub(super) fn gradient_swatch(p: &egui::Painter, r: Rect, bg: &str) {
     p.rect_stroke(r, CornerRadius::ZERO, Stroke::new(1.0, Color32::from_black_alpha(40)), StrokeKind::Inside);
 }
 
-/// 「輸出」分頁的預覽圖（左邊大畫面顯示）
+/// 「外觀與輸出」分頁的預覽圖（左邊大畫面顯示）
 pub fn output_texture(ed: &Editor) -> Option<TextureHandle> {
     ed.shot.as_ref().and_then(|s| s.preview.as_ref()).map(|(_, t)| t.clone())
 }

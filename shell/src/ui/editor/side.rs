@@ -1,4 +1,4 @@
-//! 右側面板：時間（頭尾、刪除的片段）、畫面裁切、標註（工具、屬性、清單）；截圖另有「輸出」（外框、陰影、大小）。
+//! 右側面板：時間（頭尾、刪除的片段）、畫面裁切、標註（工具、屬性、清單）；截圖另有「外觀與輸出」（外框、陰影、背景、大小、格式）。
 
 use super::shot::Act;
 use super::stage::paint_tool_icon;
@@ -56,7 +56,7 @@ fn tabs(ed: &mut Editor, ui: &mut egui::Ui) {
     let subs = ed.sub_ids.len();
     let anns = ed.anns.len() - subs.min(ed.anns.len());
     let tabs: Vec<(Tab, &str, usize)> = if ed.is_shot() {
-        vec![(Tab::Ann, tr!("標註", "Annotate"), anns), (Tab::Crop, tr!("裁切與旋轉", "Crop & rotate"), 0), (Tab::Output, tr!("輸出", "Output"), 0)]
+        vec![(Tab::Ann, tr!("標註", "Annotate"), anns), (Tab::Crop, tr!("裁切與旋轉", "Crop & rotate"), 0), (Tab::Output, tr!("外觀與輸出", "Look & output"), 0)]
     } else {
         vec![
             (Tab::Time, tr!("修剪", "Trim"), 0),
