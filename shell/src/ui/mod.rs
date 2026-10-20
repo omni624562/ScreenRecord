@@ -10,6 +10,7 @@ pub mod export_dialog;
 pub mod import;
 pub mod inline_play;
 pub mod library_dialog;
+pub mod library_send;
 pub mod main_view;
 pub mod notes;
 pub mod ocr;
@@ -164,6 +165,11 @@ pub struct UiApp {
 
     pub toast: Option<Toast>,
     pub ask: Option<dialogs::Ask>,
+    /// 「傳到媒體庫」選子資料夾的視窗
+    pub send_dlg: Option<library_send::SendDlg>,
+    /// 媒體庫的檔名索引（清單上標「已在媒體庫」）；正在背景讀
+    pub lib_index: Option<library_send::LibIndex>,
+    pub lib_index_loading: bool,
     pub changelog_open: bool,
     /// 找到的攝影機（None = 還沒找完）；主畫面的攝影機選單與設定視窗共用
     pub cameras: Option<Vec<String>>,
@@ -307,6 +313,9 @@ impl UiApp {
             status_at: Instant::now(),
             toast: None,
             ask: None,
+            send_dlg: None,
+            lib_index: None,
+            lib_index_loading: false,
             changelog_open: false,
             cameras: None,
             cameras_loading: false,
@@ -492,10 +501,10 @@ impl UiApp {
     pub fn send_label(&self) -> (String, &'static str) {
         match self.library_folder() {
             Some(folder) => (
-                trf!("傳到「{}」", "Send to “{}”", folder),
+                trf!("傳到「{}」…", "Send to “{}”…", folder),
                 tr!(
-                    "複製到媒體庫資料夾（同名的覆蓋，連同字幕），有設定 Jellyfin 時通知它。資料夾在「設定 → 存檔與分享」",
-                    "Copy to the library folder (replacing one with the same name, subtitles included) and notify Jellyfin if set up. The folder is in Settings → Saving & sharing"
+                    "選要放進媒體庫的哪個子資料夾，複製過去（同一個資料夾裡同名的覆蓋，連同字幕），有設定 Jellyfin 時通知它。媒體庫在「設定 → 存檔與分享」",
+                    "Pick a subfolder of the library and copy it there (replacing one with the same name in that folder, subtitles included), then notify Jellyfin if set up. The library is in Settings → Saving & sharing"
                 ),
             ),
             None => (
@@ -508,41 +517,19 @@ impl UiApp {
         }
     }
 
-    /// 把檔案（連同字幕）傳到媒體庫資料夾（NAS、Jellyfin 媒體庫），並通知 Jellyfin；
-    /// 剪輯、加速版另存好時自動呼叫，也可以從選單手動傳
-    pub fn send_to_library(&mut self, path: &str) {
-        let Some(folder) = self.library_folder() else {
-            self.toast(
-                tr!("請先在「媒體庫」選資料夾（例如 Jellyfin 的媒體庫），之後就能直接傳", "Choose a library folder first (such as your Jellyfin library); then you can send files there"),
-                false,
-            );
-            return settings_dialog::open(self, settings_dialog::Page::Save);
-        };
-        let jf = screenrecorder_core::jellyfin::Jellyfin::new(&self.s.jellyfin_url, &self.s.jellyfin_key);
-        let copy_to = self.s.after_copy_to.clone();
-        let file = std::path::PathBuf::from(path);
-        self.toast(trf!("正在傳到「{}」：{}", "Sending to “{}”: {}", folder, dialogs::file_name(path)), false);
-        let ffmpeg = self.core.ffmpeg_path();
-        self.spawn(
-            async move {
-                // 影片資訊的標籤、有沒有章節：傳好之後設到 Jellyfin
-                let extras = screenrecorder_core::jellyfin::Extras::read(ffmpeg.as_deref(), &file).await;
-                tokio::task::spawn_blocking(move || screenrecorder_core::jellyfin::send_file(jf.as_ref(), &copy_to, &file, &extras)).await.ok().flatten()
-            },
-            |app, r| match r {
-                Some(Ok(msg)) => app.toast(msg, false),
-                Some(Err(e)) => app.toast(e, true),
-                None => {}
-            },
-        );
-    }
-
     /// 移到資源回收筒前的確認。媒體庫資料夾（Jellyfin 媒體庫）裡也有同名的那一份時，
     /// 問要兩邊都刪，還是只刪這台電腦的；done：刪好之後（清單、檢視器跟著更新）
     pub fn confirm_trash(&mut self, title: String, message: &str, paths: Vec<String>, done: fn(&mut UiApp, &[String], bool)) {
         use screenrecorder_core::jellyfin::{in_library, library_copies};
         let copy_to = self.s.after_copy_to.clone();
-        let copies: Vec<std::path::PathBuf> = paths.iter().flat_map(|p| library_copies(&copy_to, std::path::Path::new(p))).collect();
+        let copies: Vec<std::path::PathBuf> = paths
+            .iter()
+            .flat_map(|p| {
+                // 同名而且大小一樣的才算媒體庫裡的那一份（別的子資料夾裡剛好同名的另一支不刪）
+                let size = std::fs::metadata(p).ok().map(|m| m.len());
+                library_copies(&copy_to, std::path::Path::new(p), size)
+            })
+            .collect();
         // 檔案本來就放在媒體庫裡：刪了就是從媒體庫刪掉，請 Jellyfin 重新掃描
         let in_lib = paths.iter().any(|p| in_library(&copy_to, std::path::Path::new(p)));
         let names: Vec<String> = paths.iter().map(|p| dialogs::file_name(p)).collect();
@@ -569,6 +556,7 @@ impl UiApp {
     /// 改名後：媒體庫裡那一份（連同字幕、加速版）也換成新名稱，並請 Jellyfin 重新掃描
     pub fn sync_renamed(&mut self, pairs: Vec<(std::path::PathBuf, std::path::PathBuf)>) {
         use screenrecorder_core::jellyfin::{in_library, rename_copies, Jellyfin};
+        self.lib_index = None;
         let copy_to = self.s.after_copy_to.clone();
         if copy_to.trim().is_empty() {
             return;
@@ -861,7 +849,7 @@ impl UiApp {
                         // 剪輯、加速版、壓縮、合併的影片：也傳到媒體庫資料夾（NAS、Jellyfin）
                         let video = matches!(e.kind, screenrecorder_core::types::ExportKind::Cut | screenrecorder_core::types::ExportKind::Speed | screenrecorder_core::types::ExportKind::Merge);
                         if video && self.s.copy_exports && self.library_folder().is_some() {
-                            self.send_to_library(&e.output.clone());
+                            self.send_auto(&e.output.clone());
                         }
                     } else {
                         // 剪輯失敗或取消：提示並提供「回到剪輯」
@@ -1522,6 +1510,9 @@ impl eframe::App for UiApp {
         if self.changelog_open {
             dialogs::changelog(self, &ctx);
         }
+        if self.send_dlg.is_some() {
+            library_send::show(self, &ctx);
+        }
         if self.ask.is_some() {
             dialogs::show_ask(self, &ctx);
         }
@@ -1560,6 +1551,8 @@ async fn watch_changes<T: PartialEq>(every: Duration, shown: Arc<std::sync::atom
 
 /// 移到資源回收筒（confirm_trash 確認後）：copies 是媒體庫裡也要刪的那一份；notify：刪好後請 Jellyfin 重新掃描
 fn trash_now(app: &mut UiApp, paths: Vec<String>, copies: Vec<std::path::PathBuf>, notify: bool, done: fn(&mut UiApp, &[String], bool)) {
+    // 媒體庫的檔案可能跟著刪：「已在媒體庫」的標註重讀
+    app.lib_index = None;
     app.ask = None;
     // 先停止播放（Windows 上檔案使用中無法刪除）
     if app.inline.as_ref().is_some_and(|i| paths.iter().any(|p| i.is(p))) {

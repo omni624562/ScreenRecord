@@ -851,6 +851,8 @@ pub enum LibraryFilter {
     Cut,
     Speed,
     Audio,
+    /// 還沒傳到媒體庫的錄影（LibraryQuery::in_library 是媒體庫裡有的）
+    NotInLibrary,
     /// 截圖（PNG）
     Shot,
 }
@@ -888,6 +890,8 @@ pub struct LibraryQuery {
     pub facet: Option<FacetQuery>,
     /// 也列出子資料夾裡的（最多 SUBDIR_DEPTH 層）
     pub subdirs: bool,
+    /// 媒體庫裡已經有的檔案（小寫檔名, 大小）；「還沒傳到媒體庫」篩選用
+    pub in_library: Vec<(String, u64)>,
 }
 
 /// 瀏覽欄選的條件：同一組裡選多個是「其中一個」，常見詞是「全部都有」；不同組之間是「而且」

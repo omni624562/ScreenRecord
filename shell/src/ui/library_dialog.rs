@@ -366,6 +366,8 @@ fn load(app: &mut UiApp) {
             d.ocr_started = true;
         }
     }
+    // 「還沒傳到媒體庫」：媒體庫裡有哪些檔案（還沒讀到時先全部列出，讀到後再查一次）
+    let in_library = if app.library.as_ref().is_some_and(|d| d.filter == LibraryFilter::NotInLibrary) { app.library_keys() } else { vec![] };
     let Some(d) = app.library.as_mut() else {
         return;
     };
@@ -382,9 +384,19 @@ fn load(app: &mut UiApp) {
         None
     };
     let query = match d.kind {
-        Kind::Video => {
-            LibraryQuery { q, filter: d.filter, sort: d.sort, page: Some(d.page as f64), page_size: None, fit_px: Some(d.fit_px), audio: true, extra_dirs: vec![], only, ..Default::default() }
-        }
+        Kind::Video => LibraryQuery {
+            q,
+            filter: d.filter,
+            sort: d.sort,
+            page: Some(d.page as f64),
+            page_size: None,
+            fit_px: Some(d.fit_px),
+            audio: true,
+            extra_dirs: vec![],
+            only,
+            in_library,
+            ..Default::default()
+        },
         Kind::Shot => LibraryQuery {
             q,
             filter: LibraryFilter::Shot,
@@ -400,6 +412,7 @@ fn load(app: &mut UiApp) {
             facet: (d.browse || !d.facet.is_empty()).then(|| d.facet.clone()),
             // core 依設定決定（actions::library）
             subdirs: false,
+            in_library: vec![],
         },
     };
     let dir = d.dir.clone().unwrap_or(home);
@@ -443,6 +456,8 @@ enum Req {
     Merge(Vec<String>),
     /// 開啟「一次處理」：勾選的 MP4
     Batch(Vec<String>),
+    /// 勾選的錄影傳到媒體庫（選一次子資料夾）
+    SendLibrary(Vec<String>),
     /// 開啟「拼成一張」
     Combine,
     /// 比對勾選的兩張截圖
@@ -453,6 +468,15 @@ enum Req {
     CopyImage(String),
     /// 加上 / 移除星號
     Pin(String, bool),
+}
+
+impl LibraryDialog {
+    /// 媒體庫的索引更新了：選「還沒傳到媒體庫」時重查
+    pub fn library_index_changed(&mut self) {
+        if self.filter == LibraryFilter::NotInLibrary {
+            self.dirty = true;
+        }
+    }
 }
 
 /// 清單平常看的資料夾：錄影是儲存位置，截圖是截圖資料夾
@@ -727,6 +751,11 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                     (LibraryFilter::Speed, tr!("有加速版", "Has sped-up version")),
                     (LibraryFilter::Audio, tr!("有聲音", "Has audio")),
                 ];
+                // 選了媒體庫才有「還沒傳到媒體庫」
+                let filters: Vec<_> = filters
+                    .into_iter()
+                    .chain(app.library_folder().is_some().then(|| (LibraryFilter::NotInLibrary, tr!("還沒傳到媒體庫", "Not in the library yet"))))
+                    .collect();
                 egui::ComboBox::from_id_salt("libFilter").selected_text(filters.iter().find(|f| f.0 == d.filter).map(|f| f.1).unwrap_or("")).show_ui(ui, |ui| {
                     for (v, t) in filters {
                         if ui.selectable_label(d.filter == v, t).clicked() {
@@ -994,6 +1023,20 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         {
             req = Some(Req::Batch(mp4s));
         }
+        // 勾選的錄影一起傳到媒體庫（選一次資料夾）
+        let videos: Vec<String> = d.selected.iter().filter(|p| screenrecorder_core::import::is_importable(p) || p.to_ascii_lowercase().ends_with(".m4a")).cloned().collect();
+        if !shot
+            && !videos.is_empty()
+            && app.library_folder().is_some()
+            && Btn::new(tr!("傳到媒體庫…", "Send to library…"))
+                .icon(Icon::Upload)
+                .small()
+                .tooltip(tr!("勾選的錄影一起傳到媒體庫，選一次要放進哪個資料夾", "Send the selected recordings to the library; choose the folder once"))
+                .show(fui)
+                .clicked()
+        {
+            req = Some(Req::SendLibrary(videos));
+        }
         if let Some((i, n)) = batching.filter(|_| !shot) {
             fui.add_space(8.0);
             fui.label(RichText::new(trf!("一次處理中（第 {i}/{n} 支）…", "Processing {i} of {n}…")).font(theme::font_bold(12.5)).color(p.accent));
@@ -1105,6 +1148,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
             }
         }
         Some(Req::Merge(paths)) => open_merge(app, paths),
+        Some(Req::SendLibrary(paths)) => app.send_many_to_library(paths),
         Some(Req::Batch(paths)) => {
             let dlg = batch::BatchDlg::new(app, paths);
             if let Some(d) = &mut app.library {
@@ -1467,6 +1511,10 @@ fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table:
             } else {
                 tui.allocate_exact_size(vec2(16.0, 16.0), Sense::hover());
             }
+            // 已經傳到媒體庫（NAS 上有同名同大小的一份）：標出在哪個資料夾
+            if let Some(at) = app.library_where(&e.media.path, e.media.bytes) {
+                library_mark(tui, &at);
+            }
             if fresh {
                 if Btn::new(tr!("播放", "Play")).icon(Icon::Play).primary().small().show(tui).clicked() {
                     *req = Some(Req::Entry(EntryAction::Play, e.clone()));
@@ -1730,6 +1778,13 @@ pub fn no_audio_mark(ui: &mut egui::Ui) -> egui::Response {
     let (r, resp) = ui.allocate_exact_size(vec2(16.0, 16.0), Sense::hover());
     theme::paint_icon(ui.painter(), r, Icon::Muted, theme::pal(ui).muted);
     resp.on_hover_text(tr!("沒有聲音", "No audio"))
+}
+
+/// 已在媒體庫：綠色勾勾，滑鼠移上去寫在哪個資料夾
+pub fn library_mark(ui: &mut egui::Ui, at: &[String]) -> egui::Response {
+    let (r, resp) = ui.allocate_exact_size(vec2(16.0, 16.0), Sense::hover());
+    theme::paint_icon(ui.painter(), r, Icon::Check, theme::pal(ui).ok);
+    resp.on_hover_text(trf!("已在媒體庫：{}", "Already in the library: {}", at.join(tr!("、", ", "))))
 }
 
 pub fn audio_mark(ui: &mut egui::Ui) -> egui::Response {

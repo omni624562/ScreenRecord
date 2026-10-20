@@ -38,22 +38,31 @@ enum Try {
 fn items(_app: &UiApp) -> Vec<(String, String, Try)> {
     vec![
         (
-            tr!("剪輯：拖過去就選好一段", "Editor: drag to select").into(),
+            tr!("傳到媒體庫：選要放進哪個子資料夾", "Send to library: pick a subfolder").into(),
             tr!(
-                "在時間軸的縮圖上拖過一段就選好了，不用再按住 Shift；按「刪除這段」或 Delete 就剪掉。「修剪」分頁一開始就寫好 3 個步驟。",
-                "Drag across the timeline thumbnails to select a section; no Shift needed. Press “Delete section” or Delete to cut it. The Trim tab now starts with three simple steps."
+                "媒體庫設在 NAS 的上一層（例如 video），按「傳到媒體庫」時選要放進 baseball、family 等哪個子資料夾；會記住上次選的，也可以新增資料夾。勾選多支可以一起傳。",
+                "Set the library to the top folder on your NAS (such as video); “Send to library” then asks which subfolder to use. It remembers your last choice, and you can create a folder. Select several to send them together."
             )
             .into(),
-            Try::None,
+            Try::Settings(Page::Save),
         ),
         (
-            tr!("剪輯：控制列一排就好", "Editor: one control row").into(),
+            tr!("錄完自動傳到固定的資料夾", "Automatic sends go to one folder").into(),
             tr!(
-                "時間軸下方的按鈕收成一排，影片畫面大一點；章節移到「字幕」分頁，加標記一樣按 M。",
-                "The buttons under the timeline fit in one row, so the video is bigger. Chapters moved to the Subtitles tab; press M to add a marker as before."
+                "錄完自動處理、剪輯和加速版另存好自動傳的時候，放進「設定 → 存檔與分享 → 自動傳到」選的子資料夾（例如 other）。",
+                "After-recording processing and saved edited or sped-up copies go to the subfolder chosen in Settings → Saving & sharing → Auto-send to (such as other)."
             )
             .into(),
-            Try::None,
+            Try::Settings(Page::Save),
+        ),
+        (
+            tr!("檔案庫標出已在媒體庫的錄影", "The library shows what's already on the NAS").into(),
+            tr!(
+                "NAS 上有同名、同大小的一份時，檔名旁邊出現綠色勾勾，滑鼠移上去看在哪個資料夾；篩選選「還沒傳到媒體庫」只列出還沒傳的。改名、刪除時，子資料夾裡的那一份也會跟著改。",
+                "A green check appears next to recordings that have a copy with the same name and size on the NAS; hover to see which folder. Filter by “Not in the library yet” to list the rest. Renames and deletes follow the copy in its subfolder."
+            )
+            .into(),
+            Try::Library(false),
         ),
     ]
 }

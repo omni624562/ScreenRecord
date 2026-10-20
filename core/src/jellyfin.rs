@@ -325,15 +325,17 @@ pub fn sync_edited(jf: Option<&Jellyfin>, copy_to: &str, video: &std::path::Path
     if copy_to.is_empty() {
         return None;
     }
-    let lib = std::path::Path::new(copy_to);
-    let in_library = video.parent().is_some_and(|d| same_dir(d, lib));
     let mut copied = false;
-    if !in_library {
-        let dest = lib.join(&name);
-        if !dest.is_file() {
+    if !in_library(copy_to, video) {
+        // 媒體庫（最上層或第一層子資料夾）裡同名的那一份；本機改過了大小會不同，只比對名稱，有好幾份時不知道是哪一份就不動
+        let found = find_in_library(copy_to, &name, None);
+        let [dest] = found.as_slice() else {
+            if found.len() > 1 {
+                crate::info!("[Jellyfin] 媒體庫裡有 {} 個 {name}，不知道要更新哪一份", found.len());
+            }
             return None;
-        }
-        if let Err(e) = crate::paths::copy_keep_time(video, &dest) {
+        };
+        if let Err(e) = crate::paths::copy_keep_time(video, dest) {
             crate::warn!("[Jellyfin] 更新 {} 失敗：{e}", dest.display());
             return Some(Err(trf!("沒有更新「複製」資料夾裡的那一份：{e}", "Couldn't update the copy in the “Copy” folder: {e}")));
         }
@@ -402,42 +404,110 @@ pub fn send_file(jf: Option<&Jellyfin>, copy_to: &str, file: &std::path::Path, e
     })
 }
 
-/// 檔案本來就放在「複製」的資料夾（媒體庫）裡：改名、刪除就是改到媒體庫那一份
-pub fn in_library(copy_to: &str, file: &std::path::Path) -> bool {
-    let copy_to = copy_to.trim();
-    !copy_to.is_empty() && file.parent().is_some_and(|d| same_dir(d, std::path::Path::new(copy_to)))
+/// NAS 自己的資料夾（資源回收筒、縮圖快取…），不當成媒體庫的子資料夾
+fn is_system_dir(name: &str) -> bool {
+    name.starts_with(['#', '.', '@', '$']) || name.eq_ignore_ascii_case("System Volume Information")
 }
 
-/// 「複製」資料夾（媒體庫）裡屬於這個檔案的那一份：同名的檔案和它的字幕（同名.srt、同名.zh-TW.srt…）。
-/// 檔案本來就在那個資料夾時是同一份，回傳空的；file 不用還在（改名、刪除之後也查得到）
-pub fn library_copies(copy_to: &str, file: &std::path::Path) -> Vec<std::path::PathBuf> {
+/// 媒體庫第一層的子資料夾名稱（依名稱排序），「傳到哪個資料夾」用；資料夾不在或讀不到時是空的
+pub fn subfolders(copy_to: &str) -> Vec<String> {
     let copy_to = copy_to.trim();
-    let (Some(name), Some(stem)) = (file.file_name(), file.file_stem()) else { return vec![] };
-    if copy_to.is_empty() || in_library(copy_to, file) {
+    if copy_to.is_empty() {
         return vec![];
     }
-    let (name, stem) = (name.to_string_lossy().to_lowercase(), stem.to_string_lossy().to_lowercase());
     let Ok(dir) = std::fs::read_dir(copy_to) else { return vec![] };
-    let mut out: Vec<_> = dir
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| p.is_file())
-        .filter(|p| {
+    let mut out: Vec<String> = dir.flatten().filter(|e| e.file_type().is_ok_and(|t| t.is_dir())).map(|e| e.file_name().to_string_lossy().into_owned()).filter(|n| !is_system_dir(n)).collect();
+    out.sort_by_key(|n| n.to_lowercase());
+    out
+}
+
+/// 子資料夾名稱能不能用（一層、沒有路徑符號）；空的 = 媒體庫最上層
+pub fn valid_subfolder(sub: &str) -> bool {
+    let sub = sub.trim();
+    !sub.contains(['/', '\\', ':', '*', '?', '"', '<', '>', '|']) && sub != "." && sub != ".." && !is_system_dir(sub)
+}
+
+/// 傳到媒體庫的哪個資料夾：最上層，或第一層的子資料夾（名稱不能用時放最上層）
+pub fn library_dest(copy_to: &str, sub: &str) -> String {
+    let (copy_to, sub) = (copy_to.trim(), sub.trim());
+    if copy_to.is_empty() || sub.is_empty() || !valid_subfolder(sub) {
+        return copy_to.to_string();
+    }
+    std::path::Path::new(copy_to).join(sub).display().to_string()
+}
+
+/// 媒體庫的資料夾：最上層和第一層的子資料夾（最上層排第一）
+fn library_dirs(copy_to: &str) -> Vec<std::path::PathBuf> {
+    let copy_to = copy_to.trim();
+    if copy_to.is_empty() {
+        return vec![];
+    }
+    let root = std::path::Path::new(copy_to);
+    std::iter::once(root.to_path_buf()).chain(subfolders(copy_to).into_iter().map(|n| root.join(n))).collect()
+}
+
+/// 檔案本來就放在媒體庫（最上層或第一層子資料夾）裡：改名、刪除就是改到媒體庫那一份
+pub fn in_library(copy_to: &str, file: &std::path::Path) -> bool {
+    let copy_to = copy_to.trim();
+    if copy_to.is_empty() {
+        return false;
+    }
+    let root = std::path::Path::new(copy_to);
+    let Some(dir) = file.parent() else { return false };
+    same_dir(dir, root) || (dir.parent().is_some_and(|p| same_dir(p, root)) && dir.file_name().is_some_and(|n| !is_system_dir(&n.to_string_lossy())))
+}
+
+/// 媒體庫裡（最上層和第一層子資料夾）同名的影片；size 有給時大小也要一樣，別的資料夾裡剛好同名的另一支不算
+pub fn find_in_library(copy_to: &str, name: &str, size: Option<u64>) -> Vec<std::path::PathBuf> {
+    library_dirs(copy_to).into_iter().map(|d| d.join(name)).filter(|p| std::fs::metadata(p).is_ok_and(|m| m.is_file() && size.is_none_or(|s| m.len() == s))).collect()
+}
+
+/// 媒體庫裡有哪些檔案：小寫的檔名 → (在哪個子資料夾（最上層是空的）, 大小)。清單上標「已在媒體庫」用，NAS 上一個資料夾只讀一次
+pub fn library_index(copy_to: &str) -> std::collections::HashMap<String, Vec<(String, u64)>> {
+    let mut out: std::collections::HashMap<String, Vec<(String, u64)>> = std::collections::HashMap::new();
+    let copy_to = copy_to.trim();
+    for dir in library_dirs(copy_to) {
+        let sub = if same_dir(&dir, std::path::Path::new(copy_to)) { String::new() } else { dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default() };
+        let Ok(rd) = std::fs::read_dir(&dir) else { continue };
+        for e in rd.flatten() {
+            let Ok(m) = e.metadata() else { continue };
+            if m.is_file() {
+                out.entry(e.file_name().to_string_lossy().to_lowercase()).or_default().push((sub.clone(), m.len()));
+            }
+        }
+    }
+    out
+}
+
+/// 媒體庫裡屬於這個檔案的那一份：同名（size 有給時大小也一樣）的影片，和同一個資料夾裡它的字幕（同名.srt、同名.zh-TW.srt…）。
+/// 找最上層和第一層子資料夾；檔案本來就在媒體庫裡時是同一份，回傳空的；file 不用還在（改名、刪除之後也查得到）
+pub fn library_copies(copy_to: &str, file: &std::path::Path, size: Option<u64>) -> Vec<std::path::PathBuf> {
+    let (Some(name), Some(stem)) = (file.file_name(), file.file_stem()) else { return vec![] };
+    if copy_to.trim().is_empty() || in_library(copy_to, file) {
+        return vec![];
+    }
+    let stem = stem.to_string_lossy().to_lowercase();
+    let mut out = vec![];
+    for video in find_in_library(copy_to, &name.to_string_lossy(), size) {
+        let Some(Ok(dir)) = video.parent().map(std::fs::read_dir) else { continue };
+        out.extend(dir.flatten().map(|e| e.path()).filter(|p| p.is_file()).filter(|p| {
             let n = p.file_name().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_default();
-            n == name || n.strip_prefix(&stem).is_some_and(|rest| rest.starts_with('.') && [".srt", ".vtt", ".ass"].iter().any(|x| rest.ends_with(x)))
-        })
-        .collect();
+            n.strip_prefix(&stem).is_some_and(|rest| rest.starts_with('.') && [".srt", ".vtt", ".ass"].iter().any(|x| rest.ends_with(x)))
+        }));
+        out.push(video);
+    }
     out.sort();
     out
 }
 
-/// 改名後：媒體庫裡那一份（連同字幕）也換成新名稱；回傳改了幾個檔案
+/// 改名後：媒體庫裡那一份（連同字幕）也換成新名稱；回傳改了幾個檔案。改名不會改內容：用新檔案的大小比對，別的資料夾裡剛好同名的不動
 pub fn rename_copies(copy_to: &str, old: &std::path::Path, new: &std::path::Path) -> Result<usize, String> {
     let (Some(old_stem), Some(new_stem)) = (old.file_stem(), new.file_stem()) else { return Ok(0) };
     let skip = old_stem.to_string_lossy().chars().count();
     let new_stem = new_stem.to_string_lossy();
+    let size = std::fs::metadata(new).ok().map(|m| m.len());
     let mut n = 0;
-    for f in library_copies(copy_to, old) {
+    for f in library_copies(copy_to, old, size) {
         let name = f.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         let to = f.with_file_name(format!("{new_stem}{}", name.chars().skip(skip).collect::<String>()));
         if to.exists() {
@@ -722,18 +792,69 @@ mod tests {
         let copy_to = lib.display().to_string();
         let names = |v: Vec<std::path::PathBuf>| v.iter().map(|p| p.file_name().unwrap().to_string_lossy().into_owned()).collect::<Vec<_>>();
         // 只有同名的影片和字幕，加速版、名字開頭一樣的別支不算
-        assert_eq!(names(library_copies(&copy_to, &rec.join("會議.mp4"))), ["會議.en.srt", "會議.mp4", "會議.zh-TW.srt"]);
-        assert_eq!(names(library_copies(&copy_to, &rec.join("會議_2x.mp4"))), ["會議_2x.mp4"]);
+        assert_eq!(names(library_copies(&copy_to, &rec.join("會議.mp4"), None)), ["會議.en.srt", "會議.mp4", "會議.zh-TW.srt"]);
+        assert_eq!(names(library_copies(&copy_to, &rec.join("會議_2x.mp4"), None)), ["會議_2x.mp4"]);
         // 本來就在媒體庫裡：同一份，不算
-        assert!(library_copies(&copy_to, &lib.join("會議.mp4")).is_empty());
+        assert!(library_copies(&copy_to, &lib.join("會議.mp4"), None).is_empty());
         assert!(in_library(&format!("{copy_to}/"), &lib.join("會議.mp4")));
-        assert!(library_copies("", &rec.join("會議.mp4")).is_empty());
+        assert!(library_copies("", &rec.join("會議.mp4"), None).is_empty());
 
         assert_eq!(rename_copies(&copy_to, &rec.join("會議.mp4"), &rec.join("週會.mp4")).unwrap(), 3);
-        assert_eq!(names(library_copies(&copy_to, &rec.join("週會.mp4"))), ["週會.en.srt", "週會.mp4", "週會.zh-TW.srt"]);
-        assert!(library_copies(&copy_to, &rec.join("會議.mp4")).is_empty());
+        assert_eq!(names(library_copies(&copy_to, &rec.join("週會.mp4"), None)), ["週會.en.srt", "週會.mp4", "週會.zh-TW.srt"]);
+        assert!(library_copies(&copy_to, &rec.join("會議.mp4"), None).is_empty());
         // 新名稱媒體庫裡已經有：不蓋掉
         assert!(rename_copies(&copy_to, &rec.join("週會.mp4"), &rec.join("其他.mp4")).is_err());
         assert_eq!(rename_copies(&copy_to, &rec.join("沒傳過.mp4"), &rec.join("新.mp4")).unwrap(), 0);
+    }
+
+    #[test]
+    fn library_subfolders_are_searched_one_level_deep() {
+        let dir = tempfile::tempdir().unwrap();
+        let (rec, lib) = (dir.path().join("rec"), dir.path().join("video"));
+        for d in ["baseball", "piano", "#recycle", "@eaDir", "piano/2024"] {
+            std::fs::create_dir_all(lib.join(d)).unwrap();
+        }
+        std::fs::create_dir_all(&rec).unwrap();
+        let copy_to = lib.display().to_string();
+        assert_eq!(subfolders(&copy_to), ["baseball", "piano"]);
+        assert!(subfolders("").is_empty() && subfolders(&dir.path().join("沒有").display().to_string()).is_empty());
+        assert_eq!(library_dest(&copy_to, "piano"), lib.join("piano").display().to_string());
+        assert_eq!(library_dest(&copy_to, ""), copy_to);
+        assert_eq!(library_dest(&copy_to, "../x"), copy_to);
+        assert!(valid_subfolder("新資料夾") && !valid_subfolder("a/b") && !valid_subfolder("#recycle"));
+
+        // 本機的錄影 12 bytes；piano 裡同名同大小（傳過去的）、baseball 裡同名但大小不同（別支）、更深一層的不算
+        std::fs::write(rec.join("Rec.mp4"), "123456789012").unwrap();
+        std::fs::write(lib.join("piano/Rec.mp4"), "123456789012").unwrap();
+        std::fs::write(lib.join("piano/Rec.zh-TW.srt"), "x").unwrap();
+        std::fs::write(lib.join("baseball/Rec.mp4"), "other").unwrap();
+        std::fs::write(lib.join("piano/2024/Rec.mp4"), "123456789012").unwrap();
+        std::fs::write(lib.join("#recycle/Rec.mp4"), "123456789012").unwrap();
+        let names = |v: Vec<std::path::PathBuf>| v.iter().map(|p| p.strip_prefix(&lib).unwrap().display().to_string().replace('\\', "/")).collect::<Vec<_>>();
+        assert_eq!(names(library_copies(&copy_to, &rec.join("Rec.mp4"), Some(12))), ["piano/Rec.mp4", "piano/Rec.zh-TW.srt"]);
+        assert_eq!(names(find_in_library(&copy_to, "Rec.mp4", None)), ["baseball/Rec.mp4", "piano/Rec.mp4"]);
+        let idx = library_index(&copy_to);
+        let mut got = idx["rec.mp4"].clone();
+        got.sort();
+        assert_eq!(got, [("baseball".to_string(), 5), ("piano".to_string(), 12)]);
+
+        // 子資料夾裡的檔案就是媒體庫那一份；更深一層、系統資料夾的不算
+        assert!(in_library(&copy_to, &lib.join("piano/Rec.mp4")));
+        assert!(!in_library(&copy_to, &lib.join("piano/2024/Rec.mp4")) && !in_library(&copy_to, &lib.join("#recycle/Rec.mp4")));
+
+        // 改名只動同大小的那一份（piano），baseball 裡的別支不動
+        std::fs::rename(rec.join("Rec.mp4"), rec.join("練琴.mp4")).unwrap();
+        assert_eq!(rename_copies(&copy_to, &rec.join("Rec.mp4"), &rec.join("練琴.mp4")).unwrap(), 2);
+        assert!(lib.join("piano/練琴.mp4").is_file() && lib.join("piano/練琴.zh-TW.srt").is_file() && lib.join("baseball/Rec.mp4").is_file());
+
+        // 本機改了封面（大小不同）：只有一份同名的才換掉
+        std::fs::write(rec.join("練琴.mp4"), "new content, longer").unwrap();
+        assert!(sync_edited(None, &copy_to, &rec.join("練琴.mp4"), &Extras::default()).unwrap().is_ok());
+        assert_eq!(std::fs::read_to_string(lib.join("piano/練琴.mp4")).unwrap(), "new content, longer");
+        // 兩個資料夾都有同名的：不知道是哪一份，不動
+        std::fs::write(rec.join("Rec.mp4"), "zzz").unwrap();
+        std::fs::write(lib.join("Rec.mp4"), "root").unwrap();
+        assert!(sync_edited(None, &copy_to, &rec.join("Rec.mp4"), &Extras::default()).is_none());
+        assert_eq!(std::fs::read_to_string(lib.join("baseball/Rec.mp4")).unwrap(), "other");
     }
 }

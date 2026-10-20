@@ -46,6 +46,8 @@ pub struct AfterRecord {
 pub const COPY_KEY: &str = "afterCopyTo";
 /// 錄完處理好之後要不要複製到媒體庫資料夾（沒有這個欄位時要：舊版選了資料夾就是要複製）
 pub const COPY_ON_KEY: &str = "afterCopy";
+/// 錄完自動傳到媒體庫的哪個子資料夾（第一層；空的 = 最上層）
+pub const COPY_SUB_KEY: &str = "afterCopySub";
 
 /// ui 設定裡的欄位名稱（設定組合也存這些）
 /// 錄影的命名規則（介面設定裡的 key；空的 = 不用）
@@ -70,7 +72,12 @@ impl AfterRecord {
             subs_en: b(UI_KEYS[6]),
             speed: Some(n(UI_KEYS[7]) as u32).filter(|v| crate::edit::FAST_SPEEDS.contains(v)).map_or(0.0, f64::from),
             keep_audio: o.get("keepAudio").and_then(Value::as_bool).unwrap_or(true),
-            copy_to: if o.get(COPY_ON_KEY).and_then(Value::as_bool).unwrap_or(true) { o.get(COPY_KEY).and_then(Value::as_str).unwrap_or("").trim().to_string() } else { String::new() },
+            copy_to: if o.get(COPY_ON_KEY).and_then(Value::as_bool).unwrap_or(true) {
+                let s = |k: &str| o.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+                crate::jellyfin::library_dest(&s(COPY_KEY), &s(COPY_SUB_KEY))
+            } else {
+                String::new()
+            },
             jellyfin: crate::jellyfin::Jellyfin::from_ui(ui),
         }
     }
@@ -799,6 +806,9 @@ mod tests {
         // 只設定媒體庫資料夾、沒打開「處理完傳到媒體庫」：不複製
         let a = AfterRecord::from_ui(Some(&serde_json::json!({ "afterCopyTo": "D:\\Sync", "afterCopy": false })));
         assert!(a.copy_to.is_empty() && !a.any());
+        // 錄完自動傳到媒體庫的子資料夾（例如 other）
+        let a = AfterRecord::from_ui(Some(&serde_json::json!({ "afterCopyTo": "/nas/video", "afterCopySub": "other" })));
+        assert_eq!(Path::new(&a.copy_to), Path::new("/nas/video").join("other"));
     }
     use serde_json::json;
 
