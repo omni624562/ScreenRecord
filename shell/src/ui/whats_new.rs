@@ -40,8 +40,8 @@ fn items(_app: &UiApp) -> Vec<(String, String, Try)> {
         (
             tr!("傳到媒體庫：選要放進哪個子資料夾", "Send to library: pick a subfolder").into(),
             tr!(
-                "媒體庫設在 NAS 的上一層（例如 video），按「傳到媒體庫」時選要放進 baseball、family 等哪個子資料夾；會記住上次選的，也可以新增資料夾。勾選多支可以一起傳。",
-                "Set the library to the top folder on your NAS (such as video); “Send to library” then asks which subfolder to use. It remembers your last choice, and you can create a folder. Select several to send them together."
+                "媒體庫設在 NAS 的上一層（例如 video），按「傳到媒體庫」時像檔案總管一樣一層層點進去（例如 video › family › 2024），到了再按「傳到這裡」；會從上次用的那一層開始，也可以新增資料夾。勾選多支可以一起傳。",
+                "Set the library to the top folder on your NAS (such as video); “Send to library” lets you open folders one level at a time (e.g. video › family › 2024) and send to the one you're in. It starts where you were last time, and you can create a folder. Select several to send them together."
             )
             .into(),
             Try::Settings(Page::Save),
@@ -58,7 +58,7 @@ fn items(_app: &UiApp) -> Vec<(String, String, Try)> {
         (
             tr!("檔案庫標出已在媒體庫的錄影", "The library shows what's already on the NAS").into(),
             tr!(
-                "NAS 上有同名、同大小的一份時，檔名旁邊出現綠色勾勾，滑鼠移上去看在哪個資料夾；篩選選「還沒傳到媒體庫」只列出還沒傳的。改名、刪除時，子資料夾裡的那一份也會跟著改。",
+                "NAS 上任何一層有同名、同大小的一份時，檔名旁邊出現綠色勾勾，滑鼠移上去看在哪個資料夾；篩選選「還沒傳到媒體庫」只列出還沒傳的。改名、刪除時，NAS 上的那一份也會跟著改。",
                 "A green check appears next to recordings that have a copy with the same name and size on the NAS; hover to see which folder. Filter by “Not in the library yet” to list the rest. Renames and deletes follow the copy in its subfolder."
             )
             .into(),
