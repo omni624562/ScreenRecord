@@ -613,7 +613,8 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
             let lui = &mut ui.new_child(UiBuilder::new().max_rect(left).layout(Layout::top_down(Align::Min)));
             lui.spacing_mut().item_spacing.y = 2.0;
             let shot = d.kind == Kind::Shot;
-            lui.add(egui::Label::new(RichText::new(if shot { tr!("全部截圖", "All screenshots") } else { tr!("全部錄影", "All recordings") }).font(theme::font_bold(17.0))).truncate());
+            // 和主畫面的「檔案庫：錄影｜截圖」同一個名稱；右上角的「錄影｜截圖」就是切換
+            lui.add(egui::Label::new(RichText::new(tr!("檔案庫", "Library")).font(theme::font_bold(17.0))).truncate());
             lui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 2.0;
                 let other = d.dir.is_some();
@@ -760,11 +761,12 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                     "縮圖大小：小的一頁可以放比較多張。也可以在縮圖上按住 Ctrl 轉滾輪調整",
                     "Thumbnail size: smaller fits more per page. You can also hold Ctrl and turn the mouse wheel over the thumbnails"
                 );
-                if theme::segmented(ui, &mut size, &[(0u8, tr!("小", "S")), (1, tr!("中", "M")), (2, tr!("大", "L"))], true) {
-                    grid_size = size;
-                }
+                // 標籤放在前面：「縮圖 小｜中｜大」
                 if !compact {
                     ui.label(theme::muted(ui, tr!("縮圖", "Thumbnails"))).on_hover_text(tip);
+                }
+                if theme::segmented(ui, &mut size, &[(0u8, tr!("小", "S")), (1, tr!("中", "M")), (2, tr!("大", "L"))], true) {
+                    grid_size = size;
                 }
             }
             // 截圖：用點的找（瀏覽欄）、月曆
@@ -1852,9 +1854,20 @@ fn shot_grid(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, area: Re
             painter.text(br.center(), egui::Align2::CENTER_CENTER, tr!("字", "T"), theme::font_bold(12.0), p.accent_ink);
             ui.interact(br, Id::new(("ocrhit", &e.media.path)), Sense::hover()).on_hover_text(trf!("圖裡有「{}」", "The image contains “{}”", h.text));
         }
-        // 名稱（預設檔名顯示日期時間）
+        // 名稱（預設檔名顯示日期時間）；中、大縮圖時右邊寫解析度・大小（下面一行留給按鈕，不會被擠掉）
         let title = if is_default_name(&e.media.name) { dates.get(&e.media.name).cloned().unwrap_or_default() } else { base_name(&e.media.name) };
-        let tr = Rect::from_min_max(pos2(cell.min.x + 2.0, img.max.y + 6.0), pos2(cell.max.x, img.max.y + 28.0));
+        let mut tr = Rect::from_min_max(pos2(cell.min.x + 2.0, img.max.y + 6.0), pos2(cell.max.x, img.max.y + 28.0));
+        if !small {
+            let size = e.media.width.zip(e.media.height).map(|(w, h)| format!("{w}×{h}・")).unwrap_or_default();
+            let info = format!("{size}{}", format_bytes(e.media.bytes));
+            let g = painter.layout_no_wrap(info.clone(), theme::font(12.0), p.muted);
+            // 標題至少留 70 點；放不下時只寫檔案大小
+            let g = if tr.width() - g.size().x - 8.0 >= 70.0 { g } else { painter.layout_no_wrap(format_bytes(e.media.bytes), theme::font(12.0), p.muted) };
+            let gw = g.size().x;
+            painter.galley(pos2(tr.max.x - gw - 2.0, tr.center().y - g.size().y / 2.0), g, p.muted);
+            ui.interact(Rect::from_min_max(pos2(tr.max.x - gw - 2.0, tr.min.y), tr.max), Id::new(("shotinfo", &e.media.path)), Sense::hover()).on_hover_text(&info);
+            tr.max.x -= gw + 10.0;
+        }
         {
             let tui = &mut ui.new_child(UiBuilder::new().max_rect(tr).layout(Layout::left_to_right(Align::Center)));
             tui.spacing_mut().item_spacing.x = 6.0;
@@ -1866,12 +1879,9 @@ fn shot_grid(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, area: Re
         if small {
             continue;
         }
-        // 解析度・大小，右邊放按鈕
-        // 先排右邊的按鈕，解析度・大小用剩下的寬度（太窄時截斷，不會被按鈕蓋住）
+        // 按鈕自己一行（靠右）
         let br = Rect::from_min_max(pos2(cell.min.x + 2.0, img.max.y + 30.0), cell.max);
         let bui = &mut ui.new_child(UiBuilder::new().max_rect(br).layout(Layout::right_to_left(Align::Center)));
-        let size = e.media.width.zip(e.media.height).map(|(w, h)| format!("{w}×{h}・")).unwrap_or_default();
-        let info = format!("{size}{}", format_bytes(e.media.bytes));
         bui.scope(|ui| {
             // 由右往左排：畫面上是「檢視 · 編輯 · 資料夾 · 改名 · ⋯」（與全部錄影的順序相同）
             ui.spacing_mut().item_spacing.x = 2.0;
@@ -1897,10 +1907,6 @@ fn shot_grid(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, area: Re
                 *req = Some(Req::Entry(EntryAction::Play, e.clone()));
             }
         });
-        let left = Rect::from_min_max(br.min, pos2(br.max.x - bui.min_rect().width() - 4.0, br.max.y));
-        ui.new_child(UiBuilder::new().max_rect(left).layout(Layout::left_to_right(Align::Center)))
-            .add(egui::Label::new(RichText::new(&info).font(theme::font(12.0)).color(p.muted)).truncate().selectable(false))
-            .on_hover_text(&info);
     }
     if let Some(r) = band {
         painter.rect_filled(r, CornerRadius::same(2), p.accent.gamma_multiply(0.15));
