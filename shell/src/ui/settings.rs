@@ -54,6 +54,8 @@ pub struct UiSettings {
     /// 系統聲音只錄這個程式（執行檔名稱）；空字串 = 全部
     pub audio_app: String,
     pub keep_audio: bool,
+    /// 製作視窗的「其他選項」（檔案格式、尺寸、大小上限）展開著
+    pub export_more: bool,
     pub live_preview: bool,
     pub encoder: EncoderPreference,
     /// 錄影的影片格式（H.264 / HEVC / AV1）
@@ -286,6 +288,7 @@ impl UiSettings {
             mic_id: string("micId").unwrap_or_default(),
             audio_app: string("audioApp").unwrap_or_default(),
             keep_audio: boolean("keepAudio").unwrap_or(true),
+            export_more: boolean("exportMore").unwrap_or(false),
             live_preview: boolean("livePreview").unwrap_or(true),
             encoder: o.get("encoder").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default(),
             codec: o.get("codec").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default(),

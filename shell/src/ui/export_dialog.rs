@@ -261,6 +261,27 @@ fn notice(ui: &mut egui::Ui, fill: Color32, text: &str, color: Color32, button: 
     clicked
 }
 
+/// 「其他選項」的標題列：點一下展開／收起，收起時右邊寫出目前的值；回傳是否展開
+fn more_header(ui: &mut egui::Ui, open: &mut bool, summary: &str) -> bool {
+    let p = theme::pal(ui);
+    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 30.0), Sense::click());
+    if resp.hovered() {
+        ui.painter().rect_filled(rect, CornerRadius::same(4), p.surface2);
+    }
+    let icon = egui::Rect::from_center_size(pos2(rect.left() + 8.0, rect.center().y), vec2(14.0, 14.0));
+    theme::paint_icon(ui.painter(), icon, if *open { Icon::ChevD } else { Icon::ChevR }, p.muted);
+    let g = ui.painter().layout_no_wrap(tr!("其他選項", "More options").to_string(), theme::font(13.5), p.text);
+    let gw = g.size().x;
+    ui.painter().galley(pos2(rect.left() + 22.0, rect.center().y - g.size().y / 2.0), g, p.text);
+    if !*open {
+        ui.painter().text(pos2(rect.left() + 34.0 + gw, rect.center().y), Align2::LEFT_CENTER, summary, theme::font(12.5), p.muted);
+    }
+    if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+        *open = !*open;
+    }
+    *open
+}
+
 /// 每秒幾張
 fn fps_text(f: f64) -> String {
     trf!("每秒 {} 張", "{} fps", screenrecorder_core::format::num((f * 100.0).round() / 100.0))
@@ -304,6 +325,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
     let has_audio = e.media.has_audio == Some(true);
     let (sw, sh) = (e.media.width.unwrap_or(0) as i32, e.media.height.unwrap_or(0) as i32);
     let screen = ctx.content_rect();
+    let mut more = app.s.export_more;
     // 上緣固定（第一次顯示時置中，之後內容變高只往下長）
     let mut area = egui::Modal::default_area(Id::new("export"));
     if let Some(top) = dlg.top {
@@ -386,38 +408,19 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                             }
                         }
                     });
-                    if dlg.mode == Mode::Anim {
+                    // 動圖：GIF 或 WebP（動圖不含聲音，寫在這裡就好）
+                    if gif {
                         row(ui, tr!("格式", "Format"), |ui| {
                             segmented(ui, &mut o.anim, &[(ExportFormat::Gif, tr!("GIF 動畫", "Animated GIF")), (ExportFormat::Webp, tr!("WebP 動圖", "Animated WebP"))], true);
-                        });
-                    } else {
-                        // MP4 或 WebM（FFmpeg 沒有 VP9 編碼器時只能 MP4）
-                        if !has_webm {
-                            o.video = ExportFormat::Mp4;
-                        }
-                        row(ui, tr!("格式", "Format"), |ui| {
-                            segmented(
-                                ui,
-                                &mut o.video,
-                                &[(ExportFormat::Mp4, tr!("MP4（最通用）", "MP4 (works everywhere)")), (ExportFormat::Webm, tr!("WebM（較小、網頁用）", "WebM (smaller, for the web)"))],
-                                has_webm,
-                            );
-                            let note = if !has_webm {
+                            let note = if o.anim == ExportFormat::Webp {
                                 tr!(
-                                    "這個 FFmpeg 沒有 VP9 編碼器，不能存成 WebM（可以在設定的「系統」重新下載完整版 FFmpeg）",
-                                    "This FFmpeg has no VP9 encoder, so WebM isn't available (re-download the full FFmpeg in Settings → System)"
-                                )
-                            } else if o.video == ExportFormat::Webm {
-                                tr!(
-                                    "WebM 比 MP4 小約三成，可以直接放在網頁上；製作比較久。LINE、iPhone 請用 MP4",
-                                    "WebM is about 30% smaller and plays right on web pages, but takes longer to make. Use MP4 for LINE and iPhone"
+                                    "不含聲音；檔案約為 GIF 的 1/6、顏色更好，瀏覽器、Slack、Discord 都能看",
+                                    "No audio; about 1/6 the size of a GIF with better colors, and works in browsers, Slack and Discord"
                                 )
                             } else {
-                                ""
+                                tr!("不含聲音；檔案較大，建議 1 分鐘以內", "No audio; GIFs are large, so keep them under 1 min")
                             };
-                            if !note.is_empty() {
-                                helper(ui, note, p.muted);
-                            }
+                            helper(ui, note, p.muted);
                         });
                     }
                     if dlg.mode != Mode::Compress {
@@ -567,38 +570,6 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                             limit_row(ui, Mode::Compress, &mut dlg.compress_mb);
                         }
                     }
-                    row(ui, tr!("尺寸", "Size"), |ui| {
-                        ui.horizontal(|ui| {
-                            ui.set_height(ROW_H);
-                            if gif {
-                                let widths: Vec<(u32, String)> = [320, 480, 640, 960, 1280].iter().map(|w| (*w, trf!("寬 {w} px", "Width {w} px"))).collect();
-                                combo(ui, "gifw", 130.0, &mut o.gif_width, &widths);
-                                ui.add_space(8.0);
-                                let fps: Vec<(u32, String)> = [5, 10, 15, 20].iter().map(|f| (*f, fps_text(*f as f64))).collect();
-                                combo(ui, "giffps", 110.0, &mut o.gif_fps, &fps);
-                            } else if sw > 0 && sh > 0 {
-                                // 只列出比原片小的選項
-                                let opts: Vec<(u32, String)> = MP4_WIDTHS
-                                    .iter()
-                                    .copied()
-                                    .filter(|w| *w == 0 || (*w as i32) < sw)
-                                    .map(|w| {
-                                        let (a, b) = scaled_size(sw, sh, w as i32);
-                                        (w, if w == 0 { trf!("原尺寸（{a}×{b}）", "Original ({a}×{b})") } else { trf!("寬 {w}（{a}×{b}）", "Width {w} ({a}×{b})") })
-                                    })
-                                    .collect();
-                                if !opts.iter().any(|(w, _)| *w == o.mp4_width) {
-                                    o.mp4_width = 0;
-                                }
-                                combo(ui, "mp4w", 230.0, &mut o.mp4_width, &opts);
-                            } else {
-                                ui.label(theme::muted(ui, tr!("原尺寸", "Original size")));
-                            }
-                        });
-                    });
-                    if dlg.mode == Mode::Speed {
-                        limit_row(ui, Mode::Speed, &mut o.mp4_max_mb);
-                    }
                     if gif {
                         row(ui, tr!("播放", "Playback"), |ui| {
                             let one_way = speed.filter(|_| dur > 0.0).map(|sp| dur / sp);
@@ -624,30 +595,101 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                             helper(ui, note, p.muted);
                         });
                     }
-                    row(ui, tr!("聲音", "Audio"), |ui| {
-                        ui.horizontal(|ui| {
-                            ui.set_height(ROW_H);
-                            if format == ExportFormat::Webp {
-                                ui.add(
-                                    egui::Label::new(theme::muted(
-                                        ui,
-                                        tr!(
-                                            "WebP 動圖不含聲音；檔案約為 GIF 的 1/6、顏色更好，瀏覽器、Slack、Discord 都能看",
-                                            "WebP has no audio; about 1/6 the size of a GIF with better colors, and works in browsers, Slack and Discord"
-                                        ),
-                                    ))
-                                    .wrap(),
-                                );
-                            } else if gif {
-                                ui.label(theme::muted(ui, tr!("GIF 不含聲音；檔案較大，建議 1 分鐘以內", "GIFs have no audio and are large; keep them under 1 min")));
-                            } else if !has_audio {
-                                ui.label(theme::muted(ui, tr!("原片沒有聲音", "The original has no audio")));
-                            } else {
-                                let label = if dlg.mode == Mode::Compress { tr!("保留聲音", "Keep audio") } else { tr!("保留聲音（變速不變調）", "Keep audio (pitch preserved)") };
-                                switch(ui, &mut o.keep_audio, label, true);
-                            }
+                    if !gif {
+                        row(ui, tr!("聲音", "Audio"), |ui| {
+                            ui.horizontal(|ui| {
+                                ui.set_height(ROW_H);
+                                if !has_audio {
+                                    ui.label(theme::muted(ui, tr!("原片沒有聲音", "The original has no audio")));
+                                } else {
+                                    let label = if dlg.mode == Mode::Compress { tr!("保留聲音", "Keep audio") } else { tr!("保留聲音（變速不變調）", "Keep audio (pitch preserved)") };
+                                    switch(ui, &mut o.keep_audio, label, true);
+                                }
+                            });
                         });
+                    }
+                    // 少用的選項（檔案格式、尺寸、大小上限）收起來，標題列寫出目前的值；展開與否會記住，常用的人不會多一步
+                    if !has_webm {
+                        o.video = ExportFormat::Mp4;
+                    }
+                    let mut summary = vec![];
+                    if !gif {
+                        summary.push(if o.video == ExportFormat::Webm { "WebM".to_string() } else { "MP4".to_string() });
+                    }
+                    summary.push(if gif {
+                        trf!("寬 {} px", "Width {} px", o.gif_width)
+                    } else if o.mp4_width == 0 || sw <= 0 {
+                        tr!("原尺寸", "Original size").to_string()
+                    } else {
+                        trf!("寬 {}", "Width {}", o.mp4_width)
                     });
+                    if gif {
+                        summary.push(fps_text(o.gif_fps as f64));
+                    }
+                    if dlg.mode == Mode::Speed {
+                        summary.push(if o.mp4_max_mb == 0 { tr!("大小不限", "No size limit").to_string() } else { trf!("{} MB 以內", "Up to {} MB", o.mp4_max_mb) });
+                    }
+                    if more_header(ui, &mut more, &summary.join(tr!("・", " · "))) {
+                        if !gif {
+                            // MP4 或 WebM（FFmpeg 沒有 VP9 編碼器時只能 MP4）
+                            row(ui, tr!("檔案格式", "File type"), |ui| {
+                                segmented(
+                                    ui,
+                                    &mut o.video,
+                                    &[(ExportFormat::Mp4, tr!("MP4（最通用）", "MP4 (works everywhere)")), (ExportFormat::Webm, tr!("WebM（較小、網頁用）", "WebM (smaller, for the web)"))],
+                                    has_webm,
+                                );
+                                let note = if !has_webm {
+                                    tr!(
+                                        "這個 FFmpeg 沒有 VP9 編碼器，不能存成 WebM（可以在「設定 → 外部元件」重新下載完整版 FFmpeg）",
+                                        "This FFmpeg has no VP9 encoder, so WebM isn't available (re-download the full FFmpeg in Settings → Components)"
+                                    )
+                                } else if o.video == ExportFormat::Webm {
+                                    tr!(
+                                        "WebM 比 MP4 小約三成，可以直接放在網頁上；製作比較久。LINE、iPhone 請用 MP4",
+                                        "WebM is about 30% smaller and plays right on web pages, but takes longer to make. Use MP4 for LINE and iPhone"
+                                    )
+                                } else {
+                                    ""
+                                };
+                                if !note.is_empty() {
+                                    helper(ui, note, p.muted);
+                                }
+                            });
+                        }
+                        row(ui, tr!("尺寸", "Size"), |ui| {
+                            ui.horizontal(|ui| {
+                                ui.set_height(ROW_H);
+                                if gif {
+                                    let widths: Vec<(u32, String)> = [320, 480, 640, 960, 1280].iter().map(|w| (*w, trf!("寬 {w} px", "Width {w} px"))).collect();
+                                    combo(ui, "gifw", 130.0, &mut o.gif_width, &widths);
+                                    ui.add_space(8.0);
+                                    let fps: Vec<(u32, String)> = [5, 10, 15, 20].iter().map(|f| (*f, fps_text(*f as f64))).collect();
+                                    combo(ui, "giffps", 110.0, &mut o.gif_fps, &fps);
+                                } else if sw > 0 && sh > 0 {
+                                    // 只列出比原片小的選項
+                                    let opts: Vec<(u32, String)> = MP4_WIDTHS
+                                        .iter()
+                                        .copied()
+                                        .filter(|w| *w == 0 || (*w as i32) < sw)
+                                        .map(|w| {
+                                            let (a, b) = scaled_size(sw, sh, w as i32);
+                                            (w, if w == 0 { trf!("原尺寸（{a}×{b}）", "Original ({a}×{b})") } else { trf!("寬 {w}（{a}×{b}）", "Width {w} ({a}×{b})") })
+                                        })
+                                        .collect();
+                                    if !opts.iter().any(|(w, _)| *w == o.mp4_width) {
+                                        o.mp4_width = 0;
+                                    }
+                                    combo(ui, "mp4w", 230.0, &mut o.mp4_width, &opts);
+                                } else {
+                                    ui.label(theme::muted(ui, tr!("原尺寸", "Original size")));
+                                }
+                            });
+                        });
+                        if dlg.mode == Mode::Speed {
+                            limit_row(ui, Mode::Speed, &mut o.mp4_max_mb);
+                        }
+                    }
                 });
                 // 存檔位置的副檔名跟格式不合（換了格式）：改回自動取名
                 if dlg.output.as_deref().is_some_and(|o| !o.to_lowercase().ends_with(&format!(".{}", format.ext()))) {
@@ -832,6 +874,10 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         dlg.foot_h = ui.cursor().min.y - foot_top;
         speed
     });
+    if more != app.s.export_more {
+        app.s.export_more = more;
+        app.save_settings();
+    }
     // 開啟時置中（前幾格還在量大小），之後上緣固定：內容變高只往下長，超出視窗才往上移
     dlg.max_h = dlg.max_h.max(modal.response.rect.height());
     dlg.frames += 1;
