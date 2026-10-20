@@ -58,8 +58,8 @@ fn items(_app: &UiApp) -> Vec<(String, String, Try)> {
         (
             tr!("改封面、影片資訊不用重傳整支", "Cover and detail changes skip the re-send").into(),
             tr!(
-                "改了封面或影片資訊，Jellyfin 已經有這支時直接透過 Jellyfin 換上，不用再把好幾 GB 的影片傳到 NAS 一次；「✓ Jellyfin」標籤、改名、刪除照樣認得那一份。",
-                "When you change a cover or the video details and Jellyfin already has the video, the change goes straight to Jellyfin instead of copying gigabytes to the NAS again. The “✓ Jellyfin” tag, renames and deletes still recognize the copy."
+                "改了封面或影片資訊，Jellyfin 已經有這支時直接透過 Jellyfin 換上，不用再把好幾 GB 的影片傳到 NAS 一次；「Jellyfin」標籤、改名、刪除照樣認得那一份。",
+                "When you change a cover or the video details and Jellyfin already has the video, the change goes straight to Jellyfin instead of copying gigabytes to the NAS again. The “Jellyfin” tag, renames and deletes still recognize the copy."
             )
             .into(),
             Try::Library(false),
