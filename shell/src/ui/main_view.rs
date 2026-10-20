@@ -2512,7 +2512,7 @@ pub fn ask_update(app: &mut UiApp, u: &screenrecorder_core::types::UpdateInfo) {
 // ───────────── 最近錄影 ─────────────
 
 /// 「檔案庫」那一塊的最小寬度
-const LIB_BTN_W: f32 = 120.0;
+const LIB_BTN_W: f32 = 92.0;
 
 fn recent_strip(app: &mut UiApp, ui: &mut Ui) {
     let p = theme::pal(ui);
@@ -2539,14 +2539,15 @@ fn recent_strip(app: &mut UiApp, ui: &mut Ui) {
             let rec_btn = Btn::new(tr!("錄影", "Videos")).icon(Icon::Video).small().tooltip(tr!("全部錄影：搜尋、整理、合併、一次處理", "All recordings: search, organize, merge, batch process"));
             let shot_btn =
                 Btn::new(tr!("截圖", "Screenshots")).icon(Icon::Camera).small().tooltip(tr!("全部截圖：用圖裡的字搜尋、整理、拼圖", "All screenshots: search by text in images, organize, combine"));
-            let btn_w = rec_btn.width(ui) + shot_btn.width(ui) + 4.0;
+            // 兩個按鈕上下疊（一樣寬），比並排省一半寬度，多放得下一張卡片
+            let btn_w = rec_btn.width(ui).max(shot_btn.width(ui));
             let lib_w = btn_w.max(LIB_BTN_W) + 8.0;
             let cards_w = ui.available_width() - lib_w - 44.0;
-            // 下面一排 6 個小圖示（播放、剪輯、製作、傳到媒體庫、資料夾、⋯）要放得下
-            let card_w = 300.0;
-            let per = ((cards_w + 10.0) / (card_w + 10.0)).floor().clamp(1.0, 8.0) as usize;
-            // 卡片平均分配寬度（填滿這一列）
-            let card_w = ((cards_w - 8.0 * (per as f32 - 1.0)) / per as f32).clamp(card_w, 360.0);
+            // 卡片最窄：縮圖＋下面一排 6 個小圖示（播放、剪輯、製作、傳到媒體庫、資料夾、⋯）放得下就好
+            let card_w = card_min_w(ui);
+            let per = ((cards_w + 8.0) / (card_w + 8.0)).floor().clamp(1.0, 10.0) as usize;
+            // 卡片平均分配寬度（填滿這一列），但不會寬到裡面空一大塊
+            let card_w = ((cards_w - 8.0 * (per as f32 - 1.0)) / per as f32).clamp(card_w, card_w + 60.0);
             if per != app.recent_per_page {
                 app.recent_per_page = per;
                 app.load_recent();
@@ -2571,19 +2572,17 @@ fn recent_strip(app: &mut UiApp, ui: &mut Ui) {
                 });
             });
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                // 檔案庫：上面一行標題，下面錄影、截圖並排
-                ui.allocate_ui_with_layout(vec2(btn_w.max(LIB_BTN_W), 56.0), Layout::top_down(Align::Min), |ui| {
+                // 檔案庫：上面一行標題，下面錄影、截圖上下疊（一樣寬）
+                ui.allocate_ui_with_layout(vec2(btn_w.max(LIB_BTN_W), 84.0), Layout::top_down(Align::Min), |ui| {
                     ui.spacing_mut().item_spacing.y = 4.0;
                     ui.label(RichText::new(tr!("檔案庫", "Library")).font(theme::font_bold(12.5)).color(p.muted));
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 4.0;
-                        if rec_btn.show(ui).clicked() {
-                            app.library = Some(super::library_dialog::LibraryDialog::new(super::library_dialog::Kind::Video));
-                        }
-                        if shot_btn.show(ui).clicked() {
-                            app.library = Some(super::library_dialog::LibraryDialog::new(super::library_dialog::Kind::Shot));
-                        }
-                    });
+                    let w = btn_w.max(LIB_BTN_W);
+                    if rec_btn.min_width(w).show(ui).clicked() {
+                        app.library = Some(super::library_dialog::LibraryDialog::new(super::library_dialog::Kind::Video));
+                    }
+                    if shot_btn.min_width(w).show(ui).clicked() {
+                        app.library = Some(super::library_dialog::LibraryDialog::new(super::library_dialog::Kind::Shot));
+                    }
                 });
                 if Btn::icon_only(Icon::ChevR).ghost().small().enabled(app.recent_page < pages).tooltip(tr!("較舊的錄影", "Older recordings")).show(ui).clicked() {
                     app.recent_page += 1;
@@ -2595,9 +2594,21 @@ fn recent_strip(app: &mut UiApp, ui: &mut Ui) {
     tour::mark(ui, Spot::Recent, strip.response.rect);
 }
 
+/// 最近錄影卡片的縮圖：4:3（從 16:9 的畫面裁掉左右一點），卡片窄一點，一列放得下更多張
+const CARD_H: f32 = 80.0;
+fn card_thumb_w() -> f32 {
+    (CARD_H - 12.0) * 4.0 / 3.0
+}
+
+/// 卡片最窄的寬度：縮圖＋右邊一排 6 個小圖示
+fn card_min_w(ui: &Ui) -> f32 {
+    let icon = Btn::icon_only(Icon::More).ghost().small().width(ui);
+    6.0 + card_thumb_w() + 10.0 + icon * 6.0 + 6.0
+}
+
 fn recent_card(app: &mut UiApp, ui: &mut Ui, e: &LibraryEntry, date: String, w: f32) {
     let p = theme::pal(ui);
-    let h = 80.0;
+    let h = CARD_H;
     // 整張卡片可以按右鍵（和「⋯」同一個選單）
     let (rect, resp) = ui.allocate_exact_size(vec2(w, h), Sense::click());
     let painter = ui.painter_at(rect);
@@ -2607,10 +2618,10 @@ fn recent_card(app: &mut UiApp, ui: &mut Ui, e: &LibraryEntry, date: String, w: 
     let playing = app.inline.as_ref().is_some_and(|i| i.is(&e.media.path));
     let edge = if playing { Stroke::new(2.0, p.accent) } else { Stroke::new(1.0, p.border) };
     painter.rect(rect, CornerRadius::same(theme::RADIUS_SM), if resp.hovered() { p.surface2 } else { p.surface }, edge, StrokeKind::Inside);
-    let thumb = Rect::from_min_size(rect.min + vec2(6.0, 6.0), vec2((h - 12.0) * 16.0 / 9.0, h - 12.0));
+    let thumb = Rect::from_min_size(rect.min + vec2(6.0, 6.0), vec2(card_thumb_w(), h - 12.0));
     painter.rect_filled(thumb, CornerRadius::same(5), p.surface2);
     if let Some(t) = app.thumb(&e.media.path, e.media.mtime) {
-        theme::paint_thumb(&painter, thumb, &t);
+        theme::paint_thumb_cover(&painter, thumb, &t);
     }
     // 縮圖：點一下就播放（中間有播放鍵，滑鼠移上去變明顯）
     let thumb_resp = ui.interact(thumb, Id::new(("recent-thumb", &e.media.path)), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
@@ -2675,7 +2686,8 @@ fn recent_card(app: &mut UiApp, ui: &mut Ui, e: &LibraryEntry, date: String, w: 
     let row = Rect::from_min_max(pos2(x - 6.0, rect.max.y - 32.0), pos2(rect.max.x - 4.0, rect.max.y - 4.0));
     {
         let ui = &mut ui.new_child(UiBuilder::new().max_rect(row).layout(Layout::left_to_right(Align::Center)));
-        ui.spacing_mut().item_spacing.x = 2.0;
+        // 圖示之間不留空隙（按鈕本身有內距），卡片窄一點，一列放得下更多張
+        ui.spacing_mut().item_spacing.x = 0.0;
         // 播放、剪輯、製作、傳到媒體庫直接按得到，其他在「⋯」（和全部錄影、檢視器同一份清單）
         let groups = super::entry_menu::groups(app, e, Place::Home);
         let hot = ui.rect_contains_pointer(rect);

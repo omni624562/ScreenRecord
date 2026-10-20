@@ -663,7 +663,11 @@ impl Btn {
 
     /// 不設最小寬度時的寬度（讓一組按鈕取一樣寬）
     pub fn width(&self, ui: &Ui) -> f32 {
-        let (_, _, pad, fid) = self.metrics();
+        let (h, _, pad, fid) = self.metrics();
+        // 只有圖示：和 show 一樣是正方形
+        if self.text.is_empty() && self.icon.is_some() {
+            return h.max(self.min_width) + if self.menu { MENU_ARROW } else { 0.0 };
+        }
         let text = (!self.text.is_empty()).then(|| ui.painter().layout_no_wrap(self.text.clone(), fid, Color32::WHITE).size().x);
         pad * 2.0 + text.unwrap_or(0.0) + if self.icon.is_some() { 16.0 + if text.is_some() { 6.0 } else { 0.0 } } else { 0.0 } + if self.menu { MENU_ARROW } else { 0.0 }
     }
@@ -991,6 +995,22 @@ pub fn paint_thumb(p: &Painter, rect: Rect, tex: &egui::TextureHandle) {
     let s = (rect.width() / w.max(1) as f32).min(rect.height() / h.max(1) as f32);
     let r = Rect::from_center_size(rect.center(), egui::vec2(w as f32 * s, h as f32 * s));
     p.image(tex.id(), r, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+}
+
+/// 縮圖填滿整個框（比例不同時裁掉兩邊或上下，不留黑邊）
+pub fn paint_thumb_cover(p: &Painter, rect: Rect, tex: &egui::TextureHandle) {
+    let [w, h] = tex.size();
+    let (w, h) = (w.max(1) as f32, h.max(1) as f32);
+    let (tw, th) = (rect.width() / w, rect.height() / h);
+    let uv = if tw > th {
+        // 框比較寬：裁掉上下
+        let v = th / tw;
+        Rect::from_min_max(pos2(0.0, (1.0 - v) / 2.0), pos2(1.0, (1.0 + v) / 2.0))
+    } else {
+        let u = tw / th;
+        Rect::from_min_max(pos2((1.0 - u) / 2.0, 0.0), pos2((1.0 + u) / 2.0, 1.0))
+    };
+    p.image(tex.id(), rect, uv, Color32::WHITE);
 }
 
 pub fn centered_text(p: &Painter, rect: Rect, text: &str, f: FontId, color: Color32) {
