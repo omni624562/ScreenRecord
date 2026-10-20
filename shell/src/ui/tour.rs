@@ -540,7 +540,7 @@ fn content(app: &UiApp, t: &Tour) -> (Option<Spot>, String, String, Go) {
             tr!("標註工具", "Annotation tools").into(),
             tr!(
                 "右邊選工具：箭頭、框線、文字、步驟編號、畫筆、馬賽克遮個資等，先選顏色和粗細再畫。",
-                "Pick a tool on the right: arrows, boxes, text, step numbers, pen, blur to hide personal info and more. Choose a colour and thickness first, then draw."
+                "Pick a tool on the right: arrows, boxes, text, step numbers, pen, blur to hide personal info and more. Choose a color and thickness first, then draw."
             )
             .into(),
             next(),
@@ -550,7 +550,7 @@ fn content(app: &UiApp, t: &Tour) -> (Option<Spot>, String, String, Go) {
             tr!("直接在圖上畫", "Draw right on the image").into(),
             tr!(
                 "在圖上拖曳就畫上去；點一下畫好的標註可以移動、改顏色，按 Delete 刪掉。改錯了按 Ctrl+Z 復原。",
-                "Drag on the image to draw. Click an annotation to move it or change its colour, and press Delete to remove it. Made a mistake? Press Ctrl+Z to undo."
+                "Drag on the image to draw. Click an annotation to move it or change its color, and press Delete to remove it. Made a mistake? Press Ctrl+Z to undo."
             )
             .into(),
             next(),
@@ -580,7 +580,7 @@ fn content(app: &UiApp, t: &Tour) -> (Option<Spot>, String, String, Go) {
             tr!("不記得關鍵字？用點的找", "Can't remember a keyword? Browse").into(),
             tr!(
                 "左邊依截圖時的程式、內容（錯誤訊息、網頁、對話…）、常出現的詞、時間與顏色分類，點幾下就縮小範圍，每個選項旁有張數。",
-                "On the left, screenshots are grouped by the app you were using, content (errors, web pages, chats…), common words, date and colour. Click a few to narrow down; each shows how many match."
+                "On the left, screenshots are grouped by the app you were using, content (errors, web pages, chats…), common words, date and color. Click a few to narrow down; each shows how many match."
             )
             .into(),
             next(),

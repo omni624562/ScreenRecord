@@ -234,7 +234,7 @@ pub fn panel(ui: &mut egui::Ui, d: &mut LibraryDialog, rect: Rect) {
             let icon = egui::Rect::from_center_size(egui::pos2(r.left() + 7.0, r.center().y), egui::vec2(12.0, 12.0));
             theme::paint_icon(ui.painter(), icon, if open { Icon::ChevD } else { Icon::ChevR }, p.muted);
             ui.painter().text(egui::pos2(r.left() + 18.0, r.center().y), Align2::LEFT_CENTER, tr!("更多分類", "More categories"), theme::font_bold(12.5), p.muted);
-            if resp.on_hover_text(tr!("依內容類型、圖裡常出現的詞、顏色找", "Browse by content type, common words and colour")).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() && !picked
+            if resp.on_hover_text(tr!("依內容類型、圖裡常出現的詞、顏色找", "Browse by content type, common words and color")).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() && !picked
             {
                 open = !open;
                 ui.data_mut(|x| x.insert_temp(id, open));

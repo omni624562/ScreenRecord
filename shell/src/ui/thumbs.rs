@@ -4,11 +4,16 @@ use super::UiApp;
 use eframe::egui::{ColorImage, TextureHandle, TextureOptions};
 use screenrecorder_core::actions;
 use std::collections::HashMap;
+use std::time::{Duration, Instant};
+
+/// 產生失敗的縮圖隔多久再要一次（例如程式剛開、FFmpeg 還沒偵測完時要不到；之後就要得到）
+const RETRY_FAILED: Duration = Duration::from_secs(20);
 
 pub enum Thumb {
     Loading,
     Ready(TextureHandle),
-    Failed,
+    /// 失敗的時間：過了 RETRY_FAILED 再要一次，不會一直空白到重開程式
+    Failed(Instant),
 }
 
 #[derive(Default)]
@@ -37,6 +42,7 @@ impl UiApp {
         let key = (path.to_string(), mtime as u64);
         match self.thumbs.map.get(&key) {
             Some(Thumb::Ready(t)) => return Some(t.clone()),
+            Some(Thumb::Failed(at)) if at.elapsed() >= RETRY_FAILED => {}
             Some(_) => return None,
             None => {}
         }
@@ -54,7 +60,11 @@ impl UiApp {
             move |app, img| {
                 let t = match img {
                     Some(img) => Thumb::Ready(app.ctx.load_texture(format!("thumb:{}", key.0), img, TextureOptions::LINEAR)),
-                    None => Thumb::Failed,
+                    None => {
+                        // 到時候再畫一次，才會重新要縮圖
+                        app.ctx.request_repaint_after(RETRY_FAILED);
+                        Thumb::Failed(Instant::now())
+                    }
                 };
                 app.thumbs.map.insert(key, t);
             },
@@ -67,6 +77,7 @@ impl UiApp {
         let key = (path.to_string(), mtime as u64);
         match self.thumbs.strips.get(&key) {
             Some(Thumb::Ready(t)) => return Some(t.clone()),
+            Some(Thumb::Failed(at)) if at.elapsed() >= RETRY_FAILED => {}
             Some(_) => return None,
             None => {}
         }
@@ -84,7 +95,7 @@ impl UiApp {
             move |app, img| {
                 let t = match img {
                     Some(img) => Thumb::Ready(app.ctx.load_texture(format!("strip:{}", key.0), img, TextureOptions::LINEAR)),
-                    None => Thumb::Failed,
+                    None => Thumb::Failed(Instant::now()),
                 };
                 app.thumbs.strips.insert(key, t);
                 app.ctx.request_repaint();
@@ -105,7 +116,7 @@ pub fn scrub_preview(app: &mut UiApp, ui: &eframe::egui::Ui, hover: eframe::egui
         return;
     }
     let strip = app.thumb_strip(path, mtime, duration);
-    if strip.is_none() && matches!(app.thumbs.strips.get(&(path.to_string(), mtime as u64)), Some(Thumb::Failed)) {
+    if strip.is_none() && matches!(app.thumbs.strips.get(&(path.to_string(), mtime as u64)), Some(Thumb::Failed(_))) {
         return;
     }
     let frac = ((pos.x - hover.min.x) / hover.width().max(1.0)) as f64;
