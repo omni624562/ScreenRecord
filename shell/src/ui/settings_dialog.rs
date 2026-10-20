@@ -926,7 +926,8 @@ fn save_page(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
 fn library_section(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui, open: &mut Option<String>) {
     let p = theme::pal(ui);
     let dir = app.s.after_copy_to.clone();
-    form_section(ui, tr!("媒體庫", "Media library"), |ui| {
+    // 標題直接寫出 Jellyfin，找 Jellyfin 設定的人看得到
+    form_section(ui, tr!("媒體庫（NAS、Jellyfin）", "Media library (NAS, Jellyfin)"), |ui| {
         if !dir.is_empty() && Btn::new(tr!("在檔案總管開啟", "Open in File Explorer")).icon(Icon::Folder).small().ghost().show(ui).clicked() {
             *open = Some(dir.clone());
         }
@@ -959,8 +960,17 @@ fn library_section(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui, open: &
             )
             .wrap(),
         );
-        return;
     }
+    // Jellyfin 的網址與金鑰一直顯示（還沒選資料夾也可以先填），兩個勾選要有資料夾才有意義
+    if !dir.is_empty() {
+        library_checks(app, ui);
+    }
+    ui.add_space(6.0);
+    jellyfin_rows(app, d, ui, dir.is_empty());
+}
+
+/// 媒體庫：錄完、另存好之後也傳過去
+fn library_checks(app: &mut UiApp, ui: &mut Ui) {
     ui.add_space(4.0);
     if theme::check(ui, &mut app.s.after_copy, tr!("錄完自動處理好之後也傳過去", "Also send new recordings after processing"))
         .on_hover_text(tr!("和「錄完自動處理 → 媒體庫」是同一個設定", "Same setting as After recording → Library"))
@@ -977,8 +987,11 @@ fn library_section(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui, open: &
     {
         app.save_settings();
     }
-    ui.add_space(6.0);
-    // Jellyfin：傳到它的媒體庫資料夾後，通知它馬上掃描
+}
+
+/// Jellyfin：傳到它的媒體庫資料夾後，通知它馬上掃描；影片資訊、改名、刪除也同步過去
+fn jellyfin_rows(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui, no_folder: bool) {
+    let p = theme::pal(ui);
     form_row(ui, "Jellyfin", |ui| {
         let r = ui.add(egui::TextEdit::singleline(&mut app.s.jellyfin_url).desired_width(FORM_CTRL_W).hint_text(tr!("網址，例如 192.168.1.10:8096", "Address, e.g. 192.168.1.10:8096")));
         if r.changed() {
@@ -1020,7 +1033,12 @@ fn library_section(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui, open: &
     });
     form_hint(
         ui,
-        if jf.is_some() {
+        if no_folder {
+            tr!(
+                "要先在上面選 Jellyfin 媒體庫的資料夾（例如 \\\\伺服器\\videos），傳過去之後才會通知 Jellyfin 掃描。",
+                "First choose the Jellyfin library folder above (e.g. \\\\server\\videos); Jellyfin is told to scan after files are sent there."
+            )
+        } else if jf.is_some() {
             tr!(
                 "傳好之後會通知 Jellyfin 掃描，新影片馬上出現；影片資訊、改名、刪除也會同步過去。",
                 "Jellyfin is told to scan right after sending, so new videos show up at once; video details, renames and deletions are synced too."
