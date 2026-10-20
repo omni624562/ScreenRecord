@@ -92,6 +92,21 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                     }
                 });
             });
+            ui.add_space(4.0);
+            let adult = d.values.entry(video_tags::ADULT_KEY.to_string()).or_default();
+            let mut on = adult == "1";
+            ui.add_enabled_ui(!d.saving, |ui| {
+                if ui
+                    .checkbox(&mut on, tr!("只給大人看", "Adults only"))
+                    .on_hover_text(tr!(
+                        "傳到 Jellyfin 時分級設成 R、加上標籤「18+」：在小孩帳號的家長控制設最高分級（例如 PG-13）或封鎖標籤「18+」，小孩就看不到",
+                        "In Jellyfin this sets the rating to R and adds the tag “18+”. Set a maximum rating (e.g. PG-13) or block the “18+” tag in a child's profile to hide it"
+                    ))
+                    .changed()
+                {
+                    *adult = if on { "1".into() } else { String::new() };
+                }
+            });
             ui.add_space(6.0);
             ui.label(
                 RichText::new(tr!(
@@ -121,7 +136,14 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         let path = d.path.clone();
         // 只寫改過的欄位：沒動的照原樣留著
         let orig = d.orig.clone().unwrap_or_default();
-        let values: HashMap<String, String> = d.values.iter().filter(|(k, v)| orig.get(*k).is_none_or(|o| o.trim() != v.trim())).map(|(k, v)| (k.clone(), v.clone())).collect();
+        let mut values: HashMap<String, String> = d.values.iter().filter(|(k, v)| orig.get(*k).is_none_or(|o| o.trim() != v.trim())).map(|(k, v)| (k.clone(), v.clone())).collect();
+        // 標籤、人物、只給大人看一起存在 keywords 裡：改了其中一個，三個都要給
+        let kw = ["keywords", video_tags::PEOPLE_KEY, video_tags::ADULT_KEY];
+        if kw.iter().any(|k| values.contains_key(*k)) {
+            for k in kw {
+                values.insert(k.to_string(), d.values.get(k).cloned().unwrap_or_default());
+            }
+        }
         // 播放中的檔案換不掉：檢視器正在播這支就先放開，寫好再從同一個位置載入
         let t = super::viewer::release(app, &path);
         let ff = app.core.ffmpeg_path();

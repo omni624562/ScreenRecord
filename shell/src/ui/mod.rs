@@ -133,6 +133,8 @@ pub enum EntryAction {
     Trash,
     /// 複製這支在 Jellyfin 的網址
     JellyfinLink,
+    /// 用瀏覽器打開這支在 Jellyfin 的頁面
+    OpenJellyfin,
 }
 
 pub struct UiApp {
@@ -173,6 +175,9 @@ pub struct UiApp {
     /// 待傳清單：上次看 NAS 連不連得到的時間、正在補傳
     pub pending_check: Instant,
     pub pending_busy: bool,
+    /// Jellyfin 上誰看過哪支、我的最愛（什麼時候讀的）；正在背景讀
+    pub jf_watch: Option<(Instant, screenrecorder_core::jellyfin::WatchState)>,
+    pub jf_watch_loading: bool,
     pub changelog_open: bool,
     /// 找到的攝影機（None = 還沒找完）；主畫面的攝影機選單與設定視窗共用
     pub cameras: Option<Vec<String>>,
@@ -321,6 +326,8 @@ impl UiApp {
             lib_index_loading: false,
             pending_check: Instant::now(),
             pending_busy: false,
+            jf_watch: None,
+            jf_watch_loading: false,
             changelog_open: false,
             cameras: None,
             cameras_loading: false,
@@ -615,8 +622,8 @@ impl UiApp {
             .map(|j| screenrecorder_core::jellyfin::Jellyfin { collections: self.s.jellyfin_collections, ..j.with_root(&self.s.after_copy_to) })
     }
 
-    /// 複製這支影片在 Jellyfin 的網址（要先傳到媒體庫）
-    pub fn copy_jellyfin_link(&mut self, path: &str) {
+    /// 這支影片在 Jellyfin 的網址（要先傳到媒體庫）：open 時用瀏覽器打開，不然複製
+    pub fn jellyfin_link(&mut self, path: &str, open: bool) {
         let name = dialogs::file_name(path).to_string();
         let Some(jf) = self.jellyfin() else { return };
         self.spawn(
@@ -625,7 +632,12 @@ impl UiApp {
                     .await
                     .unwrap_or_else(|e| Err(e.to_string()))
             },
-            |app, r| match r {
+            move |app, r| match r {
+                Ok(Some(url)) if open => {
+                    if let Err(e) = actions::open_url(&url) {
+                        app.toast(trf!("打不開瀏覽器：{}", "Couldn't open the browser: {}", e.message()), true);
+                    }
+                }
                 Ok(Some(url)) => {
                     app.ctx.copy_text(url.clone());
                     app.toast(trf!("已複製 Jellyfin 連結：{url}", "Jellyfin link copied: {url}"), false);
@@ -1028,8 +1040,17 @@ impl UiApp {
         use actions::OpenAction;
         let path = entry.media.path.clone();
         // 主畫面正在播這個檔案：剪輯、製作、改名等要用到檔案時先停下來（Windows 上播放中的檔案不能改名、取代）
-        let keeps =
-            matches!(action, EntryAction::PlayHere | EntryAction::Reveal | EntryAction::CopyFile | EntryAction::CopyChapters | EntryAction::CopySteps | EntryAction::Star | EntryAction::JellyfinLink);
+        let keeps = matches!(
+            action,
+            EntryAction::PlayHere
+                | EntryAction::Reveal
+                | EntryAction::CopyFile
+                | EntryAction::CopyChapters
+                | EntryAction::CopySteps
+                | EntryAction::Star
+                | EntryAction::JellyfinLink
+                | EntryAction::OpenJellyfin
+        );
         if !keeps && self.inline.as_ref().is_some_and(|i| i.is(&path)) {
             self.inline = None;
         }
@@ -1041,7 +1062,8 @@ impl UiApp {
                 self.toast(if on { tr!("已加上星號：清理時會略過", "Starred: cleanup will skip it") } else { tr!("已移除星號", "Star removed") }, false);
             }
             EntryAction::Trash => library_dialog::trash_entry(self, &entry),
-            EntryAction::JellyfinLink => self.copy_jellyfin_link(&path),
+            EntryAction::JellyfinLink => self.jellyfin_link(&path, false),
+            EntryAction::OpenJellyfin => self.jellyfin_link(&path, true),
             EntryAction::RotateLeft => self.rotate(&path, screenrecorder_core::rotate::Turn::Left),
             EntryAction::RotateRight => self.rotate(&path, screenrecorder_core::rotate::Turn::Right),
             EntryAction::Rotate180 => self.rotate(&path, screenrecorder_core::rotate::Turn::Half),

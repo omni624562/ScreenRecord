@@ -321,6 +321,7 @@ impl App {
     pub fn with_data_dir(dir: PathBuf) -> Arc<App> {
         crate::jellyfin::init_links(dir.join("library-links.json"));
         crate::transfer::init_pending(dir.join("pending-sends.json"));
+        crate::jellyfin::init_favorites(dir.join("jellyfin-favorites.json"));
         Arc::new_cyclic(|weak: &Weak<App>| App {
             settings: SettingsStore::new(dir.join("settings.json")),
             recorder: Recorder::new(Arc::new(RecDeps(weak.clone()))),

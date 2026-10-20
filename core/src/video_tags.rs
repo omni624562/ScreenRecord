@@ -15,8 +15,9 @@ pub struct Field {
     pub multiline: bool,
 }
 
-/// 可以改的欄位（依序顯示）。title ©nam、artist ©ART、album ©alb、genre ©gen、keywords（標籤）、date ©day、comment ©cmt、copyright cprt
-pub fn fields() -> [Field; 8] {
+/// 可以改的欄位（依序顯示）。title ©nam、artist ©ART、album ©alb、genre ©gen、keywords（標籤）、date ©day、comment ©cmt、copyright cprt。
+/// people（人物）不是 MP4 的欄位：和「只給大人看」一起存在 keywords 裡（見 split_keywords）
+pub fn fields() -> [Field; 9] {
     [
         Field { key: "title", label: tr!("標題", "Title"), hint: tr!("例如：報價單怎麼填", "e.g. How to fill in a quote"), multiline: false },
         Field { key: "artist", label: tr!("作者", "Author"), hint: tr!("例如：業務部 王小明", "e.g. Sales team, Alex Wang"), multiline: false },
@@ -30,10 +31,42 @@ pub fn fields() -> [Field; 8] {
             hint: tr!("例如：報價; 新人（好幾個用 ; 或、隔開；傳到 Jellyfin 時也設成它的標籤）", "e.g. Quotes; Onboarding (separate several with ;; also set as Jellyfin tags)"),
             multiline: false,
         },
+        Field {
+            key: PEOPLE_KEY,
+            label: tr!("人物", "People"),
+            hint: tr!("影片裡有誰，例如：爸爸、小明（Jellyfin 裡點人名就列出他的影片）", "Who's in it, e.g. Dad; Amy (shown as people in Jellyfin)"),
+            multiline: false,
+        },
         Field { key: "date", label: tr!("年份", "Year"), hint: tr!("例如：2026", "e.g. 2026"), multiline: false },
         Field { key: "comment", label: tr!("說明", "Description"), hint: tr!("這支影片在講什麼（可以換行）", "What this video is about (can be several lines)"), multiline: true },
         Field { key: "copyright", label: tr!("版權", "Copyright"), hint: tr!("例如：© 2026 某某公司", "e.g. © 2026 Example Inc."), multiline: false },
     ]
+}
+
+/// 人物、只給大人看：不是 MP4 的欄位，存在 keywords 裡（人物前面加 @，只給大人看是「18+」這個標籤）
+pub const PEOPLE_KEY: &str = "people";
+pub const ADULT_KEY: &str = "adult";
+pub const ADULT_TAG: &str = "18+";
+
+/// keywords 拆成（標籤, 人物, 只給大人看）
+pub fn split_keywords(text: &str) -> (Vec<String>, Vec<String>, bool) {
+    let (mut tags, mut people, mut adult) = (vec![], vec![], false);
+    for k in split_genres(text) {
+        if let Some(p) = k.strip_prefix('@').map(str::trim).filter(|p| !p.is_empty()) {
+            people.push(p.to_string());
+        } else if k == ADULT_TAG {
+            adult = true;
+        } else {
+            tags.push(k);
+        }
+    }
+    (tags, people, adult)
+}
+
+/// 標籤、人物、只給大人看合成 keywords
+pub fn join_keywords(tags: &[String], people: &[String], adult: bool) -> String {
+    let all: Vec<String> = tags.iter().cloned().chain(people.iter().map(|p| format!("@{p}"))).chain(adult.then(|| ADULT_TAG.to_string())).collect();
+    join_genres(&all)
 }
 
 /// 可以改影片資訊的檔案（MP4 一類，含只有聲音的 M4A）
@@ -52,7 +85,12 @@ pub async fn read(ffmpeg: &Path, video: &str) -> Result<HashMap<String, String>>
     }
     // MKV、WebM 存成大寫（ARTIST、COMMENT）：不分大小寫
     let all: HashMap<String, String> = parse_ffmetadata(&r.stdout).into_iter().map(|(k, v)| (k.to_ascii_lowercase(), v)).collect();
-    Ok(fields().iter().map(|f| (f.key.to_string(), all.get(f.key).cloned().unwrap_or_default())).collect())
+    let mut out: HashMap<String, String> = fields().iter().map(|f| (f.key.to_string(), all.get(f.key).cloned().unwrap_or_default())).collect();
+    let (tags, people, adult) = split_keywords(&out.get("keywords").cloned().unwrap_or_default());
+    out.insert("keywords".into(), join_genres(&tags));
+    out.insert(PEOPLE_KEY.into(), join_genres(&people));
+    out.insert(ADULT_KEY.into(), if adult { "1".into() } else { String::new() });
+    Ok(out)
 }
 
 /// 寫進影片：values 裡有的欄位換成新的內容，空字串 = 刪掉；其他資訊、封面、章節保留
@@ -70,7 +108,17 @@ pub async fn write(ffmpeg: Option<&Path>, video: &str, values: &HashMap<String, 
 pub fn write_args(video: &str, values: &HashMap<String, String>, out: &str) -> Vec<String> {
     let mut a: Vec<String> = ["-hide_banner", "-nostats", "-loglevel", "error", "-i", video].iter().map(|s| s.to_string()).collect();
     a.extend(["-map", "0:v?", "-map", "0:a?", "-map", "0:s?", "-c", "copy", "-map_metadata", "0", "-map_chapters", "0"].iter().map(|s| s.to_string()));
+    // 標籤、人物、只給大人看合成 keywords（三個要一起給，見 read）
+    let mut values = values.clone();
+    if [PEOPLE_KEY, ADULT_KEY].iter().any(|k| values.contains_key(*k)) || values.contains_key("keywords") {
+        let get = |k: &str| values.get(k).cloned().unwrap_or_default();
+        let kw = join_keywords(&split_genres(&get("keywords")), &split_genres(&get(PEOPLE_KEY)), get(ADULT_KEY) == "1");
+        values.insert("keywords".into(), kw);
+    }
     for f in fields() {
+        if f.key == PEOPLE_KEY {
+            continue;
+        }
         if let Some(v) = values.get(f.key) {
             // 換行統一成 \n；單行的欄位不留換行
             let v = v.replace("\r\n", "\n");
@@ -174,6 +222,17 @@ mod tests {
         assert!(a.contains(&"artist=".to_string()), "空的 = 刪掉");
         assert!(!j.contains("album="), "沒給的欄位不動");
         assert!(a.ends_with(&["-y".to_string(), "out.mp4".to_string()]));
+    }
+
+    #[test]
+    fn people_and_adults_only_live_in_keywords() {
+        assert_eq!(split_keywords("報價; @爸爸; 18+; @ 小明 ; 新人"), (vec!["報價".to_string(), "新人".to_string()], vec!["爸爸".to_string(), "小明".to_string()], true));
+        assert_eq!(join_keywords(&["家庭".into()], &["媽媽".into()], true), "家庭; @媽媽; 18+");
+        // 只改了人物：標籤、只給大人看照樣寫回 keywords，people 不寫成 MP4 欄位
+        let values: HashMap<String, String> = [("keywords", "家庭"), (PEOPLE_KEY, "爸爸、小明"), (ADULT_KEY, "")].iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        let a = write_args("in.mp4", &values, "out.mp4");
+        assert!(a.contains(&"keywords=家庭; @爸爸; @小明".to_string()), "{a:?}");
+        assert!(!a.iter().any(|x| x.starts_with("people=") || x.starts_with("adult=")), "{a:?}");
     }
 
     #[test]
