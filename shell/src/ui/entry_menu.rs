@@ -218,7 +218,7 @@ pub fn groups(app: &UiApp, e: &LibraryEntry, place: Place) -> Vec<Vec<Node>> {
     ))];
     let (dest, send_tip) = app.send_label();
     share.push(one(item(EntryAction::SendToLibrary, tr!("傳到媒體庫", "Send to library"), Some(Icon::Upload), &format!("{dest}\n{send_tip}"))));
-    if !m4a && screenrecorder_core::jellyfin::Jellyfin::new(&app.s.jellyfin_url, &app.s.jellyfin_key).is_some() {
+    if !m4a && app.jellyfin().is_some() {
         share.push(one(item(
             EntryAction::JellyfinLink,
             tr!("複製 Jellyfin 連結", "Copy Jellyfin link"),

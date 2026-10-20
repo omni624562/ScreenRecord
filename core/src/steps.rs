@@ -161,7 +161,7 @@ pub fn bar(count: u32, confirm: bool) -> crate::bubble::Content {
 /// 圖片太寬（4K 螢幕）時縮到這個寬度再放進文件：檔案小一點，瀏覽器裡看起來一樣
 const DOC_MAX_W: u32 = 1920;
 
-fn base64(bytes: &[u8]) -> String {
+pub(crate) fn base64(bytes: &[u8]) -> String {
     const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
     for c in bytes.chunks(3) {

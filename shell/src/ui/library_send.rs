@@ -134,7 +134,7 @@ impl UiApp {
     /// 真的傳過去（sub：媒體庫的哪個資料夾，「family/2024」，空的 = 最上層）
     pub fn send_now(&mut self, path: &str, sub: &str) {
         let Some(_) = self.library_folder() else { return };
-        let jf = jellyfin::Jellyfin::new(&self.s.jellyfin_url, &self.s.jellyfin_key);
+        let jf = self.jellyfin();
         let dest = jellyfin::library_dest(&self.s.after_copy_to, sub);
         let file = std::path::PathBuf::from(path);
         self.toast(trf!("正在傳到「{}」：{}", "Sending to “{}”: {}", place_label(self, sub), dialogs::file_name(path)), false);
@@ -189,7 +189,12 @@ impl UiApp {
 
     /// 媒體庫裡有的檔案（小寫檔名, 大小）：「還沒傳到媒體庫」篩選用；還沒讀到時是空的
     pub fn library_keys(&mut self) -> Vec<(String, u64)> {
-        self.lib_index().map(|i| i.map.iter().flat_map(|(name, at)| at.iter().map(move |(_, size)| (name.clone(), *size))).collect()).unwrap_or_default()
+        // 改過封面、影片資訊只透過 Jellyfin 更新的：本機的大小和媒體庫那一份不同，也算在媒體庫裡
+        self.lib_index()
+            .map(|i| {
+                i.map.iter().flat_map(|(name, at)| at.iter().flat_map(move |(_, size)| std::iter::once(*size).chain(jellyfin::linked_sizes(name, *size)).map(move |s| (name.clone(), s)))).collect()
+            })
+            .unwrap_or_default()
     }
 
     /// 這個檔案在媒體庫的哪裡（同名同大小）；回傳顯示用的位置（「video › family › 2024」）。
@@ -200,7 +205,7 @@ impl UiApp {
             return None;
         }
         let name = std::path::Path::new(path).file_name()?.to_string_lossy().to_lowercase();
-        let subs: Vec<String> = self.lib_index()?.map.get(&name)?.iter().filter(|(_, s)| *s == size).map(|(sub, _)| sub.clone()).collect();
+        let subs: Vec<String> = self.lib_index()?.map.get(&name)?.iter().filter(|(_, s)| jellyfin::same_copy(&name, size, *s)).map(|(sub, _)| sub.clone()).collect();
         let hits: Vec<String> = subs.iter().map(|s| place_label(self, s)).collect();
         (!hits.is_empty()).then_some(hits)
     }

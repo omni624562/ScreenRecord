@@ -561,28 +561,33 @@ impl UiApp {
 
     /// 改名後：媒體庫裡那一份（連同字幕、加速版）也換成新名稱，並請 Jellyfin 重新掃描
     pub fn sync_renamed(&mut self, pairs: Vec<(std::path::PathBuf, std::path::PathBuf)>) {
-        use screenrecorder_core::jellyfin::{in_library, rename_copies, Jellyfin};
+        use screenrecorder_core::jellyfin::{in_library, rename_copies};
         self.lib_index = None;
         let copy_to = self.s.after_copy_to.clone();
         if copy_to.trim().is_empty() {
             return;
         }
         let in_lib = pairs.iter().any(|(_, new)| in_library(&copy_to, new));
-        let jf = Jellyfin::new(&self.s.jellyfin_url, &self.s.jellyfin_key);
+        let jf = self.jellyfin();
         self.spawn(
             async move {
                 tokio::task::spawn_blocking(move || -> Result<Option<String>, String> {
-                    let mut n = 0;
+                    let mut renamed = vec![];
                     for (old, new) in &pairs {
-                        n += rename_copies(&copy_to, old, new)?;
+                        renamed.extend(rename_copies(&copy_to, old, new)?);
                     }
-                    if n == 0 && !in_lib {
+                    if renamed.is_empty() && !in_lib {
                         return Ok(None);
                     }
-                    let done =
-                        if n > 0 { tr!("媒體庫裡的那一份也改名了", "The copy in the library was renamed too") } else { tr!("媒體庫裡的檔案已改名", "Renamed in the library") };
-                    Ok(Some(match jf.map(|jf| jf.refresh()) {
-                        Some(Ok(())) => format!("{done}{}", tr!("，已請 Jellyfin 重新掃描", "; Jellyfin was asked to rescan")),
+                    let done = if !renamed.is_empty() {
+                        tr!("媒體庫裡的那一份也改名了", "The copy in the library was renamed too")
+                    } else {
+                        tr!("媒體庫裡的檔案已改名", "Renamed in the library")
+                    };
+                    // 只掃描改了名的那個資料夾
+                    let scan = renamed.first().cloned().or_else(|| pairs.first().map(|(_, new)| new.clone()));
+                    Ok(Some(match jf.zip(scan).map(|(jf, at)| jf.scan(&at)) {
+                        Some(Ok(_)) => format!("{done}{}", tr!("，已請 Jellyfin 重新掃描", "; Jellyfin was asked to rescan")),
                         Some(Err(e)) => format!("{done}{}", trf!("，但沒有通知到 Jellyfin：{e}", ", but Jellyfin couldn't be notified: {e}")),
                         None => done.to_string(),
                     }))
@@ -598,10 +603,15 @@ impl UiApp {
         );
     }
 
+    /// 設定好的 Jellyfin（網址和 API 金鑰都有填），帶著媒體庫資料夾（傳好只掃描放進去的資料夾用）
+    pub fn jellyfin(&self) -> Option<screenrecorder_core::jellyfin::Jellyfin> {
+        screenrecorder_core::jellyfin::Jellyfin::new(&self.s.jellyfin_url, &self.s.jellyfin_key).map(|j| j.with_root(&self.s.after_copy_to))
+    }
+
     /// 複製這支影片在 Jellyfin 的網址（要先傳到媒體庫）
     pub fn copy_jellyfin_link(&mut self, path: &str) {
         let name = dialogs::file_name(path).to_string();
-        let Some(jf) = screenrecorder_core::jellyfin::Jellyfin::new(&self.s.jellyfin_url, &self.s.jellyfin_key) else { return };
+        let Some(jf) = self.jellyfin() else { return };
         self.spawn(
             async move {
                 tokio::task::spawn_blocking(move || -> Result<Option<String>, String> { Ok(jf.find(&name)?.first().map(|id| jf.link(id, jf.server_id().as_deref()))) })
@@ -619,9 +629,10 @@ impl UiApp {
         );
     }
 
-    /// 改了影片（封面、影片資訊）之後：媒體庫資料夾（Jellyfin 的媒體庫）裡的那一份也換成改好的，並請 Jellyfin 重新讀取
-    pub fn sync_edited(&mut self, path: &str) {
-        let jf = screenrecorder_core::jellyfin::Jellyfin::new(&self.s.jellyfin_url, &self.s.jellyfin_key);
+    /// 改了影片（封面、影片資訊、畫面）之後：媒體庫資料夾（Jellyfin 的媒體庫）裡的那一份也跟著更新：
+    /// 只換封面、影片資訊時直接透過 Jellyfin 改（不重傳整支影片），其他情況換成改好的檔案並請 Jellyfin 重新讀取
+    pub fn sync_edited(&mut self, path: &str, edit: screenrecorder_core::jellyfin::Edit) {
+        let jf = self.jellyfin();
         let copy_to = self.s.after_copy_to.clone();
         if copy_to.trim().is_empty() {
             return;
@@ -631,7 +642,15 @@ impl UiApp {
         self.spawn(
             async move {
                 let extras = screenrecorder_core::jellyfin::Extras::read(ffmpeg.as_deref(), &video).await;
-                tokio::task::spawn_blocking(move || screenrecorder_core::jellyfin::sync_edited(jf.as_ref(), &copy_to, &video, &extras)).await.ok().flatten()
+                // 換了封面：取出新封面，直接傳給 Jellyfin
+                let mut cover = None;
+                if let (screenrecorder_core::jellyfin::Edit::Cover, Some(ff), Some(_)) = (edit, ffmpeg.as_deref(), jf.as_ref()) {
+                    if let Some((jpg, _)) = screenrecorder_core::cover::extract_cover(ff, &video.display().to_string(), &video, 0).await {
+                        cover = std::fs::read(&jpg).ok();
+                        let _ = std::fs::remove_file(&jpg);
+                    }
+                }
+                tokio::task::spawn_blocking(move || screenrecorder_core::jellyfin::sync_edited(jf.as_ref(), &copy_to, &video, &extras, edit, cover.as_deref())).await.ok().flatten()
             },
             |app, r| match r {
                 Some(Ok(msg)) => app.toast(msg, false),
@@ -979,7 +998,7 @@ impl UiApp {
                         }
                         app.thumbs.forget(&path);
                         app.toast(tr!("已旋轉（再轉一次可以轉回來）", "Rotated (rotate again to undo)"), false);
-                        app.sync_edited(&path);
+                        app.sync_edited(&path, screenrecorder_core::jellyfin::Edit::Video);
                         app.shots_changed();
                         app.load_recent();
                     }
@@ -1571,7 +1590,8 @@ fn trash_now(app: &mut UiApp, paths: Vec<String>, copies: Vec<std::path::PathBuf
         Ok(n) => {
             app.toast(trf!("已將 {n} 個檔案移到資源回收筒", "Moved {n} file(s) to the Recycle Bin"), false);
             if notify {
-                let jf = screenrecorder_core::jellyfin::Jellyfin::new(&app.s.jellyfin_url, &app.s.jellyfin_key);
+                let jf = app.jellyfin();
+                let first = paths.first().map(std::path::PathBuf::from);
                 app.spawn(
                     async move {
                         tokio::task::spawn_blocking(move || -> Result<String, String> {
@@ -1583,9 +1603,11 @@ fn trash_now(app: &mut UiApp, paths: Vec<String>, copies: Vec<std::path::PathBuf
                                 screenrecorder_core::info!("[傳到資料夾] 媒體庫的那一份也刪了：{}", list.join("、"));
                                 tr!("媒體庫裡的那一份也刪了", "The copy in the library was deleted too")
                             };
-                            Ok(match jf.map(|jf| jf.refresh()) {
-                                Some(Ok(())) if gone.is_empty() => tr!("已請 Jellyfin 重新掃描", "Jellyfin was asked to rescan").to_string(),
-                                Some(Ok(())) => format!("{gone}{}", tr!("，已請 Jellyfin 重新掃描", "; Jellyfin was asked to rescan")),
+                            // 只掃描刪掉的那個資料夾
+                            let scan = copies.first().cloned().or(first);
+                            Ok(match jf.zip(scan).map(|(jf, at)| jf.scan(&at)) {
+                                Some(Ok(_)) if gone.is_empty() => tr!("已請 Jellyfin 重新掃描", "Jellyfin was asked to rescan").to_string(),
+                                Some(Ok(_)) => format!("{gone}{}", tr!("，已請 Jellyfin 重新掃描", "; Jellyfin was asked to rescan")),
                                 Some(Err(e)) => format!("{gone}{}", trf!("（沒有通知到 Jellyfin：{e}）", " (Jellyfin couldn't be notified: {e})")),
                                 None => gone.to_string(),
                             })
