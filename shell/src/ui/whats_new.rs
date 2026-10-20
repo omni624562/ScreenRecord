@@ -38,6 +38,15 @@ enum Try {
 fn items(_app: &UiApp) -> Vec<(String, String, Try)> {
     vec![
         (
+            tr!("在這裡看 Jellyfin 上的影片", "Watch Jellyfin videos here").into(),
+            tr!(
+                "檔案庫上方的「Jellyfin」打開瀏覽視窗：點資料夾進去、點影片就直接播放，家人傳上去的也看得到，不在家也能看。",
+                "“Jellyfin” at the top of the library opens a browser: open folders and click a video to play it right here — including ones family uploaded, even away from home."
+            )
+            .into(),
+            Try::Library(false),
+        ),
+        (
             tr!("家人看過了沒", "See who watched").into(),
             tr!(
                 "已經在 Jellyfin 的錄影，有人看過時「Jellyfin」標籤旁邊多一個眼睛，滑鼠移上去看誰看過、哪一天看的。",

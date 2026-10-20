@@ -9,6 +9,7 @@ pub mod entry_menu;
 pub mod export_dialog;
 pub mod import;
 pub mod inline_play;
+pub mod jellyfin_browse;
 pub mod library_dialog;
 pub mod library_send;
 pub mod main_view;
@@ -178,6 +179,8 @@ pub struct UiApp {
     /// Jellyfin 上誰看過哪支、我的最愛（什麼時候讀的）；正在背景讀
     pub jf_watch: Option<(Instant, screenrecorder_core::jellyfin::WatchState)>,
     pub jf_watch_loading: bool,
+    /// 瀏覽 Jellyfin 的視窗
+    pub jf_browse: Option<jellyfin_browse::JfBrowse>,
     pub changelog_open: bool,
     /// 找到的攝影機（None = 還沒找完）；主畫面的攝影機選單與設定視窗共用
     pub cameras: Option<Vec<String>>,
@@ -328,6 +331,7 @@ impl UiApp {
             pending_busy: false,
             jf_watch: None,
             jf_watch_loading: false,
+            jf_browse: None,
             changelog_open: false,
             cameras: None,
             cameras_loading: false,
@@ -1440,13 +1444,14 @@ impl eframe::App for UiApp {
         // 主畫面閒置時不定時重畫：狀態有變化由 watch_status 叫醒，其餘每 5 秒保險一次；視窗隱藏時 2 秒
         self.shown_flag.store(shown, std::sync::atomic::Ordering::Relaxed);
         // 選了攝影機時，主畫面看得到（沒有開著剪輯、檢視、製作、全部錄影）就先顯示攝影機小視窗
-        let covered = self.editor.is_some() || self.viewer.is_some() || self.export_dlg.is_some() || self.library.is_some();
+        let covered = self.editor.is_some() || self.viewer.is_some() || self.export_dlg.is_some() || self.library.is_some() || self.jf_browse.is_some();
         self.core.set_camera_preview((shown && !covered && self.env_ready).then(|| self.s.record_config(&self.env)));
         let busy = self.status.recorder.state != RecorderState::Idle
             || self.editor.is_some()
             || self.viewer.is_some()
             || self.export_dlg.is_some()
             || self.library.is_some()
+            || self.jf_browse.is_some()
             || self.status.export.as_ref().is_some_and(|e| e.state == screenrecorder_core::types::ExportState::Running)
             || matches!(self.status.download.phase, DownloadPhase::Downloading | DownloadPhase::Verifying | DownloadPhase::Extracting)
             || self.status.install.is_some();
@@ -1514,6 +1519,9 @@ impl eframe::App for UiApp {
         if self.library.is_some() {
             library_dialog::show(self, &ctx);
             part(self, "全部錄影");
+        }
+        if self.jf_browse.is_some() {
+            jellyfin_browse::show(self, &ctx);
         }
         inline_play::tick(self, &ctx);
         if self.viewer.is_some() {

@@ -166,6 +166,11 @@ pub fn set_autoplay(app: &mut UiApp, on: bool) {
     }
 }
 
+/// 串流的影片（Jellyfin 上的，不是這台電腦的檔案）：不能刪除、改名，也沒有同一個資料夾的其他影片
+pub fn is_remote(path: &str) -> bool {
+    path.starts_with("http://") || path.starts_with("https://")
+}
+
 pub fn open(app: &mut UiApp, entry: LibraryEntry) {
     let shots = is_image_name(&entry.media.name);
     let path = entry.media.path.clone();
@@ -196,6 +201,9 @@ pub fn open(app: &mut UiApp, entry: LibraryEntry) {
         related: vec![],
     });
     load_current(app);
+    if is_remote(&path) {
+        return;
+    }
     let core = app.core.clone();
     // 同一個資料夾裡的（全部錄影也可以看之前用過的資料夾）
     let dir = std::path::Path::new(&path).parent().map(|p| p.display().to_string()).filter(|d| !d.is_empty()).unwrap_or_else(|| app.s.out_dir(&app.env));
@@ -504,6 +512,10 @@ fn head_icon(label: &str, icon: Icon, tip: &str, act: Act) -> HeadBtn {
 /// 其他照清單的分組和順序排成一排小圖示；資料夾、刪除固定在右上角
 fn head_buttons(app: &UiApp, e: &LibraryEntry, image: bool) -> Vec<HeadBtn> {
     let b = head_btn;
+    // 串流的影片：只能看
+    if is_remote(&e.media.path) {
+        return vec![];
+    }
     if image {
         let mut edit = b(
             tr!("編輯", "Edit"),
@@ -880,10 +892,11 @@ fn header(v: &mut Viewer, ui: &mut egui::Ui, e: &LibraryEntry, buttons: &[HeadBt
     }
     // 刪除離關閉遠一點，不容易按錯
     rui.add_space(16.0);
-    if Btn::icon_only(Icon::Trash).ghost().small().tooltip(tr!("移到資源回收筒（Delete）", "Move to Recycle Bin (Delete)")).show(rui).clicked() {
+    let remote = is_remote(&e.media.path);
+    if !remote && Btn::icon_only(Icon::Trash).ghost().small().tooltip(tr!("移到資源回收筒（Delete）", "Move to Recycle Bin (Delete)")).show(rui).clicked() {
         *act = Act::Delete;
     }
-    if Btn::icon_only(Icon::Folder).ghost().small().tooltip(tr!("在資料夾中顯示", "Show in folder")).show(rui).clicked() {
+    if !remote && Btn::icon_only(Icon::Folder).ghost().small().tooltip(tr!("在資料夾中顯示", "Show in folder")).show(rui).clicked() {
         *act = Act::Entry(EntryAction::Reveal);
     }
     head_sep(rui);
@@ -944,8 +957,12 @@ fn header(v: &mut Viewer, ui: &mut egui::Ui, e: &LibraryEntry, buttons: &[HeadBt
             meta.push(short_clock(d));
         }
     }
-    meta.push(format_bytes(e.media.bytes));
-    meta.push(e.media.name.clone());
+    if remote {
+        meta.push(tr!("在 Jellyfin 上串流播放", "Streaming from Jellyfin").to_string());
+    } else {
+        meta.push(format_bytes(e.media.bytes));
+        meta.push(e.media.name.clone());
+    }
     let meta = meta.join(tr!("・", " · "));
     lui.add(egui::Label::new(RichText::new(&meta).font(theme::font(12.0)).color(p.muted)).truncate()).on_hover_text(&meta);
     ui.advance_cursor_after_rect(head);
@@ -1082,7 +1099,7 @@ fn keyboard(v: &mut Viewer, ctx: &egui::Context, act: &mut Act) {
     // 全螢幕要在讀完輸入之後才切換（讀輸入時不能送視窗指令）
     let mut toggle_full = false;
     ctx.input(|i| {
-        if i.key_pressed(Key::Delete) {
+        if i.key_pressed(Key::Delete) && !v.cur().media.path.starts_with("http") {
             *act = Act::Delete;
         }
         if image {
