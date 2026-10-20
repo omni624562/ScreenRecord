@@ -904,7 +904,9 @@ fn settings_bar(app: &mut UiApp, ui: &mut Ui) {
     // 右邊：「設定」按鈕，前面是輸出大小
     let set_btn =
         Btn::new(tr!("設定", "Settings")).icon(Icon::Settings).small().tooltip(tr!("錄影、聲音、儲存位置、快速鍵與其他設定", "Recording, audio, save location, shortcuts and other settings"));
-    let set_w = set_btn.width(ui) + super::presets::width(app, ui) + 4.0;
+    // 設定組合：有建立組合時才放在這裡（沒有時在「更多工具」）
+    let has_presets = !app.presets.is_empty();
+    let set_w = set_btn.width(ui) + if has_presets { super::presets::width(app, ui) + 4.0 } else { 0.0 };
     let out = app.s.source_rect(&app.env).map(|r| output_size(r.width, r.height, app.s.scale as f64));
     let big = out.is_some_and(|(w, h)| (w as f64) * (h as f64) > 3840.0 * 2160.0 * 1.05);
     let out_text = out.map(|(w, h)| trf!("輸出 {w}×{h}{}", "Output {w}×{h}{}", if big { tr!("（很大，建議 50%）", " (very large; 50% recommended)") } else { "" }));
@@ -987,7 +989,9 @@ fn settings_bar(app: &mut UiApp, ui: &mut Ui) {
         if set.clicked() {
             open = Some(Page::Record);
         }
-        super::presets::button(app, ui);
+        if has_presets {
+            super::presets::button(app, ui);
+        }
         if let Some(t) = out_text.filter(|_| show_out) {
             ui.add_space(8.0);
             ui.label(RichText::new(t).font(theme::font(12.5)).color(if big { p.warn } else { p.muted }));
@@ -1200,30 +1204,9 @@ fn rec_panel(app: &mut UiApp, ui: &mut Ui) {
             if let Some(rp) = replay.as_ref().filter(|_| busy.is_empty()) {
                 busy = if rp.saving { tr!("正在存…", "Saving…").into() } else { trf!("保留最近 {}", "Keeping the last {}", screenrecorder_core::replay::length_label(rp.sec)) };
             }
-            // 右上角：講稿小視窗
+            // 右上角：「更多工具」（回溯錄影、排程、講稿、設定組合：不常用的收在這裡，主畫面保持簡單）
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                let open = app.notes.is_some();
-                let tip = tr!(
-                    "講稿小視窗：浮在最上層、不會被錄進影片；可以用大字自動往上捲（提詞），開始錄影時自動開始",
-                    "Script window: stays on top and isn't recorded. It can show your script in large text that scrolls up automatically (teleprompter), starting when you record."
-                );
-                if Btn::new(if open { tr!("關閉講稿", "Close script") } else { tr!("講稿", "Script") }).icon(Icon::Edit).ghost().small().tooltip(tip).show(ui).clicked() {
-                    super::notes::toggle(app);
-                }
-                if !active
-                    && Btn::new(tr!("排程", "Schedule"))
-                        .icon(Icon::Clock)
-                        .ghost()
-                        .small()
-                        .tooltip(tr!("指定時間自動開始錄影，也可以設定錄幾分鐘後自動停止", "Start recording automatically at a set time, optionally stopping after a set length"))
-                        .show(ui)
-                        .clicked()
-                {
-                    super::schedule::open(app);
-                }
-                if !active {
-                    super::replay::button(app, ui);
-                }
+                more_tools(app, ui, active);
                 ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
                     ui.add(egui::Label::new(theme::muted(ui, busy)).truncate());
                 });
@@ -1243,11 +1226,14 @@ fn rec_panel(app: &mut UiApp, ui: &mut Ui) {
                 ask_update(app, &u);
             }
         }
-        ui.add_space(4.0);
-        let ms = live_recorded_ms(app);
-        ui.label(RichText::new(clock(ms)).font(theme::mono(clock_size)).color(if r.state == RecorderState::Recording { p.rec } else { p.text }));
-        if r.max_ms > 0 && active && r.state != RecorderState::Countdown {
-            theme::progress(ui, (ms / r.max_ms as f64) as f32, p.rec, 4.0);
+        // 計時器：錄影時才出現（待命時是 00:00:00，沒有意義）
+        if active {
+            ui.add_space(4.0);
+            let ms = live_recorded_ms(app);
+            ui.label(RichText::new(clock(ms)).font(theme::mono(clock_size)).color(if r.state == RecorderState::Recording { p.rec } else { p.text }));
+            if r.max_ms > 0 && r.state != RecorderState::Countdown {
+                theme::progress(ui, (ms / r.max_ms as f64) as f32, p.rec, 4.0);
+            }
         }
         ui.add_space(6.0);
         // 中間（統計、控制按鈕、提示、結果、快速鍵 / 事件紀錄）放不下時可以捲動：系統狀態一定在最下面，不會蓋住按鈕
@@ -1273,6 +1259,59 @@ fn rec_panel(app: &mut UiApp, ui: &mut Ui) {
         ui.painter().hline(bottom.x_range(), bottom.min.y - BOTTOM_LINE_GAP, Stroke::new(1.0, p.border));
         ui.scope_builder(UiBuilder::new().max_rect(bottom).layout(Layout::left_to_right(Align::Center)), |ui| sys_status(app, ui));
     });
+}
+
+/// 「更多工具 ▾」：回溯錄影、排程錄影、講稿小視窗、設定組合（有組合時設定組合也在下方設定列）
+fn more_tools(app: &mut UiApp, ui: &mut Ui, active: bool) {
+    let notes_open = app.notes.is_some();
+    let resp = Btn::new(tr!("更多工具", "More tools"))
+        .icon(Icon::More)
+        .ghost()
+        .small()
+        .menu()
+        .tooltip(tr!("回溯錄影、排程錄影、講稿小視窗、設定組合", "Replay buffer, scheduled recording, script window, presets"))
+        .show(ui);
+    let mut schedule = false;
+    let mut notes = false;
+    egui::Popup::menu(&resp).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
+        ui.set_min_width(220.0);
+        if !active {
+            let can = app.env.ffmpeg.found && app.env.ffmpeg.encoder.is_some() && app.manual_export().is_none();
+            ui.add_enabled_ui(can, |ui| {
+                ui.menu_button(tr!("回溯錄影（錄最近幾分鐘）", "Replay buffer (last few minutes)"), |ui| super::replay::menu_body(app, ui));
+            });
+            if ui
+                .button(tr!("排程錄影…", "Schedule recording…"))
+                .on_hover_text(tr!("指定時間自動開始錄影，也可以設定錄幾分鐘後自動停止", "Start recording automatically at a set time, optionally stopping after a set length"))
+                .clicked()
+            {
+                schedule = true;
+                ui.close();
+            }
+        }
+        if ui
+            .button(if notes_open { tr!("關閉講稿小視窗", "Close script window") } else { tr!("講稿小視窗", "Script window") })
+            .on_hover_text(tr!(
+                "浮在最上層、不會被錄進影片；可以用大字自動往上捲（提詞），開始錄影時自動開始",
+                "Stays on top and isn't recorded. It can show your script in large text that scrolls up automatically (teleprompter), starting when you record."
+            ))
+            .clicked()
+        {
+            notes = true;
+            ui.close();
+        }
+        if !active && app.presets.is_empty() {
+            ui.add_enabled_ui(!app.locked(), |ui| {
+                ui.menu_button(tr!("設定組合", "Presets"), |ui| super::presets::menu_body(app, ui));
+            });
+        }
+    });
+    if schedule {
+        super::schedule::open(app);
+    }
+    if notes {
+        super::notes::toggle(app);
+    }
 }
 
 /// 錄影面板中間可以捲動的部分
@@ -1335,7 +1374,9 @@ fn rec_body(app: &mut UiApp, ui: &mut Ui, r: &screenrecorder_core::types::Record
     // 高度不夠時省略比較不重要的列：待命時的影片長度、檔案大小（都還是 0）；錄影中的影片長度（和上面的計時差不多）、錄影方式；
     // 很擠的時候輸出、錄影方式也省略（下方摘要與滑鼠提示有）。只錄聲音時沒有「錄影方式」
     let audio_only = app.s.source_type == SourceType::Audio;
+    // 待命時只留「聲音」一列（還沒錄影，長度、大小都是 0）；錄影中才列出數據
     let show = |i: usize| match i {
+        _ if !active => i == 4,
         0 => tight == 0 || replay.is_some(),
         1 => tight == 0 || active,
         2 => tight < 2,
@@ -1441,6 +1482,9 @@ fn rec_body(app: &mut UiApp, ui: &mut Ui, r: &screenrecorder_core::types::Record
             };
             // 只錄聲音：「開始錄音」
             let label = if app.s.source_type == SourceType::Audio { tr!("開始錄音", "Start audio recording") } else { tr!("開始錄影", "Start recording") };
+            // 快速鍵直接寫在按鈕上（可以用時）
+            let k = app.keys.label(0);
+            let label = if k.is_empty() || !app.env.hotkeys.is_some_and(|h| h.all().first().copied().unwrap_or(false)) { label.to_string() } else { format!("{label}　{k}") };
             let start = Btn::new(label).kind(theme::Kind::Record).enabled(can).tooltip(tip).min_width(ui.available_width()).show(ui);
             tour::mark(ui, Spot::Record, start.rect);
             if start.clicked() {
@@ -1535,7 +1579,7 @@ fn rec_body(app: &mut UiApp, ui: &mut Ui, r: &screenrecorder_core::types::Record
         ui.add_space(4.0);
         ui.label(RichText::new(tr!("🔇 麥克風靜音中，這段不會錄到你的聲音", "🔇 Microphone muted. Your voice isn't being recorded")).color(p.rec).font(theme::font(12.5)));
     }
-    // 截圖（只錄聲音時不顯示）：框選截圖、整個範圍、更多
+    // 截圖（只錄聲音時不顯示）：框選截圖、截取錄影範圍、更多
     if !active && app.s.source_type != SourceType::Audio {
         ui.add_space(6.0);
         shot_row(app, ui);
@@ -1630,54 +1674,9 @@ fn rec_body(app: &mut UiApp, ui: &mut Ui, r: &screenrecorder_core::types::Record
     after_done_card(app, ui);
     // 快速鍵小抄或事件紀錄（放不下時整個中間部分可以捲動）
     if r.log.is_empty() && !active {
-        // 還沒有事件：顯示常用的快速鍵（不能用的變灰色，註明「無法使用」），其他的在設定裡
-        ui.add_space(10.0);
-        let mut open_keys = false;
-        ui.horizontal(|ui| {
-            ui.label(RichText::new(tr!("快速鍵", "Shortcuts")).font(theme::font_bold(12.5)).color(p.muted));
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if Btn::new(tr!("全部快速鍵…", "All shortcuts…")).ghost().small().tooltip(tr!("在「設定 → 快速鍵」查看與更換", "View and change them in Settings → Shortcuts")).show(ui).clicked()
-                {
-                    open_keys = true;
-                }
-            });
-        });
-        if open_keys {
-            settings_dialog::open(app, Page::Keys);
-        }
-        // 一列一行字的高度就好（不用按鈕的高度）
-        ui.spacing_mut().item_spacing.y = 6.0;
-        ui.spacing_mut().interact_size.y = 18.0;
-        let names = screenrecorder_core::types::hotkey_names();
-        // 系統匣沒有啟動時全域快速鍵都不能用；被其他程式占用的也不能用
-        let works = app.env.hotkeys.map(|h| h.all());
-        // 常用的在前面：開始 / 停止錄影、框選截圖、截圖、暫停 / 繼續、回溯錄影
-        for i in [0usize, 3, 2, 1, 6] {
-            let key = app.keys.label(i);
-            if key.is_empty() || i >= names.len() {
-                continue;
-            }
-            let ok = works.is_some_and(|w| w.get(i).copied().unwrap_or(false));
-            let name = if ok { names[i].to_string() } else { trf!("{}（無法使用）", "{} (unavailable)", names[i]) };
-            let tip = match works {
-                None => tr!("系統匣沒有啟動，全域快速鍵無法使用", "The tray icon isn't running, so global shortcuts don't work"),
-                Some(_) if !ok => tr!("被其他程式占用，到「設定 → 快速鍵」換一組", "Used by another program. Choose a different one in Settings → Shortcuts"),
-                _ => "",
-            };
-            // 先放右邊的按鍵，名稱用剩下的寬度（太長時結尾「…」）
-            let row = ui.horizontal(|ui| {
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    let k = RichText::new(key).font(theme::mono(12.0)).color(p.muted);
-                    ui.label(if ok { k } else { k.strikethrough() });
-                    ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-                        ui.add(egui::Label::new(RichText::new(name).font(theme::font(12.5)).color(if ok { p.text } else { p.muted })).truncate());
-                    });
-                });
-            });
-            if !tip.is_empty() {
-                row.response.on_hover_text(tip);
-            }
-        }
+        // 還沒有事件：一行寫截圖的快速鍵（開始錄影的寫在按鈕上），其他的在設定裡
+        ui.add_space(8.0);
+        shortcut_line(app, ui);
     } else {
         // 事件紀錄：預設收起來，按標題展開；收起時標出還沒看過的警告與錯誤（只要一行，空間不夠時也顯示）
         ui.add_space(10.0);
@@ -1734,6 +1733,42 @@ fn rec_body(app: &mut UiApp, ui: &mut Ui, r: &screenrecorder_core::types::Record
     }
 }
 
+/// 快速鍵一行：框選截圖、截取錄影範圍的按鍵與「全部快速鍵…」；有不能用的時候標出來
+fn shortcut_line(app: &mut UiApp, ui: &mut Ui) {
+    let p = theme::pal(ui);
+    let works = app.env.hotkeys.map(|h| h.all());
+    let ok = |i: usize| works.is_some_and(|w| w.get(i).copied().unwrap_or(false));
+    // 常用的：開始 / 停止錄影、截圖（範圍）、框選截圖、暫停 / 繼續、回溯錄影
+    let broken = [0usize, 1, 2, 3, 6].iter().filter(|&&i| !app.keys.label(i).is_empty() && !ok(i)).count();
+    let parts: Vec<String> = [(3usize, tr!("框選", "Select")), (2, tr!("截取範圍", "Capture area"))]
+        .into_iter()
+        .filter(|(i, _)| ok(*i) && !app.keys.label(*i).is_empty())
+        .map(|(i, n)| format!("{} {n}", app.keys.label(i)))
+        .collect();
+    let mut open_keys = false;
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 6.0;
+        if !parts.is_empty() {
+            ui.label(RichText::new(parts.join(tr!("・", " · "))).font(theme::mono(12.0)).color(p.muted));
+        }
+        // 右邊：「全部快速鍵…」；有不能用的時候直接寫幾個不能用（點一下去換）
+        let tip = match works {
+            _ if broken == 0 => tr!("在「設定 → 快速鍵」查看與更換", "View and change them in Settings → Shortcuts"),
+            None => tr!("系統匣沒有啟動，全域快速鍵無法使用", "The tray icon isn't running, so global shortcuts don't work"),
+            Some(_) => tr!("被其他程式占用，點一下到「設定 → 快速鍵」換一組", "Used by another program. Click to choose a different one in Settings → Shortcuts"),
+        };
+        let label = if broken > 0 { trf!("{broken} 個快速鍵無法使用…", "{broken} shortcut(s) unavailable…") } else { tr!("全部快速鍵…", "All shortcuts…").to_string() };
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            if Btn::new(label).ghost().small().tooltip(tip).show(ui).clicked() {
+                open_keys = true;
+            }
+        });
+    });
+    if open_keys {
+        settings_dialog::open(app, Page::Keys);
+    }
+}
+
 /// 截圖的方式（截圖那一列的按鈕與選單、系統匣的「截圖」選單相同的項目與順序）
 #[derive(Clone, PartialEq)]
 pub(super) enum ShotAct {
@@ -1753,7 +1788,7 @@ pub(super) enum ShotAct {
     Pen,
 }
 
-/// 截圖那一列：「框選截圖」「整個範圍」與更多的小箭頭（按右鍵也有同一個選單）
+/// 截圖那一列：「框選截圖」「截取錄影範圍」與更多的小箭頭（按右鍵也有同一個選單）；下面一行寫快速鍵
 fn shot_row(app: &mut UiApp, ui: &mut Ui) {
     let found = app.env.ffmpeg.found;
     let can = found && !app.main.shooting;
@@ -1782,7 +1817,7 @@ fn shot_row(app: &mut UiApp, ui: &mut Ui) {
         let arrow_w = 34.0;
         let w = ui.available_width() - arrow_w - 8.0;
         let select = Btn::new(tr!("框選截圖", "Select area")).icon(Icon::Camera).enabled(can).tooltip(select_tip).min_width((w * 0.55).floor()).show(ui);
-        let area = Btn::new(tr!("整個範圍", "Whole area")).enabled(can).tooltip(area_tip).min_width(ui.available_width() - arrow_w - 4.0).show(ui);
+        let area = Btn::new(tr!("截取錄影範圍", "Capture area")).enabled(can).tooltip(area_tip).min_width(ui.available_width() - arrow_w - 4.0).show(ui);
         let arrow = Btn::icon_only(Icon::ChevD)
             .enabled(can)
             .tooltip(if found {
@@ -2476,7 +2511,7 @@ pub fn ask_update(app: &mut UiApp, u: &screenrecorder_core::types::UpdateInfo) {
 
 // ───────────── 最近錄影 ─────────────
 
-/// 「全部錄影」「全部截圖」按鈕的最小寬度
+/// 「檔案庫」那一塊的最小寬度
 const LIB_BTN_W: f32 = 120.0;
 
 fn recent_strip(app: &mut UiApp, ui: &mut Ui) {
@@ -2500,13 +2535,15 @@ fn recent_strip(app: &mut UiApp, ui: &mut Ui) {
                 app.load_recent();
             }
             // 一頁放幾張依寬度決定
-            // 右邊「全部錄影」「全部截圖」：一樣寬，圖示與文字靠左對齊
-            let rec_btn = Btn::new(tr!("全部錄影", "All recordings")).icon(Icon::Video).small().left();
-            let shot_btn = Btn::new(tr!("全部截圖", "All screenshots")).icon(Icon::Camera).small().left();
-            let btn_w = rec_btn.width(ui).max(shot_btn.width(ui)).max(LIB_BTN_W);
-            let lib_w = btn_w + 8.0;
+            // 右邊「檔案庫」：錄影、截圖兩個按鈕放在一起（點哪個直接開那一頁，一步就到）
+            let rec_btn = Btn::new(tr!("錄影", "Videos")).icon(Icon::Video).small().tooltip(tr!("全部錄影：搜尋、整理、合併、一次處理", "All recordings: search, organize, merge, batch process"));
+            let shot_btn =
+                Btn::new(tr!("截圖", "Screenshots")).icon(Icon::Camera).small().tooltip(tr!("全部截圖：用圖裡的字搜尋、整理、拼圖", "All screenshots: search by text in images, organize, combine"));
+            let btn_w = rec_btn.width(ui) + shot_btn.width(ui) + 4.0;
+            let lib_w = btn_w.max(LIB_BTN_W) + 8.0;
             let cards_w = ui.available_width() - lib_w - 44.0;
-            let card_w = 280.0;
+            // 下面一排 6 個小圖示（播放、剪輯、製作、傳到媒體庫、資料夾、⋯）要放得下
+            let card_w = 300.0;
             let per = ((cards_w + 10.0) / (card_w + 10.0)).floor().clamp(1.0, 8.0) as usize;
             // 卡片平均分配寬度（填滿這一列）
             let card_w = ((cards_w - 8.0 * (per as f32 - 1.0)) / per as f32).clamp(card_w, 360.0);
@@ -2519,9 +2556,13 @@ fn recent_strip(app: &mut UiApp, ui: &mut Ui) {
                 ui.horizontal_centered(|ui| {
                     if items.is_empty() {
                         let dir = app.s.out_dir(&app.env);
-                        // 路徑很長時截斷（滑鼠提示有完整內容），不蓋到右邊的按鈕
-                        let text = trf!("「{dir}」還沒有錄影，按「開始錄影」試試看。", "No recordings in “{dir}” yet. Click “Start recording” to try it.");
-                        ui.add(egui::Label::new(theme::muted(ui, &text)).truncate()).on_hover_text(&text);
+                        // 只寫資料夾名稱（完整路徑在滑鼠提示）；太長時截斷，不蓋到右邊的按鈕
+                        let name = std::path::Path::new(&dir).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| dir.clone());
+                        let text = trf!(
+                            "還沒有錄影。按「開始錄影」錄第一支，錄好會出現在這裡（存在「{name}」資料夾）。",
+                            "No recordings yet. Click “Start recording” to make your first one; it will show up here (saved in the “{name}” folder)."
+                        );
+                        ui.add(egui::Label::new(theme::muted(ui, &text)).truncate()).on_hover_text(&dir);
                     }
                     let dates = date_labels(items.iter().map(|e| (e.media.name.as_str(), e.media.time_ms())));
                     for e in &items {
@@ -2530,15 +2571,19 @@ fn recent_strip(app: &mut UiApp, ui: &mut Ui) {
                 });
             });
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                // 錄影與截圖分開看
-                ui.allocate_ui_with_layout(vec2(btn_w, 64.0), Layout::top_down(Align::Max), |ui| {
-                    ui.spacing_mut().item_spacing.y = 6.0;
-                    if rec_btn.min_width(btn_w).show(ui).clicked() {
-                        app.library = Some(super::library_dialog::LibraryDialog::new(super::library_dialog::Kind::Video));
-                    }
-                    if shot_btn.min_width(btn_w).show(ui).clicked() {
-                        app.library = Some(super::library_dialog::LibraryDialog::new(super::library_dialog::Kind::Shot));
-                    }
+                // 檔案庫：上面一行標題，下面錄影、截圖並排
+                ui.allocate_ui_with_layout(vec2(btn_w.max(LIB_BTN_W), 56.0), Layout::top_down(Align::Min), |ui| {
+                    ui.spacing_mut().item_spacing.y = 4.0;
+                    ui.label(RichText::new(tr!("檔案庫", "Library")).font(theme::font_bold(12.5)).color(p.muted));
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 4.0;
+                        if rec_btn.show(ui).clicked() {
+                            app.library = Some(super::library_dialog::LibraryDialog::new(super::library_dialog::Kind::Video));
+                        }
+                        if shot_btn.show(ui).clicked() {
+                            app.library = Some(super::library_dialog::LibraryDialog::new(super::library_dialog::Kind::Shot));
+                        }
+                    });
                 });
                 if Btn::icon_only(Icon::ChevR).ghost().small().enabled(app.recent_page < pages).tooltip(tr!("較舊的錄影", "Older recordings")).show(ui).clicked() {
                     app.recent_page += 1;
@@ -2546,7 +2591,6 @@ fn recent_strip(app: &mut UiApp, ui: &mut Ui) {
                 }
             });
         });
-        let _ = p;
     });
     tour::mark(ui, Spot::Recent, strip.response.rect);
 }

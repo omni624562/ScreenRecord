@@ -474,13 +474,13 @@ fn content(app: &UiApp, t: &Tour) -> (Option<Spot>, String, String, Go) {
             let has = app.recent.as_ref().is_some_and(|r| !r.items.is_empty());
             let body = if t.recorded && has {
                 tr!(
-                    "剛錄好的在這裡：點縮圖就播放，剪刀按鈕剪輯（剪掉頭尾、加標註），閃電按鈕製作加速版或 GIF，按右鍵還有複製檔案（直接貼到 LINE）、改名等。",
-                    "Your new recording is here: click the thumbnail to play it, the scissors to edit (trim, annotate), the lightning button to make a sped-up video or GIF, and right-click to copy the file (paste it into a chat), rename it and more."
+                    "剛錄好的在這裡。下面一排是：播放、剪輯（剪掉頭尾、加標註）、製作（加速版、GIF、壓縮）、傳到媒體庫；複製檔案、改名等其他功能在「⋯」，也可以按右鍵。",
+                    "Your new recording is here. The buttons below are Play, Edit (trim, annotate), Make (sped-up video, GIF, compress) and Send to library; copy file, rename and more are under ⋯ or a right-click."
                 )
             } else {
                 tr!(
-                    "錄好的影片會出現在這裡：點縮圖就播放，剪刀按鈕剪輯，閃電按鈕製作加速版或 GIF，按右鍵還有複製檔案、改名等。右邊「全部錄影」看以前錄的。",
-                    "Your recordings appear here: click a thumbnail to play it, the scissors to edit, the lightning button to make a sped-up video or GIF, and right-click to copy the file, rename it and more. “All recordings” on the right shows older ones."
+                    "錄好的影片會出現在這裡。下面一排是：播放、剪輯、製作（加速版、GIF、壓縮）、傳到媒體庫；其他功能在「⋯」，也可以按右鍵。右邊「全部錄影」看以前錄的。",
+                    "Your recordings appear here. The buttons below are Play, Edit, Make (sped-up video, GIF, compress) and Send to library; everything else is under ⋯ or a right-click. “All recordings” on the right shows older ones."
                 )
             };
             (Some(if has { Spot::RecentCard } else { Spot::Recent }), tr!("在「最近錄影」播放、剪輯", "Play and edit in “Recent recordings”").into(), body.into(), next())

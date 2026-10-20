@@ -550,6 +550,15 @@ fn head_buttons(app: &UiApp, e: &LibraryEntry, image: bool) -> Vec<HeadBtn> {
     for g in &groups {
         let mut first = true;
         for n in g.iter().filter(|n| !n.quick()) {
+            // 旋轉：向左轉、向右轉各一個圖示，一按就轉（180°、另存轉好的在卡片的「⋯」）
+            if let Node::Sub { items, .. } = n {
+                if items.iter().any(|i| i.action == EntryAction::RotateLeft) {
+                    for it in items.iter().filter(|i| matches!(i.action, EntryAction::RotateLeft | EntryAction::RotateRight)) {
+                        list.push(HeadBtn { icon_only: true, group: std::mem::take(&mut first), ..one(it) });
+                    }
+                    continue;
+                }
+            }
             list.push(HeadBtn { icon_only: true, group: std::mem::take(&mut first), ..node(n) });
         }
     }

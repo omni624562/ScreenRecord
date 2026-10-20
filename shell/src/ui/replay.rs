@@ -7,17 +7,10 @@ use eframe::egui::{self, RichText, Ui};
 use screenrecorder_core::replay::{length_label, LENGTHS};
 use screenrecorder_core::{tr, trf};
 
-/// 右上角的按鈕（沒在錄影時）：說明、選長度、開始
-pub fn button(app: &mut UiApp, ui: &mut Ui) {
-    let can = app.env.ffmpeg.found && app.env.ffmpeg.encoder.is_some() && app.manual_export().is_none();
-    let tip = tr!(
-        "回溯錄影：在背景一直錄、只保留最近幾分鐘，發生想留下的事時再存下來",
-        "Replay buffer: keeps recording in the background, holding only the last few minutes; save them when something worth keeping happens"
-    );
-    let tip = if app.env.ffmpeg.found { tip } else { tr!("請先下載錄影元件", "Download the recording component first") };
-    let resp = Btn::new(tr!("回溯錄影", "Replay")).icon(Icon::Rewind).ghost().small().enabled(can).tooltip(tip).show(ui);
+/// 回溯錄影的說明、保留長度、開始按鈕（主畫面「更多工具」的子選單也用這個）
+pub fn menu_body(app: &mut UiApp, ui: &mut Ui) {
     let mut start = false;
-    egui::Popup::menu(&resp).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
+    {
         let p = theme::pal(ui);
         ui.set_width(340.0);
         ui.spacing_mut().item_spacing.y = 6.0;
@@ -49,7 +42,7 @@ pub fn button(app: &mut UiApp, ui: &mut Ui) {
         if !key.is_empty() {
             ui.label(theme::muted(ui, trf!("快速鍵 {key}：開始，回溯錄影中再按就存下", "Shortcut {key}: start; press again while running to save")));
         }
-    });
+    }
     if start {
         let config = screenrecorder_core::types::RecordConfig { replay_sec: app.s.replay_sec, ..app.s.record_config(&app.env) };
         let core = app.core.clone();
