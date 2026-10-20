@@ -1,4 +1,4 @@
-//! 設定視窗：左邊分頁（錄影 / 聲音 / 儲存位置 / 錄完處理 / 快速鍵 / 進階 / 關於），右邊表單（標籤固定寬度，控制項對齊）。
+//! 設定視窗：左邊分頁（一般 / 錄影 / 聲音 / 截圖 / 存檔與分享 / 錄完自動處理 / 快速鍵 / 進階 / 外部元件 / 關於），右邊表單（標籤固定寬度，控制項對齊）。
 //! 主畫面下方只留摘要，點一下開到對應的分頁。
 
 use super::settings::{FPS_CHOICES, MAX_MB, MAX_PRESETS, UI_MIN_SIZE, UI_SCALES};
@@ -15,8 +15,13 @@ use std::time::Instant;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Page {
+    /// 語言、外觀、介面大小、開機、結束程式
+    General,
     Record,
     Audio,
+    /// 截圖後、框選截圖
+    Shots,
+    /// 錄影、截圖資料夾、清單、檔名，與媒體庫（NAS、Jellyfin）
     Save,
     /// 錄完自動處理
     After,
@@ -29,11 +34,13 @@ pub enum Page {
 }
 
 /// 分頁：中文名稱、英文名稱、圖示
-const PAGES: [(Page, &str, &str, Icon); 8] = [
+const PAGES: [(Page, &str, &str, Icon); 10] = [
+    (Page::General, "一般", "General", Icon::Window),
     (Page::Record, "錄影", "Recording", Icon::Video),
     (Page::Audio, "聲音", "Audio", Icon::Speaker),
-    (Page::Save, "儲存位置", "Save location", Icon::Folder),
-    (Page::After, "錄完處理", "After recording", Icon::Cut),
+    (Page::Shots, "截圖", "Screenshots", Icon::Camera),
+    (Page::Save, "存檔與分享", "Saving & sharing", Icon::Folder),
+    (Page::After, "錄完自動處理", "After recording", Icon::Cut),
     (Page::Keys, "快速鍵", "Shortcuts", Icon::Keyboard),
     (Page::Advanced, "進階", "Advanced", Icon::Settings),
     (Page::Components, "外部元件", "Components", Icon::Download),
@@ -135,7 +142,7 @@ pub fn audio_summary(app: &UiApp) -> (String, Icon) {
 }
 
 const NAV_W: f32 = 148.0;
-const BODY_W: f32 = 500.0;
+const BODY_W: f32 = 600.0;
 /// 內容區的高度（視窗太矮時縮短，內容可捲動）
 const BODY_H: f32 = 470.0;
 
@@ -169,8 +176,10 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         ui.painter().vline(nav.right(), nav.y_range(), Stroke::new(1.0, p.border));
         ui.scope_builder(UiBuilder::new().max_rect(nav.shrink2(vec2(10.0, 12.0))).layout(Layout::top_down(Align::Min)), |ui| {
             ui.spacing_mut().item_spacing.y = 2.0;
+            // 視窗矮的時候分頁矮一點，全部放得下
+            let h = (ui.available_height() / PAGES.len() as f32 - 2.0).clamp(26.0, 34.0);
             for (page, zh, en, icon) in PAGES {
-                if nav_item(ui, tr!(zh, en), icon, d.page == page).clicked() && d.page != page {
+                if nav_item(ui, tr!(zh, en), icon, d.page == page, h).clicked() && d.page != page {
                     d.page = page;
                 }
             }
@@ -191,12 +200,14 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                     ui.add_space(6.0);
                 }
                 ui.add_enabled_ui(!locked, |ui| match d.page {
+                    Page::General => general_page(app, &mut d, ui),
                     Page::Record => record_page(app, &mut d, ui),
                     Page::Audio => audio_page(app, &mut d, ui),
-                    Page::Save => save_page(app, ui),
+                    Page::Shots => shots_page(app, ui),
+                    Page::Save => save_page(app, &mut d, ui),
                     Page::After => after_record_section(app, &mut d, ui),
                     Page::Keys => keys_page(app, &mut d, ui),
-                    Page::Advanced => advanced_page(app, &mut d, ui),
+                    Page::Advanced => advanced_page(app, ui),
                     Page::Components => components_page(app, &mut d, ui),
                     Page::About => about_page(app, ui),
                 });
@@ -216,9 +227,9 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
 }
 
 /// 左邊的分頁項目
-fn nav_item(ui: &mut Ui, text: &str, icon: Icon, selected: bool) -> egui::Response {
+fn nav_item(ui: &mut Ui, text: &str, icon: Icon, selected: bool, h: f32) -> egui::Response {
     let p = theme::pal(ui);
-    let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 34.0), Sense::click());
+    let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), h), Sense::click());
     let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
     let bg = if selected {
         p.surface
@@ -229,7 +240,7 @@ fn nav_item(ui: &mut Ui, text: &str, icon: Icon, selected: bool) -> egui::Respon
     };
     ui.painter().rect_filled(r, CornerRadius::same(8), bg);
     if selected {
-        ui.painter().rect_filled(Rect::from_min_size(pos2(r.left(), r.top() + 9.0), vec2(3.0, 16.0)), CornerRadius::same(2), p.accent);
+        ui.painter().rect_filled(Rect::from_center_size(pos2(r.left() + 1.5, r.center().y), vec2(3.0, 16.0)), CornerRadius::same(2), p.accent);
     }
     let color = if selected { p.text } else { p.muted };
     theme::paint_icon(ui.painter(), Rect::from_center_size(pos2(r.left() + 22.0, r.center().y), vec2(16.0, 16.0)), icon, color);
@@ -615,10 +626,16 @@ fn record_page(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
         .to_string(),
     };
     form_hint(ui, hint, p.muted);
-    form_divider(ui);
+}
+
+// ───────────── 截圖 ─────────────
+
+fn shots_page(app: &mut UiApp, ui: &mut Ui) {
     form_section(ui, tr!("截圖", "Screenshots"), |_| {});
     form_row(ui, tr!("截圖後", "After capture"), |ui| {
         ui.vertical(|ui| {
+            ui.spacing_mut().item_spacing.y = 8.0;
+            ui.add_space(6.0);
             let mut pv = app.s.shot_preview;
             if switch(ui, &mut pv, tr!("右下角顯示小縮圖", "Show thumbnail in corner"), true)
                 .on_hover_text(tr!(
@@ -781,9 +798,9 @@ fn app_audio_row(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
     }
 }
 
-// ───────────── 儲存位置 ─────────────
+// ───────────── 存檔與分享 ─────────────
 
-fn save_page(app: &mut UiApp, ui: &mut Ui) {
+fn save_page(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
     let p = theme::pal(ui);
     // 錄影：標題列右邊「在檔案總管開啟」，下面資料夾，再下面一行說明（和「改回預設位置」）
     let dir = app.s.out_dir(&app.env);
@@ -857,6 +874,8 @@ fn save_page(app: &mut UiApp, ui: &mut Ui) {
         }
     }
     save_gap(ui);
+    library_section(app, d, ui, &mut open);
+    save_gap(ui);
     // 清單：子資料夾
     form_section(ui, tr!("清單", "Lists"), |_| {});
     let mut subdirs = app.s.list_subdirs;
@@ -900,6 +919,120 @@ fn save_page(app: &mut UiApp, ui: &mut Ui) {
     if let Some(d) = open {
         open_folder(app, &d);
     }
+}
+
+/// 媒體庫：NAS、Jellyfin 的媒體庫或雲端硬碟的同步資料夾。「傳到媒體庫」、錄完自動處理、剪輯另存好都傳到這裡；
+/// 填了 Jellyfin 的網址與 API 金鑰時，傳好就通知它掃描，影片資訊、改名、刪除也會同步過去
+fn library_section(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui, open: &mut Option<String>) {
+    let p = theme::pal(ui);
+    let dir = app.s.after_copy_to.clone();
+    form_section(ui, tr!("媒體庫", "Media library"), |ui| {
+        if !dir.is_empty() && Btn::new(tr!("在檔案總管開啟", "Open in File Explorer")).icon(Icon::Folder).small().ghost().show(ui).clicked() {
+            *open = Some(dir.clone());
+        }
+    });
+    if folder_row(ui, &dir, "save-library") {
+        pick_copy_dir(app, false);
+    }
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        let text = if dir.is_empty() {
+            tr!("選了之後，錄影卡片的「傳到媒體庫」一按就複製過去（連同字幕）", "Once chosen, “Send to library” on a recording copies it there (with subtitles)")
+        } else {
+            tr!("「傳到媒體庫」複製到這裡（同名的覆蓋，連同字幕）", "“Send to library” copies here (replacing one with the same name, with subtitles)")
+        };
+        ui.add(egui::Label::new(RichText::new(text).font(theme::font(12.0)).color(p.muted)).wrap());
+        if !dir.is_empty() && Btn::new(tr!("不用媒體庫", "Stop using")).small().ghost().show(ui).clicked() {
+            app.s.after_copy_to.clear();
+            app.save_settings();
+        }
+    });
+    if dir.is_empty() {
+        ui.add(
+            egui::Label::new(
+                RichText::new(tr!(
+                    "例如 \\\\伺服器\\videos（Jellyfin 的媒體庫）、NAS，或 OneDrive、Google 雲端硬碟的同步資料夾（由同步軟體上傳，不用另外登入）。",
+                    "For example \\\\server\\videos (a Jellyfin library), a NAS, or a OneDrive / Google Drive sync folder (the sync app uploads them; no extra sign-in)."
+                ))
+                .font(theme::font(12.0))
+                .color(p.muted),
+            )
+            .wrap(),
+        );
+        return;
+    }
+    ui.add_space(4.0);
+    if theme::check(ui, &mut app.s.after_copy, tr!("錄完自動處理好之後也傳過去", "Also send new recordings after processing"))
+        .on_hover_text(tr!("和「錄完自動處理 → 媒體庫」是同一個設定", "Same setting as After recording → Library"))
+        .changed()
+    {
+        app.save_settings();
+    }
+    if theme::check(ui, &mut app.s.copy_exports, tr!("剪輯、加速版另存好也傳過去", "Also send edited and sped-up copies"))
+        .on_hover_text(tr!(
+            "剪輯、加速版、壓縮、合併另存好之後，也複製到這個資料夾（同名的覆蓋），有設定 Jellyfin 時通知它",
+            "After an edited, sped-up, compressed or merged copy is saved, copy it to this folder too (replacing one with the same name) and notify Jellyfin if set up"
+        ))
+        .changed()
+    {
+        app.save_settings();
+    }
+    ui.add_space(6.0);
+    // Jellyfin：傳到它的媒體庫資料夾後，通知它馬上掃描
+    form_row(ui, "Jellyfin", |ui| {
+        let r = ui.add(egui::TextEdit::singleline(&mut app.s.jellyfin_url).desired_width(FORM_CTRL_W).hint_text(tr!("網址，例如 192.168.1.10:8096", "Address, e.g. 192.168.1.10:8096")));
+        if r.changed() {
+            d.jf_result = None;
+            app.save_settings();
+        }
+    });
+    form_row(ui, tr!("API 金鑰", "API key"), |ui| {
+        let r = ui.add(egui::TextEdit::singleline(&mut app.s.jellyfin_key).password(true).desired_width(FORM_CTRL_W).hint_text(tr!("Jellyfin 控制台 → API 金鑰", "Jellyfin Dashboard → API Keys")));
+        if r.changed() {
+            d.jf_result = None;
+            app.save_settings();
+        }
+    });
+    let jf = screenrecorder_core::jellyfin::Jellyfin::new(&app.s.jellyfin_url, &app.s.jellyfin_key);
+    form_row(ui, "", |ui| {
+        let label = if d.jf_testing { tr!("測試中…", "Testing…") } else { tr!("測試連線", "Test connection") };
+        if Btn::new(label).small().enabled(jf.is_some() && !d.jf_testing).show(ui).clicked() {
+            if let Some(jf) = jf.clone() {
+                d.jf_testing = true;
+                d.jf_result = None;
+                app.spawn(async move { tokio::task::spawn_blocking(move || jf.test()).await.unwrap_or_else(|e| Err(e.to_string())) }, |app, r| {
+                    if let Some(d) = &mut app.settings_dlg {
+                        d.jf_testing = false;
+                        d.jf_result = Some(r);
+                    }
+                });
+            }
+        }
+        match &d.jf_result {
+            Some(Ok(name)) => {
+                ui.label(RichText::new(trf!("已連上 {}", "Connected to {}", name)).font(theme::font(12.5)).color(p.ok));
+            }
+            Some(Err(e)) => {
+                ui.add(egui::Label::new(RichText::new(e).font(theme::font(12.5)).color(p.rec)).wrap());
+            }
+            None => {}
+        }
+    });
+    form_hint(
+        ui,
+        if jf.is_some() {
+            tr!(
+                "傳好之後會通知 Jellyfin 掃描，新影片馬上出現；影片資訊、改名、刪除也會同步過去。",
+                "Jellyfin is told to scan right after sending, so new videos show up at once; video details, renames and deletions are synced too."
+            )
+        } else {
+            tr!(
+                "這個資料夾是 Jellyfin 的媒體庫時，填這兩個就會在傳好之後通知它掃描（不填就等 Jellyfin 定時掃描）。",
+                "If this folder is a Jellyfin library, fill these in to have it scan right after sending (otherwise Jellyfin finds them on its next scheduled scan)."
+            )
+        },
+        p.muted,
+    );
 }
 
 /// 影片格式：H.264（預設）、HEVC、AV1；HEVC / AV1 要這台電腦的顯示卡支援
@@ -1006,19 +1139,21 @@ fn short_dir(dir: &str) -> String {
     std::path::Path::new(dir).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| dir.to_string())
 }
 
-/// 選「錄完複製到」的資料夾（不能是儲存位置本身或它裡面，否則複製的檔案會出現在清單裡）
-fn pick_copy_dir(app: &mut UiApp) {
+/// 選媒體庫資料夾（不能是儲存位置本身或它裡面，否則複製的檔案會出現在清單裡）；
+/// enable = 同時打開「錄完處理好之後傳過去」（從錄完自動處理打開開關時）
+fn pick_copy_dir(app: &mut UiApp, enable: bool) {
     app.spawn(
-        async move {
-            tokio::task::spawn_blocking(|| screenrecorder_core::filepick::pick_folder(tr!("選擇錄完要複製到的資料夾", "Choose the folder to copy recordings to"), None)).await.unwrap_or(Ok(None))
-        },
-        |app, r| match r {
+        async move { tokio::task::spawn_blocking(|| screenrecorder_core::filepick::pick_folder(tr!("選擇媒體庫資料夾", "Choose the library folder"), None)).await.unwrap_or(Ok(None)) },
+        move |app, r| match r {
             Ok(Some(dir)) => {
                 let out = std::path::PathBuf::from(app.s.out_dir(&app.env));
                 if screenrecorder_core::paths::inside(&dir, &out) {
                     return app.toast(tr!("不能選儲存位置本身或它裡面的資料夾", "You can't choose the save folder or a folder inside it"), true);
                 }
                 app.s.after_copy_to = dir.display().to_string();
+                if enable {
+                    app.s.after_copy = true;
+                }
                 app.save_settings();
             }
             Ok(None) => {}
@@ -1076,14 +1211,21 @@ fn folder_row(ui: &mut Ui, dir: &str, id: &str) -> bool {
             // 太長時保留結尾（資料夾名稱比較重要）
             let room = rect.width() - 40.0;
             let fits = |t: &str| ui.painter().layout_no_wrap(t.to_string(), theme::font(13.0), p.text).size().x <= room;
-            let shown = if fits(dir) {
-                dir.to_string()
+            let (shown, color) = if dir.is_empty() {
+                (tr!("還沒選資料夾", "No folder chosen").to_string(), p.muted)
+            } else if fits(dir) {
+                (dir.to_string(), p.text)
             } else {
                 let chars: Vec<char> = dir.chars().collect();
-                (1..chars.len()).map(|i| format!("…{}", chars[i..].iter().collect::<String>())).find(|t| fits(t)).unwrap_or_default()
+                ((1..chars.len()).map(|i| format!("…{}", chars[i..].iter().collect::<String>())).find(|t| fits(t)).unwrap_or_default(), p.text)
             };
-            ui.painter().text(pos2(rect.min.x + 32.0, rect.center().y), egui::Align2::LEFT_CENTER, shown, theme::font(13.0), p.text);
-            if resp.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(trf!("{dir}\n點一下選擇其他資料夾", "{dir}\nClick to choose another folder")).clicked() {
+            ui.painter().text(pos2(rect.min.x + 32.0, rect.center().y), egui::Align2::LEFT_CENTER, shown, theme::font(13.0), color);
+            let tip = if dir.is_empty() {
+                tr!("點一下選擇資料夾", "Click to choose a folder").to_string()
+            } else {
+                trf!("{dir}\n點一下選擇其他資料夾", "{dir}\nClick to choose another folder")
+            };
+            if resp.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(tip).clicked() {
                 choose = true;
             }
             if btn.show(ui).clicked() {
@@ -1379,99 +1521,38 @@ fn after_record_section(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
             app.save_settings();
         }
     });
-    // 複製到資料夾：雲端硬碟（OneDrive、Google 雲端硬碟）的同步資料夾或 NAS，由同步軟體上傳
-    form_row(ui, tr!("複製", "Copy"), |ui| {
-        let mut on = !app.s.after_copy_to.is_empty();
-        let label = if on { trf!("複製到「{}」", "Copy to “{}”", short_dir(&app.s.after_copy_to)) } else { tr!("處理完複製到資料夾", "Copy to a folder when done").to_string() };
-        let r = switch(ui, &mut on, label, true).on_hover_text(if app.s.after_copy_to.is_empty() {
-            tr!(
-                "錄影、處理好的版本和字幕都複製一份到另一個資料夾，例如 OneDrive、Google 雲端硬碟的同步資料夾或 NAS（由同步軟體上傳，不用另外登入）",
-                "Copy the recording, processed versions and subtitles to another folder, such as a OneDrive or Google Drive sync folder or a NAS (the sync app uploads them; no extra sign-in)"
-            )
-            .to_string()
+    // 媒體庫：資料夾和 Jellyfin 在「存檔與分享」，這裡只決定錄完要不要傳過去；還沒選資料夾時打開就選
+    form_row(ui, tr!("媒體庫", "Library"), |ui| {
+        let has = !app.s.after_copy_to.is_empty();
+        let mut on = has && app.s.after_copy;
+        let label = if has {
+            trf!("處理完傳到「{}」", "Send to “{}” when done", short_dir(&app.s.after_copy_to))
         } else {
-            app.s.after_copy_to.clone()
-        });
+            tr!("處理完傳到媒體庫", "Send to the library when done").to_string()
+        };
+        let r = switch(ui, &mut on, label, true).on_hover_text(tr!(
+            "錄影、處理好的版本和字幕都複製一份到媒體庫資料夾，例如 NAS、Jellyfin 的媒體庫或 OneDrive、Google 雲端硬碟的同步資料夾（同名時加上 _2，不覆蓋）",
+            "Copy the recording, processed versions and subtitles to the library folder, such as a NAS, a Jellyfin library or a OneDrive / Google Drive sync folder (a _2 is added instead of overwriting)"
+        ));
         if r.changed() {
-            if on {
-                pick_copy_dir(app);
+            if on && !has {
+                pick_copy_dir(app, true);
             } else {
-                app.s.after_copy_to.clear();
+                app.s.after_copy = on;
                 app.save_settings();
             }
         }
-        if !app.s.after_copy_to.is_empty() && Btn::new(tr!("換資料夾…", "Change…")).small().ghost().show(ui).clicked() {
-            pick_copy_dir(app);
-        }
     });
-    if !app.s.after_copy_to.is_empty() {
-        form_row(ui, "", |ui| {
-            let r = switch(ui, &mut app.s.copy_exports, tr!("剪輯、加速版另存好也傳過去", "Also send edited and sped-up copies"), true).on_hover_text(tr!(
-                "剪輯、加速版、壓縮、合併另存好之後，也複製到這個資料夾（同名的覆蓋），有設定 Jellyfin 時通知它。其他檔案可以在錄影卡片的「⋯」選單按「傳到…」",
-                "After an edited, sped-up, compressed or merged copy is saved, copy it to this folder too (replacing one with the same name) and notify Jellyfin if set up. For other files, use “Send to…” in a recording card's ⋯ menu"
-            ));
-            if r.changed() {
-                app.save_settings();
-            }
-        });
-    }
-    // Jellyfin：複製到它的媒體庫資料夾後，通知它馬上掃描
-    form_row(ui, "Jellyfin", |ui| {
-        let r = ui.add(egui::TextEdit::singleline(&mut app.s.jellyfin_url).desired_width(FORM_CTRL_W).hint_text(tr!("網址，例如 192.168.1.10:8096", "Address, e.g. 192.168.1.10:8096")));
-        if r.changed() {
-            d.jf_result = None;
-            app.save_settings();
-        }
-    });
-    form_row(ui, tr!("API 金鑰", "API key"), |ui| {
-        let r = ui.add(egui::TextEdit::singleline(&mut app.s.jellyfin_key).password(true).desired_width(FORM_CTRL_W).hint_text(tr!("Jellyfin 控制台 → API 金鑰", "Jellyfin Dashboard → API Keys")));
-        if r.changed() {
-            d.jf_result = None;
-            app.save_settings();
-        }
-    });
-    let jf = screenrecorder_core::jellyfin::Jellyfin::new(&app.s.jellyfin_url, &app.s.jellyfin_key);
     form_row(ui, "", |ui| {
-        let label = if d.jf_testing { tr!("測試中…", "Testing…") } else { tr!("測試連線", "Test connection") };
-        if Btn::new(label).small().enabled(jf.is_some() && !d.jf_testing).show(ui).clicked() {
-            if let Some(jf) = jf.clone() {
-                d.jf_testing = true;
-                d.jf_result = None;
-                app.spawn(async move { tokio::task::spawn_blocking(move || jf.test()).await.unwrap_or_else(|e| Err(e.to_string())) }, |app, r| {
-                    if let Some(d) = &mut app.settings_dlg {
-                        d.jf_testing = false;
-                        d.jf_result = Some(r);
-                    }
-                });
-            }
-        }
-        match &d.jf_result {
-            Some(Ok(name)) => {
-                ui.label(RichText::new(trf!("已連上 {}", "Connected to {}", name)).font(theme::font(12.5)).color(p.ok));
-            }
-            Some(Err(e)) => {
-                ui.add(egui::Label::new(RichText::new(e).font(theme::font(12.5)).color(p.rec)).wrap());
-            }
-            None => {}
+        let text = if app.s.after_copy_to.is_empty() {
+            tr!("媒體庫資料夾和 Jellyfin 在「存檔與分享」設定", "Set the library folder and Jellyfin in Saving & sharing")
+        } else {
+            tr!("換資料夾、設定 Jellyfin：「存檔與分享」", "Change the folder or set up Jellyfin in Saving & sharing")
+        };
+        if Btn::new(text).small().ghost().icon(Icon::Folder).show(ui).clicked() {
+            d.page = Page::Save;
         }
     });
-    form_hint(
-        ui,
-        if app.s.after_copy_to.is_empty() {
-            tr!(
-                "「複製」選 Jellyfin 媒體庫的資料夾（例如 \\\\伺服器\\videos），再填這兩個，複製好就會通知 Jellyfin 掃描，新影片馬上出現。",
-                "Set “Copy” to a Jellyfin library folder (e.g. \\\\server\\videos) and fill these in: Jellyfin is told to scan right after copying, so new videos show up at once."
-            )
-        } else if jf.is_some() {
-            tr!("複製好之後會通知 Jellyfin 掃描，新影片馬上出現。", "Jellyfin is told to scan right after copying, so new videos show up at once.")
-        } else {
-            tr!(
-                "「複製」的資料夾是 Jellyfin 的媒體庫時，填這兩個就會在複製好之後通知它掃描（不填就等 Jellyfin 定時掃描）。",
-                "If the “Copy” folder is a Jellyfin library, fill these in to have it scan right after copying (otherwise Jellyfin finds them on its next scheduled scan)."
-            )
-        },
-        p.muted,
-    );
     form_hint(
         ui,
         tr!(
@@ -1482,9 +1563,9 @@ fn after_record_section(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
     );
 }
 
-// ───────────── 進階 ─────────────
+// ───────────── 一般 ─────────────
 
-fn advanced_page(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
+fn general_page(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
     let p = theme::pal(ui);
     form_section(ui, tr!("介面", "Interface"), |_| {});
     // 兩種語言都寫，選錯語言時也找得到
@@ -1537,6 +1618,8 @@ fn advanced_page(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
     } else {
         form_hint(ui, tr!("字和按鈕放大一點比較好看清楚。", "Larger text and buttons are easier to read."), p.muted);
     }
+    form_divider(ui);
+    form_section(ui, tr!("程式", "App"), |_| {});
     // 開機時自動啟動（與系統匣選單的同一個設定）：第一次看到時讀取
     if d.autostart.is_none() && !d.autostart_busy {
         d.autostart_busy = true;
@@ -1574,7 +1657,7 @@ fn advanced_page(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
     if d.autostart == Some(None) {
         form_hint(ui, tr!("開發版不能設定開機自動啟動。", "Start with Windows can't be set in development builds."), p.muted);
     }
-    form_row(ui, tr!("程式", "App"), |ui| {
+    form_row(ui, tr!("結束", "Quit"), |ui| {
         if Btn::new(tr!("結束程式", "Quit"))
             .small()
             .tooltip(tr!("完全結束螢幕錄影（關掉視窗只是收到系統匣）", "Quit Screen Recorder completely (closing the window only hides it in the tray)"))
@@ -1584,7 +1667,12 @@ fn advanced_page(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
             app.request_quit();
         }
     });
-    form_divider(ui);
+}
+
+// ───────────── 進階 ─────────────
+
+fn advanced_page(app: &mut UiApp, ui: &mut Ui) {
+    let p = theme::pal(ui);
     form_section(ui, tr!("擷取與編碼", "Capture and encoding"), |_| {});
     form_row(ui, tr!("擷取方式", "Capture method"), |ui| {
         let mut method = app.s.method;

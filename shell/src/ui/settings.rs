@@ -145,10 +145,12 @@ pub struct UiSettings {
     pub after_subs_en: bool,
     /// 錄完另存加速版（幾倍；0 = 不做；一次處理多支也用這個當預設）
     pub after_speed: u32,
-    /// 錄完處理後複製到這個資料夾（core::after_record 讀這個欄位）
+    /// 媒體庫資料夾（NAS、Jellyfin 媒體庫、雲端硬碟的同步資料夾；core::after_record 讀這個欄位）
     #[serde(skip_serializing_if = "String::is_empty")]
     pub after_copy_to: String,
-    /// 剪輯、加速版、壓縮另存好之後也傳到「複製」的資料夾（有設定資料夾時）
+    /// 錄完處理好之後複製到媒體庫資料夾（core::after_record 讀這個欄位）
+    pub after_copy: bool,
+    /// 剪輯、加速版、壓縮另存好之後也傳到媒體庫資料夾（有設定資料夾時）
     pub copy_exports: bool,
     /// 檢視器播放大影片時不再提示下載 mpv 播放元件
     pub mpv_hint_off: bool,
@@ -351,6 +353,9 @@ impl UiSettings {
             after_subs_en: boolean("afterSubsEn").unwrap_or(false),
             after_speed: num("afterSpeed").map(|v| v as u32).filter(|v| screenrecorder_core::edit::FAST_SPEEDS.contains(v)).unwrap_or(0),
             after_copy_to: o.get(screenrecorder_core::after_record::COPY_KEY).and_then(Value::as_str).unwrap_or("").trim().to_string(),
+            // 舊版選了「複製」的資料夾就是錄完要複製
+            after_copy: boolean(screenrecorder_core::after_record::COPY_ON_KEY)
+                .unwrap_or_else(|| o.get(screenrecorder_core::after_record::COPY_KEY).and_then(Value::as_str).is_some_and(|d| !d.trim().is_empty())),
             jellyfin_url: o.get(screenrecorder_core::jellyfin::URL_KEY).and_then(Value::as_str).unwrap_or("").trim().to_string(),
             jellyfin_key: o.get(screenrecorder_core::jellyfin::API_KEY).and_then(Value::as_str).unwrap_or("").trim().to_string(),
             name_rule: o.get(screenrecorder_core::after_record::NAME_RULE_KEY).and_then(Value::as_str).unwrap_or("").chars().take(120).collect(),
@@ -633,6 +638,12 @@ mod tests {
         assert!(!screenrecorder_core::after_record::AfterRecord::from_ui(Some(&s.to_value())).any());
         (s.after_idle_cut, s.after_subs, s.after_subs_lang, s.after_compress_mb, s.after_auto_name) = (true, true, 1, 25, true);
         s.after_copy_to = "D:\\Sync".into();
+        // 舊版的設定（選了「複製」的資料夾、沒有 afterCopy）：照舊錄完複製
+        let old = UiSettings::from_saved(Some(&serde_json::json!({ "afterCopyTo": "D:\\Sync" })), &env());
+        assert!(old.after_copy && screenrecorder_core::after_record::AfterRecord::from_ui(Some(&old.to_value())).copy_to == "D:\\Sync");
+        // 只選了媒體庫資料夾：錄完不複製
+        assert!(screenrecorder_core::after_record::AfterRecord::from_ui(Some(&s.to_value())).copy_to.is_empty());
+        s.after_copy = true;
         s.after_speed = 4;
         let a = screenrecorder_core::after_record::AfterRecord::from_ui(Some(&s.to_value()));
         // 加速版：錄完自動處理與一次處理多支共用
