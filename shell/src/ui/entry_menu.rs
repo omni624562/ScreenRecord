@@ -85,7 +85,19 @@ pub fn groups(app: &UiApp, e: &LibraryEntry, place: Place) -> Vec<Vec<Node>> {
     let mut look = vec![];
     match place {
         Place::Home => {
-            look.push(one(item(EntryAction::PlayHere, tr!("播放", "Play"), Some(Icon::Play), tr!("在這裡播放（點兩下卡片：在播放器開啟）", "Play here (double-click the card to open in the player)"))))
+            look.push(one(item(
+                EntryAction::PlayHere,
+                tr!("播放", "Play"),
+                Some(Icon::Play),
+                tr!("在這裡播放（點兩下卡片：在播放器開啟）", "Play here (double-click the card to open in the player)"),
+            )));
+            // 「⋯」裡也列出來（只靠點兩下卡片，第一次用的人找不到）
+            look.push(one(item(
+                EntryAction::Play,
+                tr!("在播放器開啟", "Open in player"),
+                Some(Icon::Fullscreen),
+                tr!("用大的播放器看：拖曳進度、調速度、擷取這一格（也可以點兩下卡片）", "Watch in the full player: seek, change speed, grab a frame (or double-click the card)"),
+            )));
         }
         Place::Library => look.push(one(item(EntryAction::Play, tr!("播放", "Play"), Some(Icon::Play), tr!("播放（Enter）", "Play (Enter)")))),
         Place::Viewer => {}

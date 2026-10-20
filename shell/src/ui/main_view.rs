@@ -1277,9 +1277,17 @@ fn more_tools(app: &mut UiApp, ui: &mut Ui, active: bool) {
         ui.set_min_width(220.0);
         if !active {
             let can = app.env.ffmpeg.found && app.env.ffmpeg.encoder.is_some() && app.manual_export().is_none();
+            // 不能用時寫出原因（還沒下載錄影元件、轉檔中）
+            let why = if !(app.env.ffmpeg.found && app.env.ffmpeg.encoder.is_some()) {
+                tr!("請先下載錄影元件", "Download the recording component first")
+            } else {
+                tr!("轉檔中，完成後再開始", "Wait for the conversion to finish")
+            };
             ui.add_enabled_ui(can, |ui| {
                 ui.menu_button(tr!("回溯錄影（錄最近幾分鐘）", "Replay buffer (last few minutes)"), |ui| super::replay::menu_body(app, ui));
-            });
+            })
+            .response
+            .on_disabled_hover_text(why);
             if ui
                 .button(tr!("排程錄影…", "Schedule recording…"))
                 .on_hover_text(tr!("指定時間自動開始錄影，也可以設定錄幾分鐘後自動停止", "Start recording automatically at a set time, optionally stopping after a set length"))
