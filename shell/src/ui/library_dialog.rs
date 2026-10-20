@@ -1513,7 +1513,7 @@ fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table:
             }
             // 已經傳到媒體庫（NAS 上有同名同大小的一份）：標出在哪個資料夾
             if let Some(at) = app.library_where(&e.media.path, e.media.bytes) {
-                library_mark(tui, &at);
+                library_chip(tui, app, &at);
             }
             if fresh {
                 if Btn::new(tr!("播放", "Play")).icon(Icon::Play).primary().small().show(tui).clicked() {
@@ -1780,11 +1780,15 @@ pub fn no_audio_mark(ui: &mut egui::Ui) -> egui::Response {
     resp.on_hover_text(tr!("沒有聲音", "No audio"))
 }
 
-/// 已在媒體庫：綠色勾勾，滑鼠移上去寫在哪個資料夾
-pub fn library_mark(ui: &mut egui::Ui, at: &[String]) -> egui::Response {
-    let (r, resp) = ui.allocate_exact_size(vec2(16.0, 16.0), Sense::hover());
-    theme::paint_icon(ui.painter(), r, Icon::Check, theme::pal(ui).ok);
-    resp.on_hover_text(trf!("已在媒體庫：{}", "Already in the library: {}", at.join(tr!("、", ", "))))
+/// 已在媒體庫（NAS 上有同名同大小的一份）：綠色標籤，有設定 Jellyfin 時寫「Jellyfin」，滑鼠移上去寫在哪個資料夾
+pub fn library_chip(ui: &mut egui::Ui, app: &UiApp, at: &[String]) -> egui::Response {
+    let jellyfin = screenrecorder_core::jellyfin::Jellyfin::new(&app.s.jellyfin_url, &app.s.jellyfin_key).is_some();
+    let (text, tip) = if jellyfin {
+        ("Jellyfin", trf!("已傳到 Jellyfin 的媒體庫：{}", "Already in the Jellyfin library: {}", at.join(tr!("、", ", "))))
+    } else {
+        (tr!("媒體庫", "Library"), trf!("已傳到媒體庫：{}", "Already in the library: {}", at.join(tr!("、", ", "))))
+    };
+    chip(ui, &format!("✓ {text}"), Tone::Ok, false).on_hover_text(tip)
 }
 
 pub fn audio_mark(ui: &mut egui::Ui) -> egui::Response {
