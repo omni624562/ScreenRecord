@@ -38,28 +38,28 @@ enum Try {
 fn items(_app: &UiApp) -> Vec<(String, String, Try)> {
     vec![
         (
-            tr!("傳到媒體庫：選要放進哪個子資料夾", "Send to library: pick a subfolder").into(),
+            tr!("自動找到 Jellyfin", "Find Jellyfin automatically").into(),
             tr!(
-                "媒體庫設在 NAS 的上一層（例如 video），按「傳到媒體庫」時像檔案總管一樣一層層點進去（例如 video › family › 2024），到了再按「傳到這裡」；會從上次用的那一層開始，也可以新增資料夾。勾選多支可以一起傳。",
-                "Set the library to the top folder on your NAS (such as video); “Send to library” lets you open folders one level at a time (e.g. video › family › 2024) and send to the one you're in. It starts where you were last time, and you can create a folder. Select several to send them together."
+                "「設定 → 存檔與分享」的 Jellyfin 網址旁邊多了「尋找」：在區域網路上找伺服器，找到就填好網址。測試連線時也會看媒體庫的類型，建議用「家庭影片和照片」，錄影才不會被當成電影配錯封面。",
+                "Settings → Saving & sharing has a new “Find” button next to the Jellyfin address: it looks for the server on your network and fills it in. Test connection also checks the library type and suggests “Home Videos and Photos” so recordings don't get matched like films."
             )
             .into(),
             Try::Settings(Page::Save),
         ),
         (
-            tr!("錄完自動傳到固定的資料夾", "Automatic sends go to one folder").into(),
+            tr!("傳好幾秒就出現在 Jellyfin", "Shows up in Jellyfin in seconds").into(),
             tr!(
-                "錄完自動處理、剪輯和加速版另存好自動傳的時候，放進「設定 → 存檔與分享 → 自動傳到」選的子資料夾（例如 other）。",
-                "After-recording processing and saved edited or sped-up copies go to the subfolder chosen in Settings → Saving & sharing → Auto-send to (such as other)."
+                "傳到媒體庫、改名、刪除後，只請 Jellyfin 掃描那一個資料夾，不再掃描整個媒體庫，大的媒體庫也很快。",
+                "After sending, renaming or deleting, Jellyfin is asked to scan just that folder instead of the whole library, so even a big library updates fast."
             )
             .into(),
-            Try::Settings(Page::Save),
+            Try::None,
         ),
         (
-            tr!("檔案庫標出已在媒體庫的錄影", "The library shows what's already on the NAS").into(),
+            tr!("改封面、影片資訊不用重傳整支", "Cover and detail changes skip the re-send").into(),
             tr!(
-                "NAS 上任何一層有同名、同大小的一份時，檔名旁邊出現綠色的「✓ Jellyfin」，滑鼠移上去看在哪個資料夾；篩選選「還沒傳到媒體庫」只列出還沒傳的。改名、刪除時，NAS 上的那一份也會跟著改。",
-                "A green “✓ Jellyfin” tag appears next to recordings that have a copy with the same name and size on the NAS; hover to see which folder. Filter by “Not in the library yet” to list the rest. Renames and deletes follow the copy in its subfolder."
+                "改了封面或影片資訊，Jellyfin 已經有這支時直接透過 Jellyfin 換上，不用再把好幾 GB 的影片傳到 NAS 一次；「✓ Jellyfin」標籤、改名、刪除照樣認得那一份。",
+                "When you change a cover or the video details and Jellyfin already has the video, the change goes straight to Jellyfin instead of copying gigabytes to the NAS again. The “✓ Jellyfin” tag, renames and deletes still recognize the copy."
             )
             .into(),
             Try::Library(false),

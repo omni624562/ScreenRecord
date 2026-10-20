@@ -439,12 +439,13 @@ impl App {
                 Ok(copied) => {
                     let n = copied.len();
                     let first = copied.first().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                    let scan = copied.first().cloned().unwrap_or_else(|| std::path::PathBuf::from(&after.copy_to).join(&first));
                     info!("[錄完自動處理] 複製 {n} 個檔案到 {}", after.copy_to);
                     let note = trf!("複製 {n} 個檔案到「{}」", "copied {n} files to “{}”", folder_name(&after.copy_to));
                     // 複製到 Jellyfin 的媒體庫資料夾：請它馬上掃描（失敗只提示，檔案已經複製好了）
                     match after.jellyfin.clone() {
                         // 掃描後等它收到這支、設好標籤和章節縮圖（最多等 1 分鐘）
-                        Some(jf) => match tokio::task::spawn_blocking(move || jf.refresh().map(|_| jf.after_upload(&first, &extras, vec![], std::time::Duration::from_secs(60))))
+                        Some(jf) => match tokio::task::spawn_blocking(move || jf.scan(&scan).map(|_| jf.after_upload(&first, &extras, vec![], std::time::Duration::from_secs(60))))
                             .await
                             .unwrap_or_else(|e| Err(e.to_string()))
                         {

@@ -1782,7 +1782,7 @@ pub fn no_audio_mark(ui: &mut egui::Ui) -> egui::Response {
 
 /// 已在媒體庫（NAS 上有同名同大小的一份）：綠色標籤，有設定 Jellyfin 時寫「Jellyfin」，滑鼠移上去寫在哪個資料夾
 pub fn library_chip(ui: &mut egui::Ui, app: &UiApp, at: &[String]) -> egui::Response {
-    let jellyfin = screenrecorder_core::jellyfin::Jellyfin::new(&app.s.jellyfin_url, &app.s.jellyfin_key).is_some();
+    let jellyfin = app.jellyfin().is_some();
     let (text, tip) = if jellyfin {
         ("Jellyfin", trf!("已傳到 Jellyfin 的媒體庫：{}", "Already in the Jellyfin library: {}", at.join(tr!("、", ", "))))
     } else {

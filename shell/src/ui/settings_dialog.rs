@@ -69,7 +69,10 @@ pub struct SettingsDialog {
     net_result: Option<Result<(), String>>,
     /// Jellyfin：測試連線中 / 結果（成功時是伺服器名稱）
     jf_testing: bool,
-    jf_result: Option<Result<String, String>>,
+    jf_result: Option<Result<(String, Option<String>), String>>,
+    /// Jellyfin：在區域網路上找伺服器中 / 找到的（名稱, 網址）
+    jf_finding: bool,
+    jf_found: Option<Vec<(String, String)>>,
 }
 
 pub fn open(app: &mut UiApp, page: Page) {
@@ -89,6 +92,8 @@ pub fn open(app: &mut UiApp, page: Page) {
                 net_testing: false,
                 net_result: None,
                 jf_testing: false,
+                jf_finding: false,
+                jf_found: None,
                 jf_result: None,
             })
         }
@@ -1024,7 +1029,59 @@ fn jellyfin_rows(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui, no_folder
             d.jf_result = None;
             app.save_settings();
         }
+        let label = if d.jf_finding { tr!("尋找中…", "Searching…") } else { tr!("尋找", "Find") };
+        if Btn::new(label)
+            .small()
+            .enabled(!d.jf_finding)
+            .tooltip(tr!("在區域網路上找 Jellyfin 伺服器，找到就填好網址", "Look for Jellyfin servers on your network and fill in the address"))
+            .show(ui)
+            .clicked()
+        {
+            d.jf_finding = true;
+            d.jf_found = None;
+            let job = || screenrecorder_core::jellyfin::discover(std::time::Duration::from_millis(1500));
+            app.spawn(async move { tokio::task::spawn_blocking(job).await.unwrap_or_default() }, |app, found| {
+                // 只找到一台：直接填好
+                if let [(_, url)] = found.as_slice() {
+                    app.s.jellyfin_url = url.clone();
+                    app.save_settings();
+                }
+                if let Some(d) = &mut app.settings_dlg {
+                    d.jf_finding = false;
+                    if found.len() == 1 {
+                        d.jf_result = None;
+                    }
+                    d.jf_found = Some(found);
+                }
+            });
+        }
     });
+    match d.jf_found.as_deref() {
+        Some([]) => form_hint_full(
+            ui,
+            tr!(
+                "區域網路上沒有找到 Jellyfin：伺服器可能關掉了「自動探索」，或防火牆擋住 UDP 7359。請直接輸入網址",
+                "No Jellyfin server found on your network. It may have auto-discovery turned off, or a firewall blocks UDP 7359. Enter the address instead"
+            ),
+            p.warn,
+        ),
+        Some([(name, url)]) => form_hint(ui, trf!("找到「{name}」：{url}", "Found “{name}”: {url}"), p.ok),
+        Some(list) => {
+            let list = list.to_vec();
+            form_row(ui, "", |ui| {
+                ui.label(RichText::new(tr!("找到好幾台，選一台：", "Several found, pick one:")).font(theme::font(12.5)).color(p.muted));
+                for (name, url) in &list {
+                    if Btn::new(name).small().tooltip(url).show(ui).clicked() {
+                        app.s.jellyfin_url = url.clone();
+                        app.save_settings();
+                        d.jf_result = None;
+                        d.jf_found = None;
+                    }
+                }
+            });
+        }
+        None => {}
+    }
     form_row(ui, tr!("API 金鑰", "API key"), |ui| {
         let r = ui.add(egui::TextEdit::singleline(&mut app.s.jellyfin_key).password(true).desired_width(FORM_CTRL_W).hint_text(tr!("Jellyfin 控制台 → API 金鑰", "Jellyfin Dashboard → API Keys")));
         if r.changed() {
@@ -1032,14 +1089,16 @@ fn jellyfin_rows(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui, no_folder
             app.save_settings();
         }
     });
-    let jf = screenrecorder_core::jellyfin::Jellyfin::new(&app.s.jellyfin_url, &app.s.jellyfin_key);
+    let jf = app.jellyfin();
     form_row(ui, "", |ui| {
         let label = if d.jf_testing { tr!("測試中…", "Testing…") } else { tr!("測試連線", "Test connection") };
         if Btn::new(label).small().enabled(jf.is_some() && !d.jf_testing).show(ui).clicked() {
             if let Some(jf) = jf.clone() {
                 d.jf_testing = true;
                 d.jf_result = None;
-                app.spawn(async move { tokio::task::spawn_blocking(move || jf.test()).await.unwrap_or_else(|e| Err(e.to_string())) }, |app, r| {
+                // 連上之後順便看媒體庫類型對不對（不是「家庭影片和照片」時提醒）
+                let job = move || jf.test().map(|name| (name, jf.check_library()));
+                app.spawn(async move { tokio::task::spawn_blocking(job).await.unwrap_or_else(|e| Err(e.to_string())) }, |app, r| {
                     if let Some(d) = &mut app.settings_dlg {
                         d.jf_testing = false;
                         d.jf_result = Some(r);
@@ -1048,7 +1107,7 @@ fn jellyfin_rows(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui, no_folder
             }
         }
         match &d.jf_result {
-            Some(Ok(name)) => {
+            Some(Ok((name, _))) => {
                 ui.label(RichText::new(trf!("已連上 {}", "Connected to {}", name)).font(theme::font(12.5)).color(p.ok));
             }
             Some(Err(e)) => {
@@ -1057,6 +1116,10 @@ fn jellyfin_rows(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui, no_folder
             None => {}
         }
     });
+    // 媒體庫類型：是「家庭影片和照片」打勾，不是時提醒怎麼改
+    if let Some(Ok((_, Some(note)))) = &d.jf_result {
+        form_hint_full(ui, note, if note.ends_with('✓') { p.ok } else { p.warn });
+    }
     form_hint(
         ui,
         if no_folder {
