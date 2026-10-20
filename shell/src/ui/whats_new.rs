@@ -38,31 +38,31 @@ enum Try {
 fn items(_app: &UiApp) -> Vec<(String, String, Try)> {
     vec![
         (
-            tr!("每個地方的按鈕都一樣了", "Same buttons everywhere").into(),
+            tr!("主畫面更簡單", "A simpler main screen").into(),
             tr!(
-                "主畫面的錄影卡片、「全部錄影」、檢視器現在用同一份清單：名稱、圖示、順序都一樣。直接露出「播放、剪輯、製作、傳到媒體庫」，其他都在「⋯」（和按右鍵一樣），分成看、改、做、分享、管理五組，在哪裡都找得到。",
-                "Recording cards on the main screen, All recordings and the viewer now share one list: same names, icons and order. Play, Edit, Make and Send to library are right there; everything else is under ⋯ (same as right-click), grouped into watch, change, make, share and manage."
-            )
-            .into(),
-            Try::Library(false),
-        ),
-        (
-            tr!("「製作 ▾」集中在一起", "Everything under “Make ▾”").into(),
-            tr!(
-                "加速版、GIF、WebP、壓縮、直式影片、存成 M4A、步驟教學文件都在「製作 ▾」裡，卡片、清單、檢視器都一樣。",
-                "Sped-up video, GIF, WebP, compress, vertical video, M4A and step guides are all under “Make ▾”, on cards, in the list and in the viewer."
+                "沒在錄影時，右邊只留聲音、「開始錄影」和截圖按鈕；計時器和檔案大小等開始錄影才出現。快速鍵直接寫在按鈕上。",
+                "When you're not recording, the right side shows just audio, Start recording and the screenshot buttons; the timer and file size appear once you start. Shortcuts are written right on the buttons."
             )
             .into(),
             Try::None,
         ),
         (
-            tr!("改名、刪除也同步到 Jellyfin", "Renames and deletes reach Jellyfin").into(),
+            tr!("更多工具", "More tools").into(),
             tr!(
-                "已經傳到媒體庫的錄影：重新命名時，媒體庫裡那一份（連同字幕、加速版）也跟著改名；移到資源回收筒時會問「兩邊都刪」或「只刪這台電腦的」，之後自動請 Jellyfin 重新掃描。",
-                "For recordings already in the library: renaming also renames the library copy (with subtitles and sped-up versions), and moving to the Recycle Bin asks whether to delete both or only on this PC. Jellyfin is asked to rescan afterwards."
+                "回溯錄影、排程錄影、講稿小視窗、設定組合移到右上角的「更多工具 ▾」。",
+                "Replay buffer, scheduled recording, the script window and presets are now under “More tools ▾” at the top right."
             )
             .into(),
-            Try::Settings(settings_dialog::Page::After),
+            Try::None,
+        ),
+        (
+            tr!("檔案庫：錄影｜截圖", "Library: Videos | Screenshots").into(),
+            tr!(
+                "「全部錄影」「全部截圖」放成一組「檔案庫」，點哪個就直接打開那一頁。檢視器的向左轉、向右轉，和卡片上的「在資料夾中顯示」也都改回一按就到。",
+                "“All recordings” and “All screenshots” are grouped as “Library”; each still opens its page in one click. Rotate left / right in the viewer and “Show in folder” on cards are one click again too."
+            )
+            .into(),
+            Try::Library(false),
         ),
     ]
 }
