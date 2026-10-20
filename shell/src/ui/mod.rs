@@ -520,16 +520,22 @@ impl UiApp {
     /// 移到資源回收筒前的確認。媒體庫資料夾（Jellyfin 媒體庫）裡也有同名的那一份時，
     /// 問要兩邊都刪，還是只刪這台電腦的；done：刪好之後（清單、檢視器跟著更新）
     pub fn confirm_trash(&mut self, title: String, message: &str, paths: Vec<String>, done: fn(&mut UiApp, &[String], bool)) {
-        use screenrecorder_core::jellyfin::{in_library, library_copies};
         let copy_to = self.s.after_copy_to.clone();
-        let copies: Vec<std::path::PathBuf> = paths
-            .iter()
-            .flat_map(|p| {
-                // 同名而且大小一樣的才算媒體庫裡的那一份（別的子資料夾裡剛好同名的另一支不刪）
-                let size = std::fs::metadata(p).ok().map(|m| m.len());
-                library_copies(&copy_to, std::path::Path::new(p), size)
-            })
-            .collect();
+        let message = message.to_string();
+        if copy_to.trim().is_empty() {
+            return self.ask_trash(title, &message, paths, vec![], done);
+        }
+        // 媒體庫（NAS）裡同名而且大小一樣的那一份：整個媒體庫找一遍，NAS 大的時候要一下子，在背景找
+        let files: Vec<std::path::PathBuf> = paths.iter().map(std::path::PathBuf::from).collect();
+        self.spawn(async move { tokio::task::spawn_blocking(move || screenrecorder_core::jellyfin::library_copies_of(&copy_to, &files)).await.unwrap_or_default() }, move |app, copies| {
+            app.ask_trash(title, &message, paths, copies, done)
+        });
+    }
+
+    /// 移到資源回收筒的確認視窗（copies：媒體庫裡的那一份，有的話問要不要一起刪）
+    fn ask_trash(&mut self, title: String, message: &str, paths: Vec<String>, copies: Vec<std::path::PathBuf>, done: fn(&mut UiApp, &[String], bool)) {
+        use screenrecorder_core::jellyfin::in_library;
+        let copy_to = self.s.after_copy_to.clone();
         // 檔案本來就放在媒體庫裡：刪了就是從媒體庫刪掉，請 Jellyfin 重新掃描
         let in_lib = paths.iter().any(|p| in_library(&copy_to, std::path::Path::new(p)));
         let names: Vec<String> = paths.iter().map(|p| dialogs::file_name(p)).collect();

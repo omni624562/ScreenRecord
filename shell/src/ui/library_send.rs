@@ -1,7 +1,7 @@
-//! 傳到媒體庫：選要放進媒體庫（例如 NAS 的 video）的哪個子資料夾（只有第一層）；
-//! 以及清單上「已在媒體庫」的標註要用的索引（NAS 上的檔名與大小，背景讀、記起來）。
+//! 傳到媒體庫：像檔案總管一樣一層層點進媒體庫（例如 NAS 的 video）選資料夾；設定「自動傳到」也用同一個視窗。
+//! 以及清單上「已在媒體庫」的標註要用的索引（整個媒體庫的檔名與大小，背景讀、記起來）。
 
-use super::theme::{self, Btn};
+use super::theme::{self, Btn, Icon};
 use super::{dialogs, UiApp};
 use eframe::egui::{self, vec2, Align, Id, Layout, RichText};
 use screenrecorder_core::jellyfin;
@@ -9,41 +9,49 @@ use screenrecorder_core::{tr, trf};
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-/// 「傳到媒體庫」的選資料夾視窗
-pub struct SendDlg {
-    paths: Vec<String>,
-    /// 媒體庫第一層的子資料夾；None = 還在讀（NAS 可能要一下子）
-    subs: Option<Vec<String>>,
-    /// 選的子資料夾（空的 = 最上層）
-    chosen: String,
-    /// 新增資料夾的名稱（Some = 正在輸入）
-    new_name: Option<String>,
-    /// 已經在媒體庫的哪些子資料夾（同名同大小；最上層是空字串）
-    already: Vec<String>,
+/// 選好資料夾之後做什麼
+enum Mode {
+    /// 把這些檔案傳過去
+    Send(Vec<String>),
+    /// 設成「自動傳到」的資料夾
+    PickAuto,
 }
 
-/// 媒體庫的索引：第一層的子資料夾，和小寫檔名 → (在哪個子資料夾, 大小)
+/// 選媒體庫資料夾的視窗
+pub struct SendDlg {
+    mode: Mode,
+    /// 現在在哪一層（「family/2024」；空的 = 最上層）
+    cwd: String,
+    /// 這一層底下的資料夾；None = 還在讀（NAS 可能要一下子）
+    subs: Option<Vec<String>>,
+    /// 第幾次換資料夾（慢的讀取結果回來時，已經換到別層就不用）
+    seq: u64,
+    /// 使用者自己點過資料夾了（之後找到「已經在哪裡」時不跳過去）
+    moved: bool,
+    /// 新增資料夾的名稱（Some = 正在輸入）
+    new_name: Option<String>,
+    /// 已經在媒體庫的哪些位置（同名同大小；最上層是空字串）；None = 還在找
+    already: Option<Vec<String>>,
+}
+
+/// 媒體庫的索引：小寫檔名 → (在哪個位置（「family/2024」）, 大小)
 pub struct LibIndex {
     root: String,
     at: Instant,
-    subs: Vec<String>,
     map: HashMap<String, Vec<(String, u64)>>,
 }
 
 /// 索引多久重讀一次（別的電腦、Jellyfin 也可能放檔案進去）
 const INDEX_TTL: Duration = Duration::from_secs(120);
 
-/// 顯示用的子資料夾名稱：最上層顯示媒體庫資料夾的名稱
-fn label(app: &UiApp, sub: &str) -> String {
-    if sub.is_empty() {
-        app.library_folder().unwrap_or_default()
-    } else {
-        sub.to_string()
-    }
+/// 顯示用的位置：「video › family › 2024」（最上層是媒體庫資料夾的名稱）
+pub fn place_label(app: &UiApp, sub: &str) -> String {
+    let root = app.library_folder().unwrap_or_default();
+    std::iter::once(root.as_str()).chain(sub.split('/').filter(|s| !s.is_empty())).collect::<Vec<_>>().join(" › ")
 }
 
 impl UiApp {
-    /// 「傳到媒體庫」：先選要放進哪個子資料夾（預先選好上次用的；已經傳過的選它在的那個）
+    /// 「傳到媒體庫」：先選要放進哪個資料夾（從上次用的那一層開始；已經傳過的跳到它在的那一層）
     pub fn send_to_library(&mut self, path: &str) {
         self.send_many_to_library(vec![path.to_string()]);
     }
@@ -61,53 +69,75 @@ impl UiApp {
             return super::settings_dialog::open(self, super::settings_dialog::Page::Save);
         }
         let root = self.s.after_copy_to.clone();
+        let files: Vec<std::path::PathBuf> = paths.iter().map(std::path::PathBuf::from).collect();
         let last = self.s.library_last_sub.clone();
-        self.send_dlg = Some(SendDlg { paths: paths.clone(), subs: None, chosen: last, new_name: None, already: vec![] });
-        self.spawn(
-            async move {
-                tokio::task::spawn_blocking(move || {
-                    let subs = jellyfin::subfolders(&root);
-                    let mut already: Vec<String> = vec![];
-                    for p in &paths {
-                        let file = std::path::Path::new(p);
-                        let (Some(name), Ok(m)) = (file.file_name(), std::fs::metadata(file)) else { continue };
-                        for found in jellyfin::find_in_library(&root, &name.to_string_lossy(), Some(m.len())) {
-                            // 找到的只會在最上層或第一層子資料夾
-                            let Some(dir) = found.parent() else { continue };
-                            let sub = if same(dir, &root) { String::new() } else { dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default() };
-                            if !already.contains(&sub) {
-                                already.push(sub);
-                            }
-                        }
-                    }
-                    (subs, already)
-                })
-                .await
-                .unwrap_or_default()
-            },
-            |app, (subs, already)| {
-                let Some(d) = app.send_dlg.as_mut() else { return };
-                // 上次選的資料夾不在了：放最上層
-                if !d.chosen.is_empty() && !subs.iter().any(|s| s.eq_ignore_ascii_case(&d.chosen)) {
-                    d.chosen.clear();
-                }
-                // 只傳一支、而且已經在某個資料夾：預先選它在的那個（再傳一次就是更新那一份）
-                if let [only] = already.as_slice() {
-                    d.chosen = only.clone();
-                }
-                d.subs = Some(subs);
-                d.already = already;
-            },
-        );
+        self.open_picker(Mode::Send(paths), last);
+        // 整個媒體庫找一遍：已經在哪裡（NAS 很大時要一下子，先讓人選）
+        self.spawn(async move { tokio::task::spawn_blocking(move || jellyfin::library_places(&root, &files)).await.unwrap_or_default() }, |app, places| {
+            let Some(d) = app.send_dlg.as_mut() else { return };
+            // 只傳一支、而且已經在某個資料夾，使用者還沒自己點：跳到它在的那一層（再傳一次就是更新那一份）
+            let jump = match places.as_slice() {
+                [only] if !d.moved => Some(only.clone()),
+                _ => None,
+            };
+            d.already = Some(places);
+            if let Some(sub) = jump {
+                app.picker_go(sub, false);
+            }
+        });
     }
 
-    /// 真的傳過去（sub：媒體庫的哪個子資料夾，空的 = 最上層）
+    /// 選「自動傳到」的資料夾（設定頁）
+    pub fn pick_auto_folder(&mut self) {
+        let cur = self.s.after_copy_sub.clone();
+        self.open_picker(Mode::PickAuto, cur);
+    }
+
+    fn open_picker(&mut self, mode: Mode, start: String) {
+        self.send_dlg = Some(SendDlg { mode, cwd: String::new(), subs: None, seq: 0, moved: false, new_name: None, already: None });
+        self.picker_go(jellyfin::normalize_subfolder(&start), false);
+    }
+
+    /// 換到這一層並讀它底下的資料夾；這一層不在了（被刪掉、改名）就回到最上層
+    fn picker_go(&mut self, sub: String, by_user: bool) {
+        let root = self.s.after_copy_to.clone();
+        let Some(d) = self.send_dlg.as_mut() else { return };
+        d.seq += 1;
+        d.moved |= by_user;
+        d.cwd = sub.clone();
+        d.subs = None;
+        d.new_name = None;
+        let seq = d.seq;
+        let dir = jellyfin::library_dest(&root, &sub);
+        self.spawn(async move { tokio::task::spawn_blocking(move || std::path::Path::new(&dir).is_dir().then(|| jellyfin::subfolders(&dir))).await.ok().flatten() }, move |app, subs| {
+            let Some(d) = app.send_dlg.as_mut().filter(|d| d.seq == seq) else { return };
+            match subs {
+                Some(subs) => d.subs = Some(subs),
+                None if !d.cwd.is_empty() => app.picker_go(String::new(), false),
+                // 連最上層都讀不到（NAS 沒開）：還是可以傳，傳的時候會寫原因
+                None => d.subs = Some(vec![]),
+            }
+        });
+    }
+
+    /// 在現在這一層新增資料夾，建好就進去
+    fn picker_mkdir(&mut self, name: String) {
+        let Some(d) = self.send_dlg.as_ref() else { return };
+        let sub = if d.cwd.is_empty() { name.trim().to_string() } else { format!("{}/{}", d.cwd, name.trim()) };
+        let dir = jellyfin::library_dest(&self.s.after_copy_to, &sub);
+        self.spawn(async move { tokio::task::spawn_blocking(move || std::fs::create_dir_all(&dir).map_err(|e| e.to_string())).await.unwrap_or_else(|e| Err(e.to_string())) }, move |app, r| match r {
+            Ok(()) => app.picker_go(sub, true),
+            Err(e) => app.toast(trf!("沒有建立資料夾：{e}", "Couldn't create the folder: {e}"), true),
+        });
+    }
+
+    /// 真的傳過去（sub：媒體庫的哪個資料夾，「family/2024」，空的 = 最上層）
     pub fn send_now(&mut self, path: &str, sub: &str) {
         let Some(_) = self.library_folder() else { return };
         let jf = jellyfin::Jellyfin::new(&self.s.jellyfin_url, &self.s.jellyfin_key);
         let dest = jellyfin::library_dest(&self.s.after_copy_to, sub);
         let file = std::path::PathBuf::from(path);
-        self.toast(trf!("正在傳到「{}」：{}", "Sending to “{}”: {}", label(self, sub), dialogs::file_name(path)), false);
+        self.toast(trf!("正在傳到「{}」：{}", "Sending to “{}”: {}", place_label(self, sub), dialogs::file_name(path)), false);
         let ffmpeg = self.core.ffmpeg_path();
         self.spawn(
             async move {
@@ -127,13 +157,13 @@ impl UiApp {
         );
     }
 
-    /// 剪輯、加速版另存好時自動傳：放到「錄完自動傳」的那個子資料夾
+    /// 剪輯、加速版另存好時自動傳：放到「自動傳到」的那個資料夾
     pub fn send_auto(&mut self, path: &str) {
         let sub = self.s.after_copy_sub.clone();
         self.send_now(path, &sub);
     }
 
-    /// 媒體庫的索引（NAS 上的檔名、大小、子資料夾）；還沒讀過或太舊時在背景重讀，這次先回傳舊的或 None
+    /// 媒體庫的索引（整個媒體庫的檔名、大小）；還沒讀過或太舊時在背景重讀，這次先回傳舊的或 None
     fn lib_index(&mut self) -> Option<&LibIndex> {
         let root = self.s.after_copy_to.trim().to_string();
         if root.is_empty() {
@@ -143,10 +173,10 @@ impl UiApp {
         if !fresh && !self.lib_index_loading {
             self.lib_index_loading = true;
             let r = root.clone();
-            self.spawn(async move { tokio::task::spawn_blocking(move || (jellyfin::subfolders(&r), jellyfin::library_index(&r), r)).await.ok() }, |app, got| {
+            self.spawn(async move { tokio::task::spawn_blocking(move || (jellyfin::library_index(&r), r)).await.ok() }, |app, got| {
                 app.lib_index_loading = false;
-                if let Some((subs, map, root)) = got {
-                    app.lib_index = Some(LibIndex { root, at: Instant::now(), subs, map });
+                if let Some((map, root)) = got {
+                    app.lib_index = Some(LibIndex { root, at: Instant::now(), map });
                     // 「還沒傳到媒體庫」的清單要用新的索引重查
                     if let Some(d) = app.library.as_mut() {
                         d.library_index_changed();
@@ -162,131 +192,160 @@ impl UiApp {
         self.lib_index().map(|i| i.map.iter().flat_map(|(name, at)| at.iter().map(move |(_, size)| (name.clone(), *size))).collect()).unwrap_or_default()
     }
 
-    /// 媒體庫第一層的子資料夾（設定頁選「自動傳到」用）；還沒讀到時 None
-    pub fn library_subs(&mut self) -> Option<Vec<String>> {
-        self.lib_index().map(|i| i.subs.clone())
-    }
-
-    /// 這個檔案在媒體庫的哪裡（同名同大小）；回傳顯示用的資料夾名稱（最上層是媒體庫資料夾的名稱）。
+    /// 這個檔案在媒體庫的哪裡（同名同大小）；回傳顯示用的位置（「video › family › 2024」）。
     /// 本來就放在媒體庫裡的檔案、還沒讀到索引時回傳 None
     pub fn library_where(&mut self, path: &str, size: u64) -> Option<Vec<String>> {
         let root = self.s.after_copy_to.trim().to_string();
         if root.is_empty() || jellyfin::in_library(&root, std::path::Path::new(path)) {
             return None;
         }
-        let folder = self.library_folder().unwrap_or_default();
         let name = std::path::Path::new(path).file_name()?.to_string_lossy().to_lowercase();
-        let idx = self.lib_index()?;
-        let hits: Vec<String> = idx.map.get(&name)?.iter().filter(|(_, s)| *s == size).map(|(sub, _)| if sub.is_empty() { folder.clone() } else { sub.clone() }).collect();
+        let subs: Vec<String> = self.lib_index()?.map.get(&name)?.iter().filter(|(_, s)| *s == size).map(|(sub, _)| sub.clone()).collect();
+        let hits: Vec<String> = subs.iter().map(|s| place_label(self, s)).collect();
         (!hits.is_empty()).then_some(hits)
     }
 }
 
-/// 兩個資料夾是不是同一個（不分大小寫、/ 和 \ 都算）
-fn same(a: &std::path::Path, b: &str) -> bool {
-    let norm = |s: String| s.replace('\\', "/").trim_end_matches('/').to_lowercase();
-    norm(a.display().to_string()) == norm(b.to_string())
-}
-
 pub fn show(app: &mut UiApp, ctx: &egui::Context) {
     let Some(mut d) = app.send_dlg.take() else { return };
-    let folder = app.library_folder().unwrap_or_default();
     let mut close = false;
-    let mut send = false;
+    let mut done = false;
+    let mut go: Option<String> = None;
+    let mut mkdir: Option<String> = None;
     let modal = egui::Modal::new(Id::new("send-library")).frame(theme::modal_frame(ctx)).show(ctx, |ui| {
-        ui.set_width(460.0);
+        ui.set_width(500.0);
         let p = theme::pal(ui);
-        let title = if d.paths.len() == 1 { tr!("傳到媒體庫", "Send to library").to_string() } else { trf!("傳 {} 支到媒體庫", "Send {} files to the library", d.paths.len()) };
+        let title = match &d.mode {
+            Mode::Send(paths) if paths.len() == 1 => tr!("傳到媒體庫", "Send to library").to_string(),
+            Mode::Send(paths) => trf!("傳 {} 支到媒體庫", "Send {} files to the library", paths.len()),
+            Mode::PickAuto => tr!("自動傳到哪個資料夾", "Folder for automatic sends").to_string(),
+        };
         ui.label(RichText::new(title).font(theme::font_bold(16.0)));
         ui.add_space(4.0);
-        ui.label(RichText::new(trf!("要放進「{folder}」的哪個資料夾？", "Which folder in “{folder}”?")).color(p.muted));
+        ui.label(RichText::new(tr!("點資料夾進去，到了要放的那一層再按下面的按鈕", "Click a folder to open it; when you're in the right one, use the button below")).color(p.muted));
         ui.add_space(8.0);
-        match &d.subs {
-            None => {
-                ui.horizontal(|ui| {
-                    ui.add(egui::Spinner::new().size(14.0));
-                    ui.label(theme::muted(ui, tr!("正在讀取媒體庫的資料夾…", "Reading the library folders…")));
-                });
+        // 目前位置：video › family › 2024，點前面的回到那一層
+        let parts: Vec<String> = d.cwd.split('/').filter(|s| !s.is_empty()).map(String::from).collect();
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = vec2(2.0, 4.0);
+            let root = app.library_folder().unwrap_or_default();
+            if Btn::new(&root).icon(Icon::Folder).small().ghost().selected(parts.is_empty()).show(ui).clicked() && !parts.is_empty() {
+                go = Some(String::new());
             }
-            Some(subs) => {
-                let subs = subs.clone();
-                ui.horizontal_wrapped(|ui| {
-                    ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
-                    let top = trf!("{folder}（最上層）", "{folder} (top level)");
-                    if Btn::new(top).small().selected(d.chosen.is_empty()).show(ui).clicked() {
-                        d.chosen.clear();
-                    }
-                    for s in &subs {
-                        if Btn::new(s).small().selected(d.chosen.eq_ignore_ascii_case(s)).show(ui).clicked() {
-                            d.chosen = s.clone();
-                            d.new_name = None;
-                        }
-                    }
-                    if d.new_name.is_none() && Btn::new(tr!("＋ 新增資料夾", "+ New folder")).small().ghost().show(ui).clicked() {
-                        d.new_name = Some(String::new());
-                    }
-                });
-                if subs.is_empty() {
-                    ui.add_space(4.0);
-                    ui.label(theme::muted(
-                        ui,
-                        tr!("媒體庫裡還沒有子資料夾（或 NAS 連不到），會放在最上層", "The library has no subfolders yet (or the NAS can't be reached); files go to the top level"),
-                    ));
+            for (i, part) in parts.iter().enumerate() {
+                ui.label(theme::muted(ui, "›"));
+                let last = i + 1 == parts.len();
+                if Btn::new(part).small().ghost().selected(last).show(ui).clicked() && !last {
+                    go = Some(parts[..=i].join("/"));
                 }
             }
-        }
-        if let Some(name) = &mut d.new_name {
-            ui.add_space(8.0);
-            ui.horizontal(|ui| {
-                ui.label(theme::muted(ui, tr!("新資料夾", "New folder")));
-                let r = ui.add(egui::TextEdit::singleline(name).hint_text(tr!("例如：家庭", "e.g. Family")).desired_width(220.0));
-                if r.changed() {
-                    d.chosen = name.trim().to_string();
+        });
+        ui.add_space(6.0);
+        // 這一層底下的資料夾
+        egui::Frame::new().fill(p.surface2).corner_radius(egui::CornerRadius::same(8)).inner_margin(8.0).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            egui::ScrollArea::vertical().max_height(220.0).auto_shrink([false, true]).show(ui, |ui| match &d.subs {
+                None => {
+                    ui.horizontal(|ui| {
+                        ui.add(egui::Spinner::new().size(14.0));
+                        ui.label(theme::muted(ui, tr!("正在讀取資料夾…", "Reading folders…")));
+                    });
+                }
+                Some(subs) if subs.is_empty() => {
+                    ui.label(theme::muted(ui, tr!("這裡沒有子資料夾", "No subfolders here")));
+                }
+                Some(subs) => {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
+                        for s in subs {
+                            if Btn::new(s).icon(Icon::Folder).small().show(ui).clicked() {
+                                go = Some(if d.cwd.is_empty() { s.clone() } else { format!("{}/{s}", d.cwd) });
+                            }
+                        }
+                    });
                 }
             });
-            if !jellyfin::valid_subfolder(name) {
-                ui.label(RichText::new(tr!("名稱不能有 \\ / : * ? \" < > | 這些符號", "The name can't contain \\ / : * ? \" < > |")).color(p.rec).font(theme::font(12.0)));
+        });
+        ui.add_space(6.0);
+        match &mut d.new_name {
+            None => {
+                if Btn::new(tr!("＋ 在這裡新增資料夾", "+ New folder here")).small().ghost().enabled(d.subs.is_some()).show(ui).clicked() {
+                    d.new_name = Some(String::new());
+                }
+            }
+            Some(name) => {
+                let ok = !name.trim().is_empty() && !name.contains(['/', '\\']) && jellyfin::valid_subfolder(name);
+                ui.horizontal(|ui| {
+                    let r = ui.add(egui::TextEdit::singleline(name).hint_text(tr!("新資料夾的名稱", "New folder name")).desired_width(240.0));
+                    r.request_focus();
+                    let enter = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                    if (Btn::new(tr!("建立", "Create")).small().enabled(ok).show(ui).clicked() || enter) && ok {
+                        mkdir = Some(name.trim().to_string());
+                    }
+                    if Btn::new(tr!("取消", "Cancel")).small().ghost().show(ui).clicked() {
+                        go = Some(d.cwd.clone());
+                    }
+                });
+                if !name.trim().is_empty() && !ok {
+                    ui.label(RichText::new(tr!("名稱不能有 \\ / : * ? \" < > | 這些符號", "The name can't contain \\ / : * ? \" < > |")).color(p.rec).font(theme::font(12.0)));
+                }
             }
         }
-        if !d.already.is_empty() {
-            ui.add_space(8.0);
-            let at = d.already.iter().map(|s| label(app, s)).collect::<Vec<_>>().join(tr!("、", ", "));
-            let same_place = d.already.iter().any(|s| s.eq_ignore_ascii_case(&d.chosen));
-            let text = if same_place {
-                trf!("已經在「{at}」裡了，再傳一次會換成這台電腦的版本", "Already in “{at}”; sending again replaces it with the version on this PC")
-            } else {
-                trf!("已經在「{at}」裡了，再傳會在選的資料夾多一份", "Already in “{at}”; sending puts another copy in the chosen folder")
-            };
-            ui.label(RichText::new(text).color(p.warn).font(theme::font(12.5)));
+        if let (Mode::Send(_), Some(already)) = (&d.mode, &d.already) {
+            if !already.is_empty() {
+                ui.add_space(8.0);
+                let at = already.iter().map(|s| place_label(app, s)).collect::<Vec<_>>().join(tr!("、", ", "));
+                let text = if already.iter().any(|s| s.eq_ignore_ascii_case(&d.cwd)) {
+                    trf!("已經在「{at}」裡了，傳到這裡會換成這台電腦的版本", "Already in “{at}”; sending here replaces it with the version on this PC")
+                } else {
+                    trf!("已經在「{at}」裡了，傳到這裡會多一份", "Already in “{at}”; sending here adds another copy")
+                };
+                ui.label(RichText::new(text).color(p.warn).font(theme::font(12.5)));
+            }
         }
         ui.add_space(12.0);
-        let valid = d.subs.is_some() && jellyfin::valid_subfolder(&d.chosen) && d.new_name.as_ref().is_none_or(|n| !n.trim().is_empty());
+        let here = parts.last().cloned().unwrap_or_else(|| app.library_folder().unwrap_or_default());
         ui.allocate_ui_with_layout(vec2(ui.available_width(), 34.0), Layout::right_to_left(Align::Center), |ui| {
-            let to = if d.chosen.is_empty() { folder.clone() } else { d.chosen.clone() };
-            if Btn::new(trf!("傳到「{to}」", "Send to “{to}”")).primary().enabled(valid).show(ui).clicked() {
-                send = true;
+            let label = match d.mode {
+                Mode::Send(_) => trf!("傳到「{here}」", "Send to “{here}”"),
+                Mode::PickAuto => trf!("自動傳到「{here}」", "Auto-send to “{here}”"),
+            };
+            if Btn::new(label).primary().enabled(d.subs.is_some() && d.new_name.is_none()).show(ui).clicked() {
+                done = true;
             }
             if Btn::new(tr!("取消", "Cancel")).ghost().show(ui).clicked() {
                 close = true;
             }
         });
-        if valid && d.new_name.is_none() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-            send = true;
-        }
     });
-    if send {
-        let sub = d.chosen.trim().to_string();
-        if app.s.library_last_sub != sub {
-            app.s.library_last_sub = sub.clone();
-            app.save_settings();
-        }
-        for p in &d.paths {
-            app.send_now(p, &sub);
+    let cwd = d.cwd.clone();
+    let mode = std::mem::replace(&mut d.mode, Mode::PickAuto);
+    if done {
+        match mode {
+            Mode::Send(paths) => {
+                if app.s.library_last_sub != cwd {
+                    app.s.library_last_sub = cwd.clone();
+                    app.save_settings();
+                }
+                for p in &paths {
+                    app.send_now(p, &cwd);
+                }
+            }
+            Mode::PickAuto => {
+                app.s.after_copy_sub = cwd;
+                app.save_settings();
+            }
         }
         return;
     }
-    if close || modal.should_close() {
+    if close || (modal.should_close() && d.new_name.is_none()) {
         return;
     }
+    d.mode = mode;
     app.send_dlg = Some(d);
+    if let Some(name) = mkdir {
+        app.picker_mkdir(name);
+    } else if let Some(sub) = go {
+        app.picker_go(sub, true);
+    }
 }

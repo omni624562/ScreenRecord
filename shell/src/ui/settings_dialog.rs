@@ -996,40 +996,21 @@ fn library_checks(app: &mut UiApp, ui: &mut Ui) {
     }
 }
 
-/// 錄完、剪輯好自動傳的時候放進媒體庫的哪個子資料夾（手動傳的時候每次選）
+/// 錄完、剪輯好自動傳的時候放進媒體庫的哪個資料夾（可以好幾層；手動傳的時候每次選）
 fn auto_sub_row(app: &mut UiApp, ui: &mut Ui) {
-    let folder = app.library_folder().unwrap_or_default();
-    let mut subs = app.library_subs().unwrap_or_default();
-    let cur = app.s.after_copy_sub.clone();
-    // 選的資料夾還沒建立（傳的時候會建立）也列出來
-    if !cur.is_empty() && !subs.iter().any(|s| s.eq_ignore_ascii_case(&cur)) {
-        subs.push(cur.clone());
-    }
-    let top = trf!("{folder}（最上層）", "{folder} (top level)");
+    let place = super::library_send::place_label(app, &app.s.after_copy_sub);
     form_row(ui, tr!("自動傳到", "Auto-send to"), |ui| {
-        let shown = if cur.is_empty() { top.clone() } else { cur.clone() };
-        let mut pick: Option<String> = None;
-        egui::ComboBox::from_id_salt("auto-sub")
-            .width(FORM_CTRL_W)
-            .selected_text(shown)
-            .show_ui(ui, |ui| {
-                if ui.selectable_label(cur.is_empty(), &top).clicked() {
-                    pick = Some(String::new());
-                }
-                for s in &subs {
-                    if ui.selectable_label(cur.eq_ignore_ascii_case(s), s).clicked() {
-                        pick = Some(s.clone());
-                    }
-                }
-            })
-            .response
-            .on_hover_text(tr!(
+        ui.label(RichText::new(&place).font(theme::font_bold(13.0)));
+        if Btn::new(tr!("選資料夾…", "Choose…"))
+            .small()
+            .tooltip(tr!(
                 "錄完自動處理、剪輯和加速版另存好自動傳的時候，放進媒體庫的這個資料夾。手動按「傳到媒體庫」時每次都可以選",
                 "Where automatic sends go (after recording, and after an edited or sped-up copy is saved). When you click “Send to library” you choose each time"
-            ));
-        if let Some(sub) = pick.filter(|s| *s != cur) {
-            app.s.after_copy_sub = sub;
-            app.save_settings();
+            ))
+            .show(ui)
+            .clicked()
+        {
+            app.pick_auto_folder();
         }
     });
 }
