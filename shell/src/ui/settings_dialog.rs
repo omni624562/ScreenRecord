@@ -69,7 +69,9 @@ pub struct SettingsDialog {
     net_result: Option<Result<(), String>>,
     /// Jellyfin：測試連線中 / 結果（成功時是伺服器名稱）
     jf_testing: bool,
-    jf_result: Option<Result<(String, Option<String>), String>>,
+    jf_result: Option<Result<(String, Option<screenrecorder_core::jellyfin::LibraryCheck>), String>>,
+    /// Jellyfin：一鍵修好媒體庫設定中
+    jf_fixing: bool,
     /// Jellyfin：在區域網路上找伺服器中 / 找到的（名稱, 網址）
     jf_finding: bool,
     jf_found: Option<Vec<(String, String)>>,
@@ -93,6 +95,7 @@ pub fn open(app: &mut UiApp, page: Page) {
                 net_result: None,
                 jf_testing: false,
                 jf_finding: false,
+                jf_fixing: false,
                 jf_found: None,
                 jf_result: None,
             })
@@ -1116,9 +1119,51 @@ fn jellyfin_rows(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui, no_folder
             None => {}
         }
     });
-    // 媒體庫類型：是「家庭影片和照片」打勾，不是時提醒怎麼改
-    if let Some(Ok((_, Some(note)))) = &d.jf_result {
-        form_hint_full(ui, note, if note.ends_with('✓') { p.ok } else { p.warn });
+    // 媒體庫設定：是「家庭影片和照片」且選項都打開時打勾；不是時說明並可以一鍵修好
+    if let Some(Ok((_, Some(check)))) = &d.jf_result {
+        let (note, ok) = (check.note.clone(), check.ok);
+        form_hint_full(ui, note, if ok { p.ok } else { p.warn });
+        if !ok {
+            form_row(ui, "", |ui| {
+                let label = if d.jf_fixing { tr!("修正中…", "Fixing…") } else { tr!("一鍵修好", "Fix it") };
+                let tip = tr!(
+                    "改成「家庭影片和照片」媒體庫（沒有時新建一個指到同一個資料夾），並打開即時監控、擷取章節圖片、時間軸預覽縮圖",
+                    "Use a Home Videos and Photos library (creates one for this folder if needed) and turn on real-time monitoring, chapter images and trickplay previews"
+                );
+                if Btn::new(label).small().primary().enabled(!d.jf_fixing).tooltip(tip).show(ui).clicked() {
+                    if let Some(jf) = app.jellyfin() {
+                        d.jf_fixing = true;
+                        let job = move || jf.fix_library().map(|msg| (msg, jf.check_library()));
+                        app.spawn(async move { tokio::task::spawn_blocking(job).await.unwrap_or_else(|e| Err(e.to_string())) }, |app, r| {
+                            let Some(d) = &mut app.settings_dlg else { return };
+                            d.jf_fixing = false;
+                            match r {
+                                Ok((msg, check)) => {
+                                    if let Some(Ok((_, c))) = &mut d.jf_result {
+                                        *c = check;
+                                    }
+                                    app.toast(msg, false);
+                                }
+                                Err(e) => app.toast(trf!("沒有修好：{e}", "Couldn't fix it: {e}"), true),
+                            }
+                        });
+                    }
+                }
+            });
+        }
+    }
+    if jf.is_some() {
+        form_row(ui, "", |ui| {
+            if switch(ui, &mut app.s.jellyfin_collections, tr!("依資料夾放進合集", "Add to collections by folder"), true)
+                .on_hover_text(tr!(
+                    "傳到 family › 2024 的影片放進 Jellyfin 的「family 2024」合集（沒有就新建）；直接放在媒體庫最上層的不放",
+                    "Videos sent to family › 2024 go into the “family 2024” collection in Jellyfin (created if needed); ones at the top of the library don't"
+                ))
+                .changed()
+            {
+                app.save_settings();
+            }
+        });
     }
     form_hint(
         ui,
