@@ -152,8 +152,8 @@ fn sections(ed: &mut Editor, ui: &mut egui::Ui) {
         hint(
             ui,
             tr!(
-                "先在時間軸上選取一段（按住 Shift 拖過縮圖，或打開「選取範圍」），再選倍率。等待、重複的操作可以快轉帶過，快速的操作可以放慢看清楚。",
-                "First select a section on the timeline (Shift + drag across the thumbnails, or turn on “Select range”), then pick a speed. Fast-forward waiting or repetitive steps, or slow down quick ones."
+                "先在時間軸的縮圖上拖過一段，再選倍率。等待、重複的操作可以快轉帶過，快速的操作可以放慢看清楚。",
+                "First drag across a section of the timeline thumbnails, then pick a speed. Fast-forward waiting or repetitive steps, or slow down quick ones."
             ),
         );
     }

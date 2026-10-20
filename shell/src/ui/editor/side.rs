@@ -37,7 +37,11 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, toast: &mut
             }
             Tab::Ann => ann_panel(ed, ui, ctx),
             Tab::Output => super::shot::output_panel(ed, ui, ctx),
-            Tab::Subs => super::subs::tab(ed, ui, ctx, toast),
+            Tab::Subs => {
+                super::subs::tab(ed, ui, ctx, toast);
+                // 章節常常是依字幕產生的，放在一起
+                chapters_panel(ed, ui, toast);
+            }
             Tab::Audio => {
                 audio_panel(ed, ui);
                 super::voice::panel(ed, ui, toast);
@@ -120,6 +124,23 @@ pub(super) fn section_title_sep(ui: &mut egui::Ui, title: &str) {
 
 fn time_panel(ed: &mut Editor, ui: &mut egui::Ui, toast: &mut Option<(String, bool)>) {
     let p = theme::pal(ui);
+    // 三步驟就會剪：頭尾、中間、刪掉
+    if ed.sel.is_none() {
+        for (n, zh, en) in [
+            ("1", "拖時間軸兩端的黃色把手：剪掉頭尾", "Drag the yellow handles at both ends of the timeline to trim the start and end"),
+            ("2", "刪中間：在縮圖上拖過那一段（或在開頭、結尾各按一次 S，再點那一段）", "To cut the middle, drag across that part of the thumbnails (or press S at its start and end, then click it)"),
+            ("3", "按「刪除這段」或 Delete", "Press “Delete section” or Delete"),
+        ] {
+            ui.horizontal_top(|ui| {
+                ui.spacing_mut().item_spacing.x = 6.0;
+                let (r, _) = ui.allocate_exact_size(vec2(18.0, 18.0), Sense::hover());
+                ui.painter().circle_filled(r.center(), 9.0, p.accent.gamma_multiply(0.2));
+                ui.painter().text(r.center(), Align2::CENTER_CENTER, n, theme::font_bold(11.5), p.accent);
+                ui.add(egui::Label::new(RichText::new(tr!(zh, en)).font(theme::font(12.5))).wrap());
+            });
+        }
+        ui.add_space(4.0);
+    }
     ui.horizontal(|ui| {
         if Btn::new(tr!("設為開頭", "Set start")).small().tooltip(tr!("快速鍵 I", "Shortcut: I")).show(ui).clicked() {
             let t = ed.now();
@@ -212,15 +233,8 @@ fn time_panel(ed: &mut Editor, ui: &mut egui::Ui, toast: &mut Option<(String, bo
             });
         }
     }
-    hint(
-        ui,
-        tr!(
-            "選取一段：在縮圖上按住 Shift 拖過去（或先打開「選取範圍」），也可以按「在這裡分割（S）」把影片切開後點一段。選好後按「刪除這段」或 Delete 鍵刪除；加速、放慢、定格在「加速」分頁。",
-            "To select a section, Shift + drag across the thumbnails (or turn on “Select range”), or press “Split here (S)” and click a section. Then press “Delete section” or the Delete key to remove it. Speed changes and freeze frames are in the Speed tab."
-        ),
-    );
+    hint(ui, tr!("加速、放慢、定格在「加速」分頁；章節在「字幕」分頁。", "Speed changes and freeze frames are in the Speed tab; chapters are in the Subtitles tab."));
     cleanup_panel(ed, ui, toast);
-    chapters_panel(ed, ui, toast);
 }
 
 /// 章節：標記清單（跳過去、改名、刪除），加標記、依字幕產生、複製成 YouTube 說明欄的格式
@@ -267,7 +281,7 @@ fn chapters_panel(ed: &mut Editor, ui: &mut egui::Ui, toast: &mut Option<(String
     if ed.markers.is_empty() {
         return hint(
             ui,
-            tr!("標記會在輸出時變成影片的章節。也可以在時間軸上按「＋ 加標記」或按 M。", "Markers become chapters in the output video. You can also press “+ Marker” on the timeline or M."),
+            tr!("標記會在輸出時變成影片的章節。也可以按播放列上的「＋ 標記」或按 M。", "Markers become chapters in the output video. You can also press “+ Marker” under the timeline or M."),
         );
     }
     let p = theme::pal(ui);

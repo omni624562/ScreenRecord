@@ -1,13 +1,13 @@
 //! 時間軸（縮圖、保留 / 刪除的片段、頭尾把手、選取範圍、播放頭）、標註軌、放大時的捲軸。
 //!
-//! 時間軸：上方的尺規點一下或拖曳移動播放頭；縮圖上拖曳也是移動播放頭，按住 Shift（或打開「選取範圍」）拖曳是選取要刪除 / 加速的範圍；
+//! 時間軸：上方的尺規點一下或拖曳移動播放頭；縮圖上點一下跳到那裡，拖曳是選取要刪除 / 加速的範圍；
 //! 拖曳黃色把手調整頭尾、拖曳上方橫條移動整段。有分割點時點一下選取那一段。標記：點一下跳過去、按兩下改名、右鍵刪除。
 //! 滾輪：放大 / 縮小（以滑鼠位置為中心）；Shift 或左右滾動 = 平移。
 //! 標註軌：點一下選取（並跳到它出現的時間）；拖曳移動出現時間，拖曳兩端調整開始 / 結束；點空白處跳到該時間。
 
 use super::{ann_color, hash_of, Drag, Edge, Editor, Tab, TlKind, VAct};
-use crate::ui::theme::{self, Btn};
-use eframe::egui::{self, pos2, vec2, Align, Align2, Color32, CornerRadius, CursorIcon, Layout, Pos2, Rect, RichText, Sense, Stroke, TextureHandle, TextureOptions};
+use crate::ui::theme;
+use eframe::egui::{self, pos2, vec2, Align2, Color32, CornerRadius, CursorIcon, Pos2, Rect, RichText, Sense, Stroke, TextureHandle, TextureOptions};
 use screenrecorder_core::annotate;
 use screenrecorder_core::edit::normalize_ranges;
 use screenrecorder_core::format::video_clock;
@@ -20,8 +20,6 @@ use std::time::{Duration, Instant};
 pub const TL_H: f32 = 64.0;
 /// 縮圖上方的時間尺規（點一下或拖曳移動播放頭）
 pub const RULER_H: f32 = 18.0;
-/// 時間軸下方的工具列（選取範圍、加標記…）
-pub const TOOLS_H: f32 = 28.0;
 /// 標註軌固定高度（不隨標註數量變高，影片才不會在放置標註時跳動）；列多時每列變矮
 pub const AT_H: f32 = 70.0;
 /// 還沒有標註、也不在「標註」分頁時，標註軌縮成一條，影片可以大一點
@@ -453,18 +451,16 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, toast: &mut
     let knob = vec![pos2(xp - 6.0, ruler.top() + 4.0), pos2(xp + 6.0, ruler.top() + 4.0), pos2(xp + 6.0, ruler.bottom() - 5.0), pos2(xp, ruler.bottom()), pos2(xp - 6.0, ruler.bottom() - 5.0)];
     ui.painter_at(all).add(egui::Shape::convex_polygon(knob, p.accent, Stroke::new(1.0, Color32::WHITE)));
 
-    let (pressed, secondary, down, pos, latest, shift, dbl) = ui.input(|i| {
+    let (pressed, secondary, down, pos, latest, dbl) = ui.input(|i| {
         (
             i.pointer.primary_pressed(),
             i.pointer.secondary_pressed(),
             i.pointer.primary_down(),
             i.pointer.interact_pos(),
             i.pointer.latest_pos(),
-            i.modifiers.shift,
             i.pointer.button_double_clicked(egui::PointerButton::Primary),
         )
     });
-    let selecting = shift || ed.range_mode;
     let hit = |pos: Pos2| -> Hit {
         if ruler.contains(pos) {
             if let Some(&(i, _)) = splits.iter().find(|(_, x)| (pos.x - x).abs() <= 5.0) {
@@ -497,12 +493,11 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, toast: &mut
             Hit::Drag(TlKind::Playhead)
         } else if pos.y <= rect.top() + 9.0 && pos.x >= xs && pos.x <= xe {
             Hit::Drag(TlKind::Range)
-        } else if let Some(&(i, _)) = splits.iter().find(|(_, x)| (pos.x - x).abs() <= 4.0).filter(|_| !selecting) {
+        } else if let Some(&(i, _)) = splits.iter().find(|(_, x)| (pos.x - x).abs() <= 4.0) {
             Hit::Split(i)
-        } else if selecting {
-            Hit::Drag(TlKind::Select)
         } else {
-            Hit::Drag(TlKind::Scrub)
+            // 縮圖上拖曳就是選取一段（不用按 Shift）；點一下是跳到那裡
+            Hit::Drag(TlKind::Select)
         }
     };
     let mut tip: Option<String> = None;
@@ -534,7 +529,7 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, toast: &mut
                     TlKind::SelA | TlKind::SelB => (CursorIcon::ResizeHorizontal, tr!("拖曳調整選取的範圍", "Drag to adjust the selection").into()),
                     TlKind::Playhead => (CursorIcon::Grab, tr!("拖曳跳到其他時間", "Drag to jump to another time").into()),
                     TlKind::Range => (CursorIcon::Grab, tr!("拖曳整段保留範圍（長度不變）", "Drag to move the whole kept range (the length stays the same)").into()),
-                    TlKind::Select => (CursorIcon::Text, String::new()),
+                    TlKind::Select => (CursorIcon::Text, tr!("拖曳選取一段（刪除、加速）・點一下跳到這裡", "Drag to select a section (delete, speed up) · click to jump here").into()),
                     TlKind::Scrub if ruler.contains(pos) => (CursorIcon::PointingHand, tr!("點一下或拖曳移動播放頭", "Click or drag to move the playhead").into()),
                     TlKind::Scrub => (CursorIcon::PointingHand, String::new()),
                 },
@@ -662,9 +657,6 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, toast: &mut
     // ── 捲軸 ──
     ui.add_space(4.0 - ui.spacing().item_spacing.y);
     scrollbar(ed, ui);
-
-    // ── 工具：選取範圍、加標記、顯示刪掉的部分、顯示全部、快速鍵 ──
-    tools(ed, ui, toast);
 }
 
 /// 秒數（一位小數，去掉多餘的 0）
@@ -672,64 +664,8 @@ fn fmt_secs(s: f64) -> String {
     screenrecorder_core::format::num((s * 10.0).round() / 10.0)
 }
 
-fn tools(ed: &mut Editor, ui: &mut egui::Ui, toast: &mut Option<(String, bool)>) {
-    ui.horizontal(|ui| {
-        ui.set_height(28.0);
-        ui.spacing_mut().item_spacing.x = 6.0;
-        if Btn::new(tr!("選取範圍", "Select range"))
-            .small()
-            .selected(ed.range_mode)
-            .tooltip(tr!(
-                "打開後在縮圖上拖曳是選取範圍（刪除、加速）；關閉時拖曳是移動播放頭，按住 Shift 拖曳也能選取",
-                "When on, dragging on the thumbnails selects a range (to delete or speed up); when off, dragging moves the playhead and Shift + drag selects"
-            ))
-            .show(ui)
-            .clicked()
-        {
-            ed.range_mode = !ed.range_mode;
-        }
-        if Btn::new(tr!("＋ 加標記（M）", "+ Marker (M)"))
-            .small()
-            .ghost()
-            .enabled(ed.duration > 0.0)
-            .tooltip(tr!(
-                "在播放頭加上標記，輸出時變成章節（按兩下旗子改名、右鍵刪除）",
-                "Add a marker at the playhead; it becomes a chapter in the output (double-click a flag to rename, right-click to delete)"
-            ))
-            .show(ui)
-            .clicked()
-        {
-            *toast = Some(ed.add_marker());
-        }
-        let mut show = ed.show_removed;
-        if theme::check(ui, &mut show, RichText::new(tr!("顯示刪掉的部分", "Show removed parts")).font(theme::font(12.5)))
-            .on_hover_text(tr!(
-                "播放時預設會跳過刪掉的片段、加速的片段快轉，看到的就是剪輯後的樣子；勾選後全部照原樣播放",
-                "Playback skips removed parts and fast-forwards sped-up parts by default, so you see the edited result; check this to play everything as recorded"
-            ))
-            .changed()
-        {
-            ed.show_removed = show;
-        }
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            let keys = Btn::new(tr!("快速鍵", "Shortcuts")).icon(theme::Icon::Keyboard).small().ghost().show(ui);
-            shortcut_sheet(&keys);
-            if ed.zoomed()
-                && Btn::new(tr!("顯示全部", "Show all"))
-                    .ghost()
-                    .small()
-                    .tooltip(tr!("時間軸縮回整支影片（在時間軸上轉滾輪可以放大縮小）", "Zoom the timeline out to the whole video (scroll on the timeline to zoom)"))
-                    .show(ui)
-                    .clicked()
-            {
-                ed.set_view(0.0, ed.duration);
-            }
-        });
-    });
-}
-
 /// 快速鍵說明（按「快速鍵」打開）
-fn shortcut_sheet(resp: &egui::Response) {
+pub(super) fn shortcut_sheet(resp: &egui::Response) {
     egui::Popup::menu(resp).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
         ui.set_min_width(320.0);
         ui.label(RichText::new(tr!("剪輯的快速鍵", "Editing shortcuts")).font(theme::font_bold(13.5)));
@@ -739,7 +675,7 @@ fn shortcut_sheet(resp: &egui::Response) {
             ("Shift+← / →", "往前 / 往後 1 秒", "Back / forward 1 second"),
             ("I / O", "播放頭設為開頭 / 結尾", "Set the start / end at the playhead"),
             ("S", "在播放頭分割", "Split at the playhead"),
-            ("Shift + 拖曳", "在縮圖上選取範圍", "Select a range on the thumbnails"),
+            ("縮圖上拖曳", "選取一段", "Select a section"),
             ("Delete", "刪除選取的範圍或標註", "Delete the selected range or annotation"),
             ("D", "刪除選取的範圍", "Delete the selected range"),
             ("M", "在播放頭加標記", "Add a marker at the playhead"),
@@ -754,7 +690,7 @@ fn shortcut_sheet(resp: &egui::Response) {
         ];
         egui::Grid::new("ed-keys").num_columns(2).spacing(vec2(16.0, 6.0)).show(ui, |ui| {
             for (k, zh, en) in rows {
-                let key = if screenrecorder_core::i18n::is_en() { k.replace("滾輪", "Wheel").replace("拖曳", "drag") } else { k.to_string() };
+                let key = if screenrecorder_core::i18n::is_en() { k.replace("縮圖上拖曳", "Drag on thumbnails").replace("滾輪", "Wheel").replace("拖曳", "drag") } else { k.to_string() };
                 ui.label(RichText::new(key).font(theme::mono(12.0)));
                 ui.label(RichText::new(tr!(zh, en)).font(theme::font(12.5)));
                 ui.end_row();

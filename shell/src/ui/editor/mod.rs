@@ -227,9 +227,9 @@ enum TlKind {
     End,
     Playhead,
     Range,
-    /// 選取範圍（Shift + 拖曳，或打開「選取範圍」）
+    /// 選取範圍（在縮圖上拖曳）
     Select,
-    /// 拖曳播放頭到其他時間（尺規、縮圖上一般的拖曳）
+    /// 拖曳播放頭到其他時間（尺規）
     Scrub,
     /// 拖曳選取範圍的開頭 / 結尾
     SelA,
@@ -378,8 +378,6 @@ pub struct Editor {
     out_auto: Option<(String, String, Instant)>,
     /// 按了 Ctrl+S（需要 app，在 show 裡儲存）
     save_now: bool,
-    /// 「選取範圍」：在縮圖上拖曳是選取（關閉時拖曳是移動播放頭，按住 Shift 才選取）
-    range_mode: bool,
     /// 「顯示刪掉的部分」：播放時不跳過刪掉的片段（預設跳過，看到的就是剪輯後的樣子）
     show_removed: bool,
     /// 剛按了「全部重設」：提示可以復原
@@ -688,7 +686,6 @@ impl Editor {
             out_path: None,
             out_auto: None,
             save_now: false,
-            range_mode: false,
             show_removed: false,
             reset_toast: false,
             clicks: vec![],
@@ -2794,7 +2791,7 @@ fn main_column(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, toast: &
         tour::mark(ui, Spot::ShCanvas, egui::Rect::from_min_size(ui.cursor().min, vec2(ui.available_width(), h)));
         return stage::show(ed, ui, ctx, h);
     }
-    let below = timeline::RULER_H + timeline::TL_H + 4.0 + timeline::ann_track_h(ed) + 4.0 + timeline::SCROLL_H + 8.0 + timeline::TOOLS_H + 8.0 + 34.0 + 8.0;
+    let below = timeline::RULER_H + timeline::TL_H + 4.0 + timeline::ann_track_h(ed) + 4.0 + timeline::SCROLL_H + 8.0 + 34.0 + 8.0;
     let stage_h = (ui.available_height() - below - 8.0).max(140.0);
     stage::show(ed, ui, ctx, stage_h);
     let top = ui.cursor().min.y;
@@ -2803,8 +2800,11 @@ fn main_column(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, toast: &
     transport(ed, ui, toast);
 }
 
+/// 時間軸下方一排：播放、預覽結果｜往前往後｜分割、標記、擷取、顯示刪掉的部分｜時間、快速鍵。
+/// 每個功能都一按就到；放不下時有文字的按鈕改成只有圖示（滑鼠移上去看名稱與快速鍵）
 fn transport(ed: &mut Editor, ui: &mut egui::Ui, toast: &mut Option<(String, bool)>) {
     ui.horizontal(|ui| {
+        ui.set_height(34.0);
         let playing = ed.player.is_playing() && !ed.previewing;
         let play_tip = if ed.show_removed {
             tr!("播放 / 暫停（空白鍵）", "Play / pause (Space)")
@@ -2834,37 +2834,31 @@ fn transport(ed: &mut Editor, ui: &mut egui::Ui, toast: &mut Option<(String, boo
                 ed.start_preview();
             }
         }
-        ui.add_space(4.0);
+        ui.add_space(6.0);
         ui.spacing_mut().item_spacing.x = 2.0;
-        // 右邊留給時間；放不下時分割、擷取只顯示圖示，再放不下就不顯示「±1 秒」（Shift+←／→ 一樣可以用）
-        let clock_w = ui.painter().layout_no_wrap("00:00.0 / 00:00.0".into(), theme::mono(14.0), Color32::WHITE).size().x + 12.0;
-        let split_full = Btn::new(tr!("在這裡分割（S）", "Split here (S)")).icon(theme::Icon::Cut).ghost().small();
-        let grab_full = Btn::new(tr!("擷取這一格", "Grab frame")).icon(theme::Icon::Camera).ghost().small();
-        let icon_w = Btn::icon_only(theme::Icon::Camera).ghost().small().width(ui) + 2.0;
-        let back = Btn::new(tr!("−1 秒", "−1 s")).ghost().small().tooltip(tr!("上一秒（Shift+←）", "Back 1 second (Shift+←)"));
-        let fwd = Btn::new(tr!("+1 秒", "+1 s")).ghost().small().tooltip(tr!("下一秒（Shift+→）", "Forward 1 second (Shift+→)"));
-        let prev = Btn::new(tr!("上一格", "Prev")).ghost().small().tooltip(tr!("上一格（←）", "Previous frame (←)"));
-        let next = Btn::new(tr!("下一格", "Next")).ghost().small().tooltip(tr!("下一格（→）", "Next frame (→)"));
-        let steps_w = prev.width(ui) + next.width(ui) + 4.0;
-        let secs_w = back.width(ui) + fwd.width(ui) + 4.0;
-        let seconds = ui.available_width() - clock_w - steps_w - secs_w - 6.0 >= icon_w * 2.0;
-        if seconds && back.show(ui).clicked() {
+        let step = |ui: &mut egui::Ui, b: Btn| b.ghost().small().show(ui).clicked();
+        if step(ui, Btn::new(tr!("−1 秒", "−1 s")).tooltip(tr!("往前 1 秒（Shift+←）", "Back 1 second (Shift+←)"))) {
             ed.step(None, -1.0);
         }
-        if prev.show(ui).clicked() {
+        if step(ui, Btn::icon_only(theme::Icon::ChevL).tooltip(tr!("上一格（←）", "Previous frame (←)"))) {
             ed.step(Some(-1), 0.0);
         }
-        if next.show(ui).clicked() {
+        if step(ui, Btn::icon_only(theme::Icon::ChevR).tooltip(tr!("下一格（→）", "Next frame (→)"))) {
             ed.step(Some(1), 0.0);
         }
-        if seconds && fwd.show(ui).clicked() {
+        if step(ui, Btn::new(tr!("+1 秒", "+1 s")).tooltip(tr!("往後 1 秒（Shift+→）", "Forward 1 second (Shift+→)"))) {
             ed.step(None, 1.0);
         }
-        ui.add_space(6.0);
-        let room = ui.available_width() - clock_w;
-        let split_text = room >= split_full.width(ui) + icon_w;
-        let grab_text = room >= split_full.width(ui) + grab_full.width(ui) + 2.0;
-        let split = if split_text { split_full } else { Btn::icon_only(theme::Icon::Cut).ghost().small() };
+        ui.add_space(8.0);
+        // 右邊留給時間、快速鍵（放大時還有「顯示全部」）；放不下時分割、標記只顯示圖示
+        let clock_w = ui.painter().layout_no_wrap("00:00.0 / 00:00.0".into(), theme::mono(14.0), Color32::WHITE).size().x + 12.0;
+        let icon_w = Btn::icon_only(theme::Icon::Camera).ghost().small().width(ui) + 2.0;
+        let all_w = if ed.zoomed() { Btn::new(tr!("顯示全部", "Show all")).ghost().small().width(ui) + 2.0 } else { 0.0 };
+        let split_full = Btn::new(tr!("分割（S）", "Split (S)")).icon(theme::Icon::Cut).ghost().small();
+        let mark_full = Btn::new(tr!("＋ 標記（M）", "+ Marker (M)")).ghost().small();
+        let room = ui.available_width() - clock_w - icon_w - all_w - icon_w * 2.0;
+        let text = room >= split_full.width(ui) + mark_full.width(ui) + 4.0;
+        let split = if text { split_full } else { Btn::icon_only(theme::Icon::Cut).ghost().small() };
         if split
             .tooltip(tr!(
                 "在這裡分割（S）：在播放頭把影片切開，之後點一段就能選取它（刪除、加速）",
@@ -2875,16 +2869,59 @@ fn transport(ed: &mut Editor, ui: &mut egui::Ui, toast: &mut Option<(String, boo
         {
             *toast = Some(ed.split_here());
         }
-        let grab = if grab_text { grab_full } else { Btn::icon_only(theme::Icon::Camera).ghost().small() };
-        if grab
+        let mark = if text { mark_full } else { Btn::icon_only(theme::Icon::Pin).ghost().small() };
+        if mark
+            .enabled(ed.duration > 0.0)
+            .tooltip(tr!(
+                "在播放頭加上標記（M），輸出時變成章節（按兩下旗子改名、右鍵刪除；章節清單在「字幕」分頁）",
+                "Add a marker at the playhead (M); it becomes a chapter in the output (double-click a flag to rename, right-click to delete; the chapter list is in the Subtitles tab)"
+            ))
+            .show(ui)
+            .clicked()
+        {
+            *toast = Some(ed.add_marker());
+        }
+        if Btn::icon_only(theme::Icon::Camera)
+            .ghost()
+            .small()
             .tooltip(tr!("擷取這一格：把目前這一格存成截圖（原尺寸 PNG），並複製到剪貼簿", "Grab frame: save the current frame as a screenshot (full-size PNG) and copy it to the clipboard"))
             .show(ui)
             .clicked()
         {
             ed.pending = Some(shot::Act::Grab);
         }
+        if Btn::icon_only(theme::Icon::Eye)
+            .ghost()
+            .small()
+            .selected(ed.show_removed)
+            .tooltip(if ed.show_removed {
+                tr!("顯示刪掉的部分：開（播放時照原樣播，不跳過刪掉的片段）。點一下關掉", "Show removed parts: on (everything plays as recorded). Click to turn off")
+            } else {
+                tr!(
+                    "顯示刪掉的部分：關（播放時跳過刪掉的片段、加速的片段快轉，看到的就是剪輯後的樣子）。點一下打開",
+                    "Show removed parts: off (playback skips removed parts and fast-forwards sped-up parts). Click to turn on"
+                )
+            })
+            .show(ui)
+            .clicked()
+        {
+            ed.show_removed = !ed.show_removed;
+        }
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            let keys = Btn::icon_only(theme::Icon::Keyboard).ghost().small().tooltip(tr!("剪輯的快速鍵", "Editing shortcuts")).show(ui);
+            timeline::shortcut_sheet(&keys);
             ui.label(RichText::new(format!("{} / {}", video_clock(ed.now()), video_clock(ed.duration))).font(theme::mono(14.0)));
+            if ed.zoomed()
+                && Btn::new(tr!("顯示全部", "Show all"))
+                    .ghost()
+                    .small()
+                    .tooltip(tr!("時間軸縮回整支影片（在時間軸上轉滾輪可以放大縮小）", "Zoom the timeline out to the whole video (scroll on the timeline to zoom)"))
+                    .show(ui)
+                    .clicked()
+            {
+                let d = ed.duration;
+                ed.set_view(0.0, d);
+            }
         });
     });
 }
