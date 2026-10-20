@@ -58,8 +58,8 @@ fn items(_app: &UiApp) -> Vec<(String, String, Try)> {
         (
             tr!("檔案庫標出已在媒體庫的錄影", "The library shows what's already on the NAS").into(),
             tr!(
-                "NAS 上任何一層有同名、同大小的一份時，檔名旁邊出現綠色勾勾，滑鼠移上去看在哪個資料夾；篩選選「還沒傳到媒體庫」只列出還沒傳的。改名、刪除時，NAS 上的那一份也會跟著改。",
-                "A green check appears next to recordings that have a copy with the same name and size on the NAS; hover to see which folder. Filter by “Not in the library yet” to list the rest. Renames and deletes follow the copy in its subfolder."
+                "NAS 上任何一層有同名、同大小的一份時，檔名旁邊出現綠色的「✓ Jellyfin」，滑鼠移上去看在哪個資料夾；篩選選「還沒傳到媒體庫」只列出還沒傳的。改名、刪除時，NAS 上的那一份也會跟著改。",
+                "A green “✓ Jellyfin” tag appears next to recordings that have a copy with the same name and size on the NAS; hover to see which folder. Filter by “Not in the library yet” to list the rest. Renames and deletes follow the copy in its subfolder."
             )
             .into(),
             Try::Library(false),
