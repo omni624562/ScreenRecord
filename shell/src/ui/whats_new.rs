@@ -38,31 +38,22 @@ enum Try {
 fn items(_app: &UiApp) -> Vec<(String, String, Try)> {
     vec![
         (
-            tr!("主畫面更簡單", "A simpler main screen").into(),
+            tr!("設定分得更清楚", "Clearer settings").into(),
             tr!(
-                "沒在錄影時，右邊只留聲音、「開始錄影」和截圖按鈕；計時器和檔案大小等開始錄影才出現。快速鍵直接寫在按鈕上。",
-                "When you're not recording, the right side shows just audio, Start recording and the screenshot buttons; the timer and file size appear once you start. Shortcuts are written right on the buttons."
+                "設定分成 10 頁：語言、外觀、介面大小、開機啟動在「一般」；截圖的選項有自己的一頁；「進階」只剩擷取與編碼、疑難排解。",
+                "Settings now have 10 pages: language, appearance, interface size and startup are under General; screenshots have their own page; Advanced keeps only capture, encoding and troubleshooting."
             )
             .into(),
-            Try::None,
+            Try::Settings(Page::General),
         ),
         (
-            tr!("更多工具", "More tools").into(),
+            tr!("存檔與分享：媒體庫", "Saving & sharing: Media library").into(),
             tr!(
-                "回溯錄影、排程錄影、講稿小視窗、設定組合移到右上角的「更多工具 ▾」。",
-                "Replay buffer, scheduled recording, the script window and presets are now under “More tools ▾” at the top right."
+                "媒體庫資料夾（NAS、Jellyfin）和 Jellyfin 的設定都在「存檔與分享」。選了資料夾不一定要錄完自動傳：在「錄完自動處理」另外打開就好，只用「傳到媒體庫」手動傳也可以。",
+                "The library folder (NAS, Jellyfin) and the Jellyfin settings are under Saving & sharing. Choosing a folder no longer means every recording is copied automatically: turn that on in After recording, or just use “Send to library” by hand."
             )
             .into(),
-            Try::None,
-        ),
-        (
-            tr!("檔案庫：錄影｜截圖", "Library: Videos | Screenshots").into(),
-            tr!(
-                "「全部錄影」「全部截圖」放成一組「檔案庫」，點哪個就直接打開那一頁。檢視器的向左轉、向右轉，和卡片上的「在資料夾中顯示」也都改回一按就到。",
-                "“All recordings” and “All screenshots” are grouped as “Library”; each still opens its page in one click. Rotate left / right in the viewer and “Show in folder” on cards are one click again too."
-            )
-            .into(),
-            Try::Library(false),
+            Try::Settings(Page::Save),
         ),
     ]
 }
