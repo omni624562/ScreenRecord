@@ -1511,10 +1511,20 @@ fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table:
             } else {
                 tui.allocate_exact_size(vec2(16.0, 16.0), Sense::hover());
             }
-            // 已經傳到媒體庫（NAS 上有同名同大小的一份）：標出在哪個資料夾
-            if let Some(at) = app.library_where(&e.media.path, e.media.bytes) {
-                library_chip(tui, app, &at);
+            // 已經傳到媒體庫（NAS 上有同名同大小的一份）、剪輯版：各自固定一欄，上下切齊（設定了媒體庫才留媒體庫那一欄）
+            if !app.s.after_copy_to.trim().is_empty() {
+                let at = app.library_where(&e.media.path, e.media.bytes);
+                tag_column(tui, &["Jellyfin", tr!("媒體庫", "Library")], |ui| {
+                    if let Some(at) = at {
+                        library_chip(ui, app, &at);
+                    }
+                });
             }
+            tag_column(tui, &[tr!("剪輯版", "Edited")], |ui| {
+                if is_cut_name(&e.media.name) {
+                    chip(ui, tr!("剪輯版", "Edited"), Tone::Warn, false);
+                }
+            });
             if fresh {
                 if Btn::new(tr!("播放", "Play")).icon(Icon::Play).primary().small().show(tui).clicked() {
                     *req = Some(Req::Entry(EntryAction::Play, e.clone()));
@@ -1544,9 +1554,6 @@ fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table:
                         "You can play and merge it. To edit it or make a sped-up version, choose “Convert to MP4” under “⋯” (the original is kept)"
                     )),
                 ));
-            }
-            if is_cut_name(&e.media.name) {
-                tags.push((tr!("剪輯版", "Edited").into(), Tone::Warn, None));
             }
             if audio {
                 tags.push((
@@ -1788,7 +1795,14 @@ pub fn library_chip(ui: &mut egui::Ui, app: &UiApp, at: &[String]) -> egui::Resp
     } else {
         (tr!("媒體庫", "Library"), trf!("已傳到媒體庫：{}", "Already in the library: {}", at.join(tr!("、", ", "))))
     };
-    chip(ui, &format!("✓ {text}"), Tone::Ok, false).on_hover_text(tip)
+    chip(ui, text, Tone::Ok, false).on_hover_text(tip)
+}
+
+/// 清單右邊固定寬度的一欄（right_to_left 排版裡）：標籤靠左放，沒有標籤時留空，上下各列才會切齊
+fn tag_column(ui: &mut egui::Ui, texts: &[&str], add: impl FnOnce(&mut egui::Ui)) {
+    let w = texts.iter().map(|t| ui.fonts_mut(|f| f.layout_no_wrap(t.to_string(), theme::font_bold(11.5), Color32::WHITE).size().x) + 14.0).fold(0.0, f32::max);
+    let h = ui.available_height();
+    ui.allocate_ui_with_layout(vec2(w, h), Layout::left_to_right(Align::Center), add);
 }
 
 pub fn audio_mark(ui: &mut egui::Ui) -> egui::Response {
