@@ -104,7 +104,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context, d: &mut LibraryDialog) {
         });
         ui.add_space(6.0);
         theme::check(ui, &mut b.save, RichText::new(tr!("也存成「錄完自動處理」的設定", "Also use these for After recording")).font(theme::font(12.5)))
-            .on_hover_text(tr!("之後每次錄完也照這些設定處理（設定 → 錄完處理）", "Every new recording is then processed the same way (Settings → After recording)"));
+            .on_hover_text(tr!("之後每次錄完也照這些設定處理（設定 → 錄完自動處理）", "Every new recording is then processed the same way (Settings → After recording)"));
         ui.add_space(10.0);
         ui.label(
             RichText::new(tr!(

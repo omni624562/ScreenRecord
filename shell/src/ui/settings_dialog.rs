@@ -1413,8 +1413,8 @@ fn move_shots(app: &mut UiApp, from: String, to: String) {
                 let more = if r.failed.len() > 3 { tr!("等", " and others") } else { "" };
                 app.toast(
                     trf!(
-                        "搬了 {} 張，{} 張沒搬成（{}{}），原檔還在原處，可能正被其他程式開著；稍後可在「設定 → 儲存位置」再搬一次",
-                        "Moved {}; {} couldn't be moved ({}{}). They're still in the old folder and may be open in another app. You can try again in Settings → Save location",
+                        "搬了 {} 張，{} 張沒搬成（{}{}），原檔還在原處，可能正被其他程式開著；稍後可在「設定 → 存檔與分享」再搬一次",
+                        "Moved {}; {} couldn't be moved ({}{}). They're still in the old folder and may be open in another app. You can try again in Settings → Saving & sharing",
                         r.moved.len(),
                         r.failed.len(),
                         names.join("、"),
