@@ -198,6 +198,11 @@ pub struct UiApp {
     pub recent: Option<LibraryPage>,
     pub recent_page: usize,
     recent_seq: u64,
+    /// 最近錄影上次讀的時間；視窗上次有沒有焦點、檔案庫上次開著沒（從檔案總管、手機同步放進資料夾的影片，
+    /// 程式不會知道：切回視窗、關掉檔案庫、每 2 分鐘重讀一次）
+    recent_at: Instant,
+    was_focused: bool,
+    library_was_open: bool,
     pub recent_per_page: usize,
     /// 已知的錄影（最近錄影、全部錄影），操作按鈕用完整資訊
     pub known: HashMap<String, LibraryEntry>,
@@ -344,6 +349,9 @@ impl UiApp {
             recent: None,
             recent_page: 1,
             recent_seq: 0,
+            recent_at: Instant::now(),
+            was_focused: true,
+            library_was_open: false,
             recent_per_page: 4,
             known: HashMap::new(),
             export_dlg: None,
@@ -986,6 +994,7 @@ impl UiApp {
     }
 
     pub fn load_recent(&mut self) {
+        self.recent_at = Instant::now();
         self.recent_seq += 1;
         let seq = self.recent_seq;
         let core = self.core.clone();
@@ -1001,6 +1010,18 @@ impl UiApp {
             }
             app.recent = Some(page);
         });
+    }
+
+    /// 資料夾裡的影片可能被別的程式加進去、刪掉（檔案總管、手機同步）：切回這個視窗、關掉檔案庫時、
+    /// 或每 2 分鐘，重讀最近錄影
+    fn refresh_recent_if_stale(&mut self, ctx: &egui::Context) {
+        let focused = ctx.input(|i| i.viewport().focused).unwrap_or(true);
+        let library_open = self.library.is_some();
+        let back = (focused && !self.was_focused) || (self.library_was_open && !library_open);
+        (self.was_focused, self.library_was_open) = (focused, library_open);
+        if self.visible && self.recent.is_some() && (back || self.recent_at.elapsed() > Duration::from_secs(120)) {
+            self.load_recent();
+        }
     }
 
     /// 旋轉影片：檢視器正在播這支就先放開，改好再從同一個位置播；縮圖、清單重新讀
@@ -1414,6 +1435,7 @@ impl eframe::App for UiApp {
         self.watch_window();
         self.flush_settings();
         self.flush_pending();
+        self.refresh_recent_if_stale(ctx);
         self.poll_status();
         self.handle_close(ctx);
         self.apply_theme(ctx);
