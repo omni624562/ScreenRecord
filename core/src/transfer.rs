@@ -3,6 +3,8 @@
 //!   Jellyfin 的即時監控也不會掃到還沒傳完的檔案
 //! - 傳的時候記下進度（畫面顯示「1.2 / 3.4 GB」），可以取消
 //! - 連不到 NAS 時記進待傳清單（存在設定資料夾的 pending-sends.json），連上後補傳
+//! - 從 Jellyfin 下載到這台電腦也用同樣的方式（先寫暫存檔、顯示進度、可以取消）
+//! - 傳好之後 Jellyfin 還在整理的（掃描、時間軸預覽縮圖）也列出來，好了才拿掉
 
 use crate::{tr, trf};
 use serde::{Deserialize, Serialize};
@@ -18,6 +20,8 @@ pub struct Active {
     pub name: String,
     pub done: u64,
     pub total: u64,
+    /// 從 Jellyfin 下載（不是傳到 NAS）
+    pub down: bool,
 }
 
 struct Slot {
@@ -26,6 +30,7 @@ struct Slot {
     done: Arc<AtomicU64>,
     total: u64,
     cancel: Arc<AtomicBool>,
+    down: bool,
 }
 
 static ACTIVE: Mutex<Vec<Slot>> = Mutex::new(Vec::new());
@@ -33,7 +38,7 @@ static NEXT: AtomicU64 = AtomicU64::new(1);
 
 /// 正在傳的檔案（畫面顯示進度用）；只列大於 8 MB 的（字幕、小檔一下就傳完，不用顯示）
 pub fn active() -> Vec<Active> {
-    ACTIVE.lock().unwrap().iter().filter(|s| s.total > 8 << 20).map(|s| Active { id: s.id, name: s.name.clone(), done: s.done.load(Ordering::Relaxed), total: s.total }).collect()
+    ACTIVE.lock().unwrap().iter().filter(|s| s.total > 8 << 20).map(|s| Active { id: s.id, name: s.name.clone(), done: s.done.load(Ordering::Relaxed), total: s.total, down: s.down }).collect()
 }
 
 /// 取消正在傳的那一個（暫存檔會刪掉，原本 NAS 上的那一份不動）
@@ -50,12 +55,28 @@ pub fn is_cancelled(e: &std::io::Error) -> bool {
 
 /// 複製到 NAS：先寫暫存檔，傳完才換成正式檔名（同名的舊檔這時才被換掉），修改時間和原檔一樣。回傳複製了幾個位元組
 pub fn copy(from: &Path, to: &Path) -> std::io::Result<u64> {
+    let total = std::fs::metadata(from)?.len();
+    let src = std::fs::File::open(from)?;
+    let r = save(src, total, to, false);
+    if r.is_ok() {
+        if let Ok(t) = std::fs::metadata(from).and_then(|m| m.modified()) {
+            crate::paths::set_mtime(to, t);
+        }
+    }
+    r
+}
+
+/// 從 src 讀出來存成 to（Jellyfin 下載也用）：先寫暫存檔，完整了才換成正式檔名。total：全部幾個位元組（不知道時 0）
+pub fn save(src: impl Read, total: u64, to: &Path, down: bool) -> std::io::Result<u64> {
     let name = to.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     let tmp = to.with_file_name(format!(".{name}.part"));
-    let total = std::fs::metadata(from)?.len();
     let (id, done, cancel) = (NEXT.fetch_add(1, Ordering::Relaxed), Arc::new(AtomicU64::new(0)), Arc::new(AtomicBool::new(false)));
-    ACTIVE.lock().unwrap().push(Slot { id, name: name.clone(), done: done.clone(), total, cancel: cancel.clone() });
-    let r = copy_to_tmp(from, &tmp, &done, &cancel).and_then(|n| {
+    ACTIVE.lock().unwrap().push(Slot { id, name: name.clone(), done: done.clone(), total, cancel: cancel.clone(), down });
+    let r = copy_to_tmp(src, &tmp, &done, &cancel).and_then(|n| {
+        // 少了一截（下載到一半斷線）：不算完成
+        if total > 0 && n < total {
+            return Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, tr!("連線中斷，沒有收完", "The connection dropped before it finished")));
+        }
         // Windows 的 rename 遇到同名檔會換掉；有的 NAS（SMB）不行，先刪掉舊的再換
         if std::fs::rename(&tmp, to).is_err() {
             let _ = std::fs::remove_file(to);
@@ -64,21 +85,13 @@ pub fn copy(from: &Path, to: &Path) -> std::io::Result<u64> {
         Ok(n)
     });
     ACTIVE.lock().unwrap().retain(|s| s.id != id);
-    match &r {
-        Ok(_) => {
-            if let Ok(t) = std::fs::metadata(from).and_then(|m| m.modified()) {
-                crate::paths::set_mtime(to, t);
-            }
-        }
-        Err(_) => {
-            let _ = std::fs::remove_file(&tmp);
-        }
+    if r.is_err() {
+        let _ = std::fs::remove_file(&tmp);
     }
     r
 }
 
-fn copy_to_tmp(from: &Path, tmp: &Path, done: &AtomicU64, cancel: &AtomicBool) -> std::io::Result<u64> {
-    let mut src = std::fs::File::open(from)?;
+fn copy_to_tmp(mut src: impl Read, tmp: &Path, done: &AtomicU64, cancel: &AtomicBool) -> std::io::Result<u64> {
     let mut dst = std::io::BufWriter::with_capacity(4 << 20, std::fs::File::create(tmp)?);
     let mut buf = vec![0u8; 4 << 20];
     let mut n = 0u64;
@@ -96,6 +109,22 @@ fn copy_to_tmp(from: &Path, tmp: &Path, done: &AtomicU64, cancel: &AtomicBool) -
     }
     dst.into_inner().map_err(|e| e.into_error())?.sync_all()?;
     Ok(n)
+}
+
+/// Jellyfin 還在整理的影片：（檔名, 在做什麼）
+static STAGES: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
+
+/// 記下（或拿掉）這支影片 Jellyfin 正在做什麼（畫面右下角顯示）
+pub fn set_stage(name: &str, what: Option<String>) {
+    let mut g = STAGES.lock().unwrap();
+    g.retain(|(n, _)| n != name);
+    if let Some(w) = what {
+        g.push((name.to_string(), w));
+    }
+}
+
+pub fn stages() -> Vec<(String, String)> {
+    STAGES.lock().unwrap().clone()
 }
 
 /// 連得到媒體庫資料夾嗎（NAS 沒開、不在家時連不到）
@@ -213,8 +242,22 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let tmp = dir.path().join(".b.part");
         std::fs::write(dir.path().join("b"), "x").unwrap();
-        let e = copy_to_tmp(&dir.path().join("b"), &tmp, &AtomicU64::new(0), &AtomicBool::new(true)).unwrap_err();
+        let e = copy_to_tmp(std::fs::File::open(dir.path().join("b")).unwrap(), &tmp, &AtomicU64::new(0), &AtomicBool::new(true)).unwrap_err();
         assert!(is_cancelled(&e));
+    }
+
+    #[test]
+    fn a_short_download_is_not_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let to = dir.path().join("c.mp4");
+        assert!(save(&b"12345"[..], 10, &to, true).is_err());
+        assert!(!to.exists() && !dir.path().join(".c.mp4.part").exists());
+        assert_eq!(save(&b"12345"[..], 5, &to, true).unwrap(), 5);
+        assert_eq!(std::fs::read(&to).unwrap(), b"12345");
+        set_stage("c.mp4", Some("掃描中".into()));
+        assert_eq!(stages(), [("c.mp4".to_string(), "掃描中".to_string())]);
+        set_stage("c.mp4", None);
+        assert!(stages().is_empty());
     }
 
     #[test]

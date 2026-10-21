@@ -563,10 +563,12 @@ async fn reachable_bg(root: &str) -> bool {
     tokio::task::spawn_blocking(move || transfer::reachable(&root)).await.unwrap_or(false)
 }
 
-/// 傳到 NAS 的進度（右下角）：檔名、百分比、已傳 / 全部，可以取消
+/// 傳到 NAS、從 Jellyfin 下載的進度（右下角）：檔名、百分比、已傳 / 全部，可以取消；
+/// 傳好之後 Jellyfin 還在整理的（等它掃描到、做時間軸預覽縮圖）也列在這裡，好了才拿掉
 pub fn transfer_bar(app: &mut UiApp, ctx: &egui::Context) {
     let list = transfer::active();
-    if list.is_empty() {
+    let stages = transfer::stages();
+    if list.is_empty() && stages.is_empty() {
         return;
     }
     let gb = |b: u64| screenrecorder_core::format::format_bytes(b);
@@ -577,10 +579,12 @@ pub fn transfer_bar(app: &mut UiApp, ctx: &egui::Context) {
             for t in &list {
                 let frac = if t.total > 0 { t.done as f32 / t.total as f32 } else { 0.0 };
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new(tr!("傳到 NAS", "Sending to NAS")).font(theme::font_bold(12.5)));
+                    let what = if t.down { tr!("下載", "Downloading") } else { tr!("傳到 NAS", "Sending to NAS") };
+                    ui.label(RichText::new(what).font(theme::font_bold(12.5)));
                     ui.add(egui::Label::new(RichText::new(&t.name).font(theme::font(12.0)).color(p.muted)).truncate());
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if Btn::icon_only(Icon::Close).ghost().small().tooltip(tr!("取消（NAS 上原本的那一份不會動）", "Cancel (the copy already on the NAS stays)")).show(ui).clicked() {
+                        let tip = if t.down { tr!("取消下載", "Cancel the download") } else { tr!("取消（NAS 上原本的那一份不會動）", "Cancel (the copy already on the NAS stays)") };
+                        if Btn::icon_only(Icon::Close).ghost().small().tooltip(tip).show(ui).clicked() {
                             transfer::cancel(t.id);
                         }
                     });
@@ -588,10 +592,18 @@ pub fn transfer_bar(app: &mut UiApp, ctx: &egui::Context) {
                 ui.add(egui::ProgressBar::new(frac).desired_height(6.0).fill(p.accent));
                 ui.label(RichText::new(format!("{:.0}%　{} / {}", frac * 100.0, gb(t.done), gb(t.total))).font(theme::font(11.5)).color(p.muted));
             }
+            for (name, what) in &stages {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label(RichText::new(tr!("Jellyfin 整理中", "Jellyfin is processing")).font(theme::font_bold(12.5)));
+                    ui.add(egui::Label::new(RichText::new(name).font(theme::font(12.0)).color(p.muted)).truncate());
+                });
+                ui.label(RichText::new(what).font(theme::font(11.5)).color(p.muted));
+            }
         });
     });
     let _ = app;
-    ctx.request_repaint_after(Duration::from_millis(250));
+    ctx.request_repaint_after(Duration::from_millis(if list.is_empty() { 1000 } else { 250 }));
 }
 
 /// 這些資料夾裡的影片（路徑, 小寫檔名）

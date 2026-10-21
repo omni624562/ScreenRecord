@@ -1,18 +1,21 @@
 //! 瀏覽 Jellyfin：列出伺服器上的媒體庫、資料夾、影片（家人用手機傳上去的也看得到），點了就在檢視器裡串流播放。
-//! 不在家時只要連得到 Jellyfin 也能看。見 core::jellyfin 的 views、items、stream_url
+//! 不在家時只要連得到 Jellyfin 也能看。最上層先列「繼續觀看」「最近加入」；資料夾裡可以排序、只看沒看過的等。
+//! 可以多選一次下載到這台電腦（下載回來就能剪輯）或刪除。見 core::jellyfin 的 views、items、stream_url
 
 use super::theme::{self, Btn, Icon};
-use super::{viewer, UiApp};
+use super::{viewer, ToastAction, UiApp};
 use eframe::egui::{self, pos2, vec2, Align, Align2, Id, Layout, Rect, RichText, Sense};
-use screenrecorder_core::jellyfin::{JfItem, JfKind};
-use screenrecorder_core::types::{LibraryEntry, MediaInfo};
+use screenrecorder_core::jellyfin::{Jellyfin, JfFilter, JfItem, JfKind, JfSort};
+use screenrecorder_core::types::{Chapter, LibraryEntry, MediaInfo};
 use screenrecorder_core::{tr, trf};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 /// 一頁幾個
 const PAGE: usize = 60;
 /// 每格的寬度（縮圖 16:9）
 const CELL_W: f32 = 196.0;
+/// 「繼續觀看」「最近加入」各讀幾個
+const ROW_ITEMS: usize = 12;
 
 enum Poster {
     Loading,
@@ -30,11 +33,32 @@ pub struct JfBrowse {
     search: String,
     searched: String,
     items: Option<Vec<JfItem>>,
+    /// 最上層的「繼續觀看」「最近加入」
+    resume: Vec<JfItem>,
+    latest: Vec<JfItem>,
     total: usize,
     page: usize,
+    sort: JfSort,
+    filter: JfFilter,
     error: Option<String>,
     seq: u64,
     posters: HashMap<String, Poster>,
+    /// 勾選的影片（編號 → 那支影片）
+    selected: BTreeMap<String, JfItem>,
+}
+
+impl JfBrowse {
+    /// 最上層（媒體庫清單，沒有搜尋）
+    fn at_top(&self) -> bool {
+        self.path.is_empty() && self.searched.is_empty()
+    }
+
+    /// 這支影片在畫面上的每一份（同一支可能同時在「繼續觀看」和資料夾裡）
+    fn each_mut(&mut self, id: &str, mut f: impl FnMut(&mut JfItem)) {
+        for it in self.items.iter_mut().flatten().chain(self.resume.iter_mut()).chain(self.latest.iter_mut()).filter(|i| i.id == id) {
+            f(it);
+        }
+    }
 }
 
 /// 打開瀏覽視窗（沒設定 Jellyfin 時提示到設定填）
@@ -46,7 +70,10 @@ pub fn open(app: &mut UiApp) {
     load(app);
 }
 
-/// 讀目前這一層（或搜尋結果）的這一頁
+/// 讀到的一層：（使用者, 東西, 全部幾個, 繼續觀看, 最近加入）
+type Loaded = (String, Vec<JfItem>, usize, Vec<JfItem>, Vec<JfItem>);
+
+/// 讀目前這一層（或搜尋結果）的這一頁；最上層連「繼續觀看」「最近加入」一起讀
 fn load(app: &mut UiApp) {
     let Some(jf) = app.jellyfin() else { return };
     let preferred = app.s.jellyfin_user.clone();
@@ -55,10 +82,10 @@ fn load(app: &mut UiApp) {
     d.items = None;
     d.error = None;
     d.searched = d.search.trim().to_string();
-    let (seq, user, parent, search, start) = (d.seq, d.user.clone(), d.path.last().map(|(id, _)| id.clone()), d.searched.clone(), d.page * PAGE);
+    let (seq, user, parent, search, start, sort, filter) = (d.seq, d.user.clone(), d.path.last().map(|(id, _)| id.clone()), d.searched.clone(), d.page * PAGE, d.sort, d.filter);
     app.spawn(
         async move {
-            tokio::task::spawn_blocking(move || -> Result<(String, Vec<JfItem>, usize), String> {
+            tokio::task::spawn_blocking(move || -> Result<Loaded, String> {
                 let user = match user {
                     Some(u) => u,
                     None => jf.browse_user(&preferred)?,
@@ -66,10 +93,13 @@ fn load(app: &mut UiApp) {
                 if parent.is_none() && search.is_empty() {
                     let views = jf.views(&user)?;
                     let n = views.len();
-                    return Ok((user, views, n));
+                    // 舊版 Jellyfin 沒有這兩個也沒關係：只是不列
+                    let resume = jf.resume_items(&user, ROW_ITEMS).unwrap_or_default();
+                    let latest = jf.latest_items(&user, ROW_ITEMS).unwrap_or_default();
+                    return Ok((user, views, n, resume, latest));
                 }
-                let (items, total) = jf.items(&user, parent.as_deref(), &search, start, PAGE)?;
-                Ok((user, items, total))
+                let (items, total) = jf.items(&user, parent.as_deref(), &search, start, PAGE, sort, filter)?;
+                Ok((user, items, total, vec![], vec![]))
             })
             .await
             .unwrap_or_else(|e| Err(e.to_string()))
@@ -77,10 +107,12 @@ fn load(app: &mut UiApp) {
         move |app, r| {
             let Some(d) = app.jf_browse.as_mut().filter(|d| d.seq == seq) else { return };
             match r {
-                Ok((user, items, total)) => {
+                Ok((user, items, total, resume, latest)) => {
                     d.user = Some(user);
                     d.items = Some(items);
                     d.total = total;
+                    d.resume = resume;
+                    d.latest = latest;
                 }
                 Err(e) => d.error = Some(e),
             }
@@ -116,44 +148,125 @@ fn load_poster(app: &mut UiApp, id: &str) {
     );
 }
 
-/// 從 Jellyfin 刪掉這支影片（先確認）：伺服器上的檔案一起刪，不能復原；這台電腦上的檔案不動。
-/// 刪好之後瀏覽清單拿掉它，檢視器正在播它就關掉
+/// 從 Jellyfin 刪掉這支影片（先確認）：伺服器上的檔案一起刪，不能復原；這台電腦上的檔案不動
 pub fn confirm_delete(app: &mut UiApp, id: String, name: String) {
+    confirm_delete_many(app, vec![(id, name)]);
+}
+
+/// 一次刪掉好幾支（先確認一次）。刪好之後瀏覽清單拿掉它們，檢視器正在播其中一支就關掉
+fn confirm_delete_many(app: &mut UiApp, list: Vec<(String, String)>) {
     let msg = tr!(
-        "會從 Jellyfin 和 NAS 上刪掉這個檔案，不會進資源回收筒，刪了不能復原。這台電腦上的檔案不會動。",
-        "This deletes the file from Jellyfin and the NAS. It doesn't go to a Recycle Bin and can't be undone. Files on this computer aren't touched."
+        "會從 Jellyfin 和 NAS 上刪掉，不會進資源回收筒，刪了不能復原。這台電腦上的檔案不會動。",
+        "This deletes them from Jellyfin and the NAS. They don't go to a Recycle Bin and can't be undone. Files on this computer aren't touched."
     );
-    let shown = name.clone();
-    let mut ask = super::dialogs::Ask::confirm(tr!("從 Jellyfin 刪除這支影片？", "Delete this video from Jellyfin?"), msg, tr!("刪除", "Delete"), move |app, _| {
+    let title = if list.len() == 1 {
+        tr!("從 Jellyfin 刪除這支影片？", "Delete this video from Jellyfin?").to_string()
+    } else {
+        trf!("從 Jellyfin 刪除這 {} 支影片？", "Delete these {} videos from Jellyfin?", list.len())
+    };
+    let names: Vec<String> = list.iter().map(|(_, n)| n.clone()).collect();
+    let mut ask = super::dialogs::Ask::confirm(title, msg, tr!("刪除", "Delete"), move |app, _| {
         let Some(jf) = app.jellyfin() else { return };
-        let key = id.clone();
-        app.spawn(async move { tokio::task::spawn_blocking(move || jf.delete_item(&key)).await.unwrap_or_else(|e| Err(e.to_string())) }, move |app, r| match r {
-            Ok(()) => {
+        let todo = list.clone();
+        app.spawn(
+            async move { tokio::task::spawn_blocking(move || todo.into_iter().map(|(id, name)| (jf.delete_item(&id).map(|_| id), name)).collect::<Vec<_>>()).await.unwrap_or_default() },
+            move |app, done| {
+                let ok: Vec<String> = done.iter().filter_map(|(r, _)| r.as_ref().ok().cloned()).collect();
                 if let Some(d) = app.jf_browse.as_mut() {
-                    if let Some(items) = d.items.as_mut() {
-                        let n = items.len();
-                        items.retain(|i| i.id != id);
-                        d.total = d.total.saturating_sub(n - items.len());
+                    for list in [d.items.as_mut(), Some(&mut d.resume), Some(&mut d.latest)].into_iter().flatten() {
+                        list.retain(|i| !ok.contains(&i.id));
                     }
+                    d.total = d.total.saturating_sub(ok.len());
+                    d.selected.retain(|id, _| !ok.contains(id));
                 }
-                if app.viewer.as_ref().is_some_and(|v| screenrecorder_core::jellyfin::Jellyfin::item_of_stream(&v.cur().media.path).as_deref() == Some(id.as_str())) {
+                if app.viewer.as_ref().is_some_and(|v| Jellyfin::item_of_stream(&v.cur().media.path).is_some_and(|id| ok.contains(&id))) {
                     app.viewer = None;
                 }
                 // NAS 上的檔案少了：「Jellyfin」標籤重讀
                 app.lib_index = None;
                 app.jf_watch = None;
-                app.toast(trf!("已從 Jellyfin 刪除：{name}", "Deleted from Jellyfin: {name}"), false);
-            }
-            Err(e) => app.toast(trf!("沒有刪掉：{e}", "Couldn't delete it: {e}"), true),
-        });
+                match done.iter().find_map(|(r, name)| r.as_ref().err().map(|e| (e, name))) {
+                    Some((e, name)) => app.toast(trf!("「{name}」沒有刪掉：{e}", "Couldn't delete “{name}”: {e}"), true),
+                    None if ok.len() == 1 => app.toast(trf!("已從 Jellyfin 刪除：{}", "Deleted from Jellyfin: {}", done[0].1), false),
+                    None => app.toast(trf!("已從 Jellyfin 刪除 {} 支影片", "Deleted {} videos from Jellyfin", ok.len()), false),
+                }
+            },
+        );
     });
-    ask.list = vec![shown];
+    ask.list = names;
     ask.danger = true;
     app.ask = Some(ask);
 }
 
-/// 在檢視器裡串流播放
-fn play(app: &mut UiApp, item: &JfItem) {
+/// 下載到這台電腦的儲存位置（下載回來就能剪輯、做加速版）：先寫暫存檔，右下角顯示進度、可以取消。
+/// 同名同大小的已經下載過就不再下載；同名但不同的另取「名稱 (2)」
+pub fn download(app: &mut UiApp, list: Vec<(String, String)>) {
+    let Some(jf) = app.jellyfin() else { return };
+    if list.is_empty() {
+        return;
+    }
+    let dir = std::path::PathBuf::from(app.s.out_dir(&app.env));
+    app.toast(if list.len() == 1 { trf!("正在下載：{}", "Downloading: {}", list[0].1) } else { trf!("正在下載 {} 支影片", "Downloading {} videos", list.len()) }, false);
+    app.spawn(
+        async move {
+            tokio::task::spawn_blocking(move || {
+                let mut out = vec![];
+                for (id, file) in list {
+                    let r = match free_name(&dir, &file) {
+                        Some(to) => jf.download(&id, &to).map(|_| Some(to)),
+                        None => Ok(None),
+                    };
+                    let cancelled = matches!(&r, Err(e) if e.contains(tr!("已取消", "Cancelled")));
+                    out.push((file, r));
+                    if cancelled {
+                        break;
+                    }
+                }
+                out
+            })
+            .await
+            .unwrap_or_default()
+        },
+        |app, done| {
+            let got: Vec<std::path::PathBuf> = done.iter().filter_map(|(_, r)| r.as_ref().ok().cloned().flatten()).collect();
+            if let Some(d) = app.library.as_mut() {
+                d.dirty = true;
+            }
+            app.load_recent();
+            if let Some((file, Err(e))) = done.iter().find(|(_, r)| r.is_err()) {
+                return app.toast(trf!("「{file}」沒有下載完：{e}", "“{file}” wasn't downloaded: {e}"), true);
+            }
+            let text = match got.len() {
+                0 => tr!("已經下載過了，在儲存位置裡", "Already downloaded; it's in your save folder").to_string(),
+                1 => trf!("已下載到這台電腦：{}", "Downloaded to this computer: {}", got[0].file_name().unwrap_or_default().to_string_lossy()),
+                n => trf!("已下載 {n} 支影片到這台電腦", "Downloaded {n} videos to this computer"),
+            };
+            let first = got.first().map(|p| p.display().to_string());
+            let actions = first
+                .map(|p| {
+                    vec![ToastAction::new(tr!("在資料夾中顯示", "Show in folder"), move |app| {
+                        app.act(super::EntryAction::Reveal, LibraryEntry { media: MediaInfo { path: p.clone(), ..Default::default() }, exports: vec![], hits: vec![] })
+                    })]
+                })
+                .unwrap_or_default();
+            app.toast_with(text, false, actions);
+        },
+    );
+}
+
+/// 下載的檔名：還沒有就用原本的；同名同大小（已經下載過）None；同名不同的加上 (2)、(3)…
+fn free_name(dir: &std::path::Path, file: &str) -> Option<std::path::PathBuf> {
+    let file = if file.trim().is_empty() { "jellyfin.mp4" } else { file };
+    let first = dir.join(file);
+    if !first.exists() {
+        return Some(first);
+    }
+    let (stem, ext) = file.rsplit_once('.').map_or((file, String::new()), |(s, e)| (s, format!(".{e}")));
+    (2..1000).map(|i| dir.join(format!("{stem} ({i}){ext}"))).find(|p| !p.exists())
+}
+
+/// 在檢視器裡串流播放；上次看到一半的從那裡接著看
+fn play(app: &mut UiApp, d: &JfBrowse, item: &JfItem) {
     let Some(jf) = app.jellyfin() else { return };
     if item.duration <= 0.0 {
         return app.toast(tr!("Jellyfin 還沒分析好這支影片（長度不明），等一下再試", "Jellyfin hasn't finished analyzing this video yet. Try again shortly"), true);
@@ -170,10 +283,35 @@ fn play(app: &mut UiApp, item: &JfItem) {
         height: (item.height > 0).then_some(item.height),
         fps: Some(item.fps),
         has_audio: Some(item.has_audio),
+        chapters: item.chapters.iter().filter(|(_, t)| !t.is_empty()).map(|(start, title)| Chapter { start: *start, title: title.clone() }).collect(),
         ..Default::default()
     };
-    viewer::open(app, LibraryEntry { media, exports: vec![], hits: vec![] });
-    viewer::set_autoplay(app, true);
+    let remote = viewer::Remote::new(&item.id, d.user.as_deref().unwrap_or(""), item.subs.iter().map(|s| jf.subtitle_url(&item.id, s.index)).collect(), &item.file_name);
+    let entry = LibraryEntry { media, exports: vec![], hits: vec![] };
+    // 看到一半（不是剛開始、也不是快看完）：從那裡接著看
+    if item.resume > 5.0 && item.resume < item.duration - 10.0 {
+        viewer::open_remote(app, entry, remote, Some(item.resume));
+        app.toast(trf!("從上次看到的 {} 接著看（拖曳進度列可以從頭看）", "Resuming from {} (drag the progress bar to start over)", clock(item.resume)), false);
+    } else {
+        viewer::open_remote(app, entry, remote, None);
+    }
+}
+
+/// 在程式裡看了一段：瀏覽清單上的進度條、「看過」跟著更新
+pub fn note_position(app: &mut UiApp, id: &str, at: f64, played: bool) {
+    let Some(d) = app.jf_browse.as_mut() else { return };
+    d.each_mut(id, |it| {
+        it.played |= played;
+        it.resume = if played { 0.0 } else { at };
+    });
+    let top = d.at_top();
+    let item = d.items.iter().flatten().chain(d.latest.iter()).find(|i| i.id == id).cloned();
+    if top {
+        d.resume.retain(|i| i.id != id);
+        if let Some(it) = item.filter(|_| !played && at > 5.0) {
+            d.resume.insert(0, it);
+        }
+    }
 }
 
 /// 長度：1:02:03、2:03
@@ -186,13 +324,143 @@ fn clock(sec: f64) -> String {
     }
 }
 
+/// 一格一格畫的時候按到了什麼
+#[derive(Default)]
+struct Picked {
+    open: Option<JfItem>,
+    delete: Option<JfItem>,
+    download: Option<JfItem>,
+    toggle: Option<JfItem>,
+    posters: Vec<String>,
+}
+
+/// 畫一組縮圖格（rows：最多幾列，None = 全部）
+fn cells(ui: &mut egui::Ui, d: &JfBrowse, items: &[JfItem], rows: Option<usize>, out: &mut Picked) {
+    let p = theme::pal(ui);
+    let gap = 12.0;
+    let cols = ((ui.available_width() + gap) / (CELL_W + gap)).floor().max(1.0) as usize;
+    let cell_w = (ui.available_width() - gap * (cols as f32 - 1.0)) / cols as f32;
+    let img_h = (cell_w * 9.0 / 16.0).round();
+    let cell_h = img_h + 46.0;
+    let clip = ui.clip_rect();
+    let picking = !d.selected.is_empty();
+    let ctrl = ui.input(|i| i.modifiers.command);
+    for row in items.chunks(cols).take(rows.unwrap_or(usize::MAX)) {
+        let (row_rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), cell_h), Sense::hover());
+        for (i, it) in row.iter().enumerate() {
+            let cell = Rect::from_min_size(pos2(row_rect.min.x + i as f32 * (cell_w + gap), row_rect.min.y), vec2(cell_w, cell_h));
+            let resp = ui.interact(cell, ui.id().with(("jf-cell", &it.id)), Sense::click());
+            let img = Rect::from_min_size(cell.min, vec2(cell_w, img_h));
+            let video = it.kind == JfKind::Video;
+            let on = d.selected.contains_key(&it.id);
+            let painter = ui.painter();
+            painter.rect_filled(img, 8.0, p.surface2);
+            match d.posters.get(&it.id) {
+                Some(Poster::Ready(tex)) => theme::paint_thumb_cover(painter, img, tex),
+                None if it.has_image && clip.intersects(cell) => out.posters.push(it.id.clone()),
+                _ => {}
+            }
+            if !matches!(d.posters.get(&it.id), Some(Poster::Ready(_))) {
+                let icon = if video { Icon::Video } else { Icon::Folder };
+                theme::paint_icon(painter, Rect::from_center_size(img.center(), vec2(32.0, 32.0)), icon, p.muted);
+            }
+            // 影片：滑鼠移上去時左上角勾選、左下角刪除和下載
+            let check = Rect::from_min_size(img.min + vec2(6.0, 6.0), vec2(22.0, 22.0));
+            let trash = Rect::from_min_size(pos2(img.min.x + 6.0, img.max.y - 30.0), vec2(24.0, 24.0));
+            let down = trash.translate(vec2(30.0, 0.0));
+            let inside = ui.rect_contains_pointer(cell);
+            let hovering = resp.hovered() || inside && [check, trash, down].iter().any(|r| ui.rect_contains_pointer(*r));
+            let mut used = false;
+            if video && (hovering || on || picking) {
+                let r = ui.interact(check, ui.id().with(("jf-check", &it.id)), Sense::click()).on_hover_text(tr!("勾選（一次下載、刪除好幾支）", "Select (to download or delete several at once)"));
+                let painter = ui.painter();
+                painter.rect_filled(check, 5.0, if on { p.accent } else { egui::Color32::from_black_alpha(150) });
+                painter.rect_stroke(check, 5.0, egui::Stroke::new(1.5, egui::Color32::WHITE), egui::StrokeKind::Inside);
+                if on {
+                    theme::paint_icon(painter, check.shrink(4.0), Icon::Check, egui::Color32::WHITE);
+                }
+                if r.clicked() {
+                    out.toggle = Some(it.clone());
+                    used = true;
+                }
+            }
+            if video && hovering {
+                let tr_resp = ui.interact(trash, ui.id().with(("jf-del", &it.id)), Sense::click()).on_hover_text(tr!("從 Jellyfin 刪除", "Delete from Jellyfin"));
+                let dl_resp =
+                    ui.interact(down, ui.id().with(("jf-down", &it.id)), Sense::click()).on_hover_text(tr!("下載到這台電腦（下載回來就能剪輯）", "Download to this computer (so you can edit it)"));
+                let painter = ui.painter();
+                painter.rect_filled(trash, 6.0, if tr_resp.hovered() { p.rec } else { egui::Color32::from_black_alpha(160) });
+                theme::paint_icon(painter, trash.shrink(4.0), Icon::Trash, egui::Color32::WHITE);
+                painter.rect_filled(down, 6.0, if dl_resp.hovered() { p.accent } else { egui::Color32::from_black_alpha(160) });
+                theme::paint_icon(painter, down.shrink(4.0), Icon::Download, egui::Color32::WHITE);
+                if tr_resp.clicked() {
+                    out.delete = Some(it.clone());
+                    used = true;
+                }
+                if dl_resp.clicked() {
+                    out.download = Some(it.clone());
+                    used = true;
+                }
+            }
+            let painter = ui.painter();
+            if hovering || on {
+                painter.rect_stroke(img, 8.0, egui::Stroke::new(2.0, p.accent), egui::StrokeKind::Inside);
+            }
+            if hovering && video && !picking {
+                theme::paint_icon(painter, Rect::from_center_size(img.center(), vec2(40.0, 40.0)), Icon::Play, egui::Color32::WHITE);
+            }
+            // 看到一半：縮圖下緣的進度條
+            if video && it.resume > 0.0 && it.duration > 0.0 {
+                let bar = Rect::from_min_max(pos2(img.min.x + 4.0, img.max.y - 5.0), pos2(img.max.x - 4.0, img.max.y - 2.0));
+                painter.rect_filled(bar, 1.5, egui::Color32::from_black_alpha(140));
+                let frac = (it.resume / it.duration).clamp(0.0, 1.0) as f32;
+                painter.rect_filled(Rect::from_min_max(bar.min, pos2(bar.min.x + bar.width() * frac, bar.max.y)), 1.5, p.accent);
+            }
+            // 看過的：右上角綠色「看過」
+            if it.played {
+                let t = tr!("看過", "Watched");
+                let g = painter.layout_no_wrap(t.to_string(), theme::font_bold(11.0), p.ok);
+                let r = Rect::from_min_size(pos2(img.max.x - g.size().x - 14.0, img.min.y + 6.0), g.size() + vec2(8.0, 4.0));
+                painter.rect_filled(r, 6.0, p.ok_soft);
+                painter.galley(r.min + vec2(4.0, 2.0), g, p.ok);
+            }
+            let name = painter.layout(it.name.clone(), theme::font_bold(12.5), p.text, cell_w);
+            let name_rect = Rect::from_min_size(pos2(cell.min.x, img.max.y + 4.0), vec2(cell_w, 18.0));
+            painter.with_clip_rect(name_rect).galley(name_rect.min, name, p.text);
+            let sub = match it.kind {
+                JfKind::Folder if it.children > 0 => trf!("{} 個", "{} items", it.children),
+                JfKind::Folder => String::new(),
+                JfKind::Video => [it.date.clone(), if it.duration > 0.0 { clock(it.duration) } else { String::new() }].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" · "),
+            };
+            painter.text(pos2(cell.min.x, img.max.y + 24.0), Align2::LEFT_TOP, sub, theme::font(11.5), p.muted);
+            let resp = resp.on_hover_text(&it.name);
+            if resp.clicked() && !used {
+                // 已經在勾選、或按著 Ctrl：點影片是勾選；不然是播放（資料夾是進去）
+                if video && (picking || ctrl) {
+                    out.toggle = Some(it.clone());
+                } else {
+                    out.open = Some(it.clone());
+                }
+            }
+        }
+        ui.add_space(gap);
+    }
+}
+
+/// 區塊標題（「繼續觀看」等）
+fn section(ui: &mut egui::Ui, title: &str) {
+    ui.add_space(2.0);
+    ui.label(RichText::new(title).font(theme::font_bold(14.0)));
+    ui.add_space(4.0);
+}
+
 pub fn show(app: &mut UiApp, ctx: &egui::Context) {
     let Some(mut d) = app.jf_browse.take() else { return };
     let mut close = false;
     let mut reload = false;
-    let mut open_item: Option<JfItem> = None;
-    let mut delete_item: Option<JfItem> = None;
-    let mut want_posters: Vec<String> = vec![];
+    let mut picked = Picked::default();
+    let mut bulk_download = false;
+    let mut bulk_delete = false;
     let modal = egui::Modal::new(Id::new("jellyfin-browse")).frame(theme::modal_frame(ctx)).show(ctx, |ui| {
         let p = theme::pal(ui);
         let w = (ctx.content_rect().width() - 80.0).clamp(420.0, 1040.0);
@@ -217,8 +485,8 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                 }
             });
         });
-        // 目前位置：媒體庫 › family › 2024，點前面的回到那一層
-        ui.horizontal_wrapped(|ui| {
+        // 目前位置：媒體庫 › family › 2024，點前面的回到那一層；資料夾裡右邊可以排序、篩選
+        ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing = vec2(2.0, 4.0);
             if !d.searched.is_empty() {
                 ui.label(RichText::new(trf!("搜尋「{}」", "Search “{}”", d.searched)).color(p.muted));
@@ -239,9 +507,36 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                     reload = true;
                 }
             }
+            if n == 0 {
+                return;
+            }
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                ui.spacing_mut().item_spacing.x = 6.0;
+                theme::field_style(ui);
+                let (sort, filter) = (d.sort, d.filter);
+                egui::ComboBox::from_id_salt("jf-sort").selected_text(d.sort.label()).width(130.0).show_ui(ui, |ui| {
+                    for s in JfSort::ALL {
+                        ui.selectable_value(&mut d.sort, s, s.label());
+                    }
+                });
+                egui::ComboBox::from_id_salt("jf-filter")
+                    .selected_text(d.filter.label())
+                    .width(120.0)
+                    .show_ui(ui, |ui| {
+                        for f in JfFilter::ALL {
+                            ui.selectable_value(&mut d.filter, f, f.label());
+                        }
+                    })
+                    .response
+                    .on_hover_text(tr!("不是「全部」時，列出這個資料夾底下（含子資料夾）符合的影片", "Anything but “All” lists matching videos in this folder and its subfolders"));
+                if (sort, filter) != (d.sort, d.filter) {
+                    d.page = 0;
+                    reload = true;
+                }
+            });
         });
         ui.add_space(6.0);
-        let body_h = h - 110.0;
+        let body_h = h - 110.0 - if d.selected.is_empty() { 0.0 } else { 40.0 };
         match (&d.items, &d.error) {
             (_, Some(e)) => {
                 ui.allocate_ui(vec2(w, body_h), |ui| {
@@ -261,86 +556,47 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
             }
             (Some(items), None) if items.is_empty() => {
                 ui.allocate_ui(vec2(w, body_h), |ui| {
-                    ui.label(RichText::new(tr!("這裡沒有影片", "No videos here")).color(p.muted));
+                    let msg = if d.filter == JfFilter::All { tr!("這裡沒有影片", "No videos here") } else { tr!("這裡沒有符合的影片", "No matching videos here") };
+                    ui.label(RichText::new(msg).color(p.muted));
                 });
             }
             (Some(items), None) => {
                 egui::ScrollArea::vertical().max_height(body_h).min_scrolled_height(body_h).auto_shrink([false, false]).show(ui, |ui| {
-                    let gap = 12.0;
-                    let cols = ((ui.available_width() + gap) / (CELL_W + gap)).floor().max(1.0) as usize;
-                    let cell_w = (ui.available_width() - gap * (cols as f32 - 1.0)) / cols as f32;
-                    let img_h = (cell_w * 9.0 / 16.0).round();
-                    let cell_h = img_h + 46.0;
-                    let clip = ui.clip_rect();
-                    for row in items.chunks(cols) {
-                        let (row_rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), cell_h), Sense::hover());
-                        for (i, it) in row.iter().enumerate() {
-                            let cell = Rect::from_min_size(pos2(row_rect.min.x + i as f32 * (cell_w + gap), row_rect.min.y), vec2(cell_w, cell_h));
-                            let resp = ui.interact(cell, Id::new(("jf-cell", &it.id)), Sense::click());
-                            let img = Rect::from_min_size(cell.min, vec2(cell_w, img_h));
-                            let painter = ui.painter();
-                            painter.rect_filled(img, 8.0, p.surface2);
-                            match d.posters.get(&it.id) {
-                                Some(Poster::Ready(tex)) => theme::paint_thumb_cover(painter, img, tex),
-                                None if it.has_image && clip.intersects(cell) => want_posters.push(it.id.clone()),
-                                _ => {}
-                            }
-                            let no_img = !matches!(d.posters.get(&it.id), Some(Poster::Ready(_)));
-                            if no_img {
-                                let icon = if it.kind == JfKind::Folder { Icon::Folder } else { Icon::Video };
-                                theme::paint_icon(painter, Rect::from_center_size(img.center(), vec2(32.0, 32.0)), icon, p.muted);
-                            }
-                            // 影片：滑鼠移上去時左下角有刪除鈕（從 Jellyfin 和 NAS 刪掉）
-                            let trash = Rect::from_min_size(pos2(img.min.x + 6.0, img.max.y - 30.0), vec2(24.0, 24.0));
-                            let hovering = resp.hovered() || ui.rect_contains_pointer(trash) && ui.rect_contains_pointer(cell);
-                            if it.kind == JfKind::Video && hovering {
-                                let tr_resp = ui.interact(trash, Id::new(("jf-del", &it.id)), Sense::click()).on_hover_text(tr!("從 Jellyfin 刪除", "Delete from Jellyfin"));
-                                let painter = ui.painter();
-                                painter.rect_filled(trash, 6.0, if tr_resp.hovered() { p.rec } else { egui::Color32::from_black_alpha(160) });
-                                theme::paint_icon(painter, trash.shrink(4.0), Icon::Trash, egui::Color32::WHITE);
-                                if tr_resp.clicked() {
-                                    delete_item = Some(it.clone());
-                                }
-                            }
-                            let painter = ui.painter();
-                            if hovering {
-                                painter.rect_stroke(img, 8.0, egui::Stroke::new(2.0, p.accent), egui::StrokeKind::Inside);
-                                if it.kind == JfKind::Video {
-                                    theme::paint_icon(painter, Rect::from_center_size(img.center(), vec2(40.0, 40.0)), Icon::Play, egui::Color32::WHITE);
-                                }
-                            }
-                            // 看過的：右上角綠色「看過」
-                            if it.played {
-                                let t = tr!("看過", "Watched");
-                                let g = painter.layout_no_wrap(t.to_string(), theme::font_bold(11.0), p.ok);
-                                let r = Rect::from_min_size(pos2(img.max.x - g.size().x - 14.0, img.min.y + 6.0), g.size() + vec2(8.0, 4.0));
-                                painter.rect_filled(r, 6.0, p.ok_soft);
-                                painter.galley(r.min + vec2(4.0, 2.0), g, p.ok);
-                            }
-                            let name = painter.layout(it.name.clone(), theme::font_bold(12.5), p.text, cell_w);
-                            let name_rect = Rect::from_min_size(pos2(cell.min.x, img.max.y + 4.0), vec2(cell_w, 18.0));
-                            painter.with_clip_rect(name_rect).galley(name_rect.min, name, p.text);
-                            let sub = match it.kind {
-                                JfKind::Folder if it.children > 0 => trf!("{} 個", "{} items", it.children),
-                                JfKind::Folder => String::new(),
-                                JfKind::Video => {
-                                    [it.date.clone(), if it.duration > 0.0 { clock(it.duration) } else { String::new() }].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" · ")
-                                }
-                            };
-                            painter.text(pos2(cell.min.x, img.max.y + 24.0), Align2::LEFT_TOP, sub, theme::font(11.5), p.muted);
-                            let resp = resp.on_hover_text(&it.name);
-                            if resp.clicked() && delete_item.is_none() {
-                                open_item = Some(it.clone());
+                    if d.at_top() {
+                        // 最上層：繼續觀看、最近加入各一列，接著是媒體庫
+                        for (title, list, salt) in [(tr!("繼續觀看", "Continue watching"), &d.resume, "resume"), (tr!("最近加入", "Recently added"), &d.latest, "latest")] {
+                            if !list.is_empty() {
+                                section(ui, title);
+                                ui.push_id(salt, |ui| cells(ui, &d, list, Some(1), &mut picked));
                             }
                         }
-                        ui.add_space(gap);
+                        if !d.resume.is_empty() || !d.latest.is_empty() {
+                            section(ui, tr!("媒體庫", "Libraries"));
+                        }
                     }
+                    ui.push_id("items", |ui| cells(ui, &d, items, None, &mut picked));
                 });
             }
         }
+        // 勾選了：下面一排一次下載、刪除
+        if !d.selected.is_empty() {
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(trf!("已勾選 {} 支", "{} selected", d.selected.len())).font(theme::font_bold(13.0)));
+                if Btn::new(tr!("下載到這台電腦", "Download to this computer")).icon(Icon::Download).small().primary().show(ui).clicked() {
+                    bulk_download = true;
+                }
+                if Btn::new(tr!("從 Jellyfin 刪除", "Delete from Jellyfin")).icon(Icon::Trash).small().danger().show(ui).clicked() {
+                    bulk_delete = true;
+                }
+                if Btn::new(tr!("取消勾選", "Clear selection")).small().ghost().show(ui).clicked() {
+                    d.selected.clear();
+                }
+            });
+        }
         // 換頁
         let pages = d.total.div_ceil(PAGE).max(1);
-        if (!d.path.is_empty() || !d.searched.is_empty()) && pages > 1 {
+        if !d.at_top() && pages > 1 {
             ui.add_space(6.0);
             ui.horizontal(|ui| {
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -358,16 +614,39 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
             });
         }
     });
-    // 檢視器開著時 Esc 是關檢視器，不要連瀏覽視窗一起關
-    if close || (modal.should_close() && app.viewer.is_none()) {
+    // 檢視器開著時 Esc 是關檢視器，不要連瀏覽視窗一起關；有勾選時 Esc 先取消勾選
+    if close || (modal.should_close() && app.viewer.is_none() && app.ask.is_none()) {
+        if !close && !d.selected.is_empty() {
+            d.selected.clear();
+            app.jf_browse = Some(d);
+        }
         return;
     }
-    if let Some(it) = delete_item {
+    if let Some(it) = picked.toggle {
+        if d.selected.remove(&it.id).is_none() {
+            d.selected.insert(it.id.clone(), it);
+        }
+    }
+    let selected: Vec<(String, String)> = d.selected.values().map(|i| (i.id.clone(), i.file_name.clone())).collect();
+    if bulk_download {
+        d.selected.clear();
         app.jf_browse = Some(d);
-        confirm_delete(app, it.id, it.name);
-        return;
+        return download(app, selected);
     }
-    if let Some(it) = open_item {
+    if bulk_delete {
+        let names = d.selected.values().map(|i| (i.id.clone(), i.name.clone())).collect();
+        app.jf_browse = Some(d);
+        return confirm_delete_many(app, names);
+    }
+    if let Some(it) = picked.download {
+        app.jf_browse = Some(d);
+        return download(app, vec![(it.id, it.file_name)]);
+    }
+    if let Some(it) = picked.delete {
+        app.jf_browse = Some(d);
+        return confirm_delete(app, it.id, it.name);
+    }
+    if let Some(it) = picked.open {
         match it.kind {
             JfKind::Folder => {
                 d.path.push((it.id.clone(), it.name.clone()));
@@ -376,8 +655,8 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                 reload = true;
             }
             JfKind::Video => {
+                play(app, &d, &it);
                 app.jf_browse = Some(d);
-                play(app, &it);
                 return;
             }
         }
@@ -392,7 +671,23 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         return;
     }
     app.jf_browse = Some(d);
-    for id in want_posters {
+    for id in picked.posters {
         load_poster(app, &id);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn downloads_get_a_free_name() {
+        let dir = std::env::temp_dir().join(format!("jf-free-name-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        assert_eq!(free_name(&dir, "a.mp4"), Some(dir.join("a.mp4")));
+        std::fs::write(dir.join("a.mp4"), "x").unwrap();
+        assert_eq!(free_name(&dir, "a.mp4"), Some(dir.join("a (2).mp4")));
+        assert_eq!(free_name(&dir, ""), Some(dir.join("jellyfin.mp4")));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

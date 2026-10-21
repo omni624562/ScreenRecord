@@ -229,13 +229,15 @@ unsafe extern "C" fn on_update(ctx: *mut c_void) {
 }
 
 /// 從哪裡開始播、速度、音量（0～1）
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Default)]
 pub struct Start {
     pub at: f64,
     pub rate: f64,
     pub volume: f32,
     /// 開好之後先停在第一個畫面，等按播放
     pub paused: bool,
+    /// 外掛字幕（網址或檔案）；有的話疊在畫面上（Jellyfin 串流的影片）
+    pub subs: Vec<String>,
 }
 
 /// 播放的狀態（從 mpv 的屬性變更事件收下來；播放、暫停、跳轉時先照要求改，不等 mpv 回應）
@@ -273,6 +275,8 @@ pub struct MpvPlayer {
     logged_hwdec: bool,
     hwdec: String,
     codec: String,
+    /// 開好檔案之後要加的外掛字幕
+    subs: Vec<String>,
 }
 
 // SAFETY: mpv 的 handle 可以從任何執行緒呼叫；render context 只在介面執行緒使用（見模組說明）
@@ -288,7 +292,7 @@ impl MpvPlayer {
     /// gl 是 None 時（測試沒有 OpenGL）畫面輸出用 null
     fn with_vo(path: &str, duration: f64, start: Start, wake: Wake, gl: Option<(&ProcAddress, bool)>) -> Result<MpvPlayer, String> {
         let vo = if gl.is_some() { "libmpv" } else { "null" };
-        let Start { at: start, rate, volume, paused } = start;
+        let Start { at: start, rate, volume, paused, subs } = start;
         let lib = lib()?;
         // SAFETY: 照 libmpv 的用法建立、設定、初始化
         let h = unsafe { (lib.create)() };
@@ -307,6 +311,7 @@ impl MpvPlayer {
             logged_hwdec: false,
             hwdec: String::new(),
             codec: String::new(),
+            subs: vec![],
         };
         let opts: &[(&str, &str)] = &[
             // 畫進介面（render API），不開自己的視窗
@@ -336,6 +341,8 @@ impl MpvPlayer {
         for (k, v) in opts {
             p.option(k, v);
         }
+        // 外掛字幕：開好檔案之後用 sub-add 一個一個加（網址裡有「:」，不能用 sub-files 的清單）
+        p.subs = subs;
         // 顯示卡解碼，解好的畫面複製回來再交給 OpenGL（不用顯示卡和 OpenGL 之間直接共用畫面：
         // 那要看驅動程式支援，嵌在別的程式裡容易出問題）；不支援時自動改用 CPU。舊版 mpv 沒有 auto-copy-safe
         if !p.option("hwdec", "auto-copy-safe") {
@@ -454,7 +461,15 @@ impl MpvPlayer {
             let ev = unsafe { &*(self.lib.wait_event)(self.h, 0.0) };
             match ev.event_id {
                 EVENT_NONE => break,
-                EVENT_FILE_LOADED => self.loaded = true,
+                EVENT_FILE_LOADED => {
+                    self.loaded = true;
+                    // 第一個選來顯示，其他的也加進去
+                    for (i, url) in std::mem::take(&mut self.subs).iter().enumerate() {
+                        if let Err(e) = self.command(&["sub-add", url, if i == 0 { "select" } else { "auto" }]) {
+                            crate::info!("[mpv] 加字幕失敗：{e}");
+                        }
+                    }
+                }
                 EVENT_PLAYBACK_RESTART => seek_done = true,
                 EVENT_COMMAND_REPLY if ev.reply_userdata == SEEK_REPLY && ev.error < 0 => seek_done = true,
                 EVENT_PROPERTY_CHANGE if !ev.data.is_null() => {
@@ -666,6 +681,11 @@ impl MpvPlayer {
         self.st.lock().unwrap().speed
     }
 
+    /// 字幕開或關（外掛字幕、影片裡的文字字幕）
+    pub fn show_subs(&self, on: bool) {
+        let _ = self.command(&["set", "sid", if on { "auto" } else { "no" }]);
+    }
+
     pub fn set_volume(&self, v: f32) {
         self.set_double("volume", (v.clamp(0.0, 1.0) * 100.0) as f64);
     }
@@ -737,7 +757,7 @@ mod tests {
         }
         let dir = tempfile::tempdir().unwrap();
         let Some(path) = test_video(dir.path()) else { return };
-        let mut p = MpvPlayer::with_vo(&path, 2.0, Start { at: 0.5, rate: 1.0, volume: 0.0, paused: false }, Arc::new(|| {}), None).unwrap();
+        let mut p = MpvPlayer::with_vo(&path, 2.0, Start { at: 0.5, rate: 1.0, volume: 0.0, paused: false, ..Default::default() }, Arc::new(|| {}), None).unwrap();
         assert!(wait_until(&mut p, 5.0, |p| p.loaded()), "讀不到檔案：{:?}", p.failed());
         assert!(wait_until(&mut p, 5.0, |p| p.time() > 0.7), "沒有往前播：{}", p.time());
         assert!(p.is_playing());
@@ -763,7 +783,7 @@ mod tests {
         }
         let dir = tempfile::tempdir().unwrap();
         let Some(path) = test_video(dir.path()) else { return };
-        let mut p = MpvPlayer::with_vo(&path, 2.0, Start { at: 0.0, rate: 1.0, volume: 0.0, paused: false }, Arc::new(|| {}), None).unwrap();
+        let mut p = MpvPlayer::with_vo(&path, 2.0, Start { at: 0.0, rate: 1.0, volume: 0.0, paused: false, ..Default::default() }, Arc::new(|| {}), None).unwrap();
         assert!(wait_until(&mut p, 5.0, |p| p.loaded()), "讀不到檔案：{:?}", p.failed());
         p.pause();
         for i in 0..60 {
@@ -794,7 +814,7 @@ mod tests {
         if !ok {
             return;
         }
-        let mut p = MpvPlayer::with_vo(&path.display().to_string(), 8.0, Start { at: 0.0, rate: 1.0, volume: 0.0, paused: false }, Arc::new(|| {}), None).unwrap();
+        let mut p = MpvPlayer::with_vo(&path.display().to_string(), 8.0, Start { at: 0.0, rate: 1.0, volume: 0.0, paused: false, ..Default::default() }, Arc::new(|| {}), None).unwrap();
         assert!(wait_until(&mut p, 5.0, |p| p.loaded() && p.time() > 0.2), "讀不到檔案：{:?}", p.failed());
         p.set_rate(2.0);
         let (t0, w0) = (p.time(), Instant::now());
@@ -813,7 +833,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let bad = dir.path().join("bad.mp4");
         std::fs::write(&bad, b"not a video").unwrap();
-        let mut p = MpvPlayer::with_vo(&bad.display().to_string(), 2.0, Start { at: 0.0, rate: 1.0, volume: 0.0, paused: false }, Arc::new(|| {}), None).unwrap();
+        let mut p = MpvPlayer::with_vo(&bad.display().to_string(), 2.0, Start { at: 0.0, rate: 1.0, volume: 0.0, paused: false, ..Default::default() }, Arc::new(|| {}), None).unwrap();
         assert!(wait_until(&mut p, 5.0, |p| p.failed().is_some()));
     }
 }

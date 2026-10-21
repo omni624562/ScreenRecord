@@ -84,6 +84,33 @@ pub struct Viewer {
     reload_after_ask: bool,
     /// 截圖：相關的截圖（同一個程式、時間接近、有共同的詞、長得像）
     related: Vec<MediaInfo>,
+    /// 串流的 Jellyfin 影片：看到哪裡回報給 Jellyfin、字幕
+    pub(crate) remote: Option<Remote>,
+}
+
+/// 正在串流的 Jellyfin 影片
+pub struct Remote {
+    pub id: String,
+    /// 看到哪裡記在哪個使用者
+    pub user: String,
+    /// 外掛字幕的網址
+    pub subs: Vec<String>,
+    pub subs_on: bool,
+    /// 原檔的檔名（下載到這台電腦用）
+    pub file_name: String,
+    /// 上次記下看到哪裡的時候
+    saved: Option<std::time::Instant>,
+}
+
+impl Remote {
+    fn cur_is(&self, path: &str) -> bool {
+        screenrecorder_core::jellyfin::Jellyfin::item_of_stream(path).as_deref() == Some(self.id.as_str())
+    }
+
+    pub fn new(id: &str, user: &str, subs: Vec<String>, file_name: &str) -> Remote {
+        // 第一次記是看了 30 秒之後（剛開始時播放位置還是 0，會蓋掉上次看到的地方）
+        Remote { id: id.to_string(), user: user.to_string(), subs, subs_on: true, file_name: file_name.to_string(), saved: Some(std::time::Instant::now()) }
+    }
 }
 
 impl Viewer {
@@ -171,7 +198,17 @@ pub fn is_remote(path: &str) -> bool {
     path.starts_with("http://") || path.starts_with("https://")
 }
 
+/// 串流播放 Jellyfin 的影片（start：從哪裡開始，上次看到一半的）
+pub fn open_remote(app: &mut UiApp, entry: LibraryEntry, remote: Remote, start: Option<f64>) {
+    open_with(app, entry, Some(remote), start);
+    set_autoplay(app, true);
+}
+
 pub fn open(app: &mut UiApp, entry: LibraryEntry) {
+    open_with(app, entry, None, None);
+}
+
+fn open_with(app: &mut UiApp, entry: LibraryEntry, remote: Option<Remote>, start: Option<f64>) {
     let shots = is_image_name(&entry.media.name);
     let path = entry.media.path.clone();
     app.viewer = Some(Viewer {
@@ -194,11 +231,12 @@ pub fn open(app: &mut UiApp, entry: LibraryEntry) {
         loading: true,
         error: None,
         close: false,
-        start_at: None,
-        autoplay: false,
+        start_at: start,
+        autoplay: remote.is_some(),
         full: false,
         reload_after_ask: false,
         related: vec![],
+        remote,
     });
     load_current(app);
     if is_remote(&path) {
@@ -306,10 +344,12 @@ fn load_current(app: &mut UiApp) {
             let rate = RATE.load(Ordering::Relaxed) as f64 / 100.0;
             // 從說過的話開始：往前一點，聽得到整句
             let start = v.start_at.take().map(|t| (t - 0.5).max(0.0)).unwrap_or(0.0);
+            // Jellyfin 的字幕（mpv 才疊得上去）
+            let subs = v.remote.as_ref().filter(|r| r.subs_on && r.cur_is(&m.path)).map(|r| r.subs.clone()).unwrap_or_default();
             v.video_size = vec2(w as f32, h as f32);
             // 有 libmpv 就用 mpv 播（跟 Windows 的播放器一樣順）；只有聲音的檔案、mpv 播不了的檔案用 FFmpeg
             if let Some(gl) = gl.filter(|_| !is_audio_name(&m.name) && v.no_mpv.as_deref() != Some(m.path.as_str())) {
-                match MpvPlayer::new(&m.path, spec.duration, Start { at: start, rate, volume: v.volume_now(), paused: !v.autoplay }, wake.clone(), &gl, software_gl) {
+                match MpvPlayer::new(&m.path, spec.duration, Start { at: start, rate, volume: v.volume_now(), paused: !v.autoplay, subs }, wake.clone(), &gl, software_gl) {
                     Ok(p) => {
                         v.player = Some(Playback::Mpv { p, has_audio: spec.has_audio });
                         return;
@@ -485,6 +525,8 @@ enum Act {
     Rename,
     /// 打開相關的截圖（第幾張）
     Related(usize),
+    /// 串流的 Jellyfin 影片：下載到這台電腦
+    Download,
 }
 
 /// 標題列的一個按鈕；視窗窄時依序從後面的開始收進「⋯」
@@ -519,9 +561,14 @@ fn head_icon(label: &str, icon: Icon, tip: &str, act: Act) -> HeadBtn {
 /// 其他照清單的分組和順序排成一排小圖示；資料夾、刪除固定在右上角
 fn head_buttons(app: &UiApp, e: &LibraryEntry, image: bool) -> Vec<HeadBtn> {
     let b = head_btn;
-    // 串流的影片：只能看
+    // 串流的影片：只能看、下載到這台電腦
     if is_remote(&e.media.path) {
-        return vec![];
+        return vec![head_btn(
+            tr!("下載到這台電腦", "Download"),
+            Some(Icon::Download),
+            tr!("把原檔下載到儲存位置，就能剪輯、做加速版", "Download the original to your save folder so you can edit it"),
+            Act::Download,
+        )];
     }
     if image {
         let mut edit = b(
@@ -743,6 +790,10 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         app.s.mpv_hint_off = true;
         app.save_settings();
     }
+    let position = remote_position(&mut v);
+    if let Some((id, user, at, played)) = position {
+        save_position(app, id, user, at, played);
+    }
     if v.close {
         if v.full {
             ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
@@ -751,6 +802,34 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
     }
     app.viewer = Some(v);
     run_act(app, act);
+}
+
+/// Jellyfin 串流：要不要記下看到哪裡（播放中每 30 秒一次、關掉時）；回傳（影片, 使用者, 秒, 看完了沒）
+fn remote_position(v: &mut Viewer) -> Option<(String, String, f64, bool)> {
+    let close = v.close;
+    let (Some(r), Some(pl)) = (v.remote.as_mut(), v.player.as_ref()) else { return None };
+    if r.user.is_empty() {
+        return None;
+    }
+    // 還沒開始看（不到 5 秒）：不記
+    let (at, dur) = (pl.time(), pl.duration());
+    let due = pl.is_playing() && r.saved.is_none_or(|t| t.elapsed() > std::time::Duration::from_secs(30));
+    if at <= 5.0 || !(due || close) {
+        return None;
+    }
+    r.saved = Some(std::time::Instant::now());
+    Some((r.id.clone(), r.user.clone(), at, dur > 0.0 && at >= dur * 0.9))
+}
+
+/// 在背景記下看到哪裡（連不到 Jellyfin 時只寫進記錄檔）；瀏覽視窗的進度條跟著更新
+fn save_position(app: &mut UiApp, id: String, user: String, at: f64, played: bool) {
+    let Some(jf) = app.jellyfin() else { return };
+    super::jellyfin_browse::note_position(app, &id, at, played);
+    app.spawn(async move { tokio::task::spawn_blocking(move || jf.save_position(&user, &id, at, played)).await.unwrap_or_else(|e| Err(e.to_string())) }, |_, r| {
+        if let Err(e) = r {
+            screenrecorder_core::info!("[Jellyfin] 記下看到哪裡失敗：{e}");
+        }
+    });
 }
 
 /// 畫面上方的提示：下載 mpv 播放元件讓大影片播放更順（下載中顯示進度）
@@ -996,6 +1075,11 @@ fn run_act(app: &mut UiApp, act: Act) {
         }
         Act::Next => go(app, 1),
         Act::Copy => copy_image(app),
+        Act::Download => {
+            let Some(r) = app.viewer.as_ref().and_then(|v| v.remote.as_ref()) else { return };
+            let item = (r.id.clone(), r.file_name.clone());
+            super::jellyfin_browse::download(app, vec![item]);
+        }
         Act::Delete => delete_current(app),
         Act::Rename => {
             let Some(v) = app.viewer.as_mut() else { return };
@@ -1312,8 +1396,10 @@ fn video_stage(v: &mut Viewer, painter: &egui::Painter, stage: Rect, resp: &egui
 fn video_bar(v: &mut Viewer, ui: &mut egui::Ui, act: &mut Act) {
     let p = theme::pal(ui);
     let chapters = v.cur().media.chapters.clone();
+    let remote = v.remote.is_some();
     let full = v.full;
     let audio = v.is_audio();
+    let has_subs = v.remote.as_ref().is_some_and(|r| !r.subs.is_empty()) && matches!(v.player, Some(Playback::Mpv { .. }));
     let Some(player) = &v.player else { return };
     let playing = player.is_playing();
     let dur = player.duration().max(0.001);
@@ -1326,7 +1412,7 @@ fn video_bar(v: &mut Viewer, ui: &mut egui::Ui, act: &mut Act) {
     // 速度、全螢幕、音量（右邊），進度列填滿中間
     let vol_w = 140.0;
     let chap_w = if chapters.is_empty() { 0.0 } else { 84.0 };
-    let tools_w = 76.0 + 36.0 + if audio { 0.0 } else { 36.0 };
+    let tools_w = 76.0 + 36.0 + if audio { 0.0 } else { 36.0 } + if has_subs { 36.0 } else { 0.0 };
     let track_w = (ui.available_width() - vol_w - chap_w - tools_w - 16.0).max(80.0);
     let (rect, resp) = ui.allocate_exact_size(vec2(track_w, 28.0), Sense::click_and_drag());
     let track = Rect::from_center_size(rect.center(), vec2(rect.width() - 12.0, 6.0));
@@ -1377,11 +1463,23 @@ fn video_bar(v: &mut Viewer, ui: &mut egui::Ui, act: &mut Act) {
                     player.seek(c.start);
                 }
             }
-            ui.separator();
-            if ui.button(tr!("複製章節（貼到 YouTube）", "Copy chapters (for YouTube)")).clicked() {
-                *act = Act::Entry(EntryAction::CopyChapters);
+            if !remote {
+                ui.separator();
+                if ui.button(tr!("複製章節（貼到 YouTube）", "Copy chapters (for YouTube)")).clicked() {
+                    *act = Act::Entry(EntryAction::CopyChapters);
+                }
             }
         });
+    }
+    // Jellyfin 影片的字幕：開或關
+    if has_subs {
+        let on = v.remote.as_ref().is_some_and(|r| r.subs_on);
+        if Btn::icon_only(Icon::Captions).ghost().small().selected(on).tooltip(if on { tr!("關掉字幕", "Hide subtitles") } else { tr!("顯示字幕", "Show subtitles") }).show(ui).clicked() {
+            player.show_subs(!on);
+            if let Some(r) = v.remote.as_mut() {
+                r.subs_on = !on;
+            }
+        }
     }
     // 擷取這一格（跟目前的畫面有關，放在進度列旁邊；全螢幕時也按得到）
     if !audio

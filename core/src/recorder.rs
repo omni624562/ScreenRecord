@@ -128,7 +128,7 @@ pub async fn disk_free(dir: &str) -> Option<u64> {
 }
 
 #[cfg(windows)]
-fn disk_free_sync(dir: &str) -> Option<u64> {
+pub(crate) fn disk_free_sync(dir: &str) -> Option<u64> {
     use windows::core::PCWSTR;
     use windows::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
     let wide: Vec<u16> = dir.encode_utf16().chain(std::iter::once(0)).collect();
@@ -138,7 +138,7 @@ fn disk_free_sync(dir: &str) -> Option<u64> {
 }
 
 #[cfg(not(windows))]
-fn disk_free_sync(_dir: &str) -> Option<u64> {
+pub(crate) fn disk_free_sync(_dir: &str) -> Option<u64> {
     None
 }
 
