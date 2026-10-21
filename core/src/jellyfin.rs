@@ -240,6 +240,18 @@ impl Jellyfin {
         Ok(())
     }
 
+    /// 拿掉這支影片在 Jellyfin 的封面（橫幅圖、縮圖也拿掉；本來就沒有的不算錯）
+    pub fn remove_cover(&self, id: &str) -> Result<(), String> {
+        for kind in ["Primary", "Backdrop", "Thumb"] {
+            match self.auth(agent().delete(&format!("{}/Items/{id}/Images/{kind}", self.url))).call() {
+                Ok(_) | Err(ureq::Error::Status(404, _)) => {}
+                Err(e) if kind == "Primary" => return Err(describe(&e)),
+                Err(e) => crate::info!("[Jellyfin] 拿掉 {kind} 圖失敗：{}", describe(&e)),
+            }
+        }
+        Ok(())
+    }
+
     fn admin_id(&self) -> Result<String, String> {
         let body = self.call(agent().get(&format!("{}/Users", self.url)))?.into_string().map_err(|e| e.to_string())?;
         let users: Value = serde_json::from_str(&body).map_err(|e| e.to_string())?;
@@ -1255,7 +1267,7 @@ pub fn unsaved(want: &JfInfo, got: &JfInfo) -> Vec<&'static str> {
     if want.overview.trim() != got.overview.trim() {
         out.push(tr!("說明", "description"));
     }
-    if want.year.is_some() && want.year != got.year {
+    if want.year != got.year {
         out.push(tr!("年份", "year"));
     }
     if !same_set(&want.people, &got.people) {
@@ -1281,11 +1293,17 @@ pub fn with_info(item_json: &str, x: &JfInfo) -> Option<String> {
     people.extend(x.people.iter().map(|n| serde_json::json!({ "Name": n, "Type": "Actor" })));
     o.insert("People".into(), Value::from(people));
     o.insert("ProductionYear".into(), x.year.map_or(Value::Null, Value::from));
-    // 首映日期跟著換成這一年（月日不變）：Jellyfin 的家庭影片頁面顯示的是首映日期，只改年份會看不出來
-    if let Some(y) = x.year {
-        let date = o.get("PremiereDate").and_then(Value::as_str).filter(|d| d.len() >= 4 && d.is_char_boundary(4)).map(|d| format!("{y:04}{}", &d[4..]));
-        if let Some(d) = date {
-            o.insert("PremiereDate".into(), Value::from(d));
+    // 首映日期跟著換成這一年（月日不變）：Jellyfin 的家庭影片頁面顯示的是首映日期，只改年份會看不出來。
+    // 年份清空時首映日期也清掉（對話框沒年份時顯示的就是首映日期的年，不清掉下次打開又出現）
+    match x.year {
+        Some(y) => {
+            let date = o.get("PremiereDate").and_then(Value::as_str).filter(|d| d.len() >= 4 && d.is_char_boundary(4)).map(|d| format!("{y:04}{}", &d[4..]));
+            if let Some(d) = date {
+                o.insert("PremiereDate".into(), Value::from(d));
+            }
+        }
+        None => {
+            o.insert("PremiereDate".into(), Value::Null);
         }
     }
     serde_json::to_string(&v).ok()
@@ -2679,6 +2697,10 @@ mod tests {
         let v: Value = serde_json::from_str(&with_info(dated, &JfInfo { year: Some(2019), ..Default::default() }).unwrap()).unwrap();
         assert_eq!((v["ProductionYear"].as_i64(), v["PremiereDate"].as_str()), (Some(2019), Some("2019-05-01T10:00:00.0000000Z")));
         assert_eq!(v["Name"], "生日");
+        // 清掉年份：首映日期也清掉，下次打開不會又出現
+        let v: Value = serde_json::from_str(&with_info(dated, &JfInfo::default()).unwrap()).unwrap();
+        assert!(v["ProductionYear"].is_null() && v["PremiereDate"].is_null());
+        assert_eq!(info_of(&v.to_string()).unwrap().year, None);
     }
 
     #[test]

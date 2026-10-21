@@ -29,6 +29,8 @@ pub struct JfEdit {
     poster: Option<egui::TextureHandle>,
     /// 選好的新封面
     cover: Option<Picked>,
+    /// 存檔時拿掉 Jellyfin 上的封面
+    remove_cover: bool,
     saving: bool,
     error: Option<String>,
 }
@@ -49,6 +51,7 @@ pub fn open(app: &mut UiApp, id: String, user: String, name: String, known_peopl
         known_tags,
         poster: None,
         cover: None,
+        remove_cover: false,
         saving: false,
         error: None,
     });
@@ -105,15 +108,24 @@ fn label(ui: &mut egui::Ui, text: &str) {
 fn chips(ui: &mut egui::Ui, id: &str, list: &mut Vec<String>, input: &mut String, known: &[String], hint: &str) {
     let p = theme::pal(ui);
     let mut remove = None;
+    // 點了名字（不是 ×）：拿回輸入框改
+    let mut edit = None;
     let focus_id = Id::new(("jf-edit-chips", id));
     let focused = ui.memory(|m| m.has_focus(focus_id));
-    let frame = egui::Frame::new().fill(p.surface).stroke(Stroke::new(1.0, if focused { p.accent } else { p.border })).corner_radius(6.0).inner_margin(egui::Margin::symmetric(6, 5)).show(ui, |ui| {
+    egui::Frame::new().fill(p.surface).stroke(Stroke::new(1.0, if focused { p.accent } else { p.border })).corner_radius(6.0).inner_margin(egui::Margin::symmetric(6, 5)).show(ui, |ui| {
         ui.set_width(ui.available_width());
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
             for (i, v) in list.iter().enumerate() {
-                if theme::chip(ui, &format!("{v}  ×"), theme::Tone::Accent, true).on_hover_text(tr!("點一下拿掉", "Click to remove")).clicked() {
-                    remove = Some(i);
+                let r = theme::chip(ui, &format!("{v}  ×"), theme::Tone::Accent, true).on_hover_text(tr!("點名字修改，點 × 拿掉", "Click the name to edit it, × to remove it"));
+                if r.clicked() {
+                    // 右邊的 × 是拿掉，其他地方是修改
+                    let on_x = r.interact_pointer_pos().is_some_and(|pos| pos.x > r.rect.right() - 20.0);
+                    if on_x {
+                        remove = Some(i);
+                    } else {
+                        edit = Some(i);
+                    }
                 }
             }
             let w = (ui.available_size_before_wrap().x - 12.0).max(120.0);
@@ -131,38 +143,69 @@ fn chips(ui: &mut egui::Ui, id: &str, list: &mut Vec<String>, input: &mut String
             }
         });
     });
-    // 點方框的空白處也是開始打字
-    if ui.interact(frame.response.rect, Id::new(("jf-edit-chips-box", id)), Sense::click()).clicked() {
-        ui.memory_mut(|m| m.request_focus(focus_id));
-    }
     if let Some(i) = remove {
         list.remove(i);
     }
-    let rest: Vec<&String> = known.iter().filter(|k| !list.iter().any(|x| x.to_lowercase() == k.to_lowercase())).take(12).collect();
+    // 修改：拿回輸入框（輸入框裡原本打的字先加進去），改好按 Enter
+    if let Some(i) = edit {
+        commit(list, input);
+        let i = i.min(list.len().saturating_sub(1));
+        if i < list.len() {
+            *input = list.remove(i);
+            ui.memory_mut(|m| m.request_focus(focus_id));
+        }
+    }
+    // 伺服器上已經有的：沒打字時先列 12 個（「還有 N 個…」展開全部），打字時列出全部符合的
+    let typed = input.trim().to_lowercase();
+    let more_id = Id::new(("jf-edit-more", id));
+    let expanded = ui.data(|d| d.get_temp::<bool>(more_id)).unwrap_or(false);
+    let rest: Vec<&String> = known.iter().filter(|k| !list.iter().any(|x| x.to_lowercase() == k.to_lowercase())).filter(|k| typed.is_empty() || k.to_lowercase().contains(&typed)).collect();
+    let limit = if expanded || !typed.is_empty() { rest.len() } else { 12 };
+    let hidden = rest.len().saturating_sub(limit);
     if !rest.is_empty() {
         let mut add = None;
+        let mut toggle = false;
         ui.add_space(2.0);
-        ui.horizontal_wrapped(|ui| {
-            ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
-            ui.label(RichText::new(tr!("常用：", "Used before:")).font(theme::font(12.0)).color(p.muted));
-            for k in rest {
-                if theme::chip(ui, &format!("＋ {k}"), theme::Tone::Plain, true).on_hover_text(tr!("點一下加入", "Click to add")).clicked() {
-                    add = Some(k.clone());
+        egui::ScrollArea::vertical().id_salt(("jf-edit-known", id)).max_height(150.0).auto_shrink([false, true]).show(ui, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
+                let title = if typed.is_empty() { tr!("常用：", "Used before:") } else { tr!("符合的：", "Matches:") };
+                ui.label(RichText::new(title).font(theme::font(12.0)).color(p.muted));
+                for k in rest.iter().take(limit) {
+                    if theme::chip(ui, &format!("＋ {k}"), theme::Tone::Plain, true).on_hover_text(tr!("點一下加入", "Click to add")).clicked() {
+                        add = Some((*k).clone());
+                    }
                 }
-            }
+                if hidden > 0 {
+                    if ui.link(RichText::new(trf!("還有 {hidden} 個…", "{hidden} more…")).font(theme::font(12.0))).clicked() {
+                        toggle = true;
+                    }
+                } else if expanded && typed.is_empty() && rest.len() > 12 && ui.link(RichText::new(tr!("收起", "Show fewer")).font(theme::font(12.0))).clicked() {
+                    toggle = true;
+                }
+            });
         });
-        list.extend(add);
+        if toggle {
+            ui.data_mut(|d| d.insert_temp(more_id, !expanded));
+        }
+        if let Some(k) = add {
+            list.push(k);
+            // 打了一半的字是用來找的：加好就清掉
+            input.clear();
+        }
+    } else if !typed.is_empty() && !known.is_empty() {
+        ui.label(RichText::new(tr!("伺服器上沒有符合的，按 Enter 新增", "No match on the server; press Enter to add it")).font(theme::font(12.0)).color(p.muted));
     }
 }
 
 /// 封面預覽：選了新的就顯示新的，不然是 Jellyfin 上目前的
-fn cover_box(ui: &mut egui::Ui, d: &JfEdit, pick: &mut bool, undo: &mut bool) {
+fn cover_box(ui: &mut egui::Ui, d: &mut JfEdit, pick: &mut bool, undo: &mut bool) {
     let p = theme::pal(ui);
     ui.vertical(|ui| {
         ui.set_width(COVER.x);
         label(ui, tr!("封面", "Cover"));
         let (rect, resp) = ui.allocate_exact_size(COVER, Sense::click());
-        let tex = d.cover.as_ref().and_then(|c| c.2.as_ref()).or(d.poster.as_ref());
+        let tex = d.cover.as_ref().and_then(|c| c.2.as_ref()).or(d.poster.as_ref().filter(|_| !d.remove_cover));
         ui.painter().rect_filled(rect, 8.0, p.surface2);
         match tex {
             Some(t) => theme::paint_thumb_cover(ui.painter(), rect, t),
@@ -186,9 +229,25 @@ fn cover_box(ui: &mut egui::Ui, d: &JfEdit, pick: &mut bool, undo: &mut bool) {
                     *undo = true;
                 }
             }
+            None if d.remove_cover => {
+                ui.label(RichText::new(tr!("存檔時拿掉", "Removed on save")).font(theme::font(12.0)).color(p.warn));
+                if Btn::new(tr!("不拿掉", "Keep it")).small().ghost().show(ui).clicked() {
+                    d.remove_cover = false;
+                }
+            }
             None => {
                 if Btn::new(tr!("換封面…", "Change cover…")).small().show(ui).clicked() {
                     *pick = true;
+                }
+                if d.poster.is_some()
+                    && Btn::new(tr!("拿掉", "Remove"))
+                        .small()
+                        .ghost()
+                        .tooltip(tr!("拿掉 Jellyfin 上的封面（Jellyfin 之後可能自己從影片取一張）", "Remove the cover on Jellyfin (Jellyfin may pick a frame from the video later)"))
+                        .show(ui)
+                        .clicked()
+                {
+                    d.remove_cover = true;
                 }
             }
         });
@@ -205,7 +264,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
     let year_ok = d.year.trim().is_empty() || year.is_some();
     // 輸入框裡還沒按 Enter 的字也算（儲存時會一起存）
     let pending = !d.new_person.trim().is_empty() || !d.new_tag.trim().is_empty();
-    let changed = d.orig.as_ref().is_some_and(|o| *o != JfInfo { year, ..d.info.clone() }) || d.cover.is_some() || pending;
+    let changed = d.orig.as_ref().is_some_and(|o| *o != JfInfo { year, ..d.info.clone() }) || d.cover.is_some() || d.remove_cover || pending;
     let modal = egui::Modal::new(Id::new("jellyfin-edit")).frame(theme::modal_frame(ctx)).show(ctx, |ui| {
         ui.set_width((ctx.content_rect().width() - 80.0).clamp(360.0, 600.0));
         let p = theme::pal(ui);
@@ -236,11 +295,14 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                 ui.spacing_mut().item_spacing.y = 4.0;
                 // 上面：左邊封面，右邊標題、年份
                 ui.horizontal_top(|ui| {
-                    cover_box(ui, &d, &mut pick_cover, &mut undo_cover);
+                    cover_box(ui, &mut d, &mut pick_cover, &mut undo_cover);
                     ui.add_space(14.0);
                     ui.vertical(|ui| {
                         label(ui, tr!("標題", "Title"));
                         ui.add(egui::TextEdit::singleline(&mut d.info.title).desired_width(ui.available_width()).min_size(vec2(0.0, 30.0)).vertical_align(Align::Center));
+                        if d.info.title.trim().is_empty() {
+                            ui.label(RichText::new(tr!("Jellyfin 的標題不能空白：空白時保留原本的", "Jellyfin titles can't be empty; the current one is kept")).color(p.warn).font(theme::font(12.0)));
+                        }
                         ui.add_space(8.0);
                         label(ui, tr!("年份", "Year"));
                         ui.horizontal(|ui| {
@@ -316,7 +378,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         d.saving = true;
         d.error = None;
         let info = JfInfo { year, ..d.info.clone() };
-        let (id, user, cover) = (d.id.clone(), d.user.clone(), d.cover.as_ref().map(|c| c.1.clone()));
+        let (id, user, cover, remove_cover) = (d.id.clone(), d.user.clone(), d.cover.as_ref().map(|c| c.1.clone()), d.remove_cover);
         let Some(jf) = app.jellyfin() else { return };
         let (id2, title) = (id.clone(), info.title.clone());
         app.spawn(
@@ -325,6 +387,8 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                     jf.set_info(&user, &id, &info)?;
                     if let Some(c) = cover {
                         jf.set_cover(&id, &c)?;
+                    } else if remove_cover {
+                        jf.remove_cover(&id)?;
                     }
                     // 重新讀回來：Jellyfin 沒改到的欄位要講出來
                     let got = jf.item_info(&user, &id)?;
@@ -388,6 +452,7 @@ fn choose_cover(app: &mut UiApp) {
             Ok(Some(c)) => {
                 if let Some(d) = app.jf_edit.as_mut() {
                     d.cover = Some(c);
+                    d.remove_cover = false;
                 }
             }
             Ok(None) => {}
