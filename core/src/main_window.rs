@@ -154,11 +154,8 @@ mod win {
     use std::sync::Mutex;
     use windows::Win32::Foundation::{HWND, LPARAM, POINT, RECT};
     use windows::Win32::Graphics::Gdi::{EnumDisplayMonitors, GetMonitorInfoW, MonitorFromWindow, HDC, HMONITOR, MONITORINFO, MONITOR_DEFAULTTONEAREST};
-    use windows::Win32::UI::HiDpi::{AdjustWindowRectExForDpi, GetDpiForMonitor, MDT_EFFECTIVE_DPI};
-    use windows::Win32::UI::WindowsAndMessaging::{
-        GetCursorPos, GetWindowLongPtrW, GetWindowRect, IsIconic, IsWindowVisible, IsZoomed, SetWindowPos, ShowWindow, GWL_EXSTYLE, GWL_STYLE, SWP_NOACTIVATE, SWP_NOZORDER, SW_MAXIMIZE,
-        WINDOW_EX_STYLE, WINDOW_STYLE,
-    };
+    use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
+    use windows::Win32::UI::WindowsAndMessaging::{GetCursorPos, GetWindowRect, IsIconic, IsWindowVisible, IsZoomed, SetWindowPos, ShowWindow, SWP_NOACTIVATE, SWP_NOZORDER, SW_MAXIMIZE};
 
     static MAIN: AtomicIsize = AtomicIsize::new(0);
     /// 最後一次看到的還原（不是最大化、縮小）時的位置：最大化時記這個
@@ -204,21 +201,9 @@ mod win {
         list
     }
 
-    /// 這個縮放下視窗外框比內容多出來的寬度（依操作視窗實際的樣式）
-    pub fn frame(dpi: u32) -> Frame {
-        let mut r = RECT::default();
-        // SAFETY: 只讀取視窗樣式、計算外框
-        unsafe {
-            let (style, ex) = match hwnd() {
-                Some(h) => (WINDOW_STYLE(GetWindowLongPtrW(h, GWL_STYLE) as u32), WINDOW_EX_STYLE(GetWindowLongPtrW(h, GWL_EXSTYLE) as u32)),
-                None => (windows::Win32::UI::WindowsAndMessaging::WS_OVERLAPPEDWINDOW, WINDOW_EX_STYLE(0)),
-            };
-            if AdjustWindowRectExForDpi(&mut r, style, false, ex, dpi).is_err() {
-                let s = dpi as i32;
-                return Frame { l: 8 * s / 96, t: 31 * s / 96, r: 8 * s / 96, b: 8 * s / 96 };
-            }
-        }
-        Frame { l: -r.left, t: -r.top, r: r.right, b: r.bottom }
+    /// 這個縮放下視窗外框比內容多出來的寬度：操作視窗自己畫標題列（沒有 Windows 的標題列、邊框），外框和內容一樣大
+    pub fn frame(_dpi: u32) -> Frame {
+        Frame::default()
     }
 
     fn cursor() -> (i32, i32) {

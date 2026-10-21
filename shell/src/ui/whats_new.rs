@@ -34,30 +34,36 @@ enum Try {
     Tour,
     /// 打開檔案庫的 Jellyfin 分頁
     Jellyfin,
+    /// 縮小成小視窗
+    Compact,
 }
 
 /// 這一版的新功能（標題、說明、試試看）：最多 6 項，快速鍵用目前的設定
 fn items(_app: &UiApp) -> Vec<(String, String, Try)> {
     vec![
         (
-            tr!("Jellyfin 播放畫面也能剪輯、設封面", "Edit and set covers while streaming").into(),
+            tr!("新的標題列", "A new title bar").into(),
             tr!(
-                "看 Jellyfin 上的影片時，上方也有剪輯、製作（先下載好再打開）、設為封面、影片資訊、星號、Jellyfin 連結。",
-                "While watching a Jellyfin video you can edit or make versions (downloads first), set the cover from this frame, change details, star it or copy its link."
+                "視窗最上面換成白色的標題列：左邊「螢幕錄影 ⌄」有關於、檢查更新、更新說明；右邊直接開檔案庫、設定。",
+                "The top of the window has a new title bar: “Screen Recorder ⌄” on the left has About, Check for updates and Release notes; the right side opens the library and settings."
             )
             .into(),
-            Try::Jellyfin,
-        ),
-        (
-            tr!("後退、快轉 10 秒", "Back / forward 10 seconds").into(),
-            tr!("播放鈕兩旁的 ↶10、↷10，或鍵盤 ←→，一次跳 10 秒。", "Use ↶10 and ↷10 next to the play button, or ← →, to jump 10 seconds.").into(),
             Try::None,
         ),
         (
-            tr!("主畫面直接打開 Jellyfin", "Jellyfin on the home screen").into(),
+            tr!("縮小成小視窗", "Shrink to a small window").into(),
             tr!(
-                "最近錄影右邊的檔案庫多了「Jellyfin」按鈕；人物、標籤、年份選了也能按 × 清除。",
-                "The Library buttons next to recent recordings now include Jellyfin, and People / Tag / Year filters can be cleared with ×."
+                "標題列右邊的小視窗按鈕：只留開始錄影、截圖，錄影中有計時、暫停、停止，不擋畫面；再按一次回到原本大小。",
+                "The small-window button on the title bar keeps just record and screenshot (plus the timer, pause and stop while recording) out of your way. Click it again to go back."
+            )
+            .into(),
+            Try::Compact,
+        ),
+        (
+            tr!("檔案庫更大、縮圖可以調", "A bigger library with adjustable thumbnails").into(),
+            tr!(
+                "檔案庫填滿整個視窗、跟著視窗大小改變；Jellyfin 分頁的縮圖可以選小、中、大（也能按住 Ctrl 轉滾輪）。",
+                "The library fills the window and follows its size; the Jellyfin tab's thumbnails can be small, medium or large (or hold Ctrl and turn the wheel)."
             )
             .into(),
             Try::Jellyfin,
@@ -137,5 +143,6 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         }
         Try::Tour => super::tour::restart(app),
         Try::Jellyfin => super::library_dialog::open_jellyfin(app),
+        Try::Compact => super::title_bar::enter_compact(app, ctx),
     }
 }

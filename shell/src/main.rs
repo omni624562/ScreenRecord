@@ -330,6 +330,8 @@ fn main() {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title(screenrecorder_core::winui::app_title())
+            // 不用 Windows 的標題列，自己畫（ui::title_bar）；標題還是要設：程式靠標題找到操作視窗
+            .with_decorations(false)
             .with_inner_size([ui::settings::WINDOW_SIZE.0, ui::settings::WINDOW_SIZE.1])
             .with_min_inner_size([ui::settings::UI_MIN_SIZE.0, ui::settings::UI_MIN_SIZE.1])
             .with_visible(visible)
