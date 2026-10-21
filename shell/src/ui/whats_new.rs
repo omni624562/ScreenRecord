@@ -38,19 +38,37 @@ enum Try {
 fn items(_app: &UiApp) -> Vec<(String, String, Try)> {
     vec![
         (
-            tr!("時間軸可以按右鍵", "Right-click the timeline").into(),
+            tr!("選好就能刪", "Delete right from the selection").into(),
             tr!(
-                "剪輯時在時間軸上按右鍵：在這裡分割、刪除或加速這段、設為開頭 / 結尾、加標記，在刪掉的片段上按右鍵就能還原。",
-                "Right-click the editor timeline to split, delete or speed up a section, set the start or end, or add a marker. Right-click a removed part to restore it."
+                "剪輯時在縮圖上拖過不要的部分，選取範圍上方就有「刪除」「加速」按鈕，不用再找右邊的面板。",
+                "Drag across the part you don't want and Delete and Speed up buttons appear right above the selection."
             )
             .into(),
             Try::Library(false),
         ),
         (
-            tr!("刪掉的部分收起來", "Removed parts fold away").into(),
+            tr!("點一下只跳過去", "A click only jumps").into(),
             tr!(
-                "時間軸只顯示剪輯後留下的部分，接縫處的復原鈕可以還原；想看原來的樣子，點時間軸下方的眼睛圖示。",
-                "The timeline shows only what you keep; the restore button at each seam brings a part back. Click the eye below the timeline to see everything."
+                "在時間軸上點一下只移動播放頭，拖曳才是選取，手抖不會選到；分割好的片段按兩下選取。",
+                "Clicking the timeline only moves the playhead; dragging selects, so a shaky click won't. Double-click a split section to select it."
+            )
+            .into(),
+            Try::Library(false),
+        ),
+        (
+            tr!("剪頭尾和刪中間一樣", "Trim the ends like the middle").into(),
+            tr!(
+                "選取碰到開頭或結尾時按「刪除」就是剪掉頭尾；剪掉的頭尾也收起來，旁邊的紅色復原鈕可以放回來。",
+                "Deleting a selection that touches the start or end trims it. Trimmed ends fold away too, with a red restore button next to them."
+            )
+            .into(),
+            Try::Library(false),
+        ),
+        (
+            tr!("時間軸可以按右鍵", "Right-click the timeline").into(),
+            tr!(
+                "在時間軸上按右鍵：在這裡分割、刪除或加速這段、設為開頭 / 結尾、加標記，在剪掉的部分上按右鍵就能還原。",
+                "Right-click the timeline to split, delete or speed up a section, set the start or end, or add a marker. Right-click a removed part to restore it."
             )
             .into(),
             Try::Library(false),
@@ -63,20 +81,6 @@ fn items(_app: &UiApp) -> Vec<(String, String, Try)> {
             )
             .into(),
             Try::Library(false),
-        ),
-        (
-            tr!("測試音量可以提早停", "Stop the level test early").into(),
-            tr!("測試音量時旁邊有「停止」按鈕，顯示還剩幾秒，不用等它自己結束。", "The level test now has a Stop button showing the seconds left, so you don't have to wait for it.").into(),
-            Try::None,
-        ),
-        (
-            tr!("Proxy 用在哪裡", "What the proxy is for").into(),
-            tr!(
-                "Proxy 只用在下載外部元件和新版本，Jellyfin、NAS 不經過它；檢查更新失敗時可以直接打開 Proxy 設定。",
-                "The proxy is only used to download components and updates, not for Jellyfin or the NAS. When an update check fails you can jump straight to the proxy settings."
-            )
-            .into(),
-            Try::Settings(Page::Components),
         ),
     ]
 }
