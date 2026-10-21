@@ -281,12 +281,23 @@ fn sub_items(ui: &mut egui::Ui, items: &[Item]) -> Option<EntryAction> {
     pick
 }
 
-/// 「⋯」與按右鍵的選單：全部動作，一組一條分隔線
+/// 按右鍵的選單：全部動作，一組一條分隔線
 pub fn menu(ui: &mut egui::Ui, groups: &[Vec<Node>]) -> Option<EntryAction> {
+    menu_except(ui, groups, &[])
+}
+
+/// 選單，但不列 shown 裡的動作（「⋯」是「更多」：旁邊已經有按鈕的不再列一次）
+fn menu_except(ui: &mut egui::Ui, groups: &[Vec<Node>], shown: &[EntryAction]) -> Option<EntryAction> {
     ui.set_min_width(220.0);
     let mut pick = None;
-    for (i, g) in groups.iter().enumerate() {
-        if i > 0 {
+    let keep = |n: &&Node| !matches!(n, Node::One(it) if shown.contains(&it.action));
+    let mut first = true;
+    for g in groups {
+        let g: Vec<&Node> = g.iter().filter(keep).collect();
+        if g.is_empty() {
+            continue;
+        }
+        if !std::mem::take(&mut first) {
             ui.separator();
         }
         for n in g {
@@ -313,6 +324,7 @@ pub fn menu(ui: &mut egui::Ui, groups: &[Vec<Node>]) -> Option<EntryAction> {
 /// slots：留幾個位置；shown：前幾個位置才放圖示（加速版那一列只放播放，其他在「⋯」）
 pub fn quick_icons(ui: &mut egui::Ui, groups: &[Vec<Node>], hot: bool, slots: usize, shown: usize, more_tip: &str) -> Option<EntryAction> {
     let mut pick = None;
+    let mut shown_actions = vec![];
     let quick: Vec<&Item> = groups
         .iter()
         .flatten()
@@ -328,6 +340,7 @@ pub fn quick_icons(ui: &mut egui::Ui, groups: &[Vec<Node>], hot: bool, slots: us
             continue;
         };
         let Some(icon) = it.icon else { continue };
+        shown_actions.push(it.action);
         let tip = it.blocked.clone().unwrap_or_else(|| if it.tip.is_empty() { it.label.clone() } else { format!("{}\n{}", it.label, it.tip) });
         // 播放一直是深色，其他平常淡灰色，滑鼠移到上面才變深
         if Btn::icon_only(icon).ghost().small().quiet(!hot && slot != 0).enabled(it.blocked.is_none()).tooltip(tip).show(ui).clicked() {
@@ -336,7 +349,7 @@ pub fn quick_icons(ui: &mut egui::Ui, groups: &[Vec<Node>], hot: bool, slots: us
     }
     let more = Btn::icon_only(Icon::More).ghost().small().quiet(!hot).tooltip(more_tip).show(ui);
     egui::Popup::menu(&more).show(|ui| {
-        if let Some(a) = menu(ui, groups) {
+        if let Some(a) = menu_except(ui, groups, &shown_actions) {
             pick = Some(a);
         }
     });
