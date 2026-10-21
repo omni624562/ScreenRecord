@@ -127,13 +127,13 @@ fn time_panel(ed: &mut Editor, ui: &mut egui::Ui, toast: &mut Option<(String, bo
     // 三步驟就會剪：頭尾、中間、刪掉
     if ed.sel.is_none() {
         for (n, zh, en) in [
-            ("1", "拖時間軸兩端的黃色把手：剪掉頭尾", "Drag the yellow handles at both ends of the timeline to trim the start and end"),
             (
-                "2",
-                "刪中間：在縮圖上拖過那一段（或在開頭、結尾按右鍵「在這裡分割」）",
-                "To cut the middle, drag across that part of the thumbnails (or right-click its start and end and choose “Split here”)",
+                "1",
+                "在縮圖上拖過不要的部分：開頭、中間、結尾都一樣（剪頭尾也可以拖兩端的黃色把手）",
+                "Drag across the part you don't want on the thumbnails, whether it's the start, the middle or the end (you can also drag the yellow handles to trim)",
             ),
-            ("3", "按「刪除這段」、Delete，或在那一段按右鍵「刪除這段」", "Press “Delete section” or Delete, or right-click the section and choose “Delete this section”"),
+            ("2", "按選取範圍上方的「刪除」（或 Delete）；要加速就按「加速」", "Press “Delete” above the selection (or Delete). Press “Speed up” to speed it up instead"),
+            ("3", "刪掉的部分在時間軸上收起來，點紅色的復原鈕可以放回來（Ctrl+Z 也可以）", "Removed parts fold away on the timeline. Click the red restore button to bring one back (or press Ctrl+Z)"),
         ] {
             ui.horizontal_top(|ui| {
                 ui.spacing_mut().item_spacing.x = 6.0;

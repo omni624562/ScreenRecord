@@ -370,7 +370,7 @@ pub struct Editor {
     sub_anchor: Option<u64>,
     /// 找到的贅字與停頓（勾選的要剪）；None = 沒有在看
     pub(crate) fillers: Option<Vec<(screenrecorder_core::fillers::Filler, bool)>>,
-    /// 分割點（原片的時間）：時間軸分成一段一段，點一下選取一段
+    /// 分割點（原片的時間）：時間軸分成一段一段，按兩下選取一段
     splits: Vec<f64>,
     /// 時間軸按右鍵的選單：按的地方（原片的時間）與那裡有什麼
     tl_menu: Option<timeline::TlMenu>,
@@ -1504,11 +1504,42 @@ impl Editor {
         self.view.1 - self.view.0 < self.duration - 0.001
     }
 
-    /// 刪除選取的範圍（提示刪了哪一段、可以復原）
+    /// 刪除選取的範圍（提示刪了哪一段、可以復原）；碰到開頭或結尾的就是剪掉頭尾（和拖曳黃色把手一樣）
     fn delete_selection(&mut self, app_toast: &mut Option<(String, bool)>) {
-        let all: Vec<Range> = self.sels().into_iter().filter(|(a, b)| b - a >= 0.05).collect();
+        let (start, end) = (self.spec.start, self.spec.end);
+        let mut all: Vec<Range> = self.sels().into_iter().map(|(a, b)| (a.max(start), b.min(end))).filter(|(a, b)| b - a >= 0.05).collect();
         self.sel = None;
         self.sel_more.clear();
+        if all.iter().any(|&(a, b)| a <= start + 0.05 && b >= end - 0.05) {
+            *app_toast = Some((tr!("不能刪掉全部；要留下一段", "You can't remove everything. Keep at least one part").into(), true));
+            return;
+        }
+        let (mut new_start, mut new_end) = (start, end);
+        all.retain(|&(a, b)| {
+            if a <= start + 0.05 {
+                new_start = new_start.max(b);
+                false
+            } else if b >= end - 0.05 {
+                new_end = new_end.min(a);
+                false
+            } else {
+                true
+            }
+        });
+        let trimmed = new_start != start || new_end != end;
+        if trimmed {
+            self.set_start(new_start);
+            self.set_end(new_end);
+            if all.is_empty() {
+                let msg = match (new_start != start, new_end != end) {
+                    (true, false) => trf!("已剪掉開頭（到 {}），可按 Ctrl+Z 復原", "Trimmed the start (up to {}). Press Ctrl+Z to undo", video_clock(new_start)),
+                    (false, true) => trf!("已剪掉結尾（從 {}），可按 Ctrl+Z 復原", "Trimmed the end (from {}). Press Ctrl+Z to undo", video_clock(new_end)),
+                    _ => tr!("已剪掉開頭和結尾，可按 Ctrl+Z 復原", "Trimmed the start and end. Press Ctrl+Z to undo").into(),
+                };
+                *app_toast = Some((msg, false));
+                return;
+            }
+        }
         match all.as_slice() {
             [] => *app_toast = Some((tr!("選取的片段太短", "The selected section is too short").into(), true)),
             [one] => {
@@ -1741,7 +1772,7 @@ impl Editor {
         }
         self.splits.push(t);
         self.splits.sort_by(f64::total_cmp);
-        (trf!("已在 {} 分割，點一段就能選取它（刪除、加速）", "Split at {}. Click a section to select it (delete or speed up)", video_clock(t)), false)
+        (trf!("已在 {} 分割，按兩下一段就能選取它（刪除、加速）", "Split at {}. Double-click a section to select it (delete or speed up)", video_clock(t)), false)
     }
 
     /// 在播放頭加上標記（輸出時變成章節）；回傳要顯示的訊息
@@ -2922,8 +2953,8 @@ fn transport(ed: &mut Editor, ui: &mut egui::Ui, toast: &mut Option<(String, boo
         let split = if text { split_full } else { Btn::icon_only(theme::Icon::Cut).ghost().small() };
         if split
             .tooltip(tr!(
-                "在這裡分割（S）：在播放頭把影片切開，之後點一段就能選取它（刪除、加速）",
-                "Split here (S): cut the video at the playhead, then click a section to select it (delete or speed up)"
+                "在這裡分割（S）：在播放頭把影片切開，之後按兩下一段就能選取它（刪除、加速）",
+                "Split here (S): cut the video at the playhead, then double-click a section to select it (delete or speed up)"
             ))
             .show(ui)
             .clicked()

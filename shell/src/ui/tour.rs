@@ -509,8 +509,8 @@ fn content(app: &UiApp, t: &Tour) -> (Option<Spot>, String, String, Go) {
             Some(Spot::EdTimeline),
             tr!("時間軸：剪掉不要的部分", "Timeline: cut what you don't need").into(),
             tr!(
-                "拖曳兩端的把手剪掉開頭、結尾；在中間拖曳選一段、按 Delete 刪掉。滾輪放大時間軸看細一點，點一下跳到那個位置。",
-                "Drag the handles at either end to trim the start and end; drag across the middle to select a part and press Delete to remove it. Scroll to zoom the timeline and click to jump to a point."
+                "在縮圖上拖過不要的部分（開頭、中間、結尾都可以），按上方的「刪除」；兩端的黃色把手也能剪頭尾。滾輪放大時間軸看細一點，點一下跳到那個位置。",
+                "Drag across the part you don't want on the thumbnails (start, middle or end) and press “Delete” above it; the yellow handles at either end trim too. Scroll to zoom the timeline and click to jump to a point."
             )
             .into(),
             next(),
