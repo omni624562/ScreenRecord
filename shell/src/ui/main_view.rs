@@ -1154,6 +1154,18 @@ fn after_done_card(app: &mut UiApp, ui: &mut Ui) {
 
 // ───────────── 錄影狀態 ─────────────
 
+/// 可以開始錄影：有錄影元件與編碼器、沒有手動開始的轉檔、範圍夠大（主畫面、小視窗的「開始錄影」）
+pub(super) fn can_start(app: &UiApp) -> bool {
+    app.env.ffmpeg.found && app.env.ffmpeg.encoder.is_some() && app.manual_export().is_none() && !region_too_small(app)
+}
+
+/// 用目前的設定開始錄影
+pub(super) fn start_recording(app: &UiApp) {
+    let config = app.s.record_config(&app.env);
+    let core = app.core.clone();
+    app.guarded(async move { actions::record_start(&core, config).await }, |_, _| {});
+}
+
 pub(super) fn live_recorded_ms(app: &UiApp) -> f64 {
     let r = &app.status.recorder;
     if r.state == RecorderState::Recording {
@@ -1505,7 +1517,7 @@ fn rec_body(app: &mut UiApp, ui: &mut Ui, r: &screenrecorder_core::types::Record
         if !active {
             // 錄完自動處理不擋錄影（錄影時先暫停，錄完再繼續）；手動開始的轉檔要先停止（下方的按鈕）
             let manual = app.manual_export();
-            let can = app.env.ffmpeg.found && app.env.ffmpeg.encoder.is_some() && manual.is_none() && !region_too_small(app);
+            let can = can_start(app);
             let tip = if !app.env.ffmpeg.found {
                 tr!("請先下載錄影元件（上方的「下載並開始使用」）", "Download the recording component first (“Download and get started” above)").to_string()
             } else if region_too_small(app) {
@@ -1529,9 +1541,7 @@ fn rec_body(app: &mut UiApp, ui: &mut Ui, r: &screenrecorder_core::types::Record
             let start = Btn::new(label).kind(theme::Kind::Record).enabled(can).tooltip(tip).min_width(ui.available_width()).show(ui);
             tour::mark(ui, Spot::Record, start.rect);
             if start.clicked() {
-                let config = app.s.record_config(&app.env);
-                let core = app.core.clone();
-                app.guarded(async move { actions::record_start(&core, config).await }, |_, _| {});
+                start_recording(app);
             }
         } else if let Some(rp) = replay {
             // 回溯錄影：存下最近 N 分鐘、停止（不能暫停、不能加標記）

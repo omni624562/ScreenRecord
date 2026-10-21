@@ -28,6 +28,7 @@ pub mod snip;
 pub mod steps_review;
 pub mod theme;
 pub mod thumbs;
+pub mod title_bar;
 mod tour;
 pub mod video_tags;
 pub mod viewer;
@@ -206,6 +207,8 @@ pub struct UiApp {
     whats_new_checked: bool,
     /// 一步一步的教學（第一次錄影、各功能第一次打開的提示）
     pub tour: Option<tour::Tour>,
+    /// 縮小成小視窗（標題列的按鈕）：切換前的視窗大小
+    pub compact: Option<title_bar::Compact>,
     /// 已檢查過要不要問搬移截圖（每次啟動一次）
     shot_move_checked: bool,
 
@@ -366,6 +369,7 @@ impl UiApp {
             whats_new_open: false,
             whats_new_checked: false,
             tour: None,
+            compact: None,
             shot_move_checked: false,
             preview: preview::Preview::default(),
             thumbs: thumbs::Thumbs::default(),
@@ -1481,6 +1485,10 @@ impl UiApp {
 
     /// 記下視窗目前的位置、大小、是否最大化（下次開啟時用）
     fn remember_window(&mut self) {
+        // 小視窗不記：下次開啟還是原本的大小
+        if self.compact.is_some() {
+            return;
+        }
         if let Some(p) = screenrecorder_core::main_window::current() {
             if self.s.window != Some(p) {
                 self.s.window = Some(p);
@@ -1599,12 +1607,16 @@ impl eframe::App for UiApp {
         ctx.request_repaint_after(next);
     }
 
-    #[cfg(debug_assertions)]
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {
-        dev::input(self, ctx, raw);
-        if std::mem::take(&mut self.release_pointer) {
-            if let Some(pos) = ctx.input(|i| i.pointer.latest_pos()) {
-                raw.events.push(egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: false, modifiers: ctx.input(|i| i.modifiers) });
+        // 自己畫的標題列：主畫面、對話框從標題列下面開始
+        raw.safe_area_insets = Some(title_bar::insets(ctx));
+        #[cfg(debug_assertions)]
+        {
+            dev::input(self, ctx, raw);
+            if std::mem::take(&mut self.release_pointer) {
+                if let Some(pos) = ctx.input(|i| i.pointer.latest_pos()) {
+                    raw.events.push(egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: false, modifiers: ctx.input(|i| i.modifiers) });
+                }
             }
         }
     }
@@ -1632,7 +1644,15 @@ impl eframe::App for UiApp {
             snip::show(self, &ctx);
             part(self, "框選截圖");
         }
-        main_view::show(self, ui);
+        // 主畫面（或小視窗）排在標題列下面
+        title_bar::tick(self, &ctx);
+        ui.scope_builder(egui::UiBuilder::new().max_rect(ctx.content_rect()), |ui| {
+            if self.compact.is_some() {
+                title_bar::compact_view(self, ui);
+            } else {
+                main_view::show(self, ui);
+            }
+        });
         part(self, "主畫面");
         if self.notes.is_some() {
             notes::show(self, &ctx);
@@ -1716,6 +1736,8 @@ impl eframe::App for UiApp {
         tour::show(self, &ctx);
         dialogs::show_toast(self, &ctx);
         main_view::countdown_overlay(self, &ctx);
+        title_bar::show(self, &ctx);
+        title_bar::resize_edges(&ctx);
         #[cfg(debug_assertions)]
         dev::tick(self, &ctx);
     }

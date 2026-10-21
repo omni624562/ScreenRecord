@@ -79,6 +79,25 @@ pub struct SettingsDialog {
     jf_found: Option<Vec<(String, String)>>,
 }
 
+/// 馬上檢查有沒有新版本，結果用通知列說（「關於」頁的「立即檢查」、標題列選單的「檢查更新」）
+pub fn check_update_now(app: &mut UiApp) {
+    let core = app.core.clone();
+    app.spawn(async move { actions::check_update(&core).await }, |app, r| match r {
+        Ok(u) => {
+            app.update = actions::update_state(&app.core);
+            app.env.update = u.clone();
+            match u {
+                Some(u) => app.toast(trf!("有新版本 v{}", "Version v{} is available", u.version), false),
+                None => app.toast(trf!("目前已是最新版本（v{}）", "You're on the latest version (v{})", app.env.app_version), false),
+            }
+        }
+        Err(e) => {
+            app.update.error = Some(e.message().to_string());
+            app.toast_with(e.message().to_string(), true, vec![proxy_action()]);
+        }
+    });
+}
+
 pub fn open(app: &mut UiApp, page: Page) {
     match &mut app.settings_dlg {
         Some(d) => d.page = page,
@@ -2091,21 +2110,7 @@ fn updates_section(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
     }
     form_row(ui, if app.env.update.is_some() { "" } else { tr!("目前版本", "Current version") }, |ui| {
         if Btn::new(tr!("立即檢查", "Check now")).small().show(ui).clicked() {
-            let core = app.core.clone();
-            app.spawn(async move { actions::check_update(&core).await }, |app, r| match r {
-                Ok(u) => {
-                    app.update = actions::update_state(&app.core);
-                    app.env.update = u.clone();
-                    match u {
-                        Some(u) => app.toast(trf!("有新版本 v{}", "Version v{} is available", u.version), false),
-                        None => app.toast(trf!("目前已是最新版本（v{}）", "You're on the latest version (v{})", app.env.app_version), false),
-                    }
-                }
-                Err(e) => {
-                    app.update.error = Some(e.message().to_string());
-                    app.toast_with(e.message().to_string(), true, vec![proxy_action()]);
-                }
-            });
+            check_update_now(app);
         }
         if app.env.update.is_none() {
             ui.label(theme::muted(ui, trf!("v{}", "v{}", app.env.app_version)));

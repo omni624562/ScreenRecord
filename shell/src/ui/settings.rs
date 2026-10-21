@@ -239,10 +239,10 @@ pub const NOTES_OPACITY_MIN: u32 = 40;
 
 /// 介面大小可選的百分比
 pub const UI_SCALES: [u32; 4] = [100, 110, 125, 150];
-/// 操作視窗開啟時的大小（點，100% 縮放）；螢幕上放不下時縮小、最大化
-pub const WINDOW_SIZE: (f32, f32) = (1280.0, 900.0);
-/// 主畫面至少要這麼大（點）才放得下：視窗的最小大小；螢幕放大後比這個小的介面大小不能選
-pub const UI_MIN_SIZE: (f32, f32) = (960.0, 520.0);
+/// 操作視窗開啟時的大小（點，100% 縮放；含自己畫的標題列）；螢幕上放不下時縮小、最大化
+pub const WINDOW_SIZE: (f32, f32) = (1280.0, 900.0 + super::title_bar::TITLE_H);
+/// 主畫面（加上標題列）至少要這麼大（點）才放得下：視窗的最小大小；螢幕放大後比這個小的介面大小不能選
+pub const UI_MIN_SIZE: (f32, f32) = (960.0, 520.0 + super::title_bar::TITLE_H);
 
 /// 自訂範圍跟著的視窗
 #[derive(Debug, Clone, PartialEq, Eq)]
