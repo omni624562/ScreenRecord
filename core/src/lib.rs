@@ -50,6 +50,7 @@ pub mod input_overlay_win;
 pub mod instance;
 pub mod ipc;
 pub mod jellyfin;
+pub mod jf_dupes;
 pub mod job;
 pub mod library;
 #[cfg(windows)]

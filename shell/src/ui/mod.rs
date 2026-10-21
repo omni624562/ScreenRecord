@@ -10,6 +10,7 @@ pub mod export_dialog;
 pub mod import;
 pub mod inline_play;
 pub mod jellyfin_browse;
+pub mod jellyfin_dupes;
 pub mod jellyfin_edit;
 pub mod library_dialog;
 pub mod library_send;
@@ -186,10 +187,12 @@ pub struct UiApp {
     /// Jellyfin 上誰看過哪支、我的最愛（什麼時候讀的）；正在背景讀
     pub jf_watch: Option<(Instant, screenrecorder_core::jellyfin::WatchState)>,
     pub jf_watch_loading: bool,
-    /// 瀏覽 Jellyfin 的視窗
+    /// 檔案庫「Jellyfin」分頁的內容（關掉檔案庫時清掉）
     pub jf_browse: Option<jellyfin_browse::JfBrowse>,
     /// 在瀏覽視窗改 Jellyfin 上的影片資訊
     pub jf_edit: Option<jellyfin_edit::JfEdit>,
+    /// 找 Jellyfin 上重複的影片
+    pub jf_dupes: Option<jellyfin_dupes::JfDupes>,
     /// 上一格工作列有沒有顯示進度（做完時閃一下用）
     taskbar_busy: bool,
     /// 從檔案庫或檢視器去剪輯、製作時記下來：剪輯視窗、製作視窗關掉後回到原本的地方
@@ -354,6 +357,7 @@ impl UiApp {
             jf_watch_loading: false,
             jf_browse: None,
             jf_edit: None,
+            jf_dupes: None,
             taskbar_busy: false,
             back_to: None,
             changelog_open: false,
@@ -1641,8 +1645,8 @@ impl eframe::App for UiApp {
             library_dialog::show(self, &ctx);
             part(self, "全部錄影");
         }
-        if self.jf_browse.is_some() {
-            jellyfin_browse::show(self, &ctx);
+        if self.jf_dupes.is_some() {
+            jellyfin_dupes::show(self, &ctx);
         }
         inline_play::tick(self, &ctx);
         if self.viewer.is_some() {

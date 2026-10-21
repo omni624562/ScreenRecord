@@ -379,6 +379,33 @@ impl Jellyfin {
         (!buf.is_empty()).then_some(buf)
     }
 
+    /// 伺服器上全部的影片（找重複用）：大小、長度、解析度、位元率、加入日期、user 看過了沒；一次讀 500 支
+    pub fn all_videos(&self, user: &str) -> Result<Vec<crate::jf_dupes::JfVideo>, String> {
+        let (mut out, mut start) = (vec![], 0usize);
+        loop {
+            let req = agent()
+                .get(&format!("{}/Users/{user}/Items", self.url))
+                .query("recursive", "true")
+                .query("includeItemTypes", VIDEO_TYPES)
+                .query("fields", "Path,MediaSources,DateCreated")
+                .query("enableImageTypes", "Primary")
+                .query("imageTypeLimit", "1")
+                .query("startIndex", &start.to_string())
+                .query("limit", "500")
+                .query("enableTotalRecordCount", "true");
+            let body = self.call(req)?.into_string().map_err(|e| e.to_string())?;
+            let (page, total) = crate::jf_dupes::parse_videos(&body);
+            // 這一頁有幾個（沒有長度的不算進 page，但要跳過）
+            let got = serde_json::from_str::<Value>(&body).ok().and_then(|v| v.get("Items").and_then(Value::as_array).map(Vec::len)).unwrap_or(0);
+            out.extend(page);
+            start += got;
+            // 讀完了（或伺服器沒給更多）
+            if got == 0 || start >= total {
+                return Ok(out);
+            }
+        }
+    }
+
     /// 影片裡出現的人物（瀏覽視窗「依人物找」）：（編號, 名稱），依名稱排
     pub fn persons(&self, user: &str) -> Result<Vec<(String, String)>, String> {
         let req = agent().get(&format!("{}/Persons", self.url)).query("userId", user).query("limit", "500").query("enableImages", "false");
@@ -395,7 +422,7 @@ impl Jellyfin {
         Ok(facets_of(&body))
     }
 
-    /// 一支影片的資訊（標題、說明、人物、標籤、年份），在瀏覽視窗修改用
+    /// 一支影片的資訊（標題、說明、人物、標籤、年份），在檔案庫 Jellyfin 分頁修改用
     pub fn item_info(&self, user: &str, id: &str) -> Result<JfInfo, String> {
         let body = self.call(agent().get(&format!("{}/Users/{user}/Items/{id}", self.url)))?.into_string().map_err(|e| e.to_string())?;
         info_of(&body).ok_or_else(|| tr!("Jellyfin 的影片資料看不懂", "Couldn't understand Jellyfin's item data").to_string())
@@ -977,7 +1004,7 @@ impl JfFacet {
     }
 }
 
-/// 在瀏覽視窗修改的影片資訊
+/// 在檔案庫 Jellyfin 分頁修改的影片資訊
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct JfInfo {
     pub title: String,
@@ -1190,8 +1217,45 @@ fn info_of(json: &str) -> Option<JfInfo> {
             .map(|a| a.iter().filter(|p| p.get("Type").and_then(Value::as_str).is_none_or(|t| t == "Actor")).filter_map(|p| p.get("Name")?.as_str().map(String::from)).collect())
             .unwrap_or_default(),
         tags: strs("Tags"),
-        year: v.get("ProductionYear").and_then(Value::as_i64).map(|y| y as i32),
+        // 沒設年份時用首映日期的年（Jellyfin 的家庭影片頁面顯示的是首映日期）
+        year: v.get("ProductionYear").and_then(Value::as_i64).map(|y| y as i32).or_else(|| premiere_year(&v)),
     })
+}
+
+/// 首映日期（2024-05-01T00:00:00Z）的年
+fn premiere_year(v: &Value) -> Option<i32> {
+    v.get("PremiereDate").and_then(Value::as_str).and_then(|d| d.get(..4)).and_then(|y| y.parse().ok())
+}
+
+/// 存好後重新讀回來，哪些欄位沒有改到（回傳欄位名稱；全部改到時空的）。
+/// 標籤、人物不管順序與大小寫；標題空的時本來就不改
+pub fn unsaved(want: &JfInfo, got: &JfInfo) -> Vec<&'static str> {
+    let same_set = |a: &[String], b: &[String]| {
+        let norm = |l: &[String]| {
+            let mut v: Vec<String> = l.iter().map(|x| x.trim().to_lowercase()).filter(|x| !x.is_empty()).collect();
+            v.sort();
+            v.dedup();
+            v
+        };
+        norm(a) == norm(b)
+    };
+    let mut out = vec![];
+    if !want.title.trim().is_empty() && want.title.trim() != got.title.trim() {
+        out.push(tr!("標題", "title"));
+    }
+    if want.overview.trim() != got.overview.trim() {
+        out.push(tr!("說明", "description"));
+    }
+    if want.year.is_some() && want.year != got.year {
+        out.push(tr!("年份", "year"));
+    }
+    if !same_set(&want.people, &got.people) {
+        out.push(tr!("人物", "people"));
+    }
+    if !same_set(&want.tags, &got.tags) {
+        out.push(tr!("標籤", "tags"));
+    }
+    out
 }
 
 /// 把 JfInfo 換進整筆資料（POST /Items/{id} 用）：標題空的時不改
@@ -1208,6 +1272,13 @@ pub fn with_info(item_json: &str, x: &JfInfo) -> Option<String> {
     people.extend(x.people.iter().map(|n| serde_json::json!({ "Name": n, "Type": "Actor" })));
     o.insert("People".into(), Value::from(people));
     o.insert("ProductionYear".into(), x.year.map_or(Value::Null, Value::from));
+    // 首映日期跟著換成這一年（月日不變）：Jellyfin 的家庭影片頁面顯示的是首映日期，只改年份會看不出來
+    if let Some(y) = x.year {
+        let date = o.get("PremiereDate").and_then(Value::as_str).filter(|d| d.len() >= 4 && d.is_char_boundary(4)).map(|d| format!("{y:04}{}", &d[4..]));
+        if let Some(d) = date {
+            o.insert("PremiereDate".into(), Value::from(d));
+        }
+    }
     serde_json::to_string(&v).ok()
 }
 
@@ -2593,5 +2664,21 @@ mod tests {
         assert!(v["ProductionYear"].is_null());
         // 導演留著，演員換成新的
         assert_eq!(v["People"], serde_json::json!([{"Name":"爸爸","Type":"Director"},{"Name":"阿嬤","Type":"Actor"}]));
+        // 改年份：首映日期跟著換年；沒有年份時用首映日期的年
+        let dated = r#"{"Id":"x","Name":"生日","PremiereDate":"2026-05-01T10:00:00.0000000Z"}"#;
+        assert_eq!(info_of(dated).unwrap().year, Some(2026));
+        let v: Value = serde_json::from_str(&with_info(dated, &JfInfo { year: Some(2019), ..Default::default() }).unwrap()).unwrap();
+        assert_eq!((v["ProductionYear"].as_i64(), v["PremiereDate"].as_str()), (Some(2019), Some("2019-05-01T10:00:00.0000000Z")));
+        assert_eq!(v["Name"], "生日");
+    }
+
+    #[test]
+    fn finds_fields_jellyfin_did_not_keep() {
+        let want = JfInfo { title: "生日".into(), overview: "蛋糕".into(), people: vec!["小明".into(), "阿嬤".into()], tags: vec!["家".into()], year: Some(2019) };
+        // 順序、大小寫、前後空白不同不算
+        let same = JfInfo { people: vec!["阿嬤 ".into(), "小明".into()], ..want.clone() };
+        assert!(unsaved(&want, &same).is_empty());
+        let lost = JfInfo { people: vec![], tags: vec![], year: Some(2026), ..want.clone() };
+        assert_eq!(unsaved(&want, &lost), vec![tr!("年份", "year"), tr!("人物", "people"), tr!("標籤", "tags")]);
     }
 }
