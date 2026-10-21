@@ -325,8 +325,9 @@ pub fn quick_icons(ui: &mut egui::Ui, groups: &[Vec<Node>], hot: bool, more_tip:
     let quick: Vec<&Node> = groups.iter().flatten().filter(|n| n.quick()).collect();
     for slot in 0..5 {
         let n = quick.iter().find(|n| slot_of(n) == slot);
+        // 這支沒有的：留一個和按鈕一樣大的空位（上下列的圖示才對得齊）
         let Some(n) = n else {
-            ui.add_space(28.0);
+            ui.allocate_exact_size(egui::vec2(28.0, 28.0), egui::Sense::hover());
             continue;
         };
         let Some(icon) = n.icon() else { continue };
