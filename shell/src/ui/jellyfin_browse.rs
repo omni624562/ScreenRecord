@@ -618,29 +618,60 @@ pub fn panel(ui: &mut egui::Ui, d: &mut JfBrowse) -> Panel {
                 out.find_dupes = true;
             }
             ui.add_space(8.0);
-            let mut pick = None;
-            let menu = |ui: &mut egui::Ui, label: &str, empty: &str, items: Vec<(String, JfFacet)>, pick: &mut Option<JfFacet>| {
-                let b = Btn::new(label).menu().small().ghost().enabled(!items.is_empty()).tooltip(if items.is_empty() { empty } else { "" }).show(ui);
+            // 選了一個（Some(Some)）或清除（Some(None)）
+            let mut pick: Option<Option<JfFacet>> = None;
+            let facet = d.facet.clone();
+            // 一個選單：選了這一類時按鈕寫出選了什麼（例如「人物：媽媽」）、旁邊有 × 清除，選單最上面也可以清除
+            let menu = |ui: &mut egui::Ui, label: &str, empty: &str, items: Vec<(String, JfFacet)>, on: Option<String>, pick: &mut Option<Option<JfFacet>>| {
+                if on.is_some() && Btn::icon_only(Icon::Close).small().ghost().tooltip(tr!("清除，看全部的影片", "Clear and show all videos")).show(ui).clicked() {
+                    *pick = Some(None);
+                }
+                let text = on.as_ref().map_or(label.to_string(), |v| format!("{label}：{v}"));
+                let b = Btn::new(&text).menu().small().ghost().selected(on.is_some()).enabled(!items.is_empty()).tooltip(if items.is_empty() { empty } else { "" }).show(ui);
                 egui::Popup::menu(&b).show(|ui| {
                     ui.set_min_width(180.0);
+                    if on.is_some() {
+                        if ui.button(trf!("× 清除{label}（看全部）", "× Clear {label} (show all)")).clicked() {
+                            *pick = Some(None);
+                        }
+                        ui.separator();
+                    }
                     egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
                         for (text, f) in items {
-                            if ui.button(text).clicked() {
-                                *pick = Some(f);
+                            if ui.selectable_label(on.as_deref() == Some(text.as_str()), &text).clicked() {
+                                *pick = Some(Some(f));
                             }
                         }
                     });
                 });
             };
             let years = d.years.iter().map(|y| (y.to_string(), JfFacet::Year(*y))).collect();
-            menu(ui, tr!("年份", "Year"), tr!("影片還沒有設年份", "No videos have a year yet"), years, &mut pick);
+            let on = match &facet {
+                Some(JfFacet::Year(y)) => Some(y.to_string()),
+                _ => None,
+            };
+            menu(ui, tr!("年份", "Year"), tr!("影片還沒有設年份", "No videos have a year yet"), years, on, &mut pick);
             let tags = d.tags.iter().map(|t| (t.clone(), JfFacet::Tag(t.clone()))).collect();
-            menu(ui, tr!("標籤", "Tag"), tr!("影片還沒有標籤", "No videos have tags yet"), tags, &mut pick);
+            let on = match &facet {
+                Some(JfFacet::Tag(t)) => Some(t.clone()),
+                _ => None,
+            };
+            menu(ui, tr!("標籤", "Tag"), tr!("影片還沒有標籤", "No videos have tags yet"), tags, on, &mut pick);
             let people = d.persons.iter().map(|(id, n)| (n.clone(), JfFacet::Person(id.clone(), n.clone()))).collect();
-            menu(ui, tr!("人物", "People"), tr!("影片還沒有設人物", "No videos have people yet"), people, &mut pick);
+            let on = match &facet {
+                Some(JfFacet::Person(_, n)) => Some(n.clone()),
+                _ => None,
+            };
+            menu(ui, tr!("人物", "People"), tr!("影片還沒有設人物", "No videos have people yet"), people, on, &mut pick);
             ui.label(theme::muted(ui, tr!("依這些找：", "Find by:")));
+            // 清除：回到最上層
+            if let Some(None) = pick {
+                d.facet = None;
+                d.page = 0;
+                out.reload = true;
+            }
             // 找整個伺服器：離開資料夾、搜尋
-            if let Some(f) = pick {
+            if let Some(Some(f)) = pick {
                 d.facet = Some(f);
                 d.path.clear();
                 d.search.clear();
@@ -664,6 +695,7 @@ pub fn panel(ui: &mut egui::Ui, d: &mut JfBrowse) -> Panel {
         }
     }
     ui.add_space(4.0);
+    let mut clear_facet = false;
     // 目前位置：媒體庫 › family › 2024（點前面的回到那一層）；右邊排序、篩選
     ui.horizontal(|ui| {
         ui.set_min_height(28.0);
@@ -684,6 +716,9 @@ pub fn panel(ui: &mut egui::Ui, d: &mut JfBrowse) -> Panel {
             // 依人物、標籤、年份找的：媒體庫 › 人物：媽媽
             ui.label(theme::muted(ui, "›"));
             Btn::new(f.label()).small().ghost().selected(true).show(ui);
+            if Btn::icon_only(Icon::Close).small().ghost().tooltip(tr!("清除，回到媒體庫", "Clear and go back to the libraries")).show(ui).clicked() {
+                clear_facet = true;
+            }
         } else {
             let n = d.path.len();
             for i in 0..n {
@@ -727,6 +762,11 @@ pub fn panel(ui: &mut egui::Ui, d: &mut JfBrowse) -> Panel {
             }
         });
     });
+    if clear_facet {
+        d.facet = None;
+        d.page = 0;
+        out.reload = true;
+    }
     ui.add_space(6.0);
     let foot_h = 40.0;
     let table = Rect::from_min_max(ui.cursor().min, pos2(ui.max_rect().max.x, ui.max_rect().max.y - foot_h - 8.0));
