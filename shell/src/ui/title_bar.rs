@@ -1,7 +1,7 @@
 //! 自己畫的標題列（操作視窗不用 Windows 的標題列）：左邊「螢幕錄影 ⌄」選單（關於、檢查更新、更新說明），
 //! 右邊檔案庫、設定、縮小成小視窗，再來是縮到最小、最大化、關閉。
 //! 拖曳空白的地方移動視窗、按兩下最大化；視窗四邊與四個角可以拖曳調整大小。
-//! 小視窗：只留開始 / 停止錄影、計時、暫停、截圖，不擋畫面
+//! 小視窗：只留開始 / 停止錄影、計時、暫停、截圖，不擋畫面；不會被錄進影片，錄影中浮在最上層
 
 use super::library_dialog::{Kind, LibraryDialog};
 use super::main_view::{self, ShotAct};
@@ -29,6 +29,8 @@ const COMPACT: Vec2 = vec2(460.0, 64.0);
 pub struct Compact {
     size: Vec2,
     max: bool,
+    /// 錄影中浮在最上層（目前設定的狀態，有變化才送給視窗）
+    top: bool,
 }
 
 /// 全螢幕（檢視器）時不畫標題列
@@ -76,12 +78,18 @@ pub fn enter_compact(app: &mut UiApp, ctx: &egui::Context) {
     let want = COMPACT + vec2(0.0, TITLE_H);
     ctx.send_viewport_cmd(ViewportCommand::MinInnerSize(want));
     ctx.send_viewport_cmd(ViewportCommand::InnerSize(want));
-    app.compact = Some(Compact { size, max });
+    // 小視窗不被錄到：開始錄影時不用縮小，錄影中浮在最上層
+    screenrecorder_core::winui::hide_main_from_capture(true);
+    app.compact = Some(Compact { size, max, top: false });
 }
 
 /// 回到完整視窗（原本的大小，原本最大化就再最大化）
 pub fn leave_compact(app: &mut UiApp, ctx: &egui::Context) {
     let Some(c) = app.compact.take() else { return };
+    screenrecorder_core::winui::hide_main_from_capture(false);
+    if c.top {
+        ctx.send_viewport_cmd(ViewportCommand::WindowLevel(egui::WindowLevel::Normal));
+    }
     ctx.send_viewport_cmd(ViewportCommand::MinInnerSize(vec2(UI_MIN_SIZE.0, UI_MIN_SIZE.1)));
     ctx.send_viewport_cmd(ViewportCommand::InnerSize(c.size));
     if c.max {
@@ -90,9 +98,15 @@ pub fn leave_compact(app: &mut UiApp, ctx: &egui::Context) {
 }
 
 /// 每一畫格：小視窗時開了需要完整視窗的畫面（例如截圖後直接編輯、從系統匣開設定）就回到完整視窗
+/// 小視窗錄影中（含倒數、暫停）浮在最上層，停止後恢復一般視窗
 pub fn tick(app: &mut UiApp, ctx: &egui::Context) {
     if app.compact.is_some() && needs_full(app) {
         leave_compact(app, ctx);
+    }
+    let recording = app.status.recorder.state != RecorderState::Idle;
+    if let Some(c) = app.compact.as_mut().filter(|c| c.top != recording) {
+        c.top = recording;
+        ctx.send_viewport_cmd(ViewportCommand::WindowLevel(if recording { egui::WindowLevel::AlwaysOnTop } else { egui::WindowLevel::Normal }));
     }
 }
 

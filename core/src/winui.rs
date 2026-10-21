@@ -36,6 +36,18 @@ pub fn style_notes_window(alpha: u8) -> bool {
     }
 }
 
+/// 操作視窗設成不被擷取（小視窗：錄影、截圖都看不到它，所以開始錄影時不用縮小，可以浮在最上層）；
+/// false 還原。Windows 10 2004 以前設不了時回傳 false（照舊在開始錄影時縮小）
+pub fn hide_main_from_capture(on: bool) -> bool {
+    #[cfg(windows)]
+    return imp::hide_main_from_capture(on);
+    #[cfg(not(windows))]
+    {
+        let _ = on;
+        false
+    }
+}
+
 /// 可以錄的視窗（「只錄這個視窗」）
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WindowInfo {
@@ -103,9 +115,25 @@ mod imp {
         found: Vec<HWND>,
     }
 
+    /// 設成不被擷取的操作視窗（0：沒有）：錄不到它，開始錄影、截圖時不用縮小
+    static UNCAPTURED: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
+
+    pub fn hide_main_from_capture(on: bool) -> bool {
+        use std::sync::atomic::Ordering;
+        use windows::Win32::UI::WindowsAndMessaging::{SetWindowDisplayAffinity, WDA_EXCLUDEFROMCAPTURE, WDA_NONE};
+        let h = crate::main_window::handle();
+        if h == 0 {
+            return false;
+        }
+        let ok = unsafe { SetWindowDisplayAffinity(HWND(h as *mut _), if on { WDA_EXCLUDEFROMCAPTURE } else { WDA_NONE }) }.is_ok();
+        UNCAPTURED.store(if on && ok { h } else { 0 }, Ordering::Relaxed);
+        ok
+    }
+
     unsafe extern "system" fn visit(hwnd: HWND, lparam: LPARAM) -> BOOL {
         let search = &mut *(lparam.0 as *mut Search);
-        if IsWindowVisible(hwnd).as_bool() && !IsIconic(hwnd).as_bool() {
+        let uncaptured = UNCAPTURED.load(std::sync::atomic::Ordering::Relaxed);
+        if hwnd.0 as isize != uncaptured && IsWindowVisible(hwnd).as_bool() && !IsIconic(hwnd).as_bool() {
             // InternalGetWindowText 不送 WM_GETTEXT：操作視窗就在本程式裡，不能等它的執行緒回應
             let mut buf = [0u16; 256];
             let n = InternalGetWindowText(hwnd, &mut buf);
