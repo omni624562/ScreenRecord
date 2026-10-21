@@ -6,6 +6,7 @@
 //! 也用來編輯截圖（shot.rs）：沒有時間軸，標註與裁切相同，另有輸出設定（外框、陰影、大小）。
 //! 兩種都可以復原 / 重做（Ctrl+Z / Ctrl+Y）。
 
+mod history;
 pub mod shot;
 mod side;
 mod speed;
@@ -352,6 +353,9 @@ pub struct Editor {
     /// 復原 / 重做：每一步是 snapshot() 的 JSON
     undo: Vec<String>,
     redo: Vec<String>,
+    /// 每一步改了什麼（和 undo / redo 一一對應，復原清單用）
+    undo_labels: Vec<String>,
+    redo_labels: Vec<String>,
     /// 最後記下的一步；目前的內容和它不同時，停下來（放開滑鼠、停止打字）就記成新的一步
     committed: String,
     changed_at: Option<Instant>,
@@ -447,6 +451,13 @@ pub struct Editor {
     pub(crate) clean_kinds: [bool; 3],
     /// 預覽到加速的片段時，上次跳過去的位置
     fast_from: Option<f64>,
+    /// J / K / L：正數快轉、負數倒轉（1、2、4、8 倍），0 = 沒有
+    shuttle: i8,
+    /// 時間軸上按下時播放頭的位置（拖曳時貼齊用）與這一格貼齊到的時間
+    press_playhead: f64,
+    snap_at: Option<f64>,
+    /// 快轉、倒轉上次往前 / 往後跳的時候
+    shuttle_at: Option<Instant>,
     /// 預覽到定格：停在這個時間，到這個時候再繼續播放
     hold_until: Option<(f64, std::time::Instant)>,
     /// 上一次檢查預覽時的播放位置（看有沒有經過定格的地方）
@@ -677,6 +688,8 @@ impl Editor {
             shot: None,
             undo: vec![],
             redo: vec![],
+            undo_labels: vec![],
+            redo_labels: vec![],
             committed: String::new(),
             changed_at: None,
             history_at: None,
@@ -730,6 +743,10 @@ impl Editor {
             idle_found: None,
             clean_kinds: [true; 3],
             fast_from: None,
+            shuttle: 0,
+            shuttle_at: None,
+            press_playhead: 0.0,
+            snap_at: None,
             hold_until: None,
             last_tick: 0.0,
             seg_cur: None,
@@ -767,6 +784,8 @@ impl Editor {
         self.committed = self.initial.clone();
         self.undo.clear();
         self.redo.clear();
+        self.undo_labels.clear();
+        self.redo_labels.clear();
     }
 
     /// 有還沒儲存的修改
@@ -871,12 +890,16 @@ impl Editor {
     }
 
     fn commit(&mut self, now: String) {
+        let label = history::describe(&self.committed, &now);
         let prev = std::mem::replace(&mut self.committed, now);
         self.undo.push(prev);
+        self.undo_labels.push(label);
         if self.undo.len() > 200 {
             self.undo.remove(0);
+            self.undo_labels.remove(0);
         }
         self.redo.clear();
+        self.redo_labels.clear();
         self.changed_at = None;
         self.uncommitted = false;
     }
@@ -892,6 +915,7 @@ impl Editor {
         }
         if let Some(prev) = self.undo.pop() {
             self.redo.push(std::mem::take(&mut self.committed));
+            self.redo_labels.extend(self.undo_labels.pop());
             self.restore(&prev);
         }
     }
@@ -899,7 +923,23 @@ impl Editor {
     fn redo(&mut self) {
         if let Some(next) = self.redo.pop() {
             self.undo.push(std::mem::take(&mut self.committed));
+            self.undo_labels.extend(self.redo_labels.pop());
             self.restore(&next);
+        }
+    }
+
+    /// 還沒記成一步的修改先記下來（復原清單才列得到）
+    fn commit_pending(&mut self) {
+        let now = self.snapshot();
+        if now != self.committed {
+            self.commit(now);
+        }
+    }
+
+    /// 復原清單選了第 n 步（0 = 最近一步）：一次復原到那一步之前
+    fn undo_to(&mut self, n: usize) {
+        for _ in 0..=n {
+            self.undo();
         }
     }
 
@@ -1429,6 +1469,7 @@ impl Editor {
 
     /// 播放 / 暫停。播放時預設跳過刪掉的片段、加速的片段快轉（看到的就是剪輯後的樣子）；打開「顯示刪掉的部分」時全部照原樣播
     fn toggle_play(&mut self) {
+        self.shuttle = 0;
         if self.previewing {
             return self.stop_preview();
         }
@@ -1456,6 +1497,83 @@ impl Editor {
         }
     }
 
+    /// J / K / L（剪片軟體常用的）：L 播放，再按一次越來越快（2、4、8 倍）；J 倒轉，再按一次越來越快；K 停
+    fn shuttle_key(&mut self, dir: i8) {
+        self.stop_preview();
+        match dir {
+            0 => {
+                self.shuttle = 0;
+                self.player.pause();
+            }
+            1 if self.shuttle > 0 => self.shuttle = (self.shuttle + 1).min(4),
+            1 => {
+                if !self.player.is_playing() {
+                    self.toggle_play();
+                }
+                self.shuttle = 1;
+            }
+            _ if self.shuttle < 0 => self.shuttle = (self.shuttle - 1).max(-4),
+            _ => {
+                self.player.pause();
+                self.shuttle = -1;
+            }
+        }
+        self.shuttle_at = Some(Instant::now());
+    }
+
+    /// 快轉、倒轉的倍數
+    fn shuttle_speed(&self) -> f64 {
+        [1.0, 2.0, 4.0, 8.0][(self.shuttle.unsigned_abs() as usize).clamp(1, 4) - 1]
+    }
+
+    /// 快轉時的播放速度（播放器最快 2 倍，更快的另外往後跳）
+    fn shuttle_rate(&self) -> f64 {
+        if self.shuttle >= 2 {
+            2.0
+        } else {
+            1.0
+        }
+    }
+
+    /// 快轉 4、8 倍：用 2 倍速播，每 0.5 秒再往後跳；倒轉：暫停著每一小段時間往前跳（跳過刪掉的片段）
+    fn shuttle_tick(&mut self) {
+        let Some(at) = self.shuttle_at else { return };
+        let dt = at.elapsed().as_secs_f64();
+        if self.shuttle > 0 {
+            if !self.player.is_playing() {
+                self.shuttle = 0;
+            } else if self.shuttle >= 3 && dt >= 0.5 {
+                self.shuttle_at = Some(Instant::now());
+                self.seek(self.now() + dt * (self.shuttle_speed() / 2.0 - 1.0));
+            }
+        } else if self.shuttle < 0 {
+            if self.player.is_playing() {
+                self.shuttle = 0;
+                return;
+            }
+            if dt < 0.12 {
+                return;
+            }
+            self.shuttle_at = Some(Instant::now());
+            let mut t = self.now() - dt.min(0.5) * self.shuttle_speed();
+            if !self.show_removed {
+                let keep = self.keep();
+                if !keep.iter().any(|&(a, b)| t >= a && t < b) {
+                    match keep.iter().rev().find(|&&(_, b)| b <= t + 1e-6) {
+                        Some(&(_, b)) => t = b - 0.05,
+                        None => t = -1.0,
+                    }
+                }
+            }
+            let floor = if self.show_removed { 0.0 } else { self.keep().first().map_or(0.0, |r| r.0) };
+            if t <= floor {
+                t = floor;
+                self.shuttle = 0;
+            }
+            self.seek(t);
+        }
+    }
+
     /// 時間軸上刪掉的片段收起來（沒有打開「顯示刪掉的部分」時）
     fn collapse_removed(&self) -> bool {
         !self.show_removed
@@ -1468,6 +1586,7 @@ impl Editor {
 
     /// 前後移動：frame = 一張，否則秒數
     fn step(&mut self, frames: Option<i32>, secs: f64) {
+        self.shuttle = 0;
         self.stop_preview();
         self.player.pause();
         let d = match frames {
@@ -1663,7 +1782,7 @@ impl Editor {
         }
         voice::tick(self);
         if !self.skipping() {
-            self.player.set_rate(1.0);
+            self.player.set_rate(self.shuttle_rate());
             return;
         }
         let t = self.now();
@@ -1704,7 +1823,7 @@ impl Editor {
             // 2 倍以內（含整支加速）直接用播放速度，更快的跳著播
             let part = self.parts().into_iter().find(|p| !p.is_hold() && (p.rate - 1.0).abs() > 1e-9 && t >= p.a - 0.02 && t < p.b);
             let rate = part.map_or(1.0, |p| p.rate);
-            self.player.set_rate(if rate <= 2.0 { rate } else { 1.0 });
+            self.player.set_rate(if rate <= 2.0 { (rate * self.shuttle_rate()).min(2.0) } else { 1.0 });
             match part.filter(|p| p.rate > 2.0) {
                 Some(p) => {
                     let from = *self.fast_from.get_or_insert(t);
@@ -2098,6 +2217,7 @@ impl Editor {
             self.previewing = false;
         }
         self.preview_tick();
+        self.shuttle_tick();
         // 播放時播放頭跑出放大的範圍：跟著捲動
         let t = self.now();
         if self.player.is_playing() && self.zoomed() && (t > self.view.1 || t < self.view.0) {
@@ -2340,11 +2460,40 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                         SIDE_OPEN.store(!open, Ordering::Relaxed);
                     }
                     ui.add(egui::Separator::default().vertical().spacing(12.0));
-                    if Btn::icon_only(Icon::Redo).ghost().enabled(!ed.redo.is_empty()).tooltip(tr!("重做（Ctrl+Y）", "Redo (Ctrl+Y)")).show(ui).clicked() {
+                    let redo_tip = match ed.redo_labels.last() {
+                        Some(l) => trf!("重做：{l}（Ctrl+Y）", "Redo: {l} (Ctrl+Y)"),
+                        None => tr!("重做（Ctrl+Y）", "Redo (Ctrl+Y)").into(),
+                    };
+                    if Btn::icon_only(Icon::Redo).ghost().enabled(!ed.redo.is_empty()).tooltip(redo_tip).show(ui).clicked() {
                         ed.redo();
                     }
+                    // 復原清單：看得到每一步改了什麼，可以一次跳回好幾步之前
+                    let list = Btn::icon_only(Icon::ChevD).ghost().small().enabled(ed.can_undo()).tooltip(tr!("復原清單", "Undo history")).show(ui);
+                    if list.clicked() {
+                        ed.commit_pending();
+                    }
+                    let mut pick = None;
+                    egui::Popup::menu(&list).show(|ui| {
+                        ui.set_min_width(240.0);
+                        ui.label(theme::muted(ui, tr!("點一步：復原到那一步之前", "Click a step to undo back to before it")).font(theme::font(12.0)));
+                        for (i, l) in ed.undo_labels.iter().rev().take(20).enumerate() {
+                            if ui.button(l).clicked() {
+                                pick = Some(i);
+                            }
+                        }
+                        if ed.undo_labels.len() > 20 {
+                            ui.label(theme::muted(ui, &trf!("還有 {} 步", "{} more steps", ed.undo_labels.len() - 20)).font(theme::font(12.0)));
+                        }
+                    });
+                    if let Some(n) = pick {
+                        ed.undo_to(n);
+                    }
                     let can = ed.can_undo();
-                    if Btn::icon_only(Icon::Undo).ghost().enabled(can).tooltip(tr!("復原（Ctrl+Z）", "Undo (Ctrl+Z)")).show(ui).clicked() {
+                    let undo_tip = match (ed.uncommitted, ed.undo_labels.last()) {
+                        (false, Some(l)) => trf!("復原：{l}（Ctrl+Z）", "Undo: {l} (Ctrl+Z)"),
+                        _ => tr!("復原（Ctrl+Z）", "Undo (Ctrl+Z)").into(),
+                    };
+                    if Btn::icon_only(Icon::Undo).ghost().enabled(can).tooltip(undo_tip).show(ui).clicked() {
                         ed.undo();
                     }
                 });
@@ -3006,6 +3155,11 @@ fn transport(ed: &mut Editor, ui: &mut egui::Ui, toast: &mut Option<(String, boo
             let keys = Btn::icon_only(theme::Icon::Keyboard).ghost().small().tooltip(tr!("剪輯的快速鍵", "Editing shortcuts")).show(ui);
             timeline::shortcut_sheet(&keys);
             ui.label(RichText::new(format!("{} / {}", video_clock(ed.now()), video_clock(ed.duration))).font(theme::mono(14.0)));
+            if ed.shuttle != 0 {
+                let speed = screenrecorder_core::format::speed_label(ed.shuttle_speed());
+                let text = if ed.shuttle > 0 { trf!("快轉 {speed}×", "Fast forward {speed}×") } else { trf!("倒轉 {speed}×", "Rewind {speed}×") };
+                ui.label(RichText::new(text).font(theme::font_bold(12.5)).color(theme::pal(ui).accent));
+            }
             if ed.zoomed()
                 && Btn::new(tr!("顯示全部", "Show all"))
                     .ghost()
@@ -3316,6 +3470,15 @@ fn shortcuts(ed: &mut Editor, ctx: &egui::Context, toast: &mut Option<(String, b
         } else {
             ed.toggle_play();
         }
+    }
+    if video && key(Modifiers::NONE, Key::J) {
+        ed.shuttle_key(-1);
+    }
+    if video && key(Modifiers::NONE, Key::K) {
+        ed.shuttle_key(0);
+    }
+    if video && key(Modifiers::NONE, Key::L) {
+        ed.shuttle_key(1);
     }
     if video && key(Modifiers::SHIFT, Key::ArrowLeft) {
         ed.step(None, -1.0);

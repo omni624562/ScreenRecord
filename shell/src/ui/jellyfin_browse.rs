@@ -5,7 +5,7 @@
 use super::theme::{self, Btn, Icon};
 use super::{viewer, ToastAction, UiApp};
 use eframe::egui::{self, pos2, vec2, Align, Align2, Id, Layout, Rect, RichText, Sense};
-use screenrecorder_core::jellyfin::{Jellyfin, JfFilter, JfItem, JfKind, JfSort};
+use screenrecorder_core::jellyfin::{Jellyfin, JfFacet, JfFilter, JfItem, JfKind, JfSort};
 use screenrecorder_core::types::{Chapter, LibraryEntry, MediaInfo};
 use screenrecorder_core::{tr, trf};
 use std::collections::{BTreeMap, HashMap};
@@ -45,12 +45,19 @@ pub struct JfBrowse {
     posters: HashMap<String, Poster>,
     /// 勾選的影片（編號 → 那支影片）
     selected: BTreeMap<String, JfItem>,
+    /// 依人物、標籤、年份找（找整個伺服器的影片）
+    facet: Option<JfFacet>,
+    /// 伺服器上的人物（編號, 名稱）、標籤、年份（打開時讀一次，改了影片資訊後重讀）
+    persons: Vec<(String, String)>,
+    tags: Vec<String>,
+    years: Vec<u32>,
+    facets_loaded: bool,
 }
 
 impl JfBrowse {
     /// 最上層（媒體庫清單，沒有搜尋）
     fn at_top(&self) -> bool {
-        self.path.is_empty() && self.searched.is_empty()
+        self.path.is_empty() && self.searched.is_empty() && self.facet.is_none()
     }
 
     /// 這支影片在畫面上的每一份（同一支可能同時在「繼續觀看」和資料夾裡）
@@ -82,7 +89,10 @@ fn load(app: &mut UiApp) {
     d.items = None;
     d.error = None;
     d.searched = d.search.trim().to_string();
-    let (seq, user, parent, search, start, sort, filter) = (d.seq, d.user.clone(), d.path.last().map(|(id, _)| id.clone()), d.searched.clone(), d.page * PAGE, d.sort, d.filter);
+    let (seq, user, parent, search, start, sort, filter, facet) =
+        (d.seq, d.user.clone(), d.path.last().map(|(id, _)| id.clone()), d.searched.clone(), d.page * PAGE, d.sort, d.filter, d.facet.clone());
+    let want_facets = !d.facets_loaded;
+    d.facets_loaded = true;
     app.spawn(
         async move {
             tokio::task::spawn_blocking(move || -> Result<Loaded, String> {
@@ -90,7 +100,7 @@ fn load(app: &mut UiApp) {
                     Some(u) => u,
                     None => jf.browse_user(&preferred)?,
                 };
-                if parent.is_none() && search.is_empty() {
+                if parent.is_none() && search.is_empty() && facet.is_none() {
                     let views = jf.views(&user)?;
                     let n = views.len();
                     // 舊版 Jellyfin 沒有這兩個也沒關係：只是不列
@@ -98,7 +108,7 @@ fn load(app: &mut UiApp) {
                     let latest = jf.latest_items(&user, ROW_ITEMS).unwrap_or_default();
                     return Ok((user, views, n, resume, latest));
                 }
-                let (items, total) = jf.items(&user, parent.as_deref(), &search, start, PAGE, sort, filter)?;
+                let (items, total) = jf.items(&user, parent.as_deref(), &search, start, PAGE, sort, filter, facet.as_ref())?;
                 Ok((user, items, total, vec![], vec![]))
             })
             .await
@@ -118,6 +128,48 @@ fn load(app: &mut UiApp) {
             }
         },
     );
+    if want_facets {
+        load_facets(app);
+    }
+}
+
+/// 讀伺服器上的人物、標籤、年份（「依人物 / 標籤 / 年份找」的選單）；舊版 Jellyfin 讀不到就不列
+fn load_facets(app: &mut UiApp) {
+    let Some(jf) = app.jellyfin() else { return };
+    let preferred = app.s.jellyfin_user.clone();
+    let user = app.jf_browse.as_ref().and_then(|d| d.user.clone());
+    app.spawn(
+        async move {
+            tokio::task::spawn_blocking(move || {
+                let user = match user {
+                    Some(u) => u,
+                    None => jf.browse_user(&preferred).unwrap_or_default(),
+                };
+                let persons = jf.persons(&user).unwrap_or_default();
+                let (tags, years) = jf.facets(&user).unwrap_or_default();
+                (persons, tags, years)
+            })
+            .await
+            .unwrap_or_default()
+        },
+        |app, (persons, tags, years)| {
+            if let Some(d) = app.jf_browse.as_mut() {
+                d.persons = persons;
+                d.tags = tags;
+                d.years = years;
+            }
+        },
+    );
+}
+
+/// 在「影片資訊」改好了：名稱跟著換、縮圖重讀（可能換了封面），人物、標籤重讀
+pub fn edited(app: &mut UiApp, id: &str, title: &str) {
+    let Some(d) = app.jf_browse.as_mut() else { return };
+    if !title.trim().is_empty() {
+        d.each_mut(id, |it| it.name = title.trim().to_string());
+    }
+    d.posters.remove(id);
+    load_facets(app);
 }
 
 /// 讀這一格的縮圖（背景下載、轉成材質）
@@ -265,12 +317,49 @@ fn free_name(dir: &std::path::Path, file: &str) -> Option<std::path::PathBuf> {
     (2..1000).map(|i| dir.join(format!("{stem} ({i}){ext}"))).find(|p| !p.exists())
 }
 
-/// 在檢視器裡串流播放；上次看到一半的從那裡接著看
-fn play(app: &mut UiApp, d: &JfBrowse, item: &JfItem) {
+/// 在檢視器裡串流播放；上次看到一半的從那裡接著看。同一排（資料夾、「繼續觀看」…）的其他影片
+/// 用上一部 / 下一部切換，看完自動接下一支
+fn play(app: &mut UiApp, d: &JfBrowse, item: &JfItem, row: &[JfItem]) {
     let Some(jf) = app.jellyfin() else { return };
     if item.duration <= 0.0 {
         return app.toast(tr!("Jellyfin 還沒分析好這支影片（長度不明），等一下再試", "Jellyfin hasn't finished analyzing this video yet. Try again shortly"), true);
     }
+    let list: Vec<&JfItem> = row.iter().filter(|i| i.kind == JfKind::Video && i.duration > 0.0).collect();
+    if let Some(idx) = list.iter().position(|i| i.id == item.id).filter(|_| list.len() > 1) {
+        let queue = list.iter().map(|i| (entry_of(&jf, i), remote_of(&jf, d, i))).collect();
+        let start = resume_at(item);
+        viewer::open_remote_list(app, queue, idx, start);
+        if let Some(t) = start {
+            app.toast(trf!("從上次看到的 {} 接著看（拖曳進度列可以從頭看）", "Resuming from {} (drag the progress bar to start over)", clock(t)), false);
+        }
+        return;
+    }
+    let remote = remote_of(&jf, d, item);
+    let entry = entry_of(&jf, item);
+    match resume_at(item) {
+        Some(t) => {
+            viewer::open_remote(app, entry, remote, Some(t));
+            app.toast(trf!("從上次看到的 {} 接著看（拖曳進度列可以從頭看）", "Resuming from {} (drag the progress bar to start over)", clock(t)), false);
+        }
+        None => viewer::open_remote(app, entry, remote, None),
+    }
+}
+
+/// 看到一半（不是剛開始、也不是快看完）：從那裡接著看
+fn resume_at(item: &JfItem) -> Option<f64> {
+    (item.resume > 5.0 && item.resume < item.duration - 10.0).then_some(item.resume)
+}
+
+/// 串流用的字幕、看到哪裡記在誰、預覽縮圖
+fn remote_of(jf: &Jellyfin, d: &JfBrowse, item: &JfItem) -> viewer::Remote {
+    let mut r = viewer::Remote::new(&item.id, d.user.as_deref().unwrap_or(""), item.subs.iter().map(|s| jf.subtitle_url(&item.id, s.index)).collect(), &item.file_name);
+    r.resume = item.resume;
+    r.trickplay = item.trickplay.clone();
+    r
+}
+
+/// 檢視器要的影片資訊（串流網址、長度、章節）
+fn entry_of(jf: &Jellyfin, item: &JfItem) -> LibraryEntry {
     // 檢視器依副檔名判斷是不是影片：名稱用 Jellyfin 的標題加上原檔的副檔名
     let ext = item.file_name.rsplit_once('.').map(|(_, e)| e.to_string()).unwrap_or_else(|| "mp4".into());
     let mtime = chrono::NaiveDate::parse_from_str(&item.date, "%Y-%m-%d").ok().and_then(|d| d.and_hms_opt(12, 0, 0)).map_or(0.0, |t| t.and_utc().timestamp_millis() as f64);
@@ -286,15 +375,7 @@ fn play(app: &mut UiApp, d: &JfBrowse, item: &JfItem) {
         chapters: item.chapters.iter().filter(|(_, t)| !t.is_empty()).map(|(start, title)| Chapter { start: *start, title: title.clone() }).collect(),
         ..Default::default()
     };
-    let remote = viewer::Remote::new(&item.id, d.user.as_deref().unwrap_or(""), item.subs.iter().map(|s| jf.subtitle_url(&item.id, s.index)).collect(), &item.file_name);
-    let entry = LibraryEntry { media, exports: vec![], hits: vec![] };
-    // 看到一半（不是剛開始、也不是快看完）：從那裡接著看
-    if item.resume > 5.0 && item.resume < item.duration - 10.0 {
-        viewer::open_remote(app, entry, remote, Some(item.resume));
-        app.toast(trf!("從上次看到的 {} 接著看（拖曳進度列可以從頭看）", "Resuming from {} (drag the progress bar to start over)", clock(item.resume)), false);
-    } else {
-        viewer::open_remote(app, entry, remote, None);
-    }
+    LibraryEntry { media, exports: vec![], hits: vec![] }
 }
 
 /// 在程式裡看了一段：瀏覽清單上的進度條、「看過」跟著更新
@@ -328,6 +409,9 @@ fn clock(sec: f64) -> String {
 #[derive(Default)]
 struct Picked {
     open: Option<JfItem>,
+    /// 點開的那支所在的那一排（上一部 / 下一部、接著播）
+    row: Vec<JfItem>,
+    edit: Option<JfItem>,
     delete: Option<JfItem>,
     download: Option<JfItem>,
     toggle: Option<JfItem>,
@@ -368,8 +452,9 @@ fn cells(ui: &mut egui::Ui, d: &JfBrowse, items: &[JfItem], rows: Option<usize>,
             let check = Rect::from_min_size(img.min + vec2(6.0, 6.0), vec2(22.0, 22.0));
             let trash = Rect::from_min_size(pos2(img.min.x + 6.0, img.max.y - 30.0), vec2(24.0, 24.0));
             let down = trash.translate(vec2(30.0, 0.0));
+            let edit = down.translate(vec2(30.0, 0.0));
             let inside = ui.rect_contains_pointer(cell);
-            let hovering = resp.hovered() || inside && [check, trash, down].iter().any(|r| ui.rect_contains_pointer(*r));
+            let hovering = resp.hovered() || inside && [check, trash, down, edit].iter().any(|r| ui.rect_contains_pointer(*r));
             let mut used = false;
             if video && (hovering || on || picking) {
                 let r = ui.interact(check, ui.id().with(("jf-check", &it.id)), Sense::click()).on_hover_text(tr!("勾選（一次下載、刪除好幾支）", "Select (to download or delete several at once)"));
@@ -388,7 +473,15 @@ fn cells(ui: &mut egui::Ui, d: &JfBrowse, items: &[JfItem], rows: Option<usize>,
                 let tr_resp = ui.interact(trash, ui.id().with(("jf-del", &it.id)), Sense::click()).on_hover_text(tr!("從 Jellyfin 刪除", "Delete from Jellyfin"));
                 let dl_resp =
                     ui.interact(down, ui.id().with(("jf-down", &it.id)), Sense::click()).on_hover_text(tr!("下載到這台電腦（下載回來就能剪輯）", "Download to this computer (so you can edit it)"));
+                let ed_resp =
+                    ui.interact(edit, ui.id().with(("jf-edit", &it.id)), Sense::click()).on_hover_text(tr!("影片資訊：改標題、人物、標籤、年份、封面", "Details: title, people, tags, year, cover"));
                 let painter = ui.painter();
+                painter.rect_filled(edit, 6.0, if ed_resp.hovered() { p.accent } else { egui::Color32::from_black_alpha(160) });
+                theme::paint_icon(painter, edit.shrink(4.0), Icon::Edit, egui::Color32::WHITE);
+                if ed_resp.clicked() {
+                    out.edit = Some(it.clone());
+                    used = true;
+                }
                 painter.rect_filled(trash, 6.0, if tr_resp.hovered() { p.rec } else { egui::Color32::from_black_alpha(160) });
                 theme::paint_icon(painter, trash.shrink(4.0), Icon::Trash, egui::Color32::WHITE);
                 painter.rect_filled(down, 6.0, if dl_resp.hovered() { p.accent } else { egui::Color32::from_black_alpha(160) });
@@ -440,6 +533,7 @@ fn cells(ui: &mut egui::Ui, d: &JfBrowse, items: &[JfItem], rows: Option<usize>,
                     out.toggle = Some(it.clone());
                 } else {
                     out.open = Some(it.clone());
+                    out.row = items.to_vec();
                 }
             }
         }
@@ -492,10 +586,31 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                 ui.label(RichText::new(trf!("搜尋「{}」", "Search “{}”", d.searched)).color(p.muted));
                 return;
             }
-            if Btn::new(tr!("媒體庫", "Libraries")).icon(Icon::Folder).small().ghost().selected(d.path.is_empty()).show(ui).clicked() && !d.path.is_empty() {
+            let top = d.path.is_empty() && d.facet.is_none();
+            if Btn::new(tr!("媒體庫", "Libraries")).icon(Icon::Folder).small().ghost().selected(top).show(ui).clicked() && !top {
                 d.path.clear();
+                d.facet = None;
                 d.page = 0;
                 reload = true;
+            }
+            // 依人物、標籤、年份找的：媒體庫 › 人物：媽媽
+            if let Some(f) = d.facet.clone() {
+                ui.label(theme::muted(ui, "›"));
+                Btn::new(f.label()).small().ghost().selected(true).show(ui);
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    theme::field_style(ui);
+                    let sort = d.sort;
+                    egui::ComboBox::from_id_salt("jf-sort-facet").selected_text(d.sort.label()).width(130.0).show_ui(ui, |ui| {
+                        for s in JfSort::ALL {
+                            ui.selectable_value(&mut d.sort, s, s.label());
+                        }
+                    });
+                    if sort != d.sort {
+                        d.page = 0;
+                        reload = true;
+                    }
+                });
+                return;
             }
             let n = d.path.len();
             for i in 0..n {
@@ -508,6 +623,37 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                 }
             }
             if n == 0 {
+                // 最上層：依人物、標籤、年份找（找整個伺服器）
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    ui.spacing_mut().item_spacing.x = 6.0;
+                    let mut pick = None;
+                    let menu = |ui: &mut egui::Ui, label: &str, empty: &str, items: Vec<(String, JfFacet)>, pick: &mut Option<JfFacet>| {
+                        let b = Btn::new(label).menu().small().ghost().enabled(!items.is_empty()).tooltip(if items.is_empty() { empty } else { "" }).show(ui);
+                        egui::Popup::menu(&b).show(|ui| {
+                            ui.set_min_width(180.0);
+                            egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
+                                for (text, f) in items {
+                                    if ui.button(text).clicked() {
+                                        *pick = Some(f);
+                                    }
+                                }
+                            });
+                        });
+                    };
+                    let years = d.years.iter().map(|y| (y.to_string(), JfFacet::Year(*y))).collect();
+                    menu(ui, tr!("年份", "Year"), tr!("影片還沒有設年份", "No videos have a year yet"), years, &mut pick);
+                    let tags = d.tags.iter().map(|t| (t.clone(), JfFacet::Tag(t.clone()))).collect();
+                    menu(ui, tr!("標籤", "Tag"), tr!("影片還沒有標籤", "No videos have tags yet"), tags, &mut pick);
+                    let people = d.persons.iter().map(|(id, n)| (n.clone(), JfFacet::Person(id.clone(), n.clone()))).collect();
+                    menu(ui, tr!("人物", "People"), tr!("影片還沒有設人物", "No videos have people yet"), people, &mut pick);
+                    ui.label(theme::muted(ui, tr!("依這些找：", "Find by:")));
+                    if let Some(f) = pick {
+                        d.facet = Some(f);
+                        d.filter = JfFilter::All;
+                        d.page = 0;
+                        reload = true;
+                    }
+                });
                 return;
             }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -615,7 +761,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         }
     });
     // 檢視器開著時 Esc 是關檢視器，不要連瀏覽視窗一起關；有勾選時 Esc 先取消勾選
-    if close || (modal.should_close() && app.viewer.is_none() && app.ask.is_none()) {
+    if close || (modal.should_close() && app.viewer.is_none() && app.ask.is_none() && app.jf_edit.is_none()) {
         if !close && !d.selected.is_empty() {
             d.selected.clear();
             app.jf_browse = Some(d);
@@ -646,16 +792,22 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         app.jf_browse = Some(d);
         return confirm_delete(app, it.id, it.name);
     }
+    if let Some(it) = picked.edit {
+        let (user, people, tags) = (d.user.clone().unwrap_or_default(), d.persons.iter().map(|(_, n)| n.clone()).collect(), d.tags.clone());
+        app.jf_browse = Some(d);
+        return super::jellyfin_edit::open(app, it.id, user, it.name, people, tags);
+    }
     if let Some(it) = picked.open {
         match it.kind {
             JfKind::Folder => {
+                d.facet = None;
                 d.path.push((it.id.clone(), it.name.clone()));
                 d.search.clear();
                 d.page = 0;
                 reload = true;
             }
             JfKind::Video => {
-                play(app, &d, &it);
+                play(app, &d, &it, &picked.row);
                 app.jf_browse = Some(d);
                 return;
             }

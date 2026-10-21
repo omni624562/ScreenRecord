@@ -267,20 +267,28 @@ impl Jellyfin {
     }
 
     /// 一個資料夾（媒體庫、合集）裡的東西：資料夾在前，影片依 sort 排；search 不是空的時找整個伺服器。
-    /// filter 不是「全部」時列出這個資料夾底下（含子資料夾）符合的影片。回傳（這一頁, 全部幾個）
+    /// filter 不是「全部」時列出這個資料夾底下（含子資料夾）符合的影片；facet（人物、標籤、年份）找整個伺服器的影片。
+    /// 回傳（這一頁, 全部幾個）
     #[allow(clippy::too_many_arguments)]
-    pub fn items(&self, user: &str, parent: Option<&str>, search: &str, start: usize, limit: usize, sort: JfSort, filter: JfFilter) -> Result<(Vec<JfItem>, usize), String> {
+    pub fn items(&self, user: &str, parent: Option<&str>, search: &str, start: usize, limit: usize, sort: JfSort, filter: JfFilter, facet: Option<&JfFacet>) -> Result<(Vec<JfItem>, usize), String> {
         let mut req = self.items_req(&format!("{}/Users/{user}/Items", self.url)).query("startIndex", &start.to_string()).query("limit", &limit.to_string()).query("enableTotalRecordCount", "true");
         let (by, order) = sort.query();
         let search = search.trim();
-        if !search.is_empty() {
+        if let Some(f) = facet {
+            req = req.query("sortBy", by).query("sortOrder", order).query("recursive", "true").query("includeItemTypes", VIDEO_TYPES);
+            req = match f {
+                JfFacet::Person(id, _) => req.query("personIds", id),
+                JfFacet::Tag(t) => req.query("tags", t),
+                JfFacet::Year(y) => req.query("years", &y.to_string()),
+            };
+        } else if !search.is_empty() {
             req = req.query("searchTerm", search).query("recursive", "true").query("includeItemTypes", "Video,Movie,Episode,MusicVideo,Folder,BoxSet");
         } else if filter == JfFilter::All {
             req = req.query("sortBy", &format!("IsFolder,{by}")).query("sortOrder", &format!("Descending,{order}"));
         } else {
             req = req.query("sortBy", by).query("sortOrder", order).query("recursive", "true").query("includeItemTypes", VIDEO_TYPES);
         }
-        if search.is_empty() {
+        if search.is_empty() && facet.is_none() {
             if let Some(p) = parent {
                 req = req.query("parentId", p);
             }
@@ -294,7 +302,7 @@ impl Jellyfin {
 
     /// 清單要的欄位、縮圖
     fn items_req(&self, url: &str) -> ureq::Request {
-        agent().get(url).query("fields", "Path,MediaStreams,DateCreated,PremiereDate,ChildCount,Chapters").query("enableImageTypes", "Primary").query("imageTypeLimit", "1")
+        agent().get(url).query("fields", "Path,MediaStreams,DateCreated,PremiereDate,ChildCount,Chapters,Trickplay").query("enableImageTypes", "Primary").query("imageTypeLimit", "1")
     }
 
     /// 看到一半的影片（Jellyfin 首頁的「繼續觀看」，最近看的在前）
@@ -360,6 +368,47 @@ impl Jellyfin {
         let mut buf = vec![];
         std::io::Read::read_to_end(&mut std::io::Read::take(r.into_reader(), 8 << 20), &mut buf).ok()?;
         (!buf.is_empty()).then_some(buf)
+    }
+
+    /// 時間軸預覽縮圖的第 index 張大圖（裡面排著 tile_w × tile_h 張小圖）
+    pub fn trickplay_tile(&self, id: &str, tp: &Trickplay, index: u32) -> Option<Vec<u8>> {
+        let url = format!("{}/Videos/{id}/Trickplay/{}/{index}.jpg", self.url, tp.width);
+        let r = self.call(agent().get(&url).query("mediaSourceId", &tp.source)).ok()?;
+        let mut buf = vec![];
+        std::io::Read::read_to_end(&mut std::io::Read::take(r.into_reader(), 16 << 20), &mut buf).ok()?;
+        (!buf.is_empty()).then_some(buf)
+    }
+
+    /// 影片裡出現的人物（瀏覽視窗「依人物找」）：（編號, 名稱），依名稱排
+    pub fn persons(&self, user: &str) -> Result<Vec<(String, String)>, String> {
+        let req = agent().get(&format!("{}/Persons", self.url)).query("userId", user).query("limit", "500").query("enableImages", "false");
+        let body = self.call(req)?.into_string().map_err(|e| e.to_string())?;
+        let mut list = persons_of(&body);
+        list.sort_by_key(|a| a.1.to_lowercase());
+        Ok(list)
+    }
+
+    /// 影片用到的標籤、年份（瀏覽視窗「依標籤 / 年份找」）
+    pub fn facets(&self, user: &str) -> Result<(Vec<String>, Vec<u32>), String> {
+        let req = agent().get(&format!("{}/Items/Filters", self.url)).query("userId", user).query("includeItemTypes", VIDEO_TYPES).query("recursive", "true");
+        let body = self.call(req)?.into_string().map_err(|e| e.to_string())?;
+        Ok(facets_of(&body))
+    }
+
+    /// 一支影片的資訊（標題、說明、人物、標籤、年份），在瀏覽視窗修改用
+    pub fn item_info(&self, user: &str, id: &str) -> Result<JfInfo, String> {
+        let body = self.call(agent().get(&format!("{}/Users/{user}/Items/{id}", self.url)))?.into_string().map_err(|e| e.to_string())?;
+        info_of(&body).ok_or_else(|| tr!("Jellyfin 的影片資料看不懂", "Couldn't understand Jellyfin's item data").to_string())
+    }
+
+    /// 把改好的資訊存回去：取回整筆資料、換上去再存（清空的欄位就清掉；不是演員的人物，例如導演，留著）
+    pub fn set_info(&self, user: &str, id: &str, info: &JfInfo) -> Result<(), String> {
+        let body = match self.call(agent().get(&format!("{}/Items/{id}", self.url))) {
+            Ok(r) => r.into_string().map_err(|e| e.to_string())?,
+            Err(_) => self.call(agent().get(&format!("{}/Users/{user}/Items/{id}", self.url)))?.into_string().map_err(|e| e.to_string())?,
+        };
+        let item = with_info(&body, info).ok_or_else(|| tr!("Jellyfin 的影片資料看不懂", "Couldn't understand Jellyfin's item data").to_string())?;
+        self.call_body(agent().post(&format!("{}/Items/{id}", self.url)), &item).map(|_| ())
     }
 
     /// 從 Jellyfin 刪掉這支影片（伺服器上的檔案也一起刪，不會進資源回收筒）
@@ -882,6 +931,60 @@ pub struct JfItem {
     pub subs: Vec<JfSub>,
     /// 章節（開始的秒數, 名稱）
     pub chapters: Vec<(f64, String)>,
+    /// Jellyfin 做好的時間軸預覽縮圖（沒有時 None）
+    pub trickplay: Option<Trickplay>,
+}
+
+/// 時間軸預覽縮圖：每 interval 秒一張小圖（width × height），tile_w × tile_h 張排成一張大圖
+#[derive(Debug, Clone, PartialEq)]
+pub struct Trickplay {
+    pub source: String,
+    pub width: u32,
+    pub height: u32,
+    pub tile_w: u32,
+    pub tile_h: u32,
+    pub count: u32,
+    pub interval: f64,
+}
+
+impl Trickplay {
+    /// t 秒的小圖在哪一張大圖、大圖裡的哪一格（UV，0～1）
+    pub fn at(&self, t: f64) -> (u32, [f32; 4]) {
+        let k = ((t.max(0.0) / self.interval).floor() as u32).min(self.count.saturating_sub(1));
+        let per = (self.tile_w * self.tile_h).max(1);
+        let (index, pos) = (k / per, k % per);
+        let (col, row) = (pos % self.tile_w.max(1), pos / self.tile_w.max(1));
+        let (w, h) = (1.0 / self.tile_w.max(1) as f32, 1.0 / self.tile_h.max(1) as f32);
+        (index, [col as f32 * w, row as f32 * h, (col + 1) as f32 * w, (row + 1) as f32 * h])
+    }
+}
+
+/// 瀏覽視窗依什麼找：人物（編號, 名稱）、標籤、年份
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum JfFacet {
+    Person(String, String),
+    Tag(String),
+    Year(u32),
+}
+
+impl JfFacet {
+    pub fn label(&self) -> String {
+        match self {
+            JfFacet::Person(_, n) => trf!("人物：{n}", "Person: {n}"),
+            JfFacet::Tag(t) => trf!("標籤：{t}", "Tag: {t}"),
+            JfFacet::Year(y) => trf!("{y} 年", "Year {y}"),
+        }
+    }
+}
+
+/// 在瀏覽視窗修改的影片資訊
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct JfInfo {
+    pub title: String,
+    pub overview: String,
+    pub people: Vec<String>,
+    pub tags: Vec<String>,
+    pub year: Option<i32>,
 }
 
 /// 一個字幕：Jellyfin 的串流編號、顯示的名稱（語言）
@@ -1021,12 +1124,91 @@ pub fn parse_items(json: &str) -> (Vec<JfItem>, usize) {
                                 a.iter().map(|c| (c.get("StartPositionTicks").and_then(Value::as_f64).unwrap_or(0.0) / 1e7, c.get("Name").and_then(Value::as_str).unwrap_or("").to_string())).collect()
                             })
                             .unwrap_or_default(),
+                        trickplay: i.get("Trickplay").and_then(trickplay_of),
                     })
                 })
                 .collect()
         })
         .unwrap_or_default();
     (items, total)
+}
+
+/// 項目的 Trickplay：{ 媒體來源: { 寬度: { Width, Height, TileWidth, TileHeight, ThumbnailCount, Interval(毫秒) } } }；
+/// 有好幾種寬度時挑 200 以上最小的（預覽框不大，下載快）
+fn trickplay_of(v: &Value) -> Option<Trickplay> {
+    let (source, sizes) = v.as_object()?.iter().next()?;
+    let mut list: Vec<Trickplay> = sizes
+        .as_object()?
+        .values()
+        .filter_map(|t| {
+            let n = |k: &str| t.get(k).and_then(Value::as_u64).unwrap_or(0) as u32;
+            let tp = Trickplay {
+                source: source.clone(),
+                width: n("Width"),
+                height: n("Height"),
+                tile_w: n("TileWidth"),
+                tile_h: n("TileHeight"),
+                count: n("ThumbnailCount"),
+                interval: n("Interval") as f64 / 1000.0,
+            };
+            (tp.width > 0 && tp.height > 0 && tp.tile_w > 0 && tp.tile_h > 0 && tp.count > 0 && tp.interval > 0.0).then_some(tp)
+        })
+        .collect();
+    list.sort_by_key(|t| (t.width < 200, t.width));
+    list.into_iter().next()
+}
+
+/// /Persons 的回應：（編號, 名稱）
+fn persons_of(json: &str) -> Vec<(String, String)> {
+    let Ok(v) = serde_json::from_str::<Value>(json) else { return vec![] };
+    v.get("Items")
+        .and_then(Value::as_array)
+        .map(|a| a.iter().filter_map(|p| Some((p.get("Id")?.as_str()?.to_string(), p.get("Name")?.as_str()?.trim().to_string()))).filter(|(_, n)| !n.is_empty()).collect())
+        .unwrap_or_default()
+}
+
+/// /Items/Filters 的回應：（標籤, 年份新的在前）
+fn facets_of(json: &str) -> (Vec<String>, Vec<u32>) {
+    let Ok(v) = serde_json::from_str::<Value>(json) else { return (vec![], vec![]) };
+    let mut tags: Vec<String> = v.get("Tags").and_then(Value::as_array).map(|a| a.iter().filter_map(|t| t.as_str().map(String::from)).collect()).unwrap_or_default();
+    tags.sort_by_key(|t| t.to_lowercase());
+    let mut years: Vec<u32> = v.get("Years").and_then(Value::as_array).map(|a| a.iter().filter_map(|y| y.as_u64().map(|y| y as u32)).collect()).unwrap_or_default();
+    years.sort_unstable_by(|a, b| b.cmp(a));
+    (tags, years)
+}
+
+/// 影片的資訊（人物只算演員：我們設的人物都是演員）
+fn info_of(json: &str) -> Option<JfInfo> {
+    let v: Value = serde_json::from_str(json).ok()?;
+    let strs = |k: &str| v.get(k).and_then(Value::as_array).map(|a| a.iter().filter_map(|t| t.as_str().map(String::from)).collect()).unwrap_or_default();
+    Some(JfInfo {
+        title: v.get("Name").and_then(Value::as_str).unwrap_or("").to_string(),
+        overview: v.get("Overview").and_then(Value::as_str).unwrap_or("").to_string(),
+        people: v
+            .get("People")
+            .and_then(Value::as_array)
+            .map(|a| a.iter().filter(|p| p.get("Type").and_then(Value::as_str).is_none_or(|t| t == "Actor")).filter_map(|p| p.get("Name")?.as_str().map(String::from)).collect())
+            .unwrap_or_default(),
+        tags: strs("Tags"),
+        year: v.get("ProductionYear").and_then(Value::as_i64).map(|y| y as i32),
+    })
+}
+
+/// 把 JfInfo 換進整筆資料（POST /Items/{id} 用）：標題空的時不改
+pub fn with_info(item_json: &str, x: &JfInfo) -> Option<String> {
+    let mut v: Value = serde_json::from_str(item_json).ok()?;
+    let o = v.as_object_mut()?;
+    if !x.title.trim().is_empty() {
+        o.insert("Name".into(), Value::from(x.title.trim()));
+    }
+    o.insert("Overview".into(), Value::from(x.overview.trim()));
+    o.insert("Tags".into(), Value::from(x.tags.clone()));
+    let mut people: Vec<Value> =
+        o.get("People").and_then(Value::as_array).map(|a| a.iter().filter(|p| p.get("Type").and_then(Value::as_str).is_some_and(|t| t != "Actor")).cloned().collect()).unwrap_or_default();
+    people.extend(x.people.iter().map(|n| serde_json::json!({ "Name": n, "Type": "Actor" })));
+    o.insert("People".into(), Value::from(people));
+    o.insert("ProductionYear".into(), x.year.map_or(Value::Null, Value::from));
+    serde_json::to_string(&v).ok()
 }
 
 /// 家人看過了沒、我的最愛（Jellyfin::watch_state）
@@ -2366,8 +2548,50 @@ mod tests {
     fn filtered_browse_lists_videos_below_the_folder() {
         let (url, h) = serve_seq(vec![("200 OK", r#"{"Items":[],"TotalRecordCount":0}"#.to_string())]);
         let jf = Jellyfin::new(&url, "k").unwrap();
-        jf.items("u", Some("p1"), "", 0, 60, JfSort::Name, JfFilter::Unplayed).unwrap();
+        jf.items("u", Some("p1"), "", 0, 60, JfSort::Name, JfFilter::Unplayed, None).unwrap();
         let got = h.join().unwrap();
         assert!(got[0].contains("filters=IsUnplayed") && got[0].contains("recursive=true") && got[0].contains("parentId=p1") && got[0].contains("sortBy=SortName"), "{got:?}");
+    }
+
+    #[test]
+    fn facet_browse_searches_the_whole_server() {
+        let (url, h) = serve_seq(vec![("200 OK", r#"{"Items":[],"TotalRecordCount":0}"#.to_string())]);
+        let jf = Jellyfin::new(&url, "k").unwrap();
+        jf.items("u", Some("p1"), "", 0, 60, JfSort::Name, JfFilter::All, Some(&JfFacet::Person("pp".into(), "媽媽".into()))).unwrap();
+        let got = h.join().unwrap();
+        assert!(got[0].contains("personIds=pp") && got[0].contains("recursive=true") && !got[0].contains("parentId"), "{got:?}");
+    }
+
+    #[test]
+    fn trickplay_picks_a_size_and_finds_the_tile() {
+        let v: Value = serde_json::from_str(r#"{"ms1":{"320":{"Width":320,"Height":180,"TileWidth":10,"TileHeight":10,"ThumbnailCount":250,"Interval":10000},"120":{"Width":120,"Height":68,"TileWidth":10,"TileHeight":10,"ThumbnailCount":250,"Interval":10000}}}"#).unwrap();
+        let tp = trickplay_of(&v).unwrap();
+        assert_eq!((tp.source.as_str(), tp.width, tp.interval), ("ms1", 320, 10.0));
+        // 第 123 張（1230 秒）：第 1 張大圖的第 23 格（第 2 列第 3 個）
+        let (index, uv) = tp.at(1235.0);
+        assert_eq!(index, 1);
+        assert!((uv[0] - 0.3).abs() < 1e-6 && (uv[1] - 0.2).abs() < 1e-6 && (uv[2] - 0.4).abs() < 1e-6);
+        // 超過最後一張停在最後一張
+        assert_eq!(tp.at(1e9).0, 2);
+        assert!(trickplay_of(&serde_json::json!({})).is_none());
+    }
+
+    #[test]
+    fn facets_persons_and_info() {
+        let (tags, years) = facets_of(r#"{"Tags":["旅行","Birthday"],"Years":[2023,2025,2024]}"#);
+        assert_eq!(tags, vec!["Birthday", "旅行"]);
+        assert_eq!(years, vec![2025, 2024, 2023]);
+        assert_eq!(persons_of(r#"{"Items":[{"Id":"p1","Name":"媽媽"},{"Id":"p2","Name":" "}]}"#), vec![("p1".to_string(), "媽媽".to_string())]);
+        let item = r#"{"Id":"x","Name":"生日","Overview":"蛋糕","Tags":["家"],"ProductionYear":2024,"People":[{"Name":"小明","Type":"Actor"},{"Name":"爸爸","Type":"Director"}]}"#;
+        let info = info_of(item).unwrap();
+        assert_eq!(info, JfInfo { title: "生日".into(), overview: "蛋糕".into(), people: vec!["小明".into()], tags: vec!["家".into()], year: Some(2024) });
+        let edited = JfInfo { title: "生日派對".into(), overview: String::new(), people: vec!["阿嬤".into()], tags: vec![], year: None };
+        let v: Value = serde_json::from_str(&with_info(item, &edited).unwrap()).unwrap();
+        assert_eq!(v["Name"], "生日派對");
+        assert_eq!(v["Overview"], "");
+        assert_eq!(v["Tags"], serde_json::json!([]));
+        assert!(v["ProductionYear"].is_null());
+        // 導演留著，演員換成新的
+        assert_eq!(v["People"], serde_json::json!([{"Name":"爸爸","Type":"Director"},{"Name":"阿嬤","Type":"Actor"}]));
     }
 }

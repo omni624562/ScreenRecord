@@ -251,6 +251,10 @@ mod win {
         MAIN.store(h, Ordering::Relaxed);
     }
 
+    pub fn handle() -> isize {
+        MAIN.load(Ordering::Relaxed)
+    }
+
     pub fn place_at_start(saved: Option<Placement>, want: (f32, f32)) -> bool {
         let Some(h) = hwnd() else { return false };
         let list = screens();
@@ -328,6 +332,14 @@ mod win {
     pub fn screens_signature() -> String {
         signature(&screens())
     }
+}
+
+/// 操作視窗（attach 記下的；還沒有時 0）
+pub fn handle() -> isize {
+    #[cfg(windows)]
+    return win::handle();
+    #[cfg(not(windows))]
+    0
 }
 
 /// 記下操作視窗（建立後、第一次顯示前呼叫）
