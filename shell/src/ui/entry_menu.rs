@@ -1,6 +1,7 @@
 //! 一支錄影（影片、聲音檔）能做的事：主畫面卡片、全部錄影、檢視器共用同一份清單，
-//! 名稱、圖示、分組、順序都一樣。各處只差在直接露出幾個（播放、剪輯、製作、傳到媒體庫、資料夾），
-//! 其他在「⋯」裡、順序不變，所以在哪裡學會的，到別的地方也找得到
+//! 名稱、圖示、分組、順序都一樣，所以在哪裡學會的，到別的地方也找得到。
+//! 清單（卡片、全部錄影）只放管理檔案的事：播放、剪輯、製作、改名、分享、星號、刪除；
+//! 要看著畫面才知道怎麼做的（設為封面、旋轉、操作步驟、章節、用 Windows 開啟）在打開影片後的檢視器
 
 use super::theme::{Btn, Icon};
 use super::{EntryAction, UiApp};
@@ -27,28 +28,7 @@ pub enum Node {
 }
 
 impl Node {
-    pub fn label(&self) -> &str {
-        match self {
-            Node::One(i) => &i.label,
-            Node::Sub { label, .. } => label,
-        }
-    }
-
-    pub fn icon(&self) -> Option<Icon> {
-        match self {
-            Node::One(i) => i.icon,
-            Node::Sub { icon, .. } => Some(*icon),
-        }
-    }
-
-    pub fn tip(&self) -> &str {
-        match self {
-            Node::One(i) => &i.tip,
-            Node::Sub { tip, .. } => tip,
-        }
-    }
-
-    /// 卡片、清單的每一列直接露出的那幾個：播放、剪輯、製作、傳到媒體庫、在資料夾中顯示（常用的都要一按就到）
+    /// 檢視器上方直接露出的那幾個：播放、剪輯、製作、傳到媒體庫、在資料夾中顯示
     pub fn quick(&self) -> bool {
         match self {
             Node::One(i) => matches!(i.action, EntryAction::Play | EntryAction::PlayHere | EntryAction::Edit | EntryAction::SendToLibrary | EntryAction::Reveal),
@@ -75,6 +55,8 @@ pub fn groups(app: &UiApp, e: &LibraryEntry, place: Place) -> Vec<Vec<Node>> {
     // 聲音檔（M4A）只能播放、分享、管理；加速版、GIF 這些另存的版本不能再剪輯、製作，名稱跟著原片改
     let m4a = e.media.name.to_lowercase().ends_with(".m4a");
     let export = super::viewer::is_export_name(&e.media.name);
+    // 清單上（卡片、全部錄影）；要看著畫面做的只在檢視器
+    let list = place != Place::Viewer;
     let audio_rec = screenrecorder_core::after_record::is_audio_recording(path);
     let gate = |mut i: Item| {
         i.blocked = app.blocked(i.action);
@@ -106,7 +88,7 @@ pub fn groups(app: &UiApp, e: &LibraryEntry, place: Place) -> Vec<Vec<Node>> {
     let mut change = vec![];
     if !m4a && !export {
         change.push(one(item(EntryAction::Edit, tr!("剪輯", "Edit"), Some(Icon::Cut), tr!("剪掉頭尾、刪除片段、加上標註", "Trim, cut out parts, add annotations"))));
-        if !audio_rec && screenrecorder_core::cover::can_embed(path) {
+        if !list && !audio_rec && screenrecorder_core::cover::can_embed(path) {
             let tip = if place == Place::Viewer {
                 tr!(
                     "把現在這一格設為封面：檔案總管和多數播放器看到的縮圖就是這一格（影片內容不變）",
@@ -130,7 +112,7 @@ pub fn groups(app: &UiApp, e: &LibraryEntry, place: Place) -> Vec<Vec<Node>> {
                     "Edit the title, author, description and tags stored in the video file (shown in File Explorer under Properties → Details; the video itself is unchanged)"
                 ),
             )));
-            if !audio_rec {
+            if !list && !audio_rec {
                 let tip = tr!("直接改原檔，幾秒就好、畫質不變；轉錯再轉回來就好", "Changes the original in seconds without losing quality; just rotate back if needed");
                 change.push(Node::Sub {
                     label: tr!("旋轉", "Rotate").into(),
@@ -177,7 +159,7 @@ pub fn groups(app: &UiApp, e: &LibraryEntry, place: Place) -> Vec<Vec<Node>> {
         if e.media.has_audio != Some(false) {
             items.push(item(EntryAction::SaveAudio, tr!("存成 M4A（只留聲音）", "Save as M4A (audio only)"), None, ""));
         }
-        if !audio_rec {
+        if !list && !audio_rec {
             items.push(item(
                 EntryAction::StepsGuide,
                 tr!("步驟教學文件（附圖）…", "Step-by-step guide with pictures…"),
@@ -210,6 +192,8 @@ pub fn groups(app: &UiApp, e: &LibraryEntry, place: Place) -> Vec<Vec<Node>> {
         });
     }
 
+    // 加速版、GIF 在清單上只留複製、傳、資料夾、刪除（其他的在打開後的檢視器）
+    let side = list && export;
     let mut share = vec![one(item(
         EntryAction::CopyFile,
         tr!("複製檔案", "Copy file"),
@@ -218,7 +202,8 @@ pub fn groups(app: &UiApp, e: &LibraryEntry, place: Place) -> Vec<Vec<Node>> {
     ))];
     let (dest, send_tip) = app.send_label();
     share.push(one(item(EntryAction::SendToLibrary, tr!("傳到媒體庫", "Send to library"), Some(Icon::Upload), &format!("{dest}\n{send_tip}"))));
-    if !m4a && app.jellyfin().is_some() {
+    // 已經傳到媒體庫的才有 Jellyfin 頁面
+    if !m4a && !side && app.jellyfin().is_some() && app.sent_already(path, e.media.bytes) {
         share.push(one(item(
             EntryAction::OpenJellyfin,
             tr!("在 Jellyfin 開啟", "Open in Jellyfin"),
@@ -235,10 +220,10 @@ pub fn groups(app: &UiApp, e: &LibraryEntry, place: Place) -> Vec<Vec<Node>> {
             ),
         )));
     }
-    if !e.media.chapters.is_empty() {
+    if !list && !e.media.chapters.is_empty() {
         share.push(one(item(EntryAction::CopyChapters, tr!("複製章節（貼到 YouTube）", "Copy chapters (for YouTube)"), Some(Icon::List), "")));
     }
-    if !m4a && !export && !audio_rec {
+    if !list && !m4a && !export && !audio_rec {
         share.push(one(item(
             EntryAction::CopySteps,
             tr!("複製操作步驟（文字）", "Copy steps as text"),
@@ -248,7 +233,8 @@ pub fn groups(app: &UiApp, e: &LibraryEntry, place: Place) -> Vec<Vec<Node>> {
     }
 
     let starred = app.core.pins.contains(path);
-    let mut manage = vec![one(if starred {
+    let mut manage = vec![];
+    let star = one(if starred {
         item(EntryAction::Star, tr!("移除星號", "Remove star"), Some(Icon::StarOn), "")
     } else {
         item(
@@ -257,12 +243,16 @@ pub fn groups(app: &UiApp, e: &LibraryEntry, place: Place) -> Vec<Vec<Node>> {
             Some(Icon::Star),
             tr!("加上星號的不會被清理，也可以只看有星號的", "Starred files are skipped by cleanup, and you can show only starred ones"),
         )
-    })];
-    if place != Place::Viewer {
-        manage.push(one(item(EntryAction::Reveal, tr!("在資料夾中顯示", "Show in folder"), Some(Icon::Folder), "")));
+    });
+    if !side {
+        manage.push(star);
     }
-    manage.push(one(item(EntryAction::External, tr!("用 Windows 開啟", "Open in Windows"), Some(Icon::Export), tr!("用 Windows 的媒體播放器開啟", "Open in the Windows media player"))));
-    if place != Place::Viewer {
+    if list {
+        manage.push(one(item(EntryAction::Reveal, tr!("在資料夾中顯示", "Show in folder"), Some(Icon::Folder), "")));
+    } else {
+        manage.push(one(item(EntryAction::External, tr!("用 Windows 開啟", "Open in Windows"), Some(Icon::Export), tr!("用 Windows 的媒體播放器開啟", "Open in the Windows media player"))));
+    }
+    if list {
         let tip = if e.exports.is_empty() { "" } else { tr!("連同底下的加速版、GIF", "Including its sped-up versions and GIFs") };
         manage.push(one(item(EntryAction::Trash, tr!("移到資源回收筒", "Move to Recycle Bin"), Some(Icon::Trash), tip)));
     }
@@ -319,39 +309,29 @@ pub fn menu(ui: &mut egui::Ui, groups: &[Vec<Node>]) -> Option<EntryAction> {
     pick
 }
 
-/// 卡片、清單一列上的小圖示：直接露出的那幾個（固定的位置，這支沒有的空著，上下列才對得齊），最後是「⋯」
-pub fn quick_icons(ui: &mut egui::Ui, groups: &[Vec<Node>], hot: bool, more_tip: &str) -> Option<EntryAction> {
+/// 卡片、清單一列上的小圖示：播放、剪輯，有設定媒體庫時加上傳到媒體庫（固定的位置，這支沒有的空著，上下列才對得齊），最後是「⋯」。
+/// slots：留幾個位置；shown：前幾個位置才放圖示（加速版那一列只放播放，其他在「⋯」）
+pub fn quick_icons(ui: &mut egui::Ui, groups: &[Vec<Node>], hot: bool, slots: usize, shown: usize, more_tip: &str) -> Option<EntryAction> {
     let mut pick = None;
-    let quick: Vec<&Node> = groups.iter().flatten().filter(|n| n.quick()).collect();
-    for slot in 0..5 {
-        let n = quick.iter().find(|n| slot_of(n) == slot);
+    let quick: Vec<&Item> = groups
+        .iter()
+        .flatten()
+        .filter_map(|n| match n {
+            Node::One(it) => Some(it),
+            Node::Sub { .. } => None,
+        })
+        .collect();
+    for slot in 0..slots {
         // 這支沒有的：留一個和按鈕一樣大的空位（上下列的圖示才對得齊）
-        let Some(n) = n else {
+        let Some(it) = quick.iter().find(|it| slot < shown && slot_of(it.action) == Some(slot)) else {
             ui.allocate_exact_size(egui::vec2(28.0, 28.0), egui::Sense::hover());
             continue;
         };
-        let Some(icon) = n.icon() else { continue };
-        let blocked = match n {
-            Node::One(it) => it.blocked.clone(),
-            Node::Sub { .. } => None,
-        };
-        let tip = blocked.clone().unwrap_or_else(|| if n.tip().is_empty() { n.label().to_string() } else { format!("{}\n{}", n.label(), n.tip()) });
+        let Some(icon) = it.icon else { continue };
+        let tip = it.blocked.clone().unwrap_or_else(|| if it.tip.is_empty() { it.label.clone() } else { format!("{}\n{}", it.label, it.tip) });
         // 播放一直是深色，其他平常淡灰色，滑鼠移到上面才變深
-        let r = Btn::icon_only(icon).ghost().small().quiet(!hot && slot != 0).enabled(blocked.is_none()).tooltip(tip).show(ui);
-        match n {
-            Node::One(it) => {
-                if r.clicked() {
-                    pick = Some(it.action);
-                }
-            }
-            Node::Sub { items, .. } => {
-                egui::Popup::menu(&r).show(|ui| {
-                    ui.set_min_width(200.0);
-                    if let Some(a) = sub_items(ui, items) {
-                        pick = Some(a);
-                    }
-                });
-            }
+        if Btn::icon_only(icon).ghost().small().quiet(!hot && slot != 0).enabled(it.blocked.is_none()).tooltip(tip).show(ui).clicked() {
+            pick = Some(it.action);
         }
     }
     let more = Btn::icon_only(Icon::More).ghost().small().quiet(!hot).tooltip(more_tip).show(ui);
@@ -363,15 +343,12 @@ pub fn quick_icons(ui: &mut egui::Ui, groups: &[Vec<Node>], hot: bool, more_tip:
     pick
 }
 
-/// 直接露出的圖示固定的位置：播放、剪輯、製作、傳到媒體庫、在資料夾中顯示
-fn slot_of(n: &Node) -> usize {
-    match n {
-        Node::One(it) => match it.action {
-            EntryAction::Play | EntryAction::PlayHere => 0,
-            EntryAction::Edit => 1,
-            EntryAction::SendToLibrary => 3,
-            _ => 4,
-        },
-        Node::Sub { .. } => 2,
+/// 清單上直接露出的圖示固定的位置：播放、剪輯、傳到媒體庫
+fn slot_of(a: EntryAction) -> Option<usize> {
+    match a {
+        EntryAction::Play | EntryAction::PlayHere => Some(0),
+        EntryAction::Edit => Some(1),
+        EntryAction::SendToLibrary => Some(2),
+        _ => None,
     }
 }

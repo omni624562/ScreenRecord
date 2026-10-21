@@ -341,6 +341,14 @@ impl UiApp {
         self.lib_index.as_ref().filter(|i| i.root == root)
     }
 
+    /// 已經傳到媒體庫了嗎（只看已經讀好的索引，不會開始讀；還沒讀到時當作沒有）
+    pub fn sent_already(&self, path: &str, size: u64) -> bool {
+        let root = self.s.after_copy_to.trim();
+        let Some(index) = self.lib_index.as_ref().filter(|i| !root.is_empty() && i.root == root) else { return false };
+        let name = std::path::Path::new(path).file_name().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_default();
+        index.map.get(&name).is_some_and(|v| v.iter().any(|(_, s)| jellyfin::same_copy(&name, size, *s)))
+    }
+
     /// 媒體庫裡有的檔案（小寫檔名, 大小）：「還沒傳到媒體庫」篩選用；還沒讀到時是空的
     pub fn library_keys(&mut self) -> Vec<(String, u64)> {
         // 改過封面、影片資訊只透過 Jellyfin 更新的：本機的大小和媒體庫那一份不同，也算在媒體庫裡
