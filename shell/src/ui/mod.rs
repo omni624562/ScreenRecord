@@ -10,6 +10,7 @@ pub mod export_dialog;
 pub mod import;
 pub mod inline_play;
 pub mod jellyfin_browse;
+pub mod jellyfin_edit;
 pub mod library_dialog;
 pub mod library_send;
 pub mod main_view;
@@ -187,6 +188,10 @@ pub struct UiApp {
     pub jf_watch_loading: bool,
     /// 瀏覽 Jellyfin 的視窗
     pub jf_browse: Option<jellyfin_browse::JfBrowse>,
+    /// 在瀏覽視窗改 Jellyfin 上的影片資訊
+    pub jf_edit: Option<jellyfin_edit::JfEdit>,
+    /// 上一格工作列有沒有顯示進度（做完時閃一下用）
+    taskbar_busy: bool,
     /// 從檔案庫或檢視器去剪輯、製作時記下來：剪輯視窗、製作視窗關掉後回到原本的地方
     pub back_to: Option<BackTo>,
     pub changelog_open: bool,
@@ -348,6 +353,8 @@ impl UiApp {
             jf_watch: None,
             jf_watch_loading: false,
             jf_browse: None,
+            jf_edit: None,
+            taskbar_busy: false,
             back_to: None,
             changelog_open: false,
             cameras: None,
@@ -643,6 +650,36 @@ impl UiApp {
     }
 
     /// 設定好的 Jellyfin（網址和 API 金鑰都有填），帶著媒體庫資料夾（傳好只掃描放進去的資料夾用）
+    /// 工作列圖示的進度條：製作 / 壓縮、傳到 NAS、從 Jellyfin 下載、下載外部元件，一起算；等 Jellyfin 整理時顯示忙碌中。
+    /// 全部做完時程式不在最前面就閃一下
+    fn taskbar_tick(&mut self) {
+        use screenrecorder_core::taskbar;
+        let mut parts: Vec<(f64, f64)> = vec![];
+        if let Some(e) = self.status.export.as_ref().filter(|e| e.state == screenrecorder_core::types::ExportState::Running) {
+            parts.push((e.progress, 1.0));
+        }
+        for t in screenrecorder_core::transfer::active() {
+            parts.push(if t.total > 0 { (t.done as f64 / t.total as f64, 1.0) } else { (0.0, 0.0) });
+        }
+        let d = &self.status.download;
+        let mut busy = !screenrecorder_core::transfer::stages().is_empty();
+        match d.phase {
+            DownloadPhase::Downloading => parts.push(match d.total.filter(|t| *t > 0) {
+                Some(t) => (d.received as f64 / t as f64, 1.0),
+                None => (0.0, 0.0),
+            }),
+            DownloadPhase::Verifying | DownloadPhase::Extracting => busy = true,
+            _ => {}
+        }
+        let p = taskbar::combine(&parts, busy);
+        let working = p != taskbar::Progress::None;
+        taskbar::set(p);
+        if self.taskbar_busy && !working {
+            taskbar::flash();
+        }
+        self.taskbar_busy = working;
+    }
+
     pub fn jellyfin(&self) -> Option<screenrecorder_core::jellyfin::Jellyfin> {
         screenrecorder_core::jellyfin::Jellyfin::new(&self.s.jellyfin_url, &self.s.jellyfin_key)
             .map(|j| screenrecorder_core::jellyfin::Jellyfin { collections: self.s.jellyfin_collections, ..j.with_root(&self.s.after_copy_to) })
@@ -1522,6 +1559,7 @@ impl eframe::App for UiApp {
         if (ctx.zoom_factor() - zoom).abs() > 0.001 {
             ctx.set_zoom_factor(zoom);
         }
+        self.taskbar_tick();
         self.frame_parts.push(("背景狀態", t0.elapsed().as_secs_f32() * 1000.0));
         // 錄影中（計時器）、開著剪輯 / 檢視 / 製作 / 全部錄影、轉檔或下載中：每 0.25 秒更新。
         // 主畫面閒置時不定時重畫：狀態有變化由 watch_status 叫醒，其餘每 5 秒保險一次；視窗隱藏時 2 秒
@@ -1623,6 +1661,9 @@ impl eframe::App for UiApp {
         }
         if self.video_tags.is_some() {
             video_tags::show(self, &ctx);
+        }
+        if self.jf_edit.is_some() {
+            jellyfin_edit::show(self, &ctx);
         }
         library_send::transfer_bar(self, &ctx);
         // 設定視窗在其他視窗之後畫：從剪輯視窗、全部錄影開啟時（例如「前往外部元件」）在最上面

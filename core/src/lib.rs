@@ -108,6 +108,7 @@ pub mod steps_log;
 #[cfg(windows)]
 pub mod steps_win;
 pub mod subtitles;
+pub mod taskbar;
 pub mod thumbs;
 pub mod transcript;
 pub mod transfer;

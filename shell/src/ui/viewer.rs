@@ -86,9 +86,15 @@ pub struct Viewer {
     related: Vec<MediaInfo>,
     /// 串流的 Jellyfin 影片：看到哪裡回報給 Jellyfin、字幕
     pub(crate) remote: Option<Remote>,
+    /// 從瀏覽視窗開的同一排影片（和 list 一一對應）：上一部 / 下一部、看完自動接下一支
+    queue: Vec<Remote>,
+    /// Jellyfin 的時間軸預覽縮圖：第幾張大圖 → 材質（None = 讀取中或讀不到）；要讀的那一張
+    tp_tiles: std::collections::HashMap<u32, Option<TextureHandle>>,
+    tp_want: std::cell::Cell<Option<u32>>,
 }
 
 /// 正在串流的 Jellyfin 影片
+#[derive(Clone)]
 pub struct Remote {
     pub id: String,
     /// 看到哪裡記在哪個使用者
@@ -100,6 +106,10 @@ pub struct Remote {
     pub file_name: String,
     /// 上次記下看到哪裡的時候
     saved: Option<std::time::Instant>,
+    /// 上次看到一半的地方（從那裡接著看；0 = 從頭）
+    pub resume: f64,
+    /// Jellyfin 做好的時間軸預覽縮圖
+    pub trickplay: Option<screenrecorder_core::jellyfin::Trickplay>,
 }
 
 impl Remote {
@@ -109,7 +119,7 @@ impl Remote {
 
     pub fn new(id: &str, user: &str, subs: Vec<String>, file_name: &str) -> Remote {
         // 第一次記是看了 30 秒之後（剛開始時播放位置還是 0，會蓋掉上次看到的地方）
-        Remote { id: id.to_string(), user: user.to_string(), subs, subs_on: true, file_name: file_name.to_string(), saved: Some(std::time::Instant::now()) }
+        Remote { id: id.to_string(), user: user.to_string(), subs, subs_on: true, file_name: file_name.to_string(), saved: Some(std::time::Instant::now()), resume: 0.0, trickplay: None }
     }
 }
 
@@ -217,6 +227,18 @@ pub fn open_remote(app: &mut UiApp, entry: LibraryEntry, remote: Remote, start: 
     set_autoplay(app, true);
 }
 
+/// 串流播放瀏覽視窗同一排裡的第 idx 支：上一部 / 下一部在這一排裡切換，看完自動接下一支
+pub fn open_remote_list(app: &mut UiApp, list: Vec<(LibraryEntry, Remote)>, idx: usize, start: Option<f64>) {
+    let Some((entry, remote)) = list.get(idx).cloned() else { return };
+    open_remote(app, entry, remote, start);
+    if let Some(v) = app.viewer.as_mut() {
+        let (entries, remotes): (Vec<_>, Vec<_>) = list.into_iter().unzip();
+        v.list = entries;
+        v.queue = remotes;
+        v.idx = idx;
+    }
+}
+
 pub fn open(app: &mut UiApp, entry: LibraryEntry) {
     open_with(app, entry, None, None);
 }
@@ -250,6 +272,9 @@ fn open_with(app: &mut UiApp, entry: LibraryEntry, remote: Option<Remote>, start
         reload_after_ask: false,
         related: vec![],
         remote,
+        queue: vec![],
+        tp_tiles: Default::default(),
+        tp_want: Default::default(),
     });
     load_current(app);
     if is_remote(&path) {
@@ -445,15 +470,38 @@ fn decode_image(path: &str, max_side: usize) -> Option<(egui::ColorImage, Vec2)>
 }
 
 fn go(app: &mut UiApp, step: i64) {
+    let playing = app.viewer.as_ref().and_then(|v| v.player.as_ref()).is_some_and(|p| p.is_playing());
+    go_to(app, step, playing);
+}
+
+/// 上一個 / 下一個（autoplay：開好就播放）。Jellyfin 的影片：先記下這支看到哪裡，換成那一支的字幕、預覽縮圖，
+/// 上次看到一半的從那裡接著看
+fn go_to(app: &mut UiApp, step: i64, autoplay: bool) {
     let Some(v) = app.viewer.as_mut() else { return };
     let n = v.list.len() as i64;
     let i = v.idx as i64 + step;
     if n <= 1 || i < 0 || i >= n {
         return;
     }
+    if !v.queue.is_empty() {
+        let close = std::mem::replace(&mut v.close, true);
+        let position = remote_position(v);
+        v.close = close;
+        if let Some((id, user, at, played)) = position {
+            save_position(app, id, user, at, played);
+        }
+    }
+    let Some(v) = app.viewer.as_mut() else { return };
     v.idx = i as usize;
+    if let Some(r) = v.queue.get(v.idx).cloned() {
+        let dur = v.cur().media.duration_sec.unwrap_or(0.0);
+        v.start_at = (r.resume > 5.0 && r.resume < dur - 10.0).then_some(r.resume + 0.5);
+        v.remote = Some(Remote { saved: Some(std::time::Instant::now()), ..r });
+        v.tp_tiles.clear();
+        v.tp_want.set(None);
+    }
     // 上一個 / 下一個：正在播就接著播下一個，暫停中就停在第一個畫面
-    v.autoplay = v.player.as_ref().is_some_and(|p| p.is_playing());
+    v.autoplay = autoplay;
     load_current(app);
 }
 
@@ -653,8 +701,10 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
             None => v.video_tex = Some(ctx.load_texture("viewer-video", img, TextureOptions::LINEAR)),
         }
     }
+    // Jellyfin 的影片看完了：記成看過，接著播同一排的下一支
+    let mut auto_next = false;
     if let Some(p) = &v.player {
-        let _ = p.take_ended();
+        auto_next = p.take_ended() && !v.queue.is_empty() && v.idx + 1 < v.list.len();
         // 新的一格到了解碼器會叫畫面更新；這裡只讓時間順順地走
         if p.is_playing() {
             ctx.request_repaint_after(std::time::Duration::from_millis(33));
@@ -813,8 +863,47 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         }
         return;
     }
+    let want = v.tp_want.take().filter(|i| !v.tp_tiles.contains_key(i));
     app.viewer = Some(v);
+    if let Some(index) = want {
+        load_tile(app, index);
+    }
+    if auto_next {
+        go_to(app, 1, true);
+        if let Some(v) = &app.viewer {
+            app.toast(trf!("接著播下一支：{}", "Playing the next one: {}", base_name(&v.cur().media.name)), false);
+        }
+        return;
+    }
     run_act(app, act);
+}
+
+/// 讀 Jellyfin 的時間軸預覽縮圖的第 index 張大圖（背景下載、轉成材質）
+fn load_tile(app: &mut UiApp, index: u32) {
+    let Some(jf) = app.jellyfin() else { return };
+    let Some(v) = app.viewer.as_mut() else { return };
+    let Some((id, tp)) = v.remote.as_ref().and_then(|r| Some((r.id.clone(), r.trickplay.clone()?))) else { return };
+    v.tp_tiles.insert(index, None);
+    let ctx = app.ctx.clone();
+    let key = id.clone();
+    app.spawn(
+        async move {
+            let img = tokio::task::spawn_blocking(move || {
+                let bytes = jf.trickplay_tile(&key, &tp, index)?;
+                let pm = screenrecorder_core::picture::decode_pixmap(&bytes)?;
+                Some(egui::ColorImage::from_rgba_premultiplied([pm.width() as usize, pm.height() as usize], pm.data()))
+            })
+            .await
+            .ok()
+            .flatten();
+            img.map(|i| ctx.load_texture("jf-trickplay", i, TextureOptions::LINEAR))
+        },
+        move |app, tex| {
+            if let Some(v) = app.viewer.as_mut().filter(|v| v.remote.as_ref().is_some_and(|r| r.id == id)) {
+                v.tp_tiles.insert(index, tex);
+            }
+        },
+    );
 }
 
 /// Jellyfin 串流：要不要記下看到哪裡（播放中每 30 秒一次、關掉時）；回傳（影片, 使用者, 秒, 看完了沒）
@@ -1447,7 +1536,30 @@ fn video_bar(v: &mut Viewer, ui: &mut egui::Ui, act: &mut Act) {
             None => short_clock(at),
         };
         let keys = tr!("←/→ 倒退/快轉 5 秒、空白鍵 播放/暫停", "←/→ back/forward 5 s, Space play/pause");
-        resp.clone().on_hover_text_at_pointer(format!("{when}\n{keys}"));
+        // Jellyfin 做好時間軸預覽縮圖的：滑鼠移到進度列上看得到那一秒的畫面
+        let thumb = v.remote.as_ref().and_then(|r| r.trickplay.as_ref()).and_then(|tp| {
+            let (index, uv) = tp.at(at);
+            match v.tp_tiles.get(&index) {
+                Some(Some(tex)) => Some((tex.id(), uv, tp.width as f32 / tp.height.max(1) as f32)),
+                Some(None) => None,
+                None => {
+                    v.tp_want.set(Some(index));
+                    None
+                }
+            }
+        });
+        match thumb {
+            Some((tex, uv, aspect)) => {
+                resp.clone().on_hover_ui_at_pointer(|ui| {
+                    let size = vec2(220.0, 220.0 / aspect);
+                    ui.add(egui::Image::from_texture(egui::load::SizedTexture::new(tex, size)).uv(Rect::from_min_max(pos2(uv[0], uv[1]), pos2(uv[2], uv[3]))).corner_radius(4));
+                    ui.label(RichText::new(&when).font(theme::font_bold(12.5)));
+                });
+            }
+            None => {
+                resp.clone().on_hover_text_at_pointer(format!("{when}\n{keys}"));
+            }
+        }
     }
     if v.seeking.is_none() && resp.is_pointer_button_down_on() {
         v.seeking = Some(playing);

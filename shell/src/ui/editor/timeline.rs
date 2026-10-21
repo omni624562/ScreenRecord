@@ -976,6 +976,8 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, toast: &mut
                         _ => (ed.spec.start, ed.spec.end),
                     };
                     ed.drag = Drag::Timeline { kind, x0: pos.x, t0: time_at(pos.x), moved: false, orig };
+                    // 貼齊用：按下時播放頭的位置（拖曳中播放頭會跟著動）
+                    ed.press_playhead = ed.now();
                     // 按著 Ctrl：加選（拖曳是再加一段、只點一下是加選 / 取消那一段）；沒按 Ctrl 重新選
                     ed.sel_add = ctrl && kind == TlKind::Select;
                     if kind == TlKind::Select && !ctrl {
@@ -989,7 +991,17 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, toast: &mut
         }
     } else if let Drag::Timeline { kind, x0, t0, moved, orig } = ed.drag {
         let lx = latest.map(|p| p.x).unwrap_or(x0);
-        let t = time_at(lx);
+        // 拖曳選取、調整頭尾或選取範圍時，靠近開頭結尾、按下時的播放頭、標記、分割點、刪掉的接縫就貼齊（10 像素內）
+        let targets = snap_targets(ed, kind);
+        let snap = |v: f64| -> (f64, Option<f64>) {
+            let best = targets.iter().copied().map(|s| (s, (x_of(s) - x_of(v)).abs())).filter(|&(_, d)| d <= 10.0).min_by(|a, b| a.1.total_cmp(&b.1));
+            match best {
+                Some((s, _)) => (s, Some(s)),
+                None => (v, None),
+            }
+        };
+        let (t, snapped) = if targets.is_empty() { (time_at(lx), None) } else { snap(time_at(lx)) };
+        ed.snap_at = snapped;
         if down {
             // 選取要拖遠一點才算，點一下時手抖不會變成選取
             let slop = if kind == TlKind::Select { 8.0 } else { 4.0 };
@@ -1033,18 +1045,9 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, toast: &mut
                             }
                         }
                         ed.ann_sel = None;
-                        // 靠近開頭、結尾時貼齊，按「刪除」就是剪掉頭尾
-                        let (s, e) = (ed.spec.start, ed.spec.end);
-                        let snap = |v: f64| {
-                            if (x_of(v) - x_of(s)).abs() <= 10.0 {
-                                s
-                            } else if (x_of(v) - x_of(e)).abs() <= 10.0 {
-                                e
-                            } else {
-                                v
-                            }
-                        };
-                        ed.sel = Some((snap(t0.min(t)), snap(t0.max(t))));
+                        // 按下的地方也貼齊（靠近開頭、結尾時按「刪除」就是剪掉頭尾）
+                        let a = snap(t0).0;
+                        ed.sel = Some((a.min(t), a.max(t)));
                         ed.seek(t);
                     }
                 }
@@ -1070,7 +1073,12 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, toast: &mut
                 }
             }
             ed.drag = Drag::None;
+            ed.snap_at = None;
         }
+    }
+    // 貼齊時畫一條線，看得出貼到哪裡
+    if let Some(sx) = ed.snap_at.filter(|_| matches!(ed.drag, Drag::Timeline { .. })).map(x_of) {
+        painter.vline(sx, rect.y_range(), Stroke::new(2.0, p.accent));
     }
     if let Some(t) = tip {
         resp.clone().on_hover_text(t);
@@ -1084,6 +1092,23 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, toast: &mut
     // ── 捲軸 ──
     ui.add_space(4.0 - ui.spacing().item_spacing.y);
     scrollbar(ed, ui);
+}
+
+/// 拖曳時可以貼齊的時間：選取時有開頭、結尾，調整頭尾時沒有（拖的就是它）；
+/// 都有按下時的播放頭、標記、分割點、刪掉的片段的兩端
+fn snap_targets(ed: &Editor, kind: TlKind) -> Vec<f64> {
+    let mut out = match kind {
+        TlKind::Select | TlKind::SelA | TlKind::SelB => vec![ed.spec.start, ed.spec.end],
+        TlKind::Start | TlKind::End => vec![],
+        _ => return vec![],
+    };
+    out.push(ed.press_playhead);
+    out.extend(ed.markers.iter().map(|m| m.t));
+    out.extend(ed.splits.iter().copied());
+    for (a, b) in normalize_ranges(&ed.spec.removed, ed.duration) {
+        out.extend([a, b]);
+    }
+    out
 }
 
 /// 還原剪掉的部分：中間刪掉的那一段，或把開頭 / 結尾放回來
@@ -1105,12 +1130,13 @@ pub(super) fn shortcut_sheet(resp: &egui::Response) {
     egui::Popup::menu(resp).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
         ui.set_min_width(320.0);
         ui.label(RichText::new(tr!("剪輯的快速鍵", "Editing shortcuts")).font(theme::font_bold(13.5)));
-        let rows: [(&str, &str, &str); 20] = [
+        let rows: [(&str, &str, &str); 21] = [
             ("Space", "播放 / 暫停", "Play / pause"),
             ("← / →", "上一格 / 下一格", "Previous / next frame"),
             ("Shift+← / →", "往前 / 往後 1 秒", "Back / forward 1 second"),
             ("I / O", "播放頭設為開頭 / 結尾", "Set the start / end at the playhead"),
             ("S", "在播放頭分割", "Split at the playhead"),
+            ("J / K / L", "倒轉 / 停 / 播放（再按一次更快：2、4、8 倍）", "Rewind / stop / play (press again to go faster: 2×, 4×, 8×)"),
             ("縮圖上拖曳", "選取一段（上方有刪除、速度按鈕）", "Select a section (Delete and Speed buttons appear above it)"),
             ("按兩下", "選取分割好的那一段", "Select a split section"),
             ("Ctrl+點 / 拖曳", "再加選一段（可以一次刪除、改速度好幾段）", "Add another section (delete or change the speed of several at once)"),
