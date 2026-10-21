@@ -38,49 +38,54 @@ enum Try {
 fn items(_app: &UiApp) -> Vec<(String, String, Try)> {
     vec![
         (
-            tr!("選好就能刪", "Delete right from the selection").into(),
+            tr!("Jellyfin 連續播放", "Keep watching on Jellyfin").into(),
             tr!(
-                "剪輯時在縮圖上拖過不要的部分，選取範圍上方就有「刪除」「速度」按鈕，不用再找右邊的面板。",
-                "Drag across the part you don't want and Delete and Speed buttons appear right above the selection."
+                "從瀏覽視窗點開的影片，同一排可以上一部、下一部，看完自動接下一支；拖進度列時看得到那一秒的小畫面。",
+                "Videos opened from the Jellyfin browser play one after another, with previous / next. Hover the progress bar to preview that second."
             )
             .into(),
             Try::Library(false),
         ),
         (
-            tr!("點一下只跳過去", "A click only jumps").into(),
+            tr!("依人物、標籤、年份找", "Find by person, tag or year").into(),
             tr!(
-                "在時間軸上點一下只移動播放頭，拖曳才是選取，手抖不會選到；分割好的片段按兩下選取。",
-                "Clicking the timeline only moves the playhead; dragging selects, so a shaky click won't. Double-click a split section to select it."
+                "Jellyfin 瀏覽視窗最上層多了「人物」「標籤」「年份」，一次列出整個伺服器上符合的影片。",
+                "The top of the Jellyfin browser now has People, Tag and Year to list matching videos across the server."
             )
             .into(),
             Try::Library(false),
         ),
         (
-            tr!("剪頭尾和刪中間一樣", "Trim the ends like the middle").into(),
+            tr!("直接改 Jellyfin 上的影片資訊", "Edit details on Jellyfin").into(),
             tr!(
-                "選取碰到開頭或結尾時按「刪除」就是剪掉頭尾；剪掉的頭尾也收起來，旁邊的紅色復原鈕可以放回來。",
-                "Deleting a selection that touches the start or end trims it. Trimmed ends fold away too, with a red restore button next to them."
+                "家人傳上去的影片，滑鼠移上去按筆的圖示，就能改標題、人物、標籤、年份、封面，不用先下載。",
+                "Hover a video in the Jellyfin browser and click the pencil to change its title, people, tags, year or cover without downloading it."
             )
             .into(),
             Try::Library(false),
         ),
         (
-            tr!("時間軸可以按右鍵", "Right-click the timeline").into(),
+            tr!("J / K / L 找要剪的地方", "J / K / L to find the spot").into(),
             tr!(
-                "在時間軸上按右鍵：在這裡分割、刪除或加速這段、設為開頭 / 結尾、加標記，在剪掉的部分上按右鍵就能還原。",
-                "Right-click the timeline to split, delete or speed up a section, set the start or end, or add a marker. Right-click a removed part to restore it."
+                "剪輯時 L 播放、再按更快，J 倒轉，K 停；拖曳選取時會貼齊標記、分割點和播放頭。",
+                "In the editor, L plays (press again to go faster), J rewinds and K stops. Selections snap to markers, splits and the playhead."
             )
             .into(),
             Try::Library(false),
         ),
         (
-            tr!("一次選好幾段", "Select several sections").into(),
+            tr!("復原清單", "Undo history").into(),
+            tr!("復原鈕旁的「▾」列出每一步改了什麼，點一步就一次復原到那裡之前。", "The ▾ next to Undo lists every step by name; pick one to undo back to before it.").into(),
+            Try::Library(false),
+        ),
+        (
+            tr!("工作列看得到進度", "Progress on the taskbar").into(),
             tr!(
-                "按住 Ctrl 在時間軸上拖曳或點片段，選好幾段後一起刪除或加速；按 Ctrl+Z 一次復原。",
-                "Hold Ctrl and drag or click on the timeline to pick several sections, then delete or speed them up together. Ctrl+Z undoes it in one step."
+                "製作、壓縮、傳檔、下載時，工作列上的程式圖示顯示進度，做完會閃一下。",
+                "Exports, compression, transfers and downloads show progress on the taskbar icon, which flashes when they finish."
             )
             .into(),
-            Try::Library(false),
+            Try::None,
         ),
     ]
 }
