@@ -38,49 +38,45 @@ enum Try {
 fn items(_app: &UiApp) -> Vec<(String, String, Try)> {
     vec![
         (
-            tr!("清單上的操作變簡單了", "Simpler actions in lists").into(),
+            tr!("時間軸可以按右鍵", "Right-click the timeline").into(),
             tr!(
-                "每一列只留播放、剪輯和「⋯」；設為封面、旋轉、複製操作步驟這些要看著畫面做的，打開影片後在上方。",
-                "Each row now has just Play, Edit and “⋯”. Set as cover, rotate, copy steps and other picture-related actions are at the top once you open the video."
+                "剪輯時在時間軸上按右鍵：在這裡分割、刪除或加速這段、設為開頭 / 結尾、加標記，在刪掉的片段上按右鍵就能還原。",
+                "Right-click the editor timeline to split, delete or speed up a section, set the start or end, or add a marker. Right-click a removed part to restore it."
             )
             .into(),
             Try::Library(false),
         ),
         (
-            tr!("Jellyfin 記住看到哪裡", "Jellyfin remembers where you stopped").into(),
+            tr!("刪掉的部分收起來", "Removed parts fold away").into(),
             tr!(
-                "在這裡看到一半，電視上可以接著看，反過來也一樣；瀏覽視窗一打開先列「繼續觀看」「最近加入」。",
-                "Stop halfway here and pick up on the TV, or the other way round. The browser now starts with Continue watching and Recently added."
+                "時間軸只顯示剪輯後留下的部分，接縫處的復原鈕可以還原；想看原來的樣子，點時間軸下方的眼睛圖示。",
+                "The timeline shows only what you keep; the restore button at each seam brings a part back. Click the eye below the timeline to see everything."
             )
             .into(),
             Try::Library(false),
         ),
         (
-            tr!("下載家人傳的影片", "Download family videos").into(),
+            tr!("一次選好幾段", "Select several sections").into(),
             tr!(
-                "Jellyfin 瀏覽視窗可以下載影片到這台電腦，就能剪輯、做加速版；勾選好幾支可以一次下載或刪除。",
-                "Download videos from the Jellyfin browser to edit them or make sped-up versions. Select several to download or delete them at once."
+                "按住 Ctrl 在時間軸上拖曳或點片段，選好幾段後一起刪除或加速；按 Ctrl+Z 一次復原。",
+                "Hold Ctrl and drag or click on the timeline to pick several sections, then delete or speed them up together. Ctrl+Z undoes it in one step."
             )
             .into(),
             Try::Library(false),
         ),
         (
-            tr!("排序、篩選、字幕", "Sort, filter, subtitles").into(),
-            tr!(
-                "資料夾裡可以只看還沒看過的、看到一半的、我的最愛；串流時也顯示 Jellyfin 上的字幕和章節。",
-                "In a folder, show only unwatched, partly watched or favorite videos. Streaming shows Jellyfin's subtitles and chapters too."
-            )
-            .into(),
-            Try::Library(false),
-        ),
-        (
-            tr!("NAS 空間不夠先提醒", "Low NAS space warning").into(),
-            tr!(
-                "傳之前先看 NAS 還有多少空間；傳好之後右下角顯示 Jellyfin 還在整理什麼，做完才拿掉。",
-                "Free space on the NAS is checked before sending, and the corner shows what Jellyfin is still processing until it's done."
-            )
-            .into(),
+            tr!("測試音量可以提早停", "Stop the level test early").into(),
+            tr!("測試音量時旁邊有「停止」按鈕，顯示還剩幾秒，不用等它自己結束。", "The level test now has a Stop button showing the seconds left, so you don't have to wait for it.").into(),
             Try::None,
+        ),
+        (
+            tr!("Proxy 用在哪裡", "What the proxy is for").into(),
+            tr!(
+                "Proxy 只用在下載外部元件和新版本，Jellyfin、NAS 不經過它；檢查更新失敗時可以直接打開 Proxy 設定。",
+                "The proxy is only used to download components and updates, not for Jellyfin or the NAS. When an update check fails you can jump straight to the proxy settings."
+            )
+            .into(),
+            Try::Settings(Page::Components),
         ),
     ]
 }
