@@ -67,7 +67,7 @@ fn needs_full(app: &UiApp) -> bool {
 }
 
 /// 切成小視窗
-fn enter_compact(app: &mut UiApp, ctx: &egui::Context) {
+pub fn enter_compact(app: &mut UiApp, ctx: &egui::Context) {
     let size = ctx.input(|i| i.viewport().inner_rect.map(|r| r.size())).unwrap_or(vec2(super::settings::WINDOW_SIZE.0, super::settings::WINDOW_SIZE.1));
     let max = maximized(ctx);
     if max {
