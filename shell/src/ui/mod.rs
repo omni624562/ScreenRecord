@@ -831,7 +831,7 @@ impl UiApp {
         if let Some(i) = &self.status.install {
             if i.phase == screenrecorder_core::selfupdate::InstallPhase::Error && prev_install.as_ref().map(|p| (&p.phase, &p.message)) != Some((&i.phase, &i.message)) {
                 let msg = trf!("更新失敗：{}", "Update failed: {}", i.message.clone().unwrap_or_default());
-                self.toast(msg, true);
+                self.toast_with(msg, true, vec![settings_dialog::proxy_action()]);
             }
         }
         // FFmpeg 下載完成：重新偵測

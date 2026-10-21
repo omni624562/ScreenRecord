@@ -220,7 +220,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                     Page::Keys => keys_page(app, &mut d, ui),
                     Page::Advanced => advanced_page(app, ui),
                     Page::Components => components_page(app, &mut d, ui),
-                    Page::About => about_page(app, ui),
+                    Page::About => about_page(app, &mut d, ui),
                 });
             });
         }
@@ -1966,7 +1966,7 @@ fn advanced_page(app: &mut UiApp, ui: &mut Ui) {
 /// 「這一版更新了什麼」最多列幾項（其餘在「所有版本的更新說明」看）
 const ABOUT_NOTES_MAX: usize = 6;
 
-fn about_page(app: &mut UiApp, ui: &mut Ui) {
+fn about_page(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
     let p = theme::pal(ui);
     // 程式圖示、名稱、版本
     ui.horizontal(|ui| {
@@ -2040,7 +2040,7 @@ fn about_page(app: &mut UiApp, ui: &mut Ui) {
         }
     });
     form_divider(ui);
-    updates_section(app, ui);
+    updates_section(app, d, ui);
     form_divider(ui);
     form_section(ui, tr!("連結", "Links"), |_| {});
     let link = |ui: &mut Ui, app: &mut UiApp, label: &str, text: &str, url: &str| {
@@ -2066,7 +2066,7 @@ fn about_page(app: &mut UiApp, ui: &mut Ui) {
 }
 
 /// 新版本：自動檢查、立即檢查、有新版本時更新
-fn updates_section(app: &mut UiApp, ui: &mut Ui) {
+fn updates_section(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
     let p = theme::pal(ui);
     form_section(ui, tr!("新版本", "Updates"), |_| {});
     form_row(ui, tr!("自動檢查", "Auto check"), |ui| {
@@ -2103,7 +2103,7 @@ fn updates_section(app: &mut UiApp, ui: &mut Ui) {
                 }
                 Err(e) => {
                     app.update.error = Some(e.message().to_string());
-                    app.toast(e.message().to_string(), true);
+                    app.toast_with(e.message().to_string(), true, vec![proxy_action()]);
                 }
             });
         }
@@ -2115,7 +2115,18 @@ fn updates_section(app: &mut UiApp, ui: &mut Ui) {
         // 「立即檢查」的錯誤已經有這個開頭（中文或英文），不要重複
         let e = e.trim_start_matches("無法檢查新版本：").trim_start_matches("Couldn't check for updates: ");
         form_hint(ui, trf!("無法檢查新版本：{e}", "Couldn't check for updates: {e}"), p.warn);
+        // 檢查、下載新版本也走 Proxy：公司網路連不上時直接去設定
+        form_row(ui, "", |ui| {
+            if Btn::new(tr!("到「外部元件」設定 Proxy", "Set up a proxy in Components")).small().ghost().show(ui).clicked() {
+                d.page = Page::Components;
+            }
+        });
     }
+}
+
+/// 連不上網路時的提示按鈕：打開「設定 → 外部元件」的 Proxy
+pub fn proxy_action() -> super::ToastAction {
+    super::ToastAction::new(tr!("設定 Proxy", "Set up a proxy"), |app| open(app, Page::Components))
 }
 
 // ───────────── 快速鍵（點按鍵後按下新的組合，Esc 取消；可停用或還原預設） ─────────────
@@ -2667,6 +2678,14 @@ fn network_section(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
         }
         _ => {}
     }
+    form_hint(
+        ui,
+        tr!(
+            "只用在下載外部元件（FFmpeg、mpv、語音模型）和檢查、下載新版本；Jellyfin、NAS 在區域網路上，不經過 Proxy",
+            "Only used to download components (FFmpeg, mpv, speech models) and to check for and download updates. Jellyfin and the NAS are on your local network and don't go through the proxy"
+        ),
+        p.muted,
+    );
     form_row(ui, "", |ui| {
         if Btn::new(if d.net_testing { tr!("測試中…", "Testing…") } else { tr!("測試連線", "Test connection") }).small().enabled(!d.net_testing).show(ui).clicked() {
             d.net_testing = true;

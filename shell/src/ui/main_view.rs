@@ -1432,21 +1432,38 @@ fn rec_body(app: &mut UiApp, ui: &mut Ui, r: &screenrecorder_core::types::Record
                 if let Some(l) = app.meter.as_ref().map(|m| m.levels()) {
                     // 音量表：每個來源一條，旁邊寫名稱
                     let meters: Vec<(&str, f32)> = [(tr!("系統", "System"), l.system), (tr!("麥克風", "Mic"), l.mic)].into_iter().filter_map(|(n, v)| v.map(|v| (n, v))).collect();
-                    let resp = ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 6.0;
-                        for (n, v) in &meters {
-                            ui.label(RichText::new(*n).font(theme::font(12.5)));
-                            level_bar(ui, *v);
-                        }
-                        if l.error.is_some() {
-                            ui.label(RichText::new("⚠").color(p.warn));
-                        }
-                    });
+                    // 右邊：「停止（12）」不用等 20 秒，按了就關掉音量表、放開麥克風；括號裡是還剩幾秒
+                    let left = app.meter_until.map_or(0, |t| t.saturating_duration_since(Instant::now()).as_secs() + 1);
                     let tip = match &l.error {
                         Some(e) => trf!("打不開：{e}", "Couldn't open: {e}"),
                         None => tr!("錄影前先講幾句話：麥克風的條會跳動，就表示收得到聲音", "Say a few words before recording: if the microphone bar moves, your voice is being picked up").into(),
                     };
-                    resp.response.on_hover_text(tip);
+                    let stop = ui
+                        .with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            let stop = Btn::new(trf!("停止（{left}）", "Stop ({left})"))
+                                .ghost()
+                                .small()
+                                .tooltip(tr!("不用等時間到，現在就停止測試音量", "Stop the level test now instead of waiting"))
+                                .show(ui)
+                                .clicked();
+                            ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                                ui.spacing_mut().item_spacing.x = 6.0;
+                                for (n, v) in &meters {
+                                    ui.label(RichText::new(*n).font(theme::font(12.5)));
+                                    level_bar(ui, *v);
+                                }
+                                if l.error.is_some() {
+                                    ui.label(RichText::new("⚠").color(p.warn));
+                                }
+                            })
+                            .response
+                            .on_hover_text(tip);
+                            stop
+                        })
+                        .inner;
+                    if stop {
+                        app.meter_until = None;
+                    }
                     return;
                 }
                 if app.s.audio_system || app.s.audio_mic {
