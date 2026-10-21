@@ -40,19 +40,24 @@ enum Try {
 fn items(_app: &UiApp) -> Vec<(String, String, Try)> {
     vec![
         (
-            tr!("檔案庫的 Jellyfin 分頁", "Jellyfin tab in the library").into(),
+            tr!("Jellyfin 播放畫面也能剪輯、設封面", "Edit and set covers while streaming").into(),
             tr!(
-                "檔案庫右上角多了「Jellyfin」：切過去整個檔案庫就是 Jellyfin 上的影片，可以搜尋、依人物／標籤／年份找、播放、下載、刪除。",
-                "The library now has a Jellyfin tab next to Recordings and Screenshots: search, find by people, tag or year, play, download or delete videos on Jellyfin."
+                "看 Jellyfin 上的影片時，上方也有剪輯、製作（先下載好再打開）、設為封面、影片資訊、星號、Jellyfin 連結。",
+                "While watching a Jellyfin video you can edit or make versions (downloads first), set the cover from this frame, change details, star it or copy its link."
             )
             .into(),
             Try::Jellyfin,
         ),
         (
-            tr!("找出重複的影片", "Find duplicate videos").into(),
+            tr!("後退、快轉 10 秒", "Back / forward 10 seconds").into(),
+            tr!("播放鈕兩旁的 ↶10、↷10，或鍵盤 ←→，一次跳 10 秒。", "Use ↶10 and ↷10 next to the play button, or ← →, to jump 10 seconds.").into(),
+            Try::None,
+        ),
+        (
+            tr!("主畫面直接打開 Jellyfin", "Jellyfin on the home screen").into(),
             tr!(
-                "Jellyfin 分頁的「找重複的影片」比對畫面，同一支傳了兩次、重新壓縮過的都找得到；預設留畫質最好的那一份，確認後再刪。",
-                "“Find duplicates” in the Jellyfin tab compares the picture, so copies uploaded twice or re-encoded are found. The best-quality copy is kept by default; nothing is deleted until you confirm."
+                "最近錄影右邊的檔案庫多了「Jellyfin」按鈕；人物、標籤、年份選了也能按 × 清除。",
+                "The Library buttons next to recent recordings now include Jellyfin, and People / Tag / Year filters can be cleared with ×."
             )
             .into(),
             Try::Jellyfin,
