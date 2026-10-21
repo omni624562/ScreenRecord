@@ -118,6 +118,11 @@ impl Viewer {
         &self.list[self.idx]
     }
 
+    /// 現在播到幾秒（還沒開始播時 0）
+    pub(crate) fn time(&self) -> f64 {
+        self.player.as_ref().map_or(0.0, |p| p.time())
+    }
+
     fn is_image(&self) -> bool {
         is_image_name(&self.cur().media.name)
     }
@@ -183,6 +188,14 @@ pub fn open_at(app: &mut UiApp, entry: LibraryEntry, t: f64) {
     if let Some(v) = &mut app.viewer {
         v.start_at = Some(t.max(0.0));
         v.autoplay = true;
+    }
+}
+
+/// 剪輯、製作完回來：重新開啟同一支，停在原本看到的地方（不自動播放）
+pub fn reopen(app: &mut UiApp, entry: LibraryEntry, t: f64) {
+    open(app, entry);
+    if let Some(v) = &mut app.viewer {
+        v.start_at = (t > 0.5).then_some(t + 0.5);
     }
 }
 
@@ -1152,12 +1165,11 @@ fn run_act(app: &mut UiApp, act: Act) {
                 if let Some(why) = blocked {
                     return app.toast(why, true);
                 }
-                // 改到剪輯 / 製作視窗：關掉檢視器與清單（編輯截圖蓋在上面，關掉就回來）
+                // 改到剪輯 / 製作視窗：先收起檢視器與清單，剪輯、製作視窗關掉後回到這裡（編輯截圖蓋在上面，關掉就回來）
                 if v.full {
                     app.ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
                 }
-                app.viewer = None;
-                app.library = None;
+                app.leave_for_edit();
             } else if a == EntryAction::External {
                 v.pause();
             }
