@@ -156,20 +156,34 @@ fn time_panel(ed: &mut Editor, ui: &mut egui::Ui, toast: &mut Option<(String, bo
         }
     });
     ui.label(theme::muted(ui, trf!("開頭 {}　結尾 {}", "Start {} · End {}", video_clock(ed.spec.start), video_clock(ed.spec.end))));
-    if let Some((a, b)) = ed.sel {
+    let all = ed.sels();
+    if !all.is_empty() {
         egui::Frame::new().fill(Color32::from_rgba_unmultiplied(214, 140, 18, 31)).corner_radius(6).inner_margin(8).show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.spacing_mut().item_spacing.y = 6.0;
-            ui.label(RichText::new(trf!("已選取 {} – {}（{}）", "Selected {} – {} ({})", video_clock(a), video_clock(b), video_clock(b - a))).font(theme::font(12.5)));
+            ui.label(RichText::new(super::speed::selected_text(&all)).font(theme::font(12.5)));
+            if all.len() == 1 {
+                ui.label(theme::muted(ui, tr!("按住 Ctrl 再點（或拖曳）其他段，可以一次選好幾段", "Hold Ctrl and click (or drag) other sections to select several at once")).font(theme::font(11.5)));
+            }
             ui.horizontal(|ui| {
-                if Btn::new(tr!("刪除這段", "Delete section")).danger().small().tooltip(tr!("快速鍵 Delete", "Shortcut: Delete")).show(ui).clicked() {
+                if Btn::new(if all.len() > 1 { tr!("刪除這幾段", "Delete sections") } else { tr!("刪除這段", "Delete section") })
+                    .danger()
+                    .small()
+                    .tooltip(tr!("快速鍵 Delete", "Shortcut: Delete"))
+                    .show(ui)
+                    .clicked()
+                {
                     ed.delete_selection(toast);
                 }
                 if Btn::new(tr!("取消選取", "Deselect")).ghost().small().tooltip(tr!("快速鍵 Esc", "Shortcut: Esc")).show(ui).clicked() {
                     ed.sel = None;
                 }
             });
-            if Btn::new(tr!("加速、放慢這段…", "Speed up or slow down…")).small().tooltip(tr!("到「加速」分頁設定這段的速度", "Set this section's speed in the Speed tab")).show(ui).clicked()
+            if Btn::new(if all.len() > 1 { tr!("加速、放慢這幾段…", "Speed up or slow down…") } else { tr!("加速、放慢這段…", "Speed up or slow down…") })
+                .small()
+                .tooltip(tr!("到「加速」分頁設定這段的速度", "Set this section's speed in the Speed tab"))
+                .show(ui)
+                .clicked()
             {
                 ed.tab = Tab::Speed;
             }

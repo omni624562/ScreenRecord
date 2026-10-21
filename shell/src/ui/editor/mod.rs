@@ -314,8 +314,12 @@ pub struct Editor {
     vw: f64,
     vh: f64,
     spec: EditSpec,
-    /// 在時間軸上拖曳選取、準備刪除的範圍
+    /// 在時間軸上拖曳選取、準備刪除的範圍（多段時是最後選的那一段）
     sel: Option<Range>,
+    /// 按住 Ctrl 多選的其他幾段（sel 是 None 時不算）
+    sel_more: Vec<Range>,
+    /// 按著 Ctrl 在縮圖上按下：拖曳是再加選一段，只點一下是加選 / 取消那一段
+    sel_add: bool,
     /// 預覽結果：只播放保留的部分
     previewing: bool,
     crop_on: bool,
@@ -651,6 +655,8 @@ impl Editor {
             vh: 0.0,
             spec: EditSpec { start: 0.0, end: 0.0, removed: vec![], crop: None, overlays: vec![], ..Default::default() },
             sel: None,
+            sel_more: vec![],
+            sel_add: false,
             previewing: false,
             crop_on: false,
             crop_ratio: 0,
@@ -1359,12 +1365,41 @@ impl Editor {
         }
     }
 
-    /// 選取時間軸上的範圍：同時取消選取的標註（Delete 只會刪掉最後選的那一個）
+    /// 選取時間軸上的範圍：同時取消選取的標註（Delete 只會刪掉最後選的那一個）；取消多選的其他段
     fn set_sel(&mut self, r: Option<Range>) {
         if r.is_some() {
             self.ann_sel = None;
         }
         self.sel = r;
+        self.sel_more.clear();
+    }
+
+    /// 選取的每一段（Ctrl 多選的加上最後選的；重疊的合併），由前到後
+    fn sels(&self) -> Vec<Range> {
+        let Some(s) = self.sel else { return vec![] };
+        let mut all = self.sel_more.clone();
+        all.push(s);
+        normalize_ranges(&all, self.duration)
+    }
+
+    /// Ctrl＋點一段：加進選取，已經選了就拿掉
+    fn toggle_sel(&mut self, r: Range) {
+        let had = self.sel.is_some();
+        let mut all: Vec<Range> = if had { self.sel_more.iter().copied().chain(self.sel).collect() } else { vec![] };
+        let n = all.len();
+        all.retain(|&(a, b)| !((a - r.0).abs() < 0.02 && (b - r.1).abs() < 0.02));
+        if all.len() == n {
+            all.push(r);
+        }
+        self.ann_sel = None;
+        self.sel = all.pop();
+        self.sel_more = all;
+    }
+
+    /// 選取的幾段一共幾段、幾秒（說明用）
+    fn sel_summary(&self) -> Option<(usize, f64)> {
+        let all = self.sels();
+        (!all.is_empty()).then(|| (all.len(), all.iter().map(|(a, b)| b - a).sum()))
     }
 
     fn delete_ann(&mut self, id: u64) {
@@ -1421,6 +1456,11 @@ impl Editor {
         }
     }
 
+    /// 時間軸上刪掉的片段收起來（沒有打開「顯示刪掉的部分」時）
+    fn collapse_removed(&self) -> bool {
+        !self.show_removed
+    }
+
     /// 播放時跳過刪掉的片段（預覽結果，或沒有打開「顯示刪掉的部分」）
     fn skipping(&self) -> bool {
         self.previewing || (!self.show_removed && self.player.is_playing())
@@ -1466,14 +1506,24 @@ impl Editor {
 
     /// 刪除選取的範圍（提示刪了哪一段、可以復原）
     fn delete_selection(&mut self, app_toast: &mut Option<(String, bool)>) {
-        let Some(sel) = self.sel.take() else { return };
-        if sel.1 - sel.0 < 0.05 {
-            *app_toast = Some((tr!("選取的片段太短", "The selected section is too short").into(), true));
-        } else {
-            let mut list = self.spec.removed.clone();
-            list.push(sel);
-            self.spec.removed = normalize_ranges(&list, self.duration);
-            *app_toast = Some((trf!("已刪除 {}–{}，可按 Ctrl+Z 復原", "Removed {}–{}. Press Ctrl+Z to undo", video_clock(sel.0), video_clock(sel.1)), false));
+        let all: Vec<Range> = self.sels().into_iter().filter(|(a, b)| b - a >= 0.05).collect();
+        self.sel = None;
+        self.sel_more.clear();
+        match all.as_slice() {
+            [] => *app_toast = Some((tr!("選取的片段太短", "The selected section is too short").into(), true)),
+            [one] => {
+                let mut list = self.spec.removed.clone();
+                list.push(*one);
+                self.spec.removed = normalize_ranges(&list, self.duration);
+                *app_toast = Some((trf!("已刪除 {}–{}，可按 Ctrl+Z 復原", "Removed {}–{}. Press Ctrl+Z to undo", video_clock(one.0), video_clock(one.1)), false));
+            }
+            many => {
+                let mut list = self.spec.removed.clone();
+                list.extend(many.iter().copied());
+                self.spec.removed = normalize_ranges(&list, self.duration);
+                let secs: f64 = many.iter().map(|(a, b)| b - a).sum();
+                *app_toast = Some((trf!("已刪除 {} 段（共 {}），可按 Ctrl+Z 復原", "Removed {} sections ({} in total). Press Ctrl+Z to undo", many.len(), video_clock(secs)), false));
+            }
         }
     }
 
@@ -2906,11 +2956,14 @@ fn transport(ed: &mut Editor, ui: &mut egui::Ui, toast: &mut Option<(String, boo
             .small()
             .selected(ed.show_removed)
             .tooltip(if ed.show_removed {
-                tr!("顯示刪掉的部分：開（播放時照原樣播，不跳過刪掉的片段）。點一下關掉", "Show removed parts: on (everything plays as recorded). Click to turn off")
+                tr!(
+                    "顯示刪掉的部分：開（時間軸展開刪掉的片段，播放時照原樣播）。點一下關掉",
+                    "Show removed parts: on (the timeline shows removed parts and everything plays as recorded). Click to turn off"
+                )
             } else {
                 tr!(
-                    "顯示刪掉的部分：關（播放時跳過刪掉的片段、加速的片段快轉，看到的就是剪輯後的樣子）。點一下打開",
-                    "Show removed parts: off (playback skips removed parts and fast-forwards sped-up parts). Click to turn on"
+                    "顯示刪掉的部分：關（時間軸上刪掉的片段收起來，播放時跳過、加速的片段快轉，看到的就是剪輯後的樣子）。點一下打開",
+                    "Show removed parts: off (removed parts are folded away on the timeline and skipped when playing; sped-up parts fast-forward). Click to turn on"
                 )
             })
             .show(ui)

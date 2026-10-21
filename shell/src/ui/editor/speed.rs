@@ -100,22 +100,38 @@ fn whole(ed: &mut Editor, ui: &mut egui::Ui) {
     }
 }
 
+/// 選取的每一段都改成這個速度（Ctrl 多選的一起改），之後取消選取
+fn apply(ed: &mut Editor, all: &[(f64, f64)], speed: f64) {
+    for &(a, b) in all {
+        set_fast(&mut ed.spec.fast, a, b, speed);
+    }
+    ed.sel = None;
+}
+
+/// 「已選取 0:10 – 0:20（0:10）」；多段時「已選取 3 段（共 0:25）」
+pub(super) fn selected_text(all: &[(f64, f64)]) -> String {
+    match all {
+        [(a, b)] => trf!("已選取 {} – {}（{}）", "Selected {} – {} ({})", video_clock(*a), video_clock(*b), video_clock(b - a)),
+        _ => trf!("已選取 {} 段（共 {}）", "{} sections selected ({} in total)", all.len(), video_clock(all.iter().map(|(a, b)| b - a).sum())),
+    }
+}
+
 /// 選取的片段加速、放慢（含自訂倍率），以及已經變速的片段
 fn sections(ed: &mut Editor, ui: &mut egui::Ui) {
     let p = theme::pal(ui);
     section(ui, tr!("局部加速、放慢", "Speed up or slow down a section"), false);
-    if let Some((a, b)) = ed.sel {
+    let all = ed.sels();
+    if !all.is_empty() {
         egui::Frame::new().fill(Color32::from_rgba_unmultiplied(214, 140, 18, 31)).corner_radius(6).inner_margin(8).show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.spacing_mut().item_spacing.y = 6.0;
-            ui.label(RichText::new(trf!("已選取 {} – {}（{}）", "Selected {} – {} ({})", video_clock(a), video_clock(b), video_clock(b - a))).font(theme::font(12.5)));
+            ui.label(RichText::new(selected_text(&all)).font(theme::font(12.5)));
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing = vec2(4.0, 4.0);
                 ui.label(theme::muted(ui, tr!("加速", "Faster")).font(theme::font(12.0)));
                 for s in FAST_SPEEDS {
                     if Btn::new(format!("{s}×")).small().tooltip(trf!("這段以 {s} 倍速播放（沒有聲音）", "Play this section at {s}× speed (no sound)")).show(ui).clicked() {
-                        set_fast(&mut ed.spec.fast, a, b, s as f64);
-                        ed.sel = None;
+                        apply(ed, &all, s as f64);
                     }
                 }
             });
@@ -126,8 +142,7 @@ fn sections(ed: &mut Editor, ui: &mut egui::Ui) {
                     let label = format!("{}×", speed_label(s));
                     if Btn::new(&label).small().tooltip(trf!("這段以 {label} 播放（變長，沒有原本的聲音）", "Play this section at {label} (longer, without the original sound)")).show(ui).clicked()
                     {
-                        set_fast(&mut ed.spec.fast, a, b, s);
-                        ed.sel = None;
+                        apply(ed, &all, s);
                     }
                 }
             });
@@ -138,13 +153,12 @@ fn sections(ed: &mut Editor, ui: &mut egui::Ui) {
                 let ok = valid_speed(ed.sel_speed);
                 if Btn::new(tr!("套用", "Apply")).small().enabled(ok).tooltip(tr!("0.25～0.99 倍放慢、1.01～16 倍加速", "0.25–0.99× slows down, 1.01–16× speeds up")).show(ui).clicked()
                 {
-                    set_fast(&mut ed.spec.fast, a, b, ed.sel_speed);
-                    ed.sel = None;
+                    let speed = ed.sel_speed;
+                    apply(ed, &all, speed);
                 }
-                let overlaps = ed.spec.fast.iter().any(|f| f.start() < b && f.end() > a);
+                let overlaps = ed.spec.fast.iter().any(|f| all.iter().any(|&(a, b)| f.start() < b && f.end() > a));
                 if overlaps && Btn::new(tr!("原速", "1×")).ghost().small().tooltip(tr!("這段恢復原本的速度", "Restore this section's original speed")).show(ui).clicked() {
-                    set_fast(&mut ed.spec.fast, a, b, 1.0);
-                    ed.sel = None;
+                    apply(ed, &all, 1.0);
                 }
             });
         });
