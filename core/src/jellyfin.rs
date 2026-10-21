@@ -240,6 +240,18 @@ impl Jellyfin {
         Ok(())
     }
 
+    /// 拿掉這支影片在 Jellyfin 的封面（橫幅圖、縮圖也拿掉；本來就沒有的不算錯）
+    pub fn remove_cover(&self, id: &str) -> Result<(), String> {
+        for kind in ["Primary", "Backdrop", "Thumb"] {
+            match self.auth(agent().delete(&format!("{}/Items/{id}/Images/{kind}", self.url))).call() {
+                Ok(_) | Err(ureq::Error::Status(404, _)) => {}
+                Err(e) if kind == "Primary" => return Err(describe(&e)),
+                Err(e) => crate::info!("[Jellyfin] 拿掉 {kind} 圖失敗：{}", describe(&e)),
+            }
+        }
+        Ok(())
+    }
+
     fn admin_id(&self) -> Result<String, String> {
         let body = self.call(agent().get(&format!("{}/Users", self.url)))?.into_string().map_err(|e| e.to_string())?;
         let users: Value = serde_json::from_str(&body).map_err(|e| e.to_string())?;
@@ -415,11 +427,38 @@ impl Jellyfin {
         Ok(list)
     }
 
-    /// 影片用到的標籤、年份（瀏覽視窗「依標籤 / 年份找」）
+    /// 影片用到的標籤、年份（Jellyfin 分頁「依標籤 / 年份找」）。先問 /Items/Filters；
+    /// 有些伺服器那裡回空的（或沒有這個功能），就一頁一頁讀全部影片的標籤、年份自己整理
     pub fn facets(&self, user: &str) -> Result<(Vec<String>, Vec<u32>), String> {
         let req = agent().get(&format!("{}/Items/Filters", self.url)).query("userId", user).query("includeItemTypes", VIDEO_TYPES).query("recursive", "true");
-        let body = self.call(req)?.into_string().map_err(|e| e.to_string())?;
-        Ok(facets_of(&body))
+        let quick = self.call(req).ok().and_then(|r| r.into_string().ok()).map(|b| facets_of(&b)).unwrap_or_default();
+        if !quick.0.is_empty() && !quick.1.is_empty() {
+            return Ok(quick);
+        }
+        let (mut tags, mut years) = quick;
+        let mut start = 0usize;
+        loop {
+            let req = agent()
+                .get(&format!("{}/Users/{user}/Items", self.url))
+                .query("recursive", "true")
+                .query("includeItemTypes", VIDEO_TYPES)
+                .query("fields", "Tags")
+                .query("enableImages", "false")
+                .query("enableUserData", "false")
+                .query("startIndex", &start.to_string())
+                .query("limit", "1000")
+                .query("enableTotalRecordCount", "true");
+            let body = self.call(req)?.into_string().map_err(|e| e.to_string())?;
+            let (t, y, got, total) = tags_years_of_items(&body);
+            tags.extend(t);
+            years.extend(y);
+            start += got;
+            // 讀完了（太多時讀到 2 萬支為止）
+            if got == 0 || start >= total || start >= 20_000 {
+                break;
+            }
+        }
+        Ok(tidy_facets(tags, years))
     }
 
     /// 一支影片的資訊（標題、說明、人物、標籤、年份），在檔案庫 Jellyfin 分頁修改用
@@ -1203,6 +1242,25 @@ fn persons_of(json: &str) -> Vec<(String, String)> {
         .unwrap_or_default()
 }
 
+/// 影片清單（fields=Tags）裡的（標籤, 年份, 這一頁幾支, 全部幾支）
+fn tags_years_of_items(json: &str) -> (Vec<String>, Vec<u32>, usize, usize) {
+    let Ok(v) = serde_json::from_str::<Value>(json) else { return (vec![], vec![], 0, 0) };
+    let items = v.get("Items").and_then(Value::as_array).cloned().unwrap_or_default();
+    let tags = items.iter().filter_map(|i| i.get("Tags").and_then(Value::as_array)).flatten().filter_map(|t| t.as_str().map(|s| s.trim().to_string())).filter(|t| !t.is_empty()).collect();
+    let years = items.iter().filter_map(|i| i.get("ProductionYear").and_then(Value::as_u64)).filter(|y| *y > 0).map(|y| y as u32).collect();
+    let total = v.get("TotalRecordCount").and_then(Value::as_u64).unwrap_or(0) as usize;
+    (tags, years, items.len(), total)
+}
+
+/// 標籤不分大小寫去掉重複、依名稱排；年份去掉重複、新的在前
+fn tidy_facets(mut tags: Vec<String>, mut years: Vec<u32>) -> (Vec<String>, Vec<u32>) {
+    tags.sort_by_key(|t| t.to_lowercase());
+    tags.dedup_by(|a, b| a.to_lowercase() == b.to_lowercase());
+    years.sort_unstable_by(|a, b| b.cmp(a));
+    years.dedup();
+    (tags, years)
+}
+
 /// /Items/Filters 的回應：（標籤, 年份新的在前）
 fn facets_of(json: &str) -> (Vec<String>, Vec<u32>) {
     let Ok(v) = serde_json::from_str::<Value>(json) else { return (vec![], vec![]) };
@@ -1255,7 +1313,7 @@ pub fn unsaved(want: &JfInfo, got: &JfInfo) -> Vec<&'static str> {
     if want.overview.trim() != got.overview.trim() {
         out.push(tr!("說明", "description"));
     }
-    if want.year.is_some() && want.year != got.year {
+    if want.year != got.year {
         out.push(tr!("年份", "year"));
     }
     if !same_set(&want.people, &got.people) {
@@ -1281,11 +1339,17 @@ pub fn with_info(item_json: &str, x: &JfInfo) -> Option<String> {
     people.extend(x.people.iter().map(|n| serde_json::json!({ "Name": n, "Type": "Actor" })));
     o.insert("People".into(), Value::from(people));
     o.insert("ProductionYear".into(), x.year.map_or(Value::Null, Value::from));
-    // 首映日期跟著換成這一年（月日不變）：Jellyfin 的家庭影片頁面顯示的是首映日期，只改年份會看不出來
-    if let Some(y) = x.year {
-        let date = o.get("PremiereDate").and_then(Value::as_str).filter(|d| d.len() >= 4 && d.is_char_boundary(4)).map(|d| format!("{y:04}{}", &d[4..]));
-        if let Some(d) = date {
-            o.insert("PremiereDate".into(), Value::from(d));
+    // 首映日期跟著換成這一年（月日不變）：Jellyfin 的家庭影片頁面顯示的是首映日期，只改年份會看不出來。
+    // 年份清空時首映日期也清掉（對話框沒年份時顯示的就是首映日期的年，不清掉下次打開又出現）
+    match x.year {
+        Some(y) => {
+            let date = o.get("PremiereDate").and_then(Value::as_str).filter(|d| d.len() >= 4 && d.is_char_boundary(4)).map(|d| format!("{y:04}{}", &d[4..]));
+            if let Some(d) = date {
+                o.insert("PremiereDate".into(), Value::from(d));
+            }
+        }
+        None => {
+            o.insert("PremiereDate".into(), Value::Null);
         }
     }
     serde_json::to_string(&v).ok()
@@ -2679,6 +2743,18 @@ mod tests {
         let v: Value = serde_json::from_str(&with_info(dated, &JfInfo { year: Some(2019), ..Default::default() }).unwrap()).unwrap();
         assert_eq!((v["ProductionYear"].as_i64(), v["PremiereDate"].as_str()), (Some(2019), Some("2019-05-01T10:00:00.0000000Z")));
         assert_eq!(v["Name"], "生日");
+        // 清掉年份：首映日期也清掉，下次打開不會又出現
+        let v: Value = serde_json::from_str(&with_info(dated, &JfInfo::default()).unwrap()).unwrap();
+        assert!(v["ProductionYear"].is_null() && v["PremiereDate"].is_null());
+        assert_eq!(info_of(&v.to_string()).unwrap().year, None);
+    }
+
+    #[test]
+    fn collects_tags_and_years_from_items() {
+        let page = r#"{"Items":[{"Id":"a","Tags":["生日","旅行"],"ProductionYear":2024},{"Id":"b","Tags":["生日 "," "]},{"Id":"c","ProductionYear":2019}],"TotalRecordCount":7}"#;
+        let (tags, years, got, total) = tags_years_of_items(page);
+        assert_eq!((got, total), (3, 7));
+        assert_eq!(tidy_facets(tags, years), (vec!["旅行".to_string(), "生日".to_string()], vec![2024, 2019]));
     }
 
     #[test]

@@ -57,6 +57,8 @@ pub struct JfBrowse {
     tags: Vec<String>,
     years: Vec<u32>,
     facets_loaded: bool,
+    /// 讀不到標籤、年份時的原因（選單變灰時滑鼠移上去看得到）
+    facets_error: Option<String>,
 }
 
 impl JfBrowse {
@@ -151,17 +153,23 @@ fn load_facets(app: &mut UiApp) {
                     None => jf.browse_user(&preferred).unwrap_or_default(),
                 };
                 let persons = jf.persons(&user).unwrap_or_default();
-                let (tags, years) = jf.facets(&user).unwrap_or_default();
-                (persons, tags, years)
+                let facets = jf.facets(&user);
+                (persons, facets)
             })
             .await
-            .unwrap_or_default()
+            .unwrap_or_else(|e| (vec![], Err(e.to_string())))
         },
-        |app, (persons, tags, years)| {
+        |app, (persons, facets)| {
             if let Some(d) = app.jf_browse.as_mut() {
                 d.persons = persons;
-                d.tags = tags;
-                d.years = years;
+                match facets {
+                    Ok((tags, years)) => {
+                        d.tags = tags;
+                        d.years = years;
+                        d.facets_error = None;
+                    }
+                    Err(e) => d.facets_error = Some(e),
+                }
             }
         },
     );
@@ -704,13 +712,17 @@ pub fn panel(ui: &mut egui::Ui, d: &mut JfBrowse) -> Panel {
                 Some(JfFacet::Year(y)) => Some(y.to_string()),
                 _ => None,
             };
-            menu(ui, tr!("年份", "Year"), tr!("影片還沒有設年份", "No videos have a year yet"), years, on, &mut pick);
+            let why = |none: &str| match &d.facets_error {
+                Some(e) => trf!("讀不到 Jellyfin 的標籤、年份：{e}", "Couldn't read tags and years from Jellyfin: {e}"),
+                None => none.to_string(),
+            };
+            menu(ui, tr!("年份", "Year"), &why(tr!("Jellyfin 上的影片都還沒有設年份", "No videos on Jellyfin have a year yet")), years, on, &mut pick);
             let tags = d.tags.iter().map(|t| (t.clone(), JfFacet::Tag(t.clone()))).collect();
             let on = match &facet {
                 Some(JfFacet::Tag(t)) => Some(t.clone()),
                 _ => None,
             };
-            menu(ui, tr!("標籤", "Tag"), tr!("影片還沒有標籤", "No videos have tags yet"), tags, on, &mut pick);
+            menu(ui, tr!("標籤", "Tag"), &why(tr!("Jellyfin 上的影片都還沒有標籤", "No videos on Jellyfin have tags yet")), tags, on, &mut pick);
             let people = d.persons.iter().map(|(id, n)| (n.clone(), JfFacet::Person(id.clone(), n.clone()))).collect();
             let on = match &facet {
                 Some(JfFacet::Person(_, n)) => Some(n.clone()),
