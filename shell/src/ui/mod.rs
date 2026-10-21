@@ -693,26 +693,30 @@ impl UiApp {
     pub fn jellyfin_link(&mut self, path: &str, open: bool) {
         let name = dialogs::file_name(path).to_string();
         let Some(jf) = self.jellyfin() else { return };
-        self.spawn(
-            async move {
-                tokio::task::spawn_blocking(move || -> Result<Option<String>, String> { Ok(jf.find(&name)?.first().map(|id| jf.link(id, jf.server_id().as_deref()))) })
-                    .await
-                    .unwrap_or_else(|e| Err(e.to_string()))
-            },
-            move |app, r| match r {
-                Ok(Some(url)) if open => {
-                    if let Err(e) = actions::open_url(&url) {
-                        app.toast(trf!("打不開瀏覽器：{}", "Couldn't open the browser: {}", e.message()), true);
-                    }
+        self.link_found(open, move || Ok(jf.find(&name)?.first().map(|id| jf.link(id, jf.server_id().as_deref()))));
+    }
+
+    /// Jellyfin 上這支影片（編號）的網址：open 時用瀏覽器打開，不然複製（串流播放時用）
+    pub fn jellyfin_link_id(&mut self, id: String, open: bool) {
+        let Some(jf) = self.jellyfin() else { return };
+        self.link_found(open, move || Ok(Some(jf.link(&id, jf.server_id().as_deref()))));
+    }
+
+    /// 在背景找出網址後打開或複製
+    fn link_found(&mut self, open: bool, find: impl FnOnce() -> Result<Option<String>, String> + Send + 'static) {
+        self.spawn(async move { tokio::task::spawn_blocking(find).await.unwrap_or_else(|e| Err(e.to_string())) }, move |app, r| match r {
+            Ok(Some(url)) if open => {
+                if let Err(e) = actions::open_url(&url) {
+                    app.toast(trf!("打不開瀏覽器：{}", "Couldn't open the browser: {}", e.message()), true);
                 }
-                Ok(Some(url)) => {
-                    app.ctx.copy_text(url.clone());
-                    app.toast(trf!("已複製 Jellyfin 連結：{url}", "Jellyfin link copied: {url}"), false);
-                }
-                Ok(None) => app.toast(tr!("Jellyfin 還沒有這支影片：先按「傳到媒體庫」，或等錄完自動處理複製過去", "Jellyfin doesn't have this video yet. Send it to the library first"), true),
-                Err(e) => app.toast(trf!("查不到 Jellyfin：{e}", "Couldn't check Jellyfin: {e}"), true),
-            },
-        );
+            }
+            Ok(Some(url)) => {
+                app.ctx.copy_text(url.clone());
+                app.toast(trf!("已複製 Jellyfin 連結：{url}", "Jellyfin link copied: {url}"), false);
+            }
+            Ok(None) => app.toast(tr!("Jellyfin 還沒有這支影片：先按「傳到媒體庫」，或等錄完自動處理複製過去", "Jellyfin doesn't have this video yet. Send it to the library first"), true),
+            Err(e) => app.toast(trf!("查不到 Jellyfin：{e}", "Couldn't check Jellyfin: {e}"), true),
+        });
     }
 
     /// 改了影片（封面、影片資訊、畫面）之後：媒體庫資料夾（Jellyfin 的媒體庫）裡的那一份也跟著更新：

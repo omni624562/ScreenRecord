@@ -167,14 +167,32 @@ fn load_facets(app: &mut UiApp) {
     );
 }
 
-/// 在「影片資訊」改好了：名稱跟著換、縮圖重讀（可能換了封面），人物、標籤重讀
+/// 在「影片資訊」改好了：名稱跟著換、縮圖重讀（可能換了封面），人物、標籤重讀；正在播這支的話標題也換
 pub fn edited(app: &mut UiApp, id: &str, title: &str) {
+    if let Some(v) = app.viewer.as_mut().filter(|_| !title.trim().is_empty()) {
+        for e in v.list.iter_mut().filter(|e| Jellyfin::item_of_stream(&e.media.path).as_deref() == Some(id)) {
+            let ext = e.media.name.rsplit_once('.').map(|(_, x)| x.to_string()).unwrap_or_else(|| "mp4".into());
+            e.media.name = format!("{}.{ext}", title.trim());
+        }
+    }
     let Some(d) = app.jf_browse.as_mut() else { return };
     if !title.trim().is_empty() {
         d.each_mut(id, |it| it.name = title.trim().to_string());
     }
     d.posters.remove(id);
     load_facets(app);
+}
+
+/// 伺服器上已經有的人物、標籤（影片資訊對話框點一下加入）；Jellyfin 分頁沒開時空的
+pub fn known_people_tags(app: &UiApp) -> (Vec<String>, Vec<String>) {
+    app.jf_browse.as_ref().map(|d| (d.persons.iter().map(|(_, n)| n.clone()).collect(), d.tags.clone())).unwrap_or_default()
+}
+
+/// 在播放畫面按了星號：清單上的那一支也跟著改
+pub fn set_favorite(app: &mut UiApp, id: &str, on: bool) {
+    if let Some(d) = app.jf_browse.as_mut() {
+        d.each_mut(id, |it| it.favorite = on);
+    }
 }
 
 /// 讀這一格的縮圖（背景下載、轉成材質）
@@ -317,6 +335,41 @@ pub fn download(app: &mut UiApp, list: Vec<(String, String)>) {
     );
 }
 
+/// 先下載到這台電腦，下載好接著剪輯、製作（已經下載過的直接用那一份）
+pub fn download_then(app: &mut UiApp, item: (String, String), then: super::EntryAction) {
+    let Some(jf) = app.jellyfin() else { return };
+    if let Some(why) = app.blocked(then) {
+        return app.toast(why, true);
+    }
+    let dir = std::path::PathBuf::from(app.s.out_dir(&app.env));
+    let (id, file) = item;
+    app.toast(trf!("正在下載「{file}」，下載好就打開", "Downloading “{file}”; it opens when done"), false);
+    app.spawn(
+        async move {
+            tokio::task::spawn_blocking(move || -> Result<std::path::PathBuf, String> {
+                match free_name(&dir, &file) {
+                    Some(to) => jf.download(&id, &to).map(|_| to),
+                    None => Ok(dir.join(&file)),
+                }
+            })
+            .await
+            .unwrap_or_else(|e| Err(e.to_string()))
+        },
+        move |app, r| match r {
+            Ok(path) => {
+                if let Some(d) = app.library.as_mut() {
+                    d.reload();
+                }
+                app.load_recent();
+                // 剪輯、製作視窗關掉後回到原本的播放畫面
+                app.leave_for_edit();
+                app.act_path(then, path.display().to_string());
+            }
+            Err(e) => app.toast(trf!("沒有下載完：{e}", "The download didn't finish: {e}"), true),
+        },
+    );
+}
+
 /// 下載的檔名：還沒有就用原本的；同名同大小（已經下載過）None；同名不同的加上 (2)、(3)…
 fn free_name(dir: &std::path::Path, file: &str) -> Option<std::path::PathBuf> {
     let file = if file.trim().is_empty() { "jellyfin.mp4" } else { file };
@@ -366,6 +419,7 @@ fn remote_of(jf: &Jellyfin, d: &JfBrowse, item: &JfItem) -> viewer::Remote {
     let mut r = viewer::Remote::new(&item.id, d.user.as_deref().unwrap_or(""), item.subs.iter().map(|s| jf.subtitle_url(&item.id, s.index)).collect(), &item.file_name);
     r.resume = item.resume;
     r.trickplay = item.trickplay.clone();
+    r.favorite = item.favorite;
     r
 }
 
@@ -618,29 +672,60 @@ pub fn panel(ui: &mut egui::Ui, d: &mut JfBrowse) -> Panel {
                 out.find_dupes = true;
             }
             ui.add_space(8.0);
-            let mut pick = None;
-            let menu = |ui: &mut egui::Ui, label: &str, empty: &str, items: Vec<(String, JfFacet)>, pick: &mut Option<JfFacet>| {
-                let b = Btn::new(label).menu().small().ghost().enabled(!items.is_empty()).tooltip(if items.is_empty() { empty } else { "" }).show(ui);
+            // 選了一個（Some(Some)）或清除（Some(None)）
+            let mut pick: Option<Option<JfFacet>> = None;
+            let facet = d.facet.clone();
+            // 一個選單：選了這一類時按鈕寫出選了什麼（例如「人物：媽媽」）、旁邊有 × 清除，選單最上面也可以清除
+            let menu = |ui: &mut egui::Ui, label: &str, empty: &str, items: Vec<(String, JfFacet)>, on: Option<String>, pick: &mut Option<Option<JfFacet>>| {
+                if on.is_some() && Btn::icon_only(Icon::Close).small().ghost().tooltip(tr!("清除，看全部的影片", "Clear and show all videos")).show(ui).clicked() {
+                    *pick = Some(None);
+                }
+                let text = on.as_ref().map_or(label.to_string(), |v| format!("{label}：{v}"));
+                let b = Btn::new(&text).menu().small().ghost().selected(on.is_some()).enabled(!items.is_empty()).tooltip(if items.is_empty() { empty } else { "" }).show(ui);
                 egui::Popup::menu(&b).show(|ui| {
                     ui.set_min_width(180.0);
+                    if on.is_some() {
+                        if ui.button(trf!("× 清除{label}（看全部）", "× Clear {label} (show all)")).clicked() {
+                            *pick = Some(None);
+                        }
+                        ui.separator();
+                    }
                     egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
                         for (text, f) in items {
-                            if ui.button(text).clicked() {
-                                *pick = Some(f);
+                            if ui.selectable_label(on.as_deref() == Some(text.as_str()), &text).clicked() {
+                                *pick = Some(Some(f));
                             }
                         }
                     });
                 });
             };
             let years = d.years.iter().map(|y| (y.to_string(), JfFacet::Year(*y))).collect();
-            menu(ui, tr!("年份", "Year"), tr!("影片還沒有設年份", "No videos have a year yet"), years, &mut pick);
+            let on = match &facet {
+                Some(JfFacet::Year(y)) => Some(y.to_string()),
+                _ => None,
+            };
+            menu(ui, tr!("年份", "Year"), tr!("影片還沒有設年份", "No videos have a year yet"), years, on, &mut pick);
             let tags = d.tags.iter().map(|t| (t.clone(), JfFacet::Tag(t.clone()))).collect();
-            menu(ui, tr!("標籤", "Tag"), tr!("影片還沒有標籤", "No videos have tags yet"), tags, &mut pick);
+            let on = match &facet {
+                Some(JfFacet::Tag(t)) => Some(t.clone()),
+                _ => None,
+            };
+            menu(ui, tr!("標籤", "Tag"), tr!("影片還沒有標籤", "No videos have tags yet"), tags, on, &mut pick);
             let people = d.persons.iter().map(|(id, n)| (n.clone(), JfFacet::Person(id.clone(), n.clone()))).collect();
-            menu(ui, tr!("人物", "People"), tr!("影片還沒有設人物", "No videos have people yet"), people, &mut pick);
+            let on = match &facet {
+                Some(JfFacet::Person(_, n)) => Some(n.clone()),
+                _ => None,
+            };
+            menu(ui, tr!("人物", "People"), tr!("影片還沒有設人物", "No videos have people yet"), people, on, &mut pick);
             ui.label(theme::muted(ui, tr!("依這些找：", "Find by:")));
+            // 清除：回到最上層
+            if let Some(None) = pick {
+                d.facet = None;
+                d.page = 0;
+                out.reload = true;
+            }
             // 找整個伺服器：離開資料夾、搜尋
-            if let Some(f) = pick {
+            if let Some(Some(f)) = pick {
                 d.facet = Some(f);
                 d.path.clear();
                 d.search.clear();
@@ -664,6 +749,7 @@ pub fn panel(ui: &mut egui::Ui, d: &mut JfBrowse) -> Panel {
         }
     }
     ui.add_space(4.0);
+    let mut clear_facet = false;
     // 目前位置：媒體庫 › family › 2024（點前面的回到那一層）；右邊排序、篩選
     ui.horizontal(|ui| {
         ui.set_min_height(28.0);
@@ -684,6 +770,9 @@ pub fn panel(ui: &mut egui::Ui, d: &mut JfBrowse) -> Panel {
             // 依人物、標籤、年份找的：媒體庫 › 人物：媽媽
             ui.label(theme::muted(ui, "›"));
             Btn::new(f.label()).small().ghost().selected(true).show(ui);
+            if Btn::icon_only(Icon::Close).small().ghost().tooltip(tr!("清除，回到媒體庫", "Clear and go back to the libraries")).show(ui).clicked() {
+                clear_facet = true;
+            }
         } else {
             let n = d.path.len();
             for i in 0..n {
@@ -727,6 +816,11 @@ pub fn panel(ui: &mut egui::Ui, d: &mut JfBrowse) -> Panel {
             }
         });
     });
+    if clear_facet {
+        d.facet = None;
+        d.page = 0;
+        out.reload = true;
+    }
     ui.add_space(6.0);
     let foot_h = 40.0;
     let table = Rect::from_min_max(ui.cursor().min, pos2(ui.max_rect().max.x, ui.max_rect().max.y - foot_h - 8.0));
