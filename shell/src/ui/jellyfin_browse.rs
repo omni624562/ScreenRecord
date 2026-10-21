@@ -205,6 +205,11 @@ pub fn confirm_delete(app: &mut UiApp, id: String, name: String) {
     confirm_delete_many(app, vec![(id, name)]);
 }
 
+/// 一次刪掉好幾支（找重複的視窗用）
+pub fn confirm_delete_list(app: &mut UiApp, list: Vec<(String, String)>) {
+    confirm_delete_many(app, list);
+}
+
 /// 一次刪掉好幾支（先確認一次）。刪好之後瀏覽清單拿掉它們，檢視器正在播其中一支就關掉
 fn confirm_delete_many(app: &mut UiApp, list: Vec<(String, String)>) {
     let msg = tr!(
@@ -224,6 +229,7 @@ fn confirm_delete_many(app: &mut UiApp, list: Vec<(String, String)>) {
             async move { tokio::task::spawn_blocking(move || todo.into_iter().map(|(id, name)| (jf.delete_item(&id).map(|_| id), name)).collect::<Vec<_>>()).await.unwrap_or_default() },
             move |app, done| {
                 let ok: Vec<String> = done.iter().filter_map(|(r, _)| r.as_ref().ok().cloned()).collect();
+                super::jellyfin_dupes::removed(app, &ok);
                 if let Some(d) = app.jf_browse.as_mut() {
                     for list in [d.items.as_mut(), Some(&mut d.resume), Some(&mut d.latest)].into_iter().flatten() {
                         list.retain(|i| !ok.contains(&i.id));
@@ -555,6 +561,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
     let mut picked = Picked::default();
     let mut bulk_download = false;
     let mut bulk_delete = false;
+    let mut find_dupes = false;
     let modal = egui::Modal::new(Id::new("jellyfin-browse")).frame(theme::modal_frame(ctx)).show(ctx, |ui| {
         let p = theme::pal(ui);
         let w = (ctx.content_rect().width() - 80.0).clamp(420.0, 1040.0);
@@ -647,6 +654,20 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                     let people = d.persons.iter().map(|(id, n)| (n.clone(), JfFacet::Person(id.clone(), n.clone()))).collect();
                     menu(ui, tr!("人物", "People"), tr!("影片還沒有設人物", "No videos have people yet"), people, &mut pick);
                     ui.label(theme::muted(ui, tr!("依這些找：", "Find by:")));
+                    ui.add_space(8.0);
+                    if Btn::new(tr!("找重複的影片", "Find duplicates"))
+                        .icon(Icon::Copy)
+                        .small()
+                        .ghost()
+                        .tooltip(tr!(
+                            "找出 Jellyfin 上內容一樣的影片（同一支傳了兩次、重新壓縮過的），選要刪哪一份",
+                            "Find videos on Jellyfin with the same content (uploaded twice, re-encoded) and choose which copy to delete"
+                        ))
+                        .show(ui)
+                        .clicked()
+                    {
+                        find_dupes = true;
+                    }
                     if let Some(f) = pick {
                         d.facet = Some(f);
                         d.filter = JfFilter::All;
@@ -761,7 +782,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         }
     });
     // 檢視器開著時 Esc 是關檢視器，不要連瀏覽視窗一起關；有勾選時 Esc 先取消勾選
-    if close || (modal.should_close() && app.viewer.is_none() && app.ask.is_none() && app.jf_edit.is_none()) {
+    if close || (modal.should_close() && app.viewer.is_none() && app.ask.is_none() && app.jf_edit.is_none() && app.jf_dupes.is_none()) {
         if !close && !d.selected.is_empty() {
             d.selected.clear();
             app.jf_browse = Some(d);
@@ -791,6 +812,11 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
     if let Some(it) = picked.delete {
         app.jf_browse = Some(d);
         return confirm_delete(app, it.id, it.name);
+    }
+    if find_dupes {
+        let user = d.user.clone().unwrap_or_default();
+        app.jf_browse = Some(d);
+        return super::jellyfin_dupes::open(app, user);
     }
     if let Some(it) = picked.edit {
         let (user, people, tags) = (d.user.clone().unwrap_or_default(), d.persons.iter().map(|(_, n)| n.clone()).collect(), d.tags.clone());

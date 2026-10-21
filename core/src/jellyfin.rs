@@ -379,6 +379,33 @@ impl Jellyfin {
         (!buf.is_empty()).then_some(buf)
     }
 
+    /// 伺服器上全部的影片（找重複用）：大小、長度、解析度、位元率、加入日期、user 看過了沒；一次讀 500 支
+    pub fn all_videos(&self, user: &str) -> Result<Vec<crate::jf_dupes::JfVideo>, String> {
+        let (mut out, mut start) = (vec![], 0usize);
+        loop {
+            let req = agent()
+                .get(&format!("{}/Users/{user}/Items", self.url))
+                .query("recursive", "true")
+                .query("includeItemTypes", VIDEO_TYPES)
+                .query("fields", "Path,MediaSources,DateCreated")
+                .query("enableImageTypes", "Primary")
+                .query("imageTypeLimit", "1")
+                .query("startIndex", &start.to_string())
+                .query("limit", "500")
+                .query("enableTotalRecordCount", "true");
+            let body = self.call(req)?.into_string().map_err(|e| e.to_string())?;
+            let (page, total) = crate::jf_dupes::parse_videos(&body);
+            // 這一頁有幾個（沒有長度的不算進 page，但要跳過）
+            let got = serde_json::from_str::<Value>(&body).ok().and_then(|v| v.get("Items").and_then(Value::as_array).map(Vec::len)).unwrap_or(0);
+            out.extend(page);
+            start += got;
+            // 讀完了（或伺服器沒給更多）
+            if got == 0 || start >= total {
+                return Ok(out);
+            }
+        }
+    }
+
     /// 影片裡出現的人物（瀏覽視窗「依人物找」）：（編號, 名稱），依名稱排
     pub fn persons(&self, user: &str) -> Result<Vec<(String, String)>, String> {
         let req = agent().get(&format!("{}/Persons", self.url)).query("userId", user).query("limit", "500").query("enableImages", "false");
