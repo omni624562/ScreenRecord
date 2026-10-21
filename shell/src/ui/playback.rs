@@ -20,6 +20,17 @@ impl Playback {
         }
     }
 
+    /// 字幕開或關（只有 mpv 疊得上字幕）；回傳有沒有作用
+    pub fn show_subs(&self, on: bool) -> bool {
+        match self {
+            Playback::Ff(_) => false,
+            Playback::Mpv { p, .. } => {
+                p.show_subs(on);
+                true
+            }
+        }
+    }
+
     pub fn is_playing(&self) -> bool {
         match self {
             Playback::Ff(p) => p.is_playing(),

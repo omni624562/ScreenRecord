@@ -1338,8 +1338,12 @@ fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table:
     let order: Vec<String> = rows.iter().map(|e| e.media.path.clone()).collect();
     let (ctrl, shift) = multi_mods(ui);
     select_all_key(app, ui, d, &order);
+    // 操作：播放、剪輯（有設定媒體庫時加上傳到媒體庫）、⋯
+    let send = !app.s.after_copy_to.trim().is_empty();
+    let slots = if send { 3 } else { 2 };
+    let act_w = (slots + 1) as f32 * 30.0 + 16.0;
     // 勾選、日期、檔案、長度、解析度、大小、操作
-    let cols = [36.0, 104.0, 0.0, 70.0, 86.0, 90.0, 166.0];
+    let cols = [36.0, 104.0, 0.0, 70.0, 86.0, 90.0, act_w];
     let name_w = table.width() - cols.iter().sum::<f32>();
     let col_x = |i: usize| -> f32 {
         let widths = [cols[0], cols[1], name_w, cols[3], cols[4], cols[5], cols[6]];
@@ -1387,10 +1391,17 @@ fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table:
             x.2 += e.media.bytes;
         }
     }
-    // 檔名開始的位置（主列：縮圖、時間之後；加速版子列也對齊這裡）
-    let name_x = col_x(2) + 4.0 + 53.0 + 10.0 + time_w + 12.0;
+    // 檔名開始的位置（主列：縮圖、時間之後；加速版子列也對齊這裡）。
+    // 子列的「4× 加速版」標籤比縮圖加時間寬時，整頁的檔名一起往右移，上下才切齊
+    let chip_w = |t: &str| ui.fonts_mut(|f| f.layout_no_wrap(t.to_string(), theme::font_bold(11.5), p.text).size().x) + 14.0;
+    let badge_w = rows.iter().flat_map(|e| &e.exports).map(|x| chip_w(&export_label(x))).fold(0.0, f32::max);
+    let name_x = (col_x(2) + 4.0 + 53.0 + 10.0 + time_w + 12.0).max(col_x(2) + 48.0 + badge_w + 10.0);
     let today = chrono::Local::now().date_naive();
     let mut last_day = None;
+    // 標記欄（媒體庫、剪輯版、沒有聲音）：這一頁有那種標記才留位置，檔名才不會被擠得太短
+    let lib_col = send && rows.iter().any(|e| app.library_where(&e.media.path, e.media.bytes).is_some() || screenrecorder_core::transfer::is_pending(&e.media.path));
+    let cut_col = rows.iter().any(|e| is_cut_name(&e.media.name));
+    let mute_col = rows.iter().any(|e| e.media.has_audio == Some(false) && e.media.duration_sec.is_some() && !is_audio_file(&e.media.name));
     if rows.is_empty() {
         let can = can_record(app);
         empty_list(ui, d, table, dir, req, tr!("這個資料夾還沒有錄影。", "No recordings in this folder yet."), tr!("沒有符合條件的錄影。", "No matching recordings."), can);
@@ -1522,11 +1533,11 @@ fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table:
             // 大部分錄影都有聲音，只標出「沒有聲音」的；位置固定保留，星號才會切齊
             if e.media.has_audio == Some(false) && e.media.duration_sec.is_some() && !audio {
                 no_audio_mark(tui);
-            } else {
+            } else if mute_col {
                 tui.allocate_exact_size(vec2(16.0, 16.0), Sense::hover());
             }
             // 已經傳到媒體庫（NAS 上有同名同大小的一份）、剪輯版：各自固定一欄，上下切齊（設定了媒體庫才留媒體庫那一欄）
-            if !app.s.after_copy_to.trim().is_empty() {
+            if lib_col {
                 let at = app.library_where(&e.media.path, e.media.bytes);
                 let watched = if at.is_some() { app.watched_by(&e.media.name) } else { vec![] };
                 // 「Jellyfin」後面可能有看過的眼睛：多留一點寬度
@@ -1538,11 +1549,13 @@ fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table:
                     }
                 });
             }
-            tag_column(tui, &[tr!("剪輯版", "Edited")], |ui| {
-                if is_cut_name(&e.media.name) {
-                    chip(ui, tr!("剪輯版", "Edited"), Tone::Warn, false);
-                }
-            });
+            if cut_col {
+                tag_column(tui, &[tr!("剪輯版", "Edited")], |ui| {
+                    if is_cut_name(&e.media.name) {
+                        chip(ui, tr!("剪輯版", "Edited"), Tone::Warn, false);
+                    }
+                });
+            }
             if fresh {
                 if Btn::new(tr!("播放", "Play")).icon(Icon::Play).primary().small().show(tui).clicked() {
                     *req = Some(Req::Entry(EntryAction::Play, e.clone()));
@@ -1611,33 +1624,13 @@ fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table:
         }
         num(&e.media.duration_sec.map(short_clock).unwrap_or_else(|| "—".into()), col_x(4) - 10.0, row.center().y, p.text, 13.0);
         // 畫面大小用白話（4K 直、1080p 橫），滑鼠移上去看實際像素
-        match (e.media.width, e.media.height) {
-            (Some(w), Some(h)) if !audio => {
-                let rr = Rect::from_min_max(pos2(col_x(4), row.min.y + 8.0), pos2(col_x(5) - 6.0, row.max.y - 8.0));
-                let label = super::dialogs::res_label(w, h);
-                let g = ui.fonts_mut(|f| f.layout_no_wrap(label.clone(), theme::font(12.5), p.muted));
-                let tx = rr.max.x - 4.0 - g.size().x;
-                painter.galley(pos2(tx, row.center().y - g.size().y / 2.0), g, p.muted);
-                // 直／橫的小框
-                let (iw, ih) = if w < h {
-                    (7.0, 11.0)
-                } else if w > h {
-                    (11.0, 7.0)
-                } else {
-                    (9.0, 9.0)
-                };
-                let ir = Rect::from_center_size(pos2(tx - 5.0 - iw / 2.0, row.center().y), vec2(iw, ih));
-                painter.rect_stroke(ir, CornerRadius::same(1), Stroke::new(1.2, p.muted), egui::StrokeKind::Inside);
-                ui.interact(rr, Id::new(("libres", &e.media.path)), Sense::hover()).on_hover_text(format!("{w}×{h}"));
-            }
-            _ => num("—", col_x(5) - 10.0, row.center().y, p.muted, 12.5),
-        }
+        res_cell(ui, Rect::from_min_max(pos2(col_x(4), row.min.y + 8.0), pos2(col_x(5) - 6.0, row.max.y - 8.0)), &e.media, audio);
         num(&format_bytes(e.media.bytes), col_x(6) - 10.0, row.center().y, p.text, 13.0);
         {
-            // 播放、剪輯、製作、傳到媒體庫直接按得到，其他在「⋯」（和主畫面卡片、檢視器同一份清單）
+            // 播放、剪輯（、傳到媒體庫）直接按得到，其他在「⋯」（和主畫面卡片、檢視器同一份清單）
             let aui = &mut ui.new_child(UiBuilder::new().max_rect(Rect::from_min_max(pos2(col_x(6), row.min.y), row.max)).layout(Layout::left_to_right(Align::Center)));
             aui.spacing_mut().item_spacing.x = 2.0;
-            if let Some(a) = super::entry_menu::quick_icons(aui, &groups, hot, tr!("更多（也可以在這一列按右鍵）", "More (or right-click the row)")) {
+            if let Some(a) = super::entry_menu::quick_icons(aui, &groups, hot, slots, slots, tr!("更多（也可以在這一列按右鍵）", "More (or right-click the row)")) {
                 *req = Some(Req::Entry(a, e.clone()));
             }
         }
@@ -1677,24 +1670,17 @@ fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table:
             {
                 let nui = &mut ui.new_child(UiBuilder::new().max_rect(Rect::from_min_max(pos2(bx + 18.0, row.min.y), pos2(col_x(3) - 8.0, row.max.y))).layout(Layout::left_to_right(Align::Center)));
                 chip(nui, &export_label(x), Tone::Accent, false).on_hover_text(trf!("{}（{}×）", "{} ({}×)", x.media.name, speed_label(x.speed)));
-                // 檔名和主列的檔名切齊（標籤太寬時就接在後面）
-                let gap = name_x - nui.cursor().min.x;
-                if gap > 0.0 {
-                    nui.add_space(gap);
-                }
+                // 檔名和主列的檔名切齊
+                nui.add_space((name_x - nui.cursor().min.x).max(0.0));
                 nui.add(egui::Label::new(RichText::new(&x.media.name).font(theme::font(12.0)).color(p.muted)).truncate());
             }
             num(&x.media.duration_sec.map(short_clock).unwrap_or_else(|| "—".into()), col_x(4) - 10.0, row.center().y, p.text, 12.5);
-            let res = match (x.media.width, x.media.height) {
-                (Some(w), Some(h)) => format!("{w}×{h}"),
-                _ => "—".into(),
-            };
-            num(&res, col_x(5) - 10.0, row.center().y, p.muted, 12.0);
+            res_cell(ui, Rect::from_min_max(pos2(col_x(4), row.min.y + 4.0), pos2(col_x(5) - 6.0, row.max.y - 4.0)), &x.media, false);
             num(&format_bytes(x.media.bytes), col_x(6) - 10.0, row.center().y, p.text, 12.5);
-            // 與原片的按鈕對齊：播放 ·（不能剪輯、製作）· 傳到媒體庫 · ⋯
+            // 與原片的按鈕對齊：播放 ·（不能剪輯）·（傳到媒體庫在「⋯」）· ⋯
             let aui = &mut ui.new_child(UiBuilder::new().max_rect(Rect::from_min_max(pos2(col_x(6), row.min.y), row.max)).layout(Layout::left_to_right(Align::Center)));
             aui.spacing_mut().item_spacing.x = 2.0;
-            if let Some(a) = super::entry_menu::quick_icons(aui, &sub_groups, hot, tr!("更多（也可以在這一列按右鍵）", "More (or right-click the row)")) {
+            if let Some(a) = super::entry_menu::quick_icons(aui, &sub_groups, hot, slots, 1, tr!("更多（也可以在這一列按右鍵）", "More (or right-click the row)")) {
                 *req = Some(Req::Entry(a, entry.clone()));
             }
             y += LIBRARY_ROW_SUB_PX as f32;
@@ -1726,6 +1712,34 @@ fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table:
         }
     }
     row_keys(app, ui, d, &rows, req);
+}
+
+/// 解析度欄：白話的「1080p 橫」加上直／橫的小框，滑鼠移上去看實際像素（原片、加速版子列一樣）
+fn res_cell(ui: &mut egui::Ui, rr: Rect, m: &MediaInfo, audio: bool) {
+    let p = theme::pal(ui);
+    let painter = ui.painter().clone();
+    let y = rr.center().y;
+    match (m.width, m.height) {
+        (Some(w), Some(h)) if !audio => {
+            let label = super::dialogs::res_label(w, h);
+            let g = ui.fonts_mut(|f| f.layout_no_wrap(label, theme::font(12.5), p.muted));
+            let tx = rr.max.x - 4.0 - g.size().x;
+            painter.galley(pos2(tx, y - g.size().y / 2.0), g, p.muted);
+            let (iw, ih) = if w < h {
+                (7.0, 11.0)
+            } else if w > h {
+                (11.0, 7.0)
+            } else {
+                (9.0, 9.0)
+            };
+            let ir = Rect::from_center_size(pos2(tx - 5.0 - iw / 2.0, y), vec2(iw, ih));
+            painter.rect_stroke(ir, CornerRadius::same(1), Stroke::new(1.2, p.muted), egui::StrokeKind::Inside);
+            ui.interact(rr, Id::new(("libres", &m.path)), Sense::hover()).on_hover_text(format!("{w}×{h}"));
+        }
+        _ => {
+            painter.text(pos2(rr.max.x - 4.0, y), egui::Align2::RIGHT_CENTER, "—", theme::font(12.5), p.muted);
+        }
+    }
 }
 
 /// 清單是空的：讀取中、資料夾讀不到（選別的資料夾）、還沒有檔案（開始錄影）、搜尋沒有結果（清除搜尋）

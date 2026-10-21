@@ -278,6 +278,8 @@ pub enum Icon {
     Link,
     /// 傳到媒體庫（往上的箭頭放進托盤）
     Upload,
+    /// 字幕（方框裡兩行字）
+    Captions,
 }
 
 /// 在 rect（正方形）裡畫圖示
@@ -519,6 +521,12 @@ pub fn paint_icon(p: &Painter, rect: Rect, icon: Icon, color: Color32) {
                 p.circle_filled(at(x, 6.8), 0.8 * k, color);
             }
             line(&[(5.0, 9.8), (11.0, 9.8)]);
+        }
+        Icon::Captions => {
+            p.rect_stroke(Rect::from_min_max(at(1.5, 3.0), at(14.5, 13.0)), CornerRadius::same((1.5 * k) as u8), st, StrokeKind::Middle);
+            line(&[(4.0, 7.0), (8.0, 7.0)]);
+            line(&[(9.5, 7.0), (12.0, 7.0)]);
+            line(&[(4.0, 10.0), (12.0, 10.0)]);
         }
         Icon::Fullscreen => {
             line(&[(2.5, 6.0), (2.5, 2.5), (6.0, 2.5)]);

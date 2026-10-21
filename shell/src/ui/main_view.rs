@@ -2720,10 +2720,11 @@ fn recent_card(app: &mut UiApp, ui: &mut Ui, e: &LibraryEntry, date: String, w: 
         let ui = &mut ui.new_child(UiBuilder::new().max_rect(row).layout(Layout::left_to_right(Align::Center)));
         // 圖示之間不留空隙（按鈕本身有內距），卡片窄一點，一列放得下更多張
         ui.spacing_mut().item_spacing.x = 0.0;
-        // 播放、剪輯、製作、傳到媒體庫直接按得到，其他在「⋯」（和全部錄影、檢視器同一份清單）
+        // 播放、剪輯（、傳到媒體庫）直接按得到，其他在「⋯」（和全部錄影、檢視器同一份清單）
+        let slots = if app.s.after_copy_to.trim().is_empty() { 2 } else { 3 };
         let groups = super::entry_menu::groups(app, e, Place::Home);
         let hot = ui.rect_contains_pointer(rect);
-        if let Some(a) = super::entry_menu::quick_icons(ui, &groups, hot, tr!("更多（也可以在卡片上按右鍵）", "More (or right-click the card)")) {
+        if let Some(a) = super::entry_menu::quick_icons(ui, &groups, hot, slots, slots, tr!("更多（也可以在卡片上按右鍵）", "More (or right-click the card)")) {
             app.known.insert(e.media.path.clone(), e.clone());
             app.act(a, e.clone());
         }

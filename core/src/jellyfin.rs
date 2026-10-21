@@ -266,27 +266,87 @@ impl Jellyfin {
         Ok(parse_items(&body).0.into_iter().map(|i| JfItem { kind: JfKind::Folder, ..i }).collect())
     }
 
-    /// 一個資料夾（媒體庫、合集）裡的東西：資料夾在前，影片依日期新的在前；search 不是空的時找整個伺服器。
-    /// 回傳（這一頁, 全部幾個）
-    pub fn items(&self, user: &str, parent: Option<&str>, search: &str, start: usize, limit: usize) -> Result<(Vec<JfItem>, usize), String> {
-        let mut req = agent()
-            .get(&format!("{}/Users/{user}/Items", self.url))
-            .query("fields", "Path,MediaStreams,DateCreated,PremiereDate,ChildCount")
-            .query("startIndex", &start.to_string())
-            .query("limit", &limit.to_string())
-            .query("enableImageTypes", "Primary")
-            .query("imageTypeLimit", "1");
+    /// 一個資料夾（媒體庫、合集）裡的東西：資料夾在前，影片依 sort 排；search 不是空的時找整個伺服器。
+    /// filter 不是「全部」時列出這個資料夾底下（含子資料夾）符合的影片。回傳（這一頁, 全部幾個）
+    #[allow(clippy::too_many_arguments)]
+    pub fn items(&self, user: &str, parent: Option<&str>, search: &str, start: usize, limit: usize, sort: JfSort, filter: JfFilter) -> Result<(Vec<JfItem>, usize), String> {
+        let mut req = self.items_req(&format!("{}/Users/{user}/Items", self.url)).query("startIndex", &start.to_string()).query("limit", &limit.to_string()).query("enableTotalRecordCount", "true");
+        let (by, order) = sort.query();
         let search = search.trim();
+        if !search.is_empty() {
+            req = req.query("searchTerm", search).query("recursive", "true").query("includeItemTypes", "Video,Movie,Episode,MusicVideo,Folder,BoxSet");
+        } else if filter == JfFilter::All {
+            req = req.query("sortBy", &format!("IsFolder,{by}")).query("sortOrder", &format!("Descending,{order}"));
+        } else {
+            req = req.query("sortBy", by).query("sortOrder", order).query("recursive", "true").query("includeItemTypes", VIDEO_TYPES);
+        }
         if search.is_empty() {
-            req = req.query("sortBy", "IsFolder,PremiereDate,DateCreated,SortName").query("sortOrder", "Descending,Descending,Descending,Ascending");
             if let Some(p) = parent {
                 req = req.query("parentId", p);
             }
-        } else {
-            req = req.query("searchTerm", search).query("recursive", "true").query("includeItemTypes", "Video,Movie,Episode,MusicVideo,Folder,BoxSet");
+        }
+        if let Some(f) = filter.query() {
+            req = req.query("filters", f);
         }
         let body = self.call(req)?.into_string().map_err(|e| e.to_string())?;
         Ok(parse_items(&body))
+    }
+
+    /// 清單要的欄位、縮圖
+    fn items_req(&self, url: &str) -> ureq::Request {
+        agent().get(url).query("fields", "Path,MediaStreams,DateCreated,PremiereDate,ChildCount,Chapters").query("enableImageTypes", "Primary").query("imageTypeLimit", "1")
+    }
+
+    /// 看到一半的影片（Jellyfin 首頁的「繼續觀看」，最近看的在前）
+    pub fn resume_items(&self, user: &str, limit: usize) -> Result<Vec<JfItem>, String> {
+        let req = self.items_req(&format!("{}/Users/{user}/Items/Resume", self.url)).query("limit", &limit.to_string()).query("mediaTypes", "Video");
+        let body = self.call(req)?.into_string().map_err(|e| e.to_string())?;
+        Ok(parse_items(&body).0)
+    }
+
+    /// 最近加入的影片（Jellyfin 首頁的「最近加入」，新的在前）
+    pub fn latest_items(&self, user: &str, limit: usize) -> Result<Vec<JfItem>, String> {
+        let req = self.items_req(&format!("{}/Users/{user}/Items/Latest", self.url)).query("limit", &limit.to_string()).query("includeItemTypes", VIDEO_TYPES).query("groupItems", "false");
+        let body = self.call(req)?.into_string().map_err(|e| e.to_string())?;
+        Ok(parse_items(&body).0.into_iter().filter(|i| i.kind == JfKind::Video).collect())
+    }
+
+    /// 記下 user 看到哪裡（秒；看完了 played = true，下次從頭開始）：Jellyfin 首頁的「繼續觀看」、電視和手機都接得上。
+    /// 10.10 以後是 /UserItems/{id}/UserData，10.9 是 /Users/{user}/Items/{id}/UserData，更舊的版本用「停止播放」
+    pub fn save_position(&self, user: &str, id: &str, at: f64, played: bool) -> Result<(), String> {
+        let ticks = if played { 0 } else { (at.max(0.0) * 1e7) as u64 };
+        let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S.000Z").to_string();
+        let mut body = serde_json::json!({ "PlaybackPositionTicks": ticks, "LastPlayedDate": now });
+        if played {
+            body["Played"] = Value::Bool(true);
+        }
+        let body = body.to_string();
+        let new = self.call_body(agent().post(&format!("{}/UserItems/{id}/UserData", self.url)).query("userId", user), &body);
+        if new.is_ok() {
+            return Ok(());
+        }
+        if self.call_body(agent().post(&format!("{}/Users/{user}/Items/{id}/UserData", self.url)), &body).is_ok() {
+            return Ok(());
+        }
+        if played {
+            return self.mark_played(user, id);
+        }
+        self.call(agent().delete(&format!("{}/Users/{user}/PlayingItems/{id}", self.url)).query("positionTicks", &ticks.to_string())).map(|_| ())
+    }
+
+    /// 字幕的網址（Jellyfin 轉成 SRT 給播放器；影片檔外面的 .srt 和影片裡的文字字幕都可以）
+    pub fn subtitle_url(&self, id: &str, index: u32) -> String {
+        format!("{}/Videos/{id}/{id}/Subtitles/{index}/0/Stream.srt?api_key={}", self.url, self.key)
+    }
+
+    /// 把原檔下載到 to（先寫暫存檔、顯示進度、可以取消）；回傳幾個位元組
+    pub fn download(&self, id: &str, to: &std::path::Path) -> Result<u64, String> {
+        let r = self.auth(agent_long().get(&format!("{}/Videos/{id}/stream", self.url)).query("static", "true")).call().map_err(|e| describe(&e))?;
+        let total = r.header("Content-Length").and_then(|n| n.parse().ok()).unwrap_or(0);
+        if let Some(dir) = to.parent() {
+            std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+        }
+        crate::transfer::save(r.into_reader(), total, to, true).map_err(|e| e.to_string())
     }
 
     /// 串流播放的網址（原檔直接傳過來，不在 NAS 上轉檔；可以跳著看）
@@ -362,6 +422,20 @@ impl Jellyfin {
         Ok(ids.len())
     }
 
+    /// 排程工作做完之前，畫面右下角顯示「做時間軸預覽縮圖 45%」（每 5 秒問一次，最多 30 分鐘）
+    fn watch_task(&self, key: &str, name: &str, what: &str) {
+        let start = std::time::Instant::now();
+        // 剛按下去時可能還沒開始
+        std::thread::sleep(Duration::from_secs(2));
+        while start.elapsed() < Duration::from_secs(1800) {
+            let tasks = self.call(agent().get(&format!("{}/ScheduledTasks?isHidden=false", self.url))).ok().and_then(|r| r.into_string().ok()).unwrap_or_default();
+            let Some(pct) = task_progress(&tasks, key) else { break };
+            crate::transfer::set_stage(name, Some(format!("{what} {pct:.0}%")));
+            std::thread::sleep(Duration::from_secs(5));
+        }
+        crate::transfer::set_stage(name, None);
+    }
+
     /// 執行排程工作（Key 是 key 的那個）
     fn run_task(&self, key: &str) -> Result<(), String> {
         let tasks = self.call(agent().get(&format!("{}/ScheduledTasks?isHidden=false", self.url)))?.into_string().map_err(|e| e.to_string())?;
@@ -429,8 +503,12 @@ impl Jellyfin {
     /// 傳好之後：等 Jellyfin 掃到這支（新檔案），設好標籤、請它做章節縮圖；回傳接在結果後面的說明
     /// local：媒體庫裡那一份（依它在哪個資料夾放進合集）
     pub fn after_upload(&self, file_name: &str, extras: &Extras, ids: Vec<String>, wait: Duration, local: Option<&std::path::Path>) -> String {
+        let stage = |what: &str| crate::transfer::set_stage(file_name, Some(what.to_string()));
         let ids = if ids.is_empty() {
-            match self.wait_for(file_name, wait) {
+            stage(tr!("等 Jellyfin 掃描到這支", "Waiting for Jellyfin to find it"));
+            let found = self.wait_for(file_name, wait);
+            crate::transfer::set_stage(file_name, None);
+            match found {
                 Ok(Some(id)) => vec![id],
                 Ok(None) => return tr!("（Jellyfin 還在掃描，稍後就會出現）", " (Jellyfin is still scanning; it'll show up shortly)").into(),
                 Err(e) => return trf!("（查不到 Jellyfin 有沒有收到：{e}）", " (couldn't check whether Jellyfin got it: {e})"),
@@ -438,7 +516,14 @@ impl Jellyfin {
         } else {
             ids
         };
-        let mut notes = vec![tr!("✓ Jellyfin 已收到", "✓ Jellyfin has it").to_string()];
+        stage(tr!("設定影片資訊、封面", "Setting details and cover"));
+        let out = self.finish_upload(file_name, extras, &ids, local);
+        crate::transfer::set_stage(file_name, None);
+        out
+    }
+
+    fn finish_upload(&self, file_name: &str, extras: &Extras, ids: &[String], local: Option<&std::path::Path>) -> String {
+        let mut notes = vec![tr!("✓ Jellyfin 已收到，可以看了", "✓ Jellyfin has it and it's ready to watch").to_string()];
         if extras.has_details() {
             let failed = ids.iter().filter_map(|id| self.set_details(id, extras).err()).next();
             notes.push(match failed {
@@ -450,7 +535,7 @@ impl Jellyfin {
             });
         }
         // 首頁「繼續觀看」的橫幅圖、縮圖：沒有時用封面（Jellyfin 的主要圖片）
-        for id in &ids {
+        for id in ids {
             self.fill_backdrop(id);
         }
         if let Some(name) = local.filter(|_| self.collections).and_then(|l| collection_name(&self.root, l)) {
@@ -462,9 +547,11 @@ impl Jellyfin {
                 }
             });
         }
-        // 時間軸預覽縮圖（10.9 以後）：媒體庫有打開才做，沒打開時設定裡的「一鍵修好」會打開
+        // 時間軸預覽縮圖（10.9 以後）：媒體庫有打開才做，沒打開時設定裡的「一鍵修好」會打開。做的時候畫面右下角顯示進度
         if self.trickplay_enabled() && self.run_task("RefreshTrickplayImages").is_ok() {
             notes.push(tr!("正在做時間軸預覽縮圖", "making trickplay previews").into());
+            let (jf, name) = (self.clone(), file_name.to_string());
+            std::thread::spawn(move || jf.watch_task("RefreshTrickplayImages", &name, tr!("做時間軸預覽縮圖", "Making trickplay previews")));
         }
         if extras.chapters {
             notes.push(match self.chapter_images() {
@@ -686,6 +773,13 @@ pub fn task_id(json: &str, key: &str) -> Option<String> {
 }
 
 /// 有沒有任何一個媒體庫打開了「擷取章節圖片」
+/// 排程工作正在做時的進度（0–100）；沒在做時 None
+pub fn task_progress(json: &str, key: &str) -> Option<f64> {
+    let v: Value = serde_json::from_str(json).ok()?;
+    let t = v.as_array()?.iter().find(|t| t.get("Key").and_then(Value::as_str) == Some(key))?;
+    (t.get("State").and_then(Value::as_str) == Some("Running")).then(|| t.get("CurrentProgressPercentage").and_then(Value::as_f64).unwrap_or(0.0))
+}
+
 pub fn chapter_images_enabled(json: &str) -> bool {
     serde_json::from_str::<Value>(json)
         .ok()
@@ -782,6 +876,88 @@ pub struct JfItem {
     /// 資料夾裡有幾個
     pub children: u32,
     pub has_image: bool,
+    /// 這個使用者上次看到哪裡（秒；沒看過或看完了是 0）
+    pub resume: f64,
+    /// 文字字幕（圖片字幕播放器疊不上去，不列）
+    pub subs: Vec<JfSub>,
+    /// 章節（開始的秒數, 名稱）
+    pub chapters: Vec<(f64, String)>,
+}
+
+/// 一個字幕：Jellyfin 的串流編號、顯示的名稱（語言）
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JfSub {
+    pub index: u32,
+    pub title: String,
+}
+
+/// 影片類型（Jellyfin 的 includeItemTypes）
+const VIDEO_TYPES: &str = "Movie,Video,MusicVideo,Episode";
+
+/// 瀏覽的排序
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum JfSort {
+    /// 錄影時間新的在前（沒有時用加入的時間）
+    #[default]
+    Newest,
+    Oldest,
+    /// 最近放進 Jellyfin 的在前
+    Added,
+    Name,
+}
+
+impl JfSort {
+    pub const ALL: [JfSort; 4] = [JfSort::Newest, JfSort::Oldest, JfSort::Added, JfSort::Name];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            JfSort::Newest => tr!("最新的在前", "Newest first"),
+            JfSort::Oldest => tr!("最舊的在前", "Oldest first"),
+            JfSort::Added => tr!("最近加入的在前", "Recently added"),
+            JfSort::Name => tr!("依名稱", "By name"),
+        }
+    }
+
+    fn query(self) -> (&'static str, &'static str) {
+        match self {
+            JfSort::Newest => ("PremiereDate,DateCreated,SortName", "Descending,Descending,Ascending"),
+            JfSort::Oldest => ("PremiereDate,DateCreated,SortName", "Ascending,Ascending,Ascending"),
+            JfSort::Added => ("DateCreated,SortName", "Descending,Ascending"),
+            JfSort::Name => ("SortName", "Ascending"),
+        }
+    }
+}
+
+/// 瀏覽的篩選
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum JfFilter {
+    #[default]
+    All,
+    Unplayed,
+    Resumable,
+    Favorite,
+}
+
+impl JfFilter {
+    pub const ALL: [JfFilter; 4] = [JfFilter::All, JfFilter::Unplayed, JfFilter::Resumable, JfFilter::Favorite];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            JfFilter::All => tr!("全部", "All"),
+            JfFilter::Unplayed => tr!("還沒看過的", "Not watched"),
+            JfFilter::Resumable => tr!("看到一半的", "Partly watched"),
+            JfFilter::Favorite => tr!("我的最愛", "Favorites"),
+        }
+    }
+
+    fn query(self) -> Option<&'static str> {
+        match self {
+            JfFilter::All => None,
+            JfFilter::Unplayed => Some("IsUnplayed"),
+            JfFilter::Resumable => Some("IsResumable"),
+            JfFilter::Favorite => Some("IsFavorite"),
+        }
+    }
 }
 
 /// 把 Jellyfin 的網址參數 api_key 遮掉（寫進記錄檔時用）
@@ -795,12 +971,13 @@ pub fn redact(text: &str) -> String {
     }
 }
 
-/// /Items、/Views 的回應：（東西, 全部幾個）。照片、音樂等不是影片也不是資料夾的略過
+/// /Items、/Views 的回應：（東西, 全部幾個）。照片、音樂等不是影片也不是資料夾的略過。
+/// /Items/Latest 回傳的是陣列（沒有外面那一層）
 pub fn parse_items(json: &str) -> (Vec<JfItem>, usize) {
     let Ok(v) = serde_json::from_str::<Value>(json) else { return (vec![], 0) };
-    let total = v.get("TotalRecordCount").and_then(Value::as_u64).unwrap_or(0) as usize;
-    let items = v
-        .get("Items")
+    let list = if v.is_array() { Some(&v) } else { v.get("Items") };
+    let total = v.get("TotalRecordCount").and_then(Value::as_u64).unwrap_or_else(|| list.and_then(Value::as_array).map_or(0, |a| a.len() as u64)) as usize;
+    let items = list
         .and_then(Value::as_array)
         .map(|a| {
             a.iter()
@@ -828,6 +1005,22 @@ pub fn parse_items(json: &str) -> (Vec<JfItem>, usize) {
                         played: i.pointer("/UserData/Played").and_then(Value::as_bool) == Some(true),
                         children: i.get("ChildCount").and_then(Value::as_u64).unwrap_or(0) as u32,
                         has_image: i.pointer("/ImageTags/Primary").is_some(),
+                        resume: i.pointer("/UserData/PlaybackPositionTicks").and_then(Value::as_f64).unwrap_or(0.0) / 1e7,
+                        subs: streams
+                            .iter()
+                            .filter(|s| s.get("Type").and_then(Value::as_str) == Some("Subtitle") && s.get("IsTextSubtitleStream").and_then(Value::as_bool) != Some(false))
+                            .filter_map(|s| {
+                                let title = ["DisplayTitle", "Title", "Language"].iter().find_map(|k| s.get(*k).and_then(Value::as_str)).unwrap_or("").to_string();
+                                Some(JfSub { index: s.get("Index")?.as_u64()? as u32, title })
+                            })
+                            .collect(),
+                        chapters: i
+                            .get("Chapters")
+                            .and_then(Value::as_array)
+                            .map(|a| {
+                                a.iter().map(|c| (c.get("StartPositionTicks").and_then(Value::as_f64).unwrap_or(0.0) / 1e7, c.get("Name").and_then(Value::as_str).unwrap_or("").to_string())).collect()
+                            })
+                            .unwrap_or_default(),
                     })
                 })
                 .collect()
@@ -1235,6 +1428,12 @@ pub fn send_file(jf: Option<&Jellyfin>, copy_to: &str, file: &std::path::Path, e
             return Some(Err(tr!("「複製」的資料夾位置不對，請在設定裡重新選擇", "The “Copy” folder isn't valid. Choose it again in Settings").into()));
         }
         let files = crate::after_record::result_files(&file.display().to_string(), None);
+        // 先看 NAS 的空間夠不夠（不夠時傳到一半才失敗，還留下半個暫存檔）
+        let need: u64 = files.iter().filter_map(|f| std::fs::metadata(f).ok()).map(|m| m.len()).sum();
+        if let Some(e) = space_problem(crate::recorder::disk_free_sync(copy_to), need) {
+            crate::warn!("[傳到資料夾] {name} → {copy_to}：{e}");
+            return Some(Err(trf!("沒有傳到「{folder}」：{e}", "Couldn't send it to “{folder}”: {e}")));
+        }
         let copied = std::fs::create_dir_all(lib).and_then(|_| {
             for f in &files {
                 crate::transfer::copy(f, &lib.join(library_name(f)))?;
@@ -1261,6 +1460,14 @@ pub fn send_file(jf: Option<&Jellyfin>, copy_to: &str, file: &std::path::Path, e
             Err(format!("{sent}{}", trf!("，但沒有通知到 Jellyfin：{e}", ", but Jellyfin couldn't be notified: {e}")))
         }
     })
+}
+
+/// 空間不夠時的說明（留 200 MB 給 NAS 自己用；查不到剩多少時不擋）
+pub fn space_problem(free: Option<u64>, need: u64) -> Option<String> {
+    let free = free?;
+    let fmt = crate::format::format_bytes;
+    (free < need.saturating_add(200 << 20))
+        .then(|| trf!("NAS 只剩 {}，這支要 {}。先到 NAS 清出空間再傳", "The NAS only has {} free and this needs {}. Free up some space on the NAS first", fmt(free), fmt(need)))
 }
 
 /// NAS 自己的資料夾（資源回收筒、縮圖快取…），不當成媒體庫的子資料夾
@@ -1509,7 +1716,16 @@ pub fn normalize_url(text: &str) -> Option<String> {
 
 /// 區域網路的伺服器：直接連線（不經過 Proxy），等太久就放棄
 fn agent() -> ureq::Agent {
-    let b = ureq::AgentBuilder::new().timeout_connect(Duration::from_secs(8)).timeout_read(Duration::from_secs(15));
+    agent_with(Duration::from_secs(15))
+}
+
+/// 下載整支影片用：每次讀等久一點（NAS 從硬碟休眠醒來要幾秒）
+fn agent_long() -> ureq::Agent {
+    agent_with(Duration::from_secs(60))
+}
+
+fn agent_with(read: Duration) -> ureq::Agent {
+    let b = ureq::AgentBuilder::new().timeout_connect(Duration::from_secs(8)).timeout_read(read);
     #[cfg(windows)]
     let b = match native_tls::TlsConnector::new() {
         Ok(c) => b.tls_connector(std::sync::Arc::new(c)),
@@ -2102,5 +2318,56 @@ mod tests {
         assert!(e.contains("允許刪除") || e.contains("Allow media deletion"), "{e}");
         let got = h.join().unwrap();
         assert!(got[0].starts_with("DELETE /Items/v1"), "{got:?}");
+    }
+
+    #[test]
+    fn items_carry_resume_subtitles_and_chapters() {
+        let json = r#"[{"Id":"v1","Name":"家庭","Type":"Video","RunTimeTicks":600000000,
+            "UserData":{"PlaybackPositionTicks":125000000,"Played":false},
+            "MediaStreams":[{"Type":"Video","Width":1920,"Height":1080},
+                {"Type":"Subtitle","Index":2,"DisplayTitle":"Chinese","IsTextSubtitleStream":true,"IsExternal":true},
+                {"Type":"Subtitle","Index":3,"DisplayTitle":"PGS","IsTextSubtitleStream":false}],
+            "Chapters":[{"StartPositionTicks":0,"Name":"開頭"},{"StartPositionTicks":300000000,"Name":"中間"}]}]"#;
+        let (items, total) = parse_items(json);
+        assert_eq!(total, 1);
+        let v = &items[0];
+        assert_eq!(v.resume, 12.5);
+        assert_eq!(v.subs, vec![JfSub { index: 2, title: "Chinese".into() }]);
+        assert_eq!(v.chapters, vec![(0.0, "開頭".to_string()), (30.0, "中間".to_string())]);
+    }
+
+    #[test]
+    fn task_progress_only_while_running() {
+        let t = r#"[{"Key":"RefreshTrickplayImages","State":"Running","CurrentProgressPercentage":42.5},{"Key":"Other","State":"Idle"}]"#;
+        assert_eq!(task_progress(t, "RefreshTrickplayImages"), Some(42.5));
+        assert_eq!(task_progress(t, "Other"), None);
+        assert_eq!(task_progress("[]", "Other"), None);
+    }
+
+    #[test]
+    fn not_enough_space_on_the_nas() {
+        assert!(space_problem(Some(100 << 20), 50 << 20).is_some());
+        assert!(space_problem(Some(10 << 30), 1 << 30).is_none());
+        assert!(space_problem(None, 1 << 40).is_none());
+    }
+
+    #[test]
+    fn position_falls_back_to_older_servers() {
+        // 10.10 的網址沒有（舊版）：改用 10.9 的
+        let (url, h) = serve_seq(vec![("404 Not Found", String::new()), ("204 No Content", String::new())]);
+        let jf = Jellyfin::new(&url, "k").unwrap();
+        jf.save_position("u1", "v1", 12.5, false).unwrap();
+        let got = h.join().unwrap();
+        assert!(got[0].starts_with("POST /UserItems/v1/UserData?userId=u1"), "{got:?}");
+        assert!(got[1].starts_with("POST /Users/u1/Items/v1/UserData"), "{got:?}");
+    }
+
+    #[test]
+    fn filtered_browse_lists_videos_below_the_folder() {
+        let (url, h) = serve_seq(vec![("200 OK", r#"{"Items":[],"TotalRecordCount":0}"#.to_string())]);
+        let jf = Jellyfin::new(&url, "k").unwrap();
+        jf.items("u", Some("p1"), "", 0, 60, JfSort::Name, JfFilter::Unplayed).unwrap();
+        let got = h.join().unwrap();
+        assert!(got[0].contains("filters=IsUnplayed") && got[0].contains("recursive=true") && got[0].contains("parentId=p1") && got[0].contains("sortBy=SortName"), "{got:?}");
     }
 }

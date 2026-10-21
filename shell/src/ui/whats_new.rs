@@ -38,49 +38,49 @@ enum Try {
 fn items(_app: &UiApp) -> Vec<(String, String, Try)> {
     vec![
         (
-            tr!("在這裡看 Jellyfin 上的影片", "Watch Jellyfin videos here").into(),
+            tr!("清單上的操作變簡單了", "Simpler actions in lists").into(),
             tr!(
-                "檔案庫上方的「Jellyfin」打開瀏覽視窗：點資料夾進去、點影片就直接播放，家人傳上去的也看得到，不在家也能看。",
-                "“Jellyfin” at the top of the library opens a browser: open folders and click a video to play it right here — including ones family uploaded, even away from home."
+                "每一列只留播放、剪輯和「⋯」；設為封面、旋轉、複製操作步驟這些要看著畫面做的，打開影片後在上方。",
+                "Each row now has just Play, Edit and “⋯”. Set as cover, rotate, copy steps and other picture-related actions are at the top once you open the video."
             )
             .into(),
             Try::Library(false),
         ),
         (
-            tr!("家人看過了沒", "See who watched").into(),
+            tr!("Jellyfin 記住看到哪裡", "Jellyfin remembers where you stopped").into(),
             tr!(
-                "已經在 Jellyfin 的錄影，有人看過時「Jellyfin」標籤旁邊多一個眼睛，滑鼠移上去看誰看過、哪一天看的。",
-                "When someone has watched a recording in Jellyfin, an eye appears next to its “Jellyfin” tag; hover to see who and when."
+                "在這裡看到一半，電視上可以接著看，反過來也一樣；瀏覽視窗一打開先列「繼續觀看」「最近加入」。",
+                "Stop halfway here and pick up on the TV, or the other way round. The browser now starts with Continue watching and Recently added."
             )
             .into(),
             Try::Library(false),
         ),
         (
-            tr!("星號和我的最愛同步", "Stars sync with Favorites").into(),
+            tr!("下載家人傳的影片", "Download family videos").into(),
             tr!(
-                "在設定選「星號同步到」哪個 Jellyfin 帳號，這裡的星號和那個帳號的我的最愛就會互相同步。錄影的功能清單也多了「在 Jellyfin 開啟」。",
-                "Pick a Jellyfin account under “Sync stars to” and stars here stay in sync with its Favorites. Recordings also have “Open in Jellyfin”."
+                "Jellyfin 瀏覽視窗可以下載影片到這台電腦，就能剪輯、做加速版；勾選好幾支可以一次下載或刪除。",
+                "Download videos from the Jellyfin browser to edit them or make sped-up versions. Select several to download or delete them at once."
             )
             .into(),
-            Try::Settings(Page::Save),
+            Try::Library(false),
         ),
         (
-            tr!("人物、只給大人看", "People and adults only").into(),
+            tr!("排序、篩選、字幕", "Sort, filter, subtitles").into(),
             tr!(
-                "「影片資訊」可以填影片裡有誰，Jellyfin 點人名就列出他的影片；勾「只給大人看」，小孩帳號就看不到。",
-                "In Video details, list who's in the video (tap a name in Jellyfin to see their videos), or mark it adults only to hide it from children's profiles."
+                "資料夾裡可以只看還沒看過的、看到一半的、我的最愛；串流時也顯示 Jellyfin 上的字幕和章節。",
+                "In a folder, show only unwatched, partly watched or favorite videos. Streaming shows Jellyfin's subtitles and chapters too."
+            )
+            .into(),
+            Try::Library(false),
+        ),
+        (
+            tr!("NAS 空間不夠先提醒", "Low NAS space warning").into(),
+            tr!(
+                "傳之前先看 NAS 還有多少空間；傳好之後右下角顯示 Jellyfin 還在整理什麼，做完才拿掉。",
+                "Free space on the NAS is checked before sending, and the corner shows what Jellyfin is still processing until it's done."
             )
             .into(),
             Try::None,
-        ),
-        (
-            tr!("電視播不順？傳之前先檢查", "Checked before sending").into(),
-            tr!(
-                "HEVC、AV1 的影片有些電視不能直接播：傳的時候會提醒，也可以在設定打開「傳的時候轉成 H.264」。",
-                "Some TVs can't play HEVC or AV1 directly: you're told when sending, and Settings can convert them to H.264 first."
-            )
-            .into(),
-            Try::Settings(Page::Save),
         ),
     ]
 }
