@@ -1,7 +1,7 @@
 //! 時間軸（縮圖、保留 / 刪除的片段、頭尾把手、選取範圍、播放頭）、標註軌、放大時的捲軸。
 //!
 //! 時間軸：上方的尺規點一下或拖曳移動播放頭；縮圖上點一下只跳到那裡，拖曳是選取要刪除 / 加速的範圍
-//! （選好後範圍上方有「刪除」「加速」按鈕；碰到開頭或結尾的刪除就是剪掉頭尾）；按兩下選取分割好的那一段。
+//! （選好後範圍上方有「刪除」「速度」按鈕；碰到開頭或結尾的刪除就是剪掉頭尾）；按兩下選取分割好的那一段。
 //! 拖曳黃色把手調整頭尾、拖曳上方橫條移動整段（照原樣排開時）。標記：點一下跳過去、按兩下改名。
 //! 按右鍵：在那裡分割、刪除 / 加速 / 還原那一段、設為開頭 / 結尾、加標記（按在標記、分割點上時可以刪掉它）。
 //! 滾輪：放大 / 縮小（以滑鼠位置為中心）；Shift 或左右滾動 = 平移。
@@ -609,8 +609,11 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, toast: &mut
                 .small()
                 .height(24.0)
                 .tooltip(tr!("刪掉選取的部分（Delete），可以按 Ctrl+Z 復原", "Remove the selection (Delete). Ctrl+Z to undo"));
-            let fast =
-                Btn::new(tr!("加速", "Speed up")).icon(theme::Icon::Fast).small().height(24.0).tooltip(tr!("到「加速」分頁設定選取部分的速度", "Set the speed of the selection in the Speed tab"));
+            let fast = Btn::new(tr!("速度…", "Speed…"))
+                .icon(theme::Icon::Fast)
+                .small()
+                .height(24.0)
+                .tooltip(tr!("到「速度」分頁把選取的部分加速、放慢或定格", "Speed up, slow down or freeze the selection in the Speed tab"));
             let close = Btn::icon_only(theme::Icon::Close).ghost().small().height(24.0).tooltip(tr!("取消選取（Esc）", "Clear the selection (Esc)"));
             let gap = 4.0;
             let w = 8.0 + g.size().x + 8.0 + del.width(ui) + gap + fast.width(ui) + gap + close.width(ui) + 4.0;
@@ -768,8 +771,8 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, toast: &mut
                     TlKind::Select => (
                         CursorIcon::Text,
                         tr!(
-                            "點一下跳到這裡・拖曳選取一段（刪除、加速）・按兩下選取分割好的那一段・按住 Ctrl 可以一次選好幾段・按右鍵：分割、刪除、加速…",
-                            "Click to jump here · drag to select a section (delete, speed up) · double-click to select a split section · hold Ctrl to select several · right-click: split, delete, speed up…"
+                            "點一下跳到這裡・拖曳選取一段（刪除、改速度）・按兩下選取分割好的那一段・按住 Ctrl 可以一次選好幾段・按右鍵：分割、刪除、速度…",
+                            "Click to jump here · drag to select a section (delete, change speed) · double-click to select a split section · hold Ctrl to select several · right-click: split, delete, speed…"
                         )
                         .into(),
                     ),
@@ -843,13 +846,13 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, toast: &mut
                 item(ui, tr!("在這裡分割", "Split here").into(), Some(MenuAct::Split(m.t)), "");
                 let (del, speed) = match &target {
                     Some((_, list)) if list.len() > 1 => {
-                        (trf!("刪除選取的 {} 段", "Delete the {} selected sections", list.len()), trf!("加速選取的 {} 段…", "Speed up the {} selected sections…", list.len()))
+                        (trf!("刪除選取的 {} 段", "Delete the {} selected sections", list.len()), trf!("調整選取的 {} 段的速度…", "Change the speed of the {} selected sections…", list.len()))
                     }
                     Some((_, list)) => {
                         let r = list[0];
-                        (trf!("刪除這段（{} – {}）", "Delete this section ({} – {})", video_clock(r.0), video_clock(r.1)), tr!("加速這段…", "Speed up this section…").to_string())
+                        (trf!("刪除這段（{} – {}）", "Delete this section ({} – {})", video_clock(r.0), video_clock(r.1)), tr!("調整這段的速度…", "Change this section's speed…").to_string())
                     }
-                    None => (tr!("刪除這段", "Delete this section").to_string(), tr!("加速這段…", "Speed up this section…").to_string()),
+                    None => (tr!("刪除這段", "Delete this section").to_string(), tr!("調整這段的速度…", "Change this section's speed…").to_string()),
                 };
                 item(ui, del, target.as_ref().map(|(r, _)| MenuAct::Delete(*r)), why);
                 item(ui, speed, target.as_ref().map(|(r, _)| MenuAct::Speed(*r)), why);
@@ -939,7 +942,7 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, toast: &mut
                 let t = pos.map(|p| time_at(p.x)).unwrap_or_default();
                 if let Some(seg) = ed.segment_at(t) {
                     ed.set_sel(Some(seg));
-                    // 在「加速」分頁時留在那裡（選好一段就能設定速度）
+                    // 在「速度」分頁時留在那裡（選好一段就能設定速度）
                     if ed.tab != Tab::Speed {
                         ed.tab = Tab::Time;
                     }
@@ -1061,7 +1064,7 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, toast: &mut
                 ed.seek(t);
                 ed.set_sel(None);
             } else if matches!(kind, TlKind::Select | TlKind::SelA | TlKind::SelB) && ed.sel.is_some() {
-                // 選好要刪除的範圍：顯示「刪除這段」的按鈕（在「加速」分頁時顯示速度的按鈕）
+                // 選好要刪除的範圍：顯示「刪除這段」的按鈕（在「速度」分頁時顯示速度的按鈕）
                 if ed.tab != Tab::Speed {
                     ed.tab = Tab::Time;
                 }
@@ -1108,10 +1111,10 @@ pub(super) fn shortcut_sheet(resp: &egui::Response) {
             ("Shift+← / →", "往前 / 往後 1 秒", "Back / forward 1 second"),
             ("I / O", "播放頭設為開頭 / 結尾", "Set the start / end at the playhead"),
             ("S", "在播放頭分割", "Split at the playhead"),
-            ("縮圖上拖曳", "選取一段（上方有刪除、加速按鈕）", "Select a section (Delete and Speed up buttons appear above it)"),
+            ("縮圖上拖曳", "選取一段（上方有刪除、速度按鈕）", "Select a section (Delete and Speed buttons appear above it)"),
             ("按兩下", "選取分割好的那一段", "Select a split section"),
-            ("Ctrl+點 / 拖曳", "再加選一段（可以一次刪除、加速好幾段）", "Add another section (delete or speed up several at once)"),
-            ("右鍵", "時間軸上：分割、刪除、加速、還原…", "On the timeline: split, delete, speed up, restore…"),
+            ("Ctrl+點 / 拖曳", "再加選一段（可以一次刪除、改速度好幾段）", "Add another section (delete or change the speed of several at once)"),
+            ("右鍵", "時間軸上：分割、刪除、速度、還原…", "On the timeline: split, delete, speed, restore…"),
             ("Delete", "刪除選取的範圍或標註", "Delete the selected range or annotation"),
             ("D", "刪除選取的範圍", "Delete the selected range"),
             ("M", "在播放頭加標記", "Add a marker at the playhead"),

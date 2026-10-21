@@ -408,7 +408,7 @@ pub struct Editor {
     pub(crate) ann_styles: Vec<screenrecorder_core::annotate::AnnStyle>,
     /// 平滑游標停著不動時隱藏
     pub(crate) cursor_hide: bool,
-    /// 「加速」分頁：做成指定長度的輸入、選取片段的自訂倍率
+    /// 「速度」分頁：做成指定長度的輸入、選取片段的自訂倍率
     pub(crate) speed_target: String,
     pub(crate) sel_speed: f64,
     /// 逐字稿：每段加上時間、去掉贅字
@@ -1183,7 +1183,7 @@ impl Editor {
         })
     }
 
-    /// 「加速」分頁上的數字：變速的片段與定格各算一個，整支加速算一個
+    /// 「速度」分頁上的數字：變速的片段與定格各算一個，整支加速算一個
     pub(crate) fn speed_count(&self) -> usize {
         self.spec.fast.len() + self.spec.freezes.len() + usize::from(screenrecorder_core::edit::whole_speed(&self.spec) > 1.0)
     }
@@ -1772,7 +1772,7 @@ impl Editor {
         }
         self.splits.push(t);
         self.splits.sort_by(f64::total_cmp);
-        (trf!("已在 {} 分割，按兩下一段就能選取它（刪除、加速）", "Split at {}. Double-click a section to select it (delete or speed up)", video_clock(t)), false)
+        (trf!("已在 {} 分割，按兩下一段就能選取它（刪除、改速度）", "Split at {}. Double-click a section to select it (delete or change its speed)", video_clock(t)), false)
     }
 
     /// 在播放頭加上標記（輸出時變成章節）；回傳要顯示的訊息
@@ -2953,8 +2953,8 @@ fn transport(ed: &mut Editor, ui: &mut egui::Ui, toast: &mut Option<(String, boo
         let split = if text { split_full } else { Btn::icon_only(theme::Icon::Cut).ghost().small() };
         if split
             .tooltip(tr!(
-                "在這裡分割（S）：在播放頭把影片切開，之後按兩下一段就能選取它（刪除、加速）",
-                "Split here (S): cut the video at the playhead, then double-click a section to select it (delete or speed up)"
+                "在這裡分割（S）：在播放頭把影片切開，之後按兩下一段就能選取它（刪除、改速度）",
+                "Split here (S): cut the video at the playhead, then double-click a section to select it (delete or change its speed)"
             ))
             .show(ui)
             .clicked()

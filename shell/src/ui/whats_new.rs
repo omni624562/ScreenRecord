@@ -40,8 +40,8 @@ fn items(_app: &UiApp) -> Vec<(String, String, Try)> {
         (
             tr!("選好就能刪", "Delete right from the selection").into(),
             tr!(
-                "剪輯時在縮圖上拖過不要的部分，選取範圍上方就有「刪除」「加速」按鈕，不用再找右邊的面板。",
-                "Drag across the part you don't want and Delete and Speed up buttons appear right above the selection."
+                "剪輯時在縮圖上拖過不要的部分，選取範圍上方就有「刪除」「速度」按鈕，不用再找右邊的面板。",
+                "Drag across the part you don't want and Delete and Speed buttons appear right above the selection."
             )
             .into(),
             Try::Library(false),

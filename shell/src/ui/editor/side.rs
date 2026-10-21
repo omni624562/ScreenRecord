@@ -60,7 +60,7 @@ fn tabs(ed: &mut Editor, ui: &mut egui::Ui) {
     } else {
         vec![
             (Tab::Time, tr!("修剪", "Trim"), 0),
-            (Tab::Speed, tr!("加速", "Speed"), ed.speed_count()),
+            (Tab::Speed, tr!("速度", "Speed"), ed.speed_count()),
             (Tab::Crop, tr!("畫面", "Frame"), 0),
             (Tab::Ann, tr!("標註", "Annotate"), anns),
             (Tab::Subs, tr!("字幕", "Subtitles"), subs),
@@ -132,7 +132,7 @@ fn time_panel(ed: &mut Editor, ui: &mut egui::Ui, toast: &mut Option<(String, bo
                 "在縮圖上拖過不要的部分：開頭、中間、結尾都一樣（剪頭尾也可以拖兩端的黃色把手）",
                 "Drag across the part you don't want on the thumbnails, whether it's the start, the middle or the end (you can also drag the yellow handles to trim)",
             ),
-            ("2", "按選取範圍上方的「刪除」（或 Delete）；要加速就按「加速」", "Press “Delete” above the selection (or Delete). Press “Speed up” to speed it up instead"),
+            ("2", "按選取範圍上方的「刪除」（或 Delete）；要加速、放慢就按「速度」", "Press “Delete” above the selection (or Delete). Press “Speed” to speed it up or slow it down instead"),
             ("3", "刪掉的部分在時間軸上收起來，點紅色的復原鈕可以放回來（Ctrl+Z 也可以）", "Removed parts fold away on the timeline. Click the red restore button to bring one back (or press Ctrl+Z)"),
         ] {
             ui.horizontal_top(|ui| {
@@ -181,7 +181,7 @@ fn time_panel(ed: &mut Editor, ui: &mut egui::Ui, toast: &mut Option<(String, bo
             });
             if Btn::new(if all.len() > 1 { tr!("加速、放慢這幾段…", "Speed up or slow down…") } else { tr!("加速、放慢這段…", "Speed up or slow down…") })
                 .small()
-                .tooltip(tr!("到「加速」分頁設定這段的速度", "Set this section's speed in the Speed tab"))
+                .tooltip(tr!("到「速度」分頁設定這段的速度", "Set this section's speed in the Speed tab"))
                 .show(ui)
                 .clicked()
             {
@@ -251,7 +251,7 @@ fn time_panel(ed: &mut Editor, ui: &mut egui::Ui, toast: &mut Option<(String, bo
             });
         }
     }
-    hint(ui, tr!("加速、放慢、定格在「加速」分頁；章節在「字幕」分頁。", "Speed changes and freeze frames are in the Speed tab; chapters are in the Subtitles tab."));
+    hint(ui, tr!("加速、放慢、定格在「速度」分頁；章節在「字幕」分頁。", "Speed changes and freeze frames are in the Speed tab; chapters are in the Subtitles tab."));
     cleanup_panel(ed, ui, toast);
 }
 
