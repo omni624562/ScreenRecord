@@ -1131,9 +1131,9 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
     match req {
         None | Some(Req::Record) => {}
         Some(Req::Entry(act, e)) => {
-            // 剪輯影片、製作加速版時關掉清單；編輯截圖蓋在清單上，關掉編輯就回到清單
+            // 剪輯影片、製作加速版時先收起清單，剪輯、製作視窗關掉後回到這裡；編輯截圖蓋在清單上，關掉編輯就回到清單
             if matches!(act, EntryAction::Edit | EntryAction::Export | EntryAction::Compress | EntryAction::Vertical) && !super::dialogs::is_image(&e.media.path) && app.blocked(act).is_none() {
-                app.library = None;
+                app.leave_for_edit();
             }
             app.act(act, e);
         }

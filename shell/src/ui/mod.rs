@@ -138,6 +138,12 @@ pub enum EntryAction {
     OpenJellyfin,
 }
 
+/// 去剪輯、製作之前在哪裡（檔案庫、檢視器在看的那一支和看到幾秒）
+pub struct BackTo {
+    library: Option<library_dialog::LibraryDialog>,
+    viewer: Option<(LibraryEntry, f64)>,
+}
+
 pub struct UiApp {
     pub core: Arc<App>,
     pub rt: tokio::runtime::Handle,
@@ -181,6 +187,8 @@ pub struct UiApp {
     pub jf_watch_loading: bool,
     /// 瀏覽 Jellyfin 的視窗
     pub jf_browse: Option<jellyfin_browse::JfBrowse>,
+    /// 從檔案庫或檢視器去剪輯、製作時記下來：剪輯視窗、製作視窗關掉後回到原本的地方
+    pub back_to: Option<BackTo>,
     pub changelog_open: bool,
     /// 找到的攝影機（None = 還沒找完）；主畫面的攝影機選單與設定視窗共用
     pub cameras: Option<Vec<String>>,
@@ -340,6 +348,7 @@ impl UiApp {
             jf_watch: None,
             jf_watch_loading: false,
             jf_browse: None,
+            back_to: None,
             changelog_open: false,
             cameras: None,
             cameras_loading: false,
@@ -1019,6 +1028,34 @@ impl UiApp {
 
     /// 資料夾裡的影片可能被別的程式加進去、刪掉（檔案總管、手機同步）：切回這個視窗、關掉檔案庫時重讀最近錄影；
     /// 另外每 2 分鐘只看一下資料夾的檔名、大小、時間有沒有變（不讀影片），有變才重讀。錄影中不檢查
+    /// 去剪輯、製作之前：記下檔案庫（翻到哪一頁、勾了哪些）和檢視器在看的那一支，之後回到這裡
+    pub fn leave_for_edit(&mut self) {
+        let library = self.library.take();
+        let viewer = self.viewer.take().map(|v| (v.cur().clone(), v.time()));
+        if library.is_some() || viewer.is_some() {
+            self.back_to = Some(BackTo { library, viewer });
+        }
+    }
+
+    /// 剪輯視窗、製作視窗都關掉了：回到原本的檔案庫、檢視器（清單重讀，剛做好的版本才看得到）
+    fn go_back(&mut self) {
+        if self.back_to.is_none() || self.editor.is_some() || self.export_dlg.is_some() {
+            return;
+        }
+        let Some(back) = self.back_to.take() else { return };
+        if self.library.is_none() {
+            if let Some(mut d) = back.library {
+                d.dirty = true;
+                self.library = Some(d);
+            }
+        }
+        if self.viewer.is_none() {
+            if let Some((e, t)) = back.viewer {
+                viewer::reopen(self, e, t);
+            }
+        }
+    }
+
     fn refresh_recent_if_stale(&mut self, ctx: &egui::Context) {
         let focused = ctx.input(|i| i.viewport().focused).unwrap_or(true);
         let library_open = self.library.is_some();
@@ -1459,6 +1496,7 @@ impl eframe::App for UiApp {
         self.flush_settings();
         self.flush_pending();
         self.refresh_recent_if_stale(ctx);
+        self.go_back();
         self.poll_status();
         self.handle_close(ctx);
         self.apply_theme(ctx);

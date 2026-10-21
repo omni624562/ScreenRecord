@@ -280,6 +280,10 @@ pub enum Icon {
     Upload,
     /// 字幕（方框裡兩行字）
     Captions,
+    /// 收起右側面板：視窗外框，右邊一欄塗滿（面板開著），左邊箭頭往右
+    PanelHide,
+    /// 打開右側面板：右邊一欄空著（面板收起來了），左邊箭頭往左
+    PanelShow,
 }
 
 /// 在 rect（正方形）裡畫圖示
@@ -521,6 +525,18 @@ pub fn paint_icon(p: &Painter, rect: Rect, icon: Icon, color: Color32) {
                 p.circle_filled(at(x, 6.8), 0.8 * k, color);
             }
             line(&[(5.0, 9.8), (11.0, 9.8)]);
+        }
+        Icon::PanelHide | Icon::PanelShow => {
+            p.rect_stroke(Rect::from_min_max(at(1.5, 2.5), at(14.5, 13.5)), CornerRadius::same((1.5 * k) as u8), st, StrokeKind::Middle);
+            line(&[(10.0, 2.5), (10.0, 13.5)]);
+            if icon == Icon::PanelHide {
+                p.rect_filled(Rect::from_min_max(at(10.0, 2.5), at(14.5, 13.5)), CornerRadius::same((1.5 * k) as u8), color);
+                line(&[(3.5, 8.0), (7.5, 8.0)]);
+                line(&[(5.8, 6.2), (7.5, 8.0), (5.8, 9.8)]);
+            } else {
+                line(&[(3.5, 8.0), (7.5, 8.0)]);
+                line(&[(5.2, 6.2), (3.5, 8.0), (5.2, 9.8)]);
+            }
         }
         Icon::Captions => {
             p.rect_stroke(Rect::from_min_max(at(1.5, 3.0), at(14.5, 13.0)), CornerRadius::same((1.5 * k) as u8), st, StrokeKind::Middle);

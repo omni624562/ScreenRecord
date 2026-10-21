@@ -2237,17 +2237,18 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                         ed.close = true;
                     }
                     ui.add_space(10.0);
-                    // 收起 / 打開右側面板（畫面小的時候影片可以大一點）
+                    // 收起 / 打開右側面板（畫面小的時候影片可以大一點）：畫出視窗和右邊那一欄，箭頭是要往哪邊；
+                    // 和復原、重做用分隔線隔開，不會看成同一組的箭頭
                     let open = SIDE_OPEN.load(Ordering::Relaxed);
                     let (icon, tip) = if open {
-                        (Icon::ChevR, tr!("收起右側面板（影片變大）", "Hide the side panel (bigger video)"))
+                        (Icon::PanelHide, tr!("收起右側面板（影片變大）", "Hide the side panel (bigger video)"))
                     } else {
-                        (Icon::ChevL, tr!("打開右側面板", "Show the side panel"))
+                        (Icon::PanelShow, tr!("打開右側面板", "Show the side panel"))
                     };
                     if Btn::icon_only(icon).ghost().tooltip(tip).show(ui).clicked() {
                         SIDE_OPEN.store(!open, Ordering::Relaxed);
                     }
-                    ui.add_space(4.0);
+                    ui.add(egui::Separator::default().vertical().spacing(12.0));
                     if Btn::icon_only(Icon::Redo).ghost().enabled(!ed.redo.is_empty()).tooltip(tr!("重做（Ctrl+Y）", "Redo (Ctrl+Y)")).show(ui).clicked() {
                         ed.redo();
                     }
