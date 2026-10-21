@@ -2580,12 +2580,24 @@ fn recent_strip(app: &mut UiApp, ui: &mut Ui) {
                 app.load_recent();
             }
             // 一頁放幾張依寬度決定
-            // 右邊「檔案庫」：錄影、截圖兩個按鈕放在一起（點哪個直接開那一頁，一步就到）
-            let rec_btn = Btn::new(tr!("錄影", "Videos")).icon(Icon::Video).small().tooltip(tr!("全部錄影：搜尋、整理、合併、一次處理", "All recordings: search, organize, merge, batch process"));
-            let shot_btn =
-                Btn::new(tr!("截圖", "Screenshots")).icon(Icon::Camera).small().tooltip(tr!("全部截圖：用圖裡的字搜尋、整理、拼圖", "All screenshots: search by text in images, organize, combine"));
-            // 兩個按鈕上下疊（一樣寬），比並排省一半寬度，多放得下一張卡片
-            let btn_w = rec_btn.width(ui).max(shot_btn.width(ui));
+            // 右邊「檔案庫」：錄影、截圖（有設定 Jellyfin 時再加 Jellyfin）放在一起，點哪個直接開檔案庫的那一頁，一步就到
+            let jf = app.jellyfin().is_some();
+            // 三個疊起來時矮一點才放得下（和檔案庫的分頁一樣：錄影｜截圖｜Jellyfin）
+            let btn_h = if jf { 24.0 } else { 28.0 };
+            let rec_btn =
+                Btn::new(tr!("錄影", "Videos")).icon(Icon::Video).small().height(btn_h).tooltip(tr!("全部錄影：搜尋、整理、合併、一次處理", "All recordings: search, organize, merge, batch process"));
+            let shot_btn = Btn::new(tr!("截圖", "Screenshots"))
+                .icon(Icon::Camera)
+                .small()
+                .height(btn_h)
+                .tooltip(tr!("全部截圖：用圖裡的字搜尋、整理、拼圖", "All screenshots: search by text in images, organize, combine"));
+            let jf_btn = Btn::new("Jellyfin")
+                .icon(Icon::Play)
+                .small()
+                .height(btn_h)
+                .tooltip(tr!("Jellyfin 上的影片：搜尋、播放、下載、改影片資訊、找重複的", "Videos on Jellyfin: search, play, download, edit details, find duplicates"));
+            // 按鈕上下疊（一樣寬），比並排省寬度，多放得下一張卡片
+            let btn_w = rec_btn.width(ui).max(shot_btn.width(ui)).max(if jf { jf_btn.width(ui) } else { 0.0 });
             let lib_w = btn_w.max(LIB_BTN_W) + 8.0;
             let cards_w = ui.available_width() - lib_w - 44.0;
             // 卡片最窄：縮圖＋下面一排 6 個小圖示（播放、剪輯、製作、傳到媒體庫、資料夾、⋯）放得下就好
@@ -2617,9 +2629,9 @@ fn recent_strip(app: &mut UiApp, ui: &mut Ui) {
                 });
             });
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                // 檔案庫：上面一行標題，下面錄影、截圖上下疊（一樣寬）
-                ui.allocate_ui_with_layout(vec2(btn_w.max(LIB_BTN_W), 84.0), Layout::top_down(Align::Min), |ui| {
-                    ui.spacing_mut().item_spacing.y = 4.0;
+                // 檔案庫：上面一行標題，下面錄影、截圖（、Jellyfin）上下疊（一樣寬）
+                ui.allocate_ui_with_layout(vec2(btn_w.max(LIB_BTN_W), if jf { 96.0 } else { 84.0 }), Layout::top_down(Align::Min), |ui| {
+                    ui.spacing_mut().item_spacing.y = if jf { 3.0 } else { 4.0 };
                     ui.label(RichText::new(tr!("檔案庫", "Library")).font(theme::font_bold(12.5)).color(p.muted));
                     let w = btn_w.max(LIB_BTN_W);
                     if rec_btn.min_width(w).show(ui).clicked() {
@@ -2627,6 +2639,9 @@ fn recent_strip(app: &mut UiApp, ui: &mut Ui) {
                     }
                     if shot_btn.min_width(w).show(ui).clicked() {
                         app.library = Some(super::library_dialog::LibraryDialog::new(super::library_dialog::Kind::Shot));
+                    }
+                    if jf && jf_btn.min_width(w).show(ui).clicked() {
+                        super::library_dialog::open_jellyfin(app);
                     }
                 });
                 if Btn::icon_only(Icon::ChevR).ghost().small().enabled(app.recent_page < pages).tooltip(tr!("較舊的錄影", "Older recordings")).show(ui).clicked() {
