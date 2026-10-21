@@ -110,6 +110,8 @@ pub struct Remote {
     pub resume: f64,
     /// Jellyfin 做好的時間軸預覽縮圖
     pub trickplay: Option<screenrecorder_core::jellyfin::Trickplay>,
+    /// 在這個使用者的我的最愛裡（星號）
+    pub favorite: bool,
 }
 
 impl Remote {
@@ -119,7 +121,17 @@ impl Remote {
 
     pub fn new(id: &str, user: &str, subs: Vec<String>, file_name: &str) -> Remote {
         // 第一次記是看了 30 秒之後（剛開始時播放位置還是 0，會蓋掉上次看到的地方）
-        Remote { id: id.to_string(), user: user.to_string(), subs, subs_on: true, file_name: file_name.to_string(), saved: Some(std::time::Instant::now()), resume: 0.0, trickplay: None }
+        Remote {
+            id: id.to_string(),
+            user: user.to_string(),
+            subs,
+            subs_on: true,
+            file_name: file_name.to_string(),
+            saved: Some(std::time::Instant::now()),
+            resume: 0.0,
+            trickplay: None,
+            favorite: false,
+        }
     }
 }
 
@@ -588,6 +600,18 @@ enum Act {
     Related(usize),
     /// 串流的 Jellyfin 影片：下載到這台電腦
     Download,
+    /// 串流的 Jellyfin 影片：先下載，下載好接著剪輯、製作
+    DownloadThen(EntryAction),
+    /// 串流的 Jellyfin 影片：目前這一格設成 Jellyfin 上的封面
+    JfCover,
+    /// 串流的 Jellyfin 影片：改 Jellyfin 上的影片資訊
+    JfInfo,
+    /// 串流的 Jellyfin 影片：加進或拿出我的最愛
+    JfFav,
+    /// 串流的 Jellyfin 影片：在瀏覽器打開（true）或複製連結
+    JfLink(bool),
+    /// 後退或快轉幾秒
+    Skip(f64),
 }
 
 /// 標題列的一個按鈕；視窗窄時依序從後面的開始收進「⋯」
@@ -620,16 +644,11 @@ fn head_icon(label: &str, icon: Icon, tip: &str, act: Act) -> HeadBtn {
 /// 檢視器標題列上的按鈕（由左到右，越前面越常用；放不下的從後面開始收進「⋯」）。
 /// 錄影：和主畫面卡片、全部錄影同一份清單（entry_menu），常用的（剪輯、製作、傳到媒體庫）有文字放最前面，
 /// 其他照清單的分組和順序排成一排小圖示；資料夾、刪除固定在右上角
-fn head_buttons(app: &UiApp, e: &LibraryEntry, image: bool) -> Vec<HeadBtn> {
+fn head_buttons(app: &UiApp, e: &LibraryEntry, image: bool, remote: Option<&Remote>) -> Vec<HeadBtn> {
     let b = head_btn;
-    // 串流的影片：只能看、下載到這台電腦
+    // 串流的 Jellyfin 影片：和這台電腦上的錄影一樣的排法；要用到檔案的（剪輯、製作）先下載回來再接著做
     if is_remote(&e.media.path) {
-        return vec![head_btn(
-            tr!("下載到這台電腦", "Download"),
-            Some(Icon::Download),
-            tr!("把原檔下載到儲存位置，就能剪輯、做加速版", "Download the original to your save folder so you can edit it"),
-            Act::Download,
-        )];
+        return remote_buttons(app, remote);
     }
     if image {
         let mut edit = b(
@@ -692,6 +711,52 @@ fn head_buttons(app: &UiApp, e: &LibraryEntry, image: bool) -> Vec<HeadBtn> {
     list
 }
 
+/// 串流 Jellyfin 影片時標題列的按鈕：剪輯、製作（先下載）、下載｜設為封面、影片資訊｜星號、在 Jellyfin 開啟、複製連結
+fn remote_buttons(app: &UiApp, remote: Option<&Remote>) -> Vec<HeadBtn> {
+    let blocked = app.blocked(EntryAction::Export);
+    let then = tr!("（先下載到這台電腦的儲存位置，下載好就接著打開）", " (downloads it to your save folder first, then opens)");
+    let mut edit =
+        head_btn(tr!("剪輯", "Edit"), Some(Icon::Cut), &format!("{}{then}", tr!("剪掉不要的片段、加上標註、字幕", "Cut parts, add annotations and subtitles")), Act::DownloadThen(EntryAction::Edit));
+    edit.primary = true;
+    edit.blocked = app.blocked(EntryAction::Edit);
+    let make_items = [
+        (EntryAction::Export, tr!("加速版 / GIF / WebP…", "Sped-up / GIF / WebP…")),
+        (EntryAction::Compress, tr!("壓縮…", "Compress…")),
+        (EntryAction::Vertical, tr!("直式影片（Shorts / Reels）…", "Vertical video (Shorts / Reels)…")),
+    ]
+    .into_iter()
+    .map(|(a, label)| HeadBtn { blocked: blocked.clone(), ..head_btn(label, None, tr!("先下載到這台電腦，下載好就打開", "Downloads it first, then opens"), Act::DownloadThen(a)) })
+    .collect();
+    let make = HeadBtn {
+        items: make_items,
+        ..head_btn(
+            tr!("製作", "Make"),
+            Some(Icon::Fast),
+            &format!("{}{then}", tr!("另存加速版、GIF、WebP、直式影片，或壓縮", "Save a sped-up version, GIF, WebP or vertical video, or compress")),
+            Act::None,
+        )
+    };
+    let down = head_btn(tr!("下載到這台電腦", "Download"), Some(Icon::Download), tr!("把原檔下載到儲存位置", "Download the original to your save folder"), Act::Download);
+    let mut cover = head_icon(tr!("設為封面", "Set as cover"), Icon::Image, tr!("把正在看的這一格設成 Jellyfin 上的封面", "Use the frame you're watching as the cover on Jellyfin"), Act::JfCover);
+    cover.group = true;
+    let info = head_icon(tr!("影片資訊", "Details"), Icon::Info, tr!("改 Jellyfin 上的標題、說明、人物、標籤、年份", "Change the title, description, people, tags and year on Jellyfin"), Act::JfInfo);
+    let fav_on = remote.is_some_and(|r| r.favorite);
+    let mut fav = if fav_on {
+        head_icon(tr!("移除星號", "Remove star"), Icon::StarOn, tr!("從 Jellyfin 的我的最愛拿掉", "Remove from your Jellyfin favorites"), Act::JfFav)
+    } else {
+        head_icon(tr!("加上星號", "Star"), Icon::Star, tr!("加進 Jellyfin 的我的最愛", "Add to your Jellyfin favorites"), Act::JfFav)
+    };
+    fav.group = true;
+    let open = head_icon(tr!("在 Jellyfin 開啟", "Open in Jellyfin"), Icon::Video, tr!("用瀏覽器打開這支影片在 Jellyfin 的頁面", "Open this video's Jellyfin page in your browser"), Act::JfLink(true));
+    let link = head_icon(
+        tr!("複製 Jellyfin 連結", "Copy Jellyfin link"),
+        Icon::Link,
+        tr!("複製這支影片在 Jellyfin 的網址（可以貼給家人）", "Copy this video's Jellyfin address (to share with family)"),
+        Act::JfLink(false),
+    );
+    vec![edit, make, down, cover, info, fav, open, link]
+}
+
 pub fn show(app: &mut UiApp, ctx: &egui::Context) {
     let Some(mut v) = app.viewer.take() else { return };
     if let Some(f) = v.player.as_ref().and_then(|p| if let Playback::Ff(p) = p { p.take_frame() } else { None }) {
@@ -727,7 +792,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         keyboard(&mut v, ctx, &mut act);
     }
     let e = v.cur().clone();
-    let buttons = head_buttons(app, &e, v.is_image());
+    let buttons = head_buttons(app, &e, v.is_image(), v.remote.as_ref());
 
     let screen = ctx.content_rect();
     let (size, frame, area) = if v.full {
@@ -1182,6 +1247,74 @@ fn run_act(app: &mut UiApp, act: Act) {
             let item = (r.id.clone(), r.file_name.clone());
             super::jellyfin_browse::download(app, vec![item]);
         }
+        Act::DownloadThen(a) => {
+            let Some(v) = app.viewer.as_mut() else { return };
+            let Some(r) = v.remote.as_ref() else { return };
+            let item = (r.id.clone(), r.file_name.clone());
+            v.pause();
+            super::jellyfin_browse::download_then(app, item, a);
+        }
+        Act::Skip(d) => {
+            let Some(p) = app.viewer.as_ref().and_then(|v| v.player.as_ref()) else { return };
+            p.seek((p.time() + d).clamp(0.0, (p.duration() - 0.1).max(0.0)));
+        }
+        Act::JfCover => {
+            let Some(v) = app.viewer.as_ref() else { return };
+            let (Some(r), Some(jf), Some(ff)) = (v.remote.as_ref(), app.jellyfin(), app.core.ffmpeg_path()) else { return };
+            let (id, url, t) = (r.id.clone(), v.cur().media.path.clone(), v.player.as_ref().map(|p| p.time()).unwrap_or(0.0));
+            app.toast(tr!("正在把這一格設成 Jellyfin 上的封面…", "Setting this frame as the cover on Jellyfin…"), false);
+            let id2 = id.clone();
+            app.spawn(
+                async move {
+                    let pm = screenrecorder_core::cover::frame_at(&ff, &url, t).await.map_err(|e| e.message().to_string())?;
+                    let jpeg = screenrecorder_core::shot_edit::encode_jpeg(&pm, 90)?;
+                    tokio::task::spawn_blocking(move || jf.set_cover(&id, &jpeg)).await.unwrap_or_else(|e| Err(e.to_string()))
+                },
+                move |app, r| match r {
+                    Ok(()) => {
+                        super::jellyfin_browse::edited(app, &id2, "");
+                        app.toast(tr!("已設為 Jellyfin 上的封面", "Set as the cover on Jellyfin"), false);
+                    }
+                    Err(e) => app.toast(trf!("沒有設成封面：{e}", "Couldn't set the cover: {e}"), true),
+                },
+            );
+        }
+        Act::JfInfo => {
+            let Some(v) = app.viewer.as_mut() else { return };
+            let Some(r) = v.remote.as_ref() else { return };
+            let (id, user, name) = (r.id.clone(), r.user.clone(), base_name(&v.cur().media.name));
+            v.pause();
+            let (people, tags) = super::jellyfin_browse::known_people_tags(app);
+            super::jellyfin_edit::open(app, id, user, name, people, tags);
+        }
+        Act::JfFav => {
+            let Some(r) = app.viewer.as_ref().and_then(|v| v.remote.as_ref()) else { return };
+            let Some(jf) = app.jellyfin() else { return };
+            let (id, user, on) = (r.id.clone(), r.user.clone(), !r.favorite);
+            let id2 = id.clone();
+            app.spawn(async move { tokio::task::spawn_blocking(move || jf.set_favorite_item(&user, &id, on)).await.unwrap_or_else(|e| Err(e.to_string())) }, move |app, r| match r {
+                Ok(()) => {
+                    if let Some(r) = app.viewer.as_mut().and_then(|v| v.remote.as_mut()).filter(|r| r.id == id2) {
+                        r.favorite = on;
+                    }
+                    super::jellyfin_browse::set_favorite(app, &id2, on);
+                    app.toast(
+                        if on {
+                            tr!("已加進 Jellyfin 的我的最愛", "Added to your Jellyfin favorites")
+                        } else {
+                            tr!("已從 Jellyfin 的我的最愛拿掉", "Removed from your Jellyfin favorites")
+                        },
+                        false,
+                    );
+                }
+                Err(e) => app.toast(trf!("沒有改到 Jellyfin 的我的最愛：{e}", "Couldn't change your Jellyfin favorites: {e}"), true),
+            });
+        }
+        Act::JfLink(open) => {
+            let Some(r) = app.viewer.as_ref().and_then(|v| v.remote.as_ref()) else { return };
+            let id = r.id.clone();
+            app.jellyfin_link_id(id, open);
+        }
         Act::Delete => delete_current(app),
         Act::Rename => {
             let Some(v) = app.viewer.as_mut() else { return };
@@ -1330,7 +1463,7 @@ fn keyboard(v: &mut Viewer, ctx: &egui::Context, act: &mut Act) {
         if i.key_pressed(Key::Space) {
             toggle_play(p);
         }
-        let step = if i.modifiers.shift { 1.0 } else { 5.0 };
+        let step = if i.modifiers.shift { 1.0 } else { SKIP };
         if i.key_pressed(Key::ArrowLeft) {
             p.seek((p.time() - step).max(0.0));
         }
@@ -1494,6 +1627,9 @@ fn video_stage(v: &mut Viewer, painter: &egui::Painter, stage: Rect, resp: &egui
     }
 }
 
+/// 後退 / 快轉一次跳幾秒（播放列的按鈕、←→ 鍵）
+const SKIP: f64 = 10.0;
+
 fn video_bar(v: &mut Viewer, ui: &mut egui::Ui, act: &mut Act) {
     let p = theme::pal(ui);
     let chapters = v.cur().media.chapters.clone();
@@ -1506,8 +1642,15 @@ fn video_bar(v: &mut Viewer, ui: &mut egui::Ui, act: &mut Act) {
     let dur = player.duration().max(0.001);
     let t = player.time().min(dur);
     let tip = if playing { tr!("暫停（空白鍵）", "Pause (Space)") } else { tr!("播放（空白鍵）", "Play (Space)") };
+    // 後退 10 秒｜播放｜快轉 10 秒
+    if Btn::new("10").icon(Icon::Undo).ghost().small().tooltip(tr!("後退 10 秒（←）", "Back 10 seconds (←)")).show(ui).clicked() {
+        *act = Act::Skip(-SKIP);
+    }
     if Btn::icon_only(if playing { Icon::Pause } else { Icon::Play }).small().tooltip(tip).show(ui).clicked() {
         toggle_play(player);
+    }
+    if Btn::new("10").icon(Icon::Redo).ghost().small().tooltip(tr!("快轉 10 秒（→）", "Forward 10 seconds (→)")).show(ui).clicked() {
+        *act = Act::Skip(SKIP);
     }
     ui.label(RichText::new(format!("{} / {}", short_clock(t), short_clock(dur))).font(theme::mono(12.5)));
     // 速度、全螢幕、音量（右邊），進度列填滿中間
@@ -1535,7 +1678,7 @@ fn video_bar(v: &mut Viewer, ui: &mut egui::Ui, act: &mut Act) {
             Some(c) => format!("{}・{}", short_clock(at), c.title),
             None => short_clock(at),
         };
-        let keys = tr!("←/→ 倒退/快轉 5 秒、空白鍵 播放/暫停", "←/→ back/forward 5 s, Space play/pause");
+        let keys = tr!("←/→ 後退/快轉 10 秒、空白鍵 播放/暫停", "←/→ back/forward 10 s, Space play/pause");
         // Jellyfin 做好時間軸預覽縮圖的：滑鼠移到進度列上看得到那一秒的畫面
         let thumb = v.remote.as_ref().and_then(|r| r.trickplay.as_ref()).and_then(|tp| {
             let (index, uv) = tp.at(at);

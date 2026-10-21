@@ -498,6 +498,12 @@ impl Jellyfin {
         Ok(ids.len())
     }
 
+    /// 這支影片（編號）加進或拿出 user 的我的最愛
+    pub fn set_favorite_item(&self, user: &str, id: &str, on: bool) -> Result<(), String> {
+        let url = format!("{}/Users/{user}/FavoriteItems/{id}", self.url);
+        self.call(if on { agent().post(&url) } else { agent().delete(&url) }).map(|_| ())
+    }
+
     /// 排程工作做完之前，畫面右下角顯示「做時間軸預覽縮圖 45%」（每 5 秒問一次，最多 30 分鐘）
     fn watch_task(&self, key: &str, name: &str, what: &str) {
         let start = std::time::Instant::now();
@@ -949,6 +955,8 @@ pub struct JfItem {
     pub date: String,
     /// 這個使用者看過了
     pub played: bool,
+    /// 在這個使用者的我的最愛裡
+    pub favorite: bool,
     /// 資料夾裡有幾個
     pub children: u32,
     pub has_image: bool,
@@ -1133,6 +1141,7 @@ pub fn parse_items(json: &str) -> (Vec<JfItem>, usize) {
                         has_audio: streams.iter().any(|s| s.get("Type").and_then(Value::as_str) == Some("Audio")),
                         date,
                         played: i.pointer("/UserData/Played").and_then(Value::as_bool) == Some(true),
+                        favorite: i.pointer("/UserData/IsFavorite").and_then(Value::as_bool) == Some(true),
                         children: i.get("ChildCount").and_then(Value::as_u64).unwrap_or(0) as u32,
                         has_image: i.pointer("/ImageTags/Primary").is_some(),
                         resume: i.pointer("/UserData/PlaybackPositionTicks").and_then(Value::as_f64).unwrap_or(0.0) / 1e7,

@@ -167,14 +167,32 @@ fn load_facets(app: &mut UiApp) {
     );
 }
 
-/// 在「影片資訊」改好了：名稱跟著換、縮圖重讀（可能換了封面），人物、標籤重讀
+/// 在「影片資訊」改好了：名稱跟著換、縮圖重讀（可能換了封面），人物、標籤重讀；正在播這支的話標題也換
 pub fn edited(app: &mut UiApp, id: &str, title: &str) {
+    if let Some(v) = app.viewer.as_mut().filter(|_| !title.trim().is_empty()) {
+        for e in v.list.iter_mut().filter(|e| Jellyfin::item_of_stream(&e.media.path).as_deref() == Some(id)) {
+            let ext = e.media.name.rsplit_once('.').map(|(_, x)| x.to_string()).unwrap_or_else(|| "mp4".into());
+            e.media.name = format!("{}.{ext}", title.trim());
+        }
+    }
     let Some(d) = app.jf_browse.as_mut() else { return };
     if !title.trim().is_empty() {
         d.each_mut(id, |it| it.name = title.trim().to_string());
     }
     d.posters.remove(id);
     load_facets(app);
+}
+
+/// 伺服器上已經有的人物、標籤（影片資訊對話框點一下加入）；Jellyfin 分頁沒開時空的
+pub fn known_people_tags(app: &UiApp) -> (Vec<String>, Vec<String>) {
+    app.jf_browse.as_ref().map(|d| (d.persons.iter().map(|(_, n)| n.clone()).collect(), d.tags.clone())).unwrap_or_default()
+}
+
+/// 在播放畫面按了星號：清單上的那一支也跟著改
+pub fn set_favorite(app: &mut UiApp, id: &str, on: bool) {
+    if let Some(d) = app.jf_browse.as_mut() {
+        d.each_mut(id, |it| it.favorite = on);
+    }
 }
 
 /// 讀這一格的縮圖（背景下載、轉成材質）
@@ -317,6 +335,41 @@ pub fn download(app: &mut UiApp, list: Vec<(String, String)>) {
     );
 }
 
+/// 先下載到這台電腦，下載好接著剪輯、製作（已經下載過的直接用那一份）
+pub fn download_then(app: &mut UiApp, item: (String, String), then: super::EntryAction) {
+    let Some(jf) = app.jellyfin() else { return };
+    if let Some(why) = app.blocked(then) {
+        return app.toast(why, true);
+    }
+    let dir = std::path::PathBuf::from(app.s.out_dir(&app.env));
+    let (id, file) = item;
+    app.toast(trf!("正在下載「{file}」，下載好就打開", "Downloading “{file}”; it opens when done"), false);
+    app.spawn(
+        async move {
+            tokio::task::spawn_blocking(move || -> Result<std::path::PathBuf, String> {
+                match free_name(&dir, &file) {
+                    Some(to) => jf.download(&id, &to).map(|_| to),
+                    None => Ok(dir.join(&file)),
+                }
+            })
+            .await
+            .unwrap_or_else(|e| Err(e.to_string()))
+        },
+        move |app, r| match r {
+            Ok(path) => {
+                if let Some(d) = app.library.as_mut() {
+                    d.reload();
+                }
+                app.load_recent();
+                // 剪輯、製作視窗關掉後回到原本的播放畫面
+                app.leave_for_edit();
+                app.act_path(then, path.display().to_string());
+            }
+            Err(e) => app.toast(trf!("沒有下載完：{e}", "The download didn't finish: {e}"), true),
+        },
+    );
+}
+
 /// 下載的檔名：還沒有就用原本的；同名同大小（已經下載過）None；同名不同的加上 (2)、(3)…
 fn free_name(dir: &std::path::Path, file: &str) -> Option<std::path::PathBuf> {
     let file = if file.trim().is_empty() { "jellyfin.mp4" } else { file };
@@ -366,6 +419,7 @@ fn remote_of(jf: &Jellyfin, d: &JfBrowse, item: &JfItem) -> viewer::Remote {
     let mut r = viewer::Remote::new(&item.id, d.user.as_deref().unwrap_or(""), item.subs.iter().map(|s| jf.subtitle_url(&item.id, s.index)).collect(), &item.file_name);
     r.resume = item.resume;
     r.trickplay = item.trickplay.clone();
+    r.favorite = item.favorite;
     r
 }
 
