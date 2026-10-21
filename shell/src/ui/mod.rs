@@ -187,7 +187,7 @@ pub struct UiApp {
     /// Jellyfin 上誰看過哪支、我的最愛（什麼時候讀的）；正在背景讀
     pub jf_watch: Option<(Instant, screenrecorder_core::jellyfin::WatchState)>,
     pub jf_watch_loading: bool,
-    /// 瀏覽 Jellyfin 的視窗
+    /// 檔案庫「Jellyfin」分頁的內容（關掉檔案庫時清掉）
     pub jf_browse: Option<jellyfin_browse::JfBrowse>,
     /// 在瀏覽視窗改 Jellyfin 上的影片資訊
     pub jf_edit: Option<jellyfin_edit::JfEdit>,
@@ -1644,9 +1644,6 @@ impl eframe::App for UiApp {
         if self.library.is_some() {
             library_dialog::show(self, &ctx);
             part(self, "全部錄影");
-        }
-        if self.jf_browse.is_some() {
-            jellyfin_browse::show(self, &ctx);
         }
         if self.jf_dupes.is_some() {
             jellyfin_dupes::show(self, &ctx);

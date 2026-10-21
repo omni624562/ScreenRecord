@@ -1312,7 +1312,10 @@ fn more_tools(app: &mut UiApp, ui: &mut Ui, active: bool) {
         if app.jellyfin().is_some()
             && ui
                 .button(tr!("瀏覽 Jellyfin…", "Browse Jellyfin…"))
-                .on_hover_text(tr!("看 Jellyfin 上的影片（家人傳上去的也看得到），點了就在這裡播放", "Watch videos on Jellyfin (including ones family uploaded) right here"))
+                .on_hover_text(tr!(
+                    "打開檔案庫的「Jellyfin」分頁：看 Jellyfin 上的影片（家人傳上去的也看得到），點了就在這裡播放",
+                    "Opens the Jellyfin tab of the library: watch videos on Jellyfin (including ones family uploaded) right here"
+                ))
                 .clicked()
         {
             jellyfin = true;
@@ -1331,7 +1334,7 @@ fn more_tools(app: &mut UiApp, ui: &mut Ui, active: bool) {
         super::notes::toggle(app);
     }
     if jellyfin {
-        super::jellyfin_browse::open(app);
+        super::library_dialog::open_jellyfin(app);
     }
 }
 

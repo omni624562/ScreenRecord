@@ -278,7 +278,7 @@ pub fn tick(app: &mut UiApp, ctx: &egui::Context) {
                         app.whats_new_checked = true;
                         app.whats_new_open = true;
                     }
-                    _ if a == "jellyfin" => super::jellyfin_browse::open(app),
+                    _ if a == "jellyfin" => super::library_dialog::open_jellyfin(app),
                     _ if a == "monitors" => fake_monitors(app),
                     _ if a == "unplug" => fake_unplug(app),
                     // 把操作視窗移到 x,y（例如螢幕外），2 秒後拉回看得到的地方（測試螢幕改變時的處理）

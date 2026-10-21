@@ -1,4 +1,4 @@
-//! 找出 Jellyfin 上重複的影片（從瀏覽視窗打開）：一組一組並排列出來，預設留畫質最好的那一份、其他打勾，
+//! 找出 Jellyfin 上重複的影片（從檔案庫的 Jellyfin 分頁打開）：一組一組並排列出來，預設留畫質最好的那一份、其他打勾，
 //! 確認後從 Jellyfin 刪除打勾的。比對方法見 core::jf_dupes
 
 use super::theme::{self, Btn, Icon};
@@ -27,7 +27,7 @@ pub struct JfDupes {
     posters: HashMap<String, Option<egui::TextureHandle>>,
 }
 
-/// 打開並開始找（user：瀏覽視窗用的使用者，看過了沒照他的）
+/// 打開並開始找（user：Jellyfin 分頁用的使用者，看過了沒照這個使用者）
 pub fn open(app: &mut UiApp, user: String) {
     let Some(jf) = app.jellyfin() else { return };
     let Some(ffmpeg) = app.core.ffmpeg_path() else {

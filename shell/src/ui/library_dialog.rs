@@ -40,6 +40,8 @@ pub struct LibraryDialog {
     /// 工具列搜尋框右邊所有東西的寬度（上一格量到的；[錄影, 截圖][完整, 只有圖示]）：視窗窄時搜尋框縮短、按鈕只顯示圖示
     bar_w: [[f32; 2]; 2],
     kind: Kind,
+    /// 切到「Jellyfin」分頁（整個檔案庫改成瀏覽 Jellyfin；kind 留著，切回來還是原本的錄影或截圖）
+    jellyfin: bool,
     /// 看哪個資料夾：None = 目前的儲存位置；也可以看之前用過的資料夾
     dir: Option<String>,
     /// 上次讀取的資料夾（儲存位置改了就重新讀取）
@@ -187,6 +189,7 @@ impl LibraryDialog {
             prefetch: vec![],
             bar_w: [[440.0, 300.0], [560.0, 330.0]],
             kind,
+            jellyfin: false,
             dir: None,
             loaded_dir: String::new(),
             query: String::new(),
@@ -346,6 +349,14 @@ fn export_label(x: &ExportInfo) -> String {
     }
 }
 
+/// 打開檔案庫，停在「Jellyfin」分頁（「更多工具 → 瀏覽 Jellyfin…」）；切回錄影、截圖時是錄影
+pub fn open_jellyfin(app: &mut UiApp) {
+    let mut d = LibraryDialog::new(Kind::Video);
+    d.jellyfin = true;
+    app.library = Some(d);
+    super::jellyfin_browse::open(app);
+}
+
 fn load(app: &mut UiApp) {
     let Some((kind, browsing)) = app.library.as_ref().map(|d| (d.kind, d.dir.is_some())) else {
         return;
@@ -446,7 +457,7 @@ enum Req {
     ChooseDir,
     /// 匯入影片（選檔案；MOV、MKV 等轉成 MP4）
     Import,
-    /// 瀏覽 Jellyfin 上的影片
+    /// 切到「Jellyfin」分頁：還沒讀過就開始讀
     Jellyfin,
     /// 在檔案總管開啟資料夾
     OpenDir(String),
@@ -587,6 +598,14 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         return;
     };
     watch_merge(app, &mut d);
+    // 「Jellyfin」分頁：設定裡拿掉 Jellyfin 了就回到錄影或截圖
+    let jf_url = app.jellyfin().is_some().then(|| app.s.jellyfin_url.trim().to_string());
+    if jf_url.is_none() {
+        d.jellyfin = false;
+    }
+    // Jellyfin 分頁的內容要在對話框裡畫，先拿出來（畫完再放回去）
+    let mut jf = if d.jellyfin { app.jf_browse.take() } else { None };
+    let mut jf_out = None;
     // 只看已選取，但全部取消了（或刪掉了）：回到全部
     if d.only_selected && d.selected.is_empty() {
         d.only_selected = false;
@@ -619,8 +638,27 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                 close = true;
             }
             rui.add_space(8.0);
-            // 由右往左排：畫面上是「錄影｜截圖」
-            if theme::segmented(rui, &mut d.kind, &[(Kind::Shot, tr!("截圖", "Screenshots")), (Kind::Video, tr!("錄影", "Recordings"))], true) {
+            // 由右往左排：畫面上是「錄影｜截圖｜Jellyfin」（有設定 Jellyfin 才有第三個）
+            let mut tab = if d.jellyfin { None } else { Some(d.kind) };
+            let mut tabs = vec![(Some(Kind::Shot), tr!("截圖", "Screenshots")), (Some(Kind::Video), tr!("錄影", "Recordings"))];
+            if jf_url.is_some() {
+                tabs.insert(0, (None, "Jellyfin"));
+            }
+            let changed = theme::segmented(rui, &mut tab, &tabs, true);
+            if changed {
+                match tab {
+                    None => {
+                        d.jellyfin = true;
+                        req = Some(Req::Jellyfin);
+                    }
+                    Some(k) => {
+                        d.jellyfin = false;
+                        d.kind = k;
+                    }
+                }
+            }
+            // 錄影、截圖互換時（切到 Jellyfin 再切回原本的不算）
+            if changed && tab.is_some_and(|k| k != kind) {
                 d.filter = LibraryFilter::All;
                 if d.sort == LibrarySort::Duration {
                     d.sort = LibrarySort::New;
@@ -639,8 +677,12 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
             let lui = &mut ui.new_child(UiBuilder::new().max_rect(left).layout(Layout::top_down(Align::Min)));
             lui.spacing_mut().item_spacing.y = 2.0;
             let shot = d.kind == Kind::Shot;
-            // 和主畫面的「檔案庫：錄影｜截圖」同一個名稱；右上角的「錄影｜截圖」就是切換
+            // 和主畫面的「檔案庫：錄影｜截圖」同一個名稱；右上角的「錄影｜截圖｜Jellyfin」就是切換
             lui.add(egui::Label::new(RichText::new(tr!("檔案庫", "Library")).font(theme::font_bold(17.0))).truncate());
+            // Jellyfin 分頁：下面寫伺服器的網址（不是這台電腦的資料夾）
+            if let Some(url) = jf_url.as_deref().filter(|_| d.jellyfin) {
+                lui.add(egui::Label::new(theme::muted(lui, url)).truncate());
+            } else {
             lui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 2.0;
                 let other = d.dir.is_some();
@@ -681,8 +723,23 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                     chip(ui, &trf!("＋舊資料夾 {n} 個", "+{n} old folder(s)", n = extra.len()), Tone::Plain, false).on_hover_text(tip);
                 }
             });
+            }
         }
         ui.advance_cursor_after_rect(head);
+        // Jellyfin 分頁：搜尋、目前位置、縮圖格、勾選與換頁都是 Jellyfin 自己的
+        if d.jellyfin {
+            ui.add_space(8.0);
+            match jf.as_mut() {
+                Some(b) => jf_out = Some(super::jellyfin_browse::panel(ui, b)),
+                None => {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label(tr!("正在讀取…", "Loading…"));
+                    });
+                }
+            }
+            return;
+        }
         let shot = d.kind == Kind::Shot;
         ui.add_space(8.0);
         // 搜尋、篩選、排序：放不下（視窗窄、介面放大）時搜尋框縮短，再放不下按鈕只顯示圖示（名稱在滑鼠提示）
@@ -872,17 +929,6 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                 .clicked()
             {
                 req = Some(Req::Import);
-            }
-            // 瀏覽 Jellyfin 上的影片（家人傳上去的也看得到），在這裡串流播放
-            if !shot
-                && app.jellyfin().is_some()
-                && btn("Jellyfin", Icon::Video, tr!("瀏覽 Jellyfin 上的影片，點了就在這裡播放（不在家也能看）", "Browse videos on Jellyfin and play them here (works away from home too)"))
-                    .small()
-                    .ghost()
-                    .show(ui)
-                    .clicked()
-            {
-                req = Some(Req::Jellyfin);
             }
             if shot {
                 let b = Btn::new(tr!("整理", "Tidy up")).icon(Icon::ChevD).small().ghost().tooltip(tr!("清理舊截圖、找出相似的截圖", "Clean up old screenshots, find similar ones")).show(ui);
@@ -1111,9 +1157,15 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         drag_out(app, &list);
     }
     if modal.should_close() && app.ask.is_none() && !covered {
-        close = true;
+        // Jellyfin 分頁：檢視器、影片資訊、找重複開著時 Esc 是關它們；有勾選時 Esc 先取消勾選
+        let jf_busy = app.viewer.is_some() || app.jf_edit.is_some() || app.jf_dupes.is_some();
+        if !d.jellyfin || !jf_busy && !jf.as_mut().is_some_and(|b| b.clear_selection()) {
+            close = true;
+        }
     }
     if close || matches!(req, Some(Req::Record)) {
+        // 關掉檔案庫：Jellyfin 下次打開重新讀
+        app.jf_browse = None;
         if matches!(req, Some(Req::Record)) {
             start_recording(app);
         }
@@ -1128,6 +1180,13 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
     if let Some((e, t)) = jump {
         super::viewer::open_at(app, e, t);
     }
+    // 換到別的分頁也留著，切回來還在同一個位置
+    if let Some(b) = jf {
+        match jf_out {
+            Some(out) => super::jellyfin_browse::apply(app, b, out),
+            None => app.jf_browse = Some(b),
+        }
+    }
     match req {
         None | Some(Req::Record) => {}
         Some(Req::Entry(act, e)) => {
@@ -1140,7 +1199,11 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         Some(Req::Rename(e)) => rename_entry(app, e),
         Some(Req::DeleteSelected) => remove_selected(app),
         Some(Req::Import) => super::import::pick(app),
-        Some(Req::Jellyfin) => super::jellyfin_browse::open(app),
+        Some(Req::Jellyfin) => {
+            if app.jf_browse.is_none() {
+                super::jellyfin_browse::open(app);
+            }
+        }
         Some(Req::ChooseDir) => match app.library.as_ref().map(|d| d.kind) {
             Some(Kind::Shot) => super::settings_dialog::choose_shot_dir(app),
             _ => super::settings_dialog::choose_output_dir(app),

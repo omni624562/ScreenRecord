@@ -1,4 +1,4 @@
-//! 在 Jellyfin 瀏覽視窗直接改影片資訊：家人用手機傳上去的影片不用先下載，就能改標題、說明、人物、標籤、年份、封面。
+//! 在檔案庫的 Jellyfin 分頁直接改影片資訊：家人用手機傳上去的影片不用先下載，就能改標題、說明、人物、標籤、年份、封面。
 //! 見 core::jellyfin 的 item_info、set_info、set_cover
 
 use super::theme::{self, Btn, Icon};
@@ -173,8 +173,8 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
             ui.add_space(6.0);
             ui.label(
                 RichText::new(tr!(
-                    "直接改 Jellyfin 上的資料，電視、手機上看得到；NAS 上的影片檔不會動。瀏覽視窗最上層的「人物」「標籤」「年份」可以找出同一個人、同一個標籤的影片。",
-                    "This changes the details on Jellyfin, so TVs and phones see them; the file on the NAS isn't touched. Use People, Tag and Year at the top of the browser to find matching videos."
+                    "直接改 Jellyfin 上的資料，電視、手機上看得到；NAS 上的影片檔不會動。檔案庫 Jellyfin 分頁上方的「人物」「標籤」「年份」可以找出同一個人、同一個標籤的影片。",
+                    "This changes the details on Jellyfin, so TVs and phones see them; the file on the NAS isn't touched. Use People, Tag and Year at the top of the library's Jellyfin tab to find matching videos."
                 ))
                 .font(theme::font(12.0))
                 .color(pal.muted),

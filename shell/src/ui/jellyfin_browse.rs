@@ -1,14 +1,15 @@
-//! 瀏覽 Jellyfin：列出伺服器上的媒體庫、資料夾、影片（家人用手機傳上去的也看得到），點了就在檢視器裡串流播放。
+//! 檔案庫的「Jellyfin」分頁：列出伺服器上的媒體庫、資料夾、影片（家人用手機傳上去的也看得到），點了就在檢視器裡串流播放。
 //! 不在家時只要連得到 Jellyfin 也能看。最上層先列「繼續觀看」「最近加入」；資料夾裡可以排序、只看沒看過的等。
 //! 可以多選一次下載到這台電腦（下載回來就能剪輯）或刪除。見 core::jellyfin 的 views、items、stream_url
 
 use super::theme::{self, Btn, Icon};
 use super::{viewer, ToastAction, UiApp};
-use eframe::egui::{self, pos2, vec2, Align, Align2, Id, Layout, Rect, RichText, Sense};
+use eframe::egui::{self, pos2, vec2, Align, Align2, Layout, Rect, RichText, Sense, UiBuilder};
 use screenrecorder_core::jellyfin::{Jellyfin, JfFacet, JfFilter, JfItem, JfKind, JfSort};
 use screenrecorder_core::types::{Chapter, LibraryEntry, MediaInfo};
 use screenrecorder_core::{tr, trf};
 use std::collections::{BTreeMap, HashMap};
+use std::time::{Duration, Instant};
 
 /// 一頁幾個
 const PAGE: usize = 60;
@@ -16,6 +17,8 @@ const PAGE: usize = 60;
 const CELL_W: f32 = 196.0;
 /// 「繼續觀看」「最近加入」各讀幾個
 const ROW_ITEMS: usize = 12;
+/// 搜尋框停止打字多久之後才找（每打一個字就問伺服器太多次）
+const SEARCH_WAIT: Duration = Duration::from_millis(400);
 
 enum Poster {
     Loading,
@@ -32,6 +35,8 @@ pub struct JfBrowse {
     /// 搜尋框的字、目前列出的是哪個搜尋
     search: String,
     searched: String,
+    /// 上次打字的時間（停一下才找）
+    search_at: Option<Instant>,
     items: Option<Vec<JfItem>>,
     /// 最上層的「繼續觀看」「最近加入」
     resume: Vec<JfItem>,
@@ -68,7 +73,7 @@ impl JfBrowse {
     }
 }
 
-/// 打開瀏覽視窗（沒設定 Jellyfin 時提示到設定填）
+/// 開始瀏覽（檔案庫切到「Jellyfin」分頁時；沒設定 Jellyfin 時提示到設定填）
 pub fn open(app: &mut UiApp) {
     if app.jellyfin().is_none() {
         return app.toast(tr!("要先在「設定 → 存檔與分享」填 Jellyfin 的網址和 API 金鑰", "Fill in the Jellyfin address and API key in Settings → Saving & sharing first"), true);
@@ -554,71 +559,132 @@ fn section(ui: &mut egui::Ui, title: &str) {
     ui.add_space(4.0);
 }
 
-pub fn show(app: &mut UiApp, ctx: &egui::Context) {
-    let Some(mut d) = app.jf_browse.take() else { return };
-    let mut close = false;
-    let mut reload = false;
-    let mut picked = Picked::default();
-    let mut bulk_download = false;
-    let mut bulk_delete = false;
-    let mut find_dupes = false;
-    let modal = egui::Modal::new(Id::new("jellyfin-browse")).frame(theme::modal_frame(ctx)).show(ctx, |ui| {
-        let p = theme::pal(ui);
-        let w = (ctx.content_rect().width() - 80.0).clamp(420.0, 1040.0);
-        let h = (ctx.content_rect().height() - 120.0).clamp(320.0, 760.0);
-        ui.set_width(w);
-        ui.horizontal(|ui| {
-            ui.label(RichText::new("Jellyfin").font(theme::font_bold(17.0)));
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if Btn::icon_only(Icon::Close).ghost().small().tooltip(tr!("關閉（Esc）", "Close (Esc)")).show(ui).clicked() {
-                    close = true;
-                }
-                // 搜尋整個伺服器
-                let r = ui.add(egui::TextEdit::singleline(&mut d.search).desired_width(220.0).hint_text(tr!("搜尋 Jellyfin 上的影片", "Search videos on Jellyfin")));
-                if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) && d.search.trim() != d.searched {
-                    d.page = 0;
-                    reload = true;
-                }
-                if !d.searched.is_empty() && Btn::new(tr!("清除搜尋", "Clear search")).small().ghost().show(ui).clicked() {
-                    d.search.clear();
-                    d.page = 0;
-                    reload = true;
-                }
-            });
-        });
-        // 目前位置：媒體庫 › family › 2024，點前面的回到那一層；資料夾裡右邊可以排序、篩選
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing = vec2(2.0, 4.0);
-            if !d.searched.is_empty() {
-                ui.label(RichText::new(trf!("搜尋「{}」", "Search “{}”", d.searched)).color(p.muted));
-                return;
+/// 在檔案庫「Jellyfin」分頁上按了什麼（畫完之後才處理，處理時要用到 app）
+#[derive(Default)]
+pub struct Panel {
+    reload: bool,
+    picked: Picked,
+    bulk_download: bool,
+    bulk_delete: bool,
+    find_dupes: bool,
+}
+
+impl JfBrowse {
+    /// Esc：有勾選時先取消勾選（回傳 true），沒有才關掉檔案庫
+    pub fn clear_selection(&mut self) -> bool {
+        let had = !self.selected.is_empty();
+        self.selected.clear();
+        had
+    }
+}
+
+/// 檔案庫的「Jellyfin」分頁：上面搜尋、依人物 / 標籤 / 年份找、找重複；接著目前位置與排序；
+/// 中間縮圖格；最下面勾選的操作與換頁（和錄影、截圖分頁同一個排法）
+pub fn panel(ui: &mut egui::Ui, d: &mut JfBrowse) -> Panel {
+    let mut out = Panel::default();
+    let p = theme::pal(ui);
+    // 搜尋整個伺服器（打字停一下就找，Enter 馬上找）、依人物 / 標籤 / 年份找、找重複的影片
+    ui.horizontal(|ui| {
+        let r = ui.add(
+            egui::TextEdit::singleline(&mut d.search)
+                .hint_text(tr!("搜尋 Jellyfin 上的影片", "Search videos on Jellyfin"))
+                .desired_width((ui.available_width() - 470.0).clamp(160.0, 340.0))
+                .min_size(vec2(0.0, 30.0))
+                .vertical_align(Align::Center),
+        );
+        if r.changed() {
+            d.search_at = Some(Instant::now());
+        }
+        if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+            d.search_at = Some(Instant::now() - SEARCH_WAIT);
+        }
+        if !d.search.is_empty() && Btn::icon_only(Icon::Close).small().ghost().tooltip(tr!("清除搜尋", "Clear search")).show(ui).clicked() {
+            d.search.clear();
+            d.search_at = Some(Instant::now() - SEARCH_WAIT);
+        }
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            ui.spacing_mut().item_spacing.x = 6.0;
+            if Btn::new(tr!("找重複的影片", "Find duplicates"))
+                .icon(Icon::Copy)
+                .small()
+                .ghost()
+                .tooltip(tr!(
+                    "找出 Jellyfin 上內容一樣的影片（同一支傳了兩次、重新壓縮過的），選要刪哪一份",
+                    "Find videos on Jellyfin with the same content (uploaded twice, re-encoded) and choose which copy to delete"
+                ))
+                .show(ui)
+                .clicked()
+            {
+                out.find_dupes = true;
             }
-            let top = d.path.is_empty() && d.facet.is_none();
-            if Btn::new(tr!("媒體庫", "Libraries")).icon(Icon::Folder).small().ghost().selected(top).show(ui).clicked() && !top {
-                d.path.clear();
-                d.facet = None;
-                d.page = 0;
-                reload = true;
-            }
-            // 依人物、標籤、年份找的：媒體庫 › 人物：媽媽
-            if let Some(f) = d.facet.clone() {
-                ui.label(theme::muted(ui, "›"));
-                Btn::new(f.label()).small().ghost().selected(true).show(ui);
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    theme::field_style(ui);
-                    let sort = d.sort;
-                    egui::ComboBox::from_id_salt("jf-sort-facet").selected_text(d.sort.label()).width(130.0).show_ui(ui, |ui| {
-                        for s in JfSort::ALL {
-                            ui.selectable_value(&mut d.sort, s, s.label());
+            ui.add_space(8.0);
+            let mut pick = None;
+            let menu = |ui: &mut egui::Ui, label: &str, empty: &str, items: Vec<(String, JfFacet)>, pick: &mut Option<JfFacet>| {
+                let b = Btn::new(label).menu().small().ghost().enabled(!items.is_empty()).tooltip(if items.is_empty() { empty } else { "" }).show(ui);
+                egui::Popup::menu(&b).show(|ui| {
+                    ui.set_min_width(180.0);
+                    egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
+                        for (text, f) in items {
+                            if ui.button(text).clicked() {
+                                *pick = Some(f);
+                            }
                         }
                     });
-                    if sort != d.sort {
-                        d.page = 0;
-                        reload = true;
-                    }
                 });
-                return;
+            };
+            let years = d.years.iter().map(|y| (y.to_string(), JfFacet::Year(*y))).collect();
+            menu(ui, tr!("年份", "Year"), tr!("影片還沒有設年份", "No videos have a year yet"), years, &mut pick);
+            let tags = d.tags.iter().map(|t| (t.clone(), JfFacet::Tag(t.clone()))).collect();
+            menu(ui, tr!("標籤", "Tag"), tr!("影片還沒有標籤", "No videos have tags yet"), tags, &mut pick);
+            let people = d.persons.iter().map(|(id, n)| (n.clone(), JfFacet::Person(id.clone(), n.clone()))).collect();
+            menu(ui, tr!("人物", "People"), tr!("影片還沒有設人物", "No videos have people yet"), people, &mut pick);
+            ui.label(theme::muted(ui, tr!("依這些找：", "Find by:")));
+            // 找整個伺服器：離開資料夾、搜尋
+            if let Some(f) = pick {
+                d.facet = Some(f);
+                d.path.clear();
+                d.search.clear();
+                d.search_at = None;
+                d.filter = JfFilter::All;
+                d.page = 0;
+                out.reload = true;
             }
+        });
+    });
+    if let Some(t) = d.search_at {
+        if t.elapsed() >= SEARCH_WAIT {
+            d.search_at = None;
+            if d.search.trim() != d.searched {
+                d.facet = None;
+                d.page = 0;
+                out.reload = true;
+            }
+        } else {
+            ui.ctx().request_repaint_after(SEARCH_WAIT);
+        }
+    }
+    ui.add_space(4.0);
+    // 目前位置：媒體庫 › family › 2024（點前面的回到那一層）；右邊排序、篩選
+    ui.horizontal(|ui| {
+        ui.set_min_height(28.0);
+        ui.spacing_mut().item_spacing = vec2(2.0, 4.0);
+        let top = d.at_top();
+        if Btn::new(tr!("媒體庫", "Libraries")).icon(Icon::Folder).small().ghost().selected(top).show(ui).clicked() && !top {
+            d.path.clear();
+            d.facet = None;
+            d.search.clear();
+            d.search_at = None;
+            d.page = 0;
+            out.reload = true;
+        }
+        if !d.searched.is_empty() {
+            ui.label(theme::muted(ui, "›"));
+            Btn::new(&trf!("搜尋「{}」", "Search “{}”", d.searched)).small().ghost().selected(true).show(ui);
+        } else if let Some(f) = &d.facet {
+            // 依人物、標籤、年份找的：媒體庫 › 人物：媽媽
+            ui.label(theme::muted(ui, "›"));
+            Btn::new(f.label()).small().ghost().selected(true).show(ui);
+        } else {
             let n = d.path.len();
             for i in 0..n {
                 ui.label(theme::muted(ui, "›"));
@@ -626,66 +692,24 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                 if Btn::new(&d.path[i].1).small().ghost().selected(last).show(ui).clicked() && !last {
                     d.path.truncate(i + 1);
                     d.page = 0;
-                    reload = true;
+                    out.reload = true;
                 }
             }
-            if n == 0 {
-                // 最上層：依人物、標籤、年份找（找整個伺服器）
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    ui.spacing_mut().item_spacing.x = 6.0;
-                    let mut pick = None;
-                    let menu = |ui: &mut egui::Ui, label: &str, empty: &str, items: Vec<(String, JfFacet)>, pick: &mut Option<JfFacet>| {
-                        let b = Btn::new(label).menu().small().ghost().enabled(!items.is_empty()).tooltip(if items.is_empty() { empty } else { "" }).show(ui);
-                        egui::Popup::menu(&b).show(|ui| {
-                            ui.set_min_width(180.0);
-                            egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
-                                for (text, f) in items {
-                                    if ui.button(text).clicked() {
-                                        *pick = Some(f);
-                                    }
-                                }
-                            });
-                        });
-                    };
-                    let years = d.years.iter().map(|y| (y.to_string(), JfFacet::Year(*y))).collect();
-                    menu(ui, tr!("年份", "Year"), tr!("影片還沒有設年份", "No videos have a year yet"), years, &mut pick);
-                    let tags = d.tags.iter().map(|t| (t.clone(), JfFacet::Tag(t.clone()))).collect();
-                    menu(ui, tr!("標籤", "Tag"), tr!("影片還沒有標籤", "No videos have tags yet"), tags, &mut pick);
-                    let people = d.persons.iter().map(|(id, n)| (n.clone(), JfFacet::Person(id.clone(), n.clone()))).collect();
-                    menu(ui, tr!("人物", "People"), tr!("影片還沒有設人物", "No videos have people yet"), people, &mut pick);
-                    ui.label(theme::muted(ui, tr!("依這些找：", "Find by:")));
-                    ui.add_space(8.0);
-                    if Btn::new(tr!("找重複的影片", "Find duplicates"))
-                        .icon(Icon::Copy)
-                        .small()
-                        .ghost()
-                        .tooltip(tr!(
-                            "找出 Jellyfin 上內容一樣的影片（同一支傳了兩次、重新壓縮過的），選要刪哪一份",
-                            "Find videos on Jellyfin with the same content (uploaded twice, re-encoded) and choose which copy to delete"
-                        ))
-                        .show(ui)
-                        .clicked()
-                    {
-                        find_dupes = true;
-                    }
-                    if let Some(f) = pick {
-                        d.facet = Some(f);
-                        d.filter = JfFilter::All;
-                        d.page = 0;
-                        reload = true;
-                    }
-                });
-                return;
-            }
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                ui.spacing_mut().item_spacing.x = 6.0;
-                theme::field_style(ui);
-                let (sort, filter) = (d.sort, d.filter);
-                egui::ComboBox::from_id_salt("jf-sort").selected_text(d.sort.label()).width(130.0).show_ui(ui, |ui| {
-                    for s in JfSort::ALL {
-                        ui.selectable_value(&mut d.sort, s, s.label());
-                    }
-                });
+        }
+        if top {
+            return;
+        }
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            ui.spacing_mut().item_spacing.x = 6.0;
+            theme::field_style(ui);
+            let (sort, filter) = (d.sort, d.filter);
+            egui::ComboBox::from_id_salt("jf-sort").selected_text(d.sort.label()).width(130.0).show_ui(ui, |ui| {
+                for s in JfSort::ALL {
+                    ui.selectable_value(&mut d.sort, s, s.label());
+                }
+            });
+            // 篩選只在資料夾裡（列出這個資料夾底下符合的影片）
+            if d.searched.is_empty() && d.facet.is_none() {
                 egui::ComboBox::from_id_salt("jf-filter")
                     .selected_text(d.filter.label())
                     .width(120.0)
@@ -696,99 +720,106 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                     })
                     .response
                     .on_hover_text(tr!("不是「全部」時，列出這個資料夾底下（含子資料夾）符合的影片", "Anything but “All” lists matching videos in this folder and its subfolders"));
-                if (sort, filter) != (d.sort, d.filter) {
-                    d.page = 0;
-                    reload = true;
-                }
-            });
+            }
+            if (sort, filter) != (d.sort, d.filter) {
+                d.page = 0;
+                out.reload = true;
+            }
         });
-        ui.add_space(6.0);
-        let body_h = h - 110.0 - if d.selected.is_empty() { 0.0 } else { 40.0 };
+    });
+    ui.add_space(6.0);
+    let foot_h = 40.0;
+    let table = Rect::from_min_max(ui.cursor().min, pos2(ui.max_rect().max.x, ui.max_rect().max.y - foot_h - 8.0));
+    {
+        let bui = &mut ui.new_child(UiBuilder::new().max_rect(table).layout(Layout::top_down(Align::Min)));
         match (&d.items, &d.error) {
             (_, Some(e)) => {
-                ui.allocate_ui(vec2(w, body_h), |ui| {
-                    ui.label(RichText::new(trf!("讀不到 Jellyfin：{e}", "Couldn't reach Jellyfin: {e}")).color(p.warn));
-                    if Btn::new(tr!("再試一次", "Try again")).small().show(ui).clicked() {
-                        reload = true;
-                    }
-                });
+                bui.label(RichText::new(trf!("讀不到 Jellyfin：{e}", "Couldn't reach Jellyfin: {e}")).color(p.warn));
+                if Btn::new(tr!("再試一次", "Try again")).small().show(bui).clicked() {
+                    out.reload = true;
+                }
             }
             (None, None) => {
-                ui.allocate_ui(vec2(w, body_h), |ui| {
-                    ui.horizontal(|ui| {
-                        ui.spinner();
-                        ui.label(tr!("正在讀取…", "Loading…"));
-                    });
+                bui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label(tr!("正在讀取…", "Loading…"));
                 });
             }
             (Some(items), None) if items.is_empty() => {
-                ui.allocate_ui(vec2(w, body_h), |ui| {
-                    let msg = if d.filter == JfFilter::All { tr!("這裡沒有影片", "No videos here") } else { tr!("這裡沒有符合的影片", "No matching videos here") };
-                    ui.label(RichText::new(msg).color(p.muted));
-                });
+                let msg = if !d.searched.is_empty() {
+                    tr!("找不到符合的影片", "No matching videos")
+                } else if d.filter == JfFilter::All {
+                    tr!("這裡沒有影片", "No videos here")
+                } else {
+                    tr!("這裡沒有符合的影片", "No matching videos here")
+                };
+                bui.label(RichText::new(msg).color(p.muted));
             }
             (Some(items), None) => {
-                egui::ScrollArea::vertical().max_height(body_h).min_scrolled_height(body_h).auto_shrink([false, false]).show(ui, |ui| {
+                egui::ScrollArea::vertical().id_salt("jf-body").max_height(table.height()).auto_shrink([false, false]).show(bui, |ui| {
                     if d.at_top() {
                         // 最上層：繼續觀看、最近加入各一列，接著是媒體庫
                         for (title, list, salt) in [(tr!("繼續觀看", "Continue watching"), &d.resume, "resume"), (tr!("最近加入", "Recently added"), &d.latest, "latest")] {
                             if !list.is_empty() {
                                 section(ui, title);
-                                ui.push_id(salt, |ui| cells(ui, &d, list, Some(1), &mut picked));
+                                ui.push_id(salt, |ui| cells(ui, d, list, Some(1), &mut out.picked));
                             }
                         }
                         if !d.resume.is_empty() || !d.latest.is_empty() {
                             section(ui, tr!("媒體庫", "Libraries"));
                         }
                     }
-                    ui.push_id("items", |ui| cells(ui, &d, items, None, &mut picked));
+                    ui.push_id("items", |ui| cells(ui, d, items, None, &mut out.picked));
                 });
             }
         }
-        // 勾選了：下面一排一次下載、刪除
-        if !d.selected.is_empty() {
-            ui.add_space(6.0);
-            ui.horizontal(|ui| {
-                ui.label(RichText::new(trf!("已勾選 {} 支", "{} selected", d.selected.len())).font(theme::font_bold(13.0)));
-                if Btn::new(tr!("下載到這台電腦", "Download to this computer")).icon(Icon::Download).small().primary().show(ui).clicked() {
-                    bulk_download = true;
-                }
-                if Btn::new(tr!("從 Jellyfin 刪除", "Delete from Jellyfin")).icon(Icon::Trash).small().danger().show(ui).clicked() {
-                    bulk_delete = true;
-                }
-                if Btn::new(tr!("取消勾選", "Clear selection")).small().ghost().show(ui).clicked() {
-                    d.selected.clear();
-                }
-            });
-        }
-        // 換頁
-        let pages = d.total.div_ceil(PAGE).max(1);
-        if !d.at_top() && pages > 1 {
-            ui.add_space(6.0);
-            ui.horizontal(|ui| {
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if Btn::icon_only(Icon::ChevR).small().ghost().enabled(d.page + 1 < pages).show(ui).clicked() {
-                        d.page += 1;
-                        reload = true;
-                    }
-                    ui.label(trf!("第 {} / {} 頁", "Page {} / {}", d.page + 1, pages));
-                    if Btn::icon_only(Icon::ChevL).small().ghost().enabled(d.page > 0).show(ui).clicked() {
-                        d.page -= 1;
-                        reload = true;
-                    }
-                    ui.label(RichText::new(trf!("共 {} 個", "{} in all", d.total)).color(p.muted));
-                });
-            });
-        }
-    });
-    // 檢視器開著時 Esc 是關檢視器，不要連瀏覽視窗一起關；有勾選時 Esc 先取消勾選
-    if close || (modal.should_close() && app.viewer.is_none() && app.ask.is_none() && app.jf_edit.is_none() && app.jf_dupes.is_none()) {
-        if !close && !d.selected.is_empty() {
-            d.selected.clear();
-            app.jf_browse = Some(d);
-        }
-        return;
     }
+    // 下面：右邊換頁，左邊勾選的操作（和錄影、截圖分頁一樣）
+    let foot = Rect::from_min_max(pos2(table.min.x, ui.max_rect().max.y - foot_h), ui.max_rect().max);
+    ui.painter().hline(foot.x_range(), foot.min.y - 4.0, egui::Stroke::new(1.0, p.border));
+    let pages = d.total.div_ceil(PAGE).max(1);
+    let pager_w = if !d.at_top() && d.items.is_some() {
+        let right = &mut ui.new_child(UiBuilder::new().max_rect(foot).layout(Layout::right_to_left(Align::Center)));
+        if pages > 1 {
+            if Btn::icon_only(Icon::ChevR).small().ghost().enabled(d.page + 1 < pages).tooltip(tr!("下一頁", "Next page")).show(right).clicked() {
+                d.page += 1;
+                out.reload = true;
+            }
+            right.label(trf!("第 {} / {} 頁", "Page {} / {}", d.page + 1, pages));
+            if Btn::icon_only(Icon::ChevL).small().ghost().enabled(d.page > 0).tooltip(tr!("上一頁", "Previous page")).show(right).clicked() {
+                d.page -= 1;
+                out.reload = true;
+            }
+        }
+        right.label(theme::muted(right, trf!("共 {} 個", "{} in all", d.total)));
+        right.min_rect().width() + 16.0
+    } else {
+        0.0
+    };
+    let fui = &mut ui.new_child(UiBuilder::new().max_rect(Rect::from_min_max(foot.min, pos2(foot.max.x - pager_w, foot.max.y))).layout(Layout::left_to_right(Align::Center)));
+    if d.selected.is_empty() {
+        fui.label(theme::muted(fui, tr!("多選小技巧", "Multi-select tips"))).on_hover_text(tr!(
+            "滑鼠移到影片上按左上角的方塊，或按住 Ctrl 點影片，勾選好幾支一次下載或刪除",
+            "Hover a video and click the box in its top-left corner, or Ctrl+click videos, to download or delete several at once"
+        ));
+    } else {
+        fui.label(RichText::new(trf!("已勾選 {} 支", "{} selected", d.selected.len())).font(theme::font_bold(13.0)));
+        if Btn::new(tr!("下載到這台電腦", "Download to this computer")).icon(Icon::Download).small().primary().show(fui).clicked() {
+            out.bulk_download = true;
+        }
+        if Btn::new(tr!("從 Jellyfin 刪除", "Delete from Jellyfin")).icon(Icon::Trash).small().danger().show(fui).clicked() {
+            out.bulk_delete = true;
+        }
+        if Btn::new(tr!("取消勾選", "Clear selection")).small().ghost().show(fui).clicked() {
+            d.selected.clear();
+        }
+    }
+    out
+}
+
+/// 處理在分頁上按的（d 是從 app.jf_browse 拿出來畫的那一份，處理完放回去）
+pub fn apply(app: &mut UiApp, mut d: JfBrowse, out: Panel) {
+    let Panel { mut reload, picked, bulk_download, bulk_delete, find_dupes } = out;
     if let Some(it) = picked.toggle {
         if d.selected.remove(&it.id).is_none() {
             d.selected.insert(it.id.clone(), it);
@@ -829,6 +860,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                 d.facet = None;
                 d.path.push((it.id.clone(), it.name.clone()));
                 d.search.clear();
+                d.search_at = None;
                 d.page = 0;
                 reload = true;
             }
