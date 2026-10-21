@@ -580,8 +580,9 @@ fn empty_state(ui: &mut egui::Ui, area: Rect, msg: &str, buttons: &[(&str, bool)
 }
 
 pub fn show(app: &mut UiApp, ctx: &egui::Context) {
+    // 填滿操作視窗（四周留一點邊），跟著視窗大小改變
     let screen = ctx.content_rect();
-    let size = vec2((screen.width() - 80.0).min(1040.0), screen.height() - 80.0);
+    let size = vec2(screen.width() - 32.0, screen.height() - 32.0);
     let mut close = false;
     let mut req: Option<Req> = None;
     // 目前的儲存位置記在「用過的資料夾」最前面（換了儲存位置之後，舊的還能從選單切回去看）

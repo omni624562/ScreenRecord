@@ -13,8 +13,8 @@ use std::time::{Duration, Instant};
 
 /// 一頁幾個
 const PAGE: usize = 60;
-/// 每格的寬度（縮圖 16:9）
-const CELL_W: f32 = 196.0;
+/// 每格最小的寬度（縮圖 16:9）：縮圖小、中、大
+const CELL_W: [f32; 3] = [150.0, 196.0, 300.0];
 /// 「繼續觀看」「最近加入」各讀幾個
 const ROW_ITEMS: usize = 12;
 /// 搜尋框停止打字多久之後才找（每打一個字就問伺服器太多次）
@@ -59,6 +59,10 @@ pub struct JfBrowse {
     facets_loaded: bool,
     /// 讀不到標籤、年份時的原因（選單變灰時滑鼠移上去看得到）
     facets_error: Option<String>,
+    /// 縮圖大小：0 小、1 中、2 大（記在設定裡）
+    grid: u8,
+    /// 上次按 Ctrl 轉滾輪換縮圖大小的時間（轉一格只換一級）
+    wheel_at: Option<Instant>,
 }
 
 impl JfBrowse {
@@ -80,7 +84,7 @@ pub fn open(app: &mut UiApp) {
     if app.jellyfin().is_none() {
         return app.toast(tr!("要先在「設定 → 存檔與分享」填 Jellyfin 的網址和 API 金鑰", "Fill in the Jellyfin address and API key in Settings → Saving & sharing first"), true);
     }
-    app.jf_browse = Some(JfBrowse::default());
+    app.jf_browse = Some(JfBrowse { grid: app.s.jf_grid_size, ..Default::default() });
     load(app);
 }
 
@@ -495,7 +499,7 @@ struct Picked {
 fn cells(ui: &mut egui::Ui, d: &JfBrowse, items: &[JfItem], rows: Option<usize>, out: &mut Picked) {
     let p = theme::pal(ui);
     let gap = 12.0;
-    let cols = ((ui.available_width() + gap) / (CELL_W + gap)).floor().max(1.0) as usize;
+    let cols = ((ui.available_width() + gap) / (CELL_W[(d.grid as usize).min(2)] + gap)).floor().max(1.0) as usize;
     let cell_w = (ui.available_width() - gap * (cols as f32 - 1.0)) / cols as f32;
     let img_h = (cell_w * 9.0 / 16.0).round();
     let cell_h = img_h + 46.0;
@@ -637,6 +641,31 @@ impl JfBrowse {
         let had = !self.selected.is_empty();
         self.selected.clear();
         had
+    }
+}
+
+/// 在縮圖上按住 Ctrl 轉滾輪：換縮圖大小（轉一下換一級）
+fn grid_zoom(ui: &egui::Ui, d: &mut JfBrowse, area: Rect) {
+    if !ui.rect_contains_pointer(area) || egui::Popup::is_any_open(ui.ctx()) {
+        return;
+    }
+    let dy: f32 = ui.input(|i| {
+        i.raw
+            .events
+            .iter()
+            .filter_map(|e| match e {
+                egui::Event::MouseWheel { delta, modifiers, .. } if modifiers.ctrl || modifiers.command => Some(delta.y),
+                _ => None,
+            })
+            .sum()
+    });
+    if dy == 0.0 || d.wheel_at.is_some_and(|t| t.elapsed().as_millis() < 250) {
+        return;
+    }
+    let next = if dy > 0.0 { d.grid.saturating_add(1).min(2) } else { d.grid.saturating_sub(1) };
+    if next != d.grid {
+        d.grid = next;
+        d.wheel_at = Some(Instant::now());
     }
 }
 
@@ -797,11 +826,19 @@ pub fn panel(ui: &mut egui::Ui, d: &mut JfBrowse) -> Panel {
                 }
             }
         }
-        if top {
-            return;
-        }
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             ui.spacing_mut().item_spacing.x = 6.0;
+            // 縮圖大小（也可以在縮圖上按住 Ctrl 轉滾輪）
+            let tip = tr!(
+                "縮圖大小：小的一次看得到比較多支。也可以在縮圖上按住 Ctrl 轉滾輪調整",
+                "Thumbnail size: smaller shows more at once. You can also hold Ctrl and turn the mouse wheel over the thumbnails"
+            );
+            theme::segmented(ui, &mut d.grid, &[(2u8, tr!("大", "L")), (1, tr!("中", "M")), (0, tr!("小", "S"))], true);
+            ui.label(theme::muted(ui, tr!("縮圖", "Thumbnails"))).on_hover_text(tip);
+            if top {
+                return;
+            }
+            ui.add_space(6.0);
             theme::field_style(ui);
             let (sort, filter) = (d.sort, d.filter);
             egui::ComboBox::from_id_salt("jf-sort").selected_text(d.sort.label()).width(130.0).show_ui(ui, |ui| {
@@ -836,6 +873,7 @@ pub fn panel(ui: &mut egui::Ui, d: &mut JfBrowse) -> Panel {
     ui.add_space(6.0);
     let foot_h = 40.0;
     let table = Rect::from_min_max(ui.cursor().min, pos2(ui.max_rect().max.x, ui.max_rect().max.y - foot_h - 8.0));
+    grid_zoom(ui, d, table);
     {
         let bui = &mut ui.new_child(UiBuilder::new().max_rect(table).layout(Layout::top_down(Align::Min)));
         match (&d.items, &d.error) {
@@ -925,6 +963,10 @@ pub fn panel(ui: &mut egui::Ui, d: &mut JfBrowse) -> Panel {
 
 /// 處理在分頁上按的（d 是從 app.jf_browse 拿出來畫的那一份，處理完放回去）
 pub fn apply(app: &mut UiApp, mut d: JfBrowse, out: Panel) {
+    if d.grid != app.s.jf_grid_size {
+        app.s.jf_grid_size = d.grid;
+        app.save_settings();
+    }
     let Panel { mut reload, picked, bulk_download, bulk_delete, find_dupes } = out;
     if let Some(it) = picked.toggle {
         if d.selected.remove(&it.id).is_none() {
