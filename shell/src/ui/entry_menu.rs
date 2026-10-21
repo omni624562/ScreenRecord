@@ -1,7 +1,8 @@
 //! 一支錄影（影片、聲音檔）能做的事：主畫面卡片、全部錄影、檢視器共用同一份清單，
 //! 名稱、圖示、分組、順序都一樣，所以在哪裡學會的，到別的地方也找得到。
 //! 清單（卡片、全部錄影）只放管理檔案的事：播放、剪輯、製作、改名、分享、星號、刪除；
-//! 要看著畫面才知道怎麼做的（設為封面、旋轉、操作步驟、章節、用 Windows 開啟）在打開影片後的檢視器
+//! 要看著畫面才知道怎麼做的（設為封面、旋轉、操作步驟、用 Windows 開啟）在打開影片後的檢視器。
+//! 同一個地方已經有按鈕的，「⋯」裡不再列一次（按右鍵的選單才列全部）
 
 use super::theme::{Btn, Icon};
 use super::{EntryAction, UiApp};
@@ -220,9 +221,7 @@ pub fn groups(app: &UiApp, e: &LibraryEntry, place: Place) -> Vec<Vec<Node>> {
             ),
         )));
     }
-    if !list && !e.media.chapters.is_empty() {
-        share.push(one(item(EntryAction::CopyChapters, tr!("複製章節（貼到 YouTube）", "Copy chapters (for YouTube)"), Some(Icon::List), "")));
-    }
+    // 複製章節在檢視器播放列的「章節」選單裡（跟跳到某一章放在一起），這裡不再列一次
     if !list && !m4a && !export && !audio_rec {
         share.push(one(item(
             EntryAction::CopySteps,
