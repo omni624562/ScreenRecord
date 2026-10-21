@@ -368,6 +368,8 @@ pub struct Editor {
     pub(crate) fillers: Option<Vec<(screenrecorder_core::fillers::Filler, bool)>>,
     /// 分割點（原片的時間）：時間軸分成一段一段，點一下選取一段
     splits: Vec<f64>,
+    /// 時間軸按右鍵的選單：按的地方（原片的時間）與那裡有什麼
+    tl_menu: Option<timeline::TlMenu>,
     /// 跟著點擊放大時不放大的點擊（點擊的時間）
     zoom_skip: Vec<f64>,
     /// 需要 app 的動作（影片）
@@ -681,6 +683,7 @@ impl Editor {
             sub_anchor: None,
             fillers: None,
             splits: vec![],
+            tl_menu: None,
             zoom_skip: vec![],
             vpending: None,
             out_path: None,
@@ -1675,7 +1678,11 @@ impl Editor {
 
     /// 在播放頭的位置分割；回傳要顯示的訊息
     fn split_here(&mut self) -> (String, bool) {
-        let t = self.now();
+        self.split_at(self.now())
+    }
+
+    /// 在時間 t 分割（時間軸按右鍵「在這裡分割」）；回傳要顯示的訊息
+    fn split_at(&mut self, t: f64) -> (String, bool) {
         if t <= self.spec.start + 0.05 || t >= self.spec.end - 0.05 {
             return (tr!("開頭、結尾不用分割，請把播放頭移到中間", "No need to split at the start or end. Move the playhead somewhere in between").into(), true);
         }
@@ -1689,7 +1696,10 @@ impl Editor {
 
     /// 在播放頭加上標記（輸出時變成章節）；回傳要顯示的訊息
     fn add_marker(&mut self) -> (String, bool) {
-        let t = self.now();
+        self.add_marker_at(self.now())
+    }
+
+    fn add_marker_at(&mut self, t: f64) -> (String, bool) {
         if self.markers.iter().any(|m| (m.t - t).abs() < 0.1) {
             return (tr!("這裡已經有標記了", "There's already a marker here").into(), false);
         }

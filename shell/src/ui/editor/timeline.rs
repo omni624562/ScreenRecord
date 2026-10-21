@@ -1,7 +1,8 @@
 //! 時間軸（縮圖、保留 / 刪除的片段、頭尾把手、選取範圍、播放頭）、標註軌、放大時的捲軸。
 //!
 //! 時間軸：上方的尺規點一下或拖曳移動播放頭；縮圖上點一下跳到那裡，拖曳是選取要刪除 / 加速的範圍；
-//! 拖曳黃色把手調整頭尾、拖曳上方橫條移動整段。有分割點時點一下選取那一段。標記：點一下跳過去、按兩下改名、右鍵刪除。
+//! 拖曳黃色把手調整頭尾、拖曳上方橫條移動整段。有分割點時點一下選取那一段。標記：點一下跳過去、按兩下改名。
+//! 按右鍵：在那裡分割、刪除 / 加速 / 還原那一段、設為開頭 / 結尾、加標記（按在標記、分割點上時可以刪掉它）。
 //! 滾輪：放大 / 縮小（以滑鼠位置為中心）；Shift 或左右滾動 = 平移。
 //! 標註軌：點一下選取（並跳到它出現的時間）；拖曳移動出現時間，拖曳兩端調整開始 / 結束；點空白處跳到該時間。
 
@@ -221,6 +222,30 @@ fn tick_label(t: f64, step: f64) -> String {
 }
 
 /// 時間軸上可以點的東西
+/// 時間軸按右鍵時記下的：按的時間、按到的標記 / 分割點 / 刪掉的片段
+#[derive(Debug, Clone, Copy)]
+pub struct TlMenu {
+    t: f64,
+    flag: Option<usize>,
+    split: Option<usize>,
+    removed: Option<usize>,
+}
+
+/// 右鍵選單選了什麼（選單關掉後才做）
+enum MenuAct {
+    Split(f64),
+    Delete((f64, f64)),
+    Speed((f64, f64)),
+    Restore(usize),
+    Start(f64),
+    End(f64),
+    Marker(f64),
+    DeleteMarker(usize),
+    RenameMarker(usize),
+    RemoveSplit(usize),
+    Jump(f64),
+}
+
 enum Hit {
     /// 還原刪掉的片段（第幾段）
     Restore(usize),
@@ -451,7 +476,7 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, toast: &mut
     let knob = vec![pos2(xp - 6.0, ruler.top() + 4.0), pos2(xp + 6.0, ruler.top() + 4.0), pos2(xp + 6.0, ruler.bottom() - 5.0), pos2(xp, ruler.bottom()), pos2(xp - 6.0, ruler.bottom() - 5.0)];
     ui.painter_at(all).add(egui::Shape::convex_polygon(knob, p.accent, Stroke::new(1.0, Color32::WHITE)));
 
-    let (pressed, secondary, down, pos, latest, dbl) = ui.input(|i| {
+    let (pressed, _secondary, down, pos, latest, dbl) = ui.input(|i| {
         (
             i.pointer.primary_pressed(),
             i.pointer.secondary_pressed(),
@@ -508,7 +533,7 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, toast: &mut
                 Hit::Flag(i, t) => (
                     CursorIcon::PointingHand,
                     trf!(
-                        "{}（{}）・點一下跳過去・按兩下改名（輸出時當作章節名稱）・右鍵刪除・Shift+M 下一個",
+                        "{}（{}）・點一下跳過去・按兩下改名（輸出時當作章節名稱）・按右鍵可以刪除・Shift+M 下一個",
                         "{} ({}) · click to jump there · double-click to rename (used as the chapter title) · right-click to delete · Shift+M: next",
                         ed.marker_name(i),
                         video_clock(t)
@@ -522,14 +547,21 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, toast: &mut
                         trf!("滑鼠點擊 {}・點一下：這次點擊不放大", "Mouse click at {} · click to skip zooming here", video_clock(t))
                     },
                 ),
-                Hit::Split(i) => (CursorIcon::PointingHand, trf!("分割點 {}・右鍵移除", "Split at {} · right-click to remove", ed.splits.get(i).map(|t| video_clock(*t)).unwrap_or_default())),
+                Hit::Split(i) => (CursorIcon::PointingHand, trf!("分割點 {}・按右鍵可以移除", "Split at {} · right-click to remove it", ed.splits.get(i).map(|t| video_clock(*t)).unwrap_or_default())),
                 Hit::Drag(k) => match k {
                     TlKind::Start => (CursorIcon::ResizeHorizontal, tr!("拖曳調整開頭", "Drag to adjust the start").into()),
                     TlKind::End => (CursorIcon::ResizeHorizontal, tr!("拖曳調整結尾", "Drag to adjust the end").into()),
                     TlKind::SelA | TlKind::SelB => (CursorIcon::ResizeHorizontal, tr!("拖曳調整選取的範圍", "Drag to adjust the selection").into()),
                     TlKind::Playhead => (CursorIcon::Grab, tr!("拖曳跳到其他時間", "Drag to jump to another time").into()),
                     TlKind::Range => (CursorIcon::Grab, tr!("拖曳整段保留範圍（長度不變）", "Drag to move the whole kept range (the length stays the same)").into()),
-                    TlKind::Select => (CursorIcon::Text, tr!("拖曳選取一段（刪除、加速）・點一下跳到這裡", "Drag to select a section (delete, speed up) · click to jump here").into()),
+                    TlKind::Select => (
+                        CursorIcon::Text,
+                        tr!(
+                            "拖曳選取一段（刪除、加速）・點一下跳到這裡・按右鍵：分割、刪除、加速…",
+                            "Drag to select a section (delete, speed up) · click to jump here · right-click: split, delete, speed up…"
+                        )
+                        .into(),
+                    ),
                     TlKind::Scrub if ruler.contains(pos) => (CursorIcon::PointingHand, tr!("點一下或拖曳移動播放頭", "Click or drag to move the playhead").into()),
                     TlKind::Scrub => (CursorIcon::PointingHand, String::new()),
                 },
@@ -540,20 +572,105 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, toast: &mut
             }
         }
     }
-    // 右鍵：刪除標記、移除分割點
-    if secondary && resp.hovered() {
+    // 右鍵（放開的那一下，選單也是這時打開）：記下按的地方，選單照那裡有什麼列出能做的事
+    if resp.secondary_clicked() {
         if let Some(pos) = pos {
-            match hit(pos) {
-                Hit::Flag(i, _) => {
-                    let name = ed.marker_name(i);
-                    ed.markers.remove(i);
-                    *toast = Some((trf!("已刪除{}，可按 Ctrl+Z 復原", "Deleted {}. Press Ctrl+Z to undo", name), false));
+            let t = time_at(pos.x);
+            let (flag, split) = match hit(pos) {
+                Hit::Flag(i, _) => (Some(i), None),
+                Hit::Split(i) => (None, Some(i)),
+                _ => (None, None),
+            };
+            let removed = normalize_ranges(&ed.spec.removed, ed.duration).iter().position(|&(r0, r1)| t >= r0 && t <= r1);
+            ed.tl_menu = Some(TlMenu { t, flag, split, removed });
+        }
+    }
+    let mut menu_act: Option<MenuAct> = None;
+    let menu = ed.tl_menu.map(|m| {
+        // 要刪除 / 加速的那一段：按在選取的範圍裡就是它，不然是分割點之間的那一段
+        let target = ed.sel.filter(|&(s0, s1)| m.t >= s0 && m.t <= s1).or_else(|| ed.segment_at(m.t));
+        (m, target, m.flag.map(|i| ed.marker_name(i)))
+    });
+    let shown = egui::Popup::context_menu(&resp).show(|ui| {
+        let Some((m, target, marker_name)) = menu else {
+            ui.close();
+            return;
+        };
+        {
+            ui.set_min_width(220.0);
+            ui.label(RichText::new(trf!("在 {}", "At {}", video_clock(m.t))).font(theme::font(12.0)).color(theme::pal(ui).muted));
+            let mut item = |ui: &mut egui::Ui, label: String, act: Option<MenuAct>, why: &str| {
+                let enabled = act.is_some();
+                let r = ui.add_enabled(enabled, egui::Button::new(label));
+                let r = if enabled || why.is_empty() { r } else { r.on_disabled_hover_text(why) };
+                if r.clicked() {
+                    menu_act = act;
                 }
-                Hit::Split(i) => {
+            };
+            if let Some(i) = m.removed {
+                item(ui, tr!("還原這段", "Restore this section").into(), Some(MenuAct::Restore(i)), "");
+            } else {
+                let range = |r: (f64, f64)| format!("{} – {}", video_clock(r.0), video_clock(r.1));
+                let why = tr!("先拖曳選取一段，或在兩邊分割", "Drag to select a section first, or split on both sides");
+                item(ui, tr!("在這裡分割", "Split here").into(), Some(MenuAct::Split(m.t)), "");
+                item(ui, target.map_or_else(|| tr!("刪除這段", "Delete this section").into(), |r| trf!("刪除這段（{}）", "Delete this section ({})", range(r))), target.map(MenuAct::Delete), why);
+                item(ui, tr!("加速這段…", "Speed up this section…").into(), target.map(MenuAct::Speed), why);
+            }
+            ui.separator();
+            item(ui, tr!("設為開頭（剪掉前面）", "Set as start (trim before)").into(), Some(MenuAct::Start(m.t)), "");
+            item(ui, tr!("設為結尾（剪掉後面）", "Set as end (trim after)").into(), Some(MenuAct::End(m.t)), "");
+            item(ui, tr!("在這裡加標記", "Add a marker here").into(), Some(MenuAct::Marker(m.t)), "");
+            item(ui, tr!("跳到這裡", "Jump here").into(), Some(MenuAct::Jump(m.t)), "");
+            if let (Some(i), Some(name)) = (m.flag, &marker_name) {
+                ui.separator();
+                item(ui, trf!("改名「{name}」…", "Rename “{name}”…"), Some(MenuAct::RenameMarker(i)), "");
+                item(ui, trf!("刪除「{name}」", "Delete “{name}”"), Some(MenuAct::DeleteMarker(i)), "");
+            }
+            if let Some(i) = m.split {
+                ui.separator();
+                item(ui, tr!("移除這個分割點", "Remove this split").into(), Some(MenuAct::RemoveSplit(i)), "");
+            }
+        }
+    });
+    if shown.is_none() {
+        ed.tl_menu = None;
+    }
+    if let Some(act) = menu_act {
+        ed.tl_menu = None;
+        ed.stop_preview();
+        ed.player.pause();
+        match act {
+            MenuAct::Split(t) => *toast = Some(ed.split_at(t)),
+            MenuAct::Delete(r) => {
+                ed.set_sel(Some(r));
+                ed.delete_selection(toast);
+            }
+            MenuAct::Speed(r) => {
+                ed.set_sel(Some(r));
+                ed.tab = Tab::Speed;
+            }
+            MenuAct::Restore(i) => ed.restore_removed(i),
+            MenuAct::Start(t) => {
+                ed.set_start(t);
+                ed.seek(ed.spec.start);
+            }
+            MenuAct::End(t) => {
+                ed.set_end(t);
+                ed.seek(ed.spec.end);
+            }
+            MenuAct::Marker(t) => *toast = Some(ed.add_marker_at(t)),
+            MenuAct::DeleteMarker(i) => {
+                let name = ed.marker_name(i);
+                ed.markers.remove(i);
+                *toast = Some((trf!("已刪除{}，可按 Ctrl+Z 復原", "Deleted {}. Press Ctrl+Z to undo", name), false));
+            }
+            MenuAct::RenameMarker(i) => ed.vpending = Some(VAct::RenameMarker(i)),
+            MenuAct::RemoveSplit(i) => {
+                if i < ed.splits.len() {
                     ed.splits.remove(i);
                 }
-                _ => {}
             }
+            MenuAct::Jump(t) => ed.seek(t),
         }
     }
     if dbl && resp.hovered() {
