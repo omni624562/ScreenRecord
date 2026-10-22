@@ -44,8 +44,8 @@ fn items(_app: &UiApp) -> Vec<(String, String, Try)> {
         (
             tr!("開始錄影移到預覽下面", "Start recording is now under the preview").into(),
             tr!(
-                "「開始錄影」「框選截圖」「截取錄影範圍」放在預覽下面的一條控制列；錄影中同一列換成計時、暫停、標記、麥克風、停止，眼睛不用在預覽和右邊之間來回。",
-                "“Start recording”, “Select area” and “Capture recording area” now sit on a bar under the preview. While recording, the same bar shows the timer, Pause, Mark, the mic and Stop, so you don't have to look back and forth."
+                "「開始錄影」放在預覽下面的一條控制列；錄影中同一列換成計時、暫停、標記、麥克風、停止，眼睛不用在預覽和右邊之間來回。截圖用快速鍵，或右上角「⋯」→「截圖工具」。",
+                "“Start recording” now sits on a bar under the preview. While recording, the same bar shows the timer, Pause, Mark, the mic and Stop, so you don't have to look back and forth. Take screenshots with the shortcuts or “⋯” (top right) → “Screenshot tools”."
             )
             .into(),
             Try::None,

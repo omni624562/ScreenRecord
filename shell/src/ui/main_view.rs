@@ -1147,7 +1147,7 @@ fn shortcut_line(app: &mut UiApp, ui: &mut Ui) {
     }
 }
 
-/// 截圖的方式（截圖那一列的按鈕與選單、系統匣的「截圖」選單相同的項目與順序）
+/// 截圖的方式（「⋯」→「截圖工具」、系統匣的「截圖」選單相同的項目與順序）
 #[derive(Clone, PartialEq)]
 pub(super) enum ShotAct {
     /// 在螢幕上框選範圍或點選視窗；幾秒後再框選
@@ -1166,62 +1166,16 @@ pub(super) enum ShotAct {
     Pen,
 }
 
-/// 截圖那一列：「框選截圖」「截取錄影範圍」與更多的小箭頭（按右鍵也有同一個選單）；下面一行寫快速鍵
-fn shot_row(app: &mut UiApp, ui: &mut Ui) {
-    let found = app.env.ffmpeg.found;
-    let can = found && !app.main.shooting;
-    let need = tr!("請先下載錄影元件（上方的「下載並開始使用」）", "Download the recording component first (“Download and get started” above)").to_string();
-    let key = |i: usize| {
-        let k = app.keys.label(i);
-        if k.is_empty() || !app.env.hotkeys.is_some_and(|h| h.all().get(i).copied().unwrap_or(false)) {
-            String::new()
-        } else {
-            trf!("（{k}）", " ({k})")
-        }
-    };
-    let select_tip = if found {
-        trf!("在螢幕上框選範圍或點一下視窗，截下來存成 PNG 並複製到剪貼簿{}", "Select an area or click a window on the screen to save it as PNG and copy it to the clipboard{}", key(3))
-    } else {
-        need.clone()
-    };
-    let area_tip = if found {
-        trf!("截下目前的錄影範圍（{}），存成 PNG 並複製到剪貼簿{}", "Capture the current recording area ({}) as PNG and copy it to the clipboard{}", app.s.source_label(&app.env), key(2))
-    } else {
-        need.clone()
-    };
-    let mut act: Option<ShotAct> = None;
-    let row = ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 4.0;
-        let arrow_w = 34.0;
-        let w = ui.available_width() - arrow_w - 8.0;
-        let select = Btn::new(tr!("框選截圖", "Select area")).icon(Icon::Camera).enabled(can).tooltip(select_tip).min_width((w * 0.55).floor()).show(ui);
-        let area = Btn::new(tr!("截取錄影範圍", "Capture area")).enabled(can).tooltip(area_tip).min_width(ui.available_width() - arrow_w - 4.0).show(ui);
-        let arrow = Btn::icon_only(Icon::ChevD)
-            .enabled(can)
-            .tooltip(if found {
-                tr!(
-                    "更多截圖方式與小工具：延遲框選、全螢幕、長截圖、步驟截圖、只抓文字、螢幕畫筆",
-                    "More screenshot options and tools: delayed selection, full screen, scrolling screenshot, step capture, grab text, screen pen"
-                )
-                .to_string()
-            } else {
-                need.clone()
-            })
-            .min_width(arrow_w)
-            .show(ui);
-        if select.clicked() {
-            act = Some(ShotAct::Select(0));
-        }
-        if area.clicked() {
-            act = Some(ShotAct::Area);
-        }
-        for r in [&select, &area] {
-            egui::Popup::context_menu(r).show(|ui| shot_menu(app, ui, &mut act));
-        }
-        egui::Popup::menu(&arrow).show(|ui| shot_menu(app, ui, &mut act));
-    });
-    tour::mark(ui, Spot::Shot, row.response.rect);
-    if let Some(a) = act.filter(|_| can) {
+/// 現在可以截圖（有錄影元件、沒有正在截）
+pub(super) fn can_shoot(app: &UiApp) -> bool {
+    app.env.ffmpeg.found && !app.main.shooting
+}
+
+/// 「⋯」→「截圖工具」子選單：點了就截
+pub(super) fn shot_menu_body(app: &mut UiApp, ui: &mut Ui) {
+    let mut act = None;
+    shot_menu(app, ui, &mut act);
+    if let Some(a) = act.filter(|_| can_shoot(app)) {
         run_shot(app, a);
     }
 }
@@ -1820,7 +1774,7 @@ pub fn ask_update(app: &mut UiApp, u: &screenrecorder_core::types::UpdateInfo) {
 
 // ───────────── 控制列（預覽下方） ─────────────
 
-/// 預覽下方的控制列：待命時「開始錄影」與截圖按鈕，錄影中換成計時與暫停、標記、麥克風、停止；
+/// 預覽下方的控制列：待命時「開始錄影」，錄影中換成計時與暫停、標記、麥克風、停止；
 /// 右邊的空間顯示一則訊息（錄好了、製作中 / 完成、提醒），有好幾則時「還有 N 則」切換。高度固定，預覽不會跳
 fn control_bar(app: &mut UiApp, ui: &mut Ui) {
     let r = app.status.recorder.clone();
@@ -1838,7 +1792,7 @@ fn control_bar(app: &mut UiApp, ui: &mut Ui) {
     });
 }
 
-/// 待命：開始錄影（快速鍵寫在按鈕上）、框選截圖、截取錄影範圍、更多；右邊是訊息或常用的快速鍵
+/// 待命：開始錄影（快速鍵寫在按鈕上）；右邊是訊息或截圖的快速鍵（截圖的其他方式在「⋯」→「截圖工具」）
 fn idle_controls(app: &mut UiApp, ui: &mut Ui) {
     let narrow = ui.available_width() < 700.0;
     let manual = app.manual_export();
@@ -1860,9 +1814,6 @@ fn idle_controls(app: &mut UiApp, ui: &mut Ui) {
     tour::mark(ui, Spot::Record, start.rect);
     if start.clicked() {
         start_recording(app);
-    }
-    if app.s.source_type != SourceType::Audio {
-        ui.allocate_ui_with_layout(vec2(if narrow { 230.0 } else { 290.0 }, 42.0), Layout::left_to_right(Align::Center), |ui| shot_row(app, ui));
     }
     notice_area(app, ui, false);
 }

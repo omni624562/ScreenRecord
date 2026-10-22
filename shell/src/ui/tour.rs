@@ -17,13 +17,12 @@ use screenrecorder_core::{tr, trf};
 /// 教學會亮出來的地方
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Spot {
-    /// 主畫面：下載錄影元件、範圍分頁、開始 / 停止錄影、最近錄影（第一張）、截圖那一列、標題列右上角的「⋯」總選單
+    /// 主畫面：下載錄影元件、範圍分頁、開始 / 停止錄影、最近錄影（第一張）、標題列右上角的「⋯」總選單
     Download,
     Source,
     Record,
     Recent,
     RecentCard,
-    Shot,
     Settings,
     /// 剪輯視窗：影片與時間軸、右側分頁、下方儲存
     EdTimeline,
@@ -485,13 +484,24 @@ fn content(app: &UiApp, t: &Tour) -> (Option<Spot>, String, String, Go) {
             (Some(if has { Spot::RecentCard } else { Spot::Recent }), tr!("在「最近錄影」播放、剪輯", "Play and edit in “Recent recordings”").into(), body.into(), next())
         }
         Step::Shot => (
-            Some(Spot::Shot),
+            Some(Spot::Settings),
             tr!("截圖", "Screenshots").into(),
-            trf!(
-                "「框選截圖」{}在螢幕上拖曳框選一塊（或點一下視窗），存成圖片並複製到剪貼簿，可以直接貼上。旁邊的箭頭還有延遲截圖、長截圖、步驟截圖等。截過的圖在右下角的「檔案庫 → 截圖」。",
-                "“Select area”{} lets you drag over part of the screen (or click a window); it's saved as an image and copied to the clipboard, ready to paste. The arrow next to it has delayed, scrolling and step screenshots. Find your screenshots under “Library → Screenshots” at the bottom right.",
-                key(app, 3)
-            ),
+            {
+                // 快速鍵沒設定時寫功能名稱
+                let k = |i: usize, name: &str| {
+                    let l = app.keys.label(i);
+                    if l.is_empty() {
+                        trf!("「{name}」的快速鍵", " the “{name}” shortcut ")
+                    } else {
+                        format!(" {l} ")
+                    }
+                };
+                let (sel, area) = (k(3, tr!("框選截圖", "Select area")), k(2, tr!("截取錄影範圍", "Capture area")));
+                trf!(
+                    "按{sel}在螢幕上拖曳框選一塊（或點一下視窗），存成圖片並複製到剪貼簿，可以直接貼上；按{area}截下整個錄影範圍。延遲截圖、長截圖、步驟截圖、只抓文字等在右上角「⋯」→「截圖工具」，系統匣圖示的選單也有。截過的圖在「檔案庫 → 截圖」。",
+                    "Press{sel}to drag over part of the screen (or click a window); it's saved as an image and copied to the clipboard, ready to paste. Press{area}to capture the whole recording area. Delayed, scrolling and step screenshots, grab text and more are under “⋯” (top right) → “Screenshot tools”, and in the tray icon's menu. Find your screenshots under “Library → Screenshots”."
+                )
+            },
             next(),
         ),
         Step::Done => (
