@@ -40,35 +40,15 @@ enum Try {
 
 /// 這一版的新功能（標題、說明、試試看）：最多 6 項，快速鍵用目前的設定
 fn items(_app: &UiApp) -> Vec<(String, String, Try)> {
-    vec![
-        (
-            tr!("錄影中看得到聲音大小", "See audio levels while recording").into(),
-            tr!(
-                "錄影時控制列中間有麥克風、電腦聲音的音量條，講話時麥克風那條會跳動，不用錄完才發現沒有聲音；麥克風靜音時按鈕和音量條都會寫「已靜音」。",
-                "While recording, the control bar shows microphone and system audio levels. The mic bar moves when you talk, so you won't find out afterwards that nothing was recorded. When the mic is muted, the button and the level both say “Muted”."
-            )
-            .into(),
-            Try::None,
-        ),
-        (
-            tr!("訊息更好找、更好按", "Clearer messages and actions").into(),
-            tr!(
-                "錄好了、做好了的訊息左邊有色條（綠＝完成、藍＝進行中、橘＝提醒），第二行寫檔名，「▶ 播放」等按鈕就在文字旁邊；好幾則時用「‹ 1/2 ›」翻看，新的排第一。停止改成紅底實心，麥克風按鈕會寫出是不是靜音。",
-                "Messages have a colored stripe (green = done, blue = in progress, orange = note) and the file name on a second line, with Play and other buttons right next to the text. Page through several with “‹ 1/2 ›”; the newest is first. Stop is now solid red, and the mic button says whether it's muted."
-            )
-            .into(),
-            Try::None,
-        ),
-        (
-            tr!("Jellyfin 人物、標籤：常用的在前", "Jellyfin people and tags: most used first").into(),
-            tr!(
-                "影片資訊的「常用」依使用次數排、重複的合成一個；★ 釘選常用的，「全部 N 個」可以搜尋、勾選多個一次加入。",
-                "“Used before” in the video details is ordered by how often each is used, with duplicates merged. Pin favorites with ★, and use “All N” to search and add several at once."
-            )
-            .into(),
-            Try::Jellyfin,
-        ),
-    ]
+    vec![(
+        tr!("Jellyfin：人物、標籤、年份可以勾好幾個", "Jellyfin: pick several people, tags and years").into(),
+        tr!(
+            "檔案庫 Jellyfin 分頁的「依這些找」，每一類都是勾選清單（可以搜尋，後面寫用在幾支影片），勾了馬上套用。同一類任一個符合就列，不同類都要符合，例如「小美或小明、2024 年」；下面一列看得到所有條件，按一下就拿掉。",
+            "In the library's Jellyfin tab, “Find by” now has a checklist for each of people, tags and years (searchable, with how many videos use each), applied as you check. Videos matching any choice in a group are listed, and every group must match — e.g. “Amy or Ming, 2024”. All conditions appear in a row below; click one to remove it."
+        )
+        .into(),
+        Try::Jellyfin,
+    )]
 }
 
 pub fn show(app: &mut UiApp, ctx: &egui::Context) {

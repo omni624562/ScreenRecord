@@ -65,9 +65,9 @@ pub fn open(app: &mut UiApp, id: String, user: String, name: String, known_peopl
     app.spawn(async move { tokio::task::spawn_blocking(move || jf3.usage(&user3)).await.unwrap_or_else(|e| Err(e.to_string())) }, move |app, r| {
         let Some(d) = app.jf_edit.as_mut().filter(|d| d.id == id3) else { return };
         match r {
-            Ok((people, tags)) => {
-                d.known_people = merge_usage(people, &d.known_people);
-                d.known_tags = merge_usage(tags, &d.known_tags);
+            Ok(u) => {
+                d.known_people = merge_usage(u.people, &d.known_people);
+                d.known_tags = merge_usage(u.tags, &d.known_tags);
             }
             Err(e) => screenrecorder_core::info!("[Jellyfin] 讀不到人物、標籤的使用次數：{e}"),
         }
