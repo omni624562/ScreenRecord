@@ -50,6 +50,8 @@ pub struct JfBrowse {
     posters: HashMap<String, Poster>,
     /// 勾選的影片（編號 → 那支影片）
     selected: BTreeMap<String, JfItem>,
+    /// 上次勾或取消勾的那一支（Shift＋點一下：從它選到點的那一支）
+    anchor: Option<String>,
     /// 依人物、標籤、年份找（找整個伺服器的影片）：勾了的條件，同一類任一個符合、不同類都要符合；空的 = 沒有用
     facet: Vec<JfFacet>,
     /// 伺服器上的人物（編號, 名稱, 幾支影片）、標籤（名稱, 幾支）、年份（年, 幾支）（打開時讀一次，改了影片資訊後重讀）；
@@ -519,6 +521,8 @@ struct Picked {
     delete: Option<JfItem>,
     download: Option<JfItem>,
     toggle: Option<JfItem>,
+    /// Shift＋點一下：（點的那一支, 它所在的那一排）
+    range: Option<(JfItem, Vec<JfItem>)>,
     posters: Vec<String>,
 }
 
@@ -532,7 +536,7 @@ fn cells(ui: &mut egui::Ui, d: &JfBrowse, items: &[JfItem], rows: Option<usize>,
     let cell_h = img_h + 46.0;
     let clip = ui.clip_rect();
     let picking = !d.selected.is_empty();
-    let ctrl = ui.input(|i| i.modifiers.command);
+    let (ctrl, shift) = ui.input(|i| (i.modifiers.command || i.modifiers.ctrl, i.modifiers.shift));
     for row in items.chunks(cols).take(rows.unwrap_or(usize::MAX)) {
         let (row_rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), cell_h), Sense::hover());
         for (i, it) in row.iter().enumerate() {
@@ -632,8 +636,10 @@ fn cells(ui: &mut egui::Ui, d: &JfBrowse, items: &[JfItem], rows: Option<usize>,
             painter.text(pos2(cell.min.x, img.max.y + 24.0), Align2::LEFT_TOP, sub, theme::font(11.5), p.muted);
             let resp = resp.on_hover_text(&it.name);
             if resp.clicked() && !used {
-                // 已經在勾選、或按著 Ctrl：點影片是勾選；不然是播放（資料夾是進去）
-                if video && (picking || ctrl) {
+                // Shift：從上次勾的選到這一支；已經在勾選、或按著 Ctrl：點影片是勾選；不然是播放（資料夾是進去）
+                if video && shift {
+                    out.range = Some((it.clone(), items.to_vec()));
+                } else if video && (picking || ctrl) {
                     out.toggle = Some(it.clone());
                 } else {
                     out.open = Some(it.clone());
@@ -1094,8 +1100,8 @@ pub fn panel(ui: &mut egui::Ui, d: &mut JfBrowse) -> Panel {
     let fui = &mut ui.new_child(UiBuilder::new().max_rect(Rect::from_min_max(foot.min, pos2(foot.max.x - pager_w, foot.max.y))).layout(Layout::left_to_right(Align::Center)));
     if d.selected.is_empty() {
         fui.label(theme::muted(fui, tr!("多選小技巧", "Multi-select tips"))).on_hover_text(tr!(
-            "滑鼠移到影片上按左上角的方塊，或按住 Ctrl 點影片，勾選好幾支一次下載或刪除",
-            "Hover a video and click the box in its top-left corner, or Ctrl+click videos, to download or delete several at once"
+            "滑鼠移到影片上按左上角的方塊，或按住 Ctrl 點影片，勾選好幾支一次下載或刪除；按住 Shift 點一下，從上次勾的那支到這一支全部勾起來",
+            "Hover a video and click the box in its top-left corner, or Ctrl+click videos, to download or delete several at once. Shift+click selects everything from the last one you checked"
         ));
     } else {
         fui.label(RichText::new(trf!("已勾選 {} 支", "{} selected", d.selected.len())).font(theme::font_bold(13.0)));
@@ -1120,8 +1126,24 @@ pub fn apply(app: &mut UiApp, mut d: JfBrowse, out: Panel) {
     }
     let Panel { mut reload, picked, bulk_download, bulk_delete, find_dupes } = out;
     if let Some(it) = picked.toggle {
+        d.anchor = Some(it.id.clone());
         if d.selected.remove(&it.id).is_none() {
             d.selected.insert(it.id.clone(), it);
+        }
+    }
+    // Shift＋點一下：同一排裡從上次勾的到這一支都勾起來（上次勾的不在這一排時只勾這一支）
+    if let Some((it, row)) = picked.range {
+        let from = d.anchor.as_ref().and_then(|a| row.iter().position(|r| &r.id == a));
+        match (from, row.iter().position(|r| r.id == it.id)) {
+            (Some(a), Some(b)) => {
+                for r in row[a.min(b)..=a.max(b)].iter().filter(|r| r.kind == JfKind::Video) {
+                    d.selected.insert(r.id.clone(), r.clone());
+                }
+            }
+            _ => {
+                d.anchor = Some(it.id.clone());
+                d.selected.insert(it.id.clone(), it);
+            }
         }
     }
     let selected: Vec<(String, String)> = d.selected.values().map(|i| (i.id.clone(), i.file_name.clone())).collect();
