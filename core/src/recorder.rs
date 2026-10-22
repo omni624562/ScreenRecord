@@ -1042,6 +1042,7 @@ impl Recorder {
                 result: st.result.clone(),
                 log: st.log.clone(),
                 silent_audio: if st.state == RecorderState::Idle { 0 } else { st.silent_now },
+                levels: if recording { cur.and_then(|c| c.audio.as_ref()).map(|a| a.levels()) } else { None },
                 replay: st.replay_sec().filter(|_| st.state != RecorderState::Idle).map(|sec| ReplayStatus {
                     sec,
                     bytes: st.replay_bytes,
