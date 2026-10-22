@@ -39,6 +39,8 @@ pub struct MainState {
     result_detail: bool,
     /// 按 ✕ 關掉的「已自動處理」結果
     dismissed_after: Option<u64>,
+    /// 錄影面板（右欄上半）需要的高度（上一個畫面量到的；下半給最近錄影）
+    rec_need: f32,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -63,17 +65,18 @@ pub fn show(app: &mut UiApp, ui: &mut Ui) {
     ui.scope_builder(UiBuilder::new().max_rect(inner), |ui| {
         banners(app, ui);
         let rest = ui.available_rect_before_wrap();
-        let recent_h = 118.0;
         let gap = 14.0;
-        let top = Rect::from_min_max(rest.min, pos2(rest.max.x, rest.max.y - recent_h - gap));
-        let bottom = Rect::from_min_max(pos2(rest.min.x, rest.max.y - recent_h), rest.max);
-        // 右欄：視窗窄時跟著變窄，左邊的預覽才放得下
+        // 左邊預覽一直到底；右欄上半是錄影控制（依內容的高度），下半是最近錄影與檔案庫
         let rec_w = (inner.width() * 0.34).clamp(312.0, 360.0);
-        let left = Rect::from_min_max(top.min, pos2(top.max.x - rec_w - gap, top.max.y));
-        let right = Rect::from_min_max(pos2(top.max.x - rec_w, top.min.y), top.max);
+        let left = Rect::from_min_max(rest.min, pos2(rest.max.x - rec_w - gap, rest.max.y));
+        let right = Rect::from_min_max(pos2(rest.max.x - rec_w, rest.min.y), rest.max);
+        let rec_max = (right.height() - RECENT_MIN_H - gap).max(160.0);
+        let rec_h = app.main.rec_need.clamp(140.0, rec_max);
+        let rec_r = Rect::from_min_size(right.min, vec2(right.width(), rec_h));
+        let recent_r = Rect::from_min_max(pos2(right.min.x, rec_r.max.y + gap), right.max);
         ui.scope_builder(UiBuilder::new().max_rect(left), |ui| capture_panel(app, ui));
-        ui.scope_builder(UiBuilder::new().max_rect(right), |ui| rec_panel(app, ui));
-        ui.scope_builder(UiBuilder::new().max_rect(bottom), |ui| recent_strip(app, ui));
+        ui.scope_builder(UiBuilder::new().max_rect(rec_r), |ui| rec_panel(app, ui, rec_max));
+        ui.scope_builder(UiBuilder::new().max_rect(recent_r), |ui| recent_panel(app, ui));
     });
     // 儲存位置停止輸入 0.6 秒後重新讀取最近錄影
     if app.main.dir_changed_at.is_some_and(|t| t.elapsed().as_millis() > 600) {
@@ -1225,12 +1228,15 @@ fn countdown_left(app: &UiApp) -> u64 {
     (left.max(0.0) / 1000.0).ceil().max(1.0) as u64
 }
 
-fn rec_panel(app: &mut UiApp, ui: &mut Ui) {
+/// 錄影面板（右欄上半）。max_h：最多可以多高（下面要留給最近錄影）；面板的高度跟著內容，量到的需要高度記在 rec_need
+fn rec_panel(app: &mut UiApp, ui: &mut Ui, max_h: f32) {
     let p = theme::pal(ui);
+    let top = ui.max_rect().min.y;
     theme::card(ui).show(ui, |ui| {
         ui.set_min_size(ui.available_size());
+        let margin = ui.max_rect().min.y - top;
         // 視窗矮（小螢幕、介面放大）時計時器的字小一點，開始錄影、截圖的按鈕才放得下
-        let clock_size = match ui.available_height() {
+        let clock_size = match max_h - margin * 2.0 {
             h if h < 340.0 => 30.0,
             h if h < 420.0 => 38.0,
             _ => 46.0,
@@ -1297,11 +1303,12 @@ fn rec_panel(app: &mut UiApp, ui: &mut Ui) {
         let sys = sys_problem(app);
         let bottom_h = if sys { BOTTOM_BAR_H + BOTTOM_LINE_GAP + 6.0 } else { 0.0 };
         let body = Rect::from_min_max(ui.cursor().min, pos2(full.max.x, full.max.y - bottom_h));
-        // 高度不夠（視窗矮、介面放大）：省略比較不重要的列
+        // 高度不夠（視窗矮、介面放大）：省略比較不重要的列（用最多可以多高來算，面板跟著內容縮放時才不會跳來跳去）
         // 0 = 放得下；1 = 有點擠（省略不重要的列、列高縮小）；2 = 很擠（只留聲音一列，開始錄影的按鈕才看得到）
-        let tight = if body.height() < 180.0 {
+        let room = max_h - margin * 2.0 - (body.min.y - full.min.y) - bottom_h;
+        let tight = if room < 180.0 {
             2
-        } else if body.height() < 330.0 {
+        } else if room < 330.0 {
             1
         } else {
             0
@@ -1309,9 +1316,15 @@ fn rec_panel(app: &mut UiApp, ui: &mut Ui) {
         ui.scope_builder(UiBuilder::new().max_rect(body), |ui| {
             // 捲軸佔自己的寬度，不蓋在按鈕上
             ui.spacing_mut().scroll = egui::style::ScrollStyle::solid();
-            egui::ScrollArea::vertical().id_salt("rec-body").auto_shrink([false, false]).max_height(body.height()).show(ui, |ui| {
+            let out = egui::ScrollArea::vertical().id_salt("rec-body").auto_shrink([false, false]).max_height(body.height()).show(ui, |ui| {
                 rec_body(app, ui, &r, replay.as_ref(), tight);
             });
+            // 面板需要的高度：上面的標題、計時器＋中間的內容＋最下面的系統狀態
+            let need = margin * 2.0 + (body.min.y - full.min.y) + out.content_size.y + bottom_h + 2.0;
+            if (need - app.main.rec_need).abs() > 0.5 {
+                app.main.rec_need = need;
+                ui.ctx().request_repaint();
+            }
         });
         if sys {
             let bottom = Rect::from_min_max(pos2(full.min.x, full.max.y - BOTTOM_BAR_H), full.max);
@@ -2524,114 +2537,105 @@ pub fn ask_update(app: &mut UiApp, u: &screenrecorder_core::types::UpdateInfo) {
 
 // ───────────── 最近錄影 ─────────────
 
-/// 「檔案庫」那一塊的最小寬度
-const LIB_BTN_W: f32 = 92.0;
+/// 右欄下半的最近錄影最少要多高（標題、一張卡片、檔案庫按鈕）
+const RECENT_MIN_H: f32 = 210.0;
 
-fn recent_strip(app: &mut UiApp, ui: &mut Ui) {
+/// 右欄下半：最近錄影（卡片直排，放得下幾張就一頁幾張，上下翻頁）＋檔案庫（錄影、截圖、Jellyfin）
+fn recent_panel(app: &mut UiApp, ui: &mut Ui) {
     let p = theme::pal(ui);
-    let strip = theme::card(ui).inner_margin(egui::Margin::symmetric(14, 10)).show(ui, |ui| {
+    let panel = theme::card(ui).show(ui, |ui| {
         ui.set_min_size(ui.available_size());
-        ui.horizontal_centered(|ui| {
-            ui.vertical(|ui| {
-                // 英文的「Recent recordings」分成兩行
-                ui.set_width(if is_en() { 96.0 } else { 84.0 });
-                ui.label(RichText::new(tr!("最近錄影", "Recent recordings")).font(theme::font_bold(14.0)));
-                if let Some(r) = &app.recent {
-                    if r.total > 0 {
-                        ui.label(theme::muted(ui, trf!("{} / {} 頁", "Page {} / {}", app.recent_page, r.pages.max(1))));
-                    }
-                }
-            });
-            let pages = app.recent.as_ref().map(|r| r.pages).unwrap_or(1);
-            if Btn::icon_only(Icon::ChevL).ghost().small().enabled(app.recent_page > 1).tooltip(tr!("較新的錄影", "Newer recordings")).show(ui).clicked() {
-                app.recent_page -= 1;
-                app.load_recent();
+        let full = ui.max_rect();
+        let pages = app.recent.as_ref().map(|r| r.pages).unwrap_or(1);
+        // 標題列：最近錄影、第幾頁，右邊上一頁 / 下一頁
+        ui.horizontal(|ui| {
+            ui.label(RichText::new(tr!("最近錄影", "Recent recordings")).font(theme::font_bold(14.0)));
+            if let Some(r) = app.recent.as_ref().filter(|r| r.total > 0) {
+                ui.label(theme::muted(ui, trf!("{} / {} 頁", "Page {} / {}", app.recent_page, r.pages.max(1))));
             }
-            // 一頁放幾張依寬度決定
-            // 右邊「檔案庫」：錄影、截圖（有設定 Jellyfin 時再加 Jellyfin）放在一起，點哪個直接開檔案庫的那一頁，一步就到
-            let jf = app.jellyfin().is_some();
-            // 三個疊起來時矮一點才放得下（和檔案庫的分頁一樣：錄影｜截圖｜Jellyfin）
-            let btn_h = if jf { 24.0 } else { 28.0 };
-            let rec_btn =
-                Btn::new(tr!("錄影", "Videos")).icon(Icon::Video).small().height(btn_h).tooltip(tr!("全部錄影：搜尋、整理、合併、一次處理", "All recordings: search, organize, merge, batch process"));
-            let shot_btn = Btn::new(tr!("截圖", "Screenshots"))
-                .icon(Icon::Camera)
-                .small()
-                .height(btn_h)
-                .tooltip(tr!("全部截圖：用圖裡的字搜尋、整理、拼圖", "All screenshots: search by text in images, organize, combine"));
-            let jf_btn = Btn::new("Jellyfin")
-                .icon(Icon::Play)
-                .small()
-                .height(btn_h)
-                .tooltip(tr!("Jellyfin 上的影片：搜尋、播放、下載、改影片資訊、找重複的", "Videos on Jellyfin: search, play, download, edit details, find duplicates"));
-            // 按鈕上下疊（一樣寬），比並排省寬度，多放得下一張卡片
-            let btn_w = rec_btn.width(ui).max(shot_btn.width(ui)).max(if jf { jf_btn.width(ui) } else { 0.0 });
-            let lib_w = btn_w.max(LIB_BTN_W) + 8.0;
-            let cards_w = ui.available_width() - lib_w - 44.0;
-            // 卡片最窄：縮圖＋下面一排 6 個小圖示（播放、剪輯、製作、傳到媒體庫、資料夾、⋯）放得下就好
-            let card_w = card_min_w(ui);
-            let per = ((cards_w + 8.0) / (card_w + 8.0)).floor().clamp(1.0, 10.0) as usize;
-            // 卡片平均分配寬度（填滿這一列），但不會寬到裡面空一大塊
-            let card_w = ((cards_w - 8.0 * (per as f32 - 1.0)) / per as f32).clamp(card_w, card_w + 60.0);
-            if per != app.recent_per_page {
-                app.recent_per_page = per;
-                app.load_recent();
-            }
-            let items = app.recent.as_ref().map(|r| r.items.clone()).unwrap_or_default();
-            ui.allocate_ui(vec2(cards_w, ui.available_height()), |ui| {
-                ui.horizontal_centered(|ui| {
-                    if items.is_empty() {
-                        let dir = app.s.out_dir(&app.env);
-                        // 只寫資料夾名稱（完整路徑在滑鼠提示）；太長時截斷，不蓋到右邊的按鈕
-                        let name = std::path::Path::new(&dir).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| dir.clone());
-                        let text = trf!(
-                            "還沒有錄影。按「開始錄影」錄第一支，錄好會出現在這裡（存在「{name}」資料夾）。",
-                            "No recordings yet. Click “Start recording” to make your first one; it will show up here (saved in the “{name}” folder)."
-                        );
-                        ui.add(egui::Label::new(theme::muted(ui, &text)).truncate()).on_hover_text(&dir);
-                    }
-                    let dates = date_labels(items.iter().map(|e| (e.media.name.as_str(), e.media.time_ms())));
-                    for e in &items {
-                        recent_card(app, ui, e, dates.get(&e.media.name).cloned().unwrap_or_default(), card_w);
-                    }
-                });
-            });
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                // 檔案庫：上面一行標題，下面錄影、截圖（、Jellyfin）上下疊（一樣寬）
-                ui.allocate_ui_with_layout(vec2(btn_w.max(LIB_BTN_W), if jf { 96.0 } else { 84.0 }), Layout::top_down(Align::Min), |ui| {
-                    ui.spacing_mut().item_spacing.y = if jf { 3.0 } else { 4.0 };
-                    ui.label(RichText::new(tr!("檔案庫", "Library")).font(theme::font_bold(12.5)).color(p.muted));
-                    let w = btn_w.max(LIB_BTN_W);
-                    if rec_btn.min_width(w).show(ui).clicked() {
-                        app.library = Some(super::library_dialog::LibraryDialog::new(super::library_dialog::Kind::Video));
-                    }
-                    if shot_btn.min_width(w).show(ui).clicked() {
-                        app.library = Some(super::library_dialog::LibraryDialog::new(super::library_dialog::Kind::Shot));
-                    }
-                    if jf && jf_btn.min_width(w).show(ui).clicked() {
-                        super::library_dialog::open_jellyfin(app);
-                    }
-                });
                 if Btn::icon_only(Icon::ChevR).ghost().small().enabled(app.recent_page < pages).tooltip(tr!("較舊的錄影", "Older recordings")).show(ui).clicked() {
                     app.recent_page += 1;
                     app.load_recent();
                 }
+                if Btn::icon_only(Icon::ChevL).ghost().small().enabled(app.recent_page > 1).tooltip(tr!("較新的錄影", "Newer recordings")).show(ui).clicked() {
+                    app.recent_page -= 1;
+                    app.load_recent();
+                }
+            });
+        });
+        ui.add_space(4.0);
+        // 下面的檔案庫：標題＋一排按鈕
+        let jf = app.jellyfin().is_some();
+        let lib_h = 62.0;
+        let list = Rect::from_min_max(ui.cursor().min, pos2(full.max.x, full.max.y - lib_h - 10.0));
+        // 一頁放幾張依高度決定
+        let per = ((list.height() + 8.0) / (CARD_H + 8.0)).floor().clamp(1.0, 10.0) as usize;
+        if per != app.recent_per_page {
+            app.recent_per_page = per;
+            app.load_recent();
+        }
+        let items = app.recent.as_ref().map(|r| r.items.clone()).unwrap_or_default();
+        ui.scope_builder(UiBuilder::new().max_rect(list).layout(Layout::top_down(Align::Min)), |ui| {
+            ui.spacing_mut().item_spacing.y = 8.0;
+            if items.is_empty() {
+                let dir = app.s.out_dir(&app.env);
+                let name = std::path::Path::new(&dir).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| dir.clone());
+                let text = trf!(
+                    "還沒有錄影。按「開始錄影」錄第一支，錄好會出現在這裡（存在「{name}」資料夾）。",
+                    "No recordings yet. Click “Start recording” to make your first one; it will show up here (saved in the “{name}” folder)."
+                );
+                ui.add(egui::Label::new(theme::muted(ui, &text)).wrap()).on_hover_text(&dir);
+            }
+            let dates = date_labels(items.iter().map(|e| (e.media.name.as_str(), e.media.time_ms())));
+            let w = ui.available_width();
+            for e in &items {
+                recent_card(app, ui, e, dates.get(&e.media.name).cloned().unwrap_or_default(), w);
+            }
+        });
+        let lib = Rect::from_min_max(pos2(full.min.x, full.max.y - lib_h), full.max);
+        ui.painter().hline(lib.x_range(), lib.min.y - 6.0, Stroke::new(1.0, p.border));
+        ui.scope_builder(UiBuilder::new().max_rect(lib).layout(Layout::top_down(Align::Min)), |ui| {
+            ui.spacing_mut().item_spacing.y = 6.0;
+            ui.label(RichText::new(tr!("檔案庫", "Library")).font(theme::font_bold(12.5)).color(p.muted));
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 6.0;
+                let n = if jf { 3.0 } else { 2.0 };
+                let w = ((ui.available_width() - 6.0 * (n - 1.0)) / n).floor();
+                let rec_btn = Btn::new(tr!("錄影", "Videos"))
+                    .icon(Icon::Video)
+                    .small()
+                    .min_width(w)
+                    .tooltip(tr!("全部錄影：搜尋、整理、合併、一次處理", "All recordings: search, organize, merge, batch process"));
+                if rec_btn.show(ui).clicked() {
+                    app.library = Some(super::library_dialog::LibraryDialog::new(super::library_dialog::Kind::Video));
+                }
+                let shot_btn = Btn::new(tr!("截圖", "Screenshots"))
+                    .icon(Icon::Camera)
+                    .small()
+                    .min_width(w)
+                    .tooltip(tr!("全部截圖：用圖裡的字搜尋、整理、拼圖", "All screenshots: search by text in images, organize, combine"));
+                if shot_btn.show(ui).clicked() {
+                    app.library = Some(super::library_dialog::LibraryDialog::new(super::library_dialog::Kind::Shot));
+                }
+                let jf_btn = Btn::new("Jellyfin")
+                    .icon(Icon::Play)
+                    .small()
+                    .min_width(w)
+                    .tooltip(tr!("Jellyfin 上的影片：搜尋、播放、下載、改影片資訊、找重複的", "Videos on Jellyfin: search, play, download, edit details, find duplicates"));
+                if jf && jf_btn.show(ui).clicked() {
+                    super::library_dialog::open_jellyfin(app);
+                }
             });
         });
     });
-    tour::mark(ui, Spot::Recent, strip.response.rect);
+    tour::mark(ui, Spot::Recent, panel.response.rect);
 }
 
 /// 最近錄影卡片的縮圖：4:3（從 16:9 的畫面裁掉左右一點），卡片窄一點，一列放得下更多張
 const CARD_H: f32 = 80.0;
 fn card_thumb_w() -> f32 {
     (CARD_H - 12.0) * 4.0 / 3.0
-}
-
-/// 卡片最窄的寬度：縮圖＋右邊一排 6 個小圖示
-fn card_min_w(ui: &Ui) -> f32 {
-    let icon = Btn::icon_only(Icon::More).ghost().small().width(ui);
-    6.0 + card_thumb_w() + 10.0 + icon * 6.0 + 6.0
 }
 
 fn recent_card(app: &mut UiApp, ui: &mut Ui, e: &LibraryEntry, date: String, w: f32) {
