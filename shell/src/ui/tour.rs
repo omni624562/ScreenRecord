@@ -442,8 +442,8 @@ fn content(app: &UiApp, t: &Tour) -> (Option<Spot>, String, String, Go) {
             Some(Spot::Settings),
             tr!("確認聲音", "Check the audio").into(),
             tr!(
-                "預設會錄電腦播放的聲音和麥克風。想確認麥克風收得到：右上角的「⋯」→「設定」→「聲音」，按「測試音量」講幾句話，麥克風的條有跳動就表示收得到；換麥克風或不錄聲音也在那裡。錄影前有問題（例如找不到麥克風）時，預覽下方會出現橘色的提醒。",
-                "By default the computer's sound and your microphone are recorded. To check the mic: “⋯” (top right) → Settings → Audio, click “Test levels” and say a few words; if the microphone bar moves, you're being heard. You can change microphones or turn audio off there too. If something's wrong before recording (for example no microphone), an orange note appears below the preview."
+                "預設會錄電腦播放的聲音和麥克風。想確認麥克風收得到：右上角的「⋯」→「設定」→「聲音」，按「測試音量」講幾句話，麥克風的條有跳動就表示收得到；換麥克風或不錄聲音也在那裡。錄影前有問題（例如找不到麥克風）時，預覽下方「開始錄影」那一列的右邊會出現橘色的提醒。",
+                "By default the computer's sound and your microphone are recorded. To check the mic: “⋯” (top right) → Settings → Audio, click “Test levels” and say a few words; if the microphone bar moves, you're being heard. You can change microphones or turn audio off there too. If something's wrong before recording (for example no microphone), an orange note appears to the right of “Start recording” below the preview."
             )
             .into(),
             next(),
@@ -465,7 +465,7 @@ fn content(app: &UiApp, t: &Tour) -> (Option<Spot>, String, String, Go) {
         Step::Recording => (
             Some(Spot::Record),
             tr!("錄影中", "Recording").into(),
-            tr!("錄幾秒後按「停止」（或螢幕上方控制列的停止）。停止後就會出現在下方的「最近錄影」。", "After a few seconds, click “Stop” (or Stop on the bar at the top of the screen). It will then appear under “Recent recordings” below.")
+            tr!("錄幾秒後按「停止」（或螢幕上方控制列的停止）。停止後會出現在右邊「最近錄影」的第一張（藍框）；「開始錄影」那一列的右邊也會寫「錄影已儲存」，可以直接播放、開資料夾、複製檔案。", "After a few seconds, click “Stop” (or Stop on the bar at the top of the screen). It will then appear first in “Recent recordings” on the right (with a blue border), and “Recording saved” shows next to “Start recording” with play, folder and copy buttons.")
                 .into(),
             Go::Wait,
         ),
@@ -478,8 +478,8 @@ fn content(app: &UiApp, t: &Tour) -> (Option<Spot>, String, String, Go) {
                 )
             } else {
                 tr!(
-                    "錄好的影片會出現在這裡。下面一排是：播放、剪輯、製作（加速版、GIF、壓縮）、傳到 Jellyfin、在資料夾中顯示；其他功能在「⋯」，也可以按右鍵。右邊「檔案庫 → 錄影」看以前錄的。",
-                    "Your recordings appear here. The buttons below are Play, Edit, Make (sped-up video, GIF, compress), Send to library and Show in folder; everything else is under ⋯ or a right-click. “Library → Videos” on the right shows older ones."
+                    "錄好的影片會出現在這裡。下面一排是：播放、剪輯、製作（加速版、GIF、壓縮）、傳到 Jellyfin、在資料夾中顯示；其他功能在「⋯」，也可以按右鍵。下方「檔案庫 → 錄影」看以前錄的。",
+                    "Your recordings appear here. The buttons below are Play, Edit, Make (sped-up video, GIF, compress), Send to library and Show in folder; everything else is under ⋯ or a right-click. “Library → Videos” at the bottom shows older ones."
                 )
             };
             (Some(if has { Spot::RecentCard } else { Spot::Recent }), tr!("在「最近錄影」播放、剪輯", "Play and edit in “Recent recordings”").into(), body.into(), next())

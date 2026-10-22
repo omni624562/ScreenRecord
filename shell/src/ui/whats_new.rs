@@ -42,27 +42,31 @@ enum Try {
 fn items(_app: &UiApp) -> Vec<(String, String, Try)> {
     vec![
         (
-            tr!("右上角的「⋯」總選單", "The “⋯” main menu").into(),
+            tr!("開始錄影移到預覽下面", "Start recording is now under the preview").into(),
             tr!(
-                "錄影、截圖、Jellyfin、回溯錄影、排程錄影、講稿小視窗、設定組合、設定、更新說明、檢查更新、關於都集中在標題列右上角的「⋯」，一層就看得到，每一項有圖示；設定也可以按 Ctrl+,。「關於」改成獨立的視窗，不在設定裡。",
-                "Recordings, screenshots, Jellyfin, the replay buffer, scheduled recording, the script window, presets, Settings, release notes, updates and About are now all in the “⋯” at the top right of the title bar, in one level with icons; Settings also opens with Ctrl+,. About is now its own window instead of a Settings page."
+                "「開始錄影」「框選截圖」「截取錄影範圍」放在預覽下面的一條控制列；錄影中同一列換成計時、暫停、標記、麥克風、停止，眼睛不用在預覽和右邊之間來回。",
+                "“Start recording”, “Select area” and “Capture recording area” now sit on a bar under the preview. While recording, the same bar shows the timer, Pause, Mark, the mic and Stop, so you don't have to look back and forth."
             )
             .into(),
             Try::None,
         ),
         (
-            tr!("預覽更大，有問題才提醒", "A bigger preview, with notes only when needed").into(),
+            tr!("錄好了、製作中，都寫在同一列", "Results and progress on the same bar").into(),
             tr!(
-                "預覽下方的設定列拿掉了（攝影機移到預覽上方）。錄影前找不到麥克風、儲存位置不能寫入或磁碟快滿時，預覽下方才會出現橘色提醒，點一下就到對應的設定。",
-                "The settings row below the preview is gone (the camera moved above the preview). An orange note appears below the preview only when something's wrong before recording, such as no microphone, a save folder that can't be written to or a nearly full disk; click it to open the right setting."
+                "錄影已儲存、製作加速版的進度、自動處理、有新版本和錄影前的提醒，都顯示在按鈕右邊，一次一則，有好幾則時點「還有 N 則」換下一則；播放、資料夾、複製檔案、剪輯、製作是小圖示，滑鼠移上去有說明。控制列高度不會變，預覽不會跳。",
+                "“Recording saved”, export progress, post-processing, updates and pre-recording notes appear to the right of the buttons, one at a time; click “N more” for the next one. Play, folder, copy, edit and make are small icons with tooltips. The bar keeps its height, so the preview doesn't jump."
             )
             .into(),
             Try::None,
         ),
         (
-            tr!("測試音量在「設定 → 聲音」", "Test levels is in Settings → Audio").into(),
-            tr!("和麥克風、系統聲音的設定放在一起：按「開始（20 秒）」講幾句話，看麥克風的條有沒有跳動。", "It now sits with the mic and system audio settings: click “Start (20 s)”, say a few words and watch the microphone bar.").into(),
-            Try::Settings(Page::Audio),
+            tr!("右邊整欄是最近錄影", "Recent recordings fill the right column").into(),
+            tr!(
+                "右邊從上到下都是最近錄影，放得下幾張就一頁幾張；剛錄好的那支排第一張、有藍框。最下面是檔案庫：錄影、截圖、Jellyfin。",
+                "The whole right column now lists recent recordings, as many per page as fit; the one you just recorded is first with a blue border. The library buttons (videos, screenshots, Jellyfin) are at the bottom."
+            )
+            .into(),
+            Try::Library(false),
         ),
     ]
 }

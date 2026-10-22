@@ -1,5 +1,5 @@
 //! 開發用（只在 debug 版）：自動開啟某個畫面、模擬操作並截圖，在 Linux 的 Xvfb 上檢查介面。
-//! - SCREENRECORDER_DEV：要開啟的畫面（library、shots、changelog、notes（講稿小視窗）、schedule（排程錄影）、after:<路徑>（錄完自動處理）、follow:<標題>（只錄這個視窗）、followfake:<標題>（模擬已選好視窗）、record:<秒>（錄幾秒）、replay:<保留秒數>,<幾秒後存下>[,<再幾秒停止>]（重播緩衝）、export:<路徑>、edit:<路徑>、tags:<路徑>（影片資訊）、send:<路徑>|<路徑>（傳到媒體庫：選資料夾）、compress:<路徑>（壓縮）、merge:<路徑>|<路徑>（合併）、view:<路徑>、play:<路徑>（在主畫面播放）、whatsnew（新功能介紹）、about（關於）、monitors（模擬兩個螢幕）、unplug（模擬拔掉外接螢幕）、winoff:<x>,<y>（把視窗移到那裡，2 秒後拉回看得到的地方）、snip:<PNG>（用這張圖當凍結的桌面開啟框選截圖）、snipregion:<PNG>（同上，只選範圍）、stepsreview:<PNG>,<PNG>（整理步驟截圖）、hotkeys（模擬已登記快速鍵）、fakerec:<0|1>（模擬錄影中、有錄麥克風，1 = 靜音中）、update:<版本>（模擬有新版本）、cameras:<名稱>,<名稱>（模擬找到的攝影機）、settings:<general|record|audio|shots|save|after|keys|advanced|components>、ed:<剪輯視窗指令>、tour:<first|editor|shot|library>[,<第幾步>]（教學）），以 ; 分隔
+//! - SCREENRECORDER_DEV：要開啟的畫面（library、shots、changelog、notes（講稿小視窗）、schedule（排程錄影）、after:<路徑>（錄完自動處理）、follow:<標題>（只錄這個視窗）、followfake:<標題>（模擬已選好視窗）、record:<秒>（錄幾秒）、replay:<保留秒數>,<幾秒後存下>[,<再幾秒停止>]（重播緩衝）、export:<路徑>、edit:<路徑>、tags:<路徑>（影片資訊）、send:<路徑>|<路徑>（傳到媒體庫：選資料夾）、compress:<路徑>（壓縮）、merge:<路徑>|<路徑>（合併）、view:<路徑>、play:<路徑>（在主畫面播放）、whatsnew（新功能介紹）、about（關於）、monitors（模擬兩個螢幕）、unplug（模擬拔掉外接螢幕）、winoff:<x>,<y>（把視窗移到那裡，2 秒後拉回看得到的地方）、snip:<PNG>（用這張圖當凍結的桌面開啟框選截圖）、snipregion:<PNG>（同上，只選範圍）、stepsreview:<PNG>,<PNG>（整理步驟截圖）、hotkeys（模擬已登記快速鍵）、fakerec:<0|1>（模擬錄影中、有錄麥克風，1 = 靜音中）、fakedone:<路徑>（模擬剛錄好這支）、update:<版本>（模擬有新版本）、cameras:<名稱>,<名稱>（模擬找到的攝影機）、settings:<general|record|audio|shots|save|after|keys|advanced|components>、ed:<剪輯視窗指令>、tour:<first|editor|shot|library>[,<第幾步>]（教學）），以 ; 分隔
 //! - SCREENRECORDER_INPUT：開啟後依序模擬的操作，以 ; 分隔：
 //!   wait:毫秒、click:x,y（可加 ,ctrl、,shift）、dclick:x,y（按兩下）、rclick:x,y（右鍵）、move:x,y、drag:x0,y0,x1,y1、wheel:x,y,dy（加 ,ctrl = Ctrl+滾輪）、key:Space（可加 ctrl+、alt+、shift+）、hold:Space / release:Space（按住、放開）、type:文字、shot:路徑
 //! - SCREENRECORDER_SHOT：最後截圖存檔的路徑（存好後結束）；SCREENRECORDER_SHOT_AFTER：開始後幾毫秒截圖（預設 3000）
@@ -33,6 +33,8 @@ pub struct Dev {
     fake_update: Option<screenrecorder_core::types::UpdateInfo>,
     /// fakerec:<0|1> 模擬錄影中（有錄麥克風；1 = 靜音中），檢查錄影面板
     fake_rec: Option<bool>,
+    /// fakedone:<路徑> 模擬剛錄好這支（控制列的「錄影已儲存」、最近錄影的藍框）
+    fake_done: Option<String>,
 }
 
 fn button(p: Pos2, pressed: bool, modifiers: Modifiers) -> Event {
@@ -175,6 +177,11 @@ pub fn fake_status(app: &mut UiApp) {
         let r = &mut app.status.recorder;
         (r.state, r.mic_muted, r.recorded_ms, r.markers) = (screenrecorder_core::types::RecorderState::Recording, Some(m), 83_000, 1);
     }
+    if let Some(path) = app.dev.fake_done.clone() {
+        let bytes = std::fs::metadata(&path).map(|m| m.len()).ok();
+        let r = &mut app.status.recorder;
+        r.result = Some(screenrecorder_core::types::RecordingResult { ok: true, path: Some(path), frames: 180, video_sec: 6.0, bytes, message: String::new(), parts_dir: None, silent_audio: 0 });
+    }
 }
 
 pub fn tick(app: &mut UiApp, ctx: &egui::Context) {
@@ -273,6 +280,7 @@ pub fn tick(app: &mut UiApp, ctx: &egui::Context) {
                     }
                     Some(("notes", c)) => super::notes::dev(app, c),
                     Some(("tour", c)) => super::tour::dev(app, c),
+                    Some(("fakedone", p)) => app.dev.fake_done = Some(p.to_string()),
                     _ if a.starts_with("fakerec:") => app.dev.fake_rec = Some(a.ends_with('1')),
                     _ if a == "about" => app.about_open = true,
                     _ if a == "whatsnew" => {

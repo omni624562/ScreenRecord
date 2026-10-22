@@ -1,12 +1,12 @@
 //! 排程錄影：錄影面板右上角「排程」開啟的對話框，與排程中的提示列（還有多久、取消）。
 //! 排程本身在 core（App::run_schedule、schedule::run_saved）：到時間用排程時的錄影設定開始，不倒數；等待中的排程存在設定裡，重新開啟程式後繼續等。
 
-use super::theme::{self, segmented, Btn, Icon};
+use super::theme::{self, segmented, Btn};
 use super::UiApp;
 use chrono::TimeZone;
 use chrono::{Duration, Local, Timelike};
 use eframe::egui::{self, Align, CornerRadius, Id, Layout, RichText};
-use screenrecorder_core::schedule::{describe, left_text, next_at, when_text, Schedule};
+use screenrecorder_core::schedule::{describe, next_at, when_text, Schedule};
 use screenrecorder_core::{tr, trf};
 
 /// 錄多久的選項（分鐘；0 = 不限）
@@ -214,27 +214,4 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         d.keep_hint = true;
     }
     app.schedule_dlg = Some(d);
-}
-
-/// 排程中：錄影面板裡的提示列（什麼時候開始、還有多久、取消）
-pub fn strip(app: &mut UiApp, ui: &mut egui::Ui) {
-    let Some(s) = app.core.scheduled() else { return };
-    let p = theme::pal(ui);
-    let now = Local::now();
-    ui.add_space(6.0);
-    egui::Frame::new().fill(p.accent.gamma_multiply(0.1)).corner_radius(CornerRadius::same(theme::RADIUS_SM)).inner_margin(8.0).show(ui, |ui| {
-        ui.set_width(ui.available_width());
-        ui.add(egui::Label::new(RichText::new(trf!("排程錄影：{}", "Scheduled: {}", describe(&s, now))).color(p.accent).font(theme::font_bold(13.0))).wrap());
-        ui.horizontal(|ui| {
-            ui.label(theme::muted(ui, trf!("還有 {}", "Starts in {}", left_text(s.at, now))));
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if Btn::new(tr!("取消排程", "Cancel")).icon(Icon::Close).ghost().small().show(ui).clicked() {
-                    app.core.cancel_schedule();
-                    app.toast(tr!("已取消排程錄影", "Scheduled recording canceled"), false);
-                }
-            });
-        });
-    });
-    // 倒數每秒更新
-    ui.ctx().request_repaint_after(std::time::Duration::from_secs(1));
 }
