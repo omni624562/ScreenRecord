@@ -103,6 +103,8 @@ fn main() {
     }
     info!("螢幕錄影 {APP_VERSION} — 原速錄影、事後加速匯出{}", if argv.iter().any(|a| a == "--tray") { "（--tray：開機自動啟動，只常駐系統匣）" } else { "" });
     info!("程式資料夾：{}", app_dir().display());
+    #[cfg(windows)]
+    screenrecorder_core::monitors::log_environment();
     // 外部元件以程式所在的資料夾為主：以前放到 %LOCALAPPDATA% 的搬過來（確定只有自己在執行、還沒開始用之前）
     #[cfg(windows)]
     screenrecorder_core::components::move_to_app_dir();
