@@ -76,6 +76,10 @@ fn hand_over(args: &Args, argv: &[String]) -> bool {
 }
 
 fn main() {
+    // 最先設成 Per-Monitor V2：之後各執行緒建立的小視窗（游標光暈、點擊波紋、錄影外框…）才會用實體像素定位，
+    // 否則在縮放 125%、150% 的螢幕上會跟游標錯開
+    #[cfg(windows)]
+    screenrecorder_core::monitors::ensure_dpi_aware();
     log::setup();
     log::install_panic_hook();
     let argv: Vec<String> = std::env::args().collect();
