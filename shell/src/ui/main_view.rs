@@ -1109,46 +1109,6 @@ fn countdown_left(app: &UiApp) -> u64 {
     (left.max(0.0) / 1000.0).ceil().max(1.0) as u64
 }
 
-/// 快速鍵一行：框選截圖、截取錄影範圍的按鍵與「全部快速鍵…」；有不能用的時候標出來
-fn shortcut_line(app: &mut UiApp, ui: &mut Ui) {
-    let p = theme::pal(ui);
-    let works = app.env.hotkeys.map(|h| h.all());
-    let ok = |i: usize| works.is_some_and(|w| w.get(i).copied().unwrap_or(false));
-    // 常用的：開始 / 停止錄影、截圖（範圍）、框選截圖、暫停 / 繼續、回溯錄影
-    let broken = [0usize, 1, 2, 3, 6].iter().filter(|&&i| !app.keys.label(i).is_empty() && !ok(i)).count();
-    let parts: Vec<String> = [(3usize, tr!("框選", "Select")), (2, tr!("截取範圍", "Capture area"))]
-        .into_iter()
-        .filter(|(i, _)| ok(*i) && !app.keys.label(*i).is_empty())
-        .map(|(i, n)| format!("{} {n}", app.keys.label(i)))
-        .collect();
-    let mut open_keys = false;
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 6.0;
-        // 右邊：「全部快速鍵…」；有不能用的時候直接寫幾個不能用（點一下去換）
-        let tip = match works {
-            _ if broken == 0 => tr!("在「設定 → 快速鍵」查看與更換", "View and change them in Settings → Shortcuts"),
-            None => tr!("系統匣沒有啟動，全域快速鍵無法使用", "The tray icon isn't running, so global shortcuts don't work"),
-            Some(_) => tr!("被其他程式占用，點一下到「設定 → 快速鍵」換一組", "Used by another program. Click to choose a different one in Settings → Shortcuts"),
-        };
-        let label = if broken > 0 { trf!("{broken} 個快速鍵無法使用…", "{broken} shortcut(s) unavailable…") } else { tr!("全部快速鍵…", "All shortcuts…").to_string() };
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            if Btn::new(label).ghost().small().tooltip(tip).show(ui).clicked() {
-                open_keys = true;
-            }
-            // 左邊：常用的快速鍵，先放按鈕再用剩下的寬度，放不下就截斷，不會和按鈕疊在一起
-            if !parts.is_empty() {
-                let text = parts.join(tr!("・", " · "));
-                ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-                    ui.add(egui::Label::new(RichText::new(&text).font(theme::mono(12.0)).color(p.muted)).truncate()).on_hover_text(&text);
-                });
-            }
-        });
-    });
-    if open_keys {
-        settings_dialog::open(app, Page::Keys);
-    }
-}
-
 /// 截圖的方式（「⋯」→「截圖工具」、系統匣的「截圖」選單相同的項目與順序）
 #[derive(Clone, PartialEq)]
 pub(super) enum ShotAct {
@@ -1794,7 +1754,7 @@ fn control_bar(app: &mut UiApp, ui: &mut Ui) {
     });
 }
 
-/// 待命：開始錄影（快速鍵寫在按鈕上）；右邊是訊息或截圖的快速鍵（截圖的其他方式在「⋯」→「截圖工具」）
+/// 待命：開始錄影（快速鍵在滑鼠提示）；右邊是訊息，沒有訊息時空著
 fn idle_controls(app: &mut UiApp, ui: &mut Ui) {
     let narrow = ui.available_width() < 700.0;
     let manual = app.manual_export();
@@ -1810,8 +1770,9 @@ fn idle_controls(app: &mut UiApp, ui: &mut Ui) {
         String::new()
     };
     let label = if app.s.source_type == SourceType::Audio { tr!("開始錄音", "Start audio recording") } else { tr!("開始錄影", "Start recording") };
+    // 快速鍵不寫在按鈕上，滑鼠移上去才提示
     let k = app.keys.label(0);
-    let label = if narrow || k.is_empty() || !app.env.hotkeys.is_some_and(|h| h.all().first().copied().unwrap_or(false)) { label.to_string() } else { format!("{label}　{k}") };
+    let tip = if tip.is_empty() && !k.is_empty() && app.env.hotkeys.is_some_and(|h| h.all().first().copied().unwrap_or(false)) { trf!("快速鍵 {k}", "Shortcut {k}") } else { tip };
     let start = Btn::new(label).kind(theme::Kind::Record).height(42.0).min_width(if narrow { 130.0 } else { 180.0 }).enabled(can_start(app)).tooltip(tip).show(ui);
     tour::mark(ui, Spot::Record, start.rect);
     if start.clicked() {
@@ -2055,18 +2016,25 @@ fn notices(app: &UiApp, ctx: &egui::Context, active: bool) -> Vec<Notice> {
         for (text, tip, page) in rec_warnings(app, ctx) {
             out.push(Notice::Warn(text, tip, page));
         }
+        // 常用的快速鍵（開始 / 停止、截圖、框選、暫停、回溯錄影）被占用或系統匣沒啟動
+        let works = app.env.hotkeys.map(|h| h.all());
+        let broken = [0usize, 1, 2, 3, 6].iter().filter(|&&i| !app.keys.label(i).is_empty() && !works.is_some_and(|w| w.get(i).copied().unwrap_or(false))).count();
+        if broken > 0 && app.env_ready {
+            let tip = if works.is_none() {
+                tr!("系統匣沒有啟動，全域快速鍵無法使用", "The tray icon isn't running, so global shortcuts don't work")
+            } else {
+                tr!("被其他程式占用，到「設定 → 快速鍵」換一組", "Used by another program. Choose a different one in Settings → Shortcuts")
+            };
+            out.push(Notice::Warn(trf!("{broken} 個快速鍵無法使用", "{broken} shortcut(s) unavailable"), tip.into(), Page::Keys));
+        }
     }
     out
 }
 
-/// 控制列右邊：一則訊息（有好幾則時「還有 N 則」切換）；沒有訊息時，待命時寫常用的快速鍵
+/// 控制列右邊：一則訊息（有好幾則時「還有 N 則」切換）；沒有訊息時空著
 fn notice_area(app: &mut UiApp, ui: &mut Ui, active: bool) {
     let list = notices(app, ui.ctx(), active);
     if list.is_empty() {
-        if !active {
-            ui.add_space(4.0);
-            shortcut_line(app, ui);
-        }
         return;
     }
     let p = theme::pal(ui);
