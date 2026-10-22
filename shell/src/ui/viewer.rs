@@ -608,8 +608,6 @@ enum Act {
     JfInfo,
     /// 串流的 Jellyfin 影片：加進或拿出我的最愛
     JfFav,
-    /// 串流的 Jellyfin 影片：在瀏覽器打開（true）或複製連結
-    JfLink(bool),
     /// 後退或快轉幾秒
     Skip(f64),
 }
@@ -711,7 +709,7 @@ fn head_buttons(app: &UiApp, e: &LibraryEntry, image: bool, remote: Option<&Remo
     list
 }
 
-/// 串流 Jellyfin 影片時標題列的按鈕：剪輯、製作（先下載）、下載｜設為封面、影片資訊｜星號、在 Jellyfin 開啟、複製連結
+/// 串流 Jellyfin 影片時標題列的按鈕：剪輯、製作（先下載）、下載｜設為封面、影片資訊｜星號
 fn remote_buttons(app: &UiApp, remote: Option<&Remote>) -> Vec<HeadBtn> {
     let blocked = app.blocked(EntryAction::Export);
     let then = tr!("（先下載到這台電腦的儲存位置，下載好就接著打開）", " (downloads it to your save folder first, then opens)");
@@ -747,14 +745,7 @@ fn remote_buttons(app: &UiApp, remote: Option<&Remote>) -> Vec<HeadBtn> {
         head_icon(tr!("加上星號", "Star"), Icon::Star, tr!("加進 Jellyfin 的我的最愛", "Add to your Jellyfin favorites"), Act::JfFav)
     };
     fav.group = true;
-    let open = head_icon(tr!("在 Jellyfin 開啟", "Open in Jellyfin"), Icon::Video, tr!("用瀏覽器打開這支影片在 Jellyfin 的頁面", "Open this video's Jellyfin page in your browser"), Act::JfLink(true));
-    let link = head_icon(
-        tr!("複製 Jellyfin 連結", "Copy Jellyfin link"),
-        Icon::Link,
-        tr!("複製這支影片在 Jellyfin 的網址（可以貼給家人）", "Copy this video's Jellyfin address (to share with family)"),
-        Act::JfLink(false),
-    );
-    vec![edit, make, down, cover, info, fav, open, link]
+    vec![edit, make, down, cover, info, fav]
 }
 
 pub fn show(app: &mut UiApp, ctx: &egui::Context) {
@@ -1309,11 +1300,6 @@ fn run_act(app: &mut UiApp, act: Act) {
                 }
                 Err(e) => app.toast(trf!("沒有改到 Jellyfin 的我的最愛：{e}", "Couldn't change your Jellyfin favorites: {e}"), true),
             });
-        }
-        Act::JfLink(open) => {
-            let Some(r) = app.viewer.as_ref().and_then(|v| v.remote.as_ref()) else { return };
-            let id = r.id.clone();
-            app.jellyfin_link_id(id, open);
         }
         Act::Delete => delete_current(app),
         Act::Rename => {

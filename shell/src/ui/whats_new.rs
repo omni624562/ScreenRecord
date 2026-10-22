@@ -41,10 +41,10 @@ enum Try {
 /// 這一版的新功能（標題、說明、試試看）：最多 6 項，快速鍵用目前的設定
 fn items(_app: &UiApp) -> Vec<(String, String, Try)> {
     vec![(
-        tr!("Jellyfin：人物、標籤、年份可以勾好幾個", "Jellyfin: pick several people, tags and years").into(),
+        tr!("Jellyfin：寫錯的人物、標籤可以改名", "Jellyfin: fix misspelled people and tags").into(),
         tr!(
-            "檔案庫 Jellyfin 分頁的「依這些找」，每一類都是勾選清單（可以搜尋，後面寫用在幾支影片），勾了馬上套用。同一類任一個符合就列，不同類都要符合，例如「小美或小明、2024 年」；下面一列看得到所有條件，按一下就拿掉。",
-            "In the library's Jellyfin tab, “Find by” now has a checklist for each of people, tags and years (searchable, with how many videos use each), applied as you check. Videos matching any choice in a group are listed, and every group must match — e.g. “Amy or Ming, 2024”. All conditions appear in a row below; click one to remove it."
+            "影片資訊的「全部 N 個」清單裡按「改名」（或在常用上按右鍵），打正確的寫法；改成已經有的就是合併，Jellyfin 上用到的影片會一起改好。看起來一樣、其實寫法不同的（例如兩個「無碼」）會標「寫法不同」。",
+            "In the video details, use Rename in the “All N” list (or right-click a suggestion) and type the right spelling; choosing an existing one merges them, and every video on Jellyfin using it is updated. Look-alikes that are spelled differently are marked “Differs”."
         )
         .into(),
         Try::Jellyfin,

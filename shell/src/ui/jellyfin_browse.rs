@@ -199,6 +199,13 @@ fn load_facets(app: &mut UiApp) {
     );
 }
 
+/// 人物、標籤改名之後重讀「依這些找」的清單（Jellyfin 分頁沒開時不用）
+pub fn reload_facets(app: &mut UiApp) {
+    if app.jf_browse.is_some() {
+        load_facets(app);
+    }
+}
+
 /// 在「影片資訊」改好了：名稱跟著換、縮圖重讀（可能換了封面），人物、標籤重讀；正在播這支的話標題也換
 pub fn edited(app: &mut UiApp, id: &str, title: &str) {
     if let Some(v) = app.viewer.as_mut().filter(|_| !title.trim().is_empty()) {
