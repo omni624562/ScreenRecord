@@ -156,6 +156,42 @@ pub fn layout_signature() -> String {
     list.join("|")
 }
 
+/// 啟動時檢查顯示環境並寫進記錄檔：DPI 模式有沒有設成 Per-Monitor V2、每個螢幕的解析度與縮放比例。
+/// 游標光暈、波紋、錄影外框等小視窗錯位時，看記錄檔就知道是哪種環境
+#[cfg(windows)]
+pub fn log_environment() {
+    use windows::Win32::Foundation::{LPARAM, RECT};
+    use windows::Win32::Graphics::Gdi::{EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFOEXW};
+    use windows::Win32::UI::HiDpi::{AreDpiAwarenessContextsEqual, GetDpiForMonitor, GetThreadDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, MDT_EFFECTIVE_DPI};
+    unsafe extern "system" fn visit(m: HMONITOR, _: HDC, _: *mut RECT, data: LPARAM) -> windows::core::BOOL {
+        let list = &mut *(data.0 as *mut Vec<(String, RECT, u32, bool)>);
+        let mut info = MONITORINFOEXW::default();
+        info.monitorInfo.cbSize = std::mem::size_of::<MONITORINFOEXW>() as u32;
+        if GetMonitorInfoW(m, &mut info.monitorInfo as *mut _).as_bool() {
+            let (mut dx, mut dy) = (96u32, 96u32);
+            let _ = GetDpiForMonitor(m, MDT_EFFECTIVE_DPI, &mut dx, &mut dy);
+            list.push((wide(&info.szDevice), info.monitorInfo.rcMonitor, dx, info.monitorInfo.dwFlags & 1 != 0));
+        }
+        true.into()
+    }
+    ensure_dpi_aware();
+    let v2 = unsafe { AreDpiAwarenessContextsEqual(GetThreadDpiAwarenessContext(), DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2).as_bool() };
+    if v2 {
+        crate::info!("顯示環境：DPI 模式 Per-Monitor V2");
+    } else {
+        crate::warn!("顯示環境：DPI 模式不是 Per-Monitor V2，縮放不是 100% 的螢幕上游標光暈、點擊波紋可能和游標錯開");
+    }
+    let mut list: Vec<(String, RECT, u32, bool)> = vec![];
+    unsafe {
+        let _ = EnumDisplayMonitors(None, None, Some(visit), LPARAM(&mut list as *mut _ as isize));
+    }
+    let names = display_names();
+    for (dev, r, dpi, primary) in list {
+        let model = names.get(&dev.to_lowercase()).map(|(_, n)| n.as_str()).filter(|n| !n.is_empty()).unwrap_or("?");
+        crate::info!("顯示環境：{dev}（{model}）{}×{} 位置 ({}, {}) 縮放 {}%{}", r.right - r.left, r.bottom - r.top, r.left, r.top, (dpi * 100 + 48) / 96, if primary { " 主螢幕" } else { "" });
+    }
+}
+
 #[cfg(not(windows))]
 pub fn layout_signature() -> String {
     String::new()
