@@ -626,6 +626,13 @@ pub async fn list_library_with(cache: &Arc<MediaCache>, ffmpeg: Option<&Path>, d
     // 前後一頁的範圍（在背景先讀好影片資訊、縮圖，換頁時就不用等）
     let mut near: Vec<std::ops::Range<usize>> = vec![];
     let (pages, page, slice, page_size) = match (grid, q.fit_px.filter(|f| f.is_finite())) {
+        // 捲動列出：前 n 筆；接下來那一批先產生縮圖、讀影片資訊
+        _ if q.scroll.is_some() => {
+            let n = q.scroll.unwrap_or(0).min(list.len());
+            start = 0;
+            near.push(n..(n + SCROLL_AHEAD).min(list.len()));
+            (1, 1, list[..n].to_vec(), n)
+        }
         (Some(g), _) => {
             let places = grid_layout(&days, g);
             let pages = places.last().map_or(1, |p| p.page + 1);
@@ -702,6 +709,9 @@ pub async fn list_library_with(cache: &Arc<MediaCache>, ffmpeg: Option<&Path>, d
     }
     LibraryPage { dir: dir.display().to_string(), total, page, pages, page_size, items, all_paths, start, groups, facets, ahead, error: None }
 }
+
+/// 捲動列出時，先準備好下一批的幾筆（縮圖、影片資訊）
+const SCROLL_AHEAD: usize = 60;
 
 /// 清理舊截圖：這些資料夾裡在 cutoff_ms（毫秒）之前的截圖，由舊到新；同一個檔案只列一次
 /// 這些資料夾裡全部的截圖與時間（檔名或修改時間；同一個檔案只算一次），由舊到新
@@ -1182,6 +1192,20 @@ mod tests {
         let src = dir.path().join("Shot_2026-10-09_14-30-00.png").display().to_string();
         let out = rename_recording(&MediaCache::default(), &src, "登入畫面", &[]).await.unwrap();
         assert!(out.ends_with("登入畫面.png"), "{out}");
+    }
+
+    /// 捲動列出：前 n 筆（不分頁），接下來那一批在 ahead；截圖依日期分組
+    #[tokio::test]
+    async fn scroll_lists_the_first_n() {
+        let dir = make(&["Rec_A.mp4", "Rec_B.mp4", "Rec_C.mp4", "Shot_2026-10-09_14-30-00.png", "Shot_2026-10-09_15-30-00.png", "Shot_2026-10-08_09-00-00.png"]);
+        let cache = Arc::new(MediaCache::default());
+        let page = list_library(&cache, None, dir.path(), &LibraryQuery { scroll: Some(2), ..q(None, None, LibrarySort::Old) }).await;
+        assert_eq!((page.total, page.items.len(), page.pages, page.start), (3, 2, 1, 0));
+        assert_eq!(page.ahead.len(), 1);
+        let grid = Some(GridFit { cols: 1, height: 1.0e9, row_h: 1.0, head_h: 0.0 });
+        let shots = list_library(&cache, None, dir.path(), &LibraryQuery { filter: LibraryFilter::Shot, scroll: Some(10), grid, ..q(None, None, LibrarySort::New) }).await;
+        assert_eq!(shots.items.len(), 3);
+        assert_eq!(shots.groups.iter().map(|g| (g.day.as_str(), g.first, g.total)).collect::<Vec<_>>(), vec![("2026-10-09", 0, 2), ("2026-10-08", 2, 1)]);
     }
 
     /// 「選取全部」：all_paths 是每一頁的全部（含加速版）；「只看已選取」：only 只列那些檔案
