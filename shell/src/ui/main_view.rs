@@ -41,6 +41,8 @@ pub struct MainState {
     dismissed_after: Option<u64>,
     /// 控制列的訊息有好幾則時，目前顯示第幾則（按「還有 N 則」換下一則）
     notice_idx: usize,
+    /// 最近錄影目前第一張（換了，例如剛錄好一支，就捲回最上面）
+    recent_first: Option<String>,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -2351,44 +2353,31 @@ fn notice_line(app: &mut UiApp, ui: &mut Ui, n: Notice) {
 
 // ───────────── 最近錄影 ─────────────
 
-/// 右欄：最近錄影（卡片直排，放得下幾張就一頁幾張，上下翻頁）＋檔案庫（錄影、截圖、Jellyfin）
+/// 右欄：最近錄影（卡片直排，捲動看全部，捲到快底時再多讀一批）＋檔案庫（錄影、截圖、Jellyfin）
 fn recent_panel(app: &mut UiApp, ui: &mut Ui) {
     let p = theme::pal(ui);
     let panel = theme::card(ui).show(ui, |ui| {
         ui.set_min_size(ui.available_size());
         let full = ui.max_rect();
-        let pages = app.recent.as_ref().map(|r| r.pages).unwrap_or(1);
-        // 標題列：最近錄影、第幾頁，右邊上一頁 / 下一頁
+        // 標題列：最近錄影、共幾支
         ui.horizontal(|ui| {
             ui.label(RichText::new(tr!("最近錄影", "Recent recordings")).font(theme::font_bold(14.0)));
             if let Some(r) = app.recent.as_ref().filter(|r| r.total > 0) {
-                ui.label(theme::muted(ui, trf!("{} / {} 頁", "Page {} / {}", app.recent_page, r.pages.max(1))));
+                ui.label(theme::muted(ui, trf!("共 {} 支", "{} in total", r.total)));
             }
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if Btn::icon_only(Icon::ChevR).ghost().small().enabled(app.recent_page < pages).tooltip(tr!("較舊的錄影", "Older recordings")).show(ui).clicked() {
-                    app.recent_page += 1;
-                    app.load_recent();
-                }
-                if Btn::icon_only(Icon::ChevL).ghost().small().enabled(app.recent_page > 1).tooltip(tr!("較新的錄影", "Newer recordings")).show(ui).clicked() {
-                    app.recent_page -= 1;
-                    app.load_recent();
-                }
-            });
         });
         ui.add_space(4.0);
         // 下面的檔案庫：標題＋一排按鈕
         let jf = app.jellyfin().is_some();
         let lib_h = 62.0;
         let list = Rect::from_min_max(ui.cursor().min, pos2(full.max.x, full.max.y - lib_h - 10.0));
-        // 一頁放幾張依高度決定
-        let per = ((list.height() + 8.0) / (CARD_H + 8.0)).floor().clamp(1.0, 10.0) as usize;
-        if per != app.recent_per_page {
-            app.recent_per_page = per;
-            app.load_recent();
-        }
         let items = app.recent.as_ref().map(|r| r.items.clone()).unwrap_or_default();
+        let total = app.recent.as_ref().map_or(0, |r| r.total);
+        // 第一張換了（剛錄好、存下回溯錄影、換了儲存位置）：捲回最上面
+        let first = items.first().map(|e| e.media.path.clone());
+        let to_top = first != app.main.recent_first;
+        app.main.recent_first = first;
         ui.scope_builder(UiBuilder::new().max_rect(list).layout(Layout::top_down(Align::Min)), |ui| {
-            ui.spacing_mut().item_spacing.y = 8.0;
             if items.is_empty() {
                 let dir = app.s.out_dir(&app.env);
                 let name = std::path::Path::new(&dir).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| dir.clone());
@@ -2397,11 +2386,27 @@ fn recent_panel(app: &mut UiApp, ui: &mut Ui) {
                     "No recordings yet. Click “Start recording” to make your first one; it will show up here (saved in the “{name}” folder)."
                 );
                 ui.add(egui::Label::new(theme::muted(ui, &text)).wrap()).on_hover_text(&dir);
+                return;
             }
             let dates = date_labels(items.iter().map(|e| (e.media.name.as_str(), e.media.time_ms())));
-            let w = ui.available_width();
-            for e in &items {
-                recent_card(app, ui, e, dates.get(&e.media.name).cloned().unwrap_or_default(), w);
+            ui.spacing_mut().item_spacing.y = 8.0;
+            let mut area = egui::ScrollArea::vertical().id_salt("recent-list").auto_shrink([false, false]);
+            if to_top {
+                area = area.vertical_scroll_offset(0.0);
+            }
+            // 只畫看得到的卡片，幾百支也不會卡
+            let out = area.show_rows(ui, CARD_H, items.len(), |ui, rows| {
+                // 右邊留一點給捲軸，不壓在卡片上
+                let w = ui.available_width() - 10.0;
+                for e in &items[rows] {
+                    recent_card(app, ui, e, dates.get(&e.media.name).cloned().unwrap_or_default(), w);
+                }
+            });
+            // 捲到剩不到 3 張時再多讀 30 支（上一批還沒回來時不重複要）
+            let left = out.content_size.y - out.state.offset.y - out.inner_rect.height();
+            if left < (CARD_H + 8.0) * 3.0 && items.len() == app.recent_per_page && total > items.len() {
+                app.recent_per_page += RECENT_BATCH;
+                app.load_recent();
             }
         });
         let lib = Rect::from_min_max(pos2(full.min.x, full.max.y - lib_h), full.max);
@@ -2442,6 +2447,9 @@ fn recent_panel(app: &mut UiApp, ui: &mut Ui) {
     });
     tour::mark(ui, Spot::Recent, panel.response.rect);
 }
+
+/// 最近錄影一次多讀幾支
+pub(super) const RECENT_BATCH: usize = 30;
 
 /// 最近錄影卡片的縮圖：4:3（從 16:9 的畫面裁掉左右一點），卡片窄一點，一列放得下更多張
 const CARD_H: f32 = 80.0;

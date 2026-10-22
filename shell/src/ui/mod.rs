@@ -384,7 +384,7 @@ impl UiApp {
             library_was_open: false,
             recent_sig: None,
             recent_checking: false,
-            recent_per_page: 4,
+            recent_per_page: main_view::RECENT_BATCH,
             known: HashMap::new(),
             export_dlg: None,
             library: None,
