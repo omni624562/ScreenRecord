@@ -1321,48 +1321,6 @@ fn rec_panel(app: &mut UiApp, ui: &mut Ui) {
     });
 }
 
-/// 總選單「工具」：回溯錄影、排程錄影、講稿小視窗、設定組合（錄影中只有講稿小視窗）
-pub(super) fn tools_menu(app: &mut UiApp, ui: &mut Ui) {
-    ui.set_min_width(220.0);
-    let active = app.status.recorder.state != RecorderState::Idle;
-    if !active {
-        let can = app.env.ffmpeg.found && app.env.ffmpeg.encoder.is_some() && app.manual_export().is_none();
-        // 不能用時寫出原因（還沒下載錄影元件、轉檔中）
-        let why = if !(app.env.ffmpeg.found && app.env.ffmpeg.encoder.is_some()) {
-            tr!("請先下載錄影元件", "Download the recording component first")
-        } else {
-            tr!("轉檔中，完成後再開始", "Wait for the conversion to finish")
-        };
-        ui.add_enabled_ui(can, |ui| {
-            ui.menu_button(tr!("回溯錄影（錄最近幾分鐘）", "Replay buffer (last few minutes)"), |ui| super::replay::menu_body(app, ui));
-        })
-        .response
-        .on_disabled_hover_text(why);
-        if ui
-            .button(tr!("排程錄影…", "Schedule recording…"))
-            .on_hover_text(tr!("指定時間自動開始錄影，也可以設定錄幾分鐘後自動停止", "Start recording automatically at a set time, optionally stopping after a set length"))
-            .clicked()
-        {
-            super::schedule::open(app);
-        }
-    }
-    if ui
-        .button(if app.notes.is_some() { tr!("關閉講稿小視窗", "Close script window") } else { tr!("講稿小視窗", "Script window") })
-        .on_hover_text(tr!(
-            "浮在最上層、不會被錄進影片；可以用大字自動往上捲（提詞），開始錄影時自動開始",
-            "Stays on top and isn't recorded. It can show your script in large text that scrolls up automatically (teleprompter), starting when you record."
-        ))
-        .clicked()
-    {
-        super::notes::toggle(app);
-    }
-    if !active {
-        ui.add_enabled_ui(!app.locked(), |ui| {
-            ui.menu_button(tr!("設定組合", "Presets"), |ui| super::presets::menu_body(app, ui));
-        });
-    }
-}
-
 /// 錄影面板中間可以捲動的部分
 fn rec_body(app: &mut UiApp, ui: &mut Ui, r: &screenrecorder_core::types::RecorderStatus, replay: Option<&screenrecorder_core::types::ReplayStatus>, tight: u8) {
     let p = theme::pal(ui);

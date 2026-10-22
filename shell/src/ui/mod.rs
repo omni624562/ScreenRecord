@@ -199,7 +199,7 @@ pub struct UiApp {
     /// 從檔案庫或檢視器去剪輯、製作時記下來：剪輯視窗、製作視窗關掉後回到原本的地方
     pub back_to: Option<BackTo>,
     pub changelog_open: bool,
-    /// 「關於」視窗開著（☰ →「說明 → 關於」、系統匣「關於」）
+    /// 「關於」視窗開著（「⋯」→「關於」、系統匣「關於」）
     pub about_open: bool,
     /// 找到的攝影機（None = 還沒找完）；主畫面的攝影機選單與設定視窗共用
     pub cameras: Option<Vec<String>>,

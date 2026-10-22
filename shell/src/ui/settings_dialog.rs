@@ -76,7 +76,7 @@ pub struct SettingsDialog {
     jf_found: Option<Vec<(String, String)>>,
 }
 
-/// 馬上檢查有沒有新版本，結果用通知列說（「關於」的「立即檢查」、☰ →「說明 → 檢查更新」）
+/// 馬上檢查有沒有新版本，結果用通知列說（「關於」的「立即檢查」、「⋯」→「檢查更新」）
 pub fn check_update_now(app: &mut UiApp) {
     let core = app.core.clone();
     app.spawn(async move { actions::check_update(&core).await }, |app, r| match r {
@@ -1838,7 +1838,7 @@ fn general_page(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
     form_row(ui, tr!("新版本", "Updates"), |ui| {
         let mut on = app.update.enabled;
         if switch(ui, &mut on, tr!("自動檢查（啟動後與每 12 小時）", "Check automatically (at startup and every 12 hours)"), true)
-            .on_hover_text(tr!("有新版本時通知你；立即檢查、更新在 ☰ →「說明 → 關於」", "You're told when there's a new version. Check now or update from ☰ → Help → About"))
+            .on_hover_text(tr!("有新版本時通知你；立即檢查、更新在 「⋯」→「關於」", "You're told when there's a new version. Check now or update from “⋯” → About"))
             .changed()
         {
             app.core.set_check_updates(on);
@@ -1952,7 +1952,7 @@ fn advanced_page(app: &mut UiApp, ui: &mut Ui) {
     );
 }
 
-// ───────────── 關於（獨立的視窗，☰ →「說明 → 關於」、系統匣「關於」）：版本、這一版更新了什麼、新版本、連結 ─────────────
+// ───────────── 關於（獨立的視窗，「⋯」→「關於」、系統匣「關於」）：版本、這一版更新了什麼、新版本、連結 ─────────────
 
 /// 畫「關於」視窗（app.about_open 時）
 pub fn show_about(app: &mut UiApp, ctx: &egui::Context) {

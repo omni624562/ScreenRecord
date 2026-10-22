@@ -42,10 +42,10 @@ enum Try {
 fn items(_app: &UiApp) -> Vec<(String, String, Try)> {
     vec![
         (
-            tr!("左上角的 ☰ 總選單", "The ☰ main menu").into(),
+            tr!("右上角的「⋯」總選單", "The “⋯” main menu").into(),
             tr!(
-                "檔案庫、工具（回溯錄影、排程錄影、講稿小視窗、設定組合）、設定、說明（更新說明、檢查更新、關於）都集中在標題列左上角的 ☰；設定也可以按 Ctrl+,。標題列右邊只留小視窗和視窗按鈕。",
-                "Library, Tools (replay buffer, scheduled recording, script window, presets), Settings and Help (release notes, updates, about) are now all under the ☰ at the top left of the title bar; Settings also opens with Ctrl+,. The right side keeps just the small-window and window buttons."
+                "錄影、截圖、Jellyfin、回溯錄影、排程錄影、講稿小視窗、設定組合、設定、更新說明、檢查更新、關於都集中在標題列右上角的「⋯」，一層就看得到，每一項有圖示；設定也可以按 Ctrl+,。「關於」改成獨立的視窗，不在設定裡。",
+                "Recordings, screenshots, Jellyfin, the replay buffer, scheduled recording, the script window, presets, Settings, release notes, updates and About are now all in the “⋯” at the top right of the title bar, in one level with icons; Settings also opens with Ctrl+,. About is now its own window instead of a Settings page."
             )
             .into(),
             Try::None,

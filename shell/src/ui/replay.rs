@@ -7,7 +7,7 @@ use eframe::egui::{self, RichText, Ui};
 use screenrecorder_core::replay::{length_label, LENGTHS};
 use screenrecorder_core::{tr, trf};
 
-/// 回溯錄影的說明、保留長度、開始按鈕（☰ →「工具」的子選單也用這個）
+/// 回溯錄影的說明、保留長度、開始按鈕（「⋯」總選單的子選單也用這個）
 pub fn menu_body(app: &mut UiApp, ui: &mut Ui) {
     let mut start = false;
     {
