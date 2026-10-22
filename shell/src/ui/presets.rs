@@ -59,7 +59,7 @@ pub fn button(app: &mut UiApp, ui: &mut Ui) {
     egui::Popup::menu(&resp).show(|ui| menu_body(app, ui));
 }
 
-/// 組合清單與管理（預覽上方的按鈕、☰ →「工具」的子選單都用這個）
+/// 組合清單與管理（預覽上方的按鈕、「⋯」總選單的子選單都用這個）
 pub fn menu_body(app: &mut UiApp, ui: &mut Ui) {
     let current = active(app);
     let modified = last_used(app).filter(|_| current.is_none());

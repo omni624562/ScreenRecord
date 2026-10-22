@@ -1,5 +1,5 @@
-//! 自己畫的標題列（操作視窗不用 Windows 的標題列）：左邊 ☰ 總選單（檔案庫、工具、設定、說明、結束），
-//! 右邊縮小成小視窗，再來是縮到最小、最大化、關閉。
+//! 自己畫的標題列（操作視窗不用 Windows 的標題列）：左邊程式圖示與名稱；
+//! 右邊「⋯」總選單（檔案庫、工具、設定、說明、結束）、縮小成小視窗，再來是縮到最小、最大化、關閉。
 //! 拖曳空白的地方移動視窗、按兩下最大化；視窗四邊與四個角可以拖曳調整大小。
 //! 小視窗：只留開始 / 停止錄影、計時、暫停、截圖，不擋畫面；不會被錄進影片，錄影中浮在最上層
 
@@ -21,6 +21,8 @@ const EDGE: f32 = 5.0;
 const CORNER: f32 = 14.0;
 /// 縮到最小、最大化、關閉按鈕的寬度
 const CTRL_W: f32 = 46.0;
+/// 總選單的寬度
+const MENU_W: f32 = 300.0;
 /// 小視窗內容的大小（不含標題列）
 const COMPACT: Vec2 = vec2(460.0, 64.0);
 
@@ -58,6 +60,7 @@ fn needs_full(app: &UiApp) -> bool {
         || app.ask.is_some()
         || app.whats_new_open
         || app.changelog_open
+        || app.about_open
         || app.jf_dupes.is_some()
         || app.video_tags.is_some()
         || app.jf_edit.is_some()
@@ -195,15 +198,16 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                     enter_compact(app, ctx);
                 }
             }
+            rui.add_space(2.0);
+            let menu = Btn::icon_only(Icon::More).ghost().small().tooltip(tr!("選單：檔案庫、工具、設定、說明", "Menu: library, tools, settings, help")).show(rui);
+            super::tour::mark(rui, super::tour::Spot::Settings, menu.rect);
+            egui::Popup::menu(&menu).align(egui::RectAlign::BOTTOM_END).show(|ui| main_menu(app, ui, covered));
             bar.max.x - rui.min_rect().min.x
         };
-        // 左邊：☰ 總選單、圖示、程式名稱（名稱只是文字，拖曳它一樣可以移動視窗；寬度不夠時省略）
-        let left = Rect::from_min_max(bar.min + vec2(6.0, 0.0), egui::pos2(bar.max.x - right_w - 8.0, bar.max.y));
+        // 左邊：圖示、程式名稱（名稱只是文字，拖曳它一樣可以移動視窗；寬度不夠時省略）
+        let left = Rect::from_min_max(bar.min + vec2(12.0, 0.0), egui::pos2(bar.max.x - right_w - 8.0, bar.max.y));
         let lui = &mut ui.new_child(UiBuilder::new().max_rect(left).layout(Layout::left_to_right(Align::Center)));
-        lui.spacing_mut().item_spacing.x = 6.0;
-        let menu = Btn::icon_only(Icon::Menu).ghost().small().tooltip(tr!("選單：檔案庫、工具、設定、說明", "Menu: library, tools, settings, help")).show(lui);
-        super::tour::mark(lui, super::tour::Spot::Settings, menu.rect);
-        egui::Popup::menu(&menu).show(|ui| main_menu(app, ui, covered));
+        lui.spacing_mut().item_spacing.x = 8.0;
         let tex = app_icon(ctx);
         lui.add(egui::Image::new(&tex).fit_to_exact_size(vec2(18.0, 18.0)));
         let name = tr!("螢幕錄影", "Screen Recorder");
@@ -216,55 +220,103 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
     });
 }
 
-/// 總選單：檔案庫、工具、設定、說明、結束。covered：開著剪輯、檢視器等視窗時不能開檔案庫和工具
+/// 總選單（標題列右邊的「⋯」）：一層攤平、用分隔線分組；每一項左邊是圖示，右邊是快速鍵。
+/// 回溯錄影、設定組合本來就有自己的選項，滑過去才展開。covered：開著剪輯、檢視器等視窗時不能開檔案庫和工具
 fn main_menu(app: &mut UiApp, ui: &mut Ui, covered: bool) {
-    ui.set_min_width(200.0);
+    ui.set_width(MENU_W);
+    ui.spacing_mut().item_spacing.y = 2.0;
+    let idle = app.status.recorder.state == RecorderState::Idle;
     let why = tr!("先關掉目前開著的視窗", "Close the open window first");
-    ui.add_enabled_ui(!covered, |ui| {
-        ui.menu_button(tr!("檔案庫", "Library"), |ui| {
-            ui.set_min_width(160.0);
-            if ui.button(tr!("錄影", "Recordings")).clicked() {
-                app.library = Some(LibraryDialog::new(Kind::Video));
-            }
-            if ui.button(tr!("截圖", "Screenshots")).clicked() {
-                app.library = Some(LibraryDialog::new(Kind::Shot));
-            }
-            if app.jellyfin().is_some() && ui.button("Jellyfin").clicked() {
-                super::library_dialog::open_jellyfin(app);
-            }
-        });
-        ui.menu_button(tr!("工具", "Tools"), |ui| main_view::tools_menu(app, ui));
-    })
-    .response
-    .on_disabled_hover_text(why);
-    let settings = egui::Button::new(tr!("設定", "Settings")).shortcut_text("Ctrl+,");
-    if ui.add_enabled(app.ask.is_none(), settings).clicked() {
+    // 檔案庫
+    if menu_item(ui, Icon::Video, tr!("錄影", "Recordings"), None, false, !covered).on_disabled_hover_text(why).clicked() {
+        app.library = Some(LibraryDialog::new(Kind::Video));
+    }
+    if menu_item(ui, Icon::Camera, tr!("截圖", "Screenshots"), None, false, !covered).on_disabled_hover_text(why).clicked() {
+        app.library = Some(LibraryDialog::new(Kind::Shot));
+    }
+    if app.jellyfin().is_some() && menu_item(ui, Icon::Play, "Jellyfin", None, false, !covered).on_disabled_hover_text(why).clicked() {
+        super::library_dialog::open_jellyfin(app);
+    }
+    ui.separator();
+    // 工具（錄影中只有講稿小視窗）
+    if idle {
+        let can = app.env.ffmpeg.found && app.env.ffmpeg.encoder.is_some() && app.manual_export().is_none();
+        let r = menu_item(ui, Icon::Undo, tr!("回溯錄影（錄最近幾分鐘）", "Replay buffer (last few minutes)"), None, true, can && !covered);
+        if can && !covered {
+            egui::containers::menu::SubMenu::new().show(ui, &r, |ui| super::replay::menu_body(app, ui));
+        }
+        let tip = tr!("指定時間自動開始錄影，也可以設定錄幾分鐘後自動停止", "Start recording automatically at a set time, optionally stopping after a set length");
+        if menu_item(ui, Icon::Clock, tr!("排程錄影…", "Schedule recording…"), None, false, !covered).on_hover_text(tip).clicked() {
+            super::schedule::open(app);
+        }
+    }
+    let notes = if app.notes.is_some() { tr!("關閉講稿小視窗", "Close script window") } else { tr!("講稿小視窗", "Script window") };
+    let tip = tr!(
+        "浮在最上層、不會被錄進影片；可以用大字自動往上捲（提詞），開始錄影時自動開始",
+        "Stays on top and isn't recorded. It can show your script in large text that scrolls up automatically (teleprompter), starting when you record."
+    );
+    if menu_item(ui, Icon::Edit, notes, None, false, true).on_hover_text(tip).clicked() {
+        super::notes::toggle(app);
+    }
+    if idle {
+        let r = menu_item(ui, Icon::Copy, tr!("設定組合", "Presets"), None, true, !app.locked());
+        if !app.locked() {
+            egui::containers::menu::SubMenu::new().show(ui, &r, |ui| super::presets::menu_body(app, ui));
+        }
+    }
+    ui.separator();
+    if menu_item(ui, Icon::Settings, tr!("設定", "Settings"), Some("Ctrl+,"), false, app.ask.is_none()).clicked() {
         settings_dialog::open(app, Page::General);
     }
     ui.separator();
-    ui.menu_button(tr!("說明", "Help"), |ui| {
-        ui.set_min_width(180.0);
-        if ui.button(tr!("新功能介紹", "What's new tour")).clicked() {
-            app.whats_new_open = true;
-        }
-        if ui.button(tr!("更新說明", "Release notes")).clicked() {
-            app.changelog_open = true;
-        }
-        if ui.button(tr!("檢查更新", "Check for updates")).clicked() {
-            settings_dialog::check_update_now(app);
-        }
-        if ui.button(tr!("重新看教學", "Replay tutorial")).clicked() {
-            super::tour::restart(app);
-        }
-        ui.separator();
-        if ui.button(tr!("關於", "About")).clicked() {
-            settings_dialog::open(app, Page::About);
-        }
-    });
+    // 說明
+    if menu_item(ui, Icon::Star, tr!("新功能介紹", "What's new tour"), None, false, true).clicked() {
+        app.whats_new_open = true;
+    }
+    if menu_item(ui, Icon::List, tr!("更新說明", "Release notes"), None, false, true).clicked() {
+        app.changelog_open = true;
+    }
+    if menu_item(ui, Icon::Refresh, tr!("檢查更新", "Check for updates"), None, false, true).clicked() {
+        settings_dialog::check_update_now(app);
+    }
+    if menu_item(ui, Icon::Eye, tr!("重新看教學", "Replay tutorial"), None, false, true).clicked() {
+        super::tour::restart(app);
+    }
+    if menu_item(ui, Icon::Info, tr!("關於", "About"), None, false, true).clicked() {
+        app.about_open = true;
+    }
     ui.separator();
-    if ui.button(tr!("結束程式", "Quit")).on_hover_text(tr!("完全結束螢幕錄影（關掉視窗只是收到系統匣）", "Quit Screen Recorder completely (closing the window only hides it in the tray)")).clicked()
-    {
+    let quit = menu_item(ui, Icon::Close, tr!("結束程式", "Quit"), None, false, true);
+    if quit.on_hover_text(tr!("完全結束螢幕錄影（關掉視窗只是收到系統匣）", "Quit Screen Recorder completely (closing the window only hides it in the tray)")).clicked() {
         app.request_quit();
+    }
+}
+
+/// 總選單的一項：左邊圖示、文字，右邊框起來的快速鍵或子選單的箭頭；整列都可以點（有子選單的只要滑過去）
+fn menu_item(ui: &mut Ui, icon: Icon, label: &str, key: Option<&str>, sub: bool, enabled: bool) -> Response {
+    let p = theme::pal(ui);
+    let sense = if enabled && !sub { Sense::click() } else { Sense::hover() };
+    let (rect, resp) = ui.allocate_exact_size(vec2(MENU_W, 38.0), sense);
+    let resp = if enabled { resp } else { resp.with_new_rect(rect) };
+    if enabled && resp.hovered() {
+        ui.painter().rect_filled(rect, egui::CornerRadius::same(6), p.surface2);
+    }
+    let fg = if enabled { p.text } else { p.muted.gamma_multiply(0.7) };
+    theme::paint_icon(ui.painter(), Rect::from_center_size(egui::pos2(rect.min.x + 20.0, rect.center().y), vec2(17.0, 17.0)), icon, fg);
+    ui.painter().text(egui::pos2(rect.min.x + 44.0, rect.center().y), egui::Align2::LEFT_CENTER, label, theme::font(14.0), fg);
+    if let Some(k) = key {
+        let g = ui.painter().layout_no_wrap(k.to_string(), theme::font(12.0), p.muted);
+        let kr = Rect::from_min_size(egui::pos2(rect.max.x - 8.0 - g.size().x - 14.0, rect.center().y - 11.0), vec2(g.size().x + 14.0, 22.0));
+        ui.painter().rect_stroke(kr, egui::CornerRadius::same(4), Stroke::new(1.0, p.border), egui::StrokeKind::Inside);
+        ui.painter().galley(kr.center() - g.size() / 2.0, g, p.muted);
+    }
+    if sub {
+        theme::paint_icon(ui.painter(), Rect::from_center_size(egui::pos2(rect.max.x - 16.0, rect.center().y), vec2(12.0, 12.0)), Icon::ChevR, fg);
+    }
+    if enabled && !sub {
+        resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+    } else {
+        resp
     }
 }
 

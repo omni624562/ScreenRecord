@@ -93,12 +93,16 @@ pub fn bold() -> FontFamily {
     FontFamily::Name("bold".into())
 }
 
+/// 全程式的字放大的比例：寫在各處的字級（12、13.5…）都乘上這個數字，14 點變成約 15 點，
+/// 和 Windows 一般程式的選單、設定頁差不多大
+pub const FONT_SCALE: f32 = 1.08;
+
 pub fn font(size: f32) -> FontId {
-    FontId::new(size, FontFamily::Proportional)
+    FontId::new(size * FONT_SCALE, FontFamily::Proportional)
 }
 
 pub fn font_bold(size: f32) -> FontId {
-    FontId::new(size, bold())
+    FontId::new(size * FONT_SCALE, bold())
 }
 
 pub fn mono(size: f32) -> FontId {
@@ -290,8 +294,6 @@ pub enum Icon {
     Minimize,
     Maximize,
     Restore,
-    /// 總選單（三條橫線，標題列左上角）
-    Menu,
 }
 
 /// 在 rect（正方形）裡畫圖示
@@ -583,11 +585,6 @@ pub fn paint_icon(p: &Painter, rect: Rect, icon: Icon, color: Color32) {
             p.rect_filled(Rect::from_min_max(at(8.0, 8.0), at(12.5, 11.5)), CornerRadius::same((1.0 * k) as u8), color);
         }
         Icon::Minimize => line(&[(3.0, 8.5), (13.0, 8.5)]),
-        Icon::Menu => {
-            for y in [4.0, 8.0, 12.0] {
-                line(&[(2.5, y), (13.5, y)]);
-            }
-        }
         Icon::Maximize => {
             p.rect_stroke(Rect::from_min_max(at(3.0, 3.0), at(13.0, 13.0)), CornerRadius::same((1.0 * k) as u8), Stroke::new(1.1 * k.max(0.8), color), StrokeKind::Middle);
         }

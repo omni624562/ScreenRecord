@@ -17,7 +17,7 @@ use screenrecorder_core::{tr, trf};
 /// 教學會亮出來的地方
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Spot {
-    /// 主畫面：下載錄影元件、範圍分頁、開始 / 停止錄影、最近錄影（第一張）、截圖那一列、標題列的 ☰ 總選單
+    /// 主畫面：下載錄影元件、範圍分頁、開始 / 停止錄影、最近錄影（第一張）、截圖那一列、標題列右上角的「⋯」總選單
     Download,
     Source,
     Record,
@@ -156,7 +156,7 @@ pub fn start(app: &mut UiApp, kind: Kind, at: usize) {
     }
 }
 
-/// 從設定的「關於」重新看：第一次錄影的教學，之後各功能第一次打開時的提示也再顯示
+/// 從「⋯」總選單或「關於」重新看：第一次錄影的教學，之後各功能第一次打開時的提示也再顯示
 pub fn restart(app: &mut UiApp) {
     app.s.tours_done.clear();
     app.s.tips = true;
@@ -265,7 +265,7 @@ fn finish(app: &mut UiApp, completed: bool) {
     if kind == Kind::First {
         app.s.tour_step = 0;
         if !completed {
-            app.toast(tr!("之後可以在「設定 → 關於」按「重新看教學」", "You can see it again from Settings → About → “Replay tutorial”"), false);
+            app.toast(tr!("之後可以在右上角「⋯」→「重新看教學」再看一次", "You can see it again from “⋯” (top right) → “Replay tutorial”"), false);
         }
     }
     app.save_settings();
@@ -297,7 +297,7 @@ fn visible(app: &UiApp, kind: Kind) -> Option<bool> {
     if !app.visible {
         return Some(false);
     }
-    let others = app.ask.is_some() || app.changelog_open || app.whats_new_open || app.snip.is_some() || app.ocr.is_some() || app.settings_dlg.is_some();
+    let others = app.ask.is_some() || app.changelog_open || app.about_open || app.whats_new_open || app.snip.is_some() || app.ocr.is_some() || app.settings_dlg.is_some();
     match kind {
         // 倒數時不蓋住倒數的數字
         Kind::First => Some(
@@ -442,8 +442,8 @@ fn content(app: &UiApp, t: &Tour) -> (Option<Spot>, String, String, Go) {
             Some(Spot::Settings),
             tr!("確認聲音", "Check the audio").into(),
             tr!(
-                "預設會錄電腦播放的聲音和麥克風。想確認麥克風收得到：左上角 ☰ →「設定」→「聲音」，按「測試音量」講幾句話，麥克風的條有跳動就表示收得到；換麥克風或不錄聲音也在那裡。錄影前有問題（例如找不到麥克風）時，預覽下方會出現橘色的提醒。",
-                "By default the computer's sound and your microphone are recorded. To check the mic: ☰ (top left) → Settings → Audio, click “Test levels” and say a few words; if the microphone bar moves, you're being heard. You can change microphones or turn audio off there too. If something's wrong before recording (for example no microphone), an orange note appears below the preview."
+                "預設會錄電腦播放的聲音和麥克風。想確認麥克風收得到：右上角的「⋯」→「設定」→「聲音」，按「測試音量」講幾句話，麥克風的條有跳動就表示收得到；換麥克風或不錄聲音也在那裡。錄影前有問題（例如找不到麥克風）時，預覽下方會出現橘色的提醒。",
+                "By default the computer's sound and your microphone are recorded. To check the mic: “⋯” (top right) → Settings → Audio, click “Test levels” and say a few words; if the microphone bar moves, you're being heard. You can change microphones or turn audio off there too. If something's wrong before recording (for example no microphone), an orange note appears below the preview."
             )
             .into(),
             next(),
@@ -498,8 +498,8 @@ fn content(app: &UiApp, t: &Tour) -> (Option<Spot>, String, String, Go) {
             Some(Spot::Settings),
             tr!("完成了！", "You're all set!").into(),
             tr!(
-                "左上角的 ☰ 是總選單：檔案庫、工具（回溯錄影、排程錄影、講稿小視窗、設定組合）、設定（畫質、每秒張數、存檔位置、快速鍵、語言，也可以按 Ctrl+,）、說明。之後第一次打開剪輯、截圖編輯、全部截圖時，也會有幾步小提示。想再看一次這個教學：☰ →「說明」→「重新看教學」。",
-                "The ☰ at the top left is the main menu: Library, Tools (replay buffer, scheduled recording, script window, presets), Settings (quality, frame rate, where files are saved, shortcuts, language; or press Ctrl+,) and Help. The first time you open the editor, screenshot editing or All screenshots, you'll get a few quick tips too. To see this tutorial again: ☰ → Help → “Replay tutorial”."
+                "右上角的「⋯」是總選單：錄影、截圖、回溯錄影、排程錄影、講稿小視窗、設定組合、設定（畫質、每秒張數、存檔位置、快速鍵、語言，也可以按 Ctrl+,）、更新說明、關於都在這裡。之後第一次打開剪輯、截圖編輯、全部截圖時，也會有幾步小提示。想再看一次這個教學：「⋯」→「重新看教學」。",
+                "The “⋯” at the top right is the main menu: recordings, screenshots, the replay buffer, scheduled recording, the script window, presets, Settings (quality, frame rate, where files are saved, shortcuts, language; or press Ctrl+,), release notes and About. The first time you open the editor, screenshot editing or All screenshots, you'll get a few quick tips too. To see this tutorial again: “⋯” → “Replay tutorial”."
             )
             .into(),
             Go::Button(tr!("開始使用", "Get started").into()),
