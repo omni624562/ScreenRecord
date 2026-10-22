@@ -639,15 +639,36 @@ pub struct Btn {
     quiet: bool,
     /// 文字後面加「▾」：按下去會打開選單
     menu: bool,
+    /// 文字後面的藍色小數字（例如勾了幾個）；0 不顯示
+    badge: usize,
 }
 
 impl Btn {
     pub fn new(text: impl Into<String>) -> Self {
-        Self { text: text.into(), icon: None, kind: Kind::Normal, small: false, enabled: true, min_width: 0.0, tooltip: None, selected: false, height: None, left: false, quiet: false, menu: false }
+        Self {
+            text: text.into(),
+            icon: None,
+            kind: Kind::Normal,
+            small: false,
+            enabled: true,
+            min_width: 0.0,
+            tooltip: None,
+            selected: false,
+            height: None,
+            left: false,
+            quiet: false,
+            menu: false,
+            badge: 0,
+        }
     }
     /// 文字後面加向下的箭頭（下拉選單按鈕）
     pub fn menu(mut self) -> Self {
         self.menu = true;
+        self
+    }
+    /// 文字後面的藍色小數字（例如「人物 2」勾了幾個）；0 不顯示
+    pub fn badge(mut self, n: usize) -> Self {
+        self.badge = n;
         self
     }
     pub fn quiet(mut self, q: bool) -> Self {
@@ -718,7 +739,16 @@ impl Btn {
             return h.max(self.min_width) + if self.menu { MENU_ARROW } else { 0.0 };
         }
         let text = (!self.text.is_empty()).then(|| ui.painter().layout_no_wrap(self.text.clone(), fid, Color32::WHITE).size().x);
-        pad * 2.0 + text.unwrap_or(0.0) + if self.icon.is_some() { 16.0 + if text.is_some() { 6.0 } else { 0.0 } } else { 0.0 } + if self.menu { MENU_ARROW } else { 0.0 }
+        pad * 2.0 + text.unwrap_or(0.0) + if self.icon.is_some() { 16.0 + if text.is_some() { 6.0 } else { 0.0 } } else { 0.0 } + if self.menu { MENU_ARROW } else { 0.0 } + self.badge_w(ui)
+    }
+
+    /// 小數字佔的寬度（含前面的間隔）
+    fn badge_w(&self, ui: &Ui) -> f32 {
+        if self.badge == 0 {
+            return 0.0;
+        }
+        let g = ui.painter().layout_no_wrap(self.badge.to_string(), font_bold(11.0), Color32::WHITE);
+        6.0 + (g.size().x + 10.0).max(18.0)
     }
 
     pub fn show(self, ui: &mut Ui) -> Response {
@@ -755,6 +785,8 @@ impl Btn {
         if self.menu {
             w += MENU_ARROW;
         }
+        let badge_w = self.badge_w(ui);
+        w += badge_w;
         let size = vec2(w.max(self.min_width), h);
         let sense = if self.enabled { Sense::click() } else { Sense::hover() };
         let (rect, resp) = ui.allocate_exact_size(size, sense);
@@ -801,6 +833,12 @@ impl Btn {
             if let Some(g) = &galley {
                 painter.galley_with_override_text_color(pos2(x, rect.center().y - g.size().y / 2.0), g.clone(), color);
                 x += g.size().x;
+            }
+            if badge_w > 0.0 {
+                let b = Rect::from_min_size(pos2(x + 6.0, rect.center().y - 8.0), vec2(badge_w - 6.0, 16.0));
+                painter.rect_filled(b, CornerRadius::same(8), if self.enabled { p.accent } else { p.accent.gamma_multiply(0.5) });
+                painter.text(b.center(), egui::Align2::CENTER_CENTER, self.badge.to_string(), font_bold(11.0), p.accent_ink);
+                x += badge_w;
             }
             if self.menu {
                 paint_icon(painter, Rect::from_min_size(pos2(x + 3.0, rect.center().y - 6.0), Vec2::splat(12.0)), Icon::ChevD, color);

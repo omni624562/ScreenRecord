@@ -288,20 +288,18 @@ impl Jellyfin {
     }
 
     /// 一個資料夾（媒體庫、合集）裡的東西：資料夾在前，影片依 sort 排；search 不是空的時找整個伺服器。
-    /// filter 不是「全部」時列出這個資料夾底下（含子資料夾）符合的影片；facet（人物、標籤、年份）找整個伺服器的影片。
-    /// 回傳（這一頁, 全部幾個）
+    /// filter 不是「全部」時列出這個資料夾底下（含子資料夾）符合的影片；facets（人物、標籤、年份）有選時找整個伺服器的影片
+    /// （同一類任一個符合、不同類都要符合）。回傳（這一頁, 全部幾個）
     #[allow(clippy::too_many_arguments)]
-    pub fn items(&self, user: &str, parent: Option<&str>, search: &str, start: usize, limit: usize, sort: JfSort, filter: JfFilter, facet: Option<&JfFacet>) -> Result<(Vec<JfItem>, usize), String> {
+    pub fn items(&self, user: &str, parent: Option<&str>, search: &str, start: usize, limit: usize, sort: JfSort, filter: JfFilter, facets: &[JfFacet]) -> Result<(Vec<JfItem>, usize), String> {
         let mut req = self.items_req(&format!("{}/Users/{user}/Items", self.url)).query("startIndex", &start.to_string()).query("limit", &limit.to_string()).query("enableTotalRecordCount", "true");
         let (by, order) = sort.query();
         let search = search.trim();
-        if let Some(f) = facet {
+        if !facets.is_empty() {
             req = req.query("sortBy", by).query("sortOrder", order).query("recursive", "true").query("includeItemTypes", VIDEO_TYPES);
-            req = match f {
-                JfFacet::Person(id, _) => req.query("personIds", id),
-                JfFacet::Tag(t) => req.query("tags", t),
-                JfFacet::Year(y) => req.query("years", &y.to_string()),
-            };
+            for (k, v) in facet_query(facets) {
+                req = req.query(k, &v);
+            }
         } else if !search.is_empty() {
             req = req.query("searchTerm", search).query("recursive", "true").query("includeItemTypes", "Video,Movie,Episode,MusicVideo,Folder,BoxSet");
         } else if filter == JfFilter::All {
@@ -309,7 +307,7 @@ impl Jellyfin {
         } else {
             req = req.query("sortBy", by).query("sortOrder", order).query("recursive", "true").query("includeItemTypes", VIDEO_TYPES);
         }
-        if search.is_empty() && facet.is_none() {
+        if search.is_empty() && facets.is_empty() {
             if let Some(p) = parent {
                 req = req.query("parentId", p);
             }
@@ -436,10 +434,11 @@ impl Jellyfin {
         Ok(list)
     }
 
-    /// 全部影片用到的人物、標籤與次數（「影片資訊」的常用）：（名稱, 幾支影片），依次數多到少、再依名稱排。
-    /// 只差在前後空白、大小寫、全形半形的算同一個，顯示用得最多的寫法；太多時讀到 2 萬支為止
-    pub fn usage(&self, user: &str) -> Result<(Counts, Counts), String> {
-        let (mut people, mut tags) = (vec![], vec![]);
+    /// 全部影片用到的人物、標籤、年份與次數（「影片資訊」的常用、Jellyfin 分頁「依這些找」後面的支數）。
+    /// 人物、標籤依次數多到少、再依名稱排，只差在前後空白、大小寫、全形半形的算同一個，顯示用得最多的寫法；
+    /// 年份新的在前；太多時讀到 2 萬支為止
+    pub fn usage(&self, user: &str) -> Result<Usage, String> {
+        let (mut people, mut tags, mut years) = (vec![], vec![], vec![]);
         let mut start = 0usize;
         loop {
             let req = agent()
@@ -453,15 +452,16 @@ impl Jellyfin {
                 .query("limit", "1000")
                 .query("enableTotalRecordCount", "true");
             let body = self.call(req)?.into_string().map_err(|e| e.to_string())?;
-            let (p, t, got, total) = people_tags_of_items(&body);
+            let (p, t, y, got, total) = people_tags_of_items(&body);
             people.extend(p);
             tags.extend(t);
+            years.extend(y);
             start += got;
             if got == 0 || start >= total || start >= 20_000 {
                 break;
             }
         }
-        Ok((tally(people), tally(tags)))
+        Ok(Usage { people: tally(people), tags: tally(tags), years: tally_years(years) })
     }
 
     /// 影片用到的標籤、年份（Jellyfin 分頁「依標籤 / 年份找」）。先問 /Items/Filters；
@@ -1070,22 +1070,12 @@ impl Trickplay {
     }
 }
 
-/// 瀏覽視窗依什麼找：人物（編號, 名稱）、標籤、年份
+/// Jellyfin 分頁「依這些找」的一個條件：人物（編號, 名稱）、標籤、年份
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum JfFacet {
     Person(String, String),
     Tag(String),
     Year(u32),
-}
-
-impl JfFacet {
-    pub fn label(&self) -> String {
-        match self {
-            JfFacet::Person(_, n) => trf!("人物：{n}", "Person: {n}"),
-            JfFacet::Tag(t) => trf!("標籤：{t}", "Tag: {t}"),
-            JfFacet::Year(y) => trf!("{y} 年", "Year {y}"),
-        }
-    }
 }
 
 /// 在檔案庫 Jellyfin 分頁修改的影片資訊
@@ -1292,6 +1282,34 @@ fn tags_years_of_items(json: &str) -> (Vec<String>, Vec<u32>, usize, usize) {
 /// （名稱, 用在幾支影片），次數多的在前
 pub type Counts = Vec<(String, usize)>;
 
+/// 全部影片用到的人物、標籤、年份各幾支
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Usage {
+    pub people: Counts,
+    pub tags: Counts,
+    /// （年份, 幾支），新的在前
+    pub years: Vec<(u32, usize)>,
+}
+
+/// 依人物、標籤、年份找時要加的查詢參數：同一類的串在一起（Jellyfin 列出任一個符合的），不同類分開（都要符合）
+pub fn facet_query(facets: &[JfFacet]) -> Vec<(&'static str, String)> {
+    let join = |sep: &str, f: &dyn Fn(&JfFacet) -> Option<String>| facets.iter().filter_map(f).collect::<Vec<_>>().join(sep);
+    let people = join(",", &|f| if let JfFacet::Person(id, _) = f { Some(id.clone()) } else { None });
+    // 標籤可能有逗號，Jellyfin 的 tags 用「|」分隔
+    let tags = join("|", &|f| if let JfFacet::Tag(t) = f { Some(t.clone()) } else { None });
+    let years = join(",", &|f| if let JfFacet::Year(y) = f { Some(y.to_string()) } else { None });
+    [("personIds", people), ("tags", tags), ("years", years)].into_iter().filter(|(_, v)| !v.is_empty()).collect()
+}
+
+/// 每個年份幾支，新的在前
+fn tally_years(years: Vec<u32>) -> Vec<(u32, usize)> {
+    let mut m = std::collections::BTreeMap::<u32, usize>::new();
+    for y in years {
+        *m.entry(y).or_default() += 1;
+    }
+    m.into_iter().rev().collect()
+}
+
 /// 人物、標籤比對用的鍵：去掉前後空白、全形英數符號換成半形、不分大小寫（「無碼」和「無碼 」、「ＶＲ」和「vr」算同一個）
 pub fn name_key(s: &str) -> String {
     s.trim()
@@ -1329,12 +1347,14 @@ fn tally(names: Vec<String>) -> Vec<(String, usize)> {
     out
 }
 
-/// 影片清單（fields=People,Tags）裡的（人物, 標籤, 這一頁幾支, 全部幾支）；人物只算演員（我們設的人物都是演員）
-fn people_tags_of_items(json: &str) -> (Vec<String>, Vec<String>, usize, usize) {
-    let Ok(v) = serde_json::from_str::<Value>(json) else { return (vec![], vec![], 0, 0) };
+/// 影片清單（fields=People,Tags）裡的（人物, 標籤, 年份, 這一頁幾支, 全部幾支）；人物只算演員（我們設的人物都是演員）。
+/// 年份只看 ProductionYear（依年份找時 Jellyfin 比對的是這個）
+fn people_tags_of_items(json: &str) -> (Vec<String>, Vec<String>, Vec<u32>, usize, usize) {
+    let Ok(v) = serde_json::from_str::<Value>(json) else { return (vec![], vec![], vec![], 0, 0) };
     let items = v.get("Items").and_then(Value::as_array).cloned().unwrap_or_default();
     let mut people = vec![];
     let mut tags = vec![];
+    let years = items.iter().filter_map(|i| i.get("ProductionYear")?.as_u64()).filter(|y| *y > 0).map(|y| y as u32).collect();
     for i in &items {
         // 同一支影片裡重複的只算一次
         let mut seen = std::collections::HashSet::new();
@@ -1355,7 +1375,7 @@ fn people_tags_of_items(json: &str) -> (Vec<String>, Vec<String>, usize, usize) 
         }
     }
     let total = v.get("TotalRecordCount").and_then(Value::as_u64).unwrap_or(0) as usize;
-    (people, tags, items.len(), total)
+    (people, tags, years, items.len(), total)
 }
 
 /// 標籤去掉前後空白、重複（只差大小寫、全形半形的也算重複）、依名稱排；年份去掉重複、新的在前
@@ -2829,7 +2849,7 @@ mod tests {
     fn filtered_browse_lists_videos_below_the_folder() {
         let (url, h) = serve_seq(vec![("200 OK", r#"{"Items":[],"TotalRecordCount":0}"#.to_string())]);
         let jf = Jellyfin::new(&url, "k").unwrap();
-        jf.items("u", Some("p1"), "", 0, 60, JfSort::Name, JfFilter::Unplayed, None).unwrap();
+        jf.items("u", Some("p1"), "", 0, 60, JfSort::Name, JfFilter::Unplayed, &[]).unwrap();
         let got = h.join().unwrap();
         assert!(got[0].contains("filters=IsUnplayed") && got[0].contains("recursive=true") && got[0].contains("parentId=p1") && got[0].contains("sortBy=SortName"), "{got:?}");
     }
@@ -2838,9 +2858,9 @@ mod tests {
     fn facet_browse_searches_the_whole_server() {
         let (url, h) = serve_seq(vec![("200 OK", r#"{"Items":[],"TotalRecordCount":0}"#.to_string())]);
         let jf = Jellyfin::new(&url, "k").unwrap();
-        jf.items("u", Some("p1"), "", 0, 60, JfSort::Name, JfFilter::All, Some(&JfFacet::Person("pp".into(), "媽媽".into()))).unwrap();
+        jf.items("u", Some("p1"), "", 0, 60, JfSort::Name, JfFilter::All, &[JfFacet::Person("pp".into(), "媽媽".into()), JfFacet::Person("pq".into(), "小明".into()), JfFacet::Year(2024)]).unwrap();
         let got = h.join().unwrap();
-        assert!(got[0].contains("personIds=pp") && got[0].contains("recursive=true") && !got[0].contains("parentId"), "{got:?}");
+        assert!(got[0].contains("personIds=pp%2Cpq") && got[0].contains("years=2024") && got[0].contains("recursive=true") && !got[0].contains("parentId"), "{got:?}");
     }
 
     #[test]
@@ -2898,10 +2918,11 @@ mod tests {
     fn usage_counts_merge_spellings() {
         let json = r#"{"TotalRecordCount":3,"Items":[
             {"People":[{"Name":"小美","Type":"Actor"},{"Name":"導演","Type":"Director"}],"Tags":["無碼","ＶＲ"]},
-            {"People":[{"Name":" 小美 ","Type":"Actor"},{"Name":"阿明"}],"Tags":["無碼 ","vr","vr"]},
-            {"People":[],"Tags":["旅行"]}]}"#;
-        let (people, tags, got, total) = people_tags_of_items(json);
+            {"People":[{"Name":" 小美 ","Type":"Actor"},{"Name":"阿明"}],"Tags":["無碼 ","vr","vr"],"ProductionYear":2024},
+            {"People":[],"Tags":["旅行"],"ProductionYear":2024}]}"#;
+        let (people, tags, years, got, total) = people_tags_of_items(json);
         assert_eq!((got, total), (3, 3));
+        assert_eq!(tally_years(years), vec![(2024, 2)]);
         assert_eq!(tally(people), vec![("小美".to_string(), 2), ("阿明".to_string(), 1)]);
         // 次數一樣時依名稱排：vr（兩種寫法各一次）、無碼（「無碼 」去掉空白後一樣），最後是只用一次的旅行
         let t = tally(tags);
@@ -2910,6 +2931,14 @@ mod tests {
         assert_eq!(t[1], ("無碼".to_string(), 2));
         assert_eq!(t[2], ("旅行".to_string(), 1));
         assert_eq!(name_key("　ＡＢＣ　"), "abc");
+    }
+
+    #[test]
+    fn facet_query_or_within_and_across() {
+        let q = facet_query(&[JfFacet::Person("p1".into(), "小美".into()), JfFacet::Year(2024), JfFacet::Person("p2".into(), "小明".into()), JfFacet::Tag("a,b".into()), JfFacet::Tag("旅行".into())]);
+        assert_eq!(q, vec![("personIds", "p1,p2".to_string()), ("tags", "a,b|旅行".to_string()), ("years", "2024".to_string())]);
+        assert!(facet_query(&[]).is_empty());
+        assert_eq!(tally_years(vec![2021, 2024, 2021]), vec![(2024, 1), (2021, 2)]);
     }
 
     #[test]
