@@ -174,13 +174,6 @@ impl Jellyfin {
         self.call(agent().post(&format!("{}/Library/Refresh", self.url))).map(|_| ())
     }
 
-    /// 伺服器的編號（做連結時用；拿不到時連結不帶）
-    pub fn server_id(&self) -> Option<String> {
-        let r = self.call(agent().get(&format!("{}/System/Info", self.url))).ok()?;
-        let info: Value = serde_json::from_str(&r.into_string().ok()?).ok()?;
-        info.get("Id").and_then(Value::as_str).map(String::from)
-    }
-
     /// Jellyfin 裡檔名是 file_name 的影片編號（沒有時空的）
     pub fn find(&self, file_name: &str) -> Result<Vec<String>, String> {
         let url = format!("{}/Items?recursive=true&includeItemTypes=Movie,Video,MusicVideo,Episode&fields=Path&enableImages=false&enableUserData=false", self.url);
@@ -208,14 +201,6 @@ impl Jellyfin {
                 return Ok(None);
             }
             std::thread::sleep(Duration::from_secs(3).min(wait));
-        }
-    }
-
-    /// 在瀏覽器打開這支影片的網址（可以貼給別人；對方要能連到這台 Jellyfin、有帳號）
-    pub fn link(&self, id: &str, server_id: Option<&str>) -> String {
-        match server_id {
-            Some(sid) => format!("{}/web/#/details?id={id}&serverId={sid}", self.url),
-            None => format!("{}/web/#/details?id={id}", self.url),
         }
     }
 
@@ -462,6 +447,77 @@ impl Jellyfin {
             }
         }
         Ok(Usage { people: tally(people), tags: tally(tags), years: tally_years(years) })
+    }
+
+    /// 把全部影片裡的一個人物或標籤改成另一個寫法（「常用」裡寫錯的改正確；改成已經有的就是合併）。
+    /// from 只差前後空白、大小寫、全形半形的寫法一起改；一支一支取回整筆資料換上去再存，其他資訊不動。
+    /// progress(改好幾支, 全部幾支)；有幾支失敗時其他照改，最後回報失敗的。回傳改了幾支
+    pub fn rename_name(&self, user: &str, kind: NameKind, from: &str, to: &str, progress: &dyn Fn(usize, usize)) -> Result<usize, String> {
+        let to = to.trim();
+        if to.is_empty() {
+            return Err(tr!("新的寫法不能空白", "The new spelling can't be empty").into());
+        }
+        let ids = self.items_using(user, kind, from)?;
+        let total = ids.len();
+        progress(0, total);
+        let (mut done, mut failed) = (0usize, vec![]);
+        for (i, id) in ids.iter().enumerate() {
+            let r = (|| {
+                let body = match self.call(agent().get(&format!("{}/Items/{id}", self.url))) {
+                    Ok(r) => r.into_string().map_err(|e| e.to_string())?,
+                    Err(_) => self.call(agent().get(&format!("{}/Users/{user}/Items/{id}", self.url)))?.into_string().map_err(|e| e.to_string())?,
+                };
+                let item = with_renamed(&body, kind, from, to).ok_or_else(|| tr!("Jellyfin 的影片資料看不懂", "Couldn't understand Jellyfin's item data").to_string())?;
+                self.call_body(agent().post(&format!("{}/Items/{id}", self.url)), &item).map(|_| ())
+            })();
+            match r {
+                Ok(()) => done += 1,
+                Err(e) => {
+                    crate::info!("[Jellyfin] 改名「{from}」→「{to}」，影片 {id} 沒改到：{e}");
+                    failed.push(e);
+                }
+            }
+            progress(i + 1, total);
+        }
+        match failed.first() {
+            None => Ok(done),
+            Some(e) => Err(trf!("改好 {done} 支，{} 支沒改到：{e}", "Changed {done}, {} failed: {e}", failed.len())),
+        }
+    }
+
+    /// 用到這個人物（演員）或標籤的影片編號（只差前後空白、大小寫、全形半形的算同一個）；太多時讀到 2 萬支為止
+    fn items_using(&self, user: &str, kind: NameKind, name: &str) -> Result<Vec<String>, String> {
+        let key = name_key(name);
+        let mut out = vec![];
+        let mut start = 0usize;
+        loop {
+            let req = agent()
+                .get(&format!("{}/Users/{user}/Items", self.url))
+                .query("recursive", "true")
+                .query("includeItemTypes", VIDEO_TYPES)
+                .query("fields", "People,Tags")
+                .query("enableImages", "false")
+                .query("enableUserData", "false")
+                .query("startIndex", &start.to_string())
+                .query("limit", "1000")
+                .query("enableTotalRecordCount", "true");
+            let body = self.call(req)?.into_string().map_err(|e| e.to_string())?;
+            let Ok(v) = serde_json::from_str::<Value>(&body) else { break };
+            let items = v.get("Items").and_then(Value::as_array).cloned().unwrap_or_default();
+            for i in &items {
+                if names_in(i, kind).iter().any(|n| name_key(n) == key) {
+                    if let Some(id) = i.get("Id").and_then(Value::as_str) {
+                        out.push(id.to_string());
+                    }
+                }
+            }
+            let total = v.get("TotalRecordCount").and_then(Value::as_u64).unwrap_or(0) as usize;
+            start += items.len();
+            if items.is_empty() || start >= total || start >= 20_000 {
+                break;
+            }
+        }
+        Ok(out)
     }
 
     /// 影片用到的標籤、年份（Jellyfin 分頁「依標籤 / 年份找」）。先問 /Items/Filters；
@@ -1289,6 +1345,95 @@ pub struct Usage {
     pub tags: Counts,
     /// （年份, 幾支），新的在前
     pub years: Vec<(u32, usize)>,
+}
+
+/// 「常用」改名時改的是人物還是標籤
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NameKind {
+    Person,
+    Tag,
+}
+
+/// 一支影片（JSON）裡的演員或標籤
+fn names_in(item: &Value, kind: NameKind) -> Vec<String> {
+    match kind {
+        NameKind::Person => item
+            .get("People")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter(|p| p.get("Type").and_then(Value::as_str).is_none_or(|t| t == "Actor"))
+            .filter_map(|p| p.get("Name")?.as_str().map(String::from))
+            .collect(),
+        NameKind::Tag => item.get("Tags").and_then(Value::as_array).into_iter().flatten().filter_map(|t| t.as_str().map(String::from)).collect(),
+    }
+}
+
+/// 整筆資料（POST /Items/{id} 用）裡的人物（演員）或標籤 from 換成 to；換完同一個重複的只留一個。
+/// 人物換成只有名字的（Jellyfin 依名字找到或建立那個人物）
+pub fn with_renamed(item_json: &str, kind: NameKind, from: &str, to: &str) -> Option<String> {
+    let mut v: Value = serde_json::from_str(item_json).ok()?;
+    let o = v.as_object_mut()?;
+    let key = name_key(from);
+    let mut seen = std::collections::HashSet::new();
+    match kind {
+        NameKind::Tag => {
+            let tags: Vec<Value> = o
+                .get("Tags")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .map(|t| if name_key(t) == key { to.to_string() } else { t.to_string() })
+                .filter(|t| seen.insert(name_key(t)))
+                .map(Value::from)
+                .collect();
+            o.insert("Tags".into(), Value::from(tags));
+        }
+        NameKind::Person => {
+            let people: Vec<Value> = o
+                .get("People")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(|p| {
+                    let actor = p.get("Type").and_then(Value::as_str).is_none_or(|t| t == "Actor");
+                    let name = p.get("Name").and_then(Value::as_str).unwrap_or("");
+                    if !actor {
+                        return Some(p.clone());
+                    }
+                    let (name, p) = if name_key(name) == key { (to.to_string(), serde_json::json!({ "Name": to, "Type": "Actor" })) } else { (name.to_string(), p.clone()) };
+                    seen.insert(name_key(&name)).then_some(p)
+                })
+                .collect();
+            o.insert("People".into(), Value::from(people));
+        }
+    }
+    serde_json::to_string(&v).ok()
+}
+
+/// 看不見的字元（零寬空白、方向記號、變體選擇符等）
+fn invisible(c: char) -> bool {
+    matches!(c, '\u{00AD}' | '\u{034F}' | '\u{180E}' | '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2060}'..='\u{2064}' | '\u{FE00}'..='\u{FE0F}' | '\u{FEFF}')
+}
+
+/// 看起來的樣子：name_key 再去掉看不見的字元（兩個寫法這個一樣、name_key 不一樣 = 看起來一樣其實不同）
+pub fn look_key(s: &str) -> String {
+    name_key(&s.chars().filter(|c| !invisible(*c)).collect::<String>())
+}
+
+/// 兩個寫法看起來一樣、其實不同（多了看不見的字元）時，說明 a 差在哪裡；不是這種情況時 None
+pub fn spelling_diff(a: &str, b: &str) -> Option<String> {
+    if name_key(a) == name_key(b) || look_key(a) != look_key(b) {
+        return None;
+    }
+    let hidden = |s: &str| s.chars().filter(|c| invisible(*c)).map(|c| format!("U+{:04X}", c as u32)).collect::<Vec<_>>().join(tr!("、", ", "));
+    let (ha, hb) = (hidden(a), hidden(b));
+    Some(if !ha.is_empty() {
+        trf!("這個寫法多了看不見的字元（{ha}）", "This spelling has invisible characters ({ha})")
+    } else {
+        trf!("另一個寫法多了看不見的字元（{hb}）", "The other spelling has invisible characters ({hb})")
+    })
 }
 
 /// 依人物、標籤、年份找時要加的查詢參數：同一類的串在一起（Jellyfin 列出任一個符合的），不同類分開（都要符合）
@@ -2410,8 +2555,7 @@ mod tests {
         assert_eq!((x.title.as_str(), x.overview.as_str(), x.genres.clone(), x.year), ("報價單怎麼填", "第一行\n第二行", vec!["教學".to_string(), "業務".into()], Some(2026)));
         assert_eq!(Extras::from_ffmetadata(";FFMETADATA1\n"), Extras::default());
         let jf = Jellyfin::new("nas:8096", "k").unwrap();
-        assert_eq!(jf.link("abc", Some("s1")), "http://nas:8096/web/#/details?id=abc&serverId=s1");
-        assert_eq!(jf.link("abc", None), "http://nas:8096/web/#/details?id=abc");
+        assert_eq!(jf.url, "http://nas:8096");
         let item = with_details(
             r#"{"Id":"abc","Name":"Rec","Overview":"舊","Genres":["教學"],"Tags":["old"]}"#,
             &Extras { tags: vec!["新".into()], title: "報價單".into(), year: Some(2026), ..Default::default() },
@@ -2931,6 +3075,37 @@ mod tests {
         assert_eq!(t[1], ("無碼".to_string(), 2));
         assert_eq!(t[2], ("旅行".to_string(), 1));
         assert_eq!(name_key("　ＡＢＣ　"), "abc");
+    }
+
+    #[test]
+    fn rename_merges_spellings_and_keeps_others() {
+        let item =
+            r#"{"Id":"a","Name":"x","Tags":["無碼\u200b","素人","無碼"],"People":[{"Name":"小美","Type":"Actor","Id":"p1"},{"Name":"導演","Type":"Director"},{"Name":"小美美","Type":"Actor"}]}"#;
+        let t: Value = serde_json::from_str(&with_renamed(item, NameKind::Tag, "無碼\u{200b}", "無碼").unwrap()).unwrap();
+        assert_eq!(t["Tags"], serde_json::json!(["無碼", "素人"]));
+        assert_eq!(t["Name"], "x");
+        let p: Value = serde_json::from_str(&with_renamed(item, NameKind::Person, " 小美", "小美美").unwrap()).unwrap();
+        // 演員改名後和已經有的重複：只留一個；導演不動
+        assert_eq!(p["People"], serde_json::json!([{"Name":"小美美","Type":"Actor"},{"Name":"導演","Type":"Director"}]));
+        assert!(spelling_diff("無碼\u{200b}", "無碼").unwrap().contains("U+200B"));
+        assert!(spelling_diff("無碼", "無碼\u{200b}").is_some());
+        assert_eq!(spelling_diff("無碼", "無毛"), None);
+        assert_eq!(spelling_diff("VR", "ｖｒ"), None);
+    }
+
+    #[test]
+    fn rename_changes_only_videos_using_it() {
+        let list = r#"{"TotalRecordCount":2,"Items":[{"Id":"a","Tags":["無碼 "]},{"Id":"b","Tags":["素人"]}]}"#.to_string();
+        let item = r#"{"Id":"a","Name":"x","Tags":["無碼 "]}"#.to_string();
+        let (url, h) = serve_seq(vec![("200 OK", list), ("200 OK", item), ("204 No Content", String::new())]);
+        let jf = Jellyfin::new(&url, "k").unwrap();
+        let seen = std::sync::Mutex::new(vec![]);
+        let n = jf.rename_name("u", NameKind::Tag, "無碼", "無碼", &|d, t| seen.lock().unwrap().push((d, t))).unwrap();
+        assert_eq!(n, 1);
+        assert_eq!(*seen.lock().unwrap(), vec![(0, 1), (1, 1)]);
+        let got = h.join().unwrap();
+        assert!(got[1].starts_with("GET /Items/a "), "{got:?}");
+        assert!(got[2].starts_with("POST /Items/a "), "{got:?}");
     }
 
     #[test]

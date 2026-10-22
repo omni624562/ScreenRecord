@@ -5,8 +5,9 @@
 use super::theme::{self, Btn, Icon};
 use super::UiApp;
 use eframe::egui::{self, vec2, Align, Id, Layout, Rect, RichText, Sense, Stroke};
-use screenrecorder_core::jellyfin::{self, JfInfo};
+use screenrecorder_core::jellyfin::{self, JfInfo, NameKind};
 use screenrecorder_core::{tr, trf};
+use std::sync::{Arc, Mutex};
 
 /// 封面預覽的大小（16:9）
 const COVER: egui::Vec2 = vec2(192.0, 108.0);
@@ -60,18 +61,7 @@ pub fn open(app: &mut UiApp, id: String, user: String, name: String, known_peopl
         saving: false,
         error: None,
     });
-    // 全部影片用到的人物、標籤與次數（常用依次數排）；讀不到就維持原本的清單
-    let (jf3, user3, id3) = (jf.clone(), user.clone(), id.clone());
-    app.spawn(async move { tokio::task::spawn_blocking(move || jf3.usage(&user3)).await.unwrap_or_else(|e| Err(e.to_string())) }, move |app, r| {
-        let Some(d) = app.jf_edit.as_mut().filter(|d| d.id == id3) else { return };
-        match r {
-            Ok(u) => {
-                d.known_people = merge_usage(u.people, &d.known_people);
-                d.known_tags = merge_usage(u.tags, &d.known_tags);
-            }
-            Err(e) => screenrecorder_core::info!("[Jellyfin] 讀不到人物、標籤的使用次數：{e}"),
-        }
-    });
+    load_usage(app);
     let (key, jf2, id2) = (id.clone(), jf.clone(), id.clone());
     app.spawn(async move { tokio::task::spawn_blocking(move || jf.item_info(&user, &key)).await.unwrap_or_else(|e| Err(e.to_string())) }, move |app, r| {
         let Some(d) = app.jf_edit.as_mut().filter(|d| d.id == id) else { return };
@@ -99,6 +89,88 @@ pub fn open(app: &mut UiApp, id: String, user: String, name: String, known_peopl
     );
 }
 
+/// 讀全部影片用到的人物、標籤與次數（常用依次數排）；讀不到就維持原本的清單
+fn load_usage(app: &mut UiApp) {
+    let Some(jf) = app.jellyfin() else { return };
+    let Some((id, user)) = app.jf_edit.as_ref().map(|d| (d.id.clone(), d.user.clone())) else { return };
+    app.spawn(async move { tokio::task::spawn_blocking(move || jf.usage(&user)).await.unwrap_or_else(|e| Err(e.to_string())) }, move |app, r| {
+        let Some(d) = app.jf_edit.as_mut().filter(|d| d.id == id) else { return };
+        match r {
+            Ok(u) => {
+                d.known_people = merge_usage(u.people, &d.known_people);
+                d.known_tags = merge_usage(u.tags, &d.known_tags);
+            }
+            Err(e) => screenrecorder_core::info!("[Jellyfin] 讀不到人物、標籤的使用次數：{e}"),
+        }
+    });
+}
+
+/// 背景把全部影片裡的 from 改成 to；改好通知，常用、「依這些找」的清單重讀，
+/// 這台電腦記的釘選、最近用過與開著的影片資訊裡的也跟著換
+fn start_rename(app: &mut UiApp, user: String, kind: NameKind, from: String, to: String) {
+    let Some(jf) = app.jellyfin() else { return };
+    let progress = Arc::new(Mutex::new((0usize, 0usize)));
+    app.jf_rename = Some(Renaming { kind, from: from.clone(), to: to.clone(), progress: progress.clone() });
+    let ctx = app.ctx.clone();
+    let (f2, t2) = (from.clone(), to.clone());
+    app.spawn(
+        async move {
+            tokio::task::spawn_blocking(move || {
+                jf.rename_name(&user, kind, &f2, &t2, &|done, total| {
+                    *progress.lock().unwrap_or_else(|e| e.into_inner()) = (done, total);
+                    ctx.request_repaint();
+                })
+            })
+            .await
+            .unwrap_or_else(|e| Err(e.to_string()))
+        },
+        move |app, r| {
+            app.jf_rename = None;
+            let what = if kind == NameKind::Person { tr!("人物", "person") } else { tr!("標籤", "tag") };
+            match r {
+                Ok(n) => app.toast(trf!("✓ {n} 支影片的{what}「{from}」改成「{to}」", "✓ Changed {what} “{from}” to “{to}” in {n} videos"), false),
+                Err(e) => app.toast(trf!("{what}「{from}」沒有全部改好：{e}", "Couldn't change every “{from}”: {e}"), true),
+            }
+            let key = jellyfin::name_key(&from);
+            let swap = |list: &mut Vec<String>| {
+                if list.iter().any(|x| jellyfin::name_key(x) == key) {
+                    for x in list.iter_mut().filter(|x| jellyfin::name_key(x) == key) {
+                        *x = to.clone();
+                    }
+                    let mut seen = std::collections::HashSet::new();
+                    list.retain(|x| seen.insert(jellyfin::name_key(x)));
+                    true
+                } else {
+                    false
+                }
+            };
+            let s = &mut app.s;
+            let (pins, recent) = if kind == NameKind::Person { (&mut s.jf_pin_people, &mut s.jf_recent_people) } else { (&mut s.jf_pin_tags, &mut s.jf_recent_tags) };
+            let changed = swap(pins) | swap(recent);
+            if changed {
+                app.save_settings();
+            }
+            if let Some(d) = app.jf_edit.as_mut() {
+                fn pick(i: &mut JfInfo, kind: NameKind) -> &mut Vec<String> {
+                    if kind == NameKind::Person {
+                        &mut i.people
+                    } else {
+                        &mut i.tags
+                    }
+                }
+                swap(pick(&mut d.info, kind));
+                if let Some(o) = d.orig.as_mut() {
+                    swap(pick(o, kind));
+                }
+                let known = if kind == NameKind::Person { &mut d.known_people } else { &mut d.known_tags };
+                known.retain(|(n, _)| jellyfin::name_key(n) != key);
+            }
+            load_usage(app);
+            super::jellyfin_browse::reload_facets(app);
+        },
+    );
+}
+
 /// 使用次數（多的在前）加上伺服器上有、但還沒有影片用到的（次數 0）
 fn merge_usage(mut used: Vec<(String, usize)>, known: &[(String, usize)]) -> Vec<(String, usize)> {
     for (n, _) in known {
@@ -109,12 +181,52 @@ fn merge_usage(mut used: Vec<(String, usize)>, known: &[(String, usize)]) -> Vec
     used
 }
 
-/// 「全部 N 個 ▾」清單的狀態：搜尋的字、排序、勾了哪些
+/// 「全部 N 個 ▾」清單的狀態：搜尋的字、排序、勾了哪些、正在打的改名
 #[derive(Default)]
 struct Picker {
     search: String,
     sort: Sort,
     checked: Vec<String>,
+    rename: Option<RenameForm>,
+    /// 按了「改 N 支」：（舊的, 新的寫法），show 讀走後開始改
+    start: Option<(String, String)>,
+    /// 下一次畫的時候打開「全部 N 個」清單（常用按右鍵選「改名…」）
+    open: bool,
+}
+
+/// 改名的框：哪一個（用在幾支）、新的寫法
+struct RenameForm {
+    from: String,
+    count: usize,
+    to: String,
+    /// 剛打開：游標放進輸入框
+    focus: bool,
+}
+
+impl RenameForm {
+    /// 有看起來一樣、寫法不同的（用最多的那個）時先填它，不然填原本的
+    fn new(from: &str, count: usize, all: &[(String, usize)]) -> Self {
+        let twin = all.iter().filter(|(m, _)| jellyfin::spelling_diff(from, m).is_some()).max_by_key(|(_, c)| *c).map(|(m, _)| m.clone());
+        Self { from: from.to_string(), count, to: twin.unwrap_or_else(|| from.to_string()), focus: true }
+    }
+}
+
+/// 背景正在把一個人物或標籤改名（改的時候可以關掉影片資訊，會繼續）
+pub struct Renaming {
+    kind: NameKind,
+    from: String,
+    to: String,
+    /// （改好幾支, 全部幾支）
+    progress: Arc<Mutex<(usize, usize)>>,
+}
+
+/// 清單上畫進度用：正在改的（舊的, 新的, 改好幾支, 全部幾支）
+#[derive(Clone)]
+struct Busy {
+    from: String,
+    to: String,
+    done: usize,
+    total: usize,
 }
 
 #[derive(Default, Clone, Copy, PartialEq)]
@@ -218,11 +330,13 @@ struct Prefs<'a> {
     changed: &'a mut bool,
     /// 「全部 N 個 ▾」清單的狀態
     picker: &'a mut Picker,
+    /// 這一類正在改名的
+    busy: Option<Busy>,
 }
 
 /// 輸入框下面：沒打字時一行「常用」（釘選的在前，再依使用次數；放得下幾個就幾個），最後是「全部 N 個 ▾」清單；
 /// 打字時列出全部符合的
-fn suggestions(ui: &mut egui::Ui, id: &str, list: &mut Vec<String>, input: &mut String, known: &[(String, usize)], prefs: Prefs) {
+fn suggestions(ui: &mut egui::Ui, id: &str, list: &mut Vec<String>, input: &mut String, known: &[(String, usize)], mut prefs: Prefs) {
     let p = theme::pal(ui);
     let key = jellyfin::name_key;
     // 候選：伺服器上有的＋釘選的（伺服器上已經沒有的也列），已經加的不列
@@ -267,22 +381,54 @@ fn suggestions(ui: &mut egui::Ui, id: &str, list: &mut Vec<String>, input: &mut 
             ui.label(RichText::new(tr!("常用：", "Used before:")).font(theme::font(12.0)).color(p.muted));
             let all = Btn::new(trf!("全部 {} 個", "All {}", cands.len())).small().menu().tooltip(tr!("搜尋、勾選多個一次加入、釘選常用的", "Search, add several at once, pin favorites"));
             let all_w = all.width(ui) + 6.0;
-            // 一行放得下的才放，「全部」那一顆一定留位置
+            // 一行放得下的才放，「全部」那一顆一定留位置；按右鍵可以改名、釘選
+            let mut toggle_pin = None;
             for (n, c) in &row {
                 if sug_width(ui, n, *c, pin_rank(n).is_some()) + 6.0 > ui.available_width() - all_w {
                     break;
                 }
-                if sug_chip(ui, n, *c, pin_rank(n).is_some()).clicked() {
+                let r = sug_chip(ui, n, *c, pin_rank(n).is_some());
+                if r.clicked() {
                     add.push(n.clone());
                 }
+                r.context_menu(|ui| {
+                    if ui.button(tr!("加入", "Add")).clicked() {
+                        add.push(n.clone());
+                    }
+                    if *c > 0
+                        && prefs.busy.is_none()
+                        && ui
+                            .button(tr!("改名…", "Rename…"))
+                            .on_hover_text(tr!("寫錯了？改成正確的寫法（改成已經有的就是合併）", "Misspelled? Change it to the right spelling (choosing an existing one merges them)"))
+                            .clicked()
+                    {
+                        prefs.picker.rename = Some(RenameForm::new(n, *c, known));
+                        prefs.picker.search.clear();
+                        prefs.picker.open = true;
+                    }
+                    if ui.button(if pin_rank(n).is_some() { tr!("取消釘選", "Unpin") } else { tr!("釘選", "Pin") }).clicked() {
+                        toggle_pin = Some(n.clone());
+                    }
+                });
             }
             let resp = all.show(ui);
+            if std::mem::take(&mut prefs.picker.open) {
+                egui::Popup::open_id(ui.ctx(), egui::Popup::default_response_id(&resp));
+            }
             egui::Popup::menu(&resp).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
-                if let Some(picked) = picker_body(ui, id, &cands, prefs.pins, prefs.recent, prefs.changed, prefs.picker) {
+                if let Some(picked) = picker_body(ui, id, &cands, known, &mut prefs) {
                     add.extend(picked);
                     ui.close();
                 }
             });
+            if let Some(n) = toggle_pin {
+                if prefs.pins.iter().any(|x| key(x) == key(&n)) {
+                    prefs.pins.retain(|x| key(x) != key(&n));
+                } else {
+                    prefs.pins.push(n);
+                }
+                *prefs.changed = true;
+            }
         });
     }
     if !add.is_empty() {
@@ -329,14 +475,17 @@ fn sug_chip(ui: &mut egui::Ui, name: &str, count: usize, pinned: bool) -> egui::
     resp.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(tip)
 }
 
-/// 「全部 N 個 ▾」清單：搜尋、排序（次數 / 名稱 / 最近用過）、☆ 釘選、勾選多個一次加入；回傳要加入的
-fn picker_body(ui: &mut egui::Ui, id: &str, cands: &[(String, usize)], pins: &mut Vec<String>, recent: &[String], changed: &mut bool, pk: &mut Picker) -> Option<Vec<String>> {
+/// 「全部 N 個 ▾」清單：搜尋、排序（次數 / 名稱 / 最近用過）、☆ 釘選、勾選多個一次加入、改名（寫錯的改成正確的寫法）；
+/// 回傳要加入的
+/// cands 是可以加的（這支影片還沒有的），all 是伺服器上全部的（改名時找相近的、看起來一樣的用）
+fn picker_body(ui: &mut egui::Ui, id: &str, cands: &[(String, usize)], all: &[(String, usize)], prefs: &mut Prefs) -> Option<Vec<String>> {
     let p = theme::pal(ui);
     let key = jellyfin::name_key;
     // 寬度固定：清單在選單裡，靠右的東西不能讓它每一格越撐越寬
     const W: f32 = 330.0;
     ui.set_width(W);
     ui.set_max_width(W);
+    let pk = &mut *prefs.picker;
     let hint = if id == "people" { tr!("搜尋人物…", "Search people…") } else { tr!("搜尋標籤…", "Search tags…") };
     ui.add(egui::TextEdit::singleline(&mut pk.search).hint_text(hint).desired_width(W));
     ui.add_space(4.0);
@@ -347,9 +496,21 @@ fn picker_body(ui: &mut egui::Ui, id: &str, cands: &[(String, usize)], pins: &mu
     match pk.sort {
         Sort::Count => {}
         Sort::Name => items.sort_by_key(|(n, _)| n.to_lowercase()),
-        Sort::Recent => items.sort_by_key(|(n, _)| recent.iter().position(|r| key(r) == key(n)).unwrap_or(usize::MAX)),
+        Sort::Recent => items.sort_by_key(|(n, _)| prefs.recent.iter().position(|r| key(r) == key(n)).unwrap_or(usize::MAX)),
     }
-    let (pinned, others): (Vec<_>, Vec<_>) = items.into_iter().partition(|(n, _)| pins.iter().any(|x| key(x) == key(n)));
+    let (pinned, others): (Vec<_>, Vec<_>) = items.into_iter().partition(|(n, _)| prefs.pins.iter().any(|x| key(x) == key(n)));
+    // 看起來一樣、其實寫法不同的（多了看不見的字元）：標「寫法不同」
+    let mut looks: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for (n, _) in all {
+        *looks.entry(jellyfin::look_key(n)).or_default() += 1;
+    }
+    let differs = |n: &str| -> Option<String> {
+        if looks.get(&jellyfin::look_key(n)).copied().unwrap_or(0) < 2 {
+            return None;
+        }
+        all.iter().find_map(|(m, _)| jellyfin::spelling_diff(n, m))
+    };
+    let busy = prefs.busy.clone();
     let mut toggle_pin: Option<String> = None;
     egui::ScrollArea::vertical().id_salt(("jf-edit-all", id)).max_height(300.0).show(ui, |ui| {
         if pinned.is_empty() && others.is_empty() {
@@ -363,8 +524,20 @@ fn picker_body(ui: &mut egui::Ui, id: &str, cands: &[(String, usize)], pins: &mu
                 ui.label(RichText::new(title).font(theme::font(11.5)).color(p.muted));
             }
             for (n, c) in group.iter() {
+                // 正在改名的這一個：灰色「舊 → 新」、改好幾支和進度條
+                if let Some(b) = busy.as_ref().filter(|b| key(&b.from) == key(n)) {
+                    let (row, _) = ui.allocate_exact_size(vec2(W - 16.0, 26.0), Sense::hover());
+                    ui.painter().text(egui::pos2(row.min.x + 28.0, row.center().y), egui::Align2::LEFT_CENTER, format!("{n} → {}", b.to), theme::font(13.0), p.muted);
+                    ui.painter().text(egui::pos2(row.max.x - 4.0, row.center().y), egui::Align2::RIGHT_CENTER, format!("{} / {}", b.done, b.total), theme::font(12.0), p.muted);
+                    let (bar, _) = ui.allocate_exact_size(vec2(W - 16.0, 8.0), Sense::hover());
+                    let bar = bar.shrink2(vec2(4.0, 1.0));
+                    ui.painter().rect_filled(bar, 3.0, p.surface2);
+                    let frac = if b.total > 0 { b.done as f32 / b.total as f32 } else { 0.0 };
+                    ui.painter().rect_filled(Rect::from_min_size(bar.min, vec2(bar.width() * frac, bar.height())), 3.0, p.accent);
+                    continue;
+                }
                 let is_pin = !std::ptr::eq(group, &others);
-                // 每一列固定大小：星星、勾選框＋名稱、右邊的次數（畫上去，不用靠右的排版，選單才不會越撐越寬）
+                // 每一列固定大小：星星、勾選框＋名稱、右邊的「寫法不同」「改名」與次數（畫上去，不用靠右的排版，選單才不會越撐越寬）
                 let (row, _) = ui.allocate_exact_size(vec2(W - 16.0, 26.0), Sense::hover());
                 let tip = if is_pin { tr!("取消釘選", "Unpin") } else { tr!("釘選：永遠排在常用的最前面", "Pin: always first in the list") };
                 let sr = Rect::from_min_size(row.min + vec2(0.0, 2.0), vec2(22.0, 22.0));
@@ -376,9 +549,36 @@ fn picker_body(ui: &mut egui::Ui, id: &str, cands: &[(String, usize)], pins: &mu
                 if star.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(tip).clicked() {
                     toggle_pin = Some(n.clone());
                 }
-                let cw = if *c > 0 { 56.0 } else { 0.0 };
+                let cw = if *c > 0 { 52.0 } else { 0.0 };
+                let mut right = row.max.x - cw;
+                if *c > 0 {
+                    ui.painter().text(egui::pos2(row.max.x - 4.0, row.center().y), egui::Align2::RIGHT_CENTER, trf!("{c} 支", "{c}"), theme::font(12.0), p.muted);
+                }
+                // 改名：滑鼠移到這一列才出現（伺服器上有影片用到的才能改；同時只改一個）
+                let open = pk.rename.as_ref().is_some_and(|f| f.from == *n);
+                if *c > 0 && busy.is_none() && (open || ui.rect_contains_pointer(row)) {
+                    let b = Btn::new(tr!("改名", "Rename")).icon(Icon::Edit).small().ghost().height(22.0).selected(open).tooltip(tr!(
+                        "寫錯了？改成正確的寫法（改成已經有的就是合併），Jellyfin 上用到的影片一起改",
+                        "Misspelled? Change it to the right spelling (choosing an existing one merges them); videos on Jellyfin using it are updated"
+                    ));
+                    let bw = b.width(ui);
+                    let br = Rect::from_min_max(egui::pos2(right - bw, row.center().y - 11.0), egui::pos2(right, row.center().y + 11.0));
+                    if ui.scope_builder(egui::UiBuilder::new().max_rect(br), |ui| b.show(ui)).inner.clicked() {
+                        pk.rename = if open { None } else { Some(RenameForm::new(n, *c, all)) };
+                    }
+                    right -= bw + 4.0;
+                }
+                if let Some(why) = differs(n) {
+                    let g = ui.painter().layout_no_wrap(tr!("寫法不同", "Differs").to_string(), theme::font(11.0), p.warn);
+                    let br = Rect::from_min_max(egui::pos2(right - g.size().x - 12.0, row.center().y - 9.0), egui::pos2(right, row.center().y + 9.0));
+                    ui.painter().rect_filled(br, 9.0, p.warn_soft);
+                    ui.painter().galley(br.center() - g.size() / 2.0, g, p.warn);
+                    ui.interact(br, Id::new(("jf-differs", id, n.as_str())), Sense::hover())
+                        .on_hover_text(trf!("看起來和另一個一樣，但寫法不同：{why}。可以用「改名」合併", "Looks the same as another one but is spelled differently: {why}. Use Rename to merge them"));
+                    right = br.min.x - 4.0;
+                }
                 let mut on = pk.checked.iter().any(|x| key(x) == key(n));
-                let cb = Rect::from_min_max(egui::pos2(sr.max.x + 6.0, row.min.y), egui::pos2(row.max.x - cw, row.max.y));
+                let cb = Rect::from_min_max(egui::pos2(sr.max.x + 6.0, row.min.y), egui::pos2(right, row.max.y));
                 let clicked = ui.scope_builder(egui::UiBuilder::new().max_rect(cb).layout(Layout::left_to_right(Align::Center)), |ui| theme::check(ui, &mut on, n.as_str()).changed()).inner;
                 if clicked {
                     if on {
@@ -387,25 +587,30 @@ fn picker_body(ui: &mut egui::Ui, id: &str, cands: &[(String, usize)], pins: &mu
                         pk.checked.retain(|x| key(x) != key(n));
                     }
                 }
-                if *c > 0 {
-                    ui.painter().text(egui::pos2(row.max.x - 4.0, row.center().y), egui::Align2::RIGHT_CENTER, trf!("{c} 支", "{c}"), theme::font(12.0), p.muted);
+                if open {
+                    rename_form(ui, W - 16.0, all, pk);
                 }
             }
         }
     });
     if let Some(n) = toggle_pin {
-        if pins.iter().any(|x| key(x) == key(&n)) {
-            pins.retain(|x| key(x) != key(&n));
+        if prefs.pins.iter().any(|x| key(x) == key(&n)) {
+            prefs.pins.retain(|x| key(x) != key(&n));
         } else {
-            pins.push(n);
+            prefs.pins.push(n);
         }
-        *changed = true;
+        *prefs.changed = true;
     }
     ui.separator();
     let mut out = None;
     let n = pk.checked.len();
     let (row, _) = ui.allocate_exact_size(vec2(W, 30.0), Sense::hover());
-    ui.painter().text(egui::pos2(row.min.x, row.center().y), egui::Align2::LEFT_CENTER, trf!("已勾 {n} 個", "{n} checked"), theme::font(12.0), p.muted);
+    let note = if busy.is_some() {
+        tr!("正在改 Jellyfin 上的影片…（可以關掉，會繼續）", "Updating videos on Jellyfin… (you can close this)").to_string()
+    } else {
+        trf!("已勾 {n} 個", "{n} checked")
+    };
+    ui.painter().text(egui::pos2(row.min.x, row.center().y), egui::Align2::LEFT_CENTER, note, theme::font(12.0), p.muted);
     let add = Btn::new(trf!("加入 {n} 個", "Add {n}")).primary().small().enabled(n > 0);
     let bw = add.width(ui);
     let br = Rect::from_min_max(egui::pos2(row.max.x - bw, row.min.y), row.max);
@@ -414,6 +619,86 @@ fn picker_body(ui: &mut egui::Ui, id: &str, cands: &[(String, usize)], pins: &mu
         pk.search.clear();
     }
     out
+}
+
+/// 改名的框（在那一列下面打開）：打正確的寫法，下面列出相近、已經有的；按「改 N 支」開始改
+fn rename_form(ui: &mut egui::Ui, w: f32, cands: &[(String, usize)], pk: &mut Picker) {
+    let p = theme::pal(ui);
+    let key = jellyfin::name_key;
+    let Some(f) = pk.rename.as_mut() else { return };
+    let (from, count) = (f.from.clone(), f.count);
+    let mut go = None;
+    let mut cancel = false;
+    let just_opened = f.focus;
+    let framed = egui::Frame::new().fill(p.accent_soft).stroke(Stroke::new(1.0, p.border)).corner_radius(8.0).inner_margin(8.0).show(ui, |ui| {
+        let w = w - 16.0;
+        ui.set_width(w);
+        ui.label(RichText::new(trf!("把「{from}」（{count} 支）改成：", "Change “{from}” ({count} videos) to:")).font(theme::font(12.5)));
+        let te = ui.add(egui::TextEdit::singleline(&mut f.to).desired_width(w).min_size(vec2(0.0, 28.0)).vertical_align(Align::Center));
+        if f.focus {
+            te.request_focus();
+            f.focus = false;
+        }
+        let enter = te.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+        // 相近、已經有的（看起來一樣的排最前面）：點一下填進去
+        let q = key(&f.to);
+        let mut near: Vec<&(String, usize)> =
+            cands.iter().filter(|(m, _)| *m != from && (jellyfin::spelling_diff(&from, m).is_some() || (!q.is_empty() && (key(m).contains(&q) || q.contains(&key(m)))))).collect();
+        near.sort_by_key(|(m, _)| jellyfin::spelling_diff(&from, m).is_none());
+        for (m, mc) in near.into_iter().take(4) {
+            let (r, resp) = ui.allocate_exact_size(vec2(w, 24.0), Sense::click());
+            let on = key(m) == q;
+            if on || resp.hovered() {
+                ui.painter().rect_filled(r, 5.0, if on { p.surface } else { p.surface2 });
+            }
+            ui.painter().text(egui::pos2(r.min.x + 8.0, r.center().y), egui::Align2::LEFT_CENTER, m, theme::font(12.5), p.text);
+            ui.painter().text(egui::pos2(r.max.x - 8.0, r.center().y), egui::Align2::RIGHT_CENTER, trf!("{mc} 支・已經有", "{mc} · exists"), theme::font(11.5), p.muted);
+            if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                f.to = m.clone();
+            }
+        }
+        let to = f.to.trim().to_string();
+        // 改成已經有的（只差大小寫、全形半形也算）= 合併，用那個的寫法
+        let target = cands.iter().find(|(m, _)| *m != from && key(m) == key(&to));
+        let same = to == from;
+        let note = match target {
+            _ if to.is_empty() => String::new(),
+            _ if same => tr!("和原本的寫法一樣", "Same as the current spelling").to_string(),
+            Some((m, tc)) => trf!(
+                "合併到已經有的「{m}」：Jellyfin 上這 {count} 支影片的「{from}」會改成那個寫法，之後清單只剩一個（約 {} 支）。",
+                "Merge into the existing “{m}”: “{from}” in these {count} videos on Jellyfin becomes that spelling, leaving one entry (about {}).",
+                count + tc
+            ),
+            None => trf!("Jellyfin 上這 {count} 支影片的「{from}」會改成「{to}」。", "“{from}” in these {count} videos on Jellyfin becomes “{to}”."),
+        };
+        if !note.is_empty() {
+            ui.add(egui::Label::new(RichText::new(note).font(theme::font(12.0)).color(p.muted)).wrap());
+        }
+        if let Some(d) = target.and_then(|(m, _)| jellyfin::spelling_diff(&from, m)) {
+            ui.add(egui::Label::new(RichText::new(trf!("⚠ 這兩個看起來一樣，差在：{d}", "⚠ These look the same; the difference: {d}")).font(theme::font(11.5)).color(p.warn)).wrap());
+        }
+        let ok = !to.is_empty() && !same;
+        ui.horizontal(|ui| {
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if Btn::new(trf!("改 {count} 支", "Change {count}")).primary().small().enabled(ok).show(ui).clicked() || (enter && ok) {
+                    go = Some(target.map_or(to.clone(), |(m, _)| m.clone()));
+                }
+                if Btn::new(tr!("取消", "Cancel")).small().ghost().show(ui).clicked() {
+                    cancel = true;
+                }
+            });
+        });
+    });
+    // 剛打開：清單捲到看得到整個框（按鈕不會被擋住）
+    if just_opened {
+        ui.scroll_to_rect(framed.response.rect, Some(Align::Max));
+    }
+    if let Some(to) = go {
+        pk.start = Some((from, to));
+        pk.rename = None;
+    } else if cancel {
+        pk.rename = None;
+    }
 }
 
 /// 封面預覽：選了新的就顯示新的，不然是 Jellyfin 上目前的
@@ -484,6 +769,14 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
     // 輸入框裡還沒按 Enter 的字也算（儲存時會一起存）
     let pending = !d.new_person.trim().is_empty() || !d.new_tag.trim().is_empty();
     let changed = d.orig.as_ref().is_some_and(|o| *o != JfInfo { year, ..d.info.clone() }) || d.cover.is_some() || d.remove_cover || pending;
+    // 正在改名的（清單上畫進度）
+    let busy = |kind: NameKind| {
+        app.jf_rename.as_ref().filter(|r| r.kind == kind).map(|r| {
+            let (done, total) = *r.progress.lock().unwrap_or_else(|e| e.into_inner());
+            Busy { from: r.from.clone(), to: r.to.clone(), done, total }
+        })
+    };
+    let (busy_people, busy_tags) = (busy(NameKind::Person), busy(NameKind::Tag));
     let modal = egui::Modal::new(Id::new("jellyfin-edit")).frame(theme::modal_frame(ctx)).show(ctx, |ui| {
         ui.set_width((ctx.content_rect().width() - 80.0).clamp(360.0, 600.0));
         let p = theme::pal(ui);
@@ -548,7 +841,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                     &mut d.info.people,
                     &mut d.new_person,
                     &d.known_people,
-                    Prefs { pins: &mut app.s.jf_pin_people, recent: &app.s.jf_recent_people, changed: &mut prefs_changed, picker: &mut d.pick_people },
+                    Prefs { pins: &mut app.s.jf_pin_people, recent: &app.s.jf_recent_people, changed: &mut prefs_changed, picker: &mut d.pick_people, busy: busy_people },
                     tr!("打名字，按 Enter 加入（可以一次打好幾個，用頓號分開）", "Type a name and press Enter (separate several with commas)"),
                 );
                 ui.add_space(10.0);
@@ -559,7 +852,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                     &mut d.info.tags,
                     &mut d.new_tag,
                     &d.known_tags,
-                    Prefs { pins: &mut app.s.jf_pin_tags, recent: &app.s.jf_recent_tags, changed: &mut prefs_changed, picker: &mut d.pick_tags },
+                    Prefs { pins: &mut app.s.jf_pin_tags, recent: &app.s.jf_recent_tags, changed: &mut prefs_changed, picker: &mut d.pick_tags, busy: busy_tags },
                     tr!("打標籤，按 Enter 加入", "Type a tag and press Enter"),
                 );
             });
@@ -591,6 +884,12 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
     });
     if prefs_changed {
         app.save_settings();
+    }
+    // 按了「改 N 支」：背景開始改（同時只改一個）
+    for (kind, start) in [(NameKind::Person, d.pick_people.start.take()), (NameKind::Tag, d.pick_tags.start.take())] {
+        if let Some((from, to)) = start.filter(|_| app.jf_rename.is_none()) {
+            start_rename(app, d.user.clone(), kind, from, to);
+        }
     }
     if (close || modal.should_close()) && !d.saving && app.ask.is_none() {
         return;

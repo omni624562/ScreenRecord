@@ -278,8 +278,6 @@ pub enum Icon {
     /// 星號（外框）；StarOn 是實心
     Star,
     StarOn,
-    /// 連結（兩個扣在一起的環）
-    Link,
     /// 傳到媒體庫（往上的箭頭放進托盤）
     Upload,
     /// 字幕（方框裡兩行字）
@@ -492,12 +490,6 @@ pub fn paint_icon(p: &Painter, rect: Rect, icon: Icon, color: Color32) {
         Icon::Copy => {
             p.rect_stroke(Rect::from_min_max(at(5.5, 5.5), at(13.5, 14.0)), CornerRadius::same((1.5 * k) as u8), st, StrokeKind::Middle);
             line(&[(3.0, 10.5), (2.5, 10.5), (2.5, 2.5), (10.0, 2.5), (10.0, 3.0)]);
-        }
-        Icon::Link => {
-            // 兩個斜放的圓角環，中間一段重疊
-            arc(5.5, 10.5, 3.2, 0.25 * std::f32::consts::PI, 1.75 * std::f32::consts::PI);
-            arc(10.5, 5.5, 3.2, 1.25 * std::f32::consts::PI, 2.75 * std::f32::consts::PI);
-            line(&[(6.0, 10.0), (10.0, 6.0)]);
         }
         Icon::Upload => {
             line(&[(8.0, 10.5), (8.0, 2.5)]);

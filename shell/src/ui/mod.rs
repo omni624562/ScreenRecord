@@ -135,10 +135,6 @@ pub enum EntryAction {
     Star,
     /// 移到資源回收筒（連同底下的加速版；媒體庫也有時問要不要一起刪）
     Trash,
-    /// 複製這支在 Jellyfin 的網址
-    JellyfinLink,
-    /// 用瀏覽器打開這支在 Jellyfin 的頁面
-    OpenJellyfin,
 }
 
 /// 去剪輯、製作之前在哪裡（檔案庫、檢視器在看的那一支和看到幾秒）
@@ -192,6 +188,8 @@ pub struct UiApp {
     pub jf_browse: Option<jellyfin_browse::JfBrowse>,
     /// 在瀏覽視窗改 Jellyfin 上的影片資訊
     pub jf_edit: Option<jellyfin_edit::JfEdit>,
+    /// 背景正在把 Jellyfin 上的人物或標籤改名（影片資訊關掉也會繼續）
+    pub jf_rename: Option<jellyfin_edit::Renaming>,
     /// 找 Jellyfin 上重複的影片
     pub jf_dupes: Option<jellyfin_dupes::JfDupes>,
     /// 上一格工作列有沒有顯示進度（做完時閃一下用）
@@ -362,6 +360,7 @@ impl UiApp {
             jf_watch_loading: false,
             jf_browse: None,
             jf_edit: None,
+            jf_rename: None,
             jf_dupes: None,
             taskbar_busy: false,
             back_to: None,
@@ -729,36 +728,6 @@ impl UiApp {
     pub fn jellyfin(&self) -> Option<screenrecorder_core::jellyfin::Jellyfin> {
         screenrecorder_core::jellyfin::Jellyfin::new(&self.s.jellyfin_url, &self.s.jellyfin_key)
             .map(|j| screenrecorder_core::jellyfin::Jellyfin { collections: self.s.jellyfin_collections, ..j.with_root(&self.s.after_copy_to) })
-    }
-
-    /// 這支影片在 Jellyfin 的網址（要先傳到媒體庫）：open 時用瀏覽器打開，不然複製
-    pub fn jellyfin_link(&mut self, path: &str, open: bool) {
-        let name = dialogs::file_name(path).to_string();
-        let Some(jf) = self.jellyfin() else { return };
-        self.link_found(open, move || Ok(jf.find(&name)?.first().map(|id| jf.link(id, jf.server_id().as_deref()))));
-    }
-
-    /// Jellyfin 上這支影片（編號）的網址：open 時用瀏覽器打開，不然複製（串流播放時用）
-    pub fn jellyfin_link_id(&mut self, id: String, open: bool) {
-        let Some(jf) = self.jellyfin() else { return };
-        self.link_found(open, move || Ok(Some(jf.link(&id, jf.server_id().as_deref()))));
-    }
-
-    /// 在背景找出網址後打開或複製
-    fn link_found(&mut self, open: bool, find: impl FnOnce() -> Result<Option<String>, String> + Send + 'static) {
-        self.spawn(async move { tokio::task::spawn_blocking(find).await.unwrap_or_else(|e| Err(e.to_string())) }, move |app, r| match r {
-            Ok(Some(url)) if open => {
-                if let Err(e) = actions::open_url(&url) {
-                    app.toast(trf!("打不開瀏覽器：{}", "Couldn't open the browser: {}", e.message()), true);
-                }
-            }
-            Ok(Some(url)) => {
-                app.ctx.copy_text(url.clone());
-                app.toast(trf!("已複製 Jellyfin 連結：{url}", "Jellyfin link copied: {url}"), false);
-            }
-            Ok(None) => app.toast(tr!("Jellyfin 還沒有這支影片：先按「傳到 Jellyfin」，或等錄完自動處理傳過去", "Jellyfin doesn't have this video yet. Send it to Jellyfin first"), true),
-            Err(e) => app.toast(trf!("查不到 Jellyfin：{e}", "Couldn't check Jellyfin: {e}"), true),
-        });
     }
 
     /// 改了影片（封面、影片資訊、畫面）之後：媒體庫資料夾（Jellyfin 的媒體庫）裡的那一份也跟著更新：
@@ -1212,17 +1181,7 @@ impl UiApp {
         use actions::OpenAction;
         let path = entry.media.path.clone();
         // 主畫面正在播這個檔案：剪輯、製作、改名等要用到檔案時先停下來（Windows 上播放中的檔案不能改名、取代）
-        let keeps = matches!(
-            action,
-            EntryAction::PlayHere
-                | EntryAction::Reveal
-                | EntryAction::CopyFile
-                | EntryAction::CopyChapters
-                | EntryAction::CopySteps
-                | EntryAction::Star
-                | EntryAction::JellyfinLink
-                | EntryAction::OpenJellyfin
-        );
+        let keeps = matches!(action, EntryAction::PlayHere | EntryAction::Reveal | EntryAction::CopyFile | EntryAction::CopyChapters | EntryAction::CopySteps | EntryAction::Star);
         if !keeps && self.inline.as_ref().is_some_and(|i| i.is(&path)) {
             self.inline = None;
         }
@@ -1234,8 +1193,6 @@ impl UiApp {
                 self.toast(if on { tr!("已加上星號：清理時會略過", "Starred: cleanup will skip it") } else { tr!("已移除星號", "Star removed") }, false);
             }
             EntryAction::Trash => library_dialog::trash_entry(self, &entry),
-            EntryAction::JellyfinLink => self.jellyfin_link(&path, false),
-            EntryAction::OpenJellyfin => self.jellyfin_link(&path, true),
             EntryAction::RotateLeft => self.rotate(&path, screenrecorder_core::rotate::Turn::Left),
             EntryAction::RotateRight => self.rotate(&path, screenrecorder_core::rotate::Turn::Right),
             EntryAction::Rotate180 => self.rotate(&path, screenrecorder_core::rotate::Turn::Half),
