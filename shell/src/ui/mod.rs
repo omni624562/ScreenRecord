@@ -199,6 +199,8 @@ pub struct UiApp {
     /// 從檔案庫或檢視器去剪輯、製作時記下來：剪輯視窗、製作視窗關掉後回到原本的地方
     pub back_to: Option<BackTo>,
     pub changelog_open: bool,
+    /// 「關於」視窗開著（☰ →「說明 → 關於」、系統匣「關於」）
+    pub about_open: bool,
     /// 找到的攝影機（None = 還沒找完）；主畫面的攝影機選單與設定視窗共用
     pub cameras: Option<Vec<String>>,
     cameras_loading: bool,
@@ -364,6 +366,7 @@ impl UiApp {
             taskbar_busy: false,
             back_to: None,
             changelog_open: false,
+            about_open: false,
             cameras: None,
             cameras_loading: false,
             whats_new_open: false,
@@ -1429,7 +1432,7 @@ impl UiApp {
                 self.load_recent();
             }
             if page == UiPage::About {
-                settings_dialog::open(self, settings_dialog::Page::About);
+                self.about_open = true;
             }
             if page == UiPage::StepsReview {
                 steps_review::open(self);
@@ -1757,6 +1760,9 @@ impl eframe::App for UiApp {
                 let from = self.s.out_dir(&self.env);
                 settings_dialog::offer_shot_move(self, from, true);
             }
+        }
+        if self.about_open {
+            settings_dialog::show_about(self, &ctx);
         }
         if self.changelog_open {
             dialogs::changelog(self, &ctx);

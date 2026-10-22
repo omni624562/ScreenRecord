@@ -156,7 +156,7 @@ pub fn start(app: &mut UiApp, kind: Kind, at: usize) {
     }
 }
 
-/// 從設定的「關於」重新看：第一次錄影的教學，之後各功能第一次打開時的提示也再顯示
+/// 從 ☰ →「說明」或「關於」重新看：第一次錄影的教學，之後各功能第一次打開時的提示也再顯示
 pub fn restart(app: &mut UiApp) {
     app.s.tours_done.clear();
     app.s.tips = true;
@@ -265,7 +265,7 @@ fn finish(app: &mut UiApp, completed: bool) {
     if kind == Kind::First {
         app.s.tour_step = 0;
         if !completed {
-            app.toast(tr!("之後可以在「設定 → 關於」按「重新看教學」", "You can see it again from Settings → About → “Replay tutorial”"), false);
+            app.toast(tr!("之後可以在 ☰ →「說明 → 重新看教學」再看一次", "You can see it again from ☰ → Help → “Replay tutorial”"), false);
         }
     }
     app.save_settings();
@@ -297,7 +297,7 @@ fn visible(app: &UiApp, kind: Kind) -> Option<bool> {
     if !app.visible {
         return Some(false);
     }
-    let others = app.ask.is_some() || app.changelog_open || app.whats_new_open || app.snip.is_some() || app.ocr.is_some() || app.settings_dlg.is_some();
+    let others = app.ask.is_some() || app.changelog_open || app.about_open || app.whats_new_open || app.snip.is_some() || app.ocr.is_some() || app.settings_dlg.is_some();
     match kind {
         // 倒數時不蓋住倒數的數字
         Kind::First => Some(

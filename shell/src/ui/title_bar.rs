@@ -58,6 +58,7 @@ fn needs_full(app: &UiApp) -> bool {
         || app.ask.is_some()
         || app.whats_new_open
         || app.changelog_open
+        || app.about_open
         || app.jf_dupes.is_some()
         || app.video_tags.is_some()
         || app.jf_edit.is_some()
@@ -258,7 +259,7 @@ fn main_menu(app: &mut UiApp, ui: &mut Ui, covered: bool) {
         }
         ui.separator();
         if ui.button(tr!("關於", "About")).clicked() {
-            settings_dialog::open(app, Page::About);
+            app.about_open = true;
         }
     });
     ui.separator();

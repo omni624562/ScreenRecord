@@ -1,4 +1,4 @@
-//! 設定視窗：左邊分頁（一般 / 錄影 / 聲音 / 截圖 / 存檔與分享 / 錄完自動處理 / 快速鍵 / 進階 / 外部元件 / 關於），右邊表單（標籤固定寬度，控制項對齊）。
+//! 設定視窗：左邊分頁（一般 / 錄影 / 聲音 / 截圖 / 存檔與分享 / 錄完自動處理 / 快速鍵 / 進階 / 外部元件），右邊表單（標籤固定寬度，控制項對齊）。
 //! 主畫面下方只留摘要，點一下開到對應的分頁。
 
 use super::settings::{FPS_CHOICES, MAX_MB, MAX_PRESETS, UI_MIN_SIZE, UI_SCALES};
@@ -29,12 +29,10 @@ pub enum Page {
     Advanced,
     /// 外部元件：FFmpeg、語音辨識用的 FFmpeg、語音模型的下載與 Proxy
     Components,
-    /// 版本、更新說明、新版本、連結
-    About,
 }
 
 /// 分頁：中文名稱、英文名稱、圖示
-const PAGES: [(Page, &str, &str, Icon); 10] = [
+const PAGES: [(Page, &str, &str, Icon); 9] = [
     (Page::General, "一般", "General", Icon::Window),
     (Page::Record, "錄影", "Recording", Icon::Video),
     (Page::Audio, "聲音", "Audio", Icon::Speaker),
@@ -44,7 +42,6 @@ const PAGES: [(Page, &str, &str, Icon); 10] = [
     (Page::Keys, "快速鍵", "Shortcuts", Icon::Keyboard),
     (Page::Advanced, "進階", "Advanced", Icon::Settings),
     (Page::Components, "外部元件", "Components", Icon::Download),
-    (Page::About, "關於", "About", Icon::Info),
 ];
 
 /// 設定視窗的狀態（輸入中的文字、設定中的快速鍵）
@@ -79,7 +76,7 @@ pub struct SettingsDialog {
     jf_found: Option<Vec<(String, String)>>,
 }
 
-/// 馬上檢查有沒有新版本，結果用通知列說（「關於」頁的「立即檢查」、標題列選單的「檢查更新」）
+/// 馬上檢查有沒有新版本，結果用通知列說（「關於」的「立即檢查」、☰ →「說明 → 檢查更新」）
 pub fn check_update_now(app: &mut UiApp) {
     let core = app.core.clone();
     app.spawn(async move { actions::check_update(&core).await }, |app, r| match r {
@@ -207,7 +204,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
             egui::ScrollArea::vertical().id_salt(("settings-page", d.page as u8)).auto_shrink([false, false]).show(ui, |ui| {
                 // 右邊留給捲軸，按鈕不會貼著捲軸
                 ui.set_max_width(ui.available_width() - 14.0);
-                let locked = app.locked() && !matches!(d.page, Page::Keys | Page::About);
+                let locked = app.locked() && d.page != Page::Keys;
                 if locked {
                     form_hint_full(ui, tr!("錄影中無法變更這些設定，停止錄影後再調整。", "These settings can't be changed while recording. Stop recording first."), p.warn);
                     ui.add_space(6.0);
@@ -222,7 +219,6 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                     Page::Keys => keys_page(app, &mut d, ui),
                     Page::Advanced => advanced_page(app, ui),
                     Page::Components => components_page(app, &mut d, ui),
-                    Page::About => about_page(app, &mut d, ui),
                 });
             });
         }
@@ -1839,6 +1835,16 @@ fn general_page(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
     if d.autostart == Some(None) {
         form_hint(ui, tr!("開發版不能設定開機自動啟動。", "Start with Windows can't be set in development builds."), p.muted);
     }
+    form_row(ui, tr!("新版本", "Updates"), |ui| {
+        let mut on = app.update.enabled;
+        if switch(ui, &mut on, tr!("自動檢查（啟動後與每 12 小時）", "Check automatically (at startup and every 12 hours)"), true)
+            .on_hover_text(tr!("有新版本時通知你；立即檢查、更新在 ☰ →「說明 → 關於」", "You're told when there's a new version. Check now or update from ☰ → Help → About"))
+            .changed()
+        {
+            app.core.set_check_updates(on);
+            app.update = actions::update_state(&app.core);
+        }
+    });
     form_row(ui, tr!("結束", "Quit"), |ui| {
         if Btn::new(tr!("結束程式", "Quit"))
             .small()
@@ -1946,12 +1952,37 @@ fn advanced_page(app: &mut UiApp, ui: &mut Ui) {
     );
 }
 
-// ───────────── 關於：版本、這一版更新了什麼（可看所有版本的更新說明）、新版本、連結 ─────────────
+// ───────────── 關於（獨立的視窗，☰ →「說明 → 關於」、系統匣「關於」）：版本、這一版更新了什麼、新版本、連結 ─────────────
+
+/// 畫「關於」視窗（app.about_open 時）
+pub fn show_about(app: &mut UiApp, ctx: &egui::Context) {
+    let mut close = false;
+    let modal = egui::Modal::new(Id::new("about")).frame(theme::modal_frame(ctx)).show(ctx, |ui| {
+        ui.set_width((ctx.content_rect().width() - 80.0).min(600.0));
+        ui.horizontal(|ui| {
+            ui.label(RichText::new(tr!("關於", "About")).font(theme::font_bold(18.0)));
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if Btn::icon_only(Icon::Close).ghost().small().tooltip(tr!("關閉（Esc）", "Close (Esc)")).show(ui).clicked() {
+                    close = true;
+                }
+            });
+        });
+        ui.add_space(8.0);
+        egui::ScrollArea::vertical().max_height(ctx.content_rect().height() - 160.0).show(ui, |ui| {
+            ui.set_max_width(ui.available_width() - 14.0);
+            ui.spacing_mut().item_spacing = vec2(6.0, 4.0);
+            about_page(app, ui, &mut close);
+        });
+    });
+    if modal.should_close() || close {
+        app.about_open = false;
+    }
+}
 
 /// 「這一版更新了什麼」最多列幾項（其餘在「所有版本的更新說明」看）
 const ABOUT_NOTES_MAX: usize = 6;
 
-fn about_page(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
+fn about_page(app: &mut UiApp, ui: &mut Ui, close: &mut bool) {
     let p = theme::pal(ui);
     // 程式圖示、名稱、版本
     ui.horizontal(|ui| {
@@ -2007,9 +2038,11 @@ fn about_page(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
             .clicked()
         {
             app.changelog_open = true;
+            *close = true;
         }
         if Btn::new(tr!("新功能介紹", "What's new tour")).small().ghost().tooltip(tr!("再看一次這一版的新功能介紹", "Show this version's feature tour again")).show(ui).clicked() {
             app.whats_new_open = true;
+            *close = true;
         }
         if Btn::new(tr!("重新看教學", "Replay tutorial"))
             .small()
@@ -2022,10 +2055,11 @@ fn about_page(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
             .clicked()
         {
             super::tour::restart(app);
+            *close = true;
         }
     });
     form_divider(ui);
-    updates_section(app, d, ui);
+    updates_section(app, ui, close);
     form_divider(ui);
     form_section(ui, tr!("連結", "Links"), |_| {});
     let link = |ui: &mut Ui, app: &mut UiApp, label: &str, text: &str, url: &str| {
@@ -2050,17 +2084,10 @@ fn about_page(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
     });
 }
 
-/// 新版本：自動檢查、立即檢查、有新版本時更新
-fn updates_section(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
+/// 新版本：立即檢查、有新版本時更新（自動檢查的開關在「設定 → 一般」）
+fn updates_section(app: &mut UiApp, ui: &mut Ui, close: &mut bool) {
     let p = theme::pal(ui);
     form_section(ui, tr!("新版本", "Updates"), |_| {});
-    form_row(ui, tr!("自動檢查", "Auto check"), |ui| {
-        let mut on = app.update.enabled;
-        if switch(ui, &mut on, tr!("啟動後與每 12 小時檢查", "Check at startup and every 12 hours"), true).changed() {
-            app.core.set_check_updates(on);
-            app.update = actions::update_state(&app.core);
-        }
-    });
     // 有新版本：直接在這裡更新、看新版的更新內容
     if let Some(u) = app.env.update.clone() {
         form_row(ui, tr!("有新版本", "New version"), |ui| {
@@ -2089,7 +2116,8 @@ fn updates_section(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
         // 檢查、下載新版本也走 Proxy：公司網路連不上時直接去設定
         form_row(ui, "", |ui| {
             if Btn::new(tr!("到「外部元件」設定 Proxy", "Set up a proxy in Components")).small().ghost().show(ui).clicked() {
-                d.page = Page::Components;
+                open(app, Page::Components);
+                *close = true;
             }
         });
     }
