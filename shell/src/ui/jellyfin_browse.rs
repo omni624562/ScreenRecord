@@ -11,7 +11,7 @@ use screenrecorder_core::{tr, trf};
 use std::collections::{BTreeMap, HashMap};
 use std::time::{Duration, Instant};
 
-/// 一頁幾個
+/// 一次讀幾個（捲到快底時再讀下一批）
 const PAGE: usize = 60;
 /// 每格最小的寬度（縮圖 16:9）：縮圖小、中、大
 const CELL_W: [f32; 3] = [150.0, 196.0, 300.0];
@@ -42,7 +42,12 @@ pub struct JfBrowse {
     resume: Vec<JfItem>,
     latest: Vec<JfItem>,
     total: usize,
+    /// 換了位置、搜尋、排序等時歸零（從第一批讀起）
     page: usize,
+    /// 正在讀下一批（捲到快底時）
+    loading_more: bool,
+    /// 下一批讀不到（不再自動重試，換位置或重新整理時再讀）
+    more_failed: bool,
     sort: JfSort,
     filter: JfFilter,
     error: Option<String>,
@@ -104,6 +109,8 @@ fn load(app: &mut UiApp) {
     d.seq += 1;
     d.items = None;
     d.error = None;
+    d.loading_more = false;
+    d.more_failed = false;
     d.searched = d.search.trim().to_string();
     let (seq, user, parent, search, start, sort, filter, facet) =
         (d.seq, d.user.clone(), d.path.last().map(|(id, _)| id.clone()), d.searched.clone(), d.page * PAGE, d.sort, d.filter, d.facet.clone());
@@ -831,6 +838,8 @@ fn section(ui: &mut egui::Ui, title: &str) {
 #[derive(Default)]
 pub struct Panel {
     reload: bool,
+    /// 捲到快底了：讀下一批
+    more: bool,
     picked: Picked,
     bulk_download: bool,
     bulk_delete: bool,
@@ -1071,6 +1080,18 @@ pub fn panel(ui: &mut egui::Ui, d: &mut JfBrowse) -> Panel {
                         }
                     }
                     ui.push_id("items", |ui| cells(ui, d, items, None, &mut out.picked));
+                    // 還有沒讀的：捲到離底部不到一個畫面高時讀下一批，最下面顯示正在讀
+                    if !d.at_top() && items.len() < d.total {
+                        if d.loading_more {
+                            ui.horizontal(|ui| {
+                                ui.spinner();
+                                ui.label(theme::muted(ui, tr!("正在讀取更多…", "Loading more…")));
+                            });
+                        }
+                        if ui.cursor().min.y < ui.clip_rect().max.y + ui.clip_rect().height() {
+                            out.more = true;
+                        }
+                    }
                 });
             }
         }
@@ -1078,20 +1099,9 @@ pub fn panel(ui: &mut egui::Ui, d: &mut JfBrowse) -> Panel {
     // 下面：右邊換頁，左邊勾選的操作（和錄影、截圖分頁一樣）
     let foot = Rect::from_min_max(pos2(table.min.x, ui.max_rect().max.y - foot_h), ui.max_rect().max);
     ui.painter().hline(foot.x_range(), foot.min.y - 4.0, egui::Stroke::new(1.0, p.border));
-    let pages = d.total.div_ceil(PAGE).max(1);
+    // 右下角：共幾個（不換頁，捲動時自動讀下一批）
     let pager_w = if !d.at_top() && d.items.is_some() {
         let right = &mut ui.new_child(UiBuilder::new().max_rect(foot).layout(Layout::right_to_left(Align::Center)));
-        if pages > 1 {
-            if Btn::icon_only(Icon::ChevR).small().ghost().enabled(d.page + 1 < pages).tooltip(tr!("下一頁", "Next page")).show(right).clicked() {
-                d.page += 1;
-                out.reload = true;
-            }
-            right.label(trf!("第 {} / {} 頁", "Page {} / {}", d.page + 1, pages));
-            if Btn::icon_only(Icon::ChevL).small().ghost().enabled(d.page > 0).tooltip(tr!("上一頁", "Previous page")).show(right).clicked() {
-                d.page -= 1;
-                out.reload = true;
-            }
-        }
         right.label(theme::muted(right, trf!("共 {} 個", "{} in all", d.total)));
         right.min_rect().width() + 16.0
     } else {
@@ -1124,7 +1134,7 @@ pub fn apply(app: &mut UiApp, mut d: JfBrowse, out: Panel) {
         app.s.jf_grid_size = d.grid;
         app.save_settings();
     }
-    let Panel { mut reload, picked, bulk_download, bulk_delete, find_dupes } = out;
+    let Panel { mut reload, more, picked, bulk_download, bulk_delete, find_dupes } = out;
     if let Some(it) = picked.toggle {
         d.anchor = Some(it.id.clone());
         if d.selected.remove(&it.id).is_none() {
@@ -1201,10 +1211,47 @@ pub fn apply(app: &mut UiApp, mut d: JfBrowse, out: Panel) {
         load(app);
         return;
     }
+    let more = more && !d.loading_more && !reload;
     app.jf_browse = Some(d);
     for id in picked.posters {
         load_poster(app, &id);
     }
+    if more {
+        load_more(app);
+    }
+}
+
+/// 讀下一批接在後面（捲到快底時）；換了位置、搜尋的話丟掉
+fn load_more(app: &mut UiApp) {
+    let Some(jf) = app.jellyfin() else { return };
+    let Some(d) = app.jf_browse.as_mut() else { return };
+    let (Some(user), Some(start)) = (d.user.clone(), d.items.as_ref().map(Vec::len)) else { return };
+    if start >= d.total || d.more_failed {
+        return;
+    }
+    d.loading_more = true;
+    let (seq, parent, search, sort, filter, facet) = (d.seq, d.path.last().map(|(id, _)| id.clone()), d.searched.clone(), d.sort, d.filter, d.facet.clone());
+    app.spawn(
+        async move { tokio::task::spawn_blocking(move || jf.items(&user, parent.as_deref(), &search, start, PAGE, sort, filter, &facet)).await.unwrap_or_else(|e| Err(e.to_string())) },
+        move |app, r| {
+            let Some(d) = app.jf_browse.as_mut().filter(|d| d.seq == seq) else { return };
+            d.loading_more = false;
+            match r {
+                Ok((more, total)) => {
+                    if let Some(items) = d.items.as_mut().filter(|i| i.len() == start) {
+                        // 讀的時候伺服器上多了影片：同一支不重複列
+                        let have: std::collections::HashSet<String> = items.iter().map(|i| i.id.clone()).collect();
+                        items.extend(more.into_iter().filter(|i| !have.contains(&i.id)));
+                        d.total = total;
+                    }
+                }
+                Err(e) => {
+                    d.more_failed = true;
+                    app.toast(trf!("讀不到更多 Jellyfin 影片：{e}", "Couldn't load more Jellyfin videos: {e}"), true);
+                }
+            }
+        },
+    );
 }
 
 #[cfg(test)]
