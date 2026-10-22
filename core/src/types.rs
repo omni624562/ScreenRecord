@@ -889,6 +889,9 @@ pub struct LibraryQuery {
     pub grid: Option<GridFit>,
     /// 換縮圖大小時：回傳含有第幾筆（從 0 算）的那一頁，忽略 page
     pub anchor: Option<usize>,
+    /// 捲動列出：從第一筆起列出這麼多筆（不分頁，捲到快底時介面再要多一點）；有指定時忽略 page、page_size、fit_px，
+    /// grid 只用來依日期分組
+    pub scroll: Option<usize>,
     /// 截圖的瀏覽條件（瀏覽欄）；有指定時回傳每個選項的張數
     pub facet: Option<FacetQuery>,
     /// 也列出子資料夾裡的（最多 SUBDIR_DEPTH 層）

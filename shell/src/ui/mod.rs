@@ -1831,7 +1831,8 @@ fn trash_now(app: &mut UiApp, paths: Vec<String>, copies: Vec<std::path::PathBuf
                                 ""
                             } else {
                                 let list: Vec<String> = copies.iter().map(|c| c.display().to_string()).collect();
-                                screenrecorder_core::recycle::move_to_recycle_bin(&list).map_err(|e| e.message().to_string())?;
+                                // NAS 上的沒有資源回收筒：移不進去時直接刪，刪完確認真的不見了
+                                screenrecorder_core::recycle::delete_for_sure(&list).map_err(|e| e.message().to_string())?;
                                 screenrecorder_core::info!("[傳到資料夾] 媒體庫的那一份也刪了：{}", list.join("、"));
                                 tr!("Jellyfin 那一份也刪了", "The copy on Jellyfin was deleted too")
                             };
