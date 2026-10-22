@@ -44,10 +44,13 @@ pub struct LibIndex {
 /// 索引多久重讀一次（別的電腦、Jellyfin 也可能放檔案進去）
 const INDEX_TTL: Duration = Duration::from_secs(120);
 
+/// 沒選媒體庫資料夾、索引改問 Jellyfin 時 LibIndex.root 的開頭（後面接 Jellyfin 的網址）
+const JF_INDEX: &str = "jellyfin:";
+
 /// 顯示用的位置：「video › family › 2024」（最上層是媒體庫資料夾的名稱）
 pub fn place_label(app: &UiApp, sub: &str) -> String {
     let root = app.library_folder().unwrap_or_default();
-    std::iter::once(root.as_str()).chain(sub.split('/').filter(|s| !s.is_empty())).collect::<Vec<_>>().join(" › ")
+    std::iter::once(root.as_str()).filter(|r| !r.is_empty()).chain(sub.split('/').filter(|s| !s.is_empty())).collect::<Vec<_>>().join(" › ")
 }
 
 impl UiApp {
@@ -63,7 +66,10 @@ impl UiApp {
         }
         if self.library_folder().is_none() {
             self.toast(
-                tr!("請先在「媒體庫」選資料夾（例如 Jellyfin 的媒體庫），之後就能直接傳", "Choose a library folder first (such as your Jellyfin library); then you can send files there"),
+                tr!(
+                    "請先在「設定 → 存檔與分享 → Jellyfin」選 Jellyfin 媒體庫的資料夾，之後就能直接傳",
+                    "Choose the Jellyfin library folder in Settings → Saving & sharing → Jellyfin first; then you can send files there"
+                ),
                 false,
             );
             return super::settings_dialog::open(self, super::settings_dialog::Page::Save);
@@ -161,7 +167,7 @@ impl UiApp {
                 match r {
                     None => {
                         transfer::add_pending(std::path::Path::new(&key), &sub);
-                        app.toast(trf!("連不到「{place}」：已記下，連上 NAS 後會自動傳過去", "Can't reach “{place}”. It's queued and will be sent once the NAS is reachable"), false);
+                        app.toast(trf!("連不到「{place}」：已記下，連上之後會自動傳過去", "Can't reach “{place}”. It's queued and will be sent once it's reachable"), false);
                     }
                     Some(Some(Ok(msg))) => {
                         transfer::remove_pending(&key);
@@ -225,7 +231,7 @@ impl UiApp {
                 }
                 if sent > 0 {
                     app.lib_index = None;
-                    app.toast(trf!("NAS 連上了：已補傳 {sent} 支", "The NAS is back: sent {sent} queued file(s)"), false);
+                    app.toast(trf!("Jellyfin 的資料夾連上了：已補傳 {sent} 支", "The Jellyfin folder is back: sent {sent} queued file(s)"), false);
                 }
             },
         );
@@ -317,17 +323,34 @@ impl UiApp {
         });
     }
 
+    /// 「已在 Jellyfin」的索引從哪裡讀：選了媒體庫資料夾就讀資料夾；沒選但有設定 Jellyfin 時問 Jellyfin。都沒有時 None
+    fn index_source(&self) -> Option<String> {
+        let root = self.s.after_copy_to.trim();
+        if !root.is_empty() {
+            return Some(root.to_string());
+        }
+        self.jellyfin().map(|_| format!("{JF_INDEX}{}", self.s.jellyfin_url.trim()))
+    }
+
     /// 媒體庫的索引（整個媒體庫的檔名、大小）；還沒讀過或太舊時在背景重讀，這次先回傳舊的或 None
     fn lib_index(&mut self) -> Option<&LibIndex> {
-        let root = self.s.after_copy_to.trim().to_string();
-        if root.is_empty() {
-            return None;
-        }
+        let root = self.index_source()?;
         let fresh = self.lib_index.as_ref().is_some_and(|i| i.root == root && i.at.elapsed() < INDEX_TTL);
         if !fresh && !self.lib_index_loading {
             self.lib_index_loading = true;
             let r = root.clone();
-            self.spawn(async move { tokio::task::spawn_blocking(move || (jellyfin::library_index(&r), r)).await.ok() }, |app, got| {
+            let jf = root.starts_with(JF_INDEX).then(|| self.jellyfin()).flatten();
+            let job = move || {
+                let map = match jf {
+                    Some(jf) => jf.file_index().unwrap_or_else(|e| {
+                        screenrecorder_core::warn!("[Jellyfin] 讀不到影片清單（已在 Jellyfin 的標籤）：{e}");
+                        Default::default()
+                    }),
+                    None => jellyfin::library_index(&r),
+                };
+                (map, r)
+            };
+            self.spawn(async move { tokio::task::spawn_blocking(job).await.ok() }, |app, got| {
                 app.lib_index_loading = false;
                 if let Some((map, root)) = got {
                     app.lib_index = Some(LibIndex { root, at: Instant::now(), map });
@@ -343,8 +366,8 @@ impl UiApp {
 
     /// 已經傳到媒體庫了嗎（只看已經讀好的索引，不會開始讀；還沒讀到時當作沒有）
     pub fn sent_already(&self, path: &str, size: u64) -> bool {
-        let root = self.s.after_copy_to.trim();
-        let Some(index) = self.lib_index.as_ref().filter(|i| !root.is_empty() && i.root == root) else { return false };
+        let Some(root) = self.index_source() else { return false };
+        let Some(index) = self.lib_index.as_ref().filter(|i| i.root == root) else { return false };
         let name = std::path::Path::new(path).file_name().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_default();
         index.map.get(&name).is_some_and(|v| v.iter().any(|(_, s)| jellyfin::same_copy(&name, size, *s)))
     }
@@ -362,8 +385,8 @@ impl UiApp {
     /// 這個檔案在媒體庫的哪裡（同名同大小）；回傳顯示用的位置（「video › family › 2024」）。
     /// 本來就放在媒體庫裡的檔案、還沒讀到索引時回傳 None
     pub fn library_where(&mut self, path: &str, size: u64) -> Option<Vec<String>> {
-        let root = self.s.after_copy_to.trim().to_string();
-        if root.is_empty() || jellyfin::in_library(&root, std::path::Path::new(path)) {
+        let folder = self.s.after_copy_to.trim().to_string();
+        if !folder.is_empty() && jellyfin::in_library(&folder, std::path::Path::new(path)) {
             return None;
         }
         let name = std::path::Path::new(path).file_name()?.to_string_lossy().to_lowercase();
@@ -383,8 +406,8 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         ui.set_width(500.0);
         let p = theme::pal(ui);
         let title = match &d.mode {
-            Mode::Send(paths) if paths.len() == 1 => tr!("傳到媒體庫", "Send to library").to_string(),
-            Mode::Send(paths) => trf!("傳 {} 支到媒體庫", "Send {} files to the library", paths.len()),
+            Mode::Send(paths) if paths.len() == 1 => tr!("傳到 Jellyfin", "Send to Jellyfin").to_string(),
+            Mode::Send(paths) => trf!("傳 {} 支到 Jellyfin", "Send {} files to Jellyfin", paths.len()),
             Mode::PickAuto => tr!("自動傳到哪個資料夾", "Folder for automatic sends").to_string(),
         };
         ui.label(RichText::new(title).font(theme::font_bold(16.0)));
@@ -548,8 +571,8 @@ async fn send_one(core: &std::sync::Arc<screenrecorder_core::app::App>, jf: Opti
         (Some(Ok(msg)), Some(c)) if !h264 => Some(Ok(format!(
             "{msg}{}",
             trf!(
-                "（這支是 {c}：有些電視播放時 NAS 要即時轉檔，可能卡頓。可以在「設定 → 存檔與分享」打開「傳的時候轉成 H.264」）",
-                " (This video is {c}; some TVs make the NAS convert it while playing, which can stutter. Turn on “Convert to H.264 when sending” in Settings → Saving & sharing)"
+                "（這支是 {c}：有些電視播放時 Jellyfin 要即時轉檔，可能卡頓。可以在「設定 → 存檔與分享」打開「傳的時候轉成 H.264」）",
+                " (This video is {c}; some TVs make Jellyfin convert it while playing, which can stutter. Turn on “Convert to H.264 when sending” in Settings → Saving & sharing)"
             )
         ))),
         (Some(Ok(msg)), Some(_)) => Some(Ok(format!("{msg}{}", tr!("（已轉成 H.264，電視都能直接播）", " (converted to H.264 so any TV can play it)")))),
@@ -579,11 +602,15 @@ pub fn transfer_bar(app: &mut UiApp, ctx: &egui::Context) {
             for t in &list {
                 let frac = if t.total > 0 { t.done as f32 / t.total as f32 } else { 0.0 };
                 ui.horizontal(|ui| {
-                    let what = if t.down { tr!("下載", "Downloading") } else { tr!("傳到 NAS", "Sending to NAS") };
+                    let what = if t.down { tr!("下載", "Downloading") } else { tr!("傳到 Jellyfin", "Sending to Jellyfin") };
                     ui.label(RichText::new(what).font(theme::font_bold(12.5)));
                     ui.add(egui::Label::new(RichText::new(&t.name).font(theme::font(12.0)).color(p.muted)).truncate());
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        let tip = if t.down { tr!("取消下載", "Cancel the download") } else { tr!("取消（NAS 上原本的那一份不會動）", "Cancel (the copy already on the NAS stays)") };
+                        let tip = if t.down {
+                            tr!("取消下載", "Cancel the download")
+                        } else {
+                            tr!("取消（Jellyfin 那邊原本的那一份不會動）", "Cancel (the copy already on Jellyfin stays)")
+                        };
                         if Btn::icon_only(Icon::Close).ghost().small().tooltip(tip).show(ui).clicked() {
                             transfer::cancel(t.id);
                         }

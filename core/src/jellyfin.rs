@@ -188,6 +188,15 @@ impl Jellyfin {
         Ok(items_with_file(&body, file_name))
     }
 
+    /// Jellyfin 上全部影片的索引（沒選媒體庫資料夾時「已在 Jellyfin」的標籤用）：
+    /// 小寫檔名 → (位置「媒體庫名稱/family/2024」, 大小)
+    pub fn file_index(&self) -> Result<std::collections::HashMap<String, Vec<(String, u64)>>, String> {
+        let libs = self.call(agent().get(&format!("{}/Library/VirtualFolders", self.url)))?.into_string().map_err(|e| e.to_string())?;
+        let url = format!("{}/Items?recursive=true&includeItemTypes=Movie,Video,MusicVideo,Episode&fields=Path,MediaSources&enableImages=false&enableUserData=false", self.url);
+        let items = self.call(agent().get(&url))?.into_string().map_err(|e| e.to_string())?;
+        Ok(index_from_items(&libs, &items))
+    }
+
     /// 請 Jellyfin 掃描後等它掃到這支影片（每 3 秒問一次，最多等 wait）：回傳影片編號；時間到還沒有時 None
     pub fn wait_for(&self, file_name: &str, wait: Duration) -> Result<Option<String>, String> {
         let start = std::time::Instant::now();
@@ -1571,6 +1580,38 @@ pub fn items_with_file(json: &str, file_name: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// /Items（fields=Path,MediaSources）的回應整理成索引：小寫檔名 → (位置, 大小)。
+/// 位置是影片所在的媒體庫名稱加上在媒體庫裡的資料夾（「家庭影片/family/2024」）；libs 是 /Library/VirtualFolders 的回應。
+/// 不在任何媒體庫位置底下的用它所在的資料夾名稱；沒有大小的略過（比不出是不是同一支）
+pub fn index_from_items(libs: &str, items: &str) -> std::collections::HashMap<String, Vec<(String, u64)>> {
+    let norm = |p: &str| p.replace('\\', "/").trim_end_matches('/').to_lowercase();
+    let roots: Vec<(String, String)> = serde_json::from_str::<Value>(libs)
+        .ok()
+        .and_then(|v| v.as_array().cloned())
+        .unwrap_or_default()
+        .iter()
+        .flat_map(|l| {
+            let name = l.get("Name").and_then(Value::as_str).unwrap_or("").to_string();
+            l.get("Locations").and_then(Value::as_array).cloned().unwrap_or_default().into_iter().filter_map(move |loc| loc.as_str().map(|s| (norm(s), name.clone())))
+        })
+        .collect();
+    let mut out: std::collections::HashMap<String, Vec<(String, u64)>> = std::collections::HashMap::new();
+    let Ok(v) = serde_json::from_str::<Value>(items) else { return out };
+    for it in v.get("Items").and_then(Value::as_array).into_iter().flatten() {
+        let Some(path) = it.get("Path").and_then(Value::as_str) else { continue };
+        let Some(size) = it.pointer("/MediaSources/0/Size").and_then(Value::as_u64).filter(|s| *s > 0) else { continue };
+        let original = path.replace('\\', "/");
+        let (dir, file) = original.rsplit_once('/').unwrap_or(("", original.as_str()));
+        let low = dir.to_lowercase();
+        let place = match roots.iter().filter(|(r, _)| low == *r || low.starts_with(&format!("{r}/"))).max_by_key(|(r, _)| r.len()) {
+            Some((r, name)) => std::iter::once(name.as_str()).chain(dir[r.len()..].split('/').filter(|s| !s.is_empty())).collect::<Vec<_>>().join("/"),
+            None => dir.rsplit('/').next().unwrap_or("").to_string(),
+        };
+        out.entry(file.to_lowercase()).or_default().push((place, size));
+    }
+    out
+}
+
 /// 改了影片的哪個部分：決定媒體庫裡那一份要不要整支重傳
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Edit {
@@ -1793,7 +1834,7 @@ pub fn space_problem(free: Option<u64>, need: u64) -> Option<String> {
     let free = free?;
     let fmt = crate::format::format_bytes;
     (free < need.saturating_add(200 << 20))
-        .then(|| trf!("NAS 只剩 {}，這支要 {}。先到 NAS 清出空間再傳", "The NAS only has {} free and this needs {}. Free up some space on the NAS first", fmt(free), fmt(need)))
+        .then(|| trf!("Jellyfin 的資料夾只剩 {}，這支要 {}。先清出空間再傳", "The Jellyfin folder only has {} free and this needs {}. Free up some space first", fmt(free), fmt(need)))
 }
 
 /// NAS 自己的資料夾（資源回收筒、縮圖快取…），不當成媒體庫的子資料夾
@@ -1971,7 +2012,7 @@ pub fn rename_copies(copy_to: &str, old: &std::path::Path, new: &std::path::Path
         let name = f.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         let to = f.with_file_name(format!("{new_stem}{}", name.chars().skip(skip).collect::<String>()));
         if to.exists() {
-            return Err(trf!("媒體庫裡已經有「{}」", "The library already has “{}”", to.file_name().unwrap_or_default().to_string_lossy()));
+            return Err(trf!("Jellyfin 的資料夾裡已經有「{}」", "The Jellyfin folder already has “{}”", to.file_name().unwrap_or_default().to_string_lossy()));
         }
         std::fs::rename(&f, &to).map_err(|e| e.to_string())?;
         crate::info!("[傳到資料夾] 跟著改名：{} → {}", f.display(), to.display());
@@ -2755,6 +2796,24 @@ mod tests {
         let (tags, years, got, total) = tags_years_of_items(page);
         assert_eq!((got, total), (3, 7));
         assert_eq!(tidy_facets(tags, years), (vec!["旅行".to_string(), "生日".to_string()], vec![2024, 2019]));
+    }
+
+    #[test]
+    fn indexes_jellyfin_videos_by_file_name() {
+        let libs = r#"[{"Name":"家庭影片","Locations":["/media/video"]},{"Name":"電影","Locations":["D:\\Movies"]}]"#;
+        let items = r#"{"Items":[
+            {"Id":"a","Path":"/media/video/family/2024/Clip.mp4","MediaSources":[{"Size":100}]},
+            {"Id":"b","Path":"/media/video/top.mp4","MediaSources":[{"Size":5}]},
+            {"Id":"c","Path":"D:\\Movies\\x\\Film.mkv","MediaSources":[{"Size":7}]},
+            {"Id":"d","Path":"/other/place/odd.mp4","MediaSources":[{"Size":9}]},
+            {"Id":"e","Path":"/media/video/nosize.mp4"}
+        ]}"#;
+        let idx = index_from_items(libs, items);
+        assert_eq!(idx["clip.mp4"], vec![("家庭影片/family/2024".to_string(), 100)]);
+        assert_eq!(idx["top.mp4"], vec![("家庭影片".to_string(), 5)]);
+        assert_eq!(idx["film.mkv"], vec![("電影/x".to_string(), 7)]);
+        assert_eq!(idx["odd.mp4"], vec![("place".to_string(), 9)]);
+        assert!(!idx.contains_key("nosize.mp4"));
     }
 
     #[test]

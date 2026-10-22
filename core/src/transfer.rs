@@ -209,8 +209,8 @@ pub fn rename_pending(old: &str, new: &str) {
 
 /// 待傳清單的說明（檔案庫標籤的提示）
 pub fn pending_tip(sub: &str) -> String {
-    let place = if sub.is_empty() { tr!("媒體庫", "the library").to_string() } else { sub.replace('/', " › ") };
-    trf!("連不到 NAS，連上後會自動傳到「{place}」", "The NAS isn't reachable. It will be sent to “{place}” once it is")
+    let place = if sub.is_empty() { tr!("Jellyfin", "Jellyfin").to_string() } else { sub.replace('/', " › ") };
+    trf!("連不到 Jellyfin 的資料夾，連上後會自動傳到「{place}」", "The Jellyfin folder isn't reachable. It will be sent to “{place}” once it is")
 }
 
 #[cfg(test)]

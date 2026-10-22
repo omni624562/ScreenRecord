@@ -1,5 +1,5 @@
 //! 自己畫的標題列（操作視窗不用 Windows 的標題列）：左邊「螢幕錄影 ⌄」選單（關於、檢查更新、更新說明），
-//! 右邊檔案庫、設定、縮小成小視窗，再來是縮到最小、最大化、關閉。
+//! 右邊更多工具（⋯）、檔案庫、設定、縮小成小視窗，再來是縮到最小、最大化、關閉。
 //! 拖曳空白的地方移動視窗、按兩下最大化；視窗四邊與四個角可以拖曳調整大小。
 //! 小視窗：只留開始 / 停止錄影、計時、暫停、截圖，不擋畫面；不會被錄進影片，錄影中浮在最上層
 
@@ -205,6 +205,14 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                 if lib.show(rui).clicked() && app.library.is_none() {
                     app.library = Some(LibraryDialog::new(Kind::Video));
                 }
+                // 更多工具：回溯錄影、排程錄影、講稿小視窗、瀏覽 Jellyfin、設定組合
+                let more = Btn::icon_only(Icon::More)
+                    .ghost()
+                    .small()
+                    .enabled(!covered)
+                    .tooltip(tr!("更多工具：回溯錄影、排程錄影、講稿小視窗、設定組合", "More tools: replay buffer, scheduled recording, script window, presets"))
+                    .show(rui);
+                main_view::more_tools(app, &more);
             }
             bar.max.x - rui.min_rect().min.x
         };

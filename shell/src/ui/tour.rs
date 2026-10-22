@@ -443,8 +443,8 @@ fn content(app: &UiApp, t: &Tour) -> (Option<Spot>, String, String, Go) {
             Some(Spot::Audio),
             tr!("確認聲音", "Check the audio").into(),
             tr!(
-                "預設會錄電腦播放的聲音和麥克風。按「測試音量」講幾句話，麥克風的條有跳動就表示收得到；要換麥克風或不錄聲音，點下方的聲音設定修改。",
-                "By default the computer's sound and your microphone are recorded. Click “Test levels” and say a few words: if the microphone bar moves, you're being heard. To change microphones or record without sound, click the audio setting below the preview."
+                "預設會錄電腦播放的聲音和麥克風。按聲音旁邊的「測試音量」講幾句話，麥克風的條有跳動就表示收得到；要換麥克風或不錄聲音，點聲音設定修改。",
+                "By default the computer's sound and your microphone are recorded. Click “Test levels” next to the audio setting and say a few words: if the microphone bar moves, you're being heard. To change microphones or record without sound, click the audio setting."
             )
             .into(),
             next(),
@@ -474,12 +474,12 @@ fn content(app: &UiApp, t: &Tour) -> (Option<Spot>, String, String, Go) {
             let has = app.recent.as_ref().is_some_and(|r| !r.items.is_empty());
             let body = if t.recorded && has {
                 tr!(
-                    "剛錄好的在這裡。下面一排是：播放、剪輯（剪掉頭尾、加標註）、製作（加速版、GIF、壓縮）、傳到媒體庫、在資料夾中顯示；複製檔案、改名等其他功能在「⋯」，也可以按右鍵。",
+                    "剛錄好的在這裡。下面一排是：播放、剪輯（剪掉頭尾、加標註）、製作（加速版、GIF、壓縮）、傳到 Jellyfin、在資料夾中顯示；複製檔案、改名等其他功能在「⋯」，也可以按右鍵。",
                     "Your new recording is here. The buttons below are Play, Edit (trim, annotate), Make (sped-up video, GIF, compress), Send to library and Show in folder; copy file, rename and more are under ⋯ or a right-click."
                 )
             } else {
                 tr!(
-                    "錄好的影片會出現在這裡。下面一排是：播放、剪輯、製作（加速版、GIF、壓縮）、傳到媒體庫、在資料夾中顯示；其他功能在「⋯」，也可以按右鍵。右邊「檔案庫 → 錄影」看以前錄的。",
+                    "錄好的影片會出現在這裡。下面一排是：播放、剪輯、製作（加速版、GIF、壓縮）、傳到 Jellyfin、在資料夾中顯示；其他功能在「⋯」，也可以按右鍵。右邊「檔案庫 → 錄影」看以前錄的。",
                     "Your recordings appear here. The buttons below are Play, Edit, Make (sped-up video, GIF, compress), Send to library and Show in folder; everything else is under ⋯ or a right-click. “Library → Videos” on the right shows older ones."
                 )
             };
@@ -499,8 +499,8 @@ fn content(app: &UiApp, t: &Tour) -> (Option<Spot>, String, String, Go) {
             Some(Spot::Settings),
             tr!("完成了！", "You're all set!").into(),
             tr!(
-                "畫質、每秒張數、存檔位置、快速鍵、語言都在「設定」；回溯錄影、排程錄影、講稿小視窗在右上角「更多工具」。之後第一次打開剪輯、截圖編輯、全部截圖時，也會有幾步小提示。想再看一次這個教學：「設定 → 關於 → 重新看教學」。",
-                "Quality, frame rate, where files are saved, shortcuts and language are in “Settings”; the replay buffer, scheduled recording and the script window are under “More tools” at the top right. The first time you open the editor, screenshot editing or All screenshots, you'll get a few quick tips too. To see this tutorial again: Settings → About → “Replay tutorial”."
+                "畫質、每秒張數、存檔位置、快速鍵、語言都在「設定」；回溯錄影、排程錄影、講稿小視窗在標題列右邊的「⋯」。之後第一次打開剪輯、截圖編輯、全部截圖時，也會有幾步小提示。想再看一次這個教學：「設定 → 關於 → 重新看教學」。",
+                "Quality, frame rate, where files are saved, shortcuts and language are in “Settings”; the replay buffer, scheduled recording and the script window are under “⋯” on the right of the title bar. The first time you open the editor, screenshot editing or All screenshots, you'll get a few quick tips too. To see this tutorial again: Settings → About → “Replay tutorial”."
             )
             .into(),
             Go::Button(tr!("開始使用", "Get started").into()),

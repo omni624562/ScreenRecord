@@ -556,15 +556,15 @@ impl UiApp {
             Some(folder) => (
                 trf!("傳到「{}」…", "Send to “{}”…", folder),
                 tr!(
-                    "選要放進媒體庫的哪個子資料夾，複製過去（同一個資料夾裡同名的覆蓋，連同字幕），有設定 Jellyfin 時通知它。媒體庫在「設定 → 存檔與分享」",
-                    "Pick a subfolder of the library and copy it there (replacing one with the same name in that folder, subtitles included), then notify Jellyfin if set up. The library is in Settings → Saving & sharing"
+                    "選要放進 Jellyfin 媒體庫的哪個子資料夾，複製過去（同一個資料夾裡同名的覆蓋，連同字幕），傳好通知 Jellyfin 掃描。資料夾在「設定 → 存檔與分享 → Jellyfin」",
+                    "Pick a subfolder of the Jellyfin library and copy it there (replacing one with the same name in that folder, subtitles included), then have Jellyfin scan. The folder is in Settings → Saving & sharing → Jellyfin"
                 ),
             ),
             None => (
-                tr!("傳到媒體庫…", "Send to library…").to_string(),
+                tr!("傳到 Jellyfin…", "Send to Jellyfin…").to_string(),
                 tr!(
-                    "還沒選資料夾：按了打開「設定 → 存檔與分享」，選 Jellyfin 媒體庫或 NAS 的資料夾",
-                    "No folder yet: opens Settings → Saving & sharing so you can pick a Jellyfin library or NAS folder"
+                    "還沒選資料夾：按了打開「設定 → 存檔與分享」，選 Jellyfin 媒體庫的資料夾",
+                    "No folder yet: opens Settings → Saving & sharing so you can pick the Jellyfin library folder"
                 ),
             ),
         }
@@ -576,12 +576,47 @@ impl UiApp {
         let copy_to = self.s.after_copy_to.clone();
         let message = message.to_string();
         if copy_to.trim().is_empty() {
-            return self.ask_trash(title, &message, paths, vec![], done);
+            return self.confirm_trash_jellyfin(title, &message, paths, done);
         }
         // 媒體庫（NAS）裡同名而且大小一樣的那一份：整個媒體庫找一遍，NAS 大的時候要一下子，在背景找
         let files: Vec<std::path::PathBuf> = paths.iter().map(std::path::PathBuf::from).collect();
         self.spawn(async move { tokio::task::spawn_blocking(move || screenrecorder_core::jellyfin::library_copies_of(&copy_to, &files)).await.unwrap_or_default() }, move |app, copies| {
             app.ask_trash(title, &message, paths, copies, done)
+        });
+    }
+
+    /// 沒選媒體庫資料夾：Jellyfin 上也有同名同大小的那一支時，問要不要從 Jellyfin 一起刪（連同伺服器上的檔案）
+    fn confirm_trash_jellyfin(&mut self, title: String, message: &str, paths: Vec<String>, done: fn(&mut UiApp, &[String], bool)) {
+        let names: Vec<String> = paths.iter().filter(|p| std::fs::metadata(p).is_ok_and(|m| self.sent_already(p, m.len()))).map(|p| dialogs::file_name(p).to_string()).collect();
+        let Some(jf) = self.jellyfin().filter(|_| !names.is_empty()) else {
+            return self.ask_trash(title, message, paths, vec![], done);
+        };
+        let message = message.to_string();
+        let job = move || names.iter().map(|n| jf.find(n)).collect::<Result<Vec<_>, _>>().map(|ids| ids.concat());
+        self.spawn(async move { tokio::task::spawn_blocking(job).await.unwrap_or_else(|e| Err(e.to_string())) }, move |app, r| {
+            let ids = r.unwrap_or_else(|e| {
+                screenrecorder_core::warn!("[Jellyfin] 找不到要一起刪的影片：{e}");
+                vec![]
+            });
+            if ids.is_empty() {
+                return app.ask_trash(title, &message, paths, vec![], done);
+            }
+            let names: Vec<String> = paths.iter().map(|p| dialogs::file_name(p)).collect();
+            let more = trf!(
+                "Jellyfin 上也有 {} 支同名的影片，要一起刪掉嗎？從 Jellyfin 刪掉會連伺服器上的檔案一起刪，不能復原。",
+                "Jellyfin also has {} matching video(s). Delete them too? Deleting from Jellyfin also deletes the files on the server and can't be undone.",
+                ids.len()
+            );
+            let p2 = paths.clone();
+            let mut ask = dialogs::Ask::confirm(title, format!("{message}\n{more}"), tr!("兩邊都刪", "Delete both"), move |app, _| {
+                trash_now(app, p2, vec![], false, done);
+                delete_on_jellyfin(app, ids);
+            });
+            ask.alt = Some((tr!("只刪這台電腦的", "Only on this PC").to_string(), Box::new(move |app, _| trash_now(app, paths, vec![], false, done))));
+            ask.alt_danger = true;
+            ask.danger = true;
+            ask.list = names;
+            app.ask = Some(ask);
         });
     }
 
@@ -598,8 +633,8 @@ impl UiApp {
             let folder = self.library_folder().unwrap_or_default();
             let n = copies.len();
             let more = trf!(
-                "媒體庫「{folder}」裡也有 {n} 個同名的檔案（影片、字幕），要一起刪掉嗎？NAS 上的檔案可能無法從資源回收筒還原。",
-                "The library “{folder}” also has {n} matching file(s) (video, subtitles). Delete them too? Files on a NAS may not be restorable from the Recycle Bin."
+                "Jellyfin 的資料夾「{folder}」裡也有 {n} 個同名的檔案（影片、字幕），要一起刪掉嗎？那邊的檔案可能無法從資源回收筒還原。",
+                "The Jellyfin folder “{folder}” also has {n} matching file(s) (video, subtitles). Delete them too? Files there may not be restorable from the Recycle Bin."
             );
             let (p2, c2) = (paths.clone(), copies.clone());
             let mut ask = dialogs::Ask::confirm(title, format!("{message}\n{more}"), tr!("兩邊都刪", "Delete both"), move |app, _| trash_now(app, p2, c2, true, done));
@@ -634,9 +669,9 @@ impl UiApp {
                         return Ok(None);
                     }
                     let done = if !renamed.is_empty() {
-                        tr!("媒體庫裡的那一份也改名了", "The copy in the library was renamed too")
+                        tr!("Jellyfin 那一份也改名了", "The copy on Jellyfin was renamed too")
                     } else {
-                        tr!("媒體庫裡的檔案已改名", "Renamed in the library")
+                        tr!("Jellyfin 那邊的檔案已改名", "Renamed on Jellyfin")
                     };
                     // 只掃描改了名的那個資料夾
                     let scan = renamed.first().cloned().or_else(|| pairs.first().map(|(_, new)| new.clone()));
@@ -652,7 +687,7 @@ impl UiApp {
             |app, r| match r {
                 Ok(Some(msg)) => app.toast(msg, false),
                 Ok(None) => {}
-                Err(e) => app.toast(trf!("媒體庫裡的那一份沒有改名：{e}", "The copy in the library wasn't renamed: {e}"), true),
+                Err(e) => app.toast(trf!("Jellyfin 那一份沒有改名：{e}", "The copy on Jellyfin wasn't renamed: {e}"), true),
             },
         );
     }
@@ -718,7 +753,7 @@ impl UiApp {
                 app.ctx.copy_text(url.clone());
                 app.toast(trf!("已複製 Jellyfin 連結：{url}", "Jellyfin link copied: {url}"), false);
             }
-            Ok(None) => app.toast(tr!("Jellyfin 還沒有這支影片：先按「傳到媒體庫」，或等錄完自動處理複製過去", "Jellyfin doesn't have this video yet. Send it to the library first"), true),
+            Ok(None) => app.toast(tr!("Jellyfin 還沒有這支影片：先按「傳到 Jellyfin」，或等錄完自動處理傳過去", "Jellyfin doesn't have this video yet. Send it to Jellyfin first"), true),
             Err(e) => app.toast(trf!("查不到 Jellyfin：{e}", "Couldn't check Jellyfin: {e}"), true),
         });
     }
@@ -1791,6 +1826,19 @@ fn folder_signature(dir: &str, subdirs: bool) -> u64 {
     h.finish()
 }
 
+/// 從 Jellyfin 刪掉這些影片（伺服器上的檔案一起刪）：「兩邊都刪」而且沒選媒體庫資料夾時
+fn delete_on_jellyfin(app: &mut UiApp, ids: Vec<String>) {
+    let Some(jf) = app.jellyfin() else { return };
+    let job = move || ids.iter().try_for_each(|id| jf.delete_item(id));
+    app.spawn(async move { tokio::task::spawn_blocking(job).await.unwrap_or_else(|e| Err(e.to_string())) }, |app, r| {
+        app.lib_index = None;
+        match r {
+            Ok(()) => app.toast(tr!("Jellyfin 那一份也刪了", "The copy on Jellyfin was deleted too"), false),
+            Err(e) => app.toast(trf!("Jellyfin 那一份沒有刪掉：{e}", "The copy on Jellyfin wasn't deleted: {e}"), true),
+        }
+    });
+}
+
 /// 移到資源回收筒（confirm_trash 確認後）：copies 是媒體庫裡也要刪的那一份；notify：刪好後請 Jellyfin 重新掃描
 fn trash_now(app: &mut UiApp, paths: Vec<String>, copies: Vec<std::path::PathBuf>, notify: bool, done: fn(&mut UiApp, &[String], bool)) {
     // 媒體庫的檔案可能跟著刪：「已在媒體庫」的標註重讀
@@ -1822,7 +1870,7 @@ fn trash_now(app: &mut UiApp, paths: Vec<String>, copies: Vec<std::path::PathBuf
                                 let list: Vec<String> = copies.iter().map(|c| c.display().to_string()).collect();
                                 screenrecorder_core::recycle::move_to_recycle_bin(&list).map_err(|e| e.message().to_string())?;
                                 screenrecorder_core::info!("[傳到資料夾] 媒體庫的那一份也刪了：{}", list.join("、"));
-                                tr!("媒體庫裡的那一份也刪了", "The copy in the library was deleted too")
+                                tr!("Jellyfin 那一份也刪了", "The copy on Jellyfin was deleted too")
                             };
                             // 只掃描刪掉的那個資料夾
                             let scan = copies.first().cloned().or(first);
@@ -1839,7 +1887,7 @@ fn trash_now(app: &mut UiApp, paths: Vec<String>, copies: Vec<std::path::PathBuf
                     |app, r| match r {
                         Ok(msg) if msg.is_empty() => {}
                         Ok(msg) => app.toast(msg, false),
-                        Err(e) => app.toast(trf!("媒體庫裡的那一份沒有刪掉：{e}", "The copy in the library wasn't deleted: {e}"), true),
+                        Err(e) => app.toast(trf!("Jellyfin 那一份沒有刪掉：{e}", "The copy on Jellyfin wasn't deleted: {e}"), true),
                     },
                 );
             }

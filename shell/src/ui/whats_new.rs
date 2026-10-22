@@ -42,31 +42,22 @@ enum Try {
 fn items(_app: &UiApp) -> Vec<(String, String, Try)> {
     vec![
         (
-            tr!("新的標題列", "A new title bar").into(),
+            tr!("Jellyfin 設定變簡單", "Simpler Jellyfin setup").into(),
             tr!(
-                "視窗最上面換成白色的標題列：左邊「螢幕錄影 ⌄」有關於、檢查更新、更新說明；右邊直接開檔案庫、設定。",
-                "The top of the window has a new title bar: “Screen Recorder ⌄” on the left has About, Check for updates and Release notes; the right side opens the library and settings."
+                "設定裡合併成一區「Jellyfin」：填網址和 API 金鑰就能看、播放、改影片資訊；要從這台電腦傳錄影上去才另外選資料夾。",
+                "Settings now has a single “Jellyfin” section: the address and API key are enough to browse, play and edit; choose a folder only if you want to send recordings from this PC."
+            )
+            .into(),
+            Try::Settings(Page::Save),
+        ),
+        (
+            tr!("主畫面更清爽", "A cleaner home screen").into(),
+            tr!(
+                "右邊只留開始錄影和截圖；「更多工具」在標題列的「⋯」，「測試音量」在預覽下方聲音設定旁邊。",
+                "The right side now has just record and screenshot; “More tools” is under “⋯” on the title bar, and “Test levels” sits next to the audio setting below the preview."
             )
             .into(),
             Try::None,
-        ),
-        (
-            tr!("縮小成小視窗", "Shrink to a small window").into(),
-            tr!(
-                "標題列右邊的小視窗按鈕：只留開始錄影、截圖，錄影中有計時、暫停、停止，不擋畫面；再按一次回到原本大小。",
-                "The small-window button on the title bar keeps just record and screenshot (plus the timer, pause and stop while recording) out of your way. Click it again to go back."
-            )
-            .into(),
-            Try::Compact,
-        ),
-        (
-            tr!("檔案庫更大、縮圖可以調", "A bigger library with adjustable thumbnails").into(),
-            tr!(
-                "檔案庫填滿整個視窗、跟著視窗大小改變；Jellyfin 分頁的縮圖可以選小、中、大（也能按住 Ctrl 轉滾輪）。",
-                "The library fills the window and follows its size; the Jellyfin tab's thumbnails can be small, medium or large (or hold Ctrl and turn the wheel)."
-            )
-            .into(),
-            Try::Jellyfin,
         ),
     ]
 }

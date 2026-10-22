@@ -346,7 +346,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         ui.add_space(12.0);
         ui.horizontal(|ui| {
             ui.label(
-                RichText::new(tr!("存到 Jellyfin，電視、手機上都看得到；NAS 上的影片檔不會動", "Saved on Jellyfin for TVs and phones; the file on the NAS isn't touched"))
+                RichText::new(tr!("存到 Jellyfin，電視、手機上都看得到；伺服器上的影片檔不會動", "Saved on Jellyfin for TVs and phones; the video file on the server isn't touched"))
                     .font(theme::font(12.0))
                     .color(p.muted),
             );
