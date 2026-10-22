@@ -41,6 +41,8 @@ pub struct MainState {
     dismissed_after: Option<u64>,
     /// 控制列的訊息有好幾則時，目前顯示第幾則（按「還有 N 則」換下一則）
     notice_idx: usize,
+    /// 最近錄影目前第一張（換了，例如剛錄好一支，就捲回最上面）
+    recent_first: Option<String>,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -1147,7 +1149,7 @@ fn shortcut_line(app: &mut UiApp, ui: &mut Ui) {
     }
 }
 
-/// 截圖的方式（截圖那一列的按鈕與選單、系統匣的「截圖」選單相同的項目與順序）
+/// 截圖的方式（「⋯」→「截圖工具」、系統匣的「截圖」選單相同的項目與順序）
 #[derive(Clone, PartialEq)]
 pub(super) enum ShotAct {
     /// 在螢幕上框選範圍或點選視窗；幾秒後再框選
@@ -1166,62 +1168,16 @@ pub(super) enum ShotAct {
     Pen,
 }
 
-/// 截圖那一列：「框選截圖」「截取錄影範圍」與更多的小箭頭（按右鍵也有同一個選單）；下面一行寫快速鍵
-fn shot_row(app: &mut UiApp, ui: &mut Ui) {
-    let found = app.env.ffmpeg.found;
-    let can = found && !app.main.shooting;
-    let need = tr!("請先下載錄影元件（上方的「下載並開始使用」）", "Download the recording component first (“Download and get started” above)").to_string();
-    let key = |i: usize| {
-        let k = app.keys.label(i);
-        if k.is_empty() || !app.env.hotkeys.is_some_and(|h| h.all().get(i).copied().unwrap_or(false)) {
-            String::new()
-        } else {
-            trf!("（{k}）", " ({k})")
-        }
-    };
-    let select_tip = if found {
-        trf!("在螢幕上框選範圍或點一下視窗，截下來存成 PNG 並複製到剪貼簿{}", "Select an area or click a window on the screen to save it as PNG and copy it to the clipboard{}", key(3))
-    } else {
-        need.clone()
-    };
-    let area_tip = if found {
-        trf!("截下目前的錄影範圍（{}），存成 PNG 並複製到剪貼簿{}", "Capture the current recording area ({}) as PNG and copy it to the clipboard{}", app.s.source_label(&app.env), key(2))
-    } else {
-        need.clone()
-    };
-    let mut act: Option<ShotAct> = None;
-    let row = ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 4.0;
-        let arrow_w = 34.0;
-        let w = ui.available_width() - arrow_w - 8.0;
-        let select = Btn::new(tr!("框選截圖", "Select area")).icon(Icon::Camera).enabled(can).tooltip(select_tip).min_width((w * 0.55).floor()).show(ui);
-        let area = Btn::new(tr!("截取錄影範圍", "Capture area")).enabled(can).tooltip(area_tip).min_width(ui.available_width() - arrow_w - 4.0).show(ui);
-        let arrow = Btn::icon_only(Icon::ChevD)
-            .enabled(can)
-            .tooltip(if found {
-                tr!(
-                    "更多截圖方式與小工具：延遲框選、全螢幕、長截圖、步驟截圖、只抓文字、螢幕畫筆",
-                    "More screenshot options and tools: delayed selection, full screen, scrolling screenshot, step capture, grab text, screen pen"
-                )
-                .to_string()
-            } else {
-                need.clone()
-            })
-            .min_width(arrow_w)
-            .show(ui);
-        if select.clicked() {
-            act = Some(ShotAct::Select(0));
-        }
-        if area.clicked() {
-            act = Some(ShotAct::Area);
-        }
-        for r in [&select, &area] {
-            egui::Popup::context_menu(r).show(|ui| shot_menu(app, ui, &mut act));
-        }
-        egui::Popup::menu(&arrow).show(|ui| shot_menu(app, ui, &mut act));
-    });
-    tour::mark(ui, Spot::Shot, row.response.rect);
-    if let Some(a) = act.filter(|_| can) {
+/// 現在可以截圖（有錄影元件、沒有正在截）
+pub(super) fn can_shoot(app: &UiApp) -> bool {
+    app.env.ffmpeg.found && !app.main.shooting
+}
+
+/// 「⋯」→「截圖工具」子選單：點了就截
+pub(super) fn shot_menu_body(app: &mut UiApp, ui: &mut Ui) {
+    let mut act = None;
+    shot_menu(app, ui, &mut act);
+    if let Some(a) = act.filter(|_| can_shoot(app)) {
         run_shot(app, a);
     }
 }
@@ -1820,7 +1776,7 @@ pub fn ask_update(app: &mut UiApp, u: &screenrecorder_core::types::UpdateInfo) {
 
 // ───────────── 控制列（預覽下方） ─────────────
 
-/// 預覽下方的控制列：待命時「開始錄影」與截圖按鈕，錄影中換成計時與暫停、標記、麥克風、停止；
+/// 預覽下方的控制列：待命時「開始錄影」，錄影中換成計時與暫停、標記、麥克風、停止；
 /// 右邊的空間顯示一則訊息（錄好了、製作中 / 完成、提醒），有好幾則時「還有 N 則」切換。高度固定，預覽不會跳
 fn control_bar(app: &mut UiApp, ui: &mut Ui) {
     let r = app.status.recorder.clone();
@@ -1838,7 +1794,7 @@ fn control_bar(app: &mut UiApp, ui: &mut Ui) {
     });
 }
 
-/// 待命：開始錄影（快速鍵寫在按鈕上）、框選截圖、截取錄影範圍、更多；右邊是訊息或常用的快速鍵
+/// 待命：開始錄影（快速鍵寫在按鈕上）；右邊是訊息或截圖的快速鍵（截圖的其他方式在「⋯」→「截圖工具」）
 fn idle_controls(app: &mut UiApp, ui: &mut Ui) {
     let narrow = ui.available_width() < 700.0;
     let manual = app.manual_export();
@@ -1860,9 +1816,6 @@ fn idle_controls(app: &mut UiApp, ui: &mut Ui) {
     tour::mark(ui, Spot::Record, start.rect);
     if start.clicked() {
         start_recording(app);
-    }
-    if app.s.source_type != SourceType::Audio {
-        ui.allocate_ui_with_layout(vec2(if narrow { 230.0 } else { 290.0 }, 42.0), Layout::left_to_right(Align::Center), |ui| shot_row(app, ui));
     }
     notice_area(app, ui, false);
 }
@@ -2400,44 +2353,31 @@ fn notice_line(app: &mut UiApp, ui: &mut Ui, n: Notice) {
 
 // ───────────── 最近錄影 ─────────────
 
-/// 右欄：最近錄影（卡片直排，放得下幾張就一頁幾張，上下翻頁）＋檔案庫（錄影、截圖、Jellyfin）
+/// 右欄：最近錄影（卡片直排，捲動看全部，捲到快底時再多讀一批）＋檔案庫（錄影、截圖、Jellyfin）
 fn recent_panel(app: &mut UiApp, ui: &mut Ui) {
     let p = theme::pal(ui);
     let panel = theme::card(ui).show(ui, |ui| {
         ui.set_min_size(ui.available_size());
         let full = ui.max_rect();
-        let pages = app.recent.as_ref().map(|r| r.pages).unwrap_or(1);
-        // 標題列：最近錄影、第幾頁，右邊上一頁 / 下一頁
+        // 標題列：最近錄影、共幾支
         ui.horizontal(|ui| {
             ui.label(RichText::new(tr!("最近錄影", "Recent recordings")).font(theme::font_bold(14.0)));
             if let Some(r) = app.recent.as_ref().filter(|r| r.total > 0) {
-                ui.label(theme::muted(ui, trf!("{} / {} 頁", "Page {} / {}", app.recent_page, r.pages.max(1))));
+                ui.label(theme::muted(ui, trf!("共 {} 支", "{} in total", r.total)));
             }
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if Btn::icon_only(Icon::ChevR).ghost().small().enabled(app.recent_page < pages).tooltip(tr!("較舊的錄影", "Older recordings")).show(ui).clicked() {
-                    app.recent_page += 1;
-                    app.load_recent();
-                }
-                if Btn::icon_only(Icon::ChevL).ghost().small().enabled(app.recent_page > 1).tooltip(tr!("較新的錄影", "Newer recordings")).show(ui).clicked() {
-                    app.recent_page -= 1;
-                    app.load_recent();
-                }
-            });
         });
         ui.add_space(4.0);
         // 下面的檔案庫：標題＋一排按鈕
         let jf = app.jellyfin().is_some();
         let lib_h = 62.0;
         let list = Rect::from_min_max(ui.cursor().min, pos2(full.max.x, full.max.y - lib_h - 10.0));
-        // 一頁放幾張依高度決定
-        let per = ((list.height() + 8.0) / (CARD_H + 8.0)).floor().clamp(1.0, 10.0) as usize;
-        if per != app.recent_per_page {
-            app.recent_per_page = per;
-            app.load_recent();
-        }
         let items = app.recent.as_ref().map(|r| r.items.clone()).unwrap_or_default();
+        let total = app.recent.as_ref().map_or(0, |r| r.total);
+        // 第一張換了（剛錄好、存下回溯錄影、換了儲存位置）：捲回最上面
+        let first = items.first().map(|e| e.media.path.clone());
+        let to_top = first != app.main.recent_first;
+        app.main.recent_first = first;
         ui.scope_builder(UiBuilder::new().max_rect(list).layout(Layout::top_down(Align::Min)), |ui| {
-            ui.spacing_mut().item_spacing.y = 8.0;
             if items.is_empty() {
                 let dir = app.s.out_dir(&app.env);
                 let name = std::path::Path::new(&dir).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| dir.clone());
@@ -2446,11 +2386,27 @@ fn recent_panel(app: &mut UiApp, ui: &mut Ui) {
                     "No recordings yet. Click “Start recording” to make your first one; it will show up here (saved in the “{name}” folder)."
                 );
                 ui.add(egui::Label::new(theme::muted(ui, &text)).wrap()).on_hover_text(&dir);
+                return;
             }
             let dates = date_labels(items.iter().map(|e| (e.media.name.as_str(), e.media.time_ms())));
-            let w = ui.available_width();
-            for e in &items {
-                recent_card(app, ui, e, dates.get(&e.media.name).cloned().unwrap_or_default(), w);
+            ui.spacing_mut().item_spacing.y = 8.0;
+            let mut area = egui::ScrollArea::vertical().id_salt("recent-list").auto_shrink([false, false]);
+            if to_top {
+                area = area.vertical_scroll_offset(0.0);
+            }
+            // 只畫看得到的卡片，幾百支也不會卡
+            let out = area.show_rows(ui, CARD_H, items.len(), |ui, rows| {
+                // 右邊留一點給捲軸，不壓在卡片上
+                let w = ui.available_width() - 10.0;
+                for e in &items[rows] {
+                    recent_card(app, ui, e, dates.get(&e.media.name).cloned().unwrap_or_default(), w);
+                }
+            });
+            // 捲到剩不到 3 張時再多讀 30 支（上一批還沒回來時不重複要）
+            let left = out.content_size.y - out.state.offset.y - out.inner_rect.height();
+            if left < (CARD_H + 8.0) * 3.0 && items.len() == app.recent_per_page && total > items.len() {
+                app.recent_per_page += RECENT_BATCH;
+                app.load_recent();
             }
         });
         let lib = Rect::from_min_max(pos2(full.min.x, full.max.y - lib_h), full.max);
@@ -2491,6 +2447,9 @@ fn recent_panel(app: &mut UiApp, ui: &mut Ui) {
     });
     tour::mark(ui, Spot::Recent, panel.response.rect);
 }
+
+/// 最近錄影一次多讀幾支
+pub(super) const RECENT_BATCH: usize = 30;
 
 /// 最近錄影卡片的縮圖：4:3（從 16:9 的畫面裁掉左右一點），卡片窄一點，一列放得下更多張
 const CARD_H: f32 = 80.0;

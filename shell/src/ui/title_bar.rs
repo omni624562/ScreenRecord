@@ -238,7 +238,12 @@ fn main_menu(app: &mut UiApp, ui: &mut Ui, covered: bool) {
         super::library_dialog::open_jellyfin(app);
     }
     ui.separator();
-    // 工具（錄影中只有講稿小視窗）
+    // 工具（錄影中只有截圖工具、講稿小視窗）
+    let shoot = super::main_view::can_shoot(app) && !covered;
+    let r = menu_item(ui, Icon::Camera, tr!("截圖工具", "Screenshot tools"), None, true, shoot);
+    if shoot {
+        egui::containers::menu::SubMenu::new().show(ui, &r, |ui| super::main_view::shot_menu_body(app, ui));
+    }
     if idle {
         let can = app.env.ffmpeg.found && app.env.ffmpeg.encoder.is_some() && app.manual_export().is_none();
         let r = menu_item(ui, Icon::Undo, tr!("回溯錄影（錄最近幾分鐘）", "Replay buffer (last few minutes)"), None, true, can && !covered);

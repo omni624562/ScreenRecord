@@ -44,8 +44,8 @@ fn items(_app: &UiApp) -> Vec<(String, String, Try)> {
         (
             tr!("開始錄影移到預覽下面", "Start recording is now under the preview").into(),
             tr!(
-                "「開始錄影」「框選截圖」「截取錄影範圍」放在預覽下面的一條控制列；錄影中同一列換成計時、暫停、標記、麥克風、停止，眼睛不用在預覽和右邊之間來回。",
-                "“Start recording”, “Select area” and “Capture recording area” now sit on a bar under the preview. While recording, the same bar shows the timer, Pause, Mark, the mic and Stop, so you don't have to look back and forth."
+                "「開始錄影」放在預覽下面的一條控制列；錄影中同一列換成計時、暫停、標記、麥克風、停止，眼睛不用在預覽和右邊之間來回。截圖用快速鍵，或右上角「⋯」→「截圖工具」。",
+                "“Start recording” now sits on a bar under the preview. While recording, the same bar shows the timer, Pause, Mark, the mic and Stop, so you don't have to look back and forth. Take screenshots with the shortcuts or “⋯” (top right) → “Screenshot tools”."
             )
             .into(),
             Try::None,
@@ -62,8 +62,8 @@ fn items(_app: &UiApp) -> Vec<(String, String, Try)> {
         (
             tr!("右邊整欄是最近錄影", "Recent recordings fill the right column").into(),
             tr!(
-                "右邊從上到下都是最近錄影，放得下幾張就一頁幾張；剛錄好的那支排第一張、有藍框。最下面是檔案庫：錄影、截圖、Jellyfin。",
-                "The whole right column now lists recent recordings, as many per page as fit; the one you just recorded is first with a blue border. The library buttons (videos, screenshots, Jellyfin) are at the bottom."
+                "右邊從上到下都是最近錄影，用捲軸或滾輪捲動看全部；剛錄好的那支排第一張、有藍框。最下面是檔案庫：錄影、截圖、Jellyfin。",
+                "The whole right column now lists recent recordings; scroll to see them all; the one you just recorded is first with a blue border. The library buttons (videos, screenshots, Jellyfin) are at the bottom."
             )
             .into(),
             Try::Library(false),
