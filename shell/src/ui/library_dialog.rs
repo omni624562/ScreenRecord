@@ -814,7 +814,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                 // 選了媒體庫才有「還沒傳到媒體庫」
                 let filters: Vec<_> = filters
                     .into_iter()
-                    .chain(app.library_folder().is_some().then(|| (LibraryFilter::NotInLibrary, tr!("還沒傳到媒體庫", "Not in the library yet"))))
+                    .chain((app.library_folder().is_some() || app.jellyfin().is_some()).then(|| (LibraryFilter::NotInLibrary, tr!("還沒傳到 Jellyfin", "Not on Jellyfin yet"))))
                     .collect();
                 egui::ComboBox::from_id_salt("libFilter").selected_text(filters.iter().find(|f| f.0 == d.filter).map(|f| f.1).unwrap_or("")).show_ui(ui, |ui| {
                     for (v, t) in filters {
@@ -1088,10 +1088,10 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         if !shot
             && !videos.is_empty()
             && app.library_folder().is_some()
-            && Btn::new(tr!("傳到媒體庫…", "Send to library…"))
+            && Btn::new(tr!("傳到 Jellyfin…", "Send to Jellyfin…"))
                 .icon(Icon::Upload)
                 .small()
-                .tooltip(tr!("勾選的錄影一起傳到媒體庫，選一次要放進哪個資料夾", "Send the selected recordings to the library; choose the folder once"))
+                .tooltip(tr!("勾選的錄影一起傳到 Jellyfin，選一次要放進哪個資料夾", "Send the selected recordings to Jellyfin; choose the folder once"))
                 .show(fui)
                 .clicked()
         {
@@ -1463,7 +1463,7 @@ fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table:
     let today = chrono::Local::now().date_naive();
     let mut last_day = None;
     // 標記欄（媒體庫、剪輯版、沒有聲音）：這一頁有那種標記才留位置，檔名才不會被擠得太短
-    let lib_col = send && rows.iter().any(|e| app.library_where(&e.media.path, e.media.bytes).is_some() || screenrecorder_core::transfer::is_pending(&e.media.path));
+    let lib_col = (send || app.jellyfin().is_some()) && rows.iter().any(|e| app.library_where(&e.media.path, e.media.bytes).is_some() || screenrecorder_core::transfer::is_pending(&e.media.path));
     let cut_col = rows.iter().any(|e| is_cut_name(&e.media.name));
     let mute_col = rows.iter().any(|e| e.media.has_audio == Some(false) && e.media.duration_sec.is_some() && !is_audio_file(&e.media.name));
     if rows.is_empty() {
@@ -1605,7 +1605,7 @@ fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table:
                 let at = app.library_where(&e.media.path, e.media.bytes);
                 let watched = if at.is_some() { app.watched_by(&e.media.name) } else { vec![] };
                 // 「Jellyfin」後面可能有看過的眼睛：多留一點寬度
-                tag_column(tui, &["Jellyfin      ", tr!("媒體庫", "Library"), tr!("待傳", "Queued")], |ui| {
+                tag_column(tui, &["Jellyfin      ", tr!("待傳", "Queued")], |ui| {
                     if let Some(at) = at {
                         library_chip(ui, app, &at, &watched);
                     } else {
@@ -1883,20 +1883,15 @@ pub fn no_audio_mark(ui: &mut egui::Ui) -> egui::Response {
     resp.on_hover_text(tr!("沒有聲音", "No audio"))
 }
 
-/// 已在媒體庫（NAS 上有同名同大小的一份）：綠色標籤，有設定 Jellyfin 時寫「Jellyfin」，滑鼠移上去寫在哪個資料夾
+/// 已在 Jellyfin（媒體庫的資料夾裡有同名同大小的一份）：綠色標籤「Jellyfin」，滑鼠移上去寫在哪個資料夾
 /// watched：在 Jellyfin 誰看過（名稱, 日期）；有人看過時標籤旁邊多一個眼睛
 pub fn library_chip(ui: &mut egui::Ui, app: &UiApp, at: &[String], watched: &[(String, String)]) -> egui::Response {
-    let jellyfin = app.jellyfin().is_some();
-    let (text, mut tip) = if jellyfin {
-        ("Jellyfin", trf!("已傳到 Jellyfin 的媒體庫：{}", "Already in the Jellyfin library: {}", at.join(tr!("、", ", "))))
-    } else {
-        (tr!("媒體庫", "Library"), trf!("已傳到媒體庫：{}", "Already in the library: {}", at.join(tr!("、", ", "))))
-    };
+    let (text, mut tip) = ("Jellyfin", trf!("已傳到 Jellyfin：{}", "Already on Jellyfin: {}", at.join(tr!("、", ", "))));
     if !watched.is_empty() {
         let who: Vec<String> =
             watched.iter().map(|(n, d)| if d.len() >= 10 { format!("{n}（{}/{}）", d[5..7].trim_start_matches('0'), d[8..10].trim_start_matches('0')) } else { n.clone() }).collect();
         tip.push_str(&trf!("\n看過：{}", "\nWatched by: {}", who.join(tr!("、", ", "))));
-    } else if jellyfin {
+    } else if app.jellyfin().is_some() {
         tip.push_str(tr!("\n還沒有人看過", "\nNot watched yet"));
     }
     let r = chip(ui, text, Tone::Ok, false).on_hover_text(&tip);
@@ -1908,7 +1903,7 @@ pub fn library_chip(ui: &mut egui::Ui, app: &UiApp, at: &[String], watched: &[(S
     r
 }
 
-/// 在待傳清單裡（連不到 NAS，連上後自動傳）：灰色「待傳」標籤
+/// 在待傳清單裡（連不到 Jellyfin 的資料夾，連上後自動傳）：灰色「待傳」標籤
 pub fn pending_chip(ui: &mut egui::Ui, path: &str) {
     if let Some(p) = screenrecorder_core::transfer::pending().into_iter().find(|p| p.file == path) {
         chip(ui, tr!("待傳", "Queued"), Tone::Plain, false).on_hover_text(screenrecorder_core::transfer::pending_tip(&p.sub));

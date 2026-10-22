@@ -202,23 +202,20 @@ pub fn groups(app: &UiApp, e: &LibraryEntry, place: Place) -> Vec<Vec<Node>> {
         tr!("複製這個檔案，可以直接貼到 LINE、Teams、信件或資料夾", "Copy this file so you can paste it into LINE, Teams, an email or a folder"),
     ))];
     let (dest, send_tip) = app.send_label();
-    share.push(one(item(EntryAction::SendToLibrary, tr!("傳到媒體庫", "Send to library"), Some(Icon::Upload), &format!("{dest}\n{send_tip}"))));
+    share.push(one(item(EntryAction::SendToLibrary, tr!("傳到 Jellyfin", "Send to Jellyfin"), Some(Icon::Upload), &format!("{dest}\n{send_tip}"))));
     // 已經傳到媒體庫的才有 Jellyfin 頁面
     if !m4a && !side && app.jellyfin().is_some() && app.sent_already(path, e.media.bytes) {
         share.push(one(item(
             EntryAction::OpenJellyfin,
             tr!("在 Jellyfin 開啟", "Open in Jellyfin"),
             Some(Icon::Video),
-            tr!("用瀏覽器打開這支影片在 Jellyfin 的頁面（要先傳到 Jellyfin 的媒體庫）", "Open this video's Jellyfin page in your browser (send it to the Jellyfin library first)"),
+            tr!("用瀏覽器打開這支影片在 Jellyfin 的頁面（要先傳到 Jellyfin）", "Open this video's Jellyfin page in your browser (send it to Jellyfin first)"),
         )));
         share.push(one(item(
             EntryAction::JellyfinLink,
             tr!("複製 Jellyfin 連結", "Copy Jellyfin link"),
             Some(Icon::Link),
-            tr!(
-                "複製這支影片在 Jellyfin 的網址，貼給別人就能在瀏覽器看（要先傳到 Jellyfin 的媒體庫）",
-                "Copy this video's Jellyfin address so others can watch it in a browser (send it to the Jellyfin library first)"
-            ),
+            tr!("複製這支影片在 Jellyfin 的網址，貼給別人就能在瀏覽器看（要先傳到 Jellyfin）", "Copy this video's Jellyfin address so others can watch it in a browser (send it to Jellyfin first)"),
         )));
     }
     // 複製章節在檢視器播放列的「章節」選單裡（跟跳到某一章放在一起），這裡不再列一次

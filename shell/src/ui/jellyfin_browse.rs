@@ -248,8 +248,8 @@ pub fn confirm_delete_list(app: &mut UiApp, list: Vec<(String, String)>) {
 /// 一次刪掉好幾支（先確認一次）。刪好之後瀏覽清單拿掉它們，檢視器正在播其中一支就關掉
 fn confirm_delete_many(app: &mut UiApp, list: Vec<(String, String)>) {
     let msg = tr!(
-        "會從 Jellyfin 和 NAS 上刪掉，不會進資源回收筒，刪了不能復原。這台電腦上的檔案不會動。",
-        "This deletes them from Jellyfin and the NAS. They don't go to a Recycle Bin and can't be undone. Files on this computer aren't touched."
+        "會從 Jellyfin（連同伺服器上的影片檔）刪掉，不會進資源回收筒，刪了不能復原。這台電腦上的檔案不會動。",
+        "This deletes them from Jellyfin (including the video files on the server). They don't go to a Recycle Bin and can't be undone. Files on this computer aren't touched."
     );
     let title = if list.len() == 1 {
         tr!("從 Jellyfin 刪除這支影片？", "Delete this video from Jellyfin?").to_string()

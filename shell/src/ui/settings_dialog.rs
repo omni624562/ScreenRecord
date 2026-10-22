@@ -954,55 +954,53 @@ fn save_page(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
     }
 }
 
-/// 媒體庫：NAS、Jellyfin 的媒體庫或雲端硬碟的同步資料夾。「傳到媒體庫」、錄完自動處理、剪輯另存好都傳到這裡；
-/// 填了 Jellyfin 的網址與 API 金鑰時，傳好就通知它掃描，影片資訊、改名、刪除也會同步過去
+/// Jellyfin：網址與 API 金鑰（瀏覽、播放、改影片資訊只要這兩個）；要從這台電腦把錄影傳上去，
+/// 再選 Jellyfin 媒體庫的資料夾：「傳到 Jellyfin」、錄完自動處理、剪輯另存好都複製到這裡，傳好就通知它掃描，
+/// 影片資訊、改名、刪除也同步過去
 fn library_section(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui, open: &mut Option<String>) {
     let p = theme::pal(ui);
     let dir = app.s.after_copy_to.clone();
-    // 標題直接寫出 Jellyfin，找 Jellyfin 設定的人看得到
-    form_section(ui, tr!("媒體庫（NAS、Jellyfin）", "Media library (NAS, Jellyfin)"), |ui| {
-        if !dir.is_empty() && Btn::new(tr!("在檔案總管開啟", "Open in File Explorer")).icon(Icon::Folder).small().ghost().show(ui).clicked() {
-            *open = Some(dir.clone());
-        }
+    form_section(ui, "Jellyfin", |_| {});
+    jellyfin_rows(app, d, ui);
+    // 傳錄影過去：Jellyfin 媒體庫的資料夾（只瀏覽、播放不用選）
+    ui.add_space(10.0);
+    ui.horizontal(|ui| {
+        ui.label(RichText::new(tr!("從這台電腦傳錄影過去", "Send recordings from this computer")).font(theme::font_bold(13.5)));
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            if !dir.is_empty() && Btn::new(tr!("不傳了", "Stop sending")).small().ghost().show(ui).clicked() {
+                app.s.after_copy_to.clear();
+                app.save_settings();
+            }
+            if !dir.is_empty() && Btn::new(tr!("在檔案總管開啟", "Open in File Explorer")).icon(Icon::Folder).small().ghost().show(ui).clicked() {
+                *open = Some(dir.clone());
+            }
+        });
     });
+    ui.add_space(4.0);
     if folder_row(ui, &dir, "save-library") {
         pick_copy_dir(app, false);
     }
     ui.add_space(4.0);
-    ui.horizontal(|ui| {
-        let text = if dir.is_empty() {
-            tr!("選了之後，錄影卡片的「傳到媒體庫」一按就複製過去（連同字幕）", "Once chosen, “Send to library” on a recording copies it there (with subtitles)")
-        } else {
-            tr!(
-                "「傳到媒體庫」時選要放進這裡的哪個子資料夾（同一個資料夾裡同名的覆蓋，連同字幕）",
-                "“Send to library” lets you pick a subfolder here (replacing one with the same name in that folder, with subtitles)"
-            )
-        };
-        ui.add(egui::Label::new(RichText::new(text).font(theme::font(12.0)).color(p.muted)).wrap());
-        if !dir.is_empty() && Btn::new(tr!("不用媒體庫", "Stop using")).small().ghost().show(ui).clicked() {
-            app.s.after_copy_to.clear();
-            app.save_settings();
-        }
-    });
-    if dir.is_empty() {
-        ui.add(
-            egui::Label::new(
-                RichText::new(tr!(
-                    "例如 \\\\伺服器\\videos（Jellyfin 的媒體庫）、NAS，或 OneDrive、Google 雲端硬碟的同步資料夾（由同步軟體上傳，不用另外登入）。",
-                    "For example \\\\server\\videos (a Jellyfin library), a NAS, or a OneDrive / Google Drive sync folder (the sync app uploads them; no extra sign-in)."
-                ))
-                .font(theme::font(12.0))
-                .color(p.muted),
-            )
-            .wrap(),
-        );
-    }
-    // Jellyfin 的網址與金鑰一直顯示（還沒選資料夾也可以先填），兩個勾選要有資料夾才有意義
+    let text = if dir.is_empty() {
+        tr!(
+            "選 Jellyfin 媒體庫的資料夾（例如 \\\\伺服器\\videos；Jellyfin 裝在這台電腦就選本機的資料夾），錄影卡片的「傳到 Jellyfin」一按就複製過去。只在這裡看、播放 Jellyfin 上的影片不用選。",
+            "Choose the Jellyfin library folder (e.g. \\\\server\\videos, or a local folder if Jellyfin runs on this computer) and “Send to Jellyfin” on a recording copies it there. You don't need it just to browse and play Jellyfin videos here."
+        )
+    } else if app.jellyfin().is_some() {
+        tr!(
+            "「傳到 Jellyfin」時選要放進這裡的哪個子資料夾（同一個資料夾裡同名的覆蓋，連同字幕）。傳好之後通知 Jellyfin 掃描，新影片馬上出現；影片資訊、改名、刪除也會同步過去。",
+            "“Send to Jellyfin” lets you pick a subfolder here (replacing one with the same name, with subtitles). Jellyfin is told to scan right after, so new videos show up at once; details, renames and deletions are synced too."
+        )
+    } else {
+        tr!(
+            "「傳到 Jellyfin」時選要放進這裡的哪個子資料夾。填好上面的網址和 API 金鑰才會在傳好之後通知 Jellyfin 掃描（不填就等它定時掃描）。",
+            "“Send to Jellyfin” lets you pick a subfolder here. Fill in the address and API key above to have Jellyfin scan right after sending (otherwise it finds them on its next scheduled scan)."
+        )
+    };
+    ui.add(egui::Label::new(RichText::new(text).font(theme::font(12.0)).color(p.muted)).wrap());
     if !dir.is_empty() {
         library_checks(app, ui);
     }
-    ui.add_space(6.0);
-    jellyfin_rows(app, d, ui, dir.is_empty());
 }
 
 /// 媒體庫：錄完、另存好之後也傳過去，放在哪個子資料夾
@@ -1010,7 +1008,7 @@ fn library_checks(app: &mut UiApp, ui: &mut Ui) {
     ui.add_space(4.0);
     auto_sub_row(app, ui);
     if theme::check(ui, &mut app.s.after_copy, tr!("錄完自動處理好之後也傳過去", "Also send new recordings after processing"))
-        .on_hover_text(tr!("和「錄完自動處理 → 媒體庫」是同一個設定", "Same setting as After recording → Library"))
+        .on_hover_text(tr!("和「錄完自動處理 → Jellyfin」是同一個設定", "Same setting as After recording → Jellyfin"))
         .changed()
     {
         app.save_settings();
@@ -1024,6 +1022,25 @@ fn library_checks(app: &mut UiApp, ui: &mut Ui) {
     {
         app.save_settings();
     }
+    if switch(ui, &mut app.s.library_h264, tr!("傳的時候轉成 H.264", "Convert to H.264 when sending"), true)
+        .on_hover_text(tr!(
+            "HEVC、AV1 的影片有些電視、手機不能直接播，Jellyfin 要在伺服器上即時轉檔，可能卡頓。打開後傳過去之前先轉成 H.264（要花一點時間，本機的原檔不變）",
+            "Some TVs and phones can't play HEVC or AV1 directly, so Jellyfin converts them on the server while playing, which can stutter. When on, such videos are converted to H.264 before sending (takes a while; your original stays as is)"
+        ))
+        .changed()
+    {
+        app.save_settings();
+    }
+    if app.jellyfin().is_some()
+        && switch(ui, &mut app.s.jellyfin_collections, tr!("依資料夾放進合集", "Add to collections by folder"), true)
+            .on_hover_text(tr!(
+                "傳到 family › 2024 的影片放進 Jellyfin 的「family 2024」合集（沒有就新建）；直接放在最上層的不放",
+                "Videos sent to family › 2024 go into the “family 2024” collection in Jellyfin (created if needed); ones at the top level don't"
+            ))
+            .changed()
+    {
+        app.save_settings();
+    }
 }
 
 /// 錄完、剪輯好自動傳的時候放進媒體庫的哪個資料夾（可以好幾層；手動傳的時候每次選）
@@ -1034,8 +1051,8 @@ fn auto_sub_row(app: &mut UiApp, ui: &mut Ui) {
         if Btn::new(tr!("選資料夾…", "Choose…"))
             .small()
             .tooltip(tr!(
-                "錄完自動處理、剪輯和加速版另存好自動傳的時候，放進媒體庫的這個資料夾。手動按「傳到媒體庫」時每次都可以選",
-                "Where automatic sends go (after recording, and after an edited or sped-up copy is saved). When you click “Send to library” you choose each time"
+                "錄完自動處理、剪輯和加速版另存好自動傳的時候，放進 Jellyfin 媒體庫的這個資料夾。手動按「傳到 Jellyfin」時每次都可以選",
+                "Where automatic sends go (after recording, and after an edited or sped-up copy is saved). When you click “Send to Jellyfin” you choose each time"
             ))
             .show(ui)
             .clicked()
@@ -1045,8 +1062,8 @@ fn auto_sub_row(app: &mut UiApp, ui: &mut Ui) {
     });
 }
 
-/// Jellyfin：傳到它的媒體庫資料夾後，通知它馬上掃描；影片資訊、改名、刪除也同步過去
-fn jellyfin_rows(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui, no_folder: bool) {
+/// Jellyfin：網址（可以在區域網路上找）、API 金鑰、測試連線與媒體庫設定檢查、星號同步
+fn jellyfin_rows(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
     let p = theme::pal(ui);
     form_row(ui, "Jellyfin", |ui| {
         let r = ui.add(egui::TextEdit::singleline(&mut app.s.jellyfin_url).desired_width(FORM_CTRL_W).hint_text(tr!("網址，例如 192.168.1.10:8096", "Address, e.g. 192.168.1.10:8096")));
@@ -1177,17 +1194,6 @@ fn jellyfin_rows(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui, no_folder
             });
         }
     }
-    form_row(ui, "", |ui| {
-        if switch(ui, &mut app.s.library_h264, tr!("傳的時候轉成 H.264", "Convert to H.264 when sending"), true)
-            .on_hover_text(tr!(
-                "HEVC、AV1 的影片有些電視、手機不能直接播，Jellyfin 要在 NAS 上即時轉檔，可能卡頓。打開後傳到媒體庫時先轉成 H.264（要花一點時間，本機的原檔不變）",
-                "Some TVs and phones can't play HEVC or AV1 directly, so Jellyfin converts them on the NAS while playing, which can stutter. When on, such videos are converted to H.264 before sending (takes a while; your original stays as is)"
-            ))
-            .changed()
-        {
-            app.save_settings();
-        }
-    });
     // 星號和誰的「我的最愛」同步
     if jf.is_some() {
         let mut users: Vec<(String, String)> = d.jf_users.clone().unwrap_or_default();
@@ -1217,38 +1223,7 @@ fn jellyfin_rows(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui, no_folder
                 p.muted,
             );
         }
-        form_row(ui, "", |ui| {
-            if switch(ui, &mut app.s.jellyfin_collections, tr!("依資料夾放進合集", "Add to collections by folder"), true)
-                .on_hover_text(tr!(
-                    "傳到 family › 2024 的影片放進 Jellyfin 的「family 2024」合集（沒有就新建）；直接放在媒體庫最上層的不放",
-                    "Videos sent to family › 2024 go into the “family 2024” collection in Jellyfin (created if needed); ones at the top of the library don't"
-                ))
-                .changed()
-            {
-                app.save_settings();
-            }
-        });
     }
-    form_hint(
-        ui,
-        if no_folder {
-            tr!(
-                "要先在上面選 Jellyfin 媒體庫的資料夾（例如 \\\\伺服器\\videos），傳過去之後才會通知 Jellyfin 掃描。",
-                "First choose the Jellyfin library folder above (e.g. \\\\server\\videos); Jellyfin is told to scan after files are sent there."
-            )
-        } else if jf.is_some() {
-            tr!(
-                "傳好之後會通知 Jellyfin 掃描，新影片馬上出現；影片資訊、改名、刪除也會同步過去。",
-                "Jellyfin is told to scan right after sending, so new videos show up at once; video details, renames and deletions are synced too."
-            )
-        } else {
-            tr!(
-                "這個資料夾是 Jellyfin 的媒體庫時，填這兩個就會在傳好之後通知它掃描（不填就等 Jellyfin 定時掃描）。",
-                "If this folder is a Jellyfin library, fill these in to have it scan right after sending (otherwise Jellyfin finds them on its next scheduled scan)."
-            )
-        },
-        p.muted,
-    );
 }
 
 /// 影片格式：H.264（預設）、HEVC、AV1；HEVC / AV1 要這台電腦的顯示卡支援
@@ -1359,7 +1334,9 @@ fn short_dir(dir: &str) -> String {
 /// enable = 同時打開「錄完處理好之後傳過去」（從錄完自動處理打開開關時）
 fn pick_copy_dir(app: &mut UiApp, enable: bool) {
     app.spawn(
-        async move { tokio::task::spawn_blocking(|| screenrecorder_core::filepick::pick_folder(tr!("選擇媒體庫資料夾", "Choose the library folder"), None)).await.unwrap_or(Ok(None)) },
+        async move {
+            tokio::task::spawn_blocking(|| screenrecorder_core::filepick::pick_folder(tr!("選擇 Jellyfin 媒體庫的資料夾", "Choose the Jellyfin library folder"), None)).await.unwrap_or(Ok(None))
+        },
         move |app, r| match r {
             Ok(Some(dir)) => {
                 let out = std::path::PathBuf::from(app.s.out_dir(&app.env));
@@ -1738,17 +1715,17 @@ fn after_record_section(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
         }
     });
     // 媒體庫：資料夾和 Jellyfin 在「存檔與分享」，這裡只決定錄完要不要傳過去；還沒選資料夾時打開就選
-    form_row(ui, tr!("媒體庫", "Library"), |ui| {
+    form_row(ui, "Jellyfin", |ui| {
         let has = !app.s.after_copy_to.is_empty();
         let mut on = has && app.s.after_copy;
         let label = if has {
             trf!("處理完傳到「{}」", "Send to “{}” when done", short_dir(&screenrecorder_core::jellyfin::library_dest(&app.s.after_copy_to, &app.s.after_copy_sub)))
         } else {
-            tr!("處理完傳到媒體庫", "Send to the library when done").to_string()
+            tr!("處理完傳到 Jellyfin", "Send to Jellyfin when done").to_string()
         };
         let r = switch(ui, &mut on, label, true).on_hover_text(tr!(
-            "錄影、處理好的版本和字幕都複製一份到媒體庫資料夾，例如 NAS、Jellyfin 的媒體庫或 OneDrive、Google 雲端硬碟的同步資料夾（同名時加上 _2，不覆蓋）",
-            "Copy the recording, processed versions and subtitles to the library folder, such as a NAS, a Jellyfin library or a OneDrive / Google Drive sync folder (a _2 is added instead of overwriting)"
+            "錄影、處理好的版本和字幕都複製一份到 Jellyfin 媒體庫的資料夾，傳好通知 Jellyfin 掃描（同名時加上 _2，不覆蓋）",
+            "Copy the recording, processed versions and subtitles to the Jellyfin library folder and have Jellyfin scan (a _2 is added instead of overwriting)"
         ));
         if r.changed() {
             if on && !has {
@@ -1761,7 +1738,7 @@ fn after_record_section(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
     });
     form_row(ui, "", |ui| {
         let text = if app.s.after_copy_to.is_empty() {
-            tr!("媒體庫資料夾和 Jellyfin 在「存檔與分享」設定", "Set the library folder and Jellyfin in Saving & sharing")
+            tr!("Jellyfin 在「存檔與分享」設定", "Set up Jellyfin in Saving & sharing")
         } else {
             tr!("換資料夾、設定 Jellyfin：「存檔與分享」", "Change the folder or set up Jellyfin in Saving & sharing")
         };
@@ -2686,8 +2663,8 @@ fn network_section(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
     form_hint(
         ui,
         tr!(
-            "只用在下載外部元件（FFmpeg、mpv、語音模型）和檢查、下載新版本；Jellyfin、NAS 在區域網路上，不經過 Proxy",
-            "Only used to download components (FFmpeg, mpv, speech models) and to check for and download updates. Jellyfin and the NAS are on your local network and don't go through the proxy"
+            "只用在下載外部元件（FFmpeg、mpv、語音模型）和檢查、下載新版本；Jellyfin 在區域網路上，不經過 Proxy",
+            "Only used to download components (FFmpeg, mpv, speech models) and to check for and download updates. Jellyfin is on your local network and doesn't go through the proxy"
         ),
         p.muted,
     );

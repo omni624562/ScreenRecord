@@ -474,12 +474,12 @@ fn content(app: &UiApp, t: &Tour) -> (Option<Spot>, String, String, Go) {
             let has = app.recent.as_ref().is_some_and(|r| !r.items.is_empty());
             let body = if t.recorded && has {
                 tr!(
-                    "剛錄好的在這裡。下面一排是：播放、剪輯（剪掉頭尾、加標註）、製作（加速版、GIF、壓縮）、傳到媒體庫、在資料夾中顯示；複製檔案、改名等其他功能在「⋯」，也可以按右鍵。",
+                    "剛錄好的在這裡。下面一排是：播放、剪輯（剪掉頭尾、加標註）、製作（加速版、GIF、壓縮）、傳到 Jellyfin、在資料夾中顯示；複製檔案、改名等其他功能在「⋯」，也可以按右鍵。",
                     "Your new recording is here. The buttons below are Play, Edit (trim, annotate), Make (sped-up video, GIF, compress), Send to library and Show in folder; copy file, rename and more are under ⋯ or a right-click."
                 )
             } else {
                 tr!(
-                    "錄好的影片會出現在這裡。下面一排是：播放、剪輯、製作（加速版、GIF、壓縮）、傳到媒體庫、在資料夾中顯示；其他功能在「⋯」，也可以按右鍵。右邊「檔案庫 → 錄影」看以前錄的。",
+                    "錄好的影片會出現在這裡。下面一排是：播放、剪輯、製作（加速版、GIF、壓縮）、傳到 Jellyfin、在資料夾中顯示；其他功能在「⋯」，也可以按右鍵。右邊「檔案庫 → 錄影」看以前錄的。",
                     "Your recordings appear here. The buttons below are Play, Edit, Make (sped-up video, GIF, compress), Send to library and Show in folder; everything else is under ⋯ or a right-click. “Library → Videos” on the right shows older ones."
                 )
             };
