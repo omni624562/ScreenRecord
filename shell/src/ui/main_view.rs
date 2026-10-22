@@ -67,7 +67,7 @@ pub fn show(app: &mut UiApp, ui: &mut Ui) {
         let gap = 14.0;
         let top = Rect::from_min_max(rest.min, pos2(rest.max.x, rest.max.y - recent_h - gap));
         let bottom = Rect::from_min_max(pos2(rest.min.x, rest.max.y - recent_h), rest.max);
-        // 右欄：視窗窄時跟著變窄，左邊的預覽與設定列才放得下
+        // 右欄：視窗窄時跟著變窄，左邊的預覽才放得下
         let rec_w = (inner.width() * 0.34).clamp(312.0, 360.0);
         let left = Rect::from_min_max(top.min, pos2(top.max.x - rec_w - gap, top.max.y));
         let right = Rect::from_min_max(pos2(top.max.x - rec_w, top.min.y), top.max);
@@ -197,7 +197,7 @@ fn view_rect(app: &UiApp) -> DRect {
     }
 }
 
-/// 左右兩欄底部那一列（設定列、系統狀態）的高度與上方細線的間距：兩邊相同，細線才會對齊
+/// 左右兩欄底部那一列（錄影前提醒、系統狀態；有問題時才有）的高度與上方細線的間距：兩邊相同，細線才會對齊
 const BOTTOM_BAR_H: f32 = 40.0;
 const BOTTOM_LINE_GAP: f32 = 5.0;
 
@@ -216,7 +216,9 @@ fn capture_panel(app: &mut UiApp, ui: &mut Ui) {
         let tabs_w = tabs.iter().map(|(_, t)| text_w(ui, t, 13.5) + 22.0 + 2.0).sum::<f32>() + 8.0;
         let audio = app.s.source_type == SourceType::Audio;
         let live_label = tr!("即時預覽", "Live preview");
-        let right_w = 28.0 + gap + if audio { 0.0 } else { 34.0 + 8.0 + text_w(ui, live_label, 14.0) + gap };
+        // 右邊：重新整理、即時預覽，再來是攝影機、設定組合（有建立組合時）
+        let extras_w = if audio { 0.0 } else { camera_width(app, ui) + gap } + if app.presets.is_empty() { 0.0 } else { super::presets::width(app, ui) + gap };
+        let right_w = 28.0 + gap + if audio { 0.0 } else { 34.0 + 8.0 + text_w(ui, live_label, 14.0) + gap } + extras_w;
         let one_row = tabs_w + gap + detail_width(app, ui) + gap + right_w <= ui.available_width();
         ui.horizontal(|ui| {
             let mut st = app.s.source_type;
@@ -256,6 +258,13 @@ fn capture_panel(app: &mut UiApp, ui: &mut Ui) {
                     app.preview.retry_live();
                     app.save_settings();
                 }
+                if !audio {
+                    ui.add_space(8.0);
+                    camera_button(app, ui);
+                }
+                if !app.presets.is_empty() {
+                    super::presets::button(app, ui);
+                }
             });
         });
         if !one_row {
@@ -271,14 +280,18 @@ fn capture_panel(app: &mut UiApp, ui: &mut Ui) {
             precise_row(app, ui, locked);
         }
         ui.add_space(10.0);
-        let bar_h = BOTTOM_BAR_H;
-        let desk_area = Rect::from_min_max(ui.cursor().min, pos2(ui.max_rect().max.x, ui.max_rect().max.y - bar_h - 10.0));
+        // 下方：錄影前的提醒（有問題時才有這一列，預覽可以大一點）
+        let warnings = rec_warnings(app, ui.ctx());
+        let bar_h = if warnings.is_empty() { 0.0 } else { BOTTOM_BAR_H + 10.0 };
+        let desk_area = Rect::from_min_max(ui.cursor().min, pos2(ui.max_rect().max.x, ui.max_rect().max.y - bar_h));
         desk(app, ui, desk_area);
-        let bar = Rect::from_min_max(pos2(desk_area.min.x, ui.max_rect().max.y - bar_h), ui.max_rect().max);
-        ui.scope_builder(UiBuilder::new().max_rect(bar).layout(Layout::left_to_right(Align::Center)), |ui| {
-            ui.painter().hline(bar.x_range(), bar.min.y - BOTTOM_LINE_GAP, Stroke::new(1.0, p.border));
-            settings_bar(app, ui);
-        });
+        if !warnings.is_empty() {
+            let bar = Rect::from_min_max(pos2(desk_area.min.x, ui.max_rect().max.y - BOTTOM_BAR_H), ui.max_rect().max);
+            ui.scope_builder(UiBuilder::new().max_rect(bar).layout(Layout::left_to_right(Align::Center)), |ui| {
+                ui.painter().hline(bar.x_range(), bar.min.y - BOTTOM_LINE_GAP, Stroke::new(1.0, p.border));
+                warning_bar(app, ui, warnings);
+            });
+        }
     });
 }
 
@@ -897,113 +910,140 @@ fn dk_of(app: &UiApp, view: DRect) -> DRect {
 
 // ───────────── 錄影設定摘要（下方一列；點一下開啟「設定」視窗的那一頁） ─────────────
 
-fn settings_bar(app: &mut UiApp, ui: &mut Ui) {
-    let p = theme::pal(ui);
-    let locked = app.locked();
-    ui.spacing_mut().item_spacing.x = 2.0;
-    // 右邊：「設定」按鈕，前面是輸出大小
-    let set_btn =
-        Btn::new(tr!("設定", "Settings")).icon(Icon::Settings).small().tooltip(tr!("錄影、聲音、儲存位置、快速鍵與其他設定", "Recording, audio, save location, shortcuts and other settings"));
-    // 設定組合：有建立組合時才放在這裡（沒有時在標題列「⋯」的更多工具）
-    let has_presets = !app.presets.is_empty();
-    let set_w = set_btn.width(ui) + if has_presets { super::presets::width(app, ui) + 4.0 } else { 0.0 };
-    let out = app.s.source_rect(&app.env).map(|r| output_size(r.width, r.height, app.s.scale as f64));
-    let big = out.is_some_and(|(w, h)| (w as f64) * (h as f64) > 3840.0 * 2160.0 * 1.05);
-    let out_text = out.map(|(w, h)| trf!("輸出 {w}×{h}{}", "Output {w}×{h}{}", if big { tr!("（很大，建議 50%）", " (very large; 50% recommended)") } else { "" }));
-    let out_w = out_text.as_ref().map(|t| ui.painter().layout_no_wrap(t.clone(), theme::font(12.5), p.muted).size().x + 16.0).unwrap_or(0.0);
-    // 左邊：錄影、聲音、儲存位置的摘要，依剩下的寬度取捨
-    let room = ui.available_width() - set_w - 8.0;
-    let show_out = room - out_w > 360.0;
-    let mut room = if show_out { room - out_w } else { room };
-    let mut rec = settings_dialog::record_summary(app);
-    // 攝影機有自己的按鈕
-    rec.retain(|t| t != tr!("攝影機", "Camera"));
-    let (audio, audio_icon) = settings_dialog::audio_summary(app);
-    let item = |text: &str, icon: Icon| Btn::new(text).icon(icon).ghost().small();
-    let measure = |ui: &Ui, text: &str, icon: Icon| item(text, icon).width(ui) + 2.0;
-    let mut open: Option<Page> = None;
-    // 錄影：太窄時只寫每秒張數
-    let rec_full = rec.join(tr!("・", " · "));
-    let rec_text = if measure(ui, &rec_full, Icon::Video) + 200.0 <= room { rec_full.clone() } else { rec[0].clone() };
-    room -= measure(ui, &rec_text, Icon::Video);
-    if item(&rec_text, Icon::Video).enabled(!locked).tooltip(trf!("錄影：{rec_full}（點一下修改）", "Recording: {rec_full} (click to change)")).show(ui).clicked() {
-        open = Some(Page::Record);
+/// 錄影前的提醒：會讓錄影少了東西、或錄不成的設定（正常時沒有）。每一項：(說明, 滑鼠移上去的提示, 點了打開的設定分頁)
+fn rec_warnings(app: &UiApp, ctx: &egui::Context) -> Vec<(String, String, Page)> {
+    let mut out = vec![];
+    if !app.env_ready || app.status.recorder.state != RecorderState::Idle {
+        return out;
     }
-    // 聲音：太窄時只剩圖示
-    // 聲音、攝影機太窄時寫短一點，但不會只剩圖示
-    let audio_text = if measure(ui, &audio, audio_icon) + 120.0 <= room { audio.clone() } else { tr!("聲音", "Audio").to_string() };
-    room -= measure(ui, &audio_text, audio_icon);
-    let audio_resp = item(&audio_text, audio_icon).enabled(!locked).tooltip(trf!("錄製聲音：{audio}（點一下修改）", "Audio: {audio} (click to change)")).show(ui);
-    if audio_resp.clicked() {
-        open = Some(Page::Audio);
+    let a = &app.env.audio;
+    if app.s.source_type == SourceType::Audio && !app.s.audio_system && !app.s.audio_mic {
+        out.push((
+            tr!("只錄聲音，但系統聲音和麥克風都關著", "Audio only, but system audio and the mic are both off").into(),
+            tr!("點一下到「設定 → 聲音」打開要錄的聲音", "Click to turn on a source in Settings → Audio").into(),
+            Page::Audio,
+        ));
     }
-    // 測試音量：聲音設定旁邊；測試中換成音量表與「停止」
-    let test = level_test(app, ui, locked);
-    room -= test.width();
-    tour::mark(ui, Spot::Audio, audio_resp.rect.union(test).expand2(vec2(4.0, 2.0)));
-    // 攝影機：直接選要用哪一台（不用進設定）；太窄時只剩圖示
-    let cam = camera_label(&app.s.camera);
-    let cam_text = if measure(ui, &cam, Icon::Webcam) + 80.0 <= room { cam.clone() } else { tr!("攝影機", "Camera").to_string() };
-    room -= measure(ui, &cam_text, Icon::Webcam);
-    let cam_resp =
-        item(&cam_text, Icon::Webcam).selected(!app.s.camera.is_empty()).enabled(!locked).tooltip(trf!("攝影機子母畫面：{cam}（點一下修改）", "Camera overlay: {cam} (click to change)")).show(ui);
-    if cam_resp.clicked() {
-        app.load_cameras(false);
+    if app.s.audio_mic && a.error.is_none() && a.captures.is_empty() {
+        out.push((
+            tr!("找不到麥克風：錄影不會有你的聲音", "No microphone found: your voice won't be recorded").into(),
+            tr!("接上麥克風後按預覽右上的重新整理；不錄麥克風的話，到「設定 → 聲音」關掉", "Plug in a microphone and click Refresh above the preview, or turn the mic off in Settings → Audio").into(),
+            Page::Audio,
+        ));
     }
-    egui::Popup::menu(&cam_resp).show(|ui| {
-        if camera_menu(app, ui) {
-            open = Some(Page::Record);
-        }
-    });
-    // 儲存位置：縮短路徑（保留結尾）
+    if let Some(e) = &a.error {
+        out.push((trf!("聲音裝置有問題：{e}", "Audio device problem: {e}"), tr!("點一下到「設定 → 聲音」檢查", "Click to check Settings → Audio").into(), Page::Audio));
+    }
     let dir = app.s.out_dir(&app.env);
-    let fits = |t: &str| measure(ui, t, Icon::Folder) <= room;
-    let short: String = if fits(&dir) {
-        dir.clone()
-    } else {
-        let chars: Vec<char> = dir.chars().collect();
-        (1..chars.len()).map(|i| format!("…{}", chars[i..].iter().collect::<String>())).find(|t| fits(t)).unwrap_or_default()
-    };
-    // 點一下：開啟資料夾或換一個資料夾（不用進設定打字）
-    let dir_resp = item(&short, Icon::Folder).enabled(!locked).tooltip(trf!("錄影的儲存位置：{dir}（點一下修改）", "Recordings are saved to: {dir} (click to change)")).show(ui);
-    egui::Popup::menu(&dir_resp).show(|ui| {
-        ui.set_min_width(200.0);
-        if ui.button(tr!("在檔案總管開啟", "Open in File Explorer")).clicked() {
-            if let Err(e) = actions::open(actions::OpenAction::Folder, &dir) {
-                app.toast(e.message().to_string(), true);
-            }
+    match dir_issue(ctx, &dir) {
+        Some(DirIssue::NotWritable) => out.push((
+            tr!("儲存位置不能寫入，錄影會存不起來", "Can't write to the save folder, so recordings can't be saved").into(),
+            trf!("{dir}\n點一下到「設定 → 存檔與分享」換一個資料夾", "{dir}\nClick to choose another folder in Settings → Save & share"),
+            Page::Save,
+        )),
+        Some(DirIssue::LowSpace(free)) => out.push((
+            trf!("儲存位置的磁碟只剩 {}", "Only {} left on the save drive", format_bytes(free)),
+            trf!(
+                "{dir}\n錄影一分鐘約需數十 MB；空間用完會自動停止錄影。點一下到「設定 → 存檔與分享」換一個資料夾",
+                "{dir}\nA minute of video takes tens of MB, and recording stops when the disk is full. Click to choose another folder in Settings → Save & share"
+            ),
+            Page::Save,
+        )),
+        None => {}
+    }
+    out
+}
+
+/// 錄影前提醒那一列：每一項是一個可以點的橘色標籤，點了打開對應的設定
+fn warning_bar(app: &mut UiApp, ui: &mut Ui, warnings: Vec<(String, String, Page)>) {
+    ui.spacing_mut().item_spacing.x = 8.0;
+    let mut open = None;
+    for (text, tip, page) in warnings {
+        if theme::chip(ui, &format!("⚠ {text}"), Tone::Warn, true).on_hover_text(tip).clicked() {
+            open = Some(page);
         }
-        if ui.button(tr!("選擇其他資料夾…", "Choose another folder…")).clicked() {
-            settings_dialog::choose_output_dir(app);
-        }
-        // 截圖和錄影分開存
-        let shots = app.s.shots_dir(&app.env);
-        if ui.button(tr!("開啟截圖資料夾", "Open screenshot folder")).on_hover_text(&shots).clicked() {
-            let _ = std::fs::create_dir_all(&shots);
-            if let Err(e) = actions::open(actions::OpenAction::Folder, &shots) {
-                app.toast(e.message().to_string(), true);
-            }
-        }
-        if ui.button(tr!("儲存位置設定…", "Save location settings…")).clicked() {
-            open = Some(Page::Save);
-        }
-    });
-    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-        let set = set_btn.show(ui);
-        tour::mark(ui, Spot::Settings, set.rect);
-        if set.clicked() {
-            open = Some(Page::Record);
-        }
-        if has_presets {
-            super::presets::button(app, ui);
-        }
-        if let Some(t) = out_text.filter(|_| show_out) {
-            ui.add_space(8.0);
-            ui.label(RichText::new(t).font(theme::font(12.5)).color(if big { p.warn } else { p.muted }));
-        }
-    });
+    }
     if let Some(page) = open {
         settings_dialog::open(app, page);
+    }
+}
+
+/// 儲存位置的問題
+#[derive(Clone, Copy, PartialEq)]
+enum DirIssue {
+    NotWritable,
+    /// 剩下的空間（位元組）
+    LowSpace(u64),
+}
+
+/// 剩下不到這麼多空間時提醒
+const LOW_SPACE: u64 = 2 * 1024 * 1024 * 1024;
+
+/// 儲存位置的檢查結果：在背景檢查（網路磁碟可能很慢，不能卡住畫面），每 15 秒重新檢查一次，換了資料夾時馬上檢查。
+/// (資料夾, 檢查的時間, 結果, 檢查中)
+#[allow(clippy::type_complexity)]
+static DIR_CHECK: std::sync::Mutex<Option<(String, Instant, Option<DirIssue>, bool)>> = std::sync::Mutex::new(None);
+
+fn dir_issue(ctx: &egui::Context, dir: &str) -> Option<DirIssue> {
+    let mut g = DIR_CHECK.lock().unwrap_or_else(|e| e.into_inner());
+    let same = g.as_ref().is_some_and(|(d, ..)| d == dir);
+    let stale = !same || g.as_ref().is_some_and(|(_, at, _, busy)| !busy && at.elapsed() >= std::time::Duration::from_secs(15));
+    if stale {
+        let prev = g.as_ref().filter(|_| same).and_then(|(_, _, r, _)| *r);
+        *g = Some((dir.to_string(), Instant::now(), prev, true));
+        let (dir, ctx) = (dir.to_string(), ctx.clone());
+        let _ = std::thread::Builder::new().name("dir-check".into()).spawn(move || {
+            let r = check_dir(&dir);
+            let mut g = DIR_CHECK.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(c) = g.as_mut().filter(|(d, ..)| *d == dir) {
+                let changed = c.2 != r;
+                *c = (dir, Instant::now(), r, false);
+                if changed {
+                    ctx.request_repaint();
+                }
+            }
+        });
+    }
+    g.as_ref().and_then(|(_, _, r, _)| *r)
+}
+
+/// 試著在資料夾裡寫一個暫存檔（資料夾還沒建立時試最近一層已經存在的上層），再看剩下的空間
+fn check_dir(dir: &str) -> Option<DirIssue> {
+    let mut at = std::path::Path::new(dir);
+    while !at.exists() {
+        at = at.parent()?;
+    }
+    let probe = at.join(format!(".screenrecorder-write-test-{}", std::process::id()));
+    if std::fs::write(&probe, b"").is_err() {
+        return Some(DirIssue::NotWritable);
+    }
+    let _ = std::fs::remove_file(&probe);
+    screenrecorder_core::recorder::disk_free_sync(&at.to_string_lossy()).filter(|f| *f < LOW_SPACE).map(DirIssue::LowSpace)
+}
+
+/// 攝影機按鈕的寬度（預覽上方那一列先扣掉）
+fn camera_width(app: &UiApp, ui: &Ui) -> f32 {
+    Btn::new(camera_label(&app.s.camera)).icon(Icon::Webcam).ghost().small().width(ui)
+}
+
+/// 攝影機子母畫面：直接選要用哪一台（不用進設定）
+fn camera_button(app: &mut UiApp, ui: &mut Ui) {
+    let cam = camera_label(&app.s.camera);
+    let resp = Btn::new(&cam)
+        .icon(Icon::Webcam)
+        .ghost()
+        .small()
+        .selected(!app.s.camera.is_empty())
+        .enabled(!app.locked())
+        .tooltip(trf!("攝影機子母畫面：{cam}（點一下修改）", "Camera overlay: {cam} (click to change)"))
+        .show(ui);
+    if resp.clicked() {
+        app.load_cameras(false);
+    }
+    let mut open = false;
+    egui::Popup::menu(&resp).show(|ui| open = camera_menu(app, ui));
+    if open {
+        settings_dialog::open(app, Page::Record);
     }
 }
 
@@ -1281,75 +1321,45 @@ fn rec_panel(app: &mut UiApp, ui: &mut Ui) {
     });
 }
 
-/// 「更多工具」選單（標題列的「⋯」）：回溯錄影、排程錄影、講稿小視窗、瀏覽 Jellyfin、設定組合
-/// （有組合時設定組合也在下方設定列）。resp：按了會打開選單的按鈕
-pub(super) fn more_tools(app: &mut UiApp, resp: &egui::Response) {
+/// 總選單「工具」：回溯錄影、排程錄影、講稿小視窗、設定組合（錄影中只有講稿小視窗）
+pub(super) fn tools_menu(app: &mut UiApp, ui: &mut Ui) {
+    ui.set_min_width(220.0);
     let active = app.status.recorder.state != RecorderState::Idle;
-    let notes_open = app.notes.is_some();
-    let mut schedule = false;
-    let mut notes = false;
-    let mut jellyfin = false;
-    egui::Popup::menu(resp).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
-        ui.set_min_width(220.0);
-        if !active {
-            let can = app.env.ffmpeg.found && app.env.ffmpeg.encoder.is_some() && app.manual_export().is_none();
-            // 不能用時寫出原因（還沒下載錄影元件、轉檔中）
-            let why = if !(app.env.ffmpeg.found && app.env.ffmpeg.encoder.is_some()) {
-                tr!("請先下載錄影元件", "Download the recording component first")
-            } else {
-                tr!("轉檔中，完成後再開始", "Wait for the conversion to finish")
-            };
-            ui.add_enabled_ui(can, |ui| {
-                ui.menu_button(tr!("回溯錄影（錄最近幾分鐘）", "Replay buffer (last few minutes)"), |ui| super::replay::menu_body(app, ui));
-            })
-            .response
-            .on_disabled_hover_text(why);
-            if ui
-                .button(tr!("排程錄影…", "Schedule recording…"))
-                .on_hover_text(tr!("指定時間自動開始錄影，也可以設定錄幾分鐘後自動停止", "Start recording automatically at a set time, optionally stopping after a set length"))
-                .clicked()
-            {
-                schedule = true;
-                ui.close();
-            }
-        }
+    if !active {
+        let can = app.env.ffmpeg.found && app.env.ffmpeg.encoder.is_some() && app.manual_export().is_none();
+        // 不能用時寫出原因（還沒下載錄影元件、轉檔中）
+        let why = if !(app.env.ffmpeg.found && app.env.ffmpeg.encoder.is_some()) {
+            tr!("請先下載錄影元件", "Download the recording component first")
+        } else {
+            tr!("轉檔中，完成後再開始", "Wait for the conversion to finish")
+        };
+        ui.add_enabled_ui(can, |ui| {
+            ui.menu_button(tr!("回溯錄影（錄最近幾分鐘）", "Replay buffer (last few minutes)"), |ui| super::replay::menu_body(app, ui));
+        })
+        .response
+        .on_disabled_hover_text(why);
         if ui
-            .button(if notes_open { tr!("關閉講稿小視窗", "Close script window") } else { tr!("講稿小視窗", "Script window") })
-            .on_hover_text(tr!(
-                "浮在最上層、不會被錄進影片；可以用大字自動往上捲（提詞），開始錄影時自動開始",
-                "Stays on top and isn't recorded. It can show your script in large text that scrolls up automatically (teleprompter), starting when you record."
-            ))
+            .button(tr!("排程錄影…", "Schedule recording…"))
+            .on_hover_text(tr!("指定時間自動開始錄影，也可以設定錄幾分鐘後自動停止", "Start recording automatically at a set time, optionally stopping after a set length"))
             .clicked()
         {
-            notes = true;
-            ui.close();
+            super::schedule::open(app);
         }
-        if app.jellyfin().is_some()
-            && ui
-                .button(tr!("瀏覽 Jellyfin…", "Browse Jellyfin…"))
-                .on_hover_text(tr!(
-                    "打開檔案庫的「Jellyfin」分頁：看 Jellyfin 上的影片（家人傳上去的也看得到），點了就在這裡播放",
-                    "Opens the Jellyfin tab of the library: watch videos on Jellyfin (including ones family uploaded) right here"
-                ))
-                .clicked()
-        {
-            jellyfin = true;
-            ui.close();
-        }
-        if !active && app.presets.is_empty() {
-            ui.add_enabled_ui(!app.locked(), |ui| {
-                ui.menu_button(tr!("設定組合", "Presets"), |ui| super::presets::menu_body(app, ui));
-            });
-        }
-    });
-    if schedule {
-        super::schedule::open(app);
     }
-    if notes {
+    if ui
+        .button(if app.notes.is_some() { tr!("關閉講稿小視窗", "Close script window") } else { tr!("講稿小視窗", "Script window") })
+        .on_hover_text(tr!(
+            "浮在最上層、不會被錄進影片；可以用大字自動往上捲（提詞），開始錄影時自動開始",
+            "Stays on top and isn't recorded. It can show your script in large text that scrolls up automatically (teleprompter), starting when you record."
+        ))
+        .clicked()
+    {
         super::notes::toggle(app);
     }
-    if jellyfin {
-        super::library_dialog::open_jellyfin(app);
+    if !active {
+        ui.add_enabled_ui(!app.locked(), |ui| {
+            ui.menu_button(tr!("設定組合", "Presets"), |ui| super::presets::menu_body(app, ui));
+        });
     }
 }
 
@@ -1413,7 +1423,7 @@ fn rec_body(app: &mut UiApp, ui: &mut Ui, r: &screenrecorder_core::types::Record
     // 高度不夠時省略比較不重要的列：待命時的影片長度、檔案大小（都還是 0）；錄影中的影片長度（和上面的計時差不多）、錄影方式；
     // 很擠的時候輸出、錄影方式也省略（下方摘要與滑鼠提示有）。只錄聲音時沒有「錄影方式」
     let audio_only = app.s.source_type == SourceType::Audio;
-    // 錄影中才列出數據（待命時長度、大小都是 0；聲音、輸出在預覽下方的設定列）
+    // 錄影中才列出數據（待命時長度、大小都是 0）
     let show = |i: usize| match i {
         _ if !active => false,
         0 => tight == 0 || replay.is_some(),
@@ -2329,10 +2339,9 @@ fn job_card(app: &mut UiApp, ui: &mut Ui) {
     });
 }
 
-/// 系統狀態：新版本、FFmpeg、擷取方式、編碼器（正常的合併成一個「已就緒」）
-/// 預覽下方設定列的「測試音量」：量 20 秒，測試中顯示每個來源的音量條與「停止（剩幾秒）」；回傳用掉的範圍。
+/// 「設定 → 聲音」的「測試音量」：量 20 秒，測試中顯示每個來源的音量條與「停止（剩幾秒）」；回傳用掉的範圍。
 /// 錄影中、不錄聲音時不顯示
-fn level_test(app: &mut UiApp, ui: &mut Ui, locked: bool) -> Rect {
+pub(super) fn level_test(app: &mut UiApp, ui: &mut Ui, locked: bool) -> Rect {
     let p = theme::pal(ui);
     let start = ui.cursor().min;
     if locked || !(app.s.audio_system || app.s.audio_mic) {
@@ -2341,7 +2350,7 @@ fn level_test(app: &mut UiApp, ui: &mut Ui, locked: bool) -> Rect {
     let r = ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 6.0;
         let Some(l) = app.meter.as_ref().map(|m| m.levels()) else {
-            if Btn::new(tr!("測試音量", "Test levels"))
+            if Btn::new(tr!("開始（20 秒）", "Start (20 s)"))
                 .ghost()
                 .small()
                 .tooltip(tr!(

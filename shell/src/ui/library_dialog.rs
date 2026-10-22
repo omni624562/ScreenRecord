@@ -349,7 +349,7 @@ fn export_label(x: &ExportInfo) -> String {
     }
 }
 
-/// 打開檔案庫，停在「Jellyfin」分頁（「更多工具 → 瀏覽 Jellyfin…」）；切回錄影、截圖時是錄影
+/// 打開檔案庫，停在「Jellyfin」分頁（☰ →「檔案庫 → Jellyfin」）；切回錄影、截圖時是錄影
 pub fn open_jellyfin(app: &mut UiApp) {
     let mut d = LibraryDialog::new(Kind::Video);
     d.jellyfin = true;

@@ -42,22 +42,27 @@ enum Try {
 fn items(_app: &UiApp) -> Vec<(String, String, Try)> {
     vec![
         (
-            tr!("Jellyfin 設定變簡單", "Simpler Jellyfin setup").into(),
+            tr!("左上角的 ☰ 總選單", "The ☰ main menu").into(),
             tr!(
-                "設定裡合併成一區「Jellyfin」：填網址和 API 金鑰就能看、播放、改影片資訊；要從這台電腦傳錄影上去才另外選資料夾。",
-                "Settings now has a single “Jellyfin” section: the address and API key are enough to browse, play and edit; choose a folder only if you want to send recordings from this PC."
-            )
-            .into(),
-            Try::Settings(Page::Save),
-        ),
-        (
-            tr!("主畫面更清爽", "A cleaner home screen").into(),
-            tr!(
-                "右邊只留開始錄影和截圖；「更多工具」在標題列的「⋯」，「測試音量」在預覽下方聲音設定旁邊。",
-                "The right side now has just record and screenshot; “More tools” is under “⋯” on the title bar, and “Test levels” sits next to the audio setting below the preview."
+                "檔案庫、工具（回溯錄影、排程錄影、講稿小視窗、設定組合）、設定、說明（更新說明、檢查更新、關於）都集中在標題列左上角的 ☰；設定也可以按 Ctrl+,。標題列右邊只留小視窗和視窗按鈕。",
+                "Library, Tools (replay buffer, scheduled recording, script window, presets), Settings and Help (release notes, updates, about) are now all under the ☰ at the top left of the title bar; Settings also opens with Ctrl+,. The right side keeps just the small-window and window buttons."
             )
             .into(),
             Try::None,
+        ),
+        (
+            tr!("預覽更大，有問題才提醒", "A bigger preview, with notes only when needed").into(),
+            tr!(
+                "預覽下方的設定列拿掉了（攝影機移到預覽上方）。錄影前找不到麥克風、儲存位置不能寫入或磁碟快滿時，預覽下方才會出現橘色提醒，點一下就到對應的設定。",
+                "The settings row below the preview is gone (the camera moved above the preview). An orange note appears below the preview only when something's wrong before recording, such as no microphone, a save folder that can't be written to or a nearly full disk; click it to open the right setting."
+            )
+            .into(),
+            Try::None,
+        ),
+        (
+            tr!("測試音量在「設定 → 聲音」", "Test levels is in Settings → Audio").into(),
+            tr!("和麥克風、系統聲音的設定放在一起：按「開始（20 秒）」講幾句話，看麥克風的條有沒有跳動。", "It now sits with the mic and system audio settings: click “Start (20 s)”, say a few words and watch the microphone bar.").into(),
+            Try::Settings(Page::Audio),
         ),
     ]
 }

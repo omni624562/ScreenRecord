@@ -1,6 +1,6 @@
 //! 講稿小視窗（提詞）：浮在最上層，設成不會被錄進影片或截圖（Windows 10 2004 以後）。
 //! 「編輯」寫講稿；「提詞」大字往上捲，讀的位置固定在上方三分之一（有一條提示線）。
-//! 開始錄影時自動開始捲、暫停或停止時停下（可在「⋯」關掉）。
+//! 開始錄影時自動開始捲、暫停或停止時停下（可在講稿小視窗的「⋯」關掉）。
 //! 講稿存在資料夾的 notes.txt；字級、速度、不透明度、位置存在設定。
 //! 跟著操作視窗：操作視窗收到系統匣時一起收起來，再打開時回來。
 
@@ -128,7 +128,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         let (mx, my, mw) = m.map(|m| (m.x as f32 / ppp, m.y as f32 / ppp, m.width as f32 / ppp)).unwrap_or((0.0, 0.0, 1280.0));
         let (w, h) = (460.0, 280.0);
         let mut r = Rect::from_min_size(pos2(mx + (mw - w) / 2.0, my + 40.0), vec2(w, h));
-        // 不要蓋住操作視窗右上角的按鈕（標題列的更多工具、檔案庫、設定）：會蓋到時往左移
+        // 不要蓋住操作視窗右上角的按鈕（小視窗、縮到最小、關閉）：會蓋到時往左移
         if let Some(main) = ctx.input(|i| i.viewport().outer_rect) {
             let buttons = Rect::from_min_max(pos2(main.max.x - 420.0, main.min.y), pos2(main.max.x, main.min.y + 220.0));
             if r.intersects(buttons) {
