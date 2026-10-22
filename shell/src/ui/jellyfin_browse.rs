@@ -66,6 +66,8 @@ pub struct JfBrowse {
     years: Vec<(u32, usize)>,
     /// 「人物」「標籤」「年份」選單裡的搜尋框
     facet_search: [String; 3],
+    /// 位置那一列右邊（符合幾支、排序、縮圖大小）上次量到的寬度：左邊的條件只用剩下的地方
+    crumb_right_w: f32,
     facets_loaded: bool,
     /// 讀不到標籤、年份時的原因（選單變灰時滑鼠移上去看得到）
     facets_error: Option<String>,
@@ -712,7 +714,9 @@ fn facet_menu(ui: &mut egui::Ui, kind: u8, empty: &str, rows: Vec<(String, usize
     let p = theme::pal(ui);
     let label = [tr!("人物", "People"), tr!("標籤", "Tags"), tr!("年份", "Year")][kind as usize];
     let n = chosen.iter().filter(|f| kind_of(f) == kind).count();
-    let b = Btn::new(label).menu().small().selected(n > 0).badge(n).enabled(!rows.is_empty()).tooltip(if rows.is_empty() { empty } else { "" }).show(ui);
+    // 寬度固定（先留好藍色數字的位置）：勾了只是數字出現，按鈕不變寬、整排不會移動
+    let w = Btn::new(label).menu().small().badge(9).width(ui);
+    let b = Btn::new(label).menu().small().selected(n > 0).badge(n).min_width(w).enabled(!rows.is_empty()).tooltip(if rows.is_empty() { empty } else { "" }).show(ui);
     egui::Popup::menu(&b).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
         // 寬度固定：清單在選單裡，靠右的東西不能讓它每一格越撐越寬
         const W: f32 = 300.0;
@@ -761,37 +765,60 @@ fn facet_menu(ui: &mut egui::Ui, kind: u8, empty: &str, rows: Vec<(String, usize
     });
 }
 
-/// 條件列：每個條件一顆（按一下拿掉），同一類之間寫「或」、不同類之間寫「且」，最後是「全部清除」
-fn facet_chips(ui: &mut egui::Ui, chosen: &[JfFacet], change: &mut FacetChange) {
+/// 條件（放在「媒體庫 ›」後面同一列）：每個條件一顆（按一下拿掉），同一類之間寫「或」、不同類之間寫「且」，最後是「全部清除」。
+/// room 放不下時先放得下的，後面一顆「+N 個」打開清單看其他的（一樣可以拿掉）
+fn facet_chips(ui: &mut egui::Ui, chosen: &[JfFacet], room: f32, change: &mut FacetChange) {
     let p = theme::pal(ui);
-    ui.horizontal_wrapped(|ui| {
-        ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
-        let mut first = true;
-        for kind in 0..3u8 {
-            let list: Vec<&JfFacet> = chosen.iter().filter(|f| kind_of(f) == kind).collect();
-            if list.is_empty() {
-                continue;
-            }
-            if !first {
-                ui.label(RichText::new(tr!("且", "and")).font(theme::font_bold(12.5)).color(p.text));
-            }
-            first = false;
-            for (i, f) in list.into_iter().enumerate() {
-                if i > 0 {
-                    ui.label(RichText::new(tr!("或", "or")).font(theme::font(12.0)).color(p.muted));
-                }
-                let kind_name = [tr!("人物", "Person"), tr!("標籤", "Tag"), tr!("年份", "Year")][kind as usize];
-                let tip = trf!("{kind_name}：{}，按一下拿掉這個條件", "{kind_name}: {}. Click to remove this condition", facet_name(f));
-                if remove_chip(ui, &facet_name(f)).on_hover_text(tip).clicked() {
-                    *change = FacetChange::Toggle(f.clone());
-                }
-            }
+    ui.spacing_mut().item_spacing.x = 6.0;
+    let gap = 6.0;
+    let ordered: Vec<&JfFacet> = (0..3u8).flat_map(|k| chosen.iter().filter(move |f| kind_of(f) == k)).collect();
+    let text_w = |t: &str, f: egui::FontId| ui.painter().layout_no_wrap(t.to_string(), f, p.text).size().x;
+    let clear = Btn::new(tr!("全部清除", "Clear all")).small().ghost().tooltip(tr!("拿掉所有條件，回到媒體庫", "Remove all conditions and go back to the libraries"));
+    let clear_w = clear.width(ui) + gap;
+    let more_w = Btn::new(trf!("+{} 個", "+{} more", 99)).small().ghost().width(ui) + gap;
+    let sep = |a: &JfFacet, b: &JfFacet| if kind_of(a) == kind_of(b) { tr!("或", "or") } else { tr!("且", "and") };
+    // 放得下幾個（至少一個）
+    let (mut used, mut shown) = (0.0, 0);
+    for (i, f) in ordered.iter().enumerate() {
+        let sep_w = if i == 0 { 0.0 } else { text_w(sep(ordered[i - 1], f), theme::font_bold(12.5)) + gap };
+        let w = sep_w + text_w(&facet_name(f), theme::font(12.5)) + 34.0 + gap;
+        let reserve = clear_w + if i + 1 < ordered.len() { more_w } else { 0.0 };
+        if shown > 0 && used + w + reserve > room {
+            break;
         }
-        ui.add_space(6.0);
-        if Btn::new(tr!("全部清除", "Clear all")).small().ghost().tooltip(tr!("拿掉所有條件，回到媒體庫", "Remove all conditions and go back to the libraries")).show(ui).clicked() {
-            *change = FacetChange::ClearAll;
+        used += w;
+        shown += 1;
+    }
+    let kind_name = |f: &JfFacet| [tr!("人物", "Person"), tr!("標籤", "Tag"), tr!("年份", "Year")][kind_of(f) as usize];
+    for (i, f) in ordered.iter().take(shown).enumerate() {
+        if i > 0 {
+            let s = sep(ordered[i - 1], f);
+            let and = kind_of(ordered[i - 1]) != kind_of(f);
+            ui.label(RichText::new(s).font(if and { theme::font_bold(12.5) } else { theme::font(12.0) }).color(if and { p.text } else { p.muted }));
         }
-    });
+        let tip = trf!("{}：{}，按一下拿掉這個條件", "{}: {}. Click to remove this condition", kind_name(f), facet_name(f));
+        if remove_chip(ui, &facet_name(f)).on_hover_text(tip).clicked() {
+            *change = FacetChange::Toggle((*f).clone());
+        }
+    }
+    let hidden = &ordered[shown..];
+    if !hidden.is_empty() {
+        let b = Btn::new(trf!("+{} 個", "+{} more", hidden.len())).small().ghost().tooltip(tr!("看其他的條件", "See the other conditions")).show(ui);
+        egui::Popup::menu(&b).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
+            ui.spacing_mut().item_spacing.y = 6.0;
+            for f in hidden {
+                ui.horizontal(|ui| {
+                    ui.label(theme::muted(ui, kind_name(f)));
+                    if remove_chip(ui, &facet_name(f)).on_hover_text(tr!("按一下拿掉這個條件", "Click to remove this condition")).clicked() {
+                        *change = FacetChange::Toggle((*f).clone());
+                    }
+                });
+            }
+        });
+    }
+    if clear.show(ui).clicked() {
+        *change = FacetChange::ClearAll;
+    }
 }
 
 /// 藍色小標籤，後面有 ×：整顆按一下拿掉
@@ -937,13 +964,6 @@ pub fn panel(ui: &mut egui::Ui, d: &mut JfBrowse) -> Panel {
             apply_facet(d, change, &mut out);
         });
     });
-    // 勾了條件時：一列列出所有條件（每個可以按 × 拿掉；同一類之間「或」、不同類之間「且」）
-    if !d.facet.is_empty() {
-        ui.add_space(2.0);
-        let mut change = FacetChange::None;
-        facet_chips(ui, &d.facet, &mut change);
-        apply_facet(d, change, &mut out);
-    }
     if let Some(t) = d.search_at {
         if t.elapsed() >= SEARCH_WAIT {
             d.search_at = None;
@@ -957,7 +977,9 @@ pub fn panel(ui: &mut egui::Ui, d: &mut JfBrowse) -> Panel {
         }
     }
     ui.add_space(4.0);
-    // 目前位置：媒體庫 › family › 2024（點前面的回到那一層）；右邊排序、篩選
+    // 目前位置：媒體庫 › family › 2024（點前面的回到那一層）；右邊排序、篩選。
+    // 依人物、標籤、年份找時，條件直接放在「媒體庫 ›」後面（不另外多一列，縮圖不會往下跳），右邊寫符合幾支
+    let mut change = FacetChange::None;
     ui.horizontal(|ui| {
         ui.set_min_height(28.0);
         ui.spacing_mut().item_spacing = vec2(2.0, 4.0);
@@ -974,15 +996,11 @@ pub fn panel(ui: &mut egui::Ui, d: &mut JfBrowse) -> Panel {
             ui.label(theme::muted(ui, "›"));
             Btn::new(&trf!("搜尋「{}」", "Search “{}”", d.searched)).small().ghost().selected(true).show(ui);
         } else if !d.facet.is_empty() {
-            // 依人物、標籤、年份找的：媒體庫 › 符合 12 支：有小美或小明、2024 年的影片
+            // 依人物、標籤、年份找的：媒體庫 › 小美 × 或 小明 × 且 2024 × 全部清除
             ui.label(theme::muted(ui, "›"));
-            let what = facet_summary(&d.facet);
-            let text = match &d.items {
-                Some(_) => trf!("符合 {} 支：{what}", "{} matching: {what}", d.total),
-                None => trf!("正在找{what}…", "Finding {what}…"),
-            };
-            let short: String = if text.chars().count() > 70 { text.chars().take(69).chain(['…']).collect() } else { text.clone() };
-            Btn::new(short).small().ghost().selected(true).tooltip(text).show(ui);
+            ui.add_space(4.0);
+            let room = ui.available_width() - d.crumb_right_w - 16.0;
+            facet_chips(ui, &d.facet, room, &mut change);
         } else {
             let n = d.path.len();
             for i in 0..n {
@@ -1005,6 +1023,7 @@ pub fn panel(ui: &mut egui::Ui, d: &mut JfBrowse) -> Panel {
             theme::segmented(ui, &mut d.grid, &[(2u8, tr!("大", "L")), (1, tr!("中", "M")), (0, tr!("小", "S"))], true);
             ui.label(theme::muted(ui, tr!("縮圖", "Thumbnails"))).on_hover_text(tip);
             if top {
+                d.crumb_right_w = ui.min_rect().width();
                 return;
             }
             ui.add_space(6.0);
@@ -1032,8 +1051,19 @@ pub fn panel(ui: &mut egui::Ui, d: &mut JfBrowse) -> Panel {
                 d.page = 0;
                 out.reload = true;
             }
+            // 依條件找：排序左邊寫符合幾支（滑鼠移上去看完整的條件）
+            if !d.facet.is_empty() && d.searched.is_empty() {
+                let what = facet_summary(&d.facet);
+                let (text, tip) = match &d.items {
+                    Some(_) => (trf!("符合 {} 支", "{} matching", d.total), trf!("符合 {} 支：{what}", "{} matching: {what}", d.total)),
+                    None => (tr!("正在找…", "Finding…").to_string(), trf!("正在找{what}…", "Finding {what}…")),
+                };
+                ui.label(RichText::new(text).font(theme::font(12.5)).color(p.muted)).on_hover_text(tip);
+            }
+            d.crumb_right_w = ui.min_rect().width();
         });
     });
+    apply_facet(d, change, &mut out);
     ui.add_space(6.0);
     let foot_h = 40.0;
     let table = Rect::from_min_max(ui.cursor().min, pos2(ui.max_rect().max.x, ui.max_rect().max.y - foot_h - 8.0));
