@@ -220,6 +220,12 @@ pub struct UiSettings {
     pub tips: bool,
     /// 影片資訊用過的類型（點一下就能再用；最近用的在前，最多 RECENT_GENRES 個）
     pub genres: Vec<String>,
+    /// Jellyfin 影片資訊釘選的人物、標籤（永遠排在常用的最前面）
+    pub jf_pin_people: Vec<String>,
+    pub jf_pin_tags: Vec<String>,
+    /// Jellyfin 影片資訊最近加過的人物、標籤（最近的在前，最多 RECENT_GENRES 個；「全部」清單可以依這個排）
+    pub jf_recent_people: Vec<String>,
+    pub jf_recent_tags: Vec<String>,
     /// 上次切換或儲存的設定組合（目前的設定和它不一樣時顯示「已修改」）
     pub preset_name: String,
     /// 等待中的排程錄影（core 的 schedule.rs 存進來；這裡只是原樣保留，並跟著 core 的狀態更新）
@@ -275,6 +281,17 @@ impl UiSettings {
         let num = |k: &str| o.get(k).and_then(Value::as_f64);
         let boolean = |k: &str| o.get(k).and_then(Value::as_bool);
         let string = |k: &str| o.get(k).and_then(Value::as_str).map(str::to_string);
+        // 一串名稱（去掉空白、空的；最多 RECENT_GENRES 個）
+        let names = |k: &str| {
+            o.get(k)
+                .and_then(|v| serde_json::from_value::<Vec<String>>(v.clone()).ok())
+                .unwrap_or_default()
+                .into_iter()
+                .map(|n| n.trim().to_string())
+                .filter(|n| !n.is_empty())
+                .take(RECENT_GENRES)
+                .collect::<Vec<_>>()
+        };
         let p = primary(env);
         let region = o
             .get("region")
@@ -419,6 +436,10 @@ impl UiSettings {
             tour_step: num("tourStep").map(|v| v as u32).filter(|v| *v <= 50).unwrap_or(0),
             tours_done: o.get("toursDone").and_then(|v| serde_json::from_value::<Vec<String>>(v.clone()).ok()).unwrap_or_default(),
             tips: boolean("tips").unwrap_or(false),
+            jf_pin_people: names("jfPinPeople"),
+            jf_pin_tags: names("jfPinTags"),
+            jf_recent_people: names("jfRecentPeople"),
+            jf_recent_tags: names("jfRecentTags"),
             genres: o
                 .get("genres")
                 .and_then(|v| serde_json::from_value::<Vec<String>>(v.clone()).ok())

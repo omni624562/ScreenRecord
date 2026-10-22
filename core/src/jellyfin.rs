@@ -436,6 +436,34 @@ impl Jellyfin {
         Ok(list)
     }
 
+    /// 全部影片用到的人物、標籤與次數（「影片資訊」的常用）：（名稱, 幾支影片），依次數多到少、再依名稱排。
+    /// 只差在前後空白、大小寫、全形半形的算同一個，顯示用得最多的寫法；太多時讀到 2 萬支為止
+    pub fn usage(&self, user: &str) -> Result<(Counts, Counts), String> {
+        let (mut people, mut tags) = (vec![], vec![]);
+        let mut start = 0usize;
+        loop {
+            let req = agent()
+                .get(&format!("{}/Users/{user}/Items", self.url))
+                .query("recursive", "true")
+                .query("includeItemTypes", VIDEO_TYPES)
+                .query("fields", "People,Tags")
+                .query("enableImages", "false")
+                .query("enableUserData", "false")
+                .query("startIndex", &start.to_string())
+                .query("limit", "1000")
+                .query("enableTotalRecordCount", "true");
+            let body = self.call(req)?.into_string().map_err(|e| e.to_string())?;
+            let (p, t, got, total) = people_tags_of_items(&body);
+            people.extend(p);
+            tags.extend(t);
+            start += got;
+            if got == 0 || start >= total || start >= 20_000 {
+                break;
+            }
+        }
+        Ok((tally(people), tally(tags)))
+    }
+
     /// 影片用到的標籤、年份（Jellyfin 分頁「依標籤 / 年份找」）。先問 /Items/Filters；
     /// 有些伺服器那裡回空的（或沒有這個功能），就一頁一頁讀全部影片的標籤、年份自己整理
     pub fn facets(&self, user: &str) -> Result<(Vec<String>, Vec<u32>), String> {
@@ -1261,10 +1289,80 @@ fn tags_years_of_items(json: &str) -> (Vec<String>, Vec<u32>, usize, usize) {
     (tags, years, items.len(), total)
 }
 
-/// 標籤不分大小寫去掉重複、依名稱排；年份去掉重複、新的在前
-fn tidy_facets(mut tags: Vec<String>, mut years: Vec<u32>) -> (Vec<String>, Vec<u32>) {
-    tags.sort_by_key(|t| t.to_lowercase());
-    tags.dedup_by(|a, b| a.to_lowercase() == b.to_lowercase());
+/// （名稱, 用在幾支影片），次數多的在前
+pub type Counts = Vec<(String, usize)>;
+
+/// 人物、標籤比對用的鍵：去掉前後空白、全形英數符號換成半形、不分大小寫（「無碼」和「無碼 」、「ＶＲ」和「vr」算同一個）
+pub fn name_key(s: &str) -> String {
+    s.trim()
+        .chars()
+        .map(|c| match c {
+            '\u{FF01}'..='\u{FF5E}' => char::from_u32(c as u32 - 0xFEE0).unwrap_or(c),
+            '\u{3000}' => ' ',
+            _ => c,
+        })
+        .collect::<String>()
+        .trim()
+        .to_lowercase()
+}
+
+/// 每個人物、標籤出現幾次：同一個鍵的算一起，名稱用出現最多次的寫法；依次數多到少、再依名稱排
+fn tally(names: Vec<String>) -> Vec<(String, usize)> {
+    let mut groups: std::collections::HashMap<String, (usize, std::collections::HashMap<String, usize>)> = std::collections::HashMap::new();
+    for n in names {
+        let n = n.trim().to_string();
+        if n.is_empty() {
+            continue;
+        }
+        let g = groups.entry(name_key(&n)).or_default();
+        g.0 += 1;
+        *g.1.entry(n).or_default() += 1;
+    }
+    let mut out: Vec<(String, usize)> = groups
+        .into_values()
+        .map(|(count, spellings)| {
+            let name = spellings.into_iter().max_by(|a, b| a.1.cmp(&b.1).then_with(|| b.0.cmp(&a.0))).map(|(n, _)| n).unwrap_or_default();
+            (name, count)
+        })
+        .collect();
+    out.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.to_lowercase().cmp(&b.0.to_lowercase())));
+    out
+}
+
+/// 影片清單（fields=People,Tags）裡的（人物, 標籤, 這一頁幾支, 全部幾支）；人物只算演員（我們設的人物都是演員）
+fn people_tags_of_items(json: &str) -> (Vec<String>, Vec<String>, usize, usize) {
+    let Ok(v) = serde_json::from_str::<Value>(json) else { return (vec![], vec![], 0, 0) };
+    let items = v.get("Items").and_then(Value::as_array).cloned().unwrap_or_default();
+    let mut people = vec![];
+    let mut tags = vec![];
+    for i in &items {
+        // 同一支影片裡重複的只算一次
+        let mut seen = std::collections::HashSet::new();
+        for p in i.get("People").and_then(Value::as_array).into_iter().flatten() {
+            if p.get("Type").and_then(Value::as_str).is_none_or(|t| t == "Actor") {
+                if let Some(n) = p.get("Name").and_then(Value::as_str).map(str::trim).filter(|n| !n.is_empty()) {
+                    if seen.insert(name_key(n)) {
+                        people.push(n.to_string());
+                    }
+                }
+            }
+        }
+        seen.clear();
+        for t in i.get("Tags").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).map(str::trim).filter(|t| !t.is_empty()) {
+            if seen.insert(name_key(t)) {
+                tags.push(t.to_string());
+            }
+        }
+    }
+    let total = v.get("TotalRecordCount").and_then(Value::as_u64).unwrap_or(0) as usize;
+    (people, tags, items.len(), total)
+}
+
+/// 標籤去掉前後空白、重複（只差大小寫、全形半形的也算重複）、依名稱排；年份去掉重複、新的在前
+fn tidy_facets(tags: Vec<String>, mut years: Vec<u32>) -> (Vec<String>, Vec<u32>) {
+    let mut tags: Vec<String> = tags.into_iter().map(|t| t.trim().to_string()).filter(|t| !t.is_empty()).collect();
+    tags.sort_by_key(|t| (name_key(t), t.clone()));
+    tags.dedup_by(|a, b| name_key(a) == name_key(b));
     years.sort_unstable_by(|a, b| b.cmp(a));
     years.dedup();
     (tags, years)
@@ -1273,11 +1371,9 @@ fn tidy_facets(mut tags: Vec<String>, mut years: Vec<u32>) -> (Vec<String>, Vec<
 /// /Items/Filters 的回應：（標籤, 年份新的在前）
 fn facets_of(json: &str) -> (Vec<String>, Vec<u32>) {
     let Ok(v) = serde_json::from_str::<Value>(json) else { return (vec![], vec![]) };
-    let mut tags: Vec<String> = v.get("Tags").and_then(Value::as_array).map(|a| a.iter().filter_map(|t| t.as_str().map(String::from)).collect()).unwrap_or_default();
-    tags.sort_by_key(|t| t.to_lowercase());
-    let mut years: Vec<u32> = v.get("Years").and_then(Value::as_array).map(|a| a.iter().filter_map(|y| y.as_u64().map(|y| y as u32)).collect()).unwrap_or_default();
-    years.sort_unstable_by(|a, b| b.cmp(a));
-    (tags, years)
+    let tags: Vec<String> = v.get("Tags").and_then(Value::as_array).map(|a| a.iter().filter_map(|t| t.as_str().map(String::from)).collect()).unwrap_or_default();
+    let years: Vec<u32> = v.get("Years").and_then(Value::as_array).map(|a| a.iter().filter_map(|y| y.as_u64().map(|y| y as u32)).collect()).unwrap_or_default();
+    tidy_facets(tags, years)
 }
 
 /// 影片的資訊（人物只算演員：我們設的人物都是演員）
@@ -2796,6 +2892,30 @@ mod tests {
         let (tags, years, got, total) = tags_years_of_items(page);
         assert_eq!((got, total), (3, 7));
         assert_eq!(tidy_facets(tags, years), (vec!["旅行".to_string(), "生日".to_string()], vec![2024, 2019]));
+    }
+
+    #[test]
+    fn usage_counts_merge_spellings() {
+        let json = r#"{"TotalRecordCount":3,"Items":[
+            {"People":[{"Name":"小美","Type":"Actor"},{"Name":"導演","Type":"Director"}],"Tags":["無碼","ＶＲ"]},
+            {"People":[{"Name":" 小美 ","Type":"Actor"},{"Name":"阿明"}],"Tags":["無碼 ","vr","vr"]},
+            {"People":[],"Tags":["旅行"]}]}"#;
+        let (people, tags, got, total) = people_tags_of_items(json);
+        assert_eq!((got, total), (3, 3));
+        assert_eq!(tally(people), vec![("小美".to_string(), 2), ("阿明".to_string(), 1)]);
+        // 次數一樣時依名稱排：vr（兩種寫法各一次）、無碼（「無碼 」去掉空白後一樣），最後是只用一次的旅行
+        let t = tally(tags);
+        assert_eq!(t.len(), 3);
+        assert_eq!((name_key(&t[0].0), t[0].1), ("vr".to_string(), 2));
+        assert_eq!(t[1], ("無碼".to_string(), 2));
+        assert_eq!(t[2], ("旅行".to_string(), 1));
+        assert_eq!(name_key("　ＡＢＣ　"), "abc");
+    }
+
+    #[test]
+    fn facets_drop_duplicate_tags() {
+        let (tags, _) = facets_of(r#"{"Tags":["無碼","無碼 ","18+"," 旅行"],"Years":[2024]}"#);
+        assert_eq!(tags, vec!["18+".to_string(), "旅行".to_string(), "無碼".to_string()]);
     }
 
     #[test]
