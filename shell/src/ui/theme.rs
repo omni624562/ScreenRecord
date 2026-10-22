@@ -93,12 +93,16 @@ pub fn bold() -> FontFamily {
     FontFamily::Name("bold".into())
 }
 
+/// 全程式的字放大的比例：寫在各處的字級（12、13.5…）都乘上這個數字，14 點變成約 15 點，
+/// 和 Windows 一般程式的選單、設定頁差不多大
+pub const FONT_SCALE: f32 = 1.08;
+
 pub fn font(size: f32) -> FontId {
-    FontId::new(size, FontFamily::Proportional)
+    FontId::new(size * FONT_SCALE, FontFamily::Proportional)
 }
 
 pub fn font_bold(size: f32) -> FontId {
-    FontId::new(size, bold())
+    FontId::new(size * FONT_SCALE, bold())
 }
 
 pub fn mono(size: f32) -> FontId {

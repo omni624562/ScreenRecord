@@ -74,12 +74,16 @@ const CJK_LINUX: &[(&str, u32)] = &[
     ("/usr/share/fonts/truetype/wqy/wqy-microhei.ttc", 0),
 ];
 
+/// 一般粗細的中文字（Linux）：先找 Regular，介面才不會整片都是粗體
+const CJK_LINUX_REGULAR: &[(&str, u32)] =
+    &[("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc", 3), ("/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc", 0), ("/usr/share/fonts/truetype/wqy/wqy-microhei.ttc", 0)];
+
 /// 介面用的字型（一般、粗體），依序找字；第一個用來顯示英數字
 pub fn ui_fonts() -> (Vec<FontFile>, Vec<FontFile>) {
     let regular = [
         load(&[("segoeui.ttf", 0)]),
         // msjh.ttc 的第 2 個字型是「Microsoft JhengHei UI」（行距較適合介面）
-        load(&[("msjh.ttc", 1), ("msjh.ttf", 0), ("mingliu.ttc", 0)]).or_else(|| load(CJK_LINUX)),
+        load(&[("msjh.ttc", 1), ("msjh.ttf", 0), ("mingliu.ttc", 0)]).or_else(|| load(CJK_LINUX_REGULAR)),
         load(&[("seguisym.ttf", 0)]),
     ];
     let bold = [load(&[("segoeuib.ttf", 0), ("seguisb.ttf", 0)]), load(&[("msjhbd.ttc", 1), ("msjhbd.ttf", 0)]).or_else(|| load(&[("msjh.ttc", 1)])).or_else(|| load(CJK_LINUX))];

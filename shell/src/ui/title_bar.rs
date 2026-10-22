@@ -22,7 +22,7 @@ const CORNER: f32 = 14.0;
 /// 縮到最小、最大化、關閉按鈕的寬度
 const CTRL_W: f32 = 46.0;
 /// 總選單的寬度
-const MENU_W: f32 = 290.0;
+const MENU_W: f32 = 300.0;
 /// 小視窗內容的大小（不含標題列）
 const COMPACT: Vec2 = vec2(460.0, 64.0);
 
@@ -296,17 +296,17 @@ fn main_menu(app: &mut UiApp, ui: &mut Ui, covered: bool) {
 fn menu_item(ui: &mut Ui, icon: Icon, label: &str, key: Option<&str>, sub: bool, enabled: bool) -> Response {
     let p = theme::pal(ui);
     let sense = if enabled && !sub { Sense::click() } else { Sense::hover() };
-    let (rect, resp) = ui.allocate_exact_size(vec2(MENU_W, 32.0), sense);
+    let (rect, resp) = ui.allocate_exact_size(vec2(MENU_W, 38.0), sense);
     let resp = if enabled { resp } else { resp.with_new_rect(rect) };
     if enabled && resp.hovered() {
         ui.painter().rect_filled(rect, egui::CornerRadius::same(6), p.surface2);
     }
     let fg = if enabled { p.text } else { p.muted.gamma_multiply(0.7) };
-    theme::paint_icon(ui.painter(), Rect::from_center_size(egui::pos2(rect.min.x + 18.0, rect.center().y), vec2(15.0, 15.0)), icon, fg);
-    ui.painter().text(egui::pos2(rect.min.x + 38.0, rect.center().y), egui::Align2::LEFT_CENTER, label, theme::font(13.5), fg);
+    theme::paint_icon(ui.painter(), Rect::from_center_size(egui::pos2(rect.min.x + 20.0, rect.center().y), vec2(17.0, 17.0)), icon, fg);
+    ui.painter().text(egui::pos2(rect.min.x + 44.0, rect.center().y), egui::Align2::LEFT_CENTER, label, theme::font(14.0), fg);
     if let Some(k) = key {
-        let g = ui.painter().layout_no_wrap(k.to_string(), theme::font(11.5), p.muted);
-        let kr = Rect::from_min_size(egui::pos2(rect.max.x - 8.0 - g.size().x - 12.0, rect.center().y - 10.0), vec2(g.size().x + 12.0, 20.0));
+        let g = ui.painter().layout_no_wrap(k.to_string(), theme::font(12.0), p.muted);
+        let kr = Rect::from_min_size(egui::pos2(rect.max.x - 8.0 - g.size().x - 14.0, rect.center().y - 11.0), vec2(g.size().x + 14.0, 22.0));
         ui.painter().rect_stroke(kr, egui::CornerRadius::same(4), Stroke::new(1.0, p.border), egui::StrokeKind::Inside);
         ui.painter().galley(kr.center() - g.size() / 2.0, g, p.muted);
     }
