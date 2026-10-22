@@ -40,15 +40,26 @@ enum Try {
 
 /// 這一版的新功能（標題、說明、試試看）：最多 6 項，快速鍵用目前的設定
 fn items(_app: &UiApp) -> Vec<(String, String, Try)> {
-    vec![(
-        tr!("Jellyfin：寫錯的人物、標籤可以改名", "Jellyfin: fix misspelled people and tags").into(),
-        tr!(
-            "影片資訊的「全部 N 個」清單裡按「改名」（或在常用上按右鍵），打正確的寫法；改成已經有的就是合併，Jellyfin 上用到的影片會一起改好。看起來一樣、其實寫法不同的（例如兩個「無碼」）會標「寫法不同」。",
-            "In the video details, use Rename in the “All N” list (or right-click a suggestion) and type the right spelling; choosing an existing one merges them, and every video on Jellyfin using it is updated. Look-alikes that are spelled differently are marked “Differs”."
-        )
-        .into(),
-        Try::Jellyfin,
-    )]
+    vec![
+        (
+            tr!("檔案庫不再換頁，往下捲就有", "The library scrolls instead of paging").into(),
+            tr!(
+                "錄影、截圖、Jellyfin 三個分頁都改用捲軸，捲到快底時自動讀下一批；右下角寫共幾筆。Ctrl+A、「選取全部」照樣包括還沒捲到的。",
+                "Recordings, screenshots and Jellyfin all scroll now, loading more as you near the bottom; the total is shown at the bottom right. Ctrl+A and Select all still include everything."
+            )
+            .into(),
+            Try::Library(false),
+        ),
+        (
+            tr!("Jellyfin：Shift 一次選一段、依這些找不跳動", "Jellyfin: Shift-select a range, steadier find-by").into(),
+            tr!(
+                "Jellyfin 分頁 Shift＋點一下從上次勾的那支選到這一支。「依這些找」勾選條件時按鈕和影片都留在原位，條件排在位置列，放不下的收進「+N 個」。",
+                "In the Jellyfin tab, Shift+click selects from the last checked video to this one. Picking find-by conditions no longer moves the buttons or videos; conditions sit in the location row, with extras under “+N more”."
+            )
+            .into(),
+            Try::Jellyfin,
+        ),
+    ]
 }
 
 pub fn show(app: &mut UiApp, ctx: &egui::Context) {
