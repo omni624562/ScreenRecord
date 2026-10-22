@@ -904,7 +904,7 @@ fn settings_bar(app: &mut UiApp, ui: &mut Ui) {
     // 右邊：「設定」按鈕，前面是輸出大小
     let set_btn =
         Btn::new(tr!("設定", "Settings")).icon(Icon::Settings).small().tooltip(tr!("錄影、聲音、儲存位置、快速鍵與其他設定", "Recording, audio, save location, shortcuts and other settings"));
-    // 設定組合：有建立組合時才放在這裡（沒有時在「更多工具」）
+    // 設定組合：有建立組合時才放在這裡（沒有時在標題列「⋯」的更多工具）
     let has_presets = !app.presets.is_empty();
     let set_w = set_btn.width(ui) + if has_presets { super::presets::width(app, ui) + 4.0 } else { 0.0 };
     let out = app.s.source_rect(&app.env).map(|r| output_size(r.width, r.height, app.s.scale as f64));
@@ -933,9 +933,14 @@ fn settings_bar(app: &mut UiApp, ui: &mut Ui) {
     // 聲音、攝影機太窄時寫短一點，但不會只剩圖示
     let audio_text = if measure(ui, &audio, audio_icon) + 120.0 <= room { audio.clone() } else { tr!("聲音", "Audio").to_string() };
     room -= measure(ui, &audio_text, audio_icon);
-    if item(&audio_text, audio_icon).enabled(!locked).tooltip(trf!("錄製聲音：{audio}（點一下修改）", "Audio: {audio} (click to change)")).show(ui).clicked() {
+    let audio_resp = item(&audio_text, audio_icon).enabled(!locked).tooltip(trf!("錄製聲音：{audio}（點一下修改）", "Audio: {audio} (click to change)")).show(ui);
+    if audio_resp.clicked() {
         open = Some(Page::Audio);
     }
+    // 測試音量：聲音設定旁邊；測試中換成音量表與「停止」
+    let test = level_test(app, ui, locked);
+    room -= test.width();
+    tour::mark(ui, Spot::Audio, audio_resp.rect.union(test).expand2(vec2(4.0, 2.0)));
     // 攝影機：直接選要用哪一台（不用進設定）；太窄時只剩圖示
     let cam = camera_label(&app.s.camera);
     let cam_text = if measure(ui, &cam, Icon::Webcam) + 80.0 <= room { cam.clone() } else { tr!("攝影機", "Camera").to_string() };
@@ -1194,36 +1199,34 @@ fn rec_panel(app: &mut UiApp, ui: &mut Ui) {
         let active = r.state != RecorderState::Idle;
         // 回溯錄影中（不是一般錄影）
         let replay = r.replay.clone().filter(|_| active);
-        // 狀態
-        ui.horizontal(|ui| {
-            let (text, tone) = match r.state {
-                RecorderState::Recording if replay.is_some() => (tr!("● 回溯錄影中", "● Replay buffer"), Tone::Bad),
-                RecorderState::Idle => (tr!("待命", "Ready"), Tone::Plain),
-                RecorderState::Countdown => (tr!("倒數中", "Countdown"), Tone::Warn),
-                RecorderState::Recording => (tr!("● 錄影中", "● Recording"), Tone::Bad),
-                RecorderState::Paused if r.auto_paused => (tr!("沒動靜，已自動暫停", "Idle, paused"), Tone::Warn),
-                RecorderState::Paused => (tr!("已暫停", "Paused"), Tone::Warn),
-                RecorderState::Stopping => (tr!("處理中", "Processing"), Tone::Accent),
-            };
-            chip(ui, text, tone, false);
-            let mut busy = r.busy.clone().unwrap_or_default();
-            if busy.is_empty() && r.auto_paused {
-                busy = tr!("動一下滑鼠或按鍵就繼續", "Move the mouse or press a key to continue").into();
-            }
-            if busy.is_empty() && r.max_ms > 0 && active {
-                busy = trf!("剩餘 {}", "{} left", clock((r.max_ms as f64 - live_recorded_ms(app)).max(0.0)));
-            }
-            if let Some(rp) = replay.as_ref().filter(|_| busy.is_empty()) {
-                busy = if rp.saving { tr!("正在存…", "Saving…").into() } else { trf!("保留最近 {}", "Keeping the last {}", screenrecorder_core::replay::length_label(rp.sec)) };
-            }
-            // 右上角：「更多工具」（回溯錄影、排程、講稿、設定組合：不常用的收在這裡，主畫面保持簡單）
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                more_tools(app, ui, active);
-                ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-                    ui.add(egui::Label::new(theme::muted(ui, busy)).truncate());
-                });
+        // 狀態：錄影中、暫停、倒數、處理中才顯示（待命時沒有要說的，整列省略）
+        let mut busy = r.busy.clone().unwrap_or_default();
+        if busy.is_empty() && r.auto_paused {
+            busy = tr!("動一下滑鼠或按鍵就繼續", "Move the mouse or press a key to continue").into();
+        }
+        if busy.is_empty() && r.max_ms > 0 && active {
+            busy = trf!("剩餘 {}", "{} left", clock((r.max_ms as f64 - live_recorded_ms(app)).max(0.0)));
+        }
+        if let Some(rp) = replay.as_ref().filter(|_| busy.is_empty()) {
+            busy = if rp.saving { tr!("正在存…", "Saving…").into() } else { trf!("保留最近 {}", "Keeping the last {}", screenrecorder_core::replay::length_label(rp.sec)) };
+        }
+        if active || !busy.is_empty() {
+            ui.horizontal(|ui| {
+                let (text, tone) = match r.state {
+                    RecorderState::Recording if replay.is_some() => (tr!("● 回溯錄影中", "● Replay buffer"), Tone::Bad),
+                    RecorderState::Idle => (tr!("待命", "Ready"), Tone::Plain),
+                    RecorderState::Countdown => (tr!("倒數中", "Countdown"), Tone::Warn),
+                    RecorderState::Recording => (tr!("● 錄影中", "● Recording"), Tone::Bad),
+                    RecorderState::Paused if r.auto_paused => (tr!("沒動靜，已自動暫停", "Idle, paused"), Tone::Warn),
+                    RecorderState::Paused => (tr!("已暫停", "Paused"), Tone::Warn),
+                    RecorderState::Stopping => (tr!("處理中", "Processing"), Tone::Accent),
+                };
+                if active {
+                    chip(ui, text, tone, false);
+                }
+                ui.add(egui::Label::new(theme::muted(ui, busy)).truncate());
             });
-        });
+        }
         // 有新版本：標題下方一個明顯的「更新到 vX.Y.Z」
         if let Some(u) = app.env.update.clone().filter(|_| !active) {
             ui.add_space(4.0);
@@ -1248,9 +1251,12 @@ fn rec_panel(app: &mut UiApp, ui: &mut Ui) {
             }
         }
         ui.add_space(6.0);
-        // 中間（統計、控制按鈕、提示、結果、快速鍵 / 事件紀錄）放不下時可以捲動：系統狀態一定在最下面，不會蓋住按鈕
+        // 中間（統計、控制按鈕、提示、結果、快速鍵 / 事件紀錄）放不下時可以捲動：系統狀態一定在最下面，不會蓋住按鈕。
+        // 系統狀態只在有問題時顯示（找不到 FFmpeg、沒有編碼器）；正常時中間一直到底
         let full = ui.max_rect();
-        let body = Rect::from_min_max(ui.cursor().min, pos2(full.max.x, full.max.y - BOTTOM_BAR_H - BOTTOM_LINE_GAP - 6.0));
+        let sys = sys_problem(app);
+        let bottom_h = if sys { BOTTOM_BAR_H + BOTTOM_LINE_GAP + 6.0 } else { 0.0 };
+        let body = Rect::from_min_max(ui.cursor().min, pos2(full.max.x, full.max.y - bottom_h));
         // 高度不夠（視窗矮、介面放大）：省略比較不重要的列
         // 0 = 放得下；1 = 有點擠（省略不重要的列、列高縮小）；2 = 很擠（只留聲音一列，開始錄影的按鈕才看得到）
         let tight = if body.height() < 180.0 {
@@ -1267,26 +1273,23 @@ fn rec_panel(app: &mut UiApp, ui: &mut Ui) {
                 rec_body(app, ui, &r, replay.as_ref(), tight);
             });
         });
-        let bottom = Rect::from_min_max(pos2(full.min.x, full.max.y - BOTTOM_BAR_H), full.max);
-        ui.painter().hline(bottom.x_range(), bottom.min.y - BOTTOM_LINE_GAP, Stroke::new(1.0, p.border));
-        ui.scope_builder(UiBuilder::new().max_rect(bottom).layout(Layout::left_to_right(Align::Center)), |ui| sys_status(app, ui));
+        if sys {
+            let bottom = Rect::from_min_max(pos2(full.min.x, full.max.y - BOTTOM_BAR_H), full.max);
+            ui.painter().hline(bottom.x_range(), bottom.min.y - BOTTOM_LINE_GAP, Stroke::new(1.0, p.border));
+            ui.scope_builder(UiBuilder::new().max_rect(bottom).layout(Layout::left_to_right(Align::Center)), |ui| sys_status(app, ui));
+        }
     });
 }
 
-/// 「更多工具 ▾」：回溯錄影、排程錄影、講稿小視窗、設定組合（有組合時設定組合也在下方設定列）
-fn more_tools(app: &mut UiApp, ui: &mut Ui, active: bool) {
+/// 「更多工具」選單（標題列的「⋯」）：回溯錄影、排程錄影、講稿小視窗、瀏覽 Jellyfin、設定組合
+/// （有組合時設定組合也在下方設定列）。resp：按了會打開選單的按鈕
+pub(super) fn more_tools(app: &mut UiApp, resp: &egui::Response) {
+    let active = app.status.recorder.state != RecorderState::Idle;
     let notes_open = app.notes.is_some();
-    let resp = Btn::new(tr!("更多工具", "More tools"))
-        .icon(Icon::More)
-        .ghost()
-        .small()
-        .menu()
-        .tooltip(tr!("回溯錄影、排程錄影、講稿小視窗、設定組合", "Replay buffer, scheduled recording, script window, presets"))
-        .show(ui);
     let mut schedule = false;
     let mut notes = false;
     let mut jellyfin = false;
-    egui::Popup::menu(&resp).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
+    egui::Popup::menu(resp).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
         ui.set_min_width(220.0);
         if !active {
             let can = app.env.ffmpeg.found && app.env.ffmpeg.encoder.is_some() && app.manual_export().is_none();
@@ -1410,9 +1413,9 @@ fn rec_body(app: &mut UiApp, ui: &mut Ui, r: &screenrecorder_core::types::Record
     // 高度不夠時省略比較不重要的列：待命時的影片長度、檔案大小（都還是 0）；錄影中的影片長度（和上面的計時差不多）、錄影方式；
     // 很擠的時候輸出、錄影方式也省略（下方摘要與滑鼠提示有）。只錄聲音時沒有「錄影方式」
     let audio_only = app.s.source_type == SourceType::Audio;
-    // 待命時只留「聲音」一列（還沒錄影，長度、大小都是 0）；錄影中才列出數據
+    // 錄影中才列出數據（待命時長度、大小都是 0；聲音、輸出在預覽下方的設定列）
     let show = |i: usize| match i {
-        _ if !active => i == 4,
+        _ if !active => false,
         0 => tight == 0 || replay.is_some(),
         1 => tight == 0 || active,
         2 => tight < 2,
@@ -1431,7 +1434,7 @@ fn rec_body(app: &mut UiApp, ui: &mut Ui, r: &screenrecorder_core::types::Record
         }
         // 最後一列是「聲音」
         let audio_row = i == 4;
-        let row = ui.horizontal(|ui| {
+        ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 14.0;
             let (cell, _) = ui.allocate_exact_size(vec2(key_w, 18.0), Sense::hover());
             ui.painter().text(cell.left_center(), egui::Align2::LEFT_CENTER, k, theme::font(13.0), p.muted);
@@ -1443,71 +1446,8 @@ fn rec_body(app: &mut UiApp, ui: &mut Ui, r: &screenrecorder_core::types::Record
                 ui.add(egui::Label::new(RichText::new(text).font(theme::font(13.0)).color(p.rec)).truncate()).on_hover_text(trf!("{text}（錄到的是靜音）\n{v}", "{text} (recording silence)\n{v}"));
                 return;
             }
-            if audio_row && !active {
-                if let Some(l) = app.meter.as_ref().map(|m| m.levels()) {
-                    // 音量表：每個來源一條，旁邊寫名稱
-                    let meters: Vec<(&str, f32)> = [(tr!("系統", "System"), l.system), (tr!("麥克風", "Mic"), l.mic)].into_iter().filter_map(|(n, v)| v.map(|v| (n, v))).collect();
-                    // 右邊：「停止（12）」不用等 20 秒，按了就關掉音量表、放開麥克風；括號裡是還剩幾秒
-                    let left = app.meter_until.map_or(0, |t| t.saturating_duration_since(Instant::now()).as_secs() + 1);
-                    let tip = match &l.error {
-                        Some(e) => trf!("打不開：{e}", "Couldn't open: {e}"),
-                        None => tr!("錄影前先講幾句話：麥克風的條會跳動，就表示收得到聲音", "Say a few words before recording: if the microphone bar moves, your voice is being picked up").into(),
-                    };
-                    let stop = ui
-                        .with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            let stop = Btn::new(trf!("停止（{left}）", "Stop ({left})"))
-                                .ghost()
-                                .small()
-                                .tooltip(tr!("不用等時間到，現在就停止測試音量", "Stop the level test now instead of waiting"))
-                                .show(ui)
-                                .clicked();
-                            ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-                                ui.spacing_mut().item_spacing.x = 6.0;
-                                for (n, v) in &meters {
-                                    ui.label(RichText::new(*n).font(theme::font(12.5)));
-                                    level_bar(ui, *v);
-                                }
-                                if l.error.is_some() {
-                                    ui.label(RichText::new("⚠").color(p.warn));
-                                }
-                            })
-                            .response
-                            .on_hover_text(tip);
-                            stop
-                        })
-                        .inner;
-                    if stop {
-                        app.meter_until = None;
-                    }
-                    return;
-                }
-                if app.s.audio_system || app.s.audio_mic {
-                    // 右邊留給「測試音量」
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if Btn::new(tr!("測試音量", "Test levels"))
-                            .ghost()
-                            .small()
-                            .tooltip(tr!(
-                                "量 20 秒的音量：講幾句話看麥克風的條有沒有跳動，確定錄得到聲音",
-                                "Shows levels for 20 seconds: say a few words and check that the microphone bar moves, so you know audio is being recorded"
-                            ))
-                            .show(ui)
-                            .clicked()
-                        {
-                            app.meter_until = Some(Instant::now() + std::time::Duration::from_secs(20));
-                        }
-                        ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-                            ui.add(egui::Label::new(RichText::new(&v).font(theme::font(13.0))).truncate()).on_hover_text(&v);
-                        });
-                    });
-                    return;
-                }
-            }
             ui.add(egui::Label::new(RichText::new(&v).font(theme::font(13.0))).truncate()).on_hover_text(&v);
         });
-        if audio_row {
-            tour::mark(ui, Spot::Audio, row.response.rect.expand2(vec2(4.0, 2.0)));
-        }
     }
     ui.spacing_mut().item_spacing.y = gap_y;
     ui.spacing_mut().interact_size.y = row_h;
@@ -2390,6 +2330,57 @@ fn job_card(app: &mut UiApp, ui: &mut Ui) {
 }
 
 /// 系統狀態：新版本、FFmpeg、擷取方式、編碼器（正常的合併成一個「已就緒」）
+/// 預覽下方設定列的「測試音量」：量 20 秒，測試中顯示每個來源的音量條與「停止（剩幾秒）」；回傳用掉的範圍。
+/// 錄影中、不錄聲音時不顯示
+fn level_test(app: &mut UiApp, ui: &mut Ui, locked: bool) -> Rect {
+    let p = theme::pal(ui);
+    let start = ui.cursor().min;
+    if locked || !(app.s.audio_system || app.s.audio_mic) {
+        return Rect::from_min_size(start, egui::Vec2::ZERO);
+    }
+    let r = ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 6.0;
+        let Some(l) = app.meter.as_ref().map(|m| m.levels()) else {
+            if Btn::new(tr!("測試音量", "Test levels"))
+                .ghost()
+                .small()
+                .tooltip(tr!(
+                    "量 20 秒的音量：講幾句話看麥克風的條有沒有跳動，確定錄得到聲音",
+                    "Shows levels for 20 seconds: say a few words and check that the microphone bar moves, so you know audio is being recorded"
+                ))
+                .show(ui)
+                .clicked()
+            {
+                app.meter_until = Some(Instant::now() + std::time::Duration::from_secs(20));
+            }
+            return;
+        };
+        // 音量表：每個來源一條，前面寫名稱
+        let tip = match &l.error {
+            Some(e) => trf!("打不開：{e}", "Couldn't open: {e}"),
+            None => tr!("錄影前先講幾句話：麥克風的條會跳動，就表示收得到聲音", "Say a few words before recording: if the microphone bar moves, your voice is being picked up").into(),
+        };
+        let bars = ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 6.0;
+            for (n, v) in [(tr!("系統", "System"), l.system), (tr!("麥克風", "Mic"), l.mic)].into_iter().filter_map(|(n, v)| v.map(|v| (n, v))) {
+                ui.label(RichText::new(n).font(theme::font(12.5)));
+                level_bar(ui, v);
+            }
+            if l.error.is_some() {
+                ui.label(RichText::new("⚠").color(p.warn));
+            }
+        });
+        bars.response.on_hover_text(tip);
+        // 「停止（12）」：不用等 20 秒，按了就關掉音量表、放開麥克風；括號裡是還剩幾秒
+        let left = app.meter_until.map_or(0, |t| t.saturating_duration_since(Instant::now()).as_secs() + 1);
+        if Btn::new(trf!("停止（{left}）", "Stop ({left})")).ghost().small().tooltip(tr!("不用等時間到，現在就停止測試音量", "Stop the level test now instead of waiting")).show(ui).clicked()
+        {
+            app.meter_until = None;
+        }
+    });
+    r.response.rect
+}
+
 /// 錄影前的音量表：主畫面看得到、沒在錄影、沒開其他視窗時才開著（錄影中、隱藏時關掉，不佔用麥克風）
 fn update_meter(app: &mut UiApp, ctx: &egui::Context) {
     let idle = app.status.recorder.state == RecorderState::Idle && app.status.recorder.busy.is_none();
@@ -2448,16 +2439,49 @@ fn encoder_name(e: &str) -> String {
     }
 }
 
+/// 系統狀態有問題（偵測好了，但找不到 FFmpeg 或沒有可以用的編碼器）：這時才在錄影面板最下面顯示
+fn sys_problem(app: &UiApp) -> bool {
+    app.env_ready && (!app.env.ffmpeg.found || app.env.ffmpeg.encoder.is_none())
+}
+
+/// 錄影環境的細節（擷取方式、畫面處理、編碼器），「設定 → 外部元件」的 FFmpeg 下面列出來
+pub(super) fn ready_details(app: &UiApp) -> Vec<String> {
+    let ff = &app.env.ffmpeg;
+    let mut lines: Vec<String> = vec![];
+    lines.push(if !ff.has_ddagrab {
+        tr!(
+            "擷取：相容模式（gdigrab）。這個 FFmpeg 不支援顯示卡擷取，大畫面時比較吃 CPU",
+            "Capture: compatibility mode (gdigrab). This FFmpeg doesn't support GPU capture, so it uses more CPU on large screens"
+        )
+        .into()
+    } else {
+        match ff.ddagrab_works {
+            None => tr!("擷取：正在測試顯示卡擷取…", "Capture: testing GPU capture…").into(),
+            Some(true) => tr!("擷取：顯示卡擷取（ddagrab）", "Capture: GPU capture (ddagrab)").into(),
+            Some(false) => trf!(
+                "擷取：相容模式（gdigrab）。顯示卡擷取在這台電腦不能用\n{}",
+                "Capture: compatibility mode (gdigrab). GPU capture doesn't work on this PC\n{}",
+                ff.ddagrab_error.clone().unwrap_or_default()
+            ),
+        }
+    });
+    if let Some(g) = &ff.gpu_convert {
+        lines.push(trf!("畫面處理：{g}", "Video processing: {g}"));
+    }
+    if let Some(e) = &ff.encoder {
+        lines.push(trf!("編碼：{}（{e}）", "Encoding: {} ({e})", encoder_name(e)));
+    }
+    lines
+}
+
 fn sys_status(app: &mut UiApp, ui: &mut Ui) {
     let p = theme::pal(ui);
     ui.label(RichText::new(tr!("系統狀態", "System status")).font(theme::font(12.0)).color(p.muted));
     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
         let ff = app.env.ffmpeg.clone();
         let ver = ff.version.clone().unwrap_or_default().split('-').next().unwrap_or("").to_string();
-        // 有問題的才另外標出來；正常時只有一個淡淡的「已就緒」，細節在滑鼠提示
-        let (text, tone, tip): (String, Tone, String) = if !app.env_ready {
-            (tr!("偵測中…", "Detecting…").into(), Tone::Plain, String::new())
-        } else if !ff.found {
+        // 只在有問題時顯示（sys_problem）；正常時的擷取方式、編碼在「設定 → 外部元件」的 FFmpeg
+        let (text, tone, tip): (String, Tone, String) = if !ff.found {
             (
                 tr!("找不到 FFmpeg", "FFmpeg not found").into(),
                 Tone::Bad,
@@ -2470,40 +2494,7 @@ fn sys_status(app: &mut UiApp, ui: &mut Ui) {
                 trf!("這個 FFmpeg {ver} 沒有可以用的 H.264 編碼器，請重新下載錄影元件", "This FFmpeg {ver} has no usable H.264 encoder. Download the recording component again"),
             )
         } else {
-            let mut lines = vec![trf!("FFmpeg {ver}（{}）", "FFmpeg {ver} ({})", ff.path.clone().unwrap_or_default())];
-            let compat = !ff.has_ddagrab || ff.ddagrab_works == Some(false);
-            let testing = ff.has_ddagrab && ff.ddagrab_works.is_none();
-            lines.push(if !ff.has_ddagrab {
-                tr!(
-                    "擷取：相容模式（gdigrab）。這個 FFmpeg 不支援顯示卡擷取，大畫面時比較吃 CPU",
-                    "Capture: compatibility mode (gdigrab). This FFmpeg doesn't support GPU capture, so it uses more CPU on large screens"
-                )
-                .into()
-            } else {
-                match ff.ddagrab_works {
-                    None => tr!("擷取：正在測試顯示卡擷取…", "Capture: testing GPU capture…").into(),
-                    Some(true) => tr!("擷取：顯示卡擷取（ddagrab）", "Capture: GPU capture (ddagrab)").into(),
-                    Some(false) => trf!(
-                        "擷取：相容模式（gdigrab）。顯示卡擷取在這台電腦不能用\n{}",
-                        "Capture: compatibility mode (gdigrab). GPU capture doesn't work on this PC\n{}",
-                        ff.ddagrab_error.clone().unwrap_or_default()
-                    ),
-                }
-            });
-            if let Some(g) = &ff.gpu_convert {
-                lines.push(trf!("畫面處理：{g}", "Video processing: {g}"));
-            }
-            if let Some(e) = &ff.encoder {
-                lines.push(trf!("編碼：{}（{e}）", "Encoding: {} ({e})", encoder_name(e)));
-            }
-            let label = if testing {
-                tr!("已就緒（檢查中…）", "Ready (checking…)")
-            } else if compat {
-                tr!("已就緒（相容模式）", "Ready (compatibility mode)")
-            } else {
-                tr!("已就緒", "Ready")
-            };
-            (label.into(), Tone::Plain, lines.join("\n"))
+            return;
         };
         let r = chip(ui, &text, tone, false);
         if !tip.is_empty() {

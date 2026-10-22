@@ -128,7 +128,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         let (mx, my, mw) = m.map(|m| (m.x as f32 / ppp, m.y as f32 / ppp, m.width as f32 / ppp)).unwrap_or((0.0, 0.0, 1280.0));
         let (w, h) = (460.0, 280.0);
         let mut r = Rect::from_min_size(pos2(mx + (mw - w) / 2.0, my + 40.0), vec2(w, h));
-        // 不要蓋住操作視窗右上角的「更多工具」按鈕：會蓋到時往左移
+        // 不要蓋住操作視窗右上角的按鈕（標題列的更多工具、檔案庫、設定）：會蓋到時往左移
         if let Some(main) = ctx.input(|i| i.viewport().outer_rect) {
             let buttons = Rect::from_min_max(pos2(main.max.x - 420.0, main.min.y), pos2(main.max.x, main.min.y + 220.0));
             if r.intersects(buttons) {

@@ -443,8 +443,8 @@ fn content(app: &UiApp, t: &Tour) -> (Option<Spot>, String, String, Go) {
             Some(Spot::Audio),
             tr!("確認聲音", "Check the audio").into(),
             tr!(
-                "預設會錄電腦播放的聲音和麥克風。按「測試音量」講幾句話，麥克風的條有跳動就表示收得到；要換麥克風或不錄聲音，點下方的聲音設定修改。",
-                "By default the computer's sound and your microphone are recorded. Click “Test levels” and say a few words: if the microphone bar moves, you're being heard. To change microphones or record without sound, click the audio setting below the preview."
+                "預設會錄電腦播放的聲音和麥克風。按聲音旁邊的「測試音量」講幾句話，麥克風的條有跳動就表示收得到；要換麥克風或不錄聲音，點聲音設定修改。",
+                "By default the computer's sound and your microphone are recorded. Click “Test levels” next to the audio setting and say a few words: if the microphone bar moves, you're being heard. To change microphones or record without sound, click the audio setting."
             )
             .into(),
             next(),
@@ -499,8 +499,8 @@ fn content(app: &UiApp, t: &Tour) -> (Option<Spot>, String, String, Go) {
             Some(Spot::Settings),
             tr!("完成了！", "You're all set!").into(),
             tr!(
-                "畫質、每秒張數、存檔位置、快速鍵、語言都在「設定」；回溯錄影、排程錄影、講稿小視窗在右上角「更多工具」。之後第一次打開剪輯、截圖編輯、全部截圖時，也會有幾步小提示。想再看一次這個教學：「設定 → 關於 → 重新看教學」。",
-                "Quality, frame rate, where files are saved, shortcuts and language are in “Settings”; the replay buffer, scheduled recording and the script window are under “More tools” at the top right. The first time you open the editor, screenshot editing or All screenshots, you'll get a few quick tips too. To see this tutorial again: Settings → About → “Replay tutorial”."
+                "畫質、每秒張數、存檔位置、快速鍵、語言都在「設定」；回溯錄影、排程錄影、講稿小視窗在標題列右邊的「⋯」。之後第一次打開剪輯、截圖編輯、全部截圖時，也會有幾步小提示。想再看一次這個教學：「設定 → 關於 → 重新看教學」。",
+                "Quality, frame rate, where files are saved, shortcuts and language are in “Settings”; the replay buffer, scheduled recording and the script window are under “⋯” on the right of the title bar. The first time you open the editor, screenshot editing or All screenshots, you'll get a few quick tips too. To see this tutorial again: Settings → About → “Replay tutorial”."
             )
             .into(),
             Go::Button(tr!("開始使用", "Get started").into()),

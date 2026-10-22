@@ -2457,7 +2457,10 @@ fn component_card(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui, k: Kind)
             theme::chip(ui, &text, tone, false);
         });
         let info = match k {
-            Kind::Ffmpeg if installed => trf!("版本 {}：{}", "Version {}: {}", app.env.ffmpeg.version.clone().unwrap_or_default(), app.env.ffmpeg.path.clone().unwrap_or_default()),
+            Kind::Ffmpeg if installed => std::iter::once(trf!("版本 {}：{}", "Version {}: {}", app.env.ffmpeg.version.clone().unwrap_or_default(), app.env.ffmpeg.path.clone().unwrap_or_default()))
+                .chain(main_view::ready_details(app))
+                .collect::<Vec<_>>()
+                .join("\n"),
             Kind::Ffmpeg => tr!("錄影、截圖、轉檔都要用到（必要，約 100 MB）。", "Required for recording, screenshots and conversion (about 100 MB).").into(),
             Kind::Mpv if installed => trf!(
                 "播放影片時用 mpv（顯示卡解碼），4K、60 fps 的影片也很順。位置：{}",
