@@ -1,5 +1,5 @@
 //! 開發用（只在 debug 版）：自動開啟某個畫面、模擬操作並截圖，在 Linux 的 Xvfb 上檢查介面。
-//! - SCREENRECORDER_DEV：要開啟的畫面（library、shots、changelog、notes（講稿小視窗）、schedule（排程錄影）、after:<路徑>（錄完自動處理）、follow:<標題>（只錄這個視窗）、followfake:<標題>（模擬已選好視窗）、record:<秒>（錄幾秒）、replay:<保留秒數>,<幾秒後存下>[,<再幾秒停止>]（重播緩衝）、export:<路徑>、edit:<路徑>、tags:<路徑>（影片資訊）、send:<路徑>|<路徑>（傳到媒體庫：選資料夾）、compress:<路徑>（壓縮）、merge:<路徑>|<路徑>（合併）、view:<路徑>、play:<路徑>（在主畫面播放）、whatsnew（新功能介紹）、about（關於）、monitors（模擬兩個螢幕）、unplug（模擬拔掉外接螢幕）、winoff:<x>,<y>（把視窗移到那裡，2 秒後拉回看得到的地方）、snip:<PNG>（用這張圖當凍結的桌面開啟框選截圖）、snipregion:<PNG>（同上，只選範圍）、stepsreview:<PNG>,<PNG>（整理步驟截圖）、hotkeys（模擬已登記快速鍵）、fakerec:<0|1>（模擬錄影中、有錄麥克風，1 = 靜音中）、fakedone:<路徑>（模擬剛錄好這支）、update:<版本>（模擬有新版本）、cameras:<名稱>,<名稱>（模擬找到的攝影機）、settings:<general|record|audio|shots|save|after|keys|advanced|components>、ed:<剪輯視窗指令>、tour:<first|editor|shot|library>[,<第幾步>]（教學）），以 ; 分隔
+//! - SCREENRECORDER_DEV：要開啟的畫面（library、shots、changelog、notes（講稿小視窗）、schedule（排程錄影）、after:<路徑>（錄完自動處理）、follow:<標題>（只錄這個視窗）、followfake:<標題>（模擬已選好視窗）、record:<秒>（錄幾秒）、replay:<保留秒數>,<幾秒後存下>[,<再幾秒停止>]（重播緩衝）、export:<路徑>、edit:<路徑>、tags:<路徑>（影片資訊）、send:<路徑>|<路徑>（傳到媒體庫：選資料夾）、compress:<路徑>（壓縮）、merge:<路徑>|<路徑>（合併）、view:<路徑>、play:<路徑>（在主畫面播放）、whatsnew（新功能介紹）、about（關於）、monitors（模擬兩個螢幕）、unplug（模擬拔掉外接螢幕）、winoff:<x>,<y>（把視窗移到那裡，2 秒後拉回看得到的地方）、snip:<PNG>（用這張圖當凍結的桌面開啟框選截圖）、snipregion:<PNG>（同上，只選範圍）、stepsreview:<PNG>,<PNG>（整理步驟截圖）、hotkeys（模擬已登記快速鍵）、fakerec:<0|1>（模擬錄影中、有錄麥克風、音量條；1 = 暫停、麥克風靜音、有一則警告）、fakedone:<路徑>（模擬剛錄好這支）、fakejob:<路徑>（模擬加速版剛做好）、jfinfo:<編號>（Jellyfin 影片資訊）、update:<版本>（模擬有新版本）、cameras:<名稱>,<名稱>（模擬找到的攝影機）、settings:<general|record|audio|shots|save|after|keys|advanced|components>、ed:<剪輯視窗指令>、tour:<first|editor|shot|library>[,<第幾步>]（教學）），以 ; 分隔
 //! - SCREENRECORDER_INPUT：開啟後依序模擬的操作，以 ; 分隔：
 //!   wait:毫秒、click:x,y（可加 ,ctrl、,shift）、dclick:x,y（按兩下）、rclick:x,y（右鍵）、move:x,y、drag:x0,y0,x1,y1、wheel:x,y,dy（加 ,ctrl = Ctrl+滾輪）、key:Space（可加 ctrl+、alt+、shift+）、hold:Space / release:Space（按住、放開）、type:文字、shot:路徑
 //! - SCREENRECORDER_SHOT：最後截圖存檔的路徑（存好後結束）；SCREENRECORDER_SHOT_AFTER：開始後幾毫秒截圖（預設 3000）
@@ -35,6 +35,8 @@ pub struct Dev {
     fake_rec: Option<bool>,
     /// fakedone:<路徑> 模擬剛錄好這支（控制列的「錄影已儲存」、最近錄影的藍框）
     fake_done: Option<String>,
+    /// fakejob:<路徑> 模擬 1.15× 加速版剛做好（控制列的「加速版做好了」）
+    fake_job: Option<String>,
 }
 
 fn button(p: Pos2, pressed: bool, modifiers: Modifiers) -> Event {
@@ -176,6 +178,39 @@ pub fn fake_status(app: &mut UiApp) {
     if let Some(m) = app.dev.fake_rec {
         let r = &mut app.status.recorder;
         (r.state, r.mic_muted, r.recorded_ms, r.markers) = (screenrecorder_core::types::RecorderState::Recording, Some(m), 83_000, 1);
+        (r.bytes, r.out_width, r.out_height, r.fps) = (6_330_000, 1920, 1080, 30.0);
+        // 音量條：跟著時間跳動
+        let t = app.dev.started.map_or(0.0, |s| s.elapsed().as_secs_f32());
+        r.levels = Some((Some(0.05 + 0.04 * (t * 3.0).sin().abs()), Some(0.2 + 0.15 * (t * 5.0).sin().abs())));
+        // 靜音的那種也當作暫停中、有一則警告（看暫停、靜音、事件紀錄的樣子）
+        if m {
+            r.state = screenrecorder_core::types::RecorderState::Paused;
+            if r.log.is_empty() {
+                r.log.push(screenrecorder_core::types::LogEntry {
+                    t: screenrecorder_core::paths::now_ms(),
+                    level: screenrecorder_core::types::LogLevel::Warn,
+                    text: "麥克風中斷：先以靜音代替並嘗試重新連線".into(),
+                });
+            }
+        }
+    }
+    if let Some(path) = app.dev.fake_job.clone() {
+        use screenrecorder_core::types::{ExportKind, ExportState, ExportStatus};
+        let output = path.replace(".mp4", "_1.15x.mp4");
+        app.status.export = Some(ExportStatus {
+            id: 7,
+            kind: ExportKind::Speed,
+            state: ExportState::Done,
+            source: path,
+            output,
+            speed: 1.15,
+            progress: 1.0,
+            expected_sec: 30.0,
+            elapsed_ms: 9000,
+            eta_sec: None,
+            bytes: Some(11_400_000),
+            message: None,
+        });
     }
     if let Some(path) = app.dev.fake_done.clone() {
         let bytes = std::fs::metadata(&path).map(|m| m.len()).ok();
@@ -281,6 +316,12 @@ pub fn tick(app: &mut UiApp, ctx: &egui::Context) {
                     Some(("notes", c)) => super::notes::dev(app, c),
                     Some(("tour", c)) => super::tour::dev(app, c),
                     Some(("fakedone", p)) => app.dev.fake_done = Some(p.to_string()),
+                    Some(("fakejob", p)) => app.dev.fake_job = Some(p.to_string()),
+                    // Jellyfin 影片資訊（人物、標籤的常用）
+                    Some(("jfinfo", id)) => {
+                        let user = Some(app.s.jellyfin_user.clone()).filter(|u| !u.is_empty()).unwrap_or_else(|| "u".into());
+                        super::jellyfin_edit::open(app, id.to_string(), user, id.to_string(), vec![], vec![])
+                    }
                     _ if a.starts_with("fakerec:") => app.dev.fake_rec = Some(a.ends_with('1')),
                     _ if a == "about" => app.about_open = true,
                     _ if a == "whatsnew" => {

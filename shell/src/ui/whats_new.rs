@@ -42,31 +42,31 @@ enum Try {
 fn items(_app: &UiApp) -> Vec<(String, String, Try)> {
     vec![
         (
-            tr!("開始錄影移到預覽下面", "Start recording is now under the preview").into(),
+            tr!("錄影中看得到聲音大小", "See audio levels while recording").into(),
             tr!(
-                "「開始錄影」放在預覽下面的一條控制列；錄影中同一列換成計時、暫停、標記、麥克風、停止，眼睛不用在預覽和右邊之間來回。截圖用快速鍵，或右上角「⋯」→「截圖工具」。",
-                "“Start recording” now sits on a bar under the preview. While recording, the same bar shows the timer, Pause, Mark, the mic and Stop, so you don't have to look back and forth. Take screenshots with the shortcuts or “⋯” (top right) → “Screenshot tools”."
+                "錄影時控制列中間有麥克風、電腦聲音的音量條，講話時麥克風那條會跳動，不用錄完才發現沒有聲音；麥克風靜音時按鈕和音量條都會寫「已靜音」。",
+                "While recording, the control bar shows microphone and system audio levels. The mic bar moves when you talk, so you won't find out afterwards that nothing was recorded. When the mic is muted, the button and the level both say “Muted”."
             )
             .into(),
             Try::None,
         ),
         (
-            tr!("錄好了、製作中，都寫在同一列", "Results and progress on the same bar").into(),
+            tr!("訊息更好找、更好按", "Clearer messages and actions").into(),
             tr!(
-                "錄影已儲存、製作加速版的進度、自動處理、有新版本和錄影前的提醒，都顯示在按鈕右邊，一次一則，有好幾則時點「還有 N 則」換下一則；播放、資料夾、複製檔案、剪輯、製作是小圖示，滑鼠移上去有說明。控制列高度不會變，預覽不會跳。",
-                "“Recording saved”, export progress, post-processing, updates and pre-recording notes appear to the right of the buttons, one at a time; click “N more” for the next one. Play, folder, copy, edit and make are small icons with tooltips. The bar keeps its height, so the preview doesn't jump."
+                "錄好了、做好了的訊息左邊有色條（綠＝完成、藍＝進行中、橘＝提醒），第二行寫檔名，「▶ 播放」等按鈕就在文字旁邊；好幾則時用「‹ 1/2 ›」翻看，新的排第一。停止改成紅底實心，麥克風按鈕會寫出是不是靜音。",
+                "Messages have a colored stripe (green = done, blue = in progress, orange = note) and the file name on a second line, with Play and other buttons right next to the text. Page through several with “‹ 1/2 ›”; the newest is first. Stop is now solid red, and the mic button says whether it's muted."
             )
             .into(),
             Try::None,
         ),
         (
-            tr!("右邊整欄是最近錄影", "Recent recordings fill the right column").into(),
+            tr!("Jellyfin 人物、標籤：常用的在前", "Jellyfin people and tags: most used first").into(),
             tr!(
-                "右邊從上到下都是最近錄影，用捲軸或滾輪捲動看全部；剛錄好的那支排第一張、有藍框。最下面是檔案庫：錄影、截圖、Jellyfin。",
-                "The whole right column now lists recent recordings; scroll to see them all; the one you just recorded is first with a blue border. The library buttons (videos, screenshots, Jellyfin) are at the bottom."
+                "影片資訊的「常用」依使用次數排、重複的合成一個；★ 釘選常用的，「全部 N 個」可以搜尋、勾選多個一次加入。",
+                "“Used before” in the video details is ordered by how often each is used, with duplicates merged. Pin favorites with ★, and use “All N” to search and add several at once."
             )
             .into(),
-            Try::Library(false),
+            Try::Jellyfin,
         ),
     ]
 }

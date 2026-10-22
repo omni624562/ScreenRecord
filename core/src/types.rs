@@ -698,6 +698,9 @@ pub struct RecorderStatus {
     /// 以靜音代替的聲音來源（audiopipe::SILENT_SYSTEM、SILENT_MIC）：錄影面板標成紅色
     #[serde(default, skip_serializing_if = "is_zero_u8")]
     pub silent_audio: u8,
+    /// 錄影中的音量（0～1，最近一小段的最大值）：（系統聲音, 麥克風），沒錄的來源是 None；主畫面的音量條
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub levels: Option<(Option<f32>, Option<f32>)>,
 }
 
 /// 重播緩衝的狀態

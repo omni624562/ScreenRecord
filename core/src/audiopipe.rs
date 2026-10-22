@@ -200,6 +200,8 @@ pub struct Timeline {
     src_buf: Vec<f32>,
     /// 麥克風靜音的開關（平常是 MIC_MUTED；測試時換成自己的，不和其他測試互相影響）
     mic_mute: &'static AtomicBool,
+    /// 上次讀了之後各來源的最大音量（0～1，[系統聲音, 麥克風]；沒錄的來源是 None）：主畫面錄影中的音量條
+    peaks: [Option<f32>; 2],
 }
 
 /// 這個來源在 SILENT_SYSTEM / SILENT_MIC 裡是哪一個
@@ -251,10 +253,13 @@ impl Timeline {
             separate,
             src_buf: Vec::new(),
             mic_mute: &MIC_MUTED,
+            peaks: [None, None],
         };
         for i in 0..t.sources.len() {
             t.open(i, true, now);
         }
+        // 有錄的來源從 0 開始（沒錄的維持 None）
+        t.take_peaks();
         t
     }
 
@@ -401,6 +406,22 @@ impl Timeline {
         }
     }
 
+    /// 上次讀了之後各來源的最大音量（[系統聲音, 麥克風]），讀了就歸零
+    pub fn take_peaks(&mut self) -> [Option<f32>; 2] {
+        let out = self.peaks;
+        for s in &self.sources {
+            self.peaks[if s.spec.loopback { 0 } else { 1 }] = Some(0.0);
+        }
+        out
+    }
+
+    /// 記下一個來源這一段的最大音量
+    fn note_peak(&mut self, loopback: bool, data: &[f32]) {
+        let peak = data.iter().fold(0.0f32, |m, v| m.max(v.abs()));
+        let slot = &mut self.peaks[if loopback { 0 } else { 1 }];
+        *slot = Some(slot.unwrap_or(0.0).max(peak));
+    }
+
     /// 所有來源都有資料的部分相加後回傳（分軌時每張取樣是 混音、來源 1、來源 2…）
     fn mix(&mut self) -> &[u8] {
         let Some(n) = self.sources.iter().map(|s| s.ring.size).min() else { return &[] };
@@ -411,12 +432,17 @@ impl Timeline {
         if self.mix_buf.len() < n * width {
             self.mix_buf.resize(n * width, 0.0);
         }
+        if self.src_buf.len() < n * CHANNELS {
+            self.src_buf.resize(n * CHANNELS, 0.0);
+        }
         if self.separate {
-            if self.src_buf.len() < n * CHANNELS {
-                self.src_buf.resize(n * CHANNELS, 0.0);
-            }
-            for (i, s) in self.sources.iter_mut().enumerate() {
+            for i in 0..self.sources.len() {
+                let s = &mut self.sources[i];
                 s.ring.take(&mut self.src_buf, n, false);
+                let loopback = s.spec.loopback;
+                let buf = std::mem::take(&mut self.src_buf);
+                self.note_peak(loopback, &buf[..n * CHANNELS]);
+                self.src_buf = buf;
                 for f in 0..n {
                     for c in 0..CHANNELS {
                         let v = self.src_buf[f * CHANNELS + c];
@@ -427,8 +453,17 @@ impl Timeline {
                 }
             }
         } else {
-            for (i, s) in self.sources.iter_mut().enumerate() {
-                s.ring.take(&mut self.mix_buf, n, i > 0);
+            // 每個來源先取出來量音量，再加進混音
+            for i in 0..self.sources.len() {
+                let s = &mut self.sources[i];
+                s.ring.take(&mut self.src_buf, n, false);
+                let loopback = s.spec.loopback;
+                let buf = std::mem::take(&mut self.src_buf);
+                self.note_peak(loopback, &buf[..n * CHANNELS]);
+                for (j, v) in buf[..n * CHANNELS].iter().enumerate() {
+                    self.mix_buf[j] = if i == 0 { *v } else { self.mix_buf[j] + v };
+                }
+                self.src_buf = buf;
             }
         }
         let out = &self.mix_buf[..n * width];
@@ -541,6 +576,8 @@ pub struct AudioPipe {
     sources: u8,
     /// 最後一次有聲音（不是安靜的）的時間（Unix 毫秒；沒動靜時自動暫停用）
     last_sound: Arc<AtomicU64>,
+    /// 最近的音量（f32 的位元；[系統聲音, 麥克風]，u32::MAX 表示沒錄這個來源）
+    levels: Arc<[std::sync::atomic::AtomicU32; 2]>,
     tx: mpsc::Sender<Cmd>,
     thread: std::sync::Mutex<Option<std::thread::JoinHandle<()>>>,
 }
@@ -562,6 +599,8 @@ impl AudioPipe {
         let silent_flag = silent.clone();
         let last_sound = Arc::new(AtomicU64::new(0));
         let sound_at = last_sound.clone();
+        let levels = Arc::new([std::sync::atomic::AtomicU32::new(u32::MAX), std::sync::atomic::AtomicU32::new(u32::MAX)]);
+        let levels_out = levels.clone();
         let thread = std::thread::Builder::new().name("audio".into()).spawn(move || {
             let mut tl = Timeline::with_tracks(&specs, opener, log.clone(), now_100ns(), separate);
             silent_flag.store(tl.silent_mask(), Ordering::Relaxed);
@@ -586,6 +625,9 @@ impl AudioPipe {
                             sound_at.store(crate::paths::now_ms(), Ordering::Relaxed);
                         }
                         out.write(bytes);
+                        for (slot, peak) in levels_out.iter().zip(tl.take_peaks()) {
+                            slot.store(peak.map_or(u32::MAX, f32::to_bits), Ordering::Relaxed);
+                        }
                         flag.store(tl.synced(), Ordering::Relaxed);
                         silent_flag.store(tl.silent_mask(), Ordering::Relaxed);
                     }
@@ -599,7 +641,13 @@ impl AudioPipe {
         })?;
         // 開啟音訊裝置卡住時不要一直等（錄影的開始、暫停、停止都在等這裡）：裝置稍後好了照樣會送聲音
         let desc = desc_rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap_or_else(|_| tr!("音訊裝置沒有回應", "Audio device isn't responding").to_string());
-        Ok(AudioPipe { port, channels, desc, synced, silent, sources, last_sound, tx, thread: std::sync::Mutex::new(Some(thread)) })
+        Ok(AudioPipe { port, channels, desc, synced, silent, sources, last_sound, levels, tx, thread: std::sync::Mutex::new(Some(thread)) })
+    }
+
+    /// 最近的音量（0～1）：（系統聲音, 麥克風），沒錄的來源是 None
+    pub fn levels(&self) -> (Option<f32>, Option<f32>) {
+        let get = |i: usize| Some(self.levels[i].load(Ordering::Relaxed)).filter(|b| *b != u32::MAX).map(f32::from_bits);
+        (get(0), get(1))
     }
 
     pub fn port(&self) -> u16 {
@@ -905,4 +953,26 @@ mod tests {
     }
 
     const BYTES: usize = crate::audio::BYTES_PER_FRAME;
+
+    #[test]
+    fn peaks_follow_each_source() {
+        let packets: Packets = Default::default();
+        let fail = Arc::new(AtomicBool::new(false));
+        let (log, _) = logs();
+        let specs = [AudioSourceSpec { loopback: true, mic_id: String::new(), app: String::new() }, AudioSourceSpec { loopback: false, mic_id: String::new(), app: String::new() }];
+        let mut tl = Timeline::new(&specs, fake_opener(packets.clone(), fail), log, 0);
+        // 兩個來源都有錄：一開始是 0
+        assert_eq!(tl.take_peaks(), [Some(0.0), Some(0.0)]);
+        tl.on_video_frame(0.0, 0);
+        // 第一個來源（系統聲音）讀到 −0.5 的聲音，麥克風只有靜音
+        packets.lock().unwrap().push_back((Some(vec![-0.5; 96]), 48, Some(0)));
+        let _ = tl.flush_to(10 * MS);
+        assert_eq!(tl.take_peaks(), [Some(0.5), Some(0.0)]);
+        // 讀了就歸零
+        assert_eq!(tl.take_peaks(), [Some(0.0), Some(0.0)]);
+        // 只錄麥克風：系統聲音是 None
+        let (log, _) = logs();
+        let mut mic = Timeline::new(&specs[1..], fake_opener(Default::default(), Arc::new(AtomicBool::new(false))), log, 0);
+        assert_eq!(mic.take_peaks(), [None, Some(0.0)]);
+    }
 }
