@@ -17,10 +17,9 @@ use screenrecorder_core::{tr, trf};
 /// 教學會亮出來的地方
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Spot {
-    /// 主畫面：下載錄影元件、範圍分頁、聲音那一列、開始 / 停止錄影、最近錄影（第一張）、截圖那一列、設定
+    /// 主畫面：下載錄影元件、範圍分頁、開始 / 停止錄影、最近錄影（第一張）、截圖那一列、標題列的 ☰ 總選單
     Download,
     Source,
-    Audio,
     Record,
     Recent,
     RecentCard,
@@ -440,11 +439,11 @@ fn content(app: &UiApp, t: &Tour) -> (Option<Spot>, String, String, Go) {
             next(),
         ),
         Step::Audio => (
-            Some(Spot::Audio),
+            Some(Spot::Settings),
             tr!("確認聲音", "Check the audio").into(),
             tr!(
-                "預設會錄電腦播放的聲音和麥克風。按聲音旁邊的「測試音量」講幾句話，麥克風的條有跳動就表示收得到；要換麥克風或不錄聲音，點聲音設定修改。",
-                "By default the computer's sound and your microphone are recorded. Click “Test levels” next to the audio setting and say a few words: if the microphone bar moves, you're being heard. To change microphones or record without sound, click the audio setting."
+                "預設會錄電腦播放的聲音和麥克風。想確認麥克風收得到：左上角 ☰ →「設定」→「聲音」，按「測試音量」講幾句話，麥克風的條有跳動就表示收得到；換麥克風或不錄聲音也在那裡。錄影前有問題（例如找不到麥克風）時，預覽下方會出現橘色的提醒。",
+                "By default the computer's sound and your microphone are recorded. To check the mic: ☰ (top left) → Settings → Audio, click “Test levels” and say a few words; if the microphone bar moves, you're being heard. You can change microphones or turn audio off there too. If something's wrong before recording (for example no microphone), an orange note appears below the preview."
             )
             .into(),
             next(),
@@ -499,8 +498,8 @@ fn content(app: &UiApp, t: &Tour) -> (Option<Spot>, String, String, Go) {
             Some(Spot::Settings),
             tr!("完成了！", "You're all set!").into(),
             tr!(
-                "畫質、每秒張數、存檔位置、快速鍵、語言都在「設定」；回溯錄影、排程錄影、講稿小視窗在標題列右邊的「⋯」。之後第一次打開剪輯、截圖編輯、全部截圖時，也會有幾步小提示。想再看一次這個教學：「設定 → 關於 → 重新看教學」。",
-                "Quality, frame rate, where files are saved, shortcuts and language are in “Settings”; the replay buffer, scheduled recording and the script window are under “⋯” on the right of the title bar. The first time you open the editor, screenshot editing or All screenshots, you'll get a few quick tips too. To see this tutorial again: Settings → About → “Replay tutorial”."
+                "左上角的 ☰ 是總選單：檔案庫、工具（回溯錄影、排程錄影、講稿小視窗、設定組合）、設定（畫質、每秒張數、存檔位置、快速鍵、語言，也可以按 Ctrl+,）、說明。之後第一次打開剪輯、截圖編輯、全部截圖時，也會有幾步小提示。想再看一次這個教學：☰ →「說明」→「重新看教學」。",
+                "The ☰ at the top left is the main menu: Library, Tools (replay buffer, scheduled recording, script window, presets), Settings (quality, frame rate, where files are saved, shortcuts, language; or press Ctrl+,) and Help. The first time you open the editor, screenshot editing or All screenshots, you'll get a few quick tips too. To see this tutorial again: ☰ → Help → “Replay tutorial”."
             )
             .into(),
             Go::Button(tr!("開始使用", "Get started").into()),

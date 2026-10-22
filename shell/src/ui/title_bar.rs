@@ -1,5 +1,5 @@
-//! 自己畫的標題列（操作視窗不用 Windows 的標題列）：左邊「螢幕錄影 ⌄」選單（關於、檢查更新、更新說明），
-//! 右邊更多工具（⋯）、檔案庫、設定、縮小成小視窗，再來是縮到最小、最大化、關閉。
+//! 自己畫的標題列（操作視窗不用 Windows 的標題列）：左邊 ☰ 總選單（檔案庫、工具、設定、說明、結束），
+//! 右邊縮小成小視窗，再來是縮到最小、最大化、關閉。
 //! 拖曳空白的地方移動視窗、按兩下最大化；視窗四邊與四個角可以拖曳調整大小。
 //! 小視窗：只留開始 / 停止錄影、計時、暫停、截圖，不擋畫面；不會被錄進影片，錄影中浮在最上層
 
@@ -100,6 +100,10 @@ pub fn leave_compact(app: &mut UiApp, ctx: &egui::Context) {
 /// 每一畫格：小視窗時開了需要完整視窗的畫面（例如截圖後直接編輯、從系統匣開設定）就回到完整視窗
 /// 小視窗錄影中（含倒數、暫停）浮在最上層，停止後恢復一般視窗
 pub fn tick(app: &mut UiApp, ctx: &egui::Context) {
+    // Ctrl+,：打開設定（總選單裡「設定」旁邊寫的快速鍵）
+    if app.settings_dlg.is_none() && app.ask.is_none() && app.snip.is_none() && ctx.input_mut(|i| i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::Comma))) {
+        settings_dialog::open(app, Page::General);
+    }
     if app.compact.is_some() && needs_full(app) {
         leave_compact(app, ctx);
     }
@@ -162,7 +166,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         } else if drag.drag_started_by(PointerButton::Primary) {
             ctx.send_viewport_cmd(ViewportCommand::StartDrag);
         }
-        // 右邊：關閉、最大化、縮到最小，再來是檔案庫、設定、縮小成小視窗
+        // 右邊：關閉、最大化、縮到最小，再來是縮小成小視窗
         let right_w = {
             let rui = &mut ui.new_child(UiBuilder::new().max_rect(bar).layout(Layout::right_to_left(Align::Center)));
             rui.spacing_mut().item_spacing.x = 0.0;
@@ -179,7 +183,6 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                 ctx.send_viewport_cmd(ViewportCommand::Minimized(true));
             }
             rui.add_space(10.0);
-            rui.spacing_mut().item_spacing.x = 2.0;
             let tip = if compact {
                 tr!("回到完整視窗", "Back to the full window")
             } else {
@@ -192,50 +195,77 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                     enter_compact(app, ctx);
                 }
             }
-            if !compact {
-                if Btn::icon_only(Icon::Settings).ghost().small().selected(app.settings_dlg.is_some()).enabled(app.ask.is_none()).tooltip(tr!("設定", "Settings")).show(rui).clicked() {
-                    settings_dialog::open(app, Page::General);
-                }
-                let lib = Btn::icon_only(Icon::Library)
-                    .ghost()
-                    .small()
-                    .selected(app.library.is_some())
-                    .enabled(!covered)
-                    .tooltip(tr!("檔案庫：錄影、截圖（、Jellyfin）", "Library: recordings, screenshots (and Jellyfin)"));
-                if lib.show(rui).clicked() && app.library.is_none() {
-                    app.library = Some(LibraryDialog::new(Kind::Video));
-                }
-                // 更多工具：回溯錄影、排程錄影、講稿小視窗、瀏覽 Jellyfin、設定組合
-                let more = Btn::icon_only(Icon::More)
-                    .ghost()
-                    .small()
-                    .enabled(!covered)
-                    .tooltip(tr!("更多工具：回溯錄影、排程錄影、講稿小視窗、設定組合", "More tools: replay buffer, scheduled recording, script window, presets"))
-                    .show(rui);
-                main_view::more_tools(app, &more);
-            }
             bar.max.x - rui.min_rect().min.x
         };
-        // 左邊：圖示與「螢幕錄影 ⌄」選單（寬度不夠時省略文字）
-        let left = Rect::from_min_max(bar.min + vec2(10.0, 0.0), egui::pos2(bar.max.x - right_w - 8.0, bar.max.y));
+        // 左邊：☰ 總選單、圖示、程式名稱（名稱只是文字，拖曳它一樣可以移動視窗；寬度不夠時省略）
+        let left = Rect::from_min_max(bar.min + vec2(6.0, 0.0), egui::pos2(bar.max.x - right_w - 8.0, bar.max.y));
         let lui = &mut ui.new_child(UiBuilder::new().max_rect(left).layout(Layout::left_to_right(Align::Center)));
-        lui.spacing_mut().item_spacing.x = 4.0;
+        lui.spacing_mut().item_spacing.x = 6.0;
+        let menu = Btn::icon_only(Icon::Menu).ghost().small().tooltip(tr!("選單：檔案庫、工具、設定、說明", "Menu: library, tools, settings, help")).show(lui);
+        super::tour::mark(lui, super::tour::Spot::Settings, menu.rect);
+        egui::Popup::menu(&menu).show(|ui| main_menu(app, ui, covered));
         let tex = app_icon(ctx);
         lui.add(egui::Image::new(&tex).fit_to_exact_size(vec2(18.0, 18.0)));
-        let menu = Btn::new(tr!("螢幕錄影", "Screen Recorder")).ghost().small().menu().show(lui);
-        egui::Popup::menu(&menu).show(|ui| {
-            ui.set_min_width(170.0);
-            if ui.button(tr!("關於", "About")).clicked() {
-                settings_dialog::open(app, Page::About);
+        let name = tr!("螢幕錄影", "Screen Recorder");
+        let room = lui.available_width();
+        let galley = lui.painter().layout_no_wrap(name.to_string(), theme::font(13.0), p.text);
+        if galley.size().x <= room {
+            let at = egui::pos2(lui.cursor().min.x, bar.center().y - galley.size().y / 2.0);
+            lui.painter().galley(at, galley, p.text);
+        }
+    });
+}
+
+/// 總選單：檔案庫、工具、設定、說明、結束。covered：開著剪輯、檢視器等視窗時不能開檔案庫和工具
+fn main_menu(app: &mut UiApp, ui: &mut Ui, covered: bool) {
+    ui.set_min_width(200.0);
+    let why = tr!("先關掉目前開著的視窗", "Close the open window first");
+    ui.add_enabled_ui(!covered, |ui| {
+        ui.menu_button(tr!("檔案庫", "Library"), |ui| {
+            ui.set_min_width(160.0);
+            if ui.button(tr!("錄影", "Recordings")).clicked() {
+                app.library = Some(LibraryDialog::new(Kind::Video));
             }
-            if ui.button(tr!("檢查更新", "Check for updates")).clicked() {
-                settings_dialog::check_update_now(app);
+            if ui.button(tr!("截圖", "Screenshots")).clicked() {
+                app.library = Some(LibraryDialog::new(Kind::Shot));
             }
-            if ui.button(tr!("更新說明", "Release notes")).clicked() {
-                app.changelog_open = true;
+            if app.jellyfin().is_some() && ui.button("Jellyfin").clicked() {
+                super::library_dialog::open_jellyfin(app);
             }
         });
+        ui.menu_button(tr!("工具", "Tools"), |ui| main_view::tools_menu(app, ui));
+    })
+    .response
+    .on_disabled_hover_text(why);
+    let settings = egui::Button::new(tr!("設定", "Settings")).shortcut_text("Ctrl+,");
+    if ui.add_enabled(app.ask.is_none(), settings).clicked() {
+        settings_dialog::open(app, Page::General);
+    }
+    ui.separator();
+    ui.menu_button(tr!("說明", "Help"), |ui| {
+        ui.set_min_width(180.0);
+        if ui.button(tr!("新功能介紹", "What's new tour")).clicked() {
+            app.whats_new_open = true;
+        }
+        if ui.button(tr!("更新說明", "Release notes")).clicked() {
+            app.changelog_open = true;
+        }
+        if ui.button(tr!("檢查更新", "Check for updates")).clicked() {
+            settings_dialog::check_update_now(app);
+        }
+        if ui.button(tr!("重新看教學", "Replay tutorial")).clicked() {
+            super::tour::restart(app);
+        }
+        ui.separator();
+        if ui.button(tr!("關於", "About")).clicked() {
+            settings_dialog::open(app, Page::About);
+        }
     });
+    ui.separator();
+    if ui.button(tr!("結束程式", "Quit")).on_hover_text(tr!("完全結束螢幕錄影（關掉視窗只是收到系統匣）", "Quit Screen Recorder completely (closing the window only hides it in the tray)")).clicked()
+    {
+        app.request_quit();
+    }
 }
 
 /// 視窗四邊、四個角：游標變成調整大小的箭頭，按下去拖曳調整大小（最大化、全螢幕時不行）。

@@ -31,12 +31,12 @@ fn label(app: &UiApp, current: Option<usize>) -> String {
     }
 }
 
-/// 按鈕的寬度（設定列先扣掉，其他摘要依剩下的寬度取捨）
+/// 按鈕的寬度（預覽上方那一列先扣掉）
 pub fn width(app: &UiApp, ui: &Ui) -> f32 {
     Btn::new(label(app, active(app))).icon(Icon::List).ghost().small().width(ui)
 }
 
-/// 下方設定列的按鈕
+/// 預覽上方的按鈕（有建立組合時）
 pub fn button(app: &mut UiApp, ui: &mut Ui) {
     let locked = app.locked();
     let current = active(app);
@@ -59,7 +59,7 @@ pub fn button(app: &mut UiApp, ui: &mut Ui) {
     egui::Popup::menu(&resp).show(|ui| menu_body(app, ui));
 }
 
-/// 組合清單與管理（下方設定列的按鈕、主畫面「更多工具」的子選單都用這個）
+/// 組合清單與管理（預覽上方的按鈕、☰ →「工具」的子選單都用這個）
 pub fn menu_body(app: &mut UiApp, ui: &mut Ui) {
     let current = active(app);
     let modified = last_used(app).filter(|_| current.is_none());

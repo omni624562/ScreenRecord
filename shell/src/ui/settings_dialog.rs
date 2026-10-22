@@ -154,23 +154,6 @@ pub fn record_summary(app: &UiApp) -> Vec<String> {
     v
 }
 
-/// 主畫面摘要：聲音
-pub fn audio_summary(app: &UiApp) -> (String, Icon) {
-    let label = match (app.s.audio_system, app.s.audio_mic) {
-        (true, true) => tr!("系統＋麥克風", "System + mic"),
-        (true, false) => tr!("系統聲音", "System audio"),
-        (false, true) => tr!("麥克風", "Microphone"),
-        _ => tr!("不錄聲音", "No audio"),
-    };
-    // 只錄某個程式：「chrome.exe＋麥克風」
-    let label = match (app.s.audio_system && !app.s.audio_app.is_empty(), app.s.audio_mic) {
-        (true, true) => trf!("{}＋麥克風", "{} + mic", app.s.audio_app),
-        (true, false) => app.s.audio_app.clone(),
-        _ => label.to_string(),
-    };
-    (label, if app.s.audio_mic && !app.s.audio_system { Icon::Mic } else { Icon::Speaker })
-}
-
 const NAV_W: f32 = 180.0;
 const BODY_W: f32 = 600.0;
 /// 內容區的高度（視窗太矮時縮短，內容可捲動）
@@ -746,6 +729,12 @@ fn audio_page(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
             }
         });
     });
+    // 測試音量：講幾句話看麥克風的條有沒有跳動（測試中換成音量表與「停止」）
+    if app.s.audio_system || app.s.audio_mic {
+        form_row(ui, tr!("測試音量", "Test levels"), |ui| {
+            super::main_view::level_test(app, ui, app.locked());
+        });
+    }
     form_row(ui, tr!("分軌", "Separate tracks"), |ui| {
         let both = app.s.audio_system && app.s.audio_mic;
         let mut on = app.s.separate_audio;
