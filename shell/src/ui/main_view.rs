@@ -1767,9 +1767,8 @@ fn control_bar(app: &mut UiApp, ui: &mut Ui) {
     });
 }
 
-/// 待命：紅色的「● 錄影」（快速鍵在滑鼠提示）；右邊是訊息，沒有訊息時空著
+/// 待命：錄影膠囊（灰色計時、紅色錄影鈕；快速鍵在滑鼠提示）；右邊是訊息，沒有訊息時空著
 fn idle_controls(app: &mut UiApp, ui: &mut Ui) {
-    let narrow = ui.available_width() < 700.0;
     let manual = app.manual_export();
     let tip = if !app.env.ffmpeg.found {
         tr!("請先下載錄影元件（上方的「下載並開始使用」）", "Download the recording component first (“Download and get started” above)").to_string()
@@ -1786,12 +1785,74 @@ fn idle_controls(app: &mut UiApp, ui: &mut Ui) {
     // 快速鍵不寫在按鈕上，滑鼠移上去才提示
     let k = app.keys.label(0);
     let tip = if tip.is_empty() && !k.is_empty() && app.env.hotkeys.is_some_and(|h| h.all().first().copied().unwrap_or(false)) { trf!("快速鍵 {k}", "Shortcut {k}") } else { tip };
-    let start = Btn::new(label).kind(theme::Kind::Record).height(42.0).min_width(if narrow { 110.0 } else { 140.0 }).enabled(can_start(app)).tooltip(tip).show(ui);
+    let start = idle_capsule(app, ui, label, &tip);
     tour::mark(ui, Spot::Record, start.rect);
     if start.clicked() {
         start_recording(app);
     }
     notice_area(app, ui, false);
+}
+
+/// 錄影膠囊的底色（深色；暫停時變灰；滑鼠移上去稍微亮一點）
+fn capsule_bg(ui: &Ui, paused: bool, hover: bool) -> Color32 {
+    let c = match (paused, ui.visuals().dark_mode) {
+        (false, false) => Color32::from_rgb(0x1f, 0x23, 0x28),
+        (true, false) => Color32::from_rgb(0x55, 0x5a, 0x62),
+        (false, true) => Color32::from_rgb(0x34, 0x39, 0x40),
+        (true, true) => Color32::from_rgb(0x4c, 0x51, 0x59),
+    };
+    if hover {
+        c.gamma_multiply(1.3)
+    } else {
+        c
+    }
+}
+
+/// 待命時的錄影膠囊：和錄影中同一條（灰色的 00:00:00、右邊紅色圓鈕），按下去原地變成錄影中、紅鈕變停止鈕。
+/// 整條都可以按；不能錄時變淡、滑鼠提示寫原因
+fn idle_capsule(app: &mut UiApp, ui: &mut Ui, label: &str, tip: &str) -> egui::Response {
+    let p = theme::pal(ui);
+    let enabled = can_start(app);
+    let timer = clock(0.0);
+    let timer_w = ui.painter().layout_no_wrap(timer.clone(), theme::mono(20.0), Color32::WHITE).size().x;
+    let w = 16.0 + 14.0 + 8.0 + timer_w + 10.0 + 1.0 + 7.0 + 36.0 + 6.0;
+    let (pill, resp) = ui.allocate_exact_size(vec2(w, 44.0), if enabled { Sense::click() } else { Sense::hover() });
+    let hover = enabled && resp.hovered();
+    let painter = ui.painter().clone();
+    let dim = |c: Color32| if enabled { c } else { c.gamma_multiply(0.5) };
+    painter.rect_filled(pill, 22.0, dim(capsule_bg(ui, false, hover)));
+    let cy = pill.center().y;
+    let mut x = pill.min.x + 16.0;
+    painter.circle_filled(pos2(x + 7.0, cy), 6.0, Color32::from_gray(110));
+    x += 14.0 + 8.0;
+    painter.text(pos2(x, cy), egui::Align2::LEFT_CENTER, timer, theme::mono(20.0), Color32::from_gray(if enabled { 150 } else { 120 }));
+    x += timer_w + 10.0;
+    painter.vline(x, (cy - 11.0)..=(cy + 11.0), Stroke::new(1.0, Color32::from_white_alpha(60)));
+    x += 7.0;
+    let c = pos2(x + 18.0, cy);
+    painter.circle_filled(
+        c,
+        17.0,
+        if !enabled {
+            p.rec.gamma_multiply(0.45)
+        } else if hover {
+            p.rec.gamma_multiply(0.85)
+        } else {
+            p.rec
+        },
+    );
+    painter.circle_filled(c, 6.0, Color32::WHITE);
+    if hover {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    // 滑鼠提示：「開始錄影」接快速鍵；不能錄時寫原因
+    let what = trf!("開始{label}", "Start: {label}");
+    let text = match (enabled, tip.is_empty()) {
+        (_, true) => what,
+        (true, false) => format!("{what}・{tip}"),
+        (false, false) => tip.to_string(),
+    };
+    resp.on_hover_text(text)
 }
 
 /// 錄影中：左邊一條深色膠囊（紅點、計時、暫停 / 繼續、標記、麥克風、停止；回溯錄影只有停止，旁邊是「存下最近 N」），
@@ -1878,13 +1939,7 @@ fn recording_controls(app: &mut UiApp, ui: &mut Ui, r: &screenrecorder_core::typ
     let icons_w = if icons.is_empty() { 0.0 } else { 7.0 + icons.len() as f32 * 38.0 + 6.0 };
     let w = 16.0 + 14.0 + 8.0 + timer_w + 10.0 + icons_w + 1.0 + 7.0 + 36.0 + 6.0;
     let (pill, _) = ui.allocate_exact_size(vec2(w, 44.0), Sense::hover());
-    let dark = ui.visuals().dark_mode;
-    let bg = match (paused, dark) {
-        (false, false) => Color32::from_rgb(0x1f, 0x23, 0x28),
-        (true, false) => Color32::from_rgb(0x55, 0x5a, 0x62),
-        (false, true) => Color32::from_rgb(0x34, 0x39, 0x40),
-        (true, true) => Color32::from_rgb(0x4c, 0x51, 0x59),
-    };
+    let bg = capsule_bg(ui, paused, false);
     let painter = ui.painter().clone();
     painter.rect_filled(pill, 22.0, bg);
     let cy = pill.center().y;
@@ -2308,6 +2363,11 @@ fn notice_area(app: &mut UiApp, ui: &mut Ui, active: bool) {
     let idx = app.main.notice_idx.min(count - 1);
     app.main.notice_idx = idx;
     let n = list[idx].clone();
+    // 錄影已儲存：縮圖卡片（其他訊息照舊：色條、兩行文字、動作）
+    let saved = match &n {
+        Notice::Result(res, _) if res.ok => res.path.clone().map(|path| (path, res.video_sec, res.bytes.unwrap_or(0))),
+        _ => None,
+    };
     let view = notice_view(app, &n, p);
     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
         ui.spacing_mut().item_spacing.x = 2.0;
@@ -2331,6 +2391,9 @@ fn notice_area(app: &mut UiApp, ui: &mut Ui, active: bool) {
         }
         ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
             ui.spacing_mut().item_spacing.x = 6.0;
+            if let Some((path, sec, bytes)) = &saved {
+                return saved_card(app, ui, path, *sec, *bytes);
+            }
             // 色條：綠＝完成、藍＝進行中、橘＝提醒、紅＝失敗
             let (bar, _) = ui.allocate_exact_size(vec2(4.0, 40.0), Sense::hover());
             ui.painter().rect_filled(bar, CornerRadius::same(2), view.color);
@@ -2378,6 +2441,68 @@ fn notice_area(app: &mut UiApp, ui: &mut Ui, active: bool) {
     });
     if list.iter().any(|n| matches!(n, Notice::Job(_) | Notice::After | Notice::Schedule | Notice::Manual(_))) {
         ui.ctx().request_repaint_after(std::time::Duration::from_millis(500));
+    }
+}
+
+/// 錄影已儲存：左邊縮圖（點了播放），檔名（點了在最近錄影找到它）和「✓ 已儲存・長度・大小」，後面是剪輯、資料夾、複製、更多
+fn saved_card(app: &mut UiApp, ui: &mut Ui, path: &str, sec: f64, bytes: u64) {
+    let p = theme::pal(ui);
+    ui.spacing_mut().item_spacing.x = 8.0;
+    let name = std::path::Path::new(path).file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
+    let audio = screenrecorder_core::after_record::is_audio_recording(path);
+    // 縮圖（只錄聲音的沒有畫面：灰底加音符圖示）
+    let (r, thumb) = ui.allocate_exact_size(vec2(68.0, 40.0), Sense::click());
+    let mtime = std::fs::metadata(path).and_then(|m| m.modified()).ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0.0, |d| d.as_secs_f64());
+    let rounding = CornerRadius::same(6);
+    match (!audio).then(|| app.thumb(path, mtime)).flatten() {
+        Some(t) => {
+            ui.painter().add(egui::epaint::RectShape::filled(r, rounding, Color32::WHITE).with_texture(t.id(), Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0))));
+        }
+        None => {
+            ui.painter().rect_filled(r, rounding, p.surface2);
+        }
+    }
+    ui.painter().rect_stroke(r, rounding, Stroke::new(1.0, p.border), egui::StrokeKind::Inside);
+    ui.painter().circle_filled(r.center(), 11.0, Color32::from_black_alpha(if thumb.hovered() { 200 } else { 140 }));
+    theme::paint_icon(ui.painter(), Rect::from_center_size(r.center() + vec2(1.0, 0.0), vec2(10.0, 10.0)), Icon::Play, Color32::WHITE);
+    if thumb.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(tr!("播放", "Play")).clicked() {
+        app.act_path(EntryAction::PlayHere, path.to_string());
+    }
+    // 檔名、已儲存・長度・大小
+    let meta = format!("{}・{}", short_clock(sec), format_bytes(bytes));
+    let measure = |t: &str, f: egui::FontId| ui.painter().layout_no_wrap(t.to_string(), f, p.text).size().x;
+    let text_w = measure(&name, theme::font_bold(13.5)).max(measure(&meta, theme::font(12.0)) + 70.0).ceil().min((ui.available_width() - 190.0).max(100.0));
+    ui.allocate_ui_with_layout(vec2(text_w, 44.0), Layout::top_down(Align::Min), |ui| {
+        ui.set_width(text_w);
+        ui.spacing_mut().item_spacing.y = 2.0;
+        ui.add_space(3.0);
+        let r = ui.add(egui::Label::new(RichText::new(&name).font(theme::font_bold(13.5)).color(p.text)).truncate().sense(Sense::click()));
+        if r.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(tr!("在右邊的最近錄影找到它", "Find it in Recent recordings on the right")).clicked() {
+            app.main.recent_to_top = true;
+        }
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            ui.label(RichText::new("✓").font(theme::font_bold(12.0)).color(p.ok));
+            ui.add(egui::Label::new(RichText::new(trf!("已儲存・{meta}", "Saved · {meta}")).font(theme::font(12.0)).color(p.muted)).truncate());
+        });
+    });
+    // 動作：剪輯（有畫面才有）、資料夾、複製、更多
+    if !audio && mini(ui, Icon::Cut, tr!("剪輯", "Edit")) {
+        app.act_path(EntryAction::Edit, path.to_string());
+    }
+    if mini(ui, Icon::Folder, tr!("在資料夾中顯示", "Show in folder")) {
+        app.act_path(EntryAction::Reveal, path.to_string());
+    }
+    if mini(ui, Icon::Copy, tr!("複製檔案（貼到 LINE）", "Copy file (paste into LINE)")) {
+        app.act_path(EntryAction::CopyFile, path.to_string());
+    }
+    if !audio {
+        let more = Btn::icon_only(Icon::More).ghost().small().tooltip(tr!("更多：製作加速版、GIF、壓縮…", "More: speed up, GIF, compress…")).show(ui);
+        egui::Popup::menu(&more).show(|ui| {
+            if ui.button(tr!("製作加速版 / GIF / 壓縮…", "Speed up / GIF / compress…")).clicked() {
+                app.act_path(EntryAction::Export, path.to_string());
+            }
+        });
     }
 }
 
