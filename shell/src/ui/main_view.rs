@@ -1917,12 +1917,14 @@ fn recording_controls(app: &mut UiApp, ui: &mut Ui, r: &screenrecorder_core::typ
         }
     };
     // 膠囊裡的圖示按鈕：（圖示, 滑鼠提示, 動作, 能不能按, 紅色）
+    // 回溯錄影以外，暫停、標記、麥克風的位置一直留著（倒數、處理中變淡不能按），膠囊和待命時一樣寬，開始、結束都不會縮放
     let mut icons: Vec<(Icon, String, RecAct, bool, bool)> = vec![];
-    if replay.is_none() && matches!(r.state, RecorderState::Recording | RecorderState::Paused) {
+    if replay.is_none() {
+        let live = matches!(r.state, RecorderState::Recording | RecorderState::Paused);
         icons.push(if paused {
-            (Icon::Play, tr!("繼續", "Resume").into(), RecAct::Resume, r.busy.is_none(), false)
+            (Icon::Play, tr!("繼續", "Resume").into(), RecAct::Resume, live && r.busy.is_none(), false)
         } else {
-            (Icon::Pause, tr!("暫停", "Pause").into(), RecAct::Pause, r.busy.is_none(), false)
+            (Icon::Pause, tr!("暫停", "Pause").into(), RecAct::Pause, live && r.busy.is_none(), false)
         });
         let mk = shortcut(app, 4);
         let tip = if r.markers > 0 {
@@ -1930,16 +1932,20 @@ fn recording_controls(app: &mut UiApp, ui: &mut Ui, r: &screenrecorder_core::typ
         } else {
             trf!("標記：記下現在的位置，剪輯時可以直接跳過去{mk}", "Mark: note this position so you can jump straight to it when editing{mk}")
         };
-        icons.push((Icon::Flag, tip, RecAct::Mark, true, false));
-    }
-    if replay.is_none() && r.mic_muted.is_some() && !stopping {
-        let mk = shortcut(app, 7);
-        let tip = if muted {
-            trf!("麥克風靜音中，點一下取消靜音{mk}", "The microphone is muted. Click to unmute{mk}")
-        } else {
-            trf!("暫時把麥克風靜音（咳嗽、接電話時），剪輯時會在時間軸上標出來{mk}", "Mute the microphone for a moment (to cough or take a call). Muted parts are marked on the editing timeline{mk}")
-        };
-        icons.push((if muted { Icon::Muted } else { Icon::Mic }, tip, RecAct::Mute, true, muted));
+        icons.push((Icon::Flag, tip, RecAct::Mark, live, false));
+        // 麥克風：這次有錄（或設定要錄，和待命時一樣）就留位置
+        if r.mic_muted.is_some() || app.s.audio_mic {
+            let mk = shortcut(app, 7);
+            let tip = if muted {
+                trf!("麥克風靜音中，點一下取消靜音{mk}", "The microphone is muted. Click to unmute{mk}")
+            } else {
+                trf!(
+                    "暫時把麥克風靜音（咳嗽、接電話時），剪輯時會在時間軸上標出來{mk}",
+                    "Mute the microphone for a moment (to cough or take a call). Muted parts are marked on the editing timeline{mk}"
+                )
+            };
+            icons.push((if muted { Icon::Muted } else { Icon::Mic }, tip, RecAct::Mute, r.mic_muted.is_some() && !stopping, muted));
+        }
     }
     let stop_tip = match (r.state, replay.as_ref()) {
         (RecorderState::Countdown, _) => tr!("取消倒數（Esc）", "Cancel countdown (Esc)").to_string(),
@@ -1991,7 +1997,7 @@ fn recording_controls(app: &mut UiApp, ui: &mut Ui, r: &screenrecorder_core::typ
                 painter.circle_filled(c.center(), 17.0, Color32::from_white_alpha(30));
             }
             let fg = if !enabled {
-                Color32::from_gray(120)
+                Color32::from_gray(95)
             } else if warn {
                 Color32::from_rgb(0xff, 0x8a, 0x8a)
             } else {
