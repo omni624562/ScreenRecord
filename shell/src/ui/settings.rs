@@ -204,6 +204,8 @@ pub struct UiSettings {
     pub shot_grid_size: u8,
     /// 檔案庫「Jellyfin」分頁的縮圖大小：0 小、1 中、2 大
     pub jf_grid_size: u8,
+    /// 檔案庫「Jellyfin」分頁用清單（表格）看，不是縮圖
+    pub jf_list_view: bool,
     /// 只錄聲音時另存一份 M4A（core 的 after_record.rs 讀這個欄位）
     pub audio_m4a: bool,
     /// 外觀："system"（跟著 Windows）、"light"、"dark"
@@ -429,6 +431,7 @@ impl UiSettings {
             shot_move_asked: boolean("shotMoveAsked").unwrap_or(false),
             shot_grid_size: num("shotGridSize").map(|v| v as u8).filter(|v| *v <= 2).unwrap_or(1),
             jf_grid_size: num("jfGridSize").map(|v| v as u8).filter(|v| *v <= 2).unwrap_or(1),
+            jf_list_view: boolean("jfListView").unwrap_or(false),
             audio_m4a: screenrecorder_core::after_record::audio_m4a(v),
             theme: string("theme").filter(|v| ["light", "dark"].contains(&v.as_str())).unwrap_or_else(|| "system".into()),
             hide_notice_shown: boolean("hideNoticeShown").unwrap_or(false),

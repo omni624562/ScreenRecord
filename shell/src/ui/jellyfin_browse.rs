@@ -120,6 +120,14 @@ pub struct JfBrowse {
     facets_error: Option<String>,
     /// 縮圖大小：0 小、1 中、2 大（記在設定裡）
     grid: u8,
+    /// 用清單（表格）看，不是縮圖（記在設定裡）
+    list_view: bool,
+    /// 鍵盤移到的那一個（方向鍵移動、Enter 打開、空白鍵勾選）
+    cursor: Option<String>,
+    /// 縮圖一排幾個（上次畫的；方向鍵上下用）
+    cols: usize,
+    /// 鍵盤移動了：捲到看得到那一個
+    scroll_to_cursor: bool,
     /// 上次按 Ctrl 轉滾輪換縮圖大小的時間（轉一格只換一級）
     wheel_at: Option<Instant>,
 }
@@ -143,7 +151,7 @@ pub fn open(app: &mut UiApp) {
     if app.jellyfin().is_none() {
         return app.toast(tr!("要先在「設定 → 存檔與分享」填 Jellyfin 的網址和 API 金鑰", "Fill in the Jellyfin address and API key in Settings → Saving & sharing first"), true);
     }
-    app.jf_browse = Some(JfBrowse { grid: app.s.jf_grid_size, ..Default::default() });
+    app.jf_browse = Some(JfBrowse { grid: app.s.jf_grid_size, list_view: app.s.jf_list_view, cols: 1, ..Default::default() });
     load(app);
 }
 
@@ -663,6 +671,14 @@ struct Picked {
     remove_here: Option<Vec<JfItem>>,
     /// 右鍵或下面的按鈕：幫這些影片產生字幕
     subs: Option<Vec<JfItem>>,
+    /// 點了哪一個（鍵盤從那裡接著移動）
+    cursor: Option<String>,
+    /// 清單檢視點了欄位標題：換排序
+    sort: Option<JfSort>,
+    /// 捲到鍵盤移到的那一個了
+    scrolled: bool,
+    /// 縮圖一排幾個
+    cols: Option<usize>,
 }
 
 /// 加進哪個合集、播放清單：to 是（編號, 名稱），None 是新建一個（先問名稱）
@@ -709,6 +725,9 @@ fn cells(ui: &mut egui::Ui, d: &JfBrowse, items: &[JfItem], rows: Option<usize>,
     let clip = ui.clip_rect();
     let picking = !d.selected.is_empty();
     let (ctrl, shift) = ui.input(|i| (i.modifiers.command || i.modifiers.ctrl, i.modifiers.shift));
+    if rows.is_none() {
+        out.cols = Some(cols);
+    }
     for row in items.chunks(cols).take(rows.unwrap_or(usize::MAX)) {
         let (row_rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), cell_h), Sense::hover());
         for (i, it) in row.iter().enumerate() {
@@ -785,6 +804,14 @@ fn cells(ui: &mut egui::Ui, d: &JfBrowse, items: &[JfItem], rows: Option<usize>,
             if hovering || on {
                 painter.rect_stroke(img, 8.0, egui::Stroke::new(2.0, p.accent), egui::StrokeKind::Inside);
             }
+            // 鍵盤移到的：外面一圈虛一點的框
+            if rows.is_none() && d.cursor.as_deref() == Some(it.id.as_str()) {
+                painter.rect_stroke(cell.expand(3.0), 10.0, egui::Stroke::new(2.0, p.accent.gamma_multiply(0.6)), egui::StrokeKind::Outside);
+                if d.scroll_to_cursor {
+                    ui.scroll_to_rect(cell, None);
+                    out.scrolled = true;
+                }
+            }
             if hovering && video && !picking {
                 theme::paint_icon(painter, Rect::from_center_size(img.center(), vec2(40.0, 40.0)), Icon::Play, egui::Color32::WHITE);
             }
@@ -822,54 +849,10 @@ fn cells(ui: &mut egui::Ui, d: &JfBrowse, items: &[JfItem], rows: Option<usize>,
             let resp = resp.on_hover_text(&it.name);
             // 右鍵：播放、影片資訊、加進合集或播放清單、從這裡拿掉、下載、刪除（勾選的影片按右鍵是對全部勾選的）
             if video {
-                resp.context_menu(|ui| {
-                    let targets: Vec<JfItem> = if on { d.selected.values().cloned().collect() } else { vec![it.clone()] };
-                    if targets.len() == 1 && ui.button(tr!("播放", "Play")).clicked() {
-                        out.open = Some(it.clone());
-                        out.row = items.to_vec();
-                        ui.close();
-                    }
-                    if targets.len() == 1 && ui.button(tr!("影片資訊…", "Details…")).clicked() {
-                        out.edit = Some(it.clone());
-                        ui.close();
-                    }
-                    let n = targets.len();
-                    let add = if n > 1 { trf!("把 {n} 支加進…", "Add {n} to…") } else { tr!("加進…", "Add to…").to_string() };
-                    ui.menu_button(add, |ui| add_menu(ui, d, &targets, &mut out.add_to));
-                    if let Some((kind, _)) = d.path.last().and_then(|(id, _)| list_at(id)) {
-                        let here =
-                            if kind == JfList::Collection { tr!("從這個合集拿掉", "Remove from this collection") } else { tr!("從這個播放清單拿掉", "Remove from this playlist") };
-                        if ui.button(here).clicked() {
-                            out.remove_here = Some(targets.clone());
-                            ui.close();
-                        }
-                    }
-                    let subs = if n > 1 { trf!("幫 {n} 支產生字幕", "Make subtitles for {n}") } else { tr!("產生字幕", "Make subtitles").to_string() };
-                    if ui
-                        .button(subs)
-                        .on_hover_text(tr!(
-                            "用這台電腦的語音辨識做字幕，傳回 Jellyfin（電視、手機上看也有字幕）",
-                            "Recognize speech on this computer and add the subtitles to Jellyfin (shown on TVs and phones too)"
-                        ))
-                        .clicked()
-                    {
-                        out.subs = Some(targets.clone());
-                        ui.close();
-                    }
-                    if n == 1 {
-                        ui.separator();
-                        if ui.button(tr!("下載到這台電腦", "Download to this computer")).clicked() {
-                            out.download = Some(it.clone());
-                            ui.close();
-                        }
-                        if ui.button(RichText::new(tr!("從 Jellyfin 刪除…", "Delete from Jellyfin…")).color(p.rec)).clicked() {
-                            out.delete = Some(it.clone());
-                            ui.close();
-                        }
-                    }
-                });
+                resp.context_menu(|ui| item_menu(ui, d, it, items, on, out));
             }
             if resp.clicked() && !used {
+                out.cursor = Some(it.id.clone());
                 // Shift：從上次勾的選到這一支；已經在勾選、或按著 Ctrl：點影片是勾選；不然是播放（資料夾是進去）
                 if video && shift {
                     out.range = Some((it.clone(), items.to_vec()));
@@ -882,6 +865,292 @@ fn cells(ui: &mut egui::Ui, d: &JfBrowse, items: &[JfItem], rows: Option<usize>,
             }
         }
         ui.add_space(gap);
+    }
+}
+
+/// 影片的右鍵選單：播放、影片資訊、加進合集或播放清單、從這裡拿掉、產生字幕、下載、刪除（on：這支有勾選時，對全部勾選的）
+fn item_menu(ui: &mut egui::Ui, d: &JfBrowse, it: &JfItem, items: &[JfItem], on: bool, out: &mut Picked) {
+    let p = theme::pal(ui);
+    let targets: Vec<JfItem> = if on { d.selected.values().cloned().collect() } else { vec![it.clone()] };
+    if targets.len() == 1 && ui.button(tr!("播放", "Play")).clicked() {
+        out.open = Some(it.clone());
+        out.row = items.to_vec();
+        ui.close();
+    }
+    if targets.len() == 1 && ui.button(tr!("影片資訊…", "Details…")).clicked() {
+        out.edit = Some(it.clone());
+        ui.close();
+    }
+    let n = targets.len();
+    let add = if n > 1 { trf!("把 {n} 支加進…", "Add {n} to…") } else { tr!("加進…", "Add to…").to_string() };
+    ui.menu_button(add, |ui| add_menu(ui, d, &targets, &mut out.add_to));
+    if let Some((kind, _)) = d.path.last().and_then(|(id, _)| list_at(id)) {
+        let here = if kind == JfList::Collection { tr!("從這個合集拿掉", "Remove from this collection") } else { tr!("從這個播放清單拿掉", "Remove from this playlist") };
+        if ui.button(here).clicked() {
+            out.remove_here = Some(targets.clone());
+            ui.close();
+        }
+    }
+    let subs = if n > 1 { trf!("幫 {n} 支產生字幕", "Make subtitles for {n}") } else { tr!("產生字幕", "Make subtitles").to_string() };
+    if ui
+        .button(subs)
+        .on_hover_text(tr!("用這台電腦的語音辨識做字幕，傳回 Jellyfin（電視、手機上看也有字幕）", "Recognize speech on this computer and add the subtitles to Jellyfin (shown on TVs and phones too)"))
+        .clicked()
+    {
+        out.subs = Some(targets.clone());
+        ui.close();
+    }
+    if n == 1 {
+        ui.separator();
+        if ui.button(tr!("下載到這台電腦", "Download to this computer")).clicked() {
+            out.download = Some(it.clone());
+            ui.close();
+        }
+        if ui.button(RichText::new(tr!("從 Jellyfin 刪除…", "Delete from Jellyfin…")).color(p.rec)).clicked() {
+            out.delete = Some(it.clone());
+            ui.close();
+        }
+    }
+}
+
+/// 清單檢視的一欄：（寬度, 標題, 點標題時換的排序（第一次, 再按一次）, 靠左或靠右）
+type Column<'a> = (f32, &'a str, Option<(JfSort, JfSort)>, Align);
+
+/// 清單檢視：一列一個（名稱、長度、大小、日期、人物、標籤），點欄位標題換排序；點一下和縮圖一樣（播放、進資料夾；
+/// Ctrl 勾選、Shift 選一段），右鍵同一個選單
+fn rows(ui: &mut egui::Ui, d: &JfBrowse, items: &[JfItem], out: &mut Picked) {
+    let p = theme::pal(ui);
+    let w = ui.available_width();
+    // 窄的時候不列人物、標籤
+    let wide = w > 860.0;
+    let (cw, lw, sw, dw, tw) = (30.0, 70.0, 84.0, 96.0, if wide { 170.0 } else { 0.0 });
+    let nw = (w - cw - lw - sw - dw - tw * 2.0).max(150.0);
+    let cols: Vec<Column> = [
+        (cw, "", None, Align::Min),
+        (nw, tr!("名稱", "Name"), Some((JfSort::Name, JfSort::NameDesc)), Align::Min),
+        (lw, tr!("長度", "Length"), Some((JfSort::Longest, JfSort::Shortest)), Align::Max),
+        (sw, tr!("大小", "Size"), None, Align::Max),
+        (dw, tr!("日期", "Date"), Some((JfSort::Newest, JfSort::Oldest)), Align::Max),
+        (tw, tr!("人物", "People"), None, Align::Min),
+        (tw, tr!("標籤", "Tags"), None, Align::Min),
+    ]
+    .into_iter()
+    .filter(|c| c.0 > 0.0)
+    .collect();
+    // 一格裡的字（太長截短）
+    let cell_text = |ui: &egui::Ui, rect: Rect, text: &str, align: Align, color: egui::Color32, bold: bool| {
+        let font = if bold { theme::font_bold(12.5) } else { theme::font(12.5) };
+        let inner = rect.shrink2(vec2(6.0, 0.0));
+        let mut job = egui::text::LayoutJob::simple_singleline(text.to_string(), font, color);
+        job.wrap = egui::text::TextWrapping::truncate_at_width(inner.width());
+        let g = ui.painter().layout_job(job);
+        let x = if align == Align::Max { inner.max.x - g.size().x } else { inner.min.x };
+        ui.painter().galley(pos2(x, rect.center().y - g.size().y / 2.0), g, color);
+    };
+    // 標題列
+    let (head, _) = ui.allocate_exact_size(vec2(w, 28.0), Sense::hover());
+    let mut x = head.min.x;
+    for (cwid, title, sorts, align) in &cols {
+        let r = Rect::from_min_size(pos2(x, head.min.y), vec2(*cwid, head.height()));
+        x += cwid;
+        let Some((a, b)) = sorts else {
+            cell_text(ui, r, title, *align, p.muted, false);
+            continue;
+        };
+        let now = d.sort == *a || d.sort == *b;
+        let arrow = if d.sort == *a {
+            " ↓"
+        } else if d.sort == *b {
+            " ↑"
+        } else {
+            ""
+        };
+        let resp = ui.interact(r, ui.id().with(("jf-head", *title)), Sense::click()).on_hover_text(tr!("按一下依這一欄排序（再按一下倒過來）", "Click to sort by this column (again to reverse)"));
+        if resp.hovered() {
+            ui.painter().rect_filled(r, 4.0, p.surface2);
+        }
+        cell_text(ui, r, &format!("{title}{arrow}"), *align, if now { p.text } else { p.muted }, now);
+        if resp.clicked() {
+            out.sort = Some(if d.sort == *a { *b } else { *a });
+        }
+    }
+    ui.painter().hline(head.x_range(), head.max.y, egui::Stroke::new(1.0, p.border));
+    let picking = !d.selected.is_empty();
+    let (ctrl, shift) = ui.input(|i| (i.modifiers.command || i.modifiers.ctrl, i.modifiers.shift));
+    let clip = ui.clip_rect();
+    for it in items {
+        let (row, _) = ui.allocate_exact_size(vec2(w, 32.0), Sense::hover());
+        if !clip.intersects(row) {
+            continue;
+        }
+        let video = it.kind == JfKind::Video;
+        let on = d.selected.contains_key(&it.id);
+        let resp = ui.interact(row, ui.id().with(("jf-row", &it.id)), Sense::click());
+        let fill = if on {
+            p.accent_soft
+        } else if resp.hovered() {
+            p.surface2
+        } else {
+            egui::Color32::TRANSPARENT
+        };
+        ui.painter().rect_filled(row, 4.0, fill);
+        if d.cursor.as_deref() == Some(it.id.as_str()) {
+            ui.painter().rect_stroke(row, 4.0, egui::Stroke::new(1.5, p.accent.gamma_multiply(0.7)), egui::StrokeKind::Inside);
+            if d.scroll_to_cursor {
+                ui.scroll_to_rect(row, None);
+                out.scrolled = true;
+            }
+        }
+        let mut x = row.min.x;
+        let mut used = false;
+        for (cwid, title, _, align) in &cols {
+            let r = Rect::from_min_size(pos2(x, row.min.y), vec2(*cwid, row.height()));
+            x += cwid;
+            match *title {
+                "" => {
+                    let icon_r = Rect::from_center_size(r.center(), vec2(16.0, 16.0));
+                    if video {
+                        let cr = ui.interact(icon_r.expand(4.0), ui.id().with(("jf-row-check", &it.id)), Sense::click());
+                        ui.painter().rect_filled(icon_r, 3.0, if on { p.accent } else { p.surface });
+                        ui.painter().rect_stroke(icon_r, 3.0, egui::Stroke::new(1.2, if on { p.accent } else { p.border }), egui::StrokeKind::Inside);
+                        if on {
+                            theme::paint_icon(ui.painter(), icon_r.shrink(2.0), Icon::Check, egui::Color32::WHITE);
+                        }
+                        if cr.clicked() {
+                            out.toggle = Some(it.clone());
+                            out.cursor = Some(it.id.clone());
+                            used = true;
+                        }
+                    } else {
+                        let icon = if it.id == PLAYLISTS || it.id.starts_with(PL) { Icon::List } else { Icon::Folder };
+                        theme::paint_icon(ui.painter(), icon_r, icon, p.muted);
+                    }
+                }
+                t if t == tr!("名稱", "Name") => {
+                    let mut name = it.name.clone();
+                    if it.played {
+                        name = trf!("{name}　✓ 看過", "{name}  ✓ watched");
+                    }
+                    cell_text(ui, r, &name, *align, p.text, !video);
+                    if !it.subs.is_empty() {
+                        // 名稱後面的 CC 不另外量寬度：放在這一欄的最右邊
+                        let g = ui.painter().layout_no_wrap("CC".to_string(), theme::font_bold(10.0), p.muted);
+                        let b = Rect::from_min_size(pos2(r.max.x - g.size().x - 12.0, r.center().y - g.size().y / 2.0 - 1.0), g.size() + vec2(6.0, 2.0));
+                        ui.painter().rect_stroke(b, 3.0, egui::Stroke::new(1.0, p.border), egui::StrokeKind::Inside);
+                        ui.painter().galley(b.min + vec2(3.0, 1.0), g, p.muted);
+                    }
+                }
+                t if t == tr!("長度", "Length") => {
+                    let text = match it.kind {
+                        JfKind::Folder if it.children > 0 => trf!("{} 個", "{} items", it.children),
+                        JfKind::Folder => String::new(),
+                        JfKind::Video if it.duration > 0.0 => clock(it.duration),
+                        JfKind::Video => String::new(),
+                    };
+                    cell_text(ui, r, &text, *align, p.muted, false);
+                }
+                t if t == tr!("大小", "Size") => {
+                    let text = if it.size > 0 { screenrecorder_core::format::format_bytes(it.size) } else { String::new() };
+                    cell_text(ui, r, &text, *align, p.muted, false);
+                }
+                t if t == tr!("日期", "Date") => cell_text(ui, r, &it.date, *align, p.muted, false),
+                t if t == tr!("人物", "People") => cell_text(ui, r, &it.people.join(tr!("、", ", ")), *align, p.text, false),
+                _ => cell_text(ui, r, &it.tags.join(tr!("、", ", ")), *align, p.text, false),
+            }
+        }
+        let resp = resp.on_hover_text(&it.name);
+        if video {
+            resp.context_menu(|ui| item_menu(ui, d, it, items, on, out));
+        }
+        if resp.clicked() && !used {
+            out.cursor = Some(it.id.clone());
+            if video && shift {
+                out.range = Some((it.clone(), items.to_vec()));
+            } else if video && (picking || ctrl) {
+                out.toggle = Some(it.clone());
+            } else {
+                out.open = Some(it.clone());
+                out.row = items.to_vec();
+            }
+        }
+    }
+    ui.add_space(8.0);
+}
+
+/// 鍵盤（沒有在打字、沒有打開的選單或對話框時）：方向鍵移動、Enter 打開、空白鍵勾選、Ctrl+A 勾選全部、
+/// Delete 刪除勾選的（沒勾選時是移到的那一支）、Backspace 回上一層
+fn keyboard(ui: &egui::Ui, d: &mut JfBrowse, out: &mut Panel) {
+    if ui.ctx().egui_wants_keyboard_input() || egui::Popup::is_any_open(ui.ctx()) {
+        return;
+    }
+    let Some(items) = d.items.clone().filter(|i| !i.is_empty()) else { return };
+    let step = if d.list_view && !d.at_top() { 1 } else { d.cols.max(1) as isize as usize };
+    let (left, right, up, down, enter, space, del, back, all) = ui.input(|i| {
+        (
+            i.key_pressed(egui::Key::ArrowLeft),
+            i.key_pressed(egui::Key::ArrowRight),
+            i.key_pressed(egui::Key::ArrowUp),
+            i.key_pressed(egui::Key::ArrowDown),
+            i.key_pressed(egui::Key::Enter),
+            i.key_pressed(egui::Key::Space),
+            i.key_pressed(egui::Key::Delete),
+            i.key_pressed(egui::Key::Backspace),
+            i.modifiers.command && i.key_pressed(egui::Key::A),
+        )
+    });
+    let at = d.cursor.as_ref().and_then(|c| items.iter().position(|i| &i.id == c));
+    let mv: isize = if left && !(d.list_view && !d.at_top()) {
+        -1
+    } else if right && !(d.list_view && !d.at_top()) {
+        1
+    } else if up {
+        -(step as isize)
+    } else if down {
+        step as isize
+    } else {
+        0
+    };
+    if mv != 0 {
+        let next = match at {
+            None => 0,
+            Some(i) => (i as isize + mv).clamp(0, items.len() as isize - 1) as usize,
+        };
+        d.cursor = Some(items[next].id.clone());
+        d.scroll_to_cursor = true;
+        // 快到最後面時讀下一批
+        if next + step * 2 >= items.len() {
+            out.more = true;
+        }
+    }
+    let cur = at.map(|i| items[i].clone());
+    if enter {
+        if let Some(it) = cur.clone() {
+            out.picked.open = Some(it);
+            out.picked.row = items.clone();
+        }
+    }
+    if space {
+        if let Some(it) = cur.clone().filter(|i| i.kind == JfKind::Video) {
+            out.picked.toggle = Some(it);
+        }
+    }
+    if all {
+        for it in items.iter().filter(|i| i.kind == JfKind::Video) {
+            d.selected.insert(it.id.clone(), it.clone());
+        }
+    }
+    if del {
+        if !d.selected.is_empty() {
+            out.bulk_delete = true;
+        } else if let Some(it) = cur.filter(|i| i.kind == JfKind::Video) {
+            out.picked.delete = Some(it);
+        }
+    }
+    if back && !d.path.is_empty() {
+        d.path.pop();
+        d.page = 0;
+        d.cursor = None;
+        out.reload = true;
     }
 }
 
@@ -1192,8 +1461,12 @@ fn grid_zoom(ui: &egui::Ui, d: &mut JfBrowse, area: Rect) {
 /// 中間縮圖格；最下面勾選的操作與換頁（和錄影、截圖分頁同一個排法）
 /// busy：背景正在整理好幾支影片時（改好幾支, 全部幾支），下面畫進度
 /// subs：背景正在產生字幕時（第幾支, 全部幾支, 名稱, 百分比）
-pub fn panel(ui: &mut egui::Ui, d: &mut JfBrowse, busy: Option<(usize, usize)>, subs: Option<(usize, usize, String, u32)>) -> Panel {
+/// keys：可以用鍵盤（上面沒有其他對話框）
+pub fn panel(ui: &mut egui::Ui, d: &mut JfBrowse, busy: Option<(usize, usize)>, subs: Option<(usize, usize, String, u32)>, keys: bool) -> Panel {
     let mut out = Panel::default();
+    if keys {
+        keyboard(ui, d, &mut out);
+    }
     let p = theme::pal(ui);
     // 搜尋整個伺服器（打字停一下就找，Enter 馬上找）、依人物 / 標籤 / 年份找、找重複的影片
     ui.horizontal(|ui| {
@@ -1305,8 +1578,15 @@ pub fn panel(ui: &mut egui::Ui, d: &mut JfBrowse, busy: Option<(usize, usize)>, 
                 "縮圖大小：小的一次看得到比較多支。也可以在縮圖上按住 Ctrl 轉滾輪調整",
                 "Thumbnail size: smaller shows more at once. You can also hold Ctrl and turn the mouse wheel over the thumbnails"
             );
-            theme::segmented(ui, &mut d.grid, &[(2u8, tr!("大", "L")), (1, tr!("中", "M")), (0, tr!("小", "S"))], true);
-            ui.label(theme::muted(ui, tr!("縮圖", "Thumbnails"))).on_hover_text(tip);
+            // 清單（表格）或縮圖；縮圖時才有大小
+            if !d.list_view || top {
+                theme::segmented(ui, &mut d.grid, &[(2u8, tr!("大", "L")), (1, tr!("中", "M")), (0, tr!("小", "S"))], true);
+            }
+            if !top {
+                theme::segmented(ui, &mut d.list_view, &[(true, tr!("清單", "List")), (false, tr!("縮圖", "Thumbnails"))], true);
+            } else {
+                ui.label(theme::muted(ui, tr!("縮圖", "Thumbnails"))).on_hover_text(tip);
+            }
             if top {
                 d.crumb_right_w = ui.min_rect().width();
                 return;
@@ -1409,7 +1689,11 @@ pub fn panel(ui: &mut egui::Ui, d: &mut JfBrowse, busy: Option<(usize, usize)>, 
                             section(ui, tr!("媒體庫", "Libraries"));
                         }
                     }
-                    ui.push_id("items", |ui| cells(ui, d, items, None, &mut out.picked));
+                    if d.list_view && !d.at_top() {
+                        ui.push_id("items", |ui| rows(ui, d, items, &mut out.picked));
+                    } else {
+                        ui.push_id("items", |ui| cells(ui, d, items, None, &mut out.picked));
+                    }
                     // 還有沒讀的：捲到離底部不到一個畫面高時讀下一批，最下面顯示正在讀
                     if !d.at_top() && items.len() < d.total {
                         if d.loading_more {
@@ -1520,12 +1804,27 @@ pub fn panel(ui: &mut egui::Ui, d: &mut JfBrowse, busy: Option<(usize, usize)>, 
 }
 
 /// 處理在分頁上按的（d 是從 app.jf_browse 拿出來畫的那一份，處理完放回去）
-pub fn apply(app: &mut UiApp, mut d: JfBrowse, out: Panel) {
-    if d.grid != app.s.jf_grid_size {
+pub fn apply(app: &mut UiApp, mut d: JfBrowse, mut out: Panel) {
+    if d.grid != app.s.jf_grid_size || d.list_view != app.s.jf_list_view {
         app.s.jf_grid_size = d.grid;
+        app.s.jf_list_view = d.list_view;
         app.save_settings();
     }
+    if let Some(c) = out.picked.cursor.take() {
+        d.cursor = Some(c);
+    }
+    if let Some(n) = out.picked.cols.take() {
+        d.cols = n;
+    }
+    if std::mem::take(&mut out.picked.scrolled) {
+        d.scroll_to_cursor = false;
+    }
     let Panel { mut reload, more, mut picked, bulk_download, bulk_delete, bulk_organize, play_all, cancel_subs, faces, find_dupes } = out;
+    if let Some(s) = picked.sort.take() {
+        d.sort = s;
+        d.page = 0;
+        reload = true;
+    }
 
     if cancel_subs {
         if let Some(r) = &app.jf_subs {

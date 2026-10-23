@@ -1369,10 +1369,15 @@ pub enum JfSort {
     /// 最近放進 Jellyfin 的在前
     Added,
     Name,
+    /// 名稱倒過來（Z→A）
+    NameDesc,
+    /// 最長的在前、最短的在前
+    Longest,
+    Shortest,
 }
 
 impl JfSort {
-    pub const ALL: [JfSort; 4] = [JfSort::Newest, JfSort::Oldest, JfSort::Added, JfSort::Name];
+    pub const ALL: [JfSort; 7] = [JfSort::Newest, JfSort::Oldest, JfSort::Added, JfSort::Name, JfSort::NameDesc, JfSort::Longest, JfSort::Shortest];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -1380,6 +1385,9 @@ impl JfSort {
             JfSort::Oldest => tr!("最舊的在前", "Oldest first"),
             JfSort::Added => tr!("最近加入的在前", "Recently added"),
             JfSort::Name => tr!("依名稱", "By name"),
+            JfSort::NameDesc => tr!("依名稱（倒過來）", "By name (Z→A)"),
+            JfSort::Longest => tr!("最長的在前", "Longest first"),
+            JfSort::Shortest => tr!("最短的在前", "Shortest first"),
         }
     }
 
@@ -1389,6 +1397,9 @@ impl JfSort {
             JfSort::Oldest => ("PremiereDate,DateCreated,SortName", "Ascending,Ascending,Ascending"),
             JfSort::Added => ("DateCreated,SortName", "Descending,Ascending"),
             JfSort::Name => ("SortName", "Ascending"),
+            JfSort::NameDesc => ("SortName", "Descending"),
+            JfSort::Longest => ("Runtime,SortName", "Descending,Ascending"),
+            JfSort::Shortest => ("Runtime,SortName", "Ascending,Ascending"),
         }
     }
 }
