@@ -35,6 +35,11 @@ fn real_id(id: &str) -> &str {
     list_at(id).map_or(id, |(_, x)| x)
 }
 
+/// 「依這些找」的範圍：目前所在的資料夾（含子資料夾）；最上層、「合集」「播放清單」那兩格裡是整個伺服器（None）
+fn facet_scope(path: &[(String, String)]) -> Option<String> {
+    path.last().map(|(id, _)| id.as_str()).filter(|id| *id != COLLECTIONS && *id != PLAYLISTS).map(|id| real_id(id).to_string())
+}
+
 /// 讀一層的一頁：最上層的「合集」「播放清單」列出全部合集、播放清單，播放清單裡照清單的順序，其他照一般的資料夾
 #[allow(clippy::too_many_arguments)]
 fn fetch(jf: &Jellyfin, user: &str, parent: Option<&str>, search: &str, start: usize, sort: JfSort, filter: JfFilter, facet: &[JfFacet]) -> Result<(Vec<JfItem>, usize), String> {
@@ -47,6 +52,8 @@ fn fetch(jf: &Jellyfin, user: &str, parent: Option<&str>, search: &str, start: u
             Ok((all.into_iter().skip(start).take(PAGE).map(|i| JfItem { id: format!("{prefix}{}", i.id), ..i }).collect(), n))
         }
         Some(p) if plain && list_at(p).is_some_and(|(k, _)| k == JfList::Playlist) => jf.playlist_items(user, real_id(p), start, PAGE),
+        // 「合集」「播放清單」那兩格裡依條件找：找整個伺服器
+        Some(COLLECTIONS | PLAYLISTS) => jf.items(user, None, search, start, PAGE, sort, filter, facet),
         _ => jf.items(user, parent.map(real_id), search, start, PAGE, sort, filter, facet),
     }
 }
@@ -98,9 +105,10 @@ pub struct JfBrowse {
     selected: BTreeMap<String, JfItem>,
     /// 上次勾或取消勾的那一支（Shift＋點一下：從它選到點的那一支）
     anchor: Option<String>,
-    /// 依人物、標籤、年份找（找整個伺服器的影片）：勾了的條件，同一類任一個符合、不同類都要符合；空的 = 沒有用
+    /// 依人物、標籤、年份找（找目前資料夾底下、在最上層時整個伺服器的影片）：勾了的條件，同一類任一個符合、不同類都要符合；空的 = 沒有用
     facet: Vec<JfFacet>,
-    /// 伺服器上的人物（編號, 名稱, 幾支影片）、標籤（名稱, 幾支）、年份（年, 幾支）（打開時讀一次，改了影片資訊後重讀）；
+    /// 目前資料夾（含子資料夾；最上層是整個伺服器）的人物（編號, 名稱, 幾支影片）、標籤（名稱, 幾支）、年份（年, 幾支）
+    /// （換資料夾時重讀，改了影片資訊後重讀）；在資料夾裡時沒用到的人物不列；
     /// 人物、標籤用得多的在前，年份新的在前；讀不到次數時是 0
     persons: Vec<(String, String, usize)>,
     tags: Vec<(String, usize)>,
@@ -117,7 +125,8 @@ pub struct JfBrowse {
     facet_search: [String; 3],
     /// 位置那一列右邊（符合幾支、排序、縮圖大小）上次量到的寬度：左邊的條件只用剩下的地方
     crumb_right_w: f32,
-    facets_loaded: bool,
+    /// 上面那些是哪個範圍讀的（facet_scope；還沒讀過時 None）
+    facets_for: Option<Option<String>>,
     /// 讀不到標籤、年份時的原因（選單變灰時滑鼠移上去看得到）
     facets_error: Option<String>,
     /// 縮圖大小：0 小、1 中、2 大（記在設定裡）
@@ -178,8 +187,7 @@ fn load(app: &mut UiApp) {
     d.searched = d.search.trim().to_string();
     let (seq, user, parent, search, start, sort, filter, facet) =
         (d.seq, d.user.clone(), d.path.last().map(|(id, _)| id.clone()), d.searched.clone(), d.page * PAGE, d.sort, d.filter, d.facet.clone());
-    let want_facets = !d.facets_loaded;
-    d.facets_loaded = true;
+    let want_facets = d.facets_for.as_ref() != Some(&facet_scope(&d.path));
     app.spawn(
         async move {
             tokio::task::spawn_blocking(move || -> Result<Loaded, String> {
@@ -246,7 +254,13 @@ type Facets = (Vec<(String, String, usize)>, Result<(Vec<(String, usize)>, Vec<(
 fn load_facets(app: &mut UiApp) {
     let Some(jf) = app.jellyfin() else { return };
     let preferred = app.s.jellyfin_user.clone();
-    let user = app.jf_browse.as_ref().and_then(|d| d.user.clone());
+    let Some(d) = app.jf_browse.as_mut() else { return };
+    let user = d.user.clone();
+    let scope = facet_scope(&d.path);
+    d.facets_for = Some(scope.clone());
+    // 勾著的人物在這個資料夾裡沒有也留著（選單裡才拿得掉）
+    let chosen: Vec<String> = d.facet.iter().filter_map(|f| if let JfFacet::Person(id, _) = f { Some(id.clone()) } else { None }).collect();
+    let for_scope = scope.clone();
     app.spawn(
         async move {
             tokio::task::spawn_blocking(move || {
@@ -255,10 +269,14 @@ fn load_facets(app: &mut UiApp) {
                     None => jf.browse_user(&preferred).unwrap_or_default(),
                 };
                 let persons = jf.persons(&user).unwrap_or_default();
-                let (persons, rest) = match jf.usage(&user) {
+                let (persons, rest) = match jf.usage_in(&user, scope.as_deref()) {
                     Ok(u) => {
                         let count: HashMap<String, usize> = u.people.iter().map(|(n, c)| (jellyfin::name_key(n), *c)).collect();
                         let mut persons: Vec<_> = persons.into_iter().map(|(id, n)| (id, count.get(&jellyfin::name_key(&n)).copied().unwrap_or(0), n)).collect();
+                        // 在資料夾裡：只列這個資料夾用到的人物
+                        if scope.is_some() {
+                            persons.retain(|(id, c, _)| *c > 0 || chosen.contains(id));
+                        }
                         // 用得多的在前（persons 已經依名稱排，sort_by 是穩定的）
                         persons.sort_by_key(|a| std::cmp::Reverse(a.1));
                         (persons.into_iter().map(|(id, c, n)| (id, n, c)).collect(), Ok((u.tags, u.years, u.no_people, u.no_tags)))
@@ -274,8 +292,9 @@ fn load_facets(app: &mut UiApp) {
             .await
             .unwrap_or_else(|e| (vec![], Err(e.to_string())))
         },
-        |app, (persons, facets): Facets| {
-            if let Some(d) = app.jf_browse.as_mut() {
+        move |app, (persons, facets): Facets| {
+            // 讀好之前又換了資料夾：丟掉（換的時候已經重讀）
+            if let Some(d) = app.jf_browse.as_mut().filter(|d| d.facets_for.as_ref() == Some(&for_scope)) {
                 d.persons = persons;
                 match facets {
                     Ok((tags, years, no_people, no_tags)) => {
@@ -1227,7 +1246,7 @@ fn is_none_facet(f: &JfFacet) -> bool {
     matches!(f, JfFacet::NoPeople | JfFacet::NoTags)
 }
 
-/// 套用「依這些找」的改變：找整個伺服器（離開資料夾、搜尋）；全部拿掉時回到最上層
+/// 套用「依這些找」的改變：找目前資料夾底下（含子資料夾；最上層時整個伺服器）的影片，搜尋清掉
 fn apply_facet(d: &mut JfBrowse, change: FacetChange, out: &mut Panel) {
     match change {
         FacetChange::None => return,
@@ -1245,7 +1264,6 @@ fn apply_facet(d: &mut JfBrowse, change: FacetChange, out: &mut Panel) {
         FacetChange::ClearKind(k) => d.facet.retain(|f| kind_of(f) != k),
         FacetChange::ClearAll => d.facet.clear(),
     }
-    d.path.clear();
     d.search.clear();
     d.search_at = None;
     d.page = 0;
@@ -1644,22 +1662,29 @@ pub fn panel(ui: &mut egui::Ui, d: &mut JfBrowse, busy: Option<(usize, usize)>, 
         if !d.searched.is_empty() {
             ui.label(theme::muted(ui, "›"));
             Btn::new(&trf!("搜尋「{}」", "Search “{}”", d.searched)).small().ghost().selected(true).show(ui);
-        } else if !d.facet.is_empty() {
-            // 依人物、標籤、年份找的：媒體庫 › 小美 × 或 小明 × 且 2024 × 全部清除
-            ui.label(theme::muted(ui, "›"));
-            ui.add_space(4.0);
-            let room = ui.available_width() - d.crumb_right_w - 16.0;
-            facet_chips(ui, &d.facet, room, &mut change);
         } else {
+            // 媒體庫 › X Pron › 2024（點前面的回到那一層；有依條件找時條件留著，換成找那一層）
             let n = d.path.len();
+            let facets = !d.facet.is_empty();
             for i in 0..n {
                 ui.label(theme::muted(ui, "›"));
                 let last = i + 1 == n;
-                if Btn::new(&d.path[i].1).small().ghost().selected(last).show(ui).clicked() && !last {
+                if Btn::new(&d.path[i].1).small().ghost().selected(last && !facets).show(ui).clicked() && !(last && !facets) {
                     d.path.truncate(i + 1);
+                    if last {
+                        // 依條件找時按目前這一層：拿掉條件，回到資料夾
+                        d.facet.clear();
+                    }
                     d.page = 0;
                     out.reload = true;
                 }
+            }
+            // 依人物、標籤、年份找的：媒體庫 › X Pron › 小美 × 或 小明 × 且 2024 × 全部清除
+            if facets {
+                ui.label(theme::muted(ui, "›"));
+                ui.add_space(4.0);
+                let room = ui.available_width() - d.crumb_right_w - 16.0;
+                facet_chips(ui, &d.facet, room, &mut change);
             }
         }
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -1676,6 +1701,9 @@ pub fn panel(ui: &mut egui::Ui, d: &mut JfBrowse, busy: Option<(usize, usize)>, 
             // 依條件找：寫符合幾支（滑鼠移上去看完整的條件）
             if !d.facet.is_empty() && d.searched.is_empty() {
                 let mut what = facet_summary(&d.facet);
+                if let Some((_, name)) = d.path.last().filter(|_| facet_scope(&d.path).is_some()) {
+                    what = trf!("「{name}」裡{what}", "{what} in “{name}”");
+                }
                 if d.filter != JfFilter::All {
                     what = format!("{what}{}{}", tr!("・", " · "), d.filter.label());
                 }
