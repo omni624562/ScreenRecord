@@ -117,9 +117,22 @@ impl Thumbnails {
             return None;
         }
         let meta = tokio::fs::metadata(video).await.ok()?;
+        self.make_strip(ffmpeg, video, &format!("strip|{}|{}|{}", video.to_lowercase(), meta.len(), mtime_ms(&meta)), duration).await
+    }
+
+    /// 網路上的影片（Jellyfin 的串流網址）的滑過預覽長條圖；id 是快取用的名字（影片編號與大小，網址裡有金鑰不能當名字）
+    pub async fn strip_remote(&self, ffmpeg: Option<&Path>, url: &str, id: &str, duration: f64) -> Option<PathBuf> {
+        let ffmpeg = ffmpeg?;
+        if !(duration.is_finite() && duration > 0.0) {
+            return None;
+        }
+        self.make_strip(ffmpeg, url, &format!("strip|remote|{id}"), duration).await
+    }
+
+    async fn make_strip(&self, ffmpeg: &Path, video: &str, name: &str, duration: f64) -> Option<PathBuf> {
         let key = {
             let mut h = Sha256::new();
-            h.update(format!("strip|{}|{}|{}", video.to_lowercase(), meta.len(), mtime_ms(&meta)).as_bytes());
+            h.update(name.as_bytes());
             h.finalize().iter().take(20).map(|b| format!("{b:02x}")).collect::<String>()
         };
         let out = self.dir.join(format!("{key}.png"));
@@ -141,7 +154,7 @@ impl Thumbnails {
                 if r.code == 0 && std::fs::metadata(&tmp).map(|m| m.len() > 0).unwrap_or(false) && std::fs::rename(&tmp, &out).is_ok() {
                     return Some(out.clone());
                 }
-                crate::info!("[縮圖] 滑過預覽產生失敗：{}", r.stderr.trim());
+                crate::info!("[縮圖] 滑過預覽產生失敗：{}", crate::jellyfin::redact(r.stderr.trim()));
                 let _ = std::fs::remove_file(&tmp);
                 self.failed.lock().unwrap().insert(key.clone(), Instant::now());
                 None

@@ -1443,11 +1443,18 @@ fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table:
                     theme::paint_thumb(&painter, thumb, &t);
                 }
                 if tresp.hovered() {
-                    // 滑鼠移上去：縮圖上出現播放鍵；影片在旁邊浮出預覽，左右移動看不同時間的畫面
-                    painter.rect_filled(thumb, CornerRadius::same(4), Color32::from_black_alpha(90));
-                    theme::paint_icon(&painter, Rect::from_center_size(thumb.center() + vec2(1.0, 0.0), vec2(16.0, 16.0)), Icon::Play, Color32::WHITE);
-                    if !audio && !tresp.dragged() {
-                        super::thumbs::scrub_preview(app, ui, thumb, thumb, &e.media.path, e.media.mtime, e.media.duration_sec.unwrap_or(0.0));
+                    // 滑鼠移上去：縮圖上出現播放鍵；影片在旁邊浮出預覽，左右移動看不同時間的畫面；停住約 1 秒就在縮圖裡靜音播放
+                    let mp4 = !audio && e.media.path.to_ascii_lowercase().ends_with(".mp4");
+                    let dur = e.media.duration_sec.unwrap_or(0.0);
+                    let size = (e.media.width.unwrap_or(0), e.media.height.unwrap_or(0));
+                    let fps = e.media.fps.unwrap_or(0.0);
+                    let playing = mp4 && !tresp.dragged() && super::hover_play::hover(ui.ctx(), &e.media.path, thumb, dur, |_| super::thumbs::hover_player(app, &e.media.path, dur, fps, size));
+                    if !super::hover_play::paint(&painter, &e.media.path, thumb, 4) {
+                        painter.rect_filled(thumb, CornerRadius::same(4), Color32::from_black_alpha(90));
+                        theme::paint_icon(&painter, Rect::from_center_size(thumb.center() + vec2(1.0, 0.0), vec2(16.0, 16.0)), Icon::Play, Color32::WHITE);
+                    }
+                    if !audio && !tresp.dragged() && !playing {
+                        super::thumbs::scrub_preview(app, ui, thumb, thumb, &e.media.path, e.media.mtime, dur);
                     }
                 }
                 // 影片滑過時有預覽，不另外顯示「播放」提示（會擋住預覽）
