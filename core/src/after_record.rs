@@ -450,8 +450,8 @@ impl App {
                     let note = trf!("複製 {n} 個檔案到「{}」", "copied {n} files to “{}”", folder_name(&after.copy_to));
                     // 複製到 Jellyfin 的媒體庫資料夾：請它馬上掃描（失敗只提示，檔案已經複製好了）
                     match after.jellyfin.clone() {
-                        // 掃描後等它收到這支、設好標籤和章節縮圖（最多等 1 分鐘）
-                        Some(jf) => match tokio::task::spawn_blocking(move || jf.scan(&scan).map(|_| jf.after_upload(&first, &extras, vec![], std::time::Duration::from_secs(60), Some(&scan))))
+                        // 掃描後等它收到這支、設好標籤和章節縮圖（最多等 5 分鐘）
+                        Some(jf) => match tokio::task::spawn_blocking(move || jf.scan(&scan).map(|_| jf.after_upload(&first, &extras, vec![], crate::jellyfin::WAIT_SCAN, Some(&scan))))
                             .await
                             .unwrap_or_else(|e| Err(e.to_string()))
                         {

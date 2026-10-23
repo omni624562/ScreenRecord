@@ -292,6 +292,12 @@ pub enum Icon {
     Minimize,
     Maximize,
     Restore,
+    /// 加號（補給全部）
+    Plus,
+    /// 人物（頭和肩膀：人物照片）
+    Person,
+    /// 旗子（標記）
+    Flag,
 }
 
 /// 在 rect（正方形）裡畫圖示
@@ -472,6 +478,18 @@ pub fn paint_icon(p: &Painter, rect: Rect, icon: Icon, color: Color32) {
             line(&[(4.0, 4.0), (12.0, 12.0)]);
             line(&[(12.0, 4.0), (4.0, 12.0)]);
         }
+        Icon::Flag => {
+            line(&[(4.0, 14.0), (4.0, 2.5)]);
+            p.add(Shape::convex_polygon(vec![at(4.0, 2.5), at(13.0, 5.5), at(4.0, 8.5)], color, Stroke::NONE));
+        }
+        Icon::Person => {
+            circle(8.0, 5.5, 2.8);
+            arc(8.0, 14.5, 5.5, std::f32::consts::PI, std::f32::consts::TAU);
+        }
+        Icon::Plus => {
+            line(&[(8.0, 3.0), (8.0, 13.0)]);
+            line(&[(3.0, 8.0), (13.0, 8.0)]);
+        }
         Icon::Rename => {
             p.rect_stroke(Rect::from_min_max(at(1.5, 4.5), at(14.5, 11.5)), CornerRadius::same((1.5 * k) as u8), st, StrokeKind::Middle);
             line(&[(4.0, 8.0), (8.0, 8.0)]);
@@ -610,8 +628,6 @@ pub enum Kind {
     Danger,
     /// 開始錄影（紅色、較大）
     Record,
-    /// 停止錄影（紅底實心、一般大小）
-    Stop,
 }
 
 pub struct Btn {
@@ -719,7 +735,7 @@ impl Btn {
             (_, true) => (28.0, 13.0, 10.0),
             _ => (34.0, 14.0, 14.0),
         };
-        let fid = if matches!(self.kind, Kind::Primary | Kind::Record | Kind::Danger | Kind::Stop) { font_bold(fs) } else { font(fs) };
+        let fid = if matches!(self.kind, Kind::Primary | Kind::Record | Kind::Danger) { font_bold(fs) } else { font(fs) };
         (self.height.unwrap_or(h), fs, pad, fid)
     }
 
@@ -748,7 +764,7 @@ impl Btn {
         let (h, _, pad, fid) = self.metrics();
         let text_color = |hover: bool| match self.kind {
             Kind::Primary => p.accent_ink,
-            Kind::Record | Kind::Stop => Color32::WHITE,
+            Kind::Record => Color32::WHITE,
             Kind::Danger => {
                 if hover {
                     Color32::WHITE
@@ -791,7 +807,6 @@ impl Btn {
                 Kind::Primary => (if hover { p.accent.gamma_multiply(0.9) } else { p.accent }, Stroke::NONE),
                 Kind::Record => (if hover { p.rec.gamma_multiply(0.9) } else { p.rec }, Stroke::NONE),
                 Kind::Danger => (if hover { p.rec } else { p.surface }, Stroke::new(1.0, p.rec.gamma_multiply(0.6))),
-                Kind::Stop => (if hover { p.rec.gamma_multiply(0.9) } else { p.rec }, Stroke::NONE),
             };
             if self.selected && self.kind == Kind::Normal {
                 fill = p.accent_soft;

@@ -42,22 +42,58 @@ enum Try {
 fn items(_app: &UiApp) -> Vec<(String, String, Try)> {
     vec![
         (
-            tr!("檔案庫不再換頁，往下捲就有", "The library scrolls instead of paging").into(),
+            tr!("Jellyfin：一次整理好幾支的人物、標籤", "Jellyfin: organize people and tags for many videos").into(),
             tr!(
-                "錄影、截圖、Jellyfin 三個分頁都改用捲軸，捲到快底時自動讀下一批；右下角寫共幾筆。Ctrl+A、「選取全部」照樣包括還沒捲到的。",
-                "Recordings, screenshots and Jellyfin all scroll now, loading more as you near the bottom; the total is shown at the bottom right. Ctrl+A and Select all still include everything."
-            )
-            .into(),
-            Try::Library(false),
-        ),
-        (
-            tr!("Jellyfin：Shift 一次選一段、依這些找不跳動", "Jellyfin: Shift-select a range, steadier find-by").into(),
-            tr!(
-                "Jellyfin 分頁 Shift＋點一下從上次勾的那支選到這一支。「依這些找」勾選條件時按鈕和影片都留在原位，條件排在位置列，放不下的收進「+N 個」。",
-                "In the Jellyfin tab, Shift+click selects from the last checked video to this one. Picking find-by conditions no longer moves the buttons or videos; conditions sit in the location row, with extras under “+N more”."
+                "勾選影片按「整理人物、標籤…」，一次加、拿掉人物和標籤，改年份；「依這些找」可以找「沒有人物」「沒有標籤」的影片。播放時按「人物照片」把臉框起來設成那個人的照片。",
+                "Check videos and choose “Organize people & tags…” to add or remove people and tags and change the year at once; find-by can list videos with no people or tags. While playing, “Person photo” frames a face as that person's photo."
             )
             .into(),
             Try::Jellyfin,
+        ),
+        (
+            tr!("Jellyfin：合集與播放清單", "Jellyfin: collections and playlists").into(),
+            tr!(
+                "最上層多了「合集」「播放清單」，可以全部播放；勾選影片按「加進…」或按右鍵放進去，也可以新建。",
+                "Collections and playlists now appear at the top level, with Play all; add checked videos with “Add to…” or the right-click menu, or create a new one."
+            )
+            .into(),
+            Try::Jellyfin,
+        ),
+        (
+            tr!("幫 Jellyfin 上的影片產生字幕", "Make subtitles for videos on Jellyfin").into(),
+            tr!(
+                "勾選影片按「產生字幕」，用這台電腦的語音辨識做字幕傳回 Jellyfin，電視、手機上看也有字幕；不用先下載影片。",
+                "Check videos and choose “Make subtitles”: this computer's speech recognition makes them and sends them back to Jellyfin, so TVs and phones show them too. No download needed."
+            )
+            .into(),
+            Try::Jellyfin,
+        ),
+        (
+            tr!("Jellyfin：清單檢視、鍵盤操作", "Jellyfin: list view and keyboard").into(),
+            tr!(
+                "切成清單一列一支，點欄位標題排序；方向鍵移動、Enter 打開、空白鍵勾選、Delete 刪除、Backspace 回上一層。",
+                "Switch to a list with sortable columns; arrows move, Enter opens, Space checks, Delete deletes and Backspace goes up."
+            )
+            .into(),
+            Try::Jellyfin,
+        ),
+        (
+            tr!("新的錄影控制列", "A new recording bar").into(),
+            tr!(
+                "錄影中的計時和暫停、標記、麥克風靜音、停止收進一條深色的錄影膠囊，拿掉音量條，畫面更清爽。",
+                "While recording, the timer, pause, mark, mic mute and stop sit in one dark capsule, and the level meters are gone."
+            )
+            .into(),
+            Try::None,
+        ),
+        (
+            tr!("傳到 Jellyfin 快很多", "Sending to Jellyfin is much faster").into(),
+            tr!(
+                "傳好後直接請 Jellyfin 掃描那個資料夾，不用再等它的監控延遲（原本要一分鐘左右），影片資訊、封面也比較不會漏設。",
+                "After sending, Jellyfin is asked to scan that folder right away instead of waiting out its monitor delay (about a minute before), so details and covers are set more reliably."
+            )
+            .into(),
+            Try::None,
         ),
     ]
 }

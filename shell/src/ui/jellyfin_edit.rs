@@ -172,7 +172,7 @@ fn start_rename(app: &mut UiApp, user: String, kind: NameKind, from: String, to:
 }
 
 /// 使用次數（多的在前）加上伺服器上有、但還沒有影片用到的（次數 0）
-fn merge_usage(mut used: Vec<(String, usize)>, known: &[(String, usize)]) -> Vec<(String, usize)> {
+pub(super) fn merge_usage(mut used: Vec<(String, usize)>, known: &[(String, usize)]) -> Vec<(String, usize)> {
     for (n, _) in known {
         if !used.iter().any(|(u, _)| jellyfin::name_key(u) == jellyfin::name_key(n)) {
             used.push((n.clone(), 0));
@@ -183,7 +183,7 @@ fn merge_usage(mut used: Vec<(String, usize)>, known: &[(String, usize)]) -> Vec
 
 /// 「全部 N 個 ▾」清單的狀態：搜尋的字、排序、勾了哪些、正在打的改名
 #[derive(Default)]
-struct Picker {
+pub(super) struct Picker {
     search: String,
     sort: Sort,
     checked: Vec<String>,
@@ -222,7 +222,7 @@ pub struct Renaming {
 
 /// 清單上畫進度用：正在改的（舊的, 新的, 改好幾支, 全部幾支）
 #[derive(Clone)]
-struct Busy {
+pub(super) struct Busy {
     from: String,
     to: String,
     done: usize,
@@ -238,7 +238,7 @@ enum Sort {
 }
 
 /// 最近加過的放到最前面（最多 RECENT_GENRES 個）
-fn remember(recent: &mut Vec<String>, names: &[String]) {
+pub(super) fn remember(recent: &mut Vec<String>, names: &[String]) {
     for n in names.iter().rev() {
         recent.retain(|r| jellyfin::name_key(r) != jellyfin::name_key(n));
         recent.insert(0, n.clone());
@@ -253,7 +253,7 @@ fn image_of(bytes: &[u8]) -> Option<egui::ColorImage> {
 }
 
 /// 輸入框裡的字變成小標籤（可以一次打好幾個，用逗號或頓號分開）；已經有的不重複加
-fn commit(list: &mut Vec<String>, input: &mut String) {
+pub(super) fn commit(list: &mut Vec<String>, input: &mut String) {
     for v in input.split([',', '，', '、', ';', '；']).map(str::trim).filter(|v| !v.is_empty()) {
         if !list.iter().any(|x| x.to_lowercase() == v.to_lowercase()) {
             list.push(v.to_string());
@@ -263,13 +263,13 @@ fn commit(list: &mut Vec<String>, input: &mut String) {
 }
 
 /// 欄位上面的小標題
-fn label(ui: &mut egui::Ui, text: &str) {
+pub(super) fn label(ui: &mut egui::Ui, text: &str) {
     ui.label(RichText::new(text).font(theme::font_bold(12.5)).color(theme::pal(ui).muted));
 }
 
 /// 一個像輸入框的方框：裡面是已經加的小標籤（點 × 拿掉）和打字的地方（Enter、逗號加入；空的時按退格拿掉最後一個）。
 /// 下面一排是伺服器上已經有的，點一下加入
-fn chips(ui: &mut egui::Ui, id: &str, list: &mut Vec<String>, input: &mut String, known: &[(String, usize)], prefs: Prefs, hint: &str) {
+pub(super) fn chips(ui: &mut egui::Ui, id: &str, list: &mut Vec<String>, input: &mut String, known: &[(String, usize)], prefs: Prefs, hint: &str) {
     let p = theme::pal(ui);
     let mut remove = None;
     // 點了名字（不是 ×）：拿回輸入框改
@@ -323,15 +323,15 @@ fn chips(ui: &mut egui::Ui, id: &str, list: &mut Vec<String>, input: &mut String
 }
 
 /// 這台電腦記住的：釘選的（可以改）、最近加過的
-struct Prefs<'a> {
-    pins: &'a mut Vec<String>,
-    recent: &'a [String],
+pub(super) struct Prefs<'a> {
+    pub(super) pins: &'a mut Vec<String>,
+    pub(super) recent: &'a [String],
     /// 改了釘選（要存設定）
-    changed: &'a mut bool,
+    pub(super) changed: &'a mut bool,
     /// 「全部 N 個 ▾」清單的狀態
-    picker: &'a mut Picker,
+    pub(super) picker: &'a mut Picker,
     /// 這一類正在改名的
-    busy: Option<Busy>,
+    pub(super) busy: Option<Busy>,
 }
 
 /// 輸入框下面：沒打字時一行「常用」（釘選的在前，再依使用次數；放得下幾個就幾個），最後是「全部 N 個 ▾」清單；
