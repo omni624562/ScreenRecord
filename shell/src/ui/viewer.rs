@@ -1650,12 +1650,12 @@ fn video_bar(v: &mut Viewer, ui: &mut egui::Ui, act: &mut Act) {
     let dur = player.duration().max(0.001);
     let t = player.time().min(dur);
     let tip = if playing { tr!("暫停（空白鍵）", "Pause (Space)") } else { tr!("播放（空白鍵）", "Play (Space)") };
-    // 後退 10 秒｜播放｜快轉 10 秒
-    if Btn::new("10").icon(Icon::Undo).ghost().small().tooltip(tr!("後退 10 秒（←）", "Back 10 seconds (←)")).show(ui).clicked() {
-        *act = Act::Skip(-SKIP);
-    }
+    // 播放｜後退 10 秒、快轉 10 秒（並排）
     if Btn::icon_only(if playing { Icon::Pause } else { Icon::Play }).small().tooltip(tip).show(ui).clicked() {
         toggle_play(player);
+    }
+    if Btn::new("10").icon(Icon::Undo).ghost().small().tooltip(tr!("後退 10 秒（←）", "Back 10 seconds (←)")).show(ui).clicked() {
+        *act = Act::Skip(-SKIP);
     }
     if Btn::new("10").icon(Icon::Redo).ghost().small().tooltip(tr!("快轉 10 秒（→）", "Forward 10 seconds (→)")).show(ui).clicked() {
         *act = Act::Skip(SKIP);
