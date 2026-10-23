@@ -3,7 +3,7 @@
 //! 要用其他功能（章節、擷取這一格、設為封面…）按「在播放器開啟」，從目前的位置接著播。
 //! 開始錄影（含倒數）時自動停止播放。有 mpv 播放元件時用 mpv 播放（見 playback.rs），沒有時用 FFmpeg 解碼。
 
-use super::playback::{self, Playback};
+use super::playback::{self, Playback, Skipper};
 use super::theme::{self, Btn, Icon};
 use super::UiApp;
 use eframe::egui::{self, pos2, vec2, Align, Color32, CornerRadius, Key, Layout, Pos2, Rect, RichText, Sense, Stroke, StrokeKind, TextureHandle, TextureOptions, UiBuilder, Vec2};
@@ -38,6 +38,8 @@ pub struct Inline {
     size: Vec2,
     /// 拖曳進度列時暫停，放開後若原本在播放就繼續
     seeking: Option<bool>,
+    /// 後退 / 快轉（按住加速）
+    skip: Skipper,
     volume: f32,
     muted: bool,
     loading: bool,
@@ -97,6 +99,7 @@ pub fn open(app: &mut UiApp, entry: LibraryEntry) {
         video_px: [0, 0],
         size: Vec2::ZERO,
         seeking: None,
+        skip: Skipper::default(),
         volume,
         muted: false,
         loading: true,
@@ -264,21 +267,29 @@ fn toggle(p: &Playback) {
     }
 }
 
-/// 鍵盤：空白鍵播放 / 暫停、←→ 倒退 / 快轉 5 秒、M 靜音、F 全螢幕（播放器）、Esc 回到即時預覽
+/// 鍵盤：空白鍵播放 / 暫停、←→ 後退 / 快轉 5 秒（按住加速）、M 靜音、F 全螢幕（播放器）、Esc 回到即時預覽
 fn keyboard(app: &mut UiApp, ctx: &egui::Context) {
+    if let Some(i) = app.inline.as_mut() {
+        i.skip.no_keys();
+    }
     if app.ask.is_some() || ctx.memory(|m| m.focused().is_some()) || app.editor.is_some() || app.library.is_some() || app.viewer.is_some() || app.export_dlg.is_some() {
         return;
     }
     let none = egui::Modifiers::NONE;
-    let (esc, space, left, right, m, f) = ctx.input_mut(|i| {
-        (
-            i.consume_key(none, Key::Escape),
-            i.consume_key(none, Key::Space),
-            i.consume_key(none, Key::ArrowLeft),
-            i.consume_key(none, Key::ArrowRight),
-            i.consume_key(none, Key::M),
-            i.consume_key(none, Key::F),
-        )
+    // ←→ 按住的方向先記下來（播放列一起處理），再把按鍵事件吃掉
+    if let Some(il) = app.inline.as_mut() {
+        if let Some(p) = &il.player {
+            ctx.input(|i| {
+                if !i.modifiers.any() {
+                    il.skip.keys(i, p)
+                }
+            });
+        }
+    }
+    let (esc, space, m, f) = ctx.input_mut(|i| {
+        i.consume_key(none, Key::ArrowLeft);
+        i.consume_key(none, Key::ArrowRight);
+        (i.consume_key(none, Key::Escape), i.consume_key(none, Key::Space), i.consume_key(none, Key::M), i.consume_key(none, Key::F))
     });
     if esc {
         return close(app);
@@ -297,10 +308,6 @@ fn keyboard(app: &mut UiApp, ctx: &egui::Context) {
     let Some(p) = &i.player else { return };
     if space {
         toggle(p);
-    }
-    if left || right {
-        let d = if right { 5.0 } else { -5.0 };
-        p.seek((p.time() + d).clamp(0.0, p.duration()));
     }
 }
 
@@ -426,6 +433,7 @@ fn controls(i: &mut Inline, ui: &mut egui::Ui) -> bool {
     if Btn::icon_only(if playing { Icon::Pause } else { Icon::Play }).small().tooltip(tip).show(ui).clicked() {
         toggle(player);
     }
+    i.skip.buttons(ui, player);
     ui.label(RichText::new(format!("{} / {}", short_clock(t), short_clock(dur))).font(theme::mono(12.0)));
     let right_w = 62.0 + 34.0 + 70.0 + 34.0 + 24.0;
     let track_w = (ui.available_width() - right_w).max(60.0);
