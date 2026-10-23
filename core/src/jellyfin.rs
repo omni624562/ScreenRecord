@@ -82,22 +82,46 @@ impl Jellyfin {
         found
     }
 
-    /// 請 Jellyfin 掃描剛放進去的檔案：知道伺服器上的路徑時只掃描它所在的資料夾（幾秒就出現），
-    /// 不知道時掃描所有媒體庫。回傳是不是只掃描了那個資料夾
+    /// 請 Jellyfin 掃描剛放進去的檔案：知道伺服器上的路徑時，直接請它重新整理那個資料夾（Jellyfin 上還沒有這個資料夾時找最近的上層，
+    /// 最上層就是那個媒體庫；和控制台的「掃描媒體庫」同一個做法，馬上開始）。做不到時改成通知它資料夾裡有新檔案
+    /// （它會先等「媒體庫監控延遲」，預設 60 秒，才去看）。不知道伺服器上的路徑時掃描所有媒體庫。回傳是不是只掃描了那個資料夾或媒體庫
     pub fn scan(&self, local: &std::path::Path) -> Result<bool, String> {
         let dir = local.parent().unwrap_or(local);
-        let Some(remote) = self.server_root().and_then(|r| server_path(&r, &self.root, dir)) else {
+        let Some(remote) = self.remote_dir(dir) else {
             return self.refresh().map(|_| false);
         };
+        if let Some((id, path)) = self.folder_for(&remote) {
+            let url = format!("{}/Items/{id}/Refresh?Recursive=true&MetadataRefreshMode=Default&ImageRefreshMode=Default&ReplaceAllMetadata=false&ReplaceAllImages=false", self.url);
+            match self.call(agent().post(&url)) {
+                Ok(_) => {
+                    crate::info!("[Jellyfin] 請它掃描 {path}（{remote} 新的檔案）");
+                    return Ok(true);
+                }
+                Err(e) => crate::info!("[Jellyfin] 重新整理資料夾 {path} 失敗，改成通知新檔案：{e}"),
+            }
+        }
         let body = serde_json::json!({ "Updates": [{ "Path": remote, "UpdateType": "Created" }] }).to_string();
         match self.call_body(agent().post(&format!("{}/Library/Media/Updated", self.url)), &body) {
             Ok(_) => {
-                crate::info!("[Jellyfin] 請它掃描 {remote}");
+                crate::info!("[Jellyfin] 通知它 {remote} 有新檔案");
                 Ok(true)
             }
             // 舊版或不支援：掃描所有媒體庫
             Err(_) => self.refresh().map(|_| false),
         }
+    }
+
+    /// 這台電腦媒體庫裡的資料夾在伺服器上的路徑（看不出來時 None）
+    fn remote_dir(&self, dir: &std::path::Path) -> Option<String> {
+        self.server_root().and_then(|r| server_path(&r, &self.root, dir))
+    }
+
+    /// Jellyfin 上最接近伺服器路徑 remote 的資料夾或媒體庫（它本身或最近的上層）：（編號, 伺服器上的路徑）
+    fn folder_for(&self, remote: &str) -> Option<(String, String)> {
+        let get = |url: String| self.call(agent().get(&url)).ok().and_then(|r| r.into_string().ok()).unwrap_or_default();
+        let libs = get(format!("{}/Library/VirtualFolders", self.url));
+        let folders = get(format!("{}/Items?recursive=true&includeItemTypes=Folder&fields=Path&enableImages=false&enableUserData=false", self.url));
+        closest_folder(&libs, &folders, remote)
     }
 
     /// 媒體庫的設定看起來對不對：媒體庫資料夾在伺服器上對應到哪個 Jellyfin 媒體庫、類型是不是「家庭影片和照片」。
@@ -190,18 +214,33 @@ impl Jellyfin {
         Ok(index_from_items(&libs, &items))
     }
 
-    /// 請 Jellyfin 掃描後等它掃到這支影片（每 3 秒問一次，最多等 wait）：回傳影片編號；時間到還沒有時 None
-    pub fn wait_for(&self, file_name: &str, wait: Duration) -> Result<Option<String>, String> {
+    /// 請 Jellyfin 掃描後等它掃到這支影片（每 2 秒問一次，最多等 wait）：回傳影片編號；時間到還沒有時 None。
+    /// parent：檔案所在的 Jellyfin 資料夾（只看它裡面的，影片多時快很多；每 5 次還是看全部一次，以防那個資料夾查不到）。
+    /// tick：每次問完還沒有時，告訴它等了多久
+    pub fn wait_for(&self, file_name: &str, wait: Duration, parent: Option<&str>, tick: impl Fn(Duration)) -> Result<Option<String>, String> {
         let start = std::time::Instant::now();
-        loop {
-            if let Some(id) = self.find(file_name)?.into_iter().next() {
+        for n in 0u32.. {
+            let ids = match parent.filter(|_| n % 5 != 4) {
+                Some(p) => self.find_under(file_name, p).or_else(|_| self.find(file_name))?,
+                None => self.find(file_name)?,
+            };
+            if let Some(id) = ids.into_iter().next() {
                 return Ok(Some(id));
             }
             if start.elapsed() >= wait {
-                return Ok(None);
+                break;
             }
-            std::thread::sleep(Duration::from_secs(3).min(wait));
+            tick(start.elapsed());
+            std::thread::sleep(Duration::from_secs(2).min(wait));
         }
+        Ok(None)
+    }
+
+    /// 同 find，只看 Jellyfin 資料夾 parent 裡面的（含子資料夾）
+    fn find_under(&self, file_name: &str, parent: &str) -> Result<Vec<String>, String> {
+        let url = format!("{}/Items?parentId={parent}&recursive=true&includeItemTypes=Movie,Video,MusicVideo,Episode&fields=Path&enableImages=false&enableUserData=false", self.url);
+        let body = self.call(agent().get(&url))?.into_string().map_err(|e| e.to_string())?;
+        Ok(items_with_file(&body, file_name))
     }
 
     /// 把影片資訊（標題、說明、類型、年份、標籤；空的不動 Jellyfin 上的）設到這支影片：取回整筆資料、換上去再存回去。
@@ -880,7 +919,14 @@ impl Jellyfin {
         let stage = |what: &str| crate::transfer::set_stage(file_name, Some(what.to_string()));
         let ids = if ids.is_empty() {
             stage(tr!("等 Jellyfin 掃描到這支", "Waiting for Jellyfin to find it"));
-            let found = self.wait_for(file_name, wait);
+            let parent = local.and_then(|l| self.remote_dir(l.parent()?)).and_then(|r| self.folder_for(&r)).map(|(id, _)| id);
+            let tick = |waited: Duration| {
+                if waited >= Duration::from_secs(20) {
+                    let n = crate::format::human_duration(waited.as_secs() as f64);
+                    stage(&trf!("等 Jellyfin 掃描到這支（已等 {n}）", "Waiting for Jellyfin to find it ({n} so far)"));
+                }
+            };
+            let found = self.wait_for(file_name, wait, parent.as_deref(), tick);
             crate::transfer::set_stage(file_name, None);
             match found {
                 Ok(Some(id)) => vec![id],
@@ -2029,6 +2075,38 @@ pub fn favorite_set(name: &str, on: bool) {
     }
 }
 
+/// 傳好之後等 Jellyfin 掃到新檔案最多等多久（Jellyfin 忙、媒體庫很大時要比較久；等不到時影片資訊、封面就設不上去）
+pub const WAIT_SCAN: Duration = Duration::from_secs(300);
+
+/// 媒體庫（/Library/VirtualFolders）與資料夾（/Items 的 Folder）裡，伺服器路徑是 remote 本身或最近上層的那一個：（編號, 路徑）
+fn closest_folder(libs: &str, folders: &str, remote: &str) -> Option<(String, String)> {
+    let norm = |p: &str| p.replace('\\', "/").trim_end_matches('/').to_lowercase();
+    let target = norm(remote);
+    let mut found: Vec<(String, String)> = vec![];
+    if let Ok(Value::Array(libs)) = serde_json::from_str::<Value>(libs) {
+        for l in &libs {
+            let Some(id) = l.get("ItemId").and_then(Value::as_str) else { continue };
+            for loc in l.get("Locations").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str) {
+                found.push((id.to_string(), loc.to_string()));
+            }
+        }
+    }
+    if let Ok(v) = serde_json::from_str::<Value>(folders) {
+        for f in v.get("Items").and_then(Value::as_array).into_iter().flatten() {
+            if let (Some(id), Some(path)) = (f.get("Id").and_then(Value::as_str), f.get("Path").and_then(Value::as_str)) {
+                found.push((id.to_string(), path.to_string()));
+            }
+        }
+    }
+    found
+        .into_iter()
+        .filter(|(_, p)| {
+            let p = norm(p);
+            target == p || target.strip_prefix(&p).is_some_and(|r| r.starts_with('/'))
+        })
+        .max_by_key(|(_, p)| norm(p).len())
+}
+
 /// 媒體庫 l 的資料夾有沒有包含 root（伺服器上的路徑；/ 和 \\ 都算、不分大小寫），或在 root 底下
 fn covers(l: &Value, root: &str) -> bool {
     let norm = |p: &str| p.replace('\\', "/").trim_end_matches('/').to_lowercase();
@@ -2404,11 +2482,11 @@ pub fn send_file(jf: Option<&Jellyfin>, copy_to: &str, file: &std::path::Path, e
     }
     let sent = trf!("已傳到「{folder}」：{name}", "Sent to “{folder}”: {name}");
     let Some(jf) = jf else { return Some(Ok(sent)) };
-    // 新的檔案等它掃到（最多 1 分鐘）；已經有的直接設定
+    // 新的檔案等它掃到（最多 5 分鐘）；已經有的直接設定
     Some(match jf.refresh_items(&name, Some(&lib.join(library_name(file)))) {
         Ok(ids) => {
             let what = if ids.is_empty() { tr!("，已請 Jellyfin 掃描", ", Jellyfin asked to scan") } else { tr!("，已請 Jellyfin 重新讀取", ", Jellyfin asked to reload it") };
-            let more = jf.after_upload(&name, extras, ids, Duration::from_secs(60), Some(&lib.join(library_name(file))));
+            let more = jf.after_upload(&name, extras, ids, WAIT_SCAN, Some(&lib.join(library_name(file))));
             Ok(format!("{sent}{what}{more}"))
         }
         Err(e) => {
@@ -3036,17 +3114,64 @@ mod tests {
         std::fs::create_dir_all(lib.join("family")).unwrap();
         std::fs::write(lib.join("family/old.mp4"), "x").unwrap();
         let items = r#"{"Items":[{"Path":"/srv/video/family/old.mp4"}]}"#.to_string();
-        let (url, h) = serve_seq(vec![("200 OK", items), ("204 No Content", String::new())]);
+        let libs = r#"[{"Name":"錄影","ItemId":"L1","Locations":["/srv/video"]}]"#.to_string();
+        let folders = r#"{"Items":[{"Id":"F1","Path":"/srv/video/family"},{"Id":"F2","Path":"/srv/video/family2"}]}"#.to_string();
+        // 直接請它重新整理 family 那個資料夾（馬上掃，不等即時監控的延遲）
+        let (url, h) = serve_seq(vec![("200 OK", items.clone()), ("200 OK", libs.clone()), ("200 OK", folders), ("204 No Content", String::new())]);
         let jf = Jellyfin::new(&url, "k").unwrap().with_root(&lib.display().to_string());
         assert!(jf.scan(&lib.join("family/new.mp4")).unwrap());
         let got = h.join().unwrap();
         assert!(got[0].starts_with("GET /Items?"), "{got:?}");
-        assert!(got[1].starts_with("POST /Library/Media/Updated"), "{got:?}");
+        assert!(got[1].starts_with("GET /Library/VirtualFolders"), "{got:?}");
+        assert!(got[3].starts_with("POST /Items/F1/Refresh?Recursive=true"), "{got:?}");
+        // 重新整理失敗（舊版）：改成通知它有新檔案
+        let (url, h) = serve_seq(vec![("200 OK", items), ("200 OK", libs), ("200 OK", r#"{"Items":[]}"#.to_string()), ("404 Not Found", String::new()), ("204 No Content", String::new())]);
+        let jf = Jellyfin::new(&url, "k").unwrap().with_root(&lib.display().to_string());
+        assert!(jf.scan(&lib.join("family/new.mp4")).unwrap());
+        let got = h.join().unwrap();
+        assert!(got[3].starts_with("POST /Items/L1/Refresh"), "{got:?}");
+        assert!(got[4].starts_with("POST /Library/Media/Updated"), "{got:?}");
         // 對不上（媒體庫還沒有影片）：掃描所有媒體庫
         let (url, h) = serve_seq(vec![("200 OK", r#"{"Items":[]}"#.to_string()), ("204 No Content", String::new())]);
         let jf = Jellyfin::new(&url, "k").unwrap().with_root(&dir.path().join("empty").display().to_string());
         assert!(!jf.scan(&dir.path().join("empty/a.mp4")).unwrap());
         assert!(h.join().unwrap()[1].starts_with("POST /Library/Refresh"));
+    }
+
+    #[test]
+    fn closest_folder_is_the_folder_itself_or_its_nearest_parent() {
+        let libs = r#"[{"Name":"錄影","ItemId":"L1","Locations":["/volume1/video/"]},{"Name":"電影","ItemId":"L2","Locations":["/volume1/movies"]},{"Name":"壞的"}]"#;
+        let folders = r#"{"Items":[{"Id":"F1","Path":"/volume1/video/family"},{"Id":"F2","Path":"/volume1/video/family/2024"},{"Id":"F3","Path":"/volume1/video/fam"}]}"#;
+        let id = |remote: &str| closest_folder(libs, folders, remote).map(|(id, _)| id);
+        assert_eq!(id("/volume1/video/family/2024").as_deref(), Some("F2"));
+        // 新的子資料夾 Jellyfin 還沒有：上一層
+        assert_eq!(id("/volume1/video/family/2025").as_deref(), Some("F1"));
+        // 媒體庫最上層（名稱只是開頭一樣的不算）
+        assert_eq!(id("/volume1/video").as_deref(), Some("L1"));
+        assert_eq!(id("/volume1/video/familyX").as_deref(), Some("L1"));
+        // Windows 伺服器、大小寫
+        assert_eq!(closest_folder(r#"[{"ItemId":"W","Locations":["D:\\Media"]}]"#, "", "d:\\media\\other").map(|(id, _)| id).as_deref(), Some("W"));
+        // 不在任何媒體庫
+        assert_eq!(id("/volume1/other"), None);
+        assert_eq!(closest_folder("", "", "/x"), None);
+    }
+
+    #[test]
+    fn waiting_for_a_new_file_looks_only_in_its_folder() {
+        let none = r#"{"Items":[{"Id":"o","Path":"/v/family/old.mp4"}]}"#.to_string();
+        let found = r#"{"Items":[{"Id":"n1","Path":"/v/family/new.mp4"}]}"#.to_string();
+        let (url, h) = serve_seq(vec![("200 OK", none), ("200 OK", found)]);
+        let jf = Jellyfin::new(&url, "k").unwrap();
+        let ticks = std::cell::Cell::new(0);
+        assert_eq!(jf.wait_for("new.mp4", Duration::from_secs(30), Some("F1"), |_| ticks.set(ticks.get() + 1)).unwrap().as_deref(), Some("n1"));
+        assert_eq!(ticks.get(), 1);
+        let got = h.join().unwrap();
+        assert!(got.iter().all(|g| g.contains("parentId=F1")), "{got:?}");
+        // 時間到還沒有：None
+        let (url, h) = serve_seq(vec![("200 OK", r#"{"Items":[]}"#.to_string())]);
+        let jf = Jellyfin::new(&url, "k").unwrap();
+        assert_eq!(jf.wait_for("new.mp4", Duration::ZERO, None, |_| {}).unwrap(), None);
+        assert!(!h.join().unwrap()[0].contains("parentId"));
     }
 
     #[test]
