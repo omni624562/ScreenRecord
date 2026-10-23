@@ -208,6 +208,8 @@ pub struct UiSettings {
     pub jf_list_view: bool,
     /// 檔案庫「Jellyfin」分頁上次選的排序（JfSort::ALL 的第幾個）
     pub jf_sort: u8,
+    /// 檔案庫「Jellyfin」分頁上次選的篩選（JfFilter::ALL 的第幾個：全部、還沒看過、看到一半、我的最愛）
+    pub jf_filter: u8,
     /// 只錄聲音時另存一份 M4A（core 的 after_record.rs 讀這個欄位）
     pub audio_m4a: bool,
     /// 外觀："system"（跟著 Windows）、"light"、"dark"
@@ -435,6 +437,7 @@ impl UiSettings {
             jf_grid_size: num("jfGridSize").map(|v| v as u8).filter(|v| *v <= 2).unwrap_or(1),
             jf_list_view: boolean("jfListView").unwrap_or(false),
             jf_sort: num("jfSort").map(|v| v as u8).filter(|v| (*v as usize) < screenrecorder_core::jellyfin::JfSort::ALL.len()).unwrap_or(0),
+            jf_filter: num("jfFilter").map(|v| v as u8).filter(|v| (*v as usize) < screenrecorder_core::jellyfin::JfFilter::ALL.len()).unwrap_or(0),
             audio_m4a: screenrecorder_core::after_record::audio_m4a(v),
             theme: string("theme").filter(|v| ["light", "dark"].contains(&v.as_str())).unwrap_or_else(|| "system".into()),
             hide_notice_shown: boolean("hideNoticeShown").unwrap_or(false),

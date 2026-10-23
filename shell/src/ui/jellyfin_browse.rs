@@ -152,7 +152,8 @@ pub fn open(app: &mut UiApp) {
         return app.toast(tr!("要先在「設定 → 存檔與分享」填 Jellyfin 的網址和 API 金鑰", "Fill in the Jellyfin address and API key in Settings → Saving & sharing first"), true);
     }
     let sort = JfSort::ALL.get(app.s.jf_sort as usize).copied().unwrap_or_default();
-    app.jf_browse = Some(JfBrowse { grid: app.s.jf_grid_size, list_view: app.s.jf_list_view, sort, cols: 1, ..Default::default() });
+    let filter = JfFilter::ALL.get(app.s.jf_filter as usize).copied().unwrap_or_default();
+    app.jf_browse = Some(JfBrowse { grid: app.s.jf_grid_size, list_view: app.s.jf_list_view, sort, filter, cols: 1, ..Default::default() });
     load(app);
 }
 
@@ -1806,12 +1807,14 @@ pub fn panel(ui: &mut egui::Ui, d: &mut JfBrowse, busy: Option<(usize, usize)>, 
 
 /// 處理在分頁上按的（d 是從 app.jf_browse 拿出來畫的那一份，處理完放回去）
 pub fn apply(app: &mut UiApp, mut d: JfBrowse, mut out: Panel) {
-    // 縮圖大小、清單檢視、排序記到下次（有改才存）
+    // 縮圖大小、清單檢視、排序、篩選記到下次（有改才存）
     let sort_at = JfSort::ALL.iter().position(|s| *s == d.sort).unwrap_or(0) as u8;
-    if d.grid != app.s.jf_grid_size || d.list_view != app.s.jf_list_view || sort_at != app.s.jf_sort {
+    let filter_at = JfFilter::ALL.iter().position(|f| *f == d.filter).unwrap_or(0) as u8;
+    if d.grid != app.s.jf_grid_size || d.list_view != app.s.jf_list_view || sort_at != app.s.jf_sort || filter_at != app.s.jf_filter {
         app.s.jf_grid_size = d.grid;
         app.s.jf_list_view = d.list_view;
         app.s.jf_sort = sort_at;
+        app.s.jf_filter = filter_at;
         app.save_settings();
     }
     if let Some(c) = out.picked.cursor.take() {
