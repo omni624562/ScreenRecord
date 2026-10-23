@@ -1654,10 +1654,10 @@ fn video_bar(v: &mut Viewer, ui: &mut egui::Ui, act: &mut Act) {
     if Btn::icon_only(if playing { Icon::Pause } else { Icon::Play }).small().tooltip(tip).show(ui).clicked() {
         toggle_play(player);
     }
-    if Btn::new("10").icon(Icon::Undo).ghost().small().tooltip(tr!("後退 10 秒（←）", "Back 10 seconds (←)")).show(ui).clicked() {
+    if Btn::icon_only(Icon::SkipBack).ghost().small().tooltip(tr!("後退 10 秒（←）", "Back 10 seconds (←)")).show(ui).clicked() {
         *act = Act::Skip(-SKIP);
     }
-    if Btn::new("10").icon(Icon::Redo).ghost().small().tooltip(tr!("快轉 10 秒（→）", "Forward 10 seconds (→)")).show(ui).clicked() {
+    if Btn::icon_only(Icon::SkipFwd).ghost().small().tooltip(tr!("快轉 10 秒（→）", "Forward 10 seconds (→)")).show(ui).clicked() {
         *act = Act::Skip(SKIP);
     }
     ui.label(RichText::new(format!("{} / {}", short_clock(t), short_clock(dur))).font(theme::mono(12.5)));

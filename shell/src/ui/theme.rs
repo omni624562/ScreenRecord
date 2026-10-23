@@ -253,6 +253,9 @@ pub enum Icon {
     Rename,
     /// 加速（兩個向右的三角形）
     Fast,
+    /// 播放器的後退、快轉一小段
+    SkipBack,
+    SkipFwd,
     /// 回溯錄影（逆時針箭頭圍著時鐘指針）
 
     /// 錄影（攝影機：方框與鏡頭）
@@ -496,6 +499,12 @@ pub fn paint_icon(p: &Painter, rect: Rect, icon: Icon, color: Color32) {
             line(&[(11.0, 2.5), (11.0, 13.5)]);
             line(&[(9.5, 2.5), (12.5, 2.5)]);
             line(&[(9.5, 13.5), (12.5, 13.5)]);
+        }
+        Icon::SkipBack | Icon::SkipFwd => {
+            // 兩個實心三角形；後退時左右鏡射
+            let m = |x: f32| if icon == Icon::SkipBack { 16.0 - x } else { x };
+            p.add(Shape::convex_polygon(vec![at(m(2.0), 4.0), at(m(8.0), 8.0), at(m(2.0), 12.0)], color, Stroke::NONE));
+            p.add(Shape::convex_polygon(vec![at(m(8.0), 4.0), at(m(14.0), 8.0), at(m(8.0), 12.0)], color, Stroke::NONE));
         }
         Icon::Fast => {
             p.add(Shape::convex_polygon(vec![at(1.5, 4.0), at(8.0, 8.0), at(1.5, 12.0)], color, Stroke::NONE));
