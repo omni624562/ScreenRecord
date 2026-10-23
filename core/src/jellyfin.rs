@@ -99,6 +99,8 @@ impl Jellyfin {
                 }
                 Err(e) => crate::info!("[Jellyfin] 重新整理資料夾 {path} 失敗，改成通知新檔案：{e}"),
             }
+        } else if let Some(locs) = self.outside(&remote) {
+            crate::warn!("[Jellyfin] {remote} 不在任何媒體庫裡，Jellyfin 不會掃到（媒體庫的資料夾：{}）", locs.join("、"));
         }
         let body = serde_json::json!({ "Updates": [{ "Path": remote, "UpdateType": "Created" }] }).to_string();
         match self.call_body(agent().post(&format!("{}/Library/Media/Updated", self.url)), &body) {
@@ -114,6 +116,12 @@ impl Jellyfin {
     /// 這台電腦媒體庫裡的資料夾在伺服器上的路徑（看不出來時 None）
     fn remote_dir(&self, dir: &std::path::Path) -> Option<String> {
         self.server_root().and_then(|r| server_path(&r, &self.root, dir))
+    }
+
+    /// 伺服器上的資料夾 remote 不在任何媒體庫裡時，所有媒體庫的資料夾；在媒體庫裡或查不到時 None
+    fn outside(&self, remote: &str) -> Option<Vec<String>> {
+        let libs = self.call(agent().get(&format!("{}/Library/VirtualFolders", self.url))).ok()?.into_string().ok()?;
+        outside_libraries(&libs, remote)
     }
 
     /// Jellyfin 上最接近伺服器路徑 remote 的資料夾或媒體庫（它本身或最近的上層）：（編號, 伺服器上的路徑）
@@ -927,7 +935,17 @@ impl Jellyfin {
         let stage = |what: &str| crate::transfer::set_stage(file_name, Some(what.to_string()));
         let ids = if ids.is_empty() {
             stage(tr!("等 Jellyfin 掃描到這支", "Waiting for Jellyfin to find it"));
-            let parent = local.and_then(|l| self.remote_dir(l.parent()?)).and_then(|r| self.folder_for(&r)).map(|(id, _)| id);
+            let remote = local.and_then(|l| self.remote_dir(l.parent()?));
+            // 放進去的資料夾不在任何媒體庫裡：Jellyfin 永遠掃不到，直接說，不要白等
+            if let Some((r, locs)) = remote.as_deref().and_then(|r| self.outside(r).map(|l| (r, l))) {
+                crate::transfer::set_stage(file_name, None);
+                return trf!(
+                    "（Jellyfin 的媒體庫沒有包含這個資料夾（{r}），Jellyfin 看不到這支影片：請在 Jellyfin 控制台把它加進媒體庫，或傳到媒體庫裡的資料夾：{}）",
+                    " (No Jellyfin library includes this folder ({r}), so Jellyfin can't see this video. Add it to a library in the Jellyfin Dashboard, or send to a folder inside one: {})",
+                    locs.join(tr!("、", ", "))
+                );
+            }
+            let parent = remote.and_then(|r| self.folder_for(&r)).map(|(id, _)| id);
             let tick = |waited: Duration| {
                 if waited >= Duration::from_secs(20) {
                     let n = crate::format::human_duration(waited.as_secs() as f64);
@@ -2086,6 +2104,21 @@ pub fn favorite_set(name: &str, on: bool) {
 /// 傳好之後等 Jellyfin 掃到新檔案最多等多久（Jellyfin 忙、媒體庫很大時要比較久；等不到時影片資訊、封面就設不上去）
 pub const WAIT_SCAN: Duration = Duration::from_secs(300);
 
+/// 伺服器路徑 path 是不是 dir 本身或在它底下（/ 和 \\ 都算、不分大小寫）
+fn path_under(path: &str, dir: &str) -> bool {
+    let norm = |p: &str| p.replace('\\', "/").trim_end_matches('/').to_lowercase();
+    let (path, dir) = (norm(path), norm(dir));
+    path == dir || path.strip_prefix(&dir).is_some_and(|r| r.starts_with('/'))
+}
+
+/// 伺服器上的資料夾 remote 不在任何媒體庫裡時，回傳所有媒體庫的資料夾（讓使用者知道要傳到哪裡）；
+/// 在媒體庫裡、或讀不懂媒體庫清單時 None
+fn outside_libraries(libs: &str, remote: &str) -> Option<Vec<String>> {
+    let Ok(Value::Array(libs)) = serde_json::from_str::<Value>(libs) else { return None };
+    let locs: Vec<String> = libs.iter().filter_map(|l| l.get("Locations").and_then(Value::as_array)).flatten().filter_map(Value::as_str).map(str::to_string).collect();
+    (!locs.is_empty() && !locs.iter().any(|l| path_under(remote, l))).then_some(locs)
+}
+
 /// 媒體庫（/Library/VirtualFolders）與資料夾（/Items 的 Folder）裡，伺服器路徑是 remote 本身或最近上層的那一個：（編號, 路徑）
 fn closest_folder(libs: &str, folders: &str, remote: &str) -> Option<(String, String)> {
     let norm = |p: &str| p.replace('\\', "/").trim_end_matches('/').to_lowercase();
@@ -3144,6 +3177,21 @@ mod tests {
         let jf = Jellyfin::new(&url, "k").unwrap().with_root(&dir.path().join("empty").display().to_string());
         assert!(!jf.scan(&dir.path().join("empty/a.mp4")).unwrap());
         assert!(h.join().unwrap()[1].starts_with("POST /Library/Refresh"));
+    }
+
+    #[test]
+    fn folders_outside_every_library_are_reported() {
+        let libs = r#"[{"Name":"X","ItemId":"L1","Locations":["/video/X Pron"]},{"Name":"錄影","ItemId":"L2","Locations":["/video/family/"]}]"#;
+        // 放在 /video 最上層：不在任何媒體庫裡
+        assert_eq!(outside_libraries(libs, "/video"), Some(vec!["/video/X Pron".to_string(), "/video/family/".to_string()]));
+        assert_eq!(outside_libraries(libs, "/video/familyX"), Some(vec!["/video/X Pron".to_string(), "/video/family/".to_string()]));
+        // 在媒體庫裡（本身或底下，大小寫、斜線不同也算）
+        assert_eq!(outside_libraries(libs, "/video/family"), None);
+        assert_eq!(outside_libraries(libs, "/VIDEO/x pron/2024"), None);
+        assert_eq!(outside_libraries(r#"[{"Locations":["D:\\Media"]}]"#, "d:\\media\\sub"), None);
+        // 讀不懂或沒有媒體庫：不下結論
+        assert_eq!(outside_libraries("", "/video"), None);
+        assert_eq!(outside_libraries("[]", "/video"), None);
     }
 
     #[test]
