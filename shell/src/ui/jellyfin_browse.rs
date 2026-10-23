@@ -773,8 +773,13 @@ fn cells(ui: &mut egui::Ui, d: &JfBrowse, items: &[JfItem], rows: Option<usize>,
                 if on {
                     theme::paint_icon(painter, check.shrink(4.0), Icon::Check, egui::Color32::WHITE);
                 }
+                // 勾選框也可以 Shift＋點一下：從上次勾的選到這一支
                 if r.clicked() {
-                    out.toggle = Some(it.clone());
+                    if shift {
+                        out.range = Some((it.clone(), items.to_vec()));
+                    } else {
+                        out.toggle = Some(it.clone());
+                    }
                     used = true;
                 }
             }
@@ -1021,7 +1026,11 @@ fn rows(ui: &mut egui::Ui, d: &JfBrowse, items: &[JfItem], out: &mut Picked) {
                             theme::paint_icon(ui.painter(), icon_r.shrink(2.0), Icon::Check, egui::Color32::WHITE);
                         }
                         if cr.clicked() {
-                            out.toggle = Some(it.clone());
+                            if shift {
+                                out.range = Some((it.clone(), items.to_vec()));
+                            } else {
+                                out.toggle = Some(it.clone());
+                            }
                             out.cursor = Some(it.id.clone());
                             used = true;
                         }
