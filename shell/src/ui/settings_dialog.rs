@@ -58,7 +58,7 @@ pub struct SettingsDialog {
     apps: Option<Vec<screenrecorder_core::winui::AppInfo>>,
     /// 開機時自動啟動：None = 還沒讀；Some(None) = 不能設定（開發版）
     autostart: Option<Option<bool>>,
-    autostart_busy: bool,
+    pub(crate) autostart_busy: bool,
     /// 外部元件：正在安裝選擇的檔案
     installing: Option<Kind>,
     /// 外部元件：測試連線中 / 結果
@@ -832,7 +832,7 @@ fn save_page(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
     if folder_row(ui, &dir, "save-video") {
         choose_output_dir(app);
     }
-    let missing = !std::path::Path::new(&dir).is_dir();
+    let missing = super::main_view::dir_exists(ui.ctx(), &dir) == Some(false);
     let mut reset = false;
     folder_status(
         ui,
@@ -863,7 +863,7 @@ fn save_page(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
     if folder_row(ui, &shot_dir, "save-shot") {
         choose_shot_dir(app);
     }
-    let missing = !std::path::Path::new(&shot_dir).is_dir();
+    let missing = super::main_view::dir_exists(ui.ctx(), &shot_dir) == Some(false);
     let mut reset = false;
     folder_status(
         ui,

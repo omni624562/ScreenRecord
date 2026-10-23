@@ -260,7 +260,7 @@ impl RecorderDeps for RecDeps {
     fn keep_awake(&self) {
         // 錄影中不讓電腦因為閒置而睡眠、螢幕也不關（暫停後繼續、移動範圍時沿用同一個；停止時 after_stop 放掉）
         if let Some(a) = self.0.upgrade() {
-            a.awake.lock().unwrap().get_or_insert_with(|| crate::power::keep_awake(true));
+            a.awake.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(|| crate::power::keep_awake(true));
             a.sample_apps();
         }
     }
@@ -280,7 +280,7 @@ impl RecorderDeps for RecDeps {
     }
     fn saved(&self, path: &str) {
         if let Some(a) = self.0.upgrade() {
-            if let Some((app, title)) = a.last_rec_app.lock().unwrap().take() {
+            if let Some((app, title)) = a.last_rec_app.lock().unwrap_or_else(|e| e.into_inner()).take() {
                 a.shot_meta.record(path, crate::shot_meta::ShotMeta { app, title, src: "rec".into() });
             }
             tokio::spawn(a.after_record(path.to_string()));
@@ -291,9 +291,9 @@ impl RecorderDeps for RecDeps {
         crate::winui::set_desktop_icons(true);
         crate::quiet::end();
         if let Some(a) = self.0.upgrade() {
-            a.awake.lock().unwrap().take();
-            let counts = a.rec_apps.lock().unwrap().take().unwrap_or_default();
-            *a.last_rec_app.lock().unwrap() = most_used_app(&counts);
+            a.awake.lock().unwrap_or_else(|e| e.into_inner()).take();
+            let counts = a.rec_apps.lock().unwrap_or_else(|e| e.into_inner()).take().unwrap_or_default();
+            *a.last_rec_app.lock().unwrap_or_else(|e| e.into_inner()) = most_used_app(&counts);
         }
     }
     fn save_markers(&self, output: &str, marks: &crate::recorder::Marks) {
@@ -364,7 +364,7 @@ impl App {
     /// 錄影開始：每 4 秒記一次在用的程式（已經在記就不重來；停止時 after_stop 收起來）
     fn sample_apps(&self) {
         {
-            let mut g = self.rec_apps.lock().unwrap();
+            let mut g = self.rec_apps.lock().unwrap_or_else(|e| e.into_inner());
             if g.is_some() {
                 return;
             }
@@ -377,7 +377,7 @@ impl App {
                 std::thread::sleep(wait);
                 wait = Duration::from_secs(4);
                 let info = crate::winui::foreground_app();
-                let mut g = apps.lock().unwrap();
+                let mut g = apps.lock().unwrap_or_else(|e| e.into_inner());
                 let Some(m) = g.as_mut() else { break };
                 if let Some(i) = info.filter(|i| !i.exe.is_empty()) {
                     *m.entry((i.exe, i.title)).or_default() += 1;
@@ -393,23 +393,23 @@ impl App {
     // ───────────── 與外部（系統匣、視窗）的連接 ─────────────
 
     pub fn set_notifier(&self, n: Notifier) {
-        *self.notifier.lock().unwrap() = Some(n);
+        *self.notifier.lock().unwrap_or_else(|e| e.into_inner()) = Some(n);
     }
 
     pub fn notify(&self, title: &str, text: &str, warn: bool) {
-        let n = self.notifier.lock().unwrap().clone();
+        let n = self.notifier.lock().unwrap_or_else(|e| e.into_inner()).clone();
         if let Some(n) = n {
             n(title, text, warn);
         }
     }
 
     pub fn set_ui_opener(&self, o: UiOpener) {
-        *self.ui_opener.lock().unwrap() = Some(o);
+        *self.ui_opener.lock().unwrap_or_else(|e| e.into_inner()) = Some(o);
     }
 
     /// 開啟操作視窗（已開著時帶到前面）
     pub fn open_ui(&self, page: UiPage) {
-        let o = self.ui_opener.lock().unwrap().clone();
+        let o = self.ui_opener.lock().unwrap_or_else(|e| e.into_inner()).clone();
         match o {
             Some(o) => o(page),
             None => warn!("操作視窗還沒準備好"),
@@ -417,11 +417,11 @@ impl App {
     }
 
     pub fn set_exiter(&self, e: Exiter) {
-        *self.exiter.lock().unwrap() = Some(e);
+        *self.exiter.lock().unwrap_or_else(|e| e.into_inner()) = Some(e);
     }
 
     pub fn set_tray_dispose(&self, f: Box<dyn FnOnce() + Send>) {
-        *self.tray_dispose.lock().unwrap() = Some(f);
+        *self.tray_dispose.lock().unwrap_or_else(|e| e.into_inner()) = Some(f);
     }
 
     pub fn set_hotkeys(&self, h: HotkeyStatus) {
@@ -439,12 +439,12 @@ impl App {
     }
 
     pub fn set_hotkey_applier(&self, f: HotkeyApplier) {
-        *self.hotkey_applier.lock().unwrap() = Some(f);
+        *self.hotkey_applier.lock().unwrap_or_else(|e| e.into_inner()) = Some(f);
     }
 
     /// 重新登記全域快速鍵（不存檔；設定時先暫停全部，才能按到原本的組合）。沒有系統匣時回傳 None
     pub fn apply_hotkeys(&self, k: &crate::types::Hotkeys) -> Option<HotkeyStatus> {
-        let f = self.hotkey_applier.lock().unwrap().clone()?;
+        let f = self.hotkey_applier.lock().unwrap_or_else(|e| e.into_inner()).clone()?;
         let st = f(k)?;
         self.set_hotkeys(st);
         Some(st)
@@ -1384,14 +1384,14 @@ impl App {
     /// 主畫面看得到、沒有被剪輯等視窗蓋住時，介面目前的錄影設定（介面每一格呼叫；看不到時 None）：
     /// 選了攝影機就先顯示小視窗，切換螢幕、範圍時小視窗馬上跟著移
     pub fn set_camera_preview(&self, config: Option<RecordConfig>) {
-        *self.camera_preview.lock().unwrap() = config;
+        *self.camera_preview.lock().unwrap_or_else(|e| e.into_inner()) = config;
     }
 
     /// 攝影機小視窗要顯示在哪裡、長什麼樣子（None = 不顯示）。
     /// 錄影中（含倒數、暫停）：這次錄影有攝影機時，用錄影的範圍；位置、大小、形狀用最新的設定
     /// （錄影中在設定裡改了也跟著變）。錄影前：主畫面看得到時，用介面目前的設定（先擺好位置與大小）
     pub fn camera_bubble_info(&self) -> Option<crate::camera_bubble::BubbleInfo> {
-        let preview = self.camera_preview.lock().unwrap().clone();
+        let preview = self.camera_preview.lock().unwrap_or_else(|e| e.into_inner()).clone();
         let device = |c: &crate::types::CameraConfig| !c.device.trim().is_empty();
         if let Some(rec) = self.recorder.camera_info() {
             let latest = preview.as_ref().and_then(|c| c.camera.clone()).or_else(|| self.settings.load().record_config().and_then(|c| c.camera));
@@ -1410,7 +1410,7 @@ impl App {
     /// 錄影控制列的樣式與位置（設定的 recBar、recBarPos）。控制列每 0.1 秒問一次：設定沒變就用上次讀到的
     pub fn rec_bar_prefs(&self) -> crate::types::RecBarPrefs {
         let rev = self.settings.rev();
-        let mut cache = self.rec_bar.lock().unwrap();
+        let mut cache = self.rec_bar.lock().unwrap_or_else(|e| e.into_inner());
         if cache.0 != rev {
             let ui = self.settings.load().ui;
             let get = |k: &str| ui.as_ref().and_then(|u| u.get(k)).cloned();
@@ -1797,11 +1797,11 @@ impl App {
 
     /// 等待中的排程錄影
     pub fn scheduled(&self) -> Option<crate::schedule::Schedule> {
-        self.schedule.lock().unwrap().clone()
+        self.schedule.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     pub fn cancel_schedule(&self) {
-        if self.schedule.lock().unwrap().take().is_some() {
+        if self.schedule.lock().unwrap_or_else(|e| e.into_inner()).take().is_some() {
             info!("[排程] 已取消");
         }
         self.schedule_gen.fetch_add(1, Ordering::SeqCst);
@@ -1813,7 +1813,7 @@ impl App {
         use crate::schedule::{describe, title};
         let gen = self.schedule_gen.fetch_add(1, Ordering::SeqCst) + 1;
         info!("[排程] {}", describe(&s, chrono::Local::now()));
-        *self.schedule.lock().unwrap() = Some(s.clone());
+        *self.schedule.lock().unwrap_or_else(|e| e.into_inner()) = Some(s.clone());
         let _awake = crate::power::keep_awake(false);
         loop {
             if self.schedule_gen.load(Ordering::SeqCst) != gen || self.quitting.load(Ordering::SeqCst) {
@@ -1824,7 +1824,7 @@ impl App {
             }
             tokio::time::sleep(Duration::from_millis(500)).await;
         }
-        self.schedule.lock().unwrap().take();
+        self.schedule.lock().unwrap_or_else(|e| e.into_inner()).take();
         let config = s.record_config();
         match crate::actions::record_start(self, config).await {
             Ok(()) => {
@@ -1973,7 +1973,7 @@ impl App {
         let mut child = cmd.spawn().ok()?;
         let out = child.stdout.take()?;
         let slot = Arc::new(Mutex::new(Some(child)));
-        *self.live.lock().unwrap() = Some(slot.clone());
+        *self.live.lock().unwrap_or_else(|e| e.into_inner()) = Some(slot.clone());
         Some((out, LiveGuard(slot), dims))
     }
 
@@ -1983,8 +1983,8 @@ impl App {
     }
 
     fn kill_live(&self) {
-        if let Some(slot) = self.live.lock().unwrap().take() {
-            if let Some(mut c) = slot.lock().unwrap().take() {
+        if let Some(slot) = self.live.lock().unwrap_or_else(|e| e.into_inner()).take() {
+            if let Some(mut c) = slot.lock().unwrap_or_else(|e| e.into_inner()).take() {
                 let _ = c.start_kill();
             }
         }
@@ -2001,11 +2001,11 @@ impl App {
         self.kill_live();
         self.downloader.cancel();
         tokio::join!(self.recorder.shutdown(), self.exporter.shutdown());
-        let dispose = self.tray_dispose.lock().unwrap().take();
+        let dispose = self.tray_dispose.lock().unwrap_or_else(|e| e.into_inner()).take();
         if let Some(d) = dispose {
             let _ = tokio::task::spawn_blocking(d).await;
         }
-        let exiter = self.exiter.lock().unwrap().clone();
+        let exiter = self.exiter.lock().unwrap_or_else(|e| e.into_inner()).clone();
         match exiter {
             Some(e) => e(code),
             None => std::process::exit(code),
@@ -2088,7 +2088,7 @@ pub struct LiveGuard(Arc<Mutex<Option<tokio::process::Child>>>);
 
 impl Drop for LiveGuard {
     fn drop(&mut self) {
-        if let Some(mut c) = self.0.lock().unwrap().take() {
+        if let Some(mut c) = self.0.lock().unwrap_or_else(|e| e.into_inner()).take() {
             let _ = c.start_kill();
         }
     }

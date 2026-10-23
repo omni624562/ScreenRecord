@@ -168,7 +168,7 @@ fn lib() -> Result<Arc<Lib>, String> {
     if std::env::var_os("SCREENRECORDER_NO_MPV").is_some() {
         return Err("SCREENRECORDER_NO_MPV".into());
     }
-    let mut g = LIB.lock().unwrap();
+    let mut g = LIB.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(l) = g.as_ref() {
         return Ok(l.clone());
     }
@@ -190,7 +190,7 @@ fn lib() -> Result<Arc<Lib>, String> {
     }
     let last = if errors.is_empty() { format!("找不到 {LIB_NAME}") } else { errors.join("；") };
     // 載入失敗的原因寫進記錄檔（同樣的原因只寫一次）：例如缺少其他 DLL、版本太舊
-    let mut logged = LAST_ERROR.lock().unwrap();
+    let mut logged = LAST_ERROR.lock().unwrap_or_else(|e| e.into_inner());
     if *logged != last {
         crate::info!("[mpv] 無法載入播放元件（改用 FFmpeg 播放）：{last}");
         logged.clone_from(&last);
@@ -211,6 +211,11 @@ pub fn preload() {
 /// 有 libmpv 可以用嗎（會試著載入）
 pub fn available() -> bool {
     lib().is_ok()
+}
+
+/// 已經載入了嗎（不會去載入；正在載入時不等，回答 false）：狀態列之類每一格都會問的地方用這個，不會卡住畫面
+pub fn loaded() -> bool {
+    LIB.try_lock().map(|g| g.is_some()).unwrap_or(false)
 }
 
 /// 給 mpv 用的 OpenGL 函式查詢（介面的 OpenGL context 提供）
@@ -479,7 +484,7 @@ impl MpvPlayer {
                     if prop.data.is_null() {
                         continue;
                     }
-                    let mut st = self.st.lock().unwrap();
+                    let mut st = self.st.lock().unwrap_or_else(|e| e.into_inner());
                     match (name, prop.format) {
                         // 跳轉中：顯示要跳去的位置（mpv 還在回報舊的位置）
                         (b"time-pos", FORMAT_DOUBLE) if st.pending.is_none() && st.queued.is_none() => st.time = unsafe { *(prop.data as *const f64) },
@@ -522,7 +527,7 @@ impl MpvPlayer {
             self.set_flag("pause", true);
         }
         let next = {
-            let mut st = self.st.lock().unwrap();
+            let mut st = self.st.lock().unwrap_or_else(|e| e.into_inner());
             // 太久沒跳完（例如還沒讀到檔案）也照樣送下一個
             let stale = st.pending.is_some_and(|t| t.elapsed() > std::time::Duration::from_millis(1500));
             if seek_done || stale {
@@ -592,17 +597,17 @@ impl MpvPlayer {
 
     /// 目前播到幾秒
     pub fn time(&self) -> f64 {
-        self.st.lock().unwrap().time.clamp(0.0, self.duration.max(0.0))
+        self.st.lock().unwrap_or_else(|e| e.into_inner()).time.clamp(0.0, self.duration.max(0.0))
     }
 
     pub fn is_playing(&self) -> bool {
-        let st = self.st.lock().unwrap();
+        let st = self.st.lock().unwrap_or_else(|e| e.into_inner());
         !st.paused && !st.ended
     }
 
     /// 播完了（只回報一次）
     pub fn take_ended(&self) -> bool {
-        let mut st = self.st.lock().unwrap();
+        let mut st = self.st.lock().unwrap_or_else(|e| e.into_inner());
         let first = st.ended && !st.reported;
         st.reported |= st.ended;
         first
@@ -610,7 +615,7 @@ impl MpvPlayer {
 
     pub fn play(&self) {
         let ended = {
-            let mut st = self.st.lock().unwrap();
+            let mut st = self.st.lock().unwrap_or_else(|e| e.into_inner());
             let ended = st.ended;
             if ended {
                 // 播完之後再按播放：從頭開始
@@ -628,7 +633,7 @@ impl MpvPlayer {
     }
 
     pub fn pause(&self) {
-        self.st.lock().unwrap().paused = true;
+        self.st.lock().unwrap_or_else(|e| e.into_inner()).paused = true;
         self.set_flag("pause", true);
     }
 
@@ -645,7 +650,7 @@ impl MpvPlayer {
     fn seek_to(&self, t: f64, exact: bool) {
         let t = t.clamp(0.0, self.duration.max(0.0));
         {
-            let mut st = self.st.lock().unwrap();
+            let mut st = self.st.lock().unwrap_or_else(|e| e.into_inner());
             st.time = t;
             st.ended = false;
             st.reported = false;
@@ -667,18 +672,18 @@ impl MpvPlayer {
         let how = if exact { "absolute+exact" } else { "absolute+keyframes" };
         if let Err(e) = self.command_with(SEEK_REPLY, &["seek", &format!("{t:.3}"), how]) {
             crate::info!("[mpv] 跳轉失敗：{e}");
-            self.st.lock().unwrap().pending = None;
+            self.st.lock().unwrap_or_else(|e| e.into_inner()).pending = None;
         }
     }
 
     pub fn set_rate(&self, rate: f64) {
-        self.st.lock().unwrap().speed = rate;
+        self.st.lock().unwrap_or_else(|e| e.into_inner()).speed = rate;
         self.set_double("speed", rate);
         crate::info!("[mpv] 播放速度 {}×", crate::format::num(rate));
     }
 
     pub fn rate(&self) -> f64 {
-        self.st.lock().unwrap().speed
+        self.st.lock().unwrap_or_else(|e| e.into_inner()).speed
     }
 
     /// 字幕開或關（外掛字幕、影片裡的文字字幕）
@@ -792,7 +797,7 @@ mod tests {
             p.poll();
         }
         p.seek(p.time());
-        assert!(wait_until(&mut p, 3.0, |p| p.st.lock().unwrap().pending.is_none() && p.st.lock().unwrap().queued.is_none()));
+        assert!(wait_until(&mut p, 3.0, |p| p.st.lock().unwrap_or_else(|e| e.into_inner()).pending.is_none() && p.st.lock().unwrap_or_else(|e| e.into_inner()).queued.is_none()));
         assert!(wait_until(&mut p, 3.0, |p| (p.time() - 1.38).abs() < 0.05), "停在放開的位置：{}", p.time());
     }
 

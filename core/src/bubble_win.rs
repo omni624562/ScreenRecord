@@ -84,7 +84,7 @@ impl Bubble {
     /// 換內容（一樣時不重畫）
     pub fn set(&self, content: Content) {
         {
-            let mut s = self.shared.lock().unwrap();
+            let mut s = self.shared.lock().unwrap_or_else(|e| e.into_inner());
             if s.content == content {
                 return;
             }
@@ -100,11 +100,11 @@ impl Bubble {
 
     /// 取出到目前為止的事件（按鈕編號、BODY、ESC）
     pub fn events(&self) -> Vec<u32> {
-        std::mem::take(&mut self.shared.lock().unwrap().events)
+        std::mem::take(&mut self.shared.lock().unwrap_or_else(|e| e.into_inner()).events)
     }
 
     pub fn close(&self) {
-        self.shared.lock().unwrap().closed = true;
+        self.shared.lock().unwrap_or_else(|e| e.into_inner()).closed = true;
         let h = self.hwnd.load(Ordering::Acquire);
         if h != 0 {
             unsafe {
@@ -140,7 +140,7 @@ unsafe fn run(shared: Arc<Mutex<Shared>>, hwnd_out: Arc<AtomicIsize>, opts: Opti
         }
     };
     let (work, scale) = monitor_of(at);
-    let content = shared.lock().unwrap().content.clone();
+    let content = shared.lock().unwrap_or_else(|e| e.into_inner()).content.clone();
     let Some((pm, layout)) = render(&content, scale, None) else { return };
     let gap = (12.0 * scale) as i32;
     let pos = place((layout.w as i32, layout.h as i32), work, opts.near, opts.bottom, gap);
@@ -165,7 +165,7 @@ unsafe fn run(shared: Arc<Mutex<Shared>>, hwnd_out: Arc<AtomicIsize>, opts: Opti
     crate::shot_toast_win::present(hwnd, &pm, pos);
     hwnd_out.store(hwnd.0 as isize, Ordering::Release);
     // 建好視窗前內容可能已經換了、或已經要關了
-    if shared.lock().unwrap().closed {
+    if shared.lock().unwrap_or_else(|e| e.into_inner()).closed {
         let _ = DestroyWindow(hwnd);
     } else {
         update(hwnd, false);
@@ -188,7 +188,7 @@ unsafe fn update(hwnd: HWND, force: bool) {
     let redraw = STATE.with(|s| {
         let mut b = s.borrow_mut();
         let st = b.as_mut()?;
-        let content = st.shared.lock().unwrap().content.clone();
+        let content = st.shared.lock().unwrap_or_else(|e| e.into_inner()).content.clone();
         if content == st.shown && !force {
             return None;
         }
@@ -209,7 +209,7 @@ unsafe fn update(hwnd: HWND, force: bool) {
 fn event(id: u32) {
     STATE.with(|s| {
         if let Some(st) = s.borrow().as_ref() {
-            st.shared.lock().unwrap().events.push(id);
+            st.shared.lock().unwrap_or_else(|e| e.into_inner()).events.push(id);
             if let Some(on) = &st.on {
                 on(id);
             }

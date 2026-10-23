@@ -60,16 +60,16 @@ pub struct OpenRequests(Arc<(Mutex<Vec<UiPage>>, std::sync::Condvar)>);
 
 impl OpenRequests {
     pub fn push(&self, page: UiPage) {
-        self.0 .0.lock().unwrap().push(page);
+        self.0 .0.lock().unwrap_or_else(|e| e.into_inner()).push(page);
         self.0 .1.notify_all();
     }
     fn take(&self) -> Vec<UiPage> {
-        std::mem::take(&mut *self.0 .0.lock().unwrap())
+        std::mem::take(&mut *self.0 .0.lock().unwrap_or_else(|e| e.into_inner()))
     }
     /// 等到有開啟視窗的要求（操作視窗還沒建立時，主執行緒在這裡等）；timeout 內有要求就回傳 true
     pub fn wait(&self, timeout: Duration) -> bool {
         let (list, cv) = &*self.0;
-        let g = cv.wait_timeout_while(list.lock().unwrap(), timeout, |l| l.is_empty()).unwrap().0;
+        let g = cv.wait_timeout_while(list.lock().unwrap_or_else(|e| e.into_inner()), timeout, |l| l.is_empty()).unwrap().0;
         !g.is_empty()
     }
 }
@@ -544,15 +544,46 @@ impl UiApp {
 
     // ───────────── 非同步工作 ─────────────
 
-    /// 在背景執行 fut，完成後在介面執行緒呼叫 done
+    /// 在背景執行 fut，完成後在介面執行緒呼叫 done。fut 當掉（panic）時不會悄悄消失：
+    /// 記到記錄檔、提示使用者，「正在讀取…」之類的狀態也跟著清掉（clear_busy）
     pub fn spawn<T: Send + 'static>(&self, fut: impl Future<Output = T> + Send + 'static, done: impl FnOnce(&mut UiApp, T) + Send + 'static) {
         let tx = self.tx.clone();
         let ctx = self.ctx.clone();
+        let task = self.rt.spawn(fut);
         self.rt.spawn(async move {
-            let r = fut.await;
-            let _ = tx.send(Box::new(move |app: &mut UiApp| done(app, r)));
+            match task.await {
+                Ok(r) => {
+                    let _ = tx.send(Box::new(move |app: &mut UiApp| done(app, r)));
+                }
+                Err(e) => {
+                    let what = if e.is_panic() { panic_text(e.into_panic()) } else { e.to_string() };
+                    screenrecorder_core::error!("[介面] 背景工作出錯：{what}");
+                    let _ = tx.send(Box::new(move |app: &mut UiApp| {
+                        app.clear_busy();
+                        app.toast(
+                            tr!("剛才的動作出了問題沒有完成，請再試一次（詳細原因記在記錄檔）", "That didn't finish because something went wrong. Please try again (details are in the log)"),
+                            true,
+                        );
+                    }));
+                }
+            }
             ctx.request_repaint();
         });
+    }
+
+    /// 背景工作當掉之後：把「正在讀取…」「處理中」之類的狀態清掉，按鈕不會一直不能按（之後會重讀）
+    fn clear_busy(&mut self) {
+        self.lib_index_loading = false;
+        self.jf_scanned_loading = false;
+        self.pending_busy = false;
+        self.jf_watch_loading = false;
+        self.cameras_loading = false;
+        if let Some(d) = self.library.as_mut() {
+            d.clear_busy();
+        }
+        if let Some(d) = self.settings_dlg.as_mut() {
+            d.autostart_busy = false;
+        }
     }
 
     /// 只抓文字的結果（core 已經複製到剪貼簿）：提示幾個字，可以打開來看
@@ -1911,6 +1942,11 @@ fn trash_now(app: &mut UiApp, paths: Vec<String>, copies: Vec<std::path::PathBuf
             done(app, &paths, false);
         }
     }
+}
+
+/// panic 的訊息（字串時）
+fn panic_text(p: Box<dyn std::any::Any + Send>) -> String {
+    p.downcast_ref::<&str>().map(|s| s.to_string()).or_else(|| p.downcast_ref::<String>().cloned()).unwrap_or_else(|| "panic".into())
 }
 
 #[cfg(test)]

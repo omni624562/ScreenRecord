@@ -150,7 +150,7 @@ pub fn open(app: &mut UiApp, entry: LibraryEntry) {
             i.sound_only = audio;
             i.size = vec2(w as f32, h as f32);
             // 有 libmpv 就用 mpv 播；聲音、mpv 播不了的檔案用 FFmpeg
-            let no_mpv = NO_MPV.lock().unwrap().as_deref() == Some(m.path.as_str());
+            let no_mpv = NO_MPV.lock().unwrap_or_else(|e| e.into_inner()).as_deref() == Some(m.path.as_str());
             let mpv = gl.filter(|_| !audio && !no_mpv).and_then(|gl| {
                 MpvPlayer::new(&m.path, spec.duration, Start { at: 0.0, rate: 1.0, volume: i.volume_now(), paused: false, ..Default::default() }, wake.clone(), &gl, software_gl)
                     .map_err(|e| screenrecorder_core::info!("[主畫面播放] 無法用 mpv 播放，改用 FFmpeg：{e}"))
@@ -249,7 +249,7 @@ pub fn render(app: &mut UiApp, frame: &mut eframe::Frame) {
         Err(e) => {
             screenrecorder_core::info!("[主畫面播放] mpv 無法播放，改用 FFmpeg：{e}");
             let entry = i.entry.clone();
-            *NO_MPV.lock().unwrap() = Some(entry.media.path.clone());
+            *NO_MPV.lock().unwrap_or_else(|e| e.into_inner()) = Some(entry.media.path.clone());
             app.inline = None;
             open(app, entry);
         }

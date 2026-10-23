@@ -303,7 +303,7 @@ pub async fn rename(app: &App, path: &str, name: &str) -> Result<String> {
 static RENAMES: std::sync::Mutex<Vec<(String, String)>> = std::sync::Mutex::new(Vec::new());
 
 fn remember_rename(from: &str, to: &str) {
-    let mut list = RENAMES.lock().unwrap();
+    let mut list = RENAMES.lock().unwrap_or_else(|e| e.into_inner());
     list.retain(|(f, _)| !f.eq_ignore_ascii_case(from));
     list.push((from.to_string(), to.to_string()));
     // 只留最近的
@@ -317,7 +317,7 @@ pub fn renamed_to(path: &str) -> Option<String> {
     if Path::new(path).exists() {
         return None;
     }
-    let list = RENAMES.lock().unwrap();
+    let list = RENAMES.lock().unwrap_or_else(|e| e.into_inner());
     let mut cur = path.to_string();
     for _ in 0..10 {
         match list.iter().rev().find(|(f, _)| f.eq_ignore_ascii_case(&cur)) {

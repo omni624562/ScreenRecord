@@ -243,7 +243,7 @@ impl VoiceRecorder {
                 let mut cap = match open(&crate::audio::AudioSourceSpec { loopback: false, mic_id: id, app: String::new() }) {
                     Ok(c) => c,
                     Err(e) => {
-                        sh.lock().unwrap().error = Some(trf!("{}：{e}", "{}: {e}", no_mic()));
+                        sh.lock().unwrap_or_else(|e| e.into_inner()).error = Some(trf!("{}：{e}", "{}: {e}", no_mic()));
                         return;
                     }
                 };
@@ -255,7 +255,7 @@ impl VoiceRecorder {
                         None => got.extend(std::iter::repeat_n(0.0, frames)),
                     });
                     {
-                        let mut g = sh.lock().unwrap();
+                        let mut g = sh.lock().unwrap_or_else(|e| e.into_inner());
                         if let Err(e) = r {
                             g.error = Some(e);
                             break;
@@ -273,16 +273,16 @@ impl VoiceRecorder {
 
     /// 目前的音量（0～1）
     pub fn level(&self) -> f32 {
-        self.shared.lock().unwrap().level
+        self.shared.lock().unwrap_or_else(|e| e.into_inner()).level
     }
 
     /// 錄了幾秒
     pub fn secs(&self) -> f64 {
-        self.shared.lock().unwrap().samples.len() as f64 / crate::audio::SAMPLE_RATE as f64
+        self.shared.lock().unwrap_or_else(|e| e.into_inner()).samples.len() as f64 / crate::audio::SAMPLE_RATE as f64
     }
 
     pub fn error(&self) -> Option<String> {
-        self.shared.lock().unwrap().error.clone()
+        self.shared.lock().unwrap_or_else(|e| e.into_inner()).error.clone()
     }
 
     /// 停止並存成 WAV；回傳長度（毫秒）。太短（不到 0.3 秒）或錄不到時回傳錯誤
@@ -291,7 +291,7 @@ impl VoiceRecorder {
         if let Some(t) = self.thread.take() {
             let _ = t.join();
         }
-        let g = self.shared.lock().unwrap();
+        let g = self.shared.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(e) = &g.error {
             return Err(e.clone());
         }

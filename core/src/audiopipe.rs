@@ -701,7 +701,7 @@ impl AudioPipe {
     /// 立即釋放（FFmpeg 已結束時）
     pub fn close(&self) {
         let _ = self.tx.send(Cmd::Close);
-        let thread = self.thread.lock().unwrap().take();
+        let thread = self.thread.lock().unwrap_or_else(|e| e.into_inner()).take();
         if let Some(t) = thread {
             let _ = t.join();
         }
@@ -778,7 +778,7 @@ mod tests {
             if self.fail.load(Ordering::Relaxed) {
                 return Err("拔除".into());
             }
-            while let Some((d, n, q)) = self.packets.lock().unwrap().pop_front() {
+            while let Some((d, n, q)) = self.packets.lock().unwrap_or_else(|e| e.into_inner()).pop_front() {
                 visit(d.as_deref(), n, q);
             }
             Ok(())
@@ -797,7 +797,7 @@ mod tests {
     fn logs() -> (LogFn, Arc<Mutex<Vec<String>>>) {
         let store = Arc::new(Mutex::new(Vec::new()));
         let s = store.clone();
-        (Arc::new(move |_l, m| s.lock().unwrap().push(m)), store)
+        (Arc::new(move |_l, m| s.lock().unwrap_or_else(|e| e.into_inner()).push(m)), store)
     }
 
     fn floats(bytes: &[u8]) -> Vec<f32> {
@@ -818,8 +818,8 @@ mod tests {
         tl.on_video_frame(0.0, 1000 * MS);
         tl.on_video_frame(0.1, 1150 * MS);
         // 零點前 100ms 的封包（480 個取樣）與零點後 50ms 的封包
-        packets.lock().unwrap().push_back((Some(seq(0, 480)), 480, Some(900 * MS)));
-        packets.lock().unwrap().push_back((Some(seq(1000, 48)), 48, Some(1050 * MS)));
+        packets.lock().unwrap_or_else(|e| e.into_inner()).push_back((Some(seq(0, 480)), 480, Some(900 * MS)));
+        packets.lock().unwrap_or_else(|e| e.into_inner()).push_back((Some(seq(1000, 48)), 48, Some(1050 * MS)));
         assert!(tl.tick(1500 * MS).is_empty()); // 還在收集畫面時間
         assert!(!tl.synced());
         let out = floats(tl.tick(2000 * MS));
@@ -843,14 +843,14 @@ mod tests {
         let mut tl = Timeline::new(&specs, fake_opener(packets.clone(), fail), log, 0);
         tl.on_video_frame(0.0, 0);
         // 兩個來源共用同一個假封包佇列：第一個來源讀完全部，第二個只有靜音
-        packets.lock().unwrap().push_back((Some(vec![0.25; 96]), 48, Some(0)));
+        packets.lock().unwrap_or_else(|e| e.into_inner()).push_back((Some(vec![0.25; 96]), 48, Some(0)));
         let out = floats(tl.flush_to(10 * MS));
         assert_eq!(out.len(), 480 * CHANNELS);
         assert_eq!(out[..96], vec![0.25; 96][..]);
         // 電腦睡眠 1 小時：時間軸跳過，不補一小時的靜音
         let out = tl.tick(3600 * 1000 * MS).len();
         assert!(out < (MAX_SILENCE_FRAMES as usize + 48_000) * CHANNELS * 4);
-        assert!(messages.lock().unwrap().iter().any(|m| m.contains("電腦睡眠")));
+        assert!(messages.lock().unwrap_or_else(|e| e.into_inner()).iter().any(|m| m.contains("電腦睡眠")));
     }
 
     #[test]
@@ -862,7 +862,7 @@ mod tests {
         let mut tl = Timeline::with_tracks(&specs, fake_opener(packets.clone(), fail), log, 0, true);
         tl.on_video_frame(0.0, 0);
         // 第一個來源（系統聲音）讀到這個封包，第二個（麥克風）只有靜音
-        packets.lock().unwrap().push_back((Some(seq(1, 48)), 48, Some(0)));
+        packets.lock().unwrap_or_else(|e| e.into_inner()).push_back((Some(seq(1, 48)), 48, Some(0)));
         let out = floats(tl.flush_to(10 * MS));
         assert_eq!(channels_for(2, true), 6);
         assert_eq!(out.len(), 480 * 6);
@@ -884,17 +884,17 @@ mod tests {
         let mut tl = Timeline::new(&[spec], fake_opener(packets.clone(), fail), log, 0);
         tl.mic_mute = &MUTE;
         tl.on_video_frame(0.0, 0);
-        packets.lock().unwrap().push_back((Some(seq(1, 48)), 48, Some(0)));
+        packets.lock().unwrap_or_else(|e| e.into_inner()).push_back((Some(seq(1, 48)), 48, Some(0)));
         assert_eq!(floats(tl.flush_to(MS))[..2], [1.0, -1.0]);
         // 靜音中：麥克風的聲音照樣讀走，但送出的是靜音；取消後恢復
         MUTE.store(true, Ordering::Relaxed);
-        packets.lock().unwrap().push_back((Some(seq(1, 48)), 48, Some(MS)));
+        packets.lock().unwrap_or_else(|e| e.into_inner()).push_back((Some(seq(1, 48)), 48, Some(MS)));
         let out = floats(tl.flush_to(2 * MS));
         assert_eq!(out.len(), 48 * CHANNELS);
         assert!(out.iter().all(|v| *v == 0.0));
-        assert!(packets.lock().unwrap().is_empty());
+        assert!(packets.lock().unwrap_or_else(|e| e.into_inner()).is_empty());
         MUTE.store(false, Ordering::Relaxed);
-        packets.lock().unwrap().push_back((Some(seq(1, 48)), 48, Some(2 * MS)));
+        packets.lock().unwrap_or_else(|e| e.into_inner()).push_back((Some(seq(1, 48)), 48, Some(2 * MS)));
         assert_eq!(floats(tl.flush_to(3 * MS))[..2], [1.0, -1.0]);
     }
 
@@ -918,11 +918,11 @@ mod tests {
         tl.tick(3000 * MS);
         assert_eq!(tl.describe(), "麥克風（假裝置）");
         assert_eq!(tl.silent_mask(), 0);
-        assert!(messages.lock().unwrap().iter().any(|m| m.contains("已恢復")));
+        assert!(messages.lock().unwrap_or_else(|e| e.into_inner()).iter().any(|m| m.contains("已恢復")));
         // 裝置中斷：改以靜音代替
         fail.store(true, Ordering::Relaxed);
         tl.tick(3100 * MS);
-        assert!(messages.lock().unwrap().iter().any(|m| m.contains("中斷")));
+        assert!(messages.lock().unwrap_or_else(|e| e.into_inner()).iter().any(|m| m.contains("中斷")));
         assert_eq!(tl.silent_mask(), SILENT_MIC);
     }
 
@@ -965,7 +965,7 @@ mod tests {
         assert_eq!(tl.take_peaks(), [Some(0.0), Some(0.0)]);
         tl.on_video_frame(0.0, 0);
         // 第一個來源（系統聲音）讀到 −0.5 的聲音，麥克風只有靜音
-        packets.lock().unwrap().push_back((Some(vec![-0.5; 96]), 48, Some(0)));
+        packets.lock().unwrap_or_else(|e| e.into_inner()).push_back((Some(vec![-0.5; 96]), 48, Some(0)));
         let _ = tl.flush_to(10 * MS);
         assert_eq!(tl.take_peaks(), [Some(0.5), Some(0.0)]);
         // 讀了就歸零

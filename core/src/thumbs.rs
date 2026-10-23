@@ -53,10 +53,10 @@ impl Thumbnails {
         if out.is_file() {
             return Some(out);
         }
-        if self.failed.lock().unwrap().get(&key).is_some_and(|t| t.elapsed() < RETRY_FAILED) {
+        if self.failed.lock().unwrap_or_else(|e| e.into_inner()).get(&key).is_some_and(|t| t.elapsed() < RETRY_FAILED) {
             return None;
         }
-        let cell = self.inflight.lock().unwrap().entry(key.clone()).or_default().clone();
+        let cell = self.inflight.lock().unwrap_or_else(|e| e.into_inner()).entry(key.clone()).or_default().clone();
         let result = cell
             .get_or_init(|| async {
                 let _permit = if image { self.image_sem.clone() } else { self.sem.clone() }.acquire_owned().await.ok()?;
@@ -67,37 +67,40 @@ impl Thumbnails {
                         return Some(out.clone());
                     }
                     let _ = std::fs::remove_file(&out);
-                    self.failed.lock().unwrap().insert(key.clone(), Instant::now());
+                    self.failed.lock().unwrap_or_else(|e| e.into_inner()).insert(key.clone(), Instant::now());
                     return None;
                 }
                 let ffmpeg = ffmpeg?;
+                // FFmpeg 先寫到暫存檔，完整了才改成正式檔名：做到一半當掉不會留下壞掉的縮圖（之後一直被當成做好了）
+                let tmp = out.with_extension("tmp.png");
+                let done = |tmp: &Path, out: &Path| std::fs::metadata(tmp).map(|m| m.len() > 0).unwrap_or(false) && std::fs::rename(tmp, out).is_ok();
                 // 有設定封面（寫在影片裡的 attached_pic）就用封面：0:v 去掉 0:V 剩下的就是封面圖
                 if crate::cover::can_embed(video) {
-                    let out_s = out.display().to_string();
+                    let out_s = tmp.display().to_string();
                     let args: Vec<String> =
                         ["-hide_banner", "-loglevel", "error", "-threads", "1", "-i", video, "-map", "0:v", "-map", "-0:V", "-frames:v", "1", "-vf", "scale=320:-2:flags=bilinear", "-y", &out_s]
                             .iter()
                             .map(|s| s.to_string())
                             .collect();
                     let r = run(ffmpeg, &args, Duration::from_secs(20)).await;
-                    if r.code == 0 && std::fs::metadata(&out).map(|m| m.len() > 0).unwrap_or(false) {
+                    if r.code == 0 && done(&tmp, &out) {
                         return Some(out.clone());
                     }
-                    let _ = std::fs::remove_file(&out);
+                    let _ = std::fs::remove_file(&tmp);
                 }
                 // 沒有封面：取第 1 秒（避開開頭可能的黑畫面），太短的影片改取第一張；-threads 1 不和錄影搶 CPU
                 for at in ["1", "0"] {
-                    let out_s = out.display().to_string();
+                    let out_s = tmp.display().to_string();
                     let mut args: Vec<String> = ["-hide_banner", "-loglevel", "error", "-threads", "1"].iter().map(|s| s.to_string()).collect();
                     args.extend(crate::args::input_at(video, at));
                     args.extend(["-frames:v", "1", "-vf", "scale=320:-2:flags=bilinear", "-y", &out_s].iter().map(|s| s.to_string()));
                     let r = run(ffmpeg, &args, Duration::from_secs(20)).await;
-                    if r.code == 0 && std::fs::metadata(&out).map(|m| m.len() > 0).unwrap_or(false) {
+                    if r.code == 0 && done(&tmp, &out) {
                         return Some(out.clone());
                     }
                 }
-                let _ = std::fs::remove_file(&out);
-                let mut f = self.failed.lock().unwrap();
+                let _ = std::fs::remove_file(&tmp);
+                let mut f = self.failed.lock().unwrap_or_else(|e| e.into_inner());
                 if f.len() > 500 {
                     f.clear();
                 }
@@ -106,7 +109,7 @@ impl Thumbnails {
             })
             .await
             .clone();
-        self.inflight.lock().unwrap().remove(&key);
+        self.inflight.lock().unwrap_or_else(|e| e.into_inner()).remove(&key);
         result
     }
 
@@ -139,10 +142,10 @@ impl Thumbnails {
         if out.is_file() {
             return Some(out);
         }
-        if self.failed.lock().unwrap().get(&key).is_some_and(|t| t.elapsed() < RETRY_FAILED) {
+        if self.failed.lock().unwrap_or_else(|e| e.into_inner()).get(&key).is_some_and(|t| t.elapsed() < RETRY_FAILED) {
             return None;
         }
-        let cell = self.inflight.lock().unwrap().entry(key.clone()).or_default().clone();
+        let cell = self.inflight.lock().unwrap_or_else(|e| e.into_inner()).entry(key.clone()).or_default().clone();
         let result = cell
             .get_or_init(|| async {
                 let _permit = self.sem.clone().acquire_owned().await.ok()?;
@@ -156,12 +159,12 @@ impl Thumbnails {
                 }
                 crate::info!("[縮圖] 滑過預覽產生失敗：{}", crate::jellyfin::redact(r.stderr.trim()));
                 let _ = std::fs::remove_file(&tmp);
-                self.failed.lock().unwrap().insert(key.clone(), Instant::now());
+                self.failed.lock().unwrap_or_else(|e| e.into_inner()).insert(key.clone(), Instant::now());
                 None
             })
             .await
             .clone();
-        self.inflight.lock().unwrap().remove(&key);
+        self.inflight.lock().unwrap_or_else(|e| e.into_inner()).remove(&key);
         result
     }
 
@@ -267,7 +270,7 @@ mod tests {
         std::fs::write(&video, "not a video").unwrap();
         let t = Thumbnails::new(dir.path().join("thumbs"));
         assert_eq!(t.get(Some(Path::new("false")), &video.display().to_string()).await, None);
-        assert_eq!(t.failed.lock().unwrap().len(), 1);
+        assert_eq!(t.failed.lock().unwrap_or_else(|e| e.into_inner()).len(), 1);
         // 失敗後 10 分鐘內直接回傳 None（不會再執行）
         assert_eq!(t.get(Some(Path::new("false")), &video.display().to_string()).await, None);
     }

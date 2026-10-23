@@ -52,11 +52,7 @@ impl ProjectStore {
     }
 
     fn write(&self, p: &Project) -> std::io::Result<()> {
-        std::fs::create_dir_all(&self.dir)?;
-        let file = self.file(&p.output);
-        let tmp = file.with_extension("json.tmp");
-        std::fs::write(&tmp, serde_json::to_vec(p).unwrap_or_default())?;
-        std::fs::rename(&tmp, &file)
+        crate::paths::write_atomic(&self.file(&p.output), &serde_json::to_vec(p).unwrap_or_default())
     }
 
     fn all(&self) -> Vec<(PathBuf, Project)> {

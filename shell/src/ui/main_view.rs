@@ -988,6 +988,32 @@ fn dir_issue(ctx: &egui::Context, dir: &str) -> Option<DirIssue> {
     g.as_ref().and_then(|(_, _, r, _)| *r)
 }
 
+/// 資料夾在不在：在背景檢查（NAS 斷線時檢查可能要等幾十秒，不能卡住畫面），同一個資料夾 15 秒內不重查；
+/// 還沒查完時 None
+pub fn dir_exists(ctx: &egui::Context, dir: &str) -> Option<bool> {
+    type Seen = std::collections::HashMap<String, (Instant, Option<bool>)>;
+    static SEEN: std::sync::Mutex<Option<Seen>> = std::sync::Mutex::new(None);
+    let mut g = SEEN.lock().unwrap_or_else(|e| e.into_inner());
+    let map = g.get_or_insert_with(Default::default);
+    let known = map.get(dir).copied();
+    if known.is_none_or(|(at, r)| r.is_some() && at.elapsed() >= std::time::Duration::from_secs(15)) {
+        map.insert(dir.to_string(), (Instant::now(), known.and_then(|k| k.1)));
+        let (dir, ctx) = (dir.to_string(), ctx.clone());
+        let _ = std::thread::Builder::new().name("dir-exists".into()).spawn(move || {
+            let r = std::path::Path::new(&dir).is_dir();
+            let mut g = SEEN.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(map) = g.as_mut() {
+                let changed = map.get(&dir).and_then(|k| k.1) != Some(r);
+                map.insert(dir, (Instant::now(), Some(r)));
+                if changed {
+                    ctx.request_repaint();
+                }
+            }
+        });
+    }
+    known.and_then(|k| k.1)
+}
+
 /// 試著在資料夾裡寫一個暫存檔（資料夾還沒建立時試最近一層已經存在的上層），再看剩下的空間
 fn check_dir(dir: &str) -> Option<DirIssue> {
     let mut at = std::path::Path::new(dir);

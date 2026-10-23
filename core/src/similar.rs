@@ -173,19 +173,13 @@ impl HashStore {
     }
 
     fn save(&self) {
-        let data = serde_json::to_vec(&*self.map.lock().unwrap()).unwrap_or_default();
-        if let Some(dir) = self.file.parent() {
-            let _ = std::fs::create_dir_all(dir);
-        }
-        let tmp = self.file.with_extension("json.tmp");
-        if std::fs::write(&tmp, data).is_ok() {
-            let _ = std::fs::rename(&tmp, &self.file);
-        }
+        let data = serde_json::to_vec(&*self.map.lock().unwrap_or_else(|e| e.into_inner())).unwrap_or_default();
+        let _ = crate::paths::write_atomic(&self.file, &data);
     }
 
     /// 算過的全部：路徑鍵 → (寬, 高, 指紋, 主要顏色)
     pub fn snapshot(&self) -> HashMap<String, (Print, u8)> {
-        self.map.lock().unwrap().iter().map(|(k, e)| (k.clone(), ((e.w, e.h, e.hash), e.colors.unwrap_or(0)))).collect()
+        self.map.lock().unwrap_or_else(|e| e.into_inner()).iter().map(|(k, e)| (k.clone(), ((e.w, e.h, e.hash), e.colors.unwrap_or(0)))).collect()
     }
 
     /// 查表用的鍵（和 snapshot() 的鍵一樣）
@@ -200,7 +194,7 @@ impl HashStore {
         let mut out: Vec<Option<Print>> = vec![None; paths.len()];
         let mut todo = vec![];
         {
-            let map = self.map.lock().unwrap();
+            let map = self.map.lock().unwrap_or_else(|e| e.into_inner());
             for (i, p) in paths.iter().enumerate() {
                 let Some((bytes, mtime)) = stamps[i] else { continue };
                 match map.get(&key(p)) {
@@ -223,12 +217,12 @@ impl HashStore {
                     let k = next.fetch_add(1, Ordering::Relaxed);
                     let Some(&i) = todo.get(k) else { break };
                     let r = image::open(&paths[i]).ok().map(|img| ((img.width(), img.height(), fingerprint(&img)), colors(&img)));
-                    results.lock().unwrap().push((i, r));
+                    results.lock().unwrap_or_else(|e| e.into_inner()).push((i, r));
                     self.done.fetch_add(1, Ordering::Relaxed);
                 });
             }
         });
-        let mut map = self.map.lock().unwrap();
+        let mut map = self.map.lock().unwrap_or_else(|e| e.into_inner());
         for (i, r) in results.into_inner().unwrap() {
             if let (Some(((w, h, hash), c)), Some((bytes, mtime))) = (r, stamps[i]) {
                 map.insert(key(&paths[i]), Entry { bytes, mtime, w, h, hash, colors: Some(c) });

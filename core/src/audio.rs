@@ -145,7 +145,7 @@ mod win {
 
     impl IActivateAudioInterfaceCompletionHandler_Impl for Activated_Impl {
         fn ActivateCompleted(&self, _op: windows::core::Ref<IActivateAudioInterfaceAsyncOperation>) -> windows::core::Result<()> {
-            if let Some(tx) = self.0.lock().unwrap().take() {
+            if let Some(tx) = self.0.lock().unwrap_or_else(|e| e.into_inner()).take() {
                 let _ = tx.send(());
             }
             Ok(())

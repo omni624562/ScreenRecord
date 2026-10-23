@@ -356,7 +356,7 @@ mod imp {
         }
         let any = !list.is_empty();
         let ids = list.into_iter().map(|h| h.0 as isize).collect();
-        *if recording { &REC_MINIMIZED } else { &MINIMIZED }.lock().unwrap() = ids;
+        *if recording { &REC_MINIMIZED } else { &MINIMIZED }.lock().unwrap_or_else(|e| e.into_inner()) = ids;
         any
     }
 
@@ -400,7 +400,7 @@ mod imp {
     }
 
     pub fn restore_ui(recording: bool) {
-        let list = std::mem::take(&mut *if recording { &REC_MINIMIZED } else { &MINIMIZED }.lock().unwrap());
+        let list = std::mem::take(&mut *if recording { &REC_MINIMIZED } else { &MINIMIZED }.lock().unwrap_or_else(|e| e.into_inner()));
         for h in list {
             let hwnd = HWND(h as *mut _);
             unsafe {

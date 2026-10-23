@@ -115,13 +115,13 @@ pub struct Components {
 
 impl Components {
     fn status(&self, k: Kind) -> JobStatus {
-        let g = self.jobs.lock().unwrap();
+        let g = self.jobs.lock().unwrap_or_else(|e| e.into_inner());
         g.get(&k).map(|j| JobStatus { running: j.running, progress: j.progress.load(Ordering::Relaxed) as f32 / 1000.0, error: j.error.clone() }).unwrap_or_default()
     }
 
     /// 開始：回傳 (progress, cancel)；已經在下載就回傳 None
     fn begin(&self, k: Kind) -> Option<(Arc<AtomicU32>, Arc<AtomicBool>)> {
-        let mut g = self.jobs.lock().unwrap();
+        let mut g = self.jobs.lock().unwrap_or_else(|e| e.into_inner());
         if g.get(&k).is_some_and(|j| j.running) {
             return None;
         }
@@ -131,7 +131,7 @@ impl Components {
     }
 
     fn end(&self, k: Kind, r: Result<(), String>) {
-        let mut g = self.jobs.lock().unwrap();
+        let mut g = self.jobs.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(j) = g.get_mut(&k) {
             j.running = false;
             let canceled = j.cancel.load(Ordering::Relaxed);
@@ -140,13 +140,13 @@ impl Components {
     }
 
     fn cancel(&self, k: Kind) {
-        if let Some(j) = self.jobs.lock().unwrap().get(&k) {
+        if let Some(j) = self.jobs.lock().unwrap_or_else(|e| e.into_inner()).get(&k) {
             j.cancel.store(true, Ordering::Relaxed);
         }
     }
 
     fn set_error(&self, k: Kind, e: Option<String>) {
-        let mut g = self.jobs.lock().unwrap();
+        let mut g = self.jobs.lock().unwrap_or_else(|e| e.into_inner());
         let j = g.entry(k).or_insert_with(|| Job { progress: Arc::new(AtomicU32::new(0)), cancel: Arc::new(AtomicBool::new(false)), running: false, error: None });
         if !j.running {
             j.error = e;
@@ -279,7 +279,7 @@ impl App {
         match k {
             Kind::Ffmpeg => self.env().ffmpeg.found,
             // 下載的，或系統裝的（Linux：apt install libmpv2）
-            Kind::Mpv => crate::mpv_download::installed_path().is_some() || crate::mpv::available(),
+            Kind::Mpv => crate::mpv_download::installed_path().is_some() || crate::mpv::loaded(),
             Kind::SpeechFfmpeg => self.env().ffmpeg.has_whisper || subtitles::speech_ffmpeg_downloaded(),
             Kind::Model(_) => k.model().is_some_and(subtitles::model_ready),
         }

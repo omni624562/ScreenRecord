@@ -1116,7 +1116,7 @@ fn record_with_audio_pipe(ff: &Path, card: &Path, out: &Path, separate: bool, se
         let mut first = true;
         for line in std::io::BufReader::new(stderr).lines().map_while(|l| l.ok()) {
             if !line.contains("Parsed_showinfo") {
-                let mut t = tail2.lock().unwrap();
+                let mut t = tail2.lock().unwrap_or_else(|e| e.into_inner());
                 t.push_back(line.clone());
                 if t.len() > 15 {
                     t.pop_front();
@@ -1147,7 +1147,7 @@ fn record_with_audio_pipe(ff: &Path, card: &Path, out: &Path, separate: bool, se
     while child.try_wait().unwrap().is_none() {
         if std::time::Instant::now() > deadline {
             let _ = child.kill();
-            panic!("FFmpeg 收到 q 後沒有結束（分軌 = {separate}）：{:?}", tail.lock().unwrap());
+            panic!("FFmpeg 收到 q 後沒有結束（分軌 = {separate}）：{:?}", tail.lock().unwrap_or_else(|e| e.into_inner()));
         }
         std::thread::sleep(Duration::from_millis(50));
     }

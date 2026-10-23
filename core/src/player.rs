@@ -355,7 +355,7 @@ impl Player {
     pub fn set_rate(&self, rate: f64) {
         let rate = if rate.is_finite() { rate.clamp(RATE_MIN, RATE_MAX) } else { 1.0 };
         let playing = {
-            let mut i = self.inner.lock().unwrap();
+            let mut i = self.inner.lock().unwrap_or_else(|e| e.into_inner());
             if (i.rate() - rate).abs() < 1e-6 {
                 return;
             }
@@ -374,7 +374,7 @@ impl Player {
     }
 
     pub fn rate(&self) -> f64 {
-        self.inner.lock().unwrap().rate()
+        self.inner.lock().unwrap_or_else(|e| e.into_inner()).rate()
     }
 
     /// 音量 0～1（播放中立即生效）
@@ -392,7 +392,7 @@ impl Player {
 
     /// 目前時間（播放中依時鐘推算）
     pub fn time(&self) -> f64 {
-        let i = self.inner.lock().unwrap();
+        let i = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         Self::time_of(&i, self.spec.duration)
     }
 
@@ -408,22 +408,22 @@ impl Player {
     }
 
     pub fn is_playing(&self) -> bool {
-        self.inner.lock().unwrap().playing
+        self.inner.lock().unwrap_or_else(|e| e.into_inner()).playing
     }
 
     /// 播放到結尾後停止（取一次後清除）
     pub fn take_ended(&self) -> bool {
-        std::mem::take(&mut self.inner.lock().unwrap().ended)
+        std::mem::take(&mut self.inner.lock().unwrap_or_else(|e| e.into_inner()).ended)
     }
 
     /// 取走最新的畫面
     pub fn take_frame(&self) -> Option<Frame> {
-        self.inner.lock().unwrap().frame.take()
+        self.inner.lock().unwrap_or_else(|e| e.into_inner()).frame.take()
     }
 
     fn kill_children(&self) {
-        self.stop_audio.lock().unwrap().store(true, Ordering::Relaxed);
-        let list: Vec<Child> = self.children.lock().unwrap().drain(..).collect();
+        self.stop_audio.lock().unwrap_or_else(|e| e.into_inner()).store(true, Ordering::Relaxed);
+        let list: Vec<Child> = self.children.lock().unwrap_or_else(|e| e.into_inner()).drain(..).collect();
         if !list.is_empty() {
             // 在背景結束（Windows 上等行程結束可能要上百毫秒，不卡住介面）
             std::thread::spawn(move || {
@@ -438,7 +438,7 @@ impl Player {
     /// 暫停（保留目前時間）
     pub fn pause(&self) {
         {
-            let mut i = self.inner.lock().unwrap();
+            let mut i = self.inner.lock().unwrap_or_else(|e| e.into_inner());
             if !i.playing {
                 return;
             }
@@ -459,7 +459,7 @@ impl Player {
             return;
         }
         {
-            let mut i = self.inner.lock().unwrap();
+            let mut i = self.inner.lock().unwrap_or_else(|e| e.into_inner());
             i.pos = t;
             // 只有聲音：沒有畫面要解
             if self.audio_only {
@@ -475,7 +475,7 @@ impl Player {
         let (scrub, fps) = (self.scrub.clone(), self.spec.fps.max(1.0));
         std::thread::spawn(move || loop {
             let (t, gen) = {
-                let mut i = inner.lock().unwrap();
+                let mut i = inner.lock().unwrap_or_else(|e| e.into_inner());
                 match i.still.take() {
                     Some(t) => (t, i.gen),
                     None => {
@@ -485,9 +485,9 @@ impl Player {
                 }
             };
             let idx = (t.min(last) * fps + 1e-6).floor() as i64;
-            let got = scrub_frame(&mut scrub.lock().unwrap(), &ffmpeg, &path, fps, idx, w, h);
+            let got = scrub_frame(&mut scrub.lock().unwrap_or_else(|e| e.into_inner()), &ffmpeg, &path, fps, idx, w, h);
             if let Some(rgba) = got {
-                let mut i = inner.lock().unwrap();
+                let mut i = inner.lock().unwrap_or_else(|e| e.into_inner());
                 if i.gen == gen && !i.playing {
                     i.frame = Some(Frame { time: t, width: w, height: h, rgba: (*rgba).clone() });
                     drop(i);
@@ -506,7 +506,7 @@ impl Player {
     fn play_from(&self, t: f64) {
         self.kill_children();
         let gen = {
-            let mut i = self.inner.lock().unwrap();
+            let mut i = self.inner.lock().unwrap_or_else(|e| e.into_inner());
             i.gen += 1;
             i.playing = true;
             i.play_from = t.clamp(0.0, self.last_frame_time());
@@ -516,20 +516,20 @@ impl Player {
             i.still = None;
             i.gen
         };
-        let from = self.inner.lock().unwrap().play_from;
+        let from = self.inner.lock().unwrap_or_else(|e| e.into_inner()).play_from;
         let stop = Arc::new(AtomicBool::new(false));
-        *self.stop_audio.lock().unwrap() = stop.clone();
+        *self.stop_audio.lock().unwrap_or_else(|e| e.into_inner()) = stop.clone();
 
         // 開 FFmpeg 在背景做（Windows 上啟動行程要幾十到上百毫秒，不卡住介面）
         let (ffmpeg, spec, children, inner, wake, w, h) = (self.ffmpeg.clone(), self.spec.clone(), self.children.clone(), self.inner.clone(), self.wake.clone(), self.width, self.height);
         let volume = self.volume.clone();
-        let (audio_only, light, rate) = (self.audio_only, self.light, self.inner.lock().unwrap().rate());
+        let (audio_only, light, rate) = (self.audio_only, self.light, self.inner.lock().unwrap_or_else(|e| e.into_inner()).rate());
         let (big, turn_cell, gpu_failed) = (self.big, self.turn.clone(), self.gpu_failed.clone());
         std::thread::spawn(move || {
             // 記下子行程以便停止；已經換了一輪（暫停 / 跳到其他時間）就直接結束它
             let register = |mut child: Child| -> bool {
-                let mut list = children.lock().unwrap();
-                if inner.lock().unwrap().gen != gen {
+                let mut list = children.lock().unwrap_or_else(|e| e.into_inner());
+                if inner.lock().unwrap_or_else(|e| e.into_inner()).gen != gen {
                     drop(list);
                     let _ = child.kill();
                     let _ = child.wait();
@@ -551,14 +551,14 @@ impl Player {
                         audio_started = true;
                         std::thread::spawn(move || {
                             let start_clock = |latency: f64| {
-                                let mut i = inner.lock().unwrap();
+                                let mut i = inner.lock().unwrap_or_else(|e| e.into_inner());
                                 if i.gen == gen && i.clock.is_none() {
                                     i.clock = Some(Instant::now() + Duration::from_secs_f64(latency.clamp(0.0, 0.5)));
                                 }
                             };
                             if crate::audio_out::play(out, stop2, volume, start_clock).is_err() {
                                 // 沒有播放裝置：改由畫面計時
-                                let mut i = inner.lock().unwrap();
+                                let mut i = inner.lock().unwrap_or_else(|e| e.into_inner());
                                 if i.gen == gen && i.clock.is_none() {
                                     i.clock = Some(Instant::now());
                                 }
@@ -573,7 +573,7 @@ impl Player {
                 let started = Instant::now();
                 loop {
                     std::thread::sleep(Duration::from_millis(50));
-                    let mut i = inner.lock().unwrap();
+                    let mut i = inner.lock().unwrap_or_else(|e| e.into_inner());
                     if i.gen != gen {
                         return;
                     }
@@ -610,7 +610,7 @@ impl Player {
             if try_gpu {
                 if first {
                     crate::info!("[播放] 在顯示卡縮小畫面：{}", crate::jellyfin::redact(&spec.path));
-                } else if inner.lock().unwrap().gen == gen {
+                } else if inner.lock().unwrap_or_else(|e| e.into_inner()).gen == gen {
                     // 顯示卡或 FFmpeg 不支援（例如太舊的顯示卡解不了 HEVC 10-bit）：改用一般方式，之後也不再試
                     gpu_failed.store(true, Ordering::Relaxed);
                     crate::info!("[播放] 無法在顯示卡縮小畫面，改用一般方式：{}", crate::jellyfin::redact(&spec.path));
@@ -629,7 +629,7 @@ impl Player {
                 let mut last_shown = Instant::now();
                 loop {
                     if !pending.take().unwrap_or_else(|| read_frame(&mut out, &mut buf)) {
-                        let mut i = inner.lock().unwrap();
+                        let mut i = inner.lock().unwrap_or_else(|e| e.into_inner());
                         if i.gen == gen {
                             i.playing = false;
                             i.clock = None;
@@ -645,7 +645,7 @@ impl Player {
                     // 等到這張的時間；第一張立即顯示
                     loop {
                         let now_t = {
-                            let mut i = inner.lock().unwrap();
+                            let mut i = inner.lock().unwrap_or_else(|e| e.into_inner());
                             if i.gen != gen {
                                 return;
                             }
@@ -665,7 +665,7 @@ impl Player {
                     // 跟不上：已經晚了兩張以上就跳過（不顯示）；但最多 0.15 秒就要顯示一張，
                     // 不然解碼一直落後時每一張都「晚了」，畫面會整個停住
                     let late = {
-                        let i = inner.lock().unwrap();
+                        let i = inner.lock().unwrap_or_else(|e| e.into_inner());
                         let now_t = Self::time_of(&i, duration);
                         n > 1 && now_t - t > 2.0 / fps
                     };
@@ -673,7 +673,7 @@ impl Player {
                         continue;
                     }
                     last_shown = Instant::now();
-                    let mut i = inner.lock().unwrap();
+                    let mut i = inner.lock().unwrap_or_else(|e| e.into_inner());
                     if i.gen != gen {
                         return;
                     }
@@ -688,11 +688,11 @@ impl Player {
 
 impl Drop for Player {
     fn drop(&mut self) {
-        self.inner.lock().unwrap().gen += 1;
+        self.inner.lock().unwrap_or_else(|e| e.into_inner()).gen += 1;
         self.kill_children();
         // 解碼中可能還拿著鎖：在背景關閉，不卡住介面
         let scrub = self.scrub.clone();
-        std::thread::spawn(move || scrub.lock().unwrap().close());
+        std::thread::spawn(move || scrub.lock().unwrap_or_else(|e| e.into_inner()).close());
     }
 }
 

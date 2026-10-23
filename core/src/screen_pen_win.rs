@@ -128,7 +128,7 @@ thread_local! {
 const STARTING: isize = -1;
 
 pub fn toggle() {
-    let mut cur = CURRENT.lock().unwrap();
+    let mut cur = CURRENT.lock().unwrap_or_else(|e| e.into_inner());
     match *cur {
         // 還在開啟中：不重複開，也不能關（還沒有視窗）
         Some(STARTING) => {}
@@ -144,13 +144,13 @@ pub fn toggle() {
             let spawned = std::thread::Builder::new().name("screen-pen".into()).spawn(|| {
                 unsafe { run() };
                 // 開不起來（例如找不到螢幕）時把佔位拿掉，下次才能再開
-                let mut c = CURRENT.lock().unwrap();
+                let mut c = CURRENT.lock().unwrap_or_else(|e| e.into_inner());
                 if *c == Some(STARTING) {
                     *c = None;
                 }
             });
             if spawned.is_err() {
-                *CURRENT.lock().unwrap() = None;
+                *CURRENT.lock().unwrap_or_else(|e| e.into_inner()) = None;
             }
         }
     }
@@ -158,7 +158,7 @@ pub fn toggle() {
 
 /// 畫筆開著
 pub fn active() -> bool {
-    CURRENT.lock().unwrap().is_some_and(|h| h != STARTING)
+    CURRENT.lock().unwrap_or_else(|e| e.into_inner()).is_some_and(|h| h != STARTING)
 }
 
 unsafe fn run() {
@@ -184,7 +184,7 @@ unsafe fn run() {
     let wc = WNDCLASSEXW { cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32, lpfnWndProc: Some(help_proc), hInstance: hinst.into(), lpszClassName: help_class, ..Default::default() };
     RegisterClassExW(&wc);
     let Ok(hwnd) = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_LAYERED, class, w!("螢幕畫筆"), WS_POPUP, m.left, m.top, w, h, None, None, Some(hinst.into()), None) else { return };
-    *CURRENT.lock().unwrap() = Some(hwnd.0 as isize);
+    *CURRENT.lock().unwrap_or_else(|e| e.into_inner()) = Some(hwnd.0 as isize);
     surface.present(hwnd, (m.left, m.top));
 
     // 操作說明：螢幕上方中間，不被擷取；顏色、粗細可以點（不搶焦點，Esc、數字鍵照樣給畫筆）
@@ -223,7 +223,7 @@ unsafe fn run() {
         DispatchMessageW(&msg);
     }
     STATE.with(|s| *s.borrow_mut() = None);
-    let mut c = CURRENT.lock().unwrap();
+    let mut c = CURRENT.lock().unwrap_or_else(|e| e.into_inner());
     if *c == Some(hwnd.0 as isize) {
         *c = None;
     }

@@ -91,20 +91,14 @@ impl OcrIndex {
     }
 
     fn save(&self) {
-        let data = serde_json::to_vec(&*self.map.lock().unwrap()).unwrap_or_default();
-        if let Some(dir) = self.file.parent() {
-            let _ = std::fs::create_dir_all(dir);
-        }
-        let tmp = self.file.with_extension("json.tmp");
-        if std::fs::write(&tmp, data).is_ok() {
-            let _ = std::fs::rename(&tmp, &self.file);
-        }
+        let data = serde_json::to_vec(&*self.map.lock().unwrap_or_else(|e| e.into_inner())).unwrap_or_default();
+        let _ = crate::paths::write_atomic(&self.file, &data);
     }
 
     /// 這張截圖辨識過、而且之後沒改過
     fn fresh(&self, path: &str) -> bool {
         let Some((bytes, mtime)) = stamp(path) else { return false };
-        self.map.lock().unwrap().get(&key(path)).is_some_and(|e| e.v >= VERSION && e.bytes == bytes && crate::paths::same_mtime(e.mtime, mtime))
+        self.map.lock().unwrap_or_else(|e| e.into_inner()).get(&key(path)).is_some_and(|e| e.v >= VERSION && e.bytes == bytes && crate::paths::same_mtime(e.mtime, mtime))
     }
 
     /// 圖裡的字有沒有 query（已正規化；o 與 0、l 與 1 當成一樣）；還沒辨識的算沒有
@@ -113,7 +107,7 @@ impl OcrIndex {
             return false;
         }
         let q = fold(query);
-        self.map.lock().unwrap().get(&key(path)).is_some_and(|e| e.text.contains(query) || fold(&e.text).contains(&q))
+        self.map.lock().unwrap_or_else(|e| e.into_inner()).get(&key(path)).is_some_and(|e| e.text.contains(query) || fold(&e.text).contains(&q))
     }
 
     /// 內容改過幾次
@@ -123,7 +117,7 @@ impl OcrIndex {
 
     /// 全部辨識過的字：(路徑鍵, 小寫保留空白的字)；舊格式沒有 words 時用正規化的字
     pub fn docs(&self) -> Vec<(String, String)> {
-        self.map.lock().unwrap().iter().map(|(k, e)| (k.clone(), if e.words.is_empty() { e.text.clone() } else { e.words.clone() })).collect()
+        self.map.lock().unwrap_or_else(|e| e.into_inner()).iter().map(|(k, e)| (k.clone(), if e.words.is_empty() { e.text.clone() } else { e.words.clone() })).collect()
     }
 
     /// 查表用的鍵（和 docs() 的鍵一樣）
@@ -133,7 +127,7 @@ impl OcrIndex {
 
     /// 一張截圖的字（正規化過）；還沒辨識時 None
     pub fn text(&self, path: &str) -> Option<String> {
-        self.map.lock().unwrap().get(&key(path)).map(|e| e.text.clone())
+        self.map.lock().unwrap_or_else(|e| e.into_inner()).get(&key(path)).map(|e| e.text.clone())
     }
 
     /// 進度：(做完, 總共)；沒有在做時 None
@@ -148,7 +142,7 @@ impl OcrIndex {
     /// 存一張的結果
     fn put(&self, path: &str, text: &str) {
         if let Some((bytes, mtime)) = stamp(path) {
-            self.map.lock().unwrap().insert(key(path), Entry { bytes, mtime, text: normalize(text), words: words(text), v: VERSION });
+            self.map.lock().unwrap_or_else(|e| e.into_inner()).insert(key(path), Entry { bytes, mtime, text: normalize(text), words: words(text), v: VERSION });
             self.generation.fetch_add(1, Ordering::Relaxed);
         }
     }
@@ -193,7 +187,7 @@ impl OcrIndex {
 
     /// 刪掉已經不存在的檔案的紀錄
     pub fn prune(&self) {
-        let mut m = self.map.lock().unwrap();
+        let mut m = self.map.lock().unwrap_or_else(|e| e.into_inner());
         let before = m.len();
         m.retain(|p, _| Path::new(p).exists());
         let changed = m.len() != before;

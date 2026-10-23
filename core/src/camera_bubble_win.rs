@@ -143,21 +143,21 @@ impl Reader {
             let _ = std::thread::Builder::new().name("camera-read".into()).spawn(move || {
                 let mut buf = vec![0u8; n];
                 while out.read_exact(&mut buf).is_ok() {
-                    let mut f = frame.lock().unwrap();
+                    let mut f = frame.lock().unwrap_or_else(|e| e.into_inner());
                     f.0 += 1;
                     std::mem::swap(&mut f.1, &mut buf);
                     if buf.len() != n {
                         buf = vec![0u8; n];
                     }
                 }
-                *ended.lock().unwrap() = true;
+                *ended.lock().unwrap_or_else(|e| e.into_inner()) = true;
             });
         }
         if let Some(err) = child.stderr.take() {
             let errors = errors.clone();
             let _ = std::thread::Builder::new().name("camera-err".into()).spawn(move || {
                 for line in BufReader::new(err).lines().map_while(Result::ok) {
-                    let mut e = errors.lock().unwrap();
+                    let mut e = errors.lock().unwrap_or_else(|e| e.into_inner());
                     e.push_str(line.trim());
                     e.push('\n');
                     if e.len() > 600 {
@@ -411,7 +411,7 @@ unsafe fn run(info: impl Fn() -> Option<BubbleInfo>, ffmpeg: impl Fn() -> Option
                 // 新的攝影機畫面
                 let mut fresh = false;
                 if let Some(r) = &s.reader {
-                    let mut f = r.frame.lock().unwrap();
+                    let mut f = r.frame.lock().unwrap_or_else(|e| e.into_inner());
                     if f.0 != s.seq && f.1.len() == (s.src * s.src * 4) as usize {
                         s.seq = f.0;
                         std::mem::swap(&mut s.raw, &mut f.1);
@@ -423,8 +423,8 @@ unsafe fn run(info: impl Fn() -> Option<BubbleInfo>, ffmpeg: impl Fn() -> Option
                 }
                 // 讀攝影機的 FFmpeg 結束了：打不開（還沒有任何畫面），或中途中斷（拔掉了）。
                 // 等這一輪結束再關（s 還借用著 shown）
-                if s.reader.as_ref().is_some_and(|r| *r.ended.lock().unwrap()) {
-                    let detail = s.reader.as_ref().map(|r| r.errors.lock().unwrap().lines().last().unwrap_or("").to_string()).unwrap_or_default();
+                if s.reader.as_ref().is_some_and(|r| *r.ended.lock().unwrap_or_else(|e| e.into_inner())) {
+                    let detail = s.reader.as_ref().map(|r| r.errors.lock().unwrap_or_else(|e| e.into_inner()).lines().last().unwrap_or("").to_string()).unwrap_or_default();
                     dead = Some((s.seq > 0, detail));
                 } else if raised.elapsed() > Duration::from_secs(2) {
                     // 其他最上層視窗出現時可能被蓋住：定時移回最上層

@@ -65,7 +65,7 @@ impl Jellyfin {
             return None;
         }
         let key = format!("{}|{}", self.url, self.root.to_lowercase());
-        if let Some((found, at)) = SERVER_ROOTS.lock().unwrap().as_ref().and_then(|m| m.get(&key).cloned()) {
+        if let Some((found, at)) = SERVER_ROOTS.lock().unwrap_or_else(|e| e.into_inner()).as_ref().and_then(|m| m.get(&key).cloned()) {
             if found.is_some() || at.elapsed() < Duration::from_secs(300) {
                 return found;
             }
@@ -78,7 +78,7 @@ impl Jellyfin {
         if let Some(r) = &found {
             crate::info!("[Jellyfin] 媒體庫 {} 在伺服器上是 {r}", self.root);
         }
-        SERVER_ROOTS.lock().unwrap().get_or_insert_with(Default::default).insert(key, (found.clone(), std::time::Instant::now()));
+        SERVER_ROOTS.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(Default::default).insert(key, (found.clone(), std::time::Instant::now()));
         found
     }
 
@@ -2093,7 +2093,7 @@ fn played_items(json: &str) -> Vec<(String, String)> {
 static FAVS: std::sync::Mutex<Option<(Option<std::path::PathBuf>, std::collections::BTreeSet<String>)>> = std::sync::Mutex::new(None);
 
 pub fn init_favorites(file: std::path::PathBuf) {
-    let mut g = FAVS.lock().unwrap();
+    let mut g = FAVS.lock().unwrap_or_else(|e| e.into_inner());
     if g.as_ref().is_some_and(|(f, _)| f.is_some()) {
         return;
     }
@@ -2104,14 +2104,14 @@ pub fn init_favorites(file: std::path::PathBuf) {
 
 /// 和上次比：(新加進我的最愛的, 拿掉的)，並記下這次的
 pub fn favorites_changed(now: &std::collections::HashSet<String>) -> (Vec<String>, Vec<String>) {
-    let mut g = FAVS.lock().unwrap();
+    let mut g = FAVS.lock().unwrap_or_else(|e| e.into_inner());
     let (file, prev) = g.get_or_insert_with(|| (None, Default::default()));
     let added: Vec<String> = now.iter().filter(|n| !prev.contains(*n)).cloned().collect();
     let removed: Vec<String> = prev.iter().filter(|n| !now.contains(*n)).cloned().collect();
     if !added.is_empty() || !removed.is_empty() {
         *prev = now.iter().cloned().collect();
         if let Some(f) = file.as_ref() {
-            let _ = std::fs::write(f, serde_json::to_string(prev).unwrap_or_default());
+            let _ = crate::paths::write_atomic(f, serde_json::to_string(prev).unwrap_or_default().as_bytes());
         }
     }
     (added, removed)
@@ -2119,13 +2119,13 @@ pub fn favorites_changed(now: &std::collections::HashSet<String>) -> (Vec<String
 
 /// 本機改了星號、也改到 Jellyfin 之後記下（下次比對才不會又改回來）
 pub fn favorite_set(name: &str, on: bool) {
-    let mut g = FAVS.lock().unwrap();
+    let mut g = FAVS.lock().unwrap_or_else(|e| e.into_inner());
     let (file, prev) = g.get_or_insert_with(|| (None, Default::default()));
     let name = name.to_lowercase();
     let changed = if on { prev.insert(name) } else { prev.remove(&name) };
     if changed {
         if let Some(f) = file.as_ref() {
-            let _ = std::fs::write(f, serde_json::to_string(prev).unwrap_or_default());
+            let _ = crate::paths::write_atomic(f, serde_json::to_string(prev).unwrap_or_default().as_bytes());
         }
     }
 }
@@ -2502,7 +2502,7 @@ type Link = (String, u64, u64);
 
 /// 讀出記下的對照（程式啟動時；已經讀過就不再讀）
 pub fn init_links(file: std::path::PathBuf) {
-    let mut g = LINKS.lock().unwrap();
+    let mut g = LINKS.lock().unwrap_or_else(|e| e.into_inner());
     if g.as_ref().is_some_and(|(f, _)| f.is_some()) {
         return;
     }
@@ -2512,12 +2512,12 @@ pub fn init_links(file: std::path::PathBuf) {
 }
 
 fn with_links<T>(f: impl FnOnce(&mut Vec<(String, u64, u64)>) -> (T, bool)) -> T {
-    let mut g = LINKS.lock().unwrap();
+    let mut g = LINKS.lock().unwrap_or_else(|e| e.into_inner());
     let (file, list) = g.get_or_insert_with(|| (None, vec![]));
     let (out, changed) = f(list);
     if changed {
         if let Some(file) = file.as_ref() {
-            if let Err(e) = std::fs::write(file, serde_json::to_string(list).unwrap_or_default()) {
+            if let Err(e) = crate::paths::write_atomic(file, serde_json::to_string(list).unwrap_or_default().as_bytes()) {
                 crate::warn!("[傳到資料夾] 記下媒體庫對照失敗：{e}");
             }
         }
@@ -2877,18 +2877,23 @@ pub fn normalize_url(text: &str) -> Option<String> {
     (!rest.is_empty() && !rest.starts_with('/')).then(|| format!("{scheme}{rest}"))
 }
 
-/// 區域網路的伺服器：直接連線（不經過 Proxy），等太久就放棄
+/// 區域網路的伺服器：直接連線（不經過 Proxy），等太久就放棄。整個程式共用一個（連線會留著重複用，
+/// 一頁幾十張縮圖不用每張都重新連線、重新做 TLS 交握）
 fn agent() -> ureq::Agent {
-    agent_with(Duration::from_secs(15))
+    static A: std::sync::LazyLock<ureq::Agent> = std::sync::LazyLock::new(|| agent_with(Duration::from_secs(15)));
+    A.clone()
 }
 
 /// 下載整支影片用：每次讀等久一點（NAS 從硬碟休眠醒來要幾秒）
 fn agent_long() -> ureq::Agent {
-    agent_with(Duration::from_secs(60))
+    static A: std::sync::LazyLock<ureq::Agent> = std::sync::LazyLock::new(|| agent_with(Duration::from_secs(60)));
+    A.clone()
 }
 
+/// 不跟著轉址走：ureq 轉址時只拿掉 Authorization，X-Emby-Token（API 金鑰）會跟著送到別的主機。
+/// 寫入也設逾時（上傳封面、字幕時伺服器不收資料不會一直等）
 fn agent_with(read: Duration) -> ureq::Agent {
-    let b = ureq::AgentBuilder::new().timeout_connect(Duration::from_secs(8)).timeout_read(read);
+    let b = ureq::AgentBuilder::new().timeout_connect(Duration::from_secs(8)).timeout_read(read).timeout_write(Duration::from_secs(60)).redirects(0);
     #[cfg(windows)]
     let b = match native_tls::TlsConnector::new() {
         Ok(c) => b.tls_connector(std::sync::Arc::new(c)),
@@ -2901,6 +2906,10 @@ fn describe(e: &ureq::Error) -> String {
     match e {
         ureq::Error::Status(401 | 403, _) => tr!("API 金鑰不對（Jellyfin 控制台 → API 金鑰）", "The API key is wrong (Jellyfin Dashboard → API Keys)").into(),
         ureq::Error::Status(404, _) => tr!("網址不對，找不到 Jellyfin（預設是 http://伺服器:8096）", "Wrong address; Jellyfin wasn't found there (usually http://server:8096)").into(),
+        ureq::Error::Status(300..=399, r) => {
+            let to = r.header("location").unwrap_or("").to_string();
+            trf!("伺服器要求改用另一個網址（{to}），請在設定裡把 Jellyfin 網址改成它", "The server asks to use another address ({to}); change the Jellyfin address in Settings to it")
+        }
         ureq::Error::Status(code, _) => trf!("Jellyfin 回應錯誤（HTTP {code}）", "Jellyfin returned an error (HTTP {code})"),
         ureq::Error::Transport(_) => {
             tr!("連不到 Jellyfin，請確認網址、伺服器有開著、和這台電腦在同一個網路", "Couldn't reach Jellyfin. Check the address, that the server is on, and that it's on the same network as this PC")
@@ -3821,9 +3830,9 @@ mod tests {
         let (url, h) = serve_seq(vec![("200 OK", list), ("200 OK", item), ("204 No Content", String::new())]);
         let jf = Jellyfin::new(&url, "k").unwrap();
         let seen = std::sync::Mutex::new(vec![]);
-        let n = jf.rename_name("u", NameKind::Tag, "無碼", "無碼", &|d, t| seen.lock().unwrap().push((d, t))).unwrap();
+        let n = jf.rename_name("u", NameKind::Tag, "無碼", "無碼", &|d, t| seen.lock().unwrap_or_else(|e| e.into_inner()).push((d, t))).unwrap();
         assert_eq!(n, 1);
-        assert_eq!(*seen.lock().unwrap(), vec![(0, 1), (1, 1)]);
+        assert_eq!(*seen.lock().unwrap_or_else(|e| e.into_inner()), vec![(0, 1), (1, 1)]);
         let got = h.join().unwrap();
         assert!(got[1].starts_with("GET /Items/a "), "{got:?}");
         assert!(got[2].starts_with("POST /Items/a "), "{got:?}");

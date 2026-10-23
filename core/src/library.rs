@@ -26,14 +26,14 @@ pub struct MediaCache {
 impl MediaCache {
     /// 這個檔案下次重新讀（改了內容但大小、修改時間不變時，例如旋轉）
     pub fn forget(&self, path: &str) {
-        self.map.lock().unwrap().remove(path);
+        self.map.lock().unwrap_or_else(|e| e.into_inner()).remove(path);
     }
 
     pub async fn probe(&self, ffmpeg: &Path, path: &str) -> Result<MediaInfo> {
         let meta = tokio::fs::metadata(path).await?;
         let key = format!("{}:{}", meta.len(), mtime_ms(&meta));
         let slot = {
-            let mut m = self.map.lock().unwrap();
+            let mut m = self.map.lock().unwrap_or_else(|e| e.into_inner());
             match m.get(path) {
                 Some((k, s)) if *k == key => s.clone(),
                 _ => {
@@ -76,7 +76,7 @@ impl MediaCache {
             Ok(i) => Ok(i.clone()),
             Err(e) => {
                 // 失敗不快取，下次再試
-                let mut m = self.map.lock().unwrap();
+                let mut m = self.map.lock().unwrap_or_else(|e| e.into_inner());
                 if m.get(path).is_some_and(|(_, s)| Arc::ptr_eq(s, &slot)) {
                     m.remove(path);
                 }
@@ -89,7 +89,7 @@ impl MediaCache {
     fn prune(&self, dir: &Path, present: &[String]) {
         let prefix = dir.join("_").display().to_string();
         let prefix = prefix[..prefix.len() - 1].to_lowercase(); // 與 join() 產生的路徑同樣格式，結尾為分隔符
-        let mut m = self.map.lock().unwrap();
+        let mut m = self.map.lock().unwrap_or_else(|e| e.into_inner());
         m.retain(|path, _| {
             let lower = path.to_lowercase();
             !(lower.starts_with(&prefix) && !lower[prefix.len()..].contains(['\\', '/']) && !present.contains(&lower))

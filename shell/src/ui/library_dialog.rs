@@ -159,6 +159,23 @@ struct CombineDlg {
 }
 
 impl LibraryDialog {
+    /// 背景工作當掉之後：「讀取中」「處理中」清掉（見 UiApp::clear_busy）
+    pub fn clear_busy(&mut self) {
+        self.loading = false;
+        if let Some(c) = self.cleanup.as_mut() {
+            c.busy = false;
+        }
+        if let Some(c) = self.similar.as_mut() {
+            c.busy = false;
+        }
+        if let Some(c) = self.merge.as_mut() {
+            c.busy = false;
+        }
+        if let Some(c) = self.combine.as_mut() {
+            c.busy = false;
+        }
+    }
+
     /// 全部截圖（不是全部錄影）
     pub fn is_shot(&self) -> bool {
         self.kind == Kind::Shot

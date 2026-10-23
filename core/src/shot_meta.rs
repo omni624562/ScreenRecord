@@ -100,13 +100,7 @@ impl ShotMetaStore {
     }
 
     fn save(&self, map: &HashMap<String, ShotMeta>) {
-        if let Some(dir) = self.file.parent() {
-            let _ = std::fs::create_dir_all(dir);
-        }
-        let tmp = self.file.with_extension("json.tmp");
-        if std::fs::write(&tmp, serde_json::to_vec(map).unwrap_or_default()).is_ok() {
-            let _ = std::fs::rename(&tmp, &self.file);
-        }
+        let _ = crate::paths::write_atomic(&self.file, &serde_json::to_vec(map).unwrap_or_default());
     }
 
     /// 記下一張截圖的來歷（全部空白時不記）
@@ -114,18 +108,18 @@ impl ShotMetaStore {
         if meta == ShotMeta::default() {
             return;
         }
-        let mut map = self.map.lock().unwrap();
+        let mut map = self.map.lock().unwrap_or_else(|e| e.into_inner());
         map.insert(key(path), meta);
         self.save(&map);
     }
 
     pub fn get(&self, path: &str) -> Option<ShotMeta> {
-        self.map.lock().unwrap().get(&key(path)).cloned()
+        self.map.lock().unwrap_or_else(|e| e.into_inner()).get(&key(path)).cloned()
     }
 
     /// 全部（路徑鍵 → 來歷），分類時一次取用
     pub fn all(&self) -> HashMap<String, ShotMeta> {
-        self.map.lock().unwrap().clone()
+        self.map.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     /// 查表用的鍵（和 all() 的鍵一樣）
@@ -141,7 +135,7 @@ impl ShotMetaStore {
     }
 
     pub fn renamed(&self, from: &str, to: &str) {
-        let mut map = self.map.lock().unwrap();
+        let mut map = self.map.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(m) = map.remove(&key(from)) {
             map.insert(key(to), m);
             self.save(&map);
@@ -149,7 +143,7 @@ impl ShotMetaStore {
     }
 
     pub fn removed(&self, path: &str) {
-        let mut map = self.map.lock().unwrap();
+        let mut map = self.map.lock().unwrap_or_else(|e| e.into_inner());
         if map.remove(&key(path)).is_some() {
             self.save(&map);
         }

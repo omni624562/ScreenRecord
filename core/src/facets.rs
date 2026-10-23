@@ -272,7 +272,7 @@ pub struct VocabCache {
 impl VocabCache {
     pub fn get(&self, ocr: &OcrIndex) -> Arc<Vocab> {
         let generation = ocr.generation();
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         if let Some((g, at, v)) = inner.as_ref() {
             let busy = ocr.progress().is_some();
             if *g == generation || (busy && at.elapsed().as_secs() < 60) {

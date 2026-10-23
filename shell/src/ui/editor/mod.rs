@@ -2294,7 +2294,7 @@ static TOOL_STYLE: std::sync::LazyLock<std::sync::Mutex<HashMap<AnnKind, (String
 /// 新標註的顏色與大小（vh = 大小的基準，Editor::size_base）
 pub fn style_of(kind: AnnKind, vh: f64) -> (String, f64) {
     let k = vh / 1080.0;
-    if let Some((c, s)) = TOOL_STYLE.lock().unwrap().get(&kind) {
+    if let Some((c, s)) = TOOL_STYLE.lock().unwrap_or_else(|e| e.into_inner()).get(&kind) {
         return (c.clone(), (s * k).round().max(1.0));
     }
     let color = match kind {
@@ -2311,7 +2311,7 @@ pub fn remember_style(kind: AnnKind, color: &str, size: f64, vh: f64) {
         return;
     }
     let k = (vh / 1080.0).max(1e-6);
-    TOOL_STYLE.lock().unwrap().insert(kind, (color.to_string(), size / k));
+    TOOL_STYLE.lock().unwrap_or_else(|e| e.into_inner()).insert(kind, (color.to_string(), size / k));
 }
 
 /// 這一格的滾輪量（點）：與 DOM 的方向相反，往下捲為負

@@ -364,7 +364,8 @@ impl St {
 
 /// 把分段接成一支影片（concat，不重新壓縮）。有錄聲音時每個分段在聲音結尾截斷（見 concat_list），
 /// 聲音與畫面一起結束、分段之間也不留無聲的空隙。chapters：寫進影片的章節（錄影時加的標記）。
-/// 成功時回傳成品的長度（秒，讀不到時 None），失敗時回傳原因
+/// 先合併到分段資料夾裡的暫存檔，成功才改名成 out：合併失敗或逾時時不會留下看起來正常、其實殘缺的錄影
+/// （分段留著，下次開啟時可以救回）。成功時回傳成品的長度（秒，讀不到時 None），失敗時回傳原因
 pub(crate) async fn merge_segments(ffmpeg: &Path, files: &[String], parts_dir: &Path, out: &Path, has_audio: bool, chapters: Option<String>) -> std::result::Result<Option<f64>, String> {
     let mut outpoints = Vec::new();
     if has_audio {
@@ -383,7 +384,22 @@ pub(crate) async fn merge_segments(ffmpeg: &Path, files: &[String], parts_dir: &
     }
     let list_file = parts_dir.join("concat.txt");
     std::fs::write(&list_file, concat_list(files, &outpoints)).map_err(|e| e.to_string())?;
-    let out_str = out.display().to_string();
+    // 合併要和分段一樣大的空間：不夠時先說，不要做到一半才失敗
+    let total: u64 = files.iter().filter_map(|f| std::fs::metadata(f).ok()).map(|m| m.len()).sum();
+    let out_dir = out.parent().map(|d| d.display().to_string()).unwrap_or_default();
+    if let Some(free) = disk_free(&out_dir).await {
+        if free < total + MERGE_SPARE {
+            return Err(trf!(
+                "磁碟空間不夠合併（需要約 {}，剩 {}）。分段都還在，清出空間後重新開啟程式就能救回",
+                "Not enough disk space to merge (needs about {}, {} free). The segments are kept; free up space and reopen the app to recover them",
+                crate::format::format_bytes(total + MERGE_SPARE),
+                crate::format::format_bytes(free)
+            ));
+        }
+    }
+    let tmp_out = parts_dir.join("merged.mp4");
+    let _ = std::fs::remove_file(&tmp_out);
+    let out_str = tmp_out.display().to_string();
     let meta = match chapters {
         Some(c) => {
             let f = parts_dir.join("chapters.txt");
@@ -397,14 +413,28 @@ pub(crate) async fn merge_segments(ffmpeg: &Path, files: &[String], parts_dir: &
         Some(f) => run(ffmpeg, &["-hide_banner".to_string(), "-i".into(), f.clone()], Duration::from_secs(30)).await.stderr.contains("Video: hevc"),
         None => false,
     };
-    let r = run(ffmpeg, &concat_args(&list_file.display().to_string(), &out_str, meta.as_deref(), hevc), Duration::from_secs(30 * 60)).await;
-    if r.code != 0 || !out.exists() {
+    let r = run(ffmpeg, &concat_args(&list_file.display().to_string(), &out_str, meta.as_deref(), hevc), merge_timeout(total)).await;
+    if r.code != 0 || !tmp_out.exists() {
+        let _ = std::fs::remove_file(&tmp_out);
         let tail = last_lines(&r.stderr, 3);
         return Err(if tail.is_empty() { trf!("結束代碼 {}", "exit code {}", r.code) } else { tail });
     }
+    if let Err(e) = std::fs::rename(&tmp_out, out) {
+        let _ = std::fs::remove_file(&tmp_out);
+        return Err(e.to_string());
+    }
     // 只讀成品的檔頭取得實際長度（毫秒級），不再整檔重讀一遍：長時間錄影停止時省下一半的等待
+    let out_str = out.display().to_string();
     let head = run(ffmpeg, &["-hide_banner", "-i", &out_str], Duration::from_secs(15)).await;
     Ok(parse_media_info(&head.stderr).duration_sec)
+}
+
+/// 合併時除了分段大小，另外要留的空間（檔頭、章節）
+const MERGE_SPARE: u64 = 64 * 1024 * 1024;
+
+/// 合併多久算卡住：至少 30 分鐘，大檔案依每秒 5 MB 估（存在 NAS、慢的硬碟上也夠）
+fn merge_timeout(total_bytes: u64) -> Duration {
+    Duration::from_secs(30 * 60 + total_bytes / (5 * 1024 * 1024))
 }
 
 pub(crate) fn cleanup_parts(parts_dir: Option<&Path>) {
@@ -2190,11 +2220,12 @@ impl Recorder {
     async fn finalize(&self) -> Result<RecordingResult> {
         let (fps, parts, has_audio, parts_dir, out, markers) = {
             let st = self.lock();
-            let parts: Vec<(String, u64)> =
-                st.segments.iter().filter(|s| s.frames > 0 && std::fs::metadata(&s.file).map(|m| m.len() > 0).unwrap_or(false)).map(|s| (s.file.clone(), s.frames)).collect();
+            let parts: Vec<(String, u64)> = st.segments.iter().filter(|s| s.frames > 0).map(|s| (s.file.clone(), s.frames)).collect();
             let markers: Vec<f64> = st.markers.iter().map(|m| *m as f64 / 1000.0).collect();
             (st.config().fps, parts, !st.audio_specs.is_empty(), st.parts_dir.clone().unwrap_or_default(), st.final_path.clone().unwrap_or_default(), markers)
         };
+        // 放開錄影器的鎖再看檔案（網路磁碟上可能很慢，這段時間介面照樣讀得到狀態）
+        let parts: Vec<(String, u64)> = parts.into_iter().filter(|(f, _)| std::fs::metadata(f).map(|m| m.len() > 0).unwrap_or(false)).collect();
         let frames: u64 = parts.iter().map(|p| p.1).sum();
         if parts.is_empty() {
             cleanup_parts(Some(&parts_dir));
@@ -2320,7 +2351,7 @@ mod tests {
         }
         fn learn_gpu(&self) {}
         fn monitors(&self) -> Vec<MonitorInfo> {
-            self.screens.lock().unwrap().clone().unwrap_or_else(|| vec![mon()])
+            self.screens.lock().unwrap_or_else(|e| e.into_inner()).clone().unwrap_or_else(|| vec![mon()])
         }
         fn ddagrab_usable(&self) -> BoxFut<'_, bool> {
             let usable = self.ffmpeg.is_none() || self.dda;
@@ -2334,7 +2365,7 @@ mod tests {
         }
         fn before_capture(&self, area: Rect) -> BoxFut<'_, ()> {
             self.before.fetch_add(1, Ordering::SeqCst);
-            self.before_areas.lock().unwrap().push(area);
+            self.before_areas.lock().unwrap_or_else(|e| e.into_inner()).push(area);
             if self.stop_in_before {
                 // 倒數剛結束、正在縮小視窗時按下取消
                 drop(self.rec.get().unwrap().stop(None));
@@ -2342,14 +2373,14 @@ mod tests {
             Box::pin(async { tokio::time::sleep(Duration::from_millis(10)).await })
         }
         fn ui_in_area(&self, area: &Rect) -> bool {
-            self.ui_areas.lock().unwrap().push(*area);
+            self.ui_areas.lock().unwrap_or_else(|e| e.into_inner()).push(*area);
             self.ui_in.unwrap_or(true)
         }
         fn after_stop(&self) {
             self.after.fetch_add(1, Ordering::SeqCst);
         }
         fn save_markers(&self, _output: &str, marks: &Marks) {
-            *self.marks.lock().unwrap() = Some(marks.clone());
+            *self.marks.lock().unwrap_or_else(|e| e.into_inner()) = Some(marks.clone());
         }
     }
 
@@ -2503,7 +2534,7 @@ mod tests {
         s.release();
         s.rec.start(RecordConfig { source: region(0.0, 0.0, 800.0, 600.0), ..s.config() }).await.unwrap();
         assert_eq!(s.rec.status().countdown_covers_ui, Some(false));
-        assert_eq!(s.deps.ui_areas.lock().unwrap().last(), Some(&Rect { x: 0, y: 0, width: 800, height: 600 }));
+        assert_eq!(s.deps.ui_areas.lock().unwrap_or_else(|e| e.into_inner()).last(), Some(&Rect { x: 0, y: 0, width: 800, height: 600 }));
         s.rec.stop(None).await.unwrap();
         tokio::time::sleep(Duration::from_millis(20)).await;
         assert_eq!(s.rec.status().countdown_covers_ui, None); // 不在倒數就不回報
@@ -2550,7 +2581,7 @@ mod tests {
         let s = Setup::new(Fake { stop_in_before: true, ..Default::default() });
         s.release();
         s.rec.start(RecordConfig { countdown_sec: Some(0.0), source: region(100.0, 50.0, 640.0, 480.0), ..s.config() }).await.unwrap();
-        assert_eq!(s.deps.before_areas.lock().unwrap().first(), Some(&Rect { x: 100, y: 50, width: 640, height: 480 }));
+        assert_eq!(s.deps.before_areas.lock().unwrap_or_else(|e| e.into_inner()).first(), Some(&Rect { x: 100, y: 50, width: 640, height: 480 }));
     }
 
     #[tokio::test]
@@ -2757,7 +2788,7 @@ esac
         tokio::time::sleep(Duration::from_millis(40)).await;
         s.rec.add_cursor(1920, 0);
         assert!(s.rec.stop(None).await.unwrap().unwrap().ok);
-        let m = s.deps.marks.lock().unwrap().clone().expect("有游標位置就要存");
+        let m = s.deps.marks.lock().unwrap_or_else(|e| e.into_inner()).clone().expect("有游標位置就要存");
         assert!(m.no_cursor && m.markers.is_empty());
         assert_eq!(m.cursor.iter().map(|c| (c[1], c[2])).collect::<Vec<_>>(), [(0.5, 0.5), (1.0, 0.0)]);
         assert!(m.cursor[1][0] > m.cursor[0][0]);
@@ -2843,7 +2874,7 @@ esac
         assert!(s.rec.stop(None).await.unwrap().unwrap().ok);
         // 停止後才讀到的不收
         s.rec.add_action(Action { t: 9.0, kind: CLICK, name: "晚到".into(), role: String::new(), window: String::new() });
-        let m = s.deps.marks.lock().unwrap().clone().expect("有操作步驟就要存");
+        let m = s.deps.marks.lock().unwrap_or_else(|e| e.into_inner()).clone().expect("有操作步驟就要存");
         assert_eq!(m.actions.iter().map(|a| (a.kind, a.name.as_str())).collect::<Vec<_>>(), [(CLICK, "存檔"), (KEY, "Ctrl + S")]);
         assert!(m.actions[1].t >= m.actions[0].t);
         let text = crate::steps_log::to_text(&m.actions, "Rec");
@@ -2867,7 +2898,7 @@ esac
         tokio::time::sleep(Duration::from_millis(600)).await;
         assert_eq!(s.rec.add_zoom_mark(r.x, r.y).unwrap(), 2);
         assert!(s.rec.stop(None).await.unwrap().unwrap().ok);
-        let m = s.deps.marks.lock().unwrap().clone().expect("有標記就要存");
+        let m = s.deps.marks.lock().unwrap_or_else(|e| e.into_inner()).clone().expect("有標記就要存");
         assert_eq!(m.zooms.len(), 2);
         assert_eq!((m.zooms[0][1], m.zooms[0][2]), (0.5, 0.5));
         assert_eq!((m.zooms[1][1], m.zooms[1][2]), (0.0, 0.0));
@@ -2907,7 +2938,7 @@ esac
         // 錄完：取消靜音，兩段都存下來（第二段算到結尾）
         assert!(!crate::audiopipe::MIC_MUTED.load(Ordering::Relaxed));
         assert_eq!(s.rec.status().mic_muted, None);
-        let m = s.deps.marks.lock().unwrap().clone().expect("有靜音的時段就要存");
+        let m = s.deps.marks.lock().unwrap_or_else(|e| e.into_inner()).clone().expect("有靜音的時段就要存");
         assert_eq!(m.mutes.len(), 2, "{:?}", m.mutes);
         assert!(m.mutes[0][1] - m.mutes[0][0] >= 0.07 && m.mutes[1][0] > m.mutes[0][1], "{:?}", m.mutes);
     }
@@ -2972,7 +3003,7 @@ esac
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         // 只剩另一台螢幕（錄的那台拔掉了）
-        *s.deps.screens.lock().unwrap() = Some(vec![MonitorInfo { id: "0:0".into(), device_name: r"\\.\DISPLAY2".into(), display_number: 2, ..mon() }]);
+        *s.deps.screens.lock().unwrap_or_else(|e| e.into_inner()) = Some(vec![MonitorInfo { id: "0:0".into(), device_name: r"\\.\DISPLAY2".into(), display_number: 2, ..mon() }]);
         s.rec.displays_changed().await;
         for _ in 0..200 {
             if s.rec.status().state == RecorderState::Idle {
@@ -3005,7 +3036,7 @@ esac
         };
         wait_frames().await;
         // 同一台螢幕，編號變了（例如拔掉了另一台）
-        *s.deps.screens.lock().unwrap() = Some(vec![MonitorInfo { id: "1:0".into(), adapter: 1, ..mon() }]);
+        *s.deps.screens.lock().unwrap_or_else(|e| e.into_inner()) = Some(vec![MonitorInfo { id: "1:0".into(), adapter: 1, ..mon() }]);
         s.rec.displays_changed().await;
         let st = s.rec.status();
         assert_eq!(st.state, RecorderState::Recording);

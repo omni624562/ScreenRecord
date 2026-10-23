@@ -248,7 +248,7 @@ impl Downloader {
     }
 
     pub fn status(&self) -> DownloadStatus {
-        self.inner.lock().unwrap().st.clone()
+        self.inner.lock().unwrap_or_else(|e| e.into_inner()).st.clone()
     }
 
     pub fn busy(&self) -> bool {
@@ -257,7 +257,7 @@ impl Downloader {
 
     /// 開始下載；on_done 在安裝完成後呼叫（例如重新偵測 FFmpeg），失敗不影響「已安裝」的結果
     pub fn start(&self, on_done: impl FnOnce() -> Result<(), String> + Send + 'static) {
-        let mut g = self.inner.lock().unwrap();
+        let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         if matches!(g.st.phase, DownloadPhase::Downloading | DownloadPhase::Verifying | DownloadPhase::Extracting) {
             return;
         }
@@ -273,7 +273,7 @@ impl Downloader {
             }
             Err(Fail::Canceled) => {}
             Err(Fail::Error(msg)) => {
-                let mut g = me.inner.lock().unwrap();
+                let mut g = me.inner.lock().unwrap_or_else(|e| e.into_inner());
                 if g.st.phase != DownloadPhase::Canceled {
                     g.st.phase = DownloadPhase::Error;
                     g.st.message = Some(msg.clone());
@@ -284,7 +284,7 @@ impl Downloader {
     }
 
     pub fn cancel(&self) {
-        let mut g = self.inner.lock().unwrap();
+        let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         if !matches!(g.st.phase, DownloadPhase::Downloading | DownloadPhase::Verifying | DownloadPhase::Extracting) {
             return;
         }
@@ -297,14 +297,14 @@ impl Downloader {
 
     /// 等目前的工作結束（測試用）
     pub fn join(&self) {
-        let job = self.inner.lock().unwrap().job.take();
+        let job = self.inner.lock().unwrap_or_else(|e| e.into_inner()).job.take();
         if let Some(j) = job {
             let _ = j.join();
         }
     }
 
     fn set(&self, f: impl FnOnce(&mut DownloadStatus)) {
-        f(&mut self.inner.lock().unwrap().st);
+        f(&mut self.inner.lock().unwrap_or_else(|e| e.into_inner()).st);
     }
 
     fn install(&self, cancel: &AtomicBool) -> Result<(), Fail> {
@@ -460,7 +460,7 @@ mod tests {
         let t2 = target.clone();
         let fetch = fetch.unwrap_or_else(|| {
             Box::new(move |url: &str| {
-                f2.lock().unwrap().push(url.into());
+                f2.lock().unwrap_or_else(|e| e.into_inner()).push(url.into());
                 let z = zip_bytes();
                 Ok((Some(z.len() as u64), Box::new(std::io::Cursor::new(z)) as Box<dyn Read + Send>))
             })
@@ -491,7 +491,7 @@ mod tests {
         assert_eq!(st.version.as_deref(), Some("9.0.2-test"));
         assert_eq!(std::fs::read_to_string(&s.target).unwrap(), "FAKE-FFMPEG-EXE");
         assert!(!PathBuf::from(format!("{}.download", s.target.display())).exists());
-        assert_eq!(*s.fetched.lock().unwrap(), vec!["https://primary/ffmpeg.zip".to_string()]);
+        assert_eq!(*s.fetched.lock().unwrap_or_else(|e| e.into_inner()), vec!["https://primary/ffmpeg.zip".to_string()]);
         assert_eq!(done.load(Ordering::SeqCst), 1);
     }
 
@@ -501,7 +501,7 @@ mod tests {
         let f2 = fetched.clone();
         let s = setup(
             Some(Box::new(move |url: &str| {
-                f2.lock().unwrap().push(url.into());
+                f2.lock().unwrap_or_else(|e| e.into_inner()).push(url.into());
                 let body = if url.contains("primary") { b"tampered".to_vec() } else { zip_bytes() };
                 Ok((None, Box::new(std::io::Cursor::new(body)) as Box<dyn Read + Send>))
             })),
@@ -511,7 +511,7 @@ mod tests {
         s.dl.join();
         assert_eq!(s.dl.status().phase, DownloadPhase::Done);
         assert!(s.target.exists());
-        assert_eq!(*fetched.lock().unwrap(), vec!["https://primary/ffmpeg.zip".to_string(), "https://mirror/ffmpeg.zip".to_string()]);
+        assert_eq!(*fetched.lock().unwrap_or_else(|e| e.into_inner()), vec!["https://primary/ffmpeg.zip".to_string(), "https://mirror/ffmpeg.zip".to_string()]);
     }
 
     #[test]

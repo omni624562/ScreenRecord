@@ -256,7 +256,7 @@ pub fn find(ffmpeg: &Path, videos: &[JfVideo], stream_url: impl Fn(&str) -> Stri
                 let url = stream_url(&v.id);
                 let prints: Vec<Print> = SPOTS.iter().filter_map(|f| crate::player::decode_frame(ffmpeg, &url, v.duration * f, 17, 16, false)).map(|f| frame_print(&f)).collect();
                 if prints.len() == SPOTS.len() {
-                    got.lock().unwrap().push((v.id.clone(), (v.size, v.duration, prints)));
+                    got.lock().unwrap_or_else(|e| e.into_inner()).push((v.id.clone(), (v.size, v.duration, prints)));
                 } else {
                     crate::info!("[Jellyfin] 找重複：讀不到「{}」的畫面", v.name);
                 }
@@ -271,7 +271,7 @@ pub fn find(ffmpeg: &Path, videos: &[JfVideo], stream_url: impl Fn(&str) -> Stri
     let ids: std::collections::HashSet<&str> = videos.iter().map(|v| v.id.as_str()).collect();
     cache.prints.retain(|id, _| ids.contains(id.as_str()));
     if let Ok(t) = serde_json::to_string(&cache) {
-        let _ = std::fs::write(&file, t);
+        let _ = crate::paths::write_atomic(&file, t.as_bytes());
     }
     if progress.cancel.load(Ordering::Relaxed) {
         return None;

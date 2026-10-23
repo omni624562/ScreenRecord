@@ -22,7 +22,7 @@ pub fn setup() {
     if std::fs::metadata(&file).map(|m| m.len() > 1024 * 1024).unwrap_or(false) {
         let _ = std::fs::rename(&file, dir.join("ScreenRecorder.old.log"));
     }
-    *FILE.lock().unwrap() = Some(file);
+    *FILE.lock().unwrap_or_else(|e| e.into_inner()) = Some(file);
     write("INFO ", "──── 程式啟動 ────");
 }
 
@@ -79,7 +79,7 @@ mod tests {
     fn panics_are_written_to_the_log() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("test.log");
-        *super::FILE.lock().unwrap() = Some(file.clone());
+        *super::FILE.lock().unwrap_or_else(|e| e.into_inner()) = Some(file.clone());
         super::install_panic_hook();
         let r = std::thread::Builder::new().name("背景工作".into()).spawn(|| panic!("測試用的錯誤 {}", 42)).unwrap().join();
         assert!(r.is_err());
@@ -87,6 +87,6 @@ mod tests {
         assert!(text.contains("程式內部錯誤（執行緒 背景工作，"), "{text}");
         assert!(text.contains("log.rs:"), "{text}");
         assert!(text.contains("測試用的錯誤 42"), "{text}");
-        *super::FILE.lock().unwrap() = None;
+        *super::FILE.lock().unwrap_or_else(|e| e.into_inner()) = None;
     }
 }

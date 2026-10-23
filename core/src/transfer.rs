@@ -38,12 +38,18 @@ static NEXT: AtomicU64 = AtomicU64::new(1);
 
 /// 正在傳的檔案（畫面顯示進度用）；只列大於 8 MB 的（字幕、小檔一下就傳完，不用顯示）
 pub fn active() -> Vec<Active> {
-    ACTIVE.lock().unwrap().iter().filter(|s| s.total > 8 << 20).map(|s| Active { id: s.id, name: s.name.clone(), done: s.done.load(Ordering::Relaxed), total: s.total, down: s.down }).collect()
+    ACTIVE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .filter(|s| s.total > 8 << 20)
+        .map(|s| Active { id: s.id, name: s.name.clone(), done: s.done.load(Ordering::Relaxed), total: s.total, down: s.down })
+        .collect()
 }
 
 /// 取消正在傳的那一個（暫存檔會刪掉，原本 NAS 上的那一份不動）
 pub fn cancel(id: u64) {
-    if let Some(s) = ACTIVE.lock().unwrap().iter().find(|s| s.id == id) {
+    if let Some(s) = ACTIVE.lock().unwrap_or_else(|e| e.into_inner()).iter().find(|s| s.id == id) {
         s.cancel.store(true, Ordering::Relaxed);
     }
 }
@@ -71,20 +77,30 @@ pub fn save(src: impl Read, total: u64, to: &Path, down: bool) -> std::io::Resul
     let name = to.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     let tmp = to.with_file_name(format!(".{name}.part"));
     let (id, done, cancel) = (NEXT.fetch_add(1, Ordering::Relaxed), Arc::new(AtomicU64::new(0)), Arc::new(AtomicBool::new(false)));
-    ACTIVE.lock().unwrap().push(Slot { id, name: name.clone(), done: done.clone(), total, cancel: cancel.clone(), down });
+    ACTIVE.lock().unwrap_or_else(|e| e.into_inner()).push(Slot { id, name: name.clone(), done: done.clone(), total, cancel: cancel.clone(), down });
     let r = copy_to_tmp(src, &tmp, &done, &cancel).and_then(|n| {
         // 少了一截（下載到一半斷線）：不算完成
         if total > 0 && n < total {
             return Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, tr!("連線中斷，沒有收完", "The connection dropped before it finished")));
         }
-        // Windows 的 rename 遇到同名檔會換掉；有的 NAS（SMB）不行，先刪掉舊的再換
+        // Windows 的 rename 遇到同名檔會換掉；有的 NAS（SMB）不行：先把舊的改名留著，換好了才刪，
+        // 換不過去時把舊的改回來（不會新舊兩份都不見）
         if std::fs::rename(&tmp, to).is_err() {
-            let _ = std::fs::remove_file(to);
-            std::fs::rename(&tmp, to)?;
+            let old = to.with_file_name(format!(".{name}.old"));
+            let moved = to.exists() && std::fs::rename(to, &old).is_ok();
+            if let Err(e) = std::fs::rename(&tmp, to) {
+                if moved {
+                    let _ = std::fs::rename(&old, to);
+                }
+                return Err(e);
+            }
+            if moved {
+                let _ = std::fs::remove_file(&old);
+            }
         }
         Ok(n)
     });
-    ACTIVE.lock().unwrap().retain(|s| s.id != id);
+    ACTIVE.lock().unwrap_or_else(|e| e.into_inner()).retain(|s| s.id != id);
     if r.is_err() {
         let _ = std::fs::remove_file(&tmp);
     }
@@ -116,7 +132,7 @@ static STAGES: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
 
 /// 記下（或拿掉）這支影片 Jellyfin 正在做什麼（畫面右下角顯示）
 pub fn set_stage(name: &str, what: Option<String>) {
-    let mut g = STAGES.lock().unwrap();
+    let mut g = STAGES.lock().unwrap_or_else(|e| e.into_inner());
     g.retain(|(n, _)| n != name);
     if let Some(w) = what {
         g.push((name.to_string(), w));
@@ -124,7 +140,7 @@ pub fn set_stage(name: &str, what: Option<String>) {
 }
 
 pub fn stages() -> Vec<(String, String)> {
-    STAGES.lock().unwrap().clone()
+    STAGES.lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
 /// 連得到媒體庫資料夾嗎（NAS 沒開、不在家時連不到）
@@ -145,7 +161,7 @@ static PENDING: Mutex<Option<(Option<PathBuf>, Vec<Pending>)>> = Mutex::new(None
 
 /// 讀出待傳清單（程式啟動時；已經讀過就不再讀）
 pub fn init_pending(file: PathBuf) {
-    let mut g = PENDING.lock().unwrap();
+    let mut g = PENDING.lock().unwrap_or_else(|e| e.into_inner());
     if g.as_ref().is_some_and(|(f, _)| f.is_some()) {
         return;
     }
@@ -155,7 +171,7 @@ pub fn init_pending(file: PathBuf) {
 }
 
 fn with_pending<T>(f: impl FnOnce(&mut Vec<Pending>) -> (T, bool)) -> T {
-    let mut g = PENDING.lock().unwrap();
+    let mut g = PENDING.lock().unwrap_or_else(|e| e.into_inner());
     let (file, list) = g.get_or_insert_with(|| (None, vec![]));
     let (out, changed) = f(list);
     if changed {

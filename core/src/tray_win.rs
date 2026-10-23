@@ -77,7 +77,7 @@ struct Handle {
 
 impl Handle {
     fn send(&self, r: Req) {
-        self.queue.lock().unwrap().push_back(r);
+        self.queue.lock().unwrap_or_else(|e| e.into_inner()).push_back(r);
         unsafe {
             let _ = PostMessageW(Some(HWND(self.hwnd as *mut _)), WM_WAKE, WPARAM(0), LPARAM(0));
         }
@@ -191,7 +191,7 @@ fn drain() {
     let queue = TRAY.with(|t| t.borrow().as_ref().map(|t| t.queue.clone()));
     let Some(queue) = queue else { return };
     loop {
-        let Some(req) = queue.lock().unwrap().pop_front() else { break };
+        let Some(req) = queue.lock().unwrap_or_else(|e| e.into_inner()).pop_front() else { break };
         match req {
             // Shell_NotifyIcon 會等檔案總管回應，等的時候這條執行緒可能又收到訊息（進到 wnd_proc）：
             // 所以借用 TRAY 時只準備資料，放開之後才呼叫，避免重複借用而整個程式結束

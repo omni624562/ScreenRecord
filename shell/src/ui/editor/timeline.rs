@@ -176,12 +176,12 @@ impl Wave {
             let (ffmpeg, path, data, cancel, c) = (ffmpeg.to_path_buf(), path.to_string(), self.data.clone(), self.cancel.clone(), ctx.clone());
             std::thread::spawn(move || {
                 if let Some(p) = screenrecorder_core::waveform::load(&ffmpeg, &path, &cancel) {
-                    *data.lock().unwrap() = Some(Arc::new(p));
+                    *data.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(p));
                     c.request_repaint();
                 }
             });
         }
-        self.data.lock().unwrap().clone()
+        self.data.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 }
 
@@ -255,7 +255,7 @@ fn update_strip(ed: &mut Editor, ctx: &egui::Context, rect: Rect, axis: &Axis) -
             let (ffmpeg, path, cancel, inbox, gen, c) = (ed.ffmpeg.clone(), ed.entry.media.path.clone(), st.cancel.clone(), st.inbox.clone(), st.gen, ctx.clone());
             std::thread::spawn(move || {
                 strip_frames(&ffmpeg, &path, &times, w, h, &cancel, |k, f| {
-                    inbox.lock().unwrap().push((gen, k, f));
+                    inbox.lock().unwrap_or_else(|e| e.into_inner()).push((gen, k, f));
                     c.request_repaint();
                 });
             });
@@ -263,7 +263,7 @@ fn update_strip(ed: &mut Editor, ctx: &egui::Context, rect: Rect, axis: &Axis) -
             ctx.request_repaint_after(due - Instant::now());
         }
     }
-    let got: Vec<_> = std::mem::take(&mut *st.inbox.lock().unwrap());
+    let got: Vec<_> = std::mem::take(&mut *st.inbox.lock().unwrap_or_else(|e| e.into_inner()));
     for (g, k, f) in got {
         if g == st.gen && k < st.tiles.len() {
             let img = egui::ColorImage::from_rgba_unmultiplied([f.width as usize, f.height as usize], &f.rgba);

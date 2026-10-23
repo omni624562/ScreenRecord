@@ -176,17 +176,17 @@ enum Processed {
 impl App {
     /// 錄完自動處理中（介面顯示用；處理完就是 None）
     pub fn after_status(&self) -> Option<AfterStatus> {
-        self.after.lock().unwrap().clone().filter(|s| s.done.is_none())
+        self.after.lock().unwrap_or_else(|e| e.into_inner()).clone().filter(|s| s.done.is_none())
     }
 
     /// 最近一次錄完自動處理的結果（取消時沒有）
     pub fn after_done(&self) -> Option<AfterDone> {
-        self.after.lock().unwrap().as_ref().and_then(|s| s.done.clone())
+        self.after.lock().unwrap_or_else(|e| e.into_inner()).as_ref().and_then(|s| s.done.clone())
     }
 
     /// 這個轉檔工作是錄完自動處理開始的（介面不另外顯示它的轉檔卡、完成提示）
     pub fn after_owns_export(&self, id: u64) -> bool {
-        self.after.lock().unwrap().as_ref().is_some_and(|s| s.export_ids.contains(&id))
+        self.after.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|s| s.export_ids.contains(&id))
     }
 
     /// 取消錄完自動處理（正在轉檔時一併取消）
@@ -216,7 +216,7 @@ impl App {
     }
 
     fn after_set(&self, f: impl FnOnce(&mut AfterStatus)) {
-        if let Some(s) = self.after.lock().unwrap().as_mut() {
+        if let Some(s) = self.after.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
             f(s);
         }
     }
@@ -318,7 +318,7 @@ impl App {
                 Processed::Canceled => {
                     info!("[一次處理多支] 已取消（做完 {i} 支）");
                     if i == 0 {
-                        *self.after.lock().unwrap() = None;
+                        *self.after.lock().unwrap_or_else(|e| e.into_inner()) = None;
                         return;
                     }
                     break;
@@ -341,7 +341,7 @@ impl App {
         let output = if outputs.len() == 1 { outputs.pop() } else { None };
         let done = AfterDone { seq: DONE_SEQ.fetch_add(1, Ordering::Relaxed) + 1, ok: ok > 0, text, output, source: last, batch: true };
         // 留著這次的狀態（轉檔工作的編號：介面不另外顯示那些轉檔卡），只加上結果
-        let mut st = self.after.lock().unwrap();
+        let mut st = self.after.lock().unwrap_or_else(|e| e.into_inner());
         let s = st.get_or_insert_with(|| Self::new_status(String::new(), 0, Default::default(), Default::default(), None));
         s.done = Some(done);
         s.exporting = false;
@@ -375,7 +375,7 @@ impl App {
         let name = Path::new(&video).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         let (progress, cancel) = (Arc::new(AtomicU32::new(0)), Arc::new(AtomicBool::new(false)));
         {
-            let mut st = self.after.lock().unwrap();
+            let mut st = self.after.lock().unwrap_or_else(|e| e.into_inner());
             let mut s = Self::new_status(name.clone(), after.steps(), progress.clone(), cancel.clone(), batch);
             // 一次處理多支：沿用前幾支開始的轉檔工作編號
             if let Some(prev) = st.as_ref().filter(|p| batch.is_some() && p.batch.is_some()) {
@@ -502,7 +502,7 @@ impl App {
                 }
             }
         };
-        let mut st = self.after.lock().unwrap();
+        let mut st = self.after.lock().unwrap_or_else(|e| e.into_inner());
         match done {
             // 一次處理多支：狀態留著（下一支接著用），全部做完再一起顯示
             _ if batch.is_some() => {
@@ -586,7 +586,7 @@ impl App {
 
     async fn after_run(&self, video: &str, after: &AfterRecord, progress: Arc<AtomicU32>, cancel: Arc<AtomicBool>, output: &mut Option<String>) -> Result<Vec<String>, String> {
         let ffmpeg = self.ffmpeg_path().ok_or_else(|| tr!("找不到 FFmpeg", "FFmpeg not found").to_string())?;
-        let stop_step = self.after.lock().unwrap().as_ref().map(|s| s.stop_step.clone()).unwrap_or_default();
+        let stop_step = self.after.lock().unwrap_or_else(|e| e.into_inner()).as_ref().map(|s| s.stop_step.clone()).unwrap_or_default();
         let mut video = video.to_string();
         let mut done = vec![];
         let mut step_no = 0;
