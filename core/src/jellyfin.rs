@@ -267,9 +267,70 @@ impl Jellyfin {
     }
 
     /// 這個使用者看得到的媒體庫（最上層）
+    /// 媒體庫（「合集」「播放清單」不列：瀏覽頁另外有這兩格）
     pub fn views(&self, user: &str) -> Result<Vec<JfItem>, String> {
         let body = self.call(agent().get(&format!("{}/Users/{user}/Views", self.url)))?.into_string().map_err(|e| e.to_string())?;
+        let skip = list_views(&body);
+        Ok(parse_items(&body).0.into_iter().filter(|i| !skip.contains(&i.id)).map(|i| JfItem { kind: JfKind::Folder, ..i }).collect())
+    }
+
+    /// 伺服器上的合集或（這個使用者的）播放清單，依名稱排
+    pub fn lists(&self, user: &str, kind: JfList) -> Result<Vec<JfItem>, String> {
+        let req = self
+            .items_req(&format!("{}/Users/{user}/Items", self.url))
+            .query("recursive", "true")
+            .query("includeItemTypes", kind.item_type())
+            .query("sortBy", "SortName")
+            .query("sortOrder", "Ascending");
+        let body = self.call(req)?.into_string().map_err(|e| e.to_string())?;
         Ok(parse_items(&body).0.into_iter().map(|i| JfItem { kind: JfKind::Folder, ..i }).collect())
+    }
+
+    /// 新建一個合集或播放清單，放進這些影片。回傳新的編號
+    pub fn create_list(&self, user: &str, kind: JfList, name: &str, ids: &[String]) -> Result<String, String> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(tr!("名稱不能空白", "The name can't be empty").into());
+        }
+        let req = match kind {
+            JfList::Collection => agent().post(&format!("{}/Collections", self.url)).query("name", name).query("ids", &ids.join(",")),
+            JfList::Playlist => agent().post(&format!("{}/Playlists", self.url)).query("name", name).query("ids", &ids.join(",")).query("userId", user).query("mediaType", "Video"),
+        };
+        let body = self.call(req)?.into_string().map_err(|e| e.to_string())?;
+        serde_json::from_str::<Value>(&body)
+            .ok()
+            .and_then(|v| v.get("Id").and_then(Value::as_str).map(String::from))
+            .ok_or_else(|| tr!("Jellyfin 沒有回答新的編號", "Jellyfin didn't return the new id").to_string())
+    }
+
+    /// 把影片加進合集或播放清單（合集裡已經有的 Jellyfin 不會重複放）
+    pub fn add_to_list(&self, user: &str, kind: JfList, list: &str, ids: &[String]) -> Result<(), String> {
+        let req = match kind {
+            JfList::Collection => agent().post(&format!("{}/Collections/{list}/Items", self.url)).query("ids", &ids.join(",")),
+            JfList::Playlist => agent().post(&format!("{}/Playlists/{list}/Items", self.url)).query("ids", &ids.join(",")).query("userId", user),
+        };
+        self.call(req).map(|_| ())
+    }
+
+    /// 從合集或播放清單拿掉（影片本身不刪）：合集用影片編號，播放清單用清單裡那一筆的編號（JfItem::entry）
+    pub fn remove_from_list(&self, kind: JfList, list: &str, items: &[JfItem]) -> Result<(), String> {
+        let req = match kind {
+            JfList::Collection => agent().delete(&format!("{}/Collections/{list}/Items", self.url)).query("ids", &items.iter().map(|i| i.id.as_str()).collect::<Vec<_>>().join(",")),
+            JfList::Playlist => agent().delete(&format!("{}/Playlists/{list}/Items", self.url)).query("entryIds", &items.iter().map(|i| i.entry.as_str()).collect::<Vec<_>>().join(",")),
+        };
+        self.call(req).map(|_| ())
+    }
+
+    /// 播放清單裡的影片（照清單的順序）：回傳（這一頁, 全部幾個）
+    pub fn playlist_items(&self, user: &str, list: &str, start: usize, limit: usize) -> Result<(Vec<JfItem>, usize), String> {
+        let req = self
+            .items_req(&format!("{}/Playlists/{list}/Items", self.url))
+            .query("userId", user)
+            .query("startIndex", &start.to_string())
+            .query("limit", &limit.to_string())
+            .query("enableTotalRecordCount", "true");
+        let body = self.call(req)?.into_string().map_err(|e| e.to_string())?;
+        Ok(parse_items(&body))
     }
 
     /// 一個資料夾（媒體庫、合集）裡的東西：資料夾在前，影片依 sort 排；search 不是空的時找整個伺服器。
@@ -1135,13 +1196,14 @@ pub fn server_path(server_root: &str, local_root: &str, local_dir: &std::path::P
 }
 
 /// Jellyfin 上的一個東西：資料夾（媒體庫、資料夾、合集）或影片
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum JfKind {
+    #[default]
     Folder,
     Video,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct JfItem {
     pub id: String,
     pub name: String,
@@ -1178,6 +1240,8 @@ pub struct JfItem {
     pub year: Option<i32>,
     /// 檔案大小（位元組；不知道時 0）
     pub size: u64,
+    /// 在播放清單裡時，這一筆在清單裡的編號（從播放清單拿掉用；同一支影片可以在清單裡好幾次）；其他時候空的
+    pub entry: String,
 }
 
 /// 時間軸預覽縮圖：每 interval 秒一張小圖（width × height），tile_w × tile_h 張排成一張大圖
@@ -1371,6 +1435,7 @@ pub fn parse_items(json: &str) -> (Vec<JfItem>, usize) {
                         tags: names_in(i, NameKind::Tag),
                         year: i.get("ProductionYear").and_then(Value::as_i64).filter(|y| *y > 0).map(|y| y as i32),
                         size: i.pointer("/MediaSources/0/Size").and_then(Value::as_u64).unwrap_or(0),
+                        entry: i.get("PlaylistItemId").and_then(Value::as_str).unwrap_or("").to_string(),
                     })
                 })
                 .collect()
@@ -1458,6 +1523,34 @@ fn names_in(item: &Value, kind: NameKind) -> Vec<String> {
             .collect(),
         NameKind::Tag => item.get("Tags").and_then(Value::as_array).into_iter().flatten().filter_map(|t| t.as_str().map(String::from)).collect(),
     }
+}
+
+/// 合集（BoxSet）或播放清單
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JfList {
+    Collection,
+    Playlist,
+}
+
+impl JfList {
+    fn item_type(self) -> &'static str {
+        match self {
+            JfList::Collection => "BoxSet",
+            JfList::Playlist => "Playlist",
+        }
+    }
+}
+
+/// /Users/{u}/Views 裡「合集」「播放清單」那兩個的編號
+fn list_views(json: &str) -> Vec<String> {
+    let Ok(v) = serde_json::from_str::<Value>(json) else { return vec![] };
+    v.get("Items")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|i| matches!(i.get("CollectionType").and_then(Value::as_str), Some("boxsets" | "playlists")))
+        .filter_map(|i| i.get("Id")?.as_str().map(String::from))
+        .collect()
 }
 
 /// 一頁影片（JSON）裡（沒有人物的幾支, 沒有標籤的幾支）
@@ -3263,6 +3356,18 @@ mod tests {
         let v: Value = serde_json::from_str(&with_batch(item, &BatchEdit { add_tags: vec!["旅行".into()], ..Default::default() }).unwrap()).unwrap();
         assert_eq!(v["ProductionYear"], 2023);
         assert!(BatchEdit::default().is_empty());
+    }
+
+    #[test]
+    fn lists_are_hidden_from_views_and_entries_parsed() {
+        let views = r#"{"Items":[{"Id":"a","Name":"家庭影片","Type":"CollectionFolder","IsFolder":true,"CollectionType":"homevideos"},
+            {"Id":"b","Name":"合集","Type":"CollectionFolder","IsFolder":true,"CollectionType":"boxsets"},
+            {"Id":"c","Name":"播放清單","Type":"ManualPlaylistsFolder","IsFolder":true,"CollectionType":"playlists"}]}"#;
+        assert_eq!(list_views(views), ["b", "c"]);
+        let pl = r#"{"Items":[{"Id":"v1","Type":"Video","Name":"x","PlaylistItemId":"e9"},{"Id":"p","Type":"Playlist","IsFolder":true,"Name":"週末","ChildCount":3}]}"#;
+        let (items, _) = parse_items(pl);
+        assert_eq!(items[0].entry, "e9");
+        assert_eq!((items[1].kind, items[1].children), (JfKind::Folder, 3));
     }
 
     #[test]

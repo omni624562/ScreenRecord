@@ -5,7 +5,7 @@
 use super::theme::{self, Btn, Icon};
 use super::{viewer, ToastAction, UiApp};
 use eframe::egui::{self, pos2, vec2, Align, Align2, Layout, Rect, RichText, Sense, UiBuilder};
-use screenrecorder_core::jellyfin::{self, Jellyfin, JfFacet, JfFilter, JfItem, JfKind, JfSort};
+use screenrecorder_core::jellyfin::{self, Jellyfin, JfFacet, JfFilter, JfItem, JfKind, JfList, JfSort};
 use screenrecorder_core::types::{Chapter, LibraryEntry, MediaInfo};
 use screenrecorder_core::{tr, trf};
 use std::collections::{BTreeMap, HashMap};
@@ -19,6 +19,45 @@ const CELL_W: [f32; 3] = [150.0, 196.0, 300.0];
 const ROW_ITEMS: usize = 12;
 /// 搜尋框停止打字多久之後才找（每打一個字就問伺服器太多次）
 const SEARCH_WAIT: Duration = Duration::from_millis(400);
+/// 最上層「合集」「播放清單」兩格的編號；點進一個合集、播放清單時位置的編號前面加 COL、PL
+const COLLECTIONS: &str = "jf:collections";
+const PLAYLISTS: &str = "jf:playlists";
+const COL: &str = "jf:col:";
+const PL: &str = "jf:pl:";
+
+/// 位置的編號是一個合集或播放清單時：（哪一種, 它在 Jellyfin 上的編號）
+fn list_at(id: &str) -> Option<(JfList, &str)> {
+    id.strip_prefix(COL).map(|x| (JfList::Collection, x)).or_else(|| id.strip_prefix(PL).map(|x| (JfList::Playlist, x)))
+}
+
+/// 位置、縮圖用的編號在 Jellyfin 上真正的編號（去掉合集、播放清單的前綴）
+fn real_id(id: &str) -> &str {
+    list_at(id).map_or(id, |(_, x)| x)
+}
+
+/// 讀一層的一頁：最上層的「合集」「播放清單」列出全部合集、播放清單，播放清單裡照清單的順序，其他照一般的資料夾
+#[allow(clippy::too_many_arguments)]
+fn fetch(jf: &Jellyfin, user: &str, parent: Option<&str>, search: &str, start: usize, sort: JfSort, filter: JfFilter, facet: &[JfFacet]) -> Result<(Vec<JfItem>, usize), String> {
+    let plain = search.trim().is_empty() && facet.is_empty();
+    match parent {
+        Some(p @ (COLLECTIONS | PLAYLISTS)) if plain => {
+            let (kind, prefix) = if p == COLLECTIONS { (JfList::Collection, COL) } else { (JfList::Playlist, PL) };
+            let all = jf.lists(user, kind)?;
+            let n = all.len();
+            Ok((all.into_iter().skip(start).take(PAGE).map(|i| JfItem { id: format!("{prefix}{}", i.id), ..i }).collect(), n))
+        }
+        Some(p) if plain && list_at(p).is_some_and(|(k, _)| k == JfList::Playlist) => jf.playlist_items(user, real_id(p), start, PAGE),
+        _ => jf.items(user, parent.map(real_id), search, start, PAGE, sort, filter, facet),
+    }
+}
+
+/// 最上層「合集」「播放清單」那兩格
+fn list_tiles(collections: usize, playlists: usize) -> [JfItem; 2] {
+    [
+        JfItem { id: COLLECTIONS.into(), name: tr!("合集", "Collections").into(), children: collections as u32, ..Default::default() },
+        JfItem { id: PLAYLISTS.into(), name: tr!("播放清單", "Playlists").into(), children: playlists as u32, ..Default::default() },
+    ]
+}
 
 enum Poster {
     Loading,
@@ -67,6 +106,9 @@ pub struct JfBrowse {
     /// 還沒設人物、還沒有標籤的影片幾支（「依這些找」最上面的「（沒有人物）」「（沒有標籤）」；讀不到時 0）
     no_people: usize,
     no_tags: usize,
+    /// 伺服器上的合集、播放清單（「加進…」選單用；打開分頁、加進去之後重讀）
+    collections: Vec<JfItem>,
+    playlists: Vec<JfItem>,
     /// 「人物」「標籤」「年份」選單裡的搜尋框
     facet_search: [String; 3],
     /// 位置那一列右邊（符合幾支、排序、縮圖大小）上次量到的寬度：左邊的條件只用剩下的地方
@@ -103,8 +145,8 @@ pub fn open(app: &mut UiApp) {
     load(app);
 }
 
-/// 讀到的一層：（使用者, 東西, 全部幾個, 繼續觀看, 最近加入）
-type Loaded = (String, Vec<JfItem>, usize, Vec<JfItem>, Vec<JfItem>);
+/// 讀到的一層：（使用者, 東西, 全部幾個, 繼續觀看, 最近加入, （合集, 播放清單）；不是最上層時 None）
+type Loaded = (String, Vec<JfItem>, usize, Vec<JfItem>, Vec<JfItem>, Option<(Vec<JfItem>, Vec<JfItem>)>);
 
 /// 讀目前這一層（或搜尋結果）的這一頁；最上層連「繼續觀看」「最近加入」一起讀
 fn load(app: &mut UiApp) {
@@ -129,15 +171,18 @@ fn load(app: &mut UiApp) {
                     None => jf.browse_user(&preferred)?,
                 };
                 if parent.is_none() && search.is_empty() && facet.is_empty() {
-                    let views = jf.views(&user)?;
-                    let n = views.len();
-                    // 舊版 Jellyfin 沒有這兩個也沒關係：只是不列
+                    let mut views = jf.views(&user)?;
+                    // 舊版 Jellyfin 沒有這些也沒關係：只是不列
                     let resume = jf.resume_items(&user, ROW_ITEMS).unwrap_or_default();
                     let latest = jf.latest_items(&user, ROW_ITEMS).unwrap_or_default();
-                    return Ok((user, views, n, resume, latest));
+                    let cols = jf.lists(&user, JfList::Collection).unwrap_or_default();
+                    let pls = jf.lists(&user, JfList::Playlist).unwrap_or_default();
+                    views.extend(list_tiles(cols.len(), pls.len()));
+                    let n = views.len();
+                    return Ok((user, views, n, resume, latest, Some((cols, pls))));
                 }
-                let (items, total) = jf.items(&user, parent.as_deref(), &search, start, PAGE, sort, filter, &facet)?;
-                Ok((user, items, total, vec![], vec![]))
+                let (items, total) = fetch(&jf, &user, parent.as_deref(), &search, start, sort, filter, &facet)?;
+                Ok((user, items, total, vec![], vec![], None))
             })
             .await
             .unwrap_or_else(|e| Err(e.to_string()))
@@ -145,12 +190,16 @@ fn load(app: &mut UiApp) {
         move |app, r| {
             let Some(d) = app.jf_browse.as_mut().filter(|d| d.seq == seq) else { return };
             match r {
-                Ok((user, items, total, resume, latest)) => {
+                Ok((user, items, total, resume, latest, lists)) => {
                     d.user = Some(user);
                     d.items = Some(items);
                     d.total = total;
                     d.resume = resume;
                     d.latest = latest;
+                    if let Some((cols, pls)) = lists {
+                        d.collections = cols;
+                        d.playlists = pls;
+                    }
                 }
                 Err(e) => d.error = Some(e),
             }
@@ -289,7 +338,7 @@ fn load_poster(app: &mut UiApp, id: &str) {
         async move {
             let key = id.clone();
             let img = tokio::task::spawn_blocking(move || {
-                let bytes = jf.poster(&key)?;
+                let bytes = jf.poster(real_id(&key))?;
                 let pm = screenrecorder_core::picture::decode_pixmap(&bytes)?;
                 Some(egui::ColorImage::from_rgba_premultiplied([pm.width() as usize, pm.height() as usize], pm.data()))
             })
@@ -566,6 +615,43 @@ struct Picked {
     /// Shift＋點一下：（點的那一支, 它所在的那一排）
     range: Option<(JfItem, Vec<JfItem>)>,
     posters: Vec<String>,
+    /// 右鍵或「加進…」：把這些影片加進合集、播放清單
+    add_to: Option<AddTo>,
+    /// 右鍵或下面的按鈕：從目前這個合集、播放清單拿掉這些（影片本身不刪）
+    remove_here: Option<Vec<JfItem>>,
+}
+
+/// 加進哪個合集、播放清單：to 是（編號, 名稱），None 是新建一個（先問名稱）
+struct AddTo {
+    kind: JfList,
+    to: Option<(String, String)>,
+    items: Vec<JfItem>,
+}
+
+/// 「加進…」選單的內容：合集、播放清單（後面寫幾支），各自最下面是新建；items 是要加進去的
+fn add_menu(ui: &mut egui::Ui, d: &JfBrowse, items: &[JfItem], out: &mut Option<AddTo>) {
+    let p = theme::pal(ui);
+    ui.set_min_width(220.0);
+    for (kind, title, lists, new) in [
+        (JfList::Collection, tr!("加進合集", "Add to collection"), &d.collections, tr!("＋ 新合集…", "＋ New collection…")),
+        (JfList::Playlist, tr!("加進播放清單", "Add to playlist"), &d.playlists, tr!("＋ 新播放清單…", "＋ New playlist…")),
+    ] {
+        ui.label(RichText::new(title).font(theme::font(11.5)).color(p.muted));
+        for l in lists.iter() {
+            let label = if l.children > 0 { format!("{}　{}", l.name, l.children) } else { l.name.clone() };
+            if ui.button(label).clicked() {
+                *out = Some(AddTo { kind, to: Some((l.id.clone(), l.name.clone())), items: items.to_vec() });
+                ui.close();
+            }
+        }
+        if ui.button(RichText::new(new).color(p.accent)).clicked() {
+            *out = Some(AddTo { kind, to: None, items: items.to_vec() });
+            ui.close();
+        }
+        if kind == JfList::Collection {
+            ui.separator();
+        }
+    }
 }
 
 /// 畫一組縮圖格（rows：最多幾列，None = 全部）
@@ -595,7 +681,13 @@ fn cells(ui: &mut egui::Ui, d: &JfBrowse, items: &[JfItem], rows: Option<usize>,
                 _ => {}
             }
             if !matches!(d.posters.get(&it.id), Some(Poster::Ready(_))) {
-                let icon = if video { Icon::Video } else { Icon::Folder };
+                let icon = if video {
+                    Icon::Video
+                } else if it.id == PLAYLISTS || it.id.starts_with(PL) {
+                    Icon::List
+                } else {
+                    Icon::Folder
+                };
                 theme::paint_icon(painter, Rect::from_center_size(img.center(), vec2(32.0, 32.0)), icon, p.muted);
             }
             // 影片：滑鼠移上去時左上角勾選、左下角刪除和下載
@@ -677,6 +769,43 @@ fn cells(ui: &mut egui::Ui, d: &JfBrowse, items: &[JfItem], rows: Option<usize>,
             };
             painter.text(pos2(cell.min.x, img.max.y + 24.0), Align2::LEFT_TOP, sub, theme::font(11.5), p.muted);
             let resp = resp.on_hover_text(&it.name);
+            // 右鍵：播放、影片資訊、加進合集或播放清單、從這裡拿掉、下載、刪除（勾選的影片按右鍵是對全部勾選的）
+            if video {
+                resp.context_menu(|ui| {
+                    let targets: Vec<JfItem> = if on { d.selected.values().cloned().collect() } else { vec![it.clone()] };
+                    if targets.len() == 1 && ui.button(tr!("播放", "Play")).clicked() {
+                        out.open = Some(it.clone());
+                        out.row = items.to_vec();
+                        ui.close();
+                    }
+                    if targets.len() == 1 && ui.button(tr!("影片資訊…", "Details…")).clicked() {
+                        out.edit = Some(it.clone());
+                        ui.close();
+                    }
+                    let n = targets.len();
+                    let add = if n > 1 { trf!("把 {n} 支加進…", "Add {n} to…") } else { tr!("加進…", "Add to…").to_string() };
+                    ui.menu_button(add, |ui| add_menu(ui, d, &targets, &mut out.add_to));
+                    if let Some((kind, _)) = d.path.last().and_then(|(id, _)| list_at(id)) {
+                        let here =
+                            if kind == JfList::Collection { tr!("從這個合集拿掉", "Remove from this collection") } else { tr!("從這個播放清單拿掉", "Remove from this playlist") };
+                        if ui.button(here).clicked() {
+                            out.remove_here = Some(targets.clone());
+                            ui.close();
+                        }
+                    }
+                    if n == 1 {
+                        ui.separator();
+                        if ui.button(tr!("下載到這台電腦", "Download to this computer")).clicked() {
+                            out.download = Some(it.clone());
+                            ui.close();
+                        }
+                        if ui.button(RichText::new(tr!("從 Jellyfin 刪除…", "Delete from Jellyfin…")).color(p.rec)).clicked() {
+                            out.delete = Some(it.clone());
+                            ui.close();
+                        }
+                    }
+                });
+            }
             if resp.clicked() && !used {
                 // Shift：從上次勾的選到這一支；已經在勾選、或按著 Ctrl：點影片是勾選；不然是播放（資料夾是進去）
                 if video && shift {
@@ -930,6 +1059,8 @@ pub struct Panel {
     bulk_delete: bool,
     /// 勾選的一起整理人物、標籤、年份
     bulk_organize: bool,
+    /// 在合集、播放清單裡按「全部播放」
+    play_all: bool,
     find_dupes: bool,
 }
 
@@ -1092,13 +1223,28 @@ pub fn panel(ui: &mut egui::Ui, d: &mut JfBrowse, busy: Option<(usize, usize)>) 
             ui.add_space(6.0);
             theme::field_style(ui);
             let (sort, filter) = (d.sort, d.filter);
-            egui::ComboBox::from_id_salt("jf-sort").selected_text(d.sort.label()).width(130.0).show_ui(ui, |ui| {
-                for s in JfSort::ALL {
-                    ui.selectable_value(&mut d.sort, s, s.label());
-                }
-            });
+            // 在合集、播放清單裡：「全部播放」照順序連續播放；播放清單照清單的順序，不排序、不篩選
+            let here = d.path.last().map(|(id, _)| id.as_str()).unwrap_or("");
+            let in_list = list_at(here).map(|(k, _)| k);
+            let lists_page = here == COLLECTIONS || here == PLAYLISTS;
+            let ordered = d.searched.is_empty() && d.facet.is_empty() && (in_list == Some(JfList::Playlist) || lists_page);
+            if !ordered {
+                egui::ComboBox::from_id_salt("jf-sort").selected_text(d.sort.label()).width(130.0).show_ui(ui, |ui| {
+                    for s in JfSort::ALL {
+                        ui.selectable_value(&mut d.sort, s, s.label());
+                    }
+                });
+            }
+            if in_list.is_some()
+                && d.searched.is_empty()
+                && d.facet.is_empty()
+                && d.items.as_ref().is_some_and(|i| i.iter().any(|x| x.kind == JfKind::Video))
+                && Btn::new(tr!("全部播放", "Play all")).icon(Icon::Play).small().tooltip(tr!("從第一支照順序連續播放", "Play everything in order from the first one")).show(ui).clicked()
+            {
+                out.play_all = true;
+            }
             // 篩選只在資料夾裡（列出這個資料夾底下符合的影片）
-            if d.searched.is_empty() && d.facet.is_empty() {
+            if d.searched.is_empty() && d.facet.is_empty() && !ordered {
                 egui::ComboBox::from_id_salt("jf-filter")
                     .selected_text(d.filter.label())
                     .width(120.0)
@@ -1232,6 +1378,15 @@ pub fn panel(ui: &mut egui::Ui, d: &mut JfBrowse, busy: Option<(usize, usize)>) 
         {
             out.bulk_organize = true;
         }
+        let add = Btn::new(tr!("加進…", "Add to…")).small().menu().tooltip(tr!("加進合集或播放清單", "Add to a collection or playlist")).show(fui);
+        let chosen: Vec<JfItem> = d.selected.values().cloned().collect();
+        egui::Popup::menu(&add).show(|ui| add_menu(ui, d, &chosen, &mut out.picked.add_to));
+        if let Some((kind, _)) = d.path.last().and_then(|(id, _)| list_at(id)) {
+            let here = if kind == JfList::Collection { tr!("從這個合集拿掉", "Remove from this collection") } else { tr!("從這個播放清單拿掉", "Remove from this playlist") };
+            if Btn::new(here).small().tooltip(tr!("影片本身不會刪掉", "The videos themselves aren't deleted")).show(fui).clicked() {
+                out.picked.remove_here = Some(chosen.clone());
+            }
+        }
         if Btn::new(tr!("下載到這台電腦", "Download to this computer")).icon(Icon::Download).small().show(fui).clicked() {
             out.bulk_download = true;
         }
@@ -1251,7 +1406,23 @@ pub fn apply(app: &mut UiApp, mut d: JfBrowse, out: Panel) {
         app.s.jf_grid_size = d.grid;
         app.save_settings();
     }
-    let Panel { mut reload, more, picked, bulk_download, bulk_delete, bulk_organize, find_dupes } = out;
+    let Panel { mut reload, more, mut picked, bulk_download, bulk_delete, bulk_organize, play_all, find_dupes } = out;
+    if play_all {
+        let row: Vec<JfItem> = d.items.clone().unwrap_or_default();
+        if let Some(first) = row.iter().find(|i| i.kind == JfKind::Video && i.duration > 0.0).cloned() {
+            play(app, &d, &first, &row);
+        }
+        app.jf_browse = Some(d);
+        return;
+    }
+    if let Some(a) = picked.add_to.take() {
+        app.jf_browse = Some(d);
+        return add_to_list(app, a);
+    }
+    if let Some(items) = picked.remove_here.take() {
+        app.jf_browse = Some(d);
+        return remove_here(app, items);
+    }
     if let Some(it) = picked.toggle {
         d.anchor = Some(it.id.clone());
         if d.selected.remove(&it.id).is_none() {
@@ -1345,6 +1516,96 @@ pub fn apply(app: &mut UiApp, mut d: JfBrowse, out: Panel) {
     }
 }
 
+/// 重讀合集、播放清單的清單（「加進…」選單、最上層兩格的數字）；正在看這個合集、播放清單的話也重讀
+fn reload_lists(app: &mut UiApp, list: Option<String>) {
+    let Some(jf) = app.jellyfin() else { return };
+    let Some(user) = app.jf_browse.as_ref().and_then(|d| d.user.clone()) else { return };
+    app.spawn(
+        async move { tokio::task::spawn_blocking(move || (jf.lists(&user, JfList::Collection).unwrap_or_default(), jf.lists(&user, JfList::Playlist).unwrap_or_default())).await.unwrap_or_default() },
+        move |app, (cols, pls): (Vec<JfItem>, Vec<JfItem>)| {
+            let Some(d) = app.jf_browse.as_mut() else { return };
+            if let Some(items) = d.items.as_mut().filter(|_| d.path.is_empty() && d.searched.is_empty() && d.facet.is_empty()) {
+                for t in list_tiles(cols.len(), pls.len()) {
+                    if let Some(x) = items.iter_mut().find(|i| i.id == t.id) {
+                        x.children = t.children;
+                    }
+                }
+            }
+            d.collections = cols;
+            d.playlists = pls;
+            let here = d.path.last().map(|(id, _)| real_id(id).to_string());
+            if list.is_some() && here == list {
+                d.page = 0;
+                load(app);
+            }
+        },
+    );
+}
+
+/// 加進合集、播放清單（新建的先問名稱）
+fn add_to_list(app: &mut UiApp, a: AddTo) {
+    let ids: Vec<String> = a.items.iter().filter(|i| i.kind == JfKind::Video).map(|i| i.id.clone()).collect();
+    if ids.is_empty() {
+        return;
+    }
+    let what = if a.kind == JfList::Collection { tr!("合集", "collection") } else { tr!("播放清單", "playlist") };
+    let Some((list, name)) = a.to else {
+        let title = if a.kind == JfList::Collection { tr!("新合集", "New collection") } else { tr!("新播放清單", "New playlist") };
+        let kind = a.kind;
+        app.ask = Some(super::dialogs::Ask::input(
+            title,
+            trf!("{what}的名稱（{} 支影片放進去）", "Name of the {what} ({} videos go in)", ids.len()),
+            "",
+            tr!("建立", "Create"),
+            move |app, name| {
+                if name.trim().is_empty() {
+                    return;
+                }
+                let Some(jf) = app.jellyfin() else { return };
+                let Some(user) = app.jf_browse.as_ref().and_then(|d| d.user.clone()) else { return };
+                let n = ids.len();
+                app.spawn(async move { tokio::task::spawn_blocking(move || jf.create_list(&user, kind, &name, &ids).map(|_| name)).await.unwrap_or_else(|e| Err(e.to_string())) }, move |app, r| {
+                    match r {
+                        Ok(name) => app.toast(trf!("已建立{what}「{name}」，放進 {n} 支影片", "Created the {what} “{name}” with {n} videos"), false),
+                        Err(e) => app.toast(trf!("建立{what}失敗：{e}", "Couldn't create the {what}: {e}"), true),
+                    }
+                    reload_lists(app, None);
+                });
+            },
+        ));
+        return;
+    };
+    let Some(jf) = app.jellyfin() else { return };
+    let Some(user) = app.jf_browse.as_ref().and_then(|d| d.user.clone()) else { return };
+    let (kind, n, list2) = (a.kind, ids.len(), list.clone());
+    app.spawn(async move { tokio::task::spawn_blocking(move || jf.add_to_list(&user, kind, &list2, &ids)).await.unwrap_or_else(|e| Err(e.to_string())) }, move |app, r| {
+        match r {
+            Ok(()) => app.toast(trf!("已把 {n} 支影片加進{what}「{name}」", "Added {n} videos to the {what} “{name}”"), false),
+            Err(e) => app.toast(trf!("加進{what}「{name}」失敗：{e}", "Couldn't add to the {what} “{name}”: {e}"), true),
+        }
+        reload_lists(app, Some(list));
+    });
+}
+
+/// 從目前這個合集、播放清單拿掉（影片本身不刪）
+fn remove_here(app: &mut UiApp, items: Vec<JfItem>) {
+    let Some(jf) = app.jellyfin() else { return };
+    let Some(d) = app.jf_browse.as_mut() else { return };
+    let Some((kind, list)) = d.path.last().and_then(|(id, _)| list_at(id)).map(|(k, x)| (k, x.to_string())) else { return };
+    let ids: std::collections::HashSet<String> = items.iter().map(|i| i.id.clone()).collect();
+    d.selected.retain(|id, _| !ids.contains(id));
+    let n = items.len();
+    let list2 = list.clone();
+    app.spawn(async move { tokio::task::spawn_blocking(move || jf.remove_from_list(kind, &list2, &items)).await.unwrap_or_else(|e| Err(e.to_string())) }, move |app, r| {
+        let what = if kind == JfList::Collection { tr!("合集", "collection") } else { tr!("播放清單", "playlist") };
+        match r {
+            Ok(()) => app.toast(trf!("已從{what}拿掉 {n} 支影片（影片本身還在）", "Removed {n} videos from the {what} (the videos themselves are kept)"), false),
+            Err(e) => app.toast(trf!("從{what}拿掉失敗：{e}", "Couldn't remove from the {what}: {e}"), true),
+        }
+        reload_lists(app, Some(list));
+    });
+}
+
 /// 讀下一批接在後面（捲到快底時）；換了位置、搜尋的話丟掉
 fn load_more(app: &mut UiApp) {
     let Some(jf) = app.jellyfin() else { return };
@@ -1356,7 +1617,7 @@ fn load_more(app: &mut UiApp) {
     d.loading_more = true;
     let (seq, parent, search, sort, filter, facet) = (d.seq, d.path.last().map(|(id, _)| id.clone()), d.searched.clone(), d.sort, d.filter, d.facet.clone());
     app.spawn(
-        async move { tokio::task::spawn_blocking(move || jf.items(&user, parent.as_deref(), &search, start, PAGE, sort, filter, &facet)).await.unwrap_or_else(|e| Err(e.to_string())) },
+        async move { tokio::task::spawn_blocking(move || fetch(&jf, &user, parent.as_deref(), &search, start, sort, filter, &facet)).await.unwrap_or_else(|e| Err(e.to_string())) },
         move |app, r| {
             let Some(d) = app.jf_browse.as_mut().filter(|d| d.seq == seq) else { return };
             d.loading_more = false;
