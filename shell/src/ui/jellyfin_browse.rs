@@ -89,6 +89,8 @@ pub struct JfBrowse {
     more_failed: bool,
     sort: JfSort,
     filter: JfFilter,
+    /// 位置是從上次記住的還原的（那個資料夾讀不到時回到最上層）
+    restored: bool,
     error: Option<String>,
     seq: u64,
     posters: HashMap<String, Poster>,
@@ -153,7 +155,10 @@ pub fn open(app: &mut UiApp) {
     }
     let sort = JfSort::ALL.get(app.s.jf_sort as usize).copied().unwrap_or_default();
     let filter = JfFilter::ALL.get(app.s.jf_filter as usize).copied().unwrap_or_default();
-    app.jf_browse = Some(JfBrowse { grid: app.s.jf_grid_size, list_view: app.s.jf_list_view, sort, filter, cols: 1, ..Default::default() });
+    // 回到上次停的位置（媒體庫 › 資料夾…）
+    let path = app.s.jf_path.clone();
+    let restored = !path.is_empty();
+    app.jf_browse = Some(JfBrowse { grid: app.s.jf_grid_size, list_view: app.s.jf_list_view, sort, filter, path, restored, cols: 1, ..Default::default() });
     load(app);
 }
 
@@ -201,6 +206,17 @@ fn load(app: &mut UiApp) {
         },
         move |app, r| {
             let Some(d) = app.jf_browse.as_mut().filter(|d| d.seq == seq) else { return };
+            // 上次記住的資料夾讀不到或空了（被刪掉、搬走、改了權限）：回到最上層
+            let gone = match &r {
+                Err(_) => true,
+                Ok((_, items, ..)) => items.is_empty(),
+            };
+            if gone && std::mem::take(&mut d.restored) && !d.path.is_empty() {
+                d.path.clear();
+                d.page = 0;
+                return load(app);
+            }
+            d.restored = false;
             match r {
                 Ok((user, items, total, resume, latest, lists)) => {
                     d.user = Some(user);
@@ -1830,10 +1846,11 @@ pub fn panel(ui: &mut egui::Ui, d: &mut JfBrowse, busy: Option<(usize, usize)>, 
 
 /// 處理在分頁上按的（d 是從 app.jf_browse 拿出來畫的那一份，處理完放回去）
 pub fn apply(app: &mut UiApp, mut d: JfBrowse, mut out: Panel) {
-    // 縮圖大小、清單檢視、排序、篩選記到下次（有改才存）
+    // 縮圖大小、清單檢視、排序、篩選、停在哪裡記到下次（有改才存）
     let sort_at = JfSort::ALL.iter().position(|s| *s == d.sort).unwrap_or(0) as u8;
     let filter_at = JfFilter::ALL.iter().position(|f| *f == d.filter).unwrap_or(0) as u8;
-    if d.grid != app.s.jf_grid_size || d.list_view != app.s.jf_list_view || sort_at != app.s.jf_sort || filter_at != app.s.jf_filter {
+    if d.grid != app.s.jf_grid_size || d.list_view != app.s.jf_list_view || sort_at != app.s.jf_sort || filter_at != app.s.jf_filter || d.path != app.s.jf_path {
+        app.s.jf_path = d.path.clone();
         app.s.jf_grid_size = d.grid;
         app.s.jf_list_view = d.list_view;
         app.s.jf_sort = sort_at;
