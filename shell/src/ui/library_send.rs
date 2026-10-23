@@ -61,6 +61,8 @@ impl UiApp {
 
     /// 勾選多支一起傳：只選一次資料夾
     pub fn send_many_to_library(&mut self, paths: Vec<String>) {
+        // 已經改名的（清單還沒重讀）：傳現在的那個檔案
+        let paths: Vec<String> = paths.into_iter().map(|p| screenrecorder_core::actions::renamed_to(&p).unwrap_or(p)).collect();
         if paths.is_empty() {
             return;
         }

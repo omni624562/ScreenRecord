@@ -295,7 +295,37 @@ pub async fn rename(app: &App, path: &str, name: &str) -> Result<String> {
     app.pins.renamed(path, &new_path);
     app.shot_meta.renamed(path, &new_path);
     app.recorder.result_renamed(path, &new_path);
+    remember_rename(path, &new_path);
     Ok(new_path)
+}
+
+/// 改過名的檔案（舊路徑, 新路徑）：清單還沒重讀時按到舊名稱的那一支（例如錄完自動命名之後），照樣找得到
+static RENAMES: std::sync::Mutex<Vec<(String, String)>> = std::sync::Mutex::new(Vec::new());
+
+fn remember_rename(from: &str, to: &str) {
+    let mut list = RENAMES.lock().unwrap();
+    list.retain(|(f, _)| !f.eq_ignore_ascii_case(from));
+    list.push((from.to_string(), to.to_string()));
+    // 只留最近的
+    if list.len() > 200 {
+        list.remove(0);
+    }
+}
+
+/// 這個檔案已經不在、而且是改過名的：現在的路徑（改了好幾次時跟到最後一個）；不是時 None
+pub fn renamed_to(path: &str) -> Option<String> {
+    if Path::new(path).exists() {
+        return None;
+    }
+    let list = RENAMES.lock().unwrap();
+    let mut cur = path.to_string();
+    for _ in 0..10 {
+        match list.iter().rev().find(|(f, _)| f.eq_ignore_ascii_case(&cur)) {
+            Some((_, to)) => cur = to.clone(),
+            None => break,
+        }
+    }
+    (cur != path && Path::new(&cur).exists()).then_some(cur)
 }
 
 /// 移到資源回收筒（可還原）；只接受 .mp4 / .gif / .webp / .webm / .png / .m4a，且不能刪正在轉檔的檔案
@@ -1110,6 +1140,20 @@ pub async fn auto_rename(app: &App, path: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn renamed_files_are_found_by_their_old_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let (a, b, c) = (dir.path().join("Rec_1.mp4"), dir.path().join("切換來源.mp4"), dir.path().join("final.mp4"));
+        std::fs::write(&c, "x").unwrap();
+        let s = |p: &std::path::Path| p.display().to_string();
+        remember_rename(&s(&a), &s(&b));
+        remember_rename(&s(&b), &s(&c));
+        assert_eq!(renamed_to(&s(&a)), Some(s(&c)));
+        // 還在的檔案、沒改過名的不動
+        assert_eq!(renamed_to(&s(&c)), None);
+        assert_eq!(renamed_to(&s(&dir.path().join("other.mp4"))), None);
+    }
 
     #[test]
     fn urls_and_paths_are_checked() {
