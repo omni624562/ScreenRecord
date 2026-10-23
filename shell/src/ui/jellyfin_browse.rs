@@ -783,8 +783,12 @@ fn cells(ui: &mut egui::Ui, d: &JfBrowse, items: &[JfItem], rows: Option<usize>,
             let mut used = false;
             // 滑過預覽、停住就播放（在縮圖上、不在角落的按鈕上）
             let on_buttons = [check, trash, down, edit].iter().any(|r| ui.rect_contains_pointer(*r));
-            if video && ui.rect_contains_pointer(img) && !on_buttons && !resp.dragged() {
-                out.hover = Some((it.clone(), img));
+            if video && ui.rect_contains_pointer(img) && !resp.dragged() {
+                if on_buttons {
+                    super::hover_play::keep(ui.ctx(), &it.id);
+                } else {
+                    out.hover = Some((it.clone(), img));
+                }
             }
             let playing = video && super::hover_play::paint(ui.painter(), &it.id, img, 8);
             if video && (hovering || on || picking) {
