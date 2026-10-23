@@ -69,6 +69,10 @@ pub struct Viewer {
     video_size: Vec2,
     /// 拖曳進度列時暫停，放開後若原本在播放就繼續
     seeking: Option<bool>,
+    /// 按住後退 / 快轉（按鈕或 ←→）：方向、按下的時間、下一次跳的時間
+    skip_hold: Option<(f64, f64, f64)>,
+    /// 這一格 ←→ 有沒有按住（keyboard 記下，播放列一起處理）
+    skip_key: Option<f64>,
     volume: f32,
     muted: bool,
     loading: bool,
@@ -164,6 +168,7 @@ impl Viewer {
         self.zoom = None;
         self.pan = Vec2::ZERO;
         self.seeking = None;
+        self.skip_hold = None;
         self.error = None;
     }
 
@@ -273,6 +278,8 @@ fn open_with(app: &mut UiApp, entry: LibraryEntry, remote: Option<Remote>, start
         mpv_hint_closed: false,
         video_size: Vec2::ZERO,
         seeking: None,
+        skip_hold: None,
+        skip_key: None,
         volume: VOLUME.load(Ordering::Relaxed) as f32 / 100.0,
         muted: false,
         loading: true,
@@ -610,8 +617,6 @@ enum Act {
     JfFace,
     /// 串流的 Jellyfin 影片：加進或拿出我的最愛
     JfFav,
-    /// 後退或快轉幾秒
-    Skip(f64),
 }
 
 /// 標題列的一個按鈕；視窗窄時依序從後面的開始收進「⋯」
@@ -1256,10 +1261,6 @@ fn run_act(app: &mut UiApp, act: Act) {
             v.pause();
             super::jellyfin_browse::download_then(app, item, a);
         }
-        Act::Skip(d) => {
-            let Some(p) = app.viewer.as_ref().and_then(|v| v.player.as_ref()) else { return };
-            p.seek((p.time() + d).clamp(0.0, (p.duration() - 0.1).max(0.0)));
-        }
         Act::JfCover => {
             let Some(v) = app.viewer.as_ref() else { return };
             let (Some(r), Some(jf), Some(ff)) = (v.remote.as_ref(), app.jellyfin(), app.core.ffmpeg_path()) else { return };
@@ -1426,6 +1427,7 @@ pub fn renamed(app: &mut UiApp, old: &str, new: &str) {
 }
 
 fn keyboard(v: &mut Viewer, ctx: &egui::Context, act: &mut Act) {
+    v.skip_key = None;
     if ctx.egui_wants_keyboard_input() || egui::Popup::is_any_open(ctx) {
         return;
     }
@@ -1471,12 +1473,24 @@ fn keyboard(v: &mut Viewer, ctx: &egui::Context, act: &mut Act) {
         if i.key_pressed(Key::Space) {
             toggle_play(p);
         }
-        let step = if i.modifiers.shift { 1.0 } else { SKIP };
-        if i.key_pressed(Key::ArrowLeft) {
-            p.seek((p.time() - step).max(0.0));
-        }
-        if i.key_pressed(Key::ArrowRight) {
-            p.seek(p.time() + step);
+        // Shift+←→ 每次 1 秒；沒按 Shift 時和播放列的按鈕一樣（按住加速）
+        if i.modifiers.shift {
+            if i.key_pressed(Key::ArrowLeft) {
+                p.seek((p.time() - 1.0).max(0.0));
+            }
+            if i.key_pressed(Key::ArrowRight) {
+                p.seek(p.time() + 1.0);
+            }
+        } else if i.key_down(Key::ArrowLeft) != i.key_down(Key::ArrowRight) {
+            v.skip_key = Some(if i.key_down(Key::ArrowLeft) { -1.0 } else { 1.0 });
+        } else {
+            // 按下又放開在同一格裡：沒有「按住」，只跳一次
+            let tap = |k: Key| i.events.iter().any(|e| matches!(e, egui::Event::Key { key, pressed: true, repeat: false, .. } if *key == k));
+            if tap(Key::ArrowLeft) {
+                p.seek((p.time() - SKIP).max(0.0));
+            } else if tap(Key::ArrowRight) {
+                p.seek((p.time() + SKIP).min((p.duration() - 0.1).max(0.0)));
+            }
         }
         if i.key_pressed(Key::Home) {
             p.seek(0.0);
@@ -1636,7 +1650,47 @@ fn video_stage(v: &mut Viewer, painter: &egui::Painter, stage: Rect, resp: &egui
 }
 
 /// 後退 / 快轉一次跳幾秒（播放列的按鈕、←→ 鍵）
-const SKIP: f64 = 10.0;
+const SKIP: f64 = 5.0;
+/// 按住多久開始連續跳、之後每隔多久跳一次（秒）
+const HOLD_DELAY: f64 = 0.5;
+const HOLD_EVERY: f64 = 0.25;
+
+/// 按住時每次跳幾秒：越按越久跳越多（5 → 10 → 20 → 30）
+fn hold_step(held: f64) -> f64 {
+    match held {
+        h if h < 1.5 => SKIP,
+        h if h < 3.0 => 10.0,
+        h if h < 5.0 => 20.0,
+        _ => 30.0,
+    }
+}
+
+/// 後退 / 快轉：按下先跳 5 秒，按住半秒後連續跳、越來越快；dir = 這一格按住的方向
+fn hold_skip(v: &mut Viewer, ctx: &egui::Context, dir: Option<f64>) {
+    let Some(p) = &v.player else { return };
+    let Some(d) = dir else {
+        v.skip_hold = None;
+        return;
+    };
+    let now = ctx.input(|i| i.time);
+    let step = match v.skip_hold {
+        Some((hd, since, next)) if hd == d => {
+            if now < next {
+                ctx.request_repaint_after(std::time::Duration::from_secs_f64(next - now));
+                return;
+            }
+            v.skip_hold = Some((d, since, now + HOLD_EVERY));
+            hold_step(now - since)
+        }
+        _ => {
+            v.skip_hold = Some((d, now, now + HOLD_DELAY));
+            SKIP
+        }
+    };
+    p.seek((p.time() + d * step).clamp(0.0, (p.duration() - 0.1).max(0.0)));
+    let wait = v.skip_hold.map_or(HOLD_EVERY, |h| h.2 - now);
+    ctx.request_repaint_after(std::time::Duration::from_secs_f64(wait));
+}
 
 fn video_bar(v: &mut Viewer, ui: &mut egui::Ui, act: &mut Act) {
     let p = theme::pal(ui);
@@ -1650,16 +1704,21 @@ fn video_bar(v: &mut Viewer, ui: &mut egui::Ui, act: &mut Act) {
     let dur = player.duration().max(0.001);
     let t = player.time().min(dur);
     let tip = if playing { tr!("暫停（空白鍵）", "Pause (Space)") } else { tr!("播放（空白鍵）", "Play (Space)") };
-    // 後退 10 秒｜播放｜快轉 10 秒
-    if Btn::new("10").icon(Icon::Undo).ghost().small().tooltip(tr!("後退 10 秒（←）", "Back 10 seconds (←)")).show(ui).clicked() {
-        *act = Act::Skip(-SKIP);
-    }
+    // 播放｜後退、快轉（並排；按下就跳，按住加速）
     if Btn::icon_only(if playing { Icon::Pause } else { Icon::Play }).small().tooltip(tip).show(ui).clicked() {
         toggle_play(player);
     }
-    if Btn::new("10").icon(Icon::Redo).ghost().small().tooltip(tr!("快轉 10 秒（→）", "Forward 10 seconds (→)")).show(ui).clicked() {
-        *act = Act::Skip(SKIP);
-    }
+    let back = Btn::icon_only(Icon::SkipBack).ghost().small().tooltip(tr!("後退 5 秒（←），按住加速", "Back 5 s (←), hold to go faster")).show(ui);
+    let fwd = Btn::icon_only(Icon::SkipFwd).ghost().small().tooltip(tr!("快轉 5 秒（→），按住加速", "Forward 5 s (→), hold to go faster")).show(ui);
+    let dir = if back.is_pointer_button_down_on() {
+        Some(-1.0)
+    } else if fwd.is_pointer_button_down_on() {
+        Some(1.0)
+    } else {
+        v.skip_key
+    };
+    hold_skip(v, ui.ctx(), dir);
+    let Some(player) = &v.player else { return };
     ui.label(RichText::new(format!("{} / {}", short_clock(t), short_clock(dur))).font(theme::mono(12.5)));
     // 速度、全螢幕、音量（右邊），進度列填滿中間
     let vol_w = 140.0;
@@ -1686,7 +1745,7 @@ fn video_bar(v: &mut Viewer, ui: &mut egui::Ui, act: &mut Act) {
             Some(c) => format!("{}・{}", short_clock(at), c.title),
             None => short_clock(at),
         };
-        let keys = tr!("←/→ 後退/快轉 10 秒、空白鍵 播放/暫停", "←/→ back/forward 10 s, Space play/pause");
+        let keys = tr!("←/→ 後退/快轉 5 秒（按住加速）、空白鍵 播放/暫停", "←/→ back/forward 5 s (hold to go faster), Space play/pause");
         // Jellyfin 做好時間軸預覽縮圖的：滑鼠移到進度列上看得到那一秒的畫面
         let thumb = v.remote.as_ref().and_then(|r| r.trickplay.as_ref()).and_then(|tp| {
             let (index, uv) = tp.at(at);
@@ -1837,6 +1896,15 @@ pub(crate) fn is_export_name(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn holding_skip_goes_faster() {
+        // 按一下 5 秒；按越久跳越多，最多一次 30 秒
+        assert_eq!(hold_step(0.6), 5.0);
+        assert!(hold_step(2.0) > hold_step(1.0));
+        assert!(hold_step(4.0) > hold_step(2.0));
+        assert_eq!(hold_step(60.0), 30.0);
+    }
 
     #[test]
     fn exports_are_recognized() {
