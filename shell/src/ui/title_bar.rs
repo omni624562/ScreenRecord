@@ -199,7 +199,15 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                 }
             }
             rui.add_space(2.0);
-            let menu = Btn::icon_only(Icon::More).ghost().small().tooltip(tr!("選單：檔案庫、工具、設定、說明", "Menu: library, tools, settings, help")).show(rui);
+            let tip = match &app.env.update {
+                Some(u) => trf!("選單：有新版本 v{}", "Menu: v{} is available", u.version),
+                None => tr!("選單：檔案庫、工具、設定、說明", "Menu: library, tools, settings, help").to_string(),
+            };
+            let menu = Btn::icon_only(Icon::More).ghost().small().tooltip(tip).show(rui);
+            // 有新版本：選單按鈕右上角一個紅點
+            if app.env.update.is_some() {
+                rui.painter().circle(menu.rect.right_top() + vec2(-6.0, 6.0), 4.0, p.rec, Stroke::new(1.5, p.surface));
+            }
             super::tour::mark(rui, super::tour::Spot::Settings, menu.rect);
             egui::Popup::menu(&menu).align(egui::RectAlign::BOTTOM_END).show(|ui| main_menu(app, ui, covered));
             bar.max.x - rui.min_rect().min.x
@@ -281,8 +289,22 @@ fn main_menu(app: &mut UiApp, ui: &mut Ui, covered: bool) {
     if menu_item(ui, Icon::List, tr!("更新說明", "Release notes"), None, false, true).clicked() {
         app.changelog_open = true;
     }
-    if menu_item(ui, Icon::Refresh, tr!("檢查更新", "Check for updates"), None, false, true).clicked() {
-        settings_dialog::check_update_now(app);
+    // 有新版本時這一項換成「更新到 vX」（藍字、右邊一個紅點），更新中寫進度
+    match app.env.update.clone() {
+        Some(u) => {
+            let busy = super::main_view::update_progress(app);
+            let label =
+                busy.clone().unwrap_or_else(|| if super::main_view::can_self_update(&u) { trf!("更新到 v{}", "Update to v{}", u.version) } else { trf!("下載 v{}", "Download v{}", u.version) });
+            let r = if busy.is_none() { update_item(ui, &label) } else { menu_item(ui, Icon::Refresh, &label, None, false, false) };
+            if r.clicked() {
+                super::main_view::ask_update(app, &u);
+            }
+        }
+        None => {
+            if menu_item(ui, Icon::Refresh, tr!("檢查更新", "Check for updates"), None, false, true).clicked() {
+                settings_dialog::check_update_now(app);
+            }
+        }
     }
     if menu_item(ui, Icon::Eye, tr!("重新看教學", "Replay tutorial"), None, false, true).clicked() {
         super::tour::restart(app);
@@ -295,6 +317,18 @@ fn main_menu(app: &mut UiApp, ui: &mut Ui, covered: bool) {
     if quit.on_hover_text(tr!("完全結束螢幕錄影（關掉視窗只是收到系統匣）", "Quit Screen Recorder completely (closing the window only hides it in the tray)")).clicked() {
         app.request_quit();
     }
+}
+
+/// 總選單的「更新到 vX」：淡藍底、藍色粗字，右邊一個紅點（和選單按鈕上的紅點對應）
+fn update_item(ui: &mut Ui, label: &str) -> Response {
+    let p = theme::pal(ui);
+    let (rect, resp) = ui.allocate_exact_size(vec2(MENU_W, 38.0), Sense::click());
+    let bg = if resp.hovered() { p.accent.gamma_multiply(0.18) } else { p.accent.gamma_multiply(0.1) };
+    ui.painter().rect_filled(rect, egui::CornerRadius::same(6), bg);
+    theme::paint_icon(ui.painter(), Rect::from_center_size(egui::pos2(rect.min.x + 20.0, rect.center().y), vec2(17.0, 17.0)), Icon::Refresh, p.accent);
+    ui.painter().text(egui::pos2(rect.min.x + 44.0, rect.center().y), egui::Align2::LEFT_CENTER, label, theme::font_bold(14.0), p.accent);
+    ui.painter().circle_filled(egui::pos2(rect.max.x - 16.0, rect.center().y), 4.0, p.rec);
+    resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
 /// 總選單的一項：左邊圖示、文字，右邊框起來的快速鍵或子選單的箭頭；整列都可以點（有子選單的只要滑過去）
