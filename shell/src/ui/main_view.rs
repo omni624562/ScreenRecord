@@ -1808,14 +1808,21 @@ fn capsule_bg(ui: &Ui, paused: bool, hover: bool) -> Color32 {
     }
 }
 
-/// 待命時的錄影膠囊：和錄影中同一條（灰色的 00:00:00、右邊紅色圓鈕），按下去原地變成錄影中、紅鈕變停止鈕。
+/// 待命時的錄影膠囊：和錄影中同一條、一樣寬（灰色的 00:00:00、變淡的暫停 / 標記 / 麥克風、右邊紅色圓鈕），
+/// 按下去原地變成錄影中、紅鈕變停止鈕。
 /// 整條都可以按；不能錄時變淡、滑鼠提示寫原因
 fn idle_capsule(app: &mut UiApp, ui: &mut Ui, label: &str, tip: &str) -> egui::Response {
     let p = theme::pal(ui);
     let enabled = can_start(app);
     let timer = clock(0.0);
     let timer_w = ui.painter().layout_no_wrap(timer.clone(), theme::mono(20.0), Color32::WHITE).size().x;
-    let w = 16.0 + 14.0 + 8.0 + timer_w + 10.0 + 1.0 + 7.0 + 36.0 + 6.0;
+    // 錄影中才能按的暫停、標記、麥克風（有錄麥克風時）也先畫出來、變淡：膠囊和錄影中一樣寬，按下去不會變長
+    let mut icons = vec![Icon::Pause, Icon::Flag];
+    if app.s.audio_mic {
+        icons.push(Icon::Mic);
+    }
+    let icons_w = 7.0 + icons.len() as f32 * 38.0 + 6.0;
+    let w = 16.0 + 14.0 + 8.0 + timer_w + 10.0 + icons_w + 1.0 + 7.0 + 36.0 + 6.0;
     let (pill, resp) = ui.allocate_exact_size(vec2(w, 44.0), if enabled { Sense::click() } else { Sense::hover() });
     let hover = enabled && resp.hovered();
     let painter = ui.painter().clone();
@@ -1827,7 +1834,15 @@ fn idle_capsule(app: &mut UiApp, ui: &mut Ui, label: &str, tip: &str) -> egui::R
     x += 14.0 + 8.0;
     painter.text(pos2(x, cy), egui::Align2::LEFT_CENTER, timer, theme::mono(20.0), Color32::from_gray(if enabled { 150 } else { 120 }));
     x += timer_w + 10.0;
-    painter.vline(x, (cy - 11.0)..=(cy + 11.0), Stroke::new(1.0, Color32::from_white_alpha(60)));
+    let sep = |x: f32| painter.vline(x, (cy - 11.0)..=(cy + 11.0), Stroke::new(1.0, Color32::from_white_alpha(60)));
+    sep(x);
+    x += 7.0;
+    for icon in icons {
+        theme::paint_icon(&painter, Rect::from_center_size(pos2(x + 19.0, cy), vec2(16.0, 16.0)), icon, Color32::from_gray(if enabled { 95 } else { 80 }));
+        x += 38.0;
+    }
+    x += 6.0;
+    sep(x);
     x += 7.0;
     let c = pos2(x + 18.0, cy);
     painter.circle_filled(
