@@ -364,6 +364,27 @@ impl UiApp {
         self.lib_index.as_ref().filter(|i| i.root == root)
     }
 
+    /// Jellyfin 會掃描媒體庫資料夾底下的哪些子資料夾（「family」「porn/cut」）；沒設定 Jellyfin、看不出來時 None（不擋）。
+    /// 還沒讀過或超過 2 分鐘時在背景重讀，這次先回傳舊的
+    pub fn jf_scanned(&mut self) -> Option<Vec<String>> {
+        let jf = self.jellyfin()?;
+        let root = self.s.after_copy_to.trim().to_string();
+        if root.is_empty() {
+            return None;
+        }
+        let key = format!("{}|{root}", self.s.jellyfin_url.trim());
+        let cur = self.jf_scanned.as_ref().filter(|(k, _, _)| *k == key);
+        if !cur.is_some_and(|(_, at, _)| at.elapsed() < INDEX_TTL) && !self.jf_scanned_loading {
+            self.jf_scanned_loading = true;
+            let k = key.clone();
+            self.spawn(async move { tokio::task::spawn_blocking(move || jf.library_subs()).await.ok().flatten() }, move |app, subs| {
+                app.jf_scanned_loading = false;
+                app.jf_scanned = Some((k, Instant::now(), subs));
+            });
+        }
+        self.jf_scanned.as_ref().filter(|(k, _, _)| *k == key).and_then(|(_, _, s)| s.clone())
+    }
+
     /// 已經傳到媒體庫了嗎（只看已經讀好的索引，不會開始讀；還沒讀到時當作沒有）
     pub fn sent_already(&self, path: &str, size: u64) -> bool {
         let Some(root) = self.index_source() else { return false };
@@ -398,6 +419,10 @@ impl UiApp {
 
 pub fn show(app: &mut UiApp, ctx: &egui::Context) {
     let Some(mut d) = app.send_dlg.take() else { return };
+    // Jellyfin 會掃描的子資料夾：看不到的地方標出來、不能選（看不出來時都可以選）
+    let scanned = app.jf_scanned();
+    let seen = |sub: &str| scanned.as_deref().map_or(jellyfin::Seen::Yes, |l| jellyfin::seen_by_jellyfin(l, sub));
+    let join = |cwd: &str, s: &str| if cwd.is_empty() { s.to_string() } else { format!("{cwd}/{s}") };
     let mut close = false;
     let mut done = false;
     let mut go: Option<String> = None;
@@ -448,8 +473,17 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                     ui.horizontal_wrapped(|ui| {
                         ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
                         for s in subs {
-                            if Btn::new(s).icon(Icon::Folder).small().show(ui).clicked() {
-                                go = Some(if d.cwd.is_empty() { s.clone() } else { format!("{}/{s}", d.cwd) });
+                            let full = join(&d.cwd, s);
+                            let b = match seen(&full) {
+                                jellyfin::Seen::Yes if scanned.is_some() => Btn::new(s).icon(Icon::Check).tooltip(tr!("Jellyfin 會掃描這個資料夾", "Jellyfin scans this folder")),
+                                jellyfin::Seen::Yes | jellyfin::Seen::Below(_) => Btn::new(s).icon(Icon::Folder),
+                                jellyfin::Seen::No => Btn::new(s)
+                                    .icon(Icon::Folder)
+                                    .quiet(true)
+                                    .tooltip(tr!("不在 Jellyfin 的媒體庫裡：放在這裡 Jellyfin 看不到", "Not in a Jellyfin library: Jellyfin won't see files here")),
+                            };
+                            if b.small().show(ui).clicked() {
+                                go = Some(full);
                             }
                         }
                     });
@@ -493,6 +527,34 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                 ui.label(RichText::new(text).color(p.warn).font(theme::font(12.5)));
             }
         }
+        // 這一層 Jellyfin 看不到：說明、列出看得到的資料夾一按就過去
+        let here_seen = seen(&d.cwd);
+        if let (Some(all), false) = (&scanned, here_seen == jellyfin::Seen::Yes) {
+            ui.add_space(8.0);
+            let text = if all.is_empty() {
+                tr!(
+                    "Jellyfin 的媒體庫都不在這個資料夾裡，傳過去也看不到：請先到 Jellyfin 控制台把資料夾加進媒體庫",
+                    "None of Jellyfin's libraries are in this folder, so it won't see files sent here. Add the folder to a library in the Jellyfin Dashboard first"
+                )
+            } else if matches!(here_seen, jellyfin::Seen::Below(_)) {
+                tr!("Jellyfin 不會掃描這一層，放在這裡看不到：請點進有打勾的資料夾，或直接選", "Jellyfin doesn't scan this level, so files here won't show up. Open a ticked folder, or pick one")
+            } else {
+                tr!(
+                    "這個資料夾不在 Jellyfin 的媒體庫裡，放在這裡看不到：請選 Jellyfin 會掃描的資料夾",
+                    "This folder isn't in a Jellyfin library, so files here won't show up. Pick a folder Jellyfin scans"
+                )
+            };
+            ui.add(egui::Label::new(RichText::new(text).color(p.warn).font(theme::font(12.5))).wrap());
+            ui.add_space(4.0);
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
+                for sub in all.iter().filter(|s| !s.is_empty()) {
+                    if Btn::new(sub.replace('/', " › ")).icon(Icon::Check).small().show(ui).clicked() {
+                        go = Some(sub.clone());
+                    }
+                }
+            });
+        }
         ui.add_space(12.0);
         let here = parts.last().cloned().unwrap_or_else(|| app.library_folder().unwrap_or_default());
         ui.allocate_ui_with_layout(vec2(ui.available_width(), 34.0), Layout::right_to_left(Align::Center), |ui| {
@@ -500,7 +562,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                 Mode::Send(_) => trf!("傳到「{here}」", "Send to “{here}”"),
                 Mode::PickAuto => trf!("自動傳到「{here}」", "Auto-send to “{here}”"),
             };
-            if Btn::new(label).primary().enabled(d.subs.is_some() && d.new_name.is_none()).show(ui).clicked() {
+            if Btn::new(label).primary().enabled(d.subs.is_some() && d.new_name.is_none() && here_seen == jellyfin::Seen::Yes).show(ui).clicked() {
                 done = true;
             }
             if Btn::new(tr!("取消", "Cancel")).ghost().show(ui).clicked() {

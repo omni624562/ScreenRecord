@@ -1045,6 +1045,22 @@ fn auto_sub_row(app: &mut UiApp, ui: &mut Ui) {
             app.pick_auto_folder();
         }
     });
+    // 自動傳到的資料夾 Jellyfin 看不到：傳過去的影片不會出現
+    let sub = app.s.after_copy_sub.clone();
+    if app.jf_scanned().is_some_and(|l| screenrecorder_core::jellyfin::seen_by_jellyfin(&l, &sub) != screenrecorder_core::jellyfin::Seen::Yes) {
+        let p = theme::pal(ui);
+        ui.add(
+            egui::Label::new(
+                RichText::new(tr!(
+                    "Jellyfin 不會掃描這個資料夾，自動傳過去的影片在 Jellyfin 上看不到：請按「選資料夾…」改選有打勾的資料夾",
+                    "Jellyfin doesn't scan this folder, so automatically sent videos won't show up there. Click “Choose…” and pick a ticked folder"
+                ))
+                .color(p.warn)
+                .font(theme::font(12.0)),
+            )
+            .wrap(),
+        );
+    }
 }
 
 /// Jellyfin：網址（可以在區域網路上找）、API 金鑰、測試連線與媒體庫設定檢查、星號同步
