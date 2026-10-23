@@ -593,6 +593,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
     let mut jf = if d.jellyfin { app.jf_browse.take() } else { None };
     // 背景正在整理的（Jellyfin 分頁下面畫進度）：（改好幾支, 全部幾支）
     let jf_busy = app.jf_batch_run.as_ref().map(|r| *r.progress.lock().unwrap_or_else(|e| e.into_inner()));
+    let jf_subs = app.jf_subs.as_ref().map(|r| r.status());
     let mut jf_out = None;
     // 只看已選取，但全部取消了（或刪掉了）：回到全部
     if d.only_selected && d.selected.is_empty() {
@@ -718,7 +719,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         if d.jellyfin {
             ui.add_space(8.0);
             match jf.as_mut() {
-                Some(b) => jf_out = Some(super::jellyfin_browse::panel(ui, b, jf_busy)),
+                Some(b) => jf_out = Some(super::jellyfin_browse::panel(ui, b, jf_busy, jf_subs.clone())),
                 None => {
                     ui.horizontal(|ui| {
                         ui.spinner();

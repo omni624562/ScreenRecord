@@ -469,6 +469,29 @@ impl Jellyfin {
         format!("{}/Videos/{id}/stream?static=true&api_key={}", self.url, self.key)
     }
 
+    /// 幫一支影片放上字幕（語音辨識做好的 SRT）：先用 Jellyfin 的上傳字幕（POST /Videos/{id}/Subtitles）；
+    /// 伺服器不讓上傳（舊版、權限）而這台電腦有選媒體庫資料夾時，放到那一份影片旁邊（同名.語言.srt）再請 Jellyfin 重新讀取。
+    /// lang 是 Jellyfin 的語言（zh-TW、eng…）。回傳放在哪裡（給使用者看）
+    pub fn put_subtitle(&self, item: &JfItem, lang: &str, srt: &str) -> Result<String, String> {
+        let body = serde_json::json!({ "Language": lang, "Format": "srt", "IsForced": false, "IsHearingImpaired": false, "Data": crate::steps::base64(srt.as_bytes()) }).to_string();
+        let upload = self.call_body(agent().post(&format!("{}/Videos/{}/Subtitles", self.url, item.id)), &body);
+        let Err(e) = upload else { return Ok(tr!("傳到 Jellyfin", "uploaded to Jellyfin").into()) };
+        crate::info!("[Jellyfin] 上傳字幕失敗，改放到媒體庫資料夾：{e}");
+        let local = self.server_root().and_then(|r| local_path(&r, &self.root, &item.path)).filter(|p| p.exists());
+        let Some(video) = local else {
+            return Err(trf!(
+                "Jellyfin 不讓上傳字幕（{e}）。在「設定 → 存檔與分享 → Jellyfin」選好媒體庫資料夾的話，可以改放到影片旁邊",
+                "Jellyfin didn't accept the subtitles ({e}). If you choose the library folder in Settings → Saving & sharing → Jellyfin, they can be saved next to the video instead"
+            ));
+        };
+        let stem = video.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+        let out = video.with_file_name(format!("{stem}.{lang}.srt"));
+        std::fs::write(&out, srt).map_err(|e| trf!("字幕寫不進媒體庫資料夾：{e}", "Couldn't write the subtitles to the library folder: {e}"))?;
+        let url = format!("{}/Items/{}/Refresh?metadataRefreshMode=Default&imageRefreshMode=Default&replaceAllMetadata=false&replaceAllImages=false", self.url, item.id);
+        self.call(agent().post(&url))?;
+        Ok(trf!("放到媒體庫資料夾（{}）", "saved in the library folder ({})", out.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()))
+    }
+
     /// 清單上的縮圖（寬 400 以內的 JPEG）；沒有時 None
     pub fn poster(&self, id: &str) -> Option<Vec<u8>> {
         let r = self.call(agent().get(&format!("{}/Items/{id}/Images/Primary", self.url)).query("fillWidth", "400").query("quality", "80")).ok()?;
@@ -1195,6 +1218,33 @@ pub fn server_path(server_root: &str, local_root: &str, local_dir: &std::path::P
     Some(out)
 }
 
+/// 伺服器上的路徑在這台電腦的媒體庫資料夾裡是哪裡（server_path 的反方向）；不在媒體庫資料夾底下時 None
+pub fn local_path(server_root: &str, local_root: &str, server: &str) -> Option<std::path::PathBuf> {
+    let norm = |s: &str| s.replace('\\', "/").trim_end_matches('/').to_string();
+    let (root, path) = (norm(server_root.trim()), norm(server));
+    if root.is_empty() || local_root.trim().is_empty() || path.len() <= root.len() || !path.is_char_boundary(root.len()) || !path[..root.len()].eq_ignore_ascii_case(&root) {
+        return None;
+    }
+    let rest = &path[root.len()..];
+    if !rest.starts_with('/') {
+        return None;
+    }
+    let mut out = std::path::PathBuf::from(local_root.trim());
+    for part in rest.split('/').filter(|p| !p.is_empty()) {
+        out.push(part);
+    }
+    Some(out)
+}
+
+/// 語音辨識的語言（zh、en、auto）在 Jellyfin 字幕上的語言
+pub fn subtitle_lang(whisper: &str) -> &'static str {
+    match whisper {
+        "zh" => "zh-TW",
+        "en" => "eng",
+        _ => "und",
+    }
+}
+
 /// Jellyfin 上的一個東西：資料夾（媒體庫、資料夾、合集）或影片
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum JfKind {
@@ -1210,6 +1260,8 @@ pub struct JfItem {
     pub kind: JfKind,
     /// 影片的檔名（播放時判斷格式用）；資料夾是空的
     pub file_name: String,
+    /// 影片在伺服器上的完整路徑（字幕傳不上去時找媒體庫資料夾裡的那一份用）
+    pub path: String,
     /// 秒；資料夾 0
     pub duration: f64,
     pub width: u32,
@@ -1404,6 +1456,7 @@ pub fn parse_items(json: &str) -> (Vec<JfItem>, usize) {
                         name: i.get("Name").and_then(Value::as_str).unwrap_or("?").to_string(),
                         kind,
                         file_name: i.get("Path").and_then(Value::as_str).and_then(|p| p.rsplit(['/', '\\']).next()).unwrap_or("").to_string(),
+                        path: i.get("Path").and_then(Value::as_str).unwrap_or("").to_string(),
                         duration: i.get("RunTimeTicks").and_then(Value::as_f64).unwrap_or(0.0) / 1e7,
                         width: num(video, "Width") as u32,
                         height: num(video, "Height") as u32,
@@ -3356,6 +3409,16 @@ mod tests {
         let v: Value = serde_json::from_str(&with_batch(item, &BatchEdit { add_tags: vec!["旅行".into()], ..Default::default() }).unwrap()).unwrap();
         assert_eq!(v["ProductionYear"], 2023);
         assert!(BatchEdit::default().is_empty());
+    }
+
+    #[test]
+    fn local_path_maps_server_paths_back() {
+        assert_eq!(local_path("/volume1/video", "Y:\\", "/volume1/video/family/2024/a.mp4"), Some(std::path::PathBuf::from("Y:\\").join("family").join("2024").join("a.mp4")));
+        assert_eq!(local_path("/volume1/video/", "/mnt/v", "/Volume1/Video/a.mp4"), Some(std::path::PathBuf::from("/mnt/v/a.mp4")));
+        assert_eq!(local_path("/volume1/video", "/mnt/v", "/volume1/videos/a.mp4"), None);
+        assert_eq!(local_path("/volume1/video", "", "/volume1/video/a.mp4"), None);
+        assert_eq!(subtitle_lang("zh"), "zh-TW");
+        assert_eq!(subtitle_lang("auto"), "und");
     }
 
     #[test]

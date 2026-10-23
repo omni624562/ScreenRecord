@@ -13,6 +13,7 @@ pub mod jellyfin_batch;
 pub mod jellyfin_browse;
 pub mod jellyfin_dupes;
 pub mod jellyfin_edit;
+pub mod jellyfin_subs;
 pub mod library_dialog;
 pub mod library_send;
 pub mod main_view;
@@ -194,6 +195,8 @@ pub struct UiApp {
     /// Jellyfin 分頁勾選好幾支 →「整理人物、標籤…」的視窗、背景正在整理的
     pub jf_batch: Option<jellyfin_batch::JfBatch>,
     pub jf_batch_run: Option<jellyfin_batch::BatchRun>,
+    /// 背景正在幫 Jellyfin 影片產生字幕的
+    pub jf_subs: Option<jellyfin_subs::SubsRun>,
     /// 找 Jellyfin 上重複的影片
     pub jf_dupes: Option<jellyfin_dupes::JfDupes>,
     /// 上一格工作列有沒有顯示進度（做完時閃一下用）
@@ -367,6 +370,7 @@ impl UiApp {
             jf_rename: None,
             jf_batch: None,
             jf_batch_run: None,
+            jf_subs: None,
             jf_dupes: None,
             taskbar_busy: false,
             back_to: None,

@@ -619,6 +619,8 @@ struct Picked {
     add_to: Option<AddTo>,
     /// 右鍵或下面的按鈕：從目前這個合集、播放清單拿掉這些（影片本身不刪）
     remove_here: Option<Vec<JfItem>>,
+    /// 右鍵或下面的按鈕：幫這些影片產生字幕
+    subs: Option<Vec<JfItem>>,
 }
 
 /// 加進哪個合集、播放清單：to 是（編號, 名稱），None 是新建一個（先問名稱）
@@ -759,6 +761,13 @@ fn cells(ui: &mut egui::Ui, d: &JfBrowse, items: &[JfItem], rows: Option<usize>,
                 painter.rect_filled(r, 6.0, p.ok_soft);
                 painter.galley(r.min + vec2(4.0, 2.0), g, p.ok);
             }
+            // 已經有字幕的：右下角「CC」
+            if video && !it.subs.is_empty() {
+                let g = painter.layout_no_wrap("CC".to_string(), theme::font_bold(10.5), egui::Color32::WHITE);
+                let r = Rect::from_min_size(pos2(img.max.x - g.size().x - 12.0, img.max.y - g.size().y - 10.0), g.size() + vec2(6.0, 2.0));
+                painter.rect_filled(r, 3.0, egui::Color32::from_black_alpha(170));
+                painter.galley(r.min + vec2(3.0, 1.0), g, egui::Color32::WHITE);
+            }
             let name = painter.layout(it.name.clone(), theme::font_bold(12.5), p.text, cell_w);
             let name_rect = Rect::from_min_size(pos2(cell.min.x, img.max.y + 4.0), vec2(cell_w, 18.0));
             painter.with_clip_rect(name_rect).galley(name_rect.min, name, p.text);
@@ -792,6 +801,18 @@ fn cells(ui: &mut egui::Ui, d: &JfBrowse, items: &[JfItem], rows: Option<usize>,
                             out.remove_here = Some(targets.clone());
                             ui.close();
                         }
+                    }
+                    let subs = if n > 1 { trf!("幫 {n} 支產生字幕", "Make subtitles for {n}") } else { tr!("產生字幕", "Make subtitles").to_string() };
+                    if ui
+                        .button(subs)
+                        .on_hover_text(tr!(
+                            "用這台電腦的語音辨識做字幕，傳回 Jellyfin（電視、手機上看也有字幕）",
+                            "Recognize speech on this computer and add the subtitles to Jellyfin (shown on TVs and phones too)"
+                        ))
+                        .clicked()
+                    {
+                        out.subs = Some(targets.clone());
+                        ui.close();
                     }
                     if n == 1 {
                         ui.separator();
@@ -1061,6 +1082,8 @@ pub struct Panel {
     bulk_organize: bool,
     /// 在合集、播放清單裡按「全部播放」
     play_all: bool,
+    /// 按了產生字幕進度旁的「取消」
+    cancel_subs: bool,
     find_dupes: bool,
 }
 
@@ -1101,7 +1124,8 @@ fn grid_zoom(ui: &egui::Ui, d: &mut JfBrowse, area: Rect) {
 /// 檔案庫的「Jellyfin」分頁：上面搜尋、依人物 / 標籤 / 年份找、找重複；接著目前位置與排序；
 /// 中間縮圖格；最下面勾選的操作與換頁（和錄影、截圖分頁同一個排法）
 /// busy：背景正在整理好幾支影片時（改好幾支, 全部幾支），下面畫進度
-pub fn panel(ui: &mut egui::Ui, d: &mut JfBrowse, busy: Option<(usize, usize)>) -> Panel {
+/// subs：背景正在產生字幕時（第幾支, 全部幾支, 名稱, 百分比）
+pub fn panel(ui: &mut egui::Ui, d: &mut JfBrowse, busy: Option<(usize, usize)>, subs: Option<(usize, usize, String, u32)>) -> Panel {
     let mut out = Panel::default();
     let p = theme::pal(ui);
     // 搜尋整個伺服器（打字停一下就找，Enter 馬上找）、依人物 / 標籤 / 年份找、找重複的影片
@@ -1356,6 +1380,20 @@ pub fn panel(ui: &mut egui::Ui, d: &mut JfBrowse, busy: Option<(usize, usize)>) 
         fui.painter().rect_filled(Rect::from_min_size(bar.min, vec2(bar.width() * f, bar.height())), 2.5, p.accent);
         fui.add_space(10.0);
     }
+    if let Some((i, n, name, pct)) = &subs {
+        fui.spinner();
+        let short: String = if name.chars().count() > 18 { name.chars().take(17).chain(['…']).collect() } else { name.clone() };
+        let text = if *n > 1 {
+            trf!("正在產生字幕：{short}（{i}/{n}）{pct}%", "Making subtitles: {short} ({i}/{n}) {pct}%")
+        } else {
+            trf!("正在產生字幕：{short} {pct}%", "Making subtitles: {short} {pct}%")
+        };
+        fui.label(theme::muted(fui, text)).on_hover_text(name);
+        if Btn::new(tr!("取消", "Cancel")).small().ghost().show(fui).clicked() {
+            out.cancel_subs = true;
+        }
+        fui.add_space(10.0);
+    }
     if d.selected.is_empty() {
         fui.label(theme::muted(fui, tr!("多選小技巧", "Multi-select tips"))).on_hover_text(tr!(
             "滑鼠移到影片上按左上角的方塊，或按住 Ctrl 點影片，勾選好幾支一次下載或刪除；按住 Shift 點一下，從上次勾的那支到這一支全部勾起來",
@@ -1377,6 +1415,20 @@ pub fn panel(ui: &mut egui::Ui, d: &mut JfBrowse, busy: Option<(usize, usize)>) 
             .clicked()
         {
             out.bulk_organize = true;
+        }
+        if Btn::new(tr!("產生字幕", "Make subtitles"))
+            .icon(Icon::Captions)
+            .small()
+            .enabled(subs.is_none())
+            .tooltip(if subs.is_some() {
+                tr!("正在幫其他影片產生字幕", "Already making subtitles for other videos")
+            } else {
+                tr!("用這台電腦的語音辨識做字幕，傳回 Jellyfin（電視、手機上看也有字幕）", "Recognize speech on this computer and add the subtitles to Jellyfin (shown on TVs and phones too)")
+            })
+            .show(fui)
+            .clicked()
+        {
+            out.picked.subs = Some(d.selected.values().cloned().collect());
         }
         let add = Btn::new(tr!("加進…", "Add to…")).small().menu().tooltip(tr!("加進合集或播放清單", "Add to a collection or playlist")).show(fui);
         let chosen: Vec<JfItem> = d.selected.values().cloned().collect();
@@ -1406,7 +1458,16 @@ pub fn apply(app: &mut UiApp, mut d: JfBrowse, out: Panel) {
         app.s.jf_grid_size = d.grid;
         app.save_settings();
     }
-    let Panel { mut reload, more, mut picked, bulk_download, bulk_delete, bulk_organize, play_all, find_dupes } = out;
+    let Panel { mut reload, more, mut picked, bulk_download, bulk_delete, bulk_organize, play_all, cancel_subs, find_dupes } = out;
+    if cancel_subs {
+        if let Some(r) = &app.jf_subs {
+            r.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+    if let Some(items) = picked.subs.take() {
+        app.jf_browse = Some(d);
+        return super::jellyfin_subs::start(app, items);
+    }
     if play_all {
         let row: Vec<JfItem> = d.items.clone().unwrap_or_default();
         if let Some(first) = row.iter().find(|i| i.kind == JfKind::Video && i.duration > 0.0).cloned() {
@@ -1513,6 +1574,14 @@ pub fn apply(app: &mut UiApp, mut d: JfBrowse, out: Panel) {
     }
     if more {
         load_more(app);
+    }
+}
+
+/// 重讀目前這一層（例如做好字幕後，CC 標記跟著出現）
+pub fn reload(app: &mut UiApp) {
+    if let Some(d) = app.jf_browse.as_mut() {
+        d.page = 0;
+        load(app);
     }
 }
 
