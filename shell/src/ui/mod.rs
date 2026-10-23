@@ -32,6 +32,7 @@ pub mod steps_review;
 pub mod theme;
 pub mod thumbs;
 pub mod title_bar;
+mod toolbar;
 mod tour;
 pub mod video_tags;
 pub mod viewer;

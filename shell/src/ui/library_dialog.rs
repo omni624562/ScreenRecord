@@ -41,8 +41,6 @@ pub struct LibraryDialog {
     pub dirty: bool,
     /// 前後一頁的縮圖：這一頁的縮圖都排上去之後才開始產生（換頁時馬上看得到）
     prefetch: Vec<(String, f64)>,
-    /// 工具列搜尋框右邊所有東西的寬度（上一格量到的；[錄影, 截圖][完整, 只有圖示]）：視窗窄時搜尋框縮短、按鈕只顯示圖示
-    bar_w: [[f32; 2]; 2],
     kind: Kind,
     /// 切到「Jellyfin」分頁（整個檔案庫改成瀏覽 Jellyfin；kind 留著，切回來還是原本的錄影或截圖）
     jellyfin: bool,
@@ -187,7 +185,6 @@ impl LibraryDialog {
         Self {
             dirty: true,
             prefetch: vec![],
-            bar_w: [[440.0, 300.0], [560.0, 330.0]],
             kind,
             jellyfin: false,
             dir: None,
@@ -733,207 +730,174 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         }
         let shot = d.kind == Kind::Shot;
         ui.add_space(8.0);
-        // 搜尋、篩選、排序：放不下（視窗窄、介面放大）時搜尋框縮短，再放不下按鈕只顯示圖示（名稱在滑鼠提示）
-        ui.horizontal(|ui| {
-            const SEARCH_MIN: f32 = 180.0;
-            let row_w = ui.available_width();
-            let gap = ui.spacing().item_spacing.x;
-            let widths = d.bar_w[shot as usize];
-            let compact = row_w - widths[0] - gap < SEARCH_MIN;
-            let search_w = (row_w - widths[compact as usize] - gap).clamp(SEARCH_MIN, 340.0);
-            // 按鈕：放得下時圖示加文字，放不下時只有圖示
-            let btn = |text: &str, icon: Icon, tip: &str| {
-                if compact {
-                    Btn::icon_only(icon).tooltip(format!("{text}：{tip}"))
+        // 查詢列（三個分頁共用的樣式與順序）：搜尋 → 篩選 → 排序 → 縮圖 → 這個分頁才有的功能
+        super::toolbar::bar(ui, Id::new(("libbar", shot)), |ui, part| match part {
+            super::toolbar::Part::Search(w) => {
+                let hint = if shot {
+                    tr!("搜尋檔名、日期（例如 10/11）或圖裡的字", "Search names, dates (e.g. 10/11) or text in the image")
                 } else {
-                    Btn::new(text).icon(icon).tooltip(tip)
+                    tr!("搜尋檔名、日期（例如 10/11）或字幕裡說過的話", "Search names, dates (e.g. 10/11) or words spoken")
+                };
+                let r = ui.add(super::toolbar::search_box(&mut d.query, hint, w));
+                super::tour::mark(ui, super::tour::Spot::LbSearch, r.rect);
+                if d.focus_search {
+                    r.request_focus();
+                    d.focus_search = false;
                 }
-            };
-            let hint = if shot {
-                tr!("搜尋檔名、日期（例如 10/11）或圖裡的字", "Search names, dates (e.g. 10/11) or text in the image")
-            } else {
-                tr!("搜尋檔名、日期（例如 10/11）或字幕裡說過的話", "Search names, dates (e.g. 10/11) or words spoken")
-            };
-            // 右邊留位置給「✕」清除鈕
-            let r = ui.add(
-                egui::TextEdit::singleline(&mut d.query)
-                    .hint_text(hint)
-                    .desired_width(search_w)
-                    .min_size(vec2(0.0, 30.0))
-                    .margin(egui::Margin { left: 6, right: 28, top: 2, bottom: 2 })
-                    .vertical_align(Align::Center),
-            );
-            super::tour::mark(ui, super::tour::Spot::LbSearch, r.rect);
-            let search_right = r.rect.right();
-            if d.focus_search {
-                r.request_focus();
-                d.focus_search = false;
-            }
-            if r.changed() {
-                d.search_at = Some(Instant::now());
+                if r.changed() {
+                    d.search_at = Some(Instant::now());
+                    if shot {
+                        browse::query_changed(&mut d);
+                    }
+                }
                 if shot {
-                    browse::query_changed(&mut d);
+                    browse::popup(ui, &mut d, &r);
+                }
+                if !d.query.is_empty() {
+                    let x = Rect::from_center_size(pos2(r.rect.max.x - 15.0, r.rect.center().y), vec2(22.0, 22.0));
+                    let xr = ui.interact(x, Id::new("libSearchClear"), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(tr!("清除搜尋", "Clear search"));
+                    if xr.hovered() {
+                        ui.painter().circle_filled(x.center(), 10.0, p.surface2);
+                    }
+                    theme::paint_icon(ui.painter(), Rect::from_center_size(x.center(), vec2(12.0, 12.0)), Icon::Close, if xr.hovered() { p.text } else { p.muted });
+                    if xr.clicked() {
+                        d.query.clear();
+                        d.search_at = None;
+                        d.page = 1;
+                        d.dirty = true;
+                        d.focus_search = true;
+                    }
                 }
             }
-            if shot {
-                browse::popup(ui, &mut d, &r);
-            }
-            if !d.query.is_empty() {
-                let x = Rect::from_center_size(pos2(r.rect.max.x - 15.0, r.rect.center().y), vec2(22.0, 22.0));
-                let xr = ui.interact(x, Id::new("libSearchClear"), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(tr!("清除搜尋", "Clear search"));
-                if xr.hovered() {
-                    ui.painter().circle_filled(x.center(), 10.0, p.surface2);
+            super::toolbar::Part::Left => {
+                if !shot {
+                    let filters = [
+                        (LibraryFilter::All, tr!("全部", "All")),
+                        (LibraryFilter::Original, tr!("原始錄影", "Originals")),
+                        (LibraryFilter::Cut, tr!("剪輯版", "Edited")),
+                        (LibraryFilter::Speed, tr!("有加速版", "Has sped-up version")),
+                        (LibraryFilter::Audio, tr!("有聲音", "Has audio")),
+                    ];
+                    // 選了媒體庫才有「還沒傳到媒體庫」
+                    let filters: Vec<_> = filters
+                        .into_iter()
+                        .chain((app.library_folder().is_some() || app.jellyfin().is_some()).then(|| (LibraryFilter::NotInLibrary, tr!("還沒傳到 Jellyfin", "Not on Jellyfin yet"))))
+                        .collect();
+                    egui::ComboBox::from_id_salt("libFilter").width(120.0).selected_text(filters.iter().find(|f| f.0 == d.filter).map(|f| f.1).unwrap_or("")).show_ui(ui, |ui| {
+                        for (v, t) in filters {
+                            if ui.selectable_label(d.filter == v, t).clicked() {
+                                d.filter = v;
+                                d.page = 1;
+                                d.dirty = true;
+                            }
+                        }
+                    });
                 }
-                theme::paint_icon(ui.painter(), Rect::from_center_size(x.center(), vec2(12.0, 12.0)), Icon::Close, if xr.hovered() { p.text } else { p.muted });
-                if xr.clicked() {
-                    d.query.clear();
-                    d.search_at = None;
-                    d.page = 1;
-                    d.dirty = true;
-                    d.focus_search = true;
-                }
-            }
-            if !shot {
-                let filters = [
-                    (LibraryFilter::All, tr!("全部", "All")),
-                    (LibraryFilter::Original, tr!("原始錄影", "Originals")),
-                    (LibraryFilter::Cut, tr!("剪輯版", "Edited")),
-                    (LibraryFilter::Speed, tr!("有加速版", "Has sped-up version")),
-                    (LibraryFilter::Audio, tr!("有聲音", "Has audio")),
+                let sorts = [
+                    (LibrarySort::New, tr!("最新的在前", "Newest first")),
+                    (LibrarySort::Old, tr!("最舊的在前", "Oldest first")),
+                    (LibrarySort::Duration, tr!("長度（長到短）", "Longest first")),
+                    (LibrarySort::Size, tr!("檔案大小（大到小）", "Largest first")),
                 ];
-                // 選了媒體庫才有「還沒傳到媒體庫」
-                let filters: Vec<_> = filters
-                    .into_iter()
-                    .chain((app.library_folder().is_some() || app.jellyfin().is_some()).then(|| (LibraryFilter::NotInLibrary, tr!("還沒傳到 Jellyfin", "Not on Jellyfin yet"))))
-                    .collect();
-                egui::ComboBox::from_id_salt("libFilter").selected_text(filters.iter().find(|f| f.0 == d.filter).map(|f| f.1).unwrap_or("")).show_ui(ui, |ui| {
-                    for (v, t) in filters {
-                        if ui.selectable_label(d.filter == v, t).clicked() {
-                            d.filter = v;
+                let sorts: Vec<_> = sorts.into_iter().filter(|s| !(shot && s.0 == LibrarySort::Duration)).collect();
+                egui::ComboBox::from_id_salt("libSort").width(130.0).selected_text(sorts.iter().find(|s| s.0 == d.sort).map(|s| s.1).unwrap_or("")).show_ui(ui, |ui| {
+                    for (v, t) in sorts {
+                        if ui.selectable_label(d.sort == v, t).clicked() {
+                            d.sort = v;
                             d.page = 1;
                             d.dirty = true;
                         }
                     }
                 });
             }
-            let sorts = [
-                (LibrarySort::New, tr!("最新的在前", "Newest first")),
-                (LibrarySort::Old, tr!("最舊的在前", "Oldest first")),
-                (LibrarySort::Duration, tr!("長度（長到短）", "Longest first")),
-                (LibrarySort::Size, tr!("檔案大小（大到小）", "Largest first")),
-            ];
-            let sorts: Vec<_> = sorts.into_iter().filter(|s| !(shot && s.0 == LibrarySort::Duration)).collect();
-            egui::ComboBox::from_id_salt("libSort").selected_text(sorts.iter().find(|s| s.0 == d.sort).map(|s| s.1).unwrap_or("")).show_ui(ui, |ui| {
-                for (v, t) in sorts {
-                    if ui.selectable_label(d.sort == v, t).clicked() {
-                        d.sort = v;
-                        d.page = 1;
+            super::toolbar::Part::Right(compact) => {
+                let btn = |text: &str, icon: Icon, tip: &str| super::toolbar::button(text, icon, compact, tip);
+                if shot {
+                    // 縮圖大小（小的一頁放比較多張；也可以在縮圖上按住 Ctrl 轉滾輪）
+                    let mut size = grid_size;
+                    let tip = tr!(
+                        "縮圖大小：小的一次看得到比較多張。也可以在縮圖上按住 Ctrl 轉滾輪調整",
+                        "Thumbnail size: smaller shows more at once. You can also hold Ctrl and turn the mouse wheel over the thumbnails"
+                    );
+                    if super::toolbar::view_switch(ui, &mut size, &[(0u8, tr!("小", "S")), (1, tr!("中", "M")), (2, tr!("大", "L"))], compact, tip) {
+                        grid_size = size;
+                    }
+                    ui.add_space(10.0);
+                    // 用點的找（瀏覽欄）、月曆
+                    if btn(
+                        tr!("用點的找", "Browse"),
+                        Icon::List,
+                        tr!(
+                            "左邊列出程式、內容、常出現的詞、時間、顏色，點幾下就能縮小範圍，不用記得關鍵字（再按一次收起來）",
+                            "Lists apps, content types, common words, dates and colors on the left. Click a few to narrow down without remembering keywords (click again to hide)"
+                        ),
+                    )
+                    .selected(d.browse && d.calendar.is_none())
+                    .show(ui)
+                    .clicked()
+                    {
+                        if d.calendar.is_some() {
+                            d.calendar = None;
+                            d.browse = true;
+                        } else {
+                            d.browse = !d.browse;
+                        }
                         d.dirty = true;
                     }
-                }
-            });
-            // 截圖：縮圖大小（小的一頁放比較多張；也可以在縮圖上按住 Ctrl 轉滾輪）
-            if shot {
-                ui.add_space(4.0);
-                let mut size = grid_size;
-                let tip = tr!(
-                    "縮圖大小：小的一次看得到比較多張。也可以在縮圖上按住 Ctrl 轉滾輪調整",
-                    "Thumbnail size: smaller shows more at once. You can also hold Ctrl and turn the mouse wheel over the thumbnails"
-                );
-                // 標籤放在前面：「縮圖 小｜中｜大」
-                if !compact {
-                    ui.label(theme::muted(ui, tr!("縮圖", "Thumbnails"))).on_hover_text(tip);
-                }
-                if theme::segmented(ui, &mut size, &[(0u8, tr!("小", "S")), (1, tr!("中", "M")), (2, tr!("大", "L"))], true) {
-                    grid_size = size;
-                }
-            }
-            // 截圖：用點的找（瀏覽欄）、月曆
-            if shot {
-                ui.add_space(4.0);
-                if btn(
-                    tr!("用點的找", "Browse"),
-                    Icon::List,
-                    tr!(
-                        "左邊列出程式、內容、常出現的詞、時間、顏色，點幾下就能縮小範圍，不用記得關鍵字（再按一次收起來）",
-                        "Lists apps, content types, common words, dates and colors on the left. Click a few to narrow down without remembering keywords (click again to hide)"
-                    ),
-                )
-                .small()
-                .ghost()
-                .selected(d.browse && d.calendar.is_none())
-                .show(ui)
-                .clicked()
-                {
-                    if d.calendar.is_some() {
-                        d.calendar = None;
-                        d.browse = true;
-                    } else {
-                        d.browse = !d.browse;
+                    let cal = btn(
+                        tr!("月曆", "Calendar"),
+                        Icon::Clock,
+                        tr!(
+                            "一個月一頁，看每天截了幾張、那天圖裡常出現什麼字；點一天就列出那天的截圖",
+                            "One month per page: how many screenshots each day and what they were about. Click a day to list them"
+                        ),
+                    )
+                    .selected(d.calendar.is_some())
+                    .show(ui);
+                    super::tour::mark(ui, super::tour::Spot::LbCalendar, cal.rect);
+                    if cal.clicked() {
+                        d.calendar = if d.calendar.is_some() { None } else { Some(browse::CalView::this_month()) };
                     }
+                }
+                // 只看有星號的
+                if btn(tr!("有星號的", "Starred"), Icon::Star, tr!("只列出加了星號的檔案（再按一次顯示全部）", "Show only starred files (click again to show all)"))
+                    .selected(d.only_pinned)
+                    .show(ui)
+                    .clicked()
+                {
+                    d.only_pinned = !d.only_pinned;
+                    d.only_selected = false;
+                    d.page = 1;
                     d.dirty = true;
                 }
-                let cal = btn(
-                    tr!("月曆", "Calendar"),
-                    Icon::Clock,
-                    tr!(
-                        "一個月一頁，看每天截了幾張、那天圖裡常出現什麼字；點一天就列出那天的截圖",
-                        "One month per page: how many screenshots each day and what they were about. Click a day to list them"
-                    ),
-                )
-                .small()
-                .ghost()
-                .selected(d.calendar.is_some())
-                .show(ui);
-                super::tour::mark(ui, super::tour::Spot::LbCalendar, cal.rect);
-                if cal.clicked() {
-                    d.calendar = if d.calendar.is_some() { None } else { Some(browse::CalView::this_month()) };
+                // 匯入其他地方的影片（也可以直接把檔案拖進視窗）
+                if !shot
+                    && btn(
+                        tr!("匯入影片…", "Import videos…"),
+                        Icon::Folder,
+                        tr!(
+                            "把手機、其他軟體錄的影片放進儲存位置（MOV、MKV、AVI、WMV、WebM 等會轉成 MP4，原本的檔案不會動）。也可以直接把檔案拖進這個視窗",
+                            "Bring videos from your phone or other apps into your save folder (MOV, MKV, AVI, WMV, WebM and others are converted to MP4; the originals stay as they are). You can also drop files onto this window"
+                        ),
+                    )
+                    .show(ui)
+                    .clicked()
+                {
+                    req = Some(Req::Import);
+                }
+                if shot {
+                    let b = btn(tr!("整理", "Tidy up"), Icon::ChevD, tr!("清理舊截圖、找出相似的截圖", "Clean up old screenshots, find similar ones")).show(ui);
+                    egui::Popup::menu(&b).show(|ui| {
+                        ui.set_min_width(220.0);
+                        if ui.button(tr!("清理舊截圖…", "Clean up old screenshots…")).clicked() {
+                            d.cleanup = Some(CleanupDlg { days: 90, list: None, seq: 0, busy: false });
+                        }
+                        if ui.button(tr!("找出相似的截圖…", "Find similar screenshots…")).clicked() {
+                            d.similar = Some(SimilarDlg { level: 1, groups: None, remove: HashSet::new(), seq: 0, busy: false });
+                        }
+                    });
                 }
             }
-            // 只看有星號的
-            ui.add_space(4.0);
-            if btn(tr!("有星號的", "Starred"), Icon::Star, tr!("只列出加了星號的檔案（再按一次顯示全部）", "Show only starred files (click again to show all)"))
-                .small()
-                .ghost()
-                .selected(d.only_pinned)
-                .show(ui)
-                .clicked()
-            {
-                d.only_pinned = !d.only_pinned;
-                d.only_selected = false;
-                d.page = 1;
-                d.dirty = true;
-            }
-            // 匯入其他地方的影片（也可以直接把檔案拖進視窗）
-            if !shot
-                && btn(
-                    tr!("匯入影片…", "Import videos…"),
-                    Icon::Folder,
-                    tr!(
-                        "把手機、其他軟體錄的影片放進儲存位置（MOV、MKV、AVI、WMV、WebM 等會轉成 MP4，原本的檔案不會動）。也可以直接把檔案拖進這個視窗",
-                        "Bring videos from your phone or other apps into your save folder (MOV, MKV, AVI, WMV, WebM and others are converted to MP4; the originals stay as they are). You can also drop files onto this window"
-                    ),
-                )
-                .small()
-                .ghost()
-                .show(ui)
-                .clicked()
-            {
-                req = Some(Req::Import);
-            }
-            if shot {
-                let b = Btn::new(tr!("整理", "Tidy up")).icon(Icon::ChevD).small().ghost().tooltip(tr!("清理舊截圖、找出相似的截圖", "Clean up old screenshots, find similar ones")).show(ui);
-                egui::Popup::menu(&b).show(|ui| {
-                    ui.set_min_width(220.0);
-                    if ui.button(tr!("清理舊截圖…", "Clean up old screenshots…")).clicked() {
-                        d.cleanup = Some(CleanupDlg { days: 90, list: None, seq: 0, busy: false });
-                    }
-                    if ui.button(tr!("找出相似的截圖…", "Find similar screenshots…")).clicked() {
-                        d.similar = Some(SimilarDlg { level: 1, groups: None, remove: HashSet::new(), seq: 0, busy: false });
-                    }
-                });
-            }
-            d.bar_w[shot as usize][compact as usize] = ui.min_rect().right() - search_right;
         });
         if shot {
             browse::tick(app, &mut d);

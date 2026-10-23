@@ -863,16 +863,23 @@ impl Btn {
 
 /// 分段選擇（例如：單一螢幕｜所有螢幕｜自訂範圍）；回傳是否改變
 pub fn segmented<T: PartialEq + Copy>(ui: &mut Ui, value: &mut T, items: &[(T, &str)], enabled: bool) -> bool {
+    segmented_h(ui, value, items, enabled, 28.0)
+}
+
+/// 同 segmented，每一格的高度是 item_h（外框再多 8：查詢列用 24，整個 32 和旁邊的輸入框、按鈕一樣高）
+pub fn segmented_h<T: PartialEq + Copy>(ui: &mut Ui, value: &mut T, items: &[(T, &str)], enabled: bool, item_h: f32) -> bool {
     let p = pal(ui);
     let mut changed = false;
     let frame = egui::Frame::new().fill(p.surface2).stroke(Stroke::new(1.0, p.border)).corner_radius(CornerRadius::same(10)).inner_margin(3.0);
     frame.show(ui, |ui| {
         ui.spacing_mut().item_spacing.x = 2.0;
+        // 外面設了比較高的 interact_size（例如查詢列）也不要撐高：一格多高就多高
+        ui.spacing_mut().interact_size.y = item_h;
         ui.horizontal(|ui| {
             for (v, label) in items {
                 let on = *value == *v;
                 let g = ui.painter().layout_no_wrap(label.to_string(), font(13.5), p.text);
-                let size = vec2(g.size().x + 22.0, 28.0);
+                let size = vec2(g.size().x + 22.0, item_h);
                 let (rect, resp) = ui.allocate_exact_size(size, if enabled { Sense::click() } else { Sense::hover() });
                 let hover = enabled && resp.hovered();
                 if on {

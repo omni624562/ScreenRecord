@@ -115,8 +115,6 @@ pub struct JfBrowse {
     facet_search: [String; 3],
     /// 位置那一列右邊（符合幾支、排序、縮圖大小）上次量到的寬度：左邊的條件只用剩下的地方
     crumb_right_w: f32,
-    /// 查詢列搜尋框後面那些（篩選、排序、縮圖、依這些找、找重複的影片）不縮的時候多寬（上一次畫的），用來算搜尋框能多寬
-    tool_w: f32,
     facets_loaded: bool,
     /// 讀不到標籤、年份時的原因（選單變灰時滑鼠移上去看得到）
     facets_error: Option<String>,
@@ -1244,8 +1242,8 @@ fn facet_menu(
     let label = [tr!("人物", "People"), tr!("標籤", "Tags"), tr!("年份", "Year")][kind as usize];
     let n = chosen.iter().filter(|f| kind_of(f) == kind).count();
     // 寬度固定（先留好藍色數字的位置）：勾了只是數字出現，按鈕不變寬、整排不會移動
-    let w = Btn::new(label).menu().small().badge(9).width(ui);
-    let b = Btn::new(label).menu().small().selected(n > 0).badge(n).min_width(w).enabled(!rows.is_empty()).tooltip(if rows.is_empty() { empty } else { "" }).show(ui);
+    let w = Btn::new(label).menu().badge(9).height(super::toolbar::H).width(ui);
+    let b = Btn::new(label).menu().selected(n > 0).badge(n).min_width(w).height(super::toolbar::H).enabled(!rows.is_empty()).tooltip(if rows.is_empty() { empty } else { "" }).show(ui);
     egui::Popup::menu(&b).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
         // 寬度固定：清單在選單裡，靠右的東西不能讓它每一格越撐越寬
         const W: f32 = 300.0;
@@ -1487,119 +1485,105 @@ pub fn panel(ui: &mut egui::Ui, d: &mut JfBrowse, busy: Option<(usize, usize)>, 
     let lists_page = here == COLLECTIONS || here == PLAYLISTS;
     // 最上層、播放清單、「合集」「播放清單」那一層照固定的順序：不排序、不篩選
     let ordered = top || (d.searched.is_empty() && d.facet.is_empty() && (in_list == Some(JfList::Playlist) || lists_page));
-    ui.horizontal(|ui| {
-        ui.set_min_height(30.0);
-        ui.spacing_mut().item_spacing.x = 6.0;
-        // 放不下（視窗窄、介面放大）時：搜尋框先縮短，再放不下「縮圖」兩字拿掉、「找重複的影片」只留圖示
-        const SEARCH_MIN: f32 = 180.0;
-        let row_w = ui.available_width();
-        let gap = ui.spacing().item_spacing.x;
-        let compact = row_w - d.tool_w - gap < SEARCH_MIN;
-        let clear_w = if d.search.is_empty() { 0.0 } else { 30.0 };
-        let r = ui.add(
-            egui::TextEdit::singleline(&mut d.search)
-                .hint_text(tr!("搜尋 Jellyfin 上的影片", "Search videos on Jellyfin"))
-                .desired_width((row_w - d.tool_w - gap * 2.0 - clear_w).clamp(SEARCH_MIN, 340.0))
-                .min_size(vec2(0.0, 30.0))
-                .vertical_align(Align::Center),
-        );
-        if r.changed() {
-            d.search_at = Some(Instant::now());
-        }
-        if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-            d.search_at = Some(Instant::now() - SEARCH_WAIT);
-        }
-        if !d.search.is_empty() && Btn::icon_only(Icon::Close).small().ghost().tooltip(tr!("清除搜尋", "Clear search")).show(ui).clicked() {
-            d.search.clear();
-            d.search_at = Some(Instant::now() - SEARCH_WAIT);
-        }
-        let tools_from = ui.min_rect().right();
-        // 篩選、排序：資料夾裡篩選列出底下符合的影片；搜尋、依條件找時從結果裡再篩
-        theme::field_style(ui);
-        let (sort, filter) = (d.sort, d.filter);
-        if !ordered {
-            let tip = if !d.facet.is_empty() {
-                tr!("符合條件的影片裡，只列出這一種", "Only list this kind among the videos that match")
-            } else if !d.searched.is_empty() {
-                tr!("搜尋結果裡，只列出這一種", "Only list this kind among the search results")
-            } else {
-                tr!("不是「全部」時，列出這個資料夾底下（含子資料夾）符合的影片", "Anything but “All” lists matching videos in this folder and its subfolders")
-            };
-            egui::ComboBox::from_id_salt("jf-filter")
-                .selected_text(d.filter.label())
-                .width(120.0)
-                .show_ui(ui, |ui| {
-                    for f in JfFilter::ALL {
-                        ui.selectable_value(&mut d.filter, f, f.label());
-                    }
-                })
-                .response
-                .on_hover_text(tip);
-            egui::ComboBox::from_id_salt("jf-sort").selected_text(d.sort.label()).width(130.0).show_ui(ui, |ui| {
-                for s in JfSort::ALL {
-                    ui.selectable_value(&mut d.sort, s, s.label());
+    super::toolbar::bar(ui, egui::Id::new("jfbar"), |ui, part| match part {
+        super::toolbar::Part::Search(w) => {
+            let r = ui.add(super::toolbar::search_box(&mut d.search, tr!("搜尋 Jellyfin 上的影片", "Search videos on Jellyfin"), w));
+            if r.changed() {
+                d.search_at = Some(Instant::now());
+            }
+            if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                d.search_at = Some(Instant::now() - SEARCH_WAIT);
+            }
+            if !d.search.is_empty() {
+                let x = Rect::from_center_size(pos2(r.rect.max.x - 15.0, r.rect.center().y), vec2(22.0, 22.0));
+                let xr = ui.interact(x, egui::Id::new("jfSearchClear"), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(tr!("清除搜尋", "Clear search"));
+                if xr.hovered() {
+                    ui.painter().circle_filled(x.center(), 10.0, p.surface2);
                 }
-            });
-        }
-        if (sort, filter) != (d.sort, d.filter) {
-            d.page = 0;
-            out.reload = true;
-        }
-        // 縮圖大小或清單（最上層只有縮圖）；縮圖也可以按住 Ctrl 轉滾輪調整
-        ui.add_space(4.0);
-        let tip = tr!(
-            "縮圖大小，或改成一列一支的清單。也可以在縮圖上按住 Ctrl 轉滾輪調整大小",
-            "Thumbnail size, or a list with one video per row. You can also hold Ctrl and turn the mouse wheel over the thumbnails"
-        );
-        if !compact {
-            ui.label(theme::muted(ui, tr!("縮圖", "Thumbnails"))).on_hover_text(tip);
-        }
-        let mut view = if d.list_view && !top { None } else { Some(d.grid) };
-        let mut opts = vec![(Some(0u8), tr!("小", "S")), (Some(1), tr!("中", "M")), (Some(2), tr!("大", "L"))];
-        if !top {
-            opts.push((None, tr!("清單", "List")));
-        }
-        if theme::segmented(ui, &mut view, &opts, true) {
-            match view {
-                Some(g) => {
-                    d.grid = g;
-                    d.list_view = false;
+                theme::paint_icon(ui.painter(), Rect::from_center_size(x.center(), vec2(12.0, 12.0)), Icon::Close, if xr.hovered() { p.text } else { p.muted });
+                if xr.clicked() {
+                    d.search.clear();
+                    d.search_at = Some(Instant::now() - SEARCH_WAIT);
                 }
-                None => d.list_view = true,
             }
         }
-        // 依人物、標籤、年份找（各一個勾選清單，勾了馬上套用、清單不關；按鈕上的藍色數字是勾了幾個）
-        ui.add_space(10.0);
-        let mut change = FacetChange::None;
-        let why = |none: &str| match &d.facets_error {
-            Some(e) => trf!("讀不到 Jellyfin 的標籤、年份：{e}", "Couldn't read tags and years from Jellyfin: {e}"),
-            None => none.to_string(),
-        };
-        let years: Vec<_> = d.years.iter().map(|(y, c)| (y.to_string(), *c, JfFacet::Year(*y))).collect();
-        // 最上面一列是「（沒有標籤）」「（沒有人物）」：找還沒填的
-        let none_row = |n: usize, f: JfFacet| (trf!("（{}）", "({})", facet_name(&f)), n, f);
-        let tags: Vec<_> = std::iter::once(none_row(d.no_tags, JfFacet::NoTags)).chain(d.tags.iter().map(|(t, c)| (t.clone(), *c, JfFacet::Tag(t.clone())))).collect();
-        let people: Vec<_> = std::iter::once(none_row(d.no_people, JfFacet::NoPeople)).chain(d.persons.iter().map(|(id, n, c)| (n.clone(), *c, JfFacet::Person(id.clone(), n.clone())))).collect();
-        let [s0, s1, s2] = &mut d.facet_search;
-        facet_menu(ui, 0, tr!("影片還沒有設人物", "No videos have people yet"), people, &d.facet, s0, &mut change, &d.faces, &mut out.faces);
-        facet_menu(ui, 1, &why(tr!("Jellyfin 上的影片都還沒有標籤", "No videos on Jellyfin have tags yet")), tags, &d.facet, s1, &mut change, &d.faces, &mut out.faces);
-        facet_menu(ui, 2, &why(tr!("Jellyfin 上的影片都還沒有設年份", "No videos on Jellyfin have a year yet")), years, &d.facet, s2, &mut change, &d.faces, &mut out.faces);
-        apply_facet(d, change, &mut out);
-        ui.add_space(4.0);
-        let dupes_tip = tr!(
-            "找出 Jellyfin 上內容一樣的影片（同一支傳了兩次、重新壓縮過的），選要刪哪一份",
-            "Find videos on Jellyfin with the same content (uploaded twice, re-encoded) and choose which copy to delete"
-        );
-        let dupes = if compact {
-            Btn::icon_only(Icon::Copy).tooltip(format!("{}：{dupes_tip}", tr!("找重複的影片", "Find duplicates")))
-        } else {
-            Btn::new(tr!("找重複的影片", "Find duplicates")).icon(Icon::Copy).tooltip(dupes_tip)
-        };
-        if dupes.small().ghost().show(ui).clicked() {
-            out.find_dupes = true;
+        // 篩選、排序：資料夾裡篩選列出底下符合的影片；搜尋、依條件找時從結果裡再篩
+        super::toolbar::Part::Left => {
+            let (sort, filter) = (d.sort, d.filter);
+            if !ordered {
+                let tip = if !d.facet.is_empty() {
+                    tr!("符合條件的影片裡，只列出這一種", "Only list this kind among the videos that match")
+                } else if !d.searched.is_empty() {
+                    tr!("搜尋結果裡，只列出這一種", "Only list this kind among the search results")
+                } else {
+                    tr!("不是「全部」時，列出這個資料夾底下（含子資料夾）符合的影片", "Anything but “All” lists matching videos in this folder and its subfolders")
+                };
+                egui::ComboBox::from_id_salt("jf-filter")
+                    .selected_text(d.filter.label())
+                    .width(120.0)
+                    .show_ui(ui, |ui| {
+                        for f in JfFilter::ALL {
+                            ui.selectable_value(&mut d.filter, f, f.label());
+                        }
+                    })
+                    .response
+                    .on_hover_text(tip);
+                egui::ComboBox::from_id_salt("jf-sort").selected_text(d.sort.label()).width(130.0).show_ui(ui, |ui| {
+                    for s in JfSort::ALL {
+                        ui.selectable_value(&mut d.sort, s, s.label());
+                    }
+                });
+            }
+            if (sort, filter) != (d.sort, d.filter) {
+                d.page = 0;
+                out.reload = true;
+            }
         }
-        if !compact {
-            d.tool_w = ui.min_rect().right() - tools_from;
+        super::toolbar::Part::Right(compact) => {
+            // 縮圖大小或清單（最上層只有縮圖）；縮圖也可以按住 Ctrl 轉滾輪調整
+            let tip = tr!(
+                "縮圖大小，或改成一列一支的清單。也可以在縮圖上按住 Ctrl 轉滾輪調整大小",
+                "Thumbnail size, or a list with one video per row. You can also hold Ctrl and turn the mouse wheel over the thumbnails"
+            );
+            let mut view = if d.list_view && !top { None } else { Some(d.grid) };
+            let mut opts = vec![(Some(0u8), tr!("小", "S")), (Some(1), tr!("中", "M")), (Some(2), tr!("大", "L"))];
+            if !top {
+                opts.push((None, tr!("清單", "List")));
+            }
+            if super::toolbar::view_switch(ui, &mut view, &opts, compact, tip) {
+                match view {
+                    Some(g) => {
+                        d.grid = g;
+                        d.list_view = false;
+                    }
+                    None => d.list_view = true,
+                }
+            }
+            // 依人物、標籤、年份找（各一個勾選清單，勾了馬上套用、清單不關；按鈕上的藍色數字是勾了幾個）
+            ui.add_space(10.0);
+            let mut change = FacetChange::None;
+            let why = |none: &str| match &d.facets_error {
+                Some(e) => trf!("讀不到 Jellyfin 的標籤、年份：{e}", "Couldn't read tags and years from Jellyfin: {e}"),
+                None => none.to_string(),
+            };
+            let years: Vec<_> = d.years.iter().map(|(y, c)| (y.to_string(), *c, JfFacet::Year(*y))).collect();
+            // 最上面一列是「（沒有標籤）」「（沒有人物）」：找還沒填的
+            let none_row = |n: usize, f: JfFacet| (trf!("（{}）", "({})", facet_name(&f)), n, f);
+            let tags: Vec<_> = std::iter::once(none_row(d.no_tags, JfFacet::NoTags)).chain(d.tags.iter().map(|(t, c)| (t.clone(), *c, JfFacet::Tag(t.clone())))).collect();
+            let people: Vec<_> = std::iter::once(none_row(d.no_people, JfFacet::NoPeople)).chain(d.persons.iter().map(|(id, n, c)| (n.clone(), *c, JfFacet::Person(id.clone(), n.clone())))).collect();
+            let [s0, s1, s2] = &mut d.facet_search;
+            facet_menu(ui, 0, tr!("影片還沒有設人物", "No videos have people yet"), people, &d.facet, s0, &mut change, &d.faces, &mut out.faces);
+            facet_menu(ui, 1, &why(tr!("Jellyfin 上的影片都還沒有標籤", "No videos on Jellyfin have tags yet")), tags, &d.facet, s1, &mut change, &d.faces, &mut out.faces);
+            facet_menu(ui, 2, &why(tr!("Jellyfin 上的影片都還沒有設年份", "No videos on Jellyfin have a year yet")), years, &d.facet, s2, &mut change, &d.faces, &mut out.faces);
+            apply_facet(d, change, &mut out);
+            ui.add_space(10.0);
+            let tip = tr!(
+                "找出 Jellyfin 上內容一樣的影片（同一支傳了兩次、重新壓縮過的），選要刪哪一份",
+                "Find videos on Jellyfin with the same content (uploaded twice, re-encoded) and choose which copy to delete"
+            );
+            if super::toolbar::button(tr!("找重複的影片", "Find duplicates"), Icon::Copy, compact, tip).show(ui).clicked() {
+                out.find_dupes = true;
+            }
         }
     });
     if let Some(t) = d.search_at {
