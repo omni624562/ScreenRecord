@@ -377,7 +377,7 @@ pub fn compact_view(app: &mut UiApp, ui: &mut Ui) {
         match r.state {
             RecorderState::Idle => {
                 let can = main_view::can_start(app);
-                let label = if app.s.source_type == super::settings::SourceType::Audio { tr!("開始錄音", "Start audio recording") } else { tr!("開始錄影", "Start recording") };
+                let label = if app.s.source_type == super::settings::SourceType::Audio { tr!("錄音", "Record audio") } else { tr!("錄影", "Record") };
                 let w = (ui.available_width() * 0.56).floor();
                 if Btn::new(label).kind(theme::Kind::Record).enabled(can).min_width(w).show(ui).clicked() {
                     main_view::start_recording(app);

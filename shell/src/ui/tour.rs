@@ -441,8 +441,8 @@ fn content(app: &UiApp, t: &Tour) -> (Option<Spot>, String, String, Go) {
             Some(Spot::Settings),
             tr!("確認聲音", "Check the audio").into(),
             tr!(
-                "預設會錄電腦播放的聲音和麥克風。想確認麥克風收得到：右上角的「⋯」→「設定」→「聲音」，按「測試音量」講幾句話，麥克風的條有跳動就表示收得到；換麥克風或不錄聲音也在那裡。錄影前有問題（例如找不到麥克風）時，預覽下方「開始錄影」那一列的右邊會出現橘色的提醒。",
-                "By default the computer's sound and your microphone are recorded. To check the mic: “⋯” (top right) → Settings → Audio, click “Test levels” and say a few words; if the microphone bar moves, you're being heard. You can change microphones or turn audio off there too. If something's wrong before recording (for example no microphone), an orange note appears to the right of “Start recording” below the preview."
+                "預設會錄電腦播放的聲音和麥克風。想確認麥克風收得到：右上角的「⋯」→「設定」→「聲音」，按「測試音量」講幾句話，麥克風的條有跳動就表示收得到；換麥克風或不錄聲音也在那裡。錄影前有問題（例如找不到麥克風）時，預覽下方紅色「錄影」按鈕那一列的右邊會出現橘色的提醒。",
+                "By default the computer's sound and your microphone are recorded. To check the mic: “⋯” (top right) → Settings → Audio, click “Test levels” and say a few words; if the microphone bar moves, you're being heard. You can change microphones or turn audio off there too. If something's wrong before recording (for example no microphone), an orange note appears to the right of the red “Record” button below the preview."
             )
             .into(),
             next(),
@@ -464,7 +464,7 @@ fn content(app: &UiApp, t: &Tour) -> (Option<Spot>, String, String, Go) {
         Step::Recording => (
             Some(Spot::Record),
             tr!("錄影中", "Recording").into(),
-            tr!("錄幾秒後按「停止」（或螢幕上方控制列的停止）。停止後會出現在右邊「最近錄影」的第一張（藍框）；「開始錄影」那一列的右邊也會寫「錄影已儲存」，可以直接播放、開資料夾、複製檔案。", "After a few seconds, click “Stop” (or Stop on the bar at the top of the screen). It will then appear first in “Recent recordings” on the right (with a blue border), and “Recording saved” shows next to “Start recording” with play, folder and copy buttons.")
+            tr!("錄幾秒後按「停止」（或螢幕上方控制列的停止）。停止後會出現在右邊「最近錄影」的第一張（藍框）；紅色「錄影」按鈕那一列的右邊也會寫「錄影已儲存」，可以直接播放、開資料夾、複製檔案。", "After a few seconds, click “Stop” (or Stop on the bar at the top of the screen). It will then appear first in “Recent recordings” on the right (with a blue border), and “Recording saved” shows next to the red “Record” button with play, folder and copy buttons.")
                 .into(),
             Go::Wait,
         ),
