@@ -1794,34 +1794,19 @@ fn idle_controls(app: &mut UiApp, ui: &mut Ui) {
     notice_area(app, ui, false);
 }
 
-/// 錄影中：「● 00:00:12」與一行數據；中間是聲音的音量條和訊息；右邊暫停 / 繼續、標記、麥克風、停止
-/// （回溯錄影：存下最近 N、停止），有警告或錯誤時多一顆「⚠ N」（事件紀錄）
+/// 錄影中：左邊一條深色膠囊（紅點、計時、暫停 / 繼續、標記、麥克風、停止；回溯錄影只有停止，旁邊是「存下最近 N」），
+/// 膠囊右邊一行數據（大小、剩多久；聲音沒錄到時紅字），再右邊是訊息；有警告或錯誤時最右邊多一顆「⚠ N」（事件紀錄）
 fn recording_controls(app: &mut UiApp, ui: &mut Ui, r: &screenrecorder_core::types::RecorderStatus) {
     let p = theme::pal(ui);
     let replay = r.replay.clone();
     let ms = live_recorded_ms(app);
-    // 視窗窄的時候：麥克風按鈕只留圖示；音量條用按鈕以外剩下的寬度（太窄就不放）
-    let avail = ui.available_width();
-    let narrow = avail < 780.0;
-    let left_w = if narrow { 190.0 } else { 250.0 };
-    let has_log = r.log.iter().any(|l| l.level != LogLevel::Info);
-    let buttons_w = 300.0
-        + if r.mic_muted.is_some() {
-            if narrow {
-                40.0
-            } else {
-                105.0
-            }
-        } else {
-            0.0
-        }
-        + if has_log { 60.0 } else { 0.0 }
-        + if replay.is_some() { 60.0 } else { 0.0 };
-    let bar_w = (avail - left_w - buttons_w - 120.0).min(130.0);
-    // 計時下面一行：狀態（不是一般錄影中時）、處理中的說明或數據（大小、輸出）
+    let paused = r.state == RecorderState::Paused;
+    let stopping = r.state == RecorderState::Stopping;
+    let muted = r.mic_muted == Some(true);
+    // 膠囊右邊的一行：狀態（不是一般錄影中時）、處理中的說明或數據（大小、剩多久）；解析度放在滑鼠提示
     let mut line: Vec<String> = vec![];
     match r.state {
-        RecorderState::Countdown => line.push(tr!("倒數中", "Countdown").into()),
+        RecorderState::Countdown => line.push(trf!("{} 秒後開始", "Starts in {} s", countdown_left(app))),
         RecorderState::Paused if r.auto_paused => line.push(tr!("沒動靜，已自動暫停（動一下滑鼠或按鍵就繼續）", "Idle, paused (move the mouse or press a key to continue)").into()),
         RecorderState::Paused => line.push(tr!("已暫停", "Paused").into()),
         RecorderState::Stopping => line.push(tr!("處理中…", "Processing…").into()),
@@ -1833,152 +1818,198 @@ fn recording_controls(app: &mut UiApp, ui: &mut Ui, r: &screenrecorder_core::typ
         line.push(if rp.saving {
             tr!("正在存…", "Saving…").into()
         } else {
-            trf!("回溯錄影：保留最近 {}・暫存 {}", "Replay buffer: keeping the last {} · {} temp", screenrecorder_core::replay::length_label(rp.sec), format_bytes(rp.bytes))
+            trf!("保留最近 {}・暫存 {}", "Keeping the last {} · {} temp", screenrecorder_core::replay::length_label(rp.sec), format_bytes(rp.bytes))
         });
-    } else {
+    } else if r.state != RecorderState::Countdown {
         line.push(format_bytes(r.bytes));
-        if r.state != RecorderState::Paused {
-            line.push(trf!("{}×{}・每秒 {} 張", "{}×{} · {} fps", r.out_width, r.out_height, r.fps));
-        }
         if r.max_ms > 0 {
             line.push(trf!("剩 {}", "{} left", clock((r.max_ms as f64 - ms).max(0.0))));
         }
     }
-    // 聲音沒錄到：紅字寫出來（音量條也會是空的）
+    // 聲音沒錄到：紅字寫出來
     if r.silent_audio != 0 {
         line.push(silent_text(r.silent_audio).to_string());
     }
     let stats = line.join(tr!("・", " · "));
-    ui.vertical(|ui| {
-        ui.spacing_mut().item_spacing.y = 0.0;
-        ui.set_width(left_w);
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 8.0;
-            // 錄影中是會閃的紅點，暫停是兩條線
-            let (dot, _) = ui.allocate_exact_size(vec2(16.0, 30.0), Sense::hover());
-            if r.state == RecorderState::Paused {
-                theme::paint_icon(ui.painter(), Rect::from_center_size(dot.center(), vec2(16.0, 16.0)), Icon::Pause, p.text);
-            } else {
-                let t = ui.input(|i| i.time) as f32;
-                let a = if r.state == RecorderState::Recording { 0.55 + 0.45 * (t * std::f32::consts::TAU / 1.4).sin().abs() } else { 0.5 };
-                ui.painter().circle_filled(dot.center(), 6.5, p.rec.gamma_multiply(a));
-                ui.ctx().request_repaint_after(std::time::Duration::from_millis(60));
-            }
-            ui.label(RichText::new(clock(ms)).font(theme::mono(24.0)).color(if r.state == RecorderState::Recording { p.rec } else { p.text }));
-        });
-        let color = if r.silent_audio != 0 { p.rec } else { p.muted };
-        ui.add(egui::Label::new(RichText::new(&stats).font(theme::font(11.5)).color(color)).truncate()).on_hover_text(&stats);
-    });
-    // 聲音的音量條（有錄聲音時）
-    if let Some((sys, mic)) = r.levels.filter(|(s, m)| bar_w >= 50.0 && (s.is_some() || m.is_some())) {
-        let (sep, _) = ui.allocate_exact_size(vec2(1.0, 38.0), Sense::hover());
-        ui.painter().vline(sep.center().x, sep.y_range(), Stroke::new(1.0, p.border));
-        let muted = r.mic_muted == Some(true);
-        ui.vertical(|ui| {
-            ui.spacing_mut().item_spacing.y = 6.0;
-            for (name, icon, v, off) in [(tr!("麥克風", "Mic"), Icon::Mic, mic, muted), (tr!("電腦聲音", "System"), Icon::Speaker, sys, false)] {
-                let Some(v) = v else { continue };
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 5.0;
-                    let (ir, _) = ui.allocate_exact_size(vec2(13.0, 13.0), Sense::hover());
-                    theme::paint_icon(ui.painter(), ir, icon, p.muted);
-                    let (lr, _) = ui.allocate_exact_size(vec2(58.0, 13.0), Sense::hover());
-                    ui.painter().text(lr.left_center(), egui::Align2::LEFT_CENTER, if off { tr!("已靜音", "Muted") } else { name }, theme::font(11.5), if off { p.rec } else { p.muted });
-                    level_bar_w(ui, if off { 0.0 } else { v }, bar_w, !off);
-                });
-            }
-        })
-        .response
-        .on_hover_text(tr!("錄進去的聲音大小：講話時麥克風的條要會跳動", "Levels being recorded: the microphone bar should move when you talk"));
-    }
-    // 右邊的按鈕先放（由右往左），中間剩下的空間給訊息
-    let mut stop_clicked = false;
-    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-        ui.spacing_mut().item_spacing.x = 6.0;
-        event_log_button(app, ui, r);
-        if let Some(rp) = replay.as_ref() {
-            if Btn::new(tr!("停止", "Stop"))
-                .icon(Icon::Stop)
-                .kind(theme::Kind::Stop)
-                .enabled(r.state != RecorderState::Stopping && !rp.saving)
-                .tooltip(tr!("停止回溯錄影（沒存下的部分會刪掉）", "Stop the replay buffer (anything not saved is discarded)"))
-                .show(ui)
-                .clicked()
-            {
-                super::replay::ask_stop(app, rp, live_recorded_ms(app));
-            }
-            let key = app.keys.label(6);
-            let tip = if key.is_empty() { String::new() } else { trf!("快速鍵 {key}", "Shortcut {key}") };
-            let label = trf!("存下最近 {}", "Save the last {}", screenrecorder_core::replay::length_label(rp.sec));
-            if Btn::new(label).icon(Icon::Export).primary().enabled(!rp.saving && r.state == RecorderState::Recording && r.busy.is_none()).tooltip(tip).show(ui).clicked() {
-                super::replay::save(app);
-            }
-            ui.with_layout(Layout::left_to_right(Align::Center), |ui| notice_area(app, ui, true));
-            return;
-        }
-        let stop_label = if r.state == RecorderState::Countdown {
-            if r.countdown_covers_ui == Some(false) {
-                trf!("{} 秒後開始・取消", "Starts in {} s · Cancel", countdown_left(app))
-            } else {
-                tr!("取消倒數（Esc）", "Cancel countdown (Esc)").into()
-            }
+    let detail = trf!("{}×{}・每秒 {} 張", "{}×{} · {} fps", r.out_width, r.out_height, r.fps);
+    let shortcut = |app: &UiApp, i: usize| {
+        let key = app.keys.label(i);
+        if key.is_empty() {
+            String::new()
         } else {
-            tr!("停止", "Stop").into()
+            trf!("（{key}）", " ({key})")
+        }
+    };
+    // 膠囊裡的圖示按鈕：（圖示, 滑鼠提示, 動作, 能不能按, 紅色）
+    let mut icons: Vec<(Icon, String, RecAct, bool, bool)> = vec![];
+    if replay.is_none() && matches!(r.state, RecorderState::Recording | RecorderState::Paused) {
+        icons.push(if paused {
+            (Icon::Play, tr!("繼續", "Resume").into(), RecAct::Resume, r.busy.is_none(), false)
+        } else {
+            (Icon::Pause, tr!("暫停", "Pause").into(), RecAct::Pause, r.busy.is_none(), false)
+        });
+        let mk = shortcut(app, 4);
+        let tip = if r.markers > 0 {
+            trf!("標記（已標 {} 個）：記下現在的位置，剪輯時可以直接跳過去{mk}", "Mark ({} so far): note this position so you can jump straight to it when editing{mk}", r.markers)
+        } else {
+            trf!("標記：記下現在的位置，剪輯時可以直接跳過去{mk}", "Mark: note this position so you can jump straight to it when editing{mk}")
         };
-        let key = app.keys.label(1);
-        let tip = if key.is_empty() || r.state == RecorderState::Countdown { String::new() } else { trf!("快速鍵 {key}", "Shortcut {key}") };
-        let stop = Btn::new(stop_label).icon(Icon::Stop).kind(theme::Kind::Stop).enabled(r.state != RecorderState::Stopping).tooltip(tip).show(ui);
-        tour::mark(ui, Spot::Record, stop.rect);
-        stop_clicked = stop.clicked();
-        if let Some(muted) = r.mic_muted {
-            let key = app.keys.label(7);
-            let mk = if key.is_empty() { String::new() } else { trf!("（{key}）", " ({key})") };
-            let tip = if muted {
-                trf!("麥克風靜音中，點一下取消靜音{mk}", "The microphone is muted. Click to unmute{mk}")
+        icons.push((Icon::Flag, tip, RecAct::Mark, true, false));
+    }
+    if replay.is_none() && r.mic_muted.is_some() && !stopping {
+        let mk = shortcut(app, 7);
+        let tip = if muted {
+            trf!("麥克風靜音中，點一下取消靜音{mk}", "The microphone is muted. Click to unmute{mk}")
+        } else {
+            trf!("暫時把麥克風靜音（咳嗽、接電話時），剪輯時會在時間軸上標出來{mk}", "Mute the microphone for a moment (to cough or take a call). Muted parts are marked on the editing timeline{mk}")
+        };
+        icons.push((if muted { Icon::Muted } else { Icon::Mic }, tip, RecAct::Mute, true, muted));
+    }
+    let stop_tip = match (r.state, replay.as_ref()) {
+        (RecorderState::Countdown, _) => tr!("取消倒數（Esc）", "Cancel countdown (Esc)").to_string(),
+        (_, Some(_)) => tr!("停止回溯錄影（沒存下的部分會刪掉）", "Stop the replay buffer (anything not saved is discarded)").to_string(),
+        _ => trf!("停止{}", "Stop{}", shortcut(app, 1)),
+    };
+    let stop_enabled = !stopping && !replay.as_ref().is_some_and(|rp| rp.saving);
+    // 膠囊：深色（暫停時變灰），標記過的數字畫在旗子右上角
+    let mut act = RecAct::None;
+    let timer = clock(ms);
+    let timer_w = ui.painter().layout_no_wrap(timer.clone(), theme::mono(20.0), Color32::WHITE).size().x;
+    let icons_w = if icons.is_empty() { 0.0 } else { 7.0 + icons.len() as f32 * 38.0 + 6.0 };
+    let w = 16.0 + 14.0 + 8.0 + timer_w + 10.0 + icons_w + 1.0 + 7.0 + 36.0 + 6.0;
+    let (pill, _) = ui.allocate_exact_size(vec2(w, 44.0), Sense::hover());
+    let dark = ui.visuals().dark_mode;
+    let bg = match (paused, dark) {
+        (false, false) => Color32::from_rgb(0x1f, 0x23, 0x28),
+        (true, false) => Color32::from_rgb(0x55, 0x5a, 0x62),
+        (false, true) => Color32::from_rgb(0x34, 0x39, 0x40),
+        (true, true) => Color32::from_rgb(0x4c, 0x51, 0x59),
+    };
+    let painter = ui.painter().clone();
+    painter.rect_filled(pill, 22.0, bg);
+    let cy = pill.center().y;
+    let mut x = pill.min.x + 16.0;
+    // 錄影中是會閃的紅點，暫停是兩條線，倒數、處理中是不閃的紅點
+    if paused {
+        theme::paint_icon(&painter, Rect::from_center_size(pos2(x + 7.0, cy), vec2(14.0, 14.0)), Icon::Pause, Color32::WHITE);
+    } else {
+        let a = if r.state == RecorderState::Recording {
+            let t = ui.input(|i| i.time) as f32;
+            ui.ctx().request_repaint_after(std::time::Duration::from_millis(60));
+            0.55 + 0.45 * (t * std::f32::consts::TAU / 1.4).sin().abs()
+        } else {
+            0.5
+        };
+        painter.circle_filled(pos2(x + 7.0, cy), 6.0, p.rec.gamma_multiply(a));
+    }
+    x += 14.0 + 8.0;
+    let timer_rect = Rect::from_min_size(pos2(x, pill.min.y), vec2(timer_w, pill.height()));
+    painter.text(pos2(x, cy), egui::Align2::LEFT_CENTER, timer, theme::mono(20.0), Color32::WHITE);
+    if replay.is_none() {
+        ui.interact(timer_rect, ui.id().with("recbar-timer"), Sense::hover()).on_hover_text(&detail);
+    }
+    x += timer_w + 10.0;
+    let sep = |x: f32| painter.vline(x, (cy - 11.0)..=(cy + 11.0), Stroke::new(1.0, Color32::from_white_alpha(60)));
+    if !icons.is_empty() {
+        sep(x);
+        x += 7.0;
+        for (i, (icon, tip, a, enabled, warn)) in icons.into_iter().enumerate() {
+            let c = Rect::from_center_size(pos2(x + 19.0, cy), vec2(34.0, 34.0));
+            let resp = ui.interact(c, ui.id().with(("recbar", i)), if enabled { Sense::click() } else { Sense::hover() }).on_hover_text(tip);
+            if enabled && resp.hovered() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                painter.circle_filled(c.center(), 17.0, Color32::from_white_alpha(30));
+            }
+            let fg = if !enabled {
+                Color32::from_gray(120)
+            } else if warn {
+                Color32::from_rgb(0xff, 0x8a, 0x8a)
             } else {
-                trf!(
-                    "暫時把麥克風靜音（咳嗽、接電話時），剪輯時會在時間軸上標出來{mk}",
-                    "Mute the microphone for a moment (to cough or take a call). Muted parts are marked on the editing timeline{mk}"
-                )
+                Color32::from_gray(230)
             };
-            let btn = match (muted, narrow) {
-                (true, false) => Btn::new(tr!("已靜音", "Muted")).icon(Icon::Muted).danger(),
-                (true, true) => Btn::icon_only(Icon::Muted).danger(),
-                (false, false) => Btn::new(tr!("麥克風", "Mic")).icon(Icon::Mic),
-                (false, true) => Btn::icon_only(Icon::Mic),
-            };
-            if btn.tooltip(tip).show(ui).clicked() {
-                match app.core.recorder.toggle_mic_mute() {
-                    Ok(m) => app.core.mic_mute_changed(m),
-                    Err(e) => app.toast(e.message().to_string(), true),
-                }
+            theme::paint_icon(&painter, Rect::from_center_size(c.center(), vec2(16.0, 16.0)), icon, fg);
+            if matches!(a, RecAct::Mark) && r.markers > 0 {
+                painter.text(c.center() + vec2(9.0, -8.0), egui::Align2::CENTER_CENTER, r.markers.to_string(), theme::font_bold(10.0), Color32::WHITE);
             }
-        }
-        if matches!(r.state, RecorderState::Recording | RecorderState::Paused) {
-            let mk = if app.keys.label(4).is_empty() { String::new() } else { trf!("（{}）", " ({})", app.keys.label(4)) };
-            let label = if r.markers > 0 { trf!("標記 {}", "Mark ({})", r.markers) } else { tr!("標記", "Mark").into() };
-            if Btn::new(label).tooltip(trf!("記下現在的位置，剪輯時可以直接跳過去{mk}", "Mark the current position so you can jump straight to it when editing{mk}")).show(ui).clicked()
-            {
-                if let Err(e) = app.core.recorder.add_marker() {
-                    app.toast(e.message().to_string(), true);
-                }
+            if resp.clicked() {
+                act = a;
             }
+            x += 38.0;
         }
-        if r.state == RecorderState::Recording && Btn::new(tr!("暫停", "Pause")).icon(Icon::Pause).enabled(r.busy.is_none()).show(ui).clicked() {
-            let core = app.core.clone();
-            app.guarded(async move { core.recorder.pause().await }, |_, _| {});
+        x += 6.0;
+    }
+    sep(x);
+    x += 7.0;
+    let c = Rect::from_center_size(pos2(x + 18.0, cy), vec2(34.0, 34.0));
+    let stop = ui.interact(c, ui.id().with("recbar-stop"), if stop_enabled { Sense::click() } else { Sense::hover() }).on_hover_text(stop_tip);
+    if stop_enabled && stop.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    let fill = if !stop_enabled {
+        p.rec.gamma_multiply(0.45)
+    } else if stop.hovered() {
+        p.rec.gamma_multiply(0.85)
+    } else {
+        p.rec
+    };
+    painter.circle_filled(c.center(), 17.0, fill);
+    painter.rect_filled(Rect::from_center_size(c.center(), vec2(11.0, 11.0)), 2.0, Color32::WHITE);
+    tour::mark(ui, Spot::Record, stop.rect);
+    if stop.clicked() {
+        act = RecAct::Stop;
+    }
+    // 回溯錄影：膠囊旁邊「存下最近 N」
+    if let Some(rp) = replay.as_ref() {
+        ui.add_space(4.0);
+        let key = app.keys.label(6);
+        let tip = if key.is_empty() { String::new() } else { trf!("快速鍵 {key}", "Shortcut {key}") };
+        let label = trf!("存下最近 {}", "Save the last {}", screenrecorder_core::replay::length_label(rp.sec));
+        if Btn::new(label).icon(Icon::Export).primary().enabled(!rp.saving && r.state == RecorderState::Recording && r.busy.is_none()).tooltip(tip).show(ui).clicked() {
+            super::replay::save(app);
         }
-        if r.state == RecorderState::Paused && Btn::new(tr!("繼續", "Resume")).icon(Icon::Play).primary().enabled(r.busy.is_none()).show(ui).clicked() {
-            let core = app.core.clone();
-            app.guarded(async move { core.recorder.resume().await }, |_, _| {});
-        }
-        // 中間剩下的空間：訊息（跟不上、製作中…）
+    }
+    ui.add_space(6.0);
+    let color = if r.silent_audio != 0 { p.rec } else { p.muted };
+    let resp = ui.add(egui::Label::new(RichText::new(&stats).font(theme::font(12.5)).color(color)).truncate());
+    if replay.is_none() {
+        resp.on_hover_text(format!("{stats}\n{detail}"));
+    } else {
+        resp.on_hover_text(&stats);
+    }
+    // 最右邊：事件紀錄；中間剩下的空間：訊息（跟不上、製作中…）
+    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+        event_log_button(app, ui, r);
         ui.with_layout(Layout::left_to_right(Align::Center), |ui| notice_area(app, ui, true));
     });
-    if stop_clicked {
-        let core = app.core.clone();
-        app.guarded(async move { core.recorder.stop(None).await }, |_, _| {});
+    let core = app.core.clone();
+    match act {
+        RecAct::None => {}
+        RecAct::Pause => app.guarded(async move { core.recorder.pause().await }, |_, _| {}),
+        RecAct::Resume => app.guarded(async move { core.recorder.resume().await }, |_, _| {}),
+        RecAct::Stop => match replay.as_ref() {
+            Some(rp) => super::replay::ask_stop(app, rp, ms),
+            None => app.guarded(async move { core.recorder.stop(None).await }, |_, _| {}),
+        },
+        RecAct::Mark => {
+            if let Err(e) = app.core.recorder.add_marker() {
+                app.toast(e.message().to_string(), true);
+            }
+        }
+        RecAct::Mute => match app.core.recorder.toggle_mic_mute() {
+            Ok(m) => app.core.mic_mute_changed(m),
+            Err(e) => app.toast(e.message().to_string(), true),
+        },
     }
+}
+
+/// 錄影列的動作（按了膠囊裡的哪一顆）
+enum RecAct {
+    None,
+    Pause,
+    Resume,
+    Mark,
+    Mute,
+    Stop,
 }
 
 /// 事件紀錄：有警告或錯誤時才出現「⚠ N」（還沒看過的時候是橘色），按了在選單裡看最近 20 則
