@@ -182,6 +182,9 @@ pub struct UiApp {
     /// 媒體庫的檔名索引（清單上標「已在媒體庫」）；正在背景讀
     pub lib_index: Option<library_send::LibIndex>,
     pub lib_index_loading: bool,
+    /// Jellyfin 會掃描媒體庫資料夾底下的哪些子資料夾（網址|資料夾, 讀的時間, 結果；None = 看不出來）；正在背景讀
+    pub jf_scanned: Option<(String, Instant, Option<Vec<String>>)>,
+    pub jf_scanned_loading: bool,
     /// 待傳清單：上次看 NAS 連不連得到的時間、正在補傳
     pub pending_check: Instant,
     pub pending_busy: bool,
@@ -365,6 +368,8 @@ impl UiApp {
             send_dlg: None,
             lib_index: None,
             lib_index_loading: false,
+            jf_scanned: None,
+            jf_scanned_loading: false,
             pending_check: Instant::now(),
             pending_busy: false,
             jf_watch: None,

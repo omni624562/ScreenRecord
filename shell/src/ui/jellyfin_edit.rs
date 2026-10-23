@@ -813,7 +813,11 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                         label(ui, tr!("標題", "Title"));
                         ui.add(egui::TextEdit::singleline(&mut d.info.title).desired_width(ui.available_width()).min_size(vec2(0.0, 30.0)).vertical_align(Align::Center));
                         if d.info.title.trim().is_empty() {
-                            ui.label(RichText::new(tr!("Jellyfin 的標題不能空白：空白時保留原本的", "Jellyfin titles can't be empty; the current one is kept")).color(p.warn).font(theme::font(12.0)));
+                            let msg = match title_from_people(&d.info.people) {
+                                Some(t) => trf!("標題空白：儲存時用人物名稱「{t}」當標題", "Title is empty: saving uses the people's names “{t}”"),
+                                None => tr!("Jellyfin 的標題不能空白：空白時保留原本的", "Jellyfin titles can't be empty; the current one is kept").to_string(),
+                            };
+                            ui.label(RichText::new(msg).color(p.warn).font(theme::font(12.0)));
                         }
                         ui.add_space(8.0);
                         label(ui, tr!("年份", "Year"));
@@ -905,6 +909,12 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         // 輸入框裡還沒按 Enter 的人物、標籤也存
         commit(&mut d.info.people, &mut d.new_person);
         commit(&mut d.info.tags, &mut d.new_tag);
+        // 標題空白：用人物名稱當標題（沒有人物時照舊，保留 Jellyfin 上原本的）
+        if d.info.title.trim().is_empty() {
+            if let Some(t) = title_from_people(&d.info.people) {
+                d.info.title = t;
+            }
+        }
         // 這次新加的記成「最近用過」
         if let Some(o) = &d.orig {
             let new = |now: &[String], before: &[String]| -> Vec<String> { now.iter().filter(|n| !before.iter().any(|b| jellyfin::name_key(b) == jellyfin::name_key(n))).cloned().collect() };
@@ -1001,6 +1011,12 @@ fn choose_cover(app: &mut UiApp) {
     );
 }
 
+/// 標題空白時用的標題：人物名稱用「、」接起來（沒有人物時 None）
+fn title_from_people(people: &[String]) -> Option<String> {
+    let names: Vec<&str> = people.iter().map(|n| n.trim()).filter(|n| !n.is_empty()).collect();
+    (!names.is_empty()).then(|| names.join(tr!("、", ", ")))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1012,5 +1028,12 @@ mod tests {
         commit(&mut list, &mut input);
         assert_eq!(list, vec!["媽媽", "小明", "阿嬤"]);
         assert!(input.is_empty());
+    }
+
+    #[test]
+    fn empty_title_uses_people_names() {
+        let people = vec![" 小明 ".to_string(), String::new(), "阿嬤".to_string()];
+        assert_eq!(title_from_people(&people).as_deref(), Some("小明、阿嬤"));
+        assert_eq!(title_from_people(&[" ".to_string()]), None);
     }
 }

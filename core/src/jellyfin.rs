@@ -124,6 +124,14 @@ impl Jellyfin {
         outside_libraries(&libs, remote)
     }
 
+    /// 媒體庫資料夾（例如 \\HomeStorage\video）底下 Jellyfin 會掃描的子資料夾（「family」「porn/cut」；整個資料夾都掃時是 [""]），
+    /// 「傳到哪個資料夾」標出看得到的、擋下看不到的。看不出伺服器上的路徑、或讀不到媒體庫清單時 None（不擋）
+    pub fn library_subs(&self) -> Option<Vec<String>> {
+        let root = self.server_root()?;
+        let libs = self.call(agent().get(&format!("{}/Library/VirtualFolders", self.url))).ok()?.into_string().ok()?;
+        subs_in_libraries(&libs, &root)
+    }
+
     /// Jellyfin 上最接近伺服器路徑 remote 的資料夾或媒體庫（它本身或最近的上層）：（編號, 伺服器上的路徑）
     fn folder_for(&self, remote: &str) -> Option<(String, String)> {
         let get = |url: String| self.call(agent().get(&url)).ok().and_then(|r| r.into_string().ok()).unwrap_or_default();
@@ -2119,6 +2127,57 @@ fn outside_libraries(libs: &str, remote: &str) -> Option<Vec<String>> {
     (!locs.is_empty() && !locs.iter().any(|l| path_under(remote, l))).then_some(locs)
 }
 
+/// 媒體庫清單裡在伺服器路徑 root 底下的資料夾，換成相對 root 的子資料夾（「family」「porn/cut」；就是 root 本身時 ""）。
+/// 讀不懂清單時 None；都不在 root 底下時是空的（傳到哪裡 Jellyfin 都看不到）
+fn subs_in_libraries(libs: &str, root: &str) -> Option<Vec<String>> {
+    let Ok(Value::Array(libs)) = serde_json::from_str::<Value>(libs) else { return None };
+    let norm = |p: &str| p.replace('\\', "/").trim_end_matches('/').to_string();
+    let root = norm(root);
+    let mut out: Vec<String> = vec![];
+    for loc in libs.iter().filter_map(|l| l.get("Locations").and_then(Value::as_array)).flatten().filter_map(Value::as_str) {
+        let loc = norm(loc);
+        if loc.len() < root.len() || !loc.is_char_boundary(root.len()) || !loc[..root.len()].eq_ignore_ascii_case(&root) {
+            continue;
+        }
+        let rest = &loc[root.len()..];
+        if rest.is_empty() || rest.starts_with('/') {
+            let sub = normalize_subfolder(rest);
+            if !out.iter().any(|o| o.eq_ignore_ascii_case(&sub)) {
+                out.push(sub);
+            }
+        }
+    }
+    out.sort_by_key(|s| s.to_lowercase());
+    Some(out)
+}
+
+/// 子資料夾 sub 在 Jellyfin 看不看得到（scanned：library_subs 的結果）
+#[derive(Debug, PartialEq)]
+pub enum Seen {
+    /// 在某個媒體庫裡
+    Yes,
+    /// 它本身不在，但底下有媒體庫的資料夾（相對 sub 的路徑，「cut」「uncensored」）
+    Below(Vec<String>),
+    /// 不在任何媒體庫裡、底下也沒有
+    No,
+}
+
+/// 子資料夾 sub（「family/2024」；空的 = 最上層）是不是在 scanned 其中一個裡面（或就是它），不分大小寫
+pub fn seen_by_jellyfin(scanned: &[String], sub: &str) -> Seen {
+    let sub = normalize_subfolder(sub).to_lowercase();
+    let under = |a: &str, b: &str| b.is_empty() || a == b || a.strip_prefix(b).is_some_and(|r| r.starts_with('/'));
+    if scanned.iter().any(|s| under(&sub, &s.to_lowercase())) {
+        return Seen::Yes;
+    }
+    let depth = sub_parts(&sub).count();
+    let below: Vec<String> = scanned.iter().filter(|s| under(&s.to_lowercase(), &sub)).map(|s| s.split('/').skip(depth).collect::<Vec<_>>().join("/")).collect();
+    if below.is_empty() {
+        Seen::No
+    } else {
+        Seen::Below(below)
+    }
+}
+
 /// 媒體庫（/Library/VirtualFolders）與資料夾（/Items 的 Folder）裡，伺服器路徑是 remote 本身或最近上層的那一個：（編號, 路徑）
 fn closest_folder(libs: &str, folders: &str, remote: &str) -> Option<(String, String)> {
     let norm = |p: &str| p.replace('\\', "/").trim_end_matches('/').to_lowercase();
@@ -3192,6 +3251,24 @@ mod tests {
         // 讀不懂或沒有媒體庫：不下結論
         assert_eq!(outside_libraries("", "/video"), None);
         assert_eq!(outside_libraries("[]", "/video"), None);
+    }
+
+    #[test]
+    fn library_folders_become_subfolders_jellyfin_can_see() {
+        let libs = r#"[{"Locations":["/video/porn/uncensored","/video/piano"]},{"Locations":["/config/data/collections","/video/Family/"]},{"Locations":["/videos2"]}]"#;
+        let subs = subs_in_libraries(libs, "/video").unwrap();
+        assert_eq!(subs, vec!["Family", "piano", "porn/uncensored"]);
+        assert_eq!(subs_in_libraries(r#"[{"Locations":["/video"]}]"#, "/video/").unwrap(), vec![""]);
+        assert_eq!(subs_in_libraries("oops", "/video"), None);
+
+        assert_eq!(seen_by_jellyfin(&subs, "family/2024"), Seen::Yes);
+        assert_eq!(seen_by_jellyfin(&subs, "Piano"), Seen::Yes);
+        assert_eq!(seen_by_jellyfin(&subs, ""), Seen::Below(vec!["Family".into(), "piano".into(), "porn/uncensored".into()]));
+        assert_eq!(seen_by_jellyfin(&subs, "porn"), Seen::Below(vec!["uncensored".into()]));
+        assert_eq!(seen_by_jellyfin(&subs, "pianos"), Seen::No);
+        assert_eq!(seen_by_jellyfin(&subs, "other"), Seen::No);
+        // 整個資料夾都掃
+        assert_eq!(seen_by_jellyfin(&[String::new()], "other"), Seen::Yes);
     }
 
     #[test]
