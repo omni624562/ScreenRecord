@@ -367,7 +367,7 @@ impl App {
     }
 
     /// 處理一支錄影。batch = 一次處理多支的第幾支：結果不留給介面、不另外通知（全部做完再一起說）
-    async fn after_process(self: &Arc<Self>, video: String, after: &AfterRecord, batch: Option<(usize, usize)>) -> Processed {
+    async fn after_process(self: &Arc<Self>, mut video: String, after: &AfterRecord, batch: Option<(usize, usize)>) -> Processed {
         // 前一支還在處理：等它做完（一次一支）。一次處理多支時，上一支的狀態會留到全部做完（新的錄影等全部做完再處理）
         while self.after_status().is_some_and(|s| batch.is_none() || s.batch.is_none()) {
             tokio::time::sleep(Duration::from_millis(500)).await;
@@ -423,7 +423,10 @@ impl App {
                 Some(d)
             }
             (true, None) => {
-                self.after_auto_name(&video, None).await;
+                // 只有自動命名時也要換成新的名稱（後面複製到資料夾用；不換會找不到檔案，什麼都沒複製）
+                if let Some((v, _)) = self.after_auto_name(&video, None).await {
+                    video = v;
+                }
                 None
             }
             (false, d) => d,
@@ -442,6 +445,11 @@ impl App {
             let extras = crate::jellyfin::Extras::read(self.ffmpeg_path().as_deref(), Path::new(&src)).await;
             let r = tokio::task::spawn_blocking(move || copy_results(&src, out.as_deref(), Path::new(&dest))).await.unwrap_or_else(|e| Err(e.to_string()));
             let (ok, note) = match r {
+                // 一個檔案都沒有（例如錄影被移走、改名）：當成失敗，不請 Jellyfin 等一支不存在的影片
+                Ok(copied) if copied.is_empty() => {
+                    warn!("[錄完自動處理] 沒有可以複製的檔案：{}", waiting.join("、"));
+                    (false, trf!("沒有複製到「{}」：找不到錄影檔", "couldn't copy to “{}”: the recording wasn't found", folder_name(&after.copy_to)))
+                }
                 Ok(copied) => {
                     let n = copied.len();
                     let first = copied.first().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();

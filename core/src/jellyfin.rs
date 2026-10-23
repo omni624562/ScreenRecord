@@ -920,6 +920,10 @@ impl Jellyfin {
     /// 傳好之後：等 Jellyfin 掃到這支（新檔案），設好標籤、請它做章節縮圖；回傳接在結果後面的說明
     /// local：媒體庫裡那一份（依它在哪個資料夾放進合集）
     pub fn after_upload(&self, file_name: &str, extras: &Extras, ids: Vec<String>, wait: Duration, local: Option<&std::path::Path>) -> String {
+        // 沒有檔名（不應該發生）：不等一支找不到的影片
+        if file_name.trim().is_empty() && ids.is_empty() {
+            return String::new();
+        }
         let stage = |what: &str| crate::transfer::set_stage(file_name, Some(what.to_string()));
         let ids = if ids.is_empty() {
             stage(tr!("等 Jellyfin 掃描到這支", "Waiting for Jellyfin to find it"));
