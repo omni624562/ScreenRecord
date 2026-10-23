@@ -280,6 +280,17 @@ impl Jellyfin {
         let mut req = self.items_req(&format!("{}/Users/{user}/Items", self.url)).query("startIndex", &start.to_string()).query("limit", &limit.to_string()).query("enableTotalRecordCount", "true");
         let (by, order) = sort.query();
         let search = search.trim();
+        let lacking: Vec<NameKind> = facets
+            .iter()
+            .filter_map(|f| match f {
+                JfFacet::NoPeople => Some(NameKind::Person),
+                JfFacet::NoTags => Some(NameKind::Tag),
+                _ => None,
+            })
+            .collect();
+        if !lacking.is_empty() {
+            return self.items_lacking(user, start, limit, sort, facets, &lacking);
+        }
         if !facets.is_empty() {
             req = req.query("sortBy", by).query("sortOrder", order).query("recursive", "true").query("includeItemTypes", VIDEO_TYPES);
             for (k, v) in facet_query(facets) {
@@ -304,9 +315,40 @@ impl Jellyfin {
         Ok(parse_items(&body))
     }
 
+    /// 「依這些找」有「沒有人物」「沒有標籤」時：其他條件交給伺服器，讀全部符合的（太多時到 2 萬支為止）、
+    /// 留下沒有那些的，再切出這一頁。回傳（這一頁, 全部幾個）
+    fn items_lacking(&self, user: &str, start: usize, limit: usize, sort: JfSort, facets: &[JfFacet], lacking: &[NameKind]) -> Result<(Vec<JfItem>, usize), String> {
+        let (by, order) = sort.query();
+        let mut keep: Vec<Value> = vec![];
+        let mut at = 0usize;
+        loop {
+            let mut req = self
+                .items_req(&format!("{}/Users/{user}/Items", self.url))
+                .query("recursive", "true")
+                .query("includeItemTypes", VIDEO_TYPES)
+                .query("sortBy", by)
+                .query("sortOrder", order)
+                .query("startIndex", &at.to_string())
+                .query("limit", "500")
+                .query("enableTotalRecordCount", "true");
+            for (k, v) in facet_query(facets) {
+                req = req.query(k, &v);
+            }
+            let body = self.call(req)?.into_string().map_err(|e| e.to_string())?;
+            let (got, total) = lacking_in(&body, lacking, &mut keep);
+            at += got;
+            if got == 0 || at >= total || at >= 20_000 {
+                break;
+            }
+        }
+        let n = keep.len();
+        let page: Vec<Value> = keep.into_iter().skip(start).take(limit).collect();
+        Ok((parse_items(&serde_json::json!({ "Items": page }).to_string()).0, n))
+    }
+
     /// 清單要的欄位、縮圖
     fn items_req(&self, url: &str) -> ureq::Request {
-        agent().get(url).query("fields", "Path,MediaStreams,DateCreated,PremiereDate,ChildCount,Chapters,Trickplay").query("enableImageTypes", "Primary").query("imageTypeLimit", "1")
+        agent().get(url).query("fields", ITEM_FIELDS).query("enableImageTypes", "Primary").query("imageTypeLimit", "1")
     }
 
     /// 看到一半的影片（Jellyfin 首頁的「繼續觀看」，最近看的在前）
@@ -424,6 +466,7 @@ impl Jellyfin {
     /// 年份新的在前；太多時讀到 2 萬支為止
     pub fn usage(&self, user: &str) -> Result<Usage, String> {
         let (mut people, mut tags, mut years) = (vec![], vec![], vec![]);
+        let (mut no_people, mut no_tags) = (0usize, 0usize);
         let mut start = 0usize;
         loop {
             let req = agent()
@@ -438,6 +481,9 @@ impl Jellyfin {
                 .query("enableTotalRecordCount", "true");
             let body = self.call(req)?.into_string().map_err(|e| e.to_string())?;
             let (p, t, y, got, total) = people_tags_of_items(&body);
+            let (np, nt) = lacking_counts(&body);
+            no_people += np;
+            no_tags += nt;
             people.extend(p);
             tags.extend(t);
             years.extend(y);
@@ -446,7 +492,7 @@ impl Jellyfin {
                 break;
             }
         }
-        Ok(Usage { people: tally(people), tags: tally(tags), years: tally_years(years) })
+        Ok(Usage { people: tally(people), tags: tally(tags), years: tally_years(years), no_people, no_tags })
     }
 
     /// 把全部影片裡的一個人物或標籤改成另一個寫法（「常用」裡寫錯的改正確；改成已經有的就是合併）。
@@ -462,14 +508,7 @@ impl Jellyfin {
         progress(0, total);
         let (mut done, mut failed) = (0usize, vec![]);
         for (i, id) in ids.iter().enumerate() {
-            let r = (|| {
-                let body = match self.call(agent().get(&format!("{}/Items/{id}", self.url))) {
-                    Ok(r) => r.into_string().map_err(|e| e.to_string())?,
-                    Err(_) => self.call(agent().get(&format!("{}/Users/{user}/Items/{id}", self.url)))?.into_string().map_err(|e| e.to_string())?,
-                };
-                let item = with_renamed(&body, kind, from, to).ok_or_else(|| tr!("Jellyfin 的影片資料看不懂", "Couldn't understand Jellyfin's item data").to_string())?;
-                self.call_body(agent().post(&format!("{}/Items/{id}", self.url)), &item).map(|_| ())
-            })();
+            let r = self.change_item(user, id, |body| with_renamed(body, kind, from, to));
             match r {
                 Ok(()) => done += 1,
                 Err(e) => {
@@ -483,6 +522,38 @@ impl Jellyfin {
             None => Ok(done),
             Some(e) => Err(trf!("改好 {done} 支，{} 支沒改到：{e}", "Changed {done}, {} failed: {e}", failed.len())),
         }
+    }
+
+    /// 好幾支影片一起加、拿掉人物和標籤、改年份（勾選好幾支 →「整理人物、標籤…」）：一支一支取回整筆資料、
+    /// 只換這次改的再存回去。progress(改好幾支, 全部幾支)；有幾支失敗時其他照改，最後回報失敗的。回傳改了幾支
+    pub fn edit_many(&self, user: &str, ids: &[String], edit: &BatchEdit, progress: &dyn Fn(usize, usize)) -> Result<usize, String> {
+        let total = ids.len();
+        progress(0, total);
+        let (mut done, mut failed) = (0usize, vec![]);
+        for (i, id) in ids.iter().enumerate() {
+            match self.change_item(user, id, |body| with_batch(body, edit)) {
+                Ok(()) => done += 1,
+                Err(e) => {
+                    crate::info!("[Jellyfin] 整理影片 {id} 沒改到：{e}");
+                    failed.push(e);
+                }
+            }
+            progress(i + 1, total);
+        }
+        match failed.first() {
+            None => Ok(done),
+            Some(e) => Err(trf!("改好 {done} 支，{} 支沒改到：{e}", "Changed {done}, {} failed: {e}", failed.len())),
+        }
+    }
+
+    /// 取回一支影片的整筆資料，用 f 換好再存回去（POST /Items/{id}）
+    fn change_item(&self, user: &str, id: &str, f: impl FnOnce(&str) -> Option<String>) -> Result<(), String> {
+        let body = match self.call(agent().get(&format!("{}/Items/{id}", self.url))) {
+            Ok(r) => r.into_string().map_err(|e| e.to_string())?,
+            Err(_) => self.call(agent().get(&format!("{}/Users/{user}/Items/{id}", self.url)))?.into_string().map_err(|e| e.to_string())?,
+        };
+        let item = f(&body).ok_or_else(|| tr!("Jellyfin 的影片資料看不懂", "Couldn't understand Jellyfin's item data").to_string())?;
+        self.call_body(agent().post(&format!("{}/Items/{id}", self.url)), &item).map(|_| ())
     }
 
     /// 用到這個人物（演員）或標籤的影片編號（只差前後空白、大小寫、全形半形的算同一個）；太多時讀到 2 萬支為止
@@ -1100,6 +1171,13 @@ pub struct JfItem {
     pub chapters: Vec<(f64, String)>,
     /// Jellyfin 做好的時間軸預覽縮圖（沒有時 None）
     pub trickplay: Option<Trickplay>,
+    /// 人物（演員）、標籤（勾選好幾支一起整理、清單檢視用）
+    pub people: Vec<String>,
+    pub tags: Vec<String>,
+    /// 年份（ProductionYear；沒設時 None）
+    pub year: Option<i32>,
+    /// 檔案大小（位元組；不知道時 0）
+    pub size: u64,
 }
 
 /// 時間軸預覽縮圖：每 interval 秒一張小圖（width × height），tile_w × tile_h 張排成一張大圖
@@ -1132,6 +1210,9 @@ pub enum JfFacet {
     Person(String, String),
     Tag(String),
     Year(u32),
+    /// 還沒設人物、還沒有標籤的影片（Jellyfin 沒有這種查詢，讀全部再自己挑）
+    NoPeople,
+    NoTags,
 }
 
 /// 在檔案庫 Jellyfin 分頁修改的影片資訊
@@ -1153,6 +1234,9 @@ pub struct JfSub {
 
 /// 影片類型（Jellyfin 的 includeItemTypes）
 const VIDEO_TYPES: &str = "Movie,Video,MusicVideo,Episode";
+
+/// 瀏覽清單要的欄位
+const ITEM_FIELDS: &str = "Path,MediaStreams,MediaSources,DateCreated,PremiereDate,ChildCount,Chapters,Trickplay,People,Tags";
 
 /// 瀏覽的排序
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -1283,6 +1367,10 @@ pub fn parse_items(json: &str) -> (Vec<JfItem>, usize) {
                             })
                             .unwrap_or_default(),
                         trickplay: i.get("Trickplay").and_then(trickplay_of),
+                        people: names_in(i, NameKind::Person),
+                        tags: names_in(i, NameKind::Tag),
+                        year: i.get("ProductionYear").and_then(Value::as_i64).filter(|y| *y > 0).map(|y| y as i32),
+                        size: i.pointer("/MediaSources/0/Size").and_then(Value::as_u64).unwrap_or(0),
                     })
                 })
                 .collect()
@@ -1345,6 +1433,9 @@ pub struct Usage {
     pub tags: Counts,
     /// （年份, 幾支），新的在前
     pub years: Vec<(u32, usize)>,
+    /// 還沒設人物、還沒有標籤的影片幾支
+    pub no_people: usize,
+    pub no_tags: usize,
 }
 
 /// 「常用」改名時改的是人物還是標籤
@@ -1367,6 +1458,77 @@ fn names_in(item: &Value, kind: NameKind) -> Vec<String> {
             .collect(),
         NameKind::Tag => item.get("Tags").and_then(Value::as_array).into_iter().flatten().filter_map(|t| t.as_str().map(String::from)).collect(),
     }
+}
+
+/// 一頁影片（JSON）裡（沒有人物的幾支, 沒有標籤的幾支）
+fn lacking_counts(json: &str) -> (usize, usize) {
+    let (mut p, mut t) = (vec![], vec![]);
+    lacking_in(json, &[NameKind::Person], &mut p);
+    lacking_in(json, &[NameKind::Tag], &mut t);
+    (p.len(), t.len())
+}
+
+/// 一頁影片（JSON）裡 lacking 每一種都沒有的放進 keep；回傳（這一頁幾支, 全部幾支）
+fn lacking_in(json: &str, lacking: &[NameKind], keep: &mut Vec<Value>) -> (usize, usize) {
+    let Ok(v) = serde_json::from_str::<Value>(json) else { return (0, 0) };
+    let items = v.get("Items").and_then(Value::as_array).cloned().unwrap_or_default();
+    let got = items.len();
+    keep.extend(items.into_iter().filter(|i| lacking.iter().all(|k| names_in(i, *k).iter().all(|n| n.trim().is_empty()))));
+    (got, v.get("TotalRecordCount").and_then(Value::as_u64).unwrap_or(0) as usize)
+}
+
+/// 好幾支影片一起整理（Jellyfin 分頁勾選好幾支 →「整理人物、標籤…」）：要加、要拿掉的人物和標籤，年份
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BatchEdit {
+    pub add_people: Vec<String>,
+    pub remove_people: Vec<String>,
+    pub add_tags: Vec<String>,
+    pub remove_tags: Vec<String>,
+    /// None：不改；Some(None)：清掉；Some(Some(y))：都改成 y
+    pub year: Option<Option<i32>>,
+}
+
+impl BatchEdit {
+    pub fn is_empty(&self) -> bool {
+        self.add_people.is_empty() && self.remove_people.is_empty() && self.add_tags.is_empty() && self.remove_tags.is_empty() && self.year.is_none()
+    }
+}
+
+/// 把 BatchEdit 套進一支影片的整筆資料（POST /Items/{id} 用）：只加、只拿掉這次改的，其他人物、標籤不動；
+/// 比對時只差前後空白、大小寫、全形半形的算同一個（已經有的不會再加一個）
+pub fn with_batch(item_json: &str, e: &BatchEdit) -> Option<String> {
+    let mut v: Value = serde_json::from_str(item_json).ok()?;
+    let o = v.as_object_mut()?;
+    let keys = |l: &[String]| l.iter().map(|n| name_key(n)).collect::<std::collections::HashSet<_>>();
+    let (drop_tags, drop_people) = (keys(&e.remove_tags), keys(&e.remove_people));
+    let mut seen = std::collections::HashSet::new();
+    let mut tags: Vec<String> = o.get("Tags").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).filter(|t| !drop_tags.contains(&name_key(t))).map(String::from).collect();
+    tags.extend(e.add_tags.iter().map(|t| t.trim().to_string()).filter(|t| !t.is_empty()));
+    tags.retain(|t| seen.insert(name_key(t)));
+    o.insert("Tags".into(), Value::from(tags));
+    seen.clear();
+    let mut people: Vec<Value> = o
+        .get("People")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|p| {
+            let actor = p.get("Type").and_then(Value::as_str).is_none_or(|t| t == "Actor");
+            let key = name_key(p.get("Name").and_then(Value::as_str).unwrap_or(""));
+            !actor || (!drop_people.contains(&key) && seen.insert(key))
+        })
+        .cloned()
+        .collect();
+    for n in e.add_people.iter().map(|n| n.trim()).filter(|n| !n.is_empty()) {
+        if seen.insert(name_key(n)) {
+            people.push(serde_json::json!({ "Name": n, "Type": "Actor" }));
+        }
+    }
+    o.insert("People".into(), Value::from(people));
+    if let Some(year) = e.year {
+        set_year(o, year);
+    }
+    serde_json::to_string(&v).ok()
 }
 
 /// 整筆資料（POST /Items/{id} 用）裡的人物（演員）或標籤 from 換成 to；換完同一個重複的只留一個。
@@ -1608,10 +1770,15 @@ pub fn with_info(item_json: &str, x: &JfInfo) -> Option<String> {
         o.get("People").and_then(Value::as_array).map(|a| a.iter().filter(|p| p.get("Type").and_then(Value::as_str).is_some_and(|t| t != "Actor")).cloned().collect()).unwrap_or_default();
     people.extend(x.people.iter().map(|n| serde_json::json!({ "Name": n, "Type": "Actor" })));
     o.insert("People".into(), Value::from(people));
-    o.insert("ProductionYear".into(), x.year.map_or(Value::Null, Value::from));
-    // 首映日期跟著換成這一年（月日不變）：Jellyfin 的家庭影片頁面顯示的是首映日期，只改年份會看不出來。
-    // 年份清空時首映日期也清掉（對話框沒年份時顯示的就是首映日期的年，不清掉下次打開又出現）
-    match x.year {
+    set_year(o, x.year);
+    serde_json::to_string(&v).ok()
+}
+
+/// 設年份：首映日期跟著換成這一年（月日不變）：Jellyfin 的家庭影片頁面顯示的是首映日期，只改年份會看不出來。
+/// 年份清空時首映日期也清掉（對話框沒年份時顯示的就是首映日期的年，不清掉下次打開又出現）
+fn set_year(o: &mut serde_json::Map<String, Value>, year: Option<i32>) {
+    o.insert("ProductionYear".into(), year.map_or(Value::Null, Value::from));
+    match year {
         Some(y) => {
             let date = o.get("PremiereDate").and_then(Value::as_str).filter(|d| d.len() >= 4 && d.is_char_boundary(4)).map(|d| format!("{y:04}{}", &d[4..]));
             if let Some(d) = date {
@@ -1622,7 +1789,6 @@ pub fn with_info(item_json: &str, x: &JfInfo) -> Option<String> {
             o.insert("PremiereDate".into(), Value::Null);
         }
     }
-    serde_json::to_string(&v).ok()
 }
 
 /// 家人看過了沒、我的最愛（Jellyfin::watch_state）
@@ -3075,6 +3241,50 @@ mod tests {
         assert_eq!(t[1], ("無碼".to_string(), 2));
         assert_eq!(t[2], ("旅行".to_string(), 1));
         assert_eq!(name_key("　ＡＢＣ　"), "abc");
+    }
+
+    #[test]
+    fn batch_adds_and_removes_only_what_changed() {
+        let item = r#"{"Id":"a","Name":"x","Tags":["無碼","18+","素人"],"People":[{"Name":"小美","Type":"Actor","Id":"p1"},{"Name":"導演","Type":"Director"}],"ProductionYear":2023,"PremiereDate":"2023-05-01T00:00:00.0000000Z"}"#;
+        let e = BatchEdit {
+            add_people: vec!["小明".into(), " 小美 ".into()],
+            remove_people: vec!["導演".into()],
+            add_tags: vec!["ＶＲ".into(), "無碼 ".into()],
+            remove_tags: vec!["18+".into()],
+            year: Some(Some(2024)),
+        };
+        let v: Value = serde_json::from_str(&with_batch(item, &e).unwrap()).unwrap();
+        // 已經有的（寫法只差空白、全形半形）不再加；拿掉的只拿掉那一個；導演不是演員，拿掉人物時不動
+        assert_eq!(v["Tags"], serde_json::json!(["無碼", "素人", "ＶＲ"]));
+        assert_eq!(v["People"], serde_json::json!([{"Name":"小美","Type":"Actor","Id":"p1"},{"Name":"導演","Type":"Director"},{"Name":"小明","Type":"Actor"}]));
+        assert_eq!(v["ProductionYear"], 2024);
+        assert_eq!(v["PremiereDate"], "2024-05-01T00:00:00.0000000Z");
+        // 年份不改時不動
+        let v: Value = serde_json::from_str(&with_batch(item, &BatchEdit { add_tags: vec!["旅行".into()], ..Default::default() }).unwrap()).unwrap();
+        assert_eq!(v["ProductionYear"], 2023);
+        assert!(BatchEdit::default().is_empty());
+    }
+
+    #[test]
+    fn lacking_keeps_videos_without_people_or_tags() {
+        let page = r#"{"TotalRecordCount":9,"Items":[
+            {"Id":"a","Type":"Video","Tags":["生日"],"People":[]},
+            {"Id":"b","Type":"Video","Tags":[],"People":[{"Name":"導演","Type":"Director"}]},
+            {"Id":"c","Type":"Video","Tags":[" "],"People":[{"Name":"小美","Type":"Actor"}]},
+            {"Id":"d","Type":"Video","MediaSources":[{"Size":1234}],"ProductionYear":2021,"People":[{"Name":"小美"}],"Tags":["旅行"]}]}"#;
+        let mut keep = vec![];
+        assert_eq!(lacking_in(page, &[NameKind::Person], &mut keep), (4, 9));
+        // 導演不算人物
+        assert_eq!(keep.iter().map(|i| i["Id"].as_str().unwrap()).collect::<Vec<_>>(), ["a", "b"]);
+        keep.clear();
+        lacking_in(page, &[NameKind::Person, NameKind::Tag], &mut keep);
+        assert_eq!(keep.iter().map(|i| i["Id"].as_str().unwrap()).collect::<Vec<_>>(), ["b"]);
+        assert_eq!(lacking_counts(page), (2, 2));
+        // 清單上的人物、標籤、年份、大小
+        let d = &parse_items(page).0[3];
+        assert_eq!((d.people.clone(), d.tags.clone(), d.year, d.size), (vec!["小美".to_string()], vec!["旅行".to_string()], Some(2021), 1234));
+        // 「沒有人物」不是伺服器的查詢參數
+        assert!(facet_query(&[JfFacet::NoPeople, JfFacet::NoTags]).is_empty());
     }
 
     #[test]

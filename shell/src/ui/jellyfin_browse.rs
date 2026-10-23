@@ -64,6 +64,9 @@ pub struct JfBrowse {
     persons: Vec<(String, String, usize)>,
     tags: Vec<(String, usize)>,
     years: Vec<(u32, usize)>,
+    /// 還沒設人物、還沒有標籤的影片幾支（「依這些找」最上面的「（沒有人物）」「（沒有標籤）」；讀不到時 0）
+    no_people: usize,
+    no_tags: usize,
     /// 「人物」「標籤」「年份」選單裡的搜尋框
     facet_search: [String; 3],
     /// 位置那一列右邊（符合幾支、排序、縮圖大小）上次量到的寬度：左邊的條件只用剩下的地方
@@ -159,7 +162,7 @@ fn load(app: &mut UiApp) {
 }
 
 /// 讀到的人物（編號, 名稱, 幾支）與（標籤、年份）或讀不到的原因
-type Facets = (Vec<(String, String, usize)>, Result<(Vec<(String, usize)>, Vec<(u32, usize)>), String>);
+type Facets = (Vec<(String, String, usize)>, Result<(Vec<(String, usize)>, Vec<(u32, usize)>, usize, usize), String>);
 
 /// 讀伺服器上的人物、標籤、年份和各用在幾支影片（「依這些找」的選單）；舊版 Jellyfin 讀不到就不列。
 /// 次數讀不到時改問只有名稱的清單
@@ -181,11 +184,11 @@ fn load_facets(app: &mut UiApp) {
                         let mut persons: Vec<_> = persons.into_iter().map(|(id, n)| (id, count.get(&jellyfin::name_key(&n)).copied().unwrap_or(0), n)).collect();
                         // 用得多的在前（persons 已經依名稱排，sort_by 是穩定的）
                         persons.sort_by_key(|a| std::cmp::Reverse(a.1));
-                        (persons.into_iter().map(|(id, c, n)| (id, n, c)).collect(), Ok((u.tags, u.years)))
+                        (persons.into_iter().map(|(id, c, n)| (id, n, c)).collect(), Ok((u.tags, u.years, u.no_people, u.no_tags)))
                     }
                     Err(e) => {
                         screenrecorder_core::info!("[Jellyfin] 讀不到人物、標籤、年份的使用次數：{e}");
-                        let rest = jf.facets(&user).map(|(t, y)| (t.into_iter().map(|t| (t, 0)).collect(), y.into_iter().map(|y| (y, 0)).collect()));
+                        let rest = jf.facets(&user).map(|(t, y)| (t.into_iter().map(|t| (t, 0)).collect(), y.into_iter().map(|y| (y, 0)).collect(), 0, 0));
                         (persons.into_iter().map(|(id, n)| (id, n, 0)).collect(), rest)
                     }
                 };
@@ -198,9 +201,11 @@ fn load_facets(app: &mut UiApp) {
             if let Some(d) = app.jf_browse.as_mut() {
                 d.persons = persons;
                 match facets {
-                    Ok((tags, years)) => {
+                    Ok((tags, years, no_people, no_tags)) => {
                         d.tags = tags;
                         d.years = years;
+                        d.no_people = no_people;
+                        d.no_tags = no_tags;
                         d.facets_error = None;
                     }
                     Err(e) => d.facets_error = Some(e),
@@ -230,6 +235,34 @@ pub fn edited(app: &mut UiApp, id: &str, title: &str) {
         d.each_mut(id, |it| it.name = title.trim().to_string());
     }
     d.posters.remove(id);
+    load_facets(app);
+}
+
+/// 好幾支一起整理完了：清單上（和勾選的）那些影片的人物、標籤、年份跟著換，「依這些找」重讀
+pub fn batch_done(app: &mut UiApp, ids: &[String], edit: &jellyfin::BatchEdit) {
+    let Some(d) = app.jf_browse.as_mut() else { return };
+    let apply = |it: &mut JfItem| {
+        let key = jellyfin::name_key;
+        let change = |list: &mut Vec<String>, add: &[String], remove: &[String]| {
+            list.retain(|n| !remove.iter().any(|r| key(r) == key(n)));
+            for a in add {
+                if !list.iter().any(|n| key(n) == key(a)) {
+                    list.push(a.trim().to_string());
+                }
+            }
+        };
+        change(&mut it.people, &edit.add_people, &edit.remove_people);
+        change(&mut it.tags, &edit.add_tags, &edit.remove_tags);
+        if let Some(y) = edit.year {
+            it.year = y;
+        }
+    };
+    for id in ids {
+        d.each_mut(id, apply);
+        if let Some(it) = d.selected.get_mut(id) {
+            apply(it);
+        }
+    }
     load_facets(app);
 }
 
@@ -673,8 +706,8 @@ enum FacetChange {
 /// 條件是哪一類：0 人物、1 標籤、2 年份
 fn kind_of(f: &JfFacet) -> u8 {
     match f {
-        JfFacet::Person(..) => 0,
-        JfFacet::Tag(_) => 1,
+        JfFacet::Person(..) | JfFacet::NoPeople => 0,
+        JfFacet::Tag(_) | JfFacet::NoTags => 1,
         JfFacet::Year(_) => 2,
     }
 }
@@ -684,7 +717,14 @@ fn facet_name(f: &JfFacet) -> String {
         JfFacet::Person(_, n) => n.clone(),
         JfFacet::Tag(t) => t.clone(),
         JfFacet::Year(y) => y.to_string(),
+        JfFacet::NoPeople => tr!("沒有人物", "No people").into(),
+        JfFacet::NoTags => tr!("沒有標籤", "No tags").into(),
     }
+}
+
+/// 「沒有人物」「沒有標籤」（和同一類的其他條件不能一起勾：沒有人物又有小美不會有影片）
+fn is_none_facet(f: &JfFacet) -> bool {
+    matches!(f, JfFacet::NoPeople | JfFacet::NoTags)
 }
 
 /// 套用「依這些找」的改變：找整個伺服器（離開資料夾、搜尋）；全部拿掉時回到最上層
@@ -695,7 +735,12 @@ fn apply_facet(d: &mut JfBrowse, change: FacetChange, out: &mut Panel) {
             Some(i) => {
                 d.facet.remove(i);
             }
-            None => d.facet.push(f),
+            None => {
+                // 「沒有人物」和人物（「沒有標籤」和標籤）只留剛勾的那一邊
+                let (k, none) = (kind_of(&f), is_none_facet(&f));
+                d.facet.retain(|x| kind_of(x) != k || is_none_facet(x) == none);
+                d.facet.push(f)
+            }
         },
         FacetChange::ClearKind(k) => d.facet.retain(|f| kind_of(f) != k),
         FacetChange::ClearAll => d.facet.clear(),
@@ -732,7 +777,7 @@ fn facet_menu(ui: &mut egui::Ui, kind: u8, empty: &str, rows: Vec<(String, usize
                 any = true;
                 // 每一列固定大小：勾選框＋名稱、右邊的支數（畫上去，選單才不會越撐越寬）
                 let (row, _) = ui.allocate_exact_size(vec2(W - 16.0, 26.0), Sense::hover());
-                let cw = if *c > 0 { 56.0 } else { 0.0 };
+                let cw = if *c > 0 || is_none_facet(f) { 56.0 } else { 0.0 };
                 let mut on = chosen.contains(f);
                 let shown: String = if name.chars().count() > 24 { name.chars().take(23).chain(['…']).collect() } else { name.clone() };
                 let cb = Rect::from_min_max(row.min, pos2(row.max.x - cw, row.max.y));
@@ -740,8 +785,15 @@ fn facet_menu(ui: &mut egui::Ui, kind: u8, empty: &str, rows: Vec<(String, usize
                 if r.changed() {
                     *change = FacetChange::Toggle(f.clone());
                 }
-                if *c > 0 {
+                if *c > 0 || is_none_facet(f) {
                     ui.painter().text(pos2(row.max.x - 4.0, row.center().y), Align2::RIGHT_CENTER, trf!("{c} 支", "{c}"), theme::font(12.0), p.muted);
+                }
+                if is_none_facet(f) {
+                    r.on_hover_text(tr!(
+                        "還沒填的影片：勾了列出來，全選後按下面的「整理人物、標籤…」一次補好",
+                        "Videos not filled in yet: check this to list them, select all, then use “Organize people & tags…” below"
+                    ));
+                    ui.separator();
                 }
             }
             if !any {
@@ -836,9 +888,15 @@ fn remove_chip(ui: &mut egui::Ui, text: &str) -> egui::Response {
 
 /// 目前在找什麼（例如「有小美或小明、2024 年的影片」）
 fn facet_summary(chosen: &[JfFacet]) -> String {
-    let names = |k: u8| chosen.iter().filter(|f| kind_of(f) == k).map(facet_name).collect::<Vec<_>>();
+    let names = |k: u8| chosen.iter().filter(|f| kind_of(f) == k && !is_none_facet(f)).map(facet_name).collect::<Vec<_>>();
     let or = tr!("或", " or ");
     let mut parts = vec![];
+    if chosen.contains(&JfFacet::NoPeople) {
+        parts.push(tr!("還沒設人物", "with no people").to_string());
+    }
+    if chosen.contains(&JfFacet::NoTags) {
+        parts.push(tr!("還沒有標籤", "with no tags").to_string());
+    }
     let people = names(0);
     if !people.is_empty() {
         parts.push(trf!("有{}", "with {}", people.join(or)));
@@ -870,6 +928,8 @@ pub struct Panel {
     picked: Picked,
     bulk_download: bool,
     bulk_delete: bool,
+    /// 勾選的一起整理人物、標籤、年份
+    bulk_organize: bool,
     find_dupes: bool,
 }
 
@@ -909,7 +969,8 @@ fn grid_zoom(ui: &egui::Ui, d: &mut JfBrowse, area: Rect) {
 
 /// 檔案庫的「Jellyfin」分頁：上面搜尋、依人物 / 標籤 / 年份找、找重複；接著目前位置與排序；
 /// 中間縮圖格；最下面勾選的操作與換頁（和錄影、截圖分頁同一個排法）
-pub fn panel(ui: &mut egui::Ui, d: &mut JfBrowse) -> Panel {
+/// busy：背景正在整理好幾支影片時（改好幾支, 全部幾支），下面畫進度
+pub fn panel(ui: &mut egui::Ui, d: &mut JfBrowse, busy: Option<(usize, usize)>) -> Panel {
     let mut out = Panel::default();
     let p = theme::pal(ui);
     // 搜尋整個伺服器（打字停一下就找，Enter 馬上找）、依人物 / 標籤 / 年份找、找重複的影片
@@ -954,8 +1015,10 @@ pub fn panel(ui: &mut egui::Ui, d: &mut JfBrowse) -> Panel {
                 None => none.to_string(),
             };
             let years: Vec<_> = d.years.iter().map(|(y, c)| (y.to_string(), *c, JfFacet::Year(*y))).collect();
-            let tags: Vec<_> = d.tags.iter().map(|(t, c)| (t.clone(), *c, JfFacet::Tag(t.clone()))).collect();
-            let people: Vec<_> = d.persons.iter().map(|(id, n, c)| (n.clone(), *c, JfFacet::Person(id.clone(), n.clone()))).collect();
+            // 最上面一列是「（沒有標籤）」「（沒有人物）」：找還沒填的
+            let none_row = |n: usize, f: JfFacet| (trf!("（{}）", "({})", facet_name(&f)), n, f);
+            let tags: Vec<_> = std::iter::once(none_row(d.no_tags, JfFacet::NoTags)).chain(d.tags.iter().map(|(t, c)| (t.clone(), *c, JfFacet::Tag(t.clone())))).collect();
+            let people: Vec<_> = std::iter::once(none_row(d.no_people, JfFacet::NoPeople)).chain(d.persons.iter().map(|(id, n, c)| (n.clone(), *c, JfFacet::Person(id.clone(), n.clone())))).collect();
             let [s0, s1, s2] = &mut d.facet_search;
             facet_menu(ui, 2, &why(tr!("Jellyfin 上的影片都還沒有設年份", "No videos on Jellyfin have a year yet")), years, &d.facet, s2, &mut change);
             facet_menu(ui, 1, &why(tr!("Jellyfin 上的影片都還沒有標籤", "No videos on Jellyfin have tags yet")), tags, &d.facet, s1, &mut change);
@@ -1138,6 +1201,15 @@ pub fn panel(ui: &mut egui::Ui, d: &mut JfBrowse) -> Panel {
         0.0
     };
     let fui = &mut ui.new_child(UiBuilder::new().max_rect(Rect::from_min_max(foot.min, pos2(foot.max.x - pager_w, foot.max.y))).layout(Layout::left_to_right(Align::Center)));
+    if let Some((done, total)) = busy {
+        fui.spinner();
+        fui.label(theme::muted(fui, trf!("正在整理 {done}/{total} 支…", "Organizing {done}/{total}…")));
+        let (bar, _) = fui.allocate_exact_size(vec2(90.0, 5.0), Sense::hover());
+        fui.painter().rect_filled(bar, 2.5, p.border);
+        let f = if total > 0 { done as f32 / total as f32 } else { 0.0 };
+        fui.painter().rect_filled(Rect::from_min_size(bar.min, vec2(bar.width() * f, bar.height())), 2.5, p.accent);
+        fui.add_space(10.0);
+    }
     if d.selected.is_empty() {
         fui.label(theme::muted(fui, tr!("多選小技巧", "Multi-select tips"))).on_hover_text(tr!(
             "滑鼠移到影片上按左上角的方塊，或按住 Ctrl 點影片，勾選好幾支一次下載或刪除；按住 Shift 點一下，從上次勾的那支到這一支全部勾起來",
@@ -1145,7 +1217,22 @@ pub fn panel(ui: &mut egui::Ui, d: &mut JfBrowse) -> Panel {
         ));
     } else {
         fui.label(RichText::new(trf!("已勾選 {} 支", "{} selected", d.selected.len())).font(theme::font_bold(13.0)));
-        if Btn::new(tr!("下載到這台電腦", "Download to this computer")).icon(Icon::Download).small().primary().show(fui).clicked() {
+        if Btn::new(tr!("整理人物、標籤…", "Organize people & tags…"))
+            .icon(Icon::Edit)
+            .small()
+            .primary()
+            .enabled(busy.is_none())
+            .tooltip(if busy.is_some() {
+                tr!("上一次的整理還沒改完", "The previous batch is still running")
+            } else {
+                tr!("一次加、拿掉勾選影片的人物和標籤，改年份", "Add or remove people and tags, or set the year, on all selected videos")
+            })
+            .show(fui)
+            .clicked()
+        {
+            out.bulk_organize = true;
+        }
+        if Btn::new(tr!("下載到這台電腦", "Download to this computer")).icon(Icon::Download).small().show(fui).clicked() {
             out.bulk_download = true;
         }
         if Btn::new(tr!("從 Jellyfin 刪除", "Delete from Jellyfin")).icon(Icon::Trash).small().danger().show(fui).clicked() {
@@ -1164,7 +1251,7 @@ pub fn apply(app: &mut UiApp, mut d: JfBrowse, out: Panel) {
         app.s.jf_grid_size = d.grid;
         app.save_settings();
     }
-    let Panel { mut reload, more, picked, bulk_download, bulk_delete, find_dupes } = out;
+    let Panel { mut reload, more, picked, bulk_download, bulk_delete, bulk_organize, find_dupes } = out;
     if let Some(it) = picked.toggle {
         d.anchor = Some(it.id.clone());
         if d.selected.remove(&it.id).is_none() {
@@ -1191,6 +1278,13 @@ pub fn apply(app: &mut UiApp, mut d: JfBrowse, out: Panel) {
         d.selected.clear();
         app.jf_browse = Some(d);
         return download(app, selected);
+    }
+    if bulk_organize {
+        let (user, items) = (d.user.clone().unwrap_or_default(), d.selected.values().cloned().collect());
+        let people = d.persons.iter().map(|(_, n, c)| (n.clone(), *c)).collect();
+        let tags = d.tags.clone();
+        app.jf_browse = Some(d);
+        return super::jellyfin_batch::open(app, user, items, people, tags);
     }
     if bulk_delete {
         let names = d.selected.values().map(|i| (i.id.clone(), i.name.clone())).collect();

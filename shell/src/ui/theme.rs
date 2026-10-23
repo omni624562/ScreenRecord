@@ -292,6 +292,8 @@ pub enum Icon {
     Minimize,
     Maximize,
     Restore,
+    /// 加號（補給全部）
+    Plus,
 }
 
 /// 在 rect（正方形）裡畫圖示
@@ -471,6 +473,10 @@ pub fn paint_icon(p: &Painter, rect: Rect, icon: Icon, color: Color32) {
         Icon::Close => {
             line(&[(4.0, 4.0), (12.0, 12.0)]);
             line(&[(12.0, 4.0), (4.0, 12.0)]);
+        }
+        Icon::Plus => {
+            line(&[(8.0, 3.0), (8.0, 13.0)]);
+            line(&[(3.0, 8.0), (13.0, 8.0)]);
         }
         Icon::Rename => {
             p.rect_stroke(Rect::from_min_max(at(1.5, 4.5), at(14.5, 11.5)), CornerRadius::same((1.5 * k) as u8), st, StrokeKind::Middle);

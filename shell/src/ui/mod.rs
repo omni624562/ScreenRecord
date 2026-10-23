@@ -9,6 +9,7 @@ pub mod entry_menu;
 pub mod export_dialog;
 pub mod import;
 pub mod inline_play;
+pub mod jellyfin_batch;
 pub mod jellyfin_browse;
 pub mod jellyfin_dupes;
 pub mod jellyfin_edit;
@@ -190,6 +191,9 @@ pub struct UiApp {
     pub jf_edit: Option<jellyfin_edit::JfEdit>,
     /// 背景正在把 Jellyfin 上的人物或標籤改名（影片資訊關掉也會繼續）
     pub jf_rename: Option<jellyfin_edit::Renaming>,
+    /// Jellyfin 分頁勾選好幾支 →「整理人物、標籤…」的視窗、背景正在整理的
+    pub jf_batch: Option<jellyfin_batch::JfBatch>,
+    pub jf_batch_run: Option<jellyfin_batch::BatchRun>,
     /// 找 Jellyfin 上重複的影片
     pub jf_dupes: Option<jellyfin_dupes::JfDupes>,
     /// 上一格工作列有沒有顯示進度（做完時閃一下用）
@@ -361,6 +365,8 @@ impl UiApp {
             jf_browse: None,
             jf_edit: None,
             jf_rename: None,
+            jf_batch: None,
+            jf_batch_run: None,
             jf_dupes: None,
             taskbar_busy: false,
             back_to: None,
@@ -1687,6 +1693,9 @@ impl eframe::App for UiApp {
         }
         if self.jf_edit.is_some() {
             jellyfin_edit::show(self, &ctx);
+        }
+        if self.jf_batch.is_some() {
+            jellyfin_batch::show(self, &ctx);
         }
         library_send::transfer_bar(self, &ctx);
         // 設定視窗在其他視窗之後畫：從剪輯視窗、全部錄影開啟時（例如「前往外部元件」）在最上面
