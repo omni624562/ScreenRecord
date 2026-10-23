@@ -958,9 +958,9 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
             },
             move |app, r| match r {
                 Ok(()) => {
-                    let name = app.jf_edit.take().map(|d| d.name).unwrap_or_default();
+                    app.jf_edit = None;
                     super::jellyfin_browse::edited(app, &id2, &title);
-                    app.toast(trf!("已更新 Jellyfin 上的影片資訊：{}", "Updated the details on Jellyfin: {}", if title.trim().is_empty() { name } else { title }), false);
+                    app.toast(tr!("已更新影片資訊", "Details updated"), false);
                 }
                 Err(e) => {
                     super::jellyfin_browse::edited(app, &id2, "");

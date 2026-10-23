@@ -895,6 +895,9 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         }
         // 下方控制列
         let bar = Rect::from_min_max(pos2(full.min.x, full.max.y - bar_h), full.max);
+        // 提示放在控制列（和相關截圖列）上方的右邊，不蓋到播放按鈕、進度列
+        let pass = ui.ctx().cumulative_pass_nr();
+        ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new(super::dialogs::TOAST_SPOT), (pos2(bar.max.x, stage.max.y), pass)));
         ui.painter().hline(bar.x_range(), bar.min.y, Stroke::new(1.0, p.border));
         let bui = &mut ui.new_child(egui::UiBuilder::new().max_rect(bar.shrink2(vec2(16.0, 0.0))).layout(Layout::left_to_right(Align::Center)));
         if image {

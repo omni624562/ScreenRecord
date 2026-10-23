@@ -196,6 +196,9 @@ pub fn show_ask(app: &mut UiApp, ctx: &egui::Context) {
     }
 }
 
+/// 畫面上有播放控制列時（檢視器），提示改放的位置：右下角（控制列上方）；這一格有畫才算
+pub const TOAST_SPOT: &str = "toast-spot";
+
 pub fn show_toast(app: &mut UiApp, ctx: &egui::Context) {
     let Some(t) = &app.toast else { return };
     if Instant::now() >= t.until {
@@ -208,7 +211,13 @@ pub fn show_toast(app: &mut UiApp, ctx: &egui::Context) {
     let has_actions = !t.actions.is_empty();
     let mut clicked: Option<usize> = None;
     let mut close = false;
-    let resp = egui::Area::new(Id::new("toast")).anchor(Align2::CENTER_BOTTOM, vec2(0.0, -28.0)).order(egui::Order::Tooltip).interactable(has_actions).show(ctx, |ui| {
+    let screen = ctx.content_rect();
+    let spot = ctx.data(|d| d.get_temp::<(egui::Pos2, u64)>(Id::new(TOAST_SPOT))).filter(|(_, pass)| *pass == ctx.cumulative_pass_nr()).map(|(at, _)| at);
+    let (align, offset) = match spot {
+        Some(at) => (Align2::RIGHT_BOTTOM, vec2(at.x - screen.max.x - 12.0, at.y - screen.max.y - 12.0)),
+        None => (Align2::CENTER_BOTTOM, vec2(0.0, -28.0)),
+    };
+    let resp = egui::Area::new(Id::new("toast")).anchor(align, offset).order(egui::Order::Tooltip).interactable(has_actions).show(ctx, |ui| {
         egui::Frame::new().fill(fill).corner_radius(CornerRadius::same(10)).inner_margin(egui::Margin::symmetric(16, 10)).show(ui, |ui| {
             ui.set_max_width(if has_actions { 680.0 } else { 560.0 });
             if !has_actions {
