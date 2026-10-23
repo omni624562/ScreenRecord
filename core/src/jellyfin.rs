@@ -2562,6 +2562,14 @@ pub fn send_file(jf: Option<&Jellyfin>, copy_to: &str, file: &std::path::Path, e
             return Some(Err(tr!("「複製」的資料夾位置不對，請在設定裡重新選擇", "The “Copy” folder isn't valid. Choose it again in Settings").into()));
         }
         let files = crate::after_record::result_files(&file.display().to_string(), None);
+        // 影片已經不在（改了名、刪掉了）：不要傳 0 個檔案之後白等 Jellyfin 找一支不存在的影片
+        if files.is_empty() {
+            crate::warn!("[傳到資料夾] 找不到 {}", file.display());
+            return Some(Err(trf!(
+                "找不到「{name}」，可能已經改名或刪掉了：請在清單上重新找到這支再傳",
+                "Couldn't find “{name}”; it may have been renamed or deleted. Find it in the list again and resend"
+            )));
+        }
         // 先看 NAS 的空間夠不夠（不夠時傳到一半才失敗，還留下半個暫存檔）
         let need: u64 = files.iter().filter_map(|f| std::fs::metadata(f).ok()).map(|m| m.len()).sum();
         if let Some(e) = space_problem(crate::recorder::disk_free_sync(copy_to), need) {
@@ -3251,6 +3259,16 @@ mod tests {
         // 讀不懂或沒有媒體庫：不下結論
         assert_eq!(outside_libraries("", "/video"), None);
         assert_eq!(outside_libraries("[]", "/video"), None);
+    }
+
+    #[test]
+    fn sending_a_missing_file_fails_at_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let (src, lib) = (dir.path().join("rec"), dir.path().join("lib"));
+        std::fs::create_dir_all(&src).unwrap();
+        let r = send_file(None, &lib.display().to_string(), &src.join("Rec_2026-10-23_15-32-38.mp4"), &Extras::default()).unwrap();
+        assert!(r.unwrap_err().contains("找不到"));
+        assert!(!lib.exists());
     }
 
     #[test]

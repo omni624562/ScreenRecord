@@ -185,6 +185,8 @@ pub struct UiApp {
     /// Jellyfin 會掃描媒體庫資料夾底下的哪些子資料夾（網址|資料夾, 讀的時間, 結果；None = 看不出來）；正在背景讀
     pub jf_scanned: Option<(String, Instant, Option<Vec<String>>)>,
     pub jf_scanned_loading: bool,
+    /// 看過的「錄完自動處理」結果（換了就重讀清單：自動命名改過名、傳過去的標籤）
+    after_seen: u64,
     /// 待傳清單：上次看 NAS 連不連得到的時間、正在補傳
     pub pending_check: Instant,
     pub pending_busy: bool,
@@ -370,6 +372,7 @@ impl UiApp {
             lib_index_loading: false,
             jf_scanned: None,
             jf_scanned_loading: false,
+            after_seen: 0,
             pending_check: Instant::now(),
             pending_busy: false,
             jf_watch: None,
@@ -1197,8 +1200,14 @@ impl UiApp {
     }
 
     /// 播放、顯示、剪輯、製作加速版
-    pub fn act(&mut self, action: EntryAction, entry: LibraryEntry) {
+    pub fn act(&mut self, action: EntryAction, mut entry: LibraryEntry) {
         use actions::OpenAction;
+        // 清單還沒重讀、這支已經改名了（例如錄完自動命名）：用現在的名稱，清單也重讀
+        if let Some(now) = actions::renamed_to(&entry.media.path) {
+            entry.media.name = dialogs::file_name(&now).to_string();
+            entry.media.path = now;
+            self.load_recent();
+        }
         let path = entry.media.path.clone();
         // 主畫面正在播這個檔案：剪輯、製作、改名等要用到檔案時先停下來（Windows 上播放中的檔案不能改名、取代）
         let keeps = matches!(action, EntryAction::PlayHere | EntryAction::Reveal | EntryAction::CopyFile | EntryAction::CopyChapters | EntryAction::CopySteps | EntryAction::Star);
@@ -1364,6 +1373,7 @@ impl UiApp {
 
     /// 由路徑找到完整資訊後執行（剛錄好的檔案可能還不在清單裡：重新讀取）
     pub fn act_path(&mut self, action: EntryAction, path: String) {
+        let path = actions::renamed_to(&path).unwrap_or(path);
         // 截圖不用讀影片資訊
         if action == EntryAction::Edit && dialogs::is_image(&path) {
             return editor::shot::open(self, path);
@@ -1564,6 +1574,17 @@ impl eframe::App for UiApp {
         self.flush_settings();
         self.flush_pending();
         self.refresh_recent_if_stale(ctx);
+        // 錄完自動處理好了：清單重讀（自動命名改了名，舊名稱的那一支按了會找不到）
+        let after = self.core.after_done().map_or(0, |d| d.seq);
+        if after != self.after_seen {
+            self.after_seen = after;
+            if self.recent.is_some() {
+                self.load_recent();
+            }
+            if let Some(d) = self.library.as_mut() {
+                d.dirty = true;
+            }
+        }
         self.go_back();
         self.poll_status();
         self.handle_close(ctx);
