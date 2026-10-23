@@ -109,6 +109,8 @@ pub struct JfBrowse {
     /// 伺服器上的合集、播放清單（「加進…」選單用；打開分頁、加進去之後重讀）
     collections: Vec<JfItem>,
     playlists: Vec<JfItem>,
+    /// 人物照片（人物編號 → 圖）：「依這些找」的人物清單用，看到才讀
+    faces: HashMap<String, Poster>,
     /// 「人物」「標籤」「年份」選單裡的搜尋框
     facet_search: [String; 3],
     /// 位置那一列右邊（符合幾支、排序、縮圖大小）上次量到的寬度：左邊的條件只用剩下的地方
@@ -313,6 +315,46 @@ pub fn batch_done(app: &mut UiApp, ids: &[String], edit: &jellyfin::BatchEdit) {
         }
     }
     load_facets(app);
+}
+
+/// 這支影片的人物與它們在伺服器上的編號（人物照片用）
+pub fn people_of(app: &UiApp, id: &str) -> Vec<(Option<String>, String)> {
+    let Some(d) = app.jf_browse.as_ref() else { return vec![] };
+    let names = d.items.iter().flatten().chain(d.resume.iter()).chain(d.latest.iter()).find(|i| i.id == id).map(|i| i.people.clone()).unwrap_or_default();
+    super::jellyfin_face::people_with_ids(&names, &d.persons)
+}
+
+/// 換了人物照片：清單上的那張重讀
+pub fn face_changed(app: &mut UiApp, person: &str) {
+    if let Some(d) = app.jf_browse.as_mut() {
+        d.faces.remove(person);
+    }
+}
+
+/// 讀一個人物的照片（「依這些找」的人物清單；沒有照片時記成沒有，不再問）
+fn load_face(app: &mut UiApp, id: &str) {
+    let Some(jf) = app.jellyfin() else { return };
+    let Some(d) = app.jf_browse.as_mut() else { return };
+    d.faces.insert(id.to_string(), Poster::Loading);
+    let (id, ctx) = (id.to_string(), app.ctx.clone());
+    app.spawn(
+        async move {
+            let key = id.clone();
+            let img = tokio::task::spawn_blocking(move || {
+                let pm = screenrecorder_core::picture::decode_pixmap(&jf.poster(&key)?)?;
+                Some(egui::ColorImage::from_rgba_premultiplied([pm.width() as usize, pm.height() as usize], pm.data()))
+            })
+            .await
+            .ok()
+            .flatten();
+            (id.clone(), img.map(|i| ctx.load_texture(format!("jf-face-{id}"), i, egui::TextureOptions::LINEAR)))
+        },
+        |app, (id, tex): (String, Option<egui::TextureHandle>)| {
+            if let Some(d) = app.jf_browse.as_mut() {
+                d.faces.insert(id, tex.map_or(Poster::None, Poster::Ready));
+            }
+        },
+    );
 }
 
 /// 伺服器上已經有的人物、標籤（影片資訊對話框點一下加入）；Jellyfin 分頁沒開時空的
@@ -905,7 +947,18 @@ fn apply_facet(d: &mut JfBrowse, change: FacetChange, out: &mut Panel) {
 
 /// 「人物 ⌄」「標籤 ⌄」「年份 ⌄」其中一個：按鈕上的藍色數字是勾了幾個；打開是搜尋框和勾選清單（後面寫用在幾支影片），
 /// 勾了馬上套用、清單不關（可以連續勾），最下面可以清除這一類。rows：（名稱, 幾支, 條件）
-fn facet_menu(ui: &mut egui::Ui, kind: u8, empty: &str, rows: Vec<(String, usize, JfFacet)>, chosen: &[JfFacet], search: &mut String, change: &mut FacetChange) {
+#[allow(clippy::too_many_arguments)]
+fn facet_menu(
+    ui: &mut egui::Ui,
+    kind: u8,
+    empty: &str,
+    rows: Vec<(String, usize, JfFacet)>,
+    chosen: &[JfFacet],
+    search: &mut String,
+    change: &mut FacetChange,
+    faces: &HashMap<String, Poster>,
+    want_faces: &mut Vec<String>,
+) {
     let p = theme::pal(ui);
     let label = [tr!("人物", "People"), tr!("標籤", "Tags"), tr!("年份", "Year")][kind as usize];
     let n = chosen.iter().filter(|f| kind_of(f) == kind).count();
@@ -930,13 +983,25 @@ fn facet_menu(ui: &mut egui::Ui, kind: u8, empty: &str, rows: Vec<(String, usize
                 let cw = if *c > 0 || is_none_facet(f) { 56.0 } else { 0.0 };
                 let mut on = chosen.contains(f);
                 let shown: String = if name.chars().count() > 24 { name.chars().take(23).chain(['…']).collect() } else { name.clone() };
-                let cb = Rect::from_min_max(row.min, pos2(row.max.x - cw, row.max.y));
+                let face_w = if matches!(f, JfFacet::Person(..)) { 28.0 } else { 0.0 };
+                let cb = Rect::from_min_max(row.min, pos2(row.max.x - cw - face_w, row.max.y));
                 let r = ui.scope_builder(UiBuilder::new().max_rect(cb).layout(Layout::left_to_right(Align::Center)), |ui| theme::check(ui, &mut on, shown)).inner;
                 if r.changed() {
                     *change = FacetChange::Toggle(f.clone());
                 }
                 if *c > 0 || is_none_facet(f) {
                     ui.painter().text(pos2(row.max.x - 4.0, row.center().y), Align2::RIGHT_CENTER, trf!("{c} 支", "{c}"), theme::font(12.0), p.muted);
+                }
+                // 人物照片（有的話）：支數左邊一個圓形小頭像
+                if let JfFacet::Person(id, _) = f {
+                    let at = Rect::from_center_size(pos2(row.max.x - cw - 14.0, row.center().y), vec2(22.0, 22.0));
+                    match faces.get(id) {
+                        Some(Poster::Ready(tex)) => {
+                            egui::Image::new(tex).fit_to_exact_size(at.size()).corner_radius(11.0).paint_at(ui, at);
+                        }
+                        None if ui.is_rect_visible(at) => want_faces.push(id.clone()),
+                        _ => {}
+                    }
                 }
                 if is_none_facet(f) {
                     r.on_hover_text(tr!(
@@ -1084,6 +1149,8 @@ pub struct Panel {
     play_all: bool,
     /// 按了產生字幕進度旁的「取消」
     cancel_subs: bool,
+    /// 「依這些找」的人物清單看到了、還沒讀的人物照片
+    faces: Vec<String>,
     find_dupes: bool,
 }
 
@@ -1175,9 +1242,9 @@ pub fn panel(ui: &mut egui::Ui, d: &mut JfBrowse, busy: Option<(usize, usize)>, 
             let tags: Vec<_> = std::iter::once(none_row(d.no_tags, JfFacet::NoTags)).chain(d.tags.iter().map(|(t, c)| (t.clone(), *c, JfFacet::Tag(t.clone())))).collect();
             let people: Vec<_> = std::iter::once(none_row(d.no_people, JfFacet::NoPeople)).chain(d.persons.iter().map(|(id, n, c)| (n.clone(), *c, JfFacet::Person(id.clone(), n.clone())))).collect();
             let [s0, s1, s2] = &mut d.facet_search;
-            facet_menu(ui, 2, &why(tr!("Jellyfin 上的影片都還沒有設年份", "No videos on Jellyfin have a year yet")), years, &d.facet, s2, &mut change);
-            facet_menu(ui, 1, &why(tr!("Jellyfin 上的影片都還沒有標籤", "No videos on Jellyfin have tags yet")), tags, &d.facet, s1, &mut change);
-            facet_menu(ui, 0, tr!("影片還沒有設人物", "No videos have people yet"), people, &d.facet, s0, &mut change);
+            facet_menu(ui, 2, &why(tr!("Jellyfin 上的影片都還沒有設年份", "No videos on Jellyfin have a year yet")), years, &d.facet, s2, &mut change, &d.faces, &mut out.faces);
+            facet_menu(ui, 1, &why(tr!("Jellyfin 上的影片都還沒有標籤", "No videos on Jellyfin have tags yet")), tags, &d.facet, s1, &mut change, &d.faces, &mut out.faces);
+            facet_menu(ui, 0, tr!("影片還沒有設人物", "No videos have people yet"), people, &d.facet, s0, &mut change, &d.faces, &mut out.faces);
             ui.label(theme::muted(ui, tr!("依這些找：", "Find by:")));
             apply_facet(d, change, &mut out);
         });
@@ -1458,7 +1525,8 @@ pub fn apply(app: &mut UiApp, mut d: JfBrowse, out: Panel) {
         app.s.jf_grid_size = d.grid;
         app.save_settings();
     }
-    let Panel { mut reload, more, mut picked, bulk_download, bulk_delete, bulk_organize, play_all, cancel_subs, find_dupes } = out;
+    let Panel { mut reload, more, mut picked, bulk_download, bulk_delete, bulk_organize, play_all, cancel_subs, faces, find_dupes } = out;
+
     if cancel_subs {
         if let Some(r) = &app.jf_subs {
             r.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -1571,6 +1639,11 @@ pub fn apply(app: &mut UiApp, mut d: JfBrowse, out: Panel) {
     app.jf_browse = Some(d);
     for id in picked.posters {
         load_poster(app, &id);
+    }
+    let mut faces = faces;
+    faces.dedup();
+    for id in faces {
+        load_face(app, &id);
     }
     if more {
         load_more(app);

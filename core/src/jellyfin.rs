@@ -222,6 +222,11 @@ impl Jellyfin {
         self.call_body(agent().post(&format!("{}/Items/{id}", self.url)), &item).map(|_| ())
     }
 
+    /// 換掉人物的照片（人物的主要圖片；不像影片封面那樣補橫幅圖、縮圖）
+    pub fn set_person_photo(&self, person: &str, jpeg: &[u8]) -> Result<(), String> {
+        self.set_image(person, "Primary", jpeg)
+    }
+
     /// 換掉這支影片在 Jellyfin 的封面（主要圖片）：圖片用 base64 送過去
     /// 換封面時橫幅圖、縮圖也一起換（不然首頁還是舊的那一格）
     pub fn set_cover(&self, id: &str, jpeg: &[u8]) -> Result<(), String> {

@@ -13,6 +13,7 @@ pub mod jellyfin_batch;
 pub mod jellyfin_browse;
 pub mod jellyfin_dupes;
 pub mod jellyfin_edit;
+pub mod jellyfin_face;
 pub mod jellyfin_subs;
 pub mod library_dialog;
 pub mod library_send;
@@ -197,6 +198,8 @@ pub struct UiApp {
     pub jf_batch_run: Option<jellyfin_batch::BatchRun>,
     /// 背景正在幫 Jellyfin 影片產生字幕的
     pub jf_subs: Option<jellyfin_subs::SubsRun>,
+    /// 人物照片：框出臉設成 Jellyfin 上人物的照片
+    pub jf_face: Option<jellyfin_face::FaceDlg>,
     /// 找 Jellyfin 上重複的影片
     pub jf_dupes: Option<jellyfin_dupes::JfDupes>,
     /// 上一格工作列有沒有顯示進度（做完時閃一下用）
@@ -371,6 +374,7 @@ impl UiApp {
             jf_batch: None,
             jf_batch_run: None,
             jf_subs: None,
+            jf_face: None,
             jf_dupes: None,
             taskbar_busy: false,
             back_to: None,
@@ -1700,6 +1704,9 @@ impl eframe::App for UiApp {
         }
         if self.jf_batch.is_some() {
             jellyfin_batch::show(self, &ctx);
+        }
+        if self.jf_face.is_some() {
+            jellyfin_face::show(self, &ctx);
         }
         library_send::transfer_bar(self, &ctx);
         // 設定視窗在其他視窗之後畫：從剪輯視窗、全部錄影開啟時（例如「前往外部元件」）在最上面

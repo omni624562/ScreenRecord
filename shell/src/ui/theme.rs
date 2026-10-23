@@ -294,6 +294,8 @@ pub enum Icon {
     Restore,
     /// 加號（補給全部）
     Plus,
+    /// 人物（頭和肩膀：人物照片）
+    Person,
 }
 
 /// 在 rect（正方形）裡畫圖示
@@ -473,6 +475,10 @@ pub fn paint_icon(p: &Painter, rect: Rect, icon: Icon, color: Color32) {
         Icon::Close => {
             line(&[(4.0, 4.0), (12.0, 12.0)]);
             line(&[(12.0, 4.0), (4.0, 12.0)]);
+        }
+        Icon::Person => {
+            circle(8.0, 5.5, 2.8);
+            arc(8.0, 14.5, 5.5, std::f32::consts::PI, std::f32::consts::TAU);
         }
         Icon::Plus => {
             line(&[(8.0, 3.0), (8.0, 13.0)]);

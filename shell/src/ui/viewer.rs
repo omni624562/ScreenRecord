@@ -606,6 +606,8 @@ enum Act {
     JfCover,
     /// 串流的 Jellyfin 影片：改 Jellyfin 上的影片資訊
     JfInfo,
+    /// 串流的 Jellyfin 影片：用這一格框出臉，設成人物照片
+    JfFace,
     /// 串流的 Jellyfin 影片：加進或拿出我的最愛
     JfFav,
     /// 後退或快轉幾秒
@@ -737,6 +739,12 @@ fn remote_buttons(app: &UiApp, remote: Option<&Remote>) -> Vec<HeadBtn> {
     let down = head_btn(tr!("下載到這台電腦", "Download"), Some(Icon::Download), tr!("把原檔下載到儲存位置", "Download the original to your save folder"), Act::Download);
     let mut cover = head_icon(tr!("設為封面", "Set as cover"), Icon::Image, tr!("把正在看的這一格設成 Jellyfin 上的封面", "Use the frame you're watching as the cover on Jellyfin"), Act::JfCover);
     cover.group = true;
+    let face = head_icon(
+        tr!("人物照片", "Person photo"),
+        Icon::Person,
+        tr!("用正在看的這一格框出臉，設成 Jellyfin 上人物的照片", "Frame a face in the picture you're watching and set it as a person's photo on Jellyfin"),
+        Act::JfFace,
+    );
     let info = head_icon(tr!("影片資訊", "Details"), Icon::Info, tr!("改 Jellyfin 上的標題、說明、人物、標籤、年份", "Change the title, description, people, tags and year on Jellyfin"), Act::JfInfo);
     let fav_on = remote.is_some_and(|r| r.favorite);
     let mut fav = if fav_on {
@@ -745,7 +753,7 @@ fn remote_buttons(app: &UiApp, remote: Option<&Remote>) -> Vec<HeadBtn> {
         head_icon(tr!("加上星號", "Star"), Icon::Star, tr!("加進 Jellyfin 的我的最愛", "Add to your Jellyfin favorites"), Act::JfFav)
     };
     fav.group = true;
-    vec![edit, make, down, cover, info, fav]
+    vec![edit, make, down, cover, face, info, fav]
 }
 
 pub fn show(app: &mut UiApp, ctx: &egui::Context) {
@@ -1269,6 +1277,17 @@ fn run_act(app: &mut UiApp, act: Act) {
                     Err(e) => app.toast(trf!("沒有設成封面：{e}", "Couldn't set the cover: {e}"), true),
                 },
             );
+        }
+        Act::JfFace => {
+            let Some(v) = app.viewer.as_mut() else { return };
+            let (Some(r), Some(ff)) = (v.remote.as_ref(), app.core.ffmpeg_path()) else { return };
+            let (id, url, t) = (r.id.clone(), v.cur().media.path.clone(), v.player.as_ref().map(|p| p.time()).unwrap_or(0.0));
+            v.pause();
+            let people = super::jellyfin_browse::people_of(app, &id);
+            app.spawn(async move { screenrecorder_core::cover::frame_at(&ff, &url, t).await.map_err(|e| e.message().to_string()) }, move |app, r| match r {
+                Ok(pm) => super::jellyfin_face::open(app, pm, people),
+                Err(e) => app.toast(trf!("讀不到這一格：{e}", "Couldn't read this frame: {e}"), true),
+            });
         }
         Act::JfInfo => {
             let Some(v) = app.viewer.as_mut() else { return };
