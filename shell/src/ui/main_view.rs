@@ -2067,8 +2067,6 @@ enum Notice {
     Manual(screenrecorder_core::types::ExportStatus),
     /// 排程錄影
     Schedule,
-    /// 有新版本
-    Update(screenrecorder_core::types::UpdateInfo),
     /// 錄影前的提醒（說明、提示、點了打開的設定）
     Warn(String, String, Page),
 }
@@ -2086,7 +2084,6 @@ impl Notice {
             Notice::AfterDone => format!("after-done:{}", app.core.after_done().map_or(0, |d| d.seq)),
             Notice::Manual(e) => format!("manual:{}", e.id),
             Notice::Schedule => "schedule".into(),
-            Notice::Update(u) => format!("update:{}", u.version),
             Notice::Warn(t, ..) => format!("warn:{t}"),
         }
     }
@@ -2139,9 +2136,6 @@ fn notices(app: &mut UiApp, ctx: &egui::Context, active: bool) -> Vec<Notice> {
         }
         if app.core.scheduled().is_some() {
             out.push(Notice::Schedule);
-        }
-        if let Some(u) = app.env.update.clone() {
-            out.push(Notice::Update(u));
         }
         for (text, tip, page) in rec_warnings(app, ctx) {
             out.push(Notice::Warn(text, tip, page));
@@ -2297,7 +2291,6 @@ fn notice_view(app: &UiApp, n: &Notice, p: &theme::Pal) -> NoticeView {
             }
             None => v(p.accent, String::new(), String::new()),
         },
-        Notice::Update(u) => v(p.accent, trf!("有新版本 v{}", "v{} available", u.version), String::new()),
         Notice::Warn(text, ..) => v(p.warn, format!("⚠ {text}"), String::new()),
     }
 }
@@ -2531,13 +2524,6 @@ fn notice_actions(app: &mut UiApp, ui: &mut Ui, n: &Notice) {
             if Btn::new(tr!("取消排程", "Cancel")).small().show(ui).clicked() {
                 app.core.cancel_schedule();
                 app.toast(tr!("已取消排程錄影", "Scheduled recording canceled"), false);
-            }
-        }
-        Notice::Update(u) => {
-            let busy = update_progress(app);
-            let label = busy.clone().unwrap_or_else(|| if can_self_update(u) { tr!("更新", "Update").into() } else { tr!("下載", "Download").into() });
-            if Btn::new(label).icon(Icon::Refresh).primary().small().enabled(busy.is_none()).show(ui).clicked() {
-                ask_update(app, u);
             }
         }
         Notice::Warn(_, tip, page) => {
