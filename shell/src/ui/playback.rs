@@ -1,11 +1,110 @@
 //! 檢視器與主畫面內播放的影片：有 libmpv 時用 mpv（畫面直接畫進 OpenGL 材質，跟 Windows 的播放器一樣順），
 //! 沒有或 mpv 播不了時用 FFmpeg 解碼（core::player）。
 
-use eframe::egui;
+use super::theme::{Btn, Icon};
+use eframe::egui::{self, Key};
 use eframe::glow::{self, HasContext};
 use screenrecorder_core::mpv::MpvPlayer;
 use screenrecorder_core::player::Player;
+use screenrecorder_core::tr;
 use std::sync::Arc;
+
+/// 後退 / 快轉一次跳幾秒（播放列的 ◀◀ ▶▶、←→ 鍵）
+const SKIP: f64 = 5.0;
+/// 按住多久開始連續跳、之後每隔多久跳一次（秒）
+const HOLD_DELAY: f64 = 0.5;
+const HOLD_EVERY: f64 = 0.25;
+
+/// 按住時每次跳幾秒：越按越久跳越多（5 → 10 → 20 → 30）
+fn hold_step(held: f64) -> f64 {
+    match held {
+        h if h < 1.5 => SKIP,
+        h if h < 3.0 => 10.0,
+        h if h < 5.0 => 20.0,
+        _ => 30.0,
+    }
+}
+
+/// 後退 / 快轉（檢視器、主畫面內播放共用）：按一下跳 5 秒，按住半秒後連續跳、越按越快
+#[derive(Default)]
+pub struct Skipper {
+    /// 按住的方向、按下的時間、下一次跳的時間
+    hold: Option<(f64, f64, f64)>,
+    /// 這一格 ←→ 按住的方向（鍵盤處理時記下，畫播放列時一起處理）
+    key: Option<f64>,
+}
+
+impl Skipper {
+    pub fn reset(&mut self) {
+        *self = Self::default();
+    }
+
+    /// ←→（沒按 Shift）：記下按住的方向；按下又放開在同一格裡就只跳一次
+    pub fn keys(&mut self, i: &egui::InputState, p: &Playback) {
+        self.key = None;
+        let (l, r) = (i.key_down(Key::ArrowLeft), i.key_down(Key::ArrowRight));
+        if l != r {
+            self.key = Some(if l { -1.0 } else { 1.0 });
+            return;
+        }
+        let tap = |k: Key| i.events.iter().any(|e| matches!(e, egui::Event::Key { key, pressed: true, repeat: false, .. } if *key == k));
+        if tap(Key::ArrowLeft) {
+            jump(p, -SKIP);
+        } else if tap(Key::ArrowRight) {
+            jump(p, SKIP);
+        }
+    }
+
+    /// 這一格沒處理鍵盤（有對話框、文字框在打字）：不算按住
+    pub fn no_keys(&mut self) {
+        self.key = None;
+    }
+
+    /// 播放列的 ◀◀ ▶▶，並處理按住（按鈕或 ←→）
+    pub fn buttons(&mut self, ui: &mut egui::Ui, p: &Playback) {
+        let back = Btn::icon_only(Icon::SkipBack).ghost().small().tooltip(tr!("後退 5 秒（←），按住加速", "Back 5 s (←), hold to go faster")).show(ui);
+        let fwd = Btn::icon_only(Icon::SkipFwd).ghost().small().tooltip(tr!("快轉 5 秒（→），按住加速", "Forward 5 s (→), hold to go faster")).show(ui);
+        let dir = if back.is_pointer_button_down_on() {
+            Some(-1.0)
+        } else if fwd.is_pointer_button_down_on() {
+            Some(1.0)
+        } else {
+            self.key
+        };
+        self.hold(ui.ctx(), p, dir);
+    }
+
+    /// dir = 這一格按住的方向：剛按下先跳 5 秒，按住半秒後每 0.25 秒再跳，越按越久跳越多
+    fn hold(&mut self, ctx: &egui::Context, p: &Playback, dir: Option<f64>) {
+        let Some(d) = dir else {
+            self.hold = None;
+            return;
+        };
+        let now = ctx.input(|i| i.time);
+        let step = match self.hold {
+            Some((hd, since, next)) if hd == d => {
+                if now < next {
+                    ctx.request_repaint_after(std::time::Duration::from_secs_f64(next - now));
+                    return;
+                }
+                self.hold = Some((d, since, now + HOLD_EVERY));
+                hold_step(now - since)
+            }
+            _ => {
+                self.hold = Some((d, now, now + HOLD_DELAY));
+                SKIP
+            }
+        };
+        jump(p, d * step);
+        let wait = self.hold.map_or(HOLD_EVERY, |h| h.2 - now);
+        ctx.request_repaint_after(std::time::Duration::from_secs_f64(wait));
+    }
+}
+
+/// 往前 / 往後跳 d 秒（不超過頭尾）
+fn jump(p: &Playback, d: f64) {
+    p.seek((p.time() + d).clamp(0.0, (p.duration() - 0.1).max(0.0)));
+}
 
 pub enum Playback {
     Ff(Player),
@@ -245,5 +344,19 @@ impl Drop for VideoSurface {
             self.gl.delete_framebuffer(self.fbo);
             self.gl.delete_texture(self.tex);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn holding_skip_goes_faster() {
+        // 按一下 5 秒；按越久跳越多，最多一次 30 秒
+        assert_eq!(hold_step(0.6), 5.0);
+        assert!(hold_step(2.0) > hold_step(1.0));
+        assert!(hold_step(4.0) > hold_step(2.0));
+        assert_eq!(hold_step(60.0), 30.0);
     }
 }

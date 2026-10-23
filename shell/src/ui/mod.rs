@@ -7,6 +7,7 @@ pub mod dialogs;
 pub mod editor;
 pub mod entry_menu;
 pub mod export_dialog;
+pub mod hover_play;
 pub mod import;
 pub mod inline_play;
 pub mod jellyfin_batch;
@@ -1709,6 +1710,7 @@ impl eframe::App for UiApp {
             jellyfin_dupes::show(self, &ctx);
         }
         inline_play::tick(self, &ctx);
+        hover_play::tick(&ctx);
         if self.viewer.is_some() {
             viewer::show(self, &ctx);
             part(self, "檢視器");

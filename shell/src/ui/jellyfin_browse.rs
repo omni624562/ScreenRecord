@@ -697,6 +697,8 @@ struct Picked {
     scrolled: bool,
     /// 縮圖一排幾個
     cols: Option<usize>,
+    /// 滑鼠停在哪一支影片的縮圖上（滑過預覽、停住就播放）
+    hover: Option<(JfItem, Rect)>,
 }
 
 /// 加進哪個合集、播放清單：to 是（編號, 名稱），None 是新建一個（先問名稱）
@@ -779,6 +781,12 @@ fn cells(ui: &mut egui::Ui, d: &JfBrowse, items: &[JfItem], rows: Option<usize>,
             let inside = ui.rect_contains_pointer(cell);
             let hovering = resp.hovered() || inside && [check, trash, down, edit].iter().any(|r| ui.rect_contains_pointer(*r));
             let mut used = false;
+            // 滑過預覽、停住就播放（在縮圖上、不在角落的按鈕上）
+            let on_buttons = [check, trash, down, edit].iter().any(|r| ui.rect_contains_pointer(*r));
+            if video && ui.rect_contains_pointer(img) && !on_buttons && !resp.dragged() {
+                out.hover = Some((it.clone(), img));
+            }
+            let playing = video && super::hover_play::paint(ui.painter(), &it.id, img, 8);
             if video && (hovering || on || picking) {
                 let r = ui.interact(check, ui.id().with(("jf-check", &it.id)), Sense::click()).on_hover_text(tr!("勾選（一次下載、刪除好幾支）", "Select (to download or delete several at once)"));
                 let painter = ui.painter();
@@ -835,7 +843,7 @@ fn cells(ui: &mut egui::Ui, d: &JfBrowse, items: &[JfItem], rows: Option<usize>,
                     out.scrolled = true;
                 }
             }
-            if hovering && video && !picking {
+            if hovering && video && !picking && !playing {
                 theme::paint_icon(painter, Rect::from_center_size(img.center(), vec2(40.0, 40.0)), Icon::Play, egui::Color32::WHITE);
             }
             // 看到一半：縮圖下緣的進度條
@@ -1754,6 +1762,7 @@ pub fn panel(ui: &mut egui::Ui, d: &mut JfBrowse, busy: Option<(usize, usize)>, 
     // 下面：右邊換頁，左邊勾選的操作（和錄影、截圖分頁一樣）
     let foot = Rect::from_min_max(pos2(table.min.x, ui.max_rect().max.y - foot_h), ui.max_rect().max);
     ui.painter().hline(foot.x_range(), foot.min.y - 4.0, egui::Stroke::new(1.0, p.border));
+    super::dialogs::toast_spot(ui.ctx(), pos2(foot.max.x, foot.min.y - 4.0));
     // 右下角：共幾個（不換頁，捲動時自動讀下一批）
     let pager_w = if !d.at_top() && d.items.is_some() {
         let right = &mut ui.new_child(UiBuilder::new().max_rect(foot).layout(Layout::right_to_left(Align::Center)));
@@ -1846,6 +1855,9 @@ pub fn panel(ui: &mut egui::Ui, d: &mut JfBrowse, busy: Option<(usize, usize)>, 
 
 /// 處理在分頁上按的（d 是從 app.jf_browse 拿出來畫的那一份，處理完放回去）
 pub fn apply(app: &mut UiApp, mut d: JfBrowse, mut out: Panel) {
+    if let Some((it, rect)) = out.picked.hover.take() {
+        hover(app, &it, rect);
+    }
     // 縮圖大小、清單檢視、排序、篩選、停在哪裡記到下次（有改才存）
     let sort_at = JfSort::ALL.iter().position(|s| *s == d.sort).unwrap_or(0) as u8;
     let filter_at = JfFilter::ALL.iter().position(|f| *f == d.filter).unwrap_or(0) as u8;
@@ -2125,6 +2137,16 @@ fn load_more(app: &mut UiApp) {
             }
         },
     );
+}
+
+/// 滑鼠在 Jellyfin 影片的縮圖上：停住約 1 秒就在縮圖裡靜音播放（從停住的時間點），不然浮出滑過預覽
+fn hover(app: &mut UiApp, it: &JfItem, rect: Rect) {
+    let Some(jf) = app.jellyfin() else { return };
+    let ctx = app.ctx.clone();
+    let url = jf.stream_url(&it.id);
+    if !super::hover_play::hover(&ctx, &it.id, rect, it.duration, |_| super::thumbs::hover_player(app, &url, it.duration, it.fps, (it.width, it.height))) {
+        super::thumbs::jf_scrub_preview(app, &ctx, rect, it);
+    }
 }
 
 #[cfg(test)]

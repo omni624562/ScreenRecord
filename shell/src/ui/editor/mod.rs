@@ -2550,6 +2550,8 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
             });
         });
         tour::mark(ui, if ed.is_shot() { Spot::ShFoot } else { Spot::EdFoot }, foot.response.rect);
+        // 提示放在下方「儲存」那一排的上方
+        super::dialogs::toast_spot(ui.ctx(), foot.response.rect.right_top());
     });
 
     // Ctrl+S：和按「另存剪輯版 / 儲存修改」一樣；還不能存時說明原因

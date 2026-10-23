@@ -19,8 +19,10 @@ pub enum Thumb {
 #[derive(Default)]
 pub struct Thumbs {
     map: HashMap<(String, u64), Thumb>,
-    /// 滑過預覽的長條圖（core::thumbs::strip）
+    /// 滑過預覽的長條圖（core::thumbs::strip；Jellyfin 的影片鍵是「jf:編號」與大小）
     strips: HashMap<(String, u64), Thumb>,
+    /// Jellyfin 的時間軸預覽縮圖（影片編號, 第幾張大圖）
+    jf_tiles: HashMap<(String, u32), Thumb>,
 }
 
 fn decode(path: &std::path::Path) -> Option<ColorImage> {
@@ -103,13 +105,81 @@ impl UiApp {
         );
         None
     }
+
+    /// Jellyfin 影片（沒有時間軸預覽縮圖時）的滑過預覽長條圖：FFmpeg 從串流網址讀，存在縮圖快取
+    pub fn thumb_strip_remote(&mut self, id: &str, url: &str, size: u64, duration: f64) -> Option<TextureHandle> {
+        let key = (format!("jf:{id}"), size);
+        match self.thumbs.strips.get(&key) {
+            Some(Thumb::Ready(t)) => return Some(t.clone()),
+            Some(Thumb::Failed(at)) if at.elapsed() >= RETRY_FAILED => {}
+            Some(_) => return None,
+            None => {}
+        }
+        if self.thumbs.strips.len() > 60 {
+            self.thumbs.strips.clear();
+        }
+        self.thumbs.strips.insert(key.clone(), Thumb::Loading);
+        let core = self.core.clone();
+        let (url, name) = (url.to_string(), format!("{id}|{size}"));
+        self.spawn(
+            async move {
+                let file = core.thumbs.strip_remote(core.ffmpeg_path().as_deref(), &url, &name, duration).await?;
+                tokio::task::spawn_blocking(move || decode(&file)).await.ok().flatten()
+            },
+            move |app, img| {
+                let t = match img {
+                    Some(img) => Thumb::Ready(app.ctx.load_texture(format!("strip:{}", key.0), img, TextureOptions::LINEAR)),
+                    None => Thumb::Failed(Instant::now()),
+                };
+                app.thumbs.strips.insert(key, t);
+                app.ctx.request_repaint();
+            },
+        );
+        None
+    }
+
+    /// Jellyfin 的時間軸預覽縮圖的第 index 張大圖（還沒讀時開始讀，回傳 None）
+    fn jf_tile(&mut self, id: &str, tp: &screenrecorder_core::jellyfin::Trickplay, index: u32) -> Option<TextureHandle> {
+        let key = (id.to_string(), index);
+        match self.thumbs.jf_tiles.get(&key) {
+            Some(Thumb::Ready(t)) => return Some(t.clone()),
+            Some(Thumb::Failed(at)) if at.elapsed() >= RETRY_FAILED => {}
+            Some(_) => return None,
+            None => {}
+        }
+        let jf = self.jellyfin()?;
+        if self.thumbs.jf_tiles.len() > 40 {
+            self.thumbs.jf_tiles.clear();
+        }
+        self.thumbs.jf_tiles.insert(key.clone(), Thumb::Loading);
+        let (id, tp) = (id.to_string(), tp.clone());
+        self.spawn(
+            async move {
+                tokio::task::spawn_blocking(move || {
+                    let bytes = jf.trickplay_tile(&id, &tp, index)?;
+                    let pm = screenrecorder_core::picture::decode_pixmap(&bytes)?;
+                    Some(ColorImage::from_rgba_premultiplied([pm.width() as usize, pm.height() as usize], pm.data()))
+                })
+                .await
+                .ok()
+                .flatten()
+            },
+            move |app, img| {
+                let t = match img {
+                    Some(img) => Thumb::Ready(app.ctx.load_texture("jf-trickplay", img, TextureOptions::LINEAR)),
+                    None => Thumb::Failed(Instant::now()),
+                };
+                app.thumbs.jf_tiles.insert(key, t);
+                app.ctx.request_repaint();
+            },
+        );
+        None
+    }
 }
 
 /// 滑過預覽：游標在 hover（縮圖）上左右移動時，在 near 旁邊浮出一張大一點的畫面、時間與進度；
 /// 長條圖還沒好時顯示「正在準備預覽…」
 pub fn scrub_preview(app: &mut UiApp, ui: &eframe::egui::Ui, hover: eframe::egui::Rect, near: eframe::egui::Rect, path: &str, mtime: f64, duration: f64) {
-    use eframe::egui::{self, pos2, vec2, Align2, Color32, CornerRadius, Id, Order, Rect, Stroke};
-    use screenrecorder_core::thumbs::{strip_pick, STRIP_FRAMES};
     let Some(pos) = ui.ctx().pointer_hover_pos().filter(|p| hover.contains(*p)) else { return };
     // 只有 MP4 影片；產生失敗（損壞、還在寫入）的不顯示
     if !(duration.is_finite() && duration > 0.0) || !path.to_ascii_lowercase().ends_with(".mp4") {
@@ -119,29 +189,66 @@ pub fn scrub_preview(app: &mut UiApp, ui: &eframe::egui::Ui, hover: eframe::egui
     if strip.is_none() && matches!(app.thumbs.strips.get(&(path.to_string(), mtime as u64)), Some(Thumb::Failed(_))) {
         return;
     }
-    let frac = ((pos.x - hover.min.x) / hover.width().max(1.0)) as f64;
+    strip_box(ui.ctx(), near, strip, ((pos.x - hover.min.x) / hover.width().max(1.0)) as f64, duration);
+}
+
+/// 用長條圖（STRIP_FRAMES 格）浮出 frac（0～1）處的畫面
+fn strip_box(ctx: &eframe::egui::Context, near: eframe::egui::Rect, strip: Option<TextureHandle>, frac: f64, duration: f64) {
+    use eframe::egui::{pos2, Rect};
+    use screenrecorder_core::thumbs::{strip_pick, STRIP_FRAMES};
     let (i, t) = strip_pick(frac, duration);
-    let p = super::theme::pal(ui);
-    // 預覽寬 240（和長條圖一格一樣），依影片比例；放在縮圖右邊，放不下時放左邊
     let aspect = strip.as_ref().map(|s| s.size_vec2()).map(|s| s.y / (s.x / STRIP_FRAMES as f32)).filter(|a| a.is_finite() && *a > 0.1).unwrap_or(9.0 / 16.0);
+    let n = STRIP_FRAMES as f32;
+    let image = strip.as_ref().map(|tex| (tex.id(), Rect::from_min_max(pos2(i as f32 / n, 0.0), pos2((i + 1) as f32 / n, 1.0))));
+    scrub_box(ctx, near, image, aspect, t, duration);
+}
+
+/// Jellyfin 分頁的滑過預覽：Jellyfin 做好時間軸預覽縮圖時用它（每幾秒一張，跟著游標連續變），
+/// 沒有時從串流讀一條長條圖（第一次要等幾秒）
+pub fn jf_scrub_preview(app: &mut UiApp, ctx: &eframe::egui::Context, hover: eframe::egui::Rect, it: &screenrecorder_core::jellyfin::JfItem) {
+    use eframe::egui::{pos2, Rect};
+    let Some(pos) = ctx.pointer_hover_pos().filter(|p| hover.contains(*p)) else { return };
+    if !(it.duration.is_finite() && it.duration > 0.0) {
+        return;
+    }
+    let frac = (((pos.x - hover.min.x) / hover.width().max(1.0)) as f64).clamp(0.0, 1.0);
+    if let Some(tp) = &it.trickplay {
+        let t = frac * it.duration;
+        let (index, uv) = tp.at(t);
+        let tile = app.jf_tile(&it.id, tp, index);
+        let aspect = if tp.width > 0 { tp.height as f32 / tp.width as f32 } else { 9.0 / 16.0 };
+        let image = tile.as_ref().map(|tex| (tex.id(), Rect::from_min_max(pos2(uv[0], uv[1]), pos2(uv[2], uv[3]))));
+        scrub_box(ctx, hover, image, aspect, t, it.duration);
+        return;
+    }
+    let Some(jf) = app.jellyfin() else { return };
+    let strip = app.thumb_strip_remote(&it.id, &jf.stream_url(&it.id), it.size, it.duration);
+    if strip.is_none() && matches!(app.thumbs.strips.get(&(format!("jf:{}", it.id), it.size)), Some(Thumb::Failed(_))) {
+        return;
+    }
+    strip_box(ctx, hover, strip, frac, it.duration);
+}
+
+/// 浮出的預覽框（寬 240，依影片比例）：放在 near 右邊，放不下時放左邊；image = None 時寫「正在準備預覽…」
+fn scrub_box(ctx: &eframe::egui::Context, near: eframe::egui::Rect, image: Option<(eframe::egui::TextureId, eframe::egui::Rect)>, aspect: f32, t: f64, duration: f64) {
+    use eframe::egui::{self, pos2, vec2, Align2, Color32, CornerRadius, Id, Order, Rect, Stroke};
+    let p = super::theme::pal_ctx(ctx);
     let size = vec2(240.0, (240.0 * aspect).clamp(60.0, 320.0));
-    let screen = ui.ctx().content_rect();
+    let screen = ctx.content_rect();
     let mut at = pos2(near.max.x + 10.0, near.center().y - size.y / 2.0);
     if at.x + size.x > screen.max.x - 8.0 {
         at.x = near.min.x - 10.0 - size.x;
     }
     at.y = at.y.clamp(screen.min.y + 8.0, (screen.max.y - size.y - 30.0).max(screen.min.y + 8.0));
-    egui::Area::new(Id::new("scrub-preview")).order(Order::Tooltip).fixed_pos(at).interactable(false).show(ui.ctx(), |ui| {
+    egui::Area::new(Id::new("scrub-preview")).order(Order::Tooltip).fixed_pos(at).interactable(false).show(ctx, |ui| {
         let r = Rect::from_min_size(at, size);
         let painter = ui.painter();
         painter.rect_filled(r.expand(3.0), CornerRadius::same(8), p.surface);
         painter.rect_stroke(r.expand(3.0), CornerRadius::same(8), Stroke::new(1.0, p.border_strong), egui::StrokeKind::Outside);
         painter.rect_filled(r, CornerRadius::same(6), Color32::BLACK);
-        match &strip {
-            Some(tex) => {
-                let n = STRIP_FRAMES as f32;
-                let uv = Rect::from_min_max(pos2(i as f32 / n, 0.0), pos2((i + 1) as f32 / n, 1.0));
-                painter.image(tex.id(), r, uv, Color32::WHITE);
+        match image {
+            Some((tex, uv)) => {
+                painter.image(tex, r, uv, Color32::WHITE);
             }
             None => {
                 painter.text(r.center(), Align2::CENTER_CENTER, screenrecorder_core::tr!("正在準備預覽…", "Preparing preview…"), super::theme::font(12.5), Color32::from_gray(200));
@@ -158,5 +265,16 @@ pub fn scrub_preview(app: &mut UiApp, ui: &eframe::egui::Ui, hover: eframe::egui
         painter.galley(lr.min + vec2(4.0, 2.0), g, Color32::WHITE);
         ui.allocate_rect(r, egui::Sense::hover());
     });
-    ui.ctx().request_repaint();
+    ctx.request_repaint();
+}
+
+/// 縮圖上停住就播放：用 FFmpeg 解成小畫面、不出聲音（input 是本機路徑或 Jellyfin 的串流網址）
+pub fn hover_player(app: &UiApp, input: &str, duration: f64, fps: f64, size: (u32, u32)) -> Option<screenrecorder_core::player::Player> {
+    use screenrecorder_core::player::{MediaSpec, Player};
+    let ffmpeg = app.core.ffmpeg_path()?;
+    let spec = MediaSpec { path: input.to_string(), duration, fps: if fps > 0.0 { fps } else { 30.0 }, has_audio: false };
+    let c = app.ctx.clone();
+    let (max_w, max_h) = super::hover_play::DECODE_MAX;
+    let (w, h) = if size.0 > 0 && size.1 > 0 { size } else { (1280, 720) };
+    Some(Player::new(ffmpeg, spec, w, h, max_w, max_h, std::sync::Arc::new(move || c.request_repaint())))
 }

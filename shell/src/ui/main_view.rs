@@ -2740,6 +2740,8 @@ fn recent_panel(app: &mut UiApp, ui: &mut Ui) {
         });
         let lib = Rect::from_min_max(pos2(full.min.x, full.max.y - lib_h), full.max);
         ui.painter().hline(lib.x_range(), lib.min.y - 6.0, Stroke::new(1.0, p.border));
+        // 提示放在右欄「檔案庫」那一排的上方
+        super::dialogs::toast_spot(ui.ctx(), pos2(lib.max.x, lib.min.y - 6.0));
         ui.scope_builder(UiBuilder::new().max_rect(lib).layout(Layout::top_down(Align::Min)), |ui| {
             ui.spacing_mut().item_spacing.y = 6.0;
             ui.label(RichText::new(tr!("檔案庫", "Library")).font(theme::font_bold(12.5)).color(p.muted));
@@ -2816,15 +2818,23 @@ fn recent_card(app: &mut UiApp, ui: &mut Ui, e: &LibraryEntry, date: String, w: 
     let thumb_resp = ui.interact(thumb, Id::new(("recent-thumb", &e.media.path)), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
     let hot_thumb = thumb_resp.hovered();
     // 滑過縮圖：旁邊浮出預覽，左右移動看不同時間的畫面（聲音檔仍顯示「播放」提示）
+    // 停住不動約 1 秒：在縮圖裡靜音播放（從停住的時間點開始）
     let thumb_resp = if hot_thumb && e.media.path.to_ascii_lowercase().ends_with(".mp4") {
-        super::thumbs::scrub_preview(app, ui, thumb, thumb, &e.media.path, e.media.mtime, e.media.duration_sec.unwrap_or(0.0));
+        let dur = e.media.duration_sec.unwrap_or(0.0);
+        let size = (e.media.width.unwrap_or(0), e.media.height.unwrap_or(0));
+        let fps = e.media.fps.unwrap_or(0.0);
+        if !super::hover_play::hover(ui.ctx(), &e.media.path, thumb, dur, |_| super::thumbs::hover_player(app, &e.media.path, dur, fps, size)) {
+            super::thumbs::scrub_preview(app, ui, thumb, thumb, &e.media.path, e.media.mtime, dur);
+        }
         thumb_resp
     } else {
         thumb_resp.on_hover_text(tr!("播放", "Play"))
     };
-    painter.circle_filled(thumb.center(), if hot_thumb { 15.0 } else { 13.0 }, Color32::from_black_alpha(if hot_thumb { 170 } else { 110 }));
-    let c = thumb.center();
-    painter.add(egui::Shape::convex_polygon(vec![c + vec2(-4.0, -6.5), c + vec2(7.0, 0.0), c + vec2(-4.0, 6.5)], Color32::WHITE, Stroke::NONE));
+    if !super::hover_play::paint(&painter, &e.media.path, thumb, 5) {
+        painter.circle_filled(thumb.center(), if hot_thumb { 15.0 } else { 13.0 }, Color32::from_black_alpha(if hot_thumb { 170 } else { 110 }));
+        let c = thumb.center();
+        painter.add(egui::Shape::convex_polygon(vec![c + vec2(-4.0, -6.5), c + vec2(7.0, 0.0), c + vec2(-4.0, 6.5)], Color32::WHITE, Stroke::NONE));
+    }
     if thumb_resp.clicked() {
         app.known.insert(e.media.path.clone(), e.clone());
         app.act(EntryAction::PlayHere, e.clone());
