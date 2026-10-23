@@ -230,6 +230,10 @@ pub fn tick(app: &mut UiApp, ctx: &egui::Context) {
             Ok("dark") => ctx.set_theme(egui::ThemePreference::Dark),
             _ => {}
         }
+        // 測試用：SCREENRECORDER_WINSIZE=1880x1000 換視窗大小（看寬螢幕的樣子）
+        if let Some((w, h)) = std::env::var("SCREENRECORDER_WINSIZE").ok().and_then(|v| v.split_once('x').and_then(|(w, h)| Some((w.parse::<f32>().ok()?, h.parse::<f32>().ok()?)))) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(w, h)));
+        }
         app.dev.script = parse_script(&std::env::var("SCREENRECORDER_INPUT").unwrap_or_default());
     }
     let start = *app.dev.started.get_or_insert_with(Instant::now);
