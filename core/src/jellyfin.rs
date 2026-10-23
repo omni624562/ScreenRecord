@@ -394,8 +394,8 @@ impl Jellyfin {
     }
 
     /// 一個資料夾（媒體庫、合集）裡的東西：資料夾在前，影片依 sort 排；search 不是空的時找整個伺服器。
-    /// filter 不是「全部」時列出這個資料夾底下（含子資料夾）符合的影片；facets（人物、標籤、年份）有選時找整個伺服器的影片
-    /// （同一類任一個符合、不同類都要符合）。回傳（這一頁, 全部幾個）
+    /// filter 不是「全部」時列出這個資料夾底下（含子資料夾）符合的影片；facets（人物、標籤、年份）有選時找這個資料夾底下
+    /// （含子資料夾；parent 是 None 時整個伺服器）的影片（同一類任一個符合、不同類都要符合）。回傳（這一頁, 全部幾個）
     #[allow(clippy::too_many_arguments)]
     pub fn items(&self, user: &str, parent: Option<&str>, search: &str, start: usize, limit: usize, sort: JfSort, filter: JfFilter, facets: &[JfFacet]) -> Result<(Vec<JfItem>, usize), String> {
         let mut req = self.items_req(&format!("{}/Users/{user}/Items", self.url)).query("startIndex", &start.to_string()).query("limit", &limit.to_string()).query("enableTotalRecordCount", "true");
@@ -410,7 +410,7 @@ impl Jellyfin {
             })
             .collect();
         if !lacking.is_empty() {
-            return self.items_lacking(user, start, limit, sort, filter, facets, &lacking);
+            return self.items_lacking(user, parent, start, limit, sort, filter, facets, &lacking);
         }
         if !facets.is_empty() {
             req = req.query("sortBy", by).query("sortOrder", order).query("recursive", "true").query("includeItemTypes", VIDEO_TYPES);
@@ -424,7 +424,7 @@ impl Jellyfin {
         } else {
             req = req.query("sortBy", by).query("sortOrder", order).query("recursive", "true").query("includeItemTypes", VIDEO_TYPES);
         }
-        if search.is_empty() && facets.is_empty() {
+        if search.is_empty() {
             if let Some(p) = parent {
                 req = req.query("parentId", p);
             }
@@ -437,9 +437,19 @@ impl Jellyfin {
     }
 
     /// 「依這些找」有「沒有人物」「沒有標籤」時：其他條件交給伺服器，讀全部符合的（太多時到 2 萬支為止）、
-    /// 留下沒有那些的，再切出這一頁。回傳（這一頁, 全部幾個）
+    /// 留下沒有那些的，再切出這一頁；parent 有給時只找那個資料夾（含子資料夾）。回傳（這一頁, 全部幾個）
     #[allow(clippy::too_many_arguments)]
-    fn items_lacking(&self, user: &str, start: usize, limit: usize, sort: JfSort, filter: JfFilter, facets: &[JfFacet], lacking: &[NameKind]) -> Result<(Vec<JfItem>, usize), String> {
+    fn items_lacking(
+        &self,
+        user: &str,
+        parent: Option<&str>,
+        start: usize,
+        limit: usize,
+        sort: JfSort,
+        filter: JfFilter,
+        facets: &[JfFacet],
+        lacking: &[NameKind],
+    ) -> Result<(Vec<JfItem>, usize), String> {
         let (by, order) = sort.query();
         let mut keep: Vec<Value> = vec![];
         let mut at = 0usize;
@@ -455,6 +465,9 @@ impl Jellyfin {
                 .query("enableTotalRecordCount", "true");
             for (k, v) in facet_query(facets) {
                 req = req.query(k, &v);
+            }
+            if let Some(p) = parent {
+                req = req.query("parentId", p);
             }
             if let Some(f) = filter.query() {
                 req = req.query("filters", f);
@@ -613,11 +626,16 @@ impl Jellyfin {
     /// 人物、標籤依次數多到少、再依名稱排，只差在前後空白、大小寫、全形半形的算同一個，顯示用得最多的寫法；
     /// 年份新的在前；太多時讀到 2 萬支為止
     pub fn usage(&self, user: &str) -> Result<Usage, String> {
+        self.usage_in(user, None)
+    }
+
+    /// 同 usage，parent 有給時只算那個資料夾（含子資料夾）裡的影片（Jellyfin 分頁在某個資料夾裡「依這些找」的支數）
+    pub fn usage_in(&self, user: &str, parent: Option<&str>) -> Result<Usage, String> {
         let (mut people, mut tags, mut years) = (vec![], vec![], vec![]);
         let (mut no_people, mut no_tags) = (0usize, 0usize);
         let mut start = 0usize;
         loop {
-            let req = agent()
+            let mut req = agent()
                 .get(&format!("{}/Users/{user}/Items", self.url))
                 .query("recursive", "true")
                 .query("includeItemTypes", VIDEO_TYPES)
@@ -627,6 +645,9 @@ impl Jellyfin {
                 .query("startIndex", &start.to_string())
                 .query("limit", "1000")
                 .query("enableTotalRecordCount", "true");
+            if let Some(p) = parent {
+                req = req.query("parentId", p);
+            }
             let body = self.call(req)?.into_string().map_err(|e| e.to_string())?;
             let (p, t, y, got, total) = people_tags_of_items(&body);
             let (np, nt) = lacking_counts(&body);
@@ -3603,12 +3624,42 @@ mod tests {
     }
 
     #[test]
-    fn facet_browse_searches_the_whole_server() {
+    fn facet_browse_searches_below_the_folder() {
+        // 在資料夾裡：只找那個資料夾（含子資料夾）
         let (url, h) = serve_seq(vec![("200 OK", r#"{"Items":[],"TotalRecordCount":0}"#.to_string())]);
         let jf = Jellyfin::new(&url, "k").unwrap();
         jf.items("u", Some("p1"), "", 0, 60, JfSort::Name, JfFilter::All, &[JfFacet::Person("pp".into(), "媽媽".into()), JfFacet::Person("pq".into(), "小明".into()), JfFacet::Year(2024)]).unwrap();
         let got = h.join().unwrap();
-        assert!(got[0].contains("personIds=pp%2Cpq") && got[0].contains("years=2024") && got[0].contains("recursive=true") && !got[0].contains("parentId"), "{got:?}");
+        assert!(got[0].contains("personIds=pp%2Cpq") && got[0].contains("years=2024") && got[0].contains("recursive=true") && got[0].contains("parentId=p1"), "{got:?}");
+        // 最上層：整個伺服器
+        let (url, h) = serve_seq(vec![("200 OK", r#"{"Items":[],"TotalRecordCount":0}"#.to_string())]);
+        let jf = Jellyfin::new(&url, "k").unwrap();
+        jf.items("u", None, "", 0, 60, JfSort::Name, JfFilter::All, &[JfFacet::Year(2024)]).unwrap();
+        let got = h.join().unwrap();
+        assert!(got[0].contains("years=2024") && !got[0].contains("parentId"), "{got:?}");
+        // 「沒有人物」也只看那個資料夾
+        let (url, h) = serve_seq(vec![("200 OK", r#"{"Items":[{"Id":"a","Name":"a","Type":"Video"}],"TotalRecordCount":1}"#.to_string())]);
+        let jf = Jellyfin::new(&url, "k").unwrap();
+        let (items, n) = jf.items("u", Some("p1"), "", 0, 60, JfSort::Name, JfFilter::All, &[JfFacet::NoPeople]).unwrap();
+        let got = h.join().unwrap();
+        assert!(got[0].contains("parentId=p1") && got[0].contains("recursive=true"), "{got:?}");
+        assert_eq!((items.len(), n), (1, 1));
+    }
+
+    #[test]
+    fn usage_counts_only_the_folder() {
+        let body = r#"{"Items":[{"Id":"a","People":[],"Tags":[]},{"Id":"b","People":[{"Name":"小美"}],"Tags":["旅行"]}],"TotalRecordCount":2}"#;
+        let (url, h) = serve_seq(vec![("200 OK", body.to_string())]);
+        let jf = Jellyfin::new(&url, "k").unwrap();
+        let u = jf.usage_in("u", Some("p1")).unwrap();
+        let got = h.join().unwrap();
+        assert!(got[0].contains("parentId=p1") && got[0].contains("recursive=true"), "{got:?}");
+        assert_eq!((u.no_people, u.no_tags), (1, 1));
+        // 整個伺服器：不帶資料夾
+        let (url, h) = serve_seq(vec![("200 OK", body.to_string())]);
+        let jf = Jellyfin::new(&url, "k").unwrap();
+        jf.usage("u").unwrap();
+        assert!(!h.join().unwrap()[0].contains("parentId"));
     }
 
     #[test]
