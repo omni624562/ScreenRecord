@@ -1767,7 +1767,7 @@ fn control_bar(app: &mut UiApp, ui: &mut Ui) {
     });
 }
 
-/// 待命：開始錄影（快速鍵在滑鼠提示）；右邊是訊息，沒有訊息時空著
+/// 待命：紅色的「● 錄影」（快速鍵在滑鼠提示）；右邊是訊息，沒有訊息時空著
 fn idle_controls(app: &mut UiApp, ui: &mut Ui) {
     let narrow = ui.available_width() < 700.0;
     let manual = app.manual_export();
@@ -1782,11 +1782,11 @@ fn idle_controls(app: &mut UiApp, ui: &mut Ui) {
     } else {
         String::new()
     };
-    let label = if app.s.source_type == SourceType::Audio { tr!("開始錄音", "Start audio recording") } else { tr!("開始錄影", "Start recording") };
+    let label = if app.s.source_type == SourceType::Audio { tr!("錄音", "Record audio") } else { tr!("錄影", "Record") };
     // 快速鍵不寫在按鈕上，滑鼠移上去才提示
     let k = app.keys.label(0);
     let tip = if tip.is_empty() && !k.is_empty() && app.env.hotkeys.is_some_and(|h| h.all().first().copied().unwrap_or(false)) { trf!("快速鍵 {k}", "Shortcut {k}") } else { tip };
-    let start = Btn::new(label).kind(theme::Kind::Record).height(42.0).min_width(if narrow { 130.0 } else { 180.0 }).enabled(can_start(app)).tooltip(tip).show(ui);
+    let start = Btn::new(label).kind(theme::Kind::Record).height(42.0).min_width(if narrow { 110.0 } else { 140.0 }).enabled(can_start(app)).tooltip(tip).show(ui);
     tour::mark(ui, Spot::Record, start.rect);
     if start.clicked() {
         start_recording(app);
@@ -2548,8 +2548,8 @@ fn recent_panel(app: &mut UiApp, ui: &mut Ui) {
                 let dir = app.s.out_dir(&app.env);
                 let name = std::path::Path::new(&dir).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| dir.clone());
                 let text = trf!(
-                    "還沒有錄影。按「開始錄影」錄第一支，錄好會出現在這裡（存在「{name}」資料夾）。",
-                    "No recordings yet. Click “Start recording” to make your first one; it will show up here (saved in the “{name}” folder)."
+                    "還沒有錄影。按紅色的「錄影」錄第一支，錄好會出現在這裡（存在「{name}」資料夾）。",
+                    "No recordings yet. Click the red “Record” button to make your first one; it will show up here (saved in the “{name}” folder)."
                 );
                 ui.add(egui::Label::new(theme::muted(ui, &text)).wrap()).on_hover_text(&dir);
                 return;
