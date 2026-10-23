@@ -1211,7 +1211,6 @@ fn apply_facet(d: &mut JfBrowse, change: FacetChange, out: &mut Panel) {
     d.path.clear();
     d.search.clear();
     d.search_at = None;
-    d.filter = JfFilter::All;
     d.page = 0;
     out.reload = true;
 }
@@ -1616,8 +1615,15 @@ pub fn panel(ui: &mut egui::Ui, d: &mut JfBrowse, busy: Option<(usize, usize)>, 
             {
                 out.play_all = true;
             }
-            // 篩選只在資料夾裡（列出這個資料夾底下符合的影片）
-            if d.searched.is_empty() && d.facet.is_empty() && !ordered {
+            // 篩選：資料夾裡列出底下符合的影片；搜尋、依條件找時從結果裡再篩（勾條件時保留原本的篩選）
+            if !ordered {
+                let tip = if !d.facet.is_empty() {
+                    tr!("符合條件的影片裡，只列出這一種", "Only list this kind among the videos that match")
+                } else if !d.searched.is_empty() {
+                    tr!("搜尋結果裡，只列出這一種", "Only list this kind among the search results")
+                } else {
+                    tr!("不是「全部」時，列出這個資料夾底下（含子資料夾）符合的影片", "Anything but “All” lists matching videos in this folder and its subfolders")
+                };
                 egui::ComboBox::from_id_salt("jf-filter")
                     .selected_text(d.filter.label())
                     .width(120.0)
@@ -1627,7 +1633,7 @@ pub fn panel(ui: &mut egui::Ui, d: &mut JfBrowse, busy: Option<(usize, usize)>, 
                         }
                     })
                     .response
-                    .on_hover_text(tr!("不是「全部」時，列出這個資料夾底下（含子資料夾）符合的影片", "Anything but “All” lists matching videos in this folder and its subfolders"));
+                    .on_hover_text(tip);
             }
             if (sort, filter) != (d.sort, d.filter) {
                 d.page = 0;
@@ -1635,7 +1641,10 @@ pub fn panel(ui: &mut egui::Ui, d: &mut JfBrowse, busy: Option<(usize, usize)>, 
             }
             // 依條件找：排序左邊寫符合幾支（滑鼠移上去看完整的條件）
             if !d.facet.is_empty() && d.searched.is_empty() {
-                let what = facet_summary(&d.facet);
+                let mut what = facet_summary(&d.facet);
+                if d.filter != JfFilter::All {
+                    what = format!("{what}{}{}", tr!("・", " · "), d.filter.label());
+                }
                 let (text, tip) = match &d.items {
                     Some(_) => (trf!("符合 {} 支", "{} matching", d.total), trf!("符合 {} 支：{what}", "{} matching: {what}", d.total)),
                     None => (tr!("正在找…", "Finding…").to_string(), trf!("正在找{what}…", "Finding {what}…")),
@@ -1666,14 +1675,22 @@ pub fn panel(ui: &mut egui::Ui, d: &mut JfBrowse, busy: Option<(usize, usize)>, 
                 });
             }
             (Some(items), None) if items.is_empty() => {
-                let msg = if !d.facet.is_empty() {
-                    tr!("找不到符合這些條件的影片，可以拿掉幾個條件試試", "No videos match all of these. Try removing a few")
+                let msg: String = if !d.facet.is_empty() && d.filter != JfFilter::All {
+                    trf!(
+                        "找不到符合這些條件、而且是「{}」的影片，可以拿掉幾個條件或把篩選改回「全部」試試",
+                        "No videos match all of these and “{}”. Try removing a few, or set the filter back to All",
+                        d.filter.label()
+                    )
+                } else if !d.facet.is_empty() {
+                    tr!("找不到符合這些條件的影片，可以拿掉幾個條件試試", "No videos match all of these. Try removing a few").into()
+                } else if !d.searched.is_empty() && d.filter != JfFilter::All {
+                    tr!("找不到符合的影片（篩選不是「全部」）", "No matching videos (the filter isn't All)").into()
                 } else if !d.searched.is_empty() {
-                    tr!("找不到符合的影片", "No matching videos")
+                    tr!("找不到符合的影片", "No matching videos").into()
                 } else if d.filter == JfFilter::All {
-                    tr!("這裡沒有影片", "No videos here")
+                    tr!("這裡沒有影片", "No videos here").into()
                 } else {
-                    tr!("這裡沒有符合的影片", "No matching videos here")
+                    tr!("這裡沒有符合的影片", "No matching videos here").into()
                 };
                 bui.label(RichText::new(msg).color(p.muted));
             }

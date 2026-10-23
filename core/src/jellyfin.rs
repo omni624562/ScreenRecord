@@ -394,7 +394,7 @@ impl Jellyfin {
             })
             .collect();
         if !lacking.is_empty() {
-            return self.items_lacking(user, start, limit, sort, facets, &lacking);
+            return self.items_lacking(user, start, limit, sort, filter, facets, &lacking);
         }
         if !facets.is_empty() {
             req = req.query("sortBy", by).query("sortOrder", order).query("recursive", "true").query("includeItemTypes", VIDEO_TYPES);
@@ -422,7 +422,8 @@ impl Jellyfin {
 
     /// 「依這些找」有「沒有人物」「沒有標籤」時：其他條件交給伺服器，讀全部符合的（太多時到 2 萬支為止）、
     /// 留下沒有那些的，再切出這一頁。回傳（這一頁, 全部幾個）
-    fn items_lacking(&self, user: &str, start: usize, limit: usize, sort: JfSort, facets: &[JfFacet], lacking: &[NameKind]) -> Result<(Vec<JfItem>, usize), String> {
+    #[allow(clippy::too_many_arguments)]
+    fn items_lacking(&self, user: &str, start: usize, limit: usize, sort: JfSort, filter: JfFilter, facets: &[JfFacet], lacking: &[NameKind]) -> Result<(Vec<JfItem>, usize), String> {
         let (by, order) = sort.query();
         let mut keep: Vec<Value> = vec![];
         let mut at = 0usize;
@@ -438,6 +439,9 @@ impl Jellyfin {
                 .query("enableTotalRecordCount", "true");
             for (k, v) in facet_query(facets) {
                 req = req.query(k, &v);
+            }
+            if let Some(f) = filter.query() {
+                req = req.query("filters", f);
             }
             let body = self.call(req)?.into_string().map_err(|e| e.to_string())?;
             let (got, total) = lacking_in(&body, lacking, &mut keep);
