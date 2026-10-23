@@ -42,55 +42,28 @@ enum Try {
 fn items(_app: &UiApp) -> Vec<(String, String, Try)> {
     vec![
         (
-            tr!("Jellyfin：一次整理好幾支的人物、標籤", "Jellyfin: organize people and tags for many videos").into(),
+            tr!("滑鼠停在縮圖上就播放", "Rest the mouse on a thumbnail to play").into(),
             tr!(
-                "勾選影片按「整理人物、標籤…」，一次加、拿掉人物和標籤，改年份；「依這些找」可以找「沒有人物」「沒有標籤」的影片。播放時按「人物照片」把臉框起來設成那個人的照片。",
-                "Check videos and choose “Organize people & tags…” to add or remove people and tags and change the year at once; find-by can list videos with no people or tags. While playing, “Person photo” frames a face as that person's photo."
+                "最近錄影、全部錄影、Jellyfin 的縮圖上，左右移動滑鼠看不同時間的畫面；停住約 1 秒就在縮圖裡靜音播放，從停住的地方開始，移開就停。",
+                "On thumbnails in recent recordings, the library and Jellyfin, move the mouse to see different moments; rest it for about a second and the video plays muted right in the thumbnail from that spot, stopping when you move away."
+            )
+            .into(),
+            Try::Library(false),
+        ),
+        (
+            tr!("Jellyfin 也能滑過預覽", "Scrub preview for Jellyfin too").into(),
+            tr!(
+                "Jellyfin 分頁的縮圖上左右移動滑鼠，旁邊浮出那個時間點的畫面；有做時間軸預覽縮圖時直接用它，沒有時從影片讀。",
+                "Move the mouse across a thumbnail in the Jellyfin tab to see that moment beside it, using Jellyfin's trickplay images when it has them."
             )
             .into(),
             Try::Jellyfin,
         ),
         (
-            tr!("Jellyfin：合集與播放清單", "Jellyfin: collections and playlists").into(),
+            tr!("後退、快轉：按住越來越快", "Back and forward: hold to go faster").into(),
             tr!(
-                "最上層多了「合集」「播放清單」，可以全部播放；勾選影片按「加進…」或按右鍵放進去，也可以新建。",
-                "Collections and playlists now appear at the top level, with Play all; add checked videos with “Add to…” or the right-click menu, or create a new one."
-            )
-            .into(),
-            Try::Jellyfin,
-        ),
-        (
-            tr!("幫 Jellyfin 上的影片產生字幕", "Make subtitles for videos on Jellyfin").into(),
-            tr!(
-                "勾選影片按「產生字幕」，用這台電腦的語音辨識做字幕傳回 Jellyfin，電視、手機上看也有字幕；不用先下載影片。",
-                "Check videos and choose “Make subtitles”: this computer's speech recognition makes them and sends them back to Jellyfin, so TVs and phones show them too. No download needed."
-            )
-            .into(),
-            Try::Jellyfin,
-        ),
-        (
-            tr!("Jellyfin：清單檢視、鍵盤操作", "Jellyfin: list view and keyboard").into(),
-            tr!(
-                "切成清單一列一支，點欄位標題排序；方向鍵移動、Enter 打開、空白鍵勾選、Delete 刪除、Backspace 回上一層。",
-                "Switch to a list with sortable columns; arrows move, Enter opens, Space checks, Delete deletes and Backspace goes up."
-            )
-            .into(),
-            Try::Jellyfin,
-        ),
-        (
-            tr!("新的錄影控制列", "A new recording bar").into(),
-            tr!(
-                "錄影中的計時和暫停、標記、麥克風靜音、停止收進一條深色的錄影膠囊，拿掉音量條，畫面更清爽。",
-                "While recording, the timer, pause, mark, mic mute and stop sit in one dark capsule, and the level meters are gone."
-            )
-            .into(),
-            Try::None,
-        ),
-        (
-            tr!("傳到 Jellyfin 快很多", "Sending to Jellyfin is much faster").into(),
-            tr!(
-                "傳好後直接請 Jellyfin 掃描那個資料夾，不用再等它的監控延遲（原本要一分鐘左右），影片資訊、封面也比較不會漏設。",
-                "After sending, Jellyfin is asked to scan that folder right away instead of waiting out its monitor delay (about a minute before), so details and covers are set more reliably."
+                "檢視器和主畫面播放列的 ◀◀ ▶▶ 按一下跳 5 秒，按住會連續跳、越來越快；鍵盤 ←→ 也一樣。",
+                "◀◀ ▶▶ in the viewer and main-view player jump 5 s per press and keep going faster while held; ← → work the same way."
             )
             .into(),
             Try::None,
