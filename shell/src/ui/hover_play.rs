@@ -1,5 +1,5 @@
 //! 縮圖上停住就播放（像 YouTube 首頁）：滑鼠在縮圖上左右移動是滑過預覽，停住約 1 秒就在縮圖裡靜音播放，
-//! 從停住的那個時間點開始；滑鼠再移動回到滑過預覽，移開就停止。最近錄影、全部錄影、Jellyfin 分頁共用。
+//! 從停住的那個時間點開始；開始播之後在縮圖上移動也繼續播，離開縮圖才停止。最近錄影、全部錄影、Jellyfin 分頁共用。
 //! 同時只播一支（FFmpeg 解成小畫面、不出聲音），所以狀態放在這裡，不用每個清單各記一份。
 
 use super::theme;
@@ -55,18 +55,17 @@ pub fn hover(ctx: &egui::Context, key: &str, rect: Rect, duration: f64, start: i
     let (now, pass) = (ctx.input(|i| i.time), ctx.cumulative_pass_nr());
     STATE.with_borrow_mut(|s| {
         s.seen = pass;
+        // 正在播這一張：在縮圖上怎麼移動都繼續播，離開縮圖才停（tick）
+        if s.playing.as_ref().is_some_and(|p| p.key == key) {
+            return true;
+        }
         let moved = !matches!(&s.still, Some((k, p, _)) if k == key && p.distance(pos) < MOVE);
         if moved {
             s.still = Some((key.to_string(), pos, now));
-            // 播放中又移動：回到滑過預覽
-            if s.playing.is_some() {
-                s.playing = None;
-            }
+            // 移到另一張縮圖：前一張停掉
+            s.playing = None;
             ctx.request_repaint_after(std::time::Duration::from_secs_f64(DWELL));
             return false;
-        }
-        if s.playing.as_ref().is_some_and(|p| p.key == key) {
-            return true;
         }
         let since = s.still.as_ref().map_or(now, |x| x.2);
         if now - since < DWELL {
@@ -85,6 +84,16 @@ pub fn hover(ctx: &egui::Context, key: &str, rect: Rect, duration: f64, start: i
         s.playing = Some(Playing { key: key.to_string(), player, tex: None, duration });
         true
     })
+}
+
+/// 滑鼠還在縮圖上、但在縮圖上的按鈕上（勾選、刪除…）：不開始播，正在播的繼續播
+pub fn keep(ctx: &egui::Context, key: &str) {
+    let pass = ctx.cumulative_pass_nr();
+    STATE.with_borrow_mut(|s| {
+        if s.playing.as_ref().is_some_and(|p| p.key == key) {
+            s.seen = pass;
+        }
+    });
 }
 
 /// 停在縮圖的 frac（0～1）處：從那一秒開始播；離結尾不到 1.5 秒就從頭
