@@ -196,8 +196,14 @@ pub fn show_ask(app: &mut UiApp, ctx: &egui::Context) {
     }
 }
 
-/// 畫面上有播放控制列時（檢視器），提示改放的位置：右下角（控制列上方）；這一格有畫才算
-pub const TOAST_SPOT: &str = "toast-spot";
+/// 提示放在右下角、往上長；畫面最下面有一排按鈕或控制列的（主畫面、檔案庫、檢視器、剪輯），放在那一排的上方
+const TOAST_SPOT: &str = "toast-spot";
+
+/// 這一格畫面的提示放在 at 的左上方（at = 最下面那一排的右上角）；最後畫的畫面（最上層）為準，這一格有畫才算
+pub fn toast_spot(ctx: &egui::Context, at: egui::Pos2) {
+    let pass = ctx.cumulative_pass_nr();
+    ctx.data_mut(|d| d.insert_temp(Id::new(TOAST_SPOT), (at, pass)));
+}
 
 pub fn show_toast(app: &mut UiApp, ctx: &egui::Context) {
     let Some(t) = &app.toast else { return };
@@ -215,7 +221,7 @@ pub fn show_toast(app: &mut UiApp, ctx: &egui::Context) {
     let spot = ctx.data(|d| d.get_temp::<(egui::Pos2, u64)>(Id::new(TOAST_SPOT))).filter(|(_, pass)| *pass == ctx.cumulative_pass_nr()).map(|(at, _)| at);
     let (align, offset) = match spot {
         Some(at) => (Align2::RIGHT_BOTTOM, vec2(at.x - screen.max.x - 12.0, at.y - screen.max.y - 12.0)),
-        None => (Align2::CENTER_BOTTOM, vec2(0.0, -28.0)),
+        None => (Align2::RIGHT_BOTTOM, vec2(-16.0, -16.0)),
     };
     let resp = egui::Area::new(Id::new("toast")).anchor(align, offset).order(egui::Order::Tooltip).interactable(has_actions).show(ctx, |ui| {
         egui::Frame::new().fill(fill).corner_radius(CornerRadius::same(10)).inner_margin(egui::Margin::symmetric(16, 10)).show(ui, |ui| {

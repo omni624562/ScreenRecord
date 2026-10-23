@@ -935,6 +935,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         let painter = ui.painter().clone();
         let foot = Rect::from_min_max(pos2(table.min.x, ui.max_rect().max.y - foot_h), ui.max_rect().max);
         painter.hline(foot.x_range(), foot.min.y - 4.0, Stroke::new(1.0, p.border));
+        super::dialogs::toast_spot(ui.ctx(), pos2(foot.max.x, foot.min.y - 4.0));
         let n = d.selected.len();
         let total = d.data.as_ref().map(|x| x.total).unwrap_or(0);
         // 右邊先放共幾筆，量好寬度；左邊（勾選的數量、操作、選取）只用剩下的地方（不分頁，捲動時自動讀下一批）

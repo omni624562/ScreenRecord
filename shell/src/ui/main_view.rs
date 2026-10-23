@@ -2740,6 +2740,8 @@ fn recent_panel(app: &mut UiApp, ui: &mut Ui) {
         });
         let lib = Rect::from_min_max(pos2(full.min.x, full.max.y - lib_h), full.max);
         ui.painter().hline(lib.x_range(), lib.min.y - 6.0, Stroke::new(1.0, p.border));
+        // 提示放在右欄「檔案庫」那一排的上方
+        super::dialogs::toast_spot(ui.ctx(), pos2(lib.max.x, lib.min.y - 6.0));
         ui.scope_builder(UiBuilder::new().max_rect(lib).layout(Layout::top_down(Align::Min)), |ui| {
             ui.spacing_mut().item_spacing.y = 6.0;
             ui.label(RichText::new(tr!("檔案庫", "Library")).font(theme::font_bold(12.5)).color(p.muted));

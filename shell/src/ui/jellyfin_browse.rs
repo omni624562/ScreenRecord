@@ -1762,6 +1762,7 @@ pub fn panel(ui: &mut egui::Ui, d: &mut JfBrowse, busy: Option<(usize, usize)>, 
     // 下面：右邊換頁，左邊勾選的操作（和錄影、截圖分頁一樣）
     let foot = Rect::from_min_max(pos2(table.min.x, ui.max_rect().max.y - foot_h), ui.max_rect().max);
     ui.painter().hline(foot.x_range(), foot.min.y - 4.0, egui::Stroke::new(1.0, p.border));
+    super::dialogs::toast_spot(ui.ctx(), pos2(foot.max.x, foot.min.y - 4.0));
     // 右下角：共幾個（不換頁，捲動時自動讀下一批）
     let pager_w = if !d.at_top() && d.items.is_some() {
         let right = &mut ui.new_child(UiBuilder::new().max_rect(foot).layout(Layout::right_to_left(Align::Center)));
