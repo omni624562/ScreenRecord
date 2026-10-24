@@ -42,45 +42,18 @@ enum Try {
 fn items(_app: &UiApp) -> Vec<(String, String, Try)> {
     vec![
         (
-            tr!("搜尋框一鍵清除", "Clear a search box in one click").into(),
+            tr!("拖曳文字到輸入框", "Drag text into text boxes").into(),
             tr!(
-                "檔案庫、Jellyfin 分頁和「依這些找」的搜尋框打了字之後，右邊的 × 一按就清掉。",
-                "Search boxes in the Library, the Jellyfin tab and its filters have an × on the right that clears what you typed."
-            )
-            .into(),
-            Try::Library(false),
-        ),
-        (
-            tr!("打的字不會不見", "Your edits stay put").into(),
-            tr!(
-                "影片資訊、批次整理等視窗改到一半按 Esc 或點到外面不會關掉；要放棄請按「取消」。",
-                "Pressing Esc or clicking outside a half-edited window (video details, batch edit…) no longer closes it; press Cancel to discard."
+                "選好的字按住拖到另一個輸入框放開就複製過去；從瀏覽器、記事本等其他程式拖進來的文字，放在輸入框上也會貼上。",
+                "Hold selected text and drag it to another text box to copy it there. Text dragged in from a browser, Notepad or other apps is pasted when you drop it on a text box."
             )
             .into(),
             Try::None,
         ),
         (
-            tr!("鍵盤操作看得到目前位置", "See where the keyboard is").into(),
-            tr!("按 Tab 移動時，按鈕、勾選框、開關外面有一圈藍框。", "When you move with Tab, the current button, checkbox or switch has a blue ring.").into(),
-            Try::None,
-        ),
-        (
-            tr!("刪錯了可以復原", "Undo more deletions").into(),
-            tr!(
-                "移到資源回收筒的提示都有「還原」；步驟教學刪掉的步驟、刪掉的標註樣式也可以放回去。",
-                "Every “moved to Recycle Bin” message has Restore, and deleted guide steps and annotation styles can be put back."
-            )
-            .into(),
-            Try::None,
-        ),
-        (
-            tr!("更安全、更順", "Safer and smoother").into(),
-            tr!(
-                "只從系統資料夾載入元件、Proxy 密碼加密保存；檔案庫、Jellyfin 分頁在很多影片時更順。",
-                "Components load only from system folders and the proxy password is stored encrypted; the Library and Jellyfin tab stay smooth with many videos."
-            )
-            .into(),
-            Try::None,
+            tr!("右鍵複製影片名稱", "Right-click to copy a video's name").into(),
+            tr!("播放畫面上方的名稱按右鍵，選「複製名稱」。", "Right-click the name at the top of the player and choose Copy name.").into(),
+            Try::Jellyfin,
         ),
     ]
 }

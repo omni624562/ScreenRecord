@@ -30,6 +30,7 @@ pub mod settings;
 pub mod settings_dialog;
 pub mod snip;
 pub mod steps_review;
+pub mod text_drag;
 pub mod text_menu;
 pub mod theme;
 pub mod thumbs;
@@ -316,6 +317,9 @@ fn place_window(cc: &eframe::CreationContext, saved: Option<screenrecorder_core:
         use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
         if let Ok(RawWindowHandle::Win32(h)) = cc.window_handle().map(|h| h.as_raw()) {
             screenrecorder_core::main_window::attach(h.hwnd.get());
+            // 拖放換成自己接：除了檔案，也收得到其他程式拖進來的文字
+            let ctx = cc.egui_ctx.clone();
+            screenrecorder_core::dropin::install(h.hwnd.get(), move || ctx.request_repaint());
         }
     }
     #[cfg(not(windows))]
@@ -1679,6 +1683,7 @@ impl eframe::App for UiApp {
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {
         // 自己畫的標題列：主畫面、對話框從標題列下面開始
         raw.safe_area_insets = Some(title_bar::insets(ctx));
+        text_drag::raw_input(ctx, raw);
         #[cfg(debug_assertions)]
         {
             dev::input(self, ctx, raw);
@@ -1820,6 +1825,7 @@ impl eframe::App for UiApp {
         title_bar::show(self, &ctx);
         title_bar::resize_edges(&ctx);
         text_menu::after(&ctx);
+        text_drag::after(&ctx);
         #[cfg(debug_assertions)]
         dev::tick(self, &ctx);
     }
