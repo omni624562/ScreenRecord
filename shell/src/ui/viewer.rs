@@ -602,6 +602,8 @@ enum Act {
     Next,
     Entry(EntryAction),
     Copy,
+    /// 標題右鍵「複製名稱」
+    CopyName,
     Delete,
     Ocr,
     Pin,
@@ -1237,8 +1239,13 @@ fn header(v: &mut Viewer, ui: &mut egui::Ui, e: &LibraryEntry, buttons: &[HeadBt
     let left = Rect::from_min_max(head.min, pos2(head.max.x - right_w - 16.0, head.max.y));
     let lui = &mut ui.new_child(egui::UiBuilder::new().max_rect(left).layout(Layout::top_down(Align::Min)));
     lui.spacing_mut().item_spacing.y = 2.0;
-    let title = if is_default_name(&e.media.name) { short_date(&e.media.name, e.media.time_ms(), true) } else { base_name(&e.media.name) };
-    lui.add(egui::Label::new(RichText::new(title).font(theme::font_bold(16.0))).truncate());
+    let name = lui.add(egui::Label::new(RichText::new(title_of(e)).font(theme::font_bold(16.0))).truncate().sense(Sense::click()));
+    name.context_menu(|ui| {
+        if ui.button(tr!("複製名稱", "Copy name")).clicked() {
+            *act = Act::CopyName;
+            ui.close();
+        }
+    });
     let mut meta = vec![];
     if v.list.len() > 1 {
         meta.push(format!("{} / {}", v.idx + 1, v.list.len()));
@@ -1262,6 +1269,15 @@ fn header(v: &mut Viewer, ui: &mut egui::Ui, e: &LibraryEntry, buttons: &[HeadBt
     ui.advance_cursor_after_rect(head);
 }
 
+/// 上方顯示的名稱：預設檔名換成日期時間，其他去掉副檔名
+fn title_of(e: &LibraryEntry) -> String {
+    if is_default_name(&e.media.name) {
+        short_date(&e.media.name, e.media.time_ms(), true)
+    } else {
+        base_name(&e.media.name)
+    }
+}
+
 /// 處理按下的按鈕、選單、快速鍵
 fn run_act(app: &mut UiApp, act: Act) {
     match act {
@@ -1282,6 +1298,12 @@ fn run_act(app: &mut UiApp, act: Act) {
         }
         Act::Next => go(app, 1),
         Act::Copy => copy_image(app),
+        Act::CopyName => {
+            let Some(v) = app.viewer.as_ref() else { return };
+            let name = title_of(v.cur());
+            app.ctx.copy_text(name.clone());
+            app.toast(trf!("已複製：{name}", "Copied: {name}"), false);
+        }
         Act::Download => {
             let Some(r) = app.viewer.as_ref().and_then(|v| v.remote.as_ref()) else { return };
             let item = (r.id.clone(), r.file_name.clone());
