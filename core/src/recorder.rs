@@ -812,9 +812,14 @@ impl Recorder {
     }
 
     /// 錄影中（含儲存中）要寫入的成品路徑：不能重新命名或刪除
-    /// 正在錄影的分段資料夾（救回中斷的錄影時不能動它）
+    /// 正在錄影的分段資料夾（救回中斷的錄影時不能動它）。
+    /// 已經停止（例如合併失敗）時是 None：那個資料夾就是要救回的
     pub fn parts_dir(&self) -> Option<PathBuf> {
-        self.lock().parts_dir.clone()
+        let st = self.lock();
+        if st.state == RecorderState::Idle {
+            return None;
+        }
+        st.parts_dir.clone()
     }
 
     /// 錄好的檔案重新命名了：結果卡跟著顯示新的檔案

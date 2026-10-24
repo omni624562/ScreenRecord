@@ -2995,6 +2995,24 @@ fn parse_discovery(json: &str, from: std::net::SocketAddr) -> Option<(String, St
     Some((name, url))
 }
 
+/// 沒有加密（http://）又不是家裡區域網路的位址：API 金鑰（管理員權限）會以明碼經過網際網路
+pub fn plain_over_internet(url: &str) -> bool {
+    let Some(url) = normalize_url(url) else { return false };
+    let Some(rest) = url.strip_prefix("http://") else { return false };
+    let authority = rest.split('/').next().unwrap_or("");
+    let host = match authority.strip_prefix('[') {
+        Some(r) => r.split(']').next().unwrap_or(""),
+        None => authority.rsplit_once(':').map_or(authority, |(h, _)| h),
+    };
+    let host = host.to_ascii_lowercase();
+    match host.parse::<std::net::IpAddr>() {
+        Ok(std::net::IpAddr::V4(a)) => !(a.is_private() || a.is_loopback() || a.is_link_local() || a.octets()[0] == 100 && (64..128).contains(&a.octets()[1])),
+        Ok(std::net::IpAddr::V6(a)) => !(a.is_loopback() || (a.segments()[0] & 0xfe00) == 0xfc00 || (a.segments()[0] & 0xffc0) == 0xfe80),
+        // 只有一段的名稱（nas）、.local、.lan、.home 是區域網路的
+        Err(_) => host.contains('.') && ![".local", ".lan", ".home", ".internal", ".localdomain"].iter().any(|s| host.ends_with(s)) && host != "localhost",
+    }
+}
+
 /// 使用者輸入的網址：補上 http://、去掉結尾的 /；空的或看不懂的回傳 None
 pub fn normalize_url(text: &str) -> Option<String> {
     let t = text.trim();
@@ -3167,6 +3185,10 @@ mod tests {
     #[test]
     fn urls_are_normalized() {
         assert_eq!(normalize_url(" 192.168.1.10:8096/ ").as_deref(), Some("http://192.168.1.10:8096"));
+        // 沒加密又經過網際網路才提醒
+        assert!(!plain_over_internet("192.168.1.10:8096") && !plain_over_internet("http://nas:8096") && !plain_over_internet("http://jf.local:8096"));
+        assert!(!plain_over_internet("https://jf.example.com") && !plain_over_internet("http://[::1]:8096"));
+        assert!(plain_over_internet("http://jf.example.com:8096") && plain_over_internet("8.8.8.8:8096"));
         assert_eq!(normalize_url("https://jf.example.com/jellyfin/").as_deref(), Some("https://jf.example.com/jellyfin"));
         assert_eq!(normalize_url("HTTP://nas:8096").as_deref(), Some("HTTP://nas:8096"));
         assert_eq!(normalize_url(""), None);

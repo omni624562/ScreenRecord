@@ -255,7 +255,7 @@ impl LibraryDialog {
 
     /// 勾選 / 取消一個檔案；原檔連同底下的加速版一起（之後可個別取消加速版）
     fn toggle(&mut self, path: &str, on: bool) {
-        let subs: Vec<String> = self.data.as_ref().and_then(|d| d.items.iter().find(|e| e.media.path == path)).map(|e| e.exports.iter().map(|x| x.media.path.clone()).collect()).unwrap_or_default();
+        let subs: Vec<String> = self.rows.iter().find(|e| e.media.path == path).map(|e| e.exports.iter().map(|x| x.media.path.clone()).collect()).unwrap_or_default();
         for p in std::iter::once(path.to_string()).chain(subs) {
             if on {
                 self.selected.insert(p);
@@ -447,11 +447,18 @@ fn load(app: &mut UiApp) {
         }
         d.loading = false;
         d.error = page.error.clone();
+        // 認得的檔案（之後用路徑找回完整資訊）：太多時從頭記（不會一直長）
+        if app.known.len() > 5000 {
+            app.known.clear();
+        }
         for e in &page.items {
             app.known.insert(e.media.path.clone(), e.clone());
         }
+        let Some(d) = app.library.as_mut() else { return };
+        let mut page = page;
         d.prefetch = page.ahead.clone();
-        d.rows = std::sync::Arc::new(page.items.clone());
+        // 清單搬進共用的那一份（不再另外複製一份留在 data 裡）
+        d.rows = std::sync::Arc::new(std::mem::take(&mut page.items));
         d.data = Some(page);
     });
 }
@@ -792,20 +799,10 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                 if shot {
                     browse::popup(ui, &mut d, &r);
                 }
-                if !d.query.is_empty() {
-                    let x = Rect::from_center_size(pos2(r.rect.max.x - 15.0, r.rect.center().y), vec2(22.0, 22.0));
-                    let xr = ui.interact(x, Id::new("libSearchClear"), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(tr!("清除搜尋", "Clear search"));
-                    if xr.hovered() {
-                        ui.painter().circle_filled(x.center(), 10.0, p.surface2);
-                    }
-                    theme::paint_icon(ui.painter(), Rect::from_center_size(x.center(), vec2(12.0, 12.0)), Icon::Close, if xr.hovered() { p.text } else { p.muted });
-                    if xr.clicked() {
-                        d.query.clear();
-                        d.search_at = None;
-                        d.page = 1;
-                        d.dirty = true;
-                        d.focus_search = true;
-                    }
+                if super::toolbar::clear_x(ui, &r, &mut d.query) {
+                    d.search_at = None;
+                    d.page = 1;
+                    d.dirty = true;
                 }
             }
             super::toolbar::Part::Left => {
@@ -997,14 +994,12 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         };
         let fui = &mut ui.new_child(UiBuilder::new().max_rect(Rect::from_min_max(foot.min, pos2(foot.max.x - pager_w, foot.max.y))).layout(Layout::left_to_right(Align::Center)));
         // 勾選的有幾個不在這一頁（換頁時勾選會保留）
-        let others = d
-            .data
-            .as_ref()
-            .map(|x| {
-                let here: HashSet<&str> = x.items.iter().flat_map(|e| std::iter::once(e.media.path.as_str()).chain(e.exports.iter().map(|x| x.media.path.as_str()))).collect();
-                d.selected.iter().filter(|p| !here.contains(p.as_str())).count()
-            })
-            .unwrap_or(0);
+        let others = if d.selected.is_empty() {
+            0
+        } else {
+            let here: HashSet<&str> = d.rows.iter().flat_map(|e| std::iter::once(e.media.path.as_str()).chain(e.exports.iter().map(|x| x.media.path.as_str()))).collect();
+            d.selected.iter().filter(|p| !here.contains(p.as_str())).count()
+        };
         // 沒有任何檔案時不顯示操作說明
         let hint = match (n, shot) {
             (0, _) if total == 0 => String::new(),
@@ -1259,7 +1254,7 @@ fn is_audio_file(name: &str) -> bool {
 
 /// 移到資源回收筒的項目（紅字，會先確認）
 fn trash_item(ui: &mut egui::Ui) -> bool {
-    ui.button(RichText::new(tr!("移到資源回收筒…", "Move to Recycle Bin…")).color(theme::pal(ui).rec)).clicked()
+    ui.button(RichText::new(tr!("移到資源回收筒…", "Move to Recycle Bin…")).color(theme::pal(ui).err)).clicked()
 }
 
 /// 移到資源回收筒的檔案：錄影連同底下的加速版、GIF
@@ -1311,6 +1306,35 @@ fn row_keys(app: &UiApp, ui: &egui::Ui, d: &mut LibraryDialog, rows: &[LibraryEn
 
 /// 錄影：表格（標題列固定，下面用捲軸，捲到快底時讀下一批；只畫看得到的列）。
 /// 依日期分組：每天第一筆在「日期」欄寫「今天」「昨天」「10/08（三）」，其餘只寫時間
+/// 錄影表格整份清單才算得出來的，清單換了才重算
+struct TableSum {
+    /// （清單、今天、有沒有設定媒體庫）
+    key: (std::sync::Arc<Vec<LibraryEntry>>, chrono::NaiveDate, bool),
+    days: std::rc::Rc<HashMap<chrono::NaiveDate, (usize, f64, u64)>>,
+    day_paths: std::rc::Rc<HashMap<chrono::NaiveDate, Vec<String>>>,
+    badge_w: f32,
+    lib_col: bool,
+    cut_col: bool,
+    mute_col: bool,
+    /// 媒體庫標記上次看的時間（每 2 秒重看）
+    lib_at: Option<Instant>,
+}
+
+thread_local! {
+    static TABLE: std::cell::RefCell<Option<TableSum>> = const { std::cell::RefCell::new(None) };
+    /// 錄影清單的順序（Shift 選一段用），清單換了才重算
+    #[allow(clippy::type_complexity)]
+    static VIDEO_ORDER: std::cell::RefCell<Option<(std::sync::Arc<Vec<LibraryEntry>>, std::rc::Rc<Vec<String>>)>> = const { std::cell::RefCell::new(None) };
+    /// 截圖格的順序與位置：（清單、欄數、列高、分組數）換了才重排
+    #[allow(clippy::type_complexity)]
+    static SHOTS: std::cell::RefCell<Option<(std::sync::Arc<Vec<LibraryEntry>>, (usize, u64, usize), std::rc::Rc<(Vec<String>, Vec<GridPlace>)>)>> = const { std::cell::RefCell::new(None) };
+}
+
+/// 清單的路徑（照順序）
+fn row_order(rows: &[LibraryEntry]) -> Vec<String> {
+    rows.iter().map(|e| e.media.path.clone()).collect()
+}
+
 /// 錄影的表格。size：縮圖大小（0 小、1 中、2 大），主列跟著變高
 #[allow(clippy::too_many_arguments)]
 fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table: Rect, dir: &str, req: &mut Option<Req>, size: &mut u8) {
@@ -1324,9 +1348,15 @@ fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table:
     let table = Rect::from_min_max(table.min, pos2(table.max.x - 10.0, table.max.y));
     let rows = d.rows.clone();
     let rows: &[LibraryEntry] = &rows;
-    let order: Vec<String> = rows.iter().map(|e| e.media.path.clone()).collect();
+    let order = VIDEO_ORDER.with_borrow_mut(|c| {
+        if c.as_ref().is_none_or(|(k, _)| !std::sync::Arc::ptr_eq(k, &d.rows)) {
+            *c = Some((d.rows.clone(), std::rc::Rc::new(row_order(rows))));
+        }
+        c.as_ref().map(|(_, v)| v.clone()).unwrap_or_default()
+    });
+    let order: &[String] = &order[..];
     let (ctrl, shift) = multi_mods(ui);
-    select_all_key(app, ui, d, &order);
+    select_all_key(app, ui, d, order);
     // 操作：播放、剪輯（有設定媒體庫時加上傳到媒體庫）、⋯
     let send = !app.s.after_copy_to.trim().is_empty();
     let slots = if send { 3 } else { 2 };
@@ -1366,28 +1396,50 @@ fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table:
     // 時間一律寫「時:分」；同一分鐘有好幾支時，後面用淡色小字補秒數。欄寬固定，檔名才會切齊
     let hm_w = ui.fonts_mut(|f| f.layout_no_wrap("00:00".into(), theme::font_bold(13.0), p.text).size().x);
     let sec_w = ui.fonts_mut(|f| f.layout_no_wrap(":00".into(), theme::font(12.0), p.muted).size().x);
-    let time_w = hm_w + if times.values().any(|(_, t)| t.len() > 5) { sec_w + 1.0 } else { 0.0 };
-    // 每一天（這一頁）的支數、總長度、總大小：日期欄第二行與提示
-    let mut days: HashMap<chrono::NaiveDate, (usize, f64, u64)> = HashMap::new();
-    for e in rows {
-        if let Some((dd, _)) = times.get(&e.media.name) {
-            let x = days.entry(*dd).or_default();
-            x.0 += 1;
-            x.1 += e.media.duration_sec.unwrap_or(0.0);
-            x.2 += e.media.bytes;
+    let today = chrono::Local::now().date_naive();
+    // 整份清單才算得出來的（每天的統計、標記欄、加速版標籤寬度）：清單換了才重算，
+    // 不要每一格都跑過上千筆（媒體庫標記另外每 2 秒重看一次）
+    let lib_on = send || app.jellyfin().is_some();
+    let sum = TABLE.with_borrow_mut(|c| {
+        // 鍵存清單本身（不只位址）：舊的清單還留著，新的清單不會剛好用到同一個位址而被當成一樣
+        let key = (d.rows.clone(), today, lib_on);
+        if c.as_ref().is_none_or(|c| !std::sync::Arc::ptr_eq(&c.key.0, &key.0) || c.key.1 != key.1 || c.key.2 != key.2) {
+            let mut days: HashMap<chrono::NaiveDate, (usize, f64, u64)> = HashMap::new();
+            let mut day_paths: HashMap<chrono::NaiveDate, Vec<String>> = HashMap::new();
+            for e in rows {
+                if let Some((dd, _)) = times.get(&e.media.name) {
+                    let x = days.entry(*dd).or_default();
+                    x.0 += 1;
+                    x.1 += e.media.duration_sec.unwrap_or(0.0);
+                    x.2 += e.media.bytes;
+                    day_paths.entry(*dd).or_default().push(e.media.path.clone());
+                }
+            }
+            let chip_w = |t: &str| ui.fonts_mut(|f| f.layout_no_wrap(t.to_string(), theme::font_bold(12.0), p.text).size().x) + 14.0;
+            *c = Some(TableSum {
+                key,
+                days: std::rc::Rc::new(days),
+                day_paths: std::rc::Rc::new(day_paths),
+                badge_w: rows.iter().flat_map(|e| &e.exports).map(|x| chip_w(&export_label(x))).fold(0.0, f32::max),
+                cut_col: rows.iter().any(|e| is_cut_name(&e.media.name)),
+                mute_col: rows.iter().any(|e| e.media.has_audio == Some(false) && e.media.duration_sec.is_some() && !is_audio_file(&e.media.name)),
+                lib_col: false,
+                lib_at: None,
+            });
         }
-    }
+        let c = c.as_mut().expect("剛填好");
+        if c.lib_at.is_none_or(|t| t.elapsed() > std::time::Duration::from_secs(2)) {
+            c.lib_at = Some(Instant::now());
+            c.lib_col = lib_on && rows.iter().any(|e| app.library_where(&e.media.path, e.media.bytes).is_some() || screenrecorder_core::transfer::is_pending(&e.media.path));
+        }
+        (c.days.clone(), c.day_paths.clone(), c.badge_w, c.lib_col, c.cut_col, c.mute_col)
+    });
+    let (days, day_paths, badge_w, lib_col, cut_col, mute_col) = (&*sum.0, &*sum.1, sum.2, sum.3, sum.4, sum.5);
+    let time_w = hm_w + if times.values().any(|(_, t)| t.len() > 5) { sec_w + 1.0 } else { 0.0 };
     // 檔名開始的位置（主列：縮圖、時間之後；加速版子列也對齊這裡）。
     // 子列的「4× 加速版」標籤比縮圖加時間寬時，整頁的檔名一起往右移，上下才切齊
-    let chip_w = |t: &str| ui.fonts_mut(|f| f.layout_no_wrap(t.to_string(), theme::font_bold(12.0), p.text).size().x) + 14.0;
-    let badge_w = rows.iter().flat_map(|e| &e.exports).map(|x| chip_w(&export_label(x))).fold(0.0, f32::max);
     let name_x = (col_x(2) + 4.0 + thumb_size.x + 10.0 + time_w + 12.0).max(col_x(2) + 48.0 + badge_w + 10.0);
-    let today = chrono::Local::now().date_naive();
     let mut last_day = None;
-    // 標記欄（媒體庫、剪輯版、沒有聲音）：這一頁有那種標記才留位置，檔名才不會被擠得太短
-    let lib_col = (send || app.jellyfin().is_some()) && rows.iter().any(|e| app.library_where(&e.media.path, e.media.bytes).is_some() || screenrecorder_core::transfer::is_pending(&e.media.path));
-    let cut_col = rows.iter().any(|e| is_cut_name(&e.media.name));
-    let mute_col = rows.iter().any(|e| e.media.has_audio == Some(false) && e.media.duration_sec.is_some() && !is_audio_file(&e.media.name));
     if rows.is_empty() {
         let can = can_record(app);
         empty_list(ui, d, table, dir, req, tr!("這個資料夾還沒有錄影。", "No recordings in this folder yet."), tr!("沒有符合條件的錄影。", "No matching recordings."), can);
@@ -1457,7 +1509,7 @@ fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table:
                     }
                 });
                 if resp.clicked() && (ctrl || shift) {
-                    d.pick(&e.media.path, &order, shift);
+                    d.pick(&e.media.path, order, shift);
                 }
                 let (day, time) = times.get(&e.media.name).cloned().unzip();
                 // 新的一天：上方用深一點的線分隔，日期欄寫日期
@@ -1472,7 +1524,7 @@ fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table:
                 let mut on2 = on;
                 if theme::check(rui, &mut on2, "").changed() {
                     if shift {
-                        d.pick(&e.media.path, &order, true);
+                        d.pick(&e.media.path, order, true);
                     } else {
                         d.toggle(&e.media.path, on2);
                         d.anchor = Some(e.media.path.clone());
@@ -1497,7 +1549,7 @@ fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table:
                         // 點日期：勾選（或取消）這一天全部
                         let cell = Rect::from_min_max(pos2(col_x(1), row.min.y + 4.0), pos2(col_x(2) - 4.0, row.max.y - 4.0));
                         let dresp = ui.interact(cell, Id::new(("libday", dd)), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
-                        let same: Vec<&String> = rows.iter().filter(|x| times.get(&x.media.name).map(|t| t.0) == Some(dd)).map(|x| &x.media.path).collect();
+                        let same: Vec<&String> = day_paths.get(&dd).map(|v| v.iter().collect()).unwrap_or_default();
                         let all_on = same.iter().all(|p| d.selected.contains(*p));
                         let tip = trf!(
                             "{}：{cnt} 支，共 {}、{}\n按一下{}這一天全部",
@@ -1549,7 +1601,7 @@ fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table:
                 let tresp = if audio { tresp.on_hover_text(tr!("播放", "Play")) } else { tresp };
                 if tresp.clicked() {
                     if ctrl || shift {
-                        d.pick(&e.media.path, &order, shift);
+                        d.pick(&e.media.path, order, shift);
                     } else {
                         *req = Some(Req::Entry(EntryAction::Play, e.clone()));
                     }
@@ -1650,7 +1702,7 @@ fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table:
                     if r.double_clicked() && !audio {
                         *req = Some(Req::Rename(e.clone()));
                     } else if r.clicked() && (ctrl || shift) {
-                        d.pick(&e.media.path, &order, shift);
+                        d.pick(&e.media.path, order, shift);
                     }
                 }
                 num(&e.media.duration_sec.map(short_clock).unwrap_or_else(|| "—".into()), col_x(4) - 10.0, row.center().y, p.text, 13.0);
@@ -1736,6 +1788,8 @@ fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table:
                     job.append(&more, 0.0, egui::TextFormat::simple(theme::font(12.5), p.muted));
                     job.wrap = egui::text::TextWrapping::truncate_at_width(col_x(6) - bx - 30.0);
                     let galley = ui.fonts_mut(|f| f.layout_job(job));
+                    // 那一句太長被截掉：滑鼠移上去看完整的
+                    let resp = if galley.elided { resp.on_hover_text(&h.text) } else { resp };
                     painter.galley(pos2(bx + 18.0, row.center().y - galley.size().y / 2.0), galley, p.text);
                     if resp.clicked() {
                         d.jump = Some((e.clone(), h.start));
@@ -1933,13 +1987,29 @@ fn shot_grid(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, area: Re
         empty_list(ui, d, area, dir, req, &none, tr!("沒有符合條件的截圖。", "No matching screenshots."), false);
     }
     let dates = date_labels(items.iter().map(|e| (e.media.name.as_str(), e.media.time_ms())));
-    let order: Vec<String> = items.iter().map(|e| e.media.path.clone()).collect();
     let (ctrl, shift) = multi_mods(ui);
-    select_all_key(app, ui, d, &order);
-    // 每一筆的日期（由這一頁的分組得出）與位置；與 core 分頁用同一套排法
+    // 每一筆的日期（由這一頁的分組得出）與位置；與 core 分頁用同一套排法。清單或格子大小換了才重排
     let groups = d.data.as_ref().map(|x| x.groups.clone()).unwrap_or_default();
-    let days: Vec<String> = (0..items.len()).map(|i| groups.iter().rev().find(|g| g.first <= i).map(|g| g.day.clone()).unwrap_or_default()).collect();
-    let places = grid_layout(&days, fit);
+    let key = (fit.cols, fit.row_h.to_bits(), groups.len());
+    let laid = SHOTS.with_borrow_mut(|c| {
+        if let Some((_, _, v)) = c.as_ref().filter(|(rows, k, _)| std::sync::Arc::ptr_eq(rows, &d.rows) && *k == key) {
+            return v.clone();
+        }
+        // 分組是依序的：一次走完（不用每一張都從頭找它在哪一天）
+        let mut days = Vec::with_capacity(items.len());
+        let mut g = 0;
+        for i in 0..items.len() {
+            while g + 1 < groups.len() && groups[g + 1].first <= i {
+                g += 1;
+            }
+            days.push(groups.get(g).filter(|x| x.first <= i).map(|x| x.day.clone()).unwrap_or_default());
+        }
+        let v = std::rc::Rc::new((row_order(items), grid_layout(&days, fit)));
+        *c = Some((d.rows.clone(), key, v.clone()));
+        v
+    });
+    let (order, places) = (&laid.0, &laid.1);
+    select_all_key(app, ui, d, order);
     // 捲軸裡的內容高度；還有沒列出的時最下面留一行「正在讀取更多」
     let total = d.data.as_ref().map(|x| x.total).unwrap_or(0);
     let more = items.len() < total;
@@ -1958,9 +2028,9 @@ fn shot_grid(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, area: Re
                 Rect::from_min_size(pos2(all.min.x + pl.col as f32 * (cell_w + gap), all.min.y + pl.y as f32), vec2(cell_w, cell_h))
             };
             // 用滑鼠框選（先登記，縮圖、按鈕的按一下照樣優先；拖曳超過幾個像素才算框選）
-            let band = band_select(ui, d, all, &order, &cell_at, img_h, ctrl);
+            let band = band_select(ui, d, all, order, &cell_at, img_h, ctrl);
             // 日期標題列（在框選之後登記，勾選框才點得到）
-            day_headers(app, ui, d, all, &groups, &places);
+            day_headers(app, ui, d, all, &groups, places);
             for (i, e) in items.iter().enumerate() {
                 let cell = cell_at(i);
                 if d.scroll_cursor && d.cursor_row.as_deref() == Some(e.media.path.as_str()) {
@@ -2006,7 +2076,7 @@ fn shot_grid(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, area: Re
                 painter.rect_stroke(img, CornerRadius::same(theme::RADIUS_SM), border, egui::StrokeKind::Inside);
                 if resp.clicked() {
                     if ctrl || shift {
-                        d.pick(&e.media.path, &order, shift);
+                        d.pick(&e.media.path, order, shift);
                     } else {
                         *req = Some(Req::Entry(EntryAction::Play, e.clone()));
                     }
@@ -2021,7 +2091,7 @@ fn shot_grid(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, area: Re
                     let mut v = on;
                     if theme::check(cui, &mut v, "").changed() {
                         if shift {
-                            d.pick(&e.media.path, &order, true);
+                            d.pick(&e.media.path, order, true);
                         } else {
                             d.toggle(&e.media.path, v);
                             d.anchor = Some(e.media.path.clone());
@@ -2408,7 +2478,7 @@ fn shot_menu(ui: &mut egui::Ui, e: &LibraryEntry, full: bool, pinned: bool, req:
 
 /// 清單裡找這個檔案的資訊（目前這一頁、或之前讀過的）；第二個值：是不是加速版
 fn find_media(app: &UiApp, path: &str) -> Option<(MediaInfo, bool)> {
-    let page = app.library.as_ref().and_then(|d| d.data.as_ref()).map(|x| x.items.iter()).into_iter().flatten();
+    let page = app.library.as_ref().map(|d| d.rows.iter()).into_iter().flatten();
     for e in page.chain(app.known.values()) {
         if e.media.path == path {
             return Some((e.media.clone(), false));
@@ -2537,7 +2607,7 @@ fn merge_dialog(app: &mut UiApp, ctx: &egui::Context, d: &mut LibraryDialog) {
         };
         ui.add(egui::Label::new(theme::muted(ui, hint)).wrap());
         if let Some(e) = &m.error {
-            ui.label(RichText::new(e).color(p.rec));
+            ui.label(RichText::new(e).color(p.err));
         }
         ui.add_space(10.0);
         let count = m.items.iter().filter(|i| i.on).count();
@@ -2746,7 +2816,7 @@ fn cleanup_dialog(app: &mut UiApp, ctx: &egui::Context, d: &mut LibraryDialog) {
     let core = app.core.clone();
     app.spawn(async move { tokio::task::spawn_blocking(move || actions::delete(&core, &paths)).await.unwrap_or_else(|e| Err(screenrecorder_core::error::Error::other(e.to_string()))) }, |app, r| {
         match r {
-            Ok(n) => app.toast(trf!("已將 {n} 張舊截圖移到資源回收筒", "Moved {n} old screenshots to the Recycle Bin"), false),
+            Ok(n) => super::trashed_toast(app, trf!("已將 {n} 張舊截圖移到資源回收筒", "Moved {n} old screenshots to the Recycle Bin")),
             Err(e) => app.toast(e.message().to_string(), true),
         }
         if let Some(d) = &mut app.library {
@@ -2892,7 +2962,7 @@ fn similar_dialog(app: &mut UiApp, ctx: &egui::Context, d: &mut LibraryDialog) {
     let core = app.core.clone();
     app.spawn(async move { tokio::task::spawn_blocking(move || actions::delete(&core, &paths)).await.unwrap_or_else(|e| Err(screenrecorder_core::error::Error::other(e.to_string()))) }, |app, r| {
         match r {
-            Ok(n) => app.toast(trf!("已將 {n} 張相似的截圖移到資源回收筒", "Moved {n} similar screenshots to the Recycle Bin"), false),
+            Ok(n) => super::trashed_toast(app, trf!("已將 {n} 張相似的截圖移到資源回收筒", "Moved {n} similar screenshots to the Recycle Bin")),
             Err(e) => app.toast(e.message().to_string(), true),
         }
         if let Some(d) = &mut app.library {
@@ -3161,8 +3231,7 @@ fn remove_selected(app: &mut UiApp) {
     let Some(d) = &app.library else { return };
     let list: Vec<String> = d.selected.iter().cloned().collect();
     // 原檔要刪、但取消勾選了部分加速版：提醒這些會保留
-    let kept: usize =
-        d.data.as_ref().map(|x| x.items.iter().filter(|e| d.selected.contains(&e.media.path)).map(|e| e.exports.iter().filter(|x| !d.selected.contains(&x.media.path)).count()).sum()).unwrap_or(0);
+    let kept: usize = d.rows.iter().filter(|e| d.selected.contains(&e.media.path)).map(|e| e.exports.iter().filter(|x| !d.selected.contains(&x.media.path)).count()).sum::<usize>();
     let plural = |n: usize| if n == 1 { "" } else { "s" };
     let (title, message) = if is_en() {
         let kept_text = match kept {

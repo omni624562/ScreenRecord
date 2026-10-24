@@ -80,6 +80,8 @@ fn main() {
     // 否則在縮放 125%、150% 的螢幕上會跟游標錯開
     #[cfg(windows)]
     screenrecorder_core::monitors::ensure_dpi_aware();
+    // DLL 只從系統資料夾載入（程式放在「下載」資料夾時，被放了同名的假 DLL 也不會載入）
+    screenrecorder_core::paths::harden_dll_search();
     log::setup();
     log::install_panic_hook();
     let argv: Vec<String> = std::env::args().collect();

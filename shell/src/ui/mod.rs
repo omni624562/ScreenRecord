@@ -232,7 +232,8 @@ pub struct UiApp {
 
     pub preview: preview::Preview,
     pub thumbs: thumbs::Thumbs,
-    pub recent: Option<LibraryPage>,
+    /// 主畫面「最近錄影」（共用一份：每一格畫的時候不用整份複製）
+    pub recent: Option<Arc<LibraryPage>>,
     pub recent_page: usize,
     recent_seq: u64,
     /// 最近錄影上次讀的時間；視窗上次有沒有焦點、檔案庫上次開著沒（從檔案總管、手機同步放進資料夾的影片，
@@ -1127,10 +1128,13 @@ impl UiApp {
                 return; // 較舊的要求晚回來：丟掉
             }
             app.recent_page = page.page.max(1);
+            if app.known.len() > 5000 {
+                app.known.clear();
+            }
             for e in &page.items {
                 app.known.insert(e.media.path.clone(), e.clone());
             }
-            app.recent = Some(page);
+            app.recent = Some(Arc::new(page));
         });
     }
 
@@ -1699,6 +1703,7 @@ impl eframe::App for UiApp {
         }
         let ctx = ui.ctx().clone();
         text_menu::before(&ctx);
+        theme::track_keyboard_nav(&ctx);
         let mut t = Instant::now();
         let mut part = |app: &mut UiApp, name: &'static str| {
             app.frame_parts.push((name, t.elapsed().as_secs_f32() * 1000.0));
@@ -1893,63 +1898,78 @@ fn trash_now(app: &mut UiApp, paths: Vec<String>, copies: Vec<std::path::PathBuf
     if let Some(v) = app.viewer.as_mut().filter(|v| paths.contains(&v.cur().media.path)) {
         v.clear_media();
     }
-    match actions::delete(&app.core, &paths) {
-        Ok(n) => {
-            // 刪掉的就不用再補傳
-            for p in &paths {
-                screenrecorder_core::transfer::remove_pending(p);
+    // 刪除在背景做（NAS 上的檔案、等播放器放開檔案時不會卡住畫面）
+    let core = app.core.clone();
+    let list = paths.clone();
+    app.spawn(
+        async move { tokio::task::spawn_blocking(move || actions::delete(&core, &list).map_err(|e| e.message().to_string())).await.unwrap_or_else(|e| Err(e.to_string())) },
+        move |app, r| match r {
+            Ok(n) => {
+                // 刪掉的就不用再補傳
+                for p in &paths {
+                    screenrecorder_core::transfer::remove_pending(p);
+                }
+                let moved = trf!("已將 {n} 個檔案移到資源回收筒", "Moved {n} file(s) to the Recycle Bin");
+                trashed_toast(app, moved.clone());
+                if notify {
+                    notify_jellyfin(app, paths.first().map(std::path::PathBuf::from), copies, moved);
+                }
+                done(app, &paths, true);
             }
-            // 要還原：開啟資源回收筒（在那裡按右鍵 →「還原」，會回到原本的資料夾）
-            app.toast_with(
-                trf!("已將 {n} 個檔案移到資源回收筒", "Moved {n} file(s) to the Recycle Bin"),
-                false,
-                vec![ToastAction::new(tr!("開啟資源回收筒（可還原）", "Open Recycle Bin (to restore)"), |app| {
-                    if let Err(e) = actions::open_recycle_bin() {
-                        app.toast(e.message().to_string(), true);
-                    }
-                })],
-            );
-            if notify {
-                let jf = app.jellyfin();
-                let first = paths.first().map(std::path::PathBuf::from);
-                app.spawn(
-                    async move {
-                        tokio::task::spawn_blocking(move || -> Result<String, String> {
-                            let gone = if copies.is_empty() {
-                                ""
-                            } else {
-                                let list: Vec<String> = copies.iter().map(|c| c.display().to_string()).collect();
-                                // NAS 上的沒有資源回收筒：移不進去時直接刪，刪完確認真的不見了
-                                screenrecorder_core::recycle::delete_for_sure(&list).map_err(|e| e.message().to_string())?;
-                                screenrecorder_core::info!("[傳到資料夾] 媒體庫的那一份也刪了：{}", list.join("、"));
-                                tr!("Jellyfin 那一份也刪了", "The copy on Jellyfin was deleted too")
-                            };
-                            // 只掃描刪掉的那個資料夾
-                            let scan = copies.first().cloned().or(first);
-                            Ok(match jf.zip(scan).map(|(jf, at)| jf.scan(&at)) {
-                                Some(Ok(_)) if gone.is_empty() => tr!("已請 Jellyfin 重新掃描", "Jellyfin was asked to rescan").to_string(),
-                                Some(Ok(_)) => format!("{gone}{}", tr!("，已請 Jellyfin 重新掃描", "; Jellyfin was asked to rescan")),
-                                Some(Err(e)) => format!("{gone}{}", trf!("（沒有通知到 Jellyfin：{e}）", " (Jellyfin couldn't be notified: {e})")),
-                                None => gone.to_string(),
-                            })
-                        })
-                        .await
-                        .unwrap_or_else(|e| Err(e.to_string()))
-                    },
-                    |app, r| match r {
-                        Ok(msg) if msg.is_empty() => {}
-                        Ok(msg) => app.toast(msg, false),
-                        Err(e) => app.toast(trf!("Jellyfin 那一份沒有刪掉：{e}", "The copy on Jellyfin wasn't deleted: {e}"), true),
-                    },
-                );
+            Err(e) => {
+                app.toast(e, true);
+                done(app, &paths, false);
             }
-            done(app, &paths, true);
-        }
-        Err(e) => {
-            app.toast(e.message().to_string(), true);
-            done(app, &paths, false);
-        }
-    }
+        },
+    );
+}
+
+/// 「已移到資源回收筒」：帶「開啟資源回收筒（可還原）」（在那裡按右鍵 →「還原」，會回到原本的資料夾）
+pub fn trashed_toast(app: &mut UiApp, msg: String) {
+    app.toast_with(
+        msg,
+        false,
+        vec![ToastAction::new(tr!("開啟資源回收筒（可還原）", "Open Recycle Bin (to restore)"), |app| {
+            if let Err(e) = actions::open_recycle_bin() {
+                app.toast(e.message().to_string(), true);
+            }
+        })],
+    );
+}
+
+/// 刪好之後：媒體庫那一份也刪、請 Jellyfin 重新掃描。結果接在「已移到資源回收筒」後面，還原的按鈕照樣留著
+fn notify_jellyfin(app: &mut UiApp, first: Option<std::path::PathBuf>, copies: Vec<std::path::PathBuf>, moved: String) {
+    let jf = app.jellyfin();
+    app.spawn(
+        async move {
+            tokio::task::spawn_blocking(move || -> Result<String, String> {
+                let gone = if copies.is_empty() {
+                    ""
+                } else {
+                    let list: Vec<String> = copies.iter().map(|c| c.display().to_string()).collect();
+                    // NAS 上的沒有資源回收筒：移不進去時直接刪，刪完確認真的不見了
+                    screenrecorder_core::recycle::delete_for_sure(&list).map_err(|e| e.message().to_string())?;
+                    screenrecorder_core::info!("[傳到資料夾] 媒體庫的那一份也刪了：{}", list.join("、"));
+                    tr!("Jellyfin 那一份也刪了", "The copy on Jellyfin was deleted too")
+                };
+                // 只掃描刪掉的那個資料夾
+                let scan = copies.first().cloned().or(first);
+                Ok(match jf.zip(scan).map(|(jf, at)| jf.scan(&at)) {
+                    Some(Ok(_)) if gone.is_empty() => tr!("已請 Jellyfin 重新掃描", "Jellyfin was asked to rescan").to_string(),
+                    Some(Ok(_)) => format!("{gone}{}", tr!("，已請 Jellyfin 重新掃描", "; Jellyfin was asked to rescan")),
+                    Some(Err(e)) => format!("{gone}{}", trf!("（沒有通知到 Jellyfin：{e}）", " (Jellyfin couldn't be notified: {e})")),
+                    None => gone.to_string(),
+                })
+            })
+            .await
+            .unwrap_or_else(|e| Err(e.to_string()))
+        },
+        move |app, r| match r {
+            Ok(msg) if msg.is_empty() => {}
+            Ok(msg) => trashed_toast(app, format!("{moved}{}{msg}", tr!("；", "; "))),
+            Err(e) => app.toast(trf!("Jellyfin 那一份沒有刪掉：{e}", "The copy on Jellyfin wasn't deleted: {e}"), true),
+        },
+    );
 }
 
 /// panic 的訊息（字串時）

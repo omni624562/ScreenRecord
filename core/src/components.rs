@@ -329,7 +329,7 @@ impl App {
             };
             // 透過 Proxy 連不上時，說明用的是哪一個（多半是 Proxy 設定的問題）
             let r = r.map_err(|e| match crate::http::current_proxy() {
-                Some(px) => trf!("{e}（目前透過 Proxy：{px}）", "{e} (using proxy: {px})"),
+                Some(px) => trf!("{e}（目前透過 Proxy：{}）", "{e} (using proxy: {})", crate::http::hide_password(&px)),
                 _ => e,
             });
             if let Err(e) = &r {

@@ -4,15 +4,21 @@
 //! - POST /api/show：把操作視窗帶到前面
 //! - POST /api/quit：正常結束（錄影中會先停止並儲存；新版接手時使用）
 //!
-//! 安全：Host 必須是 127.0.0.1 / localhost（擋 DNS rebinding）；POST 必須是 JSON 且沒有 Origin（擋網頁的跨站要求）。
+//! 安全：只接受同一個登入工作階段的程式連線（擋同一台電腦的其他使用者）；Host 必須是 127.0.0.1 / localhost（擋 DNS rebinding）；
+//! POST 必須是 JSON 且沒有 Origin（擋網頁的跨站要求）；一個要求最多讀 16 KB、同時最多 8 條連線。
 
 use crate::version::APP_VERSION;
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
 pub const APP_ID: &str = "screen-recorder";
+/// 同時處理的連線數上限
+const MAX_CONN: usize = 8;
+/// 一個要求最多讀這麼多（標頭和內容；超過的不讀，連線用完就關）
+const MAX_REQUEST: u64 = 16 * 1024;
 
 /// 控制端點收到要求時要做的事
 pub struct Control {
@@ -36,10 +42,17 @@ pub fn serve(listener: TcpListener, control: Control) {
     std::thread::Builder::new()
         .name("ipc".into())
         .spawn(move || {
+            let busy = Arc::new(AtomicUsize::new(0));
             for stream in listener.incoming().flatten() {
-                let c = control.clone();
+                // 只接受同一個登入工作階段的程式（同一台電腦的其他使用者不能叫這個程式結束）；同時最多 8 條
+                if !stream.peer_addr().is_ok_and(|a| crate::peer::peer_ok(a, port)) || busy.load(Ordering::SeqCst) >= MAX_CONN {
+                    continue;
+                }
+                busy.fetch_add(1, Ordering::SeqCst);
+                let (c, busy) = (control.clone(), busy.clone());
                 std::thread::spawn(move || {
                     let _ = handle(stream, port, &c);
+                    busy.fetch_sub(1, Ordering::SeqCst);
                 });
             }
         })
@@ -60,7 +73,7 @@ impl Request {
 
 fn read_request(stream: &TcpStream) -> std::io::Result<Request> {
     stream.set_read_timeout(Some(Duration::from_secs(3)))?;
-    let mut r = BufReader::new(stream);
+    let mut r = BufReader::new(std::io::Read::take(stream, MAX_REQUEST));
     let mut line = String::new();
     r.read_line(&mut line)?;
     let mut parts = line.split_whitespace();

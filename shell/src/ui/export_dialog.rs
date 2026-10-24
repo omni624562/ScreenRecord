@@ -886,8 +886,13 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         Some(t) if dlg.frames > 3 => t.min((screen.height() - dlg.max_h - 8.0).max(8.0)),
         _ => centered,
     });
+    // Esc、點外面：選好的不丟掉，記成下次的預設（下次開啟還是這樣選）
     if modal.should_close() {
         close = true;
+        if !dlg.busy {
+            dlg.save(&mut app.s);
+            app.save_settings();
+        }
     }
     if let Some((dir, name)) = change_output {
         let format = dlg.format();

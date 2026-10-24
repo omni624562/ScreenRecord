@@ -5,6 +5,29 @@ use std::sync::OnceLock;
 
 static APP_DIR: OnceLock<PathBuf> = OnceLock::new();
 
+/// Windows 資料夾（%SystemRoot%，通常 C:\\Windows）
+pub fn windows_dir() -> PathBuf {
+    std::env::var_os("SystemRoot").map(PathBuf::from).filter(|p| p.is_absolute()).unwrap_or_else(|| PathBuf::from("C:\\Windows"))
+}
+
+/// System32 裡的程式（reg.exe、tar.exe…）的完整路徑：只寫名稱時 Windows 會先找本程式的資料夾，
+/// 程式放在「下載」之類的資料夾時，被放了同名的假程式就會被執行
+pub fn system32(name: &str) -> PathBuf {
+    windows_dir().join("System32").join(name)
+}
+
+/// 之後載入的 DLL 只從系統資料夾找（不找本程式的資料夾、目前的資料夾），避免被放了同名的假 DLL；
+/// 要載入其他位置的（libmpv）一律用完整路徑。啟動時最先呼叫
+pub fn harden_dll_search() {
+    #[cfg(windows)]
+    unsafe {
+        use windows::Win32::System::LibraryLoader::{SetDefaultDllDirectories, LOAD_LIBRARY_SEARCH_SYSTEM32, LOAD_LIBRARY_SEARCH_USER_DIRS};
+        if let Err(e) = SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32 | LOAD_LIBRARY_SEARCH_USER_DIRS) {
+            crate::warn!("無法限制 DLL 的載入位置：{e}");
+        }
+    }
+}
+
 /// 程式所在資料夾（exe 所在處）；可由主程式在啟動時指定（開發時為專案根目錄）
 pub fn app_dir() -> PathBuf {
     APP_DIR.get_or_init(|| std::env::current_exe().ok().and_then(|p| p.parent().map(Path::to_path_buf)).unwrap_or_else(|| PathBuf::from("."))).clone()

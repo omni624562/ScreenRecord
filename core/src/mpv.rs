@@ -104,11 +104,23 @@ struct Lib {
     render_free: unsafe extern "C" fn(RenderCtx),
 }
 
+/// 用完整路徑載入 libmpv；它用到的其他 DLL 從它所在的資料夾和系統資料夾找（啟動時限制了 DLL 的載入位置）
+#[cfg(windows)]
+unsafe fn load_dll(path: &std::path::Path) -> Result<libloading::Library, String> {
+    // LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS
+    unsafe { libloading::os::windows::Library::load_with_flags(path, 0x0000_0100 | 0x0000_1000) }.map(Into::into).map_err(|e| e.to_string())
+}
+
+#[cfg(not(windows))]
+unsafe fn load_dll(path: &std::path::Path) -> Result<libloading::Library, String> {
+    unsafe { libloading::Library::new(path) }.map_err(|e| e.to_string())
+}
+
 impl Lib {
     fn open(path: &std::path::Path) -> Result<Lib, String> {
         // SAFETY: 載入 libmpv 並取出公開的 C 函式；簽名照 mpv/client.h、mpv/render.h
         unsafe {
-            let lib = libloading::Library::new(path).map_err(|e| e.to_string())?;
+            let lib = load_dll(path)?;
             let version: unsafe extern "C" fn() -> std::ffi::c_ulong = *lib.get(b"mpv_client_api_version\0").map_err(|e| e.to_string())?;
             // c_ulong 在 Windows 是 32 位元、Linux 是 64 位元
             #[allow(clippy::unnecessary_cast)]

@@ -255,6 +255,7 @@ fn nav_item(ui: &mut Ui, text: &str, icon: Icon, selected: bool, h: f32) -> egui
     theme::paint_icon(ui.painter(), Rect::from_center_size(pos2(r.left() + 22.0, r.center().y), vec2(16.0, 16.0)), icon, color);
     let f = if selected { theme::font_bold(13.5) } else { theme::font(13.5) };
     ui.painter().text(pos2(r.left() + 40.0, r.center().y), egui::Align2::LEFT_CENTER, text, f, color);
+    theme::focus_ring(ui, &resp, r, 8);
     resp
 }
 
@@ -1099,6 +1100,17 @@ fn jellyfin_rows(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
             });
         }
     });
+    // 沒有加密又經過網際網路：API 金鑰是管理員權限，路上的人看得到
+    if screenrecorder_core::jellyfin::plain_over_internet(&app.s.jellyfin_url) {
+        form_hint_full(
+            ui,
+            tr!(
+                "⚠ 這個網址沒有加密（http://），API 金鑰會以明碼經過網際網路，路上的人看得到。在家裡以外連線時請改用 https://",
+                "⚠ This address isn't encrypted (http://). The API key travels over the internet in plain text where others can read it. Use https:// when connecting from outside your home network"
+            ),
+            p.warn,
+        );
+    }
     match d.jf_found.as_deref() {
         Some([]) => form_hint_full(
             ui,
@@ -1135,7 +1147,9 @@ fn jellyfin_rows(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
     let jf = app.jellyfin();
     form_row(ui, "", |ui| {
         let label = if d.jf_testing { tr!("測試中…", "Testing…") } else { tr!("測試連線", "Test connection") };
-        if Btn::new(label).small().enabled(jf.is_some() && !d.jf_testing).show(ui).clicked() {
+        let r = Btn::new(label).small().enabled(jf.is_some() && !d.jf_testing).show(ui);
+        let r = if jf.is_none() { r.on_disabled_hover_text(tr!("請先填網址和 API 金鑰", "Enter the URL and API key first")) } else { r };
+        if r.clicked() {
             if let Some(jf) = jf.clone() {
                 d.jf_testing = true;
                 d.jf_result = None;
@@ -1157,7 +1171,7 @@ fn jellyfin_rows(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
                 ui.label(RichText::new(trf!("已連上 {}", "Connected to {}", name)).font(theme::font(12.5)).color(p.ok));
             }
             Some(Err(e)) => {
-                ui.add(egui::Label::new(RichText::new(e).font(theme::font(12.5)).color(p.rec)).wrap());
+                ui.add(egui::Label::new(RichText::new(e).font(theme::font(12.5)).color(p.err)).wrap());
             }
             None => {}
         }
@@ -1808,7 +1822,7 @@ fn general_page(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
         let best = UI_SCALES.iter().rev().find(|v| fits(**v)).copied().unwrap_or(100);
         form_hint(ui, trf!("螢幕太小，放大後按鈕會被擋住，建議改成 {best}%。", "The screen is too small and buttons get cut off at this size. {best}% is recommended."), p.warn);
     } else if UI_SCALES.iter().any(|v| !fits(*v)) {
-        form_hint(ui, tr!("螢幕太小，放大後按鈕會被擋住：灰色的大小不能選。", "The screen is too small: buttons would be cut off at the greyed-out sizes."), p.muted);
+        form_hint(ui, tr!("螢幕太小，放大後按鈕會被擋住：灰色的大小不能選。", "The screen is too small: buttons would be cut off at the grayed-out sizes."), p.muted);
     } else {
         form_hint(ui, tr!("字和按鈕放大一點比較好看清楚。", "Larger text and buttons are easier to read."), p.muted);
     }
@@ -2552,7 +2566,7 @@ fn component_card(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui, k: Kind)
         }
         if let Some(e) = st.error.as_ref().filter(|_| !st.running) {
             ui.add_space(2.0);
-            ui.add(egui::Label::new(RichText::new(e).font(theme::font(12.0)).color(p.rec)).wrap());
+            ui.add(egui::Label::new(RichText::new(e).font(theme::font(12.0)).color(p.err)).wrap());
         }
         if builtin {
             return;
@@ -2688,7 +2702,10 @@ fn network_section(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
     match app.s.proxy_mode.as_str() {
         "custom" => {
             form_row(ui, tr!("位址", "Address"), |ui| {
-                let r = ui.add(egui::TextEdit::singleline(&mut app.s.proxy).desired_width(FORM_CTRL_W).hint_text("proxy.company.com:8080"));
+                // 有帳號密碼時，沒在輸入時遮起來（設定畫面被錄進去、被旁人看到也看不到密碼）
+                let id = egui::Id::new("proxy-address");
+                let hide = app.s.proxy.contains('@') && !ui.memory(|m| m.has_focus(id));
+                let r = ui.add(egui::TextEdit::singleline(&mut app.s.proxy).id(id).password(hide).desired_width(FORM_CTRL_W).hint_text("proxy.company.com:8080"));
                 if r.changed() {
                     d.net_result = None;
                     app.save_settings();
@@ -2705,7 +2722,7 @@ fn network_section(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
         }
         "auto" => {
             let text = match screenrecorder_core::http::system_proxy() {
-                Some(px) => trf!("系統設定的 Proxy：{px}", "System proxy: {px}"),
+                Some(px) => trf!("系統設定的 Proxy：{}", "System proxy: {}", screenrecorder_core::http::hide_password(&px)),
                 None => tr!(
                     "系統沒有設定 Proxy，直接連線（自動設定指令碼 PAC 不支援，請改用「自訂」）",
                     "No system proxy is set, so connections are direct (automatic configuration scripts aren't supported; use Custom instead)"
@@ -2741,7 +2758,7 @@ fn network_section(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
                 ui.label(RichText::new(tr!("可以連上下載來源", "The download sources can be reached")).font(theme::font(12.5)).color(p.ok));
             }
             Some(Err(e)) => {
-                ui.add(egui::Label::new(RichText::new(e).font(theme::font(12.5)).color(p.rec)).wrap());
+                ui.add(egui::Label::new(RichText::new(e).font(theme::font(12.5)).color(p.err)).wrap());
             }
             None => {}
         }

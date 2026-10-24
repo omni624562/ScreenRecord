@@ -105,7 +105,7 @@ pub fn panel(ed: &mut Editor, ui: &mut egui::Ui, toast: &mut Option<(String, boo
             ui.painter().rect_filled(egui::Rect::from_min_size(r.min, vec2(r.width() * level.clamp(0.0, 1.0), r.height())), 4.0, p.ok);
         });
         if let Some(e) = err {
-            ui.label(RichText::new(e).font(theme::font(12.0)).color(p.rec));
+            ui.label(RichText::new(e).font(theme::font(12.0)).color(p.err));
         }
         if Btn::new(tr!("停止錄音", "Stop recording")).danger().small().show(ui).clicked() {
             stop_recording(ed, Some(toast));

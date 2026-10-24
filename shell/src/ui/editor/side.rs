@@ -1344,8 +1344,23 @@ fn style_controls(ui: &mut egui::Ui, kind: AnnKind, color: &mut String, size: &m
                 }
             });
         }
+        // 刪掉的樣式：8 秒內可以按「復原」放回原本的位置（按到 ✕ 不會就這樣不見）
+        thread_local!(static REMOVED: std::cell::RefCell<Option<(usize, annotate::AnnStyle, std::time::Instant)>> = const { std::cell::RefCell::new(None) });
         if let Some(i) = remove {
-            mine.remove(i);
+            let st = mine.remove(i);
+            REMOVED.set(Some((i, st, std::time::Instant::now())));
+        }
+        let undo = REMOVED.with_borrow(|r| r.as_ref().map(|(_, _, at)| at.elapsed()).filter(|t| t.as_secs_f32() < 8.0));
+        match undo {
+            Some(t) => {
+                ui.ctx().request_repaint_after(std::time::Duration::from_secs(8).saturating_sub(t));
+                if Btn::new(tr!("復原", "Undo")).icon(Icon::Undo).small().ghost().tooltip(tr!("放回剛刪掉的樣式", "Put back the style you just deleted")).show(ui).clicked() {
+                    if let Some((i, st, _)) = REMOVED.take() {
+                        mine.insert(i.min(mine.len()), st);
+                    }
+                }
+            }
+            None => REMOVED.set(None),
         }
         if Btn::new(tr!("＋ 存起來", "+ Save"))
             .small()
@@ -1685,7 +1700,7 @@ pub(super) fn props(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context) {
             });
         }
         if bad {
-            ui.label(RichText::new(tr!("看不懂這個時間，格式例如 1:05.5 或 65.5", "Couldn't read that time. Use a format like 1:05.5 or 65.5")).font(theme::font(12.0)).color(p.rec));
+            ui.label(RichText::new(tr!("看不懂這個時間，格式例如 1:05.5 或 65.5", "Couldn't read that time. Use a format like 1:05.5 or 65.5")).font(theme::font(12.0)).color(p.err));
         }
     });
     if delete {

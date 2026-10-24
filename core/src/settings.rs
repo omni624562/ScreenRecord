@@ -65,6 +65,8 @@ pub struct SettingsStore {
 
 /// 設定檔裡加密保存的 Jellyfin 金鑰（記憶體裡還是放在 jellyfinKey，其他地方照常讀）
 const SEALED_KEY: &str = "jellyfinKeySealed";
+/// 自訂 Proxy 位址裡有帳號密碼時，加密後存在這裡
+const SEALED_PROXY: &str = "proxySealed";
 
 /// 讀一份設定檔（讀不到、格式壞了時 None）
 fn read_file(path: &std::path::Path) -> Option<SavedSettings> {
@@ -74,6 +76,12 @@ fn read_file(path: &std::path::Path) -> Option<SavedSettings> {
             match crate::secret::unprotect(&sealed) {
                 Some(key) => drop(ui.insert(crate::jellyfin::API_KEY.into(), Value::String(key))),
                 None => crate::warn!("Jellyfin API 金鑰解不開（可能換了 Windows 帳號），請到設定重新輸入"),
+            }
+        }
+        if let Some(Value::String(sealed)) = ui.remove(SEALED_PROXY) {
+            match crate::secret::unprotect(&sealed) {
+                Some(p) => drop(ui.insert("proxy".into(), Value::String(p))),
+                None => crate::warn!("Proxy 的帳號密碼解不開（可能換了 Windows 帳號），請到設定重新輸入"),
             }
         }
     }
@@ -88,6 +96,13 @@ fn seal(v: &mut Value) {
     if let Some(sealed) = key.and_then(|k| crate::secret::protect(&k)) {
         ui.remove(crate::jellyfin::API_KEY);
         ui.insert(SEALED_KEY.into(), Value::String(sealed));
+    }
+    // Proxy 位址裡有帳號密碼（http://帳號:密碼@…）時也加密
+    ui.remove(SEALED_PROXY);
+    let proxy = ui.get("proxy").and_then(Value::as_str).filter(|p| p.contains('@')).map(str::to_string);
+    if let Some(sealed) = proxy.and_then(|p| crate::secret::protect(&p)) {
+        ui.remove("proxy");
+        ui.insert(SEALED_PROXY.into(), Value::String(sealed));
     }
 }
 

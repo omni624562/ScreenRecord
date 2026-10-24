@@ -5,6 +5,7 @@ use super::UiApp;
 use eframe::egui::{self, vec2, Align, Align2, Color32, CornerRadius, Id, Layout, RichText, Stroke};
 use screenrecorder_core::version::{APP_VERSION, CHANGELOG};
 use screenrecorder_core::{tr, trf};
+use std::rc::Rc;
 use std::time::Instant;
 
 /// 送出時呼叫：回傳 None 關閉、Some(錯誤) 顯示在對話框裡；需要等待時自己設定 ask.busy 並在完成後處理
@@ -147,7 +148,7 @@ pub fn show_ask(app: &mut UiApp, ctx: &egui::Context) {
         }
         if let Some(e) = &ask.error {
             ui.add_space(4.0);
-            ui.label(RichText::new(e).color(p.rec));
+            ui.label(RichText::new(e).color(p.err));
         }
         ui.add_space(12.0);
         // 按鈕列固定高度（with_layout 會佔滿剩下的高度，對話框就被撐得很高）
@@ -213,7 +214,7 @@ pub fn show_toast(app: &mut UiApp, ctx: &egui::Context) {
     }
     ctx.request_repaint_after(t.until - Instant::now());
     let p = theme::pal_ctx(ctx);
-    let (fill, fg) = if t.error { (p.rec, Color32::WHITE) } else { (p.text, p.surface) };
+    let (fill, fg) = if t.error { (p.err, Color32::WHITE) } else { (p.text, p.surface) };
     // 有按鈕、或出錯（不會自己消失）的：有 ✕ 可以關
     let has_actions = !t.actions.is_empty() || t.error;
     let mut clicked: Option<usize> = None;
@@ -458,33 +459,83 @@ pub fn res_label(w: u32, h: u32) -> String {
 }
 
 /// 一組錄影的日期與時間：(那一天, 時間「23:18」)。同一天同一分鐘有好幾支時加上秒數，才分得出來
-pub fn time_labels<'a>(items: impl Iterator<Item = (&'a str, f64)> + Clone) -> std::collections::HashMap<String, (chrono::NaiveDate, String)> {
+pub fn time_labels<'a>(items: impl Iterator<Item = (&'a str, f64)> + Clone) -> Rc<TimeLabels> {
+    // 每一格都會問（清單上千筆時每一格都跑正規表示式很慢）：一樣的清單直接用上次算好的
+    let key = labels_key(items.clone(), None);
+    if let Some(hit) = TIMES.with_borrow(|c| c.iter().find(|(k, _)| *k == key).map(|(_, v)| v.clone())) {
+        return hit;
+    }
     let mut count = std::collections::HashMap::<String, usize>::new();
     for (n, m) in items.clone() {
         if let Some(t) = entry_time(n, m) {
             *count.entry(t.format("%Y%m%d%H%M").to_string()).or_default() += 1;
         }
     }
-    items
-        .filter_map(|(n, m)| {
-            let t = entry_time(n, m)?;
-            let dup = count.get(&t.format("%Y%m%d%H%M").to_string()).copied().unwrap_or(0) > 1;
-            Some((n.to_string(), (t.date(), t.format(if dup { "%H:%M:%S" } else { "%H:%M" }).to_string())))
-        })
-        .collect()
+    let v: Rc<TimeLabels> = Rc::new(
+        items
+            .filter_map(|(n, m)| {
+                let t = entry_time(n, m)?;
+                let dup = count.get(&t.format("%Y%m%d%H%M").to_string()).copied().unwrap_or(0) > 1;
+                Some((n.to_string(), (t.date(), t.format(if dup { "%H:%M:%S" } else { "%H:%M" }).to_string())))
+            })
+            .collect(),
+    );
+    remember(&TIMES, key, v.clone());
+    v
+}
+
+/// 每筆的（日期, 時間文字）
+pub type TimeLabels = std::collections::HashMap<String, (chrono::NaiveDate, String)>;
+/// 每筆的日期標籤
+type DateLabels = std::collections::HashMap<String, String>;
+/// 最近算過的幾組（指紋, 結果）
+type Recent<T> = std::cell::RefCell<Vec<(u64, Rc<T>)>>;
+
+thread_local! {
+    /// 最近算過的幾組（主畫面最近錄影、檔案庫同時開著時各一組）
+    static TIMES: Recent<TimeLabels> = const { std::cell::RefCell::new(Vec::new()) };
+    static DATES: Recent<DateLabels> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// 清單的指紋（名稱、時間；date：今天的日期，跨日時重算「今天」「昨天」）
+fn labels_key<'a>(items: impl Iterator<Item = (&'a str, f64)>, date: Option<chrono::NaiveDate>) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    for (n, m) in items {
+        n.hash(&mut h);
+        m.to_bits().hash(&mut h);
+    }
+    date.hash(&mut h);
+    h.finish()
+}
+
+fn remember<T>(cache: &'static std::thread::LocalKey<Recent<T>>, key: u64, v: Rc<T>) {
+    cache.with_borrow_mut(|c| {
+        c.retain(|(k, _)| *k != key);
+        c.insert(0, (key, v));
+        c.truncate(4);
+    });
 }
 
 /// 一組錄影的日期標籤：「今天 23:18」「昨天 14:14」「10/08 22:58」（同一分鐘有好幾支時加上秒數）
-pub fn date_labels<'a>(items: impl Iterator<Item = (&'a str, f64)> + Clone) -> std::collections::HashMap<String, String> {
+pub fn date_labels<'a>(items: impl Iterator<Item = (&'a str, f64)> + Clone) -> Rc<DateLabels> {
     let today = chrono::Local::now().date_naive();
-    time_labels(items)
-        .into_iter()
-        .map(|(n, (d, t))| {
-            // 今天、昨天寫字，其他只寫日期
-            let day = if d == today || today.pred_opt() == Some(d) { day_label(d, today) } else { d.format("%m/%d").to_string() };
-            (n, format!("{day} {t}"))
-        })
-        .collect()
+    let key = labels_key(items.clone(), Some(today));
+    if let Some(hit) = DATES.with_borrow(|c| c.iter().find(|(k, _)| *k == key).map(|(_, v)| v.clone())) {
+        return hit;
+    }
+    let v: Rc<DateLabels> = Rc::new(
+        time_labels(items)
+            .iter()
+            .map(|(n, (d, t))| {
+                // 今天、昨天寫字，其他只寫日期
+                let day = if *d == today || today.pred_opt() == Some(*d) { day_label(*d, today) } else { d.format("%m/%d").to_string() };
+                (n.clone(), format!("{day} {t}"))
+            })
+            .collect(),
+    );
+    remember(&DATES, key, v.clone());
+    v
 }
 
 #[cfg(test)]

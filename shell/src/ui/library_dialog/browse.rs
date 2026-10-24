@@ -12,6 +12,12 @@ use screenrecorder_core::types::{FacetOption, FacetQuery};
 use screenrecorder_core::{tr, trf};
 use std::time::Instant;
 
+thread_local! {
+    /// 這一批清單的分類（清單換了才重新複製）
+    #[allow(clippy::type_complexity)]
+    static FACETS: std::cell::RefCell<Option<(std::sync::Arc<Vec<screenrecorder_core::types::LibraryEntry>>, Option<std::rc::Rc<screenrecorder_core::types::FacetCounts>>)>> = const { std::cell::RefCell::new(None) };
+}
+
 /// 瀏覽欄的寬度
 pub const PANEL_W: f32 = 212.0;
 
@@ -84,7 +90,8 @@ fn option_row(ui: &mut egui::Ui, o: &FacetOption, on: bool, dot: Option<Color32>
     let cg = ui.painter().layout_no_wrap(count, theme::font(12.0), p.muted);
     let max_w = r.max.x - x - cg.size().x - 12.0;
     let lg = ui.painter().layout(o.label.clone(), theme::font(12.5), p.text, f32::INFINITY);
-    let lg = if lg.size().x > max_w {
+    let cut = lg.size().x > max_w;
+    let lg = if cut {
         let mut job = egui::text::LayoutJob::simple_singleline(o.label.clone(), theme::font(12.5), p.text);
         job.wrap = egui::text::TextWrapping::truncate_at_width(max_w);
         ui.painter().layout_job(job)
@@ -93,6 +100,8 @@ fn option_row(ui: &mut egui::Ui, o: &FacetOption, on: bool, dot: Option<Color32>
     };
     ui.painter().galley(pos2(x, r.center().y - lg.size().y / 2.0), lg, p.text);
     ui.painter().galley(pos2(r.max.x - 6.0 - cg.size().x, r.center().y - cg.size().y / 2.0), cg, p.muted);
+    // 名稱太長被截掉：滑鼠移上去看完整的
+    let resp = if cut { resp.on_hover_text(&o.label) } else { resp };
     resp.clicked()
 }
 
@@ -192,7 +201,15 @@ pub fn panel(ui: &mut egui::Ui, d: &mut LibraryDialog, rect: Rect) {
                 changed = true;
             }
         }
-        let Some(fc) = d.data.as_ref().and_then(|x| x.facets.clone()) else {
+        // 分類清單很大（程式、常見詞、顏色…）：讀到新的一批才複製一次，不要每一格都複製
+        // 鍵存清單本身（不只位址）：舊的清單還留著，新的清單不會剛好用到同一個位址而被當成一樣
+        let fc = FACETS.with_borrow_mut(|c| {
+            if c.as_ref().is_none_or(|(k, _)| !std::sync::Arc::ptr_eq(k, &d.rows)) {
+                *c = Some((d.rows.clone(), d.data.as_ref().and_then(|x| x.facets.clone()).map(std::rc::Rc::new)));
+            }
+            c.as_ref().and_then(|(_, f)| f.clone())
+        });
+        let Some(fc) = fc else {
             ui.add_space(8.0);
             ui.label(theme::muted(ui, tr!("整理中…", "Sorting…")));
             return;
@@ -249,7 +266,7 @@ pub fn panel(ui: &mut egui::Ui, d: &mut LibraryDialog, rect: Rect) {
                     changed |= term_chips(ui, &fc.terms, &mut d.facet);
                 }
                 if !fc.colors.is_empty() {
-                    section(ui, tr!("顏色", "Colour"));
+                    section(ui, tr!("顏色", "Color"));
                     changed |= rows(ui, &fc.colors, &mut d.facet.colors, true);
                 }
             }

@@ -102,7 +102,7 @@ fn run(app: &mut UiApp, speech: std::path::PathBuf, items: Vec<JfItem>) {
         |app, (done, failed, cancelled): (Outcome, Outcome, bool)| {
             app.jf_subs = None;
             if cancelled {
-                app.toast(trf!("已取消產生字幕（做好 {} 支）", "Subtitles cancelled ({} done)", done.len()), false);
+                app.toast(trf!("已取消產生字幕（做好 {} 支）", "Subtitles canceled ({} done)", done.len()), false);
             } else if failed.is_empty() {
                 let msg = match done.as_slice() {
                     [(name, how)] => trf!("✓ 「{name}」的字幕{how}了，電視、手機上看也有字幕", "✓ Subtitles for “{name}” {how}; TVs and phones show them too"),

@@ -464,6 +464,7 @@ fn load_face(app: &mut UiApp, id: &str) {
         |app, (id, tex): (String, Option<egui::TextureHandle>)| {
             if let Some(d) = app.jf_browse.as_mut() {
                 d.faces.insert(id, tex.map_or(Poster::None, Poster::Ready));
+                evict(&mut d.faces, &FACE_SEEN);
             }
         },
     );
@@ -504,14 +505,45 @@ fn load_poster(app: &mut UiApp, id: &str) {
         |app, (id, tex)| {
             if let Some(d) = app.jf_browse.as_mut() {
                 d.posters.insert(id, tex.map_or(Poster::None, Poster::Ready));
-                // 逛了很多資料夾：只留現在這一頁的（每張都是一個材質，記憶體會一直長）
-                if d.posters.len() > 300 {
-                    let keep: std::collections::HashSet<&str> = d.items.iter().flatten().map(|i| i.id.as_str()).collect();
-                    d.posters.retain(|k, p| matches!(p, Poster::Loading) || keep.contains(k.as_str()));
-                }
+                // 每張都是一個材質（一張約 0.4～1 MB）：超過 300 張只留最近畫過的 200 張，捲回去時再讀
+                evict(&mut d.posters, &POSTER_SEEN);
             }
         },
     );
+}
+
+thread_local! {
+    /// 每張封面、頭像最後一次畫出來是第幾次（清掉太久沒看的用）
+    static POSTER_SEEN: std::cell::RefCell<(u64, HashMap<String, u64>)> = std::cell::RefCell::new((0, HashMap::new()));
+    static FACE_SEEN: std::cell::RefCell<(u64, HashMap<String, u64>)> = std::cell::RefCell::new((0, HashMap::new()));
+}
+
+type Seen = std::thread::LocalKey<std::cell::RefCell<(u64, HashMap<String, u64>)>>;
+
+/// 記下這張剛畫過
+fn seen(which: &'static Seen, id: &str) {
+    which.with_borrow_mut(|(tick, m)| {
+        *tick += 1;
+        match m.get_mut(id) {
+            Some(t) => *t = *tick,
+            None => drop(m.insert(id.to_string(), *tick)),
+        }
+    });
+}
+
+/// 超過 300 張時只留最近畫過的 200 張（還在讀的不動）
+fn evict(map: &mut HashMap<String, Poster>, which: &'static Seen) {
+    if map.len() <= 300 {
+        return;
+    }
+    which.with_borrow_mut(|(_, m)| {
+        let mut ids: Vec<(u64, String)> = map.iter().filter(|(_, p)| !matches!(p, Poster::Loading)).map(|(k, _)| (m.get(k).copied().unwrap_or(0), k.clone())).collect();
+        ids.sort_unstable_by_key(|x| std::cmp::Reverse(x.0));
+        for (_, k) in ids.into_iter().skip(200) {
+            map.remove(&k);
+            m.remove(&k);
+        }
+    });
 }
 
 /// 從 Jellyfin 刪掉這支影片（先確認）：伺服器上的檔案一起刪，不能復原；這台電腦上的檔案不動
@@ -539,6 +571,15 @@ fn confirm_delete_many(app: &mut UiApp, list: Vec<(String, String)>) {
     let mut ask = super::dialogs::Ask::confirm(title, msg, tr!("刪除", "Delete"), move |app, _| {
         let Some(jf) = app.jellyfin() else { return };
         let todo = list.clone();
+        // 一支一支刪，好幾支時要一點時間：先說正在刪，刪好再說結果
+        app.toast(
+            if list.len() == 1 {
+                trf!("正在從 Jellyfin 刪除：{}", "Deleting from Jellyfin: {}", list[0].1)
+            } else {
+                trf!("正在從 Jellyfin 刪除 {} 支影片…", "Deleting {} videos from Jellyfin…", list.len())
+            },
+            false,
+        );
         app.spawn(
             async move { tokio::task::spawn_blocking(move || todo.into_iter().map(|(id, name)| (jf.delete_item(&id).map(|_| id), name)).collect::<Vec<_>>()).await.unwrap_or_default() },
             move |app, done| {
@@ -588,7 +629,7 @@ pub fn download(app: &mut UiApp, list: Vec<(String, String)>) {
                         Some(to) => jf.download(&id, &to).map(|_| Some(to)),
                         None => Ok(None),
                     };
-                    let cancelled = matches!(&r, Err(e) if e.contains(tr!("已取消", "Cancelled")));
+                    let cancelled = matches!(&r, Err(e) if screenrecorder_core::transfer::is_canceled(e));
                     out.push((file, r));
                     if cancelled {
                         break;
@@ -606,6 +647,17 @@ pub fn download(app: &mut UiApp, list: Vec<(String, String)>) {
             }
             app.load_recent();
             if let Some((file, Err(e))) = done.iter().find(|(_, r)| r.is_err()) {
+                // 自己按了取消：不算錯誤，說一聲下載好幾支就好
+                if screenrecorder_core::transfer::is_canceled(e) {
+                    return app.toast(
+                        if got.is_empty() {
+                            tr!("已取消下載", "Download canceled").to_string()
+                        } else {
+                            trf!("已取消下載（已下載好 {} 支）", "Download canceled ({} already downloaded)", got.len())
+                        },
+                        false,
+                    );
+                }
                 return app.toast(trf!("「{file}」沒有下載完：{e}", "“{file}” wasn't downloaded: {e}"), true);
             }
             let text = match got.len() {
@@ -656,6 +708,7 @@ pub fn download_then(app: &mut UiApp, item: (String, String), then: super::Entry
                 app.leave_for_edit();
                 app.act_path(then, path.display().to_string());
             }
+            Err(e) if screenrecorder_core::transfer::is_canceled(&e) => app.toast(tr!("已取消下載", "Download canceled"), false),
             Err(e) => app.toast(trf!("沒有下載完：{e}", "The download didn't finish: {e}"), true),
         },
     );
@@ -858,6 +911,13 @@ fn cells(ui: &mut egui::Ui, d: &JfBrowse, items: &[JfItem], rows: Option<usize>,
     }
     for row in items.chunks(cols).take(rows.unwrap_or(usize::MAX)) {
         let (row_rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), cell_h), Sense::hover());
+        // 看不到的那一排不畫（捲過上千支時每一格都畫全部會很慢）；鍵盤移到看不到的那一支時照樣捲過去
+        if !clip.intersects(row_rect) {
+            if d.scroll_to_cursor && rows.is_none() && row.iter().any(|it| d.cursor.as_deref() == Some(it.id.as_str())) {
+                ui.scroll_to_rect(row_rect, None);
+            }
+            continue;
+        }
         for (i, it) in row.iter().enumerate() {
             let cell = Rect::from_min_size(pos2(row_rect.min.x + i as f32 * (cell_w + gap), row_rect.min.y), vec2(cell_w, cell_h));
             let resp = ui.interact(cell, ui.id().with(("jf-cell", &it.id)), Sense::click());
@@ -867,7 +927,10 @@ fn cells(ui: &mut egui::Ui, d: &JfBrowse, items: &[JfItem], rows: Option<usize>,
             let painter = ui.painter();
             painter.rect_filled(img, 8.0, p.surface2);
             match d.posters.get(&it.id) {
-                Some(Poster::Ready(tex)) => theme::paint_thumb_cover(painter, img, tex),
+                Some(Poster::Ready(tex)) => {
+                    theme::paint_thumb_cover(painter, img, tex);
+                    seen(&POSTER_SEEN, &it.id);
+                }
                 None if it.has_image && clip.intersects(cell) => out.posters.push(it.id.clone()),
                 _ => {}
             }
@@ -1051,7 +1114,7 @@ fn item_menu(ui: &mut egui::Ui, d: &JfBrowse, it: &JfItem, items: &[JfItem], on:
             out.download = Some(it.clone());
             ui.close();
         }
-        if ui.button(RichText::new(tr!("從 Jellyfin 刪除…", "Delete from Jellyfin…")).color(p.rec)).clicked() {
+        if ui.button(RichText::new(tr!("從 Jellyfin 刪除…", "Delete from Jellyfin…")).color(p.err)).clicked() {
             out.delete = Some(it.clone());
             ui.close();
         }
@@ -1082,15 +1145,17 @@ fn rows(ui: &mut egui::Ui, d: &JfBrowse, items: &[JfItem], out: &mut Picked) {
     .into_iter()
     .filter(|c| c.0 > 0.0)
     .collect();
-    // 一格裡的字（太長截短）
-    let cell_text = |ui: &egui::Ui, rect: Rect, text: &str, align: Align, color: egui::Color32, bold: bool| {
+    // 一格裡的字（太長截短；回傳有沒有截掉）
+    let cell_text = |ui: &egui::Ui, rect: Rect, text: &str, align: Align, color: egui::Color32, bold: bool| -> bool {
         let font = if bold { theme::font_bold(12.5) } else { theme::font(12.5) };
         let inner = rect.shrink2(vec2(6.0, 0.0));
         let mut job = egui::text::LayoutJob::simple_singleline(text.to_string(), font, color);
         job.wrap = egui::text::TextWrapping::truncate_at_width(inner.width());
         let g = ui.painter().layout_job(job);
         let x = if align == Align::Max { inner.max.x - g.size().x } else { inner.min.x };
+        let cut = g.elided;
         ui.painter().galley(pos2(x, rect.center().y - g.size().y / 2.0), g, color);
+        cut
     };
     // 標題列
     let (head, _) = ui.allocate_exact_size(vec2(w, 28.0), Sense::hover());
@@ -1148,6 +1213,9 @@ fn rows(ui: &mut egui::Ui, d: &JfBrowse, items: &[JfItem], out: &mut Picked) {
         }
         let mut x = row.min.x;
         let mut used = false;
+        // 人物、標籤太長被截掉、滑鼠在那一格上：提示完整的（不然提示名稱）
+        let mut tip: Option<String> = None;
+        let pointer = ui.ctx().pointer_hover_pos();
         for (cwid, title, _, align) in &cols {
             let r = Rect::from_min_size(pos2(x, row.min.y), vec2(*cwid, row.height()));
             x += cwid;
@@ -1202,12 +1270,18 @@ fn rows(ui: &mut egui::Ui, d: &JfBrowse, items: &[JfItem], out: &mut Picked) {
                     let text = if it.size > 0 { screenrecorder_core::format::format_bytes(it.size) } else { String::new() };
                     cell_text(ui, r, &text, *align, p.muted, false);
                 }
-                t if t == tr!("日期", "Date") => cell_text(ui, r, &it.date, *align, p.muted, false),
-                t if t == tr!("人物", "People") => cell_text(ui, r, &it.people.join(tr!("、", ", ")), *align, p.text, false),
-                _ => cell_text(ui, r, &it.tags.join(tr!("、", ", ")), *align, p.text, false),
+                t if t == tr!("日期", "Date") => {
+                    cell_text(ui, r, &it.date, *align, p.muted, false);
+                }
+                t => {
+                    let text = if t == tr!("人物", "People") { it.people.join(tr!("、", ", ")) } else { it.tags.join(tr!("、", ", ")) };
+                    if cell_text(ui, r, &text, *align, p.text, false) && pointer.is_some_and(|q| r.contains(q)) {
+                        tip = Some(text);
+                    }
+                }
             }
         }
-        let resp = resp.on_hover_text(&it.name);
+        let resp = resp.on_hover_text(tip.as_deref().unwrap_or(&it.name));
         if video {
             resp.context_menu(|ui| item_menu(ui, d, it, items, on, out));
         }
@@ -1372,7 +1446,8 @@ fn facet_menu(
     ui: &mut egui::Ui,
     kind: u8,
     empty: &str,
-    rows: Vec<(String, usize, JfFacet)>,
+    count: usize,
+    rows: impl FnOnce() -> Vec<(String, usize, JfFacet)>,
     chosen: &[JfFacet],
     search: &mut String,
     change: &mut FacetChange,
@@ -1384,14 +1459,16 @@ fn facet_menu(
     let n = chosen.iter().filter(|f| kind_of(f) == kind).count();
     // 寬度固定（先留好藍色數字的位置）：勾了只是數字出現，按鈕不變寬、整排不會移動
     let w = Btn::new(label).menu().badge(9).height(super::toolbar::H).width(ui);
-    let b = Btn::new(label).menu().selected(n > 0).badge(n).min_width(w).height(super::toolbar::H).enabled(!rows.is_empty()).tooltip(if rows.is_empty() { empty } else { "" }).show(ui);
+    let b = Btn::new(label).menu().selected(n > 0).badge(n).min_width(w).height(super::toolbar::H).enabled(count > 0).tooltip(if count == 0 { empty } else { "" }).show(ui);
     egui::Popup::menu(&b).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
+        let rows = rows();
         // 寬度固定：清單在選單裡，靠右的東西不能讓它每一格越撐越寬
         const W: f32 = 300.0;
         ui.set_width(W);
         ui.set_max_width(W);
         let hint = [tr!("搜尋人物…", "Search people…"), tr!("搜尋標籤…", "Search tags…"), tr!("搜尋年份…", "Search years…")][kind as usize];
-        ui.add(egui::TextEdit::singleline(search).hint_text(hint).desired_width(W));
+        let sr = ui.add(egui::TextEdit::singleline(search).hint_text(hint).desired_width(W).margin(egui::Margin { left: 4, right: 26, top: 2, bottom: 2 }));
+        super::toolbar::clear_x(ui, &sr, search);
         ui.add_space(4.0);
         let q = jellyfin::name_key(search);
         egui::ScrollArea::vertical().id_salt(("jf-facet", kind)).max_height(300.0).show(ui, |ui| {
@@ -1405,6 +1482,13 @@ fn facet_menu(
                     _ => None,
                 };
                 let (row, row_resp) = ui.allocate_exact_size(vec2(W - 16.0, if person.is_some() { 40.0 } else { 26.0 }), if person.is_some() { Sense::click() } else { Sense::hover() });
+                // 捲到看不到的列只佔位置不畫（人物、標籤有幾百個）
+                if !ui.is_rect_visible(row) {
+                    if is_none_facet(f) {
+                        ui.separator();
+                    }
+                    continue;
+                }
                 let cw = if *c > 0 || is_none_facet(f) { 56.0 } else { 0.0 };
                 let mut on = chosen.contains(f);
                 let shown: String = if name.chars().count() > 24 { name.chars().take(23).chain(['…']).collect() } else { name.clone() };
@@ -1418,6 +1502,7 @@ fn facet_menu(
                     let ar = ui.interact(at, egui::Id::new(("jf-facet-face", id)), Sense::click());
                     match faces.get(id) {
                         Some(Poster::Ready(tex)) => {
+                            seen(&FACE_SEEN, id);
                             // 人物照片是直的：取上半部的正方形（臉通常在那裡），不要壓扁
                             let [w, h] = tex.size().map(|v| v.max(1) as f32);
                             let uv = if h > w {
@@ -1676,17 +1761,8 @@ pub fn panel(ui: &mut egui::Ui, d: &mut JfBrowse, busy: Option<(usize, usize)>, 
             if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                 d.search_at = Some(Instant::now() - SEARCH_WAIT);
             }
-            if !d.search.is_empty() {
-                let x = Rect::from_center_size(pos2(r.rect.max.x - 15.0, r.rect.center().y), vec2(22.0, 22.0));
-                let xr = ui.interact(x, egui::Id::new("jfSearchClear"), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(tr!("清除搜尋", "Clear search"));
-                if xr.hovered() {
-                    ui.painter().circle_filled(x.center(), 10.0, p.surface2);
-                }
-                theme::paint_icon(ui.painter(), Rect::from_center_size(x.center(), vec2(12.0, 12.0)), Icon::Close, if xr.hovered() { p.text } else { p.muted });
-                if xr.clicked() {
-                    d.search.clear();
-                    d.search_at = Some(Instant::now() - SEARCH_WAIT);
-                }
+            if super::toolbar::clear_x(ui, &r, &mut d.search) {
+                d.search_at = Some(Instant::now() - SEARCH_WAIT);
             }
         }
         // 篩選、排序：資料夾裡篩選列出底下符合的影片；搜尋、依條件找時從結果裡再篩
@@ -1748,15 +1824,19 @@ pub fn panel(ui: &mut egui::Ui, d: &mut JfBrowse, busy: Option<(usize, usize)>, 
                 Some(e) => trf!("讀不到 Jellyfin 的標籤、年份：{e}", "Couldn't read tags and years from Jellyfin: {e}"),
                 None => none.to_string(),
             };
-            let years: Vec<_> = d.years.iter().map(|(y, c)| (y.to_string(), *c, JfFacet::Year(*y))).collect();
+            // 清單只在打開時才建（沒打開時每一格都把幾百個人物、標籤複製一遍很浪費）
+            let years = || d.years.iter().map(|(y, c)| (y.to_string(), *c, JfFacet::Year(*y))).collect::<Vec<_>>();
             // 最上面一列是「（沒有標籤）」「（沒有人物）」：找還沒填的
             let none_row = |n: usize, f: JfFacet| (trf!("（{}）", "({})", facet_name(&f)), n, f);
-            let tags: Vec<_> = std::iter::once(none_row(d.no_tags, JfFacet::NoTags)).chain(d.tags.iter().map(|(t, c)| (t.clone(), *c, JfFacet::Tag(t.clone())))).collect();
-            let people: Vec<_> = std::iter::once(none_row(d.no_people, JfFacet::NoPeople)).chain(d.persons.iter().map(|(id, n, c)| (n.clone(), *c, JfFacet::Person(id.clone(), n.clone())))).collect();
-            let [s0, s1, s2] = &mut d.facet_search;
-            facet_menu(ui, 0, tr!("影片還沒有設人物", "No videos have people yet"), people, &d.facet, s0, &mut change, &d.faces, &mut out.faces);
-            facet_menu(ui, 1, &why(tr!("Jellyfin 上的影片都還沒有標籤", "No videos on Jellyfin have tags yet")), tags, &d.facet, s1, &mut change, &d.faces, &mut out.faces);
-            facet_menu(ui, 2, &why(tr!("Jellyfin 上的影片都還沒有設年份", "No videos on Jellyfin have a year yet")), years, &d.facet, s2, &mut change, &d.faces, &mut out.faces);
+            let tags = || std::iter::once(none_row(d.no_tags, JfFacet::NoTags)).chain(d.tags.iter().map(|(t, c)| (t.clone(), *c, JfFacet::Tag(t.clone())))).collect::<Vec<_>>();
+            let people =
+                || std::iter::once(none_row(d.no_people, JfFacet::NoPeople)).chain(d.persons.iter().map(|(id, n, c)| (n.clone(), *c, JfFacet::Person(id.clone(), n.clone())))).collect::<Vec<_>>();
+            let mut search = std::mem::take(&mut d.facet_search);
+            let [s0, s1, s2] = &mut search;
+            facet_menu(ui, 0, tr!("影片還沒有設人物", "No videos have people yet"), d.persons.len() + 1, people, &d.facet, s0, &mut change, &d.faces, &mut out.faces);
+            facet_menu(ui, 1, &why(tr!("Jellyfin 上的影片都還沒有標籤", "No videos on Jellyfin have tags yet")), d.tags.len() + 1, tags, &d.facet, s1, &mut change, &d.faces, &mut out.faces);
+            facet_menu(ui, 2, &why(tr!("Jellyfin 上的影片都還沒有設年份", "No videos on Jellyfin have a year yet")), d.years.len(), years, &d.facet, s2, &mut change, &d.faces, &mut out.faces);
+            d.facet_search = search;
             apply_facet(d, change, &mut out);
             ui.add_space(10.0);
             let tip = tr!(
@@ -2009,12 +2089,13 @@ pub fn panel(ui: &mut egui::Ui, d: &mut JfBrowse, busy: Option<(usize, usize)>, 
             out.picked.subs = Some(d.selected.values().cloned().collect());
         }
         let add = Btn::new(tr!("加進…", "Add to…")).small().menu().tooltip(tr!("加進合集或播放清單", "Add to a collection or playlist")).show(fui);
-        let chosen: Vec<JfItem> = d.selected.values().cloned().collect();
-        egui::Popup::menu(&add).show(|ui| add_menu(ui, d, &chosen, &mut out.picked.add_to));
+        // 勾了的影片只在用到時才複製（Ctrl+A 全選時每一格都複製整份很浪費）
+        let chosen = || d.selected.values().cloned().collect::<Vec<JfItem>>();
+        egui::Popup::menu(&add).show(|ui| add_menu(ui, d, &chosen(), &mut out.picked.add_to));
         if let Some((kind, _)) = d.path.last().and_then(|(id, _)| list_at(id)) {
             let here = if kind == JfList::Collection { tr!("從這個合集移除", "Remove from this collection") } else { tr!("從這個播放清單移除", "Remove from this playlist") };
             if Btn::new(here).small().tooltip(tr!("影片本身不會刪掉", "The videos themselves aren't deleted")).show(fui).clicked() {
-                out.picked.remove_here = Some(chosen.clone());
+                out.picked.remove_here = Some(chosen());
             }
         }
         if Btn::new(tr!("下載到這台電腦", "Download to this computer")).icon(Icon::Download).small().show(fui).clicked() {

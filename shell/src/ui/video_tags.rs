@@ -17,6 +17,8 @@ pub struct TagsDialog {
     values: HashMap<String, String>,
     saving: bool,
     error: Option<String>,
+    /// 改過了又按 Esc、點外面：不關，提示要放棄請按「取消」
+    keep_hint: bool,
 }
 
 pub fn open(app: &mut UiApp, entry: LibraryEntry) {
@@ -27,7 +29,7 @@ pub fn open(app: &mut UiApp, entry: LibraryEntry) {
     let Some(ff) = app.core.ffmpeg_path() else {
         return app.toast(tr!("找不到 FFmpeg", "FFmpeg not found"), true);
     };
-    app.video_tags = Some(TagsDialog { name: dialogs::file_name(&path), path: path.clone(), orig: None, values: HashMap::new(), saving: false, error: None });
+    app.video_tags = Some(TagsDialog { name: dialogs::file_name(&path), path: path.clone(), orig: None, values: HashMap::new(), saving: false, error: None, keep_hint: false });
     app.spawn(async move { video_tags::read(&ff, &path).await }, |app, r| {
         let Some(d) = &mut app.video_tags else { return };
         match r {
@@ -43,6 +45,7 @@ pub fn open(app: &mut UiApp, entry: LibraryEntry) {
 pub fn show(app: &mut UiApp, ctx: &egui::Context) {
     let Some(mut d) = app.video_tags.take() else { return };
     let mut close = false;
+    let mut retry = false;
     let mut save = false;
     // 以前用過的類型，加上這支影片原本的（按一下加入或移除）
     let mut known = app.s.genres.clone();
@@ -67,6 +70,10 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         ui.add_space(8.0);
         if let Some(e) = &d.error {
             ui.label(RichText::new(e).color(pal.warn).font(theme::font(12.5)));
+            ui.add_space(6.0);
+            if Btn::new(tr!("重試", "Retry")).icon(Icon::Refresh).small().show(ui).clicked() {
+                retry = true;
+            }
         } else if d.orig.is_none() {
             ui.horizontal(|ui| {
                 ui.spinner();
@@ -120,16 +127,30 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         ui.add_space(10.0);
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             let label = if d.saving { tr!("正在儲存…", "Saving…") } else { tr!("儲存", "Save") };
-            if Btn::new(label).primary().enabled(changed && !d.saving).show(ui).clicked() {
+            let tip = if changed { "" } else { tr!("還沒有修改", "Nothing changed yet") };
+            if Btn::new(label).primary().enabled(changed && !d.saving).tooltip(tip).show(ui).clicked() {
                 save = true;
             }
             if Btn::new(tr!("取消", "Cancel")).ghost().show(ui).clicked() {
                 close = true;
             }
+            if d.keep_hint && changed {
+                ui.label(RichText::new(tr!("還沒儲存：要放棄修改請按「取消」", "Not saved yet: click Cancel to discard")).font(theme::font(12.0)).color(pal.warn));
+            }
         });
     });
-    if (close || modal.should_close()) && !d.saving {
+    // Esc、點外面：沒改過就關；改過了不直接丟掉，提示按「取消」
+    let dismiss = modal.should_close();
+    if dismiss && changed {
+        d.keep_hint = true;
+    }
+    if (close || dismiss && !changed) && !d.saving {
         return;
+    }
+    if retry {
+        // 讀不到影片資訊：重新讀一次
+        let media = screenrecorder_core::types::MediaInfo { path: d.path, ..Default::default() };
+        return open(app, LibraryEntry { media, exports: vec![], hits: vec![] });
     }
     if save {
         d.saving = true;

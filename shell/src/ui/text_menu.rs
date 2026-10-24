@@ -1,8 +1,8 @@
 //! 輸入框的右鍵選單：剪下、複製、貼上、全選（egui 的輸入框本身沒有）。
 //! 不用每個輸入框各加：每一格最後看右鍵按在哪個輸入框上（按下去輸入框會拿到焦點），
-//! 選了之後下一格一開始把焦點還給那個輸入框，再當成鍵盤事件送進去（和按 Ctrl+X、C、V、A 一樣）
+//! 選了之後下一格一開始把焦點還給那個輸入框，再當成鍵盤事件送進去（剪下、複製、貼上；全選直接設選取範圍）
 
-use eframe::egui::{self, text::CCursor, text::CCursorRange, text_edit::TextEditState, Context, Event, Id, Key, Modifiers, PointerButton};
+use eframe::egui::{self, text::CCursor, text::CCursorRange, text_edit::TextEditState, Context, Event, Id, PointerButton};
 use screenrecorder_core::tr;
 
 #[derive(Clone, Copy, PartialEq)]
@@ -38,7 +38,14 @@ pub fn before(ctx: &Context) {
             Some(t) => Event::Paste(t),
             None => return,
         },
-        Act::All => Event::Key { key: Key::A, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::CTRL | Modifiers::COMMAND },
+        // 全選直接設選取範圍（送 Ctrl+A 的話，檔案庫的搜尋框空著時會變成「選取全部錄影」）；超過字數的位置 egui 會收回到最後一個字
+        Act::All => {
+            if let Some(mut ts) = TextEditState::load(ctx, id) {
+                ts.cursor.set_char_range(Some(CCursorRange::two(CCursor::new(0), CCursor::new(usize::MAX))));
+                ts.store(ctx, id);
+            }
+            return;
+        }
     };
     ctx.input_mut(|i| i.events.push(ev));
 }

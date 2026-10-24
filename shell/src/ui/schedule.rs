@@ -140,7 +140,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         let at = start_time(&d);
         match at {
             Some(at) => ui.label(theme::muted(ui, trf!("開始時間：{}", "Starts {}", when_text(at, Local::now())))),
-            None => ui.label(RichText::new(tr!("這個時間已經過了，請改時間或選「明天」", "That time has already passed. Change the time or choose “Tomorrow”")).font(theme::font(12.5)).color(p.rec)),
+            None => ui.label(RichText::new(tr!("這個時間已經過了，請改時間或選「明天」", "That time has already passed. Change the time or choose “Tomorrow”")).font(theme::font(12.5)).color(p.err)),
         };
         ui.add_space(10.0);
         ui.label(RichText::new(tr!("錄多久", "Length")).font(theme::font_bold(13.5)));

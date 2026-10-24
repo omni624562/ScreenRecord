@@ -401,7 +401,8 @@ async fn transcribe_in(
     }
     let status = child.wait().await.map_err(|e| e.to_string())?;
     let last_err = err_task.await.unwrap_or_default();
-    let text = std::fs::read_to_string(&out).unwrap_or_default();
+    // 容錯讀取：語音辨識偶爾把一個中文字切成兩半，整份讀成空的就什麼都沒了
+    let text = std::fs::read(&out).map(|b| String::from_utf8_lossy(&b).into_owned()).unwrap_or_default();
     let _ = std::fs::remove_file(&out);
     if canceled {
         return Err("已取消".into());

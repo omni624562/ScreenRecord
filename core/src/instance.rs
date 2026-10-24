@@ -11,6 +11,10 @@ fn agent() -> ureq::Agent {
 
 /// 這個連接埠上是不是螢幕錄影；是的話回傳它的版本（3.x 在 ping 裡，舊版要另外問 /api/env）
 fn probe(port: u16) -> Option<String> {
+    // 在聽這個連接埠的是其他使用者（其他登入工作階段）的程式：不是自己的，不理它（不會因為別人占了連接埠就開不起來）
+    if crate::peer::listener_owner(port).and_then(crate::peer::same_session) == Some(false) {
+        return None;
+    }
     let a = agent();
     let ping: serde_json::Value = serde_json::from_str(&a.get(&format!("http://127.0.0.1:{port}/api/ping")).call().ok()?.into_string().ok()?).ok()?;
     if ping["app"] != APP_ID {

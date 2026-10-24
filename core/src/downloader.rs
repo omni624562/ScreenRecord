@@ -71,8 +71,7 @@ pub fn install_wait(deps: Deps, progress: &AtomicU32, cancel: &AtomicBool) -> Re
 
 /// Windows 內建 tar（bsdtar，支援 zip）
 pub fn system_tar() -> PathBuf {
-    let root = std::env::var_os("SystemRoot").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("C:\\Windows"));
-    root.join("System32").join("tar.exe")
+    crate::paths::system32("tar.exe")
 }
 
 /// 可以寫入的放置位置：優先 exe 旁邊
@@ -130,6 +129,8 @@ pub fn place_ffmpeg(src: &Path, target: &Path, run: &RunFn) -> Result<Option<Str
     std::fs::copy(src, &staging).map_err(|e| crate::error::plain(&e))?;
     let _ = std::fs::remove_file(target);
     std::fs::rename(&staging, target).map_err(|e| crate::error::plain(&e))?;
+    // 記下來：本程式裝的（下載比對過雜湊、或使用者自己選的）放在可疑的資料夾也照樣用
+    crate::ffmpeg::allow(target);
     Ok(crate::ffmpeg::parse_version(&ver.stdout))
 }
 

@@ -14,7 +14,7 @@ use std::time::Duration;
 use tokio::sync::mpsc::UnboundedSender;
 use windows::core::{w, PCSTR, PCWSTR};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
-use windows::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress, LoadLibraryW};
+use windows::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress, LoadLibraryExW, LOAD_LIBRARY_SEARCH_SYSTEM32};
 use windows::Win32::UI::Input::KeyboardAndMouse::{RegisterHotKey, UnregisterHotKey, HOT_KEY_MODIFIERS, MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, MOD_SHIFT, MOD_WIN};
 use windows::Win32::UI::Shell::{Shell_NotifyIconW, NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_TIP, NIIF_INFO, NIIF_WARNING, NIM_ADD, NIM_DELETE, NIM_MODIFY, NOTIFYICONDATAW, NOTIFY_ICON_DATA_FLAGS};
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -497,7 +497,8 @@ fn show_menu() {
 /// 讓選單跟著 Windows 的深色 / 淺色模式（uxtheme 未公開 API；失敗就維持預設外觀）
 fn allow_dark_menus() {
     unsafe {
-        let Ok(ux) = LoadLibraryW(w!("uxtheme.dll")) else { return };
+        // 只從 System32 載入（不會載入放在本程式資料夾裡的同名 DLL）
+        let Ok(ux) = LoadLibraryExW(w!("uxtheme.dll"), None, LOAD_LIBRARY_SEARCH_SYSTEM32) else { return };
         // SetPreferredAppMode（序號 135）、FlushMenuThemes（序號 136）
         if let Some(set_mode) = GetProcAddress(ux, PCSTR(135usize as *const u8)) {
             let f: unsafe extern "system" fn(i32) -> i32 = std::mem::transmute(set_mode);

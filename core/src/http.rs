@@ -41,12 +41,24 @@ pub fn configure(ui: Option<&serde_json::Value>) {
 fn describe_mode(m: &ProxyMode) -> String {
     match m {
         ProxyMode::Auto => match system_proxy() {
-            Some(p) => format!("跟著系統（{p}）"),
+            Some(p) => format!("跟著系統（{}）", hide_password(&p)),
             None => "跟著系統（沒有設定）".into(),
         },
         ProxyMode::Off => "不使用".into(),
-        ProxyMode::Custom(p) => p.clone(),
+        ProxyMode::Custom(p) => hide_password(p),
     }
+}
+
+/// 要顯示、寫進記錄檔的 Proxy 位址：遮掉密碼（http://帳號:密碼@主機 → http://帳號:…@主機）
+pub fn hide_password(url: &str) -> String {
+    let Some(at) = url.rfind('@') else { return url.to_string() };
+    let start = url.find("://").map_or(0, |i| i + 3);
+    if at < start {
+        return url.to_string();
+    }
+    let user = &url[start..at];
+    let name = user.split_once(':').map_or(user, |(n, _)| n);
+    format!("{}{name}:…{}", &url[..start], &url[at..])
 }
 
 /// 系統的 Proxy：環境變數，或 Windows「設定 → 網路和網際網路 → Proxy」手動設定的伺服器（自動設定指令碼 PAC 不支援）
@@ -193,6 +205,13 @@ fn io_source(t: &ureq::Transport) -> Option<&io::Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn proxy_passwords_are_hidden() {
+        assert_eq!(hide_password("http://me:secret@proxy:8080"), "http://me:…@proxy:8080");
+        assert_eq!(hide_password("me:p@ss@proxy:8080"), "me:…@proxy:8080");
+        assert_eq!(hide_password("proxy.corp:8080"), "proxy.corp:8080");
+    }
 
     #[test]
     fn proxy_settings() {

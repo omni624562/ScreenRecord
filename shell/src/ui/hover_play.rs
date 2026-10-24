@@ -68,6 +68,10 @@ pub fn hover(ctx: &egui::Context, key: &str, rect: Rect, duration: f64, start: i
             return false;
         }
         let since = s.still.as_ref().map_or(now, |x| x.2);
+        // 這次停住已經試過、播不了（例如還沒有 FFmpeg）：不再試，也不排重畫
+        if !since.is_finite() {
+            return false;
+        }
         if now - since < DWELL {
             ctx.request_repaint_after(std::time::Duration::from_secs_f64(DWELL - (now - since)));
             return false;
@@ -116,6 +120,7 @@ pub fn paint(painter: &egui::Painter, key: &str, rect: Rect, rounding: u8) -> bo
                 Some(t) => t.set(img, TextureOptions::LINEAR),
                 None => pl.tex = Some(ctx.load_texture("hover-play", img, TextureOptions::LINEAR)),
             }
+            pl.player.recycle(f.rgba);
         }
         // 播完了從頭再播
         if pl.player.take_ended() {

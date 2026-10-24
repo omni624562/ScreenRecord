@@ -25,9 +25,13 @@ pub struct FaceDlg {
     loading: bool,
     /// 框（以圖片寬高為 1 的比例）
     crop: Rect,
+    /// 開啟時的框（框過了又按 Esc、點外面時不直接關）
+    crop0: Rect,
     /// 正在拖曳：（調整大小？, 按下時的框）
     drag: Option<(bool, Rect)>,
     saving: bool,
+    /// 框過了又按 Esc、點外面：不關，提示要放棄請按「取消」
+    keep_hint: bool,
 }
 
 /// 開啟（frame 是正在看的這一格；people 是清單上記得的人物，接著向伺服器重讀）
@@ -39,7 +43,7 @@ pub fn open(app: &mut UiApp, frame: Pixmap, item: String, user: String, people: 
     let h = 0.7;
     let w = (h * ih * ASPECT / iw).min(1.0);
     let crop = Rect::from_center_size(pos2(0.5, 0.5), vec2(w, h));
-    app.jf_face = Some(FaceDlg { frame, tex, people, pick: 0, item, user, loading: false, crop, drag: None, saving: false });
+    app.jf_face = Some(FaceDlg { frame, tex, people, pick: 0, item, user, loading: false, crop, crop0: crop, drag: None, saving: false, keep_hint: false });
     reload(app);
 }
 
@@ -74,7 +78,8 @@ pub fn info_saved(app: &mut UiApp, item: &str) {
 
 /// 框在圖片範圍內、維持 2:3（size_w：以寬為準調整高）
 fn clamp(c: Rect, iw: f32, ih: f32) -> Rect {
-    let min_w = 40.0 / iw;
+    // 最小 40 像素寬；畫面本身比 40 像素還窄時就是整個寬（clamp 的最小值不能大於最大值）
+    let min_w = (40.0 / iw).min(1.0);
     let mut w = c.width().clamp(min_w, 1.0);
     let mut h = w * iw / ASPECT / ih;
     if h > 1.0 {
@@ -215,10 +220,18 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                 if Btn::new(tr!("取消", "Cancel")).ghost().show(ui).clicked() {
                     close = true;
                 }
+                if d.keep_hint && d.crop != d.crop0 {
+                    ui.label(RichText::new(tr!("要放棄請按「取消」", "Click Cancel to discard")).font(theme::font(12.0)).color(theme::pal(ui).warn));
+                }
             });
         });
     });
-    if (close || modal.should_close()) && !d.saving {
+    // Esc、點外面（拖框時很容易點到外面）：框過了就不直接關，提示按「取消」
+    let dismiss = modal.should_close();
+    if dismiss && d.crop != d.crop0 {
+        d.keep_hint = true;
+    }
+    if (close || dismiss && d.crop == d.crop0) && !d.saving {
         return;
     }
     if save {

@@ -499,7 +499,7 @@ impl Output {
         let mut i = 0;
         while i < self.waiting.len() && self.sock.is_none() {
             let (_, peer, at) = &self.waiting[i];
-            let verdict = match tcp_owner(*peer, self.port) {
+            let verdict = match crate::peer::tcp_owner(*peer, self.port) {
                 // FFmpeg 剛啟動、還不知道它的編號：等一下
                 Some(_) if want == 0 => None,
                 Some(pid) => Some(pid == want),
@@ -582,40 +582,6 @@ impl Output {
             }
         }
     }
-}
-
-/// 本機 TCP 連線是哪個程序開的：peer 是對方的位址，port 是我們這邊的埠。查不到時 None
-#[cfg(windows)]
-fn tcp_owner(peer: std::net::SocketAddr, port: u16) -> Option<u32> {
-    use windows::Win32::NetworkManagement::IpHelper::{GetExtendedTcpTable, MIB_TCPROW_OWNER_PID, TCP_TABLE_OWNER_PID_CONNECTIONS};
-    const AF_INET: u32 = 2;
-    let mut size = 0u32;
-    // SAFETY: 先問要多大，再用夠大的緩衝（u32 對齊）讀整張表；列數不超過緩衝
-    unsafe {
-        GetExtendedTcpTable(None, &mut size, false, AF_INET, TCP_TABLE_OWNER_PID_CONNECTIONS, 0);
-        for _ in 0..3 {
-            let mut buf = vec![0u32; size as usize / 4 + 64];
-            let mut len = (buf.len() * 4) as u32;
-            match GetExtendedTcpTable(Some(buf.as_mut_ptr().cast()), &mut len, false, AF_INET, TCP_TABLE_OWNER_PID_CONNECTIONS, 0) {
-                0 => {
-                    let n = (buf[0] as usize).min((buf.len() - 1) / 6);
-                    let rows = std::slice::from_raw_parts(buf.as_ptr().add(1) as *const MIB_TCPROW_OWNER_PID, n);
-                    let be = |p: u32| u16::from_be(p as u16);
-                    // 編號 0：系統沒給（Wine 等），當作查不到
-                    return rows.iter().find(|r| be(r.dwLocalPort) == peer.port() && be(r.dwRemotePort) == port).map(|r| r.dwOwningPid).filter(|p| *p != 0);
-                }
-                // 表變大了：重來
-                122 => size = len,
-                _ => return None,
-            }
-        }
-        None
-    }
-}
-
-#[cfg(not(windows))]
-fn tcp_owner(_: std::net::SocketAddr, _: u16) -> Option<u32> {
-    None
 }
 
 enum Cmd {
@@ -1043,7 +1009,7 @@ mod tests {
         let c = TcpStream::connect(("127.0.0.1", port)).unwrap();
         let (_s, peer) = l.accept().unwrap();
         assert_eq!(peer.port(), c.local_addr().unwrap().port());
-        assert_eq!(tcp_owner(peer, port), Some(std::process::id()));
+        assert_eq!(crate::peer::tcp_owner(peer, port), Some(std::process::id()));
         let (log, messages) = logs();
         let pipe =
             AudioPipe::new(vec![AudioSourceSpec { loopback: true, mic_id: String::new(), app: String::new() }], fake_opener(Default::default(), Arc::new(AtomicBool::new(false))), log, false).unwrap();

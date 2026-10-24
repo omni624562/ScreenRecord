@@ -281,6 +281,8 @@ struct Inner {
     still_busy: bool,
     /// 播放速度（0 = 還沒設定，當作 1）
     rate: f64,
+    /// 畫面用完還回來的記憶體（下一張直接用，不用每一張都配一塊新的）
+    spare: Option<Vec<u8>>,
 }
 
 impl Inner {
@@ -419,6 +421,11 @@ impl Player {
     /// 取走最新的畫面
     pub fn take_frame(&self) -> Option<Frame> {
         self.inner.lock().unwrap_or_else(|e| e.into_inner()).frame.take()
+    }
+
+    /// 畫面用完了：記憶體還回來給下一張用
+    pub fn recycle(&self, rgba: Vec<u8>) {
+        self.inner.lock().unwrap_or_else(|e| e.into_inner()).spare = Some(rgba);
     }
 
     fn kill_children(&self) {
@@ -682,7 +689,9 @@ impl Player {
                     if i.gen != gen {
                         return;
                     }
-                    i.frame = Some(Frame { time: t, width: w, height: h, rgba: buf.clone() });
+                    // 解好的這塊直接交出去，換一塊用過的回來接著解（還沒被取走的那張、或介面用完還回來的）
+                    let next = i.frame.take().map(|f| f.rgba).or_else(|| i.spare.take()).filter(|v| v.len() == buf.len()).unwrap_or_else(|| vec![0u8; buf.len()]);
+                    i.frame = Some(Frame { time: t, width: w, height: h, rgba: std::mem::replace(&mut buf, next) });
                     drop(i);
                     wake();
                 }

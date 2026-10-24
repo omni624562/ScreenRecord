@@ -39,6 +39,8 @@ pub struct JfEdit {
     /// 按下儲存的時間（等太久時說明伺服器還在存）
     saving_since: Option<std::time::Instant>,
     error: Option<String>,
+    /// 改過了又按 Esc、點外面：不關，提示要放棄請按「取消」
+    keep_hint: bool,
 }
 
 /// 開啟（背景讀這支影片目前的資訊和封面）
@@ -62,6 +64,7 @@ pub fn open(app: &mut UiApp, id: String, user: String, name: String, known_peopl
         remove_cover: false,
         saving: false,
         saving_since: None,
+        keep_hint: false,
         error: None,
     });
     load_usage(app);
@@ -500,7 +503,8 @@ fn picker_body(ui: &mut egui::Ui, id: &str, cands: &[(String, usize)], all: &[(S
     ui.set_max_width(W);
     let pk = &mut *prefs.picker;
     let hint = if id == "people" { tr!("搜尋人物…", "Search people…") } else { tr!("搜尋標籤…", "Search tags…") };
-    ui.add(egui::TextEdit::singleline(&mut pk.search).hint_text(hint).desired_width(W));
+    let sr = ui.add(egui::TextEdit::singleline(&mut pk.search).hint_text(hint).desired_width(W).margin(egui::Margin { left: 4, right: 26, top: 2, bottom: 2 }));
+    super::toolbar::clear_x(ui, &sr, &mut pk.search);
     ui.add_space(4.0);
     theme::segmented(ui, &mut pk.sort, &[(Sort::Count, tr!("依次數", "By count")), (Sort::Name, tr!("依名稱", "By name")), (Sort::Recent, tr!("最近用過", "Recent"))], true);
     ui.add_space(4.0);
@@ -786,6 +790,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
     let mut pick_cover = false;
     let mut undo_cover = false;
     let mut prefs_changed = false;
+    let mut retry = false;
     let year = d.year.trim().parse::<i32>().ok().filter(|y| (1900..=2999).contains(y));
     let year_ok = d.year.trim().is_empty() || year.is_some();
     // 輸入框裡還沒按 Enter 的字也算（儲存時會一起存）
@@ -816,6 +821,10 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
             match &d.error {
                 Some(e) => {
                     ui.label(RichText::new(e).color(p.warn).font(theme::font(12.5)));
+                    ui.add_space(6.0);
+                    if Btn::new(tr!("重試", "Retry")).icon(Icon::Refresh).small().show(ui).clicked() {
+                        retry = true;
+                    }
                 }
                 None => {
                     ui.horizontal(|ui| {
@@ -896,16 +905,27 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
             let slow = d.saving && d.saving_since.is_some_and(|t| t.elapsed() > std::time::Duration::from_secs(10));
             let note = if slow {
                 tr!("Jellyfin 還在儲存：一次加好幾個新標籤、人物時可能要一兩分鐘，請稍候", "Jellyfin is still saving: adding several new tags or people can take a minute or two")
+            } else if d.keep_hint && changed {
+                tr!("還沒儲存：要放棄這次的修改請按「取消」", "Not saved yet: click Cancel to discard your changes")
             } else {
                 tr!("存到 Jellyfin，電視、手機上都看得到；伺服器上的影片檔不會動", "Saved on Jellyfin for TVs and phones; the video file on the server isn't touched")
             };
             if d.saving {
                 ui.ctx().request_repaint_after(std::time::Duration::from_secs(1));
             }
-            ui.label(RichText::new(note).font(theme::font(12.0)).color(p.muted));
+            ui.label(RichText::new(note).font(theme::font(12.0)).color(if d.keep_hint && changed && !slow { p.warn } else { p.muted }));
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 let label = if d.saving { tr!("正在儲存…", "Saving…") } else { tr!("儲存", "Save") };
-                if Btn::new(label).primary().enabled(changed && year_ok && !d.saving).show(ui).clicked() {
+                let why = if !changed {
+                    tr!("還沒有修改", "Nothing changed yet")
+                } else if !year_ok {
+                    tr!("年份要是 4 位數字", "The year must be 4 digits")
+                } else {
+                    ""
+                };
+                let r = Btn::new(label).primary().enabled(changed && year_ok && !d.saving).show(ui);
+                let r = if why.is_empty() || d.saving { r } else { r.on_disabled_hover_text(why) };
+                if r.clicked() {
                     save = true;
                 }
                 if Btn::new(tr!("取消", "Cancel")).ghost().show(ui).clicked() {
@@ -923,8 +943,18 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
             start_rename(app, d.user.clone(), kind, from, to);
         }
     }
-    if (close || modal.should_close()) && !d.saving && app.ask.is_none() {
+    // Esc、點外面：沒改過就關；改過了不直接丟掉（打了一堆字按 Esc 只是想離開輸入框），提示按「取消」
+    let dismiss = modal.should_close() && app.ask.is_none();
+    if dismiss && changed {
+        d.keep_hint = true;
+    }
+    if (close || dismiss && !changed) && !d.saving && app.ask.is_none() {
         return;
+    }
+    if retry {
+        // 讀不到影片資訊：重新開一次（重新讀資訊、封面）
+        let names = |v: &[(String, usize)]| v.iter().map(|(n, _)| n.clone()).collect::<Vec<_>>();
+        return open(app, d.id, d.user, d.name, names(&d.known_people), names(&d.known_tags));
     }
     if undo_cover {
         d.cover = None;

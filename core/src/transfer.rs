@@ -75,8 +75,9 @@ pub fn copy(from: &Path, to: &Path) -> std::io::Result<u64> {
 /// 從 src 讀出來存成 to（Jellyfin 下載也用）：先寫暫存檔，完整了才換成正式檔名。total：全部幾個位元組（不知道時 0）
 pub fn save(src: impl Read, total: u64, to: &Path, down: bool) -> std::io::Result<u64> {
     let name = to.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    let tmp = to.with_file_name(format!(".{name}.part"));
     let (id, done, cancel) = (NEXT.fetch_add(1, Ordering::Relaxed), Arc::new(AtomicU64::new(0)), Arc::new(AtomicBool::new(false)));
+    // 暫存檔名每一次都不一樣：同一個檔案同時傳兩次（補傳和手動傳碰在一起）時不會寫進同一個暫存檔
+    let tmp = to.with_file_name(format!(".{name}.{}-{id}.part", std::process::id()));
     ACTIVE.lock().unwrap_or_else(|e| e.into_inner()).push(Slot { id, name: name.clone(), done: done.clone(), total, cancel: cancel.clone(), down });
     let r = copy_to_tmp(src, &tmp, &done, &cancel).and_then(|n| {
         // 少了一截（下載到一半斷線）：不算完成
@@ -107,13 +108,18 @@ pub fn save(src: impl Read, total: u64, to: &Path, down: bool) -> std::io::Resul
     r
 }
 
+/// 錯誤訊息是不是使用者自己按了取消（`copy_to_tmp` 的取消訊息）
+pub fn is_canceled(e: &str) -> bool {
+    e.contains(tr!("已取消", "Canceled"))
+}
+
 fn copy_to_tmp(mut src: impl Read, tmp: &Path, done: &AtomicU64, cancel: &AtomicBool) -> std::io::Result<u64> {
     let mut dst = std::io::BufWriter::with_capacity(4 << 20, std::fs::File::create(tmp)?);
     let mut buf = vec![0u8; 4 << 20];
     let mut n = 0u64;
     loop {
         if cancel.load(Ordering::Relaxed) {
-            return Err(std::io::Error::new(std::io::ErrorKind::Interrupted, tr!("已取消", "Cancelled")));
+            return Err(std::io::Error::new(std::io::ErrorKind::Interrupted, tr!("已取消", "Canceled")));
         }
         let k = src.read(&mut buf)?;
         if k == 0 {
@@ -176,7 +182,8 @@ fn with_pending<T>(f: impl FnOnce(&mut Vec<Pending>) -> (T, bool)) -> T {
     let (out, changed) = f(list);
     if changed {
         if let Some(file) = file.as_ref() {
-            if let Err(e) = std::fs::write(file, serde_json::to_string(list).unwrap_or_default()) {
+            // 安全寫入：寫到一半當機時舊的清單還在（不會整份待傳清單不見）
+            if let Err(e) = crate::paths::write_atomic(file, serde_json::to_string(list).unwrap_or_default().as_bytes()) {
                 crate::warn!("[傳到資料夾] 記下待傳清單失敗：{e}");
             }
         }
@@ -246,11 +253,16 @@ mod tests {
         assert_eq!(copy(&from, &to).unwrap(), 100);
         assert_eq!(std::fs::read(&to).unwrap(), vec![7u8; 100]);
         assert_eq!(std::fs::metadata(&to).unwrap().modified().unwrap(), t);
-        assert!(!to.with_file_name(".a.mp4.part").exists());
+        assert!(no_part(to.parent().unwrap()));
         assert!(active().is_empty());
         // 來源不見：不留暫存檔、舊檔不動
         assert!(copy(&dir.path().join("gone.mp4"), &to).is_err());
         assert_eq!(std::fs::read(&to).unwrap().len(), 100);
+    }
+
+    /// 資料夾裡沒有留下暫存檔
+    fn no_part(dir: &Path) -> bool {
+        std::fs::read_dir(dir).unwrap().all(|e| !e.unwrap().file_name().to_string_lossy().ends_with(".part"))
     }
 
     #[test]
@@ -267,7 +279,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let to = dir.path().join("c.mp4");
         assert!(save(&b"12345"[..], 10, &to, true).is_err());
-        assert!(!to.exists() && !dir.path().join(".c.mp4.part").exists());
+        assert!(!to.exists() && no_part(dir.path()));
         assert_eq!(save(&b"12345"[..], 5, &to, true).unwrap(), 5);
         assert_eq!(std::fs::read(&to).unwrap(), b"12345");
         set_stage("c.mp4", Some("掃描中".into()));

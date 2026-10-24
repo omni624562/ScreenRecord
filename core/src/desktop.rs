@@ -9,6 +9,11 @@ const RUN_KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
 /// 1.x、2.x 也用同一個名稱：換了資料夾放新版時，開機仍會啟動舊位置的程式（見 repoint_autostart）
 const RUN_NAME: &str = "ScreenRecorder";
 
+/// reg.exe 用完整路徑（不會執行到放在本程式資料夾裡的同名程式）
+fn reg() -> String {
+    crate::paths::system32("reg.exe").display().to_string()
+}
+
 /// 開發版（debug build）不設定開機自動啟動
 const IS_RELEASE: bool = !cfg!(debug_assertions);
 
@@ -17,7 +22,7 @@ pub async fn get_autostart() -> Option<bool> {
     if !IS_RELEASE || !cfg!(windows) {
         return None;
     }
-    Some(run("reg.exe", &["query", RUN_KEY, "/v", RUN_NAME], Duration::from_secs(5)).await.code == 0)
+    Some(run(&reg(), &["query", RUN_KEY, "/v", RUN_NAME], Duration::from_secs(5)).await.code == 0)
 }
 
 pub async fn set_autostart(on: bool) -> crate::Result<()> {
@@ -27,9 +32,9 @@ pub async fn set_autostart(on: bool) -> crate::Result<()> {
     let exe = std::env::current_exe()?;
     let value = format!("\"{}\" --tray", exe.display());
     let r = if on {
-        run("reg.exe", &["add", RUN_KEY, "/v", RUN_NAME, "/t", "REG_SZ", "/d", &value, "/f"], Duration::from_secs(5)).await
+        run(&reg(), &["add", RUN_KEY, "/v", RUN_NAME, "/t", "REG_SZ", "/d", &value, "/f"], Duration::from_secs(5)).await
     } else {
-        run("reg.exe", &["delete", RUN_KEY, "/v", RUN_NAME, "/f"], Duration::from_secs(5)).await
+        run(&reg(), &["delete", RUN_KEY, "/v", RUN_NAME, "/f"], Duration::from_secs(5)).await
     };
     if r.code != 0 {
         return Err(crate::Error::config(match (crate::i18n::is_en(), on) {
@@ -127,7 +132,8 @@ pub fn open_with_explorer(target: &str, select: bool) {
     {
         use std::os::windows::process::CommandExt;
         const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
-        let mut cmd = std::process::Command::new("explorer.exe");
+        // 完整路徑：只寫 explorer.exe 時會先找本程式的資料夾
+        let mut cmd = std::process::Command::new(crate::paths::windows_dir().join("explorer.exe"));
         // explorer 自己解析參數（/select,"路徑"），不能再被加上一層引號
         cmd.raw_arg(&arg).creation_flags(CREATE_BREAKAWAY_FROM_JOB);
         let _ = cmd.spawn();

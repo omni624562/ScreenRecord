@@ -42,11 +42,18 @@ pub fn redact(text: &str) -> String {
         let mut from = 0;
         while let Some(i) = out[from..].find(key).map(|i| from + i + key.len()) {
             let end = out[i..].find(ends).map_or(out.len(), |j| i + j);
-            if end > i && &out[i..end] != "…" {
+            // 換掉了才跳過「…」；值是空的（金鑰在最後、後面接著分隔字元或中文）就從 i 繼續，不會切在字的中間或超出長度
+            from = if end > i && &out[i..end] != "…" {
                 out.replace_range(i..end, "…");
-            }
-            from = i + "…".len();
+                i + "…".len()
+            } else {
+                i
+            };
         }
+    }
+    // Jellyfin 轉送網址裡的隨機碼
+    if let Some(t) = crate::jf_proxy::token() {
+        out = out.replace(t, "…");
     }
     out
 }
@@ -104,6 +111,13 @@ mod tests {
         assert!(r.contains("&x=1") && r.contains("api_key=…"), "{r}");
         assert_eq!(super::redact("沒有金鑰"), "沒有金鑰");
         assert_eq!(super::redact("api_key=…"), "api_key=…");
+    }
+
+    #[test]
+    fn empty_keys_dont_panic() {
+        assert_eq!(super::redact("x?api_key="), "x?api_key=");
+        assert_eq!(super::redact("api_key= 中文"), "api_key= 中文");
+        assert_eq!(super::redact("Token=\"\"中 api_key=K"), "Token=\"\"中 api_key=…");
     }
 
     #[test]

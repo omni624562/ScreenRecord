@@ -245,8 +245,8 @@ fn hint(ui: &mut egui::Ui, text: &str) {
 fn list(ed: &mut Editor, ui: &mut egui::Ui, toast: &mut Option<(String, bool)>) {
     let p = theme::pal(ui);
     let keep = ed.keep();
-    let mut rows: Vec<(u64, f64, f64, String, bool)> =
-        ed.anns.iter().filter(|a| ed.is_sub(a.id)).map(|a| (a.id, a.start, a.end, subtitles::flat(&a.text.clone().unwrap_or_default()), !Editor::in_output(a, &keep))).collect();
+    // （編號, 開始, 結束, 在 ed.anns 的第幾個, 在刪除的片段中）：文字等畫到那一行才取（字幕可能有幾百段）
+    let mut rows: Vec<(u64, f64, f64, usize, bool)> = ed.anns.iter().enumerate().filter(|(_, a)| ed.is_sub(a.id)).map(|(i, a)| (a.id, a.start, a.end, i, !Editor::in_output(a, &keep))).collect();
     rows.sort_by(|x, y| x.1.total_cmp(&y.1).then(x.0.cmp(&y.0)));
     let now = ed.now();
     let order: Vec<u64> = rows.iter().map(|r| r.0).collect();
@@ -254,12 +254,13 @@ fn list(ed: &mut Editor, ui: &mut egui::Ui, toast: &mut Option<(String, bool)>) 
     let (mut select, mut delete, mut edit, mut seek, mut cut, mut uncut, mut pick) = (None, None, None, None, None, None, None);
     let w = ui.available_width();
     ui.spacing_mut().item_spacing.y = 3.0;
-    for (id, start, end, mut text, gone) in rows {
+    for (id, start, end, idx, gone) in rows {
         let (r, _) = ui.allocate_exact_size(vec2(w, 30.0), Sense::hover());
         // 看不到的那幾行不畫（字幕可能有幾百段）
         if !ui.is_rect_visible(r) {
             continue;
         }
+        let mut text = subtitles::flat(ed.anns[idx].text.as_deref().unwrap_or(""));
         let on = ed.ann_sel == Some(id);
         let picked = ed.sub_picked.contains(&id);
         let playing_here = now >= start && now < end;
