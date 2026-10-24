@@ -878,7 +878,8 @@ impl Jellyfin {
             Err(_) => self.call(agent().get(&format!("{}/Users/{user}/Items/{id}", self.url)))?.into_string().map_err(|e| e.to_string())?,
         };
         let item = with_info(&body, info).ok_or_else(|| tr!("Jellyfin 的影片資料看不懂", "Couldn't understand Jellyfin's item data").to_string())?;
-        self.call_body(agent().post(&format!("{}/Items/{id}", self.url)), &item).map(|_| ())
+        // 存檔時 Jellyfin 要寫中繼資料、伺服器忙（例如剛讀完一頁縮圖）時可能超過 15 秒：等久一點
+        self.call_body(agent_long().post(&format!("{}/Items/{id}", self.url)), &item).map(|_| ())
     }
 
     /// 從 Jellyfin 刪掉這支影片（伺服器上的檔案也一起刪，不會進資源回收筒）
@@ -1001,7 +1002,7 @@ impl Jellyfin {
     fn set_image(&self, id: &str, kind: &str, jpeg: &[u8]) -> Result<(), String> {
         let ct = if jpeg.starts_with(b"\x89PNG") { "image/png" } else { "image/jpeg" };
         let req = self.auth(agent().post(&format!("{}/Items/{id}/Images/{kind}", self.url))).set("Content-Type", ct);
-        req.send_string(&crate::steps::base64(jpeg)).map(|_| ()).map_err(|e| describe(&e))
+        resend(req, Some(&crate::steps::base64(jpeg))).map(|_| ())
     }
 
     /// 把影片放進合集（沒有這個合集就新建）
@@ -1141,11 +1142,11 @@ impl Jellyfin {
 
     /// 帶上 API 金鑰送出；失敗時回傳給使用者看的原因
     fn call(&self, req: ureq::Request) -> Result<ureq::Response, String> {
-        self.auth(req).call().map_err(|e| describe(&e))
+        resend(self.auth(req), None)
     }
 
     fn call_body(&self, req: ureq::Request, json: &str) -> Result<ureq::Response, String> {
-        self.auth(req).set("Content-Type", "application/json").send_string(json).map_err(|e| describe(&e))
+        resend(self.auth(req).set("Content-Type", "application/json"), Some(json))
     }
 
     fn auth(&self, req: ureq::Request) -> ureq::Request {
@@ -3022,7 +3023,43 @@ fn agent_with(read: Duration) -> ureq::Agent {
     b.build()
 }
 
+/// 連線在送出後被關掉或重設（共用的連線閒置太久被伺服器或中間的設備斷掉）：ureq 只對 GET 這類自動重送，
+/// POST（存影片資訊、封面）不會。這種情況伺服器沒收到完整的要求，換一條新連線再送一次；逾時不重送
+fn stale(e: &ureq::Error) -> bool {
+    let ureq::Error::Transport(t) = e else { return false };
+    if t.kind() != ureq::ErrorKind::Io {
+        return false;
+    }
+    match std::error::Error::source(t).and_then(|s| s.downcast_ref::<std::io::Error>()) {
+        Some(io) => matches!(io.kind(), std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::ConnectionAborted | std::io::ErrorKind::BrokenPipe | std::io::ErrorKind::UnexpectedEof),
+        None => t.to_string().to_ascii_lowercase().contains("closed"),
+    }
+}
+
+/// 送出（body：POST 的內容，None = 沒有內容）；連線斷掉（見 stale）時再送一次
+fn resend(req: ureq::Request, body: Option<&str>) -> Result<ureq::Response, String> {
+    let first = match body {
+        Some(b) => req.clone().send_string(b),
+        None => req.clone().call(),
+    };
+    let r = match first {
+        Err(e) if stale(&e) => {
+            crate::info!("[Jellyfin] 連線斷掉了，換一條重送：{} {}（{e}）", req.method(), req.url());
+            match body {
+                Some(b) => req.send_string(b),
+                None => req.call(),
+            }
+        }
+        r => r,
+    };
+    r.map_err(|e| describe(&e))
+}
+
 fn describe(e: &ureq::Error) -> String {
+    // 連線層的錯誤畫面上只寫「連不到」，原因記在記錄檔（逾時、被拒絕、被重設…）
+    if let ureq::Error::Transport(t) = e {
+        crate::warn!("[Jellyfin] 連線錯誤：{t}");
+    }
     match e {
         ureq::Error::Status(401 | 403, _) => tr!("API 金鑰不對（Jellyfin 控制台 → API 金鑰）", "The API key is wrong (Jellyfin Dashboard → API Keys)").into(),
         ureq::Error::Status(404, _) => tr!("網址不對，找不到 Jellyfin（預設是 http://伺服器:8096）", "Wrong address; Jellyfin wasn't found there (usually http://server:8096)").into(),
@@ -3043,6 +3080,45 @@ mod tests {
     use super::*;
     use std::io::{BufRead, BufReader, Write};
     use std::net::TcpListener;
+
+    #[test]
+    fn a_post_on_a_dropped_connection_is_sent_again() {
+        // 第一次：伺服器讀完要求就斷線、不回應；第二次正常回應
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", l.local_addr().unwrap());
+        let h = std::thread::spawn(move || {
+            let mut got = vec![];
+            for answer in [false, true] {
+                let (mut s, _) = l.accept().unwrap();
+                let mut r = BufReader::new(s.try_clone().unwrap());
+                let mut first = String::new();
+                r.read_line(&mut first).unwrap();
+                got.push(first.trim().to_string());
+                let mut headers = vec![];
+                loop {
+                    let mut line = String::new();
+                    r.read_line(&mut line).unwrap();
+                    if line.trim().is_empty() {
+                        break;
+                    }
+                    headers.push(line.trim().to_string());
+                }
+                read_body(&mut r, &headers);
+                if answer {
+                    write!(s, "HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n").unwrap();
+                } else {
+                    let _ = s.shutdown(std::net::Shutdown::Both);
+                }
+            }
+            got
+        });
+        let jf = Jellyfin::new(&url, "k").unwrap();
+        jf.call_body(agent().post(&format!("{url}/Items/x")), "{}").unwrap();
+        assert_eq!(h.join().unwrap(), vec!["POST /Items/x HTTP/1.1", "POST /Items/x HTTP/1.1"]);
+        // 逾時、連不上不重送
+        let refused = ureq::get("http://127.0.0.1:1/").call().unwrap_err();
+        assert!(!stale(&refused));
+    }
 
     #[test]
     fn item_people_come_with_their_ids() {

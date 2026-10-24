@@ -949,11 +949,18 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         let info = JfInfo { year, ..d.info.clone() };
         let (id, user, cover, remove_cover) = (d.id.clone(), d.user.clone(), d.cover.as_ref().map(|c| c.1.clone()), d.remove_cover);
         let Some(jf) = app.jellyfin() else { return };
-        let (id2, title) = (id.clone(), info.title.clone());
+        let (id2, title, people, tags) = (id.clone(), info.title.clone(), info.people.clone(), info.tags.clone());
         app.spawn(
             async move {
                 tokio::task::spawn_blocking(move || {
-                    jf.set_info(&user, &id, &info)?;
+                    // 送出後沒收到回應（伺服器忙、逾時）時，Jellyfin 可能其實已經存好了：讀回來比對，都改到了就算成功
+                    if let Err(e) = jf.set_info(&user, &id, &info) {
+                        let saved = jf.item_info(&user, &id).is_ok_and(|got| jellyfin::unsaved(&info, &got).is_empty());
+                        if !saved {
+                            return Err(e);
+                        }
+                        screenrecorder_core::info!("[Jellyfin] 存影片資訊時出錯（{e}），但讀回來都改好了");
+                    }
                     if let Some(c) = cover {
                         jf.set_cover(&id, &c)?;
                     } else if remove_cover {
@@ -978,6 +985,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
             move |app, r| match r {
                 Ok(()) => {
                     app.jf_edit = None;
+                    super::jellyfin_browse::info_saved(app, &id2, &people, &tags);
                     super::jellyfin_browse::edited(app, &id2, &title);
                     app.toast(tr!("已更新影片資訊", "Details updated"), false);
                 }

@@ -371,6 +371,25 @@ pub fn edited(app: &mut UiApp, id: &str, title: &str) {
     refresh_facets(app);
 }
 
+/// 「影片資訊」存好了：清單上那支的人物、標籤跟著換；正在看「沒有人物」「沒有標籤」而這支現在有了，就從清單移除
+/// （「符合 N 支」減 1，鍵盤游標移到下一支）
+pub fn info_saved(app: &mut UiApp, id: &str, people: &[String], tags: &[String]) {
+    let Some(d) = app.jf_browse.as_mut() else { return };
+    d.each_mut(id, |it| {
+        it.people = people.to_vec();
+        it.tags = tags.to_vec();
+    });
+    let gone = (d.facet.contains(&JfFacet::NoPeople) && !people.is_empty()) || (d.facet.contains(&JfFacet::NoTags) && !tags.is_empty());
+    let Some(items) = d.items.as_mut().filter(|_| gone) else { return };
+    let Some(i) = items.iter().position(|it| it.id == id) else { return };
+    items.remove(i);
+    d.total = d.total.saturating_sub(1);
+    d.selected.remove(id);
+    if d.cursor.as_deref() == Some(id) {
+        d.cursor = items.get(i).or_else(|| i.checked_sub(1).and_then(|j| items.get(j))).map(|it| it.id.clone());
+    }
+}
+
 /// 好幾支一起整理完了：清單上（和勾選的）那些影片的人物、標籤、年份跟著換，「依這些找」重讀
 pub fn batch_done(app: &mut UiApp, ids: &[String], edit: &jellyfin::BatchEdit) {
     let Some(d) = app.jf_browse.as_mut() else { return };
@@ -394,6 +413,17 @@ pub fn batch_done(app: &mut UiApp, ids: &[String], edit: &jellyfin::BatchEdit) {
         d.each_mut(id, apply);
         if let Some(it) = d.selected.get_mut(id) {
             apply(it);
+        }
+    }
+    // 正在看「沒有人物」「沒有標籤」：現在有了的從清單移除（和單支存好時一樣）
+    let (no_people, no_tags) = (d.facet.contains(&JfFacet::NoPeople), d.facet.contains(&JfFacet::NoTags));
+    if let Some(items) = d.items.as_mut().filter(|_| no_people || no_tags) {
+        let before = items.len();
+        items.retain(|it| !(ids.contains(&it.id) && ((no_people && !it.people.is_empty()) || (no_tags && !it.tags.is_empty()))));
+        d.total = d.total.saturating_sub(before - items.len());
+        let left: std::collections::HashSet<&String> = items.iter().map(|it| &it.id).collect();
+        if d.cursor.as_ref().is_some_and(|c| !left.contains(c)) {
+            d.cursor = None;
         }
     }
     refresh_facets(app);
