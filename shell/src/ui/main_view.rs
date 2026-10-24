@@ -67,11 +67,12 @@ pub fn show(app: &mut UiApp, ui: &mut Ui) {
     let p = theme::pal(ui);
     let full = ui.max_rect();
     ui.painter().rect_filled(full, CornerRadius::ZERO, p.bg);
-    let inner = full.shrink(16.0);
+    // 外圍、區塊之間只留 8 點：視窗小的時候預覽和最近錄影多一點位置，三塊還是分得出來
+    let inner = full.shrink(8.0);
     ui.scope_builder(UiBuilder::new().max_rect(inner), |ui| {
         banners(app, ui);
         let rest = ui.available_rect_before_wrap();
-        let gap = 14.0;
+        let gap = 8.0;
         // 左欄：上面範圍與預覽，下面一條控制列（開始錄影、截圖；錄影中的控制；結果與提醒）；右欄整欄是最近錄影與檔案庫
         let rec_w = (inner.width() * 0.3).clamp(300.0, 360.0);
         let left = Rect::from_min_max(rest.min, pos2(rest.max.x - rec_w - gap, rest.max.y));
@@ -96,7 +97,7 @@ fn banners(app: &mut UiApp, ui: &mut Ui) {
     let p = theme::pal(ui);
     if app.env_ready && !app.env.ffmpeg.found {
         ffmpeg_banner(app, ui);
-        ui.add_space(10.0);
+        ui.add_space(8.0);
     }
     let warns: Vec<String> = [app.env.ffmpeg.found.then(|| app.env.ffmpeg.error.clone()).flatten(), app.env.monitor_error.clone()].into_iter().flatten().collect();
     if !warns.is_empty() {
@@ -104,7 +105,7 @@ fn banners(app: &mut UiApp, ui: &mut Ui) {
             ui.set_width(ui.available_width());
             ui.label(RichText::new(warns.join("　")).color(p.warn));
         });
-        ui.add_space(10.0);
+        ui.add_space(8.0);
     }
 }
 
@@ -208,7 +209,7 @@ fn view_rect(app: &UiApp) -> DRect {
 const CONTROL_H: f32 = 72.0;
 
 fn capture_panel(app: &mut UiApp, ui: &mut Ui) {
-    theme::card(ui).show(ui, |ui| {
+    theme::card(ui).inner_margin(10.0).show(ui, |ui| {
         ui.set_min_size(ui.available_size());
         let locked = app.locked();
         // 範圍分頁、細節、即時預覽、重新整理：分頁名稱與按鈕的文字不縮短，放不下時細節換到第二行
@@ -279,7 +280,7 @@ fn capture_panel(app: &mut UiApp, ui: &mut Ui) {
             ui.add_space(6.0);
             precise_row(app, ui, locked);
         }
-        ui.add_space(10.0);
+        ui.add_space(8.0);
         let desk_area = Rect::from_min_max(ui.cursor().min, ui.max_rect().max);
         desk(app, ui, desk_area);
     });
@@ -1835,7 +1836,7 @@ pub fn ask_update(app: &mut UiApp, u: &screenrecorder_core::types::UpdateInfo) {
 fn control_bar(app: &mut UiApp, ui: &mut Ui) {
     let r = app.status.recorder.clone();
     let active = r.state != RecorderState::Idle;
-    theme::card(ui).inner_margin(egui::Margin::symmetric(14, 0)).show(ui, |ui| {
+    theme::card(ui).inner_margin(egui::Margin::symmetric(10, 0)).show(ui, |ui| {
         ui.set_min_size(ui.available_size());
         // 視窗很窄時也不畫到旁邊的最近錄影上
         ui.set_clip_rect(ui.max_rect().expand2(vec2(10.0, 0.0)).intersect(ui.clip_rect()));
@@ -2808,7 +2809,7 @@ fn notice_actions(app: &mut UiApp, ui: &mut Ui, n: &Notice) {
 /// 右欄：最近錄影（卡片直排，捲動看全部，捲到快底時再多讀一批）＋檔案庫（錄影、截圖、Jellyfin）
 fn recent_panel(app: &mut UiApp, ui: &mut Ui) {
     let p = theme::pal(ui);
-    let panel = theme::card(ui).show(ui, |ui| {
+    let panel = theme::card(ui).inner_margin(10.0).show(ui, |ui| {
         ui.set_min_size(ui.available_size());
         let full = ui.max_rect();
         // 標題列：最近錄影、共幾支
