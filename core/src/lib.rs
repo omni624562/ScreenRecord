@@ -30,6 +30,7 @@ pub mod desktop;
 pub mod displays;
 pub mod downloader;
 pub mod dragout;
+pub mod dropin;
 pub mod edit;
 pub mod effects;
 pub mod error;
