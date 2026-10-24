@@ -1104,6 +1104,8 @@ fn record_with_audio_pipe(ff: &Path, card: &Path, out: &Path, separate: bool, se
     let args = segment_args(&plan, &config, CaptureMethod::Gdigrab, &ENCODERS[0], &out.display().to_string(), Some(&pipe.input_args()), None).unwrap();
     let start = std::time::Instant::now();
     let mut child = Command::new(ff).args(&args).stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::piped()).spawn().unwrap();
+    // 和錄影器一樣：聲音只送給這個 FFmpeg
+    pipe.allow(child.id());
     // 和錄影器一樣讀 showinfo 的 pts 交給聲音管線
     let stderr = child.stderr.take().unwrap();
     let (tx, rx) = std::sync::mpsc::channel::<Duration>();
