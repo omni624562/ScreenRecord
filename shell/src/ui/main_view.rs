@@ -224,7 +224,12 @@ fn capture_panel(app: &mut UiApp, ui: &mut Ui) {
         // 右邊：重新整理、即時預覽，再來是攝影機、設定組合（有建立組合時）
         let extras_w = if audio { 0.0 } else { camera_width(app, ui) + gap } + if app.presets.is_empty() { 0.0 } else { super::presets::width(app, ui) + gap };
         let right_w = 28.0 + gap + if audio { 0.0 } else { 34.0 + 8.0 + text_w(ui, live_label, 14.0) + gap } + extras_w;
-        let one_row = tabs_w + gap + detail_width(app, ui) + gap + right_w <= ui.available_width();
+        let avail = ui.available_width();
+        let detail_w = detail_width(app, ui);
+        let one_row = tabs_w + gap + detail_w + gap + right_w <= avail;
+        // 視窗窄：分頁和右邊的按鈕放不進同一行時，按鈕移到第二行（細節放得下就和按鈕同一行，不然再下一行）
+        let tools_below = tabs_w + gap + right_w > avail;
+        let detail_with_tools = tools_below && detail_w + gap + right_w <= avail;
         ui.horizontal(|ui| {
             let mut st = app.s.source_type;
             // 播放中點範圍分頁：停止播放，回到錄影畫面（點的是不同的分頁時也一起切換）
@@ -245,34 +250,24 @@ fn capture_panel(app: &mut UiApp, ui: &mut Ui) {
                     source_detail(app, ui, room);
                 });
             }
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if Btn::icon_only(Icon::Refresh).ghost().small().tooltip(tr!("重新擷取預覽並更新螢幕清單", "Refresh the preview and the screen list")).show(ui).clicked() {
-                    app.preview.retry_live();
-                    app.refresh_env(|_| {});
-                }
-                let mut live = app.s.live_preview;
-                if !audio
-                    && switch(ui, &mut live, live_label, true)
-                        .on_hover_text(tr!(
-                            "即時預覽：即時顯示目前畫面（每秒 5 張；切到其他視窗或錄影中 2 張）",
-                            "Live preview: shows the screen as it is now (5 frames per second; 2 while recording or when another window is active)"
-                        ))
-                        .changed()
-                {
-                    app.s.live_preview = live;
-                    app.preview.retry_live();
-                    app.save_settings();
-                }
-                if !audio {
-                    ui.add_space(8.0);
-                    camera_button(app, ui);
-                }
-                if !app.presets.is_empty() {
-                    super::presets::button(app, ui);
-                }
-            });
+            if !tools_below {
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| capture_tools(app, ui, audio, live_label));
+            }
         });
-        if !one_row {
+        if tools_below {
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                if detail_with_tools {
+                    let room = ui.available_width() - right_w - gap;
+                    ui.scope(|ui| {
+                        ui.set_max_width(room.max(0.0));
+                        source_detail(app, ui, room);
+                    });
+                }
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| capture_tools(app, ui, audio, live_label));
+            });
+        }
+        if !one_row && !detail_with_tools {
             ui.add_space(6.0);
             ui.horizontal(|ui| {
                 let room = ui.available_width();
@@ -288,6 +283,34 @@ fn capture_panel(app: &mut UiApp, ui: &mut Ui) {
         let desk_area = Rect::from_min_max(ui.cursor().min, ui.max_rect().max);
         desk(app, ui, desk_area);
     });
+}
+
+/// 擷取範圍右上角（由右往左）：重新整理、即時預覽、攝影機、設定組合
+fn capture_tools(app: &mut UiApp, ui: &mut Ui, audio: bool, live_label: &str) {
+    if Btn::icon_only(Icon::Refresh).ghost().small().tooltip(tr!("重新擷取預覽並更新螢幕清單", "Refresh the preview and the screen list")).show(ui).clicked() {
+        app.preview.retry_live();
+        app.refresh_env(|_| {});
+    }
+    let mut live = app.s.live_preview;
+    if !audio
+        && switch(ui, &mut live, live_label, true)
+            .on_hover_text(tr!(
+                "即時預覽：即時顯示目前畫面（每秒 5 張；切到其他視窗或錄影中 2 張）",
+                "Live preview: shows the screen as it is now (5 frames per second; 2 while recording or when another window is active)"
+            ))
+            .changed()
+    {
+        app.s.live_preview = live;
+        app.preview.retry_live();
+        app.save_settings();
+    }
+    if !audio {
+        ui.add_space(8.0);
+        camera_button(app, ui);
+    }
+    if !app.presets.is_empty() {
+        super::presets::button(app, ui);
+    }
 }
 
 /// 範圍分頁旁的細節：螢幕按鈕 / 說明 / 座標輸入。room：可用的寬度（放不下時縮短文字、省略說明）
@@ -1814,6 +1837,8 @@ fn control_bar(app: &mut UiApp, ui: &mut Ui) {
     let active = r.state != RecorderState::Idle;
     theme::card(ui).inner_margin(egui::Margin::symmetric(14, 0)).show(ui, |ui| {
         ui.set_min_size(ui.available_size());
+        // 視窗很窄時也不畫到旁邊的最近錄影上
+        ui.set_clip_rect(ui.max_rect().expand2(vec2(10.0, 0.0)).intersect(ui.clip_rect()));
         ui.horizontal_centered(|ui| {
             ui.spacing_mut().item_spacing.x = 8.0;
             if active {
@@ -2524,6 +2549,59 @@ fn saved_card(app: &mut UiApp, ui: &mut Ui, path: &str, sec: f64, bytes: u64) {
     ui.spacing_mut().item_spacing.x = 8.0;
     let name = std::path::Path::new(path).file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
     let audio = screenrecorder_core::after_record::is_audio_recording(path);
+    // 位置不夠時先拿掉縮圖，再不夠就把剪輯、資料夾、複製收進「⋯」
+    let acts_w = if audio { 2.0 } else { 4.0 } * 36.0;
+    let avail = ui.available_width();
+    let menu_only = avail < 110.0 + acts_w;
+    let show_thumb = avail >= 76.0 + 110.0 + acts_w;
+    if show_thumb {
+        saved_thumb(app, ui, path, audio);
+    }
+    // 檔名、已儲存・長度・大小
+    let meta = format!("{}・{}", short_clock(sec), format_bytes(bytes));
+    let measure = |t: &str, f: egui::FontId| ui.painter().layout_no_wrap(t.to_string(), f, p.text).size().x;
+    let reserve = if menu_only { 36.0 } else { acts_w };
+    let text_w = measure(&name, theme::font_bold(13.5)).max(measure(&meta, theme::font(12.0)) + 70.0).ceil().min((ui.available_width() - reserve).max(60.0));
+    ui.allocate_ui_with_layout(vec2(text_w, 44.0), Layout::top_down(Align::Min), |ui| {
+        ui.set_width(text_w);
+        ui.spacing_mut().item_spacing.y = 2.0;
+        ui.add_space(3.0);
+        let r = ui.add(egui::Label::new(RichText::new(&name).font(theme::font_bold(13.5)).color(p.text)).truncate().sense(Sense::click()));
+        if r.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(tr!("在右邊的最近錄影找到它", "Find it in Recent recordings on the right")).clicked() {
+            app.main.recent_to_top = true;
+        }
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            ui.label(RichText::new("✓").font(theme::font_bold(12.0)).color(p.ok));
+            ui.add(egui::Label::new(RichText::new(trf!("已儲存・{meta}", "Saved · {meta}")).font(theme::font(12.0)).color(p.muted)).truncate());
+        });
+    });
+    if menu_only {
+        let more = Btn::icon_only(Icon::More).ghost().small().tooltip(tr!("播放、剪輯、在資料夾中顯示、複製…", "Play, edit, show in folder, copy…")).show(ui);
+        egui::Popup::menu(&more).show(|ui| {
+            let mut pick = |label: &str, act: EntryAction| {
+                if ui.button(label).clicked() {
+                    app.act_path(act, path.to_string());
+                }
+            };
+            pick(tr!("播放", "Play"), EntryAction::PlayHere);
+            if !audio {
+                pick(tr!("剪輯", "Edit"), EntryAction::Edit);
+            }
+            pick(tr!("在資料夾中顯示", "Show in folder"), EntryAction::Reveal);
+            pick(tr!("複製檔案（貼到 LINE）", "Copy file (paste into LINE)"), EntryAction::CopyFile);
+            if !audio {
+                pick(tr!("製作加速版 / GIF / 壓縮…", "Speed up / GIF / compress…"), EntryAction::Export);
+            }
+        });
+        return;
+    }
+    saved_actions(app, ui, path, audio);
+}
+
+/// 錄好的縮圖（點了在主畫面播放）
+fn saved_thumb(app: &mut UiApp, ui: &mut Ui, path: &str, audio: bool) {
+    let p = theme::pal(ui);
     // 縮圖（只錄聲音的沒有畫面：灰底加音符圖示）
     let (r, thumb) = ui.allocate_exact_size(vec2(68.0, 40.0), Sense::click());
     let mtime = file_mtime(path).unwrap_or(0.0);
@@ -2542,25 +2620,10 @@ fn saved_card(app: &mut UiApp, ui: &mut Ui, path: &str, sec: f64, bytes: u64) {
     if thumb.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(tr!("播放", "Play")).clicked() {
         app.act_path(EntryAction::PlayHere, path.to_string());
     }
-    // 檔名、已儲存・長度・大小
-    let meta = format!("{}・{}", short_clock(sec), format_bytes(bytes));
-    let measure = |t: &str, f: egui::FontId| ui.painter().layout_no_wrap(t.to_string(), f, p.text).size().x;
-    let text_w = measure(&name, theme::font_bold(13.5)).max(measure(&meta, theme::font(12.0)) + 70.0).ceil().min((ui.available_width() - 190.0).max(100.0));
-    ui.allocate_ui_with_layout(vec2(text_w, 44.0), Layout::top_down(Align::Min), |ui| {
-        ui.set_width(text_w);
-        ui.spacing_mut().item_spacing.y = 2.0;
-        ui.add_space(3.0);
-        let r = ui.add(egui::Label::new(RichText::new(&name).font(theme::font_bold(13.5)).color(p.text)).truncate().sense(Sense::click()));
-        if r.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(tr!("在右邊的最近錄影找到它", "Find it in Recent recordings on the right")).clicked() {
-            app.main.recent_to_top = true;
-        }
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 4.0;
-            ui.label(RichText::new("✓").font(theme::font_bold(12.0)).color(p.ok));
-            ui.add(egui::Label::new(RichText::new(trf!("已儲存・{meta}", "Saved · {meta}")).font(theme::font(12.0)).color(p.muted)).truncate());
-        });
-    });
-    // 動作：剪輯（有畫面才有）、資料夾、複製、更多
+}
+
+/// 錄好的動作：剪輯（有畫面才有）、資料夾、複製、更多
+fn saved_actions(app: &mut UiApp, ui: &mut Ui, path: &str, audio: bool) {
     if !audio && mini(ui, Icon::Cut, tr!("剪輯", "Edit")) {
         app.act_path(EntryAction::Edit, path.to_string());
     }
@@ -2750,9 +2813,21 @@ fn recent_panel(app: &mut UiApp, ui: &mut Ui) {
         let full = ui.max_rect();
         // 標題列：最近錄影、共幾支
         ui.horizontal(|ui| {
-            ui.label(RichText::new(tr!("最近錄影", "Recent recordings")).font(theme::font_bold(14.0)));
-            if let Some(r) = app.recent.as_ref().filter(|r| r.total > 0) {
-                ui.label(theme::muted(ui, trf!("共 {} 支", "{} in total", r.total)));
+            let title = ui.label(RichText::new(tr!("最近錄影", "Recent recordings")).font(theme::font_bold(14.0)));
+            // 窄的時候先拿掉「縮圖」兩個字，再不夠就拿掉「共幾支」（滑鼠移到標題上看得到）
+            let size_label = tr!("縮圖", "Size");
+            let w = |t: &str, f: egui::FontId| ui.painter().layout_no_wrap(t.to_string(), f, Color32::WHITE).size().x;
+            let seg_w = [tr!("小", "S"), tr!("中", "M"), tr!("大", "L")].iter().map(|t| w(t, theme::font(13.0)) + 22.0).sum::<f32>() + 8.0;
+            let count = app.recent.as_ref().filter(|r| r.total > 0).map(|r| trf!("共 {} 支", "{} in total", r.total));
+            let gap = ui.spacing().item_spacing.x;
+            let room = ui.available_width() - seg_w - gap;
+            let count_w = count.as_deref().map_or(0.0, |c| w(c, theme::font(13.0)) + gap);
+            let show_label = count_w + w(size_label, theme::font(12.0)) + gap * 2.0 <= room;
+            let show_count = count_w + gap <= room;
+            match &count {
+                Some(c) if show_count => drop(ui.label(theme::muted(ui, c))),
+                Some(c) => drop(title.on_hover_text(c)),
+                None => {}
             }
             // 縮圖大小：小、中、大（大：縮圖在上面、滿寬）
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -2763,7 +2838,9 @@ fn recent_panel(app: &mut UiApp, ui: &mut Ui) {
                     app.s.recent_size = size;
                     app.save_settings();
                 }
-                ui.label(theme::muted(ui, tr!("縮圖", "Size")).font(theme::font(12.0)));
+                if show_label {
+                    ui.label(theme::muted(ui, size_label).font(theme::font(12.0)));
+                }
             });
         });
         ui.add_space(4.0);
@@ -2988,7 +3065,16 @@ fn recent_card(app: &mut UiApp, ui: &mut Ui, e: &LibraryEntry, date: String, w: 
         // 播放、剪輯（、傳到媒體庫）直接按得到，其他在「⋯」（和全部錄影、檢視器同一份清單）
         let slots = if app.s.after_copy_to.trim().is_empty() { 2 } else { 3 };
         let hot = ui.rect_contains_pointer(rect);
-        if let Some(a) = super::entry_menu::quick_icons(ui, &groups, hot, slots, slots, tr!("更多（也可以在卡片上按右鍵）", "More (or right-click the card)")) {
+        let more_tip = tr!("更多（也可以在卡片上按右鍵）", "More (or right-click the card)");
+        // 「大」的卡片比較寬：資料夾、製作、複製檔案、改名、刪除也直接按得到（放不下的在「⋯」）
+        let picked = if big {
+            use EntryAction as A;
+            let wanted = [A::PlayHere, A::Edit, A::SendToLibrary, A::Reveal, A::Export, A::CopyFile, A::Rename, A::Trash];
+            super::entry_menu::wide_icons(ui, &groups, hot, &wanted, more_tip)
+        } else {
+            super::entry_menu::quick_icons(ui, &groups, hot, slots, slots, more_tip)
+        };
+        if let Some(a) = picked {
             app.known.insert(e.media.path.clone(), e.clone());
             app.act(a, e.clone());
         }
