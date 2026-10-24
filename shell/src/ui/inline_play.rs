@@ -229,11 +229,14 @@ pub fn tick(app: &mut UiApp, ctx: &egui::Context) {
             p.pause();
         }
     }
-    if let Some(f) = i.player.as_ref().and_then(|p| if let Playback::Ff(p) = p { p.take_frame() } else { None }) {
-        let img = egui::ColorImage::from_rgba_unmultiplied([f.width as usize, f.height as usize], &f.rgba);
-        match &mut i.tex {
-            Some(t) => t.set(img, TextureOptions::LINEAR),
-            None => i.tex = Some(ctx.load_texture("inline-video", img, TextureOptions::LINEAR)),
+    if let Some(Playback::Ff(p)) = &i.player {
+        if let Some(f) = p.take_frame() {
+            let img = egui::ColorImage::from_rgba_unmultiplied([f.width as usize, f.height as usize], &f.rgba);
+            match &mut i.tex {
+                Some(t) => t.set(img, TextureOptions::LINEAR),
+                None => i.tex = Some(ctx.load_texture("inline-video", img, TextureOptions::LINEAR)),
+            }
+            p.recycle(f.rgba);
         }
     }
     if let Some(p) = &i.player {

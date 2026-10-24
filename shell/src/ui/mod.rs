@@ -232,7 +232,8 @@ pub struct UiApp {
 
     pub preview: preview::Preview,
     pub thumbs: thumbs::Thumbs,
-    pub recent: Option<LibraryPage>,
+    /// 主畫面「最近錄影」（共用一份：每一格畫的時候不用整份複製）
+    pub recent: Option<Arc<LibraryPage>>,
     pub recent_page: usize,
     recent_seq: u64,
     /// 最近錄影上次讀的時間；視窗上次有沒有焦點、檔案庫上次開著沒（從檔案總管、手機同步放進資料夾的影片，
@@ -1127,10 +1128,13 @@ impl UiApp {
                 return; // 較舊的要求晚回來：丟掉
             }
             app.recent_page = page.page.max(1);
+            if app.known.len() > 5000 {
+                app.known.clear();
+            }
             for e in &page.items {
                 app.known.insert(e.media.path.clone(), e.clone());
             }
-            app.recent = Some(page);
+            app.recent = Some(Arc::new(page));
         });
     }
 

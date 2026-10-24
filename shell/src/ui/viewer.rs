@@ -772,11 +772,14 @@ fn remote_buttons(app: &UiApp, remote: Option<&Remote>) -> Vec<HeadBtn> {
 
 pub fn show(app: &mut UiApp, ctx: &egui::Context) {
     let Some(mut v) = app.viewer.take() else { return };
-    if let Some(f) = v.player.as_ref().and_then(|p| if let Playback::Ff(p) = p { p.take_frame() } else { None }) {
-        let img = egui::ColorImage::from_rgba_unmultiplied([f.width as usize, f.height as usize], &f.rgba);
-        match &mut v.video_tex {
-            Some(t) => t.set(img, TextureOptions::LINEAR),
-            None => v.video_tex = Some(ctx.load_texture("viewer-video", img, TextureOptions::LINEAR)),
+    if let Some(Playback::Ff(p)) = &v.player {
+        if let Some(f) = p.take_frame() {
+            let img = egui::ColorImage::from_rgba_unmultiplied([f.width as usize, f.height as usize], &f.rgba);
+            match &mut v.video_tex {
+                Some(t) => t.set(img, TextureOptions::LINEAR),
+                None => v.video_tex = Some(ctx.load_texture("viewer-video", img, TextureOptions::LINEAR)),
+            }
+            p.recycle(f.rgba);
         }
     }
     // Jellyfin 的影片看完了：記成看過，接著播同一排的下一支

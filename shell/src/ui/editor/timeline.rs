@@ -1243,13 +1243,18 @@ fn ann_track(ed: &mut Editor, ui: &mut egui::Ui) {
     let lanes = ed.lane_freeze.clone().unwrap_or_else(|| ed.assign_lanes());
     let n = lanes.values().copied().max().unwrap_or(0) + 1;
     let lane_h = ((AT_H - 4.0) / n as f32).clamp(6.0, 22.0);
-    let mut bars: Vec<(u64, Rect, String)> = vec![];
-    for an in &ed.anns {
+    // （編號, 位置, 在 ed.anns 的第幾個, 在刪除的片段中）：提示文字等滑鼠移上去才組
+    let mut bars: Vec<(u64, Rect, usize, bool)> = vec![];
+    for (ai, an) in ed.anns.iter().enumerate() {
         let lane = lanes.get(&an.id).copied().unwrap_or(0);
+        let r = Rect::from_min_max(pos2(x_of(an.start), rect.top() + lane as f32 * lane_h + 2.0), pos2(x_of(an.end).max(x_of(an.start) + 3.0), rect.top() + (lane + 1) as f32 * lane_h));
+        // 放大時間軸後看不到的（字幕可能有幾百句）：不畫
+        if r.max.x < rect.min.x || r.min.x > rect.max.x {
+            continue;
+        }
         let c = ann_color(an);
         let fg = if !an.kind.is_effect() && (an.color == "#ffffff" || an.color == "#f5b301") { Color32::from_rgb(17, 17, 17) } else { Color32::WHITE };
         let gone = !Editor::in_output(an, &keep);
-        let r = Rect::from_min_max(pos2(x_of(an.start), rect.top() + lane as f32 * lane_h + 2.0), pos2(x_of(an.end).max(x_of(an.start) + 3.0), rect.top() + (lane + 1) as f32 * lane_h));
         let fill = if gone { c.gamma_multiply(0.55) } else { c };
         painter.rect_filled(r, CornerRadius::same(4), fill);
         if fg != Color32::WHITE {
@@ -1272,28 +1277,29 @@ fn ann_track(ed: &mut Editor, ui: &mut egui::Ui) {
             let g = super::side::ellipsized(&lp, annotate::label(an), theme::font(12.0), fg, r.width() - 14.0);
             lp.galley(pos2(r.left() + 7.0, r.center().y - g.size().y / 2.0), g, fg);
         }
-        let gone_note = if gone { tr!("（在刪除的片段中，不會出現在輸出影片）", " (in a removed section; won't appear in the output video)") } else { "" };
-        let tip = trf!(
-            "{}：{} – {}{}。拖曳移動，拖曳兩端調整長短",
-            "{}: {} – {}{}. Drag to move, drag the ends to change the length",
-            annotate::label(an),
-            video_clock(an.start),
-            video_clock(an.end),
-            gone_note
-        );
-        bars.push((an.id, r, tip));
+        bars.push((an.id, r, ai, gone));
     }
     let xp = x_of(ed.now());
     painter.vline(xp, rect.y_range(), Stroke::new(2.0, p.text.gamma_multiply(0.7)));
 
     let (pressed, down, pos, latest) = ui.input(|i| (i.pointer.primary_pressed(), i.pointer.primary_down(), i.pointer.interact_pos(), i.pointer.latest_pos()));
-    let bar_at = |pos: Pos2| bars.iter().rev().find(|(_, r, _)| r.expand2(vec2(2.0, 0.0)).contains(pos));
+    let bar_at = |pos: Pos2| bars.iter().rev().find(|(_, r, _, _)| r.expand2(vec2(2.0, 0.0)).contains(pos));
     if resp.hovered() && matches!(ed.drag, Drag::None) {
-        if let Some((_, r, tip)) = pos.and_then(bar_at) {
+        if let Some((_, r, ai, gone)) = pos.and_then(bar_at) {
             let pos = pos.unwrap_or_default();
             let edge = pos.x - r.left() <= 8.0 || r.right() - pos.x <= 8.0;
             ui.ctx().set_cursor_icon(if edge { CursorIcon::ResizeHorizontal } else { CursorIcon::Grab });
-            resp.clone().on_hover_text(tip.clone());
+            let an = &ed.anns[*ai];
+            let gone_note = if *gone { tr!("（在刪除的片段中，不會出現在輸出影片）", " (in a removed section; won't appear in the output video)") } else { "" };
+            let tip = trf!(
+                "{}：{} – {}{}。拖曳移動，拖曳兩端調整長短",
+                "{}: {} – {}{}. Drag to move, drag the ends to change the length",
+                annotate::label(an),
+                video_clock(an.start),
+                video_clock(an.end),
+                gone_note
+            );
+            resp.clone().on_hover_text(tip);
         }
     }
     if pressed && resp.hovered() && ed.duration > 0.0 {
@@ -1305,7 +1311,7 @@ fn ann_track(ed: &mut Editor, ui: &mut egui::Ui) {
                 ed.ann_sel = None;
                 ed.seek(time_at(pos.x));
             }
-            Some((id, r, _)) => {
+            Some((id, r, _, _)) => {
                 let edge = if pos.x - r.left() <= 8.0 {
                     Edge::Start
                 } else if r.right() - pos.x <= 8.0 {

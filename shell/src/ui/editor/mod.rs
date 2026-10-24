@@ -163,6 +163,11 @@ impl Pl {
     fn take_frame(&self) -> Option<Frame> {
         self.0.as_ref()?.take_frame()
     }
+    fn recycle(&self, rgba: Vec<u8>) {
+        if let Some(p) = &self.0 {
+            p.recycle(rgba);
+        }
+    }
     fn pause(&self) {
         if let Some(p) = &self.0 {
             p.pause();
@@ -879,6 +884,18 @@ impl Editor {
         if !input && self.changed_at.is_none() && self.history_at.is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(1)) {
             return;
         }
+        // 打字中：已經知道改了，停手 0.8 秒才記成一步，這段時間不用每一格都算快照
+        if typing && self.changed_at.is_some_and(|t| t.elapsed() < std::time::Duration::from_millis(800)) {
+            return;
+        }
+        // 一般操作（按鍵、點擊）也最多每 0.2 秒算一次
+        if input && self.history_at.is_some_and(|t| t.elapsed() < std::time::Duration::from_millis(200)) {
+            if self.changed_at.is_none() {
+                // 0.2 秒後再看一次（可能剛好改了東西）
+                self.changed_at = Some(Instant::now());
+            }
+            return;
+        }
         self.history_at = Some(Instant::now());
         let now = self.snapshot();
         if now == self.committed {
@@ -899,7 +916,8 @@ impl Editor {
         let prev = std::mem::replace(&mut self.committed, now);
         self.undo.push(prev);
         self.undo_labels.push(label);
-        if self.undo.len() > 200 {
+        // 最多 200 步；字幕很多時每一步都很大，總共超過 64 MB 也先丟掉最舊的
+        while self.undo.len() > 200 || (self.undo.len() > 1 && self.undo.iter().map(String::len).sum::<usize>() > 64 << 20) {
             self.undo.remove(0);
             self.undo_labels.remove(0);
         }
@@ -2229,7 +2247,10 @@ impl Editor {
     /// 取得新的畫面，播放到結尾時結束預覽
     fn poll_player(&mut self) {
         if let Some(f) = self.player.take_frame() {
-            self.frame = Some(f);
+            // 上一張的記憶體還給播放器，下一張接著用
+            if let Some(old) = self.frame.replace(f) {
+                self.player.recycle(old.rgba);
+            }
         }
         if self.player.take_ended() {
             self.previewing = false;

@@ -2756,7 +2756,8 @@ fn recent_panel(app: &mut UiApp, ui: &mut Ui) {
         let jf = app.jellyfin().is_some();
         let lib_h = 62.0;
         let list = Rect::from_min_max(ui.cursor().min, pos2(full.max.x, full.max.y - lib_h - 10.0));
-        let items = app.recent.as_ref().map(|r| r.items.clone()).unwrap_or_default();
+        let recent = app.recent.clone();
+        let items: &[screenrecorder_core::types::LibraryEntry] = recent.as_ref().map_or(&[], |r| r.items.as_slice());
         let total = app.recent.as_ref().map_or(0, |r| r.total);
         // 第一張換了（剛錄好、存下回溯錄影、換了儲存位置）：捲回最上面
         let first = items.first().map(|e| e.media.path.clone());
@@ -2963,20 +2964,20 @@ fn recent_card(app: &mut UiApp, ui: &mut Ui, e: &LibraryEntry, date: String, w: 
     }
     // 下方：操作按鈕（播放一直是深色，其他平常淡灰色，滑鼠移到卡片上才變深）
     let row = Rect::from_min_max(pos2(x - 6.0, rect.max.y - 32.0), pos2(rect.max.x - 4.0, rect.max.y - 4.0));
+    // 操作清單建一次：下面的按鈕和按右鍵的選單共用
+    let groups = super::entry_menu::groups(app, e, Place::Home);
     {
         let ui = &mut ui.new_child(UiBuilder::new().max_rect(row).layout(Layout::left_to_right(Align::Center)));
         // 圖示之間不留空隙（按鈕本身有內距），卡片窄一點，一列放得下更多張
         ui.spacing_mut().item_spacing.x = 0.0;
         // 播放、剪輯（、傳到媒體庫）直接按得到，其他在「⋯」（和全部錄影、檢視器同一份清單）
         let slots = if app.s.after_copy_to.trim().is_empty() { 2 } else { 3 };
-        let groups = super::entry_menu::groups(app, e, Place::Home);
         let hot = ui.rect_contains_pointer(rect);
         if let Some(a) = super::entry_menu::quick_icons(ui, &groups, hot, slots, slots, tr!("更多（也可以在卡片上按右鍵）", "More (or right-click the card)")) {
             app.known.insert(e.media.path.clone(), e.clone());
             app.act(a, e.clone());
         }
     }
-    let groups = super::entry_menu::groups(app, e, Place::Home);
     if let Some(a) = egui::Popup::context_menu(&resp).show(|ui| super::entry_menu::menu(ui, &groups)).and_then(|r| r.inner) {
         app.known.insert(e.media.path.clone(), e.clone());
         app.act(a, e.clone());

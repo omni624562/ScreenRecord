@@ -12,6 +12,12 @@ use screenrecorder_core::types::{FacetOption, FacetQuery};
 use screenrecorder_core::{tr, trf};
 use std::time::Instant;
 
+thread_local! {
+    /// 這一批清單的分類（清單換了才重新複製）
+    #[allow(clippy::type_complexity)]
+    static FACETS: std::cell::RefCell<Option<(std::sync::Arc<Vec<screenrecorder_core::types::LibraryEntry>>, Option<std::rc::Rc<screenrecorder_core::types::FacetCounts>>)>> = const { std::cell::RefCell::new(None) };
+}
+
 /// 瀏覽欄的寬度
 pub const PANEL_W: f32 = 212.0;
 
@@ -192,7 +198,15 @@ pub fn panel(ui: &mut egui::Ui, d: &mut LibraryDialog, rect: Rect) {
                 changed = true;
             }
         }
-        let Some(fc) = d.data.as_ref().and_then(|x| x.facets.clone()) else {
+        // 分類清單很大（程式、常見詞、顏色…）：讀到新的一批才複製一次，不要每一格都複製
+        // 鍵存清單本身（不只位址）：舊的清單還留著，新的清單不會剛好用到同一個位址而被當成一樣
+        let fc = FACETS.with_borrow_mut(|c| {
+            if c.as_ref().is_none_or(|(k, _)| !std::sync::Arc::ptr_eq(k, &d.rows)) {
+                *c = Some((d.rows.clone(), d.data.as_ref().and_then(|x| x.facets.clone()).map(std::rc::Rc::new)));
+            }
+            c.as_ref().and_then(|(_, f)| f.clone())
+        });
+        let Some(fc) = fc else {
             ui.add_space(8.0);
             ui.label(theme::muted(ui, tr!("整理中…", "Sorting…")));
             return;

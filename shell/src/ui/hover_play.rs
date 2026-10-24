@@ -120,6 +120,7 @@ pub fn paint(painter: &egui::Painter, key: &str, rect: Rect, rounding: u8) -> bo
                 Some(t) => t.set(img, TextureOptions::LINEAR),
                 None => pl.tex = Some(ctx.load_texture("hover-play", img, TextureOptions::LINEAR)),
             }
+            pl.player.recycle(f.rgba);
         }
         // 播完了從頭再播
         if pl.player.take_ended() {
