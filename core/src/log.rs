@@ -51,6 +51,10 @@ pub fn redact(text: &str) -> String {
             };
         }
     }
+    // Jellyfin 轉送網址裡的隨機碼
+    if let Some(t) = crate::jf_proxy::token() {
+        out = out.replace(t, "…");
+    }
     out
 }
 

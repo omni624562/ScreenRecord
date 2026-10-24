@@ -115,7 +115,7 @@ fn install_archive(archive: &Path, target: &Path) -> Result<(), String> {
     finish(&tmp, target)
 }
 
-fn file_sha256(p: &Path) -> Option<String> {
+pub(crate) fn file_sha256(p: &Path) -> Option<String> {
     let mut f = std::fs::File::open(p).ok()?;
     let mut h = Sha256::new();
     std::io::copy(&mut f, &mut h).ok()?;

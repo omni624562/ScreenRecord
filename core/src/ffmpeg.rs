@@ -18,16 +18,59 @@ pub fn which(name: &str) -> Option<PathBuf> {
     std::env::split_paths(&path).map(|d| d.join(name)).find(|p| p.is_file())
 }
 
-/// 依序尋找：程式資料夾 → 程式資料夾\ffmpeg\bin → 程式資料夾\bin → %LOCALAPPDATA%\ScreenRecorder（自動下載的位置）→ PATH
+/// 依序尋找：程式資料夾 → 程式資料夾\ffmpeg\bin → 程式資料夾\bin → %LOCALAPPDATA%\ScreenRecorder（自動下載的位置）→ PATH。
+/// 程式放在「下載」或暫存資料夾時，那裡的 ffmpeg.exe 要是本程式裝的才用（網頁可能偷偷把同名的程式下載到那裡）
 pub fn locate_ffmpeg() -> (Option<PathBuf>, Vec<String>) {
     let app = app_dir();
+    let risky = risky_dir(&app);
     let local = [app.join(EXE), app.join("ffmpeg").join("bin").join(EXE), app.join("bin").join(EXE), data_dir().join(EXE)];
     let mut searched: Vec<String> = local.iter().map(|p| p.display().to_string()).collect();
-    if let Some(p) = local.iter().find(|p| p.is_file()) {
+    for (i, p) in local.iter().enumerate() {
+        if !p.is_file() {
+            continue;
+        }
+        if risky && i < 3 && !allowed(p) {
+            crate::warn!("[FFmpeg] 不使用 {}：程式在下載或暫存資料夾，這個 ffmpeg.exe 不是本程式裝的", p.display());
+            continue;
+        }
         return (Some(p.clone()), searched);
     }
     searched.push("PATH".into());
     (which(EXE), searched)
+}
+
+/// 「下載」或暫存資料夾（別人容易放檔案進去的地方）
+fn risky_dir(dir: &Path) -> bool {
+    let home = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")).map(PathBuf::from);
+    let mut spots = vec![std::env::temp_dir()];
+    spots.extend(home.map(|h| h.join("Downloads")));
+    let dir = dir.to_string_lossy().to_lowercase();
+    spots.iter().any(|s| {
+        let s = s.to_string_lossy().to_lowercase();
+        !s.is_empty() && dir.starts_with(s.trim_end_matches(['\\', '/']))
+    })
+}
+
+/// 本程式裝過的 ffmpeg.exe（SHA-256 一行一個）
+fn allowed_list() -> PathBuf {
+    data_dir().join("ffmpeg-allowed.txt")
+}
+
+fn allowed(p: &Path) -> bool {
+    let Some(h) = crate::mpv_download::file_sha256(p) else { return false };
+    std::fs::read_to_string(allowed_list()).is_ok_and(|t| t.lines().any(|l| l.trim() == h))
+}
+
+/// 記下本程式裝的 ffmpeg.exe（下載比對過雜湊、或使用者在「外部元件」自己選的）
+pub fn allow(p: &Path) {
+    let Some(h) = crate::mpv_download::file_sha256(p) else { return };
+    let list = allowed_list();
+    let mut text = std::fs::read_to_string(&list).unwrap_or_default();
+    if !text.lines().any(|l| l.trim() == h) {
+        text.push_str(&h);
+        text.push('\n');
+        let _ = crate::paths::write_atomic(&list, text.as_bytes());
+    }
 }
 
 /// 實際試編一小段：FFmpeg 列得出來不代表能用（例如沒有 NVENC 的顯示卡、沒有 Intel 內顯就不能用 QSV）

@@ -1099,6 +1099,17 @@ fn jellyfin_rows(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
             });
         }
     });
+    // 沒有加密又經過網際網路：API 金鑰是管理員權限，路上的人看得到
+    if screenrecorder_core::jellyfin::plain_over_internet(&app.s.jellyfin_url) {
+        form_hint_full(
+            ui,
+            tr!(
+                "⚠ 這個網址沒有加密（http://），API 金鑰會以明碼經過網際網路，路上的人看得到。在家裡以外連線時請改用 https://",
+                "⚠ This address isn't encrypted (http://). The API key travels over the internet in plain text where others can read it. Use https:// when connecting from outside your home network"
+            ),
+            p.warn,
+        );
+    }
     match d.jf_found.as_deref() {
         Some([]) => form_hint_full(
             ui,
@@ -2688,7 +2699,10 @@ fn network_section(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
     match app.s.proxy_mode.as_str() {
         "custom" => {
             form_row(ui, tr!("位址", "Address"), |ui| {
-                let r = ui.add(egui::TextEdit::singleline(&mut app.s.proxy).desired_width(FORM_CTRL_W).hint_text("proxy.company.com:8080"));
+                // 有帳號密碼時，沒在輸入時遮起來（設定畫面被錄進去、被旁人看到也看不到密碼）
+                let id = egui::Id::new("proxy-address");
+                let hide = app.s.proxy.contains('@') && !ui.memory(|m| m.has_focus(id));
+                let r = ui.add(egui::TextEdit::singleline(&mut app.s.proxy).id(id).password(hide).desired_width(FORM_CTRL_W).hint_text("proxy.company.com:8080"));
                 if r.changed() {
                     d.net_result = None;
                     app.save_settings();
@@ -2705,7 +2719,7 @@ fn network_section(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
         }
         "auto" => {
             let text = match screenrecorder_core::http::system_proxy() {
-                Some(px) => trf!("系統設定的 Proxy：{px}", "System proxy: {px}"),
+                Some(px) => trf!("系統設定的 Proxy：{}", "System proxy: {}", screenrecorder_core::http::hide_password(&px)),
                 None => tr!(
                     "系統沒有設定 Proxy，直接連線（自動設定指令碼 PAC 不支援，請改用「自訂」）",
                     "No system proxy is set, so connections are direct (automatic configuration scripts aren't supported; use Custom instead)"

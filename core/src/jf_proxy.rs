@@ -1,10 +1,12 @@
 //! Jellyfin 串流的本機轉送：交給 FFmpeg、mpv 的網址是 http://127.0.0.1:埠/隨機碼/…，不帶 API 金鑰。
 //! FFmpeg 的命令列別的程式看得到、出錯時也會整行寫進記錄檔；金鑰只留在這個程式裡，由這裡加在標頭（X-Emby-Token）送給 Jellyfin。
-//! 只聽本機、網址要有這次執行才有的隨機碼；支援 Range（FFmpeg 跳著看時用）。開不了埠時退回原本帶金鑰的網址。
+//! 只聽本機、網址要有這次執行才有的隨機碼、只轉送影片串流和字幕、只接受同一個登入工作階段的程式、同時最多 16 條；
+//! 支援 Range（FFmpeg 跳著看時用）。開不了埠時退回原本帶金鑰的網址。隨機碼寫進記錄檔前遮掉（log::redact）。
 
 use std::hash::{BuildHasher, Hasher};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
@@ -24,8 +26,29 @@ fn random_token() -> String {
     format!("{a:016x}{:016x}", h.finish())
 }
 
+static R: OnceLock<Option<Relay>> = OnceLock::new();
+/// 同時轉送的連線數上限（播放器、字幕、預覽各開幾條就夠）
+const MAX_CONN: usize = 16;
+static BUSY: AtomicUsize = AtomicUsize::new(0);
+
+/// 這次執行的隨機碼（已經開了轉送時）：寫進記錄檔前遮掉
+pub fn token() -> Option<&'static str> {
+    R.get()?.as_ref().map(|r| r.token.as_str())
+}
+
+/// 只轉送播放用的路徑：影片串流、字幕（不能拿來讀伺服器的其他資料，例如全部的 API 金鑰）
+fn allowed(path: &str) -> bool {
+    let path = path.split('?').next().unwrap_or("");
+    let parts: Vec<&str> = path.trim_start_matches('/').split('/').collect();
+    let id_ok = |s: &str| !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-');
+    match parts.as_slice() {
+        ["Videos", id, "stream"] => id_ok(id),
+        ["Videos", id, id2, "Subtitles", index, "0", file] => id_ok(id) && id_ok(id2) && index.chars().all(|c| c.is_ascii_digit()) && file.starts_with("Stream."),
+        _ => false,
+    }
+}
+
 fn relay() -> Option<&'static Relay> {
-    static R: OnceLock<Option<Relay>> = OnceLock::new();
     R.get_or_init(|| {
         let l = TcpListener::bind(("127.0.0.1", 0)).map_err(|e| crate::warn!("[Jellyfin] 無法開啟本機轉送，串流網址改帶金鑰：{e}")).ok()?;
         let port = l.local_addr().ok()?.port();
@@ -33,7 +56,17 @@ fn relay() -> Option<&'static Relay> {
             .name("jellyfin-relay".into())
             .spawn(move || {
                 for c in l.incoming().flatten() {
-                    let _ = std::thread::Builder::new().name("jellyfin-relay-conn".into()).spawn(move || serve(c));
+                    if BUSY.load(Ordering::SeqCst) >= MAX_CONN {
+                        continue;
+                    }
+                    BUSY.fetch_add(1, Ordering::SeqCst);
+                    let started = std::thread::Builder::new().name("jellyfin-relay-conn".into()).spawn(move || {
+                        serve(c);
+                        BUSY.fetch_sub(1, Ordering::SeqCst);
+                    });
+                    if started.is_err() {
+                        BUSY.fetch_sub(1, Ordering::SeqCst);
+                    }
                 }
             })
             .ok()?;
@@ -92,7 +125,16 @@ fn serve(mut c: TcpStream) {
         }
     }
     let Some(r) = relay() else { return };
+    // 只有這個程式開的播放器知道隨機碼；同一台電腦的其他使用者的程式也不轉送
+    if !c.peer_addr().is_ok_and(|a| crate::peer::peer_ok(a, r.port)) {
+        return reply(&mut c, "403 Forbidden");
+    }
     let Some((to, key)) = resolve(&format!("http://127.0.0.1:{}{target}", r.port)) else { return reply(&mut c, "404 Not Found") };
+    // 路徑：/隨機碼/編號/Videos/…
+    let path = target.splitn(4, '/').nth(3).map(|p| format!("/{p}")).unwrap_or_default();
+    if !allowed(&path) {
+        return reply(&mut c, "403 Forbidden");
+    }
     let head = match method {
         "GET" => false,
         "HEAD" => true,
@@ -155,5 +197,17 @@ mod tests {
         // 隨機碼不對：不轉送
         let bad = u.replace(&relay().unwrap().token, "0000");
         assert!(matches!(ureq::get(&bad).call(), Err(ureq::Error::Status(404, _))));
+        // 播放用以外的路徑（例如讀全部 API 金鑰）：不轉送
+        let keys = u.replace("/Videos/v1/stream?static=true", "/Auth/Keys");
+        assert!(matches!(ureq::get(&keys).call(), Err(ureq::Error::Status(403, _))));
+        // 記錄檔裡的隨機碼遮掉
+        assert!(!crate::log::redact(&u).contains(token().unwrap()));
+    }
+
+    #[test]
+    fn only_playback_paths() {
+        assert!(allowed("/Videos/abc123/stream?static=true"));
+        assert!(allowed("/Videos/a-1/a-1/Subtitles/2/0/Stream.srt"));
+        assert!(!allowed("/Auth/Keys") && !allowed("/Videos/x/../Auth/Keys") && !allowed("/Users"));
     }
 }
