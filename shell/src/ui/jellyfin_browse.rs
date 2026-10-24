@@ -356,6 +356,7 @@ pub fn reload_facets(app: &mut UiApp) {
 
 /// 在「影片資訊」改好了：名稱跟著換、縮圖重讀（可能換了封面），人物、標籤重讀；正在播這支的話標題也換
 pub fn edited(app: &mut UiApp, id: &str, title: &str) {
+    super::jellyfin_face::info_saved(app, id);
     if let Some(v) = app.viewer.as_mut().filter(|_| !title.trim().is_empty()) {
         for e in v.list.iter_mut().filter(|e| Jellyfin::item_of_stream(&e.media.path).as_deref() == Some(id)) {
             let ext = e.media.name.rsplit_once('.').map(|(_, x)| x.to_string()).unwrap_or_else(|| "mp4".into());
