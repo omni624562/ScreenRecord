@@ -311,7 +311,9 @@ fn open_with(app: &mut UiApp, entry: LibraryEntry, remote: Option<Remote>, start
     let dir = std::path::Path::new(&path).parent().map(|p| p.display().to_string()).filter(|d| !d.is_empty()).unwrap_or_else(|| app.s.out_dir(&app.env));
     let query = LibraryQuery { filter: if shots { LibraryFilter::Shot } else { LibraryFilter::All }, sort: LibrarySort::New, page_size: Some(200.0), audio: true, ..Default::default() };
     app.spawn(async move { actions::library(&core, &dir, &query).await }, move |app, page| {
-        let Some(v) = app.viewer.as_mut() else { return };
+        // 還是剛才開的那一個（還沒換成別的、也不是 Jellyfin 的）才換上清單：
+        // 慢的資料夾讀好時可能已經關掉、改開別的了
+        let Some(v) = app.viewer.as_mut().filter(|v| v.remote.is_none() && v.list.len() == 1 && v.list[0].media.path == path) else { return };
         // 加速版 / GIF 不在清單裡（列在原片底下）：只看這一個
         if let Some(i) = page.items.iter().position(|e| e.media.path == path) {
             let cur = v.list[v.idx].clone();

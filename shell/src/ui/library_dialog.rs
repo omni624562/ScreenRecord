@@ -792,20 +792,10 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                 if shot {
                     browse::popup(ui, &mut d, &r);
                 }
-                if !d.query.is_empty() {
-                    let x = Rect::from_center_size(pos2(r.rect.max.x - 15.0, r.rect.center().y), vec2(22.0, 22.0));
-                    let xr = ui.interact(x, Id::new("libSearchClear"), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(tr!("清除搜尋", "Clear search"));
-                    if xr.hovered() {
-                        ui.painter().circle_filled(x.center(), 10.0, p.surface2);
-                    }
-                    theme::paint_icon(ui.painter(), Rect::from_center_size(x.center(), vec2(12.0, 12.0)), Icon::Close, if xr.hovered() { p.text } else { p.muted });
-                    if xr.clicked() {
-                        d.query.clear();
-                        d.search_at = None;
-                        d.page = 1;
-                        d.dirty = true;
-                        d.focus_search = true;
-                    }
+                if super::toolbar::clear_x(ui, &r, &mut d.query) {
+                    d.search_at = None;
+                    d.page = 1;
+                    d.dirty = true;
                 }
             }
             super::toolbar::Part::Left => {

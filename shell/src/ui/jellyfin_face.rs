@@ -74,7 +74,8 @@ pub fn info_saved(app: &mut UiApp, item: &str) {
 
 /// 框在圖片範圍內、維持 2:3（size_w：以寬為準調整高）
 fn clamp(c: Rect, iw: f32, ih: f32) -> Rect {
-    let min_w = 40.0 / iw;
+    // 最小 40 像素寬；畫面本身比 40 像素還窄時就是整個寬（clamp 的最小值不能大於最大值）
+    let min_w = (40.0 / iw).min(1.0);
     let mut w = c.width().clamp(min_w, 1.0);
     let mut h = w * iw / ASPECT / ih;
     if h > 1.0 {

@@ -1391,7 +1391,8 @@ fn facet_menu(
         ui.set_width(W);
         ui.set_max_width(W);
         let hint = [tr!("搜尋人物…", "Search people…"), tr!("搜尋標籤…", "Search tags…"), tr!("搜尋年份…", "Search years…")][kind as usize];
-        ui.add(egui::TextEdit::singleline(search).hint_text(hint).desired_width(W));
+        let sr = ui.add(egui::TextEdit::singleline(search).hint_text(hint).desired_width(W).margin(egui::Margin { left: 4, right: 26, top: 2, bottom: 2 }));
+        super::toolbar::clear_x(ui, &sr, search);
         ui.add_space(4.0);
         let q = jellyfin::name_key(search);
         egui::ScrollArea::vertical().id_salt(("jf-facet", kind)).max_height(300.0).show(ui, |ui| {
@@ -1676,17 +1677,8 @@ pub fn panel(ui: &mut egui::Ui, d: &mut JfBrowse, busy: Option<(usize, usize)>, 
             if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                 d.search_at = Some(Instant::now() - SEARCH_WAIT);
             }
-            if !d.search.is_empty() {
-                let x = Rect::from_center_size(pos2(r.rect.max.x - 15.0, r.rect.center().y), vec2(22.0, 22.0));
-                let xr = ui.interact(x, egui::Id::new("jfSearchClear"), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(tr!("清除搜尋", "Clear search"));
-                if xr.hovered() {
-                    ui.painter().circle_filled(x.center(), 10.0, p.surface2);
-                }
-                theme::paint_icon(ui.painter(), Rect::from_center_size(x.center(), vec2(12.0, 12.0)), Icon::Close, if xr.hovered() { p.text } else { p.muted });
-                if xr.clicked() {
-                    d.search.clear();
-                    d.search_at = Some(Instant::now() - SEARCH_WAIT);
-                }
+            if super::toolbar::clear_x(ui, &r, &mut d.search) {
+                d.search_at = Some(Instant::now() - SEARCH_WAIT);
             }
         }
         // 篩選、排序：資料夾裡篩選列出底下符合的影片；搜尋、依條件找時從結果裡再篩

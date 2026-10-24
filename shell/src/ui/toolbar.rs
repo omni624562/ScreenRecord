@@ -70,6 +70,27 @@ pub fn search_box<'a>(text: &'a mut String, hint: &str, width: f32) -> egui::Tex
         .vertical_align(egui::Align::Center)
 }
 
+/// 搜尋框（或其他右邊留了約 26 像素的輸入框）有字時，右邊一個 ×：按一下清掉打的字（回傳 true）
+pub fn clear_x(ui: &mut Ui, field: &egui::Response, text: &mut String) -> bool {
+    if text.is_empty() {
+        return false;
+    }
+    let p = theme::pal(ui);
+    let x = egui::Rect::from_center_size(egui::pos2(field.rect.max.x - 14.0, field.rect.center().y), egui::vec2(20.0, 20.0));
+    let xr = ui.interact(x, field.id.with("clear"), egui::Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(screenrecorder_core::tr!("清除", "Clear"));
+    if xr.hovered() {
+        ui.painter().circle_filled(x.center(), 10.0, p.surface2);
+    }
+    theme::paint_icon(ui.painter(), egui::Rect::from_center_size(x.center(), egui::vec2(11.0, 11.0)), Icon::Close, if xr.hovered() { p.text } else { p.muted });
+    if xr.clicked() {
+        text.clear();
+        // 清掉後游標留在輸入框，可以直接打新的
+        field.request_focus();
+        return true;
+    }
+    false
+}
+
 /// 「縮圖」兩字 + 分段選擇（和查詢列一樣高）
 pub fn view_switch<T: PartialEq + Copy>(ui: &mut Ui, value: &mut T, items: &[(T, &str)], compact: bool, tip: &str) -> bool {
     if !compact {

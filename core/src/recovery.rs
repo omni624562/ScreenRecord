@@ -50,7 +50,8 @@ pub fn find(output_dir: &Path, active: Option<&Path>) -> Vec<Orphan> {
             cleanup_parts(Some(&dir));
             continue;
         }
-        files.sort();
+        // 依分段編號排（seg_1000 要排在 seg_999 後面，照字串排會跑到 seg_100 旁邊）
+        files.sort_by_key(|(p, _)| (seg_number(p), p.clone()));
         out.push(Orphan {
             stamp: dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
             audio_only: dir.join("card.png").exists(),
@@ -83,6 +84,11 @@ pub async fn recover(ffmpeg: &Path, o: &Orphan) -> Result<RecordingResult> {
     })
 }
 
+/// seg_012.mp4 → 12（看不懂的排最後）
+fn seg_number(p: &Path) -> u64 {
+    p.file_name().and_then(|n| n.to_str()).and_then(|n| n.strip_prefix("seg_")?.strip_suffix(".mp4")?.parse().ok()).unwrap_or(u64::MAX)
+}
+
 /// 不要了：刪掉分段
 pub fn discard(o: &Orphan) {
     cleanup_parts(Some(&o.dir));
@@ -106,6 +112,9 @@ mod tests {
             std::fs::create_dir_all(d).unwrap();
         }
         std::fs::write(a.join("seg_001.mp4"), b"22").unwrap();
+        // 超過 999 段：照編號排在最後（照字串排會排到 seg_100 旁邊）
+        std::fs::write(a.join("seg_1000.mp4"), b"7").unwrap();
+        std::fs::write(a.join("seg_100.mp4"), b"6").unwrap();
         std::fs::write(a.join("seg_000.mp4"), b"1").unwrap();
         std::fs::write(a.join("concat.txt"), b"x").unwrap();
         std::fs::write(b.join("seg_000.mp4"), b"333").unwrap();
@@ -118,8 +127,8 @@ mod tests {
         let found = find(dir.path(), Some(&active));
         assert_eq!(found.len(), 2);
         assert_eq!(found[0].stamp, "2026-10-10_09-00-00");
-        assert_eq!(found[0].files.iter().map(|f| f.file_name().unwrap().to_str().unwrap()).collect::<Vec<_>>(), ["seg_000.mp4", "seg_001.mp4"]);
-        assert_eq!((found[0].bytes, found[0].audio_only), (3, false));
+        assert_eq!(found[0].files.iter().map(|f| f.file_name().unwrap().to_str().unwrap()).collect::<Vec<_>>(), ["seg_000.mp4", "seg_001.mp4", "seg_100.mp4", "seg_1000.mp4"]);
+        assert_eq!((found[0].bytes, found[0].audio_only), (5, false));
         assert!(found[1].audio_only);
         // 沒有內容的資料夾刪掉；正在錄的不動
         assert!(!empty.exists() && !replay.exists());

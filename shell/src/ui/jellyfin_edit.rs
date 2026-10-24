@@ -500,7 +500,8 @@ fn picker_body(ui: &mut egui::Ui, id: &str, cands: &[(String, usize)], all: &[(S
     ui.set_max_width(W);
     let pk = &mut *prefs.picker;
     let hint = if id == "people" { tr!("搜尋人物…", "Search people…") } else { tr!("搜尋標籤…", "Search tags…") };
-    ui.add(egui::TextEdit::singleline(&mut pk.search).hint_text(hint).desired_width(W));
+    let sr = ui.add(egui::TextEdit::singleline(&mut pk.search).hint_text(hint).desired_width(W).margin(egui::Margin { left: 4, right: 26, top: 2, bottom: 2 }));
+    super::toolbar::clear_x(ui, &sr, &mut pk.search);
     ui.add_space(4.0);
     theme::segmented(ui, &mut pk.sort, &[(Sort::Count, tr!("依次數", "By count")), (Sort::Name, tr!("依名稱", "By name")), (Sort::Recent, tr!("最近用過", "Recent"))], true);
     ui.add_space(4.0);

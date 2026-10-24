@@ -342,7 +342,15 @@ pub fn delete(app: &App, paths: &[String]) -> Result<usize> {
             return Err(Error::config(tr!("檔案正在轉檔中，無法刪除", "The file is being converted and can't be deleted")));
         }
     }
-    crate::recycle::move_to_recycle_bin(paths)?;
+    // 剛關掉的播放器（FFmpeg、mpv）在背景結束，檔案可能還開著一下：失敗時再試，最多約 2 秒
+    let mut tries = 0;
+    while let Err(e) = crate::recycle::move_to_recycle_bin(paths) {
+        tries += 1;
+        if tries >= 8 || !paths.iter().all(|f| is_file(f)) {
+            return Err(e);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
     for f in paths {
         app.projects.removed(f);
         app.markers.removed(f);
