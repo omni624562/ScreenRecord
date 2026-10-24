@@ -42,24 +42,45 @@ enum Try {
 fn items(_app: &UiApp) -> Vec<(String, String, Try)> {
     vec![
         (
-            tr!("全部錄影：縮圖小、中、大", "All recordings: small, medium or large thumbnails").into(),
+            tr!("搜尋框一鍵清除", "Clear a search box in one click").into(),
             tr!(
-                "「檔案庫 → 錄影」右上角可以選縮圖大小（也可以按住 Ctrl 轉滾輪），中、大的縮圖上左右移動就能預覽。",
-                "Pick the thumbnail size at the top right of Library → Recordings (or hold Ctrl and turn the wheel); move across a medium or large thumbnail to preview it."
+                "檔案庫、Jellyfin 分頁和「依這些找」的搜尋框打了字之後，右邊的 × 一按就清掉。",
+                "Search boxes in the Library, the Jellyfin tab and its filters have an × on the right that clears what you typed."
             )
             .into(),
             Try::Library(false),
         ),
         (
-            tr!("輸入框按右鍵：剪下、複製、貼上", "Right-click text boxes: cut, copy, paste").into(),
-            tr!("每個輸入框按右鍵都有剪下、複製、貼上、全選。", "Every text box has cut, copy, paste and select all on its right-click menu.").into(),
+            tr!("打的字不會不見", "Your edits stay put").into(),
+            tr!(
+                "影片資訊、批次整理等視窗改到一半按 Esc 或點到外面不會關掉；要放棄請按「取消」。",
+                "Pressing Esc or clicking outside a half-edited window (video details, batch edit…) no longer closes it; press Cancel to discard."
+            )
+            .into(),
             Try::None,
         ),
         (
-            tr!("人物頭像變大", "Bigger people photos").into(),
-            tr!("Jellyfin 分頁「人物」清單的頭像放大、放在名字前面，滑鼠移上去看大張的。", "In the Jellyfin tab's People list the photos are bigger and next to the names; hover one to see it large.")
-                .into(),
-            Try::Jellyfin,
+            tr!("鍵盤操作看得到目前位置", "See where the keyboard is").into(),
+            tr!("按 Tab 移動時，按鈕、勾選框、開關外面有一圈藍框。", "When you move with Tab, the current button, checkbox or switch has a blue ring.").into(),
+            Try::None,
+        ),
+        (
+            tr!("刪錯了可以復原", "Undo more deletions").into(),
+            tr!(
+                "移到資源回收筒的提示都有「還原」；步驟教學刪掉的步驟、刪掉的標註樣式也可以放回去。",
+                "Every “moved to Recycle Bin” message has Restore, and deleted guide steps and annotation styles can be put back."
+            )
+            .into(),
+            Try::None,
+        ),
+        (
+            tr!("更安全、更順", "Safer and smoother").into(),
+            tr!(
+                "只從系統資料夾載入元件、Proxy 密碼加密保存；檔案庫、Jellyfin 分頁在很多影片時更順。",
+                "Components load only from system folders and the proxy password is stored encrypted; the Library and Jellyfin tab stay smooth with many videos."
+            )
+            .into(),
+            Try::None,
         ),
     ]
 }

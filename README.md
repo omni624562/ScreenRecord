@@ -6,7 +6,7 @@ Windows 11 螢幕錄影工具：**原速錄影並完整保留，停止後再選�
 - 擷取與編碼交給 FFmpeg：優先 `ddagrab`（Desktop Duplication，GPU 擷取），不支援或失敗時自動退回 `gdigrab`
 - 輸出 H.264 MP4（yuv420p、BT.709）
 
-目前版本：**3.65.0**　各版本的變更見 [CHANGELOG.md](CHANGELOG.md)（在程式裡可從 「⋯」→「關於」或系統匣選單「關於」查看版本、這一版與所有版本的更新說明、檢查新版本；自動檢查新版本的開關在「設定 → 一般」）。
+目前版本：**3.66.0**　各版本的變更見 [CHANGELOG.md](CHANGELOG.md)（在程式裡可從 「⋯」→「關於」或系統匣選單「關於」查看版本、這一版與所有版本的更新說明、檢查新版本；自動檢查新版本的開關在「設定 → 一般」）。
 
 ## 功能
 
@@ -249,9 +249,9 @@ shell/           主程式：單一執行個體、系統匣、操作視窗（egu
 - **操作視窗**：egui（OpenGL 繪製），使用 Windows 內建的微軟正黑體；不需要 WebView2，啟動快、程式小。
 - **高 DPI**：`main()` 第一行就把程式設成 Per-Monitor V2，之後各執行緒建立的小視窗（游標光暈、點擊波紋、錄影外框、攝影機小窗等）和 `GetCursorPos`、DXGI 都用實體像素座標，縮放 125%、150% 的螢幕上才不會錯開。啟動時把 DPI 模式和每個螢幕的解析度、位置、縮放比例寫進記錄檔（`monitors::log_environment`）。
 - **子行程**：程式啟動時把自己放進 kill-on-close 的 Job Object，FFmpeg 等子行程跟著在裡面，本程式被強制結束時 FFmpeg 也會一起結束；播放器等則透過 `explorer.exe` 交給 Shell 啟動，不會被一併關閉。
-- **安全**：Jellyfin API 金鑰用 Windows DPAPI 加密後存進設定檔（`core/src/secret.rs`，只有同一個 Windows 帳號能解開），記錄檔遮蔽所有 `api_key=`、`X-Emby-Token`、`Token="`；FFmpeg、mpv 播放 Jellyfin 串流時改連本機 `127.0.0.1` 的轉送（`core/src/jf_proxy.rs`，隨機路徑），金鑰不出現在命令列；Jellyfin 的要求不跟隨轉址。自動更新：目前的程式有數位簽章時，新版必須是同一個簽署者，簽章被竄改一律拒絕（`core/src/codesign.rs`）；語音模型下載後比對官方 SHA-1，mpv 的 DLL 比對 SHA-256（或使用者自己裝的、確認過的那一個）。錄音的本機連接埠只接受這次錄影的 FFmpeg（依 TCP 連線的處理程序 ID）。區域網路找 Jellyfin 時連回答的那台電腦（顯示 IP）。下載的檔名不能跑出資料夾或變成可執行檔
+- **安全**：Jellyfin API 金鑰用 Windows DPAPI 加密後存進設定檔（`core/src/secret.rs`，只有同一個 Windows 帳號能解開），記錄檔遮蔽所有 `api_key=`、`X-Emby-Token`、`Token="`；FFmpeg、mpv 播放 Jellyfin 串流時改連本機 `127.0.0.1` 的轉送（`core/src/jf_proxy.rs`，隨機路徑），金鑰不出現在命令列；Jellyfin 的要求不跟隨轉址。自動更新：目前的程式有數位簽章時，新版必須是同一個簽署者，簽章被竄改一律拒絕（`core/src/codesign.rs`）；語音模型下載後比對官方 SHA-1，mpv 的 DLL 比對 SHA-256（或使用者自己裝的、確認過的那一個）。錄音的本機連接埠只接受這次錄影的 FFmpeg（依 TCP 連線的處理程序 ID）。區域網路找 Jellyfin 時連回答的那台電腦（顯示 IP）。下載的檔名不能跑出資料夾或變成可執行檔。程式一開始就把 DLL 搜尋限制在 System32 與程式資料夾（`paths::harden_dll_search`），tar、reg、explorer 等系統程式用完整路徑；下載資料夾或暫存資料夾裡沒驗證過的 ffmpeg 不用（`ffmpeg-allowed.txt` 記下自己下載的雜湊）；本機控制端點、錄音連接埠與 Jellyfin 轉送用 `GetExtendedTcpTable` 確認對方是同一個登入工作階段的程式（`core/src/peer.rs`），並限制長度與同時連線數；Jellyfin 轉送只允許串流與字幕路徑、網址的隨機碼在記錄檔遮蔽；Proxy 帳密用 DPAPI 加密保存、畫面上遮蔽密碼；Jellyfin 用沒加密的 http 經網際網路時提醒
 - **穩定**：設定與各種清單、快取一律先寫暫存檔再取代（`paths::write_atomic`），設定檔壞掉時退回上一份 `.bak`；合併錄影先寫暫存檔、先確認空間足夠並依大小設逾時；背景工作出錯時清掉「處理中」並顯示提示；鎖住時不做檔案 I/O，鎖中毒不會讓程式當掉
-- **效能**：影片資訊（長度、大小、有沒有聲音）存在設定資料夾的 `media-info.json`，重新開啟不必再跑 FFprobe；資料夾沒變時 5 秒內重複掃描直接用上次的結果；縮圖快取淘汰最久沒用的；Jellyfin 用檔名搜尋找單支影片、只有找不到時才讀全部清單，人物 / 標籤 / 年份的支數依資料夾快取 5 分鐘
+- **效能**：影片資訊（長度、大小、有沒有聲音）存在設定資料夾的 `media-info.json`，重新開啟不必再跑 FFprobe；資料夾沒變時 5 秒內重複掃描直接用上次的結果；縮圖快取淘汰最久沒用的；Jellyfin 用檔名搜尋找單支影片、只有找不到時才讀全部清單，人物 / 標籤 / 年份的支數依資料夾快取 5 分鐘。檔案庫的日期分組、每天統計、順序、位置與分類只在清單換了才重算（用 `Arc::ptr_eq` 判斷），Jellyfin 縮圖格與人物、標籤清單只畫看得到的列，封面與頭像材質最多留 200 張；剪輯的復原快照打字時不每格算（最多 200 步或 64 MB）；播放畫面的記憶體重複使用（`Player::recycle`）
 
 ## 已知限制
 
