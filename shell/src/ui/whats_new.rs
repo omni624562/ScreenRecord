@@ -42,31 +42,24 @@ enum Try {
 fn items(_app: &UiApp) -> Vec<(String, String, Try)> {
     vec![
         (
-            tr!("最近錄影：縮圖小、中、大", "Recent recordings: small, medium or large").into(),
+            tr!("全部錄影：縮圖小、中、大", "All recordings: small, medium or large thumbnails").into(),
             tr!(
-                "主畫面「最近錄影」右上角可以選縮圖大小；大的是縮圖在上面、整欄寬，看得比較清楚。",
-                "Choose the thumbnail size at the top right of Recent recordings; large puts a full-width thumbnail on top so it's easier to see."
+                "「檔案庫 → 錄影」右上角可以選縮圖大小（也可以按住 Ctrl 轉滾輪），中、大的縮圖上左右移動就能預覽。",
+                "Pick the thumbnail size at the top right of Library → Recordings (or hold Ctrl and turn the wheel); move across a medium or large thumbnail to preview it."
             )
             .into(),
+            Try::Library(false),
+        ),
+        (
+            tr!("輸入框按右鍵：剪下、複製、貼上", "Right-click text boxes: cut, copy, paste").into(),
+            tr!("每個輸入框按右鍵都有剪下、複製、貼上、全選。", "Every text box has cut, copy, paste and select all on its right-click menu.").into(),
             Try::None,
         ),
         (
-            tr!("滑過預覽就在縮圖上", "Scrub preview right on the thumbnail").into(),
-            tr!(
-                "最近錄影、Jellyfin 分頁的縮圖上左右移動滑鼠，縮圖本身換成那個時間點的畫面，不再浮在旁邊擋到別張。",
-                "Move the mouse across a thumbnail in Recent recordings or the Jellyfin tab and the thumbnail itself shows that moment, instead of a box floating over the next one."
-            )
-            .into(),
+            tr!("人物頭像變大", "Bigger people photos").into(),
+            tr!("Jellyfin 分頁「人物」清單的頭像放大、放在名字前面，滑鼠移上去看大張的。", "In the Jellyfin tab's People list the photos are bigger and next to the names; hover one to see it large.")
+                .into(),
             Try::Jellyfin,
-        ),
-        (
-            tr!("剪輯視窗的畫面更大", "More room in the editor").into(),
-            tr!(
-                "輸出長度、儲存位置和「另存剪輯版」搬到上方標題列，下面那一排拿掉，影片和時間軸更大。",
-                "Output length, save location and “Save edited version” moved up to the title bar; the bottom row is gone so the video and timeline get more room."
-            )
-            .into(),
-            Try::None,
         ),
     ]
 }

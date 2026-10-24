@@ -2515,8 +2515,25 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                     if Btn::icon_only(Icon::Redo).ghost().enabled(!ed.redo.is_empty()).tooltip(redo_tip).show(ui).clicked() {
                         ed.redo();
                     }
-                    // 復原清單：看得到每一步改了什麼，可以一次跳回好幾步之前
-                    let list = Btn::icon_only(Icon::ChevD).ghost().small().enabled(ed.can_undo()).tooltip(tr!("復原清單", "Undo history")).show(ui);
+                    ui.add_space(4.0);
+                    // 復原和復原清單黏成一組（↶⌄，像「另存剪輯版 ▾」）：清單是復原的，不會看成復原、重做共用
+                    let (undo, list) = ui
+                        .scope(|ui| {
+                            ui.spacing_mut().item_spacing.x = 0.0;
+                            // 復原清單：看得到每一步改了什麼，可以一次跳回好幾步之前
+                            let list = Btn::icon_only(Icon::ChevD).ghost().small().enabled(ed.can_undo()).tooltip(tr!("復原清單", "Undo history")).show(ui);
+                            let undo_tip = match (ed.uncommitted, ed.undo_labels.last()) {
+                                (false, Some(l)) => trf!("復原：{l}（Ctrl+Z）", "Undo: {l} (Ctrl+Z)"),
+                                _ => tr!("復原（Ctrl+Z）", "Undo (Ctrl+Z)").into(),
+                            };
+                            let undo = Btn::icon_only(Icon::Undo).ghost().enabled(ed.can_undo()).tooltip(undo_tip).show(ui);
+                            (undo, list)
+                        })
+                        .inner;
+                    // 外框框住兩個、中間一條分隔線，看得出是同一個按鈕的兩半
+                    let group = undo.rect.union(list.rect);
+                    ui.painter().rect_stroke(group, egui::CornerRadius::same(6), egui::Stroke::new(1.0, p.border), egui::StrokeKind::Inside);
+                    ui.painter().vline(list.rect.min.x, group.y_range().shrink(6.0), egui::Stroke::new(1.0, p.border));
                     if list.clicked() {
                         ed.commit_pending();
                     }
@@ -2536,12 +2553,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                     if let Some(n) = pick {
                         ed.undo_to(n);
                     }
-                    let can = ed.can_undo();
-                    let undo_tip = match (ed.uncommitted, ed.undo_labels.last()) {
-                        (false, Some(l)) => trf!("復原：{l}（Ctrl+Z）", "Undo: {l} (Ctrl+Z)"),
-                        _ => tr!("復原（Ctrl+Z）", "Undo (Ctrl+Z)").into(),
-                    };
-                    if Btn::icon_only(Icon::Undo).ghost().enabled(can).tooltip(undo_tip).show(ui).clicked() {
+                    if undo.clicked() {
                         ed.undo();
                     }
                 });
