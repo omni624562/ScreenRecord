@@ -864,6 +864,12 @@ impl Jellyfin {
         info_of(&body).ok_or_else(|| tr!("Jellyfin 的影片資料看不懂", "Couldn't understand Jellyfin's item data").to_string())
     }
 
+    /// 一支影片的演員與它們在伺服器上的編號（人物照片用）：直接問伺服器，剛在「影片資訊」加的人物也有編號
+    pub fn item_people(&self, user: &str, id: &str) -> Result<Vec<(Option<String>, String)>, String> {
+        let body = self.call(agent().get(&format!("{}/Users/{user}/Items/{id}", self.url)))?.into_string().map_err(|e| e.to_string())?;
+        people_ids_of(&body).ok_or_else(|| tr!("Jellyfin 的影片資料看不懂", "Couldn't understand Jellyfin's item data").to_string())
+    }
+
     /// 把改好的資訊存回去：取回整筆資料、換上去再存（清空的欄位就清掉；不是演員的人物，例如導演，留著）
     pub fn set_info(&self, user: &str, id: &str, info: &JfInfo) -> Result<(), String> {
         forget_lacking();
@@ -1735,6 +1741,24 @@ pub struct Usage {
     /// 還沒設人物、還沒有標籤的影片幾支
     pub no_people: usize,
     pub no_tags: usize,
+}
+
+/// 影片 JSON 裡的演員（編號, 名稱）；導演等其他人物不算，沒有編號時 None
+fn people_ids_of(body: &str) -> Option<Vec<(Option<String>, String)>> {
+    let item: Value = serde_json::from_str(body).ok()?;
+    Some(
+        item.get("People")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter(|p| p.get("Type").and_then(Value::as_str).is_none_or(|t| t == "Actor"))
+            .filter_map(|p| {
+                let name = p.get("Name")?.as_str()?.trim();
+                let id = p.get("Id").and_then(Value::as_str).filter(|i| !i.is_empty()).map(String::from);
+                (!name.is_empty()).then(|| (id, name.to_string()))
+            })
+            .collect(),
+    )
 }
 
 /// 「常用」重新命名時改的是人物還是標籤
@@ -3019,6 +3043,14 @@ mod tests {
     use super::*;
     use std::io::{BufRead, BufReader, Write};
     use std::net::TcpListener;
+
+    #[test]
+    fn item_people_come_with_their_ids() {
+        let body = r#"{"Id":"v","People":[{"Name":"つかもと友希","Type":"Actor","Id":"p1"},{"Name":"導演","Type":"Director","Id":"d1"},{"Name":" 新人 "},{"Name":"","Id":"x"}]}"#;
+        assert_eq!(people_ids_of(body), Some(vec![(Some("p1".into()), "つかもと友希".into()), (None, "新人".into())]));
+        assert_eq!(people_ids_of(r#"{"Id":"v"}"#), Some(vec![]));
+        assert_eq!(people_ids_of("not json"), None);
+    }
 
     #[test]
     fn urls_are_normalized() {

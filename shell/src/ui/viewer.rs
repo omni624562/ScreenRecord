@@ -1281,11 +1281,11 @@ fn run_act(app: &mut UiApp, act: Act) {
         Act::JfFace => {
             let Some(v) = app.viewer.as_mut() else { return };
             let (Some(r), Some(ff)) = (v.remote.as_ref(), app.core.ffmpeg_path()) else { return };
-            let (id, url, t) = (r.id.clone(), v.cur().media.path.clone(), v.player.as_ref().map(|p| p.time()).unwrap_or(0.0));
+            let (id, user, url, t) = (r.id.clone(), r.user.clone(), v.cur().media.path.clone(), v.player.as_ref().map(|p| p.time()).unwrap_or(0.0));
             v.pause();
             let people = super::jellyfin_browse::people_of(app, &id);
             app.spawn(async move { screenrecorder_core::cover::frame_at(&ff, &url, t).await.map_err(|e| e.message().to_string()) }, move |app, r| match r {
-                Ok(pm) => super::jellyfin_face::open(app, pm, people),
+                Ok(pm) => super::jellyfin_face::open(app, pm, id, user, people),
                 Err(e) => app.toast(e, true),
             });
         }

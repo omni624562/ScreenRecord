@@ -18,6 +18,11 @@ pub struct FaceDlg {
     /// 這支影片的人物（編號, 名稱）；編號找不到（伺服器上還沒有這個人物）時 None
     people: Vec<(Option<String>, String)>,
     pick: usize,
+    /// 這支影片的編號與看的使用者（向伺服器重讀人物用）
+    item: String,
+    user: String,
+    /// 正在向伺服器讀人物
+    loading: bool,
     /// 框（以圖片寬高為 1 的比例）
     crop: Rect,
     /// 正在拖曳：（調整大小？, 按下時的框）
@@ -25,8 +30,8 @@ pub struct FaceDlg {
     saving: bool,
 }
 
-/// 開啟（frame 是正在看的這一格；people 是這支影片的人物與它們在伺服器上的編號）
-pub fn open(app: &mut UiApp, frame: Pixmap, people: Vec<(Option<String>, String)>) {
+/// 開啟（frame 是正在看的這一格；people 是清單上記得的人物，接著向伺服器重讀）
+pub fn open(app: &mut UiApp, frame: Pixmap, item: String, user: String, people: Vec<(Option<String>, String)>) {
     let img = egui::ColorImage::from_rgba_premultiplied([frame.width() as usize, frame.height() as usize], frame.data());
     let tex = app.ctx.load_texture("jf-face-frame", img, egui::TextureOptions::LINEAR);
     // 一開始：高度 70%、置中
@@ -34,7 +39,37 @@ pub fn open(app: &mut UiApp, frame: Pixmap, people: Vec<(Option<String>, String)
     let h = 0.7;
     let w = (h * ih * ASPECT / iw).min(1.0);
     let crop = Rect::from_center_size(pos2(0.5, 0.5), vec2(w, h));
-    app.jf_face = Some(FaceDlg { frame, tex, people, pick: 0, crop, drag: None, saving: false });
+    app.jf_face = Some(FaceDlg { frame, tex, people, pick: 0, item, user, loading: false, crop, drag: None, saving: false });
+    reload(app);
+}
+
+/// 向伺服器重讀這支影片的人物與編號（清單上記得的可能是舊的：剛在「影片資訊」加的人物、剛建立的人物編號）
+pub fn reload(app: &mut UiApp) {
+    let Some(jf) = app.jellyfin() else { return };
+    let Some(d) = app.jf_face.as_mut() else { return };
+    d.loading = true;
+    let (item, user) = (d.item.clone(), d.user.clone());
+    let item2 = item.clone();
+    app.spawn(async move { tokio::task::spawn_blocking(move || jf.item_people(&user, &item)).await.unwrap_or_else(|e| Err(e.to_string())) }, move |app, r| {
+        let Some(d) = app.jf_face.as_mut().filter(|d| d.item == item2) else { return };
+        d.loading = false;
+        match r {
+            Ok(people) => {
+                // 原本選的人還在就繼續選他
+                let picked = d.people.get(d.pick).map(|(_, n)| n.clone());
+                d.pick = picked.and_then(|n| people.iter().position(|(_, p)| *p == n)).or_else(|| people.iter().position(|(id, _)| id.is_some())).unwrap_or(0);
+                d.people = people;
+            }
+            Err(e) => app.toast(trf!("讀不到這支影片的人物：{e}", "Couldn't read this video's people: {e}"), true),
+        }
+    });
+}
+
+/// 「影片資訊」存好了：人物照片開著、是同一支影片就重讀人物
+pub fn info_saved(app: &mut UiApp, item: &str) {
+    if app.jf_face.as_ref().is_some_and(|d| d.item == item) {
+        reload(app);
+    }
 }
 
 /// 框在圖片範圍內、維持 2:3（size_w：以寬為準調整高）
@@ -69,6 +104,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
     let Some(mut d) = app.jf_face.take() else { return };
     let mut close = false;
     let mut save = false;
+    let mut reload_now = false;
     let (iw, ih) = (d.frame.width() as f32, d.frame.height() as f32);
     let modal = egui::Modal::new(Id::new("jellyfin-face")).frame(theme::modal_frame(ctx)).show(ctx, |ui| {
         let p = theme::pal(ui);
@@ -138,8 +174,15 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
             ui.label(RichText::new(tr!("這是：", "This is:")).font(theme::font_bold(12.5)).color(p.muted));
-            if d.people.is_empty() {
-                ui.label(RichText::new(tr!("這支影片還沒有設人物：先在「影片資訊」加上人物", "This video has no people yet: add them in Details first")).font(theme::font(12.5)).color(p.warn));
+            if d.loading {
+                ui.spinner();
+                ui.label(RichText::new(tr!("正在讀取人物…", "Loading people…")).font(theme::font(12.5)).color(p.muted));
+            } else if d.people.is_empty() {
+                ui.label(
+                    RichText::new(tr!("這支影片還沒有設人物：先在「影片資訊」加上人物並儲存", "This video has no people yet: add them in Details and save first"))
+                        .font(theme::font(12.5))
+                        .color(p.warn),
+                );
             }
             for (i, (id, name)) in d.people.iter().enumerate() {
                 let r = ui.add_enabled(id.is_some(), egui::Button::selectable(d.pick == i, name));
@@ -151,6 +194,10 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                 if r.clicked() {
                     d.pick = i;
                 }
+            }
+            // 沒有人物、或有人物還沒有編號：可以再讀一次（存好「影片資訊」後也會自動重讀）
+            if !d.loading && (d.people.is_empty() || d.people.iter().any(|(id, _)| id.is_none())) && Btn::new(tr!("重新讀取", "Reload")).ghost().small().show(ui).clicked() {
+                reload_now = true;
             }
         });
         ui.add_space(10.0);
@@ -208,6 +255,9 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         );
     }
     app.jf_face = Some(d);
+    if reload_now {
+        reload(app);
+    }
 }
 
 /// 這支影片的人物與伺服器上的編號（「依這些找」的人物清單裡找；只差空白、大小寫、全形半形的算同一個）
