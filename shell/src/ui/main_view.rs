@@ -2739,6 +2739,17 @@ fn recent_panel(app: &mut UiApp, ui: &mut Ui) {
             if let Some(r) = app.recent.as_ref().filter(|r| r.total > 0) {
                 ui.label(theme::muted(ui, trf!("共 {} 支", "{} in total", r.total)));
             }
+            // 縮圖大小：小、中、大（大：縮圖在上面、滿寬）
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                let mut size = app.s.recent_size;
+                // 由右往左排：反過來給，畫出來才是「小 中 大」
+                let items = [(2u8, tr!("大", "L")), (1, tr!("中", "M")), (0, tr!("小", "S"))];
+                if theme::segmented_h(ui, &mut size, &items, true, 22.0) {
+                    app.s.recent_size = size;
+                    app.save_settings();
+                }
+                ui.label(theme::muted(ui, tr!("縮圖", "Size")).font(theme::font(12.0)));
+            });
         });
         ui.add_space(4.0);
         // 下面的檔案庫：標題＋一排按鈕
@@ -2768,17 +2779,18 @@ fn recent_panel(app: &mut UiApp, ui: &mut Ui) {
             if to_top {
                 area = area.vertical_scroll_offset(0.0);
             }
-            // 只畫看得到的卡片，幾百支也不會卡
-            let out = area.show_rows(ui, CARD_H, items.len(), |ui, rows| {
-                // 右邊留一點給捲軸，不壓在卡片上
-                let w = ui.available_width() - 10.0;
+            // 只畫看得到的卡片，幾百支也不會卡；右邊留一點給捲軸，不壓在卡片上
+            let size = app.s.recent_size;
+            let w = ui.available_width() - 10.0;
+            let card_h = card_h(size, w);
+            let out = area.show_rows(ui, card_h, items.len(), |ui, rows| {
                 for e in &items[rows] {
-                    recent_card(app, ui, e, dates.get(&e.media.name).cloned().unwrap_or_default(), w);
+                    recent_card(app, ui, e, dates.get(&e.media.name).cloned().unwrap_or_default(), w, size);
                 }
             });
             // 捲到剩不到 3 張時再多讀 30 支（上一批還沒回來時不重複要）
             let left = out.content_size.y - out.state.offset.y - out.inner_rect.height();
-            if left < (CARD_H + 8.0) * 3.0 && items.len() == app.recent_per_page && total > items.len() {
+            if left < (card_h + 8.0) * 3.0 && items.len() == app.recent_per_page && total > items.len() {
                 app.recent_per_page += RECENT_BATCH;
                 app.load_recent();
             }
@@ -2827,15 +2839,25 @@ fn recent_panel(app: &mut UiApp, ui: &mut Ui) {
 /// 最近錄影一次多讀幾支
 pub(super) const RECENT_BATCH: usize = 30;
 
-/// 最近錄影卡片的縮圖：4:3（從 16:9 的畫面裁掉左右一點），卡片窄一點，一列放得下更多張
-const CARD_H: f32 = 80.0;
-fn card_thumb_w() -> f32 {
-    (CARD_H - 12.0) * 4.0 / 3.0
+/// 最近錄影卡片的高度：小、中是縮圖在左（4:3，從 16:9 的畫面裁掉左右一點），大是縮圖在上面、滿寬 16:9
+fn card_h(size: u8, w: f32) -> f32 {
+    match size {
+        0 => 80.0,
+        1 => 112.0,
+        _ => big_thumb_h(w) + 12.0 + RECENT_INFO_H,
+    }
 }
 
-fn recent_card(app: &mut UiApp, ui: &mut Ui, e: &LibraryEntry, date: String, w: f32) {
+/// 大縮圖下面那一塊（名稱、長度大小、按鈕）的高度
+const RECENT_INFO_H: f32 = 82.0;
+
+fn big_thumb_h(w: f32) -> f32 {
+    ((w - 12.0) * 9.0 / 16.0).round()
+}
+
+fn recent_card(app: &mut UiApp, ui: &mut Ui, e: &LibraryEntry, date: String, w: f32, size: u8) {
     let p = theme::pal(ui);
-    let h = CARD_H;
+    let h = card_h(size, w);
     // 整張卡片可以按右鍵（和「⋯」同一個選單）
     let (rect, resp) = ui.allocate_exact_size(vec2(w, h), Sense::click());
     let painter = ui.painter_at(rect);
@@ -2854,7 +2876,11 @@ fn recent_card(app: &mut UiApp, ui: &mut Ui, e: &LibraryEntry, date: String, w: 
         p.surface
     };
     painter.rect(rect, CornerRadius::same(theme::RADIUS_SM), fill, edge, StrokeKind::Inside);
-    let thumb = Rect::from_min_size(rect.min + vec2(6.0, 6.0), vec2(card_thumb_w(), h - 12.0));
+    let big = size >= 2;
+    let thumb =
+        if big { Rect::from_min_size(rect.min + vec2(6.0, 6.0), vec2(w - 12.0, big_thumb_h(w))) } else { Rect::from_min_size(rect.min + vec2(6.0, 6.0), vec2((h - 12.0) * 4.0 / 3.0, h - 12.0)) };
+    // 名稱、長度大小、按鈕那一塊：小、中在縮圖右邊，大在縮圖下面
+    let info = if big { Rect::from_min_max(pos2(rect.min.x + 10.0, thumb.max.y + 2.0), rect.max) } else { Rect::from_min_max(pos2(thumb.max.x + 10.0, rect.min.y), rect.max) };
     painter.rect_filled(thumb, CornerRadius::same(5), p.surface2);
     if let Some(t) = app.thumb(&e.media.path, e.media.mtime) {
         theme::paint_thumb_cover(&painter, thumb, &t);
@@ -2862,20 +2888,21 @@ fn recent_card(app: &mut UiApp, ui: &mut Ui, e: &LibraryEntry, date: String, w: 
     // 縮圖：按一下就播放（中間有播放鍵，滑鼠移上去變明顯）
     let thumb_resp = ui.interact(thumb, Id::new(("recent-thumb", &e.media.path)), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
     let hot_thumb = thumb_resp.hovered();
-    // 滑過縮圖：旁邊浮出預覽，左右移動看不同時間的畫面（聲音檔仍顯示「播放」提示）
+    // 滑過縮圖：左右移動，縮圖直接換成那個時間點的畫面（聲音檔仍顯示「播放」提示）
     // 停住不動約 1 秒：在縮圖裡靜音播放（從停住的時間點開始）
+    let mut scrubbing = false;
     let thumb_resp = if hot_thumb && e.media.path.to_ascii_lowercase().ends_with(".mp4") {
         let dur = e.media.duration_sec.unwrap_or(0.0);
-        let size = (e.media.width.unwrap_or(0), e.media.height.unwrap_or(0));
+        let vsize = (e.media.width.unwrap_or(0), e.media.height.unwrap_or(0));
         let fps = e.media.fps.unwrap_or(0.0);
-        if !super::hover_play::hover(ui.ctx(), &e.media.path, thumb, dur, |_| super::thumbs::hover_player(app, &e.media.path, dur, fps, size)) {
-            super::thumbs::scrub_preview(app, ui, thumb, thumb, &e.media.path, e.media.mtime, dur);
+        if !super::hover_play::hover(ui.ctx(), &e.media.path, thumb, dur, |_| super::thumbs::hover_player(app, &e.media.path, dur, fps, vsize)) {
+            scrubbing = super::thumbs::scrub_here(app, ui, thumb, &e.media.path, e.media.mtime, dur);
         }
         thumb_resp
     } else {
         thumb_resp.on_hover_text(tr!("播放", "Play"))
     };
-    if !super::hover_play::paint(&painter, &e.media.path, thumb, 5) {
+    if !super::hover_play::paint(&painter, &e.media.path, thumb, 5) && !(scrubbing && super::thumbs::paint_scrub(&painter, &e.media.path, thumb, 5)) {
         painter.circle_filled(thumb.center(), if hot_thumb { 15.0 } else { 13.0 }, Color32::from_black_alpha(if hot_thumb { 170 } else { 110 }));
         let c = thumb.center();
         painter.add(egui::Shape::convex_polygon(vec![c + vec2(-4.0, -6.5), c + vec2(7.0, 0.0), c + vec2(-4.0, 6.5)], Color32::WHITE, Stroke::NONE));
@@ -2890,11 +2917,12 @@ fn recent_card(app: &mut UiApp, ui: &mut Ui, e: &LibraryEntry, date: String, w: 
         app.known.insert(e.media.path.clone(), e.clone());
         app.act(EntryAction::Play, e.clone());
     }
-    let x = thumb.max.x + 10.0;
+    let x = info.min.x;
+    let y0 = info.min.y;
     let meta = format!("{}・{}", e.media.duration_sec.map(short_clock).unwrap_or_else(|| "—".into()), format_bytes(e.media.bytes));
     let meta_g = painter.layout_no_wrap(meta, theme::font(12.0), p.muted);
     let meta_w = meta_g.size().x;
-    painter.galley(pos2(x, rect.min.y + 28.0), meta_g, p.muted);
+    painter.galley(pos2(x, y0 + 28.0), meta_g, p.muted);
     // 另外做過的版本（加速版、GIF…）：在長度、大小後面寫「另有 2 個版本」（放不下時「+2 版本」），滑鼠提示列出來
     if !e.exports.is_empty() {
         let n = e.exports.len();
@@ -2904,12 +2932,12 @@ fn recent_card(app: &mut UiApp, ui: &mut Ui, e: &LibraryEntry, date: String, w: 
         let short = trf!("+{n} 版本", "+{n}");
         let fits = |t: &str| ui.painter().layout_no_wrap(t.to_string(), theme::font_bold(12.0), p.accent).size().x + 14.0 <= room;
         let text = if fits(&long) { long } else { short };
-        let chip_rect = Rect::from_min_max(pos2(x + meta_w + 8.0, rect.min.y + 24.0), pos2(rect.max.x - 6.0, rect.min.y + 46.0));
+        let chip_rect = Rect::from_min_max(pos2(x + meta_w + 8.0, y0 + 24.0), pos2(rect.max.x - 6.0, y0 + 46.0));
         let ui = &mut ui.new_child(UiBuilder::new().max_rect(chip_rect).layout(Layout::left_to_right(Align::Center)));
         chip(ui, &text, Tone::Accent, false).on_hover_text(trf!("已製作 {}", "Made: {}", list.join(tr!("、", ", "))));
     }
     // 第一列：日期（或名稱）與標籤
-    let top = Rect::from_min_max(pos2(x, rect.min.y + 5.0), pos2(rect.max.x - 6.0, rect.min.y + 27.0));
+    let top = Rect::from_min_max(pos2(x, y0 + 5.0), pos2(rect.max.x - 6.0, y0 + 27.0));
     {
         let ui = &mut ui.new_child(UiBuilder::new().max_rect(top).layout(Layout::right_to_left(Align::Center)));
         ui.spacing_mut().item_spacing.x = 3.0;

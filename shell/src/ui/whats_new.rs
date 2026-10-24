@@ -42,46 +42,28 @@ enum Try {
 fn items(_app: &UiApp) -> Vec<(String, String, Try)> {
     vec![
         (
-            tr!("快速鍵統一", "Same keys everywhere").into(),
+            tr!("最近錄影：縮圖小、中、大", "Recent recordings: small, medium or large").into(),
             tr!(
-                "剪輯、檢視器、主畫面播放都一樣：← → 跳 5 秒（Shift 1 秒）、, . 一格一格、M 靜音；剪輯的標記改成 B。檢視器的鍵盤圖示可以看全部。",
-                "Editor, viewer and main-view player share the same keys: ← → jump 5 s (Shift 1 s), , . step one frame, M mutes; editor markers are now B. The keyboard icon in the viewer lists them all."
+                "主畫面「最近錄影」右上角可以選縮圖大小；大的是縮圖在上面、整欄寬，看得比較清楚。",
+                "Choose the thumbnail size at the top right of Recent recordings; large puts a full-width thumbnail on top so it's easier to see."
             )
             .into(),
             Try::None,
         ),
         (
-            tr!("長時間的工作可以取消", "Stop long jobs midway").into(),
+            tr!("滑過預覽就在縮圖上", "Scrub preview right on the thumbnail").into(),
             tr!(
-                "Jellyfin 批次整理、人物和標籤重新命名、步驟教學做成影片都顯示百分比，可以隨時按「取消」。",
-                "Jellyfin batch edits, renaming people and tags, and building step-guide videos show a percentage and can be cancelled at any time."
+                "最近錄影、Jellyfin 分頁的縮圖上左右移動滑鼠，縮圖本身換成那個時間點的畫面，不再浮在旁邊擋到別張。",
+                "Move the mouse across a thumbnail in Recent recordings or the Jellyfin tab and the thumbnail itself shows that moment, instead of a box floating over the next one."
             )
             .into(),
-            Try::None,
+            Try::Jellyfin,
         ),
         (
-            tr!("只用鍵盤看全部錄影", "Browse the library with the keyboard").into(),
+            tr!("剪輯視窗的畫面更大", "More room in the editor").into(),
             tr!(
-                "在搜尋框按 ↓ 進到清單，↑↓ 移動、空白鍵勾選、Enter 開啟。",
-                "Press ↓ in the search box to enter the list, then ↑↓ to move, Space to tick and Enter to open."
-            )
-            .into(),
-            Try::Library(false),
-        ),
-        (
-            tr!("出錯時說清楚、可以復原", "Clearer errors, and undo").into(),
-            tr!(
-                "檔案出錯時直接說原因（被其他程式使用、空間不足、沒有權限…），錯誤提示會留到你關掉；從合集移除可以復原，刪除的提示可以開啟資源回收筒。",
-                "File errors say why (in use, disk full, no permission…) and stay until you close them; removing from a collection can be undone, and the delete toast opens the Recycle Bin."
-            )
-            .into(),
-            Try::None,
-        ),
-        (
-            tr!("更安全、更穩定、更快", "Safer, steadier, faster").into(),
-            tr!(
-                "Jellyfin 金鑰加密保存、更新檢查數位簽章；設定檔不會寫到一半壞掉；影片資訊記在硬碟，開啟檔案庫更快。",
-                "The Jellyfin key is stored encrypted and updates check their signature; settings can't be half-written; video info is cached on disk so the library opens faster."
+                "輸出長度、儲存位置和「另存剪輯版」搬到上方標題列，下面那一排拿掉，影片和時間軸更大。",
+                "Output length, save location and “Save edited version” moved up to the title bar; the bottom row is gone so the video and timeline get more room."
             )
             .into(),
             Try::None,

@@ -86,6 +86,8 @@ pub struct Viewer {
     autoplay: bool,
     /// 全螢幕（只顯示畫面與下方的控制列）
     full: bool,
+    /// 進全螢幕前視窗是最大化的（離開全螢幕時再最大化回去）
+    full_was_max: bool,
     /// 重新命名的對話框關掉後重新載入（重新命名前先放開檔案，Windows 上播放中的檔案不能重新命名）
     reload_after_ask: bool,
     /// 截圖：相關的截圖（同一個程式、時間接近、有共同的詞、長得像）
@@ -292,6 +294,7 @@ fn open_with(app: &mut UiApp, entry: LibraryEntry, remote: Option<Remote>, start
         start_at: start,
         autoplay: remote.is_some(),
         full: false,
+        full_was_max: false,
         reload_after_ask: false,
         related: vec![],
         remote,
@@ -944,9 +947,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         save_position(app, id, user, at, played);
     }
     if v.close {
-        if v.full {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
-        }
+        set_full(&mut v, ctx, false);
         return;
     }
     let want = v.tp_want.take().filter(|i| !v.tp_tiles.contains_key(i));
@@ -1089,9 +1090,22 @@ fn related_strip(v: &Viewer, ui: &mut egui::Ui, strip: Rect, thumbs: &[Option<Te
 
 /// 進入 / 離開全螢幕（整個視窗全螢幕，檢視器蓋滿）
 pub(super) fn set_full(v: &mut Viewer, ctx: &egui::Context, on: bool) {
-    if v.full != on {
-        v.full = on;
-        ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(on));
+    if v.full == on {
+        return;
+    }
+    v.full = on;
+    // 無邊框視窗在最大化時直接切全螢幕，Windows 會沿用最大化的範圍（扣掉工作列），最下面空一條：先取消最大化再切
+    if on {
+        v.full_was_max = ctx.input(|i| i.viewport().maximized == Some(true));
+        if v.full_was_max {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(false));
+        }
+        ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(true));
+    } else {
+        ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
+        if std::mem::take(&mut v.full_was_max) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(true));
+        }
     }
 }
 
@@ -1411,9 +1425,8 @@ fn run_act(app: &mut UiApp, act: Act) {
                     return app.toast(why, true);
                 }
                 // 改到剪輯 / 製作視窗：先收起檢視器與清單，剪輯、製作視窗關掉後回到這裡（編輯截圖蓋在上面，關掉就回來）
-                if v.full {
-                    app.ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
-                }
+                let ctx = app.ctx.clone();
+                set_full(v, &ctx, false);
                 app.leave_for_edit();
             } else if a == EntryAction::External {
                 v.pause();

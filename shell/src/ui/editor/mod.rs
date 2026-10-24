@@ -2458,7 +2458,28 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                         Some(c) => trf!("{}（從原始影片「{}」重新套用剪輯）", "{} (edits reapplied from the original “{}”)", c.media.name, ed.entry.media.name),
                         None => ed.entry.media.name.clone(),
                     };
-                    ui.add(egui::Label::new(RichText::new(name).font(theme::mono(12.0)).color(p.muted)).truncate());
+                    if ed.is_shot() {
+                        ui.add(egui::Label::new(RichText::new(name).font(theme::mono(12.0)).color(p.muted)).truncate());
+                    } else {
+                        // 檔名 → 輸出的摘要（一行；放不下時滑鼠移上去看完整的）
+                        let mut job = egui::text::LayoutJob::default();
+                        let fmt = |font: egui::FontId, color: egui::Color32| egui::TextFormat { font_id: font, color, ..Default::default() };
+                        job.append(&name, 0.0, fmt(theme::mono(12.0), p.muted));
+                        job.append("  →  ", 0.0, fmt(theme::font(12.5), p.muted));
+                        let mut full = format!("{name} → ");
+                        for (text, bold, warn) in summary_parts(&ed) {
+                            let color = if warn {
+                                p.warn
+                            } else if bold {
+                                p.text
+                            } else {
+                                p.muted
+                            };
+                            job.append(&text, 0.0, fmt(if bold { theme::font_bold(12.5) } else { theme::font(12.5) }, color));
+                            full.push_str(&text);
+                        }
+                        ui.add(egui::Label::new(job).truncate()).on_hover_text(full);
+                    }
                 });
                 // 標題列只放復原、重做與關閉；其他功能在右側分頁與下方
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -2466,6 +2487,15 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                         ed.close = true;
                     }
                     ui.add_space(10.0);
+                    // 影片：全部重設、另存剪輯版放在這裡（原本在最下面一排，搬上來讓影片和時間軸大一點）
+                    if !ed.is_shot() {
+                        let r = ui.scope(|ui| {
+                            ui.spacing_mut().item_spacing.x = 4.0;
+                            save = save_buttons(&mut ed, ui);
+                        });
+                        tour::mark(ui, Spot::EdFoot, r.response.rect);
+                        ui.add(egui::Separator::default().vertical().spacing(12.0));
+                    }
                     // 收起 / 開啟右側面板（畫面小的時候影片可以大一點）：畫出視窗和右邊那一欄，箭頭是要往哪邊；
                     // 和復原、重做用分隔線隔開，不會看成同一組的箭頭
                     let open = SIDE_OPEN.load(Ordering::Relaxed);
@@ -2525,8 +2555,8 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
             banner(&mut ed, ui, ctx);
         }
 
-        // 下方的摘要列固定高度，其他給影片、時間軸與右側面板
-        let foot_h = 64.0;
+        // 截圖編輯下方有一排固定高度的按鈕（影片的摘要和儲存在標題列），其他給影片、時間軸與右側面板
+        let foot_h = if ed.is_shot() { 64.0 } else { 8.0 };
         let body_h = (ui.available_height() - foot_h).max(200.0);
         let full_w = ui.available_width();
         let side_open = SIDE_OPEN.load(Ordering::Relaxed);
@@ -2553,23 +2583,25 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
             }
         });
 
-        // 摘要與儲存
-        let r = ui.cursor();
-        ui.painter().hline(r.x_range(), r.top(), egui::Stroke::new(1.0, p.border));
-        let foot = egui::Frame::new().inner_margin(egui::Margin::symmetric(18, 10)).show(ui, |ui| {
-            ui.horizontal(|ui| {
-                if ed.is_shot() {
+        // 截圖編輯：下方的儲存那一排
+        if ed.is_shot() {
+            let r = ui.cursor();
+            ui.painter().hline(r.x_range(), r.top(), egui::Stroke::new(1.0, p.border));
+            let foot = egui::Frame::new().inner_margin(egui::Margin::symmetric(18, 10)).show(ui, |ui| {
+                ui.horizontal(|ui| {
                     if let Some(a) = shot::footer(&mut ed, ui) {
                         ed.pending = Some(a);
                     }
-                } else {
-                    save = footer(&mut ed, ui);
-                }
+                });
             });
-        });
-        tour::mark(ui, if ed.is_shot() { Spot::ShFoot } else { Spot::EdFoot }, foot.response.rect);
-        // 提示放在下方「儲存」那一排的上方
-        super::dialogs::toast_spot(ui.ctx(), foot.response.rect.right_top());
+            tour::mark(ui, Spot::ShFoot, foot.response.rect);
+            // 提示放在下方「儲存」那一排的上方
+            super::dialogs::toast_spot(ui.ctx(), foot.response.rect.right_top());
+        } else {
+            // 提示放在右下角
+            let r = ui.max_rect();
+            super::dialogs::toast_spot(ui.ctx(), pos2(r.right() - 12.0, r.bottom() - 12.0));
+        }
     });
 
     // Ctrl+S：和按「另存剪輯版 / 儲存修改」一樣；還不能存時說明原因
@@ -3195,9 +3227,8 @@ fn transport(ed: &mut Editor, ui: &mut egui::Ui, toast: &mut Option<(String, boo
     });
 }
 
-/// 摘要與按鈕；回傳是否按了儲存
-fn footer(ed: &mut Editor, ui: &mut egui::Ui) -> bool {
-    let p = theme::pal(ui);
+/// 輸出的摘要（標題列檔名後面那一行）：一段一段的字（粗體？、警告色？）
+fn summary_parts(ed: &Editor) -> Vec<(String, bool, bool)> {
     let keep = ed.keep();
     let parts = ed.parts();
     let length = output_length(&parts) + ed.cards_secs();
@@ -3209,140 +3240,136 @@ fn footer(ed: &mut Editor, ui: &mut egui::Ui) -> bool {
     let crop = if ed.crop_on && ed.vertical != 2 { normalize_crop(ed.spec.crop, ed.vw as i32, ed.vh as i32) } else { None };
     let size = ed.output_size(crop).map(|(w, h)| format!("{w}×{h}")).unwrap_or_default();
     let gone = ed.gone_count(&keep);
-    let zooming = ed.zoom_active();
+    let en = screenrecorder_core::i18n::is_en();
+    let s = |n: usize| if n == 1 { "" } else { "s" };
+    let mut out: Vec<(String, bool, bool)> = vec![];
+    let mut t = |x: String| out.push((x, false, false));
+    t(tr!("輸出 ", "Output ").into());
+    let mut v = vec![(video_clock(length), true, false)];
+    let (orig, kept) = (video_clock(ed.duration), keep.len());
+    let mut more: Vec<String> = vec![if en { format!(" (original {orig}) · {kept} section{} kept", s(kept)) } else { format!("（原 {orig}）・保留 {kept} 段") }];
+    if fast > 0 {
+        more.push(if en { format!(" · {fast} speed change{}", s(fast)) } else { format!("・變速 {fast} 段") });
+    }
+    if holds > 0 {
+        more.push(if en { format!(" · {holds} freeze frame{}", s(holds)) } else { format!("・定格 {holds} 處") });
+    }
+    if voices > 0 {
+        more.push(if en { format!(" · {voices} narration clip{}", s(voices)) } else { format!("・旁白 {voices} 段") });
+    }
+    if ed.click_sound_on() {
+        more.push(tr!("・點擊音效", " · Click sounds").into());
+    }
+    if ed.is_reordered() {
+        more.push(tr!("・改了片段順序", " · Sections reordered").into());
+    }
+    if whole_rate > 1.0 {
+        more.push(trf!("・整支 {}×", " · Whole video {}×", screenrecorder_core::format::speed_label(whole_rate)));
+    }
+    let zr = ed.region_spans().len();
+    if zr > 0 {
+        more.push(if en { format!(" · {zr} manual zoom{}", s(zr)) } else { format!("・手動放大 {zr} 處") });
+    }
+    if ed.zoom_active() {
+        more.push(tr!("・跟著點擊放大", " · Zoom on clicks").into());
+    }
+    if ed.cursor_on() {
+        more.push(tr!("・平滑放大的游標", " · Smooth cursor").into());
+    }
+    if ed.vertical_spec().is_some() {
+        more.push(tr!("・直式影片", " · Vertical video").into());
+    }
+    if ed.spec.frame.is_some() && ed.vertical == 0 {
+        more.push(tr!("・背景與圓角", " · Background and rounded corners").into());
+    }
+    if ed.cards_secs() > 0.0 {
+        more.push(tr!("・片頭片尾", " · Intro/outro").into());
+    }
+    if !ed.spec.look.is_default() {
+        more.push(tr!("・調色", " · Color").into());
+    }
+    if ed.spec.stamp.is_some() {
+        more.push(tr!("・日期時間", " · Date and time").into());
+    }
+    out.append(&mut v);
+    for m in more {
+        out.push((m, false, false));
+    }
+    if !size.is_empty() {
+        out.push((tr!("・", " · ").into(), false, false));
+        out.push((size, true, false));
+    }
+    // 字幕另外算
+    let subs = ed.sub_ids.len().min(ed.anns.len());
+    let n = ed.anns.len() - subs;
+    if n > 0 {
+        out.push((if en { format!(" · {n} annotation{}", s(n)) } else { format!("・標註 {n} 個") }, false, false));
+    }
+    if subs > 0 {
+        out.push((if en { format!(" · {subs} subtitle{}", s(subs)) } else { format!("・字幕 {subs} 段") }, false, false));
+    }
+    if gone > 0 {
+        let t = if !en {
+            format!("（{gone} 個在刪除的片段中，不會出現）")
+        } else if gone == 1 {
+            " (1 is in a removed section and won't appear)".to_string()
+        } else {
+            format!(" ({gone} are in removed sections and won't appear)")
+        };
+        out.push((t, false, true));
+    }
+    out
+}
+
+/// 標題列右上角：全部重設、另存剪輯版（旁邊 ▾ 看儲存位置、變更）；回傳是否按了儲存
+/// （右到左的排版裡呼叫：先放 ▾，再放儲存，最後全部重設）
+fn save_buttons(ed: &mut Editor, ui: &mut egui::Ui) -> bool {
+    let p = theme::pal(ui);
+    let parts = ed.parts();
+    let length = output_length(&parts) + ed.cards_secs();
     let unchanged = ed.unchanged();
     let mut save = false;
-    // 右邊留給「全部重設」「另存剪輯版」
-    let left_w = (ui.available_width() - 250.0).max(200.0);
-    ui.vertical(|ui| {
-        ui.set_max_width(left_w);
-        ui.spacing_mut().item_spacing = vec2(0.0, 2.0);
-        ui.horizontal_wrapped(|ui| {
-            ui.spacing_mut().item_spacing.x = 0.0;
-            let en = screenrecorder_core::i18n::is_en();
-            let s = |n: usize| if n == 1 { "" } else { "s" };
-            ui.label(tr!("輸出長度 ", "Output duration "));
-            ui.label(RichText::new(video_clock(length)).font(theme::font_bold(13.5)));
-            let (orig, kept) = (video_clock(ed.duration), keep.len());
-            ui.label(if en { format!(" (original {orig}) · {kept} section{} kept", s(kept)) } else { format!("（原 {orig}）・保留 {kept} 段") });
-            if fast > 0 {
-                ui.label(if en { format!(" · {fast} speed change{}", s(fast)) } else { format!("・變速 {fast} 段") });
-            }
-            if holds > 0 {
-                ui.label(if en { format!(" · {holds} freeze frame{}", s(holds)) } else { format!("・定格 {holds} 處") });
-            }
-            if voices > 0 {
-                ui.label(if en { format!(" · {voices} narration clip{}", s(voices)) } else { format!("・旁白 {voices} 段") });
-            }
-            if ed.click_sound_on() {
-                ui.label(tr!("・點擊音效", " · Click sounds"));
-            }
-            if ed.is_reordered() {
-                ui.label(tr!("・改了片段順序", " · Sections reordered"));
-            }
-            let whole = screenrecorder_core::edit::whole_speed(&ed.spec);
-            if whole > 1.0 {
-                ui.label(trf!("・整支 {}×", " · Whole video {}×", screenrecorder_core::format::speed_label(whole)));
-            }
-            let zr = ed.region_spans().len();
-            if zr > 0 {
-                ui.label(if en { format!(" · {zr} manual zoom{}", s(zr)) } else { format!("・手動放大 {zr} 處") });
-            }
-            if zooming {
-                ui.label(tr!("・跟著點擊放大", " · Zoom on clicks"));
-            }
-            if ed.cursor_on() {
-                ui.label(tr!("・平滑放大的游標", " · Smooth cursor"));
-            }
-            if ed.vertical_spec().is_some() {
-                ui.label(tr!("・直式影片", " · Vertical video"));
-            }
-            if ed.spec.frame.is_some() && ed.vertical == 0 {
-                ui.label(tr!("・背景與圓角", " · Background and rounded corners"));
-            }
-            if ed.cards_secs() > 0.0 {
-                ui.label(tr!("・片頭片尾", " · Intro/outro"));
-            }
-            if !ed.spec.look.is_default() {
-                ui.label(tr!("・調色", " · Color"));
-            }
-            if ed.spec.stamp.is_some() {
-                ui.label(tr!("・日期時間", " · Date and time"));
-            }
-            if !size.is_empty() {
-                ui.label(tr!("・解析度 ", " · Resolution "));
-                ui.label(RichText::new(size).font(theme::font_bold(13.5)));
-            }
-            // 字幕另外算
-            let subs = ed.sub_ids.len().min(ed.anns.len());
-            let n = ed.anns.len() - subs;
-            if n > 0 {
-                ui.label(if en { format!(" · {n} annotation{}", s(n)) } else { format!("・標註 {n} 個") });
-            }
-            if subs > 0 {
-                ui.label(if en { format!(" · {subs} subtitle{}", s(subs)) } else { format!("・字幕 {subs} 段") });
-            }
-            if gone > 0 {
-                let t = if !en {
-                    format!("（{gone} 個在刪除的片段中，不會出現）")
-                } else if gone == 1 {
-                    " (1 is in a removed section and won't appear)".to_string()
-                } else {
-                    format!(" ({gone} are in removed sections and won't appear)")
-                };
-                ui.label(RichText::new(t).color(p.warn));
-            }
-        });
-        // 實際存到哪裡：資料夾 › 檔名（滑鼠移上去看完整路徑），可以按「變更…」另外選
-        let target = ed.output_target();
-        let what = if ed.replace_target.is_some() { tr!("取代：", "Replaces: ") } else { tr!("儲存到：", "Saves to: ") };
-        // 自己畫成一行（和上一行一樣矮，下方的高度才不會變）
-        let (r, _) = ui.allocate_exact_size(vec2(left_w, 16.0), egui::Sense::hover());
-        let link = ui.painter().layout_no_wrap(tr!("變更…", "Change…").to_string(), theme::font(12.0), p.accent);
-        let text = side::ellipsized(ui.painter(), format!("{what}{}", pretty_path(&target)), theme::font(12.0), p.muted, r.width() - link.size().x - 10.0);
-        let tw = text.size().x;
-        ui.painter().galley(pos2(r.left(), r.center().y - text.size().y / 2.0), text, p.muted);
-        ui.interact(egui::Rect::from_min_size(r.min, vec2(tw, r.height())), Id::new("ed-out-path"), egui::Sense::hover()).on_hover_text(&target);
-        let lr = egui::Rect::from_min_size(pos2(r.left() + tw + 8.0, r.center().y - link.size().y / 2.0), link.size());
-        let lresp = ui
-            .interact(lr, Id::new("ed-out-change"), egui::Sense::click())
-            .on_hover_cursor(egui::CursorIcon::PointingHand)
-            .on_hover_text(tr!("選擇儲存的資料夾與檔名", "Choose the folder and file name"));
-        if lresp.hovered() {
-            ui.painter().hline(lr.x_range(), lr.bottom(), egui::Stroke::new(1.0, p.accent));
-        }
-        ui.painter().galley(lr.min, link, p.accent);
-        if lresp.clicked() {
-            ed.vpending = Some(VAct::PickOutput);
+    // 實際存到哪裡：資料夾 › 檔名，可以按「變更儲存位置…」另外選
+    let target = ed.output_target();
+    let what = if ed.replace_target.is_some() { tr!("取代：", "Replaces: ") } else { tr!("儲存到：", "Saves to: ") };
+    let place = format!("{what}{}", pretty_path(&target));
+    let menu = Btn::icon_only(Icon::ChevD).small().tooltip(format!("{place}\n{}", tr!("按一下變更儲存位置", "Click to change where it's saved"))).show(ui);
+    let mut pick = false;
+    egui::Popup::menu(&menu).show(|ui| {
+        ui.set_min_width(280.0);
+        ui.label(RichText::new(&place).font(theme::font(12.0)).color(p.muted)).on_hover_text(&target);
+        if ui.button(tr!("變更儲存位置…", "Change where it's saved…")).clicked() {
+            pick = true;
         }
     });
-    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-        let label = if ed.replace_target.is_some() { tr!("儲存修改", "Save changes") } else { tr!("另存剪輯版", "Save edited version") };
-        let tip = if unchanged {
-            tr!("還沒有任何剪輯、裁切或標註", "No cuts, crop or annotations yet")
-        } else if ed.replace_target.is_some() {
-            tr!("儲存修改（Ctrl+S）", "Save changes (Ctrl+S)")
-        } else {
-            tr!("另存剪輯版（Ctrl+S）", "Save edited version (Ctrl+S)")
-        };
-        if Btn::new(label).primary().enabled(!unchanged && length >= 0.1 && !ed.saving).tooltip(tip).show(ui).clicked() {
-            save = true;
-        }
-        let can_reset = !unchanged || !ed.splits.is_empty();
-        if Btn::new(tr!("全部重設", "Reset all"))
-            .ghost()
-            .enabled(can_reset)
-            .tooltip(tr!(
-                "剪輯、裁切、標註、字幕、加速、聲音、放大、游標、直式、背景都回到原本的樣子（可以按 Ctrl+Z 復原）",
-                "Undo all cuts, crop, annotations, subtitles, speed-ups, audio, zoom, cursor, vertical and background settings (press Ctrl+Z to undo)"
-            ))
-            .show(ui)
-            .clicked()
-        {
-            ed.reset();
-            ed.reset_toast = true;
-        }
-    });
+    if pick {
+        ed.vpending = Some(VAct::PickOutput);
+    }
+    let label = if ed.replace_target.is_some() { tr!("儲存修改", "Save changes") } else { tr!("另存剪輯版", "Save edited version") };
+    let tip = if unchanged {
+        tr!("還沒有任何剪輯、裁切或標註", "No cuts, crop or annotations yet").to_string()
+    } else if ed.replace_target.is_some() {
+        format!("{}\n{place}", tr!("儲存修改（Ctrl+S）", "Save changes (Ctrl+S)"))
+    } else {
+        format!("{}\n{place}", tr!("另存剪輯版（Ctrl+S）", "Save edited version (Ctrl+S)"))
+    };
+    if Btn::new(label).primary().enabled(!unchanged && length >= 0.1 && !ed.saving).tooltip(tip).show(ui).clicked() {
+        save = true;
+    }
+    let can_reset = !unchanged || !ed.splits.is_empty();
+    if Btn::new(tr!("全部重設", "Reset all"))
+        .ghost()
+        .enabled(can_reset)
+        .tooltip(tr!(
+            "剪輯、裁切、標註、字幕、加速、聲音、放大、游標、直式、背景都回到原本的樣子（可以按 Ctrl+Z 復原）",
+            "Undo all cuts, crop, annotations, subtitles, speed-ups, audio, zoom, cursor, vertical and background settings (press Ctrl+Z to undo)"
+        ))
+        .show(ui)
+        .clicked()
+    {
+        ed.reset();
+        ed.reset_toast = true;
+    }
     save
 }
 

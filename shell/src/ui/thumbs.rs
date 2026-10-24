@@ -235,21 +235,110 @@ pub fn scrub_preview(app: &mut UiApp, ui: &eframe::egui::Ui, hover: eframe::egui
     strip_box(ui.ctx(), near, strip, ((pos.x - hover.min.x) / hover.width().max(1.0)) as f64, duration);
 }
 
+/// 滑過預覽直接畫在縮圖上（最近錄影的卡片）：游標在 hover 上左右移動時記下那個時間點的畫面，接著用 paint_scrub 畫；
+/// 不能預覽（不是 MP4、長條圖做不出來）時回傳 false
+pub fn scrub_here(app: &mut UiApp, ui: &eframe::egui::Ui, hover: eframe::egui::Rect, path: &str, mtime: f64, duration: f64) -> bool {
+    let Some(pos) = ui.ctx().pointer_hover_pos().filter(|p| hover.contains(*p)) else { return false };
+    if !(duration.is_finite() && duration > 0.0) || !path.to_ascii_lowercase().ends_with(".mp4") {
+        return false;
+    }
+    let strip = app.thumb_strip(path, mtime, duration);
+    if strip.is_none() && matches!(app.thumbs.strips.peek(&(path.to_string(), mtime as u64)), Some(Thumb::Failed(_))) {
+        return false;
+    }
+    let (image, aspect, t) = strip_frame(strip.as_ref(), ((pos.x - hover.min.x) / hover.width().max(1.0)) as f64, duration);
+    set_scrub(ui.ctx(), Scrub { key: path.to_string(), image, aspect, t, duration });
+    true
+}
+
 /// 用長條圖（STRIP_FRAMES 格）浮出 frac（0～1）處的畫面
 fn strip_box(ctx: &eframe::egui::Context, near: eframe::egui::Rect, strip: Option<TextureHandle>, frac: f64, duration: f64) {
-    use eframe::egui::{pos2, Rect};
-    use screenrecorder_core::thumbs::{strip_pick, STRIP_FRAMES};
-    let (i, t) = strip_pick(frac, duration);
-    let aspect = strip.as_ref().map(|s| s.size_vec2()).map(|s| s.y / (s.x / STRIP_FRAMES as f32)).filter(|a| a.is_finite() && *a > 0.1).unwrap_or(9.0 / 16.0);
-    let n = STRIP_FRAMES as f32;
-    let image = strip.as_ref().map(|tex| (tex.id(), Rect::from_min_max(pos2(i as f32 / n, 0.0), pos2((i + 1) as f32 / n, 1.0))));
+    let (image, aspect, t) = strip_frame(strip.as_ref(), frac, duration);
     scrub_box(ctx, near, image, aspect, t, duration);
 }
 
-/// Jellyfin 分頁的滑過預覽：Jellyfin 做好時間軸預覽縮圖時用它（每幾秒一張，跟著游標連續變），
-/// 沒有時從串流讀一條長條圖（第一次要等幾秒）
+/// 長條圖（STRIP_FRAMES 格）裡 frac（0～1）處的那一格：（圖與範圍, 高 / 寬, 秒）
+fn strip_frame(strip: Option<&TextureHandle>, frac: f64, duration: f64) -> (ScrubImage, f32, f64) {
+    use eframe::egui::{pos2, Rect};
+    use screenrecorder_core::thumbs::{strip_pick, STRIP_FRAMES};
+    let (i, t) = strip_pick(frac, duration);
+    let aspect = strip.map(|s| s.size_vec2()).map(|s| s.y / (s.x / STRIP_FRAMES as f32)).filter(|a| a.is_finite() && *a > 0.1).unwrap_or(9.0 / 16.0);
+    let n = STRIP_FRAMES as f32;
+    let image = strip.map(|tex| (tex.id(), Rect::from_min_max(pos2(i as f32 / n, 0.0), pos2((i + 1) as f32 / n, 1.0))));
+    (image, aspect, t)
+}
+
+/// 預覽的一格：材質與在材質上的範圍（還沒讀好時 None）
+type ScrubImage = Option<(eframe::egui::TextureId, eframe::egui::Rect)>;
+
+/// Jellyfin 縮圖上的滑過預覽（直接畫在那張縮圖上，見 paint_scrub）：上一格算好的
+struct Scrub {
+    key: String,
+    image: ScrubImage,
+    aspect: f32,
+    t: f64,
+    duration: f64,
+}
+
+thread_local! {
+    static SCRUB: std::cell::RefCell<Option<Scrub>> = const { std::cell::RefCell::new(None) };
+}
+
+/// 記下這支要畫哪一格；和上一次不同時重畫
+fn set_scrub(ctx: &eframe::egui::Context, s: Scrub) {
+    SCRUB.with_borrow_mut(|cur| {
+        let changed = cur.as_ref().is_none_or(|c| c.key != s.key || (c.t - s.t).abs() > 1e-6 || c.image.map(|i| i.0) != s.image.map(|i| i.0) || c.image.is_some() != s.image.is_some());
+        *cur = Some(s);
+        if changed {
+            ctx.request_repaint();
+        }
+    });
+}
+
+/// 滑鼠在 key 這支的縮圖上左右移動：把那個時間點的畫面直接畫在 rect（和縮圖一樣填滿），下緣是進度、右下角是時間；
+/// 還沒讀好時暗下來寫「正在準備預覽…」。有畫時回傳 true
+pub fn paint_scrub(painter: &eframe::egui::Painter, key: &str, rect: eframe::egui::Rect, rounding: u8) -> bool {
+    use eframe::egui::{pos2, vec2, Align2, Color32, CornerRadius, Rect};
+    SCRUB.with_borrow(|s| {
+        let Some(s) = s.as_ref().filter(|s| s.key == key) else { return false };
+        let p = super::theme::pal_ctx(painter.ctx());
+        match s.image {
+            Some((tex, uv)) => {
+                // 和縮圖一樣填滿：比例不同時裁掉多的部分
+                let (fa, ra) = (s.aspect, rect.height() / rect.width().max(1.0));
+                let uv = if fa > ra {
+                    let keep = ra / fa;
+                    let cut = uv.height() * (1.0 - keep) / 2.0;
+                    Rect::from_min_max(pos2(uv.min.x, uv.min.y + cut), pos2(uv.max.x, uv.max.y - cut))
+                } else {
+                    let keep = fa / ra;
+                    let cut = uv.width() * (1.0 - keep) / 2.0;
+                    Rect::from_min_max(pos2(uv.min.x + cut, uv.min.y), pos2(uv.max.x - cut, uv.max.y))
+                };
+                painter.add(eframe::egui::epaint::RectShape::filled(rect, CornerRadius::same(rounding), Color32::WHITE).with_texture(tex, uv));
+            }
+            None => {
+                painter.rect_filled(rect, CornerRadius::same(rounding), Color32::from_black_alpha(140));
+                painter.text(rect.center(), Align2::CENTER_CENTER, screenrecorder_core::tr!("正在準備預覽…", "Preparing preview…"), super::theme::font(12.0), Color32::from_gray(230));
+            }
+        }
+        let bar = Rect::from_min_max(pos2(rect.min.x, rect.max.y - 3.0), rect.max);
+        painter.rect_filled(bar, CornerRadius::ZERO, Color32::from_white_alpha(70));
+        painter.rect_filled(Rect::from_min_max(bar.min, pos2(rect.min.x + rect.width() * (s.t / s.duration.max(0.001)) as f32, bar.max.y)), CornerRadius::ZERO, p.accent);
+        let g = painter.layout_no_wrap(screenrecorder_core::format::video_clock(s.t), super::theme::mono(12.0), Color32::WHITE);
+        // 時間放在下緣正中間（左下是刪除、下載、編輯，右下是 CC）
+        let lr = Rect::from_center_size(pos2(rect.center().x, rect.max.y - 18.0 - g.size().y / 2.0), g.size() + vec2(8.0, 4.0));
+        painter.rect_filled(lr, CornerRadius::same(4), Color32::from_black_alpha(170));
+        painter.galley(lr.min + vec2(4.0, 2.0), g, Color32::WHITE);
+        true
+    })
+}
+
+/// Jellyfin 分頁的滑過預覽（畫在縮圖本身上，見 paint_scrub）：Jellyfin 做好時間軸預覽縮圖時用它
+/// （每幾秒一張，跟著游標連續變），沒有時從串流讀一條長條圖（第一次要等幾秒）
 pub fn jf_scrub_preview(app: &mut UiApp, ctx: &eframe::egui::Context, hover: eframe::egui::Rect, it: &screenrecorder_core::jellyfin::JfItem) {
     use eframe::egui::{pos2, Rect};
+    let key = it.id.clone();
     let Some(pos) = ctx.pointer_hover_pos().filter(|p| hover.contains(*p)) else { return };
     if !(it.duration.is_finite() && it.duration > 0.0) {
         return;
@@ -261,7 +350,7 @@ pub fn jf_scrub_preview(app: &mut UiApp, ctx: &eframe::egui::Context, hover: efr
         let tile = app.jf_tile(&it.id, tp, index);
         let aspect = if tp.width > 0 { tp.height as f32 / tp.width as f32 } else { 9.0 / 16.0 };
         let image = tile.as_ref().map(|tex| (tex.id(), Rect::from_min_max(pos2(uv[0], uv[1]), pos2(uv[2], uv[3]))));
-        scrub_box(ctx, hover, image, aspect, t, it.duration);
+        set_scrub(ctx, Scrub { key, image, aspect, t, duration: it.duration });
         return;
     }
     let Some(jf) = app.jellyfin() else { return };
@@ -269,7 +358,8 @@ pub fn jf_scrub_preview(app: &mut UiApp, ctx: &eframe::egui::Context, hover: efr
     if strip.is_none() && matches!(app.thumbs.strips.peek(&(format!("jf:{}", it.id), it.size)), Some(Thumb::Failed(_))) {
         return;
     }
-    strip_box(ctx, hover, strip, frac, it.duration);
+    let (image, aspect, t) = strip_frame(strip.as_ref(), frac, it.duration);
+    set_scrub(ctx, Scrub { key, image, aspect, t, duration: it.duration });
 }
 
 /// 浮出的預覽框（寬 240，依影片比例）：放在 near 右邊，放不下時放左邊；image = None 時寫「正在準備預覽…」

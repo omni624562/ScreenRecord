@@ -204,6 +204,8 @@ pub struct UiSettings {
     pub shot_grid_size: u8,
     /// 檔案庫「Jellyfin」分頁的縮圖大小：0 小、1 中、2 大
     pub jf_grid_size: u8,
+    /// 主畫面「最近錄影」卡片的縮圖大小：0 小、1 中、2 大（大：縮圖在上面、滿寬）
+    pub recent_size: u8,
     /// 檔案庫「Jellyfin」分頁用清單（表格）看，不是縮圖
     pub jf_list_view: bool,
     /// 檔案庫「Jellyfin」分頁上次選的排序（JfSort::ALL 的第幾個）
@@ -437,6 +439,7 @@ impl UiSettings {
             shot_move_asked: boolean("shotMoveAsked").unwrap_or(false),
             shot_grid_size: num("shotGridSize").map(|v| v as u8).filter(|v| *v <= 2).unwrap_or(1),
             jf_grid_size: num("jfGridSize").map(|v| v as u8).filter(|v| *v <= 2).unwrap_or(1),
+            recent_size: num("recentSize").map(|v| v as u8).filter(|v| *v <= 2).unwrap_or(0),
             jf_list_view: boolean("jfListView").unwrap_or(false),
             jf_path: o.get("jfPath").and_then(|v| serde_json::from_value::<Vec<(String, String)>>(v.clone()).ok()).unwrap_or_default(),
             jf_sort: num("jfSort").map(|v| v as u8).filter(|v| (*v as usize) < screenrecorder_core::jellyfin::JfSort::ALL.len()).unwrap_or(0),

@@ -899,6 +899,8 @@ fn cells(ui: &mut egui::Ui, d: &JfBrowse, items: &[JfItem], rows: Option<usize>,
                 }
             }
             let playing = video && super::hover_play::paint(ui.painter(), &it.id, img, 8);
+            // 滑過預覽：那個時間點的畫面直接畫在這張縮圖上（按鈕、標籤照樣在上面）
+            let scrubbing = video && !playing && ui.rect_contains_pointer(img) && !resp.dragged() && super::thumbs::paint_scrub(ui.painter(), &it.id, img, 8);
             if video && (hovering || on || picking) {
                 let r = ui.interact(check, ui.id().with(("jf-check", &it.id)), Sense::click()).on_hover_text(tr!("勾選（一次下載、刪除好幾支）", "Select (to download or delete several at once)"));
                 let painter = ui.painter();
@@ -955,7 +957,7 @@ fn cells(ui: &mut egui::Ui, d: &JfBrowse, items: &[JfItem], rows: Option<usize>,
                     out.scrolled = true;
                 }
             }
-            if hovering && video && !picking && !playing {
+            if hovering && video && !picking && !playing && !scrubbing {
                 theme::paint_icon(painter, Rect::from_center_size(img.center(), vec2(40.0, 40.0)), Icon::Play, egui::Color32::WHITE);
             }
             // 看到一半：縮圖下緣的進度條
