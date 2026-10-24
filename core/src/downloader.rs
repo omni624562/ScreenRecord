@@ -124,12 +124,12 @@ pub fn place_ffmpeg(src: &Path, target: &Path, run: &RunFn) -> Result<Option<Str
         return Err(tr!("這個 ffmpeg.exe 無法執行（可能不完整或不是 64 位元 Windows 版）", "This ffmpeg.exe can't run (it may be incomplete or not a 64-bit Windows build)").into());
     }
     if let Some(dir) = target.parent() {
-        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+        std::fs::create_dir_all(dir).map_err(|e| crate::error::plain(&e))?;
     }
     let staging = PathBuf::from(format!("{}.download", target.display()));
-    std::fs::copy(src, &staging).map_err(|e| e.to_string())?;
+    std::fs::copy(src, &staging).map_err(|e| crate::error::plain(&e))?;
     let _ = std::fs::remove_file(target);
-    std::fs::rename(&staging, target).map_err(|e| e.to_string())?;
+    std::fs::rename(&staging, target).map_err(|e| crate::error::plain(&e))?;
     Ok(crate::ffmpeg::parse_version(&ver.stdout))
 }
 
@@ -141,7 +141,7 @@ pub fn install_local(src: &Path, target: &Path) -> Result<Option<String>, String
         return place_ffmpeg(src, target, &run);
     }
     let work = std::env::temp_dir().join(format!("ScreenRecorder-ffmpeg-local-{}-{}", crate::paths::now_ms(), std::process::id()));
-    std::fs::create_dir_all(&work).map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&work).map_err(|e| crate::error::plain(&e))?;
     let r = extract_ffmpeg(src, &work, &system_tar(), &run).and_then(|exe| place_ffmpeg(&exe, target, &run));
     let _ = std::fs::remove_dir_all(&work);
     r

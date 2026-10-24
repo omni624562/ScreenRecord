@@ -2002,6 +2002,17 @@ pub fn apply(app: &mut UiApp, mut d: JfBrowse, mut out: Panel) {
     }
     if let Some(items) = picked.remove_here.take() {
         app.jf_browse = Some(d);
+        // 一次拿掉很多支：先問（拿掉之後也可以按「復原」放回去）
+        if items.len() >= 5 {
+            let n = items.len();
+            app.ask = Some(super::dialogs::Ask::confirm(
+                trf!("從這裡拿掉 {n} 支影片？", "Remove {n} videos from here?"),
+                tr!("影片本身不會刪掉，只是不在這個合集或播放清單裡。", "The videos themselves aren't deleted; they're just taken out of this collection or playlist."),
+                tr!("拿掉", "Remove"),
+                move |app, _| remove_here(app, items),
+            ));
+            return;
+        }
         return remove_here(app, items);
     }
     if let Some(it) = picked.toggle {
@@ -2190,11 +2201,32 @@ fn remove_here(app: &mut UiApp, items: Vec<JfItem>) {
     d.selected.retain(|id, _| !ids.contains(id));
     let n = items.len();
     let list2 = list.clone();
+    let (user, back) = (d.user.clone().unwrap_or_default(), items.iter().map(|i| i.id.clone()).collect::<Vec<_>>());
     app.spawn(async move { tokio::task::spawn_blocking(move || jf.remove_from_list(kind, &list2, &items)).await.unwrap_or_else(|e| Err(e.to_string())) }, move |app, r| {
         let what = if kind == JfList::Collection { tr!("合集", "collection") } else { tr!("播放清單", "playlist") };
         match r {
-            Ok(()) => app.toast(trf!("已從{what}拿掉 {n} 支影片（影片本身還在）", "Removed {n} videos from the {what} (the videos themselves are kept)"), false),
+            Ok(()) => {
+                let undo_list = list.clone();
+                app.toast_with(
+                    trf!("已從{what}拿掉 {n} 支影片（影片本身還在）", "Removed {n} videos from the {what} (the videos themselves are kept)"),
+                    false,
+                    vec![super::ToastAction::new(tr!("復原", "Undo"), move |app| put_back(app, kind, user, undo_list, back))],
+                );
+            }
             Err(e) => app.toast(trf!("從{what}拿掉失敗：{e}", "Couldn't remove from the {what}: {e}"), true),
+        }
+        reload_lists(app, Some(list));
+    });
+}
+
+/// 「復原」剛才拿掉的：放回同一個合集、播放清單（播放清單裡會排到最後面）
+fn put_back(app: &mut UiApp, kind: JfList, user: String, list: String, ids: Vec<String>) {
+    let Some(jf) = app.jellyfin() else { return };
+    let list2 = list.clone();
+    app.spawn(async move { tokio::task::spawn_blocking(move || jf.add_to_list(&user, kind, &list2, &ids)).await.unwrap_or_else(|e| Err(e.to_string())) }, move |app, r| {
+        match r {
+            Ok(()) => app.toast(tr!("已放回去", "Put back"), false),
+            Err(e) => app.toast(trf!("放不回去：{e}", "Couldn't put them back: {e}"), true),
         }
         reload_lists(app, Some(list));
     });

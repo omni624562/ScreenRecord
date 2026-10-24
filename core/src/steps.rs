@@ -180,7 +180,7 @@ fn data_uri(path: &Path) -> Result<String, String> {
 
 /// 放進文件的 PNG：太寬時縮小
 fn doc_png(path: &Path) -> Result<Vec<u8>, String> {
-    let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+    let bytes = std::fs::read(path).map_err(|e| crate::error::plain(&e))?;
     let wide = image::ImageReader::new(std::io::Cursor::new(&bytes)).with_guessed_format().ok().and_then(|r| r.into_dimensions().ok()).is_some_and(|(w, _)| w > DOC_MAX_W);
     Ok(if wide {
         let img = image::load_from_memory(&bytes).map_err(|e| e.to_string())?;

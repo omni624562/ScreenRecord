@@ -348,6 +348,9 @@ pub struct Editor {
     banner_hidden: bool,
 
     player: Pl,
+    /// 預覽靜音（M）：旁白試聽等設定的音量照樣記著，取消靜音時還原
+    muted: bool,
+    out_volume: f32,
     /// 編輯截圖（不是影片）
     shot: Option<shot::Shot>,
     /// 復原 / 重做：每一步是 snapshot() 的 JSON
@@ -697,6 +700,8 @@ impl Editor {
             pending: None,
             markers: vec![],
             rec_markers: vec![],
+            muted: false,
+            out_volume: 1.0,
             sub_ids: HashSet::new(),
             sub_picked: HashSet::new(),
             sub_anchor: None,
@@ -1585,6 +1590,19 @@ impl Editor {
     }
 
     /// 前後移動：frame = 一張，否則秒數
+    /// 預覽的音量（靜音時先記著）
+    fn set_out_volume(&mut self, v: f32) {
+        self.out_volume = v;
+        self.player.set_volume(if self.muted { 0.0 } else { v });
+    }
+
+    fn toggle_mute(&mut self) -> (String, bool) {
+        self.muted = !self.muted;
+        let v = self.out_volume;
+        self.set_out_volume(v);
+        (if self.muted { tr!("預覽靜音（再按 M 取消）", "Preview muted (press M again to unmute)") } else { tr!("預覽有聲音了", "Preview sound on") }.into(), false)
+    }
+
     fn step(&mut self, frames: Option<i32>, secs: f64) {
         self.shuttle = 0;
         self.stop_preview();
@@ -3098,7 +3116,7 @@ fn transport(ed: &mut Editor, ui: &mut egui::Ui, toast: &mut Option<(String, boo
         let icon_w = Btn::icon_only(theme::Icon::Camera).ghost().small().width(ui) + 2.0;
         let all_w = if ed.zoomed() { Btn::new(tr!("顯示全部", "Show all")).ghost().small().width(ui) + 2.0 } else { 0.0 };
         let split_full = Btn::new(tr!("分割（S）", "Split (S)")).icon(theme::Icon::Cut).ghost().small();
-        let mark_full = Btn::new(tr!("＋ 標記（M）", "+ Marker (M)")).ghost().small();
+        let mark_full = Btn::new(tr!("＋ 標記（B）", "+ Marker (B)")).ghost().small();
         let room = ui.available_width() - clock_w - icon_w - all_w - icon_w * 2.0;
         let text = room >= split_full.width(ui) + mark_full.width(ui) + 4.0;
         let split = if text { split_full } else { Btn::icon_only(theme::Icon::Cut).ghost().small() };
@@ -3116,8 +3134,8 @@ fn transport(ed: &mut Editor, ui: &mut egui::Ui, toast: &mut Option<(String, boo
         if mark
             .enabled(ed.duration > 0.0)
             .tooltip(tr!(
-                "在播放頭加上標記（M），輸出時變成章節（按兩下旗子改名、右鍵刪除；章節清單在「字幕」分頁）",
-                "Add a marker at the playhead (M); it becomes a chapter in the output (double-click a flag to rename, right-click to delete; the chapter list is in the Subtitles tab)"
+                "在播放頭加上標記（B），輸出時變成章節（按兩下旗子改名、右鍵刪除；章節清單在「字幕」分頁）",
+                "Add a marker at the playhead (B); it becomes a chapter in the output (double-click a flag to rename, right-click to delete; the chapter list is in the Subtitles tab)"
             ))
             .show(ui)
             .clicked()
@@ -3439,7 +3457,8 @@ fn start_save(app: &mut UiApp, ed: &mut Editor) {
     );
 }
 
-/// 快速鍵：空白 = 播放/暫停、←/→ = 一張（Shift = 一秒）、I/O = 開頭/結尾、Delete = 刪除選取的片段或標註、Esc = 取消或關閉
+/// 快速鍵（和播放畫面一樣）：空白 = 播放/暫停、←/→ = 5 秒（Shift = 1 秒）、, / . = 一張、B = 標記、M = 靜音、
+/// I/O = 開頭/結尾、Delete = 刪除選取的片段或標註、Esc = 取消或關閉
 fn keyboard(ed: &mut Editor, ctx: &egui::Context, toast: &mut Option<(String, bool)>) {
     if ctx.egui_wants_keyboard_input() || ed.typing {
         // 正在輸入文字（egui 在這一格開始時就因 Esc 離開輸入欄）：Esc 只離開輸入欄
@@ -3489,27 +3508,37 @@ fn shortcuts(ed: &mut Editor, ctx: &egui::Context, toast: &mut Option<(String, b
         ed.step(None, 1.0);
     }
     if video && key(Modifiers::NONE, Key::ArrowLeft) {
-        ed.step(Some(-1), 0.0);
+        ed.step(None, -5.0);
     }
     if video && key(Modifiers::NONE, Key::ArrowRight) {
+        ed.step(None, 5.0);
+    }
+    // , / .：一張一張看
+    if video && key(Modifiers::NONE, Key::Comma) {
+        ed.step(Some(-1), 0.0);
+    }
+    if video && key(Modifiers::NONE, Key::Period) {
         ed.step(Some(1), 0.0);
     }
-    // M：加標記；Shift+M / Ctrl+Shift+M：跳到下一個 / 上一個標記（先比對有修飾鍵的）
+    if video && key(Modifiers::NONE, Key::M) {
+        *toast = Some(ed.toggle_mute());
+    }
+    // B：加標記；Shift+B / Ctrl+Shift+B：跳到下一個 / 上一個標記（先比對有修飾鍵的）
     if video {
         let now = ed.now();
-        if key(Modifiers::COMMAND | Modifiers::SHIFT, Key::M) {
+        if key(Modifiers::COMMAND | Modifiers::SHIFT, Key::B) {
             match ed.markers.iter().rev().map(|m| m.t).find(|&t| t < now - 0.05) {
                 Some(t) => ed.seek(t),
                 None => *toast = Some((tr!("前面沒有標記了", "No earlier markers").into(), false)),
             }
         }
-        if key(Modifiers::SHIFT, Key::M) {
+        if key(Modifiers::SHIFT, Key::B) {
             match ed.markers.iter().map(|m| m.t).find(|&t| t > now + 0.05) {
                 Some(t) => ed.seek(t),
                 None => *toast = Some((tr!("後面沒有標記了", "No more markers ahead").into(), false)),
             }
         }
-        if key(Modifiers::NONE, Key::M) {
+        if key(Modifiers::NONE, Key::B) {
             *toast = Some(ed.add_marker());
         }
         // S：在播放頭分割

@@ -76,8 +76,11 @@ pub struct LibraryDialog {
     fresh: Option<String>,
     /// 拼成一張的對話框
     combine: Option<CombineDlg>,
-    /// 鍵盤（Delete、F2、Enter）操作的那一列：滑鼠所在或上次點的
+    /// 鍵盤（↑↓、空白鍵、Delete、F2、Enter）操作的那一列：滑鼠所在或上次點的
     cursor_row: Option<String>,
+    /// cursor_row 是用方向鍵移過去的：畫外框（滑鼠移動時取消）；scroll_cursor：捲到看得到
+    kb_cursor: bool,
+    scroll_cursor: bool,
     /// Shift＋點一下時，從這一筆選到點的那一筆（上次點或勾選的）
     anchor: Option<String>,
     /// 上次按 Ctrl 轉滾輪換縮圖大小的時間（轉一格只換一級）
@@ -230,6 +233,8 @@ impl LibraryDialog {
             fresh: None,
             combine: None,
             cursor_row: None,
+            kb_cursor: false,
+            scroll_cursor: false,
             anchor: None,
             wheel_at: None,
             only_selected: false,
@@ -774,6 +779,15 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                         browse::query_changed(&mut d);
                     }
                 }
+                // 在搜尋框按 ↓：到清單的第一筆（之後 ↑↓、空白鍵、Enter 操作清單）
+                if ui.memory(|m| m.has_focus(r.id)) && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown)) {
+                    ui.memory_mut(|m| m.surrender_focus(r.id));
+                    if let Some(first) = d.rows.first() {
+                        d.cursor_row = Some(first.media.path.clone());
+                        d.kb_cursor = true;
+                        d.scroll_cursor = true;
+                    }
+                }
                 if shot {
                     browse::popup(ui, &mut d, &r);
                 }
@@ -1248,11 +1262,33 @@ fn trash_list(e: &LibraryEntry) -> Vec<String> {
 }
 
 /// 鍵盤：Delete 移到資源回收筒（有勾選時是勾選的全部，和下方按鈕一樣；沒勾選時是滑鼠所在或上次點的那一列）、F2 改名、Enter 播放
-fn row_keys(app: &UiApp, ui: &egui::Ui, d: &LibraryDialog, rows: &[LibraryEntry], req: &mut Option<Req>) {
+fn row_keys(app: &UiApp, ui: &egui::Ui, d: &mut LibraryDialog, rows: &[LibraryEntry], req: &mut Option<Req>) {
     if req.is_some() || app.ask.is_some() || d.overlay() || ui.ctx().egui_wants_keyboard_input() || egui::Popup::is_any_open(ui.ctx()) {
         return;
     }
     let (del, f2, enter) = ui.input(|i| (i.key_pressed(egui::Key::Delete), i.key_pressed(egui::Key::F2), i.key_pressed(egui::Key::Enter)));
+    // ↑↓：換一列（外框標出來、捲到看得到）；空白鍵：勾選 / 取消勾選這一列
+    let (up, down, space) = ui.input(|i| (i.key_pressed(egui::Key::ArrowUp), i.key_pressed(egui::Key::ArrowDown), i.key_pressed(egui::Key::Space) && !i.modifiers.any()));
+    if (up || down) && !rows.is_empty() {
+        let at = d.cursor_row.as_ref().and_then(|p| rows.iter().position(|e| &e.media.path == p));
+        let next = match at {
+            None => 0,
+            Some(i) if up => i.saturating_sub(1),
+            Some(i) => (i + 1).min(rows.len() - 1),
+        };
+        d.cursor_row = Some(rows[next].media.path.clone());
+        d.kb_cursor = true;
+        d.scroll_cursor = true;
+        return;
+    }
+    if space {
+        if let Some(path) = d.cursor_row.clone().filter(|p| rows.iter().any(|e| &e.media.path == p)) {
+            let on = !d.selected.contains(&path);
+            d.toggle(&path, on);
+            d.anchor = Some(path);
+        }
+        return;
+    }
     if del && !d.selected.is_empty() {
         *req = Some(Req::DeleteSelected);
         return;
@@ -1365,6 +1401,10 @@ fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table:
             for (ri, e) in rows.iter().enumerate() {
                 // 看不到的列不畫（日期分隔還是要記著）
                 let grp = Rect::from_min_size(pos2(table.min.x, y), vec2(table.width(), heights[ri]));
+                if d.scroll_cursor && d.cursor_row.as_deref() == Some(e.media.path.as_str()) {
+                    d.scroll_cursor = false;
+                    ui.scroll_to_rect(grp, None);
+                }
                 if !ui.is_rect_visible(grp) {
                     last_day = times.get(&e.media.name).map(|t| t.0);
                     y += heights[ri];
@@ -1380,8 +1420,11 @@ fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table:
                 let audio = is_audio_file(&e.media.name);
                 let fresh = d.fresh.as_deref() == Some(e.media.path.as_str());
                 let on = d.selected.contains(&e.media.path);
-                if resp.hovered() || resp.clicked() || resp.secondary_clicked() {
+                // 滑鼠動了才跟著滑鼠（停在清單上按 ↑↓ 時不會被拉回來）
+                let moved = ui.input(|i| i.pointer.delta() != Vec2::ZERO);
+                if (resp.hovered() && moved) || resp.clicked() || resp.secondary_clicked() {
                     d.cursor_row = Some(e.media.path.clone());
+                    d.kb_cursor = false;
                 }
                 // 勾選的列、剛做好的列：淡淡的強調色底
                 if on || fresh {
@@ -1391,6 +1434,9 @@ fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table:
                 }
                 if fresh {
                     painter.rect_filled(Rect::from_min_size(row.min + vec2(0.0, 4.0), vec2(3.0, row.height() - 8.0)), CornerRadius::same(2), p.accent);
+                }
+                if d.kb_cursor && d.cursor_row.as_deref() == Some(e.media.path.as_str()) {
+                    painter.rect_stroke(row.shrink(1.0), CornerRadius::same(4), Stroke::new(2.0, p.accent), egui::StrokeKind::Inside);
                 }
                 let groups = super::entry_menu::groups(app, e, Place::Library);
                 resp.context_menu(|ui| {
@@ -1902,14 +1948,22 @@ fn shot_grid(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, area: Re
             day_headers(app, ui, d, all, &groups, &places);
             for (i, e) in items.iter().enumerate() {
                 let cell = cell_at(i);
+                if d.scroll_cursor && d.cursor_row.as_deref() == Some(e.media.path.as_str()) {
+                    d.scroll_cursor = false;
+                    ui.scroll_to_rect(cell, None);
+                }
                 // 看不到的格子不畫（縮圖也只產生看得到的）
                 if !ui.is_rect_visible(cell.expand(4.0)) {
                     continue;
                 }
                 let pinned_e = app.core.pins.contains(&e.media.path);
                 let hot = ui.rect_contains_pointer(cell);
-                if hot {
+                if hot && ui.input(|i| i.pointer.delta() != Vec2::ZERO) {
                     d.cursor_row = Some(e.media.path.clone());
+                    d.kb_cursor = false;
+                }
+                if d.kb_cursor && d.cursor_row.as_deref() == Some(e.media.path.as_str()) {
+                    painter.rect_stroke(cell.expand(4.0), CornerRadius::same(theme::RADIUS_SM + 2), Stroke::new(2.0, p.accent), egui::StrokeKind::Inside);
                 }
                 let on = d.selected.contains(&e.media.path);
                 // 勾選的：格子底下淡淡的強調色

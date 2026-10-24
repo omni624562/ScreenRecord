@@ -1070,7 +1070,7 @@ fn related_strip(v: &Viewer, ui: &mut egui::Ui, strip: Rect, thumbs: &[Option<Te
 }
 
 /// 進入 / 離開全螢幕（整個視窗全螢幕，檢視器蓋滿）
-fn set_full(v: &mut Viewer, ctx: &egui::Context, on: bool) {
+pub(super) fn set_full(v: &mut Viewer, ctx: &egui::Context, on: bool) {
     if v.full != on {
         v.full = on;
         ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(on));
@@ -1286,7 +1286,7 @@ fn run_act(app: &mut UiApp, act: Act) {
             let people = super::jellyfin_browse::people_of(app, &id);
             app.spawn(async move { screenrecorder_core::cover::frame_at(&ff, &url, t).await.map_err(|e| e.message().to_string()) }, move |app, r| match r {
                 Ok(pm) => super::jellyfin_face::open(app, pm, people),
-                Err(e) => app.toast(trf!("讀不到這一格：{e}", "Couldn't read this frame: {e}"), true),
+                Err(e) => app.toast(e, true),
             });
         }
         Act::JfInfo => {

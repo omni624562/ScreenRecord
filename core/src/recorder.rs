@@ -383,7 +383,7 @@ pub(crate) async fn merge_segments(ffmpeg: &Path, files: &[String], parts_dir: &
         }
     }
     let list_file = parts_dir.join("concat.txt");
-    std::fs::write(&list_file, concat_list(files, &outpoints)).map_err(|e| e.to_string())?;
+    std::fs::write(&list_file, concat_list(files, &outpoints)).map_err(|e| crate::error::plain(&e))?;
     // 合併要和分段一樣大的空間：不夠時先說，不要做到一半才失敗
     let total: u64 = files.iter().filter_map(|f| std::fs::metadata(f).ok()).map(|m| m.len()).sum();
     let out_dir = out.parent().map(|d| d.display().to_string()).unwrap_or_default();
@@ -403,7 +403,7 @@ pub(crate) async fn merge_segments(ffmpeg: &Path, files: &[String], parts_dir: &
     let meta = match chapters {
         Some(c) => {
             let f = parts_dir.join("chapters.txt");
-            std::fs::write(&f, c).map_err(|e| e.to_string())?;
+            std::fs::write(&f, c).map_err(|e| crate::error::plain(&e))?;
             Some(f.display().to_string())
         }
         None => None,

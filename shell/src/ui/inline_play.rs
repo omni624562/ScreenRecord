@@ -29,6 +29,8 @@ static NO_MPV: Mutex<Option<String>> = Mutex::new(None);
 
 pub struct Inline {
     pub entry: LibraryEntry,
+    /// 按了全螢幕：在播放器開啟時直接全螢幕
+    want_full: bool,
     player: Option<Playback>,
     tex: Option<TextureHandle>,
     /// mpv 畫好第一張畫面之後：共用材質（UiApp::inline_surface）的 id
@@ -93,6 +95,7 @@ pub fn open(app: &mut UiApp, entry: LibraryEntry) {
     let cancel = Arc::new(AtomicBool::new(false));
     app.inline = Some(Inline {
         entry: entry.clone(),
+        want_full: false,
         player: None,
         tex: None,
         mpv_tex: None,
@@ -202,6 +205,14 @@ fn to_viewer(app: &mut UiApp) {
     super::viewer::set_autoplay(app, playing);
 }
 
+/// 在播放器接著播，直接全螢幕
+fn to_full(app: &mut UiApp, ctx: &egui::Context) {
+    to_viewer(app);
+    if let Some(v) = app.viewer.as_mut() {
+        super::viewer::set_full(v, ctx, true);
+    }
+}
+
 /// 每一格：錄影開始了、或被其他視窗蓋住時停下來；收下解出來的畫面
 pub fn tick(app: &mut UiApp, ctx: &egui::Context) {
     if app.inline.is_none() {
@@ -294,8 +305,9 @@ fn keyboard(app: &mut UiApp, ctx: &egui::Context) {
     if esc {
         return close(app);
     }
+    // F：和播放畫面一樣是全螢幕（在播放器全螢幕接著播）
     if f {
-        return to_viewer(app);
+        return to_full(app, ctx);
     }
     let Some(i) = app.inline.as_mut() else { return };
     if m {
@@ -389,7 +401,11 @@ pub fn show(app: &mut UiApp, ui: &mut egui::Ui, area: Rect) {
     if close_now {
         close(app);
     } else if open_viewer {
-        to_viewer(app);
+        if app.inline.as_ref().is_some_and(|i| i.want_full) {
+            to_full(app, ui.ctx());
+        } else {
+            to_viewer(app);
+        }
     }
 }
 
@@ -504,17 +520,24 @@ fn controls(i: &mut Inline, ui: &mut egui::Ui) -> bool {
         }
         resp.on_hover_text(trf!("音量 {:.0}%", "Volume {:.0}%", vol * 100.0));
     }
-    // 在播放器開啟（其他功能都在那裡）
+    // 全螢幕（F）；在播放器開啟（其他功能都在那裡）
+    let mut full = false;
     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-        if Btn::icon_only(Icon::Fullscreen)
+        if Btn::icon_only(Icon::Fullscreen).ghost().small().tooltip(tr!("全螢幕（F）", "Full screen (F)")).show(ui).clicked() {
+            full = true;
+        }
+        if Btn::icon_only(Icon::Window)
             .ghost()
             .small()
-            .tooltip(tr!("在播放器開啟（F、點兩下畫面）：全螢幕、章節、擷取這一格、設為封面等", "Open in the player (F, or double-click): full screen, chapters, frame capture, set as cover…"))
+            .tooltip(tr!("在播放器開啟（點兩下畫面也可以）：章節、擷取這一格、設為封面等", "Open in the player (or double-click the video): chapters, frame capture, set as cover…"))
             .show(ui)
             .clicked()
         {
             open_viewer = true;
         }
     });
-    open_viewer
+    if full {
+        i.want_full = true;
+    }
+    open_viewer || full
 }

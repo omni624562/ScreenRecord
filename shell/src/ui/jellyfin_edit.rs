@@ -985,7 +985,7 @@ fn choose_cover(app: &mut UiApp) {
         async move {
             tokio::task::spawn_blocking(move || -> Result<Option<Picked>, String> {
                 let Some(path) = screenrecorder_core::picture::pick_file()? else { return Ok(None) };
-                let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
+                let bytes = std::fs::read(&path).map_err(|e| screenrecorder_core::error::plain(&e))?;
                 let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
                 let pm = screenrecorder_core::picture::decode_pixmap(&bytes).ok_or_else(|| tr!("看不懂這張圖片", "Couldn't read this image").to_string())?;
                 let preview = Some(ctx.load_texture("jf-edit-cover", egui::ColorImage::from_rgba_premultiplied([pm.width() as usize, pm.height() as usize], pm.data()), egui::TextureOptions::LINEAR));

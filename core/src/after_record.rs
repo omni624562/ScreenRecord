@@ -785,7 +785,7 @@ pub fn copy_results(video: &str, output: Option<&str>, dest: &Path) -> Result<Ve
     if !dest.is_absolute() {
         return Err(tr!("資料夾位置不對，請重新選擇", "The folder location isn't valid. Choose it again").into());
     }
-    std::fs::create_dir_all(dest).map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(dest).map_err(|e| crate::error::plain(&e))?;
     let files = result_files(video, output);
     let mut copied = vec![];
     for f in &files {

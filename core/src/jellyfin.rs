@@ -590,7 +590,7 @@ impl Jellyfin {
         let r = self.auth(agent_long().get(&format!("{}/Videos/{id}/stream", self.url)).query("static", "true")).call().map_err(|e| describe(&e))?;
         let total = r.header("Content-Length").and_then(|n| n.parse().ok()).unwrap_or(0);
         if let Some(dir) = to.parent() {
-            std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+            std::fs::create_dir_all(dir).map_err(|e| crate::error::plain(&e))?;
         }
         crate::transfer::save(r.into_reader(), total, to, true).map_err(|e| e.to_string())
     }
@@ -2866,7 +2866,7 @@ pub fn rename_copies(copy_to: &str, old: &std::path::Path, new: &std::path::Path
         if to.exists() {
             return Err(trf!("Jellyfin 的資料夾裡已經有「{}」", "The Jellyfin folder already has “{}”", to.file_name().unwrap_or_default().to_string_lossy()));
         }
-        std::fs::rename(&f, &to).map_err(|e| e.to_string())?;
+        std::fs::rename(&f, &to).map_err(|e| crate::error::plain(&e))?;
         crate::info!("[傳到資料夾] 跟著改名：{} → {}", f.display(), to.display());
         done.push(to);
     }

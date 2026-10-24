@@ -270,12 +270,12 @@ pub fn install_model_file(m: &Model, src: &Path) -> Result<(), String> {
     }
     let target = subtitles::model_install_path(m);
     if let Some(dir) = target.parent() {
-        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+        std::fs::create_dir_all(dir).map_err(|e| crate::error::plain(&e))?;
     }
     let staging = target.with_extension("part");
-    std::fs::copy(src, &staging).map_err(|e| e.to_string())?;
+    std::fs::copy(src, &staging).map_err(|e| crate::error::plain(&e))?;
     let _ = std::fs::remove_file(&target);
-    std::fs::rename(&staging, &target).map_err(|e| e.to_string())?;
+    std::fs::rename(&staging, &target).map_err(|e| crate::error::plain(&e))?;
     crate::info!("[外部元件] 已安裝選擇的語音模型 {}", m.file);
     Ok(())
 }

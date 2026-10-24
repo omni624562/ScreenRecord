@@ -261,7 +261,7 @@ fn chapters_panel(ed: &mut Editor, ui: &mut egui::Ui, toast: &mut Option<(String
     let has_subs = !ed.sub_ids.is_empty();
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing = vec2(4.0, 4.0);
-        if Btn::new(tr!("＋ 在播放頭加標記（M）", "+ Marker at playhead (M)")).small().enabled(ed.duration > 0.0).show(ui).clicked() {
+        if Btn::new(tr!("＋ 在播放頭加標記（B）", "+ Marker at playhead (B)")).small().enabled(ed.duration > 0.0).show(ui).clicked() {
             *toast = Some(ed.add_marker());
         }
         if Btn::new(tr!("依字幕產生", "From subtitles"))
@@ -299,7 +299,7 @@ fn chapters_panel(ed: &mut Editor, ui: &mut egui::Ui, toast: &mut Option<(String
     if ed.markers.is_empty() {
         return hint(
             ui,
-            tr!("標記會在輸出時變成影片的章節。也可以按播放列上的「＋ 標記」或按 M。", "Markers become chapters in the output video. You can also press “+ Marker” under the timeline or M."),
+            tr!("標記會在輸出時變成影片的章節。也可以按播放列上的「＋ 標記」或按 B。", "Markers become chapters in the output video. You can also press “+ Marker” under the timeline or B."),
         );
     }
     let p = theme::pal(ui);

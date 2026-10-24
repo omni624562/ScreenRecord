@@ -621,7 +621,7 @@ impl App {
         let t2 = tmp.clone();
         // 畫面與語音（背景執行緒）
         let prepared = tokio::task::spawn_blocking(move || -> Result<crate::steps::VideoParts, String> {
-            std::fs::create_dir_all(&t2).map_err(|e| e.to_string())?;
+            std::fs::create_dir_all(&t2).map_err(|e| crate::error::plain(&e))?;
             let (w, h) = crate::steps::VIDEO_SIZE;
             let mut frames = vec![];
             let mut voices = vec![];

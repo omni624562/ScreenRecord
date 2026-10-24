@@ -820,16 +820,12 @@ impl UiApp {
         self.toast_with(text, error, vec![]);
     }
 
-    /// 帶按鈕的提示（例如「在資料夾中顯示」）：停留 8 秒，滑鼠移上去時不會消失，可按 ✕ 關閉
+    /// 帶按鈕的提示（例如「在資料夾中顯示」）：停留 8 秒，滑鼠移上去時不會消失，可按 ✕ 關閉。
+    /// 字多的停久一點（大約一秒讀 12 個字）；出錯的不會自己消失（看完按 ✕，或下一則提示取代）
     pub fn toast_with(&mut self, text: impl Into<String>, error: bool, actions: Vec<ToastAction>) {
         let text = text.into();
-        let secs = if !actions.is_empty() {
-            8
-        } else if error {
-            6
-        } else {
-            3
-        };
+        let base = if !actions.is_empty() { 8 } else { 3 };
+        let secs = if error { 24 * 3600 } else { base.max(text.chars().count() as u64 / 12 + 1) };
         self.toast = Some(Toast { text, error, until: Instant::now() + Duration::from_secs(secs), actions });
         self.ctx.request_repaint();
     }
@@ -1900,7 +1896,16 @@ fn trash_now(app: &mut UiApp, paths: Vec<String>, copies: Vec<std::path::PathBuf
             for p in &paths {
                 screenrecorder_core::transfer::remove_pending(p);
             }
-            app.toast(trf!("已將 {n} 個檔案移到資源回收筒", "Moved {n} file(s) to the Recycle Bin"), false);
+            // 要還原：打開資源回收筒（在那裡按右鍵 →「還原」，會回到原本的資料夾）
+            app.toast_with(
+                trf!("已將 {n} 個檔案移到資源回收筒", "Moved {n} file(s) to the Recycle Bin"),
+                false,
+                vec![ToastAction::new(tr!("打開資源回收筒（可還原）", "Open Recycle Bin (to restore)"), |app| {
+                    if let Err(e) = actions::open_recycle_bin() {
+                        app.toast(e.message().to_string(), true);
+                    }
+                })],
+            );
             if notify {
                 let jf = app.jellyfin();
                 let first = paths.first().map(std::path::PathBuf::from);

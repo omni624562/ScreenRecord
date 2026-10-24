@@ -133,10 +133,13 @@ impl UiApp {
         let Some(d) = self.send_dlg.as_ref() else { return };
         let sub = if d.cwd.is_empty() { name.trim().to_string() } else { format!("{}/{}", d.cwd, name.trim()) };
         let dir = jellyfin::library_dest(&self.s.after_copy_to, &sub);
-        self.spawn(async move { tokio::task::spawn_blocking(move || std::fs::create_dir_all(&dir).map_err(|e| e.to_string())).await.unwrap_or_else(|e| Err(e.to_string())) }, move |app, r| match r {
-            Ok(()) => app.picker_go(sub, true),
-            Err(e) => app.toast(trf!("沒有建立資料夾：{e}", "Couldn't create the folder: {e}"), true),
-        });
+        self.spawn(
+            async move { tokio::task::spawn_blocking(move || std::fs::create_dir_all(&dir).map_err(|e| screenrecorder_core::error::plain(&e))).await.unwrap_or_else(|e| Err(e.to_string())) },
+            move |app, r| match r {
+                Ok(()) => app.picker_go(sub, true),
+                Err(e) => app.toast(trf!("沒有建立資料夾：{e}", "Couldn't create the folder: {e}"), true),
+            },
+        );
     }
 
     /// 真的傳過去（sub：媒體庫的哪個資料夾，「family/2024」，空的 = 最上層）。

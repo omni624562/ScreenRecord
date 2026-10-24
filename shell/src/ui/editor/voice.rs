@@ -46,11 +46,11 @@ pub fn tick(ed: &mut Editor) {
                 p.play();
                 ed.voice.play = Some((c.file.clone(), p));
             }
-            ed.player.set_volume(ed.spec.narration.original as f32 / 100.0);
+            ed.set_out_volume(ed.spec.narration.original as f32 / 100.0);
         }
         None => {
             if ed.voice.play.take().is_some() {
-                ed.player.set_volume(1.0);
+                ed.set_out_volume(1.0);
             }
         }
     }
@@ -60,7 +60,7 @@ fn start_recording(ed: &mut Editor) {
     ed.voice.play = None;
     let at = ed.now();
     // 邊播放邊錄：原本的聲音關掉，免得被麥克風錄進去
-    ed.player.set_volume(0.0);
+    ed.set_out_volume(0.0);
     let rec = VoiceRecorder::start(Arc::new(screenrecorder_core::audio::open_wasapi), &ed.voice.mic_id);
     ed.voice.rec = Some((rec, at));
     ed.player.play();
@@ -70,7 +70,7 @@ fn start_recording(ed: &mut Editor) {
 fn stop_recording(ed: &mut Editor, toast: Option<&mut Option<(String, bool)>>) {
     let Some((rec, at)) = ed.voice.rec.take() else { return };
     ed.player.pause();
-    ed.player.set_volume(1.0);
+    ed.set_out_volume(1.0);
     let path = narration::new_voice_path("voice");
     let msg = match rec.finish(&path) {
         Ok(ms) => {
@@ -203,7 +203,7 @@ fn clip_list(ed: &mut Editor, ui: &mut egui::Ui) {
     if let Some(i) = remove {
         ed.spec.narration.clips.remove(i);
         ed.voice.play = None;
-        ed.player.set_volume(1.0);
+        ed.set_out_volume(1.0);
     }
     if let Some(t) = seek {
         ed.stop_preview();

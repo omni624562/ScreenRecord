@@ -214,7 +214,8 @@ pub fn show_toast(app: &mut UiApp, ctx: &egui::Context) {
     ctx.request_repaint_after(t.until - Instant::now());
     let p = theme::pal_ctx(ctx);
     let (fill, fg) = if t.error { (p.rec, Color32::WHITE) } else { (p.text, p.surface) };
-    let has_actions = !t.actions.is_empty();
+    // 有按鈕、或出錯（不會自己消失）的：有 ✕ 可以關
+    let has_actions = !t.actions.is_empty() || t.error;
     let mut clicked: Option<usize> = None;
     let mut close = false;
     let screen = ctx.content_rect();
@@ -223,7 +224,7 @@ pub fn show_toast(app: &mut UiApp, ctx: &egui::Context) {
         Some(at) => (Align2::RIGHT_BOTTOM, vec2(at.x - screen.max.x - 12.0, at.y - screen.max.y - 12.0)),
         None => (Align2::RIGHT_BOTTOM, vec2(-16.0, -16.0)),
     };
-    let resp = egui::Area::new(Id::new("toast")).anchor(align, offset).order(egui::Order::Tooltip).interactable(has_actions).show(ctx, |ui| {
+    let resp = egui::Area::new(Id::new("toast")).anchor(align, offset).order(egui::Order::Tooltip).interactable(true).show(ctx, |ui| {
         egui::Frame::new().fill(fill).corner_radius(CornerRadius::same(10)).inner_margin(egui::Margin::symmetric(16, 10)).show(ui, |ui| {
             ui.set_max_width(if has_actions { 680.0 } else { 560.0 });
             if !has_actions {
@@ -251,8 +252,8 @@ pub fn show_toast(app: &mut UiApp, ctx: &egui::Context) {
             });
         });
     });
-    // 滑鼠在提示上時不會消失
-    if has_actions && resp.response.contains_pointer() {
+    // 滑鼠在提示上時不會消失（還沒看完）
+    if resp.response.contains_pointer() {
         if let Some(t) = &mut app.toast {
             t.until = t.until.max(Instant::now() + std::time::Duration::from_millis(1500));
         }

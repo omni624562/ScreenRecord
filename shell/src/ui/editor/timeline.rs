@@ -747,8 +747,8 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, toast: &mut
                 Hit::Flag(i, t) => (
                     CursorIcon::PointingHand,
                     trf!(
-                        "{}（{}）・點一下跳過去・按兩下改名（輸出時當作章節名稱）・按右鍵可以刪除・Shift+M 下一個",
-                        "{} ({}) · click to jump there · double-click to rename (used as the chapter title) · right-click to delete · Shift+M: next",
+                        "{}（{}）・點一下跳過去・按兩下改名（輸出時當作章節名稱）・按右鍵可以刪除・Shift+B 下一個",
+                        "{} ({}) · click to jump there · double-click to rename (used as the chapter title) · right-click to delete · Shift+B: next",
                         ed.marker_name(i),
                         video_clock(t)
                     ),
@@ -1130,10 +1130,12 @@ pub(super) fn shortcut_sheet(resp: &egui::Response) {
     egui::Popup::menu(resp).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
         ui.set_min_width(320.0);
         ui.label(RichText::new(tr!("剪輯的快速鍵", "Editing shortcuts")).font(theme::font_bold(13.5)));
-        let rows: [(&str, &str, &str); 21] = [
+        let rows: [(&str, &str, &str); 23] = [
             ("Space", "播放 / 暫停", "Play / pause"),
-            ("← / →", "上一格 / 下一格", "Previous / next frame"),
+            ("← / →", "往前 / 往後 5 秒（和播放畫面一樣）", "Back / forward 5 seconds (same as the player)"),
             ("Shift+← / →", "往前 / 往後 1 秒", "Back / forward 1 second"),
+            (", / .", "上一格 / 下一格", "Previous / next frame"),
+            ("M", "預覽靜音", "Mute the preview"),
             ("I / O", "播放頭設為開頭 / 結尾", "Set the start / end at the playhead"),
             ("S", "在播放頭分割", "Split at the playhead"),
             ("J / K / L", "倒轉 / 停 / 播放（再按一次更快：2、4、8 倍）", "Rewind / stop / play (press again to go faster: 2×, 4×, 8×)"),
@@ -1143,9 +1145,9 @@ pub(super) fn shortcut_sheet(resp: &egui::Response) {
             ("右鍵", "時間軸上：分割、刪除、速度、還原…", "On the timeline: split, delete, speed, restore…"),
             ("Delete", "刪除選取的範圍或標註", "Delete the selected range or annotation"),
             ("D", "刪除選取的範圍", "Delete the selected range"),
-            ("M", "在播放頭加標記", "Add a marker at the playhead"),
-            ("Shift+M", "跳到下一個標記", "Jump to the next marker"),
-            ("Ctrl+Shift+M", "跳到上一個標記", "Jump to the previous marker"),
+            ("B", "在播放頭加標記", "Add a marker at the playhead"),
+            ("Shift+B", "跳到下一個標記", "Jump to the next marker"),
+            ("Ctrl+Shift+B", "跳到上一個標記", "Jump to the previous marker"),
             ("[ / ]", "選取的標註轉 15 度（Shift：1 度）", "Rotate the selected annotation 15° (Shift: 1°)"),
             ("Ctrl+Z", "復原", "Undo"),
             ("Ctrl+Y", "重做", "Redo"),

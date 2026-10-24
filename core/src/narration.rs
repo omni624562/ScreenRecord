@@ -299,7 +299,7 @@ impl VoiceRecorder {
         if ms < 300 {
             return Err(tr!("旁白太短，沒有存下來", "The narration was too short and wasn't kept").into());
         }
-        std::fs::write(path, wav_mono16(&g.samples, crate::audio::SAMPLE_RATE)).map_err(|e| e.to_string())?;
+        std::fs::write(path, wav_mono16(&g.samples, crate::audio::SAMPLE_RATE)).map_err(|e| crate::error::plain(&e))?;
         Ok(ms)
     }
 }
@@ -338,7 +338,7 @@ pub fn speak_to_file(text: &str, voice: &str, rate: f64, path: &Path) -> Result<
     {
         let bytes = speech::synthesize(text, voice, rate)?;
         let ms = wav_ms(&bytes).ok_or_else(|| tr!("產生的語音格式不對", "The generated speech has an unexpected format").to_string())?;
-        std::fs::write(path, bytes).map_err(|e| e.to_string())?;
+        std::fs::write(path, bytes).map_err(|e| crate::error::plain(&e))?;
         Ok(ms)
     }
     #[cfg(not(windows))]

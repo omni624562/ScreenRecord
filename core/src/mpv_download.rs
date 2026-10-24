@@ -84,7 +84,7 @@ pub fn install_file(src: &Path, target: &Path) -> Result<(), String> {
     let is_dll = src.extension().is_some_and(|e| e.eq_ignore_ascii_case("dll"));
     if is_dll {
         let tmp = target.with_extension("dll.part");
-        std::fs::copy(src, &tmp).map_err(|e| e.to_string())?;
+        std::fs::copy(src, &tmp).map_err(|e| crate::error::plain(&e))?;
         return finish(&tmp, target);
     }
     install_archive(src, target)

@@ -1014,6 +1014,15 @@ pub fn check_writable_dir(dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// 打開資源回收筒（剛移進去的檔案在那裡按右鍵 →「還原」）
+pub fn open_recycle_bin() -> Result<()> {
+    if !cfg!(windows) {
+        return Err(Error::config(tr!("這個系統沒有資源回收筒", "There's no Recycle Bin on this system")));
+    }
+    crate::desktop::open_with_explorer("shell:RecycleBinFolder", false);
+    Ok(())
+}
+
 /// 用預設瀏覽器開啟外部網址（更新頁面、FFmpeg 下載頁）
 pub fn open_url(url: &str) -> Result<()> {
     let u = url.trim();
