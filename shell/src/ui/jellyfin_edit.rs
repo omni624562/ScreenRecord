@@ -36,6 +36,8 @@ pub struct JfEdit {
     /// 存檔時移除 Jellyfin 上的封面
     remove_cover: bool,
     saving: bool,
+    /// 按下儲存的時間（等太久時說明伺服器還在存）
+    saving_since: Option<std::time::Instant>,
     error: Option<String>,
 }
 
@@ -59,6 +61,7 @@ pub fn open(app: &mut UiApp, id: String, user: String, name: String, known_peopl
         cover: None,
         remove_cover: false,
         saving: false,
+        saving_since: None,
         error: None,
     });
     load_usage(app);
@@ -889,11 +892,17 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         }
         ui.add_space(12.0);
         ui.horizontal(|ui| {
-            ui.label(
-                RichText::new(tr!("存到 Jellyfin，電視、手機上都看得到；伺服器上的影片檔不會動", "Saved on Jellyfin for TVs and phones; the video file on the server isn't touched"))
-                    .font(theme::font(12.0))
-                    .color(p.muted),
-            );
+            // 存超過 10 秒：說明伺服器還在存（一次加好幾個新標籤、人物時可能要一兩分鐘）
+            let slow = d.saving && d.saving_since.is_some_and(|t| t.elapsed() > std::time::Duration::from_secs(10));
+            let note = if slow {
+                tr!("Jellyfin 還在儲存：一次加好幾個新標籤、人物時可能要一兩分鐘，請稍候", "Jellyfin is still saving: adding several new tags or people can take a minute or two")
+            } else {
+                tr!("存到 Jellyfin，電視、手機上都看得到；伺服器上的影片檔不會動", "Saved on Jellyfin for TVs and phones; the video file on the server isn't touched")
+            };
+            if d.saving {
+                ui.ctx().request_repaint_after(std::time::Duration::from_secs(1));
+            }
+            ui.label(RichText::new(note).font(theme::font(12.0)).color(p.muted));
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 let label = if d.saving { tr!("正在儲存…", "Saving…") } else { tr!("儲存", "Save") };
                 if Btn::new(label).primary().enabled(changed && year_ok && !d.saving).show(ui).clicked() {
@@ -945,6 +954,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
             }
         }
         d.saving = true;
+        d.saving_since = Some(std::time::Instant::now());
         d.error = None;
         let info = JfInfo { year, ..d.info.clone() };
         let (id, user, cover, remove_cover) = (d.id.clone(), d.user.clone(), d.cover.as_ref().map(|c| c.1.clone()), d.remove_cover);
@@ -953,9 +963,10 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         app.spawn(
             async move {
                 tokio::task::spawn_blocking(move || {
-                    // 送出後沒收到回應（伺服器忙、逾時）時，Jellyfin 可能其實已經存好了：讀回來比對，都改到了就算成功
+                    // 送出後沒收到回應（伺服器忙、逾時、連線斷掉）時，Jellyfin 可能還在存或其實已經存好了：
+                    // 每 3 秒讀回來比對，最多再等 45 秒，都改到了就算成功
                     if let Err(e) = jf.set_info(&user, &id, &info) {
-                        let saved = jf.item_info(&user, &id).is_ok_and(|got| jellyfin::unsaved(&info, &got).is_empty());
+                        let saved = jf.info_landed(&user, &id, &info, std::time::Duration::from_secs(45));
                         if !saved {
                             return Err(e);
                         }

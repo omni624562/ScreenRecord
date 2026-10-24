@@ -321,7 +321,7 @@ impl Jellyfin {
             }
         };
         let item = with_details(&body, x).ok_or_else(|| tr!("Jellyfin 的影片資料看不懂", "Couldn't understand Jellyfin's item data").to_string())?;
-        self.call_body(agent().post(&format!("{}/Items/{id}", self.url)), &item).map(|_| ())
+        self.call_body(agent_save().post(&format!("{}/Items/{id}", self.url)), &item).map(|_| ())
     }
 
     /// 換掉人物的照片（人物的主要圖片；不像影片封面那樣補橫幅圖、縮圖）
@@ -786,7 +786,7 @@ impl Jellyfin {
             Err(_) => self.call(agent().get(&format!("{}/Users/{user}/Items/{id}", self.url)))?.into_string().map_err(|e| e.to_string())?,
         };
         let item = f(&body).ok_or_else(|| tr!("Jellyfin 的影片資料看不懂", "Couldn't understand Jellyfin's item data").to_string())?;
-        self.call_body(agent().post(&format!("{}/Items/{id}", self.url)), &item).map(|_| ())
+        self.call_body(agent_save().post(&format!("{}/Items/{id}", self.url)), &item).map(|_| ())
     }
 
     /// 用到這個人物（演員）或標籤的影片編號（只差前後空白、大小寫、全形半形的算同一個）；太多時讀到 2 萬支為止
@@ -878,8 +878,22 @@ impl Jellyfin {
             Err(_) => self.call(agent().get(&format!("{}/Users/{user}/Items/{id}", self.url)))?.into_string().map_err(|e| e.to_string())?,
         };
         let item = with_info(&body, info).ok_or_else(|| tr!("Jellyfin 的影片資料看不懂", "Couldn't understand Jellyfin's item data").to_string())?;
-        // 存檔時 Jellyfin 要寫中繼資料、伺服器忙（例如剛讀完一頁縮圖）時可能超過 15 秒：等久一點
-        self.call_body(agent_long().post(&format!("{}/Items/{id}", self.url)), &item).map(|_| ())
+        self.call_body(agent_save().post(&format!("{}/Items/{id}", self.url)), &item).map(|_| ())
+    }
+
+    /// 存影片資訊出錯（逾時、連線斷掉）時：Jellyfin 可能還在存或其實已經存好了。每 3 秒讀回來比對一次，
+    /// 最多等 wait；都改到了回傳 true
+    pub fn info_landed(&self, user: &str, id: &str, info: &JfInfo, wait: Duration) -> bool {
+        let until = std::time::Instant::now() + wait;
+        loop {
+            if self.item_info(user, id).is_ok_and(|got| unsaved(info, &got).is_empty()) {
+                return true;
+            }
+            if std::time::Instant::now() >= until {
+                return false;
+            }
+            std::thread::sleep(Duration::from_secs(3));
+        }
     }
 
     /// 從 Jellyfin 刪掉這支影片（伺服器上的檔案也一起刪，不會進資源回收筒）
@@ -3000,6 +3014,13 @@ fn agent() -> ureq::Agent {
     A.clone()
 }
 
+/// 存影片資料（POST /Items/{id}）用：Jellyfin 存標籤、人物時要整理資料表，媒體庫大、一次加好幾個新標籤時
+/// 可能要一兩分鐘才回應，等久一點（逾時不重送，見 resend）
+fn agent_save() -> ureq::Agent {
+    static A: std::sync::LazyLock<ureq::Agent> = std::sync::LazyLock::new(|| agent_with(Duration::from_secs(180)));
+    A.clone()
+}
+
 /// 下載整支影片用：每次讀等久一點（NAS 從硬碟休眠醒來要幾秒）
 fn agent_long() -> ureq::Agent {
     static A: std::sync::LazyLock<ureq::Agent> = std::sync::LazyLock::new(|| agent_with(Duration::from_secs(60)));
@@ -3080,6 +3101,21 @@ mod tests {
     use super::*;
     use std::io::{BufRead, BufReader, Write};
     use std::net::TcpListener;
+
+    #[test]
+    fn a_slow_save_counts_once_it_reads_back_right() {
+        // 第一次讀回來還是舊的（伺服器還在存），3 秒後再讀就是新的
+        let (url, h) = serve_seq(vec![("200 OK", r#"{"Name":"舊","Tags":[]}"#.into()), ("200 OK", r#"{"Name":"新","Tags":["中出","多P"]}"#.into())]);
+        let jf = Jellyfin::new(&url, "k").unwrap();
+        let want = JfInfo { title: "新".into(), tags: vec!["多P".into(), "中出".into()], ..Default::default() };
+        assert!(jf.info_landed("u", "x", &want, Duration::from_secs(10)));
+        assert_eq!(h.join().unwrap().len(), 2);
+        // 一直沒改到：時間到就放棄
+        let (url, h) = serve_seq(vec![("200 OK", r#"{"Name":"舊"}"#.into())]);
+        let jf = Jellyfin::new(&url, "k").unwrap();
+        assert!(!jf.info_landed("u", "x", &want, Duration::from_millis(1)));
+        h.join().unwrap();
+    }
 
     #[test]
     fn a_post_on_a_dropped_connection_is_sent_again() {
