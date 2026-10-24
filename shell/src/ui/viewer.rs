@@ -71,6 +71,8 @@ pub struct Viewer {
     seeking: Option<bool>,
     /// 後退 / 快轉（按住加速）
     skip: Skipper,
+    /// 控制列進度列右邊那些按鈕實際用掉的寬度（上一格量的；進度列用剩下的，不再寫死估計值）
+    tools_w: f32,
     volume: f32,
     muted: bool,
     loading: bool,
@@ -277,6 +279,7 @@ fn open_with(app: &mut UiApp, entry: LibraryEntry, remote: Option<Remote>, start
         video_size: Vec2::ZERO,
         seeking: None,
         skip: Skipper::default(),
+        tools_w: 0.0,
         volume: VOLUME.load(Ordering::Relaxed) as f32 / 100.0,
         muted: false,
         loading: true,
@@ -1681,12 +1684,13 @@ fn video_bar(v: &mut Viewer, ui: &mut egui::Ui, act: &mut Act) {
     }
     v.skip.buttons(ui, player);
     ui.label(RichText::new(format!("{} / {}", short_clock(t), short_clock(dur))).font(theme::mono(12.5)));
-    // 速度、全螢幕、音量（右邊），進度列填滿中間
-    let vol_w = 140.0;
-    let chap_w = if chapters.is_empty() { 0.0 } else { 84.0 };
-    let tools_w = 76.0 + 36.0 + if audio { 0.0 } else { 36.0 } + if has_subs { 36.0 } else { 0.0 };
-    let track_w = (ui.available_width() - vol_w - chap_w - tools_w - 16.0).max(80.0);
+    // 章節、字幕、擷取、速度、快速鍵、全螢幕、音量（右邊），進度列填滿中間：
+    // 右邊用掉多少寬度是上一格畫完量的（第一格先估），增減按鈕都不會把音量擠出畫面
+    let guess = 380.0 + if chapters.is_empty() { 0.0 } else { 84.0 } + if has_subs { 36.0 } else { 0.0 };
+    let tools_w = if v.tools_w > 0.0 { v.tools_w } else { guess };
+    let track_w = (ui.available_width() - tools_w - 4.0).max(80.0);
     let (rect, resp) = ui.allocate_exact_size(vec2(track_w, 28.0), Sense::click_and_drag());
+    let tools_from = rect.max.x;
     let track = Rect::from_center_size(rect.center(), vec2(rect.width() - 12.0, 6.0));
     let painter = ui.painter();
     painter.rect_filled(track, CornerRadius::same(3), p.surface2);
@@ -1848,6 +1852,12 @@ fn video_bar(v: &mut Viewer, ui: &mut egui::Ui, act: &mut Act) {
             player.set_volume(v.volume_now());
         }
         resp.on_hover_text(trf!("音量 {:.0}%（↑↓ 調整）", "Volume {:.0}% (↑↓ to adjust)", v.volume_now() * 100.0));
+    }
+    // 記下右邊實際用掉的寬度（和這一格用的不同時再畫一次，下一格就對了）
+    let used = ui.min_rect().max.x.max(ui.cursor().min.x) - tools_from;
+    if (used - v.tools_w).abs() > 0.5 {
+        v.tools_w = used;
+        ui.ctx().request_repaint();
     }
 }
 
