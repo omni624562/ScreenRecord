@@ -337,6 +337,41 @@ pub fn quick_icons(ui: &mut egui::Ui, groups: &[Vec<Node>], hot: bool, slots: us
     pick
 }
 
+/// 寬的卡片（最近錄影「大」）：照 wanted 的順序露出放得下的圖示（製作在子選單裡也拿出來），其他在「⋯」
+pub fn wide_icons(ui: &mut egui::Ui, groups: &[Vec<Node>], hot: bool, wanted: &[EntryAction], more_tip: &str) -> Option<EntryAction> {
+    let mut pick = None;
+    let all: Vec<&Item> = groups
+        .iter()
+        .flatten()
+        .flat_map(|n| match n {
+            Node::One(it) => std::slice::from_ref(it).iter(),
+            Node::Sub { items, .. } => items.iter(),
+        })
+        .collect();
+    // 每個圖示 28 點，最後留一個給「⋯」
+    let room = ((ui.available_width() - 28.0) / 28.0).floor().max(0.0) as usize;
+    let mut shown = vec![];
+    for (i, want) in wanted.iter().enumerate() {
+        if shown.len() >= room {
+            break;
+        }
+        let Some(it) = all.iter().find(|it| it.action == *want) else { continue };
+        let Some(icon) = it.icon.or((*want == EntryAction::Export).then_some(Icon::Fast)) else { continue };
+        shown.push(it.action);
+        let tip = it.blocked.clone().unwrap_or_else(|| if it.tip.is_empty() { it.label.clone() } else { format!("{}\n{}", it.label, it.tip) });
+        if Btn::icon_only(icon).ghost().small().quiet(!hot && i != 0).enabled(it.blocked.is_none()).tooltip(tip).show(ui).clicked() {
+            pick = Some(it.action);
+        }
+    }
+    let more = Btn::icon_only(Icon::More).ghost().small().quiet(!hot).tooltip(more_tip).show(ui);
+    egui::Popup::menu(&more).show(|ui| {
+        if let Some(a) = menu_except(ui, groups, &shown) {
+            pick = Some(a);
+        }
+    });
+    pick
+}
+
 /// 清單上直接露出的圖示固定的位置：播放、剪輯、傳到媒體庫
 fn slot_of(a: EntryAction) -> Option<usize> {
     match a {
