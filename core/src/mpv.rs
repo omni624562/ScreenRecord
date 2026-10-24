@@ -178,6 +178,16 @@ fn lib() -> Result<Arc<Lib>, String> {
         if p.is_absolute() && !p.is_file() {
             continue;
         }
+        // 不認得的 DLL 不載入（例如從網路下載的 exe 放在「下載」資料夾，旁邊被放了同名的 DLL）
+        if p.is_absolute() && !crate::mpv_download::dll_trusted(&p) {
+            crate::warn!("[播放] {} 不是本程式下載或在「外部元件」選來安裝的版本，為了安全沒有載入", p.display());
+            errors.push(crate::trf!(
+                "{} 不是認得的版本（要用它請在「設定 → 外部元件」選這個檔案安裝）",
+                "{} isn't a recognized version (to use it, install it from Settings → Components)",
+                p.display()
+            ));
+            continue;
+        }
         match Lib::open(&p) {
             Ok(l) => {
                 crate::info!("[mpv] 已載入 {}", p.display());

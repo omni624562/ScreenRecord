@@ -63,9 +63,32 @@ pub struct SettingsStore {
     saving: Mutex<()>,
 }
 
+/// 設定檔裡加密保存的 Jellyfin 金鑰（記憶體裡還是放在 jellyfinKey，其他地方照常讀）
+const SEALED_KEY: &str = "jellyfinKeySealed";
+
 /// 讀一份設定檔（讀不到、格式壞了時 None）
 fn read_file(path: &std::path::Path) -> Option<SavedSettings> {
-    std::fs::read_to_string(path).ok().and_then(|t| serde_json::from_str(&t).ok())
+    let mut s: SavedSettings = std::fs::read_to_string(path).ok().and_then(|t| serde_json::from_str(&t).ok())?;
+    if let Some(Value::Object(ui)) = &mut s.ui {
+        if let Some(Value::String(sealed)) = ui.remove(SEALED_KEY) {
+            match crate::secret::unprotect(&sealed) {
+                Some(key) => drop(ui.insert(crate::jellyfin::API_KEY.into(), Value::String(key))),
+                None => crate::warn!("Jellyfin API 金鑰解不開（可能換了 Windows 帳號），請到設定重新輸入"),
+            }
+        }
+    }
+    Some(s)
+}
+
+/// 寫進檔案的那一份：金鑰加密（設定檔被別人拿到、備份到雲端也看不到）；沒辦法加密時照原樣
+fn seal(v: &mut Value) {
+    let Some(Value::Object(ui)) = v.get_mut("ui") else { return };
+    ui.remove(SEALED_KEY);
+    let key = ui.get(crate::jellyfin::API_KEY).and_then(Value::as_str).filter(|k| !k.is_empty()).map(str::to_string);
+    if let Some(sealed) = key.and_then(|k| crate::secret::protect(&k)) {
+        ui.remove(crate::jellyfin::API_KEY);
+        ui.insert(SEALED_KEY.into(), Value::String(sealed));
+    }
 }
 
 impl SettingsStore {
@@ -132,6 +155,7 @@ impl SettingsStore {
         if let Value::Object(m) = &mut v {
             m.remove("rev");
         }
+        seal(&mut v);
         // 先寫暫存檔再取代：寫到一半當機、停電時原本的設定還在
         if let Err(e) = crate::paths::write_atomic(&self.file, serde_json::to_string_pretty(&v).unwrap_or_default().as_bytes()) {
             crate::error!("無法儲存設定：{e}");
@@ -205,6 +229,23 @@ mod tests {
         let v = SettingsStore::new(dir.path().join("settings.json")).load();
         assert_eq!((v.check_updates, v.prefer_gpu), (Some(true), Some(true)));
         assert_eq!(s.load().rev, 101);
+    }
+
+    #[test]
+    fn sealed_key_is_dropped_when_the_key_is_cleared() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("settings.json");
+        // 舊的加密金鑰：使用者把金鑰清掉後不能再冒出來
+        std::fs::write(&file, r#"{"ui":{"jellyfinKeySealed":"AAAA"}}"#).unwrap();
+        let s = SettingsStore::new(file.clone());
+        assert!(s.load().ui.unwrap().get(SEALED_KEY).is_none());
+        s.save(SettingsPatch { ui: Some(json!({ "jellyfinKeySealed": "AAAA" })), ..Default::default() });
+        assert!(!std::fs::read_to_string(&file).unwrap().contains(SEALED_KEY));
+        // 有金鑰：讀回來一樣（Windows 上檔案裡是加密的）
+        s.save(SettingsPatch { ui: Some(json!({ "jellyfinKey": "k123" })), ..Default::default() });
+        let text = std::fs::read_to_string(&file).unwrap();
+        assert_eq!(text.contains("k123"), !cfg!(windows), "{text}");
+        assert_eq!(SettingsStore::new(file).load().ui.unwrap()["jellyfinKey"], json!("k123"));
     }
 
     #[test]

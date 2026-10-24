@@ -144,7 +144,7 @@ impl Installer {
     fn install(&self, url: &str, sha: &str, size: Option<u64>, exe: &Path) -> Result<(), String> {
         crate::info!("[更新] 下載新版 exe");
         let new = sibling(exe, ".new");
-        let result = self.download(url, sha, size, &new).and_then(|()| swap(exe, &new));
+        let result = self.download(url, sha, size, &new).and_then(|()| crate::codesign::update_allowed(&crate::codesign::signer(exe), &crate::codesign::signer(&new))).and_then(|()| swap(exe, &new));
         if result.is_err() {
             let _ = std::fs::remove_file(&new);
         }

@@ -1558,6 +1558,9 @@ impl Recorder {
         let mut cmd = command(&ffmpeg);
         cmd.args(&args).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
         let mut child = cmd.spawn().map_err(|e| e.to_string())?;
+        if let (Some(a), Some(pid)) = (&audio, child.id()) {
+            a.allow(pid);
+        }
         let mut stdin = child.stdin.take();
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();

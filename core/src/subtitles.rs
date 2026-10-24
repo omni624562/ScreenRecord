@@ -27,6 +27,8 @@ pub struct Model {
     pub url: &'static str,
     /// 大約幾 MB
     pub mb: u32,
+    /// whisper.cpp 官方公布的 SHA-1（models/README.md）：下載或自己選的檔案要一樣才用（被換掉、損壞的不用）
+    pub sha1: &'static str,
     /// 說明（中文、英文）
     pub labels: [&'static str; 2],
     /// 短的名稱（中文、英文）
@@ -53,6 +55,7 @@ pub const MODELS: [Model; 3] = [
         file: "ggml-base.bin",
         url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin",
         mb: 148,
+        sha1: "465707469ff3a37a2b9b8d8f89f2f99de7299dac",
         labels: ["標準（約 150 MB，較快）", "Standard (about 150 MB, faster)"],
         short: ["標準（較快）", "Standard (faster)"],
         translates: true,
@@ -62,6 +65,7 @@ pub const MODELS: [Model; 3] = [
         file: "ggml-small.bin",
         url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin",
         mb: 488,
+        sha1: "55356645c2b361a969dfd0ef2c5a50d530afd8d5",
         labels: ["精準（約 490 MB，較慢）", "Accurate (about 490 MB, slower)"],
         short: ["精準（較慢）", "Accurate (slower)"],
         translates: true,
@@ -71,6 +75,7 @@ pub const MODELS: [Model; 3] = [
         file: "ggml-large-v3-turbo-q5_0.bin",
         url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin",
         mb: 574,
+        sha1: "e050f7970618a659205450ad97eb95a18d69c9ee",
         labels: ["最精準（約 570 MB，最慢；中文建議）", "Most accurate (about 570 MB, slowest; best for Chinese)"],
         short: ["最精準（最慢）", "Most accurate (slowest)"],
         translates: false,
@@ -158,6 +163,18 @@ pub fn model_size_ok(m: &Model, path: &Path) -> bool {
     std::fs::metadata(path).is_ok_and(|md| md.len() > m.mb as u64 * 900_000)
 }
 
+fn hex(d: &[u8]) -> String {
+    d.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// 檔案的 SHA-1 和官方公布的一樣
+pub fn model_hash_ok(m: &Model, path: &Path) -> bool {
+    use sha1::Digest;
+    let Ok(mut f) = std::fs::File::open(path) else { return false };
+    let mut h = sha1::Sha1::new();
+    std::io::copy(&mut f, &mut h).is_ok() && hex(&h.finalize()) == m.sha1
+}
+
 /// 下載模型（會等到下載完成；progress：千分比；cancel 設成 true 就停止）
 pub fn download_model(m: &Model, progress: &AtomicU32, cancel: &AtomicBool) -> Result<(), String> {
     use std::io::{Read, Write};
@@ -170,6 +187,7 @@ pub fn download_model(m: &Model, progress: &AtomicU32, cancel: &AtomicBool) -> R
     let mut out = std::fs::File::create(&part).map_err(|e| trf!("無法寫入檔案：{e}", "Couldn't write the file: {e}"))?;
     let mut buf = vec![0u8; 256 * 1024];
     let mut got = 0u64;
+    let mut hash = <sha1::Sha1 as sha1::Digest>::new();
     loop {
         if cancel.load(Ordering::Relaxed) {
             drop(out);
@@ -181,6 +199,7 @@ pub fn download_model(m: &Model, progress: &AtomicU32, cancel: &AtomicBool) -> R
             break;
         }
         out.write_all(&buf[..n]).map_err(|e| trf!("無法寫入檔案：{e}", "Couldn't write the file: {e}"))?;
+        sha1::Digest::update(&mut hash, &buf[..n]);
         got += n as u64;
         progress.store(((got * 1000) / total.max(1)).min(1000) as u32, Ordering::Relaxed);
     }
@@ -188,6 +207,14 @@ pub fn download_model(m: &Model, progress: &AtomicU32, cancel: &AtomicBool) -> R
     if !magic_ok(&part) || got < m.mb as u64 * 900_000 {
         let _ = std::fs::remove_file(&part);
         return Err(tr!("下載的語音模型不完整，請再試一次", "The downloaded speech model is incomplete. Please try again.").into());
+    }
+    let digest = hex(&sha1::Digest::finalize(hash));
+    if digest != m.sha1 {
+        let _ = std::fs::remove_file(&part);
+        crate::warn!("[字幕] 語音模型 {} 檢查碼不符：{digest}", m.file);
+        return Err(
+            tr!("下載的語音模型和官方發佈的不一樣（可能下載時損壞），請再試一次", "The downloaded speech model doesn't match the official one (it may have been damaged). Please try again.").into()
+        );
     }
     std::fs::rename(&part, dir.join(m.file)).map_err(|e| trf!("無法儲存語音模型：{e}", "Couldn't save the speech model: {e}"))?;
     crate::info!("[字幕] 已下載語音模型 {}（{} MB）", m.file, got / 1_000_000);
@@ -876,6 +903,13 @@ echo "progress=end"
             "-hide_banner -nostats -loglevel error -progress pipe:1 -i C:\\影片\\a.mp4 -vn -map 0:a:0 -af whisper=model=ggml-base.bin:language=zh:queue=10:format=srt:destination=job.srt -f null -"
         );
         assert!(MODELS.iter().all(|m| m.url.ends_with(m.file)));
+        assert!(MODELS.iter().all(|m| m.sha1.len() == 40));
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("m.bin");
+        std::fs::write(&f, "abc").unwrap();
+        let m = Model { sha1: "a9993e364706816aba3e25717850c26c9cd0d89d", ..MODELS[0] };
+        assert!(model_hash_ok(&m, &f));
+        assert!(!model_hash_ok(&MODELS[0], &f));
     }
 
     #[test]

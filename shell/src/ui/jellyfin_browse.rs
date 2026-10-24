@@ -568,7 +568,7 @@ pub fn download_then(app: &mut UiApp, item: (String, String), then: super::Entry
             tokio::task::spawn_blocking(move || -> Result<std::path::PathBuf, String> {
                 match free_name(&dir, &file) {
                     Some(to) => jf.download(&id, &to).map(|_| to),
-                    None => Ok(dir.join(&file)),
+                    None => Ok(dir.join(safe_file_name(&file))),
                 }
             })
             .await
@@ -591,13 +591,30 @@ pub fn download_then(app: &mut UiApp, item: (String, String), then: super::Entry
 
 /// 下載的檔名：還沒有就用原本的；同名同大小（已經下載過）None；同名不同的加上 (2)、(3)…
 fn free_name(dir: &std::path::Path, file: &str) -> Option<std::path::PathBuf> {
-    let file = if file.trim().is_empty() { "jellyfin.mp4" } else { file };
+    let file = safe_file_name(file);
+    let file = file.as_str();
     let first = dir.join(file);
     if !first.exists() {
         return Some(first);
     }
     let (stem, ext) = file.rsplit_once('.').map_or((file, String::new()), |(s, e)| (s, format!(".{e}")));
     (2..1000).map(|i| dir.join(format!("{stem} ({i}){ext}"))).find(|p| !p.exists())
+}
+
+/// 伺服器給的檔名只當作名字用：拿掉資料夾（/、\\、..）與 Windows 不能用的字元；
+/// 副檔名不是影片的（例如 .exe、.lnk）加上 .mp4，下載的東西不會變成可以執行的檔案
+fn safe_file_name(file: &str) -> String {
+    const VIDEO: [&str; 22] = ["mp4", "m4v", "mkv", "mov", "avi", "wmv", "webm", "ts", "mts", "m2ts", "flv", "f4v", "mpg", "mpeg", "3gp", "ogv", "vob", "rm", "rmvb", "asf", "divx", "mxf"];
+    let last = file.rsplit(['/', '\\']).next().unwrap_or("");
+    let clean: String = last.chars().map(|c| if c.is_control() || "<>:\"|?*".contains(c) { '_' } else { c }).collect();
+    let clean = clean.trim().trim_start_matches('.').trim_end_matches(['.', ' ']).to_string();
+    if clean.is_empty() {
+        return "jellyfin.mp4".into();
+    }
+    match clean.rsplit_once('.') {
+        Some((_, ext)) if VIDEO.contains(&ext.to_ascii_lowercase().as_str()) => clean,
+        _ => format!("{clean}.mp4"),
+    }
 }
 
 /// 在檢視器裡串流播放；上次看到一半的從那裡接著看。同一排（資料夾、「繼續觀看」…）的其他影片
@@ -2193,6 +2210,12 @@ mod tests {
         std::fs::write(dir.join("a.mp4"), "x").unwrap();
         assert_eq!(free_name(&dir, "a.mp4"), Some(dir.join("a (2).mp4")));
         assert_eq!(free_name(&dir, ""), Some(dir.join("jellyfin.mp4")));
+        // 伺服器給的檔名不能跑到資料夾外面、不能變成程式
+        assert_eq!(safe_file_name("..\\..\\Startup\\run.bat"), "run.bat.mp4");
+        assert_eq!(safe_file_name("../x/影片.MKV"), "影片.MKV");
+        assert_eq!(safe_file_name("C:a:b.mp4"), "C_a_b.mp4");
+        assert_eq!(safe_file_name(".."), "jellyfin.mp4");
+        assert_eq!(safe_file_name("練琴"), "練琴.mp4");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

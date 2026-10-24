@@ -261,6 +261,13 @@ pub fn install_model_file(m: &Model, src: &Path) -> Result<(), String> {
     if !subtitles::model_size_ok(m, src) {
         return Err(trf!("檔案不完整（應該約 {} MB），請重新下載", "The file is incomplete (it should be about {} MB). Please download it again", m.mb));
     }
+    if !subtitles::model_hash_ok(m, src) {
+        return Err(tr!(
+            "這個檔案和官方發佈的模型不一樣（可能下載不完整或被改過），請重新下載",
+            "This file doesn't match the official model (it may be incomplete or modified). Please download it again"
+        )
+        .into());
+    }
     let target = subtitles::model_install_path(m);
     if let Some(dir) = target.parent() {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;

@@ -17,7 +17,7 @@ use crate::{tr, trf};
 use std::collections::VecDeque;
 use std::io::{ErrorKind, Write};
 use std::net::{TcpListener, TcpStream};
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
 use std::sync::mpsc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -475,6 +475,12 @@ impl Timeline {
 /// 送往 FFmpeg 的 TCP 連線（不等待：寫不完的部分保留到下一次）
 struct Output {
     listener: TcpListener,
+    /// 我們這邊的埠
+    port: u16,
+    /// 錄影用的 FFmpeg 的程序編號（0 = 還不知道）：只把聲音送給它
+    owner: Arc<AtomicU32>,
+    /// 連進來、還在確認是誰的連線
+    waiting: Vec<(TcpStream, std::net::SocketAddr, Instant)>,
     sock: Option<TcpStream>,
     pending: VecDeque<u8>,
     overflow_warned: bool,
@@ -483,12 +489,41 @@ struct Output {
 
 impl Output {
     fn accept(&mut self) {
-        // 只接受 FFmpeg 的一條連線，其他的直接關掉
-        while let Ok((sock, _)) = self.listener.accept() {
-            if self.sock.is_none() && sock.set_nonblocking(true).is_ok() {
-                let _ = sock.set_nodelay(true);
-                self.sock = Some(sock);
+        // 只接受錄影用的 FFmpeg 的一條連線：別的程式（包括這台電腦的其他使用者）連進來聽不到錄音
+        while let Ok((sock, peer)) = self.listener.accept() {
+            if self.sock.is_none() && self.waiting.len() < 4 {
+                self.waiting.push((sock, peer, Instant::now()));
             }
+        }
+        let want = self.owner.load(Ordering::Relaxed);
+        let mut i = 0;
+        while i < self.waiting.len() && self.sock.is_none() {
+            let (_, peer, at) = &self.waiting[i];
+            let verdict = match tcp_owner(*peer, self.port) {
+                // FFmpeg 剛啟動、還不知道它的編號：等一下
+                Some(_) if want == 0 => None,
+                Some(pid) => Some(pid == want),
+                // 查不到是誰（不是 Windows、系統查詢失敗）：照舊接受
+                None => Some(true),
+            };
+            match verdict {
+                Some(true) => {
+                    let (sock, ..) = self.waiting.remove(i);
+                    if sock.set_nonblocking(true).is_ok() {
+                        let _ = sock.set_nodelay(true);
+                        self.sock = Some(sock);
+                    }
+                }
+                Some(false) => {
+                    (self.log)(LogLevel::Warn, tr!("有別的程式想接收錄音的聲音，已拒絕", "Another program tried to receive the recording's audio and was refused").into());
+                    self.waiting.remove(i);
+                }
+                None if at.elapsed() > Duration::from_secs(10) => drop(self.waiting.remove(i)),
+                None => i += 1,
+            }
+        }
+        if self.sock.is_some() {
+            self.waiting.clear();
         }
     }
 
@@ -549,6 +584,40 @@ impl Output {
     }
 }
 
+/// 本機 TCP 連線是哪個程序開的：peer 是對方的位址，port 是我們這邊的埠。查不到時 None
+#[cfg(windows)]
+fn tcp_owner(peer: std::net::SocketAddr, port: u16) -> Option<u32> {
+    use windows::Win32::NetworkManagement::IpHelper::{GetExtendedTcpTable, MIB_TCPROW_OWNER_PID, TCP_TABLE_OWNER_PID_CONNECTIONS};
+    const AF_INET: u32 = 2;
+    let mut size = 0u32;
+    // SAFETY: 先問要多大，再用夠大的緩衝（u32 對齊）讀整張表；列數不超過緩衝
+    unsafe {
+        GetExtendedTcpTable(None, &mut size, false, AF_INET, TCP_TABLE_OWNER_PID_CONNECTIONS, 0);
+        for _ in 0..3 {
+            let mut buf = vec![0u32; size as usize / 4 + 64];
+            let mut len = (buf.len() * 4) as u32;
+            match GetExtendedTcpTable(Some(buf.as_mut_ptr().cast()), &mut len, false, AF_INET, TCP_TABLE_OWNER_PID_CONNECTIONS, 0) {
+                0 => {
+                    let n = (buf[0] as usize).min((buf.len() - 1) / 6);
+                    let rows = std::slice::from_raw_parts(buf.as_ptr().add(1) as *const MIB_TCPROW_OWNER_PID, n);
+                    let be = |p: u32| u16::from_be(p as u16);
+                    // 編號 0：系統沒給（Wine 等），當作查不到
+                    return rows.iter().find(|r| be(r.dwLocalPort) == peer.port() && be(r.dwRemotePort) == port).map(|r| r.dwOwningPid).filter(|p| *p != 0);
+                }
+                // 表變大了：重來
+                122 => size = len,
+                _ => return None,
+            }
+        }
+        None
+    }
+}
+
+#[cfg(not(windows))]
+fn tcp_owner(_: std::net::SocketAddr, _: u16) -> Option<u32> {
+    None
+}
+
 enum Cmd {
     Frame(f64, i64),
     Flush(i64, mpsc::Sender<()>),
@@ -578,6 +647,8 @@ pub struct AudioPipe {
     last_sound: Arc<AtomicU64>,
     /// 最近的音量（f32 的位元；[系統聲音, 麥克風]，u32::MAX 表示沒錄這個來源）
     levels: Arc<[std::sync::atomic::AtomicU32; 2]>,
+    /// 錄影用的 FFmpeg 的程序編號（Output::owner）
+    owner: Arc<AtomicU32>,
     tx: mpsc::Sender<Cmd>,
     thread: std::sync::Mutex<Option<std::thread::JoinHandle<()>>>,
 }
@@ -601,11 +672,13 @@ impl AudioPipe {
         let sound_at = last_sound.clone();
         let levels = Arc::new([std::sync::atomic::AtomicU32::new(u32::MAX), std::sync::atomic::AtomicU32::new(u32::MAX)]);
         let levels_out = levels.clone();
+        let owner = Arc::new(AtomicU32::new(0));
+        let owner_in = owner.clone();
         let thread = std::thread::Builder::new().name("audio".into()).spawn(move || {
             let mut tl = Timeline::with_tracks(&specs, opener, log.clone(), now_100ns(), separate);
             silent_flag.store(tl.silent_mask(), Ordering::Relaxed);
             let _ = desc_tx.send(tl.describe());
-            let mut out = Output { listener, sock: None, pending: VecDeque::new(), overflow_warned: false, log };
+            let mut out = Output { listener, port, owner: owner_in, waiting: vec![], sock: None, pending: VecDeque::new(), overflow_warned: false, log };
             let mut next = Instant::now() + TICK;
             loop {
                 let wait = next.saturating_duration_since(Instant::now());
@@ -641,7 +714,12 @@ impl AudioPipe {
         })?;
         // 開啟音訊裝置卡住時不要一直等（錄影的開始、暫停、停止都在等這裡）：裝置稍後好了照樣會送聲音
         let desc = desc_rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap_or_else(|_| tr!("音訊裝置沒有回應", "Audio device isn't responding").to_string());
-        Ok(AudioPipe { port, channels, desc, synced, silent, sources, last_sound, levels, tx, thread: std::sync::Mutex::new(Some(thread)) })
+        Ok(AudioPipe { port, channels, desc, synced, silent, sources, last_sound, levels, owner, tx, thread: std::sync::Mutex::new(Some(thread)) })
+    }
+
+    /// 錄影用的 FFmpeg 啟動了：只把聲音送給這個程序
+    pub fn allow(&self, pid: u32) {
+        self.owner.store(pid, Ordering::Relaxed);
     }
 
     /// 最近的音量（0～1）：（系統聲音, 麥克風），沒錄的來源是 None
@@ -939,6 +1017,7 @@ mod tests {
         assert_eq!((pipe.sources(), pipe.silent()), (SILENT_SYSTEM, 0));
         let args = pipe.input_args();
         assert_eq!(args.last().unwrap(), &format!("tcp://127.0.0.1:{}", pipe.port()));
+        pipe.allow(std::process::id());
         let mut conn = TcpStream::connect(("127.0.0.1", pipe.port())).unwrap();
         pipe.on_video_frame(0.0, now_100ns());
         pipe.flush_to_now();
@@ -953,6 +1032,32 @@ mod tests {
     }
 
     const BYTES: usize = crate::audio::BYTES_PER_FRAME;
+
+    /// Windows：別的程序連進來拿不到聲音
+    #[cfg(windows)]
+    #[test]
+    fn only_the_recording_ffmpeg_gets_the_audio() {
+        use std::io::Read;
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = l.local_addr().unwrap().port();
+        let c = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        let (_s, peer) = l.accept().unwrap();
+        assert_eq!(peer.port(), c.local_addr().unwrap().port());
+        assert_eq!(tcp_owner(peer, port), Some(std::process::id()));
+        let (log, messages) = logs();
+        let pipe =
+            AudioPipe::new(vec![AudioSourceSpec { loopback: true, mic_id: String::new(), app: String::new() }], fake_opener(Default::default(), Arc::new(AtomicBool::new(false))), log, false).unwrap();
+        pipe.allow(std::process::id() + 1);
+        let mut conn = TcpStream::connect(("127.0.0.1", pipe.port())).unwrap();
+        pipe.on_video_frame(0.0, now_100ns());
+        pipe.flush_to_now();
+        std::thread::sleep(Duration::from_millis(200));
+        pipe.close();
+        let mut got = Vec::new();
+        let _ = conn.read_to_end(&mut got);
+        assert!(got.is_empty(), "{}", got.len());
+        assert!(messages.lock().unwrap_or_else(|e| e.into_inner()).iter().any(|m| m.contains("拒絕") || m.contains("refused")));
+    }
 
     #[test]
     fn peaks_follow_each_source() {

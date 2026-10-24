@@ -15,6 +15,8 @@ pub const MPV_BUILD: &str = "20261011-git-accb7b2821";
 /// 壓縮檔裡的 DLL
 const DLL_NAME: &str = "libmpv-2.dll";
 pub const MPV_SHA256: &str = "cf63b4ce66e03e5e70acf2648cbc3177656c77c5b9583e16d83efc58801182b7";
+/// 壓縮檔裡那個 libmpv-2.dll 的 SHA-256：載入前檢查（exe 旁邊被放了別的同名 DLL 不會被載入）
+pub const MPV_DLL_SHA256: &str = "e023856d0d2a96c66e75098c290dfd83b66a1c87740bb58152864e53e74f5ffb";
 /// 下載的大小（約幾 MB）
 pub const MPV_MB: u32 = 32;
 
@@ -113,6 +115,40 @@ fn install_archive(archive: &Path, target: &Path) -> Result<(), String> {
     finish(&tmp, target)
 }
 
+fn file_sha256(p: &Path) -> Option<String> {
+    let mut f = std::fs::File::open(p).ok()?;
+    let mut h = Sha256::new();
+    std::io::copy(&mut f, &mut h).ok()?;
+    Some(h.finalize().iter().map(|b| format!("{b:02x}")).collect())
+}
+
+/// 使用者自己選來安裝的其他版本（SHA-256 一行一個）：放在資料夾裡，不在 exe 旁邊
+fn allowed_list() -> PathBuf {
+    crate::paths::data_dir().join("mpv-allowed.txt")
+}
+
+/// 可以載入這個 DLL 嗎：本程式下載的版本，或使用者在「外部元件」自己選來安裝的檔案。
+/// Windows 以外用系統的 libmpv，不檢查
+pub fn dll_trusted(p: &Path) -> bool {
+    if !cfg!(windows) {
+        return true;
+    }
+    let Some(h) = file_sha256(p) else { return false };
+    h == MPV_DLL_SHA256 || std::fs::read_to_string(allowed_list()).is_ok_and(|t| t.lines().any(|l| l.trim() == h))
+}
+
+/// 使用者自己選的檔案：記下來，之後載入時認得
+fn allow(p: &Path) {
+    let Some(h) = file_sha256(p).filter(|h| h != MPV_DLL_SHA256) else { return };
+    let list = allowed_list();
+    let mut text = std::fs::read_to_string(&list).unwrap_or_default();
+    if !text.lines().any(|l| l.trim() == h) {
+        text.push_str(&h);
+        text.push('\n');
+        let _ = crate::paths::write_atomic(&list, text.as_bytes());
+    }
+}
+
 /// 確認是 Windows 的 DLL 再放到定位
 fn finish(tmp: &Path, target: &Path) -> Result<(), String> {
     let mut head = [0u8; 2];
@@ -123,6 +159,9 @@ fn finish(tmp: &Path, target: &Path) -> Result<(), String> {
     }
     let _ = std::fs::remove_file(target);
     std::fs::rename(tmp, target).map_err(|e| trf!("無法儲存 {}：{e}", "Couldn't save {}: {e}", crate::mpv::LIB_NAME))?;
+    if cfg!(windows) {
+        allow(target);
+    }
     crate::info!("[外部元件] 已安裝 {}", target.display());
     Ok(())
 }

@@ -13,6 +13,8 @@ regex = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "fs", "io-util", "time", "sync"] }
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 sha2 = "0.10"
+# 語音模型的檢查碼（whisper.cpp 官方公布的是 SHA-1）
+sha1 = "0.10"
 # 用 mpv 播放影片（檢視器）：執行時才載入 libmpv（不是必要的元件，見 mpv.rs）
 libloading = "0.8"
 # 下載的 libmpv 是 7z 壓縮檔（Windows 10 內建的 tar 解不了 LZMA）：純 Rust 解壓縮
@@ -57,8 +59,13 @@ windows = { version = "0.62", features = [
   "Win32_Graphics_Dxgi",
   "Win32_Graphics_Dxgi_Common",
   "Win32_Graphics_Gdi",
+  "Win32_NetworkManagement_IpHelper",
   "Win32_Media_Audio",
   "Win32_Security",
+  "Win32_Security_Cryptography",
+  "Win32_Security_Cryptography_Catalog",
+  "Win32_Security_Cryptography_Sip",
+  "Win32_Security_WinTrust",
   "Win32_Storage_FileSystem",
   "Win32_System_Com",
   "Win32_System_Com_StructuredStorage",

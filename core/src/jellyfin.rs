@@ -528,7 +528,7 @@ impl Jellyfin {
 
     /// 字幕的網址（Jellyfin 轉成 SRT 給播放器；影片檔外面的 .srt 和影片裡的文字字幕都可以）
     pub fn subtitle_url(&self, id: &str, index: u32) -> String {
-        format!("{}/Videos/{id}/{id}/Subtitles/{index}/0/Stream.srt?api_key={}", self.url, self.key)
+        crate::jf_proxy::url(&self.url, &self.key, &format!("/Videos/{id}/{id}/Subtitles/{index}/0/Stream.srt"))
     }
 
     /// 把原檔下載到 to（先寫暫存檔、顯示進度、可以取消）；回傳幾個位元組
@@ -543,7 +543,7 @@ impl Jellyfin {
 
     /// 串流播放的網址（原檔直接傳過來，不在 NAS 上轉檔；可以跳著看）
     pub fn stream_url(&self, id: &str) -> String {
-        format!("{}/Videos/{id}/stream?static=true&api_key={}", self.url, self.key)
+        crate::jf_proxy::url(&self.url, &self.key, &format!("/Videos/{id}/stream?static=true"))
     }
 
     /// 幫一支影片放上字幕（語音辨識做好的 SRT）：先用 Jellyfin 的上傳字幕（POST /Videos/{id}/Subtitles）；
@@ -1337,6 +1337,10 @@ pub fn local_path(server_root: &str, local_root: &str, server: &str) -> Option<s
     }
     let mut out = std::path::PathBuf::from(local_root.trim());
     for part in rest.split('/').filter(|p| !p.is_empty()) {
+        // 伺服器給的路徑不能跑到媒體庫資料夾外面（..）、不能是磁碟機或檔案的其他資料流（:）
+        if part == "." || part == ".." || part.contains(':') {
+            return None;
+        }
         out.push(part);
     }
     Some(out)
@@ -1539,13 +1543,7 @@ impl JfFilter {
 
 /// 把 Jellyfin 的網址參數 api_key 遮掉（寫進記錄檔時用）
 pub fn redact(text: &str) -> String {
-    match text.find("api_key=") {
-        Some(i) => {
-            let end = text[i..].find('&').map_or(text.len(), |j| i + j);
-            format!("{}api_key=…{}", &text[..i], &text[end..])
-        }
-        None => text.to_string(),
-    }
+    crate::log::redact(text)
 }
 
 /// /Items、/Views 的回應：（東西, 全部幾個）。照片、音樂等不是影片也不是資料夾的略過。
@@ -2855,13 +2853,40 @@ fn discover_at(target: std::net::SocketAddr, wait: Duration) -> Vec<(String, Str
     found
 }
 
-/// 伺服器對「who is JellyfinServer?」的回覆：{"Address":"http://192.168.1.10:8096","Name":"NAS",…}；
-/// 沒有網址時用回覆來源的 IP 加上預設的 8096
+/// 伺服器對「who is JellyfinServer?」的回覆：{"Address":"http://192.168.1.10:8096","Name":"NAS",…}。
+/// 網址一律連到「回覆的那台」（回覆裡的主機和來源不同時只用它的 http/https 和埠：
+/// 不會被假的回覆帶到別台主機去送 API 金鑰；Docker 回報容器內的 IP 時也連得到）。名稱後面加上 IP 讓使用者認得是哪台
 fn parse_discovery(json: &str, from: std::net::SocketAddr) -> Option<(String, String)> {
     let v: Value = serde_json::from_str(json).ok()?;
     v.get("Id")?;
-    let name = v.get("Name").and_then(Value::as_str).unwrap_or("Jellyfin").to_string();
-    let url = v.get("Address").and_then(Value::as_str).and_then(normalize_url).unwrap_or_else(|| format!("http://{}:8096", from.ip()));
+    let ip = from.ip();
+    let host = if ip.is_ipv6() { format!("[{ip}]") } else { ip.to_string() };
+    let name = format!("{}（{ip}）", v.get("Name").and_then(Value::as_str).unwrap_or("Jellyfin"));
+    let url = match v.get("Address").and_then(Value::as_str).and_then(normalize_url) {
+        Some(addr) => {
+            let (scheme, rest) = addr.split_once("://").unwrap_or(("http", &addr));
+            let authority = rest.split('/').next().unwrap_or("");
+            // [IPv6]:埠 或 主機:埠
+            let (h, port) = match authority.strip_prefix('[') {
+                Some(r) => r.split_once(']').map_or((r, ""), |(h, p)| (h, p.trim_start_matches(':'))),
+                None => authority.rsplit_once(':').unwrap_or((authority, "")),
+            };
+            let port = Some(port).filter(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()));
+            let path = &rest[authority.len()..];
+            // 主機名稱（https 的憑證是發給名稱的）：查得到、就是回覆的那台才照用
+            let same = match h.parse::<std::net::IpAddr>() {
+                Ok(a) => a == ip,
+                Err(_) => std::net::ToSocketAddrs::to_socket_addrs(&(h, 0)).is_ok_and(|mut it| it.any(|a| a.ip() == ip)),
+            };
+            if same {
+                addr.clone()
+            } else {
+                crate::info!("[Jellyfin] 探索回覆的網址是 {addr}，改連回覆的那台 {ip}");
+                format!("{scheme}://{host}:{}{path}", port.unwrap_or("8096"))
+            }
+        }
+        None => format!("http://{host}:8096"),
+    };
     Some((name, url))
 }
 
@@ -2888,6 +2913,11 @@ fn agent() -> ureq::Agent {
 fn agent_long() -> ureq::Agent {
     static A: std::sync::LazyLock<ureq::Agent> = std::sync::LazyLock::new(|| agent_with(Duration::from_secs(60)));
     A.clone()
+}
+
+/// 本機轉送串流用（jf_proxy.rs）
+pub(crate) fn stream_agent() -> ureq::Agent {
+    agent_long()
 }
 
 /// 不跟著轉址走：ureq 轉址時只拿掉 Authorization，X-Emby-Token（API 金鑰）會跟著送到別的主機。
@@ -3385,9 +3415,15 @@ mod tests {
         });
         let found = discover_at(at, Duration::from_millis(500));
         h.join().unwrap();
-        assert_eq!(found, vec![("家裡的NAS".to_string(), "http://192.168.1.10:8096".to_string())]);
+        assert_eq!(found, vec![("家裡的NAS（127.0.0.1）".to_string(), "http://127.0.0.1:8096".to_string())]);
         let from = std::net::SocketAddr::from(([10, 0, 0, 5], 7359));
-        assert_eq!(parse_discovery(r#"{"Id":"x","Name":"N"}"#, from), Some(("N".into(), "http://10.0.0.5:8096".into())));
+        assert_eq!(parse_discovery(r#"{"Id":"x","Name":"N"}"#, from), Some(("N（10.0.0.5）".into(), "http://10.0.0.5:8096".into())));
+        // 回覆指向別台主機（假的回覆、Docker 容器內的 IP）：連回覆的那台，保留 https 和埠
+        assert_eq!(parse_discovery(r#"{"Id":"x","Name":"N","Address":"https://evil.example:8920/jf"}"#, from).unwrap().1, "https://10.0.0.5:8920/jf");
+        assert_eq!(parse_discovery(r#"{"Id":"x","Name":"N","Address":"http://10.0.0.5:8097"}"#, from).unwrap().1, "http://10.0.0.5:8097");
+        assert_eq!(parse_discovery(r#"{"Id":"x","Name":"N","Address":"http://172.17.0.2"}"#, from).unwrap().1, "http://10.0.0.5:8096");
+        let local = std::net::SocketAddr::from(([127, 0, 0, 1], 7359));
+        assert_eq!(parse_discovery(r#"{"Id":"x","Name":"N","Address":"https://localhost:8920"}"#, local).unwrap().1, "https://localhost:8920");
         assert_eq!(parse_discovery(r#"{"Name":"N"}"#, from), None);
     }
 
@@ -3564,7 +3600,9 @@ mod tests {
         assert!((v.duration - 123.4).abs() < 1e-6 && (v.fps - 29.97).abs() < 1e-6);
         let jf = Jellyfin::new("nas:8096", "secret").unwrap();
         let url = jf.stream_url("v1");
-        assert_eq!(url, "http://nas:8096/Videos/v1/stream?static=true&api_key=secret");
+        // 給 FFmpeg 的網址不帶金鑰（本機轉送），找回來的是原本的伺服器網址
+        assert!(!url.contains("secret"), "{url}");
+        assert_eq!(crate::jf_proxy::resolve(&url), Some(("http://nas:8096/Videos/v1/stream?static=true".into(), "secret".into())));
         assert!(!redact(&url).contains("secret") && redact("x?api_key=s&y=1").ends_with("&y=1"));
         assert_eq!(Jellyfin::item_of_stream(&url).as_deref(), Some("v1"));
         assert_eq!(Jellyfin::item_of_stream("D:\\a.mp4"), None);
@@ -3769,6 +3807,8 @@ mod tests {
         assert_eq!(local_path("/volume1/video/", "/mnt/v", "/Volume1/Video/a.mp4"), Some(std::path::PathBuf::from("/mnt/v/a.mp4")));
         assert_eq!(local_path("/volume1/video", "/mnt/v", "/volume1/videos/a.mp4"), None);
         assert_eq!(local_path("/volume1/video", "", "/volume1/video/a.mp4"), None);
+        assert_eq!(local_path("/volume1/video", "/mnt/v", "/volume1/video/../../etc/x"), None);
+        assert_eq!(local_path("/volume1/video", "Y:\\", "/volume1/video/C:/Windows/x.mp4"), None);
         assert_eq!(subtitle_lang("zh"), "zh-TW");
         assert_eq!(subtitle_lang("auto"), "und");
     }

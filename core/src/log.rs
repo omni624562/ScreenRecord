@@ -27,8 +27,28 @@ pub fn setup() {
 }
 
 pub fn write(level: &str, msg: &str) {
+    let msg = redact(msg);
     eprintln!("{msg}");
-    write_file(level, msg);
+    write_file(level, &msg);
+}
+
+/// 遮掉金鑰（網址裡的 api_key=、標頭裡的 X-Emby-Token、Token="…"）：記錄檔常被貼給別人看，
+/// 每一處都遮（不只第一個）
+pub fn redact(text: &str) -> String {
+    const KEYS: [(&str, &[char]); 4] =
+        [("api_key=", &['&', ' ', '"', '\'', '\n', '\r', ')']), ("ApiKey=", &['&', ' ', '"', '\'', '\n', '\r', ')']), ("X-Emby-Token: ", &['\r', '\n', ' ', '"', '\'']), ("Token=\"", &['"'])];
+    let mut out = text.to_string();
+    for (key, ends) in KEYS {
+        let mut from = 0;
+        while let Some(i) = out[from..].find(key).map(|i| from + i + key.len()) {
+            let end = out[i..].find(ends).map_or(out.len(), |j| i + j);
+            if end > i && &out[i..end] != "…" {
+                out.replace_range(i..end, "…");
+            }
+            from = i + "…".len();
+        }
+    }
+    out
 }
 
 /// 只寫進記錄檔（不輸出到 stderr）
@@ -68,13 +88,24 @@ pub fn install_panic_hook() {
         let msg = info.payload().downcast_ref::<&str>().map(|s| s.to_string()).or_else(|| info.payload().downcast_ref::<String>().cloned()).unwrap_or_else(|| "（無訊息）".into());
         let at = info.location().map(|l| format!("{}:{}", l.file(), l.line())).unwrap_or_default();
         let thread = std::thread::current().name().unwrap_or("未命名").to_string();
-        write_file("ERROR", &format!("程式內部錯誤（執行緒 {thread}，{at}）：{msg}"));
+        write_file("ERROR", &redact(&format!("程式內部錯誤（執行緒 {thread}，{at}）：{msg}")));
         default(info);
     }));
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn every_key_is_hidden() {
+        let r = super::redact(r#"a?api_key=K1&x=1 b?api_key=K2 -headers "X-Emby-Token: K3\r\n" MediaBrowser Token="K4", c?ApiKey=K5"#);
+        for k in ["K1", "K2", "K3", "K4", "K5"] {
+            assert!(!r.contains(k), "{r}");
+        }
+        assert!(r.contains("&x=1") && r.contains("api_key=…"), "{r}");
+        assert_eq!(super::redact("沒有金鑰"), "沒有金鑰");
+        assert_eq!(super::redact("api_key=…"), "api_key=…");
+    }
+
     #[test]
     fn panics_are_written_to_the_log() {
         let dir = tempfile::tempdir().unwrap();
