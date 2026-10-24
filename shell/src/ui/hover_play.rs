@@ -79,8 +79,7 @@ pub fn hover(ctx: &egui::Context, key: &str, rect: Rect, duration: f64, start: i
             s.still = Some((key.to_string(), pos, f64::INFINITY));
             return false;
         };
-        player.seek(t);
-        player.play();
+        player.play_at(t);
         s.playing = Some(Playing { key: key.to_string(), player, tex: None, duration });
         true
     })
@@ -120,8 +119,7 @@ pub fn paint(painter: &egui::Painter, key: &str, rect: Rect, rounding: u8) -> bo
         }
         // 播完了從頭再播
         if pl.player.take_ended() {
-            pl.player.seek(0.0);
-            pl.player.play();
+            pl.player.play_at(0.0);
         }
         ctx.request_repaint_after(std::time::Duration::from_millis(33));
         let Some(tex) = &pl.tex else {

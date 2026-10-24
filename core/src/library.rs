@@ -21,12 +21,80 @@ type Slot = Arc<OnceCell<MediaInfo>>;
 #[derive(Default)]
 pub struct MediaCache {
     map: Mutex<HashMap<String, (String, Slot)>>,
+    /// 剛列過的資料夾（什麼時候列的, 資料夾的修改時間, 清單）：見 scan_checked
+    scans: Mutex<HashMap<PathBuf, ScanCache>>,
+    /// 存在硬碟上的一份：重開程式後不用每支影片再跑一次 FFmpeg（檔案庫幾百支時開啟快很多）
+    disk: Option<DiskInfo>,
 }
 
+type ScanCache = (std::time::Instant, Option<std::time::SystemTime>, Vec<LibraryEntry>);
+
+/// 路徑 → (大小:修改時間, 影片資訊)
+type DiskMap = HashMap<String, (String, MediaInfo)>;
+
+struct DiskInfo {
+    file: PathBuf,
+    /// 第一次用到才讀
+    map: Arc<Mutex<Option<DiskMap>>>,
+    /// 有新的資訊、存檔排定了
+    saving: Arc<std::sync::atomic::AtomicBool>,
+}
+
+/// 硬碟上最多記幾支（太多時丟掉一半）
+const DISK_MAX: usize = 20_000;
+
 impl MediaCache {
+    /// 影片資訊也存一份在 file
+    pub fn with_disk(file: PathBuf) -> Self {
+        MediaCache { disk: Some(DiskInfo { file, map: Arc::default(), saving: Arc::default() }), ..Default::default() }
+    }
+
+    fn disk_get(&self, path: &str, key: &str) -> Option<MediaInfo> {
+        let d = self.disk.as_ref()?;
+        let mut g = d.map.lock().unwrap_or_else(|e| e.into_inner());
+        let map = g.get_or_insert_with(|| std::fs::read_to_string(&d.file).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default());
+        map.get(path).filter(|(k, _)| k == key).map(|(_, i)| i.clone())
+    }
+
+    fn disk_put(&self, path: &str, key: String, info: &MediaInfo) {
+        let Some(d) = self.disk.as_ref() else { return };
+        {
+            let mut g = d.map.lock().unwrap_or_else(|e| e.into_inner());
+            let map = g.get_or_insert_with(Default::default);
+            if map.len() >= DISK_MAX {
+                let drop_keys: Vec<String> = map.keys().take(DISK_MAX / 2).cloned().collect();
+                for k in drop_keys {
+                    map.remove(&k);
+                }
+            }
+            map.insert(path.to_string(), (key, info.clone()));
+        }
+        // 幾秒內的新資訊一起存（掃描資料夾時一次會有很多支）
+        if !d.saving.swap(true, std::sync::atomic::Ordering::AcqRel) {
+            let (file, map, saving) = (d.file.clone(), d.map.clone(), d.saving.clone());
+            let _ = std::thread::Builder::new().name("media-info-save".into()).spawn(move || {
+                std::thread::sleep(Duration::from_secs(2));
+                saving.store(false, std::sync::atomic::Ordering::Release);
+                let text = serde_json::to_string(&*map.lock().unwrap_or_else(|e| e.into_inner())).unwrap_or_default();
+                if let Err(e) = crate::paths::write_atomic(&file, text.as_bytes()) {
+                    crate::warn!("[檔案庫] 無法儲存影片資訊快取：{e}");
+                }
+            });
+        }
+    }
+
     /// 這個檔案下次重新讀（改了內容但大小、修改時間不變時，例如旋轉）
     pub fn forget(&self, path: &str) {
         self.map.lock().unwrap_or_else(|e| e.into_inner()).remove(path);
+        // 這個檔案在的資料夾也重新列（大小、修改時間可能變了）
+        if let Some(dir) = Path::new(path).parent() {
+            self.scans.lock().unwrap_or_else(|e| e.into_inner()).remove(dir);
+        }
+        if let Some(d) = &self.disk {
+            if let Some(m) = d.map.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+                m.remove(path);
+            }
+        }
     }
 
     pub async fn probe(&self, ffmpeg: &Path, path: &str) -> Result<MediaInfo> {
@@ -38,13 +106,16 @@ impl MediaCache {
                 Some((k, s)) if *k == key => s.clone(),
                 _ => {
                     let s: Slot = Arc::default();
-                    m.insert(path.to_string(), (key, s.clone()));
+                    m.insert(path.to_string(), (key.clone(), s.clone()));
                     s
                 }
             }
         };
         let info = slot
             .get_or_try_init(|| async {
+                if let Some(i) = self.disk_get(path, &key) {
+                    return Ok(i);
+                }
                 // 沒指定輸出時 ffmpeg 會以代碼 1 結束，但 stderr 已含完整的串流資訊
                 let r = run(ffmpeg, &["-hide_banner", "-i", path], Duration::from_secs(15)).await;
                 if r.timed_out || (r.code == -1 && r.stderr.is_empty()) {
@@ -55,7 +126,7 @@ impl MediaCache {
                     let m = run(ffmpeg, &measure_duration_args(path), Duration::from_secs(15)).await;
                     p.duration_sec = parse_measured_duration(&m.stderr);
                 }
-                Ok::<_, Error>(MediaInfo {
+                let info = MediaInfo {
                     path: path.to_string(),
                     name: file_name(path),
                     bytes: meta.len(),
@@ -69,7 +140,12 @@ impl MediaCache {
                     chapters: p.chapters,
                     audio_tracks: p.audio_tracks,
                     folder: String::new(),
-                })
+                };
+                // 讀不出長度、畫面（還在寫入、損壞）的不存：下次再讀
+                if info.duration_sec.is_some() || info.width.is_some() {
+                    self.disk_put(path, key.clone(), &info);
+                }
+                Ok::<_, Error>(info)
             })
             .await;
         match info {
@@ -140,6 +216,22 @@ pub async fn scan(cache: &MediaCache, dir: &Path) -> Vec<LibraryEntry> {
 
 /// 同 scan，但資料夾讀不到（不存在、隨身碟或網路磁碟沒接上、沒有權限）時回傳錯誤
 pub async fn scan_checked(cache: &MediaCache, dir: &Path) -> std::io::Result<Vec<LibraryEntry>> {
+    // 捲到底讀下一批、換篩選時：剛讀過、資料夾沒變（修改時間一樣）就不再列一次（NAS 上每次都要等網路）
+    let dir_mtime = tokio::fs::metadata(dir).await?.modified().ok();
+    if let Some((_, _, list)) = cache.scans.lock().unwrap_or_else(|e| e.into_inner()).get(dir).filter(|(at, m, _)| at.elapsed() < SCAN_REUSE && *m == dir_mtime && m.is_some()) {
+        return Ok(list.clone());
+    }
+    let list = scan_dir(cache, dir).await?;
+    let mut scans = cache.scans.lock().unwrap_or_else(|e| e.into_inner());
+    scans.retain(|_, (at, _, _)| at.elapsed() < SCAN_REUSE);
+    scans.insert(dir.to_path_buf(), (std::time::Instant::now(), dir_mtime, list.clone()));
+    Ok(list)
+}
+
+/// 同一個資料夾的清單在多久內可以直接用
+const SCAN_REUSE: Duration = Duration::from_secs(5);
+
+async fn scan_dir(cache: &MediaCache, dir: &Path) -> std::io::Result<Vec<LibraryEntry>> {
     let mut names = Vec::new();
     let mut rd = tokio::fs::read_dir(dir).await?;
     while let Ok(Some(e)) = rd.next_entry().await {
@@ -965,6 +1057,29 @@ pub fn move_images(from: &Path, to: &Path) -> MoveReport {
 mod tests {
     use super::*;
     use std::fs;
+
+    #[tokio::test]
+    async fn media_info_is_remembered_on_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let video = dir.path().join("a.mp4");
+        fs::write(&video, "x").unwrap();
+        let path = video.display().to_string();
+        let meta = fs::metadata(&video).unwrap();
+        let key = format!("{}:{}", meta.len(), mtime_ms(&meta));
+        let info = MediaInfo { path: path.clone(), duration_sec: Some(12.5), width: Some(640), ..Default::default() };
+        let store = dir.path().join("media-info.json");
+        fs::write(&store, serde_json::to_string(&HashMap::from([(path.clone(), (key, info.clone()))])).unwrap()).unwrap();
+        // 硬碟上有、檔案沒變：不用跑 FFmpeg（這裡給一個不存在的 FFmpeg）
+        let no_ffmpeg = dir.path().join("no-ffmpeg");
+        let cache = MediaCache::with_disk(store.clone());
+        assert_eq!(cache.probe(&no_ffmpeg, &path).await.unwrap().duration_sec, Some(12.5));
+        // 要重讀（例如旋轉過）：硬碟那一份也不用
+        cache.forget(&path);
+        assert!(cache.probe(&no_ffmpeg, &path).await.map_or(true, |i| i.duration_sec.is_none()));
+        // 檔案改了：不用舊的
+        fs::write(&video, "changed").unwrap();
+        assert!(MediaCache::with_disk(store).probe(&no_ffmpeg, &path).await.map_or(true, |i| i.duration_sec.is_none()));
+    }
 
     #[test]
     fn sidecars_follow_the_recording_but_not_other_recordings() {

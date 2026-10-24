@@ -497,6 +497,11 @@ impl Player {
         });
     }
 
+    /// 從時間 t 開始播放（不像先 seek 再 play：暫停時的 seek 會多開一個 FFmpeg 解那一張）
+    pub fn play_at(&self, t: f64) {
+        self.play_from(t.clamp(0.0, self.spec.duration.max(0.0)));
+    }
+
     /// 從目前位置開始播放
     pub fn play(&self) {
         let t = self.time();

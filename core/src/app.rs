@@ -337,7 +337,7 @@ impl App {
             shot_meta: Arc::new(crate::shot_meta::ShotMetaStore::new(dir.join("shot_meta.json"))),
             vocab: Arc::new(crate::facets::VocabCache::default()),
             hashes: Arc::new(crate::similar::HashStore::new(dir.join("shot_hashes.json"))),
-            cache: Arc::default(),
+            cache: Arc::new(MediaCache::with_disk(dir.join("media-info.json"))),
             default_output_dir: default_output_dir().display().to_string(),
             st: Mutex::default(),
             hw_ready: watch::channel(true).0,

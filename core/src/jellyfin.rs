@@ -33,6 +33,15 @@ pub struct LibraryCheck {
     pub ok: bool,
 }
 
+/// 「沒有人物／標籤」最近一次的結果（查詢條件, 什麼時候, 全部符合的）：換頁用
+type LackingCache = Option<(String, std::time::Instant, std::sync::Arc<Vec<Value>>)>;
+static LACKING: std::sync::Mutex<LackingCache> = std::sync::Mutex::new(None);
+
+/// 影片的人物、標籤改了：「沒有人物／標籤」要重查
+pub fn forget_lacking() {
+    *LACKING.lock().unwrap_or_else(|e| e.into_inner()) = None;
+}
+
 /// 這台電腦的媒體庫資料夾在伺服器上的路徑（網址|資料夾 → 路徑、什麼時候查的）；查不到的 5 分鐘內不再查
 static SERVER_ROOTS: std::sync::Mutex<Option<std::collections::HashMap<String, RootLookup>>> = std::sync::Mutex::new(None);
 type RootLookup = (Option<String>, std::time::Instant);
@@ -214,20 +223,56 @@ impl Jellyfin {
         self.call(agent().post(&format!("{}/Library/Refresh", self.url))).map(|_| ())
     }
 
-    /// Jellyfin 裡檔名是 file_name 的影片編號（沒有時空的）
+    /// Jellyfin 裡檔名是 file_name 的影片編號（沒有時空的）：先用名稱搜尋（只回傳幾筆），
+    /// 找不到（標題改過、名稱有特殊字元）才列出全部影片比對檔名
     pub fn find(&self, file_name: &str) -> Result<Vec<String>, String> {
+        let quick = self.find_quick(file_name)?;
+        if !quick.is_empty() {
+            return Ok(quick);
+        }
         let url = format!("{}/Items?recursive=true&includeItemTypes=Movie,Video,MusicVideo,Episode&fields=Path&enableImages=false&enableUserData=false", self.url);
         let body = self.call(agent().get(&url))?.into_string().map_err(|e| e.to_string())?;
+        Ok(items_with_file(&body, file_name))
+    }
+
+    /// 用名稱搜尋（剛掃到的影片名稱就是檔名去掉副檔名）
+    fn find_quick(&self, file_name: &str) -> Result<Vec<String>, String> {
+        let stem = file_name.rsplit_once('.').map_or(file_name, |(s, _)| s);
+        let r = agent()
+            .get(&format!("{}/Items", self.url))
+            .query("searchTerm", stem)
+            .query("recursive", "true")
+            .query("includeItemTypes", "Movie,Video,MusicVideo,Episode")
+            .query("fields", "Path")
+            .query("enableImages", "false")
+            .query("enableUserData", "false")
+            .query("limit", "50");
+        let body = self.call(r)?.into_string().map_err(|e| e.to_string())?;
         Ok(items_with_file(&body, file_name))
     }
 
     /// Jellyfin 上全部影片的索引（沒選媒體庫資料夾時「已在 Jellyfin」的標籤用）：
     /// 小寫檔名 → (位置「媒體庫名稱/family/2024」, 大小)
     pub fn file_index(&self) -> Result<std::collections::HashMap<String, Vec<(String, u64)>>, String> {
+        const PAGE: usize = 2000;
         let libs = self.call(agent().get(&format!("{}/Library/VirtualFolders", self.url)))?.into_string().map_err(|e| e.to_string())?;
-        let url = format!("{}/Items?recursive=true&includeItemTypes=Movie,Video,MusicVideo,Episode&fields=Path,MediaSources&enableImages=false&enableUserData=false", self.url);
-        let items = self.call(agent().get(&url))?.into_string().map_err(|e| e.to_string())?;
-        Ok(index_from_items(&libs, &items))
+        let mut map: std::collections::HashMap<String, Vec<(String, u64)>> = Default::default();
+        // 分批讀（影片上萬支時一次全部回傳要很久、可能逾時）
+        for start in (0..).step_by(PAGE) {
+            let url = format!(
+                "{}/Items?recursive=true&includeItemTypes=Movie,Video,MusicVideo,Episode&fields=Path,MediaSources&enableImages=false&enableUserData=false&startIndex={start}&limit={PAGE}",
+                self.url
+            );
+            let items = self.call(agent_long().get(&url))?.into_string().map_err(|e| e.to_string())?;
+            let (page, total) = parse_items(&items);
+            for (k, v) in index_from_items(&libs, &items) {
+                map.entry(k).or_default().extend(v);
+            }
+            if page.is_empty() || start + PAGE >= total {
+                break;
+            }
+        }
+        Ok(map)
     }
 
     /// 請 Jellyfin 掃描後等它掃到這支影片（每 2 秒問一次，最多等 wait）：回傳影片編號；時間到還沒有時 None。
@@ -236,9 +281,11 @@ impl Jellyfin {
     pub fn wait_for(&self, file_name: &str, wait: Duration, parent: Option<&str>, tick: impl Fn(Duration)) -> Result<Option<String>, String> {
         let start = std::time::Instant::now();
         for n in 0u32.. {
-            let ids = match parent.filter(|_| n % 5 != 4) {
-                Some(p) => self.find_under(file_name, p).or_else(|_| self.find(file_name))?,
-                None => self.find(file_name)?,
+            // 平常只問一小部分（那個資料夾、或用名稱搜尋）；每 5 次比對全部一次，以防查不到
+            let ids = match (parent, n % 5 == 4) {
+                (_, true) => self.find(file_name)?,
+                (Some(p), false) => self.find_under(file_name, p).or_else(|_| self.find_quick(file_name))?,
+                (None, false) => self.find_quick(file_name)?,
             };
             if let Some(id) = ids.into_iter().next() {
                 return Ok(Some(id));
@@ -451,6 +498,12 @@ impl Jellyfin {
         lacking: &[NameKind],
     ) -> Result<(Vec<JfItem>, usize), String> {
         let (by, order) = sort.query();
+        // 換頁時不用整個資料夾再讀一次：上一次的結果 60 秒內直接用（改了影片資訊會清掉，見 forget_lacking）
+        let key = format!("{}|{user}|{parent:?}|{sort:?}|{filter:?}|{facets:?}|{lacking:?}", self.url);
+        if let Some((_, _, all)) = LACKING.lock().unwrap_or_else(|e| e.into_inner()).as_ref().filter(|(k, at, _)| *k == key && at.elapsed() < Duration::from_secs(60)) {
+            let page: Vec<Value> = all.iter().skip(start).take(limit).cloned().collect();
+            return Ok((parse_items(&serde_json::json!({ "Items": page }).to_string()).0, all.len()));
+        }
         let mut keep: Vec<Value> = vec![];
         let mut at = 0usize;
         loop {
@@ -480,7 +533,8 @@ impl Jellyfin {
             }
         }
         let n = keep.len();
-        let page: Vec<Value> = keep.into_iter().skip(start).take(limit).collect();
+        let page: Vec<Value> = keep.iter().skip(start).take(limit).cloned().collect();
+        *LACKING.lock().unwrap_or_else(|e| e.into_inner()) = Some((key, std::time::Instant::now(), std::sync::Arc::new(keep)));
         Ok((parse_items(&serde_json::json!({ "Items": page }).to_string()).0, n))
     }
 
@@ -668,6 +722,7 @@ impl Jellyfin {
     /// from 只差前後空白、大小寫、全形半形的寫法一起改；一支一支取回整筆資料換上去再存，其他資訊不動。
     /// progress(改好幾支, 全部幾支)；有幾支失敗時其他照改，最後回報失敗的。回傳改了幾支
     pub fn rename_name(&self, user: &str, kind: NameKind, from: &str, to: &str, progress: &dyn Fn(usize, usize)) -> Result<usize, String> {
+        forget_lacking();
         let to = to.trim();
         if to.is_empty() {
             return Err(tr!("新的寫法不能空白", "The new spelling can't be empty").into());
@@ -717,6 +772,7 @@ impl Jellyfin {
 
     /// 取回一支影片的整筆資料，用 f 換好再存回去（POST /Items/{id}）
     fn change_item(&self, user: &str, id: &str, f: impl FnOnce(&str) -> Option<String>) -> Result<(), String> {
+        forget_lacking();
         let body = match self.call(agent().get(&format!("{}/Items/{id}", self.url))) {
             Ok(r) => r.into_string().map_err(|e| e.to_string())?,
             Err(_) => self.call(agent().get(&format!("{}/Users/{user}/Items/{id}", self.url)))?.into_string().map_err(|e| e.to_string())?,
@@ -802,6 +858,7 @@ impl Jellyfin {
 
     /// 把改好的資訊存回去：取回整筆資料、換上去再存（清空的欄位就清掉；不是演員的人物，例如導演，留著）
     pub fn set_info(&self, user: &str, id: &str, info: &JfInfo) -> Result<(), String> {
+        forget_lacking();
         let body = match self.call(agent().get(&format!("{}/Items/{id}", self.url))) {
             Ok(r) => r.into_string().map_err(|e| e.to_string())?,
             Err(_) => self.call(agent().get(&format!("{}/Users/{user}/Items/{id}", self.url)))?.into_string().map_err(|e| e.to_string())?,
@@ -812,6 +869,7 @@ impl Jellyfin {
 
     /// 從 Jellyfin 刪掉這支影片（伺服器上的檔案也一起刪，不會進資源回收筒）
     pub fn delete_item(&self, id: &str) -> Result<(), String> {
+        forget_lacking();
         match self.auth(agent().delete(&format!("{}/Items/{id}", self.url))).call() {
             Ok(_) => Ok(()),
             Err(ureq::Error::Status(401 | 403, _)) => {
@@ -3035,13 +3093,17 @@ mod tests {
         let (url, h) = serve_seq(vec![("200 OK", items.to_string()), ("204 No Content", String::new()), ("204 No Content", String::new())]);
         assert_eq!(Jellyfin::new(&url, "k").unwrap().refresh_file("Rec_1.mp4").unwrap(), 2);
         let req = h.join().unwrap();
-        assert!(req[0].starts_with("GET /Items?recursive=true&") && req[0].contains("fields=Path"), "{req:?}");
+        // 先用名稱搜尋（只回傳幾筆），不用列出全部影片
+        assert!(req[0].starts_with("GET /Items?searchTerm=Rec_1&recursive=true&") && req[0].contains("fields=Path"), "{req:?}");
         assert!(req[1].starts_with("POST /Items/a1/Refresh?metadataRefreshMode=Default&imageRefreshMode=FullRefresh&replaceAllMetadata=false&replaceAllImages=true"), "{req:?}");
         assert!(req[2].starts_with("POST /Items/c3/Refresh?"), "{req:?}");
         // Jellyfin 還沒有這支：請它掃描媒體庫
-        let (url, h) = serve_seq(vec![("200 OK", r#"{"Items":[]}"#.to_string()), ("204 No Content", String::new())]);
+        let (url, h) = serve_seq(vec![("200 OK", r#"{"Items":[]}"#.to_string()), ("200 OK", r#"{"Items":[]}"#.to_string()), ("204 No Content", String::new())]);
         assert_eq!(Jellyfin::new(&url, "k").unwrap().refresh_file("new.mp4").unwrap(), 0);
-        assert!(h.join().unwrap()[1].starts_with("POST /Library/Refresh "));
+        let req = h.join().unwrap();
+        // 名稱搜尋找不到：比對全部影片的檔名，還是沒有才請它掃描
+        assert!(req[0].contains("searchTerm=new&") && req[1].starts_with("GET /Items?recursive=true&"), "{req:?}");
+        assert!(req[2].starts_with("POST /Library/Refresh "), "{req:?}");
     }
 
     #[test]
@@ -3089,13 +3151,14 @@ mod tests {
         assert_eq!(std::fs::read_dir(&lib).unwrap().count(), 2);
         // 有 Jellyfin：新檔案請它掃描，等它收到
         let found = r#"{"Items":[{"Id":"n1","Path":"/nas/Rec_1_cut.mp4"}]}"#.to_string();
-        let (url, h) = serve_seq(vec![("200 OK", r#"{"Items":[]}"#.to_string()), ("204 No Content", String::new()), ("200 OK", found)]);
+        let (url, h) = serve_seq(vec![("200 OK", r#"{"Items":[]}"#.to_string()), ("200 OK", r#"{"Items":[]}"#.to_string()), ("204 No Content", String::new()), ("200 OK", found)]);
         let jf = Jellyfin::new(&url, "k").unwrap();
         let msg = send_file(Some(&jf), &copy_to, &video, &Extras::default()).unwrap().unwrap();
         assert!(msg.contains("✓"), "{msg}");
         let req = h.join().unwrap();
-        assert!(req[1].starts_with("POST /Library/Refresh "));
-        assert!(req[2].starts_with("GET /Items?"));
+        assert!(req[2].starts_with("POST /Library/Refresh "), "{req:?}");
+        // 等它掃到：用名稱搜尋，不用每次列出全部影片
+        assert!(req[3].starts_with("GET /Items?searchTerm=Rec_1_cut&"), "{req:?}");
     }
 
     #[test]
@@ -3455,7 +3518,13 @@ mod tests {
         assert_eq!(rename_copies(&copy_to, &video, &renamed).unwrap(), vec![lib.join("family/j3新名.mp4")]);
         assert!(same_copy("j3新名.mp4", 10, 3));
         // 換畫面（旋轉）：整支重傳；Jellyfin 還沒有這支時封面也整支重傳
-        let (url, h) = serve_seq(vec![("200 OK", r#"{"Items":[]}"#.to_string()), ("200 OK", r#"{"Items":[]}"#.to_string()), ("204 No Content", String::new())]);
+        let (url, h) = serve_seq(vec![
+            ("200 OK", r#"{"Items":[]}"#.to_string()),
+            ("200 OK", r#"{"Items":[]}"#.to_string()),
+            ("200 OK", r#"{"Items":[]}"#.to_string()),
+            ("200 OK", r#"{"Items":[]}"#.to_string()),
+            ("204 No Content", String::new()),
+        ]);
         let jf = Jellyfin::new(&url, "k").unwrap();
         sync_edited(Some(&jf), &copy_to, &renamed, &Extras::default(), Edit::Cover, Some(b"jpeg")).unwrap().unwrap();
         assert_eq!(std::fs::read_to_string(lib.join("family/j3新名.mp4")).unwrap(), "new cover!");
@@ -3908,6 +3977,17 @@ mod tests {
         assert_eq!(idx["film.mkv"], vec![("電影/x".to_string(), 7)]);
         assert_eq!(idx["odd.mp4"], vec![("place".to_string(), 9)]);
         assert!(!idx.contains_key("nosize.mp4"));
+        // 從伺服器分批讀：2001 支要問兩次
+        let page = |from: usize, n: usize| {
+            let items: Vec<String> = (from..from + n).map(|i| format!(r#"{{"Id":"v{i}","Type":"Video","Path":"/media/video/v{i}.mp4","MediaSources":[{{"Size":{}}}]}}"#, i + 1)).collect();
+            format!(r#"{{"TotalRecordCount":2001,"Items":[{}]}}"#, items.join(","))
+        };
+        let (url, h) = serve_seq(vec![("200 OK", libs.to_string()), ("200 OK", page(0, 2000)), ("200 OK", page(2000, 1))]);
+        let idx = Jellyfin::new(&url, "k").unwrap().file_index().unwrap();
+        assert_eq!(idx.len(), 2001);
+        assert_eq!(idx["v2000.mp4"], vec![("家庭影片".to_string(), 2001)]);
+        let req = h.join().unwrap();
+        assert!(req[1].contains("startIndex=0&limit=2000") && req[2].contains("startIndex=2000&limit=2000"), "{req:?}");
     }
 
     #[test]

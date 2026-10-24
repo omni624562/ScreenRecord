@@ -54,6 +54,8 @@ pub struct LibraryDialog {
     /// 列出了幾批（捲到快底時加一批；換了條件時回到 1）
     page: usize,
     data: Option<LibraryPage>,
+    /// data 裡的清單（共用一份：畫面每一格都要用，複製指標就好，不用整份複製）
+    rows: std::sync::Arc<Vec<LibraryEntry>>,
     loading: bool,
     error: Option<String>,
     selected: HashSet<String>,
@@ -195,6 +197,7 @@ impl LibraryDialog {
     pub fn reload(&mut self) {
         self.selected.clear();
         self.data = None;
+        self.rows = Default::default();
         self.dirty = true;
     }
 
@@ -211,6 +214,7 @@ impl LibraryDialog {
             sort: LibrarySort::New,
             page: 1,
             data: None,
+            rows: Default::default(),
             loading: false,
             error: None,
             selected: HashSet::new(),
@@ -442,6 +446,7 @@ fn load(app: &mut UiApp) {
             app.known.insert(e.media.path.clone(), e.clone());
         }
         d.prefetch = page.ahead.clone();
+        d.rows = std::sync::Arc::new(page.items.clone());
         d.data = Some(page);
     });
 }
@@ -623,6 +628,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         d.page = 1;
         d.selected.clear();
         d.data = None;
+        d.rows = Default::default();
         d.dirty = true;
     }
     // 搜尋建議開著時，Esc 只關掉建議（要在對話框檢查 Esc 之前先拿走）
@@ -671,6 +677,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                 d.page = 1;
                 d.selected.clear();
                 d.data = None;
+        d.rows = Default::default();
                 // 錄影與截圖存在不同的資料夾：換了就回到各自的資料夾
                 d.dir = None;
                 d.dirty = true;
@@ -1191,6 +1198,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                     d.page = 1;
                     d.selected.clear();
                     d.data = None;
+                    d.rows = Default::default();
                     d.dirty = true;
                 }
             }
@@ -1266,7 +1274,8 @@ fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table:
     let head_h = 30.0;
     // 右邊留捲軸的位置（捲軸浮在內容上，不留的話會蓋住操作按鈕）
     let table = Rect::from_min_max(table.min, pos2(table.max.x - 10.0, table.max.y));
-    let rows = d.data.as_ref().map(|x| x.items.clone()).unwrap_or_default();
+    let rows = d.rows.clone();
+    let rows: &[LibraryEntry] = &rows;
     let order: Vec<String> = rows.iter().map(|e| e.media.path.clone()).collect();
     let (ctrl, shift) = multi_mods(ui);
     select_all_key(app, ui, d, &order);
@@ -1291,7 +1300,7 @@ fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table:
         let ui2 = &mut ui
             .new_child(UiBuilder::new().max_rect(Rect::from_min_max(head.min + vec2(10.0, 0.0), pos2(head.min.x + col_x(1) - table.min.x, head.max.y))).layout(Layout::left_to_right(Align::Center)));
         if theme::check(ui2, &mut all2, "").on_hover_text(tr!("全選已列出的", "Select all listed")).changed() {
-            for e in &rows {
+            for e in rows {
                 d.toggle(&e.media.path, all2);
             }
         }
@@ -1312,7 +1321,7 @@ fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table:
     let time_w = hm_w + if times.values().any(|(_, t)| t.len() > 5) { sec_w + 1.0 } else { 0.0 };
     // 每一天（這一頁）的支數、總長度、總大小：日期欄第二行與提示
     let mut days: HashMap<chrono::NaiveDate, (usize, f64, u64)> = HashMap::new();
-    for e in &rows {
+    for e in rows {
         if let Some((dd, _)) = times.get(&e.media.name) {
             let x = days.entry(*dd).or_default();
             x.0 += 1;
@@ -1685,7 +1694,7 @@ fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table:
         d.page += 1;
         d.dirty = true;
     }
-    row_keys(app, ui, d, &rows, req);
+    row_keys(app, ui, d, rows, req);
 }
 
 /// 解析度欄：白話的「1080p 橫」加上直／橫的小框，滑鼠移上去看實際像素（原片、加速版子列一樣）
@@ -1853,7 +1862,8 @@ fn shot_grid(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, area: Re
     let head_h = 30.0;
     // 捲動列出：不分頁，高度不限（排法和 core 的依日期分組一樣）
     let fit = GridFit { cols: cols as usize, height: 1.0e9, row_h: (cell_h + gap) as f64, head_h };
-    let items = d.data.as_ref().map(|x| x.items.clone()).unwrap_or_default();
+    let items = d.rows.clone();
+    let items: &[LibraryEntry] = &items;
     if items.is_empty() {
         let none = match app.keys.label(2) {
             k if k.is_empty() => tr!("還沒有截圖。按主畫面的「截圖」試試看。", "No screenshots yet. Try “Screenshot” in the main window.").to_string(),
@@ -2029,7 +2039,7 @@ fn shot_grid(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, area: Re
         d.page += 1;
         d.dirty = true;
     }
-    row_keys(app, ui, d, &items, req);
+    row_keys(app, ui, d, items, req);
 }
 
 /// 截圖格的日期標題列：「☐ 7/27（一）· 8 張」，勾選框選取或取消那一天全部（每一頁；有星號的不選）

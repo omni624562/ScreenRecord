@@ -337,7 +337,9 @@ impl UiApp {
     /// 媒體庫的索引（整個媒體庫的檔名、大小）；還沒讀過或太舊時在背景重讀，這次先回傳舊的或 None
     fn lib_index(&mut self) -> Option<&LibIndex> {
         let root = self.index_source()?;
-        let fresh = self.lib_index.as_ref().is_some_and(|i| i.root == root && i.at.elapsed() < INDEX_TTL);
+        // 問 Jellyfin 要列出整個媒體庫：比讀資料夾重，久一點才重讀（傳檔、刪除後會馬上重讀）
+        let ttl = if root.starts_with(JF_INDEX) { INDEX_TTL * 5 } else { INDEX_TTL };
+        let fresh = self.lib_index.as_ref().is_some_and(|i| i.root == root && i.at.elapsed() < ttl);
         if !fresh && !self.lib_index_loading {
             self.lib_index_loading = true;
             let r = root.clone();

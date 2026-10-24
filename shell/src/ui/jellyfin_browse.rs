@@ -127,6 +127,8 @@ pub struct JfBrowse {
     crumb_right_w: f32,
     /// 上面那些是哪個範圍讀的（facet_scope；還沒讀過時 None）
     facets_for: Option<Option<String>>,
+    /// 讀過的範圍：回到剛看過的資料夾不用再問伺服器（FACET_TTL 內；改了影片資訊時清掉）
+    facet_cache: HashMap<Option<String>, (Instant, Facets)>,
     /// 讀不到標籤、年份時的原因（選單變灰時滑鼠移上去看得到）
     facets_error: Option<String>,
     /// 縮圖大小：0 小、1 中、2 大（記在設定裡）
@@ -241,13 +243,54 @@ fn load(app: &mut UiApp) {
             }
         },
     );
-    if want_facets {
+    if want_facets && !facets_from_cache(app) {
         load_facets(app);
     }
 }
 
+/// 「依這些找」的人物、標籤、年份在多久內不重讀（改了影片資訊會馬上重讀）
+const FACET_TTL: Duration = Duration::from_secs(300);
+
+/// 這個資料夾剛讀過：直接用，不問伺服器（有勾人物時照樣重讀：勾著的要留在清單上）
+fn facets_from_cache(app: &mut UiApp) -> bool {
+    let Some(d) = app.jf_browse.as_mut() else { return false };
+    if d.facet.iter().any(|f| matches!(f, JfFacet::Person(..))) {
+        return false;
+    }
+    let scope = facet_scope(&d.path);
+    let Some((_, (persons, facets))) = d.facet_cache.get(&scope).filter(|(at, _)| at.elapsed() < FACET_TTL).cloned() else { return false };
+    d.facets_for = Some(scope);
+    apply_facets(d, persons, facets);
+    true
+}
+
+fn apply_facets(d: &mut JfBrowse, persons: Vec<(String, String, usize)>, facets: FacetCounts) {
+    d.persons = persons;
+    match facets {
+        Ok((tags, years, no_people, no_tags)) => {
+            d.tags = tags;
+            d.years = years;
+            d.no_people = no_people;
+            d.no_tags = no_tags;
+            d.facets_error = None;
+        }
+        Err(e) => d.facets_error = Some(e),
+    }
+}
+
+/// 改了影片資訊：每個資料夾的人物、標籤、年份都可能變了，全部重讀
+fn refresh_facets(app: &mut UiApp) {
+    jellyfin::forget_lacking();
+    if let Some(d) = app.jf_browse.as_mut() {
+        d.facet_cache.clear();
+    }
+    load_facets(app);
+}
+
 /// 讀到的人物（編號, 名稱, 幾支）與（標籤、年份）或讀不到的原因
-type Facets = (Vec<(String, String, usize)>, Result<(Vec<(String, usize)>, Vec<(u32, usize)>, usize, usize), String>);
+type Facets = (Vec<(String, String, usize)>, FacetCounts);
+/// 標籤（名稱, 幾支）、年份（年, 幾支）、沒有人物的幾支、沒有標籤的幾支；或讀不到的原因
+type FacetCounts = Result<(Vec<(String, usize)>, Vec<(u32, usize)>, usize, usize), String>;
 
 /// 讀伺服器上的人物、標籤、年份和各用在幾支影片（「依這些找」的選單）；舊版 Jellyfin 讀不到就不列。
 /// 次數讀不到時改問只有名稱的清單
@@ -295,17 +338,10 @@ fn load_facets(app: &mut UiApp) {
         move |app, (persons, facets): Facets| {
             // 讀好之前又換了資料夾：丟掉（換的時候已經重讀）
             if let Some(d) = app.jf_browse.as_mut().filter(|d| d.facets_for.as_ref() == Some(&for_scope)) {
-                d.persons = persons;
-                match facets {
-                    Ok((tags, years, no_people, no_tags)) => {
-                        d.tags = tags;
-                        d.years = years;
-                        d.no_people = no_people;
-                        d.no_tags = no_tags;
-                        d.facets_error = None;
-                    }
-                    Err(e) => d.facets_error = Some(e),
+                if facets.is_ok() {
+                    d.facet_cache.insert(for_scope, (Instant::now(), (persons.clone(), facets.clone())));
                 }
+                apply_facets(d, persons, facets);
             }
         },
     );
@@ -314,7 +350,7 @@ fn load_facets(app: &mut UiApp) {
 /// 人物、標籤改名之後重讀「依這些找」的清單（Jellyfin 分頁沒開時不用）
 pub fn reload_facets(app: &mut UiApp) {
     if app.jf_browse.is_some() {
-        load_facets(app);
+        refresh_facets(app);
     }
 }
 
@@ -331,7 +367,7 @@ pub fn edited(app: &mut UiApp, id: &str, title: &str) {
         d.each_mut(id, |it| it.name = title.trim().to_string());
     }
     d.posters.remove(id);
-    load_facets(app);
+    refresh_facets(app);
 }
 
 /// 好幾支一起整理完了：清單上（和勾選的）那些影片的人物、標籤、年份跟著換，「依這些找」重讀
@@ -359,7 +395,7 @@ pub fn batch_done(app: &mut UiApp, ids: &[String], edit: &jellyfin::BatchEdit) {
             apply(it);
         }
     }
-    load_facets(app);
+    refresh_facets(app);
 }
 
 /// 這支影片的人物與它們在伺服器上的編號（人物照片用）
@@ -437,6 +473,11 @@ fn load_poster(app: &mut UiApp, id: &str) {
         |app, (id, tex)| {
             if let Some(d) = app.jf_browse.as_mut() {
                 d.posters.insert(id, tex.map_or(Poster::None, Poster::Ready));
+                // 逛了很多資料夾：只留現在這一頁的（每張都是一個材質，記憶體會一直長）
+                if d.posters.len() > 300 {
+                    let keep: std::collections::HashSet<&str> = d.items.iter().flatten().map(|i| i.id.as_str()).collect();
+                    d.posters.retain(|k, p| matches!(p, Poster::Loading) || keep.contains(k.as_str()));
+                }
             }
         },
     );
@@ -1158,8 +1199,6 @@ fn keyboard(ui: &egui::Ui, d: &mut JfBrowse, out: &mut Panel) {
     if ui.ctx().egui_wants_keyboard_input() || egui::Popup::is_any_open(ui.ctx()) {
         return;
     }
-    let Some(items) = d.items.clone().filter(|i| !i.is_empty()) else { return };
-    let step = if d.list_view && !d.at_top() { 1 } else { d.cols.max(1) as isize as usize };
     let (left, right, up, down, enter, space, del, back, all) = ui.input(|i| {
         (
             i.key_pressed(egui::Key::ArrowLeft),
@@ -1173,6 +1212,12 @@ fn keyboard(ui: &egui::Ui, d: &mut JfBrowse, out: &mut Panel) {
             i.modifiers.command && i.key_pressed(egui::Key::A),
         )
     });
+    // 沒按鍵（幾乎每一格都是）：不用複製整個清單
+    if !(left || right || up || down || enter || space || del || back || all) {
+        return;
+    }
+    let Some(items) = d.items.clone().filter(|i| !i.is_empty()) else { return };
+    let step = if d.list_view && !d.at_top() { 1 } else { d.cols.max(1) as isize as usize };
     let at = d.cursor.as_ref().and_then(|c| items.iter().position(|i| &i.id == c));
     let mv: isize = if left && !(d.list_view && !d.at_top()) {
         -1

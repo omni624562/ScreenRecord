@@ -988,6 +988,25 @@ fn dir_issue(ctx: &egui::Context, dir: &str) -> Option<DirIssue> {
     g.as_ref().and_then(|(_, _, r, _)| *r)
 }
 
+/// 檔案的修改時間（秒；沒有這個檔案時 None）：畫面每格都要問，3 秒內不重查（錄影存在 NAS 時每次查都要等網路）
+pub fn file_mtime(path: &str) -> Option<f64> {
+    type Seen = std::collections::HashMap<String, (Instant, Option<f64>)>;
+    static SEEN: std::sync::Mutex<Option<Seen>> = std::sync::Mutex::new(None);
+    let mut g = SEEN.lock().unwrap_or_else(|e| e.into_inner());
+    let map = g.get_or_insert_with(Default::default);
+    if let Some((at, r)) = map.get(path) {
+        if at.elapsed() < std::time::Duration::from_secs(3) {
+            return *r;
+        }
+    }
+    let r = std::fs::metadata(path).ok().filter(|m| m.is_file()).map(|m| m.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0.0, |d| d.as_secs_f64()));
+    if map.len() > 200 {
+        map.clear();
+    }
+    map.insert(path.to_string(), (Instant::now(), r));
+    r
+}
+
 /// 資料夾在不在：在背景檢查（NAS 斷線時檢查可能要等幾十秒，不能卡住畫面），同一個資料夾 15 秒內不重查；
 /// 還沒查完時 None
 pub fn dir_exists(ctx: &egui::Context, dir: &str) -> Option<bool> {
@@ -1464,7 +1483,7 @@ fn result_card(app: &mut UiApp, ui: &mut Ui, res: &screenrecorder_core::types::R
                 action_buttons(app, ui, path, true, !audio);
                 // 只錄聲音：另存的 M4A
                 let m4a = screenrecorder_core::after_record::m4a_path(path).display().to_string();
-                if audio && std::path::Path::new(&m4a).is_file() {
+                if audio && file_mtime(&m4a).is_some() {
                     ui.add_space(2.0);
                     ui.add(egui::Label::new(RichText::new(trf!("也存成 M4A：{}", "Also saved as M4A: {}", file_name(&m4a))).font(theme::font(12.5))).truncate()).on_hover_text(&m4a);
                     ui.horizontal_wrapped(|ui| {
@@ -2499,7 +2518,7 @@ fn saved_card(app: &mut UiApp, ui: &mut Ui, path: &str, sec: f64, bytes: u64) {
     let audio = screenrecorder_core::after_record::is_audio_recording(path);
     // 縮圖（只錄聲音的沒有畫面：灰底加音符圖示）
     let (r, thumb) = ui.allocate_exact_size(vec2(68.0, 40.0), Sense::click());
-    let mtime = std::fs::metadata(path).and_then(|m| m.modified()).ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0.0, |d| d.as_secs_f64());
+    let mtime = file_mtime(path).unwrap_or(0.0);
     let rounding = CornerRadius::same(6);
     match (!audio).then(|| app.thumb(path, mtime)).flatten() {
         Some(t) => {
