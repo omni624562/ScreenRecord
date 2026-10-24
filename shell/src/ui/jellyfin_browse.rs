@@ -571,6 +571,15 @@ fn confirm_delete_many(app: &mut UiApp, list: Vec<(String, String)>) {
     let mut ask = super::dialogs::Ask::confirm(title, msg, tr!("刪除", "Delete"), move |app, _| {
         let Some(jf) = app.jellyfin() else { return };
         let todo = list.clone();
+        // 一支一支刪，好幾支時要一點時間：先說正在刪，刪好再說結果
+        app.toast(
+            if list.len() == 1 {
+                trf!("正在從 Jellyfin 刪除：{}", "Deleting from Jellyfin: {}", list[0].1)
+            } else {
+                trf!("正在從 Jellyfin 刪除 {} 支影片…", "Deleting {} videos from Jellyfin…", list.len())
+            },
+            false,
+        );
         app.spawn(
             async move { tokio::task::spawn_blocking(move || todo.into_iter().map(|(id, name)| (jf.delete_item(&id).map(|_| id), name)).collect::<Vec<_>>()).await.unwrap_or_default() },
             move |app, done| {
@@ -620,7 +629,7 @@ pub fn download(app: &mut UiApp, list: Vec<(String, String)>) {
                         Some(to) => jf.download(&id, &to).map(|_| Some(to)),
                         None => Ok(None),
                     };
-                    let cancelled = matches!(&r, Err(e) if e.contains(tr!("已取消", "Cancelled")));
+                    let cancelled = matches!(&r, Err(e) if screenrecorder_core::transfer::is_canceled(e));
                     out.push((file, r));
                     if cancelled {
                         break;
@@ -638,6 +647,17 @@ pub fn download(app: &mut UiApp, list: Vec<(String, String)>) {
             }
             app.load_recent();
             if let Some((file, Err(e))) = done.iter().find(|(_, r)| r.is_err()) {
+                // 自己按了取消：不算錯誤，說一聲下載好幾支就好
+                if screenrecorder_core::transfer::is_canceled(e) {
+                    return app.toast(
+                        if got.is_empty() {
+                            tr!("已取消下載", "Download canceled").to_string()
+                        } else {
+                            trf!("已取消下載（已下載好 {} 支）", "Download canceled ({} already downloaded)", got.len())
+                        },
+                        false,
+                    );
+                }
                 return app.toast(trf!("「{file}」沒有下載完：{e}", "“{file}” wasn't downloaded: {e}"), true);
             }
             let text = match got.len() {
@@ -688,6 +708,7 @@ pub fn download_then(app: &mut UiApp, item: (String, String), then: super::Entry
                 app.leave_for_edit();
                 app.act_path(then, path.display().to_string());
             }
+            Err(e) if screenrecorder_core::transfer::is_canceled(&e) => app.toast(tr!("已取消下載", "Download canceled"), false),
             Err(e) => app.toast(trf!("沒有下載完：{e}", "The download didn't finish: {e}"), true),
         },
     );
@@ -1093,7 +1114,7 @@ fn item_menu(ui: &mut egui::Ui, d: &JfBrowse, it: &JfItem, items: &[JfItem], on:
             out.download = Some(it.clone());
             ui.close();
         }
-        if ui.button(RichText::new(tr!("從 Jellyfin 刪除…", "Delete from Jellyfin…")).color(p.rec)).clicked() {
+        if ui.button(RichText::new(tr!("從 Jellyfin 刪除…", "Delete from Jellyfin…")).color(p.err)).clicked() {
             out.delete = Some(it.clone());
             ui.close();
         }
@@ -1124,15 +1145,17 @@ fn rows(ui: &mut egui::Ui, d: &JfBrowse, items: &[JfItem], out: &mut Picked) {
     .into_iter()
     .filter(|c| c.0 > 0.0)
     .collect();
-    // 一格裡的字（太長截短）
-    let cell_text = |ui: &egui::Ui, rect: Rect, text: &str, align: Align, color: egui::Color32, bold: bool| {
+    // 一格裡的字（太長截短；回傳有沒有截掉）
+    let cell_text = |ui: &egui::Ui, rect: Rect, text: &str, align: Align, color: egui::Color32, bold: bool| -> bool {
         let font = if bold { theme::font_bold(12.5) } else { theme::font(12.5) };
         let inner = rect.shrink2(vec2(6.0, 0.0));
         let mut job = egui::text::LayoutJob::simple_singleline(text.to_string(), font, color);
         job.wrap = egui::text::TextWrapping::truncate_at_width(inner.width());
         let g = ui.painter().layout_job(job);
         let x = if align == Align::Max { inner.max.x - g.size().x } else { inner.min.x };
+        let cut = g.elided;
         ui.painter().galley(pos2(x, rect.center().y - g.size().y / 2.0), g, color);
+        cut
     };
     // 標題列
     let (head, _) = ui.allocate_exact_size(vec2(w, 28.0), Sense::hover());
@@ -1190,6 +1213,9 @@ fn rows(ui: &mut egui::Ui, d: &JfBrowse, items: &[JfItem], out: &mut Picked) {
         }
         let mut x = row.min.x;
         let mut used = false;
+        // 人物、標籤太長被截掉、滑鼠在那一格上：提示完整的（不然提示名稱）
+        let mut tip: Option<String> = None;
+        let pointer = ui.ctx().pointer_hover_pos();
         for (cwid, title, _, align) in &cols {
             let r = Rect::from_min_size(pos2(x, row.min.y), vec2(*cwid, row.height()));
             x += cwid;
@@ -1244,12 +1270,18 @@ fn rows(ui: &mut egui::Ui, d: &JfBrowse, items: &[JfItem], out: &mut Picked) {
                     let text = if it.size > 0 { screenrecorder_core::format::format_bytes(it.size) } else { String::new() };
                     cell_text(ui, r, &text, *align, p.muted, false);
                 }
-                t if t == tr!("日期", "Date") => cell_text(ui, r, &it.date, *align, p.muted, false),
-                t if t == tr!("人物", "People") => cell_text(ui, r, &it.people.join(tr!("、", ", ")), *align, p.text, false),
-                _ => cell_text(ui, r, &it.tags.join(tr!("、", ", ")), *align, p.text, false),
+                t if t == tr!("日期", "Date") => {
+                    cell_text(ui, r, &it.date, *align, p.muted, false);
+                }
+                t => {
+                    let text = if t == tr!("人物", "People") { it.people.join(tr!("、", ", ")) } else { it.tags.join(tr!("、", ", ")) };
+                    if cell_text(ui, r, &text, *align, p.text, false) && pointer.is_some_and(|q| r.contains(q)) {
+                        tip = Some(text);
+                    }
+                }
             }
         }
-        let resp = resp.on_hover_text(&it.name);
+        let resp = resp.on_hover_text(tip.as_deref().unwrap_or(&it.name));
         if video {
             resp.context_menu(|ui| item_menu(ui, d, it, items, on, out));
         }

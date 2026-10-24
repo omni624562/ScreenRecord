@@ -6,7 +6,7 @@
 
 use super::settings::{NOTES_FONT, NOTES_OPACITY_MIN};
 use super::theme::{self, segmented, Btn, Icon};
-use super::UiApp;
+use super::{ToastAction, UiApp};
 use eframe::egui::{self, pos2, vec2, Align2, Color32, FontId, Key, Rect, RichText, Sense, Stroke, ViewportBuilder, ViewportId};
 use screenrecorder_core::types::RecorderState;
 use screenrecorder_core::winui;
@@ -79,21 +79,25 @@ pub fn dev(app: &mut UiApp, cmd: &str) {
     }
 }
 
-fn save_text(n: &mut Notes) {
+/// 存講稿；存不了時回傳白話的原因（會顯示給使用者看，不只寫記錄檔）
+fn save_text(n: &mut Notes) -> Result<(), String> {
     n.save_at = None;
     let f = file();
     if let Some(dir) = f.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
-    if let Err(e) = std::fs::write(&f, &n.text) {
+    screenrecorder_core::paths::write_atomic(&f, n.text.as_bytes()).map_err(|e| {
         screenrecorder_core::error!("無法儲存講稿：{e}");
-    }
+        trf!("講稿沒有存起來：{}", "The script wasn't saved: {}", screenrecorder_core::error::plain(&e))
+    })
 }
 
 /// 關閉：存講稿與位置
 fn close(app: &mut UiApp, mut n: Notes) {
     if n.save_at.is_some() {
-        save_text(&mut n);
+        if let Err(e) = save_text(&mut n) {
+            app.toast(e, true);
+        }
     }
     if let Some(r) = n.rect {
         app.s.notes_rect = Some([r.min.x.round() as i32, r.min.y.round() as i32, r.width().round() as i32, r.height().round() as i32]);
@@ -119,7 +123,9 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         n.rec = state;
     }
     if n.save_at.is_some_and(|t| Instant::now() >= t) {
-        save_text(&mut n);
+        if let Err(e) = save_text(&mut n) {
+            app.toast(e, true);
+        }
     }
     let [x, y, w, h] = app.s.notes_rect.unwrap_or_else(|| {
         // 預設：主螢幕上方中間（靠近鏡頭，讀稿時眼睛不會飄走）
@@ -180,13 +186,30 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
             |app, r| match r {
                 Ok(Some(path)) => match read_script(&path) {
                     Ok(text) => {
-                        if let Some(n) = &mut app.notes {
-                            n.text = text;
-                            n.scroll = 0.0;
-                            n.playing = false;
-                            save_text(n);
+                        let Some(n) = &mut app.notes else { return };
+                        // 原本的講稿留著，提示上可以一鍵換回來（不會不小心就蓋掉）
+                        let old = std::mem::replace(&mut n.text, text);
+                        n.scroll = 0.0;
+                        n.playing = false;
+                        let saved = save_text(n);
+                        let name = path.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
+                        match saved {
+                            Err(e) => app.toast(e, true),
+                            Ok(()) if old.trim().is_empty() => app.toast(trf!("已開啟講稿「{name}」", "Opened the script “{name}”"), false),
+                            Ok(()) => app.toast_with(
+                                trf!("已開啟講稿「{name}」（取代了原本的講稿）", "Opened the script “{name}” (it replaced the previous one)"),
+                                false,
+                                vec![ToastAction::new(tr!("換回原本的講稿", "Restore the previous script"), move |app| {
+                                    if let Some(n) = &mut app.notes {
+                                        n.text = old.clone();
+                                        n.scroll = 0.0;
+                                        if let Err(e) = save_text(n) {
+                                            app.toast(e, true);
+                                        }
+                                    }
+                                })],
+                            ),
                         }
-                        app.toast(trf!("已開啟講稿「{}」", "Opened the script “{}”", path.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default()), false);
                     }
                     Err(e) => app.toast(e, true),
                 },
@@ -204,11 +227,18 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
 
 /// 讀講稿檔案（UTF-8；開頭的 BOM 去掉；太大的不讀）
 fn read_script(path: &std::path::Path) -> Result<String, String> {
-    let bytes = std::fs::read(path).map_err(|e| trf!("讀不到講稿檔案：{e}", "Couldn't read the script file: {e}"))?;
+    let bytes = std::fs::read(path).map_err(|e| trf!("讀不到講稿檔案：{}", "Couldn't read the script file: {}", screenrecorder_core::error::plain(&e)))?;
     if bytes.len() > 2 * 1024 * 1024 {
         return Err(tr!("講稿檔案太大（超過 2 MB）", "The script file is too large (over 2 MB)").into());
     }
-    let text = String::from_utf8_lossy(&bytes);
+    // 舊的記事本存的是 Big5（ANSI）：照讀會變亂碼，請使用者先轉成 UTF-8
+    let text = String::from_utf8(bytes).map_err(|_| {
+        tr!(
+            "講稿檔不是 UTF-8 編碼（可能是舊的 Big5 / ANSI），讀進來會是亂碼。請用記事本開啟後「另存新檔」，編碼選 UTF-8",
+            "The script file isn't UTF-8 (it may be Big5/ANSI) and would come out garbled. Open it in Notepad, choose “Save as” and pick UTF-8 encoding"
+        )
+        .to_string()
+    })?;
     Ok(text.trim_start_matches('\u{feff}').to_string())
 }
 

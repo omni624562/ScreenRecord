@@ -47,6 +47,8 @@ pub struct JfBatch {
     year: String,
     /// 現在的年份（沒有年份的是 None）與幾支，多的在前
     years_now: Vec<(Option<i32>, usize)>,
+    /// 改過了又按 Esc、點外面：不關，提示要放棄請按「取消」
+    keep_hint: bool,
 }
 
 /// 背景正在整理的（Jellyfin 分頁下面畫進度）
@@ -102,6 +104,7 @@ pub fn open(app: &mut UiApp, user: String, items: Vec<JfItem>, known_people: Vec
         year_mode: 0,
         year: String::new(),
         years_now: years,
+        keep_hint: false,
     });
 }
 
@@ -239,6 +242,8 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
     let mut close = false;
     let mut go = None;
     let mut prefs_changed = false;
+    // 有沒有改了什麼（含還沒按 Enter 的字、選了年份）：Esc、點外面時不直接丟掉
+    let dirty = edit_of(&d).is_some_and(|e| !e.is_empty()) || !d.new_person.trim().is_empty() || !d.new_tag.trim().is_empty() || d.year_mode != 0;
     // 常用裡不列勾選的影片都已經有的（移除的還是列，可以再加回去）
     let on_all = |haves: &[Have]| haves.iter().filter(|h| h.count >= total && h.act == Act::Keep).map(|h| jellyfin::name_key(&h.name)).collect::<Vec<_>>();
     let (all_p, all_t) = (on_all(&d.people), on_all(&d.tags));
@@ -318,7 +323,11 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         ui.add_space(10.0);
         ui.horizontal(|ui| {
             let what = edit.as_ref().filter(|e| !e.is_empty()).map(summary).unwrap_or_else(|| tr!("還沒有要改的", "Nothing to change yet").to_string());
-            ui.label(RichText::new(trf!("要改：{what}", "Changes: {what}")).font(theme::font(12.0)).color(p.muted));
+            if d.keep_hint && dirty {
+                ui.label(RichText::new(tr!("還沒改：要放棄這次的設定請按「取消」", "Not applied yet: click Cancel to discard")).font(theme::font(12.0)).color(p.warn));
+            } else {
+                ui.label(RichText::new(trf!("要改：{what}", "Changes: {what}")).font(theme::font(12.0)).color(p.muted));
+            }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 let ok = edit.as_ref().is_some_and(|e| !e.is_empty()) && app.jf_batch_run.is_none();
                 let tip = if app.jf_batch_run.is_some() { tr!("上一次的整理還沒改完", "The previous batch is still running") } else { "" };
@@ -340,7 +349,12 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         app.save_settings();
         return start(app, d.user, d.ids, e);
     }
-    if (close || modal.should_close()) && app.ask.is_none() {
+    // Esc、點外面：沒改過就關；改過了不直接丟掉，提示按「取消」
+    let dismiss = modal.should_close() && app.ask.is_none();
+    if dismiss && dirty {
+        d.keep_hint = true;
+    }
+    if (close || dismiss && !dirty) && app.ask.is_none() {
         return;
     }
     app.jf_batch = Some(d);

@@ -410,10 +410,13 @@ pub fn compact_view(app: &mut UiApp, ui: &mut Ui) {
         ui.spacing_mut().item_spacing.x = 8.0;
         match r.state {
             RecorderState::Idle => {
-                let can = main_view::can_start(app);
+                let why = main_view::start_blocker(app);
                 let label = if app.s.source_type == super::settings::SourceType::Audio { tr!("錄音", "Record audio") } else { tr!("錄影", "Record") };
                 let w = (ui.available_width() * 0.56).floor();
-                if Btn::new(label).kind(theme::Kind::Record).enabled(can).min_width(w).show(ui).clicked() {
+                let rec = Btn::new(label).kind(theme::Kind::Record).enabled(why.is_none()).min_width(w).show(ui);
+                if let Some(why) = why {
+                    rec.on_disabled_hover_text(why);
+                } else if rec.clicked() {
                     main_view::start_recording(app);
                 }
                 if app.s.source_type != super::settings::SourceType::Audio

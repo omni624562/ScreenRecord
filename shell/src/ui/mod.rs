@@ -1703,6 +1703,7 @@ impl eframe::App for UiApp {
         }
         let ctx = ui.ctx().clone();
         text_menu::before(&ctx);
+        theme::track_keyboard_nav(&ctx);
         let mut t = Instant::now();
         let mut part = |app: &mut UiApp, name: &'static str| {
             app.frame_parts.push((name, t.elapsed().as_secs_f32() * 1000.0));
@@ -1924,7 +1925,7 @@ fn trash_now(app: &mut UiApp, paths: Vec<String>, copies: Vec<std::path::PathBuf
 }
 
 /// 「已移到資源回收筒」：帶「開啟資源回收筒（可還原）」（在那裡按右鍵 →「還原」，會回到原本的資料夾）
-fn trashed_toast(app: &mut UiApp, msg: String) {
+pub fn trashed_toast(app: &mut UiApp, msg: String) {
     app.toast_with(
         msg,
         false,

@@ -1254,7 +1254,7 @@ fn is_audio_file(name: &str) -> bool {
 
 /// 移到資源回收筒的項目（紅字，會先確認）
 fn trash_item(ui: &mut egui::Ui) -> bool {
-    ui.button(RichText::new(tr!("移到資源回收筒…", "Move to Recycle Bin…")).color(theme::pal(ui).rec)).clicked()
+    ui.button(RichText::new(tr!("移到資源回收筒…", "Move to Recycle Bin…")).color(theme::pal(ui).err)).clicked()
 }
 
 /// 移到資源回收筒的檔案：錄影連同底下的加速版、GIF
@@ -1788,6 +1788,8 @@ fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table:
                     job.append(&more, 0.0, egui::TextFormat::simple(theme::font(12.5), p.muted));
                     job.wrap = egui::text::TextWrapping::truncate_at_width(col_x(6) - bx - 30.0);
                     let galley = ui.fonts_mut(|f| f.layout_job(job));
+                    // 那一句太長被截掉：滑鼠移上去看完整的
+                    let resp = if galley.elided { resp.on_hover_text(&h.text) } else { resp };
                     painter.galley(pos2(bx + 18.0, row.center().y - galley.size().y / 2.0), galley, p.text);
                     if resp.clicked() {
                         d.jump = Some((e.clone(), h.start));
@@ -2605,7 +2607,7 @@ fn merge_dialog(app: &mut UiApp, ctx: &egui::Context, d: &mut LibraryDialog) {
         };
         ui.add(egui::Label::new(theme::muted(ui, hint)).wrap());
         if let Some(e) = &m.error {
-            ui.label(RichText::new(e).color(p.rec));
+            ui.label(RichText::new(e).color(p.err));
         }
         ui.add_space(10.0);
         let count = m.items.iter().filter(|i| i.on).count();
@@ -2814,7 +2816,7 @@ fn cleanup_dialog(app: &mut UiApp, ctx: &egui::Context, d: &mut LibraryDialog) {
     let core = app.core.clone();
     app.spawn(async move { tokio::task::spawn_blocking(move || actions::delete(&core, &paths)).await.unwrap_or_else(|e| Err(screenrecorder_core::error::Error::other(e.to_string()))) }, |app, r| {
         match r {
-            Ok(n) => app.toast(trf!("已將 {n} 張舊截圖移到資源回收筒", "Moved {n} old screenshots to the Recycle Bin"), false),
+            Ok(n) => super::trashed_toast(app, trf!("已將 {n} 張舊截圖移到資源回收筒", "Moved {n} old screenshots to the Recycle Bin")),
             Err(e) => app.toast(e.message().to_string(), true),
         }
         if let Some(d) = &mut app.library {
@@ -2960,7 +2962,7 @@ fn similar_dialog(app: &mut UiApp, ctx: &egui::Context, d: &mut LibraryDialog) {
     let core = app.core.clone();
     app.spawn(async move { tokio::task::spawn_blocking(move || actions::delete(&core, &paths)).await.unwrap_or_else(|e| Err(screenrecorder_core::error::Error::other(e.to_string()))) }, |app, r| {
         match r {
-            Ok(n) => app.toast(trf!("已將 {n} 張相似的截圖移到資源回收筒", "Moved {n} similar screenshots to the Recycle Bin"), false),
+            Ok(n) => super::trashed_toast(app, trf!("已將 {n} 張相似的截圖移到資源回收筒", "Moved {n} similar screenshots to the Recycle Bin")),
             Err(e) => app.toast(e.message().to_string(), true),
         }
         if let Some(d) = &mut app.library {

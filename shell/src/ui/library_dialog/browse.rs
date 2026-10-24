@@ -90,7 +90,8 @@ fn option_row(ui: &mut egui::Ui, o: &FacetOption, on: bool, dot: Option<Color32>
     let cg = ui.painter().layout_no_wrap(count, theme::font(12.0), p.muted);
     let max_w = r.max.x - x - cg.size().x - 12.0;
     let lg = ui.painter().layout(o.label.clone(), theme::font(12.5), p.text, f32::INFINITY);
-    let lg = if lg.size().x > max_w {
+    let cut = lg.size().x > max_w;
+    let lg = if cut {
         let mut job = egui::text::LayoutJob::simple_singleline(o.label.clone(), theme::font(12.5), p.text);
         job.wrap = egui::text::TextWrapping::truncate_at_width(max_w);
         ui.painter().layout_job(job)
@@ -99,6 +100,8 @@ fn option_row(ui: &mut egui::Ui, o: &FacetOption, on: bool, dot: Option<Color32>
     };
     ui.painter().galley(pos2(x, r.center().y - lg.size().y / 2.0), lg, p.text);
     ui.painter().galley(pos2(r.max.x - 6.0 - cg.size().x, r.center().y - cg.size().y / 2.0), cg, p.muted);
+    // 名稱太長被截掉：滑鼠移上去看完整的
+    let resp = if cut { resp.on_hover_text(&o.label) } else { resp };
     resp.clicked()
 }
 
@@ -263,7 +266,7 @@ pub fn panel(ui: &mut egui::Ui, d: &mut LibraryDialog, rect: Rect) {
                     changed |= term_chips(ui, &fc.terms, &mut d.facet);
                 }
                 if !fc.colors.is_empty() {
-                    section(ui, tr!("顏色", "Colour"));
+                    section(ui, tr!("顏色", "Color"));
                     changed |= rows(ui, &fc.colors, &mut d.facet.colors, true);
                 }
             }

@@ -99,6 +99,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
     let Some(mut d) = app.jf_dupes.take() else { return };
     let mut close = false;
     let mut cancel = false;
+    let mut retry = false;
     let mut delete = false;
     let mut play_it: Option<JfVideo> = None;
     let mut want_posters: Vec<String> = vec![];
@@ -147,6 +148,10 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
             }
             Phase::Error(e) => {
                 ui.label(RichText::new(trf!("讀不到 Jellyfin：{e}", "Couldn't reach Jellyfin: {e}")).color(p.warn));
+                ui.add_space(8.0);
+                if Btn::new(tr!("重試", "Retry")).icon(Icon::Refresh).small().show(ui).clicked() {
+                    retry = true;
+                }
             }
             Phase::Done(groups) if groups.is_empty() => {
                 ui.label(RichText::new(tr!("沒有找到重複的影片 ✓", "No duplicate videos found ✓")).font(theme::font_bold(14.0)).color(p.ok));
@@ -244,15 +249,21 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         }
     });
     let scanning = matches!(d.phase, Phase::Scanning(_));
-    if cancel || (scanning && (close || modal.should_close())) {
+    // 掃描要好幾分鐘：只有按「取消」或 × 才停（不小心點到外面、按 Esc 不會停掉）
+    if cancel || (scanning && close) {
         if let Phase::Scanning(pr) = &d.phase {
             pr.cancel.store(true, Ordering::Relaxed);
         }
     }
-    if !scanning && (close || (modal.should_close() && app.viewer.is_none() && app.ask.is_none())) {
+    // 掃完、已經勾好要刪的：點外面、按 Esc 不關（勾的會不見），要按 ×
+    let dismiss = modal.should_close() && app.viewer.is_none() && app.ask.is_none() && d.marked.is_empty();
+    if !scanning && (close || dismiss) {
         return;
     }
     let user = d.user.clone();
+    if retry {
+        return open(app, user);
+    }
     let names: Vec<(String, String)> = match (&d.phase, delete) {
         (Phase::Done(groups), true) => groups.iter().flat_map(|g| g.items.iter()).filter(|v| d.marked.contains(&v.id)).map(|v| (v.id.clone(), v.name.clone())).collect(),
         _ => vec![],

@@ -28,6 +28,8 @@ pub struct Review {
     /// 做成影片：每一步至少幾秒、唸出說明
     secs: f64,
     speak: bool,
+    /// 刪掉的步驟（原本的位置），「復原刪除」、Ctrl+Z 一步一步放回去
+    removed: Vec<(usize, Item)>,
 }
 
 struct Item {
@@ -41,6 +43,8 @@ enum Act {
     Up(usize),
     Down(usize),
     Delete(usize),
+    /// 放回最後刪掉的一步
+    Undo,
     Build,
     /// 只要文字：說明整理成編號清單複製（不附圖，不會關閉）
     CopyText,
@@ -54,8 +58,18 @@ pub fn open(app: &mut UiApp) {
         return;
     }
     let items = draft.steps.iter().map(|s| Item { step: s.clone(), tex: None, failed: false }).collect();
-    app.steps_review =
-        Some(Review { title: draft.title(), draft, items, busy: false, progress: Default::default(), cancel: Default::default(), format: Default::default(), secs: 3.0, speak: cfg!(windows) });
+    app.steps_review = Some(Review {
+        title: draft.title(),
+        draft,
+        items,
+        busy: false,
+        progress: Default::default(),
+        cancel: Default::default(),
+        format: Default::default(),
+        secs: 3.0,
+        speak: cfg!(windows),
+        removed: vec![],
+    });
     load_thumb(app, 0);
 }
 
@@ -170,7 +184,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                     }
                     ui.ctx().request_repaint_after(std::time::Duration::from_millis(250));
                 } else {
-                    ui.label(tr!("正在做成教學文件…", "Making the guide…"));
+                    ui.label(trf!("正在做成教學文件（{} 步）…", "Making the guide ({} steps)…", n));
                 }
             } else {
                 use screenrecorder_core::steps::DocFormat;
@@ -219,10 +233,26 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                 {
                     act = Some(Act::Close);
                 }
+                if let Some((i, _)) = r.removed.last() {
+                    if Btn::new(tr!("復原刪除", "Undo delete"))
+                        .icon(Icon::Undo)
+                        .ghost()
+                        .enabled(!r.busy)
+                        .tooltip(trf!("放回剛刪掉的步驟 {}（Ctrl+Z）", "Put back the deleted step {} (Ctrl+Z)", i + 1))
+                        .show(ui)
+                        .clicked()
+                    {
+                        act = Some(Act::Undo);
+                    }
+                }
             });
         });
     });
     // 另一個對話框（確定放棄）開著時不處理 Esc、點外面
+    // Ctrl+Z：沒在打字時放回刪掉的步驟（標題欄位裡的 Ctrl+Z 是復原文字）
+    if act.is_none() && !r.busy && !r.removed.is_empty() && ctx.memory(|m| m.focused().is_none()) && ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::Z)) {
+        act = Some(Act::Undo);
+    }
     if act.is_none() && modal.should_close() && app.ask.is_none() && !r.busy {
         act = Some(Act::Close);
     }
@@ -230,7 +260,13 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         Some(Act::Up(i)) => r.items.swap(i, i - 1),
         Some(Act::Down(i)) => r.items.swap(i, i + 1),
         Some(Act::Delete(i)) => {
-            r.items.remove(i);
+            let it = r.items.remove(i);
+            r.removed.push((i, it));
+        }
+        Some(Act::Undo) => {
+            if let Some((i, it)) = r.removed.pop() {
+                r.items.insert(i.min(r.items.len()), it);
+            }
         }
         Some(Act::CopyText) => {
             let title = if r.title.trim().is_empty() { r.draft.title() } else { r.title.trim().to_string() };
@@ -271,20 +307,21 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                         stopped = r.cancel.load(std::sync::atomic::Ordering::Relaxed);
                     }
                     if stopped {
-                        app.toast(tr!("已取消，沒有做成影片", "Cancelled; no video was made"), false);
+                        app.toast(tr!("已取消，沒有做成影片", "Canceled; no video was made"), false);
                     } else {
                         app.toast(e.message().to_string(), true);
                     }
                 }
             });
         }
-        Some(Act::Close) if r.items.is_empty() => {
+        Some(Act::Close) if r.items.is_empty() && r.removed.is_empty() => {
             // 全部刪掉了：直接放棄
             app.core.steps_discard();
             return;
         }
         Some(Act::Close) => {
-            let n = r.items.len();
+            // 刪掉、還能復原的也一起放棄
+            let n = r.items.len() + r.removed.len();
             let msg = if screenrecorder_core::i18n::is_en() {
                 format!("The {n} step{} will be deleted and no guide will be made.", if n == 1 { "" } else { "s" })
             } else {

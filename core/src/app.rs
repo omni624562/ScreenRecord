@@ -620,7 +620,7 @@ impl App {
         cancel: Arc<std::sync::atomic::AtomicBool>,
     ) -> crate::Result<String> {
         use std::sync::atomic::Ordering;
-        let cancelled = || crate::Error::config(tr!("已取消", "Cancelled"));
+        let cancelled = || crate::Error::config(tr!("已取消", "Canceled"));
         let draft = self.lock().steps_draft.clone().ok_or_else(|| crate::Error::config(tr!("沒有要整理的步驟", "There are no steps to organize")))?;
         if steps.is_empty() {
             return Err(crate::Error::config(tr!("沒有要整理的步驟", "There are no steps to organize")));
@@ -646,7 +646,7 @@ impl App {
             voices.push(None);
             for (i, s) in list.iter().enumerate() {
                 if stop.load(Ordering::Relaxed) {
-                    return Err(tr!("已取消", "Cancelled").into());
+                    return Err(tr!("已取消", "Canceled").into());
                 }
                 prog.store((i * 500 / list.len().max(1)) as u32, Ordering::Relaxed);
                 let text = s.caption();

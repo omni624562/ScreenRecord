@@ -108,13 +108,18 @@ pub fn save(src: impl Read, total: u64, to: &Path, down: bool) -> std::io::Resul
     r
 }
 
+/// 錯誤訊息是不是使用者自己按了取消（`copy_to_tmp` 的取消訊息）
+pub fn is_canceled(e: &str) -> bool {
+    e.contains(tr!("已取消", "Canceled"))
+}
+
 fn copy_to_tmp(mut src: impl Read, tmp: &Path, done: &AtomicU64, cancel: &AtomicBool) -> std::io::Result<u64> {
     let mut dst = std::io::BufWriter::with_capacity(4 << 20, std::fs::File::create(tmp)?);
     let mut buf = vec![0u8; 4 << 20];
     let mut n = 0u64;
     loop {
         if cancel.load(Ordering::Relaxed) {
-            return Err(std::io::Error::new(std::io::ErrorKind::Interrupted, tr!("已取消", "Cancelled")));
+            return Err(std::io::Error::new(std::io::ErrorKind::Interrupted, tr!("已取消", "Canceled")));
         }
         let k = src.read(&mut buf)?;
         if k == 0 {

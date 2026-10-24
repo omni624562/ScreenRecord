@@ -518,7 +518,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                     }
                 });
                 if !name.trim().is_empty() && !ok {
-                    ui.label(RichText::new(tr!("名稱不能有 \\ / : * ? \" < > | 這些符號", "The name can't contain \\ / : * ? \" < > |")).color(p.rec).font(theme::font(12.0)));
+                    ui.label(RichText::new(tr!("名稱不能有 \\ / : * ? \" < > | 這些符號", "The name can't contain \\ / : * ? \" < > |")).color(p.err).font(theme::font(12.0)));
                 }
             }
         }

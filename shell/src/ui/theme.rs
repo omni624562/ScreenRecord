@@ -21,6 +21,8 @@ pub struct Pal {
     pub accent_soft: Color32,
     pub rec: Color32,
     pub rec_soft: Color32,
+    /// 錯誤文字、錯誤提示的底色：比錄影紅深一點，白底上的小字也夠清楚（對比 4.5:1 以上）
+    pub err: Color32,
     pub warn: Color32,
     pub warn_soft: Color32,
     pub ok: Color32,
@@ -44,6 +46,7 @@ pub const LIGHT: Pal = Pal {
     accent_soft: hex(0xe8efff),
     rec: hex(0xe5484d),
     rec_soft: hex(0xfdecec),
+    err: hex(0xc62828),
     warn: hex(0xb25e00),
     warn_soft: hex(0xfff4e2),
     ok: hex(0x1a7f4b),
@@ -63,6 +66,7 @@ pub const DARK: Pal = Pal {
     accent_soft: hex(0x1c2847),
     rec: hex(0xff6369),
     rec_soft: hex(0x3a1d1f),
+    err: hex(0xff6369),
     warn: hex(0xf5a524),
     warn_soft: hex(0x3a2a12),
     ok: hex(0x4cc38a),
@@ -859,6 +863,7 @@ impl Btn {
             if self.menu {
                 paint_icon(painter, Rect::from_min_size(pos2(x + 3.0, rect.center().y - 6.0), Vec2::splat(12.0)), Icon::ChevD, color);
             }
+            focus_ring(ui, &resp, rect, RADIUS_SM);
         }
         let resp = if self.enabled { resp.on_hover_cursor(egui::CursorIcon::PointingHand) } else { resp };
         match self.tooltip {
@@ -876,6 +881,31 @@ pub fn segmented<T: PartialEq + Copy>(ui: &mut Ui, value: &mut T, items: &[(T, &
 }
 
 /// 同 segmented，每一格的高度是 item_h（外框再多 8：查詢列用 24，整個 32 和旁邊的輸入框、按鈕一樣高）
+/// 用鍵盤（Tab）移動焦點時：在有焦點的按鈕、勾選框外面畫一圈藍框，看得出按 Enter / 空白鍵會按到哪一個。
+/// 用滑鼠點的不畫（點完按鈕就有焦點，畫框反而奇怪）
+pub fn focus_ring(ui: &Ui, resp: &Response, rect: Rect, radius: u8) {
+    if resp.has_focus() && keyboard_nav(ui.ctx()) {
+        ui.painter().rect_stroke(rect.expand(2.0), CornerRadius::same(radius.saturating_add(2)), Stroke::new(2.0, pal(ui).accent), StrokeKind::Outside);
+    }
+}
+
+fn nav_id() -> egui::Id {
+    egui::Id::new("keyboard-nav")
+}
+
+/// 最近一次是用鍵盤移動焦點（按了 Tab、方向鍵），之後按了滑鼠就不是
+pub fn keyboard_nav(ctx: &egui::Context) -> bool {
+    ctx.data(|d| d.get_temp::<bool>(nav_id())).unwrap_or(false)
+}
+
+/// 每一格開始時呼叫：記下現在是不是在用鍵盤操作
+pub fn track_keyboard_nav(ctx: &egui::Context) {
+    let (tab, click) = ctx.input(|i| (i.key_pressed(egui::Key::Tab), i.pointer.any_pressed()));
+    if tab || click {
+        ctx.data_mut(|d| d.insert_temp(nav_id(), tab && !click));
+    }
+}
+
 pub fn segmented_h<T: PartialEq + Copy>(ui: &mut Ui, value: &mut T, items: &[(T, &str)], enabled: bool, item_h: f32) -> bool {
     let p = pal(ui);
     let mut changed = false;
@@ -897,6 +927,7 @@ pub fn segmented_h<T: PartialEq + Copy>(ui: &mut Ui, value: &mut T, items: &[(T,
                 let color = if on || hover { p.text } else { p.muted };
                 let color = if enabled { color } else { color.gamma_multiply(0.5) };
                 ui.painter().galley_with_override_text_color(rect.center() - g.size() / 2.0, g, color);
+                focus_ring(ui, &resp, rect, 7);
                 if resp.clicked() && !on {
                     *value = *v;
                     changed = true;
@@ -927,6 +958,7 @@ pub fn switch(ui: &mut Ui, on: &mut bool, label: impl Into<WidgetText>, enabled:
     ui.painter().circle_filled(pos2(knob_x, track.center().y), 7.0, Color32::WHITE);
     let text_color = if enabled { p.text } else { p.muted };
     ui.painter().galley_with_override_text_color(pos2(track.right() + 8.0, rect.center().y - galley.size().y / 2.0), galley, text_color);
+    focus_ring(ui, &resp, track, 9);
     if enabled {
         resp.on_hover_cursor(egui::CursorIcon::PointingHand)
     } else {
@@ -965,6 +997,7 @@ pub fn check(ui: &mut Ui, on: &mut bool, label: impl Into<WidgetText>) -> Respon
         let color = if enabled { p.text } else { p.muted };
         ui.painter().galley_with_override_text_color(pos2(bx.max.x + 8.0, rect.center().y - g.size().y / 2.0), g, color);
     }
+    focus_ring(ui, &resp, bx, 3);
     if enabled {
         resp.on_hover_cursor(egui::CursorIcon::PointingHand)
     } else {
@@ -1046,6 +1079,7 @@ pub fn chip(ui: &mut Ui, text: &str, tone: Tone, clickable: bool) -> Response {
     let fill = if clickable && resp.hovered() { fill.gamma_multiply(1.15) } else { fill };
     ui.painter().rect_filled(rect, CornerRadius::same(11), fill);
     ui.painter().galley_with_override_text_color(rect.center() - g.size() / 2.0, g, fg);
+    focus_ring(ui, &resp, rect, 11);
     if clickable {
         resp.on_hover_cursor(egui::CursorIcon::PointingHand)
     } else {

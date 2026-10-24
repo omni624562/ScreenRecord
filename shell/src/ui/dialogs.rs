@@ -148,7 +148,7 @@ pub fn show_ask(app: &mut UiApp, ctx: &egui::Context) {
         }
         if let Some(e) = &ask.error {
             ui.add_space(4.0);
-            ui.label(RichText::new(e).color(p.rec));
+            ui.label(RichText::new(e).color(p.err));
         }
         ui.add_space(12.0);
         // 按鈕列固定高度（with_layout 會佔滿剩下的高度，對話框就被撐得很高）
@@ -214,7 +214,7 @@ pub fn show_toast(app: &mut UiApp, ctx: &egui::Context) {
     }
     ctx.request_repaint_after(t.until - Instant::now());
     let p = theme::pal_ctx(ctx);
-    let (fill, fg) = if t.error { (p.rec, Color32::WHITE) } else { (p.text, p.surface) };
+    let (fill, fg) = if t.error { (p.err, Color32::WHITE) } else { (p.text, p.surface) };
     // 有按鈕、或出錯（不會自己消失）的：有 ✕ 可以關
     let has_actions = !t.actions.is_empty() || t.error;
     let mut clicked: Option<usize> = None;

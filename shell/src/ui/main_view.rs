@@ -405,7 +405,7 @@ fn source_detail(app: &mut UiApp, ui: &mut Ui, room: f32) {
             window_picker(app, ui, locked);
             // 範圍太小：精確數值收起來時也要看得到
             if region_too_small(app) && !app.main.precise {
-                ui.label(RichText::new(tr!("寬高至少 16 像素", "Width and height must be at least 16 pixels")).font(theme::font(12.5)).color(p.rec));
+                ui.label(RichText::new(tr!("寬高至少 16 像素", "Width and height must be at least 16 pixels")).font(theme::font(12.5)).color(p.err));
                 return;
             }
             // 放得下才顯示說明
@@ -493,7 +493,7 @@ fn precise_row(app: &mut UiApp, ui: &mut Ui, locked: bool) {
             }
             if next.width < 16 || next.height < 16 {
                 // 整句不拆開（放不下時換到下一行）
-                ui.add(egui::Label::new(RichText::new(tr!("寬高至少 16 像素", "Width and height must be at least 16 pixels")).font(theme::font(12.5)).color(p.rec)).extend());
+                ui.add(egui::Label::new(RichText::new(tr!("寬高至少 16 像素", "Width and height must be at least 16 pixels")).font(theme::font(12.5)).color(p.err)).extend());
             }
         });
     });
@@ -1134,7 +1134,20 @@ fn camera_menu(app: &mut UiApp, ui: &mut Ui) -> bool {
 
 /// 可以開始錄影：有錄影元件與編碼器、沒有手動開始的轉檔、範圍夠大（主畫面、小視窗的「開始錄影」）
 pub(super) fn can_start(app: &UiApp) -> bool {
-    app.env.ffmpeg.found && app.env.ffmpeg.encoder.is_some() && app.manual_export().is_none() && !region_too_small(app)
+    start_blocker(app).is_none()
+}
+
+/// 不能開始錄影的原因（停用的錄影鈕滑鼠移上去時提示）
+pub(super) fn start_blocker(app: &UiApp) -> Option<String> {
+    if !app.env.ffmpeg.found {
+        Some(tr!("請先下載錄影元件（上方的「下載並開始使用」）", "Download the recording component first (“Download and get started” above)").to_string())
+    } else if app.env.ffmpeg.encoder.is_none() {
+        Some(tr!("沒有可以用的 H.264 編碼器：請重新下載錄影元件", "No usable H.264 encoder. Download the recording component again").to_string())
+    } else if region_too_small(app) {
+        Some(tr!("範圍太小：寬高至少 16 像素", "The area is too small: it must be at least 16 pixels wide and tall").to_string())
+    } else {
+        app.manual_export().map(|e| trf!("正在{}，完成後才能錄影", "{} is in progress. You can record when it finishes", actions::job_label(&e)))
+    }
 }
 
 /// 用目前的設定開始錄影
@@ -1475,7 +1488,7 @@ fn result_card(app: &mut UiApp, ui: &mut Ui, res: &screenrecorder_core::types::R
                 }
                 ui.label(RichText::new(file_name(path)).font(theme::mono(12.0))).on_hover_text(path);
                 if let Some(t) = silent_result_text(res.silent_audio) {
-                    ui.add(egui::Label::new(RichText::new(t).font(theme::font(12.5)).color(p.rec)).wrap()).on_hover_text(tr!(
+                    ui.add(egui::Label::new(RichText::new(t).font(theme::font(12.5)).color(p.err)).wrap()).on_hover_text(tr!(
                         "錄影時麥克風或播放裝置打不開、或中途斷掉，那段錄到的是靜音",
                         "The microphone or playback device couldn't be opened or disconnected while recording, so that part is silent"
                     ));
@@ -1814,13 +1827,8 @@ fn control_bar(app: &mut UiApp, ui: &mut Ui) {
 
 /// 待命：錄影膠囊（灰色計時、紅色錄影鈕；快速鍵在滑鼠提示）；右邊是訊息，沒有訊息時空著
 fn idle_controls(app: &mut UiApp, ui: &mut Ui) {
-    let manual = app.manual_export();
-    let tip = if !app.env.ffmpeg.found {
-        tr!("請先下載錄影元件（上方的「下載並開始使用」）", "Download the recording component first (“Download and get started” above)").to_string()
-    } else if region_too_small(app) {
-        tr!("範圍太小：寬高至少 16 像素", "The area is too small: it must be at least 16 pixels wide and tall").to_string()
-    } else if let Some(e) = &manual {
-        trf!("正在{}，完成後才能錄影", "{} is in progress. You can record when it finishes", actions::job_label(e))
+    let tip = if let Some(why) = start_blocker(app) {
+        why
     } else if app.core.after_status().is_some() {
         tr!("錄完自動處理會先暫停，錄完再繼續", "Post-processing pauses while you record and continues afterwards").to_string()
     } else {
@@ -2704,7 +2712,14 @@ fn notice_actions(app: &mut UiApp, ui: &mut Ui, n: &Notice) {
         }
         Notice::Manual(e) => {
             let what = actions::job_label(e);
-            if Btn::new(tr!("停止處理並開始錄影", "Stop it and start recording")).icon(Icon::Stop).small().enabled(app.env.ffmpeg.encoder.is_some()).show(ui).clicked() {
+            if Btn::new(tr!("停止處理並開始錄影", "Stop it and start recording"))
+                .icon(Icon::Stop)
+                .small()
+                .enabled(app.env.ffmpeg.encoder.is_some())
+                .show(ui)
+                .on_disabled_hover_text(tr!("沒有可以用的 H.264 編碼器：請重新下載錄影元件", "No usable H.264 encoder. Download the recording component again"))
+                .clicked()
+            {
                 let config = app.s.record_config(&app.env);
                 let core = app.core.clone();
                 app.toast(trf!("已停止{what}，錄完後可以再做一次", "{what} was stopped. You can do it again after recording"), false);
