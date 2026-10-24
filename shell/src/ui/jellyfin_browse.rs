@@ -1398,30 +1398,69 @@ fn facet_menu(
             let mut any = false;
             for (name, c, f) in rows.iter().filter(|(n, ..)| q.is_empty() || jellyfin::name_key(n).contains(&q)) {
                 any = true;
-                // 每一列固定大小：勾選框＋名稱、右邊的支數（畫上去，選單才不會越撐越寬）
-                let (row, _) = ui.allocate_exact_size(vec2(W - 16.0, 26.0), Sense::hover());
+                // 每一列固定大小：勾選框＋名稱、右邊的支數（畫上去，選單才不會越撐越寬）。
+                // 人物那一列高一點：勾選框和名稱中間一個圓形頭像（沒有照片時是名字的第一個字）
+                let person = match f {
+                    JfFacet::Person(id, _) => Some(id),
+                    _ => None,
+                };
+                let (row, row_resp) = ui.allocate_exact_size(vec2(W - 16.0, if person.is_some() { 40.0 } else { 26.0 }), if person.is_some() { Sense::click() } else { Sense::hover() });
                 let cw = if *c > 0 || is_none_facet(f) { 56.0 } else { 0.0 };
                 let mut on = chosen.contains(f);
                 let shown: String = if name.chars().count() > 24 { name.chars().take(23).chain(['…']).collect() } else { name.clone() };
-                let face_w = if matches!(f, JfFacet::Person(..)) { 28.0 } else { 0.0 };
-                let cb = Rect::from_min_max(row.min, pos2(row.max.x - cw - face_w, row.max.y));
-                let r = ui.scope_builder(UiBuilder::new().max_rect(cb).layout(Layout::left_to_right(Align::Center)), |ui| theme::check(ui, &mut on, shown)).inner;
+                let r = if let Some(id) = person {
+                    if row_resp.hovered() {
+                        ui.painter().rect_filled(row, 4.0, p.surface2.gamma_multiply(0.6));
+                    }
+                    let cb = Rect::from_min_size(pos2(row.min.x + 2.0, row.center().y - 10.0), vec2(20.0, 20.0));
+                    let mut r = ui.scope_builder(UiBuilder::new().max_rect(cb).layout(Layout::left_to_right(Align::Center)), |ui| theme::check(ui, &mut on, "")).inner;
+                    let at = Rect::from_min_size(pos2(cb.max.x + 6.0, row.center().y - 16.0), vec2(32.0, 32.0));
+                    let ar = ui.interact(at, egui::Id::new(("jf-facet-face", id)), Sense::click());
+                    match faces.get(id) {
+                        Some(Poster::Ready(tex)) => {
+                            // 人物照片是直的：取上半部的正方形（臉通常在那裡），不要壓扁
+                            let [w, h] = tex.size().map(|v| v.max(1) as f32);
+                            let uv = if h > w {
+                                let span = w / h;
+                                let v0 = (0.4 - span / 2.0).clamp(0.0, 1.0 - span);
+                                Rect::from_min_max(pos2(0.0, v0), pos2(1.0, v0 + span))
+                            } else {
+                                let span = h / w;
+                                Rect::from_min_max(pos2(0.5 - span / 2.0, 0.0), pos2(0.5 + span / 2.0, 1.0))
+                            };
+                            egui::Image::new(tex).uv(uv).fit_to_exact_size(at.size()).corner_radius(16.0).paint_at(ui, at);
+                            // 滑過頭像看大張的
+                            let tex = tex.clone();
+                            ar.clone().on_hover_ui(move |ui| {
+                                let s = vec2(140.0, 140.0 * h / w);
+                                ui.add(egui::Image::new(&tex).fit_to_exact_size(s).corner_radius(6.0));
+                            });
+                        }
+                        other => {
+                            if other.is_none() && ui.is_rect_visible(at) {
+                                want_faces.push(id.clone());
+                            }
+                            ui.painter().circle_filled(at.center(), 16.0, p.surface2);
+                            let first: String = name.chars().next().map(String::from).unwrap_or_default();
+                            ui.painter().text(at.center(), Align2::CENTER_CENTER, first, theme::font_bold(14.0), p.muted);
+                        }
+                    }
+                    let name_max = row.max.x - cw - at.max.x - 12.0;
+                    let galley = ui.painter().layout(shown, theme::font(14.0), p.text, name_max);
+                    ui.painter().galley(pos2(at.max.x + 8.0, row.center().y - galley.size().y / 2.0), galley, p.text);
+                    if !r.changed() && (row_resp.clicked() || ar.clicked()) {
+                        r.mark_changed();
+                    }
+                    r
+                } else {
+                    let cb = Rect::from_min_max(row.min, pos2(row.max.x - cw, row.max.y));
+                    ui.scope_builder(UiBuilder::new().max_rect(cb).layout(Layout::left_to_right(Align::Center)), |ui| theme::check(ui, &mut on, shown)).inner
+                };
                 if r.changed() {
                     *change = FacetChange::Toggle(f.clone());
                 }
                 if *c > 0 || is_none_facet(f) {
                     ui.painter().text(pos2(row.max.x - 4.0, row.center().y), Align2::RIGHT_CENTER, trf!("{c} 支", "{c}"), theme::font(12.0), p.muted);
-                }
-                // 人物照片（有的話）：支數左邊一個圓形小頭像
-                if let JfFacet::Person(id, _) = f {
-                    let at = Rect::from_center_size(pos2(row.max.x - cw - 14.0, row.center().y), vec2(22.0, 22.0));
-                    match faces.get(id) {
-                        Some(Poster::Ready(tex)) => {
-                            egui::Image::new(tex).fit_to_exact_size(at.size()).corner_radius(11.0).paint_at(ui, at);
-                        }
-                        None if ui.is_rect_visible(at) => want_faces.push(id.clone()),
-                        _ => {}
-                    }
                 }
                 if is_none_facet(f) {
                     r.on_hover_text(tr!(

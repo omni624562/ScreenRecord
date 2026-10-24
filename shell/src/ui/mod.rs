@@ -30,6 +30,7 @@ pub mod settings;
 pub mod settings_dialog;
 pub mod snip;
 pub mod steps_review;
+pub mod text_menu;
 pub mod theme;
 pub mod thumbs;
 pub mod title_bar;
@@ -1697,6 +1698,7 @@ impl eframe::App for UiApp {
             return;
         }
         let ctx = ui.ctx().clone();
+        text_menu::before(&ctx);
         let mut t = Instant::now();
         let mut part = |app: &mut UiApp, name: &'static str| {
             app.frame_parts.push((name, t.elapsed().as_secs_f32() * 1000.0));
@@ -1812,6 +1814,7 @@ impl eframe::App for UiApp {
         main_view::countdown_overlay(self, &ctx);
         title_bar::show(self, &ctx);
         title_bar::resize_edges(&ctx);
+        text_menu::after(&ctx);
         #[cfg(debug_assertions)]
         dev::tick(self, &ctx);
     }
