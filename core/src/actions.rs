@@ -280,7 +280,7 @@ pub async fn thumb_strip(app: &App, path: &str, duration: f64) -> Option<PathBuf
     app.thumbs.strip(app.ffmpeg_path().as_deref(), path, duration).await
 }
 
-/// 錄影或截圖改名（錄影連同加速版 / GIF）；不能改正在錄影或轉檔的檔案。回傳新的完整路徑
+/// 錄影或截圖重新命名（錄影連同加速版 / GIF）；不能改正在錄影或轉檔的檔案。回傳新的完整路徑
 pub async fn rename(app: &App, path: &str, name: &str) -> Result<String> {
     if !is_abs(path) || !ends_with_ci(path, &[".mp4", ".png", ".jpg", ".jpeg"]) || !Path::new(path).exists() {
         return Err(Error::config(trf!("找不到檔案：{path}", "File not found: {path}")));
@@ -303,7 +303,7 @@ pub async fn rename(app: &App, path: &str, name: &str) -> Result<String> {
 static RENAMES: std::sync::Mutex<Vec<(String, String)>> = std::sync::Mutex::new(Vec::new());
 
 fn remember_rename(from: &str, to: &str) {
-    let mut list = RENAMES.lock().unwrap();
+    let mut list = RENAMES.lock().unwrap_or_else(|e| e.into_inner());
     list.retain(|(f, _)| !f.eq_ignore_ascii_case(from));
     list.push((from.to_string(), to.to_string()));
     // 只留最近的
@@ -317,7 +317,7 @@ pub fn renamed_to(path: &str) -> Option<String> {
     if Path::new(path).exists() {
         return None;
     }
-    let list = RENAMES.lock().unwrap();
+    let list = RENAMES.lock().unwrap_or_else(|e| e.into_inner());
     let mut cur = path.to_string();
     for _ in 0..10 {
         match list.iter().rev().find(|(f, _)| f.eq_ignore_ascii_case(&cur)) {
@@ -935,7 +935,7 @@ async fn save_rendered(app: &App, source: &str, spec: &crate::shot_edit::ShotSpe
     let (o, (w, h)) = (out.clone(), (pm.width(), pm.height()));
     let copied = tokio::task::spawn_blocking(move || -> Result<bool> {
         let fail = |e: String| Error::other(trf!("無法儲存圖片：{e}", "Couldn't save the image: {e}"));
-        // 先寫暫存檔再改名：取代時不會留下寫到一半的圖
+        // 先寫暫存檔再重新命名：取代時不會留下寫到一半的圖
         let tmp = o.with_extension(if jpg { "jpg.tmp" } else { "png.tmp" });
         if jpg {
             let bytes = crate::shot_edit::encode_jpeg(&pm, 90).map_err(fail)?;
@@ -1014,6 +1014,15 @@ pub fn check_writable_dir(dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// 開啟資源回收筒（剛移進去的檔案在那裡按右鍵 →「還原」）
+pub fn open_recycle_bin() -> Result<()> {
+    if !cfg!(windows) {
+        return Err(Error::config(tr!("這個系統沒有資源回收筒", "There's no Recycle Bin on this system")));
+    }
+    crate::desktop::open_with_explorer("shell:RecycleBinFolder", false);
+    Ok(())
+}
+
 /// 用預設瀏覽器開啟外部網址（更新頁面、FFmpeg 下載頁）
 pub fn open_url(url: &str) -> Result<()> {
     let u = url.trim();
@@ -1080,7 +1089,7 @@ pub async fn suggest_name(app: &App, path: &str) -> Option<String> {
     crate::naming::suggest(&h)
 }
 
-/// 依命名規則（設定裡的「命名規則」）改名：只改預設的名稱（Rec_時間、Shot_時間；只錄聲音的錄音不改），回傳新的路徑。
+/// 依命名規則（設定裡的「命名規則」）重新命名：只改預設的名稱（Rec_時間、Shot_時間；只錄聲音的錄音不改），回傳新的路徑。
 /// 規則裡有 {內容} 時，依內容想名稱（同自動命名）
 pub async fn apply_name_rule(app: &App, path: &str, rule: &str) -> Option<String> {
     let p = Path::new(path);
@@ -1108,7 +1117,7 @@ pub async fn apply_name_rule(app: &App, path: &str, rule: &str) -> Option<String
             Ok(p) => return Some(p),
             Err(e) if e.message().contains(tr!("已有同名的檔案", "A file with this name already exists")) => continue,
             Err(e) => {
-                crate::warn!("[命名規則] 無法改名：{}", e.message());
+                crate::warn!("[命名規則] 無法重新命名：{}", e.message());
                 return None;
             }
         }
@@ -1129,7 +1138,7 @@ pub async fn auto_rename(app: &App, path: &str) -> Option<String> {
             Ok(p) => return Some(p),
             Err(e) if e.message().contains(tr!("已有同名的檔案", "A file with this name already exists")) => continue,
             Err(e) => {
-                crate::warn!("[自動命名] 無法改名：{}", e.message());
+                crate::warn!("[自動命名] 無法重新命名：{}", e.message());
                 return None;
             }
         }

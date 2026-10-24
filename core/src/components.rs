@@ -115,13 +115,13 @@ pub struct Components {
 
 impl Components {
     fn status(&self, k: Kind) -> JobStatus {
-        let g = self.jobs.lock().unwrap();
+        let g = self.jobs.lock().unwrap_or_else(|e| e.into_inner());
         g.get(&k).map(|j| JobStatus { running: j.running, progress: j.progress.load(Ordering::Relaxed) as f32 / 1000.0, error: j.error.clone() }).unwrap_or_default()
     }
 
     /// 開始：回傳 (progress, cancel)；已經在下載就回傳 None
     fn begin(&self, k: Kind) -> Option<(Arc<AtomicU32>, Arc<AtomicBool>)> {
-        let mut g = self.jobs.lock().unwrap();
+        let mut g = self.jobs.lock().unwrap_or_else(|e| e.into_inner());
         if g.get(&k).is_some_and(|j| j.running) {
             return None;
         }
@@ -131,7 +131,7 @@ impl Components {
     }
 
     fn end(&self, k: Kind, r: Result<(), String>) {
-        let mut g = self.jobs.lock().unwrap();
+        let mut g = self.jobs.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(j) = g.get_mut(&k) {
             j.running = false;
             let canceled = j.cancel.load(Ordering::Relaxed);
@@ -140,13 +140,13 @@ impl Components {
     }
 
     fn cancel(&self, k: Kind) {
-        if let Some(j) = self.jobs.lock().unwrap().get(&k) {
+        if let Some(j) = self.jobs.lock().unwrap_or_else(|e| e.into_inner()).get(&k) {
             j.cancel.store(true, Ordering::Relaxed);
         }
     }
 
     fn set_error(&self, k: Kind, e: Option<String>) {
-        let mut g = self.jobs.lock().unwrap();
+        let mut g = self.jobs.lock().unwrap_or_else(|e| e.into_inner());
         let j = g.entry(k).or_insert_with(|| Job { progress: Arc::new(AtomicU32::new(0)), cancel: Arc::new(AtomicBool::new(false)), running: false, error: None });
         if !j.running {
             j.error = e;
@@ -261,14 +261,21 @@ pub fn install_model_file(m: &Model, src: &Path) -> Result<(), String> {
     if !subtitles::model_size_ok(m, src) {
         return Err(trf!("檔案不完整（應該約 {} MB），請重新下載", "The file is incomplete (it should be about {} MB). Please download it again", m.mb));
     }
+    if !subtitles::model_hash_ok(m, src) {
+        return Err(tr!(
+            "這個檔案和官方發佈的模型不一樣（可能下載不完整或被改過），請重新下載",
+            "This file doesn't match the official model (it may be incomplete or modified). Please download it again"
+        )
+        .into());
+    }
     let target = subtitles::model_install_path(m);
     if let Some(dir) = target.parent() {
-        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+        std::fs::create_dir_all(dir).map_err(|e| crate::error::plain(&e))?;
     }
     let staging = target.with_extension("part");
-    std::fs::copy(src, &staging).map_err(|e| e.to_string())?;
+    std::fs::copy(src, &staging).map_err(|e| crate::error::plain(&e))?;
     let _ = std::fs::remove_file(&target);
-    std::fs::rename(&staging, &target).map_err(|e| e.to_string())?;
+    std::fs::rename(&staging, &target).map_err(|e| crate::error::plain(&e))?;
     crate::info!("[外部元件] 已安裝選擇的語音模型 {}", m.file);
     Ok(())
 }
@@ -279,7 +286,7 @@ impl App {
         match k {
             Kind::Ffmpeg => self.env().ffmpeg.found,
             // 下載的，或系統裝的（Linux：apt install libmpv2）
-            Kind::Mpv => crate::mpv_download::installed_path().is_some() || crate::mpv::available(),
+            Kind::Mpv => crate::mpv_download::installed_path().is_some() || crate::mpv::loaded(),
             Kind::SpeechFfmpeg => self.env().ffmpeg.has_whisper || subtitles::speech_ffmpeg_downloaded(),
             Kind::Model(_) => k.model().is_some_and(subtitles::model_ready),
         }

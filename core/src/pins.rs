@@ -1,5 +1,5 @@
 //! 釘選（我的最愛）：重要的截圖、錄影加星號，「選取全部」「全選本頁」和「清理舊截圖」都會略過。
-//! 存在資料夾裡的 pins.json（完整路徑的清單）；檔案改名、搬移時跟著改，刪除時拿掉。
+//! 存在資料夾裡的 pins.json（完整路徑的清單）；檔案重新命名、搬移時跟著改，刪除時移除。
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -23,18 +23,15 @@ impl PinStore {
             let _ = std::fs::create_dir_all(dir);
         }
         let list: Vec<&String> = set.values().collect();
-        let tmp = self.file.with_extension("json.tmp");
-        if std::fs::write(&tmp, serde_json::to_vec(&list).unwrap_or_default()).is_ok() {
-            let _ = std::fs::rename(&tmp, &self.file);
-        }
+        let _ = crate::paths::write_atomic(&self.file, &serde_json::to_vec(&list).unwrap_or_default());
     }
 
     pub fn contains(&self, path: &str) -> bool {
-        self.set.lock().unwrap().contains_key(&path.to_lowercase())
+        self.set.lock().unwrap_or_else(|e| e.into_inner()).contains_key(&path.to_lowercase())
     }
 
     pub fn set(&self, path: &str, on: bool) {
-        let mut set = self.set.lock().unwrap();
+        let mut set = self.set.lock().unwrap_or_else(|e| e.into_inner());
         let changed = if on { set.insert(path.to_lowercase(), path.to_string()).is_none() } else { set.remove(&path.to_lowercase()).is_some() };
         if changed {
             self.save(&set);
@@ -43,12 +40,12 @@ impl PinStore {
 
     /// 全部釘選的檔案（還存在的）
     pub fn list(&self) -> Vec<String> {
-        self.set.lock().unwrap().values().filter(|p| std::path::Path::new(p).is_file()).cloned().collect()
+        self.set.lock().unwrap_or_else(|e| e.into_inner()).values().filter(|p| std::path::Path::new(p).is_file()).cloned().collect()
     }
 
-    /// 檔案改名或搬到別的資料夾
+    /// 檔案重新命名或搬到別的資料夾
     pub fn renamed(&self, from: &str, to: &str) {
-        let mut set = self.set.lock().unwrap();
+        let mut set = self.set.lock().unwrap_or_else(|e| e.into_inner());
         if set.remove(&from.to_lowercase()).is_some() {
             set.insert(to.to_lowercase(), to.to_string());
             self.save(&set);

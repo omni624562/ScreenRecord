@@ -61,7 +61,7 @@ impl UiApp {
 
     /// 勾選多支一起傳：只選一次資料夾
     pub fn send_many_to_library(&mut self, paths: Vec<String>) {
-        // 已經改名的（清單還沒重讀）：傳現在的那個檔案
+        // 已經重新命名的（清單還沒重讀）：傳現在的那個檔案
         let paths: Vec<String> = paths.into_iter().map(|p| screenrecorder_core::actions::renamed_to(&p).unwrap_or(p)).collect();
         if paths.is_empty() {
             return;
@@ -106,7 +106,7 @@ impl UiApp {
         self.picker_go(jellyfin::normalize_subfolder(&start), false);
     }
 
-    /// 換到這一層並讀它底下的資料夾；這一層不在了（被刪掉、改名）就回到最上層
+    /// 換到這一層並讀它底下的資料夾；這一層不在了（被刪掉、重新命名）就回到最上層
     fn picker_go(&mut self, sub: String, by_user: bool) {
         let root = self.s.after_copy_to.clone();
         let Some(d) = self.send_dlg.as_mut() else { return };
@@ -133,10 +133,13 @@ impl UiApp {
         let Some(d) = self.send_dlg.as_ref() else { return };
         let sub = if d.cwd.is_empty() { name.trim().to_string() } else { format!("{}/{}", d.cwd, name.trim()) };
         let dir = jellyfin::library_dest(&self.s.after_copy_to, &sub);
-        self.spawn(async move { tokio::task::spawn_blocking(move || std::fs::create_dir_all(&dir).map_err(|e| e.to_string())).await.unwrap_or_else(|e| Err(e.to_string())) }, move |app, r| match r {
-            Ok(()) => app.picker_go(sub, true),
-            Err(e) => app.toast(trf!("沒有建立資料夾：{e}", "Couldn't create the folder: {e}"), true),
-        });
+        self.spawn(
+            async move { tokio::task::spawn_blocking(move || std::fs::create_dir_all(&dir).map_err(|e| screenrecorder_core::error::plain(&e))).await.unwrap_or_else(|e| Err(e.to_string())) },
+            move |app, r| match r {
+                Ok(()) => app.picker_go(sub, true),
+                Err(e) => app.toast(trf!("沒有建立資料夾：{e}", "Couldn't create the folder: {e}"), true),
+            },
+        );
     }
 
     /// 真的傳過去（sub：媒體庫的哪個資料夾，「family/2024」，空的 = 最上層）。
@@ -265,7 +268,7 @@ impl UiApp {
         self.spawn(
             async move {
                 let st = tokio::task::spawn_blocking(move || jf.watch_state(Some(&user).filter(|u| !u.is_empty()).map(|u| u.as_str()))).await.ok()?.ok()?;
-                // 我的最愛和上次比：新加的本機也加星號，拿掉的本機也拿掉
+                // 我的最愛和上次比：新加的本機也加星號，移除的本機也移除
                 let mut pins: Vec<(String, bool)> = vec![];
                 if st.fav_user.is_some() {
                     let (added, removed) = jellyfin::favorites_changed(&st.favorites);
@@ -337,7 +340,9 @@ impl UiApp {
     /// 媒體庫的索引（整個媒體庫的檔名、大小）；還沒讀過或太舊時在背景重讀，這次先回傳舊的或 None
     fn lib_index(&mut self) -> Option<&LibIndex> {
         let root = self.index_source()?;
-        let fresh = self.lib_index.as_ref().is_some_and(|i| i.root == root && i.at.elapsed() < INDEX_TTL);
+        // 問 Jellyfin 要列出整個媒體庫：比讀資料夾重，久一點才重讀（傳檔、刪除後會馬上重讀）
+        let ttl = if root.starts_with(JF_INDEX) { INDEX_TTL * 5 } else { INDEX_TTL };
+        let fresh = self.lib_index.as_ref().is_some_and(|i| i.root == root && i.at.elapsed() < ttl);
         if !fresh && !self.lib_index_loading {
             self.lib_index_loading = true;
             let r = root.clone();
@@ -635,7 +640,7 @@ async fn send_one(core: &std::sync::Arc<screenrecorder_core::app::App>, jf: Opti
         (Some(Ok(msg)), Some(c)) if !h264 => Some(Ok(format!(
             "{msg}{}",
             trf!(
-                "（這支是 {c}：有些電視播放時 Jellyfin 要即時轉檔，可能卡頓。可以在「設定 → 存檔與分享」打開「傳的時候轉成 H.264」）",
+                "（這支是 {c}：有些電視播放時 Jellyfin 要即時轉檔，可能卡頓。可以在「設定 → 存檔與分享」開啟「傳的時候轉成 H.264」）",
                 " (This video is {c}; some TVs make Jellyfin convert it while playing, which can stutter. Turn on “Convert to H.264 when sending” in Settings → Saving & sharing)"
             )
         ))),
@@ -651,7 +656,7 @@ async fn reachable_bg(root: &str) -> bool {
 }
 
 /// 傳到 NAS、從 Jellyfin 下載的進度（右下角）：檔名、百分比、已傳 / 全部，可以取消；
-/// 傳好之後 Jellyfin 還在整理的（等它掃描到、做時間軸預覽縮圖）也列在這裡，好了才拿掉
+/// 傳好之後 Jellyfin 還在整理的（等它掃描到、做時間軸預覽縮圖）也列在這裡，好了才移除
 pub fn transfer_bar(app: &mut UiApp, ctx: &egui::Context) {
     let list = transfer::active();
     let stages = transfer::stages();
@@ -681,7 +686,7 @@ pub fn transfer_bar(app: &mut UiApp, ctx: &egui::Context) {
                     });
                 });
                 ui.add(egui::ProgressBar::new(frac).desired_height(6.0).fill(p.accent));
-                ui.label(RichText::new(format!("{:.0}%　{} / {}", frac * 100.0, gb(t.done), gb(t.total))).font(theme::font(11.5)).color(p.muted));
+                ui.label(RichText::new(format!("{:.0}%　{} / {}", frac * 100.0, gb(t.done), gb(t.total))).font(theme::font(12.0)).color(p.muted));
             }
             for (name, what) in &stages {
                 ui.horizontal(|ui| {
@@ -689,7 +694,7 @@ pub fn transfer_bar(app: &mut UiApp, ctx: &egui::Context) {
                     ui.label(RichText::new(tr!("Jellyfin 整理中", "Jellyfin is processing")).font(theme::font_bold(12.5)));
                     ui.add(egui::Label::new(RichText::new(name).font(theme::font(12.0)).color(p.muted)).truncate());
                 });
-                ui.label(RichText::new(what).font(theme::font(11.5)).color(p.muted));
+                ui.label(RichText::new(what).font(theme::font(12.0)).color(p.muted));
             }
         });
     });

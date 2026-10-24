@@ -66,7 +66,7 @@ thread_local! {
 
 /// 顯示這張截圖的小縮圖；按鈕交給 on 處理。thumb：已經做好的縮圖（沒有時讀取 path 再縮小）；caption：圖下面的說明
 pub fn show(path: String, thumb: Option<Pixmap>, caption: String, on: impl Fn(Cmd, &str) -> bool + Send + 'static) {
-    if let Some(h) = CURRENT.lock().unwrap().take() {
+    if let Some(h) = CURRENT.lock().unwrap_or_else(|e| e.into_inner()).take() {
         unsafe {
             let _ = PostMessageW(Some(HWND(h as *mut _)), WM_CLOSE, WPARAM(0), LPARAM(0));
         }
@@ -105,7 +105,7 @@ unsafe fn run(path: String, thumb: Option<Pixmap>, caption: String, on: OnCmd) {
     let Ok(hwnd) = CreateWindowExW(ex, class, w!("截圖"), WS_POPUP, pos.0, pos.1, layout.w as i32, layout.h as i32, None, None, Some(hinst.into()), None) else { return };
     // 不被下一次截圖、錄影拍進去
     let _ = SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE);
-    *CURRENT.lock().unwrap() = Some(hwnd.0 as isize);
+    *CURRENT.lock().unwrap_or_else(|e| e.into_inner()) = Some(hwnd.0 as isize);
     present(hwnd, &pm, pos);
     STATE.with(|s| *s.borrow_mut() = Some(State { path, thumb, scale, layout, hover: None, pos, inside: false, since: Instant::now(), on, caption, deleted: false }));
     let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
@@ -252,7 +252,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
         }
         WM_DESTROY => {
             let _ = KillTimer(Some(hwnd), 1);
-            let mut cur = CURRENT.lock().unwrap();
+            let mut cur = CURRENT.lock().unwrap_or_else(|e| e.into_inner());
             if *cur == Some(hwnd.0 as isize) {
                 *cur = None;
             }

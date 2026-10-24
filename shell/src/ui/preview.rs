@@ -79,13 +79,13 @@ impl Preview {
 
     /// 重新嘗試即時預覽
     pub fn retry_live(&mut self) {
-        self.slot.lock().unwrap().live_failed = None;
+        self.slot.lock().unwrap_or_else(|e| e.into_inner()).live_failed = None;
         self.reset();
     }
 
     /// 即時預覽先前失敗過才重試（例如 ddagrab 的測試結果出來了：測試期間用 ddagrab 開可能失敗）
     pub fn retry_if_failed(&mut self) {
-        if self.slot.lock().unwrap().live_failed.take().is_some() {
+        if self.slot.lock().unwrap_or_else(|e| e.into_inner()).live_failed.take().is_some() {
             self.reset();
         }
     }
@@ -102,18 +102,18 @@ impl Preview {
     }
 
     pub fn state(&self) -> PreviewState {
-        self.slot.lock().unwrap().state.clone().unwrap_or(PreviewState::Idle)
+        self.slot.lock().unwrap_or_else(|e| e.into_inner()).state.clone().unwrap_or(PreviewState::Idle)
     }
 
     /// 確認預覽在執行（key = "" 整個桌面或螢幕 id；fps = 0 單張；width = 即時預覽的寬度）
     #[allow(clippy::too_many_arguments)]
     pub fn ensure(&mut self, core: &Arc<App>, rt: &tokio::runtime::Handle, ctx: &egui::Context, key: &str, mut fps: u32, width: u32, ffmpeg_ok: bool) {
         if !ffmpeg_ok {
-            self.slot.lock().unwrap().state = Some(PreviewState::Failed(tr!("需要 FFmpeg 才能顯示預覽", "FFmpeg is needed to show the preview").into()));
+            self.slot.lock().unwrap_or_else(|e| e.into_inner()).state = Some(PreviewState::Failed(tr!("需要 FFmpeg 才能顯示預覽", "FFmpeg is needed to show the preview").into()));
             return;
         }
         {
-            let mut s = self.slot.lock().unwrap();
+            let mut s = self.slot.lock().unwrap_or_else(|e| e.into_inner());
             if std::mem::take(&mut s.ended) {
                 self.current = None;
                 if self.last_end.is_some_and(|t| t.elapsed() < Duration::from_secs(10)) {
@@ -154,7 +154,7 @@ impl Preview {
         let stop = Arc::new(AtomicBool::new(false));
         self.stop = stop.clone();
         {
-            let mut s = self.slot.lock().unwrap();
+            let mut s = self.slot.lock().unwrap_or_else(|e| e.into_inner());
             if !same_key {
                 // 換了範圍：舊畫面比例不對，先藏起來
                 s.frame = None;
@@ -170,7 +170,7 @@ impl Preview {
         if fps > 0 {
             rt.spawn(async move {
                 let Some((mut out, guard, (w, h))) = core.live_preview(fps as f64, monitor.as_deref(), width) else {
-                    let mut s = slot.lock().unwrap();
+                    let mut s = slot.lock().unwrap_or_else(|e| e.into_inner());
                     s.live_failed = Some(Instant::now());
                     ctx.request_repaint();
                     return;
@@ -186,7 +186,7 @@ impl Preview {
                     }
                     if out.read_exact(bytemuck::cast_slice_mut(&mut cur)).await.is_err() {
                         if !stop.load(Ordering::Relaxed) {
-                            let mut s = slot.lock().unwrap();
+                            let mut s = slot.lock().unwrap_or_else(|e| e.into_inner());
                             if got {
                                 // 有畫面之後才結束（螢幕被拔掉、解析度改變…）：重新開始，不停在最後一張
                                 s.ended = true;
@@ -207,7 +207,7 @@ impl Preview {
                     if cur.len() != last.len() {
                         cur = vec![Color32::BLACK; last.len()];
                     }
-                    let mut s = slot.lock().unwrap();
+                    let mut s = slot.lock().unwrap_or_else(|e| e.into_inner());
                     s.frame = Some(img);
                     s.seq += 1;
                     s.state = Some(PreviewState::Ready);
@@ -224,7 +224,7 @@ impl Preview {
                     return;
                 }
                 let img = img.map(|i| ColorImage::from_rgba_unmultiplied([i.width as usize, i.height as usize], &i.rgba));
-                let mut s = slot.lock().unwrap();
+                let mut s = slot.lock().unwrap_or_else(|e| e.into_inner());
                 match img {
                     Some(i) => {
                         s.frame = Some(i);
@@ -241,7 +241,7 @@ impl Preview {
 
     /// 目前的畫面（有新的就更新材質）
     pub fn texture(&mut self, ctx: &egui::Context) -> Option<&TextureHandle> {
-        let mut s = self.slot.lock().unwrap();
+        let mut s = self.slot.lock().unwrap_or_else(|e| e.into_inner());
         if s.live_failed.is_some() && self.current.as_ref().is_some_and(|c| c.fps > 0) {
             // 即時預覽失敗：下一畫格改用單張
             self.current = None;

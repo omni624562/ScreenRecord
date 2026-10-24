@@ -153,7 +153,7 @@ impl Tool {
             Tool::Pin => tr!("變成浮在最上層的小視窗，不存檔", "Show it in a small always-on-top window without saving"),
             Tool::Cancel => tr!("不截圖（Esc 或右鍵）", "Don't capture (Esc or right-click)"),
             Tool::Done if record => tr!("用這個範圍（Enter）", "Use this area (Enter)"),
-            Tool::Done => tr!("存檔並複製到剪貼簿（Enter 或在範圍裡點兩下）", "Save and copy to the clipboard (Enter, or double-click inside the area)"),
+            Tool::Done => tr!("存檔並複製到剪貼簿（Enter 或在範圍裡按兩下）", "Save and copy to the clipboard (Enter, or double-click inside the area)"),
         }
     }
 

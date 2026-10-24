@@ -118,7 +118,7 @@ mod tests {
 
     #[test]
     fn finds_fillers_and_pauses_but_not_removed_parts() {
-        let cues = [c(0.0, 2.0, "大家好"), c(2.1, 3.0, "嗯"), c(3.1, 5.0, "今天介紹報價單"), c(7.0, 9.0, "先打開檔案"), c(20.0, 22.0, "完成了")];
+        let cues = [c(0.0, 2.0, "大家好"), c(2.1, 3.0, "嗯"), c(3.1, 5.0, "今天介紹報價單"), c(7.0, 9.0, "先開啟檔案"), c(20.0, 22.0, "完成了")];
         let f = find(&cues, &[], 30.0);
         // 2.0～3.1 只有「嗯」：當作停頓（贅字併在裡面）
         let got: Vec<(f64, f64, Kind)> = f.iter().map(|x| ((x.start * 100.0).round() / 100.0, (x.end * 100.0).round() / 100.0, x.kind)).collect();

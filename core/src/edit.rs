@@ -482,7 +482,7 @@ pub fn normalize_ranges(ranges: &[Range], duration: f64) -> Vec<Range> {
     out.into_iter().map(|(a, b)| (ms(a), ms(b))).collect()
 }
 
-/// 把 cut 從刪除的區段裡拿掉（還原這一段；它前後還是刪除的部分留著）
+/// 把 cut 從刪除的區段裡移除（還原這一段；它前後還是刪除的部分留著）
 pub fn unremove(removed: &[Range], cut: Range, duration: f64) -> Vec<Range> {
     let mut out = vec![];
     for &(a, b) in removed {
@@ -564,7 +564,7 @@ mod tests {
         set_fast(&mut fast, 2.0, 6.0, 4.0);
         set_fast(&mut fast, 8.0, 9.0, 2.0);
         assert_eq!(fast.len(), 2);
-        // 重疊的部分以新的為準；設回原速就拿掉
+        // 重疊的部分以新的為準；設回原速就移除
         set_fast(&mut fast, 5.0, 8.5, 8.0);
         assert_eq!(fast.iter().map(|f| (f.start_ms, f.end_ms, f.speed)).collect::<Vec<_>>(), vec![(2000, 5000, 4.0), (5000, 8500, 8.0), (8500, 9000, 2.0)]);
         set_fast(&mut fast, 0.0, 10.0, 1.0);

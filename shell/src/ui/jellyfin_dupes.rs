@@ -1,4 +1,4 @@
-//! 找出 Jellyfin 上重複的影片（從檔案庫的 Jellyfin 分頁打開）：一組一組並排列出來，預設留畫質最好的那一份、其他打勾，
+//! 找出 Jellyfin 上重複的影片（從檔案庫的 Jellyfin 分頁開啟）：一組一組並排列出來，預設留畫質最好的那一份、其他打勾，
 //! 確認後從 Jellyfin 刪除打勾的。比對方法見 core::jf_dupes
 
 use super::theme::{self, Btn, Icon};
@@ -27,7 +27,7 @@ pub struct JfDupes {
     posters: HashMap<String, Option<egui::TextureHandle>>,
 }
 
-/// 打開並開始找（user：Jellyfin 分頁用的使用者，看過了沒照這個使用者）
+/// 開啟並開始找（user：Jellyfin 分頁用的使用者，看過了沒照這個使用者）
 pub fn open(app: &mut UiApp, user: String) {
     let Some(jf) = app.jellyfin() else { return };
     let Some(ffmpeg) = app.core.ffmpeg_path() else {
@@ -62,7 +62,7 @@ pub fn open(app: &mut UiApp, user: String) {
     );
 }
 
-/// 從 Jellyfin 刪掉了：清單拿掉它們，只剩一支的組也拿掉
+/// 從 Jellyfin 刪掉了：清單移除它們，只剩一支的組也移除
 pub fn removed(app: &mut UiApp, ids: &[String]) {
     let Some(d) = app.jf_dupes.as_mut() else { return };
     if let Phase::Done(groups) = &mut d.phase {
@@ -216,7 +216,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                                             .filter(|s| !s.is_empty())
                                             .collect();
                                         ui.label(RichText::new(meta.join("・")).font(theme::font(12.0)).color(p.muted));
-                                        ui.add(egui::Label::new(RichText::new(folder(&v.path)).font(theme::font(11.5)).color(p.muted)).truncate()).on_hover_text(&v.path);
+                                        ui.add(egui::Label::new(RichText::new(folder(&v.path)).font(theme::font(12.0)).color(p.muted)).truncate()).on_hover_text(&v.path);
                                     });
                                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                                         if Btn::new(tr!("播放", "Play")).icon(Icon::Play).small().ghost().show(ui).clicked() {

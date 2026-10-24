@@ -49,13 +49,13 @@ fn cache() -> &'static Cache {
 /// 讀取圖片（檔案改過就重新讀取）；讀不到時回傳 None
 pub fn load(path: &str) -> Option<Arc<Picture>> {
     let mtime = std::fs::metadata(path).map(|m| crate::paths::mtime_ms(&m)).unwrap_or(-1.0);
-    if let Some((t, p)) = cache().lock().unwrap().get(path) {
+    if let Some((t, p)) = cache().lock().unwrap_or_else(|e| e.into_inner()).get(path) {
         if *t == mtime {
             return p.clone();
         }
     }
     let pic = std::fs::read(path).ok().and_then(|b| decode(&b)).map(Arc::new);
-    cache().lock().unwrap().insert(path.to_string(), (mtime, pic.clone()));
+    cache().lock().unwrap_or_else(|e| e.into_inner()).insert(path.to_string(), (mtime, pic.clone()));
     pic
 }
 

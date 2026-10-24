@@ -35,7 +35,7 @@ pub fn autostart_changed() {
     AUTOSTART_CHANGED.store(true, Ordering::Relaxed);
 }
 
-/// 結束程式（系統匣「結束」、新版接手）：剪輯視窗有還沒儲存的修改、或有排程錄影時，先打開操作視窗問
+/// 結束程式（系統匣「結束」、新版接手）：剪輯視窗有還沒儲存的修改、或有排程錄影時，先開啟操作視窗問
 pub async fn quit_or_ask(app: &Arc<App>) {
     if UI_UNSAVED.load(Ordering::Relaxed) || app.scheduled().is_some() {
         QUIT_ASKED.store(true, Ordering::Relaxed);
@@ -81,13 +81,13 @@ pub enum TrayCommand {
     ScreenshotSelect,
     /// 再截一次上次框選的範圍
     ScreenshotLast,
-    /// 幾秒後再框選（先打開要截的選單、提示）
+    /// 幾秒後再框選（先開啟要截的選單、提示）
     ScreenshotDelay(u64),
     /// 長截圖（框選後自動往下捲，接成長圖）
     ScreenshotScroll,
     /// 只抓文字（框選後辨識，複製到剪貼簿）
     ScreenshotText,
-    /// 開始步驟截圖（每點一下截一張）
+    /// 開始步驟截圖（每按一下截一張）
     StepsStart,
     /// 完成步驟截圖（做成教學文件）
     StepsFinish,
@@ -242,7 +242,7 @@ impl TrayController {
     }
 
     pub fn notify(&self, title: &str, text: &str, warn: bool) {
-        self.ctl.lock().unwrap().balloon_shot = false;
+        self.ctl.lock().unwrap_or_else(|e| e.into_inner()).balloon_shot = false;
         self.ui.balloon(title, text, warn);
     }
 
@@ -250,7 +250,7 @@ impl TrayController {
     pub fn tick(&self) {
         self.push(false);
         let Some(res) = self.app.recorder.status().result else { return };
-        let mut c = self.ctl.lock().unwrap();
+        let mut c = self.ctl.lock().unwrap_or_else(|e| e.into_inner());
         let key = res.path.clone().unwrap_or_else(|| res.message.clone());
         let last = c.last_result_path.clone().or_else(|| c.last_result_msg.clone());
         if Some(&key) == last.as_ref() {
@@ -305,7 +305,7 @@ impl TrayController {
                 std::array::from_fn(|i| k.label(i))
             },
         );
-        let c = self.ctl.lock().unwrap();
+        let c = self.ctl.lock().unwrap_or_else(|e| e.into_inner());
         TrayState {
             rec: st.state,
             tip: match (&scheduled, st.state) {
@@ -346,7 +346,7 @@ impl TrayController {
     /// 選單「播放最近的錄影」是否可用：每 10 秒才查一次檔案（網路磁碟上可能卡住數秒；查的時候不鎖）
     fn last_result_exists(&self) -> bool {
         let p = {
-            let c = self.ctl.lock().unwrap();
+            let c = self.ctl.lock().unwrap_or_else(|e| e.into_inner());
             let Some(p) = c.last_result_path.clone() else { return false };
             if now_ms().saturating_sub(c.exists_at) <= 10_000 {
                 return c.exists_cache;
@@ -354,7 +354,7 @@ impl TrayController {
             p
         };
         let ok = Path::new(&p).exists();
-        let mut c = self.ctl.lock().unwrap();
+        let mut c = self.ctl.lock().unwrap_or_else(|e| e.into_inner());
         c.exists_at = now_ms();
         c.exists_cache = ok;
         ok
@@ -362,20 +362,20 @@ impl TrayController {
 
     /// 最近的截圖還在不在：同一個檔案每 10 秒才查一次（換了截圖立刻查）
     fn shot_exists(&self, path: &str) -> bool {
-        if let Some((p, at, ok)) = &self.ctl.lock().unwrap().shot_exists {
+        if let Some((p, at, ok)) = &self.ctl.lock().unwrap_or_else(|e| e.into_inner()).shot_exists {
             if p == path && now_ms().saturating_sub(*at) <= 10_000 {
                 return *ok;
             }
         }
         let ok = Path::new(path).is_file();
-        self.ctl.lock().unwrap().shot_exists = Some((path.to_string(), now_ms(), ok));
+        self.ctl.lock().unwrap_or_else(|e| e.into_inner()).shot_exists = Some((path.to_string(), now_ms(), ok));
         ok
     }
 
     pub fn push(&self, force: bool) {
         let s = self.state();
         {
-            let mut c = self.ctl.lock().unwrap();
+            let mut c = self.ctl.lock().unwrap_or_else(|e| e.into_inner());
             if !force && c.last.as_ref() == Some(&s) {
                 return;
             }
@@ -486,7 +486,7 @@ impl TrayController {
             trf!("已存成 {name}。點這裡編輯", "Saved as {name}. Click here to edit.")
         };
         self.notify(tr!("已截圖", "Screenshot taken"), &text, false);
-        self.ctl.lock().unwrap().balloon_shot = true;
+        self.ctl.lock().unwrap_or_else(|e| e.into_inner()).balloon_shot = true;
     }
 
     async fn run_inner(self: &Arc<Self>, cmd: TrayCommand) -> Result<(), String> {
@@ -507,7 +507,7 @@ impl TrayController {
                 return Ok(());
             }
             TrayCommand::BalloonClick => {
-                let shot = std::mem::take(&mut self.ctl.lock().unwrap().balloon_shot);
+                let shot = std::mem::take(&mut self.ctl.lock().unwrap_or_else(|e| e.into_inner()).balloon_shot);
                 app.open_ui(if shot { UiPage::EditShot } else { UiPage::Main });
                 return Ok(());
             }
@@ -668,17 +668,17 @@ impl TrayController {
                 return Ok(());
             }
             TrayCommand::PlayLast => {
-                let p = self.ctl.lock().unwrap().last_result_path.clone();
+                let p = self.ctl.lock().unwrap_or_else(|e| e.into_inner()).last_result_path.clone();
                 if let Some(p) = p {
                     crate::desktop::open_with_explorer(&p, false);
                 }
                 return Ok(());
             }
             TrayCommand::Autostart => {
-                let cur = self.ctl.lock().unwrap().autostart;
+                let cur = self.ctl.lock().unwrap_or_else(|e| e.into_inner()).autostart;
                 crate::desktop::set_autostart(cur != Some(true)).await.map_err(err)?;
                 let now = crate::desktop::get_autostart().await;
-                self.ctl.lock().unwrap().autostart = now;
+                self.ctl.lock().unwrap_or_else(|e| e.into_inner()).autostart = now;
                 self.notify(
                     tr!("開機自動啟動", "Start with Windows"),
                     if now == Some(true) {
@@ -711,7 +711,7 @@ impl TrayController {
                     return Err(trf!("範圍太小（{}×{}），寬高至少 16 像素", "The area is too small ({}×{}). It must be at least 16 pixels wide and high.", r.width, r.height));
                 }
                 cfg.source = SourceConfig::Region { x: r.x as f64, y: r.y as f64, width: r.width as f64, height: r.height as f64 };
-                // 點一下選的是視窗：錄影範圍跟著那個視窗移動
+                // 按一下選的是視窗：錄影範圍跟著那個視窗移動
                 let near = |a: i32, b: i32| (a - b).abs() <= 2;
                 cfg.follow_window =
                     crate::winui::app_windows().into_iter().find(|w| near(w.rect.x, r.x) && near(w.rect.y, r.y) && near(w.rect.width, r.width) && near(w.rect.height, r.height)).map(|w| {
@@ -775,7 +775,7 @@ pub async fn start(app: &Arc<App>, wait: std::time::Duration) -> bool {
                 iv.tick().await;
                 if AUTOSTART_CHANGED.swap(false, Ordering::Relaxed) {
                     let now = crate::desktop::get_autostart().await;
-                    ctl.ctl.lock().unwrap().autostart = now;
+                    ctl.ctl.lock().unwrap_or_else(|e| e.into_inner()).autostart = now;
                 }
                 ctl.tick();
             }
@@ -814,10 +814,10 @@ mod tests {
 
     impl TrayUi for FakeUi {
         fn set_state(&self, s: TrayState) {
-            self.states.lock().unwrap().push(s);
+            self.states.lock().unwrap_or_else(|e| e.into_inner()).push(s);
         }
         fn balloon(&self, title: &str, text: &str, warn: bool) {
-            self.balloons.lock().unwrap().push((title.into(), text.into(), warn));
+            self.balloons.lock().unwrap_or_else(|e| e.into_inner()).push((title.into(), text.into(), warn));
         }
         fn dispose(&self) {}
         fn set_hotkeys(&self, _: &Hotkeys) -> Option<HotkeyStatus> {
@@ -834,7 +834,7 @@ mod tests {
         app.mark_ready();
         ctl.push(true);
         ctl.push(false); // 沒有變化就不重送
-        let states = ui.states.lock().unwrap().clone();
+        let states = ui.states.lock().unwrap_or_else(|e| e.into_inner()).clone();
         assert_eq!(states.len(), 1);
         let s = &states[0];
         assert_eq!(s.rec, RecorderState::Idle);
@@ -847,11 +847,11 @@ mod tests {
         let saved = app.settings.load();
         assert!(!saved.record_config().unwrap().audio.system);
         assert_eq!(saved.ui.unwrap()["audioSystem"], false);
-        assert!(!ui.states.lock().unwrap().last().unwrap().audio_system);
+        assert!(!ui.states.lock().unwrap_or_else(|e| e.into_inner()).last().unwrap().audio_system);
 
         // 沒有 FFmpeg 時開始錄影：以通知告知
         ctl.run(TrayCommand::StartLast).await;
-        let b = ui.balloons.lock().unwrap().clone();
+        let b = ui.balloons.lock().unwrap_or_else(|e| e.into_inner()).clone();
         assert_eq!(b.last().unwrap().0, "無法執行");
         assert!(b.last().unwrap().1.contains("ffmpeg"));
     }
@@ -875,7 +875,7 @@ mod tests {
         cur["language"] = json!("en");
         app.settings.save(SettingsPatch { ui: Some(cur), presets: Some(presets), ..Default::default() });
         ctl.push(true);
-        let s = ui.states.lock().unwrap().last().unwrap().clone();
+        let s = ui.states.lock().unwrap_or_else(|e| e.into_inner()).last().unwrap().clone();
         assert_eq!((s.presets.clone(), s.preset), (vec!["教學".to_string(), "會議".to_string()], Some(1)));
 
         // 切換：操作視窗的設定與錄影設定都換成「教學」，其他設定不動
@@ -884,7 +884,7 @@ mod tests {
         assert_eq!(saved.record_config().unwrap(), teach_cfg);
         let ui_now = saved.ui.unwrap();
         assert_eq!((ui_now["sourceType"].clone(), ui_now["language"].clone()), (json!("region"), json!("en")));
-        let s = ui.states.lock().unwrap().last().unwrap().clone();
+        let s = ui.states.lock().unwrap_or_else(|e| e.into_inner()).last().unwrap().clone();
         assert_eq!((s.preset, s.last_source.as_str()), (Some(0), "範圍 1280×720"));
         // 不存在的組合：不動
         let rev = app.settings.rev();

@@ -141,6 +141,28 @@ pub fn is_windows_abs(p: &str) -> bool {
     (b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && b[2] == b'\\') || p.starts_with("\\\\")
 }
 
+/// 安全地寫入整個檔案：先寫到同一個資料夾的暫存檔、寫進磁碟（sync）再重新命名取代，
+/// 寫到一半當機、停電時原本的檔案還在，不會變成空的或只剩一半
+pub fn write_atomic(path: &Path, data: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let tmp = path.with_file_name(format!("{name}.{}.tmp", std::process::id()));
+    let r = (|| {
+        let mut f = std::fs::File::create(&tmp)?;
+        f.write_all(data)?;
+        f.sync_all()?;
+        drop(f);
+        std::fs::rename(&tmp, path)
+    })();
+    if r.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    r
+}
+
 /// dir 是不是 root 本身或它底下的資料夾（不分大小寫、斜線方向）
 pub fn inside(dir: &std::path::Path, root: &std::path::Path) -> bool {
     let norm = |p: &std::path::Path| p.display().to_string().replace('\\', "/").trim_end_matches('/').to_lowercase();
@@ -151,6 +173,17 @@ pub fn inside(dir: &std::path::Path, root: &std::path::Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn atomic_write_replaces_the_whole_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("a").join("s.json");
+        write_atomic(&f, b"first, long content").unwrap();
+        write_atomic(&f, b"second").unwrap();
+        assert_eq!(std::fs::read(&f).unwrap(), b"second");
+        // 沒有留下暫存檔
+        assert_eq!(std::fs::read_dir(f.parent().unwrap()).unwrap().count(), 1);
+    }
 
     #[test]
     fn temp_names_never_repeat() {

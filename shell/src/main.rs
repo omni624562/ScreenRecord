@@ -381,7 +381,7 @@ fn main() {
     }
 }
 
-/// 設定裡打開了「截圖後直接開啟編輯」
+/// 設定裡開啟了「截圖後直接開啟編輯」
 fn edit_after_shot(core: &App) -> bool {
     core.settings.load().ui.as_ref().and_then(|u| u.get("editAfterShot")).and_then(|v| v.as_bool()).unwrap_or(false)
 }

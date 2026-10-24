@@ -103,7 +103,7 @@ pub fn leave_compact(app: &mut UiApp, ctx: &egui::Context) {
 /// 每一畫格：小視窗時開了需要完整視窗的畫面（例如截圖後直接編輯、從系統匣開設定）就回到完整視窗
 /// 小視窗錄影中（含倒數、暫停）浮在最上層，停止後恢復一般視窗
 pub fn tick(app: &mut UiApp, ctx: &egui::Context) {
-    // Ctrl+,：打開設定（總選單裡「設定」旁邊寫的快速鍵）
+    // Ctrl+,：開啟設定（總選單裡「設定」旁邊寫的快速鍵）
     if app.settings_dlg.is_none() && app.ask.is_none() && app.snip.is_none() && ctx.input_mut(|i| i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::Comma))) {
         settings_dialog::open(app, Page::General);
     }

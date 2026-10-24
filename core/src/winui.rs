@@ -87,7 +87,7 @@ pub fn foreground_app() -> Option<AppInfo> {
     None
 }
 
-/// 這個執行檔（例如 chrome.exe）目前的程序代碼：有視窗的那個（瀏覽器的主程序，聲音的子程序也算在內）
+/// 這個執行檔（例如 chrome.exe）目前的程序代碼：有視窗的那個（瀏覽器的主程序，聲音的子處理程序也算在內）
 pub fn pid_for_exe(exe: &str) -> Option<u32> {
     #[cfg(windows)]
     return imp::pid_for_exe(exe);
@@ -356,7 +356,7 @@ mod imp {
         }
         let any = !list.is_empty();
         let ids = list.into_iter().map(|h| h.0 as isize).collect();
-        *if recording { &REC_MINIMIZED } else { &MINIMIZED }.lock().unwrap() = ids;
+        *if recording { &REC_MINIMIZED } else { &MINIMIZED }.lock().unwrap_or_else(|e| e.into_inner()) = ids;
         any
     }
 
@@ -400,11 +400,11 @@ mod imp {
     }
 
     pub fn restore_ui(recording: bool) {
-        let list = std::mem::take(&mut *if recording { &REC_MINIMIZED } else { &MINIMIZED }.lock().unwrap());
+        let list = std::mem::take(&mut *if recording { &REC_MINIMIZED } else { &MINIMIZED }.lock().unwrap_or_else(|e| e.into_inner()));
         for h in list {
             let hwnd = HWND(h as *mut _);
             unsafe {
-                // 使用者自己又打開的就不動；視窗已關閉時 IsIconic 回傳 false
+                // 使用者自己又開啟的就不動；視窗已關閉時 IsIconic 回傳 false
                 if IsIconic(hwnd).as_bool() {
                     let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
                 }
@@ -464,7 +464,7 @@ pub fn restore_ui_after_recording() {
     imp::restore_ui(true);
 }
 
-/// 看得到的視窗範圍（實體像素），由上層到下層（框選截圖時點一下截整個視窗）
+/// 看得到的視窗範圍（實體像素），由上層到下層（框選截圖時按一下截整個視窗）
 pub fn visible_windows() -> Vec<Rect> {
     #[cfg(windows)]
     return imp::visible_windows();
@@ -507,7 +507,7 @@ pub fn set_desktop_icons(visible: bool) {
     let _ = visible;
 }
 
-/// 還原先前由 minimize_ui 縮小的視窗（使用者自己又打開的就不動）
+/// 還原先前由 minimize_ui 縮小的視窗（使用者自己又開啟的就不動）
 pub fn restore_ui() {
     #[cfg(windows)]
     imp::restore_ui(false);

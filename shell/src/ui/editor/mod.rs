@@ -43,7 +43,7 @@ const DECODE_MAX: (u32, u32) = (1280, 720);
 static OPEN_SEQ: AtomicU64 = AtomicU64::new(0);
 /// 右側顯示的分頁（下次開啟時沿用）
 static LAST_TAB: AtomicU8 = AtomicU8::new(0);
-/// 右側面板打開著（可以收起來讓影片變大；下次開啟時沿用）
+/// 右側面板開啟著（可以收起來讓影片變大；下次開啟時沿用）
 static SIDE_OPEN: AtomicBool = AtomicBool::new(true);
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -143,7 +143,7 @@ enum VAct {
     ExportSrt,
     /// 字幕整理成逐字稿（true = Word，false = TXT）
     ExportTranscript(bool),
-    /// 標記改名（第幾個）
+    /// 標記重新命名（第幾個）
     RenameMarker(usize),
 }
 
@@ -319,7 +319,7 @@ pub struct Editor {
     sel: Option<Range>,
     /// 按住 Ctrl 多選的其他幾段（sel 是 None 時不算）
     sel_more: Vec<Range>,
-    /// 按著 Ctrl 在縮圖上按下：拖曳是再加選一段，只點一下是加選 / 取消那一段
+    /// 按著 Ctrl 在縮圖上按下：拖曳是再加選一段，只按一下是加選 / 取消那一段
     sel_add: bool,
     /// 預覽結果：只播放保留的部分
     previewing: bool,
@@ -348,6 +348,9 @@ pub struct Editor {
     banner_hidden: bool,
 
     player: Pl,
+    /// 預覽靜音（M）：旁白試聽等設定的音量照樣記著，取消靜音時還原
+    muted: bool,
+    out_volume: f32,
     /// 編輯截圖（不是影片）
     shot: Option<shot::Shot>,
     /// 復原 / 重做：每一步是 snapshot() 的 JSON
@@ -364,7 +367,7 @@ pub struct Editor {
     uncommitted: bool,
     /// 快速鍵要做、需要 app 的事（儲存、複製…）
     pending: Option<shot::Act>,
-    /// 標記（原片的時間；可以在剪輯視窗新增、改名、刪除）與錄影時加的（比對有沒有改過）
+    /// 標記（原片的時間；可以在剪輯視窗新增、重新命名、刪除）與錄影時加的（比對有沒有改過）
     markers: Vec<Marker>,
     rec_markers: Vec<f64>,
     /// 字幕的標註（id）
@@ -697,6 +700,8 @@ impl Editor {
             pending: None,
             markers: vec![],
             rec_markers: vec![],
+            muted: false,
+            out_volume: 1.0,
             sub_ids: HashSet::new(),
             sub_picked: HashSet::new(),
             sub_anchor: None,
@@ -1099,7 +1104,7 @@ impl Editor {
         serde_json::to_value(Saved { data: self.project_data(), extras: &extras }).unwrap_or(Value::Null)
     }
 
-    /// 標記和錄影時加的不一樣（新增、刪除、改名）
+    /// 標記和錄影時加的不一樣（新增、刪除、重新命名）
     fn markers_changed(&self) -> bool {
         self.markers.len() != self.rec_markers.len() || self.markers.iter().zip(&self.rec_markers).any(|(m, &t)| m.t != t || !m.name.is_empty())
     }
@@ -1163,7 +1168,7 @@ impl Editor {
         self.spec.order = if list == natural { vec![] } else { list };
     }
 
-    /// 有打開平滑、放大的游標（而且有記下游標的位置）
+    /// 有開啟平滑、放大的游標（而且有記下游標的位置）
     fn cursor_on(&self) -> bool {
         self.cursor_size > 0.0 && !self.cursor.is_empty()
     }
@@ -1177,7 +1182,7 @@ impl Editor {
         }
     }
 
-    /// 有打開跟著點擊放大（而且有點擊或標記、沒有裁切、不是直式影片）
+    /// 有開啟跟著點擊放大（而且有點擊或標記、沒有裁切、不是直式影片）
     fn zoom_on(&self) -> bool {
         self.zoom > 1.0 && !self.zoom_source().is_empty() && !self.crop_on && self.vertical == 0
     }
@@ -1422,7 +1427,7 @@ impl Editor {
         normalize_ranges(&all, self.duration)
     }
 
-    /// Ctrl＋點一段：加進選取，已經選了就拿掉
+    /// Ctrl＋點一段：加進選取，已經選了就移除
     fn toggle_sel(&mut self, r: Range) {
         let had = self.sel.is_some();
         let mut all: Vec<Range> = if had { self.sel_more.iter().copied().chain(self.sel).collect() } else { vec![] };
@@ -1467,7 +1472,7 @@ impl Editor {
         self.player.seek(t.clamp(0.0, (self.duration - 0.001).max(0.0)));
     }
 
-    /// 播放 / 暫停。播放時預設跳過刪掉的片段、加速的片段快轉（看到的就是剪輯後的樣子）；打開「顯示刪掉的部分」時全部照原樣播
+    /// 播放 / 暫停。播放時預設跳過刪掉的片段、加速的片段快轉（看到的就是剪輯後的樣子）；開啟「顯示刪掉的部分」時全部照原樣播
     fn toggle_play(&mut self) {
         self.shuttle = 0;
         if self.previewing {
@@ -1574,17 +1579,30 @@ impl Editor {
         }
     }
 
-    /// 時間軸上刪掉的片段收起來（沒有打開「顯示刪掉的部分」時）
+    /// 時間軸上刪掉的片段收起來（沒有開啟「顯示刪掉的部分」時）
     fn collapse_removed(&self) -> bool {
         !self.show_removed
     }
 
-    /// 播放時跳過刪掉的片段（預覽結果，或沒有打開「顯示刪掉的部分」）
+    /// 播放時跳過刪掉的片段（預覽結果，或沒有開啟「顯示刪掉的部分」）
     fn skipping(&self) -> bool {
         self.previewing || (!self.show_removed && self.player.is_playing())
     }
 
     /// 前後移動：frame = 一張，否則秒數
+    /// 預覽的音量（靜音時先記著）
+    fn set_out_volume(&mut self, v: f32) {
+        self.out_volume = v;
+        self.player.set_volume(if self.muted { 0.0 } else { v });
+    }
+
+    fn toggle_mute(&mut self) -> (String, bool) {
+        self.muted = !self.muted;
+        let v = self.out_volume;
+        self.set_out_volume(v);
+        (if self.muted { tr!("預覽靜音（再按 M 取消）", "Preview muted (press M again to unmute)") } else { tr!("預覽有聲音了", "Preview sound on") }.into(), false)
+    }
+
     fn step(&mut self, frames: Option<i32>, secs: f64) {
         self.shuttle = 0;
         self.stop_preview();
@@ -1906,7 +1924,7 @@ impl Editor {
         self.markers.push(Marker { t, name: String::new() });
         self.markers.sort_by(|a, b| a.t.total_cmp(&b.t));
         let n = self.markers.iter().position(|m| m.t == t).map(|i| i + 1).unwrap_or(1);
-        (trf!("已在 {} 加上標記 {}（按兩下旗子可以改名，輸出時變成章節）", "Added marker {1} at {0} (double-click the flag to rename it; it becomes a chapter)", video_clock(t), n), false)
+        (trf!("已在 {} 加上標記 {}（按兩下旗子可以重新命名，輸出時變成章節）", "Added marker {1} at {0} (double-click the flag to rename it; it becomes a chapter)", video_clock(t), n), false)
     }
 
     /// 標記的名稱（沒有名稱時是「標記 N」）
@@ -1932,7 +1950,7 @@ impl Editor {
             .collect()
     }
 
-    /// 有打開點擊音效（而且錄影時有記下點擊）
+    /// 有開啟點擊音效（而且錄影時有記下點擊）
     pub(crate) fn click_sound_on(&self) -> bool {
         self.spec.narration.click_volume > 0 && !self.clicks.is_empty()
     }
@@ -2294,7 +2312,7 @@ static TOOL_STYLE: std::sync::LazyLock<std::sync::Mutex<HashMap<AnnKind, (String
 /// 新標註的顏色與大小（vh = 大小的基準，Editor::size_base）
 pub fn style_of(kind: AnnKind, vh: f64) -> (String, f64) {
     let k = vh / 1080.0;
-    if let Some((c, s)) = TOOL_STYLE.lock().unwrap().get(&kind) {
+    if let Some((c, s)) = TOOL_STYLE.lock().unwrap_or_else(|e| e.into_inner()).get(&kind) {
         return (c.clone(), (s * k).round().max(1.0));
     }
     let color = match kind {
@@ -2311,7 +2329,7 @@ pub fn remember_style(kind: AnnKind, color: &str, size: f64, vh: f64) {
         return;
     }
     let k = (vh / 1080.0).max(1e-6);
-    TOOL_STYLE.lock().unwrap().insert(kind, (color.to_string(), size / k));
+    TOOL_STYLE.lock().unwrap_or_else(|e| e.into_inner()).insert(kind, (color.to_string(), size / k));
 }
 
 /// 這一格的滾輪量（點）：與 DOM 的方向相反，往下捲為負
@@ -2448,13 +2466,13 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                         ed.close = true;
                     }
                     ui.add_space(10.0);
-                    // 收起 / 打開右側面板（畫面小的時候影片可以大一點）：畫出視窗和右邊那一欄，箭頭是要往哪邊；
+                    // 收起 / 開啟右側面板（畫面小的時候影片可以大一點）：畫出視窗和右邊那一欄，箭頭是要往哪邊；
                     // 和復原、重做用分隔線隔開，不會看成同一組的箭頭
                     let open = SIDE_OPEN.load(Ordering::Relaxed);
                     let (icon, tip) = if open {
                         (Icon::PanelHide, tr!("收起右側面板（影片變大）", "Hide the side panel (bigger video)"))
                     } else {
-                        (Icon::PanelShow, tr!("打開右側面板", "Show the side panel"))
+                        (Icon::PanelShow, tr!("開啟右側面板", "Show the side panel"))
                     };
                     if Btn::icon_only(icon).ghost().tooltip(tip).show(ui).clicked() {
                         SIDE_OPEN.store(!open, Ordering::Relaxed);
@@ -2678,7 +2696,7 @@ fn run_vact(app: &mut UiApp, ed: &mut Editor, act: VAct) {
             let t = m.t;
             let name = ed.marker_name(i);
             app.ask = Some(super::dialogs::Ask::input(
-                trf!("標記改名（{}）", "Rename marker ({})", video_clock(t)),
+                trf!("標記重新命名（{}）", "Rename marker ({})", video_clock(t)),
                 tr!("名稱（輸出時當作章節名稱，空白 = 標記 N）", "Name (used as the chapter title; leave empty for “Marker N”)"),
                 name,
                 tr!("確定", "OK"),
@@ -3098,7 +3116,7 @@ fn transport(ed: &mut Editor, ui: &mut egui::Ui, toast: &mut Option<(String, boo
         let icon_w = Btn::icon_only(theme::Icon::Camera).ghost().small().width(ui) + 2.0;
         let all_w = if ed.zoomed() { Btn::new(tr!("顯示全部", "Show all")).ghost().small().width(ui) + 2.0 } else { 0.0 };
         let split_full = Btn::new(tr!("分割（S）", "Split (S)")).icon(theme::Icon::Cut).ghost().small();
-        let mark_full = Btn::new(tr!("＋ 標記（M）", "+ Marker (M)")).ghost().small();
+        let mark_full = Btn::new(tr!("＋ 標記（B）", "+ Marker (B)")).ghost().small();
         let room = ui.available_width() - clock_w - icon_w - all_w - icon_w * 2.0;
         let text = room >= split_full.width(ui) + mark_full.width(ui) + 4.0;
         let split = if text { split_full } else { Btn::icon_only(theme::Icon::Cut).ghost().small() };
@@ -3116,8 +3134,8 @@ fn transport(ed: &mut Editor, ui: &mut egui::Ui, toast: &mut Option<(String, boo
         if mark
             .enabled(ed.duration > 0.0)
             .tooltip(tr!(
-                "在播放頭加上標記（M），輸出時變成章節（按兩下旗子改名、右鍵刪除；章節清單在「字幕」分頁）",
-                "Add a marker at the playhead (M); it becomes a chapter in the output (double-click a flag to rename, right-click to delete; the chapter list is in the Subtitles tab)"
+                "在播放頭加上標記（B），輸出時變成章節（按兩下旗子重新命名、右鍵刪除；章節清單在「字幕」分頁）",
+                "Add a marker at the playhead (B); it becomes a chapter in the output (double-click a flag to rename, right-click to delete; the chapter list is in the Subtitles tab)"
             ))
             .show(ui)
             .clicked()
@@ -3139,12 +3157,12 @@ fn transport(ed: &mut Editor, ui: &mut egui::Ui, toast: &mut Option<(String, boo
             .selected(ed.show_removed)
             .tooltip(if ed.show_removed {
                 tr!(
-                    "顯示刪掉的部分：開（時間軸展開刪掉的片段，播放時照原樣播）。點一下關掉",
+                    "顯示刪掉的部分：開（時間軸展開刪掉的片段，播放時照原樣播）。按一下關掉",
                     "Show removed parts: on (the timeline shows removed parts and everything plays as recorded). Click to turn off"
                 )
             } else {
                 tr!(
-                    "顯示刪掉的部分：關（時間軸上刪掉的片段收起來，播放時跳過、加速的片段快轉，看到的就是剪輯後的樣子）。點一下打開",
+                    "顯示刪掉的部分：關（時間軸上刪掉的片段收起來，播放時跳過、加速的片段快轉，看到的就是剪輯後的樣子）。按一下開啟",
                     "Show removed parts: off (removed parts are folded away on the timeline and skipped when playing; sped-up parts fast-forward). Click to turn on"
                 )
             })
@@ -3439,7 +3457,8 @@ fn start_save(app: &mut UiApp, ed: &mut Editor) {
     );
 }
 
-/// 快速鍵：空白 = 播放/暫停、←/→ = 一張（Shift = 一秒）、I/O = 開頭/結尾、Delete = 刪除選取的片段或標註、Esc = 取消或關閉
+/// 快速鍵（和播放畫面一樣）：空白 = 播放/暫停、←/→ = 5 秒（Shift = 1 秒）、, / . = 一張、B = 標記、M = 靜音、
+/// I/O = 開頭/結尾、Delete = 刪除選取的片段或標註、Esc = 取消或關閉
 fn keyboard(ed: &mut Editor, ctx: &egui::Context, toast: &mut Option<(String, bool)>) {
     if ctx.egui_wants_keyboard_input() || ed.typing {
         // 正在輸入文字（egui 在這一格開始時就因 Esc 離開輸入欄）：Esc 只離開輸入欄
@@ -3489,27 +3508,37 @@ fn shortcuts(ed: &mut Editor, ctx: &egui::Context, toast: &mut Option<(String, b
         ed.step(None, 1.0);
     }
     if video && key(Modifiers::NONE, Key::ArrowLeft) {
-        ed.step(Some(-1), 0.0);
+        ed.step(None, -5.0);
     }
     if video && key(Modifiers::NONE, Key::ArrowRight) {
+        ed.step(None, 5.0);
+    }
+    // , / .：一張一張看
+    if video && key(Modifiers::NONE, Key::Comma) {
+        ed.step(Some(-1), 0.0);
+    }
+    if video && key(Modifiers::NONE, Key::Period) {
         ed.step(Some(1), 0.0);
     }
-    // M：加標記；Shift+M / Ctrl+Shift+M：跳到下一個 / 上一個標記（先比對有修飾鍵的）
+    if video && key(Modifiers::NONE, Key::M) {
+        *toast = Some(ed.toggle_mute());
+    }
+    // B：加標記；Shift+B / Ctrl+Shift+B：跳到下一個 / 上一個標記（先比對有修飾鍵的）
     if video {
         let now = ed.now();
-        if key(Modifiers::COMMAND | Modifiers::SHIFT, Key::M) {
+        if key(Modifiers::COMMAND | Modifiers::SHIFT, Key::B) {
             match ed.markers.iter().rev().map(|m| m.t).find(|&t| t < now - 0.05) {
                 Some(t) => ed.seek(t),
                 None => *toast = Some((tr!("前面沒有標記了", "No earlier markers").into(), false)),
             }
         }
-        if key(Modifiers::SHIFT, Key::M) {
+        if key(Modifiers::SHIFT, Key::B) {
             match ed.markers.iter().map(|m| m.t).find(|&t| t > now + 0.05) {
                 Some(t) => ed.seek(t),
                 None => *toast = Some((tr!("後面沒有標記了", "No more markers ahead").into(), false)),
             }
         }
-        if key(Modifiers::NONE, Key::M) {
+        if key(Modifiers::NONE, Key::B) {
             *toast = Some(ed.add_marker());
         }
         // S：在播放頭分割

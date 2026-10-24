@@ -364,7 +364,7 @@ fn source_detail(app: &mut UiApp, ui: &mut Ui, room: f32) {
             let text = if app.s.audio_system || app.s.audio_mic {
                 tr!("畫面不錄，只錄聲音", "Records audio only, no video")
             } else {
-                tr!("請先打開「系統聲音」或「麥克風」", "Turn on “System audio” or “Microphone” first")
+                tr!("請先開啟「系統聲音」或「麥克風」", "Turn on “System audio” or “Microphone” first")
             };
             let warn = !(app.s.audio_system || app.s.audio_mic);
             ui.add(egui::Label::new(RichText::new(text).color(if warn { p.warn } else { p.muted }).font(theme::font(12.5))).truncate());
@@ -731,7 +731,7 @@ fn audio_panel(app: &mut UiApp, ui: &mut Ui, area: Rect) {
     };
     let parts: Vec<String> = [app.s.audio_system.then_some(system), app.s.audio_mic.then(|| tr!("麥克風", "Microphone").to_string())].into_iter().flatten().collect();
     let (line, warn) = if parts.is_empty() {
-        (tr!("還沒選要錄的聲音：請在下方「聲音」打開系統聲音或麥克風", "No audio selected: turn on system audio or the microphone under “Audio” below").to_string(), true)
+        (tr!("還沒選要錄的聲音：請在下方「聲音」開啟系統聲音或麥克風", "No audio selected: turn on system audio or the microphone under “Audio” below").to_string(), true)
     } else {
         (trf!("會錄：{}", "Will record: {}", parts.join(tr!("、", ", "))), false)
     };
@@ -903,9 +903,9 @@ fn dk_of(app: &UiApp, view: DRect) -> DRect {
     }
 }
 
-// ───────────── 錄影設定摘要（下方一列；點一下開啟「設定」視窗的那一頁） ─────────────
+// ───────────── 錄影設定摘要（下方一列；按一下開啟「設定」視窗的那一頁） ─────────────
 
-/// 錄影前的提醒：會讓錄影少了東西、或錄不成的設定（正常時沒有）。每一項：(說明, 滑鼠移上去的提示, 點了打開的設定分頁)
+/// 錄影前的提醒：會讓錄影少了東西、或錄不成的設定（正常時沒有）。每一項：(說明, 滑鼠移上去的提示, 點了開啟的設定分頁)
 fn rec_warnings(app: &UiApp, ctx: &egui::Context) -> Vec<(String, String, Page)> {
     let mut out = vec![];
     if !app.env_ready || app.status.recorder.state != RecorderState::Idle {
@@ -915,7 +915,7 @@ fn rec_warnings(app: &UiApp, ctx: &egui::Context) -> Vec<(String, String, Page)>
     if app.s.source_type == SourceType::Audio && !app.s.audio_system && !app.s.audio_mic {
         out.push((
             tr!("只錄聲音，但系統聲音和麥克風都關著", "Audio only, but system audio and the mic are both off").into(),
-            tr!("點一下到「設定 → 聲音」打開要錄的聲音", "Click to turn on a source in Settings → Audio").into(),
+            tr!("按一下到「設定 → 聲音」開啟要錄的聲音", "Click to turn on a source in Settings → Audio").into(),
             Page::Audio,
         ));
     }
@@ -927,19 +927,19 @@ fn rec_warnings(app: &UiApp, ctx: &egui::Context) -> Vec<(String, String, Page)>
         ));
     }
     if let Some(e) = &a.error {
-        out.push((trf!("聲音裝置有問題：{e}", "Audio device problem: {e}"), tr!("點一下到「設定 → 聲音」檢查", "Click to check Settings → Audio").into(), Page::Audio));
+        out.push((trf!("聲音裝置有問題：{e}", "Audio device problem: {e}"), tr!("按一下到「設定 → 聲音」檢查", "Click to check Settings → Audio").into(), Page::Audio));
     }
     let dir = app.s.out_dir(&app.env);
     match dir_issue(ctx, &dir) {
         Some(DirIssue::NotWritable) => out.push((
             tr!("儲存位置不能寫入，錄影會存不起來", "Can't write to the save folder, so recordings can't be saved").into(),
-            trf!("{dir}\n點一下到「設定 → 存檔與分享」換一個資料夾", "{dir}\nClick to choose another folder in Settings → Save & share"),
+            trf!("{dir}\n按一下到「設定 → 存檔與分享」換一個資料夾", "{dir}\nClick to choose another folder in Settings → Save & share"),
             Page::Save,
         )),
         Some(DirIssue::LowSpace(free)) => out.push((
             trf!("儲存位置的磁碟只剩 {}", "Only {} left on the save drive", format_bytes(free)),
             trf!(
-                "{dir}\n錄影一分鐘約需數十 MB；空間用完會自動停止錄影。點一下到「設定 → 存檔與分享」換一個資料夾",
+                "{dir}\n錄影一分鐘約需數十 MB；空間用完會自動停止錄影。按一下到「設定 → 存檔與分享」換一個資料夾",
                 "{dir}\nA minute of video takes tens of MB, and recording stops when the disk is full. Click to choose another folder in Settings → Save & share"
             ),
             Page::Save,
@@ -988,6 +988,51 @@ fn dir_issue(ctx: &egui::Context, dir: &str) -> Option<DirIssue> {
     g.as_ref().and_then(|(_, _, r, _)| *r)
 }
 
+/// 檔案的修改時間（秒；沒有這個檔案時 None）：畫面每格都要問，3 秒內不重查（錄影存在 NAS 時每次查都要等網路）
+pub fn file_mtime(path: &str) -> Option<f64> {
+    type Seen = std::collections::HashMap<String, (Instant, Option<f64>)>;
+    static SEEN: std::sync::Mutex<Option<Seen>> = std::sync::Mutex::new(None);
+    let mut g = SEEN.lock().unwrap_or_else(|e| e.into_inner());
+    let map = g.get_or_insert_with(Default::default);
+    if let Some((at, r)) = map.get(path) {
+        if at.elapsed() < std::time::Duration::from_secs(3) {
+            return *r;
+        }
+    }
+    let r = std::fs::metadata(path).ok().filter(|m| m.is_file()).map(|m| m.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0.0, |d| d.as_secs_f64()));
+    if map.len() > 200 {
+        map.clear();
+    }
+    map.insert(path.to_string(), (Instant::now(), r));
+    r
+}
+
+/// 資料夾在不在：在背景檢查（NAS 斷線時檢查可能要等幾十秒，不能卡住畫面），同一個資料夾 15 秒內不重查；
+/// 還沒查完時 None
+pub fn dir_exists(ctx: &egui::Context, dir: &str) -> Option<bool> {
+    type Seen = std::collections::HashMap<String, (Instant, Option<bool>)>;
+    static SEEN: std::sync::Mutex<Option<Seen>> = std::sync::Mutex::new(None);
+    let mut g = SEEN.lock().unwrap_or_else(|e| e.into_inner());
+    let map = g.get_or_insert_with(Default::default);
+    let known = map.get(dir).copied();
+    if known.is_none_or(|(at, r)| r.is_some() && at.elapsed() >= std::time::Duration::from_secs(15)) {
+        map.insert(dir.to_string(), (Instant::now(), known.and_then(|k| k.1)));
+        let (dir, ctx) = (dir.to_string(), ctx.clone());
+        let _ = std::thread::Builder::new().name("dir-exists".into()).spawn(move || {
+            let r = std::path::Path::new(&dir).is_dir();
+            let mut g = SEEN.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(map) = g.as_mut() {
+                let changed = map.get(&dir).and_then(|k| k.1) != Some(r);
+                map.insert(dir, (Instant::now(), Some(r)));
+                if changed {
+                    ctx.request_repaint();
+                }
+            }
+        });
+    }
+    known.and_then(|k| k.1)
+}
+
 /// 試著在資料夾裡寫一個暫存檔（資料夾還沒建立時試最近一層已經存在的上層），再看剩下的空間
 fn check_dir(dir: &str) -> Option<DirIssue> {
     let mut at = std::path::Path::new(dir);
@@ -1016,7 +1061,7 @@ fn camera_button(app: &mut UiApp, ui: &mut Ui) {
         .small()
         .selected(!app.s.camera.is_empty())
         .enabled(!app.locked())
-        .tooltip(trf!("攝影機子母畫面：{cam}（點一下修改）", "Camera overlay: {cam} (click to change)"))
+        .tooltip(trf!("攝影機子母畫面：{cam}（按一下修改）", "Camera overlay: {cam} (click to change)"))
         .show(ui);
     if resp.clicked() {
         app.load_cameras(false);
@@ -1155,7 +1200,7 @@ fn shot_menu(app: &UiApp, ui: &mut Ui, act: &mut Option<ShotAct>) {
     };
     let item = |ui: &mut Ui, label: String, key: usize, enabled: bool| -> bool {
         let k = app.keys.label(key);
-        let b = egui::Button::new(label).shortcut_text(RichText::new(k).font(theme::mono(11.5)));
+        let b = egui::Button::new(label).shortcut_text(RichText::new(k).font(theme::mono(12.0)));
         ui.add_enabled(enabled, b).clicked()
     };
     let steps_on = app.status.steps.is_some();
@@ -1167,7 +1212,7 @@ fn shot_menu(app: &UiApp, ui: &mut Ui, act: &mut Option<ShotAct>) {
         for sec in [3u64, 5, 10] {
             if ui
                 .button(trf!("{sec} 秒後", "In {sec} seconds"))
-                .on_hover_text(tr!("先打開要截的選單或提示，時間到畫面會凍結讓你框選", "Open the menu or tooltip you want to capture first; the screen freezes for selection when time is up"))
+                .on_hover_text(tr!("先開啟要截的選單或提示，時間到畫面會凍結讓你框選", "Open the menu or tooltip you want to capture first; the screen freezes for selection when time is up"))
                 .clicked()
             {
                 *act = Some(ShotAct::Select(sec));
@@ -1209,7 +1254,7 @@ fn shot_menu(app: &UiApp, ui: &mut Ui, act: &mut Option<ShotAct>) {
     if ui
         .add_enabled(!steps_on, egui::Button::new(tr!("步驟截圖（做成教學文件）", "Step capture (step-by-step guide)")))
         .on_hover_text(tr!(
-            "開始後每點一下滑鼠就截一張，標出點的位置；完成時做成一份圖文並茂的教學文件",
+            "開始後每按一下滑鼠就截一張，標出點的位置；完成時做成一份圖文並茂的教學文件",
             "Once started, every mouse click takes a screenshot with the click marked. When you finish, it becomes an illustrated step-by-step guide."
         ))
         .clicked()
@@ -1222,7 +1267,7 @@ fn shot_menu(app: &UiApp, ui: &mut Ui, act: &mut Option<ShotAct>) {
     ui.separator();
     heading(ui, tr!("小工具", "Tools"));
     if ui
-        .add(egui::Button::new(tr!("只抓文字…", "Grab text…")).shortcut_text(RichText::new(app.keys.label(9)).font(theme::mono(11.5))))
+        .add(egui::Button::new(tr!("只抓文字…", "Grab text…")).shortcut_text(RichText::new(app.keys.label(9)).font(theme::mono(12.0))))
         .on_hover_text(tr!(
             "框選畫面上的字（圖片、影片、不能選取的視窗也可以），直接複製到剪貼簿，不存圖；表格可以貼到 Excel",
             "Select text anywhere on the screen (even in images, videos or windows that don't allow selection) to copy it straight to the clipboard without saving an image; tables paste into Excel"
@@ -1251,9 +1296,9 @@ pub(super) fn run_shot(app: &mut UiApp, act: ShotAct) {
         ShotAct::Select(sec) => {
             app.main.shooting = true;
             if sec > 0 {
-                app.toast(trf!("{sec} 秒後框選：現在先打開要截的選單或提示", "Selecting in {sec} s: open the menu or tooltip you want to capture now"), false);
+                app.toast(trf!("{sec} 秒後框選：現在先開啟要截的選單或提示", "Selecting in {sec} s: open the menu or tooltip you want to capture now"), false);
             }
-            // 延遲截圖：core 在畫面上顯示倒數（可以按 Esc 或點一下取消）
+            // 延遲截圖：core 在畫面上顯示倒數（可以按 Esc 或按一下取消）
             app.spawn(async move { core.snip_delayed(&config, sec).await.map(|_| ()) }, done);
         }
         ShotAct::Area | ShotAct::Screen(_) | ShotAct::Last => {
@@ -1285,7 +1330,7 @@ pub(super) fn run_shot(app: &mut UiApp, act: ShotAct) {
         ShotAct::Steps => match app.core.steps_start(&config.shots_dir()) {
             Ok(()) => app.toast(
                 tr!(
-                    "步驟截圖開始：之後每點一下滑鼠就截一張，做完後按畫面下方的「完成」",
+                    "步驟截圖開始：之後每按一下滑鼠就截一張，做完後按畫面下方的「完成」",
                     "Step capture started: every mouse click now takes a screenshot. Click “Finish” at the bottom of the screen when you're done."
                 ),
                 false,
@@ -1438,7 +1483,7 @@ fn result_card(app: &mut UiApp, ui: &mut Ui, res: &screenrecorder_core::types::R
                 action_buttons(app, ui, path, true, !audio);
                 // 只錄聲音：另存的 M4A
                 let m4a = screenrecorder_core::after_record::m4a_path(path).display().to_string();
-                if audio && std::path::Path::new(&m4a).is_file() {
+                if audio && file_mtime(&m4a).is_some() {
                     ui.add_space(2.0);
                     ui.add(egui::Label::new(RichText::new(trf!("也存成 M4A：{}", "Also saved as M4A: {}", file_name(&m4a))).font(theme::font(12.5))).truncate()).on_hover_text(&m4a);
                     ui.horizontal_wrapped(|ui| {
@@ -1937,7 +1982,7 @@ fn recording_controls(app: &mut UiApp, ui: &mut Ui, r: &screenrecorder_core::typ
         if r.mic_muted.is_some() || app.s.audio_mic {
             let mk = shortcut(app, 7);
             let tip = if muted {
-                trf!("麥克風靜音中，點一下取消靜音{mk}", "The microphone is muted. Click to unmute{mk}")
+                trf!("麥克風靜音中，按一下取消靜音{mk}", "The microphone is muted. Click to unmute{mk}")
             } else {
                 trf!(
                     "暫時把麥克風靜音（咳嗽、接電話時），剪輯時會在時間軸上標出來{mk}",
@@ -2005,7 +2050,7 @@ fn recording_controls(app: &mut UiApp, ui: &mut Ui, r: &screenrecorder_core::typ
             };
             theme::paint_icon(&painter, Rect::from_center_size(c.center(), vec2(16.0, 16.0)), icon, fg);
             if matches!(a, RecAct::Mark) && r.markers > 0 {
-                painter.text(c.center() + vec2(9.0, -8.0), egui::Align2::CENTER_CENTER, r.markers.to_string(), theme::font_bold(10.0), Color32::WHITE);
+                painter.text(c.center() + vec2(9.0, -8.0), egui::Align2::CENTER_CENTER, r.markers.to_string(), theme::font_bold(11.0), Color32::WHITE);
             }
             if resp.clicked() {
                 act = a;
@@ -2097,7 +2142,7 @@ fn event_log_button(app: &mut UiApp, ui: &mut Ui, r: &screenrecorder_core::types
     let p = theme::pal(ui);
     let unseen = r.log.iter().filter(|l| l.t > app.main.log_seen && l.level != LogLevel::Info).count();
     let tip = if unseen > 0 {
-        trf!("錄影過程有 {unseen} 則新的警告或錯誤，點一下看事件紀錄", "{unseen} new warning(s) or error(s) while recording. Click to see the event log")
+        trf!("錄影過程有 {unseen} 則新的警告或錯誤，按一下看事件紀錄", "{unseen} new warning(s) or error(s) while recording. Click to see the event log")
     } else {
         tr!("事件紀錄：錄影過程的訊息、警告與錯誤", "Event log: messages, warnings and errors while recording").into()
     };
@@ -2116,7 +2161,7 @@ fn event_log_button(app: &mut UiApp, ui: &mut Ui, r: &screenrecorder_core::types
                 LogLevel::Error => p.rec,
             };
             ui.horizontal(|ui| {
-                ui.label(RichText::new(time).font(theme::mono(11.5)).color(p.muted));
+                ui.label(RichText::new(time).font(theme::mono(12.0)).color(p.muted));
                 ui.add(egui::Label::new(RichText::new(&l.text).font(theme::font(12.5)).color(color)).truncate()).on_hover_text(&l.text);
             });
         }
@@ -2143,7 +2188,7 @@ enum Notice {
     Manual(screenrecorder_core::types::ExportStatus),
     /// 排程錄影
     Schedule,
-    /// 錄影前的提醒（說明、提示、點了打開的設定）
+    /// 錄影前的提醒（說明、提示、點了開啟的設定）
     Warn(String, String, Page),
 }
 
@@ -2423,7 +2468,7 @@ fn notice_area(app: &mut UiApp, ui: &mut Ui, active: bool) {
             let line1 = measure(&view.title, theme::font_bold(13.5)) + if view.meta.is_empty() { 0.0 } else { 10.0 + measure(&view.meta, theme::font(12.0)) };
             let line2 = match (&view.frac, &view.file) {
                 (Some(_), _) => 160.0,
-                (None, Some(f)) => measure(f, theme::font(11.5)),
+                (None, Some(f)) => measure(f, theme::font(12.0)),
                 _ => 0.0,
             };
             let text_w = line1.max(line2).ceil().min((ui.available_width() - 230.0).max(120.0));
@@ -2451,7 +2496,7 @@ fn notice_area(app: &mut UiApp, ui: &mut Ui, active: bool) {
                     fill.set_width(bar.width() * f.clamp(0.0, 1.0));
                     ui.painter().rect_filled(fill, CornerRadius::same(3), p.accent);
                 } else if let Some(name) = &view.file {
-                    let r = ui.add(egui::Label::new(RichText::new(name).font(theme::font(11.5)).color(p.muted)).truncate().sense(Sense::click()));
+                    let r = ui.add(egui::Label::new(RichText::new(name).font(theme::font(12.0)).color(p.muted)).truncate().sense(Sense::click()));
                     if r.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(tr!("在右邊的最近錄影找到它", "Find it in Recent recordings on the right")).clicked() {
                         app.main.recent_to_top = true;
                     }
@@ -2473,7 +2518,7 @@ fn saved_card(app: &mut UiApp, ui: &mut Ui, path: &str, sec: f64, bytes: u64) {
     let audio = screenrecorder_core::after_record::is_audio_recording(path);
     // 縮圖（只錄聲音的沒有畫面：灰底加音符圖示）
     let (r, thumb) = ui.allocate_exact_size(vec2(68.0, 40.0), Sense::click());
-    let mtime = std::fs::metadata(path).and_then(|m| m.modified()).ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0.0, |d| d.as_secs_f64());
+    let mtime = file_mtime(path).unwrap_or(0.0);
     let rounding = CornerRadius::same(6);
     match (!audio).then(|| app.thumb(path, mtime)).flatten() {
         Some(t) => {
@@ -2619,7 +2664,7 @@ fn notice_actions(app: &mut UiApp, ui: &mut Ui, n: &Notice) {
                     app.main.dismissed_result = Some(key.clone());
                     app.recover_now();
                 }
-                // 「詳細」打開原本的完整卡片（原因與建議、救回、記錄檔…）
+                // 「詳細」開啟原本的完整卡片（原因與建議、救回、記錄檔…）
                 let more = Btn::new(tr!("詳細", "Details")).small().show(ui);
                 egui::Popup::menu(&more).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
                     ui.set_width(400.0);
@@ -2814,7 +2859,7 @@ fn recent_card(app: &mut UiApp, ui: &mut Ui, e: &LibraryEntry, date: String, w: 
     if let Some(t) = app.thumb(&e.media.path, e.media.mtime) {
         theme::paint_thumb_cover(&painter, thumb, &t);
     }
-    // 縮圖：點一下就播放（中間有播放鍵，滑鼠移上去變明顯）
+    // 縮圖：按一下就播放（中間有播放鍵，滑鼠移上去變明顯）
     let thumb_resp = ui.interact(thumb, Id::new(("recent-thumb", &e.media.path)), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
     let hot_thumb = thumb_resp.hovered();
     // 滑過縮圖：旁邊浮出預覽，左右移動看不同時間的畫面（聲音檔仍顯示「播放」提示）
@@ -2839,7 +2884,7 @@ fn recent_card(app: &mut UiApp, ui: &mut Ui, e: &LibraryEntry, date: String, w: 
         app.known.insert(e.media.path.clone(), e.clone());
         app.act(EntryAction::PlayHere, e.clone());
     }
-    // 點兩下卡片：在播放器開啟（完整的功能）
+    // 按兩下卡片：在播放器開啟（完整的功能）
     if resp.double_clicked() || thumb_resp.double_clicked() {
         app.inline = None;
         app.known.insert(e.media.path.clone(), e.clone());
@@ -2857,7 +2902,7 @@ fn recent_card(app: &mut UiApp, ui: &mut Ui, e: &LibraryEntry, date: String, w: 
         let room = rect.max.x - 8.0 - (x + meta_w + 8.0);
         let long = if is_en() { format!("{n} more version{}", if n == 1 { "" } else { "s" }) } else { format!("另有 {n} 個版本") };
         let short = trf!("+{n} 版本", "+{n}");
-        let fits = |t: &str| ui.painter().layout_no_wrap(t.to_string(), theme::font_bold(11.5), p.accent).size().x + 14.0 <= room;
+        let fits = |t: &str| ui.painter().layout_no_wrap(t.to_string(), theme::font_bold(12.0), p.accent).size().x + 14.0 <= room;
         let text = if fits(&long) { long } else { short };
         let chip_rect = Rect::from_min_max(pos2(x + meta_w + 8.0, rect.min.y + 24.0), pos2(rect.max.x - 6.0, rect.min.y + 46.0));
         let ui = &mut ui.new_child(UiBuilder::new().max_rect(chip_rect).layout(Layout::left_to_right(Align::Center)));

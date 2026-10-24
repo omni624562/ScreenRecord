@@ -17,7 +17,7 @@ use crate::{tr, trf};
 use std::collections::VecDeque;
 use std::io::{ErrorKind, Write};
 use std::net::{TcpListener, TcpStream};
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
 use std::sync::mpsc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -475,6 +475,12 @@ impl Timeline {
 /// 送往 FFmpeg 的 TCP 連線（不等待：寫不完的部分保留到下一次）
 struct Output {
     listener: TcpListener,
+    /// 我們這邊的埠
+    port: u16,
+    /// 錄影用的 FFmpeg 的程序編號（0 = 還不知道）：只把聲音送給它
+    owner: Arc<AtomicU32>,
+    /// 連進來、還在確認是誰的連線
+    waiting: Vec<(TcpStream, std::net::SocketAddr, Instant)>,
     sock: Option<TcpStream>,
     pending: VecDeque<u8>,
     overflow_warned: bool,
@@ -483,12 +489,41 @@ struct Output {
 
 impl Output {
     fn accept(&mut self) {
-        // 只接受 FFmpeg 的一條連線，其他的直接關掉
-        while let Ok((sock, _)) = self.listener.accept() {
-            if self.sock.is_none() && sock.set_nonblocking(true).is_ok() {
-                let _ = sock.set_nodelay(true);
-                self.sock = Some(sock);
+        // 只接受錄影用的 FFmpeg 的一條連線：別的程式（包括這台電腦的其他使用者）連進來聽不到錄音
+        while let Ok((sock, peer)) = self.listener.accept() {
+            if self.sock.is_none() && self.waiting.len() < 4 {
+                self.waiting.push((sock, peer, Instant::now()));
             }
+        }
+        let want = self.owner.load(Ordering::Relaxed);
+        let mut i = 0;
+        while i < self.waiting.len() && self.sock.is_none() {
+            let (_, peer, at) = &self.waiting[i];
+            let verdict = match tcp_owner(*peer, self.port) {
+                // FFmpeg 剛啟動、還不知道它的編號：等一下
+                Some(_) if want == 0 => None,
+                Some(pid) => Some(pid == want),
+                // 查不到是誰（不是 Windows、系統查詢失敗）：照舊接受
+                None => Some(true),
+            };
+            match verdict {
+                Some(true) => {
+                    let (sock, ..) = self.waiting.remove(i);
+                    if sock.set_nonblocking(true).is_ok() {
+                        let _ = sock.set_nodelay(true);
+                        self.sock = Some(sock);
+                    }
+                }
+                Some(false) => {
+                    (self.log)(LogLevel::Warn, tr!("有別的程式想接收錄音的聲音，已拒絕", "Another program tried to receive the recording's audio and was refused").into());
+                    self.waiting.remove(i);
+                }
+                None if at.elapsed() > Duration::from_secs(10) => drop(self.waiting.remove(i)),
+                None => i += 1,
+            }
+        }
+        if self.sock.is_some() {
+            self.waiting.clear();
         }
     }
 
@@ -549,6 +584,40 @@ impl Output {
     }
 }
 
+/// 本機 TCP 連線是哪個程序開的：peer 是對方的位址，port 是我們這邊的埠。查不到時 None
+#[cfg(windows)]
+fn tcp_owner(peer: std::net::SocketAddr, port: u16) -> Option<u32> {
+    use windows::Win32::NetworkManagement::IpHelper::{GetExtendedTcpTable, MIB_TCPROW_OWNER_PID, TCP_TABLE_OWNER_PID_CONNECTIONS};
+    const AF_INET: u32 = 2;
+    let mut size = 0u32;
+    // SAFETY: 先問要多大，再用夠大的緩衝（u32 對齊）讀整張表；列數不超過緩衝
+    unsafe {
+        GetExtendedTcpTable(None, &mut size, false, AF_INET, TCP_TABLE_OWNER_PID_CONNECTIONS, 0);
+        for _ in 0..3 {
+            let mut buf = vec![0u32; size as usize / 4 + 64];
+            let mut len = (buf.len() * 4) as u32;
+            match GetExtendedTcpTable(Some(buf.as_mut_ptr().cast()), &mut len, false, AF_INET, TCP_TABLE_OWNER_PID_CONNECTIONS, 0) {
+                0 => {
+                    let n = (buf[0] as usize).min((buf.len() - 1) / 6);
+                    let rows = std::slice::from_raw_parts(buf.as_ptr().add(1) as *const MIB_TCPROW_OWNER_PID, n);
+                    let be = |p: u32| u16::from_be(p as u16);
+                    // 編號 0：系統沒給（Wine 等），當作查不到
+                    return rows.iter().find(|r| be(r.dwLocalPort) == peer.port() && be(r.dwRemotePort) == port).map(|r| r.dwOwningPid).filter(|p| *p != 0);
+                }
+                // 表變大了：重來
+                122 => size = len,
+                _ => return None,
+            }
+        }
+        None
+    }
+}
+
+#[cfg(not(windows))]
+fn tcp_owner(_: std::net::SocketAddr, _: u16) -> Option<u32> {
+    None
+}
+
 enum Cmd {
     Frame(f64, i64),
     Flush(i64, mpsc::Sender<()>),
@@ -578,6 +647,8 @@ pub struct AudioPipe {
     last_sound: Arc<AtomicU64>,
     /// 最近的音量（f32 的位元；[系統聲音, 麥克風]，u32::MAX 表示沒錄這個來源）
     levels: Arc<[std::sync::atomic::AtomicU32; 2]>,
+    /// 錄影用的 FFmpeg 的程序編號（Output::owner）
+    owner: Arc<AtomicU32>,
     tx: mpsc::Sender<Cmd>,
     thread: std::sync::Mutex<Option<std::thread::JoinHandle<()>>>,
 }
@@ -601,11 +672,13 @@ impl AudioPipe {
         let sound_at = last_sound.clone();
         let levels = Arc::new([std::sync::atomic::AtomicU32::new(u32::MAX), std::sync::atomic::AtomicU32::new(u32::MAX)]);
         let levels_out = levels.clone();
+        let owner = Arc::new(AtomicU32::new(0));
+        let owner_in = owner.clone();
         let thread = std::thread::Builder::new().name("audio".into()).spawn(move || {
             let mut tl = Timeline::with_tracks(&specs, opener, log.clone(), now_100ns(), separate);
             silent_flag.store(tl.silent_mask(), Ordering::Relaxed);
             let _ = desc_tx.send(tl.describe());
-            let mut out = Output { listener, sock: None, pending: VecDeque::new(), overflow_warned: false, log };
+            let mut out = Output { listener, port, owner: owner_in, waiting: vec![], sock: None, pending: VecDeque::new(), overflow_warned: false, log };
             let mut next = Instant::now() + TICK;
             loop {
                 let wait = next.saturating_duration_since(Instant::now());
@@ -641,7 +714,12 @@ impl AudioPipe {
         })?;
         // 開啟音訊裝置卡住時不要一直等（錄影的開始、暫停、停止都在等這裡）：裝置稍後好了照樣會送聲音
         let desc = desc_rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap_or_else(|_| tr!("音訊裝置沒有回應", "Audio device isn't responding").to_string());
-        Ok(AudioPipe { port, channels, desc, synced, silent, sources, last_sound, levels, tx, thread: std::sync::Mutex::new(Some(thread)) })
+        Ok(AudioPipe { port, channels, desc, synced, silent, sources, last_sound, levels, owner, tx, thread: std::sync::Mutex::new(Some(thread)) })
+    }
+
+    /// 錄影用的 FFmpeg 啟動了：只把聲音送給這個程序
+    pub fn allow(&self, pid: u32) {
+        self.owner.store(pid, Ordering::Relaxed);
     }
 
     /// 最近的音量（0～1）：（系統聲音, 麥克風），沒錄的來源是 None
@@ -701,7 +779,7 @@ impl AudioPipe {
     /// 立即釋放（FFmpeg 已結束時）
     pub fn close(&self) {
         let _ = self.tx.send(Cmd::Close);
-        let thread = self.thread.lock().unwrap().take();
+        let thread = self.thread.lock().unwrap_or_else(|e| e.into_inner()).take();
         if let Some(t) = thread {
             let _ = t.join();
         }
@@ -778,7 +856,7 @@ mod tests {
             if self.fail.load(Ordering::Relaxed) {
                 return Err("拔除".into());
             }
-            while let Some((d, n, q)) = self.packets.lock().unwrap().pop_front() {
+            while let Some((d, n, q)) = self.packets.lock().unwrap_or_else(|e| e.into_inner()).pop_front() {
                 visit(d.as_deref(), n, q);
             }
             Ok(())
@@ -797,7 +875,7 @@ mod tests {
     fn logs() -> (LogFn, Arc<Mutex<Vec<String>>>) {
         let store = Arc::new(Mutex::new(Vec::new()));
         let s = store.clone();
-        (Arc::new(move |_l, m| s.lock().unwrap().push(m)), store)
+        (Arc::new(move |_l, m| s.lock().unwrap_or_else(|e| e.into_inner()).push(m)), store)
     }
 
     fn floats(bytes: &[u8]) -> Vec<f32> {
@@ -818,8 +896,8 @@ mod tests {
         tl.on_video_frame(0.0, 1000 * MS);
         tl.on_video_frame(0.1, 1150 * MS);
         // 零點前 100ms 的封包（480 個取樣）與零點後 50ms 的封包
-        packets.lock().unwrap().push_back((Some(seq(0, 480)), 480, Some(900 * MS)));
-        packets.lock().unwrap().push_back((Some(seq(1000, 48)), 48, Some(1050 * MS)));
+        packets.lock().unwrap_or_else(|e| e.into_inner()).push_back((Some(seq(0, 480)), 480, Some(900 * MS)));
+        packets.lock().unwrap_or_else(|e| e.into_inner()).push_back((Some(seq(1000, 48)), 48, Some(1050 * MS)));
         assert!(tl.tick(1500 * MS).is_empty()); // 還在收集畫面時間
         assert!(!tl.synced());
         let out = floats(tl.tick(2000 * MS));
@@ -843,14 +921,14 @@ mod tests {
         let mut tl = Timeline::new(&specs, fake_opener(packets.clone(), fail), log, 0);
         tl.on_video_frame(0.0, 0);
         // 兩個來源共用同一個假封包佇列：第一個來源讀完全部，第二個只有靜音
-        packets.lock().unwrap().push_back((Some(vec![0.25; 96]), 48, Some(0)));
+        packets.lock().unwrap_or_else(|e| e.into_inner()).push_back((Some(vec![0.25; 96]), 48, Some(0)));
         let out = floats(tl.flush_to(10 * MS));
         assert_eq!(out.len(), 480 * CHANNELS);
         assert_eq!(out[..96], vec![0.25; 96][..]);
         // 電腦睡眠 1 小時：時間軸跳過，不補一小時的靜音
         let out = tl.tick(3600 * 1000 * MS).len();
         assert!(out < (MAX_SILENCE_FRAMES as usize + 48_000) * CHANNELS * 4);
-        assert!(messages.lock().unwrap().iter().any(|m| m.contains("電腦睡眠")));
+        assert!(messages.lock().unwrap_or_else(|e| e.into_inner()).iter().any(|m| m.contains("電腦睡眠")));
     }
 
     #[test]
@@ -862,7 +940,7 @@ mod tests {
         let mut tl = Timeline::with_tracks(&specs, fake_opener(packets.clone(), fail), log, 0, true);
         tl.on_video_frame(0.0, 0);
         // 第一個來源（系統聲音）讀到這個封包，第二個（麥克風）只有靜音
-        packets.lock().unwrap().push_back((Some(seq(1, 48)), 48, Some(0)));
+        packets.lock().unwrap_or_else(|e| e.into_inner()).push_back((Some(seq(1, 48)), 48, Some(0)));
         let out = floats(tl.flush_to(10 * MS));
         assert_eq!(channels_for(2, true), 6);
         assert_eq!(out.len(), 480 * 6);
@@ -884,17 +962,17 @@ mod tests {
         let mut tl = Timeline::new(&[spec], fake_opener(packets.clone(), fail), log, 0);
         tl.mic_mute = &MUTE;
         tl.on_video_frame(0.0, 0);
-        packets.lock().unwrap().push_back((Some(seq(1, 48)), 48, Some(0)));
+        packets.lock().unwrap_or_else(|e| e.into_inner()).push_back((Some(seq(1, 48)), 48, Some(0)));
         assert_eq!(floats(tl.flush_to(MS))[..2], [1.0, -1.0]);
         // 靜音中：麥克風的聲音照樣讀走，但送出的是靜音；取消後恢復
         MUTE.store(true, Ordering::Relaxed);
-        packets.lock().unwrap().push_back((Some(seq(1, 48)), 48, Some(MS)));
+        packets.lock().unwrap_or_else(|e| e.into_inner()).push_back((Some(seq(1, 48)), 48, Some(MS)));
         let out = floats(tl.flush_to(2 * MS));
         assert_eq!(out.len(), 48 * CHANNELS);
         assert!(out.iter().all(|v| *v == 0.0));
-        assert!(packets.lock().unwrap().is_empty());
+        assert!(packets.lock().unwrap_or_else(|e| e.into_inner()).is_empty());
         MUTE.store(false, Ordering::Relaxed);
-        packets.lock().unwrap().push_back((Some(seq(1, 48)), 48, Some(2 * MS)));
+        packets.lock().unwrap_or_else(|e| e.into_inner()).push_back((Some(seq(1, 48)), 48, Some(2 * MS)));
         assert_eq!(floats(tl.flush_to(3 * MS))[..2], [1.0, -1.0]);
     }
 
@@ -918,11 +996,11 @@ mod tests {
         tl.tick(3000 * MS);
         assert_eq!(tl.describe(), "麥克風（假裝置）");
         assert_eq!(tl.silent_mask(), 0);
-        assert!(messages.lock().unwrap().iter().any(|m| m.contains("已恢復")));
+        assert!(messages.lock().unwrap_or_else(|e| e.into_inner()).iter().any(|m| m.contains("已恢復")));
         // 裝置中斷：改以靜音代替
         fail.store(true, Ordering::Relaxed);
         tl.tick(3100 * MS);
-        assert!(messages.lock().unwrap().iter().any(|m| m.contains("中斷")));
+        assert!(messages.lock().unwrap_or_else(|e| e.into_inner()).iter().any(|m| m.contains("中斷")));
         assert_eq!(tl.silent_mask(), SILENT_MIC);
     }
 
@@ -939,6 +1017,7 @@ mod tests {
         assert_eq!((pipe.sources(), pipe.silent()), (SILENT_SYSTEM, 0));
         let args = pipe.input_args();
         assert_eq!(args.last().unwrap(), &format!("tcp://127.0.0.1:{}", pipe.port()));
+        pipe.allow(std::process::id());
         let mut conn = TcpStream::connect(("127.0.0.1", pipe.port())).unwrap();
         pipe.on_video_frame(0.0, now_100ns());
         pipe.flush_to_now();
@@ -954,6 +1033,32 @@ mod tests {
 
     const BYTES: usize = crate::audio::BYTES_PER_FRAME;
 
+    /// Windows：別的程序連進來拿不到聲音
+    #[cfg(windows)]
+    #[test]
+    fn only_the_recording_ffmpeg_gets_the_audio() {
+        use std::io::Read;
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = l.local_addr().unwrap().port();
+        let c = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        let (_s, peer) = l.accept().unwrap();
+        assert_eq!(peer.port(), c.local_addr().unwrap().port());
+        assert_eq!(tcp_owner(peer, port), Some(std::process::id()));
+        let (log, messages) = logs();
+        let pipe =
+            AudioPipe::new(vec![AudioSourceSpec { loopback: true, mic_id: String::new(), app: String::new() }], fake_opener(Default::default(), Arc::new(AtomicBool::new(false))), log, false).unwrap();
+        pipe.allow(std::process::id() + 1);
+        let mut conn = TcpStream::connect(("127.0.0.1", pipe.port())).unwrap();
+        pipe.on_video_frame(0.0, now_100ns());
+        pipe.flush_to_now();
+        std::thread::sleep(Duration::from_millis(200));
+        pipe.close();
+        let mut got = Vec::new();
+        let _ = conn.read_to_end(&mut got);
+        assert!(got.is_empty(), "{}", got.len());
+        assert!(messages.lock().unwrap_or_else(|e| e.into_inner()).iter().any(|m| m.contains("拒絕") || m.contains("refused")));
+    }
+
     #[test]
     fn peaks_follow_each_source() {
         let packets: Packets = Default::default();
@@ -965,7 +1070,7 @@ mod tests {
         assert_eq!(tl.take_peaks(), [Some(0.0), Some(0.0)]);
         tl.on_video_frame(0.0, 0);
         // 第一個來源（系統聲音）讀到 −0.5 的聲音，麥克風只有靜音
-        packets.lock().unwrap().push_back((Some(vec![-0.5; 96]), 48, Some(0)));
+        packets.lock().unwrap_or_else(|e| e.into_inner()).push_back((Some(vec![-0.5; 96]), 48, Some(0)));
         let _ = tl.flush_to(10 * MS);
         assert_eq!(tl.take_peaks(), [Some(0.5), Some(0.0)]);
         // 讀了就歸零

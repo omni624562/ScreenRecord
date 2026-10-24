@@ -42,7 +42,7 @@ pub async fn set_autostart(on: bool) -> crate::Result<()> {
 }
 
 /// 開機自動啟動指向別的程式時（例如舊版留在另一個資料夾、或已經刪掉），改成目前這個程式；
-/// 沒有開啟開機自動啟動時不動。從暫存資料夾執行（例如在 zip 裡直接點兩下）時不改，
+/// 沒有開啟開機自動啟動時不動。從暫存資料夾執行（例如在 zip 裡直接按兩下）時不改，
 /// 否則暫存檔刪掉後開機就不會啟動。回傳原本指向的位置（有改的時候）
 pub async fn repoint_autostart() -> Option<String> {
     if !IS_RELEASE {

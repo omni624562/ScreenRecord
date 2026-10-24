@@ -1,4 +1,4 @@
-//! 記錄檔：%LOCALAPPDATA%\ScreenRecorder\ScreenRecorder.log（超過 1 MB 時改名為 .old.log 重新開始）。
+//! 記錄檔：%LOCALAPPDATA%\ScreenRecorder\ScreenRecorder.log（超過 1 MB 時重新命名為 .old.log 重新開始）。
 //! 隱藏主控台的版本看不到訊息，出問題時可從這裡查。同時也輸出到 stderr。
 
 use crate::paths::data_dir;
@@ -22,13 +22,33 @@ pub fn setup() {
     if std::fs::metadata(&file).map(|m| m.len() > 1024 * 1024).unwrap_or(false) {
         let _ = std::fs::rename(&file, dir.join("ScreenRecorder.old.log"));
     }
-    *FILE.lock().unwrap() = Some(file);
+    *FILE.lock().unwrap_or_else(|e| e.into_inner()) = Some(file);
     write("INFO ", "──── 程式啟動 ────");
 }
 
 pub fn write(level: &str, msg: &str) {
+    let msg = redact(msg);
     eprintln!("{msg}");
-    write_file(level, msg);
+    write_file(level, &msg);
+}
+
+/// 遮掉金鑰（網址裡的 api_key=、標頭裡的 X-Emby-Token、Token="…"）：記錄檔常被貼給別人看，
+/// 每一處都遮（不只第一個）
+pub fn redact(text: &str) -> String {
+    const KEYS: [(&str, &[char]); 4] =
+        [("api_key=", &['&', ' ', '"', '\'', '\n', '\r', ')']), ("ApiKey=", &['&', ' ', '"', '\'', '\n', '\r', ')']), ("X-Emby-Token: ", &['\r', '\n', ' ', '"', '\'']), ("Token=\"", &['"'])];
+    let mut out = text.to_string();
+    for (key, ends) in KEYS {
+        let mut from = 0;
+        while let Some(i) = out[from..].find(key).map(|i| from + i + key.len()) {
+            let end = out[i..].find(ends).map_or(out.len(), |j| i + j);
+            if end > i && &out[i..end] != "…" {
+                out.replace_range(i..end, "…");
+            }
+            from = i + "…".len();
+        }
+    }
+    out
 }
 
 /// 只寫進記錄檔（不輸出到 stderr）
@@ -68,7 +88,7 @@ pub fn install_panic_hook() {
         let msg = info.payload().downcast_ref::<&str>().map(|s| s.to_string()).or_else(|| info.payload().downcast_ref::<String>().cloned()).unwrap_or_else(|| "（無訊息）".into());
         let at = info.location().map(|l| format!("{}:{}", l.file(), l.line())).unwrap_or_default();
         let thread = std::thread::current().name().unwrap_or("未命名").to_string();
-        write_file("ERROR", &format!("程式內部錯誤（執行緒 {thread}，{at}）：{msg}"));
+        write_file("ERROR", &redact(&format!("程式內部錯誤（執行緒 {thread}，{at}）：{msg}")));
         default(info);
     }));
 }
@@ -76,10 +96,21 @@ pub fn install_panic_hook() {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn every_key_is_hidden() {
+        let r = super::redact(r#"a?api_key=K1&x=1 b?api_key=K2 -headers "X-Emby-Token: K3\r\n" MediaBrowser Token="K4", c?ApiKey=K5"#);
+        for k in ["K1", "K2", "K3", "K4", "K5"] {
+            assert!(!r.contains(k), "{r}");
+        }
+        assert!(r.contains("&x=1") && r.contains("api_key=…"), "{r}");
+        assert_eq!(super::redact("沒有金鑰"), "沒有金鑰");
+        assert_eq!(super::redact("api_key=…"), "api_key=…");
+    }
+
+    #[test]
     fn panics_are_written_to_the_log() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("test.log");
-        *super::FILE.lock().unwrap() = Some(file.clone());
+        *super::FILE.lock().unwrap_or_else(|e| e.into_inner()) = Some(file.clone());
         super::install_panic_hook();
         let r = std::thread::Builder::new().name("背景工作".into()).spawn(|| panic!("測試用的錯誤 {}", 42)).unwrap().join();
         assert!(r.is_err());
@@ -87,6 +118,6 @@ mod tests {
         assert!(text.contains("程式內部錯誤（執行緒 背景工作，"), "{text}");
         assert!(text.contains("log.rs:"), "{text}");
         assert!(text.contains("測試用的錯誤 42"), "{text}");
-        *super::FILE.lock().unwrap() = None;
+        *super::FILE.lock().unwrap_or_else(|e| e.into_inner()) = None;
     }
 }

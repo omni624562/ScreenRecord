@@ -31,7 +31,7 @@ pub struct Ask {
     pub hint: String,
     /// 取消按鈕的字（None = 取消）
     pub cancel: Option<String>,
-    /// 輸入對話框：建議的值（點一下填進去），例如依內容想的名稱
+    /// 輸入對話框：建議的值（按一下填進去），例如依內容想的名稱
     pub suggest: Option<String>,
     /// 正在想建議的值；suggest_key 是它屬於哪個檔案（對話框換了就不套用）
     pub suggest_pending: bool,
@@ -137,7 +137,7 @@ pub fn show_ask(app: &mut UiApp, ctx: &egui::Context) {
                     ui.label(theme::muted(ui, tr!("建議名稱：", "Suggested: ")).font(theme::font(12.0)));
                     let b = ui
                         .add_enabled(!ask.busy, egui::Button::new(RichText::new(&s).font(theme::font(12.5)).color(p.accent)).frame(false))
-                        .on_hover_text(tr!("依說的話、畫面上的字、在用的程式想的名稱；點一下套用", "Based on what was said, text on screen and the app used. Click to use it"))
+                        .on_hover_text(tr!("依說的話、畫面上的字、在用的程式想的名稱；按一下套用", "Based on what was said, text on screen and the app used. Click to use it"))
                         .on_hover_cursor(egui::CursorIcon::PointingHand);
                     if b.clicked() {
                         ask.input = Some(s.clone());
@@ -214,7 +214,8 @@ pub fn show_toast(app: &mut UiApp, ctx: &egui::Context) {
     ctx.request_repaint_after(t.until - Instant::now());
     let p = theme::pal_ctx(ctx);
     let (fill, fg) = if t.error { (p.rec, Color32::WHITE) } else { (p.text, p.surface) };
-    let has_actions = !t.actions.is_empty();
+    // 有按鈕、或出錯（不會自己消失）的：有 ✕ 可以關
+    let has_actions = !t.actions.is_empty() || t.error;
     let mut clicked: Option<usize> = None;
     let mut close = false;
     let screen = ctx.content_rect();
@@ -223,7 +224,7 @@ pub fn show_toast(app: &mut UiApp, ctx: &egui::Context) {
         Some(at) => (Align2::RIGHT_BOTTOM, vec2(at.x - screen.max.x - 12.0, at.y - screen.max.y - 12.0)),
         None => (Align2::RIGHT_BOTTOM, vec2(-16.0, -16.0)),
     };
-    let resp = egui::Area::new(Id::new("toast")).anchor(align, offset).order(egui::Order::Tooltip).interactable(has_actions).show(ctx, |ui| {
+    let resp = egui::Area::new(Id::new("toast")).anchor(align, offset).order(egui::Order::Tooltip).interactable(true).show(ctx, |ui| {
         egui::Frame::new().fill(fill).corner_radius(CornerRadius::same(10)).inner_margin(egui::Margin::symmetric(16, 10)).show(ui, |ui| {
             ui.set_max_width(if has_actions { 680.0 } else { 560.0 });
             if !has_actions {
@@ -251,8 +252,8 @@ pub fn show_toast(app: &mut UiApp, ctx: &egui::Context) {
             });
         });
     });
-    // 滑鼠在提示上時不會消失
-    if has_actions && resp.response.contains_pointer() {
+    // 滑鼠在提示上時不會消失（還沒看完）
+    if resp.response.contains_pointer() {
         if let Some(t) = &mut app.toast {
             t.until = t.until.max(Instant::now() + std::time::Duration::from_millis(1500));
         }

@@ -1,6 +1,6 @@
 //! 程式內更新：下載新版 exe、核對大小與 SHA-256（由 GitHub Release 提供），再取代自己。
 //!
-//! Windows 不能覆寫執行中的 exe，但可以改名：目前的 exe 改名為 `.old`，新版放到原本的位置，
+//! Windows 不能覆寫執行中的 exe，但可以重新命名：目前的 exe 重新命名為 `.old`，新版放到原本的位置，
 //! 接著啟動新版並結束自己；新版啟動時等舊的結束，再刪掉 `.old`。
 
 use crate::types::UpdateInfo;
@@ -88,7 +88,7 @@ impl Installer {
     }
 
     pub fn status(&self) -> InstallStatus {
-        self.st.lock().unwrap().clone()
+        self.st.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     pub fn busy(&self) -> bool {
@@ -96,7 +96,7 @@ impl Installer {
     }
 
     fn set(&self, f: impl FnOnce(&mut InstallStatus)) {
-        f(&mut self.st.lock().unwrap());
+        f(&mut self.st.lock().unwrap_or_else(|e| e.into_inner()));
     }
 
     /// 開始下載並取代 exe；完成後呼叫 on_ready（啟動新版並結束自己）。回傳的執行緒用於測試等待
@@ -105,7 +105,7 @@ impl Installer {
             return Err(tr!("這個版本沒有提供可自動更新的檔案，請到下載頁面手動更新", "This version has no file for automatic updates. Update manually from the download page").into());
         };
         {
-            let mut st = self.st.lock().unwrap();
+            let mut st = self.st.lock().unwrap_or_else(|e| e.into_inner());
             if matches!(st.phase, InstallPhase::Downloading | InstallPhase::Verifying | InstallPhase::Restarting) {
                 return Err(tr!("正在更新中", "Already updating").into());
             }
@@ -144,7 +144,7 @@ impl Installer {
     fn install(&self, url: &str, sha: &str, size: Option<u64>, exe: &Path) -> Result<(), String> {
         crate::info!("[更新] 下載新版 exe");
         let new = sibling(exe, ".new");
-        let result = self.download(url, sha, size, &new).and_then(|()| swap(exe, &new));
+        let result = self.download(url, sha, size, &new).and_then(|()| crate::codesign::update_allowed(&crate::codesign::signer(exe), &crate::codesign::signer(&new))).and_then(|()| swap(exe, &new));
         if result.is_err() {
             let _ = std::fs::remove_file(&new);
         }
@@ -184,7 +184,7 @@ impl Installer {
     }
 }
 
-/// 目前的 exe 改名為 .old、新版放到原位置；失敗時還原
+/// 目前的 exe 重新命名為 .old、新版放到原位置；失敗時還原
 fn swap(exe: &Path, new: &Path) -> Result<(), String> {
     let old = sibling(exe, ".old");
     let _ = std::fs::remove_file(&old);

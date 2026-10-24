@@ -22,7 +22,7 @@ pub fn should_show(app: &UiApp) -> bool {
 #[allow(dead_code)] // 有些版本的新功能介紹沒有「到設定看看」
 enum Try {
     None,
-    /// 打開設定的某一頁
+    /// 開啟設定的某一頁
     Settings(Page),
     /// 在螢幕上框選截圖（這一版的介紹沒用到，保留給之後）
     #[allow(dead_code)]
@@ -32,7 +32,7 @@ enum Try {
     /// 開始一步一步的教學（這一版的介紹沒用到，保留給之後）
     #[allow(dead_code)]
     Tour,
-    /// 打開檔案庫的 Jellyfin 分頁
+    /// 開啟檔案庫的 Jellyfin 分頁
     Jellyfin,
     /// 縮小成小視窗
     Compact,
@@ -42,28 +42,46 @@ enum Try {
 fn items(_app: &UiApp) -> Vec<(String, String, Try)> {
     vec![
         (
-            tr!("滑鼠停在縮圖上就播放", "Rest the mouse on a thumbnail to play").into(),
+            tr!("快速鍵統一", "Same keys everywhere").into(),
             tr!(
-                "最近錄影、全部錄影、Jellyfin 的縮圖上，左右移動滑鼠看不同時間的畫面；停住約 1 秒就在縮圖裡靜音播放，從停住的地方開始，移開就停。",
-                "On thumbnails in recent recordings, the library and Jellyfin, move the mouse to see different moments; rest it for about a second and the video plays muted right in the thumbnail from that spot, stopping when you move away."
+                "剪輯、檢視器、主畫面播放都一樣：← → 跳 5 秒（Shift 1 秒）、, . 一格一格、M 靜音；剪輯的標記改成 B。檢視器的鍵盤圖示可以看全部。",
+                "Editor, viewer and main-view player share the same keys: ← → jump 5 s (Shift 1 s), , . step one frame, M mutes; editor markers are now B. The keyboard icon in the viewer lists them all."
+            )
+            .into(),
+            Try::None,
+        ),
+        (
+            tr!("長時間的工作可以取消", "Stop long jobs midway").into(),
+            tr!(
+                "Jellyfin 批次整理、人物和標籤重新命名、步驟教學做成影片都顯示百分比，可以隨時按「取消」。",
+                "Jellyfin batch edits, renaming people and tags, and building step-guide videos show a percentage and can be cancelled at any time."
+            )
+            .into(),
+            Try::None,
+        ),
+        (
+            tr!("只用鍵盤看全部錄影", "Browse the library with the keyboard").into(),
+            tr!(
+                "在搜尋框按 ↓ 進到清單，↑↓ 移動、空白鍵勾選、Enter 開啟。",
+                "Press ↓ in the search box to enter the list, then ↑↓ to move, Space to tick and Enter to open."
             )
             .into(),
             Try::Library(false),
         ),
         (
-            tr!("Jellyfin 也能滑過預覽", "Scrub preview for Jellyfin too").into(),
+            tr!("出錯時說清楚、可以復原", "Clearer errors, and undo").into(),
             tr!(
-                "Jellyfin 分頁的縮圖上左右移動滑鼠，旁邊浮出那個時間點的畫面；有做時間軸預覽縮圖時直接用它，沒有時從影片讀。",
-                "Move the mouse across a thumbnail in the Jellyfin tab to see that moment beside it, using Jellyfin's trickplay images when it has them."
+                "檔案出錯時直接說原因（被其他程式使用、空間不足、沒有權限…），錯誤提示會留到你關掉；從合集移除可以復原，刪除的提示可以開啟資源回收筒。",
+                "File errors say why (in use, disk full, no permission…) and stay until you close them; removing from a collection can be undone, and the delete toast opens the Recycle Bin."
             )
             .into(),
-            Try::Jellyfin,
+            Try::None,
         ),
         (
-            tr!("後退、快轉：按住越來越快", "Back and forward: hold to go faster").into(),
+            tr!("更安全、更穩定、更快", "Safer, steadier, faster").into(),
             tr!(
-                "檢視器和主畫面播放列的 ◀◀ ▶▶ 按一下跳 5 秒，按住會連續跳、越來越快；鍵盤 ←→ 也一樣。",
-                "◀◀ ▶▶ in the viewer and main-view player jump 5 s per press and keep going faster while held; ← → work the same way."
+                "Jellyfin 金鑰加密保存、更新檢查數位簽章；設定檔不會寫到一半壞掉；影片資訊記在硬碟，開啟檔案庫更快。",
+                "The Jellyfin key is stored encrypted and updates check their signature; settings can't be half-written; video info is cached on disk so the library opens faster."
             )
             .into(),
             Try::None,

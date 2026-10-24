@@ -176,17 +176,17 @@ enum Processed {
 impl App {
     /// 錄完自動處理中（介面顯示用；處理完就是 None）
     pub fn after_status(&self) -> Option<AfterStatus> {
-        self.after.lock().unwrap().clone().filter(|s| s.done.is_none())
+        self.after.lock().unwrap_or_else(|e| e.into_inner()).clone().filter(|s| s.done.is_none())
     }
 
     /// 最近一次錄完自動處理的結果（取消時沒有）
     pub fn after_done(&self) -> Option<AfterDone> {
-        self.after.lock().unwrap().as_ref().and_then(|s| s.done.clone())
+        self.after.lock().unwrap_or_else(|e| e.into_inner()).as_ref().and_then(|s| s.done.clone())
     }
 
     /// 這個轉檔工作是錄完自動處理開始的（介面不另外顯示它的轉檔卡、完成提示）
     pub fn after_owns_export(&self, id: u64) -> bool {
-        self.after.lock().unwrap().as_ref().is_some_and(|s| s.export_ids.contains(&id))
+        self.after.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|s| s.export_ids.contains(&id))
     }
 
     /// 取消錄完自動處理（正在轉檔時一併取消）
@@ -216,7 +216,7 @@ impl App {
     }
 
     fn after_set(&self, f: impl FnOnce(&mut AfterStatus)) {
-        if let Some(s) = self.after.lock().unwrap().as_mut() {
+        if let Some(s) = self.after.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
             f(s);
         }
     }
@@ -271,7 +271,7 @@ impl App {
     /// 錄影存好之後（由錄影器呼叫）：依設定處理，完成時用系統匣通知
     pub async fn after_record(self: Arc<Self>, video: String) {
         let ui = self.settings.load().ui;
-        // 命名規則：先改名，之後做出來的檔案（剪輯版、壓縮版、字幕）都接在新的名稱後面
+        // 命名規則：先重新命名，之後做出來的檔案（剪輯版、壓縮版、字幕）都接在新的名稱後面
         let rule = ui.as_ref().and_then(|u| u.get(NAME_RULE_KEY)).and_then(Value::as_str).unwrap_or("").to_string();
         let renamed = match crate::actions::apply_name_rule(&self, &video, &rule).await {
             Some(p) => {
@@ -318,7 +318,7 @@ impl App {
                 Processed::Canceled => {
                     info!("[一次處理多支] 已取消（做完 {i} 支）");
                     if i == 0 {
-                        *self.after.lock().unwrap() = None;
+                        *self.after.lock().unwrap_or_else(|e| e.into_inner()) = None;
                         return;
                     }
                     break;
@@ -341,7 +341,7 @@ impl App {
         let output = if outputs.len() == 1 { outputs.pop() } else { None };
         let done = AfterDone { seq: DONE_SEQ.fetch_add(1, Ordering::Relaxed) + 1, ok: ok > 0, text, output, source: last, batch: true };
         // 留著這次的狀態（轉檔工作的編號：介面不另外顯示那些轉檔卡），只加上結果
-        let mut st = self.after.lock().unwrap();
+        let mut st = self.after.lock().unwrap_or_else(|e| e.into_inner());
         let s = st.get_or_insert_with(|| Self::new_status(String::new(), 0, Default::default(), Default::default(), None));
         s.done = Some(done);
         s.exporting = false;
@@ -375,7 +375,7 @@ impl App {
         let name = Path::new(&video).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         let (progress, cancel) = (Arc::new(AtomicU32::new(0)), Arc::new(AtomicBool::new(false)));
         {
-            let mut st = self.after.lock().unwrap();
+            let mut st = self.after.lock().unwrap_or_else(|e| e.into_inner());
             let mut s = Self::new_status(name.clone(), after.steps(), progress.clone(), cancel.clone(), batch);
             // 一次處理多支：沿用前幾支開始的轉檔工作編號
             if let Some(prev) = st.as_ref().filter(|p| batch.is_some() && p.batch.is_some()) {
@@ -445,7 +445,7 @@ impl App {
             let extras = crate::jellyfin::Extras::read(self.ffmpeg_path().as_deref(), Path::new(&src)).await;
             let r = tokio::task::spawn_blocking(move || copy_results(&src, out.as_deref(), Path::new(&dest))).await.unwrap_or_else(|e| Err(e.to_string()));
             let (ok, note) = match r {
-                // 一個檔案都沒有（例如錄影被移走、改名）：當成失敗，不請 Jellyfin 等一支不存在的影片
+                // 一個檔案都沒有（例如錄影被移走、重新命名）：當成失敗，不請 Jellyfin 等一支不存在的影片
                 Ok(copied) if copied.is_empty() => {
                     warn!("[錄完自動處理] 沒有可以複製的檔案：{}", waiting.join("、"));
                     (false, trf!("沒有複製到「{}」：找不到錄影檔", "couldn't copy to “{}”: the recording wasn't found", folder_name(&after.copy_to)))
@@ -502,7 +502,7 @@ impl App {
                 }
             }
         };
-        let mut st = self.after.lock().unwrap();
+        let mut st = self.after.lock().unwrap_or_else(|e| e.into_inner());
         match done {
             // 一次處理多支：狀態留著（下一支接著用），全部做完再一起顯示
             _ if batch.is_some() => {
@@ -586,7 +586,7 @@ impl App {
 
     async fn after_run(&self, video: &str, after: &AfterRecord, progress: Arc<AtomicU32>, cancel: Arc<AtomicBool>, output: &mut Option<String>) -> Result<Vec<String>, String> {
         let ffmpeg = self.ffmpeg_path().ok_or_else(|| tr!("找不到 FFmpeg", "FFmpeg not found").to_string())?;
-        let stop_step = self.after.lock().unwrap().as_ref().map(|s| s.stop_step.clone()).unwrap_or_default();
+        let stop_step = self.after.lock().unwrap_or_else(|e| e.into_inner()).as_ref().map(|s| s.stop_step.clone()).unwrap_or_default();
         let mut video = video.to_string();
         let mut done = vec![];
         let mut step_no = 0;
@@ -604,7 +604,7 @@ impl App {
             if cut >= 1.0 {
                 self.after_step(tr!("剪掉沒動靜的片段", "Cutting idle parts").into());
                 let spec = EditSpec { start: 0.0, end: dur, removed: ranges.clone(), ..Default::default() };
-                // 剪輯設定（與剪輯視窗相同的格式）：之後在剪輯視窗打開剪輯版可以再改
+                // 剪輯設定（與剪輯視窗相同的格式）：之後在剪輯視窗開啟剪輯版可以再改
                 let project = crate::annotate::ProjectData {
                     v: 1,
                     duration: dur,
@@ -785,7 +785,7 @@ pub fn copy_results(video: &str, output: Option<&str>, dest: &Path) -> Result<Ve
     if !dest.is_absolute() {
         return Err(tr!("資料夾位置不對，請重新選擇", "The folder location isn't valid. Choose it again").into());
     }
-    std::fs::create_dir_all(dest).map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(dest).map_err(|e| crate::error::plain(&e))?;
     let files = result_files(video, output);
     let mut copied = vec![];
     for f in &files {
@@ -825,7 +825,7 @@ mod tests {
         let a = AfterRecord::from_ui(Some(&serde_json::json!({ "afterCopyTo": " D:\\Sync " })));
         assert_eq!(a.copy_to, "D:\\Sync");
         assert!(a.any());
-        // 只設定媒體庫資料夾、沒打開「處理完傳到媒體庫」：不複製
+        // 只設定媒體庫資料夾、沒開啟「處理完傳到媒體庫」：不複製
         let a = AfterRecord::from_ui(Some(&serde_json::json!({ "afterCopyTo": "D:\\Sync", "afterCopy": false })));
         assert!(a.copy_to.is_empty() && !a.any());
         // 錄完自動傳到媒體庫的子資料夾（例如 other）

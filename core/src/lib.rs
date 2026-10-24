@@ -22,6 +22,7 @@ pub mod cards;
 pub mod chapters;
 pub mod clipboard;
 pub mod clock;
+pub mod codesign;
 pub mod components;
 pub mod cover;
 pub mod cursor;
@@ -51,6 +52,7 @@ pub mod instance;
 pub mod ipc;
 pub mod jellyfin;
 pub mod jf_dupes;
+pub mod jf_proxy;
 pub mod job;
 pub mod library;
 #[cfg(windows)]
@@ -92,6 +94,7 @@ pub mod screen_pen;
 pub mod screen_pen_win;
 #[cfg(windows)]
 pub mod scroll_win;
+pub mod secret;
 pub mod selfupdate;
 pub mod settings;
 pub mod shot_diff;

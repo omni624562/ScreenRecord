@@ -59,19 +59,68 @@ pub struct SettingsPatch {
 pub struct SettingsStore {
     file: PathBuf,
     cache: Mutex<Option<SavedSettings>>,
+    /// 存檔時整個「讀出 → 修改 → 寫回」只讓一個執行緒做（系統匣、錄影器、介面同時存不會互相蓋掉）
+    saving: Mutex<()>,
+}
+
+/// 設定檔裡加密保存的 Jellyfin 金鑰（記憶體裡還是放在 jellyfinKey，其他地方照常讀）
+const SEALED_KEY: &str = "jellyfinKeySealed";
+
+/// 讀一份設定檔（讀不到、格式壞了時 None）
+fn read_file(path: &std::path::Path) -> Option<SavedSettings> {
+    let mut s: SavedSettings = std::fs::read_to_string(path).ok().and_then(|t| serde_json::from_str(&t).ok())?;
+    if let Some(Value::Object(ui)) = &mut s.ui {
+        if let Some(Value::String(sealed)) = ui.remove(SEALED_KEY) {
+            match crate::secret::unprotect(&sealed) {
+                Some(key) => drop(ui.insert(crate::jellyfin::API_KEY.into(), Value::String(key))),
+                None => crate::warn!("Jellyfin API 金鑰解不開（可能換了 Windows 帳號），請到設定重新輸入"),
+            }
+        }
+    }
+    Some(s)
+}
+
+/// 寫進檔案的那一份：金鑰加密（設定檔被別人拿到、備份到雲端也看不到）；沒辦法加密時照原樣
+fn seal(v: &mut Value) {
+    let Some(Value::Object(ui)) = v.get_mut("ui") else { return };
+    ui.remove(SEALED_KEY);
+    let key = ui.get(crate::jellyfin::API_KEY).and_then(Value::as_str).filter(|k| !k.is_empty()).map(str::to_string);
+    if let Some(sealed) = key.and_then(|k| crate::secret::protect(&k)) {
+        ui.remove(crate::jellyfin::API_KEY);
+        ui.insert(SEALED_KEY.into(), Value::String(sealed));
+    }
 }
 
 impl SettingsStore {
     pub fn new(file: PathBuf) -> Self {
-        Self { file, cache: Mutex::new(None) }
+        Self { file, cache: Mutex::new(None), saving: Mutex::new(()) }
+    }
+
+    /// 上一次順利讀到的設定（settings.json.bak）：設定檔壞掉時用它
+    fn backup(&self) -> PathBuf {
+        let name = self.file.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "settings.json".into());
+        self.file.with_file_name(format!("{name}.bak"))
     }
 
     pub fn load(&self) -> SavedSettings {
-        let mut c = self.cache.lock().unwrap();
+        let mut c = self.cache.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(s) = c.as_ref() {
             return s.clone();
         }
-        let mut s: SavedSettings = std::fs::read_to_string(&self.file).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+        let mut s = match read_file(&self.file) {
+            Some(s) => {
+                // 讀得到：留一份備份（之後設定檔壞了可以用）
+                let _ = std::fs::copy(&self.file, self.backup());
+                s
+            }
+            None => {
+                let bak = self.file.exists().then(|| read_file(&self.backup())).flatten();
+                if bak.is_some() {
+                    crate::warn!("設定檔讀不到或格式壞了，改用上次的備份");
+                }
+                bak.unwrap_or_default()
+            }
+        };
         s.rev = 1;
         *c = Some(s.clone());
         s
@@ -79,13 +128,14 @@ impl SettingsStore {
 
     /// 設定的版本（每次儲存加一）：介面每 0.25 秒問一次，不用複製整份設定
     pub fn rev(&self) -> u64 {
-        if let Some(s) = self.cache.lock().unwrap().as_ref() {
+        if let Some(s) = self.cache.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
             return s.rev;
         }
         self.load().rev
     }
 
     pub fn save(&self, patch: SettingsPatch) -> SavedSettings {
+        let _one = self.saving.lock().unwrap_or_else(|e| e.into_inner());
         let cur = self.load();
         let mut next = SavedSettings {
             ui: patch.ui.or(cur.ui),
@@ -97,7 +147,7 @@ impl SettingsStore {
             presets: patch.presets.unwrap_or(cur.presets),
             rev: cur.rev + 1,
         };
-        *self.cache.lock().unwrap() = Some(next.clone());
+        *self.cache.lock().unwrap_or_else(|e| e.into_inner()) = Some(next.clone());
         let rev = next.rev;
         next.rev = 0;
         // 存檔不含 rev
@@ -105,10 +155,9 @@ impl SettingsStore {
         if let Value::Object(m) = &mut v {
             m.remove("rev");
         }
-        if let Some(dir) = self.file.parent() {
-            let _ = std::fs::create_dir_all(dir);
-        }
-        if let Err(e) = std::fs::write(&self.file, serde_json::to_string_pretty(&v).unwrap_or_default()) {
+        seal(&mut v);
+        // 先寫暫存檔再取代：寫到一半當機、停電時原本的設定還在
+        if let Err(e) = crate::paths::write_atomic(&self.file, serde_json::to_string_pretty(&v).unwrap_or_default().as_bytes()) {
             crate::error!("無法儲存設定：{e}");
         }
         next.rev = rev;
@@ -153,6 +202,50 @@ mod tests {
         assert_eq!(SettingsStore::new(file.clone()).load(), SavedSettings { rev: 1, ..Default::default() });
         std::fs::write(&file, "{broken").unwrap();
         assert_eq!(SettingsStore::new(file).load().rev, 1);
+    }
+
+    #[test]
+    fn broken_file_falls_back_to_last_good_copy() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("settings.json");
+        std::fs::write(&file, r#"{"checkUpdates":false}"#).unwrap();
+        // 讀得到時留一份備份
+        assert_eq!(SettingsStore::new(file.clone()).load().check_updates, Some(false));
+        // 設定檔壞了（例如寫到一半停電）：用備份
+        std::fs::write(&file, "").unwrap();
+        assert_eq!(SettingsStore::new(file).load().check_updates, Some(false));
+    }
+
+    #[test]
+    fn saves_from_many_threads_keep_every_change() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = std::sync::Arc::new(SettingsStore::new(dir.path().join("settings.json")));
+        let a = s.clone();
+        let t1 = std::thread::spawn(move || (0..50).for_each(|_| drop(a.save(SettingsPatch { check_updates: Some(true), ..Default::default() }))));
+        let b = s.clone();
+        let t2 = std::thread::spawn(move || (0..50).for_each(|_| drop(b.save(SettingsPatch { prefer_gpu: Some(true), ..Default::default() }))));
+        t1.join().unwrap();
+        t2.join().unwrap();
+        let v = SettingsStore::new(dir.path().join("settings.json")).load();
+        assert_eq!((v.check_updates, v.prefer_gpu), (Some(true), Some(true)));
+        assert_eq!(s.load().rev, 101);
+    }
+
+    #[test]
+    fn sealed_key_is_dropped_when_the_key_is_cleared() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("settings.json");
+        // 舊的加密金鑰：使用者把金鑰清掉後不能再冒出來
+        std::fs::write(&file, r#"{"ui":{"jellyfinKeySealed":"AAAA"}}"#).unwrap();
+        let s = SettingsStore::new(file.clone());
+        assert!(s.load().ui.unwrap().get(SEALED_KEY).is_none());
+        s.save(SettingsPatch { ui: Some(json!({ "jellyfinKeySealed": "AAAA" })), ..Default::default() });
+        assert!(!std::fs::read_to_string(&file).unwrap().contains(SEALED_KEY));
+        // 有金鑰：讀回來一樣（Windows 上檔案裡是加密的）
+        s.save(SettingsPatch { ui: Some(json!({ "jellyfinKey": "k123" })), ..Default::default() });
+        let text = std::fs::read_to_string(&file).unwrap();
+        assert_eq!(text.contains("k123"), !cfg!(windows), "{text}");
+        assert_eq!(SettingsStore::new(file).load().ui.unwrap()["jellyfinKey"], json!("k123"));
     }
 
     #[test]

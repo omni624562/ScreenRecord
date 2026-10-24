@@ -573,7 +573,7 @@ unsafe extern "system" fn bar_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                     let _ = SetWindowPos(hwnd, None, x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
                     bar_dropped(hwnd);
                 } else {
-                    // 只是點一下（沒移動）不算：放回原位
+                    // 只是按一下（沒移動）不算：放回原位
                     let _ = SetWindowPos(hwnd, None, d.origin.0, d.origin.1, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
                 }
                 return LRESULT(0);
@@ -581,7 +581,7 @@ unsafe extern "system" fn bar_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             if let Some(mut d) = DRAG.with(|d| d.take()) {
                 let _ = ReleaseCapture();
                 let _ = GetCursorPos(&mut d.cur);
-                // 只是點一下（沒移動）不算
+                // 只是按一下（沒移動）不算
                 if (d.cur.x - d.start.x).abs() + (d.cur.y - d.start.y).abs() > 3 {
                     let size = BAR_AREA.with(|a| a.get());
                     MOVE_TO.with(|m| m.set(Some(drag_origin(&d, size))));

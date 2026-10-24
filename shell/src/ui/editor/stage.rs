@@ -232,7 +232,7 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, stage_h: f3
             painter.extend(egui::Shape::dashed_line(&pts, Stroke::new(1.0, Color32::from_white_alpha((230.0 * alpha) as u8)), 4.0, 3.0));
             // 名稱放在形狀裡面（橢圓、圓角時置中靠上，不會跑到框外）；形狀太小放不下就不顯示
             if r.width() >= 120.0 && r.height() >= 48.0 {
-                let g = painter.layout_no_wrap(annotate::label(a), theme::font(11.0), Color32::WHITE);
+                let g = painter.layout_no_wrap(annotate::label(a), theme::font(12.0), Color32::WHITE);
                 let pill = match a.shape.unwrap_or_default() {
                     Shape::Rect => Rect::from_min_size(r.min + vec2(4.0, 4.0), g.size() + vec2(12.0, 2.0)),
                     _ => Rect::from_center_size(pos2(r.center().x, r.top() + r.height() * 0.14 + g.size().y / 2.0), g.size() + vec2(12.0, 2.0)),
@@ -333,7 +333,7 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, stage_h: f3
                 );
                 let pts = vec![rr.left_top(), rr.right_top(), rr.right_bottom(), rr.left_bottom(), rr.left_top()];
                 painter.extend(egui::Shape::dashed_line(&pts, Stroke::new(1.5, ZOOM_MARK), 6.0, 4.0));
-                let g = painter.layout_no_wrap(trf!("放大 {}×", "Zoom {}×", screenrecorder_core::format::speed_label((r.factor() * 10.0).round() / 10.0)), theme::font_bold(11.0), Color32::WHITE);
+                let g = painter.layout_no_wrap(trf!("放大 {}×", "Zoom {}×", screenrecorder_core::format::speed_label((r.factor() * 10.0).round() / 10.0)), theme::font_bold(12.0), Color32::WHITE);
                 let pill = Rect::from_min_size(rr.min + vec2(4.0, 4.0), g.size() + vec2(10.0, 4.0));
                 painter.rect_filled(pill, CornerRadius::same(4), ZOOM_MARK);
                 painter.galley(pill.min + vec2(5.0, 2.0), g, Color32::WHITE);
@@ -405,7 +405,7 @@ fn pick_region(ed: &mut Editor, ui: &egui::Ui, painter: &egui::Painter, rect: Re
 
 /// 預覽結果時的畫面：和輸出一樣的大小比例，只顯示裁切的範圍、直式影片（放在中間：上下是同一個畫面放大變暗；
 /// 跟著游標：9:16 的一塊）、背景與圓角；標註跟著影片縮小。沒有這些設定時回傳 false（照平常畫，跟著點擊放大另外處理）。
-/// 點一下畫面停止預覽。
+/// 按一下畫面停止預覽。
 fn result_view(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, avail_w: f32, stage_h: f32) -> bool {
     use screenrecorder_core::{edit::normalize_crop, vertical, video_frame};
     if ed.vw <= 0.0 || ed.vh <= 0.0 {
@@ -504,7 +504,7 @@ fn result_view(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, avail_w:
     if let Some(m) = cover {
         painter.image(m.id(), out, unit, Color32::WHITE);
     }
-    if resp.on_hover_cursor(CursorIcon::PointingHand).on_hover_text(tr!("預覽結果中（點一下停止）", "Previewing the result (click to stop)")).clicked() {
+    if resp.on_hover_cursor(CursorIcon::PointingHand).on_hover_text(tr!("預覽結果中（按一下停止）", "Previewing the result (click to stop)")).clicked() {
         ed.stop_preview();
     }
     true
@@ -810,7 +810,7 @@ fn interact(ed: &mut Editor, ui: &egui::Ui, rect: Rect, resp: &egui::Response) {
             ed.anns.push(a);
             ed.select_ann(Some(id));
             if matches!(kind, AnnKind::Text | AnnKind::Step) {
-                // 點一下就放好；編號、表情符號繼續放下一個
+                // 按一下就放好；編號、表情符號繼續放下一個
                 if !tool.sticky() {
                     ed.tool = None;
                 }
@@ -881,7 +881,7 @@ fn drag_to(ed: &mut Editor, (px, py): (f64, f64), shift: bool) {
         Drag::Crop { from, prev_on, prev } => {
             let ratio = super::CROP_RATIOS.get(ed.crop_ratio).and_then(|c| c.2);
             let c = crop_from_drag(from, (px, py), ratio, ed.vw, ed.vh);
-            // 拖超過一點點才算框選（只點一下不會把裁切清掉）
+            // 拖超過一點點才算框選（只按一下不會把裁切清掉）
             if c.width >= 8.0 && c.height >= 8.0 {
                 ed.crop_on = true;
                 ed.spec.crop = Some(c);
@@ -1002,7 +1002,7 @@ fn end_drag(ed: &mut Editor) {
         Drag::Crop { prev_on, prev, .. } => {
             let tiny = !ed.crop_on || ed.spec.crop.is_none_or(|c| c.width < 8.0 || c.height < 8.0);
             if tiny {
-                // 只點一下：還原；影片照舊是播放 / 暫停
+                // 只按一下：還原；影片照舊是播放 / 暫停
                 (ed.crop_on, ed.spec.crop) = (prev_on, prev);
                 if !ed.is_shot() {
                     ed.toggle_play();
@@ -1017,7 +1017,7 @@ fn end_drag(ed: &mut Editor) {
             }
         }
         Drag::Pen { id, pts } => {
-            // 只點一下：畫一個點
+            // 只按一下：畫一個點
             if pts.len() == 1 {
                 if let Some(a) = ed.ann_mut(id) {
                     annotate::set_pen_points(a, &[pts[0], (pts[0].0 + 0.5, pts[0].1)]);

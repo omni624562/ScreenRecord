@@ -66,7 +66,7 @@ impl Meter {
                 None => None,
             };
             if !errors.is_empty() {
-                l.lock().unwrap().error = Some(errors.join(tr!("；", "; ")));
+                l.lock().unwrap_or_else(|e| e.into_inner()).error = Some(errors.join(tr!("；", "; ")));
             }
             let (mut ls, mut lm) = (0.0f32, 0.0f32);
             let mut tick = 0u32;
@@ -100,7 +100,7 @@ impl Meter {
                     }
                 }
                 {
-                    let mut g = l.lock().unwrap();
+                    let mut g = l.lock().unwrap_or_else(|e| e.into_inner());
                     if g.system.is_some() {
                         g.system = Some(ls);
                     }
@@ -115,7 +115,7 @@ impl Meter {
     }
 
     pub fn levels(&self) -> Levels {
-        self.levels.lock().unwrap().clone()
+        self.levels.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 }
 

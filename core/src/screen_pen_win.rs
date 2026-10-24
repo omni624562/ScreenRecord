@@ -1,6 +1,6 @@
-//! 螢幕畫筆（Windows）：快速鍵（預設 Ctrl+Alt+D）或系統匣打開，在游標所在的螢幕蓋一層透明的分層視窗，
+//! 螢幕畫筆（Windows）：快速鍵（預設 Ctrl+Alt+D）或系統匣開啟，在游標所在的螢幕蓋一層透明的分層視窗，
 //! 拖曳就能畫線；錄影時會一起錄進去。再按一次快速鍵或 Esc 結束（畫的線一起清掉）。
-//! 上方的操作說明是另一個小視窗，設成不被擷取，不會錄進影片；上面的顏色、粗細點一下就換。
+//! 上方的操作說明是另一個小視窗，設成不被擷取，不會錄進影片；上面的顏色、粗細按一下就換。
 
 use crate::screen_pen::{help_hit, render_help, Board, HelpHit, HelpLayout, KeyResult};
 use crate::shot_toast_win::present;
@@ -123,12 +123,12 @@ thread_local! {
     static STATE: RefCell<Option<State>> = const { RefCell::new(None) };
 }
 
-/// 打開或關掉螢幕畫筆
+/// 開啟或關掉螢幕畫筆
 /// 正在開啟（視窗還沒建好）時 CURRENT 裡放這個：連按兩次快速鍵不會開出兩個畫筆
 const STARTING: isize = -1;
 
 pub fn toggle() {
-    let mut cur = CURRENT.lock().unwrap();
+    let mut cur = CURRENT.lock().unwrap_or_else(|e| e.into_inner());
     match *cur {
         // 還在開啟中：不重複開，也不能關（還沒有視窗）
         Some(STARTING) => {}
@@ -143,14 +143,14 @@ pub fn toggle() {
             drop(cur);
             let spawned = std::thread::Builder::new().name("screen-pen".into()).spawn(|| {
                 unsafe { run() };
-                // 開不起來（例如找不到螢幕）時把佔位拿掉，下次才能再開
-                let mut c = CURRENT.lock().unwrap();
+                // 開不起來（例如找不到螢幕）時把佔位移除，下次才能再開
+                let mut c = CURRENT.lock().unwrap_or_else(|e| e.into_inner());
                 if *c == Some(STARTING) {
                     *c = None;
                 }
             });
             if spawned.is_err() {
-                *CURRENT.lock().unwrap() = None;
+                *CURRENT.lock().unwrap_or_else(|e| e.into_inner()) = None;
             }
         }
     }
@@ -158,7 +158,7 @@ pub fn toggle() {
 
 /// 畫筆開著
 pub fn active() -> bool {
-    CURRENT.lock().unwrap().is_some_and(|h| h != STARTING)
+    CURRENT.lock().unwrap_or_else(|e| e.into_inner()).is_some_and(|h| h != STARTING)
 }
 
 unsafe fn run() {
@@ -184,7 +184,7 @@ unsafe fn run() {
     let wc = WNDCLASSEXW { cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32, lpfnWndProc: Some(help_proc), hInstance: hinst.into(), lpszClassName: help_class, ..Default::default() };
     RegisterClassExW(&wc);
     let Ok(hwnd) = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_LAYERED, class, w!("螢幕畫筆"), WS_POPUP, m.left, m.top, w, h, None, None, Some(hinst.into()), None) else { return };
-    *CURRENT.lock().unwrap() = Some(hwnd.0 as isize);
+    *CURRENT.lock().unwrap_or_else(|e| e.into_inner()) = Some(hwnd.0 as isize);
     surface.present(hwnd, (m.left, m.top));
 
     // 操作說明：螢幕上方中間，不被擷取；顏色、粗細可以點（不搶焦點，Esc、數字鍵照樣給畫筆）
@@ -223,7 +223,7 @@ unsafe fn run() {
         DispatchMessageW(&msg);
     }
     STATE.with(|s| *s.borrow_mut() = None);
-    let mut c = CURRENT.lock().unwrap();
+    let mut c = CURRENT.lock().unwrap_or_else(|e| e.into_inner());
     if *c == Some(hwnd.0 as isize) {
         *c = None;
     }

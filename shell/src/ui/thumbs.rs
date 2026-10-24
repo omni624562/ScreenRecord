@@ -16,13 +16,68 @@ pub enum Thumb {
     Failed(Instant),
 }
 
-#[derive(Default)]
 pub struct Thumbs {
-    map: HashMap<(String, u64), Thumb>,
+    map: Lru<(String, u64)>,
     /// 滑過預覽的長條圖（core::thumbs::strip；Jellyfin 的影片鍵是「jf:編號」與大小）
-    strips: HashMap<(String, u64), Thumb>,
+    strips: Lru<(String, u64)>,
     /// Jellyfin 的時間軸預覽縮圖（影片編號, 第幾張大圖）
-    jf_tiles: HashMap<(String, u32), Thumb>,
+    jf_tiles: Lru<(String, u32)>,
+}
+
+impl Default for Thumbs {
+    fn default() -> Self {
+        Thumbs { map: Lru::new(400), strips: Lru::new(60), jf_tiles: Lru::new(40) }
+    }
+}
+
+/// 材質快取：滿了丟掉最久沒用到的（以前是整個清空，捲動清單時畫面上的縮圖也要全部重讀）
+pub struct Lru<K> {
+    map: HashMap<K, (Thumb, u64)>,
+    tick: u64,
+    cap: usize,
+}
+
+impl<K: std::hash::Hash + Eq + Clone> Lru<K> {
+    pub fn new(cap: usize) -> Self {
+        Lru { map: HashMap::new(), tick: 0, cap }
+    }
+
+    /// 拿來用（記下用過）
+    pub fn get(&mut self, k: &K) -> Option<&Thumb> {
+        self.tick += 1;
+        let tick = self.tick;
+        self.map.get_mut(k).map(|e| {
+            e.1 = tick;
+            &e.0
+        })
+    }
+
+    /// 只看不算用過
+    pub fn peek(&self, k: &K) -> Option<&Thumb> {
+        self.map.get(k).map(|e| &e.0)
+    }
+
+    pub fn insert(&mut self, k: K, t: Thumb) {
+        self.tick += 1;
+        self.map.insert(k, (t, self.tick));
+        if self.map.len() > self.cap {
+            // 一次丟掉最舊的四分之一（不用每次都排序）；正在讀的留著（讀好會再放進來）
+            let mut old: Vec<(u64, K)> = self.map.iter().filter(|(_, (t, _))| !matches!(t, Thumb::Loading)).map(|(k, (_, at))| (*at, k.clone())).collect();
+            old.sort_unstable_by_key(|(at, _)| *at);
+            for (_, k) in old.into_iter().take(self.map.len() - self.cap * 3 / 4) {
+                self.map.remove(&k);
+            }
+        }
+    }
+
+    pub fn retain(&mut self, mut keep: impl FnMut(&K) -> bool) {
+        self.map.retain(|k, _| keep(k));
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.map.len()
+    }
 }
 
 fn decode(path: &std::path::Path) -> Option<ColorImage> {
@@ -34,7 +89,7 @@ fn decode(path: &std::path::Path) -> Option<ColorImage> {
 impl Thumbs {
     /// 這個檔案的縮圖重做（設了封面：修改時間保留，鍵不會變）
     pub fn forget(&mut self, path: &str) {
-        self.map.retain(|k, _| k.0 != path);
+        self.map.retain(|k| k.0 != path);
     }
 }
 
@@ -47,9 +102,6 @@ impl UiApp {
             Some(Thumb::Failed(at)) if at.elapsed() >= RETRY_FAILED => {}
             Some(_) => return None,
             None => {}
-        }
-        if self.thumbs.map.len() > 400 {
-            self.thumbs.map.clear();
         }
         self.thumbs.map.insert(key.clone(), Thumb::Loading);
         let core = self.core.clone();
@@ -83,9 +135,6 @@ impl UiApp {
             Some(_) => return None,
             None => {}
         }
-        if self.thumbs.strips.len() > 60 {
-            self.thumbs.strips.clear();
-        }
         self.thumbs.strips.insert(key.clone(), Thumb::Loading);
         let core = self.core.clone();
         let p = path.to_string();
@@ -114,9 +163,6 @@ impl UiApp {
             Some(Thumb::Failed(at)) if at.elapsed() >= RETRY_FAILED => {}
             Some(_) => return None,
             None => {}
-        }
-        if self.thumbs.strips.len() > 60 {
-            self.thumbs.strips.clear();
         }
         self.thumbs.strips.insert(key.clone(), Thumb::Loading);
         let core = self.core.clone();
@@ -148,9 +194,6 @@ impl UiApp {
             None => {}
         }
         let jf = self.jellyfin()?;
-        if self.thumbs.jf_tiles.len() > 40 {
-            self.thumbs.jf_tiles.clear();
-        }
         self.thumbs.jf_tiles.insert(key.clone(), Thumb::Loading);
         let (id, tp) = (id.to_string(), tp.clone());
         self.spawn(
@@ -186,7 +229,7 @@ pub fn scrub_preview(app: &mut UiApp, ui: &eframe::egui::Ui, hover: eframe::egui
         return;
     }
     let strip = app.thumb_strip(path, mtime, duration);
-    if strip.is_none() && matches!(app.thumbs.strips.get(&(path.to_string(), mtime as u64)), Some(Thumb::Failed(_))) {
+    if strip.is_none() && matches!(app.thumbs.strips.peek(&(path.to_string(), mtime as u64)), Some(Thumb::Failed(_))) {
         return;
     }
     strip_box(ui.ctx(), near, strip, ((pos.x - hover.min.x) / hover.width().max(1.0)) as f64, duration);
@@ -223,7 +266,7 @@ pub fn jf_scrub_preview(app: &mut UiApp, ctx: &eframe::egui::Context, hover: efr
     }
     let Some(jf) = app.jellyfin() else { return };
     let strip = app.thumb_strip_remote(&it.id, &jf.stream_url(&it.id), it.size, it.duration);
-    if strip.is_none() && matches!(app.thumbs.strips.get(&(format!("jf:{}", it.id), it.size)), Some(Thumb::Failed(_))) {
+    if strip.is_none() && matches!(app.thumbs.strips.peek(&(format!("jf:{}", it.id), it.size)), Some(Thumb::Failed(_))) {
         return;
     }
     strip_box(ctx, hover, strip, frac, it.duration);
@@ -265,7 +308,7 @@ fn scrub_box(ctx: &eframe::egui::Context, near: eframe::egui::Rect, image: Optio
         painter.galley(lr.min + vec2(4.0, 2.0), g, Color32::WHITE);
         ui.allocate_rect(r, egui::Sense::hover());
     });
-    ctx.request_repaint();
+    // 不必每格都重畫：游標移動、縮圖讀好時（上面讀取完成會 request_repaint）才換畫面
 }
 
 /// 縮圖上停住就播放：用 FFmpeg 解成小畫面、不出聲音（input 是本機路徑或 Jellyfin 的串流網址）
@@ -277,4 +320,26 @@ pub fn hover_player(app: &UiApp, input: &str, duration: f64, fps: f64, size: (u3
     let (max_w, max_h) = super::hover_play::DECODE_MAX;
     let (w, h) = if size.0 > 0 && size.1 > 0 { size } else { (1280, 720) };
     Some(Player::new(ffmpeg, spec, w, h, max_w, max_h, std::sync::Arc::new(move || c.request_repaint())))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cache_drops_the_least_recently_used() {
+        let mut c: Lru<u32> = Lru::new(8);
+        for i in 0..8 {
+            c.insert(i, Thumb::Failed(Instant::now()));
+        }
+        // 0、1 剛用過；正在讀的 7 不丟
+        c.insert(7, Thumb::Loading);
+        assert!(c.get(&0).is_some() && c.get(&1).is_some());
+        c.insert(8, Thumb::Failed(Instant::now()));
+        assert_eq!(c.len(), 6);
+        for k in [0, 1, 7, 8] {
+            assert!(c.peek(&k).is_some(), "{k}");
+        }
+        assert!(c.peek(&2).is_none() && c.peek(&3).is_none());
+    }
 }

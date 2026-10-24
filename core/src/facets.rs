@@ -221,7 +221,7 @@ pub fn build_vocab(docs: &[(String, String)]) -> Vocab {
     let n = sets.iter().filter(|s| s.3).count();
     let max_df = if n >= 6 { n / 2 } else { n };
     let mut kept: HashMap<String, usize> = df.into_iter().filter(|(_, d)| *d >= 2 && *d <= max_df.max(2)).collect();
-    // 被更長的詞包住、次數差不多的中文片段拿掉
+    // 被更長的詞包住、次數差不多的中文片段移除
     let mut drop: HashSet<String> = HashSet::new();
     for (t, &d) in &kept {
         let cs: Vec<char> = t.chars().collect();
@@ -272,7 +272,7 @@ pub struct VocabCache {
 impl VocabCache {
     pub fn get(&self, ocr: &OcrIndex) -> Arc<Vocab> {
         let generation = ocr.generation();
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         if let Some((g, at, v)) = inner.as_ref() {
             let busy = ocr.progress().is_some();
             if *g == generation || (busy && at.elapsed().as_secs() < 60) {

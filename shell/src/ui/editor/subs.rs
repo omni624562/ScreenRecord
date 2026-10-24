@@ -200,7 +200,7 @@ pub(super) fn fillers_panel(ed: &mut Editor, ui: &mut egui::Ui, toast: &mut Opti
                 ui.horizontal(|ui| {
                     theme::check(ui, on, "");
                     let t = ui
-                        .add(egui::Label::new(RichText::new(video_clock(f.start)).font(theme::mono(11.5)).color(p.accent)).sense(Sense::click()))
+                        .add(egui::Label::new(RichText::new(video_clock(f.start)).font(theme::mono(12.0)).color(p.accent)).sense(Sense::click()))
                         .on_hover_text(tr!("跳到這裡聽聽看", "Jump here to listen"))
                         .on_hover_cursor(CursorIcon::PointingHand);
                     if t.clicked() {
@@ -240,7 +240,7 @@ fn hint(ui: &mut egui::Ui, text: &str) {
     ui.label(theme::muted(ui, text).font(theme::font(12.0)));
 }
 
-/// 每一段字幕一行：時間（點一下跳過去並選取；Ctrl / Shift＋點選好幾句）、可以直接修改的文字、
+/// 每一段字幕一行：時間（按一下跳過去並選取；Ctrl / Shift＋點選好幾句）、可以直接修改的文字、
 /// 剪掉這一句（剪掉的顯示還原）、刪除字幕
 fn list(ed: &mut Editor, ui: &mut egui::Ui, toast: &mut Option<(String, bool)>) {
     let p = theme::pal(ui);
@@ -284,11 +284,11 @@ fn list(ed: &mut Editor, ui: &mut egui::Ui, toast: &mut Option<(String, bool)>) 
         } else {
             p.text
         };
-        ui.painter().text(pos2(tr_rect.left() + 8.0, r.center().y), Align2::LEFT_CENTER, video_clock(start), theme::mono(11.5), tcolor);
+        ui.painter().text(pos2(tr_rect.left() + 8.0, r.center().y), Align2::LEFT_CENTER, video_clock(start), theme::mono(12.0), tcolor);
         let gone_note = if gone { tr!("（在刪除的片段中，不會出現）", " (in a removed section; won't appear)") } else { "" };
         if t.on_hover_cursor(CursorIcon::PointingHand)
             .on_hover_text(trf!(
-                "{} – {}{}・點一下跳到這一段並選取；Ctrl / Shift＋點選好幾句一起剪",
+                "{} – {}{}・按一下跳到這一段並選取；Ctrl / Shift＋點選好幾句一起剪",
                 "{} – {}{} · click to jump here and select it; Ctrl/Shift-click to pick several to cut",
                 video_clock(start),
                 video_clock(end),
@@ -359,7 +359,7 @@ fn list(ed: &mut Editor, ui: &mut egui::Ui, toast: &mut Option<(String, bool)>) 
         ed.uncut_sub(id);
         *toast = Some((tr!("已還原這一句，可按 Ctrl+Z 復原", "Sentence restored. Press Ctrl+Z to undo").into(), false));
     }
-    // Ctrl＋點：加入或拿掉；Shift＋點：從上次點的那句選到這句
+    // Ctrl＋點：加入或移除；Shift＋點：從上次點的那句選到這句
     if let Some((id, range)) = pick {
         let anchor = ed.sub_anchor.and_then(|a| order.iter().position(|x| *x == a));
         match (range, anchor, order.iter().position(|x| *x == id)) {
@@ -610,7 +610,7 @@ fn start(app: &mut UiApp, speech: PathBuf) {
                     let msg = if screenrecorder_core::i18n::is_en() {
                         format!("Added {n} subtitle{}{saved}. Check for typos; click a subtitle to edit it", if n == 1 { "" } else { "s" })
                     } else {
-                        format!("加上 {n} 段字幕{saved}；請檢查錯字，點一下字幕就能修改")
+                        format!("加上 {n} 段字幕{saved}；請檢查錯字，按一下字幕就能修改")
                     };
                     app.toast(msg, false);
                 }
@@ -696,7 +696,7 @@ impl Editor {
         self.markers.extend(marks);
         self.markers.sort_by(|a, b| a.t.total_cmp(&b.t));
         trf!(
-            "分成 {n} 章，標在時間軸上（按兩下旗子可以改名），輸出時寫進影片",
+            "分成 {n} 章，標在時間軸上（按兩下旗子可以重新命名），輸出時寫進影片",
             "Split into {n} chapters, marked on the timeline (double-click a flag to rename); they're written into the output video"
         )
     }

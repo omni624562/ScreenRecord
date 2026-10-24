@@ -60,16 +60,16 @@ pub struct OpenRequests(Arc<(Mutex<Vec<UiPage>>, std::sync::Condvar)>);
 
 impl OpenRequests {
     pub fn push(&self, page: UiPage) {
-        self.0 .0.lock().unwrap().push(page);
+        self.0 .0.lock().unwrap_or_else(|e| e.into_inner()).push(page);
         self.0 .1.notify_all();
     }
     fn take(&self) -> Vec<UiPage> {
-        std::mem::take(&mut *self.0 .0.lock().unwrap())
+        std::mem::take(&mut *self.0 .0.lock().unwrap_or_else(|e| e.into_inner()))
     }
     /// 等到有開啟視窗的要求（操作視窗還沒建立時，主執行緒在這裡等）；timeout 內有要求就回傳 true
     pub fn wait(&self, timeout: Duration) -> bool {
         let (list, cv) = &*self.0;
-        let g = cv.wait_timeout_while(list.lock().unwrap(), timeout, |l| l.is_empty()).unwrap().0;
+        let g = cv.wait_timeout_while(list.lock().unwrap_or_else(|e| e.into_inner()), timeout, |l| l.is_empty()).unwrap().0;
         !g.is_empty()
     }
 }
@@ -198,7 +198,7 @@ pub struct UiApp {
     pub jf_browse: Option<jellyfin_browse::JfBrowse>,
     /// 在瀏覽視窗改 Jellyfin 上的影片資訊
     pub jf_edit: Option<jellyfin_edit::JfEdit>,
-    /// 背景正在把 Jellyfin 上的人物或標籤改名（影片資訊關掉也會繼續）
+    /// 背景正在把 Jellyfin 上的人物或標籤重新命名（影片資訊關掉也會繼續）
     pub jf_rename: Option<jellyfin_edit::Renaming>,
     /// Jellyfin 分頁勾選好幾支 →「整理人物、標籤…」的視窗、背景正在整理的
     pub jf_batch: Option<jellyfin_batch::JfBatch>,
@@ -222,7 +222,7 @@ pub struct UiApp {
     /// 新功能介紹（更新後第一次開啟時顯示一次）
     pub whats_new_open: bool,
     whats_new_checked: bool,
-    /// 一步一步的教學（第一次錄影、各功能第一次打開的提示）
+    /// 一步一步的教學（第一次錄影、各功能第一次開啟的提示）
     pub tour: Option<tour::Tour>,
     /// 縮小成小視窗（標題列的按鈕）：切換前的視窗大小
     pub compact: Option<title_bar::Compact>,
@@ -544,18 +544,49 @@ impl UiApp {
 
     // ───────────── 非同步工作 ─────────────
 
-    /// 在背景執行 fut，完成後在介面執行緒呼叫 done
+    /// 在背景執行 fut，完成後在介面執行緒呼叫 done。fut 當掉（panic）時不會悄悄消失：
+    /// 記到記錄檔、提示使用者，「正在讀取…」之類的狀態也跟著清掉（clear_busy）
     pub fn spawn<T: Send + 'static>(&self, fut: impl Future<Output = T> + Send + 'static, done: impl FnOnce(&mut UiApp, T) + Send + 'static) {
         let tx = self.tx.clone();
         let ctx = self.ctx.clone();
+        let task = self.rt.spawn(fut);
         self.rt.spawn(async move {
-            let r = fut.await;
-            let _ = tx.send(Box::new(move |app: &mut UiApp| done(app, r)));
+            match task.await {
+                Ok(r) => {
+                    let _ = tx.send(Box::new(move |app: &mut UiApp| done(app, r)));
+                }
+                Err(e) => {
+                    let what = if e.is_panic() { panic_text(e.into_panic()) } else { e.to_string() };
+                    screenrecorder_core::error!("[介面] 背景工作出錯：{what}");
+                    let _ = tx.send(Box::new(move |app: &mut UiApp| {
+                        app.clear_busy();
+                        app.toast(
+                            tr!("剛才的動作出了問題沒有完成，請再試一次（詳細原因記在記錄檔）", "That didn't finish because something went wrong. Please try again (details are in the log)"),
+                            true,
+                        );
+                    }));
+                }
+            }
             ctx.request_repaint();
         });
     }
 
-    /// 只抓文字的結果（core 已經複製到剪貼簿）：提示幾個字，可以打開來看
+    /// 背景工作當掉之後：把「正在讀取…」「處理中」之類的狀態清掉，按鈕不會一直不能按（之後會重讀）
+    fn clear_busy(&mut self) {
+        self.lib_index_loading = false;
+        self.jf_scanned_loading = false;
+        self.pending_busy = false;
+        self.jf_watch_loading = false;
+        self.cameras_loading = false;
+        if let Some(d) = self.library.as_mut() {
+            d.clear_busy();
+        }
+        if let Some(d) = self.settings_dlg.as_mut() {
+            d.autostart_busy = false;
+        }
+    }
+
+    /// 只抓文字的結果（core 已經複製到剪貼簿）：提示幾個字，可以開啟來看
     pub fn show_grabbed_text(&mut self, l: screenrecorder_core::ocr::Layout) {
         if l.text.trim().is_empty() {
             return self.toast(tr!("沒有認出文字（框大一點、或把畫面放大再試試）", "No text recognized (try a larger area or zoom in)"), true);
@@ -576,7 +607,7 @@ impl UiApp {
         (!d.is_empty()).then(|| std::path::Path::new(d).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| d.to_string()))
     }
 
-    /// 「傳到」選單項目的名稱與說明；還沒選資料夾時是「傳到媒體庫…」（按了打開設定）
+    /// 「傳到」選單項目的名稱與說明；還沒選資料夾時是「傳到媒體庫…」（按了開啟設定）
     pub fn send_label(&self) -> (String, &'static str) {
         match self.library_folder() {
             Some(folder) => (
@@ -589,7 +620,7 @@ impl UiApp {
             None => (
                 tr!("傳到 Jellyfin…", "Send to Jellyfin…").to_string(),
                 tr!(
-                    "還沒選資料夾：按了打開「設定 → 存檔與分享」，選 Jellyfin 媒體庫的資料夾",
+                    "還沒選資料夾：按了開啟「設定 → 存檔與分享」，選 Jellyfin 媒體庫的資料夾",
                     "No folder yet: opens Settings → Saving & sharing so you can pick the Jellyfin library folder"
                 ),
             ),
@@ -673,7 +704,7 @@ impl UiApp {
         self.ask = Some(ask);
     }
 
-    /// 改名後：媒體庫裡那一份（連同字幕、加速版）也換成新名稱，並請 Jellyfin 重新掃描
+    /// 重新命名後：媒體庫裡那一份（連同字幕、加速版）也換成新名稱，並請 Jellyfin 重新掃描
     pub fn sync_renamed(&mut self, pairs: Vec<(std::path::PathBuf, std::path::PathBuf)>) {
         use screenrecorder_core::jellyfin::{in_library, rename_copies};
         self.lib_index = None;
@@ -695,9 +726,9 @@ impl UiApp {
                         return Ok(None);
                     }
                     let done = if !renamed.is_empty() {
-                        tr!("Jellyfin 那一份也改名了", "The copy on Jellyfin was renamed too")
+                        tr!("Jellyfin 那一份也重新命名了", "The copy on Jellyfin was renamed too")
                     } else {
-                        tr!("Jellyfin 那邊的檔案已改名", "Renamed on Jellyfin")
+                        tr!("Jellyfin 那邊的檔案已重新命名", "Renamed on Jellyfin")
                     };
                     // 只掃描改了名的那個資料夾
                     let scan = renamed.first().cloned().or_else(|| pairs.first().map(|(_, new)| new.clone()));
@@ -713,7 +744,7 @@ impl UiApp {
             |app, r| match r {
                 Ok(Some(msg)) => app.toast(msg, false),
                 Ok(None) => {}
-                Err(e) => app.toast(trf!("Jellyfin 那一份沒有改名：{e}", "The copy on Jellyfin wasn't renamed: {e}"), true),
+                Err(e) => app.toast(trf!("Jellyfin 那一份沒有重新命名：{e}", "The copy on Jellyfin wasn't renamed: {e}"), true),
             },
         );
     }
@@ -789,16 +820,12 @@ impl UiApp {
         self.toast_with(text, error, vec![]);
     }
 
-    /// 帶按鈕的提示（例如「在資料夾中顯示」）：停留 8 秒，滑鼠移上去時不會消失，可按 ✕ 關閉
+    /// 帶按鈕的提示（例如「在資料夾中顯示」）：停留 8 秒，滑鼠移上去時不會消失，可按 ✕ 關閉。
+    /// 字多的停久一點（大約一秒讀 12 個字）；出錯的不會自己消失（看完按 ✕，或下一則提示取代）
     pub fn toast_with(&mut self, text: impl Into<String>, error: bool, actions: Vec<ToastAction>) {
         let text = text.into();
-        let secs = if !actions.is_empty() {
-            8
-        } else if error {
-            6
-        } else {
-            3
-        };
+        let base = if !actions.is_empty() { 8 } else { 3 };
+        let secs = if error { 24 * 3600 } else { base.max(text.chars().count() as u64 / 12 + 1) };
         self.toast = Some(Toast { text, error, until: Instant::now() + Duration::from_secs(secs), actions });
         self.ctx.request_repaint();
     }
@@ -1203,14 +1230,14 @@ impl UiApp {
     /// 播放、顯示、剪輯、製作加速版
     pub fn act(&mut self, action: EntryAction, mut entry: LibraryEntry) {
         use actions::OpenAction;
-        // 清單還沒重讀、這支已經改名了（例如錄完自動命名）：用現在的名稱，清單也重讀
+        // 清單還沒重讀、這支已經重新命名了（例如錄完自動命名）：用現在的名稱，清單也重讀
         if let Some(now) = actions::renamed_to(&entry.media.path) {
             entry.media.name = dialogs::file_name(&now).to_string();
             entry.media.path = now;
             self.load_recent();
         }
         let path = entry.media.path.clone();
-        // 主畫面正在播這個檔案：剪輯、製作、改名等要用到檔案時先停下來（Windows 上播放中的檔案不能改名、取代）
+        // 主畫面正在播這個檔案：剪輯、製作、重新命名等要用到檔案時先停下來（Windows 上播放中的檔案不能重新命名、取代）
         let keeps = matches!(action, EntryAction::PlayHere | EntryAction::Reveal | EntryAction::CopyFile | EntryAction::CopyChapters | EntryAction::CopySteps | EntryAction::Star);
         if !keeps && self.inline.as_ref().is_some_and(|i| i.is(&path)) {
             self.inline = None;
@@ -1814,7 +1841,7 @@ async fn watch_changes<T: PartialEq>(every: Duration, shown: Arc<std::sync::atom
     }
 }
 
-/// 資料夾（和子資料夾）裡檔案的樣子：檔名、大小、修改時間算出一個值，只讀目錄不打開檔案
+/// 資料夾（和子資料夾）裡檔案的樣子：檔名、大小、修改時間算出一個值，只讀目錄不開啟檔案
 fn folder_signature(dir: &str, subdirs: bool) -> u64 {
     use std::hash::{Hash, Hasher};
     let root = std::path::PathBuf::from(dir);
@@ -1869,7 +1896,16 @@ fn trash_now(app: &mut UiApp, paths: Vec<String>, copies: Vec<std::path::PathBuf
             for p in &paths {
                 screenrecorder_core::transfer::remove_pending(p);
             }
-            app.toast(trf!("已將 {n} 個檔案移到資源回收筒", "Moved {n} file(s) to the Recycle Bin"), false);
+            // 要還原：開啟資源回收筒（在那裡按右鍵 →「還原」，會回到原本的資料夾）
+            app.toast_with(
+                trf!("已將 {n} 個檔案移到資源回收筒", "Moved {n} file(s) to the Recycle Bin"),
+                false,
+                vec![ToastAction::new(tr!("開啟資源回收筒（可還原）", "Open Recycle Bin (to restore)"), |app| {
+                    if let Err(e) = actions::open_recycle_bin() {
+                        app.toast(e.message().to_string(), true);
+                    }
+                })],
+            );
             if notify {
                 let jf = app.jellyfin();
                 let first = paths.first().map(std::path::PathBuf::from);
@@ -1911,6 +1947,11 @@ fn trash_now(app: &mut UiApp, paths: Vec<String>, copies: Vec<std::path::PathBuf
             done(app, &paths, false);
         }
     }
+}
+
+/// panic 的訊息（字串時）
+fn panic_text(p: Box<dyn std::any::Any + Send>) -> String {
+    p.downcast_ref::<&str>().map(|s| s.to_string()).or_else(|| p.downcast_ref::<String>().cloned()).unwrap_or_else(|| "panic".into())
 }
 
 #[cfg(test)]

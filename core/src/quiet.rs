@@ -1,16 +1,16 @@
-//! 錄影時打開 Windows 的勿擾（Windows 10 的「專注輔助」）：只允許鬧鐘，LINE、Outlook 等程式的通知不會跳出來被錄進去；
+//! 錄影時開啟 Windows 的勿擾（Windows 10 的「專注輔助」）：只允許鬧鐘，LINE、Outlook 等程式的通知不會跳出來被錄進去；
 //! 停止後恢復成原本的設定。Windows 沒有公開的 API，用系統內部的通知狀態（WNF_SHEL_QUIETHOURS_ACTIVE_PROFILE_CHANGED）。
 //! 自己畫通知視窗、不經過 Windows 通知的程式（例如部分版本的 LINE）擋不住。
 
 use std::sync::Mutex;
 
-/// 開啟前的設定（None = 沒有由本程式打開）
+/// 開啟前的設定（None = 沒有由本程式開啟）
 static PREVIOUS: Mutex<Option<u32>> = Mutex::new(None);
 
 /// 勿擾的等級：0 = 關、1 = 只有優先通知、2 = 只有鬧鐘
 pub const ALARMS_ONLY: u32 = 2;
 
-/// 打開勿擾（記住原本的設定）；已經打開過就不重複。回傳是否成功
+/// 開啟勿擾（記住原本的設定）；已經開啟過就不重複。回傳是否成功
 pub fn begin() -> bool {
     let mut prev = PREVIOUS.lock().unwrap_or_else(|e| e.into_inner());
     if prev.is_some() {
@@ -25,15 +25,15 @@ pub fn begin() -> bool {
         *prev = Some(cur);
         // 記在檔案裡：錄影中程式當掉時，下次開啟可以恢復
         let _ = std::fs::write(marker(), cur.to_string());
-        crate::info!("[勿擾] 錄影時打開（原本是 {cur}）");
+        crate::info!("[勿擾] 錄影時開啟（原本是 {cur}）");
         true
     } else {
-        crate::warn!("[勿擾] 無法打開");
+        crate::warn!("[勿擾] 無法開啟");
         false
     }
 }
 
-/// 恢復成錄影前的設定（不是由本程式打開的就不動）
+/// 恢復成錄影前的設定（不是由本程式開啟的就不動）
 pub fn end() {
     let Some(prev) = PREVIOUS.lock().unwrap_or_else(|e| e.into_inner()).take() else { return };
     let _ = std::fs::remove_file(marker());
@@ -48,7 +48,7 @@ fn marker() -> std::path::PathBuf {
     crate::paths::data_dir().join("quiet_restore.txt")
 }
 
-/// 程式啟動時：上次錄影中當掉、勿擾沒有恢復時恢復（這次自己打開的不動）
+/// 程式啟動時：上次錄影中當掉、勿擾沒有恢復時恢復（這次自己開啟的不動）
 pub fn recover() {
     if PREVIOUS.lock().unwrap_or_else(|e| e.into_inner()).is_some() {
         return;
@@ -111,7 +111,7 @@ mod tests {
     #[test]
     fn end_without_begin_does_nothing() {
         super::end();
-        // 非 Windows：讀不到狀態，打開失敗
+        // 非 Windows：讀不到狀態，開啟失敗
         if !cfg!(windows) {
             assert!(!super::begin());
         }

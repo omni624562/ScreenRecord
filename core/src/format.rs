@@ -159,7 +159,7 @@ pub fn estimate_bytes(o: &EstimateInput) -> (f64, f64) {
 static BAD_CHARS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"[\\/:*?"<>|\x00-\x1f]"#).unwrap());
 static RESERVED: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^(con|prn|aux|nul|com\d|lpt\d)$").unwrap());
 
-/// 錄影改名時的名稱檢查（不含 .mp4）；沒問題回傳 None
+/// 錄影重新命名時的名稱檢查（不含 .mp4）；沒問題回傳 None
 pub fn check_recording_name(base: &str) -> Option<&'static str> {
     let b = base.trim();
     if b.is_empty() {

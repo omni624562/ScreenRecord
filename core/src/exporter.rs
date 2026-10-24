@@ -11,7 +11,7 @@ use crate::{tr, trf};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokio::sync::{oneshot, watch};
 
 fn kind_text(k: ExportKind) -> &'static str {
@@ -75,7 +75,7 @@ pub struct Exporter {
 struct StartingGuard(Arc<Mutex<State>>);
 impl Drop for StartingGuard {
     fn drop(&mut self) {
-        self.0.lock().unwrap().starting = false;
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).starting = false;
     }
 }
 
@@ -85,18 +85,18 @@ impl Exporter {
     }
 
     pub fn running(&self) -> bool {
-        let s = self.state.lock().unwrap();
+        let s = self.state.lock().unwrap_or_else(|e| e.into_inner());
         s.starting || s.job.as_ref().is_some_and(|j| j.status.state == ExportState::Running)
     }
 
     pub fn status(&self) -> Option<ExportStatus> {
-        let s = self.state.lock().unwrap();
+        let s = self.state.lock().unwrap_or_else(|e| e.into_inner());
         s.job.as_ref().map(snapshot)
     }
 
     /// 檢查與開始之間有 await，用旗標讓整段成為一個不可重入的動作
     fn begin(&self) -> Result<StartingGuard> {
-        let mut s = self.state.lock().unwrap();
+        let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
         if s.starting || s.job.as_ref().is_some_and(|j| j.status.state == ExportState::Running) {
             return Err(Error::config(tr!("已有轉檔工作進行中，請等它完成", "Another video is being processed. Wait for it to finish.")));
         }
@@ -627,7 +627,7 @@ impl Exporter {
     }
 
     pub fn cancel(&self) -> Result<()> {
-        let mut s = self.state.lock().unwrap();
+        let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
         match s.job.as_mut() {
             Some(j) if j.status.state == ExportState::Running && j.cancel.is_some() => {
                 j.canceled = true;
@@ -638,19 +638,19 @@ impl Exporter {
         }
     }
 
-    /// 程式結束時：中止轉檔並等它刪除未完成的檔案
+    /// 程式結束時：中止轉檔並等它刪除未完成的檔案（最多等 10 秒：轉檔工作出了問題、沒有回報結束時，程式照樣能關）
     pub async fn shutdown(&self) {
-        let rx = self.finished.lock().unwrap().as_ref().map(|t| t.subscribe());
+        let rx = self.finished.lock().unwrap_or_else(|e| e.into_inner()).as_ref().map(|t| t.subscribe());
         if self.cancel().is_ok() {
             if let Some(mut rx) = rx {
-                let _ = rx.changed().await;
+                let _ = tokio::time::timeout(Duration::from_secs(10), rx.changed()).await;
             }
         }
     }
 
     /// 等目前的工作結束（測試用）
     pub async fn wait(&self) {
-        let rx = self.finished.lock().unwrap().as_ref().map(|t| t.subscribe());
+        let rx = self.finished.lock().unwrap_or_else(|e| e.into_inner()).as_ref().map(|t| t.subscribe());
         if let Some(mut rx) = rx {
             while self.running() {
                 if rx.changed().await.is_err() {
@@ -706,7 +706,7 @@ impl Exporter {
         let write_path = output.to_path_buf();
         let output_s = replace.as_ref().unwrap_or(&write_path).display().to_string();
         let id = {
-            let mut s = self.state.lock().unwrap();
+            let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
             s.next_id += 1;
             let id = s.next_id;
             s.job = Some(Job {
@@ -733,7 +733,7 @@ impl Exporter {
             id
         };
         {
-            let mut f = self.finished.lock().unwrap();
+            let mut f = self.finished.lock().unwrap_or_else(|e| e.into_inner());
             if f.is_none() {
                 *f = Some(watch::channel(0).0);
             }
@@ -755,7 +755,7 @@ impl Exporter {
                     read_lines(out, |line| {
                         let Some((key, value)) = line.split_once('=') else { return };
                         let Ok(v) = value.trim().parse::<f64>() else { return };
-                        let mut s = st_out.lock().unwrap();
+                        let mut s = st_out.lock().unwrap_or_else(|e| e.into_inner());
                         let Some(j) = s.job.as_mut().filter(|j| j.status.id == id) else { return };
                         if key == "out_time_us" && v > 0.0 && expected_sec > 0.0 {
                             j.status.progress = (v / 1e6 / expected_sec).min(0.999);
@@ -769,7 +769,7 @@ impl Exporter {
             let errors = async {
                 if let Some(err) = stderr {
                     read_lines(err, |line| {
-                        let mut s = st_err.lock().unwrap();
+                        let mut s = st_err.lock().unwrap_or_else(|e| e.into_inner());
                         if let Some(j) = s.job.as_mut().filter(|j| j.status.id == id) {
                             j.stderr.push_str(line);
                             j.stderr.push('\n');
@@ -792,7 +792,7 @@ impl Exporter {
             let (_, _, code) = tokio::join!(progress, errors, wait);
             // 帶上原影片的封面（失敗時影片照樣存好，只是沒有封面）
             if let Some(img) = &cover {
-                let canceled = state.lock().unwrap().job.as_ref().is_some_and(|j| j.status.id == id && j.canceled);
+                let canceled = state.lock().unwrap_or_else(|e| e.into_inner()).job.as_ref().is_some_and(|j| j.status.id == id && j.canceled);
                 if code == Some(0) && !canceled && write_path.exists() {
                     if let Err(e) = crate::cover::embed_png(Some(&ffmpeg_path), &write_path.display().to_string(), img).await {
                         crate::info!("[封面] 沒有帶到 {}：{e}", write_path.display());
@@ -800,52 +800,64 @@ impl Exporter {
                 }
                 let _ = std::fs::remove_file(img);
             }
-            let message = {
-                let mut s = state.lock().unwrap();
+            // 先在鎖內記下結果需要的東西，放開鎖再做檔案的動作（網路磁碟上重新命名、刪檔可能很慢，
+            // 這段時間介面讀進度不會被卡住）
+            let (canceled, stderr_tail) = {
+                let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
                 let Some(j) = s.job.as_mut().filter(|j| j.status.id == id) else { return };
                 j.ended = Some(Instant::now());
                 j.cancel = None;
-                let out = write_path.clone();
-                let mut saved = None;
-                if j.canceled {
-                    j.status.state = ExportState::Canceled;
-                    j.status.message = Some(trf!("已取消{label}", "{label_en} canceled"));
-                    let _ = std::fs::remove_file(&out);
-                } else if code == Some(0) && out.exists() {
-                    j.status.state = ExportState::Done;
-                    j.status.progress = 1.0;
-                    if let Ok(m) = std::fs::metadata(&out) {
-                        j.status.bytes = Some(m.len());
-                    }
-                    let mut fin = out.clone();
-                    let mut note = String::new();
-                    if let Some(target) = &replace {
-                        match std::fs::rename(&out, target) {
-                            Ok(()) => fin = target.clone(),
-                            Err(_) => {
-                                // 剪輯版正在被其他程式使用：新版本改用新檔名儲存，不丟掉
-                                let alt = crate::paths::unique_path(&parent(&target.display().to_string()), &strip_mp4(&file_name(&target.display().to_string())), ".mp4");
-                                if std::fs::rename(&out, &alt).is_ok() {
-                                    fin = alt;
-                                }
-                                note = trf!("（無法取代 {}，可能正在播放）", " (couldn't replace {}; it may be playing)", file_name(&target.display().to_string()));
+                (j.canceled, last_lines(&j.stderr, 3))
+            };
+            let out = write_path.clone();
+            let mut saved = None;
+            let (state_now, message, bytes, output) = if canceled {
+                let _ = std::fs::remove_file(&out);
+                (ExportState::Canceled, trf!("已取消{label}", "{label_en} canceled"), None, None)
+            } else if code == Some(0) && out.exists() {
+                let bytes = std::fs::metadata(&out).ok().map(|m| m.len());
+                let mut fin = out.clone();
+                let mut note = String::new();
+                if let Some(target) = &replace {
+                    match std::fs::rename(&out, target) {
+                        Ok(()) => fin = target.clone(),
+                        Err(_) => {
+                            // 剪輯版正在被其他程式使用：新版本改用新檔名儲存，不丟掉
+                            let alt = crate::paths::unique_path(&parent(&target.display().to_string()), &strip_mp4(&file_name(&target.display().to_string())), ".mp4");
+                            if std::fs::rename(&out, &alt).is_ok() {
+                                fin = alt;
                             }
+                            note = trf!("（無法取代 {}，可能正在播放）", " (couldn't replace {}; it may be playing)", file_name(&target.display().to_string()));
                         }
                     }
-                    if let Some(t) = time {
-                        crate::paths::set_mtime(&fin, t);
-                    }
-                    j.status.output = fin.display().to_string();
-                    j.status.message = Some(trf!("已儲存 {}{note}", "Saved {}{note}", j.status.output));
-                    saved = Some(j.status.output.clone());
-                } else {
-                    j.status.state = ExportState::Error;
-                    let last = last_lines(&j.stderr, 3);
-                    let why = if last.is_empty() { trf!("結束代碼 {}", "exit code {}", code.map(|c| c.to_string()).unwrap_or_else(|| "?".into())) } else { last };
-                    j.status.message = Some(trf!("{label}失敗：{why}", "{label_en} failed: {why}"));
-                    let _ = std::fs::remove_file(&out);
                 }
-                (j.status.message.clone().unwrap_or_default(), saved)
+                if let Some(t) = time {
+                    crate::paths::set_mtime(&fin, t);
+                }
+                let output = fin.display().to_string();
+                saved = Some(output.clone());
+                (ExportState::Done, trf!("已儲存 {}{note}", "Saved {}{note}", output), bytes, Some(output))
+            } else {
+                let why = if stderr_tail.is_empty() { trf!("結束代碼 {}", "exit code {}", code.map(|c| c.to_string()).unwrap_or_else(|| "?".into())) } else { stderr_tail };
+                let _ = std::fs::remove_file(&out);
+                (ExportState::Error, trf!("{label}失敗：{why}", "{label_en} failed: {why}"), None, None)
+            };
+            let message = {
+                let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
+                if let Some(j) = s.job.as_mut().filter(|j| j.status.id == id) {
+                    j.status.state = state_now;
+                    if state_now == ExportState::Done {
+                        j.status.progress = 1.0;
+                    }
+                    if bytes.is_some() {
+                        j.status.bytes = bytes;
+                    }
+                    if let Some(o) = output {
+                        j.status.output = o;
+                    }
+                    j.status.message = Some(message.clone());
+                }
+                (message, saved)
             };
             let (message, saved) = message;
             if let (Some(path), Some(f)) = (saved, on_saved) {
@@ -855,7 +867,7 @@ impl Exporter {
             if let Some(d) = &cleanup {
                 let _ = std::fs::remove_dir_all(d);
             }
-            if let Some(tx) = finished.lock().unwrap().as_ref() {
+            if let Some(tx) = finished.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
                 tx.send_modify(|n| *n += 1);
             }
         });

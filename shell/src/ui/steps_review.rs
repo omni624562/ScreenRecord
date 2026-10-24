@@ -20,6 +20,9 @@ pub struct Review {
     items: Vec<Item>,
     /// 正在做成文件
     busy: bool,
+    /// 做成影片的進度（千分比）、按了取消
+    progress: std::sync::Arc<std::sync::atomic::AtomicU32>,
+    cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// 做成哪一種文件
     format: screenrecorder_core::steps::DocFormat,
     /// 做成影片：每一步至少幾秒、唸出說明
@@ -51,7 +54,8 @@ pub fn open(app: &mut UiApp) {
         return;
     }
     let items = draft.steps.iter().map(|s| Item { step: s.clone(), tex: None, failed: false }).collect();
-    app.steps_review = Some(Review { title: draft.title(), draft, items, busy: false, format: Default::default(), secs: 3.0, speak: cfg!(windows) });
+    app.steps_review =
+        Some(Review { title: draft.title(), draft, items, busy: false, progress: Default::default(), cancel: Default::default(), format: Default::default(), secs: 3.0, speak: cfg!(windows) });
     load_thumb(app, 0);
 }
 
@@ -158,11 +162,16 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         ui.horizontal_wrapped(|ui| {
             if r.busy {
                 ui.spinner();
-                ui.label(if r.format == screenrecorder_core::steps::DocFormat::Video {
-                    tr!("正在做成教學影片…", "Making the video…")
+                if r.format == screenrecorder_core::steps::DocFormat::Video {
+                    let pct = r.progress.load(std::sync::atomic::Ordering::Relaxed) / 10;
+                    ui.label(trf!("正在做成教學影片… {pct}%", "Making the video… {pct}%"));
+                    if Btn::new(tr!("取消", "Cancel")).small().show(ui).clicked() {
+                        r.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    ui.ctx().request_repaint_after(std::time::Duration::from_millis(250));
                 } else {
-                    tr!("正在做成教學文件…", "Making the guide…")
-                });
+                    ui.label(tr!("正在做成教學文件…", "Making the guide…"));
+                }
             } else {
                 use screenrecorder_core::steps::DocFormat;
                 let items = [(DocFormat::Html, tr!("網頁", "Web page")), (DocFormat::Word, "Word"), (DocFormat::PowerPoint, "PowerPoint"), (DocFormat::Video, tr!("影片", "Video"))];
@@ -231,12 +240,15 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         }
         Some(Act::Build) => {
             r.busy = true;
+            r.progress.store(0, std::sync::atomic::Ordering::Relaxed);
+            r.cancel.store(false, std::sync::atomic::Ordering::Relaxed);
+            let (progress, cancel) = (r.progress.clone(), r.cancel.clone());
             let (title, list, format) = (r.title.clone(), r.items.iter().map(|it| it.step.clone()).collect::<Vec<_>>(), r.format);
             let (secs, speak) = (r.secs, r.speak && cfg!(windows));
             let core = app.core.clone();
             let job = async move {
                 if format == screenrecorder_core::steps::DocFormat::Video {
-                    core.steps_build_video(title, list, secs, speak).await
+                    core.steps_build_video(title, list, secs, speak, progress, cancel).await
                 } else {
                     core.steps_build_as(title, list, format).await
                 }
@@ -247,16 +259,22 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                     screenrecorder_core::desktop::open_with_explorer(&path, false);
                     let msg = match format {
                         screenrecorder_core::steps::DocFormat::Html => tr!("教學文件做好了，已用瀏覽器開啟", "The step-by-step guide is ready and open in your browser"),
-                        screenrecorder_core::steps::DocFormat::Video => tr!("教學影片做好了，已經打開", "The step-by-step video is ready and open"),
-                        _ => tr!("教學文件做好了，已經打開", "The step-by-step guide is ready and open"),
+                        screenrecorder_core::steps::DocFormat::Video => tr!("教學影片做好了，已經開啟", "The step-by-step video is ready and open"),
+                        _ => tr!("教學文件做好了，已經開啟", "The step-by-step guide is ready and open"),
                     };
                     app.toast_file(msg, &path);
                 }
                 Err(e) => {
+                    let mut stopped = false;
                     if let Some(r) = &mut app.steps_review {
                         r.busy = false;
+                        stopped = r.cancel.load(std::sync::atomic::Ordering::Relaxed);
                     }
-                    app.toast(e.message().to_string(), true);
+                    if stopped {
+                        app.toast(tr!("已取消，沒有做成影片", "Cancelled; no video was made"), false);
+                    } else {
+                        app.toast(e.message().to_string(), true);
+                    }
                 }
             });
         }

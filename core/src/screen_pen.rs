@@ -220,7 +220,7 @@ fn fill_round(pm: &mut Pixmap, (x, y, w, h): (f32, f32, f32, f32), r: f32, c: Co
     }
 }
 
-/// 說明列（不透明的深色圓角底、白字）：「螢幕畫筆」、四個顏色（點一下換）、粗細（細、中、粗）、操作說明；回傳預乘 RGBA 與點得到的地方
+/// 說明列（不透明的深色圓角底、白字）：「螢幕畫筆」、四個顏色（按一下換）、粗細（細、中、粗）、操作說明；回傳預乘 RGBA 與點得到的地方
 pub fn render_help(color: usize, thick: usize, scale: f32) -> Option<(Pixmap, HelpLayout)> {
     let s = scale.max(1.0);
     let size = 14.0 * s as f64;

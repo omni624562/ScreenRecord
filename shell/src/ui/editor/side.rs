@@ -139,7 +139,7 @@ fn time_panel(ed: &mut Editor, ui: &mut egui::Ui, toast: &mut Option<(String, bo
                 ui.spacing_mut().item_spacing.x = 6.0;
                 let (r, _) = ui.allocate_exact_size(vec2(18.0, 18.0), Sense::hover());
                 ui.painter().circle_filled(r.center(), 9.0, p.accent.gamma_multiply(0.2));
-                ui.painter().text(r.center(), Align2::CENTER_CENTER, n, theme::font_bold(11.5), p.accent);
+                ui.painter().text(r.center(), Align2::CENTER_CENTER, n, theme::font_bold(12.0), p.accent);
                 ui.add(egui::Label::new(RichText::new(tr!(zh, en)).font(theme::font(12.5))).wrap());
             });
         }
@@ -163,7 +163,7 @@ fn time_panel(ed: &mut Editor, ui: &mut egui::Ui, toast: &mut Option<(String, bo
             ui.spacing_mut().item_spacing.y = 6.0;
             ui.label(RichText::new(super::speed::selected_text(&all)).font(theme::font(12.5)));
             if all.len() == 1 {
-                ui.label(theme::muted(ui, tr!("按住 Ctrl 再點（或拖曳）其他段，可以一次選好幾段", "Hold Ctrl and click (or drag) other sections to select several at once")).font(theme::font(11.5)));
+                ui.label(theme::muted(ui, tr!("按住 Ctrl 再點（或拖曳）其他段，可以一次選好幾段", "Hold Ctrl and click (or drag) other sections to select several at once")).font(theme::font(12.0)));
             }
             ui.horizontal(|ui| {
                 if Btn::new(if all.len() > 1 { tr!("刪除這幾段", "Delete sections") } else { tr!("刪除這段", "Delete section") })
@@ -255,13 +255,13 @@ fn time_panel(ed: &mut Editor, ui: &mut egui::Ui, toast: &mut Option<(String, bo
     cleanup_panel(ed, ui, toast);
 }
 
-/// 章節：標記清單（跳過去、改名、刪除），加標記、依字幕產生、複製成 YouTube 說明欄的格式
+/// 章節：標記清單（跳過去、重新命名、刪除），加標記、依字幕產生、複製成 YouTube 說明欄的格式
 fn chapters_panel(ed: &mut Editor, ui: &mut egui::Ui, toast: &mut Option<(String, bool)>) {
     section(ui, tr!("章節", "Chapters"), false);
     let has_subs = !ed.sub_ids.is_empty();
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing = vec2(4.0, 4.0);
-        if Btn::new(tr!("＋ 在播放頭加標記（M）", "+ Marker at playhead (M)")).small().enabled(ed.duration > 0.0).show(ui).clicked() {
+        if Btn::new(tr!("＋ 在播放頭加標記（B）", "+ Marker at playhead (B)")).small().enabled(ed.duration > 0.0).show(ui).clicked() {
             *toast = Some(ed.add_marker());
         }
         if Btn::new(tr!("依字幕產生", "From subtitles"))
@@ -299,7 +299,7 @@ fn chapters_panel(ed: &mut Editor, ui: &mut egui::Ui, toast: &mut Option<(String
     if ed.markers.is_empty() {
         return hint(
             ui,
-            tr!("標記會在輸出時變成影片的章節。也可以按播放列上的「＋ 標記」或按 M。", "Markers become chapters in the output video. You can also press “+ Marker” under the timeline or M."),
+            tr!("標記會在輸出時變成影片的章節。也可以按播放列上的「＋ 標記」或按 B。", "Markers become chapters in the output video. You can also press “+ Marker” under the timeline or B."),
         );
     }
     let p = theme::pal(ui);
@@ -321,7 +321,7 @@ fn chapters_panel(ed: &mut Editor, ui: &mut egui::Ui, toast: &mut Option<(String
                 if Btn::icon_only(theme::Icon::Trash).ghost().small().tooltip(tr!("刪除", "Delete")).show(ui).clicked() {
                     remove = Some(i);
                 }
-                if Btn::icon_only(theme::Icon::Rename).ghost().small().tooltip(tr!("改名", "Rename")).show(ui).clicked() {
+                if Btn::icon_only(theme::Icon::Rename).ghost().small().tooltip(tr!("重新命名", "Rename")).show(ui).clicked() {
                     rename = Some(i);
                 }
             });
@@ -375,7 +375,7 @@ pub(super) fn cleanup_panel(ed: &mut Editor, ui: &mut egui::Ui, toast: &mut Opti
                 if theme::check(ui, &mut on, RichText::new(label.as_str()).font(theme::font(12.5))).on_hover_text(tip.as_str()).changed() {
                     ed.clean_kinds[i] = on;
                 }
-                ui.add(egui::Label::new(theme::muted(ui, tip.as_str()).font(theme::font(11.5))).wrap());
+                ui.add(egui::Label::new(theme::muted(ui, tip.as_str()).font(theme::font(12.0))).wrap());
             });
         });
     }
@@ -545,7 +545,7 @@ pub(super) fn section(ui: &mut egui::Ui, title: &str, first: bool) {
     ui.label(RichText::new(title).font(theme::font_bold(13.5)));
 }
 
-/// 「裁切與旋轉」（截圖）／「畫面裁切」（影片）：旋轉只在這裡；裁切直接在圖上拖曳，不用先打開開關
+/// 「裁切與旋轉」（截圖）／「畫面裁切」（影片）：旋轉只在這裡；裁切直接在圖上拖曳，不用先開啟開關
 fn crop_panel(ed: &mut Editor, ui: &mut egui::Ui) {
     let shot = ed.is_shot();
     if shot {
@@ -588,7 +588,7 @@ fn sub_title(ui: &mut egui::Ui, title: &str) {
     ui.label(RichText::new(title).font(theme::font_bold(12.5)));
 }
 
-/// 可以收起來的區塊：標題列點一下展開／收起；有開啟的效果時預設展開，標題旁邊標「已開啟」
+/// 可以收起來的區塊：標題列按一下展開／收起；有開啟的效果時預設展開，標題旁邊標「已開啟」
 pub(super) fn fold(ed: &mut Editor, ui: &mut egui::Ui, key: &str, title: &str, on: bool, body: impl FnOnce(&mut Editor, &mut egui::Ui)) {
     let p = theme::pal(ui);
     let id = Id::new(("ed-fold", key));
@@ -608,7 +608,7 @@ pub(super) fn fold(ed: &mut Editor, ui: &mut egui::Ui, key: &str, title: &str, o
     let gw = g.size().x;
     ui.painter().galley(pos2(tx, rect.center().y - g.size().y / 2.0), g, p.text);
     if on {
-        let b = ui.painter().layout_no_wrap(tr!("已開啟", "On").to_string(), theme::font(11.5), p.accent);
+        let b = ui.painter().layout_no_wrap(tr!("已開啟", "On").to_string(), theme::font(12.0), p.accent);
         let br = egui::Rect::from_min_size(pos2(tx + gw + 8.0, rect.center().y - b.size().y / 2.0 - 2.0), b.size() + vec2(12.0, 4.0));
         ui.painter().rect_filled(br, CornerRadius::same(8), p.accent.gamma_multiply(0.15));
         ui.painter().galley(br.min + vec2(6.0, 2.0), b, p.accent);
@@ -901,7 +901,7 @@ fn region_panel(ed: &mut Editor, ui: &mut egui::Ui) {
             if Btn::new(tr!("看看", "Show")).ghost().small().tooltip(tr!("跳到這裡", "Jump here")).show(ui).clicked() {
                 seek = Some(r.start);
             }
-            if Btn::new("×").ghost().small().tooltip(tr!("拿掉這個放大", "Remove this zoom")).show(ui).clicked() {
+            if Btn::new("×").ghost().small().tooltip(tr!("移除這個放大", "Remove this zoom")).show(ui).clicked() {
                 remove = Some(i);
             }
         });
@@ -967,7 +967,7 @@ fn zoom_panel(ed: &mut Editor, ui: &mut egui::Ui) {
         hint(
             ui,
             tr!(
-                "只在錄影時按快速鍵（預設 Ctrl+Alt+Z）標記的地方慢慢放大，停一下再拉回全畫面。時間軸上的藍點是標記的地方，點一下可以設定這裡不放大；按「預覽結果」可以看到效果。",
+                "只在錄影時按快速鍵（預設 Ctrl+Alt+Z）標記的地方慢慢放大，停一下再拉回全畫面。時間軸上的藍點是標記的地方，按一下可以設定這裡不放大；按「預覽結果」可以看到效果。",
                 "Zooms in only on the spots you marked with the shortcut while recording (Ctrl+Alt+Z by default), then zooms back out. The blue dots on the timeline are the marked spots; click one to skip it. Press “Preview result” to see the effect."
             ),
         );
@@ -975,7 +975,7 @@ fn zoom_panel(ed: &mut Editor, ui: &mut egui::Ui) {
         hint(
             ui,
             tr!(
-                "點擊前畫面慢慢放大到點擊的地方，連續點擊時跟著移動，停下來後拉回全畫面。時間軸上的藍點是點擊，點一下可以設定這次不放大；按「預覽結果」可以看到效果。",
+                "點擊前畫面慢慢放大到點擊的地方，連續點擊時跟著移動，停下來後拉回全畫面。時間軸上的藍點是點擊，按一下可以設定這次不放大；按「預覽結果」可以看到效果。",
                 "Before each click the view slowly zooms in on it, follows along during a series of clicks, then zooms back out. The blue dots on the timeline are clicks; click one to skip zooming on it. Press “Preview result” to see the effect."
             ),
         );
@@ -1193,16 +1193,16 @@ fn ann_panel(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context) {
     } else {
         match ed.tool {
             // 提示短一點，句子不要在「復／原」、「）」之間斷行
-            Some(Tool::Ann(AnnKind::Step)) => trf!("在{w}上依序點一下，放上編號 1、2、3…\n按 Esc 結束", "Click on the {w} in order to place 1, 2, 3…\nPress Esc when done"),
-            Some(Tool::Emoji) => trf!("選好表情符號，在{w}上點一下放置，可連續放\n按 Esc 結束", "Pick an emoji, then click on the {w} to place it (repeatable)\nPress Esc when done"),
-            Some(Tool::Ann(AnnKind::Text)) => trf!("在{w}上點一下放置文字。按 Esc 取消", "Click on the {w} to place it. Esc cancels"),
+            Some(Tool::Ann(AnnKind::Step)) => trf!("在{w}上依序按一下，放上編號 1、2、3…\n按 Esc 結束", "Click on the {w} in order to place 1, 2, 3…\nPress Esc when done"),
+            Some(Tool::Emoji) => trf!("選好表情符號，在{w}上按一下放置，可連續放\n按 Esc 結束", "Pick an emoji, then click on the {w} to place it (repeatable)\nPress Esc when done"),
+            Some(Tool::Ann(AnnKind::Text)) => trf!("在{w}上按一下放置文字。按 Esc 取消", "Click on the {w} to place it. Esc cancels"),
             Some(Tool::Ann(AnnKind::Pen)) => trf!("在{w}上按住拖曳手繪，可以畫好幾筆\n按 Esc 結束", "Drag on the {w} to draw (several strokes are fine)\nPress Esc when done"),
             Some(Tool::Ann(AnnKind::Magnify)) => trf!("在{w}上拖曳框出要放大的地方。按 Esc 取消", "Drag on the {w} over the area to magnify. Esc cancels"),
             Some(_) => trf!("在{w}上按住拖曳放置。按 Esc 取消", "Drag on the {w} to place it. Esc cancels"),
             None if ed.selected().is_some() => String::new(),
-            None if shot => tr!("選工具後在圖上點一下或拖曳。Ctrl+Z 復原", "Pick a tool, then click or drag on the image. Ctrl+Z undoes").into(),
+            None if shot => tr!("選工具後在圖上按一下或拖曳。Ctrl+Z 復原", "Pick a tool, then click or drag on the image. Ctrl+Z undoes").into(),
             None => tr!(
-                "① 選工具 ② 在影片上點一下或拖曳放置。標註從目前位置起出現 3 秒，可在時間軸下方的標註軌拖曳調整。",
+                "① 選工具 ② 在影片上按一下或拖曳放置。標註從目前位置起出現 3 秒，可在時間軸下方的標註軌拖曳調整。",
                 "① Pick a tool ② Click or drag on the video to place it. Annotations show for 3 s from the current position; drag them on the annotation track below the timeline to adjust."
             )
             .into(),
@@ -1215,7 +1215,7 @@ fn ann_panel(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context) {
     ann_list(ed, ui);
 }
 
-/// 選取標註時的工具列：一排小圖示（點一下換成放新的標註）
+/// 選取標註時的工具列：一排小圖示（按一下換成放新的標註）
 fn tool_row(ed: &mut Editor, ui: &mut egui::Ui, can: bool) {
     let p = theme::pal(ui);
     let shot = ed.is_shot();
@@ -1306,22 +1306,31 @@ fn style_controls(ui: &mut egui::Ui, kind: AnnKind, color: &mut String, size: &m
             sc = true;
         }
     });
-    // 我的樣式：點一下套用；按右鍵刪除；「存起來」把目前的顏色與大小加進去
+    // 我的樣式：按一下套用；按右鍵刪除；「存起來」把目前的顏色與大小加進去
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
         ui.label(theme::muted(ui, tr!("我的樣式", "My styles")).font(theme::font(12.0)));
         let mut remove = None;
         for (i, st) in mine.iter().enumerate() {
             let label = format!("{}", st.size.round());
-            let g = ui.painter().layout_no_wrap(label, theme::font(11.5), p.text);
-            let (r, resp) = ui.allocate_exact_size(vec2(g.size().x + 30.0, 24.0), Sense::click());
+            let g = ui.painter().layout_no_wrap(label, theme::font(12.0), p.text);
+            // 右邊留一個 ✕ 的位置（滑鼠移上去才畫出來）
+            let (r, resp) = ui.allocate_exact_size(vec2(g.size().x + 30.0 + 16.0, 24.0), Sense::click());
             let on = color.eq_ignore_ascii_case(&st.color) && (*size - (st.size * k).round()).abs() < 0.5;
             ui.painter().rect(r, CornerRadius::same(12), p.surface, Stroke::new(if on { 2.0 } else { 1.0 }, if on { p.accent } else { p.border }), egui::StrokeKind::Inside);
             let (cr, cg, cb) = annotate::parse_color(&st.color);
             ui.painter().circle(pos2(r.left() + 12.0, r.center().y), 7.0, Color32::from_rgb(cr, cg, cb), Stroke::new(1.0, p.border_strong));
             ui.painter().galley(pos2(r.left() + 23.0, r.center().y - g.size().y / 2.0), g, p.text);
-            let resp = resp.on_hover_cursor(CursorIcon::PointingHand).on_hover_text(tr!("套用這個樣式（按右鍵刪除）", "Apply this style (right-click to delete)"));
-            if resp.clicked() {
+            let xr = egui::Rect::from_center_size(pos2(r.right() - 12.0, r.center().y), vec2(16.0, 16.0));
+            let x = ui.interact(xr, ui.id().with(("style-del", i)), Sense::click()).on_hover_text(tr!("刪除這個樣式", "Delete this style"));
+            if resp.hovered() || x.hovered() {
+                theme::paint_icon(ui.painter(), xr.shrink(3.0), Icon::Close, if x.hovered() { p.text } else { p.muted });
+            }
+            if x.clicked() {
+                remove = Some(i);
+            }
+            let resp = resp.on_hover_cursor(CursorIcon::PointingHand).on_hover_text(tr!("套用這個樣式（✕ 或右鍵刪除）", "Apply this style (× or right-click to delete)"));
+            if resp.clicked() && !x.clicked() {
                 let (lo_s, hi_s) = ((lo * k).round(), (hi * k).round());
                 *color = st.color.clone();
                 *size = (st.size * k).round().clamp(lo_s, hi_s);
@@ -1736,7 +1745,7 @@ pub(super) fn ellipsized(painter: &egui::Painter, text: String, font: egui::Font
     painter.layout_job(job)
 }
 
-/// 標註清單（依出現時間；字幕在「字幕」分頁）：點一下選取並跳到它出現的時間
+/// 標註清單（依出現時間；字幕在「字幕」分頁）：按一下選取並跳到它出現的時間
 fn ann_list(ed: &mut Editor, ui: &mut egui::Ui) {
     let subs = ed.sub_ids.len();
     if ed.anns.len() <= subs {
@@ -1761,7 +1770,7 @@ fn ann_list(ed: &mut Editor, ui: &mut egui::Ui) {
         let painter = ui.painter();
         painter.rect(r, CornerRadius::same(6), if on { p.accent.gamma_multiply(0.12) } else { Color32::TRANSPARENT }, Stroke::new(1.0, if on { p.accent } else { p.border }), egui::StrokeKind::Inside);
         painter.circle(pos2(r.left() + 13.0, r.center().y), 5.0, color, Stroke::new(1.0, Color32::from_black_alpha(77)));
-        let times = painter.layout_no_wrap(if shot { String::new() } else { format!("{}–{}", video_clock(start), video_clock(end)) }, theme::mono(11.5), p.muted);
+        let times = painter.layout_no_wrap(if shot { String::new() } else { format!("{}–{}", video_clock(start), video_clock(end)) }, theme::mono(12.0), p.muted);
         let x_rect = egui::Rect::from_center_size(pos2(r.right() - 14.0, r.center().y), vec2(22.0, 22.0));
         let tx = x_rect.left() - 4.0 - times.size().x;
         let name_rect = egui::Rect::from_min_max(pos2(r.left() + 24.0, r.top()), pos2(tx - 6.0, r.bottom()));

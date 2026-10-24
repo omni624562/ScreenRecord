@@ -261,7 +261,7 @@ fn notice(ui: &mut egui::Ui, fill: Color32, text: &str, color: Color32, button: 
     clicked
 }
 
-/// 「其他選項」的標題列：點一下展開／收起，收起時右邊寫出目前的值；回傳是否展開
+/// 「其他選項」的標題列：按一下展開／收起，收起時右邊寫出目前的值；回傳是否展開
 fn more_header(ui: &mut egui::Ui, open: &mut bool, summary: &str) -> bool {
     let p = theme::pal(ui);
     let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 30.0), Sense::click());

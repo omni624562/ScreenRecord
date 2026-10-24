@@ -23,7 +23,7 @@ pub struct Hints {
 
 static AUTO_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(Rec|錄音|Replay|Shot)_\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}(_\d+)?$").unwrap());
 
-/// 是程式自動取的預設名稱（不含副檔名）：可以自動改名；使用者取過的名稱不動
+/// 是程式自動取的預設名稱（不含副檔名）：可以自動重新命名；使用者取過的名稱不動
 pub fn is_auto_name(stem: &str) -> bool {
     AUTO_RE.is_match(stem)
 }
@@ -37,7 +37,7 @@ pub fn date_of(stem: &str) -> Option<String> {
 /// 開頭是這些詞時，後面接的就是這段影片在講什麼
 const TOPIC_MARKS: [&str; 14] = ["今天要跟大家", "今天來跟大家", "今天要", "今天來", "這次要", "跟大家示範", "示範", "介紹", "講解", "說明", "分享", "討論", "教大家", "來看"];
 
-/// 主題前面可以拿掉的字
+/// 主題前面可以移除的字
 const TOPIC_LEAD: [&str; 9] = ["一下", "跟大家", "給大家", "大家", "的是", "如何", "關於", "：", "的"];
 
 /// 講話常出現、當名稱沒意義的詞
@@ -122,7 +122,7 @@ fn keyword(h: &Hints) -> Option<String> {
         }
     }
     df.retain(|t, d| *d >= 2 && !FILLER.contains(&t.as_str()) && !FILLER.iter().any(|f| t.starts_with(f) || t.ends_with(f)));
-    // 被更長、次數差不多的詞包住的片段拿掉（「報價」與「報價單」只留「報價單」）
+    // 被更長、次數差不多的詞包住的片段移除（「報價」與「報價單」只留「報價單」）
     let mut drop: HashSet<String> = HashSet::new();
     for (t, &d) in &df {
         let cs: Vec<char> = t.chars().collect();
@@ -315,7 +315,7 @@ mod tests {
 
     #[test]
     fn topic_from_the_opening_sentence() {
-        let h = Hints { subs: subs(&["大家好", "今天要跟大家介紹報價單的填法，", "首先打開 Excel"]), date: "10-15".into(), ..Default::default() };
+        let h = Hints { subs: subs(&["大家好", "今天要跟大家介紹報價單的填法，", "首先開啟 Excel"]), date: "10-15".into(), ..Default::default() };
         assert_eq!(suggest(&h).as_deref(), Some("報價單的填法_10-15"));
     }
 

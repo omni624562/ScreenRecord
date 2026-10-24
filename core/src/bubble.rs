@@ -121,7 +121,7 @@ mod tests {
         assert!(plain.width() > 200 && plain.height() >= 30, "{}×{}", plain.width(), plain.height());
         // 圓角外透明、中間是深色底
         assert_eq!(plain.pixel(0, 0).unwrap().alpha(), 0);
-        let c = Content { big: Some("3".into()), lines: vec!["秒後框選".into(), "按 Esc 或點一下取消".into()], buttons: vec![] };
+        let c = Content { big: Some("3".into()), lines: vec!["秒後框選".into(), "按 Esc 或按一下取消".into()], buttons: vec![] };
         let (pm, l) = render(&c, 1.5, None).unwrap();
         assert!(l.buttons.is_empty() && pm.height() > plain.height());
         let c = Content { big: None, lines: vec!["步驟截圖中・已截 3 步".into()], buttons: vec![(1, "完成".into(), true), (2, "取消".into(), false)] };

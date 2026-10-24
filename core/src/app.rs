@@ -50,7 +50,7 @@ pub struct SnipSource {
     pub path: PathBuf,
     pub desktop: crate::types::Rect,
     pub monitors: Vec<MonitorInfo>,
-    /// 截下時看得到的視窗（由上層到下層）：點一下截整個視窗
+    /// 截下時看得到的視窗（由上層到下層）：按一下截整個視窗
     pub windows: Vec<crate::types::Rect>,
     /// 截圖存檔的資料夾
     pub shot_dir: String,
@@ -260,7 +260,7 @@ impl RecorderDeps for RecDeps {
     fn keep_awake(&self) {
         // 錄影中不讓電腦因為閒置而睡眠、螢幕也不關（暫停後繼續、移動範圍時沿用同一個；停止時 after_stop 放掉）
         if let Some(a) = self.0.upgrade() {
-            a.awake.lock().unwrap().get_or_insert_with(|| crate::power::keep_awake(true));
+            a.awake.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(|| crate::power::keep_awake(true));
             a.sample_apps();
         }
     }
@@ -280,7 +280,7 @@ impl RecorderDeps for RecDeps {
     }
     fn saved(&self, path: &str) {
         if let Some(a) = self.0.upgrade() {
-            if let Some((app, title)) = a.last_rec_app.lock().unwrap().take() {
+            if let Some((app, title)) = a.last_rec_app.lock().unwrap_or_else(|e| e.into_inner()).take() {
                 a.shot_meta.record(path, crate::shot_meta::ShotMeta { app, title, src: "rec".into() });
             }
             tokio::spawn(a.after_record(path.to_string()));
@@ -291,9 +291,9 @@ impl RecorderDeps for RecDeps {
         crate::winui::set_desktop_icons(true);
         crate::quiet::end();
         if let Some(a) = self.0.upgrade() {
-            a.awake.lock().unwrap().take();
-            let counts = a.rec_apps.lock().unwrap().take().unwrap_or_default();
-            *a.last_rec_app.lock().unwrap() = most_used_app(&counts);
+            a.awake.lock().unwrap_or_else(|e| e.into_inner()).take();
+            let counts = a.rec_apps.lock().unwrap_or_else(|e| e.into_inner()).take().unwrap_or_default();
+            *a.last_rec_app.lock().unwrap_or_else(|e| e.into_inner()) = most_used_app(&counts);
         }
     }
     fn save_markers(&self, output: &str, marks: &crate::recorder::Marks) {
@@ -337,7 +337,7 @@ impl App {
             shot_meta: Arc::new(crate::shot_meta::ShotMetaStore::new(dir.join("shot_meta.json"))),
             vocab: Arc::new(crate::facets::VocabCache::default()),
             hashes: Arc::new(crate::similar::HashStore::new(dir.join("shot_hashes.json"))),
-            cache: Arc::default(),
+            cache: Arc::new(MediaCache::with_disk(dir.join("media-info.json"))),
             default_output_dir: default_output_dir().display().to_string(),
             st: Mutex::default(),
             hw_ready: watch::channel(true).0,
@@ -364,7 +364,7 @@ impl App {
     /// 錄影開始：每 4 秒記一次在用的程式（已經在記就不重來；停止時 after_stop 收起來）
     fn sample_apps(&self) {
         {
-            let mut g = self.rec_apps.lock().unwrap();
+            let mut g = self.rec_apps.lock().unwrap_or_else(|e| e.into_inner());
             if g.is_some() {
                 return;
             }
@@ -377,7 +377,7 @@ impl App {
                 std::thread::sleep(wait);
                 wait = Duration::from_secs(4);
                 let info = crate::winui::foreground_app();
-                let mut g = apps.lock().unwrap();
+                let mut g = apps.lock().unwrap_or_else(|e| e.into_inner());
                 let Some(m) = g.as_mut() else { break };
                 if let Some(i) = info.filter(|i| !i.exe.is_empty()) {
                     *m.entry((i.exe, i.title)).or_default() += 1;
@@ -393,23 +393,23 @@ impl App {
     // ───────────── 與外部（系統匣、視窗）的連接 ─────────────
 
     pub fn set_notifier(&self, n: Notifier) {
-        *self.notifier.lock().unwrap() = Some(n);
+        *self.notifier.lock().unwrap_or_else(|e| e.into_inner()) = Some(n);
     }
 
     pub fn notify(&self, title: &str, text: &str, warn: bool) {
-        let n = self.notifier.lock().unwrap().clone();
+        let n = self.notifier.lock().unwrap_or_else(|e| e.into_inner()).clone();
         if let Some(n) = n {
             n(title, text, warn);
         }
     }
 
     pub fn set_ui_opener(&self, o: UiOpener) {
-        *self.ui_opener.lock().unwrap() = Some(o);
+        *self.ui_opener.lock().unwrap_or_else(|e| e.into_inner()) = Some(o);
     }
 
     /// 開啟操作視窗（已開著時帶到前面）
     pub fn open_ui(&self, page: UiPage) {
-        let o = self.ui_opener.lock().unwrap().clone();
+        let o = self.ui_opener.lock().unwrap_or_else(|e| e.into_inner()).clone();
         match o {
             Some(o) => o(page),
             None => warn!("操作視窗還沒準備好"),
@@ -417,11 +417,11 @@ impl App {
     }
 
     pub fn set_exiter(&self, e: Exiter) {
-        *self.exiter.lock().unwrap() = Some(e);
+        *self.exiter.lock().unwrap_or_else(|e| e.into_inner()) = Some(e);
     }
 
     pub fn set_tray_dispose(&self, f: Box<dyn FnOnce() + Send>) {
-        *self.tray_dispose.lock().unwrap() = Some(f);
+        *self.tray_dispose.lock().unwrap_or_else(|e| e.into_inner()) = Some(f);
     }
 
     pub fn set_hotkeys(&self, h: HotkeyStatus) {
@@ -439,12 +439,12 @@ impl App {
     }
 
     pub fn set_hotkey_applier(&self, f: HotkeyApplier) {
-        *self.hotkey_applier.lock().unwrap() = Some(f);
+        *self.hotkey_applier.lock().unwrap_or_else(|e| e.into_inner()) = Some(f);
     }
 
     /// 重新登記全域快速鍵（不存檔；設定時先暫停全部，才能按到原本的組合）。沒有系統匣時回傳 None
     pub fn apply_hotkeys(&self, k: &crate::types::Hotkeys) -> Option<HotkeyStatus> {
-        let f = self.hotkey_applier.lock().unwrap().clone()?;
+        let f = self.hotkey_applier.lock().unwrap_or_else(|e| e.into_inner()).clone()?;
         let st = f(k)?;
         self.set_hotkeys(st);
         Some(st)
@@ -496,7 +496,7 @@ impl App {
         }
     }
 
-    /// 開始步驟截圖：之後每點一下滑鼠就截一張（圖先放在儲存資料夾的「教學_日期_時間」資料夾）；
+    /// 開始步驟截圖：之後每按一下滑鼠就截一張（圖先放在儲存資料夾的「教學_日期_時間」資料夾）；
     /// 畫面下方有小工具列可以完成或取消
     pub fn steps_start(self: &Arc<Self>, output_dir: &str) -> crate::Result<()> {
         if self.lock().steps_draft.is_some() {
@@ -609,7 +609,18 @@ impl App {
 
     /// 做成影片（MP4）：每一步一張畫面（截圖＋說明）至少顯示 secs 秒、淡入淡出；speak = 用 Windows 內建的語音唸出說明。
     /// 存成 儲存資料夾/文件名稱.mp4（已經有同名檔案時加上編號），成功後刪掉暫放的截圖
-    pub async fn steps_build_video(&self, title: String, steps: Vec<crate::steps::Step>, secs: f64, speak: bool) -> crate::Result<String> {
+    /// progress：千分比（準備畫面、語音占一半，FFmpeg 壓縮占一半）；cancel 設成 true 就停（做到一半的刪掉）
+    pub async fn steps_build_video(
+        &self,
+        title: String,
+        steps: Vec<crate::steps::Step>,
+        secs: f64,
+        speak: bool,
+        progress: Arc<std::sync::atomic::AtomicU32>,
+        cancel: Arc<std::sync::atomic::AtomicBool>,
+    ) -> crate::Result<String> {
+        use std::sync::atomic::Ordering;
+        let cancelled = || crate::Error::config(tr!("已取消", "Cancelled"));
         let draft = self.lock().steps_draft.clone().ok_or_else(|| crate::Error::config(tr!("沒有要整理的步驟", "There are no steps to organize")))?;
         if steps.is_empty() {
             return Err(crate::Error::config(tr!("沒有要整理的步驟", "There are no steps to organize")));
@@ -619,9 +630,10 @@ impl App {
         let title = if title.trim().is_empty() { draft.title() } else { title.trim().to_string() };
         let (d, list, t) = (draft.clone(), steps.clone(), title.clone());
         let t2 = tmp.clone();
+        let (prog, stop) = (progress.clone(), cancel.clone());
         // 畫面與語音（背景執行緒）
         let prepared = tokio::task::spawn_blocking(move || -> Result<crate::steps::VideoParts, String> {
-            std::fs::create_dir_all(&t2).map_err(|e| e.to_string())?;
+            std::fs::create_dir_all(&t2).map_err(|e| crate::error::plain(&e))?;
             let (w, h) = crate::steps::VIDEO_SIZE;
             let mut frames = vec![];
             let mut voices = vec![];
@@ -633,6 +645,10 @@ impl App {
             frames.push((png.display().to_string(), 2.5));
             voices.push(None);
             for (i, s) in list.iter().enumerate() {
+                if stop.load(Ordering::Relaxed) {
+                    return Err(tr!("已取消", "Cancelled").into());
+                }
+                prog.store((i * 500 / list.len().max(1)) as u32, Ordering::Relaxed);
                 let text = s.caption();
                 let png = t2.join(format!("frame_{i:03}.png"));
                 crate::steps::video_frame(&d.image_path(s), i + 1, &text, w, h)?.save_png(&png).map_err(|e| e.to_string())?;
@@ -655,28 +671,84 @@ impl App {
         .map_err(|e| crate::Error::other(e.to_string()))?;
         let (frames, voices) = match prepared {
             Ok(v) => v,
+            Err(_) if cancel.load(Ordering::Relaxed) => {
+                let _ = std::fs::remove_dir_all(&tmp);
+                return Err(cancelled());
+            }
             Err(e) => {
                 let _ = std::fs::remove_dir_all(&tmp);
                 return Err(crate::Error::other(e));
             }
         };
+        progress.store(500, Ordering::Relaxed);
         let mut path = draft.dir.join(format!("{}.mp4", draft.name));
         let mut n = 2;
         while path.exists() {
             path = draft.dir.join(format!("{} ({n}).mp4", draft.name));
             n += 1;
         }
-        let out = crate::process::command(&ffmpeg).args(crate::steps::video_args(&frames, &voices, &path.display().to_string())).output().await;
+        // 壓縮的進度：依每一步的秒數估（FFmpeg 的 -progress 報目前做到幾秒）
+        let total_sec: f64 = frames.iter().map(|f| f.1).sum::<f64>().max(0.1);
+        let mut cmd = crate::process::command(&ffmpeg);
+        cmd.args(["-progress", "pipe:1", "-nostats"])
+            .args(crate::steps::video_args(&frames, &voices, &path.display().to_string()))
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        let out = match cmd.spawn() {
+            Ok(mut child) => {
+                use tokio::io::AsyncBufReadExt;
+                let mut lines = child.stdout.take().map(|o| tokio::io::BufReader::new(o).lines());
+                let stderr = child.stderr.take();
+                let err_task = tokio::spawn(async move {
+                    let mut buf = String::new();
+                    if let Some(mut e) = stderr {
+                        let _ = tokio::io::AsyncReadExt::read_to_string(&mut e, &mut buf).await;
+                    }
+                    buf
+                });
+                let mut stopped = false;
+                loop {
+                    let next = match lines.as_mut() {
+                        Some(l) => tokio::time::timeout(std::time::Duration::from_millis(250), l.next_line()).await,
+                        None => Ok(Ok(None)),
+                    };
+                    if cancel.load(Ordering::Relaxed) {
+                        let _ = child.start_kill();
+                        stopped = true;
+                        break;
+                    }
+                    match next {
+                        Ok(Ok(Some(line))) => {
+                            if let Some(us) = line.strip_prefix("out_time_us=").and_then(|v| v.trim().parse::<f64>().ok()) {
+                                progress.store(500 + ((us / 1e6 / total_sec).clamp(0.0, 1.0) * 499.0) as u32, Ordering::Relaxed);
+                            }
+                        }
+                        Ok(_) => break,
+                        Err(_) => {}
+                    }
+                }
+                let status = child.wait().await;
+                let err = err_task.await.unwrap_or_default();
+                if stopped {
+                    let _ = std::fs::remove_dir_all(&tmp);
+                    let _ = std::fs::remove_file(&path);
+                    return Err(cancelled());
+                }
+                status.map(|s| (s.success(), err))
+            }
+            Err(e) => Err(e),
+        };
         let _ = std::fs::remove_dir_all(&tmp);
         match out {
-            Ok(o) if o.status.success() => {}
-            Ok(o) => {
+            Ok((true, _)) => {}
+            Ok((false, stderr)) => {
                 let _ = std::fs::remove_file(&path);
-                let err = String::from_utf8_lossy(&o.stderr).lines().last().unwrap_or_default().to_string();
+                let err = stderr.lines().last().unwrap_or_default().to_string();
                 return Err(crate::Error::other(trf!("無法做成影片：{err}", "Couldn't make the video: {err}")));
             }
             Err(e) => return Err(crate::Error::other(e.to_string())),
         }
+        progress.store(1000, Ordering::Relaxed);
         draft.discard();
         let mut st = self.lock();
         if st.steps_draft.as_ref() == Some(&draft) {
@@ -969,8 +1041,8 @@ impl App {
         }
     }
 
-    /// 延遲截圖：倒數 sec 秒後框選（先打開要截的選單或提示）。Windows 上畫面上方顯示「3」秒後框選（不會被截進去），
-    /// 按 Esc 或點一下取消。取消時回傳 None
+    /// 延遲截圖：倒數 sec 秒後框選（先開啟要截的選單或提示）。Windows 上畫面上方顯示「3」秒後框選（不會被截進去），
+    /// 按 Esc 或按一下取消。取消時回傳 None
     pub async fn snip_delayed(self: &Arc<Self>, config: &RecordConfig, sec: u64) -> crate::Result<Option<crate::types::ShotInfo>> {
         if sec > 0 && !countdown(sec).await {
             crate::info!("[截圖] 取消延遲截圖");
@@ -1094,7 +1166,7 @@ impl App {
         }
     }
 
-    /// 凍結畫面讓使用者框選一塊（或點一下選視窗），把那塊的像素（RGBA）交給 f 處理；取消時 None
+    /// 凍結畫面讓使用者框選一塊（或按一下選視窗），把那塊的像素（RGBA）交給 f 處理；取消時 None
     #[cfg(windows)]
     async fn snip_pixels<T: Send + 'static>(
         self: &Arc<Self>,
@@ -1136,7 +1208,7 @@ impl App {
         res
     }
 
-    /// 長截圖：框選範圍（或點一下選視窗）後，自動一邊往下捲一邊擷取，接成一張長圖，
+    /// 長截圖：框選範圍（或按一下選視窗）後，自動一邊往下捲一邊擷取，接成一張長圖，
     /// 存成新的截圖並複製到剪貼簿。捲到底、畫面對不起來、太長或按 Esc 時停止。只有 Windows
     pub async fn long_shot(self: &Arc<Self>, config: &RecordConfig) -> crate::Result<Option<crate::types::ShotInfo>> {
         #[cfg(not(windows))]
@@ -1190,7 +1262,7 @@ impl App {
         }
     }
 
-    /// 框選要錄影的範圍：與框選截圖相同的畫面（拖曳框選或點一下選視窗），回傳範圍（取消時 None），
+    /// 框選要錄影的範圍：與框選截圖相同的畫面（拖曳框選或按一下選視窗），回傳範圍（取消時 None），
     /// 也記成「上次框選」。只有 Windows 有原生的框選畫面
     pub async fn select_record_region(self: &Arc<Self>, config: &RecordConfig) -> crate::Result<Option<crate::types::Rect>> {
         {
@@ -1384,14 +1456,14 @@ impl App {
     /// 主畫面看得到、沒有被剪輯等視窗蓋住時，介面目前的錄影設定（介面每一格呼叫；看不到時 None）：
     /// 選了攝影機就先顯示小視窗，切換螢幕、範圍時小視窗馬上跟著移
     pub fn set_camera_preview(&self, config: Option<RecordConfig>) {
-        *self.camera_preview.lock().unwrap() = config;
+        *self.camera_preview.lock().unwrap_or_else(|e| e.into_inner()) = config;
     }
 
     /// 攝影機小視窗要顯示在哪裡、長什麼樣子（None = 不顯示）。
     /// 錄影中（含倒數、暫停）：這次錄影有攝影機時，用錄影的範圍；位置、大小、形狀用最新的設定
     /// （錄影中在設定裡改了也跟著變）。錄影前：主畫面看得到時，用介面目前的設定（先擺好位置與大小）
     pub fn camera_bubble_info(&self) -> Option<crate::camera_bubble::BubbleInfo> {
-        let preview = self.camera_preview.lock().unwrap().clone();
+        let preview = self.camera_preview.lock().unwrap_or_else(|e| e.into_inner()).clone();
         let device = |c: &crate::types::CameraConfig| !c.device.trim().is_empty();
         if let Some(rec) = self.recorder.camera_info() {
             let latest = preview.as_ref().and_then(|c| c.camera.clone()).or_else(|| self.settings.load().record_config().and_then(|c| c.camera));
@@ -1410,7 +1482,7 @@ impl App {
     /// 錄影控制列的樣式與位置（設定的 recBar、recBarPos）。控制列每 0.1 秒問一次：設定沒變就用上次讀到的
     pub fn rec_bar_prefs(&self) -> crate::types::RecBarPrefs {
         let rev = self.settings.rev();
-        let mut cache = self.rec_bar.lock().unwrap();
+        let mut cache = self.rec_bar.lock().unwrap_or_else(|e| e.into_inner());
         if cache.0 != rev {
             let ui = self.settings.load().ui;
             let get = |k: &str| ui.as_ref().and_then(|u| u.get(k)).cloned();
@@ -1797,11 +1869,11 @@ impl App {
 
     /// 等待中的排程錄影
     pub fn scheduled(&self) -> Option<crate::schedule::Schedule> {
-        self.schedule.lock().unwrap().clone()
+        self.schedule.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     pub fn cancel_schedule(&self) {
-        if self.schedule.lock().unwrap().take().is_some() {
+        if self.schedule.lock().unwrap_or_else(|e| e.into_inner()).take().is_some() {
             info!("[排程] 已取消");
         }
         self.schedule_gen.fetch_add(1, Ordering::SeqCst);
@@ -1813,7 +1885,7 @@ impl App {
         use crate::schedule::{describe, title};
         let gen = self.schedule_gen.fetch_add(1, Ordering::SeqCst) + 1;
         info!("[排程] {}", describe(&s, chrono::Local::now()));
-        *self.schedule.lock().unwrap() = Some(s.clone());
+        *self.schedule.lock().unwrap_or_else(|e| e.into_inner()) = Some(s.clone());
         let _awake = crate::power::keep_awake(false);
         loop {
             if self.schedule_gen.load(Ordering::SeqCst) != gen || self.quitting.load(Ordering::SeqCst) {
@@ -1824,7 +1896,7 @@ impl App {
             }
             tokio::time::sleep(Duration::from_millis(500)).await;
         }
-        self.schedule.lock().unwrap().take();
+        self.schedule.lock().unwrap_or_else(|e| e.into_inner()).take();
         let config = s.record_config();
         match crate::actions::record_start(self, config).await {
             Ok(()) => {
@@ -1973,7 +2045,7 @@ impl App {
         let mut child = cmd.spawn().ok()?;
         let out = child.stdout.take()?;
         let slot = Arc::new(Mutex::new(Some(child)));
-        *self.live.lock().unwrap() = Some(slot.clone());
+        *self.live.lock().unwrap_or_else(|e| e.into_inner()) = Some(slot.clone());
         Some((out, LiveGuard(slot), dims))
     }
 
@@ -1983,8 +2055,8 @@ impl App {
     }
 
     fn kill_live(&self) {
-        if let Some(slot) = self.live.lock().unwrap().take() {
-            if let Some(mut c) = slot.lock().unwrap().take() {
+        if let Some(slot) = self.live.lock().unwrap_or_else(|e| e.into_inner()).take() {
+            if let Some(mut c) = slot.lock().unwrap_or_else(|e| e.into_inner()).take() {
                 let _ = c.start_kill();
             }
         }
@@ -2001,11 +2073,11 @@ impl App {
         self.kill_live();
         self.downloader.cancel();
         tokio::join!(self.recorder.shutdown(), self.exporter.shutdown());
-        let dispose = self.tray_dispose.lock().unwrap().take();
+        let dispose = self.tray_dispose.lock().unwrap_or_else(|e| e.into_inner()).take();
         if let Some(d) = dispose {
             let _ = tokio::task::spawn_blocking(d).await;
         }
-        let exiter = self.exiter.lock().unwrap().clone();
+        let exiter = self.exiter.lock().unwrap_or_else(|e| e.into_inner()).clone();
         match exiter {
             Some(e) => e(code),
             None => std::process::exit(code),
@@ -2088,7 +2160,7 @@ pub struct LiveGuard(Arc<Mutex<Option<tokio::process::Child>>>);
 
 impl Drop for LiveGuard {
     fn drop(&mut self) {
-        if let Some(mut c) = self.0.lock().unwrap().take() {
+        if let Some(mut c) = self.0.lock().unwrap_or_else(|e| e.into_inner()).take() {
             let _ = c.start_kill();
         }
     }
@@ -2098,7 +2170,7 @@ impl Drop for LiveGuard {
 #[cfg(windows)]
 type LongCapture = (crate::longshot::LongImage, usize, Option<crate::longshot::Step>);
 
-/// 倒數 sec 秒；回傳 false = 取消（Windows：畫面上方顯示倒數，按 Esc 或點一下取消）
+/// 倒數 sec 秒；回傳 false = 取消（Windows：畫面上方顯示倒數，按 Esc 或按一下取消）
 async fn countdown(sec: u64) -> bool {
     #[cfg(windows)]
     {
@@ -2111,14 +2183,14 @@ async fn countdown(sec: u64) -> bool {
     }
 }
 
-/// 延遲截圖的倒數：「3」秒後框選截圖（先打開要截的選單・按 Esc 或點一下取消）
+/// 延遲截圖的倒數：「3」秒後框選截圖（先開啟要截的選單・按 Esc 或按一下取消）
 #[cfg(windows)]
 fn countdown_bubble(sec: u64) -> bool {
     use crate::bubble::Content;
     use crate::bubble_win::{Bubble, Options};
     let content = |n: u64| Content {
         big: Some(n.to_string()),
-        lines: vec![tr!("秒後框選截圖", "s until you select an area").into(), tr!("先打開要截的選單或提示・按 Esc 或點一下取消", "Open the menu or tooltip now · Esc or click to cancel").into()],
+        lines: vec![tr!("秒後框選截圖", "s until you select an area").into(), tr!("先開啟要截的選單或提示・按 Esc 或按一下取消", "Open the menu or tooltip now · Esc or click to cancel").into()],
         buttons: vec![],
     };
     let bubble = Bubble::show(content(sec), Options { clickable: true, esc: true, near: None, bottom: false, on: None });
