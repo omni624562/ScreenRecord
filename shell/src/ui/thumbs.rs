@@ -235,6 +235,22 @@ pub fn scrub_preview(app: &mut UiApp, ui: &eframe::egui::Ui, hover: eframe::egui
     strip_box(ui.ctx(), near, strip, ((pos.x - hover.min.x) / hover.width().max(1.0)) as f64, duration);
 }
 
+/// 滑過預覽直接畫在縮圖上（最近錄影的卡片）：游標在 hover 上左右移動時記下那個時間點的畫面，接著用 paint_scrub 畫；
+/// 不能預覽（不是 MP4、長條圖做不出來）時回傳 false
+pub fn scrub_here(app: &mut UiApp, ui: &eframe::egui::Ui, hover: eframe::egui::Rect, path: &str, mtime: f64, duration: f64) -> bool {
+    let Some(pos) = ui.ctx().pointer_hover_pos().filter(|p| hover.contains(*p)) else { return false };
+    if !(duration.is_finite() && duration > 0.0) || !path.to_ascii_lowercase().ends_with(".mp4") {
+        return false;
+    }
+    let strip = app.thumb_strip(path, mtime, duration);
+    if strip.is_none() && matches!(app.thumbs.strips.peek(&(path.to_string(), mtime as u64)), Some(Thumb::Failed(_))) {
+        return false;
+    }
+    let (image, aspect, t) = strip_frame(strip.as_ref(), ((pos.x - hover.min.x) / hover.width().max(1.0)) as f64, duration);
+    set_scrub(ui.ctx(), Scrub { key: path.to_string(), image, aspect, t, duration });
+    true
+}
+
 /// 用長條圖（STRIP_FRAMES 格）浮出 frac（0～1）處的畫面
 fn strip_box(ctx: &eframe::egui::Context, near: eframe::egui::Rect, strip: Option<TextureHandle>, frac: f64, duration: f64) {
     let (image, aspect, t) = strip_frame(strip.as_ref(), frac, duration);
