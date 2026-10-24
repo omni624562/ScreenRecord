@@ -641,6 +641,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         d.suggest.open = false;
     }
     let mut grid_size = app.s.shot_grid_size;
+    let mut vid_size = app.s.lib_video_size;
     let modal = egui::Modal::new(Id::new("library")).frame(theme::modal_frame(ctx)).show(ctx, |ui| {
         let p = theme::pal(ui);
         ui.set_width(size.x - 40.0);
@@ -850,17 +851,21 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
             }
             super::toolbar::Part::Right(compact) => {
                 let btn = |text: &str, icon: Icon, tip: &str| super::toolbar::button(text, icon, compact, tip);
-                if shot {
-                    // 縮圖大小（小的一頁放比較多張；也可以在縮圖上按住 Ctrl 轉滾輪）
-                    let mut size = grid_size;
-                    let tip = tr!(
-                        "縮圖大小：小的一次看得到比較多張。也可以在縮圖上按住 Ctrl 轉滾輪調整",
-                        "Thumbnail size: smaller shows more at once. You can also hold Ctrl and turn the mouse wheel over the thumbnails"
-                    );
-                    if super::toolbar::view_switch(ui, &mut size, &[(0u8, tr!("小", "S")), (1, tr!("中", "M")), (2, tr!("大", "L"))], compact, tip) {
+                // 縮圖大小（小的一次看得到比較多；也可以在縮圖上按住 Ctrl 轉滾輪）。錄影是表格，那一列跟著變高
+                let mut size = if shot { grid_size } else { vid_size };
+                let tip = tr!(
+                    "縮圖大小：小的一次看得到比較多。也可以在縮圖上按住 Ctrl 轉滾輪調整",
+                    "Thumbnail size: smaller shows more at once. You can also hold Ctrl and turn the mouse wheel over the thumbnails"
+                );
+                if super::toolbar::view_switch(ui, &mut size, &[(0u8, tr!("小", "S")), (1, tr!("中", "M")), (2, tr!("大", "L"))], compact, tip) {
+                    if shot {
                         grid_size = size;
+                    } else {
+                        vid_size = size;
                     }
-                    ui.add_space(10.0);
+                }
+                ui.add_space(10.0);
+                if shot {
                     // 用點的找（瀏覽欄）、月曆
                     if btn(
                         tr!("用點的找", "Browse"),
@@ -961,7 +966,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
             };
             shot_grid(app, ui, &mut d, grid, &dir, &mut req, &mut grid_size);
         } else {
-            video_table(app, ui, &mut d, table, &dir, &mut req);
+            video_table(app, ui, &mut d, table, &dir, &mut req, &mut vid_size);
         }
         // 看得到的縮圖都排好了，再排下一批的
         if !d.loading {
@@ -1135,8 +1140,9 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
             selection_links(fui, &mut d, shot, &app.core.pins);
         }
     });
-    if grid_size != app.s.shot_grid_size {
+    if grid_size != app.s.shot_grid_size || vid_size != app.s.lib_video_size {
         app.s.shot_grid_size = grid_size;
+        app.s.lib_video_size = vid_size;
         app.save_settings();
     }
     let covered = d.overlay();
@@ -1305,9 +1311,15 @@ fn row_keys(app: &UiApp, ui: &egui::Ui, d: &mut LibraryDialog, rows: &[LibraryEn
 
 /// 錄影：表格（標題列固定，下面用捲軸，捲到快底時讀下一批；只畫看得到的列）。
 /// 依日期分組：每天第一筆在「日期」欄寫「今天」「昨天」「10/08（三）」，其餘只寫時間
-fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table: Rect, dir: &str, req: &mut Option<Req>) {
+/// 錄影的表格。size：縮圖大小（0 小、1 中、2 大），主列跟著變高
+#[allow(clippy::too_many_arguments)]
+fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table: Rect, dir: &str, req: &mut Option<Req>, size: &mut u8) {
     let p = theme::pal(ui);
     let head_h = 30.0;
+    grid_zoom(ui, d, table, size);
+    let thumb_size = video_thumb(*size);
+    // 主列高度：縮圖上下各留約 5 像素（小的時候和原本一樣）
+    let main_h = (thumb_size.y + 11.0).max(LIBRARY_ROW_MAIN_PX as f32);
     // 右邊留捲軸的位置（捲軸浮在內容上，不留的話會蓋住操作按鈕）
     let table = Rect::from_min_max(table.min, pos2(table.max.x - 10.0, table.max.y));
     let rows = d.rows.clone();
@@ -1369,7 +1381,7 @@ fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table:
     // 子列的「4× 加速版」標籤比縮圖加時間寬時，整頁的檔名一起往右移，上下才切齊
     let chip_w = |t: &str| ui.fonts_mut(|f| f.layout_no_wrap(t.to_string(), theme::font_bold(12.0), p.text).size().x) + 14.0;
     let badge_w = rows.iter().flat_map(|e| &e.exports).map(|x| chip_w(&export_label(x))).fold(0.0, f32::max);
-    let name_x = (col_x(2) + 4.0 + 53.0 + 10.0 + time_w + 12.0).max(col_x(2) + 48.0 + badge_w + 10.0);
+    let name_x = (col_x(2) + 4.0 + thumb_size.x + 10.0 + time_w + 12.0).max(col_x(2) + 48.0 + badge_w + 10.0);
     let today = chrono::Local::now().date_naive();
     let mut last_day = None;
     // 標記欄（媒體庫、剪輯版、沒有聲音）：這一頁有那種標記才留位置，檔名才不會被擠得太短
@@ -1381,7 +1393,7 @@ fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table:
         empty_list(ui, d, table, dir, req, tr!("這個資料夾還沒有錄影。", "No recordings in this folder yet."), tr!("沒有符合條件的錄影。", "No matching recordings."), can);
     }
     // 每一筆（含加速版、說過的話子列）的高度
-    let heights: Vec<f32> = rows.iter().map(|e| LIBRARY_ROW_MAIN_PX as f32 + (e.exports.len() + e.hits.len().min(LIBRARY_HITS_SHOWN)) as f32 * LIBRARY_ROW_SUB_PX as f32).collect();
+    let heights: Vec<f32> = rows.iter().map(|e| main_h + (e.exports.len() + e.hits.len().min(LIBRARY_HITS_SHOWN)) as f32 * LIBRARY_ROW_SUB_PX as f32).collect();
     let total = d.data.as_ref().map(|x| x.total).unwrap_or(0);
     let more = rows.len() < total;
     let content_h = heights.iter().sum::<f32>() + if more { 40.0 } else { 0.0 };
@@ -1410,12 +1422,12 @@ fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table:
                     y += heights[ri];
                     continue;
                 }
-                let row = Rect::from_min_size(pos2(table.min.x, y), vec2(table.width(), LIBRARY_ROW_MAIN_PX as f32));
+                let row = Rect::from_min_size(pos2(table.min.x, y), vec2(table.width(), main_h));
                 // 整列可按右鍵（所有操作的選單）；按一下記住這一列（鍵盤 Delete、F2、Enter 操作它）
                 let resp = ui.interact(row.shrink2(vec2(0.0, 1.0)), Id::new(("librow", &e.media.path)), drag_sense());
                 // 子列（加速版）也算在這一列的範圍內：滑鼠在子列上時，原片的按鈕也亮起來
                 let sub_rows = e.exports.len() + e.hits.len().min(LIBRARY_HITS_SHOWN);
-                let group = Rect::from_min_size(row.min, vec2(row.width(), LIBRARY_ROW_MAIN_PX as f32 + sub_rows as f32 * LIBRARY_ROW_SUB_PX as f32));
+                let group = Rect::from_min_size(row.min, vec2(row.width(), main_h + sub_rows as f32 * LIBRARY_ROW_SUB_PX as f32));
                 let hot = ui.rect_contains_pointer(group);
                 let audio = is_audio_file(&e.media.name);
                 let fresh = d.fresh.as_deref() == Some(e.media.path.as_str());
@@ -1504,7 +1516,7 @@ fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table:
                 }
                 // 檔案欄：縮圖（按一下播放）、時間、檔名（資料夾裡看到的名稱），右邊是剪輯版、有聲音
                 let name_rect = Rect::from_min_max(pos2(col_x(2), row.min.y), pos2(col_x(3), row.max.y));
-                let thumb = Rect::from_min_size(pos2(name_rect.min.x + 4.0, row.center().y - 15.0), vec2(53.0, 30.0));
+                let thumb = Rect::from_min_size(pos2(name_rect.min.x + 4.0, row.center().y - thumb_size.y / 2.0), thumb_size);
                 let tresp = ui.interact(thumb, Id::new(("libthumb", &e.media.path)), drag_sense()).on_hover_cursor(egui::CursorIcon::PointingHand);
                 if resp.drag_started_by(egui::PointerButton::Primary) || tresp.drag_started_by(egui::PointerButton::Primary) {
                     d.drag_out = Some(drag_list(d, &e.media.path));
@@ -1516,17 +1528,20 @@ fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table:
                     theme::paint_thumb(&painter, thumb, &t);
                 }
                 if tresp.hovered() {
-                    // 滑鼠移上去：縮圖上出現播放鍵；影片在旁邊浮出預覽，左右移動看不同時間的畫面；停住約 1 秒就在縮圖裡靜音播放
+                    // 滑鼠移上去：縮圖上出現播放鍵；左右移動看不同時間的畫面（中、大縮圖在原位置，小的浮在旁邊）；停住約 1 秒就在縮圖裡靜音播放
                     let mp4 = !audio && e.media.path.to_ascii_lowercase().ends_with(".mp4");
                     let dur = e.media.duration_sec.unwrap_or(0.0);
                     let size = (e.media.width.unwrap_or(0), e.media.height.unwrap_or(0));
                     let fps = e.media.fps.unwrap_or(0.0);
                     let playing = mp4 && !tresp.dragged() && super::hover_play::hover(ui.ctx(), &e.media.path, thumb, dur, |_| super::thumbs::hover_player(app, &e.media.path, dur, fps, size));
-                    if !super::hover_play::paint(&painter, &e.media.path, thumb, 4) {
+                    // 中、大縮圖：左右移動時縮圖本身換成那個時間點的畫面；小縮圖太小，預覽浮在旁邊
+                    let scrub = !audio && !tresp.dragged() && !playing;
+                    let here = scrub && thumb_size.x > 60.0 && super::thumbs::scrub_here(app, ui, thumb, &e.media.path, e.media.mtime, dur);
+                    if !super::hover_play::paint(&painter, &e.media.path, thumb, 4) && !(here && super::thumbs::paint_scrub(&painter, &e.media.path, thumb, 4)) {
                         painter.rect_filled(thumb, CornerRadius::same(4), Color32::from_black_alpha(90));
                         theme::paint_icon(&painter, Rect::from_center_size(thumb.center() + vec2(1.0, 0.0), vec2(16.0, 16.0)), Icon::Play, Color32::WHITE);
                     }
-                    if !audio && !tresp.dragged() && !playing {
+                    if scrub && thumb_size.x <= 60.0 {
                         super::thumbs::scrub_preview(app, ui, thumb, thumb, &e.media.path, e.media.mtime, dur);
                     }
                 }
@@ -1650,7 +1665,7 @@ fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table:
                         *req = Some(Req::Entry(a, e.clone()));
                     }
                 }
-                y += LIBRARY_ROW_MAIN_PX as f32;
+                y += main_h;
                 // 加速版 / GIF 子列
                 for x in &e.exports {
                     let row = Rect::from_min_size(pos2(table.min.x, y), vec2(table.width(), LIBRARY_ROW_SUB_PX as f32));
@@ -2320,6 +2335,15 @@ fn star_button(ui: &mut egui::Ui, rect: Rect, id: Id, pinned: bool, show: bool, 
     theme::paint_icon(ui.painter(), icon_rect, if pinned { Icon::StarOn } else { Icon::Star }, color);
     if r.clicked() {
         *req = Some(Req::Pin(path.to_string(), !pinned));
+    }
+}
+
+/// 錄影表格的縮圖大小（0 小、1 中、2 大），16:9
+fn video_thumb(size: u8) -> Vec2 {
+    match size {
+        0 => vec2(53.0, 30.0),
+        1 => vec2(107.0, 60.0),
+        _ => vec2(160.0, 90.0),
     }
 }
 
