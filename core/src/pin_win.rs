@@ -1,7 +1,7 @@
 //! 釘在桌面（Windows）：把圖變成浮在最上層的小視窗，方便對照著打字或填表。
 //! 每張圖一個視窗（各自的執行緒與訊息迴圈），不靠操作視窗，操作視窗關到系統匣也還在。
-//! 拖曳移動、滾輪縮放、點兩下或 Esc 關閉；滑鼠移上去時右上角有 ✕；右鍵選單：複製、原尺寸、關閉。
-//! 剛釘上時下方顯示 3 秒「拖曳移動・滾輪縮放・點兩下關閉」。
+//! 拖曳移動、滾輪縮放、按兩下或 Esc 關閉；滑鼠移上去時右上角有 ✕；右鍵選單：複製、原尺寸、關閉。
+//! 剛釘上時下方顯示 3 秒「拖曳移動・滾輪縮放・按兩下關閉」。
 //! 圖的像素是實體像素（截圖就是實體像素），原尺寸顯示時和截圖時一樣大。
 
 use crate::tr;
@@ -244,7 +244,7 @@ unsafe fn overlay(hdc: HDC, rc: &RECT, p: &Pin) {
     if p.hint {
         let font = CreateFontW(-((13.0 * s) as i32), 0, 0, 0, FW_NORMAL.0 as i32, 0, 0, 0, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, 0, w!("Microsoft JhengHei UI"));
         let old = SelectObject(hdc, font.into());
-        let mut text: Vec<u16> = tr!("拖曳移動・滾輪縮放・點兩下關閉", "Drag to move · Scroll to zoom · Double-click to close").encode_utf16().collect();
+        let mut text: Vec<u16> = tr!("拖曳移動・滾輪縮放・按兩下關閉", "Drag to move · Scroll to zoom · Double-click to close").encode_utf16().collect();
         let mut sz = SIZE::default();
         let _ = GetTextExtentPoint32W(hdc, &text, &mut sz);
         let (pw, ph) = (sz.cx + (24.0 * s) as i32, sz.cy + (12.0 * s) as i32);

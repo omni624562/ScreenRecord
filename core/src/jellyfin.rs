@@ -160,7 +160,7 @@ impl Jellyfin {
         library_check(&libs, root.as_deref())
     }
 
-    /// 一鍵修好媒體庫設定：媒體庫資料夾所在的「家庭影片和照片」媒體庫打開即時監控、擷取章節圖片、時間軸預覽縮圖；
+    /// 自動修正媒體庫設定：媒體庫資料夾所在的「家庭影片和照片」媒體庫開啟即時監控、擷取章節圖片、時間軸預覽縮圖；
     /// 沒有這種媒體庫時新建一個指到同一個資料夾。回傳做了什麼
     pub fn fix_library(&self) -> Result<String, String> {
         let root = self.server_root().ok_or_else(|| {
@@ -199,8 +199,8 @@ impl Jellyfin {
             self.call_body(agent().post(&format!("{}/Library/VirtualFolders/LibraryOptions", self.url)), &serde_json::json!({ "Id": id, "LibraryOptions": opts }).to_string())?;
         }
         let names: Vec<&str> = home.iter().filter_map(|l| l.get("Name").and_then(Value::as_str)).collect();
-        crate::info!("[Jellyfin] 打開媒體庫選項：{}", names.join("、"));
-        Ok(trf!("已打開「{}」的即時監控、擷取章節圖片、時間軸預覽縮圖", "Turned on real-time monitoring, chapter images and trickplay for “{}”", names.join("、")))
+        crate::info!("[Jellyfin] 開啟媒體庫選項：{}", names.join("、"));
+        Ok(trf!("已開啟「{}」的即時監控、擷取章節圖片、時間軸預覽縮圖", "Turned on real-time monitoring, chapter images and trickplay for “{}”", names.join("、")))
     }
 
     /// 測試連線：成功回傳「伺服器名稱（版本）」
@@ -341,13 +341,13 @@ impl Jellyfin {
         Ok(())
     }
 
-    /// 拿掉這支影片在 Jellyfin 的封面（橫幅圖、縮圖也拿掉；本來就沒有的不算錯）
+    /// 移除這支影片在 Jellyfin 的封面（橫幅圖、縮圖也移除；本來就沒有的不算錯）
     pub fn remove_cover(&self, id: &str) -> Result<(), String> {
         for kind in ["Primary", "Backdrop", "Thumb"] {
             match self.auth(agent().delete(&format!("{}/Items/{id}/Images/{kind}", self.url))).call() {
                 Ok(_) | Err(ureq::Error::Status(404, _)) => {}
                 Err(e) if kind == "Primary" => return Err(describe(&e)),
-                Err(e) => crate::info!("[Jellyfin] 拿掉 {kind} 圖失敗：{}", describe(&e)),
+                Err(e) => crate::info!("[Jellyfin] 移除 {kind} 圖失敗：{}", describe(&e)),
             }
         }
         Ok(())
@@ -419,7 +419,7 @@ impl Jellyfin {
         self.call(req).map(|_| ())
     }
 
-    /// 從合集或播放清單拿掉（影片本身不刪）：合集用影片編號，播放清單用清單裡那一筆的編號（JfItem::entry）
+    /// 從合集或播放清單移除（影片本身不刪）：合集用影片編號，播放清單用清單裡那一筆的編號（JfItem::entry）
     pub fn remove_from_list(&self, kind: JfList, list: &str, items: &[JfItem]) -> Result<(), String> {
         let req = match kind {
             JfList::Collection => agent().delete(&format!("{}/Collections/{list}/Items", self.url)).query("ids", &items.iter().map(|i| i.id.as_str()).collect::<Vec<_>>().join(",")),
@@ -721,7 +721,8 @@ impl Jellyfin {
     /// 把全部影片裡的一個人物或標籤改成另一個寫法（「常用」裡寫錯的改正確；改成已經有的就是合併）。
     /// from 只差前後空白、大小寫、全形半形的寫法一起改；一支一支取回整筆資料換上去再存，其他資訊不動。
     /// progress(改好幾支, 全部幾支)；有幾支失敗時其他照改，最後回報失敗的。回傳改了幾支
-    pub fn rename_name(&self, user: &str, kind: NameKind, from: &str, to: &str, progress: &dyn Fn(usize, usize)) -> Result<usize, String> {
+    /// progress 回傳 false 就停（取消；改好的保留，再改一次會接著改完剩下的）
+    pub fn rename_name(&self, user: &str, kind: NameKind, from: &str, to: &str, progress: &dyn Fn(usize, usize) -> bool) -> Result<usize, String> {
         forget_lacking();
         let to = to.trim();
         if to.is_empty() {
@@ -732,11 +733,14 @@ impl Jellyfin {
         progress(0, total);
         let (mut done, mut failed) = (0usize, vec![]);
         for (i, id) in ids.iter().enumerate() {
+            if i > 0 && !progress(i, total) {
+                break;
+            }
             let r = self.change_item(user, id, |body| with_renamed(body, kind, from, to));
             match r {
                 Ok(()) => done += 1,
                 Err(e) => {
-                    crate::info!("[Jellyfin] 改名「{from}」→「{to}」，影片 {id} 沒改到：{e}");
+                    crate::info!("[Jellyfin] 重新命名「{from}」→「{to}」，影片 {id} 沒改到：{e}");
                     failed.push(e);
                 }
             }
@@ -748,13 +752,17 @@ impl Jellyfin {
         }
     }
 
-    /// 好幾支影片一起加、拿掉人物和標籤、改年份（勾選好幾支 →「整理人物、標籤…」）：一支一支取回整筆資料、
-    /// 只換這次改的再存回去。progress(改好幾支, 全部幾支)；有幾支失敗時其他照改，最後回報失敗的。回傳改了幾支
-    pub fn edit_many(&self, user: &str, ids: &[String], edit: &BatchEdit, progress: &dyn Fn(usize, usize)) -> Result<usize, String> {
+    /// 好幾支影片一起加、移除人物和標籤、改年份（勾選好幾支 →「整理人物、標籤…」）：一支一支取回整筆資料、
+    /// 只換這次改的再存回去。progress(改好幾支, 全部幾支) 回傳 false 就停（取消；已經改的不還原）；
+    /// 有幾支失敗時其他照改，最後回報失敗的。回傳改了幾支
+    pub fn edit_many(&self, user: &str, ids: &[String], edit: &BatchEdit, progress: &dyn Fn(usize, usize) -> bool) -> Result<usize, String> {
         let total = ids.len();
         progress(0, total);
         let (mut done, mut failed) = (0usize, vec![]);
         for (i, id) in ids.iter().enumerate() {
+            if i > 0 && !progress(i, total) {
+                break;
+            }
             match self.change_item(user, id, |body| with_batch(body, edit)) {
                 Ok(()) => done += 1,
                 Err(e) => {
@@ -873,7 +881,7 @@ impl Jellyfin {
         match self.auth(agent().delete(&format!("{}/Items/{id}", self.url))).call() {
             Ok(_) => Ok(()),
             Err(ureq::Error::Status(401 | 403, _)) => {
-                Err(tr!("Jellyfin 不允許刪除：到 Jellyfin 控制台 → 使用者，打開「允許刪除媒體」", "Jellyfin doesn't allow deleting: in the Jellyfin Dashboard → Users, turn on “Allow media deletion”")
+                Err(tr!("Jellyfin 不允許刪除：到 Jellyfin 控制台 → 使用者，開啟「允許刪除媒體」", "Jellyfin doesn't allow deleting: in the Jellyfin Dashboard → Users, turn on “Allow media deletion”")
                     .into())
             }
             Err(e) => Err(describe(&e)),
@@ -955,7 +963,7 @@ impl Jellyfin {
         self.call(agent().post(&format!("{}/ScheduledTasks/Running/{id}", self.url))).map(|_| ())
     }
 
-    /// 有沒有任何一個媒體庫打開了「時間軸預覽縮圖」（Trickplay）
+    /// 有沒有任何一個媒體庫開啟了「時間軸預覽縮圖」（Trickplay）
     fn trickplay_enabled(&self) -> bool {
         self.call(agent().get(&format!("{}/Library/VirtualFolders", self.url))).ok().and_then(|r| r.into_string().ok()).is_some_and(|libs| library_option_on(&libs, "EnableTrickplayImageExtraction"))
     }
@@ -1003,7 +1011,7 @@ impl Jellyfin {
         }
     }
 
-    /// 請 Jellyfin 產生章節縮圖（執行「擷取章節圖片」排程工作）。回傳媒體庫有沒有打開「擷取章節圖片」（沒打開時工作不會做）
+    /// 請 Jellyfin 產生章節縮圖（執行「擷取章節圖片」排程工作）。回傳媒體庫有沒有開啟「擷取章節圖片」（沒開啟時工作不會做）
     pub fn chapter_images(&self) -> Result<bool, String> {
         let tasks = self.call(agent().get(&format!("{}/ScheduledTasks?isHidden=false", self.url)))?.into_string().map_err(|e| e.to_string())?;
         let id = task_id(&tasks, "RefreshChapterImages").ok_or_else(|| tr!("這版 Jellyfin 沒有「擷取章節圖片」工作", "This Jellyfin has no chapter image task").to_string())?;
@@ -1080,7 +1088,7 @@ impl Jellyfin {
                 }
             });
         }
-        // 時間軸預覽縮圖（10.9 以後）：媒體庫有打開才做，沒打開時設定裡的「一鍵修好」會打開。做的時候畫面右下角顯示進度
+        // 時間軸預覽縮圖（10.9 以後）：媒體庫有開啟才做，沒開啟時設定裡的「自動修正」會開啟。做的時候畫面右下角顯示進度
         if self.trickplay_enabled() && self.run_task("RefreshTrickplayImages").is_ok() {
             notes.push(tr!("正在做時間軸預覽縮圖", "making trickplay previews").into());
             let (jf, name) = (self.clone(), file_name.to_string());
@@ -1089,7 +1097,7 @@ impl Jellyfin {
         if extras.chapters {
             notes.push(match self.chapter_images() {
                 Ok(true) => tr!("正在做章節縮圖", "making chapter thumbnails").into(),
-                Ok(false) => tr!("要做章節縮圖請在 Jellyfin 的媒體庫設定打開「擷取章節圖片」", "turn on “Extract chapter images” in the Jellyfin library settings for chapter thumbnails").into(),
+                Ok(false) => tr!("要做章節縮圖請在 Jellyfin 的媒體庫設定開啟「擷取章節圖片」", "turn on “Extract chapter images” in the Jellyfin library settings for chapter thumbnails").into(),
                 Err(e) => {
                     crate::warn!("[Jellyfin] 章節縮圖：{e}");
                     trf!("章節縮圖沒有做：{e}", "no chapter thumbnails: {e}")
@@ -1283,7 +1291,7 @@ pub fn with_details(item_json: &str, x: &Extras) -> Option<String> {
     if !x.people.is_empty() {
         o.insert("People".into(), x.people.iter().map(|n| serde_json::json!({ "Name": n, "Type": "Actor" })).collect());
     }
-    // 只給大人看：R 級（兒童帳號設最高分級就看不到）；拿掉時清掉我們設的 R
+    // 只給大人看：R 級（兒童帳號設最高分級就看不到）；移除時清掉我們設的 R
     if x.adult {
         o.insert("OfficialRating".into(), Value::from("R"));
     } else if o.get("OfficialRating").and_then(Value::as_str) == Some("R") {
@@ -1305,7 +1313,7 @@ pub fn task_id(json: &str, key: &str) -> Option<String> {
     v.as_array()?.iter().find(|t| t.get("Key").and_then(Value::as_str) == Some(key)).and_then(|t| t.get("Id").and_then(Value::as_str)).map(String::from)
 }
 
-/// 有沒有任何一個媒體庫打開了「擷取章節圖片」
+/// 有沒有任何一個媒體庫開啟了「擷取章節圖片」
 /// 排程工作正在做時的進度（0–100）；沒在做時 None
 pub fn task_progress(json: &str, key: &str) -> Option<f64> {
     let v: Value = serde_json::from_str(json).ok()?;
@@ -1460,7 +1468,7 @@ pub struct JfItem {
     pub year: Option<i32>,
     /// 檔案大小（位元組；不知道時 0）
     pub size: u64,
-    /// 在播放清單裡時，這一筆在清單裡的編號（從播放清單拿掉用；同一支影片可以在清單裡好幾次）；其他時候空的
+    /// 在播放清單裡時，這一筆在清單裡的編號（從播放清單移除用；同一支影片可以在清單裡好幾次）；其他時候空的
     pub entry: String,
 }
 
@@ -1729,7 +1737,7 @@ pub struct Usage {
     pub no_tags: usize,
 }
 
-/// 「常用」改名時改的是人物還是標籤
+/// 「常用」重新命名時改的是人物還是標籤
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NameKind {
     Person,
@@ -1796,7 +1804,7 @@ fn lacking_in(json: &str, lacking: &[NameKind], keep: &mut Vec<Value>) -> (usize
     (got, v.get("TotalRecordCount").and_then(Value::as_u64).unwrap_or(0) as usize)
 }
 
-/// 好幾支影片一起整理（Jellyfin 分頁勾選好幾支 →「整理人物、標籤…」）：要加、要拿掉的人物和標籤，年份
+/// 好幾支影片一起整理（Jellyfin 分頁勾選好幾支 →「整理人物、標籤…」）：要加、要移除的人物和標籤，年份
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct BatchEdit {
     pub add_people: Vec<String>,
@@ -1813,7 +1821,7 @@ impl BatchEdit {
     }
 }
 
-/// 把 BatchEdit 套進一支影片的整筆資料（POST /Items/{id} 用）：只加、只拿掉這次改的，其他人物、標籤不動；
+/// 把 BatchEdit 套進一支影片的整筆資料（POST /Items/{id} 用）：只加、只移除這次改的，其他人物、標籤不動；
 /// 比對時只差前後空白、大小寫、全形半形的算同一個（已經有的不會再加一個）
 pub fn with_batch(item_json: &str, e: &BatchEdit) -> Option<String> {
     let mut v: Value = serde_json::from_str(item_json).ok()?;
@@ -2094,7 +2102,7 @@ pub fn with_info(item_json: &str, x: &JfInfo) -> Option<String> {
 }
 
 /// 設年份：首映日期跟著換成這一年（月日不變）：Jellyfin 的家庭影片頁面顯示的是首映日期，只改年份會看不出來。
-/// 年份清空時首映日期也清掉（對話框沒年份時顯示的就是首映日期的年，不清掉下次打開又出現）
+/// 年份清空時首映日期也清掉（對話框沒年份時顯示的就是首映日期的年，不清掉下次開啟又出現）
 fn set_year(o: &mut serde_json::Map<String, Value>, year: Option<i32>) {
     o.insert("ProductionYear".into(), year.map_or(Value::Null, Value::from));
     match year {
@@ -2145,7 +2153,7 @@ fn played_items(json: &str) -> Vec<(String, String)> {
         .unwrap_or_default()
 }
 
-/// 上次同步時 Jellyfin 我的最愛裡的檔名（小寫）：比對出新加的、拿掉的，本機的星號跟著改。存在設定資料夾的 jellyfin-favorites.json
+/// 上次同步時 Jellyfin 我的最愛裡的檔名（小寫）：比對出新加的、移除的，本機的星號跟著改。存在設定資料夾的 jellyfin-favorites.json
 static FAVS: std::sync::Mutex<Option<(Option<std::path::PathBuf>, std::collections::BTreeSet<String>)>> = std::sync::Mutex::new(None);
 
 pub fn init_favorites(file: std::path::PathBuf) {
@@ -2158,7 +2166,7 @@ pub fn init_favorites(file: std::path::PathBuf) {
     *g = Some((Some(file), set));
 }
 
-/// 和上次比：(新加進我的最愛的, 拿掉的)，並記下這次的
+/// 和上次比：(新加進我的最愛的, 移除的)，並記下這次的
 pub fn favorites_changed(now: &std::collections::HashSet<String>) -> (Vec<String>, Vec<String>) {
     let mut g = FAVS.lock().unwrap_or_else(|e| e.into_inner());
     let (file, prev) = g.get_or_insert_with(|| (None, Default::default()));
@@ -2292,11 +2300,11 @@ fn covers(l: &Value, root: &str) -> bool {
     l.get("Locations").and_then(Value::as_array).is_some_and(|a| a.iter().filter_map(Value::as_str).map(norm).any(|loc| under(&root, &loc) || under(&loc, &root)))
 }
 
-/// 一鍵修好要打開的媒體庫選項：即時監控、擷取章節圖片（含掃描時）、時間軸預覽縮圖（含掃描時）
+/// 自動修正要開啟的媒體庫選項：即時監控、擷取章節圖片（含掃描時）、時間軸預覽縮圖（含掃描時）
 const GOOD_OPTIONS: [&str; 5] =
     ["EnableRealtimeMonitor", "EnableChapterImageExtraction", "ExtractChapterImagesDuringLibraryScan", "EnableTrickplayImageExtraction", "ExtractTrickplayImagesDuringLibraryScan"];
 
-/// 媒體庫選項打開 GOOD_OPTIONS（其他照原樣）
+/// 媒體庫選項開啟 GOOD_OPTIONS（其他照原樣）
 fn with_good_options(opts: &Value) -> Value {
     let mut o = if opts.is_object() { opts.clone() } else { serde_json::json!({}) };
     if let Some(m) = o.as_object_mut() {
@@ -2307,7 +2315,7 @@ fn with_good_options(opts: &Value) -> Value {
     o
 }
 
-/// 有沒有任何一個媒體庫打開了這個選項
+/// 有沒有任何一個媒體庫開啟了這個選項
 fn library_option_on(vf_json: &str, key: &str) -> bool {
     serde_json::from_str::<Value>(vf_json)
         .ok()
@@ -2316,7 +2324,7 @@ fn library_option_on(vf_json: &str, key: &str) -> bool {
 }
 
 /// /Library/VirtualFolders 的回應裡，包含 server_root 的媒體庫設定對不對：類型是不是「家庭影片和照片」、
-/// 即時監控、章節圖片、時間軸預覽縮圖有沒有打開。server_root 不知道時（媒體庫還沒有影片）看不出來，None
+/// 即時監控、章節圖片、時間軸預覽縮圖有沒有開啟。server_root 不知道時（媒體庫還沒有影片）看不出來，None
 pub fn library_check(vf_json: &str, server_root: Option<&str>) -> Option<LibraryCheck> {
     let root = server_root?;
     let v: Value = serde_json::from_str(vf_json).ok()?;
@@ -2345,7 +2353,7 @@ pub fn library_check(vf_json: &str, server_root: Option<&str>) -> Option<Library
             "{}{}",
             notes.join(tr!("；", "; ")),
             tr!(
-                "：錄影會被當成電影或影集去網路上找資訊，可能配錯封面、名稱。按「一鍵修好」新建一個「家庭影片和照片」媒體庫",
+                "：錄影會被當成電影或影集去網路上找資訊，可能配錯封面、名稱。按「自動修正」新建一個「家庭影片和照片」媒體庫",
                 ". Recordings get matched like films or episodes and may get the wrong cover or title. Click “Fix it” to create a Home Videos and Photos library"
             )
         );
@@ -2364,7 +2372,7 @@ pub fn library_check(vf_json: &str, server_root: Option<&str>) -> Option<Library
     }
     let off = off.join(tr!("、", ", "));
     Some(LibraryCheck {
-        note: trf!("媒體庫「{names}」是家庭影片和照片，但{off}沒打開：按「一鍵修好」打開", "Library “{names}” is Home Videos and Photos, but {off} is off. Click “Fix it” to turn it on"),
+        note: trf!("媒體庫「{names}」是家庭影片和照片，但{off}沒開啟：按「自動修正」開啟", "Library “{names}” is Home Videos and Photos, but {off} is off. Click “Fix it” to turn it on"),
         ok: false,
     })
 }
@@ -2491,7 +2499,7 @@ pub fn sync_edited(jf: Option<&Jellyfin>, copy_to: &str, video: &std::path::Path
             return None;
         };
         if let Some(msg) = jf.and_then(|jf| update_in_place(jf, &name, edit, extras, cover)) {
-            // 兩邊的大小不一樣了：記下來，「已在媒體庫」、跟著改名、刪除照樣認得
+            // 兩邊的大小不一樣了：記下來，「已在媒體庫」、跟著重新命名、刪除照樣認得
             if let (Ok(a), Ok(b)) = (std::fs::metadata(video), std::fs::metadata(dest)) {
                 remember_link(&name, a.len(), b.len());
             }
@@ -2595,7 +2603,7 @@ pub fn remember_link(name: &str, local: u64, lib: u64) {
     })
 }
 
-/// 本機改名後，記下的對照也換成新名稱
+/// 本機重新命名後，記下的對照也換成新名稱
 pub fn rename_link(old: &str, new: &str) {
     let (old, new) = (old.to_lowercase(), new.to_lowercase());
     with_links(|list| {
@@ -2643,7 +2651,7 @@ pub fn send_file(jf: Option<&Jellyfin>, copy_to: &str, file: &std::path::Path, e
         if files.is_empty() {
             crate::warn!("[傳到資料夾] 找不到 {}", file.display());
             return Some(Err(trf!(
-                "找不到「{name}」，可能已經改名或刪掉了：請在清單上重新找到這支再傳",
+                "找不到「{name}」，可能已經重新命名或刪掉了：請在清單上重新找到這支再傳",
                 "Couldn't find “{name}”; it may have been renamed or deleted. Find it in the list again and resend"
             )));
         }
@@ -2757,7 +2765,7 @@ fn library_dirs(copy_to: &str) -> Vec<(std::path::PathBuf, String)> {
     out
 }
 
-/// 檔案本來就放在媒體庫（最上層或底下任何一層，不含 NAS 的系統資料夾）裡：改名、刪除就是改到媒體庫那一份
+/// 檔案本來就放在媒體庫（最上層或底下任何一層，不含 NAS 的系統資料夾）裡：重新命名、刪除就是改到媒體庫那一份
 pub fn in_library(copy_to: &str, file: &std::path::Path) -> bool {
     let copy_to = copy_to.trim();
     if copy_to.is_empty() {
@@ -2816,7 +2824,7 @@ pub fn library_index(copy_to: &str) -> std::collections::HashMap<String, Vec<(St
 }
 
 /// 媒體庫裡屬於這個檔案的那一份：同名（size 有給時大小也一樣）的影片，和同一個資料夾裡它的字幕（同名.srt、同名.zh-TW.srt…）。
-/// 找最上層和底下每一層；檔案本來就在媒體庫裡時是同一份，回傳空的；file 不用還在（改名、刪除之後也查得到）
+/// 找最上層和底下每一層；檔案本來就在媒體庫裡時是同一份，回傳空的；file 不用還在（重新命名、刪除之後也查得到）
 pub fn library_copies(copy_to: &str, file: &std::path::Path, size: Option<u64>) -> Vec<std::path::PathBuf> {
     if copy_to.trim().is_empty() || in_library(copy_to, file) {
         return vec![];
@@ -2853,7 +2861,7 @@ fn copies_in(dirs: &[(std::path::PathBuf, String)], file: &std::path::Path, size
     out
 }
 
-/// 改名後：媒體庫裡那一份（連同字幕）也換成新名稱；回傳改好的檔案（新名稱）。改名不會改內容：用新檔案的大小比對，別的資料夾裡剛好同名的不動
+/// 重新命名後：媒體庫裡那一份（連同字幕）也換成新名稱；回傳改好的檔案（新名稱）。重新命名不會改內容：用新檔案的大小比對，別的資料夾裡剛好同名的不動
 pub fn rename_copies(copy_to: &str, old: &std::path::Path, new: &std::path::Path) -> Result<Vec<std::path::PathBuf>, String> {
     let (Some(old_stem), Some(new_stem)) = (old.file_stem(), new.file_stem()) else { return Ok(vec![]) };
     let skip = old_stem.to_string_lossy().chars().count();
@@ -2867,7 +2875,7 @@ pub fn rename_copies(copy_to: &str, old: &std::path::Path, new: &std::path::Path
             return Err(trf!("Jellyfin 的資料夾裡已經有「{}」", "The Jellyfin folder already has “{}”", to.file_name().unwrap_or_default().to_string_lossy()));
         }
         std::fs::rename(&f, &to).map_err(|e| crate::error::plain(&e))?;
-        crate::info!("[傳到資料夾] 跟著改名：{} → {}", f.display(), to.display());
+        crate::info!("[傳到資料夾] 跟著重新命名：{} → {}", f.display(), to.display());
         done.push(to);
     }
     if !done.is_empty() {
@@ -2978,7 +2986,7 @@ pub(crate) fn stream_agent() -> ureq::Agent {
     agent_long()
 }
 
-/// 不跟著轉址走：ureq 轉址時只拿掉 Authorization，X-Emby-Token（API 金鑰）會跟著送到別的主機。
+/// 不跟著轉址走：ureq 轉址時只移除 Authorization，X-Emby-Token（API 金鑰）會跟著送到別的主機。
 /// 寫入也設逾時（上傳封面、字幕時伺服器不收資料不會一直等）
 fn agent_with(read: Duration) -> ureq::Agent {
     let b = ureq::AgentBuilder::new().timeout_connect(Duration::from_secs(8)).timeout_read(read).timeout_write(Duration::from_secs(60)).redirects(0);
@@ -3299,7 +3307,7 @@ mod tests {
         assert!(!in_library(&copy_to, &lib.join("#recycle/Rec.mp4")) && !in_library(&copy_to, &lib.join("family/@eaDir/Rec.mp4")));
         assert!(!in_library(&copy_to, &rec.join("Rec.mp4")));
 
-        // 改名只動同大小的那一份，baseball 裡的別支不動
+        // 重新命名只動同大小的那一份，baseball 裡的別支不動
         std::fs::rename(rec.join("Rec.mp4"), rec.join("練琴.mp4")).unwrap();
         assert_eq!(rename_copies(&copy_to, &rec.join("Rec.mp4"), &rec.join("練琴.mp4")).unwrap().len(), 2);
         assert!(lib.join("family/2024/活動/練琴.mp4").is_file() && lib.join("family/2024/活動/練琴.zh-TW.srt").is_file() && lib.join("baseball/Rec.mp4").is_file());
@@ -3512,7 +3520,7 @@ mod tests {
         assert!(same_copy("J3封面.MP4", 10, 3));
         assert_eq!(library_copies(&copy_to, &video, Some(10)), vec![lib.join("family/j3封面.mp4")]);
         assert_eq!(linked_sizes("j3封面.mp4", 3), vec![10]);
-        // 改名跟著走
+        // 重新命名跟著走
         let renamed = local.join("j3新名.mp4");
         std::fs::rename(&video, &renamed).unwrap();
         assert_eq!(rename_copies(&copy_to, &video, &renamed).unwrap(), vec![lib.join("family/j3新名.mp4")]);
@@ -3590,7 +3598,7 @@ mod tests {
         assert_eq!(fixed["Other"], 1);
         assert!(library_option_on(vf, "EnableChapterImageExtraction") && !library_option_on(vf, "EnableTrickplayImageExtraction"));
 
-        // 一鍵修好：已經是家庭影片 → 打開選項
+        // 自動修正：已經是家庭影片 → 開啟選項
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join("x")).unwrap();
         std::fs::write(dir.path().join("x/a.mp4"), "x").unwrap();
@@ -3640,7 +3648,7 @@ mod tests {
         assert_eq!(item["People"][1]["Name"], "小明");
         assert_eq!(item["People"][0]["Type"], "Actor");
         assert_eq!(item["OfficialRating"], "R");
-        // 拿掉「只給大人看」：清掉 R；別的分級不動
+        // 移除「只給大人看」：清掉 R；別的分級不動
         let kid = Extras { title: "t".into(), ..Default::default() };
         let item: Value = serde_json::from_str(&with_details(r#"{"OfficialRating":"R"}"#, &kid).unwrap()).unwrap();
         assert_eq!(item["OfficialRating"], "");
@@ -3815,7 +3823,7 @@ mod tests {
         let v: Value = serde_json::from_str(&with_info(dated, &JfInfo { year: Some(2019), ..Default::default() }).unwrap()).unwrap();
         assert_eq!((v["ProductionYear"].as_i64(), v["PremiereDate"].as_str()), (Some(2019), Some("2019-05-01T10:00:00.0000000Z")));
         assert_eq!(v["Name"], "生日");
-        // 清掉年份：首映日期也清掉，下次打開不會又出現
+        // 清掉年份：首映日期也清掉，下次開啟不會又出現
         let v: Value = serde_json::from_str(&with_info(dated, &JfInfo::default()).unwrap()).unwrap();
         assert!(v["ProductionYear"].is_null() && v["PremiereDate"].is_null());
         assert_eq!(info_of(&v.to_string()).unwrap().year, None);
@@ -3859,7 +3867,7 @@ mod tests {
             year: Some(Some(2024)),
         };
         let v: Value = serde_json::from_str(&with_batch(item, &e).unwrap()).unwrap();
-        // 已經有的（寫法只差空白、全形半形）不再加；拿掉的只拿掉那一個；導演不是演員，拿掉人物時不動
+        // 已經有的（寫法只差空白、全形半形）不再加；移除的只移除那一個；導演不是演員，移除人物時不動
         assert_eq!(v["Tags"], serde_json::json!(["無碼", "素人", "ＶＲ"]));
         assert_eq!(v["People"], serde_json::json!([{"Name":"小美","Type":"Actor","Id":"p1"},{"Name":"導演","Type":"Director"},{"Name":"小明","Type":"Actor"}]));
         assert_eq!(v["ProductionYear"], 2024);
@@ -3924,7 +3932,7 @@ mod tests {
         assert_eq!(t["Tags"], serde_json::json!(["無碼", "素人"]));
         assert_eq!(t["Name"], "x");
         let p: Value = serde_json::from_str(&with_renamed(item, NameKind::Person, " 小美", "小美美").unwrap()).unwrap();
-        // 演員改名後和已經有的重複：只留一個；導演不動
+        // 演員重新命名後和已經有的重複：只留一個；導演不動
         assert_eq!(p["People"], serde_json::json!([{"Name":"小美美","Type":"Actor"},{"Name":"導演","Type":"Director"}]));
         assert!(spelling_diff("無碼\u{200b}", "無碼").unwrap().contains("U+200B"));
         assert!(spelling_diff("無碼", "無碼\u{200b}").is_some());
@@ -3939,7 +3947,12 @@ mod tests {
         let (url, h) = serve_seq(vec![("200 OK", list), ("200 OK", item), ("204 No Content", String::new())]);
         let jf = Jellyfin::new(&url, "k").unwrap();
         let seen = std::sync::Mutex::new(vec![]);
-        let n = jf.rename_name("u", NameKind::Tag, "無碼", "無碼", &|d, t| seen.lock().unwrap_or_else(|e| e.into_inner()).push((d, t))).unwrap();
+        let n = jf
+            .rename_name("u", NameKind::Tag, "無碼", "無碼", &|d, t| {
+                seen.lock().unwrap_or_else(|e| e.into_inner()).push((d, t));
+                true
+            })
+            .unwrap();
         assert_eq!(n, 1);
         assert_eq!(*seen.lock().unwrap_or_else(|e| e.into_inner()), vec![(0, 1), (1, 1)]);
         let got = h.join().unwrap();

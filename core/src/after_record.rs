@@ -271,7 +271,7 @@ impl App {
     /// 錄影存好之後（由錄影器呼叫）：依設定處理，完成時用系統匣通知
     pub async fn after_record(self: Arc<Self>, video: String) {
         let ui = self.settings.load().ui;
-        // 命名規則：先改名，之後做出來的檔案（剪輯版、壓縮版、字幕）都接在新的名稱後面
+        // 命名規則：先重新命名，之後做出來的檔案（剪輯版、壓縮版、字幕）都接在新的名稱後面
         let rule = ui.as_ref().and_then(|u| u.get(NAME_RULE_KEY)).and_then(Value::as_str).unwrap_or("").to_string();
         let renamed = match crate::actions::apply_name_rule(&self, &video, &rule).await {
             Some(p) => {
@@ -445,7 +445,7 @@ impl App {
             let extras = crate::jellyfin::Extras::read(self.ffmpeg_path().as_deref(), Path::new(&src)).await;
             let r = tokio::task::spawn_blocking(move || copy_results(&src, out.as_deref(), Path::new(&dest))).await.unwrap_or_else(|e| Err(e.to_string()));
             let (ok, note) = match r {
-                // 一個檔案都沒有（例如錄影被移走、改名）：當成失敗，不請 Jellyfin 等一支不存在的影片
+                // 一個檔案都沒有（例如錄影被移走、重新命名）：當成失敗，不請 Jellyfin 等一支不存在的影片
                 Ok(copied) if copied.is_empty() => {
                     warn!("[錄完自動處理] 沒有可以複製的檔案：{}", waiting.join("、"));
                     (false, trf!("沒有複製到「{}」：找不到錄影檔", "couldn't copy to “{}”: the recording wasn't found", folder_name(&after.copy_to)))
@@ -604,7 +604,7 @@ impl App {
             if cut >= 1.0 {
                 self.after_step(tr!("剪掉沒動靜的片段", "Cutting idle parts").into());
                 let spec = EditSpec { start: 0.0, end: dur, removed: ranges.clone(), ..Default::default() };
-                // 剪輯設定（與剪輯視窗相同的格式）：之後在剪輯視窗打開剪輯版可以再改
+                // 剪輯設定（與剪輯視窗相同的格式）：之後在剪輯視窗開啟剪輯版可以再改
                 let project = crate::annotate::ProjectData {
                     v: 1,
                     duration: dur,
@@ -825,7 +825,7 @@ mod tests {
         let a = AfterRecord::from_ui(Some(&serde_json::json!({ "afterCopyTo": " D:\\Sync " })));
         assert_eq!(a.copy_to, "D:\\Sync");
         assert!(a.any());
-        // 只設定媒體庫資料夾、沒打開「處理完傳到媒體庫」：不複製
+        // 只設定媒體庫資料夾、沒開啟「處理完傳到媒體庫」：不複製
         let a = AfterRecord::from_ui(Some(&serde_json::json!({ "afterCopyTo": "D:\\Sync", "afterCopy": false })));
         assert!(a.copy_to.is_empty() && !a.any());
         // 錄完自動傳到媒體庫的子資料夾（例如 other）

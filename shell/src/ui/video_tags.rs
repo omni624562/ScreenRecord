@@ -44,7 +44,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
     let Some(mut d) = app.video_tags.take() else { return };
     let mut close = false;
     let mut save = false;
-    // 以前用過的類型，加上這支影片原本的（點一下加入或拿掉）
+    // 以前用過的類型，加上這支影片原本的（按一下加入或移除）
     let mut known = app.s.genres.clone();
     for g in d.orig.as_ref().and_then(|o| o.get("genre")).map(|g| video_tags::split_genres(g)).unwrap_or_default() {
         if !known.iter().any(|k| k.to_lowercase() == g.to_lowercase()) {
@@ -170,7 +170,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
     app.video_tags = Some(d);
 }
 
-/// 類型欄下面的小標籤：以前用過的類型，點一下加入或拿掉（已選的反白）
+/// 類型欄下面的小標籤：以前用過的類型，按一下加入或移除（已選的反白）
 fn genre_chips(ui: &mut egui::Ui, value: &mut String, known: &[String]) {
     if known.is_empty() {
         return;
@@ -181,7 +181,7 @@ fn genre_chips(ui: &mut egui::Ui, value: &mut String, known: &[String]) {
         ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
         for g in known {
             let on = chosen.iter().any(|c| c.to_lowercase() == g.to_lowercase());
-            let tip = if on { tr!("點一下拿掉", "Click to remove") } else { tr!("點一下加入", "Click to add") };
+            let tip = if on { tr!("按一下移除", "Click to remove") } else { tr!("按一下加入", "Click to add") };
             if theme::chip(ui, g, if on { theme::Tone::Accent } else { theme::Tone::Plain }, true).on_hover_text(tip).clicked() {
                 toggled = Some((g.clone(), on));
             }

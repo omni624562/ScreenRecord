@@ -43,9 +43,9 @@ pub fn button(app: &mut UiApp, ui: &mut Ui) {
     let label = label(app, current);
     let modified = last_used(app).filter(|_| current.is_none());
     let tip = match (current, modified) {
-        (Some(i), _) => trf!("目前是「{}」設定組合。點一下切換或管理組合", "Using the “{}” preset. Click to switch or manage presets", app.presets[i].name),
+        (Some(i), _) => trf!("目前是「{}」設定組合。按一下切換或管理組合", "Using the “{}” preset. Click to switch or manage presets", app.presets[i].name),
         (None, Some(i)) => trf!(
-            "目前的設定和「{}」組合不一樣了。點一下可以更新這個組合、切換或管理組合",
+            "目前的設定和「{}」組合不一樣了。按一下可以更新這個組合、切換或管理組合",
             "The current settings differ from the “{}” preset. Click to update it, switch or manage presets",
             app.presets[i].name
         ),
@@ -202,7 +202,7 @@ fn save_now(app: &mut UiApp, name: &str) {
 
 fn rename_preset(app: &mut UiApp, i: usize) {
     let Some(old) = app.presets.get(i).map(|p| p.name.clone()) else { return };
-    app.ask = Some(Ask::input(tr!("重新命名設定組合", "Rename preset"), tr!("新名稱", "New name"), old.clone(), tr!("改名", "Rename"), move |app, value| {
+    app.ask = Some(Ask::input(tr!("重新命名設定組合", "Rename preset"), tr!("新名稱", "New name"), old.clone(), tr!("重新命名", "Rename"), move |app, value| {
         let Some(name) = presets::clean_name(&value) else {
             rename_preset(app, i);
             if let Some(a) = &mut app.ask {
@@ -219,7 +219,7 @@ fn rename_preset(app: &mut UiApp, i: usize) {
         }
         let mut list = app.presets.clone();
         if let Some(p) = list.get_mut(i) {
-            // 改的是上次用的組合：跟著改名
+            // 改的是上次用的組合：跟著重新命名
             if p.name == app.s.preset_name {
                 app.s.preset_name = name.clone();
                 app.save_settings();

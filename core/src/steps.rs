@@ -1,4 +1,4 @@
-//! 步驟截圖：開始後每點一下滑鼠就截一張（標出點的位置），完成後先在操作視窗整理（刪掉、調整順序），
+//! 步驟截圖：開始後每按一下滑鼠就截一張（標出點的位置），完成後先在操作視窗整理（刪掉、調整順序），
 //! 再做成一份教學文件（HTML）：每個步驟一段說明與一張圖，圖片都包在同一個檔案裡（單獨傳給別人也看得到）。
 //! 說明可以直接在瀏覽器裡修改，再列印成 PDF 或複製到 Word。
 
@@ -68,13 +68,13 @@ fn esc(s: &str) -> String {
     s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
 }
 
-/// 步驟的說明：「在「視窗」點一下」
+/// 步驟的說明：「在「視窗」按一下」
 pub fn caption(window: &str) -> String {
     let w = window.trim();
     if w.is_empty() {
-        tr!("點一下", "Click").into()
+        tr!("按一下", "Click").into()
     } else {
-        trf!("在「{w}」點一下", "Click in “{w}”")
+        trf!("在「{w}」按一下", "Click in “{w}”")
     }
 }
 
@@ -95,7 +95,7 @@ pub fn html(title: &str, date: &str, steps: &[Step], srcs: &[String]) -> String 
     let (d, n) = (esc(date), steps.len());
     let meta = if crate::i18n::is_en() { format!("{d} · {n} step{}", if n == 1 { "" } else { "s" }) } else { format!("{d}・共 {n} 個步驟") };
     let tip = tr!(
-        "文字可以直接點一下修改（例如補上要輸入什麼）。在瀏覽器裡改的文字不會自動存檔：改好後用瀏覽器的「列印」存成 PDF，或全選複製貼到 Word。圖片都包在這個檔案裡，單獨傳給別人也看得到。",
+        "文字可以直接按一下修改（例如補上要輸入什麼）。在瀏覽器裡改的文字不會自動存檔：改好後用瀏覽器的「列印」存成 PDF，或全選複製貼到 Word。圖片都包在這個檔案裡，單獨傳給別人也看得到。",
         "Click any text to edit it (e.g. add what to type). Changes made in the browser aren't saved automatically: when you're done, use the browser's “Print” to save it as a PDF, or select all and paste it into Word. The pictures are inside this file, so you can send it on its own."
     );
     format!(
@@ -153,7 +153,7 @@ pub fn bar(count: u32, confirm: bool) -> crate::bubble::Content {
     let head = if en { format!("Capturing steps · {count} captured") } else { format!("步驟截圖中・已截 {count} 步") };
     crate::bubble::Content {
         big: None,
-        lines: vec![head, tr!("每點一下滑鼠就截一張", "Each mouse click takes a screenshot").into()],
+        lines: vec![head, tr!("每按一下滑鼠就截一張", "Each mouse click takes a screenshot").into()],
         buttons: vec![(BAR_FINISH, tr!("完成", "Finish").into(), true), (BAR_CANCEL, tr!("取消", "Cancel").into(), false)],
     }
 }
@@ -408,7 +408,7 @@ mod tests {
         let mut pm = tiny_skia::Pixmap::new(800, 500).unwrap();
         pm.fill(tiny_skia::Color::from_rgba8(240, 240, 240, 255));
         pm.save_png(&shot).unwrap();
-        let f = video_frame(&shot, 1, "在「記事本」點一下", 640, 360).unwrap();
+        let f = video_frame(&shot, 1, "在「記事本」按一下", 640, 360).unwrap();
         // 上方是截圖（淺色）、下方說明列是深色背景
         assert!(f.pixel(320, 150).unwrap().red() > 200 && f.pixel(5, 355).unwrap().red() < 60);
         assert_eq!(step_secs(3.0, None), 3.0);
@@ -441,8 +441,8 @@ mod tests {
         let h = html("登入流程", "2026/10/10", &steps, &["data:image/png;base64,AAAA".into(), "b.png".into()]);
         assert!(h.contains("<title>登入流程</title>"));
         assert!(h.contains("共 2 個步驟"));
-        assert!(h.contains("<b>步驟 1</b>　在「設定 &lt;進階&gt;」點一下"));
-        assert!(h.contains("<b>步驟 2</b>　點一下"));
+        assert!(h.contains("<b>步驟 1</b>　在「設定 &lt;進階&gt;」按一下"));
+        assert!(h.contains("<b>步驟 2</b>　按一下"));
         assert!(h.contains("src=\"data:image/png;base64,AAAA\""));
         assert!(h.contains("contenteditable=\"true\""));
         assert!(h.contains("在瀏覽器裡改的文字不會自動存檔"));

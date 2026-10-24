@@ -25,7 +25,7 @@ pub struct FaceDlg {
     saving: bool,
 }
 
-/// 打開（frame 是正在看的這一格；people 是這支影片的人物與它們在伺服器上的編號）
+/// 開啟（frame 是正在看的這一格；people 是這支影片的人物與它們在伺服器上的編號）
 pub fn open(app: &mut UiApp, frame: Pixmap, people: Vec<(Option<String>, String)>) {
     let img = egui::ColorImage::from_rgba_premultiplied([frame.width() as usize, frame.height() as usize], frame.data());
     let tex = app.ctx.load_texture("jf-face-frame", img, egui::TextureOptions::LINEAR);

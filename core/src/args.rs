@@ -252,7 +252,7 @@ pub struct FallbackInput<'a> {
 /// 第一張畫面之前就失敗時該退回哪一項：依錯誤訊息判斷是編碼器還是擷取（ddagrab）出問題。
 /// 判斷不出來時，先退擷取方式（較常見），之後若仍失敗再退編碼器。
 pub fn startup_fallback(o: &FallbackInput) -> StartupFallback {
-    // 顯示卡處理是最新、最依賴驅動的一環：先拿掉它再試，其他設定不變
+    // 顯示卡處理是最新、最依賴驅動的一環：先移除它再試，其他設定不變
     if o.gpu_convert_in_use {
         return StartupFallback::CpuConvert;
     }
@@ -2352,7 +2352,7 @@ dummy: Immediate exit requested";
         assert_eq!(graphs[1], "[1:a]asplit=3[sa0][sa1][sa2];[sa0]pan=stereo|c0=c0|c1=c1[amix];[sa1]pan=stereo|c0=c2|c1=c3[asys];[sa2]pan=stereo|c0=c4|c1=c5[amic]");
         assert!(j.contains("-map [vout] -map [amix] -map [asys] -map [amic] -c:a aac"), "{j}");
         assert!(j.contains("-metadata:s:a:2 handler_name=麥克風") && j.contains("-disposition:a:0 default -metadata:s:a:1"), "{j}");
-        // 只錄一個來源、或沒打開分軌：一條音軌
+        // 只錄一個來源、或沒開啟分軌：一條音軌
         assert!(!RecordConfig { audio: AudioConfig { mic: false, ..both.clone() }, ..c.clone() }.separate_tracks());
         let one = segment_args(&plan, &RecordConfig { separate_audio: false, ..c }, CaptureMethod::Gdigrab, &x264(), "o.mp4", Some(&audio_in), None).unwrap();
         assert!(one.join(" ").contains("-map [vout] -map 1:a -c:a aac") && !one.join(" ").contains("asplit"));
@@ -2662,7 +2662,7 @@ dummy: Immediate exit requested";
         assert_eq!(after(&args, "-vf"), "select='gte(t,1)*lt(t,2)+gte(t,4)*lt(t,5.5)',setpts=N/(30*TB),crop=200:160:40:40,format=yuv420p");
         assert_eq!(after(&args, "-af"), "aselect='gte(t,1)*lt(t,2)+gte(t,4)*lt(t,5.5)',asetpts=N/SR/TB");
         let no_audio = cut_args("in.mp4", "out.mp4", &[Part::new(0.0, 3.0, 1.0)], None, 30.0, &x264(), false, &[], AudioFx::default(), None, None, None, None, None, false).unwrap();
-        // 降噪、音量平衡接在剪輯後面；不要聲音時整個拿掉
+        // 降噪、音量平衡接在剪輯後面；不要聲音時整個移除
         let fx = cut_args(
             "in.mp4",
             "out.mp4",

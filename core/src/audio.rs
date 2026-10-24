@@ -25,7 +25,7 @@ pub struct AudioSourceSpec {
     pub loopback: bool,
     /// 麥克風裝置 ID；空字串 = 預設麥克風
     pub mic_id: String,
-    /// 系統聲音只錄這個程式（執行檔名稱，例如 chrome.exe；含它開的子程序）；空字串 = 全部
+    /// 系統聲音只錄這個程式（執行檔名稱，例如 chrome.exe；含它開的子處理程序）；空字串 = 全部
     pub app: String,
 }
 
@@ -154,7 +154,7 @@ mod win {
 
     impl IAgileObject_Impl for Activated_Impl {}
 
-    /// 只錄某個程式（和它開的子程序）播放的聲音（process loopback；較舊的 Windows 不支援）
+    /// 只錄某個程式（和它開的子處理程序）播放的聲音（process loopback；較舊的 Windows 不支援）
     fn process_loopback(pid: u32) -> Result<IAudioClient, String> {
         use std::mem::ManuallyDrop;
         use windows::Win32::System::Com::StructuredStorage::{PROPVARIANT, PROPVARIANT_0, PROPVARIANT_0_0, PROPVARIANT_0_0_0};

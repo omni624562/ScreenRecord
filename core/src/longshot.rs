@@ -293,7 +293,7 @@ impl Stitcher {
         let strips = strips(&cols);
         let prev = Grid::new(&self.last, w, h, &strips);
         let cells = Grid::new(&next, w, h, &strips);
-        // 固定的頁尾與先留著的列：第一次捲動時決定，先從接好的內容拿掉，最後再從最後一張接上
+        // 固定的頁尾與先留著的列：第一次捲動時決定，先從接好的內容移除，最後再從最後一張接上
         let (f, e) = match self.hold {
             Some(fe) => fe,
             None => {
@@ -452,7 +452,7 @@ mod tests {
 
     #[test]
     fn stitches_window_with_fixed_toolbar_and_sidebar() {
-        // 點一下選整個瀏覽器視窗：上面的分頁列與網址列、左邊的側欄都不會動
+        // 按一下選整個瀏覽器視窗：上面的分頁列與網址列、左邊的側欄都不會動
         let (w, h, head, side, long_h) = (240u32, 160u32, 30u32, 40u32, 700u32);
         let long = page(w, long_h);
         let max_top = long_h - (h - head);

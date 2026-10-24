@@ -267,7 +267,7 @@ pub fn find(ffmpeg: &Path, videos: &[JfVideo], stream_url: impl Fn(&str) -> Stri
     for (id, e) in got.into_inner().unwrap() {
         cache.prints.insert(id, e);
     }
-    // 伺服器上已經沒有的拿掉
+    // 伺服器上已經沒有的移除
     let ids: std::collections::HashSet<&str> = videos.iter().map(|v| v.id.as_str()).collect();
     cache.prints.retain(|id, _| ids.contains(id.as_str()));
     if let Ok(t) = serde_json::to_string(&cache) {

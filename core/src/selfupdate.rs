@@ -1,6 +1,6 @@
 //! 程式內更新：下載新版 exe、核對大小與 SHA-256（由 GitHub Release 提供），再取代自己。
 //!
-//! Windows 不能覆寫執行中的 exe，但可以改名：目前的 exe 改名為 `.old`，新版放到原本的位置，
+//! Windows 不能覆寫執行中的 exe，但可以重新命名：目前的 exe 重新命名為 `.old`，新版放到原本的位置，
 //! 接著啟動新版並結束自己；新版啟動時等舊的結束，再刪掉 `.old`。
 
 use crate::types::UpdateInfo;
@@ -184,7 +184,7 @@ impl Installer {
     }
 }
 
-/// 目前的 exe 改名為 .old、新版放到原位置；失敗時還原
+/// 目前的 exe 重新命名為 .old、新版放到原位置；失敗時還原
 fn swap(exe: &Path, new: &Path) -> Result<(), String> {
     let old = sibling(exe, ".old");
     let _ = std::fs::remove_file(&old);

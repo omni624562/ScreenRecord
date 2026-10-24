@@ -53,7 +53,7 @@ pub fn plain(e: &std::io::Error) -> String {
             "沒有權限（檔案可能是唯讀、被其他程式開著，或這個資料夾不能寫入）",
             "Permission denied (the file may be read-only or open in another program, or the folder can't be written to)"
         ),
-        (NotFound, _) => crate::tr!("找不到檔案或資料夾（可能被移走、改名或刪掉了）", "The file or folder wasn't found (it may have been moved, renamed or deleted)"),
+        (NotFound, _) => crate::tr!("找不到檔案或資料夾（可能被移走、重新命名或刪掉了）", "The file or folder wasn't found (it may have been moved, renamed or deleted)"),
         (AlreadyExists, _) => crate::tr!("已經有同名的檔案", "A file with that name already exists"),
         (TimedOut, _) => crate::tr!("等太久沒有回應（網路磁碟可能斷線了）", "No response for too long (a network drive may have disconnected)"),
         (ReadOnlyFilesystem, _) => crate::tr!("這個磁碟是唯讀的，不能寫入", "This drive is read-only"),

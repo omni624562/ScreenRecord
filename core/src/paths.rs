@@ -141,7 +141,7 @@ pub fn is_windows_abs(p: &str) -> bool {
     (b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && b[2] == b'\\') || p.starts_with("\\\\")
 }
 
-/// 安全地寫入整個檔案：先寫到同一個資料夾的暫存檔、寫進磁碟（sync）再改名取代，
+/// 安全地寫入整個檔案：先寫到同一個資料夾的暫存檔、寫進磁碟（sync）再重新命名取代，
 /// 寫到一半當機、停電時原本的檔案還在，不會變成空的或只剩一半
 pub fn write_atomic(path: &Path, data: &[u8]) -> std::io::Result<()> {
     use std::io::Write;

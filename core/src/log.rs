@@ -1,4 +1,4 @@
-//! 記錄檔：%LOCALAPPDATA%\ScreenRecorder\ScreenRecorder.log（超過 1 MB 時改名為 .old.log 重新開始）。
+//! 記錄檔：%LOCALAPPDATA%\ScreenRecorder\ScreenRecorder.log（超過 1 MB 時重新命名為 .old.log 重新開始）。
 //! 隱藏主控台的版本看不到訊息，出問題時可從這裡查。同時也輸出到 stderr。
 
 use crate::paths::data_dir;

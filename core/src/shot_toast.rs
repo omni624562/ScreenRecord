@@ -147,7 +147,7 @@ pub fn render(thumb: &Pixmap, scale: f32, hover: Option<Hit>, caption: &str, del
     if hover == Some(Hit::Image) && !deleted {
         let (w, h) = (100.0 * s, 26.0 * s);
         fill_round(&mut pm, (ix + (iw - w) / 2.0, iy + (ih - h) / 2.0, w, h), 13.0 * s, Color::from_rgba8(0, 0, 0, 170));
-        text(&mut pm, tr!("點一下編輯", "Click to edit"), ix + iw / 2.0, iy + ih / 2.0, 13.0 * s);
+        text(&mut pm, tr!("按一下編輯", "Click to edit"), ix + iw / 2.0, iy + ih / 2.0, 13.0 * s);
     }
     // 關閉
     let (cx, cy, r) = l.close;

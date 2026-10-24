@@ -1,11 +1,11 @@
 //! 時間軸（縮圖、保留 / 刪除的片段、頭尾把手、選取範圍、播放頭）、標註軌、放大時的捲軸。
 //!
-//! 時間軸：上方的尺規點一下或拖曳移動播放頭；縮圖上點一下只跳到那裡，拖曳是選取要刪除 / 加速的範圍
+//! 時間軸：上方的尺規按一下或拖曳移動播放頭；縮圖上按一下只跳到那裡，拖曳是選取要刪除 / 加速的範圍
 //! （選好後範圍上方有「刪除」「速度」按鈕；碰到開頭或結尾的刪除就是剪掉頭尾）；按兩下選取分割好的那一段。
-//! 拖曳黃色把手調整頭尾、拖曳上方橫條移動整段（照原樣排開時）。標記：點一下跳過去、按兩下改名。
+//! 拖曳黃色把手調整頭尾、拖曳上方橫條移動整段（照原樣排開時）。標記：按一下跳過去、按兩下重新命名。
 //! 按右鍵：在那裡分割、刪除 / 加速 / 還原那一段、設為開頭 / 結尾、加標記（按在標記、分割點上時可以刪掉它）。
 //! 滾輪：放大 / 縮小（以滑鼠位置為中心）；Shift 或左右滾動 = 平移。
-//! 標註軌：點一下選取（並跳到它出現的時間）；拖曳移動出現時間，拖曳兩端調整開始 / 結束；點空白處跳到該時間。
+//! 標註軌：按一下選取（並跳到它出現的時間）；拖曳移動出現時間，拖曳兩端調整開始 / 結束；點空白處跳到該時間。
 
 use super::{ann_color, hash_of, Drag, Edge, Editor, Tab, TlKind, VAct};
 use crate::ui::theme::{self, Btn};
@@ -21,8 +21,8 @@ use std::time::{Duration, Instant};
 
 pub const TL_H: f32 = 64.0;
 
-/// 時間軸的橫向座標：原片的時間 ↔ 畫面上的 x。沒打開「顯示刪掉的部分」時，刪掉的片段收起來（寬度 0），
-/// 時間軸只剩保留的部分，刪掉的地方是一條紅線；打開時照原片的時間平均排開
+/// 時間軸的橫向座標：原片的時間 ↔ 畫面上的 x。沒開啟「顯示刪掉的部分」時，刪掉的片段收起來（寬度 0），
+/// 時間軸只剩保留的部分，刪掉的地方是一條紅線；開啟時照原片的時間平均排開
 struct Axis {
     left: f32,
     width: f32,
@@ -105,7 +105,7 @@ impl Axis {
         self.cuts.iter().any(|&(r0, r1)| t >= r0 && t < r1)
     }
 }
-/// 縮圖上方的時間尺規（點一下或拖曳移動播放頭）
+/// 縮圖上方的時間尺規（按一下或拖曳移動播放頭）
 pub const RULER_H: f32 = 18.0;
 /// 標註軌固定高度（不隨標註數量變高，影片才不會在放置標註時跳動）；列多時每列變矮
 pub const AT_H: f32 = 70.0;
@@ -368,7 +368,7 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, toast: &mut
     let w = ui.available_width();
     let (a, b) = ed.view;
 
-    // ── 尺規（點一下或拖曳移動播放頭）與縮圖 ──
+    // ── 尺規（按一下或拖曳移動播放頭）與縮圖 ──
     let (all, resp) = ui.allocate_exact_size(vec2(w, RULER_H + TL_H), Sense::click_and_drag());
     let ruler = Rect::from_min_size(all.min, vec2(w, RULER_H));
     let rect = Rect::from_min_max(pos2(all.left(), ruler.bottom()), all.max);
@@ -387,7 +387,7 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, toast: &mut
             let x = x_of(t);
             rp.vline(x, ruler.bottom() - 5.0..=ruler.bottom(), Stroke::new(1.0, p.muted));
             if x - last_label >= 44.0 {
-                rp.text(pos2(x + 3.0, ruler.center().y - 1.0), Align2::LEFT_CENTER, tick_label(t, step), theme::mono(10.5), p.muted);
+                rp.text(pos2(x + 3.0, ruler.center().y - 1.0), Align2::LEFT_CENTER, tick_label(t, step), theme::mono(11.0), p.muted);
                 last_label = x;
             }
         }
@@ -426,7 +426,7 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, toast: &mut
     let trimmed_tip = |head: bool, t0: f64, t1: f64| {
         let what = if head { tr!("開頭", "the start") } else { tr!("結尾", "the end") };
         trf!(
-            "剪掉了{} {} – {}（{} 秒）・點一下還原・也可以拖曳黃色把手",
+            "剪掉了{} {} – {}（{} 秒）・按一下還原・也可以拖曳黃色把手",
             "Trimmed {} {} – {} ({} s) · click to restore · or drag the yellow handle",
             what,
             video_clock(t0),
@@ -462,7 +462,7 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, toast: &mut
                 pos2(r.left(), rect.top() + 14.0),
                 Cut::Removed(i),
                 trf!(
-                    "這裡刪掉了 {} – {}（{} 秒）・點一下還原・按眼睛「顯示刪掉的部分」可以展開來看",
+                    "這裡刪掉了 {} – {}（{} 秒）・按一下還原・按眼睛「顯示刪掉的部分」可以展開來看",
                     "{} – {} was removed here ({} s) · click to restore · turn on “Show removed parts” (the eye) to see it",
                     video_clock(r0),
                     video_clock(r1),
@@ -495,7 +495,7 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, toast: &mut
         let band = Rect::from_min_max(pos2(r.left(), r.bottom() - 14.0), pos2(r.right(), r.bottom() - 2.0));
         painter.rect_filled(band, CornerRadius::same(3), VOICE_MARK);
         let label = if c.text.is_empty() { tr!("旁白", "Narration").to_string() } else { c.text.chars().take(20).collect::<String>() };
-        let g = painter.layout_no_wrap(label, theme::font_bold(10.0), Color32::WHITE);
+        let g = painter.layout_no_wrap(label, theme::font_bold(11.0), Color32::WHITE);
         if band.width() > g.size().x + 6.0 {
             painter.galley(pos2(band.left() + 3.0, band.center().y - g.size().y / 2.0), g, Color32::WHITE);
         }
@@ -504,7 +504,7 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, toast: &mut
     if ed.is_reordered() {
         for (i, (s0, s1)) in ed.ordered_keep().iter().enumerate().filter(|(_, r)| r.1 > a && r.0 < b) {
             let x = x_of(s0.max(a));
-            let g = painter.layout_no_wrap(format!("{}", i + 1), theme::font_bold(11.0), Color32::WHITE);
+            let g = painter.layout_no_wrap(format!("{}", i + 1), theme::font_bold(12.0), Color32::WHITE);
             let c = pos2(x + 11.0, rect.bottom() - 12.0);
             if x_of(*s1) - x > 22.0 {
                 painter.circle_filled(c, 9.0, ORDER_MARK);
@@ -517,7 +517,7 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, toast: &mut
         let rr = full(r.start, r.end).shrink2(vec2(1.0, 0.0));
         let band = Rect::from_min_max(pos2(rr.left(), rr.top() + 2.0), pos2(rr.right(), rr.top() + 14.0));
         painter.rect_filled(band, CornerRadius::same(3), REGION_MARK);
-        let g = painter.layout_no_wrap(trf!("放大 {}×", "Zoom {}×", screenrecorder_core::format::speed_label((r.factor() * 10.0).round() / 10.0)), theme::font_bold(10.0), Color32::WHITE);
+        let g = painter.layout_no_wrap(trf!("放大 {}×", "Zoom {}×", screenrecorder_core::format::speed_label((r.factor() * 10.0).round() / 10.0)), theme::font_bold(11.0), Color32::WHITE);
         if band.width() > g.size().x + 6.0 {
             painter.galley(pos2(band.left() + 3.0, band.center().y - g.size().y / 2.0), g, Color32::WHITE);
         }
@@ -526,7 +526,7 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, toast: &mut
     for f in ed.spec.freezes.iter().filter(|f| f.at() >= a && f.at() <= b) {
         let x = x_of(f.at());
         painter.vline(x, rect.y_range(), Stroke::new(2.0, FREEZE_MARK));
-        let g = painter.layout_no_wrap(trf!("定格 {} 秒", "Freeze {}s", screenrecorder_core::format::speed_label(f.secs())), theme::font_bold(10.5), Color32::WHITE);
+        let g = painter.layout_no_wrap(trf!("定格 {} 秒", "Freeze {}s", screenrecorder_core::format::speed_label(f.secs())), theme::font_bold(11.0), Color32::WHITE);
         let c = pos2(x, rect.top() + 21.0);
         painter.rect_filled(Rect::from_center_size(c, g.size() + vec2(8.0, 2.0)), CornerRadius::same(4), FREEZE_MARK);
         painter.galley(c - g.size() / 2.0, g, Color32::WHITE);
@@ -537,7 +537,7 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, toast: &mut
         let band = Rect::from_min_max(pos2(r.left(), r.top() + 6.0), pos2(r.right(), r.top() + 22.0));
         painter.rect_filled(band, CornerRadius::ZERO, MUTE_MARK);
         for label in [tr!("🔇 麥克風靜音", "🔇 Mic muted"), "🔇"] {
-            let g = painter.layout_no_wrap(label.to_string(), theme::font_bold(10.5), Color32::WHITE);
+            let g = painter.layout_no_wrap(label.to_string(), theme::font_bold(11.0), Color32::WHITE);
             if band.width() > g.size().x + 6.0 {
                 painter.galley(band.center() - g.size() / 2.0, g, Color32::WHITE);
                 break;
@@ -554,7 +554,7 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, toast: &mut
                 let band = Rect::from_min_max(pos2(r.left(), r.bottom() - 16.0), r.max);
                 painter.rect_filled(band, CornerRadius::ZERO, col);
                 let label = if col == IDLE_MARK { tr!("沒動靜", "Idle") } else { tr!("沒說話", "Quiet") };
-                let g = painter.layout_no_wrap(label.to_string(), theme::font_bold(11.0), Color32::WHITE);
+                let g = painter.layout_no_wrap(label.to_string(), theme::font_bold(12.0), Color32::WHITE);
                 if band.width() > g.size().x + 6.0 {
                     painter.galley(band.center() - g.size() / 2.0, g, Color32::WHITE);
                 }
@@ -594,7 +594,7 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, toast: &mut
             _ => trf!("{} 秒", "{} s", fmt_secs(s1 - s0)),
         };
         let dragging = matches!(ed.drag, Drag::Timeline { kind: TlKind::Select | TlKind::SelA | TlKind::SelB, moved: true, .. });
-        let g = painter.layout_no_wrap(label, theme::font_bold(11.5), Color32::WHITE);
+        let g = painter.layout_no_wrap(label, theme::font_bold(12.0), Color32::WHITE);
         if dragging {
             // 拖曳中只寫選了幾秒
             let c = pos2(((x0 + x1) / 2.0).max(rect.left() + g.size().x / 2.0 + 6.0).min(rect.right() - g.size().x / 2.0 - 6.0), rect.top() + 21.0);
@@ -623,7 +623,7 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, toast: &mut
             painter.rect(bar, CornerRadius::same(6), p.surface, Stroke::new(1.5, p.warn), egui::StrokeKind::Inside);
             let mut child = ui.new_child(egui::UiBuilder::new().max_rect(bar.shrink2(vec2(8.0, 3.0))).layout(egui::Layout::left_to_right(egui::Align::Center)));
             child.spacing_mut().item_spacing.x = gap;
-            child.label(RichText::new(g.text()).font(theme::font_bold(11.5)).color(p.warn));
+            child.label(RichText::new(g.text()).font(theme::font_bold(12.0)).color(p.warn));
             child.add_space(8.0 - gap);
             if del.show(&mut child).clicked() {
                 bar_act = Some(BarAct::Delete);
@@ -653,7 +653,7 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, toast: &mut
         painter.circle_filled(*c, 10.0, p.rec);
         theme::paint_icon(&painter, Rect::from_center_size(*c, vec2(12.0, 12.0)), theme::Icon::Undo, Color32::WHITE);
     }
-    // 標記：底部的小旗子（寫名稱或第幾個）；點一下跳過去、按兩下改名、右鍵刪除
+    // 標記：底部的小旗子（寫名稱或第幾個）；按一下跳過去、按兩下重新命名、右鍵刪除
     let flags: Vec<(Rect, usize, f64)> = ed
         .markers
         .iter()
@@ -662,17 +662,17 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, toast: &mut
         .map(|(i, m)| {
             let x = x_of(m.t);
             let label = if m.name.trim().is_empty() { (i + 1).to_string() } else { m.name.trim().chars().take(10).collect::<String>() + if m.name.trim().chars().count() > 10 { "…" } else { "" } };
-            let g = painter.layout_no_wrap(label, theme::font_bold(10.0), Color32::WHITE);
+            let g = painter.layout_no_wrap(label, theme::font_bold(11.0), Color32::WHITE);
             let (top, bot) = (rect.bottom() - FLAG_H, rect.bottom() - 1.0);
             painter.vline(x, top..=bot, Stroke::new(3.5, Color32::from_black_alpha(120)));
             painter.vline(x, top..=bot, Stroke::new(2.0, MARK));
-            let flag = Rect::from_min_size(pos2(x, top), vec2(g.size().x + 9.0, 13.0));
+            let flag = Rect::from_min_size(pos2(x, top), vec2(g.size().x + 9.0, 14.0));
             painter.rect(flag, CornerRadius { nw: 0, sw: 0, ne: 4, se: 4 }, MARK, Stroke::new(1.0, Color32::from_black_alpha(140)), egui::StrokeKind::Outside);
             painter.galley(pos2(flag.left() + 4.5, flag.center().y - g.size().y / 2.0), g, Color32::WHITE);
             (Rect::from_min_max(pos2(x - 4.0, top - 2.0), pos2(flag.right() + 2.0, bot)), i, m.t)
         })
         .collect();
-    // 跟著點擊放大：點擊的時間（藍點；設定成這次不放大的是空心灰點），點一下切換
+    // 跟著點擊放大：點擊的時間（藍點；設定成這次不放大的是空心灰點），按一下切換
     let dots: Vec<(Pos2, f64, bool)> =
         if ed.zoom_on() { ed.zoom_source().iter().filter(|c| c[0] >= a && c[0] <= b).map(|c| (pos2(x_of(c[0]), rect.bottom() - 7.0), c[0], ed.click_skipped(c[0]))).collect() } else { vec![] };
     for &(c, _, skipped) in &dots {
@@ -731,7 +731,7 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, toast: &mut
         } else if let Some(&(i, _)) = splits.iter().find(|(_, x)| (pos.x - x).abs() <= 4.0) {
             Hit::Split(i)
         } else {
-            // 縮圖上拖曳就是選取一段（不用按 Shift）；點一下只跳到那裡，按兩下選取分割好的那一段
+            // 縮圖上拖曳就是選取一段（不用按 Shift）；按一下只跳到那裡，按兩下選取分割好的那一段
             Hit::Drag(TlKind::Select)
         }
     };
@@ -747,7 +747,7 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, toast: &mut
                 Hit::Flag(i, t) => (
                     CursorIcon::PointingHand,
                     trf!(
-                        "{}（{}）・點一下跳過去・按兩下改名（輸出時當作章節名稱）・按右鍵可以刪除・Shift+B 下一個",
+                        "{}（{}）・按一下跳過去・按兩下重新命名（輸出時當作章節名稱）・按右鍵可以刪除・Shift+B 下一個",
                         "{} ({}) · click to jump there · double-click to rename (used as the chapter title) · right-click to delete · Shift+B: next",
                         ed.marker_name(i),
                         video_clock(t)
@@ -756,9 +756,9 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, toast: &mut
                 Hit::Click(t) => (
                     CursorIcon::PointingHand,
                     if ed.click_skipped(t) {
-                        trf!("滑鼠點擊 {}・這次點擊不放大・點一下恢復放大", "Mouse click at {} · not zoomed · click to zoom again", video_clock(t))
+                        trf!("滑鼠點擊 {}・這次點擊不放大・按一下恢復放大", "Mouse click at {} · not zoomed · click to zoom again", video_clock(t))
                     } else {
-                        trf!("滑鼠點擊 {}・點一下：這次點擊不放大", "Mouse click at {} · click to skip zooming here", video_clock(t))
+                        trf!("滑鼠點擊 {}・按一下：這次點擊不放大", "Mouse click at {} · click to skip zooming here", video_clock(t))
                     },
                 ),
                 Hit::Split(i) => (CursorIcon::PointingHand, trf!("分割點 {}・按右鍵可以移除", "Split at {} · right-click to remove it", ed.splits.get(i).map(|t| video_clock(*t)).unwrap_or_default())),
@@ -771,12 +771,12 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, toast: &mut
                     TlKind::Select => (
                         CursorIcon::Text,
                         tr!(
-                            "點一下跳到這裡・拖曳選取一段（刪除、改速度）・按兩下選取分割好的那一段・按住 Ctrl 可以一次選好幾段・按右鍵：分割、刪除、速度…",
+                            "按一下跳到這裡・拖曳選取一段（刪除、改速度）・按兩下選取分割好的那一段・按住 Ctrl 可以一次選好幾段・按右鍵：分割、刪除、速度…",
                             "Click to jump here · drag to select a section (delete, change speed) · double-click to select a split section · hold Ctrl to select several · right-click: split, delete, speed…"
                         )
                         .into(),
                     ),
-                    TlKind::Scrub if ruler.contains(pos) => (CursorIcon::PointingHand, tr!("點一下或拖曳移動播放頭", "Click or drag to move the playhead").into()),
+                    TlKind::Scrub if ruler.contains(pos) => (CursorIcon::PointingHand, tr!("按一下或拖曳移動播放頭", "Click or drag to move the playhead").into()),
                     TlKind::Scrub => (CursorIcon::PointingHand, String::new()),
                 },
             };
@@ -786,7 +786,7 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, toast: &mut
             }
         }
     }
-    // 右鍵（放開的那一下，選單也是這時打開）：記下按的地方，選單照那裡有什麼列出能做的事
+    // 右鍵（放開的那一下，選單也是這時開啟）：記下按的地方，選單照那裡有什麼列出能做的事
     if resp.secondary_clicked() {
         if let Some(pos) = pos {
             let t = time_at(pos.x);
@@ -864,7 +864,7 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, toast: &mut
             item(ui, tr!("跳到這裡", "Jump here").into(), Some(MenuAct::Jump(m.t)), "");
             if let (Some(i), Some(name)) = (m.flag, &marker_name) {
                 ui.separator();
-                item(ui, trf!("改名「{name}」…", "Rename “{name}”…"), Some(MenuAct::RenameMarker(i)), "");
+                item(ui, trf!("重新命名「{name}」…", "Rename “{name}”…"), Some(MenuAct::RenameMarker(i)), "");
                 item(ui, trf!("刪除「{name}」", "Delete “{name}”"), Some(MenuAct::DeleteMarker(i)), "");
             }
             if let Some(i) = m.split {
@@ -927,7 +927,7 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, toast: &mut
             BarAct::Clear => ed.set_sel(None),
         }
     }
-    // 按兩下：旗子改名；縮圖上選取分割好的那一段（Ctrl 不算）
+    // 按兩下：旗子重新命名；縮圖上選取分割好的那一段（Ctrl 不算）
     let mut dbl_done = false;
     if dbl && resp.hovered() && !ctrl {
         match pos.map(hit) {
@@ -978,7 +978,7 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, toast: &mut
                     ed.drag = Drag::Timeline { kind, x0: pos.x, t0: time_at(pos.x), moved: false, orig };
                     // 貼齊用：按下時播放頭的位置（拖曳中播放頭會跟著動）
                     ed.press_playhead = ed.now();
-                    // 按著 Ctrl：加選（拖曳是再加一段、只點一下是加選 / 取消那一段）；沒按 Ctrl 重新選
+                    // 按著 Ctrl：加選（拖曳是再加一段、只按一下是加選 / 取消那一段）；沒按 Ctrl 重新選
                     ed.sel_add = ctrl && kind == TlKind::Select;
                     if kind == TlKind::Select && !ctrl {
                         ed.sel_more.clear();
@@ -1003,7 +1003,7 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, toast: &mut
         let (t, snapped) = if targets.is_empty() { (time_at(lx), None) } else { snap(time_at(lx)) };
         ed.snap_at = snapped;
         if down {
-            // 選取要拖遠一點才算，點一下時手抖不會變成選取
+            // 選取要拖遠一點才算，按一下時手抖不會變成選取
             let slop = if kind == TlKind::Select { 8.0 } else { 4.0 };
             let moved = moved || (lx - x0).abs() > slop;
             ed.drag = Drag::Timeline { kind, x0, t0, moved, orig };
@@ -1125,7 +1125,7 @@ fn fmt_secs(s: f64) -> String {
     screenrecorder_core::format::num((s * 10.0).round() / 10.0)
 }
 
-/// 快速鍵說明（按「快速鍵」打開）
+/// 快速鍵說明（按「快速鍵」開啟）
 pub(super) fn shortcut_sheet(resp: &egui::Response) {
     egui::Popup::menu(resp).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
         ui.set_min_width(320.0);
@@ -1269,7 +1269,7 @@ fn ann_track(ed: &mut Editor, ui: &mut egui::Ui) {
         if lane_h >= 16.0 && r.width() > 24.0 {
             // 名稱放不下時結尾變成「…」
             let lp = painter.with_clip_rect(r.intersect(rect));
-            let g = super::side::ellipsized(&lp, annotate::label(an), theme::font(11.5), fg, r.width() - 14.0);
+            let g = super::side::ellipsized(&lp, annotate::label(an), theme::font(12.0), fg, r.width() - 14.0);
             lp.galley(pos2(r.left() + 7.0, r.center().y - g.size().y / 2.0), g, fg);
         }
         let gone_note = if gone { tr!("（在刪除的片段中，不會出現在輸出影片）", " (in a removed section; won't appear in the output video)") } else { "" };
@@ -1363,7 +1363,7 @@ fn ann_track(ed: &mut Editor, ui: &mut egui::Ui) {
                 ed.seek(t);
             }
         } else {
-            // 只是點一下：跳到它出現的時間（已經在範圍內就不動）
+            // 只是按一下：跳到它出現的時間（已經在範圍內就不動）
             let now = ed.now();
             if let Some(an) = ed.anns.iter().find(|x| x.id == id) {
                 if !moved && (now < an.start || now > an.end) {

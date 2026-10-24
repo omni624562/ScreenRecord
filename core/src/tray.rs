@@ -35,7 +35,7 @@ pub fn autostart_changed() {
     AUTOSTART_CHANGED.store(true, Ordering::Relaxed);
 }
 
-/// 結束程式（系統匣「結束」、新版接手）：剪輯視窗有還沒儲存的修改、或有排程錄影時，先打開操作視窗問
+/// 結束程式（系統匣「結束」、新版接手）：剪輯視窗有還沒儲存的修改、或有排程錄影時，先開啟操作視窗問
 pub async fn quit_or_ask(app: &Arc<App>) {
     if UI_UNSAVED.load(Ordering::Relaxed) || app.scheduled().is_some() {
         QUIT_ASKED.store(true, Ordering::Relaxed);
@@ -81,13 +81,13 @@ pub enum TrayCommand {
     ScreenshotSelect,
     /// 再截一次上次框選的範圍
     ScreenshotLast,
-    /// 幾秒後再框選（先打開要截的選單、提示）
+    /// 幾秒後再框選（先開啟要截的選單、提示）
     ScreenshotDelay(u64),
     /// 長截圖（框選後自動往下捲，接成長圖）
     ScreenshotScroll,
     /// 只抓文字（框選後辨識，複製到剪貼簿）
     ScreenshotText,
-    /// 開始步驟截圖（每點一下截一張）
+    /// 開始步驟截圖（每按一下截一張）
     StepsStart,
     /// 完成步驟截圖（做成教學文件）
     StepsFinish,
@@ -711,7 +711,7 @@ impl TrayController {
                     return Err(trf!("範圍太小（{}×{}），寬高至少 16 像素", "The area is too small ({}×{}). It must be at least 16 pixels wide and high.", r.width, r.height));
                 }
                 cfg.source = SourceConfig::Region { x: r.x as f64, y: r.y as f64, width: r.width as f64, height: r.height as f64 };
-                // 點一下選的是視窗：錄影範圍跟著那個視窗移動
+                // 按一下選的是視窗：錄影範圍跟著那個視窗移動
                 let near = |a: i32, b: i32| (a - b).abs() <= 2;
                 cfg.follow_window =
                     crate::winui::app_windows().into_iter().find(|w| near(w.rect.x, r.x) && near(w.rect.y, r.y) && near(w.rect.width, r.width) && near(w.rect.height, r.height)).map(|w| {

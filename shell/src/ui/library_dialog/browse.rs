@@ -81,7 +81,7 @@ fn option_row(ui: &mut egui::Ui, o: &FacetOption, on: bool, dot: Option<Color32>
         x += 15.0;
     }
     let count = o.count.to_string();
-    let cg = ui.painter().layout_no_wrap(count, theme::font(11.5), p.muted);
+    let cg = ui.painter().layout_no_wrap(count, theme::font(12.0), p.muted);
     let max_w = r.max.x - x - cg.size().x - 12.0;
     let lg = ui.painter().layout(o.label.clone(), theme::font(12.5), p.text, f32::INFINITY);
     let lg = if lg.size().x > max_w {
@@ -199,7 +199,7 @@ pub fn panel(ui: &mut egui::Ui, d: &mut LibraryDialog, rect: Rect) {
         };
         if fc.pending_text > 0 {
             ui.add_space(4.0);
-            ui.label(RichText::new(trf!("還有 {} 張的字沒讀完，分類會越來越完整", "{} screenshots still being read; categories will fill in", fc.pending_text)).font(theme::font(11.5)).color(p.muted));
+            ui.label(RichText::new(trf!("還有 {} 張的字沒讀完，分類會越來越完整", "{} screenshots still being read; categories will fill in", fc.pending_text)).font(theme::font(12.0)).color(p.muted));
         }
         // 子資料夾（有兩個以上的資料夾才列）
         if !fc.folders.is_empty() {
@@ -208,7 +208,7 @@ pub fn panel(ui: &mut egui::Ui, d: &mut LibraryDialog, rect: Rect) {
         }
         section(ui, tr!("程式", "App"));
         if fc.apps.is_empty() {
-            ui.label(RichText::new(tr!("之後的截圖會記下截圖時在用的程式", "New screenshots will remember the app you were using")).font(theme::font(11.5)).color(p.muted));
+            ui.label(RichText::new(tr!("之後的截圖會記下截圖時在用的程式", "New screenshots will remember the app you were using")).font(theme::font(12.0)).color(p.muted));
         } else {
             changed |= rows(ui, &fc.apps, &mut d.facet.apps, false);
         }
@@ -224,7 +224,7 @@ pub fn panel(ui: &mut egui::Ui, d: &mut LibraryDialog, rect: Rect) {
             section(ui, tr!("其他", "Other"));
             changed |= rows(ui, &fc.other, &mut d.facet.other, false);
         }
-        // 內容、常見詞、顏色比較少用：收在「更多分類」，有選的時候自動打開
+        // 內容、常見詞、顏色比較少用：收在「更多分類」，有選的時候自動開啟
         if !fc.kinds.is_empty() || !fc.terms.is_empty() || !fc.colors.is_empty() {
             let picked = !d.facet.kinds.is_empty() || !d.facet.terms.is_empty() || !d.facet.colors.is_empty();
             let id = egui::Id::new("browse-more");
@@ -341,13 +341,13 @@ pub fn calendar(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, rect:
         ui.painter().rect_stroke(cell, CornerRadius::same(6), border, egui::StrokeKind::Inside);
         ui.painter().text(cell.min + vec2(7.0, 5.0), Align2::LEFT_TOP, day.to_string(), theme::font_bold(13.0), if n > 0 { p.text } else { p.muted });
         if n > 0 {
-            ui.painter().text(pos2(cell.max.x - 7.0, cell.min.y + 6.0), Align2::RIGHT_TOP, trf!("{n} 張", "{n}"), theme::font(11.5), p.text);
+            ui.painter().text(pos2(cell.max.x - 7.0, cell.min.y + 6.0), Align2::RIGHT_TOP, trf!("{n} 張", "{n}"), theme::font(12.0), p.text);
             let mut y = cell.min.y + 26.0;
             for t in info.map(|d| d.terms.as_slice()).unwrap_or(&[]) {
                 if y + 14.0 > cell.max.y {
                     break;
                 }
-                let mut job = egui::text::LayoutJob::simple_singleline(t.clone(), theme::font(11.5), p.muted);
+                let mut job = egui::text::LayoutJob::simple_singleline(t.clone(), theme::font(12.0), p.muted);
                 job.wrap = egui::text::TextWrapping::truncate_at_width(cell.width() - 12.0);
                 let g = ui.painter().layout_job(job);
                 ui.painter().galley(pos2(cell.min.x + 7.0, y), g, p.muted);
@@ -423,14 +423,14 @@ pub fn popup(ui: &egui::Ui, d: &mut LibraryDialog, search: &egui::Response) {
     let area = egui::Area::new(Id::new("libSuggest")).order(egui::Order::Tooltip).fixed_pos(search.rect.left_bottom() + vec2(0.0, 2.0)).show(ui.ctx(), |ui| {
         egui::Frame::new().fill(p.surface).stroke(Stroke::new(1.0, p.border)).corner_radius(CornerRadius::same(6)).inner_margin(4).show(ui, |ui| {
             ui.set_width(search.rect.width() - 8.0);
-            ui.label(RichText::new(tr!("圖裡有這些字：", "Words found in your screenshots:")).font(theme::font(11.5)).color(p.muted));
+            ui.label(RichText::new(tr!("圖裡有這些字：", "Words found in your screenshots:")).font(theme::font(12.0)).color(p.muted));
             for (t, n) in &list {
                 let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 24.0), Sense::click());
                 if resp.hovered() {
                     ui.painter().rect_filled(r, CornerRadius::same(4), p.surface2);
                 }
                 ui.painter().text(pos2(r.min.x + 8.0, r.center().y), Align2::LEFT_CENTER, t, theme::font(13.0), p.text);
-                ui.painter().text(pos2(r.max.x - 8.0, r.center().y), Align2::RIGHT_CENTER, trf!("{n} 張", "{n}"), theme::font(11.5), p.muted);
+                ui.painter().text(pos2(r.max.x - 8.0, r.center().y), Align2::RIGHT_CENTER, trf!("{n} 張", "{n}"), theme::font(12.0), p.muted);
                 if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
                     pick = Some(t.clone());
                 }

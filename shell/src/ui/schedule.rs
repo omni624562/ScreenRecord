@@ -24,7 +24,7 @@ pub struct ScheduleDlg {
     hour: u32,
     minute: u32,
     length: u32,
-    /// 打開時的內容：改過了按 Esc 或點外面不會直接關掉
+    /// 開啟時的內容：改過了按 Esc 或點外面不會直接關掉
     initial: (bool, u32, u8, u32, u32, u32, u32),
     /// 改過了還按 Esc / 點外面：提示要按「取消」才放棄
     keep_hint: bool,

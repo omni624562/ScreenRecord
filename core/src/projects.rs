@@ -80,7 +80,7 @@ impl ProjectStore {
         self.all().into_iter().map(|(_, p)| p).filter(|p| same(&p.source, source) && Path::new(&p.output).is_file()).max_by_key(|p| p.saved_at)
     }
 
-    /// 檔案改名：剪輯版改名就搬專案，原始影片改名就更新指向它的專案（草稿也一樣）
+    /// 檔案重新命名：剪輯版重新命名就搬專案，原始影片重新命名就更新指向它的專案（草稿也一樣）
     pub fn renamed(&self, from: &str, to: &str) {
         self.renamed_here(from, to);
         self.drafts().renamed_here(from, to);
@@ -131,13 +131,13 @@ mod tests {
         assert_eq!(p.data, json!({ "anns": [1] }));
         assert_eq!(store.latest_for_source(&src).unwrap().output, out);
 
-        // 原片改名：專案跟著指向新名稱
+        // 原片重新命名：專案跟著指向新名稱
         let src2 = dir.path().join("Demo.mp4").display().to_string();
         std::fs::rename(&src, &src2).unwrap();
         store.renamed(&src, &src2);
         assert_eq!(store.for_output(&out).unwrap().source, src2);
 
-        // 剪輯版改名：專案搬到新名稱
+        // 剪輯版重新命名：專案搬到新名稱
         let out2 = dir.path().join("Demo_cut.mp4").display().to_string();
         std::fs::rename(&out, &out2).unwrap();
         store.renamed(&out, &out2);
@@ -161,7 +161,7 @@ mod tests {
         assert!(store.for_output(&v).is_none());
         assert!(store.latest_for_source(&v).is_none());
         assert_eq!(store.drafts().for_output(&v).unwrap().data, json!({ "a": 1 }));
-        // 影片改名：草稿跟著搬
+        // 影片重新命名：草稿跟著搬
         let v2 = dir.path().join("Demo.mp4").display().to_string();
         std::fs::rename(&v, &v2).unwrap();
         store.renamed(&v, &v2);

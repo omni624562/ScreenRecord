@@ -147,7 +147,7 @@ pub fn panel(ed: &mut Editor, ui: &mut egui::Ui, toast: &mut Option<(String, boo
         super::side::hint_text(
             ui,
             tr!(
-                "這支錄影沒有記下點擊。錄影前在「設定 → 錄影」打開「點擊、按鍵」，錄的時候才會記下點擊。",
+                "這支錄影沒有記下點擊。錄影前在「設定 → 錄影」開啟「點擊、按鍵」，錄的時候才會記下點擊。",
                 "This recording has no clicks recorded. Turn on “Clicks and keys” in Settings → Recording before you record."
             ),
         );

@@ -315,7 +315,7 @@ mod tests {
         assert_eq!(fit(1000, 2000, 500, 500), (250, 500));
     }
 
-    /// 有 Python（python-docx、python-pptx）時：寫出檔案，用它們打開檢查
+    /// 有 Python（python-docx、python-pptx）時：寫出檔案，用它們開啟檢查
     #[test]
     fn office_files_open_in_python() {
         let ok = std::process::Command::new("python3").args(["-c", "import docx, pptx"]).output().is_ok_and(|o| o.status.success());
@@ -325,14 +325,14 @@ mod tests {
         let mut pm = tiny_skia::Pixmap::new(320, 200).unwrap();
         pm.fill(tiny_skia::Color::from_rgba8(30, 120, 200, 255));
         let png = pm.encode_png().unwrap();
-        let items = vec![Item { caption: "在「設定」點一下".into(), png: png.clone(), width: 320, height: 200 }, Item { caption: "Click <OK> & done".into(), png, width: 320, height: 200 }];
+        let items = vec![Item { caption: "在「設定」按一下".into(), png: png.clone(), width: 320, height: 200 }, Item { caption: "Click <OK> & done".into(), png, width: 320, height: 200 }];
         let dir = tempfile::tempdir().unwrap();
         let d = dir.path().join("a.docx");
         let p = dir.path().join("a.pptx");
         std::fs::write(&d, docx("操作步驟", "2026/10/15", &items)).unwrap();
         std::fs::write(&p, pptx("操作步驟", "2026/10/15", &items)).unwrap();
         let script = format!(
-            "import docx, pptx\nd = docx.Document(r'{}')\nt = [x.text for x in d.paragraphs]\nassert t[0] == '操作步驟', t\nassert any('在「設定」點一下' in x for x in t), t\nassert len(d.inline_shapes) == 2\np = pptx.Presentation(r'{}')\nassert len(p.slides) == 3\nassert any('Click <OK> & done' in s.text_frame.text for s in p.slides[2].shapes if s.has_text_frame)\nprint('ok')",
+            "import docx, pptx\nd = docx.Document(r'{}')\nt = [x.text for x in d.paragraphs]\nassert t[0] == '操作步驟', t\nassert any('在「設定」按一下' in x for x in t), t\nassert len(d.inline_shapes) == 2\np = pptx.Presentation(r'{}')\nassert len(p.slides) == 3\nassert any('Click <OK> & done' in s.text_frame.text for s in p.slides[2].shapes if s.has_text_frame)\nprint('ok')",
             d.display(),
             p.display()
         );

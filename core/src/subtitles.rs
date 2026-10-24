@@ -1,7 +1,7 @@
 //! 字幕：自動產生（FFmpeg 8 以上的 whisper 濾鏡，用 whisper.cpp 在這台電腦上辨識語音，不用上傳），
 //! 或匯入 SRT 字幕檔。結果轉成繁體中文（台灣用詞），在剪輯視窗變成一段一段的文字標註，可以修改後燒進影片。
 //!
-//! FFmpeg 不一定有 whisper 濾鏡（要編譯時打開；程式自動下載的 essentials 版本沒有），所以先用 `ffmpeg -filters` 確認，
+//! FFmpeg 不一定有 whisper 濾鏡（要編譯時開啟；程式自動下載的 essentials 版本沒有），所以先用 `ffmpeg -filters` 確認，
 //! 沒有時另外下載同一版、有 whisper 的 full 版本，只用來辨識語音。
 //! 語音辨識用的 FFmpeg 與語音模型（ggml 格式）第一次使用時下載到資料夾\whisper。
 
@@ -33,7 +33,7 @@ pub struct Model {
     pub labels: [&'static str; 2],
     /// 短的名稱（中文、英文）
     pub short: [&'static str; 2],
-    /// 能翻成英文（large-v3-turbo 訓練時拿掉了翻譯）
+    /// 能翻成英文（large-v3-turbo 訓練時移除了翻譯）
     pub translates: bool,
 }
 
@@ -490,8 +490,8 @@ const TAIWAN_TERMS: [(&str, &str); 53] = [
     ("硬盤", "硬碟"),
     ("字體", "字型"),
     ("圖標", "圖示"),
-    ("雙擊", "點兩下"),
-    ("單擊", "點一下"),
+    ("雙擊", "按兩下"),
+    ("單擊", "按一下"),
     ("演示", "示範"),
 ];
 
@@ -813,7 +813,7 @@ mod tests {
         assert_eq!(c[1].text, "打開影片");
         assert!((c[1].start - 62.345).abs() < 1e-9);
         assert_eq!(traditional("先打开设置，把视频保存到文件夹，再复制到剪切板"), "先打開設定，把影片儲存到資料夾，再複製到剪貼簿");
-        assert_eq!(traditional("双击快捷键打开摄像头"), "點兩下快速鍵打開攝影機");
+        assert_eq!(traditional("双击快捷键打开摄像头"), "按兩下快速鍵打開攝影機");
     }
 
     #[test]

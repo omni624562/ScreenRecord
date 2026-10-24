@@ -529,7 +529,7 @@ pub struct RecordConfig {
     /// 錄影時把麥克風的雜音（風扇、冷氣、鍵盤）降低（FFmpeg afftdn，只處理麥克風）
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub mic_denoise: bool,
-    /// 錄影時打開 Windows 的勿擾（只允許鬧鐘），停止後恢復
+    /// 錄影時開啟 Windows 的勿擾（只允許鬧鐘），停止後恢復
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub quiet: bool,
     /// 錄影時打上馬賽克的固定範圍（虛擬桌面絕對座標）；只錄視窗內容時不適用
@@ -544,7 +544,7 @@ pub struct RecordConfig {
 }
 
 impl RecordConfig {
-    /// 這次錄影要分軌：有打開分軌，而且系統聲音、麥克風都有錄
+    /// 這次錄影要分軌：有開啟分軌，而且系統聲音、麥克風都有錄
     pub fn separate_tracks(&self) -> bool {
         self.separate_audio && self.audio.system && self.audio.mic
     }
@@ -734,7 +734,7 @@ fn is_zero_f64(v: &f64) -> bool {
 
 impl MediaInfo {
     /// 錄影開始（截圖）的時間（毫秒），檔名沒有日期時間時用：建立時間與修改時間較早的那個。
-    /// 修改時間是錄完的時間；改名不會改變建立時間。從別處複製來的檔案建立時間是複製的時候，這時修改時間比較早
+    /// 修改時間是錄完的時間；重新命名不會改變建立時間。從別處複製來的檔案建立時間是複製的時候，這時修改時間比較早
     pub fn time_ms(&self) -> f64 {
         if self.created > 0.0 {
             self.created.min(self.mtime)

@@ -103,7 +103,7 @@ pub struct JfBrowse {
     posters: HashMap<String, Poster>,
     /// 勾選的影片（編號 → 那支影片）
     selected: BTreeMap<String, JfItem>,
-    /// 上次勾或取消勾的那一支（Shift＋點一下：從它選到點的那一支）
+    /// 上次勾或取消勾的那一支（Shift＋按一下：從它選到點的那一支）
     anchor: Option<String>,
     /// 依人物、標籤、年份找（找目前資料夾底下、在最上層時整個伺服器的影片）：勾了的條件，同一類任一個符合、不同類都要符合；空的 = 沒有用
     facet: Vec<JfFacet>,
@@ -116,7 +116,7 @@ pub struct JfBrowse {
     /// 還沒設人物、還沒有標籤的影片幾支（「依這些找」最上面的「（沒有人物）」「（沒有標籤）」；讀不到時 0）
     no_people: usize,
     no_tags: usize,
-    /// 伺服器上的合集、播放清單（「加進…」選單用；打開分頁、加進去之後重讀）
+    /// 伺服器上的合集、播放清單（「加進…」選單用；開啟分頁、加進去之後重讀）
     collections: Vec<JfItem>,
     playlists: Vec<JfItem>,
     /// 人物照片（人物編號 → 圖）：「依這些找」的人物清單用，看到才讀
@@ -135,7 +135,7 @@ pub struct JfBrowse {
     grid: u8,
     /// 用清單（表格）看，不是縮圖（記在設定裡）
     list_view: bool,
-    /// 鍵盤移到的那一個（方向鍵移動、Enter 打開、空白鍵勾選）
+    /// 鍵盤移到的那一個（方向鍵移動、Enter 開啟、空白鍵勾選）
     cursor: Option<String>,
     /// 縮圖一排幾個（上次畫的；方向鍵上下用）
     cols: usize,
@@ -347,7 +347,7 @@ fn load_facets(app: &mut UiApp) {
     );
 }
 
-/// 人物、標籤改名之後重讀「依這些找」的清單（Jellyfin 分頁沒開時不用）
+/// 人物、標籤重新命名之後重讀「依這些找」的清單（Jellyfin 分頁沒開時不用）
 pub fn reload_facets(app: &mut UiApp) {
     if app.jf_browse.is_some() {
         refresh_facets(app);
@@ -438,7 +438,7 @@ fn load_face(app: &mut UiApp, id: &str) {
     );
 }
 
-/// 伺服器上已經有的人物、標籤（影片資訊對話框點一下加入）；Jellyfin 分頁沒開時空的
+/// 伺服器上已經有的人物、標籤（影片資訊對話框按一下加入）；Jellyfin 分頁沒開時空的
 pub fn known_people_tags(app: &UiApp) -> (Vec<String>, Vec<String>) {
     app.jf_browse.as_ref().map(|d| (d.persons.iter().map(|(_, n, _)| n.clone()).collect(), d.tags.iter().map(|(t, _)| t.clone()).collect())).unwrap_or_default()
 }
@@ -493,7 +493,7 @@ pub fn confirm_delete_list(app: &mut UiApp, list: Vec<(String, String)>) {
     confirm_delete_many(app, list);
 }
 
-/// 一次刪掉好幾支（先確認一次）。刪好之後瀏覽清單拿掉它們，檢視器正在播其中一支就關掉
+/// 一次刪掉好幾支（先確認一次）。刪好之後瀏覽清單移除它們，檢視器正在播其中一支就關掉
 fn confirm_delete_many(app: &mut UiApp, list: Vec<(String, String)>) {
     let msg = tr!(
         "會從 Jellyfin（連同伺服器上的影片檔）刪掉，不會進資源回收筒，刪了不能復原。這台電腦上的檔案不會動。",
@@ -603,7 +603,7 @@ pub fn download_then(app: &mut UiApp, item: (String, String), then: super::Entry
     }
     let dir = std::path::PathBuf::from(app.s.out_dir(&app.env));
     let (id, file) = item;
-    app.toast(trf!("正在下載「{file}」，下載好就打開", "Downloading “{file}”; it opens when done"), false);
+    app.toast(trf!("正在下載「{file}」，下載好就開啟", "Downloading “{file}”; it opens when done"), false);
     app.spawn(
         async move {
             tokio::task::spawn_blocking(move || -> Result<std::path::PathBuf, String> {
@@ -642,7 +642,7 @@ fn free_name(dir: &std::path::Path, file: &str) -> Option<std::path::PathBuf> {
     (2..1000).map(|i| dir.join(format!("{stem} ({i}){ext}"))).find(|p| !p.exists())
 }
 
-/// 伺服器給的檔名只當作名字用：拿掉資料夾（/、\\、..）與 Windows 不能用的字元；
+/// 伺服器給的檔名只當作名字用：移除資料夾（/、\\、..）與 Windows 不能用的字元；
 /// 副檔名不是影片的（例如 .exe、.lnk）加上 .mp4，下載的東西不會變成可以執行的檔案
 fn safe_file_name(file: &str) -> String {
     const VIDEO: [&str; 22] = ["mp4", "m4v", "mkv", "mov", "avi", "wmv", "webm", "ts", "mts", "m2ts", "flv", "f4v", "mpg", "mpeg", "3gp", "ogv", "vob", "rm", "rmvb", "asf", "divx", "mxf"];
@@ -757,12 +757,12 @@ struct Picked {
     delete: Option<JfItem>,
     download: Option<JfItem>,
     toggle: Option<JfItem>,
-    /// Shift＋點一下：（點的那一支, 它所在的那一排）
+    /// Shift＋按一下：（點的那一支, 它所在的那一排）
     range: Option<(JfItem, Vec<JfItem>)>,
     posters: Vec<String>,
     /// 右鍵或「加進…」：把這些影片加進合集、播放清單
     add_to: Option<AddTo>,
-    /// 右鍵或下面的按鈕：從目前這個合集、播放清單拿掉這些（影片本身不刪）
+    /// 右鍵或下面的按鈕：從目前這個合集、播放清單移除這些（影片本身不刪）
     remove_here: Option<Vec<JfItem>>,
     /// 右鍵或下面的按鈕：幫這些影片產生字幕
     subs: Option<Vec<JfItem>>,
@@ -793,7 +793,7 @@ fn add_menu(ui: &mut egui::Ui, d: &JfBrowse, items: &[JfItem], out: &mut Option<
         (JfList::Collection, tr!("加進合集", "Add to collection"), &d.collections, tr!("＋ 新合集…", "＋ New collection…")),
         (JfList::Playlist, tr!("加進播放清單", "Add to playlist"), &d.playlists, tr!("＋ 新播放清單…", "＋ New playlist…")),
     ] {
-        ui.label(RichText::new(title).font(theme::font(11.5)).color(p.muted));
+        ui.label(RichText::new(title).font(theme::font(12.0)).color(p.muted));
         for l in lists.iter() {
             let label = if l.children > 0 { format!("{}　{}", l.name, l.children) } else { l.name.clone() };
             if ui.button(label).clicked() {
@@ -876,7 +876,7 @@ fn cells(ui: &mut egui::Ui, d: &JfBrowse, items: &[JfItem], rows: Option<usize>,
                 if on {
                     theme::paint_icon(painter, check.shrink(4.0), Icon::Check, egui::Color32::WHITE);
                 }
-                // 勾選框也可以 Shift＋點一下：從上次勾的選到這一支
+                // 勾選框也可以 Shift＋按一下：從上次勾的選到這一支
                 if r.clicked() {
                     if shift {
                         out.range = Some((it.clone(), items.to_vec()));
@@ -937,14 +937,14 @@ fn cells(ui: &mut egui::Ui, d: &JfBrowse, items: &[JfItem], rows: Option<usize>,
             // 看過的：右上角綠色「看過」
             if it.played {
                 let t = tr!("看過", "Watched");
-                let g = painter.layout_no_wrap(t.to_string(), theme::font_bold(11.0), p.ok);
+                let g = painter.layout_no_wrap(t.to_string(), theme::font_bold(12.0), p.ok);
                 let r = Rect::from_min_size(pos2(img.max.x - g.size().x - 14.0, img.min.y + 6.0), g.size() + vec2(8.0, 4.0));
                 painter.rect_filled(r, 6.0, p.ok_soft);
                 painter.galley(r.min + vec2(4.0, 2.0), g, p.ok);
             }
             // 已經有字幕的：右下角「CC」
             if video && !it.subs.is_empty() {
-                let g = painter.layout_no_wrap("CC".to_string(), theme::font_bold(10.5), egui::Color32::WHITE);
+                let g = painter.layout_no_wrap("CC".to_string(), theme::font_bold(11.0), egui::Color32::WHITE);
                 let r = Rect::from_min_size(pos2(img.max.x - g.size().x - 12.0, img.max.y - g.size().y - 10.0), g.size() + vec2(6.0, 2.0));
                 painter.rect_filled(r, 3.0, egui::Color32::from_black_alpha(170));
                 painter.galley(r.min + vec2(3.0, 1.0), g, egui::Color32::WHITE);
@@ -957,9 +957,9 @@ fn cells(ui: &mut egui::Ui, d: &JfBrowse, items: &[JfItem], rows: Option<usize>,
                 JfKind::Folder => String::new(),
                 JfKind::Video => [it.date.clone(), if it.duration > 0.0 { clock(it.duration) } else { String::new() }].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" · "),
             };
-            painter.text(pos2(cell.min.x, img.max.y + 24.0), Align2::LEFT_TOP, sub, theme::font(11.5), p.muted);
+            painter.text(pos2(cell.min.x, img.max.y + 24.0), Align2::LEFT_TOP, sub, theme::font(12.0), p.muted);
             let resp = resp.on_hover_text(&it.name);
-            // 右鍵：播放、影片資訊、加進合集或播放清單、從這裡拿掉、下載、刪除（勾選的影片按右鍵是對全部勾選的）
+            // 右鍵：播放、影片資訊、加進合集或播放清單、從這裡移除、下載、刪除（勾選的影片按右鍵是對全部勾選的）
             if video {
                 resp.context_menu(|ui| item_menu(ui, d, it, items, on, out));
             }
@@ -980,7 +980,7 @@ fn cells(ui: &mut egui::Ui, d: &JfBrowse, items: &[JfItem], rows: Option<usize>,
     }
 }
 
-/// 影片的右鍵選單：播放、影片資訊、加進合集或播放清單、從這裡拿掉、產生字幕、下載、刪除（on：這支有勾選時，對全部勾選的）
+/// 影片的右鍵選單：播放、影片資訊、加進合集或播放清單、從這裡移除、產生字幕、下載、刪除（on：這支有勾選時，對全部勾選的）
 fn item_menu(ui: &mut egui::Ui, d: &JfBrowse, it: &JfItem, items: &[JfItem], on: bool, out: &mut Picked) {
     let p = theme::pal(ui);
     let targets: Vec<JfItem> = if on { d.selected.values().cloned().collect() } else { vec![it.clone()] };
@@ -997,7 +997,7 @@ fn item_menu(ui: &mut egui::Ui, d: &JfBrowse, it: &JfItem, items: &[JfItem], on:
     let add = if n > 1 { trf!("把 {n} 支加進…", "Add {n} to…") } else { tr!("加進…", "Add to…").to_string() };
     ui.menu_button(add, |ui| add_menu(ui, d, &targets, &mut out.add_to));
     if let Some((kind, _)) = d.path.last().and_then(|(id, _)| list_at(id)) {
-        let here = if kind == JfList::Collection { tr!("從這個合集拿掉", "Remove from this collection") } else { tr!("從這個播放清單拿掉", "Remove from this playlist") };
+        let here = if kind == JfList::Collection { tr!("從這個合集移除", "Remove from this collection") } else { tr!("從這個播放清單移除", "Remove from this playlist") };
         if ui.button(here).clicked() {
             out.remove_here = Some(targets.clone());
             ui.close();
@@ -1028,7 +1028,7 @@ fn item_menu(ui: &mut egui::Ui, d: &JfBrowse, it: &JfItem, items: &[JfItem], on:
 /// 清單檢視的一欄：（寬度, 標題, 點標題時換的排序（第一次, 再按一次）, 靠左或靠右）
 type Column<'a> = (f32, &'a str, Option<(JfSort, JfSort)>, Align);
 
-/// 清單檢視：一列一個（名稱、長度、大小、日期、人物、標籤），點欄位標題換排序；點一下和縮圖一樣（播放、進資料夾；
+/// 清單檢視：一列一個（名稱、長度、大小、日期、人物、標籤），點欄位標題換排序；按一下和縮圖一樣（播放、進資料夾；
 /// Ctrl 勾選、Shift 選一段），右鍵同一個選單
 fn rows(ui: &mut egui::Ui, d: &JfBrowse, items: &[JfItem], out: &mut Picked) {
     let p = theme::pal(ui);
@@ -1150,7 +1150,7 @@ fn rows(ui: &mut egui::Ui, d: &JfBrowse, items: &[JfItem], out: &mut Picked) {
                     cell_text(ui, r, &name, *align, p.text, !video);
                     if !it.subs.is_empty() {
                         // 名稱後面的 CC 不另外量寬度：放在這一欄的最右邊
-                        let g = ui.painter().layout_no_wrap("CC".to_string(), theme::font_bold(10.0), p.muted);
+                        let g = ui.painter().layout_no_wrap("CC".to_string(), theme::font_bold(11.0), p.muted);
                         let b = Rect::from_min_size(pos2(r.max.x - g.size().x - 12.0, r.center().y - g.size().y / 2.0 - 1.0), g.size() + vec2(6.0, 2.0));
                         ui.painter().rect_stroke(b, 3.0, egui::Stroke::new(1.0, p.border), egui::StrokeKind::Inside);
                         ui.painter().galley(b.min + vec2(3.0, 1.0), g, p.muted);
@@ -1193,7 +1193,7 @@ fn rows(ui: &mut egui::Ui, d: &JfBrowse, items: &[JfItem], out: &mut Picked) {
     ui.add_space(8.0);
 }
 
-/// 鍵盤（沒有在打字、沒有打開的選單或對話框時）：方向鍵移動、Enter 打開、空白鍵勾選、Ctrl+A 勾選全部、
+/// 鍵盤（沒有在打字、沒有開啟的選單或對話框時）：方向鍵移動、Enter 開啟、空白鍵勾選、Ctrl+A 勾選全部、
 /// Delete 刪除勾選的（沒勾選時是移到的那一支）、Backspace 回上一層
 fn keyboard(ui: &egui::Ui, d: &mut JfBrowse, out: &mut Panel) {
     if ui.ctx().egui_wants_keyboard_input() || egui::Popup::is_any_open(ui.ctx()) {
@@ -1332,7 +1332,7 @@ fn apply_facet(d: &mut JfBrowse, change: FacetChange, out: &mut Panel) {
     out.reload = true;
 }
 
-/// 「人物 ⌄」「標籤 ⌄」「年份 ⌄」其中一個：按鈕上的藍色數字是勾了幾個；打開是搜尋框和勾選清單（後面寫用在幾支影片），
+/// 「人物 ⌄」「標籤 ⌄」「年份 ⌄」其中一個：按鈕上的藍色數字是勾了幾個；開啟是搜尋框和勾選清單（後面寫用在幾支影片），
 /// 勾了馬上套用、清單不關（可以連續勾），最下面可以清除這一類。rows：（名稱, 幾支, 條件）
 #[allow(clippy::too_many_arguments)]
 fn facet_menu(
@@ -1419,15 +1419,15 @@ fn facet_menu(
     });
 }
 
-/// 條件（放在「媒體庫 ›」後面同一列）：每個條件一顆（按一下拿掉），同一類之間寫「或」、不同類之間寫「且」，最後是「全部清除」。
-/// room 放不下時先放得下的，後面一顆「+N 個」打開清單看其他的（一樣可以拿掉）
+/// 條件（放在「媒體庫 ›」後面同一列）：每個條件一顆（按一下移除），同一類之間寫「或」、不同類之間寫「且」，最後是「全部清除」。
+/// room 放不下時先放得下的，後面一顆「+N 個」開啟清單看其他的（一樣可以移除）
 fn facet_chips(ui: &mut egui::Ui, chosen: &[JfFacet], room: f32, change: &mut FacetChange) {
     let p = theme::pal(ui);
     ui.spacing_mut().item_spacing.x = 6.0;
     let gap = 6.0;
     let ordered: Vec<&JfFacet> = (0..3u8).flat_map(|k| chosen.iter().filter(move |f| kind_of(f) == k)).collect();
     let text_w = |t: &str, f: egui::FontId| ui.painter().layout_no_wrap(t.to_string(), f, p.text).size().x;
-    let clear = Btn::new(tr!("全部清除", "Clear all")).small().ghost().tooltip(tr!("拿掉所有條件，回到媒體庫", "Remove all conditions and go back to the libraries"));
+    let clear = Btn::new(tr!("全部清除", "Clear all")).small().ghost().tooltip(tr!("移除所有條件，回到媒體庫", "Remove all conditions and go back to the libraries"));
     let clear_w = clear.width(ui) + gap;
     let more_w = Btn::new(trf!("+{} 個", "+{} more", 99)).small().ghost().width(ui) + gap;
     let sep = |a: &JfFacet, b: &JfFacet| if kind_of(a) == kind_of(b) { tr!("或", "or") } else { tr!("且", "and") };
@@ -1450,7 +1450,7 @@ fn facet_chips(ui: &mut egui::Ui, chosen: &[JfFacet], room: f32, change: &mut Fa
             let and = kind_of(ordered[i - 1]) != kind_of(f);
             ui.label(RichText::new(s).font(if and { theme::font_bold(12.5) } else { theme::font(12.0) }).color(if and { p.text } else { p.muted }));
         }
-        let tip = trf!("{}：{}，按一下拿掉這個條件", "{}: {}. Click to remove this condition", kind_name(f), facet_name(f));
+        let tip = trf!("{}：{}，按一下移除這個條件", "{}: {}. Click to remove this condition", kind_name(f), facet_name(f));
         if remove_chip(ui, &facet_name(f)).on_hover_text(tip).clicked() {
             *change = FacetChange::Toggle((*f).clone());
         }
@@ -1463,7 +1463,7 @@ fn facet_chips(ui: &mut egui::Ui, chosen: &[JfFacet], room: f32, change: &mut Fa
             for f in hidden {
                 ui.horizontal(|ui| {
                     ui.label(theme::muted(ui, kind_name(f)));
-                    if remove_chip(ui, &facet_name(f)).on_hover_text(tr!("按一下拿掉這個條件", "Click to remove this condition")).clicked() {
+                    if remove_chip(ui, &facet_name(f)).on_hover_text(tr!("按一下移除這個條件", "Click to remove this condition")).clicked() {
                         *change = FacetChange::Toggle((*f).clone());
                     }
                 });
@@ -1475,7 +1475,7 @@ fn facet_chips(ui: &mut egui::Ui, chosen: &[JfFacet], room: f32, change: &mut Fa
     }
 }
 
-/// 藍色小標籤，後面有 ×：整顆按一下拿掉
+/// 藍色小標籤，後面有 ×：整顆按一下移除
 fn remove_chip(ui: &mut egui::Ui, text: &str) -> egui::Response {
     let p = theme::pal(ui);
     let g = ui.painter().layout_no_wrap(text.to_string(), theme::font(12.5), p.accent);
@@ -1536,6 +1536,8 @@ pub struct Panel {
     play_all: bool,
     /// 按了產生字幕進度旁的「取消」
     cancel_subs: bool,
+    /// 按了整理人物、標籤進度旁的「取消」
+    cancel_batch: bool,
     /// 「依這些找」的人物清單看到了、還沒讀的人物照片
     faces: Vec<String>,
     find_dupes: bool,
@@ -1734,7 +1736,7 @@ pub fn panel(ui: &mut egui::Ui, d: &mut JfBrowse, busy: Option<(usize, usize)>, 
                 if Btn::new(&d.path[i].1).small().ghost().selected(last && !facets).show(ui).clicked() && !(last && !facets) {
                     d.path.truncate(i + 1);
                     if last {
-                        // 依條件找時按目前這一層：拿掉條件，回到資料夾
+                        // 依條件找時按目前這一層：移除條件，回到資料夾
                         d.facet.clear();
                     }
                     d.page = 0;
@@ -1801,12 +1803,12 @@ pub fn panel(ui: &mut egui::Ui, d: &mut JfBrowse, busy: Option<(usize, usize)>, 
             (Some(items), None) if items.is_empty() => {
                 let msg: String = if !d.facet.is_empty() && d.filter != JfFilter::All {
                     trf!(
-                        "找不到符合這些條件、而且是「{}」的影片，可以拿掉幾個條件或把篩選改回「全部」試試",
+                        "找不到符合這些條件、而且是「{}」的影片，可以移除幾個條件或把篩選改回「全部」試試",
                         "No videos match all of these and “{}”. Try removing a few, or set the filter back to All",
                         d.filter.label()
                     )
                 } else if !d.facet.is_empty() {
-                    tr!("找不到符合這些條件的影片，可以拿掉幾個條件試試", "No videos match all of these. Try removing a few").into()
+                    tr!("找不到符合這些條件的影片，可以移除幾個條件試試", "No videos match all of these. Try removing a few").into()
                 } else if !d.searched.is_empty() && d.filter != JfFilter::All {
                     tr!("找不到符合的影片（篩選不是「全部」）", "No matching videos (the filter isn't All)").into()
                 } else if !d.searched.is_empty() {
@@ -1868,11 +1870,20 @@ pub fn panel(ui: &mut egui::Ui, d: &mut JfBrowse, busy: Option<(usize, usize)>, 
     let fui = &mut ui.new_child(UiBuilder::new().max_rect(Rect::from_min_max(foot.min, pos2(foot.max.x - pager_w, foot.max.y))).layout(Layout::left_to_right(Align::Center)));
     if let Some((done, total)) = busy {
         fui.spinner();
-        fui.label(theme::muted(fui, trf!("正在整理 {done}/{total} 支…", "Organizing {done}/{total}…")));
+        let f = if total > 0 { done as f32 / total as f32 } else { 0.0 };
+        fui.label(theme::muted(fui, trf!("正在整理 {done}/{total} 支（{:.0}%）…", "Organizing {done}/{total} ({:.0}%)…", f * 100.0)));
         let (bar, _) = fui.allocate_exact_size(vec2(90.0, 5.0), Sense::hover());
         fui.painter().rect_filled(bar, 2.5, p.border);
-        let f = if total > 0 { done as f32 / total as f32 } else { 0.0 };
         fui.painter().rect_filled(Rect::from_min_size(bar.min, vec2(bar.width() * f, bar.height())), 2.5, p.accent);
+        if Btn::new(tr!("取消", "Cancel"))
+            .small()
+            .ghost()
+            .tooltip(tr!("改完正在改的那一支就停；已經改的照樣保留", "Stops after the current video; videos already changed stay changed"))
+            .show(fui)
+            .clicked()
+        {
+            out.cancel_batch = true;
+        }
         fui.add_space(10.0);
     }
     if let Some((i, n, name, pct)) = &subs {
@@ -1891,7 +1902,7 @@ pub fn panel(ui: &mut egui::Ui, d: &mut JfBrowse, busy: Option<(usize, usize)>, 
     }
     if d.selected.is_empty() {
         fui.label(theme::muted(fui, tr!("多選小技巧", "Multi-select tips"))).on_hover_text(tr!(
-            "滑鼠移到影片上按左上角的方塊，或按住 Ctrl 點影片，勾選好幾支一次下載或刪除；按住 Shift 點一下，從上次勾的那支到這一支全部勾起來",
+            "滑鼠移到影片上按左上角的方塊，或按住 Ctrl 點影片，勾選好幾支一次下載或刪除；按住 Shift 按一下，從上次勾的那支到這一支全部勾起來",
             "Hover a video and click the box in its top-left corner, or Ctrl+click videos, to download or delete several at once. Shift+click selects everything from the last one you checked"
         ));
     } else {
@@ -1904,7 +1915,7 @@ pub fn panel(ui: &mut egui::Ui, d: &mut JfBrowse, busy: Option<(usize, usize)>, 
             .tooltip(if busy.is_some() {
                 tr!("上一次的整理還沒改完", "The previous batch is still running")
             } else {
-                tr!("一次加、拿掉勾選影片的人物和標籤，改年份", "Add or remove people and tags, or set the year, on all selected videos")
+                tr!("一次加、移除勾選影片的人物和標籤，改年份", "Add or remove people and tags, or set the year, on all selected videos")
             })
             .show(fui)
             .clicked()
@@ -1929,7 +1940,7 @@ pub fn panel(ui: &mut egui::Ui, d: &mut JfBrowse, busy: Option<(usize, usize)>, 
         let chosen: Vec<JfItem> = d.selected.values().cloned().collect();
         egui::Popup::menu(&add).show(|ui| add_menu(ui, d, &chosen, &mut out.picked.add_to));
         if let Some((kind, _)) = d.path.last().and_then(|(id, _)| list_at(id)) {
-            let here = if kind == JfList::Collection { tr!("從這個合集拿掉", "Remove from this collection") } else { tr!("從這個播放清單拿掉", "Remove from this playlist") };
+            let here = if kind == JfList::Collection { tr!("從這個合集移除", "Remove from this collection") } else { tr!("從這個播放清單移除", "Remove from this playlist") };
             if Btn::new(here).small().tooltip(tr!("影片本身不會刪掉", "The videos themselves aren't deleted")).show(fui).clicked() {
                 out.picked.remove_here = Some(chosen.clone());
             }
@@ -1972,7 +1983,7 @@ pub fn apply(app: &mut UiApp, mut d: JfBrowse, mut out: Panel) {
     if std::mem::take(&mut out.picked.scrolled) {
         d.scroll_to_cursor = false;
     }
-    let Panel { mut reload, more, mut picked, bulk_download, bulk_delete, bulk_organize, play_all, cancel_subs, faces, find_dupes } = out;
+    let Panel { mut reload, more, mut picked, bulk_download, bulk_delete, bulk_organize, play_all, cancel_subs, cancel_batch, faces, find_dupes } = out;
     if let Some(s) = picked.sort.take() {
         d.sort = s;
         d.page = 0;
@@ -1981,6 +1992,11 @@ pub fn apply(app: &mut UiApp, mut d: JfBrowse, mut out: Panel) {
 
     if cancel_subs {
         if let Some(r) = &app.jf_subs {
+            r.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+    if cancel_batch {
+        if let Some(r) = &app.jf_batch_run {
             r.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
         }
     }
@@ -2002,13 +2018,13 @@ pub fn apply(app: &mut UiApp, mut d: JfBrowse, mut out: Panel) {
     }
     if let Some(items) = picked.remove_here.take() {
         app.jf_browse = Some(d);
-        // 一次拿掉很多支：先問（拿掉之後也可以按「復原」放回去）
+        // 一次移除很多支：先問（移除之後也可以按「復原」放回去）
         if items.len() >= 5 {
             let n = items.len();
             app.ask = Some(super::dialogs::Ask::confirm(
-                trf!("從這裡拿掉 {n} 支影片？", "Remove {n} videos from here?"),
+                trf!("從這裡移除 {n} 支影片？", "Remove {n} videos from here?"),
                 tr!("影片本身不會刪掉，只是不在這個合集或播放清單裡。", "The videos themselves aren't deleted; they're just taken out of this collection or playlist."),
-                tr!("拿掉", "Remove"),
+                tr!("移除", "Remove"),
                 move |app, _| remove_here(app, items),
             ));
             return;
@@ -2021,7 +2037,7 @@ pub fn apply(app: &mut UiApp, mut d: JfBrowse, mut out: Panel) {
             d.selected.insert(it.id.clone(), it);
         }
     }
-    // Shift＋點一下：同一排裡從上次勾的到這一支都勾起來（上次勾的不在這一排時只勾這一支）
+    // Shift＋按一下：同一排裡從上次勾的到這一支都勾起來（上次勾的不在這一排時只勾這一支）
     if let Some((it, row)) = picked.range {
         let from = d.anchor.as_ref().and_then(|a| row.iter().position(|r| &r.id == a));
         match (from, row.iter().position(|r| r.id == it.id)) {
@@ -2192,7 +2208,7 @@ fn add_to_list(app: &mut UiApp, a: AddTo) {
     });
 }
 
-/// 從目前這個合集、播放清單拿掉（影片本身不刪）
+/// 從目前這個合集、播放清單移除（影片本身不刪）
 fn remove_here(app: &mut UiApp, items: Vec<JfItem>) {
     let Some(jf) = app.jellyfin() else { return };
     let Some(d) = app.jf_browse.as_mut() else { return };
@@ -2208,18 +2224,18 @@ fn remove_here(app: &mut UiApp, items: Vec<JfItem>) {
             Ok(()) => {
                 let undo_list = list.clone();
                 app.toast_with(
-                    trf!("已從{what}拿掉 {n} 支影片（影片本身還在）", "Removed {n} videos from the {what} (the videos themselves are kept)"),
+                    trf!("已從{what}移除 {n} 支影片（影片本身還在）", "Removed {n} videos from the {what} (the videos themselves are kept)"),
                     false,
                     vec![super::ToastAction::new(tr!("復原", "Undo"), move |app| put_back(app, kind, user, undo_list, back))],
                 );
             }
-            Err(e) => app.toast(trf!("從{what}拿掉失敗：{e}", "Couldn't remove from the {what}: {e}"), true),
+            Err(e) => app.toast(trf!("從{what}移除失敗：{e}", "Couldn't remove from the {what}: {e}"), true),
         }
         reload_lists(app, Some(list));
     });
 }
 
-/// 「復原」剛才拿掉的：放回同一個合集、播放清單（播放清單裡會排到最後面）
+/// 「復原」剛才移除的：放回同一個合集、播放清單（播放清單裡會排到最後面）
 fn put_back(app: &mut UiApp, kind: JfList, user: String, list: String, ids: Vec<String>) {
     let Some(jf) = app.jellyfin() else { return };
     let list2 = list.clone();

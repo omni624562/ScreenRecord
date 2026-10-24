@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 pub struct Action {
     /// 影片的秒數
     pub t: f64,
-    /// 0 = 點一下、1 = 按右鍵、2 = 按快速鍵
+    /// 0 = 按一下、1 = 按右鍵、2 = 按快速鍵
     #[serde(default)]
     pub kind: u8,
     /// 點到的東西的名稱（按鈕上的字）或按鍵（「Ctrl + S」）

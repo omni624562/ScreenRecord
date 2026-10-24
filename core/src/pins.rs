@@ -1,5 +1,5 @@
 //! 釘選（我的最愛）：重要的截圖、錄影加星號，「選取全部」「全選本頁」和「清理舊截圖」都會略過。
-//! 存在資料夾裡的 pins.json（完整路徑的清單）；檔案改名、搬移時跟著改，刪除時拿掉。
+//! 存在資料夾裡的 pins.json（完整路徑的清單）；檔案重新命名、搬移時跟著改，刪除時移除。
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -43,7 +43,7 @@ impl PinStore {
         self.set.lock().unwrap_or_else(|e| e.into_inner()).values().filter(|p| std::path::Path::new(p).is_file()).cloned().collect()
     }
 
-    /// 檔案改名或搬到別的資料夾
+    /// 檔案重新命名或搬到別的資料夾
     pub fn renamed(&self, from: &str, to: &str) {
         let mut set = self.set.lock().unwrap_or_else(|e| e.into_inner());
         if set.remove(&from.to_lowercase()).is_some() {

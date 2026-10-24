@@ -1,7 +1,7 @@
 //! 一支錄影（影片、聲音檔）能做的事：主畫面卡片、全部錄影、檢視器共用同一份清單，
 //! 名稱、圖示、分組、順序都一樣，所以在哪裡學會的，到別的地方也找得到。
-//! 清單（卡片、全部錄影）只放管理檔案的事：播放、剪輯、製作、改名、分享、星號、刪除；
-//! 要看著畫面才知道怎麼做的（設為封面、旋轉、操作步驟、用 Windows 開啟）在打開影片後的檢視器。
+//! 清單（卡片、全部錄影）只放管理檔案的事：播放、剪輯、製作、重新命名、分享、星號、刪除；
+//! 要看著畫面才知道怎麼做的（設為封面、旋轉、操作步驟、用 Windows 開啟）在開啟影片後的檢視器。
 //! 同一個地方已經有按鈕的，「⋯」裡不再列一次（按右鍵的選單才列全部）
 
 use super::theme::{Btn, Icon};
@@ -72,14 +72,14 @@ pub fn groups(app: &UiApp, e: &LibraryEntry, place: Place) -> Vec<Vec<Node>> {
                 EntryAction::PlayHere,
                 tr!("播放", "Play"),
                 Some(Icon::Play),
-                tr!("在這裡播放（點兩下卡片：在播放器開啟）", "Play here (double-click the card to open in the player)"),
+                tr!("在這裡播放（按兩下卡片：在播放器開啟）", "Play here (double-click the card to open in the player)"),
             )));
-            // 「⋯」裡也列出來（只靠點兩下卡片，第一次用的人找不到）
+            // 「⋯」裡也列出來（只靠按兩下卡片，第一次用的人找不到）
             look.push(one(item(
                 EntryAction::Play,
                 tr!("在播放器開啟", "Open in player"),
                 Some(Icon::Fullscreen),
-                tr!("用大的播放器看：拖曳進度、調速度、擷取這一格（也可以點兩下卡片）", "Watch in the full player: seek, change speed, grab a frame (or double-click the card)"),
+                tr!("用大的播放器看：拖曳進度、調速度、擷取這一格（也可以按兩下卡片）", "Watch in the full player: seek, change speed, grab a frame (or double-click the card)"),
             )));
         }
         Place::Library => look.push(one(item(EntryAction::Play, tr!("播放", "Play"), Some(Icon::Play), tr!("播放（Enter）", "Play (Enter)")))),
@@ -193,7 +193,7 @@ pub fn groups(app: &UiApp, e: &LibraryEntry, place: Place) -> Vec<Vec<Node>> {
         });
     }
 
-    // 加速版、GIF 在清單上只留複製、傳、資料夾、刪除（其他的在打開後的檢視器）
+    // 加速版、GIF 在清單上只留複製、傳、資料夾、刪除（其他的在開啟後的檢視器）
     let side = list && export;
     let mut share = vec![one(item(
         EntryAction::CopyFile,

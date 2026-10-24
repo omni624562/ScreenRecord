@@ -800,7 +800,7 @@ impl Exporter {
                 }
                 let _ = std::fs::remove_file(img);
             }
-            // 先在鎖內記下結果需要的東西，放開鎖再做檔案的動作（網路磁碟上改名、刪檔可能很慢，
+            // 先在鎖內記下結果需要的東西，放開鎖再做檔案的動作（網路磁碟上重新命名、刪檔可能很慢，
             // 這段時間介面讀進度不會被卡住）
             let (canceled, stderr_tail) = {
                 let mut s = state.lock().unwrap_or_else(|e| e.into_inner());

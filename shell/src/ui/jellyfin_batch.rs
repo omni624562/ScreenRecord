@@ -1,5 +1,5 @@
-//! Jellyfin 分頁勾選好幾支 →「整理人物、標籤…」：一次加、拿掉人物和標籤，改年份。
-//! 上面列出勾選的影片現在有的（全部都有的實心，只有幾支有的寫幾支），可以從全部拿掉或補給全部；
+//! Jellyfin 分頁勾選好幾支 →「整理人物、標籤…」：一次加、移除人物和標籤，改年份。
+//! 上面列出勾選的影片現在有的（全部都有的實心，只有幾支有的寫幾支），可以從全部移除或補給全部；
 //! 下面和影片資訊一樣打字或點常用的加入。按「改 N 支」後在背景一支一支改（只動這次改的），
 //! 分頁下面顯示進度，關掉檔案庫也會繼續。見 core::jellyfin 的 BatchEdit、edit_many
 
@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex};
 #[derive(Clone, Copy, PartialEq)]
 enum Act {
     Keep,
-    /// 從全部拿掉
+    /// 從全部移除
     Remove,
     /// 補給還沒有的
     AddAll,
@@ -52,6 +52,8 @@ pub struct JfBatch {
 /// 背景正在整理的（Jellyfin 分頁下面畫進度）
 pub struct BatchRun {
     pub progress: Arc<Mutex<(usize, usize)>>,
+    /// 按了「取消」：改完正在改的那一支就停
+    pub cancel: Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// 名稱依只差空白、大小寫、全形半形的合在一起，算每個有幾支；多的在前、再依名稱
@@ -74,7 +76,7 @@ fn haves(lists: impl Iterator<Item = Vec<String>>) -> Vec<Have> {
     out
 }
 
-/// 打開（items 是勾選的影片；known 是伺服器上的人物、標籤與用在幾支）
+/// 開啟（items 是勾選的影片；known 是伺服器上的人物、標籤與用在幾支）
 pub fn open(app: &mut UiApp, user: String, items: Vec<JfItem>, known_people: Vec<(String, usize)>, known_tags: Vec<(String, usize)>) {
     let mut years: Vec<(Option<i32>, usize)> = vec![];
     for it in &items {
@@ -104,14 +106,14 @@ pub fn open(app: &mut UiApp, user: String, items: Vec<JfItem>, known_people: Vec
 }
 
 /// 現在有的一顆：全部都有的實心藍、只有幾支有的白底虛線框寫「2/5」；
-/// 右邊是動作（拿掉 ×、補給全部 ＋；改了的是復原 ↺），從全部拿掉的劃線變紅、補給全部的變綠
+/// 右邊是動作（移除 ×、補給全部 ＋；改了的是復原 ↺），從全部移除的劃線變紅、補給全部的變綠
 fn have_chip(ui: &mut egui::Ui, h: &mut Have, total: usize) {
     let p = theme::pal(ui);
     let partial = h.count < total;
     let count = if partial { format!(" {}/{total}", h.count) } else { String::new() };
     let note = match h.act {
         Act::Keep => String::new(),
-        Act::Remove => tr!("（要拿掉）", " (remove)").to_string(),
+        Act::Remove => tr!("（要移除）", " (remove)").to_string(),
         Act::AddAll => tr!("（補給全部）", " (add to all)").to_string(),
     };
     let fg = match h.act {
@@ -121,7 +123,7 @@ fn have_chip(ui: &mut egui::Ui, h: &mut Have, total: usize) {
         Act::AddAll => p.ok,
     };
     let name = ui.painter().layout_no_wrap(format!("{}{note}", h.name), theme::font(12.5), fg);
-    let num = ui.painter().layout_no_wrap(count, theme::font(11.5), p.muted);
+    let num = ui.painter().layout_no_wrap(count, theme::font(12.0), p.muted);
     // 動作：沒改的 ×（只有幾支有的前面多一個 ＋），改了的 ↺
     let icons: Vec<Icon> = match h.act {
         Act::Keep if partial => vec![Icon::Plus, Icon::Close],
@@ -154,7 +156,7 @@ fn have_chip(ui: &mut egui::Ui, h: &mut Have, total: usize) {
         let r = ui.interact(hit, ui.id().with(("have-act", &h.name, i)), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
         let r = match icon {
             Icon::Plus => r.on_hover_text(tr!("補給勾選的全部影片", "Add it to all selected videos")),
-            Icon::Close => r.on_hover_text(tr!("從勾選的全部影片拿掉", "Remove it from all selected videos")),
+            Icon::Close => r.on_hover_text(tr!("從勾選的全部影片移除", "Remove it from all selected videos")),
             _ => r.on_hover_text(tr!("復原（不改）", "Undo (leave as is)")),
         };
         if r.hovered() {
@@ -207,7 +209,7 @@ fn edit_of(d: &JfBatch) -> Option<BatchEdit> {
     Some(BatchEdit { add_people, remove_people: pick(&d.people, Act::Remove), add_tags, remove_tags: pick(&d.tags, Act::Remove), year })
 }
 
-/// 要改什麼的一句話（例如「加 1 個人物、拿掉 1 個標籤、年份改成 2024」）
+/// 要改什麼的一句話（例如「加 1 個人物、移除 1 個標籤、年份改成 2024」）
 fn summary(e: &BatchEdit) -> String {
     let mut parts = vec![];
     let n = |v: &Vec<String>| v.len();
@@ -215,13 +217,13 @@ fn summary(e: &BatchEdit) -> String {
         parts.push(trf!("加 {} 個人物", "add {} people", n(&e.add_people)));
     }
     if n(&e.remove_people) > 0 {
-        parts.push(trf!("拿掉 {} 個人物", "remove {} people", n(&e.remove_people)));
+        parts.push(trf!("移除 {} 個人物", "remove {} people", n(&e.remove_people)));
     }
     if n(&e.add_tags) > 0 {
         parts.push(trf!("加 {} 個標籤", "add {} tags", n(&e.add_tags)));
     }
     if n(&e.remove_tags) > 0 {
-        parts.push(trf!("拿掉 {} 個標籤", "remove {} tags", n(&e.remove_tags)));
+        parts.push(trf!("移除 {} 個標籤", "remove {} tags", n(&e.remove_tags)));
     }
     match e.year {
         Some(Some(y)) => parts.push(trf!("年份改成 {y}", "set the year to {y}")),
@@ -237,7 +239,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
     let mut close = false;
     let mut go = None;
     let mut prefs_changed = false;
-    // 常用裡不列勾選的影片都已經有的（拿掉的還是列，可以再加回去）
+    // 常用裡不列勾選的影片都已經有的（移除的還是列，可以再加回去）
     let on_all = |haves: &[Have]| haves.iter().filter(|h| h.count >= total && h.act == Act::Keep).map(|h| jellyfin::name_key(&h.name)).collect::<Vec<_>>();
     let (all_p, all_t) = (on_all(&d.people), on_all(&d.tags));
     let known_people: Vec<(String, usize)> = d.known_people.iter().filter(|(n, _)| !all_p.contains(&jellyfin::name_key(n))).cloned().collect();
@@ -255,7 +257,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         });
         ui.label(
             RichText::new(tr!(
-                "實心的是勾選的影片都有；白底的只有幾支有（寫幾支）。按 × 從全部拿掉，按 ＋ 補給全部；下面打字或點常用的加給全部。",
+                "實心的是勾選的影片都有；白底的只有幾支有（寫幾支）。按 × 從全部移除，按 ＋ 補給全部；下面打字或點常用的加給全部。",
                 "Solid ones are on every selected video; outlined ones only on some (with the count). Click × to remove from all, ＋ to add to all; type below or click a suggestion to add to all."
             ))
             .font(theme::font(12.0))
@@ -348,23 +350,28 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
 fn start(app: &mut UiApp, user: String, ids: Vec<String>, edit: BatchEdit) {
     let Some(jf) = app.jellyfin() else { return };
     let progress = Arc::new(Mutex::new((0usize, ids.len())));
-    app.jf_batch_run = Some(BatchRun { progress: progress.clone() });
+    let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    app.jf_batch_run = Some(BatchRun { progress: progress.clone(), cancel: cancel.clone() });
     let ctx = app.ctx.clone();
     let (ids2, e2) = (ids.clone(), edit.clone());
     app.spawn(
         async move {
             tokio::task::spawn_blocking(move || {
-                jf.edit_many(&user, &ids2, &e2, &|done, total| {
+                let stop = cancel.clone();
+                let r = jf.edit_many(&user, &ids2, &e2, &|done, total| {
                     *progress.lock().unwrap_or_else(|e| e.into_inner()) = (done, total);
                     ctx.request_repaint();
-                })
+                    !stop.load(std::sync::atomic::Ordering::Relaxed)
+                });
+                (r, cancel.load(std::sync::atomic::Ordering::Relaxed))
             })
             .await
-            .unwrap_or_else(|e| Err(e.to_string()))
+            .unwrap_or_else(|e| (Err(e.to_string()), false))
         },
-        move |app, r| {
+        move |app, (r, cancelled)| {
             app.jf_batch_run = None;
             match r {
+                Ok(n) if cancelled => app.toast(trf!("已停止：改好 {n} 支（已經改的照樣保留）", "Stopped: {n} videos changed (those stay changed)"), false),
                 Ok(n) => app.toast(trf!("✓ {n} 支影片整理好了", "✓ Organized {n} videos"), false),
                 Err(e) => app.toast(trf!("沒有全部整理好：{e}", "Not every video was changed: {e}"), true),
             }

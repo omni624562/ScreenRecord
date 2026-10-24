@@ -50,7 +50,7 @@ pub struct SnipSource {
     pub path: PathBuf,
     pub desktop: crate::types::Rect,
     pub monitors: Vec<MonitorInfo>,
-    /// 截下時看得到的視窗（由上層到下層）：點一下截整個視窗
+    /// 截下時看得到的視窗（由上層到下層）：按一下截整個視窗
     pub windows: Vec<crate::types::Rect>,
     /// 截圖存檔的資料夾
     pub shot_dir: String,
@@ -496,7 +496,7 @@ impl App {
         }
     }
 
-    /// 開始步驟截圖：之後每點一下滑鼠就截一張（圖先放在儲存資料夾的「教學_日期_時間」資料夾）；
+    /// 開始步驟截圖：之後每按一下滑鼠就截一張（圖先放在儲存資料夾的「教學_日期_時間」資料夾）；
     /// 畫面下方有小工具列可以完成或取消
     pub fn steps_start(self: &Arc<Self>, output_dir: &str) -> crate::Result<()> {
         if self.lock().steps_draft.is_some() {
@@ -609,7 +609,18 @@ impl App {
 
     /// 做成影片（MP4）：每一步一張畫面（截圖＋說明）至少顯示 secs 秒、淡入淡出；speak = 用 Windows 內建的語音唸出說明。
     /// 存成 儲存資料夾/文件名稱.mp4（已經有同名檔案時加上編號），成功後刪掉暫放的截圖
-    pub async fn steps_build_video(&self, title: String, steps: Vec<crate::steps::Step>, secs: f64, speak: bool) -> crate::Result<String> {
+    /// progress：千分比（準備畫面、語音占一半，FFmpeg 壓縮占一半）；cancel 設成 true 就停（做到一半的刪掉）
+    pub async fn steps_build_video(
+        &self,
+        title: String,
+        steps: Vec<crate::steps::Step>,
+        secs: f64,
+        speak: bool,
+        progress: Arc<std::sync::atomic::AtomicU32>,
+        cancel: Arc<std::sync::atomic::AtomicBool>,
+    ) -> crate::Result<String> {
+        use std::sync::atomic::Ordering;
+        let cancelled = || crate::Error::config(tr!("已取消", "Cancelled"));
         let draft = self.lock().steps_draft.clone().ok_or_else(|| crate::Error::config(tr!("沒有要整理的步驟", "There are no steps to organize")))?;
         if steps.is_empty() {
             return Err(crate::Error::config(tr!("沒有要整理的步驟", "There are no steps to organize")));
@@ -619,6 +630,7 @@ impl App {
         let title = if title.trim().is_empty() { draft.title() } else { title.trim().to_string() };
         let (d, list, t) = (draft.clone(), steps.clone(), title.clone());
         let t2 = tmp.clone();
+        let (prog, stop) = (progress.clone(), cancel.clone());
         // 畫面與語音（背景執行緒）
         let prepared = tokio::task::spawn_blocking(move || -> Result<crate::steps::VideoParts, String> {
             std::fs::create_dir_all(&t2).map_err(|e| crate::error::plain(&e))?;
@@ -633,6 +645,10 @@ impl App {
             frames.push((png.display().to_string(), 2.5));
             voices.push(None);
             for (i, s) in list.iter().enumerate() {
+                if stop.load(Ordering::Relaxed) {
+                    return Err(tr!("已取消", "Cancelled").into());
+                }
+                prog.store((i * 500 / list.len().max(1)) as u32, Ordering::Relaxed);
                 let text = s.caption();
                 let png = t2.join(format!("frame_{i:03}.png"));
                 crate::steps::video_frame(&d.image_path(s), i + 1, &text, w, h)?.save_png(&png).map_err(|e| e.to_string())?;
@@ -655,28 +671,84 @@ impl App {
         .map_err(|e| crate::Error::other(e.to_string()))?;
         let (frames, voices) = match prepared {
             Ok(v) => v,
+            Err(_) if cancel.load(Ordering::Relaxed) => {
+                let _ = std::fs::remove_dir_all(&tmp);
+                return Err(cancelled());
+            }
             Err(e) => {
                 let _ = std::fs::remove_dir_all(&tmp);
                 return Err(crate::Error::other(e));
             }
         };
+        progress.store(500, Ordering::Relaxed);
         let mut path = draft.dir.join(format!("{}.mp4", draft.name));
         let mut n = 2;
         while path.exists() {
             path = draft.dir.join(format!("{} ({n}).mp4", draft.name));
             n += 1;
         }
-        let out = crate::process::command(&ffmpeg).args(crate::steps::video_args(&frames, &voices, &path.display().to_string())).output().await;
+        // 壓縮的進度：依每一步的秒數估（FFmpeg 的 -progress 報目前做到幾秒）
+        let total_sec: f64 = frames.iter().map(|f| f.1).sum::<f64>().max(0.1);
+        let mut cmd = crate::process::command(&ffmpeg);
+        cmd.args(["-progress", "pipe:1", "-nostats"])
+            .args(crate::steps::video_args(&frames, &voices, &path.display().to_string()))
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        let out = match cmd.spawn() {
+            Ok(mut child) => {
+                use tokio::io::AsyncBufReadExt;
+                let mut lines = child.stdout.take().map(|o| tokio::io::BufReader::new(o).lines());
+                let stderr = child.stderr.take();
+                let err_task = tokio::spawn(async move {
+                    let mut buf = String::new();
+                    if let Some(mut e) = stderr {
+                        let _ = tokio::io::AsyncReadExt::read_to_string(&mut e, &mut buf).await;
+                    }
+                    buf
+                });
+                let mut stopped = false;
+                loop {
+                    let next = match lines.as_mut() {
+                        Some(l) => tokio::time::timeout(std::time::Duration::from_millis(250), l.next_line()).await,
+                        None => Ok(Ok(None)),
+                    };
+                    if cancel.load(Ordering::Relaxed) {
+                        let _ = child.start_kill();
+                        stopped = true;
+                        break;
+                    }
+                    match next {
+                        Ok(Ok(Some(line))) => {
+                            if let Some(us) = line.strip_prefix("out_time_us=").and_then(|v| v.trim().parse::<f64>().ok()) {
+                                progress.store(500 + ((us / 1e6 / total_sec).clamp(0.0, 1.0) * 499.0) as u32, Ordering::Relaxed);
+                            }
+                        }
+                        Ok(_) => break,
+                        Err(_) => {}
+                    }
+                }
+                let status = child.wait().await;
+                let err = err_task.await.unwrap_or_default();
+                if stopped {
+                    let _ = std::fs::remove_dir_all(&tmp);
+                    let _ = std::fs::remove_file(&path);
+                    return Err(cancelled());
+                }
+                status.map(|s| (s.success(), err))
+            }
+            Err(e) => Err(e),
+        };
         let _ = std::fs::remove_dir_all(&tmp);
         match out {
-            Ok(o) if o.status.success() => {}
-            Ok(o) => {
+            Ok((true, _)) => {}
+            Ok((false, stderr)) => {
                 let _ = std::fs::remove_file(&path);
-                let err = String::from_utf8_lossy(&o.stderr).lines().last().unwrap_or_default().to_string();
+                let err = stderr.lines().last().unwrap_or_default().to_string();
                 return Err(crate::Error::other(trf!("無法做成影片：{err}", "Couldn't make the video: {err}")));
             }
             Err(e) => return Err(crate::Error::other(e.to_string())),
         }
+        progress.store(1000, Ordering::Relaxed);
         draft.discard();
         let mut st = self.lock();
         if st.steps_draft.as_ref() == Some(&draft) {
@@ -969,8 +1041,8 @@ impl App {
         }
     }
 
-    /// 延遲截圖：倒數 sec 秒後框選（先打開要截的選單或提示）。Windows 上畫面上方顯示「3」秒後框選（不會被截進去），
-    /// 按 Esc 或點一下取消。取消時回傳 None
+    /// 延遲截圖：倒數 sec 秒後框選（先開啟要截的選單或提示）。Windows 上畫面上方顯示「3」秒後框選（不會被截進去），
+    /// 按 Esc 或按一下取消。取消時回傳 None
     pub async fn snip_delayed(self: &Arc<Self>, config: &RecordConfig, sec: u64) -> crate::Result<Option<crate::types::ShotInfo>> {
         if sec > 0 && !countdown(sec).await {
             crate::info!("[截圖] 取消延遲截圖");
@@ -1094,7 +1166,7 @@ impl App {
         }
     }
 
-    /// 凍結畫面讓使用者框選一塊（或點一下選視窗），把那塊的像素（RGBA）交給 f 處理；取消時 None
+    /// 凍結畫面讓使用者框選一塊（或按一下選視窗），把那塊的像素（RGBA）交給 f 處理；取消時 None
     #[cfg(windows)]
     async fn snip_pixels<T: Send + 'static>(
         self: &Arc<Self>,
@@ -1136,7 +1208,7 @@ impl App {
         res
     }
 
-    /// 長截圖：框選範圍（或點一下選視窗）後，自動一邊往下捲一邊擷取，接成一張長圖，
+    /// 長截圖：框選範圍（或按一下選視窗）後，自動一邊往下捲一邊擷取，接成一張長圖，
     /// 存成新的截圖並複製到剪貼簿。捲到底、畫面對不起來、太長或按 Esc 時停止。只有 Windows
     pub async fn long_shot(self: &Arc<Self>, config: &RecordConfig) -> crate::Result<Option<crate::types::ShotInfo>> {
         #[cfg(not(windows))]
@@ -1190,7 +1262,7 @@ impl App {
         }
     }
 
-    /// 框選要錄影的範圍：與框選截圖相同的畫面（拖曳框選或點一下選視窗），回傳範圍（取消時 None），
+    /// 框選要錄影的範圍：與框選截圖相同的畫面（拖曳框選或按一下選視窗），回傳範圍（取消時 None），
     /// 也記成「上次框選」。只有 Windows 有原生的框選畫面
     pub async fn select_record_region(self: &Arc<Self>, config: &RecordConfig) -> crate::Result<Option<crate::types::Rect>> {
         {
@@ -2098,7 +2170,7 @@ impl Drop for LiveGuard {
 #[cfg(windows)]
 type LongCapture = (crate::longshot::LongImage, usize, Option<crate::longshot::Step>);
 
-/// 倒數 sec 秒；回傳 false = 取消（Windows：畫面上方顯示倒數，按 Esc 或點一下取消）
+/// 倒數 sec 秒；回傳 false = 取消（Windows：畫面上方顯示倒數，按 Esc 或按一下取消）
 async fn countdown(sec: u64) -> bool {
     #[cfg(windows)]
     {
@@ -2111,14 +2183,14 @@ async fn countdown(sec: u64) -> bool {
     }
 }
 
-/// 延遲截圖的倒數：「3」秒後框選截圖（先打開要截的選單・按 Esc 或點一下取消）
+/// 延遲截圖的倒數：「3」秒後框選截圖（先開啟要截的選單・按 Esc 或按一下取消）
 #[cfg(windows)]
 fn countdown_bubble(sec: u64) -> bool {
     use crate::bubble::Content;
     use crate::bubble_win::{Bubble, Options};
     let content = |n: u64| Content {
         big: Some(n.to_string()),
-        lines: vec![tr!("秒後框選截圖", "s until you select an area").into(), tr!("先打開要截的選單或提示・按 Esc 或點一下取消", "Open the menu or tooltip now · Esc or click to cancel").into()],
+        lines: vec![tr!("秒後框選截圖", "s until you select an area").into(), tr!("先開啟要截的選單或提示・按 Esc 或按一下取消", "Open the menu or tooltip now · Esc or click to cancel").into()],
         buttons: vec![],
     };
     let bubble = Bubble::show(content(sec), Options { clickable: true, esc: true, near: None, bottom: false, on: None });

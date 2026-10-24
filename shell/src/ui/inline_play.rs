@@ -363,7 +363,7 @@ pub fn show(app: &mut UiApp, ui: &mut egui::Ui, area: Rect) {
     let tag = Rect::from_min_size(shown.min + vec2(8.0, 8.0), g.size() + vec2(12.0, 6.0));
     painter.rect_filled(tag, CornerRadius::same(5), p.accent);
     painter.galley(tag.min + vec2(6.0, 3.0), g, Color32::WHITE);
-    // 點畫面：播放 / 暫停；點兩下：在播放器開啟。要比上面的按鈕先登記，按鈕才收得到點擊（後登記的蓋在上面）
+    // 點畫面：播放 / 暫停；按兩下：在播放器開啟。要比上面的按鈕先登記，按鈕才收得到點擊（後登記的蓋在上面）
     let resp = ui.interact(stage, egui::Id::new("inline-stage"), Sense::click());
     // 右上角：回到錄影畫面（即時預覽），有文字比較好找
     let close_r = Rect::from_min_max(pos2(shown.max.x - 220.0, shown.min.y + 6.0), pos2(shown.max.x - 6.0, shown.min.y + 38.0));
@@ -529,7 +529,7 @@ fn controls(i: &mut Inline, ui: &mut egui::Ui) -> bool {
         if Btn::icon_only(Icon::Window)
             .ghost()
             .small()
-            .tooltip(tr!("在播放器開啟（點兩下畫面也可以）：章節、擷取這一格、設為封面等", "Open in the player (or double-click the video): chapters, frame capture, set as cover…"))
+            .tooltip(tr!("在播放器開啟（按兩下畫面也可以）：章節、擷取這一格、設為封面等", "Open in the player (or double-click the video): chapters, frame capture, set as cover…"))
             .show(ui)
             .clicked()
         {

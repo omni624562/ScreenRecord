@@ -150,7 +150,7 @@ impl Thumbnails {
             .get_or_init(|| async {
                 let _permit = self.sem.clone().acquire_owned().await.ok()?;
                 let _ = tokio::fs::create_dir_all(&self.dir).await;
-                // 先寫暫存檔再改名：不會留下寫一半的圖
+                // 先寫暫存檔再重新命名：不會留下寫一半的圖
                 let tmp = out.with_extension("tmp.png");
                 let args = strip_args(video, duration, &tmp.display().to_string());
                 let r = run(ffmpeg, &args, Duration::from_secs(60)).await;
@@ -217,7 +217,7 @@ pub fn strip_pick(frac: f64, duration: f64) -> (usize, f64) {
     (i, duration.max(0.0) * (i as f64 + 0.5) / STRIP_FRAMES as f64)
 }
 
-/// 截圖縮圖：解碼後縮到 IMAGE_MAX 以內（小圖不放大），存成 PNG；先寫暫存檔再改名，不會留下寫一半的縮圖
+/// 截圖縮圖：解碼後縮到 IMAGE_MAX 以內（小圖不放大），存成 PNG；先寫暫存檔再重新命名，不會留下寫一半的縮圖
 fn image_thumb(src: &Path, dst: &Path) -> bool {
     let Ok(img) = image::open(src) else { return false };
     let (w, h) = (img.width(), img.height());

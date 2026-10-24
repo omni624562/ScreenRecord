@@ -81,7 +81,7 @@ pub struct LibraryDialog {
     /// cursor_row 是用方向鍵移過去的：畫外框（滑鼠移動時取消）；scroll_cursor：捲到看得到
     kb_cursor: bool,
     scroll_cursor: bool,
-    /// Shift＋點一下時，從這一筆選到點的那一筆（上次點或勾選的）
+    /// Shift＋按一下時，從這一筆選到點的那一筆（上次點或勾選的）
     anchor: Option<String>,
     /// 上次按 Ctrl 轉滾輪換縮圖大小的時間（轉一格只換一級）
     wheel_at: Option<Instant>,
@@ -89,7 +89,7 @@ pub struct LibraryDialog {
     only_selected: bool,
     /// 全部截圖用滑鼠框選：開始拖曳時的勾選（框到的加在上面）
     band_base: Option<HashSet<String>>,
-    /// 按下了、還沒移動到算拖曳的距離（只點一下的話交給縮圖的點一下）
+    /// 按下了、還沒移動到算拖曳的距離（只按一下的話交給縮圖的按一下）
     band_pending: bool,
     /// 只看有星號的
     only_pinned: bool,
@@ -106,7 +106,7 @@ pub struct LibraryDialog {
     calendar: Option<browse::CalView>,
     /// 搜尋框的建議
     suggest: browse::Suggest,
-    /// 已經開始建立截圖的文字索引（打開全部截圖時一次）
+    /// 已經開始建立截圖的文字索引（開啟全部截圖時一次）
     ocr_started: bool,
     /// 上一個畫面文字索引還在做（做完時重新搜尋）
     ocr_running: bool,
@@ -271,7 +271,7 @@ impl LibraryDialog {
         self.selected.extend(all.into_iter().filter(|p| !pins.contains(p)));
     }
 
-    /// Ctrl＋點一下：選取 / 取消這一筆；Shift＋點一下：選取從上次點的那一筆到這一筆（order：這一頁的順序）
+    /// Ctrl＋按一下：選取 / 取消這一筆；Shift＋按一下：選取從上次點的那一筆到這一筆（order：這一頁的順序）
     fn pick(&mut self, path: &str, order: &[String], shift: bool) {
         let from = self.anchor.as_ref().and_then(|a| order.iter().position(|p| p == a));
         if let (true, Some(a), Some(b)) = (shift, from, order.iter().position(|p| p == path)) {
@@ -361,7 +361,7 @@ fn export_label(x: &ExportInfo) -> String {
     }
 }
 
-/// 打開檔案庫，停在「Jellyfin」分頁（「⋯」總選單的「Jellyfin」）；切回錄影、截圖時是錄影
+/// 開啟檔案庫，停在「Jellyfin」分頁（「⋯」總選單的「Jellyfin」）；切回錄影、截圖時是錄影
 pub fn open_jellyfin(app: &mut UiApp) {
     let mut d = LibraryDialog::new(Kind::Video);
     d.jellyfin = true;
@@ -377,7 +377,7 @@ fn load(app: &mut UiApp) {
     // 截圖資料夾＋留在原處的舊截圖（看其他資料夾時只看那個資料夾）
     let extra_dirs = if kind == Kind::Shot && !browsing { app.s.shot_extra(&app.env) } else { vec![] };
     let pinned = app.core.pins.list();
-    // 截圖：在背景讀出圖裡的字（搜尋用）；打開時開始一次，已經做過的不再做
+    // 截圖：在背景讀出圖裡的字（搜尋用）；開啟時開始一次，已經做過的不再做
     if kind == Kind::Shot && app.library.as_ref().is_some_and(|d| !d.ocr_started) {
         let dirs: Vec<String> = match app.library.as_ref().and_then(|d| d.dir.clone()) {
             Some(dir) => vec![dir],
@@ -546,7 +546,7 @@ fn middle_truncate(ui: &egui::Ui, text: &str, font: &egui::FontId, max_w: f32) -
     cut(lo)
 }
 
-/// 標題下的資料夾：資料夾圖示與路徑（太長時從中間省略），點一下在檔案總管開啟，滑鼠提示完整路徑
+/// 標題下的資料夾：資料夾圖示與路徑（太長時從中間省略），按一下在檔案總管開啟，滑鼠提示完整路徑
 fn folder_link(ui: &mut egui::Ui, dir: &str, max_w: f32) -> egui::Response {
     let p = theme::pal(ui);
     let font = theme::font(12.5);
@@ -560,7 +560,7 @@ fn folder_link(ui: &mut egui::Ui, dir: &str, max_w: f32) -> egui::Response {
         ui.painter().hline(at.x..=at.x + g.size().x, at.y + g.size().y, Stroke::new(1.0, color));
     }
     ui.painter().galley_with_override_text_color(at, g, color);
-    resp.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(trf!("{dir}\n點一下開啟資料夾", "{dir}\nClick to open the folder"))
+    resp.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(trf!("{dir}\n按一下開啟資料夾", "{dir}\nClick to open the folder"))
 }
 
 /// 清單是空的或讀不到資料夾：說明與按鈕（置中）；回傳按了第幾個按鈕
@@ -608,7 +608,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         return;
     };
     watch_merge(app, &mut d);
-    // 「Jellyfin」分頁：設定裡拿掉 Jellyfin 了就回到錄影或截圖
+    // 「Jellyfin」分頁：設定裡移除 Jellyfin 了就回到錄影或截圖
     let jf_url = app.jellyfin().is_some().then(|| app.s.jellyfin_url.trim().to_string());
     if jf_url.is_none() {
         d.jellyfin = false;
@@ -1004,12 +1004,12 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         let hint = match (n, shot) {
             (0, _) if total == 0 => String::new(),
             (0, true) => tr!(
-                "勾選多張可一次刪除或拼成一張（從空白處拖曳框選、Ctrl / Shift＋點一下、Ctrl+A）；縮圖可以拖到其他程式",
+                "勾選多張可一次刪除或拼成一張（從空白處拖曳框選、Ctrl / Shift＋按一下、Ctrl+A）；縮圖可以拖到其他程式",
                 "Select several to delete or combine them (drag a box from empty space, Ctrl/Shift+click, Ctrl+A); drag thumbnails into other apps"
             )
             .into(),
             (0, false) => {
-                tr!("勾選多筆可一次刪除（Ctrl / Shift＋點一下、Ctrl+A 全選）", "Select several to delete them at once (Ctrl/Shift+click, Ctrl+A for all)")
+                tr!("勾選多筆可一次刪除（Ctrl / Shift＋按一下、Ctrl+A 全選）", "Select several to delete them at once (Ctrl/Shift+click, Ctrl+A for all)")
                     .into()
             }
             _ if is_en() => {
@@ -1156,7 +1156,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         }
     }
     if close || matches!(req, Some(Req::Record)) {
-        // 關掉檔案庫：Jellyfin 下次打開重新讀
+        // 關掉檔案庫：Jellyfin 下次開啟重新讀
         app.jf_browse = None;
         if matches!(req, Some(Req::Record)) {
             start_recording(app);
@@ -1261,7 +1261,7 @@ fn trash_list(e: &LibraryEntry) -> Vec<String> {
     std::iter::once(e.media.path.clone()).chain(e.exports.iter().map(|x| x.media.path.clone())).collect()
 }
 
-/// 鍵盤：Delete 移到資源回收筒（有勾選時是勾選的全部，和下方按鈕一樣；沒勾選時是滑鼠所在或上次點的那一列）、F2 改名、Enter 播放
+/// 鍵盤：Delete 移到資源回收筒（有勾選時是勾選的全部，和下方按鈕一樣；沒勾選時是滑鼠所在或上次點的那一列）、F2 重新命名、Enter 播放
 fn row_keys(app: &UiApp, ui: &egui::Ui, d: &mut LibraryDialog, rows: &[LibraryEntry], req: &mut Option<Req>) {
     if req.is_some() || app.ask.is_some() || d.overlay() || ui.ctx().egui_wants_keyboard_input() || egui::Popup::is_any_open(ui.ctx()) {
         return;
@@ -1353,7 +1353,7 @@ fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table:
     let times = time_labels(rows.iter().map(|e| (e.media.name.as_str(), e.media.time_ms())));
     // 時間一律寫「時:分」；同一分鐘有好幾支時，後面用淡色小字補秒數。欄寬固定，檔名才會切齊
     let hm_w = ui.fonts_mut(|f| f.layout_no_wrap("00:00".into(), theme::font_bold(13.0), p.text).size().x);
-    let sec_w = ui.fonts_mut(|f| f.layout_no_wrap(":00".into(), theme::font(11.0), p.muted).size().x);
+    let sec_w = ui.fonts_mut(|f| f.layout_no_wrap(":00".into(), theme::font(12.0), p.muted).size().x);
     let time_w = hm_w + if times.values().any(|(_, t)| t.len() > 5) { sec_w + 1.0 } else { 0.0 };
     // 每一天（這一頁）的支數、總長度、總大小：日期欄第二行與提示
     let mut days: HashMap<chrono::NaiveDate, (usize, f64, u64)> = HashMap::new();
@@ -1367,7 +1367,7 @@ fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table:
     }
     // 檔名開始的位置（主列：縮圖、時間之後；加速版子列也對齊這裡）。
     // 子列的「4× 加速版」標籤比縮圖加時間寬時，整頁的檔名一起往右移，上下才切齊
-    let chip_w = |t: &str| ui.fonts_mut(|f| f.layout_no_wrap(t.to_string(), theme::font_bold(11.5), p.text).size().x) + 14.0;
+    let chip_w = |t: &str| ui.fonts_mut(|f| f.layout_no_wrap(t.to_string(), theme::font_bold(12.0), p.text).size().x) + 14.0;
     let badge_w = rows.iter().flat_map(|e| &e.exports).map(|x| chip_w(&export_label(x))).fold(0.0, f32::max);
     let name_x = (col_x(2) + 4.0 + 53.0 + 10.0 + time_w + 12.0).max(col_x(2) + 48.0 + badge_w + 10.0);
     let today = chrono::Local::now().date_naive();
@@ -1411,7 +1411,7 @@ fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table:
                     continue;
                 }
                 let row = Rect::from_min_size(pos2(table.min.x, y), vec2(table.width(), LIBRARY_ROW_MAIN_PX as f32));
-                // 整列可按右鍵（所有操作的選單）；點一下記住這一列（鍵盤 Delete、F2、Enter 操作它）
+                // 整列可按右鍵（所有操作的選單）；按一下記住這一列（鍵盤 Delete、F2、Enter 操作它）
                 let resp = ui.interact(row.shrink2(vec2(0.0, 1.0)), Id::new(("librow", &e.media.path)), drag_sense());
                 // 子列（加速版）也算在這一列的範圍內：滑鼠在子列上時，原片的按鈕也亮起來
                 let sub_rows = e.exports.len() + e.hits.len().min(LIBRARY_HITS_SHOWN);
@@ -1480,7 +1480,7 @@ fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table:
                             painter.text(pos2(x, row.center().y), egui::Align2::LEFT_CENTER, &main, theme::font_bold(13.0), p.text);
                         } else {
                             painter.text(pos2(x, row.center().y - 1.0), egui::Align2::LEFT_BOTTOM, &main, theme::font_bold(13.0), p.text);
-                            painter.text(pos2(x, row.center().y + 1.0), egui::Align2::LEFT_TOP, sub.join(" · "), theme::font(11.0), p.muted);
+                            painter.text(pos2(x, row.center().y + 1.0), egui::Align2::LEFT_TOP, sub.join(" · "), theme::font(12.0), p.muted);
                         }
                         // 點日期：勾選（或取消）這一天全部
                         let cell = Rect::from_min_max(pos2(col_x(1), row.min.y + 4.0), pos2(col_x(2) - 4.0, row.max.y - 4.0));
@@ -1488,7 +1488,7 @@ fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table:
                         let same: Vec<&String> = rows.iter().filter(|x| times.get(&x.media.name).map(|t| t.0) == Some(dd)).map(|x| &x.media.path).collect();
                         let all_on = same.iter().all(|p| d.selected.contains(*p));
                         let tip = trf!(
-                            "{}：{cnt} 支，共 {}、{}\n點一下{}這一天全部",
+                            "{}：{cnt} 支，共 {}、{}\n按一下{}這一天全部",
                             "{}: {cnt} videos, {} total, {}\nClick to {} all of this day",
                             day_label(dd, today),
                             short_clock(dur),
@@ -1502,7 +1502,7 @@ fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table:
                         }
                     }
                 }
-                // 檔案欄：縮圖（點一下播放）、時間、檔名（資料夾裡看到的名稱），右邊是剪輯版、有聲音
+                // 檔案欄：縮圖（按一下播放）、時間、檔名（資料夾裡看到的名稱），右邊是剪輯版、有聲音
                 let name_rect = Rect::from_min_max(pos2(col_x(2), row.min.y), pos2(col_x(3), row.max.y));
                 let thumb = Rect::from_min_size(pos2(name_rect.min.x + 4.0, row.center().y - 15.0), vec2(53.0, 30.0));
                 let tresp = ui.interact(thumb, Id::new(("libthumb", &e.media.path)), drag_sense()).on_hover_cursor(egui::CursorIcon::PointingHand);
@@ -1587,7 +1587,7 @@ fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table:
                     let (hm, sec) = time.split_at(time.len().min(5));
                     painter.text(pos2(tr_rect.min.x, row.center().y), egui::Align2::LEFT_CENTER, hm, theme::font_bold(13.0), p.text);
                     if !sec.is_empty() {
-                        painter.text(pos2(tr_rect.min.x + hm_w + 1.0, row.center().y + 1.0), egui::Align2::LEFT_CENTER, sec, theme::font(11.0), p.muted);
+                        painter.text(pos2(tr_rect.min.x + hm_w + 1.0, row.center().y + 1.0), egui::Align2::LEFT_CENTER, sec, theme::font(12.0), p.muted);
                     }
                     nui.add_space((name_x - nui.cursor().min.x).max(0.0));
                     // 格式、剪輯版等標記緊接在檔名後面（不要隔一大段空白）；先量好寬度，檔名太長時截斷
@@ -1609,11 +1609,11 @@ fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table:
                             Some(tr!("存成 M4A 的聲音檔（可以在這裡播放，或在「⋯」用 Windows 開啟）", "Audio saved as M4A (play it here, or open it in Windows from “⋯”)")),
                         ));
                     }
-                    let chips_w: f32 = tags.iter().map(|(t, _, _)| ui.fonts_mut(|f| f.layout_no_wrap(t.clone(), theme::font_bold(11.5), p.text).size().x) + 14.0 + 6.0).sum();
+                    let chips_w: f32 = tags.iter().map(|(t, _, _)| ui.fonts_mut(|f| f.layout_no_wrap(t.clone(), theme::font_bold(12.0), p.text).size().x) + 14.0 + 6.0).sum();
                     // 自己取的名稱用一般字色，預設檔名（Rec_日期_時間）用灰色
                     let custom = !is_default_name(&e.media.name);
                     let name = RichText::new(&e.media.name).font(theme::font(if custom { 13.0 } else { 12.5 })).color(if custom { p.text } else { p.muted });
-                    let tip = if audio { e.media.name.clone() } else { trf!("{}\n按兩下改名（F2）", "{}\nDouble-click to rename (F2)", e.media.name) };
+                    let tip = if audio { e.media.name.clone() } else { trf!("{}\n按兩下重新命名（F2）", "{}\nDouble-click to rename (F2)", e.media.name) };
                     if !e.media.folder.is_empty() {
                         nui.spacing_mut().item_spacing.x = 6.0;
                         folder_chip(nui, &e.media.folder);
@@ -1702,7 +1702,7 @@ fn video_table(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, table:
                     }
                     y += LIBRARY_ROW_SUB_PX as f32;
                 }
-                // 搜尋到的說過的話：時間與那一句（點一下從那裡播放）
+                // 搜尋到的說過的話：時間與那一句（按一下從那裡播放）
                 let shown = e.hits.len().min(LIBRARY_HITS_SHOWN);
                 for (i, h) in e.hits.iter().take(shown).enumerate() {
                     let row = Rect::from_min_size(pos2(table.min.x, y), vec2(table.width(), LIBRARY_ROW_SUB_PX as f32));
@@ -1877,7 +1877,7 @@ pub fn pending_chip(ui: &mut egui::Ui, path: &str) {
 
 /// 清單右邊固定寬度的一欄（right_to_left 排版裡）：標籤靠左放，沒有標籤時留空，上下各列才會切齊
 fn tag_column(ui: &mut egui::Ui, texts: &[&str], add: impl FnOnce(&mut egui::Ui)) {
-    let w = texts.iter().map(|t| ui.fonts_mut(|f| f.layout_no_wrap(t.to_string(), theme::font_bold(11.5), Color32::WHITE).size().x) + 14.0).fold(0.0, f32::max);
+    let w = texts.iter().map(|t| ui.fonts_mut(|f| f.layout_no_wrap(t.to_string(), theme::font_bold(12.0), Color32::WHITE).size().x) + 14.0).fold(0.0, f32::max);
     let h = ui.available_height();
     ui.allocate_ui_with_layout(vec2(w, h), Layout::left_to_right(Align::Center), add);
 }
@@ -1895,7 +1895,7 @@ const GRID_MIN_W: [f32; 3] = [120.0, 210.0, 300.0];
 fn shot_grid(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, area: Rect, dir: &str, req: &mut Option<Req>, size: &mut u8) {
     let p = theme::pal(ui);
     grid_zoom(ui, d, area, size);
-    // 小縮圖只放名稱：點一下檢視、按右鍵看全部操作
+    // 小縮圖只放名稱：按一下檢視、按右鍵看全部操作
     let small = *size == 0;
     let gap = if small { 10.0 } else { 14.0 };
     // 右邊留捲軸的位置（捲軸浮在內容上）
@@ -1942,7 +1942,7 @@ fn shot_grid(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, area: Re
                 let pl = places.get(i).copied().unwrap_or(GridPlace { page: 0, y: 0.0, col: i, head_y: None });
                 Rect::from_min_size(pos2(all.min.x + pl.col as f32 * (cell_w + gap), all.min.y + pl.y as f32), vec2(cell_w, cell_h))
             };
-            // 用滑鼠框選（先登記，縮圖、按鈕的點一下照樣優先；拖曳超過幾個像素才算框選）
+            // 用滑鼠框選（先登記，縮圖、按鈕的按一下照樣優先；拖曳超過幾個像素才算框選）
             let band = band_select(ui, d, all, &order, &cell_at, img_h, ctrl);
             // 日期標題列（在框選之後登記，勾選框才點得到）
             day_headers(app, ui, d, all, &groups, &places);
@@ -1972,7 +1972,7 @@ fn shot_grid(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, area: Re
                 }
                 let img = Rect::from_min_size(cell.min, vec2(cell_w, img_h));
                 let resp = ui.interact(img, Id::new(("shotcell", &e.media.path)), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(trf!(
-                    "{}\n點一下檢視（Enter）、Ctrl＋點一下多選、按右鍵看更多\n拖到其他程式（LINE、Word、檔案總管…）可以直接傳過去",
+                    "{}\n按一下檢視（Enter）、Ctrl＋按一下多選、按右鍵看更多\n拖到其他程式（LINE、Word、檔案總管…）可以直接傳過去",
                     "{}\nClick to view (Enter), Ctrl+click to select; right-click for more\nDrag into other apps (chat, Word, File Explorer…) to share it",
                     e.media.name
                 ));
@@ -2052,7 +2052,7 @@ fn shot_grid(app: &mut UiApp, ui: &mut egui::Ui, d: &mut LibraryDialog, area: Re
                 let br = Rect::from_min_max(pos2(cell.min.x + 2.0, img.max.y + 30.0), cell.max);
                 let bui = &mut ui.new_child(UiBuilder::new().max_rect(br).layout(Layout::right_to_left(Align::Center)));
                 bui.scope(|ui| {
-                    // 由右往左排：畫面上是「檢視 · 編輯 · 資料夾 · 改名 · ⋯」（與全部錄影的順序相同）
+                    // 由右往左排：畫面上是「檢視 · 編輯 · 資料夾 · 重新命名 · ⋯」（與全部錄影的順序相同）
                     ui.spacing_mut().item_spacing.x = 2.0;
                     let more = Btn::icon_only(Icon::More).ghost().small().quiet(!hot).tooltip(tr!("更多（也可以在圖上按右鍵）", "More (or right-click the image)")).show(ui);
                     egui::Popup::menu(&more).show(|ui| shot_menu(ui, e, false, pinned_e, req));
@@ -2294,7 +2294,7 @@ fn selection_links(ui: &mut egui::Ui, d: &mut LibraryDialog, shot: bool, pins: &
     }
 }
 
-/// 星號（釘選）按鈕：有星號時一直顯示（黃色實心），沒有時 show 才顯示外框；點一下切換
+/// 星號（釘選）按鈕：有星號時一直顯示（黃色實心），沒有時 show 才顯示外框；按一下切換
 #[allow(clippy::too_many_arguments)]
 fn star_button(ui: &mut egui::Ui, rect: Rect, id: Id, pinned: bool, show: bool, bg: bool, req: &mut Option<Req>, path: &str) {
     if !pinned && !show {
@@ -2651,7 +2651,7 @@ fn compare_selected(app: &mut UiApp) {
 /// 清理舊截圖：選天數，看會刪幾張、多大，確認後移到資源回收筒（有星號的不刪）
 fn cleanup_dialog(app: &mut UiApp, ctx: &egui::Context, d: &mut LibraryDialog) {
     let Some(c) = &mut d.cleanup else { return };
-    // 天數改了（或剛打開）：重新查
+    // 天數改了（或剛開啟）：重新查
     let want = c.days as u64 + 1;
     if c.seq != want {
         c.seq = want;
@@ -2824,9 +2824,9 @@ fn similar_dialog(app: &mut UiApp, ctx: &egui::Context, d: &mut LibraryDialog) {
                                     };
                                     let tr_ = Rect::from_min_size(img.min + vec2(4.0, 4.0), vec2(if pinned { 52.0 } else { 40.0 }, 18.0));
                                     ui.painter().rect_filled(tr_, CornerRadius::same(3), col);
-                                    ui.painter().text(tr_.center(), egui::Align2::CENTER_CENTER, tag, theme::font_bold(11.0), Color32::WHITE);
+                                    ui.painter().text(tr_.center(), egui::Align2::CENTER_CENTER, tag, theme::font_bold(12.0), Color32::WHITE);
                                     let when = entry_time(&m.name, m.time_ms()).map(|t| t.format("%m/%d %H:%M").to_string()).unwrap_or_default();
-                                    ui.painter().text(pos2(img.min.x + 2.0, img.max.y + 10.0), egui::Align2::LEFT_CENTER, format!("{when} · {}", format_bytes(m.bytes)), theme::font(11.0), p.muted);
+                                    ui.painter().text(pos2(img.min.x + 2.0, img.max.y + 10.0), egui::Align2::LEFT_CENTER, format!("{when} · {}", format_bytes(m.bytes)), theme::font(12.0), p.muted);
                                     let resp = resp.on_hover_text(&m.name);
                                     if resp.clicked() && !c.remove.remove(&m.path) {
                                         c.remove.insert(m.path.clone());
@@ -3024,7 +3024,7 @@ fn combine_dialog(app: &mut UiApp, ctx: &egui::Context, d: &mut LibraryDialog) {
     });
 }
 
-/// 改名：原片與底下的加速版一起改；送出時檢查衝突、使用中，錯誤留在對話框裡。
+/// 重新命名：原片與底下的加速版一起改；送出時檢查衝突、使用中，錯誤留在對話框裡。
 /// 同時在背景依內容想一個名稱（字幕、畫面上的字、在用的程式），想好顯示在輸入欄下面
 pub fn rename_entry(app: &mut UiApp, entry: LibraryEntry) {
     let path = entry.media.path.clone();
@@ -3046,7 +3046,7 @@ pub fn rename_entry(app: &mut UiApp, entry: LibraryEntry) {
 fn rename_dialog(app: &mut UiApp, entry: LibraryEntry) {
     let old = base_name(&entry.media.name);
     let n = entry.exports.len();
-    let mut ask = Ask::input(tr!("重新命名", "Rename"), tr!("新名稱", "New name"), old.clone(), tr!("改名", "Rename"), move |app, value| {
+    let mut ask = Ask::input(tr!("重新命名", "Rename"), tr!("新名稱", "New name"), old.clone(), tr!("重新命名", "Rename"), move |app, value| {
         let name = value.trim().trim_end_matches(".mp4").trim_end_matches(".MP4").trim_end_matches(".png").trim_end_matches(".PNG").trim_end_matches(".jpg").trim_end_matches(".JPG").to_string();
         if name == old {
             app.ask = None;
@@ -3073,7 +3073,7 @@ fn rename_dialog(app: &mut UiApp, entry: LibraryEntry) {
                 super::viewer::renamed(app, &e2.media.path, &new_path);
                 app.sync_renamed(renamed_pairs(&e2, &new_path));
                 app.ask = None;
-                app.toast(trf!("已改名為 {name}", "Renamed to {name}"), false);
+                app.toast(trf!("已重新命名為 {name}", "Renamed to {name}"), false);
                 if let Some(d) = &mut app.library {
                     d.selected.remove(&e2.media.path);
                     for x in &e2.exports {
@@ -3100,13 +3100,13 @@ fn rename_dialog(app: &mut UiApp, entry: LibraryEntry) {
                 format!("Its {n} sped-up versions will be renamed too.")
             }
         } else {
-            format!("底下的 {n} 個加速版會一起改名。")
+            format!("底下的 {n} 個加速版會一起重新命名。")
         });
     }
     app.ask = Some(ask);
 }
 
-/// 改名前後的路徑（錄影和底下的加速版、GIF：名稱開頭跟著換），媒體庫那一份照這個改
+/// 重新命名前後的路徑（錄影和底下的加速版、GIF：名稱開頭跟著換），媒體庫那一份照這個改
 fn renamed_pairs(e: &LibraryEntry, new_path: &str) -> Vec<(std::path::PathBuf, std::path::PathBuf)> {
     let new = std::path::PathBuf::from(new_path);
     let dir = new.parent().map(|d| d.to_path_buf()).unwrap_or_default();
@@ -3120,7 +3120,7 @@ fn renamed_pairs(e: &LibraryEntry, new_path: &str) -> Vec<(std::path::PathBuf, s
     pairs
 }
 
-/// 改名失敗後：保留對話框（含輸入的文字與錯誤訊息），讓使用者再送出一次
+/// 重新命名失敗後：保留對話框（含輸入的文字與錯誤訊息），讓使用者再送出一次
 fn rename_retry(app: &mut UiApp, entry: LibraryEntry) {
     let Some(a) = app.ask.take() else { return };
     let value = a.input.clone().unwrap_or_default();
@@ -3191,7 +3191,7 @@ fn trash_paths(app: &mut UiApp, paths: Vec<String>) {
     app.confirm_trash(title, tr!("可從資源回收筒還原。", "You can restore files from the Recycle Bin."), paths, trashed);
 }
 
-/// 刪好之後：清單的勾選拿掉、重新讀取
+/// 刪好之後：清單的勾選移除、重新讀取
 fn trashed(app: &mut UiApp, paths: &[String], ok: bool) {
     if !ok {
         return;

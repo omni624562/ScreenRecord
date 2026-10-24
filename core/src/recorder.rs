@@ -364,7 +364,7 @@ impl St {
 
 /// 把分段接成一支影片（concat，不重新壓縮）。有錄聲音時每個分段在聲音結尾截斷（見 concat_list），
 /// 聲音與畫面一起結束、分段之間也不留無聲的空隙。chapters：寫進影片的章節（錄影時加的標記）。
-/// 先合併到分段資料夾裡的暫存檔，成功才改名成 out：合併失敗或逾時時不會留下看起來正常、其實殘缺的錄影
+/// 先合併到分段資料夾裡的暫存檔，成功才重新命名成 out：合併失敗或逾時時不會留下看起來正常、其實殘缺的錄影
 /// （分段留著，下次開啟時可以救回）。成功時回傳成品的長度（秒，讀不到時 None），失敗時回傳原因
 pub(crate) async fn merge_segments(ffmpeg: &Path, files: &[String], parts_dir: &Path, out: &Path, has_audio: bool, chapters: Option<String>) -> std::result::Result<Option<f64>, String> {
     let mut outpoints = Vec::new();
@@ -811,13 +811,13 @@ impl Recorder {
         self.lock().state != RecorderState::Idle
     }
 
-    /// 錄影中（含儲存中）要寫入的成品路徑：不能改名或刪除
+    /// 錄影中（含儲存中）要寫入的成品路徑：不能重新命名或刪除
     /// 正在錄影的分段資料夾（救回中斷的錄影時不能動它）
     pub fn parts_dir(&self) -> Option<PathBuf> {
         self.lock().parts_dir.clone()
     }
 
-    /// 錄好的檔案改名了：結果卡跟著顯示新的檔案
+    /// 錄好的檔案重新命名了：結果卡跟著顯示新的檔案
     pub fn result_renamed(&self, from: &str, to: &str) {
         if let Some(r) = self.lock().result.as_mut() {
             if r.path.as_deref().is_some_and(|p| p.eq_ignore_ascii_case(from)) {
@@ -1151,7 +1151,7 @@ impl Recorder {
         }
         if config.audio_only {
             if !config.audio.system && !config.audio.mic {
-                return Err(Error::config(tr!("只錄聲音時，請至少打開「系統聲音」或「麥克風」", "For audio-only recording, turn on “System audio” or “Microphone”")));
+                return Err(Error::config(tr!("只錄聲音時，請至少開啟「系統聲音」或「麥克風」", "For audio-only recording, turn on “System audio” or “Microphone”")));
             }
             // 畫面是一張卡片：螢幕相關的設定都用不到，也不用縮小操作視窗
             config = RecordConfig {
@@ -1318,7 +1318,7 @@ impl Recorder {
         if self.lock().config.as_ref().is_some_and(|c| c.hide_icons) {
             crate::winui::set_desktop_icons(false);
         }
-        // 錄影時打開勿擾（停止後由 after_stop 恢復）
+        // 錄影時開啟勿擾（停止後由 after_stop 恢復）
         if self.lock().config.as_ref().is_some_and(|c| c.quiet) {
             crate::quiet::begin();
         }

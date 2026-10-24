@@ -22,7 +22,7 @@ pub fn should_show(app: &UiApp) -> bool {
 #[allow(dead_code)] // 有些版本的新功能介紹沒有「到設定看看」
 enum Try {
     None,
-    /// 打開設定的某一頁
+    /// 開啟設定的某一頁
     Settings(Page),
     /// 在螢幕上框選截圖（這一版的介紹沒用到，保留給之後）
     #[allow(dead_code)]
@@ -32,7 +32,7 @@ enum Try {
     /// 開始一步一步的教學（這一版的介紹沒用到，保留給之後）
     #[allow(dead_code)]
     Tour,
-    /// 打開檔案庫的 Jellyfin 分頁
+    /// 開啟檔案庫的 Jellyfin 分頁
     Jellyfin,
     /// 縮小成小視窗
     Compact,

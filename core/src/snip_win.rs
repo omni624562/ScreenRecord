@@ -1,7 +1,7 @@
 //! 框選截圖的畫面（Windows 原生視窗，不靠操作視窗）：一個蓋住整個桌面的最上層視窗，
-//! 顯示凍結的畫面並變暗；拖曳框選範圍，或點一下選游標下的視窗；Esc 或右鍵取消。截圖與錄影共用。
+//! 顯示凍結的畫面並變暗；拖曳框選範圍，或按一下選游標下的視窗；Esc 或右鍵取消。截圖與錄影共用。
 //! 截圖、選錄影範圍時放開滑鼠後範圍留著：可以拖曳邊、角調整或整個移動，下方的工具列選要做什麼
-//! （完成、編輯、複製、釘在桌面、取消；Enter 完成、在範圍裡點兩下也是完成）。設定「放開滑鼠就直接存檔」時放開就截。
+//! （完成、編輯、複製、釘在桌面、取消；Enter 完成、在範圍裡按兩下也是完成）。設定「放開滑鼠就直接存檔」時放開就截。
 //! 游標旁有放大鏡（看清楚像素、方向鍵微調位置）。
 //! 座標都是實體像素（程式已宣告 Per-Monitor DPI aware）。
 
@@ -26,7 +26,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_PAINT, WM_RBUTTONUP, WM_SETCURSOR, WNDCLASSEXW, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
 
-/// 小於這個大小（像素）的拖曳當成點一下
+/// 小於這個大小（像素）的拖曳當成按一下
 const MIN_DRAG: i32 = 4;
 const ACCENT: COLORREF = COLORREF(0x00EB_6325); // #2563EB（BGR）
 const ACCENT_HOT: COLORREF = COLORREF(0x00F6_823B); // #3B82F6
@@ -352,7 +352,7 @@ fn cursor_for(st: &State, p: POINT) -> PCWSTR {
     }
 }
 
-/// 按下左鍵（在範圍裡點兩下以外的第二下也到這裡）
+/// 按下左鍵（在範圍裡按兩下以外的第二下也到這裡）
 unsafe fn press(hwnd: HWND, p: POINT) {
     STATE.with(|s| {
         let mut b = s.borrow_mut();
@@ -435,7 +435,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             press(hwnd, point(lparam));
             LRESULT(0)
         }
-        // 在範圍裡點兩下：完成
+        // 在範圍裡按兩下：完成
         WM_LBUTTONDBLCLK => {
             let p = point(lparam);
             let done = STATE.with(|s| {
@@ -468,7 +468,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                 let picked = if r.right - r.left >= MIN_DRAG && r.bottom - r.top >= MIN_DRAG {
                     r
                 } else {
-                    // 點一下：選游標下的視窗（超出桌面的部分裁掉）
+                    // 按一下：選游標下的視窗（超出桌面的部分裁掉）
                     win_rect(st, clamp_to(window_at(st, p)?, st.desk))
                 };
                 if st.adjust {
@@ -566,22 +566,22 @@ fn tip_text(st: &State) -> &'static str {
     match st.record {
         Mode::Record if adjusting => tr!("拖曳邊框調整範圍，按 Enter 確定　　Esc 取消", "Drag the edges to adjust, then press Enter    Esc to cancel"),
         Mode::Record => tr!(
-            "拖曳框選要錄影的範圍，或點一下選視窗；按 Enter 選整個螢幕　　Esc 或右鍵取消",
+            "拖曳框選要錄影的範圍，或按一下選視窗；按 Enter 選整個螢幕　　Esc 或右鍵取消",
             "Drag to select the area to record, or click a window; Enter for the whole screen    Esc or right-click to cancel"
         ),
         Mode::Scroll => tr!(
-            "框選要捲動的內容（例如網頁中間的部分），或點一下選視窗；選好後自動往下捲並接成長圖，按 Esc 停止",
+            "框選要捲動的內容（例如網頁中間的部分），或按一下選視窗；選好後自動往下捲並接成長圖，按 Esc 停止",
             "Select what to scroll (e.g. part of a web page) or click a window; it then scrolls down and stitches a long image. Esc stops"
         ),
         Mode::Text => tr!(
-            "框選要抓的文字（圖片、影片裡的字也可以），或點一下選視窗；字會直接複製到剪貼簿　　Esc 或右鍵取消",
+            "框選要抓的文字（圖片、影片裡的字也可以），或按一下選視窗；字會直接複製到剪貼簿　　Esc 或右鍵取消",
             "Select the text to grab (text in images and videos works too), or click a window; it's copied straight to the clipboard    Esc or right-click to cancel"
         ),
         Mode::Shot if adjusting => {
-            tr!("拖曳邊框調整範圍，在範圍裡點兩下或按 Enter 完成　　Esc 取消", "Drag the edges to adjust; double-click inside or press Enter to finish    Esc to cancel")
+            tr!("拖曳邊框調整範圍，在範圍裡按兩下或按 Enter 完成　　Esc 取消", "Drag the edges to adjust; double-click inside or press Enter to finish    Esc to cancel")
         }
         Mode::Shot => {
-            tr!("拖曳框選範圍，或點一下選視窗；按 Enter 截整個螢幕　　Esc 或右鍵取消", "Drag to select an area or click a window; Enter for the whole screen    Esc or right-click to cancel")
+            tr!("拖曳框選範圍，或按一下選視窗；按 Enter 截整個螢幕　　Esc 或右鍵取消", "Drag to select an area or click a window; Enter for the whole screen    Esc or right-click to cancel")
         }
     }
 }
@@ -667,7 +667,7 @@ fn sel_label(st: &State) -> Option<(RECT, String)> {
         format!("{} × {}", r.right - r.left, r.bottom - r.top)
     } else {
         trf!(
-            "視窗 {} × {}・點一下{}",
+            "視窗 {} × {}・按一下{}",
             "Window {} × {} · Click to {}",
             r.right - r.left,
             r.bottom - r.top,

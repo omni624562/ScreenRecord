@@ -1557,7 +1557,7 @@ pub fn run(app: &mut UiApp, ed: &mut Editor, act: Act) {
             Err(e) => app.toast(e.message().to_string(), true),
         }),
         Act::Pin => app.spawn(async move { actions::shot_pin(&src, &sp).await }, |app, r| match r {
-            Ok(()) => app.toast(tr!("已釘在桌面，點兩下圖片即可關閉", "Pinned to the desktop. Double-click the image to close it"), false),
+            Ok(()) => app.toast(tr!("已釘在桌面，按兩下圖片即可關閉", "Pinned to the desktop. Double-click the image to close it"), false),
             Err(e) => app.toast(e.message().to_string(), true),
         }),
         Act::Ocr => super::super::ocr::start_spec(app, src, sp),

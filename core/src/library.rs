@@ -1,4 +1,4 @@
-//! 錄影清單：加速版歸到原始錄影底下，支援搜尋、篩選、排序、分頁、改名。
+//! 錄影清單：加速版歸到原始錄影底下，支援搜尋、篩選、排序、分頁、重新命名。
 //! 讀取影片資訊（長度、解析度、有無聲音）要執行 FFmpeg，只對需要的檔案做，並快取結果。
 
 use crate::args::{measure_duration_args, parse_measured_duration, parse_media_info};
@@ -546,7 +546,7 @@ pub fn name_time_ms(name: &str) -> Option<f64> {
 }
 
 /// 排序用的時間（毫秒）：檔名裡的錄影時間（Rec_2026-10-06_08-17-18…，剪輯版沿用原片的時間），
-/// 不是預設檔名時用建立或修改時間（改名後不會跳到錄完的時間）。介面依日期分組時也用這個時間，才不會同一天被拆開
+/// 不是預設檔名時用建立或修改時間（重新命名後不會跳到錄完的時間）。介面依日期分組時也用這個時間，才不會同一天被拆開
 fn sort_time(e: &LibraryEntry) -> f64 {
     name_time_ms(&e.media.name)
         // 同一秒的：剪輯版、_2 排在後面（修改時間較新）
@@ -884,7 +884,7 @@ pub fn grid_layout(days: &[String], g: GridFit) -> Vec<GridPlace> {
     out
 }
 
-/// 錄影改名：原片與底下的加速版 / GIF 一起改（Rec_X_4x.mp4 → 新名_4x.mp4），清單上才不會斷開。
+/// 錄影重新命名：原片與底下的加速版 / GIF 一起改（Rec_X_4x.mp4 → 新名_4x.mp4），清單上才不會斷開。
 /// 任何一個失敗就把已改的改回去。busy = 正在錄影 / 轉檔的檔案（小寫完整路徑）。回傳新的完整路徑。
 /// 跟著錄影的檔案：字幕 stem.srt、stem_2.srt、stem.en.srt，只有聲音的 stem.m4a；回傳 (路徑, 名稱 stem 後面的部分)。
 /// stem_2.srt 是另一支錄影 stem_2.mp4 的字幕時不算
@@ -944,7 +944,7 @@ pub async fn rename_recording(cache: &MediaCache, path: &str, new_name: &str, bu
     }
     for (from, to) in &plan {
         if busy.contains(&from.to_lowercase()) {
-            return Err(Error::config(tr!("檔案正在錄影或轉檔中，完成後才能改名", "The file is being recorded or converted. Rename it after that finishes")));
+            return Err(Error::config(tr!("檔案正在錄影或轉檔中，完成後才能重新命名", "The file is being recorded or converted. Rename it after that finishes")));
         }
         // 只改大小寫時目標就是自己（Windows 不分大小寫），不算衝突
         if to.exists() && to.display().to_string().to_lowercase() != from.to_lowercase() {
@@ -961,12 +961,12 @@ pub async fn rename_recording(cache: &MediaCache, path: &str, new_name: &str, bu
             return Err(Error::config(if busy {
                 tr!("檔案正在使用中（例如正在播放或剪輯），關閉後再試一次", "The file is in use (e.g. playing or open in the editor). Close it and try again").to_string()
             } else {
-                trf!("無法改名：{e}", "Couldn't rename: {e}")
+                trf!("無法重新命名：{e}", "Couldn't rename: {e}")
             }));
         }
         done.push((from, to));
     }
-    // 檔名裡的錄影時間寫進建立時間：改名後清單仍顯示錄影的時間，不會跳到錄完的時間（MediaInfo::time_ms）
+    // 檔名裡的錄影時間寫進建立時間：重新命名後清單仍顯示錄影的時間，不會跳到錄完的時間（MediaInfo::time_ms）
     if let Some(t) = name_time_ms(&entry.media.name) {
         set_created(&plan[0].1, t);
     }
@@ -1303,7 +1303,7 @@ mod tests {
         assert_eq!(videos.items.iter().map(|e| e.media.name.as_str()).collect::<Vec<_>>(), vec!["Rec_X.mp4"]);
         let shots = list_library(&cache, None, dir.path(), &LibraryQuery { filter: LibraryFilter::Shot, ..q(None, None, LibrarySort::New) }).await;
         assert_eq!(shots.items.iter().map(|e| e.media.name.as_str()).collect::<Vec<_>>(), vec!["Shot_2026-10-09_14-30-00.png"]);
-        // 改名保留 .png
+        // 重新命名保留 .png
         let src = dir.path().join("Shot_2026-10-09_14-30-00.png").display().to_string();
         let out = rename_recording(&MediaCache::default(), &src, "登入畫面", &[]).await.unwrap();
         assert!(out.ends_with("登入畫面.png"), "{out}");
@@ -1369,7 +1369,7 @@ mod tests {
         assert_eq!(names, vec!["Shot_2020-01-01_10-00-00.png", "Shot_2020-01-02_10-00-00.png"], "由舊到新、不含錄影與新的、資料夾重複只算一次");
     }
 
-    /// 截圖編輯另存的 JPG 也列在全部截圖，改名保留 .jpg
+    /// 截圖編輯另存的 JPG 也列在全部截圖，重新命名保留 .jpg
     #[tokio::test]
     async fn jpg_screenshots_are_listed_and_keep_extension() {
         let dir = make(&["Shot_2026-10-09_14-30-00.png", "登入畫面_編輯.jpg", "Rec_X.mp4"]);
@@ -1409,7 +1409,7 @@ mod tests {
         assert_eq!(name_time_ms("操作示範.mp4"), None);
     }
 
-    /// 改名後清單仍顯示錄影的時間（檔名裡的時間寫進建立時間），不會跳到錄完的時間
+    /// 重新命名後清單仍顯示錄影的時間（檔名裡的時間寫進建立時間），不會跳到錄完的時間
     #[tokio::test]
     async fn rename_keeps_recording_time() {
         let dir = make(&["Rec_2026-10-11_16-20-00.mp4"]);

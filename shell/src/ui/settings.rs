@@ -96,7 +96,7 @@ pub struct UiSettings {
     pub cursor_halo: bool,
     /// 錄影時隱藏桌面圖示
     pub hide_icons: bool,
-    /// 錄影時打開 Windows 的勿擾
+    /// 錄影時開啟 Windows 的勿擾
     pub rec_quiet: bool,
     /// 下載外部元件時的 Proxy：auto（跟著系統）、off、custom（core::http 讀這兩個欄位）
     pub proxy_mode: String,
@@ -208,7 +208,7 @@ pub struct UiSettings {
     pub jf_list_view: bool,
     /// 檔案庫「Jellyfin」分頁上次選的排序（JfSort::ALL 的第幾個）
     pub jf_sort: u8,
-    /// 檔案庫「Jellyfin」分頁上次停在哪裡（媒體庫 › 資料夾…：（編號, 名稱）；最上層是空的），下次打開回到這裡
+    /// 檔案庫「Jellyfin」分頁上次停在哪裡（媒體庫 › 資料夾…：（編號, 名稱）；最上層是空的），下次開啟回到這裡
     pub jf_path: Vec<(String, String)>,
     /// 檔案庫「Jellyfin」分頁上次選的篩選（JfFilter::ALL 的第幾個：全部、還沒看過、看到一半、我的最愛）
     pub jf_filter: u8,
@@ -224,9 +224,9 @@ pub struct UiSettings {
     pub tour_step: u32,
     /// 看完或跳過的教學："first"（第一次錄影）、"editor"、"shot"、"library"
     pub tours_done: Vec<String>,
-    /// 剪輯視窗、截圖編輯、全部截圖第一次打開時顯示短提示（新安裝或按了「重新看教學」才開）
+    /// 剪輯視窗、截圖編輯、全部截圖第一次開啟時顯示短提示（新安裝或按了「重新看教學」才開）
     pub tips: bool,
-    /// 影片資訊用過的類型（點一下就能再用；最近用的在前，最多 RECENT_GENRES 個）
+    /// 影片資訊用過的類型（按一下就能再用；最近用的在前，最多 RECENT_GENRES 個）
     pub genres: Vec<String>,
     /// Jellyfin 影片資訊釘選的人物、標籤（永遠排在常用的最前面）
     pub jf_pin_people: Vec<String>,

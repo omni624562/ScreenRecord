@@ -117,7 +117,7 @@ pub fn extract_ffmpeg(zip: &Path, work: &Path, tar: &Path, run: &RunFn) -> Resul
     Ok(extracted)
 }
 
-/// 確認 ffmpeg 能執行，再放到 target（先放暫存名稱再改名，避免留下半個檔案）；回傳版本
+/// 確認 ffmpeg 能執行，再放到 target（先放暫存名稱再重新命名，避免留下半個檔案）；回傳版本
 pub fn place_ffmpeg(src: &Path, target: &Path, run: &RunFn) -> Result<Option<String>, String> {
     let ver = run(src, &["-hide_banner".into(), "-version".into()], Duration::from_secs(15));
     if ver.code != 0 || !ver.stdout.contains("ffmpeg version") {

@@ -4,7 +4,7 @@
 //! - 傳的時候記下進度（畫面顯示「1.2 / 3.4 GB」），可以取消
 //! - 連不到 NAS 時記進待傳清單（存在設定資料夾的 pending-sends.json），連上後補傳
 //! - 從 Jellyfin 下載到這台電腦也用同樣的方式（先寫暫存檔、顯示進度、可以取消）
-//! - 傳好之後 Jellyfin 還在整理的（掃描、時間軸預覽縮圖）也列出來，好了才拿掉
+//! - 傳好之後 Jellyfin 還在整理的（掃描、時間軸預覽縮圖）也列出來，好了才移除
 
 use crate::{tr, trf};
 use serde::{Deserialize, Serialize};
@@ -83,7 +83,7 @@ pub fn save(src: impl Read, total: u64, to: &Path, down: bool) -> std::io::Resul
         if total > 0 && n < total {
             return Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, tr!("連線中斷，沒有收完", "The connection dropped before it finished")));
         }
-        // Windows 的 rename 遇到同名檔會換掉；有的 NAS（SMB）不行：先把舊的改名留著，換好了才刪，
+        // Windows 的 rename 遇到同名檔會換掉；有的 NAS（SMB）不行：先把舊的重新命名留著，換好了才刪，
         // 換不過去時把舊的改回來（不會新舊兩份都不見）
         if std::fs::rename(&tmp, to).is_err() {
             let old = to.with_file_name(format!(".{name}.old"));
@@ -130,7 +130,7 @@ fn copy_to_tmp(mut src: impl Read, tmp: &Path, done: &AtomicU64, cancel: &Atomic
 /// Jellyfin 還在整理的影片：（檔名, 在做什麼）
 static STAGES: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
 
-/// 記下（或拿掉）這支影片 Jellyfin 正在做什麼（畫面右下角顯示）
+/// 記下（或移除）這支影片 Jellyfin 正在做什麼（畫面右下角顯示）
 pub fn set_stage(name: &str, what: Option<String>) {
     let mut g = STAGES.lock().unwrap_or_else(|e| e.into_inner());
     g.retain(|(n, _)| n != name);
@@ -211,7 +211,7 @@ pub fn is_pending(file: &str) -> bool {
     with_pending(|list| (list.iter().any(|p| p.file == file), false))
 }
 
-/// 本機檔案改名後，待傳清單跟著換
+/// 本機檔案重新命名後，待傳清單跟著換
 pub fn rename_pending(old: &str, new: &str) {
     with_pending(|list| {
         let mut changed = false;

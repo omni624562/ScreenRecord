@@ -124,7 +124,7 @@ pub fn find_pii(lines: &[Vec<Word>]) -> Vec<Found> {
     out
 }
 
-/// Windows 的辨識結果在中文字之間會加空白：中文字（含全形標點）之間的空白拿掉，英文單字之間的保留
+/// Windows 的辨識結果在中文字之間會加空白：中文字（含全形標點）之間的空白移除，英文單字之間的保留
 pub fn tidy(line: &str) -> String {
     let cjk = |c: char| matches!(c as u32, 0x2E80..=0x9FFF | 0xF900..=0xFAFF | 0xFF00..=0xFFEF);
     let chars: Vec<char> = line.chars().collect();

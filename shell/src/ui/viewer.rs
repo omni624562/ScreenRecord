@@ -78,11 +78,11 @@ pub struct Viewer {
     close: bool,
     /// 影片從這裡開始播（搜尋說過的話時跳到那一句）
     start_at: Option<f64>,
-    /// 影片開好就播放；點兩下卡片、按清單開啟時不播，停在第一個畫面等按播放
+    /// 影片開好就播放；按兩下卡片、按清單開啟時不播，停在第一個畫面等按播放
     autoplay: bool,
     /// 全螢幕（只顯示畫面與下方的控制列）
     full: bool,
-    /// 改名的對話框關掉後重新載入（改名前先放開檔案，Windows 上播放中的檔案不能改名）
+    /// 重新命名的對話框關掉後重新載入（重新命名前先放開檔案，Windows 上播放中的檔案不能重新命名）
     reload_after_ask: bool,
     /// 截圖：相關的截圖（同一個程式、時間接近、有共同的詞、長得像）
     related: Vec<MediaInfo>,
@@ -231,7 +231,7 @@ pub fn set_autoplay(app: &mut UiApp, on: bool) {
     }
 }
 
-/// 串流的影片（Jellyfin 上的，不是這台電腦的檔案）：不能刪除、改名，也沒有同一個資料夾的其他影片
+/// 串流的影片（Jellyfin 上的，不是這台電腦的檔案）：不能刪除、重新命名，也沒有同一個資料夾的其他影片
 pub fn is_remote(path: &str) -> bool {
     path.starts_with("http://") || path.starts_with("https://")
 }
@@ -600,7 +600,7 @@ enum Act {
     /// 影片：改標題、作者、說明等影片資訊
     Tags,
     Rename,
-    /// 打開相關的截圖（第幾張）
+    /// 開啟相關的截圖（第幾張）
     Related(usize),
     /// 串流的 Jellyfin 影片：下載到這台電腦
     Download,
@@ -674,13 +674,13 @@ fn head_buttons(app: &UiApp, e: &LibraryEntry, image: bool, remote: Option<&Remo
             b(
                 tr!("釘在桌面", "Pin to desktop"),
                 Some(Icon::Pin),
-                tr!("把這張圖變成浮在最上層的小視窗，方便對照（點兩下或 Esc 關閉）", "Turn this image into a small always-on-top window for reference (double-click or Esc to close)"),
+                tr!("把這張圖變成浮在最上層的小視窗，方便對照（按兩下或 Esc 關閉）", "Turn this image into a small always-on-top window for reference (double-click or Esc to close)"),
                 Act::Pin,
             ),
             open,
         ];
     }
-    // 有自己做法的：設為封面用現在這一格、改名和影片資訊先放開檔案、刪除後換到下一個
+    // 有自己做法的：設為封面用現在這一格、重新命名和影片資訊先放開檔案、刪除後換到下一個
     let act_of = |a: EntryAction| match a {
         EntryAction::SetThumb => Act::SetThumb,
         EntryAction::Tags => Act::Tags,
@@ -716,7 +716,7 @@ fn head_buttons(app: &UiApp, e: &LibraryEntry, image: bool, remote: Option<&Remo
 /// 串流 Jellyfin 影片時標題列的按鈕：剪輯、製作（先下載）、下載｜設為封面、影片資訊｜星號
 fn remote_buttons(app: &UiApp, remote: Option<&Remote>) -> Vec<HeadBtn> {
     let blocked = app.blocked(EntryAction::Export);
-    let then = tr!("（先下載到這台電腦的儲存位置，下載好就接著打開）", " (downloads it to your save folder first, then opens)");
+    let then = tr!("（先下載到這台電腦的儲存位置，下載好就接著開啟）", " (downloads it to your save folder first, then opens)");
     let mut edit =
         head_btn(tr!("剪輯", "Edit"), Some(Icon::Cut), &format!("{}{then}", tr!("剪掉不要的片段、加上標註、字幕", "Cut parts, add annotations and subtitles")), Act::DownloadThen(EntryAction::Edit));
     edit.primary = true;
@@ -727,7 +727,7 @@ fn remote_buttons(app: &UiApp, remote: Option<&Remote>) -> Vec<HeadBtn> {
         (EntryAction::Vertical, tr!("直式影片（Shorts / Reels）…", "Vertical video (Shorts / Reels)…")),
     ]
     .into_iter()
-    .map(|(a, label)| HeadBtn { blocked: blocked.clone(), ..head_btn(label, None, tr!("先下載到這台電腦，下載好就打開", "Downloads it first, then opens"), Act::DownloadThen(a)) })
+    .map(|(a, label)| HeadBtn { blocked: blocked.clone(), ..head_btn(label, None, tr!("先下載到這台電腦，下載好就開啟", "Downloads it first, then opens"), Act::DownloadThen(a)) })
     .collect();
     let make = HeadBtn {
         items: make_items,
@@ -750,7 +750,7 @@ fn remote_buttons(app: &UiApp, remote: Option<&Remote>) -> Vec<HeadBtn> {
     let info = head_icon(tr!("影片資訊", "Details"), Icon::Info, tr!("改 Jellyfin 上的標題、說明、人物、標籤、年份", "Change the title, description, people, tags and year on Jellyfin"), Act::JfInfo);
     let fav_on = remote.is_some_and(|r| r.favorite);
     let mut fav = if fav_on {
-        head_icon(tr!("移除星號", "Remove star"), Icon::StarOn, tr!("從 Jellyfin 的我的最愛拿掉", "Remove from your Jellyfin favorites"), Act::JfFav)
+        head_icon(tr!("移除星號", "Remove star"), Icon::StarOn, tr!("從 Jellyfin 的我的最愛移除", "Remove from your Jellyfin favorites"), Act::JfFav)
     } else {
         head_icon(tr!("加上星號", "Star"), Icon::Star, tr!("加進 Jellyfin 的我的最愛", "Add to your Jellyfin favorites"), Act::JfFav)
     };
@@ -776,7 +776,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
             ctx.request_repaint_after(std::time::Duration::from_millis(33));
         }
     }
-    // 改名的對話框關掉了：重新載入（改了名就是新的路徑）
+    // 重新命名的對話框關掉了：重新載入（改了名就是新的路徑）
     if v.reload_after_ask && app.ask.is_none() {
         v.reload_after_ask = false;
         app.viewer = Some(v);
@@ -852,7 +852,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                 mpv_hint(ui, stage, &mpv_job, &mut hint_download, &mut hint_close, &mut hint_never);
             }
         }
-        // 點兩下畫面：全螢幕
+        // 按兩下畫面：全螢幕
         if !image && resp.double_clicked() {
             let on = !v.full;
             set_full(&mut v, ui.ctx(), on);
@@ -1042,7 +1042,7 @@ fn related_strip(v: &Viewer, ui: &mut egui::Ui, strip: Rect, thumbs: &[Option<Te
         pos2(strip.min.x + 16.0, strip.min.y + 12.0),
         Align2::LEFT_CENTER,
         tr!("相關的截圖（同一個程式、時間接近、內容相近）", "Related screenshots (same app, around the same time, similar content)"),
-        theme::font(11.5),
+        theme::font(12.0),
         p.muted,
     );
     let (tw, th, gap) = (112.0, 63.0, 8.0);
@@ -1312,7 +1312,7 @@ fn run_act(app: &mut UiApp, act: Act) {
                         if on {
                             tr!("已加進 Jellyfin 的我的最愛", "Added to your Jellyfin favorites")
                         } else {
-                            tr!("已從 Jellyfin 的我的最愛拿掉", "Removed from your Jellyfin favorites")
+                            tr!("已從 Jellyfin 的我的最愛移除", "Removed from your Jellyfin favorites")
                         },
                         false,
                     );
@@ -1324,7 +1324,7 @@ fn run_act(app: &mut UiApp, act: Act) {
         Act::Rename => {
             let Some(v) = app.viewer.as_mut() else { return };
             let e = v.cur().clone();
-            // 先停止播放、放開檔案（Windows 上播放中的檔案不能改名），對話框關掉後重新載入
+            // 先停止播放、放開檔案（Windows 上播放中的檔案不能重新命名），對話框關掉後重新載入
             if !v.is_image() {
                 v.clear_media();
                 v.reload_after_ask = true;
@@ -1405,7 +1405,7 @@ fn run_act(app: &mut UiApp, act: Act) {
     }
 }
 
-/// 改名後：清單裡的路徑、檔名跟著改（底下的加速版也是），對話框關掉後用新的路徑重新載入
+/// 重新命名後：清單裡的路徑、檔名跟著改（底下的加速版也是），對話框關掉後用新的路徑重新載入
 pub fn renamed(app: &mut UiApp, old: &str, new: &str) {
     let Some(v) = app.viewer.as_mut() else { return };
     let dir = std::path::Path::new(new).parent().map(|d| d.to_path_buf()).unwrap_or_default();
@@ -1512,6 +1512,32 @@ fn keyboard(v: &mut Viewer, ctx: &egui::Context, act: &mut Act) {
     }
 }
 
+/// 播放的快速鍵（按鍵盤圖示開啟；和剪輯視窗一樣的鍵做一樣的事）
+fn key_sheet(resp: &egui::Response) {
+    egui::Popup::menu(resp).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
+        ui.set_min_width(300.0);
+        ui.label(RichText::new(tr!("播放的快速鍵", "Playback shortcuts")).font(theme::font_bold(13.5)));
+        let rows: [(&str, &str, &str); 9] = [
+            ("Space", "播放 / 暫停", "Play / pause"),
+            ("← / →", "後退 / 快轉 5 秒（按住越跳越快）", "Back / forward 5 s (hold to go faster)"),
+            ("Shift+← / →", "後退 / 快轉 1 秒", "Back / forward 1 s"),
+            ("Home / End", "跳到開頭 / 結尾", "Jump to the start / end"),
+            ("↑ / ↓", "音量大 / 小", "Volume up / down"),
+            ("M", "靜音", "Mute"),
+            ("F", "全螢幕", "Full screen"),
+            ("Page Up / Down", "上一個 / 下一個", "Previous / next"),
+            ("Esc", "離開全螢幕；不是全螢幕時關閉", "Exit full screen; close otherwise"),
+        ];
+        egui::Grid::new("viewer-keys").num_columns(2).spacing(vec2(16.0, 6.0)).show(ui, |ui| {
+            for (k, zh, en) in rows {
+                ui.label(RichText::new(k).font(theme::mono(12.0)));
+                ui.label(RichText::new(tr!(zh, en)).font(theme::font(12.5)));
+                ui.end_row();
+            }
+        });
+    });
+}
+
 fn toggle_play(p: &Playback) {
     if p.is_playing() {
         p.pause();
@@ -1584,7 +1610,7 @@ fn image_bar(v: &mut Viewer, ui: &mut egui::Ui, stage: Rect) {
     let Some((_, size)) = v.image.clone() else { return };
     let fit = fit_zoom(size, stage);
     let z = v.zoom.unwrap_or(fit);
-    ui.label(RichText::new(tr!("滾輪縮放・拖曳移動・點兩下切換原尺寸", "Scroll to zoom · Drag to pan · Double-click for actual size")).font(theme::font(12.0)).color(p.muted));
+    ui.label(RichText::new(tr!("滾輪縮放・拖曳移動・按兩下切換原尺寸", "Scroll to zoom · Drag to pan · Double-click for actual size")).font(theme::font(12.0)).color(p.muted));
     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
         ui.spacing_mut().item_spacing.x = 4.0;
         if Btn::new("+").small().tooltip(tr!("放大", "Zoom in")).show(ui).clicked() {
@@ -1627,7 +1653,7 @@ fn video_stage(v: &mut Viewer, painter: &egui::Painter, stage: Rect, resp: &egui
         return;
     }
     let Some(p) = &v.player else { return };
-    // 點畫面：播放 / 暫停（點兩下：全螢幕）
+    // 點畫面：播放 / 暫停（按兩下：全螢幕）
     if resp.clicked() {
         toggle_play(p);
     }
@@ -1781,8 +1807,11 @@ fn video_bar(v: &mut Viewer, ui: &mut egui::Ui, act: &mut Act) {
             .response
             .on_hover_text(tr!("播放速度（聲音變速不變調）", "Playback speed (pitch preserved)"));
     });
+    // 快速鍵一覽
+    let keys = Btn::icon_only(Icon::Keyboard).ghost().small().tooltip(tr!("播放的快速鍵", "Playback shortcuts")).show(ui);
+    key_sheet(&keys);
     // 全螢幕
-    let tip = if full { tr!("離開全螢幕（Esc、F）", "Exit full screen (Esc, F)") } else { tr!("全螢幕（F、點兩下畫面）", "Full screen (F, or double-click the video)") };
+    let tip = if full { tr!("離開全螢幕（Esc、F）", "Exit full screen (Esc, F)") } else { tr!("全螢幕（F、按兩下畫面）", "Full screen (F, or double-click the video)") };
     if Btn::icon_only(Icon::Fullscreen).ghost().small().selected(full).tooltip(tip).show(ui).clicked() {
         let on = !v.full;
         set_full(v, ui.ctx(), on);

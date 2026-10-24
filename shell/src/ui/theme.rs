@@ -287,7 +287,7 @@ pub enum Icon {
     Captions,
     /// 收起右側面板：視窗外框，右邊一欄塗滿（面板開著），左邊箭頭往右
     PanelHide,
-    /// 打開右側面板：右邊一欄空著（面板收起來了），左邊箭頭往左
+    /// 開啟右側面板：右邊一欄空著（面板收起來了），左邊箭頭往左
     PanelShow,
     /// 縮小成小視窗（大框右下角一個實心的小框）
     Compact,
@@ -654,7 +654,7 @@ pub struct Btn {
     left: bool,
     /// 平常淡灰色，滑鼠移上去才變深（一整排操作按鈕時不搶眼）
     quiet: bool,
-    /// 文字後面加「▾」：按下去會打開選單
+    /// 文字後面加「▾」：按下去會開啟選單
     menu: bool,
     /// 文字後面的藍色小數字（例如勾了幾個）；0 不顯示
     badge: usize,
@@ -764,7 +764,7 @@ impl Btn {
         if self.badge == 0 {
             return 0.0;
         }
-        let g = ui.painter().layout_no_wrap(self.badge.to_string(), font_bold(11.0), Color32::WHITE);
+        let g = ui.painter().layout_no_wrap(self.badge.to_string(), font_bold(12.0), Color32::WHITE);
         6.0 + (g.size().x + 10.0).max(18.0)
     }
 
@@ -853,7 +853,7 @@ impl Btn {
             if badge_w > 0.0 {
                 let b = Rect::from_min_size(pos2(x + 6.0, rect.center().y - 8.0), vec2(badge_w - 6.0, 16.0));
                 painter.rect_filled(b, CornerRadius::same(8), if self.enabled { p.accent } else { p.accent.gamma_multiply(0.5) });
-                painter.text(b.center(), egui::Align2::CENTER_CENTER, self.badge.to_string(), font_bold(11.0), p.accent_ink);
+                painter.text(b.center(), egui::Align2::CENTER_CENTER, self.badge.to_string(), font_bold(12.0), p.accent_ink);
                 x += badge_w;
             }
             if self.menu {
@@ -972,7 +972,7 @@ pub fn check(ui: &mut Ui, on: &mut bool, label: impl Into<WidgetText>) -> Respon
     }
 }
 
-/// 數字調整：[−] 數值 [＋]（數值也可以點一下直接輸入，Enter 或離開時套用；看不懂時恢復原值）。
+/// 數字調整：[−] 數值 [＋]（數值也可以按一下直接輸入，Enter 或離開時套用；看不懂時恢復原值）。
 /// id 要在畫面上唯一（例如 Id::new(("max-min", i))）；fmt 顯示數值、parse 解析輸入；回傳是否改變
 pub fn stepper_with(ui: &mut Ui, id: egui::Id, value: &mut f64, step: f64, range: std::ops::RangeInclusive<f64>, fmt: impl Fn(f64) -> String, parse: impl Fn(&str) -> Option<f64>) -> bool {
     let (lo, hi) = (*range.start(), *range.end());
@@ -1040,7 +1040,7 @@ pub fn chip(ui: &mut Ui, text: &str, tone: Tone, clickable: bool) -> Response {
         Tone::Bad => (p.rec_soft, p.rec),
         Tone::Accent => (p.accent_soft, p.accent),
     };
-    let g = ui.painter().layout_no_wrap(text.to_string(), font_bold(11.5), fg);
+    let g = ui.painter().layout_no_wrap(text.to_string(), font_bold(12.0), fg);
     let size = vec2(g.size().x + 14.0, 22.0);
     let (rect, resp) = ui.allocate_exact_size(size, if clickable { Sense::click() } else { Sense::hover() });
     let fill = if clickable && resp.hovered() { fill.gamma_multiply(1.15) } else { fill };

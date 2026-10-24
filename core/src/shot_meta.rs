@@ -1,7 +1,7 @@
 //! 截圖的來歷：截圖當下在用的程式與視窗標題（例如 chrome.exe「訂單查詢 - Google Chrome」），
 //! 以及怎麼截的（長截圖、影片畫面、拼圖、編輯過）。「全部截圖」的瀏覽欄用它分類。
 //!
-//! 存在 shot_meta.json（路徑 → 來歷）；改名、搬移時跟著改，刪除時拿掉。只有加上這功能之後的截圖才有。
+//! 存在 shot_meta.json（路徑 → 來歷）；重新命名、搬移時跟著改，刪除時移除。只有加上這功能之後的截圖才有。
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;

@@ -198,7 +198,7 @@ pub struct UiApp {
     pub jf_browse: Option<jellyfin_browse::JfBrowse>,
     /// 在瀏覽視窗改 Jellyfin 上的影片資訊
     pub jf_edit: Option<jellyfin_edit::JfEdit>,
-    /// 背景正在把 Jellyfin 上的人物或標籤改名（影片資訊關掉也會繼續）
+    /// 背景正在把 Jellyfin 上的人物或標籤重新命名（影片資訊關掉也會繼續）
     pub jf_rename: Option<jellyfin_edit::Renaming>,
     /// Jellyfin 分頁勾選好幾支 →「整理人物、標籤…」的視窗、背景正在整理的
     pub jf_batch: Option<jellyfin_batch::JfBatch>,
@@ -222,7 +222,7 @@ pub struct UiApp {
     /// 新功能介紹（更新後第一次開啟時顯示一次）
     pub whats_new_open: bool,
     whats_new_checked: bool,
-    /// 一步一步的教學（第一次錄影、各功能第一次打開的提示）
+    /// 一步一步的教學（第一次錄影、各功能第一次開啟的提示）
     pub tour: Option<tour::Tour>,
     /// 縮小成小視窗（標題列的按鈕）：切換前的視窗大小
     pub compact: Option<title_bar::Compact>,
@@ -586,7 +586,7 @@ impl UiApp {
         }
     }
 
-    /// 只抓文字的結果（core 已經複製到剪貼簿）：提示幾個字，可以打開來看
+    /// 只抓文字的結果（core 已經複製到剪貼簿）：提示幾個字，可以開啟來看
     pub fn show_grabbed_text(&mut self, l: screenrecorder_core::ocr::Layout) {
         if l.text.trim().is_empty() {
             return self.toast(tr!("沒有認出文字（框大一點、或把畫面放大再試試）", "No text recognized (try a larger area or zoom in)"), true);
@@ -607,7 +607,7 @@ impl UiApp {
         (!d.is_empty()).then(|| std::path::Path::new(d).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| d.to_string()))
     }
 
-    /// 「傳到」選單項目的名稱與說明；還沒選資料夾時是「傳到媒體庫…」（按了打開設定）
+    /// 「傳到」選單項目的名稱與說明；還沒選資料夾時是「傳到媒體庫…」（按了開啟設定）
     pub fn send_label(&self) -> (String, &'static str) {
         match self.library_folder() {
             Some(folder) => (
@@ -620,7 +620,7 @@ impl UiApp {
             None => (
                 tr!("傳到 Jellyfin…", "Send to Jellyfin…").to_string(),
                 tr!(
-                    "還沒選資料夾：按了打開「設定 → 存檔與分享」，選 Jellyfin 媒體庫的資料夾",
+                    "還沒選資料夾：按了開啟「設定 → 存檔與分享」，選 Jellyfin 媒體庫的資料夾",
                     "No folder yet: opens Settings → Saving & sharing so you can pick the Jellyfin library folder"
                 ),
             ),
@@ -704,7 +704,7 @@ impl UiApp {
         self.ask = Some(ask);
     }
 
-    /// 改名後：媒體庫裡那一份（連同字幕、加速版）也換成新名稱，並請 Jellyfin 重新掃描
+    /// 重新命名後：媒體庫裡那一份（連同字幕、加速版）也換成新名稱，並請 Jellyfin 重新掃描
     pub fn sync_renamed(&mut self, pairs: Vec<(std::path::PathBuf, std::path::PathBuf)>) {
         use screenrecorder_core::jellyfin::{in_library, rename_copies};
         self.lib_index = None;
@@ -726,9 +726,9 @@ impl UiApp {
                         return Ok(None);
                     }
                     let done = if !renamed.is_empty() {
-                        tr!("Jellyfin 那一份也改名了", "The copy on Jellyfin was renamed too")
+                        tr!("Jellyfin 那一份也重新命名了", "The copy on Jellyfin was renamed too")
                     } else {
-                        tr!("Jellyfin 那邊的檔案已改名", "Renamed on Jellyfin")
+                        tr!("Jellyfin 那邊的檔案已重新命名", "Renamed on Jellyfin")
                     };
                     // 只掃描改了名的那個資料夾
                     let scan = renamed.first().cloned().or_else(|| pairs.first().map(|(_, new)| new.clone()));
@@ -744,7 +744,7 @@ impl UiApp {
             |app, r| match r {
                 Ok(Some(msg)) => app.toast(msg, false),
                 Ok(None) => {}
-                Err(e) => app.toast(trf!("Jellyfin 那一份沒有改名：{e}", "The copy on Jellyfin wasn't renamed: {e}"), true),
+                Err(e) => app.toast(trf!("Jellyfin 那一份沒有重新命名：{e}", "The copy on Jellyfin wasn't renamed: {e}"), true),
             },
         );
     }
@@ -1230,14 +1230,14 @@ impl UiApp {
     /// 播放、顯示、剪輯、製作加速版
     pub fn act(&mut self, action: EntryAction, mut entry: LibraryEntry) {
         use actions::OpenAction;
-        // 清單還沒重讀、這支已經改名了（例如錄完自動命名）：用現在的名稱，清單也重讀
+        // 清單還沒重讀、這支已經重新命名了（例如錄完自動命名）：用現在的名稱，清單也重讀
         if let Some(now) = actions::renamed_to(&entry.media.path) {
             entry.media.name = dialogs::file_name(&now).to_string();
             entry.media.path = now;
             self.load_recent();
         }
         let path = entry.media.path.clone();
-        // 主畫面正在播這個檔案：剪輯、製作、改名等要用到檔案時先停下來（Windows 上播放中的檔案不能改名、取代）
+        // 主畫面正在播這個檔案：剪輯、製作、重新命名等要用到檔案時先停下來（Windows 上播放中的檔案不能重新命名、取代）
         let keeps = matches!(action, EntryAction::PlayHere | EntryAction::Reveal | EntryAction::CopyFile | EntryAction::CopyChapters | EntryAction::CopySteps | EntryAction::Star);
         if !keeps && self.inline.as_ref().is_some_and(|i| i.is(&path)) {
             self.inline = None;
@@ -1841,7 +1841,7 @@ async fn watch_changes<T: PartialEq>(every: Duration, shown: Arc<std::sync::atom
     }
 }
 
-/// 資料夾（和子資料夾）裡檔案的樣子：檔名、大小、修改時間算出一個值，只讀目錄不打開檔案
+/// 資料夾（和子資料夾）裡檔案的樣子：檔名、大小、修改時間算出一個值，只讀目錄不開啟檔案
 fn folder_signature(dir: &str, subdirs: bool) -> u64 {
     use std::hash::{Hash, Hasher};
     let root = std::path::PathBuf::from(dir);
@@ -1896,11 +1896,11 @@ fn trash_now(app: &mut UiApp, paths: Vec<String>, copies: Vec<std::path::PathBuf
             for p in &paths {
                 screenrecorder_core::transfer::remove_pending(p);
             }
-            // 要還原：打開資源回收筒（在那裡按右鍵 →「還原」，會回到原本的資料夾）
+            // 要還原：開啟資源回收筒（在那裡按右鍵 →「還原」，會回到原本的資料夾）
             app.toast_with(
                 trf!("已將 {n} 個檔案移到資源回收筒", "Moved {n} file(s) to the Recycle Bin"),
                 false,
-                vec![ToastAction::new(tr!("打開資源回收筒（可還原）", "Open Recycle Bin (to restore)"), |app| {
+                vec![ToastAction::new(tr!("開啟資源回收筒（可還原）", "Open Recycle Bin (to restore)"), |app| {
                     if let Err(e) = actions::open_recycle_bin() {
                         app.toast(e.message().to_string(), true);
                     }

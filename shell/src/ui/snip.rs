@@ -1,9 +1,9 @@
 //! 在螢幕上框選（Windows 以外的平台；Windows 用 core 的原生框選畫面 snip_win.rs）：
-//! 先截下整個桌面（凍結），每個螢幕開一個全螢幕視窗顯示變暗的畫面，拖曳框選範圍，或點一下選游標下的視窗；
+//! 先截下整個桌面（凍結），每個螢幕開一個全螢幕視窗顯示變暗的畫面，拖曳框選範圍，或按一下選游標下的視窗；
 //! Esc 或右鍵取消。從凍結的畫面裁切，所以截到的就是框選時看到的樣子。
 //!
 //! 放開滑鼠後範圍留著：拖曳邊、角調整或整個移動，下方的工具列選要做什麼（完成、編輯、複製、釘在桌面、取消）；
-//! Enter 完成（還沒框選時是整個螢幕）、在範圍裡點兩下也是完成。設定「放開滑鼠就直接存檔」時放開就截。
+//! Enter 完成（還沒框選時是整個螢幕）、在範圍裡按兩下也是完成。設定「放開滑鼠就直接存檔」時放開就截。
 //!
 //! 也可以只選一個範圍、不存檔（例如選錄影範圍）：pick_region。
 
@@ -15,7 +15,7 @@ use screenrecorder_core::snip_tools::{self, Grab, SnipAction, Tool};
 use screenrecorder_core::types::{MonitorInfo, Rect as DRect};
 use screenrecorder_core::{tr, trf};
 
-/// 小於這個大小（實體像素）的拖曳當成點一下
+/// 小於這個大小（實體像素）的拖曳當成按一下
 const MIN_DRAG: i32 = 4;
 
 /// 只選範圍時，選好（或取消 = None）要做的事
@@ -230,7 +230,7 @@ fn overlay(ui: &mut egui::Ui, s: &mut Snip, i: usize) -> Option<Done> {
     }
     let pointer = resp.hover_pos().or_else(|| resp.interact_pointer_pos());
     let my_sel = s.sel.filter(|(si, _)| *si == i).map(|(_, r)| r);
-    // 在範圍裡點兩下：完成
+    // 在範圍裡按兩下：完成
     if resp.double_clicked() {
         if let (Some(r), Some(p)) = (my_sel, pointer) {
             if inside(r, to_desk(p)) {
@@ -277,7 +277,7 @@ fn overlay(ui: &mut egui::Ui, s: &mut Snip, i: usize) -> Option<Done> {
         }
     }
     if resp.clicked() && s.drag.is_none() {
-        // 點一下：選游標下的視窗（範圍裡點一下不變）
+        // 按一下：選游標下的視窗（範圍裡按一下不變）
         let at = pointer.map(to_desk);
         let in_sel = my_sel.zip(at).is_some_and(|(r, p)| inside(r, p));
         if let Some(w) = at.filter(|_| !in_sel).and_then(window_at) {
@@ -311,9 +311,9 @@ fn overlay(ui: &mut egui::Ui, s: &mut Snip, i: usize) -> Option<Done> {
             let text = if selection.is_some() || my_sel.is_some() {
                 format!("{} × {}", r.width, r.height)
             } else if s.adjust {
-                trf!("視窗 {} × {}・點一下選這個視窗", "Window {} × {} · Click to select it", r.width, r.height)
+                trf!("視窗 {} × {}・按一下選這個視窗", "Window {} × {} · Click to select it", r.width, r.height)
             } else {
-                trf!("視窗 {} × {}・點一下擷取", "Window {} × {} · Click to capture", r.width, r.height)
+                trf!("視窗 {} × {}・按一下擷取", "Window {} × {} · Click to capture", r.width, r.height)
             };
             let g = painter.layout_no_wrap(text, theme::font_bold(13.0), Color32::WHITE);
             let mut at = h.min + vec2(0.0, -g.size().y - 10.0);
@@ -369,13 +369,13 @@ fn overlay(ui: &mut egui::Ui, s: &mut Snip, i: usize) -> Option<Done> {
     // 上方的說明（游標移過去時改到下方，才不會擋住）
     let adjusting = my_sel.is_some() && s.adjust;
     let tip = match (shot, adjusting) {
-        (true, true) => tr!("拖曳邊框調整範圍，在範圍裡點兩下或按 Enter 完成　　Esc 取消", "Drag the edges to adjust; double-click inside or press Enter to finish    Esc to cancel"),
+        (true, true) => tr!("拖曳邊框調整範圍，在範圍裡按兩下或按 Enter 完成　　Esc 取消", "Drag the edges to adjust; double-click inside or press Enter to finish    Esc to cancel"),
         (true, false) => {
-            tr!("拖曳框選範圍，或點一下選視窗；按 Enter 截整個螢幕　　Esc 或右鍵取消", "Drag to select an area or click a window; Enter for the whole screen    Esc or right-click to cancel")
+            tr!("拖曳框選範圍，或按一下選視窗；按 Enter 截整個螢幕　　Esc 或右鍵取消", "Drag to select an area or click a window; Enter for the whole screen    Esc or right-click to cancel")
         }
         (false, true) => tr!("拖曳邊框調整範圍，按 Enter 確定　　Esc 取消", "Drag the edges to adjust, then press Enter    Esc to cancel"),
         (false, false) => {
-            tr!("拖曳框選範圍，或點一下選視窗；按 Enter 選整個螢幕　　Esc 或右鍵取消", "Drag to select an area or click a window; Enter for the whole screen    Esc or right-click to cancel")
+            tr!("拖曳框選範圍，或按一下選視窗；按 Enter 選整個螢幕　　Esc 或右鍵取消", "Drag to select an area or click a window; Enter for the whole screen    Esc or right-click to cancel")
         }
     };
     let g = painter.layout_no_wrap(tip.to_string(), theme::font(14.0), Color32::WHITE);

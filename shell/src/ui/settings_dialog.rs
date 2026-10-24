@@ -1,5 +1,5 @@
 //! 設定視窗：左邊分頁（一般 / 錄影 / 聲音 / 截圖 / 存檔與分享 / 錄完自動處理 / 快速鍵 / 進階 / 外部元件），右邊表單（標籤固定寬度，控制項對齊）。
-//! 主畫面下方只留摘要，點一下開到對應的分頁。
+//! 主畫面下方只留摘要，按一下開到對應的分頁。
 
 use super::settings::{FPS_CHOICES, MAX_MB, MAX_PRESETS, UI_MIN_SIZE, UI_SCALES};
 use super::theme::{self, segmented, switch, Btn, Icon};
@@ -67,7 +67,7 @@ pub struct SettingsDialog {
     /// Jellyfin：測試連線中 / 結果（成功時是伺服器名稱）
     jf_testing: bool,
     jf_result: Option<Result<(String, Option<screenrecorder_core::jellyfin::LibraryCheck>), String>>,
-    /// Jellyfin：一鍵修好媒體庫設定中
+    /// Jellyfin：自動修正媒體庫設定中
     jf_fixing: bool,
     /// Jellyfin 的使用者（編號, 名稱）：測試連線時讀，「星號同步到」用
     jf_users: Option<Vec<(String, String)>>,
@@ -533,9 +533,9 @@ fn record_page(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
     });
     form_row(ui, tr!("通知", "Notifications"), |ui| {
         let mut v = app.s.rec_quiet;
-        if switch(ui, &mut v, tr!("錄影時打開勿擾", "Turn on Do not disturb while recording"), true)
+        if switch(ui, &mut v, tr!("錄影時開啟勿擾", "Turn on Do not disturb while recording"), true)
             .on_hover_text(tr!(
-                "開始錄影時打開 Windows 的勿擾（只允許鬧鐘），LINE、Outlook 等的通知不會跳出來被錄進去；停止後恢復原本的設定。自己畫通知視窗的程式擋不住",
+                "開始錄影時開啟 Windows 的勿擾（只允許鬧鐘），LINE、Outlook 等的通知不會跳出來被錄進去；停止後恢復原本的設定。自己畫通知視窗的程式擋不住",
                 "Turns on Windows Do not disturb (alarms only) when recording starts so notifications from apps like Outlook don't pop up in the video; your previous setting comes back when you stop. Apps that draw their own pop-ups can't be blocked"
             ))
             .changed()
@@ -808,7 +808,7 @@ fn app_audio_row(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
         form_hint(
             ui,
             tr!(
-                "只錄這個程式發出的聲音（含它的子程序），其他程式的通知音、音樂不會錄進去。Windows 版本太舊或程式沒有開啟時改錄全部系統聲音。",
+                "只錄這個程式發出的聲音（含它的子處理程序），其他程式的通知音、音樂不會錄進去。Windows 版本太舊或程式沒有開啟時改錄全部系統聲音。",
                 "Records only the sound from this app (and its child processes); notifications and music from other apps are left out. On older Windows versions, or if the app isn't running, all system audio is recorded instead."
             ),
             theme::pal(ui).muted,
@@ -941,7 +941,7 @@ fn save_page(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
 
 /// Jellyfin：網址與 API 金鑰（瀏覽、播放、改影片資訊只要這兩個）；要從這台電腦把錄影傳上去，
 /// 再選 Jellyfin 媒體庫的資料夾：「傳到 Jellyfin」、錄完自動處理、剪輯另存好都複製到這裡，傳好就通知它掃描，
-/// 影片資訊、改名、刪除也同步過去
+/// 影片資訊、重新命名、刪除也同步過去
 fn library_section(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui, open: &mut Option<String>) {
     let p = theme::pal(ui);
     let dir = app.s.after_copy_to.clone();
@@ -973,7 +973,7 @@ fn library_section(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui, open: &
         )
     } else if app.jellyfin().is_some() {
         tr!(
-            "「傳到 Jellyfin」時選要放進這裡的哪個子資料夾（同一個資料夾裡同名的覆蓋，連同字幕）。傳好之後通知 Jellyfin 掃描，新影片馬上出現；影片資訊、改名、刪除也會同步過去。",
+            "「傳到 Jellyfin」時選要放進這裡的哪個子資料夾（同一個資料夾裡同名的覆蓋，連同字幕）。傳好之後通知 Jellyfin 掃描，新影片馬上出現；影片資訊、重新命名、刪除也會同步過去。",
             "“Send to Jellyfin” lets you pick a subfolder here (replacing one with the same name, with subtitles). Jellyfin is told to scan right after, so new videos show up at once; details, renames and deletions are synced too."
         )
     } else {
@@ -1009,7 +1009,7 @@ fn library_checks(app: &mut UiApp, ui: &mut Ui) {
     }
     if switch(ui, &mut app.s.library_h264, tr!("傳的時候轉成 H.264", "Convert to H.264 when sending"), true)
         .on_hover_text(tr!(
-            "HEVC、AV1 的影片有些電視、手機不能直接播，Jellyfin 要在伺服器上即時轉檔，可能卡頓。打開後傳過去之前先轉成 H.264（要花一點時間，本機的原檔不變）",
+            "HEVC、AV1 的影片有些電視、手機不能直接播，Jellyfin 要在伺服器上即時轉檔，可能卡頓。開啟後傳過去之前先轉成 H.264（要花一點時間，本機的原檔不變）",
             "Some TVs and phones can't play HEVC or AV1 directly, so Jellyfin converts them on the server while playing, which can stutter. When on, such videos are converted to H.264 before sending (takes a while; your original stays as is)"
         ))
         .changed()
@@ -1162,15 +1162,15 @@ fn jellyfin_rows(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
             None => {}
         }
     });
-    // 媒體庫設定：是「家庭影片和照片」且選項都打開時打勾；不是時說明並可以一鍵修好
+    // 媒體庫設定：是「家庭影片和照片」且選項都開啟時打勾；不是時說明並可以自動修正
     if let Some(Ok((_, Some(check)))) = &d.jf_result {
         let (note, ok) = (check.note.clone(), check.ok);
         form_hint_full(ui, note, if ok { p.ok } else { p.warn });
         if !ok {
             form_row(ui, "", |ui| {
-                let label = if d.jf_fixing { tr!("修正中…", "Fixing…") } else { tr!("一鍵修好", "Fix it") };
+                let label = if d.jf_fixing { tr!("修正中…", "Fixing…") } else { tr!("自動修正", "Fix it") };
                 let tip = tr!(
-                    "改成「家庭影片和照片」媒體庫（沒有時新建一個指到同一個資料夾），並打開即時監控、擷取章節圖片、時間軸預覽縮圖",
+                    "改成「家庭影片和照片」媒體庫（沒有時新建一個指到同一個資料夾），並開啟即時監控、擷取章節圖片、時間軸預覽縮圖",
                     "Use a Home Videos and Photos library (creates one for this folder if needed) and turn on real-time monitoring, chapter images and trickplay previews"
                 );
                 if Btn::new(label).small().primary().enabled(!d.jf_fixing).tooltip(tip).show(ui).clicked() {
@@ -1218,7 +1218,7 @@ fn jellyfin_rows(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
             form_hint(
                 ui,
                 tr!(
-                    "這裡加上、拿掉星號時，這個帳號的「我的最愛」也跟著改；在 Jellyfin 加進我的最愛的，這裡也會加上星號。",
+                    "這裡加上、移除星號時，這個帳號的「我的最愛」也跟著改；在 Jellyfin 加進我的最愛的，這裡也會加上星號。",
                     "Starring or unstarring here also updates this account's Favorites, and favorites added in Jellyfin get a star here."
                 ),
                 p.muted,
@@ -1332,7 +1332,7 @@ fn short_dir(dir: &str) -> String {
 }
 
 /// 選媒體庫資料夾（不能是儲存位置本身或它裡面，否則複製的檔案會出現在清單裡）；
-/// enable = 同時打開「錄完處理好之後傳過去」（從錄完自動處理打開開關時）
+/// enable = 同時開啟「錄完處理好之後傳過去」（從錄完自動處理開啟開關時）
 fn pick_copy_dir(app: &mut UiApp, enable: bool) {
     app.spawn(
         async move {
@@ -1390,7 +1390,7 @@ fn indented_hint(ui: &mut Ui, text: impl Into<String>) {
     });
 }
 
-/// 目前的資料夾（不用打字）：點一下或按「選擇資料夾」用 Windows 的視窗選；回傳 true = 要選資料夾
+/// 目前的資料夾（不用打字）：按一下或按「選擇資料夾」用 Windows 的視窗選；回傳 true = 要選資料夾
 fn folder_row(ui: &mut Ui, dir: &str, id: &str) -> bool {
     let p = theme::pal(ui);
     let mut choose = false;
@@ -1415,9 +1415,9 @@ fn folder_row(ui: &mut Ui, dir: &str, id: &str) -> bool {
             };
             ui.painter().text(pos2(rect.min.x + 32.0, rect.center().y), egui::Align2::LEFT_CENTER, shown, theme::font(13.0), color);
             let tip = if dir.is_empty() {
-                tr!("點一下選擇資料夾", "Click to choose a folder").to_string()
+                tr!("按一下選擇資料夾", "Click to choose a folder").to_string()
             } else {
-                trf!("{dir}\n點一下選擇其他資料夾", "{dir}\nClick to choose another folder")
+                trf!("{dir}\n按一下選擇其他資料夾", "{dir}\nClick to choose another folder")
             };
             if resp.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(tip).clicked() {
                 choose = true;
@@ -1499,7 +1499,7 @@ fn set_shot_dir(app: &mut UiApp, value: String) {
 }
 
 /// 問要不要把 from 資料夾裡的截圖搬到截圖資料夾。先把 from 記成「留在原處的資料夾」（全部截圖照樣列得出來），
-/// 搬完、資料夾裡沒有截圖了再拿掉。first_run：截圖改成分開存之後第一次啟動（不想現在決定時下次再問）
+/// 搬完、資料夾裡沒有截圖了再移除。first_run：截圖改成分開存之後第一次啟動（不想現在決定時下次再問）
 pub fn offer_shot_move(app: &mut UiApp, from: String, first_run: bool) {
     let to = app.s.shots_dir(&app.env);
     if from.trim().is_empty() || from.eq_ignore_ascii_case(&to) {
@@ -1528,7 +1528,7 @@ pub fn offer_shot_move(app: &mut UiApp, from: String, first_run: bool) {
         let mut ask = dialogs::Ask::confirm(
             tr!("要把截圖搬到截圖資料夾嗎？", "Move your screenshots to the screenshot folder?"),
             trf!(
-                "截圖和錄影現在分開存放，新的截圖會存到：\n{to}\n\n舊的資料夾裡還有 {n} 張截圖：\n{from}\n\n要一起搬過去嗎？同名的檔案會自動改名，不會覆蓋；截圖編輯的記錄會跟著更新，之後一樣可以再次編輯。",
+                "截圖和錄影現在分開存放，新的截圖會存到：\n{to}\n\n舊的資料夾裡還有 {n} 張截圖：\n{from}\n\n要一起搬過去嗎？同名的檔案會自動重新命名，不會覆蓋；截圖編輯的記錄會跟著更新，之後一樣可以再次編輯。",
                 "Screenshots and recordings are now kept apart. New screenshots are saved in:\n{to}\n\nThere are {n} screenshots in the old folder:\n{from}\n\nMove them there too? Files with the same name are renamed, never overwritten, and your screenshot edits stay editable.",
                 to = to,
                 from = from,
@@ -1715,7 +1715,7 @@ fn after_record_section(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
             app.save_settings();
         }
     });
-    // 媒體庫：資料夾和 Jellyfin 在「存檔與分享」，這裡只決定錄完要不要傳過去；還沒選資料夾時打開就選
+    // 媒體庫：資料夾和 Jellyfin 在「存檔與分享」，這裡只決定錄完要不要傳過去；還沒選資料夾時開啟就選
     form_row(ui, "Jellyfin", |ui| {
         let has = !app.s.after_copy_to.is_empty();
         let mut on = has && app.s.after_copy;
@@ -2064,7 +2064,7 @@ fn about_page(app: &mut UiApp, ui: &mut Ui, close: &mut bool) {
             .small()
             .ghost()
             .tooltip(tr!(
-                "一步一步帶你錄第一部影片；之後第一次打開剪輯、截圖編輯、全部截圖時也會再顯示小提示",
+                "一步一步帶你錄第一部影片；之後第一次開啟剪輯、截圖編輯、全部截圖時也會再顯示小提示",
                 "Walks you through your first recording again; quick tips also reappear the next time you open the editor, screenshot editing or All screenshots"
             ))
             .show(ui)
@@ -2139,7 +2139,7 @@ fn updates_section(app: &mut UiApp, ui: &mut Ui, close: &mut bool) {
     }
 }
 
-/// 連不上網路時的提示按鈕：打開「設定 → 外部元件」的 Proxy
+/// 連不上網路時的提示按鈕：開啟「設定 → 外部元件」的 Proxy
 pub fn proxy_action() -> super::ToastAction {
     super::ToastAction::new(tr!("設定 Proxy", "Set up a proxy"), |app| open(app, Page::Components))
 }
@@ -2157,13 +2157,24 @@ fn keys_page(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
     form_section(ui, tr!("全域快速鍵", "Global shortcuts"), |ui| {
         if app.keys != Hotkeys::default() && Btn::new(tr!("還原預設", "Restore defaults")).ghost().small().show(ui).clicked() {
             d.key_capture = None;
-            save_keys(app, d, Hotkeys::default());
+            // 先問：自己改過的快速鍵都會不見
+            app.ask = Some(super::dialogs::Ask::confirm(
+                tr!("快速鍵全部還原成預設？", "Restore all shortcuts to the defaults?"),
+                tr!("自己改過、停用的快速鍵都會改回原本的設定。", "Every shortcut you changed or turned off goes back to its original setting."),
+                tr!("還原", "Restore"),
+                |app, _| {
+                    if let Some(mut d) = app.settings_dlg.take() {
+                        save_keys(app, &mut d, Hotkeys::default());
+                        app.settings_dlg = Some(d);
+                    }
+                },
+            ));
         }
     });
     form_hint_full(
         ui,
         tr!(
-            "程式在背景時也能用。點一下按鍵，再按下新的組合（要包含 Ctrl 或 Alt）。",
+            "程式在背景時也能用。按一下按鍵，再按下新的組合（要包含 Ctrl 或 Alt）。",
             "These work even when the app is in the background. Click a key, then press a new combination (must include Ctrl or Alt)."
         ),
         p.muted,
@@ -2186,9 +2197,9 @@ fn keys_page(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
             let tip = if capturing {
                 tr!("按 Esc 取消", "Press Esc to cancel")
             } else if busy {
-                tr!("被其他程式占用，點一下換一組", "Used by another program. Click to choose a different one")
+                tr!("被其他程式占用，按一下換一組", "Used by another program. Click to choose a different one")
             } else {
-                tr!("點一下後按下新的組合鍵（要包含 Ctrl 或 Alt）", "Click, then press a new key combination (must include Ctrl or Alt)")
+                tr!("按一下後按下新的組合鍵（要包含 Ctrl 或 Alt）", "Click, then press a new key combination (must include Ctrl or Alt)")
             };
             if Btn::new(text).small().height(30.0).selected(capturing).min_width(KEY_BTN_W).tooltip(tip).show(ui).clicked() {
                 if capturing {
@@ -2207,9 +2218,9 @@ fn keys_page(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
                 save_keys(app, d, k);
             }
         });
-        // 被其他程式占用：橘色說明（點一下按鍵就能換）
+        // 被其他程式占用：橘色說明（按一下按鍵就能換）
         if !ok[i] && !app.keys.label(i).is_empty() && d.key_capture != Some(i) {
-            key_hint(ui, tr!("⚠ 被其他程式占用，點一下換一組", "⚠ Used by another program. Click to choose a different one"), p.warn);
+            key_hint(ui, tr!("⚠ 被其他程式占用，按一下換一組", "⚠ Used by another program. Click to choose a different one"), p.warn);
         }
         // 這一列的提示（不支援的按鍵、和別的功能重複）寫在這一列下面
         if let Some((_, m)) = d.key_msg.clone().filter(|(row, _)| *row == i) {
@@ -2602,10 +2613,19 @@ fn component_card(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui, k: Kind)
                     .show(ui)
                     .clicked()
             {
-                match app.core.component_remove(k) {
-                    Ok(()) => app.toast(trf!("已移除{}", "Removed {}", k.name()), false),
-                    Err(e) => app.toast(e, true),
-                }
+                // 先問：要再用時得重新下載（可能幾百 MB）
+                let mb = k.mb();
+                let mut ask = super::dialogs::Ask::confirm(
+                    trf!("移除{}？", "Remove {}?", k.name()),
+                    trf!("會刪掉下載的檔案（約 {mb} MB）。之後要用時要重新下載。", "The downloaded file (about {mb} MB) will be deleted. You'll need to download it again to use it."),
+                    tr!("移除", "Remove"),
+                    move |app, _| match app.core.component_remove(k) {
+                        Ok(()) => app.toast(trf!("已移除{}", "Removed {}", k.name()), false),
+                        Err(e) => app.toast(e, true),
+                    },
+                );
+                ask.danger = true;
+                app.ask = Some(ask);
             }
             // FFmpeg：目前用的那一個所在的資料夾（可能是自己放的或 PATH 上的）
             let path = match (k, &app.env.ffmpeg.path) {

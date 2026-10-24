@@ -202,7 +202,7 @@ mod tests {
         let r = Region { start: 2.0, end: 5.0, x: 0.5, y: 0.5, w: 0.25, h: 0.5 };
         assert_eq!(r.factor(), 2.0);
         assert_eq!(r.center(), (0.625, 0.75));
-        // 重疊的往後挪、太短的拿掉
+        // 重疊的往後挪、太短的移除
         let list = clean_regions(&[Region { start: 4.0, end: 6.0, ..r }, r, Region { start: 9.0, end: 9.1, ..r }]);
         assert_eq!(list.iter().map(|r| (r.start, r.end)).collect::<Vec<_>>(), vec![(2.0, 5.0), (5.0, 6.0)]);
         // 剪掉 0～1：剪輯後 1～4

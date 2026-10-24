@@ -1,7 +1,7 @@
 //! 一步一步的教學：畫面變暗，只亮出這一步要按的地方，旁邊有說明框與「第 2／7 步」。
 //! - 第一次安裝：帶著錄第一部影片（選範圍 → 聲音 → 開始錄影 → 錄完在最近錄影播放、剪輯 → 截圖）；
 //!   要使用者真的做的步驟（選範圍、開始錄影、停止）做完會自動到下一步，也可以跳過這一步
-//! - 剪輯視窗、截圖編輯、全部截圖第一次打開時：幾步短提示（新安裝或按了「重新看教學」才有）
+//! - 剪輯視窗、截圖編輯、全部截圖第一次開啟時：幾步短提示（新安裝或按了「重新看教學」才有）
 //!
 //! 要亮出來的元件畫出來時用 mark() 記下位置（這一格的），教學照著畫框；
 //! 找不到位置（例如視窗太窄收起來了）時說明框放在畫面中間。
@@ -155,7 +155,7 @@ pub fn start(app: &mut UiApp, kind: Kind, at: usize) {
     }
 }
 
-/// 從「⋯」總選單或「關於」重新看：第一次錄影的教學，之後各功能第一次打開時的提示也再顯示
+/// 從「⋯」總選單或「關於」重新看：第一次錄影的教學，之後各功能第一次開啟時的提示也再顯示
 pub fn restart(app: &mut UiApp) {
     app.s.tours_done.clear();
     app.s.tips = true;
@@ -270,7 +270,7 @@ fn finish(app: &mut UiApp, completed: bool) {
     app.save_settings();
 }
 
-/// 各功能第一次打開時的短提示：剪輯視窗、截圖編輯、全部截圖
+/// 各功能第一次開啟時的短提示：剪輯視窗、截圖編輯、全部截圖
 fn auto_tips(app: &mut UiApp) {
     if !app.s.tips || app.tour.is_some() || app.ask.is_some() || app.settings_dlg.is_some() {
         return;
@@ -472,7 +472,7 @@ fn content(app: &UiApp, t: &Tour) -> (Option<Spot>, String, String, Go) {
             let has = app.recent.as_ref().is_some_and(|r| !r.items.is_empty());
             let body = if t.recorded && has {
                 tr!(
-                    "剛錄好的在這裡。下面一排是：播放、剪輯（剪掉頭尾、加標註）、製作（加速版、GIF、壓縮）、傳到 Jellyfin、在資料夾中顯示；複製檔案、改名等其他功能在「⋯」，也可以按右鍵。",
+                    "剛錄好的在這裡。下面一排是：播放、剪輯（剪掉頭尾、加標註）、製作（加速版、GIF、壓縮）、傳到 Jellyfin、在資料夾中顯示；複製檔案、重新命名等其他功能在「⋯」，也可以按右鍵。",
                     "Your new recording is here. The buttons below are Play, Edit (trim, annotate), Make (sped-up video, GIF, compress), Send to library and Show in folder; copy file, rename and more are under ⋯ or a right-click."
                 )
             } else {
@@ -498,7 +498,7 @@ fn content(app: &UiApp, t: &Tour) -> (Option<Spot>, String, String, Go) {
                 };
                 let (sel, area) = (k(3, tr!("框選截圖", "Select area")), k(2, tr!("截取錄影範圍", "Capture area")));
                 trf!(
-                    "按{sel}在螢幕上拖曳框選一塊（或點一下視窗），存成圖片並複製到剪貼簿，可以直接貼上；按{area}截下整個錄影範圍。延遲截圖、長截圖、步驟截圖、只抓文字等在右上角「⋯」→「截圖工具」，系統匣圖示的選單也有。截過的圖在「檔案庫 → 截圖」。",
+                    "按{sel}在螢幕上拖曳框選一塊（或按一下視窗），存成圖片並複製到剪貼簿，可以直接貼上；按{area}截下整個錄影範圍。延遲截圖、長截圖、步驟截圖、只抓文字等在右上角「⋯」→「截圖工具」，系統匣圖示的選單也有。截過的圖在「檔案庫 → 截圖」。",
                     "Press{sel}to drag over part of the screen (or click a window); it's saved as an image and copied to the clipboard, ready to paste. Press{area}to capture the whole recording area. Delayed, scrolling and step screenshots, grab text and more are under “⋯” (top right) → “Screenshot tools”, and in the tray icon's menu. Find your screenshots under “Library → Screenshots”."
                 )
             },
@@ -508,7 +508,7 @@ fn content(app: &UiApp, t: &Tour) -> (Option<Spot>, String, String, Go) {
             Some(Spot::Settings),
             tr!("完成了！", "You're all set!").into(),
             tr!(
-                "右上角的「⋯」是總選單：錄影、截圖、回溯錄影、排程錄影、講稿小視窗、設定組合、設定（畫質、每秒張數、存檔位置、快速鍵、語言，也可以按 Ctrl+,）、更新說明、關於都在這裡。之後第一次打開剪輯、截圖編輯、全部截圖時，也會有幾步小提示。想再看一次這個教學：「⋯」→「重新看教學」。",
+                "右上角的「⋯」是總選單：錄影、截圖、回溯錄影、排程錄影、講稿小視窗、設定組合、設定（畫質、每秒張數、存檔位置、快速鍵、語言，也可以按 Ctrl+,）、更新說明、關於都在這裡。之後第一次開啟剪輯、截圖編輯、全部截圖時，也會有幾步小提示。想再看一次這個教學：「⋯」→「重新看教學」。",
                 "The “⋯” at the top right is the main menu: recordings, screenshots, the replay buffer, scheduled recording, the script window, presets, Settings (quality, frame rate, where files are saved, shortcuts, language; or press Ctrl+,), release notes and About. The first time you open the editor, screenshot editing or All screenshots, you'll get a few quick tips too. To see this tutorial again: “⋯” → “Replay tutorial”."
             )
             .into(),
@@ -518,7 +518,7 @@ fn content(app: &UiApp, t: &Tour) -> (Option<Spot>, String, String, Go) {
             Some(Spot::EdTimeline),
             tr!("時間軸：剪掉不要的部分", "Timeline: cut what you don't need").into(),
             tr!(
-                "在縮圖上拖過不要的部分（開頭、中間、結尾都可以），按上方的「刪除」；兩端的黃色把手也能剪頭尾。滾輪放大時間軸看細一點，點一下跳到那個位置。",
+                "在縮圖上拖過不要的部分（開頭、中間、結尾都可以），按上方的「刪除」；兩端的黃色把手也能剪頭尾。滾輪放大時間軸看細一點，按一下跳到那個位置。",
                 "Drag across the part you don't want on the thumbnails (start, middle or end) and press “Delete” above it; the yellow handles at either end trim too. Scroll to zoom the timeline and click to jump to a point."
             )
             .into(),
@@ -538,7 +538,7 @@ fn content(app: &UiApp, t: &Tour) -> (Option<Spot>, String, String, Go) {
             Some(Spot::EdFoot),
             tr!("存成新的影片", "Save as a new video").into(),
             tr!(
-                "剪好後按這裡另存剪輯版，原本的影片不會被改掉；沒存就關掉也沒關係，下次打開會問要不要接著剪。",
+                "剪好後按這裡另存剪輯版，原本的影片不會被改掉；沒存就關掉也沒關係，下次開啟會問要不要接著剪。",
                 "When you're done, save it here as an edited copy; the original stays untouched. If you close without saving, you'll be asked whether to continue next time."
             )
             .into(),
@@ -558,7 +558,7 @@ fn content(app: &UiApp, t: &Tour) -> (Option<Spot>, String, String, Go) {
             Some(Spot::ShCanvas),
             tr!("直接在圖上畫", "Draw right on the image").into(),
             tr!(
-                "在圖上拖曳就畫上去；點一下畫好的標註可以移動、改顏色，按 Delete 刪掉。改錯了按 Ctrl+Z 復原。",
+                "在圖上拖曳就畫上去；按一下畫好的標註可以移動、改顏色，按 Delete 刪掉。改錯了按 Ctrl+Z 復原。",
                 "Drag on the image to draw. Click an annotation to move it or change its color, and press Delete to remove it. Made a mistake? Press Ctrl+Z to undo."
             )
             .into(),

@@ -242,7 +242,7 @@ fn freezes(ed: &mut Editor, ui: &mut egui::Ui) {
             ui.painter().rect_filled(r, CornerRadius::same(12), p.accent.gamma_multiply(0.14));
             ui.painter().galley(pos2(r.left() + 10.0, r.center().y - g.size().y / 2.0), g, p.accent);
             let x = egui::Rect::from_center_size(pos2(r.right() - 13.0, r.center().y), vec2(20.0, 20.0));
-            let xr = ui.interact(x, Id::new(("ed-freeze", i)), Sense::click()).on_hover_text(tr!("拿掉這個定格", "Remove this freeze")).on_hover_cursor(CursorIcon::PointingHand);
+            let xr = ui.interact(x, Id::new(("ed-freeze", i)), Sense::click()).on_hover_text(tr!("移除這個定格", "Remove this freeze")).on_hover_cursor(CursorIcon::PointingHand);
             if xr.hovered() {
                 ui.painter().circle_filled(x.center(), 10.0, p.accent.gamma_multiply(0.2));
             }
