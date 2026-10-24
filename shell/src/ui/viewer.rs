@@ -71,6 +71,8 @@ pub struct Viewer {
     seeking: Option<bool>,
     /// 後退 / 快轉（按住加速）
     skip: Skipper,
+    /// 這支播過了：暫停時中間不再放大大的播放鈕（螢幕錄影常有字會被擋到），滑鼠在畫面上時才淡淡顯示
+    played_once: bool,
     /// 控制列進度列右邊那些按鈕實際用掉的寬度（上一格量的；進度列用剩下的，不再寫死估計值）
     tools_w: f32,
     volume: f32,
@@ -169,6 +171,7 @@ impl Viewer {
         self.pan = Vec2::ZERO;
         self.seeking = None;
         self.skip.reset();
+        self.played_once = false;
         self.error = None;
     }
 
@@ -279,6 +282,7 @@ fn open_with(app: &mut UiApp, entry: LibraryEntry, remote: Option<Remote>, start
         video_size: Vec2::ZERO,
         seeking: None,
         skip: Skipper::default(),
+        played_once: false,
         tools_w: 0.0,
         volume: VOLUME.load(Ordering::Relaxed) as f32 / 100.0,
         muted: false,
@@ -803,7 +807,8 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         let area = egui::Modal::default_area(Id::new("viewer")).anchor(Align2::LEFT_TOP, vec2(0.0, 0.0));
         (screen.size(), theme::modal_frame(ctx).inner_margin(0).corner_radius(0).stroke(Stroke::NONE).shadow(egui::Shadow::NONE), area)
     } else {
-        (vec2((screen.width() - 32.0).max(600.0), (screen.height() - 32.0).max(400.0)), theme::modal_frame(ctx).inner_margin(0), egui::Modal::default_area(Id::new("viewer")))
+        // 四周只留 8 像素，影片可以大一點
+        (vec2((screen.width() - 16.0).max(600.0), (screen.height() - 16.0).max(400.0)), theme::modal_frame(ctx).inner_margin(0), egui::Modal::default_area(Id::new("viewer")))
     };
     let rel_thumbs: Vec<Option<TextureHandle>> = v.related.iter().take(16).map(|m| app.thumb(&m.path, m.mtime)).collect();
     // 大影片（大於 1080p）用 FFmpeg 播放時：提示下載 mpv 播放元件（播放更順）
@@ -837,7 +842,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         let audio = v.is_audio();
         // 標題列（全螢幕時不顯示）
         if !v.full {
-            egui::Frame::new().inner_margin(egui::Margin::symmetric(18, 12)).show(ui, |ui| header(&mut v, ui, &e, &buttons, &mut act));
+            egui::Frame::new().inner_margin(egui::Margin::symmetric(18, 9)).show(ui, |ui| header(&mut v, ui, &e, &buttons, &mut act));
         }
         // 畫面（截圖下方留一列相關的截圖）
         let bar_h = 52.0;
@@ -867,19 +872,29 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
             painter.text(stage.center(), Align2::CENTER_CENTER, err, theme::font(14.0), Color32::from_gray(220));
         }
         // 上一個 / 下一個
+        // 上一個 / 下一個：滑鼠在畫面上時淡淡的，靠近那一側（左右各 1/4）才明顯；白色細框讓深色、淺色畫面上都看得到，不貼邊
         if v.list.len() > 1 {
-            let hover = ui.rect_contains_pointer(stage);
-            for (step, icon, x) in [(-1i64, Icon::ChevL, stage.min.x + 34.0), (1, Icon::ChevR, stage.max.x - 34.0)] {
+            let pointer = ui.ctx().pointer_hover_pos().filter(|p| stage.contains(*p));
+            for (step, icon, x) in [(-1i64, Icon::ChevL, stage.min.x + 40.0), (1, Icon::ChevR, stage.max.x - 40.0)] {
                 let enabled = if step < 0 { v.idx > 0 } else { v.idx + 1 < v.list.len() };
                 if !enabled {
                     continue;
                 }
                 let r = Rect::from_center_size(pos2(x, stage.center().y), vec2(44.0, 44.0));
                 let b = ui.interact(r, Id::new(("viewer-nav", step)), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
-                if hover || b.hovered() {
-                    let a = if b.hovered() { 200 } else { 140 };
-                    ui.painter().circle_filled(r.center(), 22.0, Color32::from_black_alpha(a));
-                    theme::paint_icon(ui.painter(), Rect::from_center_size(r.center(), vec2(20.0, 20.0)), icon, Color32::WHITE);
+                let near = pointer.is_some_and(|p| if step < 0 { p.x < stage.min.x + stage.width() / 4.0 } else { p.x > stage.max.x - stage.width() / 4.0 });
+                let (bg, fg) = if b.hovered() {
+                    (210, 255)
+                } else if near {
+                    (160, 235)
+                } else if pointer.is_some() {
+                    (70, 120)
+                } else {
+                    (0, 0)
+                };
+                if bg > 0 {
+                    ui.painter().circle(r.center(), 22.0, Color32::from_black_alpha(bg), Stroke::new(1.0, Color32::from_white_alpha(fg / 3)));
+                    theme::paint_icon(ui.painter(), Rect::from_center_size(r.center(), vec2(20.0, 20.0)), icon, Color32::from_white_alpha(fg));
                 }
                 b.clone().on_hover_text(match (image, step < 0) {
                     (true, true) => tr!("上一張（←）", "Previous image (←)"),
@@ -1515,9 +1530,9 @@ fn keyboard(v: &mut Viewer, ctx: &egui::Context, act: &mut Act) {
     }
 }
 
-/// 播放的快速鍵（按鍵盤圖示開啟；和剪輯視窗一樣的鍵做一樣的事）
-fn key_sheet(resp: &egui::Response) {
-    egui::Popup::menu(resp).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
+/// 播放的快速鍵（速度選單裡的「快速鍵一覽」；和剪輯視窗一樣的鍵做一樣的事）
+fn key_rows(ui: &mut egui::Ui) {
+    {
         ui.set_min_width(300.0);
         ui.label(RichText::new(tr!("播放的快速鍵", "Playback shortcuts")).font(theme::font_bold(13.5)));
         let rows: [(&str, &str, &str); 9] = [
@@ -1538,7 +1553,7 @@ fn key_sheet(resp: &egui::Response) {
                 ui.end_row();
             }
         });
-    });
+    }
 }
 
 fn toggle_play(p: &Playback) {
@@ -1647,7 +1662,8 @@ fn video_stage(v: &mut Viewer, painter: &egui::Painter, stage: Rect, resp: &egui
         v.video_tex.as_ref().map(|t| (t.id(), t.size_vec2(), Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)))).or(v.mpv_tex.map(|id| (id, v.video_size, super::playback::mpv_uv())))
     {
         let src = if v.video_size.x > 0.0 { v.video_size } else { size };
-        let k = ((stage.width() - 24.0) / src.x).min((stage.height() - 24.0) / src.y);
+        // 影片填滿畫面區（不留邊；長寬比不同的那一邊才有黑邊）
+        let k = (stage.width() / src.x).min(stage.height() / src.y);
         // 對齊螢幕像素；mpv 照顯示的大小（像素）畫，縮放由 mpv 在顯示卡上做
         let (r, px) = super::playback::pixel_rect(Rect::from_center_size(stage.center(), src * k), painter.ctx().pixels_per_point());
         painter.image(id, r, uv, Color32::WHITE);
@@ -1660,9 +1676,22 @@ fn video_stage(v: &mut Viewer, painter: &egui::Painter, stage: Rect, resp: &egui
     if resp.clicked() {
         toggle_play(p);
     }
+    if p.is_playing() {
+        v.played_once = true;
+    }
+    // 還沒播過：中間大大的播放鈕；播過以後暫停時只在滑鼠移到畫面上才淡淡顯示，不擋住畫面上的字
     if !p.is_playing() && v.seeking.is_none() && !audio {
-        painter.circle_filled(stage.center(), 34.0, Color32::from_black_alpha(150));
-        theme::paint_icon(painter, Rect::from_center_size(stage.center() + vec2(3.0, 0.0), vec2(30.0, 30.0)), Icon::Play, Color32::WHITE);
+        let (bg, fg) = if !v.played_once {
+            (150, 255)
+        } else if resp.hovered() {
+            (70, 150)
+        } else {
+            (0, 0)
+        };
+        if bg > 0 {
+            painter.circle_filled(stage.center(), 34.0, Color32::from_black_alpha(bg));
+            theme::paint_icon(painter, Rect::from_center_size(stage.center() + vec2(3.0, 0.0), vec2(30.0, 30.0)), Icon::Play, Color32::from_white_alpha(fg));
+        }
     }
 }
 
@@ -1686,7 +1715,7 @@ fn video_bar(v: &mut Viewer, ui: &mut egui::Ui, act: &mut Act) {
     ui.label(RichText::new(format!("{} / {}", short_clock(t), short_clock(dur))).font(theme::mono(12.5)));
     // 章節、字幕、擷取、速度、快速鍵、全螢幕、音量（右邊），進度列填滿中間：
     // 右邊用掉多少寬度是上一格畫完量的（第一格先估），增減按鈕都不會把音量擠出畫面
-    let guess = 380.0 + if chapters.is_empty() { 0.0 } else { 84.0 } + if has_subs { 36.0 } else { 0.0 };
+    let guess = 230.0 + if chapters.is_empty() { 0.0 } else { 84.0 } + if has_subs { 36.0 } else { 0.0 };
     let tools_w = if v.tools_w > 0.0 { v.tools_w } else { guess };
     let track_w = (ui.available_width() - tools_w - 4.0).max(80.0);
     let (rect, resp) = ui.allocate_exact_size(vec2(track_w, 28.0), Sense::click_and_drag());
@@ -1791,29 +1820,21 @@ fn video_bar(v: &mut Viewer, ui: &mut egui::Ui, act: &mut Act) {
     {
         *act = Act::Grab;
     }
-    // 播放速度「1×▾」
+    // 播放速度「1× ▾」（選單最下面是快速鍵一覽，控制列少一顆按鈕、進度列長一點）
     ui.add_space(4.0);
-    ui.scope(|ui| {
-        theme::field_style(ui);
-        ui.spacing_mut().interact_size.y = 28.0;
-        let rate = player.rate();
-        egui::ComboBox::from_id_salt("viewer-rate")
-            .selected_text(RichText::new(format!("{}×", speed_label(rate))).font(theme::font(12.5)))
-            .width(62.0)
-            .show_ui(ui, |ui| {
-                for r in RATES {
-                    if ui.selectable_label((r - rate).abs() < 1e-6, format!("{}×", speed_label(r))).clicked() {
-                        player.set_rate(r);
-                        RATE.store((r * 100.0).round() as u64, Ordering::Relaxed);
-                    }
-                }
-            })
-            .response
-            .on_hover_text(tr!("播放速度（聲音變速不變調）", "Playback speed (pitch preserved)"));
+    let rate = player.rate();
+    let b = Btn::new(format!("{}×", speed_label(rate))).small().menu().tooltip(tr!("播放速度（聲音變速不變調）、快速鍵一覽", "Playback speed (pitch preserved), keyboard shortcuts")).show(ui);
+    egui::Popup::menu(&b).show(|ui| {
+        ui.set_min_width(140.0);
+        for r in RATES {
+            if ui.selectable_label((r - rate).abs() < 1e-6, format!("{}×", speed_label(r))).clicked() {
+                player.set_rate(r);
+                RATE.store((r * 100.0).round() as u64, Ordering::Relaxed);
+            }
+        }
+        ui.separator();
+        ui.menu_button(tr!("快速鍵一覽", "Keyboard shortcuts"), key_rows);
     });
-    // 快速鍵一覽
-    let keys = Btn::icon_only(Icon::Keyboard).ghost().small().tooltip(tr!("播放的快速鍵", "Playback shortcuts")).show(ui);
-    key_sheet(&keys);
     // 全螢幕
     let tip = if full { tr!("離開全螢幕（Esc、F）", "Exit full screen (Esc, F)") } else { tr!("全螢幕（F、按兩下畫面）", "Full screen (F, or double-click the video)") };
     if Btn::icon_only(Icon::Fullscreen).ghost().small().selected(full).tooltip(tip).show(ui).clicked() {
@@ -1829,29 +1850,62 @@ fn video_bar(v: &mut Viewer, ui: &mut egui::Ui, act: &mut Act) {
     } else if v.muted {
         tr!("取消靜音（M）", "Unmute (M)")
     } else {
-        tr!("靜音（M）", "Mute (M)")
+        tr!("靜音（M）・滾輪或上方的音量條調整大小（↑↓）", "Mute (M) · scroll or use the slider above to change the volume (↑↓)")
     };
-    if Btn::icon_only(Icon::Speaker).ghost().small().selected(v.muted).enabled(has_audio).tooltip(icon_tip).show(ui).clicked() {
+    let sp = Btn::icon_only(Icon::Speaker).ghost().small().selected(v.muted).enabled(has_audio).tooltip(icon_tip).show(ui);
+    if sp.clicked() {
         v.muted = !v.muted;
         player.set_volume(v.volume_now());
     }
-    // 音量表（與進度列同樣的樣式）
-    let (rect, resp) = ui.allocate_exact_size(vec2(96.0, 28.0), if has_audio { Sense::click_and_drag() } else { Sense::hover() });
-    let track = Rect::from_center_size(rect.center(), vec2(rect.width() - 12.0, 4.0));
-    let vol = v.volume_now();
-    let color = if has_audio { p.accent } else { p.border_strong };
-    let painter = ui.painter();
-    painter.rect_filled(track, CornerRadius::same(2), p.surface2);
-    painter.rect_filled(Rect::from_min_max(track.min, pos2(track.min.x + track.width() * vol, track.max.y)), CornerRadius::same(2), color);
-    painter.circle(pos2(track.min.x + track.width() * vol, track.center().y), if resp.hovered() || resp.dragged() { 7.0 } else { 5.5 }, p.surface, Stroke::new(2.0, color));
+    // 音量：滑鼠移到喇叭上，上方浮出直立的音量條（控制列不用一直留位置給它）；喇叭上滾滾輪也能調
     if has_audio {
-        if let Some(pos) = resp.interact_pointer_pos().filter(|_| resp.is_pointer_button_down_on()) {
-            v.volume = ((pos.x - track.min.x) / track.width()).clamp(0.0, 1.0);
-            v.muted = false;
-            VOLUME.store((v.volume * 100.0).round() as u64, Ordering::Relaxed);
-            player.set_volume(v.volume_now());
+        let pop_id = Id::new("viewer-volume");
+        let pop = Rect::from_min_size(pos2(sp.rect.center().x - 22.0, sp.rect.min.y - 158.0), vec2(44.0, 154.0));
+        let (was_open, dragging) = ui.ctx().data(|d| d.get_temp::<(bool, bool)>(pop_id)).unwrap_or_default();
+        let pointer = ui.ctx().pointer_hover_pos();
+        // 開著時：喇叭到音量條中間的空隙也算在裡面，滑上去不會關掉
+        let inside = pointer.is_some_and(|p| if was_open { pop.union(sp.rect).expand(6.0).contains(p) } else { sp.rect.contains(p) });
+        if inside {
+            let dy = ui.input(|i| i.smooth_scroll_delta.y);
+            if dy != 0.0 {
+                v.volume = (v.volume + dy / 400.0).clamp(0.0, 1.0);
+                v.muted = false;
+                VOLUME.store((v.volume * 100.0).round() as u64, Ordering::Relaxed);
+                player.set_volume(v.volume_now());
+            }
         }
-        resp.on_hover_text(trf!("音量 {:.0}%（↑↓ 調整）", "Volume {:.0}% (↑↓ to adjust)", v.volume_now() * 100.0));
+        let mut drag_now = false;
+        if inside || dragging {
+            let vol = v.volume_now();
+            let mut new_vol = None;
+            egui::Area::new(pop_id).order(egui::Order::Tooltip).fixed_pos(pop.min).show(ui.ctx(), |ui| {
+                egui::Frame::popup(ui.style()).inner_margin(egui::Margin::symmetric(6, 8)).show(ui, |ui| {
+                    ui.set_width(pop.width() - 14.0);
+                    ui.vertical_centered(|ui| {
+                        ui.label(RichText::new(format!("{:.0}", vol * 100.0)).font(theme::font(12.0)).color(p.muted));
+                        let (rect, resp) = ui.allocate_exact_size(vec2(28.0, 104.0), Sense::click_and_drag());
+                        let track = Rect::from_center_size(rect.center(), vec2(4.0, rect.height() - 14.0));
+                        let painter = ui.painter();
+                        painter.rect_filled(track, CornerRadius::same(2), p.surface2);
+                        let y = track.max.y - track.height() * vol;
+                        painter.rect_filled(Rect::from_min_max(pos2(track.min.x, y), track.max), CornerRadius::same(2), p.accent);
+                        painter.circle(pos2(track.center().x, y), if resp.hovered() || resp.dragged() { 7.0 } else { 5.5 }, p.surface, Stroke::new(2.0, p.accent));
+                        if let Some(pos) = resp.interact_pointer_pos().filter(|_| resp.is_pointer_button_down_on()) {
+                            new_vol = Some(((track.max.y - pos.y) / track.height()).clamp(0.0, 1.0));
+                        }
+                        drag_now = resp.is_pointer_button_down_on() || resp.dragged();
+                        resp.on_hover_cursor(egui::CursorIcon::PointingHand);
+                    });
+                });
+            });
+            if let Some(nv) = new_vol {
+                v.volume = nv;
+                v.muted = false;
+                VOLUME.store((v.volume * 100.0).round() as u64, Ordering::Relaxed);
+                player.set_volume(v.volume_now());
+            }
+        }
+        ui.ctx().data_mut(|d| d.insert_temp(pop_id, (inside || drag_now, drag_now)));
     }
     // 記下右邊實際用掉的寬度（和這一格用的不同時再畫一次，下一格就對了）
     let used = ui.min_rect().max.x.max(ui.cursor().min.x) - tools_from;
