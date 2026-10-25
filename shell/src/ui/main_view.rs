@@ -3070,7 +3070,7 @@ fn recent_card(app: &mut UiApp, ui: &mut Ui, e: &LibraryEntry, date: String, w: 
         // 「大」的卡片比較寬：資料夾、製作、複製檔案、改名、刪除也直接按得到（放不下的在「⋯」）
         let picked = if big {
             use EntryAction as A;
-            let wanted = [A::PlayHere, A::Edit, A::SendToLibrary, A::Reveal, A::Export, A::CopyFile, A::Rename, A::Trash];
+            let wanted = [A::PlayHere, A::Play, A::Edit, A::SendToLibrary, A::Reveal, A::Export, A::CopyFile, A::Tags, A::Rename, A::Star, A::Trash];
             super::entry_menu::wide_icons(ui, &groups, hot, &wanted, more_tip)
         } else {
             super::entry_menu::quick_icons(ui, &groups, hot, slots, slots, more_tip)
