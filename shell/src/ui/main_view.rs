@@ -2597,7 +2597,7 @@ fn saved_card(app: &mut UiApp, ui: &mut Ui, path: &str, sec: f64, bytes: u64) {
         });
         return;
     }
-    saved_actions(app, ui, path, audio);
+    saved_actions(app, ui, path);
 }
 
 /// 錄好的縮圖（點了在主畫面播放）
@@ -2624,23 +2624,18 @@ fn saved_thumb(app: &mut UiApp, ui: &mut Ui, path: &str, audio: bool) {
 }
 
 /// 錄好的動作：剪輯（有畫面才有）、資料夾、複製、更多
-fn saved_actions(app: &mut UiApp, ui: &mut Ui, path: &str, audio: bool) {
-    if !audio && mini(ui, Icon::Cut, tr!("剪輯", "Edit")) {
-        app.act_path(EntryAction::Edit, path.to_string());
-    }
-    if mini(ui, Icon::Folder, tr!("在資料夾中顯示", "Show in folder")) {
-        app.act_path(EntryAction::Reveal, path.to_string());
-    }
-    if mini(ui, Icon::Copy, tr!("複製檔案（貼到 LINE）", "Copy file (paste into LINE)")) {
-        app.act_path(EntryAction::CopyFile, path.to_string());
-    }
-    if !audio {
-        let more = Btn::icon_only(Icon::More).ghost().small().tooltip(tr!("更多：製作加速版、GIF、壓縮…", "More: speed up, GIF, compress…")).show(ui);
-        egui::Popup::menu(&more).show(|ui| {
-            if ui.button(tr!("製作加速版 / GIF / 壓縮…", "Speed up / GIF / compress…")).clicked() {
-                app.act_path(EntryAction::Export, path.to_string());
-            }
-        });
+fn saved_actions(app: &mut UiApp, ui: &mut Ui, path: &str) {
+    // 位置夠就把「⋯」裡的也直接排出來（和最近錄影「大」的卡片同一份、同樣的順序），放不下的才收進「⋯」
+    let e = app.known.get(path).or_else(|| app.recent.as_ref().and_then(|r| r.items.iter().find(|e| e.media.path == path))).cloned().unwrap_or_else(|| {
+        let name = std::path::Path::new(path).file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
+        LibraryEntry { media: screenrecorder_core::types::MediaInfo { path: path.to_string(), name, ..Default::default() }, exports: vec![], hits: vec![] }
+    });
+    let groups = super::entry_menu::groups(app, &e, Place::Home);
+    use EntryAction as A;
+    let wanted = [A::Edit, A::Reveal, A::CopyFile, A::Export, A::SendToLibrary, A::Play, A::Tags, A::Rename, A::Star, A::Trash];
+    if let Some(a) = super::entry_menu::wide_icons(ui, &groups, true, &wanted, tr!("更多", "More")) {
+        app.known.insert(e.media.path.clone(), e.clone());
+        app.act(a, e);
     }
 }
 
@@ -3070,7 +3065,7 @@ fn recent_card(app: &mut UiApp, ui: &mut Ui, e: &LibraryEntry, date: String, w: 
         // 「大」的卡片比較寬：資料夾、製作、複製檔案、改名、刪除也直接按得到（放不下的在「⋯」）
         let picked = if big {
             use EntryAction as A;
-            let wanted = [A::PlayHere, A::Edit, A::SendToLibrary, A::Reveal, A::Export, A::CopyFile, A::Rename, A::Trash];
+            let wanted = [A::PlayHere, A::Play, A::Edit, A::SendToLibrary, A::Reveal, A::Export, A::CopyFile, A::Tags, A::Rename, A::Star, A::Trash];
             super::entry_menu::wide_icons(ui, &groups, hot, &wanted, more_tip)
         } else {
             super::entry_menu::quick_icons(ui, &groups, hot, slots, slots, more_tip)
