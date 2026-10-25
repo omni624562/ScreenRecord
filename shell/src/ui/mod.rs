@@ -346,6 +346,7 @@ impl UiApp {
         let env = core.env();
         let saved = core.settings.load();
         let s = UiSettings::from_saved(saved.ui.as_ref(), &env);
+        playback::load_sound(s.play_volume, s.play_muted);
         // 視窗還沒顯示：先放到螢幕上看得到的位置（扣掉工作列）
         let start_max = place_window(cc, s.window);
         let status = core.status();
@@ -1608,6 +1609,12 @@ impl eframe::App for UiApp {
             ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(true));
         }
         self.watch_window();
+        // 播放時改了音量、靜音：存進設定（下一支、重開程式都沿用）
+        if let Some((volume, muted)) = playback::take_sound_change() {
+            self.s.play_volume = volume;
+            self.s.play_muted = muted;
+            self.save_settings();
+        }
         self.flush_settings();
         self.flush_pending();
         self.refresh_recent_if_stale(ctx);

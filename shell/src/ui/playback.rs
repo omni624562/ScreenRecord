@@ -7,7 +7,38 @@ use eframe::glow::{self, HasContext};
 use screenrecorder_core::mpv::MpvPlayer;
 use screenrecorder_core::player::Player;
 use screenrecorder_core::tr;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+
+/// 播放的音量（×100）與靜音：檢視器、主畫面內播放共用，開下一支沿用，存進設定（重開程式也一樣）
+static VOLUME: AtomicU64 = AtomicU64::new(100);
+static MUTED: AtomicBool = AtomicBool::new(false);
+/// 改過了、還沒存進設定
+static SOUND_DIRTY: AtomicBool = AtomicBool::new(false);
+
+/// 上次的音量（0～1）與靜音
+pub fn sound() -> (f32, bool) {
+    (VOLUME.load(Ordering::Relaxed) as f32 / 100.0, MUTED.load(Ordering::Relaxed))
+}
+
+/// 記下音量、靜音（有變才標記要存檔）
+pub fn remember_sound(volume: f32, muted: bool) {
+    let v = (volume.clamp(0.0, 1.0) * 100.0).round() as u64;
+    if VOLUME.swap(v, Ordering::Relaxed) != v || MUTED.swap(muted, Ordering::Relaxed) != muted {
+        SOUND_DIRTY.store(true, Ordering::Relaxed);
+    }
+}
+
+/// 啟動時從設定讀回來
+pub fn load_sound(volume: u8, muted: bool) {
+    VOLUME.store(volume.min(100) as u64, Ordering::Relaxed);
+    MUTED.store(muted, Ordering::Relaxed);
+}
+
+/// 改過了：回傳要存進設定的（音量 0～100、靜音），只回傳一次
+pub fn take_sound_change() -> Option<(u8, bool)> {
+    SOUND_DIRTY.swap(false, Ordering::Relaxed).then(|| (VOLUME.load(Ordering::Relaxed) as u8, MUTED.load(Ordering::Relaxed)))
+}
 
 /// 後退 / 快轉一次跳幾秒（播放列的 ◀◀ ▶▶、←→ 鍵）
 const SKIP: f64 = 5.0;

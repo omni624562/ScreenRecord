@@ -91,7 +91,7 @@ pub fn open(app: &mut UiApp, entry: LibraryEntry) {
         }
         return;
     }
-    let volume = app.inline.as_ref().map_or(1.0, |i| i.volume);
+    let (volume, muted) = super::playback::sound();
     let cancel = Arc::new(AtomicBool::new(false));
     app.inline = Some(Inline {
         entry: entry.clone(),
@@ -104,7 +104,7 @@ pub fn open(app: &mut UiApp, entry: LibraryEntry) {
         seeking: None,
         skip: Skipper::default(),
         volume,
-        muted: false,
+        muted,
         loading: true,
         error: None,
         wave: None,
@@ -315,6 +315,7 @@ fn keyboard(app: &mut UiApp, ctx: &egui::Context) {
     let Some(i) = app.inline.as_mut() else { return };
     if m {
         i.muted = !i.muted;
+        super::playback::remember_sound(i.volume, i.muted);
         let v = i.volume_now();
         if let Some(p) = &i.player {
             p.set_volume(v);
@@ -506,6 +507,7 @@ fn controls(i: &mut Inline, ui: &mut egui::Ui) -> bool {
     };
     if Btn::icon_only(Icon::Speaker).ghost().small().selected(i.muted).enabled(has_audio).tooltip(tip).show(ui).clicked() {
         i.muted = !i.muted;
+        super::playback::remember_sound(i.volume, i.muted);
         player.set_volume(i.volume_now());
     }
     let (rect, resp) = ui.allocate_exact_size(vec2(64.0, 26.0), if has_audio { Sense::click_and_drag() } else { Sense::hover() });
@@ -519,6 +521,7 @@ fn controls(i: &mut Inline, ui: &mut egui::Ui) -> bool {
         if let Some(pos) = resp.interact_pointer_pos().filter(|_| resp.is_pointer_button_down_on()) {
             i.volume = ((pos.x - track.min.x) / track.width()).clamp(0.0, 1.0);
             i.muted = false;
+            super::playback::remember_sound(i.volume, i.muted);
             player.set_volume(i.volume_now());
         }
         resp.on_hover_text(trf!("音量 {:.0}%", "Volume {:.0}%", vol * 100.0));

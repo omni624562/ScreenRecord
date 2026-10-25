@@ -5,7 +5,7 @@
 use super::theme::{self, Btn, Icon};
 use super::{viewer, ToastAction, UiApp};
 use eframe::egui::{self, pos2, vec2, Align, Align2, Layout, Rect, RichText, Sense, UiBuilder};
-use screenrecorder_core::jellyfin::{self, Jellyfin, JfFacet, JfFilter, JfItem, JfKind, JfList, JfSort};
+use screenrecorder_core::jellyfin::{self, Jellyfin, JfFacet, JfFilter, JfItem, JfKind, JfList, JfSort, NameKind};
 use screenrecorder_core::types::{Chapter, LibraryEntry, MediaInfo};
 use screenrecorder_core::{tr, trf};
 use std::collections::{BTreeMap, HashMap};
@@ -1389,6 +1389,8 @@ enum FacetChange {
     /// 清除一類（0 人物、1 標籤、2 年份）
     ClearKind(u8),
     ClearAll,
+    /// 清單上按右鍵：重新命名（合併）或從全部影片移除這個人物、標籤（類別, 名稱, 幾支）
+    Edit(NameKind, String, usize),
 }
 
 /// 條件是哪一類：0 人物、1 標籤、2 年份
@@ -1419,6 +1421,10 @@ fn is_none_facet(f: &JfFacet) -> bool {
 fn apply_facet(d: &mut JfBrowse, change: FacetChange, out: &mut Panel) {
     match change {
         FacetChange::None => return,
+        FacetChange::Edit(kind, name, count) => {
+            out.edit_name = Some((kind, name, count));
+            return;
+        }
         FacetChange::Toggle(f) => match d.facet.iter().position(|x| *x == f) {
             Some(i) => {
                 d.facet.remove(i);
@@ -1481,7 +1487,7 @@ fn facet_menu(
                     JfFacet::Person(id, _) => Some(id),
                     _ => None,
                 };
-                let (row, row_resp) = ui.allocate_exact_size(vec2(W - 16.0, if person.is_some() { 40.0 } else { 26.0 }), if person.is_some() { Sense::click() } else { Sense::hover() });
+                let (row, row_resp) = ui.allocate_exact_size(vec2(W - 16.0, if person.is_some() { 40.0 } else { 26.0 }), Sense::click());
                 // 捲到看不到的列只佔位置不畫（人物、標籤有幾百個）
                 if !ui.is_rect_visible(row) {
                     if is_none_facet(f) {
@@ -1539,10 +1545,24 @@ fn facet_menu(
                     r
                 } else {
                     let cb = Rect::from_min_max(row.min, pos2(row.max.x - cw, row.max.y));
-                    ui.scope_builder(UiBuilder::new().max_rect(cb).layout(Layout::left_to_right(Align::Center)), |ui| theme::check(ui, &mut on, shown)).inner
+                    let mut r = ui.scope_builder(UiBuilder::new().max_rect(cb).layout(Layout::left_to_right(Align::Center)), |ui| theme::check(ui, &mut on, shown)).inner;
+                    // 名稱右邊的空白、支數也算這一列：點了一樣勾
+                    if !r.changed() && row_resp.clicked() {
+                        r.mark_changed();
+                    }
+                    r
                 };
                 if r.changed() {
                     *change = FacetChange::Toggle(f.clone());
+                }
+                // 右鍵：重新命名（改成已經有的就是合併）或從全部影片移除（開對話框；選單裡再開右鍵選單會把這個清單關掉）
+                let name_kind = match f {
+                    JfFacet::Person(..) => Some(NameKind::Person),
+                    JfFacet::Tag(_) => Some(NameKind::Tag),
+                    _ => None,
+                };
+                if let Some(nk) = name_kind.filter(|_| row_resp.secondary_clicked() || r.secondary_clicked()) {
+                    *change = FacetChange::Edit(nk, name.clone(), *c);
                 }
                 if *c > 0 || is_none_facet(f) {
                     ui.painter().text(pos2(row.max.x - 4.0, row.center().y), Align2::RIGHT_CENTER, trf!("{c} 支", "{c}"), theme::font(12.0), p.muted);
@@ -1564,7 +1584,11 @@ fn facet_menu(
         let note = if n > 0 {
             trf!("已勾 {n} 個・勾了馬上套用", "{n} checked · applies right away")
         } else {
-            tr!("勾了馬上套用，可以勾好幾個", "Applies right away; check as many as you like").to_string()
+            if kind < 2 {
+                tr!("勾了馬上套用・右鍵改名、合併", "Applies right away · right-click to rename").to_string()
+            } else {
+                tr!("勾了馬上套用，可以勾好幾個", "Applies right away; check as many as you like").to_string()
+            }
         };
         ui.painter().text(pos2(row.min.x, row.center().y), Align2::LEFT_CENTER, note, theme::font(12.0), p.muted);
         let lower = label.to_lowercase();
@@ -1574,6 +1598,49 @@ fn facet_menu(
             *change = FacetChange::ClearKind(kind);
         }
     });
+}
+
+/// 「人物 ⌄」「標籤 ⌄」清單上按右鍵：重新命名（改成已經有的寫法就是合併），或從全部影片移除（再確認一次），背景改
+fn ask_edit_name(app: &mut UiApp, user: Option<String>, kind: NameKind, name: String, count: usize, known: Vec<(String, usize)>) {
+    let Some(user) = user else { return };
+    if app.jf_rename.is_some() {
+        return app.toast(tr!("還在改上一個人物或標籤，改完再試一次", "Still changing the previous one; try again when it's done"), true);
+    }
+    let what = if kind == NameKind::Person { tr!("人物", "person") } else { tr!("標籤", "tag") };
+    let (from, user2, name2) = (name.clone(), user.clone(), name.clone());
+    // 有看起來一樣、寫法不同的（用最多的那個）時先填它：按一下就合併
+    let twin = known.iter().filter(|(m, _)| jellyfin::spelling_diff(&name, m).is_some()).max_by_key(|(_, c)| *c).map(|(m, _)| m.clone());
+    let mut ask = super::dialogs::Ask::input(
+        trf!("{what}「{name}」", "{what} “{name}”"),
+        trf!("改成新的寫法（改成已經有的就合併成一個），Jellyfin 上 {count} 支影片一起改", "New spelling (an existing name merges them into one); the {count} videos on Jellyfin are updated"),
+        twin.unwrap_or_else(|| name.clone()),
+        trf!("重新命名 {count} 支", "Rename {count}"),
+        move |app, to| {
+            let to = to.trim().to_string();
+            if to.is_empty() || to == from {
+                return;
+            }
+            // 改成已經有的（只差大小寫、全形半形也算）= 合併，用那個的寫法
+            let key = jellyfin::name_key(&to);
+            let to = known.into_iter().map(|(k, _)| k).find(|k| jellyfin::name_key(k) == key && *k != from).unwrap_or(to);
+            super::jellyfin_edit::start_rename(app, user, kind, from, to);
+        },
+    )
+    .with_alt(tr!("從全部影片移除…", "Remove from all videos…"), move |app, _| {
+        let mut ask = super::dialogs::Ask::confirm(
+            trf!("從全部影片移除{what}「{name2}」？", "Remove {what} “{name2}” from all videos?"),
+            trf!(
+                "Jellyfin 上 {count} 支影片會拿掉「{name2}」；影片本身和其他人物、標籤不變。",
+                "“{name2}” will be removed from {count} videos on Jellyfin; the videos and their other people and tags stay as they are."
+            ),
+            tr!("移除", "Remove"),
+            move |app, _| super::jellyfin_edit::start_remove(app, user2, kind, name2),
+        );
+        ask.danger = true;
+        app.ask = Some(ask);
+    });
+    ask.alt_danger = true;
+    app.ask = Some(ask);
 }
 
 /// 條件（放在「媒體庫 ›」後面同一列）：每個條件一顆（按一下移除），同一類之間寫「或」、不同類之間寫「且」，最後是「全部清除」。
@@ -1698,6 +1765,8 @@ pub struct Panel {
     /// 「依這些找」的人物清單看到了、還沒讀的人物照片
     faces: Vec<String>,
     find_dupes: bool,
+    /// 「人物 ⌄」「標籤 ⌄」清單按右鍵選了重新命名或移除
+    edit_name: Option<(NameKind, String, usize)>,
 }
 
 impl JfBrowse {
@@ -2136,7 +2205,13 @@ pub fn apply(app: &mut UiApp, mut d: JfBrowse, mut out: Panel) {
     if std::mem::take(&mut out.picked.scrolled) {
         d.scroll_to_cursor = false;
     }
-    let Panel { mut reload, more, mut picked, bulk_download, bulk_delete, bulk_organize, play_all, cancel_subs, cancel_batch, faces, find_dupes } = out;
+    let Panel { mut reload, more, mut picked, bulk_download, bulk_delete, bulk_organize, play_all, cancel_subs, cancel_batch, faces, find_dupes, edit_name } = out;
+    if let Some((kind, name, count)) = edit_name {
+        let known: Vec<(String, usize)> = if kind == NameKind::Person { d.persons.iter().map(|(_, n, c)| (n.clone(), *c)).collect() } else { d.tags.clone() };
+        let user = d.user.clone();
+        app.jf_browse = Some(d);
+        return ask_edit_name(app, user, kind, name, count, known);
+    }
     if let Some(s) = picked.sort.take() {
         d.sort = s;
         d.page = 0;

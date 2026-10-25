@@ -113,7 +113,7 @@ fn load_usage(app: &mut UiApp) {
 
 /// 背景把全部影片裡的 from 改成 to；改好通知，常用、「依這些找」的清單重讀，
 /// 這台電腦記的釘選、最近用過與開著的影片資訊裡的也跟著換
-fn start_rename(app: &mut UiApp, user: String, kind: NameKind, from: String, to: String) {
+pub(super) fn start_rename(app: &mut UiApp, user: String, kind: NameKind, from: String, to: String) {
     let Some(jf) = app.jellyfin() else { return };
     let progress = Arc::new(Mutex::new((0usize, 0usize)));
     let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -174,6 +174,60 @@ fn start_rename(app: &mut UiApp, user: String, kind: NameKind, from: String, to:
                 swap(pick(&mut d.info, kind));
                 if let Some(o) = d.orig.as_mut() {
                     swap(pick(o, kind));
+                }
+                let known = if kind == NameKind::Person { &mut d.known_people } else { &mut d.known_tags };
+                known.retain(|(n, _)| jellyfin::name_key(n) != key);
+            }
+            load_usage(app);
+            super::jellyfin_browse::reload_facets(app);
+        },
+    );
+}
+
+/// 背景從全部影片移除一個人物或標籤（「依這些找」清單按右鍵「從全部影片移除」）；改好通知，清單重讀，
+/// 這台電腦記的釘選、最近用過與開著的影片資訊裡的也拿掉
+pub(super) fn start_remove(app: &mut UiApp, user: String, kind: NameKind, name: String) {
+    let Some(jf) = app.jellyfin() else { return };
+    let progress = Arc::new(Mutex::new((0usize, 0usize)));
+    let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    app.jf_rename = Some(Renaming { kind, from: name.clone(), to: String::new(), progress: progress.clone(), cancel: cancel.clone() });
+    let ctx = app.ctx.clone();
+    let n2 = name.clone();
+    app.spawn(
+        async move {
+            tokio::task::spawn_blocking(move || {
+                let r = jf.remove_name(&user, kind, &n2, &|done, total| {
+                    *progress.lock().unwrap_or_else(|e| e.into_inner()) = (done, total);
+                    ctx.request_repaint();
+                    !cancel.load(std::sync::atomic::Ordering::Relaxed)
+                });
+                (r, cancel.load(std::sync::atomic::Ordering::Relaxed))
+            })
+            .await
+            .unwrap_or_else(|e| (Err(e.to_string()), false))
+        },
+        move |app, (r, stopped)| {
+            app.jf_rename = None;
+            let what = if kind == NameKind::Person { tr!("人物", "person") } else { tr!("標籤", "tag") };
+            match r {
+                Ok(n) if stopped => app.toast(trf!("已停止：{n} 支拿掉了「{name}」（再移除一次會接著做完）", "Stopped: removed “{name}” from {n} videos (remove again to finish)"), false),
+                Ok(n) => app.toast(trf!("✓ {n} 支影片拿掉了{what}「{name}」", "✓ Removed {what} “{name}” from {n} videos"), false),
+                Err(e) => app.toast(trf!("{what}「{name}」沒有全部拿掉：{e}", "Couldn't remove every “{name}”: {e}"), true),
+            }
+            let key = jellyfin::name_key(&name);
+            let drop = |list: &mut Vec<String>| {
+                let before = list.len();
+                list.retain(|x| jellyfin::name_key(x) != key);
+                list.len() != before
+            };
+            let s = &mut app.s;
+            let (pins, recent) = if kind == NameKind::Person { (&mut s.jf_pin_people, &mut s.jf_recent_people) } else { (&mut s.jf_pin_tags, &mut s.jf_recent_tags) };
+            if drop(pins) | drop(recent) {
+                app.save_settings();
+            }
+            if let Some(d) = app.jf_edit.as_mut() {
+                for i in [Some(&mut d.info), d.orig.as_mut()].into_iter().flatten() {
+                    drop(if kind == NameKind::Person { &mut i.people } else { &mut i.tags });
                 }
                 let known = if kind == NameKind::Person { &mut d.known_people } else { &mut d.known_tags };
                 known.retain(|(n, _)| jellyfin::name_key(n) != key);
@@ -544,7 +598,13 @@ fn picker_body(ui: &mut egui::Ui, id: &str, cands: &[(String, usize)], all: &[(S
                 // 正在重新命名的這一個：灰色「舊 → 新」、改好幾支和進度條
                 if let Some(b) = busy.as_ref().filter(|b| key(&b.from) == key(n)) {
                     let (row, _) = ui.allocate_exact_size(vec2(W - 16.0, 26.0), Sense::hover());
-                    ui.painter().text(egui::pos2(row.min.x + 28.0, row.center().y), egui::Align2::LEFT_CENTER, format!("{n} → {}", b.to), theme::font(13.0), p.muted);
+                    ui.painter().text(
+                        egui::pos2(row.min.x + 28.0, row.center().y),
+                        egui::Align2::LEFT_CENTER,
+                        if b.to.is_empty() { trf!("{n}：移除中", "{n}: removing") } else { format!("{n} → {}", b.to) },
+                        theme::font(13.0),
+                        p.muted,
+                    );
                     // 右邊：改好幾支、停止
                     let stop = Rect::from_min_size(egui::pos2(row.max.x - 22.0, row.center().y - 10.0), vec2(20.0, 20.0));
                     let sr = ui.interact(stop, Id::new(("jf-rename-stop", n.as_str())), Sense::click()).on_hover_text(tr!("停止（改好的照樣保留）", "Stop (videos already changed stay changed)"));

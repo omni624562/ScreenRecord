@@ -723,12 +723,26 @@ impl Jellyfin {
     /// progress(改好幾支, 全部幾支)；有幾支失敗時其他照改，最後回報失敗的。回傳改了幾支
     /// progress 回傳 false 就停（取消；改好的保留，再改一次會接著改完剩下的）
     pub fn rename_name(&self, user: &str, kind: NameKind, from: &str, to: &str, progress: &dyn Fn(usize, usize) -> bool) -> Result<usize, String> {
-        forget_lacking();
         let to = to.trim();
         if to.is_empty() {
             return Err(tr!("新的寫法不能空白", "The new spelling can't be empty").into());
         }
-        let ids = self.items_using(user, kind, from)?;
+        self.change_using(user, kind, from, &|body| with_renamed(body, kind, from, to), progress)
+    }
+
+    /// 從全部用到的影片移除這個人物或標籤（其他人物、標籤不動）；取消、失敗和 rename_name 一樣。回傳改了幾支
+    pub fn remove_name(&self, user: &str, kind: NameKind, name: &str, progress: &dyn Fn(usize, usize) -> bool) -> Result<usize, String> {
+        let edit = match kind {
+            NameKind::Person => BatchEdit { remove_people: vec![name.to_string()], ..Default::default() },
+            NameKind::Tag => BatchEdit { remove_tags: vec![name.to_string()], ..Default::default() },
+        };
+        self.change_using(user, kind, name, &|body| with_batch(body, &edit), progress)
+    }
+
+    /// 用到 name 的影片一支一支用 f 換好再存回去
+    fn change_using(&self, user: &str, kind: NameKind, name: &str, f: &dyn Fn(&str) -> Option<String>, progress: &dyn Fn(usize, usize) -> bool) -> Result<usize, String> {
+        forget_lacking();
+        let ids = self.items_using(user, kind, name)?;
         let total = ids.len();
         progress(0, total);
         let (mut done, mut failed) = (0usize, vec![]);
@@ -736,11 +750,10 @@ impl Jellyfin {
             if i > 0 && !progress(i, total) {
                 break;
             }
-            let r = self.change_item(user, id, |body| with_renamed(body, kind, from, to));
-            match r {
+            match self.change_item(user, id, f) {
                 Ok(()) => done += 1,
                 Err(e) => {
-                    crate::info!("[Jellyfin] 重新命名「{from}」→「{to}」，影片 {id} 沒改到：{e}");
+                    crate::info!("[Jellyfin] 改「{name}」，影片 {id} 沒改到：{e}");
                     failed.push(e);
                 }
             }
