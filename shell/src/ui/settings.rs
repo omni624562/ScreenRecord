@@ -210,6 +210,9 @@ pub struct UiSettings {
     pub lib_video_size: u8,
     /// 檔案庫「Jellyfin」分頁用清單（表格）看，不是縮圖
     pub jf_list_view: bool,
+    /// 播放影片的音量（0～100）與靜音：開下一支、重開程式都沿用上次的
+    pub play_volume: u8,
+    pub play_muted: bool,
     /// 檔案庫「Jellyfin」分頁上次選的排序（JfSort::ALL 的第幾個）
     pub jf_sort: u8,
     /// 檔案庫「Jellyfin」分頁上次停在哪裡（媒體庫 › 資料夾…：（編號, 名稱）；最上層是空的），下次開啟回到這裡
@@ -444,6 +447,8 @@ impl UiSettings {
             recent_size: num("recentSize").map(|v| v as u8).filter(|v| *v <= 2).unwrap_or(0),
             lib_video_size: num("libVideoSize").map(|v| v as u8).filter(|v| *v <= 2).unwrap_or(0),
             jf_list_view: boolean("jfListView").unwrap_or(false),
+            play_volume: num("playVolume").map(|v| v.clamp(0.0, 100.0) as u8).unwrap_or(100),
+            play_muted: boolean("playMuted").unwrap_or(false),
             jf_path: o.get("jfPath").and_then(|v| serde_json::from_value::<Vec<(String, String)>>(v.clone()).ok()).unwrap_or_default(),
             jf_sort: num("jfSort").map(|v| v as u8).filter(|v| (*v as usize) < screenrecorder_core::jellyfin::JfSort::ALL.len()).unwrap_or(0),
             jf_filter: num("jfFilter").map(|v| v as u8).filter(|v| (*v as usize) < screenrecorder_core::jellyfin::JfFilter::ALL.len()).unwrap_or(0),

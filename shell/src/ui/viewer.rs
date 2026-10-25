@@ -37,8 +37,6 @@ const ZOOM_MAX: f32 = 8.0;
 
 /// 載入順序：切換很快時，丟掉較舊的載入結果
 static LOAD_SEQ: AtomicU64 = AtomicU64::new(0);
-/// 音量在開啟之間保留
-static VOLUME: AtomicU64 = AtomicU64::new(100);
 /// 播放速度（×100）在開啟之間保留
 static RATE: AtomicU64 = AtomicU64::new(100);
 /// 可選的播放速度
@@ -286,8 +284,8 @@ fn open_with(app: &mut UiApp, entry: LibraryEntry, remote: Option<Remote>, start
         skip: Skipper::default(),
         played_once: false,
         tools_w: 0.0,
-        volume: VOLUME.load(Ordering::Relaxed) as f32 / 100.0,
-        muted: false,
+        volume: super::playback::sound().0,
+        muted: super::playback::sound().1,
         loading: true,
         error: None,
         close: false,
@@ -1548,6 +1546,7 @@ fn keyboard(v: &mut Viewer, ctx: &egui::Context, act: &mut Act) {
         if p.has_audio() {
             if i.key_pressed(Key::M) {
                 v.muted = !v.muted;
+                super::playback::remember_sound(v.volume, v.muted);
             }
             let dv = if i.key_pressed(Key::ArrowUp) {
                 0.1
@@ -1559,7 +1558,7 @@ fn keyboard(v: &mut Viewer, ctx: &egui::Context, act: &mut Act) {
             if dv != 0.0 {
                 v.volume = ((v.volume + dv) * 10.0).round().clamp(0.0, 10.0) / 10.0;
                 v.muted = false;
-                VOLUME.store((v.volume * 100.0).round() as u64, Ordering::Relaxed);
+                super::playback::remember_sound(v.volume, v.muted);
             }
             p.set_volume(v.volume_now());
         }
@@ -1895,6 +1894,7 @@ fn video_bar(v: &mut Viewer, ui: &mut egui::Ui, act: &mut Act) {
     let sp = Btn::icon_only(Icon::Speaker).ghost().small().selected(v.muted).enabled(has_audio).tooltip(icon_tip).show(ui);
     if sp.clicked() {
         v.muted = !v.muted;
+        super::playback::remember_sound(v.volume, v.muted);
         player.set_volume(v.volume_now());
     }
     // 音量：滑鼠移到喇叭上，上方浮出直立的音量條（控制列不用一直留位置給它）；喇叭上滾滾輪也能調
@@ -1910,7 +1910,7 @@ fn video_bar(v: &mut Viewer, ui: &mut egui::Ui, act: &mut Act) {
             if dy != 0.0 {
                 v.volume = (v.volume + dy / 400.0).clamp(0.0, 1.0);
                 v.muted = false;
-                VOLUME.store((v.volume * 100.0).round() as u64, Ordering::Relaxed);
+                super::playback::remember_sound(v.volume, v.muted);
                 player.set_volume(v.volume_now());
             }
         }
@@ -1941,7 +1941,7 @@ fn video_bar(v: &mut Viewer, ui: &mut egui::Ui, act: &mut Act) {
             if let Some(nv) = new_vol {
                 v.volume = nv;
                 v.muted = false;
-                VOLUME.store((v.volume * 100.0).round() as u64, Ordering::Relaxed);
+                super::playback::remember_sound(v.volume, v.muted);
                 player.set_volume(v.volume_now());
             }
         }
