@@ -42,18 +42,18 @@ enum Try {
 fn items(_app: &UiApp) -> Vec<(String, String, Try)> {
     vec![
         (
-            tr!("拖曳文字到輸入框", "Drag text into text boxes").into(),
+            tr!("人物、標籤按右鍵改名、合併", "Right-click people and tags to rename or merge").into(),
             tr!(
-                "選好的字按住拖到另一個輸入框放開就複製過去；從瀏覽器、記事本等其他程式拖進來的文字，放在輸入框上也會貼上。",
-                "Hold selected text and drag it to another text box to copy it there. Text dragged in from a browser, Notepad or other apps is pasted when you drop it on a text box."
+                "Jellyfin 分頁的「人物」「標籤」清單，在名字上按右鍵就能重新命名；改成已經有的名字就合併成一個，也可以從全部影片移除。",
+                "In the People and Tags lists on the Jellyfin tab, right-click a name to rename it. Renaming it to an existing name merges them, and you can also remove it from all videos."
             )
             .into(),
-            Try::None,
+            Try::Jellyfin,
         ),
         (
-            tr!("右鍵複製影片名稱", "Right-click to copy a video's name").into(),
-            tr!("播放畫面上方的名稱按右鍵，選「複製名稱」。", "Right-click the name at the top of the player and choose Copy name.").into(),
-            Try::Jellyfin,
+            tr!("記住播放音量", "Playback volume is remembered").into(),
+            tr!("調過的音量和靜音，開下一支影片、重開程式都會沿用。", "The volume and mute you set carry over to the next video and after restarting the app.").into(),
+            Try::None,
         ),
     ]
 }
