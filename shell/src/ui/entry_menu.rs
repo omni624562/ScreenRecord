@@ -348,8 +348,9 @@ pub fn wide_icons(ui: &mut egui::Ui, groups: &[Vec<Node>], hot: bool, wanted: &[
             Node::Sub { items, .. } => items.iter(),
         })
         .collect();
-    // 每個圖示 28 點，最後留一個給「⋯」
-    let room = ((ui.available_width() - 28.0) / 28.0).floor().max(0.0) as usize;
+    // 每個圖示 28 點加上間距，最後留一個給「⋯」
+    let per = 28.0 + ui.spacing().item_spacing.x;
+    let room = ((ui.available_width() - per) / per).floor().max(0.0) as usize;
     let mut shown = vec![];
     for (i, want) in wanted.iter().enumerate() {
         if shown.len() >= room {
