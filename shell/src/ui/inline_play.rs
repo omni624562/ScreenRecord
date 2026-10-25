@@ -438,6 +438,9 @@ fn wave_view(i: &Inline, painter: &egui::Painter, stage: Rect, p: &theme::Pal) {
     }
 }
 
+/// 控制列裡音量和「在播放器開啟」之間的空隙
+const GROUP_GAP: f32 = 16.0;
+
 /// 控制列：播放、時間、進度、速度、音量、在播放器開啟；回傳 true = 要在播放器開啟
 fn controls(i: &mut Inline, ui: &mut egui::Ui) -> bool {
     let p = theme::pal(ui);
@@ -455,7 +458,9 @@ fn controls(i: &mut Inline, ui: &mut egui::Ui) -> bool {
     }
     i.skip.buttons(ui, player);
     ui.label(RichText::new(format!("{} / {}", short_clock(t), short_clock(dur))).font(theme::mono(12.0)));
-    let right_w = 62.0 + 34.0 + 70.0 + 34.0 + 24.0;
+    // 右邊：速度、喇叭、音量條、空隙、在播放器開啟、全螢幕（各自之間有間距）
+    let gap = ui.spacing().item_spacing.x;
+    let right_w = 70.0 + 28.0 + 64.0 + GROUP_GAP + 28.0 + 28.0 + gap * 7.0;
     let track_w = (ui.available_width() - right_w).max(60.0);
     let (rect, resp) = ui.allocate_exact_size(vec2(track_w, 26.0), Sense::click_and_drag());
     let track = Rect::from_center_size(rect.center(), vec2(rect.width() - 12.0, 5.0));
@@ -505,7 +510,8 @@ fn controls(i: &mut Inline, ui: &mut egui::Ui) -> bool {
     } else {
         tr!("靜音（M）", "Mute (M)")
     };
-    if Btn::icon_only(Icon::Speaker).ghost().small().selected(i.muted).enabled(has_audio).tooltip(tip).show(ui).clicked() {
+    // 靜音（或音量 0）時喇叭打叉
+    if Btn::icon_only(if i.volume_now() <= 0.0 { Icon::Muted } else { Icon::Speaker }).ghost().small().selected(i.muted).enabled(has_audio).tooltip(tip).show(ui).clicked() {
         i.muted = !i.muted;
         super::playback::remember_sound(i.volume, i.muted);
         player.set_volume(i.volume_now());
@@ -526,7 +532,8 @@ fn controls(i: &mut Inline, ui: &mut egui::Ui) -> bool {
         }
         resp.on_hover_text(trf!("音量 {:.0}%", "Volume {:.0}%", vol * 100.0));
     }
-    // 全螢幕（F）；在播放器開啟（其他功能都在那裡）
+    // 全螢幕（F）；在播放器開啟（其他功能都在那裡）：和喇叭、音量條隔開一段，不會按錯
+    ui.add_space(GROUP_GAP);
     let mut full = false;
     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
         if Btn::icon_only(Icon::Fullscreen).ghost().small().tooltip(tr!("全螢幕（F）", "Full screen (F)")).show(ui).clicked() {

@@ -1891,7 +1891,8 @@ fn video_bar(v: &mut Viewer, ui: &mut egui::Ui, act: &mut Act) {
     } else {
         tr!("靜音（M）・滾輪或上方的音量條調整大小（↑↓）", "Mute (M) · scroll or use the slider above to change the volume (↑↓)")
     };
-    let sp = Btn::icon_only(Icon::Speaker).ghost().small().selected(v.muted).enabled(has_audio).tooltip(icon_tip).show(ui);
+    // 靜音（或音量 0）時喇叭打叉，不用打開音量條就看得出來
+    let sp = Btn::icon_only(if v.volume_now() <= 0.0 { Icon::Muted } else { Icon::Speaker }).ghost().small().selected(v.muted).enabled(has_audio).tooltip(icon_tip).show(ui);
     if sp.clicked() {
         v.muted = !v.muted;
         super::playback::remember_sound(v.volume, v.muted);
