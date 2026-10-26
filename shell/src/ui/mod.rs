@@ -1127,7 +1127,8 @@ impl UiApp {
         let seq = self.recent_seq;
         let core = self.core.clone();
         let dir = self.s.out_dir(&self.env);
-        let query = screenrecorder_core::types::LibraryQuery { page: Some(self.recent_page as f64), page_size: Some(self.recent_per_page as f64), ..Default::default() };
+        let q = Some(self.main.recent_q.trim().to_string()).filter(|q| !q.is_empty());
+        let query = screenrecorder_core::types::LibraryQuery { q, page: Some(self.recent_page as f64), page_size: Some(self.recent_per_page as f64), ..Default::default() };
         self.spawn(async move { actions::library(&core, &dir, &query).await }, move |app, page| {
             if seq != app.recent_seq {
                 return; // 較舊的要求晚回來：丟掉

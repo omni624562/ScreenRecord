@@ -781,6 +781,9 @@ pub struct MediaInfo {
     /// 在儲存位置的哪個子資料夾（例如「教學\2026」；空的 = 儲存位置本身）
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub folder: String,
+    /// 影片資訊裡可以搜尋的字（標題、作者、系列、類型、標籤與人物、說明）
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub meta: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]

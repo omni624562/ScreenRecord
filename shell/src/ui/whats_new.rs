@@ -42,25 +42,19 @@ enum Try {
 fn items(_app: &UiApp) -> Vec<(String, String, Try)> {
     vec![
         (
-            tr!("人物照片可以用自己的圖片", "Use your own image for person photos").into(),
+            tr!("最近錄影用上預覽兩側的空白", "Recent recordings use the space beside the preview").into(),
             tr!(
-                "人物照片除了影片畫面，也能從電腦選圖片、把圖片拖進來，或按 Ctrl+V 貼上剪貼簿的圖片。",
-                "Besides the video frame, you can choose an image from your computer, drag one in, or press Ctrl+V to paste one."
+                "預覽畫面左右有黑邊時，最近錄影欄自動變寬；夠寬時卡片排成兩欄。",
+                "When the preview has black bars on the sides, the recent recordings column gets wider, and shows two columns of cards when there is room."
             )
             .into(),
-            Try::Jellyfin,
-        ),
-        (
-            tr!("框可以旋轉、改比例", "Rotate the box and change its ratio").into(),
-            tr!("拖框上方的圓點旋轉，歪著的臉也能框正；比例可選 2:3、1:1 或自由。", "Drag the dot above the box to rotate it, so tilted faces come out straight. The ratio can be 2:3, 1:1 or free.")
-                .into(),
             Try::None,
         ),
         (
-            tr!("看得出誰已經有照片", "See who already has a photo").into(),
+            tr!("搜尋最近錄影", "Search recent recordings").into(),
             tr!(
-                "人物照片的名字前有小頭像的已經有照片；「人物」清單裡沒有照片的會寫「還沒有照片」。",
-                "In the person photo window, names with a small picture already have a photo. The People list marks those without one as “No photo yet”."
+                "最近錄影上方的搜尋框可以找檔名、字幕裡說過的話，以及影片資訊的標題、標籤、人物和說明。",
+                "The search box above recent recordings finds file names, words said in subtitles, and the title, tags, people and description in video details."
             )
             .into(),
             Try::None,
