@@ -132,9 +132,14 @@ fn commit_inputs(d: &mut TagsDialog) {
     }
 }
 
+/// 主畫面看得到（沒有檢視器、檔案庫、剪輯視窗蓋住）：影片資訊才能放在播放區旁邊，不然開成對話框
+pub fn can_dock(app: &UiApp) -> bool {
+    app.viewer.is_none() && app.library.is_none() && app.editor.is_none() && app.jf_browse.is_none()
+}
+
 /// 開影片資訊：主畫面播放中放在播放區旁邊，其他時候是對話框
 pub fn open(app: &mut UiApp, entry: LibraryEntry) {
-    let docked = app.viewer.is_none() && (app.inline.is_some() || app.video_tags.as_ref().is_some_and(|d| d.docked));
+    let docked = can_dock(app) && (app.inline.is_some() || app.video_tags.as_ref().is_some_and(|d| d.docked));
     if let Some(d) = app.video_tags.as_mut() {
         // 已經開著同一支：留著改到一半的內容，只換顯示的位置（例如面板開著時從檢視器按影片資訊）
         if d.path == entry.media.path {
@@ -592,7 +597,7 @@ pub fn ask(app: &mut UiApp, next: Next) {
 fn go(app: &mut UiApp, next: Next, docked: bool) {
     match next {
         Next::Close => {}
-        Next::Open(e) => open_as(app, e, docked && app.viewer.is_none()),
+        Next::Open(e) => open_as(app, e, docked && can_dock(app)),
         Next::Act(a, e) => {
             let follow = docked && follows(a, &e.media.path);
             app.act_follow(a, e, follow);
