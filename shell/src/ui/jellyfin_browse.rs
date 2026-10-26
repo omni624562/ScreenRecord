@@ -1556,13 +1556,8 @@ fn facet_menu_inner(
                     }
                     let name_max = row.max.x - cw - at.max.x - 12.0;
                     let galley = ui.painter().layout(shown, theme::font(14.0), p.text, name_max);
-                    // 讀過、伺服器上沒有照片的：名字下面寫「還沒有照片」（有照片的看頭像就知道）
-                    let no_photo = matches!(faces.get(id), Some(Poster::None));
-                    let y = if no_photo { row.center().y - galley.size().y + 1.0 } else { row.center().y - galley.size().y / 2.0 };
+                    let y = row.center().y - galley.size().y / 2.0;
                     ui.painter().galley(pos2(at.max.x + 8.0, y), galley, p.text);
-                    if no_photo {
-                        ui.painter().text(pos2(at.max.x + 8.0, row.center().y + 2.0), Align2::LEFT_TOP, tr!("還沒有照片", "No photo yet"), theme::font(11.0), p.muted);
-                    }
                     if !r.changed() && (row_resp.clicked() || ar.clicked()) {
                         r.mark_changed();
                     }
