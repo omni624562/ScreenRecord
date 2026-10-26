@@ -439,7 +439,7 @@ fn wave_view(i: &Inline, painter: &egui::Painter, stage: Rect, p: &theme::Pal) {
 }
 
 /// 控制列裡音量和「在播放器開啟」之間的空隙
-const GROUP_GAP: f32 = 16.0;
+const GROUP_GAP: f32 = 10.0;
 
 /// 控制列：播放、時間、進度、速度、音量、在播放器開啟；回傳 true = 要在播放器開啟
 fn controls(i: &mut Inline, ui: &mut egui::Ui) -> bool {
@@ -458,10 +458,12 @@ fn controls(i: &mut Inline, ui: &mut egui::Ui) -> bool {
     }
     i.skip.buttons(ui, player);
     ui.label(RichText::new(format!("{} / {}", short_clock(t), short_clock(dur))).font(theme::mono(12.0)));
-    // 右邊：速度、喇叭、音量條、空隙、在播放器開啟、全螢幕（各自之間有間距）
+    // 右邊（速度、喇叭、音量條、空隙、在播放器開啟、全螢幕）用上一格實際量到的寬度，進度條拿剩下的全部：
+    // 右邊整組緊貼在一起，視窗寬窄都不會多出空白
+    let right_id = egui::Id::new("inline-controls-right");
     let gap = ui.spacing().item_spacing.x;
-    let right_w = 70.0 + 28.0 + 64.0 + GROUP_GAP + 28.0 + 28.0 + gap * 7.0;
-    let track_w = (ui.available_width() - right_w).max(60.0);
+    let right_w = ui.ctx().data(|d| d.get_temp::<f32>(right_id)).unwrap_or(70.0 + 28.0 + 64.0 + GROUP_GAP + 28.0 + 28.0 + gap * 6.0);
+    let track_w = (ui.available_width() - right_w - gap).max(60.0);
     let (rect, resp) = ui.allocate_exact_size(vec2(track_w, 26.0), Sense::click_and_drag());
     let track = Rect::from_center_size(rect.center(), vec2(rect.width() - 12.0, 5.0));
     let painter = ui.painter();
@@ -488,6 +490,7 @@ fn controls(i: &mut Inline, ui: &mut egui::Ui) -> bool {
             }
         }
     }
+    let right_x0 = ui.cursor().min.x;
     // 播放速度
     ui.scope(|ui| {
         theme::field_style(ui);
@@ -510,8 +513,8 @@ fn controls(i: &mut Inline, ui: &mut egui::Ui) -> bool {
     } else {
         tr!("靜音（M）", "Mute (M)")
     };
-    // 靜音（或音量 0）時喇叭打叉
-    if Btn::icon_only(if i.volume_now() <= 0.0 { Icon::Muted } else { Icon::Speaker }).ghost().small().selected(i.muted).enabled(has_audio).tooltip(tip).show(ui).clicked() {
+    // 喇叭跟著音量變（靜音打叉）
+    if Btn::icon_only(super::playback::speaker_icon(i.volume_now())).ghost().small().selected(i.muted).enabled(has_audio).tooltip(tip).show(ui).clicked() {
         i.muted = !i.muted;
         super::playback::remember_sound(i.volume, i.muted);
         player.set_volume(i.volume_now());
@@ -524,7 +527,8 @@ fn controls(i: &mut Inline, ui: &mut egui::Ui) -> bool {
     painter.rect_filled(track, CornerRadius::same(2), p.surface2);
     painter.rect_filled(Rect::from_min_max(track.min, pos2(track.min.x + track.width() * vol, track.max.y)), CornerRadius::same(2), color);
     if has_audio {
-        if let Some(pos) = resp.interact_pointer_pos().filter(|_| resp.is_pointer_button_down_on()) {
+        // 按住拖或點一下（按下放開在同一格也算）
+        if let Some(pos) = resp.interact_pointer_pos().filter(|_| resp.is_pointer_button_down_on() || resp.clicked()) {
             i.volume = ((pos.x - track.min.x) / track.width()).clamp(0.0, 1.0);
             i.muted = false;
             super::playback::remember_sound(i.volume, i.muted);
@@ -532,23 +536,28 @@ fn controls(i: &mut Inline, ui: &mut egui::Ui) -> bool {
         }
         resp.on_hover_text(trf!("音量 {:.0}%", "Volume {:.0}%", vol * 100.0));
     }
-    // 全螢幕（F）；在播放器開啟（其他功能都在那裡）：和喇叭、音量條隔開一段，不會按錯
+    // 在播放器開啟（其他功能都在那裡）；全螢幕（F）：和喇叭、音量條隔開一小段，不會按錯
     ui.add_space(GROUP_GAP);
+    if Btn::icon_only(Icon::Window)
+        .ghost()
+        .small()
+        .tooltip(tr!("在播放器開啟（按兩下畫面也可以）：章節、擷取這一格、設為封面等", "Open in the player (or double-click the video): chapters, frame capture, set as cover…"))
+        .show(ui)
+        .clicked()
+    {
+        open_viewer = true;
+    }
     let mut full = false;
-    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-        if Btn::icon_only(Icon::Fullscreen).ghost().small().tooltip(tr!("全螢幕（F）", "Full screen (F)")).show(ui).clicked() {
-            full = true;
-        }
-        if Btn::icon_only(Icon::Window)
-            .ghost()
-            .small()
-            .tooltip(tr!("在播放器開啟（按兩下畫面也可以）：章節、擷取這一格、設為封面等", "Open in the player (or double-click the video): chapters, frame capture, set as cover…"))
-            .show(ui)
-            .clicked()
-        {
-            open_viewer = true;
-        }
-    });
+    let fr = Btn::icon_only(Icon::Fullscreen).ghost().small().tooltip(tr!("全螢幕（F）", "Full screen (F)")).show(ui);
+    if fr.clicked() {
+        full = true;
+    }
+    // 記下右邊實際用掉的寬度（和這一格用的不同時再畫一次，下一格就對了）
+    let used = fr.rect.max.x - right_x0;
+    if (used - right_w).abs() > 0.5 {
+        ui.ctx().data_mut(|d| d.insert_temp(right_id, used));
+        ui.ctx().request_repaint();
+    }
     if full {
         i.want_full = true;
     }
