@@ -1255,7 +1255,8 @@ impl UiApp {
         }
         let path = entry.media.path.clone();
         // 主畫面正在播這個檔案：剪輯、製作、重新命名等要用到檔案時先停下來（Windows 上播放中的檔案不能重新命名、取代）
-        let keeps = matches!(action, EntryAction::PlayHere | EntryAction::Reveal | EntryAction::CopyFile | EntryAction::CopyChapters | EntryAction::CopySteps | EntryAction::Star);
+        // 影片資訊：主畫面繼續播，旁邊開面板（存的時候才暫時放開檔案）
+        let keeps = matches!(action, EntryAction::PlayHere | EntryAction::Reveal | EntryAction::CopyFile | EntryAction::CopyChapters | EntryAction::CopySteps | EntryAction::Star | EntryAction::Tags);
         if !keeps && self.inline.as_ref().is_some_and(|i| i.is(&path)) {
             self.inline = None;
         }
@@ -1778,7 +1779,8 @@ impl eframe::App for UiApp {
         if self.steps_review.is_some() {
             steps_review::show(self, &ctx);
         }
-        if self.video_tags.is_some() {
+        // 主畫面播放中開的影片資訊在播放區旁邊（main_view 畫），其他時候是對話框
+        if self.video_tags.as_ref().is_some_and(|d| !d.docked()) {
             video_tags::show(self, &ctx);
         }
         if self.jf_edit.is_some() {

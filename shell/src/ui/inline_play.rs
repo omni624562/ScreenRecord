@@ -53,6 +53,8 @@ pub struct Inline {
     /// 只有聲音（M4A、只錄聲音的錄影、沒有畫面的檔案）
     sound_only: bool,
     cancel: Arc<AtomicBool>,
+    /// 改寫檔案後重新載入：從這個時間開始，是否接著播（見 resume）
+    resume: Option<(f64, bool)>,
 }
 
 impl Inline {
@@ -113,6 +115,7 @@ pub fn open(app: &mut UiApp, entry: LibraryEntry) {
         wave: None,
         sound_only: sound_only(&entry),
         cancel: cancel.clone(),
+        resume: None,
     });
     let Some(ffmpeg) = app.core.ffmpeg_path() else {
         if let Some(i) = &mut app.inline {
@@ -170,6 +173,13 @@ pub fn open(app: &mut UiApp, entry: LibraryEntry) {
                 player.play();
                 i.player = Some(Playback::Ff(player));
             }
+            // 改寫檔案後重新載入：回到原本的位置，原本暫停的照樣暫停
+            if let (Some((t, playing)), Some(p)) = (i.resume.take(), i.player.as_ref()) {
+                p.seek(t);
+                if !playing {
+                    p.pause();
+                }
+            }
             // 錄音：在背景讀波形
             if audio {
                 let (path, cancel) = (m.path.clone(), i.cancel.clone());
@@ -189,6 +199,28 @@ pub fn open(app: &mut UiApp, entry: LibraryEntry) {
 /// 只有聲音的檔案：M4A、只錄聲音的錄影（錄音_…）
 fn sound_only(e: &LibraryEntry) -> bool {
     is_audio_name(&e.media.name) || screenrecorder_core::after_record::is_audio_recording(&e.media.path)
+}
+
+/// 主畫面正在播這個檔案時先放開（Windows 上播放中的檔案不能取代）：回傳（影片, 時間, 是否在播），改寫好交給 resume
+pub fn release(app: &mut UiApp, path: &str) -> Option<(LibraryEntry, f64, bool)> {
+    let i = app.inline.as_ref().filter(|i| i.is(path))?;
+    let t = i.player.as_ref().map_or(0.0, |p| p.time());
+    let playing = i.player.as_ref().is_some_and(|p| p.is_playing());
+    let entry = i.entry.clone();
+    app.inline = None;
+    Some((entry, t, playing))
+}
+
+/// release 放開的重新載入，從原本的位置接著（原本暫停的照樣暫停）；這段時間已經改播別支時不動
+pub fn resume(app: &mut UiApp, r: Option<(LibraryEntry, f64, bool)>) {
+    let Some((entry, t, playing)) = r else { return };
+    if app.inline.is_some() || app.locked() {
+        return;
+    }
+    open(app, entry);
+    if let Some(i) = app.inline.as_mut() {
+        i.resume = Some((t, playing));
+    }
 }
 
 /// 停止播放，回到即時預覽
@@ -474,7 +506,7 @@ fn controls(i: &mut Inline, ui: &mut egui::Ui) -> bool {
     // 右邊整組緊貼在一起，視窗寬窄都不會多出空白
     let right_id = egui::Id::new("inline-controls-right");
     let gap = ui.spacing().item_spacing.x;
-    let right_w = ui.ctx().data(|d| d.get_temp::<f32>(right_id)).unwrap_or(70.0 + 28.0 + 64.0 + GROUP_GAP + 28.0 + 28.0 + gap * 6.0);
+    let right_w = ui.ctx().data(|d| d.get_temp::<f32>(right_id)).unwrap_or(70.0 + 28.0 + GROUP_GAP + 28.0 + 28.0 + gap * 5.0);
     let track_w = (ui.available_width() - right_w - gap).max(60.0);
     let (rect, resp) = ui.allocate_exact_size(vec2(track_w, 26.0), Sense::click_and_drag());
     let track = Rect::from_center_size(rect.center(), vec2(rect.width() - 12.0, 5.0));
@@ -523,30 +555,17 @@ fn controls(i: &mut Inline, ui: &mut egui::Ui) -> bool {
     } else if i.muted {
         tr!("取消靜音（M）", "Unmute (M)")
     } else {
-        tr!("靜音（M）", "Mute (M)")
+        tr!("靜音（M）・滾輪或上方的音量條調整大小", "Mute (M) · scroll or use the slider above to change the volume")
     };
-    // 喇叭跟著音量變（靜音打叉）
-    if Btn::icon_only(super::playback::speaker_icon(i.volume_now())).ghost().small().selected(i.muted).enabled(has_audio).tooltip(tip).show(ui).clicked() {
+    // 喇叭跟著音量變（靜音打叉）；音量和檢視器一樣：滑鼠移到喇叭上，上方浮出直立的音量條
+    let sp = Btn::icon_only(super::playback::speaker_icon(i.volume_now())).ghost().small().selected(i.muted).enabled(has_audio).tooltip(tip).show(ui);
+    if sp.clicked() {
         i.muted = !i.muted;
         super::playback::remember_sound(i.volume, i.muted);
         player.set_volume(i.volume_now());
     }
-    let (rect, resp) = ui.allocate_exact_size(vec2(64.0, 26.0), if has_audio { Sense::click_and_drag() } else { Sense::hover() });
-    let track = Rect::from_center_size(rect.center(), vec2(rect.width() - 10.0, 4.0));
-    let vol = i.volume_now();
-    let color = if has_audio { p.accent } else { p.border_strong };
-    let painter = ui.painter();
-    painter.rect_filled(track, CornerRadius::same(2), p.surface2);
-    painter.rect_filled(Rect::from_min_max(track.min, pos2(track.min.x + track.width() * vol, track.max.y)), CornerRadius::same(2), color);
     if has_audio {
-        // 按住拖或點一下（按下放開在同一格也算）
-        if let Some(pos) = resp.interact_pointer_pos().filter(|_| resp.is_pointer_button_down_on() || resp.clicked()) {
-            i.volume = ((pos.x - track.min.x) / track.width()).clamp(0.0, 1.0);
-            i.muted = false;
-            super::playback::remember_sound(i.volume, i.muted);
-            player.set_volume(i.volume_now());
-        }
-        resp.on_hover_text(trf!("音量 {:.0}%", "Volume {:.0}%", vol * 100.0));
+        super::playback::volume_popup(ui, &sp, egui::Id::new("inline-volume"), &mut i.volume, &mut i.muted, player);
     }
     // 在播放器開啟（其他功能都在那裡）；全螢幕（F）：和喇叭、音量條隔開一小段，不會按錯
     ui.add_space(GROUP_GAP);

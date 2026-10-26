@@ -93,11 +93,22 @@ pub fn show(app: &mut UiApp, ui: &mut Ui) {
         let rec_w = app.main.rec_w;
         let left = Rect::from_min_max(rest.min, pos2(rest.max.x - rec_w - gap, rest.max.y));
         let right = Rect::from_min_max(pos2(rest.max.x - rec_w, rest.min.y), rest.max);
+        // 主畫面播放中開的影片資訊：放在左欄右邊，播放區縮窄（影片繼續播）
+        let docked = app.video_tags.as_ref().is_some_and(|d| d.docked());
+        let (left, tags) = if docked {
+            let w = super::video_tags::PANEL_W.min(left.width() - 320.0).max(280.0);
+            (Rect::from_min_max(left.min, pos2(left.max.x - w - gap, left.max.y)), Some(Rect::from_min_max(pos2(left.max.x - w, left.min.y), left.max)))
+        } else {
+            (left, None)
+        };
         let cap = Rect::from_min_max(left.min, pos2(left.max.x, left.max.y - CONTROL_H - gap));
         let bar = Rect::from_min_max(pos2(left.min.x, left.max.y - CONTROL_H), left.max);
         ui.scope_builder(UiBuilder::new().max_rect(cap), |ui| capture_panel(app, ui));
         ui.scope_builder(UiBuilder::new().max_rect(bar), |ui| control_bar(app, ui));
         ui.scope_builder(UiBuilder::new().max_rect(right), |ui| recent_panel(app, ui));
+        if let Some(r) = tags {
+            ui.scope_builder(UiBuilder::new().max_rect(r), |ui| super::video_tags::panel(app, ui));
+        }
     });
     // 儲存位置停止輸入 0.6 秒後重新讀取最近錄影
     if app.main.dir_changed_at.is_some_and(|t| t.elapsed().as_millis() > 600) {
