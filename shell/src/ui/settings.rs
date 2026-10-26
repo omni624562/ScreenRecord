@@ -238,6 +238,8 @@ pub struct UiSettings {
     /// Jellyfin 影片資訊釘選的人物、標籤（永遠排在常用的最前面）
     pub jf_pin_people: Vec<String>,
     pub jf_pin_tags: Vec<String>,
+    /// 影片資訊釘選的類型
+    pub jf_pin_genres: Vec<String>,
     /// Jellyfin 影片資訊最近加過的人物、標籤（最近的在前，最多 RECENT_GENRES 個；「全部」清單可以依這個排）
     pub jf_recent_people: Vec<String>,
     pub jf_recent_tags: Vec<String>,
@@ -461,6 +463,7 @@ impl UiSettings {
             tips: boolean("tips").unwrap_or(false),
             jf_pin_people: names("jfPinPeople"),
             jf_pin_tags: names("jfPinTags"),
+            jf_pin_genres: names("jfPinGenres"),
             jf_recent_people: names("jfRecentPeople"),
             jf_recent_tags: names("jfRecentTags"),
             genres: o

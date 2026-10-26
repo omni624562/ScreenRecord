@@ -1,8 +1,8 @@
 //! 檢視器與主畫面內播放的影片：有 libmpv 時用 mpv（畫面直接畫進 OpenGL 材質，跟 Windows 的播放器一樣順），
 //! 沒有或 mpv 播不了時用 FFmpeg 解碼（core::player）。
 
-use super::theme::{Btn, Icon};
-use eframe::egui::{self, Key};
+use super::theme::{self, Btn, Icon};
+use eframe::egui::{self, pos2, vec2, CornerRadius, Key, Rect, RichText, Sense, Stroke};
 use eframe::glow::{self, HasContext};
 use screenrecorder_core::mpv::MpvPlayer;
 use screenrecorder_core::player::Player;
@@ -15,6 +15,59 @@ static VOLUME: AtomicU64 = AtomicU64::new(100);
 static MUTED: AtomicBool = AtomicBool::new(false);
 /// 改過了、還沒存進設定
 static SOUND_DIRTY: AtomicBool = AtomicBool::new(false);
+
+/// 音量條：滑鼠移到喇叭（sp）上，上方浮出直立的音量條（控制列不用一直留位置給它）；喇叭上滾滾輪也能調。
+/// 檢視器、主畫面內播放共用；改了就記下並套用到 player
+pub fn volume_popup(ui: &egui::Ui, sp: &egui::Response, id: egui::Id, volume: &mut f32, muted: &mut bool, player: &Playback) {
+    let p = theme::pal(ui);
+    let now = |v: f32, m: bool| if m { 0.0 } else { v };
+    let pop = Rect::from_min_size(pos2(sp.rect.center().x - 22.0, sp.rect.min.y - 158.0), vec2(44.0, 154.0));
+    let (was_open, dragging) = ui.ctx().data(|d| d.get_temp::<(bool, bool)>(id)).unwrap_or_default();
+    let pointer = ui.ctx().pointer_hover_pos();
+    // 開著時：喇叭到音量條中間的空隙也算在裡面，滑上去不會關掉
+    let inside = pointer.is_some_and(|q| if was_open { pop.union(sp.rect).expand(6.0).contains(q) } else { sp.rect.contains(q) });
+    if inside {
+        let dy = ui.input(|i| i.smooth_scroll_delta.y);
+        if dy != 0.0 {
+            *volume = (*volume + dy / 400.0).clamp(0.0, 1.0);
+            *muted = false;
+            remember_sound(*volume, *muted);
+            player.set_volume(now(*volume, *muted));
+        }
+    }
+    let mut drag_now = false;
+    if inside || dragging {
+        let vol = now(*volume, *muted);
+        let mut new_vol = None;
+        egui::Area::new(id).order(egui::Order::Tooltip).fixed_pos(pop.min).show(ui.ctx(), |ui| {
+            egui::Frame::popup(ui.style()).inner_margin(egui::Margin::symmetric(6, 8)).show(ui, |ui| {
+                ui.set_width(pop.width() - 14.0);
+                ui.vertical_centered(|ui| {
+                    ui.label(RichText::new(format!("{:.0}", vol * 100.0)).font(theme::font(12.0)).color(p.muted));
+                    let (rect, resp) = ui.allocate_exact_size(vec2(28.0, 104.0), Sense::click_and_drag());
+                    let track = Rect::from_center_size(rect.center(), vec2(4.0, rect.height() - 14.0));
+                    let painter = ui.painter();
+                    painter.rect_filled(track, CornerRadius::same(2), p.surface2);
+                    let y = track.max.y - track.height() * vol;
+                    painter.rect_filled(Rect::from_min_max(pos2(track.min.x, y), track.max), CornerRadius::same(2), p.accent);
+                    painter.circle(pos2(track.center().x, y), if resp.hovered() || resp.dragged() { 7.0 } else { 5.5 }, p.surface, Stroke::new(2.0, p.accent));
+                    if let Some(pos) = resp.interact_pointer_pos().filter(|_| resp.is_pointer_button_down_on() || resp.clicked()) {
+                        new_vol = Some(((track.max.y - pos.y) / track.height()).clamp(0.0, 1.0));
+                    }
+                    drag_now = resp.is_pointer_button_down_on() || resp.dragged();
+                    resp.on_hover_cursor(egui::CursorIcon::PointingHand);
+                });
+            });
+        });
+        if let Some(nv) = new_vol {
+            *volume = nv;
+            *muted = false;
+            remember_sound(*volume, *muted);
+            player.set_volume(now(*volume, *muted));
+        }
+    }
+    ui.ctx().data_mut(|d| d.insert_temp(id, (inside || drag_now, drag_now)));
+}
 
 /// 喇叭圖示跟著音量變：靜音或 0 打叉、一半以下一道聲波、一半以上兩道
 pub fn speaker_icon(volume: f32) -> Icon {

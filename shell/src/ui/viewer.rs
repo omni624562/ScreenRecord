@@ -151,6 +151,11 @@ impl Viewer {
         self.player.as_ref().map_or(0.0, |p| p.time())
     }
 
+    /// 正在播放（不是暫停）
+    pub(crate) fn playing(&self) -> bool {
+        self.player.as_ref().is_some_and(|p| p.is_playing())
+    }
+
     fn is_image(&self) -> bool {
         is_image_name(&self.cur().media.name)
     }
@@ -1898,55 +1903,9 @@ fn video_bar(v: &mut Viewer, ui: &mut egui::Ui, act: &mut Act) {
         super::playback::remember_sound(v.volume, v.muted);
         player.set_volume(v.volume_now());
     }
-    // 音量：滑鼠移到喇叭上，上方浮出直立的音量條（控制列不用一直留位置給它）；喇叭上滾滾輪也能調
+    // 音量：滑鼠移到喇叭上，上方浮出直立的音量條；喇叭上滾滾輪也能調
     if has_audio {
-        let pop_id = Id::new("viewer-volume");
-        let pop = Rect::from_min_size(pos2(sp.rect.center().x - 22.0, sp.rect.min.y - 158.0), vec2(44.0, 154.0));
-        let (was_open, dragging) = ui.ctx().data(|d| d.get_temp::<(bool, bool)>(pop_id)).unwrap_or_default();
-        let pointer = ui.ctx().pointer_hover_pos();
-        // 開著時：喇叭到音量條中間的空隙也算在裡面，滑上去不會關掉
-        let inside = pointer.is_some_and(|p| if was_open { pop.union(sp.rect).expand(6.0).contains(p) } else { sp.rect.contains(p) });
-        if inside {
-            let dy = ui.input(|i| i.smooth_scroll_delta.y);
-            if dy != 0.0 {
-                v.volume = (v.volume + dy / 400.0).clamp(0.0, 1.0);
-                v.muted = false;
-                super::playback::remember_sound(v.volume, v.muted);
-                player.set_volume(v.volume_now());
-            }
-        }
-        let mut drag_now = false;
-        if inside || dragging {
-            let vol = v.volume_now();
-            let mut new_vol = None;
-            egui::Area::new(pop_id).order(egui::Order::Tooltip).fixed_pos(pop.min).show(ui.ctx(), |ui| {
-                egui::Frame::popup(ui.style()).inner_margin(egui::Margin::symmetric(6, 8)).show(ui, |ui| {
-                    ui.set_width(pop.width() - 14.0);
-                    ui.vertical_centered(|ui| {
-                        ui.label(RichText::new(format!("{:.0}", vol * 100.0)).font(theme::font(12.0)).color(p.muted));
-                        let (rect, resp) = ui.allocate_exact_size(vec2(28.0, 104.0), Sense::click_and_drag());
-                        let track = Rect::from_center_size(rect.center(), vec2(4.0, rect.height() - 14.0));
-                        let painter = ui.painter();
-                        painter.rect_filled(track, CornerRadius::same(2), p.surface2);
-                        let y = track.max.y - track.height() * vol;
-                        painter.rect_filled(Rect::from_min_max(pos2(track.min.x, y), track.max), CornerRadius::same(2), p.accent);
-                        painter.circle(pos2(track.center().x, y), if resp.hovered() || resp.dragged() { 7.0 } else { 5.5 }, p.surface, Stroke::new(2.0, p.accent));
-                        if let Some(pos) = resp.interact_pointer_pos().filter(|_| resp.is_pointer_button_down_on() || resp.clicked()) {
-                            new_vol = Some(((track.max.y - pos.y) / track.height()).clamp(0.0, 1.0));
-                        }
-                        drag_now = resp.is_pointer_button_down_on() || resp.dragged();
-                        resp.on_hover_cursor(egui::CursorIcon::PointingHand);
-                    });
-                });
-            });
-            if let Some(nv) = new_vol {
-                v.volume = nv;
-                v.muted = false;
-                super::playback::remember_sound(v.volume, v.muted);
-                player.set_volume(v.volume_now());
-            }
-        }
-        ui.ctx().data_mut(|d| d.insert_temp(pop_id, (inside || drag_now, drag_now)));
+        super::playback::volume_popup(ui, &sp, Id::new("viewer-volume"), &mut v.volume, &mut v.muted, player);
     }
     // 記下右邊實際用掉的寬度（和這一格用的不同時再畫一次，下一格就對了）
     let used = ui.min_rect().max.x.max(ui.cursor().min.x) - tools_from;

@@ -42,19 +42,19 @@ enum Try {
 fn items(_app: &UiApp) -> Vec<(String, String, Try)> {
     vec![
         (
-            tr!("影片資訊和 Jellyfin 雙向同步", "Video details sync with Jellyfin both ways").into(),
+            tr!("類型、標籤、人物用 Jellyfin 的清單", "Genres, tags and people from Jellyfin").into(),
             tr!(
-                "本機錄影和 Jellyfin 上同檔名的影片，標題、說明、年份、標籤、人物兩邊保持一樣：在哪邊改，另一邊就跟著改。",
-                "For recordings with the same file name in Jellyfin, the title, description, year, tags and people stay the same on both sides: change either one and the other follows."
+                "影片資訊的類型、標籤、人物和 Jellyfin 影片資訊一樣：點「常用」加入，或從「全部 N 個」清單搜尋、勾選。",
+                "In Video details, genres, tags and people work like Jellyfin's details: click a suggestion or pick from the “All N” list."
             )
             .into(),
-            Try::Jellyfin,
+            Try::None,
         ),
         (
-            tr!("兩邊都改過時讓你選", "You choose when both sides changed").into(),
+            tr!("邊看邊改影片資訊", "Edit details while watching").into(),
             tr!(
-                "同一個欄位兩邊都改了而且不一樣時，打開影片資訊會列出 Jellyfin 上的內容，可以選用哪一個。",
-                "If the same field was changed differently on both sides, Video details shows Jellyfin's version so you can pick one."
+                "在主畫面播放時按「影片資訊」，資訊放在播放區旁邊，影片繼續播；看完放大或在播放器開啟，關掉後也回到原本的影片。",
+                "While playing on the main screen, Video details opens beside the video and playback continues. Closing the player or full screen returns to the same video."
             )
             .into(),
             Try::None,
