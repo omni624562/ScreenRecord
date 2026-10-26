@@ -16,6 +16,15 @@ static MUTED: AtomicBool = AtomicBool::new(false);
 /// 改過了、還沒存進設定
 static SOUND_DIRTY: AtomicBool = AtomicBool::new(false);
 
+/// 喇叭圖示跟著音量變：靜音或 0 打叉、一半以下一道聲波、一半以上兩道
+pub fn speaker_icon(volume: f32) -> Icon {
+    match volume {
+        v if v <= 0.0 => Icon::Muted,
+        v if v < 0.5 => Icon::Speaker,
+        _ => Icon::SpeakerLoud,
+    }
+}
+
 /// 上次的音量（0～1）與靜音
 pub fn sound() -> (f32, bool) {
     (VOLUME.load(Ordering::Relaxed) as f32 / 100.0, MUTED.load(Ordering::Relaxed))

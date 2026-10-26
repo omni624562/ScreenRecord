@@ -1891,8 +1891,8 @@ fn video_bar(v: &mut Viewer, ui: &mut egui::Ui, act: &mut Act) {
     } else {
         tr!("靜音（M）・滾輪或上方的音量條調整大小（↑↓）", "Mute (M) · scroll or use the slider above to change the volume (↑↓)")
     };
-    // 靜音（或音量 0）時喇叭打叉，不用打開音量條就看得出來
-    let sp = Btn::icon_only(if v.volume_now() <= 0.0 { Icon::Muted } else { Icon::Speaker }).ghost().small().selected(v.muted).enabled(has_audio).tooltip(icon_tip).show(ui);
+    // 喇叭跟著音量變（靜音打叉），不用打開音量條就看得出來
+    let sp = Btn::icon_only(super::playback::speaker_icon(v.volume_now())).ghost().small().selected(v.muted).enabled(has_audio).tooltip(icon_tip).show(ui);
     if sp.clicked() {
         v.muted = !v.muted;
         super::playback::remember_sound(v.volume, v.muted);
@@ -1931,7 +1931,7 @@ fn video_bar(v: &mut Viewer, ui: &mut egui::Ui, act: &mut Act) {
                         let y = track.max.y - track.height() * vol;
                         painter.rect_filled(Rect::from_min_max(pos2(track.min.x, y), track.max), CornerRadius::same(2), p.accent);
                         painter.circle(pos2(track.center().x, y), if resp.hovered() || resp.dragged() { 7.0 } else { 5.5 }, p.surface, Stroke::new(2.0, p.accent));
-                        if let Some(pos) = resp.interact_pointer_pos().filter(|_| resp.is_pointer_button_down_on()) {
+                        if let Some(pos) = resp.interact_pointer_pos().filter(|_| resp.is_pointer_button_down_on() || resp.clicked()) {
                             new_vol = Some(((track.max.y - pos.y) / track.height()).clamp(0.0, 1.0));
                         }
                         drag_now = resp.is_pointer_button_down_on() || resp.dragged();
