@@ -1460,6 +1460,24 @@ fn facet_menu(
     faces: &HashMap<String, Poster>,
     want_faces: &mut Vec<String>,
 ) {
+    // 固定的編號（不接在上一層後面）：勾了之後工具列前面會多出篩選、排序（清掉又少了），照順序編的話
+    // 三個清單的編號會錯開，正開著的清單就關掉、或換成旁邊那個打開
+    ui.scope_builder(UiBuilder::new().id(egui::Id::new(("jf-facet-menu", kind))), |ui| facet_menu_inner(ui, kind, empty, count, rows, chosen, search, change, faces, want_faces));
+}
+
+#[allow(clippy::too_many_arguments)]
+fn facet_menu_inner(
+    ui: &mut egui::Ui,
+    kind: u8,
+    empty: &str,
+    count: usize,
+    rows: impl FnOnce() -> Vec<(String, usize, JfFacet)>,
+    chosen: &[JfFacet],
+    search: &mut String,
+    change: &mut FacetChange,
+    faces: &HashMap<String, Poster>,
+    want_faces: &mut Vec<String>,
+) {
     let p = theme::pal(ui);
     let label = [tr!("人物", "People"), tr!("標籤", "Tags"), tr!("年份", "Year")][kind as usize];
     let n = chosen.iter().filter(|f| kind_of(f) == kind).count();
@@ -1687,7 +1705,9 @@ fn facet_chips(ui: &mut egui::Ui, chosen: &[JfFacet], room: f32, change: &mut Fa
     }
     let hidden = &ordered[shown..];
     if !hidden.is_empty() {
-        let b = Btn::new(trf!("+{} 個", "+{} more", hidden.len())).small().ghost().tooltip(tr!("看其他的條件", "See the other conditions")).show(ui);
+        // 固定的編號：前面的條件移除了也還是同一個清單（不會關掉）
+        let more = Btn::new(trf!("+{} 個", "+{} more", hidden.len())).small().ghost().tooltip(tr!("看其他的條件", "See the other conditions"));
+        let b = ui.scope_builder(UiBuilder::new().id(egui::Id::new("jf-facet-more")), |ui| more.show(ui)).inner;
         egui::Popup::menu(&b).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
             ui.spacing_mut().item_spacing.y = 6.0;
             for f in hidden {
