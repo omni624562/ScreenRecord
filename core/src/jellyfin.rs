@@ -877,6 +877,31 @@ impl Jellyfin {
         info_of(&body).ok_or_else(|| tr!("Jellyfin 的影片資料看不懂", "Couldn't understand Jellyfin's item data").to_string())
     }
 
+    /// 一支影片的資訊與檔名（改好之後寫回本機同名的那一支用）
+    pub fn item_info_file(&self, user: &str, id: &str) -> Result<(JfInfo, Option<String>), String> {
+        let body = self.call(agent().get(&format!("{}/Users/{user}/Items/{id}", self.url)))?.into_string().map_err(|e| e.to_string())?;
+        let v: Value = serde_json::from_str(&body).map_err(|_| tr!("Jellyfin 的影片資料看不懂", "Couldn't understand Jellyfin's item data").to_string())?;
+        Ok((info_of_value(&v), file_of(&v)))
+    }
+
+    /// 這個檔名在 Jellyfin 上的那一支：（編號, 影片資訊）。沒有、或有好幾支同名（不知道是哪一支）時 None
+    pub fn info_by_file(&self, user: &str, file_name: &str) -> Result<Option<(String, JfInfo)>, String> {
+        let ids = self.find(file_name)?;
+        let [id] = ids.as_slice() else { return Ok(None) };
+        let body = match self.call(agent().get(&format!("{}/Items/{id}", self.url))) {
+            Ok(r) => r.into_string().map_err(|e| e.to_string())?,
+            Err(_) => self.call(agent().get(&format!("{}/Users/{user}/Items/{id}", self.url)))?.into_string().map_err(|e| e.to_string())?,
+        };
+        Ok(info_of(&body).map(|i| (id.clone(), i)))
+    }
+
+    /// 全部影片的（編號, 檔名, 影片資訊）：一次讀完（雙向同步影片資訊用）
+    pub fn all_infos(&self) -> Result<Vec<(String, String, JfInfo)>, String> {
+        let url = format!("{}/Items?recursive=true&includeItemTypes={VIDEO_TYPES}&fields=Path,People,Tags,Overview,ProductionYear,PremiereDate&enableImages=false&enableUserData=false", self.url);
+        let body = self.call(agent().get(&url))?.into_string().map_err(|e| e.to_string())?;
+        Ok(infos_of(&body))
+    }
+
     /// 一支影片的演員與它們在伺服器上的編號（人物照片用）：直接問伺服器，剛在「影片資訊」加的人物也有編號
     pub fn item_people(&self, user: &str, id: &str) -> Result<Vec<(Option<String>, String)>, String> {
         let body = self.call(agent().get(&format!("{}/Users/{user}/Items/{id}", self.url)))?.into_string().map_err(|e| e.to_string())?;
@@ -2085,8 +2110,12 @@ fn facets_of(json: &str) -> (Vec<String>, Vec<u32>) {
 /// 影片的資訊（人物只算演員：我們設的人物都是演員）
 fn info_of(json: &str) -> Option<JfInfo> {
     let v: Value = serde_json::from_str(json).ok()?;
+    Some(info_of_value(&v))
+}
+
+fn info_of_value(v: &Value) -> JfInfo {
     let strs = |k: &str| v.get(k).and_then(Value::as_array).map(|a| a.iter().filter_map(|t| t.as_str().map(String::from)).collect()).unwrap_or_default();
-    Some(JfInfo {
+    JfInfo {
         title: v.get("Name").and_then(Value::as_str).unwrap_or("").to_string(),
         overview: v.get("Overview").and_then(Value::as_str).unwrap_or("").to_string(),
         people: v
@@ -2096,8 +2125,19 @@ fn info_of(json: &str) -> Option<JfInfo> {
             .unwrap_or_default(),
         tags: strs("Tags"),
         // 沒設年份時用首映日期的年（Jellyfin 的家庭影片頁面顯示的是首映日期）
-        year: v.get("ProductionYear").and_then(Value::as_i64).map(|y| y as i32).or_else(|| premiere_year(&v)),
-    })
+        year: v.get("ProductionYear").and_then(Value::as_i64).map(|y| y as i32).or_else(|| premiere_year(v)),
+    }
+}
+
+/// 一支影片的檔名（Path 的最後一段）
+fn file_of(v: &Value) -> Option<String> {
+    v.get("Path").and_then(Value::as_str).and_then(|p| p.rsplit(['/', '\\']).next()).filter(|n| !n.is_empty()).map(String::from)
+}
+
+/// /Items 的回應：每支影片的（編號, 檔名, 影片資訊）；沒有檔名的略過
+fn infos_of(json: &str) -> Vec<(String, String, JfInfo)> {
+    let Ok(v) = serde_json::from_str::<Value>(json) else { return vec![] };
+    v.get("Items").and_then(Value::as_array).map(|a| a.iter().filter_map(|i| Some((i.get("Id")?.as_str()?.to_string(), file_of(i)?, info_of_value(i)))).collect()).unwrap_or_default()
 }
 
 /// 首映日期（2024-05-01T00:00:00Z）的年
@@ -2149,6 +2189,12 @@ pub fn with_info(item_json: &str, x: &JfInfo) -> Option<String> {
         o.get("People").and_then(Value::as_array).map(|a| a.iter().filter(|p| p.get("Type").and_then(Value::as_str).is_some_and(|t| t != "Actor")).cloned().collect()).unwrap_or_default();
     people.extend(x.people.iter().map(|n| serde_json::json!({ "Name": n, "Type": "Actor" })));
     o.insert("People".into(), Value::from(people));
+    // 標籤「18+」= 只給大人看：R 級；拿掉時清掉我們設的 R（和 with_details 一樣）
+    if x.tags.iter().any(|t| t.trim() == crate::video_tags::ADULT_TAG) {
+        o.insert("OfficialRating".into(), Value::from("R"));
+    } else if o.get("OfficialRating").and_then(Value::as_str) == Some("R") {
+        o.insert("OfficialRating".into(), Value::from(""));
+    }
     set_year(o, x.year);
     serde_json::to_string(&v).ok()
 }
@@ -2653,6 +2699,18 @@ pub fn remember_link(name: &str, local: u64, lib: u64) {
         list.drain(..over);
         ((), true)
     })
+}
+
+/// 本機這一支只改了影片資訊（大小從 old 變成 new，Jellyfin 那一份沒換）：原本對得上的媒體庫大小，新的大小也對得上
+pub fn relink(name: &str, old: u64, new: u64) {
+    if old == new {
+        return;
+    }
+    let key = name.to_lowercase();
+    let libs: Vec<u64> = with_links(|list| (list.iter().filter(|(n, a, _)| *n == key && *a == old).map(|(_, _, b)| *b).collect(), false));
+    for lib in libs.into_iter().chain(std::iter::once(old)) {
+        remember_link(name, new, lib);
+    }
 }
 
 /// 本機重新命名後，記下的對照也換成新名稱

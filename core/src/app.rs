@@ -320,6 +320,7 @@ impl App {
     /// 設定與縮圖放在 dir（測試用暫存資料夾）
     pub fn with_data_dir(dir: PathBuf) -> Arc<App> {
         crate::jellyfin::init_links(dir.join("library-links.json"));
+        crate::details_sync::init(dir.join("details-sync.json"));
         crate::transfer::init_pending(dir.join("pending-sends.json"));
         crate::jellyfin::init_favorites(dir.join("jellyfin-favorites.json"));
         Arc::new_cyclic(|weak: &Weak<App>| App {
