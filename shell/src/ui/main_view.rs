@@ -2918,8 +2918,9 @@ fn recent_panel(app: &mut UiApp, ui: &mut Ui) {
             // 只畫看得到的卡片，幾百支也不會卡；右邊留一點給捲軸，不壓在卡片上
             let size = app.s.recent_size;
             let full_w = ui.available_width() - 10.0;
-            // 右欄寬的時候排成好幾欄（每張不超過 CARD_MAX_W）
-            let cols = (((full_w + 8.0) / (CARD_MAX_W[size.min(2) as usize] + 8.0)).ceil() as usize).max(1);
+            // 右欄寬的時候排成好幾欄（每張不超過 CARD_MAX_W）；每張至少 CARD_MIN_W，放不下兩張就一列一張（名稱、按鈕才不會被擠掉）
+            let most = ((full_w + 8.0) / (CARD_MIN_W + 8.0)).floor() as usize;
+            let cols = (((full_w + 8.0) / (CARD_MAX_W[size.min(2) as usize] + 8.0)).ceil() as usize).min(most).max(1);
             let w = ((full_w - 8.0 * (cols - 1) as f32) / cols as f32).floor();
             let card_h = card_h(size, w);
             let out = area.show_rows(ui, card_h, items.len().div_ceil(cols), |ui, rows| {
@@ -2987,6 +2988,8 @@ pub(super) const RECENT_BATCH: usize = 30;
 /// 最近錄影卡片的高度：小、中是縮圖在左（4:3，從 16:9 的畫面裁掉左右一點），大是縮圖在上面、滿寬 16:9
 /// 最近錄影一張卡片最寬多少（小、中、大）：右欄比這寬就排成兩欄以上
 const CARD_MAX_W: [f32; 3] = [420.0, 420.0, 400.0];
+/// 最近錄影一張卡片最窄多少：再窄名稱只剩幾個字、按鈕排不下
+const CARD_MIN_W: f32 = 300.0;
 
 /// 最近錄影的搜尋框：找儲存位置裡全部的錄影（檔名、字幕裡說過的話、影片資訊），停止打字 0.3 秒後才找
 fn recent_search(app: &mut UiApp, ui: &mut Ui) {
