@@ -1460,6 +1460,24 @@ fn facet_menu(
     faces: &HashMap<String, Poster>,
     want_faces: &mut Vec<String>,
 ) {
+    // 固定的編號（不接在上一層後面）：勾了之後工具列前面會多出篩選、排序（清掉又少了），照順序編的話
+    // 三個清單的編號會錯開，正開著的清單就關掉、或換成旁邊那個打開
+    ui.scope_builder(UiBuilder::new().id(egui::Id::new(("jf-facet-menu", kind))), |ui| facet_menu_inner(ui, kind, empty, count, rows, chosen, search, change, faces, want_faces));
+}
+
+#[allow(clippy::too_many_arguments)]
+fn facet_menu_inner(
+    ui: &mut egui::Ui,
+    kind: u8,
+    empty: &str,
+    count: usize,
+    rows: impl FnOnce() -> Vec<(String, usize, JfFacet)>,
+    chosen: &[JfFacet],
+    search: &mut String,
+    change: &mut FacetChange,
+    faces: &HashMap<String, Poster>,
+    want_faces: &mut Vec<String>,
+) {
     let p = theme::pal(ui);
     let label = [tr!("人物", "People"), tr!("標籤", "Tags"), tr!("年份", "Year")][kind as usize];
     let n = chosen.iter().filter(|f| kind_of(f) == kind).count();
@@ -1538,7 +1556,13 @@ fn facet_menu(
                     }
                     let name_max = row.max.x - cw - at.max.x - 12.0;
                     let galley = ui.painter().layout(shown, theme::font(14.0), p.text, name_max);
-                    ui.painter().galley(pos2(at.max.x + 8.0, row.center().y - galley.size().y / 2.0), galley, p.text);
+                    // 讀過、伺服器上沒有照片的：名字下面寫「還沒有照片」（有照片的看頭像就知道）
+                    let no_photo = matches!(faces.get(id), Some(Poster::None));
+                    let y = if no_photo { row.center().y - galley.size().y + 1.0 } else { row.center().y - galley.size().y / 2.0 };
+                    ui.painter().galley(pos2(at.max.x + 8.0, y), galley, p.text);
+                    if no_photo {
+                        ui.painter().text(pos2(at.max.x + 8.0, row.center().y + 2.0), Align2::LEFT_TOP, tr!("還沒有照片", "No photo yet"), theme::font(11.0), p.muted);
+                    }
                     if !r.changed() && (row_resp.clicked() || ar.clicked()) {
                         r.mark_changed();
                     }
@@ -1681,7 +1705,9 @@ fn facet_chips(ui: &mut egui::Ui, chosen: &[JfFacet], room: f32, change: &mut Fa
     }
     let hidden = &ordered[shown..];
     if !hidden.is_empty() {
-        let b = Btn::new(trf!("+{} 個", "+{} more", hidden.len())).small().ghost().tooltip(tr!("看其他的條件", "See the other conditions")).show(ui);
+        // 固定的編號：前面的條件移除了也還是同一個清單（不會關掉）
+        let more = Btn::new(trf!("+{} 個", "+{} more", hidden.len())).small().ghost().tooltip(tr!("看其他的條件", "See the other conditions"));
+        let b = ui.scope_builder(UiBuilder::new().id(egui::Id::new("jf-facet-more")), |ui| more.show(ui)).inner;
         egui::Popup::menu(&b).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
             ui.spacing_mut().item_spacing.y = 6.0;
             for f in hidden {
