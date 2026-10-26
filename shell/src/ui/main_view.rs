@@ -82,7 +82,10 @@ pub fn show(app: &mut UiApp, ui: &mut Ui) {
         let gap = 8.0;
         // 左欄：上面範圍與預覽，下面一條控制列（開始錄影、截圖；錄影中的控制；結果與提醒）；右欄整欄是最近錄影與檔案庫
         // 右欄的寬度：預覽左右有黑邊時把黑邊的寬度給最近錄影（上下有空時還給左欄），最少 300 點，左欄至少留 520 點
-        let max_w = (inner.width() - 520.0 - gap).max(300.0);
+        // 播放區旁邊開著影片資訊：左欄再多留面板的寬度（不然直式影片的黑邊會把預覽擠得很窄）
+        let docked = app.video_tags.as_ref().is_some_and(|d| d.docked());
+        let panel_w = if docked { super::video_tags::PANEL_W + gap } else { 0.0 };
+        let max_w = (inner.width() - 520.0 - gap - panel_w).max(300.0);
         let base = (inner.width() * 0.3).clamp(300.0, 360.0);
         let cur = if app.main.rec_w > 0.0 { app.main.rec_w } else { base };
         let want = (cur + std::mem::take(&mut app.main.desk_slack)).clamp(300.0, max_w);
@@ -94,7 +97,6 @@ pub fn show(app: &mut UiApp, ui: &mut Ui) {
         let left = Rect::from_min_max(rest.min, pos2(rest.max.x - rec_w - gap, rest.max.y));
         let right = Rect::from_min_max(pos2(rest.max.x - rec_w, rest.min.y), rest.max);
         // 主畫面播放中開的影片資訊：放在左欄右邊，播放區縮窄（影片繼續播）
-        let docked = app.video_tags.as_ref().is_some_and(|d| d.docked());
         let (left, tags) = if docked {
             let w = super::video_tags::PANEL_W.min(left.width() - 320.0).max(280.0);
             (Rect::from_min_max(left.min, pos2(left.max.x - w - gap, left.max.y)), Some(Rect::from_min_max(pos2(left.max.x - w, left.min.y), left.max)))
@@ -2916,8 +2918,9 @@ fn recent_panel(app: &mut UiApp, ui: &mut Ui) {
             // 只畫看得到的卡片，幾百支也不會卡；右邊留一點給捲軸，不壓在卡片上
             let size = app.s.recent_size;
             let full_w = ui.available_width() - 10.0;
-            // 右欄寬的時候排成好幾欄（每張不超過 CARD_MAX_W）
-            let cols = (((full_w + 8.0) / (CARD_MAX_W[size.min(2) as usize] + 8.0)).ceil() as usize).max(1);
+            // 右欄寬的時候排成好幾欄（每張不超過 CARD_MAX_W）；每張至少 CARD_MIN_W，放不下兩張就一列一張（名稱、按鈕才不會被擠掉）
+            let most = ((full_w + 8.0) / (CARD_MIN_W + 8.0)).floor() as usize;
+            let cols = (((full_w + 8.0) / (CARD_MAX_W[size.min(2) as usize] + 8.0)).ceil() as usize).min(most).max(1);
             let w = ((full_w - 8.0 * (cols - 1) as f32) / cols as f32).floor();
             let card_h = card_h(size, w);
             let out = area.show_rows(ui, card_h, items.len().div_ceil(cols), |ui, rows| {
@@ -2985,6 +2988,8 @@ pub(super) const RECENT_BATCH: usize = 30;
 /// 最近錄影卡片的高度：小、中是縮圖在左（4:3，從 16:9 的畫面裁掉左右一點），大是縮圖在上面、滿寬 16:9
 /// 最近錄影一張卡片最寬多少（小、中、大）：右欄比這寬就排成兩欄以上
 const CARD_MAX_W: [f32; 3] = [420.0, 420.0, 400.0];
+/// 最近錄影一張卡片最窄多少：再窄名稱只剩幾個字、按鈕排不下
+const CARD_MIN_W: f32 = 300.0;
 
 /// 最近錄影的搜尋框：找儲存位置裡全部的錄影（檔名、字幕裡說過的話、影片資訊），停止打字 0.3 秒後才找
 fn recent_search(app: &mut UiApp, ui: &mut Ui) {
@@ -3039,6 +3044,8 @@ fn recent_card(app: &mut UiApp, ui: &mut Ui, e: &LibraryEntry, date: String, w: 
         tour::mark(ui, Spot::RecentCard, rect);
     }
     let playing = app.inline.as_ref().is_some_and(|i| i.is(&e.media.path));
+    // 播放區旁邊的影片資訊開著：點卡片就換成這一支；正在看的那支縮圖上標出來
+    let panel = app.video_tags.as_ref().filter(|d| d.docked()).map(|d| d.path() == e.media.path);
     // 剛錄好的那支（控制列的「錄影已儲存」還沒關掉）：藍框、淡藍底
     let fresh = app.status.recorder.result.as_ref().filter(|r| r.ok).and_then(|r| r.path.as_deref()).is_some_and(|f| f == e.media.path && app.main.dismissed_result.as_deref() != Some(f));
     let edge = if playing || fresh { Stroke::new(2.0, p.accent) } else { Stroke::new(1.0, p.border) };
@@ -3081,9 +3088,18 @@ fn recent_card(app: &mut UiApp, ui: &mut Ui, e: &LibraryEntry, date: String, w: 
         let c = thumb.center();
         painter.add(egui::Shape::convex_polygon(vec![c + vec2(-4.0, -6.5), c + vec2(7.0, 0.0), c + vec2(-4.0, 6.5)], Color32::WHITE, Stroke::NONE));
     }
+    if panel == Some(true) {
+        let g = painter.layout_no_wrap(tr!("影片資訊", "Details").to_string(), theme::font(11.5), Color32::WHITE);
+        let r = Rect::from_min_size(thumb.min + vec2(6.0, 6.0), g.size() + vec2(14.0, 6.0));
+        painter.rect_filled(r, CornerRadius::same(4), p.accent);
+        painter.galley(r.min + vec2(7.0, 3.0), g, Color32::WHITE);
+    }
     if thumb_resp.clicked() {
         app.known.insert(e.media.path.clone(), e.clone());
         app.act(EntryAction::PlayHere, e.clone());
+    } else if resp.clicked() && panel == Some(false) && super::video_tags::follows(EntryAction::Tags, &e.media.path) {
+        app.known.insert(e.media.path.clone(), e.clone());
+        app.act(EntryAction::Tags, e.clone());
     }
     // 按兩下卡片：在播放器開啟（完整的功能）
     if resp.double_clicked() || thumb_resp.double_clicked() {
@@ -3164,7 +3180,11 @@ fn recent_card(app: &mut UiApp, ui: &mut Ui, e: &LibraryEntry, date: String, w: 
         app.known.insert(e.media.path.clone(), e.clone());
         app.act(a, e.clone());
     }
-    resp.on_hover_text(&e.media.name);
+    if panel == Some(false) && super::video_tags::follows(EntryAction::Tags, &e.media.path) {
+        resp.on_hover_text(trf!("{}\n按一下在左邊顯示這支的影片資訊", "{}\nClick to show its details on the left", e.media.name));
+    } else {
+        resp.on_hover_text(&e.media.name);
+    }
 }
 
 // ───────────── 倒數 ─────────────

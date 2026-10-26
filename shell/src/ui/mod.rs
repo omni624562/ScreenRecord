@@ -1249,13 +1249,45 @@ impl UiApp {
 
     /// 播放、顯示、剪輯、製作加速版
     pub fn act(&mut self, action: EntryAction, mut entry: LibraryEntry) {
-        use actions::OpenAction;
         // 清單還沒重讀、這支已經重新命名了（例如錄完自動命名）：用現在的名稱，清單也重讀
         if let Some(now) = actions::renamed_to(&entry.media.path) {
             entry.media.name = dialogs::file_name(&now).to_string();
             entry.media.path = now;
             self.load_recent();
         }
+        // 播放區旁邊的影片資訊開著：按了別支影片的功能，面板跟著換成那一支；改過還沒儲存先問
+        // 這一支要改名、刪除：先問，之後關掉面板
+        let mut follow = false;
+        if let Some(d) = self.video_tags.as_ref().filter(|d| d.docked()) {
+            let other = d.path() != entry.media.path;
+            follow = other && video_tags::follows(action, &entry.media.path);
+            if follow || !other && matches!(action, EntryAction::Rename | EntryAction::Trash) {
+                if d.saving() {
+                    return self.toast(tr!("正在儲存影片資訊，存好再換", "Saving the video details. Try again when it's done"), true);
+                }
+                if d.dirty() {
+                    return video_tags::ask(self, video_tags::Next::Act(action, entry));
+                }
+                self.video_tags = None;
+            }
+        }
+        self.act_follow(action, entry, follow);
+    }
+
+    /// 做這個功能；follow：做完把播放區旁邊的影片資訊換成這一支
+    pub fn act_follow(&mut self, action: EntryAction, entry: LibraryEntry, follow: bool) {
+        if follow && action == EntryAction::Tags {
+            return video_tags::open_as(self, entry, true);
+        }
+        let again = follow.then(|| entry.clone());
+        self.act_now(action, entry);
+        if let Some(e) = again.filter(|_| self.video_tags.is_none()) {
+            video_tags::open_as(self, e, true);
+        }
+    }
+
+    fn act_now(&mut self, action: EntryAction, entry: LibraryEntry) {
+        use actions::OpenAction;
         let path = entry.media.path.clone();
         // 主畫面正在播這個檔案：剪輯、製作、重新命名等要用到檔案時先停下來（Windows 上播放中的檔案不能重新命名、取代）
         // 影片資訊：主畫面繼續播，旁邊開面板（存的時候才暫時放開檔案）
@@ -1802,6 +1834,7 @@ impl eframe::App for UiApp {
         if self.video_tags.as_ref().is_some_and(|d| !d.docked()) {
             video_tags::show(self, &ctx);
         }
+        video_tags::ask_dialog(self, &ctx);
         if self.jf_edit.is_some() {
             jellyfin_edit::show(self, &ctx);
         }
