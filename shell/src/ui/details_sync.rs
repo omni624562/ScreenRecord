@@ -73,7 +73,7 @@ impl UiApp {
                 // 連不到 Jellyfin（不在家）：背景對的時候會發現這邊改過，到時再補
                 Err(e) => {
                     screenrecorder_core::info!("[影片資訊同步] 沒有更新到 Jellyfin：{e}");
-                    app.toast(tr!("暫時沒有更新到 Jellyfin，連得到時會自動補上", "Couldn't reach Jellyfin; it will be updated automatically later"), false);
+                    app.toast(trf!("沒有更新到 Jellyfin：{e}（背景同步時會再試）", "Couldn't update Jellyfin: {e} (it will be retried in the background)"), true);
                 }
             },
         );

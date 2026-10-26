@@ -1277,10 +1277,12 @@ impl UiApp {
     /// 做這個功能；follow：做完把播放區旁邊的影片資訊換成這一支
     pub fn act_follow(&mut self, action: EntryAction, entry: LibraryEntry, follow: bool) {
         if follow && action == EntryAction::Tags {
-            return video_tags::open_as(self, entry, true);
+            let docked = video_tags::can_dock(self);
+            return video_tags::open_as(self, entry, docked);
         }
         let again = follow.then(|| entry.clone());
         self.act_now(action, entry);
+        // 面板跟著換成這一支；做的事蓋住了主畫面（檢視器、剪輯）也一樣放在播放區旁邊，回到主畫面就看得到
         if let Some(e) = again.filter(|_| self.video_tags.is_none()) {
             video_tags::open_as(self, e, true);
         }

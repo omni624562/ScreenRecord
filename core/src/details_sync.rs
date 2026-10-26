@@ -295,7 +295,12 @@ fn file_name(path: &str) -> String {
 /// Jellyfin 上同名的那一支（沒有、或好幾支同名時 None）
 pub async fn jf_twin(jf: &Jellyfin, user: &str, path: &str) -> Result<Option<(String, JfInfo)>, String> {
     let (jf, user, name) = (jf.clone(), user.to_string(), file_name(path));
-    tokio::task::spawn_blocking(move || jf.info_by_file(&user, &name)).await.map_err(|e| e.to_string())?
+    tokio::task::spawn_blocking(move || {
+        let user = jf.browse_user(&user)?;
+        jf.info_by_file(&user, &name)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// 讀本機這一支與 Jellyfin 上同名的那一支，比對；Jellyfin 上沒有時 None
@@ -321,7 +326,12 @@ pub async fn apply(jf: &Jellyfin, user: &str, ffmpeg: &Path, path: &str, f: &Fou
     }
     if !merged.same(&Common::from_jf(&f.info, &name)) {
         let (jf, user, id, info) = (jf.clone(), user.to_string(), f.id.clone(), merged.to_jf(&name));
-        tokio::task::spawn_blocking(move || jf.set_info(&user, &id, &info)).await.map_err(|e| e.to_string())??;
+        tokio::task::spawn_blocking(move || {
+            let user = jf.browse_user(&user)?;
+            jf.set_info(&user, &id, &info)
+        })
+        .await
+        .map_err(|e| e.to_string())??;
     }
     remember(&name, merged);
     Ok(wrote)
@@ -351,7 +361,8 @@ fn stamp(path: &str) -> Option<Stamp> {
 /// 只有一邊改過的照它改另一邊；兩邊都改了同一個欄位的跳過。一支一支來，本機要改寫整個檔案
 pub async fn sync_all(jf: Jellyfin, user: String, ffmpeg: PathBuf, dirs: Vec<String>) -> Result<Report, String> {
     let jf2 = jf.clone();
-    let remote = tokio::task::spawn_blocking(move || jf2.all_infos()).await.map_err(|e| e.to_string())??;
+    // 沒指定使用者時先換成管理員的編號，之後每支都用它（不用每支再問一次）
+    let (user, remote) = tokio::task::spawn_blocking(move || Ok::<_, String>((jf2.browse_user(&user)?, jf2.all_infos()?))).await.map_err(|e| e.to_string())??;
     let mut by_name: HashMap<String, Vec<(String, JfInfo)>> = HashMap::new();
     for (id, name, info) in remote {
         by_name.entry(name.to_lowercase()).or_default().push((id, info));

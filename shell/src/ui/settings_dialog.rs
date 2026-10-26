@@ -76,7 +76,7 @@ pub struct SettingsDialog {
     jf_found: Option<Vec<(String, String)>>,
 }
 
-/// 馬上檢查有沒有新版本，結果用通知列說（「關於」的「立即檢查」、「⋯」→「檢查更新」）
+/// 馬上檢查有沒有新版本（「關於」的「立即檢查」、「⋯」→「檢查更新」）：有新版本直接開更新視窗，沒有用通知列說
 pub fn check_update_now(app: &mut UiApp) {
     let core = app.core.clone();
     app.spawn(async move { actions::check_update(&core).await }, |app, r| match r {
@@ -84,7 +84,7 @@ pub fn check_update_now(app: &mut UiApp) {
             app.update = actions::update_state(&app.core);
             app.env.update = u.clone();
             match u {
-                Some(u) => app.toast(trf!("有新版本 v{}", "Version v{} is available", u.version), false),
+                Some(u) => update_found(app, &u),
                 None => app.toast(trf!("目前已是最新版本（v{}）", "You're on the latest version (v{})", app.env.app_version), false),
             }
         }
@@ -93,6 +93,23 @@ pub fn check_update_now(app: &mut UiApp) {
             app.toast_with(e.message().to_string(), true, vec![proxy_action()]);
         }
     });
+}
+
+/// 檢查到新版本：能自己更新的問要不要更新；不能的（例如沒有安裝檔）問要不要到下載頁
+fn update_found(app: &mut UiApp, u: &screenrecorder_core::types::UpdateInfo) {
+    if main_view::can_self_update(u) {
+        return main_view::ask_update(app, u);
+    }
+    let url = u.url.clone();
+    app.ask = Some(dialogs::Ask::confirm(
+        trf!("有新版本 v{}", "Version v{} is available", u.version),
+        trf!("目前是 v{}。到下載頁下載新版安裝；設定與錄影都會保留。", "You have v{}. Download the new version from the release page; your settings and recordings are kept.", app.env.app_version),
+        tr!("前往下載", "Go to download"),
+        move |app, _| {
+            app.ask = None;
+            let _ = actions::open_url(&url);
+        },
+    ));
 }
 
 pub fn open(app: &mut UiApp, page: Page) {
