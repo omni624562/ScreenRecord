@@ -1782,6 +1782,8 @@ pub struct ParsedMedia {
     pub chapters: Vec<crate::types::Chapter>,
     /// 幾條音軌
     pub audio_tracks: u32,
+    /// 影片資訊裡可以搜尋的字（標題、作者、系列、類型、標籤與人物、說明；見 parse_meta_text）
+    pub meta: String,
 }
 
 static DURATION_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"Duration:\s*(\d+):(\d{2}):(\d{2}(?:\.\d+)?)").unwrap());
@@ -1823,7 +1825,46 @@ pub fn parse_media_info(stderr: &str) -> ParsedMedia {
     if (parse_rotation(stderr).unwrap_or(0.0).abs().round() as i64) % 180 == 90 {
         std::mem::swap(&mut width, &mut height);
     }
-    ParsedMedia { duration_sec, width, height, fps, has_audio: AUDIO_RE.is_match(stderr), chapters: crate::chapters::parse(stderr), audio_tracks: AUDIO_RE.find_iter(stderr).count() as u32 }
+    ParsedMedia {
+        duration_sec,
+        width,
+        height,
+        fps,
+        has_audio: AUDIO_RE.is_match(stderr),
+        chapters: crate::chapters::parse(stderr),
+        audio_tracks: AUDIO_RE.find_iter(stderr).count() as u32,
+        meta: parse_meta_text(stderr),
+    }
+}
+
+/// `ffmpeg -i file` 的 stderr 裡整個檔案的影片資訊（Input 底下、Duration 之前的 Metadata）：標題、作者、系列、類型、
+/// 標籤（人物、只給大人看也在這裡）、說明，接成一串（搜尋用）。說明換行時後面的行是「 : 下一行」
+pub fn parse_meta_text(stderr: &str) -> String {
+    const KEYS: [&str; 7] = ["title", "artist", "album", "genre", "keywords", "comment", "description"];
+    let Some(start) = stderr.find("Input #") else { return String::new() };
+    let head = &stderr[start..];
+    let head = &head[..head.find("Duration:").unwrap_or(head.len())];
+    let mut out: Vec<String> = vec![];
+    let mut keep = false;
+    for line in head.lines().map(|l| l.trim_end_matches('\r')) {
+        let Some((k, v)) = line.split_once(':') else {
+            keep = false;
+            continue;
+        };
+        let k = k.trim();
+        if k.is_empty() {
+            // 上一個欄位的下一行
+            if keep {
+                out.push(v.trim().to_string());
+            }
+            continue;
+        }
+        keep = KEYS.contains(&k.to_ascii_lowercase().as_str());
+        if keep && !v.trim().is_empty() {
+            out.push(v.trim().to_string());
+        }
+    }
+    out.join(" ")
 }
 
 /// 從第 t 秒開始讀 path：`-ss t -i path`（快速跳到附近的關鍵畫面）。
@@ -2487,7 +2528,10 @@ dummy: Immediate exit requested";
     #[test]
     fn media_info() {
         let stderr = "Input #0, mov,mp4,m4a,3gp,3g2,mj2, from 'x.mp4':\n  Duration: 00:01:02.50, start: 0.000000, bitrate: 1234 kb/s\n  Stream #0:0[0x1](und): Video: h264 (High) (avc1 / 0x31637661), yuv420p(tv, bt709, progressive), 1920x1080 [SAR 1:1 DAR 16:9], 1200 kb/s, 30 fps, 30 tbr, 15360 tbn (default)\n  Stream #0:1[0x2](und): Audio: aac (LC) (mp4a / 0x6134706D), 48000 Hz, stereo, fltp, 160 kb/s (default)";
-        assert_eq!(parse_media_info(stderr), ParsedMedia { duration_sec: Some(62.5), width: Some(1920), height: Some(1080), fps: Some(30.0), has_audio: true, chapters: vec![], audio_tracks: 1 });
+        assert_eq!(
+            parse_media_info(stderr),
+            ParsedMedia { duration_sec: Some(62.5), width: Some(1920), height: Some(1080), fps: Some(30.0), has_audio: true, chapters: vec![], audio_tracks: 1, meta: String::new() }
+        );
         let first3: Vec<&str> = stderr.lines().take(3).collect();
         assert!(!parse_media_info(&first3.join("\n")).has_audio);
         // WebP 動圖：檔頭沒有長度，另外量
@@ -3081,5 +3125,12 @@ dummy: Immediate exit requested";
             let r = std::process::Command::new(&ffmpeg).args(&args).output().unwrap();
             assert!(r.status.success(), "{}", String::from_utf8_lossy(&r.stderr));
         }
+    }
+
+    #[test]
+    fn meta_text_reads_details() {
+        let stderr = "Input #0, mov,mp4,m4a,3gp,3g2,mj2, from 'a.mp4':\r\n  Metadata:\n    major_brand     : isom\n    title           : 報價單怎麼填\n    artist          : 王小明\n    keywords        : 報價; @小美\n    comment         : 第一行\n                    : 第二行\n    encoder         : Lavf61\n  Duration: 00:00:05.00, start: 0.000000, bitrate: 1 kb/s\n  Stream #0:0[0x1](und): Video: h264\n      Metadata:\n        title           : 不是這個\n";
+        assert_eq!(parse_meta_text(stderr), "報價單怎麼填 王小明 報價; @小美 第一行 第二行");
+        assert_eq!(parse_meta_text("Input #0, mov, from 'a.mp4':\n  Duration: 00:00:05.00\n"), "");
     }
 }

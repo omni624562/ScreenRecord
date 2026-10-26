@@ -47,6 +47,13 @@ pub struct MainState {
     recent_to_top: bool,
     /// 最近錄影目前第一張（換了，例如剛錄好一支，就捲回最上面）
     recent_first: Option<String>,
+    /// 最近錄影的搜尋（檔名、字幕、影片資訊）；停止打字一下子後才找
+    pub recent_q: String,
+    recent_q_at: Option<Instant>,
+    /// 預覽（或主畫面內播放）左右多出來的黑邊寬度；負的 = 上下有空（左欄可以再寬一點）
+    desk_slack: f32,
+    /// 右欄（最近錄影）的寬度：依黑邊調整，0 = 還沒算
+    rec_w: f32,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -74,7 +81,16 @@ pub fn show(app: &mut UiApp, ui: &mut Ui) {
         let rest = ui.available_rect_before_wrap();
         let gap = 8.0;
         // 左欄：上面範圍與預覽，下面一條控制列（開始錄影、截圖；錄影中的控制；結果與提醒）；右欄整欄是最近錄影與檔案庫
-        let rec_w = (inner.width() * 0.3).clamp(300.0, 360.0);
+        // 右欄的寬度：預覽左右有黑邊時把黑邊的寬度給最近錄影（上下有空時還給左欄），最少 300 點，左欄至少留 520 點
+        let max_w = (inner.width() - 520.0 - gap).max(300.0);
+        let base = (inner.width() * 0.3).clamp(300.0, 360.0);
+        let cur = if app.main.rec_w > 0.0 { app.main.rec_w } else { base };
+        let want = (cur + std::mem::take(&mut app.main.desk_slack)).clamp(300.0, max_w);
+        if (want - cur).abs() > 1.0 {
+            ui.ctx().request_repaint();
+        }
+        app.main.rec_w = if (want - cur).abs() > 1.0 { want } else { cur.clamp(300.0, max_w) };
+        let rec_w = app.main.rec_w;
         let left = Rect::from_min_max(rest.min, pos2(rest.max.x - rec_w - gap, rest.max.y));
         let right = Rect::from_min_max(pos2(rest.max.x - rec_w, rest.min.y), rest.max);
         let cap = Rect::from_min_max(left.min, pos2(left.max.x, left.max.y - CONTROL_H - gap));
@@ -599,7 +615,9 @@ fn desk(app: &mut UiApp, ui: &mut Ui, area: Rect) {
         if app.preview.running() {
             app.preview.stop(&app.core);
         }
-        return super::inline_play::show(app, ui, area);
+        super::inline_play::show(app, ui, area);
+        app.main.desk_slack = app.inline.as_ref().map_or(0.0, |i| i.slack);
+        return;
     }
     if app.s.source_type == SourceType::Audio {
         if app.preview.running() {
@@ -617,6 +635,8 @@ fn desk(app: &mut UiApp, ui: &mut Ui, area: Rect) {
         w = h * ar;
     }
     let rect = Rect::from_min_size(pos2(area.center().x - w / 2.0, area.min.y), vec2(w, h));
+    // 左右的黑邊（給右欄）；上下有空時是負的（左欄可以再寬）
+    app.main.desk_slack = if area.width() - w > 1.0 { area.width() - w } else { -(area.height() - h).max(0.0) * ar };
     // 即時預覽：視窗看得到時才擷取；切到其他視窗或錄影中放慢；大小跟著預覽實際顯示的像素
     let key = if app.s.source_type == SourceType::Monitor { app.s.monitor_id.clone().unwrap_or_default() } else { String::new() };
     let focused = ui.ctx().input(|i| i.viewport().focused) != Some(false);
@@ -2814,7 +2834,8 @@ fn recent_panel(app: &mut UiApp, ui: &mut Ui) {
             let size_label = tr!("縮圖", "Size");
             let w = |t: &str, f: egui::FontId| ui.painter().layout_no_wrap(t.to_string(), f, Color32::WHITE).size().x;
             let seg_w = [tr!("小", "S"), tr!("中", "M"), tr!("大", "L")].iter().map(|t| w(t, theme::font(13.0)) + 22.0).sum::<f32>() + 8.0;
-            let count = app.recent.as_ref().filter(|r| r.total > 0).map(|r| trf!("共 {} 支", "{} in total", r.total));
+            let searching = !app.main.recent_q.trim().is_empty();
+            let count = app.recent.as_ref().filter(|r| r.total > 0 || searching).map(|r| if searching { trf!("找到 {} 支", "{} found", r.total) } else { trf!("共 {} 支", "{} in total", r.total) });
             let gap = ui.spacing().item_spacing.x;
             let room = ui.available_width() - seg_w - gap;
             let count_w = count.as_deref().map_or(0.0, |c| w(c, theme::font(13.0)) + gap);
@@ -2840,6 +2861,8 @@ fn recent_panel(app: &mut UiApp, ui: &mut Ui) {
             });
         });
         ui.add_space(4.0);
+        recent_search(app, ui);
+        ui.add_space(6.0);
         // 下面的檔案庫：標題＋一排按鈕
         let jf = app.jellyfin().is_some();
         let lib_h = 62.0;
@@ -2852,6 +2875,17 @@ fn recent_panel(app: &mut UiApp, ui: &mut Ui) {
         let to_top = first != app.main.recent_first || std::mem::take(&mut app.main.recent_to_top);
         app.main.recent_first = first;
         ui.scope_builder(UiBuilder::new().max_rect(list).layout(Layout::top_down(Align::Min)), |ui| {
+            if items.is_empty() && !app.main.recent_q.trim().is_empty() {
+                let q = app.main.recent_q.trim().to_string();
+                ui.add(
+                    egui::Label::new(theme::muted(
+                        ui,
+                        &trf!("沒有符合「{q}」的錄影（找檔名、字幕裡說過的話、影片資訊）", "No recordings match “{q}” (searched names, what was said in subtitles, and video details)"),
+                    ))
+                    .wrap(),
+                );
+                return;
+            }
             if items.is_empty() {
                 let dir = app.s.out_dir(&app.env);
                 let name = std::path::Path::new(&dir).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| dir.clone());
@@ -2870,11 +2904,20 @@ fn recent_panel(app: &mut UiApp, ui: &mut Ui) {
             }
             // 只畫看得到的卡片，幾百支也不會卡；右邊留一點給捲軸，不壓在卡片上
             let size = app.s.recent_size;
-            let w = ui.available_width() - 10.0;
+            let full_w = ui.available_width() - 10.0;
+            // 右欄寬的時候排成好幾欄（每張不超過 CARD_MAX_W）
+            let cols = (((full_w + 8.0) / (CARD_MAX_W[size.min(2) as usize] + 8.0)).ceil() as usize).max(1);
+            let w = ((full_w - 8.0 * (cols - 1) as f32) / cols as f32).floor();
             let card_h = card_h(size, w);
-            let out = area.show_rows(ui, card_h, items.len(), |ui, rows| {
-                for e in &items[rows] {
-                    recent_card(app, ui, e, dates.get(&e.media.name).cloned().unwrap_or_default(), w, size);
+            let out = area.show_rows(ui, card_h, items.len().div_ceil(cols), |ui, rows| {
+                for row in rows {
+                    let cards = &items[row * cols..((row + 1) * cols).min(items.len())];
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 8.0;
+                        for e in cards {
+                            recent_card(app, ui, e, dates.get(&e.media.name).cloned().unwrap_or_default(), w, size);
+                        }
+                    });
                 }
             });
             // 捲到剩不到 3 張時再多讀 30 支（上一批還沒回來時不重複要）
@@ -2929,6 +2972,37 @@ fn recent_panel(app: &mut UiApp, ui: &mut Ui) {
 pub(super) const RECENT_BATCH: usize = 30;
 
 /// 最近錄影卡片的高度：小、中是縮圖在左（4:3，從 16:9 的畫面裁掉左右一點），大是縮圖在上面、滿寬 16:9
+/// 最近錄影一張卡片最寬多少（小、中、大）：右欄比這寬就排成兩欄以上
+const CARD_MAX_W: [f32; 3] = [420.0, 420.0, 400.0];
+
+/// 最近錄影的搜尋框：找儲存位置裡全部的錄影（檔名、字幕裡說過的話、影片資訊），停止打字 0.3 秒後才找
+fn recent_search(app: &mut UiApp, ui: &mut Ui) {
+    let w = ui.available_width();
+    let r = ui.add(super::toolbar::search_box(&mut app.main.recent_q, tr!("搜尋錄影（檔名、說過的話、標籤…）", "Search recordings (name, what was said, tags…)"), w).id_salt("recent-search"));
+    let mut changed = r.changed();
+    if super::toolbar::clear_x(ui, &r, &mut app.main.recent_q) {
+        changed = true;
+    }
+    if r.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Escape)) && !app.main.recent_q.is_empty() {
+        app.main.recent_q.clear();
+        changed = true;
+    }
+    if changed {
+        app.main.recent_q_at = Some(Instant::now());
+    }
+    if let Some(t) = app.main.recent_q_at {
+        if t.elapsed().as_millis() >= 300 {
+            app.main.recent_q_at = None;
+            app.main.recent_to_top = true;
+            app.recent_page = 1;
+            app.recent_per_page = RECENT_BATCH;
+            app.load_recent();
+        } else {
+            ui.ctx().request_repaint_after(std::time::Duration::from_millis(310));
+        }
+    }
+}
+
 fn card_h(size: u8, w: f32) -> f32 {
     match size {
         0 => 80.0,

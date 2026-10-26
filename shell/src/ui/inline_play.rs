@@ -43,6 +43,8 @@ pub struct Inline {
     /// 後退 / 快轉（按住加速）
     skip: Skipper,
     volume: f32,
+    /// 畫面左右的黑邊寬度（負的 = 上下有空）：主畫面拿來調整右欄的寬度
+    pub(super) slack: f32,
     muted: bool,
     loading: bool,
     error: Option<String>,
@@ -105,6 +107,7 @@ pub fn open(app: &mut UiApp, entry: LibraryEntry) {
         skip: Skipper::default(),
         volume,
         muted,
+        slack: 0.0,
         loading: true,
         error: None,
         wave: None,
@@ -349,6 +352,15 @@ pub fn show(app: &mut UiApp, ui: &mut egui::Ui, area: Rect) {
         painter.image(id, shown, uv, Color32::WHITE);
         i.video_px = px;
     }
+    // 左右的黑邊給右欄（最近錄影）；上下有空時是負的（左欄可以再寬）
+    let slack = if audio || shown == stage {
+        0.0
+    } else if stage.width() - shown.width() > 1.0 {
+        stage.width() - shown.width()
+    } else {
+        -(stage.height() - shown.height()).max(0.0) * shown.width() / shown.height().max(1.0)
+    };
+    i.slack = slack;
     let msg = if let Some(e) = &i.error {
         Some(e.clone())
     } else if i.loading || (!audio && i.tex.is_none() && i.mpv_tex.is_none()) {

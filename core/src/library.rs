@@ -99,7 +99,8 @@ impl MediaCache {
 
     pub async fn probe(&self, ffmpeg: &Path, path: &str) -> Result<MediaInfo> {
         let meta = tokio::fs::metadata(path).await?;
-        let key = format!("{}:{}", meta.len(), mtime_ms(&meta));
+        // 「:m」：有記影片資訊（標題、標籤…）的版本；之前存的沒有，重讀一次
+        let key = format!("{}:{}:m", meta.len(), mtime_ms(&meta));
         let slot = {
             let mut m = self.map.lock().unwrap_or_else(|e| e.into_inner());
             match m.get(path) {
@@ -140,6 +141,7 @@ impl MediaCache {
                     chapters: p.chapters,
                     audio_tracks: p.audio_tracks,
                     folder: String::new(),
+                    meta: p.meta,
                 };
                 // 讀不出長度、畫面（還在寫入、損壞）的不存：下次再讀
                 if info.duration_sec.is_some() || info.width.is_some() {
@@ -643,8 +645,13 @@ pub async fn list_library_with(cache: &Arc<MediaCache>, ffmpeg: Option<&Path>, d
                 }
             }
         }
+        // 也找影片資訊（標題、作者、標籤、人物、說明）：要讀過每支影片的資訊（有快取，第一次較慢；截圖不用）
+        if ffmpeg.is_some() && q.filter != LibraryFilter::Shot {
+            list = pool_with_info(cache, ffmpeg, list, 6).await;
+        }
         list.retain(|e| {
             e.media.name.to_lowercase().contains(&text)
+                || e.media.meta.to_lowercase().contains(&text)
                 || local_date(e.media.time_ms()).contains(&text)
                 || day.is_some_and(|q| entry_day(e).is_some_and(|d| q.matches(d)))
                 || e.exports.iter().any(|x| x.media.name.to_lowercase().contains(&text))
@@ -1065,7 +1072,7 @@ mod tests {
         fs::write(&video, "x").unwrap();
         let path = video.display().to_string();
         let meta = fs::metadata(&video).unwrap();
-        let key = format!("{}:{}", meta.len(), mtime_ms(&meta));
+        let key = format!("{}:{}:m", meta.len(), mtime_ms(&meta));
         let info = MediaInfo { path: path.clone(), duration_sec: Some(12.5), width: Some(640), ..Default::default() };
         let store = dir.path().join("media-info.json");
         fs::write(&store, serde_json::to_string(&HashMap::from([(path.clone(), (key, info.clone()))])).unwrap()).unwrap();

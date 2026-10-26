@@ -174,6 +174,8 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
             match r {
                 Ok(()) => {
                     app.video_tags = None;
+                    // 搜尋也找影片資訊：快取裡舊的那一份丟掉（修改時間沒變，大小可能也一樣）
+                    app.core.cache.forget(&path);
                     remember_genres(app, &used);
                     app.toast(trf!("已更新影片資訊：{}", "Video details updated: {}", dialogs::file_name(&path)), false);
                     app.sync_edited(&path, screenrecorder_core::jellyfin::Edit::Details);
