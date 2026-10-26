@@ -1,8 +1,8 @@
 //! 操作視窗（egui）：主畫面、製作加速版 / GIF、全部錄影、剪輯、更新說明。
 //! 直接呼叫後端（screenrecorder-core），非同步的工作在 tokio 上執行，完成後把結果交回介面執行緒。
 
-#[cfg(debug_assertions)]
 mod details_sync;
+#[cfg(debug_assertions)]
 mod dev;
 pub mod dialogs;
 pub mod editor;
