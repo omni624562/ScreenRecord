@@ -390,6 +390,8 @@ fn start(app: &mut UiApp, user: String, ids: Vec<String>, edit: BatchEdit) {
                 Err(e) => app.toast(trf!("沒有全部整理好：{e}", "Not every video was changed: {e}"), true),
             }
             super::jellyfin_browse::batch_done(app, &ids, &edit);
+            // 本機同名的影片也跟著改
+            app.sync_details_all(true);
         },
     );
 }

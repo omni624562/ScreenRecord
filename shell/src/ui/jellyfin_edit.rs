@@ -180,6 +180,8 @@ pub(super) fn start_rename(app: &mut UiApp, user: String, kind: NameKind, from: 
             }
             load_usage(app);
             super::jellyfin_browse::reload_facets(app);
+            // 本機同名的影片也跟著改
+            app.sync_details_all(true);
         },
     );
 }
@@ -234,6 +236,8 @@ pub(super) fn start_remove(app: &mut UiApp, user: String, kind: NameKind, name: 
             }
             load_usage(app);
             super::jellyfin_browse::reload_facets(app);
+            // 本機同名的影片也跟著改
+            app.sync_details_all(true);
         },
     );
 }
@@ -1068,7 +1072,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                         jf.remove_cover(&id)?;
                     }
                     // 重新讀回來：Jellyfin 沒改到的欄位要講出來
-                    let got = jf.item_info(&user, &id)?;
+                    let (got, file) = jf.item_info_file(&user, &id)?;
                     let lost = jellyfin::unsaved(&info, &got);
                     if !lost.is_empty() {
                         screenrecorder_core::info!("[Jellyfin] 影片資訊沒存到：{lost:?}；想存 {info:?}，讀回來 {got:?}");
@@ -1078,14 +1082,18 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                             lost.join(tr!("、", ", "))
                         ));
                     }
-                    Ok::<_, String>(())
+                    Ok::<_, String>((got, file))
                 })
                 .await
                 .unwrap_or_else(|e| Err(e.to_string()))
             },
             move |app, r| match r {
-                Ok(()) => {
+                Ok((got, file)) => {
                     app.jf_edit = None;
+                    // 本機有同名的那一支：也換成一樣的影片資訊
+                    if let Some(file) = file {
+                        app.pull_details(&file, got);
+                    }
                     super::jellyfin_browse::info_saved(app, &id2, &people, &tags);
                     super::jellyfin_browse::edited(app, &id2, &title);
                     app.toast(tr!("已更新影片資訊", "Details updated"), false);

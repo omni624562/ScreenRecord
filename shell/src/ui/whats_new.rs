@@ -42,19 +42,19 @@ enum Try {
 fn items(_app: &UiApp) -> Vec<(String, String, Try)> {
     vec![
         (
-            tr!("最近錄影用上預覽兩側的空白", "Recent recordings use the space beside the preview").into(),
+            tr!("影片資訊和 Jellyfin 雙向同步", "Video details sync with Jellyfin both ways").into(),
             tr!(
-                "預覽畫面左右有黑邊時，最近錄影欄自動變寬；夠寬時卡片排成兩欄。",
-                "When the preview has black bars on the sides, the recent recordings column gets wider, and shows two columns of cards when there is room."
+                "本機錄影和 Jellyfin 上同檔名的影片，標題、說明、年份、標籤、人物兩邊保持一樣：在哪邊改，另一邊就跟著改。",
+                "For recordings with the same file name in Jellyfin, the title, description, year, tags and people stay the same on both sides: change either one and the other follows."
             )
             .into(),
-            Try::None,
+            Try::Jellyfin,
         ),
         (
-            tr!("搜尋最近錄影", "Search recent recordings").into(),
+            tr!("兩邊都改過時讓你選", "You choose when both sides changed").into(),
             tr!(
-                "最近錄影上方的搜尋框可以找檔名、字幕裡說過的話，以及影片資訊的標題、標籤、人物和說明。",
-                "The search box above recent recordings finds file names, words said in subtitles, and the title, tags, people and description in video details."
+                "同一個欄位兩邊都改了而且不一樣時，打開影片資訊會列出 Jellyfin 上的內容，可以選用哪一個。",
+                "If the same field was changed differently on both sides, Video details shows Jellyfin's version so you can pick one."
             )
             .into(),
             Try::None,

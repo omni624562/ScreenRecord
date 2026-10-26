@@ -27,6 +27,7 @@ pub mod components;
 pub mod cover;
 pub mod cursor;
 pub mod desktop;
+pub mod details_sync;
 pub mod displays;
 pub mod downloader;
 pub mod dragout;

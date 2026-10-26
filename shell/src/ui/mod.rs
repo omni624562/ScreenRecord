@@ -1,6 +1,7 @@
 //! 操作視窗（egui）：主畫面、製作加速版 / GIF、全部錄影、剪輯、更新說明。
 //! 直接呼叫後端（screenrecorder-core），非同步的工作在 tokio 上執行，完成後把結果交回介面執行緒。
 
+mod details_sync;
 #[cfg(debug_assertions)]
 mod dev;
 pub mod dialogs;
@@ -196,6 +197,9 @@ pub struct UiApp {
     /// Jellyfin 上誰看過哪支、我的最愛（什麼時候讀的）；正在背景讀
     pub jf_watch: Option<(Instant, screenrecorder_core::jellyfin::WatchState)>,
     pub jf_watch_loading: bool,
+    /// 本機和 Jellyfin 的影片資訊上次全部對過的時間、正在背景對
+    pub details_sync_at: Option<Instant>,
+    pub details_sync_busy: bool,
     /// 檔案庫「Jellyfin」分頁的內容（關掉檔案庫時清掉）
     pub jf_browse: Option<jellyfin_browse::JfBrowse>,
     /// 在瀏覽視窗改 Jellyfin 上的影片資訊
@@ -385,6 +389,8 @@ impl UiApp {
             pending_busy: false,
             jf_watch: None,
             jf_watch_loading: false,
+            details_sync_at: None,
+            details_sync_busy: false,
             jf_browse: None,
             jf_edit: None,
             jf_rename: None,

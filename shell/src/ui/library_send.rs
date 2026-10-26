@@ -191,6 +191,8 @@ impl UiApp {
             return;
         }
         self.pending_check = Instant::now();
+        // 順便把本機和 Jellyfin 的影片資訊對一次（在 Jellyfin 網頁、手機改的帶回本機；30 分鐘最多一次）
+        self.sync_details_all(false);
         let list = transfer::pending();
         let root = self.s.after_copy_to.trim().to_string();
         if list.is_empty() || root.is_empty() {

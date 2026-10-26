@@ -4,6 +4,7 @@ use super::dialogs;
 use super::theme::{self, Btn, Icon};
 use super::UiApp;
 use eframe::egui::{self, Align, Id, Layout, RichText};
+use screenrecorder_core::details_sync::{self, Field};
 use screenrecorder_core::types::LibraryEntry;
 use screenrecorder_core::video_tags;
 use screenrecorder_core::{tr, trf};
@@ -19,6 +20,12 @@ pub struct TagsDialog {
     error: Option<String>,
     /// 改過了又按 Esc、點外面：不關，提示要放棄請按「取消」
     keep_hint: bool,
+    /// 正在和 Jellyfin 上同名的那一支同步（先不能改）
+    syncing: bool,
+    /// 剛換成 Jellyfin 上較新的內容
+    synced_note: bool,
+    /// 兩邊都改過、不一樣的欄位與 Jellyfin 上的內容（使用者選；不選就用這邊的）
+    conflicts: Vec<(Field, String)>,
 }
 
 pub fn open(app: &mut UiApp, entry: LibraryEntry) {
@@ -29,16 +36,89 @@ pub fn open(app: &mut UiApp, entry: LibraryEntry) {
     let Some(ff) = app.core.ffmpeg_path() else {
         return app.toast(tr!("找不到 FFmpeg", "FFmpeg not found"), true);
     };
-    app.video_tags = Some(TagsDialog { name: dialogs::file_name(&path), path: path.clone(), orig: None, values: HashMap::new(), saving: false, error: None, keep_hint: false });
-    app.spawn(async move { video_tags::read(&ff, &path).await }, |app, r| {
+    app.video_tags = Some(TagsDialog {
+        name: dialogs::file_name(&path),
+        path: path.clone(),
+        orig: None,
+        values: HashMap::new(),
+        saving: false,
+        error: None,
+        keep_hint: false,
+        syncing: false,
+        synced_note: false,
+        conflicts: vec![],
+    });
+    let p = path.clone();
+    app.spawn(async move { video_tags::read(&ff, &p).await }, move |app, r| {
         let Some(d) = &mut app.video_tags else { return };
         match r {
             Ok(m) => {
                 d.values = m.clone();
                 d.orig = Some(m);
+                check_jellyfin(app, path);
             }
             Err(e) => d.error = Some(e.message().to_string()),
         }
+    });
+}
+
+/// 和 Jellyfin 上同名的那一支比對：只有一邊改過就照它同步兩邊；兩邊都改了同一個欄位而且不一樣，列出來讓使用者選
+fn check_jellyfin(app: &mut UiApp, path: String) {
+    let (Some(jf), Some(ff)) = (app.jellyfin(), app.core.ffmpeg_path()) else { return };
+    let user = app.s.jellyfin_user.clone();
+    if let Some(d) = app.video_tags.as_mut() {
+        d.syncing = true;
+    }
+    let p = path.clone();
+    app.spawn(async move { details_sync::check(&jf, &user, &ff, &p).await }, move |app, r| {
+        let Some(d) = app.video_tags.as_mut().filter(|d| d.path == path) else { return };
+        let f = match r {
+            Ok(Some(f)) => f,
+            Ok(None) => return d.syncing = false,
+            Err(e) => {
+                d.syncing = false;
+                return screenrecorder_core::info!("[影片資訊同步] 沒有和 Jellyfin 比對：{e}");
+            }
+        };
+        if !f.plan.conflicts.is_empty() {
+            // 不衝突的先換上（儲存時兩邊一起改），衝突的列出來
+            d.syncing = false;
+            d.values = f.plan.merged.to_local(&f.local);
+            d.conflicts = f.plan.conflicts.clone();
+            return;
+        }
+        if !f.plan.to_local && !f.plan.to_jf {
+            d.syncing = false;
+            details_sync::remember(&d.name, &f.plan.merged);
+            return;
+        }
+        // 只有一邊改過：照它改另一邊（本機要改寫時，檢視器正在播這支就先放開）
+        let t = if f.plan.to_local { super::viewer::release(app, &path) } else { None };
+        let (Some(jf), Some(ff)) = (app.jellyfin(), app.core.ffmpeg_path()) else { return };
+        let user = app.s.jellyfin_user.clone();
+        let p = path.clone();
+        app.spawn(
+            async move {
+                let wrote = details_sync::apply(&jf, &user, &ff, &p, &f, &f.plan.merged).await?;
+                let values = video_tags::read(&ff, &p).await.map_err(|e| e.message().to_string())?;
+                Ok::<_, String>((wrote, values))
+            },
+            move |app, r| {
+                if let Some(d) = app.video_tags.as_mut().filter(|d| d.path == path) {
+                    d.syncing = false;
+                    match r {
+                        Ok((wrote, values)) => {
+                            d.synced_note = wrote;
+                            d.values = values.clone();
+                            d.orig = Some(values);
+                        }
+                        Err(e) => d.error = Some(trf!("沒有和 Jellyfin 同步好：{e}", "Couldn't sync with Jellyfin: {e}")),
+                    }
+                }
+                app.core.cache.forget(&path);
+                super::viewer::reload(app, &path, t);
+            },
+        );
     });
 }
 
@@ -54,6 +134,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
             known.push(g);
         }
     }
+    let has_jf = app.jellyfin().is_some();
     let changed = d.orig.as_ref().is_some_and(|o| o.iter().any(|(k, v)| d.values.get(k).is_some_and(|n| n.trim() != v.trim())));
     let modal = egui::Modal::new(Id::new("video-tags")).frame(theme::modal_frame(ctx)).show(ctx, |ui| {
         ui.set_width((ctx.content_rect().width() - 80.0).clamp(320.0, 520.0));
@@ -80,7 +161,18 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                 ui.label(tr!("正在讀取…", "Reading…"));
             });
         } else {
-            ui.add_enabled_ui(!d.saving, |ui| {
+            if d.syncing {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label(RichText::new(tr!("正在和 Jellyfin 上的同一支影片對照…", "Checking against the same video in Jellyfin…")).font(theme::font(12.5)).color(pal.muted));
+                });
+                ui.add_space(4.0);
+            } else if d.synced_note {
+                ui.label(RichText::new(tr!("✓ Jellyfin 上改得比較新，已換成一樣的內容", "✓ Jellyfin had newer details, so they were copied here")).font(theme::font(12.5)).color(pal.ok));
+                ui.add_space(4.0);
+            }
+            conflicts(ui, &mut d);
+            ui.add_enabled_ui(!d.saving && !d.syncing, |ui| {
                 egui::Grid::new("video-tags-form").num_columns(2).spacing([10.0, 8.0]).show(ui, |ui| {
                     for f in video_tags::fields() {
                         ui.label(f.label);
@@ -102,7 +194,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
             ui.add_space(4.0);
             let adult = d.values.entry(video_tags::ADULT_KEY.to_string()).or_default();
             let mut on = adult == "1";
-            ui.add_enabled_ui(!d.saving, |ui| {
+            ui.add_enabled_ui(!d.saving && !d.syncing, |ui| {
                 if ui
                     .checkbox(&mut on, tr!("只給大人看", "Adults only"))
                     .on_hover_text(tr!(
@@ -123,12 +215,23 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                 .font(theme::font(12.0))
                 .color(pal.muted),
             );
+            if has_jf {
+                ui.label(
+                    RichText::new(tr!(
+                        "Jellyfin 上有同名的影片時，標題、說明、年份、標籤、人物、只給大人看兩邊會一樣（在哪邊改都會同步到另一邊）。",
+                        "If Jellyfin has a video with the same file name, the title, description, year, tags, people and adults-only setting are kept the same on both sides (changes on either side sync to the other)."
+                    ))
+                    .font(theme::font(12.0))
+                    .color(pal.muted),
+                );
+            }
         }
         ui.add_space(10.0);
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             let label = if d.saving { tr!("正在儲存…", "Saving…") } else { tr!("儲存", "Save") };
             let tip = if changed { "" } else { tr!("還沒有修改", "Nothing changed yet") };
-            if Btn::new(label).primary().enabled(changed && !d.saving).tooltip(tip).show(ui).clicked() {
+            let can = (changed || !d.conflicts.is_empty()) && !d.saving && !d.syncing;
+            if Btn::new(label).primary().enabled(can).tooltip(tip).show(ui).clicked() {
                 save = true;
             }
             if Btn::new(tr!("取消", "Cancel")).ghost().show(ui).clicked() {
@@ -170,27 +273,64 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         let ff = app.core.ffmpeg_path();
         let p2 = path.clone();
         let used = video_tags::split_genres(d.values.get("genre").map(String::as_str).unwrap_or(""));
-        app.spawn(async move { video_tags::write(ff.as_deref(), &p2, &values).await }, move |app, r| {
-            match r {
-                Ok(()) => {
-                    app.video_tags = None;
-                    // 搜尋也找影片資訊：快取裡舊的那一份丟掉（修改時間沒變，大小可能也一樣）
-                    app.core.cache.forget(&path);
-                    remember_genres(app, &used);
-                    app.toast(trf!("已更新影片資訊：{}", "Video details updated: {}", dialogs::file_name(&path)), false);
-                    app.sync_edited(&path, screenrecorder_core::jellyfin::Edit::Details);
+        // 沒改這邊的欄位（只是兩邊不一樣、選了用這邊的）：不用改寫檔案，只同步 Jellyfin
+        app.spawn(
+            async move {
+                if values.is_empty() {
+                    return Ok(());
                 }
-                Err(e) => {
-                    if let Some(d) = &mut app.video_tags {
-                        d.saving = false;
+                details_sync::write_local(ff.as_deref(), &p2, &values).await
+            },
+            move |app, r| {
+                match r {
+                    Ok(()) => {
+                        app.video_tags = None;
+                        // 搜尋也找影片資訊：快取裡舊的那一份丟掉（修改時間沒變，大小可能也一樣）
+                        app.core.cache.forget(&path);
+                        remember_genres(app, &used);
+                        app.toast(trf!("已更新影片資訊：{}", "Video details updated: {}", dialogs::file_name(&path)), false);
+                        app.push_details(&path);
                     }
-                    app.toast(e.message().to_string(), true);
+                    Err(e) => {
+                        if let Some(d) = &mut app.video_tags {
+                            d.saving = false;
+                        }
+                        app.toast(e.message().to_string(), true);
+                    }
                 }
-            }
-            super::viewer::reload(app, &path, t);
-        });
+                super::viewer::reload(app, &path, t);
+            },
+        );
     }
     app.video_tags = Some(d);
+}
+
+/// 兩邊都改過、不一樣的欄位：顯示 Jellyfin 上的內容，按「用 Jellyfin 的」換過來；不選就照這邊的（儲存時 Jellyfin 也改成這邊的）
+fn conflicts(ui: &mut egui::Ui, d: &mut TagsDialog) {
+    if d.conflicts.is_empty() {
+        return;
+    }
+    let pal = theme::pal(ui);
+    let mut take = None;
+    egui::Frame::new().fill(pal.surface2).corner_radius(6.0).inner_margin(8.0).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.label(RichText::new(tr!("Jellyfin 上也改過，這幾個和這裡不一樣：", "These were also changed in Jellyfin and differ from here:")).font(theme::font_bold(12.5)).color(pal.warn));
+        for (i, (f, v)) in d.conflicts.iter().enumerate() {
+            ui.horizontal(|ui| {
+                let shown = if v.trim().is_empty() { tr!("（空的）", "(empty)").to_string() } else { v.replace('\n', " ") };
+                ui.add(egui::Label::new(RichText::new(trf!("{}：「{}」", "{}: “{}”", f.label(), shown)).font(theme::font(12.5))).truncate());
+                if Btn::new(tr!("用 Jellyfin 的", "Use Jellyfin's")).small().show(ui).clicked() {
+                    take = Some(i);
+                }
+            });
+        }
+        ui.label(RichText::new(tr!("不選就用這裡的；儲存後兩邊都會一樣", "Otherwise this side is kept; after saving both sides match")).font(theme::font(12.0)).color(pal.muted));
+    });
+    ui.add_space(6.0);
+    if let Some(i) = take {
+        let (f, v) = d.conflicts.remove(i);
+        d.values.insert(f.local_key().to_string(), v);
+    }
 }
 
 /// 類型欄下面的小標籤：以前用過的類型，按一下加入或移除（已選的反白）
