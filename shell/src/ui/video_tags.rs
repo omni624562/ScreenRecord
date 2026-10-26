@@ -3,7 +3,7 @@
 use super::dialogs;
 use super::jellyfin_edit::{self, Picker, Prefs};
 use super::theme::{self, Btn, Icon};
-use super::UiApp;
+use super::{EntryAction, UiApp};
 use eframe::egui::{self, Align, Id, Layout, RichText};
 use screenrecorder_core::details_sync::{self, Field};
 use screenrecorder_core::jellyfin::NameKind;
@@ -20,8 +20,6 @@ pub struct TagsDialog {
     values: HashMap<String, String>,
     saving: bool,
     error: Option<String>,
-    /// 改過了又按 Esc、點外面：不關，提示要放棄請按「取消」
-    keep_hint: bool,
     /// 正在和 Jellyfin 上同名的那一支同步（先不能改）
     syncing: bool,
     /// 剛換成 Jellyfin 上較新的內容
@@ -32,11 +30,39 @@ pub struct TagsDialog {
     lists: Option<Lists>,
     /// 主畫面播放中開的：放在播放區旁邊（影片繼續播），不是蓋住整個視窗的對話框
     docked: bool,
+    /// 改過了還沒儲存，又要換到別支、關掉：先問（儲存、不儲存、繼續編輯）
+    ask: Option<Next>,
+    /// 選了「儲存後繼續」：存好再做
+    after: Option<Next>,
+}
+
+/// 影片資訊還沒儲存時，選好之後要做的事
+pub enum Next {
+    /// 右邊清單按了別支影片的功能（做完面板換成那一支）
+    Act(EntryAction, LibraryEntry),
+    /// 換成別支影片的影片資訊（例如從檢視器開）
+    Open(LibraryEntry),
+    /// 關掉
+    Close,
 }
 
 impl TagsDialog {
     pub fn docked(&self) -> bool {
         self.docked
+    }
+
+    pub fn path(&self) -> &str {
+        &self.path
+    }
+
+    pub fn saving(&self) -> bool {
+        self.saving
+    }
+
+    /// 改過了還沒儲存（含輸入框裡打了字還沒按 Enter 的）
+    pub fn dirty(&self) -> bool {
+        let pending = self.lists.as_ref().is_some_and(|l| l.input.iter().any(|t| !t.trim().is_empty()));
+        pending || self.orig.as_ref().is_some_and(|o| self.values.iter().any(|(k, v)| o.get(k).map(String::as_str).unwrap_or("").trim() != v.trim()))
     }
 }
 
@@ -106,7 +132,27 @@ fn commit_inputs(d: &mut TagsDialog) {
     }
 }
 
+/// 開影片資訊：主畫面播放中放在播放區旁邊，其他時候是對話框
 pub fn open(app: &mut UiApp, entry: LibraryEntry) {
+    let docked = app.viewer.is_none() && (app.inline.is_some() || app.video_tags.as_ref().is_some_and(|d| d.docked));
+    if let Some(d) = app.video_tags.as_mut() {
+        // 已經開著同一支：留著改到一半的內容，只換顯示的位置（例如面板開著時從檢視器按影片資訊）
+        if d.path == entry.media.path {
+            d.docked = docked;
+            return;
+        }
+        if d.saving {
+            return app.toast(tr!("正在儲存影片資訊，存好再換", "Saving the video details. Try again when it's done"), true);
+        }
+        if d.dirty() {
+            return ask(app, Next::Open(entry));
+        }
+    }
+    open_as(app, entry, docked);
+}
+
+/// 開影片資訊（docked：放在播放區旁邊）
+pub fn open_as(app: &mut UiApp, entry: LibraryEntry, docked: bool) {
     let path = entry.media.path.clone();
     if !video_tags::can_tag(&path) {
         return app.toast(tr!("只有 MP4 影片可以改影片資訊", "Only MP4 videos can have their details changed"), true);
@@ -121,12 +167,13 @@ pub fn open(app: &mut UiApp, entry: LibraryEntry) {
         values: HashMap::new(),
         saving: false,
         error: None,
-        keep_hint: false,
         syncing: false,
         synced_note: false,
         conflicts: vec![],
         lists: app.jellyfin().map(|_| Lists::default()),
-        docked: app.inline.is_some() && app.viewer.is_none(),
+        docked,
+        ask: None,
+        after: None,
     });
     load_lists(app);
     let p = path.clone();
@@ -221,9 +268,13 @@ pub const PANEL_W: f32 = 380.0;
 
 fn run(app: &mut UiApp, ctx: &egui::Context, host: Option<&mut egui::Ui>) {
     let Some(mut d) = app.video_tags.take() else { return };
+    // Ctrl+S 儲存
+    let mut save =
+        d.ask.is_none() && d.orig.is_some() && d.dirty() && !d.saving && !d.syncing && ctx.input_mut(|i| i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::S)));
     let mut close = false;
+    // ✕、Esc、點外面：沒改過就關，改過了先問
+    let mut leave = false;
     let mut retry = false;
-    let mut save = false;
     // 以前用過的類型，加上這支影片原本的（按一下加入或移除）
     let mut known = app.s.genres.clone();
     for g in d.orig.as_ref().and_then(|o| o.get("genre")).map(|g| video_tags::split_genres(g)).unwrap_or_default() {
@@ -232,20 +283,24 @@ fn run(app: &mut UiApp, ctx: &egui::Context, host: Option<&mut egui::Ui>) {
         }
     }
     let has_jf = app.jellyfin().is_some();
-    let pending = d.lists.as_ref().is_some_and(|l| l.input.iter().any(|t| !t.trim().is_empty()));
     let mut busy = [None, jellyfin_edit::rename_busy(app, NameKind::Tag), jellyfin_edit::rename_busy(app, NameKind::Person)];
     let genres_known = known.clone();
     let mut prefs_changed = false;
-    let changed = pending || d.orig.as_ref().is_some_and(|o| o.iter().any(|(k, v)| d.values.get(k).is_some_and(|n| n.trim() != v.trim())));
+    let changed = d.dirty();
+    let docked = host.is_some();
     // part：0 = 全部（對話框），1 = 欄位（面板裡可以捲動），2 = 底下的按鈕（面板固定在最下面）
     let mut content = |ui: &mut egui::Ui, part: u8| {
         let pal = theme::pal(ui);
         if part != 2 {
             ui.horizontal(|ui| {
                 ui.label(RichText::new(tr!("影片資訊", "Video details")).font(theme::font_bold(17.0)));
+                if changed {
+                    ui.label(RichText::new(tr!("● 還沒儲存", "● Not saved")).font(theme::font(12.0)).color(pal.warn));
+                }
                 ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
-                    if Btn::icon_only(Icon::Close).ghost().small().tooltip(tr!("關閉（Esc）", "Close (Esc)")).show(ui).clicked() {
-                        close = true;
+                    let tip = if docked { tr!("關閉", "Close") } else { tr!("關閉（Esc）", "Close (Esc)") };
+                    if Btn::icon_only(Icon::Close).ghost().small().tooltip(tip).show(ui).clicked() {
+                        leave = true;
                     }
                 });
             });
@@ -349,6 +404,16 @@ fn run(app: &mut UiApp, ctx: &egui::Context, host: Option<&mut egui::Ui>) {
                 .font(theme::font(12.0))
                 .color(pal.muted),
             );
+                if docked {
+                    ui.label(
+                        RichText::new(tr!(
+                            "點右邊別支影片的縮圖、卡片或按鈕，這裡就換成那一支（改過還沒儲存會先問）。",
+                            "Click another video's thumbnail, card or buttons on the right to show its details here (you'll be asked first if there are unsaved changes)."
+                        ))
+                        .font(theme::font(12.0))
+                        .color(pal.muted),
+                    );
+                }
                 if has_jf {
                     ui.label(
                     RichText::new(tr!(
@@ -367,16 +432,14 @@ fn run(app: &mut UiApp, ctx: &egui::Context, host: Option<&mut egui::Ui>) {
         ui.add_space(if part == 0 { 10.0 } else { 6.0 });
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             let label = if d.saving { tr!("正在儲存…", "Saving…") } else { tr!("儲存", "Save") };
-            let tip = if changed { "" } else { tr!("還沒有修改", "Nothing changed yet") };
+            let tip = if changed { tr!("Ctrl+S", "Ctrl+S") } else { tr!("還沒有修改", "Nothing changed yet") };
             let can = (changed || !d.conflicts.is_empty()) && !d.saving && !d.syncing;
             if Btn::new(label).primary().enabled(can).tooltip(tip).show(ui).clicked() {
                 save = true;
             }
-            if Btn::new(tr!("取消", "Cancel")).ghost().show(ui).clicked() {
+            let tip = if changed { tr!("放棄這次的修改並關閉", "Discard the changes and close") } else { "" };
+            if Btn::new(tr!("取消", "Cancel")).ghost().tooltip(tip).show(ui).clicked() {
                 close = true;
-            }
-            if d.keep_hint && changed {
-                ui.label(RichText::new(tr!("還沒儲存：要放棄修改請按「取消」", "Not saved yet: click Cancel to discard")).font(theme::font(12.0)).color(pal.warn));
             }
         });
     };
@@ -403,17 +466,21 @@ fn run(app: &mut UiApp, ctx: &egui::Context, host: Option<&mut egui::Ui>) {
             false
         }
     };
-    // Esc、點外面：沒改過就關；改過了不直接丟掉，提示按「取消」
-    if dismiss && changed {
-        d.keep_hint = true;
+    // ✕、Esc、點外面：沒改過就關；改過了不直接丟掉，先問要不要儲存
+    if (leave || dismiss) && d.ask.is_none() {
+        if changed {
+            d.ask = Some(Next::Close);
+        } else {
+            close = true;
+        }
     }
-    if (close || dismiss && !changed) && !d.saving {
+    if close && !d.saving {
         return;
     }
     if retry {
         // 讀不到影片資訊：重新讀一次
         let media = screenrecorder_core::types::MediaInfo { path: d.path, ..Default::default() };
-        return open(app, LibraryEntry { media, exports: vec![], hits: vec![] });
+        return open_as(app, LibraryEntry { media, exports: vec![], hits: vec![] }, d.docked);
     }
     if prefs_changed {
         app.save_settings();
@@ -430,70 +497,166 @@ fn run(app: &mut UiApp, ctx: &egui::Context, host: Option<&mut egui::Ui>) {
         }
     }
     if save {
-        commit_inputs(&mut d);
-        // 這次新加的標籤、人物記成「最近用過」（和 Jellyfin 影片資訊共用）
-        if d.lists.is_some() {
-            let orig = d.orig.clone().unwrap_or_default();
-            let added = |key: &str| -> Vec<String> {
-                let before = video_tags::split_genres(orig.get(key).map(String::as_str).unwrap_or(""));
-                video_tags::split_genres(d.values.get(key).map(String::as_str).unwrap_or("")).into_iter().filter(|n| !before.iter().any(|b| b.to_lowercase() == n.to_lowercase())).collect()
-            };
-            let (tags, people) = (added("keywords"), added(video_tags::PEOPLE_KEY));
-            if !tags.is_empty() || !people.is_empty() {
-                jellyfin_edit::remember(&mut app.s.jf_recent_tags, &tags);
-                jellyfin_edit::remember(&mut app.s.jf_recent_people, &people);
-                app.save_settings();
-            }
-        }
-        d.saving = true;
-        let path = d.path.clone();
-        // 只寫改過的欄位：沒動的照原樣留著
-        let orig = d.orig.clone().unwrap_or_default();
-        let mut values: HashMap<String, String> = d.values.iter().filter(|(k, v)| orig.get(*k).is_none_or(|o| o.trim() != v.trim())).map(|(k, v)| (k.clone(), v.clone())).collect();
-        // 標籤、人物、只給大人看一起存在 keywords 裡：改了其中一個，三個都要給
-        let kw = ["keywords", video_tags::PEOPLE_KEY, video_tags::ADULT_KEY];
-        if kw.iter().any(|k| values.contains_key(*k)) {
-            for k in kw {
-                values.insert(k.to_string(), d.values.get(k).cloned().unwrap_or_default());
-            }
-        }
-        // 播放中的檔案換不掉：檢視器正在播這支就先放開，寫好再從同一個位置載入
-        let t = super::viewer::release(app, &path);
-        let here = super::inline_play::release(app, &path);
-        let ff = app.core.ffmpeg_path();
-        let p2 = path.clone();
-        let used = video_tags::split_genres(d.values.get("genre").map(String::as_str).unwrap_or(""));
-        // 沒改這邊的欄位（只是兩邊不一樣、選了用這邊的）：不用改寫檔案，只同步 Jellyfin
-        app.spawn(
-            async move {
-                if values.is_empty() {
-                    return Ok(());
-                }
-                details_sync::write_local(ff.as_deref(), &p2, &values).await
-            },
-            move |app, r| {
-                match r {
-                    Ok(()) => {
-                        app.video_tags = None;
-                        // 搜尋也找影片資訊：快取裡舊的那一份丟掉（修改時間沒變，大小可能也一樣）
-                        app.core.cache.forget(&path);
-                        remember_genres(app, &used);
-                        app.toast(trf!("已更新影片資訊：{}", "Video details updated: {}", dialogs::file_name(&path)), false);
-                        app.push_details(&path);
-                    }
-                    Err(e) => {
-                        if let Some(d) = &mut app.video_tags {
-                            d.saving = false;
-                        }
-                        app.toast(e.message().to_string(), true);
-                    }
-                }
-                super::viewer::reload(app, &path, t);
-                super::inline_play::resume(app, here);
-            },
-        );
+        start_save(app, &mut d);
     }
     app.video_tags = Some(d);
+}
+
+/// 儲存（存好就關掉；有「儲存後繼續」的接著做）
+fn start_save(app: &mut UiApp, d: &mut TagsDialog) {
+    commit_inputs(d);
+    // 這次新加的標籤、人物記成「最近用過」（和 Jellyfin 影片資訊共用）
+    if d.lists.is_some() {
+        let orig = d.orig.clone().unwrap_or_default();
+        let added = |key: &str| -> Vec<String> {
+            let before = video_tags::split_genres(orig.get(key).map(String::as_str).unwrap_or(""));
+            video_tags::split_genres(d.values.get(key).map(String::as_str).unwrap_or("")).into_iter().filter(|n| !before.iter().any(|b| b.to_lowercase() == n.to_lowercase())).collect()
+        };
+        let (tags, people) = (added("keywords"), added(video_tags::PEOPLE_KEY));
+        if !tags.is_empty() || !people.is_empty() {
+            jellyfin_edit::remember(&mut app.s.jf_recent_tags, &tags);
+            jellyfin_edit::remember(&mut app.s.jf_recent_people, &people);
+            app.save_settings();
+        }
+    }
+    d.saving = true;
+    let path = d.path.clone();
+    // 只寫改過的欄位：沒動的照原樣留著
+    let orig = d.orig.clone().unwrap_or_default();
+    let mut values: HashMap<String, String> = d.values.iter().filter(|(k, v)| orig.get(*k).is_none_or(|o| o.trim() != v.trim())).map(|(k, v)| (k.clone(), v.clone())).collect();
+    // 標籤、人物、只給大人看一起存在 keywords 裡：改了其中一個，三個都要給
+    let kw = ["keywords", video_tags::PEOPLE_KEY, video_tags::ADULT_KEY];
+    if kw.iter().any(|k| values.contains_key(*k)) {
+        for k in kw {
+            values.insert(k.to_string(), d.values.get(k).cloned().unwrap_or_default());
+        }
+    }
+    // 播放中的檔案換不掉：檢視器正在播這支就先放開，寫好再從同一個位置載入
+    let t = super::viewer::release(app, &path);
+    let here = super::inline_play::release(app, &path);
+    let ff = app.core.ffmpeg_path();
+    let p2 = path.clone();
+    let used = video_tags::split_genres(d.values.get("genre").map(String::as_str).unwrap_or(""));
+    // 沒改這邊的欄位（只是兩邊不一樣、選了用這邊的）：不用改寫檔案，只同步 Jellyfin
+    app.spawn(
+        async move {
+            if values.is_empty() {
+                return Ok(());
+            }
+            details_sync::write_local(ff.as_deref(), &p2, &values).await
+        },
+        move |app, r| {
+            let mut after = None;
+            match r {
+                Ok(()) => {
+                    after = app.video_tags.take().and_then(|d| d.after.map(|n| (n, d.docked)));
+                    // 搜尋也找影片資訊：快取裡舊的那一份丟掉（修改時間沒變，大小可能也一樣）
+                    app.core.cache.forget(&path);
+                    remember_genres(app, &used);
+                    app.toast(trf!("已更新影片資訊：{}", "Video details updated: {}", dialogs::file_name(&path)), false);
+                    app.push_details(&path);
+                }
+                Err(e) => {
+                    if let Some(d) = &mut app.video_tags {
+                        d.saving = false;
+                        d.after = None;
+                    }
+                    app.toast(e.message().to_string(), true);
+                }
+            }
+            super::viewer::reload(app, &path, t);
+            super::inline_play::resume(app, here);
+            if let Some((next, docked)) = after {
+                go(app, next, docked);
+            }
+        },
+    );
+}
+
+/// 改過還沒儲存，又要換到別支、關掉：先問
+pub fn ask(app: &mut UiApp, next: Next) {
+    if let Some(d) = app.video_tags.as_mut() {
+        d.ask = Some(next);
+    }
+}
+
+/// 儲存或不儲存之後接著做（影片資訊已經關掉）
+fn go(app: &mut UiApp, next: Next, docked: bool) {
+    match next {
+        Next::Close => {}
+        Next::Open(e) => open_as(app, e, docked && app.viewer.is_none()),
+        Next::Act(a, e) => {
+            let follow = docked && follows(a, &e.media.path);
+            app.act_follow(a, e, follow);
+        }
+    }
+}
+
+/// 面板開著時按了別支影片的這個功能：面板跟著換成那一支（改名、刪除不換；只有 MP4 能改影片資訊）
+pub fn follows(action: EntryAction, path: &str) -> bool {
+    !matches!(action, EntryAction::Rename | EntryAction::Trash) && video_tags::can_tag(path)
+}
+
+/// 「還沒儲存」的詢問（儲存後繼續、不儲存、繼續編輯）
+pub fn ask_dialog(app: &mut UiApp, ctx: &egui::Context) {
+    let Some(d) = app.video_tags.as_ref() else { return };
+    let Some(next) = d.ask.as_ref() else { return };
+    let target = match next {
+        Next::Act(_, e) | Next::Open(e) => Some(dialogs::file_name(&e.media.path).to_string()),
+        Next::Close => None,
+    };
+    let can_save = d.orig.is_some() && !d.saving && !d.syncing;
+    let name = d.name.clone();
+    // 1 = 儲存後繼續，2 = 不儲存，3 = 繼續編輯
+    let mut choice = 0;
+    let modal = egui::Modal::new(Id::new("video-tags-ask")).frame(theme::modal_frame(ctx)).show(ctx, |ui| {
+        ui.set_width(400.0);
+        let pal = theme::pal(ui);
+        ui.label(RichText::new(tr!("影片資訊還沒儲存", "Unsaved video details")).font(theme::font_bold(17.0)));
+        ui.add_space(8.0);
+        ui.label(trf!("「{name}」的影片資訊改過了，還沒儲存。", "The details of “{name}” were changed but not saved."));
+        match &target {
+            Some(t) => ui.label(trf!("換到「{t}」之前要先儲存嗎？", "Save them before switching to “{t}”?")),
+            None => ui.label(tr!("關掉之前要先儲存嗎？", "Save them before closing?")),
+        };
+        ui.label(RichText::new(tr!("按「不儲存」這次的修改就不見了。", "If you don't save, the changes are lost.")).font(theme::font(12.5)).color(pal.muted));
+        ui.add_space(12.0);
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            let label = if target.is_some() { tr!("儲存後繼續", "Save and continue") } else { tr!("儲存", "Save") };
+            if Btn::new(label).primary().enabled(can_save).show(ui).clicked() {
+                choice = 1;
+            }
+            if Btn::new(tr!("不儲存", "Don't save")).show(ui).clicked() {
+                choice = 2;
+            }
+            if Btn::new(tr!("繼續編輯", "Keep editing")).ghost().tooltip(tr!("Esc", "Esc")).show(ui).clicked() {
+                choice = 3;
+            }
+        });
+    });
+    if choice == 0 && modal.should_close() {
+        choice = 3;
+    }
+    match choice {
+        1 => {
+            let Some(mut d) = app.video_tags.take() else { return };
+            d.after = d.ask.take();
+            start_save(app, &mut d);
+            app.video_tags = Some(d);
+        }
+        2 => {
+            let Some(d) = app.video_tags.take() else { return };
+            if let Some(next) = d.ask {
+                go(app, next, d.docked);
+            }
+        }
+        3 => {
+            if let Some(d) = app.video_tags.as_mut() {
+                d.ask = None;
+            }
+        }
+        _ => {}
+    }
 }
 
 /// 兩邊都改過、不一樣的欄位：顯示 Jellyfin 上的內容，按「用 Jellyfin 的」換過來；不選就照這邊的（儲存時 Jellyfin 也改成這邊的）
