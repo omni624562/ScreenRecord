@@ -1,9 +1,8 @@
 //! 自己畫的標題列（操作視窗不用 Windows 的標題列）：左邊程式圖示與名稱；
-//! 右邊「⋯」總選單（檔案庫、工具、設定、說明、結束）、縮小成小視窗，再來是縮到最小、最大化、關閉。
+//! 右邊「⋯」總選單（工具、設定、說明、結束）、縮小成小視窗，再來是縮到最小、最大化、關閉。
 //! 拖曳空白的地方移動視窗、按兩下最大化；視窗四邊與四個角可以拖曳調整大小。
 //! 小視窗：只留開始 / 停止錄影、計時、暫停、截圖，不擋畫面；不會被錄進影片，錄影中浮在最上層
 
-use super::library_dialog::{Kind, LibraryDialog};
 use super::main_view::{self, ShotAct};
 use super::settings::UI_MIN_SIZE;
 use super::settings_dialog::{self, Page};
@@ -201,7 +200,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
             rui.add_space(2.0);
             let tip = match &app.env.update {
                 Some(u) => trf!("選單：有新版本 v{}", "Menu: v{} is available", u.version),
-                None => tr!("選單：檔案庫、工具、設定、說明", "Menu: library, tools, settings, help").to_string(),
+                None => tr!("選單：工具、設定、說明", "Menu: tools, settings, help").to_string(),
             };
             let menu = Btn::icon_only(Icon::More).ghost().small().tooltip(tip).show(rui);
             // 有新版本：選單按鈕右上角一個紅點
@@ -229,23 +228,11 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
 }
 
 /// 總選單（標題列右邊的「⋯」）：一層攤平、用分隔線分組；每一項左邊是圖示，右邊是快速鍵。
-/// 回溯錄影、設定組合本來就有自己的選項，滑過去才展開。covered：開著剪輯、檢視器等視窗時不能開檔案庫和工具
+/// 回溯錄影、設定組合本來就有自己的選項，滑過去才展開。covered：開著剪輯、檢視器等視窗時不能開工具（檔案庫在主畫面右下）
 fn main_menu(app: &mut UiApp, ui: &mut Ui, covered: bool) {
     ui.set_width(MENU_W);
     ui.spacing_mut().item_spacing.y = 2.0;
     let idle = app.status.recorder.state == RecorderState::Idle;
-    let why = tr!("先關掉目前開著的視窗", "Close the open window first");
-    // 檔案庫
-    if menu_item(ui, Icon::Video, tr!("錄影", "Recordings"), None, false, !covered).on_disabled_hover_text(why).clicked() {
-        app.library = Some(LibraryDialog::new(Kind::Video));
-    }
-    if menu_item(ui, Icon::Camera, tr!("截圖", "Screenshots"), None, false, !covered).on_disabled_hover_text(why).clicked() {
-        app.library = Some(LibraryDialog::new(Kind::Shot));
-    }
-    if app.jellyfin().is_some() && menu_item(ui, Icon::Play, "Jellyfin", None, false, !covered).on_disabled_hover_text(why).clicked() {
-        super::library_dialog::open_jellyfin(app);
-    }
-    ui.separator();
     // 工具（錄影中只有截圖工具、講稿小視窗）
     let shoot = super::main_view::can_shoot(app) && !covered;
     let r = menu_item(ui, Icon::Camera, tr!("截圖工具", "Screenshot tools"), None, true, shoot);

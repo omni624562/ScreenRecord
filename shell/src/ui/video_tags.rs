@@ -266,6 +266,9 @@ pub fn panel(app: &mut UiApp, ui: &mut egui::Ui) {
 /// 面板的寬度
 pub const PANEL_W: f32 = 380.0;
 
+/// 面板最下面按鈕那一排的高度
+const FOOT_H: f32 = 34.0;
+
 fn run(app: &mut UiApp, ctx: &egui::Context, host: Option<&mut egui::Ui>) {
     let Some(mut d) = app.video_tags.take() else { return };
     // Ctrl+S 儲存
@@ -429,7 +432,9 @@ fn run(app: &mut UiApp, ctx: &egui::Context, host: Option<&mut egui::Ui>) {
         if part == 1 {
             return;
         }
-        ui.add_space(if part == 0 { 10.0 } else { 6.0 });
+        if part == 0 {
+            ui.add_space(10.0);
+        }
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             let label = if d.saving { tr!("正在儲存…", "Saving…") } else { tr!("儲存", "Save") };
             let tip = if changed { tr!("Ctrl+S", "Ctrl+S") } else { tr!("還沒有修改", "Nothing changed yet") };
@@ -452,16 +457,19 @@ fn run(app: &mut UiApp, ctx: &egui::Context, host: Option<&mut egui::Ui>) {
             modal.should_close()
         }
         Some(ui) => {
+            // 外框正好是給的位置（和左邊的播放區、控制列上下對齊）：欄位在上面捲動，按鈕固定在最下面
             let p = theme::pal(ui);
             let rect = ui.max_rect();
-            egui::Frame::new().fill(p.surface).stroke(egui::Stroke::new(1.0, p.border)).corner_radius(8.0).inner_margin(12.0).show(ui, |ui| {
-                ui.set_min_size(rect.size() - egui::vec2(24.0, 24.0));
-                ui.set_max_width(rect.width() - 24.0);
-                let h = (ui.available_height() - 44.0).max(80.0);
-                egui::ScrollArea::vertical().id_salt("video-tags-panel").max_height(h).auto_shrink([false, false]).show(ui, |ui| content(ui, 1));
-                ui.separator();
-                content(ui, 2);
+            ui.painter().rect(rect, 8.0, p.surface, egui::Stroke::new(1.0, p.border), egui::StrokeKind::Inside);
+            let inner = rect.shrink(12.0);
+            let foot = egui::Rect::from_min_max(egui::pos2(inner.min.x, inner.max.y - FOOT_H), inner.max);
+            let body = egui::Rect::from_min_max(inner.min, egui::pos2(inner.max.x, foot.min.y - 6.0));
+            ui.scope_builder(egui::UiBuilder::new().max_rect(body), |ui| {
+                egui::ScrollArea::vertical().id_salt("video-tags-panel").max_height(body.height()).auto_shrink([false, false]).show(ui, |ui| content(ui, 1));
             });
+            ui.painter().hline(inner.x_range(), foot.min.y - 3.0, egui::Stroke::new(1.0, p.border));
+            ui.scope_builder(egui::UiBuilder::new().max_rect(foot).layout(Layout::bottom_up(Align::Max)), |ui| content(ui, 2));
+            ui.allocate_rect(rect, egui::Sense::hover());
             // 面板沒有「外面」可以點；Esc 留給主畫面播放（回到錄影畫面），面板用 ✕、取消關閉
             false
         }
