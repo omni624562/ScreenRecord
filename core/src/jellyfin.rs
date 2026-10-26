@@ -685,7 +685,7 @@ impl Jellyfin {
 
     /// 同 usage，parent 有給時只算那個資料夾（含子資料夾）裡的影片（Jellyfin 分頁在某個資料夾裡「依這些找」的支數）
     pub fn usage_in(&self, user: &str, parent: Option<&str>) -> Result<Usage, String> {
-        let (mut people, mut tags, mut years) = (vec![], vec![], vec![]);
+        let (mut people, mut tags, mut years, mut genres) = (vec![], vec![], vec![], vec![]);
         let (mut no_people, mut no_tags) = (0usize, 0usize);
         let mut start = 0usize;
         loop {
@@ -693,7 +693,7 @@ impl Jellyfin {
                 .get(&format!("{}/Users/{user}/Items", self.url))
                 .query("recursive", "true")
                 .query("includeItemTypes", VIDEO_TYPES)
-                .query("fields", "People,Tags")
+                .query("fields", "People,Tags,Genres")
                 .query("enableImages", "false")
                 .query("enableUserData", "false")
                 .query("startIndex", &start.to_string())
@@ -704,6 +704,7 @@ impl Jellyfin {
             }
             let body = self.call(req)?.into_string().map_err(|e| e.to_string())?;
             let (p, t, y, got, total) = people_tags_of_items(&body);
+            genres.extend(genres_of_items(&body));
             let (np, nt) = lacking_counts(&body);
             no_people += np;
             no_tags += nt;
@@ -715,7 +716,7 @@ impl Jellyfin {
                 break;
             }
         }
-        Ok(Usage { people: tally(people), tags: tally(tags), years: tally_years(years), no_people, no_tags })
+        Ok(Usage { people: tally(people), tags: tally(tags), genres: tally(genres), years: tally_years(years), no_people, no_tags })
     }
 
     /// 把全部影片裡的一個人物或標籤改成另一個寫法（「常用」裡寫錯的改正確；改成已經有的就是合併）。
@@ -1789,6 +1790,8 @@ pub type Counts = Vec<(String, usize)>;
 pub struct Usage {
     pub people: Counts,
     pub tags: Counts,
+    /// 類型（Genres）
+    pub genres: Counts,
     /// （年份, 幾支），新的在前
     pub years: Vec<(u32, usize)>,
     /// 還沒設人物、還沒有標籤的影片幾支
@@ -2087,6 +2090,21 @@ fn people_tags_of_items(json: &str) -> (Vec<String>, Vec<String>, Vec<u32>, usiz
     }
     let total = v.get("TotalRecordCount").and_then(Value::as_u64).unwrap_or(0) as usize;
     (people, tags, years, items.len(), total)
+}
+
+/// /Items 的回應裡每支影片的類型（同一支重複的只算一次）
+fn genres_of_items(json: &str) -> Vec<String> {
+    let Ok(v) = serde_json::from_str::<Value>(json) else { return vec![] };
+    let mut out = vec![];
+    for i in v.get("Items").and_then(Value::as_array).into_iter().flatten() {
+        let mut seen = std::collections::HashSet::new();
+        for g in i.get("Genres").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).map(str::trim).filter(|g| !g.is_empty()) {
+            if seen.insert(name_key(g)) {
+                out.push(g.to_string());
+            }
+        }
+    }
+    out
 }
 
 /// 標籤去掉前後空白、重複（只差大小寫、全形半形的也算重複）、依名稱排；年份去掉重複、新的在前

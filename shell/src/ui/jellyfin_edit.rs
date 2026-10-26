@@ -242,6 +242,14 @@ pub(super) fn start_remove(app: &mut UiApp, user: String, kind: NameKind, name: 
     );
 }
 
+/// 這一類正在背景重新命名的（清單上畫進度）
+pub(super) fn rename_busy(app: &UiApp, kind: NameKind) -> Option<Busy> {
+    app.jf_rename.as_ref().filter(|r| r.kind == kind).map(|r| {
+        let (done, total) = *r.progress.lock().unwrap_or_else(|e| e.into_inner());
+        Busy { cancel: r.cancel.clone(), from: r.from.clone(), to: r.to.clone(), done, total }
+    })
+}
+
 /// 使用次數（多的在前）加上伺服器上有、但還沒有影片用到的（次數 0）
 pub(super) fn merge_usage(mut used: Vec<(String, usize)>, known: &[(String, usize)]) -> Vec<(String, usize)> {
     for (n, _) in known {
@@ -263,6 +271,13 @@ pub(super) struct Picker {
     start: Option<(String, String)>,
     /// 下一次畫的時候開啟「全部 N 個」清單（常用按右鍵選「重新命名…」）
     open: bool,
+}
+
+impl Picker {
+    /// 按了「改 N 支」：（舊的, 新的寫法），讀走後清掉
+    pub(super) fn take_rename(&mut self) -> Option<(String, String)> {
+        self.start.take()
+    }
 }
 
 /// 重新命名的框：哪一個（用在幾支）、新的寫法
@@ -860,14 +875,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
     // 輸入框裡還沒按 Enter 的字也算（儲存時會一起存）
     let pending = !d.new_person.trim().is_empty() || !d.new_tag.trim().is_empty();
     let changed = d.orig.as_ref().is_some_and(|o| *o != JfInfo { year, ..d.info.clone() }) || d.cover.is_some() || d.remove_cover || pending;
-    // 正在重新命名的（清單上畫進度）
-    let busy = |kind: NameKind| {
-        app.jf_rename.as_ref().filter(|r| r.kind == kind).map(|r| {
-            let (done, total) = *r.progress.lock().unwrap_or_else(|e| e.into_inner());
-            Busy { cancel: r.cancel.clone(), from: r.from.clone(), to: r.to.clone(), done, total }
-        })
-    };
-    let (busy_people, busy_tags) = (busy(NameKind::Person), busy(NameKind::Tag));
+    let (busy_people, busy_tags) = (rename_busy(app, NameKind::Person), rename_busy(app, NameKind::Tag));
     let modal = egui::Modal::new(Id::new("jellyfin-edit")).frame(theme::modal_frame(ctx)).show(ctx, |ui| {
         ui.set_width((ctx.content_rect().width() - 80.0).clamp(360.0, 600.0));
         let p = theme::pal(ui);

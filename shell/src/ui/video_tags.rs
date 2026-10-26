@@ -1,10 +1,12 @@
 //! 影片資訊：改 MP4 裡的標題、作者、說明等（檔案總管「內容 → 詳細資料」看到的那些）。見 core::video_tags。
 
 use super::dialogs;
+use super::jellyfin_edit::{self, Picker, Prefs};
 use super::theme::{self, Btn, Icon};
 use super::UiApp;
 use eframe::egui::{self, Align, Id, Layout, RichText};
 use screenrecorder_core::details_sync::{self, Field};
+use screenrecorder_core::jellyfin::NameKind;
 use screenrecorder_core::types::LibraryEntry;
 use screenrecorder_core::video_tags;
 use screenrecorder_core::{tr, trf};
@@ -26,6 +28,74 @@ pub struct TagsDialog {
     synced_note: bool,
     /// 兩邊都改過、不一樣的欄位與 Jellyfin 上的內容（使用者選；不選就用這邊的）
     conflicts: Vec<(Field, String)>,
+    /// 有設定 Jellyfin 時：類型、標籤、人物改成和 Jellyfin 影片資訊一樣的小標籤＋常用＋「全部 N 個」清單
+    lists: Option<Lists>,
+}
+
+/// 類型、標籤、人物的選擇清單（順序：類型、標籤、人物）
+#[derive(Default)]
+struct Lists {
+    /// Jellyfin 的使用者（讀使用次數、重新命名用；還沒讀到時空的）
+    user: String,
+    /// Jellyfin 上用過的與用在幾支影片（讀好之前是空的）
+    known: [Vec<(String, usize)>; 3],
+    pick: [Picker; 3],
+    /// 輸入框裡還沒按 Enter 的字
+    input: [String; 3],
+}
+
+/// 用選擇清單的欄位：（欄位, 小元件的編號, 提示）
+const LIST_KEYS: [&str; 3] = ["genre", "keywords", video_tags::PEOPLE_KEY];
+
+fn list_hint(i: usize) -> &'static str {
+    match i {
+        0 => tr!("打類型，按 Enter 加入", "Type a genre and press Enter"),
+        1 => tr!("打標籤，按 Enter 加入", "Type a tag and press Enter"),
+        _ => tr!("打名字，按 Enter 加入（可以一次打好幾個，用頓號分開）", "Type a name and press Enter (separate several with commas)"),
+    }
+}
+
+/// 從 Jellyfin 讀全部影片用到的類型、標籤、人物與次數
+fn load_lists(app: &mut UiApp) {
+    let Some(jf) = app.jellyfin() else { return };
+    let preferred = app.s.jellyfin_user.clone();
+    let Some(path) = app.video_tags.as_ref().map(|d| d.path.clone()) else { return };
+    app.spawn(
+        async move {
+            tokio::task::spawn_blocking(move || {
+                let user = jf.browse_user(&preferred)?;
+                jf.usage(&user).map(|u| (user, u))
+            })
+            .await
+            .unwrap_or_else(|e| Err(e.to_string()))
+        },
+        move |app, r| {
+            let Some(l) = app.video_tags.as_mut().filter(|d| d.path == path).and_then(|d| d.lists.as_mut()) else { return };
+            match r {
+                Ok((user, u)) => {
+                    l.user = user;
+                    // 「18+」是「只給大人看」的勾選框，不當成一般標籤列出
+                    let tags = u.tags.into_iter().filter(|(t, _)| t.trim() != video_tags::ADULT_TAG).collect();
+                    l.known = [u.genres, tags, u.people];
+                }
+                Err(e) => screenrecorder_core::info!("[影片資訊] 讀不到 Jellyfin 的類型、標籤、人物：{e}"),
+            }
+        },
+    );
+}
+
+/// 輸入框裡還沒按 Enter 的字也加進去
+fn commit_inputs(d: &mut TagsDialog) {
+    let Some(l) = d.lists.as_mut() else { return };
+    for (i, key) in LIST_KEYS.iter().enumerate() {
+        if l.input[i].trim().is_empty() {
+            continue;
+        }
+        let v = d.values.entry(key.to_string()).or_default();
+        let mut list = video_tags::split_genres(v);
+        jellyfin_edit::commit(&mut list, &mut l.input[i]);
+        *v = video_tags::join_genres(&list);
+    }
 }
 
 pub fn open(app: &mut UiApp, entry: LibraryEntry) {
@@ -47,7 +117,9 @@ pub fn open(app: &mut UiApp, entry: LibraryEntry) {
         syncing: false,
         synced_note: false,
         conflicts: vec![],
+        lists: app.jellyfin().map(|_| Lists::default()),
     });
+    load_lists(app);
     let p = path.clone();
     app.spawn(async move { video_tags::read(&ff, &p).await }, move |app, r| {
         let Some(d) = &mut app.video_tags else { return };
@@ -135,7 +207,11 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         }
     }
     let has_jf = app.jellyfin().is_some();
-    let changed = d.orig.as_ref().is_some_and(|o| o.iter().any(|(k, v)| d.values.get(k).is_some_and(|n| n.trim() != v.trim())));
+    let pending = d.lists.as_ref().is_some_and(|l| l.input.iter().any(|t| !t.trim().is_empty()));
+    let mut busy = [None, jellyfin_edit::rename_busy(app, NameKind::Tag), jellyfin_edit::rename_busy(app, NameKind::Person)];
+    let genres_known = known.clone();
+    let mut prefs_changed = false;
+    let changed = pending || d.orig.as_ref().is_some_and(|o| o.iter().any(|(k, v)| d.values.get(k).is_some_and(|n| n.trim() != v.trim())));
     let modal = egui::Modal::new(Id::new("video-tags")).frame(theme::modal_frame(ctx)).show(ctx, |ui| {
         ui.set_width((ctx.content_rect().width() - 80.0).clamp(320.0, 520.0));
         let pal = theme::pal(ui);
@@ -177,6 +253,38 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                     for f in video_tags::fields() {
                         ui.label(f.label);
                         let v = d.values.entry(f.key.to_string()).or_default();
+                        if let (Some(i), Some(l)) = (LIST_KEYS.iter().position(|k| *k == f.key), d.lists.as_mut()) {
+                            // 和 Jellyfin 影片資訊一樣：小標籤、常用、「全部 N 個」
+                            let mut known = l.known[i].clone();
+                            if i == 0 {
+                                for g in &genres_known {
+                                    if !known.iter().any(|(n, _)| n.to_lowercase() == g.to_lowercase()) {
+                                        known.push((g.clone(), 0));
+                                    }
+                                }
+                            }
+                            let s = &mut app.s;
+                            let (pins, recent) = match i {
+                                0 => (&mut s.jf_pin_genres, &s.genres),
+                                1 => (&mut s.jf_pin_tags, &s.jf_recent_tags),
+                                _ => (&mut s.jf_pin_people, &s.jf_recent_people),
+                            };
+                            let mut list = video_tags::split_genres(v);
+                            ui.vertical(|ui| {
+                                jellyfin_edit::chips(
+                                    ui,
+                                    &format!("local-{}", f.key),
+                                    &mut list,
+                                    &mut l.input[i],
+                                    &known,
+                                    Prefs { pins, recent, changed: &mut prefs_changed, picker: &mut l.pick[i], busy: busy[i].take() },
+                                    list_hint(i),
+                                );
+                            });
+                            *v = video_tags::join_genres(&list);
+                            ui.end_row();
+                            continue;
+                        }
                         if f.key != "genre" {
                             let edit = if f.multiline { egui::TextEdit::multiline(v).desired_rows(4) } else { egui::TextEdit::singleline(v) };
                             ui.add(edit.desired_width(ui.available_width()).hint_text(f.hint));
@@ -255,7 +363,36 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         let media = screenrecorder_core::types::MediaInfo { path: d.path, ..Default::default() };
         return open(app, LibraryEntry { media, exports: vec![], hits: vec![] });
     }
+    if prefs_changed {
+        app.save_settings();
+    }
+    // 「全部 N 個」清單按了「改 N 支」：Jellyfin 上全部影片的這個標籤、人物一起改（類型不能改名）
+    if let Some(l) = d.lists.as_mut() {
+        let user = l.user.clone();
+        let renames: Vec<(NameKind, Option<(String, String)>)> = vec![(NameKind::Tag, l.pick[1].take_rename()), (NameKind::Person, l.pick[2].take_rename())];
+        l.pick[0].take_rename();
+        for (kind, start) in renames {
+            if let Some((from, to)) = start.filter(|_| app.jf_rename.is_none() && !user.is_empty()) {
+                jellyfin_edit::start_rename(app, user.clone(), kind, from, to);
+            }
+        }
+    }
     if save {
+        commit_inputs(&mut d);
+        // 這次新加的標籤、人物記成「最近用過」（和 Jellyfin 影片資訊共用）
+        if d.lists.is_some() {
+            let orig = d.orig.clone().unwrap_or_default();
+            let added = |key: &str| -> Vec<String> {
+                let before = video_tags::split_genres(orig.get(key).map(String::as_str).unwrap_or(""));
+                video_tags::split_genres(d.values.get(key).map(String::as_str).unwrap_or("")).into_iter().filter(|n| !before.iter().any(|b| b.to_lowercase() == n.to_lowercase())).collect()
+            };
+            let (tags, people) = (added("keywords"), added(video_tags::PEOPLE_KEY));
+            if !tags.is_empty() || !people.is_empty() {
+                jellyfin_edit::remember(&mut app.s.jf_recent_tags, &tags);
+                jellyfin_edit::remember(&mut app.s.jf_recent_people, &people);
+                app.save_settings();
+            }
+        }
         d.saving = true;
         let path = d.path.clone();
         // 只寫改過的欄位：沒動的照原樣留著
