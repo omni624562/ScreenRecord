@@ -235,6 +235,8 @@ fn to_viewer(app: &mut UiApp) {
     let playing = i.player.as_ref().is_some_and(|p| p.is_playing());
     let entry = i.entry.clone();
     drop(i);
+    // 關掉檢視器後回到主畫面接著播（檢視器播到哪裡就從哪裡）
+    app.inline_return = Some((entry.clone(), t, playing));
     super::viewer::open_at(app, entry, t + 0.5);
     // 在主畫面暫停著就暫停著開
     super::viewer::set_autoplay(app, playing);

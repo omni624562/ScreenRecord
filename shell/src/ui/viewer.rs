@@ -151,6 +151,11 @@ impl Viewer {
         self.player.as_ref().map_or(0.0, |p| p.time())
     }
 
+    /// 正在播放（不是暫停）
+    pub(crate) fn playing(&self) -> bool {
+        self.player.as_ref().is_some_and(|p| p.is_playing())
+    }
+
     fn is_image(&self) -> bool {
         is_image_name(&self.cur().media.name)
     }

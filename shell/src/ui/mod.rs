@@ -219,6 +219,8 @@ pub struct UiApp {
     taskbar_busy: bool,
     /// 從檔案庫或檢視器去剪輯、製作時記下來：剪輯視窗、製作視窗關掉後回到原本的地方
     pub back_to: Option<BackTo>,
+    /// 從主畫面播放打開檢視器（在播放器開啟、全螢幕、卡片的「播放」）：關掉檢視器後回到主畫面接著播這一支（影片, 時間, 是否在播）
+    pub inline_return: Option<(LibraryEntry, f64, bool)>,
     pub changelog_open: bool,
     /// 「關於」視窗開著（「⋯」→「關於」、系統匣「關於」）
     pub about_open: bool,
@@ -401,6 +403,7 @@ impl UiApp {
             jf_dupes: None,
             taskbar_busy: false,
             back_to: None,
+            inline_return: None,
             changelog_open: false,
             about_open: false,
             cameras: None,
@@ -1281,7 +1284,13 @@ impl UiApp {
                     Err(e) => app.toast(e.message().to_string(), true),
                 });
             }
-            EntryAction::Play => viewer::open(self, entry),
+            EntryAction::Play => {
+                // 主畫面正在播：先放開，關掉檢視器後回到這一支
+                if let Some(r) = self.inline.as_ref().map(|i| i.entry.media.path.clone()).and_then(|p| inline_play::release(self, &p)) {
+                    self.inline_return = Some(r);
+                }
+                viewer::open(self, entry)
+            }
             EntryAction::PlayHere => inline_play::open(self, entry),
             EntryAction::SaveAudio => {
                 let core = self.core.clone();
@@ -1768,6 +1777,16 @@ impl eframe::App for UiApp {
         if self.viewer.is_some() {
             viewer::show(self, &ctx);
             part(self, "檢視器");
+        }
+        // 從主畫面播放來的：檢視器播到哪裡就記到哪裡；關掉檢視器（不是去剪輯、製作）就回到主畫面接著播
+        if let (Some(v), Some(r)) = (self.viewer.as_ref(), self.inline_return.as_mut()) {
+            if v.cur().media.path == r.0.media.path {
+                (r.1, r.2) = (v.time(), v.playing());
+            }
+        }
+        if self.viewer.is_none() && self.back_to.is_none() && self.editor.is_none() && self.inline_return.is_some() {
+            let r = self.inline_return.take();
+            inline_play::resume(self, r);
         }
         if self.editor.is_some() {
             editor::show(self, &ctx);
