@@ -178,6 +178,16 @@ pub fn read_text() -> Option<String> {
     arboard::Clipboard::new().and_then(|mut c| c.get_text()).ok()
 }
 
+/// 剪貼簿裡的圖片（在網頁或其他程式按「複製圖片」的；轉成預乘 alpha 的畫布）；沒有圖片時 None
+pub fn read_image() -> Option<tiny_skia::Pixmap> {
+    let img = arboard::Clipboard::new().and_then(|mut c| c.get_image()).ok()?;
+    let mut pm = tiny_skia::Pixmap::new(img.width as u32, img.height as u32)?;
+    for (d, s) in pm.pixels_mut().iter_mut().zip(img.bytes.as_chunks::<4>().0) {
+        *d = tiny_skia::ColorU8::from_rgba(s[0], s[1], s[2], s[3]).premultiply();
+    }
+    Some(pm)
+}
+
 /// 把畫面（預乘 alpha）複製到剪貼簿；編輯後加了陰影的圖四周是透明的
 pub fn copy_pixmap(pm: &tiny_skia::Pixmap) -> bool {
     let bytes = crate::shot_edit::straight_rgba(pm);

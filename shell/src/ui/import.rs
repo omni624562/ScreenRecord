@@ -11,7 +11,8 @@ const FILTER: &str = "*.mp4;*.mov;*.mkv;*.avi;*.wmv;*.webm;*.m4v;*.flv;*.mpg;*.m
 
 /// 主畫面、全部錄影：拖曳檔案到視窗時蓋上提示，放開就匯入（剪輯視窗開著時由剪輯視窗處理：拖進來的是圖片）
 pub fn handle_drop(app: &mut UiApp, ctx: &egui::Context) {
-    if app.editor.is_some() {
+    // 剪輯視窗、人物照片開著時由它們處理（拖進來的是圖片）
+    if app.editor.is_some() || app.jf_face.is_some() {
         return;
     }
     let (hovering, dropped) = ctx.input(|i| (!i.raw.hovered_files.is_empty(), i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).filter(|p| !p.as_os_str().is_empty()).collect::<Vec<_>>()));
