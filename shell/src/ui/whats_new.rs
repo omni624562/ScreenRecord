@@ -42,17 +42,27 @@ enum Try {
 fn items(_app: &UiApp) -> Vec<(String, String, Try)> {
     vec![
         (
-            tr!("人物、標籤按右鍵改名、合併", "Right-click people and tags to rename or merge").into(),
+            tr!("人物照片可以用自己的圖片", "Use your own image for person photos").into(),
             tr!(
-                "Jellyfin 分頁的「人物」「標籤」清單，在名字上按右鍵就能重新命名；改成已經有的名字就合併成一個，也可以從全部影片移除。",
-                "In the People and Tags lists on the Jellyfin tab, right-click a name to rename it. Renaming it to an existing name merges them, and you can also remove it from all videos."
+                "人物照片除了影片畫面，也能從電腦選圖片、把圖片拖進來，或按 Ctrl+V 貼上剪貼簿的圖片。",
+                "Besides the video frame, you can choose an image from your computer, drag one in, or press Ctrl+V to paste one."
             )
             .into(),
             Try::Jellyfin,
         ),
         (
-            tr!("記住播放音量", "Playback volume is remembered").into(),
-            tr!("調過的音量和靜音，開下一支影片、重開程式都會沿用。", "The volume and mute you set carry over to the next video and after restarting the app.").into(),
+            tr!("框可以旋轉、改比例", "Rotate the box and change its ratio").into(),
+            tr!("拖框上方的圓點旋轉，歪著的臉也能框正；比例可選 2:3、1:1 或自由。", "Drag the dot above the box to rotate it, so tilted faces come out straight. The ratio can be 2:3, 1:1 or free.")
+                .into(),
+            Try::None,
+        ),
+        (
+            tr!("看得出誰已經有照片", "See who already has a photo").into(),
+            tr!(
+                "人物照片的名字前有小頭像的已經有照片；「人物」清單裡沒有照片的會寫「還沒有照片」。",
+                "In the person photo window, names with a small picture already have a photo. The People list marks those without one as “No photo yet”."
+            )
+            .into(),
             Try::None,
         ),
     ]
