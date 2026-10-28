@@ -768,6 +768,20 @@ fn interact(ed: &mut Editor, ui: &egui::Ui, rect: Rect, resp: &egui::Response) {
             } else {
                 ui.ctx().set_cursor_icon(cursor);
             }
+            // 選了工具：十字游標右下方顯示是哪個工具、用什麼顏色，放下去之前就知道會放什麼
+            if let Some(tool) = ed.tool.filter(|_| vw > 0.0) {
+                let kind = tool.kind();
+                let color = if kind.is_effect() || kind == AnnKind::Image {
+                    Color32::WHITE
+                } else {
+                    let (r, g, b) = annotate::parse_color(&super::style_of(kind, ed.size_base()).0);
+                    Color32::from_rgb(r, g, b)
+                };
+                let c = p + vec2(24.0, 24.0);
+                let painter = ui.painter();
+                painter.circle(c, 15.0, Color32::from_black_alpha(190), Stroke::new(1.0, Color32::from_white_alpha(90)));
+                paint_tool_icon(painter, c, tool, color);
+            }
         }
     }
 
