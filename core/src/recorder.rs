@@ -931,6 +931,10 @@ impl Recorder {
             return None;
         }
         let c = st.config.as_ref().filter(|c| !c.audio_only)?;
+        // 回溯錄影不記點擊、游標（用不到）：沒有要在畫面上顯示點擊、按鍵、游標光圈時，連全域的鍵盤、滑鼠攔截都不裝
+        if c.replay_sec > 0 && !(c.show_clicks || c.show_keys || c.cursor_halo) {
+            return None;
+        }
         Some(OverlayInfo { area: st.plan.as_ref()?.rect, show_clicks: c.show_clicks, show_keys: c.show_keys, cursor_halo: c.cursor_halo })
     }
 
@@ -947,7 +951,8 @@ impl Recorder {
     pub fn add_click(&self, x: i32, y: i32) -> Option<f64> {
         let mut st = self.lock();
         st.note_activity();
-        if st.state != RecorderState::Recording || st.clicks.len() >= 20_000 || st.config.as_ref().is_some_and(|c| c.audio_only) {
+        // 回溯錄影：存下的影片沒有剪輯專案，點擊用不到；不記也就不用去查點到了什麼
+        if st.state != RecorderState::Recording || st.clicks.len() >= 20_000 || st.config.as_ref().is_some_and(|c| c.audio_only || c.replay_sec > 0) {
             return None;
         }
         let r = st.plan.as_ref().map(|p| p.rect)?;
@@ -974,7 +979,7 @@ impl Recorder {
         let t = {
             let mut st = self.lock();
             st.note_activity();
-            if st.state != RecorderState::Recording || st.config.as_ref().is_some_and(|c| c.audio_only) {
+            if st.state != RecorderState::Recording || st.config.as_ref().is_some_and(|c| c.audio_only || c.replay_sec > 0) {
                 return;
             }
             st.recorded_ms() as f64 / 1000.0

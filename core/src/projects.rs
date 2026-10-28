@@ -60,6 +60,25 @@ impl ProjectStore {
         rd.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "json")).filter_map(|p| Self::read(&p).map(|x| (p, x))).collect()
     }
 
+    /// 所有剪輯專案與草稿的內容（原始 JSON；找旁白檔有沒有人用）。有讀不到的就回傳 None：寧可不清，也不要刪到還在用的
+    pub fn raw_texts(&self) -> Option<Vec<String>> {
+        let mut out = vec![];
+        for dir in [self.dir.clone(), self.dir.join("drafts")] {
+            let rd = match std::fs::read_dir(&dir) {
+                Ok(rd) => rd,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(_) => return None,
+            };
+            for e in rd {
+                let p = e.ok()?.path();
+                if p.extension().is_some_and(|x| x == "json") {
+                    out.push(std::fs::read_to_string(&p).ok()?);
+                }
+            }
+        }
+        Some(out)
+    }
+
     /// 草稿（還沒完成的剪輯）：同樣的格式，output 與 source 都是剪輯中的影片
     pub fn drafts(&self) -> ProjectStore {
         ProjectStore::new(self.dir.join("drafts"))

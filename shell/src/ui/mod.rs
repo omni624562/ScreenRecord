@@ -161,6 +161,9 @@ pub struct UiApp {
     /// 系統匣可以用：關掉視窗時只是隱藏（開機時系統匣可能晚一點才建立好）
     pub tray_ok: Arc<std::sync::atomic::AtomicBool>,
     pub visible: bool,
+    /// 關到系統匣時放開的影片（檢視器：路徑與時間；主畫面播放：inline_play::release 的結果）：叫回來時從同一個地方接著（暫停著）
+    hidden_viewer: Option<(String, f64)>,
+    hidden_inline: Option<(LibraryEntry, f64, bool)>,
     /// 主視窗看得到（背景比對狀態時用：看不到就不叫介面重畫）
     shown_flag: Arc<std::sync::atomic::AtomicBool>,
 
@@ -345,6 +348,8 @@ impl UiApp {
         seen_shot: u64,
     ) -> UiApp {
         let ctx = cc.egui_ctx.clone();
+        // mpv 播放元件（有下載時，約 100 MB）在背景先載入：等到要開操作視窗才載，只在系統匣常駐時不佔記憶體
+        screenrecorder_core::mpv::preload();
         theme::setup_fonts(&ctx);
         theme::setup_visuals(&ctx);
         let (tx, rx) = channel();
@@ -366,6 +371,8 @@ impl UiApp {
             open_requests,
             tray_ok,
             visible,
+            hidden_viewer: None,
+            hidden_inline: None,
             shown_flag: Arc::new(std::sync::atomic::AtomicBool::new(visible)),
             env,
             env_ready: false,
@@ -1533,6 +1540,12 @@ impl UiApp {
                 // 從系統匣叫回來：上次即時預覽失敗（例如當時在鎖定畫面）也重新試
                 self.preview.retry_live();
                 self.load_recent();
+                // 關到系統匣時放開的影片：重新載入，停在原本的地方
+                if let Some((path, t)) = self.hidden_viewer.take() {
+                    viewer::reload(self, &path, Some(t));
+                }
+                let inline = self.hidden_inline.take();
+                inline_play::resume(self, inline);
             }
             if page == UiPage::About {
                 self.about_open = true;
@@ -1662,8 +1675,15 @@ impl UiApp {
             if let Some(e) = &mut self.editor {
                 e.pause();
             }
+            // 檢視器、主畫面播放的影片放開：mpv 與畫面材質不再佔記憶體，檔案也不會被鎖住（檔案總管刪不掉、改不了名）
             if let Some(v) = &mut self.viewer {
                 v.pause();
+            }
+            if let Some(path) = self.viewer.as_ref().map(|v| v.cur().media.path.clone()) {
+                self.hidden_viewer = viewer::release(self, &path).map(|t| (path, t));
+            }
+            if let Some(path) = self.inline.as_ref().map(|i| i.entry.media.path.clone()) {
+                self.hidden_inline = inline_play::release(self, &path).map(|(e, t, _)| (e, t, false));
             }
             settings_dialog::cancel_key_capture(self);
         } else {

@@ -114,6 +114,34 @@ pub fn unique_temp(prefix: &str, ext: &str) -> PathBuf {
     std::env::temp_dir().join(format!("{prefix}-{}-{}-{n}{ext}", std::process::id(), now_ms()))
 }
 
+/// 清掉暫存資料夾裡本程式留下的東西（ScreenRecorder-…：匯出時的標註圖、合併清單等；
+/// 平常用完就刪，匯出到一半當掉、被強制結束時才會留下）。只刪放了一天以上、不是這次執行建立的。回傳刪掉幾個
+pub fn prune_temp() -> usize {
+    prune_temp_in(&std::env::temp_dir(), std::process::id(), std::time::SystemTime::now())
+}
+
+fn prune_temp_in(dir: &Path, pid: u32, now: std::time::SystemTime) -> usize {
+    let Ok(rd) = std::fs::read_dir(dir) else { return 0 };
+    let mine = format!("-{pid}-");
+    let mut n = 0;
+    for e in rd.flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        if !name.starts_with("ScreenRecorder-") || name.contains(&mine) {
+            continue;
+        }
+        let old = e.metadata().ok().and_then(|m| m.modified().ok()).and_then(|t| now.duration_since(t).ok()).is_some_and(|age| age >= std::time::Duration::from_secs(24 * 3600));
+        if !old {
+            continue;
+        }
+        let p = e.path();
+        let r = if p.is_dir() { std::fs::remove_dir_all(&p) } else { std::fs::remove_file(&p) };
+        if r.is_ok() {
+            n += 1;
+        }
+    }
+    n
+}
+
 pub fn now_ms() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
 }
@@ -202,6 +230,24 @@ pub fn inside(dir: &std::path::Path, root: &std::path::Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn prune_temp_removes_only_old_leftovers_of_other_runs() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        std::fs::create_dir_all(d.join("ScreenRecorder-overlays-111-5-0")).unwrap();
+        std::fs::write(d.join("ScreenRecorder-overlays-111-5-0").join("a.png"), b"x").unwrap();
+        std::fs::write(d.join("ScreenRecorder-cover-111-5-1.jpg"), b"x").unwrap();
+        // 這次執行的、別的程式的：不動
+        std::fs::create_dir_all(d.join("ScreenRecorder-merge-222-5-0")).unwrap();
+        std::fs::write(d.join("other-app.tmp"), b"x").unwrap();
+        // 剛建立的不動
+        assert_eq!(prune_temp_in(d, 222, std::time::SystemTime::now()), 0);
+        let later = std::time::SystemTime::now() + std::time::Duration::from_secs(2 * 24 * 3600);
+        assert_eq!(prune_temp_in(d, 222, later), 2);
+        assert!(d.join("ScreenRecorder-merge-222-5-0").exists() && d.join("other-app.tmp").exists());
+        assert!(!d.join("ScreenRecorder-overlays-111-5-0").exists());
+    }
 
     #[test]
     fn atomic_write_replaces_the_whole_file() {

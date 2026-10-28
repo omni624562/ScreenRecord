@@ -165,10 +165,20 @@ impl Exporter {
         let budget = max_mb * 1024.0 * 1024.0 - cover.as_ref().map(|c| c.1 as f64).unwrap_or(0.0);
         let cover = cover.map(|c| c.0);
         let kbps = limit.then(|| crate::args::size_bitrate(budget, out_sec, if with_audio { crate::args::SMALL_AUDIO_KBPS } else { 0 }));
-        let mut args = if webm {
-            crate::args::webm_export_args(source, &output.display().to_string(), speed, fps, with_audio, Some(w), src_w, kbps, quality)?
+        let args = if webm {
+            crate::args::webm_export_args(source, &output.display().to_string(), speed, fps, with_audio, Some(w), src_w, kbps, quality)
         } else {
-            export_args(source, &output.display().to_string(), speed, fps, &enc, with_audio, Some(w), src_w, kbps, quality)?
+            export_args(source, &output.display().to_string(), speed, fps, &enc, with_audio, Some(w), src_w, kbps, quality)
+        };
+        // 做不了：剛取出的封面暫存檔（放在輸出旁邊的隱藏檔）一起刪掉
+        let mut args = match args {
+            Ok(a) => a,
+            Err(e) => {
+                if let Some(c) = &cover {
+                    let _ = std::fs::remove_file(c);
+                }
+                return Err(e);
+            }
         };
         // 章節（錄影時加的標記）跟著加速換算時間
         let cleanup = with_chapters(&mut args, &crate::chapters::scale(&info.chapters, speed), out_sec, None);
