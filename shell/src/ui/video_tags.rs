@@ -388,22 +388,7 @@ fn run(app: &mut UiApp, ctx: &egui::Context, host: Option<&mut egui::Ui>) {
                         }
                     });
                 });
-                ui.add_space(4.0);
-                let adult = d.values.entry(video_tags::ADULT_KEY.to_string()).or_default();
-                let mut on = adult == "1";
-                ui.add_enabled_ui(!d.saving && !d.syncing, |ui| {
-                    if ui
-                        .checkbox(&mut on, tr!("只給大人看", "Adults only"))
-                        .on_hover_text(tr!(
-                            "傳到 Jellyfin 時分級設成 R、加上標籤「18+」：在小孩帳號的家長控制設最高分級（例如 PG-13）或封鎖標籤「18+」，小孩就看不到",
-                            "In Jellyfin this sets the rating to R and adds the tag “18+”. Set a maximum rating (e.g. PG-13) or block the “18+” tag in a child's profile to hide it"
-                        ))
-                        .changed()
-                    {
-                        *adult = if on { "1".into() } else { String::new() };
-                    }
-                });
-                ui.add_space(6.0);
+                ui.add_space(10.0);
                 ui.label(
                 RichText::new(tr!(
                     "寫進影片檔裡：Windows 檔案總管（按右鍵 → 內容 → 詳細資料）和多數播放器看得到。影片內容、封面、章節都不變；欄位清空就是刪掉。",
@@ -424,13 +409,13 @@ fn run(app: &mut UiApp, ctx: &egui::Context, host: Option<&mut egui::Ui>) {
                 }
                 if has_jf {
                     ui.label(
-                    RichText::new(tr!(
-                        "Jellyfin 上有同名的影片時，標題、說明、年份、標籤、人物、只給大人看兩邊會一樣（在哪邊改都會同步到另一邊）。",
-                        "If Jellyfin has a video with the same file name, the title, description, year, tags, people and adults-only setting are kept the same on both sides (changes on either side sync to the other)."
+                        RichText::new(tr!(
+                        "Jellyfin 上有同名的影片時，標題、說明、年份、標籤、人物兩邊會一樣（在哪邊改都會同步到另一邊）。",
+                        "If Jellyfin has a video with the same file name, the title, description, year, tags and people are kept the same on both sides (changes on either side sync to the other)."
                     ))
-                    .font(theme::font(12.0))
-                    .color(pal.muted),
-                );
+                        .font(theme::font(12.0))
+                        .color(pal.muted),
+                    );
                 }
             }
         }
