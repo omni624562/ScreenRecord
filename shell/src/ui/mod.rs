@@ -2000,6 +2000,17 @@ fn trash_now(app: &mut UiApp, paths: Vec<String>, copies: Vec<std::path::PathBuf
     );
 }
 
+/// FFmpeg 解出來的 RGBA 畫面 → egui 的圖。影片沒有透明度（每一點都是 255）時直接整塊複製，
+/// 不用一點一點換算（1080p 每秒 30 張時省下不少 CPU）；有透明的才照一般的方式換算
+pub fn rgba_image(w: u32, h: u32, rgba: &[u8]) -> egui::ColorImage {
+    let size = [w as usize, h as usize];
+    if rgba.len() == size[0] * size[1] * 4 && rgba.iter().skip(3).step_by(4).all(|&a| a == 255) {
+        egui::ColorImage::new(size, bytemuck::cast_slice::<u8, egui::Color32>(rgba).to_vec())
+    } else {
+        egui::ColorImage::from_rgba_unmultiplied(size, rgba)
+    }
+}
+
 /// 「已移到資源回收筒」：帶「開啟資源回收筒（可還原）」（在那裡按右鍵 →「還原」，會回到原本的資料夾）
 pub fn trashed_toast(app: &mut UiApp, msg: String) {
     app.toast_with(
@@ -2057,6 +2068,16 @@ fn panic_text(p: Box<dyn std::any::Any + Send>) -> String {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+
+    #[test]
+    fn rgba_image_matches_slow_path() {
+        // 不透明：整塊複製，結果和一點一點換算一樣
+        let opaque = [10u8, 20, 30, 255, 40, 50, 60, 255];
+        assert_eq!(rgba_image(2, 1, &opaque), egui::ColorImage::from_rgba_unmultiplied([2, 1], &opaque));
+        // 有透明：照一般方式換算（預乘）
+        let alpha = [200u8, 100, 50, 128, 1, 2, 3, 255];
+        assert_eq!(rgba_image(2, 1, &alpha), egui::ColorImage::from_rgba_unmultiplied([2, 1], &alpha));
+    }
 
     #[tokio::test(start_paused = true)]
     async fn wakes_only_on_change() {

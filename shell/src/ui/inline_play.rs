@@ -268,7 +268,7 @@ pub fn tick(app: &mut UiApp, ctx: &egui::Context) {
     }
     if let Some(Playback::Ff(p)) = &i.player {
         if let Some(f) = p.take_frame() {
-            let img = egui::ColorImage::from_rgba_unmultiplied([f.width as usize, f.height as usize], &f.rgba);
+            let img = super::rgba_image(f.width, f.height, &f.rgba);
             match &mut i.tex {
                 Some(t) => t.set(img, TextureOptions::LINEAR),
                 None => i.tex = Some(ctx.load_texture("inline-video", img, TextureOptions::LINEAR)),

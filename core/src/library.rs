@@ -23,9 +23,14 @@ pub struct MediaCache {
     map: Mutex<HashMap<String, (String, Slot)>>,
     /// 剛列過的資料夾（什麼時候列的, 資料夾的修改時間, 清單）：見 scan_checked
     scans: Mutex<HashMap<PathBuf, ScanCache>>,
+    /// 截圖的寬高：路徑 → (大小, 修改時間, 寬高)。換頁、換篩選時不用每張再讀一次檔頭（NAS 上每張都要等網路）
+    dims: Mutex<HashMap<String, Dims>>,
     /// 存在硬碟上的一份：重開程式後不用每支影片再跑一次 FFmpeg（檔案庫幾百支時開啟快很多）
     disk: Option<DiskInfo>,
 }
+
+/// 截圖的寬高快取：(大小, 修改時間, 寬高)
+type Dims = (u64, f64, (u32, u32));
 
 type ScanCache = (std::time::Instant, Option<std::time::SystemTime>, Vec<LibraryEntry>);
 
@@ -39,6 +44,9 @@ struct DiskInfo {
     /// 有新的資訊、存檔排定了
     saving: Arc<std::sync::atomic::AtomicBool>,
 }
+
+/// 記憶體裡最多記幾張截圖的寬高（太多時整個清掉重新讀）
+const DIMS_MAX: usize = 50_000;
 
 /// 硬碟上最多記幾支（太多時丟掉一半）
 const DISK_MAX: usize = 20_000;
@@ -384,8 +392,23 @@ fn dir_error(dir: &Path, e: &std::io::Error) -> Option<String> {
 async fn with_info(cache: &MediaCache, ffmpeg: Option<&Path>, e: LibraryEntry) -> LibraryEntry {
     // 截圖只要寬高：讀檔頭就好，不必啟動 FFmpeg
     if is_image_name(&e.media.name) {
-        let path = PathBuf::from(&e.media.path);
-        let size = tokio::task::spawn_blocking(move || image::image_dimensions(path).ok()).await.ok().flatten();
+        let (bytes, mtime) = (e.media.bytes, e.media.mtime);
+        let known = cache.dims.lock().unwrap_or_else(|e| e.into_inner()).get(&e.media.path).filter(|(b, m, _)| *b == bytes && m.to_bits() == mtime.to_bits()).map(|d| d.2);
+        let size = match known {
+            Some(d) => Some(d),
+            None => {
+                let path = PathBuf::from(&e.media.path);
+                let size = tokio::task::spawn_blocking(move || image::image_dimensions(path).ok()).await.ok().flatten();
+                if let Some(d) = size {
+                    let mut dims = cache.dims.lock().unwrap_or_else(|e| e.into_inner());
+                    if dims.len() >= DIMS_MAX {
+                        dims.clear();
+                    }
+                    dims.insert(e.media.path.clone(), (bytes, mtime, d));
+                }
+                size
+            }
+        };
         let mut e = e;
         if let Some((w, h)) = size {
             (e.media.width, e.media.height) = (Some(w), Some(h));
@@ -417,6 +440,27 @@ fn srt_files(dir: &Path) -> HashMap<String, Vec<PathBuf>> {
     map
 }
 
+/// 字幕檔的內容：大小、修改時間沒變就用上次讀的（搜尋時每打一個字都要找一次）
+fn srt_text(p: &Path) -> Option<Arc<String>> {
+    type Texts = HashMap<PathBuf, (u64, Option<std::time::SystemTime>, Arc<String>)>;
+    static TEXTS: LazyLock<Mutex<Texts>> = LazyLock::new(Mutex::default);
+    let meta = std::fs::metadata(p).ok()?;
+    let (len, mtime) = (meta.len(), meta.modified().ok());
+    if let Some((l, m, t)) = TEXTS.lock().unwrap_or_else(|e| e.into_inner()).get(p) {
+        if *l == len && *m == mtime && mtime.is_some() {
+            return Some(t.clone());
+        }
+    }
+    let text = Arc::new(std::fs::read_to_string(p).ok()?);
+    let mut texts = TEXTS.lock().unwrap_or_else(|e| e.into_inner());
+    // 字幕檔通常只有幾十 KB；太多時整個清掉重新讀
+    if texts.len() >= 2_000 {
+        texts.clear();
+    }
+    texts.insert(p.to_path_buf(), (len, mtime, text.clone()));
+    Some(text)
+}
+
 /// 這支影片的字幕裡說過的話：同名的 SRT（另存時可能是「名稱_2.srt」；有同名的另一支影片時那是它的）
 fn speech_hits(srts: &HashMap<String, Vec<PathBuf>>, videos: &std::collections::HashSet<String>, video_name: &str, query: &str) -> Vec<crate::types::SpeechHit> {
     static NUM: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^_\d+$").unwrap());
@@ -428,7 +472,7 @@ fn speech_hits(srts: &HashMap<String, Vec<PathBuf>>, videos: &std::collections::
             continue;
         }
         for p in paths {
-            if let Ok(text) = std::fs::read_to_string(p) {
+            if let Some(text) = srt_text(p) {
                 hits.extend(crate::subtitles::search(&text, query));
             }
         }
@@ -437,6 +481,30 @@ fn speech_hits(srts: &HashMap<String, Vec<PathBuf>>, videos: &std::collections::
     hits.dedup_by(|a, b| a.start == b.start && a.text == b.text);
     hits
 }
+
+/// 一次列好幾個子資料夾：同時最多 SCAN_CONCURRENCY 個（NAS 上一個一個列要等很多次網路），
+/// 結果照原本的順序；讀不到的略過
+async fn scan_many(cache: &Arc<MediaCache>, dirs: Vec<(PathBuf, String)>) -> Vec<(PathBuf, String, Vec<LibraryEntry>)> {
+    let sem = Arc::new(Semaphore::new(SCAN_CONCURRENCY));
+    let mut tasks = tokio::task::JoinSet::new();
+    let n = dirs.len();
+    for (i, (dir, rel)) in dirs.into_iter().enumerate() {
+        let (cache, sem) = (cache.clone(), sem.clone());
+        tasks.spawn(async move {
+            let _permit = sem.acquire_owned().await;
+            let r = scan_checked(&cache, &dir).await.ok();
+            (i, r.map(|list| (dir, rel, list)))
+        });
+    }
+    let mut out: Vec<Option<(PathBuf, String, Vec<LibraryEntry>)>> = (0..n).map(|_| None).collect();
+    while let Some(Ok((i, r))) = tasks.join_next().await {
+        out[i] = r;
+    }
+    out.into_iter().flatten().collect()
+}
+
+/// 同時最多列幾個子資料夾
+const SCAN_CONCURRENCY: usize = 8;
 
 /// 同時最多 limit 個讀取影片資訊的工作
 async fn pool_with_info(cache: &Arc<MediaCache>, ffmpeg: Option<&Path>, list: Vec<LibraryEntry>, limit: usize) -> Vec<LibraryEntry> {
@@ -596,11 +664,9 @@ pub async fn list_library_with(cache: &Arc<MediaCache>, ffmpeg: Option<&Path>, d
     if q.subdirs {
         let root = dir.to_path_buf();
         let subs = tokio::task::spawn_blocking(move || subdirs_of(&root)).await.unwrap_or_default();
-        for (sub, rel) in subs {
-            if let Ok(more) = scan_checked(cache, &sub).await {
-                list.extend(more.into_iter().map(|e| in_folder(e, &rel)));
-                scanned.push(sub);
-            }
+        for (sub, rel, more) in scan_many(cache, subs).await {
+            list.extend(more.into_iter().map(|e| in_folder(e, &rel)));
+            scanned.push(sub);
         }
     }
     // 截圖：也列出留在其他資料夾的舊截圖（讀不到的資料夾略過）
@@ -611,11 +677,9 @@ pub async fn list_library_with(cache: &Arc<MediaCache>, ffmpeg: Option<&Path>, d
                 let root = extra.to_path_buf();
                 dirs.extend(tokio::task::spawn_blocking(move || subdirs_of(&root)).await.unwrap_or_default());
             }
-            for (d, rel) in dirs {
-                if let Ok(more) = scan_checked(cache, &d).await {
-                    let add: Vec<LibraryEntry> = more.into_iter().filter(|e| is_image_name(&e.media.name) && !list_has(&list, &e.media.path)).map(|e| in_folder(e, &rel)).collect();
-                    list.extend(add);
-                }
+            for (_, rel, more) in scan_many(cache, dirs).await {
+                let add: Vec<LibraryEntry> = more.into_iter().filter(|e| is_image_name(&e.media.name) && !list_has(&list, &e.media.path)).map(|e| in_folder(e, &rel)).collect();
+                list.extend(add);
             }
         }
     }

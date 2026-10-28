@@ -115,7 +115,7 @@ pub fn paint(painter: &egui::Painter, key: &str, rect: Rect, rounding: u8) -> bo
         let Some(pl) = s.playing.as_mut().filter(|p| p.key == key) else { return false };
         let ctx = painter.ctx();
         if let Some(f) = pl.player.take_frame() {
-            let img = egui::ColorImage::from_rgba_unmultiplied([f.width as usize, f.height as usize], &f.rgba);
+            let img = super::rgba_image(f.width, f.height, &f.rgba);
             match &mut pl.tex {
                 Some(t) => t.set(img, TextureOptions::LINEAR),
                 None => pl.tex = Some(ctx.load_texture("hover-play", img, TextureOptions::LINEAR)),
