@@ -742,15 +742,27 @@ impl AudioPipe {
         }
     }
 
-    /// 立即釋放（FFmpeg 已結束時）
+    /// 立即釋放（FFmpeg 已結束時）。最多等 CLOSE_WAIT：音訊裝置卡住（例如拔掉的藍牙耳機）時
+    /// 釋放的呼叫可能一直不回來，不能讓停止錄影、結束程式跟著一直等；那條執行緒放著，好了會自己結束
     pub fn close(&self) {
         let _ = self.tx.send(Cmd::Close);
         let thread = self.thread.lock().unwrap_or_else(|e| e.into_inner()).take();
         if let Some(t) = thread {
-            let _ = t.join();
+            let until = Instant::now() + CLOSE_WAIT;
+            while !t.is_finished() && Instant::now() < until {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            if t.is_finished() {
+                let _ = t.join();
+            } else {
+                crate::warn!("[聲音] 音訊裝置 {} 秒內沒有釋放，不再等它", CLOSE_WAIT.as_secs());
+            }
         }
     }
 }
+
+/// 關閉時最多等聲音執行緒多久（見 AudioPipe::close）
+const CLOSE_WAIT: Duration = Duration::from_secs(5);
 
 impl Drop for AudioPipe {
     fn drop(&mut self) {
