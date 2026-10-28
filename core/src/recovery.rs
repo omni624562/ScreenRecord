@@ -26,6 +26,11 @@ pub struct Orphan {
 /// 儲存位置裡沒有收尾的錄影（最舊的在前）。active = 正在錄影的分段資料夾（不算）。
 /// 沒有任何內容的資料夾直接刪掉
 pub fn find(output_dir: &Path, active: Option<&Path>) -> Vec<Orphan> {
+    find_at(output_dir, active, std::time::SystemTime::now())
+}
+
+/// 同上，now：現在時間（測試用）
+fn find_at(output_dir: &Path, active: Option<&Path>, now: std::time::SystemTime) -> Vec<Orphan> {
     let root = output_dir.join(".parts");
     let Ok(rd) = std::fs::read_dir(&root) else { return Vec::new() };
     let mut out = Vec::new();
@@ -34,18 +39,20 @@ pub fn find(output_dir: &Path, active: Option<&Path>) -> Vec<Orphan> {
         if !dir.is_dir() || active.is_some_and(|a| a == dir) {
             continue;
         }
-        let mut files: Vec<(PathBuf, u64)> = std::fs::read_dir(&dir)
-            .map(|rd| {
-                rd.flatten()
-                    .filter_map(|f| {
-                        let p = f.path();
-                        let name = p.file_name()?.to_str()?.to_string();
-                        let len = f.metadata().ok()?.len();
-                        (name.starts_with("seg_") && name.ends_with(".mp4") && len > 0).then_some((p, len))
-                    })
-                    .collect()
+        // 讀不到（NAS 斷線、沒有權限）：不知道裡面有什麼，留著不動
+        let Ok(rd) = std::fs::read_dir(&dir) else { continue };
+        let entries: Vec<(PathBuf, std::fs::Metadata)> = rd.flatten().filter_map(|f| Some((f.path(), f.metadata().ok()?))).collect();
+        // 另一台電腦（存到同一個 NAS 資料夾）的、最近還有寫入：它可能正在錄，不算、也不刪
+        if from_other_pc(&dir) && (entries.iter().any(|(_, m)| recently_written(m, now)) || std::fs::metadata(&dir).is_ok_and(|m| recently_written(&m, now))) {
+            continue;
+        }
+        let mut files: Vec<(PathBuf, u64)> = entries
+            .into_iter()
+            .filter_map(|(p, m)| {
+                let name = p.file_name()?.to_str()?.to_string();
+                (name.starts_with("seg_") && name.ends_with(".mp4") && m.len() > 0).then_some((p, m.len()))
             })
-            .unwrap_or_default();
+            .collect();
         if files.is_empty() {
             cleanup_parts(Some(&dir));
             continue;
@@ -71,7 +78,7 @@ pub async fn recover(ffmpeg: &Path, o: &Orphan) -> Result<RecordingResult> {
     let out = unique_path(output_dir, &format!("{prefix}_{}", o.stamp), ".mp4");
     let files: Vec<String> = o.files.iter().map(|f| f.display().to_string()).collect();
     // 聲音有沒有錄：讀不到聲音結尾的分段就不截斷（merge_segments 會略過）
-    let duration = merge_segments(ffmpeg, &files, &o.dir, &out, true, None).await.map_err(|detail| Error::other(trf!("無法合併分段：{detail}", "Couldn't merge the segments: {detail}")))?;
+    let duration = merge_segments(ffmpeg, &files, &[], true, &o.dir, &out, true, None).await.map_err(|detail| Error::other(trf!("無法合併分段：{detail}", "Couldn't merge the segments: {detail}")))?;
     cleanup_parts(Some(&o.dir));
     let out_str = out.display().to_string();
     Ok(RecordingResult {
@@ -84,14 +91,50 @@ pub async fn recover(ffmpeg: &Path, o: &Orphan) -> Result<RecordingResult> {
     })
 }
 
+/// 分段資料夾裡記下是哪台電腦錄的（見 from_other_pc）
+const OWNER_FILE: &str = "owner.txt";
+
+fn this_pc() -> String {
+    std::env::var("COMPUTERNAME").or_else(|_| std::env::var("HOSTNAME")).unwrap_or_default()
+}
+
+/// 開始錄影時記下這個分段資料夾是哪台電腦的
+pub(crate) fn mark_owner(dir: &Path) {
+    let _ = std::fs::write(dir.join(OWNER_FILE), this_pc());
+}
+
+/// 別台電腦錄的（沒有記錄的是舊版本留下的，當作這台的）
+fn from_other_pc(dir: &Path) -> bool {
+    std::fs::read_to_string(dir.join(OWNER_FILE)).is_ok_and(|o| !o.trim().is_empty() && !o.trim().eq_ignore_ascii_case(this_pc().trim()))
+}
+
+/// 別台電腦的分段資料夾這麼久以內有寫入，當作還在錄（錄影中每秒都會寫入）
+const LIVE_WINDOW: std::time::Duration = std::time::Duration::from_secs(120);
+
+fn recently_written(m: &std::fs::Metadata, now: std::time::SystemTime) -> bool {
+    // 修改時間比現在還晚（時鐘不一致的 NAS）也當作還在錄
+    m.modified().is_ok_and(|t| now.duration_since(t).map_or(true, |age| age < LIVE_WINDOW))
+}
+
 /// seg_012.mp4 → 12（看不懂的排最後）
 fn seg_number(p: &Path) -> u64 {
     p.file_name().and_then(|n| n.to_str()).and_then(|n| n.strip_prefix("seg_")?.strip_suffix(".mp4")?.parse().ok()).unwrap_or(u64::MAX)
 }
 
-/// 不要了：刪掉分段
-pub fn discard(o: &Orphan) {
-    cleanup_parts(Some(&o.dir));
+/// 不要了：刪掉沒有存好的錄影片段：移到資源回收筒（按錯了還能還原）；移不進去時留著不刪，回傳原因。
+/// 網路資料夾（NAS）沒有資源回收筒，Windows 會直接刪掉
+pub fn discard(o: &Orphan) -> std::result::Result<(), String> {
+    if cfg!(windows) {
+        crate::recycle::move_to_recycle_bin(&[o.dir.display().to_string()]).map_err(|e| e.message().to_string())?;
+        // 只有空資料夾才刪得掉（.parts 裡還有其他片段時留著）
+        if let Some(parent) = o.dir.parent() {
+            let _ = std::fs::remove_dir(parent);
+        }
+        Ok(())
+    } else {
+        cleanup_parts(Some(&o.dir));
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -124,7 +167,17 @@ mod tests {
         std::fs::write(active.join("seg_000.mp4"), b"4444").unwrap();
         std::fs::write(replay.join("rp_000_00003.mp4"), b"55555").unwrap();
 
+        // 另一台電腦（同一個 NAS 資料夾）正在錄的：剛寫入時不算、也不刪；一小時沒動才當作沒收尾
+        let other = parts.join("2026-10-11_14-00-00");
+        std::fs::create_dir_all(&other).unwrap();
+        std::fs::write(other.join(OWNER_FILE), "ANOTHER-PC-XYZ").unwrap();
+        std::fs::write(other.join("seg_000.mp4"), b"666666").unwrap();
         let found = find(dir.path(), Some(&active));
+        assert_eq!(found.len(), 2, "這台電腦的照樣找得到（剛當掉、馬上救回）");
+        assert!(other.exists());
+        let later = std::time::SystemTime::now() + std::time::Duration::from_secs(3600);
+        assert_eq!(find_at(dir.path(), Some(&active), later).len(), 3);
+        std::fs::remove_dir_all(&other).unwrap();
         assert_eq!(found.len(), 2);
         assert_eq!(found[0].stamp, "2026-10-10_09-00-00");
         assert_eq!(found[0].files.iter().map(|f| f.file_name().unwrap().to_str().unwrap()).collect::<Vec<_>>(), ["seg_000.mp4", "seg_001.mp4", "seg_100.mp4", "seg_1000.mp4"]);
@@ -135,7 +188,7 @@ mod tests {
         assert!(active.exists());
         // 沒有 .parts
         assert!(find(&dir.path().join("none"), None).is_empty());
-        discard(&found[0]);
+        discard(&found[0]).unwrap();
         assert!(!a.exists());
     }
 }

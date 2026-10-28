@@ -525,16 +525,43 @@ impl UiApp {
                 tr!("救回", "Recover"),
                 move |app, _| app.recover_orphans(keep),
             )
-            .with_alt(tr!("刪除", "Delete"), move |app, _| {
-                for o in &drop {
-                    screenrecorder_core::recovery::discard(o);
-                }
-                app.toast(tr!("已刪除沒有存好的錄影片段", "Deleted the unsaved recording pieces"), false);
-            })
+            .with_alt(tr!("刪除", "Delete"), move |app, _| app.confirm_discard(drop))
             .with_cancel(tr!("稍後", "Later"));
             ask.list = names;
             app.ask = Some(ask);
         });
+    }
+
+    /// 「找到沒有存好的錄影」按了刪除：可能是幾個小時的錄影、只有這一份，再問一次；刪除是移到資源回收筒
+    fn confirm_discard(&mut self, list: Vec<screenrecorder_core::recovery::Orphan>) {
+        let total = list.iter().map(|o| o.bytes).sum::<u64>();
+        let mut ask = dialogs::Ask::confirm(
+            tr!("刪除沒有存好的錄影？", "Delete the unsaved recordings?"),
+            trf!(
+                "這 {} 段錄影（共 {}）只有這一份，刪掉後就不能救回成影片。會移到資源回收筒（存在網路資料夾時會直接刪掉）。",
+                "These {} recordings ({} in total) exist only here; once deleted they can't be recovered as videos. They'll be moved to the Recycle Bin (deleted permanently on a network folder).",
+                list.len(),
+                screenrecorder_core::format::format_bytes(total)
+            ),
+            tr!("刪除", "Delete"),
+            move |app, _| {
+                app.spawn(
+                    async move {
+                        tokio::task::spawn_blocking(move || list.iter().filter_map(|o| screenrecorder_core::recovery::discard(o).err()).collect::<Vec<_>>().into_iter().next())
+                            .await
+                            .unwrap_or_else(|e| Some(e.to_string()))
+                    },
+                    |app, err: Option<String>| match err {
+                        None => app.toast(tr!("已把沒有存好的錄影片段移到資源回收筒", "Moved the unsaved recording pieces to the Recycle Bin"), false),
+                        Some(e) => app.toast(trf!("有些片段沒有刪掉（還留著，之後可以再救回）：{e}", "Some pieces weren't deleted (they're kept and can still be recovered): {e}"), true),
+                    },
+                );
+            },
+        )
+        // 不刪：片段留著，下次開啟（或錄影失敗卡的「救回」）還會再問
+        .with_cancel(tr!("不要刪", "Don't delete"));
+        ask.danger = true;
+        self.ask = Some(ask);
     }
 
     fn recover_orphans(&mut self, list: Vec<screenrecorder_core::recovery::Orphan>) {
