@@ -169,6 +169,25 @@ pub fn panel(ed: &mut Editor, ui: &mut egui::Ui, toast: &mut Option<(String, boo
     }
 }
 
+/// 旁白的錄音檔不見了：清單每一格都要問，同一個檔案 2 秒內不重查磁碟
+fn file_missing(path: &str) -> bool {
+    type Seen = std::collections::HashMap<String, (std::time::Instant, bool)>;
+    static SEEN: std::sync::Mutex<Option<Seen>> = std::sync::Mutex::new(None);
+    let mut g = SEEN.lock().unwrap_or_else(|e| e.into_inner());
+    let map = g.get_or_insert_with(Default::default);
+    if let Some((at, r)) = map.get(path) {
+        if at.elapsed() < std::time::Duration::from_secs(2) {
+            return *r;
+        }
+    }
+    let r = !std::path::Path::new(path).is_file();
+    if map.len() > 200 {
+        map.clear();
+    }
+    map.insert(path.to_string(), (std::time::Instant::now(), r));
+    r
+}
+
 /// 旁白清單：時間、內容、試聽、刪除
 fn clip_list(ed: &mut Editor, ui: &mut egui::Ui) {
     let p = theme::pal(ui);
@@ -177,7 +196,7 @@ fn clip_list(ed: &mut Editor, ui: &mut egui::Ui) {
     for (i, c) in ed.spec.narration.clips.iter().enumerate() {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 4.0;
-            let missing = !std::path::Path::new(&c.file).is_file();
+            let missing = file_missing(&c.file);
             let label = narration::describe(c);
             // 文字太長時截短，右邊留給「播放」「×」
             let w = (ui.available_width() - 84.0).max(60.0);

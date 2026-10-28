@@ -775,6 +775,20 @@ fn remote_buttons(app: &UiApp, remote: Option<&Remote>) -> Vec<HeadBtn> {
     vec![edit, make, down, cover, face, info, fav]
 }
 
+/// 有沒有 mpv 播放元件：大影片用 FFmpeg 播放時每一格都要問（決定要不要顯示提示），2 秒內不重查磁碟
+fn mpv_installed(app: &UiApp) -> bool {
+    static SEEN: std::sync::Mutex<Option<(std::time::Instant, bool)>> = std::sync::Mutex::new(None);
+    let mut g = SEEN.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((at, r)) = *g {
+        if at.elapsed() < std::time::Duration::from_secs(2) {
+            return r;
+        }
+    }
+    let r = app.core.component_installed(Kind::Mpv);
+    *g = Some((std::time::Instant::now(), r));
+    r
+}
+
 pub fn show(app: &mut UiApp, ctx: &egui::Context) {
     let Some(mut v) = app.viewer.take() else { return };
     if let Some(Playback::Ff(p)) = &v.player {
@@ -845,7 +859,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         && !v.mpv_hint_closed
         && !app.s.mpv_hint_off
         && app.s.use_mpv
-        && !app.core.component_installed(Kind::Mpv);
+        && !mpv_installed(app);
     let (mut hint_download, mut hint_close, mut hint_never) = (false, false, false);
     let modal = egui::Modal::new(Id::new("viewer")).area(area).frame(frame).show(ctx, |ui| {
         ui.set_width(size.x);
