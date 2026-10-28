@@ -139,7 +139,9 @@ pub async fn ocr_index(app: &App, dirs: Vec<String>) {
     }
     paths.sort_by(|a, b| b.0.total_cmp(&a.0));
     let paths: Vec<String> = paths.into_iter().map(|(_, p)| p).collect();
-    app.ocr.prune();
+    // 清理要檢查每張截圖在不在（存在 NAS 上時要等網路）：不要佔住非同步的執行緒
+    let ocr = app.ocr.clone();
+    let _ = tokio::task::spawn_blocking(move || ocr.prune()).await;
     // 同時在背景算每張的長相指紋與主要顏色（瀏覽欄的「顏色」、相關截圖、找相似的截圖都用得到）
     let hashes = app.hashes.clone();
     let all = paths.clone();

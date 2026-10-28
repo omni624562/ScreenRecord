@@ -154,7 +154,7 @@ impl ShotMetaStore {
     pub fn prune(&self) {
         let keys: Vec<String> = self.map.lock().unwrap_or_else(|e| e.into_inner()).keys().cloned().collect();
         // 檢查時不鎖住：截圖存在 NAS 上時可能要等，不要擋到正在記錄的截圖
-        let gone: std::collections::HashSet<String> = keys.into_iter().filter(|k| is_gone(Path::new(k))).collect();
+        let gone: std::collections::HashSet<String> = keys.into_iter().filter(|k| crate::paths::file_gone(Path::new(k))).collect();
         if gone.is_empty() {
             return;
         }
@@ -164,11 +164,6 @@ impl ShotMetaStore {
         self.save(&map);
         crate::info!("[截圖來歷] 清掉 {} 筆已經不在的截圖", gone.len());
     }
-}
-
-/// 檔案不見了，而且確定不是讀不到：所在的資料夾還在
-fn is_gone(p: &Path) -> bool {
-    !p.exists() && p.parent().is_some_and(Path::is_dir)
 }
 
 #[cfg(test)]
