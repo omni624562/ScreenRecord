@@ -779,7 +779,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
     let Some(mut v) = app.viewer.take() else { return };
     if let Some(Playback::Ff(p)) = &v.player {
         if let Some(f) = p.take_frame() {
-            let img = egui::ColorImage::from_rgba_unmultiplied([f.width as usize, f.height as usize], &f.rgba);
+            let img = super::rgba_image(f.width, f.height, &f.rgba);
             match &mut v.video_tex {
                 Some(t) => t.set(img, TextureOptions::LINEAR),
                 None => v.video_tex = Some(ctx.load_texture("viewer-video", img, TextureOptions::LINEAR)),

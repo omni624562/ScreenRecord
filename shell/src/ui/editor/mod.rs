@@ -2281,7 +2281,7 @@ impl Editor {
         let size = [f.width as usize, f.height as usize];
         // 沒有馬賽克 / 模糊時直接用解出來的畫面（不多複製一份）
         let img = if (effects.is_empty() || self.vw <= 0.0) && look.is_default() {
-            egui::ColorImage::from_rgba_unmultiplied(size, &f.rgba)
+            crate::ui::rgba_image(f.width, f.height, &f.rgba)
         } else {
             let mut rgba = f.rgba.clone();
             // 調色先做（輸出時也是先調色、再疊標註的馬賽克 / 模糊結果相近）
