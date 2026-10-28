@@ -342,6 +342,8 @@ pub struct Editor {
     emoji: usize,
     /// 上次選的馬賽克 / 模糊形狀與範圍（新的沿用）：[馬賽克, 模糊]
     last_style: [(Shape, bool); 2],
+    /// 影片：Ctrl+C 複製的標註（剪貼簿的文字, 標註）；Ctrl+V 時剪貼簿還是這段文字才貼上
+    ann_clip: Option<(String, Ann)>,
     /// 拖曳標註軌時固定每個標註所在的列，避免拖曳中跳列
     lane_freeze: Option<HashMap<u64, usize>>,
     /// 儲存時取代這個剪輯版（修改之前的剪輯）
@@ -687,6 +689,7 @@ impl Editor {
             tool: None,
             emoji: 0,
             last_style: [(Shape::Rect, false); 2],
+            ann_clip: None,
             lane_freeze: None,
             replace_target: None,
             opened_cut: None,
@@ -1420,6 +1423,25 @@ impl Editor {
         a.y = cy - a.h / 2.0;
         self.last_picture = path.to_string();
         Ok(())
+    }
+
+    /// 影片：複製一份標註放到播放位置（出現多久、出現方式不變）並選取它；
+    /// 和原本的時間重疊時往右下錯開一點，看得出是新的一個
+    fn place_copy(&mut self, a: &Ann) {
+        let mut b = a.clone();
+        b.id = self.next_id;
+        self.next_id += 1;
+        let (start, end) = self.default_window(self.now(), (a.end - a.start).max(0.1));
+        (b.start, b.end) = (start, end);
+        if start < a.end && a.start < end {
+            let off = (self.vw.min(self.vh) * 0.02).round().max(10.0);
+            b.x += off;
+            b.y += off;
+        }
+        let id = b.id;
+        self.anns.push(b);
+        self.tool = None;
+        self.select_ann(Some(id));
     }
 
     /// 選取標註：同時取消時間軸上選取的範圍（Delete 只會刪掉最後選的那一個）
@@ -3543,8 +3565,38 @@ fn keyboard(ed: &mut Editor, ctx: &egui::Context, toast: &mut Option<(String, bo
     }
     if ed.is_shot() {
         shot::keys(ed, ctx, toast);
+    } else {
+        clip_keys(ed, ctx, toast);
     }
     shortcuts(ed, ctx, toast, key);
+}
+
+/// 影片的標註：Ctrl+C 複製、Ctrl+V 貼到播放位置、Ctrl+D 在播放位置再做一份（字幕不算，字幕在「字幕」分頁處理）
+fn clip_keys(ed: &mut Editor, ctx: &egui::Context, toast: &mut Option<(String, bool)>) {
+    let key = |m: Modifiers, k: Key| ctx.input_mut(|i| i.consume_key(m, k));
+    let selected = ed.selected().filter(|a| !ed.is_sub(a.id)).cloned();
+    // Ctrl+C 會先變成「複製」事件
+    let copy = key(Modifiers::COMMAND, Key::C) | ctx.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Copy)));
+    if let (true, Some(a)) = (copy, selected.clone()) {
+        // 剪貼簿放這個標註的文字（文字標註）或名稱：貼回來時認得出來
+        let text = a.text.clone().filter(|t| a.kind == AnnKind::Text && !t.trim().is_empty()).unwrap_or_else(|| annotate::label(&a));
+        screenrecorder_core::clipboard::copy_text(&text);
+        ed.ann_clip = Some((text, a));
+        *toast = Some((tr!("已複製標註：移到要出現的時間按 Ctrl+V 貼上", "Annotation copied. Move to where it should appear and press Ctrl+V").into(), false));
+    }
+    let pasted = ctx.input(|i| i.events.iter().find_map(|e| if let egui::Event::Paste(t) = e { Some(t.clone()) } else { None }));
+    if pasted.is_some() || key(Modifiers::COMMAND, Key::V) {
+        let text = pasted.or_else(screenrecorder_core::clipboard::read_text);
+        if let Some(a) = ed.ann_clip.as_ref().filter(|(t, _)| text.as_ref() == Some(t)).map(|(_, a)| a.clone()) {
+            ed.place_copy(&a);
+        }
+    }
+    if key(Modifiers::COMMAND, Key::D) {
+        if let Some(a) = selected {
+            ed.place_copy(&a);
+            *toast = Some((tr!("已在播放位置再做一份", "Duplicated at the playhead").into(), false));
+        }
+    }
 }
 
 /// 其他快速鍵（截圖沒有時間軸：播放、移動、開頭結尾不適用）

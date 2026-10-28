@@ -1210,7 +1210,10 @@ fn ann_panel(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context) {
             None if ed.selected().is_some() => String::new(),
             None if shot => tr!("選工具後在圖上按一下或拖曳。Ctrl+Z 復原", "Pick a tool, then click or drag on the image. Ctrl+Z undoes").into(),
             // 加過標註之後只留一行，下面的樣式、標註清單早一點看得到
-            None if !ed.anns.is_empty() => tr!("選工具（數字鍵 1～0）後在影片上按一下或拖曳", "Pick a tool (number keys 1–0), then click or drag on the video").into(),
+            None if !ed.anns.is_empty() => tr!(
+                "選工具（數字鍵 1～0）後在影片上按一下或拖曳。選取標註後按 Ctrl+D 可在播放位置再做一份",
+                "Pick a tool (number keys 1–0), then click or drag on the video. Select an annotation and press Ctrl+D to duplicate it at the playhead"
+            ).into(),
             None => tr!(
                 "① 選工具（數字鍵 1～0）② 在影片上按一下或拖曳放置。標註從目前位置起出現 3 秒（同一種會沿用上一個的長度與出現方式），可在時間軸下方的標註軌拖曳調整。",
                 "① Pick a tool (number keys 1–0) ② Click or drag on the video to place it. Annotations show for 3 s from the current position (the same kind reuses the previous one's length and animation); drag them on the annotation track below the timeline to adjust."
