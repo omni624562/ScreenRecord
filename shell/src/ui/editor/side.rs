@@ -1114,13 +1114,7 @@ fn tool_grid(ed: &mut Editor, ui: &mut egui::Ui, tools: &[(Tool, &str, &str)], c
                 let ink = if can { ink } else { ink.gamma_multiply(0.45) };
                 ui.painter().rect(r, CornerRadius::same(theme::RADIUS_SM), fill, Stroke::new(1.0, stroke), egui::StrokeKind::Inside);
                 let icon_color = if !on && tool == Tool::Ann(AnnKind::Highlight) { Color32::from_rgb(0xf5, 0xb3, 0x01) } else { ink };
-                paint_tool_icon(
-                    ui.painter(),
-                    pos2(r.center().x, r.top() + 19.0),
-                    tool,
-                    if on && tool == Tool::Ann(AnnKind::Highlight) { Color32::WHITE } else { icon_color },
-                    ed.emoji_tex.get(ed.emoji),
-                );
+                paint_tool_icon(ui.painter(), pos2(r.center().x, r.top() + 19.0), tool, if on && tool == Tool::Ann(AnnKind::Highlight) { Color32::WHITE } else { icon_color });
                 ui.painter().text(pos2(r.center().x, r.bottom() - 11.0), Align2::CENTER_CENTER, label, theme::font(12.0), ink);
                 // 提示顯示快速鍵：截圖「箭頭（A）」、影片「箭頭（3）」
                 let tip = if shot { super::shot::tool_tip(tool, label) } else { video_tool_key(tool).map(|k| trf!("{label}（{k}）", "{label} ({k})")) };
@@ -1245,7 +1239,7 @@ fn tool_row(ed: &mut Editor, ui: &mut egui::Ui, can: bool) {
             let ink = if can { p.text } else { p.text.gamma_multiply(0.45) };
             // 圖示畫小一點才放得進小方塊
             let painter = ui.painter().with_clip_rect(r);
-            paint_tool_icon(&painter, r.center(), tool, if tool == Tool::Ann(AnnKind::Highlight) { Color32::from_rgb(0xf5, 0xb3, 0x01) } else { ink }, ed.emoji_tex.get(ed.emoji));
+            paint_tool_icon(&painter, r.center(), tool, if tool == Tool::Ann(AnnKind::Highlight) { Color32::from_rgb(0xf5, 0xb3, 0x01) } else { ink });
             if resp.on_hover_text(trf!("加上{label}", "Add {label}")).on_hover_cursor(CursorIcon::PointingHand).clicked() && can {
                 ed.tool = Some(tool);
                 ed.ann_sel = None;

@@ -1047,18 +1047,19 @@ fn end_drag(ed: &mut Editor) {
 }
 
 /// 工具按鈕上的小圖示
-pub fn paint_tool_icon(p: &egui::Painter, c: Pos2, tool: Tool, color: Color32, emoji: Option<&TextureHandle>) {
+pub fn paint_tool_icon(p: &egui::Painter, c: Pos2, tool: Tool, color: Color32) {
     let s = Stroke::new(1.8, color);
     match tool {
         Tool::Ann(AnnKind::Text) => {
             p.text(c, Align2::CENTER_CENTER, "T", theme::font_bold(19.0), color);
         }
+        // 和其他工具一樣的線條圖示（彩色表情符號的圖有留白，放在方塊裡會偏小、偏一邊）；選了這個工具後下面會列出表情符號
         Tool::Emoji => {
-            if let Some(t) = emoji {
-                let sz = t.size_vec2();
-                let k = 22.0 / sz.y.max(1.0);
-                p.image(t.id(), Rect::from_center_size(c, sz * k), Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
-            }
+            p.circle_stroke(c, 9.0, s);
+            p.circle_filled(c + vec2(-3.2, -2.5), 1.3, color);
+            p.circle_filled(c + vec2(3.2, -2.5), 1.3, color);
+            let smile: Vec<Pos2> = (0..=8).map(|i| std::f32::consts::PI * (0.15 + 0.7 * i as f32 / 8.0)).map(|a| c + vec2(-a.cos() * 4.8, 1.2 + a.sin() * 3.6)).collect();
+            p.add(egui::Shape::line(smile, s));
         }
         Tool::Ann(AnnKind::Arrow) => {
             let (a, b) = (c + vec2(-7.0, 7.0), c + vec2(7.0, -7.0));
