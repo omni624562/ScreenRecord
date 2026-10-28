@@ -1232,6 +1232,7 @@ impl Recorder {
         }
         let parts_dir = Path::new(&output_dir).join(".parts").join(&stamp);
         std::fs::create_dir_all(&parts_dir)?;
+        crate::recovery::mark_owner(&parts_dir);
         if config.audio_only {
             // 卡片放在分段資料夾裡（意外中斷續錄時還要用，合併完一起刪掉）
             let card = parts_dir.join("card.png");
