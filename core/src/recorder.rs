@@ -365,8 +365,17 @@ impl St {
 /// 把分段接成一支影片（concat，不重新壓縮）。有錄聲音時每個分段在聲音結尾截斷（見 concat_list），
 /// 聲音與畫面一起結束、分段之間也不留無聲的空隙。chapters：寫進影片的章節（錄影時加的標記）。
 /// 先合併到分段資料夾裡的暫存檔，成功才重新命名成 out：合併失敗或逾時時不會留下看起來正常、其實殘缺的錄影
-/// （分段留著，下次開啟時可以救回）。成功時回傳成品的長度（秒，讀不到時 None），失敗時回傳原因
-pub(crate) async fn merge_segments(ffmpeg: &Path, files: &[String], parts_dir: &Path, out: &Path, has_audio: bool, chapters: Option<String>) -> std::result::Result<Option<f64>, String> {
+/// （分段留著，下次開啟時可以救回）。成功時回傳成品的長度（秒，讀不到時 None），失敗時回傳原因。
+/// video_sec：各分段錄到的畫面長度（秒；不知道時空的）。聲音結尾比畫面早很多（聲音中途斷了）時不照聲音截斷，不然畫面也會被切掉
+pub(crate) async fn merge_segments(
+    ffmpeg: &Path,
+    files: &[String],
+    video_sec: &[f64],
+    parts_dir: &Path,
+    out: &Path,
+    has_audio: bool,
+    chapters: Option<String>,
+) -> std::result::Result<Option<f64>, String> {
     let mut outpoints = Vec::new();
     if has_audio {
         // 同時最多 AUDIO_END_CONCURRENCY 個：存重播時錄影還在進行，一次開幾十個 FFmpeg 會搶走錄影的 CPU、
@@ -382,8 +391,15 @@ pub(crate) async fn merge_segments(ffmpeg: &Path, files: &[String], parts_dir: &
                 us.filter(|us| r.code == 0 && *us > 0.0).map(|us| us / 1e6)
             }));
         }
-        for t in tasks {
-            outpoints.push(t.await.ok().flatten());
+        for (i, t) in tasks.into_iter().enumerate() {
+            let out = t.await.ok().flatten();
+            outpoints.push(match (out, video_sec.get(i)) {
+                (Some(a), Some(v)) if a + OUTPOINT_SLACK < *v => {
+                    crate::warn!("[合併] 第 {} 段的聲音在 {a:.1} 秒就結束，畫面有 {v:.1} 秒：不照聲音截斷", i + 1);
+                    None
+                }
+                _ => out,
+            });
         }
     }
     let list_file = parts_dir.join("concat.txt");
@@ -432,6 +448,12 @@ pub(crate) async fn merge_segments(ffmpeg: &Path, files: &[String], parts_dir: &
     let head = run(ffmpeg, &["-hide_banner", "-i", &out_str], Duration::from_secs(15)).await;
     Ok(parse_media_info(&head.stderr).duration_sec)
 }
+
+/// 聲音結尾比這個分段的畫面早超過這麼多秒：當作聲音中途斷了，不照聲音截斷
+const OUTPOINT_SLACK: f64 = 2.0;
+
+/// 合併後的影片比錄到的畫面（扣掉一成）還短這麼多秒：分段不刪
+const MERGE_SHORT_SLACK: f64 = 3.0;
 
 /// 合併前讀各分段聲音結尾時，同時最多幾個 FFmpeg
 const AUDIO_END_CONCURRENCY: usize = 3;
@@ -2173,7 +2195,7 @@ impl Recorder {
         let work = dir.join(format!("save_{}", now_ms()));
         std::fs::create_dir_all(&work)?;
         let out = unique_path(Path::new(&output_dir), &format!("Replay_{}", timestamp()), ".mp4");
-        let r = merge_segments(&ffmpeg, &files, &work, &out, has_audio, None).await;
+        let r = merge_segments(&ffmpeg, &files, &[], &work, &out, has_audio, None).await;
         let _ = std::fs::remove_dir_all(&work);
         let duration = r.map_err(|detail| Error::other(trf!("合併失敗：{detail}", "Merge failed: {detail}")))?;
         let out_str = out.display().to_string();
@@ -2260,7 +2282,8 @@ impl Recorder {
         let length = frames as f64 / fps;
         let chapters = crate::chapters::from_markers(&markers, length);
         let meta = (!chapters.is_empty()).then(|| crate::chapters::ffmetadata(&chapters, length));
-        let duration = match merge_segments(&ffmpeg, &files, &parts_dir, &out, has_audio, meta).await {
+        let video_sec: Vec<f64> = parts.iter().map(|p| p.1 as f64 / fps).collect();
+        let duration = match merge_segments(&ffmpeg, &files, &video_sec, &parts_dir, &out, has_audio, meta).await {
             Ok(d) => d,
             Err(detail) => {
                 return Ok(RecordingResult {
@@ -2274,18 +2297,31 @@ impl Recorder {
             }
         };
         let real_frames = duration.map(|d| js_round(d * fps) as u64).unwrap_or(frames);
-        cleanup_parts(Some(&parts_dir));
+        // 成品比錄到的短很多：分段先留著（下次開啟時可以再救回），不要刪掉唯一完整的那一份
+        let short = duration.is_some_and(|d| d + MERGE_SHORT_SLACK < length * 0.9);
+        if short {
+            crate::warn!("[合併] 成品只有 {:.1} 秒，錄到的畫面有 {length:.1} 秒：分段保留在 {parts_str}", duration.unwrap_or(0.0));
+        } else {
+            cleanup_parts(Some(&parts_dir));
+        }
         Ok(RecordingResult {
             ok: true,
             path: Some(out_str.clone()),
             frames: real_frames,
             video_sec: duration.unwrap_or(frames as f64 / fps),
             bytes: std::fs::metadata(&out).map(|m| m.len()).ok(),
-            message: if crate::i18n::is_en() {
-                let n = parts.len();
-                format!("Saved {out_str} ({real_frames} frame{}, {n} segment{})", if real_frames == 1 { "" } else { "s" }, if n == 1 { "" } else { "s" })
-            } else {
-                format!("已儲存 {out_str}（{real_frames} 張，{} 個分段）", parts.len())
+            message: {
+                let saved = if crate::i18n::is_en() {
+                    let n = parts.len();
+                    format!("Saved {out_str} ({real_frames} frame{}, {n} segment{})", if real_frames == 1 { "" } else { "s" }, if n == 1 { "" } else { "s" })
+                } else {
+                    format!("已儲存 {out_str}（{real_frames} 張，{} 個分段）", parts.len())
+                };
+                if short {
+                    saved + &trf!("；影片比錄到的短，原始分段保留在 {parts_str}", "; the video is shorter than what was recorded, so the original segments are kept in {parts_str}")
+                } else {
+                    saved
+                }
             },
             parts_dir: None,
             silent_audio: self.lock().silent_result(),

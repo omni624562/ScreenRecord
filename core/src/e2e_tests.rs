@@ -173,7 +173,7 @@ async fn recording_segments_merge_with_chapters() {
     let out = dir.path().join("Rec_2026-10-11_10-00-00.mp4");
     let chapters = crate::chapters::from_markers(&[1.0, 3.0], expect);
     let files: Vec<String> = segs.iter().map(|s| s.display().to_string()).collect();
-    let duration = crate::recorder::merge_segments(&ff, &files, &parts, &out, true, Some(crate::chapters::ffmetadata(&chapters, expect))).await.unwrap().unwrap();
+    let duration = crate::recorder::merge_segments(&ff, &files, &[], &parts, &out, true, Some(crate::chapters::ffmetadata(&chapters, expect))).await.unwrap().unwrap();
     // 兩段都要在：至少有各段的聲音那麼長，最多是分段加起來的長度（舊版 FFmpeg 不截斷）
     assert!(duration >= audio - 0.3 && duration <= expect + 0.3, "合併後 {duration} 秒，各段聲音加起來 {audio} 秒，分段加起來 {expect} 秒");
 
@@ -338,11 +338,58 @@ async fn hevc_segments_merge_as_hvc1() {
         files.push(f.display().to_string());
     }
     let out = dir.path().join("Rec.mp4");
-    let d = crate::recorder::merge_segments(&ff, &files, &parts, &out, true, None).await.unwrap().unwrap();
+    let d = crate::recorder::merge_segments(&ff, &files, &[], &parts, &out, true, None).await.unwrap().unwrap();
     assert!(near(d, 2.0, 0.2), "{d}");
     let o = Command::new(&ff).args(["-hide_banner", "-i"]).arg(&out).output().unwrap();
     let err = String::from_utf8_lossy(&o.stderr);
     assert!(err.contains("hevc") && err.contains("hvc1"), "{err}");
+}
+
+/// 聲音中途斷了（分段裡聲音比畫面短很多）：知道畫面長度時不照聲音截斷，畫面不會被切掉
+#[tokio::test]
+async fn merge_keeps_video_when_audio_stops_early() {
+    let Some(ff) = ffmpeg() else { return };
+    if !has(&ff, "-encoders", "libx264") {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let parts = dir.path().join(".parts").join("x");
+    std::fs::create_dir_all(&parts).unwrap();
+    let f = parts.join("seg_000.mp4");
+    let s = f.display().to_string();
+    // 畫面 6 秒、聲音只有 1 秒
+    run_ok(
+        &ff,
+        &[
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=s=320x240:r=30:d=6",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=d=1:sample_rate=48000",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "ultrafast",
+            "-c:a",
+            "aac",
+            "-movflags",
+            "+empty_moov+default_base_moof",
+            "-frag_duration",
+            "1000000",
+            &s,
+        ],
+    );
+    let files = vec![s];
+    let out = dir.path().join("Rec.mp4");
+    let d = crate::recorder::merge_segments(&ff, &files, &[6.0], &parts, &out, true, None).await.unwrap().unwrap();
+    assert!(near(d, 6.0, 0.3), "{d}");
+    // 不知道畫面長度時（例如救回）照舊用聲音結尾
+    let out2 = dir.path().join("Rec2.mp4");
+    let d2 = crate::recorder::merge_segments(&ff, &files, &[], &parts, &out2, true, None).await.unwrap().unwrap();
+    assert!(d2 < 2.0, "{d2}");
 }
 
 #[tokio::test]
@@ -890,7 +937,7 @@ async fn separate_audio_tracks() {
     record_segment_with(&ff, &card, &segs[1], 2.0, false, &config, &src);
     let out = dir.path().join("Rec_2026-10-11_14-00-00.mp4");
     let files: Vec<String> = segs.iter().map(|s| s.display().to_string()).collect();
-    crate::recorder::merge_segments(&ff, &files, &parts, &out, true, None).await.unwrap();
+    crate::recorder::merge_segments(&ff, &files, &[], &parts, &out, true, None).await.unwrap();
     // 合併後三條音軌都在，第一條（混音）是預設
     let i = probe(&ff, &out).await;
     assert_eq!((i.has_audio, i.audio_tracks), (Some(true), 3));
@@ -957,7 +1004,7 @@ async fn replay_buffer_saves_while_recording() {
     let work = parts.join("save");
     std::fs::create_dir_all(&work).unwrap();
     let out = dir.path().join("Replay_2026-10-11_14-00-07.mp4");
-    let dur = crate::recorder::merge_segments(&ff, &files, &work, &out, true, None).await.unwrap().unwrap();
+    let dur = crate::recorder::merge_segments(&ff, &files, &[], &work, &out, true, None).await.unwrap().unwrap();
     // 存下的至少 3 秒（最近 4 秒，最新的檔案還在寫）。檔案只在關鍵畫面切開，第一個常常比 2 秒長（錯過 2 秒那個切點就到 4 秒），
     // 所以不用固定的上限，而是看接起來的長度：已經寫完的檔案都要在裡面（接的地方沒有掉），
     // 也不會比現在所有挑到的檔案加起來還長（沒有重複；最新的那個合併之後還在變長）
