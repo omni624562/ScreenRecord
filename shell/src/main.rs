@@ -311,6 +311,12 @@ fn main() {
         let _ = tokio::task::spawn_blocking(move || {
             c.thumbs.prune();
             c.shot_meta.prune();
+            // 當掉、被強制結束時留下的暫存資料夾，以及沒有人用的旁白檔
+            let temp = screenrecorder_core::paths::prune_temp();
+            let voice = c.projects.raw_texts().map_or(0, |t| screenrecorder_core::narration::prune_unused(&t));
+            if temp + voice > 0 {
+                screenrecorder_core::info!("[清理] 刪掉 {temp} 個留下的暫存檔、{voice} 個沒有人用的旁白檔");
+            }
         })
         .await;
     });

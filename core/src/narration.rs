@@ -89,6 +89,30 @@ pub fn voice_dir() -> PathBuf {
     crate::paths::data_dir().join("voice")
 }
 
+/// 清掉沒有人用的旁白檔（重錄、刪掉的旁白，或沒存的剪輯留下的；每分鐘約 5.8 MB）：
+/// 沒有任何剪輯專案、草稿用到，而且放了 UNUSED_KEEP 以上的。太新的不動（剪輯視窗可能還開著，復原會用回來）。
+/// projects：所有專案與草稿的內容（ProjectStore::raw_texts）。回傳刪掉幾個
+pub fn prune_unused(projects: &[String]) -> usize {
+    prune_unused_in(&voice_dir(), projects, std::time::SystemTime::now())
+}
+
+/// 旁白檔沒人用之後至少留多久
+const UNUSED_KEEP: std::time::Duration = std::time::Duration::from_secs(14 * 24 * 3600);
+
+fn prune_unused_in(dir: &std::path::Path, projects: &[String], now: std::time::SystemTime) -> usize {
+    let Ok(rd) = std::fs::read_dir(dir) else { return 0 };
+    let mut n = 0;
+    for e in rd.flatten() {
+        let p = e.path();
+        let Some(name) = p.file_name().and_then(|n| n.to_str()).filter(|n| n.ends_with(".wav")) else { continue };
+        let old = e.metadata().ok().and_then(|m| m.modified().ok()).and_then(|t| now.duration_since(t).ok()).is_some_and(|age| age >= UNUSED_KEEP);
+        if old && !projects.iter().any(|t| t.contains(name)) && std::fs::remove_file(&p).is_ok() {
+            n += 1;
+        }
+    }
+    n
+}
+
 /// 新的旁白檔名
 pub fn new_voice_path(prefix: &str) -> PathBuf {
     let dir = voice_dir();
@@ -408,6 +432,23 @@ mod speech {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn prunes_only_old_unused_voice_files() {
+        let dir = tempfile::tempdir().unwrap();
+        for f in ["voice_1.wav", "voice_2.wav", "voice_3.wav", "notes.txt"] {
+            std::fs::write(dir.path().join(f), b"x").unwrap();
+        }
+        // voice_1 有專案用到（JSON 裡 Windows 的路徑是跳脫過的反斜線）
+        let projects = vec![r#"{"narration":{"clips":[{"file":"C:\\Users\\a\\voice\\voice_1.wav"}]}}"#.to_string()];
+        // 剛錄的都不動
+        assert_eq!(prune_unused_in(dir.path(), &projects, std::time::SystemTime::now()), 0);
+        // 一個月後：沒人用的 wav 刪掉，有人用的、不是 wav 的留著
+        let later = std::time::SystemTime::now() + std::time::Duration::from_secs(30 * 24 * 3600);
+        assert_eq!(prune_unused_in(dir.path(), &projects, later), 2);
+        assert!(dir.path().join("voice_1.wav").exists() && dir.path().join("notes.txt").exists());
+        assert!(!dir.path().join("voice_2.wav").exists());
+    }
 
     fn clip(file: &str, at: u64, ms: u64) -> VoiceClip {
         VoiceClip { file: file.into(), at_ms: at, ms, text: String::new() }
