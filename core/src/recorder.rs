@@ -369,10 +369,14 @@ impl St {
 pub(crate) async fn merge_segments(ffmpeg: &Path, files: &[String], parts_dir: &Path, out: &Path, has_audio: bool, chapters: Option<String>) -> std::result::Result<Option<f64>, String> {
     let mut outpoints = Vec::new();
     if has_audio {
+        // 同時最多 AUDIO_END_CONCURRENCY 個：存重播時錄影還在進行，一次開幾十個 FFmpeg 會搶走錄影的 CPU、
+        // 也會讓這些工作互相拖慢到逾時（讀不到結尾的分段就不截斷聲音）
+        let sem = Arc::new(tokio::sync::Semaphore::new(AUDIO_END_CONCURRENCY));
         let mut tasks = Vec::new();
         for f in files {
-            let (ffmpeg, args) = (ffmpeg.to_path_buf(), audio_end_args(f));
+            let (ffmpeg, args, sem) = (ffmpeg.to_path_buf(), audio_end_args(f), sem.clone());
             tasks.push(tokio::spawn(async move {
+                let _permit = sem.acquire_owned().await;
                 let r = run(&ffmpeg, &args, Duration::from_secs(60)).await;
                 let us = OUT_TIME_RE.captures_iter(&r.stdout).last().and_then(|c| c[1].parse::<f64>().ok());
                 us.filter(|us| r.code == 0 && *us > 0.0).map(|us| us / 1e6)
@@ -428,6 +432,9 @@ pub(crate) async fn merge_segments(ffmpeg: &Path, files: &[String], parts_dir: &
     let head = run(ffmpeg, &["-hide_banner", "-i", &out_str], Duration::from_secs(15)).await;
     Ok(parse_media_info(&head.stderr).duration_sec)
 }
+
+/// 合併前讀各分段聲音結尾時，同時最多幾個 FFmpeg
+const AUDIO_END_CONCURRENCY: usize = 3;
 
 /// 合併時除了分段大小，另外要留的空間（檔頭、章節）
 const MERGE_SPARE: u64 = 64 * 1024 * 1024;
