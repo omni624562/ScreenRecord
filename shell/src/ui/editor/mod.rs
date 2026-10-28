@@ -1306,10 +1306,10 @@ impl Editor {
         map
     }
 
-    /// 新標註的出現時間：從目前位置起 3 秒，但不超出目前所在的保留片段；
+    /// 新標註的出現時間：從目前位置起 len 秒，但不超出目前所在的保留片段；
     /// 太靠近片段結尾時往前延伸（一定包含目前這一格，放好就看得到）。
-    fn default_window(&self, t: f64) -> (f64, f64) {
-        let len = 3f64.min(self.duration);
+    fn default_window(&self, t: f64, len: f64) -> (f64, f64) {
+        let len = len.min(self.duration);
         let seg = self.keep().into_iter().find(|&(a, b)| t >= a - 1e-3 && t < b).unwrap_or((0.0, self.duration));
         let end = seg.1.min(t.max(0.0) + len);
         let start = seg.0.max(t.min(end - len));
@@ -1328,8 +1328,11 @@ impl Editor {
 
     fn new_ann(&mut self, kind: AnnKind, x: f64, y: f64) -> Ann {
         let vh = self.size_base();
-        let (start, end) = self.default_window(self.now());
         let emoji = self.tool == Some(Tool::Emoji);
+        // 同一種標註沿用上一個的出現長度與出現方式（調好一個，接下來放的都一樣；表情符號和文字分開算）
+        let prev = self.anns.iter().rev().find(|o| o.kind == kind && (kind != AnnKind::Text || o.text.as_deref().is_some_and(is_emoji_text) == emoji));
+        let len = prev.map_or(ANN_SEC, |o| (o.end - o.start).max(0.1));
+        let (start, end) = self.default_window(self.now(), len);
         let mut a = Ann {
             id: self.next_id,
             kind,
@@ -1348,7 +1351,7 @@ impl Editor {
             invert: false,
             rot: 0.0,
             pts: vec![],
-            anim: 0,
+            anim: prev.map_or(0, |o| o.anim),
             bend: 0.0,
         };
         self.next_id += 1;
@@ -2323,6 +2326,9 @@ fn make_player(ctx: &egui::Context, ffmpeg: &std::path::Path, e: &LibraryEntry) 
 }
 
 /// 表情符號標註（文字只有一個表情符號）
+/// 新標註預設出現幾秒（同一種已經有的話沿用上一個的長度）
+const ANN_SEC: f64 = 3.0;
+
 pub fn is_emoji_text(t: &str) -> bool {
     EMOJIS.contains(&t)
 }
@@ -3639,6 +3645,20 @@ fn shortcuts(ed: &mut Editor, ctx: &egui::Context, toast: &mut Option<(String, b
             a.rot = norm_deg(a.rot + dir * step);
         }
     }
+    // 數字鍵選標註工具（再按一次取消）；字母鍵已經用在播放、剪輯
+    if video && ed.vw > 0.0 {
+        for tool in side::MARK_TOOLS.iter().map(|t| t.0).chain([Tool::Ann(AnnKind::Mosaic), Tool::Ann(AnnKind::Blur)]) {
+            let Some(k) = side::video_tool_key(tool).and_then(|c| Key::from_name(&c.to_string())) else { continue };
+            if key(Modifiers::NONE, k) {
+                ed.tool = if ed.tool == Some(tool) { None } else { Some(tool) };
+                if ed.tool.is_some() {
+                    ed.ann_sel = None;
+                    ed.sel = None;
+                    ed.tab = Tab::Ann;
+                }
+            }
+        }
+    }
     if key(Modifiers::NONE, Key::Escape) {
         if ed.sel.is_some() || ed.tool.is_some() || ed.ann_sel.is_some() {
             // 有選取或正在放置時 Esc 只取消，不關閉
@@ -3683,6 +3703,16 @@ fn ann_color(a: &Ann) -> Color32 {
 #[cfg(test)]
 mod tests {
     use super::parse_time;
+
+    #[test]
+    fn video_tool_keys_are_unique() {
+        use super::{side, AnnKind, Tool};
+        let tools: Vec<Tool> = side::MARK_TOOLS.iter().map(|t| t.0).chain([Tool::Ann(AnnKind::Mosaic), Tool::Ann(AnnKind::Blur), Tool::Ann(AnnKind::Spotlight)]).collect();
+        let keys: Vec<char> = tools.iter().filter_map(|t| side::video_tool_key(*t)).collect();
+        assert_eq!(keys.iter().collect::<String>(), "1234567890");
+        assert_eq!(side::video_tool_key(Tool::Ann(AnnKind::Text)), Some('1'));
+        assert_eq!(side::video_tool_key(Tool::Ann(AnnKind::Spotlight)), None);
+    }
 
     #[test]
     fn times() {
