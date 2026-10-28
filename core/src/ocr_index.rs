@@ -185,16 +185,18 @@ impl OcrIndex {
         self.running.store(false, Ordering::SeqCst);
     }
 
-    /// 刪掉已經不存在的檔案的紀錄
+    /// 刪掉已經不存在的檔案的紀錄。只刪「資料夾還在、檔案不見」的：資料夾讀不到（隨身碟、NAS 沒接上）時留著，
+    /// 不然接回來後那裡的截圖全部要重新辨識
     pub fn prune(&self) {
-        let mut m = self.map.lock().unwrap_or_else(|e| e.into_inner());
-        let before = m.len();
-        m.retain(|p, _| Path::new(p).exists());
-        let changed = m.len() != before;
-        drop(m);
-        if changed {
-            self.save();
+        let keys: Vec<String> = self.map.lock().unwrap_or_else(|e| e.into_inner()).keys().cloned().collect();
+        // 檢查時不鎖住：截圖存在 NAS 上時可能要等，不要擋到搜尋
+        let gone: std::collections::HashSet<String> = keys.into_iter().filter(|k| crate::paths::file_gone(Path::new(k))).collect();
+        if gone.is_empty() {
+            return;
         }
+        // 檢查之後才又出現在同一個路徑的：留著
+        self.map.lock().unwrap_or_else(|e| e.into_inner()).retain(|k, _| !gone.contains(k) || Path::new(k).exists());
+        self.save();
     }
 }
 
@@ -232,6 +234,30 @@ mod tests {
         idx2.build(vec![a.clone(), b.clone()], rec).await;
         assert_eq!(calls.load(Ordering::SeqCst), 2);
         assert!(idx2.matches(&a, "502"));
+    }
+
+    #[tokio::test]
+    async fn prune_drops_deleted_but_keeps_unreachable() {
+        let dir = tempfile::tempdir().unwrap();
+        let here = dir.path().join("here.png").display().to_string();
+        let deleted = dir.path().join("deleted.png").display().to_string();
+        let offline = dir.path().join("nas").join("offline.png").display().to_string();
+        let file = dir.path().join("ocr_index.json");
+        let idx = OcrIndex::new(file.clone());
+        for p in [&here, &deleted] {
+            std::fs::write(p, "x").unwrap();
+        }
+        std::fs::create_dir(dir.path().join("nas")).unwrap();
+        std::fs::write(&offline, "x").unwrap();
+        idx.build(vec![here.clone(), deleted.clone(), offline.clone()], |_| async { Ok::<_, String>("502 Bad Gateway".to_string()) }).await;
+        // 截圖被刪掉；NAS 的資料夾讀不到（整個資料夾不見）
+        std::fs::remove_file(&deleted).unwrap();
+        std::fs::remove_dir_all(dir.path().join("nas")).unwrap();
+        idx.prune();
+        let again = OcrIndex::new(file);
+        assert!(again.matches(&here, "502"));
+        assert!(!again.matches(&deleted, "502"), "資料夾還在、檔案不見：刪掉");
+        assert!(again.matches(&offline, "502"), "資料夾讀不到：留著");
     }
 
     #[tokio::test]

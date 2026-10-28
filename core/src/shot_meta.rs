@@ -5,7 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -148,6 +148,22 @@ impl ShotMetaStore {
             self.save(&map);
         }
     }
+
+    /// 刪掉在程式外被刪掉的截圖的紀錄（不然這個檔案只會越來越大，每次截圖都要整份重寫）。
+    /// 只刪「資料夾還在、檔案不見」的：資料夾讀不到（隨身碟、NAS 沒接上）時留著，接上後還用得到
+    pub fn prune(&self) {
+        let keys: Vec<String> = self.map.lock().unwrap_or_else(|e| e.into_inner()).keys().cloned().collect();
+        // 檢查時不鎖住：截圖存在 NAS 上時可能要等，不要擋到正在記錄的截圖
+        let gone: std::collections::HashSet<String> = keys.into_iter().filter(|k| crate::paths::file_gone(Path::new(k))).collect();
+        if gone.is_empty() {
+            return;
+        }
+        let mut map = self.map.lock().unwrap_or_else(|e| e.into_inner());
+        // 檢查之後才又截到同一個路徑的：留著
+        map.retain(|k, _| !gone.contains(k) || Path::new(k).exists());
+        self.save(&map);
+        crate::info!("[截圖來歷] 清掉 {} 筆已經不在的截圖", gone.len());
+    }
 }
 
 #[cfg(test)]
@@ -169,6 +185,26 @@ mod tests {
         assert_eq!(again.get("C:/b.png").unwrap().app, "chrome.exe");
         again.removed("C:/b.png");
         assert!(again.get("C:/b.png").is_none());
+    }
+
+    #[test]
+    fn prune_drops_deleted_but_keeps_unreachable() {
+        let dir = tempfile::tempdir().unwrap();
+        let here = dir.path().join("here.png");
+        std::fs::write(&here, b"").unwrap();
+        let deleted = dir.path().join("deleted.png");
+        let offline = dir.path().join("nas").join("offline.png");
+        let file = dir.path().join("shot_meta.json");
+        let s = ShotMetaStore::new(file.clone());
+        let m = ShotMeta { app: "chrome.exe".into(), ..Default::default() };
+        for p in [&here, &deleted, &offline] {
+            s.record(&p.display().to_string(), m.clone());
+        }
+        s.prune();
+        let again = ShotMetaStore::new(file);
+        assert!(again.get(&here.display().to_string()).is_some());
+        assert!(again.get(&deleted.display().to_string()).is_none(), "資料夾還在、檔案不見：刪掉");
+        assert!(again.get(&offline.display().to_string()).is_some(), "資料夾讀不到：留著");
     }
 
     #[test]

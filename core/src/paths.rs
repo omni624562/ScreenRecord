@@ -186,6 +186,12 @@ pub fn write_atomic(path: &Path, data: &[u8]) -> std::io::Result<()> {
     r
 }
 
+/// 檔案確定不在了：檔案不見，而且所在的資料夾還在。資料夾讀不到（隨身碟、NAS 沒接上）時不算，
+/// 清理紀錄時用：不然 NAS 斷線時剛好清理，那裡的紀錄會全部被刪掉
+pub fn file_gone(p: &Path) -> bool {
+    !p.exists() && p.parent().is_some_and(Path::is_dir)
+}
+
 /// dir 是不是 root 本身或它底下的資料夾（不分大小寫、斜線方向）
 pub fn inside(dir: &std::path::Path, root: &std::path::Path) -> bool {
     let norm = |p: &std::path::Path| p.display().to_string().replace('\\', "/").trim_end_matches('/').to_lowercase();

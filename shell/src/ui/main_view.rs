@@ -1045,23 +1045,39 @@ fn dir_issue(ctx: &egui::Context, dir: &str) -> Option<DirIssue> {
     g.as_ref().and_then(|(_, _, r, _)| *r)
 }
 
-/// 檔案的修改時間（秒；沒有這個檔案時 None）：畫面每格都要問，3 秒內不重查（錄影存在 NAS 時每次查都要等網路）
-pub fn file_mtime(path: &str) -> Option<f64> {
-    type Seen = std::collections::HashMap<String, (Instant, Option<f64>)>;
+/// 檔案的修改時間：Some(Some(秒))、Some(None) 沒有這個檔案、None 還在查。畫面每格都要問：
+/// 在背景執行緒查（錄影存在 NAS、NAS 斷線時查一次可能要等好幾秒，不能卡住畫面），3 秒內不重查，查到有變才重畫
+pub fn file_mtime(ctx: &egui::Context, path: &str) -> Option<Option<f64>> {
+    // (上次查好的時間, 結果, 是否正在查)
+    type Seen = std::collections::HashMap<String, (Instant, Option<Option<f64>>, bool)>;
     static SEEN: std::sync::Mutex<Option<Seen>> = std::sync::Mutex::new(None);
     let mut g = SEEN.lock().unwrap_or_else(|e| e.into_inner());
     let map = g.get_or_insert_with(Default::default);
-    if let Some((at, r)) = map.get(path) {
-        if at.elapsed() < std::time::Duration::from_secs(3) {
-            return *r;
+    let known = map.get(path).copied();
+    let stale = known.is_none_or(|(at, _, busy)| !busy && at.elapsed() >= std::time::Duration::from_secs(3));
+    if stale {
+        if map.len() > 200 {
+            map.retain(|_, (_, _, busy)| *busy);
+        }
+        map.insert(path.to_string(), (Instant::now(), known.and_then(|k| k.1), true));
+        let (owned, ctx) = (path.to_string(), ctx.clone());
+        let spawned = std::thread::Builder::new().name("file-mtime".into()).spawn(move || {
+            let path = owned;
+            let r = std::fs::metadata(&path).ok().filter(|m| m.is_file()).map(|m| m.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0.0, |d| d.as_secs_f64()));
+            let mut g = SEEN.lock().unwrap_or_else(|e| e.into_inner());
+            let map = g.get_or_insert_with(Default::default);
+            let changed = map.get(&path).and_then(|k| k.1) != Some(r);
+            map.insert(path, (Instant::now(), Some(r), false));
+            if changed {
+                ctx.request_repaint();
+            }
+        });
+        // 開不了執行緒：不要一直標成「正在查」，下次再試
+        if spawned.is_err() {
+            map.insert(path.to_string(), (Instant::now(), known.and_then(|k| k.1), false));
         }
     }
-    let r = std::fs::metadata(path).ok().filter(|m| m.is_file()).map(|m| m.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0.0, |d| d.as_secs_f64()));
-    if map.len() > 200 {
-        map.clear();
-    }
-    map.insert(path.to_string(), (Instant::now(), r));
-    r
+    known.and_then(|k| k.1)
 }
 
 /// 資料夾在不在：在背景檢查（NAS 斷線時檢查可能要等幾十秒，不能卡住畫面），同一個資料夾 15 秒內不重查；
@@ -1553,7 +1569,7 @@ fn result_card(app: &mut UiApp, ui: &mut Ui, res: &screenrecorder_core::types::R
                 action_buttons(app, ui, path, true, !audio);
                 // 只錄聲音：另存的 M4A
                 let m4a = screenrecorder_core::after_record::m4a_path(path).display().to_string();
-                if audio && file_mtime(&m4a).is_some() {
+                if audio && file_mtime(ui.ctx(), &m4a).flatten().is_some() {
                     ui.add_space(2.0);
                     ui.add(egui::Label::new(RichText::new(trf!("也存成 M4A：{}", "Also saved as M4A: {}", file_name(&m4a))).font(theme::font(12.5))).truncate()).on_hover_text(&m4a);
                     ui.horizontal_wrapped(|ui| {
@@ -2638,9 +2654,10 @@ fn saved_thumb(app: &mut UiApp, ui: &mut Ui, path: &str, audio: bool) {
     let p = theme::pal(ui);
     // 縮圖（只錄聲音的沒有畫面：灰底加音符圖示）
     let (r, thumb) = ui.allocate_exact_size(vec2(68.0, 40.0), Sense::click());
-    let mtime = file_mtime(path).unwrap_or(0.0);
+    // 修改時間還在查（或檔案不見了）時先不要縮圖：不然會先用錯的修改時間做一張，查好了再做一張
+    let mtime = file_mtime(ui.ctx(), path).flatten();
     let rounding = CornerRadius::same(6);
-    match (!audio).then(|| app.thumb(path, mtime)).flatten() {
+    match mtime.filter(|_| !audio).and_then(|mtime| app.thumb(path, mtime)) {
         Some(t) => {
             ui.painter().add(egui::epaint::RectShape::filled(r, rounding, Color32::WHITE).with_texture(t.id(), Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0))));
         }
