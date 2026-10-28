@@ -345,6 +345,8 @@ impl UiApp {
         seen_shot: u64,
     ) -> UiApp {
         let ctx = cc.egui_ctx.clone();
+        // mpv 播放元件（有下載時，約 100 MB）在背景先載入：等到要開操作視窗才載，只在系統匣常駐時不佔記憶體
+        screenrecorder_core::mpv::preload();
         theme::setup_fonts(&ctx);
         theme::setup_visuals(&ctx);
         let (tx, rx) = channel();

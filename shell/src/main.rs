@@ -298,8 +298,6 @@ fn main() {
         tray_ok.store(!args.no_tray && rt.block_on(tray::start(&core, Duration::from_secs(5))), Ordering::Relaxed);
         info!("{}", if tray_ok.load(Ordering::Relaxed) { "已常駐於系統匣：右鍵點圖示可錄影或結束程式" } else { "系統匣無法使用：關掉操作視窗就會結束程式" });
     }
-    // mpv 播放元件（有下載時）在背景先載入
-    screenrecorder_core::mpv::preload();
     // 上次還在等的排程錄影：繼續等（已經過了的通知錯過了）
     screenrecorder_core::schedule::resume_saved(&core);
     if !args.no_tray {
