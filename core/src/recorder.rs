@@ -366,11 +366,14 @@ impl St {
 /// 聲音與畫面一起結束、分段之間也不留無聲的空隙。chapters：寫進影片的章節（錄影時加的標記）。
 /// 先合併到分段資料夾裡的暫存檔，成功才重新命名成 out：合併失敗或逾時時不會留下看起來正常、其實殘缺的錄影
 /// （分段留著，下次開啟時可以救回）。成功時回傳成品的長度（秒，讀不到時 None），失敗時回傳原因。
-/// video_sec：各分段錄到的畫面長度（秒；不知道時空的）。聲音結尾比畫面早很多（聲音中途斷了）時不照聲音截斷，不然畫面也會被切掉
+/// video_sec：各分段錄到的畫面長度（秒；不知道時空的）。聲音結尾比畫面早很多（聲音中途斷了）時不照聲音截斷，不然畫面也會被切掉。
+/// may_move：空間不夠合併、只有一段時，可以直接把那一段搬成成品（停止錄影、救回；回溯錄影的暫存檔可能還在寫，不行）
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn merge_segments(
     ffmpeg: &Path,
     files: &[String],
     video_sec: &[f64],
+    may_move: bool,
     parts_dir: &Path,
     out: &Path,
     has_audio: bool,
@@ -409,6 +412,19 @@ pub(crate) async fn merge_segments(
     let out_dir = out.parent().map(|d| d.display().to_string()).unwrap_or_default();
     if let Some(free) = disk_free(&out_dir).await {
         if free < total + MERGE_SPARE {
+            // 只有一段：直接搬過去當成品（同一顆磁碟搬移不用多的空間；分段本身就能播，只是沒有章節、不照聲音截斷）。
+            // 錄影中剩很少空間自動停止時，多半就是這種情況
+            if let (true, [only]) = (may_move, files) {
+                if out.exists() {
+                    return Err(tr!("成品的檔名已經有檔案", "A file with the output name already exists").into());
+                }
+                if std::fs::rename(only, out).is_ok() {
+                    crate::warn!("[合併] 空間不夠合併（剩 {}）：直接把唯一的分段搬成 {}", crate::format::format_bytes(free), out.display());
+                    let out_str = out.display().to_string();
+                    let head = run(ffmpeg, &["-hide_banner", "-i", &out_str], Duration::from_secs(15)).await;
+                    return Ok(parse_media_info(&head.stderr).duration_sec);
+                }
+            }
             return Err(trf!(
                 "磁碟空間不夠合併（需要約 {}，剩 {}）。分段都還在，清出空間後重新開啟程式就能救回",
                 "Not enough disk space to merge (needs about {}, {} free). The segments are kept; free up space and reopen the app to recover them",
@@ -2195,7 +2211,7 @@ impl Recorder {
         let work = dir.join(format!("save_{}", now_ms()));
         std::fs::create_dir_all(&work)?;
         let out = unique_path(Path::new(&output_dir), &format!("Replay_{}", timestamp()), ".mp4");
-        let r = merge_segments(&ffmpeg, &files, &[], &work, &out, has_audio, None).await;
+        let r = merge_segments(&ffmpeg, &files, &[], false, &work, &out, has_audio, None).await;
         let _ = std::fs::remove_dir_all(&work);
         let duration = r.map_err(|detail| Error::other(trf!("合併失敗：{detail}", "Merge failed: {detail}")))?;
         let out_str = out.display().to_string();
@@ -2283,7 +2299,7 @@ impl Recorder {
         let chapters = crate::chapters::from_markers(&markers, length);
         let meta = (!chapters.is_empty()).then(|| crate::chapters::ffmetadata(&chapters, length));
         let video_sec: Vec<f64> = parts.iter().map(|p| p.1 as f64 / fps).collect();
-        let duration = match merge_segments(&ffmpeg, &files, &video_sec, &parts_dir, &out, has_audio, meta).await {
+        let duration = match merge_segments(&ffmpeg, &files, &video_sec, true, &parts_dir, &out, has_audio, meta).await {
             Ok(d) => d,
             Err(detail) => {
                 return Ok(RecordingResult {
