@@ -621,16 +621,24 @@ pub async fn list_library_with(cache: &Arc<MediaCache>, ffmpeg: Option<&Path>, d
     }
 
     if let Some(text) = q.q.as_deref().map(|t| t.trim().to_lowercase()).filter(|t| !t.is_empty()) {
-        // 也找字幕裡說過的話（影片旁邊的 SRT；子資料夾裡的也找）
-        let mut srts: HashMap<String, Vec<PathBuf>> = HashMap::new();
-        for d in &scanned {
-            for (k, v) in srt_files(d) {
-                srts.entry(k).or_default().extend(v);
-            }
-        }
+        // 也找字幕裡說過的話（影片旁邊的 SRT；子資料夾裡的也找）。列資料夾、讀字幕檔都會卡住執行緒
+        // （存在 NAS 時要等網路）：放到 spawn_blocking，不要佔住錄影也在用的非同步執行緒
         let videos: std::collections::HashSet<String> = list.iter().map(|e| strip_ext(&e.media.name).to_lowercase()).collect();
-        for e in list.iter_mut().filter(|e| !is_image_name(&e.media.name)) {
-            e.hits = speech_hits(&srts, &videos, &e.media.name, &text);
+        let names: Vec<(usize, String)> = list.iter().enumerate().filter(|(_, e)| !is_image_name(&e.media.name)).map(|(i, e)| (i, e.media.name.clone())).collect();
+        let query = text.clone();
+        let hits = tokio::task::spawn_blocking(move || {
+            let mut srts: HashMap<String, Vec<PathBuf>> = HashMap::new();
+            for d in &scanned {
+                for (k, v) in srt_files(d) {
+                    srts.entry(k).or_default().extend(v);
+                }
+            }
+            names.into_iter().map(|(i, name)| (i, speech_hits(&srts, &videos, &name, &query))).collect::<Vec<_>>()
+        })
+        .await
+        .unwrap_or_default();
+        for (i, h) in hits {
+            list[i].hits = h;
         }
         // 也可以用日期找：「10/11」「10月11日」「今天」「昨天」
         let day = date_query(&text, chrono::Local::now().date_naive());
