@@ -310,7 +310,11 @@ fn main() {
     let c = core.clone();
     rt.spawn(async move {
         tokio::time::sleep(Duration::from_secs(30)).await;
-        let _ = tokio::task::spawn_blocking(move || c.thumbs.prune()).await;
+        let _ = tokio::task::spawn_blocking(move || {
+            c.thumbs.prune();
+            c.shot_meta.prune();
+        })
+        .await;
     });
 
     // 沒有系統匣時一定要開視窗（否則看不到程式）；開機自動啟動時不開（系統匣在背景重試）
