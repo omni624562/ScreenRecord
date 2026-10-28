@@ -342,6 +342,8 @@ pub struct Editor {
     emoji: usize,
     /// 上次選的馬賽克 / 模糊形狀與範圍（新的沿用）：[馬賽克, 模糊]
     last_style: [(Shape, bool); 2],
+    /// 影片：Ctrl+C 複製的標註（剪貼簿的文字, 標註）；Ctrl+V 時剪貼簿還是這段文字才貼上
+    ann_clip: Option<(String, Ann)>,
     /// 拖曳標註軌時固定每個標註所在的列，避免拖曳中跳列
     lane_freeze: Option<HashMap<u64, usize>>,
     /// 儲存時取代這個剪輯版（修改之前的剪輯）
@@ -418,6 +420,8 @@ pub struct Editor {
     cursor_size: f64,
     /// 標註的「我的樣式」（改了會存回設定）
     pub(crate) ann_styles: Vec<screenrecorder_core::annotate::AnnStyle>,
+    /// 標註範本（和設定同步，截圖編輯也用得到）
+    pub(crate) ann_templates: Vec<annotate::AnnTemplate>,
     /// 平滑游標停著不動時隱藏
     pub(crate) cursor_hide: bool,
     /// 「速度」分頁：做成指定長度的輸入、選取片段的自訂倍率
@@ -687,6 +691,7 @@ impl Editor {
             tool: None,
             emoji: 0,
             last_style: [(Shape::Rect, false); 2],
+            ann_clip: None,
             lane_freeze: None,
             replace_target: None,
             opened_cut: None,
@@ -743,6 +748,7 @@ impl Editor {
             vertical_pan: vec![],
             last_picture: app.s.last_picture.clone(),
             ann_styles: app.s.ann_styles.clone(),
+            ann_templates: app.s.ann_templates.clone(),
             subs: None,
             subs_lang: 0,
             subs_model: screenrecorder_core::subtitles::MODELS.iter().rposition(screenrecorder_core::subtitles::model_ready).unwrap_or(0),
@@ -1306,10 +1312,10 @@ impl Editor {
         map
     }
 
-    /// 新標註的出現時間：從目前位置起 3 秒，但不超出目前所在的保留片段；
+    /// 新標註的出現時間：從目前位置起 len 秒，但不超出目前所在的保留片段；
     /// 太靠近片段結尾時往前延伸（一定包含目前這一格，放好就看得到）。
-    fn default_window(&self, t: f64) -> (f64, f64) {
-        let len = 3f64.min(self.duration);
+    fn default_window(&self, t: f64, len: f64) -> (f64, f64) {
+        let len = len.min(self.duration);
         let seg = self.keep().into_iter().find(|&(a, b)| t >= a - 1e-3 && t < b).unwrap_or((0.0, self.duration));
         let end = seg.1.min(t.max(0.0) + len);
         let start = seg.0.max(t.min(end - len));
@@ -1328,8 +1334,11 @@ impl Editor {
 
     fn new_ann(&mut self, kind: AnnKind, x: f64, y: f64) -> Ann {
         let vh = self.size_base();
-        let (start, end) = self.default_window(self.now());
         let emoji = self.tool == Some(Tool::Emoji);
+        // 同一種標註沿用上一個的出現長度與出現方式（調好一個，接下來放的都一樣；表情符號和文字分開算）
+        let prev = self.anns.iter().rev().find(|o| o.kind == kind && (kind != AnnKind::Text || o.text.as_deref().is_some_and(is_emoji_text) == emoji));
+        let len = prev.map_or(ANN_SEC, |o| (o.end - o.start).max(0.1));
+        let (start, end) = self.default_window(self.now(), len);
         let mut a = Ann {
             id: self.next_id,
             kind,
@@ -1348,7 +1357,7 @@ impl Editor {
             invert: false,
             rot: 0.0,
             pts: vec![],
-            anim: 0,
+            anim: prev.map_or(0, |o| o.anim),
             bend: 0.0,
         };
         self.next_id += 1;
@@ -1417,6 +1426,104 @@ impl Editor {
         a.y = cy - a.h / 2.0;
         self.last_picture = path.to_string();
         Ok(())
+    }
+
+    /// 影片：複製一份標註放到播放位置（出現多久、出現方式不變）並選取它；
+    /// 和原本的時間重疊時往右下錯開一點，看得出是新的一個
+    fn place_copy(&mut self, a: &Ann) {
+        let mut b = a.clone();
+        b.id = self.next_id;
+        self.next_id += 1;
+        let (start, end) = self.default_window(self.now(), (a.end - a.start).max(0.1));
+        (b.start, b.end) = (start, end);
+        if start < a.end && a.start < end {
+            let off = (self.vw.min(self.vh) * 0.02).round().max(10.0);
+            b.x += off;
+            b.y += off;
+        }
+        let id = b.id;
+        self.anns.push(b);
+        self.tool = None;
+        self.select_ann(Some(id));
+    }
+
+    /// 錄影時的點擊（刪掉的片段裡的不算）：「在每次點擊的地方加上圓框」用
+    pub(super) fn kept_clicks(&self) -> Vec<[f64; 3]> {
+        let keep = self.keep();
+        self.clicks.iter().copied().filter(|c| keep.iter().any(|&(a, b)| c[0] >= a && c[0] < b)).collect()
+    }
+
+    /// 在每次點擊的地方加上圓框（用圓框目前的顏色、淡入淡出，從點下去前一點點出現 1 秒）；
+    /// 同一個點已經加過的不重複加。回傳要顯示的訊息
+    pub(super) fn mark_clicks(&mut self) -> (String, bool) {
+        let clicks = self.kept_clicks();
+        if clicks.is_empty() || self.vw <= 0.0 {
+            return (tr!("這支錄影沒有記下點擊（錄影時要開啟「點擊、按鍵」）", "This recording has no clicks recorded (turn on “Clicks and keys” before recording)").into(), true);
+        }
+        let base = self.size_base();
+        let d = (base * 0.07).round().max(24.0);
+        let (color, size) = style_of(AnnKind::Ellipse, base);
+        let mut added = 0;
+        for c in clicks {
+            let (cx, cy) = (c[1] * self.vw, c[2] * self.vh);
+            let start = (c[0] - 0.15).max(0.0);
+            let dup = self.anns.iter().any(|a| a.kind == AnnKind::Ellipse && (a.start - start).abs() < 0.05 && (a.x + a.w / 2.0 - cx).abs() < 4.0 && (a.y + a.h / 2.0 - cy).abs() < 4.0);
+            if dup {
+                continue;
+            }
+            let mut a = self.new_ann(AnnKind::Ellipse, cx - d / 2.0, cy - d / 2.0);
+            (a.w, a.h) = (d, d);
+            (a.start, a.end) = (start, (start + 1.0).min(self.duration));
+            (a.color, a.size, a.anim) = (color.clone(), size, 1);
+            self.anns.push(a);
+            added += 1;
+        }
+        self.tool = None;
+        self.ann_sel = None;
+        if added == 0 {
+            (tr!("每次點擊的地方都已經有圓框了", "Every click already has a circle").into(), false)
+        } else {
+            (trf!("已在 {added} 次點擊的地方加上圓框，可按 Ctrl+Z 復原", "Added circles at {added} clicks. Press Ctrl+Z to undo"), false)
+        }
+    }
+
+    /// 可以存成範本的標註：影片是播放位置看得到的（字幕不算），截圖是全部
+    pub(super) fn template_source(&self) -> Vec<Ann> {
+        let shot = self.is_shot();
+        let t = self.now();
+        self.anns.iter().filter(|a| !self.is_sub(a.id) && (shot || (a.start <= t + 1e-3 && t < a.end))).cloned().collect()
+    }
+
+    /// 把目前看得到的標註存成範本；回傳要顯示的訊息
+    pub(super) fn save_template(&mut self) -> (String, bool) {
+        match annotate::make_template(&self.template_source(), self.vw, self.vh, self.size_base()) {
+            Some(t) => {
+                let msg = trf!("已存成範本「{}」，之後在「標註」分頁一按就放上去", "Saved as template “{}”. Click it in the Annotations tab to add it again", t.name);
+                annotate::save_template(&mut self.ann_templates, t);
+                (msg, false)
+            }
+            None => (tr!("這裡沒有可以存的標註", "There are no annotations here to save").into(), true),
+        }
+    }
+
+    /// 放上第 i 個範本：影片從播放位置開始，選取放上去的第一個
+    pub(super) fn insert_template(&mut self, i: usize) {
+        let Some(t) = self.ann_templates.get(i).cloned() else { return };
+        let shot = self.is_shot();
+        let (at, duration) = if shot { (0.0, f64::INFINITY) } else { (self.now(), self.duration) };
+        let mut first = None;
+        for mut a in annotate::place_template(&t, self.vw, self.vh, self.size_base(), at, duration) {
+            if shot {
+                // 截圖沒有時間：和新放的標註一樣
+                (a.start, a.end) = self.default_window(self.now(), ANN_SEC);
+            }
+            a.id = self.next_id;
+            self.next_id += 1;
+            first.get_or_insert(a.id);
+            self.anns.push(a);
+        }
+        self.tool = None;
+        self.select_ann(first);
     }
 
     /// 選取標註：同時取消時間軸上選取的範圍（Delete 只會刪掉最後選的那一個）
@@ -2323,6 +2430,9 @@ fn make_player(ctx: &egui::Context, ffmpeg: &std::path::Path, e: &LibraryEntry) 
 }
 
 /// 表情符號標註（文字只有一個表情符號）
+/// 新標註預設出現幾秒（同一種已經有的話沿用上一個的長度）
+const ANN_SEC: f64 = 3.0;
+
 pub fn is_emoji_text(t: &str) -> bool {
     EMOJIS.contains(&t)
 }
@@ -2441,8 +2551,9 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
     }
     let mut toast: Option<(String, bool)> = None;
     // 「我的樣式」改了：存回設定（下次開啟、截圖編輯也用得到）
-    if ed.ann_styles != app.s.ann_styles {
+    if ed.ann_styles != app.s.ann_styles || ed.ann_templates != app.s.ann_templates {
         app.s.ann_styles = ed.ann_styles.clone();
+        app.s.ann_templates = ed.ann_templates.clone();
         app.save_settings();
     }
     ed.poll_player();
@@ -3537,8 +3648,38 @@ fn keyboard(ed: &mut Editor, ctx: &egui::Context, toast: &mut Option<(String, bo
     }
     if ed.is_shot() {
         shot::keys(ed, ctx, toast);
+    } else {
+        clip_keys(ed, ctx, toast);
     }
     shortcuts(ed, ctx, toast, key);
+}
+
+/// 影片的標註：Ctrl+C 複製、Ctrl+V 貼到播放位置、Ctrl+D 在播放位置再做一份（字幕不算，字幕在「字幕」分頁處理）
+fn clip_keys(ed: &mut Editor, ctx: &egui::Context, toast: &mut Option<(String, bool)>) {
+    let key = |m: Modifiers, k: Key| ctx.input_mut(|i| i.consume_key(m, k));
+    let selected = ed.selected().filter(|a| !ed.is_sub(a.id)).cloned();
+    // Ctrl+C 會先變成「複製」事件
+    let copy = key(Modifiers::COMMAND, Key::C) | ctx.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Copy)));
+    if let (true, Some(a)) = (copy, selected.clone()) {
+        // 剪貼簿放這個標註的文字（文字標註）或名稱：貼回來時認得出來
+        let text = a.text.clone().filter(|t| a.kind == AnnKind::Text && !t.trim().is_empty()).unwrap_or_else(|| annotate::label(&a));
+        screenrecorder_core::clipboard::copy_text(&text);
+        ed.ann_clip = Some((text, a));
+        *toast = Some((tr!("已複製標註：移到要出現的時間按 Ctrl+V 貼上", "Annotation copied. Move to where it should appear and press Ctrl+V").into(), false));
+    }
+    let pasted = ctx.input(|i| i.events.iter().find_map(|e| if let egui::Event::Paste(t) = e { Some(t.clone()) } else { None }));
+    if pasted.is_some() || key(Modifiers::COMMAND, Key::V) {
+        let text = pasted.or_else(screenrecorder_core::clipboard::read_text);
+        if let Some(a) = ed.ann_clip.as_ref().filter(|(t, _)| text.as_ref() == Some(t)).map(|(_, a)| a.clone()) {
+            ed.place_copy(&a);
+        }
+    }
+    if key(Modifiers::COMMAND, Key::D) {
+        if let Some(a) = selected {
+            ed.place_copy(&a);
+            *toast = Some((tr!("已在播放位置再做一份", "Duplicated at the playhead").into(), false));
+        }
+    }
 }
 
 /// 其他快速鍵（截圖沒有時間軸：播放、移動、開頭結尾不適用）
@@ -3639,6 +3780,20 @@ fn shortcuts(ed: &mut Editor, ctx: &egui::Context, toast: &mut Option<(String, b
             a.rot = norm_deg(a.rot + dir * step);
         }
     }
+    // 數字鍵選標註工具（再按一次取消）；字母鍵已經用在播放、剪輯
+    if video && ed.vw > 0.0 {
+        for tool in side::MARK_TOOLS.iter().map(|t| t.0).chain([Tool::Ann(AnnKind::Mosaic), Tool::Ann(AnnKind::Blur)]) {
+            let Some(k) = side::video_tool_key(tool).and_then(|c| Key::from_name(&c.to_string())) else { continue };
+            if key(Modifiers::NONE, k) {
+                ed.tool = if ed.tool == Some(tool) { None } else { Some(tool) };
+                if ed.tool.is_some() {
+                    ed.ann_sel = None;
+                    ed.sel = None;
+                    ed.tab = Tab::Ann;
+                }
+            }
+        }
+    }
     if key(Modifiers::NONE, Key::Escape) {
         if ed.sel.is_some() || ed.tool.is_some() || ed.ann_sel.is_some() {
             // 有選取或正在放置時 Esc 只取消，不關閉
@@ -3683,6 +3838,16 @@ fn ann_color(a: &Ann) -> Color32 {
 #[cfg(test)]
 mod tests {
     use super::parse_time;
+
+    #[test]
+    fn video_tool_keys_are_unique() {
+        use super::{side, AnnKind, Tool};
+        let tools: Vec<Tool> = side::MARK_TOOLS.iter().map(|t| t.0).chain([Tool::Ann(AnnKind::Mosaic), Tool::Ann(AnnKind::Blur), Tool::Ann(AnnKind::Spotlight)]).collect();
+        let keys: Vec<char> = tools.iter().filter_map(|t| side::video_tool_key(*t)).collect();
+        assert_eq!(keys.iter().collect::<String>(), "1234567890");
+        assert_eq!(side::video_tool_key(Tool::Ann(AnnKind::Text)), Some('1'));
+        assert_eq!(side::video_tool_key(Tool::Ann(AnnKind::Spotlight)), None);
+    }
 
     #[test]
     fn times() {

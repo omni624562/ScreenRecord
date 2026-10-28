@@ -768,6 +768,20 @@ fn interact(ed: &mut Editor, ui: &egui::Ui, rect: Rect, resp: &egui::Response) {
             } else {
                 ui.ctx().set_cursor_icon(cursor);
             }
+            // 選了工具：十字游標右下方顯示是哪個工具、用什麼顏色，放下去之前就知道會放什麼
+            if let Some(tool) = ed.tool.filter(|_| vw > 0.0) {
+                let kind = tool.kind();
+                let color = if kind.is_effect() || kind == AnnKind::Image {
+                    Color32::WHITE
+                } else {
+                    let (r, g, b) = annotate::parse_color(&super::style_of(kind, ed.size_base()).0);
+                    Color32::from_rgb(r, g, b)
+                };
+                let c = p + vec2(24.0, 24.0);
+                let painter = ui.painter();
+                painter.circle(c, 15.0, Color32::from_black_alpha(190), Stroke::new(1.0, Color32::from_white_alpha(90)));
+                paint_tool_icon(painter, c, tool, color);
+            }
         }
     }
 
@@ -1047,18 +1061,19 @@ fn end_drag(ed: &mut Editor) {
 }
 
 /// 工具按鈕上的小圖示
-pub fn paint_tool_icon(p: &egui::Painter, c: Pos2, tool: Tool, color: Color32, emoji: Option<&TextureHandle>) {
+pub fn paint_tool_icon(p: &egui::Painter, c: Pos2, tool: Tool, color: Color32) {
     let s = Stroke::new(1.8, color);
     match tool {
         Tool::Ann(AnnKind::Text) => {
             p.text(c, Align2::CENTER_CENTER, "T", theme::font_bold(19.0), color);
         }
+        // 和其他工具一樣的線條圖示（彩色表情符號的圖有留白，放在方塊裡會偏小、偏一邊）；選了這個工具後下面會列出表情符號
         Tool::Emoji => {
-            if let Some(t) = emoji {
-                let sz = t.size_vec2();
-                let k = 22.0 / sz.y.max(1.0);
-                p.image(t.id(), Rect::from_center_size(c, sz * k), Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
-            }
+            p.circle_stroke(c, 9.0, s);
+            p.circle_filled(c + vec2(-3.2, -2.5), 1.3, color);
+            p.circle_filled(c + vec2(3.2, -2.5), 1.3, color);
+            let smile: Vec<Pos2> = (0..=8).map(|i| std::f32::consts::PI * (0.15 + 0.7 * i as f32 / 8.0)).map(|a| c + vec2(-a.cos() * 4.8, 1.2 + a.sin() * 3.6)).collect();
+            p.add(egui::Shape::line(smile, s));
         }
         Tool::Ann(AnnKind::Arrow) => {
             let (a, b) = (c + vec2(-7.0, 7.0), c + vec2(7.0, -7.0));

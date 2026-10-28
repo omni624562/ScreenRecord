@@ -35,7 +35,7 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, toast: &mut
                     fold(ed, ui, "cards", tr!("片頭、片尾", "Intro and outro"), on, |ed, ui| cards_panel(ed, ui, ctx));
                 }
             }
-            Tab::Ann => ann_panel(ed, ui, ctx),
+            Tab::Ann => ann_panel(ed, ui, ctx, toast),
             Tab::Output => super::shot::output_panel(ed, ui, ctx),
             Tab::Subs => {
                 super::subs::tab(ed, ui, ctx, toast);
@@ -1069,7 +1069,7 @@ fn cursor_panel(ed: &mut Editor, ui: &mut egui::Ui) {
 }
 
 /// 加上標註：(工具, 中文名稱, 英文名稱)
-const MARK_TOOLS: [(Tool, &str, &str); 8] = [
+pub(super) const MARK_TOOLS: [(Tool, &str, &str); 8] = [
     (Tool::Ann(AnnKind::Text), "文字", "Text"),
     (Tool::Emoji, "表情符號", "Emoji"),
     (Tool::Ann(AnnKind::Arrow), "箭頭", "Arrow"),
@@ -1086,6 +1086,13 @@ const COVER_TOOLS: [(Tool, &str, &str); 4] = [
     (Tool::Ann(AnnKind::Spotlight), "聚光燈", "Spotlight"),
     (Tool::Ann(AnnKind::Magnify), "放大鏡", "Magnifier"),
 ];
+
+/// 剪輯影片時選工具的快速鍵：數字鍵 1～9、0（字母鍵已經用在播放、剪輯）。聚光燈沒有
+pub(super) fn video_tool_key(tool: Tool) -> Option<char> {
+    const KEYS: [char; 10] = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '0'];
+    let order = MARK_TOOLS.iter().map(|t| t.0).chain([Tool::Ann(AnnKind::Mosaic), Tool::Ann(AnnKind::Blur)]);
+    order.zip(KEYS).find(|(t, _)| *t == tool).map(|(_, k)| k)
+}
 
 /// 一組工具：每列三個方塊；picture = 最後放一個「圖片」方塊（按下去選圖片來源）
 fn tool_grid(ed: &mut Editor, ui: &mut egui::Ui, tools: &[(Tool, &str, &str)], can: bool, picture: bool) {
@@ -1107,16 +1114,11 @@ fn tool_grid(ed: &mut Editor, ui: &mut egui::Ui, tools: &[(Tool, &str, &str)], c
                 let ink = if can { ink } else { ink.gamma_multiply(0.45) };
                 ui.painter().rect(r, CornerRadius::same(theme::RADIUS_SM), fill, Stroke::new(1.0, stroke), egui::StrokeKind::Inside);
                 let icon_color = if !on && tool == Tool::Ann(AnnKind::Highlight) { Color32::from_rgb(0xf5, 0xb3, 0x01) } else { ink };
-                paint_tool_icon(
-                    ui.painter(),
-                    pos2(r.center().x, r.top() + 19.0),
-                    tool,
-                    if on && tool == Tool::Ann(AnnKind::Highlight) { Color32::WHITE } else { icon_color },
-                    ed.emoji_tex.get(ed.emoji),
-                );
+                paint_tool_icon(ui.painter(), pos2(r.center().x, r.top() + 19.0), tool, if on && tool == Tool::Ann(AnnKind::Highlight) { Color32::WHITE } else { icon_color });
                 ui.painter().text(pos2(r.center().x, r.bottom() - 11.0), Align2::CENTER_CENTER, label, theme::font(12.0), ink);
-                // 截圖：提示顯示快速鍵「箭頭（A）」
-                let resp = match super::shot::tool_tip(tool, label).filter(|_| shot) {
+                // 提示顯示快速鍵：截圖「箭頭（A）」、影片「箭頭（3）」
+                let tip = if shot { super::shot::tool_tip(tool, label) } else { video_tool_key(tool).map(|k| trf!("{label}（{k}）", "{label} ({k})")) };
+                let resp = match tip {
                     Some(t) => resp.on_hover_text(t),
                     None => resp,
                 };
@@ -1149,7 +1151,7 @@ fn tool_grid(ed: &mut Editor, ui: &mut egui::Ui, tools: &[(Tool, &str, &str)], c
     }
 }
 
-fn ann_panel(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context) {
+fn ann_panel(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, toast: &mut Option<(String, bool)>) {
     let can = ed.vw > 0.0;
     let shot = ed.is_shot();
 
@@ -1157,6 +1159,7 @@ fn ann_panel(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context) {
     if ed.tool.is_none() && ed.selected().is_some() {
         tool_row(ed, ui, can);
         props(ed, ui, ctx);
+        templates(ed, ui, can, toast);
         return ann_list(ed, ui);
     }
 
@@ -1201,9 +1204,14 @@ fn ann_panel(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context) {
             Some(_) => trf!("在{w}上按住拖曳放置。按 Esc 取消", "Drag on the {w} to place it. Esc cancels"),
             None if ed.selected().is_some() => String::new(),
             None if shot => tr!("選工具後在圖上按一下或拖曳。Ctrl+Z 復原", "Pick a tool, then click or drag on the image. Ctrl+Z undoes").into(),
+            // 加過標註之後只留一行，下面的樣式、標註清單早一點看得到
+            None if !ed.anns.is_empty() => tr!(
+                "選工具（數字鍵 1～0）後在影片上按一下或拖曳。選取標註後按 Ctrl+D 可在播放位置再做一份",
+                "Pick a tool (number keys 1–0), then click or drag on the video. Select an annotation and press Ctrl+D to duplicate it at the playhead"
+            ).into(),
             None => tr!(
-                "① 選工具 ② 在影片上按一下或拖曳放置。標註從目前位置起出現 3 秒，可在時間軸下方的標註軌拖曳調整。",
-                "① Pick a tool ② Click or drag on the video to place it. Annotations show for 3 s from the current position; drag them on the annotation track below the timeline to adjust."
+                "① 選工具（數字鍵 1～0）② 在影片上按一下或拖曳放置。標註從目前位置起出現 3 秒（同一種會沿用上一個的長度與出現方式），可在時間軸下方的標註軌拖曳調整。",
+                "① Pick a tool (number keys 1–0) ② Click or drag on the video to place it. Annotations show for 3 s from the current position (the same kind reuses the previous one's length and animation); drag them on the annotation track below the timeline to adjust."
             )
             .into(),
         }
@@ -1212,7 +1220,112 @@ fn ann_panel(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context) {
         hint(ui, &hint_text);
     }
     tool_style(ed, ui);
+    templates(ed, ui, can, toast);
+    click_marks(ed, ui, can, toast);
     ann_list(ed, ui);
+}
+
+/// 跟著點擊：在錄影時每次點擊的地方加上圓框（做教學影片時不用一個一個放）
+fn click_marks(ed: &mut Editor, ui: &mut egui::Ui, can: bool, toast: &mut Option<(String, bool)>) {
+    if ed.is_shot() || !can {
+        return;
+    }
+    let n = ed.kept_clicks().len();
+    if n == 0 {
+        return;
+    }
+    section(ui, tr!("跟著點擊", "Follow clicks"), false);
+    if Btn::new(trf!("在每次點擊的地方加上圓框（{n} 次）", "Circle every click ({n})"))
+        .small()
+        .min_width(ui.available_width())
+        .tooltip(tr!(
+            "用錄影時記下的點擊，在點下去的地方各加一個淡入淡出的圓框（出現 1 秒，顏色用圓框目前的顏色）；刪掉的片段裡的不加，加過的不重複加",
+            "Uses the clicks recorded during recording to add a fading circle where each click happened (shown for 1 s, in the current circle color). Clicks in removed parts are skipped, and existing circles aren't duplicated"
+        ))
+        .show(ui)
+        .clicked()
+    {
+        *toast = Some(ed.mark_clicks());
+    }
+}
+
+/// 範本：一組常用的標註（例如紅框＋文字說明），按一下放到播放位置；「存成範本」把現在看得到的標註存起來
+fn templates(ed: &mut Editor, ui: &mut egui::Ui, can: bool, toast: &mut Option<(String, bool)>) {
+    let shot = ed.is_shot();
+    let here = ed.template_source().len();
+    if !can || (ed.ann_templates.is_empty() && here == 0) {
+        return;
+    }
+    section(ui, tr!("範本", "Templates"), false);
+    let mut insert = None;
+    let mut remove = None;
+    if !ed.ann_templates.is_empty() {
+        templates_row(ed, ui, &mut insert, &mut remove);
+    }
+    if let Some(i) = insert {
+        ed.insert_template(i);
+    }
+    if let Some(i) = remove {
+        let t = ed.ann_templates.remove(i);
+        *toast = Some((trf!("已刪除範本「{}」", "Deleted template “{}”", t.name), false));
+    }
+    let label = if shot {
+        trf!("＋ 把圖上的 {here} 個標註存成範本", "+ Save the image's annotations ({here}) as a template")
+    } else {
+        trf!("＋ 把這個時間點的 {here} 個標註存成範本", "+ Save what's shown now ({here}) as a template")
+    };
+    if here > 0
+        && Btn::new(label)
+            .small()
+            .ghost()
+            .tooltip(tr!(
+                "位置、大小、顏色、文字、出現時間一起存起來，之後在別支影片或截圖一按就放上去",
+                "Saves their position, size, color, text and timing so you can add them to another video or screenshot with one click"
+            ))
+            .show(ui)
+            .clicked()
+    {
+        *toast = Some(ed.save_template());
+    }
+}
+
+/// 範本的一排按鈕：按一下放上去（insert），✕ 或右鍵刪除（remove）
+fn templates_row(ed: &Editor, ui: &mut egui::Ui, insert: &mut Option<usize>, remove: &mut Option<usize>) {
+    let p = theme::pal(ui);
+    let shot = ed.is_shot();
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
+        for (i, t) in ed.ann_templates.iter().enumerate() {
+            let g = ui.painter().layout_no_wrap(t.name.clone(), theme::font(12.0), p.text);
+            // 右邊留一個 ✕ 的位置（滑鼠移上去才畫出來）
+            let (r, resp) = ui.allocate_exact_size(vec2(g.size().x + 20.0 + 16.0, 26.0), Sense::click());
+            ui.painter().rect(r, CornerRadius::same(13), p.surface, Stroke::new(1.0, if resp.hovered() { p.accent } else { p.border }), egui::StrokeKind::Inside);
+            ui.painter().galley(pos2(r.left() + 10.0, r.center().y - g.size().y / 2.0), g, p.text);
+            let xr = egui::Rect::from_center_size(pos2(r.right() - 12.0, r.center().y), vec2(16.0, 16.0));
+            let x = ui.interact(xr, ui.id().with(("template-del", i)), Sense::click()).on_hover_text(tr!("刪除這個範本", "Delete this template"));
+            if resp.hovered() || x.hovered() {
+                theme::paint_icon(ui.painter(), xr.shrink(3.0), Icon::Close, if x.hovered() { p.text } else { p.muted });
+            }
+            if x.clicked() {
+                *remove = Some(i);
+            }
+            let tip = if shot {
+                trf!("放上這組標註（{} 個）", "Add this set of annotations ({})", t.anns.len())
+            } else {
+                trf!("從播放位置放上這組標註（{} 個）", "Add this set of annotations ({}) at the playhead", t.anns.len())
+            };
+            let resp = resp.on_hover_cursor(CursorIcon::PointingHand).on_hover_text(tip);
+            if resp.clicked() && !x.clicked() {
+                *insert = Some(i);
+            }
+            resp.context_menu(|ui| {
+                if ui.button(tr!("刪除這個範本", "Delete this template")).clicked() {
+                    *remove = Some(i);
+                    ui.close();
+                }
+            });
+        }
+    });
 }
 
 /// 選取標註時的工具列：一排小圖示（按一下換成放新的標註）
@@ -1232,7 +1345,7 @@ fn tool_row(ed: &mut Editor, ui: &mut egui::Ui, can: bool) {
             let ink = if can { p.text } else { p.text.gamma_multiply(0.45) };
             // 圖示畫小一點才放得進小方塊
             let painter = ui.painter().with_clip_rect(r);
-            paint_tool_icon(&painter, r.center(), tool, if tool == Tool::Ann(AnnKind::Highlight) { Color32::from_rgb(0xf5, 0xb3, 0x01) } else { ink }, ed.emoji_tex.get(ed.emoji));
+            paint_tool_icon(&painter, r.center(), tool, if tool == Tool::Ann(AnnKind::Highlight) { Color32::from_rgb(0xf5, 0xb3, 0x01) } else { ink });
             if resp.on_hover_text(trf!("加上{label}", "Add {label}")).on_hover_cursor(CursorIcon::PointingHand).clicked() && can {
                 ed.tool = Some(tool);
                 ed.ann_sel = None;

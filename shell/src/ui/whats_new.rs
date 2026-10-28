@@ -42,19 +42,37 @@ enum Try {
 fn items(_app: &UiApp) -> Vec<(String, String, Try)> {
     vec![
         (
-            tr!("類型、標籤、人物用 Jellyfin 的清單", "Genres, tags and people from Jellyfin").into(),
+            tr!("標註範本", "Annotation templates").into(),
             tr!(
-                "影片資訊的類型、標籤、人物和 Jellyfin 影片資訊一樣：點「常用」加入，或從「全部 N 個」清單搜尋、勾選。",
-                "In Video details, genres, tags and people work like Jellyfin's details: click a suggestion or pick from the “All N” list."
+                "剪輯或截圖編輯的「標註」分頁：把畫面上的幾個標註（例如紅框＋說明文字）存成範本，之後在別支影片、截圖一按就放上去，位置、大小、顏色都一樣。",
+                "In the Annotations tab of the editor: save the annotations on screen (for example a red box with a note) as a template, then add them to another video or screenshot with one click, in the same place, size and color."
+            )
+            .into(),
+            Try::Library(false),
+        ),
+        (
+            tr!("在每次點擊的地方加上圓框", "Circle every click").into(),
+            tr!(
+                "錄影時有記下點擊（「點擊、按鍵」）的影片，剪輯時在「標註」分頁按一下，每次點擊的地方都會加上淡入淡出的圓框，做教學影片不用一個一個放。",
+                "For recordings with clicks recorded (“Clicks and keys”), one click in the Annotations tab adds a fading circle at every click, so tutorials don't need them placed one by one."
             )
             .into(),
             Try::None,
         ),
         (
-            tr!("邊看邊改影片資訊", "Edit details while watching").into(),
+            tr!("影片標註可以複製、貼上", "Copy and paste annotations in videos").into(),
             tr!(
-                "在主畫面播放時按「影片資訊」，資訊放在播放區旁邊，影片繼續播；看完放大或在播放器開啟，關掉後也回到原本的影片。",
-                "While playing on the main screen, Video details opens beside the video and playback continues. Closing the player or full screen returns to the same video."
+                "選取標註後 Ctrl+C、Ctrl+V 貼到播放位置，或 Ctrl+D 直接在播放位置再做一份；數字鍵 1～0 選工具。",
+                "Select an annotation and press Ctrl+C, then Ctrl+V to paste it at the playhead, or Ctrl+D to duplicate it there. Number keys 1–0 pick tools."
+            )
+            .into(),
+            Try::None,
+        ),
+        (
+            tr!("新的標註跟著上一個", "New annotations follow the last one").into(),
+            tr!(
+                "同一種標註會沿用上一個的出現長度和出現方式（淡入淡出、放大出現）：調好一個，接下來放的都一樣。",
+                "Annotations of the same kind reuse the previous one's length and appear animation: set it once and the rest follow."
             )
             .into(),
             Try::None,
