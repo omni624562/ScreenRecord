@@ -268,8 +268,10 @@ impl Exporter {
         let base = name.map(|n| n.trim().to_string()).unwrap_or_else(|| format!("{stem}_合併"));
         let output = crate::paths::unique_path(&parent(&list[0].0), &base, ".mp4");
         // 合併：用最早的那支錄的時間
-        let time = recorded_at(&ffmpeg, &list.iter().map(|(p, _)| p.clone()).collect::<Vec<_>>()).await;
-        if quality.is_none() && can_join(&ffmpeg, &inputs.iter().map(|i| i.0.clone()).collect::<Vec<_>>()).await {
+        let paths: Vec<String> = list.iter().map(|(p, _)| p.clone()).collect();
+        let heads = headers(&ffmpeg, &paths).await;
+        let time = recorded_at_in(&paths, &heads);
+        if quality.is_none() && can_join(&paths, &heads) {
             let dir = crate::paths::unique_temp("ScreenRecorder-merge", "");
             std::fs::create_dir_all(&dir).map_err(|e| Error::other(e.to_string()))?;
             let file = dir.join("list.txt");
@@ -895,16 +897,29 @@ pub struct CutOptions {
 /// 影片「錄的時間」：影片裡的建立時間（手機影片是拍攝時間；creation_time），沒有時用檔案的修改時間。
 /// 好幾支時取最早的（合併）
 async fn recorded_at(ffmpeg: &Path, paths: &[String]) -> Option<std::time::SystemTime> {
+    recorded_at_in(paths, &headers(ffmpeg, paths).await)
+}
+
+/// 同上，用已經讀好的檔頭（headers）
+fn recorded_at_in(paths: &[String], heads: &[String]) -> Option<std::time::SystemTime> {
     let mut best: Option<std::time::SystemTime> = None;
-    for p in paths {
-        let args = ["-hide_banner".to_string(), "-i".into(), p.clone()];
-        let r = crate::process::run(ffmpeg, &args, std::time::Duration::from_secs(20)).await;
-        let t = crate::args::parse_creation_time(&r.stderr).or_else(|| std::fs::metadata(p).and_then(|m| m.modified()).ok());
+    for (p, head) in paths.iter().zip(heads) {
+        let t = crate::args::parse_creation_time(head).or_else(|| std::fs::metadata(p).and_then(|m| m.modified()).ok());
         if let Some(t) = t {
             best = Some(best.map_or(t, |b| b.min(t)));
         }
     }
     best
+}
+
+/// 每支影片的檔頭（`ffmpeg -i` 的輸出）：合併時錄的時間、能不能直接接起來都要看，讀一次就好
+async fn headers(ffmpeg: &Path, paths: &[String]) -> Vec<String> {
+    let mut out = Vec::with_capacity(paths.len());
+    for p in paths {
+        let r = crate::process::run(ffmpeg, &["-hide_banner".to_string(), "-i".into(), p.clone()], std::time::Duration::from_secs(30)).await;
+        out.push(r.stderr);
+    }
+    out
 }
 
 /// 輸出加上建立時間（放在輸出檔名前面；GIF、WebP 沒有這個欄位，FFmpeg 會略過）
@@ -949,8 +964,9 @@ fn with_chapters(args: &mut Vec<String>, chapters: &[crate::types::Chapter], dur
     Some(dir)
 }
 
-/// 合併時能不能直接接起來：都是 MP4 / MOV、MP4 裝得了的編碼，每支的串流格式都一樣（見 import::stream_signature）
-async fn can_join(ffmpeg: &Path, paths: &[String]) -> bool {
+/// 合併時能不能直接接起來：都是 MP4 / MOV、MP4 裝得了的編碼，每支的串流格式都一樣（見 import::stream_signature）。
+/// heads：各支的檔頭（headers）
+fn can_join(paths: &[String], heads: &[String]) -> bool {
     let mp4 = |p: &String| {
         let l = p.to_ascii_lowercase();
         l.ends_with(".mp4") || l.ends_with(".m4v") || l.ends_with(".mov")
@@ -959,9 +975,8 @@ async fn can_join(ffmpeg: &Path, paths: &[String]) -> bool {
         return false;
     }
     let mut first: Option<String> = None;
-    for p in paths {
-        let r = crate::process::run(ffmpeg, &["-hide_banner".to_string(), "-i".into(), p.clone()], std::time::Duration::from_secs(30)).await;
-        let Some(sig) = crate::import::stream_signature(&r.stderr) else { return false };
+    for (p, head) in paths.iter().zip(heads) {
+        let Some(sig) = crate::import::stream_signature(head) else { return false };
         // MOV 裡也可能是 MP4 裝不了的編碼（ProRes、PCM 聲音）：那就重新壓縮
         if !crate::import::mp4_can_hold(&sig) {
             crate::info!("[合併] {p} 的格式 MP4 裝不了，重新壓縮：{sig}");
