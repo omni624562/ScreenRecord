@@ -86,6 +86,8 @@ pub struct Status {
 /// 預覽畫面的最大寬度
 pub const PREVIEW_MAX_WIDTH: u32 = 1600;
 pub const LIVE_MAX_WIDTH: u32 = 1280;
+/// 錄影中記下的「在用的程式（執行檔, 視窗標題）」最多幾種
+const APP_SAMPLES_MAX: usize = 500;
 pub type Exiter = Arc<dyn Fn(i32) + Send + Sync>;
 
 #[derive(Default)]
@@ -381,7 +383,11 @@ impl App {
                 let mut g = apps.lock().unwrap_or_else(|e| e.into_inner());
                 let Some(m) = g.as_mut() else { break };
                 if let Some(i) = info.filter(|i| !i.exe.is_empty()) {
-                    *m.entry((i.exe, i.title)).or_default() += 1;
+                    // 視窗標題常常在變（瀏覽器分頁、文件名稱）：回溯錄影開好幾天時不要一直長大，記滿了只加已經有的
+                    let key = (i.exe, i.title);
+                    if m.len() < APP_SAMPLES_MAX || m.contains_key(&key) {
+                        *m.entry(key).or_default() += 1;
+                    }
                 }
             }
         });
