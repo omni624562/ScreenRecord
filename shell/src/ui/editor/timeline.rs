@@ -153,7 +153,13 @@ pub struct Strip {
     gen: u64,
     inbox: Arc<Mutex<Vec<(u64, usize, Frame)>>>,
     tiles: Vec<Option<TextureHandle>>,
+    /// 解過的縮圖：(時間, 寬, 高, 圖)，新的在後面。縮放、捲動回到看過的地方時直接用，
+    /// 還沒解好的格子先放時間最接近的那張（不會整排先變空白）
+    cache: std::collections::VecDeque<(f64, u32, u32, TextureHandle)>,
 }
+
+/// 時間軸縮圖最多記幾張（每張只有幾十 KB）
+const STRIP_CACHE: usize = 240;
 
 /// 聲音波形（開啟剪輯視窗後在背景讀一次）
 #[derive(Default)]
@@ -206,7 +212,7 @@ fn draw_wave(painter: &egui::Painter, rect: Rect, peaks: &[u8], axis: &Axis, col
 
 impl Default for Strip {
     fn default() -> Self {
-        Strip { key: 0, due: None, cancel: Arc::new(AtomicBool::new(false)), gen: 0, inbox: Arc::default(), tiles: vec![] }
+        Strip { key: 0, due: None, cancel: Arc::new(AtomicBool::new(false)), gen: 0, inbox: Arc::default(), tiles: vec![], cache: Default::default() }
     }
 }
 
@@ -215,6 +221,25 @@ impl Strip {
         self.cancel();
         self.key = 0;
         self.tiles.clear();
+        self.cache.clear();
+    }
+
+    /// 時間 t、大小 w×h 解過的那張
+    fn cached(&self, t: f64, w: u32, h: u32) -> Option<TextureHandle> {
+        self.cache.iter().find(|(ct, cw, ch, _)| ct.to_bits() == t.to_bits() && *cw == w && *ch == h).map(|c| c.3.clone())
+    }
+
+    /// 時間最接近 t（相差 tol 秒以內）的那張：先頂著用
+    fn nearest(&self, t: f64, tol: f64) -> Option<TextureHandle> {
+        self.cache.iter().map(|c| ((c.0 - t).abs(), &c.3)).filter(|(d, _)| *d <= tol).min_by(|a, b| a.0.total_cmp(&b.0)).map(|(_, tex)| tex.clone())
+    }
+
+    fn remember(&mut self, t: f64, w: u32, h: u32, tex: TextureHandle) {
+        self.cache.retain(|(ct, cw, ch, _)| !(ct.to_bits() == t.to_bits() && *cw == w && *ch == h));
+        if self.cache.len() >= STRIP_CACHE {
+            self.cache.pop_front();
+        }
+        self.cache.push_back((t, w, h, tex));
     }
 
     pub fn cancel(&self) {
@@ -245,20 +270,35 @@ fn update_strip(ed: &mut Editor, ctx: &egui::Context, rect: Rect, axis: &Axis) -
             st.cancel();
             st.cancel = Arc::new(AtomicBool::new(false));
             st.gen += 1;
-            st.tiles = vec![None; n];
             let ppp = ctx.pixels_per_point();
             let h = ((TL_H * ppp).round() as u32 / 2 * 2).max(2);
             let w = ((tile_w * ppp).round() as u32 / 2 * 2).max(2);
             let last = (ed.duration - 0.05).max(0.0);
             // 每一格中間的時間（刪掉的片段收起來時，跳過刪掉的部分）
             let times: Vec<f64> = (0..n).map(|i| axis.time(rect.left() + (i as f32 + 0.5) * tile_w).min(last)).collect();
-            let (ffmpeg, path, cancel, inbox, gen, c) = (ed.ffmpeg.clone(), ed.entry.media.path.clone(), st.cancel.clone(), st.inbox.clone(), st.gen, ctx.clone());
-            std::thread::spawn(move || {
-                strip_frames(&ffmpeg, &path, &times, w, h, &cancel, |k, f| {
-                    inbox.lock().unwrap_or_else(|e| e.into_inner()).push((gen, k, f));
-                    c.request_repaint();
+            // 解過的直接用；其他格先放時間最接近的那張（一格大約涵蓋的時間以內），只解沒解過的
+            let tol = if n > 1 { (times[n - 1] - times[0]).abs() / (n - 1) as f64 } else { ed.duration };
+            let mut todo: Vec<(usize, f64)> = vec![];
+            st.tiles = times
+                .iter()
+                .enumerate()
+                .map(|(i, &t)| {
+                    st.cached(t, w, h).or_else(|| {
+                        todo.push((i, t));
+                        st.nearest(t, tol)
+                    })
+                })
+                .collect();
+            if !todo.is_empty() {
+                let (ffmpeg, path, cancel, inbox, gen, c) = (ed.ffmpeg.clone(), ed.entry.media.path.clone(), st.cancel.clone(), st.inbox.clone(), st.gen, ctx.clone());
+                std::thread::spawn(move || {
+                    let times: Vec<f64> = todo.iter().map(|(_, t)| *t).collect();
+                    strip_frames(&ffmpeg, &path, &times, w, h, &cancel, |k, f| {
+                        inbox.lock().unwrap_or_else(|e| e.into_inner()).push((gen, todo[k].0, f));
+                        c.request_repaint();
+                    });
                 });
-            });
+            }
         } else {
             ctx.request_repaint_after(due - Instant::now());
         }
@@ -266,8 +306,10 @@ fn update_strip(ed: &mut Editor, ctx: &egui::Context, rect: Rect, axis: &Axis) -
     let got: Vec<_> = std::mem::take(&mut *st.inbox.lock().unwrap_or_else(|e| e.into_inner()));
     for (g, k, f) in got {
         if g == st.gen && k < st.tiles.len() {
-            let img = egui::ColorImage::from_rgba_unmultiplied([f.width as usize, f.height as usize], &f.rgba);
-            st.tiles[k] = Some(ctx.load_texture(format!("strip-{k}"), img, TextureOptions::LINEAR));
+            let img = crate::ui::rgba_image(f.width, f.height, &f.rgba);
+            let tex = ctx.load_texture(format!("strip-{k}"), img, TextureOptions::LINEAR);
+            st.remember(f.time, f.width, f.height, tex.clone());
+            st.tiles[k] = Some(tex);
         }
     }
     tile_w
