@@ -1221,7 +1221,32 @@ fn ann_panel(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, toast: &mu
     }
     tool_style(ed, ui);
     templates(ed, ui, can, toast);
+    click_marks(ed, ui, can, toast);
     ann_list(ed, ui);
+}
+
+/// 跟著點擊：在錄影時每次點擊的地方加上圓框（做教學影片時不用一個一個放）
+fn click_marks(ed: &mut Editor, ui: &mut egui::Ui, can: bool, toast: &mut Option<(String, bool)>) {
+    if ed.is_shot() || !can {
+        return;
+    }
+    let n = ed.kept_clicks().len();
+    if n == 0 {
+        return;
+    }
+    section(ui, tr!("跟著點擊", "Follow clicks"), false);
+    if Btn::new(trf!("在每次點擊的地方加上圓框（{n} 次）", "Circle every click ({n})"))
+        .small()
+        .min_width(ui.available_width())
+        .tooltip(tr!(
+            "用錄影時記下的點擊，在點下去的地方各加一個淡入淡出的圓框（出現 1 秒，顏色用圓框目前的顏色）；刪掉的片段裡的不加，加過的不重複加",
+            "Uses the clicks recorded during recording to add a fading circle where each click happened (shown for 1 s, in the current circle color). Clicks in removed parts are skipped, and existing circles aren't duplicated"
+        ))
+        .show(ui)
+        .clicked()
+    {
+        *toast = Some(ed.mark_clicks());
+    }
 }
 
 /// 範本：一組常用的標註（例如紅框＋文字說明），按一下放到播放位置；「存成範本」把現在看得到的標註存起來

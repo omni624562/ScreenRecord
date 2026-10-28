@@ -1447,6 +1447,46 @@ impl Editor {
         self.select_ann(Some(id));
     }
 
+    /// 錄影時的點擊（刪掉的片段裡的不算）：「在每次點擊的地方加上圓框」用
+    pub(super) fn kept_clicks(&self) -> Vec<[f64; 3]> {
+        let keep = self.keep();
+        self.clicks.iter().copied().filter(|c| keep.iter().any(|&(a, b)| c[0] >= a && c[0] < b)).collect()
+    }
+
+    /// 在每次點擊的地方加上圓框（用圓框目前的顏色、淡入淡出，從點下去前一點點出現 1 秒）；
+    /// 同一個點已經加過的不重複加。回傳要顯示的訊息
+    pub(super) fn mark_clicks(&mut self) -> (String, bool) {
+        let clicks = self.kept_clicks();
+        if clicks.is_empty() || self.vw <= 0.0 {
+            return (tr!("這支錄影沒有記下點擊（錄影時要開啟「點擊、按鍵」）", "This recording has no clicks recorded (turn on “Clicks and keys” before recording)").into(), true);
+        }
+        let base = self.size_base();
+        let d = (base * 0.07).round().max(24.0);
+        let (color, size) = style_of(AnnKind::Ellipse, base);
+        let mut added = 0;
+        for c in clicks {
+            let (cx, cy) = (c[1] * self.vw, c[2] * self.vh);
+            let start = (c[0] - 0.15).max(0.0);
+            let dup = self.anns.iter().any(|a| a.kind == AnnKind::Ellipse && (a.start - start).abs() < 0.05 && (a.x + a.w / 2.0 - cx).abs() < 4.0 && (a.y + a.h / 2.0 - cy).abs() < 4.0);
+            if dup {
+                continue;
+            }
+            let mut a = self.new_ann(AnnKind::Ellipse, cx - d / 2.0, cy - d / 2.0);
+            (a.w, a.h) = (d, d);
+            (a.start, a.end) = (start, (start + 1.0).min(self.duration));
+            (a.color, a.size, a.anim) = (color.clone(), size, 1);
+            self.anns.push(a);
+            added += 1;
+        }
+        self.tool = None;
+        self.ann_sel = None;
+        if added == 0 {
+            (tr!("每次點擊的地方都已經有圓框了", "Every click already has a circle").into(), false)
+        } else {
+            (trf!("已在 {added} 次點擊的地方加上圓框，可按 Ctrl+Z 復原", "Added circles at {added} clicks. Press Ctrl+Z to undo"), false)
+        }
+    }
+
     /// 可以存成範本的標註：影片是播放位置看得到的（字幕不算），截圖是全部
     pub(super) fn template_source(&self) -> Vec<Ann> {
         let shot = self.is_shot();
