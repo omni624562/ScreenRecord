@@ -61,6 +61,8 @@ pub struct SettingsDialog {
     pub(crate) autostart_busy: bool,
     /// 外部元件：正在安裝選擇的檔案
     installing: Option<Kind>,
+    /// 外部元件：各元件的檔案狀態（見 comp_files：畫面每格都要用，不要每格都去讀磁碟）
+    comp_files: std::collections::HashMap<Kind, (Instant, CompSig, CompFiles)>,
     /// 外部元件：測試連線中 / 結果
     net_testing: bool,
     net_result: Option<Result<(), String>>,
@@ -126,6 +128,7 @@ pub fn open(app: &mut UiApp, page: Page) {
                 autostart: None,
                 autostart_busy: false,
                 installing: None,
+                comp_files: Default::default(),
                 net_testing: false,
                 net_result: None,
                 jf_testing: false,
@@ -2505,6 +2508,48 @@ fn components_page(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
     }
 }
 
+/// 元件卡片要用到的檔案狀態（要讀磁碟：語音模型還會打開檔案檢查開頭）
+#[derive(Clone)]
+struct CompFiles {
+    installed: bool,
+    /// 元件的位置（Kind::path：找的時候也要讀磁碟）
+    path: Option<std::path::PathBuf>,
+    /// 下載的檔案（存在時）
+    file: Option<std::path::PathBuf>,
+    /// 下載的檔案放在 %LOCALAPPDATA%（程式資料夾不能寫入）
+    in_data_dir: bool,
+    /// 「開啟所在的資料夾」的資料夾（存在時）
+    folder: Option<std::path::PathBuf>,
+}
+
+/// 這些變了就要重新讀 CompFiles：下載、安裝結束，換了 FFmpeg
+type CompSig = (bool, bool, bool, Option<String>, bool);
+
+/// 元件的檔案狀態：快取 2 秒，下載、安裝狀態或 FFmpeg 變了馬上重讀（移除之後最多 2 秒更新）
+fn comp_files(app: &UiApp, d: &mut SettingsDialog, k: Kind, sig: CompSig) -> CompFiles {
+    if let Some((at, old, f)) = d.comp_files.get(&k) {
+        if *old == sig && at.elapsed() < std::time::Duration::from_secs(2) {
+            return f.clone();
+        }
+    }
+    let path = k.path();
+    let file = path.clone().filter(|p| p.is_file());
+    // FFmpeg：目前用的那一個所在的資料夾（可能是自己放的或 PATH 上的）
+    let folder = match (k, &app.env.ffmpeg.path) {
+        (Kind::Ffmpeg, Some(found)) => Some(std::path::PathBuf::from(found)),
+        _ => path.clone(),
+    };
+    let f = CompFiles {
+        installed: app.core.component_installed(k),
+        in_data_dir: file.as_ref().is_some_and(|p| screenrecorder_core::paths::inside(p, &screenrecorder_core::paths::data_dir())),
+        path,
+        file,
+        folder: folder.and_then(|p| p.parent().map(|d| d.to_path_buf())).filter(|d| d.is_dir()),
+    };
+    d.comp_files.insert(k, (Instant::now(), sig, f.clone()));
+    f
+}
+
 /// 一個元件：名稱、狀態、說明、進度或錯誤、按鈕
 fn component_card(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui, k: Kind) {
     use theme::Tone;
@@ -2512,8 +2557,9 @@ fn component_card(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui, k: Kind)
     let st = app.core.component_status(k);
     // 目前的 FFmpeg 就能辨識語音：不用另外下載
     let builtin = k == Kind::SpeechFfmpeg && app.env.ffmpeg.has_whisper;
-    let installed = app.core.component_installed(k);
     let installing = d.installing == Some(k);
+    let files = comp_files(app, d, k, (st.running, installing, st.error.is_some(), app.env.ffmpeg.path.clone(), app.env.ffmpeg.has_whisper));
+    let installed = files.installed;
     egui::Frame::new().fill(p.surface2).corner_radius(CornerRadius::same(theme::RADIUS_SM)).inner_margin(10.0).show(ui, |ui| {
         ui.set_width(ui.available_width());
         ui.horizontal(|ui| {
@@ -2540,7 +2586,7 @@ fn component_card(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui, k: Kind)
             Kind::Mpv if installed => trf!(
                 "播放影片時用 mpv（顯示卡解碼），4K、60 fps 的影片也很順。位置：{}",
                 "Videos play with mpv (decoded on the graphics card), so even 4K 60 fps videos play smoothly. Location: {}",
-                k.path().filter(|p| p.is_file()).map(|p| p.display().to_string()).unwrap_or_else(|| screenrecorder_core::mpv::LIB_NAME.into())
+                files.file.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| screenrecorder_core::mpv::LIB_NAME.into())
             ),
             Kind::Mpv => trf!(
                 "讓檢視器、主畫面播放影片更順（手機的 4K、60 fps 影片也一樣），約 {} MB。不下載也可以播放，只是大影片可能卡卡的。",
@@ -2556,20 +2602,21 @@ fn component_card(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui, k: Kind)
             Kind::SpeechFfmpeg if installed => trf!(
                 "另外下載的、有語音辨識功能的 FFmpeg，只用來產生字幕：{}",
                 "A separate FFmpeg build with speech recognition, used only for subtitles: {}",
-                k.path().map(|p| p.display().to_string()).unwrap_or_default()
+                files.path.as_ref().map(|p| p.display().to_string()).unwrap_or_default()
             ),
             Kind::SpeechFfmpeg => trf!("有語音辨識功能的 FFmpeg（約 {} MB），只用來產生字幕。", "An FFmpeg build with speech recognition (about {} MB), used only for subtitles.", k.mb()),
             Kind::Model(_) if installed => trf!(
                 "模型越大辨識越準，但比較慢。只需要其中一個。位置：{}",
                 "Bigger models are more accurate but slower. You only need one. Location: {}",
-                k.path().map(|p| p.display().to_string()).unwrap_or_default()
+                files.path.as_ref().map(|p| p.display().to_string()).unwrap_or_default()
             ),
             Kind::Model(_) => tr!("模型越大辨識越準，但比較慢。只需要其中一個。", "Bigger models are more accurate but slower. You only need one.").into(),
         };
         // 程式資料夾不能寫入（例如放在 Program Files）才會放在 %LOCALAPPDATA%：說明原因
-        let info = match k.path().filter(|p| installed && !builtin && p.is_file() && screenrecorder_core::paths::inside(p, &screenrecorder_core::paths::data_dir())) {
-            Some(_) => info + tr!("（程式所在的資料夾不能寫入，所以放在這裡）", " (the app's folder isn't writable, so it's kept here)"),
-            None => info,
+        let info = if installed && !builtin && files.in_data_dir {
+            info + tr!("（程式所在的資料夾不能寫入，所以放在這裡）", " (the app's folder isn't writable, so it's kept here)")
+        } else {
+            info
         };
         let info = if k.model().is_some_and(|m| !m.translates) {
             info + tr!("這個模型不能翻成英文，要英文字幕時另外需要「精準」或「標準」。", " This model can't translate to English; English subtitles also need \"Accurate\" or \"Standard\".")
@@ -2658,12 +2705,7 @@ fn component_card(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui, k: Kind)
                 ask.danger = true;
                 app.ask = Some(ask);
             }
-            // FFmpeg：目前用的那一個所在的資料夾（可能是自己放的或 PATH 上的）
-            let path = match (k, &app.env.ffmpeg.path) {
-                (Kind::Ffmpeg, Some(found)) => Some(std::path::PathBuf::from(found)),
-                _ => k.path(),
-            };
-            if let Some(dir) = path.and_then(|p| p.parent().map(|d| d.to_path_buf())).filter(|d| d.is_dir()) {
+            if let Some(dir) = files.folder.clone() {
                 if Btn::icon_only(Icon::Folder).small().ghost().tooltip(tr!("開啟所在的資料夾", "Open the folder")).show(ui).clicked() {
                     if let Err(e) = actions::open(actions::OpenAction::Folder, &dir.display().to_string()) {
                         app.toast(e.message().to_string(), true);
