@@ -12,10 +12,14 @@ use std::time::Duration;
 
 const EXE: &str = if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" };
 
-/// 在 PATH 裡找執行檔
+/// 在 PATH 裡找執行檔。只看完整路徑的資料夾：PATH 裡空的項目（結尾多一個「;」很常見）或「.」會變成目前的資料夾，
+/// 程式放在「下載」時就會找回那裡來路不明的 ffmpeg.exe（locate_ffmpeg 剛拒絕的那個）
 pub fn which(name: &str) -> Option<PathBuf> {
-    let path = std::env::var_os("PATH")?;
-    std::env::split_paths(&path).map(|d| d.join(name)).find(|p| p.is_file())
+    which_in(&std::env::var_os("PATH")?, name)
+}
+
+fn which_in(path: &std::ffi::OsStr, name: &str) -> Option<PathBuf> {
+    std::env::split_paths(path).filter(|d| d.is_absolute()).map(|d| d.join(name)).find(|p| p.is_file())
 }
 
 /// 依序尋找：程式資料夾 → 程式資料夾\ffmpeg\bin → 程式資料夾\bin → %LOCALAPPDATA%\ScreenRecorder（自動下載的位置）→ PATH。
@@ -57,8 +61,25 @@ fn allowed_list() -> PathBuf {
 }
 
 fn allowed(p: &Path) -> bool {
-    let Some(h) = crate::mpv_download::file_sha256(p) else { return false };
-    std::fs::read_to_string(allowed_list()).is_ok_and(|t| t.lines().any(|l| l.trim() == h))
+    // 算雜湊要讀整個檔案（幾百 MB）：大小、修改時間沒變就用上次的結果
+    type Seen = std::collections::HashMap<PathBuf, (u64, Option<std::time::SystemTime>, bool)>;
+    static SEEN: LazyLock<std::sync::Mutex<Seen>> = LazyLock::new(Default::default);
+    let Ok(meta) = std::fs::metadata(p) else { return false };
+    let (len, mtime) = (meta.len(), meta.modified().ok());
+    if let Some((l, m, r)) = SEEN.lock().unwrap_or_else(|e| e.into_inner()).get(p) {
+        if *l == len && *m == mtime && mtime.is_some() {
+            return *r;
+        }
+    }
+    let r = crate::mpv_download::file_sha256(p).is_some_and(|h| std::fs::read_to_string(allowed_list()).is_ok_and(|t| t.lines().any(|l| l.trim() == h)));
+    SEEN.lock().unwrap_or_else(|e| e.into_inner()).insert(p.to_path_buf(), (len, mtime, r));
+    r
+}
+
+/// 可以執行這個 ffmpeg.exe 嗎：程式放在「下載」或暫存資料夾時，程式資料夾裡的要是本程式裝的才用（見 locate_ffmpeg）
+pub(crate) fn trusted(p: &Path) -> bool {
+    let app = app_dir();
+    !(risky_dir(&app) && crate::paths::inside(p, &app)) || allowed(p)
 }
 
 /// 記下本程式裝的 ffmpeg.exe（下載比對過雜湊、或使用者在「外部元件」自己選的）
@@ -267,5 +288,19 @@ mod tests {
             assert!(which("sh").is_some());
         }
         assert!(which("definitely-not-a-program-xyz").is_none());
+    }
+
+    #[test]
+    fn which_skips_relative_path_entries() {
+        // PATH 裡空的項目、「.」、相對路徑不算（不然會找到目前資料夾裡的檔案）
+        let name = "Cargo.toml";
+        assert!(Path::new(name).is_file(), "測試在 crate 資料夾執行，目前資料夾有這個檔案");
+        let sep = if cfg!(windows) { ";" } else { ":" };
+        let path = format!("{sep}.{sep}src{sep}");
+        assert_eq!(which_in(std::ffi::OsStr::new(&path), name), None);
+        // 完整路徑的資料夾照樣找得到
+        let here = std::env::current_dir().unwrap();
+        let path = format!("{sep}{}", here.display());
+        assert_eq!(which_in(std::ffi::OsStr::new(&path), name), Some(here.join(name)));
     }
 }

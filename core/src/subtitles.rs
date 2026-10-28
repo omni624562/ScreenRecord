@@ -231,9 +231,10 @@ fn filters_have_whisper(list: &str) -> bool {
     list.lines().any(|l| l.split_whitespace().nth(1) == Some("whisper"))
 }
 
-/// 語音辨識用的 FFmpeg（目前用的 FFmpeg 沒有 whisper 時才下載），和語音模型放在同一個資料夾
+/// 語音辨識用的 FFmpeg（目前用的 FFmpeg 沒有 whisper 時才下載），和語音模型放在同一個資料夾。
+/// 和主要的 FFmpeg 一樣：程式放在「下載」或暫存資料夾時，程式資料夾裡的要是本程式裝的才用（錄完會自動執行它）
 pub fn speech_ffmpeg_path() -> PathBuf {
-    find_in_dirs(FFMPEG_NAME, |p| p.is_file()).unwrap_or_else(speech_ffmpeg_install_path)
+    find_in_dirs(FFMPEG_NAME, |p| p.is_file() && crate::ffmpeg::trusted(p)).unwrap_or_else(speech_ffmpeg_install_path)
 }
 
 const FFMPEG_NAME: &str = if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" };
@@ -245,7 +246,8 @@ pub fn speech_ffmpeg_install_path() -> PathBuf {
 
 /// 已經下載了語音辨識用的 FFmpeg（只看檔案在不在，介面提示用）
 pub fn speech_ffmpeg_downloaded() -> bool {
-    speech_ffmpeg_path().is_file()
+    let p = speech_ffmpeg_path();
+    p.is_file() && crate::ffmpeg::trusted(&p)
 }
 
 /// 用哪個 FFmpeg 辨識語音：目前用的有 whisper 就用它，否則用下載的那個；都不行時是 None（要先下載）
@@ -257,7 +259,8 @@ async fn find_speech_ffmpeg_in(main: &Path, downloaded: &Path) -> Option<PathBuf
     if has_whisper(main).await {
         return Some(main.to_path_buf());
     }
-    (downloaded.is_file() && has_whisper(downloaded).await).then(|| downloaded.to_path_buf())
+    // 找不到可以用的時 speech_ffmpeg_path 回傳要安裝的位置，那裡可能有來路不明的檔案：一樣要檢查
+    (downloaded.is_file() && crate::ffmpeg::trusted(downloaded) && has_whisper(downloaded).await).then(|| downloaded.to_path_buf())
 }
 
 /// 下載語音辨識用的 FFmpeg（progress：千分比；cancel 設成 true 就停止）
