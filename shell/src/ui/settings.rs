@@ -128,6 +128,9 @@ pub struct UiSettings {
     /// 標註的「我的樣式」
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub ann_styles: Vec<screenrecorder_core::annotate::AnnStyle>,
+    /// 標註範本（一起存起來的幾個標註，例如紅框＋文字說明）
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub ann_templates: Vec<screenrecorder_core::annotate::AnnTemplate>,
     /// 講稿小視窗：提詞的字級、捲動速度（1～10）、不透明度（%）、開始錄影時自動捲動、位置與大小（點）
     pub notes_font: u32,
     pub notes_speed: u32,
@@ -388,6 +391,14 @@ impl UiSettings {
                 .into_iter()
                 .filter(|s| s.size.is_finite() && s.size >= 1.0 && s.color.starts_with('#'))
                 .take(screenrecorder_core::annotate::MAX_STYLES)
+                .collect(),
+            ann_templates: o
+                .get("annTemplates")
+                .and_then(|v| serde_json::from_value::<Vec<screenrecorder_core::annotate::AnnTemplate>>(v.clone()).ok())
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|t| !t.anns.is_empty())
+                .take(screenrecorder_core::annotate::MAX_TEMPLATES)
                 .collect(),
             ui_scale: num("uiScale").map(|v| v as u32).filter(|v| UI_SCALES.contains(v)).unwrap_or(100),
             language: string("language").filter(|v| ["zh-TW", "en"].contains(&v.as_str())).unwrap_or_else(|| "auto".into()),

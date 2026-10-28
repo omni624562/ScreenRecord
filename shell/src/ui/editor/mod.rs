@@ -420,6 +420,8 @@ pub struct Editor {
     cursor_size: f64,
     /// 標註的「我的樣式」（改了會存回設定）
     pub(crate) ann_styles: Vec<screenrecorder_core::annotate::AnnStyle>,
+    /// 標註範本（和設定同步，截圖編輯也用得到）
+    pub(crate) ann_templates: Vec<annotate::AnnTemplate>,
     /// 平滑游標停著不動時隱藏
     pub(crate) cursor_hide: bool,
     /// 「速度」分頁：做成指定長度的輸入、選取片段的自訂倍率
@@ -746,6 +748,7 @@ impl Editor {
             vertical_pan: vec![],
             last_picture: app.s.last_picture.clone(),
             ann_styles: app.s.ann_styles.clone(),
+            ann_templates: app.s.ann_templates.clone(),
             subs: None,
             subs_lang: 0,
             subs_model: screenrecorder_core::subtitles::MODELS.iter().rposition(screenrecorder_core::subtitles::model_ready).unwrap_or(0),
@@ -1442,6 +1445,45 @@ impl Editor {
         self.anns.push(b);
         self.tool = None;
         self.select_ann(Some(id));
+    }
+
+    /// 可以存成範本的標註：影片是播放位置看得到的（字幕不算），截圖是全部
+    pub(super) fn template_source(&self) -> Vec<Ann> {
+        let shot = self.is_shot();
+        let t = self.now();
+        self.anns.iter().filter(|a| !self.is_sub(a.id) && (shot || (a.start <= t + 1e-3 && t < a.end))).cloned().collect()
+    }
+
+    /// 把目前看得到的標註存成範本；回傳要顯示的訊息
+    pub(super) fn save_template(&mut self) -> (String, bool) {
+        match annotate::make_template(&self.template_source(), self.vw, self.vh, self.size_base()) {
+            Some(t) => {
+                let msg = trf!("已存成範本「{}」，之後在「標註」分頁一按就放上去", "Saved as template “{}”. Click it in the Annotations tab to add it again", t.name);
+                annotate::save_template(&mut self.ann_templates, t);
+                (msg, false)
+            }
+            None => (tr!("這裡沒有可以存的標註", "There are no annotations here to save").into(), true),
+        }
+    }
+
+    /// 放上第 i 個範本：影片從播放位置開始，選取放上去的第一個
+    pub(super) fn insert_template(&mut self, i: usize) {
+        let Some(t) = self.ann_templates.get(i).cloned() else { return };
+        let shot = self.is_shot();
+        let (at, duration) = if shot { (0.0, f64::INFINITY) } else { (self.now(), self.duration) };
+        let mut first = None;
+        for mut a in annotate::place_template(&t, self.vw, self.vh, self.size_base(), at, duration) {
+            if shot {
+                // 截圖沒有時間：和新放的標註一樣
+                (a.start, a.end) = self.default_window(self.now(), ANN_SEC);
+            }
+            a.id = self.next_id;
+            self.next_id += 1;
+            first.get_or_insert(a.id);
+            self.anns.push(a);
+        }
+        self.tool = None;
+        self.select_ann(first);
     }
 
     /// 選取標註：同時取消時間軸上選取的範圍（Delete 只會刪掉最後選的那一個）
@@ -2469,8 +2511,9 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
     }
     let mut toast: Option<(String, bool)> = None;
     // 「我的樣式」改了：存回設定（下次開啟、截圖編輯也用得到）
-    if ed.ann_styles != app.s.ann_styles {
+    if ed.ann_styles != app.s.ann_styles || ed.ann_templates != app.s.ann_templates {
         app.s.ann_styles = ed.ann_styles.clone();
+        app.s.ann_templates = ed.ann_templates.clone();
         app.save_settings();
     }
     ed.poll_player();

@@ -35,7 +35,7 @@ pub fn show(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, toast: &mut
                     fold(ed, ui, "cards", tr!("片頭、片尾", "Intro and outro"), on, |ed, ui| cards_panel(ed, ui, ctx));
                 }
             }
-            Tab::Ann => ann_panel(ed, ui, ctx),
+            Tab::Ann => ann_panel(ed, ui, ctx, toast),
             Tab::Output => super::shot::output_panel(ed, ui, ctx),
             Tab::Subs => {
                 super::subs::tab(ed, ui, ctx, toast);
@@ -1151,7 +1151,7 @@ fn tool_grid(ed: &mut Editor, ui: &mut egui::Ui, tools: &[(Tool, &str, &str)], c
     }
 }
 
-fn ann_panel(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context) {
+fn ann_panel(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context, toast: &mut Option<(String, bool)>) {
     let can = ed.vw > 0.0;
     let shot = ed.is_shot();
 
@@ -1159,6 +1159,7 @@ fn ann_panel(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context) {
     if ed.tool.is_none() && ed.selected().is_some() {
         tool_row(ed, ui, can);
         props(ed, ui, ctx);
+        templates(ed, ui, can, toast);
         return ann_list(ed, ui);
     }
 
@@ -1219,7 +1220,87 @@ fn ann_panel(ed: &mut Editor, ui: &mut egui::Ui, ctx: &egui::Context) {
         hint(ui, &hint_text);
     }
     tool_style(ed, ui);
+    templates(ed, ui, can, toast);
     ann_list(ed, ui);
+}
+
+/// 範本：一組常用的標註（例如紅框＋文字說明），按一下放到播放位置；「存成範本」把現在看得到的標註存起來
+fn templates(ed: &mut Editor, ui: &mut egui::Ui, can: bool, toast: &mut Option<(String, bool)>) {
+    let shot = ed.is_shot();
+    let here = ed.template_source().len();
+    if !can || (ed.ann_templates.is_empty() && here == 0) {
+        return;
+    }
+    section(ui, tr!("範本", "Templates"), false);
+    let mut insert = None;
+    let mut remove = None;
+    if !ed.ann_templates.is_empty() {
+        templates_row(ed, ui, &mut insert, &mut remove);
+    }
+    if let Some(i) = insert {
+        ed.insert_template(i);
+    }
+    if let Some(i) = remove {
+        let t = ed.ann_templates.remove(i);
+        *toast = Some((trf!("已刪除範本「{}」", "Deleted template “{}”", t.name), false));
+    }
+    let label = if shot {
+        trf!("＋ 把圖上的 {here} 個標註存成範本", "+ Save the image's annotations ({here}) as a template")
+    } else {
+        trf!("＋ 把這個時間點的 {here} 個標註存成範本", "+ Save what's shown now ({here}) as a template")
+    };
+    if here > 0
+        && Btn::new(label)
+            .small()
+            .ghost()
+            .tooltip(tr!(
+                "位置、大小、顏色、文字、出現時間一起存起來，之後在別支影片或截圖一按就放上去",
+                "Saves their position, size, color, text and timing so you can add them to another video or screenshot with one click"
+            ))
+            .show(ui)
+            .clicked()
+    {
+        *toast = Some(ed.save_template());
+    }
+}
+
+/// 範本的一排按鈕：按一下放上去（insert），✕ 或右鍵刪除（remove）
+fn templates_row(ed: &Editor, ui: &mut egui::Ui, insert: &mut Option<usize>, remove: &mut Option<usize>) {
+    let p = theme::pal(ui);
+    let shot = ed.is_shot();
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
+        for (i, t) in ed.ann_templates.iter().enumerate() {
+            let g = ui.painter().layout_no_wrap(t.name.clone(), theme::font(12.0), p.text);
+            // 右邊留一個 ✕ 的位置（滑鼠移上去才畫出來）
+            let (r, resp) = ui.allocate_exact_size(vec2(g.size().x + 20.0 + 16.0, 26.0), Sense::click());
+            ui.painter().rect(r, CornerRadius::same(13), p.surface, Stroke::new(1.0, if resp.hovered() { p.accent } else { p.border }), egui::StrokeKind::Inside);
+            ui.painter().galley(pos2(r.left() + 10.0, r.center().y - g.size().y / 2.0), g, p.text);
+            let xr = egui::Rect::from_center_size(pos2(r.right() - 12.0, r.center().y), vec2(16.0, 16.0));
+            let x = ui.interact(xr, ui.id().with(("template-del", i)), Sense::click()).on_hover_text(tr!("刪除這個範本", "Delete this template"));
+            if resp.hovered() || x.hovered() {
+                theme::paint_icon(ui.painter(), xr.shrink(3.0), Icon::Close, if x.hovered() { p.text } else { p.muted });
+            }
+            if x.clicked() {
+                *remove = Some(i);
+            }
+            let tip = if shot {
+                trf!("放上這組標註（{} 個）", "Add this set of annotations ({})", t.anns.len())
+            } else {
+                trf!("從播放位置放上這組標註（{} 個）", "Add this set of annotations ({}) at the playhead", t.anns.len())
+            };
+            let resp = resp.on_hover_cursor(CursorIcon::PointingHand).on_hover_text(tip);
+            if resp.clicked() && !x.clicked() {
+                *insert = Some(i);
+            }
+            resp.context_menu(|ui| {
+                if ui.button(tr!("刪除這個範本", "Delete this template")).clicked() {
+                    *remove = Some(i);
+                    ui.close();
+                }
+            });
+        }
+    });
 }
 
 /// 選取標註時的工具列：一排小圖示（按一下換成放新的標註）

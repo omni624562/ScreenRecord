@@ -1076,6 +1076,68 @@ pub fn save_style(list: &mut Vec<AnnStyle>, color: &str, size: f64) {
     }
 }
 
+/// 標註範本：一起存起來的幾個標註（例如紅框＋文字說明），之後一次放上去。
+/// 位置、寬高存成畫面寬高的比例，大小以 1080 為準，換到不同大小的影片或截圖也放在同樣的地方、一樣大；
+/// 出現時間存成相對於第一個出現的秒數
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AnnTemplate {
+    pub name: String,
+    pub anns: Vec<Ann>,
+}
+
+/// 最多存幾個範本
+pub const MAX_TEMPLATES: usize = 12;
+
+/// 把這些標註做成範本（base：畫面的短邊，見 size_base）；沒有標註時 None
+pub fn make_template(anns: &[Ann], vw: f64, vh: f64, base: f64) -> Option<AnnTemplate> {
+    if anns.is_empty() || vw <= 0.0 || vh <= 0.0 || base <= 0.0 {
+        return None;
+    }
+    let t0 = anns.iter().map(|a| a.start).fold(f64::INFINITY, f64::min);
+    let k = 1080.0 / base;
+    let list: Vec<Ann> =
+        anns.iter().map(|a| Ann { id: 0, x: a.x / vw, y: a.y / vh, w: a.w / vw, h: a.h / vh, start: a.start - t0, end: a.end - t0, size: a.size * k, bend: a.bend * k, ..a.clone() }).collect();
+    // 名稱：裡面有什麼（「方框＋文字」），太多時只列前三個
+    let mut parts: Vec<String> = list
+        .iter()
+        .take(3)
+        .map(|a| if a.kind == AnnKind::Text { a.text.clone().filter(|t| t.chars().count() <= 6).unwrap_or_else(|| a.kind.label().to_string()) } else { a.kind.label().to_string() })
+        .collect();
+    if list.len() > 3 {
+        parts.push("…".into());
+    }
+    Some(AnnTemplate { name: parts.join("＋"), anns: list })
+}
+
+/// 存一個範本：太多時去掉最舊的
+pub fn save_template(list: &mut Vec<AnnTemplate>, t: AnnTemplate) {
+    list.retain(|o| o.anns != t.anns);
+    list.push(t);
+    if list.len() > MAX_TEMPLATES {
+        list.remove(0);
+    }
+}
+
+/// 把範本放到這個畫面上、從 at 秒開始（id 由呼叫的地方給）。超出影片長度的部分截掉
+pub fn place_template(t: &AnnTemplate, vw: f64, vh: f64, base: f64, at: f64, duration: f64) -> Vec<Ann> {
+    let k = base / 1080.0;
+    t.anns
+        .iter()
+        .filter_map(|a| {
+            let start = at + a.start;
+            let end = (at + a.end).min(duration.max(0.0));
+            if duration > 0.0 && start >= duration {
+                return None;
+            }
+            let mut b = Ann { x: a.x * vw, y: a.y * vh, w: a.w * vw, h: a.h * vh, start, end: end.max(start + 0.1), size: (a.size * k).round().max(1.0), bend: a.bend * k, ..a.clone() };
+            if matches!(b.kind, AnnKind::Text | AnnKind::Step) {
+                measure(&mut b);
+            }
+            Some(b)
+        })
+        .collect()
+}
+
 /// 存起來的剪輯設定與標註（之後可以再修改）；與 2.1 版的格式相同
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1123,6 +1185,45 @@ pub struct ProjectSpec {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn templates_keep_relative_place_size_and_timing() {
+        let mk = |kind: AnnKind, x: f64, start: f64, size: f64| Ann {
+            id: 7,
+            kind,
+            x,
+            y: 108.0,
+            w: 192.0,
+            h: 108.0,
+            start,
+            end: start + 2.0,
+            color: "#e5484d".into(),
+            size,
+            text: None,
+            bg: false,
+            n: None,
+            shape: None,
+            invert: false,
+            rot: 0.0,
+            pts: vec![],
+            anim: 1,
+            bend: 0.0,
+        };
+        // 1920×1080 上 5 秒、6 秒出現的方框與箭頭
+        let t = make_template(&[mk(AnnKind::Rect, 960.0, 5.0, 6.0), mk(AnnKind::Arrow, 0.0, 6.0, 6.0)], 1920.0, 1080.0, 1080.0).unwrap();
+        assert_eq!(t.name, "方框＋箭頭");
+        // 放到 1280×720 的影片 10 秒：位置、大小照比例，出現時間照相對的秒數
+        let placed = place_template(&t, 1280.0, 720.0, 720.0, 10.0, 60.0);
+        assert_eq!(placed.len(), 2);
+        assert_eq!((placed[0].x, placed[0].y, placed[0].w, placed[0].h), (640.0, 72.0, 128.0, 72.0));
+        assert_eq!((placed[0].start, placed[0].end, placed[1].start), (10.0, 12.0, 11.0));
+        assert_eq!((placed[0].size, placed[0].anim), (4.0, 1));
+        // 影片快結束了：超出的截掉
+        let near_end = place_template(&t, 1280.0, 720.0, 720.0, 10.5, 11.0);
+        assert_eq!(near_end.len(), 1);
+        assert_eq!(near_end[0].end, 11.0);
+        assert!(make_template(&[], 1920.0, 1080.0, 1080.0).is_none());
+    }
+
     use super::*;
 
     #[test]
