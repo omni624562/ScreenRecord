@@ -4,6 +4,7 @@
 use crate::types::UpdateInfo;
 use crate::version::PROJECT_URL;
 use serde::Deserialize;
+use std::io::Read;
 use std::time::Duration;
 
 pub const RELEASES_API: &str = "https://api.github.com/repos/omni624562/ScreenRecord/releases/latest";
@@ -103,14 +104,11 @@ pub fn parse_release(current: &str, status: u16, body: &str) -> Result<Option<Up
 
 /// 有比 current 新的正式版就回傳它（同步，請在背景執行緒呼叫）
 pub fn check_for_update(current: &str) -> Result<Option<UpdateInfo>, UpdateError> {
-    let agent = crate::http::agent().timeout(Duration::from_secs(15)).build();
-    let res = agent.get(RELEASES_API).set("Accept", "application/vnd.github+json").set("User-Agent", &format!("ScreenRecorder/{current}")).call();
-    let (status, body) = match res {
-        Ok(r) => (r.status(), r.into_string().unwrap_or_default()),
-        Err(ureq::Error::Status(code, r)) => (code, r.into_string().unwrap_or_default()),
-        Err(e) => return Err(UpdateError::Other(crate::http::describe(&e))),
-    };
-    parse_release(current, status, &body)
+    let r = crate::http::get(RELEASES_API, &[("Accept", "application/vnd.github+json")], Duration::from_secs(15), Duration::from_secs(15)).map_err(UpdateError::Other)?;
+    let mut body = String::new();
+    // GitHub 的回應不到 100 KB；讀到一半斷線時當成空的（parse_release 會說明）
+    let _ = r.body.take(10 << 20).read_to_string(&mut body);
+    parse_release(current, r.status, &body)
 }
 
 #[cfg(test)]

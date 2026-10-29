@@ -129,6 +129,7 @@ pub mod vertical;
 pub mod video_frame;
 pub mod video_tags;
 pub mod waveform;
+pub mod winhttp;
 pub mod winui;
 pub mod zoom;
 

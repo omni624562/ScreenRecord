@@ -167,16 +167,7 @@ pub struct Deps {
 impl Default for Deps {
     fn default() -> Self {
         Self {
-            fetch: Box::new(|url| {
-                let agent = crate::http::agent().timeout_connect(Duration::from_secs(20)).timeout_read(Duration::from_secs(60)).build();
-                match agent.get(url).call() {
-                    Ok(r) => {
-                        let len = r.header("content-length").and_then(|v| v.parse().ok());
-                        Ok((len, Box::new(r.into_reader())))
-                    }
-                    Err(e) => Err(trf!("下載失敗：{}", "Download failed: {}", crate::http::describe(&e))),
-                }
-            }),
+            fetch: Box::new(|url| crate::http::download(url, Duration::from_secs(20), Duration::from_secs(60)).map_err(|e| trf!("下載失敗：{e}", "Download failed: {e}"))),
             run: Box::new(run_blocking),
             target: Box::new(download_target),
             urls: ffmpeg_urls(),

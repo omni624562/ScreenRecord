@@ -1,8 +1,11 @@
 //! HTTPS 連線設定：Windows 用系統內建的 SChannel（使用系統憑證、遵循企業環境的設定），其他平台用 rustls。
+//! ureq 連不上時，Windows 上改用系統內建的 WinHTTP 再試一次（`crate::winhttp`：公司網路的自動設定指令碼 PAC、WPAD 與 Windows 帳號驗證）。
 //! 連線失敗的說明一律經過 describe：ureq 錯誤本身的文字開頭就是完整網址，不能直接顯示或寫進記錄檔。
 
 use crate::{tr, trf};
-use std::io;
+use std::io::{self, Read};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
 /// Proxy 伺服器的設定（設定 → 外部元件）
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -61,7 +64,8 @@ pub fn hide_password(url: &str) -> String {
     format!("{}{name}:…{}", &url[..start], &url[at..])
 }
 
-/// 系統的 Proxy：環境變數，或 Windows「設定 → 網路和網際網路 → Proxy」手動設定的伺服器（自動設定指令碼 PAC 不支援）
+/// 系統的 Proxy：環境變數，或 Windows「設定 → 網路和網際網路 → Proxy」手動設定的伺服器
+/// （自動設定指令碼 PAC、WPAD 這裡讀不到，連不上時由 WinHTTP 處理）
 pub fn system_proxy() -> Option<String> {
     for k in ["HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy", "HTTP_PROXY", "http_proxy"] {
         if let Some(v) = std::env::var(k).ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty()) {
@@ -123,11 +127,99 @@ pub fn current_proxy() -> Option<String> {
 
 /// 試著連線下載來源（設定 → 外部元件的「測試連線」）：成功回傳 Ok，失敗回傳原因
 pub fn test_connection() -> Result<(), String> {
-    let agent = agent().timeout_connect(std::time::Duration::from_secs(15)).timeout_read(std::time::Duration::from_secs(15)).build();
-    match agent.head("https://github.com/").call() {
-        Ok(_) | Err(ureq::Error::Status(..)) => Ok(()),
-        Err(e) => Err(describe(&e)),
+    get("https://github.com/", &[], Duration::from_secs(15), Duration::from_secs(15)).map(|_| ())
+}
+
+/// 回應：HTTP 狀態碼、內容長度（可能未知）與內容
+pub struct Response {
+    pub status: u16,
+    pub len: Option<u64>,
+    pub body: Box<dyn Read + Send>,
+}
+
+/// WinHTTP 連上過（ureq 連不上）之後，這次執行都先用 WinHTTP，不必每次先等 ureq 逾時
+static PREFER_WINHTTP: AtomicBool = AtomicBool::new(false);
+
+fn user_agent() -> String {
+    format!("ScreenRecorder/{}", crate::version::APP_VERSION)
+}
+
+/// GET `url`，任何狀態碼都回傳 Ok（由呼叫端判斷），失敗的說明不含網址。
+/// `connect`：等待建立連線；`read`：每次等待回應、讀取內容（沒有整體的時間限制，大檔案也能下載完）。
+/// Windows 上 ureq 連不上時（公司網路的 Proxy 用自動設定指令碼 PAC、WPAD，或要用 Windows 帳號驗證）
+/// 改用系統內建的 WinHTTP 再試一次；Proxy 選「不使用」時不試
+pub fn get(url: &str, headers: &[(&str, &str)], connect: Duration, read: Duration) -> Result<Response, String> {
+    let mut alt = winhttp_proxy();
+    if let Some(proxy) = &alt {
+        if PREFER_WINHTTP.load(Ordering::Relaxed) {
+            match winhttp_get(url, headers, proxy.as_deref(), read) {
+                Ok(r) => return Ok(r),
+                Err(e) => crate::warn!("[網路] WinHTTP 連線失敗，改用一般連線：{e}"),
+            }
+            // 已經試過，一般連線也失敗時不再試一次
+            alt = None;
+        }
     }
+    let first = match ureq_get(url, headers, connect, read) {
+        Ok(r) => return Ok(r),
+        Err(e) => e,
+    };
+    let Some(proxy) = alt else { return Err(first) };
+    match winhttp_get(url, headers, proxy.as_deref(), read) {
+        Ok(r) => {
+            if !PREFER_WINHTTP.swap(true, Ordering::Relaxed) {
+                crate::info!("[網路] 一般連線失敗（{first}），改用 Windows 的連線設定（WinHTTP）連上");
+            }
+            Ok(r)
+        }
+        Err(e) => Err(trf!("{e}（另一種連線方式：{first}）", "{e} (other connection method: {first})")),
+    }
+}
+
+/// 下載 `url`：只接受 2xx，回傳（內容長度, 內容）
+pub fn download(url: &str, connect: Duration, read: Duration) -> Result<(Option<u64>, Box<dyn Read + Send>), String> {
+    let r = get(url, &[], connect, read)?;
+    if !(200..300).contains(&r.status) {
+        return Err(status_error(r.status));
+    }
+    Ok((r.len, r.body))
+}
+
+/// ureq 連線；伺服器回應錯誤（4xx、5xx）也算連上，只有連不上時回傳 Err（說明）
+fn ureq_get(url: &str, headers: &[(&str, &str)], connect: Duration, read: Duration) -> Result<Response, String> {
+    let mut req = agent().timeout_connect(connect).timeout_read(read).redirects(8).build().get(url).set("User-Agent", &user_agent());
+    for (k, v) in headers {
+        req = req.set(k, v);
+    }
+    let r = match req.call() {
+        Ok(r) | Err(ureq::Error::Status(_, r)) => r,
+        Err(e) => return Err(describe(&e)),
+    };
+    let len = r.header("Content-Length").and_then(|v| v.parse().ok());
+    Ok(Response { status: r.status(), len, body: Box::new(r.into_reader()) })
+}
+
+/// 要不要改用 WinHTTP 再試、用哪個 Proxy：None 不試；Some(None) 跟著系統（含自動設定指令碼）；Some(Some(位址)) 自訂的 Proxy
+fn winhttp_proxy() -> Option<Option<String>> {
+    if !cfg!(windows) || cfg!(test) {
+        return None;
+    }
+    match &*PROXY.read().unwrap_or_else(|e| e.into_inner()) {
+        ProxyMode::Auto => Some(None),
+        ProxyMode::Off => None,
+        ProxyMode::Custom(p) => crate::winhttp::named_proxy(p).map(Some),
+    }
+}
+
+#[cfg(windows)]
+fn winhttp_get(url: &str, headers: &[(&str, &str)], proxy: Option<&str>, read: Duration) -> Result<Response, String> {
+    let r = crate::winhttp::get(url, headers, proxy, read, &user_agent())?;
+    Ok(Response { status: r.status, len: r.len, body: Box::new(r) })
+}
+
+#[cfg(not(windows))]
+fn winhttp_get(_url: &str, _headers: &[(&str, &str)], _proxy: Option<&str>, _read: Duration) -> Result<Response, String> {
+    Err(tr!("只有 Windows 有 WinHTTP", "WinHTTP is only available on Windows").into())
 }
 
 pub fn agent() -> ureq::AgentBuilder {
@@ -149,7 +241,7 @@ pub fn agent() -> ureq::AgentBuilder {
 /// 連線失敗的說明（顯示在介面、寫進記錄檔）：只說原因與錯誤代碼，不含網址或主機名稱
 pub fn describe(e: &ureq::Error) -> String {
     let t = match e {
-        ureq::Error::Status(code, _) => return trf!("伺服器回應錯誤（HTTP {code}）", "The server returned an error (HTTP {code})"),
+        ureq::Error::Status(code, _) => return status_error(*code),
         ureq::Error::Transport(t) => t,
     };
     let io = io_source(t);
@@ -168,8 +260,17 @@ pub fn describe(e: &ureq::Error) -> String {
     with_code(text, io)
 }
 
+/// 伺服器回應錯誤的說明
+pub fn status_error(code: u16) -> String {
+    trf!("伺服器回應錯誤（HTTP {code}）", "The server returned an error (HTTP {code})")
+}
+
 /// 下載途中讀取失敗的說明（同樣不含網址）
 pub fn describe_io(e: &io::Error) -> String {
+    // WinHTTP 讀取失敗（錯誤碼 12001～12999）
+    if let Some(code) = e.raw_os_error().filter(|c| (12001..13000).contains(c)) {
+        return crate::winhttp::describe(code as u32);
+    }
     with_code(if e.kind() == io::ErrorKind::TimedOut { timed_out() } else { interrupted() }, Some(e))
 }
 
@@ -273,5 +374,47 @@ mod tests {
         assert!(reset.starts_with("連線中斷") && reset.ends_with("（錯誤代碼 10054）"), "{reset}");
         assert_no_url(&reset);
         assert!(with_code("x", Some(&io::Error::from_raw_os_error(-2146893019))).ends_with("0x80090325）"));
+    }
+
+    /// 本機的假伺服器：每個連線依序回一個回應
+    fn serve(replies: Vec<&'static [u8]>) -> u16 {
+        let server = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = server.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            use std::io::Write;
+            for reply in replies {
+                let (mut s, _) = server.accept().unwrap();
+                let _ = s.read(&mut [0u8; 4096]);
+                let _ = s.write_all(reply);
+            }
+        });
+        port
+    }
+
+    #[test]
+    fn get_returns_status_length_and_body() {
+        let port = serve(vec![b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello", b"HTTP/1.1 404 Not Found\r\nContent-Length: 7\r\n\r\nmissing"]);
+        let url = format!("http://127.0.0.1:{port}/example");
+        let wait = Duration::from_secs(5);
+        let mut r = get(&url, &[("Accept", "text/plain")], wait, wait).unwrap();
+        let mut body = String::new();
+        r.body.read_to_string(&mut body).unwrap();
+        assert_eq!((r.status, r.len, body.as_str()), (200, Some(5), "hello"));
+        // 伺服器回應錯誤也回傳內容（GitHub 用 403 說明查詢次數用完）；download 只接受 2xx
+        let e = download(&url, wait, wait).err().unwrap();
+        assert_eq!(e, "伺服器回應錯誤（HTTP 404）");
+    }
+
+    #[test]
+    fn unreachable_get_has_no_url() {
+        let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        let e = get(&format!("http://127.0.0.1:{port}/example"), &[], Duration::from_secs(5), Duration::from_secs(5)).err().unwrap();
+        assert!(e.starts_with("無法連線"), "{e}");
+        assert_no_url(&e);
+    }
+
+    #[test]
+    fn winhttp_read_errors_are_explained() {
+        assert_eq!(describe_io(&io::Error::from_raw_os_error(12002)), "連線逾時（WinHTTP 12002）");
     }
 }
