@@ -51,9 +51,9 @@ pub fn download(progress: &AtomicU32, cancel: &AtomicBool) -> Result<PathBuf, St
 
 fn download_to(url: &str, out: &Path, progress: &AtomicU32, cancel: &AtomicBool) -> Result<(), String> {
     crate::info!("[外部元件] 下載 mpv 播放元件（{MPV_BUILD}）");
-    let resp = crate::http::agent().redirects(8).build().get(url).call().map_err(|e| trf!("下載 mpv 播放元件失敗：{}", "Couldn't download the mpv component: {}", crate::http::describe(&e)))?;
-    let total = resp.header("Content-Length").and_then(|v| v.parse::<u64>().ok()).unwrap_or(MPV_MB as u64 * 1_000_000);
-    let mut reader = resp.into_reader();
+    let (len, mut reader) = crate::http::download(url, std::time::Duration::from_secs(20), std::time::Duration::from_secs(60))
+        .map_err(|e| trf!("下載 mpv 播放元件失敗：{e}", "Couldn't download the mpv component: {e}"))?;
+    let total = len.unwrap_or(MPV_MB as u64 * 1_000_000);
     let mut file = std::fs::File::create(out).map_err(|e| trf!("無法寫入檔案：{e}", "Couldn't write the file: {e}"))?;
     let mut hasher = Sha256::new();
     let mut buf = vec![0u8; 256 * 1024];

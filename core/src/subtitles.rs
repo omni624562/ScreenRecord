@@ -181,9 +181,9 @@ pub fn download_model(m: &Model, progress: &AtomicU32, cancel: &AtomicBool) -> R
     let dir = install_dir();
     std::fs::create_dir_all(&dir).map_err(|e| trf!("無法建立資料夾：{e}", "Couldn't create the folder: {e}"))?;
     let part = dir.join(format!("{}.part", m.file));
-    let resp = crate::http::agent().redirects(8).build().get(m.url).call().map_err(|e| trf!("下載語音模型失敗：{}", "Couldn't download the speech model: {}", crate::http::describe(&e)))?;
-    let total = resp.header("Content-Length").and_then(|v| v.parse::<u64>().ok()).unwrap_or(m.mb as u64 * 1_000_000);
-    let mut reader = resp.into_reader();
+    let (len, mut reader) =
+        crate::http::download(m.url, std::time::Duration::from_secs(20), std::time::Duration::from_secs(60)).map_err(|e| trf!("下載語音模型失敗：{e}", "Couldn't download the speech model: {e}"))?;
+    let total = len.unwrap_or(m.mb as u64 * 1_000_000);
     let mut out = std::fs::File::create(&part).map_err(|e| trf!("無法寫入檔案：{e}", "Couldn't write the file: {e}"))?;
     let mut buf = vec![0u8; 256 * 1024];
     let mut got = 0u64;

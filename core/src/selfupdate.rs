@@ -41,12 +41,7 @@ pub struct InstallStatus {
 pub type Fetch = Arc<dyn Fn(&str) -> Result<(Option<u64>, Box<dyn Read + Send>), String> + Send + Sync>;
 
 fn http_fetch() -> Fetch {
-    Arc::new(|url: &str| {
-        let agent = crate::http::agent().timeout_connect(Duration::from_secs(15)).timeout_read(Duration::from_secs(60)).build();
-        let res = agent.get(url).set("User-Agent", &format!("ScreenRecorder/{}", crate::version::APP_VERSION)).call().map_err(|e| crate::http::describe(&e))?;
-        let len = res.header("Content-Length").and_then(|v| v.parse().ok());
-        Ok((len, Box::new(res.into_reader()) as Box<dyn Read + Send>))
-    })
+    Arc::new(|url: &str| crate::http::download(url, Duration::from_secs(15), Duration::from_secs(60)))
 }
 
 /// 同一資料夾內的暫存檔名（ScreenRecorder.exe → ScreenRecorder.exe.new / .old）
