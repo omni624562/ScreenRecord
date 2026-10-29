@@ -373,7 +373,7 @@ impl UiApp {
         self.lib_index.as_ref().filter(|i| i.root == root)
     }
 
-    /// Jellyfin 會掃描媒體庫資料夾底下的哪些子資料夾（「family」「porn/cut」）；沒設定 Jellyfin、看不出來時 None（不擋）。
+    /// Jellyfin 會掃描媒體庫資料夾底下的哪些子資料夾（「family」「travel/2024」）；沒設定 Jellyfin、看不出來時 None（不擋）。
     /// 還沒讀過或超過 2 分鐘時在背景重讀，這次先回傳舊的
     pub fn jf_scanned(&mut self) -> Option<Vec<String>> {
         let jf = self.jellyfin()?;
