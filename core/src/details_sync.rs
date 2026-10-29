@@ -467,25 +467,25 @@ mod tests {
 
     #[test]
     fn never_synced_fills_empty_side_and_unions_lists() {
-        let p = plan(&c("", &["a"]), &c("素人", &["b"]), None);
-        assert_eq!(p.merged.title, "素人");
+        let p = plan(&c("", &["a"]), &c("旅行紀錄", &["b"]), None);
+        assert_eq!(p.merged.title, "旅行紀錄");
         assert!(same_set(&p.merged.tags, &["a".into(), "b".into()]));
         assert!(p.conflicts.is_empty());
-        let p = plan(&c("情趣娃娃", &[]), &c("素人", &[]), None);
+        let p = plan(&c("海邊烤肉", &[]), &c("旅行紀錄", &[]), None);
         assert_eq!(p.conflicts.len(), 1);
     }
 
     #[test]
     fn jellyfin_title_from_file_name_counts_as_empty() {
-        let info = JfInfo { title: "Velfie_4_cut".into(), tags: vec!["18+".into(), "無碼".into()], year: Some(2025), ..Default::default() };
-        let j = Common::from_jf(&info, "Velfie_4_cut.mp4");
+        let info = JfInfo { title: "Trip_4_cut".into(), tags: vec!["18+".into(), "海邊".into()], year: Some(2025), ..Default::default() };
+        let j = Common::from_jf(&info, "Trip_4_cut.mp4");
         assert_eq!(j.title, "");
         assert!(j.adult);
-        assert_eq!(j.tags, vec!["無碼".to_string()]);
+        assert_eq!(j.tags, vec!["海邊".to_string()]);
         assert_eq!(j.year, "2025");
         // 再換回 Jellyfin：標題空的保留原本的，18+ 加回標籤
-        let back = j.to_jf("Velfie_4_cut.mp4");
-        assert_eq!(back.title, "Velfie_4_cut");
+        let back = j.to_jf("Trip_4_cut.mp4");
+        assert_eq!(back.title, "Trip_4_cut");
         assert!(back.tags.contains(&"18+".to_string()));
     }
 
@@ -493,15 +493,15 @@ mod tests {
     fn local_round_trip_keeps_other_fields_and_full_date() {
         let mut base = HashMap::new();
         base.insert("title".to_string(), "t".to_string());
-        base.insert("album".to_string(), "人妻".to_string());
+        base.insert("album".to_string(), "家庭".to_string());
         base.insert("date".to_string(), "2025-05-01".to_string());
         let l = Common::from_local(&base);
         assert_eq!(l.year, "2025");
-        let out = Common { title: "新".into(), people: vec!["素人".into()], ..l.clone() }.to_local(&base);
-        assert_eq!(out["album"], "人妻");
+        let out = Common { title: "新".into(), people: vec!["阿明".into()], ..l.clone() }.to_local(&base);
+        assert_eq!(out["album"], "家庭");
         assert_eq!(out["date"], "2025-05-01");
         assert_eq!(out["title"], "新");
-        assert_eq!(out[PEOPLE_KEY], "素人");
+        assert_eq!(out[PEOPLE_KEY], "阿明");
     }
 
     #[test]

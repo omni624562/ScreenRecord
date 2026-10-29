@@ -133,7 +133,7 @@ impl Jellyfin {
         outside_libraries(&libs, remote)
     }
 
-    /// 媒體庫資料夾（例如 \\HomeStorage\video）底下 Jellyfin 會掃描的子資料夾（「family」「porn/cut」；整個資料夾都掃時是 [""]），
+    /// 媒體庫資料夾（例如 \\NAS\video）底下 Jellyfin 會掃描的子資料夾（「family」「travel/2024」；整個資料夾都掃時是 [""]），
     /// 「傳到哪個資料夾」標出看得到的、擋下看不到的。看不出伺服器上的路徑、或讀不到媒體庫清單時 None（不擋）
     pub fn library_subs(&self) -> Option<Vec<String>> {
         let root = self.server_root()?;
@@ -2024,7 +2024,7 @@ fn tally_years(years: Vec<u32>) -> Vec<(u32, usize)> {
     m.into_iter().rev().collect()
 }
 
-/// 人物、標籤比對用的鍵：去掉前後空白、全形英數符號換成半形、不分大小寫（「無碼」和「無碼 」、「ＶＲ」和「vr」算同一個）
+/// 人物、標籤比對用的鍵：去掉前後空白、全形英數符號換成半形、不分大小寫（「海邊」和「海邊 」、「ＶＲ」和「vr」算同一個）
 pub fn name_key(s: &str) -> String {
     s.trim()
         .chars()
@@ -2328,7 +2328,7 @@ fn outside_libraries(libs: &str, remote: &str) -> Option<Vec<String>> {
     (!locs.is_empty() && !locs.iter().any(|l| path_under(remote, l))).then_some(locs)
 }
 
-/// 媒體庫清單裡在伺服器路徑 root 底下的資料夾，換成相對 root 的子資料夾（「family」「porn/cut」；就是 root 本身時 ""）。
+/// 媒體庫清單裡在伺服器路徑 root 底下的資料夾，換成相對 root 的子資料夾（「family」「travel/2024」；就是 root 本身時 ""）。
 /// 讀不懂清單時 None；都不在 root 底下時是空的（傳到哪裡 Jellyfin 都看不到）
 fn subs_in_libraries(libs: &str, root: &str) -> Option<Vec<String>> {
     let Ok(Value::Array(libs)) = serde_json::from_str::<Value>(libs) else { return None };
@@ -2357,7 +2357,7 @@ fn subs_in_libraries(libs: &str, root: &str) -> Option<Vec<String>> {
 pub enum Seen {
     /// 在某個媒體庫裡
     Yes,
-    /// 它本身不在，但底下有媒體庫的資料夾（相對 sub 的路徑，「cut」「uncensored」）
+    /// 它本身不在，但底下有媒體庫的資料夾（相對 sub 的路徑，「2024」「school」）
     Below(Vec<String>),
     /// 不在任何媒體庫裡、底下也沒有
     No,
@@ -3212,9 +3212,9 @@ mod tests {
     #[test]
     fn a_slow_save_counts_once_it_reads_back_right() {
         // 第一次讀回來還是舊的（伺服器還在存），3 秒後再讀就是新的
-        let (url, h) = serve_seq(vec![("200 OK", r#"{"Name":"舊","Tags":[]}"#.into()), ("200 OK", r#"{"Name":"新","Tags":["中出","多P"]}"#.into())]);
+        let (url, h) = serve_seq(vec![("200 OK", r#"{"Name":"舊","Tags":[]}"#.into()), ("200 OK", r#"{"Name":"新","Tags":["露營","烤肉"]}"#.into())]);
         let jf = Jellyfin::new(&url, "k").unwrap();
-        let want = JfInfo { title: "新".into(), tags: vec!["多P".into(), "中出".into()], ..Default::default() };
+        let want = JfInfo { title: "新".into(), tags: vec!["烤肉".into(), "露營".into()], ..Default::default() };
         assert!(jf.info_landed("u", "x", &want, Duration::from_secs(10)));
         assert_eq!(h.join().unwrap().len(), 2);
         // 一直沒改到：時間到就放棄
@@ -3265,8 +3265,8 @@ mod tests {
 
     #[test]
     fn item_people_come_with_their_ids() {
-        let body = r#"{"Id":"v","People":[{"Name":"つかもと友希","Type":"Actor","Id":"p1"},{"Name":"導演","Type":"Director","Id":"d1"},{"Name":" 新人 "},{"Name":"","Id":"x"}]}"#;
-        assert_eq!(people_ids_of(body), Some(vec![(Some("p1".into()), "つかもと友希".into()), (None, "新人".into())]));
+        let body = r#"{"Id":"v","People":[{"Name":"王小華","Type":"Actor","Id":"p1"},{"Name":"導演","Type":"Director","Id":"d1"},{"Name":" 新人 "},{"Name":"","Id":"x"}]}"#;
+        assert_eq!(people_ids_of(body), Some(vec![(Some("p1".into()), "王小華".into()), (None, "新人".into())]));
         assert_eq!(people_ids_of(r#"{"Id":"v"}"#), Some(vec![]));
         assert_eq!(people_ids_of("not json"), None);
     }
@@ -3659,16 +3659,16 @@ mod tests {
 
     #[test]
     fn library_folders_become_subfolders_jellyfin_can_see() {
-        let libs = r#"[{"Locations":["/video/porn/uncensored","/video/piano"]},{"Locations":["/config/data/collections","/video/Family/"]},{"Locations":["/videos2"]}]"#;
+        let libs = r#"[{"Locations":["/video/travel/2024","/video/piano"]},{"Locations":["/config/data/collections","/video/Family/"]},{"Locations":["/videos2"]}]"#;
         let subs = subs_in_libraries(libs, "/video").unwrap();
-        assert_eq!(subs, vec!["Family", "piano", "porn/uncensored"]);
+        assert_eq!(subs, vec!["Family", "piano", "travel/2024"]);
         assert_eq!(subs_in_libraries(r#"[{"Locations":["/video"]}]"#, "/video/").unwrap(), vec![""]);
         assert_eq!(subs_in_libraries("oops", "/video"), None);
 
         assert_eq!(seen_by_jellyfin(&subs, "family/2024"), Seen::Yes);
         assert_eq!(seen_by_jellyfin(&subs, "Piano"), Seen::Yes);
-        assert_eq!(seen_by_jellyfin(&subs, ""), Seen::Below(vec!["Family".into(), "piano".into(), "porn/uncensored".into()]));
-        assert_eq!(seen_by_jellyfin(&subs, "porn"), Seen::Below(vec!["uncensored".into()]));
+        assert_eq!(seen_by_jellyfin(&subs, ""), Seen::Below(vec!["Family".into(), "piano".into(), "travel/2024".into()]));
+        assert_eq!(seen_by_jellyfin(&subs, "travel"), Seen::Below(vec!["2024".into()]));
         assert_eq!(seen_by_jellyfin(&subs, "pianos"), Seen::No);
         assert_eq!(seen_by_jellyfin(&subs, "other"), Seen::No);
         // 整個資料夾都掃
@@ -3800,10 +3800,10 @@ mod tests {
         assert_eq!(t("Rec_2026-10-20_07-30-05").as_deref(), Some("2026-10-20 07:30:05"));
         assert_eq!(t("PXL_20261012_145733464").as_deref(), Some("2026-10-12 14:57:33"));
         assert_eq!(t("VID_20240501_103000_cut").as_deref(), Some("2024-05-01 10:30:00"));
-        assert_eq!(t("Velfie_2_cut"), None);
+        assert_eq!(t("Trip_2_cut"), None);
         assert_eq!(t("Rec_2026-13-40_07-30-05"), None);
         let dir = tempfile::tempdir().unwrap();
-        let f = dir.path().join("Velfie_2.mp4");
+        let f = dir.path().join("Trip_2.mp4");
         std::fs::write(&f, "x").unwrap();
         crate::paths::set_mtime(&f, std::time::SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000));
         assert_eq!(recorded_at(&f).as_deref(), Some("2023-11-14T22:13:20.0000000Z"));
@@ -4095,35 +4095,35 @@ mod tests {
     #[test]
     fn usage_counts_merge_spellings() {
         let json = r#"{"TotalRecordCount":3,"Items":[
-            {"People":[{"Name":"小美","Type":"Actor"},{"Name":"導演","Type":"Director"}],"Tags":["無碼","ＶＲ"]},
-            {"People":[{"Name":" 小美 ","Type":"Actor"},{"Name":"阿明"}],"Tags":["無碼 ","vr","vr"],"ProductionYear":2024},
+            {"People":[{"Name":"小美","Type":"Actor"},{"Name":"導演","Type":"Director"}],"Tags":["海邊","ＶＲ"]},
+            {"People":[{"Name":" 小美 ","Type":"Actor"},{"Name":"阿明"}],"Tags":["海邊 ","vr","vr"],"ProductionYear":2024},
             {"People":[],"Tags":["旅行"],"ProductionYear":2024}]}"#;
         let (people, tags, years, got, total) = people_tags_of_items(json);
         assert_eq!((got, total), (3, 3));
         assert_eq!(tally_years(years), vec![(2024, 2)]);
         assert_eq!(tally(people), vec![("小美".to_string(), 2), ("阿明".to_string(), 1)]);
-        // 次數一樣時依名稱排：vr（兩種寫法各一次）、無碼（「無碼 」去掉空白後一樣），最後是只用一次的旅行
+        // 次數一樣時依名稱排：vr（兩種寫法各一次）、海邊（「海邊 」去掉空白後一樣），最後是只用一次的旅行
         let t = tally(tags);
         assert_eq!(t.len(), 3);
         assert_eq!((name_key(&t[0].0), t[0].1), ("vr".to_string(), 2));
-        assert_eq!(t[1], ("無碼".to_string(), 2));
+        assert_eq!(t[1], ("海邊".to_string(), 2));
         assert_eq!(t[2], ("旅行".to_string(), 1));
         assert_eq!(name_key("　ＡＢＣ　"), "abc");
     }
 
     #[test]
     fn batch_adds_and_removes_only_what_changed() {
-        let item = r#"{"Id":"a","Name":"x","Tags":["無碼","18+","素人"],"People":[{"Name":"小美","Type":"Actor","Id":"p1"},{"Name":"導演","Type":"Director"}],"ProductionYear":2023,"PremiereDate":"2023-05-01T00:00:00.0000000Z"}"#;
+        let item = r#"{"Id":"a","Name":"x","Tags":["海邊","18+","露營"],"People":[{"Name":"小美","Type":"Actor","Id":"p1"},{"Name":"導演","Type":"Director"}],"ProductionYear":2023,"PremiereDate":"2023-05-01T00:00:00.0000000Z"}"#;
         let e = BatchEdit {
             add_people: vec!["小明".into(), " 小美 ".into()],
             remove_people: vec!["導演".into()],
-            add_tags: vec!["ＶＲ".into(), "無碼 ".into()],
+            add_tags: vec!["ＶＲ".into(), "海邊 ".into()],
             remove_tags: vec!["18+".into()],
             year: Some(Some(2024)),
         };
         let v: Value = serde_json::from_str(&with_batch(item, &e).unwrap()).unwrap();
         // 已經有的（寫法只差空白、全形半形）不再加；移除的只移除那一個；導演不是演員，移除人物時不動
-        assert_eq!(v["Tags"], serde_json::json!(["無碼", "素人", "ＶＲ"]));
+        assert_eq!(v["Tags"], serde_json::json!(["海邊", "露營", "ＶＲ"]));
         assert_eq!(v["People"], serde_json::json!([{"Name":"小美","Type":"Actor","Id":"p1"},{"Name":"導演","Type":"Director"},{"Name":"小明","Type":"Actor"}]));
         assert_eq!(v["ProductionYear"], 2024);
         assert_eq!(v["PremiereDate"], "2024-05-01T00:00:00.0000000Z");
@@ -4182,28 +4182,28 @@ mod tests {
     #[test]
     fn rename_merges_spellings_and_keeps_others() {
         let item =
-            r#"{"Id":"a","Name":"x","Tags":["無碼\u200b","素人","無碼"],"People":[{"Name":"小美","Type":"Actor","Id":"p1"},{"Name":"導演","Type":"Director"},{"Name":"小美美","Type":"Actor"}]}"#;
-        let t: Value = serde_json::from_str(&with_renamed(item, NameKind::Tag, "無碼\u{200b}", "無碼").unwrap()).unwrap();
-        assert_eq!(t["Tags"], serde_json::json!(["無碼", "素人"]));
+            r#"{"Id":"a","Name":"x","Tags":["海邊\u200b","露營","海邊"],"People":[{"Name":"小美","Type":"Actor","Id":"p1"},{"Name":"導演","Type":"Director"},{"Name":"小美美","Type":"Actor"}]}"#;
+        let t: Value = serde_json::from_str(&with_renamed(item, NameKind::Tag, "海邊\u{200b}", "海邊").unwrap()).unwrap();
+        assert_eq!(t["Tags"], serde_json::json!(["海邊", "露營"]));
         assert_eq!(t["Name"], "x");
         let p: Value = serde_json::from_str(&with_renamed(item, NameKind::Person, " 小美", "小美美").unwrap()).unwrap();
         // 演員重新命名後和已經有的重複：只留一個；導演不動
         assert_eq!(p["People"], serde_json::json!([{"Name":"小美美","Type":"Actor"},{"Name":"導演","Type":"Director"}]));
-        assert!(spelling_diff("無碼\u{200b}", "無碼").unwrap().contains("U+200B"));
-        assert!(spelling_diff("無碼", "無碼\u{200b}").is_some());
-        assert_eq!(spelling_diff("無碼", "無毛"), None);
+        assert!(spelling_diff("海邊\u{200b}", "海邊").unwrap().contains("U+200B"));
+        assert!(spelling_diff("海邊", "海邊\u{200b}").is_some());
+        assert_eq!(spelling_diff("海邊", "海灘"), None);
         assert_eq!(spelling_diff("VR", "ｖｒ"), None);
     }
 
     #[test]
     fn rename_changes_only_videos_using_it() {
-        let list = r#"{"TotalRecordCount":2,"Items":[{"Id":"a","Tags":["無碼 "]},{"Id":"b","Tags":["素人"]}]}"#.to_string();
-        let item = r#"{"Id":"a","Name":"x","Tags":["無碼 "]}"#.to_string();
+        let list = r#"{"TotalRecordCount":2,"Items":[{"Id":"a","Tags":["海邊 "]},{"Id":"b","Tags":["露營"]}]}"#.to_string();
+        let item = r#"{"Id":"a","Name":"x","Tags":["海邊 "]}"#.to_string();
         let (url, h) = serve_seq(vec![("200 OK", list), ("200 OK", item), ("204 No Content", String::new())]);
         let jf = Jellyfin::new(&url, "k").unwrap();
         let seen = std::sync::Mutex::new(vec![]);
         let n = jf
-            .rename_name("u", NameKind::Tag, "無碼", "無碼", &|d, t| {
+            .rename_name("u", NameKind::Tag, "海邊", "海邊", &|d, t| {
                 seen.lock().unwrap_or_else(|e| e.into_inner()).push((d, t));
                 true
             })
@@ -4225,8 +4225,8 @@ mod tests {
 
     #[test]
     fn facets_drop_duplicate_tags() {
-        let (tags, _) = facets_of(r#"{"Tags":["無碼","無碼 ","18+"," 旅行"],"Years":[2024]}"#);
-        assert_eq!(tags, vec!["18+".to_string(), "旅行".to_string(), "無碼".to_string()]);
+        let (tags, _) = facets_of(r#"{"Tags":["海邊","海邊 ","18+"," 旅行"],"Years":[2024]}"#);
+        assert_eq!(tags, vec!["18+".to_string(), "旅行".to_string(), "海邊".to_string()]);
     }
 
     #[test]

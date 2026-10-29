@@ -32,7 +32,7 @@ impl Ratio {
 }
 
 /// 框（圖片像素）：中心、寬高、角度（弧度，順時針）
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 struct Frame {
     c: Pos2,
     w: f32,
@@ -40,13 +40,16 @@ struct Frame {
     a: f32,
 }
 
-/// 拖的是哪裡
+/// 拖的是哪裡；Resize 是第幾個角（框自己的左上、右上、右下、左下）
 #[derive(Clone, Copy)]
 enum Grab {
     Move,
-    Resize,
+    Resize(usize),
     Rotate,
 }
+
+/// 四個角在框裡的方向（左上、右上、右下、左下）
+const CORNERS: [Vec2; 4] = [vec2(-1.0, -1.0), vec2(1.0, -1.0), vec2(1.0, 1.0), vec2(-1.0, 1.0)];
 
 /// 框的最小邊長（像素）
 const MIN_SIDE: f32 = 40.0;
@@ -223,6 +226,29 @@ fn clamp(mut f: Frame, ratio: Ratio, iw: f32, ih: f32) -> Frame {
     f
 }
 
+/// 拖第 corner 個角到 p（圖片像素）：對面那個角固定不動；from_center（按住 Alt）時以中心為準往四邊一起縮放。
+/// 框旋轉過也一樣（用框自己的方向算）；有固定比例時維持比例
+fn resize(start: Frame, corner: usize, p: Pos2, from_center: bool, ratio: Ratio, iw: f32, ih: f32) -> Frame {
+    let s = CORNERS[corner % 4];
+    let fit = |w: f32, h: f32| {
+        let h = ratio.value().map_or(h, |r| h.max(w / r));
+        // 只借 clamp 限制大小（最小、最大、比例），中心等一下再算
+        let f = clamp(Frame { w, h, ..start }, ratio, iw, ih);
+        (f.w, f.h)
+    };
+    if from_center {
+        let l = rot(p - start.c, -start.a);
+        let (w, h) = fit(l.x.abs() * 2.0, l.y.abs() * 2.0);
+        return clamp(Frame { w, h, ..start }, ratio, iw, ih);
+    }
+    // 對面的角固定：從那個角量到滑鼠，往拖的方向算長度（拖過頭變負的就用最小值）
+    let anchor = start.c + rot(vec2(-s.x * start.w / 2.0, -s.y * start.h / 2.0), start.a);
+    let l = rot(p - anchor, -start.a);
+    let (w, h) = fit((l.x * s.x).max(0.0), (l.y * s.y).max(0.0));
+    let c = anchor + rot(vec2(s.x * w / 2.0, s.y * h / 2.0), start.a);
+    clamp(Frame { c, w, h, ..start }, ratio, iw, ih)
+}
+
 /// 切出框起來的那一塊（轉正；框超出圖片的地方填黑）
 fn crop(pm: &Pixmap, f: Frame) -> Option<Pixmap> {
     let (w, h) = (f.w.round().max(1.0) as u32, f.h.round().max(1.0) as u32);
@@ -273,8 +299,8 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         });
         ui.label(
             RichText::new(tr!(
-                "把框拖到臉上：拖右下角調整大小、拖上方的圓點旋轉。也可以換成電腦裡的圖片（或拖進來、按 Ctrl+V 貼上）。",
-                "Drag the box over the face: drag its corner to resize, drag the dot above it to rotate. You can also use an image from your computer (or drag one in, or press Ctrl+V to paste)."
+                "把框拖到臉上：拖四個角調整大小（對面的角不動；按住 Alt 以中心縮放）、拖上方的圓點旋轉。也可以換成電腦裡的圖片（或拖進來、按 Ctrl+V 貼上）。",
+                "Drag the box over the face: drag a corner to resize (the opposite corner stays put; hold Alt to resize from the center), drag the dot above it to rotate. You can also use an image from your computer (or drag one in, or press Ctrl+V to paste)."
             ))
             .font(theme::font(12.0))
             .color(p.muted),
@@ -345,8 +371,8 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
             let (hw, hh) = (f.w * scale / 2.0, f.h * scale / 2.0);
             if pos.distance(rot_handle(f)) <= 10.0 {
                 Some(Grab::Rotate)
-            } else if pos.distance(corners(f)[2]) <= 10.0 {
-                Some(Grab::Resize)
+            } else if let Some(i) = corners(f).iter().position(|q| pos.distance(*q) <= 10.0) {
+                Some(Grab::Resize(i))
             } else if l.x.abs() <= hw && l.y.abs() <= hh {
                 Some(Grab::Move)
             } else {
@@ -361,14 +387,9 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
             let mut f = start;
             match grab {
                 Grab::Move => f.c = start.c + (now - origin) / scale,
-                Grab::Resize => {
-                    // 以中心為準：拖到哪裡，框的一半就到哪裡
-                    let l = local(start, now) / scale;
-                    f.w = l.x.abs() * 2.0;
-                    f.h = l.y.abs() * 2.0;
-                    if let Some(r) = d.ratio.value() {
-                        f.h = f.h.max(f.w / r);
-                    }
+                Grab::Resize(i) => {
+                    let alt = ui.input(|inp| inp.modifiers.alt);
+                    f = resize(start, i, (now - img_rect.min).to_pos2() / scale, alt, d.ratio, iw, ih);
                 }
                 Grab::Rotate => {
                     let v = now - to_screen(start.c);
@@ -400,9 +421,10 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         }
         let white = egui::Color32::WHITE;
         painter.add(egui::Shape::closed_line(pts.to_vec(), Stroke::new(2.0, white)));
-        // 右下角把手（調整大小）、上方圓點（旋轉）
-        let corner = pts[2];
-        painter.add(egui::Shape::convex_polygon([vec2(-6.0, -6.0), vec2(6.0, -6.0), vec2(6.0, 6.0), vec2(-6.0, 6.0)].map(|v| corner + rot(v, d.crop.a)).to_vec(), white, Stroke::NONE));
+        // 四個角的把手（調整大小）、上方圓點（旋轉）
+        for corner in pts {
+            painter.add(egui::Shape::convex_polygon([vec2(-5.0, -5.0), vec2(5.0, -5.0), vec2(5.0, 5.0), vec2(-5.0, 5.0)].map(|v| corner + rot(v, d.crop.a)).to_vec(), white, Stroke::new(1.0, egui::Color32::from_black_alpha(120))));
+        }
         let top_mid = to_screen(d.crop.c) + rot(vec2(0.0, -d.crop.h * scale / 2.0), d.crop.a);
         let rh = rot_handle(d.crop);
         painter.line_segment([top_mid, rh], Stroke::new(1.5, white));
@@ -414,7 +436,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         }
         // 游標
         let cursor = match d.drag.map(|(g, _)| g).or_else(|| ui.ctx().pointer_hover_pos().filter(|p| area.contains(*p)).and_then(|p| hit(d.crop, p))) {
-            Some(Grab::Resize) => Some(egui::CursorIcon::ResizeNwSe),
+            Some(Grab::Resize(i)) => Some(if i % 2 == 0 { egui::CursorIcon::ResizeNwSe } else { egui::CursorIcon::ResizeNeSw }),
             Some(Grab::Rotate) => Some(egui::CursorIcon::Alias),
             Some(Grab::Move) => Some(if d.drag.is_some() { egui::CursorIcon::Grabbing } else { egui::CursorIcon::Grab }),
             None => None,
@@ -551,4 +573,53 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
 /// 這支影片的人物與伺服器上的編號（「依這些找」的人物清單裡找；只差空白、大小寫、全形半形的算同一個）
 pub fn people_with_ids(names: &[String], persons: &[(String, String, usize)]) -> Vec<(Option<String>, String)> {
     names.iter().map(|n| (persons.iter().find(|(_, p, _)| jellyfin::name_key(p) == jellyfin::name_key(n)).map(|(id, _, _)| id.clone()), n.clone())).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn frame() -> Frame {
+        Frame { c: pos2(300.0, 300.0), w: 100.0, h: 200.0, a: 0.0 }
+    }
+
+    fn near(a: Pos2, b: Pos2) -> bool {
+        a.distance(b) < 0.01
+    }
+
+    #[test]
+    fn dragging_a_corner_keeps_the_opposite_corner() {
+        let f = frame();
+        // 右下角拖到 (400, 500)：左上角 (250, 200) 不動
+        let g = resize(f, 2, pos2(400.0, 500.0), false, Ratio::Free, 1000.0, 1000.0);
+        assert!(near(g.c - vec2(g.w / 2.0, g.h / 2.0), pos2(250.0, 200.0)), "{g:?}");
+        assert_eq!((g.w, g.h), (150.0, 300.0));
+        // 左上角拖到 (200, 100)：右下角 (350, 400) 不動
+        let g = resize(f, 0, pos2(200.0, 100.0), false, Ratio::Free, 1000.0, 1000.0);
+        assert!(near(g.c + vec2(g.w / 2.0, g.h / 2.0), pos2(350.0, 400.0)), "{g:?}");
+        // 拖過頭（越過對面的角）：縮到最小，對面的角還是不動
+        let g = resize(f, 2, pos2(0.0, 0.0), false, Ratio::Free, 1000.0, 1000.0);
+        assert_eq!((g.w, g.h), (MIN_SIDE, MIN_SIDE));
+        assert!(near(g.c - vec2(g.w / 2.0, g.h / 2.0), pos2(250.0, 200.0)), "{g:?}");
+    }
+
+    #[test]
+    fn alt_resizes_from_the_center_and_ratio_is_kept() {
+        let f = frame();
+        let g = resize(f, 2, pos2(400.0, 500.0), true, Ratio::Free, 1000.0, 1000.0);
+        assert!(near(g.c, f.c));
+        assert_eq!((g.w, g.h), (200.0, 400.0));
+        // 2:3：維持比例，左上角照樣不動
+        let g = resize(f, 2, pos2(500.0, 320.0), false, Ratio::Portrait, 1000.0, 1000.0);
+        assert!((g.w / g.h - 2.0 / 3.0).abs() < 1e-4, "{g:?}");
+        assert!(near(g.c - vec2(g.w / 2.0, g.h / 2.0), pos2(250.0, 200.0)), "{g:?}");
+    }
+
+    #[test]
+    fn rotated_frame_keeps_its_own_opposite_corner() {
+        let f = Frame { a: std::f32::consts::FRAC_PI_2, ..frame() };
+        let anchor = f.c + rot(vec2(-f.w / 2.0, -f.h / 2.0), f.a);
+        let g = resize(f, 2, f.c + rot(vec2(80.0, 150.0), f.a), false, Ratio::Free, 1000.0, 1000.0);
+        assert!(near(g.c + rot(vec2(-g.w / 2.0, -g.h / 2.0), g.a), anchor), "{g:?}");
+    }
 }
