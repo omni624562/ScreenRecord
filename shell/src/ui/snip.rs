@@ -64,7 +64,7 @@ pub fn pick_region(app: &mut UiApp, done: impl FnOnce(&mut UiApp, Option<DRect>)
     let config = app.s.record_config(&app.env);
     let core = app.core.clone();
     if cfg!(windows) {
-        return app.spawn(async move { core.select_record_region(&config).await }, move |app, r| match r {
+        return app.spawn(async move { core.select_record_region(&config, screenrecorder_core::winui::ShotFrom::Button).await }, move |app, r| match r {
             Ok(rect) => done(app, rect),
             Err(e) => {
                 app.toast(e.message().to_string(), true);
@@ -72,7 +72,7 @@ pub fn pick_region(app: &mut UiApp, done: impl FnOnce(&mut UiApp, Option<DRect>)
             }
         });
     }
-    app.spawn(async move { core.snip_source(&config).await }, move |app, r| match r {
+    app.spawn(async move { core.snip_source(&config, screenrecorder_core::winui::ShotFrom::Button).await }, move |app, r| match r {
         Ok(src) => {
             let ctx = app.ctx.clone();
             open(app, &ctx, src, Some(Box::new(done)));

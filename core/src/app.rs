@@ -774,8 +774,8 @@ impl App {
     }
 
     /// 截圖：與錄影相同的擷取範圍，存成原尺寸 PNG（儲存資料夾）並複製到剪貼簿。
-    /// 操作視窗擋到範圍時先縮小、截完還原。
-    pub async fn screenshot(self: &Arc<Self>, config: &RecordConfig) -> crate::Result<crate::types::ShotInfo> {
+    /// 從操作視窗的按鈕開始、操作視窗擋到範圍時先縮小、截完還原（from，見 ShotFrom）。
+    pub async fn screenshot(self: &Arc<Self>, config: &RecordConfig, from: crate::winui::ShotFrom) -> crate::Result<crate::types::ShotInfo> {
         {
             let mut st = self.lock();
             if st.shooting {
@@ -784,7 +784,7 @@ impl App {
             st.shooting = true;
         }
         self.note_app("");
-        let r = self.take_screenshot(config).await;
+        let r = self.take_screenshot(config, from).await;
         self.lock().shooting = false;
         let shot = r?;
         self.lock().shot = Some(shot.clone());
@@ -838,13 +838,13 @@ impl App {
         let _ = (path, thumb, caption);
     }
 
-    async fn take_screenshot(self: &Arc<Self>, config: &RecordConfig) -> crate::Result<crate::types::ShotInfo> {
+    async fn take_screenshot(self: &Arc<Self>, config: &RecordConfig, from: crate::winui::ShotFrom) -> crate::Result<crate::types::ShotInfo> {
         let monitors = self.lock().monitors.clone();
         // 選了「只錄聲音」時，截圖仍截螢幕
         let plan = crate::args::resolve_plan(&RecordConfig { audio_only: false, ..config.clone() }, &monitors)?;
         let out = self.new_shot_path(&config.shots_dir()).await?;
-        // 操作視窗擋到範圍：先縮小（等動畫結束）再截
-        let hid = crate::winui::minimize_ui(Some(&plan.rect));
+        // 從按鈕開始、操作視窗擋到範圍：先縮小（等動畫結束）再截
+        let hid = crate::winui::minimize_for_shot(&plan.rect, from);
         if hid {
             tokio::time::sleep(Duration::from_millis(350)).await;
         }
@@ -1028,8 +1028,9 @@ impl App {
 
     /// 框選截圖：截下整個桌面（不含游標）當作凍結的畫面，讓使用者框選後裁切存檔。
     /// Windows 上用原生的全螢幕視窗框選（不靠操作視窗）；其他平台交給介面（開發測試用）。
-    /// 操作視窗先縮小，框選結束才還原。回傳截好的圖（取消時為 None）
-    pub async fn snip_begin(self: &Arc<Self>, config: &RecordConfig) -> crate::Result<Option<crate::types::ShotInfo>> {
+    /// 從操作視窗的按鈕開始時操作視窗先縮小，框選結束才還原（快速鍵、系統匣選單不縮小，見 ShotFrom）。
+    /// 回傳截好的圖（取消時為 None）
+    pub async fn snip_begin(self: &Arc<Self>, config: &RecordConfig, from: crate::winui::ShotFrom) -> crate::Result<Option<crate::types::ShotInfo>> {
         {
             let mut st = self.lock();
             if st.shooting || st.snipping {
@@ -1038,7 +1039,7 @@ impl App {
             st.shooting = true;
         }
         self.note_app("");
-        let src = self.snip_ready(self.snip_capture(config).await)?;
+        let src = self.snip_ready(self.snip_capture(config, from).await)?;
         #[cfg(windows)]
         return self.snip_native(src).await;
         #[cfg(not(windows))]
@@ -1049,13 +1050,14 @@ impl App {
     }
 
     /// 延遲截圖：倒數 sec 秒後框選（先開啟要截的選單或提示）。Windows 上畫面上方顯示「3」秒後框選（不會被截進去），
-    /// 按 Esc 或按一下取消。取消時回傳 None
-    pub async fn snip_delayed(self: &Arc<Self>, config: &RecordConfig, sec: u64) -> crate::Result<Option<crate::types::ShotInfo>> {
+    /// 按 Esc 或按一下取消。取消時回傳 None。
+    /// 有倒數時不縮小本程式的視窗（倒數時自己安排畫面，要截的可能就是本程式的視窗）
+    pub async fn snip_delayed(self: &Arc<Self>, config: &RecordConfig, sec: u64, from: crate::winui::ShotFrom) -> crate::Result<Option<crate::types::ShotInfo>> {
         if sec > 0 && !countdown(sec).await {
             crate::info!("[截圖] 取消延遲截圖");
             return Ok(None);
         }
-        self.snip_begin(config).await
+        self.snip_begin(config, if sec > 0 { crate::winui::ShotFrom::AsIs } else { from }).await
     }
 
     /// 在凍結的畫面上框選（Windows 原生視窗）：(範圍, 工具列選的動作)；取消時 None
@@ -1136,7 +1138,7 @@ impl App {
     }
 
     /// 截下整個桌面當作凍結的畫面，給介面的框選視窗用（例如框選錄影範圍）。用完要呼叫 snip_end
-    pub async fn snip_source(self: &Arc<Self>, config: &RecordConfig) -> crate::Result<SnipSource> {
+    pub async fn snip_source(self: &Arc<Self>, config: &RecordConfig, from: crate::winui::ShotFrom) -> crate::Result<SnipSource> {
         {
             let mut st = self.lock();
             if st.shooting || st.snipping {
@@ -1144,20 +1146,20 @@ impl App {
             }
             st.shooting = true;
         }
-        self.snip_ready(self.snip_capture(config).await)
+        self.snip_ready(self.snip_capture(config, from).await)
     }
 
     /// 只抓文字：在螢幕上框選，辨識裡面的字直接複製到剪貼簿（不存圖）；對齊的欄排成 Tab 分隔，可以直接貼到 Excel
-    pub async fn text_snip(self: &Arc<Self>, config: &RecordConfig) -> crate::Result<Option<crate::ocr::Layout>> {
+    pub async fn text_snip(self: &Arc<Self>, config: &RecordConfig, from: crate::winui::ShotFrom) -> crate::Result<Option<crate::ocr::Layout>> {
         #[cfg(not(windows))]
         {
-            let _ = config;
+            let _ = (config, from);
             Err(crate::Error::config(tr!("只抓文字要用 Windows 的文字辨識，只支援 Windows", "Grab text uses Windows text recognition and is only available on Windows")))
         }
         #[cfg(windows)]
         {
             let r = self
-                .snip_pixels(config, crate::snip_win::Mode::Text, |rgba, w, h| {
+                .snip_pixels(config, crate::snip_win::Mode::Text, from, |rgba, w, h| {
                     let lines = crate::ocr::recognize_words(&rgba, w, h).map_err(crate::Error::other)?;
                     Ok(crate::ocr::layout(&lines))
                 })
@@ -1179,6 +1181,7 @@ impl App {
         self: &Arc<Self>,
         config: &RecordConfig,
         mode: crate::snip_win::Mode,
+        from: crate::winui::ShotFrom,
         f: impl FnOnce(Vec<u8>, u32, u32) -> crate::Result<T> + Send + 'static,
     ) -> crate::Result<Option<T>> {
         {
@@ -1188,7 +1191,7 @@ impl App {
             }
             st.shooting = true;
         }
-        let src = self.snip_ready(self.snip_capture(config).await)?;
+        let src = self.snip_ready(self.snip_capture(config, from).await)?;
         let sel = self.snip_pick(&src, mode).await.map(|p| p.0);
         let path = src.path.clone();
         let desk = src.desktop;
@@ -1217,10 +1220,10 @@ impl App {
 
     /// 長截圖：框選範圍（或按一下選視窗）後，自動一邊往下捲一邊擷取，接成一張長圖，
     /// 存成新的截圖並複製到剪貼簿。捲到底、畫面對不起來、太長或按 Esc 時停止。只有 Windows
-    pub async fn long_shot(self: &Arc<Self>, config: &RecordConfig) -> crate::Result<Option<crate::types::ShotInfo>> {
+    pub async fn long_shot(self: &Arc<Self>, config: &RecordConfig, from: crate::winui::ShotFrom) -> crate::Result<Option<crate::types::ShotInfo>> {
         #[cfg(not(windows))]
         {
-            let _ = config;
+            let _ = (config, from);
             Err(crate::Error::config(tr!("長截圖只支援 Windows", "Scrolling screenshot is only available on Windows")))
         }
         #[cfg(windows)]
@@ -1233,7 +1236,7 @@ impl App {
                 st.shooting = true;
             }
             self.note_app("long");
-            let src = self.snip_ready(self.snip_capture(config).await)?;
+            let src = self.snip_ready(self.snip_capture(config, from).await)?;
             let Some((area, _)) = self.snip_pick(&src, crate::snip_win::Mode::Scroll).await else {
                 crate::info!("[截圖] 取消長截圖");
                 self.snip_end(Some(&src));
@@ -1271,7 +1274,7 @@ impl App {
 
     /// 框選要錄影的範圍：與框選截圖相同的畫面（拖曳框選或按一下選視窗），回傳範圍（取消時 None），
     /// 也記成「上次框選」。只有 Windows 有原生的框選畫面
-    pub async fn select_record_region(self: &Arc<Self>, config: &RecordConfig) -> crate::Result<Option<crate::types::Rect>> {
+    pub async fn select_record_region(self: &Arc<Self>, config: &RecordConfig, from: crate::winui::ShotFrom) -> crate::Result<Option<crate::types::Rect>> {
         {
             let mut st = self.lock();
             if st.shooting || st.snipping {
@@ -1279,7 +1282,7 @@ impl App {
             }
             st.shooting = true;
         }
-        let src = self.snip_ready(self.snip_capture(config).await)?;
+        let src = self.snip_ready(self.snip_capture(config, from).await)?;
         #[cfg(windows)]
         let sel = self.snip_pick(&src, crate::snip_win::Mode::Record).await.map(|p| p.0);
         #[cfg(not(windows))]
@@ -1305,7 +1308,7 @@ impl App {
         self.open_ui(UiPage::Snip);
     }
 
-    async fn snip_capture(self: &Arc<Self>, config: &RecordConfig) -> crate::Result<SnipSource> {
+    async fn snip_capture(self: &Arc<Self>, config: &RecordConfig, from: crate::winui::ShotFrom) -> crate::Result<SnipSource> {
         let monitors = self.lock().monitors.clone();
         let all = RecordConfig { source: crate::types::SourceConfig::All, audio_only: false, ..config.clone() };
         let plan = crate::args::resolve_plan(&all, &monitors)?;
@@ -1313,7 +1316,8 @@ impl App {
         static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let path = std::env::temp_dir().join(format!("ScreenRecorder-snip-{}-{n}.png", std::process::id()));
-        if crate::winui::minimize_ui(Some(&plan.rect)) {
+        // 從操作視窗的按鈕開始：先縮小操作視窗（快速鍵、系統匣選單不縮小，本程式的視窗也截得到）
+        if crate::winui::minimize_for_shot(&plan.rect, from) {
             tokio::time::sleep(Duration::from_millis(350)).await;
         }
         if let Err(e) = self.capture_png(&plan, false, &path).await {

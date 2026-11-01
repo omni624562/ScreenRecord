@@ -348,7 +348,16 @@ mod imp {
     static REC_MINIMIZED: Mutex<Vec<isize>> = Mutex::new(Vec::new());
 
     pub fn minimize_ui(area: Option<&Rect>, recording: bool) -> bool {
-        let list = windows_in(area);
+        minimize(windows_in(area), recording)
+    }
+
+    /// 截圖前只縮小操作視窗（主視窗）；剪輯視窗、檢視器等其他視窗不動
+    pub fn minimize_main(area: &Rect) -> bool {
+        let main = crate::main_window::handle();
+        minimize(windows_in(Some(area)).into_iter().filter(|h| main != 0 && h.0 as isize == main).collect(), false)
+    }
+
+    fn minimize(list: Vec<HWND>, recording: bool) -> bool {
         for h in &list {
             unsafe {
                 let _ = ShowWindow(*h, SW_MINIMIZE);
@@ -435,14 +444,22 @@ pub fn ui_in_area(area: &Rect) -> bool {
     }
 }
 
-/// 縮小操作視窗；回傳是否有縮小任何視窗。
-/// 指定 area 時只縮小與它重疊的視窗（拿不到位置的視窗一律縮小，寧可多縮也不要錄到它）。
-pub fn minimize_ui(area: Option<&Rect>) -> bool {
+/// 截圖從哪裡開始：決定截圖前要不要先縮小本程式的視窗
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShotFrom {
+    /// 操作視窗上的按鈕：要截的是後面的東西，先縮小擋到範圍的操作視窗（剪輯視窗、檢視器等不縮小，截得到）
+    Button,
+    /// 快速鍵、系統匣選單、延遲截圖：畫面上是什麼就截什麼，本程式的視窗也截得到
+    AsIs,
+}
+
+/// 截圖前縮小擋到 area 的操作視窗（只有從操作視窗的按鈕開始時）；回傳是否有縮小，截完用 restore_ui 還原
+pub fn minimize_for_shot(area: &Rect, from: ShotFrom) -> bool {
     #[cfg(windows)]
-    return imp::minimize_ui(area, false);
+    return from == ShotFrom::Button && imp::minimize_main(area);
     #[cfg(not(windows))]
     {
-        let _ = area;
+        let _ = (area, from);
         false
     }
 }

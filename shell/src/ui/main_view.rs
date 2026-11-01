@@ -1385,7 +1385,7 @@ pub(super) fn run_shot(app: &mut UiApp, act: ShotAct) {
                 app.toast(trf!("{sec} 秒後框選：現在先開啟要截的選單或提示", "Selecting in {sec} s: open the menu or tooltip you want to capture now"), false);
             }
             // 延遲截圖：core 在畫面上顯示倒數（可以按 Esc 或按一下取消）
-            app.spawn(async move { core.snip_delayed(&config, sec).await.map(|_| ()) }, done);
+            app.spawn(async move { core.snip_delayed(&config, sec, screenrecorder_core::winui::ShotFrom::Button).await.map(|_| ()) }, done);
         }
         ShotAct::Area | ShotAct::Screen(_) | ShotAct::Last => {
             match act {
@@ -1398,11 +1398,11 @@ pub(super) fn run_shot(app: &mut UiApp, act: ShotAct) {
                 _ => {}
             }
             app.main.shooting = true;
-            app.spawn(async move { core.screenshot(&config).await.map(|_| ()) }, done);
+            app.spawn(async move { core.screenshot(&config, screenrecorder_core::winui::ShotFrom::Button).await.map(|_| ()) }, done);
         }
         ShotAct::Scroll => {
             app.main.shooting = true;
-            app.spawn(async move { core.long_shot(&config).await }, |app, r| {
+            app.spawn(async move { core.long_shot(&config, screenrecorder_core::winui::ShotFrom::Button).await }, |app, r| {
                 app.main.shooting = false;
                 if let Err(e) = r {
                     // 捲動時被捲的視窗在前面，操作視窗常在它後面：沒在前面時也用系統通知說明
@@ -1430,7 +1430,7 @@ pub(super) fn run_shot(app: &mut UiApp, act: ShotAct) {
         },
         ShotAct::Text => {
             app.main.shooting = true;
-            app.spawn(async move { core.text_snip(&config).await }, |app, r| {
+            app.spawn(async move { core.text_snip(&config, screenrecorder_core::winui::ShotFrom::Button).await }, |app, r| {
                 app.main.shooting = false;
                 match r {
                     Ok(Some(l)) => app.show_grabbed_text(l),
