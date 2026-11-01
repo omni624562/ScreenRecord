@@ -169,7 +169,9 @@ pub fn open(app: &mut UiApp) {
     // 回到上次停的位置（媒體庫 › 資料夾…）
     let path = app.s.jf_path.clone();
     let restored = !path.is_empty();
-    app.jf_browse = Some(JfBrowse { grid: app.s.jf_grid_size, list_view: app.s.jf_list_view, sort, filter, path, restored, cols: 1, ..Default::default() });
+    // 上次勾的「依這些找」條件也照樣用
+    let facet = app.s.jf_facet.clone();
+    app.jf_browse = Some(JfBrowse { grid: app.s.jf_grid_size, list_view: app.s.jf_list_view, sort, filter, path, facet, restored, cols: 1, ..Default::default() });
     load(app);
 }
 
@@ -2206,11 +2208,12 @@ pub fn apply(app: &mut UiApp, mut d: JfBrowse, mut out: Panel) {
     if let Some((it, rect)) = out.picked.hover.take() {
         hover(app, &it, rect);
     }
-    // 縮圖大小、清單檢視、排序、篩選、停在哪裡記到下次（有改才存）
+    // 縮圖大小、清單檢視、排序、篩選、停在哪裡、「依這些找」的條件記到下次（有改才存）
     let sort_at = JfSort::ALL.iter().position(|s| *s == d.sort).unwrap_or(0) as u8;
     let filter_at = JfFilter::ALL.iter().position(|f| *f == d.filter).unwrap_or(0) as u8;
-    if d.grid != app.s.jf_grid_size || d.list_view != app.s.jf_list_view || sort_at != app.s.jf_sort || filter_at != app.s.jf_filter || d.path != app.s.jf_path {
+    if d.grid != app.s.jf_grid_size || d.list_view != app.s.jf_list_view || sort_at != app.s.jf_sort || filter_at != app.s.jf_filter || d.path != app.s.jf_path || d.facet != app.s.jf_facet {
         app.s.jf_path = d.path.clone();
+        app.s.jf_facet = d.facet.clone();
         app.s.jf_grid_size = d.grid;
         app.s.jf_list_view = d.list_view;
         app.s.jf_sort = sort_at;

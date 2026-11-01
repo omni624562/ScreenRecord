@@ -5,6 +5,7 @@
 
 use super::dialogs::{base_name, date_labels, day_label, day_parts, entry_time, file_name, is_cut_name, is_default_name, short_date, time_labels, Ask};
 use super::entry_menu::Place;
+use super::settings::LastChoices;
 use super::theme::{self, chip, Btn, Icon, Tone};
 use super::{EntryAction, ToastAction, UiApp};
 use eframe::egui::{self, pos2, vec2, Align, Color32, CornerRadius, Id, Layout, Rect, RichText, Sense, Stroke, UiBuilder, Vec2};
@@ -108,6 +109,8 @@ pub struct LibraryDialog {
     suggest: browse::Suggest,
     /// 已經開始建立截圖的文字索引（開啟全部截圖時一次）
     ocr_started: bool,
+    /// 已經套用上次的排序、篩選（開啟後第一次畫的時候；套用之前不記下這次的選擇）
+    last_used: bool,
     /// 上一個畫面文字索引還在做（做完時重新搜尋）
     ocr_running: bool,
 }
@@ -250,6 +253,40 @@ impl LibraryDialog {
             suggest: browse::Suggest::default(),
             ocr_started: false,
             ocr_running: false,
+            last_used: false,
+        }
+    }
+
+    /// 套用上次的排序、篩選（開啟、錄影和截圖互換時）
+    fn use_last(&mut self, last: &LastChoices) {
+        match self.kind {
+            Kind::Video => (self.sort, self.filter) = (last.lib_video_sort, last.lib_video_filter),
+            // 截圖沒有長度
+            Kind::Shot => (self.sort, self.filter) = (if last.lib_shot_sort == LibrarySort::Duration { LibrarySort::New } else { last.lib_shot_sort }, LibraryFilter::All),
+        }
+    }
+
+    /// 記下這次的排序、篩選、只看有星號的、瀏覽欄與對話框的選擇（remember::sync 每一格呼叫）
+    pub fn remember(&self, last: &mut LastChoices) {
+        if !self.last_used {
+            return;
+        }
+        match self.kind {
+            Kind::Video => (last.lib_video_sort, last.lib_video_filter) = (self.sort, self.filter),
+            Kind::Shot => last.lib_shot_sort = self.sort,
+        }
+        (last.lib_pinned, last.lib_browse) = (self.only_pinned, self.browse);
+        if let Some(c) = &self.cleanup {
+            last.cleanup_days = c.days;
+        }
+        if let Some(c) = &self.similar {
+            last.similar_level = c.level;
+        }
+        if let Some(m) = &self.merge {
+            last.merge_quality = m.quality;
+        }
+        if let Some(c) = &self.combine {
+            (last.combine_vertical, last.combine_spacing) = (c.vertical, c.spacing);
         }
     }
 
@@ -614,6 +651,16 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
     let Some(mut d) = app.library.take() else {
         return;
     };
+    if !d.last_used {
+        d.last_used = true;
+        d.use_last(&app.s.last);
+        (d.only_pinned, d.browse) = (app.s.last.lib_pinned, app.s.last.lib_browse);
+    }
+    // 上次選的「還沒傳到媒體庫」：之後移除了媒體庫的設定就看全部
+    if d.filter == LibraryFilter::NotInLibrary && app.library_folder().is_none() && app.jellyfin().is_none() {
+        d.filter = LibraryFilter::All;
+    }
+    let last = app.s.last.clone();
     watch_merge(app, &mut d);
     // 「Jellyfin」分頁：設定裡移除 Jellyfin 了就回到錄影或截圖
     let jf_url = app.jellyfin().is_some().then(|| app.s.jellyfin_url.trim().to_string());
@@ -683,10 +730,8 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
             }
             // 錄影、截圖互換時（切到 Jellyfin 再切回原本的不算）
             if changed && tab.is_some_and(|k| k != kind) {
-                d.filter = LibraryFilter::All;
-                if d.sort == LibrarySort::Duration {
-                    d.sort = LibrarySort::New;
-                }
+                // 換成那個分頁上次的排序、篩選
+                d.use_last(&last);
                 d.page = 1;
                 d.selected.clear();
                 d.data = None;
@@ -930,10 +975,10 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                     egui::Popup::menu(&b).show(|ui| {
                         ui.set_min_width(220.0);
                         if ui.button(tr!("清理舊截圖…", "Clean up old screenshots…")).clicked() {
-                            d.cleanup = Some(CleanupDlg { days: 90, list: None, seq: 0, busy: false });
+                            d.cleanup = Some(CleanupDlg { days: Some(last.cleanup_days).filter(|d| [7, 30, 90, 180, 365].contains(d)).unwrap_or(90), list: None, seq: 0, busy: false });
                         }
                         if ui.button(tr!("找出相似的截圖…", "Find similar screenshots…")).clicked() {
-                            d.similar = Some(SimilarDlg { level: 1, groups: None, remove: HashSet::new(), seq: 0, busy: false });
+                            d.similar = Some(SimilarDlg { level: last.similar_level.min(2), groups: None, remove: HashSet::new(), seq: 0, busy: false });
                         }
                     });
                 }
@@ -2507,7 +2552,7 @@ pub(super) fn open_merge(app: &mut UiApp, paths: Vec<String>) {
     let day = items.iter().find(|i| i.on).and_then(|i| find_media(app, &i.path)).and_then(|(m, _)| entry_time(&m.name, m.time_ms())).unwrap_or_else(|| chrono::Local::now().naive_local());
     let name = trf!("合併_{}", "Merged_{}", day.format("%m-%d"));
     if let Some(d) = &mut app.library {
-        d.merge = Some(MergeDlg { items, name, quality: None, error: None, busy: false });
+        d.merge = Some(MergeDlg { items, name, quality: app.s.last.merge_quality, error: None, busy: false });
     }
 }
 
@@ -2694,7 +2739,7 @@ fn open_combine(app: &mut UiApp) {
         return app.toast(tr!("一次最多拼 20 張", "You can combine up to 20 screenshots at a time"), true);
     }
     if let Some(d) = &mut app.library {
-        d.combine = Some(CombineDlg { items, vertical: false, spacing: 1, busy: false });
+        d.combine = Some(CombineDlg { items, vertical: app.s.last.combine_vertical, spacing: app.s.last.combine_spacing.min(2), busy: false });
     }
 }
 

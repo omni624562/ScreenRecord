@@ -114,6 +114,19 @@ fn update_found(app: &mut UiApp, u: &screenrecorder_core::types::UpdateInfo) {
     ));
 }
 
+/// 從標題列的選單、Ctrl+, 開啟：停在上次看的那一頁
+pub fn open_last(app: &mut UiApp) {
+    let page = PAGES.get(app.s.last.settings_page as usize).map_or(Page::General, |p| p.0);
+    open(app, page);
+}
+
+/// 記下目前看的那一頁（remember::sync 每一格呼叫）
+pub fn remember(d: &SettingsDialog, last: &mut super::settings::LastChoices) {
+    if let Some(i) = PAGES.iter().position(|p| p.0 == d.page) {
+        last.settings_page = i as u8;
+    }
+}
+
 pub fn open(app: &mut UiApp, page: Page) {
     match &mut app.settings_dlg {
         Some(d) => d.page = page,

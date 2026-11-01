@@ -20,7 +20,7 @@ use screenrecorder_core::mpv::{MpvPlayer, Start};
 use screenrecorder_core::player::{MediaSpec, Player};
 use screenrecorder_core::types::{LibraryEntry, LibraryFilter, LibraryQuery, LibrarySort, MediaInfo};
 use screenrecorder_core::{tr, trf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
 /// 播放時解碼的最大尺寸
@@ -37,10 +37,25 @@ const ZOOM_MAX: f32 = 8.0;
 
 /// 載入順序：切換很快時，丟掉較舊的載入結果
 static LOAD_SEQ: AtomicU64 = AtomicU64::new(0);
-/// 播放速度（×100）在開啟之間保留
+/// 播放速度（×100）在開啟之間保留，重開程式也記得（設定的 last.playRate）
 static RATE: AtomicU64 = AtomicU64::new(100);
+/// Jellyfin 影片的字幕開著（上次關掉了，下一支也不顯示；設定的 last.jfSubs）
+static JF_SUBS: AtomicBool = AtomicBool::new(true);
 /// 可選的播放速度
 const RATES: [f64; 5] = [0.5, 1.0, 1.25, 1.5, 2.0];
+
+/// 啟動時還原上次的播放速度、Jellyfin 字幕開關
+pub fn restore_last(last: &super::settings::LastChoices) {
+    let rate = RATES.into_iter().find(|r| (r - last.play_rate).abs() < 1e-6).unwrap_or(1.0);
+    RATE.store((rate * 100.0).round() as u64, Ordering::Relaxed);
+    JF_SUBS.store(last.jf_subs, Ordering::Relaxed);
+}
+
+/// 記下播放速度、Jellyfin 字幕開關（remember::sync 每一格呼叫）
+pub fn remember(last: &mut super::settings::LastChoices) {
+    last.play_rate = RATE.load(Ordering::Relaxed) as f64 / 100.0;
+    last.jf_subs = JF_SUBS.load(Ordering::Relaxed);
+}
 
 pub struct Viewer {
     /// 上一個 / 下一個切換的清單（同類：截圖或錄影，最新的在前）
@@ -131,7 +146,7 @@ impl Remote {
             id: id.to_string(),
             user: user.to_string(),
             subs,
-            subs_on: true,
+            subs_on: JF_SUBS.load(Ordering::Relaxed),
             file_name: file_name.to_string(),
             saved: Some(std::time::Instant::now()),
             resume: 0.0,
@@ -1865,6 +1880,7 @@ fn video_bar(v: &mut Viewer, ui: &mut egui::Ui, act: &mut Act) {
             if let Some(r) = v.remote.as_mut() {
                 r.subs_on = !on;
             }
+            JF_SUBS.store(!on, Ordering::Relaxed);
         }
     }
     // 擷取這一格（跟目前的畫面有關，放在進度列旁邊；全螢幕時也按得到）

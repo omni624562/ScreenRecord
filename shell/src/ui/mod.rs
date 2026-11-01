@@ -25,6 +25,7 @@ pub mod ocr;
 pub mod playback;
 pub mod presets;
 pub mod preview;
+mod remember;
 pub mod replay;
 pub mod schedule;
 pub mod settings;
@@ -358,6 +359,8 @@ impl UiApp {
         let saved = core.settings.load();
         let s = UiSettings::from_saved(saved.ui.as_ref(), &env);
         playback::load_sound(s.play_volume, s.play_muted);
+        editor::restore_last(&s.last);
+        viewer::restore_last(&s.last);
         // 視窗還沒顯示：先放到螢幕上看得到的位置（扣掉工作列）
         let start_max = place_window(cc, s.window);
         let status = core.status();
@@ -476,6 +479,7 @@ impl UiApp {
             let saved = app.core.settings.load();
             let (s, notes) = UiSettings::from_saved_noted(saved.ui.as_ref(), &app.env);
             app.s = s;
+            remember::restore(app);
             // 上次選的螢幕沒接上等：說明改成什麼（並存回設定，系統匣、快速鍵開始的錄影也用新的）
             if !notes.is_empty() {
                 app.toast(notes.join("\n"), false);
@@ -942,6 +946,7 @@ impl UiApp {
             self.settings_rev = saved.rev;
             if saved.ui.is_some() {
                 self.s = UiSettings::from_saved(saved.ui.as_ref(), &self.env);
+                remember::restore(self);
             }
             self.presets = saved.presets;
         }
@@ -1713,6 +1718,8 @@ impl eframe::App for UiApp {
             self.s.play_muted = muted;
             self.save_settings();
         }
+        // 排序、篩選、分頁等上次的選擇：有改就存
+        remember::sync(self);
         self.flush_settings();
         self.flush_pending();
         self.refresh_recent_if_stale(ctx);

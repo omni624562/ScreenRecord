@@ -42,40 +42,31 @@ enum Try {
 fn items(_app: &UiApp) -> Vec<(String, String, Try)> {
     vec![
         (
-            tr!("標註範本", "Annotation templates").into(),
+            tr!("記住上次的選擇", "Remembers your last choices").into(),
             tr!(
-                "剪輯或截圖編輯的「標註」分頁：把畫面上的幾個標註（例如紅框＋說明文字）存成範本，之後在別支影片、截圖一按就放上去，位置、大小、顏色都一樣。",
-                "In the Annotations tab of the editor: save the annotations on screen (for example a red box with a note) as a template, then add them to another video or screenshot with one click, in the same place, size and color."
+                "檔案庫的排序、篩選與 Jellyfin「依這些找」勾的條件，剪輯視窗的分頁、標註的顏色大小、字幕選項，播放速度、壓縮大小等，重開程式後照樣用，不用每次重選。",
+                "Library sorting and filters, the people, tags and years picked in Jellyfin, the editor's tab, annotation colors and sizes, subtitle options, playback speed, compression size and more stay as you left them after restarting."
             )
             .into(),
             Try::Library(false),
         ),
         (
-            tr!("在每次點擊的地方加上圓框", "Circle every click").into(),
+            tr!("截得到本程式的畫面", "Capture this app's own windows").into(),
             tr!(
-                "錄影時有記下點擊（「點擊、按鍵」）的影片，剪輯時在「標註」分頁按一下，每次點擊的地方都會加上淡入淡出的圓框，做教學影片不用一個一個放。",
-                "For recordings with clicks recorded (“Clicks and keys”), one click in the Annotations tab adds a fading circle at every click, so tutorials don't need them placed one by one."
+                "用快速鍵、系統匣選單或延遲截圖時不再縮小本程式的視窗，剪輯視窗、檔案庫、設定都截得到；從主畫面的按鈕截圖時才縮小主畫面。",
+                "Shortcuts, the tray menu and delayed screenshots no longer minimize this app, so the editor, library and settings can be captured. Only the main window's own screenshot buttons hide the main window."
             )
             .into(),
-            Try::None,
+            Try::Settings(Page::Keys),
         ),
         (
-            tr!("影片標註可以複製、貼上", "Copy and paste annotations in videos").into(),
+            tr!("公司網路也能下載", "Downloads on company networks").into(),
             tr!(
-                "選取標註後 Ctrl+C、Ctrl+V 貼到播放位置，或 Ctrl+D 直接在播放位置再做一份；數字鍵 1～0 選工具。",
-                "Select an annotation and press Ctrl+C, then Ctrl+V to paste it at the playhead, or Ctrl+D to duplicate it there. Number keys 1–0 pick tools."
+                "檢查新版本、下載 FFmpeg、語音模型連不上時，改用 Windows 的連線設定再試一次，和瀏覽器一樣支援公司的 Proxy 自動設定與帳號驗證。",
+                "When checking for updates or downloading FFmpeg and speech models fails, the app retries with Windows' own connection settings, which handle company proxy auto-configuration and sign-in just like your browser."
             )
             .into(),
-            Try::None,
-        ),
-        (
-            tr!("新的標註跟著上一個", "New annotations follow the last one").into(),
-            tr!(
-                "同一種標註會沿用上一個的出現長度和出現方式（淡入淡出、放大出現）：調好一個，接下來放的都一樣。",
-                "Annotations of the same kind reuse the previous one's length and appear animation: set it once and the rest follow."
-            )
-            .into(),
-            Try::None,
+            Try::Settings(Page::Components),
         ),
     ]
 }

@@ -222,6 +222,9 @@ pub struct UiSettings {
     pub jf_path: Vec<(String, String)>,
     /// 檔案庫「Jellyfin」分頁上次選的篩選（JfFilter::ALL 的第幾個：全部、還沒看過、看到一半、我的最愛）
     pub jf_filter: u8,
+    /// 檔案庫「Jellyfin」分頁上次勾的「依這些找」條件（人物、標籤、年份），下次開啟照樣用
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub jf_facet: Vec<screenrecorder_core::jellyfin::JfFacet>,
     /// 只錄聲音時另存一份 M4A（core 的 after_record.rs 讀這個欄位）
     pub audio_m4a: bool,
     /// 外觀："system"（跟著 Windows）、"light"、"dark"
@@ -236,6 +239,9 @@ pub struct UiSettings {
     pub tours_done: Vec<String>,
     /// 剪輯視窗、截圖編輯、全部截圖第一次開啟時顯示短提示（新安裝或按了「重新看教學」才開）
     pub tips: bool,
+    /// 上次的操作選擇（排序、篩選、分頁、工具的顏色大小…）：下次開啟照樣用
+    #[serde(default)]
+    pub last: LastChoices,
     /// 影片資訊用過的類型（按一下就能再用；最近用的在前，最多 RECENT_GENRES 個）
     pub genres: Vec<String>,
     /// Jellyfin 影片資訊釘選的人物、標籤（永遠排在常用的最前面）
@@ -269,6 +275,92 @@ pub const UI_SCALES: [u32; 4] = [100, 110, 125, 150];
 pub const WINDOW_SIZE: (f32, f32) = (1280.0, 900.0 + super::title_bar::TITLE_H);
 /// 主畫面（加上標題列）至少要這麼大（點）才放得下：視窗的最小大小；螢幕放大後比這個小的介面大小不能選
 pub const UI_MIN_SIZE: (f32, f32) = (960.0, 520.0 + super::title_bar::TITLE_H);
+
+/// 上次的操作選擇：檔案庫的排序與篩選、剪輯視窗的分頁與工具、播放速度、壓縮的大小……下次開啟照樣用。
+/// 整組存在設定的 "last"；舊版的設定沒有、新版加的欄位缺少時用預設值（和第一次開啟時一樣）。
+/// 讀到不合理的值時，用的地方換成預設的
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct LastChoices {
+    /// 檔案庫「錄影」「截圖」分頁的排序（各自記）、「錄影」的篩選
+    pub lib_video_sort: screenrecorder_core::types::LibrarySort,
+    pub lib_shot_sort: screenrecorder_core::types::LibrarySort,
+    pub lib_video_filter: screenrecorder_core::types::LibraryFilter,
+    /// 檔案庫只看有星號的
+    pub lib_pinned: bool,
+    /// 全部截圖左邊的瀏覽欄開著
+    pub lib_browse: bool,
+    /// 清理舊截圖：幾天以前的
+    pub cleanup_days: u32,
+    /// 找相似的截圖：多像才算（0 寬鬆、1 一般、2 嚴格）
+    pub similar_level: u8,
+    /// 合併成一支：畫質（None = 保留原本的畫質）
+    pub merge_quality: Option<screenrecorder_core::args::Quality>,
+    /// 拼成一張：直的排、間隔
+    pub combine_vertical: bool,
+    pub combine_spacing: u8,
+    /// 剪輯視窗右側的分頁（影片、截圖各自記；Tab::key 的名稱）與右側面板開著
+    pub ed_tab: String,
+    pub shot_tab: String,
+    pub ed_side_open: bool,
+    /// 每種標註上次用的顏色與大小（大小以 1080 高的畫面為準）
+    pub tool_styles: Vec<(screenrecorder_core::annotate::AnnKind, String, f64)>,
+    /// 字幕分頁：語言、語音模型（檔名）、輸出（說的語言 / 英文 / 雙語）
+    pub subs_lang: usize,
+    pub subs_model: String,
+    pub subs_out: usize,
+    /// 匯出逐字稿：加上時間、去掉贅字
+    pub transcript_time: bool,
+    pub transcript_clean: bool,
+    /// 清掉空白：沒動靜、沒聲音、贅字
+    pub clean_kinds: [bool; 3],
+    /// 播放時也看得到刪掉的部分
+    pub show_removed: bool,
+    /// 截圖編輯存成 JPG
+    pub shot_jpg: bool,
+    /// 播放速度（0.5～2）、Jellyfin 影片的字幕開著
+    pub play_rate: f64,
+    pub jf_subs: bool,
+    /// 壓縮：大小上限（MB）、依畫質壓縮時的畫質
+    pub compress_mb: u32,
+    pub compress_quality: screenrecorder_core::args::Quality,
+    /// 從標題列開啟設定時停在哪一頁（settings_dialog::PAGES 的第幾個）
+    pub settings_page: u8,
+}
+
+impl Default for LastChoices {
+    fn default() -> Self {
+        Self {
+            lib_video_sort: Default::default(),
+            lib_shot_sort: Default::default(),
+            lib_video_filter: Default::default(),
+            lib_pinned: false,
+            lib_browse: true,
+            cleanup_days: 90,
+            similar_level: 1,
+            merge_quality: None,
+            combine_vertical: false,
+            combine_spacing: 1,
+            ed_tab: String::new(),
+            shot_tab: String::new(),
+            ed_side_open: true,
+            tool_styles: vec![],
+            subs_lang: 0,
+            subs_model: String::new(),
+            subs_out: 0,
+            transcript_time: true,
+            transcript_clean: true,
+            clean_kinds: [true; 3],
+            show_removed: false,
+            shot_jpg: false,
+            play_rate: 1.0,
+            jf_subs: true,
+            compress_mb: 25,
+            compress_quality: screenrecorder_core::args::Quality::Standard,
+            settings_page: 0,
+        }
+    }
+}
 
 /// 自訂範圍跟著的視窗
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -465,6 +557,7 @@ impl UiSettings {
             jf_path: o.get("jfPath").and_then(|v| serde_json::from_value::<Vec<(String, String)>>(v.clone()).ok()).unwrap_or_default(),
             jf_sort: num("jfSort").map(|v| v as u8).filter(|v| (*v as usize) < screenrecorder_core::jellyfin::JfSort::ALL.len()).unwrap_or(0),
             jf_filter: num("jfFilter").map(|v| v as u8).filter(|v| (*v as usize) < screenrecorder_core::jellyfin::JfFilter::ALL.len()).unwrap_or(0),
+            jf_facet: o.get("jfFacet").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default(),
             audio_m4a: screenrecorder_core::after_record::audio_m4a(v),
             theme: string("theme").filter(|v| ["light", "dark"].contains(&v.as_str())).unwrap_or_else(|| "system".into()),
             hide_notice_shown: boolean("hideNoticeShown").unwrap_or(false),
@@ -472,6 +565,7 @@ impl UiSettings {
             tour_step: num("tourStep").map(|v| v as u32).filter(|v| *v <= 50).unwrap_or(0),
             tours_done: o.get("toursDone").and_then(|v| serde_json::from_value::<Vec<String>>(v.clone()).ok()).unwrap_or_default(),
             tips: boolean("tips").unwrap_or(false),
+            last: o.get("last").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default(),
             jf_pin_people: names("jfPinPeople"),
             jf_pin_tags: names("jfPinTags"),
             jf_pin_genres: names("jfPinGenres"),
@@ -764,6 +858,56 @@ mod tests {
         let bad = serde_json::json!({ "fps": 7.5, "scale": 33, "countdownSec": 4, "gifWidth": 1 });
         let s = UiSettings::from_saved(Some(&bad), &env());
         assert_eq!((s.fps, s.scale, s.countdown_sec, s.gif_width), (30.0, 100, 3, 640));
+    }
+
+    #[test]
+    fn remembers_last_choices() {
+        use screenrecorder_core::jellyfin::JfFacet;
+        let mut s = UiSettings::from_saved(None, &env());
+        assert!(s.jf_facet.is_empty());
+        // 沒勾條件時不寫這個欄位
+        assert!(s.to_value().get("jfFacet").is_none());
+        s.jf_facet = vec![JfFacet::Person("p1".into(), "小明".into()), JfFacet::Tag("旅行".into()), JfFacet::Year(2024), JfFacet::NoTags];
+        // 存回去再讀：相同
+        assert_eq!(UiSettings::from_saved(Some(&s.to_value()), &env()), s);
+        // 看不懂的（舊版、改壞的）當成沒勾
+        let bad = serde_json::json!({ "jfFacet": [{ "Unknown": 1 }] });
+        assert!(UiSettings::from_saved(Some(&bad), &env()).jf_facet.is_empty());
+    }
+
+    #[test]
+    fn last_choices_round_trip() {
+        use screenrecorder_core::types::{LibraryFilter, LibrarySort};
+        // 舊版的設定沒有 last：和第一次開啟一樣
+        let s = UiSettings::from_saved(Some(&serde_json::json!({ "fps": 30 })), &env());
+        assert_eq!(s.last, LastChoices::default());
+        assert!(s.last.lib_browse && s.last.ed_side_open && s.last.jf_subs);
+        assert_eq!((s.last.cleanup_days, s.last.compress_mb, s.last.play_rate), (90, 25, 1.0));
+        // 改過的存回去再讀：相同
+        let mut s = s;
+        s.last = LastChoices {
+            lib_video_sort: LibrarySort::Size,
+            lib_shot_sort: LibrarySort::Old,
+            lib_video_filter: LibraryFilter::Cut,
+            lib_pinned: true,
+            lib_browse: false,
+            ed_tab: "ann".into(),
+            ed_side_open: false,
+            tool_styles: vec![(screenrecorder_core::annotate::AnnKind::Text, "#ffffff".into(), 48.0)],
+            subs_model: "ggml-small.bin".into(),
+            clean_kinds: [true, false, true],
+            play_rate: 1.5,
+            jf_subs: false,
+            compress_mb: 50,
+            settings_page: 3,
+            ..Default::default()
+        };
+        assert_eq!(UiSettings::from_saved(Some(&s.to_value()), &env()).last, s.last);
+        // 只有一部分欄位（新版加的欄位舊設定沒有）：其他用預設
+        let part = serde_json::json!({ "last": { "libPinned": true } });
+        let s = UiSettings::from_saved(Some(&part), &env());
+        assert!(s.last.lib_pinned && s.last.lib_browse);
+        assert_eq!(s.last.compress_mb, 25);
     }
 
     #[test]
