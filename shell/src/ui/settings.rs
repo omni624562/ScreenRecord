@@ -222,6 +222,9 @@ pub struct UiSettings {
     pub jf_path: Vec<(String, String)>,
     /// 檔案庫「Jellyfin」分頁上次選的篩選（JfFilter::ALL 的第幾個：全部、還沒看過、看到一半、我的最愛）
     pub jf_filter: u8,
+    /// 檔案庫「Jellyfin」分頁上次勾的「依這些找」條件（人物、標籤、年份），下次開啟照樣用
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub jf_facet: Vec<screenrecorder_core::jellyfin::JfFacet>,
     /// 只錄聲音時另存一份 M4A（core 的 after_record.rs 讀這個欄位）
     pub audio_m4a: bool,
     /// 外觀："system"（跟著 Windows）、"light"、"dark"
@@ -465,6 +468,7 @@ impl UiSettings {
             jf_path: o.get("jfPath").and_then(|v| serde_json::from_value::<Vec<(String, String)>>(v.clone()).ok()).unwrap_or_default(),
             jf_sort: num("jfSort").map(|v| v as u8).filter(|v| (*v as usize) < screenrecorder_core::jellyfin::JfSort::ALL.len()).unwrap_or(0),
             jf_filter: num("jfFilter").map(|v| v as u8).filter(|v| (*v as usize) < screenrecorder_core::jellyfin::JfFilter::ALL.len()).unwrap_or(0),
+            jf_facet: o.get("jfFacet").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default(),
             audio_m4a: screenrecorder_core::after_record::audio_m4a(v),
             theme: string("theme").filter(|v| ["light", "dark"].contains(&v.as_str())).unwrap_or_else(|| "system".into()),
             hide_notice_shown: boolean("hideNoticeShown").unwrap_or(false),
@@ -764,6 +768,21 @@ mod tests {
         let bad = serde_json::json!({ "fps": 7.5, "scale": 33, "countdownSec": 4, "gifWidth": 1 });
         let s = UiSettings::from_saved(Some(&bad), &env());
         assert_eq!((s.fps, s.scale, s.countdown_sec, s.gif_width), (30.0, 100, 3, 640));
+    }
+
+    #[test]
+    fn remembers_last_choices() {
+        use screenrecorder_core::jellyfin::JfFacet;
+        let mut s = UiSettings::from_saved(None, &env());
+        assert!(s.jf_facet.is_empty());
+        // 沒勾條件時不寫這個欄位
+        assert!(s.to_value().get("jfFacet").is_none());
+        s.jf_facet = vec![JfFacet::Person("p1".into(), "小明".into()), JfFacet::Tag("旅行".into()), JfFacet::Year(2024), JfFacet::NoTags];
+        // 存回去再讀：相同
+        assert_eq!(UiSettings::from_saved(Some(&s.to_value()), &env()), s);
+        // 看不懂的（舊版、改壞的）當成沒勾
+        let bad = serde_json::json!({ "jfFacet": [{ "Unknown": 1 }] });
+        assert!(UiSettings::from_saved(Some(&bad), &env()).jf_facet.is_empty());
     }
 
     #[test]

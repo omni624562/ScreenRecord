@@ -1556,8 +1556,8 @@ impl Trickplay {
     }
 }
 
-/// Jellyfin 分頁「依這些找」的一個條件：人物（編號, 名稱）、標籤、年份
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Jellyfin 分頁「依這些找」的一個條件：人物（編號, 名稱）、標籤、年份（記在設定的 jfFacet，下次開啟照樣用）
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum JfFacet {
     Person(String, String),
     Tag(String),
