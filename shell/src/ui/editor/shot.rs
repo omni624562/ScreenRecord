@@ -277,7 +277,9 @@ fn res_cap(w: u32, h: u32) -> f64 {
 /// 圖還在讀的編輯視窗（只有檔名）
 fn loading_editor(app: &UiApp, path: &str, seq: u64) -> Editor {
     let entry = LibraryEntry { media: MediaInfo { path: path.to_string(), name: file_name(path), ..Default::default() }, exports: vec![], hits: vec![] };
-    let mut ed = Editor::base(app, entry, PathBuf::new(), Pl(None), Tab::Ann);
+    // 上次的分頁（截圖有標註、裁切與旋轉、外觀與輸出）
+    let tab = Tab::from_key(&app.s.last.shot_tab).filter(|t| [Tab::Ann, Tab::Crop, Tab::Output].contains(t)).unwrap_or(Tab::Ann);
+    let mut ed = Editor::base(app, entry, PathBuf::new(), Pl(None), tab);
     ed.duration = 1.0;
     ed.fps = 1.0;
     ed.spec = EditSpec { start: 0.0, end: 1.0, removed: vec![], crop: None, overlays: vec![], ..Default::default() };
@@ -285,7 +287,8 @@ fn loading_editor(app: &UiApp, path: &str, seq: u64) -> Editor {
     let empty = Frame { time: 0.0, width: 0, height: 0, rgba: vec![] };
     ed.shot = Some(Shot {
         path: path.to_string(),
-        opts: ShotOpts::default(),
+        // 上次選了存成 JPG：這次也是
+        opts: ShotOpts { jpg: app.s.last.shot_jpg, ..ShotOpts::default() },
         opened_edit: None,
         target: None,
         preview: None,
@@ -399,7 +402,8 @@ fn apply_spec(ed: &mut Editor, spec: &ShotSpec) {
             background: spec.background.clone(),
             padding: spec.padding,
             width: spec.width,
-            jpg: false,
+            // 存成 JPG 不是編輯的一部分：沿用目前的選擇
+            jpg: s.opts.jpg,
         };
     }
     sync_rotation(ed);

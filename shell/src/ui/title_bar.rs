@@ -5,7 +5,7 @@
 
 use super::main_view::{self, ShotAct};
 use super::settings::UI_MIN_SIZE;
-use super::settings_dialog::{self, Page};
+use super::settings_dialog;
 use super::theme::{self, Btn, Icon};
 use super::UiApp;
 use eframe::egui::{self, vec2, Align, Color32, Id, Layout, Order, PointerButton, Rect, Response, RichText, Sense, Stroke, Ui, UiBuilder, Vec2, ViewportCommand};
@@ -104,7 +104,7 @@ pub fn leave_compact(app: &mut UiApp, ctx: &egui::Context) {
 pub fn tick(app: &mut UiApp, ctx: &egui::Context) {
     // Ctrl+,：開啟設定（總選單裡「設定」旁邊寫的快速鍵）
     if app.settings_dlg.is_none() && app.ask.is_none() && app.snip.is_none() && ctx.input_mut(|i| i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::Comma))) {
-        settings_dialog::open(app, Page::General);
+        settings_dialog::open_last(app);
     }
     if app.compact.is_some() && needs_full(app) {
         leave_compact(app, ctx);
@@ -266,7 +266,7 @@ fn main_menu(app: &mut UiApp, ui: &mut Ui, covered: bool) {
     }
     ui.separator();
     if menu_item(ui, Icon::Settings, tr!("設定", "Settings"), Some("Ctrl+,"), false, app.ask.is_none()).clicked() {
-        settings_dialog::open(app, Page::General);
+        settings_dialog::open_last(app);
     }
     ui.separator();
     // 說明

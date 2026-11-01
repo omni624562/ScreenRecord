@@ -16,6 +16,7 @@ mod timeline;
 mod voice;
 
 use super::dialogs::file_name;
+use super::settings::LastChoices;
 use super::theme::{self, Btn, Icon};
 use super::tour::{self, Spot};
 use super::UiApp;
@@ -33,7 +34,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -41,9 +42,7 @@ use std::time::Instant;
 const DECODE_MAX: (u32, u32) = (1280, 720);
 /// 開啟的序號：查詢專案回來時已經換了影片就不套用
 static OPEN_SEQ: AtomicU64 = AtomicU64::new(0);
-/// 右側顯示的分頁（下次開啟時沿用）
-static LAST_TAB: AtomicU8 = AtomicU8::new(0);
-/// 右側面板開啟著（可以收起來讓影片變大；下次開啟時沿用）
+/// 右側面板開啟著（可以收起來讓影片變大；下次開啟、重開程式都沿用：設定的 last.edSideOpen）
 static SIDE_OPEN: AtomicBool = AtomicBool::new(true);
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -61,6 +60,27 @@ pub enum Tab {
     Subs,
     /// 影片：聲音處理
     Audio,
+}
+
+impl Tab {
+    const ALL: [Tab; 7] = [Tab::Time, Tab::Speed, Tab::Crop, Tab::Ann, Tab::Output, Tab::Subs, Tab::Audio];
+
+    /// 記在設定裡的名稱（上次的分頁）
+    fn key(self) -> &'static str {
+        match self {
+            Tab::Time => "time",
+            Tab::Speed => "speed",
+            Tab::Crop => "crop",
+            Tab::Ann => "ann",
+            Tab::Output => "output",
+            Tab::Subs => "subs",
+            Tab::Audio => "audio",
+        }
+    }
+
+    fn from_key(k: &str) -> Option<Tab> {
+        Tab::ALL.into_iter().find(|t| t.key() == k)
+    }
 }
 
 /// 剪輯視窗自己用的資料：和 ProjectData 存在同一個 JSON 裡（剪輯專案、草稿、復原 / 重做）
@@ -625,14 +645,28 @@ pub fn cut_ended(app: &mut UiApp, e: &screenrecorder_core::types::ExportStatus) 
 type CursorTex = (u32, TextureHandle, (i32, i32), (u32, u32));
 
 impl Editor {
+    /// 記下這次的分頁與選項（remember::sync 每一格呼叫）：影片和截圖的分頁各自記
+    pub fn remember(&self, last: &mut LastChoices) {
+        if let Some(shot) = &self.shot {
+            last.shot_tab = self.tab.key().into();
+            // 取代原檔時不能存成 JPG，不算
+            if self.replace_target.is_none() {
+                last.shot_jpg = shot.opts().jpg;
+            }
+            return;
+        }
+        last.ed_tab = self.tab.key().into();
+        last.subs_lang = self.subs_lang;
+        last.subs_model = screenrecorder_core::subtitles::MODELS.get(self.subs_model).map(|m| m.file.to_string()).unwrap_or_default();
+        last.subs_out = self.subs_out;
+        (last.transcript_time, last.transcript_clean) = (self.transcript_time, self.transcript_clean);
+        last.clean_kinds = self.clean_kinds;
+        last.show_removed = self.show_removed;
+    }
+
     fn new(app: &UiApp, e: LibraryEntry, ffmpeg: PathBuf, info: Option<EditProject>, marks: screenrecorder_core::recorder::Marks) -> Editor {
-        let tab = match LAST_TAB.load(Ordering::Relaxed) {
-            1 => Tab::Crop,
-            2 => Tab::Ann,
-            4 => Tab::Subs,
-            5 => Tab::Audio,
-            _ => Tab::Time,
-        };
+        // 上次的分頁（「外觀與輸出」只有截圖有）
+        let tab = Tab::from_key(&app.s.last.ed_tab).filter(|t| *t != Tab::Output).unwrap_or(Tab::Time);
         let player = Pl(Some(make_player(&app.ctx, &ffmpeg, &e)));
         let mut ed = Editor::base(app, e.clone(), ffmpeg, player, tab);
         // 錄影時記下的標記、點擊、游標（載入專案前先設好：專案裡改過的標記會蓋過去）
@@ -723,7 +757,7 @@ impl Editor {
             out_path: None,
             out_auto: None,
             save_now: false,
-            show_removed: false,
+            show_removed: app.s.last.show_removed,
             reset_toast: false,
             clicks: vec![],
             zooms: vec![],
@@ -737,8 +771,8 @@ impl Editor {
             cursor_hide: false,
             speed_target: String::new(),
             sel_speed: 1.5,
-            transcript_time: true,
-            transcript_clean: true,
+            transcript_time: app.s.last.transcript_time,
+            transcript_clean: app.s.last.transcript_clean,
             zoom_pick: false,
             zoom_from: None,
             cursor_idle: vec![],
@@ -750,14 +784,18 @@ impl Editor {
             ann_styles: app.s.ann_styles.clone(),
             ann_templates: app.s.ann_templates.clone(),
             subs: None,
-            subs_lang: 0,
-            subs_model: screenrecorder_core::subtitles::MODELS.iter().rposition(screenrecorder_core::subtitles::model_ready).unwrap_or(0),
-            subs_out: 0,
+            subs_lang: app.s.last.subs_lang.min(screenrecorder_core::subtitles::LANGUAGES.len() - 1),
+            // 上次用的模型（還在的話），不然用下載好的最好的那一個
+            subs_model: {
+                use screenrecorder_core::subtitles::{model_ready, MODELS};
+                MODELS.iter().position(|m| m.file == app.s.last.subs_model && model_ready(m)).or_else(|| MODELS.iter().rposition(model_ready)).unwrap_or(0)
+            },
+            subs_out: app.s.last.subs_out.min(2),
             ffmpeg_whisper: app.env.ffmpeg.has_whisper,
             finding_pii: false,
             finding_idle: false,
             idle_found: None,
-            clean_kinds: [true; 3],
+            clean_kinds: app.s.last.clean_kinds,
             fast_from: None,
             shuttle: 0,
             shuttle_at: None,
@@ -2437,7 +2475,7 @@ pub fn is_emoji_text(t: &str) -> bool {
     EMOJIS.contains(&t)
 }
 
-/// 每種標註上次用的顏色與大小（大小以 1080 高的畫面為準）：新放的沿用，程式執行期間都記得
+/// 每種標註上次用的顏色與大小（大小以 1080 高的畫面為準）：新放的沿用，重開程式也記得（設定的 last.toolStyles）
 static TOOL_STYLE: std::sync::LazyLock<std::sync::Mutex<HashMap<AnnKind, (String, f64)>>> = std::sync::LazyLock::new(Default::default);
 
 /// 新標註的顏色與大小（vh = 大小的基準，Editor::size_base）
@@ -2452,6 +2490,22 @@ pub fn style_of(kind: AnnKind, vh: f64) -> (String, f64) {
         _ => COLORS[0],
     };
     (color.into(), annotate::default_size(kind, vh))
+}
+
+/// 啟動時還原上次的右側面板、每種標註的顏色與大小
+pub fn restore_last(last: &LastChoices) {
+    SIDE_OPEN.store(last.ed_side_open, Ordering::Relaxed);
+    let styles = last.tool_styles.iter().filter(|(_, c, s)| !c.is_empty() && s.is_finite() && *s > 0.0).map(|(k, c, s)| (*k, (c.clone(), *s)));
+    *TOOL_STYLE.lock().unwrap_or_else(|e| e.into_inner()) = styles.collect();
+}
+
+/// 記下右側面板、每種標註的顏色與大小（remember::sync 每一格呼叫）
+pub fn remember_statics(last: &mut LastChoices) {
+    last.ed_side_open = SIDE_OPEN.load(Ordering::Relaxed);
+    let mut styles: Vec<_> = TOOL_STYLE.lock().unwrap_or_else(|e| e.into_inner()).iter().map(|(k, (c, s))| (*k, c.clone(), *s)).collect();
+    // HashMap 的順序每次不同：排好才比得出有沒有改
+    styles.sort_by(|a, b| format!("{:?}", a.0).cmp(&format!("{:?}", b.0)));
+    last.tool_styles = styles;
 }
 
 /// 記住這種標註的顏色與大小（之後新放的沿用）
@@ -2777,9 +2831,6 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
     }
     if let Some((t, err)) = toast {
         app.toast(t, err);
-    }
-    if !ed.is_shot() {
-        LAST_TAB.store(ed.tab as u8, Ordering::Relaxed);
     }
     ed.typing = ctx.egui_wants_keyboard_input();
     if std::mem::take(&mut ed.discard_draft) {
@@ -3837,7 +3888,15 @@ fn ann_color(a: &Ann) -> Color32 {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_time;
+    use super::{parse_time, Tab};
+
+    #[test]
+    fn tab_keys_round_trip() {
+        for t in Tab::ALL {
+            assert!(Tab::from_key(t.key()) == Some(t), "{}", t.key());
+        }
+        assert!(Tab::from_key("").is_none() && Tab::from_key("x").is_none());
+    }
 
     #[test]
     fn video_tool_keys_are_unique() {

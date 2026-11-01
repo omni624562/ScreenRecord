@@ -14,7 +14,6 @@ use screenrecorder_core::format::{
 };
 use screenrecorder_core::types::{ExportFormat, ExportInfo, LibraryEntry};
 use screenrecorder_core::{tr, trf};
-use std::sync::atomic::{AtomicU32, Ordering};
 
 const SPEED_PRESETS: [f64; 5] = [1.5, 2.0, 4.0, 8.0, 16.0];
 const TARGET_PRESETS: [&str; 4] = ["0:30", "1:00", "3:00", "5:00"];
@@ -22,8 +21,6 @@ const TARGET_PRESETS: [&str; 4] = ["0:30", "1:00", "3:00", "5:00"];
 const TOO_SHORT_SEC: f64 = 3.0;
 /// 壓縮可選的大小上限（MB）
 const COMPRESS_MB: [u32; 4] = [10, 25, 50, 100];
-/// 上次壓縮選的大小上限（這次開啟程式期間記住；不影響加速版的大小上限）
-static LAST_COMPRESS_MB: AtomicU32 = AtomicU32::new(25);
 
 /// 要做哪一種
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -114,7 +111,8 @@ impl ExportDialog {
         if mode == Mode::Speed && o.speed < SPEED_MIN {
             o.speed = 4.0;
         }
-        let compress_mb = if compress && COMPRESS_MB.contains(&s.mp4_max_mb) { s.mp4_max_mb } else { LAST_COMPRESS_MB.load(Ordering::Relaxed) };
+        let last_mb = if COMPRESS_MB.contains(&s.last.compress_mb) { s.last.compress_mb } else { 25 };
+        let compress_mb = if compress && COMPRESS_MB.contains(&s.mp4_max_mb) { s.mp4_max_mb } else { last_mb };
         // 大檔案（例如合併後、手機拍的）預設依畫質縮小；小的預設壓縮到傳得出去的大小
         let by_quality = entry.media.bytes > 100 * 1024 * 1024;
         Self {
@@ -123,7 +121,7 @@ impl ExportDialog {
             o,
             compress_mb,
             by_quality,
-            quality: Quality::Standard,
+            quality: s.last.compress_quality,
             speed_text: String::new(),
             speed_focus: false,
             body_h: 0.0,
@@ -160,7 +158,11 @@ impl ExportDialog {
         s.keep_audio = o.keep_audio;
         s.mp4_width = o.mp4_width;
         if self.mode == Mode::Compress {
-            LAST_COMPRESS_MB.store(self.compress_mb, Ordering::Relaxed);
+            if self.by_quality {
+                s.last.compress_quality = self.quality;
+            } else {
+                s.last.compress_mb = self.compress_mb;
+            }
             return;
         }
         s.export_mode = o.export_mode;
