@@ -77,31 +77,38 @@ fn tabs(ed: &mut Editor, ui: &mut egui::Ui) {
             (tab, g, extra)
         })
         .collect();
-    // 放不下時縮小左右留白（五個分頁、英文介面）
-    let natural: f32 = galleys.iter().map(|(_, g, e)| g.size().x + e.as_ref().map(|e| e.size().x + 4.0).unwrap_or(0.0)).sum();
-    let pad = ((ui.available_width() - natural - 2.0 * (galleys.len() as f32 - 1.0)) / galleys.len() as f32 / 2.0).clamp(5.0, 14.0);
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 2.0;
-        for (tab, g, extra) in galleys {
-            let on = ed.tab == tab;
-            let w = g.size().x + extra.as_ref().map(|e| e.size().x + 4.0).unwrap_or(0.0) + pad * 2.0;
-            let (r, resp) = ui.allocate_exact_size(vec2(w, 32.0), Sense::click());
-            let y = r.center().y - g.size().y / 2.0;
-            let gw = g.size().x;
-            ui.painter().galley(pos2(r.left() + pad, y), g, p.text);
-            if let Some(extra) = extra {
-                ui.painter().galley(pos2(r.left() + pad + 4.0 + gw, y), extra, p.accent);
-            }
-            if on {
-                ui.painter().hline(r.x_range(), r.bottom() - 1.0, Stroke::new(2.0, p.accent));
-            }
-            if resp.on_hover_cursor(CursorIcon::PointingHand).clicked() {
-                ed.tab = tab;
-            }
+    // 和下面的內容同寬（內容右邊留 6 給捲軸）：第一個分頁的字對齊內容左邊、最後一個對齊右邊，中間平均分開；
+    // 太寬時間隔最多 28，放不下時（英文介面）最少 6
+    let width = ui.available_width() - 6.0;
+    let label_w = |g: &std::sync::Arc<egui::Galley>, e: &Option<std::sync::Arc<egui::Galley>>| g.size().x + e.as_ref().map(|e| e.size().x + 4.0).unwrap_or(0.0);
+    let natural: f32 = galleys.iter().map(|(_, g, e)| label_w(g, e)).sum();
+    let gap = ((width - natural) / (galleys.len() as f32 - 1.0).max(1.0)).clamp(6.0, 28.0);
+    let (row, _) = ui.allocate_exact_size(vec2(width, 32.0), Sense::hover());
+    let mut x = row.left();
+    let last = galleys.len() - 1;
+    for (i, (tab, g, extra)) in galleys.into_iter().enumerate() {
+        let on = ed.tab == tab;
+        let lw = label_w(&g, &extra);
+        // 按得到的範圍：字的左右各加半個間隔（頭尾到這一列的邊）
+        let left = if i == 0 { row.left() } else { x - gap / 2.0 };
+        let right = if i == last { row.right().max(x + lw) } else { x + lw + gap / 2.0 };
+        let r = egui::Rect::from_x_y_ranges(left..=right, row.y_range());
+        let resp = ui.interact(r, ui.id().with(("ed-tab", i)), Sense::click());
+        let y = r.center().y - g.size().y / 2.0;
+        let gw = g.size().x;
+        ui.painter().galley(pos2(x, y), g, p.text);
+        if let Some(extra) = extra {
+            ui.painter().galley(pos2(x + 4.0 + gw, y), extra, p.accent);
         }
-    });
-    let r = ui.cursor();
-    ui.painter().hline(r.x_range(), r.top() - ui.spacing().item_spacing.y + 0.5, Stroke::new(1.0, p.border));
+        if on {
+            ui.painter().hline(x..=x + lw, r.bottom() - 1.0, Stroke::new(2.0, p.accent));
+        }
+        if resp.on_hover_cursor(CursorIcon::PointingHand).clicked() {
+            ed.tab = tab;
+        }
+        x += lw + gap;
+    }
+    ui.painter().hline(row.x_range(), row.bottom() - 0.5, Stroke::new(1.0, p.border));
 }
 
 pub(super) fn hint(ui: &mut egui::Ui, text: &str) {

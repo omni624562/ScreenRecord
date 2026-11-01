@@ -391,7 +391,7 @@ pub fn tick(app: &mut UiApp, ctx: &egui::Context) {
                     // 延遲截圖（倒數的提示；Windows 以外沒有提示）
                     Some(("delayshot", sec)) => {
                         let (core, config, sec) = (app.core.clone(), app.s.record_config(&app.env), sec.parse().unwrap_or(3));
-                        app.spawn(async move { core.snip_delayed(&config, sec).await }, |app, r| match r {
+                        app.spawn(async move { core.snip_delayed(&config, sec, screenrecorder_core::winui::ShotFrom::Button).await }, |app, r| match r {
                             Ok(Some(s)) => app.toast(format!("[dev] {}", s.path), false),
                             Ok(None) => app.toast("[dev] 取消", false),
                             Err(e) => app.toast(e.message().to_string(), true),

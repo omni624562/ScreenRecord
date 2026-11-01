@@ -2491,8 +2491,8 @@ fn components_page(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
     form_section(ui, tr!("無法下載時", "If downloads don't work"), |_| {});
     for line in [
         tr!(
-            "1. 確認已連上網路；公司網路請在上面設定 Proxy，或請 IT 放行 github.com、gyan.dev、sourceforge.net、huggingface.co。",
-            "1. Check your internet connection. On a company network, set the proxy above, or ask IT to allow github.com, gyan.dev, sourceforge.net and huggingface.co."
+            "1. 確認已連上網路；公司網路先用「跟著系統」按「測試連線」，不行再設定 Proxy，或請 IT 放行 github.com、gyan.dev、sourceforge.net、huggingface.co。",
+            "1. Check your internet connection. On a company network, first press “Test connection” with System; if that fails, set the proxy above, or ask IT to allow github.com, gyan.dev, sourceforge.net and huggingface.co."
         ),
         tr!("2. 按「用瀏覽器下載」，在瀏覽器（或另一台電腦）下載。", "2. Press “Download in browser” to download it in your browser (or on another computer)."),
         tr!(
@@ -2781,10 +2781,14 @@ fn network_section(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
         }
         "auto" => {
             let text = match screenrecorder_core::http::system_proxy() {
-                Some(px) => trf!("系統設定的 Proxy：{}", "System proxy: {}", screenrecorder_core::http::hide_password(&px)),
+                Some(px) => trf!(
+                    "系統設定的 Proxy：{}；連不上時改用 Windows 的連線設定再試（和瀏覽器一樣，含公司帳號驗證）",
+                    "System proxy: {}. If that fails, Windows' own connection settings are tried (like your browser, including company sign-in)",
+                    screenrecorder_core::http::hide_password(&px)
+                ),
                 None => tr!(
-                    "系統沒有設定 Proxy，直接連線（自動設定指令碼 PAC 不支援，請改用「自訂」）",
-                    "No system proxy is set, so connections are direct (automatic configuration scripts aren't supported; use Custom instead)"
+                    "直接連線；連不上時改用 Windows 的連線設定再試（和瀏覽器一樣，含自動設定指令碼 PAC 與公司帳號驗證）",
+                    "Direct connection. If that fails, Windows' own connection settings are tried (like your browser, including automatic configuration scripts and company sign-in)"
                 )
                 .into(),
             };

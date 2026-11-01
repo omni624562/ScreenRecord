@@ -8,6 +8,7 @@ use crate::paths::now_ms;
 use crate::settings::SettingsPatch;
 use crate::types::{AudioConfig, HotkeyStatus, Hotkeys, MethodPreference, RecordConfig, RecorderState, SourceConfig};
 use crate::version::APP_VERSION;
+use crate::winui::ShotFrom;
 use crate::{tr, trf};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -612,7 +613,7 @@ impl TrayController {
             }
             TrayCommand::ScreenshotText => {
                 let cfg = self.config();
-                let Some(l) = app.text_snip(&cfg).await.map_err(err)? else { return Ok(()) };
+                let Some(l) = app.text_snip(&cfg, ShotFrom::AsIs).await.map_err(err)? else { return Ok(()) };
                 if l.text.trim().is_empty() {
                     self.notify(tr!("只抓文字", "Grab text"), tr!("沒有認出文字（框大一點、或把畫面放大再試試）", "No text recognized (try a larger area or zoom in)"), true);
                 } else {
@@ -636,7 +637,7 @@ impl TrayController {
             }
             TrayCommand::ScreenshotScroll => {
                 let cfg = self.config();
-                let Some(shot) = app.long_shot(&cfg).await.map_err(err)? else { return Ok(()) };
+                let Some(shot) = app.long_shot(&cfg, ShotFrom::AsIs).await.map_err(err)? else { return Ok(()) };
                 self.notify_shot(&shot);
                 return Ok(());
             }
@@ -651,7 +652,7 @@ impl TrayController {
                     // 框選（延遲截圖先在畫面上倒數，可以取消）：取消時不顯示通知
                     TrayCommand::ScreenshotSelect | TrayCommand::ScreenshotDelay(_) => {
                         let sec = if let TrayCommand::ScreenshotDelay(sec) = cmd { sec } else { 0 };
-                        let Some(shot) = app.snip_delayed(&cfg, sec).await.map_err(err)? else { return Ok(()) };
+                        let Some(shot) = app.snip_delayed(&cfg, sec, ShotFrom::AsIs).await.map_err(err)? else { return Ok(()) };
                         self.notify_shot(&shot);
                         return Ok(());
                     }
@@ -663,7 +664,7 @@ impl TrayController {
                     }
                     _ => {}
                 }
-                let shot = app.screenshot(&cfg).await.map_err(err)?;
+                let shot = app.screenshot(&cfg, ShotFrom::AsIs).await.map_err(err)?;
                 self.notify_shot(&shot);
                 return Ok(());
             }
@@ -702,7 +703,7 @@ impl TrayController {
             TrayCommand::StartSelect | TrayCommand::StartLastSnip => {
                 let r = if cmd == TrayCommand::StartSelect {
                     // 取消框選時不顯示通知
-                    let Some(r) = app.select_record_region(&cfg).await.map_err(err)? else { return Ok(()) };
+                    let Some(r) = app.select_record_region(&cfg, ShotFrom::AsIs).await.map_err(err)? else { return Ok(()) };
                     r
                 } else {
                     app.last_snip().ok_or(tr!("還沒有框選過範圍", "You haven't selected an area yet"))?
