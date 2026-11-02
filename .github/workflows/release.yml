@@ -7,6 +7,11 @@
 # 其他情況（PR、版本已發佈過、手動執行沒勾 publish）只測試與建置，exe 附在該次執行上可下載試用。
 #
 # 發佈新版本：更新 Cargo.toml（workspace.package.version）與 CHANGELOG.md → 合併到 main（或推送 tag）
+#
+# 安全：
+#   - 預設只能讀 repo；建立 Release 的 release 工作才有寫入權限（測試、建置時跑的程式拿不到）
+#   - 簽章憑證只在「簽章」那一步讀得到（建置時會執行相依套件的 build script）
+#   - 外部的 Actions 固定在某個 commit（註解是對應的版本），升級時一起改 commit 與註解
 name: Release
 
 on:
@@ -26,7 +31,7 @@ on:
         default: false
 
 permissions:
-  contents: write
+  contents: read
 
 # 同一個 PR 有新推送時，取消還在跑的舊執行
 concurrency:
@@ -36,19 +41,22 @@ concurrency:
 jobs:
   build:
     runs-on: windows-latest
-    env:
-      # 步驟的 if 看不到 secrets，先放進 env 判斷有沒有設定
-      SIGN_CERT_PFX: ${{ secrets.SIGN_CERT_PFX }}
+    outputs:
+      # 要發佈的 tag（不發佈時是空的）
+      tag: ${{ steps.version.outputs.tag }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # 建置、測試時不留 GitHub 權杖在 .git/config
+          persist-credentials: false
 
       # 固定版本：新版 Rust 加入的 clippy 規則不會突然讓發佈失敗（要升級時改這裡）
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master，2026-11
         with:
           toolchain: 1.99.0
           components: clippy, rustfmt
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
       - name: 格式檢查
         run: cargo fmt --all --check
@@ -77,6 +85,7 @@ jobs:
       #   推送 tag → 那個 tag；手動勾選 publish → Cargo.toml 的版本；
       #   推送到 main → Cargo.toml 的版本，但已經發佈過就不再發佈
       - name: 決定發佈版本
+        id: version
         if: github.event_name != 'pull_request'
         env:
           GH_TOKEN: ${{ github.token }}
@@ -84,17 +93,22 @@ jobs:
         shell: bash
         run: |
           version="v$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)"
+          tag=""
           if [[ "$GITHUB_REF" == refs/tags/* ]]; then
-            echo "RELEASE_TAG=$GITHUB_REF_NAME" >> "$GITHUB_ENV"
+            tag="$GITHUB_REF_NAME"
           elif [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]; then
             [[ "$PUBLISH" == true ]] || { echo "手動執行未勾選 publish：只建置"; exit 0; }
             [[ "$GITHUB_REF" == refs/heads/main ]] || { echo "::error::只能從 main 發佈（目前是 $GITHUB_REF_NAME）"; exit 1; }
-            echo "RELEASE_TAG=$version" >> "$GITHUB_ENV"
+            tag="$version"
           elif gh release view "$version" > /dev/null 2>&1; then
             echo "$version 已經發佈過：只建置"
           else
             echo "main 的版本 $version 尚未發佈：建置後自動發佈"
-            echo "RELEASE_TAG=$version" >> "$GITHUB_ENV"
+            tag="$version"
+          fi
+          if [[ -n "$tag" ]]; then
+            echo "RELEASE_TAG=$tag" >> "$GITHUB_ENV"
+            echo "tag=$tag" >> "$GITHUB_OUTPUT"
           fi
 
       - name: 建置 exe
@@ -110,10 +124,19 @@ jobs:
         shell: bash
         run: bash .github/scripts/release-notes.sh "${RELEASE_TAG}" dist/ScreenRecorder.exe > release-notes.md
 
-      # 程式碼簽章（選用）：在 repo 的 Settings → Secrets 設定 SIGN_CERT_PFX（.pfx 的 base64）與 SIGN_CERT_PASSWORD 才會執行
-      - name: 簽章
-        if: env.SIGN_CERT_PFX != ''
+      # 程式碼簽章（選用）：在 repo 的 Settings → Secrets 設定 SIGN_CERT_PFX（.pfx 的 base64）與 SIGN_CERT_PASSWORD 才會執行。
+      # 步驟的 if 看不到 secrets：這一步只算出「有沒有設定」，憑證本身只放在「簽章」那一步
+      - name: 檢查簽章憑證
+        id: sign
         env:
+          HAS_CERT: ${{ secrets.SIGN_CERT_PFX != '' }}
+        shell: bash
+        run: echo "has=$HAS_CERT" >> "$GITHUB_OUTPUT"
+
+      - name: 簽章
+        if: steps.sign.outputs.has == 'true'
+        env:
+          SIGN_CERT_PFX: ${{ secrets.SIGN_CERT_PFX }}
           SIGN_CERT_PASSWORD: ${{ secrets.SIGN_CERT_PASSWORD }}
         shell: pwsh
         run: |
@@ -131,15 +154,40 @@ jobs:
 
       # 試用版：只放 exe（GitHub 下載時本來就會包成 zip，再放 zip 會變成 zip 裡還有 zip）
       - name: 上傳建置結果
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: ScreenRecorder
           path: dist/ScreenRecorder.exe
 
+      # 要發佈時：exe、zip、更新說明交給 release 工作
+      - name: 上傳要發佈的檔案
+        if: env.RELEASE_TAG != ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release
+          path: |
+            dist/ScreenRecorder.exe
+            dist/ScreenRecorder.zip
+            release-notes.md
+          retention-days: 1
+
+  # 建立 Release：只有這個工作能寫入 repo，而且只做這件事（不建置、不執行 repo 裡的程式）
+  release:
+    needs: build
+    if: needs.build.outputs.tag != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release
+          path: release
+
       # 手動發佈時 tag 還不存在：--target 讓 gh 在這次建置的 commit 上建立 tag（推送 tag 時 tag 已存在，--target 不影響）
       - name: 發佈 Release
-        if: env.RELEASE_TAG != ''
         env:
           GH_TOKEN: ${{ github.token }}
-        shell: bash
-        run: gh release create "${RELEASE_TAG}" dist/ScreenRecorder.zip dist/ScreenRecorder.exe --title "${RELEASE_TAG}" --notes-file release-notes.md --target "${GITHUB_SHA}"
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ needs.build.outputs.tag }}
+        run: gh release create "${RELEASE_TAG}" release/dist/ScreenRecorder.zip release/dist/ScreenRecorder.exe --title "${RELEASE_TAG}" --notes-file release/release-notes.md --target "${GITHUB_SHA}"
