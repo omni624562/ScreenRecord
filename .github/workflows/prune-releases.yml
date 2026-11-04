@@ -1,0 +1,65 @@
+# 只留最近三版：Release 與 v* tag 都只留最新的三個，舊的刪掉
+#
+# 什麼時候執行：
+#   - main 上的「Release」執行成功之後（發佈新版後，最舊的那一版就會被刪掉）
+#   - 在 Actions 頁面手動執行（可以改要留幾版）
+# 程式裡的「檢查更新」只看最新的 Release，刪掉舊版不影響更新
+name: Prune releases
+
+on:
+  workflow_run:
+    workflows: ["Release"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      keep:
+        description: "要留幾版（Release 與 tag 都是）"
+        type: number
+        default: 3
+
+permissions:
+  contents: write
+
+# 同時只有一個在刪
+concurrency:
+  group: prune-releases
+
+jobs:
+  prune:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      KEEP: ${{ inputs.keep || 3 }}
+    steps:
+      - name: 刪掉舊的 Release 與 tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$KEEP" =~ ^[0-9]+$ && "$KEEP" -ge 1 ]] || { echo "::error::要留的版數不對：$KEEP"; exit 1; }
+
+          # 依建立時間新到舊（草稿不算）
+          mapfile -t releases < <(gh api --paginate "repos/$REPO/releases?per_page=100" \
+            --jq '.[] | select(.draft | not) | [.created_at, .tag_name] | @tsv' | sort -r | cut -f2)
+          echo "共有 ${#releases[@]} 個 Release"
+          # 讀不到任何 Release 時不刪 tag（免得把全部 tag 當成舊的刪光）
+          (( ${#releases[@]} > 0 )) || { echo "沒有 Release：不處理"; exit 0; }
+
+          keep=("${releases[@]:0:KEEP}")
+          echo "保留：${keep[*]}"
+
+          for tag in "${releases[@]:KEEP}"; do
+            echo "刪除 Release $tag"
+            gh release delete "$tag" --repo "$REPO" --cleanup-tag --yes
+          done
+
+          # 沒有 Release 的舊 tag（例如發佈失敗留下的）也刪掉；只動 v 開頭的版本 tag
+          mapfile -t tags < <(gh api --paginate "repos/$REPO/git/matching-refs/tags/v" --jq '.[].ref | sub("^refs/tags/"; "")')
+          for tag in "${tags[@]}"; do
+            if [[ " ${keep[*]} " != *" $tag "* ]]; then
+              echo "刪除 tag $tag"
+              gh api -X DELETE "repos/$REPO/git/refs/tags/$tag" --silent || echo "::warning::$tag 刪不掉（可能已經刪了）"
+            fi
+          done
