@@ -2,10 +2,16 @@
 # 版本號只在這裡（workspace.package.version）：程式內顯示、exe 的檔案資訊、發佈流程都讀這裡
 [workspace]
 members = ["core", "shell"]
+# vendor/ 裡是改過的第三方套件（不是本專案的程式）：不跑本專案的格式、lint、測試
+exclude = ["vendor/epaint"]
 resolver = "2"
 
+# egui 的文字排版：中文換行時「）」「，」等全形標點不放在行首、「（」不放在行尾（vendor/epaint/README.md）
+[patch.crates-io]
+epaint = { path = "vendor/epaint" }
+
 [workspace.package]
-version = "3.74.0"
+version = "3.74.1"
 edition = "2021"
 publish = false
 license = "MIT"

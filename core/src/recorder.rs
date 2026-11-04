@@ -60,8 +60,9 @@ pub trait RecorderDeps: Send + Sync + 'static {
     }
     /// 顯示卡處理在錄影時失敗：這次執行期間不再使用
     fn gpu_convert_failed(&self) {}
-    /// 倒數結束、開始擷取前（一定會呼叫）：錄影中不讓電腦睡眠；停止時 after_stop 放掉
-    fn keep_awake(&self) {}
+    /// 倒數結束、開始擷取前（一定會呼叫）：錄影中不讓電腦睡眠；停止時 after_stop 放掉。
+    /// display = 螢幕也不關（錄畫面時；回溯錄影、只錄聲音時螢幕可以照常關掉）
+    fn keep_awake(&self, _display: bool) {}
     /// 倒數結束、開始擷取前（縮小擋到擷取範圍的操作視窗等；設定不縮小時不呼叫）；area 為擷取範圍（虛擬桌面的實體像素座標）
     fn before_capture(&self, _area: Rect) -> BoxFut<'_, ()> {
         Box::pin(async {})
@@ -1365,7 +1366,9 @@ impl Recorder {
         }
         // 倒數中可能移動了範圍（螢幕上的控制列）
         let plan = self.lock().plan.clone().unwrap_or(plan);
-        deps.keep_awake();
+        // 回溯錄影（在背景一直錄）、只錄聲音：電腦不睡眠就好，螢幕照常關掉
+        let display = !self.lock().config.as_ref().is_some_and(|c| c.replay_sec > 0 || c.audio_only);
+        deps.keep_awake(display);
         // 縮小視窗的那 0.35 秒仍算倒數（countdown 保留到這之後），期間取消也有效
         if hide_ui {
             deps.before_capture(plan.rect).await;
@@ -2400,6 +2403,8 @@ mod tests {
         marks: Mutex<Option<Marks>>,
         /// 改過的螢幕清單（模擬接上、拔掉螢幕）；None = 只有 mon()
         screens: Mutex<Option<Vec<MonitorInfo>>>,
+        /// 每次要求不睡眠時，螢幕是不是也不關
+        awake: Mutex<Vec<bool>>,
     }
 
     impl RecorderDeps for Fake {
@@ -2451,6 +2456,9 @@ mod tests {
         }
         fn after_stop(&self) {
             self.after.fetch_add(1, Ordering::SeqCst);
+        }
+        fn keep_awake(&self, display: bool) {
+            self.awake.lock().unwrap_or_else(|e| e.into_inner()).push(display);
         }
         fn save_markers(&self, _output: &str, marks: &Marks) {
             *self.marks.lock().unwrap_or_else(|e| e.into_inner()) = Some(marks.clone());
@@ -2810,6 +2818,9 @@ esac
         let st = s.rec.status();
         assert_eq!(st.state, RecorderState::Recording);
         assert_eq!(st.method, Some(CaptureMethod::Gdigrab));
+        // 錄畫面：電腦不睡眠、螢幕也不關
+        let awake = s.deps.awake.lock().unwrap().clone();
+        assert!(!awake.is_empty() && awake.iter().all(|d| *d), "{awake:?}");
         let wait_frames = || async {
             for _ in 0..100 {
                 if s.rec.status().frames > 0 && s.rec.status().busy.is_none() {
@@ -3035,6 +3046,8 @@ esac
         assert!(st.frames > 0);
         assert_eq!((st.replay.as_ref().map(|r| r.sec), st.max_ms), (Some(60), 0));
         assert_eq!(s.deps.before.load(Ordering::SeqCst), 0);
+        // 在背景一直錄：電腦不睡眠，螢幕照常關掉
+        assert_eq!(*s.deps.awake.lock().unwrap(), vec![false]);
         assert!(s.rec.output_path().is_none());
         assert!(st.log.iter().any(|l| l.text.contains("回溯錄影：保留最近 1 分鐘")), "{:?}", st.log);
         // 不能暫停、加標記
