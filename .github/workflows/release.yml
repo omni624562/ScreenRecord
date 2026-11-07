@@ -1,4 +1,4 @@
-# 測試 → 建置 exe →（有憑證時）簽章 →（需要時）發佈 GitHub Release
+# 測試 → 建置 exe → 確認不需要 Visual C++ 可轉散發套件 →（有憑證時）簽章 →（需要時）發佈 GitHub Release
 #
 # 什麼時候發佈：
 #   - main 上的 Cargo.toml 版本還沒發佈過（合併改了版本號的 PR，或上次發佈失敗後合併的修正）→ 自動建立 tag 並發佈
@@ -118,6 +118,23 @@ jobs:
           mkdir -p dist
           cp target/release/screenrecorder-ui.exe dist/ScreenRecorder.exe
           ls -l dist/ScreenRecorder.exe
+
+      # 乾淨安裝的 Windows 沒有 Visual C++ 可轉散發套件：exe 匯入它的 DLL（VCRUNTIME140.dll、MSVCP140.dll 等）就開不起來。
+      # C 執行階段在 .cargo/config.toml 設定靜態連結，這裡確認真的沒有匯入（含延遲載入）
+      - name: 確認不需要 Visual C++ 可轉散發套件
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $dumpbin = & $vswhere -latest -products * -find 'VC\Tools\MSVC\**\bin\Hostx64\x64\dumpbin.exe' | Select-Object -First 1
+          if (-not $dumpbin) { throw "找不到 dumpbin.exe" }
+          $out = & $dumpbin /nologo /dependents dist\ScreenRecorder.exe
+          if ($LASTEXITCODE -ne 0) { throw "dumpbin 執行失敗" }
+          $out
+          $dlls = foreach ($line in $out) { if ($line -match '^\s+(\S+\.dll)\s*$') { $Matches[1] } }
+          if (-not $dlls) { throw "讀不到 exe 匯入的 DLL" }
+          $bad = $dlls | Where-Object { $_ -match '^(vcruntime|msvcp|msvcr|concrt|vccorlib|vcomp)\d' }
+          if ($bad) { throw "exe 需要 Visual C++ 可轉散發套件的 DLL：$($bad -join '、')（.cargo/config.toml 的 crt-static 沒有生效？設了 RUSTFLAGS 時不會讀那裡的設定）" }
+          "沒有匯入 Visual C++ 可轉散發套件的 DLL（共 $(@($dlls).Count) 個 DLL）"
 
       - name: 確認版本與更新說明
         if: env.RELEASE_TAG != ''

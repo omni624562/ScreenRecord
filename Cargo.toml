@@ -11,7 +11,7 @@ resolver = "2"
 epaint = { path = "vendor/epaint" }
 
 [workspace.package]
-version = "3.74.1"
+version = "3.74.2"
 edition = "2021"
 publish = false
 license = "MIT"

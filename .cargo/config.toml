@@ -1,0 +1,9 @@
+# Windows（MSVC）：C 執行階段靜態連結進 exe。
+# 動態連結時 exe 需要 VCRUNTIME140.dll，那不是 Windows 內建的（要裝過 Visual C++ 可轉散發套件才有），
+# 乾淨安裝的 Windows（剛重灌、Windows 沙箱）會開不起來。
+# 用 Rust 內建的 crt-static，不另外加套件：用 cc 編譯的 C 程式也會跟著改用靜態的執行階段（/MT），整個程式一致。
+# 只影響 Windows MSVC 目標，Linux 上的建置、測試不變；執行時才載入的 libmpv-2.dll、外部的 ffmpeg.exe 不受影響。
+# 發佈流程（.github/workflows/release.yml）建置後會確認 exe 沒有匯入 VCRUNTIME140.dll、MSVCP140.dll。
+# 注意：設了環境變數 RUSTFLAGS 時 cargo 不看這裡的 rustflags（上面的檢查會失敗）
+[target.'cfg(all(windows, target_env = "msvc"))']
+rustflags = ["-C", "target-feature=+crt-static"]

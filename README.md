@@ -6,7 +6,7 @@ Windows 11 螢幕錄影工具：**原速錄影並完整保留，停止後再選�
 - 擷取與編碼交給 FFmpeg：優先 `ddagrab`（Desktop Duplication，GPU 擷取），不支援或失敗時自動退回 `gdigrab`
 - 輸出 H.264 MP4（yuv420p、BT.709）
 
-目前版本：**3.74.1**　各版本的變更見 [CHANGELOG.md](CHANGELOG.md)（在程式裡可從 「⋯」→「關於」或系統匣選單「關於」查看版本、這一版與所有版本的更新說明、檢查新版本；自動檢查新版本的開關在「設定 → 一般」）。
+目前版本：**3.74.2**　各版本的變更見 [CHANGELOG.md](CHANGELOG.md)（在程式裡可從 「⋯」→「關於」或系統匣選單「關於」查看版本、這一版與所有版本的更新說明、檢查新版本；自動檢查新版本的開關在「設定 → 一般」）。
 
 ## 功能
 
@@ -136,7 +136,7 @@ Windows 11 螢幕錄影工具：**原速錄影並完整保留，停止後再選�
 
 ### 執行編譯好的版本
 
-從 [Releases](https://github.com/omni624562/ScreenRecord/releases/latest) 下載 `ScreenRecorder.zip`（解壓縮後使用）或 `ScreenRecorder.exe`（單一執行檔）。
+從 [Releases](https://github.com/omni624562/ScreenRecord/releases/latest) 下載 `ScreenRecorder.zip`（解壓縮後使用）或 `ScreenRecorder.exe`（單一執行檔）。不用另外安裝 Visual C++ 可轉散發套件，乾淨安裝的 Windows 也能直接執行。
 
 ```
 ScreenRecorder.exe
@@ -181,7 +181,7 @@ cargo fmt --all
 cargo build --release -p screenrecorder-ui
 ```
 
-產生 `target\release\screenrecorder-ui.exe`（單一 exe；發佈時重新命名為 `ScreenRecorder.exe`）。exe 的圖示與檔案資訊（版本號）在建置時自動寫入。
+產生 `target\release\screenrecorder-ui.exe`（單一 exe；發佈時重新命名為 `ScreenRecorder.exe`）。exe 的圖示與檔案資訊（版本號）在建置時自動寫入。C 執行階段靜態連結（`.cargo/config.toml` 的 `crt-static`，只影響 Windows MSVC 目標），exe 不需要 `VCRUNTIME140.dll`；設了環境變數 `RUSTFLAGS` 時 cargo 不會讀這個設定，要自己加上 `-C target-feature=+crt-static`。
 
 ### 發佈新版本
 
@@ -189,7 +189,7 @@ cargo build --release -p screenrecorder-ui
 2. 在 `CHANGELOG.md` 最上方加上這一版的「新增／變更／修正」
 3. 合併到 main：GitHub Actions 發現 `Cargo.toml` 的版本還沒發佈過，就會自動建立 tag（例如 `v1.4.0`）並發佈 Release
 
-GitHub Actions（`.github/workflows/release.yml`）會在 Windows 上檢查格式（rustfmt）與程式碼（clippy）、測試、建置 exe，確認版本與 CHANGELOG 一致，再以 CHANGELOG 該版段落為說明發佈 Release。
+GitHub Actions（`.github/workflows/release.yml`）會在 Windows 上檢查格式（rustfmt）與程式碼（clippy）、測試、建置 exe，確認 exe 沒有匯入 Visual C++ 可轉散發套件的 DLL（`VCRUNTIME140.dll`、`MSVCP140.dll` 等）、版本與 CHANGELOG 一致，再以 CHANGELOG 該版段落為說明發佈 Release。
 
 - **PR**：每個 PR 都會在 Windows 上測試與建置，建置好的 exe 附在該次執行上，可下載試用
 - **其他發佈方式**：推送 `v*` tag，或在 Actions 頁面手動執行（分支選 main）並勾選 publish
