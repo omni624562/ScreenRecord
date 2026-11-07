@@ -187,13 +187,21 @@ cargo build --release -p screenrecorder-ui
 
 1. 修改 `Cargo.toml` 的 `[workspace.package] version`（新功能增加次版號，只修正問題增加修訂號）
 2. 在 `CHANGELOG.md` 最上方加上這一版的「新增／變更／修正」
-3. 合併到 main：GitHub Actions 發現 `Cargo.toml` 的版本還沒發佈過，就會自動建立 tag（例如 `v1.4.0`）並發佈 Release
+3. 合併到 main：GitHub Actions 發現 `Cargo.toml` 的版本還沒發佈過，測試、建置完成後會停下來等核准
+4. 在 Actions 的那次執行頁面按「Review deployments」，勾 `release` 後按「Approve and deploy」：建立 tag（例如 `v1.4.0`）並發佈 Release。按「Reject」就不發佈
 
 GitHub Actions（`.github/workflows/release.yml`）會在 Windows 上檢查格式（rustfmt）與程式碼（clippy）、測試、建置 exe，確認版本與 CHANGELOG 一致，再以 CHANGELOG 該版段落為說明發佈 Release。
 
 - **PR**：每個 PR 都會在 Windows 上測試與建置，建置好的 exe 附在該次執行上，可下載試用
-- **其他發佈方式**：推送 `v*` tag，或在 Actions 頁面手動執行（分支選 main）並勾選 publish
-- 每次合併到 main 都會測試與建置；版本已經發佈過就不會重複發佈。上次發佈失敗（例如測試沒過）時，合併修正後會自動再發佈
+- **其他發佈方式**：推送 `v*` tag，或在 Actions 頁面手動執行（分支選 main）並勾選 publish；一樣要核准才發佈
+- 每次合併到 main 都會測試與建置；版本已經發佈過就不會重複發佈。上次發佈失敗（例如測試沒過）或被拒絕時，合併修正後會再要求核准一次
+- 等核准時又合併到 main：新的執行會排在後面，等前一次核准或拒絕才開始。核准前一次會發佈前一次的 commit；要發佈最新的，先拒絕前一次，再核准新的那次。沒有處理的話 30 天後自動當成失敗
+
+**發佈前核准的設定（只要做一次）**：在 repo 的 Settings → Environments 建立 `release`（第一次發佈時也會自動建立，但沒有審核者，不會停下來等）：
+
+- 勾「Required reviewers」，加入自己（公開的 repo 免費可用）
+- 不要勾「Prevent self-review」，否則自己合併觸發的發佈不能自己核准
+- 「Deployment branches and tags」選「Selected branches and tags」，加入分支 `main` 與 tag `v*`：其他分支的執行不能用這個環境
 
 **程式碼簽章（選用）**：沒有簽章的 exe 在其他電腦第一次執行時，SmartScreen 可能顯示「Windows 已保護您的電腦」（按「其他資訊 → 仍要執行」即可）。購買程式碼簽章憑證後，在 repo 的 Settings → Secrets and variables → Actions 新增 `SIGN_CERT_PFX`（.pfx 檔的 base64）與 `SIGN_CERT_PASSWORD`，之後發佈的 exe 就會自動簽章。
 

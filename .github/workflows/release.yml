@@ -7,9 +7,13 @@
 # 其他情況（PR、版本已發佈過、手動執行沒勾 publish）只測試與建置，exe 附在該次執行上可下載試用。
 #
 # 發佈新版本：更新 Cargo.toml（workspace.package.version）與 CHANGELOG.md → 合併到 main（或推送 tag）
+#   → 建置完成後在執行頁面按「Review deployments」→「Approve and deploy」才建立 Release
+#
+# 發佈前核准：release 工作用「release」環境。要在 repo 的 Settings → Environments → release
+# 設定 Required reviewers 才會停下來等核准（沒設定時照樣自動發佈）。設定方式見 README「發佈新版本」
 #
 # 安全：
-#   - 預設只能讀 repo；建立 Release 的 release 工作才有寫入權限（測試、建置時跑的程式拿不到）
+#   - 預設只能讀 repo；建立 Release 的 release 工作才有寫入權限（測試、建置時跑的程式拿不到），而且要核准才執行
 #   - 簽章憑證只在「簽章」那一步讀得到（建置時會執行相依套件的 build script）
 #   - 外部的 Actions 固定在某個 commit（註解是對應的版本），升級時一起改 commit 與註解
 name: Release
@@ -172,10 +176,15 @@ jobs:
           retention-days: 1
 
   # 建立 Release：只有這個工作能寫入 repo，而且只做這件事（不建置、不執行 repo 裡的程式）
+  # 「release」環境設了審核者時，建置完成後停在這裡等核准（最多 30 天，逾時當成失敗）；
+  # 拒絕或逾時都不會發佈，下次推送到 main 會再要求核准一次
   release:
     needs: build
     if: needs.build.outputs.tag != ''
     runs-on: ubuntu-latest
+    environment:
+      name: release
+      url: ${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ needs.build.outputs.tag }}
     permissions:
       contents: write
     steps:
