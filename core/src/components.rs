@@ -72,7 +72,7 @@ impl Kind {
             Kind::Mpv => crate::mpv_download::mpv_urls().into_iter().next().unwrap_or_default(),
             Kind::SpeechFfmpeg => crate::downloader::speech_ffmpeg_urls().into_iter().next().unwrap_or_default(),
             Kind::Model(_) => self.model().map(|m| m.url.to_string()).unwrap_or_default(),
-            // 兩個檔案：瀏覽器先開大的那個（小的在設定頁說明裡）
+            // 好幾個檔案：瀏覽器先開最大的那個（其他的在設定頁說明裡）
             Kind::Faces => crate::faces::SFACE.url.to_string(),
         }
     }
@@ -364,7 +364,7 @@ impl App {
             Kind::Ffmpeg => return Err(tr!("FFmpeg 是錄影必要的元件，不能移除", "FFmpeg is required for recording and can't be removed").into()),
             Kind::Mpv => crate::mpv_download::installed_path()
                 .ok_or_else(|| tr!("這是系統安裝的 libmpv，請用系統的套件管理程式移除", "This libmpv is installed by the system. Remove it with your package manager").to_string())?,
-            // 兩個檔案一起移除（臉的資料留著，在相片分頁的「人物」裡刪）
+            // 模型檔一起移除（臉的資料留著，在相片分頁的「人物」裡刪）
             Kind::Faces => {
                 crate::faces::remove_models()?;
                 crate::info!("[外部元件] 已移除人臉模型");

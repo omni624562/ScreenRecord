@@ -8,6 +8,9 @@
 //! - 臉的資料存在 photo-faces.json：每張相片的臉（位置、128 個數字壓成 128 bytes）、人物（名稱）
 //! - 分組：每個人的臉平均起來當代表；新的臉和最像的那個人夠像就加進去，不然自成一組；很像的兩組（沒取名的）合在一起。
 //!   使用者改過的（移到某人、不是這個人）不再自動改
+//! - 閉眼、不是臉：Google MediaPipe 的臉部特徵點模型（478 個點、「是不是臉」的分數）與表情模型（52 個表情分數，用左右眼眨眼），
+//!   Apache-2.0；官方是 TFLite 檔，tract 跑不了，所以由這個專案轉成 ONNX 放在 models/faces（來源、轉法、檢查結果見那裡的 README）。
+//!   「是不是臉」的分數太低的不算（貓狗、雜訊）；夠大的臉才看眼睛（小臉笑起來也會被當成閉眼）
 
 use crate::paths::{data_dir, mtime_ms};
 use serde::{Deserialize, Serialize};
@@ -18,7 +21,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use tract_onnx::prelude::*;
 
-/// 一個模型檔：檔名、下載網址（opencv_zoo 固定的 commit）、大小、SHA-256
+/// 一個模型檔：檔名、下載網址（固定的 commit）、大小、SHA-256
 pub struct ModelFile {
     pub file: &'static str,
     pub url: &'static str,
@@ -40,9 +43,25 @@ pub const SFACE: ModelFile = ModelFile {
     sha256: "0ba9fbfa01b5270c96627c4ef784da859931e02f04419c829e83484087c34e79",
 };
 
-pub const MODELS: [&ModelFile; 2] = [&YUNET, &SFACE];
-/// 兩個加起來約幾 MB
-pub const MB: u32 = 39;
+/// MediaPipe 的臉部特徵點模型（這個專案從官方的 face_landmarker.task 轉成 ONNX）
+pub const LANDMARKS: ModelFile = ModelFile {
+    file: "face_landmarks_detector.onnx",
+    url: "https://raw.githubusercontent.com/omni624562/ScreenRecord/f9c3465d7a7d13278593fd89305edb1239074828/models/faces/face_landmarks_detector.onnx",
+    size: 4_920_997,
+    sha256: "cb6a76e380ff26a372957ebf69fbd523ce8a49266b882263868e1a333ed7d09a",
+};
+
+/// MediaPipe 的表情模型（同上）
+pub const BLENDSHAPES: ModelFile = ModelFile {
+    file: "face_blendshapes.onnx",
+    url: "https://raw.githubusercontent.com/omni624562/ScreenRecord/f9c3465d7a7d13278593fd89305edb1239074828/models/faces/face_blendshapes.onnx",
+    size: 1_883_548,
+    sha256: "baf1761013b93e3b4f55af456a80d74aa089a2fc377f5f8044ae48d0cc6a47f2",
+};
+
+pub const MODELS: [&ModelFile; 4] = [&YUNET, &SFACE, &LANDMARKS, &BLENDSHAPES];
+/// 全部加起來約幾 MB
+pub const MB: u32 = 46;
 
 /// YuNet 的輸入大小（固定 640×640）
 const DET: usize = 640;
@@ -50,9 +69,18 @@ const DET: usize = 640;
 pub const ANALYZE_MAX: u32 = 1280;
 /// 臉要多大才拿來認人（分析用的相片裡，短邊像素）：太小的臉算出來的數字不準
 const MIN_FACE: f32 = 24.0;
-/// 找臉的門檻（YuNet 的分數）、重疊的框留一個
-const SCORE: f32 = 0.8;
+/// 找臉的門檻（YuNet 的分數）、重疊的框留一個。0.8 時貓狗的臉也會進來（測試的相片裡動物 0.55～0.80、真人 0.86 以上）
+pub const SCORE: f32 = 0.88;
 const NMS: f32 = 0.3;
+/// 「是不是臉」的門檻（特徵點模型的 face flag；MediaPipe 預設 0.5）
+const PRESENCE: f32 = 0.5;
+/// 臉要多大才看眼睛（分析用的相片裡，寬度像素）：小臉在笑的時候眨眼分數也會到 0.5～0.8
+const EYE_MIN: f32 = 80.0;
+/// 特徵點模型的輸入：臉的四周各多留 25%（臉寬的 1.5 倍）、256×256
+const LM: usize = 256;
+const LM_SCALE: f32 = 1.5;
+/// 資料的版本：2 = 擋過不是臉的、看過眼睛
+pub const VERSION: u8 = 2;
 /// 一張臉和某個人夠像（相似度）就算他；兩組沒取名的人夠像就合在一起。SFace 建議的「同一人」門檻是 0.363，
 /// 分組時用嚴一點（不同的人被分在一起比同一個人分成兩組麻煩：家人長得像）
 pub const ASSIGN: f32 = 0.42;
@@ -85,7 +113,7 @@ pub fn model_path(m: &ModelFile) -> PathBuf {
     model_dirs().into_iter().map(|d| d.join(m.file)).find(|p| std::fs::metadata(p).is_ok_and(|x| x.len() == m.size)).unwrap_or_else(|| install_dir().join(m.file))
 }
 
-/// 兩個模型都在（大小對的；內容在載入前檢查）
+/// 模型都在（大小對的；內容在載入前檢查）
 pub fn models_ready() -> bool {
     MODELS.iter().all(|m| std::fs::metadata(model_path(m)).is_ok_and(|x| x.len() == m.size))
 }
@@ -105,7 +133,7 @@ fn sha256_file(p: &Path) -> Option<String> {
     Some(h.finalize().iter().map(|b| format!("{b:02x}")).collect())
 }
 
-/// 下載兩個模型（已經有的不再下載）：先寫 .part，大小與 SHA-256 對了才改成正式檔名
+/// 下載模型（已經有的不再下載）：先寫 .part，大小與 SHA-256 對了才改成正式檔名
 pub fn download(progress: &AtomicU32, cancel: &AtomicBool) -> Result<(), String> {
     let todo: Vec<&ModelFile> = MODELS.iter().copied().filter(|m| !std::fs::metadata(model_path(m)).is_ok_and(|x| x.len() == m.size)).collect();
     download_to(&todo, &install_dir(), progress, cancel)
@@ -167,11 +195,10 @@ fn download_to(todo: &[&ModelFile], dir: &Path, progress: &AtomicU32, cancel: &A
 /// 安裝使用者自己下載的模型檔（無法自動下載時）：用 SHA-256 認出是哪一個，不是官方的檔案不用
 pub fn install_file(src: &Path) -> Result<&'static str, String> {
     let size = std::fs::metadata(src).map(|m| m.len()).map_err(|e| e.to_string())?;
-    let m = MODELS
-        .iter()
-        .copied()
-        .find(|m| m.size == size && sha256_file(src).as_deref() == Some(m.sha256))
-        .ok_or_else(|| crate::trf!("這不是官方發佈的人臉模型，請選 {} 或 {}", "This isn't an official face model. Choose {} or {}", YUNET.file, SFACE.file))?;
+    let m = MODELS.iter().copied().find(|m| m.size == size && sha256_file(src).as_deref() == Some(m.sha256)).ok_or_else(|| {
+        let names = MODELS.iter().map(|m| m.file).collect::<Vec<_>>().join(crate::tr!("、", ", "));
+        crate::trf!("這不是官方發佈的人臉模型，請選這幾個之一：{names}", "This isn't an official face model. Choose one of: {names}")
+    })?;
     let dir = install_dir();
     std::fs::create_dir_all(&dir).map_err(|e| crate::error::plain(&e))?;
     let target = dir.join(m.file);
@@ -182,7 +209,7 @@ pub fn install_file(src: &Path) -> Result<&'static str, String> {
     Ok(m.file)
 }
 
-/// 移除兩個模型檔
+/// 移除模型檔
 pub fn remove_models() -> Result<(), String> {
     for m in MODELS {
         for d in model_dirs() {
@@ -199,10 +226,12 @@ pub fn remove_models() -> Result<(), String> {
 
 type Plan = TypedRunnableModel<TypedModel>;
 
-/// 載入好的兩個模型（多個執行緒共用）
+/// 載入好的模型（多個執行緒共用）
 pub struct Engine {
     det: Plan,
     rec: Plan,
+    lm: Plan,
+    bs: Plan,
 }
 
 static ENGINE: Mutex<Option<Arc<Engine>>> = Mutex::new(None);
@@ -214,7 +243,7 @@ impl Engine {
         if let Some(e) = g.as_ref() {
             return Ok(e.clone());
         }
-        let load = |m: &ModelFile, shape: [usize; 4]| -> Result<Plan, String> {
+        let load = |m: &ModelFile, shape: &[usize]| -> Result<Plan, String> {
             let p = model_path(m);
             if sha256_file(&p).as_deref() != Some(m.sha256) {
                 return Err(crate::trf!(
@@ -225,12 +254,12 @@ impl Engine {
             }
             tract_onnx::onnx()
                 .model_for_path(&p)
-                .and_then(|x| x.with_input_fact(0, f32::fact(shape).into()))
+                .and_then(|x| x.with_input_fact(0, f32::fact(shape.to_vec()).into()))
                 .and_then(|x| x.into_optimized())
                 .and_then(|x| x.into_runnable())
                 .map_err(|e| crate::trf!("無法載入人臉模型：{e}", "Couldn't load the face model: {e}"))
         };
-        let e = Arc::new(Engine { det: load(&YUNET, [1, 3, DET, DET])?, rec: load(&SFACE, [1, 3, 112, 112])? });
+        let e = Arc::new(Engine { det: load(&YUNET, &[1, 3, DET, DET])?, rec: load(&SFACE, &[1, 3, 112, 112])?, lm: load(&LANDMARKS, &[1, LM, LM, 3])?, bs: load(&BLENDSHAPES, &[1, SUB.len(), 2])? });
         *g = Some(e.clone());
         Ok(e)
     }
@@ -284,7 +313,55 @@ impl Engine {
         normalize(&mut e);
         Ok(e)
     }
+
+    /// 這張臉是不是臉（0～1）、兩眼閉上的程度（本人的左眼、右眼，0 睜開～1 閉上；eyes 是 false 或不是臉時不算）。
+    /// 和 MediaPipe 一樣：依兩眼轉正、臉的四周各多留 25% 的正方形縮成 256×256 → 478 個點；其中 146 個點（原圖的像素位置）→ 52 個表情分數
+    pub fn check(&self, img: &image::RgbImage, f: &Face, eyes: bool) -> Result<(f32, Option<[f32; 2]>), String> {
+        let (re, le) = (f.kps[0], f.kps[1]);
+        let ang = (le[1] - re[1]).atan2(le[0] - re[0]);
+        let (c, s) = (ang.cos(), ang.sin());
+        let (cx, cy) = (f.rect[0] + f.rect[2] / 2.0, f.rect[1] + f.rect[3] / 2.0);
+        let k = f.rect[2].max(f.rect[3]) * LM_SCALE / LM as f32;
+        let half = LM as f32 / 2.0;
+        // 256 方塊上的 (u, v) → 原圖：中心 + 轉 ang 的 (u − 128, v − 128)·k
+        let (a, b) = (c * k, s * k);
+        let (tx, ty) = (cx - (a - b) * half, cy - (b + a) * half);
+        let to_img = |u: f32, v: f32| (a * u - b * v + tx, b * u + a * v + ty);
+        let crop = warp(img, LM as u32, LM as u32, to_img);
+        // 特徵點模型的輸入：RGB、0～1、NHWC
+        let mut x = tract_ndarray::Array4::<f32>::zeros((1, LM, LM, 3));
+        for (px, py, p) in crop.enumerate_pixels() {
+            for ch in 0..3 {
+                x[[0, py as usize, px as usize, ch]] = p[ch] as f32 / 255.0;
+            }
+        }
+        let out = self.lm.run(tvec!(Tensor::from(x).into())).map_err(|e| e.to_string())?;
+        let pts = out.first().and_then(|t| t.as_slice::<f32>().ok()).filter(|v| v.len() == 478 * 3).ok_or("特徵點模型的輸出不對")?;
+        let flag = out.get(1).and_then(|t| t.as_slice::<f32>().ok()).and_then(|v| v.first().copied()).ok_or("特徵點模型的輸出不對")?;
+        let presence = 1.0 / (1.0 + (-flag).exp());
+        if !eyes || presence < PRESENCE {
+            return Ok((presence, None));
+        }
+        let mut sub = tract_ndarray::Array3::<f32>::zeros((1, SUB.len(), 2));
+        for (j, &i) in SUB.iter().enumerate() {
+            let (x, y) = to_img(pts[i * 3], pts[i * 3 + 1]);
+            sub[[0, j, 0]] = x;
+            sub[[0, j, 1]] = y;
+        }
+        let out = self.bs.run(tvec!(Tensor::from(sub).into())).map_err(|e| e.to_string())?;
+        let v = out.first().and_then(|t| t.as_slice::<f32>().ok()).filter(|v| v.len() == 52).ok_or("表情模型的輸出不對")?;
+        // 第 9、10 個是 eyeBlinkLeft、eyeBlinkRight
+        Ok((presence, Some([v[9], v[10]])))
+    }
 }
+
+/// 表情模型要的 146 個點（MediaPipe face_blendshapes_graph.cc 的 kLandmarksSubsetIdxs）
+const SUB: [usize; 146] = [
+    0, 1, 4, 5, 6, 7, 8, 10, 13, 14, 17, 21, 33, 37, 39, 40, 46, 52, 53, 54, 55, 58, 61, 63, 65, 66, 67, 70, 78, 80, 81, 82, 84, 87, 88, 91, 93, 95, 103, 105, 107, 109, 127, 132, 133, 136, 144, 145,
+    146, 148, 149, 150, 152, 153, 154, 155, 157, 158, 159, 160, 161, 162, 163, 168, 172, 173, 176, 178, 181, 185, 191, 195, 197, 234, 246, 249, 251, 263, 267, 269, 270, 276, 282, 283, 284, 285, 288,
+    291, 293, 295, 296, 297, 300, 308, 310, 311, 312, 314, 317, 318, 321, 323, 324, 332, 334, 336, 338, 356, 361, 362, 365, 373, 374, 375, 377, 378, 379, 380, 381, 382, 384, 385, 386, 387, 388, 389,
+    390, 397, 398, 400, 402, 405, 409, 415, 454, 466, 468, 469, 470, 471, 472, 473, 474, 475, 476, 477,
+];
 
 /// 一張臉：位置（x, y, 寬, 高）、分數、5 個特徵點（右眼、左眼、鼻尖、右嘴角、左嘴角；「右」是本人的右邊，在畫面左邊）
 #[derive(Debug, Clone, PartialEq)]
@@ -377,17 +454,24 @@ pub fn align(img: &image::RgbImage, kps: &[[f32; 2]; 5]) -> image::RgbImage {
     let [a, b, tx, ty] = similarity(kps);
     // 反過來：112×112 的每一點在原圖的哪裡
     let det = a * a + b * b;
-    let (w, h) = (img.width() as i64, img.height() as i64);
+    warp(img, 112, 112, |u, v| {
+        let (u, v) = (u - tx, v - ty);
+        ((a * u + b * v) / det, (-b * u + a * v) / det)
+    })
+}
+
+/// 做一張 w×h 的圖：每一點 (u, v) 取原圖 at(u, v) 的顏色（雙線性，超出相片的地方是黑色）
+fn warp(img: &image::RgbImage, w: u32, h: u32, at: impl Fn(f32, f32) -> (f32, f32)) -> image::RgbImage {
+    let (iw, ih) = (img.width() as i64, img.height() as i64);
     let px = |x: i64, y: i64| -> [f32; 3] {
-        if x < 0 || y < 0 || x >= w || y >= h {
+        if x < 0 || y < 0 || x >= iw || y >= ih {
             return [0.0; 3];
         }
         let p = img.get_pixel(x as u32, y as u32);
         [p[0] as f32, p[1] as f32, p[2] as f32]
     };
-    image::RgbImage::from_fn(112, 112, |u, v| {
-        let (u, v) = (u as f32 - tx, v as f32 - ty);
-        let (x, y) = ((a * u + b * v) / det, (-b * u + a * v) / det);
+    image::RgbImage::from_fn(w, h, |u, v| {
+        let (x, y) = at(u as f32, v as f32);
         let (x0, y0) = (x.floor(), y.floor());
         let (fx, fy) = (x - x0, y - y0);
         let (x0, y0) = (x0 as i64, y0 as i64);
@@ -486,6 +570,16 @@ pub struct FaceRec {
     /// 使用者說不是這些人
     #[serde(rename = "n", default, skip_serializing_if = "Vec::is_empty")]
     pub not: Vec<u32>,
+    /// 兩眼閉上的程度（本人的左眼、右眼，0～100）；臉太小、還沒看過時沒有
+    #[serde(rename = "k", default, skip_serializing_if = "Option::is_none")]
+    pub eyes: Option<[u8; 2]>,
+}
+
+impl FaceRec {
+    /// 兩眼都閉上的程度（比較張開的那隻眼睛，0～1）
+    pub fn blink(&self) -> Option<f32> {
+        self.eyes.map(|[l, r]| l.min(r) as f32 / 100.0)
+    }
 }
 
 /// 找出一張相片裡的臉、算出每張臉的 128 個數字。打不開檔案（NAS 斷線）時 Err（之後再試）；
@@ -500,8 +594,14 @@ pub fn analyze(engine: &Engine, ffmpeg: Option<&Path>, path: &str) -> Result<Vec
         if f.rect[2].min(f.rect[3]) < MIN_FACE {
             continue;
         }
+        // 不是臉（貓狗、雜訊）的不算；夠大的臉才看眼睛
+        let (presence, eyes) = engine.check(&img, &f, f.rect[2] >= EYE_MIN)?;
+        if presence < PRESENCE {
+            continue;
+        }
         let e = engine.embed(&align(&img, &f.kps))?;
-        out.push(FaceRec { rect: [f.rect[0] / w, f.rect[1] / h, f.rect[2] / w, f.rect[3] / h], score: f.score, emb: pack(&e), person: 0, user: false, not: vec![] });
+        let eyes = eyes.map(|v| v.map(|x| (x.clamp(0.0, 1.0) * 100.0).round() as u8));
+        out.push(FaceRec { rect: [f.rect[0] / w, f.rect[1] / h, f.rect[2] / w, f.rect[3] / h], score: f.score, emb: pack(&e), person: 0, user: false, not: vec![], eyes });
     }
     Ok(out)
 }
@@ -551,6 +651,9 @@ pub struct PhotoFaces {
     pub mtime: f64,
     #[serde(rename = "f", default)]
     pub faces: Vec<FaceRec>,
+    /// 用哪一版找的（VERSION；舊的要再看一次眼睛）
+    #[serde(rename = "v", default)]
+    pub ver: u8,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -613,9 +716,67 @@ pub struct PersonSummary {
 }
 
 impl FaceIndex {
-    /// 還沒找過（或檔案換了）的相片
+    /// 還沒找過（或檔案換了、用舊版找的）的相片
     pub fn needs(&self, path: &str, size: u64, mtime: f64) -> bool {
-        !self.photos.get(path).is_some_and(|p| p.size == size && crate::paths::same_mtime(p.mtime, mtime))
+        !self.photos.get(path).is_some_and(|p| p.size == size && crate::paths::same_mtime(p.mtime, mtime) && p.ver >= VERSION)
+    }
+
+    /// 讀進舊版的資料後：拿掉分數不夠的臉（門檻提高了；使用者指定過的留著），沒有臉的相片不用再找。回傳有沒有改
+    pub fn upgrade(&mut self) -> bool {
+        let mut changed = false;
+        for p in self.photos.values_mut().filter(|p| p.ver < VERSION) {
+            let n = p.faces.len();
+            p.faces.retain(|f| f.score >= SCORE || f.user);
+            changed |= p.faces.len() != n;
+            if p.faces.is_empty() {
+                p.ver = VERSION;
+                changed = true;
+            }
+        }
+        if changed {
+            self.drop_empty();
+        }
+        changed
+    }
+
+    /// 存一張相片找到的臉。同一個檔案用舊版找過時：對到的臉（位置重疊）留著原本分好的人、加上眼睛；
+    /// 這次沒找到的拿掉（不是臉；使用者指定過的留著），新找到的加進去等分組
+    pub fn put(&mut self, path: String, size: u64, mtime: f64, faces: Vec<FaceRec>) {
+        let old = self.photos.remove(&path).filter(|p| p.size == size && crate::paths::same_mtime(p.mtime, mtime));
+        let faces = match old {
+            None => faces,
+            Some(old) => {
+                let mut new: Vec<Option<FaceRec>> = faces.into_iter().map(Some).collect();
+                let mut out = vec![];
+                for mut f in old.faces {
+                    let best = new.iter().enumerate().filter_map(|(j, n)| n.as_ref().map(|n| (j, iou(&f.rect, &n.rect)))).max_by(|a, b| a.1.total_cmp(&b.1));
+                    match best.filter(|(_, o)| *o >= 0.5) {
+                        Some((j, _)) => {
+                            let n = new[j].take().unwrap_or_else(|| f.clone());
+                            (f.score, f.eyes) = (n.score, n.eyes);
+                            out.push(f);
+                        }
+                        None if f.user => out.push(f),
+                        None => {}
+                    }
+                }
+                out.extend(new.into_iter().flatten());
+                out
+            }
+        };
+        // 沒有臉了的人在分組（cluster）時拿掉
+        self.photos.insert(path, PhotoFaces { size, mtime, faces, ver: VERSION });
+    }
+
+    /// 有人閉眼的相片：兩眼閉上的程度都到 threshold 的臉（隱藏的人不算：卡通、雕像、路人）
+    pub fn closed_eyes(&self, threshold: f32) -> HashSet<String> {
+        let hidden: HashSet<u32> = self.people.iter().filter(|p| p.hidden).map(|p| p.id).collect();
+        self.photos.iter().filter(|(_, p)| p.faces.iter().any(|f| !hidden.contains(&f.person) && f.blink().is_some_and(|b| b >= threshold))).map(|(k, _)| k.clone()).collect()
+    }
+
+    /// 還沒用新版看過眼睛的相片有幾張
+    pub fn old_photos(&self) -> usize {
+        self.photos.values().filter(|p| p.ver < VERSION).count()
     }
 
     /// 只留還在的相片（相片清單裡沒有的拿掉）
@@ -901,7 +1062,7 @@ mod tests {
     }
 
     fn face(e: &[f32; 128]) -> FaceRec {
-        FaceRec { rect: [0.1, 0.1, 0.2, 0.2], score: 0.9, emb: pack(e), person: 0, user: false, not: vec![] }
+        FaceRec { rect: [0.1, 0.1, 0.2, 0.2], score: 0.9, emb: pack(e), person: 0, user: false, not: vec![], eyes: None }
     }
 
     #[test]
@@ -966,10 +1127,10 @@ mod tests {
         let mut idx = FaceIndex::default();
         // 兩個人各 4 張相片，另外一個路人 1 張
         for i in 0..4 {
-            idx.photos.insert(format!("/video/family/a{i}.jpg"), PhotoFaces { size: 1, mtime: 0.0, faces: vec![face(&emb(1, 0.15 + i as f32 * 0.02))] });
-            idx.photos.insert(format!("/video/family/b{i}.jpg"), PhotoFaces { size: 1, mtime: 0.0, faces: vec![face(&emb(2, 0.15 + i as f32 * 0.02))] });
+            idx.photos.insert(format!("/video/family/a{i}.jpg"), PhotoFaces { size: 1, mtime: 0.0, ver: VERSION, faces: vec![face(&emb(1, 0.15 + i as f32 * 0.02))] });
+            idx.photos.insert(format!("/video/family/b{i}.jpg"), PhotoFaces { size: 1, mtime: 0.0, ver: VERSION, faces: vec![face(&emb(2, 0.15 + i as f32 * 0.02))] });
         }
-        idx.photos.insert("/video/family/c.jpg".into(), PhotoFaces { size: 1, mtime: 0.0, faces: vec![face(&emb(3, 0.0)), face(&emb(1, 0.3))] });
+        idx.photos.insert("/video/family/c.jpg".into(), PhotoFaces { size: 1, mtime: 0.0, ver: VERSION, faces: vec![face(&emb(3, 0.0)), face(&emb(1, 0.3))] });
         idx.cluster();
         let s = idx.summary();
         let mut counts: Vec<usize> = s.iter().map(|p| p.photos).collect();
@@ -995,7 +1156,7 @@ mod tests {
         // 有取名的排在前面
         assert!(!idx.summary()[0].person.name.is_empty());
         // 新的臉：自動加進最像的人（像 b1 的跟著 b1：使用者說過 b1 不是小明）
-        idx.photos.insert("/video/family/new.jpg".into(), PhotoFaces { size: 1, mtime: 0.0, faces: vec![face(&emb(1, 0.2)), face(&emb(2, 0.2))] });
+        idx.photos.insert("/video/family/new.jpg".into(), PhotoFaces { size: 1, mtime: 0.0, ver: VERSION, faces: vec![face(&emb(1, 0.2)), face(&emb(2, 0.2))] });
         idx.cluster();
         assert_eq!(idx.photos["/video/family/new.jpg"].faces[0].person, a);
         assert_eq!(idx.photos["/video/family/new.jpg"].faces[1].person, p);
@@ -1007,6 +1168,46 @@ mod tests {
         assert_eq!(back.people, idx.people);
         std::fs::remove_file(&file).ok();
         assert!(idx.needs("/video/family/x.jpg", 1, 0.0) && !idx.needs("/video/family/a0.jpg", 1, 0.0) && idx.needs("/video/family/a0.jpg", 2, 0.0));
+    }
+
+    #[test]
+    fn upgrade_put_and_closed_eyes() {
+        let at = |x: f32, eyes: Option<[u8; 2]>, score: f32| FaceRec { rect: [x, 0.1, 0.2, 0.2], score, eyes, ..face(&emb(1, 0.1)) };
+        let mut idx = FaceIndex::default();
+        // 舊版的資料：分數不夠的臉拿掉（使用者指定的留著）、沒有臉的相片不用再找
+        let mut kept = at(0.5, None, 0.82);
+        kept.user = true;
+        idx.photos.insert("/video/family/old.jpg".into(), PhotoFaces { size: 1, mtime: 0.0, ver: 0, faces: vec![at(0.1, None, 0.95), at(0.3, None, 0.81), kept] });
+        idx.photos.insert("/video/family/none.jpg".into(), PhotoFaces { size: 1, mtime: 0.0, ver: 0, faces: vec![] });
+        idx.photos.insert("/video/family/cat.jpg".into(), PhotoFaces { size: 1, mtime: 0.0, ver: 0, faces: vec![at(0.1, None, 0.8)] });
+        assert!(idx.upgrade());
+        idx.cluster();
+        assert_eq!(idx.photos["/video/family/old.jpg"].faces.len(), 2);
+        assert!(!idx.needs("/video/family/none.jpg", 1, 0.0) && !idx.needs("/video/family/cat.jpg", 1, 0.0));
+        assert!(idx.needs("/video/family/old.jpg", 1, 0.0));
+        assert_eq!(idx.old_photos(), 1);
+        // 再找一次（同一個檔案）：對到的臉留著原本的人、加上眼睛；沒對到的拿掉（使用者指定的留著）；新的加進去
+        let a = idx.photos["/video/family/old.jpg"].faces[0].person;
+        assert_ne!(a, 0);
+        idx.put("/video/family/old.jpg".into(), 1, 0.0, vec![at(0.11, Some([90, 80]), 0.96), at(0.7, Some([5, 3]), 0.9)]);
+        let p = &idx.photos["/video/family/old.jpg"];
+        assert_eq!(p.ver, VERSION);
+        assert_eq!(p.faces.len(), 3);
+        assert_eq!((p.faces[0].person, p.faces[0].eyes, p.faces[0].rect[0]), (a, Some([90, 80]), 0.1));
+        assert!(p.faces[1].user && p.faces[2].person == 0);
+        assert!(!idx.needs("/video/family/old.jpg", 1, 0.0));
+        // 檔案換了：整個換掉
+        idx.put("/video/family/old.jpg".into(), 2, 0.0, vec![at(0.4, None, 0.9)]);
+        assert_eq!(idx.photos["/video/family/old.jpg"].faces.len(), 1);
+        // 有人閉眼：兩眼都要到門檻；隱藏的人不算
+        idx.put("/video/family/blink.jpg".into(), 1, 0.0, vec![at(0.1, Some([90, 75]), 0.95)]);
+        idx.put("/video/family/wink.jpg".into(), 1, 0.0, vec![at(0.1, Some([95, 10]), 0.95)]);
+        idx.cluster();
+        assert_eq!(idx.closed_eyes(0.7), HashSet::from(["/video/family/blink.jpg".to_string()]));
+        assert!(idx.closed_eyes(0.8).is_empty());
+        let who = idx.photos["/video/family/blink.jpg"].faces[0].person;
+        idx.set_hidden(who, true);
+        assert!(idx.closed_eyes(0.7).is_empty());
     }
 
     #[test]
@@ -1077,21 +1278,24 @@ mod tests {
         for m in MODELS {
             assert_eq!(sha256_file(&dir.join(m.file)).as_deref(), Some(m.sha256), "{}", m.file);
         }
-        let load = |m: &ModelFile, shape: [usize; 4]| {
-            tract_onnx::onnx().model_for_path(dir.join(m.file)).unwrap().with_input_fact(0, f32::fact(shape).into()).unwrap().into_optimized().unwrap().into_runnable().unwrap()
+        let load = |m: &ModelFile, shape: &[usize]| {
+            tract_onnx::onnx().model_for_path(dir.join(m.file)).unwrap().with_input_fact(0, f32::fact(shape.to_vec()).into()).unwrap().into_optimized().unwrap().into_runnable().unwrap()
         };
-        let engine = Engine { det: load(&YUNET, [1, 3, DET, DET]), rec: load(&SFACE, [1, 3, 112, 112]) };
+        let engine = Engine { det: load(&YUNET, &[1, 3, DET, DET]), rec: load(&SFACE, &[1, 3, 112, 112]), lm: load(&LANDMARKS, &[1, LM, LM, 3]), bs: load(&BLENDSHAPES, &[1, SUB.len(), 2]) };
         // 沒有臉的圖：找不到臉
         let blank = image::RgbImage::from_pixel(800, 600, image::Rgb([90, 120, 160]));
         assert!(engine.detect(&blank).unwrap().is_empty());
         let e = engine.embed(&image::RgbImage::from_pixel(112, 112, image::Rgb([120, 100, 90]))).unwrap();
         assert!((dot(&e, &e) - 1.0).abs() < 1e-4);
-        // 有測試相片時（SCREENRECORDER_TEST_FACE_IMAGE）：印出找到的臉，方便和 OpenCV 比對
-        if let Some(img) = std::env::var_os("SCREENRECORDER_TEST_FACE_IMAGE") {
-            let img = image::open(img).unwrap().to_rgb8();
-            for f in engine.detect(&img).unwrap() {
-                let e = engine.embed(&align(&img, &f.kps)).unwrap();
-                println!("FACE {:?} {:.4} {:?} EMB {:?}", f.rect, f.score, f.kps, e.to_vec());
+        // 有測試相片時（SCREENRECORDER_TEST_FACE_IMAGE，可以用 | 隔開好幾張）：印出找到的臉、是不是臉、眼睛，方便和 OpenCV、MediaPipe 比對
+        if let Ok(list) = std::env::var("SCREENRECORDER_TEST_FACE_IMAGE") {
+            for file in list.split('|') {
+                let img = image::open(file).unwrap().to_rgb8();
+                for f in engine.detect(&img).unwrap() {
+                    let e = engine.embed(&align(&img, &f.kps)).unwrap();
+                    let (presence, eyes) = engine.check(&img, &f, true).unwrap();
+                    println!("FACE {file} {:?} {:.4} {:?} PRESENCE {presence:.4} EYES {eyes:?} EMB {:?}", f.rect, f.score, f.kps, e.to_vec());
+                }
             }
         }
     }

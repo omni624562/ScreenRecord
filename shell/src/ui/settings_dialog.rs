@@ -2516,13 +2516,13 @@ fn components_page(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui) {
     form_section(ui, tr!("無法下載時", "If downloads don't work"), |_| {});
     for line in [
         tr!(
-            "1. 確認已連上網路；公司網路先用「跟著系統」按「測試連線」，不行再設定 Proxy，或請 IT 放行 github.com、media.githubusercontent.com、gyan.dev、sourceforge.net、huggingface.co。",
-            "1. Check your internet connection. On a company network, first press “Test connection” with System; if that fails, set the proxy above, or ask IT to allow github.com, media.githubusercontent.com, gyan.dev, sourceforge.net and huggingface.co."
+            "1. 確認已連上網路；公司網路先用「跟著系統」按「測試連線」，不行再設定 Proxy，或請 IT 放行 github.com、media.githubusercontent.com、raw.githubusercontent.com、gyan.dev、sourceforge.net、huggingface.co。",
+            "1. Check your internet connection. On a company network, first press “Test connection” with System; if that fails, set the proxy above, or ask IT to allow github.com, media.githubusercontent.com, raw.githubusercontent.com, gyan.dev, sourceforge.net and huggingface.co."
         ),
         tr!("2. 按「用瀏覽器下載」，在瀏覽器（或另一台電腦）下載。", "2. Press “Download in browser” to download it in your browser (or on another computer)."),
         tr!(
-            "3. 回到這裡按「選擇已下載的檔案…」：FFmpeg 可以選 zip 或 ffmpeg.exe，mpv 播放元件選 .7z 或 libmpv-2.dll，語音模型選 .bin，人臉模型選兩個 .onnx。",
-            "3. Come back and press “Choose downloaded file…”: for FFmpeg choose the zip or ffmpeg.exe; for the mpv component choose the .7z or libmpv-2.dll; for speech models choose the .bin file; for face models choose both .onnx files."
+            "3. 回到這裡按「選擇已下載的檔案…」：FFmpeg 可以選 zip 或 ffmpeg.exe，mpv 播放元件選 .7z 或 libmpv-2.dll，語音模型選 .bin，人臉模型選四個 .onnx。",
+            "3. Come back and press “Choose downloaded file…”: for FFmpeg choose the zip or ffmpeg.exe; for the mpv component choose the .7z or libmpv-2.dll; for speech models choose the .bin file; for face models choose all four .onnx files."
         ),
     ] {
         form_hint_full(ui, line, p.muted);
@@ -2637,17 +2637,19 @@ fn component_card(app: &mut UiApp, d: &mut SettingsDialog, ui: &mut Ui, k: Kind)
             ),
             Kind::Model(_) => tr!("模型越大辨識越準，但比較慢。只需要其中一個。", "Bigger models are more accurate but slower. You only need one.").into(),
             Kind::Faces if installed => trf!(
-                "OpenCV 的 YuNet（找臉，MIT 授權）與 SFace（認人，Apache-2.0 授權），下載後核對過官方的 SHA-256，每次使用前也再核對一次。位置：{}",
-                "OpenCV's YuNet (finds faces, MIT license) and SFace (recognizes people, Apache-2.0 license). Checked against the official SHA-256 after downloading and again before each use. Location: {}",
+                "OpenCV 的 YuNet（找臉，MIT 授權）與 SFace（認人，Apache-2.0 授權），以及 Google MediaPipe 的臉部特徵點與表情模型（看眼睛有沒有閉上，Apache-2.0 授權，由本專案轉成 ONNX）。下載後核對過 SHA-256，每次使用前也再核對一次。位置：{}",
+                "OpenCV's YuNet (finds faces, MIT license) and SFace (recognizes people, Apache-2.0 license), plus Google MediaPipe's face landmark and blendshape models (closed eyes, Apache-2.0 license, converted to ONNX by this project). Checked against the SHA-256 after downloading and again before each use. Location: {}",
                 files.path.as_ref().and_then(|p| p.parent()).map(|p| p.display().to_string()).unwrap_or_default()
             ),
-            Kind::Faces => trf!(
-                "OpenCV 的 YuNet（找臉）與 SFace（認人）兩個模型，約 {} MB，下載後核對官方的 SHA-256。用瀏覽器下載時兩個都要：{} 和 {}，再按「選擇已下載的檔案…」各選一次。",
-                "OpenCV's YuNet (finds faces) and SFace (recognizes people), about {} MB, checked against the official SHA-256. When downloading in a browser you need both, {} and {}; then use “Choose downloaded file…” once for each.",
-                k.mb(),
-                screenrecorder_core::faces::SFACE.url,
-                screenrecorder_core::faces::YUNET.url
-            ),
+            Kind::Faces => {
+                let urls = screenrecorder_core::faces::MODELS.iter().map(|m| m.url).collect::<Vec<_>>().join("\n");
+                trf!(
+                    "OpenCV 的 YuNet（找臉）、SFace（認人）與 Google MediaPipe 的臉部特徵點、表情模型（看眼睛有沒有閉上，由本專案轉成 ONNX），共約 {} MB，下載後核對 SHA-256。用瀏覽器下載時四個都要，再按「選擇已下載的檔案…」各選一次：\n{}",
+                    "OpenCV's YuNet (finds faces) and SFace (recognizes people), plus Google MediaPipe's face landmark and blendshape models (closed eyes, converted to ONNX by this project), about {} MB in all, checked against the SHA-256. When downloading in a browser you need all four; then use “Choose downloaded file…” once for each:\n{}",
+                    k.mb(),
+                    urls
+                )
+            }
         };
         // 程式資料夾不能寫入（例如放在 Program Files）才會放在 %LOCALAPPDATA%：說明原因
         let info = if installed && !builtin && files.in_data_dir {

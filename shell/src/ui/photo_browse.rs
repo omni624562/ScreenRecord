@@ -291,7 +291,7 @@ impl PhotoBrowse {
         }
         self.years = years.into_iter().rev().collect();
         // 只看某個人、用名字搜尋（相片裡有取名的人）
-        let person = self.people.filter.is_some();
+        let person = self.people.filtering();
         let keep = |i: usize| {
             let m = &self.meta[i];
             let path = &self.photos[i].path;
@@ -1038,7 +1038,7 @@ pub fn panel(ui: &mut egui::Ui, d: &mut PhotoBrowse, out: &mut Panel, stars: &Pi
             ui.label(theme::muted(ui, "›"));
             Btn::new(&trf!("搜尋「{}」", "Search “{}”", d.searched)).small().ghost().selected(true).show(ui);
         }
-        if d.people.filter.is_some() {
+        if d.people.filtering() {
             ui.label(theme::muted(ui, "›"));
             if super::photo_people::filter_chip(ui, &d.people) {
                 out.all_people = true;
@@ -1267,6 +1267,12 @@ fn photo_cell(ui: &mut egui::Ui, d: &mut PhotoBrowse, rect: Rect, i: usize, pos:
     let painter = ui.painter();
     if hovering || on {
         painter.rect_stroke(rect, 6.0, Stroke::new(if on { 3.0 } else { 2.0 }, p.accent), egui::StrokeKind::Inside);
+    }
+    // 有人閉眼：右下角
+    if super::photo_people::closed_eyes(&d.people, &path) && rect.width() >= 80.0 {
+        let c = pos2(rect.max.x - 15.0, rect.max.y - 15.0);
+        painter.circle_filled(c, 11.0, Color32::from_black_alpha(150));
+        theme::paint_icon(painter, Rect::from_center_size(c, vec2(15.0, 15.0)), Icon::EyeClosed, Color32::WHITE);
     }
     // 需要 FFmpeg 的格式（HEIC 等）：左下角小字
     let ph = &d.photos[i];

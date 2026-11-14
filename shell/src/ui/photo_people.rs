@@ -4,6 +4,8 @@
 //! - 背景一批批找（core::faces::analyze_many，同時 3 張），找完一批就分組、更新畫面，每 30 秒存一次 photo-faces.json；可以暫停
 //! - 「人物」選單：選一個人只看有他的相片；「整理人物…」開啟視窗：取名、合併、隱藏、把分錯的臉移出或移到別人
 //! - 搜尋也找人物的名稱；檢視器的標題列寫相片裡有誰
+//! - 有人閉眼的相片：「人物」選單可以只看這些（判斷的寬嚴記在設定的 photoBlink），縮圖右下角標出來；隱藏的人（卡通、雕像、路人）不算。
+//!   舊版找過的相片會在背景再看一次眼睛（只讀有臉的那些），原本分好的人、取的名字不變
 
 use super::theme::{self, Btn, Icon};
 use super::thumbs::{Lru, Thumb};
@@ -25,6 +27,8 @@ static GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::
 const SAVE_EVERY: Duration = Duration::from_secs(30);
 /// 臉的小圖多大（像素）
 const FACE_PX: u32 = 96;
+/// 「有人閉眼的」判斷的寬嚴（設定的 photoBlink：寬鬆、一般、嚴格）→ 兩眼閉上的程度要到多少
+const BLINK: [f32; 3] = [0.6, 0.7, 0.8];
 /// 整理人物的視窗最多列幾個人、一個人最多列幾張臉（每張臉第一次都要讀相片做小圖）
 const MAX_TILES: usize = 300;
 const MAX_FACES: usize = 600;
@@ -37,9 +41,16 @@ pub struct People {
     pub summary: Vec<PersonSummary>,
     /// 每張相片裡有取名的人（小寫，空白隔開；搜尋用）
     pub names: HashMap<String, String>,
-    /// 只看有這個人的相片、那些相片
+    /// 只看有這個人的相片（或 eyes：只看有人閉眼的）、那些相片
     pub filter: Option<u32>,
+    pub eyes: bool,
     pub filter_set: HashSet<String>,
+    /// 有人閉眼的相片（縮圖上標出來）、判斷的寬嚴（BLINK 的第幾個）、還沒看過眼睛的舊資料有幾張
+    pub closed: HashSet<String>,
+    pub blink_level: u8,
+    pub old: usize,
+    /// 模型不齊時自動下載過了（這次開啟只試一次；之前開啟過人物功能的，新版多了看眼睛的模型）
+    auto_dl: bool,
     /// 背景正在找：（這次找了幾張, 這次要找幾張）；暫停、停下來（關掉分頁）
     pub running: Option<(usize, usize)>,
     pub done: usize,
@@ -70,7 +81,12 @@ impl Default for People {
             summary: vec![],
             names: HashMap::new(),
             filter: None,
+            eyes: false,
             filter_set: HashSet::new(),
+            closed: HashSet::new(),
+            blink_level: 1,
+            old: 0,
+            auto_dl: false,
             running: None,
             done: 0,
             paused: false,
@@ -123,7 +139,11 @@ impl People {
                 (!v.is_empty()).then(|| (path.clone(), v.join(" ")))
             })
             .collect();
-        if let Some(id) = self.filter {
+        self.closed = idx.closed_eyes(BLINK[(self.blink_level as usize).min(BLINK.len() - 1)]);
+        self.old = idx.old_photos();
+        if self.eyes {
+            self.filter_set = self.closed.clone();
+        } else if let Some(id) = self.filter {
             if idx.person(id).is_none() {
                 self.filter = None;
                 self.filter_set.clear();
@@ -145,9 +165,20 @@ impl People {
         self.index.as_ref().map(|i| i.lock().unwrap_or_else(|e| e.into_inner()).names_in(path)).unwrap_or_default()
     }
 
+    /// 只看有人閉眼的相片
+    pub fn set_eyes(&mut self, on: bool) {
+        (self.filter, self.eyes) = (None, on);
+        self.filter_set = if on { self.closed.clone() } else { HashSet::new() };
+    }
+
+    /// 有篩選（某個人、有人閉眼的）
+    pub fn filtering(&self) -> bool {
+        self.filter.is_some() || self.eyes
+    }
+
     /// 選了某個人：只看有他的相片
     pub fn set_filter(&mut self, id: Option<u32>) {
-        self.filter = id;
+        (self.filter, self.eyes) = (id, false);
         self.filter_set = match (id, self.index.as_ref()) {
             (Some(id), Some(idx)) => idx.lock().unwrap_or_else(|e| e.into_inner()).photos_of(id),
             _ => HashSet::new(),
@@ -175,12 +206,33 @@ pub fn open(app: &mut UiApp) {
     if !app.s.photo_faces && !file.exists() {
         return;
     }
-    app.spawn(async move { tokio::task::spawn_blocking(move || faces::load_index(&file)).await.unwrap_or_default() }, |app, idx| {
-        let Some(d) = app.photos.as_mut() else { return };
-        d.people.index = Some(Arc::new(Mutex::new(idx)));
-        d.people.refresh();
-        d.dirty = true;
-    });
+    let level = app.s.photo_blink;
+    app.spawn(
+        async move {
+            tokio::task::spawn_blocking(move || {
+                // 舊版的資料：門檻提高了，分數不夠的臉拿掉
+                let mut idx = faces::load_index(&file);
+                let changed = idx.upgrade();
+                if changed {
+                    idx.cluster();
+                }
+                (idx, changed)
+            })
+            .await
+            .unwrap_or_default()
+        },
+        move |app, (idx, upgraded)| {
+            let Some(d) = app.photos.as_mut() else { return };
+            d.people.index = Some(Arc::new(Mutex::new(idx)));
+            d.people.blink_level = level;
+            if upgraded {
+                changed(app);
+            } else {
+                d.people.refresh();
+                d.dirty = true;
+            }
+        },
+    );
 }
 
 /// 每一格畫面（apply）：開啟了人物功能、模型在、沒在找、沒暫停時，找下一批
@@ -188,8 +240,14 @@ pub fn tick(app: &mut UiApp) {
     let enabled = app.s.photo_faces;
     let dl = downloading(app);
     let dl_error = app.core.component_status(Kind::Faces).error;
+    let level = app.s.photo_blink;
     if let Some(d) = app.photos.as_mut() {
         (d.people.enabled, d.people.dl, d.people.dl_error) = (enabled, dl, dl_error);
+        if d.people.blink_level != level {
+            d.people.blink_level = level;
+            d.people.refresh();
+            d.dirty |= d.people.eyes;
+        }
     }
     if !enabled {
         return;
@@ -207,6 +265,11 @@ pub fn tick(app: &mut UiApp) {
     p.checked_at = Some(Instant::now());
     p.missing = !faces::models_ready();
     if p.missing {
+        // 已經開啟人物功能、模型不齊（新版多了看眼睛的模型）：自動下載缺的那幾個（這次開啟只試一次，失敗時在選單上再試）
+        if !p.auto_dl && p.dl_error.is_none() {
+            p.auto_dl = true;
+            app.core.component_download(Kind::Faces);
+        }
         return;
     }
     let Some(index) = p.index.clone() else { return };
@@ -247,7 +310,7 @@ pub fn tick(app: &mut UiApp) {
                 let mut idx = idx2.lock().unwrap_or_else(|e| e.into_inner());
                 for (job, r) in results {
                     match r {
-                        Ok(f) => drop(idx.photos.insert(job.path, faces::PhotoFaces { size: job.size, mtime: job.mtime, faces: f })),
+                        Ok(f) => idx.put(job.path, job.size, job.mtime, f),
                         Err(e) => {
                             screenrecorder_core::info!("[人臉] 讀不到 {}：{e}", job.path);
                             failed.push(job.path);
@@ -274,7 +337,7 @@ pub fn tick(app: &mut UiApp) {
                     p.failed.extend(failed);
                     p.checked_at = None;
                     p.refresh();
-                    if p.filter.is_some() {
+                    if p.filtering() {
                         d.dirty = true;
                     }
                     // 有在用名稱搜尋時重新找
@@ -355,12 +418,15 @@ pub enum MenuAct {
     Enable,
     Organize,
     Filter(Option<u32>),
+    Eyes,
+    BlinkLevel(u8),
 }
 
 pub fn menu(ui: &mut egui::Ui, p: &People, enabled: bool, downloading: Option<f32>) -> MenuAct {
     let mut act = MenuAct::None;
     let text = match p.filter {
         Some(id) => p.label(id),
+        None if p.eyes => tr!("有人閉眼", "Eyes closed").to_string(),
         None => tr!("全部的人", "Everyone").to_string(),
     };
     egui::ComboBox::from_id_salt("photo-person")
@@ -373,9 +439,10 @@ pub fn menu(ui: &mut egui::Ui, p: &People, enabled: bool, downloading: Option<f3
                 ui.add(
                     egui::Label::new(theme::muted(
                         ui,
-                        tr!(
-                            "在這台電腦上找出相片裡的臉，把同一個人分在一起，取了名字就能只看有他的相片、用名字搜尋。相片和臉都不會上傳；第一次要下載約 39 MB 的模型，相片多時要在背景找一陣子。",
-                            "Finds faces in your photos on this computer and groups each person together. Name them to see only their photos or search by name. No photos or faces are uploaded. The first time downloads about 39 MB of models, and with many photos it takes a while in the background."
+                        trf!(
+                            "在這台電腦上找出相片裡的臉，把同一個人分在一起，取了名字就能只看有他的相片、用名字搜尋，也能找出有人閉眼的相片。相片和臉都不會上傳；第一次要下載約 {} MB 的模型，相片多時要在背景找一陣子。",
+                            "Finds faces in your photos on this computer and groups each person together. Name them to see only their photos or search by name, and find photos where someone's eyes are closed. No photos or faces are uploaded. The first time downloads about {} MB of models, and with many photos it takes a while in the background.",
+                            faces::MB
                         ),
                     ))
                     .wrap(),
@@ -410,6 +477,33 @@ pub fn menu(ui: &mut egui::Ui, p: &People, enabled: bool, downloading: Option<f3
                 ui.label(theme::muted(ui, tr!("還沒有取名的人：按下面的「整理人物…」幫他們取名", "Nobody is named yet. Use “Organize people…” below to name them")));
             }
             ui.separator();
+            // 有人閉眼的相片、判斷的寬嚴
+            let tip = tr!(
+                "兩隻眼睛都閉上的臉（太小的臉、隱藏的人不算）。在這台電腦上判斷，不上傳；偶爾會把瞇眼大笑當成閉眼",
+                "Faces with both eyes closed (tiny faces and hidden people don't count). Checked on this computer; nothing is uploaded. A big squinting smile is sometimes counted as closed"
+            );
+            if ui.selectable_label(p.eyes, trf!("有人閉眼的　{}", "Eyes closed  {}", p.closed.len())).on_hover_text(tip).clicked() {
+                act = MenuAct::Eyes;
+            }
+            ui.horizontal(|ui| {
+                ui.label(theme::muted(ui, tr!("閉眼的判斷", "Closed eyes")));
+                for (i, (zh, en, tip_zh, tip_en)) in [
+                    ("寬鬆", "Loose", "半閉、瞇眼也算（找到的多，看錯的也多）", "Half-closed and squinting count too (finds more, with more mistakes)"),
+                    ("一般", "Normal", "眼睛閉上的", "Eyes closed"),
+                    ("嚴格", "Strict", "只算很確定是閉上的（找到的少）", "Only eyes that are clearly closed (finds fewer)"),
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    if ui.selectable_label(p.blink_level as usize == i, tr!(zh, en)).on_hover_text(tr!(tip_zh, tip_en)).clicked() {
+                        act = MenuAct::BlinkLevel(i as u8);
+                    }
+                }
+            });
+            if p.old > 0 {
+                ui.label(theme::muted(ui, trf!("還有 {} 張舊的相片要再看一次眼睛（在背景）", "{} older photos still need their eyes checked (in the background)", p.old)));
+            }
+            ui.separator();
             let unnamed = p.summary.iter().filter(|s| s.person.name.is_empty() && !s.person.hidden && s.photos > 1).count();
             let label = if unnamed > 0 { trf!("整理人物…（{unnamed} 組還沒取名）", "Organize people… ({unnamed} unnamed)") } else { tr!("整理人物…", "Organize people…").to_string() };
             if ui.button(label).clicked() {
@@ -440,6 +534,18 @@ pub fn menu_act(app: &mut UiApp, act: MenuAct) {
                 d.want_offset = Some(0.0);
                 d.dirty = true;
             }
+        }
+        MenuAct::Eyes => {
+            if let Some(d) = app.photos.as_mut() {
+                d.people.set_eyes(true);
+                d.want_offset = Some(0.0);
+                d.dirty = true;
+            }
+        }
+        MenuAct::BlinkLevel(level) => {
+            app.s.photo_blink = level;
+            app.save_settings();
+            // 下一格 tick 會重算有人閉眼的相片
         }
     }
 }
@@ -646,7 +752,22 @@ pub fn dialog(app: &mut UiApp, ctx: &egui::Context) {
                             if s.person.hidden {
                                 ui.painter().text(face.right_top(), egui::Align2::RIGHT_TOP, tr!("隱藏", "Hidden"), theme::font(10.5), p.muted);
                             }
-                            if resp.clicked() {
+                            // 滑鼠移上去：右上角「隱藏」（卡通、雕像、路人一個個按掉）
+                            let mut hid = false;
+                            if !s.person.hidden && ui.rect_contains_pointer(r) {
+                                let x = Rect::from_center_size(pos2(r.max.x - 13.0, r.min.y + 13.0), vec2(22.0, 22.0));
+                                let xr = ui
+                                    .interact(x, ui.id().with(("hide-person", s.person.id)), Sense::click())
+                                    .on_hover_cursor(egui::CursorIcon::PointingHand)
+                                    .on_hover_text(tr!("隱藏（不是真人、路人）", "Hide (not a real person, or a passer-by)"));
+                                ui.painter().circle_filled(x.center(), 11.0, if xr.hovered() { p.rec } else { egui::Color32::from_black_alpha(140) });
+                                theme::paint_icon(ui.painter(), x.shrink(6.0), Icon::Close, egui::Color32::WHITE);
+                                if xr.clicked() {
+                                    act = Act::Hide(s.person.id, true);
+                                    hid = true;
+                                }
+                            }
+                            if resp.clicked() && !hid {
                                 act = Act::Select(s.person.id);
                             }
                         }
@@ -708,7 +829,10 @@ pub fn dialog(app: &mut UiApp, ctx: &egui::Context) {
                 }
             });
             let hidden = me.is_some_and(|s| s.person.hidden);
-            let tip = tr!("不列在人物裡（路人、不想看到的），臉照樣留著", "Don't list them in People (passers-by, people you don't want to see). Their faces are kept");
+            let tip = tr!(
+                "不是真人（卡通、雕像、海報、寵物）、路人、不想看到的：不列在人物裡，之後找到同一個的臉也會自動歸進來一起藏著",
+                "Not a real person (cartoons, statues, posters, pets), passers-by, or people you don't want to see: they aren't listed in People, and matching faces found later are hidden with them"
+            );
             if Btn::new(if hidden { tr!("取消隱藏", "Unhide") } else { tr!("隱藏", "Hide") }).small().ghost().tooltip(tip).show(ui).clicked() {
                 act = Act::Hide(id, !hidden);
             }
@@ -877,9 +1001,19 @@ pub fn dialog(app: &mut UiApp, ctx: &egui::Context) {
     }
 }
 
-/// 檢視器的標題列：相片裡有誰
+/// 檢視器的標題列：相片裡有誰（有人閉眼時也寫出來）
 pub fn names_of(app: &UiApp, path: &str) -> Vec<String> {
-    app.photos.as_ref().map(|d| d.people.names_of(path)).unwrap_or_default()
+    let Some(d) = app.photos.as_ref() else { return vec![] };
+    let mut v = d.people.names_of(path);
+    if d.people.closed.contains(path) {
+        v.push(tr!("有人閉眼", "Eyes closed").into());
+    }
+    v
+}
+
+/// 縮圖右下角：有人閉眼
+pub fn closed_eyes(p: &People, path: &str) -> bool {
+    p.closed.contains(path)
 }
 
 /// 下載模型的進度（選單上顯示）
@@ -895,6 +1029,10 @@ pub fn stop(p: &People) {
 
 /// 只看某個人時的那一行說明（位置列右邊）
 pub fn filter_chip(ui: &mut egui::Ui, p: &People) -> bool {
-    let Some(id) = p.filter else { return false };
-    Btn::new(&trf!("只看「{}」 ×", "Only “{}” ×", p.label(id))).small().ghost().selected(true).tooltip(tr!("按一下看全部的人", "Click to show everyone")).show(ui).clicked()
+    let label = match p.filter {
+        Some(id) => p.label(id),
+        None if p.eyes => tr!("有人閉眼", "Eyes closed").to_string(),
+        None => return false,
+    };
+    Btn::new(&trf!("只看「{}」 ×", "Only “{}” ×", label)).small().ghost().selected(true).tooltip(tr!("按一下看全部的人", "Click to show everyone")).show(ui).clicked()
 }

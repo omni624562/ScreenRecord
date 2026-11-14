@@ -225,6 +225,8 @@ pub struct UiSettings {
     pub photo_at: String,
     /// 檔案庫「相片」分頁開啟了「人物」（在這台電腦上找臉、分組）
     pub photo_faces: bool,
+    /// 「有人閉眼的」怎麼判斷：0 寬鬆（半閉也算）、1 一般、2 嚴格（只抓很確定的）
+    pub photo_blink: u8,
     /// 播放影片的音量（0～100）與靜音：開下一支、重開程式都沿用上次的
     pub play_volume: u8,
     pub play_muted: bool,
@@ -578,6 +580,7 @@ impl UiSettings {
             photo_sort: num("photoSort").map(|v| v as u8).filter(|v| *v <= 2).unwrap_or(0),
             photo_at: string("photoAt").unwrap_or_default(),
             photo_faces: boolean("photoFaces").unwrap_or(false),
+            photo_blink: num("photoBlink").map(|v| v as u8).filter(|v| *v <= 2).unwrap_or(1),
             play_volume: num("playVolume").map(|v| v.clamp(0.0, 100.0) as u8).unwrap_or(100),
             play_muted: boolean("playMuted").unwrap_or(false),
             jf_path: o.get("jfPath").and_then(|v| serde_json::from_value::<Vec<(String, String)>>(v.clone()).ok()).unwrap_or_default(),

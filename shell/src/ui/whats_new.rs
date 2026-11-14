@@ -44,6 +44,15 @@ enum Try {
 fn items(_app: &UiApp) -> Vec<(String, String, Try)> {
     vec![
         (
+            tr!("找出閉眼的相片", "Find photos with closed eyes").into(),
+            tr!(
+                "相片分頁「人物」選單的「有人閉眼的」只列出有人閉上眼睛的相片，縮圖右下角也會標出來，可以選判斷的寬嚴。一樣在這台電腦上判斷，不上傳。",
+                "“Eyes closed” in the Photos tab's People menu lists only photos where someone's eyes are closed, with a mark on the thumbnail. You can choose how strict it is. It's checked on this computer; nothing is uploaded."
+            )
+            .into(),
+            Try::Photos,
+        ),
+        (
             tr!("相片裡的人物", "People in your photos").into(),
             tr!(
                 "相片分頁的「人物」會在這台電腦上找出相片裡的臉，把同一個人分在一起。取了名字就能只看有他的相片、用名字搜尋；相片和臉都不會上傳。",
