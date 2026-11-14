@@ -12,6 +12,7 @@ Windows 11 螢幕錄影工具：**原速錄影並完整保留，停止後再選�
 
 | 項目 | 說明 |
 | --- | --- |
+| 相片 | 檔案庫右上角「錄影｜截圖｜相片｜Jellyfin」的「相片」分頁（`shell/src/ui/photo_browse.rs`、`core/src/photos.rs`）：瀏覽 NAS（或這台電腦任何資料夾）上的相片，不需要 Jellyfin。標題下的資料夾選單「加入相片資料夾…」（Windows 的選資料夾視窗，NAS 可以在網址列輸入 `\\NAS\photo`；可以加好幾個，記在設定的 `photoDirs`），也可以移除或在檔案總管開啟（NAS 要登入時在那裡輸入帳號密碼）。一層層讀資料夾找出 JPG、PNG、WebP、BMP、HEIC／HEIF（iPhone）、AVIF、GIF、TIFF（NAS 的 `#recycle`、`@eaDir` 等系統資料夾、隱藏檔不進去），清單存在設定資料夾的 `photo-index.json`：下次開啟馬上列出，再在背景重新掃描（上方顯示已找到幾張；讀不到的資料夾寫原因，按「在檔案總管開啟」或「再試一次」，上次的清單留著）。上方一排和其他分頁一樣：搜尋（檔名、資料夾、日期，例如 `2024/5`）、篩選（全部／有星號的、年份）、排序（拍攝日期新到舊／舊到新、名稱）、「資料夾｜日期」、縮圖小／中／大（也可以 Ctrl＋滾輪）、重新整理；下一行是目前位置（相片 › travel › 2024，點前面的回到那一層，Backspace 回上一層）。「資料夾」先列子資料夾（縮圖是裡面最新的一張、寫幾張），再列這一層的相片；「日期」把目前資料夾底下（含子資料夾）的相片依月份分段。拍攝日期依序用相片的 EXIF（DateTimeOriginal）、檔名裡的日期（`IMG_20240512_143022.jpg`）、修改時間；EXIF 在背景一批批讀（只讀檔案開頭 256 KB，下面寫進度），NAS 斷線時沒讀到的下次再讀。縮圖：JPG 等在程式裡解碼、照 EXIF 的方向轉正，HEIC 等用 FFmpeg（7.1 以上才讀得了 HEIC），存在 `%LOCALAPPDATA%\ScreenRecorder\photo-thumbs`（最長 480 像素，最多 4 萬張）；只畫看得到的那幾排，上萬張也順。點相片在檢視器看（上一張／下一張照畫面上的順序；標題列寫拍攝日期與從哪裡來、資料夾；複製圖片、星號、重新命名、用 Windows 開啟、在資料夾中顯示、刪除）。滑鼠移到相片上左上角勾選、右上角星號（另外存在 `photo-stars.json`，不和錄影、截圖的放一起：清單開啟時不用去 NAS 檢查檔案在不在）；Ctrl＋按一下、Shift＋按一下、Ctrl+A 多選，下面可以一次加星號、複製檔案、刪除；右鍵：開啟、用 Windows 開啟、在資料夾中顯示、複製圖片／檔案、星號、重新命名（F2；副檔名不變）、刪除（Delete）。NAS 上的相片刪除時說明不會進這台電腦的資源回收筒（NAS 有開資源回收筒時可以從那邊還原）。停在哪個資料夾、依日期、排序、縮圖大小記在設定（`photoAt`、`photoByDate`、`photoSort`、`photoGridSize`），回到上一層時捲回原本的位置 |
 | 標註範本 | 剪輯視窗、截圖編輯的「標註」分頁「範本」：「把這個時間點的 N 個標註存成範本」把播放位置看得到的標註（截圖是全部；字幕不算）一起存起來，按一下範本就從播放位置放上去。位置、寬高存成畫面的比例，大小以 1080 為準，出現時間存成相對的秒數，換到不同大小的影片、截圖也放在同樣的地方、一樣大；最多 12 個，存在設定裡，✕ 或右鍵刪除 |
 | 跟著點擊加圓框 | 剪輯視窗「標註」分頁「跟著點擊」：用錄影時記下的點擊（要開啟「點擊、按鍵」），在每次點擊的地方加上淡入淡出的圓框（點下去前 0.15 秒出現、1 秒，用圓框目前的顏色）；刪掉的片段裡的不加，同一個點加過的不重複加，可以 Ctrl+Z 復原 |
 | 標註的複製與快速鍵 | 剪輯影片時選取標註按 Ctrl+C 複製、Ctrl+V 貼到播放位置、Ctrl+D 在播放位置再做一份（出現長度、樣式不變，和原本的時間重疊時位置往右下錯開）；數字鍵 1～0 選工具（文字、表情符號、箭頭、方框、圓框、螢光筆、畫筆、編號、馬賽克、模糊）。同一種標註沿用上一個的出現長度與出現方式 |
@@ -225,6 +226,7 @@ core/            後端（Rust 函式庫，有單元測試，可在 Linux 上測
   library.rs     掃描儲存資料夾、讀取影片資訊、重新命名；thumbs.rs 縮圖產生與快取
   facets.rs      「用點的找」：內容類型、常見詞、顏色、時間的分類與張數、相關截圖、月曆；shot_meta.rs 截圖時的程式與視窗標題
   pins.rs        星號（我的最愛）；ocr_index.rs 截圖文字索引（搜尋圖裡的字）；similar.rs 相似截圖（長相指紋）；dragout.rs 把檔案拖到其他程式
+  photos.rs      相片分頁：掃描相片資料夾、索引（photo-index.json）、EXIF 拍攝日期與方向、縮圖（HEIC 等用 FFmpeg）、重新命名、刪除
   args.rs        所有 FFmpeg 參數組裝（純函式）；format.rs、edit.rs 檔名、倍率、剪輯計算
   ffmpeg.rs      尋找 ffmpeg.exe、偵測 ddagrab / gdigrab / 編碼器、ddagrab 與 GPU 編碼器實測
   monitors.rs    DXGI 列舉螢幕（取得 ddagrab 需要的 adapter / output 索引）
@@ -239,7 +241,7 @@ core/            後端（Rust 函式庫，有單元測試，可在 Linux 上測
   tests/         vectors.json：2.x 版算出的檔名、倍率、剪輯計算結果，確保改寫後結果不變
 shell/           主程式：單一執行個體、系統匣、操作視窗（egui）
   build.rs       把圖示與版本資訊寫進 exe
-  src/ui/        main_view.rs 主畫面；export_dialog.rs 製作加速版 / GIF；library_dialog.rs 全部錄影 / 全部截圖；viewer.rs 內建檢視器；tour.rs 一步一步的教學；
+  src/ui/        main_view.rs 主畫面；export_dialog.rs 製作加速版 / GIF；library_dialog.rs 全部錄影 / 全部截圖；photo_browse.rs 檔案庫的相片分頁；viewer.rs 內建檢視器；tour.rs 一步一步的教學；
                  editor/ 剪輯視窗（stage.rs 影片與標註、timeline.rs 時間軸與標註軌、side.rs 右側面板）；
                  theme.rs 顏色、字型、按鈕等共用元件；remember.rs 記住上次的操作選擇（排序、篩選、分頁、工具的顏色大小、播放速度…，存在設定的 last）；dev.rs 開發用的自動截圖
 .github/workflows/release.yml   PR 自動測試與建置；main 的版本號尚未發佈時自動發佈

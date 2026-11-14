@@ -45,6 +45,8 @@ pub struct LibraryDialog {
     kind: Kind,
     /// 切到「Jellyfin」分頁（整個檔案庫改成瀏覽 Jellyfin；kind 留著，切回來還是原本的錄影或截圖）
     jellyfin: bool,
+    /// 切到「相片」分頁（瀏覽 NAS 等相片資料夾；和 jellyfin 一樣 kind 留著）
+    photos: bool,
     /// 看哪個資料夾：None = 目前的儲存位置；也可以看之前用過的資料夾
     dir: Option<String>,
     /// 上次讀取的資料夾（儲存位置改了就重新讀取）
@@ -213,6 +215,7 @@ impl LibraryDialog {
             prefetch: vec![],
             kind,
             jellyfin: false,
+            photos: false,
             dir: None,
             loaded_dir: String::new(),
             query: String::new(),
@@ -398,6 +401,23 @@ fn export_label(x: &ExportInfo) -> String {
     }
 }
 
+/// 開啟檔案庫，停在「相片」分頁；切回錄影、截圖時是錄影
+pub fn open_photos(app: &mut UiApp) {
+    let mut d = LibraryDialog::new(Kind::Video);
+    d.photos = true;
+    app.library = Some(d);
+    super::photo_browse::open(app);
+}
+
+/// 檔案庫右上角的分頁
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Tab {
+    Video,
+    Shot,
+    Photos,
+    Jellyfin,
+}
+
 /// 開啟檔案庫，停在「Jellyfin」分頁（「⋯」總選單的「Jellyfin」）；切回錄影、截圖時是錄影
 pub fn open_jellyfin(app: &mut UiApp) {
     let mut d = LibraryDialog::new(Kind::Video);
@@ -512,6 +532,8 @@ enum Req {
     Import,
     /// 切到「Jellyfin」分頁：還沒讀過就開始讀
     Jellyfin,
+    /// 切到「相片」分頁：還沒讀過就開始讀
+    Photos,
     /// 在檔案總管開啟資料夾
     OpenDir(String),
     /// 看哪個資料夾（None = 目前的儲存位置）
@@ -669,6 +691,11 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
     }
     // Jellyfin 分頁的內容要在對話框裡畫，先拿出來（畫完再放回去）
     let mut jf = if d.jellyfin { app.jf_browse.take() } else { None };
+    // 相片分頁也一樣；鍵盤給它用：上面沒有其他對話框、檢視器時
+    let mut ph = if d.photos { app.photos.take() } else { None };
+    let mut ph_out = super::photo_browse::Panel::default();
+    let ph_keys = app.ask.is_none() && app.viewer.is_none() && app.settings_dlg.is_none();
+    let photo_stars = app.core.photo_stars.clone();
     // 背景正在整理的（Jellyfin 分頁下面畫進度）：（改好幾支, 全部幾支）
     let jf_busy = app.jf_batch_run.as_ref().map(|r| *r.progress.lock().unwrap_or_else(|e| e.into_inner()));
     let jf_subs = app.jf_subs.as_ref().map(|r| r.status());
@@ -709,27 +736,36 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
                 close = true;
             }
             rui.add_space(8.0);
-            // 由右往左排：畫面上是「錄影｜截圖｜Jellyfin」（有設定 Jellyfin 才有第三個）
-            let mut tab = if d.jellyfin { None } else { Some(d.kind) };
-            let mut tabs = vec![(Some(Kind::Shot), tr!("截圖", "Screenshots")), (Some(Kind::Video), tr!("錄影", "Recordings"))];
+            // 由右往左排：畫面上是「錄影｜截圖｜相片｜Jellyfin」（有設定 Jellyfin 才有最後一個）
+            let mut tab = if d.jellyfin {
+                Tab::Jellyfin
+            } else if d.photos {
+                Tab::Photos
+            } else if d.kind == Kind::Shot {
+                Tab::Shot
+            } else {
+                Tab::Video
+            };
+            let mut tabs = vec![(Tab::Photos, tr!("相片", "Photos")), (Tab::Shot, tr!("截圖", "Screenshots")), (Tab::Video, tr!("錄影", "Recordings"))];
             if jf_url.is_some() {
-                tabs.insert(0, (None, "Jellyfin"));
+                tabs.insert(0, (Tab::Jellyfin, "Jellyfin"));
             }
             let changed = theme::segmented(rui, &mut tab, &tabs, true);
+            let new_kind = match tab {
+                Tab::Video => Some(Kind::Video),
+                Tab::Shot => Some(Kind::Shot),
+                _ => None,
+            };
             if changed {
+                (d.jellyfin, d.photos) = (tab == Tab::Jellyfin, tab == Tab::Photos);
                 match tab {
-                    None => {
-                        d.jellyfin = true;
-                        req = Some(Req::Jellyfin);
-                    }
-                    Some(k) => {
-                        d.jellyfin = false;
-                        d.kind = k;
-                    }
+                    Tab::Jellyfin => req = Some(Req::Jellyfin),
+                    Tab::Photos => req = Some(Req::Photos),
+                    _ => d.kind = new_kind.unwrap_or(d.kind),
                 }
             }
-            // 錄影、截圖互換時（切到 Jellyfin 再切回原本的不算）
-            if changed && tab.is_some_and(|k| k != kind) {
+            // 錄影、截圖互換時（切到 Jellyfin、相片再切回原本的不算）
+            if changed && new_kind.is_some_and(|k| k != kind) {
                 // 換成那個分頁上次的排序、篩選
                 d.use_last(&last);
                 d.page = 1;
@@ -749,9 +785,13 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
             let shot = d.kind == Kind::Shot;
             // 和主畫面的「檔案庫：錄影｜截圖」同一個名稱；右上角的「錄影｜截圖｜Jellyfin」就是切換
             lui.add(egui::Label::new(RichText::new(tr!("檔案庫", "Library")).font(theme::font_bold(17.0))).truncate());
-            // Jellyfin 分頁：下面寫伺服器的網址（不是這台電腦的資料夾）
+            // Jellyfin 分頁：下面寫伺服器的網址（不是這台電腦的資料夾）；相片分頁：相片資料夾
             if let Some(url) = jf_url.as_deref().filter(|_| d.jellyfin) {
                 lui.add(egui::Label::new(theme::muted(lui, url)).truncate());
+            } else if d.photos {
+                if let Some(b) = ph.as_ref() {
+                    super::photo_browse::header(lui, b, &mut ph_out);
+                }
             } else {
             lui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 2.0;
@@ -796,6 +836,20 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
             }
         }
         ui.advance_cursor_after_rect(head);
+        // 相片分頁：搜尋、目前位置、縮圖格、勾選都是它自己的
+        if d.photos {
+            ui.add_space(8.0);
+            match ph.as_mut() {
+                Some(b) => super::photo_browse::panel(ui, b, &mut ph_out, &photo_stars, ph_keys),
+                None => {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label(tr!("正在讀取…", "Loading…"));
+                    });
+                }
+            }
+            return;
+        }
         // Jellyfin 分頁：搜尋、目前位置、縮圖格、勾選與換頁都是 Jellyfin 自己的
         if d.jellyfin {
             ui.add_space(8.0);
@@ -1197,13 +1251,19 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
     if modal.should_close() && app.ask.is_none() && !covered {
         // Jellyfin 分頁：檢視器、影片資訊、找重複開著時 Esc 是關它們；有勾選時 Esc 先取消勾選
         let jf_busy = app.viewer.is_some() || app.jf_edit.is_some() || app.jf_dupes.is_some();
-        if !d.jellyfin || !jf_busy && !jf.as_mut().is_some_and(|b| b.clear_selection()) {
+        if d.photos {
+            // 相片分頁：檢視器開著時 Esc 是關它；有勾選時先取消勾選
+            if app.viewer.is_none() && !ph.as_mut().is_some_and(|b| b.clear_selection()) {
+                close = true;
+            }
+        } else if !d.jellyfin || !jf_busy && !jf.as_mut().is_some_and(|b| b.clear_selection()) {
             close = true;
         }
     }
     if close || matches!(req, Some(Req::Record)) {
-        // 關掉檔案庫：Jellyfin 下次開啟重新讀
+        // 關掉檔案庫：Jellyfin、相片下次開啟重新讀（相片的清單存在 photo-index.json，馬上列得出來）
         app.jf_browse = None;
+        app.photos = None;
         if matches!(req, Some(Req::Record)) {
             start_recording(app);
         }
@@ -1219,6 +1279,9 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         super::viewer::open_at(app, e, t);
     }
     // 換到別的分頁也留著，切回來還在同一個位置
+    if let Some(b) = ph {
+        super::photo_browse::apply(app, b, ph_out);
+    }
     if let Some(b) = jf {
         match jf_out {
             Some(out) => super::jellyfin_browse::apply(app, b, out),
@@ -1240,6 +1303,11 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         Some(Req::Jellyfin) => {
             if app.jf_browse.is_none() {
                 super::jellyfin_browse::open(app);
+            }
+        }
+        Some(Req::Photos) => {
+            if app.photos.is_none() {
+                super::photo_browse::open(app);
             }
         }
         Some(Req::ChooseDir) => match app.library.as_ref().map(|d| d.kind) {

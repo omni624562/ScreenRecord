@@ -994,8 +994,8 @@ pub fn open(action: OpenAction, path: &str) -> Result<()> {
             crate::desktop::open_with_explorer(p, false);
         }
         _ => {
-            // 只允許開啟影片、截圖與聲音檔（.mp4 / .gif / .webp / .png / .m4a），避免執行任意檔案
-            if !ends_with_ci(p, &[".mp4", ".gif", ".webp", ".webm", ".png", ".jpg", ".jpeg", ".m4a"]) || !is_file(p) {
+            // 只允許開啟影片、截圖、相片與聲音檔（.mp4 / .gif / .webp / .png / .jpg / .heic / .m4a…），避免執行任意檔案
+            if !ends_with_ci(p, &[".mp4", ".gif", ".webp", ".webm", ".png", ".jpg", ".jpeg", ".m4a", ".heic", ".heif", ".avif", ".bmp", ".tif", ".tiff"]) || !is_file(p) {
                 return Err(Error::config(tr!("找不到檔案", "File not found")));
             }
             crate::desktop::open_with_explorer(p, action == OpenAction::Reveal);

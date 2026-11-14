@@ -112,6 +112,8 @@ pub struct Viewer {
     /// Jellyfin 的時間軸預覽縮圖：第幾張大圖 → 材質（None = 讀取中或讀不到）；要讀的那一張
     tp_tiles: std::collections::HashMap<u32, Option<TextureHandle>>,
     tp_want: std::cell::Cell<Option<u32>>,
+    /// 檔案庫「相片」分頁開的相片（HEIC 等也看得到、照 EXIF 轉正；刪除、重新命名、星號用相片分頁的做法）
+    photo: bool,
 }
 
 /// 正在串流的 Jellyfin 影片
@@ -172,7 +174,7 @@ impl Viewer {
     }
 
     fn is_image(&self) -> bool {
-        is_image_name(&self.cur().media.name)
+        self.photo || is_image_name(&self.cur().media.name)
     }
 
     /// 只有聲音（M4A）
@@ -283,10 +285,36 @@ pub fn open(app: &mut UiApp, entry: LibraryEntry) {
     open_with(app, entry, None, None);
 }
 
-fn open_with(app: &mut UiApp, entry: LibraryEntry, remote: Option<Remote>, start: Option<f64>) {
-    let shots = is_image_name(&entry.media.name);
-    let path = entry.media.path.clone();
-    app.viewer = Some(Viewer {
+/// 看檔案庫「相片」分頁的相片：list 是分頁上的順序（上一張 / 下一張），從第 idx 張開始
+pub fn open_photos(app: &mut UiApp, list: Vec<LibraryEntry>, idx: usize) {
+    let Some(entry) = list.get(idx).cloned() else { return };
+    let mut v = new_viewer(entry, None, None);
+    v.list = list;
+    v.idx = idx;
+    v.photo = true;
+    app.viewer = Some(v);
+    load_current(app);
+}
+
+/// 相片分頁刪掉了這些相片：檢視器開著的話從清單移除，換到下一張（全部刪了就關掉）
+pub fn photos_removed(app: &mut UiApp, paths: &[String]) {
+    let Some(v) = app.viewer.as_mut().filter(|v| v.photo) else { return };
+    let cur = v.cur().media.path.clone();
+    v.list.retain(|e| !paths.contains(&e.media.path));
+    if v.list.is_empty() {
+        app.viewer = None;
+        return;
+    }
+    if paths.contains(&cur) {
+        v.idx = v.idx.min(v.list.len() - 1);
+        load_current(app);
+    } else if let Some(i) = v.list.iter().position(|e| e.media.path == cur) {
+        v.idx = i;
+    }
+}
+
+fn new_viewer(entry: LibraryEntry, remote: Option<Remote>, start: Option<f64>) -> Viewer {
+    Viewer {
         list: vec![entry],
         idx: 0,
         image: None,
@@ -319,7 +347,14 @@ fn open_with(app: &mut UiApp, entry: LibraryEntry, remote: Option<Remote>, start
         queue: vec![],
         tp_tiles: Default::default(),
         tp_want: Default::default(),
-    });
+        photo: false,
+    }
+}
+
+fn open_with(app: &mut UiApp, entry: LibraryEntry, remote: Option<Remote>, start: Option<f64>) {
+    let shots = is_image_name(&entry.media.name);
+    let path = entry.media.path.clone();
+    app.viewer = Some(new_viewer(entry, remote, start));
     load_current(app);
     if is_remote(&path) {
         return;
@@ -369,6 +404,38 @@ fn load_current(app: &mut UiApp) {
     v.loading = true;
     let e = v.cur().clone();
     let seq = LOAD_SEQ.fetch_add(1, Ordering::Relaxed) + 1;
+    if v.photo {
+        // 相片：照 EXIF 轉正，HEIC 等用 FFmpeg；太大的縮到顯示卡放得下（最長 8192）
+        let max_side = (app.ctx.input(|i| i.max_texture_side) as u32).clamp(2048, 8192);
+        let ffmpeg = app.core.ffmpeg_path();
+        let path = e.media.path.clone();
+        let heic = screenrecorder_core::photos::needs_ffmpeg(&path);
+        app.spawn(async move { tokio::task::spawn_blocking(move || screenrecorder_core::photos::load_full(ffmpeg.as_deref(), &path, max_side)).await.ok().flatten() }, move |app, img| {
+            if LOAD_SEQ.load(Ordering::Relaxed) != seq {
+                return;
+            }
+            let ctx = app.ctx.clone();
+            let no_ffmpeg = app.core.ffmpeg_path().is_none();
+            let Some(v) = app.viewer.as_mut() else { return };
+            v.loading = false;
+            match img {
+                Some((img, (w, h))) => {
+                    let size = vec2(img.width() as f32, img.height() as f32);
+                    let color = egui::ColorImage::from_rgba_unmultiplied([img.width() as usize, img.height() as usize], img.as_raw());
+                    let opt = TextureOptions { magnification: egui::TextureFilter::Nearest, mipmap_mode: Some(egui::TextureFilter::Linear), ..TextureOptions::LINEAR };
+                    v.image = Some((ctx.load_texture("viewer-photo", color, opt), size));
+                    let m = &mut v.list[v.idx].media;
+                    (m.width, m.height) = (Some(w), Some(h));
+                }
+                None if heic && no_ffmpeg => {
+                    v.error =
+                        Some(tr!("要有 FFmpeg 才看得到這種相片（主畫面上方按「下載並開始使用」）", "This kind of photo needs FFmpeg (click “Download and start” at the top of the main window)").into())
+                }
+                None => v.error = Some(tr!("無法讀取這張相片", "Couldn't read this photo").into()),
+            }
+        });
+        return;
+    }
     if is_image_name(&e.media.name) {
         load_related(app, &e.media.path);
         let max_side = app.ctx.input(|i| i.max_texture_side).max(2048);
@@ -646,6 +713,8 @@ enum Act {
     JfFace,
     /// 串流的 Jellyfin 影片：加進或拿出我的最愛
     JfFav,
+    /// 相片分頁的相片：加上 / 移除星號
+    PhotoStar,
 }
 
 /// 標題列的一個按鈕；視窗窄時依序從後面的開始收進「⋯」
@@ -745,6 +814,27 @@ fn head_buttons(app: &UiApp, e: &LibraryEntry, image: bool, remote: Option<&Remo
     list
 }
 
+/// 相片分頁開的相片：複製｜星號、重新命名｜用 Windows 開啟（刪除、在資料夾中顯示固定在右上角）
+fn photo_buttons(app: &UiApp, e: &LibraryEntry) -> Vec<HeadBtn> {
+    let b = head_btn;
+    let starred = super::photo_browse::starred(app, &e.media.path);
+    let mut star = head_icon(
+        if starred { tr!("移除星號", "Remove star") } else { tr!("加上星號", "Add star") },
+        if starred { Icon::StarOn } else { Icon::Star },
+        tr!("有星號的相片可以用篩選「有星號的」找出來", "Find starred photos with the Starred filter"),
+        Act::PhotoStar,
+    );
+    star.group = true;
+    let mut open = head_icon(tr!("用 Windows 開啟", "Open in Windows"), Icon::Export, tr!("用 Windows 的「相片」開啟", "Open in the Windows Photos app"), Act::Entry(EntryAction::External));
+    open.group = true;
+    vec![
+        b(tr!("複製", "Copy"), Some(Icon::Copy), tr!("複製到剪貼簿（Ctrl+C；可直接貼到 LINE、Word、信件）", "Copy to clipboard (Ctrl+C; paste it straight into LINE, Word or an email)"), Act::Copy),
+        star,
+        head_icon(tr!("重新命名", "Rename"), Icon::Rename, tr!("改檔名（副檔名不變）", "Rename the file (the extension stays the same)"), Act::Rename),
+        open,
+    ]
+}
+
 /// 串流 Jellyfin 影片時標題列的按鈕：剪輯、製作（先下載）、下載｜設為封面、影片資訊｜星號
 fn remote_buttons(app: &UiApp, remote: Option<&Remote>) -> Vec<HeadBtn> {
     let blocked = app.blocked(EntryAction::Export);
@@ -842,7 +932,8 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         keyboard(&mut v, ctx, &mut act);
     }
     let e = v.cur().clone();
-    let buttons = head_buttons(app, &e, v.is_image(), v.remote.as_ref());
+    let buttons = if v.photo { photo_buttons(app, &e) } else { head_buttons(app, &e, v.is_image(), v.remote.as_ref()) };
+    let photo_date = if v.photo { super::photo_browse::date_of(app, &e.media.path) } else { None };
 
     let screen = ctx.content_rect();
     let (size, frame, area) = if v.full {
@@ -884,7 +975,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         let audio = v.is_audio();
         // 標題列（全螢幕時不顯示）
         if !v.full {
-            egui::Frame::new().inner_margin(egui::Margin::symmetric(18, 9)).show(ui, |ui| header(&mut v, ui, &e, &buttons, &mut act));
+            egui::Frame::new().inner_margin(egui::Margin::symmetric(18, 9)).show(ui, |ui| header(&mut v, ui, &e, &buttons, photo_date.as_deref(), &mut act));
         }
         // 畫面（截圖下方留一列相關的截圖）
         let bar_h = 52.0;
@@ -1189,7 +1280,7 @@ fn head_sep(ui: &mut egui::Ui) {
 }
 
 /// 標題列：左邊名稱與資訊（太長時截斷），右邊按鈕都直接按得到；視窗窄放不下的才收進「⋯ 更多」
-fn header(v: &mut Viewer, ui: &mut egui::Ui, e: &LibraryEntry, buttons: &[HeadBtn], act: &mut Act) {
+fn header(v: &mut Viewer, ui: &mut egui::Ui, e: &LibraryEntry, buttons: &[HeadBtn], photo_date: Option<&str>, act: &mut Act) {
     let p = theme::pal(ui);
     let image = v.is_image();
     let head = Rect::from_min_size(ui.cursor().min, vec2(ui.available_width(), 40.0));
@@ -1220,7 +1311,13 @@ fn header(v: &mut Viewer, ui: &mut egui::Ui, e: &LibraryEntry, buttons: &[HeadBt
     // 刪除離關閉遠一點，不容易按錯
     rui.add_space(16.0);
     let remote = is_remote(&e.media.path);
-    let trash_tip = if remote { tr!("從 Jellyfin 刪除（Delete）", "Delete from Jellyfin (Delete)") } else { tr!("移到資源回收筒（Delete）", "Move to Recycle Bin (Delete)") };
+    let trash_tip = if remote {
+        tr!("從 Jellyfin 刪除（Delete）", "Delete from Jellyfin (Delete)")
+    } else if v.photo && screenrecorder_core::photos::is_network(&e.media.path) {
+        tr!("刪除（Delete；NAS 上的相片不會進這台電腦的資源回收筒）", "Delete (Delete; photos on a NAS don't go to this PC's Recycle Bin)")
+    } else {
+        tr!("移到資源回收筒（Delete）", "Move to Recycle Bin (Delete)")
+    };
     if Btn::icon_only(Icon::Trash).ghost().small().tooltip(trash_tip).show(rui).clicked() {
         *act = Act::Delete;
     }
@@ -1290,8 +1387,14 @@ fn header(v: &mut Viewer, ui: &mut egui::Ui, e: &LibraryEntry, buttons: &[HeadBt
             meta.push(short_clock(d));
         }
     }
+    if let Some(date) = photo_date {
+        meta.push(date.to_string());
+    }
     if remote {
         meta.push(tr!("在 Jellyfin 上串流播放", "Streaming from Jellyfin").to_string());
+    } else if v.photo && !e.media.folder.is_empty() {
+        meta.push(format_bytes(e.media.bytes));
+        meta.push(format!("{}/{}", e.media.folder, e.media.name));
     } else {
         meta.push(format_bytes(e.media.bytes));
         meta.push(e.media.name.clone());
@@ -1303,6 +1406,9 @@ fn header(v: &mut Viewer, ui: &mut egui::Ui, e: &LibraryEntry, buttons: &[HeadBt
 
 /// 上方顯示的名稱：預設檔名換成日期時間，其他去掉副檔名
 fn title_of(e: &LibraryEntry) -> String {
+    if screenrecorder_core::photos::is_photo_name(&e.media.name) && !is_image_name(&e.media.name) {
+        return e.media.name.rsplit_once('.').map_or(e.media.name.clone(), |(b, _)| b.to_string());
+    }
     if is_default_name(&e.media.name) {
         short_date(&e.media.name, e.media.time_ms(), true)
     } else {
@@ -1329,7 +1435,19 @@ fn run_act(app: &mut UiApp, act: Act) {
             load_current(app);
         }
         Act::Next => go(app, 1),
-        Act::Copy => copy_image(app),
+        Act::Copy => {
+            let Some(v) = app.viewer.as_ref() else { return };
+            if v.photo {
+                let path = v.cur().media.path.clone();
+                return super::photo_browse::copy_image(app, path);
+            }
+            copy_image(app)
+        }
+        Act::PhotoStar => {
+            let Some(path) = app.viewer.as_ref().map(|v| v.cur().media.path.clone()) else { return };
+            let on = !super::photo_browse::starred(app, &path);
+            super::photo_browse::set_star(app, &[path], on);
+        }
         Act::CopyName => {
             let Some(v) = app.viewer.as_ref() else { return };
             let name = title_of(v.cur());
@@ -1411,7 +1529,15 @@ fn run_act(app: &mut UiApp, act: Act) {
                 Err(e) => app.toast(trf!("沒有改到 Jellyfin 的我的最愛：{e}", "Couldn't change your Jellyfin favorites: {e}"), true),
             });
         }
+        Act::Delete if app.viewer.as_ref().is_some_and(|v| v.photo) => {
+            let Some(path) = app.viewer.as_ref().map(|v| v.cur().media.path.clone()) else { return };
+            super::photo_browse::confirm_delete(app, vec![path]);
+        }
         Act::Delete => delete_current(app),
+        Act::Rename if app.viewer.as_ref().is_some_and(|v| v.photo) => {
+            let Some(path) = app.viewer.as_ref().map(|v| v.cur().media.path.clone()) else { return };
+            super::photo_browse::rename(app, path);
+        }
         Act::Rename => {
             let Some(v) = app.viewer.as_mut() else { return };
             let e = v.cur().clone();

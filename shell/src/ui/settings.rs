@@ -213,6 +213,16 @@ pub struct UiSettings {
     pub lib_video_size: u8,
     /// 檔案庫「Jellyfin」分頁用清單（表格）看，不是縮圖
     pub jf_list_view: bool,
+    /// 檔案庫「相片」分頁的相片資料夾（NAS 上的 \\NAS\photo 或任何資料夾；可以好幾個）
+    pub photo_dirs: Vec<String>,
+    /// 檔案庫「相片」分頁的縮圖大小：0 小、1 中、2 大
+    pub photo_grid_size: u8,
+    /// 檔案庫「相片」分頁依日期看（不是一層層的資料夾）
+    pub photo_by_date: bool,
+    /// 檔案庫「相片」分頁上次的排序（photo_browse::PhotoSort::ALL 的第幾個）
+    pub photo_sort: u8,
+    /// 檔案庫「相片」分頁上次停在哪個資料夾（完整路徑；空的 = 最上層），下次開啟回到這裡
+    pub photo_at: String,
     /// 播放影片的音量（0～100）與靜音：開下一支、重開程式都沿用上次的
     pub play_volume: u8,
     pub play_muted: bool,
@@ -552,6 +562,19 @@ impl UiSettings {
             recent_size: num("recentSize").map(|v| v as u8).filter(|v| *v <= 2).unwrap_or(0),
             lib_video_size: num("libVideoSize").map(|v| v as u8).filter(|v| *v <= 2).unwrap_or(0),
             jf_list_view: boolean("jfListView").unwrap_or(false),
+            photo_dirs: o
+                .get("photoDirs")
+                .and_then(|v| serde_json::from_value::<Vec<String>>(v.clone()).ok())
+                .unwrap_or_default()
+                .into_iter()
+                .map(|d| d.trim().to_string())
+                .filter(|d| !d.is_empty())
+                .take(20)
+                .collect(),
+            photo_grid_size: num("photoGridSize").map(|v| v as u8).filter(|v| *v <= 2).unwrap_or(1),
+            photo_by_date: boolean("photoByDate").unwrap_or(false),
+            photo_sort: num("photoSort").map(|v| v as u8).filter(|v| *v <= 2).unwrap_or(0),
+            photo_at: string("photoAt").unwrap_or_default(),
             play_volume: num("playVolume").map(|v| v.clamp(0.0, 100.0) as u8).unwrap_or(100),
             play_muted: boolean("playMuted").unwrap_or(false),
             jf_path: o.get("jfPath").and_then(|v| serde_json::from_value::<Vec<(String, String)>>(v.clone()).ok()).unwrap_or_default(),

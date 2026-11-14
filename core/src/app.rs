@@ -154,6 +154,8 @@ pub struct App {
     pub markers: Arc<crate::projects::ProjectStore>,
     /// 釘選（我的最愛）的截圖、錄影
     pub pins: Arc<crate::pins::PinStore>,
+    /// 相片分頁的星號（另外存：清單開啟時不用去 NAS 檢查那些檔案在不在）
+    pub photo_stars: Arc<crate::pins::PinStore>,
     /// 截圖的文字索引（搜尋圖裡的字）
     pub ocr: Arc<crate::ocr_index::OcrIndex>,
     /// 截圖的來歷（截圖當下的程式、視窗標題）
@@ -336,6 +338,7 @@ impl App {
             projects: Arc::new(crate::projects::ProjectStore::new(dir.join("edits"))),
             markers: Arc::new(crate::projects::ProjectStore::new(dir.join("markers"))),
             pins: Arc::new(crate::pins::PinStore::new(dir.join("pins.json"))),
+            photo_stars: Arc::new(crate::pins::PinStore::new(dir.join("photo-stars.json"))),
             ocr: Arc::new(crate::ocr_index::OcrIndex::new(dir.join("ocr_index.json"))),
             shot_meta: Arc::new(crate::shot_meta::ShotMetaStore::new(dir.join("shot_meta.json"))),
             vocab: Arc::new(crate::facets::VocabCache::default()),
