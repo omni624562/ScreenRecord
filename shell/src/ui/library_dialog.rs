@@ -694,7 +694,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
     // 相片分頁也一樣；鍵盤給它用：上面沒有其他對話框、檢視器時
     let mut ph = if d.photos { app.photos.take() } else { None };
     let mut ph_out = super::photo_browse::Panel::default();
-    let ph_keys = app.ask.is_none() && app.viewer.is_none() && app.settings_dlg.is_none();
+    let ph_keys = app.ask.is_none() && app.viewer.is_none() && app.settings_dlg.is_none() && !ph.as_ref().is_some_and(|b| b.people.dlg.is_some());
     let photo_stars = app.core.photo_stars.clone();
     // 背景正在整理的（Jellyfin 分頁下面畫進度）：（改好幾支, 全部幾支）
     let jf_busy = app.jf_batch_run.as_ref().map(|r| *r.progress.lock().unwrap_or_else(|e| e.into_inner()));
@@ -1253,7 +1253,7 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         let jf_busy = app.viewer.is_some() || app.jf_edit.is_some() || app.jf_dupes.is_some();
         if d.photos {
             // 相片分頁：檢視器開著時 Esc 是關它；有勾選時先取消勾選
-            if app.viewer.is_none() && !ph.as_mut().is_some_and(|b| b.clear_selection()) {
+            if app.viewer.is_none() && !ph.as_ref().is_some_and(|b| b.people.dlg.is_some()) && !ph.as_mut().is_some_and(|b| b.clear_selection()) {
                 close = true;
             }
         } else if !d.jellyfin || !jf_busy && !jf.as_mut().is_some_and(|b| b.clear_selection()) {
@@ -1281,6 +1281,8 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
     // 換到別的分頁也留著，切回來還在同一個位置
     if let Some(b) = ph {
         super::photo_browse::apply(app, b, ph_out);
+        // 整理人物的視窗（蓋在檔案庫上面）
+        super::photo_people::dialog(app, ctx);
     }
     if let Some(b) = jf {
         match jf_out {

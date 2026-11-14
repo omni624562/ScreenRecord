@@ -36,6 +36,7 @@ pub mod edit;
 pub mod effects;
 pub mod error;
 pub mod exporter;
+pub mod faces;
 pub mod facets;
 pub mod ffmpeg;
 pub mod filepick;

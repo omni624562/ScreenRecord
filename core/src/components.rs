@@ -24,12 +24,15 @@ pub enum Kind {
     SpeechFfmpeg,
     /// 語音模型（MODELS 的第幾個）
     Model(usize),
+    /// 相片的人物：找臉、認人的模型（YuNet + SFace，faces.rs）
+    Faces,
 }
 
 impl Kind {
     pub fn all() -> Vec<Kind> {
         let mut v = vec![Kind::Ffmpeg, Kind::Mpv, Kind::SpeechFfmpeg];
         v.extend((0..MODELS.len()).map(Kind::Model));
+        v.push(Kind::Faces);
         v
     }
 
@@ -47,6 +50,7 @@ impl Kind {
             Kind::Mpv => tr!("mpv 播放元件", "mpv playback component").into(),
             Kind::SpeechFfmpeg => tr!("語音辨識用的 FFmpeg", "FFmpeg for speech recognition").into(),
             Kind::Model(_) => trf!("語音模型：{}", "Speech model: {}", self.model().map(|m| m.label()).unwrap_or_default()),
+            Kind::Faces => tr!("人臉模型", "Face models").into(),
         }
     }
 
@@ -57,6 +61,7 @@ impl Kind {
             Kind::Mpv => crate::mpv_download::MPV_MB,
             Kind::SpeechFfmpeg => crate::downloader::SPEECH_FFMPEG_MB,
             Kind::Model(_) => self.model().map(|m| m.mb).unwrap_or(0),
+            Kind::Faces => crate::faces::MB,
         }
     }
 
@@ -67,6 +72,8 @@ impl Kind {
             Kind::Mpv => crate::mpv_download::mpv_urls().into_iter().next().unwrap_or_default(),
             Kind::SpeechFfmpeg => crate::downloader::speech_ffmpeg_urls().into_iter().next().unwrap_or_default(),
             Kind::Model(_) => self.model().map(|m| m.url.to_string()).unwrap_or_default(),
+            // 兩個檔案：瀏覽器先開大的那個（小的在設定頁說明裡）
+            Kind::Faces => crate::faces::SFACE.url.to_string(),
         }
     }
 
@@ -76,6 +83,7 @@ impl Kind {
             Kind::Ffmpeg | Kind::SpeechFfmpeg => "ffmpeg.exe;*.zip",
             Kind::Mpv => "libmpv-2.dll;*.7z",
             Kind::Model(_) => "*.bin",
+            Kind::Faces => "*.onnx",
         }
     }
 
@@ -86,6 +94,7 @@ impl Kind {
             Kind::Mpv => Some(crate::mpv_download::installed_path().unwrap_or_else(crate::mpv_download::install_path)),
             Kind::SpeechFfmpeg => Some(subtitles::speech_ffmpeg_path()),
             Kind::Model(_) => self.model().map(subtitles::model_path),
+            Kind::Faces => Some(crate::faces::model_path(&crate::faces::SFACE)),
         }
     }
 }
@@ -168,6 +177,7 @@ fn component_files() -> Vec<PathBuf> {
     let exe = if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" };
     let mut v = vec![PathBuf::from(exe), PathBuf::from(crate::mpv::LIB_NAME), Path::new("whisper").join(exe)];
     v.extend(MODELS.iter().map(|m| Path::new("whisper").join(m.file)));
+    v.extend(crate::faces::MODELS.iter().map(|m| Path::new("faces").join(m.file)));
     v
 }
 
@@ -289,6 +299,7 @@ impl App {
             Kind::Mpv => crate::mpv_download::installed_path().is_some() || crate::mpv::loaded(),
             Kind::SpeechFfmpeg => self.env().ffmpeg.has_whisper || subtitles::speech_ffmpeg_downloaded(),
             Kind::Model(_) => k.model().is_some_and(subtitles::model_ready),
+            Kind::Faces => crate::faces::models_ready(),
         }
     }
 
@@ -325,6 +336,7 @@ impl App {
                     Some(m) => tokio::task::spawn_blocking(move || subtitles::download_model(&m, &progress, &cancel)).await.map_err(|e| e.to_string()).and_then(|r| r),
                     None => Ok(()),
                 },
+                Kind::Faces => tokio::task::spawn_blocking(move || crate::faces::download(&progress, &cancel)).await.map_err(|e| e.to_string()).and_then(|r| r),
                 Kind::Ffmpeg => Ok(()),
             };
             // 透過 Proxy 連不上時，說明用的是哪一個（多半是 Proxy 設定的問題）
@@ -352,6 +364,13 @@ impl App {
             Kind::Ffmpeg => return Err(tr!("FFmpeg 是錄影必要的元件，不能移除", "FFmpeg is required for recording and can't be removed").into()),
             Kind::Mpv => crate::mpv_download::installed_path()
                 .ok_or_else(|| tr!("這是系統安裝的 libmpv，請用系統的套件管理程式移除", "This libmpv is installed by the system. Remove it with your package manager").to_string())?,
+            // 兩個檔案一起移除（臉的資料留著，在相片分頁的「人物」裡刪）
+            Kind::Faces => {
+                crate::faces::remove_models()?;
+                crate::info!("[外部元件] 已移除人臉模型");
+                self.components.set_error(k, None);
+                return Ok(());
+            }
             _ => k.path().ok_or_else(|| tr!("找不到檔案", "File not found").to_string())?,
         };
         if self.after_status().is_some() {
@@ -415,6 +434,10 @@ impl App {
                 }
                 None => Ok(()),
             },
+            Kind::Faces => {
+                let s = src.clone();
+                tokio::task::spawn_blocking(move || crate::faces::install_file(&s)).await.map_err(|e| e.to_string()).and_then(|r| r.map(|_| ()))
+            }
         };
         match &r {
             Ok(()) => {

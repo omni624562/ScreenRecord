@@ -117,10 +117,10 @@ const REFRESH_AFTER: Duration = Duration::from_secs(60);
 pub struct PhotoBrowse {
     roots: Vec<String>,
     /// 全部的相片（依路徑排序，用二分搜尋找）與每一張的 Meta
-    photos: Vec<Photo>,
+    pub(super) photos: Vec<Photo>,
     meta: Vec<Meta>,
     /// 讀過索引了（還沒讀到之前顯示「正在讀取」）
-    loaded: bool,
+    pub(super) loaded: bool,
     /// 正在整個掃描時已經找到幾張（UiApp::photo_scan 的那一份；沒在掃時 None）
     scanning: Option<Arc<AtomicUsize>>,
     /// 每個相片資料夾上次整個掃描完的時間（毫秒）
@@ -137,7 +137,7 @@ pub struct PhotoBrowse {
     at: Option<(usize, String)>,
     by_date: bool,
     search: String,
-    searched: String,
+    pub(super) searched: String,
     search_at: Option<Instant>,
     year: Option<i32>,
     only_starred: bool,
@@ -146,7 +146,7 @@ pub struct PhotoBrowse {
     /// 畫面上的段落、相片的順序（檢視器的上一張 / 下一張、Shift 選一段）；dirty：條件改了，下一格重排
     sections: Vec<Section>,
     order: Vec<usize>,
-    dirty: bool,
+    pub(super) dirty: bool,
     /// 目前範圍裡每一年有幾張（篩選的年份清單）
     years: Vec<(i32, usize)>,
     /// 勾選的相片（路徑）；Shift＋按一下從 anchor 選到點的那一張
@@ -161,16 +161,19 @@ pub struct PhotoBrowse {
     visible: Arc<std::sync::Mutex<HashSet<String>>>,
     /// 每一層捲到哪裡（回到上一層時還在原本的位置）；want_offset：換了位置，下一格捲到那裡
     offsets: HashMap<String, f32>,
-    want_offset: Option<f32>,
+    pub(super) want_offset: Option<f32>,
     wheel_at: Option<Instant>,
     /// 上次存索引的時間（讀日期時每隔一陣子存一次）
     saved_at: Instant,
+    /// 相片裡的人（photo_people.rs）
+    pub(super) people: super::photo_people::People,
 }
 
 impl Drop for PhotoBrowse {
     /// 關掉檔案庫：讀日期停下來（讀到哪裡存好了，下次接著讀）；整個掃描照樣繼續，掃完存起來
     fn drop(&mut self) {
         self.date_stop.store(true, Ordering::Relaxed);
+        super::photo_people::stop(&self.people);
     }
 }
 
@@ -212,6 +215,7 @@ impl PhotoBrowse {
             want_offset: None,
             wheel_at: None,
             saved_at: Instant::now(),
+            people: Default::default(),
         }
     }
 
@@ -263,6 +267,7 @@ impl PhotoBrowse {
     fn index_changed(&mut self) {
         self.meta = self.photos.iter().map(|p| meta_of(&self.roots, p)).collect();
         self.selected.retain(|p| self.photos.binary_search_by(|x| x.path.as_str().cmp(p)).is_ok());
+        self.people.photos_changed();
         self.dirty = true;
     }
 
@@ -285,9 +290,16 @@ impl PhotoBrowse {
             *years.entry(self.meta[i].year).or_default() += 1;
         }
         self.years = years.into_iter().rev().collect();
+        // 只看某個人、用名字搜尋（相片裡有取名的人）
+        let person = self.people.filter.is_some();
         let keep = |i: usize| {
             let m = &self.meta[i];
-            self.year.is_none_or(|y| m.year == y) && (!self.only_starred || stars.contains(&self.photos[i].path)) && words.iter().all(|w| m.text.contains(w.as_str()))
+            let path = &self.photos[i].path;
+            let names = || self.people.names.get(path).map(String::as_str).unwrap_or("");
+            self.year.is_none_or(|y| m.year == y)
+                && (!self.only_starred || stars.contains(path))
+                && (!person || self.people.filter_set.contains(path))
+                && words.iter().all(|w| m.text.contains(w.as_str()) || names().contains(w.as_str()))
         };
         let photos = &self.photos;
         let sort = self.sort;
@@ -442,6 +454,8 @@ pub fn open(app: &mut UiApp) {
     });
     // 縮圖快取太多時刪掉最舊的
     app.spawn(async { tokio::task::spawn_blocking(photos::prune_thumbs).await.ok() }, |_, _| {});
+    // 相片裡的人
+    super::photo_people::open(app);
 }
 
 /// 這個相片資料夾上次整個掃描完的時間
@@ -749,6 +763,9 @@ pub struct Panel {
     external: Option<String>,
     copy: Option<String>,
     copy_file: Option<Vec<String>>,
+    /// 「人物」選單按了的、位置列「只看某人」的 ×
+    people: Option<super::photo_people::MenuAct>,
+    all_people: bool,
 }
 
 /// 標題下面那一行：相片資料夾（按了是選單：在檔案總管開啟、移除、加入資料夾）
@@ -932,6 +949,10 @@ pub fn panel(ui: &mut egui::Ui, d: &mut PhotoBrowse, out: &mut Panel, stars: &Pi
                 })
                 .response
                 .on_hover_text(tr!("依拍攝日期的年份（沒有拍攝時間的相片用檔名裡的日期或修改時間）", "By the year taken (photos without one use the date in the file name or the modified time)"));
+            match super::photo_people::menu(ui, &d.people, d.people.enabled, d.people.dl) {
+                super::photo_people::MenuAct::None => {}
+                act => out.people = Some(act),
+            }
             egui::ComboBox::from_id_salt("photo-sort").selected_text(d.sort.label()).width(140.0).show_ui(ui, |ui| {
                 for s in PhotoSort::ALL {
                     ui.selectable_value(&mut d.sort, s, s.label());
@@ -1016,6 +1037,12 @@ pub fn panel(ui: &mut egui::Ui, d: &mut PhotoBrowse, out: &mut Panel, stars: &Pi
         if !d.searched.is_empty() {
             ui.label(theme::muted(ui, "›"));
             Btn::new(&trf!("搜尋「{}」", "Search “{}”", d.searched)).small().ghost().selected(true).show(ui);
+        }
+        if d.people.filter.is_some() {
+            ui.label(theme::muted(ui, "›"));
+            if super::photo_people::filter_chip(ui, &d.people) {
+                out.all_people = true;
+            }
         }
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             if d.loaded {
@@ -1333,6 +1360,8 @@ fn footer(ui: &mut egui::Ui, d: &mut PhotoBrowse, out: &mut Panel, area: Rect, f
     let right_w = {
         let right = &mut ui.new_child(UiBuilder::new().max_rect(foot).layout(Layout::right_to_left(Align::Center)));
         right.label(theme::muted(right, trf!("相片資料夾裡共 {} 張", "{} photos in all", d.photos.len())));
+        right.add_space(12.0);
+        super::photo_people::footer(right, &mut d.people);
         if let Some((done, total)) = d.dating {
             right.add_space(12.0);
             right
@@ -1455,6 +1484,16 @@ pub fn apply(app: &mut UiApp, mut d: PhotoBrowse, out: Panel) {
     if let Some(path) = out.copy {
         copy_image(app, path);
     }
+    if let Some(act) = out.people {
+        super::photo_people::menu_act(app, act);
+    }
+    if out.all_people {
+        if let Some(d) = app.photos.as_mut() {
+            d.people.set_filter(None);
+            d.dirty = true;
+        }
+    }
+    super::photo_people::tick(app);
     if let Some(paths) = out.copy_file {
         match screenrecorder_core::clipboard::copy_files(&paths) {
             Ok(()) => app.toast(tr!("已複製檔案，可以直接貼到資料夾、LINE、Teams 或信件", "Files copied. Paste them into a folder, LINE, Teams or an email"), false),
@@ -1789,6 +1828,7 @@ mod tests {
             want_offset: None,
             wheel_at: None,
             saved_at: Instant::now(),
+            people: Default::default(),
         };
         d.photos = paths
             .iter()
