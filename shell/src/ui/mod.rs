@@ -22,6 +22,7 @@ pub mod library_send;
 pub mod main_view;
 pub mod notes;
 pub mod ocr;
+pub mod photo_browse;
 pub mod playback;
 pub mod presets;
 pub mod preview;
@@ -206,6 +207,8 @@ pub struct UiApp {
     pub details_sync_busy: bool,
     /// 檔案庫「Jellyfin」分頁的內容（關掉檔案庫時清掉）
     pub jf_browse: Option<jellyfin_browse::JfBrowse>,
+    /// 檔案庫「相片」分頁的內容（關掉檔案庫時清掉；相片的清單存在 photo-index.json，下次開啟馬上列出）
+    pub photos: Option<photo_browse::PhotoBrowse>,
     /// 在瀏覽視窗改 Jellyfin 上的影片資訊
     pub jf_edit: Option<jellyfin_edit::JfEdit>,
     /// 背景正在把 Jellyfin 上的人物或標籤重新命名（影片資訊關掉也會繼續）
@@ -404,6 +407,7 @@ impl UiApp {
             details_sync_at: None,
             details_sync_busy: false,
             jf_browse: None,
+            photos: None,
             jf_edit: None,
             jf_rename: None,
             jf_batch: None,
