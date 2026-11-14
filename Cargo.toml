@@ -23,14 +23,8 @@ lto = true
 codegen-units = 1
 strip = true
 
-# 相片的人物：找臉、認人的計算（tract 的矩陣運算）用速度優先，不然每張相片慢兩成
-[profile.release.package.tract-linalg]
-opt-level = 3
-
-[profile.release.package.tract-core]
-opt-level = 3
-
-# 開發版也一樣（不然在 debug 版找一張臉要好幾秒，測試、試用都很慢）
+# 相片的人物（tract）：發佈版和其他部分一樣檔案小優先（速度優先只快 2～5%，exe 卻多 2 MB 以上）。
+# 開發版的 tract 要最佳化，不然在 debug 版找一張臉要好幾秒，測試、試用都很慢
 [profile.dev.package.tract-linalg]
 opt-level = 3
 
