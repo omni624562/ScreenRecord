@@ -1703,6 +1703,40 @@ pub fn copy_image(app: &mut UiApp, path: String) {
     });
 }
 
+/// 勾選（檢視器的「勾選」用；和相片分頁的勾選是同一份）
+pub fn is_selected(app: &UiApp, path: &str) -> bool {
+    app.photos.as_ref().is_some_and(|d| d.selected.contains(path))
+}
+
+pub fn selected_count(app: &UiApp) -> usize {
+    app.photos.as_ref().map_or(0, |d| d.selected.len())
+}
+
+/// 勾選的相片（照畫面上的順序）
+pub fn selected_paths(app: &UiApp) -> Vec<String> {
+    let Some(d) = app.photos.as_ref() else { return vec![] };
+    let mut list: Vec<String> = d.order.iter().map(|i| d.photos[*i].path.clone()).filter(|p| d.selected.contains(p)).collect();
+    // 不在目前畫面上的（篩選換過）也算
+    let shown: HashSet<&String> = list.iter().collect();
+    let rest: Vec<String> = d.selected.iter().filter(|p| !shown.contains(p)).cloned().collect();
+    list.extend(rest);
+    list
+}
+
+pub fn toggle_selected(app: &mut UiApp, path: &str) {
+    let Some(d) = app.photos.as_mut() else { return };
+    if !d.selected.remove(path) {
+        d.selected.insert(path.to_string());
+    }
+    d.anchor = Some(path.to_string());
+}
+
+pub fn clear_selected(app: &mut UiApp) {
+    if let Some(d) = app.photos.as_mut() {
+        d.selected.clear();
+    }
+}
+
 /// 相片的星號（檢視器的按鈕用）
 pub fn starred(app: &UiApp, path: &str) -> bool {
     app.core.photo_stars.contains(path)
