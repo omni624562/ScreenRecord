@@ -157,39 +157,107 @@ fn find_tiff(b: &[u8]) -> Option<&[u8]> {
     Some(&b[at + 6..])
 }
 
+/// 讀 TIFF 資料（EXIF）：位元組順序、讀數字、一個 IFD 裡有哪些標籤
+struct Tiff<'a> {
+    t: &'a [u8],
+    le: bool,
+}
+
+impl<'a> Tiff<'a> {
+    fn new(t: &'a [u8]) -> Option<Self> {
+        let le = match t.get(..2)? {
+            b"II" => true,
+            b"MM" => false,
+            _ => return None,
+        };
+        Some(Tiff { t, le })
+    }
+
+    fn u16_at(&self, o: usize) -> Option<u16> {
+        self.t.get(o..o + 2).map(|s| if self.le { u16::from_le_bytes([s[0], s[1]]) } else { u16::from_be_bytes([s[0], s[1]]) })
+    }
+
+    fn u32_at(&self, o: usize) -> Option<u32> {
+        self.t.get(o..o + 4).map(|s| if self.le { u32::from_le_bytes([s[0], s[1], s[2], s[3]]) } else { u32::from_be_bytes([s[0], s[1], s[2], s[3]]) })
+    }
+
+    /// 一個 IFD 裡的（標籤, 那一筆的位置）
+    fn entries(&self, ifd: usize) -> Vec<(u16, usize)> {
+        let n = self.u16_at(ifd).unwrap_or(0) as usize;
+        (0..n.min(500)).filter_map(|i| self.u16_at(ifd + 2 + i * 12).map(|tag| (tag, ifd + 2 + i * 12))).collect()
+    }
+
+    /// 下一個 IFD 的位置（IFD0 之後是放縮圖的 IFD1）
+    fn next_ifd(&self, ifd: usize) -> Option<usize> {
+        let n = self.u16_at(ifd)? as usize;
+        let next = self.u32_at(ifd + 2 + n * 12)? as usize;
+        (next > 0).then_some(next)
+    }
+
+    /// 那一筆的數值（SHORT 或 LONG）
+    fn value(&self, e: usize) -> Option<u32> {
+        match self.u16_at(e + 2)? {
+            3 => self.u16_at(e + 8).map(u32::from),
+            _ => self.u32_at(e + 8),
+        }
+    }
+}
+
+fn find_tag(list: &[(u16, usize)], tag: u16) -> Option<usize> {
+    list.iter().find(|(t, _)| *t == tag).map(|(_, e)| *e)
+}
+
 /// TIFF 資料裡的拍攝時間：Exif IFD 的 DateTimeOriginal（0x9003）→ DateTimeDigitized（0x9004）→ IFD0 的 DateTime（0x0132）
 fn tiff_date(t: &[u8]) -> Option<NaiveDateTime> {
-    let le = match t.get(..2)? {
-        b"II" => true,
-        b"MM" => false,
-        _ => return None,
-    };
-    let u16_at = |o: usize| t.get(o..o + 2).map(|s| if le { u16::from_le_bytes([s[0], s[1]]) } else { u16::from_be_bytes([s[0], s[1]]) });
-    let u32_at = |o: usize| t.get(o..o + 4).map(|s| if le { u32::from_le_bytes([s[0], s[1], s[2], s[3]]) } else { u32::from_be_bytes([s[0], s[1], s[2], s[3]]) });
-    // 一個 IFD 裡的（標籤 → 那一筆的位置）
-    let entries = |ifd: usize| -> Vec<(u16, usize)> {
-        let n = u16_at(ifd).unwrap_or(0) as usize;
-        (0..n.min(500)).filter_map(|i| u16_at(ifd + 2 + i * 12).map(|tag| (tag, ifd + 2 + i * 12))).collect()
-    };
+    let x = Tiff::new(t)?;
     let ascii = |e: usize| -> Option<NaiveDateTime> {
-        let count = u32_at(e + 4)? as usize;
-        let off = if count <= 4 { e + 8 } else { u32_at(e + 8)? as usize };
+        let count = x.u32_at(e + 4)? as usize;
+        let off = if count <= 4 { e + 8 } else { x.u32_at(e + 8)? as usize };
         let s = std::str::from_utf8(t.get(off..off + count.min(19))?).ok()?;
         let d = NaiveDateTime::parse_from_str(s.trim_end_matches('\0').trim(), "%Y:%m:%d %H:%M:%S").ok()?;
         // 相機沒設時間時常是 0000:00:00 或 1970 年：不算
         (d.year() >= 1980).then_some(d)
     };
-    let ifd0 = entries(u32_at(4)? as usize);
-    let find = |list: &[(u16, usize)], tag: u16| list.iter().find(|(t, _)| *t == tag).map(|(_, e)| *e);
-    if let Some(exif) = find(&ifd0, 0x8769).and_then(|e| u32_at(e + 8)) {
-        let list = entries(exif as usize);
+    let ifd0 = x.entries(x.u32_at(4)? as usize);
+    if let Some(exif) = find_tag(&ifd0, 0x8769).and_then(|e| x.u32_at(e + 8)) {
+        let list = x.entries(exif as usize);
         for tag in [0x9003, 0x9004] {
-            if let Some(d) = find(&list, tag).and_then(ascii) {
+            if let Some(d) = find_tag(&list, tag).and_then(ascii) {
                 return Some(d);
             }
         }
     }
-    find(&ifd0, 0x0132).and_then(ascii)
+    find_tag(&ifd0, 0x0132).and_then(ascii)
+}
+
+/// EXIF 裡附的小縮圖（IFD1 的 JPEG，多半 160×120）與相片的方向（IFD0 的 0x0112）
+fn tiff_thumb(t: &[u8]) -> Option<(&[u8], u8)> {
+    let x = Tiff::new(t)?;
+    let ifd0 = x.u32_at(4)? as usize;
+    let orientation = find_tag(&x.entries(ifd0), 0x0112).and_then(|e| x.value(e)).unwrap_or(1) as u8;
+    let ifd1 = x.entries(x.next_ifd(ifd0)?);
+    let off = find_tag(&ifd1, 0x0201).and_then(|e| x.value(e))? as usize;
+    let len = find_tag(&ifd1, 0x0202).and_then(|e| x.value(e))? as usize;
+    let jpeg = t.get(off..off.checked_add(len)?)?;
+    jpeg.starts_with(&[0xFF, 0xD8]).then_some((jpeg, orientation))
+}
+
+/// 相片裡附的小縮圖（JPG 才有；只讀檔案開頭一小段，NAS 上也很快）：先顯示這張，清楚的縮圖做好再換掉。
+/// 轉正好的 RGBA：（寬, 高, 像素）
+pub fn quick_thumb(path: &str) -> Option<(u32, u32, Vec<u8>)> {
+    use std::io::Read;
+    if !matches!(ext_of(path).as_str(), "jpg" | "jpeg") {
+        return None;
+    }
+    let mut head = Vec::with_capacity(64 * 1024);
+    std::fs::File::open(path).ok()?.take(128 * 1024).read_to_end(&mut head).ok()?;
+    let (jpeg, orientation) = tiff_thumb(find_tiff(&head)?)?;
+    let mut img = image::load_from_memory_with_format(jpeg, image::ImageFormat::Jpeg).ok()?;
+    if let Some(o) = image::metadata::Orientation::from_exif(orientation) {
+        img.apply_orientation(o);
+    }
+    let img = img.to_rgba8();
+    Some((img.width(), img.height(), img.into_raw()))
 }
 
 /// 檔案開頭這一段裡的拍攝時間（EXIF）
@@ -324,8 +392,8 @@ fn thumbs_dir() -> PathBuf {
 }
 
 /// 同時產生幾張縮圖（程式裡解碼、FFmpeg）：NAS 讀檔慢，多幾張一起讀
-static DECODE_SEM: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(4);
-static FFMPEG_SEM: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
+static DECODE_SEM: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(6);
+static FFMPEG_SEM: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(3);
 
 /// 縮圖檔的名字（路徑 + 大小 + 修改時間）
 fn thumb_key(path: &str, size: u64, mtime: f64) -> String {
@@ -334,12 +402,33 @@ fn thumb_key(path: &str, size: u64, mtime: f64) -> String {
     h.finalize().iter().take(20).map(|b| format!("{b:02x}")).collect()
 }
 
-/// 這張相片的縮圖（JPEG，最長的一邊 THUMB_MAX）；產生不了時 None
-pub async fn thumb(ffmpeg: Option<PathBuf>, path: String, size: u64, mtime: f64) -> Option<PathBuf> {
-    thumb_in(thumbs_dir(), ffmpeg, path, size, mtime).await
+/// 同時讀幾張相片裡附的小縮圖（只讀開頭一小段）
+static QUICK_SEM: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(8);
+
+/// 相片裡附的小縮圖（背景）：已經有做好的縮圖、排到了卻看不到了（wanted 回答 false）時不讀
+pub async fn quick_thumb_async(path: String, size: u64, mtime: f64, wanted: impl Fn() -> bool) -> Option<(u32, u32, Vec<u8>)> {
+    if !matches!(ext_of(&path).as_str(), "jpg" | "jpeg") || cached_thumb(&path, size, mtime).is_some() {
+        return None;
+    }
+    let _permit = QUICK_SEM.acquire().await.ok()?;
+    if !wanted() {
+        return None;
+    }
+    tokio::task::spawn_blocking(move || quick_thumb(&path)).await.ok().flatten()
 }
 
-async fn thumb_in(dir: PathBuf, ffmpeg: Option<PathBuf>, path: String, size: u64, mtime: f64) -> Option<PathBuf> {
+/// 已經做好的縮圖（快取裡有）
+pub fn cached_thumb(path: &str, size: u64, mtime: f64) -> Option<PathBuf> {
+    Some(thumbs_dir().join(format!("{}.jpg", thumb_key(path, size, mtime)))).filter(|p| p.is_file())
+}
+
+/// 這張相片的縮圖（JPEG，最長的一邊 THUMB_MAX）；產生不了時 None。
+/// wanted：排到了再問一次還要不要（捲過去、看不到了就不做，讓看得到的先做）；不要時也是 None
+pub async fn thumb(ffmpeg: Option<PathBuf>, path: String, size: u64, mtime: f64, wanted: impl Fn() -> bool) -> Option<PathBuf> {
+    thumb_in(thumbs_dir(), ffmpeg, path, size, mtime, wanted).await
+}
+
+async fn thumb_in(dir: PathBuf, ffmpeg: Option<PathBuf>, path: String, size: u64, mtime: f64, wanted: impl Fn() -> bool) -> Option<PathBuf> {
     let out = dir.join(format!("{}.jpg", thumb_key(&path, size, mtime)));
     if out.is_file() {
         return Some(out);
@@ -348,6 +437,9 @@ async fn thumb_in(dir: PathBuf, ffmpeg: Option<PathBuf>, path: String, size: u64
     let tmp = out.with_extension("tmp.jpg");
     if !needs_ffmpeg(&path) {
         let _permit = DECODE_SEM.acquire().await.ok()?;
+        if !wanted() {
+            return None;
+        }
         let (src, t) = (path.clone(), tmp.clone());
         let ok = tokio::task::spawn_blocking(move || -> Option<()> {
             let img = decode_oriented(&std::fs::read(&src).ok()?, THUMB_MAX)?;
@@ -365,6 +457,9 @@ async fn thumb_in(dir: PathBuf, ffmpeg: Option<PathBuf>, path: String, size: u64
     // HEIC 等（或程式裡解不了的 JPG）：FFmpeg 取一張畫面縮小（HEIC 的方向 FFmpeg 會自己轉正）
     let ffmpeg = ffmpeg?;
     let _permit = FFMPEG_SEM.acquire().await.ok()?;
+    if !wanted() {
+        return None;
+    }
     let scale = format!("scale={THUMB_MAX}:{THUMB_MAX}:force_original_aspect_ratio=decrease:flags=bilinear");
     let t = tmp.display().to_string();
     let args: Vec<String> = ["-hide_banner", "-loglevel", "error", "-threads", "2", "-i", &path, "-frames:v", "1", "-vf", &scale, "-q:v", "5", "-y", &t].iter().map(|s| s.to_string()).collect();
@@ -685,6 +780,45 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// 相片裡附的小縮圖：IFD1 的 JPEG，照 IFD0 的方向轉正
+    #[test]
+    fn embedded_thumbnail() {
+        // 4×2 的小縮圖、方向 6（向右轉 90 度）→ 2×4
+        let small = encode_jpeg(&image::RgbImage::new(4, 2), 90).unwrap();
+        // TIFF：IFD0（方向）→ IFD1（縮圖的位置、長度）→ 縮圖
+        let mut t = b"II*\0\x08\0\0\0".to_vec();
+        let ifd1 = 8 + 2 + 12 + 4;
+        let data = ifd1 + 2 + 2 * 12 + 4;
+        t.extend(1u16.to_le_bytes());
+        t.extend([0x12, 0x01, 3, 0, 1, 0, 0, 0, 6, 0, 0, 0]);
+        t.extend((ifd1 as u32).to_le_bytes());
+        t.extend(2u16.to_le_bytes());
+        t.extend([0x01, 0x02, 4, 0, 1, 0, 0, 0]);
+        t.extend((data as u32).to_le_bytes());
+        t.extend([0x02, 0x02, 4, 0, 1, 0, 0, 0]);
+        t.extend((small.len() as u32).to_le_bytes());
+        t.extend(0u32.to_le_bytes());
+        t.extend(&small);
+        let big = encode_jpeg(&image::RgbImage::new(40, 20), 90).unwrap();
+        let mut j = big[..2].to_vec();
+        j.extend([0xFF, 0xE1]);
+        j.extend(((2 + 6 + t.len()) as u16).to_be_bytes());
+        j.extend(b"Exif\0\0");
+        j.extend(&t);
+        j.extend(&big[2..]);
+        let dir = std::env::temp_dir().join(format!("sr-photo-quick-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("IMG_0001.JPG");
+        std::fs::write(&f, &j).unwrap();
+        let (w, h, px) = quick_thumb(&f.display().to_string()).unwrap();
+        assert_eq!((w, h, px.len()), (2, 4, 32));
+        // 沒有附縮圖、不是 JPG
+        std::fs::write(&f, &big).unwrap();
+        assert!(quick_thumb(&f.display().to_string()).is_none());
+        assert!(quick_thumb(&dir.join("a.png").display().to_string()).is_none());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     /// 打不開的檔案（NAS 斷線）不算讀過，之後再讀
     #[test]
     fn unreadable_files_are_read_again_later() {
@@ -720,7 +854,9 @@ mod tests {
             // 沒有 FFmpeg 時看不到
             assert!(load_full(None, &path, 4096).is_none());
             let meta = std::fs::metadata(&f).unwrap();
-            let t = rt.block_on(thumb_in(dir.join("thumbs"), Some(ff.clone()), path.clone(), meta.len(), mtime_ms(&meta))).expect(name);
+            let t = rt.block_on(thumb_in(dir.join("thumbs"), Some(ff.clone()), path.clone(), meta.len(), mtime_ms(&meta), || true)).expect(name);
+            // 不要了（捲過去）：不做
+            assert!(rt.block_on(thumb_in(dir.join("thumbs2"), Some(ff.clone()), path.clone(), meta.len(), mtime_ms(&meta), || false)).is_none());
             let (w, h, _) = read_thumb(&t).unwrap();
             assert!(w.max(h) == THUMB_MAX && w > h, "{name}: {w}×{h}");
         }

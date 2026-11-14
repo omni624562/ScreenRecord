@@ -141,6 +141,12 @@ pub struct PhotoBrowse {
     selected: HashSet<String>,
     anchor: Option<String>,
     thumbs: Lru<String>,
+    /// 縮圖現在是相片裡附的小縮圖（糊），清楚的還要再做；正在做清楚的
+    low: HashSet<String>,
+    pending: HashSet<String>,
+    /// 這一格畫面上看得到的相片（畫完換掉 visible；背景排到了再問還在不在，不在就不做，看得到的先做）
+    seen_now: HashSet<String>,
+    visible: Arc<std::sync::Mutex<HashSet<String>>>,
     /// 每一層捲到哪裡（回到上一層時還在原本的位置）；want_offset：換了位置，下一格捲到那裡
     offsets: HashMap<String, f32>,
     want_offset: Option<f32>,
@@ -186,6 +192,10 @@ impl PhotoBrowse {
             selected: HashSet::new(),
             anchor: None,
             thumbs: Lru::new(500),
+            low: HashSet::new(),
+            pending: HashSet::new(),
+            seen_now: HashSet::new(),
+            visible: Arc::default(),
             offsets: HashMap::new(),
             want_offset: None,
             wheel_at: None,
@@ -606,10 +616,11 @@ pub fn header(ui: &mut egui::Ui, d: &PhotoBrowse, out: &mut Panel) {
     let p = theme::pal(ui);
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 4.0;
+        // 一個：寫路徑；好幾個：寫幾個（按了列出全部）
         let text = match d.roots.len() {
             0 => tr!("還沒有相片資料夾", "No photo folders yet").to_string(),
             1 => d.roots[0].clone(),
-            n => trf!("{}（共 {n} 個相片資料夾）", "{} ({n} photo folders)", d.roots.iter().map(|r| r.trim_end_matches(['\\', '/'])).collect::<Vec<_>>().join("、")),
+            n => trf!("{n} 個相片資料夾", "{n} photo folders"),
         };
         let b = Btn::new(&text).icon(Icon::Folder).small().ghost().menu().tooltip(tr!("相片資料夾：加入、移除，或在檔案總管開啟", "Photo folders: add, remove or open in File Explorer")).show(ui);
         egui::Popup::menu(&b).show(|ui| {
@@ -637,6 +648,20 @@ pub fn header(ui: &mut egui::Ui, d: &PhotoBrowse, out: &mut Panel) {
                 ui.close();
             }
         });
+        // 加第二個、第三個 NAS 資料夾：直接一顆按鈕（不用先打開上面的選單）
+        if !d.roots.is_empty()
+            && Btn::new(tr!("＋ 加入資料夾", "＋ Add folder"))
+                .small()
+                .ghost()
+                .tooltip(tr!(
+                    "再加一個放相片的資料夾（另一台 NAS、另一個共用資料夾或這台電腦的資料夾），全部一起列出",
+                    "Add another photo folder (another NAS, another share or a folder on this PC); they're all listed together"
+                ))
+                .show(ui)
+                .clicked()
+        {
+            out.add_dir = true;
+        }
         if let Some(s) = &d.scanning {
             ui.add_space(6.0);
             ui.spinner();
@@ -957,13 +982,24 @@ fn grid(ui: &mut egui::Ui, d: &mut PhotoBrowse, out: &mut Panel, stars: &PinStor
     d.sections = sections;
     let key = d.at_key();
     d.offsets.insert(key, res.state.offset.y);
+    *d.visible.lock().unwrap_or_else(|e| e.into_inner()) = std::mem::take(&mut d.seen_now);
 }
 
 /// 這張的縮圖材質（還沒讀時記下要讀，先回傳 None）
 fn thumb_of(d: &mut PhotoBrowse, i: usize, out: &mut Panel) -> Option<egui::TextureHandle> {
     let path = &d.photos[i].path;
+    if !d.seen_now.contains(path) {
+        d.seen_now.insert(path.clone());
+    }
     match d.thumbs.get(path) {
-        Some(Thumb::Ready(t)) => Some(t.clone()),
+        // 先放的是相片裡附的小縮圖：清楚的還沒在做（之前捲過去取消了）就再做
+        Some(Thumb::Ready(t)) => {
+            let t = t.clone();
+            if d.low.contains(path) && !d.pending.contains(path) {
+                out.want.push(i);
+            }
+            Some(t)
+        }
         Some(Thumb::Loading) => None,
         Some(Thumb::Failed(at)) if at.elapsed() < Duration::from_secs(120) => None,
         _ => {
@@ -1202,7 +1238,10 @@ pub fn apply(app: &mut UiApp, mut d: PhotoBrowse, out: Panel) {
     want.dedup();
     for i in &want {
         if let Some(ph) = d.photos.get(*i) {
-            d.thumbs.insert(ph.path.clone(), Thumb::Loading);
+            if !d.low.contains(&ph.path) {
+                d.thumbs.insert(ph.path.clone(), Thumb::Loading);
+            }
+            d.pending.insert(ph.path.clone());
         }
     }
     let open = out.open.map(|pos| viewer_list(&d, pos));
@@ -1288,29 +1327,69 @@ fn viewer_list(d: &PhotoBrowse, pos: usize) -> (Vec<LibraryEntry>, usize) {
     (d.order[from..to].iter().map(|i| entry_of(d, *i)).collect(), pos - from)
 }
 
-/// 背景產生縮圖、讀成材質
+/// 背景產生縮圖、讀成材質。JPG 先放相片裡附的小縮圖（只讀開頭一小段，NAS 上很快），清楚的做好再換掉；
+/// 排到了才發現捲過去、看不到了就不做（讓看得到的先做）
 fn load_thumb(app: &mut UiApp, ph: Photo) {
+    let Some(visible) = app.photos.as_ref().map(|d| d.visible.clone()) else { return };
     let ffmpeg = app.core.ffmpeg_path();
     let ctx = app.ctx.clone();
     let key = ph.path.clone();
+    let wanted = {
+        let (v, k) = (visible.clone(), key.clone());
+        move || v.lock().unwrap_or_else(|e| e.into_inner()).contains(&k)
+    };
+    let to_tex = |ctx: &egui::Context, (w, h, rgba): (u32, u32, Vec<u8>)| {
+        ctx.load_texture("photo-thumb", egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], &rgba), egui::TextureOptions::LINEAR)
+    };
+    // 小縮圖：還沒有清楚的才放上去
+    if app.photos.as_ref().is_some_and(|d| !d.low.contains(&key)) {
+        let (c2, k2, w2, p2) = (ctx.clone(), key.clone(), wanted.clone(), ph.path.clone());
+        app.spawn(async move { photos::quick_thumb_async(p2, ph.size, ph.mtime, w2).await.map(|px| to_tex(&c2, px)) }, move |app, tex| {
+            let Some(d) = app.photos.as_mut() else { return };
+            if let Some(t) = tex.filter(|_| matches!(d.thumbs.peek(&k2), Some(Thumb::Loading))) {
+                d.thumbs.insert(k2.clone(), Thumb::Ready(t));
+                d.low.insert(k2);
+            }
+        });
+    }
     app.spawn(
         async move {
-            let file = photos::thumb(ffmpeg, ph.path.clone(), ph.size, ph.mtime).await?;
-            tokio::task::spawn_blocking(move || {
-                let (w, h, rgba) = photos::read_thumb(&file)?;
-                Some(egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], &rgba))
-            })
-            .await
-            .ok()
-            .flatten()
-            .map(|img| ctx.load_texture("photo-thumb", img, egui::TextureOptions::LINEAR))
+            let w2 = wanted.clone();
+            let file = photos::thumb(ffmpeg, ph.path.clone(), ph.size, ph.mtime, w2).await?;
+            let px = tokio::task::spawn_blocking(move || photos::read_thumb(&file)).await.ok().flatten()?;
+            Some(to_tex(&ctx, px))
         },
         move |app, tex| {
-            if let Some(d) = app.photos.as_mut() {
-                d.thumbs.insert(key, tex.map_or(Thumb::Failed(Instant::now()), Thumb::Ready));
+            let Some(d) = app.photos.as_mut() else { return };
+            d.pending.remove(&key);
+            match tex {
+                Some(t) => {
+                    d.thumbs.insert(key.clone(), Thumb::Ready(t));
+                    d.low.remove(&key);
+                }
+                // 捲過去了（沒做）：看得到時再要
+                None if !visible.lock().unwrap_or_else(|e| e.into_inner()).contains(&key) => {
+                    if matches!(d.thumbs.peek(&key), Some(Thumb::Loading)) {
+                        d.thumbs.retain(|k| *k != key);
+                    }
+                }
+                // 做不出來：有小縮圖就一直用小的
+                None => {
+                    if !d.low.remove(&key) {
+                        d.thumbs.insert(key, Thumb::Failed(Instant::now()));
+                    }
+                }
             }
         },
     );
+}
+
+/// 相片分頁已經有的縮圖（檢視器讀清楚的那張之前先放這張）
+pub fn thumb_texture(app: &UiApp, path: &str) -> Option<egui::TextureHandle> {
+    match app.photos.as_ref()?.thumbs.peek(&path.to_string()) {
+        Some(Thumb::Ready(t)) => Some(t.clone()),
+        _ => None,
+    }
 }
 
 // ───────────── 整理（分頁與檢視器共用） ─────────────
@@ -1501,6 +1580,10 @@ mod tests {
             selected: HashSet::new(),
             anchor: None,
             thumbs: Lru::new(10),
+            low: HashSet::new(),
+            pending: HashSet::new(),
+            seen_now: HashSet::new(),
+            visible: Arc::default(),
             offsets: HashMap::new(),
             want_offset: None,
             wheel_at: None,
