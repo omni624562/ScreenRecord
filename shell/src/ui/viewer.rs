@@ -114,6 +114,17 @@ pub struct Viewer {
     tp_want: std::cell::Cell<Option<u32>>,
     /// 檔案庫「相片」分頁開的相片（HEIC 等也看得到、照 EXIF 轉正；刪除、重新命名、星號用相片分頁的做法）
     photo: bool,
+    /// 相片：讀好的這張與前後各一張（換下一張時不用等），正在讀的
+    photo_cache: Vec<PhotoTex>,
+    photo_fetching: std::collections::HashSet<String>,
+}
+
+/// 讀好的一張相片：（路徑, 材質, 材質大小, 原本的寬高）
+struct PhotoTex {
+    path: String,
+    tex: TextureHandle,
+    size: Vec2,
+    dims: (u32, u32),
 }
 
 /// 正在串流的 Jellyfin 影片
@@ -348,6 +359,8 @@ fn new_viewer(entry: LibraryEntry, remote: Option<Remote>, start: Option<f64>) -
         tp_tiles: Default::default(),
         tp_want: Default::default(),
         photo: false,
+        photo_cache: vec![],
+        photo_fetching: Default::default(),
     }
 }
 
@@ -405,35 +418,18 @@ fn load_current(app: &mut UiApp) {
     let e = v.cur().clone();
     let seq = LOAD_SEQ.fetch_add(1, Ordering::Relaxed) + 1;
     if v.photo {
-        // 相片：照 EXIF 轉正，HEIC 等用 FFmpeg；太大的縮到顯示卡放得下（最長 8192）
-        let max_side = (app.ctx.input(|i| i.max_texture_side) as u32).clamp(2048, 8192);
-        let ffmpeg = app.core.ffmpeg_path();
         let path = e.media.path.clone();
-        let heic = screenrecorder_core::photos::needs_ffmpeg(&path);
-        app.spawn(async move { tokio::task::spawn_blocking(move || screenrecorder_core::photos::load_full(ffmpeg.as_deref(), &path, max_side)).await.ok().flatten() }, move |app, img| {
-            if LOAD_SEQ.load(Ordering::Relaxed) != seq {
-                return;
-            }
-            let ctx = app.ctx.clone();
-            let no_ffmpeg = app.core.ffmpeg_path().is_none();
-            let Some(v) = app.viewer.as_mut() else { return };
-            v.loading = false;
-            match img {
-                Some((img, (w, h))) => {
-                    let size = vec2(img.width() as f32, img.height() as f32);
-                    let color = egui::ColorImage::from_rgba_unmultiplied([img.width() as usize, img.height() as usize], img.as_raw());
-                    let opt = TextureOptions { magnification: egui::TextureFilter::Nearest, mipmap_mode: Some(egui::TextureFilter::Linear), ..TextureOptions::LINEAR };
-                    v.image = Some((ctx.load_texture("viewer-photo", color, opt), size));
-                    let m = &mut v.list[v.idx].media;
-                    (m.width, m.height) = (Some(w), Some(h));
+        if !show_photo(v, &path) {
+            // 還沒讀好：先放相片分頁的縮圖（糊一點），讀好再換成清楚的
+            if let Some(t) = super::photo_browse::thumb_texture(app, &path) {
+                let size = vec2(t.size()[0] as f32, t.size()[1] as f32);
+                if let Some(v) = app.viewer.as_mut() {
+                    v.image = Some((t, size));
                 }
-                None if heic && no_ffmpeg => {
-                    v.error =
-                        Some(tr!("要有 FFmpeg 才看得到這種相片（主畫面上方按「下載並開始使用」）", "This kind of photo needs FFmpeg (click “Download and start” at the top of the main window)").into())
-                }
-                None => v.error = Some(tr!("無法讀取這張相片", "Couldn't read this photo").into()),
             }
-        });
+            fetch_photo(app, path);
+        }
+        prefetch_photos(app);
         return;
     }
     if is_image_name(&e.media.name) {
@@ -518,6 +514,89 @@ fn load_current(app: &mut UiApp) {
             v.player = Some(Playback::Ff(player));
         },
     );
+}
+
+/// 這張相片讀好了（在 photo_cache 裡）就直接顯示，回傳 true
+fn show_photo(v: &mut Viewer, path: &str) -> bool {
+    let Some(c) = v.photo_cache.iter().find(|c| c.path == path) else { return false };
+    v.image = Some((c.tex.clone(), c.size));
+    v.loading = false;
+    v.error = None;
+    let dims = c.dims;
+    if let Some(e) = v.list.get_mut(v.idx).filter(|e| e.media.path == path) {
+        (e.media.width, e.media.height) = (Some(dims.0), Some(dims.1));
+    }
+    true
+}
+
+/// 在背景讀一張相片（照 EXIF 轉正，HEIC 等用 FFmpeg）；讀好放進 photo_cache，正在看這張就顯示
+fn fetch_photo(app: &mut UiApp, path: String) {
+    let Some(v) = app.viewer.as_mut() else { return };
+    if !v.photo_fetching.insert(path.clone()) {
+        return;
+    }
+    // 照視窗的像素大小讀（最長 2048～6144），不用整張 4800 萬像素都放進顯示卡
+    let screen = app.ctx.content_rect().size() * app.ctx.pixels_per_point();
+    let max_tex = app.ctx.input(|i| i.max_texture_side) as u32;
+    let max_side = ((screen.x.max(screen.y) * 1.5) as u32).clamp(2048, max_tex.clamp(2048, 6144));
+    let ffmpeg = app.core.ffmpeg_path();
+    let ctx = app.ctx.clone();
+    let p2 = path.clone();
+    app.spawn(
+        async move {
+            let img = tokio::task::spawn_blocking(move || screenrecorder_core::photos::load_full(ffmpeg.as_deref(), &p2, max_side)).await.ok().flatten()?;
+            let (img, dims) = img;
+            let size = vec2(img.width() as f32, img.height() as f32);
+            let color = egui::ColorImage::from_rgba_unmultiplied([img.width() as usize, img.height() as usize], img.as_raw());
+            let opt = TextureOptions { magnification: egui::TextureFilter::Nearest, mipmap_mode: Some(egui::TextureFilter::Linear), ..TextureOptions::LINEAR };
+            Some((ctx.load_texture("viewer-photo", color, opt), size, dims))
+        },
+        move |app, r| {
+            let no_ffmpeg = app.core.ffmpeg_path().is_none();
+            let Some(v) = app.viewer.as_mut().filter(|v| v.photo) else { return };
+            v.photo_fetching.remove(&path);
+            let current = v.cur().media.path == path;
+            match r {
+                Some((tex, size, dims)) => {
+                    v.photo_cache.retain(|c| c.path != path);
+                    v.photo_cache.push(PhotoTex { path: path.clone(), tex, size, dims });
+                    // 只留這張與前後各一張
+                    let near: Vec<&str> = (v.idx.saturating_sub(1)..=(v.idx + 1).min(v.list.len() - 1)).map(|i| v.list[i].media.path.as_str()).collect();
+                    let near: Vec<String> = near.into_iter().map(str::to_string).collect();
+                    v.photo_cache.retain(|c| near.contains(&c.path));
+                    if current {
+                        show_photo(v, &path);
+                    }
+                }
+                None if current => {
+                    v.loading = false;
+                    v.image = None;
+                    v.error = Some(if screenrecorder_core::photos::needs_ffmpeg(&path) && no_ffmpeg {
+                        tr!("要有 FFmpeg 才看得到這種相片（主畫面上方按「下載並開始使用」）", "This kind of photo needs FFmpeg (click “Download and start” at the top of the main window)").into()
+                    } else {
+                        tr!("無法讀取這張相片", "Couldn't read this photo").into()
+                    });
+                }
+                None => {}
+            }
+        },
+    );
+}
+
+/// 先在背景讀好下一張、上一張（按下一張時馬上看得到）
+fn prefetch_photos(app: &mut UiApp) {
+    let Some(v) = app.viewer.as_ref().filter(|v| v.photo) else { return };
+    let mut want = vec![];
+    for i in [v.idx + 1, v.idx.wrapping_sub(1)] {
+        if let Some(e) = v.list.get(i) {
+            if !v.photo_cache.iter().any(|c| c.path == e.media.path) {
+                want.push(e.media.path.clone());
+            }
+        }
+    }
+    for path in want {
+        fetch_photo(app, path);
+    }
 }
 
 /// 每一格畫面開始時（介面執行緒、OpenGL context 是目前的）：mpv 有新畫面就畫到共用的材質；

@@ -2967,31 +2967,38 @@ fn recent_panel(app: &mut UiApp, ui: &mut Ui) {
             ui.label(RichText::new(tr!("檔案庫", "Library")).font(theme::font_bold(12.5)).color(p.muted));
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 6.0;
-                let n = if jf { 3.0 } else { 2.0 };
+                // 錄影｜截圖｜相片｜Jellyfin（有設定 Jellyfin 才有）平分這一排；右欄窄放不下時先拿掉圖示，再不夠就只留圖示（名稱在滑鼠提示）
+                let items = [
+                    (tr!("錄影", "Videos"), Icon::Video, tr!("全部錄影：搜尋、整理、合併、一次處理", "All recordings: search, organize, merge, batch process")),
+                    (tr!("截圖", "Screenshots"), Icon::Camera, tr!("全部截圖：用圖裡的字搜尋、整理、拼圖", "All screenshots: search by text in images, organize, combine")),
+                    (tr!("相片", "Photos"), Icon::Image, tr!("NAS 或電腦上的相片：一層層瀏覽、依日期看、搜尋、加星號", "Photos on your NAS or PC: browse by folder or date, search, star")),
+                    ("Jellyfin", Icon::Play, tr!("Jellyfin 上的影片：搜尋、播放、下載、改影片資訊、找重複的", "Videos on Jellyfin: search, play, download, edit details, find duplicates")),
+                ];
+                let items = &items[..if jf { 4 } else { 3 }];
+                let n = items.len() as f32;
                 let w = ((ui.available_width() - 6.0 * (n - 1.0)) / n).floor();
-                let rec_btn = Btn::new(tr!("錄影", "Videos"))
-                    .icon(Icon::Video)
-                    .small()
-                    .min_width(w)
-                    .tooltip(tr!("全部錄影：搜尋、整理、合併、一次處理", "All recordings: search, organize, merge, batch process"));
-                if rec_btn.show(ui).clicked() {
-                    app.library = Some(super::library_dialog::LibraryDialog::new(super::library_dialog::Kind::Video));
-                }
-                let shot_btn = Btn::new(tr!("截圖", "Screenshots"))
-                    .icon(Icon::Camera)
-                    .small()
-                    .min_width(w)
-                    .tooltip(tr!("全部截圖：用圖裡的字搜尋、整理、拼圖", "All screenshots: search by text in images, organize, combine"));
-                if shot_btn.show(ui).clicked() {
-                    app.library = Some(super::library_dialog::LibraryDialog::new(super::library_dialog::Kind::Shot));
-                }
-                let jf_btn = Btn::new("Jellyfin")
-                    .icon(Icon::Play)
-                    .small()
-                    .min_width(w)
-                    .tooltip(tr!("Jellyfin 上的影片：搜尋、播放、下載、改影片資訊、找重複的", "Videos on Jellyfin: search, play, download, edit details, find duplicates"));
-                if jf && jf_btn.show(ui).clicked() {
-                    super::library_dialog::open_jellyfin(app);
+                let fits = |icon: bool| items.iter().all(|(t, i, _)| (if icon { Btn::new(*t).icon(*i) } else { Btn::new(*t) }).small().width(ui) <= w);
+                let (with_icon, with_text) = if fits(true) {
+                    (true, true)
+                } else if fits(false) {
+                    (false, true)
+                } else {
+                    (true, false)
+                };
+                for (i, (text, icon, tip)) in items.iter().enumerate() {
+                    let b = match (with_icon, with_text) {
+                        (true, true) => Btn::new(*text).icon(*icon).tooltip(*tip),
+                        (false, _) => Btn::new(*text).tooltip(*tip),
+                        (true, false) => Btn::icon_only(*icon).tooltip(format!("{text}：{tip}")),
+                    };
+                    if b.small().min_width(w).show(ui).clicked() {
+                        match i {
+                            0 => app.library = Some(super::library_dialog::LibraryDialog::new(super::library_dialog::Kind::Video)),
+                            1 => app.library = Some(super::library_dialog::LibraryDialog::new(super::library_dialog::Kind::Shot)),
+                            2 => super::library_dialog::open_photos(app),
+                            _ => super::library_dialog::open_jellyfin(app),
+                        }
+                    }
                 }
             });
         });
