@@ -238,6 +238,8 @@ pub enum Icon {
     Close,
     Camera,
     Eye,
+    /// 閉上的眼睛（有人閉眼的相片）
+    EyeClosed,
     More,
     /// 視窗（有標題列的方框）
     Window,
@@ -477,6 +479,13 @@ pub fn paint_icon(p: &Painter, rect: Rect, icon: Icon, color: Color32) {
             arc(8.0, 13.0, 7.6, -2.42, -0.72);
             arc(8.0, 3.0, 7.6, 0.72, 2.42);
             p.circle_filled(at(8.0, 8.0), 2.2 * k, color);
+        }
+        Icon::EyeClosed => {
+            // 往下彎的眼皮與三根睫毛
+            arc(8.0, 1.5, 7.6, 0.72, 2.42);
+            line(&[(8.0, 9.1), (8.0, 11.8)]);
+            line(&[(11.3, 8.4), (12.8, 10.8)]);
+            line(&[(4.7, 8.4), (3.2, 10.8)]);
         }
         Icon::Clock => {
             circle(8.0, 8.0, 6.0);
