@@ -44,10 +44,19 @@ enum Try {
 fn items(_app: &UiApp) -> Vec<(String, String, Try)> {
     vec![
         (
+            tr!("相片裡的人物", "People in your photos").into(),
+            tr!(
+                "相片分頁的「人物」會在這台電腦上找出相片裡的臉，把同一個人分在一起。取了名字就能只看有他的相片、用名字搜尋；相片和臉都不會上傳。",
+                "People in the Photos tab finds faces in your photos on this computer and groups each person together. Name them to see only their photos or search by name. No photos or faces are uploaded."
+            )
+            .into(),
+            Try::Photos,
+        ),
+        (
             tr!("看 NAS 上的相片", "Photos on your NAS").into(),
             tr!(
-                "檔案庫多了「相片」分頁：加入 NAS 或電腦上放相片的資料夾，就能一層層瀏覽或依日期看、搜尋、篩選年份，加星號、重新命名、刪除。iPhone 的 HEIC 也看得到，日期用相片記的拍攝時間。",
-                "The library has a new Photos tab: add a photo folder on your NAS or PC to browse it folder by folder or by date, search, filter by year, star, rename and delete. iPhone HEIC photos work too, sorted by the date they were taken."
+                "檔案庫的「相片」分頁：加入 NAS 或電腦上放相片的資料夾，一層層瀏覽或依日期看、搜尋、篩選年份，加星號、重新命名、刪除；放大看時也能勾選一起刪。",
+                "The library's Photos tab: add photo folders on your NAS or PC to browse by folder or date, search, filter by year, star, rename and delete, and select photos while viewing them full size."
             )
             .into(),
             Try::Photos,
