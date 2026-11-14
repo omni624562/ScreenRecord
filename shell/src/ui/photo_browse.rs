@@ -102,11 +102,17 @@ struct Section {
     cells: Vec<Cell>,
 }
 
-/// 正在背景掃描：已經找到幾張、要停下來
-struct Scanning {
+/// 正在背景整個掃描的相片資料夾：已經找到幾張、要停下來（關掉檔案庫也繼續掃，掃完照樣存起來）
+pub struct Scanning {
     found: Arc<AtomicUsize>,
     stop: Arc<AtomicBool>,
+    roots: Vec<String>,
 }
+
+/// 多久沒整個掃描過才在開啟時自動整個掃（其他時候點進資料夾只讀那一層；「重新整理」隨時可以整個掃）
+const RESCAN_AFTER: Duration = Duration::from_secs(24 * 3600);
+/// 同一個資料夾多久內點進去不再讀一次
+const REFRESH_AFTER: Duration = Duration::from_secs(60);
 
 pub struct PhotoBrowse {
     roots: Vec<String>,
@@ -115,7 +121,13 @@ pub struct PhotoBrowse {
     meta: Vec<Meta>,
     /// 讀過索引了（還沒讀到之前顯示「正在讀取」）
     loaded: bool,
-    scanning: Option<Scanning>,
+    /// 正在整個掃描時已經找到幾張（UiApp::photo_scan 的那一份；沒在掃時 None）
+    scanning: Option<Arc<AtomicUsize>>,
+    /// 每個相片資料夾上次整個掃描完的時間（毫秒）
+    scanned: Vec<(String, f64)>,
+    /// 點進去時讀過一層的資料夾（多久前）、上次讀的是哪個位置
+    refreshed: HashMap<String, Instant>,
+    last_at: Option<Option<(usize, String)>>,
     /// 讀不到的相片資料夾（資料夾, 原因）
     errors: Vec<(String, String)>,
     /// 背景正在讀拍攝日期：（讀完幾張, 要讀幾張）；stop 是關掉分頁時停下來
@@ -156,11 +168,8 @@ pub struct PhotoBrowse {
 }
 
 impl Drop for PhotoBrowse {
-    /// 關掉檔案庫：背景的掃描、讀日期停下來
+    /// 關掉檔案庫：讀日期停下來（讀到哪裡存好了，下次接著讀）；整個掃描照樣繼續，掃完存起來
     fn drop(&mut self) {
-        if let Some(s) = &self.scanning {
-            s.stop.store(true, Ordering::Relaxed);
-        }
         self.date_stop.store(true, Ordering::Relaxed);
     }
 }
@@ -173,6 +182,9 @@ impl PhotoBrowse {
             meta: vec![],
             loaded: false,
             scanning: None,
+            scanned: vec![],
+            refreshed: HashMap::new(),
+            last_at: None,
             errors: vec![],
             dating: None,
             date_stop: Arc::new(AtomicBool::new(false)),
@@ -396,7 +408,8 @@ pub fn date_text(p: &Photo) -> String {
 
 // ───────────── 讀取 ─────────────
 
-/// 開啟「相片」分頁：先列出上次的清單，再在背景重新掃描
+/// 開啟「相片」分頁：先列出上次的清單。超過一天沒整個掃描過的相片資料夾才在背景整個掃；
+/// 停在的那個資料夾馬上讀一層（新放進去的相片、資料夾馬上看得到）
 pub fn open(app: &mut UiApp) {
     let mut d = PhotoBrowse::new(app);
     // 上次停的資料夾（在最長的那個相片資料夾底下）
@@ -408,6 +421,8 @@ pub fn open(app: &mut UiApp) {
         }
     }
     d.fix_top();
+    // 上次開啟時開始的整個掃描還沒掃完：接著顯示進度
+    d.scanning = app.photo_scan.as_ref().map(|s| s.found.clone());
     app.photos = Some(d);
     let file = photos::index_file();
     app.spawn(async move { tokio::task::spawn_blocking(move || photos::load_index(&file)).await.unwrap_or_default() }, |app, idx| {
@@ -416,51 +431,171 @@ pub fn open(app: &mut UiApp) {
         let roots = d.roots.clone();
         d.photos = idx.photos.into_iter().filter(|p| roots.iter().any(|r| under(&p.path, r).is_some())).collect();
         d.photos.sort_by(|a, b| a.path.cmp(&b.path));
+        d.scanned = idx.scanned;
         d.loaded = true;
         d.index_changed();
-        scan(app);
+        let now = screenrecorder_core::paths::now_ms() as f64;
+        let stale: Vec<String> = roots.iter().filter(|r| last_scan(&d.scanned, r).is_none_or(|t| now - t > RESCAN_AFTER.as_millis() as f64)).cloned().collect();
+        scan(app, stale);
+        refresh_here(app);
+        read_dates(app, false);
     });
     // 縮圖快取太多時刪掉最舊的
     app.spawn(async { tokio::task::spawn_blocking(photos::prune_thumbs).await.ok() }, |_, _| {});
 }
 
-/// 在背景重新掃描相片資料夾（同一個檔案沒改過時沿用讀過的拍攝日期），掃完接著讀拍攝日期
-fn scan(app: &mut UiApp) {
-    let Some(d) = app.photos.as_mut() else { return };
-    if let Some(s) = d.scanning.take() {
-        s.stop.store(true, Ordering::Relaxed);
+/// 這個相片資料夾上次整個掃描完的時間
+fn last_scan(scanned: &[(String, f64)], root: &str) -> Option<f64> {
+    let key = root.trim_end_matches(['\\', '/']);
+    scanned.iter().find(|(r, _)| r.trim_end_matches(['\\', '/']).eq_ignore_ascii_case(key)).map(|(_, t)| *t)
+}
+
+/// 記下這些相片資料夾整個掃描完了
+fn mark_scanned(scanned: &mut Vec<(String, f64)>, roots: &[String], now: f64) {
+    for r in roots {
+        let key = r.trim_end_matches(['\\', '/']).to_string();
+        scanned.retain(|(x, _)| !x.trim_end_matches(['\\', '/']).eq_ignore_ascii_case(&key));
+        scanned.push((r.clone(), now));
     }
-    if d.roots.is_empty() {
-        d.photos.clear();
-        d.errors.clear();
-        d.index_changed();
+}
+
+/// 整個掃描的結果合進原本的清單：掃到的相片資料夾換成這次找到的（沿用原本讀過的拍攝日期），
+/// 沒掃的、讀不到的（NAS 沒開）照舊；已經不在設定裡的相片資料夾拿掉。回傳（清單, 掃成功的相片資料夾）
+fn merge(base: Vec<Photo>, roots: &[String], scan: photos::Scan, keep: &[String]) -> (Vec<Photo>, Vec<String>) {
+    let ok: Vec<String> = roots.iter().filter(|r| !scan.errors.iter().any(|(e, _)| e.trim() == r.trim())).cloned().collect();
+    let in_ok = |p: &str| ok.iter().any(|r| under(p, r).is_some());
+    let in_keep = |p: &str| keep.iter().any(|r| under(p, r).is_some());
+    // 掃描開始之後才讀到的拍攝日期：沿用
+    let dated: HashMap<String, Photo> = base.iter().filter(|p| p.exif_read && in_ok(&p.path)).map(|p| (p.path.clone(), p.clone())).collect();
+    let mut list: Vec<Photo> = base.into_iter().filter(|p| in_keep(&p.path) && !in_ok(&p.path)).collect();
+    for mut p in scan.photos.into_iter().filter(|p| in_keep(&p.path)) {
+        if let Some(old) = dated.get(&p.path).filter(|o| !p.exif_read && o.size == p.size && screenrecorder_core::paths::same_mtime(o.mtime, p.mtime)) {
+            (p.when, p.from, p.exif_read) = (old.when, old.from, true);
+        }
+        list.push(p);
+    }
+    list.sort_by(|a, b| a.path.cmp(&b.path));
+    list.dedup_by(|a, b| a.path == b.path);
+    (list, ok)
+}
+
+/// 在背景整個掃描這些相片資料夾（含子資料夾，同一個檔案沒改過時沿用讀過的拍攝日期），掃完接著讀拍攝日期。
+/// 已經在掃的話：要掃的都包含在裡面就不再掃，不然停掉、連同那一批一起重掃。關掉檔案庫也繼續，掃完照樣存起來
+fn scan(app: &mut UiApp, roots: Vec<String>) {
+    if roots.is_empty() {
         return;
     }
-    let s = Scanning { found: Arc::new(AtomicUsize::new(0)), stop: Arc::new(AtomicBool::new(false)) };
-    let (found, stop) = (s.found.clone(), s.stop.clone());
-    let stop_id = s.stop.clone();
-    d.scanning = Some(s);
-    let (roots, known) = (d.roots.clone(), d.photos.clone());
-    app.spawn(async move { tokio::task::spawn_blocking(move || (roots.clone(), photos::scan(&roots, &known, &found, &stop))).await.ok() }, move |app, r| {
-        let Some(d) = app.photos.as_mut() else { return };
+    let mut roots = roots;
+    if let Some(old) = app.photo_scan.take() {
+        if roots.iter().all(|r| old.roots.contains(r)) {
+            app.photo_scan = Some(old);
+            return;
+        }
+        old.stop.store(true, Ordering::Relaxed);
+        roots.extend(old.roots.into_iter().filter(|r| app.s.photo_dirs.contains(r)));
+        roots.sort();
+        roots.dedup();
+    }
+    let s = Scanning { found: Arc::new(AtomicUsize::new(0)), stop: Arc::new(AtomicBool::new(false)), roots: roots.clone() };
+    let (found, stop, stop_id) = (s.found.clone(), s.stop.clone(), s.stop.clone());
+    let known = app.photos.as_ref().map(|d| d.photos.clone()).unwrap_or_default();
+    if let Some(d) = app.photos.as_mut() {
+        d.scanning = Some(found.clone());
+    }
+    app.photo_scan = Some(s);
+    let r2 = roots.clone();
+    app.spawn(async move { tokio::task::spawn_blocking(move || photos::scan(&r2, &known, &found, &stop)).await.ok() }, move |app, r| {
         // 已經換成另一次掃描（加了、移除了資料夾）
-        if !d.scanning.as_ref().is_some_and(|s| Arc::ptr_eq(&s.stop, &stop_id)) {
+        if !app.photo_scan.as_ref().is_some_and(|s| Arc::ptr_eq(&s.stop, &stop_id)) {
             return;
         }
-        d.scanning = None;
-        let Some((roots, result)) = r else { return };
-        if roots != d.roots || stop_id.load(Ordering::Relaxed) {
+        app.photo_scan = None;
+        if let Some(d) = app.photos.as_mut() {
+            d.scanning = None;
+        }
+        let Some(result) = r else { return };
+        let keep = app.s.photo_dirs.clone();
+        let now = screenrecorder_core::paths::now_ms() as f64;
+        let errors = result.errors.clone();
+        let Some(d) = app.photos.as_mut() else {
+            // 檔案庫關掉了：和存檔裡的合在一起存起來（下次開啟就是掃好的）
+            app.spawn(
+                async move {
+                    tokio::task::spawn_blocking(move || {
+                        let file = photos::index_file();
+                        let idx = photos::load_index(&file);
+                        let (list, ok) = merge(idx.photos, &roots, result, &keep);
+                        let mut scanned = idx.scanned;
+                        mark_scanned(&mut scanned, &ok, now);
+                        photos::save_index(&file, &photos::PhotoIndex { roots: keep, photos: list, scanned });
+                    })
+                    .await
+                    .ok()
+                },
+                |_, _| {},
+            );
             return;
-        }
-        d.errors = result.errors;
-        // 讀不到的資料夾（NAS 沒開）：上次的清單留著，不要整個變空
-        let missing: Vec<String> = d.errors.iter().map(|(r, _)| r.clone()).collect();
-        let mut list = result.photos;
-        if !missing.is_empty() {
-            list.extend(d.photos.drain(..).filter(|p| missing.iter().any(|m| under(&p.path, m).is_some())));
-            list.sort_by(|a, b| a.path.cmp(&b.path));
-        }
+        };
+        let (list, ok) = merge(std::mem::take(&mut d.photos), &roots, result, &keep);
         d.photos = list;
+        mark_scanned(&mut d.scanned, &ok, now);
+        // 這次掃的相片資料夾的錯誤換成這次的
+        d.errors.retain(|(e, _)| !roots.iter().any(|r| r.trim() == e.trim()));
+        d.errors.extend(errors);
+        d.index_changed();
+        save(app);
+        read_dates(app, false);
+    });
+}
+
+/// 只讀目前這個資料夾一層（點進資料夾時，很快）：這一層的相片換成現在的；新的子資料夾整個讀進來，不見了的拿掉
+fn refresh_here(app: &mut UiApp) {
+    let Some(d) = app.photos.as_mut() else { return };
+    d.last_at = Some(d.at.clone());
+    let Some((r, rel)) = d.at.clone().filter(|(r, _)| *r < d.roots.len()) else { return };
+    let dir = join_rel(&d.roots[r], &rel);
+    if d.refreshed.get(&dir).is_some_and(|t| t.elapsed() < REFRESH_AFTER) {
+        return;
+    }
+    d.refreshed.insert(dir.clone(), Instant::now());
+    // 索引裡這一層的相片、子資料夾
+    let mut here = vec![];
+    let mut subs: HashSet<String> = HashSet::new();
+    for (i, m) in d.meta.iter().enumerate() {
+        if m.root != r {
+            continue;
+        }
+        if m.dir == rel {
+            here.push(d.photos[i].clone());
+        } else if let Some(rest) = if rel.is_empty() { Some(m.dir.as_str()) } else { m.dir.strip_prefix(&format!("{rel}/")) } {
+            let name = rest.split('/').next().unwrap_or(rest);
+            subs.insert(join_rel(&d.roots[r], &if rel.is_empty() { name.to_string() } else { format!("{rel}/{name}") }).to_lowercase());
+        }
+    }
+    let d2 = dir.clone();
+    let job = move || -> Option<(Vec<Photo>, Vec<String>, Vec<Photo>)> {
+        let (now_here, now_subs) = photos::list_dir(&d2, &here).ok()?;
+        let lower: HashSet<String> = now_subs.iter().map(|s| s.to_lowercase()).collect();
+        // 新的子資料夾：整個讀進來
+        let new: Vec<String> = now_subs.into_iter().filter(|s| !subs.contains(&s.to_lowercase())).collect();
+        let added = if new.is_empty() { vec![] } else { photos::scan(&new, &[], &AtomicUsize::new(0), &AtomicBool::new(false)).photos };
+        let gone: Vec<String> = subs.into_iter().filter(|s| !lower.contains(s)).collect();
+        let unchanged = added.is_empty()
+            && gone.is_empty()
+            && now_here.len() == here.len()
+            && now_here.iter().zip(&here).all(|(a, b)| a.path == b.path && a.size == b.size && screenrecorder_core::paths::same_mtime(a.mtime, b.mtime));
+        (!unchanged).then_some((now_here, gone, added))
+    };
+    app.spawn(async move { tokio::task::spawn_blocking(job).await.ok().flatten() }, move |app, r| {
+        let Some((now_here, gone, added)) = r else { return };
+        let Some(d) = app.photos.as_mut() else { return };
+        // 這一層原本的相片、不見了的子資料夾裡的拿掉，換成現在的
+        let directly = |p: &str| under(p, &dir).is_some_and(|rest| !rest.trim_start_matches(['\\', '/']).contains(['\\', '/']));
+        d.photos.retain(|p| !directly(&p.path) && !gone.iter().any(|g| under(&p.path, g).is_some()));
+        d.photos.extend(now_here);
+        d.photos.extend(added);
+        d.photos.sort_by(|a, b| a.path.cmp(&b.path));
+        d.photos.dedup_by(|a, b| a.path == b.path);
         d.index_changed();
         save(app);
         read_dates(app, false);
@@ -471,7 +606,7 @@ fn scan(app: &mut UiApp) {
 fn save(app: &mut UiApp) {
     let Some(d) = app.photos.as_mut() else { return };
     d.saved_at = Instant::now();
-    let idx = photos::PhotoIndex { roots: d.roots.clone(), photos: d.photos.clone() };
+    let idx = photos::PhotoIndex { roots: d.roots.clone(), photos: d.photos.clone(), scanned: d.scanned.clone() };
     app.spawn(async move { tokio::task::spawn_blocking(move || photos::save_index(&photos::index_file(), &idx)).await.ok() }, |_, _| {});
 }
 
@@ -565,6 +700,7 @@ fn add_dir(app: &mut UiApp) {
                 app.save_settings();
                 app.toast(trf!("已加入 {dir}，正在找裡面的相片…", "Added {dir}. Looking for photos…"), false);
                 roots_changed(app, Some(app.s.photo_dirs.len() - 1));
+                scan(app, vec![dir]);
             }
             Ok(None) => {}
             Err(e) => app.toast(e, true),
@@ -583,8 +719,12 @@ fn roots_changed(app: &mut UiApp, go: Option<usize>) {
         None => d.go(None),
     }
     d.fix_top();
+    // 移除的相片資料夾裡的相片拿掉
+    let roots = d.roots.clone();
+    d.photos.retain(|p| roots.iter().any(|r| under(&p.path, r).is_some()));
+    d.scanned.retain(|(r, _)| roots.iter().any(|x| x.trim_end_matches(['\\', '/']).eq_ignore_ascii_case(r.trim_end_matches(['\\', '/']))));
     d.index_changed();
-    scan(app);
+    save(app);
 }
 
 // ───────────── 畫面 ─────────────
@@ -662,10 +802,19 @@ pub fn header(ui: &mut egui::Ui, d: &PhotoBrowse, out: &mut Panel) {
         {
             out.add_dir = true;
         }
-        if let Some(s) = &d.scanning {
+        if let Some(found) = &d.scanning {
             ui.add_space(6.0);
             ui.spinner();
-            ui.label(theme::muted(ui, trf!("正在找相片…已找到 {} 張", "Looking for photos… {} found", s.found.load(Ordering::Relaxed))));
+            let n = found.load(Ordering::Relaxed);
+            let text = if d.photos.is_empty() {
+                trf!("正在找相片…已找到 {n} 張", "Looking for photos… {n} found")
+            } else {
+                trf!("正在找新的相片…已讀 {n} 張", "Checking for new photos… {n} read")
+            };
+            ui.label(theme::muted(ui, text)).on_hover_text(tr!(
+                "超過一天沒整個讀過的相片資料夾會在背景整個讀一次，可以照常瀏覽；關掉檔案庫也會讀完、存起來。點進資料夾時那一層隨時都會重新讀",
+                "Photo folders not fully read in the last day are read again in the background. You can keep browsing, and closing the library doesn't stop it. Each folder you open is always re-read"
+            ));
             ui.ctx().request_repaint_after(Duration::from_millis(300));
         }
     });
@@ -803,8 +952,16 @@ pub fn panel(ui: &mut egui::Ui, d: &mut PhotoBrowse, out: &mut Panel, stars: &Pi
                 d.grid = g;
             }
             ui.add_space(6.0);
-            let tip = tr!("重新讀取相片資料夾（NAS 上新增、改過的相片）", "Read the photo folders again (picks up new or changed photos on the NAS)");
-            if super::toolbar::button(tr!("重新整理", "Refresh"), Icon::Refresh, compact, tip).enabled(d.scanning.is_none()).show(ui).clicked() {
+            let last = d.roots.iter().filter_map(|r| last_scan(&d.scanned, r)).reduce(f64::min);
+            let when = last.and_then(|t| chrono::DateTime::from_timestamp_millis(t as i64)).map(|t| t.with_timezone(&chrono::Local).format("%Y/%-m/%-d %H:%M").to_string());
+            let tip = match when {
+                Some(w) => trf!(
+                    "整個重新讀一次相片資料夾（NAS 上新增、改過、刪掉的相片）。上次整個讀完：{w}。點進資料夾時那一層隨時都會重新讀，超過一天時開啟會自動整個讀",
+                    "Read the photo folders again in full (new, changed or deleted photos on the NAS). Last full read: {w}. Each folder you open is always re-read, and a full read runs automatically after a day"
+                ),
+                None => tr!("整個重新讀一次相片資料夾（NAS 上新增、改過、刪掉的相片）", "Read the photo folders again in full (new, changed or deleted photos on the NAS)").to_string(),
+            };
+            if super::toolbar::button(tr!("重新整理", "Refresh"), Icon::Refresh, compact, &tip).enabled(d.scanning.is_none()).show(ui).clicked() {
                 out.rescan = true;
             }
         }
@@ -1223,6 +1380,8 @@ pub fn apply(app: &mut UiApp, mut d: PhotoBrowse, out: Panel) {
     if let Some(to) = out.go.clone() {
         d.go(to);
     }
+    // 換了位置：那一層重新讀一次（放回 app 之後）
+    let moved = d.loaded && d.last_at.as_ref() != Some(&d.at);
     // 記住縮圖大小、依日期、排序、停在哪個資料夾
     let at = match &d.at {
         Some((r, rel)) if *r < d.roots.len() => join_rel(&d.roots[*r], rel),
@@ -1247,6 +1406,9 @@ pub fn apply(app: &mut UiApp, mut d: PhotoBrowse, out: Panel) {
     let open = out.open.map(|pos| viewer_list(&d, pos));
     let want: Vec<Photo> = want.iter().filter_map(|i| d.photos.get(*i).cloned()).collect();
     app.photos = Some(d);
+    if moved {
+        refresh_here(app);
+    }
     for ph in want {
         load_thumb(app, ph);
     }
@@ -1270,8 +1432,10 @@ pub fn apply(app: &mut UiApp, mut d: PhotoBrowse, out: Panel) {
     if out.rescan {
         if let Some(d) = app.photos.as_mut() {
             d.errors.clear();
+            d.refreshed.clear();
         }
-        scan(app);
+        let roots = app.s.photo_dirs.clone();
+        scan(app, roots);
     }
     if let Some((paths, on)) = out.star {
         set_star(app, &paths, on);
@@ -1539,6 +1703,40 @@ pub fn copy_image(app: &mut UiApp, path: String) {
     });
 }
 
+/// 勾選（檢視器的「勾選」用；和相片分頁的勾選是同一份）
+pub fn is_selected(app: &UiApp, path: &str) -> bool {
+    app.photos.as_ref().is_some_and(|d| d.selected.contains(path))
+}
+
+pub fn selected_count(app: &UiApp) -> usize {
+    app.photos.as_ref().map_or(0, |d| d.selected.len())
+}
+
+/// 勾選的相片（照畫面上的順序）
+pub fn selected_paths(app: &UiApp) -> Vec<String> {
+    let Some(d) = app.photos.as_ref() else { return vec![] };
+    let mut list: Vec<String> = d.order.iter().map(|i| d.photos[*i].path.clone()).filter(|p| d.selected.contains(p)).collect();
+    // 不在目前畫面上的（篩選換過）也算
+    let shown: HashSet<&String> = list.iter().collect();
+    let rest: Vec<String> = d.selected.iter().filter(|p| !shown.contains(p)).cloned().collect();
+    list.extend(rest);
+    list
+}
+
+pub fn toggle_selected(app: &mut UiApp, path: &str) {
+    let Some(d) = app.photos.as_mut() else { return };
+    if !d.selected.remove(path) {
+        d.selected.insert(path.to_string());
+    }
+    d.anchor = Some(path.to_string());
+}
+
+pub fn clear_selected(app: &mut UiApp) {
+    if let Some(d) = app.photos.as_mut() {
+        d.selected.clear();
+    }
+}
+
 /// 相片的星號（檢視器的按鈕用）
 pub fn starred(app: &UiApp, path: &str) -> bool {
     app.core.photo_stars.contains(path)
@@ -1561,6 +1759,9 @@ mod tests {
             meta: vec![],
             loaded: true,
             scanning: None,
+            scanned: vec![],
+            refreshed: HashMap::new(),
+            last_at: None,
             errors: vec![],
             dating: None,
             date_stop: Arc::new(AtomicBool::new(false)),
@@ -1665,6 +1866,27 @@ mod tests {
         d.go(Some((0, "travel/2024".into())));
         go_up(&mut d);
         assert_eq!(d.at, Some((0, "travel".into())));
+    }
+
+    #[test]
+    fn merge_keeps_dates_and_unreachable_folders() {
+        let ph = |p: &str, exif: bool| Photo { path: p.into(), size: 1, mtime: 0.0, when: if exif { 7 } else { 1 }, from: if exif { DateFrom::Exif } else { DateFrom::File }, exif_read: exif };
+        let base = vec![ph("/video/family/a.jpg", true), ph("/video/family/gone.jpg", false), ph("/nas2/b.jpg", false), ph("/removed/c.jpg", false)];
+        // 掃了 family（a 還在、gone 不見了、多了 new）和 nas2（讀不到）
+        let scan = photos::Scan { photos: vec![ph("/video/family/a.jpg", false), ph("/video/family/new.jpg", false)], errors: vec![("/nas2".into(), "x".into())] };
+        let roots = ["/video/family".to_string(), "/nas2".to_string()];
+        let keep = ["/video/family".to_string(), "/nas2".to_string()];
+        let (list, ok) = merge(base, &roots, scan, &keep);
+        let paths: Vec<&str> = list.iter().map(|p| p.path.as_str()).collect();
+        // 讀不到的 nas2 照舊；已經移除的 /removed 拿掉；a 沿用讀過的拍攝日期
+        assert_eq!(paths, ["/nas2/b.jpg", "/video/family/a.jpg", "/video/family/new.jpg"]);
+        assert_eq!(ok, ["/video/family"]);
+        assert!(list[1].exif_read && list[1].when == 7 && list[1].from == DateFrom::Exif);
+        let mut scanned = vec![("/video/family/".to_string(), 1.0)];
+        mark_scanned(&mut scanned, &ok, 5.0);
+        assert_eq!(last_scan(&scanned, "/video/family"), Some(5.0));
+        assert_eq!(scanned.len(), 1);
+        assert_eq!(last_scan(&scanned, "/nas2"), None);
     }
 
     #[test]

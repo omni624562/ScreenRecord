@@ -794,6 +794,11 @@ enum Act {
     JfFav,
     /// 相片分頁的相片：加上 / 移除星號
     PhotoStar,
+    /// 相片分頁的相片：勾選 / 取消勾選這一張（和相片分頁的勾選是同一份）
+    PhotoPick,
+    /// 相片分頁的相片：刪除勾選的（先確認）、取消全部勾選
+    PhotoDeletePicked,
+    PhotoClearPicks,
 }
 
 /// 標題列的一個按鈕；視窗窄時依序從後面的開始收進「⋯」
@@ -806,6 +811,8 @@ struct HeadBtn {
     blocked: Option<String>,
     /// 最主要的動作（藍底）
     primary: bool,
+    /// 會刪掉東西（紅色）
+    danger: bool,
     /// 只顯示圖示（滑鼠移上去顯示名稱）：常用但不是最主要的動作，不用點進選單也按得到
     icon_only: bool,
     /// 前面畫一條分隔線（新的一組）
@@ -815,7 +822,7 @@ struct HeadBtn {
 }
 
 fn head_btn(label: &str, icon: Option<Icon>, tip: &str, act: Act) -> HeadBtn {
-    HeadBtn { label: label.to_string(), icon, tip: tip.to_string(), act, blocked: None, primary: false, icon_only: false, group: false, items: vec![] }
+    HeadBtn { label: label.to_string(), icon, tip: tip.to_string(), act, blocked: None, primary: false, danger: false, icon_only: false, group: false, items: vec![] }
 }
 
 /// 只有圖示的按鈕（滑鼠移上去顯示名稱與說明）
@@ -906,12 +913,31 @@ fn photo_buttons(app: &UiApp, e: &LibraryEntry) -> Vec<HeadBtn> {
     star.group = true;
     let mut open = head_icon(tr!("用 Windows 開啟", "Open in Windows"), Icon::Export, tr!("用 Windows 的「相片」開啟", "Open in the Windows Photos app"), Act::Entry(EntryAction::External));
     open.group = true;
-    vec![
-        b(tr!("複製", "Copy"), Some(Icon::Copy), tr!("複製到剪貼簿（Ctrl+C；可直接貼到 LINE、Word、信件）", "Copy to clipboard (Ctrl+C; paste it straight into LINE, Word or an email)"), Act::Copy),
-        star,
-        head_icon(tr!("重新命名", "Rename"), Icon::Rename, tr!("改檔名（副檔名不變）", "Rename the file (the extension stays the same)"), Act::Rename),
-        open,
-    ]
+    // 勾選：一張張看、把要刪的勾起來，再一起刪（和相片分頁的勾選是同一份）
+    let picked = super::photo_browse::is_selected(app, &e.media.path);
+    let n = super::photo_browse::selected_count(app);
+    let mut pick = b(
+        if picked { tr!("已勾選", "Selected") } else { tr!("勾選", "Select") },
+        Some(Icon::Check),
+        tr!(
+            "勾選這一張（空白鍵）。一張張看、把要刪的勾起來，再按「刪除勾選的」一起刪；回到縮圖時勾選還在",
+            "Select this photo (Space). Go through the photos, select the ones to delete, then delete them all at once. The selection stays when you go back to the thumbnails"
+        ),
+        Act::PhotoPick,
+    );
+    pick.primary = picked;
+    let mut list = vec![pick];
+    if n > 0 {
+        let mut del = b(&trf!("刪除勾選的 {n} 張", "Delete {n} selected"), Some(Icon::Trash), tr!("刪除勾選的相片（會先確認）", "Delete the selected photos (asks first)"), Act::PhotoDeletePicked);
+        del.danger = true;
+        list.push(del);
+        list.push(head_icon(tr!("取消勾選", "Clear selection"), Icon::Close, &trf!("取消全部 {n} 張的勾選", "Clear all {n} selected"), Act::PhotoClearPicks));
+    }
+    let mut copy =
+        b(tr!("複製", "Copy"), Some(Icon::Copy), tr!("複製到剪貼簿（Ctrl+C；可直接貼到 LINE、Word、信件）", "Copy to clipboard (Ctrl+C; paste it straight into LINE, Word or an email)"), Act::Copy);
+    copy.group = true;
+    list.extend([copy, star, head_icon(tr!("重新命名", "Rename"), Icon::Rename, tr!("改檔名（副檔名不變）", "Rename the file (the extension stays the same)"), Act::Rename), open]);
+    list
 }
 
 /// 串流 Jellyfin 影片時標題列的按鈕：剪輯、製作（先下載）、下載｜設為封面、影片資訊｜星號
@@ -1013,6 +1039,8 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
     let e = v.cur().clone();
     let buttons = if v.photo { photo_buttons(app, &e) } else { head_buttons(app, &e, v.is_image(), v.remote.as_ref()) };
     let photo_date = if v.photo { super::photo_browse::date_of(app, &e.media.path) } else { None };
+    let picked = v.photo && super::photo_browse::is_selected(app, &e.media.path);
+    let picked_n = if v.photo { super::photo_browse::selected_count(app) } else { 0 };
 
     let screen = ctx.content_rect();
     let (size, frame, area) = if v.full {
@@ -1066,6 +1094,30 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         painter.rect_filled(stage, CornerRadius::ZERO, Color32::from_gray(24));
         if image {
             image_stage(&mut v, ui, &painter, stage, &resp);
+            // 相片：左上角的勾選框（按了勾選 / 取消，和標題列的「勾選」一樣），旁邊寫已勾選幾張
+            if v.photo {
+                let r = Rect::from_min_size(stage.min + vec2(16.0, 16.0), vec2(30.0, 30.0));
+                let b = ui.interact(r, Id::new("viewer-photo-pick"), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(if picked {
+                    tr!("取消勾選（空白鍵）", "Unselect (Space)")
+                } else {
+                    tr!("勾選這一張（空白鍵），之後一起刪", "Select this photo (Space) to delete several at once")
+                });
+                let p = theme::pal(ui);
+                painter.rect_filled(r, 7.0, if picked { p.accent } else { Color32::from_black_alpha(if b.hovered() { 190 } else { 130 }) });
+                painter.rect_stroke(r, 7.0, Stroke::new(2.0, Color32::WHITE), egui::StrokeKind::Inside);
+                if picked {
+                    theme::paint_icon(&painter, r.shrink(6.0), Icon::Check, Color32::WHITE);
+                }
+                if picked_n > 0 {
+                    let g = painter.layout_no_wrap(trf!("已勾選 {picked_n} 張", "{picked_n} selected"), theme::font_bold(13.0), Color32::WHITE);
+                    let t = Rect::from_min_size(pos2(r.max.x + 8.0, r.center().y - g.size().y / 2.0 - 4.0), g.size() + vec2(14.0, 8.0));
+                    painter.rect_filled(t, 6.0, Color32::from_black_alpha(160));
+                    painter.galley(t.min + vec2(7.0, 4.0), g, Color32::WHITE);
+                }
+                if b.clicked() {
+                    act = Act::PhotoPick;
+                }
+            }
         } else {
             video_stage(&mut v, &painter, stage, &resp, audio);
             if show_hint {
@@ -1334,6 +1386,9 @@ fn head_style(b: &HeadBtn) -> Btn {
     if b.primary {
         btn = btn.primary();
     }
+    if b.danger {
+        btn = btn.danger();
+    }
     if !b.items.is_empty() {
         btn = btn.menu();
     }
@@ -1522,6 +1577,15 @@ fn run_act(app: &mut UiApp, act: Act) {
             }
             copy_image(app)
         }
+        Act::PhotoPick => {
+            let Some(path) = app.viewer.as_ref().map(|v| v.cur().media.path.clone()) else { return };
+            super::photo_browse::toggle_selected(app, &path);
+        }
+        Act::PhotoDeletePicked => {
+            let list = super::photo_browse::selected_paths(app);
+            super::photo_browse::confirm_delete(app, list);
+        }
+        Act::PhotoClearPicks => super::photo_browse::clear_selected(app),
         Act::PhotoStar => {
             let Some(path) = app.viewer.as_ref().map(|v| v.cur().media.path.clone()) else { return };
             let on = !super::photo_browse::starred(app, &path);
@@ -1743,6 +1807,10 @@ fn keyboard(v: &mut Viewer, ctx: &egui::Context, act: &mut Act) {
             if i.key_pressed(Key::Num1) {
                 v.zoom = Some(1.0);
                 v.pan = Vec2::ZERO;
+            }
+            // 相片：空白鍵勾選 / 取消勾選這一張
+            if v.photo && i.key_pressed(Key::Space) {
+                *act = Act::PhotoPick;
             }
             // Ctrl+C：複製圖片
             let copy = i.events.iter().any(|e| matches!(e, egui::Event::Copy | egui::Event::Key { key: Key::C, pressed: true, modifiers: egui::Modifiers { command: true, .. }, .. }));
