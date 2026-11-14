@@ -209,6 +209,8 @@ pub struct UiApp {
     pub jf_browse: Option<jellyfin_browse::JfBrowse>,
     /// 檔案庫「相片」分頁的內容（關掉檔案庫時清掉；相片的清單存在 photo-index.json，下次開啟馬上列出）
     pub photos: Option<photo_browse::PhotoBrowse>,
+    /// 相片資料夾正在背景整個掃描（關掉檔案庫也繼續，掃完存起來）
+    pub photo_scan: Option<photo_browse::Scanning>,
     /// 在瀏覽視窗改 Jellyfin 上的影片資訊
     pub jf_edit: Option<jellyfin_edit::JfEdit>,
     /// 背景正在把 Jellyfin 上的人物或標籤重新命名（影片資訊關掉也會繼續）
@@ -408,6 +410,7 @@ impl UiApp {
             details_sync_busy: false,
             jf_browse: None,
             photos: None,
+            photo_scan: None,
             jf_edit: None,
             jf_rename: None,
             jf_batch: None,

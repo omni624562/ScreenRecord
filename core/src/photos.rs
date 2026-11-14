@@ -299,57 +299,103 @@ pub struct Scan {
     pub errors: Vec<(String, String)>,
 }
 
-/// 讀這些相片資料夾（含子資料夾）裡的相片。known：上次的索引（同一個檔案沒改過時沿用讀過的拍攝時間）；
-/// found：已經找到幾張（畫面上顯示進度）；stop：停止（關掉檔案庫）
+/// 同時讀幾個資料夾：NAS 上每讀一個資料夾都要等網路來回，一起讀快很多
+const SCAN_THREADS: usize = 8;
+
+/// 一個資料夾裡的東西：相片、子資料夾（NAS 的系統資料夾、資料夾連結不算）
+fn read_one(dir: &Path, old: &HashMap<String, &Photo>, photos: &mut Vec<Photo>, subdirs: &mut Vec<PathBuf>) -> std::io::Result<()> {
+    for e in std::fs::read_dir(dir)?.flatten() {
+        let Ok(ft) = e.file_type() else { continue };
+        let name = e.file_name().to_string_lossy().into_owned();
+        if ft.is_symlink() {
+            continue;
+        }
+        if ft.is_dir() {
+            if !is_system_dir(&name) {
+                subdirs.push(e.path());
+            }
+            continue;
+        }
+        if !is_photo_name(&name) {
+            continue;
+        }
+        let Ok(meta) = e.metadata() else { continue };
+        let path = e.path().display().to_string();
+        let (size, mtime) = (meta.len(), mtime_ms(&meta));
+        photos.push(match old.get(&path.to_lowercase()) {
+            Some(p) if p.size == size && same_mtime(p.mtime, mtime) => Photo { path, ..(*p).clone() },
+            _ => Photo::new(path, size, mtime),
+        });
+    }
+    Ok(())
+}
+
+/// 讀這些相片資料夾（含子資料夾）裡的相片，同時讀好幾個資料夾。known：上次的索引（同一個檔案沒改過時沿用讀過的拍攝時間）；
+/// found：已經找到幾張（畫面上顯示進度）；stop：停止
 pub fn scan(roots: &[String], known: &[Photo], found: &AtomicUsize, stop: &AtomicBool) -> Scan {
     let old: HashMap<String, &Photo> = known.iter().map(|p| (p.path.to_lowercase(), p)).collect();
     let mut out = Scan::default();
-    let mut dirs = 0;
+    let mut starts = vec![];
     for root in roots {
         let root = root.trim();
         if root.is_empty() {
             continue;
         }
-        if let Err(e) = std::fs::read_dir(root) {
-            out.errors.push((root.to_string(), io_reason(&e)));
-            continue;
-        }
-        let mut stack = vec![PathBuf::from(root)];
-        while let Some(dir) = stack.pop() {
-            if stop.load(Ordering::Relaxed) || dirs >= MAX_DIRS || out.photos.len() >= MAX_PHOTOS {
-                break;
-            }
-            dirs += 1;
-            let Ok(rd) = std::fs::read_dir(&dir) else { continue };
-            for e in rd.flatten() {
-                let Ok(ft) = e.file_type() else { continue };
-                let name = e.file_name().to_string_lossy().into_owned();
-                if ft.is_symlink() {
-                    continue;
-                }
-                if ft.is_dir() {
-                    if !is_system_dir(&name) {
-                        stack.push(e.path());
-                    }
-                    continue;
-                }
-                if !is_photo_name(&name) {
-                    continue;
-                }
-                let Ok(meta) = e.metadata() else { continue };
-                let path = e.path().display().to_string();
-                let (size, mtime) = (meta.len(), mtime_ms(&meta));
-                let photo = match old.get(&path.to_lowercase()) {
-                    Some(p) if p.size == size && same_mtime(p.mtime, mtime) => Photo { path, ..(*p).clone() },
-                    _ => Photo::new(path, size, mtime),
-                };
-                out.photos.push(photo);
-                found.fetch_add(1, Ordering::Relaxed);
-            }
+        match std::fs::read_dir(root) {
+            Ok(_) => starts.push(PathBuf::from(root)),
+            Err(e) => out.errors.push((root.to_string(), io_reason(&e))),
         }
     }
+    // 還沒讀的資料夾、正在讀的有幾個（都讀完、也沒人在讀時結束）
+    let queue = std::sync::Mutex::new((starts, 0usize));
+    let dirs = AtomicUsize::new(0);
+    let all = std::sync::Mutex::new(Vec::new());
+    std::thread::scope(|sc| {
+        for _ in 0..SCAN_THREADS {
+            sc.spawn(|| {
+                let (mut mine, mut subdirs) = (vec![], vec![]);
+                loop {
+                    let next = {
+                        let mut q = queue.lock().unwrap_or_else(|e| e.into_inner());
+                        match q.0.pop() {
+                            Some(d) => {
+                                q.1 += 1;
+                                Some(d)
+                            }
+                            None if q.1 == 0 => break,
+                            None => None,
+                        }
+                    };
+                    let Some(dir) = next else {
+                        std::thread::sleep(std::time::Duration::from_millis(5));
+                        continue;
+                    };
+                    let full = stop.load(Ordering::Relaxed) || dirs.fetch_add(1, Ordering::Relaxed) >= MAX_DIRS || found.load(Ordering::Relaxed) >= MAX_PHOTOS;
+                    let before = mine.len();
+                    if !full {
+                        let _ = read_one(&dir, &old, &mut mine, &mut subdirs);
+                        found.fetch_add(mine.len() - before, Ordering::Relaxed);
+                    }
+                    let mut q = queue.lock().unwrap_or_else(|e| e.into_inner());
+                    q.0.append(&mut subdirs);
+                    q.1 -= 1;
+                }
+                all.lock().unwrap_or_else(|e| e.into_inner()).append(&mut mine);
+            });
+        }
+    });
+    out.photos = all.into_inner().unwrap_or_else(|e| e.into_inner());
     out.photos.sort_by(|a, b| a.path.cmp(&b.path));
     out
+}
+
+/// 只讀一個資料夾（不含子資料夾）：這一層的相片、子資料夾的完整路徑。點進資料夾時用，很快
+pub fn list_dir(dir: &str, known: &[Photo]) -> Result<(Vec<Photo>, Vec<String>), String> {
+    let old: HashMap<String, &Photo> = known.iter().map(|p| (p.path.to_lowercase(), p)).collect();
+    let (mut photos, mut subdirs) = (vec![], vec![]);
+    read_one(Path::new(dir), &old, &mut photos, &mut subdirs).map_err(|e| io_reason(&e))?;
+    photos.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok((photos, subdirs.into_iter().map(|d| d.display().to_string()).collect()))
 }
 
 /// 讀不到資料夾的原因（看得懂的說法）
@@ -366,6 +412,9 @@ fn io_reason(e: &std::io::Error) -> String {
 pub struct PhotoIndex {
     pub roots: Vec<String>,
     pub photos: Vec<Photo>,
+    /// 每個相片資料夾上次整個掃描完的時間（毫秒）：一天內開啟時不再整個掃（點進資料夾時只讀那一層）
+    #[serde(default)]
+    pub scanned: Vec<(String, f64)>,
 }
 
 pub fn index_file() -> PathBuf {
@@ -755,12 +804,49 @@ mod tests {
         assert_eq!(again.photos[at(&again.photos, "海邊.jpg")].from, DateFrom::Exif);
         // 存檔、讀回來
         let file = root.join("idx.json");
-        save_index(&file, &PhotoIndex { roots: roots.clone(), photos: again.photos.clone() });
+        save_index(&file, &PhotoIndex { roots: roots.clone(), photos: again.photos.clone(), scanned: vec![(roots[0].clone(), 1.0)] });
         let back = load_index(&file);
+        assert_eq!(back.scanned, [(roots[0].clone(), 1.0)]);
+        // 只讀一層：這一層的相片、子資料夾（@eaDir 不算）
+        let (here, subs) = list_dir(&root.join("travel").display().to_string(), &back.photos).unwrap();
+        assert_eq!(here.iter().map(|p| p.name()).collect::<Vec<_>>(), ["IMG_20230101_101010.png"]);
+        assert_eq!(subs.len(), 1);
+        assert!(subs[0].ends_with("2024"));
+        assert!(list_dir(&root.join("missing").display().to_string(), &[]).is_err());
         assert_eq!(back.photos.len(), again.photos.len());
         for (a, b) in back.photos.iter().zip(&again.photos) {
             assert!(a.path == b.path && a.when == b.when && a.from == b.from && same_mtime(a.mtime, b.mtime));
         }
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// 同時讀好幾個資料夾：很多層、很多個資料夾也全部找到，不會重複
+    #[test]
+    fn scan_many_folders_in_parallel() {
+        let root = std::env::temp_dir().join(format!("sr-photos-many-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let mut n = 0;
+        for y in 0..6 {
+            for m in 0..8 {
+                let d = root.join(format!("{}/{:02}/a/b", 2020 + y, m + 1));
+                std::fs::create_dir_all(&d).unwrap();
+                for i in 0..3 {
+                    std::fs::write(d.join(format!("IMG_{i}.jpg")), b"x").unwrap();
+                    n += 1;
+                }
+                std::fs::write(root.join(format!("{}/{:02}/top.png", 2020 + y, m + 1)), b"x").unwrap();
+                n += 1;
+            }
+        }
+        let found = AtomicUsize::new(0);
+        let s = scan(&[root.display().to_string()], &[], &found, &AtomicBool::new(false));
+        assert_eq!((s.photos.len(), found.load(Ordering::Relaxed)), (n, n));
+        let mut paths: Vec<&str> = s.photos.iter().map(|p| p.path.as_str()).collect();
+        paths.dedup();
+        assert_eq!(paths.len(), n);
+        // 停下來：不再讀
+        let stopped = scan(&[root.display().to_string()], &[], &AtomicUsize::new(0), &AtomicBool::new(true));
+        assert!(stopped.photos.is_empty());
         std::fs::remove_dir_all(&root).ok();
     }
 
