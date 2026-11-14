@@ -23,6 +23,7 @@ pub mod main_view;
 pub mod notes;
 pub mod ocr;
 pub mod photo_browse;
+pub mod photo_people;
 pub mod playback;
 pub mod presets;
 pub mod preview;

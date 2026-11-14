@@ -1038,7 +1038,18 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
     }
     let e = v.cur().clone();
     let buttons = if v.photo { photo_buttons(app, &e) } else { head_buttons(app, &e, v.is_image(), v.remote.as_ref()) };
-    let photo_date = if v.photo { super::photo_browse::date_of(app, &e.media.path) } else { None };
+    // 相片：拍攝日期、相片裡有誰
+    let photo_date = if v.photo {
+        let names = super::photo_people::names_of(app, &e.media.path);
+        let date = super::photo_browse::date_of(app, &e.media.path);
+        match (date, names.is_empty()) {
+            (Some(d), false) => Some(format!("{d}{}{}", tr!("・", " · "), names.join(tr!("、", ", ")))),
+            (d, true) => d,
+            (None, false) => Some(names.join(tr!("、", ", "))),
+        }
+    } else {
+        None
+    };
     let picked = v.photo && super::photo_browse::is_selected(app, &e.media.path);
     let picked_n = if v.photo { super::photo_browse::selected_count(app) } else { 0 };
 
