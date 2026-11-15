@@ -946,6 +946,42 @@ impl FaceIndex {
         out
     }
 
+    /// 取了名、沒隱藏的人的代表（臉平均起來）：在影片裡認人用
+    pub fn named_centers(&self) -> Vec<(String, [f32; 128])> {
+        let names: HashMap<u32, &str> = self.people.iter().filter(|p| !p.name.is_empty() && !p.hidden).map(|p| (p.id, p.name.as_str())).collect();
+        let mut sum: HashMap<u32, [f32; 128]> = HashMap::new();
+        for f in self.photos.values().flat_map(|p| p.faces.iter()).filter(|f| names.contains_key(&f.person)) {
+            let Some(e) = unpack(&f.emb) else { continue };
+            let s = sum.entry(f.person).or_insert([0.0; 128]);
+            for (a, b) in s.iter_mut().zip(e) {
+                *a += b;
+            }
+        }
+        let mut out: Vec<(String, [f32; 128])> = sum
+            .into_iter()
+            .map(|(id, mut c)| {
+                normalize(&mut c);
+                (names[&id].to_string(), c)
+            })
+            .collect();
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        out
+    }
+
+    /// 這個人拍得最好的一張臉（相片, 位置）：當人物的照片用（臉大、清楚、沒閉眼、正面的優先）
+    pub fn best_face(&self, id: u32) -> Option<(String, [f32; 4])> {
+        let mut best: Option<(f32, &String, [f32; 4])> = None;
+        for (k, p) in &self.photos {
+            for f in p.faces.iter().filter(|f| f.person == id) {
+                let q = f.quality(0.6).unwrap_or(1.0) + (f.rect[2] * f.rect[3]).sqrt() * 4.0 + f.score;
+                if best.as_ref().is_none_or(|b| q > b.0) {
+                    best = Some((q, k, f.rect));
+                }
+            }
+        }
+        best.map(|(_, k, r)| (k.clone(), r))
+    }
+
     /// 還沒用新版看過眼睛的相片有幾張
     pub fn old_photos(&self) -> usize {
         self.photos.values().filter(|p| p.ver < VERSION).count()
@@ -1215,6 +1251,137 @@ pub fn face_thumb(ffmpeg: Option<&Path>, path: &str, rect: [f32; 4], size: u32) 
     Some(out)
 }
 
+// ───────────── 人物的照片（Jellyfin 的人物用） ─────────────
+
+/// 直式（2:3）的人物照片：臉在上面三分之一左右、四周留一些（JPEG，最寬 600）
+pub fn portrait_jpeg(ffmpeg: Option<&Path>, path: &str, rect: [f32; 4]) -> Option<Vec<u8>> {
+    let (img, _) = crate::photos::load_full(ffmpeg, path, 3000)?;
+    let (w, h) = (img.width() as f32, img.height() as f32);
+    let (fw, fh) = (rect[2] * w, rect[3] * h);
+    let (cx, cy) = ((rect[0] + rect[2] / 2.0) * w, (rect[1] + rect[3] / 2.0) * h);
+    // 寬 = 臉的 2 倍、高 = 寬的 1.5 倍；放不下時等比縮小
+    let mut cw = fw.max(fh) * 2.0;
+    let mut ch = cw * 1.5;
+    let k = (w / cw).min(h / ch).min(1.0);
+    cw *= k;
+    ch *= k;
+    let x0 = (cx - cw / 2.0).clamp(0.0, w - cw);
+    let y0 = (cy - ch * 0.42).clamp(0.0, h - ch);
+    let crop = image::imageops::crop_imm(&img, x0 as u32, y0 as u32, (cw as u32).max(1), (ch as u32).max(1)).to_image();
+    let crop = if crop.width() > 600 { image::imageops::resize(&crop, 600, 900, image::imageops::FilterType::Triangle) } else { crop };
+    let mut out = vec![];
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 88).encode_image(&image::DynamicImage::ImageRgba8(crop).to_rgb8()).ok()?;
+    Some(out)
+}
+
+// ───────────── 影片裡的人 ─────────────
+
+/// 影片裡臉要多大才認（取出來的畫面最寬 960）、要多像才算（比相片分組嚴一點：影片的臉比較糊、角度多）
+const VIDEO_MIN_FACE: f32 = 40.0;
+const VIDEO_SCORE: f32 = 0.9;
+const VIDEO_MATCH: f32 = 0.45;
+
+/// 每隔幾秒看一格：短片 3 秒，長片最多看 600 格左右
+pub fn video_step(duration: f64) -> f64 {
+    (duration / 600.0).max(3.0)
+}
+
+/// 找出影片裡有誰：每隔 step 秒取一格畫面找臉，和取了名的人比對。src 是檔案路徑或串流網址。
+/// 回傳每個人出現在第幾秒（依名稱排）；progress 0～1000；stop 時停下來回傳 Err
+pub fn scan_video(ffmpeg: &Path, src: &str, duration: f64, people: &[(String, [f32; 128])], progress: &AtomicU32, stop: &AtomicBool) -> Result<Vec<(String, Vec<f32>)>, String> {
+    use std::io::Read;
+    let engine = Engine::get()?;
+    let step = video_step(duration);
+    let vf = format!("fps=1/{step},scale=960:-2:force_original_aspect_ratio=decrease");
+    let mut child = crate::process::std_command(ffmpeg)
+        .args(["-hide_banner", "-loglevel", "error", "-i", src, "-an", "-sn", "-vf", &vf, "-f", "image2pipe", "-c:v", "bmp", "-"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|e| crate::trf!("無法執行 FFmpeg：{e}", "Couldn't run FFmpeg: {e}"))?;
+    let mut out = child.stdout.take().ok_or("FFmpeg 沒有輸出")?;
+    let mut found: BTreeMap<String, Vec<f32>> = BTreeMap::new();
+    let mut n = 0usize;
+    let total = (duration / step).ceil().max(1.0);
+    let result = loop {
+        if stop.load(Ordering::Relaxed) {
+            break Err(crate::tr!("已取消", "Canceled").to_string());
+        }
+        // 一張 BMP：開頭 14 bytes（BM、整個檔案的大小）
+        let mut head = [0u8; 14];
+        if out.read_exact(&mut head).is_err() {
+            break Ok(());
+        }
+        let size = u32::from_le_bytes([head[2], head[3], head[4], head[5]]) as usize;
+        if &head[..2] != b"BM" || !(54..200_000_000).contains(&size) {
+            break Err(crate::tr!("讀不懂 FFmpeg 送回來的畫面", "Couldn't understand the frames from FFmpeg").to_string());
+        }
+        let mut buf = vec![0u8; size];
+        buf[..14].copy_from_slice(&head);
+        if out.read_exact(&mut buf[14..]).is_err() {
+            break Ok(());
+        }
+        let at = (n as f64 * step) as f32;
+        n += 1;
+        progress.store(((n as f64 / total) * 1000.0).min(1000.0) as u32, Ordering::Relaxed);
+        let Ok(img) = image::load_from_memory_with_format(&buf, image::ImageFormat::Bmp) else { continue };
+        let img = img.to_rgb8();
+        for f in engine.detect(&img)? {
+            if f.score < VIDEO_SCORE || f.rect[2].min(f.rect[3]) < VIDEO_MIN_FACE {
+                continue;
+            }
+            let e = engine.embed(&align(&img, &f.kps))?;
+            if let Some((name, _)) = people.iter().map(|(name, c)| (name, dot(&e, c))).filter(|(_, s)| *s >= VIDEO_MATCH).max_by(|a, b| a.1.total_cmp(&b.1)) {
+                let v = found.entry(name.clone()).or_default();
+                if v.last() != Some(&at) {
+                    v.push(at);
+                }
+            }
+        }
+    };
+    let _ = child.kill();
+    let _ = child.wait();
+    result?;
+    if n == 0 {
+        return Err(crate::tr!("FFmpeg 讀不了這支影片", "FFmpeg couldn't read this video").into());
+    }
+    Ok(found.into_iter().collect())
+}
+
+/// 出現的時間（秒）合成一段一段：相鄰兩次差不到 gap 秒算同一段，回傳每段（開始, 結束）
+pub fn time_ranges(times: &[f32], gap: f32) -> Vec<(f32, f32)> {
+    let mut out: Vec<(f32, f32)> = vec![];
+    for &t in times {
+        match out.last_mut() {
+            Some(r) if t - r.1 <= gap => r.1 = t,
+            _ => out.push((t, t)),
+        }
+    }
+    out
+}
+
+/// 一支影片找到的人（存在 video-people.json）：每隔幾秒看一格、每個人出現在第幾秒
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct VideoPeople {
+    pub step: f64,
+    pub people: Vec<(String, Vec<f32>)>,
+}
+
+pub fn video_people_file() -> PathBuf {
+    data_dir().join("video-people.json")
+}
+
+pub fn load_video_people(file: &Path) -> HashMap<String, VideoPeople> {
+    std::fs::read(file).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+}
+
+pub fn save_video_people(file: &Path, all: &HashMap<String, VideoPeople>) {
+    if let Err(e) = crate::paths::write_atomic(file, &serde_json::to_vec(all).unwrap_or_default()) {
+        crate::warn!("[人臉] 存不了影片裡的人：{e}");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1401,6 +1568,15 @@ mod tests {
         assert!(q["/video/family/good.jpg"] > q["/video/family/shut.jpg"] + 1.5 && q["/video/family/good.jpg"] > 3.5, "{q:?}");
         let me = idx.photos["/video/family/good.jpg"].faces[0].person;
         assert!(idx.person_scores(me, 0.7).contains_key("/video/family/good.jpg"));
+        // 取了名的人的代表、拍得最好的一張臉
+        idx.rename(me, "小明");
+        let centers = idx.named_centers();
+        assert_eq!(centers.len(), 1);
+        assert!(centers[0].0 == "小明" && (dot(&centers[0].1, &centers[0].1) - 1.0).abs() < 1e-3);
+        assert!(idx.best_face(me).is_some() && idx.best_face(9999).is_none());
+        // 出現的時間合成一段一段
+        assert_eq!(time_ranges(&[0.0, 3.0, 6.0, 30.0, 33.0, 90.0], 6.5), [(0.0, 6.0), (30.0, 33.0), (90.0, 90.0)]);
+        assert!(video_step(60.0) == 3.0 && video_step(7200.0) == 12.0);
         let who = idx.photos["/video/family/blink.jpg"].faces[0].person;
         idx.set_hidden(who, true);
         assert!(idx.closed_eyes(0.7).is_empty());
@@ -1467,6 +1643,34 @@ mod tests {
         assert!(download_to(&[&c], &dir, &progress, &cancel).is_err());
         assert!(!dir.join("c.onnx").exists() && !dir.join("c.onnx.part").exists());
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 有模型、影片、臉的資料時（SCREENRECORDER_TEST_FACE_VIDEO、SCREENRECORDER_TEST_FACE_INDEX；模型放在 SCREENRECORDER_DATA_DIR 的 faces）：
+    /// 印出影片裡找到誰、人物的照片存成檔案看
+    #[test]
+    fn scan_video_with_real_models() {
+        let (Ok(video), Ok(index)) = (std::env::var("SCREENRECORDER_TEST_FACE_VIDEO"), std::env::var("SCREENRECORDER_TEST_FACE_INDEX")) else {
+            eprintln!("略過：沒有設定 SCREENRECORDER_TEST_FACE_VIDEO、SCREENRECORDER_TEST_FACE_INDEX");
+            return;
+        };
+        let ff = std::env::var_os("SCREENRECORDER_TEST_FFMPEG").map(PathBuf::from).unwrap_or_else(|| "ffmpeg".into());
+        let idx = load_index(Path::new(&index));
+        let people = idx.named_centers();
+        let dur: f64 = std::env::var("SCREENRECORDER_TEST_FACE_VIDEO_SEC").ok().and_then(|v| v.parse().ok()).unwrap_or(30.0);
+        let (progress, stop) = (AtomicU32::new(0), AtomicBool::new(false));
+        let t = std::time::Instant::now();
+        let found = scan_video(&ff, &video, dur, &people, &progress, &stop).unwrap();
+        println!("VIDEO step {} 花了 {:?} 進度 {}", video_step(dur), t.elapsed(), progress.load(Ordering::Relaxed));
+        for (name, times) in &found {
+            println!("VIDEO {name} {:?}", time_ranges(times, video_step(dur) as f32 * 2.5));
+        }
+        for p in idx.people.iter().filter(|p| !p.name.is_empty()) {
+            let (path, rect) = idx.best_face(p.id).unwrap();
+            let jpg = portrait_jpeg(Some(&ff), &path, rect).unwrap();
+            let out = std::env::temp_dir().join(format!("sr-portrait-{}.jpg", p.id));
+            std::fs::write(&out, &jpg).unwrap();
+            println!("PORTRAIT {} {} bytes {}", p.name, jpg.len(), out.display());
+        }
     }
 
     /// 有模型時（SCREENRECORDER_TEST_FACE_MODELS 指到放兩個模型的資料夾）：載入、找臉、認人跑得起來

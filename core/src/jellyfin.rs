@@ -676,6 +676,16 @@ impl Jellyfin {
         Ok(list)
     }
 
+    /// 還沒有照片的人物（編號, 名稱）：相片分頁把取了名的人的臉帶過來時，只補這些
+    pub fn persons_without_photo(&self, user: &str) -> Result<Vec<(String, String)>, String> {
+        let mut req = agent().get(&format!("{}/Persons", self.url)).query("limit", "5000");
+        if !user.is_empty() {
+            req = req.query("userId", user);
+        }
+        let body = self.call(req)?.into_string().map_err(|e| e.to_string())?;
+        Ok(persons_missing_photo(&body))
+    }
+
     /// 全部影片用到的人物、標籤、年份與次數（「影片資訊」的常用、Jellyfin 分頁「依這些找」後面的支數）。
     /// 人物、標籤依次數多到少、再依名稱排，只差在前後空白、大小寫、全形半形的算同一個，顯示用得最多的寫法；
     /// 年份新的在前；太多時讀到 2 萬支為止
@@ -1769,6 +1779,21 @@ fn persons_of(json: &str) -> Vec<(String, String)> {
     v.get("Items")
         .and_then(Value::as_array)
         .map(|a| a.iter().filter_map(|p| Some((p.get("Id")?.as_str()?.to_string(), p.get("Name")?.as_str()?.trim().to_string()))).filter(|(_, n)| !n.is_empty()).collect())
+        .unwrap_or_default()
+}
+
+/// /Persons 的結果裡沒有主要圖片的人物（編號, 名稱）
+pub fn persons_missing_photo(json: &str) -> Vec<(String, String)> {
+    let Ok(v) = serde_json::from_str::<Value>(json) else { return vec![] };
+    v.get("Items")
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter(|p| p.pointer("/ImageTags/Primary").is_none())
+                .filter_map(|p| Some((p.get("Id")?.as_str()?.to_string(), p.get("Name")?.as_str()?.trim().to_string())))
+                .filter(|(_, n)| !n.is_empty())
+                .collect()
+        })
         .unwrap_or_default()
 }
 
@@ -3320,6 +3345,19 @@ mod tests {
     }
 
     /// 假的 Jellyfin：依序回應好幾個請求（每個連線一個），回傳收到的請求行
+    /// 還沒有照片的人物：向 /Persons 要（帶使用者），只留沒有主要圖片的；補照片是 POST /Items/{人物}/Images/Primary
+    #[test]
+    fn person_photos_only_for_missing() {
+        let persons = r#"{"Items":[{"Id":"p1","Name":"小明","ImageTags":{"Primary":"x"}},{"Id":"p2","Name":"小美"}]}"#;
+        let (url, h) = serve_seq(vec![("200 OK", persons.to_string()), ("204 No Content", String::new())]);
+        let jf = Jellyfin::new(&url, "k").unwrap();
+        assert_eq!(jf.persons_without_photo("u1").unwrap(), vec![("p2".to_string(), "小美".to_string())]);
+        jf.set_person_photo("p2", b"\xff\xd8jpeg").unwrap();
+        let got = h.join().unwrap();
+        assert!(got[0].starts_with("GET /Persons?") && got[0].contains("userId=u1"), "{got:?}");
+        assert!(got[1].starts_with("POST /Items/p2/Images/Primary"), "{got:?}");
+    }
+
     fn serve_seq(replies: Vec<(&'static str, String)>) -> (String, std::thread::JoinHandle<Vec<String>>) {
         let l = TcpListener::bind("127.0.0.1:0").unwrap();
         let url = format!("http://{}", l.local_addr().unwrap());
@@ -4061,6 +4099,11 @@ mod tests {
         assert_eq!(tags, vec!["Birthday", "旅行"]);
         assert_eq!(years, vec![2025, 2024, 2023]);
         assert_eq!(persons_of(r#"{"Items":[{"Id":"p1","Name":"媽媽"},{"Id":"p2","Name":" "}]}"#), vec![("p1".to_string(), "媽媽".to_string())]);
+        // 還沒有照片的人物：有 Primary 圖的不算
+        assert_eq!(
+            persons_missing_photo(r#"{"Items":[{"Id":"p1","Name":"小明","ImageTags":{"Primary":"abc"}},{"Id":"p2","Name":"小美","ImageTags":{}},{"Id":"p3","Name":"阿明"}]}"#),
+            vec![("p2".to_string(), "小美".to_string()), ("p3".to_string(), "阿明".to_string())]
+        );
         let item = r#"{"Id":"x","Name":"生日","Overview":"蛋糕","Tags":["家"],"ProductionYear":2024,"People":[{"Name":"小明","Type":"Actor"},{"Name":"爸爸","Type":"Director"}]}"#;
         let info = info_of(item).unwrap();
         assert_eq!(info, JfInfo { title: "生日".into(), overview: "蛋糕".into(), people: vec!["小明".into()], tags: vec!["家".into()], year: Some(2024) });

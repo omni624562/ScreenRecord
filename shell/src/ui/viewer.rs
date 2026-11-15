@@ -117,6 +117,8 @@ pub struct Viewer {
     /// 相片：讀好的這張與前後各一張（換下一張時不用等），正在讀的
     photo_cache: Vec<PhotoTex>,
     photo_fetching: std::collections::HashSet<String>,
+    /// 影片裡的人（每一格更新；播放列的「人物」）
+    people: super::video_people::View,
 }
 
 /// 讀好的一張相片：（路徑, 材質, 材質大小, 原本的寬高）
@@ -361,6 +363,7 @@ fn new_viewer(entry: LibraryEntry, remote: Option<Remote>, start: Option<f64>) -
         photo: false,
         photo_cache: vec![],
         photo_fetching: Default::default(),
+        people: Default::default(),
     }
 }
 
@@ -801,6 +804,11 @@ enum Act {
     PhotoClearPicks,
     /// 相片分頁的相片：這張臉（第幾張）不是閉眼
     PhotoNotClosed(usize),
+    /// 影片：找出裡面的人（again：忘掉上次找到的重新找）、取消
+    FindPeople {
+        again: bool,
+    },
+    CancelPeople,
 }
 
 /// 標題列的一個按鈕；視窗窄時依序從後面的開始收進「⋯」
@@ -1051,6 +1059,13 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         }
     } else {
         None
+    };
+    // 影片裡的人（播放列的「人物」）
+    v.people = if v.photo || v.is_image() || v.is_audio() {
+        super::video_people::View::Off
+    } else {
+        let key = super::video_people::key(&e.media.path, e.media.bytes, e.media.mtime, v.remote.as_ref().map(|r| r.id.as_str()));
+        super::video_people::view(app, &key)
     };
     // 相片裡被判斷成閉眼的臉（框出來，可以按「不是閉眼」）
     let closed = if v.photo { super::photo_people::closed_faces(app, &e.media.path) } else { vec![] };
@@ -1623,6 +1638,18 @@ fn run_act(app: &mut UiApp, act: Act) {
             super::photo_browse::confirm_delete(app, list);
         }
         Act::PhotoClearPicks => super::photo_browse::clear_selected(app),
+        Act::FindPeople { again } => {
+            let Some(v) = app.viewer.as_ref() else { return };
+            let m = &v.cur().media;
+            let key = super::video_people::key(&m.path, m.bytes, m.mtime, v.remote.as_ref().map(|r| r.id.as_str()));
+            let dur = v.player.as_ref().map(|p| p.duration()).filter(|d| *d > 0.5).or(m.duration_sec).unwrap_or(0.0);
+            let src = m.path.clone();
+            if again {
+                super::video_people::forget(app, &key);
+            }
+            super::video_people::start(app, key, src, dur);
+        }
+        Act::CancelPeople => super::video_people::cancel(app),
         Act::PhotoNotClosed(i) => {
             let Some(path) = app.viewer.as_ref().map(|v| v.cur().media.path.clone()) else { return };
             super::photo_people::not_closed(app, &path, i);
@@ -2188,6 +2215,80 @@ fn video_bar(v: &mut Viewer, ui: &mut egui::Ui, act: &mut Act) {
                 }
             }
         });
+    }
+    // 影片裡的人：找出取了名的人出現在哪裡，按時間跳過去
+    {
+        use super::video_people::View;
+        let people = v.people.clone();
+        if people != View::Off {
+            let label = match &people {
+                View::Running(f) => trf!("人物 {}%", "People {}%", (f * 100.0) as u32),
+                _ => tr!("人物", "People").to_string(),
+            };
+            let b = Btn::new(&label)
+                .ghost()
+                .small()
+                .tooltip(tr!(
+                    "找出影片裡有誰（相片分頁取了名的人），按時間跳過去；在這台電腦上找，不上傳",
+                    "Find who is in the video (people you named in the Photos tab) and jump to them. Done on this computer; nothing is uploaded"
+                ))
+                .show(ui);
+            egui::Popup::menu(&b).show(|ui| {
+                ui.set_min_width(240.0);
+                ui.set_max_width(300.0);
+                match &people {
+                    View::Off => {}
+                    View::Ready => {
+                        ui.add(
+                            egui::Label::new(theme::muted(
+                                ui,
+                                tr!(
+                                    "每隔幾秒看一格畫面，找出相片分頁取了名的人。長的影片要找一陣子，可以照常播放。",
+                                    "Checks a frame every few seconds for people you named in the Photos tab. Long videos take a while; you can keep watching."
+                                ),
+                            ))
+                            .wrap(),
+                        );
+                        if Btn::new(tr!("找出這支影片裡的人", "Find people in this video")).small().primary().show(ui).clicked() {
+                            *act = Act::FindPeople { again: false };
+                            ui.close();
+                        }
+                    }
+                    View::Running(f) => {
+                        ui.label(trf!("正在找… {}%", "Finding… {}%", (f * 100.0) as u32));
+                        if Btn::new(tr!("取消", "Cancel")).small().show(ui).clicked() {
+                            *act = Act::CancelPeople;
+                            ui.close();
+                        }
+                    }
+                    View::Busy => {
+                        ui.label(theme::muted(ui, tr!("正在找另一支影片裡的人，找完再試", "Still finding people in another video. Try again when it's done")));
+                    }
+                    View::Done(vp) => {
+                        if vp.people.is_empty() {
+                            ui.label(theme::muted(ui, tr!("這支影片裡沒有找到取了名的人", "No named people were found in this video")));
+                        }
+                        for (name, times) in &vp.people {
+                            ui.label(RichText::new(name).strong());
+                            ui.horizontal_wrapped(|ui| {
+                                // 連續出現的合成一段，按了跳到那一段的開頭
+                                for (from, to) in screenrecorder_core::faces::time_ranges(times, vp.step as f32 * 2.5).into_iter().take(24) {
+                                    let text = if to - from >= vp.step as f32 { format!("{}–{}", short_clock(from as f64), short_clock(to as f64)) } else { short_clock(from as f64) };
+                                    if ui.small_button(text).clicked() {
+                                        player.seek((from as f64 - 1.0).max(0.0));
+                                    }
+                                }
+                            });
+                        }
+                        ui.separator();
+                        if ui.button(tr!("重新找", "Find again")).on_hover_text(tr!("幫更多人取名之後，重新找一次", "Find again after naming more people")).clicked() {
+                            *act = Act::FindPeople { again: true };
+                            ui.close();
+                        }
+                    }
+                }
+            });
+        }
     }
     // Jellyfin 影片的字幕：開或關
     if has_subs {

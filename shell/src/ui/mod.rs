@@ -41,6 +41,7 @@ pub mod thumbs;
 pub mod title_bar;
 mod toolbar;
 mod tour;
+pub mod video_people;
 pub mod video_tags;
 pub mod viewer;
 mod whats_new;
@@ -212,6 +213,8 @@ pub struct UiApp {
     pub photos: Option<photo_browse::PhotoBrowse>,
     /// 相片資料夾正在背景整個掃描（關掉檔案庫也繼續，掃完存起來）
     pub photo_scan: Option<photo_browse::Scanning>,
+    /// 影片裡的人（檢視器播放列的「人物」）：找過的影片、正在找的那一支
+    pub video_people: video_people::State,
     /// 在瀏覽視窗改 Jellyfin 上的影片資訊
     pub jf_edit: Option<jellyfin_edit::JfEdit>,
     /// 背景正在把 Jellyfin 上的人物或標籤重新命名（影片資訊關掉也會繼續）
@@ -412,6 +415,7 @@ impl UiApp {
             jf_browse: None,
             photos: None,
             photo_scan: None,
+            video_people: Default::default(),
             jf_edit: None,
             jf_rename: None,
             jf_batch: None,
