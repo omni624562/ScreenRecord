@@ -79,8 +79,10 @@ const EYE_MIN: f32 = 80.0;
 /// 特徵點模型的輸入：臉的四周各多留 25%（臉寬的 1.5 倍）、256×256
 const LM: usize = 256;
 const LM_SCALE: f32 = 1.5;
-/// 資料的版本：2 = 擋過不是臉的、看過眼睛；3 = 量過臉清不清楚
-pub const VERSION: u8 = 3;
+/// 資料的版本：2 = 擋過不是臉的、看過眼睛；3 = 量過臉清不清楚；4 = 記了笑容、轉頭
+pub const VERSION: u8 = 4;
+/// 笑的程度（0～100）到這個數算在笑：測試的相片裡明顯在笑的 86 以上、微笑 50～66、沒笑的接近 0
+pub const SMILING: u8 = 50;
 /// 臉的清晰度（sharpness × 500）不到這個數算模糊：測試的相片裡清楚的臉最低 0.065，
 /// 失焦（模糊半徑是臉寬的 2% 以上）、晃動（臉寬的 8%）的幾乎都在 0.04 以下
 pub const BLURRY: u8 = 20;
@@ -319,7 +321,7 @@ impl Engine {
 
     /// 這張臉是不是臉（0～1）、兩眼閉上的程度（本人的左眼、右眼，0 睜開～1 閉上；eyes 是 false 或不是臉時不算）。
     /// 和 MediaPipe 一樣：依兩眼轉正、臉的四周各多留 25% 的正方形縮成 256×256 → 478 個點；其中 146 個點（原圖的像素位置）→ 52 個表情分數
-    pub fn check(&self, img: &image::RgbImage, f: &Face, eyes: bool) -> Result<(f32, Option<[f32; 2]>), String> {
+    pub fn check(&self, img: &image::RgbImage, f: &Face, eyes: bool) -> Result<(f32, Option<Looks>), String> {
         let (re, le) = (f.kps[0], f.kps[1]);
         let ang = (le[1] - re[1]).atan2(le[0] - re[0]);
         let (c, s) = (ang.cos(), ang.sin());
@@ -353,9 +355,21 @@ impl Engine {
         }
         let out = self.bs.run(tvec!(Tensor::from(sub).into())).map_err(|e| e.to_string())?;
         let v = out.first().and_then(|t| t.as_slice::<f32>().ok()).filter(|v| v.len() == 52).ok_or("表情模型的輸出不對")?;
-        // 第 9、10 個是 eyeBlinkLeft、eyeBlinkRight
-        Ok((presence, Some([v[9], v[10]])))
+        // 頭往左右轉幾度：臉兩側的點（234、454）一前一後差多少（z 和 x 同一個尺度）
+        let (l, r) = (234 * 3, 454 * 3);
+        let yaw = (pts[r + 2] - pts[l + 2]).atan2(pts[r] - pts[l]).to_degrees();
+        // 第 9、10 個是 eyeBlinkLeft、eyeBlinkRight；44、45 是左右嘴角上揚
+        Ok((presence, Some(Looks { eyes: [v[9], v[10]], smile: (v[44] + v[45]) / 2.0, yaw })))
     }
+}
+
+/// 一張臉的樣子：兩眼閉上的程度（本人的左眼、右眼）、笑的程度（都是 0～1）、頭往左右轉幾度。
+/// 眼球看哪裡（eyeLook*）試過不準（轉頭但看著鏡頭的、閉眼的分數都很高），不用
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Looks {
+    pub eyes: [f32; 2],
+    pub smile: f32,
+    pub yaw: f32,
 }
 
 /// 臉清不清楚（越大越清楚）：臉的那一塊縮成 56×56 灰階，四個方向（橫、直、兩個斜向）的二次差分各算變異數，
@@ -626,6 +640,11 @@ pub struct FaceRec {
     /// 臉清不清楚（sharpness × 500，最多 255）；臉太小、還沒量過時沒有
     #[serde(rename = "h", default, skip_serializing_if = "Option::is_none")]
     pub sharp: Option<u8>,
+    /// 笑的程度（0～100）、頭往左右轉幾度；臉太小、還沒量過時沒有
+    #[serde(rename = "m", default, skip_serializing_if = "Option::is_none")]
+    pub smile: Option<u8>,
+    #[serde(rename = "y", default, skip_serializing_if = "Option::is_none")]
+    pub yaw: Option<i8>,
 }
 
 impl FaceRec {
@@ -635,6 +654,16 @@ impl FaceRec {
             return None;
         }
         self.eyes.map(|[l, r]| l.min(r) as f32 / 100.0)
+    }
+
+    /// 這張臉拍得好不好（挑最好的一張用，越大越好）：沒閉眼 2 分、清楚最多 1 分、在笑最多 0.7 分、正面最多 0.3 分；沒看過眼睛的不算
+    pub fn quality(&self, threshold: f32) -> Option<f32> {
+        self.eyes?;
+        let open = if self.blink().is_some_and(|b| b >= threshold) { 0.0 } else { 2.0 };
+        let sharp = (self.sharp.unwrap_or(0) as f32 / 60.0).min(1.0);
+        let smile = self.smile.unwrap_or(0) as f32 / 100.0 * 0.7;
+        let front = (1.0 - (self.yaw.unwrap_or(0) as f32).abs().min(30.0) / 30.0) * 0.3;
+        Some(open + sharp + smile + front)
     }
 }
 
@@ -651,14 +680,29 @@ pub fn analyze(engine: &Engine, ffmpeg: Option<&Path>, path: &str) -> Result<Vec
             continue;
         }
         // 不是臉（貓狗、雜訊）的不算；夠大的臉才看眼睛
-        let (presence, eyes) = engine.check(&img, &f, f.rect[2] >= EYE_MIN)?;
+        let (presence, looks) = engine.check(&img, &f, f.rect[2] >= EYE_MIN)?;
         if presence < PRESENCE {
             continue;
         }
+        let eyes = looks.map(|l| l.eyes);
         let e = engine.embed(&align(&img, &f.kps))?;
-        let eyes = eyes.map(|v| v.map(|x| (x.clamp(0.0, 1.0) * 100.0).round() as u8));
+        let pct = |x: f32| (x.clamp(0.0, 1.0) * 100.0).round() as u8;
+        let eyes = eyes.map(|v| v.map(pct));
+        let (smile, yaw) = (looks.map(|l| pct(l.smile)), looks.map(|l| l.yaw.round().clamp(-90.0, 90.0) as i8));
         let sharp = (f.rect[2] >= EYE_MIN).then(|| (sharpness(&img, &f.rect) * 500.0).round().clamp(0.0, 255.0) as u8);
-        out.push(FaceRec { rect: [f.rect[0] / w, f.rect[1] / h, f.rect[2] / w, f.rect[3] / h], score: f.score, emb: pack(&e), person: 0, user: false, not: vec![], eyes, eyes_ok: false, sharp });
+        out.push(FaceRec {
+            rect: [f.rect[0] / w, f.rect[1] / h, f.rect[2] / w, f.rect[3] / h],
+            score: f.score,
+            emb: pack(&e),
+            person: 0,
+            user: false,
+            not: vec![],
+            eyes,
+            eyes_ok: false,
+            sharp,
+            smile,
+            yaw,
+        });
     }
     Ok(out)
 }
@@ -810,7 +854,7 @@ impl FaceIndex {
                     match best.filter(|(_, o)| *o >= 0.5) {
                         Some((j, _)) => {
                             let n = new[j].take().unwrap_or_else(|| f.clone());
-                            (f.score, f.eyes, f.sharp) = (n.score, n.eyes, n.sharp);
+                            (f.score, f.eyes, f.sharp, f.smile, f.yaw) = (n.score, n.eyes, n.sharp, n.smile, n.yaw);
                             out.push(f);
                         }
                         None if f.user => out.push(f),
@@ -862,6 +906,44 @@ impl FaceIndex {
     pub fn blurry(&self) -> HashSet<String> {
         let hidden: HashSet<u32> = self.people.iter().filter(|p| p.hidden).map(|p| p.id).collect();
         self.photos.iter().filter(|(_, p)| p.faces.iter().filter(|f| !hidden.contains(&f.person)).filter_map(|f| f.sharp).max().is_some_and(|s| s < BLURRY)).map(|(k, _)| k.clone()).collect()
+    }
+
+    /// 有人在笑的相片（隱藏的人不算）
+    pub fn smiling(&self) -> HashSet<String> {
+        let hidden: HashSet<u32> = self.people.iter().filter(|p| p.hidden).map(|p| p.id).collect();
+        self.photos.iter().filter(|(_, p)| p.faces.iter().any(|f| !hidden.contains(&f.person) && f.smile.is_some_and(|s| s >= SMILING))).map(|(k, _)| k.clone()).collect()
+    }
+
+    /// 每張相片有幾張臉（隱藏的人不算；沒有臉的相片不在裡面）
+    pub fn face_counts(&self) -> HashMap<String, usize> {
+        let hidden: HashSet<u32> = self.people.iter().filter(|p| p.hidden).map(|p| p.id).collect();
+        self.photos.iter().map(|(k, p)| (k.clone(), p.faces.iter().filter(|f| !hidden.contains(&f.person)).count())).filter(|(_, n)| *n > 0).collect()
+    }
+
+    /// 每張相片拍得好不好（看過眼睛的臉的平均，隱藏的人不算；同時間拍的裡面挑最好的一張）
+    pub fn quality(&self, threshold: f32) -> HashMap<String, f32> {
+        let hidden: HashSet<u32> = self.people.iter().filter(|p| p.hidden).map(|p| p.id).collect();
+        self.photos
+            .iter()
+            .filter_map(|(k, p)| {
+                let q: Vec<f32> = p.faces.iter().filter(|f| !hidden.contains(&f.person)).filter_map(|f| f.quality(threshold)).collect();
+                (!q.is_empty()).then(|| (k.clone(), q.iter().sum::<f32>() / q.len() as f32))
+            })
+            .collect()
+    }
+
+    /// 這個人在每張相片裡拍得好不好（每年挑幾張代表用）：臉越大、越清楚、沒閉眼、在笑的越高
+    pub fn person_scores(&self, id: u32, threshold: f32) -> HashMap<String, f32> {
+        let mut out: HashMap<String, f32> = HashMap::new();
+        for (k, p) in &self.photos {
+            for f in p.faces.iter().filter(|f| f.person == id) {
+                let size = (f.rect[2] * f.rect[3]).sqrt();
+                let q = f.quality(threshold).unwrap_or(1.0) + size * 4.0;
+                let e = out.entry(k.clone()).or_insert(q);
+                *e = e.max(q);
+            }
+        }
+        out
     }
 
     /// 還沒用新版看過眼睛的相片有幾張
@@ -1152,7 +1234,7 @@ mod tests {
     }
 
     fn face(e: &[f32; 128]) -> FaceRec {
-        FaceRec { rect: [0.1, 0.1, 0.2, 0.2], score: 0.9, emb: pack(e), person: 0, user: false, not: vec![], eyes: None, eyes_ok: false, sharp: None }
+        FaceRec { rect: [0.1, 0.1, 0.2, 0.2], score: 0.9, emb: pack(e), person: 0, user: false, not: vec![], eyes: None, eyes_ok: false, sharp: None, smile: None, yaw: None }
     }
 
     #[test]
@@ -1307,6 +1389,18 @@ mod tests {
         idx.put("/video/family/portrait.jpg".into(), 1, 0.0, vec![sharp(0.1, 80), sharp(0.5, 3)]);
         idx.cluster();
         assert_eq!(idx.blurry(), HashSet::from(["/video/family/blur.jpg".to_string()]));
+        // 在笑的、幾張臉、挑最好的一張（沒閉眼、清楚、在笑的分數高）
+        let good = FaceRec { smile: Some(90), yaw: Some(2), sharp: Some(70), ..at(0.1, Some([5, 5]), 0.95) };
+        let closed = FaceRec { smile: Some(90), yaw: Some(2), sharp: Some(70), ..at(0.1, Some([90, 90]), 0.95) };
+        idx.put("/video/family/good.jpg".into(), 1, 0.0, vec![good.clone(), at(0.5, None, 0.9)]);
+        idx.put("/video/family/shut.jpg".into(), 1, 0.0, vec![closed]);
+        idx.cluster();
+        assert_eq!(idx.smiling(), HashSet::from(["/video/family/good.jpg".to_string(), "/video/family/shut.jpg".to_string()]));
+        assert_eq!(idx.face_counts()["/video/family/good.jpg"], 2);
+        let q = idx.quality(0.7);
+        assert!(q["/video/family/good.jpg"] > q["/video/family/shut.jpg"] + 1.5 && q["/video/family/good.jpg"] > 3.5, "{q:?}");
+        let me = idx.photos["/video/family/good.jpg"].faces[0].person;
+        assert!(idx.person_scores(me, 0.7).contains_key("/video/family/good.jpg"));
         let who = idx.photos["/video/family/blink.jpg"].faces[0].person;
         idx.set_hidden(who, true);
         assert!(idx.closed_eyes(0.7).is_empty());

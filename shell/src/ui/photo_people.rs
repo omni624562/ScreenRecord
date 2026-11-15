@@ -55,6 +55,19 @@ pub struct People {
     /// 只看臉模糊的、那些相片
     pub blur: bool,
     pub blurry: HashSet<String>,
+    /// 還要同時有這幾個人（filter 以外的；「小明＋小美」）
+    pub also: Vec<u32>,
+    /// 相片裡要有幾張臉：0 不限、1、2、3 = 3 張以上；每張相片有幾張臉
+    pub count: u8,
+    counts: HashMap<String, usize>,
+    /// 只看有人在笑的、那些相片
+    pub smile: bool,
+    pub smiling: HashSet<String>,
+    /// 每張相片拍得好不好（同時間拍的裡面挑最好的一張）
+    pub quality: HashMap<String, f32>,
+    /// 只看一個人時每年挑幾張代表、他在每張相片裡拍得好不好
+    pub yearly: bool,
+    scores: HashMap<String, f32>,
     /// 模型不齊時自動下載過了（這次開啟只試一次；之前開啟過人物功能的，新版多了看眼睛的模型）
     auto_dl: bool,
     /// 背景正在找：（這次找了幾張, 這次要找幾張）；暫停、停下來（關掉分頁）
@@ -96,6 +109,14 @@ impl Default for People {
             open: HashSet::new(),
             blur: false,
             blurry: HashSet::new(),
+            also: vec![],
+            count: 0,
+            counts: HashMap::new(),
+            smile: false,
+            smiling: HashSet::new(),
+            quality: HashMap::new(),
+            yearly: false,
+            scores: HashMap::new(),
             auto_dl: false,
             running: None,
             done: 0,
@@ -154,19 +175,11 @@ impl People {
         self.closed = idx.closed_eyes(self.threshold());
         self.open = idx.open_eyes(self.threshold());
         self.blurry = idx.blurry();
+        self.smiling = idx.smiling();
+        self.counts = idx.face_counts();
+        self.quality = idx.quality(self.threshold());
         self.old = idx.old_photos();
-        if self.eyes {
-            self.filter_set = self.closed.clone();
-        } else if self.blur {
-            self.filter_set = self.blurry.clone();
-        } else if let Some(id) = self.filter {
-            if idx.person(id).is_none() {
-                self.filter = None;
-                self.filter_set.clear();
-            } else {
-                self.filter_set = idx.photos_of(id);
-            }
-        }
+        self.recompute(&idx);
         if let Some(d) = self.dlg.as_mut() {
             if d.selected.is_some_and(|id| idx.person(id).is_none()) {
                 d.selected = None;
@@ -185,21 +198,111 @@ impl People {
         BLINK[(self.blink_level as usize).min(BLINK.len() - 1)]
     }
 
+    /// 照現在的條件重算符合的相片：某個人（加上同時要有的人）、有人閉眼的、臉模糊的、有人在笑的，再加上幾張臉
+    fn recompute(&mut self, idx: &FaceIndex) {
+        if self.filter.is_some_and(|id| idx.person(id).is_none()) {
+            self.filter = None;
+            self.also.clear();
+        }
+        self.also.retain(|id| idx.person(*id).is_some());
+        let mut set = if self.eyes {
+            Some(self.closed.clone())
+        } else if self.blur {
+            Some(self.blurry.clone())
+        } else if self.smile {
+            Some(self.smiling.clone())
+        } else if let Some(id) = self.filter {
+            let mut s = idx.photos_of(id);
+            for a in &self.also {
+                let o = idx.photos_of(*a);
+                s.retain(|p| o.contains(p));
+            }
+            Some(s)
+        } else {
+            None
+        };
+        if self.count != 0 {
+            let want = self.count;
+            let ok = |n: usize| if want >= 3 { n >= 3 } else { n == want as usize };
+            let base: HashSet<String> = self.counts.iter().filter(|(_, n)| ok(**n)).map(|(k, _)| k.clone()).collect();
+            set = Some(match set {
+                Some(s) => s.into_iter().filter(|p| base.contains(p)).collect(),
+                None => base,
+            });
+        }
+        self.filter_set = set.unwrap_or_default();
+        self.scores = match self.filter {
+            Some(id) if self.yearly && self.also.is_empty() => idx.person_scores(id, self.threshold()),
+            _ => HashMap::new(),
+        };
+    }
+
+    fn recompute_now(&mut self) {
+        match self.index.clone() {
+            Some(idx) => self.recompute(&idx.lock().unwrap_or_else(|e| e.into_inner())),
+            // 臉的資料還沒讀好：照手上有的（有人閉眼的…）算
+            None => self.recompute(&FaceIndex::default()),
+        }
+    }
+
+    fn mode(&mut self, filter: Option<u32>, eyes: bool, blur: bool, smile: bool) {
+        (self.filter, self.eyes, self.blur, self.smile) = (filter, eyes, blur, smile);
+        self.also.clear();
+        self.recompute_now();
+    }
+
     /// 只看有人閉眼的相片
     pub fn set_eyes(&mut self, on: bool) {
-        (self.filter, self.eyes, self.blur) = (None, on, false);
-        self.filter_set = if on { self.closed.clone() } else { HashSet::new() };
+        self.mode(None, on, false, false);
     }
 
     /// 只看臉模糊的相片
     pub fn set_blur(&mut self) {
-        (self.filter, self.eyes, self.blur) = (None, false, true);
-        self.filter_set = self.blurry.clone();
+        self.mode(None, false, true, false);
     }
 
-    /// 有篩選（某個人、有人閉眼的、臉模糊的）
+    /// 只看有人在笑的相片
+    pub fn set_smile(&mut self) {
+        self.mode(None, false, false, true);
+    }
+
+    /// 相片裡要有幾張臉（0 不限）
+    pub fn set_count(&mut self, n: u8) {
+        self.count = n;
+        self.recompute_now();
+    }
+
+    /// 還要同時有這個人（還沒選人時就是只看他）
+    pub fn add_person(&mut self, id: u32) {
+        match self.filter {
+            None => self.mode(Some(id), false, false, false),
+            Some(f) if f == id || self.also.contains(&id) => {}
+            Some(_) => {
+                self.also.push(id);
+                self.recompute_now();
+            }
+        }
+    }
+
+    pub fn set_yearly(&mut self, on: bool) {
+        self.yearly = on;
+        self.recompute_now();
+    }
+
+    /// 只看一個人、每年挑幾張代表時：他在每張相片裡拍得好不好
+    pub fn yearly_scores(&self) -> Option<&HashMap<String, f32>> {
+        (self.yearly && self.filter.is_some() && self.also.is_empty()).then_some(&self.scores)
+    }
+
+    /// 全部的條件都拿掉
+    pub fn clear(&mut self) {
+        self.count = 0;
+        self.mode(None, false, false, false);
+    }
+
+    /// 有篩選（某個人、有人閉眼的、臉模糊的、有人在笑的、幾張臉）
     pub fn filtering(&self) -> bool {
-        self.filter.is_some() || self.eyes || self.blur
+        self.filter.is_some() || self.eyes || self.blur || self.smile || self.count != 0
     }
 
     /// 只看有人閉眼的、一起列出同時間拍的
@@ -217,11 +320,30 @@ impl People {
 
     /// 選了某個人：只看有他的相片
     pub fn set_filter(&mut self, id: Option<u32>) {
-        (self.filter, self.eyes, self.blur) = (id, false, false);
-        self.filter_set = match (id, self.index.as_ref()) {
-            (Some(id), Some(idx)) => idx.lock().unwrap_or_else(|e| e.into_inner()).photos_of(id),
-            _ => HashSet::new(),
-        };
+        self.mode(id, false, false, false);
+    }
+
+    /// 現在篩選的說法（選單、位置列）：「小明＋小美」「有人閉眼」…再加上幾張臉；沒有篩選時 None
+    pub fn describe(&self) -> Option<String> {
+        let mut parts: Vec<String> = vec![];
+        if let Some(id) = self.filter {
+            let mut names = vec![self.label(id)];
+            names.extend(self.also.iter().map(|a| self.label(*a)));
+            parts.push(names.join("＋"));
+        } else if self.eyes {
+            parts.push(tr!("有人閉眼", "Eyes closed").into());
+        } else if self.blur {
+            parts.push(tr!("臉模糊", "Blurry faces").into());
+        } else if self.smile {
+            parts.push(tr!("有人在笑", "Smiling").into());
+        }
+        match self.count {
+            0 => {}
+            1 => parts.push(tr!("1 個人", "1 person").into()),
+            2 => parts.push(tr!("2 個人", "2 people").into()),
+            _ => parts.push(tr!("3 人以上", "3+ people").into()),
+        }
+        (!parts.is_empty()).then(|| parts.join(tr!("、", ", ")))
     }
 
     fn label(&self, id: u32) -> String {
@@ -461,16 +583,15 @@ pub enum MenuAct {
     BlinkLevel(u8),
     Near(bool),
     Blur,
+    Smile,
+    Add(u32),
+    Count(u8),
+    Yearly(bool),
 }
 
 pub fn menu(ui: &mut egui::Ui, p: &People, enabled: bool, downloading: Option<f32>) -> MenuAct {
     let mut act = MenuAct::None;
-    let text = match p.filter {
-        Some(id) => p.label(id),
-        None if p.eyes => tr!("有人閉眼", "Eyes closed").to_string(),
-        None if p.blur => tr!("臉模糊", "Blurry faces").to_string(),
-        None => tr!("全部的人", "Everyone").to_string(),
-    };
+    let text = p.describe().unwrap_or_else(|| tr!("全部的人", "Everyone").to_string());
     egui::ComboBox::from_id_salt("photo-person")
         .selected_text(text)
         .width(110.0)
@@ -506,13 +627,30 @@ pub fn menu(ui: &mut egui::Ui, p: &People, enabled: bool, downloading: Option<f3
                 }
                 ui.separator();
             }
-            if ui.selectable_label(p.filter.is_none(), tr!("全部的人", "Everyone")).clicked() {
+            if ui.selectable_label(!p.filtering(), tr!("全部的人", "Everyone")).clicked() {
                 act = MenuAct::Filter(None);
             }
             let named: Vec<&PersonSummary> = p.summary.iter().filter(|s| !s.person.name.is_empty() && !s.person.hidden).collect();
             for s in &named {
-                if ui.selectable_label(p.filter == Some(s.person.id), format!("{}　{}", s.person.name, s.photos)).clicked() {
-                    act = MenuAct::Filter(Some(s.person.id));
+                let on = p.filter == Some(s.person.id) || p.also.contains(&s.person.id);
+                ui.horizontal(|ui| {
+                    if ui.selectable_label(on, format!("{}　{}", s.person.name, s.photos)).clicked() {
+                        act = MenuAct::Filter(Some(s.person.id));
+                    }
+                    // 已經選了人：「＋」再加一個，只看他們都在的相片
+                    if p.filter.is_some() && !on && ui.small_button("＋").on_hover_text(tr!("加上這個人：只看他們都在的相片", "Add this person: show only photos with all of them")).clicked() {
+                        act = MenuAct::Add(s.person.id);
+                    }
+                });
+            }
+            if p.filter.is_some() && p.also.is_empty() {
+                let mut yearly = p.yearly;
+                if ui
+                    .checkbox(&mut yearly, tr!("每年挑幾張代表", "A few highlights per year"))
+                    .on_hover_text(tr!("一年一排，挑這個人拍得最好的幾張（臉大、清楚、沒閉眼、在笑），看得出每年的變化", "One row per year with this person's best shots (big, sharp, eyes open, smiling), to see how they change over the years"))
+                    .changed()
+                {
+                    act = MenuAct::Yearly(yearly);
                 }
             }
             if named.is_empty() {
@@ -563,6 +701,21 @@ pub fn menu(ui: &mut egui::Ui, p: &People, enabled: bool, downloading: Option<f3
             {
                 act = MenuAct::Blur;
             }
+            if ui
+                .selectable_label(p.smile, trf!("有人在笑的　{}", "Smiling  {}", p.smiling.len()))
+                .on_hover_text(tr!("有人嘴角上揚的相片（太小的臉、隱藏的人不看）。在這台電腦上判斷，不上傳", "Photos where someone is smiling (tiny faces and hidden people are skipped). Checked on this computer; nothing is uploaded"))
+                .clicked()
+            {
+                act = MenuAct::Smile;
+            }
+            ui.horizontal(|ui| {
+                ui.label(theme::muted(ui, tr!("幾個人", "People")));
+                for (n, zh, en) in [(0u8, "不限", "Any"), (1, "1 人", "1"), (2, "2 人", "2"), (3, "3 人以上", "3+")] {
+                    if ui.selectable_label(p.count == n, tr!(zh, en)).on_hover_text(tr!("相片裡有幾張臉（隱藏的人不算），可以和上面的條件一起用", "How many faces are in the photo (hidden people don't count); combines with the choice above")).clicked() {
+                        act = MenuAct::Count(n);
+                    }
+                }
+            });
             if p.old > 0 {
                 ui.label(theme::muted(ui, trf!("還有 {} 張舊的相片要再看一次（在背景）", "{} older photos still need another look (in the background)", p.old)));
             }
@@ -595,7 +748,10 @@ pub fn menu_act(app: &mut UiApp, act: MenuAct) {
         // 選了某個人、有人閉眼的：看全部資料夾（直接列出符合的相片，不用一層層點進去）
         MenuAct::Filter(id) => {
             if let Some(d) = app.photos.as_mut() {
-                d.people.set_filter(id);
+                match id {
+                    Some(_) => d.people.set_filter(id),
+                    None => d.people.clear(),
+                }
                 if id.is_some() {
                     d.go_top();
                 }
@@ -620,6 +776,20 @@ pub fn menu_act(app: &mut UiApp, act: MenuAct) {
         MenuAct::Blur => {
             if let Some(d) = app.photos.as_mut() {
                 d.people.set_blur();
+                d.go_top();
+                d.want_offset = Some(0.0);
+                d.dirty = true;
+            }
+        }
+        MenuAct::Smile | MenuAct::Add(_) | MenuAct::Count(_) | MenuAct::Yearly(_) => {
+            if let Some(d) = app.photos.as_mut() {
+                match act {
+                    MenuAct::Smile => d.people.set_smile(),
+                    MenuAct::Add(id) => d.people.add_person(id),
+                    MenuAct::Count(n) => d.people.set_count(n),
+                    MenuAct::Yearly(on) => d.people.set_yearly(on),
+                    _ => {}
+                }
                 d.go_top();
                 d.want_offset = Some(0.0);
                 d.dirty = true;
@@ -1151,6 +1321,11 @@ pub fn names_of(app: &UiApp, path: &str) -> Vec<String> {
     v
 }
 
+/// 同時間拍的裡面挑最好的一張：這張相片的分數（沒看過眼睛的沒有）
+pub fn quality(p: &People, path: &str) -> Option<f32> {
+    p.quality.get(path).copied()
+}
+
 /// 檢視器：這張相片裡閉眼的臉（第幾張, 位置佔相片的比例）
 pub fn closed_faces(app: &UiApp, path: &str) -> Vec<(usize, [f32; 4])> {
     app.photos.as_ref().map(|d| d.people.closed_faces(path)).unwrap_or_default()
@@ -1186,11 +1361,6 @@ pub fn stop(p: &People) {
 
 /// 只看某個人時的那一行說明（位置列右邊）
 pub fn filter_chip(ui: &mut egui::Ui, p: &People) -> bool {
-    let label = match p.filter {
-        Some(id) => p.label(id),
-        None if p.eyes => tr!("有人閉眼", "Eyes closed").to_string(),
-        None if p.blur => tr!("臉模糊", "Blurry faces").to_string(),
-        None => return false,
-    };
+    let Some(label) = p.describe() else { return false };
     Btn::new(&trf!("只看「{}」 ×", "Only “{}” ×", label)).small().ghost().selected(true).tooltip(tr!("按一下看全部的人", "Click to show everyone")).show(ui).clicked()
 }
