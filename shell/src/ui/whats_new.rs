@@ -44,6 +44,15 @@ enum Try {
 fn items(_app: &UiApp) -> Vec<(String, String, Try)> {
     vec![
         (
+            tr!("挑最好的一張、找好幾個人的合照", "Pick the best shot, find photos of several people").into(),
+            tr!(
+                "同時間拍的相片裡，拍得最好的那張會標「推薦」，其他的可以一次勾選。「人物」選單還能找有人在笑的、好幾個人都在的（按名字旁的「＋」）、獨照或合照，也能每年挑幾張代表。",
+                "Among photos taken at the same time, the best one is marked “Best” and the rest can be selected at once. The People menu can also find smiles, photos with several people together (press “＋” next to a name), solo or group shots, and a few highlights per year."
+            )
+            .into(),
+            Try::Photos,
+        ),
+        (
             tr!("挑掉閉眼、模糊的相片", "Weed out closed eyes and blurry faces").into(),
             tr!(
                 "看「有人閉眼的」時，同時間拍的相片排在一起，綠色眼睛是沒有人閉眼的，勾選不要的一起刪；判斷錯了，看大圖時按臉下面的按鈕改掉。「人物」選單也多了「臉模糊的」。",

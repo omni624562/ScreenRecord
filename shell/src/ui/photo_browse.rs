@@ -104,6 +104,8 @@ struct Section {
 
 /// 「同時間拍的」：和前一張差這麼多毫秒以內算同一段
 const BURST_MS: i64 = 10_000;
+/// 每年挑幾張代表
+const YEARLY: usize = 6;
 
 /// 正在背景整個掃描的相片資料夾：已經找到幾張、要停下來（關掉檔案庫也繼續掃，掃完照樣存起來）
 pub struct Scanning {
@@ -150,6 +152,9 @@ pub struct PhotoBrowse {
     sections: Vec<Section>,
     /// 篩選後這裡沒有、但目前資料夾以外有幾張符合的（提示「看全部資料夾」）
     elsewhere: usize,
+    /// 看有人閉眼的＋同時間拍的時：每一段裡拍得最好的那張（推薦留下）、同一段裡其他的（一次勾選）
+    best: HashSet<String>,
+    rest: Vec<String>,
     order: Vec<usize>,
     pub(super) dirty: bool,
     /// 目前範圍裡每一年有幾張（篩選的年份清單）
@@ -207,6 +212,8 @@ impl PhotoBrowse {
             grid: app.s.photo_grid_size.min(2),
             sections: vec![],
             elsewhere: 0,
+            best: HashSet::new(),
+            rest: vec![],
             order: vec![],
             dirty: true,
             years: vec![],
@@ -328,6 +335,7 @@ impl PhotoBrowse {
         };
         let mut sections = vec![];
         let filtering = self.filtering();
+        let (mut best, mut rest) = (HashSet::new(), vec![]);
         if self.people.bursts() {
             // 有人閉眼的＋同時間拍的：前後 BURST_MS 內拍的排成一段（閉眼的有標示，挑睜眼的留下來）；沒有同時間拍的放最後一段
             let mut list: Vec<usize> = scope.iter().copied().filter(|&i| base(i)).collect();
@@ -348,6 +356,13 @@ impl PhotoBrowse {
                 if r.len() == 1 {
                     singles.push(Cell::Photo(r[0]));
                 } else {
+                    // 這一段裡拍得最好的（沒閉眼、清楚、在笑）：推薦留下，其他看過眼睛的可以一次勾選
+                    let scored: Vec<(usize, f32)> = r.iter().filter_map(|&i| super::photo_people::quality(&self.people, &photos[i].path).map(|q| (i, q))).collect();
+                    let top = scored.iter().copied().max_by(|a, b| a.1.total_cmp(&b.1)).filter(|(i, _)| scored.len() >= 2 && !self.people.closed.contains(&photos[*i].path));
+                    if let Some((t, _)) = top {
+                        best.insert(photos[t].path.clone());
+                        rest.extend(scored.iter().filter(|(i, _)| *i != t).map(|(i, _)| photos[*i].path.clone()));
+                    }
                     let title = photos[r[0]].taken().format("%Y/%-m/%-d %H:%M").to_string();
                     sections.push(Section { title, cells: r.into_iter().map(Cell::Photo).collect() });
                 }
@@ -355,6 +370,23 @@ impl PhotoBrowse {
             if !singles.is_empty() {
                 let title = if sections.is_empty() { String::new() } else { tr!("沒有同時間拍的", "Nothing else taken at the same time").to_string() };
                 sections.push(Section { title, cells: singles });
+            }
+        } else if let Some(scores) = self.people.yearly_scores() {
+            // 一個人、每年挑幾張代表：一年一段，挑他拍得最好的幾張，段裡照時間排
+            let mut years: BTreeMap<i32, Vec<usize>> = BTreeMap::new();
+            for i in scope.iter().copied().filter(|&i| keep(i)) {
+                years.entry(self.meta[i].year).or_default().push(i);
+            }
+            let mut list: Vec<(i32, Vec<usize>)> = years.into_iter().collect();
+            if sort != PhotoSort::Old {
+                list.reverse();
+            }
+            for (year, mut v) in list {
+                let score = |i: &usize| scores.get(&photos[*i].path).copied().unwrap_or(0.0);
+                v.sort_by(|a, b| score(b).total_cmp(&score(a)));
+                v.truncate(YEARLY);
+                v.sort_by_key(|i| photos[*i].when);
+                sections.push(Section { title: trf!("{year} 年", "{year}"), cells: v.into_iter().map(Cell::Photo).collect() });
             }
         } else if filtering || self.by_date {
             // 有篩選條件（搜尋、年份、星號、人物、有人閉眼）、依日期：目前範圍裡符合的全部列出來（不用一層層點進資料夾），
@@ -424,6 +456,7 @@ impl PhotoBrowse {
         self.elsewhere = if sections.is_empty() && filtering { (0..self.photos.len()).filter(|&i| !self.in_scope(i) && keep(i)).count() } else { 0 };
         self.order = sections.iter().flat_map(|s| s.cells.iter()).filter_map(|c| if let Cell::Photo(i) = c { Some(*i) } else { None }).collect();
         self.sections = sections;
+        (self.best, self.rest) = (best, rest);
     }
 }
 
@@ -1094,6 +1127,23 @@ pub fn panel(ui: &mut egui::Ui, d: &mut PhotoBrowse, out: &mut Panel, stars: &Pi
                 out.all_people = true;
             }
         }
+        // 同時間拍的：留下推薦的那張，其他的一次勾起來（勾了再自己按刪除）
+        if !d.rest.is_empty() {
+            let n = d.rest.len();
+            ui.add_space(6.0);
+            if Btn::new(&trf!("勾選推薦以外的 {n} 張", "Select the {n} not recommended"))
+                .small()
+                .tooltip(tr!(
+                    "同時間拍的每一段裡，標「推薦」的是拍得最好的一張（沒閉眼、清楚、在笑）；按了勾選同一段裡其他的，確認後再按下面的刪除",
+                    "In each group taken at the same time, “Best” marks the best shot (eyes open, sharp, smiling). This selects the others in the group; check them, then delete below"
+                ))
+                .show(ui)
+                .clicked()
+            {
+                let rest = d.rest.clone();
+                d.selected.extend(rest);
+            }
+        }
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             if d.loaded {
                 let n = d.order.len();
@@ -1338,6 +1388,13 @@ fn photo_cell(ui: &mut egui::Ui, d: &mut PhotoBrowse, rect: Rect, i: usize, pos:
             theme::paint_icon(painter, Rect::from_center_size(c, vec2(15.0, 15.0)), Icon::Eye, Color32::WHITE);
         }
     }
+    // 同時間拍的裡面最好的一張：下面中間「推薦」
+    if d.best.contains(&path) && rect.width() >= 80.0 {
+        let g = painter.layout_no_wrap(tr!("推薦", "Best").to_string(), theme::font_bold(11.0), Color32::WHITE);
+        let r = Rect::from_min_size(pos2(rect.center().x - g.size().x / 2.0 - 7.0, rect.max.y - g.size().y - 10.0), g.size() + vec2(14.0, 5.0));
+        painter.rect_filled(r, 9.0, p.ok);
+        painter.galley(r.min + vec2(7.0, 2.5), g, Color32::WHITE);
+    }
     // 需要 FFmpeg 的格式（HEIC 等）：左下角小字
     let ph = &d.photos[i];
     if photos::needs_ffmpeg(ph.name()) && rect.width() >= 120.0 {
@@ -1559,7 +1616,7 @@ pub fn apply(app: &mut UiApp, mut d: PhotoBrowse, out: Panel) {
     }
     if out.all_people {
         if let Some(d) = app.photos.as_mut() {
-            d.people.set_filter(None);
+            d.people.clear();
             d.dirty = true;
         }
     }
@@ -1885,6 +1942,8 @@ mod tests {
             grid: 1,
             sections: vec![],
             elsewhere: 0,
+            best: HashSet::new(),
+            rest: vec![],
             order: vec![],
             dirty: true,
             years: vec![],
@@ -1999,6 +2058,11 @@ mod tests {
         b.rebuild(&stars);
         assert_eq!(names(&b), ["a.jpg", "b.jpg", "c.jpg"]);
         assert_eq!(b.sections.len(), 2);
+        // 同一段裡拍得最好的（沒閉眼的）標成推薦，其他看過眼睛的可以一次勾選
+        b.people.quality = [("/video/family/a.jpg", 3.5), ("/video/family/b.jpg", 1.2)].into_iter().map(|(k, v)| (k.to_string(), v)).collect();
+        b.rebuild(&stars);
+        assert_eq!(b.best, HashSet::from(["/video/family/a.jpg".to_string()]));
+        assert_eq!(b.rest, ["/video/family/b.jpg"]);
         // 不列同時間拍的：只有閉眼的
         b.people.near = false;
         b.rebuild(&stars);
