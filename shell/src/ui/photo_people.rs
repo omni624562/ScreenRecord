@@ -70,6 +70,11 @@ pub struct People {
     /// 只看一個人時每年挑幾張代表、他在每張相片裡拍得好不好
     pub yearly: bool,
     scores: HashMap<String, f32>,
+    /// 分組的寬嚴（faces::LEVELS 的第幾個）、正在重新分組
+    pub level: u8,
+    regrouping: bool,
+    /// 同一張相片裡的臉（一定是不同的人）兩兩比較：幾組、相似度到三個門檻的各幾組（看模型分不分得開）
+    diag: (usize, [usize; 3]),
     /// 上次寫記錄檔之後找了幾張、花了多久（記錄速度）
     speed: (usize, Duration),
     /// 模型不齊時自動下載過了（這次開啟只試一次；之前開啟過人物功能的，新版多了看眼睛的模型）
@@ -121,6 +126,9 @@ impl Default for People {
             quality: HashMap::new(),
             yearly: false,
             scores: HashMap::new(),
+            level: 1,
+            regrouping: false,
+            diag: (0, [0; 3]),
             speed: (0, Duration::ZERO),
             auto_dl: false,
             running: None,
@@ -184,6 +192,8 @@ impl People {
         self.counts = idx.face_counts();
         self.quality = idx.quality(self.threshold());
         self.old = idx.old_photos();
+        self.level = idx.level.unwrap_or(1).min(2);
+        self.diag = idx.same_photo_similarity();
         self.recompute(&idx);
         if let Some(d) = self.dlg.as_mut() {
             if d.selected.is_some_and(|id| idx.person(id).is_none()) {
@@ -603,7 +613,7 @@ fn enable(app: &mut UiApp) {
     }
     if app.photos.as_ref().is_some_and(|d| d.people.index.is_none()) {
         if let Some(d) = app.photos.as_mut() {
-            d.people.index = Some(Arc::new(Mutex::new(FaceIndex::default())));
+            d.people.index = Some(Arc::new(Mutex::new(FaceIndex { grouping: faces::GROUPING, ..Default::default() })));
             d.people.paused = false;
         }
         open(app);
@@ -927,6 +937,8 @@ enum Act {
     ShowPhotos(u32),
     DeleteAll,
     ToJellyfin,
+    /// 分組的寬嚴改了（重新分組）、照現在的寬嚴重新分組
+    Regroup(Option<u8>),
 }
 
 /// 臉的小圖材質（還沒有時在背景做）
@@ -980,6 +992,7 @@ pub fn dialog(app: &mut UiApp, ctx: &egui::Context) {
     let summary: Vec<PersonSummary> = app.photos.as_ref().map(|d| d.people.summary.clone()).unwrap_or_default();
     let running = app.photos.as_ref().and_then(|d| d.people.running);
     let has_jf = app.jellyfin().is_some();
+    let (level, regrouping, diag) = app.photos.as_ref().map(|d| (d.people.level, d.people.regrouping, d.people.diag)).unwrap_or((1, false, (0, [0; 3])));
     // 左邊列出的人（只出現一次的、隱藏的平常不列；找名字）
     let q = dlg.search.trim().to_lowercase();
     let listed: Vec<PersonSummary> = summary
@@ -1131,6 +1144,59 @@ pub fn dialog(app: &mut UiApp, ctx: &egui::Context) {
                 ui,
                 tr!("按左邊的一個人：取名、看他的相片、合併、把分錯的臉移出去", "Pick someone on the left to name them, see their photos, merge, or move out faces that don't belong"),
             ));
+            // 分組的寬嚴、重新分組、診斷
+            ui.add_space(16.0);
+            ui.label(RichText::new(tr!("分組", "Grouping")).strong());
+            ui.horizontal(|ui| {
+                ui.label(theme::muted(ui, tr!("寬嚴", "Strictness")));
+                for (i, (zh, en, tip_zh, tip_en)) in [
+                    ("寬鬆", "Loose", "比較容易把臉歸成同一個人：組數少，但長得像的人可能混在一起", "Groups faces more readily: fewer groups, but look-alikes may be mixed"),
+                    ("一般", "Normal", "建議", "Recommended"),
+                    ("嚴格", "Strict", "要很像才算同一個人：不容易混，但同一個人可能分成好幾組（再合併）", "Faces must be very alike: fewer mix-ups, but one person may be split into several groups (merge them)"),
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    if ui.add_enabled(!regrouping, egui::Button::selectable(level as usize == i, tr!(zh, en))).on_hover_text(tr!(tip_zh, tip_en)).clicked() && level as usize != i {
+                        act = Act::Regroup(Some(i as u8));
+                    }
+                }
+                if regrouping {
+                    ui.spinner();
+                }
+            });
+            ui.add(
+                egui::Label::new(theme::muted(
+                    ui,
+                    tr!(
+                        "不同的人被分在同一組時改成「嚴格」。改了會重新分組：取了名、隱藏的人留著，你手動移過的臉不動；同一張相片裡的臉不會分在同一組。",
+                        "If different people end up in one group, choose Strict. Changing this regroups: named and hidden people are kept and faces you moved by hand stay put; faces in the same photo are never put in one group."
+                    ),
+                ))
+                .wrap(),
+            );
+            if Btn::new(tr!("重新分組", "Regroup")).small().enabled(!regrouping).tooltip(tr!("照現在的寬嚴重新分一次", "Group again with the current strictness")).show(ui).clicked() {
+                act = Act::Regroup(None);
+            }
+            if diag.0 > 0 {
+                let pct = |n: usize| n as f64 * 100.0 / diag.0 as f64;
+                let text = trf!(
+                    "診斷：同一張相片裡的臉（一定是不同的人）{} 組，相似度到寬鬆 / 一般 / 嚴格門檻的各 {:.1}% / {:.1}% / {:.1}%",
+                    "Check: {} pairs of faces within the same photo (always different people); {:.1}% / {:.1}% / {:.1}% reach the Loose / Normal / Strict thresholds",
+                    diag.0,
+                    pct(diag.1[0]),
+                    pct(diag.1[1]),
+                    pct(diag.1[2])
+                );
+                ui.add_space(4.0);
+                ui.add(egui::Label::new(theme::muted(ui, text.clone())).wrap()).on_hover_text(tr!(
+                    "比例越高，表示相片裡的人對模型來說越像（例如家人），越需要用「嚴格」。這些數字不含名字和相片，可以複製給開發者參考",
+                    "The higher these are, the more alike the people look to the model (e.g. family), and the more Strict helps. The numbers contain no names or photos and can be copied for the developer"
+                ));
+                if Btn::new(tr!("複製診斷", "Copy check")).small().ghost().show(ui).clicked() {
+                    ui.ctx().copy_text(text);
+                }
+            }
             if has_jf {
                 ui.add_space(16.0);
                 if Btn::new(tr!("把照片帶到 Jellyfin 的人物…", "Send photos to Jellyfin people…"))
@@ -1347,6 +1413,38 @@ pub fn dialog(app: &mut UiApp, ctx: &egui::Context) {
             d.go_top();
             d.want_offset = Some(0.0);
             d.dirty = true;
+        }
+        Act::Regroup(level) => {
+            // 臉多時要算一陣子：在背景做
+            d.people.regrouping = true;
+            let generation = GENERATION.load(Ordering::Relaxed);
+            app.spawn(
+                async move {
+                    tokio::task::spawn_blocking(move || {
+                        let mut i = index.lock().unwrap_or_else(|e| e.into_inner());
+                        if let Some(l) = level {
+                            i.level = Some(l);
+                        }
+                        i.regroup();
+                        if GENERATION.load(Ordering::Relaxed) == generation {
+                            faces::save_index(&faces::index_file(), &i);
+                        }
+                    })
+                    .await
+                    .ok()
+                },
+                |app, _| {
+                    if let Some(d) = app.photos.as_mut() {
+                        d.people.regrouping = false;
+                        if let Some(dlg) = d.people.dlg.as_mut() {
+                            dlg.selected = None;
+                            dlg.multi.clear();
+                        }
+                    }
+                    changed(app);
+                    app.toast(tr!("已重新分組", "Regrouped"), false);
+                },
+            );
         }
         Act::ToJellyfin => {
             let ask = super::dialogs::Ask::confirm(

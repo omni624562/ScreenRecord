@@ -88,8 +88,9 @@ pub const SMILING: u8 = 50;
 pub const BLURRY: u8 = 20;
 /// 一張臉和某個人夠像（相似度）就算他；兩組沒取名的人夠像就合在一起。SFace 建議的「同一人」門檻是 0.363，
 /// 分組時用嚴一點（不同的人被分在一起比同一個人分成兩組麻煩：家人長得像）
-pub const ASSIGN: f32 = 0.42;
-pub const MERGE: f32 = 0.5;
+pub const LEVELS: [(f32, f32); 3] = [(0.42, 0.5), (0.48, 0.56), (0.55, 0.62)];
+/// 分組方法的版本：2 = 同一張相片裡的臉不會是同一個人、門檻調嚴（舊版分的組讀進來時重新分一次）
+pub const GROUPING: u8 = 2;
 
 // ───────────── 模型檔 ─────────────
 
@@ -765,6 +766,9 @@ pub struct Person {
     pub hidden: bool,
 }
 
+/// 重新分組時一個人的一張臉：（相片, 第幾張, 128 個數字, 使用者指定的）
+type Grouped = (String, usize, [f32; 128], bool);
+
 /// 存在 photo-faces.json 的全部臉的資料
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct FaceIndex {
@@ -774,6 +778,12 @@ pub struct FaceIndex {
     pub people: Vec<Person>,
     #[serde(default)]
     pub next_id: u32,
+    /// 分組的寬嚴（LEVELS 的第幾個；沒設定 = 一般）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub level: Option<u8>,
+    /// 用哪一版的方法分的組（GROUPING）
+    #[serde(default)]
+    pub grouping: u8,
 }
 
 pub fn index_file() -> PathBuf {
@@ -834,7 +844,104 @@ impl FaceIndex {
         if changed {
             self.drop_empty();
         }
+        // 舊版的方法分的組：重新分一次（取了名、隱藏的人留著最像的那些臉，使用者指定的不動）
+        if self.grouping < GROUPING {
+            let had = self.photos.values().any(|p| p.faces.iter().any(|f| f.person != 0));
+            self.regroup();
+            changed |= had;
+        }
         changed
+    }
+
+    /// 分組的門檻：（加進某個人, 兩組合在一起）
+    pub fn thresholds(&self) -> (f32, f32) {
+        LEVELS[(self.level.unwrap_or(1) as usize).min(LEVELS.len() - 1)]
+    }
+
+    /// 重新分組（方法改了、使用者改了寬嚴）：使用者指定的臉不動；取了名或隱藏的人只留和他最像的那些臉
+    /// （同一張相片裡只留一張），其他的臉全部放出來照現在的規則重新分
+    pub fn regroup(&mut self) {
+        let (assign, _) = self.thresholds();
+        let anchors: HashSet<u32> = self.people.iter().filter(|p| !p.name.is_empty() || p.hidden).map(|p| p.id).collect();
+        // 每個人的臉：（相片, 第幾張, 128 個數字, 使用者指定的）
+        let mut by: HashMap<u32, Vec<Grouped>> = HashMap::new();
+        for (path, pf) in &self.photos {
+            for (i, f) in pf.faces.iter().enumerate().filter(|(_, f)| f.person != 0) {
+                if let Some(e) = unpack(&f.emb) {
+                    by.entry(f.person).or_default().push((path.clone(), i, e, f.user));
+                }
+            }
+        }
+        let mean = |faces: &[Grouped], keep: &[bool]| -> Option<[f32; 128]> {
+            let mut c = [0f32; 128];
+            let mut n = 0;
+            for (f, _) in faces.iter().zip(keep).filter(|(_, k)| **k) {
+                for (a, b) in c.iter_mut().zip(f.2) {
+                    *a += b;
+                }
+                n += 1;
+            }
+            (n > 0).then(|| {
+                normalize(&mut c);
+                c
+            })
+        };
+        let mut release: Vec<(String, usize)> = vec![];
+        for (id, faces) in &by {
+            if !anchors.contains(id) {
+                release.extend(faces.iter().filter(|f| !f.3).map(|f| (f.0.clone(), f.1)));
+                continue;
+            }
+            // 代表：先用全部的臉平均，留下和代表夠像的，重算幾次（混進來的少數會被擠出去）；使用者指定的一律留著
+            let mut keep = vec![true; faces.len()];
+            for _ in 0..3 {
+                let Some(c) = mean(faces, &keep) else { break };
+                keep = faces.iter().map(|f| f.3 || dot(&f.2, &c) >= assign).collect();
+            }
+            // 同一張相片裡只留最像的一張（使用者指定的都留）
+            if let Some(c) = mean(faces, &keep) {
+                let mut best: HashMap<&str, (usize, f32)> = HashMap::new();
+                for (k, f) in faces.iter().enumerate().filter(|(k, f)| keep[*k] && !f.3) {
+                    let d = dot(&f.2, &c);
+                    if best.get(f.0.as_str()).is_none_or(|b| d > b.1) {
+                        best.insert(&f.0, (k, d));
+                    }
+                }
+                for (k, f) in faces.iter().enumerate().filter(|(_, f)| !f.3) {
+                    let has_user = faces.iter().any(|o| o.3 && o.0 == f.0);
+                    if keep[k] && (has_user || best.get(f.0.as_str()).is_some_and(|b| b.0 != k)) {
+                        keep[k] = false;
+                    }
+                }
+            }
+            release.extend(faces.iter().zip(&keep).filter(|(f, k)| !**k && !f.3).map(|(f, _)| (f.0.clone(), f.1)));
+        }
+        for (path, i) in release {
+            if let Some(f) = self.photos.get_mut(&path).and_then(|p| p.faces.get_mut(i)) {
+                f.person = 0;
+            }
+        }
+        self.grouping = GROUPING;
+        self.cluster();
+    }
+
+    /// 同一張相片裡的臉一定是不同的人：兩兩比較，回傳（幾組, 相似度到 LEVELS 三個門檻的各幾組）。
+    /// 到門檻的比例高，表示模型分不開這些人（長得像的家人），要調嚴或手動分
+    pub fn same_photo_similarity(&self) -> (usize, [usize; 3]) {
+        let (mut n, mut over) = (0, [0usize; 3]);
+        for pf in self.photos.values().filter(|p| p.faces.len() >= 2) {
+            let e: Vec<[f32; 128]> = pf.faces.iter().filter_map(|f| unpack(&f.emb)).collect();
+            for a in 0..e.len() {
+                for b in a + 1..e.len() {
+                    let d = dot(&e[a], &e[b]);
+                    n += 1;
+                    for (k, (t, _)) in LEVELS.iter().enumerate() {
+                        over[k] += (d >= *t) as usize;
+                    }
+                }
+            }
+        }
+        (n, over)
     }
 
     /// 存一張相片找到的臉。同一個檔案用舊版找過時：對到的臉（位置重疊）留著原本分好的人、加上眼睛；
@@ -1004,8 +1111,10 @@ impl FaceIndex {
         self.people.iter().find(|p| p.id == id)
     }
 
-    /// 分組：還沒分的臉加進最像的人（夠像的話），不然自成一組；之後這次有動到的組和其他沒取名的組很像就合在一起
+    /// 分組：還沒分的臉加進最像的人（夠像的話），不然自成一組；之後這次有動到的組和其他沒取名的組很像就合在一起。
+    /// 同一張相片裡的臉一定是不同的人：不會加進同一張相片裡已經有的人，同一張相片裡一起出現過的兩組也不合
     pub fn cluster(&mut self) {
+        let (assign, merge) = self.thresholds();
         // 每個人的臉加起來（代表）
         let mut sum: HashMap<u32, ([f32; 128], usize)> = HashMap::new();
         let mut todo: Vec<(String, usize, [f32; 128])> = vec![];
@@ -1032,9 +1141,11 @@ impl FaceIndex {
         let mut changed: HashSet<u32> = HashSet::new();
         for (path, i, e) in todo {
             let not = self.photos[&path].faces[i].not.clone();
-            let best = centers.iter().filter(|(id, _)| !not.contains(id)).map(|(id, c)| (*id, dot(&e, c))).max_by(|a, b| a.1.total_cmp(&b.1));
+            // 這張相片裡其他的臉已經是誰：不會是同一個人
+            let taken: Vec<u32> = self.photos[&path].faces.iter().enumerate().filter(|(j, f)| *j != i && f.person != 0).map(|(_, f)| f.person).collect();
+            let best = centers.iter().filter(|(id, _)| !not.contains(id) && !taken.contains(id)).map(|(id, c)| (*id, dot(&e, c))).max_by(|a, b| a.1.total_cmp(&b.1));
             let id = match best {
-                Some((id, s)) if s >= ASSIGN => id,
+                Some((id, s)) if s >= assign => id,
                 _ => self.new_person(),
             };
             if let Some(f) = self.photos.get_mut(&path).and_then(|p| p.faces.get_mut(i)) {
@@ -1055,7 +1166,7 @@ impl FaceIndex {
         for id in changed {
             let Some(c) = centers.get(&id).copied() else { continue };
             let best = centers.iter().filter(|(o, _)| **o != id && !(named.contains(o) && named.contains(&id))).map(|(o, oc)| (*o, dot(&c, oc))).max_by(|a, b| a.1.total_cmp(&b.1));
-            if let Some((other, s)) = best.filter(|(_, s)| *s >= MERGE) {
+            if let Some((other, s)) = best.filter(|(_, s)| *s >= merge) {
                 let _ = s;
                 // 合進臉比較多的那個（或取了名的那個）
                 let (from, into) = if named.contains(&id) || (!named.contains(&other) && sum[&id].1 > sum[&other].1) { (other, id) } else { (id, other) };
@@ -1076,9 +1187,19 @@ impl FaceIndex {
         self.drop_empty();
     }
 
-    /// 有使用者說「不是這個人」的臉時，兩組不能合
+    /// 兩組不能合：有使用者說「不是這個人」的臉，或兩組的臉在同一張相片裡一起出現過（一定是不同的人）
     fn blocked(&self, a: u32, b: u32) -> bool {
-        self.photos.values().flat_map(|p| p.faces.iter()).any(|f| (f.person == a && f.not.contains(&b)) || (f.person == b && f.not.contains(&a)))
+        self.photos.values().any(|p| {
+            let (mut has_a, mut has_b) = (false, false);
+            for f in &p.faces {
+                if (f.person == a && f.not.contains(&b)) || (f.person == b && f.not.contains(&a)) {
+                    return true;
+                }
+                has_a |= f.person == a;
+                has_b |= f.person == b;
+            }
+            has_a && has_b
+        })
     }
 
     /// 沒有臉、也沒取名的人拿掉
@@ -1509,6 +1630,58 @@ mod tests {
         assert_eq!(back.people, idx.people);
         std::fs::remove_file(&file).ok();
         assert!(idx.needs("/video/family/x.jpg", 1, 0.0) && !idx.needs("/video/family/a0.jpg", 1, 0.0) && idx.needs("/video/family/a0.jpg", 2, 0.0));
+    }
+
+    #[test]
+    fn same_photo_faces_are_different_people() {
+        let ph = |faces: Vec<FaceRec>| PhotoFaces { size: 1, mtime: 0.0, ver: VERSION, faces };
+        // 兩個長得很像的人（相似度高過門檻）：各自單獨的相片、和一張合照
+        let (a, b) = (emb(1, 0.05), emb(1, 0.6));
+        assert!(dot(&a, &b) > LEVELS[2].0, "{}", dot(&a, &b));
+        let mut idx = FaceIndex { grouping: GROUPING, ..Default::default() };
+        idx.photos.insert("/video/family/both.jpg".into(), ph(vec![face(&a), face(&b)]));
+        idx.cluster();
+        let p = &idx.photos["/video/family/both.jpg"].faces;
+        // 同一張相片裡的兩張臉：再像也不會是同一個人
+        assert!(p[0].person != 0 && p[1].person != 0 && p[0].person != p[1].person);
+        let (pa, pb) = (p[0].person, p[1].person);
+        // 之後各自的相片加進各自最像的那個人；兩組在同一張相片裡出現過，不會合在一起
+        idx.photos.insert("/video/family/a1.jpg".into(), ph(vec![face(&emb(1, 0.06))]));
+        idx.photos.insert("/video/family/b1.jpg".into(), ph(vec![face(&emb(1, 0.58))]));
+        idx.cluster();
+        assert_eq!(idx.photos["/video/family/a1.jpg"].faces[0].person, pa);
+        assert_eq!(idx.photos["/video/family/b1.jpg"].faces[0].person, pb);
+        assert_eq!(idx.people.len(), 2);
+        assert_eq!(idx.same_photo_similarity(), (1, [1, 1, 1]));
+        // 舊版分的組（兩個人混在「小明」裡，還有一組沒取名的）：重新分組後小明只留最像的那些、同一張相片裡只留一張
+        let mut old = FaceIndex::default();
+        let who = |e: &[f32; 128], id: u32| FaceRec { person: id, ..face(e) };
+        old.people = vec![Person { id: 1, name: "小明".into(), hidden: false }, Person { id: 2, name: String::new(), hidden: false }];
+        old.next_id = 2;
+        for i in 0..5 {
+            old.photos.insert(format!("/video/family/m{i}.jpg"), ph(vec![who(&emb(5, 0.1 + i as f32 * 0.02), 1)]));
+        }
+        old.photos.insert("/video/family/mixed.jpg".into(), ph(vec![who(&emb(5, 0.12), 1), who(&emb(9, 0.1), 1)]));
+        old.photos.insert("/video/family/other.jpg".into(), ph(vec![who(&emb(9, 0.2), 1)]));
+        old.photos.insert("/video/family/u.jpg".into(), ph(vec![who(&emb(7, 0.1), 2)]));
+        let mut fixed = who(&emb(9, 0.3), 1);
+        fixed.user = true;
+        old.photos.insert("/video/family/fixed.jpg".into(), ph(vec![fixed]));
+        assert!(old.upgrade());
+        assert_eq!(old.grouping, GROUPING);
+        let person = |path: &str, i: usize| old.photos[path].faces[i].person;
+        // 小明的臉還是小明；混進來的另一個人被放出來自成一組（不是小明）；使用者指定的不動
+        assert!((0..5).all(|i| person(&format!("/video/family/m{i}.jpg"), 0) == 1));
+        assert_eq!(person("/video/family/mixed.jpg", 0), 1);
+        let other = person("/video/family/mixed.jpg", 1);
+        assert!(other != 1 && other != 0);
+        assert_eq!(person("/video/family/other.jpg", 0), other);
+        assert_eq!(person("/video/family/fixed.jpg", 0), 1);
+        assert!(old.person(1).is_some_and(|p| p.name == "小明"));
+        // 寬嚴：沒設定是一般
+        assert_eq!(old.thresholds(), LEVELS[1]);
+        old.level = Some(2);
+        assert_eq!(old.thresholds(), LEVELS[2]);
     }
 
     #[test]
