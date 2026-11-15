@@ -44,6 +44,15 @@ enum Try {
 fn items(_app: &UiApp) -> Vec<(String, String, Try)> {
     vec![
         (
+            tr!("在影片裡找人", "Find people in videos").into(),
+            tr!(
+                "播放影片時按播放列的「人物」，找出相片分頁取了名的人出現在哪裡，按時間跳過去；這台電腦的錄影和 Jellyfin 的影片都可以，在這台電腦上找、不上傳。「整理人物…」也能把人物的照片補到 Jellyfin。",
+                "While playing a video, press People on the player bar to find where people you named in the Photos tab appear, and jump to them. Works for recordings on this PC and Jellyfin videos, all on this computer. “Organize people…” can also add people's photos to Jellyfin."
+            )
+            .into(),
+            Try::Photos,
+        ),
+        (
             tr!("挑最好的一張、找好幾個人的合照", "Pick the best shot, find photos of several people").into(),
             tr!(
                 "同時間拍的相片裡，拍得最好的那張會標「推薦」，其他的可以一次勾選。「人物」選單還能找有人在笑的、好幾個人都在的（按名字旁的「＋」）、獨照或合照，也能每年挑幾張代表。",

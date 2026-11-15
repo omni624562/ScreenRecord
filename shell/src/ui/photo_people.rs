@@ -873,6 +873,7 @@ enum Act {
     MoveTo(Vec<(String, usize)>, Option<u32>),
     ShowPhotos(u32),
     DeleteAll,
+    ToJellyfin,
 }
 
 /// 臉的小圖材質（還沒有時在背景做）
@@ -925,6 +926,7 @@ pub fn dialog(app: &mut UiApp, ctx: &egui::Context) {
     let Some(mut dlg) = app.photos.as_mut().and_then(|d| d.people.dlg.take()) else { return };
     let summary: Vec<PersonSummary> = app.photos.as_ref().map(|d| d.people.summary.clone()).unwrap_or_default();
     let running = app.photos.as_ref().and_then(|d| d.people.running);
+    let has_jf = app.jellyfin().is_some();
     // 左邊列出的人（只出現一次的、隱藏的平常不列；找名字）
     let q = dlg.search.trim().to_lowercase();
     let listed: Vec<PersonSummary> = summary
@@ -1076,6 +1078,20 @@ pub fn dialog(app: &mut UiApp, ctx: &egui::Context) {
                 ui,
                 tr!("按左邊的一個人：取名、看他的相片、合併、把分錯的臉移出去", "Pick someone on the left to name them, see their photos, merge, or move out faces that don't belong"),
             ));
+            if has_jf {
+                ui.add_space(16.0);
+                if Btn::new(tr!("把照片帶到 Jellyfin 的人物…", "Send photos to Jellyfin people…"))
+                    .small()
+                    .tooltip(tr!(
+                        "Jellyfin 上同名、還沒有照片的人物，補上這裡拍得最好的一張臉（已經有照片的不動）",
+                        "For Jellyfin people with the same name and no photo yet, add their best face from here (people who already have a photo aren't changed)"
+                    ))
+                    .show(ui)
+                    .clicked()
+                {
+                    act = Act::ToJellyfin;
+                }
+            }
             ui.add_space(24.0);
             if Btn::new(tr!("刪除全部人臉資料…", "Delete all face data…"))
                 .small()
@@ -1279,6 +1295,18 @@ pub fn dialog(app: &mut UiApp, ctx: &egui::Context) {
             d.want_offset = Some(0.0);
             d.dirty = true;
         }
+        Act::ToJellyfin => {
+            let ask = super::dialogs::Ask::confirm(
+                tr!("把照片帶到 Jellyfin 的人物？", "Send photos to Jellyfin people?"),
+                tr!(
+                    "這裡取了名的人，Jellyfin 上有同名的人物而且還沒有照片時，補上他拍得最好的一張臉（直式）。已經有照片的不會動；只有這幾張臉的照片會傳到你的 Jellyfin 伺服器。",
+                    "For people named here, if Jellyfin has a person with the same name and no photo yet, their best face (portrait) is added. People who already have a photo aren't changed; only these face photos are sent to your Jellyfin server."
+                ),
+                tr!("帶過去", "Send"),
+                |app, _| to_jellyfin(app),
+            );
+            app.ask = Some(ask);
+        }
         Act::DeleteAll => {
             let mut ask = super::dialogs::Ask::confirm(
                 tr!("刪除全部人臉資料？", "Delete all face data?"),
@@ -1306,6 +1334,61 @@ pub fn dialog(app: &mut UiApp, ctx: &egui::Context) {
             app.ask = Some(ask);
         }
     }
+}
+
+/// 取了名的人 → Jellyfin 上同名、還沒有照片的人物：補上拍得最好的一張臉（背景做，好了通知）
+fn to_jellyfin(app: &mut UiApp) {
+    let (Some(jf), Some(index)) = (app.jellyfin(), app.photos.as_ref().and_then(|d| d.people.index.clone())) else { return };
+    let (user, ffmpeg) = (app.s.jellyfin_user.clone(), app.core.ffmpeg_path());
+    app.toast(tr!("正在把照片帶到 Jellyfin…", "Sending photos to Jellyfin…"), false);
+    app.spawn(
+        async move {
+            tokio::task::spawn_blocking(move || -> Result<(usize, usize, usize), String> {
+                let missing = jf.persons_without_photo(&user)?;
+                // （Jellyfin 的人物編號, 相片, 臉的位置）：先在鎖裡挑好，讀相片、上傳時不佔著臉的資料
+                let (jobs, named) = {
+                    let idx = index.lock().unwrap_or_else(|e| e.into_inner());
+                    let named: Vec<(u32, String)> = idx.people.iter().filter(|p| !p.name.is_empty() && !p.hidden).map(|p| (p.id, p.name.trim().to_lowercase())).collect();
+                    let jobs: Vec<(String, String, [f32; 4])> = named
+                        .iter()
+                        .filter_map(|(id, name)| {
+                            let pid = missing.iter().find(|(_, n)| n.trim().to_lowercase() == *name).map(|(pid, _)| pid.clone())?;
+                            let (path, rect) = idx.best_face(*id)?;
+                            Some((pid, path, rect))
+                        })
+                        .collect();
+                    (jobs, named.len())
+                };
+                let (mut ok, mut failed) = (0, 0);
+                for (pid, path, rect) in jobs {
+                    match faces::portrait_jpeg(ffmpeg.as_deref(), &path, rect).ok_or_else(|| "讀不到相片".to_string()).and_then(|jpg| jf.set_person_photo(&pid, &jpg)) {
+                        Ok(()) => ok += 1,
+                        Err(e) => {
+                            screenrecorder_core::info!("[人臉] 人物照片傳到 Jellyfin 失敗：{e}");
+                            failed += 1;
+                        }
+                    }
+                }
+                Ok((ok, failed, named))
+            })
+            .await
+            .unwrap_or_else(|e| Err(e.to_string()))
+        },
+        |app, r| match r {
+            Ok((ok, failed, named)) => {
+                let rest = named.saturating_sub(ok + failed);
+                let mut msg = trf!("已補上 {ok} 個人物的照片", "Added photos for {ok} people");
+                if rest > 0 {
+                    msg += &trf!("；另外 {rest} 個在 Jellyfin 上已經有照片，或沒有同名的人物", "; {rest} more already have a photo in Jellyfin or have no person with the same name");
+                }
+                if failed > 0 {
+                    msg += &trf!("；{failed} 個失敗（原因在記錄檔）", "; {failed} failed (see the log)");
+                }
+                app.toast(msg, failed > 0);
+            }
+            Err(e) => app.toast(trf!("連不到 Jellyfin：{e}", "Couldn't reach Jellyfin: {e}"), true),
+        },
+    );
 }
 
 /// 檢視器的標題列：相片裡有誰（有人閉眼時也寫出來）
