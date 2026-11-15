@@ -528,9 +528,13 @@ pub fn menu_act(app: &mut UiApp, act: MenuAct) {
                 select(&mut d.people, sel);
             }
         }
+        // 選了某個人、有人閉眼的：看全部資料夾（直接列出符合的相片，不用一層層點進去）
         MenuAct::Filter(id) => {
             if let Some(d) = app.photos.as_mut() {
                 d.people.set_filter(id);
+                if id.is_some() {
+                    d.go_top();
+                }
                 d.want_offset = Some(0.0);
                 d.dirty = true;
             }
@@ -538,6 +542,7 @@ pub fn menu_act(app: &mut UiApp, act: MenuAct) {
         MenuAct::Eyes => {
             if let Some(d) = app.photos.as_mut() {
                 d.people.set_eyes(true);
+                d.go_top();
                 d.want_offset = Some(0.0);
                 d.dirty = true;
             }
@@ -969,6 +974,7 @@ pub fn dialog(app: &mut UiApp, ctx: &egui::Context) {
         Act::ShowPhotos(id) => {
             d.people.dlg = None;
             d.people.set_filter(Some(id));
+            d.go_top();
             d.want_offset = Some(0.0);
             d.dirty = true;
         }

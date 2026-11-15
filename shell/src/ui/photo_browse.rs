@@ -145,6 +145,8 @@ pub struct PhotoBrowse {
     grid: u8,
     /// 畫面上的段落、相片的順序（檢視器的上一張 / 下一張、Shift 選一段）；dirty：條件改了，下一格重排
     sections: Vec<Section>,
+    /// 篩選後這裡沒有、但目前資料夾以外有幾張符合的（提示「看全部資料夾」）
+    elsewhere: usize,
     order: Vec<usize>,
     pub(super) dirty: bool,
     /// 目前範圍裡每一年有幾張（篩選的年份清單）
@@ -201,6 +203,7 @@ impl PhotoBrowse {
             sort: PhotoSort::ALL.get(app.s.photo_sort as usize).copied().unwrap_or(PhotoSort::New),
             grid: app.s.photo_grid_size.min(2),
             sections: vec![],
+            elsewhere: 0,
             order: vec![],
             dirty: true,
             years: vec![],
@@ -251,6 +254,19 @@ impl PhotoBrowse {
         self.selected.clear();
         self.want_offset = Some(self.offsets.get(&self.at_key()).copied().unwrap_or(0.0));
         self.dirty = true;
+    }
+
+    /// 回到最上層（全部的相片資料夾）
+    pub(super) fn go_top(&mut self) {
+        let top = if self.roots.len() == 1 { Some((0, String::new())) } else { None };
+        if self.at != top {
+            self.go(top);
+        }
+    }
+
+    /// 有篩選條件（搜尋、年份、星號、人物、有人閉眼）
+    fn filtering(&self) -> bool {
+        !self.searched.trim().is_empty() || self.year.is_some() || self.only_starred || self.people.filtering()
     }
 
     /// 只有一個相片資料夾時，最上層就是它
@@ -309,8 +325,10 @@ impl PhotoBrowse {
             PhotoSort::Name => list.sort_by_cached_key(|i| photos[*i].name().to_lowercase()),
         };
         let mut sections = vec![];
-        // 搜尋、依日期：目前範圍裡符合的全部列出來，依月份分段（照名稱排時不分段）
-        if !words.is_empty() || self.by_date {
+        let filtering = self.filtering();
+        // 有篩選條件（搜尋、年份、星號、人物、有人閉眼）、依日期：目前範圍裡符合的全部列出來（不用一層層點進資料夾），
+        // 依月份分段（照名稱排時不分段）
+        if filtering || self.by_date {
             let mut list: Vec<usize> = scope.into_iter().filter(|&i| keep(i)).collect();
             by(&mut list);
             if sort == PhotoSort::Name {
@@ -372,6 +390,8 @@ impl PhotoBrowse {
                 sections.push(Section { title, cells: here.into_iter().map(Cell::Photo).collect() });
             }
         }
+        // 這個資料夾裡沒有符合的：數一下其他資料夾有幾張
+        self.elsewhere = if sections.is_empty() && filtering { (0..self.photos.len()).filter(|&i| !self.in_scope(i) && keep(i)).count() } else { 0 };
         self.order = sections.iter().flat_map(|s| s.cells.iter()).filter_map(|c| if let Cell::Photo(i) = c { Some(*i) } else { None }).collect();
         self.sections = sections;
     }
@@ -1083,12 +1103,21 @@ pub fn panel(ui: &mut egui::Ui, d: &mut PhotoBrowse, out: &mut Panel, stars: &Pi
                 ui.label(tr!("正在讀取相片資料夾…", "Reading the photo folders…"));
             });
         } else if d.sections.is_empty() {
-            let msg = if !d.searched.is_empty() || d.year.is_some() || d.only_starred {
-                tr!("找不到符合的相片（可以清掉搜尋，或把篩選改回「全部」）", "No matching photos (clear the search or set the filters back to All)")
+            if d.elsewhere > 0 {
+                let n = d.elsewhere;
+                bui.label(RichText::new(trf!("這個資料夾沒有符合的相片，其他資料夾有 {n} 張", "No matching photos in this folder; {n} in other folders")).color(p.muted));
+                bui.add_space(6.0);
+                if Btn::new(tr!("看全部資料夾", "Show all folders")).small().primary().show(bui).clicked() {
+                    d.go_top();
+                }
             } else {
-                tr!("這裡沒有相片", "No photos here")
-            };
-            bui.label(RichText::new(msg).color(p.muted));
+                let msg = if d.filtering() {
+                    tr!("找不到符合的相片（可以清掉搜尋，或把篩選改回「全部」）", "No matching photos (clear the search or set the filters back to All)")
+                } else {
+                    tr!("這裡沒有相片", "No photos here")
+                };
+                bui.label(RichText::new(msg).color(p.muted));
+            }
         } else {
             grid(bui, d, out, stars);
         }
@@ -1820,6 +1849,7 @@ mod tests {
             sort: PhotoSort::New,
             grid: 1,
             sections: vec![],
+            elsewhere: 0,
             order: vec![],
             dirty: true,
             years: vec![],
@@ -1907,6 +1937,20 @@ mod tests {
         d.rebuild(&stars);
         assert_eq!(names(&d), ["生日.heic"]);
         stars.set("\\\\NAS\\photo\\生日.heic", false);
+        // 有篩選條件：不分資料夾，直接列出符合的相片（年份 2024 在 travel/2024 裡，以前只看得到「[travel 1]」）
+        d.only_starred = false;
+        d.year = Some(2024);
+        d.rebuild(&stars);
+        assert_eq!(names(&d), ["海邊.jpg"]);
+        // 在別的資料夾裡篩選、這裡沒有：數出其他資料夾有幾張，「看全部資料夾」回到最上層
+        d.go(Some((0, "travel/2023".into())));
+        d.rebuild(&stars);
+        assert!(d.sections.is_empty());
+        assert_eq!(d.elsewhere, 1);
+        d.go_top();
+        d.rebuild(&stars);
+        assert_eq!((d.at.clone(), names(&d)), (Some((0, String::new())), vec!["海邊.jpg".to_string()]));
+        d.year = None;
         // 回到上一層
         d.only_starred = false;
         d.go(Some((0, "travel/2024".into())));
