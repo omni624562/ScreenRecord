@@ -10,6 +10,8 @@ pub const H: f32 = 32.0;
 const GAP: f32 = 6.0;
 const GROUP_GAP: f32 = 16.0;
 const SEARCH_MIN: f32 = 200.0;
+/// 放不下時搜尋框最短縮到這麼寬
+const SEARCH_SMALL: f32 = 130.0;
 
 /// 查詢列的哪一段
 pub enum Part {
@@ -21,37 +23,73 @@ pub enum Part {
     Right(bool),
 }
 
-/// 畫一排查詢列：draw 依序被叫三次（搜尋、左、右）。寬度用上一次畫的量，算搜尋框能多寬、要不要縮
+/// 畫查詢列：draw 依序被叫三次（搜尋、左、右）。寬度用上一次畫的量，算搜尋框能多寬、要不要縮。
+/// 一定待在這一排的寬度裡（不會把整個檔案庫撐得比視窗寬）：放不下時右邊那組先只留圖示、搜尋框縮短，
+/// 還是放不下就把右邊那組換到第二排
 pub fn bar(ui: &mut Ui, id: Id, mut draw: impl FnMut(&mut Ui, Part)) {
-    // 這一排的高度先固定好，每個東西都對齊同一條中線（不然先畫的會比後畫的高一點）
-    let w = ui.available_width();
-    ui.allocate_ui_with_layout(egui::vec2(w, H), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+    let row_w = ui.available_width();
+    // 上一次量的：左邊那組、右邊那組（完整的、只留圖示的）
+    let (left_w, right_w, right_c): (f32, f32, f32) = ui.data(|d| d.get_temp(id)).unwrap_or((0.0, 0.0, 0.0));
+    let gaps = GROUP_GAP * 2.0 + GAP;
+    let compact = row_w - (left_w + right_w + gaps) < SEARCH_MIN;
+    let right_now = if compact && right_c > 0.0 { right_c } else { right_w };
+    // 只留圖示、搜尋框縮到最短還是放不下：右邊那組換到第二排（完整的）
+    let two_rows = compact && right_c > 0.0 && row_w - (left_w + right_c + gaps) < SEARCH_SMALL;
+    let style = |ui: &mut Ui| {
         ui.set_height(H);
         theme::field_style(ui);
         ui.spacing_mut().interact_size.y = H;
         ui.spacing_mut().item_spacing.x = GAP;
-        let (left_w, right_w): (f32, f32) = ui.data(|d| d.get_temp(id)).unwrap_or((0.0, 0.0));
-        let row_w = ui.available_width();
-        let rest = left_w + right_w + GROUP_GAP * 2.0 + GAP;
-        let compact = row_w - rest < SEARCH_MIN;
-        draw(ui, Part::Search((row_w - rest).clamp(SEARCH_MIN, 420.0)));
+    };
+    let (mut lw, mut rw) = (left_w, 0.0);
+    row(ui, row_w, |ui| {
+        style(ui);
+        let rest = if two_rows { left_w + GROUP_GAP } else { left_w + right_now + gaps };
+        draw(ui, Part::Search((row_w - rest).clamp(if compact { SEARCH_SMALL } else { SEARCH_MIN }, 420.0)));
         ui.add_space(GROUP_GAP - GAP);
         let x = ui.min_rect().right();
         draw(ui, Part::Left);
-        let lw = ui.min_rect().right() - x;
+        lw = ui.min_rect().right() - x;
+        if two_rows {
+            return;
+        }
         ui.add_space(GROUP_GAP - GAP);
         // 右邊那組靠右（用上一次量的寬度）
-        let pad = ui.available_width() - right_w - GAP;
+        let pad = ui.available_width() - right_now - GAP;
         if pad > 0.0 {
             ui.add_space(pad);
         }
         let x = ui.min_rect().right();
         draw(ui, Part::Right(compact));
-        let rw = ui.min_rect().right() - x;
-        if !compact {
-            ui.data_mut(|d| d.insert_temp(id, (lw, rw)));
-        }
+        rw = ui.min_rect().right() - x;
     });
+    if two_rows {
+        ui.add_space(GAP);
+        row(ui, row_w, |ui| {
+            style(ui);
+            let pad = ui.available_width() - right_w;
+            if pad > 0.0 {
+                ui.add_space(pad);
+            }
+            let x = ui.min_rect().right();
+            draw(ui, Part::Right(false));
+            rw = ui.min_rect().right() - x;
+        });
+    }
+    let stored = if compact && !two_rows { (lw, right_w, rw) } else { (lw, rw, right_c) };
+    ui.data_mut(|d| d.insert_temp(id, stored));
+    // 這一格才第一次量到只留圖示時多寬：再畫一格，用量到的寬度決定要不要換成兩排
+    if compact && right_c <= 0.0 {
+        ui.ctx().request_repaint();
+    }
+}
+
+/// 固定寬度的一排：裡面的東西比這一排寬時只是被裁掉，不會把外面撐寬
+fn row(ui: &mut Ui, w: f32, add: impl FnOnce(&mut Ui)) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(w, H), egui::Sense::hover());
+    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(egui::Layout::left_to_right(egui::Align::Center)));
+    child.set_clip_rect(rect.intersect(ui.clip_rect()).expand2(egui::vec2(0.0, 4.0)));
+    add(&mut child);
 }
 
 /// 查詢列的按鈕：和下拉一樣的灰框、一樣高；放不下時只留圖示（名稱放在滑鼠提示）
