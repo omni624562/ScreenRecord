@@ -183,11 +183,17 @@ pub fn open_as(app: &mut UiApp, entry: LibraryEntry, docked: bool) {
     load_lists(app);
     let p = path.clone();
     app.spawn(async move { video_tags::read(&ff, &p).await }, move |app, r| {
+        // 影片裡找到的人（檢視器的「人物」→「加進影片資訊」）：填進人物欄，按儲存才存
+        let add = super::video_people::take_for_info(app, &path);
         let Some(d) = &mut app.video_tags else { return };
         match r {
             Ok(m) => {
                 d.values = m.clone();
                 d.orig = Some(m);
+                let mut people = video_tags::split_genres(d.values.get(video_tags::PEOPLE_KEY).map(String::as_str).unwrap_or(""));
+                if super::video_people::merge_names(&mut people, &add) {
+                    d.values.insert(video_tags::PEOPLE_KEY.into(), video_tags::join_genres(&people));
+                }
                 check_jellyfin(app, path);
             }
             Err(e) => d.error = Some(e.message().to_string()),

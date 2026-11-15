@@ -82,6 +82,23 @@ jobs:
           & $exe.FullName -hide_banner -version | Select-Object -First 1
           "SCREENRECORDER_TEST_FFMPEG=$($exe.FullName)" >> $env:GITHUB_ENV
 
+      # 人臉模型（相片的人物）：下載程式裡寫的那四個檔案，讓 core/src/faces.rs 的 engine_with_real_models 在 Windows 上
+      # 真的載入、跑一次（檢查碼由測試核對）。下載失敗時那個測試會自動略過，其他測試照跑
+      - name: 下載人臉模型（測試用）
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP "face-models"
+          New-Item -ItemType Directory -Force $dir | Out-Null
+          $urls = (Select-String -Path core/src/faces.rs -Pattern 'url: "(https://[^"]+\.onnx)"' -AllMatches).Matches | ForEach-Object { $_.Groups[1].Value }
+          if ($urls.Count -lt 4) { throw "在 faces.rs 裡找不到模型的網址" }
+          foreach ($u in $urls) {
+            $name = Split-Path $u -Leaf
+            Invoke-WebRequest $u -OutFile (Join-Path $dir $name)
+            "{0} {1} bytes" -f $name, (Get-Item (Join-Path $dir $name)).Length
+          }
+          "SCREENRECORDER_TEST_FACE_MODELS=$dir" >> $env:GITHUB_ENV
+
       - name: 測試
         run: cargo test --locked --workspace
 

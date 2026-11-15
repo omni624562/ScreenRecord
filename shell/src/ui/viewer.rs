@@ -809,6 +809,8 @@ enum Act {
         again: bool,
     },
     CancelPeople,
+    /// 影片：把找到的人加進影片資訊的「人物」（開影片資訊、填好，按儲存才存）
+    PeopleToInfo,
 }
 
 /// 標題列的一個按鈕；視窗窄時依序從後面的開始收進「⋯」
@@ -1650,6 +1652,24 @@ fn run_act(app: &mut UiApp, act: Act) {
             super::video_people::start(app, key, src, dur);
         }
         Act::CancelPeople => super::video_people::cancel(app),
+        Act::PeopleToInfo => {
+            let Some(v) = app.viewer.as_mut() else { return };
+            let super::video_people::View::Done(vp) = v.people.clone() else { return };
+            let names: Vec<String> = vp.people.iter().map(|(n, _)| n.clone()).collect();
+            let e = v.cur().clone();
+            v.pause();
+            match v.remote.as_ref().map(|r| (r.id.clone(), r.user.clone())) {
+                Some((id, user)) => {
+                    super::video_people::add_to_info(app, id.clone(), names);
+                    let (people, tags) = super::jellyfin_browse::known_people_tags(app);
+                    super::jellyfin_edit::open(app, id, user, base_name(&e.media.name), people, tags);
+                }
+                None => {
+                    super::video_people::add_to_info(app, e.media.path.clone(), names);
+                    super::video_tags::open(app, e);
+                }
+            }
+        }
         Act::PhotoNotClosed(i) => {
             let Some(path) = app.viewer.as_ref().map(|v| v.cur().media.path.clone()) else { return };
             super::photo_people::not_closed(app, &path, i);
@@ -2281,6 +2301,18 @@ fn video_bar(v: &mut Viewer, ui: &mut egui::Ui, act: &mut Act) {
                             });
                         }
                         ui.separator();
+                        if !vp.people.is_empty()
+                            && ui
+                                .button(tr!("加進影片資訊的人物…", "Add to the video's people…"))
+                                .on_hover_text(tr!(
+                                    "開啟影片資訊，把找到的人填進「人物」欄（按儲存才存）；之後就能用人物找到這支影片",
+                                    "Opens the video details with the people found filled in under People (saved when you press Save), so you can find this video by person later"
+                                ))
+                                .clicked()
+                        {
+                            *act = Act::PeopleToInfo;
+                            ui.close();
+                        }
                         if ui.button(tr!("重新找", "Find again")).on_hover_text(tr!("幫更多人取名之後，重新找一次", "Find again after naming more people")).clicked() {
                             *act = Act::FindPeople { again: true };
                             ui.close();
