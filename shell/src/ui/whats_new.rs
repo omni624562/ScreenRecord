@@ -44,6 +44,15 @@ enum Try {
 fn items(_app: &UiApp) -> Vec<(String, String, Try)> {
     vec![
         (
+            tr!("挑掉閉眼、模糊的相片", "Weed out closed eyes and blurry faces").into(),
+            tr!(
+                "看「有人閉眼的」時，同時間拍的相片排在一起，綠色眼睛是沒有人閉眼的，勾選不要的一起刪；判斷錯了，看大圖時按臉下面的按鈕改掉。「人物」選單也多了「臉模糊的」。",
+                "With “Eyes closed”, photos taken at the same time are listed together; a green eye means nobody's eyes are closed, so select the rest and delete them. If it's wrong, fix it with the button under the face when viewing the photo. The People menu also has “Blurry faces”."
+            )
+            .into(),
+            Try::Photos,
+        ),
+        (
             tr!("找出閉眼的相片", "Find photos with closed eyes").into(),
             tr!(
                 "相片分頁「人物」選單的「有人閉眼的」只列出有人閉上眼睛的相片，縮圖右下角也會標出來，可以選判斷的寬嚴。一樣在這台電腦上判斷，不上傳。",

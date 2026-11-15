@@ -102,6 +102,9 @@ struct Section {
     cells: Vec<Cell>,
 }
 
+/// 「同時間拍的」：和前一張差這麼多毫秒以內算同一段
+const BURST_MS: i64 = 10_000;
+
 /// 正在背景整個掃描的相片資料夾：已經找到幾張、要停下來（關掉檔案庫也繼續掃，掃完照樣存起來）
 pub struct Scanning {
     found: Arc<AtomicUsize>,
@@ -308,15 +311,14 @@ impl PhotoBrowse {
         self.years = years.into_iter().rev().collect();
         // 只看某個人、用名字搜尋（相片裡有取名的人）
         let person = self.people.filtering();
-        let keep = |i: usize| {
+        // 人物以外的條件（年份、星號、搜尋）
+        let base = |i: usize| {
             let m = &self.meta[i];
             let path = &self.photos[i].path;
             let names = || self.people.names.get(path).map(String::as_str).unwrap_or("");
-            self.year.is_none_or(|y| m.year == y)
-                && (!self.only_starred || stars.contains(path))
-                && (!person || self.people.filter_set.contains(path))
-                && words.iter().all(|w| m.text.contains(w.as_str()) || names().contains(w.as_str()))
+            self.year.is_none_or(|y| m.year == y) && (!self.only_starred || stars.contains(path)) && words.iter().all(|w| m.text.contains(w.as_str()) || names().contains(w.as_str()))
         };
+        let keep = |i: usize| base(i) && (!person || self.people.filter_set.contains(&self.photos[i].path));
         let photos = &self.photos;
         let sort = self.sort;
         let by = |list: &mut Vec<usize>| match sort {
@@ -326,9 +328,37 @@ impl PhotoBrowse {
         };
         let mut sections = vec![];
         let filtering = self.filtering();
-        // 有篩選條件（搜尋、年份、星號、人物、有人閉眼）、依日期：目前範圍裡符合的全部列出來（不用一層層點進資料夾），
-        // 依月份分段（照名稱排時不分段）
-        if filtering || self.by_date {
+        if self.people.bursts() {
+            // 有人閉眼的＋同時間拍的：前後 BURST_MS 內拍的排成一段（閉眼的有標示，挑睜眼的留下來）；沒有同時間拍的放最後一段
+            let mut list: Vec<usize> = scope.iter().copied().filter(|&i| base(i)).collect();
+            list.sort_by(|a, b| photos[*a].when.cmp(&photos[*b].when).then_with(|| photos[*a].name().cmp(photos[*b].name())));
+            let mut runs: Vec<Vec<usize>> = vec![];
+            for i in list {
+                match runs.last_mut() {
+                    Some(r) if r.last().is_some_and(|l| photos[i].when - photos[*l].when <= BURST_MS) => r.push(i),
+                    _ => runs.push(vec![i]),
+                }
+            }
+            runs.retain(|r| r.iter().any(|&i| self.people.filter_set.contains(&photos[i].path)));
+            if sort != PhotoSort::Old {
+                runs.reverse();
+            }
+            let mut singles = vec![];
+            for r in runs {
+                if r.len() == 1 {
+                    singles.push(Cell::Photo(r[0]));
+                } else {
+                    let title = photos[r[0]].taken().format("%Y/%-m/%-d %H:%M").to_string();
+                    sections.push(Section { title, cells: r.into_iter().map(Cell::Photo).collect() });
+                }
+            }
+            if !singles.is_empty() {
+                let title = if sections.is_empty() { String::new() } else { tr!("沒有同時間拍的", "Nothing else taken at the same time").to_string() };
+                sections.push(Section { title, cells: singles });
+            }
+        } else if filtering || self.by_date {
+            // 有篩選條件（搜尋、年份、星號、人物、有人閉眼）、依日期：目前範圍裡符合的全部列出來（不用一層層點進資料夾），
+            // 依月份分段（照名稱排時不分段）
             let mut list: Vec<usize> = scope.into_iter().filter(|&i| keep(i)).collect();
             by(&mut list);
             if sort == PhotoSort::Name {
@@ -1297,11 +1327,16 @@ fn photo_cell(ui: &mut egui::Ui, d: &mut PhotoBrowse, rect: Rect, i: usize, pos:
     if hovering || on {
         painter.rect_stroke(rect, 6.0, Stroke::new(if on { 3.0 } else { 2.0 }, p.accent), egui::StrokeKind::Inside);
     }
-    // 有人閉眼：右下角
-    if super::photo_people::closed_eyes(&d.people, &path) && rect.width() >= 80.0 {
+    // 有人閉眼：右下角；和閉眼的排在一起時，沒有人閉眼的標綠色的眼睛
+    if rect.width() >= 80.0 {
         let c = pos2(rect.max.x - 15.0, rect.max.y - 15.0);
-        painter.circle_filled(c, 11.0, Color32::from_black_alpha(150));
-        theme::paint_icon(painter, Rect::from_center_size(c, vec2(15.0, 15.0)), Icon::EyeClosed, Color32::WHITE);
+        if super::photo_people::closed_eyes(&d.people, &path) {
+            painter.circle_filled(c, 11.0, Color32::from_black_alpha(150));
+            theme::paint_icon(painter, Rect::from_center_size(c, vec2(15.0, 15.0)), Icon::EyeClosed, Color32::WHITE);
+        } else if super::photo_people::open_eyes(&d.people, &path) {
+            painter.circle_filled(c, 11.0, p.ok);
+            theme::paint_icon(painter, Rect::from_center_size(c, vec2(15.0, 15.0)), Icon::Eye, Color32::WHITE);
+        }
     }
     // 需要 FFmpeg 的格式（HEIC 等）：左下角小字
     let ph = &d.photos[i];
@@ -1951,6 +1986,23 @@ mod tests {
         d.rebuild(&stars);
         assert_eq!((d.at.clone(), names(&d)), (Some((0, String::new())), vec!["海邊.jpg".to_string()]));
         d.year = None;
+        // 有人閉眼的＋同時間拍的：前後 10 秒內的排成一段，落單的放最後
+        let mut b =
+            browse(&["/video/family"], &[("/video/family/a.jpg", "2024-05-12"), ("/video/family/b.jpg", "2024-05-12"), ("/video/family/c.jpg", "2024-06-01"), ("/video/family/d.jpg", "2024-07-01")]);
+        let at = |b: &mut PhotoBrowse, name: &str, add: i64| {
+            let p = b.photos.iter_mut().find(|p| p.name() == name).unwrap();
+            p.when += add;
+        };
+        at(&mut b, "b.jpg", 4_000);
+        b.people.closed = ["/video/family/b.jpg", "/video/family/c.jpg"].into_iter().map(String::from).collect();
+        b.people.set_eyes(true);
+        b.rebuild(&stars);
+        assert_eq!(names(&b), ["a.jpg", "b.jpg", "c.jpg"]);
+        assert_eq!(b.sections.len(), 2);
+        // 不列同時間拍的：只有閉眼的
+        b.people.near = false;
+        b.rebuild(&stars);
+        assert_eq!(names(&b), ["c.jpg", "b.jpg"]);
         // 回到上一層
         d.only_starred = false;
         d.go(Some((0, "travel/2024".into())));
