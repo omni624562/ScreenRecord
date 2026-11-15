@@ -70,12 +70,15 @@ pub fn open(app: &mut UiApp, id: String, user: String, name: String, known_peopl
     load_usage(app);
     let (key, jf2, id2) = (id.clone(), jf.clone(), id.clone());
     app.spawn(async move { tokio::task::spawn_blocking(move || jf.item_info(&user, &key)).await.unwrap_or_else(|e| Err(e.to_string())) }, move |app, r| {
+        // 影片裡找到的人（檢視器的「人物」→「加進影片資訊」）：填進人物欄，按儲存才存
+        let add = super::video_people::take_for_info(app, &id);
         let Some(d) = app.jf_edit.as_mut().filter(|d| d.id == id) else { return };
         match r {
             Ok(info) => {
                 d.year = info.year.map(|y| y.to_string()).unwrap_or_default();
                 d.info = info.clone();
                 d.orig = Some(info);
+                super::video_people::merge_names(&mut d.info.people, &add);
             }
             Err(e) => d.error = Some(trf!("讀不到 Jellyfin 上的影片資訊：{e}", "Couldn't read the details from Jellyfin: {e}")),
         }

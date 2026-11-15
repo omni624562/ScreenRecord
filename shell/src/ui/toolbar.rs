@@ -140,3 +140,45 @@ pub fn view_switch<T: PartialEq + Copy>(ui: &mut Ui, value: &mut T, items: &[(T,
 fn egui_label() -> &'static str {
     screenrecorder_core::tr!("縮圖", "Thumbnails")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 在寬 w 的面板裡畫幾格查詢列（左邊那組寬 left、右邊那組完整 right、只留圖示 right_c）：回傳面板最後用了多寬、查詢列多高
+    fn run(w: f32, left: f32, right: f32, right_c: f32) -> (f32, f32) {
+        let ctx = egui::Context::default();
+        let mut used = (0.0, 0.0);
+        for _ in 0..6 {
+            let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(w, 400.0))), ..Default::default() };
+            let mut out = ctx.run_ui(input, |ui| {
+                ui.set_width(w);
+                let top = ui.cursor().top();
+                bar(ui, Id::new("test-bar"), |ui, part| match part {
+                    Part::Search(sw) => drop(ui.allocate_space(egui::vec2(sw, H))),
+                    Part::Left => drop(ui.allocate_space(egui::vec2(left, H))),
+                    Part::Right(compact) => drop(ui.allocate_space(egui::vec2(if compact { right_c } else { right }, H))),
+                });
+                used = (ui.min_rect().width(), ui.cursor().top() - top);
+            });
+            out.textures_delta.clear();
+        }
+        used
+    }
+
+    #[test]
+    fn bar_never_wider_than_its_row() {
+        // 夠寬：一排
+        let (w, h) = run(1200.0, 400.0, 300.0, 120.0);
+        assert!(w <= 1200.5 && h < H * 1.5, "{w} {h}");
+        // 窄一點：右邊只留圖示，還是一排
+        let (w, h) = run(760.0, 400.0, 300.0, 120.0);
+        assert!(w <= 760.5 && h < H * 1.5, "{w} {h}");
+        // 更窄：右邊那組換到第二排，面板不會被撐寬
+        let (w, h) = run(640.0, 400.0, 300.0, 120.0);
+        assert!(w <= 640.5 && h > H * 1.5, "{w} {h}");
+        // 連左邊那組都放不下：裁掉，也不撐寬
+        let (w, _) = run(300.0, 400.0, 300.0, 120.0);
+        assert!(w <= 300.5, "{w}");
+    }
+}

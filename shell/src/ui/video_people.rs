@@ -20,6 +20,8 @@ pub struct State {
     job: Option<Job>,
     /// 人物功能開著、模型在（每幾秒看一次）
     ready: Option<(bool, Instant)>,
+    /// 要加進影片資訊「人物」欄的：（影片的路徑或 Jellyfin 編號, 名字）。影片資訊讀好時拿走、填進去，使用者按儲存才存
+    add_to_info: Option<(String, Vec<String>)>,
 }
 
 struct Job {
@@ -117,6 +119,33 @@ pub fn cancel(app: &mut UiApp) {
     if let Some(j) = &app.video_people.job {
         j.stop.store(true, Ordering::Relaxed);
     }
+}
+
+/// 開影片資訊之前：記下要加進「人物」欄的名字
+pub fn add_to_info(app: &mut UiApp, target: String, names: Vec<String>) {
+    app.video_people.add_to_info = Some((target, names));
+}
+
+/// 影片資訊讀好時：這支影片有要加的名字就拿走
+pub fn take_for_info(app: &mut UiApp, target: &str) -> Vec<String> {
+    match app.video_people.add_to_info.take() {
+        Some((t, names)) if t == target => names,
+        other => {
+            app.video_people.add_to_info = other;
+            vec![]
+        }
+    }
+}
+
+/// 把名字併進現有的清單（已經有的不重複，不分大小寫）；回傳有沒有加到
+pub fn merge_names(list: &mut Vec<String>, add: &[String]) -> bool {
+    let before = list.len();
+    for n in add {
+        if !list.iter().any(|x| x.trim().to_lowercase() == n.trim().to_lowercase()) {
+            list.push(n.clone());
+        }
+    }
+    list.len() != before
 }
 
 /// 忘掉這支影片找到的（重新找之前）

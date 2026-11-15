@@ -27,6 +27,8 @@ static GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::
 const SAVE_EVERY: Duration = Duration::from_secs(30);
 /// 臉的小圖多大（像素）
 const FACE_PX: u32 = 96;
+/// 找了幾張相片在記錄檔寫一次速度
+const SPEED_EVERY: usize = 240;
 /// 「有人閉眼的」判斷的寬嚴（設定的 photoBlink：寬鬆、一般、嚴格）→ 兩眼閉上的程度要到多少
 const BLINK: [f32; 3] = [0.6, 0.7, 0.8];
 /// 整理人物的視窗最多列幾個人、一個人最多列幾張臉（每張臉第一次都要讀相片做小圖）
@@ -68,6 +70,8 @@ pub struct People {
     /// 只看一個人時每年挑幾張代表、他在每張相片裡拍得好不好
     pub yearly: bool,
     scores: HashMap<String, f32>,
+    /// 上次寫記錄檔之後找了幾張、花了多久（記錄速度）
+    speed: (usize, Duration),
     /// 模型不齊時自動下載過了（這次開啟只試一次；之前開啟過人物功能的，新版多了看眼睛的模型）
     auto_dl: bool,
     /// 背景正在找：（這次找了幾張, 這次要找幾張）；暫停、停下來（關掉分頁）
@@ -117,6 +121,7 @@ impl Default for People {
             quality: HashMap::new(),
             yearly: false,
             scores: HashMap::new(),
+            speed: (0, Duration::ZERO),
             auto_dl: false,
             running: None,
             done: 0,
@@ -323,6 +328,31 @@ impl People {
         self.mode(id, false, false, false);
     }
 
+    /// 「挑相片」選單上寫的：有人閉眼、臉模糊、有人在笑；沒有挑時 None
+    pub fn describe_pick(&self) -> Option<String> {
+        if self.eyes {
+            Some(tr!("有人閉眼", "Eyes closed").into())
+        } else if self.blur {
+            Some(tr!("臉模糊", "Blurry faces").into())
+        } else if self.smile {
+            Some(tr!("有人在笑", "Smiling").into())
+        } else {
+            None
+        }
+    }
+
+    /// 「人物」選單上寫的：選的人、幾個人；都沒有時 None
+    pub fn describe_people(&self) -> Option<String> {
+        if self.describe_pick().is_some() && self.count == 0 {
+            return None;
+        }
+        let all = self.describe()?;
+        match self.describe_pick() {
+            Some(pick) => all.strip_prefix(&pick).map(|r| r.trim_start_matches(['、', ',', ' ']).to_string()).filter(|r| !r.is_empty()),
+            None => Some(all),
+        }
+    }
+
     /// 現在篩選的說法（選單、位置列）：「小明＋小美」「有人閉眼」…再加上幾張臉；沒有篩選時 None
     pub fn describe(&self) -> Option<String> {
         let mut parts: Vec<String> = vec![];
@@ -440,7 +470,7 @@ pub fn tick(app: &mut UiApp) {
         let mut todo: Vec<&screenrecorder_core::photos::Photo> = d.photos.iter().filter(|ph| !p.failed.contains(&ph.path) && idx.needs(&ph.path, ph.size, ph.mtime)).collect();
         todo.sort_by_key(|ph| std::cmp::Reverse(ph.when));
         let left = todo.len();
-        (todo.into_iter().take(BATCH).map(|ph| faces::Job { path: ph.path.clone(), size: ph.size, mtime: ph.mtime }).collect::<Vec<_>>(), left)
+        (todo.into_iter().take(BATCH).map(|ph| faces::Job { path: ph.path.clone(), size: ph.size, mtime: ph.mtime, old: idx.known_faces(&ph.path, ph.size, ph.mtime) }).collect::<Vec<_>>(), left)
     };
     if jobs.is_empty() {
         // 全部找完：存一次
@@ -464,8 +494,10 @@ pub fn tick(app: &mut UiApp) {
     let idx2 = index.clone();
     app.spawn(
         async move {
-            tokio::task::spawn_blocking(move || -> Result<(usize, Vec<String>), String> {
+            tokio::task::spawn_blocking(move || -> Result<(usize, Vec<String>, Duration), String> {
+                let began = Instant::now();
                 let results = faces::analyze_many(jobs, ffmpeg, &stop)?;
+                let took = began.elapsed();
                 let mut failed = vec![];
                 let n = results.len();
                 let mut idx = idx2.lock().unwrap_or_else(|e| e.into_inner());
@@ -483,7 +515,7 @@ pub fn tick(app: &mut UiApp) {
                 if (save_now || stop.load(Ordering::Relaxed)) && GENERATION.load(Ordering::Relaxed) == generation {
                     faces::save_index(&faces::index_file(), &idx);
                 }
-                Ok((n, failed))
+                Ok((n, failed, took))
             })
             .await
             .unwrap_or_else(|e| Err(e.to_string()))
@@ -493,7 +525,14 @@ pub fn tick(app: &mut UiApp) {
             let p = &mut d.people;
             p.running = None;
             match r {
-                Ok((n, failed)) => {
+                Ok((n, failed, took)) => {
+                    // 每找 SPEED_EVERY 張左右，在記錄檔寫一次速度（回報問題、調整同時找幾張時用）
+                    p.speed = (p.speed.0 + n, p.speed.1 + took);
+                    if p.speed.0 >= SPEED_EVERY {
+                        let (count, secs) = (p.speed.0, p.speed.1.as_secs_f64().max(0.001));
+                        screenrecorder_core::info!("[人臉] 找了 {count} 張相片，花 {secs:.0} 秒（每分鐘約 {:.0} 張）", count as f64 / secs * 60.0);
+                        p.speed = (0, Duration::ZERO);
+                    }
                     p.done += n;
                     p.failed.extend(failed);
                     p.checked_at = None;
@@ -591,7 +630,7 @@ pub enum MenuAct {
 
 pub fn menu(ui: &mut egui::Ui, p: &People, enabled: bool, downloading: Option<f32>) -> MenuAct {
     let mut act = MenuAct::None;
-    let text = p.describe().unwrap_or_else(|| tr!("全部的人", "Everyone").to_string());
+    let text = p.describe_people().unwrap_or_else(|| tr!("全部的人", "Everyone").to_string());
     egui::ComboBox::from_id_salt("photo-person")
         .selected_text(text)
         .width(110.0)
@@ -627,7 +666,7 @@ pub fn menu(ui: &mut egui::Ui, p: &People, enabled: bool, downloading: Option<f3
                 }
                 ui.separator();
             }
-            if ui.selectable_label(!p.filtering(), tr!("全部的人", "Everyone")).clicked() {
+            if ui.selectable_label(p.filter.is_none() && p.count == 0, tr!("全部的人", "Everyone")).clicked() {
                 act = MenuAct::Filter(None);
             }
             let named: Vec<&PersonSummary> = p.summary.iter().filter(|s| !s.person.name.is_empty() && !s.person.hidden).collect();
@@ -656,58 +695,6 @@ pub fn menu(ui: &mut egui::Ui, p: &People, enabled: bool, downloading: Option<f3
             if named.is_empty() {
                 ui.label(theme::muted(ui, tr!("還沒有取名的人：按下面的「整理人物…」幫他們取名", "Nobody is named yet. Use “Organize people…” below to name them")));
             }
-            ui.separator();
-            // 有人閉眼的相片、判斷的寬嚴
-            let tip = tr!(
-                "兩隻眼睛都閉上的臉（太小的臉、隱藏的人不算）。在這台電腦上判斷，不上傳；偶爾會把瞇眼大笑當成閉眼",
-                "Faces with both eyes closed (tiny faces and hidden people don't count). Checked on this computer; nothing is uploaded. A big squinting smile is sometimes counted as closed"
-            );
-            if ui.selectable_label(p.eyes, trf!("有人閉眼的　{}", "Eyes closed  {}", p.closed.len())).on_hover_text(tip).clicked() {
-                act = MenuAct::Eyes;
-            }
-            ui.horizontal(|ui| {
-                ui.label(theme::muted(ui, tr!("閉眼的判斷", "Closed eyes")));
-                for (i, (zh, en, tip_zh, tip_en)) in [
-                    ("寬鬆", "Loose", "半閉、瞇眼也算（找到的多，看錯的也多）", "Half-closed and squinting count too (finds more, with more mistakes)"),
-                    ("一般", "Normal", "眼睛閉上的", "Eyes closed"),
-                    ("嚴格", "Strict", "只算很確定是閉上的（找到的少）", "Only eyes that are clearly closed (finds fewer)"),
-                ]
-                .into_iter()
-                .enumerate()
-                {
-                    if ui.selectable_label(p.blink_level as usize == i, tr!(zh, en)).on_hover_text(tr!(tip_zh, tip_en)).clicked() {
-                        act = MenuAct::BlinkLevel(i as u8);
-                    }
-                }
-            });
-            let mut near = p.near;
-            if ui
-                .checkbox(&mut near, tr!("一起列出同時間拍的", "Also list photos taken at the same time"))
-                .on_hover_text(tr!(
-                    "看「有人閉眼的」時，把前後 10 秒內拍的相片排在一起：閉眼的有標示，綠色眼睛是沒有人閉眼的，勾選不要的一起刪",
-                    "With “Eyes closed”, photos taken within 10 seconds are listed together: closed eyes are marked, a green eye means nobody's eyes are closed, and you can select the ones to delete"
-                ))
-                .changed()
-            {
-                act = MenuAct::Near(near);
-            }
-            if ui
-                .selectable_label(p.blur, trf!("臉模糊的　{}", "Blurry faces  {}", p.blurry.len()))
-                .on_hover_text(tr!(
-                    "相片裡最清楚的那張臉也模糊（失焦、手震）；背景的人模糊不算，太小的臉、隱藏的人不看。在這台電腦上判斷，不上傳",
-                    "Even the sharpest face in the photo is blurry (out of focus or camera shake). Blurry people in the background don't count; tiny faces and hidden people are skipped. Checked on this computer; nothing is uploaded"
-                ))
-                .clicked()
-            {
-                act = MenuAct::Blur;
-            }
-            if ui
-                .selectable_label(p.smile, trf!("有人在笑的　{}", "Smiling  {}", p.smiling.len()))
-                .on_hover_text(tr!("有人嘴角上揚的相片（太小的臉、隱藏的人不看）。在這台電腦上判斷，不上傳", "Photos where someone is smiling (tiny faces and hidden people are skipped). Checked on this computer; nothing is uploaded"))
-                .clicked()
-            {
-                act = MenuAct::Smile;
-            }
             ui.horizontal(|ui| {
                 ui.label(theme::muted(ui, tr!("幾個人", "People")));
                 for (n, zh, en) in [(0u8, "不限", "Any"), (1, "1 人", "1"), (2, "2 人", "2"), (3, "3 人以上", "3+")] {
@@ -716,9 +703,6 @@ pub fn menu(ui: &mut egui::Ui, p: &People, enabled: bool, downloading: Option<f3
                     }
                 }
             });
-            if p.old > 0 {
-                ui.label(theme::muted(ui, trf!("還有 {} 張舊的相片要再看一次（在背景）", "{} older photos still need another look (in the background)", p.old)));
-            }
             ui.separator();
             let unnamed = p.summary.iter().filter(|s| s.person.name.is_empty() && !s.person.hidden && s.photos > 1).count();
             let label = if unnamed > 0 { trf!("整理人物…（{unnamed} 組還沒取名）", "Organize people… ({unnamed} unnamed)") } else { tr!("整理人物…", "Organize people…").to_string() };
@@ -729,6 +713,75 @@ pub fn menu(ui: &mut egui::Ui, p: &People, enabled: bool, downloading: Option<f3
         })
         .response
         .on_hover_text(tr!("只看有某個人的相片；在這台電腦上找臉、分組，不上傳", "Show only photos of one person. Faces are found and grouped on this computer; nothing is uploaded"));
+    // 「挑相片」：閉眼、模糊、在笑（人物功能開了才有）
+    if enabled {
+        let text = p.describe_pick().unwrap_or_else(|| tr!("挑相片", "Pick photos").to_string());
+        egui::ComboBox::from_id_salt("photo-pick")
+            .selected_text(text)
+            .width(96.0)
+            .show_ui(ui, |ui| {
+                ui.set_min_width(260.0);
+                if ui.selectable_label(!(p.eyes || p.blur || p.smile), tr!("不挑", "Don't pick")).clicked() && (p.eyes || p.blur || p.smile) {
+                    act = MenuAct::Filter(None);
+                }
+                // 有人閉眼的相片、判斷的寬嚴
+                let tip = tr!(
+                    "兩隻眼睛都閉上的臉（太小的臉、隱藏的人不算）。在這台電腦上判斷，不上傳；偶爾會把瞇眼大笑當成閉眼",
+                    "Faces with both eyes closed (tiny faces and hidden people don't count). Checked on this computer; nothing is uploaded. A big squinting smile is sometimes counted as closed"
+                );
+                if ui.selectable_label(p.eyes, trf!("有人閉眼的　{}", "Eyes closed  {}", p.closed.len())).on_hover_text(tip).clicked() {
+                    act = MenuAct::Eyes;
+                }
+                ui.horizontal(|ui| {
+                    ui.label(theme::muted(ui, tr!("閉眼的判斷", "Closed eyes")));
+                    for (i, (zh, en, tip_zh, tip_en)) in [
+                        ("寬鬆", "Loose", "半閉、瞇眼也算（找到的多，看錯的也多）", "Half-closed and squinting count too (finds more, with more mistakes)"),
+                        ("一般", "Normal", "眼睛閉上的", "Eyes closed"),
+                        ("嚴格", "Strict", "只算很確定是閉上的（找到的少）", "Only eyes that are clearly closed (finds fewer)"),
+                    ]
+                    .into_iter()
+                    .enumerate()
+                    {
+                        if ui.selectable_label(p.blink_level as usize == i, tr!(zh, en)).on_hover_text(tr!(tip_zh, tip_en)).clicked() {
+                            act = MenuAct::BlinkLevel(i as u8);
+                        }
+                    }
+                });
+                let mut near = p.near;
+                if ui
+                    .checkbox(&mut near, tr!("一起列出同時間拍的", "Also list photos taken at the same time"))
+                    .on_hover_text(tr!(
+                        "看「有人閉眼的」時，把前後 10 秒內拍的相片排在一起：閉眼的有標示，綠色眼睛是沒有人閉眼的，勾選不要的一起刪",
+                        "With “Eyes closed”, photos taken within 10 seconds are listed together: closed eyes are marked, a green eye means nobody's eyes are closed, and you can select the ones to delete"
+                    ))
+                    .changed()
+                {
+                    act = MenuAct::Near(near);
+                }
+                if ui
+                    .selectable_label(p.blur, trf!("臉模糊的　{}", "Blurry faces  {}", p.blurry.len()))
+                    .on_hover_text(tr!(
+                        "相片裡最清楚的那張臉也模糊（失焦、手震）；背景的人模糊不算，太小的臉、隱藏的人不看。在這台電腦上判斷，不上傳",
+                        "Even the sharpest face in the photo is blurry (out of focus or camera shake). Blurry people in the background don't count; tiny faces and hidden people are skipped. Checked on this computer; nothing is uploaded"
+                    ))
+                    .clicked()
+                {
+                    act = MenuAct::Blur;
+                }
+                if ui
+                    .selectable_label(p.smile, trf!("有人在笑的　{}", "Smiling  {}", p.smiling.len()))
+                    .on_hover_text(tr!("有人嘴角上揚的相片（太小的臉、隱藏的人不看）。在這台電腦上判斷，不上傳", "Photos where someone is smiling (tiny faces and hidden people are skipped). Checked on this computer; nothing is uploaded"))
+                    .clicked()
+                {
+                    act = MenuAct::Smile;
+                }
+                if p.old > 0 {
+                    ui.label(theme::muted(ui, trf!("還有 {} 張舊的相片要再看一次（在背景）", "{} older photos still need another look (in the background)", p.old)));
+                }
+            })
+            .response
+            .on_hover_text(tr!("挑出拍壞的或拍得好的：有人閉眼的、臉模糊的、有人在笑的；在這台電腦上判斷，不上傳", "Pick out bad or good shots: eyes closed, blurry faces, smiling. Checked on this computer; nothing is uploaded"));
+    }
     act
 }
 

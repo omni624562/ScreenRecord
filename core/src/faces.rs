@@ -669,7 +669,10 @@ impl FaceRec {
 
 /// 找出一張相片裡的臉、算出每張臉的 128 個數字。打不開檔案（NAS 斷線）時 Err（之後再試）；
 /// 讀得到但解不出圖（壞掉的檔案）時當作沒有臉
-pub fn analyze(engine: &Engine, ffmpeg: Option<&Path>, path: &str) -> Result<Vec<FaceRec>, String> {
+///
+/// old：同一個檔案上次找到的臉（位置, 128 個數字）。位置重疊的臉直接用上次的數字，不用再算一次（認人是最慢的一步，
+/// 資料版本升級、只是要補新欄位時省很多時間）
+pub fn analyze(engine: &Engine, ffmpeg: Option<&Path>, path: &str, old: &[([f32; 4], String)]) -> Result<Vec<FaceRec>, String> {
     std::fs::File::open(path).map_err(|e| e.to_string())?;
     let Some((img, _)) = crate::photos::load_full(ffmpeg, path, ANALYZE_MAX) else { return Ok(vec![]) };
     let img = image::DynamicImage::ImageRgba8(img).to_rgb8();
@@ -685,24 +688,16 @@ pub fn analyze(engine: &Engine, ffmpeg: Option<&Path>, path: &str) -> Result<Vec
             continue;
         }
         let eyes = looks.map(|l| l.eyes);
-        let e = engine.embed(&align(&img, &f.kps))?;
+        let rect = [f.rect[0] / w, f.rect[1] / h, f.rect[2] / w, f.rect[3] / h];
+        let emb = match old.iter().find(|(r, e)| iou(r, &rect) >= 0.5 && unpack(e).is_some()) {
+            Some((_, e)) => e.clone(),
+            None => pack(&engine.embed(&align(&img, &f.kps))?),
+        };
         let pct = |x: f32| (x.clamp(0.0, 1.0) * 100.0).round() as u8;
         let eyes = eyes.map(|v| v.map(pct));
         let (smile, yaw) = (looks.map(|l| pct(l.smile)), looks.map(|l| l.yaw.round().clamp(-90.0, 90.0) as i8));
         let sharp = (f.rect[2] >= EYE_MIN).then(|| (sharpness(&img, &f.rect) * 500.0).round().clamp(0.0, 255.0) as u8);
-        out.push(FaceRec {
-            rect: [f.rect[0] / w, f.rect[1] / h, f.rect[2] / w, f.rect[3] / h],
-            score: f.score,
-            emb: pack(&e),
-            person: 0,
-            user: false,
-            not: vec![],
-            eyes,
-            eyes_ok: false,
-            sharp,
-            smile,
-            yaw,
-        });
+        out.push(FaceRec { rect, score: f.score, emb, person: 0, user: false, not: vec![], eyes, eyes_ok: false, sharp, smile, yaw });
     }
     Ok(out)
 }
@@ -713,6 +708,8 @@ pub struct Job {
     pub path: String,
     pub size: u64,
     pub mtime: f64,
+    /// 同一個檔案上次找到的臉（位置, 128 個數字）：重疊的不用再算
+    pub old: Vec<([f32; 4], String)>,
 }
 
 /// 同時分析幾張（每張都要從 NAS 讀檔、解碼、跑模型）
@@ -733,7 +730,7 @@ pub fn analyze_many(jobs: Vec<Job>, ffmpeg: Option<PathBuf>, stop: &AtomicBool) 
                     break;
                 }
                 let Some(job) = queue.lock().unwrap_or_else(|e| e.into_inner()).pop() else { break };
-                let r = analyze(&engine, ffmpeg.as_deref(), &job.path);
+                let r = analyze(&engine, ffmpeg.as_deref(), &job.path, &job.old);
                 out.lock().unwrap_or_else(|e| e.into_inner()).push((job, r));
             });
         }
@@ -980,6 +977,11 @@ impl FaceIndex {
             }
         }
         best.map(|(_, k, r)| (k.clone(), r))
+    }
+
+    /// 同一個檔案上次找到的臉（位置, 128 個數字）：再找一次時重疊的不用重算；檔案換了就沒有
+    pub fn known_faces(&self, path: &str, size: u64, mtime: f64) -> Vec<([f32; 4], String)> {
+        self.photos.get(path).filter(|p| p.size == size && crate::paths::same_mtime(p.mtime, mtime)).map(|p| p.faces.iter().map(|f| (f.rect, f.emb.clone())).collect()).unwrap_or_default()
     }
 
     /// 還沒用新版看過眼睛的相片有幾張
@@ -1525,6 +1527,9 @@ mod tests {
         assert!(!idx.needs("/video/family/none.jpg", 1, 0.0) && !idx.needs("/video/family/cat.jpg", 1, 0.0));
         assert!(idx.needs("/video/family/old.jpg", 1, 0.0));
         assert_eq!(idx.old_photos(), 1);
+        // 再找一次時帶著上次的臉（檔案換了就不帶）
+        assert_eq!(idx.known_faces("/video/family/old.jpg", 1, 0.0).len(), 2);
+        assert!(idx.known_faces("/video/family/old.jpg", 2, 0.0).is_empty());
         // 再找一次（同一個檔案）：對到的臉留著原本的人、加上眼睛；沒對到的拿掉（使用者指定的留著）；新的加進去
         let a = idx.photos["/video/family/old.jpg"].faces[0].person;
         assert_ne!(a, 0);
@@ -1692,6 +1697,16 @@ mod tests {
         assert!(engine.detect(&blank).unwrap().is_empty());
         let e = engine.embed(&image::RgbImage::from_pixel(112, 112, image::Rgb([120, 100, 90]))).unwrap();
         assert!((dot(&e, &e) - 1.0).abs() < 1e-4);
+        // 特徵點、表情模型也跑得起來（不是臉的圖：「是不是臉」的分數在 0～1、表情分數都是有限的數字）
+        let fake = Face { rect: [200.0, 150.0, 240.0, 240.0], score: 0.9, kps: [[260.0, 240.0], [380.0, 240.0], [320.0, 300.0], [270.0, 350.0], [370.0, 350.0]] };
+        let (presence, _) = engine.check(&blank, &fake, true).unwrap();
+        assert!((0.0..=1.0).contains(&presence), "{presence}");
+        let noisy = image::RgbImage::from_fn(800, 600, |x, y| image::Rgb([((x * 7 + y * 13) % 255) as u8, ((x * 3 + y * 5) % 255) as u8, ((x + y) % 255) as u8]));
+        if let (_, Some(l)) = engine.check(&noisy, &fake, true).unwrap() {
+            assert!(l.eyes.iter().chain([&l.smile, &l.yaw]).all(|v| v.is_finite()));
+        }
+        assert!(sharpness(&noisy, &fake.rect).is_finite());
+        println!("ENGINE OK presence {presence:.4}");
         // 有測試相片時（SCREENRECORDER_TEST_FACE_IMAGE，可以用 | 隔開好幾張）：印出找到的臉、是不是臉、眼睛，方便和 OpenCV、MediaPipe 比對
         if let Ok(list) = std::env::var("SCREENRECORDER_TEST_FACE_IMAGE") {
             for file in list.split('|') {
