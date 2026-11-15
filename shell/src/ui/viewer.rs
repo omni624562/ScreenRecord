@@ -799,6 +799,8 @@ enum Act {
     /// 相片分頁的相片：刪除勾選的（先確認）、取消全部勾選
     PhotoDeletePicked,
     PhotoClearPicks,
+    /// 相片分頁的相片：這張臉（第幾張）不是閉眼
+    PhotoNotClosed(usize),
 }
 
 /// 標題列的一個按鈕；視窗窄時依序從後面的開始收進「⋯」
@@ -1050,6 +1052,8 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
     } else {
         None
     };
+    // 相片裡被判斷成閉眼的臉（框出來，可以按「不是閉眼」）
+    let closed = if v.photo { super::photo_people::closed_faces(app, &e.media.path) } else { vec![] };
     let picked = v.photo && super::photo_browse::is_selected(app, &e.media.path);
     let picked_n = if v.photo { super::photo_browse::selected_count(app) } else { 0 };
 
@@ -1104,7 +1108,29 @@ pub fn show(app: &mut UiApp, ctx: &egui::Context) {
         let painter = ui.painter_at(stage);
         painter.rect_filled(stage, CornerRadius::ZERO, Color32::from_gray(24));
         if image {
-            image_stage(&mut v, ui, &painter, stage, &resp);
+            let shown = image_stage(&mut v, ui, &painter, stage, &resp);
+            // 閉眼的臉：框起來，下面一顆「不是閉眼」（判斷錯時按，之後不再算）
+            if let Some(img) = shown {
+                for (i, r) in &closed {
+                    let face = Rect::from_min_size(img.min + vec2(r[0] * img.width(), r[1] * img.height()), vec2(r[2] * img.width(), r[3] * img.height()));
+                    let warn = Color32::from_rgb(0xF5, 0xB7, 0x00);
+                    painter.rect_stroke(face, 6.0, Stroke::new(2.0, warn), egui::StrokeKind::Outside);
+                    let g = painter.layout_no_wrap(tr!("閉眼？按這裡改成不是", "Eyes closed? Click if not").to_string(), theme::font_bold(12.0), Color32::WHITE);
+                    let chip = Rect::from_min_size(pos2(face.center().x - g.size().x / 2.0 - 8.0, face.max.y + 6.0), g.size() + vec2(16.0, 8.0));
+                    if !stage.contains_rect(chip) {
+                        continue;
+                    }
+                    let b = ui
+                        .interact(chip, Id::new(("viewer-not-closed", *i)), Sense::click())
+                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                        .on_hover_text(tr!("判斷錯了（其實沒有閉眼）：按一下，這張臉之後不再算閉眼", "Wrong (the eyes aren't closed)? Click and this face won't count as eyes closed again"));
+                    painter.rect_filled(chip, 6.0, if b.hovered() { warn.gamma_multiply(0.9) } else { Color32::from_black_alpha(180) });
+                    painter.galley(chip.min + vec2(8.0, 4.0), g, Color32::WHITE);
+                    if b.clicked() {
+                        act = Act::PhotoNotClosed(*i);
+                    }
+                }
+            }
             // 相片：左上角的勾選框（按了勾選 / 取消，和標題列的「勾選」一樣），旁邊寫已勾選幾張
             if v.photo {
                 let r = Rect::from_min_size(stage.min + vec2(16.0, 16.0), vec2(30.0, 30.0));
@@ -1597,6 +1623,11 @@ fn run_act(app: &mut UiApp, act: Act) {
             super::photo_browse::confirm_delete(app, list);
         }
         Act::PhotoClearPicks => super::photo_browse::clear_selected(app),
+        Act::PhotoNotClosed(i) => {
+            let Some(path) = app.viewer.as_ref().map(|v| v.cur().media.path.clone()) else { return };
+            super::photo_people::not_closed(app, &path, i);
+            app.toast(tr!("好，這張臉不再算閉眼", "OK, this face no longer counts as eyes closed"), false);
+        }
         Act::PhotoStar => {
             let Some(path) = app.viewer.as_ref().map(|v| v.cur().media.path.clone()) else { return };
             let on = !super::photo_browse::starred(app, &path);
@@ -1930,8 +1961,9 @@ fn fit_zoom(img: Vec2, area: Rect) -> f32 {
     ((area.width() - 24.0) / img.x).min((area.height() - 24.0) / img.y).clamp(ZOOM_MIN, 1.0)
 }
 
-fn image_stage(v: &mut Viewer, ui: &egui::Ui, painter: &egui::Painter, stage: Rect, resp: &egui::Response) {
-    let Some((tex, size)) = v.image.clone() else { return };
+/// 畫圖片（滾輪縮放、拖曳移動）；回傳圖片畫在哪裡
+fn image_stage(v: &mut Viewer, ui: &egui::Ui, painter: &egui::Painter, stage: Rect, resp: &egui::Response) -> Option<Rect> {
+    let (tex, size) = v.image.clone()?;
     let fit = fit_zoom(size, stage);
     let z = v.zoom.unwrap_or(fit);
     // 滾輪：以游標為中心縮放
@@ -1978,6 +2010,7 @@ fn image_stage(v: &mut Viewer, ui: &egui::Ui, painter: &egui::Painter, stage: Re
     if (shown.x > stage.width() || shown.y > stage.height()) && (resp.hovered() || resp.dragged()) {
         theme::hand_cursor(ui.ctx(), resp.dragged());
     }
+    Some(r)
 }
 
 fn image_bar(v: &mut Viewer, ui: &mut egui::Ui, stage: Rect) {

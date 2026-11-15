@@ -79,8 +79,11 @@ const EYE_MIN: f32 = 80.0;
 /// 特徵點模型的輸入：臉的四周各多留 25%（臉寬的 1.5 倍）、256×256
 const LM: usize = 256;
 const LM_SCALE: f32 = 1.5;
-/// 資料的版本：2 = 擋過不是臉的、看過眼睛
-pub const VERSION: u8 = 2;
+/// 資料的版本：2 = 擋過不是臉的、看過眼睛；3 = 量過臉清不清楚
+pub const VERSION: u8 = 3;
+/// 臉的清晰度（sharpness × 500）不到這個數算模糊：測試的相片裡清楚的臉最低 0.065，
+/// 失焦（模糊半徑是臉寬的 2% 以上）、晃動（臉寬的 8%）的幾乎都在 0.04 以下
+pub const BLURRY: u8 = 20;
 /// 一張臉和某個人夠像（相似度）就算他；兩組沒取名的人夠像就合在一起。SFace 建議的「同一人」門檻是 0.363，
 /// 分組時用嚴一點（不同的人被分在一起比同一個人分成兩組麻煩：家人長得像）
 pub const ASSIGN: f32 = 0.42;
@@ -355,6 +358,50 @@ impl Engine {
     }
 }
 
+/// 臉清不清楚（越大越清楚）：臉的那一塊縮成 56×56 灰階，四個方向（橫、直、兩個斜向）的二次差分各算變異數，
+/// 取最小的（晃動只糊一個方向）除以亮度的變異數（和明暗、對比無關）
+pub fn sharpness(img: &image::RgbImage, rect: &[f32; 4]) -> f32 {
+    const N: usize = 56;
+    let (iw, ih) = (img.width() as f32, img.height() as f32);
+    let (x0, y0) = (rect[0].clamp(0.0, iw - 1.0), rect[1].clamp(0.0, ih - 1.0));
+    let (x1, y1) = ((rect[0] + rect[2]).clamp(x0 + 1.0, iw), (rect[1] + rect[3]).clamp(y0 + 1.0, ih));
+    // 每一格取涵蓋的像素的平均
+    let mut g = [[0f32; N]; N];
+    for (r, row) in g.iter_mut().enumerate() {
+        let (ya, yb) = ((y0 + (y1 - y0) * r as f32 / N as f32) as u32, (y0 + (y1 - y0) * (r + 1) as f32 / N as f32).ceil() as u32);
+        for (c, v) in row.iter_mut().enumerate() {
+            let (xa, xb) = ((x0 + (x1 - x0) * c as f32 / N as f32) as u32, (x0 + (x1 - x0) * (c + 1) as f32 / N as f32).ceil() as u32);
+            let (mut sum, mut n) = (0f32, 0f32);
+            for y in ya..yb.max(ya + 1).min(img.height()) {
+                for x in xa..xb.max(xa + 1).min(img.width()) {
+                    let p = img.get_pixel(x, y);
+                    sum += 0.299 * p[0] as f32 + 0.587 * p[1] as f32 + 0.114 * p[2] as f32;
+                    n += 1.0;
+                }
+            }
+            *v = if n > 0.0 { sum / n } else { 0.0 };
+        }
+    }
+    let var = |v: &[f32]| {
+        let m = v.iter().sum::<f32>() / v.len() as f32;
+        v.iter().map(|x| (x - m) * (x - m)).sum::<f32>() / v.len() as f32
+    };
+    let all: Vec<f32> = g.iter().flatten().copied().collect();
+    let mut least = f32::MAX;
+    for (dy, dx) in [(0i32, 1i32), (1, 0), (1, 1), (1, -1)] {
+        let mut d = Vec::with_capacity((N - 2) * (N - 2));
+        for r in 1..N - 1 {
+            for c in 1..N - 1 {
+                let a = g[(r as i32 - dy) as usize][(c as i32 - dx) as usize];
+                let b = g[(r as i32 + dy) as usize][(c as i32 + dx) as usize];
+                d.push(2.0 * g[r][c] - a - b);
+            }
+        }
+        least = least.min(var(&d));
+    }
+    least / (var(&all) + 1.0)
+}
+
 /// 表情模型要的 146 個點（MediaPipe face_blendshapes_graph.cc 的 kLandmarksSubsetIdxs）
 const SUB: [usize; 146] = [
     0, 1, 4, 5, 6, 7, 8, 10, 13, 14, 17, 21, 33, 37, 39, 40, 46, 52, 53, 54, 55, 58, 61, 63, 65, 66, 67, 70, 78, 80, 81, 82, 84, 87, 88, 91, 93, 95, 103, 105, 107, 109, 127, 132, 133, 136, 144, 145,
@@ -573,11 +620,20 @@ pub struct FaceRec {
     /// 兩眼閉上的程度（本人的左眼、右眼，0～100）；臉太小、還沒看過時沒有
     #[serde(rename = "k", default, skip_serializing_if = "Option::is_none")]
     pub eyes: Option<[u8; 2]>,
+    /// 使用者說這張臉不是閉眼（之後不再算閉眼）
+    #[serde(rename = "o", default, skip_serializing_if = "std::ops::Not::not")]
+    pub eyes_ok: bool,
+    /// 臉清不清楚（sharpness × 500，最多 255）；臉太小、還沒量過時沒有
+    #[serde(rename = "h", default, skip_serializing_if = "Option::is_none")]
+    pub sharp: Option<u8>,
 }
 
 impl FaceRec {
-    /// 兩眼都閉上的程度（比較張開的那隻眼睛，0～1）
+    /// 兩眼都閉上的程度（比較張開的那隻眼睛，0～1）；使用者說不是閉眼的不算
     pub fn blink(&self) -> Option<f32> {
+        if self.eyes_ok {
+            return None;
+        }
         self.eyes.map(|[l, r]| l.min(r) as f32 / 100.0)
     }
 }
@@ -601,7 +657,8 @@ pub fn analyze(engine: &Engine, ffmpeg: Option<&Path>, path: &str) -> Result<Vec
         }
         let e = engine.embed(&align(&img, &f.kps))?;
         let eyes = eyes.map(|v| v.map(|x| (x.clamp(0.0, 1.0) * 100.0).round() as u8));
-        out.push(FaceRec { rect: [f.rect[0] / w, f.rect[1] / h, f.rect[2] / w, f.rect[3] / h], score: f.score, emb: pack(&e), person: 0, user: false, not: vec![], eyes });
+        let sharp = (f.rect[2] >= EYE_MIN).then(|| (sharpness(&img, &f.rect) * 500.0).round().clamp(0.0, 255.0) as u8);
+        out.push(FaceRec { rect: [f.rect[0] / w, f.rect[1] / h, f.rect[2] / w, f.rect[3] / h], score: f.score, emb: pack(&e), person: 0, user: false, not: vec![], eyes, eyes_ok: false, sharp });
     }
     Ok(out)
 }
@@ -753,7 +810,7 @@ impl FaceIndex {
                     match best.filter(|(_, o)| *o >= 0.5) {
                         Some((j, _)) => {
                             let n = new[j].take().unwrap_or_else(|| f.clone());
-                            (f.score, f.eyes) = (n.score, n.eyes);
+                            (f.score, f.eyes, f.sharp) = (n.score, n.eyes, n.sharp);
                             out.push(f);
                         }
                         None if f.user => out.push(f),
@@ -772,6 +829,39 @@ impl FaceIndex {
     pub fn closed_eyes(&self, threshold: f32) -> HashSet<String> {
         let hidden: HashSet<u32> = self.people.iter().filter(|p| p.hidden).map(|p| p.id).collect();
         self.photos.iter().filter(|(_, p)| p.faces.iter().any(|f| !hidden.contains(&f.person) && f.blink().is_some_and(|b| b >= threshold))).map(|(k, _)| k.clone()).collect()
+    }
+
+    /// 這張相片裡閉眼的臉（第幾張, 位置）
+    pub fn closed_faces(&self, path: &str, threshold: f32) -> Vec<(usize, [f32; 4])> {
+        let Some(p) = self.photos.get(path) else { return vec![] };
+        let hidden = |id: u32| self.person(id).is_some_and(|x| x.hidden);
+        p.faces.iter().enumerate().filter(|(_, f)| !hidden(f.person) && f.blink().is_some_and(|b| b >= threshold)).map(|(i, f)| (i, f.rect)).collect()
+    }
+
+    /// 使用者說這張臉不是閉眼
+    pub fn set_eyes_ok(&mut self, path: &str, i: usize) {
+        if let Some(f) = self.photos.get_mut(path).and_then(|p| p.faces.get_mut(i)) {
+            f.eyes_ok = true;
+        }
+    }
+
+    /// 看過眼睛、沒有人閉眼的相片（和閉眼的相片同時間拍的裡面，標出可以留的）
+    pub fn open_eyes(&self, threshold: f32) -> HashSet<String> {
+        let hidden: HashSet<u32> = self.people.iter().filter(|p| p.hidden).map(|p| p.id).collect();
+        self.photos
+            .iter()
+            .filter(|(_, p)| {
+                let mut seen = p.faces.iter().filter(|f| !hidden.contains(&f.person) && (f.eyes.is_some())).peekable();
+                seen.peek().is_some() && seen.all(|f| f.blink().is_none_or(|b| b < threshold))
+            })
+            .map(|(k, _)| k.clone())
+            .collect()
+    }
+
+    /// 臉模糊的相片：量過的臉（隱藏的人不算）裡最清楚的那張也不到 BLURRY（背景的人失焦不算）
+    pub fn blurry(&self) -> HashSet<String> {
+        let hidden: HashSet<u32> = self.people.iter().filter(|p| p.hidden).map(|p| p.id).collect();
+        self.photos.iter().filter(|(_, p)| p.faces.iter().filter(|f| !hidden.contains(&f.person)).filter_map(|f| f.sharp).max().is_some_and(|s| s < BLURRY)).map(|(k, _)| k.clone()).collect()
     }
 
     /// 還沒用新版看過眼睛的相片有幾張
@@ -1062,7 +1152,7 @@ mod tests {
     }
 
     fn face(e: &[f32; 128]) -> FaceRec {
-        FaceRec { rect: [0.1, 0.1, 0.2, 0.2], score: 0.9, emb: pack(e), person: 0, user: false, not: vec![], eyes: None }
+        FaceRec { rect: [0.1, 0.1, 0.2, 0.2], score: 0.9, emb: pack(e), person: 0, user: false, not: vec![], eyes: None, eyes_ok: false, sharp: None }
     }
 
     #[test]
@@ -1205,9 +1295,26 @@ mod tests {
         idx.cluster();
         assert_eq!(idx.closed_eyes(0.7), HashSet::from(["/video/family/blink.jpg".to_string()]));
         assert!(idx.closed_eyes(0.8).is_empty());
+        // 閉眼的臉、沒有人閉眼的相片；使用者說不是閉眼之後不再算
+        assert_eq!(idx.closed_faces("/video/family/blink.jpg", 0.7), [(0, [0.1, 0.1, 0.2, 0.2])]);
+        assert_eq!(idx.open_eyes(0.7), HashSet::from(["/video/family/wink.jpg".to_string()]));
+        idx.set_eyes_ok("/video/family/blink.jpg", 0);
+        assert!(idx.closed_eyes(0.7).is_empty() && idx.open_eyes(0.7).len() == 2);
+        idx.photos.get_mut("/video/family/blink.jpg").unwrap().faces[0].eyes_ok = false;
+        // 臉模糊：最清楚的那張臉也不到門檻（背景的人失焦不算）
+        let sharp = |x: f32, s: u8| FaceRec { sharp: Some(s), ..at(x, None, 0.95) };
+        idx.put("/video/family/blur.jpg".into(), 1, 0.0, vec![sharp(0.1, 5), sharp(0.5, 12)]);
+        idx.put("/video/family/portrait.jpg".into(), 1, 0.0, vec![sharp(0.1, 80), sharp(0.5, 3)]);
+        idx.cluster();
+        assert_eq!(idx.blurry(), HashSet::from(["/video/family/blur.jpg".to_string()]));
         let who = idx.photos["/video/family/blink.jpg"].faces[0].person;
         idx.set_hidden(who, true);
         assert!(idx.closed_eyes(0.7).is_empty());
+        // 清晰度：有細節的圖比糊掉的高很多
+        let img = image::RgbImage::from_fn(200, 200, |x, y| image::Rgb([if (x / 4 + y / 4) % 2 == 0 { 220 } else { 40 }; 3]));
+        let soft = image::imageops::blur(&img, 6.0);
+        let r = [20.0, 20.0, 160.0, 160.0];
+        assert!(sharpness(&img, &r) > 0.2 && sharpness(&soft, &r) < 0.02, "{} {}", sharpness(&img, &r), sharpness(&soft, &r));
     }
 
     #[test]
@@ -1294,7 +1401,7 @@ mod tests {
                 for f in engine.detect(&img).unwrap() {
                     let e = engine.embed(&align(&img, &f.kps)).unwrap();
                     let (presence, eyes) = engine.check(&img, &f, true).unwrap();
-                    println!("FACE {file} {:?} {:.4} {:?} PRESENCE {presence:.4} EYES {eyes:?} EMB {:?}", f.rect, f.score, f.kps, e.to_vec());
+                    println!("FACE {file} {:?} {:.4} {:?} PRESENCE {presence:.4} EYES {eyes:?} SHARP {:.4} EMB {:?}", f.rect, f.score, f.kps, sharpness(&img, &f.rect), e.to_vec());
                 }
             }
         }

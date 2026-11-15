@@ -49,6 +49,12 @@ pub struct People {
     pub closed: HashSet<String>,
     pub blink_level: u8,
     pub old: usize,
+    /// 只看有人閉眼的時，一起列出前後幾秒拍的（挑睜眼的那張留下來）；看過眼睛、沒有人閉眼的相片
+    pub near: bool,
+    pub open: HashSet<String>,
+    /// 只看臉模糊的、那些相片
+    pub blur: bool,
+    pub blurry: HashSet<String>,
     /// 模型不齊時自動下載過了（這次開啟只試一次；之前開啟過人物功能的，新版多了看眼睛的模型）
     auto_dl: bool,
     /// 背景正在找：（這次找了幾張, 這次要找幾張）；暫停、停下來（關掉分頁）
@@ -86,6 +92,10 @@ impl Default for People {
             closed: HashSet::new(),
             blink_level: 1,
             old: 0,
+            near: true,
+            open: HashSet::new(),
+            blur: false,
+            blurry: HashSet::new(),
             auto_dl: false,
             running: None,
             done: 0,
@@ -116,6 +126,8 @@ pub struct Dlg {
     show_hidden: bool,
     show_single: bool,
     search: String,
+    /// 勾選的幾組（一次隱藏）
+    multi: HashSet<u32>,
 }
 
 impl People {
@@ -139,10 +151,14 @@ impl People {
                 (!v.is_empty()).then(|| (path.clone(), v.join(" ")))
             })
             .collect();
-        self.closed = idx.closed_eyes(BLINK[(self.blink_level as usize).min(BLINK.len() - 1)]);
+        self.closed = idx.closed_eyes(self.threshold());
+        self.open = idx.open_eyes(self.threshold());
+        self.blurry = idx.blurry();
         self.old = idx.old_photos();
         if self.eyes {
             self.filter_set = self.closed.clone();
+        } else if self.blur {
+            self.filter_set = self.blurry.clone();
         } else if let Some(id) = self.filter {
             if idx.person(id).is_none() {
                 self.filter = None;
@@ -165,20 +181,43 @@ impl People {
         self.index.as_ref().map(|i| i.lock().unwrap_or_else(|e| e.into_inner()).names_in(path)).unwrap_or_default()
     }
 
+    fn threshold(&self) -> f32 {
+        BLINK[(self.blink_level as usize).min(BLINK.len() - 1)]
+    }
+
     /// 只看有人閉眼的相片
     pub fn set_eyes(&mut self, on: bool) {
-        (self.filter, self.eyes) = (None, on);
+        (self.filter, self.eyes, self.blur) = (None, on, false);
         self.filter_set = if on { self.closed.clone() } else { HashSet::new() };
     }
 
-    /// 有篩選（某個人、有人閉眼的）
+    /// 只看臉模糊的相片
+    pub fn set_blur(&mut self) {
+        (self.filter, self.eyes, self.blur) = (None, false, true);
+        self.filter_set = self.blurry.clone();
+    }
+
+    /// 有篩選（某個人、有人閉眼的、臉模糊的）
     pub fn filtering(&self) -> bool {
-        self.filter.is_some() || self.eyes
+        self.filter.is_some() || self.eyes || self.blur
+    }
+
+    /// 只看有人閉眼的、一起列出同時間拍的
+    pub fn bursts(&self) -> bool {
+        self.eyes && self.near
+    }
+
+    /// 這張相片裡閉眼的臉（第幾張, 位置）
+    pub fn closed_faces(&self, path: &str) -> Vec<(usize, [f32; 4])> {
+        if !self.closed.contains(path) {
+            return vec![];
+        }
+        self.index.as_ref().map(|i| i.lock().unwrap_or_else(|e| e.into_inner()).closed_faces(path, self.threshold())).unwrap_or_default()
     }
 
     /// 選了某個人：只看有他的相片
     pub fn set_filter(&mut self, id: Option<u32>) {
-        (self.filter, self.eyes) = (id, false);
+        (self.filter, self.eyes, self.blur) = (id, false, false);
         self.filter_set = match (id, self.index.as_ref()) {
             (Some(id), Some(idx)) => idx.lock().unwrap_or_else(|e| e.into_inner()).photos_of(id),
             _ => HashSet::new(),
@@ -420,6 +459,8 @@ pub enum MenuAct {
     Filter(Option<u32>),
     Eyes,
     BlinkLevel(u8),
+    Near(bool),
+    Blur,
 }
 
 pub fn menu(ui: &mut egui::Ui, p: &People, enabled: bool, downloading: Option<f32>) -> MenuAct {
@@ -427,6 +468,7 @@ pub fn menu(ui: &mut egui::Ui, p: &People, enabled: bool, downloading: Option<f3
     let text = match p.filter {
         Some(id) => p.label(id),
         None if p.eyes => tr!("有人閉眼", "Eyes closed").to_string(),
+        None if p.blur => tr!("臉模糊", "Blurry faces").to_string(),
         None => tr!("全部的人", "Everyone").to_string(),
     };
     egui::ComboBox::from_id_salt("photo-person")
@@ -500,8 +542,29 @@ pub fn menu(ui: &mut egui::Ui, p: &People, enabled: bool, downloading: Option<f3
                     }
                 }
             });
+            let mut near = p.near;
+            if ui
+                .checkbox(&mut near, tr!("一起列出同時間拍的", "Also list photos taken at the same time"))
+                .on_hover_text(tr!(
+                    "看「有人閉眼的」時，把前後 10 秒內拍的相片排在一起：閉眼的有標示，綠色眼睛是沒有人閉眼的，勾選不要的一起刪",
+                    "With “Eyes closed”, photos taken within 10 seconds are listed together: closed eyes are marked, a green eye means nobody's eyes are closed, and you can select the ones to delete"
+                ))
+                .changed()
+            {
+                act = MenuAct::Near(near);
+            }
+            if ui
+                .selectable_label(p.blur, trf!("臉模糊的　{}", "Blurry faces  {}", p.blurry.len()))
+                .on_hover_text(tr!(
+                    "相片裡最清楚的那張臉也模糊（失焦、手震）；背景的人模糊不算，太小的臉、隱藏的人不看。在這台電腦上判斷，不上傳",
+                    "Even the sharpest face in the photo is blurry (out of focus or camera shake). Blurry people in the background don't count; tiny faces and hidden people are skipped. Checked on this computer; nothing is uploaded"
+                ))
+                .clicked()
+            {
+                act = MenuAct::Blur;
+            }
             if p.old > 0 {
-                ui.label(theme::muted(ui, trf!("還有 {} 張舊的相片要再看一次眼睛（在背景）", "{} older photos still need their eyes checked (in the background)", p.old)));
+                ui.label(theme::muted(ui, trf!("還有 {} 張舊的相片要再看一次（在背景）", "{} older photos still need another look (in the background)", p.old)));
             }
             ui.separator();
             let unnamed = p.summary.iter().filter(|s| s.person.name.is_empty() && !s.person.hidden && s.photos > 1).count();
@@ -524,7 +587,8 @@ pub fn menu_act(app: &mut UiApp, act: MenuAct) {
         MenuAct::Organize => {
             if let Some(d) = app.photos.as_mut() {
                 let sel = d.people.filter;
-                d.people.dlg = Some(Dlg { selected: None, faces: vec![], picked: HashSet::new(), name: String::new(), show_hidden: false, show_single: false, search: String::new() });
+                d.people.dlg =
+                    Some(Dlg { selected: None, faces: vec![], picked: HashSet::new(), name: String::new(), show_hidden: false, show_single: false, search: String::new(), multi: HashSet::new() });
                 select(&mut d.people, sel);
             }
         }
@@ -542,6 +606,20 @@ pub fn menu_act(app: &mut UiApp, act: MenuAct) {
         MenuAct::Eyes => {
             if let Some(d) = app.photos.as_mut() {
                 d.people.set_eyes(true);
+                d.go_top();
+                d.want_offset = Some(0.0);
+                d.dirty = true;
+            }
+        }
+        MenuAct::Near(on) => {
+            if let Some(d) = app.photos.as_mut() {
+                d.people.near = on;
+                d.dirty = true;
+            }
+        }
+        MenuAct::Blur => {
+            if let Some(d) = app.photos.as_mut() {
+                d.people.set_blur();
                 d.go_top();
                 d.want_offset = Some(0.0);
                 d.dirty = true;
@@ -619,6 +697,7 @@ enum Act {
     Select(u32),
     Rename(u32, String),
     Hide(u32, bool),
+    HideMany(Vec<u32>),
     Merge(u32, u32),
     NotThis(Vec<(String, usize)>, u32),
     MoveTo(Vec<(String, usize)>, Option<u32>),
@@ -721,6 +800,21 @@ pub fn dialog(app: &mut UiApp, ctx: &egui::Context) {
                 ui.checkbox(&mut dlg.show_single, tr!("只出現一次的", "Seen once"))
                     .on_hover_text(tr!("只在一張相片出現的臉（多半是路人）平常不列出來", "Faces seen in only one photo (often passers-by) are usually not listed"));
                 ui.checkbox(&mut dlg.show_hidden, tr!("隱藏的", "Hidden"));
+                if !dlg.multi.is_empty() {
+                    let n = dlg.multi.len();
+                    if Btn::new(&trf!("隱藏勾選的 {n} 組", "Hide {n} selected"))
+                        .small()
+                        .danger()
+                        .tooltip(tr!("不是真人（卡通、雕像、海報、寵物）、路人：一次藏起來", "Not real people (cartoons, statues, posters, pets) or passers-by: hide them all at once"))
+                        .show(ui)
+                        .clicked()
+                    {
+                        act = Act::HideMany(dlg.multi.iter().copied().collect());
+                    }
+                    if Btn::new(tr!("取消勾選", "Clear")).small().ghost().show(ui).clicked() {
+                        dlg.multi.clear();
+                    }
+                }
             });
             ui.add_space(6.0);
             let list: Vec<&PersonSummary> = listed.iter().take(MAX_TILES).collect();
@@ -772,8 +866,31 @@ pub fn dialog(app: &mut UiApp, ctx: &egui::Context) {
                                     hid = true;
                                 }
                             }
+                            // 左上角勾選（一次隱藏好幾組）：滑鼠移上去、或已經有勾選時看得到；按著 Ctrl 點也是勾選
+                            let ticked = dlg.multi.contains(&s.person.id);
+                            if !s.person.hidden && (ticked || !dlg.multi.is_empty() || ui.rect_contains_pointer(r)) {
+                                let c = Rect::from_min_size(r.min + vec2(4.0, 4.0), vec2(20.0, 20.0));
+                                let cr = ui.interact(c, ui.id().with(("tick-person", s.person.id)), Sense::click()).on_hover_text(tr!("勾選（一次隱藏好幾組）", "Select (to hide several at once)"));
+                                ui.painter().rect_filled(c, 5.0, if ticked { p.accent } else { egui::Color32::from_black_alpha(140) });
+                                ui.painter().rect_stroke(c, 5.0, Stroke::new(1.5, egui::Color32::WHITE), egui::StrokeKind::Inside);
+                                if ticked {
+                                    theme::paint_icon(ui.painter(), c.shrink(4.0), Icon::Check, egui::Color32::WHITE);
+                                }
+                                if cr.clicked() {
+                                    if !dlg.multi.remove(&s.person.id) {
+                                        dlg.multi.insert(s.person.id);
+                                    }
+                                    hid = true;
+                                }
+                            }
                             if resp.clicked() && !hid {
-                                act = Act::Select(s.person.id);
+                                if ui.input(|i| i.modifiers.command) && !s.person.hidden {
+                                    if !dlg.multi.remove(&s.person.id) {
+                                        dlg.multi.insert(s.person.id);
+                                    }
+                                } else {
+                                    act = Act::Select(s.person.id);
+                                }
                             }
                         }
                     });
@@ -941,6 +1058,20 @@ pub fn dialog(app: &mut UiApp, ctx: &egui::Context) {
             with(&mut |i| i.set_hidden(id, on));
             changed(app);
         }
+        Act::HideMany(ids) => {
+            with(&mut |i| {
+                for id in &ids {
+                    i.set_hidden(*id, true);
+                }
+            });
+            if let Some(dlg) = d.people.dlg.as_mut() {
+                dlg.multi.clear();
+                if dlg.selected.is_some_and(|id| ids.contains(&id)) {
+                    dlg.selected = None;
+                }
+            }
+            changed(app);
+        }
         Act::Merge(from, into) => {
             with(&mut |i| i.merge(from, into));
             changed(app);
@@ -1014,7 +1145,27 @@ pub fn names_of(app: &UiApp, path: &str) -> Vec<String> {
     if d.people.closed.contains(path) {
         v.push(tr!("有人閉眼", "Eyes closed").into());
     }
+    if d.people.blurry.contains(path) {
+        v.push(tr!("臉模糊", "Blurry faces").into());
+    }
     v
+}
+
+/// 檢視器：這張相片裡閉眼的臉（第幾張, 位置佔相片的比例）
+pub fn closed_faces(app: &UiApp, path: &str) -> Vec<(usize, [f32; 4])> {
+    app.photos.as_ref().map(|d| d.people.closed_faces(path)).unwrap_or_default()
+}
+
+/// 檢視器按了「不是閉眼」：這張臉之後不再算閉眼
+pub fn not_closed(app: &mut UiApp, path: &str, i: usize) {
+    let Some(index) = app.photos.as_ref().and_then(|d| d.people.index.clone()) else { return };
+    index.lock().unwrap_or_else(|e| e.into_inner()).set_eyes_ok(path, i);
+    changed(app);
+}
+
+/// 縮圖右下角：看過眼睛、沒有人閉眼（和閉眼的排在一起時標出來）
+pub fn open_eyes(p: &People, path: &str) -> bool {
+    p.bursts() && p.open.contains(path)
 }
 
 /// 縮圖右下角：有人閉眼
@@ -1038,6 +1189,7 @@ pub fn filter_chip(ui: &mut egui::Ui, p: &People) -> bool {
     let label = match p.filter {
         Some(id) => p.label(id),
         None if p.eyes => tr!("有人閉眼", "Eyes closed").to_string(),
+        None if p.blur => tr!("臉模糊", "Blurry faces").to_string(),
         None => return false,
     };
     Btn::new(&trf!("只看「{}」 ×", "Only “{}” ×", label)).small().ghost().selected(true).tooltip(tr!("按一下看全部的人", "Click to show everyone")).show(ui).clicked()
