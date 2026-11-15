@@ -503,20 +503,27 @@ async fn thumb_in(dir: PathBuf, ffmpeg: Option<PathBuf>, path: String, size: u64
         }
         let _ = std::fs::remove_file(&tmp);
     }
-    // HEIC 等（或程式裡解不了的 JPG）：FFmpeg 取一張畫面縮小（HEIC 的方向 FFmpeg 會自己轉正）
+    // HEIC 等（或程式裡解不了的 JPG）：用和檢視器、找臉一樣的讀法（FFmpeg 把第一張畫面用 BMP 從管線送回來，HEIC 的方向 FFmpeg 會自己轉正），
+    // 在程式裡存成 JPEG。以前讓 FFmpeg 直接存 JPEG，有的 HEIC 讀得到卻存不了（縮圖一直是空的）
     let ffmpeg = ffmpeg?;
     let _permit = FFMPEG_SEM.acquire().await.ok()?;
     if !wanted() {
         return None;
     }
-    let scale = format!("scale={THUMB_MAX}:{THUMB_MAX}:force_original_aspect_ratio=decrease:flags=bilinear");
-    let t = tmp.display().to_string();
-    let args: Vec<String> = ["-hide_banner", "-loglevel", "error", "-threads", "2", "-i", &path, "-frames:v", "1", "-vf", &scale, "-q:v", "5", "-y", &t].iter().map(|s| s.to_string()).collect();
-    let r = crate::process::run(&ffmpeg, &args, std::time::Duration::from_secs(30)).await;
-    if r.code == 0 && std::fs::metadata(&tmp).is_ok_and(|m| m.len() > 0) && std::fs::rename(&tmp, &out).is_ok() {
+    let (src, t) = (path.clone(), tmp.clone());
+    let ok = tokio::task::spawn_blocking(move || -> Option<()> {
+        // 先請 FFmpeg 縮小再送回來（幾千萬像素的相片整張送回來很慢）；不行時整張讀回來自己縮
+        let img = decode_ffmpeg(&ffmpeg, &src, THUMB_MAX, true).or_else(|| decode_ffmpeg(&ffmpeg, &src, THUMB_MAX, false))?;
+        std::fs::write(&t, encode_jpeg(&img.to_rgb8(), 82)?).ok()
+    })
+    .await
+    .ok()
+    .flatten()
+    .is_some();
+    if ok && std::fs::rename(&tmp, &out).is_ok() {
         return Some(out);
     }
-    crate::info!("[相片] 縮圖產生失敗：{path}：{}", r.stderr.trim());
+    crate::info!("[相片] 縮圖產生失敗：{path}");
     let _ = std::fs::remove_file(&tmp);
     None
 }
@@ -560,15 +567,16 @@ fn decode_oriented(bytes: &[u8], max: u32) -> Option<image::DynamicImage> {
     Some(img)
 }
 
-/// 用 FFmpeg 解出第一張畫面（BMP 從管線讀回來）
-fn decode_ffmpeg(ffmpeg: &Path, path: &str, max: u32) -> Option<image::DynamicImage> {
-    let out = crate::process::std_command(ffmpeg)
-        .args(["-hide_banner", "-loglevel", "error", "-i", path, "-frames:v", "1", "-f", "image2pipe", "-c:v", "bmp", "-"])
-        .stdin(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .output()
-        .ok()?;
+/// 用 FFmpeg 解出第一張畫面（BMP 從管線讀回來），最長的一邊不超過 max；scale：請 FFmpeg 先縮小（縮圖用，不用整張送回來）
+fn decode_ffmpeg(ffmpeg: &Path, path: &str, max: u32, scale: bool) -> Option<image::DynamicImage> {
+    let mut cmd = crate::process::std_command(ffmpeg);
+    cmd.args(["-hide_banner", "-loglevel", "error", "-i", path, "-frames:v", "1"]);
+    if scale {
+        cmd.args(["-vf", &format!("scale={max}:{max}:force_original_aspect_ratio=decrease:flags=bilinear")]);
+    }
+    let out = cmd.args(["-f", "image2pipe", "-c:v", "bmp", "-"]).stdin(std::process::Stdio::null()).stderr(std::process::Stdio::piped()).output().ok()?;
     if !out.status.success() || out.stdout.is_empty() {
+        crate::info!("[相片] FFmpeg 讀不了 {path}：{}", String::from_utf8_lossy(&out.stderr).trim());
         return None;
     }
     let img = image::load_from_memory_with_format(&out.stdout, image::ImageFormat::Bmp).ok()?;
@@ -594,7 +602,7 @@ pub fn load_full(ffmpeg: Option<&Path>, path: &str, max: u32) -> Option<(image::
             }
         }
     }
-    let img = decode_ffmpeg(ffmpeg?, path, u32::MAX)?;
+    let img = decode_ffmpeg(ffmpeg?, path, u32::MAX, false)?;
     let size = (img.width(), img.height());
     let img = if img.width() > max || img.height() > max { img.thumbnail(max, max) } else { img };
     Some((img.to_rgba8(), size))
