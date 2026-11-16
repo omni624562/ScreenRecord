@@ -19,16 +19,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-/// 一批找幾張相片
-const BATCH: usize = 12;
 /// 刪除全部人臉資料時加一：在那之前開始的背景工作不再存檔（不然刪掉的檔案又被寫回來）
 static GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-/// 多久存一次臉的資料
-const SAVE_EVERY: Duration = Duration::from_secs(30);
 /// 臉的小圖多大（像素）
 const FACE_PX: u32 = 96;
-/// 找了幾張相片在記錄檔寫一次速度
-const SPEED_EVERY: usize = 240;
 /// 「有人閉眼的」判斷的寬嚴（設定的 photoBlink：寬鬆、一般、嚴格）→ 兩眼閉上的程度要到多少
 const BLINK: [f32; 3] = [0.6, 0.7, 0.8];
 /// 整理人物的視窗最多列幾個人、一個人最多列幾張臉（每張臉第一次都要讀相片做小圖）
@@ -75,17 +69,14 @@ pub struct People {
     regrouping: bool,
     /// 同一張相片裡的臉（一定是不同的人）兩兩比較：幾組、相似度到三個門檻的各幾組（看模型分不分得開）
     diag: (usize, [usize; 3]),
-    /// 上次寫記錄檔之後找了幾張、花了多久（記錄速度）
-    speed: (usize, Duration),
-    /// 模型不齊時自動下載過了（這次開啟只試一次；之前開啟過人物功能的，新版多了看眼睛的模型）
-    auto_dl: bool,
+    /// 接上背景找臉了（暫停的狀態照背景的）、上次看到的是第幾批
+    synced: bool,
+    rev: u64,
     /// 背景正在找：（這次找了幾張, 這次要找幾張）；暫停、停下來（關掉分頁）
     pub running: Option<(usize, usize)>,
     pub done: usize,
     pub paused: bool,
     pub stop: Arc<AtomicBool>,
-    /// 這次開啟找不到的（打不開的檔案）：不再一直試
-    failed: HashSet<String>,
     /// 全部都找過了（相片換了時重設）、上次檢查的時間
     all_done: bool,
     checked_at: Option<Instant>,
@@ -129,13 +120,12 @@ impl Default for People {
             level: 1,
             regrouping: false,
             diag: (0, [0; 3]),
-            speed: (0, Duration::ZERO),
-            auto_dl: false,
+            synced: false,
+            rev: 0,
             running: None,
             done: 0,
             paused: false,
             stop: Arc::new(AtomicBool::new(false)),
-            failed: HashSet::new(),
             all_done: false,
             checked_at: None,
             saved_at: Instant::now(),
@@ -401,34 +391,52 @@ fn person_name(name: &str) -> String {
 
 // ───────────── 讀取、背景找臉 ─────────────
 
-/// 開啟相片分頁時：有開啟人物功能（或有存過的資料）就讀臉的資料
+/// 開啟相片分頁時：有開啟人物功能（或有存過的資料）就讀臉的資料。整個程式只有一份（app.face_index），背景找臉也改同一份
 pub fn open(app: &mut UiApp) {
-    let file = faces::index_file();
-    if !app.s.photo_faces && !file.exists() {
+    if let (Some(ix), Some(d)) = (app.face_index.clone(), app.photos.as_mut()) {
+        d.people.index = Some(ix);
+        d.people.blink_level = app.s.photo_blink;
+        d.people.refresh();
+        d.dirty = true;
         return;
     }
-    let level = app.s.photo_blink;
+    if !app.s.photo_faces && !faces::index_file().exists() {
+        return;
+    }
+    load_index(app);
+}
+
+/// 在背景讀臉的資料（讀好放進 app.face_index；相片分頁開著就接上去）
+fn load_index(app: &mut UiApp) {
+    if app.face_loading {
+        return;
+    }
+    app.face_loading = true;
+    let file = faces::index_file();
     app.spawn(
         async move {
             tokio::task::spawn_blocking(move || {
-                // 舊版的資料：門檻提高了，分數不夠的臉拿掉
+                // 舊版的資料：門檻提高了，分數不夠的臉拿掉；舊方法分的組重新分
                 let mut idx = faces::load_index(&file);
                 let changed = idx.upgrade();
                 if changed {
                     idx.cluster();
+                    faces::save_index(&file, &idx);
                 }
-                (idx, changed)
+                idx
             })
             .await
             .unwrap_or_default()
         },
-        move |app, (idx, upgraded)| {
-            let Some(d) = app.photos.as_mut() else { return };
-            d.people.index = Some(Arc::new(Mutex::new(idx)));
-            d.people.blink_level = level;
-            if upgraded {
-                changed(app);
-            } else {
+        move |app, idx| {
+            app.face_loading = false;
+            if app.face_index.is_none() {
+                app.face_index = Some(Arc::new(Mutex::new(idx)));
+            }
+            let level = app.s.photo_blink;
+            if let (Some(ix), Some(d)) = (app.face_index.clone(), app.photos.as_mut()) {
+                d.people.index = Some(ix);
+                d.people.blink_level = level;
                 d.people.refresh();
                 d.dirty = true;
             }
@@ -436,130 +444,142 @@ pub fn open(app: &mut UiApp) {
     );
 }
 
-/// 每一格畫面（apply）：開啟了人物功能、模型在、沒在找、沒暫停時，找下一批
+/// 每一格畫面（相片分頁開著時）：把背景找臉的進度接到畫面上、該找就開始找
 pub fn tick(app: &mut UiApp) {
     let enabled = app.s.photo_faces;
     let dl = downloading(app);
     let dl_error = app.core.component_status(Kind::Faces).error;
     let level = app.s.photo_blink;
+    let (index, work) = (app.face_index.clone(), app.face_work.clone());
+    let mut recheck = false;
     if let Some(d) = app.photos.as_mut() {
-        (d.people.enabled, d.people.dl, d.people.dl_error) = (enabled, dl, dl_error);
-        if d.people.blink_level != level {
-            d.people.blink_level = level;
-            d.people.refresh();
-            d.dirty |= d.people.eyes;
+        let p = &mut d.people;
+        (p.enabled, p.dl, p.dl_error) = (enabled, dl, dl_error.clone());
+        if p.index.is_none() {
+            if let Some(ix) = index {
+                p.index = Some(ix);
+                p.refresh();
+                d.dirty = true;
+            }
+        }
+        if p.blink_level != level {
+            p.blink_level = level;
+            p.refresh();
+            d.dirty |= p.eyes;
+        }
+        // 相片換了、按了「再試一次」：再看看有沒有要找的
+        if !p.all_done {
+            p.all_done = true;
+            recheck = true;
+        }
+        if let Some(w) = &work {
+            // 第一次接上：暫停的狀態照背景的；之後照畫面上按的
+            if !p.synced {
+                p.synced = true;
+                p.paused = w.paused.load(Ordering::Relaxed);
+            }
+            if let Some(e) = w.error.lock().unwrap_or_else(|x| x.into_inner()).take() {
+                p.error = Some(e);
+                p.paused = true;
+            }
+            w.paused.store(p.paused, Ordering::Relaxed);
+            let (done, total) = (w.done.load(Ordering::Relaxed), w.total.load(Ordering::Relaxed));
+            p.done = done;
+            p.running = w.running.load(Ordering::Relaxed).then_some((done, total));
+            let rev = w.rev.load(Ordering::Relaxed);
+            if rev != p.rev {
+                p.rev = rev;
+                p.refresh();
+                // 篩選、用名稱搜尋時跟著更新
+                if p.filtering() || !d.searched.is_empty() {
+                    d.dirty = true;
+                }
+            }
         }
     }
-    if !enabled {
+    if recheck {
+        app.face_idle = false;
+    }
+    start_work(app);
+}
+
+/// 每一格畫面（不管檔案庫有沒有開）：錄影時讓路；相片分頁沒開時也在背景接著找（重開程式後自動繼續）
+pub fn background(app: &mut UiApp) {
+    use screenrecorder_core::types::RecorderState;
+    faces::HOLD.store(app.status.recorder.state != RecorderState::Idle, Ordering::Relaxed);
+    if app.photos.is_none() {
+        start_work(app);
+    }
+}
+
+/// 該找就開始找：開啟了人物功能、模型在、沒在找、沒暫停、還有沒找過的相片
+fn start_work(app: &mut UiApp) {
+    if !app.s.photo_faces || app.face_idle {
         return;
     }
-    let ffmpeg = app.core.ffmpeg_path();
-    let downloading = dl.is_some();
-    let Some(d) = app.photos.as_mut() else { return };
-    let p = &mut d.people;
-    if p.index.is_none() || p.running.is_some() || p.paused || p.all_done || downloading || !d.loaded {
+    if app.face_work.as_ref().is_some_and(|w| w.running.load(Ordering::Relaxed) || w.paused.load(Ordering::Relaxed)) {
         return;
     }
-    if p.checked_at.is_some_and(|t| t.elapsed() < Duration::from_secs(2)) {
+    // 剛開程式先等一下（讓畫面、錄影先準備好）；之後每幾秒看一次
+    let wait = if app.photos.is_some() { 2 } else { 15 };
+    if app.face_checked.elapsed() < Duration::from_secs(wait) {
         return;
     }
-    p.checked_at = Some(Instant::now());
-    p.missing = !faces::models_ready();
-    if p.missing {
-        // 已經開啟人物功能、模型不齊（新版多了看眼睛的模型）：自動下載缺的那幾個（這次開啟只試一次，失敗時在選單上再試）
-        if !p.auto_dl && p.dl_error.is_none() {
-            p.auto_dl = true;
+    app.face_checked = Instant::now();
+    if downloading(app).is_some() {
+        return;
+    }
+    if !faces::models_ready() {
+        // 已經開啟人物功能、模型不齊（新版多了模型）：自動下載缺的（這次開啟只試一次，失敗時在選單上再試）
+        let failed = app.core.component_status(Kind::Faces).error.is_some();
+        if let Some(d) = app.photos.as_mut() {
+            d.people.missing = true;
+        }
+        if !app.face_auto_dl && !failed {
+            app.face_auto_dl = true;
             app.core.component_download(Kind::Faces);
         }
         return;
     }
-    let Some(index) = p.index.clone() else { return };
-    // 新的相片先找（最近拍的最常看）
-    let (jobs, left) = {
-        let idx = index.lock().unwrap_or_else(|e| e.into_inner());
-        let mut todo: Vec<&screenrecorder_core::photos::Photo> = d.photos.iter().filter(|ph| !p.failed.contains(&ph.path) && idx.needs(&ph.path, ph.size, ph.mtime)).collect();
-        todo.sort_by_key(|ph| std::cmp::Reverse(ph.when));
-        let left = todo.len();
-        (todo.into_iter().take(BATCH).map(|ph| faces::Job { path: ph.path.clone(), size: ph.size, mtime: ph.mtime, old: idx.known_faces(&ph.path, ph.size, ph.mtime) }).collect::<Vec<_>>(), left)
-    };
-    if jobs.is_empty() {
-        // 全部找完：存一次
-        p.all_done = true;
-        p.running = None;
-        p.done = 0;
-        let mut at = p.saved_at;
-        save(index, &mut at, app);
-        if let Some(d) = app.photos.as_mut() {
-            d.people.saved_at = at;
+    if let Some(d) = app.photos.as_mut() {
+        d.people.missing = false;
+        // 相片清單還沒讀好：等一下
+        if !d.loaded {
+            return;
         }
+    }
+    let Some(index) = app.face_index.clone() else {
+        load_index(app);
         return;
-    }
-    p.running = Some((p.done, p.done + left));
-    let stop = p.stop.clone();
+    };
+    // 要找的相片：最近拍的先找。相片分頁開著用它的清單，沒開就讀上次存的清單
+    let list: Option<Vec<(String, u64, f64, i64)>> = app.photos.as_ref().map(|d| d.photos.iter().map(|ph| (ph.path.clone(), ph.size, ph.mtime, ph.when)).collect());
+    let work = Arc::new(faces::Work::default());
+    work.running.store(true, Ordering::Relaxed);
+    app.face_work = Some(work.clone());
+    let (ffmpeg, ctx) = (app.core.ffmpeg_path(), app.ctx.clone());
     let generation = GENERATION.load(Ordering::Relaxed);
-    let save_now = p.saved_at.elapsed() > SAVE_EVERY;
-    if save_now {
-        p.saved_at = Instant::now();
-    }
-    let idx2 = index.clone();
     app.spawn(
         async move {
-            tokio::task::spawn_blocking(move || -> Result<(usize, Vec<String>, Duration), String> {
-                let began = Instant::now();
-                let results = faces::analyze_many(jobs, ffmpeg, &stop)?;
-                let took = began.elapsed();
-                let mut failed = vec![];
-                let n = results.len();
-                let mut idx = idx2.lock().unwrap_or_else(|e| e.into_inner());
-                for (job, r) in results {
-                    match r {
-                        Ok(f) => idx.put(job.path, job.size, job.mtime, f),
-                        Err(e) => {
-                            screenrecorder_core::info!("[人臉] 讀不到 {}：{e}", job.path);
-                            failed.push(job.path);
-                        }
-                    }
-                }
-                idx.cluster();
-                // 每 30 秒、關掉分頁時存一次
-                if (save_now || stop.load(Ordering::Relaxed)) && GENERATION.load(Ordering::Relaxed) == generation {
-                    faces::save_index(&faces::index_file(), &idx);
-                }
-                Ok((n, failed, took))
+            tokio::task::spawn_blocking(move || {
+                let mut list = list.unwrap_or_else(|| {
+                    let idx = screenrecorder_core::photos::load_index(&screenrecorder_core::photos::index_file());
+                    idx.photos.iter().map(|ph| (ph.path.clone(), ph.size, ph.mtime, ph.when)).collect()
+                });
+                list.sort_by_key(|x| std::cmp::Reverse(x.3));
+                let photos = list.into_iter().map(|(p, s, m, _)| (p, s, m)).collect();
+                let n = faces::run_work(&index, &work, photos, ffmpeg, || GENERATION.load(Ordering::Relaxed) == generation, || ctx.request_repaint());
+                work.running.store(false, Ordering::Relaxed);
+                work.rev.fetch_add(1, Ordering::Relaxed);
+                (n, work.stop.load(Ordering::Relaxed) || work.error.lock().unwrap_or_else(|x| x.into_inner()).is_some())
             })
             .await
-            .unwrap_or_else(|e| Err(e.to_string()))
+            .unwrap_or((0, true))
         },
-        |app, r| {
-            let Some(d) = app.photos.as_mut() else { return };
-            let p = &mut d.people;
-            p.running = None;
-            match r {
-                Ok((n, failed, took)) => {
-                    // 每找 SPEED_EVERY 張左右，在記錄檔寫一次速度（回報問題、調整同時找幾張時用）
-                    p.speed = (p.speed.0 + n, p.speed.1 + took);
-                    if p.speed.0 >= SPEED_EVERY {
-                        let (count, secs) = (p.speed.0, p.speed.1.as_secs_f64().max(0.001));
-                        screenrecorder_core::info!("[人臉] 找了 {count} 張相片，花 {secs:.0} 秒（每分鐘約 {:.0} 張）", count as f64 / secs * 60.0);
-                        p.speed = (0, Duration::ZERO);
-                    }
-                    p.done += n;
-                    p.failed.extend(failed);
-                    p.checked_at = None;
-                    p.refresh();
-                    if p.filtering() {
-                        d.dirty = true;
-                    }
-                    // 有在用名稱搜尋時重新找
-                    if !d.searched.is_empty() {
-                        d.dirty = true;
-                    }
-                }
-                Err(e) => {
-                    screenrecorder_core::warn!("[人臉] 找臉失敗：{e}");
-                    p.error = Some(e);
-                    p.paused = true;
-                }
+        |app, (n, stopped)| {
+            // 沒有要找的了：不用一直看（相片換了再看）
+            if n == 0 && !stopped {
+                app.face_idle = true;
             }
         },
     );
@@ -613,7 +633,9 @@ fn enable(app: &mut UiApp) {
     }
     if app.photos.as_ref().is_some_and(|d| d.people.index.is_none()) {
         if let Some(d) = app.photos.as_mut() {
-            d.people.index = Some(Arc::new(Mutex::new(FaceIndex { grouping: faces::GROUPING, ..Default::default() })));
+            let ix = Arc::new(Mutex::new(FaceIndex { grouping: faces::GROUPING, ..Default::default() }));
+            app.face_index = Some(ix.clone());
+            d.people.index = Some(ix);
             d.people.paused = false;
         }
         open(app);
@@ -898,12 +920,17 @@ pub fn footer(ui: &mut egui::Ui, p: &mut People) {
         }
         return;
     }
-    if Btn::new(tr!("暫停", "Pause")).small().ghost().tooltip(tr!("暫停找人臉（NAS 很忙、要錄影時）", "Pause finding faces (when the NAS is busy or you're recording)")).show(ui).clicked()
-    {
+    if Btn::new(tr!("暫停", "Pause")).small().ghost().tooltip(tr!("暫停找人臉（NAS 很忙時）", "Pause finding faces (when the NAS is busy)")).show(ui).clicked() {
         p.paused = true;
     }
-    ui.label(theme::muted(ui, trf!("正在找相片裡的人 {done}/{total}", "Finding people {done}/{total}")))
-        .on_hover_text(tr!("在這台電腦上找臉、分組，不上傳；找好的會馬上出現在「人物」", "Faces are found and grouped on this computer and nothing is uploaded. Results show up in People right away"));
+    if faces::HOLD.load(Ordering::Relaxed) {
+        ui.label(theme::muted(ui, trf!("錄影中，找人臉先停一下 {done}/{total}", "Recording — finding people is on hold {done}/{total}")));
+        return;
+    }
+    ui.label(theme::muted(ui, trf!("正在找相片裡的人 {done}/{total}", "Finding people {done}/{total}"))).on_hover_text(tr!(
+        "在這台電腦上找臉、分組，不上傳；找好的會馬上出現在「人物」。關掉檔案庫也會在背景繼續找，重開程式後接著找",
+        "Faces are found and grouped on this computer and nothing is uploaded. Results show up in People right away. It keeps going in the background after you close the library, and picks up again after a restart"
+    ));
     ui.spinner();
 }
 
@@ -1468,8 +1495,11 @@ pub fn dialog(app: &mut UiApp, ctx: &egui::Context) {
                 tr!("刪除", "Delete"),
                 |app, _| {
                     GENERATION.fetch_add(1, Ordering::Relaxed);
+                    if let Some(w) = app.face_work.take() {
+                        w.stop.store(true, Ordering::Relaxed);
+                    }
+                    (app.face_index, app.face_idle) = (None, false);
                     if let Some(d) = app.photos.as_mut() {
-                        d.people.stop.store(true, Ordering::Relaxed);
                         d.people = People::default();
                         d.dirty = true;
                     }

@@ -583,6 +583,17 @@ fn decode_ffmpeg(ffmpeg: &Path, path: &str, max: u32, scale: bool) -> Option<ima
     Some(if img.width() > max || img.height() > max { img.thumbnail(max, max) } else { img })
 }
 
+/// 找臉用的小圖（轉正、最長的一邊不超過 max）：HEIC 等請 FFmpeg 先縮小再送回來（整張 1200 萬像素用 BMP 送回來很慢）
+pub fn load_small(ffmpeg: Option<&Path>, path: &str, max: u32) -> Option<image::RgbaImage> {
+    if !needs_ffmpeg(path) {
+        if let Some(img) = std::fs::read(path).ok().and_then(|b| decode_oriented(&b, max)) {
+            return Some(img.to_rgba8());
+        }
+    }
+    let ff = ffmpeg?;
+    decode_ffmpeg(ff, path, max, true).or_else(|| decode_ffmpeg(ff, path, max, false)).map(|i| i.to_rgba8())
+}
+
 /// 檢視器要的整張相片：轉正、最長的一邊不超過 max（顯示卡的上限）；回傳圖與原本的大小（轉正後的寬高）
 pub fn load_full(ffmpeg: Option<&Path>, path: &str, max: u32) -> Option<(image::RgbaImage, (u32, u32))> {
     let orig = |img: &image::DynamicImage, bytes: Option<&[u8]>| -> (u32, u32) {

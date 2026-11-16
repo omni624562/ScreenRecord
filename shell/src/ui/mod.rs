@@ -213,6 +213,14 @@ pub struct UiApp {
     pub photos: Option<photo_browse::PhotoBrowse>,
     /// 相片資料夾正在背景整個掃描（關掉檔案庫也繼續，掃完存起來）
     pub photo_scan: Option<photo_browse::Scanning>,
+    /// 相片的人物：臉的資料（整個程式一份，相片分頁和背景找臉共用）、背景找臉的狀態、正在讀資料、
+    /// 沒有要找的了（相片換了再看）、上次看要不要找的時間、模型不齊時自動下載過了
+    pub face_index: Option<std::sync::Arc<std::sync::Mutex<screenrecorder_core::faces::FaceIndex>>>,
+    pub face_work: Option<std::sync::Arc<screenrecorder_core::faces::Work>>,
+    pub face_loading: bool,
+    pub face_idle: bool,
+    pub face_checked: Instant,
+    pub face_auto_dl: bool,
     /// 影片裡的人（檢視器播放列的「人物」）：找過的影片、正在找的那一支
     pub video_people: video_people::State,
     /// 在瀏覽視窗改 Jellyfin 上的影片資訊
@@ -415,6 +423,12 @@ impl UiApp {
             jf_browse: None,
             photos: None,
             photo_scan: None,
+            face_index: None,
+            face_work: None,
+            face_loading: false,
+            face_idle: false,
+            face_checked: Instant::now(),
+            face_auto_dl: false,
             video_people: Default::default(),
             jf_edit: None,
             jf_rename: None,
@@ -1720,6 +1734,7 @@ impl eframe::App for UiApp {
             job(self);
         }
         self.handle_open_requests(ctx);
+        photo_people::background(self);
         if std::mem::take(&mut self.start_max) {
             ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(true));
         }
