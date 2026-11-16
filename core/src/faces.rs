@@ -601,7 +601,7 @@ pub fn unpack(s: &str) -> Option<[f32; 128]> {
     }
     let mut e = [0f32; 128];
     let mut n = 0usize;
-    for chunk in b.chunks_exact(4) {
+    for chunk in b.as_chunks::<4>().0 {
         let mut v = 0u32;
         let mut k = 0usize;
         for &c in chunk {
