@@ -23,6 +23,8 @@ use std::time::{Duration, Instant};
 static GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 /// 臉的小圖多大（像素）
 const FACE_PX: u32 = 96;
+/// 背景找臉時，畫面上的人物、篩選最多多久重算一次
+const REFRESH_EVERY: Duration = Duration::from_secs(3);
 /// 「有人閉眼的」判斷的寬嚴（設定的 photoBlink：寬鬆、一般、嚴格）→ 兩眼閉上的程度要到多少
 const BLINK: [f32; 3] = [0.6, 0.7, 0.8];
 /// 整理人物的視窗最多列幾個人、一個人最多列幾張臉（每張臉第一次都要讀相片做小圖）
@@ -69,9 +71,10 @@ pub struct People {
     regrouping: bool,
     /// 同一張相片裡的臉（一定是不同的人）兩兩比較：幾組、相似度到三個門檻的各幾組（看模型分不分得開）
     diag: (usize, [usize; 3]),
-    /// 接上背景找臉了（暫停的狀態照背景的）、上次看到的是第幾批
+    /// 接上背景找臉了（暫停的狀態照背景的）、上次看到的是第幾批、上次因為背景找臉重算畫面的時間
     synced: bool,
     rev: u64,
+    refreshed: Option<Instant>,
     /// 背景正在找：（這次找了幾張, 這次要找幾張）；暫停、停下來（關掉分頁）
     pub running: Option<(usize, usize)>,
     pub done: usize,
@@ -122,6 +125,7 @@ impl Default for People {
             diag: (0, [0; 3]),
             synced: false,
             rev: 0,
+            refreshed: None,
             running: None,
             done: 0,
             paused: false,
@@ -183,7 +187,10 @@ impl People {
         self.quality = idx.quality(self.threshold());
         self.old = idx.old_photos();
         self.level = idx.level.unwrap_or(1).min(2);
-        self.diag = idx.same_photo_similarity();
+        // 診斷要把同一張相片裡的臉兩兩比過，只在整理人物的視窗開著時算
+        if self.dlg.is_some() {
+            self.diag = idx.same_photo_similarity();
+        }
         self.recompute(&idx);
         if let Some(d) = self.dlg.as_mut() {
             if d.selected.is_some_and(|id| idx.person(id).is_none()) {
@@ -486,9 +493,11 @@ pub fn tick(app: &mut UiApp) {
             let (done, total) = (w.done.load(Ordering::Relaxed), w.total.load(Ordering::Relaxed));
             p.done = done;
             p.running = w.running.load(Ordering::Relaxed).then_some((done, total));
+            // 背景每找完一批就會變：重算畫面最多每 REFRESH_EVERY 一次（資料多時重算要幾十毫秒），找完時馬上算
             let rev = w.rev.load(Ordering::Relaxed);
-            if rev != p.rev {
+            if rev != p.rev && (p.running.is_none() || p.refreshed.is_none_or(|t| t.elapsed() >= REFRESH_EVERY)) {
                 p.rev = rev;
+                p.refreshed = Some(Instant::now());
                 p.refresh();
                 // 篩選、用名稱搜尋時跟著更新
                 if p.filtering() || !d.searched.is_empty() {
@@ -827,6 +836,8 @@ pub fn menu_act(app: &mut UiApp, act: MenuAct) {
                 let sel = d.people.filter;
                 d.people.dlg =
                     Some(Dlg { selected: None, faces: vec![], picked: HashSet::new(), name: String::new(), show_hidden: false, show_single: false, search: String::new(), multi: HashSet::new() });
+                // 視窗開了：算一次診斷、拿最新的整理結果
+                d.people.refresh();
                 select(&mut d.people, sel);
             }
         }
