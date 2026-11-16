@@ -75,6 +75,9 @@ pub struct People {
     synced: bool,
     rev: u64,
     refreshed: Option<Instant>,
+    /// 要在背景重算整理結果、正在算
+    want_refresh: bool,
+    refreshing: bool,
     /// 背景正在找：（這次找了幾張, 這次要找幾張）；暫停、停下來（關掉分頁）
     pub running: Option<(usize, usize)>,
     pub done: usize,
@@ -126,6 +129,8 @@ impl Default for People {
             synced: false,
             rev: 0,
             refreshed: None,
+            want_refresh: false,
+            refreshing: false,
             running: None,
             done: 0,
             paused: false,
@@ -158,19 +163,24 @@ pub struct Dlg {
     multi: HashSet<u32>,
 }
 
-impl People {
-    /// 相片換了（掃描完、刪除…）：再看看有沒有要找的
-    pub fn photos_changed(&mut self) {
-        self.all_done = false;
-    }
+/// 從臉的資料算出來、畫面要用的整理結果（資料多時要幾十毫秒：背景找臉時在背景執行緒算）
+struct Fresh {
+    summary: Vec<PersonSummary>,
+    names: HashMap<String, String>,
+    closed: HashSet<String>,
+    open: HashSet<String>,
+    blurry: HashSet<String>,
+    smiling: HashSet<String>,
+    counts: HashMap<String, usize>,
+    quality: HashMap<String, f32>,
+    old: usize,
+    level: u8,
+}
 
-    /// 資料改了：重算整理結果、每張相片的名稱、篩選的相片
-    fn refresh(&mut self) {
-        let Some(idx) = self.index.clone() else { return };
-        let idx = idx.lock().unwrap_or_else(|e| e.into_inner());
-        self.summary = idx.summary();
+impl Fresh {
+    fn of(idx: &FaceIndex, threshold: f32) -> Fresh {
         let named: HashMap<u32, String> = idx.people.iter().filter(|p| !p.name.is_empty()).map(|p| (p.id, p.name.to_lowercase())).collect();
-        self.names = idx
+        let names = idx
             .photos
             .iter()
             .filter_map(|(path, pf)| {
@@ -179,14 +189,33 @@ impl People {
                 (!v.is_empty()).then(|| (path.clone(), v.join(" ")))
             })
             .collect();
-        self.closed = idx.closed_eyes(self.threshold());
-        self.open = idx.open_eyes(self.threshold());
-        self.blurry = idx.blurry();
-        self.smiling = idx.smiling();
-        self.counts = idx.face_counts();
-        self.quality = idx.quality(self.threshold());
-        self.old = idx.old_photos();
-        self.level = idx.level.unwrap_or(1).min(2);
+        Fresh {
+            summary: idx.summary(),
+            names,
+            closed: idx.closed_eyes(threshold),
+            open: idx.open_eyes(threshold),
+            blurry: idx.blurry(),
+            smiling: idx.smiling(),
+            counts: idx.face_counts(),
+            quality: idx.quality(threshold),
+            old: idx.old_photos(),
+            level: idx.level.unwrap_or(1).min(2),
+        }
+    }
+}
+
+impl People {
+    /// 相片換了（掃描完、刪除…）：再看看有沒有要找的
+    pub fn photos_changed(&mut self) {
+        self.all_done = false;
+    }
+
+    /// 資料改了：重算整理結果、每張相片的名稱、篩選的相片（在畫面執行緒上算：使用者剛改了東西時用；
+    /// 背景找臉引起的更新用 want_refresh，在背景算好再換上）
+    fn refresh(&mut self) {
+        let Some(idx) = self.index.clone() else { return };
+        let idx = idx.lock().unwrap_or_else(|e| e.into_inner());
+        self.apply(Fresh::of(&idx, self.threshold()));
         // 診斷要把同一張相片裡的臉兩兩比過，只在整理人物的視窗開著時算
         if self.dlg.is_some() {
             self.diag = idx.same_photo_similarity();
@@ -199,6 +228,13 @@ impl People {
             d.faces = d.selected.map(|id| idx.faces_of(id)).unwrap_or_default();
             d.picked.retain(|f| d.faces.contains(f));
         }
+    }
+
+    /// 換上算好的整理結果
+    fn apply(&mut self, f: Fresh) {
+        (self.summary, self.names, self.closed, self.open) = (f.summary, f.names, f.closed, f.open);
+        (self.blurry, self.smiling, self.counts, self.quality) = (f.blurry, f.smiling, f.counts, f.quality);
+        (self.old, self.level) = (f.old, f.level);
     }
 
     /// 這張相片裡有取名的人
@@ -403,8 +439,7 @@ pub fn open(app: &mut UiApp) {
     if let (Some(ix), Some(d)) = (app.face_index.clone(), app.photos.as_mut()) {
         d.people.index = Some(ix);
         d.people.blink_level = app.s.photo_blink;
-        d.people.refresh();
-        d.dirty = true;
+        d.people.want_refresh = true;
         return;
     }
     if !app.s.photo_faces && !faces::index_file().exists() {
@@ -444,8 +479,7 @@ fn load_index(app: &mut UiApp) {
             if let (Some(ix), Some(d)) = (app.face_index.clone(), app.photos.as_mut()) {
                 d.people.index = Some(ix);
                 d.people.blink_level = level;
-                d.people.refresh();
-                d.dirty = true;
+                d.people.want_refresh = true;
             }
         },
     );
@@ -465,8 +499,7 @@ pub fn tick(app: &mut UiApp) {
         if p.index.is_none() {
             if let Some(ix) = index {
                 p.index = Some(ix);
-                p.refresh();
-                d.dirty = true;
+                p.want_refresh = true;
             }
         }
         if p.blink_level != level {
@@ -498,18 +531,51 @@ pub fn tick(app: &mut UiApp) {
             if rev != p.rev && (p.running.is_none() || p.refreshed.is_none_or(|t| t.elapsed() >= REFRESH_EVERY)) {
                 p.rev = rev;
                 p.refreshed = Some(Instant::now());
-                p.refresh();
-                // 篩選、用名稱搜尋時跟著更新
-                if p.filtering() || !d.searched.is_empty() {
-                    d.dirty = true;
-                }
+                p.want_refresh = true;
             }
         }
     }
+    refresh_in_background(app);
     if recheck {
         app.face_idle = false;
     }
     start_work(app);
+}
+
+/// 背景找臉、剛讀好資料引起的更新：整理結果在背景執行緒算好再換上（資料多時要幾十毫秒，背景工作握著資料時還要等，
+/// 都不能卡住畫面）
+fn refresh_in_background(app: &mut UiApp) {
+    let Some(d) = app.photos.as_mut() else { return };
+    let p = &mut d.people;
+    if !p.want_refresh || p.refreshing {
+        return;
+    }
+    let Some(index) = p.index.clone() else { return };
+    (p.want_refresh, p.refreshing) = (false, true);
+    let threshold = p.threshold();
+    app.spawn(async move { tokio::task::spawn_blocking(move || Fresh::of(&index.lock().unwrap_or_else(|e| e.into_inner()), threshold)).await.ok() }, |app, fresh| {
+        let Some(d) = app.photos.as_mut() else { return };
+        let p = &mut d.people;
+        p.refreshing = false;
+        let Some(fresh) = fresh else { return };
+        p.apply(fresh);
+        // 篩選的相片、整理人物視窗裡選的那個人：資料正被背景工作握著時這次先不算，下一輪再來
+        let Some(index) = p.index.clone() else { return };
+        let Ok(idx) = index.try_lock() else {
+            p.want_refresh = true;
+            return;
+        };
+        p.recompute(&idx);
+        if let Some(dlg) = p.dlg.as_mut() {
+            if dlg.selected.is_some_and(|id| idx.person(id).is_none()) {
+                dlg.selected = None;
+            }
+            dlg.faces = dlg.selected.map(|id| idx.faces_of(id)).unwrap_or_default();
+            dlg.picked.retain(|f| dlg.faces.contains(f));
+        }
+        drop(idx);
+        d.dirty = true;
+    });
 }
 
 /// 每一格畫面（不管檔案庫有沒有開）：錄影時讓路；相片分頁沒開時也在背景接著找（重開程式後自動繼續）
