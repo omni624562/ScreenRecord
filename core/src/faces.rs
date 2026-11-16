@@ -675,7 +675,7 @@ impl FaceRec {
 /// 資料版本升級、只是要補新欄位時省很多時間）
 pub fn analyze(engine: &Engine, ffmpeg: Option<&Path>, path: &str, old: &[([f32; 4], String)]) -> Result<Vec<FaceRec>, String> {
     std::fs::File::open(path).map_err(|e| e.to_string())?;
-    let Some((img, _)) = crate::photos::load_full(ffmpeg, path, ANALYZE_MAX) else { return Ok(vec![]) };
+    let Some(img) = crate::photos::load_small(ffmpeg, path, ANALYZE_MAX) else { return Ok(vec![]) };
     let img = image::DynamicImage::ImageRgba8(img).to_rgb8();
     let (w, h) = (img.width() as f32, img.height() as f32);
     let mut out = vec![];
@@ -713,8 +713,101 @@ pub struct Job {
     pub old: Vec<([f32; 4], String)>,
 }
 
-/// 同時分析幾張（每張都要從 NAS 讀檔、解碼、跑模型）
-const THREADS: usize = 3;
+/// 同時分析幾張（每張都要從 NAS 讀檔、解碼、跑模型）：CPU 執行緒的一半，最少 2、最多 6（留一半給其他工作）
+pub fn threads() -> usize {
+    (std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4) / 2).clamp(2, 6)
+}
+
+/// 先讓路（正在錄影）：背景找臉停在兩張相片之間，等放開再繼續
+pub static HOLD: AtomicBool = AtomicBool::new(false);
+
+/// 背景找臉的狀態（畫面讀進度、按暫停）
+#[derive(Default)]
+pub struct Work {
+    /// 這一輪找了幾張、要找幾張
+    pub done: std::sync::atomic::AtomicUsize,
+    pub total: std::sync::atomic::AtomicUsize,
+    pub running: AtomicBool,
+    pub paused: AtomicBool,
+    pub stop: AtomicBool,
+    /// 每找完一批加一（畫面看到變了就重算）
+    pub rev: std::sync::atomic::AtomicU64,
+    pub error: Mutex<Option<String>>,
+}
+
+/// 一批找幾張、多久存一次、找了幾張在記錄檔寫一次速度
+const WORK_BATCH: usize = 12;
+const WORK_SAVE: std::time::Duration = std::time::Duration::from_secs(30);
+const WORK_SPEED: usize = 240;
+
+/// 背景找臉：把 photos（路徑, 大小, 修改時間；先找的排前面）裡還沒找過的一批批找完，找完一批就分組，
+/// 每 30 秒與結束時存檔（may_save 回答 false 時不存：資料被刪掉了）。暫停、錄影中時停在兩批之間等；
+/// stop 時結束。回傳找了幾張
+pub fn run_work(index: &Mutex<FaceIndex>, work: &Work, photos: Vec<(String, u64, f64)>, ffmpeg: Option<PathBuf>, may_save: impl Fn() -> bool, on_batch: impl Fn()) -> usize {
+    use std::sync::atomic::Ordering::Relaxed;
+    let lock = || index.lock().unwrap_or_else(|e| e.into_inner());
+    let todo: Vec<(String, u64, f64)> = {
+        let idx = lock();
+        photos.into_iter().filter(|(p, s, m)| idx.needs(p, *s, *m)).collect()
+    };
+    work.done.store(0, Relaxed);
+    work.total.store(todo.len(), Relaxed);
+    let (mut saved, mut dirty) = (std::time::Instant::now(), false);
+    let (mut speed_n, mut speed_t) = (0usize, std::time::Duration::ZERO);
+    let mut done = 0;
+    for chunk in todo.chunks(WORK_BATCH) {
+        while (work.paused.load(Relaxed) || HOLD.load(Relaxed)) && !work.stop.load(Relaxed) {
+            std::thread::sleep(std::time::Duration::from_millis(400));
+        }
+        if work.stop.load(Relaxed) {
+            break;
+        }
+        let jobs: Vec<Job> = {
+            let idx = lock();
+            chunk.iter().map(|(p, s, m)| Job { path: p.clone(), size: *s, mtime: *m, old: idx.known_faces(p, *s, *m) }).collect()
+        };
+        let began = std::time::Instant::now();
+        let results = match analyze_many(jobs, ffmpeg.clone(), &work.stop) {
+            Ok(r) => r,
+            Err(e) => {
+                crate::warn!("[人臉] 找臉失敗：{e}");
+                *work.error.lock().unwrap_or_else(|x| x.into_inner()) = Some(e);
+                break;
+            }
+        };
+        speed_t += began.elapsed();
+        speed_n += results.len();
+        {
+            let mut idx = lock();
+            for (job, r) in results {
+                match r {
+                    Ok(f) => idx.put(job.path, job.size, job.mtime, f),
+                    // 打不開的（NAS 斷線）：這一輪不再試，下一輪再找
+                    Err(e) => crate::info!("[人臉] 讀不到 {}：{e}", job.path),
+                }
+                done += 1;
+            }
+            idx.cluster();
+            dirty = true;
+            if saved.elapsed() >= WORK_SAVE && may_save() {
+                save_index(&index_file(), &idx);
+                (saved, dirty) = (std::time::Instant::now(), false);
+            }
+        }
+        if speed_n >= WORK_SPEED {
+            let secs = speed_t.as_secs_f64().max(0.001);
+            crate::info!("[人臉] 找了 {speed_n} 張相片，花 {secs:.0} 秒（每分鐘約 {:.0} 張，同時 {} 張）", speed_n as f64 / secs * 60.0, threads());
+            (speed_n, speed_t) = (0, std::time::Duration::ZERO);
+        }
+        work.done.store(done, Relaxed);
+        work.rev.fetch_add(1, Relaxed);
+        on_batch();
+    }
+    if dirty && may_save() {
+        save_index(&index_file(), &lock());
+    }
+    done
+}
 
 /// 一張相片找臉的結果：（相片, 找到的臉；打不開時是原因）
 pub type JobResult = (Job, Result<Vec<FaceRec>, String>);
@@ -725,7 +818,7 @@ pub fn analyze_many(jobs: Vec<Job>, ffmpeg: Option<PathBuf>, stop: &AtomicBool) 
     let queue = Mutex::new(jobs);
     let out = Mutex::new(vec![]);
     std::thread::scope(|s| {
-        for _ in 0..THREADS {
+        for _ in 0..threads() {
             s.spawn(|| loop {
                 if stop.load(Ordering::Relaxed) {
                     break;
@@ -1848,6 +1941,36 @@ mod tests {
             let out = std::env::temp_dir().join(format!("sr-portrait-{}.jpg", p.id));
             std::fs::write(&out, &jpg).unwrap();
             println!("PORTRAIT {} {} bytes {}", p.name, jpg.len(), out.display());
+        }
+    }
+
+    /// 量一張相片各步驟花多久（SCREENRECORDER_TEST_FACE_BENCH=相片；模型放在 SCREENRECORDER_DATA_DIR 的 faces）
+    #[test]
+    fn bench_one_photo() {
+        let Ok(list) = std::env::var("SCREENRECORDER_TEST_FACE_BENCH") else { return };
+        let engine = Engine::get().unwrap();
+        for file in list.split('|') {
+            let t = std::time::Instant::now();
+            let bytes = std::fs::read(file).unwrap();
+            let read = t.elapsed();
+            let t = std::time::Instant::now();
+            let (img, _) = crate::photos::load_full(None, file, ANALYZE_MAX).unwrap();
+            let decode = t.elapsed();
+            let img = image::DynamicImage::ImageRgba8(img).to_rgb8();
+            let t = std::time::Instant::now();
+            let faces = engine.detect(&img).unwrap();
+            let detect = t.elapsed();
+            let t = std::time::Instant::now();
+            for f in &faces {
+                engine.check(&img, f, true).unwrap();
+            }
+            let check = t.elapsed();
+            let t = std::time::Instant::now();
+            for f in &faces {
+                engine.embed(&align(&img, &f.kps)).unwrap();
+            }
+            let embed = t.elapsed();
+            println!("BENCH {} {} bytes 臉 {}：讀檔 {read:?} 解碼縮小 {decode:?} 找臉 {detect:?} 特徵點表情 {check:?} 認人 {embed:?}", file.rsplit('/').next().unwrap(), bytes.len(), faces.len());
         }
     }
 
