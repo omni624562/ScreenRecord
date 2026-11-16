@@ -797,7 +797,8 @@ pub fn run_work(index: &Mutex<FaceIndex>, work: &Work, photos: Vec<(String, u64,
         };
         speed_t += began.elapsed();
         speed_n += results.len();
-        {
+        // 鎖只握著改資料、分組、轉成 JSON 的時間；寫檔在放開之後
+        let to_save = {
             let mut idx = lock();
             for (job, r) in results {
                 match r {
@@ -809,10 +810,11 @@ pub fn run_work(index: &Mutex<FaceIndex>, work: &Work, photos: Vec<(String, u64,
             }
             idx.cluster();
             dirty = true;
-            if saved.elapsed() >= WORK_SAVE && may_save() {
-                save_index(&index_file(), &idx);
-                (saved, dirty) = (std::time::Instant::now(), false);
-            }
+            (saved.elapsed() >= WORK_SAVE && may_save()).then(|| serde_json::to_vec(&*idx).unwrap_or_default())
+        };
+        if let Some(bytes) = to_save {
+            save_bytes(&index_file(), &bytes);
+            (saved, dirty) = (std::time::Instant::now(), false);
         }
         if speed_n >= WORK_SPEED {
             let secs = speed_t.as_secs_f64().max(0.001);
@@ -824,7 +826,8 @@ pub fn run_work(index: &Mutex<FaceIndex>, work: &Work, photos: Vec<(String, u64,
         on_batch();
     }
     if dirty && may_save() {
-        save_index(&index_file(), &lock());
+        let bytes = serde_json::to_vec(&*lock()).unwrap_or_default();
+        save_bytes(&index_file(), &bytes);
     }
     done
 }
@@ -908,10 +911,15 @@ pub fn load_index(file: &Path) -> FaceIndex {
 }
 
 pub fn save_index(file: &Path, idx: &FaceIndex) {
+    save_bytes(file, &serde_json::to_vec(idx).unwrap_or_default());
+}
+
+/// 把已經轉成 JSON 的資料寫進檔案（寫檔比較久：先在鎖裡轉好，放開鎖再寫，不擋住畫面讀資料）
+fn save_bytes(file: &Path, bytes: &[u8]) {
     if let Some(dir) = file.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
-    if let Err(e) = crate::paths::write_atomic(file, &serde_json::to_vec(idx).unwrap_or_default()) {
+    if let Err(e) = crate::paths::write_atomic(file, bytes) {
         crate::warn!("[人臉] 存不了臉的資料：{e}");
     }
 }
