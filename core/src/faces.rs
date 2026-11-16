@@ -582,29 +582,49 @@ pub fn pack(e: &[f32; 128]) -> String {
     s
 }
 
+/// base64 的每個字元是多少（不是 base64 的字元是 255）：查表，不用每個字元都從頭找
+const B64_VALUE: [u8; 256] = {
+    let mut t = [255u8; 256];
+    let mut i = 0;
+    while i < 64 {
+        t[B64[i] as usize] = i as u8;
+        i += 1;
+    }
+    t
+};
+
 pub fn unpack(s: &str) -> Option<[f32; 128]> {
-    let val = |c: u8| B64.iter().position(|b| *b == c).map(|v| v as u32);
-    let mut bytes = Vec::with_capacity(128);
-    for chunk in s.as_bytes().chunks(4) {
-        let mut n = 0u32;
+    let b = s.as_bytes();
+    // 128 bytes → 43 組 4 個字元（最後一組是 2 個 byte + 一個「=」）
+    if b.len() != 172 {
+        return None;
+    }
+    let mut e = [0f32; 128];
+    let mut n = 0usize;
+    for chunk in b.chunks_exact(4) {
+        let mut v = 0u32;
         let mut k = 0usize;
         for &c in chunk {
             if c == b'=' {
                 break;
             }
-            n |= val(c)? << (18 - 6 * k);
+            let d = B64_VALUE[c as usize];
+            if d == 255 {
+                return None;
+            }
+            v |= (d as u32) << (18 - 6 * k);
             k += 1;
         }
         for i in 0..k.saturating_sub(1) {
-            bytes.push((n >> (16 - 8 * i) & 255) as u8);
+            if n >= 128 {
+                return None;
+            }
+            e[n] = ((v >> (16 - 8 * i) & 255) as u8 as i8) as f32 / 127.0;
+            n += 1;
         }
     }
-    if bytes.len() != 128 {
+    if n != 128 {
         return None;
-    }
-    let mut e = [0f32; 128];
-    for (o, b) in e.iter_mut().zip(bytes) {
-        *o = (b as i8) as f32 / 127.0;
     }
     normalize(&mut e);
     Some(e)
@@ -1942,6 +1962,45 @@ mod tests {
             std::fs::write(&out, &jpg).unwrap();
             println!("PORTRAIT {} {} bytes {}", p.name, jpg.len(), out.display());
         }
+    }
+
+    /// 資料很多時（2 萬張相片、3 萬張臉、300 個人）每一步花多久（SCREENRECORDER_TEST_FACE_SCALE=1 才跑）
+    #[test]
+    fn bench_big_index() {
+        if std::env::var_os("SCREENRECORDER_TEST_FACE_SCALE").is_none() {
+            return;
+        }
+        let mut idx = FaceIndex { grouping: GROUPING, ..Default::default() };
+        for i in 0..20_000u32 {
+            let n = if i % 2 == 0 { 1 } else { 2 };
+            let faces = (0..n).map(|k| FaceRec { eyes: Some([10, 10]), sharp: Some(60), smile: Some(70), yaw: Some(0), ..face(&emb((i * 7 + k * 13) % 300, 0.2 + (i % 5) as f32 * 0.02)) }).collect();
+            idx.photos.insert(format!("/video/family/{:03}/Rec_{i:06}.jpg", i / 100), PhotoFaces { size: 1, mtime: 0.0, ver: VERSION, faces });
+        }
+        let t = |name: &str, f: &mut dyn FnMut()| {
+            let t0 = std::time::Instant::now();
+            f();
+            println!("SCALE {name}: {:?}", t0.elapsed());
+        };
+        t("第一次分組（3 萬張臉）", &mut || idx.cluster());
+        println!("SCALE 人數 {}", idx.people.len());
+        idx.photos.insert("/video/family/new.jpg".into(), PhotoFaces { size: 1, mtime: 0.0, ver: VERSION, faces: vec![face(&emb(5, 0.2))] });
+        t("加一批之後分組", &mut || idx.cluster());
+        t("summary", &mut || drop(idx.summary()));
+        t("closed_eyes + open_eyes + blurry + smiling", &mut || drop((idx.closed_eyes(0.7), idx.open_eyes(0.7), idx.blurry(), idx.smiling())));
+        t("face_counts + quality", &mut || drop((idx.face_counts(), idx.quality(0.7))));
+        t("same_photo_similarity", &mut || {
+            std::hint::black_box(idx.same_photo_similarity());
+        });
+        t("old_photos", &mut || {
+            std::hint::black_box(idx.old_photos());
+        });
+        t("存檔（序列化）", &mut || drop(serde_json::to_vec(&idx).unwrap()));
+        let e = pack(&emb(1, 0.1));
+        t("unpack × 30000", &mut || {
+            for _ in 0..30_000 {
+                std::hint::black_box(unpack(&e));
+            }
+        });
     }
 
     /// 量一張相片各步驟花多久（SCREENRECORDER_TEST_FACE_BENCH=相片；模型放在 SCREENRECORDER_DATA_DIR 的 faces）
